@@ -876,6 +876,69 @@ void Application::RegisterMcpEntityMethods()
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"removed", comp}};
         });
 
+    // ---- ゲーム内 UI を「押す」（合成ポインタ）----
+    // ★AI がテストプレイでメニューを操作できるようにするための口。これが無いと
+    //   「タイトルから始めて 1 面をクリアする」のような検証が、UI に触れないので成立しない。
+    //   実マウスと同じ経路へ流し込むので、覆われているボタンは**押せないのが正しく再現される**
+    //   （名前で onClick を直接呼ぶ実装にすると、そこが嘘になってテストの意味が無くなる）。
+    McpDefine("ui_click", "name:string,entity:int,x:number,y:number,move:bool", DX12E_MCP_HANDLER
+        {
+            if (!m_uiSystem) throw McpError(McpErr::InvalidParam, "UI システムが無い");
+            if (m_mcpStepReply.client != 0)
+                throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly");
+
+            const float uiVw = (m_renderW > 0) ? static_cast<float>(m_renderW) : 1920.0f;
+            const float uiVh = (m_renderH > 0) ? static_cast<float>(m_renderH) : 1080.0f;
+
+            float lx = 0.0f, ly = 0.0f;
+            std::string targetName;
+            if (params.contains("name") || params.contains("entity"))
+            {
+                auto& reg = m_scene->GetRegistry();
+                const auto e = ResolveMcpEntity(*m_scene, params);
+                std::vector<UiResolvedRect> rects;
+                UISystem::ResolveRects(reg, 0.0f, 0.0f, uiVw, uiVh, rects);
+                const UiResolvedRect* rr = nullptr;
+                for (const auto& r : rects) if (r.e == e) { rr = &r; break; }
+                if (!rr)
+                    throw McpError(McpErr::NotFound,
+                        "その要素には uiRect が無いか、キャンバスの下にぶら下がっていない",
+                        "dx12_ui_tree で構造と resolvedRect を確認すること");
+                lx = (rr->min.x + rr->max.x) * 0.5f;
+                ly = (rr->min.y + rr->max.y) * 0.5f;
+                targetName = reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string();
+            }
+            else if (params.contains("x") && params.contains("y"))
+            {
+                // 正規化 0..1（ビューポート基準）。解像度に依らないので台本に書ける。
+                lx = static_cast<float>(McpFloatParam(params, "x", 0.5f, 0.0f, 1.0f)) * uiVw;
+                ly = static_cast<float>(McpFloatParam(params, "y", 0.5f, 0.0f, 1.0f)) * uiVh;
+                targetName = "(座標指定)";
+            }
+            else
+            {
+                throw McpError(McpErr::InvalidParam, "name / entity か x,y のどちらかが要る",
+                    "x,y はビューポート基準の 0..1。何も無い所を押してフォーカスを外すのにも使える");
+            }
+
+            const bool moveOnly = params.value("move", false);
+            if (moveOnly) m_uiSystem->InjectPointerMove(lx, ly);
+            else          m_uiSystem->InjectPointerClick(lx, ly);
+
+            // 押す→離す→イベント配送で 3 フレーム見る（step_frames と同じ遅延応答に相乗り）。
+            m_mcpStepExtra = {
+                {"target", targetName},
+                {"viewportLocal", {{"x", lx}, {"y", ly}}},
+                {"viewport", {{"width", uiVw}, {"height", uiVh}}},
+                {"moveOnly", moveOnly},
+                {"note", "実マウスと同じ経路へ流したので、前面に別の要素が被っていれば"
+                         "押せないのが正しい挙動。結果は dx12_ui_tree / ゲーム側の状態で確かめること"}};
+            m_mcpStepFramesLeft = moveOnly ? 2 : 3;
+            m_mcpStepFramesRequested = m_mcpStepFramesLeft;
+            m_mcpStepReply = deferred;
+            isDeferred = true;
+        });
+
     McpDefine("ui_tree", "", DX12E_MCP_HANDLER
         {
             // ゲーム内 UI ツリーを丸ごと JSON で返す（AI が UI 構造を「見る」ための読み取り API）。

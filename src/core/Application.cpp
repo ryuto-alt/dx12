@@ -1833,6 +1833,11 @@ void Application::Run()
                     r["note"] = "時間を止めた（次の step_frames まで進まない）。"
                                 "hold:false で止めずに走らせ続けられる";
             }
+            // 相乗りしているツール（ui_click 等）の結果を混ぜる。
+            if (m_mcpStepExtra.is_object())
+                for (auto it = m_mcpStepExtra.begin(); it != m_mcpStepExtra.end(); ++it)
+                    r[it.key()] = it.value();
+            m_mcpStepExtra = nlohmann::json();
             CompleteMcp(m_mcpBridge.get(), m_mcpStepReply, std::move(r));
             m_mcpStepReply = {};
         }

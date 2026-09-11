@@ -147,7 +147,31 @@ public:
     bool WantsMouse() const { return m_wantsMouse; }
     bool WantsNav()   const { return m_wantsNav; }
 
+    // ---- 合成ポインタ（MCP / 自動テストからゲーム UI を押す）----
+    //
+    // ★実マウスとまったく同じ経路（ctx.mousePos / mouseClicked / mouseReleased）へ流し込む。
+    //   「名前で onClick を直接呼ぶ」方式にしないのは、それだと**覆われて押せないボタンも
+    //   押せてしまいテストにならない**ため。この形なら前面のブロッカー・スクロールの
+    //   クリップ・押下キャプチャ（矩形の外で離したらキャンセル）まで本物の判定を全部通る。
+    //
+    // 座標は【ビューポート左上を原点とするローカル px】。ウィンドウ位置にも解像度にも依らない。
+    // 1 クリック = 押す(phase 0) → 離す(phase 1) の 2 フレーム。ボタンは release-inside で
+    // 確定するので、1 フレームだけ押しても発火しない。
+    void InjectPointerClick(float localX, float localY)
+    { m_inject = {0, localX, localY, true}; }
+    void InjectPointerMove(float localX, float localY)
+    { m_inject = {0, localX, localY, false}; }
+    bool PointerInjectPending() const { return m_inject.phase >= 0; }
+
 private:
+    struct PointerInject
+    {
+        int   phase = -1;      // -1 = 非アクティブ
+        float x = 0.0f, y = 0.0f;
+        bool  click = false;   // false = 位置だけ動かす（ホバー確認用）
+    };
+    PointerInject m_inject;
+
     std::vector<UIPendingClick> m_pendingClicks;
     std::vector<std::string>    m_pendingSfx;
 

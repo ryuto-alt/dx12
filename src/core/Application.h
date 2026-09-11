@@ -1251,6 +1251,9 @@ private:
     McpDeferred m_mcpLoadReply;          // open_scene の遅延応答（ロード完了後に送る）。client=0 で無効。
     McpDeferred m_mcpStepReply;          // step_frames の遅延応答（N フレーム経過後に送る）。client=0 で無効。
     int         m_mcpStepFramesLeft = 0; // step_frames で残り何フレーム回すか。0 で非アクティブ。
+    // step の遅延応答へ相乗りするツール（ui_click 等）が足したいフィールド。
+    // 「N フレーム回してから返す」という仕組みは同じなので、応答の中身だけ差し替える。
+    nlohmann::json m_mcpStepExtra;
     McpDeferred m_mcpGameViewReply;      // screenshot_game_view の遅延応答（1フレーム描画後に送る）。client=0 で無効。
     // ★撮影先の絶対パス（空ならエンジンの CWD へ書く）。ヘッドレス起動では CWD が
     //   書けない場所（C:\Windows\System32 等）になることがあり、その場合 WIC が開けず

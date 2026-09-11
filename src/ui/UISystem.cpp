@@ -2275,6 +2275,20 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     ctx.mouseDown     = ImGui::IsMouseDown(ImGuiMouseButton_Left);
     ctx.mouseClicked  = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     ctx.mouseReleased = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
+    // ★合成ポインタ（MCP の dx12_ui_click / 自動テスト）。実マウスより優先して乗っ取る。
+    //   ここで差し替えるだけで、以降のレイキャスト・最前面判定・押下キャプチャは
+    //   本物のクリックとまったく同じ経路を通る。
+    if (m_inject.phase >= 0)
+    {
+        ctx.mousePos      = ImVec2(ox + m_inject.x, oy + m_inject.y);
+        ctx.windowHovered = true;   // 合成中は「ゲームビューにカーソルがある」扱い
+        ctx.mouseDown     = m_inject.click && (m_inject.phase == 0);
+        ctx.mouseClicked  = m_inject.click && (m_inject.phase == 0);
+        ctx.mouseReleased = m_inject.click && (m_inject.phase == 1);
+        // 押す→離すの 2 フレームを消化したら解除（move は 1 フレームで終わり）
+        if (!m_inject.click || m_inject.phase >= 1) m_inject.phase = -1;
+        else                                        ++m_inject.phase;
+    }
     ctx.resources     = resources;
     ctx.srvHeap       = srvHeap;
     ctx.cmdList       = cmdList;
