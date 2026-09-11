@@ -171,6 +171,9 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   // Blender 連携: engine method ではなく Blender のソケットとファイル操作。
   "dx12_blender_ensure", "dx12_model_brief", "dx12_blender_export", "dx12_asset_gap",
   "dx12_blender_polish", "dx12_blender_material", "dx12_scene_env",
+  // VFX: レシピ(vfx.ts)を TS 側で解決してから create_entity / add_particle_layer /
+  // set_component / step_frames / screenshot_final として届く合成ツール。
+  "dx12_vfx_library", "dx12_vfx_apply", "dx12_vfx_preview",
 ]);
 
 /**

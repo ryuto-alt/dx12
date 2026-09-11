@@ -479,6 +479,29 @@ dx12_attach_lua_component(entity: 88, script:"components/Rotate.lua")
 
 ### 4b. カスタムシェーダーを作ってメッシュに割り当てる
 
+**書き始める前に 2 つ読む**（白紙から 200 行を書くのは失敗率が高い）:
+
+```
+dx12_list_shader_templates()                     # 動く雛形(water / ocean / particle_ember)
+dx12_describe_shader_contract(kind:"mesh")       # b0/b1 の中身・テクスチャ・入出力・落とし穴
+# kind: mesh(既定) / particle / sprite / screen。★契約が全部違うので取り違えないこと
+dx12_create_shader(name:"Sea", template:"ocean") # 雛形から起こす(code 省略可)
+```
+
+★**割り当てただけでは動かない**。b0 の自由枠(effectValue / shaderParams / shaderParamsB)は
+最初 0 なので、波の高さ 0・流速 0 の水面のように「貼ったのに何も起きない」状態になる。
+
+```
+dx12_set_mesh_shader(name:"Sea_Plane", shaderPath:"Sea.hlsl")
+dx12_set_mesh_shader_params(name:"Sea_Plane", effect:1.0, params:[0.6, 1.2, 0.35, 0], paramsB:[0.2, 0, 0])
+# → 現在値が全部返る。意味は各シェーダーのヘッダコメント(dx12_read_shader で読める)
+```
+
+時間で動かす(溶ける・波が高くなる)なら Trigger の `AnimShaderParam` か
+`dx12_sequence_author` の shaderParam トラックを使う。
+
+自分で全部書く場合:
+
 ```
 dx12_create_shader(name:"ToonShade", code:[[
 Texture2D    g_albedo  : register(t0);
@@ -1541,6 +1564,85 @@ dx12_screenshot_game_view()
 **影が落ちるのは spot 4 / point 2 のまま**＝灯数の上限が消えても影の上限は消えていない。
 **超えた分は無言で描画されない**（パーティクルの発光ライトも枠を使う）。
 「増やしたのに明るくならない」はほぼこれ。
+
+### ワークフロー: エフェクト(VFX)を置く — レシピ → 置く → 時間で見る
+
+炎・煙・魔法・爆発・雨のようなパーティクルは **1 レイヤーでは絶対にそれらしくならない**
+（本物の炎は「炎＋煙＋火の粉」）。レシピ集から複数レイヤーごと置くのが速い。
+
+```
+# ① 何が作れるか（33 レシピ。tag で絞れる: fire/smoke/magic/impact/weather/water/electric/trail/ambient）
+dx12_vfx_library(tag:"fire")
+# → presets:[{id:"torch", title:"松明の炎", layers:3, layerNames:["Flame","Smoke","Sparks"], ...}]
+dx12_vfx_library(id:"campfire")        # 1 つの全レイヤーの実値と注意書きまで見る
+
+# ② 置く（新規エンティティを作るか、既存へ付ける。倍率で調整）
+dx12_vfx_apply(preset:"torch", position:[3, 2.1, -4], parentName:"FX")
+dx12_vfx_apply(preset:"magic_circle", position:[0,0.05,0], scale:1.5, color:[0.9,0.2,0.2])
+dx12_vfx_apply(preset:"explosion", name:"Boss_DeathFX")     # 既存エンティティに付ける
+dx12_vfx_apply(preset:"torch", dryRun:true)                  # 何も変えずに適用値だけ見る
+
+# ③ ★時間で見る（静止画 1 枚では「出ていない」のか「たまたま写っていない」のか分からない）
+dx12_vfx_preview(name:"FX_torch", seconds:2, frames:6, distance:3)
+# → 格子画像 + {visible, sceneLuma, stats:[{changedPct, effectPeak, blownAreaPct, motionPct}], suggestions}
+dx12_vfx_preview(name:"FX_explosion", fire:true, seconds:1, frames:8)   # ワンショットを試し撃ち
+```
+
+`dx12_vfx_preview` は **先に放出器を一時的に遠くへ退けて「効果が無いときの絵」を 1 枚撮り**、
+それとの差で効果の面積・明るさ・白飛びを数える（撮り終わったら必ず元へ戻す）。
+フレーム間の差だけで測ると、**同じ場所で燃え続ける炎を「出ていない」と誤判定する**ため。
+
+**倍率**: `scale`(大きさ。size/speed/offset/lightRange) / `rate`(密度) / `intensity`(HDR 強度) /
+`color`(加算レイヤーの主色だけ。煙は元の色のまま・終了色は明度比を保って追従) / `oneShot` / `life` / `light`。
+
+#### ★パーティクルで「安っぽく」なる 3 つの原因（実測して分かった）
+
+1. **密度 × 強度の掛けすぎ**。加算ブレンドは重なった枚数だけ足し算になるので、
+   `rate` を上げたまま `intensity` を上げると **芯が真っ白に潰れて色も形も消える**
+   （松明を intensity 4.0 で置くと、暗い部屋でもただの白い球にしかならなかった）。
+   粒が重なる層は **rate × intensity ≒ 50** が目安（rate 34 → 1.6 / rate 55 → 1.0 / rate 80 → 0.9）。
+   逆に**火の粉・星屑のような細かくて重ならない粒は intensity 6〜8 で構わない**。
+   「点が光っている」ように見せる唯一の作り方で、炎の中の粒立ちもこれで出す。
+2. **大きい Glow を強くする**。`kind:0`(Glow) は 1 枚でも画面を覆うので、size 0.5 以上なら
+   intensity は 1.2 まで。魔法陣の中心を size 0.9 / intensity 2.0 にしたら、
+   リングが見えない **白いドーム** になった。
+3. **色が淡い**。加算＋ブルームは色を白へ流すので、`[0.6,0.9,1.0]` のような淡い青は画面では
+   **ただの白**になる。狙った色相を残すなら `[0.25,0.65,1.0]` くらいまで濃くして指定する。
+
+その他の定石:
+- **煙・埃・血・雪・灰は `blend:1`(前乗算アルファ)**。加算にすると白く光って煙に見えない。
+- **暗いアルファの粒は暗い背景では文字通り見えない**。煙や血の確認は明るい床/空を背にして撮ること。
+- **上へ立ち上る物は `gravity` を正**にする（浮力）。落ちる物は負。
+- `light:true` は明るい粒を実ポイントライト化する。**ライト予算を食う**ので、同じ効果を 4 個以上
+  並べるなら `light:false` で置いて代表 1 個だけ点ける（`dx12_list_lights` で確認）。
+- CPU パーティクルの上限は**シーン全体で 8000 粒**。`dx12_vfx_apply` の返り値
+  `estimatedLiveParticles` で 1 個あたりの目安が分かる。大量に撒く雨/雪は `gpu:true`（別枠 131072）。
+- **ワンショット(explosion / impact_sparks / dust_puff …)は置いただけでは鳴らない**。
+  Trigger の `PlayEffect`(type:4, target:放出器の名前) で配線するか、確認だけなら
+  `dx12_vfx_preview(fire:true)`。
+
+#### レシピから外れた微調整（生のレイヤー操作）
+
+```
+dx12_list_particle_layers(name:"FX_torch")                  # index / name を見る
+dx12_set_component(name:"FX_torch", component:"particleEmitter", layer:1,
+                   data:{ rate: 4, size: 0.3 })              # layer 指定で 2 枚目を触る
+dx12_add_particle_layer(name:"FX_torch", layerName:"Ash")    # 4 枚目を足す（上限 16）
+dx12_remove_particle_layer(name:"FX_torch", layer:"Ash")     # 最後の 1 枚は消せない
+```
+
+`layer` を省いた `set_component` は **1 枚目だけ**を書き換える（レイヤーは追加されない）。
+2 枚目以降を触るには必ず `layer`(index か名前)を渡すこと。
+
+#### 粒に自作シェーダーを貼る
+
+```
+dx12_describe_shader_contract(kind:"particle")   # ★書く前に必ず読む(mesh とは別契約)
+dx12_list_shader_templates()                      # 動く雛形から始める
+dx12_create_shader(name:"Ember", template:"particle_ember")
+dx12_set_component(name:"FX_torch", component:"particleEmitter", layer:0,
+                   data:{ shaderPath:"Ember.hlsl" })
+```
 
 ### ワークフロー: 壊れてないか 1 発で確認する
 
