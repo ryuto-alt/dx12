@@ -177,6 +177,9 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   // ルック: lookDev.ts のプリセットを set_sun / set_volumetric_fog /
   // set_scene_settings / set_post_process へ分解して撃つ合成ツール。
   "dx12_look_library", "dx12_look_apply",
+  // 演出: 台本(sequence.ts)から Lua を生成して create_lua_component /
+  // attach_lua_component / play / step_frames / screenshot_final として届く。
+  "dx12_sequence_author", "dx12_sequence_preview",
 ]);
 
 /**

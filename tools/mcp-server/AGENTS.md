@@ -1683,6 +1683,62 @@ dx12_set_component(name:"FX_torch", component:"particleEmitter", layer:0,
                    data:{ shaderPath:"Ember.hlsl" })
 ```
 
+### ワークフロー: 演出(カットシーン)を作る — 台本 → 生成 → 流して見る
+
+カメラ・ポスト・時間・エフェクト・音が【同じ時間軸で噛み合って】初めて演出になる。
+Lua を手書きすると毎回ちがう自己流の状態機械が生えて、スローモを入れた瞬間に台本が壊れる。
+
+```
+dx12_sequence_author(
+  name: "BossReveal",
+  camera: "CutsceneCam",        # ★CameraComponent を持つエンティティ名
+  activateCamera: true,          # そのカメラを「映るカメラ」にする
+  tracks: [
+    { t:0.0, type:"fade",   to:"clear", dur:0.8 },
+    { t:0.0, type:"camera", from:[0,6,14], to:[0,2.2,6], lookAtName:"Boss", dur:3.2, ease:"inOut" },
+    { t:0.4, type:"sound",  path:"audio/boss_theme.wav", bgm:true },
+    { t:2.6, type:"vfx",    preset:"explosion", atName:"Boss", scale:1.4 },
+    { t:2.6, type:"shake",  amp:0.35, freq:26, dur:0.7 },
+    { t:2.6, type:"timeScale", value:0.25 },
+    { t:3.1, type:"timeScale", value:1.0, dur:0.4 },
+    { t:3.2, type:"post",   set:{ saturation:1.35, contrast:1.2 }, dur:1.0 },
+    { t:4.4, type:"event",  name:"bossFightStart" },
+  ])
+# → components/BossReveal.lua を生成して SEQ_BossReveal に貼る
+#   {duration, trackCount, playEvent, stopEvent, doneEvent, referenced, warnings}
+
+dx12_sequence_preview(name:"BossReveal", seconds:5, frames:6)
+# → ゲーム画面の連写(格子画像) + frameDiffs + recentLog
+```
+
+**track の type**: `camera`(移動+注視) / `fade`(black|white|clear) / `post`(グレーディングを時間で) /
+`timeScale`(スローモ・ヒットストップ) / `shake`(画面揺れ) / `vfx`(VFX レシピを撃つ) /
+`sound`(SFX/BGM) / `move`・`rotate`(物を動かす) / `light`(明るさ・色) / `event`(Lua イベント) /
+`scene`(フェードして遷移) / `log`。共通で `t`(開始秒) `dur`(長さ)
+`ease`(linear/in/out/inOut/outBack/outBounce)。
+
+生成された Lua は**読める・手で直せる**。ただし同じ `name` で撃ち直すと上書きされる。
+他のスクリプトからは `events:emit("<name>:play")` / `("<name>:stop")` で操作でき、
+終わると `"<name>:done"` が飛ぶ。
+
+#### 演出で踏む罠（全部ツール側で先回りしてある）
+
+- **★動かすカメラが「映るカメラ」でないと画面は 1mm も変わらない**。
+  CameraComponent は `isActive` が立っている 1 つだけが使われる。
+  `dx12_sequence_author` は今アクティブなカメラを調べ、食い違っていれば警告する
+  （`activateCamera:true` で切り替える。`camera` 省略時はアクティブなカメラを自動で使う）。
+- **★`dx12_set_editor_camera` の固定が残っているとゲーム画面が撮れない**。
+  固定中はゲームカメラの同期が止まるので、演出が動いても静止画が並ぶだけになる。
+  `dx12_sequence_preview` は撮る前に必ず `release` する（VFX プレビューも後始末で外す）。
+- **時計はタイムスケール非適用(`time.realDt()`)**。スローモを掛けても台本は実時間で流れる
+  （スケール適用だと「0.25 倍速の 3 秒後」が実時間 12 秒になって台本が壊れる）。
+- **終了時にタイムスケールを 1.0 へ戻す**。演出がスローモのまま終わるとゲームが壊れるため。
+- **画面揺れは前フレームぶんを引いてから足す**。足しっぱなしだとカメラが少しずつ漂う。
+- **グローバルの `camera` を Lua から動かしても無駄**。毎フレーム
+  `ApplyCameraTransformToGlobal` が上書きするので、**カメラ役エンティティの transform** を動かす。
+  生成コードはそうなっている（pitch の符号反転も込み）。
+- `scene` トラックの後ろに置いたトラックは実行されない（遷移でスクリプトごと消える）。検査が警告する。
+
 ### ワークフロー: 壊れてないか 1 発で確認する
 
 ```
