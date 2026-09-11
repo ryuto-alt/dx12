@@ -557,6 +557,27 @@ void Application::RegisterMcpEntityMethods()
             result["luaReadable"] = std::move(luaReadable);
             result["componentTypes"] = std::move(types);
             result["sceneGeneration"] = m_sceneGeneration;
+
+            // ★モデルに焼き込まれたマテリアルのテクスチャ有無をサブメッシュ単位で出す。
+            //   SerializeEntity は「シーン JSON に書くべきもの」＝エンティティ側の
+            //   オーバーライド（materialTextureOverrides / materials）しか出さないので、
+            //   これが無いと **AI は「このメッシュに法線マップが載っているか」を観測できない**。
+            //   見えないものは直せないので、dx12_polish_audit の「法線マップが無い」も
+            //   法線マップ付きのモデルを置いた後ですら消えなかった。
+            //   Texture はパスを持たない（ResourceManager がキャッシュを握る）ので有無だけ返す。
+            if (const auto* mr = reg.try_get<MeshRenderer>(e))
+            {
+                json baked = json::array();
+                for (const Material* mat : mr->materials)
+                {
+                    baked.push_back({
+                        {"albedo",         mat && mat->albedoTexture         != nullptr},
+                        {"normal",         mat && mat->normalMapTexture      != nullptr},
+                        {"metalRoughness", mat && mat->metalRoughnessTexture != nullptr},
+                    });
+                }
+                if (!baked.empty()) result["bakedTextures"] = std::move(baked);
+            }
             resp["ok"] = true;
             resp["result"] = std::move(result);
         });
