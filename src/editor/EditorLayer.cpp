@@ -103,6 +103,29 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_inspector->SetAssetBrowser(m_assetBrowser.get());
 }
 
+// 作り直す前に、いまユーザーが見ている実ノードの寸法から分割比を吸い上げる。
+// 比は「親ノードに対する割合」＝DockBuilderSplitNode へそのまま渡せる形で持つ。
+// ノードが無い / 潰れている場合は触らない（既定値のまま）。
+void EditorLayer::CaptureDockRatios()
+{
+    auto ratioOf = [](ImGuiID id, bool horizontal, f32& out)
+    {
+        if (id == 0) return;
+        const ImGuiDockNode* n = ImGui::DockBuilderGetNode(id);
+        if (!n || !n->ParentNode) return;
+        const ImVec2 self = n->Size, parent = n->ParentNode->Size;
+        const f32 s = horizontal ? self.x   : self.y;
+        const f32 p = horizontal ? parent.x : parent.y;
+        if (p <= 1.0f || s <= 0.0f) return;
+        // 端まで寄せて潰した状態を保存すると次回そのパネルが開けなくなるのでクランプする。
+        out = (std::min)(0.75f, (std::max)(0.05f, s / p));
+    };
+    ratioOf(m_nodeLeft,        true,  m_ratioLeft);
+    ratioOf(m_nodeRightCol,    true,  m_ratioRight);
+    ratioOf(m_nodeBottom,      false, m_ratioBottom);
+    ratioOf(m_nodeRightBottom, false, m_ratioRightBottom);
+}
+
 void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
 {
     ImGui::DockBuilderRemoveNode(dockspaceId);
@@ -118,15 +141,18 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
 
     // 左(18%): ヒエラルキー | 残り
     ImGuiID dockLeft = 0, dockRemaining = 0;
-    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, 0.18f, &dockLeft, &dockRemaining);
+    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, m_ratioLeft, &dockLeft, &dockRemaining);
+    m_nodeLeft = dockLeft;
 
     // 残り → 右(24%): 右カラム | センター
     ImGuiID dockRightCol = 0, dockCenter = 0;
-    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, 0.24f, &dockRightCol, &dockCenter);
+    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, m_ratioRight, &dockRightCol, &dockCenter);
+    m_nodeRightCol = dockRightCol;
 
     // センター → 下(33%): アセットブラウザ | ビューポート(中央)
     ImGuiID dockBottom = 0, dockViewport = 0;
-    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, 0.33f, &dockBottom, &dockViewport);
+    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, m_ratioBottom, &dockBottom, &dockViewport);
+    m_nodeBottom = dockBottom;
 
     // 左: ヒエラルキー
     ImGui::DockBuilderDockWindow(
@@ -145,7 +171,8 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     {
         // 右カラム → 上=インスペクター / 下=ツール系タブ（下 42%）
         ImGuiID dockRightTop = 0, dockRightBottom = 0;
-        ImGui::DockBuilderSplitNode(dockRightCol, ImGuiDir_Down, 0.42f, &dockRightBottom, &dockRightTop);
+        ImGui::DockBuilderSplitNode(dockRightCol, ImGuiDir_Down, m_ratioRightBottom, &dockRightBottom, &dockRightTop);
+        m_nodeRightBottom = dockRightBottom;
         ImGui::DockBuilderDockWindow(kInspector, dockRightTop);
 
         // 開いているかに関わらず全ツール窓をここへドック付け（後で開いた窓も同じタブ群に入る）。
@@ -238,6 +265,9 @@ void EditorLayer::Render(bool isPlaying,
         const bool anyToolNow = m_ctx->AnyToolWindowOpen();
         if (anyToolNow != m_prevAnyToolShown)
         {
+            // ★壊す前にユーザーの分割比を吸い上げる。これが無いと、ツール窓を
+            //   1 個開け閉めするだけで調整した幅が既定へ戻る。
+            CaptureDockRatios();
             m_prevAnyToolShown = anyToolNow;
             m_dockspaceBuilt = false;
         }
@@ -257,6 +287,10 @@ void EditorLayer::Render(bool isPlaying,
                 m_ctx->showTransitionPreview = false;
             m_prevAnyToolShown = false;
             m_dockspaceBuilt = false;
+            // 「リセット」はユーザーの調整も含めて既定へ戻すのが期待どおり
+            //（ツール窓の開閉による作り直しとは意味が違うので、ここだけ比も戻す）。
+            m_ratioLeft = 0.18f; m_ratioRight = 0.24f;
+            m_ratioBottom = 0.33f; m_ratioRightBottom = 0.42f;
             m_ctx->resetLayout = false;
         }
 

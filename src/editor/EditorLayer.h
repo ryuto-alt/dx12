@@ -117,6 +117,20 @@ private:
     // レイアウトを作り直す（右下タブ領域を出す/畳んで Inspector を全高に戻す）。
     bool m_prevAnyToolShown = false;
 
+    // ★ユーザーがドラッグで決めた分割比。BuildDefaultLayout は DockBuilderRemoveNode で
+    //   ドックツリーを丸ごと壊すので、既定値を焼き込んだままだと**ツール窓を 1 個開閉する
+    //   たびに調整した幅が既定へ戻る**（毎日使うと効いてくる種類の不便）。
+    //   作り直す前に実ノードの寸法から比を吸い上げ、作り直しでそれを使う。
+    //   ＝「ツール窓の開閉でレイアウトを作り直す」という元の意図は保ったまま、
+    //     ユーザーの調整だけを引き継ぐ。
+    f32 m_ratioLeft        = 0.18f;   // 左カラム(ヒエラルキー) / ドックスペース全体
+    f32 m_ratioRight       = 0.24f;   // 右カラム / (全体 - 左)
+    f32 m_ratioBottom      = 0.33f;   // 中央下(アセットブラウザ) / センター
+    f32 m_ratioRightBottom = 0.42f;   // 右下(ツールタブ) / 右カラム
+    // 比を吸い上げるためのノード id（BuildDefaultLayout が毎回書く。未構築は 0）。
+    ImGuiID m_nodeLeft = 0, m_nodeRightCol = 0, m_nodeBottom = 0, m_nodeRightBottom = 0;
+    void CaptureDockRatios();
+
     ImVec2 m_viewportPos  = {0, 0};
     ImVec2 m_viewportSize = {1, 1};
 

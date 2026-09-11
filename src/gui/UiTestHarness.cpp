@@ -459,6 +459,66 @@ void T_AttachScript(ImGuiTestContext* ctx)
 
 // ---- パネル ----
 
+// ツール窓を開け閉めしても、ユーザーが調整したパネル幅が既定へ戻らないこと。
+//
+// ★何を守っているか
+//   EditorLayer::BuildDefaultLayout は DockBuilderRemoveNode でドックツリーを丸ごと壊して
+//   建て直す。そして「ツール窓が 1 個でも開いているか」が変わるたびに呼ばれる
+//   （右下のツールタブ領域を出す / 畳んで Inspector を右カラム全高へ戻すため）。
+//   分割比を既定値で焼き込んだままだと、**ライティング窓を 1 回開け閉めしただけで
+//   ドラッグして決めたヒエラルキーの幅が 18% に戻る**。毎日触ると効いてくる種類の不便で、
+//   しかも「自分が何かしたせい」に見えないので原因にたどり着きにくい。
+//   直す側は「壊す前に実ノードから比を吸い上げて、建て直しでそれを使う」。
+void T_DockLayoutSurvivesToolToggle(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+
+    const char* kHierarchy = "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc";
+
+    Step(ctx, "ツール窓を閉じた状態から始める");
+    const bool wasPost = ed->showPostProcess;
+    ed->showPostProcess = false;
+    ctx->Yield(3);
+
+    ImGuiWindow* hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr);
+    IM_CHECK(hier->DockNode != nullptr);
+
+    Step(ctx, "ヒエラルキーの幅を既定から動かす（ユーザーのドラッグ相当）");
+    const f32 before = hier->DockNode->Size.x;
+    const f32 target = before * 1.6f;          // 既定 18% → 約 29% 相当
+    ImGui::DockBuilderSetNodeSize(hier->DockNode->ID, ImVec2(target, hier->DockNode->Size.y));
+    ImGui::DockBuilderFinish(hier->DockNode->ID);
+    ctx->Yield(4);
+
+    hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
+    const f32 widened = hier->DockNode->Size.x;
+    IM_CHECK_GT(widened, before * 1.2f);       // 実際に広がったことを確かめてから本題へ
+
+    Step(ctx, "ツール窓を開く（ここでレイアウトが建て直される）");
+    ed->showPostProcess = true;
+    ctx->Yield(5);
+
+    Step(ctx, "ツール窓を閉じる（もう一度建て直される）");
+    ed->showPostProcess = false;
+    ctx->Yield(5);
+
+    hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
+    const f32 after = hier->DockNode->Size.x;
+
+    // 建て直しを 2 回挟んでも、広げた幅が保たれていること。
+    // 修正前はここが既定幅（before 相当）に戻っていた。
+    ctx->LogInfo("hierarchy width: 既定 %.1f → 広げた %.1f → 開閉後 %.1f", before, widened, after);
+    IM_CHECK_GT(after, before * 1.2f);
+    IM_CHECK_LT(std::fabs(after - widened), widened * 0.15f);
+
+    ed->showPostProcess = wasPost;
+    ctx->Yield(3);
+}
+
 void T_OpenAllToolWindows(ImGuiTestContext* ctx)
 {
     IM_CHECK(Ed() != nullptr);
@@ -2238,6 +2298,7 @@ const DiagReg kTests[] = {
     { "comp",  "attach_script",         "コンポーネント",     "スクリプトを追加",                     T_AttachScript          },
 
     { "panel", "open_all_tool_windows", "パネル",             "すべてのツール窓を開いて描画",         T_OpenAllToolWindows    },
+    { "panel", "dock_layout_persist",   "パネル",             "調整したパネル幅がツール窓の開閉で戻らない", T_DockLayoutSurvivesToolToggle },
     { "panel", "console",               "パネル",             "コンソール（フィルタ / Lua 実行）",    T_ConsolePanel          },
     { "panel", "asset_browser",         "パネル",             "アセットブラウザ",                     T_AssetBrowser          },
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
