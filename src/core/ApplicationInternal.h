@@ -495,6 +495,17 @@ nlohmann::json PerfReportJson(const PerfSummary& s, bool vsync, float fpsLimit);
 // MCP のエンティティ指定を解決する。params["name"](完全一致 FindEntity) を優先し、
 // 無ければ params["entity"](数値 id) を検証して返す。どちらも解決できなければ NotFound を投げる。
 // ※ コンポーネント有無は見ない(呼び出し側で all_of を別に確認 → エラー文を分けるため)。
+//
+// ★「sceneGeneration を引数で受け取って古い id を弾くべきでは」は**不要**（2026-09-11 に実測で確認）。
+//   entt::entity は index だけでなく version を含むハンドルで、Scene 側はレジストリを
+//   作り直さず clear() するため version は単調に増え続ける。したがって
+//   「シーンが変わった後の古い id が、valid を通って別のエンティティを指す」は起きない。
+//   実測（同一エディタセッション、city_blocks）:
+//     open_scene で再読込  … 旧 id 1562      → invalid entity id で拒否
+//     Play → Stop          … 旧 id 1050138   → 拒否（version が 1 つ進む）
+//     new_scene            … 新規 spawn が 4194309 (=version 4, index 5) ＝ version は戻らない
+//   version が一周するほどの生成回数（数千万回）に達しない限り衝突しない。
+//   ＝ここに世代チェックを足しても守るものが無い。足すなら「name 指定を勧める」エラー文の方。
 inline entt::entity ResolveMcpEntity(Scene& scene, const nlohmann::json& params)
 {
     auto it = params.find("name");

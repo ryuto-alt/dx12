@@ -719,6 +719,10 @@ private:
     nlohmann::json OcclusionReportJson() const;
     // MCP get_occlusion / set_occlusion が返す状態。
     nlohmann::json OcclusionStateJson() const;
+    // get/set を別ツールに分けたぶん、返り値の形を 1 箇所に持つためのヘルパ
+    // （MCP ハンドラのラムダは明示キャプチャなのでローカルラムダを掴めない）。
+    nlohmann::json RenderScaleJson() const;
+    nlohmann::json DepthPrepassJson() const;
     void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
 

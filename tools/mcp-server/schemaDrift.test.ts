@@ -627,6 +627,47 @@ console.log("\n[13] 遅延同期 method のタイムアウトが engine の待�
     "ApplicationMcp*.cpp(連結) の ping に assetsDir / protocolVersion 4 が無い");
 }
 
+// ---------------------------------------------------------------------------
+console.log("\n[docs] docs/MCP.md に載っているツールが本当に呼べるか");
+// ★実際に起きた事故: dx12_get_render_scale / dx12_set_render_scale /
+//   dx12_get_depth_prepass / dx12_set_depth_prepass はエンジン側の実装も
+//   docs/MCP.md の表も揃っているのに、index.ts へ 1 度も reg() されておらず
+//   **ドキュメントに載っている機能がどのクライアントからも呼べなかった**。
+//   原因はエンジン側が "get_x|set_x" の合体形式で、引数が get にも付くせいで
+//   上のドリフトテストが落ちる → 登録を諦めた、という筋。
+//   ドキュメントは AI が「何ができるか」を知る唯一の入口なので、
+//   載っているのに呼べないのは、実装が無いより悪い（存在しない道具を探し続ける）。
+{
+  const docPath = path.join(repoRoot, "docs", "MCP.md");
+  if (!fs.existsSync(docPath))
+  {
+    check("docs/MCP.md がある", false, docPath);
+  }
+  else
+  {
+    const doc = fs.readFileSync(docPath, "utf8");
+    // 表のセル先頭に `dx12_xxx` と書かれているものをツール宣言とみなす。
+    const declared = new Set<string>();
+    for (const m of doc.matchAll(/^\|\s*`(dx12_[a-z0-9_]+)`/gm)) declared.add(m[1]);
+    const registered = new Set(tools.map((t) => t.tool));
+    const missing = [...declared].filter((n) => !registered.has(n)).sort();
+    check(`docs の全 ${declared.size} ツールが index.ts に登録されている`,
+      missing.length === 0,
+      missing.length ? `未登録: ${missing.join(", ")}\n      → index.ts に reg() を足すか、`
+                       + `docs/MCP.md から消すこと（載せたまま呼べないのが最悪）` : undefined);
+    // 逆向き（登録済みなのに docs に無い）は**報告だけ**にしてある。
+    // AI は MCP のマニフェストからツールの説明を直接受け取るので呼ぶことはできる＝
+    // 害は「人間が docs を読んでも全体像が分からない」に留まる。
+    // 前向き（docs にあるのに呼べない）とは重さが違うので、こちらで CI を止めない。
+    const undocumented = [...registered].filter((n) => !declared.has(n)).sort();
+    if (undocumented.length > 0)
+      console.log(`  --  docs/MCP.md 未記載が ${undocumented.length} 本（呼べるが人間が知れない）: `
+                  + undocumented.join(", "));
+    else
+      ok(`index.ts の全 ${registered.size} ツールが docs にも載っている`);
+  }
+}
+
 console.log(failed === 0
   ? "\nOK: schemaDrift テストすべて通過"
   : `\nNG: ${failed} 件失敗`);

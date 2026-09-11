@@ -1433,6 +1433,62 @@ reg(
   (a) => run(() => applyAndVerify("set_occlusion", "get_occlusion", a)),
 );
 
+// ★この 4 本は docs/MCP.md に載っていてエンジン側の実装もあるのに、
+//   MCP サーバへ登録されていなかった＝ドキュメントにある機能が 1 度も呼べなかった。
+//   原因はエンジン側が "get_x|set_x" の合体形式で定義されていたこと（引数が get にも
+//   付いてしまいスキーマドリフトテストが落ちるので登録を諦めた形跡がある）。
+//   エンジン側を get/set へ分割したうえでここに登録する。
+reg(
+  "dx12_get_render_scale",
+  "内部解像度スケール取得",
+  "内部解像度スケール(レンダー解像度と表示解像度の分離)を返す。"
+  + "{scale, renderResolution{width,height}, displayResolution{width,height}, pending, note}。"
+  + "★dx12_screenshot はレンダー解像度、dx12_screenshot_final は表示解像度で返る。"
+  + "dx12_pick / dx12_project_world_to_screen の座標系もレンダー解像度。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_render_scale", {})),
+);
+
+reg(
+  "dx12_set_render_scale",
+  "内部解像度スケール変更",
+  "3D シーン系の RT(sceneRT / 深度 / SSAO / コンタクトシャドウ / TAA 履歴・速度 / G-Buffer / "
+  + "SSR・SSGI / ブルーム / DoF / ゴッドレイ / 歪み)だけを scale 倍で確保し、最終パスで表示解像度へ"
+  + "引き伸ばす。**UI / ImGui / エディタのアイコンとギズモは常に表示解像度のまま**＝文字はボケない。"
+  + "GPU 律速のときに一番効く手。settings.json の render_scale に保存される。"
+  + "★変更は**次のフレーム先頭**で反映される(内部で WaitIdle するのでフレーム外でしか作り直せない)ので、"
+  + "直後の返り値の renderResolution はまだ 1 フレーム前の値であり得る(pending:true で分かる)。"
+  + "★反映後は TAA / SSR / SSGI / ボリュメトリックフォグの**時間履歴が全部捨てられる**"
+  + "(座標系が変わるため。持ち越すとゴーストする)。",
+  { scale: z.number().describe("0.25..1.0。1.0 で等倍(既定)。0.7 くらいから効きが分かる") },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_render_scale", a)),
+);
+
+reg(
+  "dx12_get_depth_prepass",
+  "深度プリパス単独トグル取得",
+  "深度プリパスの単独強制が ON かを返す。{enabled, note}。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_depth_prepass", {})),
+);
+
+reg(
+  "dx12_set_depth_prepass",
+  "深度プリパス単独トグル",
+  "深度プリパスを単独で走らせる。通常は SSAO / コンタクトシャドウ / TAA / SSR / SSGI / DXR の"
+  + "どれかが要求したときだけ走る。**そのシーンにオーバードローがどれだけあるか＝"
+  + "オクルージョンカリングの余地**を測るための道具で、ON/OFF で "
+  + "dx12_perf_stats の gpuPassMs.mainScene がどれだけ減るかを見る"
+  + "(gpuPassMs.depthPrepass がプリパスの描画だけ、prepassSsao はそれを含むプリパス一式)。"
+  + "正射 / 2D ビューでは自動的に無効。settings.json の render_depth_prepass に保存される。",
+  { enabled: z.boolean() },
+  { idempotentHint: true },
+  (a) => run(() => applyAndVerify("set_depth_prepass", "get_depth_prepass", a)),
+);
+
 reg(
   "dx12_get_ssr",
   "SSR設定取得",

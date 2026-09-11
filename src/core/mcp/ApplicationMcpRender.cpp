@@ -205,50 +205,41 @@ void Application::RegisterMcpRenderMethods()
     // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----
     // 3D シーンだけを scale 倍の解像度で描き、最終パスで表示解像度へ引き伸ばす。
     // UI / ImGui / エディタのギズモは常に表示解像度のまま＝文字がボケない。
-    McpDefine("get_render_scale|set_render_scale", "scale:number", DX12E_MCP_HANDLER
+    // ★get と set を分けてある。理由は下の get_occlusion のコメントと同じで、
+    //   "get_x|set_x" の合体形式にすると申告した引数が get 側にも付いてしまい、
+    //   MCP サーバのスキーマドリフトテストが落ちる。
+    //   （合体形式のままだったせいで、この 2 組は docs/MCP.md に載っているのに
+    //     MCP サーバへ 1 度も登録されず、**ドキュメントにある機能が呼べない**状態が続いていた）
+    McpDefine("get_render_scale", "", DX12E_MCP_HANDLER
         {
-            if (method == "set_render_scale")
-            {
-                if (!params.contains("scale"))
-                    throw McpError(McpErr::InvalidParam, "need scale (0.25..1.0)");
-                SetRenderScale(static_cast<f32>(McpFloatParam(params, "scale", 1.0f, 0.25f, 1.0f)));
-            }
-            u32 dvx = 0, dvy = 0, dvw = 0, dvh = 0;
-            GetDisplayViewport(dvx, dvy, dvw, dvh);
             resp["ok"] = true;
-            resp["result"] = {
-                {"scale", m_renderScale},
-                // ★set 直後は「次フレームの Run ループ先頭」で反映されるので、
-                //   ここで返る renderResolution はまだ 1 フレーム前の値であり得る。
-                {"renderResolution",  {{"width", m_renderW}, {"height", m_renderH}}},
-                {"displayResolution", {{"width", dvw},       {"height", dvh}}},
-                {"pending", (m_renderW != 0) &&
-                            (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW)},
-                {"note", "シーン系 RT（sceneRT/深度/SSAO/TAA/SSR/SSGI/ブルーム/DoF/ゴッドレイ）の"
-                         "解像度。UI と ImGui は常に表示解像度。dx12_screenshot はレンダー解像度、"
-                         "dx12_screenshot_final は表示解像度で返る"}};
+            resp["result"] = RenderScaleJson();
         });
 
-    // ---- 深度プリパスの単独トグル（計画10 A2）----
-    // 「そのシーンにオーバードローがどれだけあるか」を SSAO 生成のコストを混ぜずに測る道具。
-    // gpuPassMs.depthPrepass（プリパス描画だけ）と gpuPassMs.mainScene の増減を突き合わせる。
-    McpDefine("get_depth_prepass|set_depth_prepass", "enabled:bool", DX12E_MCP_HANDLER
+    McpDefine("set_render_scale", "scale:number", DX12E_MCP_HANDLER
         {
-            if (method == "set_depth_prepass")
-            {
-                if (!params.contains("enabled"))
-                    throw McpError(McpErr::InvalidParam, "need enabled (bool)");
-                m_forceDepthPrepass = params.value("enabled", false);
-                PersistSet("render_depth_prepass", m_forceDepthPrepass ? 1.0 : 0.0);
-            }
+            if (!params.contains("scale"))
+                throw McpError(McpErr::InvalidParam, "need scale (0.25..1.0)");
+            SetRenderScale(static_cast<f32>(McpFloatParam(params, "scale", 1.0f, 0.25f, 1.0f)));
             resp["ok"] = true;
-            resp["result"] = {
-                {"enabled", m_forceDepthPrepass},
-                {"note", "深度プリパスを SSAO / コンタクトシャドウ / TAA / SSR / SSGI / DXR と"
-                         "無関係に単独で走らせる。gpuPassMs.depthPrepass が描画だけの実測値、"
-                         "prepassSsao はそれを含むプリパス一式。正射 / 2D ビューでは自動的に無効"}};
+            resp["result"] = RenderScaleJson();
         });
 
+    McpDefine("get_depth_prepass", "", DX12E_MCP_HANDLER
+        {
+            resp["ok"] = true;
+            resp["result"] = DepthPrepassJson();
+        });
+
+    McpDefine("set_depth_prepass", "enabled:bool", DX12E_MCP_HANDLER
+        {
+            if (!params.contains("enabled"))
+                throw McpError(McpErr::InvalidParam, "need enabled (bool)");
+            m_forceDepthPrepass = params.value("enabled", false);
+            PersistSet("render_depth_prepass", m_forceDepthPrepass ? 1.0 : 0.0);
+            resp["ok"] = true;
+            resp["result"] = DepthPrepassJson();
+        });
     // ---- Hi-Z オクルージョンカリング ----
     // ★get と set を分けてある。まとめて "get_x|set_x" にすると申告した引数が両方の
     //   ツールに付いてしまい、MCP サーバ側のドリフトテストが「get に enabled が無い」と落ちる。
@@ -555,6 +546,33 @@ void Application::RegisterMcpRenderMethods()
         });
 }
 
+// get / set の 2 ツールで同じ形を返すためのヘルパ。
+// MCP ハンドラのラムダは明示キャプチャなのでローカルラムダを掴めない＝メンバ関数にしてある
+// （OcclusionStateJson と同じ作法）。
+nlohmann::json Application::RenderScaleJson() const
+{
+    u32 dvx = 0, dvy = 0, dvw = 0, dvh = 0;
+    GetDisplayViewport(dvx, dvy, dvw, dvh);
+    return {
+        {"scale", m_renderScale},
+        // ★set 直後は「次フレームの Run ループ先頭」で反映されるので、
+        //   ここで返る renderResolution はまだ 1 フレーム前の値であり得る。
+        {"renderResolution",  {{"width", m_renderW}, {"height", m_renderH}}},
+        {"displayResolution", {{"width", dvw},       {"height", dvh}}},
+        {"pending", (m_renderW != 0) &&
+                    (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW)},
+        {"note", "シーン系 RT（sceneRT/深度/SSAO/TAA/SSR/SSGI/ブルーム/DoF/ゴッドレイ）の"
+                 "解像度。UI と ImGui は常に表示解像度。dx12_screenshot はレンダー解像度、"
+                 "dx12_screenshot_final は表示解像度で返る"}};
+}
 
+nlohmann::json Application::DepthPrepassJson() const
+{
+    return {
+        {"enabled", m_forceDepthPrepass},
+        {"note", "深度プリパスを SSAO / コンタクトシャドウ / TAA / SSR / SSGI / DXR と"
+                 "無関係に単独で走らせる。gpuPassMs.depthPrepass が描画だけの実測値、"
+                 "prepassSsao はそれを含むプリパス一式。正射 / 2D ビューでは自動的に無効"}};
+}
 
 } // namespace dx12e
