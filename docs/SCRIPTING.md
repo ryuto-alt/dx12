@@ -245,6 +245,34 @@ if audio:isVoicePlaying(hum) then audio:stopVoice(hum) end   -- その 1 本だ�
 ```
 ID は世代つきなので、鳴り終わってスロットが使い回された後の古い ID は無視される（他人の音を誤って止めない）。
 
+### エフェクトを鳴らす / シェーダーを動かす
+
+置いてある放出器（Inspector や `dx12_vfx_apply` で組んだ炎＋煙＋火の粉）は `fx:play` で鳴らす。
+`fx:burst` は「その場で撒く」別物なので、**組んだ設定を使いたいなら `fx:play`**。
+
+```lua
+fx:play("Explosion")               -- 全レイヤーを最初から
+fx:play(enemy, "Sparks")           -- レイヤー名を指定（Entity でも名前でも）
+fx:stop("Rain")                    -- 止める（出ている粒は寿命で消える）
+fx:layers("Torch")                 -- レイヤー名の一覧 {"Flame","Smoke","Sparks"}
+```
+
+ワンショット（`looping=false`）は置いただけでは鳴らない。**Trigger の PlayEffect か `fx:play`** で鳴らす。
+
+カスタムシェーダーは**割り当てただけでは全部 0**（波の高さ 0 の水面になる）。値を入れて動かす:
+
+```lua
+shader.set("Sea", { effect = 0.4, p1 = 0.6 })   -- 渡した項目だけ書く
+local s = shader.get("Sea")                      -- { path, effect, p1..p4, b1..b3 }
+
+function OnUpdate(self, dt)                      -- 時間で動かす（溶ける / 水位が上がる）
+  self.t = (self.t or 0) + dt
+  shader.set("Sea", { effect = math.min(self.t / 3.0, 1.0) })
+end
+```
+
+各値の意味はシェーダー自身のヘッダコメントにある。
+
 ### その他
 ```lua
 log("hp:", hp)                       -- ログ出力（任意個・任意型を tostring 連結、[Lua] 接頭辞）

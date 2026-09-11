@@ -77,6 +77,7 @@ end
 | `ui` | table | 即時モード ゲーム内 UI |
 | `fx` | table | 即時パーティクル放出（burst/ring/beam/pulse） |
 | `vfx` | table | 統一 VFX 窓口（コード or Effekseer） |
+| `shader` | table | カスタムシェーダーの自由枠を読み書き（`shader.get/set`。貼っただけでは全部 0） |
 | `post` / `ssao` | table | ポストプロセス / SSAO を**文字列キー**で読み書き（`post.get/set/setMany/names`） |
 | `Post` / `Ssao` | table | 上の糖衣（`Post.bloom = 0.8`。`Tween` の対象にできる） |
 | `Lighting` | table | 時間帯（Time of Day）とライティング演出プリセット |
@@ -893,6 +894,28 @@ fx:pulse(amt?=0.5)                                     -- 画面パルス（ク�
 fx:clear()                                             -- 全消去
 ```
 
+#### 置いてある放出器を鳴らす（v1.18.0+）
+
+`fx:burst` は「その場で撒く」即時放出。**Inspector や `dx12_vfx_apply` で組んだ多層エフェクト
+（炎＋煙＋火の粉）を鳴らす**のはこちら。
+
+```lua
+fx:play("Explosion")             -- 全レイヤーを最初から鳴らす
+fx:play(enemy, "Sparks")         -- レイヤー名を指定（Entity でも名前でも可）
+fx:stop("Rain")                  -- 放出を止める（出ている粒は寿命で消える）
+for _, name in ipairs(fx:layers("Torch")) do log(name) end   -- レイヤー名の一覧
+```
+
+| 関数 | 戻り | 説明 |
+|---|---|---|
+| `fx:play(target, layerName?)` | bool | 放出開始。`looping=false` のワンショットを**好きな瞬間に出せる**唯一の Lua 経路 |
+| `fx:stop(target, layerName?)` | bool | 放出停止 |
+| `fx:layers(target)` | table | レイヤー名の配列（名前が空なら `"Layer 1"` 等） |
+
+`target` は**エンティティ名（string）か Entity**。見つからない／`ParticleEmitter` が無い／
+レイヤー名が違う場合は `false` を返して**警告をログに出す**（黙って何も起きない、にはならない）。
+Trigger の `PlayEffect` / `StopEffect` とまったく同じ操作なので、人が配線した結果と一致する。
+
 **burst / ring のテーブルキー**:
 `x,y,z`（位置）/ `count`（個数）/ `dx,dy,dz`（方向）/ `spread`（拡散）/ `speed,speedVar` / `size,sizeEnd` / `life,lifeVar` /
 `r,g,b`（開始色）/ `rEnd,gEnd,bEnd`（終了色）/ `rMid,gMid,bMid`（中間色）/ `intensity`（HDR・>1 でブルーム）/
@@ -921,6 +944,33 @@ vfx.register(name, fn)            -- コードプリセット登録
 vfx.play(name, x, y, z, scale?)   -- Effekseer 実体があれば優先、無ければコード
 ```
 既定登録済み: `"explosion"` / `"supernova"` / `"spark"` / `"hit"`
+
+### shader（カスタムシェーダーの自由枠・v1.18.0+）
+
+割り当てただけでは `effectValue` も `shaderParams` も **全部 0**。波の高さ 0・流速 0 の水面のように
+「貼ったのに何も起きない」状態になるので、値を入れて初めて動く。
+
+```lua
+local s = shader.get("Sea")            -- { path, effect, p1..p4, b1..b3 } / 無ければ nil
+shader.set("Sea", { effect = 0.4 })    -- 渡した項目だけ書く（部分更新）
+shader.set("Sea", { p1 = 0.6, b2 = 2.0 })
+shader.set("Sea", { params = {0.6, 1.2, 0.35, 0} })   -- まとめて渡す形も可
+
+-- 時間で動かす（溶ける / 水位が上がる）。shader は関数 API なので補間は自分で書く
+function OnUpdate(self, dt)
+  self.t = (self.t or 0) + dt
+  shader.set("Sea", { effect = math.min(self.t / 3.0, 1.0) })
+end
+```
+
+| 関数 | 戻り | 説明 |
+|---|---|---|
+| `shader.get(target)` | table\|nil | `path` / `effect` / `p1..p4`（`shaderParams`）/ `b1..b3`（`shaderParamsB`） |
+| `shader.set(target, t)` | bool | `effect` `p1..p4` `b1..b3` `params` `paramsB` のうち**渡したものだけ**書く |
+
+各値の意味は**シェーダー自身のヘッダコメント**にある（MCP なら `dx12_read_shader` で読める）。
+ルート定数経由なので毎フレーム呼んでも安い。カスタムシェーダー未割り当ての相手に書くと
+値は保存されるが誰も読まないので、1 度だけ警告を出す。
 
 ### uifx.*（ゲーム内UIの定番演出ワンライナー）
 `e` は Entity かエンティティID（ボタンイベントの `e.source` そのまま）。実体は `scene:tweenUi` の組み合わせ。
