@@ -64,6 +64,9 @@ public:
     // DXR 1.2（SER / OMM）。v1 のスコープ外。将来の判断材料としてログに出すだけ。
     bool SupportsDxr12()      const { return m_raytracingTier >= D3D12_RAYTRACING_TIER_1_2; }
     bool SupportsReordering() const { return m_serActuallyReorders; }
+    // 実際に作成できたフィーチャーレベル。12_1 を無条件要求せず高い順に落とすため、
+    // FL 12_0 止まりの GPU（AMD GCN/Polaris、Intel Gen9 など）でも起動できる。
+    D3D_FEATURE_LEVEL GetFeatureLevel() const { return m_featureLevel; }
 
 private:
     void QueryCapabilities();
@@ -72,6 +75,7 @@ private:
     Microsoft::WRL::ComPtr<IDXGIFactory6>  m_factory;
     Microsoft::WRL::ComPtr<IDXGIAdapter1>  m_adapter;
     D3D12MA::Allocator*                    m_allocator = nullptr;
+    D3D_FEATURE_LEVEL                      m_featureLevel = D3D_FEATURE_LEVEL_11_0;
     bool                                   m_dxrSupported = false;
     D3D12_RAYTRACING_TIER                  m_raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
     D3D_SHADER_MODEL                       m_highestShaderModel = D3D_SHADER_MODEL_6_0;

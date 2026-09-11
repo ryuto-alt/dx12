@@ -82,12 +82,40 @@ void GraphicsDevice::Initialize(Window& /*window*/)
     }
 
     // --- Device Creation ---
+    // ★フィーチャーレベルは高い順に試して落ちる。12_1 を無条件要求すると、
+    //   D3D12 は動くのに FL は 12_0 止まり、という GPU（AMD GCN/Polaris、Intel Gen9 など）で
+    //   **エンジンが 1 度も起動しない**。しかもここは ThrowIfFailed なので
+    //   「起動直後に落ちる」という最も原因の分かりにくい形で出る。
+    //   このエンジンが実際に使う機能（DXR / SM6.6 バインドレス / Resource Binding Tier 3）は
+    //   フィーチャーレベルとは別の CheckFeatureSupport で個別に判定しており、
+    //   FL を下げても既存のゲート（m_dxrTier など）がそのまま効く。
     {
-        ThrowIfFailed(D3D12CreateDevice(
-            m_adapter.Get(),
-            D3D_FEATURE_LEVEL_12_1,
-            IID_PPV_ARGS(&m_device)));
-        Logger::Info("D3D12 Device created (Feature Level 12_1)");
+        struct FeatureLevelEntry { D3D_FEATURE_LEVEL level; const char* name; };
+        static constexpr FeatureLevelEntry kLevels[] = {
+            { D3D_FEATURE_LEVEL_12_2, "12_2" },
+            { D3D_FEATURE_LEVEL_12_1, "12_1" },
+            { D3D_FEATURE_LEVEL_12_0, "12_0" },
+            { D3D_FEATURE_LEVEL_11_1, "11_1" },
+            { D3D_FEATURE_LEVEL_11_0, "11_0" },
+        };
+
+        HRESULT lastHr = E_FAIL;
+        for (const auto& entry : kLevels)
+        {
+            lastHr = D3D12CreateDevice(m_adapter.Get(), entry.level, IID_PPV_ARGS(&m_device));
+            if (SUCCEEDED(lastHr))
+            {
+                m_featureLevel = entry.level;
+                Logger::Info("D3D12 Device created (Feature Level {})", entry.name);
+                if (entry.level < D3D_FEATURE_LEVEL_12_1)
+                {
+                    Logger::Warn("フィーチャーレベルが 12_1 未満です({})。"
+                                 "レイトレーシングなど一部機能は自動的に無効になります。", entry.name);
+                }
+                break;
+            }
+        }
+        ThrowIfFailed(lastHr);
     }
 
     // --- Info Queue (Debug) ---
