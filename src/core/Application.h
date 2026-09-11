@@ -202,6 +202,9 @@ public:
     // メニュー経由の操作は「シーンを開く」等が Win32 のモーダルダイアログを開き、
     // 自動テストがそこで永久に固まる。テストからはこれらで状態を直接動かす。
     EditorContext* GetEditorContext()  { return m_editorCtx.get(); }
+    // ゲーム内 UI。UI 自動テストが合成ポインタを流し込み、WantsNav() を読むのに使う
+    //（ゲーム UI の入力は Play 中しか走らないので、テストは Play へ入ってから触ること）。
+    UISystem*      GetUiSystem()       { return m_uiSystem.get(); }
     EngineMode     GetEngineMode() const { return m_engineMode; }
     // 次のフレーム境界で Play/Stop する。m_pendingMode を直接書くと同フレームの
     // EditorLayer::Render に Editor へ上書きされるため、Update 冒頭で消費する要求として積む。

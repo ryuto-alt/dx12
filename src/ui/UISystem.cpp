@@ -2270,6 +2270,7 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
     ctx.reg           = &reg;
     ctx.dl            = dl;
     ctx.viewport      = {ox, oy, ox + vw, oy + vh};
+    m_lastViewport    = {vw, vh};   // 合成ポインタの座標を作る側が読む
     ctx.mousePos      = ImGui::GetIO().MousePos;
     ctx.windowHovered = ImGui::IsWindowHovered();
     ctx.mouseDown     = ImGui::IsMouseDown(ImGuiMouseButton_Left);

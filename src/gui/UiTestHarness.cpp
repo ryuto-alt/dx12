@@ -8,6 +8,7 @@
 #include "editor/EditorContext.h"
 #include "gui/DeepDiagnostics.h"
 #include "scene/Scene.h"
+#include "ui/UISystem.h"   // ゲーム UI のフォーカス検査（合成ポインタ / WantsNav）
 #include "scene/SceneSerializer.h"
 #include "physics/PhysicsSystem.h"
 #include "renderer/Material.h"
@@ -528,6 +529,89 @@ void T_DockLayoutSurvivesToolToggle(ImGuiTestContext* ctx)
 //   直す側は EndEdit<T> で「プライマリのスナップショットと現在値のバイト差分＝触った
 //   フィールド」だけを他の選択へ写す。**変えていないフィールド（色など）は相手の値のまま**で
 //   なければならないので、そこも一緒に見る。Undo も 1 エントリであること。
+// ゲーム UI のフォーカスが解放されること（HUD を 1 回押すとパッドが死ぬ問題）。
+//
+// ★何を守っているか
+//   UISystem::m_focused はマウスクリックで設定されるのに、解放する経路が
+//   ResetRuntimeState（Play/Stop）しか無かった。m_wantsNav は
+//     !focusables.empty() && (m_focused != null || dir>=0 || confirm)
+//   なので、一度どこかのウィジェットを押すと **永久に true** になる。
+//   これは Lua の input:isUiCapturingNav() にそのまま出るので、ドキュメントが勧める
+//     if input:isUiCapturingNav() then return end
+//   を書いたゲームは HUD のボタンを 1 回押しただけで以後ずっと入力を捨てる。
+//   ゲーム UI の入力は Play 中しか走らないので、このテストは Play へ入って
+//   合成ポインタ（UISystem::InjectPointerClick）で押す。
+void T_UiFocusReleases(ImGuiTestContext* ctx)
+{
+    IM_CHECK(g_app != nullptr);
+    Scene* scene = g_app->GetScene();
+    UISystem* ui = g_app->GetUiSystem();
+    EditorContext* ed = Ed();
+    IM_CHECK(scene != nullptr && ui != nullptr && ed != nullptr);
+
+    Step(ctx, "キャンバスとボタンを作る");
+    // ヒエラルキーのメニュー階層を辿るより、パネルと同じマーカーを直接積む方が確実。
+    // （HierarchyPanel の「✚ エンティティ追加 > UI」が積んでいるのと同じもの）
+    auto spawnUi = [&](const char* marker) {
+        PendingSpawnRequest req;
+        req.modelPath = marker;
+        req.position  = {0.0f, 0.0f, 0.0f};
+        ed->pendingSpawns.push_back(req);
+        ctx->Yield(8);
+    };
+    auto& reg = scene->GetRegistry();
+    spawnUi("__ui_canvas__");
+    spawnUi("__ui_button__");
+    entt::entity button = entt::null;
+    for (auto e : reg.view<UIButton>()) button = e;
+    IM_CHECK(button != entt::null);
+
+    Step(ctx, "Play へ入る（ゲーム UI の入力は Play 中しか走らない）");
+    g_app->RequestMode(Application::EngineMode::Playing);
+    int frames = 0;
+    while (g_app->GetEngineMode() != Application::EngineMode::Playing && frames < 240)
+    { ctx->Yield(); ++frames; }
+    IM_CHECK(g_app->GetEngineMode() == Application::EngineMode::Playing);
+    ctx->Yield(6);
+
+    // ボタンの中心（ビューポートローカル px）を出す。
+    // ★解像度を決め打ちにすると ConstantPixel のキャンバスで位置がずれて押せない
+    //   （実際に踏んだ: 1280x720 決め打ちでクリックが空振りした）。
+    //   実際に描いているビューポートで解決すること。
+    const ImVec2 vp = ui->LastViewportSize();
+    IM_CHECK(vp.x > 1.0f && vp.y > 1.0f);
+    std::vector<UiResolvedRect> rects;
+    UISystem::ResolveRects(reg, 0.0f, 0.0f, vp.x, vp.y, rects);
+    const UiResolvedRect* rr = nullptr;
+    for (const auto& r : rects) if (r.e == button) { rr = &r; break; }
+    IM_CHECK(rr != nullptr);
+
+    Step(ctx, "ボタンを押す → UI が方向入力を掴む");
+    ui->InjectPointerClick((rr->min.x + rr->max.x) * 0.5f, (rr->min.y + rr->max.y) * 0.5f);
+    ctx->Yield(6);
+    if (!ui->WantsNav())
+    { IM_ERRORF("ボタンを押したのに WantsNav() が false（フォーカスが乗っていない）"); }
+
+    Step(ctx, "何も無い所を押す → 掴みを手放すこと");
+    ui->InjectPointerClick(8.0f, 8.0f);   // 左上隅。ウィジェットは置いていない
+    ctx->Yield(6);
+    if (ui->WantsNav())
+    { IM_ERRORF("何も無い所を押したのに WantsNav() が true のまま"
+                "（フォーカスが解放されない＝ゲーム側の入力が死ぬ）"); }
+
+    Step(ctx, "Stop して後片付け");
+    g_app->RequestMode(Application::EngineMode::Editor);
+    frames = 0;
+    while (g_app->GetEngineMode() != Application::EngineMode::Editor && frames < 240)
+    { ctx->Yield(); ++frames; }
+    ctx->Yield(6);
+    // Stop はシーンを作り直すので id が変わる。名前で拾い直して消す。
+    for (auto [e, tag] : scene->GetRegistry().view<NameTag>().each())
+        if (tag.name.rfind("UI Canvas", 0) == 0 || tag.name.rfind("Canvas", 0) == 0)
+            ed->pendingDeletions.push_back(e);
+    ctx->Yield(8);
+}
+
 void T_InspectorMultiEdit(ImGuiTestContext* ctx)
 {
     EditorContext* ed = Ed();
@@ -2377,6 +2461,7 @@ const DiagReg kTests[] = {
     { "panel", "open_all_tool_windows", "パネル",             "すべてのツール窓を開いて描画",         T_OpenAllToolWindows    },
     { "panel", "dock_layout_persist",   "パネル",             "調整したパネル幅がツール窓の開閉で戻らない", T_DockLayoutSurvivesToolToggle },
     { "panel", "inspector_multi_edit",  "パネル",             "複数選択したライトを一括で編集できる", T_InspectorMultiEdit },
+    { "play",  "ui_focus_releases",     "再生",               "HUD を押した後もパッド操作が死なない", T_UiFocusReleases },
     { "panel", "console",               "パネル",             "コンソール（フィルタ / Lua 実行）",    T_ConsolePanel          },
     { "panel", "asset_browser",         "パネル",             "アセットブラウザ",                     T_AssetBrowser          },
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },

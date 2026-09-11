@@ -163,7 +163,14 @@ public:
     { m_inject = {0, localX, localY, false}; }
     bool PointerInjectPending() const { return m_inject.phase >= 0; }
 
+    // 直近に描いたゲーム UI のビューポート寸法（px）。合成ポインタの座標は
+    // このビューポート基準のローカル px なので、押す位置を作る側がこれを要る。
+    // 0 のうちはまだ 1 度もゲーム UI を描いていない（= Play へ入っていない）。
+    ImVec2 LastViewportSize() const { return m_lastViewport; }
+
 private:
+    ImVec2 m_lastViewport{0.0f, 0.0f};
+
     struct PointerInject
     {
         int   phase = -1;      // -1 = 非アクティブ
