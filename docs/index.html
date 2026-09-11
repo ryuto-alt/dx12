@@ -957,7 +957,7 @@ properties = {
           <span class="ic"><img src="img/file.png" alt=""/></span>
           <h2>Lua API リファレンス</h2>
         </div>
-        <p class="sec-sub">全スクリプトから使えるグローバル一覧（<code class="inl">scene</code> / <code class="inl">input</code> / <code class="inl">camera</code> / <code class="inl">physics</code> / <code class="inl">audio</code> / <code class="inl">fx</code> / <code class="inl">ui</code> / <code class="inl">events</code> …）。座標・色は <code class="inl">Vec3</code> または数値。色は 0..1。</p>
+        <p class="sec-sub">全スクリプトから使えるグローバル一覧（<code class="inl">scene</code> / <code class="inl">input</code> / <code class="inl">camera</code> / <code class="inl">physics</code> / <code class="inl">audio</code> / <code class="inl">fx</code> / <code class="inl">shader</code> / <code class="inl">ui</code> / <code class="inl">events</code> …）。座標・色は <code class="inl">Vec3</code> または数値。色は 0..1。</p>
 
         <h3>型: Vec3 / Transform / Entity</h3>
         <div class="tbl-wrap">
@@ -1101,7 +1101,24 @@ fx:<span class="tok-fn">pulse</span>(<span class="tok-n">0.5</span>)            
 FX.<span class="tok-fn">explosion</span>(x, y, z, scale)    <span class="tok-c">-- 爆発(撃破)</span>
 FX.<span class="tok-fn">supernova</span>(x, y, z)           <span class="tok-c">-- レベルアップ超新星</span>
 FX.<span class="tok-fn">spark</span>(x, y, z)               <span class="tok-c">-- 着弾火花 / FX.lightning / FX.pillar / FX.hit</span>
-vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, y, z, scale) <span class="tok-c">-- 名前で再生する統一窓口</span></code></pre>
+vfx.<span class="tok-fn">play</span>(<span class="tok-s">"explosion"</span>, x, y, z, scale) <span class="tok-c">-- 名前で再生する統一窓口</span>
+
+<span class="tok-c">-- 置いてある放出器(Inspector で組んだ炎+煙+火の粉)を鳴らす</span>
+fx:<span class="tok-fn">play</span>(<span class="tok-s">"Explosion"</span>)              <span class="tok-c">-- 全レイヤー。ワンショットを好きな瞬間に出せる唯一の口</span>
+fx:<span class="tok-fn">play</span>(enemy, <span class="tok-s">"Sparks"</span>)         <span class="tok-c">-- レイヤー名を指定(Entity でも名前でも)</span>
+fx:<span class="tok-fn">stop</span>(<span class="tok-s">"Rain"</span>)                   <span class="tok-c">-- 止める(出ている粒は寿命で消える)</span>
+fx:<span class="tok-fn">layers</span>(<span class="tok-s">"Torch"</span>)                <span class="tok-c">-- {"Flame","Smoke","Sparks"}</span></code></pre>
+
+        <h3><code class="inl">shader</code>：カスタムシェーダーの自由枠</h3>
+        <p><b>割り当てただけでは全部 0</b>。波の高さ 0・流速 0 の水面のように「貼ったのに何も起きない」状態になるので、
+        値を入れて初めて動く。意味は各シェーダーのヘッダコメントにある。</p>
+<pre><code>shader.<span class="tok-fn">set</span>(<span class="tok-s">"Sea"</span>, { effect = <span class="tok-n">0.4</span>, p1 = <span class="tok-n">0.6</span> })   <span class="tok-c">-- 渡した項目だけ書く(部分更新)</span>
+<span class="tok-k">local</span> s = shader.<span class="tok-fn">get</span>(<span class="tok-s">"Sea"</span>)                     <span class="tok-c">-- { path, effect, p1..p4, b1..b3 }</span>
+
+<span class="tok-k">function</span> <span class="tok-fn">OnUpdate</span>(self, dt)                       <span class="tok-c">-- 時間で動かす(溶ける/水位が上がる)</span>
+  self.t = (self.t <span class="tok-k">or</span> <span class="tok-n">0</span>) + dt
+  shader.<span class="tok-fn">set</span>(<span class="tok-s">"Sea"</span>, { effect = math.<span class="tok-fn">min</span>(self.t / <span class="tok-n">3</span>, <span class="tok-n">1</span>) })
+<span class="tok-k">end</span></code></pre>
 
         <h3><code class="inl">Lighting</code> / <code class="inl">Tween</code> / <code class="inl">Flicker</code>：ライティング演出</h3>
         <p>覚えるのは 3 つだけ。<b>プロパティは素直に読み書き</b>、<b>時間変化は汎用 <code class="inl">Tween</code> 1 本</b>、
