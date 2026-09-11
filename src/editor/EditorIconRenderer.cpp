@@ -3,6 +3,7 @@
 #include "graphics/GraphicsDevice.h"
 #include "resource/ShaderCompiler.h"
 #include "ecs/Components.h"
+#include "renderer/Mesh.h"   // 選択 AABB ワイヤでローカル境界を読む
 #include "core/Logger.h"
 #include "core/Assert.h"
 
@@ -680,6 +681,83 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
             AddDirectionalArrow(top, dirDown, len, col);
 
             AddPointLightIcon(top, col);
+        }
+    }
+
+    // --- 選択中メッシュのワールド AABB ワイヤ ---
+    //
+    // ★ライト / カメラ / デカールには選択色が付くのに、**メッシュだけ何も出なかった**。
+    //   ギズモは原点に立つだけなので「どの物を掴んでいるか」が分からず、
+    //   同じ形が並ぶ場所（壁 200 枚、街の箱）では選択が実質見えない。
+    //   とくに精密ピッキングの**循環選択**（同じ場所を連打して手前→奥へ 1 段ずつ）は、
+    //   今どの層にいるかが見えないと機能として成立しない。
+    //   Unity / Unreal が例外なく持っている輪郭表示の最小版として、既存の線描画へ相乗りする
+    //   （新しいパスも PSO もルートシグネチャも増やさない）。
+    {
+        // プライマリ（最後に掴んだもの）だけ明るくして、複数選択の中でも区別できるようにする。
+        const XMFLOAT3 colPrimary = { 1.0f, 0.62f, 0.0f };
+        const XMFLOAT3 colOther   = { 0.62f, 0.40f, 0.05f };
+        // 「全選択」した時に線が数万本になるのを避ける。輪郭は数が多いと意味を失うので上限で足りる。
+        constexpr size_t kMaxOutlines = 256;
+
+        size_t drawn = 0;
+        for (entt::entity e : ctx.selectedEntities)
+        {
+            if (drawn >= kMaxOutlines) break;
+            if (!registry.valid(e)) continue;
+            const auto* mr = registry.try_get<MeshRenderer>(e);
+            if (!mr || mr->meshes.empty()) continue;
+
+            const XMMATRIX world = ComputeWorldMatrix(registry, e);
+
+            // 全サブメッシュのローカル AABB をワールドへ移して包む。
+            // ★ノードアニメ持ちは meshNodeTransforms がサブメッシュごとの追加変換を持つので、
+            //   描画側（BuildDrawList）と同じ合成順 nodeMat * world で掛ける。ずれると枠だけ浮く。
+            XMVECTOR mn = XMVectorReplicate( 1e30f);
+            XMVECTOR mx = XMVectorReplicate(-1e30f);
+            bool any = false;
+            for (size_t mi = 0; mi < mr->meshes.size(); ++mi)
+            {
+                const Mesh* mesh = mr->meshes[mi];
+                if (!mesh) continue;
+                XMMATRIX mw = world;
+                if (mi < mr->meshNodeTransforms.size())
+                    mw = XMLoadFloat4x4(&mr->meshNodeTransforms[mi]) * world;
+
+                const XMFLOAT3 lmn = mesh->GetAABBMin(), lmx = mesh->GetAABBMax();
+                for (int i = 0; i < 8; ++i)
+                {
+                    const XMVECTOR c = XMVectorSet((i & 1) ? lmx.x : lmn.x,
+                                                   (i & 2) ? lmx.y : lmn.y,
+                                                   (i & 4) ? lmx.z : lmn.z, 1.0f);
+                    const XMVECTOR w = XMVector3TransformCoord(c, mw);
+                    mn = XMVectorMin(mn, w);
+                    mx = XMVectorMax(mx, w);
+                    any = true;
+                }
+            }
+            if (!any) continue;
+
+            // 面とぴったり一致すると線が Z ファイトで点線になるので、対角の 0.6% だけ膨らませる。
+            const XMVECTOR diag = XMVectorSubtract(mx, mn);
+            const f32 pad = (std::max)(0.001f, XMVectorGetX(XMVector3Length(diag)) * 0.006f);
+            const XMVECTOR pv = XMVectorReplicate(pad);
+            mn = XMVectorSubtract(mn, pv);
+            mx = XMVectorAdd(mx, pv);
+
+            XMFLOAT3 a{}, b{};
+            XMStoreFloat3(&a, mn);
+            XMStoreFloat3(&b, mx);
+            const XMFLOAT3 p[8] = {
+                {a.x, a.y, a.z}, {b.x, a.y, a.z}, {a.x, b.y, a.z}, {b.x, b.y, a.z},
+                {a.x, a.y, b.z}, {b.x, a.y, b.z}, {a.x, b.y, b.z}, {b.x, b.y, b.z},
+            };
+            const int edges[12][2] = {
+                {0,1},{1,3},{3,2},{2,0},{4,5},{5,7},{7,6},{6,4},{0,4},{1,5},{2,6},{3,7}
+            };
+            const XMFLOAT3 col = (e == ctx.selectedEntity) ? colPrimary : colOther;
+            for (const auto& ed : edges) AddLine(p[ed[0]], p[ed[1]], col);
+            ++drawn;
         }
     }
 }
