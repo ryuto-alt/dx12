@@ -64,6 +64,9 @@ public:
         u32 blasBuiltThisFrame = 0;
         u32 skippedSkinned     = 0;   // スキンドで除外した DrawItem 数（compute スキニングが無い時のみ）
         u32 skippedTransparent = 0;   // 半透明で除外した DrawItem 数（CSM が担当する）
+        // アルファテスト(MASK。葉・柵・金網)で除外した DrawItem 数（CSM の ShadowMask が担当する）。
+        // 全ジオメトリが GEOMETRY_FLAG_OPAQUE なので TLAS に入れると矩形の影になる。
+        u32 skippedAlphaTest   = 0;
         u32 skinnedInstances   = 0;   // TLAS に入ったスキンドインスタンス数
         u32 skinnedRebuilds    = 0;   // このフレームで再構築したスキンド BLAS 数
         u32 skinnedStale       = 0;   // 予算切れで前フレームの BLAS を流用した数
@@ -101,7 +104,8 @@ public:
 
     // --- 毎フレームの流し込み ---------------------------------------------
     // BeginFrame → AddInstance × N → Build の順で 1 回だけ呼ぶ。
-    void BeginFrame(const DirectX::XMFLOAT3& cameraPos, u32 skippedSkinned, u32 skippedTransparent);
+    void BeginFrame(const DirectX::XMFLOAT3& cameraPos, u32 skippedSkinned, u32 skippedTransparent,
+                    u32 skippedAlphaTest = 0);
     void AddInstance(const Mesh* mesh, const DirectX::XMMATRIX& world,
                      const DirectX::XMFLOAT3& center,
                      const GeometryInfo& geo = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u});

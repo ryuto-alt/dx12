@@ -3688,13 +3688,14 @@ void Application::Render()
 
             // 除外された数は診断（dx12_diagnose の dxr 検査）で「なぜキャラの影が
             // RT に出ないのか」を説明するために数えておく。
-            u32 skippedSkin = 0, skippedTransp = 0;
+            u32 skippedSkin = 0, skippedTransp = 0, skippedMask = 0;
             for (const DrawItem& it : m_drawItems)
             {
-                if (it.skin && !skinnedInTlas) ++skippedSkin;
-                else if (it.sortKey == 3u)     ++skippedTransp;
+                if (it.skin && !skinnedInTlas)  ++skippedSkin;
+                else if (it.sortKey == 3u)      ++skippedTransp;
+                else if (it.alphaClass == 1u)   ++skippedMask;
             }
-            m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp);
+            m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp, skippedMask);
 
             auto& rtReg = m_scene->GetRegistry();
 

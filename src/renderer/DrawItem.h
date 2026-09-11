@@ -90,9 +90,22 @@ struct OcclusionBounds
 //                      それを表すのが引数 skinnedInTlas。**必ず両方の呼び出し側へ同じ値を渡すこと**
 //                      （CSM 側だけ true にすると影が消え、TLAS 側だけ true にすると二重に出る）。
 //  - sortKey == 3    … 半透明。TLAS に入れると any-hit が必要になり 2〜10 倍遅くなる。
+//  - alphaClass == 1 … アルファテスト(MASK。葉・柵・金網・草)。
+//    ★これを TLAS に入れると**葉の影が板の影になる**。
+//      BLAS のジオメトリは全て D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE で作られ
+//      （RaytracingScene.cpp:173,275 / 同 .h の設計メモ）、any-hit を一切使わないので、
+//      レイはカードの矩形そのもので遮られる。テクスチャのアルファは見ない。
+//      しかも RT 影が有効なフレームは CSM 側がこの関数で「RT が担当する」と判断して
+//      描画から外すため、**正しく discard していた ShadowMask.hlsl の経路まで失われる**
+//      （shaders/shadow/ShadowMask.hlsl は clip(baseColor.a - cutoff) を撃つためだけに存在する）。
+//      結果、RT 影を ON にした瞬間に木や金網の太陽影が矩形になる＝機能を足したのに絵が劣化する。
+//      正攻法は any-hit シェーダでアルファを見ることだが、OPAQUE を外すと交差判定が
+//      2〜10 倍重くなるうえシェーダテーブルの新設が要る。MASK は CSM 側に
+//      既に正しい実装があるので、そちらへ任せるのが素直で速い。
+//      （代償: 葉は RT-AO の遮蔽物にもならない。精度より「絵が壊れない」を採る）
 inline bool IsRaytracedItem(const DrawItem& it, bool skinnedInTlas)
 {
-    if (it.renderer == nullptr || it.sortKey == 3u) return false;
+    if (it.renderer == nullptr || it.sortKey == 3u || it.alphaClass == 1u) return false;
     return it.skin == nullptr || skinnedInTlas;
 }
 

@@ -475,6 +475,7 @@ void Application::RegisterMcpRenderMethods()
                          {"instanceDescBytes", s.instanceDescBytes},
                          {"skippedSkinned", s.skippedSkinned},
                          {"skippedTransparent", s.skippedTransparent},
+                         {"skippedAlphaTest", s.skippedAlphaTest},
                          {"droppedOverLimit", s.droppedOverLimit},
                          // スキンド（計画09 Step 4 / compute スキニング）
                          {"skinnedInstances", s.skinnedInstances},

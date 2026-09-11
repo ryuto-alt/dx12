@@ -2183,6 +2183,13 @@ DeepDiagReport DeepDiag::Dxr(Application& app)
                  + " 個は TLAS に入りません（any-hit が必要になり 2〜10 倍遅くなるため。仕様）");
 
     ++r.checked;
+    if (d.skippedAlphaTest > 0)
+        r.Add(0, "アルファテスト(葉・柵・金網など) " + std::to_string(d.skippedAlphaTest)
+                 + " 個は TLAS に入りません。加速構造は全ジオメトリを不透明として扱うので、"
+                   "入れると穴の開いた形が矩形の影になります。太陽影は CSM 側の "
+                   "ShadowMask（baseColor.a で discard）が担当するので、影は正しく抜けます（仕様）");
+
+    ++r.checked;
     if (d.droppedOverLimit > 0)
         r.Add(1, std::to_string(d.droppedOverLimit)
                  + " 個のインスタンスが上限超過で TLAS から外れました"

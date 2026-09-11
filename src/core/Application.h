@@ -262,6 +262,7 @@ public:
         bool tlasReady      = false;
         u32  instances = 0, blasCount = 0;
         u32  skippedSkinned = 0, skippedTransparent = 0, droppedOverLimit = 0;
+        u32  skippedAlphaTest = 0;   // アルファテスト(MASK)。CSM の ShadowMask が担当する
         // スキンド（計画09 Step 4 / compute スキニング）
         u32  skinnedInstances = 0, skinnedRebuilds = 0, skinnedStale = 0;
         u64  skinnedTriangles = 0;

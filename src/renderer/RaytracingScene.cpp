@@ -76,7 +76,8 @@ void RaytracingScene::Invalidate()
     m_stats.skinnedTriangles = 0;
 }
 
-void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, u32 skippedTransparent)
+void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, u32 skippedTransparent,
+                                 u32 skippedAlphaTest)
 {
     m_pending.clear();
     m_cameraPos = cameraPos;
@@ -86,6 +87,7 @@ void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, 
     m_stats.droppedOverLimit   = 0;
     m_stats.skippedSkinned     = skippedSkinned;
     m_stats.skippedTransparent = skippedTransparent;
+    m_stats.skippedAlphaTest   = skippedAlphaTest;
     m_stats.skinnedInstances   = 0;
     m_stats.skinnedRebuilds    = 0;
     m_stats.skinnedStale       = 0;

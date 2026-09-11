@@ -707,6 +707,7 @@ Application::DiagDxrInfo Application::GetDiagDxrInfo() const
         d.blasCount          = s.blasCount;
         d.skippedSkinned     = s.skippedSkinned;
         d.skippedTransparent = s.skippedTransparent;
+        d.skippedAlphaTest   = s.skippedAlphaTest;
         d.droppedOverLimit   = s.droppedOverLimit;
         d.skinnedInstances   = s.skinnedInstances;
         d.skinnedRebuilds    = s.skinnedRebuilds;
