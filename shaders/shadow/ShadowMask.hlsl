@@ -6,9 +6,11 @@
 //
 // ★このファイル 1 本から 4 本の CSO を作る（静的 / インスタンシング / スキンド の VS と 共有 PS）。
 //   b0 の意味が VS ごとに違うので注意:
-//     VSMain          … mvp(=world*viewProj), model      （呼び出し側は 32 DWORD 書く）
+//     VSMain          … mvp(=world*viewProj)             （16 DWORD）
 //     VSMainInstanced … transpose(viewProj)              （16 DWORD。world は slot1 から）
-//     VSMainSkinned   … mvp, model + t3 のボーン行列     （32 DWORD）
+//     VSMainSkinned   … mvp + t3 のボーン行列            （16 DWORD）
+//   ★深度しか書かないので model は要らない。以前は 32 DWORD 書いていたが、
+//     後半 16 DWORD(model) はどの VS も参照していなかった＝毎ドロー 64 バイトの無駄。
 // ★cutoff / UV 変換は b2（PBRMaterial ルート定数）から読む。フォワードとまったく同じ値を
 //   同じ規則で読むこと。ズレると「本体は抜けているのに影だけ残る」になる。
 
@@ -20,7 +22,8 @@ StructuredBuffer<float4x4> g_bones : register(t3);
 cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
-    float4x4 model;
+    // ★model は置かない。深度しか書かないので不要で、置くと呼び出し側が
+    //   毎ドロー 32 DWORD 書く羽目になる(後半 16 DWORD は誰も読まない)。
 };
 
 cbuffer PBRMaterial : register(b2)

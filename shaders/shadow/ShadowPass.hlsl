@@ -3,7 +3,8 @@
 cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;    // lightViewProj * model
-    float4x4 model;  // unused in shadow pass
+    // ★model は置かない。深度しか書かないので不要で、置くと呼び出し側が
+    //   毎ドロー 32 DWORD 書く羽目になる(後半 16 DWORD は誰も読まない)。
 };
 
 // ★position だけ宣言する。深度しか書かないので他は要らない。

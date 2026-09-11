@@ -1677,10 +1677,18 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
             }
             else
             {
-                struct PerObjectData { XMMATRIX mvp; XMMATRIX mdl; } objData;
-                objData.mvp = XMMatrixTranspose(meshWorld * viewProj);
-                objData.mdl = XMMatrixTranspose(meshWorld);
-                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 32, &objData);
+                // ★深度専用パスは b0 の先頭 16 DWORD（mvp）しか読まない。
+                //   ShadowPass / ShadowPassSkinned / ShadowMask / DepthPrepassSkinned は
+                //   どれも `float4x4 model` を宣言はするが**一度も参照していない**
+                //   （各シェーダ自身が "unused in shadow pass" と書いている）。
+                //   それでも 32 DWORD = 128 バイトを毎サブメッシュ押し込み、
+                //   使われない model の転置まで計算していた。
+                //   ルート定数の更新はドローごとにルートシグネチャ全体のバージョンを
+                //   切り替えさせるので、深度パスの per-draw コストとしては小さくない。
+                //   カスケード 4 枚 + 深度プリパス + スポット影 + ポイント影(6面) に毎フレーム効く。
+                //   （インスタンス経路は元から 16 DWORD しか書いていない＝こちらが揃った形）
+                const XMMATRIX mvpT = XMMatrixTranspose(meshWorld * viewProj);
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &mvpT);
             }
 
             PipelineState* usePso = &basePso;
