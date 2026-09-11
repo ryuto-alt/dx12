@@ -686,7 +686,59 @@ template<typename T>
 void BeginEdit(entt::registry& reg, entt::entity e, InspectorPanel::EditState<T>& state)
 {
     if (!state.editing)
+    {
         state.snapshot = reg.get<T>(e);
+        // 新しい編集セッションの頭で一括編集の控えも捨てる。
+        // 残したままだと、選択を変えた後の確定で「前の選択の相手」に対する
+        // 出鱈目な Undo エントリが積まれる。
+        state.othersBefore.clear();
+    }
+}
+
+// ── 複数選択への一括編集 ──
+//
+// ★Inspector は ctx.selectedEntity（プライマリ）しか見ていなかったので、
+//   「ライトを 40 灯選んで range を 1 回だけ動かす」ができず、40 回選び直して 40 回いじる
+//   必要があった。レベルの明るさ調整はまさにその作業なので、実務では効いてくる。
+//
+// プライマリの【編集前スナップショット】と【現在値】をバイトで突き合わせ、
+// **変わったバイトだけ**を他の選択へ写す。これで「range だけ変えたのに色まで揃う」を防げる
+// （POD なら差分バイト = 触ったフィールドそのもの。詰め物バイトが混じっても誰も読まないので無害）。
+//
+// std::string / std::vector を持つコンポーネント（Trigger / LuaScript 等）は
+// バイトコピーするとポインタを共有して壊れるので、is_trivially_copyable で
+// **コンパイル時に丸ごと除外**する。除外された型は従来どおりプライマリだけが変わる。
+template<typename T>
+void PropagateEditToSelection(entt::registry& reg, EditorContext& ctx, entt::entity primary,
+                              InspectorPanel::EditState<T>& state)
+{
+    if constexpr (std::is_trivially_copyable_v<T>)
+    {
+        if (ctx.selectedEntities.size() < 2) return;
+        const T& cur = reg.get<T>(primary);
+        const auto* src  = reinterpret_cast<const unsigned char*>(&cur);
+        const auto* snap = reinterpret_cast<const unsigned char*>(&state.snapshot);
+
+        for (entt::entity o : ctx.selectedEntities)
+        {
+            if (o == primary || !reg.valid(o) || !reg.all_of<T>(o)) continue;
+            T& dst = reg.get<T>(o);
+
+            // この編集でまだ触っていない相手なら、いまの値が「編集前」。
+            bool known = false;
+            for (const auto& kv : state.othersBefore)
+                if (kv.first == o) { known = true; break; }
+            if (!known) state.othersBefore.emplace_back(o, dst);
+
+            auto* d = reinterpret_cast<unsigned char*>(&dst);
+            for (size_t i = 0; i < sizeof(T); ++i)
+                if (src[i] != snap[i]) d[i] = src[i];
+        }
+    }
+    else
+    {
+        (void)reg; (void)ctx; (void)primary; (void)state;
+    }
 }
 
 template<typename T>
@@ -694,6 +746,10 @@ void EndEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
              InspectorPanel::EditState<T>& state,
              bool changed, bool active, const char* name)
 {
+    // 値が動いたフレームで即座に写す＝ドラッグ中も選択全体が一緒に動いて見える。
+    // Undo は確定時に 1 エントリでまとめる（下の push）。
+    if (changed) PropagateEditToSelection<T>(reg, ctx, e, state);
+
     auto push = [&]()
     {
         const T& cur = reg.get<T>(e);
@@ -705,11 +761,38 @@ void EndEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
             same = (state.snapshot == cur);
         else
             same = (std::memcmp(&state.snapshot, &cur, sizeof(T)) == 0);
-        if (!same)
+        // 一括編集した相手が居なければ従来どおり 1 コマンドを積む（挙動は完全に同じ）。
+        if (state.othersBefore.empty())
         {
-            ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<T>>(
-                &reg, e, state.snapshot, cur, name));
+            if (!same)
+            {
+                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<T>>(
+                    &reg, e, state.snapshot, cur, name));
+            }
+            return;
         }
+
+        // ★一括編集は 1 回の操作なので Undo も 1 エントリにする。
+        //   ばらばらに積むと 40 灯いじった後の Ctrl+Z を 40 回押す羽目になる。
+        auto composite = std::make_unique<CompositeCommand>(name);
+        if (!same)
+            composite->Add(std::make_unique<ComponentEditCommand<T>>(
+                &reg, e, state.snapshot, cur, name));
+        for (const auto& [other, before] : state.othersBefore)
+        {
+            if (!reg.valid(other) || !reg.all_of<T>(other)) continue;
+            const T& oCur = reg.get<T>(other);
+            bool oSame;
+            if constexpr (requires (const T& a, const T& b) { { a == b } -> std::convertible_to<bool>; })
+                oSame = (before == oCur);
+            else
+                oSame = (std::memcmp(&before, &oCur, sizeof(T)) == 0);
+            if (!oSame)
+                composite->Add(std::make_unique<ComponentEditCommand<T>>(
+                    &reg, other, before, oCur, name));
+        }
+        state.othersBefore.clear();
+        if (!composite->Empty()) ctx.undoSystem.PushCommand(std::move(composite));
     };
 
     if (active)

@@ -3,6 +3,7 @@
 #include <entt/entt.hpp>
 #include <string>
 #include <vector>
+#include <utility>   // EditState::othersBefore の std::pair
 #include "core/Types.h"
 #include "ecs/Components.h"
 #include "scene/SceneSerializer.h"   // PrefabOverride（プレハブ差分表示のキャッシュ用）
@@ -55,6 +56,12 @@ public:
     {
         bool editing = false;
         T    snapshot{};
+        // ★複数選択の一括編集用。プライマリを 1 回いじると同じ選択の他のエンティティへも
+        //   「変わったフィールドだけ」を写す。その相手の【編集前】をここに溜めておき、
+        //   確定時に CompositeCommand で 1 エントリの Undo にまとめる。
+        //   （溜めないと、ドラッグ 2 フレーム目以降は相手の現在値が既に写した後の値になり、
+        //     Undo で元へ戻せなくなる）
+        std::vector<std::pair<entt::entity, T>> othersBefore;
     };
 
 private:

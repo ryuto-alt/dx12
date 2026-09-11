@@ -519,6 +519,83 @@ void T_DockLayoutSurvivesToolToggle(ImGuiTestContext* ctx)
     ctx->Yield(3);
 }
 
+// Inspector の一括編集: 複数選択していると、プライマリの変更が同じ選択の全員へ届くこと。
+//
+// ★何を守っているか
+//   Inspector は ctx.selectedEntity（プライマリ）しか見ておらず、複数選択しても
+//   1 体ぶんしか編集できなかった。ライトを 40 灯選んで明るさを揃える、といった
+//   レベル調整のたびに 40 回選び直して 40 回いじる必要があった。
+//   直す側は EndEdit<T> で「プライマリのスナップショットと現在値のバイト差分＝触った
+//   フィールド」だけを他の選択へ写す。**変えていないフィールド（色など）は相手の値のまま**で
+//   なければならないので、そこも一緒に見る。Undo も 1 エントリであること。
+void T_InspectorMultiEdit(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "ポイントライトを 3 灯作る");
+    entt::entity lights[3] = {};
+    for (int i = 0; i < 3; ++i)
+    {
+        AddEntity(ctx, "Point Light");
+        SelectLastEntity(ctx);
+        lights[i] = ed->selectedEntity;
+        IM_CHECK(reg.valid(lights[i]) && reg.all_of<PointLight>(lights[i]));
+    }
+
+    // 「色は各自バラバラ / range は同じ」から始める。
+    // 触っていない色まで揃ってしまう実装だと、この差が消えて検出できる。
+    for (int i = 0; i < 3; ++i)
+    {
+        auto& pl = reg.get<PointLight>(lights[i]);
+        pl.range = 10.0f;
+        pl.color = { 0.2f * (i + 1), 0.5f, 1.0f - 0.2f * i };
+    }
+    const DirectX::XMFLOAT3 keepColor1 = reg.get<PointLight>(lights[1]).color;
+    ctx->Yield(3);
+
+    Step(ctx, "3 灯まとめて選択する（プライマリは lights[0]）");
+    ed->selectedEntities.assign(std::begin(lights), std::end(lights));
+    ed->selectedEntity = lights[0];
+    ctx->Yield(4);
+
+    Step(ctx, "Inspector の『距離 Range』を 1 回だけ動かす");
+    ctx->SetRef(kWinInspector);
+    // pg:: のウィジェットは PushID(ラベル) + "##v" という ID になる（PropertyGrid.h 参照）
+    ctx->ItemInputValue("**/\xe8\xb7\x9d\xe9\x9b\xa2 Range/##v", 42.0f);   // 距離 Range
+    ctx->Yield(6);
+
+    for (int i = 0; i < 3; ++i)
+    {
+        const f32 r = reg.get<PointLight>(lights[i]).range;
+        if (std::fabs(r - 42.0f) > 0.05f)
+        { IM_ERRORF("ライト%d の range が届いていない（%.2f、期待 42.0）", i, r); }
+    }
+
+    // 触っていない色は相手の値のままでなければならない（全体コピーになっていないことの確認）。
+    const DirectX::XMFLOAT3 c1 = reg.get<PointLight>(lights[1]).color;
+    if (std::fabs(c1.x - keepColor1.x) > 1e-4f || std::fabs(c1.z - keepColor1.z) > 1e-4f)
+    { IM_ERRORF("触っていない色まで上書きされている（%.2f,%.2f,%.2f）", c1.x, c1.y, c1.z); }
+
+    Step(ctx, "Undo 1 回で 3 灯とも戻ること");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    for (int i = 0; i < 3; ++i)
+    {
+        const f32 r = reg.get<PointLight>(lights[i]).range;
+        if (std::fabs(r - 10.0f) > 0.05f)
+        { IM_ERRORF("Undo 1 回でライト%d が戻っていない（%.2f、期待 10.0）", i, r); }
+    }
+
+    // 後片付け
+    for (auto e : lights) ed->pendingDeletions.push_back(e);
+    ed->selectedEntities.clear();
+    ed->selectedEntity = entt::null;
+    ctx->Yield(6);
+}
+
 void T_OpenAllToolWindows(ImGuiTestContext* ctx)
 {
     IM_CHECK(Ed() != nullptr);
@@ -2299,6 +2376,7 @@ const DiagReg kTests[] = {
 
     { "panel", "open_all_tool_windows", "パネル",             "すべてのツール窓を開いて描画",         T_OpenAllToolWindows    },
     { "panel", "dock_layout_persist",   "パネル",             "調整したパネル幅がツール窓の開閉で戻らない", T_DockLayoutSurvivesToolToggle },
+    { "panel", "inspector_multi_edit",  "パネル",             "複数選択したライトを一括で編集できる", T_InspectorMultiEdit },
     { "panel", "console",               "パネル",             "コンソール（フィルタ / Lua 実行）",    T_ConsolePanel          },
     { "panel", "asset_browser",         "パネル",             "アセットブラウザ",                     T_AssetBrowser          },
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
