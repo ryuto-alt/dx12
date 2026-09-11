@@ -825,7 +825,9 @@ void ToolbarPanel::Render(bool isPlaying,
     }
 
     // Lua error
-    if (scriptEngine && !scriptEngine->GetLastError().empty())
+    // ★GetLastError だけでは消えない（直してリロードしても点きっぱなしになる）ので、
+    //   コンポーネント Lua の生きたエラー状態も併せて見る。
+    if (scriptEngine && (!scriptEngine->GetLastError().empty() || scriptEngine->HasScriptErrors()))
     {
         ImGui::SameLine(0, 16);
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));

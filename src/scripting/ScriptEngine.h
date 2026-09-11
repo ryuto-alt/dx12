@@ -132,6 +132,10 @@ public:
     };
     std::vector<ScriptError> CollectScriptErrors();
 
+    // エラーを抱えたコンポーネント Lua が 1 つでもあるか。
+    // CollectScriptErrors と違い確保をしないので、毎フレーム描くツールバーから呼んでよい。
+    bool HasScriptErrors() const;
+
     // Lua をコンパイルのみして構文を検証(実行しない・副作用なし)。OK なら true。
     // 失敗時 err にエラー文を入れる。MCP の create で書き込み前チェックに使う。
     bool CheckLuaSyntax(const std::string& code, std::string& err);

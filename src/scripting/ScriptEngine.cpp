@@ -4133,6 +4133,14 @@ void ScriptEngine::CallOnUpdate(f32 dt)
             m_lastError = err.what();
             Logger::Error("Luaエラー（OnUpdate）: {}", m_lastError);
         }
+        else
+        {
+            // ★成功したら消す。これが無いと一度でもエラーを出した後は
+            //   スクリプトを直してホットリロードしてもツールバーの「⚠ Lua Error」が
+            //   点きっぱなしになり、**本当に壊れているのか分からなくなる**
+            //   （＝以後この警告を誰も信用しなくなる）。
+            m_lastError.clear();
+        }
     }
 }
 
@@ -4422,6 +4430,18 @@ std::vector<ScriptEngine::ScriptError> ScriptEngine::CollectScriptErrors()
                         ls.scriptPath, ls.errorMessage });
     }
     return out;
+}
+
+bool ScriptEngine::HasScriptErrors() const
+{
+    if (!m_scene) return false;
+    auto& reg  = m_scene->GetRegistry();
+    auto  view = reg.view<LuaScript>();
+    for (auto e : view)
+    {
+        if (view.get<LuaScript>(e).loadError) return true;
+    }
+    return false;
 }
 
 bool ScriptEngine::CheckLuaSyntax(const std::string& code, std::string& err)
