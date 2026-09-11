@@ -215,6 +215,59 @@ int main()
 
     Check(methodCount >= 110, "McpDefine を十分に検出できている（検出 " + std::to_string(methodCount) + " 本）");
 
+    // ---- McpError が「次の一手」を持っているか ----
+    //
+    // ★McpError の定義（ApplicationInternal.h）はこう書いてある:
+    //     std::string hint;  // 「次にどうすればいいか」を必ず 1 文で
+    //   なのに 2 引数（hint 無し）で投げている箇所が 257 中 192 あった＝契約の 75% が空手形。
+    //   MCP のエラーは **AI が読む唯一の手がかり**で、「missing 'path'」の 1 行だけだと
+    //   有効値を探して往復を繰り返す＝作業が進まない。人間と違って画面を見て推測できない。
+    //   一度上げた網羅率が黙って下がらないよう、ここで下限を固定する。
+    {
+        int errTotal = 0, errWithHint = 0;
+        size_t p = 0;
+        const std::string kErr = "McpError(";
+        while ((p = src.find(kErr, p)) != std::string::npos)
+        {
+            // 直前が識別子文字なら別のシンボル（定義/コメント中の別語）
+            if (p > 0 && IsIdentChar(src[p - 1])) { p += kErr.size(); continue; }
+            size_t q = p + kErr.size();
+            int depth = 1, args = 1;
+            bool inStr = false;
+            for (; q < src.size() && depth > 0; ++q)
+            {
+                const char c = src[q];
+                if (inStr)
+                {
+                    if (c == '\\') ++q;
+                    else if (c == '"') inStr = false;
+                    continue;
+                }
+                if (c == '"') inStr = true;
+                else if (c == '(' || c == '{') ++depth;
+                else if (c == ')' || c == '}') --depth;
+                else if (c == ',' && depth == 1) ++args;
+            }
+            ++errTotal;
+            if (args >= 3) ++errWithHint;   // 3 番目の引数が hint
+            p = q;
+        }
+
+        const int pct = (errTotal > 0) ? (errWithHint * 100 / errTotal) : 100;
+        std::printf("  --  McpError %d 件中 %d 件に hint（%d%%）\n", errTotal, errWithHint, pct);
+        // ★下限は「今の実測値」に置いてある（ラチェット）。まず現状より悪くならないことだけを守る。
+        //   2026-09-11 時点で 257 件中 65 件 = 25%。ここを上げていくのが宿題で、
+        //   網羅率を上げたらこの数字も一緒に上げること（下げるのは後退なので許さない）。
+        //   足す順の目安は件数の多い順:
+        //     ApplicationMcpEntity.cpp 79 / Editor.cpp 40 / Asset.cpp 29 / Tooling.cpp 28 / Terrain.cpp 12
+        constexpr int kMinHintPercent = 25;
+        Check(pct >= kMinHintPercent,
+              "McpError の hint 網羅率が " + std::to_string(pct) + "% まで落ちている（下限 "
+              + std::to_string(kMinHintPercent) + "%）。"
+              "McpError(code, msg) の 2 引数で投げず、第 3 引数へ「次に何をすればいいか」を 1 文で足すこと"
+              "（列挙型の引数なら第 4 引数 validValues に有効値も）");
+    }
+
     std::printf("%s: %d checks / %d methods / %d failures\n",
                 g_failures == 0 ? "OK" : "NG", g_checks, methodCount, g_failures);
     return g_failures == 0 ? 0 : 1;
