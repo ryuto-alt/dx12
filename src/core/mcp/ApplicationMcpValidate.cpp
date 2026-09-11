@@ -338,23 +338,39 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         if (!IsProp(b)) continue;                     // 床・巨大な壁・足場は対象外（IsProp の理由参照）
         if (dupEntities.count(it.e)) continue;        // 二重配置は④で言った。相方を地面と誤認する
 
+        // ★真下を 1 回撃って「支え」と「地面」を同時に取る。
+        //   supportY = 真下で最初に当たった面（机・箱・足場を含む＝snap_to_ground と同じ規則）
+        //   groundY  = 真下で最初に当たった**地面らしい**面（床・地形・大きな壁だけ）
+        //   この 2 つを分けるのが肝。以前は groundY しか無く、しかも
+        //   「1 本も当たらなかった」を 0.0f（ワールド原点の高さ）と区別していなかったので:
+        //     ・机の上にぴったり置いた箱が、机を無視して床までの距離で「1.00m 浮いている」
+        //     ・真下に何も無い物が「地面から 49.75m 浮いている」（その地面は存在しない）
+        //   と報告され、しかも fix:"safe" が同じ規則で**机を貫通させて床へ落とし**、
+        //   存在しない地面へ 50m テレポートさせていた。
+        //   指摘文自身が案内している dx12_snap_to_ground は机の天面に正しく乗せるので、
+        //   道具と自動修正が真逆のことをしていたことになる。
+        //   浮きは「支えがあるか」の話なので supportY で見る。
+        //   埋まりは従来どおり床に対してだけ言う（IsGroundLike のコメント参照）。
         const XMFLOAT3 o{ (b.mn.x + b.mx.x) * 0.5f, b.mx.y + 0.05f, (b.mn.z + b.mx.z) * 0.5f };
         const XMFLOAT3 d{ 0.0f, -1.0f, 0.0f };
         ScenePickOptions popt;
         popt.includeNonMesh  = false;
         popt.trianglePrecise = true;
         popt.maxCandidates   = 128;
-        float groundY = 0.0f;
+        float groundY = 0.0f, supportY = 0.0f;
+        bool  hasGround = false, hasSupport = false;
         for (const ScenePickHit& h : RaycastSceneRay(reg, &GetDrawItems(), o, d, 0.0f, popt))
         {
             if (h.entity == it.e || McpIsDescendantOf(reg, h.entity, it.e)
                 || McpIsDescendantOf(reg, it.e, h.entity)) continue;
-            if (!IsGroundLike(reg, h.entity)) continue;
-            groundY = h.worldPos.y;
-            break;
+            if (!hasSupport) { supportY = h.worldPos.y; hasSupport = true; }
+            if (IsGroundLike(reg, h.entity)) { groundY = h.worldPos.y; hasGround = true; break; }
         }
 
-        const float gap = b.mn.y - groundY;
+        // 真下に何も無いなら、埋まりも浮きも判定材料が無い。黙る（0.0f を地面と称さない）。
+        if (!hasSupport) continue;
+
+        const float gap = hasGround ? (b.mn.y - groundY) : 1.0f;   // 床が無ければ埋まりは語れない
         if (gap < 0.0f)
         {
             // 埋まりは**割合**で見る。壁の根元が床へ 10cm 刺さっているのは隙間を出さない
@@ -370,12 +386,18 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
                 add("BURIED", 2, it.e, buf);
             }
         }
-        else if (gap > (std::max)(0.10f, b.SizeY() * 0.5f))
+        else
         {
-            std::snprintf(buf, sizeof(buf),
-                "%s が地面から %.2fm 浮いている。dx12_snap_to_ground で接地させること",
-                NameOf(reg, it.e).c_str(), gap);
-            add("FLOATING", 1, it.e, buf);
+            // 浮きは**支えとの隙間**で見る。机の天面に乗っているものは支えとの隙間が 0 なので
+            // 浮いていない（床までの高さは関係ない）。
+            const float lift = b.mn.y - supportY;
+            if (lift > (std::max)(0.10f, b.SizeY() * 0.5f))
+            {
+                std::snprintf(buf, sizeof(buf),
+                    "%s が真下の面から %.2fm 浮いている。dx12_snap_to_ground で接地させること",
+                    NameOf(reg, it.e).c_str(), lift);
+                add("FLOATING", 1, it.e, buf);
+            }
         }
     }
 
@@ -397,15 +419,24 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
                 const XMFLOAT3 d{ 0.0f, -1.0f, 0.0f };
                 ScenePickOptions popt;
                 popt.includeNonMesh = false; popt.trianglePrecise = true; popt.maxCandidates = 128;
-                float groundY = 0.0f;
+                // ★着地先は「真下で最初に当たった面」＝dx12_snap_to_ground と同じ規則。
+                //   以前は IsGroundLike の面しか着地先にしなかったので、机の上の箱を
+                //   **机を貫通させて床へ落とし**、真下に何も無い物は groundY=0.0f の
+                //   既定値のままワールド原点の高さへテレポートさせていた。
+                //   指摘文が「dx12_snap_to_ground で接地させること」と案内している以上、
+                //   自動修正が同じ結果にならないのは単純に誤り。
+                float landY = 0.0f;
+                bool  hasLand = false;
                 for (const ScenePickHit& h : RaycastSceneRay(reg, &GetDrawItems(), o, d, 0.0f, popt))
                 {
                     if (h.entity == is.entity || McpIsDescendantOf(reg, h.entity, is.entity)
                         || McpIsDescendantOf(reg, is.entity, h.entity)) continue;
-                    if (!IsGroundLike(reg, h.entity)) continue;   // 検査側と同じ規則
-                    groundY = h.worldPos.y; break;
+                    landY = h.worldPos.y; hasLand = true; break;
                 }
-                t.position.y += (groundY - b.mn.y);
+                // 真下に面が無いなら動かさない。どこが地面か分からないまま動かすのは
+                // 「安全な修正」ではない（元の位置の方がまだ作者の意図に近い）。
+                if (!hasLand) continue;
+                t.position.y += (landY - b.mn.y);
                 is.fixed = true;
                 ++rep.fixed;
             }
