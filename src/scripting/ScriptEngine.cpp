@@ -2070,6 +2070,85 @@ void ScriptEngine::RegisterBindings()
             b.kind = kind;
             m_particleSystem->EmitBeam(b);
         });
+
+        // ★シーンに【置いてある】放出器(ParticleEmitter)を鳴らす / 止める。
+        //
+        //   これが無いと、Inspector で組んだ多層エフェクト(炎+煙+火の粉)を Lua から
+        //   一切起動できなかった。ワンショット(looping=false)は playOnStart か Trigger の
+        //   PlayEffect でしか鳴らせず、「爆発をスクリプトの好きな瞬間に出す」が書けない
+        //   ＝カットシーンや必殺技の演出が Trigger の範囲に閉じ込められていた。
+        //   fx:burst は「その場で撒く」別経路なので、置いた放出器の設定は使えない。
+        //
+        //   使い方:  fx:play("Explosion")            -- 全レイヤー
+        //            fx:play(entity, "Sparks")       -- レイヤー名を指定
+        //            fx:stop("Rain")                 -- 止める(生きている粒は寿命で消える)
+        //   対象は エンティティ名(string) か Entity。見つからなければ false を返して警告する。
+        auto resolveEmitterTarget = [this](const sol::object& target) -> entt::entity {
+            if (!m_scene) return entt::null;
+            auto& reg = m_scene->GetRegistry();
+            if (target.is<std::string>())
+                return FindEntityByName(reg, target.as<std::string>());
+            if (target.is<Entity>())
+            {
+                Entity e = target.as<Entity>();
+                return e.IsValid() ? e.GetHandle() : entt::null;
+            }
+            return entt::null;
+        };
+        auto emitterOp = [this, resolveEmitterTarget](const sol::object& target,
+                                                      const sol::optional<std::string>& layer,
+                                                      bool play, const char* who) -> bool
+        {
+            const entt::entity e = resolveEmitterTarget(target);
+            if (e == entt::null)
+            {
+                Logger::Warn("{}: 対象のエンティティが見つかりません（名前か Entity を渡すこと）", who);
+                return false;
+            }
+            auto& reg = m_scene->GetRegistry();
+            auto* em = reg.try_get<ParticleEmitter>(e);
+            if (!em)
+            {
+                Logger::Warn("{}: そのエンティティに ParticleEmitter がありません", who);
+                return false;
+            }
+            // Trigger の PlayEffect とまったく同じ操作にする（人が組んだ配線と結果が一致する）。
+            auto fire = [play](ParticleLayer& l) {
+                if (play) { l._active = true; l._age = 0.0f; l._emitAccum = 0.0f; }
+                else      { l._active = false; }
+            };
+            const std::string name = layer.value_or(std::string{});
+            if (name.empty()) { for (auto& l : em->layers) fire(l); return true; }
+            if (ParticleLayer* l = em->FindLayer(name)) { fire(*l); return true; }
+            Logger::Warn("{}: レイヤー '{}' が見つかりません（fx:layers(対象) で一覧できます）", who, name);
+            return false;
+        };
+        fx.set_function("play", [emitterOp](sol::object, sol::object target,
+                                            sol::optional<std::string> layer) {
+            return emitterOp(target, layer, true, "fx:play");
+        });
+        fx.set_function("stop", [emitterOp](sol::object, sol::object target,
+                                            sol::optional<std::string> layer) {
+            return emitterOp(target, layer, false, "fx:stop");
+        });
+        // 名前が分からないと play/stop を書けないので、レイヤー名を引く口も出す。
+        fx.set_function("layers", [this, resolveEmitterTarget](sol::object, sol::object target,
+                                                               sol::this_state ts) -> sol::table {
+            sol::state_view sv(ts);
+            sol::table out = sv.create_table();
+            const entt::entity e = resolveEmitterTarget(target);
+            if (e == entt::null || !m_scene) return out;
+            auto& reg = m_scene->GetRegistry();
+            auto* em = reg.try_get<ParticleEmitter>(e);
+            if (!em) return out;
+            int i = 1;
+            for (size_t n = 0; n < em->layers.size(); ++n)
+            {
+                const auto& l = em->layers[n];
+                out[i++] = l.name.empty() ? ("Layer " + std::to_string(n + 1)) : l.name;
+            }
+            return out;
+        });
     }
 
     // --- time: 時間 API（'.' で呼ぶ）---
@@ -2151,6 +2230,87 @@ void ScriptEngine::RegisterBindings()
         so.set_function("names", [](sol::this_state ts) -> sol::table {
             sol::state_view sv(ts);
             return SsaoFieldNames(sv);
+        });
+    }
+
+    // --- shader: カスタムシェーダーの自由枠を読み書きする（'.' で呼ぶ）---
+    //
+    // ★これが無いと、カスタムシェーダーは【貼れるが動かせない】。b0 の自由枠
+    //   (effectValue / shaderParamsB / shaderParams) は割り当て直後すべて 0 なので、
+    //   波の高さ 0・流速 0 の水面のように「貼ったのに何も起きない」状態になる。
+    //   MCP の set_mesh_shader_params と同じ値を Lua からも触れるようにして、
+    //   「溶ける」「凍る」「水位が上がる」を演出やゲームロジックから動かせるようにする。
+    //
+    //   shader.get(target)                      -> { path, effect, p1..p4, b1..b3 } / 無ければ nil
+    //   shader.set(target, { effect = 0.4 })    -- 渡した項目だけ書く（部分更新）
+    //   shader.set(target, { p1 = 0.6, b2 = 2 })
+    //   対象は エンティティ名(string) か Entity。意味は各シェーダーのヘッダコメント参照。
+    //   ルート定数なので毎フレーム呼んでも安い（Tween や演出から叩く前提）。
+    {
+        auto resolveMesh = [this](const sol::object& target) -> MeshRenderer* {
+            if (!m_scene) return nullptr;
+            auto& reg = m_scene->GetRegistry();
+            entt::entity e = entt::null;
+            if (target.is<std::string>())     e = FindEntityByName(reg, target.as<std::string>());
+            else if (target.is<Entity>())     { Entity en = target.as<Entity>(); if (en.IsValid()) e = en.GetHandle(); }
+            if (e == entt::null) return nullptr;
+            return reg.try_get<MeshRenderer>(e);
+        };
+
+        sol::table sh = lua.create_named_table("shader");
+        sh.set_function("get", [resolveMesh](sol::object target, sol::this_state ts) -> sol::object {
+            sol::state_view sv(ts);
+            MeshRenderer* mr = resolveMesh(target);
+            if (!mr) return sol::make_object(sv, sol::lua_nil);
+            sol::table t = sv.create_table();
+            t["path"]   = mr->shaderPath;
+            t["effect"] = mr->effectValue;
+            t["p1"] = mr->shaderParams.x;  t["p2"] = mr->shaderParams.y;
+            t["p3"] = mr->shaderParams.z;  t["p4"] = mr->shaderParams.w;
+            t["b1"] = mr->shaderParamsB.x; t["b2"] = mr->shaderParamsB.y; t["b3"] = mr->shaderParamsB.z;
+            return t;
+        });
+        sh.set_function("set", [resolveMesh](sol::object target, sol::table t) -> bool {
+            MeshRenderer* mr = resolveMesh(target);
+            if (!mr)
+            {
+                Logger::Warn("shader.set: 対象に MeshRenderer がありません（名前か Entity を渡すこと）");
+                return false;
+            }
+            // ★渡された項目だけ書く（未指定は現状維持）。まとめて渡す params/paramsB も受ける。
+            if (sol::optional<float> v = t["effect"]) mr->effectValue = *v;
+            if (sol::optional<float> v = t["p1"]) mr->shaderParams.x = *v;
+            if (sol::optional<float> v = t["p2"]) mr->shaderParams.y = *v;
+            if (sol::optional<float> v = t["p3"]) mr->shaderParams.z = *v;
+            if (sol::optional<float> v = t["p4"]) mr->shaderParams.w = *v;
+            if (sol::optional<float> v = t["b1"]) mr->shaderParamsB.x = *v;
+            if (sol::optional<float> v = t["b2"]) mr->shaderParamsB.y = *v;
+            if (sol::optional<float> v = t["b3"]) mr->shaderParamsB.z = *v;
+            if (sol::optional<sol::table> arr = t["params"])
+            {
+                float* dst = &mr->shaderParams.x;
+                for (int i = 0; i < 4; ++i)
+                    if (sol::optional<float> v = (*arr)[i + 1]) dst[i] = *v;
+            }
+            if (sol::optional<sol::table> arr = t["paramsB"])
+            {
+                float* dst = &mr->shaderParamsB.x;
+                for (int i = 0; i < 3; ++i)
+                    if (sol::optional<float> v = (*arr)[i + 1]) dst[i] = *v;
+            }
+            if (mr->shaderPath.empty())
+            {
+                // 値は入るが読む人が居ない。黙って成功にすると「効かない」で溶かすので言う。
+                static bool warned = false;
+                if (!warned)
+                {
+                    warned = true;
+                    Logger::Warn("shader.set: カスタムシェーダーが割り当てられていません"
+                                 "（値は保存されますが既定シェーダーは読みません）。先に Inspector か "
+                                 "dx12_set_mesh_shader で .hlsl を割り当ててください");
+                }
+            }
+            return true;
         });
     }
 

@@ -798,6 +798,21 @@ nlohmann::json McpLuaApi()
         "fx:beam{ x0,y0,z0, x1,y1,z1, width, r,g,b, intensity, life, kind } — kind: energy/electric/fire。座標は ax/bz ではなく x0..z1",
         "fx:pulse(amt?)  画面全体パルス  /  fx:clear()",
         "例: fx:burst{ x=p.x, y=p.y, z=p.z, kind=\"spark\", count=18, size=0.5, r=1, g=0.78, b=0.18 }  ← scale/radius は無効キー(黙って無視される)",
+        "─── シーンに【置いてある】放出器(ParticleEmitter)を鳴らす ───",
+        "fx:play(target, layerName?) -> bool   target = エンティティ名(string) か Entity。"
+        "layerName 省略で全レイヤー。ワンショット(looping=false)を好きな瞬間に出すのはこれ",
+        "fx:stop(target, layerName?) -> bool   放出を止める(既に出ている粒は寿命で消える)",
+        "fx:layers(target) -> {名前, ...}      レイヤー名の一覧(名前が空なら \"Layer 1\" 等)",
+        "★fx:burst はその場で撒く別経路。Inspector で組んだ多層エフェクトを鳴らすなら fx:play",
+    })));
+    objects.push_back(O("shader", "global ('.' で呼ぶ)。カスタムシェーダーの自由枠", json::array({
+        "shader.get(target) -> { path, effect, p1..p4, b1..b3 } | nil   target = 名前 or Entity",
+        "shader.set(target, { effect=, p1=..p4=, b1=..b3=, params={..}, paramsB={..} }) -> bool  "
+        "渡した項目だけ書く(部分更新)",
+        "★割り当てただけでは全部 0。値を入れないと『貼ったのに何も起きない』(波の高さ 0 の水面)",
+        "意味は各シェーダーのヘッダコメント参照(MCP の dx12_read_shader で読める)",
+        "ルート定数なので毎フレーム呼んでも安い。Tween や演出から動かす前提",
+        "例: shader.set(\"Sea\", { effect = 0.4, p1 = 0.6 })   -- 溶ける/波が高くなる を時間で",
     })));
     objects.push_back(O("post / ssao", "global ('.' で呼ぶ)。項目名は MCP の set_post_process と同一", json::array({
         "post.get(name) -> value|nil  /  post.set(name, value) -> bool",
