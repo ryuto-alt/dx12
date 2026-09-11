@@ -185,6 +185,14 @@ struct UiDrawContext
     // 1 超えあり（白フラッシュ用。ToImCol 側で 0..1 に飽和される）。push/pop 式。
     DirectX::XMFLOAT3 colorMul{1.0f, 1.0f, 1.0f};
 
+    // 祖先から継承する「演出の拡縮」。UIAnimator / tween の punch / pop などは
+    // 矩形（current）を膨らませるが、**文字の大きさは fontSize から直に決まる**ので
+    // そのままだと箱だけ伸びて字が伸びない＝押した感じが出ない / 字が箱から浮く。
+    // レイアウトの拡縮（rect->scaleX/Y。ゲージの伸長など）はここに含めない。
+    // あれは「箱を伸ばしたいのであって字を伸ばしたいわけではない」ため。
+    // 等方量なので 1 本のスカラー（縦横の相乗平均）。push/pop 式。
+    float fxScale = 1.0f;
+
     // 祖先から継承する累積回転/スキュー変換（ヒット判定・resolvedOut 用。頂点には
     // DrawUiSubtree が local 変形だけを後がけする＝二重適用しない）。push/pop 式。
     bool       hasXform = false;
@@ -1485,14 +1493,17 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
             if (!txt->fontPath.empty())
                 if (ImFont* custom = GetOrLoadUiFont(txt->fontPath))
                     font = custom;
-            const float fontSize = std::max(1.0f, txt->fontSize * ctx.scale);
+            // ★ctx.fxScale は UIAnimator / tween の punch などの演出拡縮。
+            //   これを掛けないと箱だけ伸びて字が伸びず、押した感じが出ない（B-1）。
+            const float txScale  = ctx.scale * ctx.fxScale;
+            const float fontSize = std::max(1.0f, txt->fontSize * txScale);
             const float wrapW = txt->wrap ? std::max(1.0f, s.Width()) : 0.0f;
             // リッチテキスト（インラインタグ）。wrap とは非両立 = wrap 優先で無効（タグは素通し表示）
             const bool rich = txt->rich && !txt->wrap;
             // per-glyph モード（rich / 字間 / 文字アニメ）。wrap とは非両立 = wrap 優先で通常描画
             const bool perGlyph = !txt->wrap
                                   && (rich || txt->letterSpacing != 0.0f || txt->charAnim != 0);
-            const float sp = txt->letterSpacing * ctx.scale;
+            const float sp = txt->letterSpacing * txScale;
             auto utf8Adv = [](const char* p) {
                 const auto c = static_cast<unsigned char>(*p);
                 return (c < 0xC0) ? 1 : (c < 0xE0) ? 2 : (c < 0xF0) ? 3 : 4;
@@ -1648,8 +1659,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                                                  txt->shadowColor.y * cm.y,
                                                  txt->shadowColor.z * cm.z,
                                                  txt->shadowColor.w * ctx.alphaMul});
-                    const float ox = txt->shadowOffset.x * ctx.scale;
-                    const float oy = txt->shadowOffset.y * ctx.scale;
+                    const float ox = txt->shadowOffset.x * txScale;
+                    const float oy = txt->shadowOffset.y * txScale;
                     for (int i = 0; i < s_glyphs.Size; ++i)
                         ctx.dl->AddText(font, fontSize,
                                         ImVec2(s_glyphs[i].x + ox, s_glyphs[i].y + oy),
@@ -1657,7 +1668,7 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                 }
                 if (txt->outlineWidth > 0.0f && txt->outlineColor.w > 0.0f)
                 {
-                    const float ow = std::max(1.0f, txt->outlineWidth * ctx.scale);
+                    const float ow = std::max(1.0f, txt->outlineWidth * txScale);
                     const ImU32 ocol = ToImCol({txt->outlineColor.x * cm.x,
                                                 txt->outlineColor.y * cm.y,
                                                 txt->outlineColor.z * cm.z,
@@ -1697,8 +1708,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                 if (txt->shadowColor.w > 0.0f)
                 {
                     ctx.dl->AddText(font, fontSize,
-                                    ImVec2(tx + txt->shadowOffset.x * ctx.scale,
-                                           ty + txt->shadowOffset.y * ctx.scale),
+                                    ImVec2(tx + txt->shadowOffset.x * txScale,
+                                           ty + txt->shadowOffset.y * txScale),
                                     ToImCol({txt->shadowColor.x * cm.x, txt->shadowColor.y * cm.y,
                                              txt->shadowColor.z * cm.z,
                                              txt->shadowColor.w * ctx.alphaMul}),
@@ -1706,7 +1717,7 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
                 }
                 if (txt->outlineWidth > 0.0f && txt->outlineColor.w > 0.0f)
                 {
-                    const float ow = std::max(1.0f, txt->outlineWidth * ctx.scale);
+                    const float ow = std::max(1.0f, txt->outlineWidth * txScale);
                     const ImU32 ocol = ToImCol({txt->outlineColor.x * cm.x,
                                                 txt->outlineColor.y * cm.y,
                                                 txt->outlineColor.z * cm.z,
@@ -1826,6 +1837,7 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
     UiRectPx current = parentRect;
     const float parentAlpha = ctx.alphaMul;
     const DirectX::XMFLOAT3 parentColor = ctx.colorMul;
+    const float parentFxScale = ctx.fxScale;
     const bool       parentHasXform = ctx.hasXform;   // 回転/スキューの push/pop（alphaMul と同じ規律）
     const UiXform2x3 parentXform    = ctx.xform;
     const UiXform2x3 parentInv      = ctx.invXform;
@@ -1879,6 +1891,10 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
                 current = {cx - hw, cy - hh, cx + hw, cy + hh};
             }
             ctx.alphaMul = parentAlpha * fxAlpha;
+            // 文字にも同じだけ効かせる。縦横が違う演出（横だけ潰す等）でも
+            // フォントサイズは 1 本の量なので相乗平均を採る（等方な punch では sx と一致）。
+            if (fxScaleX > 0.0f && fxScaleY > 0.0f)
+                ctx.fxScale = parentFxScale * std::sqrt(fxScaleX * fxScaleY);
         }
 
         // --- UIRect 自身の静的スケール / グループアルファ ---
@@ -2102,6 +2118,7 @@ void DrawUiSubtree(entt::entity e, const UiRectPx& parentRect, UiDrawContext& ct
 
     ctx.alphaMul = parentAlpha;   // 兄弟へ波及しないよう復元（push/pop）
     ctx.colorMul = parentColor;
+    ctx.fxScale  = parentFxScale;
     ctx.hasXform = parentHasXform;
     ctx.xform    = parentXform;
     ctx.invXform = parentInv;
@@ -2604,9 +2621,26 @@ void UISystem::RenderAndUpdateInput(entt::registry& reg, ImDrawList* dl,
         return nullptr;
     };
 
-    // マウスクリックでもフォーカスは移る（パッド⇄マウスの併用で迷子にならないように）
-    if (ctx.mouseClicked && effectiveWidget != entt::null && findFocusable(effectiveWidget))
-        m_focused = effectiveWidget;
+    // ★フォーカス先が「もうフォーカスできるものではない」なら手放す。
+    //   これが無いと m_focused が二度と entt::null に戻らず、下の m_wantsNav が
+    //   永久に true のままになる＝ゲーム側の
+    //     if input:isUiCapturingNav() then return end
+    //   が二度と抜けず、**HUD のボタンを一度押しただけでパッド操作が死ぬ**。
+    //   （UISystem.h の m_wantsNav は「今フレーム UI が方向/決定入力を使った」と
+    //     書いてあるのに、実装がその契約に違反していた）
+    //   ここを毎フレーム見ることで、メニューを閉じた / HUD を隠した / 対象を消した、
+    //   といった経路も全部まとめて拾える（findFocusable は可視で当たり判定のあるものしか返さない）。
+    if (m_focused != entt::null && !findFocusable(m_focused))
+        m_focused = entt::null;
+
+    // マウスクリックでもフォーカスは移る（パッド⇄マウスの併用で迷子にならないように）。
+    // ★フォーカスできない所（3D の世界・ただの背景画像）を押したら**手放す**。
+    //   ブラウザやどのゲーム UI とも同じ挙動で、ここが「押しっぱなし」の主因だった。
+    if (ctx.mouseClicked)
+    {
+        m_focused = (effectiveWidget != entt::null && findFocusable(effectiveWidget))
+                  ? effectiveWidget : entt::null;
+    }
 
     // ---- 方向入力のエッジ + キーリピート（最初 0.4s、以後 0.12s）----
     const bool dirHeld[4] = {nav.left, nav.right, nav.up, nav.down};
