@@ -1,5 +1,9 @@
 #include "gui/DeepDiagnostics.h"
 
+// SkeletalAnimation の実体検査に必要（前方宣言だけでは unique_ptr のデストラクタも作れない）
+#include "animation/Animator.h"
+#include "animation/Skeleton.h"
+#include "animation/SkinningBuffer.h"
 #include "core/Application.h"
 #include "core/PathResolver.h"
 #include "core/Version.h"
@@ -1938,6 +1942,51 @@ DeepDiagReport DeepDiag::RenderHealth(Application& app)
         r.Add(2, "デバッグ可視化 '" + h.renderDebugName + "' が出したままです。"
                  "rtDiff/rtHit 等はそもそも真っ黒が正常な表示なので、これが原因で"
                  "『シーンビューが真っ暗』に見えます。dx12_render_debug {mode:\"off\"} で戻ります");
+
+    // ---- 1.5) スケルタルメッシュの実体が壊れていないか ----
+    //
+    // ★「キャラだけ画面から消える」の答えをここで名指しする。
+    //   スキニングは VS が GPU 上のボーン行列を掛けるので、行列が欠けていると
+    //   頂点が原点へ潰れる＝**エラーも警告も出ないまま、そのキャラだけ消える**。
+    //   実際に起きた壊れ方が 2 つあり、どちらもビルドもテストも通り抜けた:
+    //     ① Animator を Initialize していない → スキニング行列が 0 本のまま
+    //        SkinningBuffer::Update へ渡り、copyCount=0 で GPU 側が全ゼロになる
+    //        （クリップを 1 本も持たない T ポーズ素体モデルで発生した）
+    //     ② Animator そのものが null（生成漏れ）→ 触った瞬間にアクセス違反で落ちる
+    //   スポーン経路は GPU デバイスを要るので単体テストで守れない。
+    //   代わりに「シーンに置かれた実体」を検査して、置いた直後に気づけるようにする。
+    if (Scene* sc = app.GetScene())
+    {
+        auto& reg  = sc->GetRegistry();
+        auto  view = reg.view<SkeletalAnimation>();
+        for (auto e : view)
+        {
+            ++r.checked;
+            const auto& sa = view.get<SkeletalAnimation>(e);
+            const std::string nm = reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name
+                                                          : std::string("(名前なし)");
+            if (!sa.animator)
+            {
+                r.Add(2, nm + " の Animator が生成されていない。スキニング行列を触った時点で"
+                             "アクセス違反になります（スポーン経路の生成漏れ）");
+                continue;
+            }
+            if (!sa.skeleton)
+            {
+                r.Add(2, nm + " に Skeleton が無いのに SkeletalAnimation が付いている");
+                continue;
+            }
+            const size_t bones = sa.skeleton->GetBoneCount();
+            const size_t mats  = sa.animator->GetSkinningMatrices().size();
+            if (mats == 0 && bones > 0)
+                r.Add(2, nm + " のボーン行列が 0 本（骨は " + std::to_string(bones) + " 本）。"
+                             "GPU へ全ゼロ行列が渡るので、このキャラは原点へ潰れて画面から消えます"
+                             "（Animator::Initialize が呼ばれていない）");
+            else if (mats != bones)
+                r.Add(1, nm + " のボーン行列 " + std::to_string(mats) + " 本が骨の数 "
+                             + std::to_string(bones) + " 本と一致しない。一部の部位が破綻します");
+        }
+    }
 
     // ---- 2) ポスト処理で最終色が 0 になる設定 ----
     if (Scene* sc = app.GetScene())

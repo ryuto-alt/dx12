@@ -133,6 +133,7 @@ Entity Scene::Spawn(const std::string& name,
         //   GPU 側のボーン行列は**全ゼロのまま**になり、ForwardSkinned が頂点を原点へ潰す＝
         //   「T ポーズの素体モデルを置いたらキャラが消える」という形で出る。
         //   （clip=nullptr で Initialize しても再生は起きない。バインドポーズが出るだけ）
+        skelAnim.animator = std::make_unique<Animator>();
         skelAnim.animator->Initialize(skelAnim.skeleton.get(),
                                       skelAnim.clips.empty() ? nullptr
                                                              : skelAnim.clips[0].get());
