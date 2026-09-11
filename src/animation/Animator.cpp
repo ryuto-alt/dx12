@@ -74,7 +74,37 @@ void Animator::SetClip(const AnimationClip* clip)
 // ---------------------------------------------------------------
 void Animator::CrossFadeTo(const AnimationClip* nextClip, float blendDuration)
 {
-    if (!nextClip || nextClip == m_clip)
+    if (!nextClip)
+    {
+        return;
+    }
+
+    // ★ブレンド中に「遷移元へ戻せ」と言われたら、引き返す。
+    //   A→B のブレンド中は m_clip が A のままなので、素朴に
+    //   `nextClip == m_clip` で弾くと**戻る要求そのものが消える**。
+    //   毎フレーム呼ぶ書き方なら B に着地した後に効き直すが、
+    //   イベント駆動で 1 回だけ呼ぶ書き方（キーを離した瞬間に Idle へ戻す等）だと
+    //   要求が永久に届かず、意図しないアニメのまま固着する。
+    //   source と destination を入れ替えて進行も反転させると、
+    //   反転前後の見た目は lerp(A,B,f) == lerp(B,A,1-f) で完全に一致する＝ポップしない。
+    if (m_blending && nextClip == m_clip)
+    {
+        if (blendDuration <= 1e-6f)
+        {
+            // 即時指定。m_clip は既に戻り先なのでブレンドを畳むだけでよい。
+            m_nextClip    = nullptr;
+            m_blending    = false;
+            m_blendFactor = 0.0f;
+            return;
+        }
+        std::swap(m_clip, m_nextClip);
+        std::swap(m_currentTime, m_nextTime);
+        m_blendFactor   = 1.0f - m_blendFactor;
+        m_blendDuration = blendDuration;
+        return;
+    }
+
+    if (nextClip == m_clip)
     {
         return;
     }

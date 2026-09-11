@@ -128,6 +128,50 @@ int main()
         CHECK(a.GetClip() == &idle);
     }
 
+    // ---- 5) ブレンド中に「遷移元へ戻せ」と 1 度だけ言われたら、ちゃんと戻る ----
+    //
+    // ★何を守っているか
+    //   A→B のブレンド中、m_clip は A のままなので、冒頭の `nextClip == m_clip`
+    //   ガードが「A へ戻せ」という要求を**丸ごと捨てていた**。
+    //   毎フレーム呼ぶ書き方なら B へ着地した後に効き直すので気づきにくいが、
+    //   「キーを離した瞬間に 1 回だけ Idle へ戻す」というイベント駆動の書き方だと
+    //   要求が永久に届かず、離しても走り続ける＝意図しないアニメで固着する。
+    {
+        Animator a;
+        a.Initialize(&skeleton, &idle);
+
+        a.CrossFadeTo(&walk, kBlend);
+        for (int i = 0; i < 5; ++i) a.Update(kDt);   // 途中まで進める
+        CHECK(a.IsBlending());
+        const float mid = a.GetBlendFactor();
+        CHECK(mid > 0.0f && mid < 1.0f);
+
+        a.CrossFadeTo(&idle, kBlend);                // ★1 回だけ「戻れ」と言う
+        // 引き返しは source/destination の入れ替えなので、見た目は連続でなければならない
+        //（lerp(idle,walk,f) == lerp(walk,idle,1-f)）。
+        CHECK(a.GetClip()     == &walk);
+        CHECK(a.GetNextClip() == &idle);
+        CHECK(std::fabs(a.GetBlendFactor() - (1.0f - mid)) < 1e-4f);
+
+        for (int i = 0; i < 60; ++i) a.Update(kDt);  // 以後は追加要求なしで進める
+        CHECK(!a.IsBlending());
+        CHECK(a.GetClip() == &idle);                 // 修正前はここが walk のまま固着した
+    }
+
+    // ---- 6) 引き返しに blendDuration=0 を指定したら即座に元へ戻る ----
+    {
+        Animator a;
+        a.Initialize(&skeleton, &idle);
+        a.CrossFadeTo(&walk, kBlend);
+        for (int i = 0; i < 5; ++i) a.Update(kDt);
+        CHECK(a.IsBlending());
+
+        a.CrossFadeTo(&idle, 0.0f);
+        CHECK(!a.IsBlending());
+        CHECK(a.GetClip()     == &idle);
+        CHECK(a.GetNextClip() == nullptr);
+    }
+
     if (g_failures != 0)
     {
         std::printf("animator_crossfade: %d checks, %d failure(s)\n", g_checks, g_failures);

@@ -126,12 +126,16 @@ Entity Scene::Spawn(const std::string& name,
         }
 
         // Animator作成
-        skelAnim.animator = std::make_unique<Animator>();
-        if (!skelAnim.clips.empty())
-        {
-            skelAnim.animator->Initialize(skelAnim.skeleton.get(),
-                                          skelAnim.clips[0].get());
-        }
+        // ★クリップが 0 本でも必ず Initialize する。
+        //   Initialize はスキニング行列を**単位行列で boneCount 本ぶん**確保する役目も持っていて、
+        //   これを飛ばすと m_skinningMatrices が空のまま SkinningBuffer::Update へ渡る。
+        //   Update は copyCount = min(size, maxBones) = 0 で memcpy を 0 バイトしか撃たないので
+        //   GPU 側のボーン行列は**全ゼロのまま**になり、ForwardSkinned が頂点を原点へ潰す＝
+        //   「T ポーズの素体モデルを置いたらキャラが消える」という形で出る。
+        //   （clip=nullptr で Initialize しても再生は起きない。バインドポーズが出るだけ）
+        skelAnim.animator->Initialize(skelAnim.skeleton.get(),
+                                      skelAnim.clips.empty() ? nullptr
+                                                             : skelAnim.clips[0].get());
 
         // SkinningBuffer作成
         skelAnim.skinningBuffer = std::make_unique<SkinningBuffer>();
