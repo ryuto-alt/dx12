@@ -174,6 +174,9 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   // VFX: レシピ(vfx.ts)を TS 側で解決してから create_entity / add_particle_layer /
   // set_component / step_frames / screenshot_final として届く合成ツール。
   "dx12_vfx_library", "dx12_vfx_apply", "dx12_vfx_preview",
+  // ルック: lookDev.ts のプリセットを set_sun / set_volumetric_fog /
+  // set_scene_settings / set_post_process へ分解して撃つ合成ツール。
+  "dx12_look_library", "dx12_look_apply",
 ]);
 
 /**

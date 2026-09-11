@@ -1565,6 +1565,45 @@ dx12_screenshot_game_view()
 **超えた分は無言で描画されない**（パーティクルの発光ライトも枠を使う）。
 「増やしたのに明るくならない」はほぼこれ。
 
+### ワークフロー: ルック(絵作り)を決める — 光・空気・グレーディングを 1 セットで
+
+ポストは約 90 フィールドある。1 つずつ触っても「それっぽい絵」にはならない
+（bloom と exposure だけ上げて終わる、が典型）。映画的な絵は
+**光 → 空気(フォグ) → グレーディング** の 3 段が噛み合って初めて出る。
+
+```
+dx12_look_library()                        # 13 種。tag で絞る(night / stylized / indoor …)
+dx12_look_library(id:"neon_noir")          # 1 つの全フィールドの実値と注意書き
+
+dx12_look_apply(preset:"golden_hour")                    # 太陽 + フォグ + 空 + ポストを全部
+dx12_look_apply(preset:"horror_candle", strength:0.6)    # ポストだけ 6 割の効き
+dx12_look_apply(preset:"neon_noir", parts:["post"])      # 今の光は壊さずグレーディングだけ乗せる
+dx12_look_apply(preset:"clean_studio", dryRun:true)      # 何も変えずに適用値を見る
+```
+
+- `strength`(0..1) は**ポストにだけ**効き、0 に向かって **無味無臭の値**へ寄る
+  （0 になるのではない。contrast を 0 にしたら灰色になってしまう）。太陽とフォグは常に指定どおり。
+- 当てた後は **必ずエンジンから読み返して** `currentPost` を返す。
+  食い違いは `mismatched` に出る（＝「当てたのに変わらない」を AI 自身が検知できる）。
+- `dx12_apply_lighting_preset`(エンジンの 6 種)は**土台**（エディタのライティング窓と同じ実装）。
+  `dx12_look_apply` はその上に乗せる**仕上げ**。両方使ってよい。
+
+**ルック一覧**: golden_hour / blue_hour / moonlit_night / overcast_gloom / neon_noir /
+horror_candle / clean_studio / anime_daylight / desert_heat / underwater / film_noir /
+dreamy_soft / retro_vhs。それぞれ `pairsWith` に相性の良い VFX が入っている
+（neon_noir なら rain + steam_vent、horror_candle なら candle + ground_mist）。
+
+#### 絵作りで踏む罠
+
+- **暗いルックは「光源を置いてから」当てる**。真っ暗なシーンに horror を当てても真っ黒なだけ。
+  `dx12_look_apply` は、太陽を消すルックなのにライトが 1 つも無いと警告を返す。
+- **envMap(HDRI)があると `DirectionalLight.ambient` は無視される**。暗くならないときはこれ。
+  `dx12_set_scene_settings` で `iblIntensity` を下げるか、`parts` に `sky` を含めること。
+- **フォグとゴッドレイを両方強くすると太陽の散乱が二重に乗る**。どちらかを主役にする。
+- **`<name>On` を立てないと数値は効かない**。ルックは必ずスイッチ込みで当てる（テストで担保）。
+- **彩度の高い光源(ネオン/魔法)が ACES で色割れする**ときは `tonemapper:1`(AgX)。
+  neon_noir / anime_daylight / dreamy_soft は既にそうしてある。
+
 ### ワークフロー: エフェクト(VFX)を置く — レシピ → 置く → 時間で見る
 
 炎・煙・魔法・爆発・雨のようなパーティクルは **1 レイヤーでは絶対にそれらしくならない**
