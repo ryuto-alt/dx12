@@ -242,6 +242,16 @@ float4 PSMain(PSInput input) : SV_TARGET
     float  ssrConf  = saturate(ssr.a);
     float  ssgiConf = saturate(ssgi.a);
 
+    // DDGI（world-space の拡散間接光）。OFF なら ddgiConf=0 で以降の lerp が全部恒等になる。
+    // ★ここが抜けていたので、**キャラクターだけ GI が一切乗らなかった**
+    //   （赤い部屋に立たせても壁は赤く染まるのにキャラは染まらない）。
+    //   スキンドと非スキンドで間接光の経路が違うと、同じ場所に立っている物同士で
+    //   明るさと色が食い違う＝「キャラが背景から浮く」という形で出る。
+    //   g_ddgiIrradiance(t22) / g_ddgiDistance(t23) / g_ddgiSampler(s5) は
+    //   Lighting.hlsli で宣言済み＝ルートシグネチャは 1 DWORD も増えない。
+    float  ddgiConf = 0.0;
+    float3 ddgiIrr  = SampleDdgi(input.worldPos, N, ddgiConf);
+
     // ===== Ambient / IBL =====
     float3 ambient;
     if (hasIBL != 0u)
@@ -256,6 +266,9 @@ float4 PSMain(PSInput input) : SV_TARGET
         //   IBL の irradiance を積んでいるので、足すと同じ光を二重に数えて全体が倍明るくなる。
         //   SSGI が無効/無効ピクセルでは ssgiConf=0 で完全に従来どおり。
         float3 irradiance = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb;
+        // ★役割分担は Forward.hlsl と同じ「スクリーントレース優先 → 外したら world-space プローブ」。
+        //   DDGI が envMap を置き換え、そのうえで SSGI が当てたピクセルは SSGI が勝つ。
+        irradiance = lerp(irradiance, ddgiIrr, ddgiConf);
         irradiance = lerp(irradiance, ssgi.rgb, ssgiConf);
         float3 diffuseIBL = irradiance * albedo;
 
@@ -277,6 +290,14 @@ float4 PSMain(PSInput input) : SV_TARGET
         float3 ambientDiffuse  = albedo * (1.0 - metallic);
         float3 ambientSpecular = lerp(F0, ssr.rgb, ssrConf);
         ambient = ambientStrength * (ambientDiffuse + ambientSpecular) * ao;
+        // ★屋内は envMap が空＝hasIBL=0 なので、ここが DDGI の本命の経路。
+        //   固定 ambient（部屋のどこでも同じ明るさ）をプローブの irradiance で置き換える。
+        //   AO は掛けたまま: プローブ間隔 2m は皺や隅の小さな遮蔽を持っていないので、
+        //   そこは従来どおり SSAO の担当（SSGI と違い二重計上にならない）。
+        ambient = lerp(ambient,
+                       (ddgiIrr * ambientDiffuse + ambientStrength * ambientSpecular) * ao,
+                       ddgiConf);
+        // SSGI があるなら拡散側をその放射照度で置き換える（AO は掛けない）。
         ambient = lerp(ambient,
                        ssgi.rgb * ambientDiffuse + ambientStrength * ambientSpecular * ao,
                        ssgiConf);
