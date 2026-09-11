@@ -497,8 +497,8 @@ dx12_set_mesh_shader_params(name:"Sea_Plane", effect:1.0, params:[0.6, 1.2, 0.35
 # → 現在値が全部返る。意味は各シェーダーのヘッダコメント(dx12_read_shader で読める)
 ```
 
-時間で動かす(溶ける・波が高くなる)なら Trigger の `AnimShaderParam` か
-`dx12_sequence_author` の shaderParam トラックを使う。
+時間で動かす(溶ける・波が高くなる)なら Trigger の `AnimShaderParam`(actions の type:12)を使う。
+★Lua からシェーダーパラメーターを動かす口はまだ無いので、演出(`dx12_sequence_author`)からは触れない。
 
 自分で全部書く場合:
 

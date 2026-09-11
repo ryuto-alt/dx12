@@ -666,8 +666,9 @@ reg(
   + "各値の意味はシェーダー自身のヘッダコメントにある(dx12_read_shader で読める)。"
   + "ルート定数なので毎フレーム撃っても安い(頂点バッファの作り直しは起きない)。"
   + "返り値に現在値が全部入るので、撃った後の確認は要らない。"
-  + "★時間で動かしたい(徐々に溶ける/波が高くなる)なら Trigger の AnimShaderParam か "
-  + "dx12_sequence_author の shaderParam トラックを使うこと。",
+  + "★時間で動かしたい(徐々に溶ける/波が高くなる)なら Trigger の AnimShaderParam"
+  + "(dx12_set_component component='trigger' の actions に type:12 を入れる)を使うこと。"
+  + "Lua からシェーダーパラメーターを動かす口はまだ無い。",
   {
     ...entityRef,
     effect: z.number().optional().describe("effectValue(汎用の 1 個目。多くの雛形で『効果の強さ 0..1』)。"),
