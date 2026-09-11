@@ -25,8 +25,8 @@ import {
   type Expectation, type MovementCapability, type ScriptStep, type TraceSample,
 } from "./playtest.ts";
 import {
-  BLENDER_PORT, blenderCall, blenderCandidatePaths, buildExportScript, isPortOpen, modelBrief,
-  parseCodeResult, planImageRenames,
+  BLENDER_PORT, blenderCall, blenderCandidatePaths, buildExportScript, buildMaterialScript,
+  buildPolishScript, isPortOpen, modelBrief, parseCodeResult, planImageRenames,
 } from "./blenderBridge.ts";
 import {
   bakeGoldenRun, compareReplay, playtestDir, safeName, sessionToPlaytest, validatePlaytest,
@@ -46,6 +46,20 @@ import {
   HEIGHT_UNSUPPORTED_REASON, ROLE_TO_SLOT,
   filesDirectlyUnder, planPbr, resolveTextureSet, validateScalar, verifyTextureOverrides,
 } from "./materialApply.ts";
+import {
+  VFX_TAGS, describeLibrary, maxParticleLife, measureVfxFrames, resolveVfx,
+} from "./vfx.ts";
+import { LOOK_TAGS, describeLooks, resolveLook } from "./lookDev.ts";
+import {
+  SEQUENCE_EXAMPLE, generateLua, referencedEntities, referencedVfx, validateSpec,
+  type SequenceSpec,
+} from "./sequence.ts";
+import {
+  auditScene, imageFacts, polishScore, verdict, type SceneFacts,
+} from "./polish.ts";
+import {
+  DECAL_IDS, buildAtlasPng, describeDecals, findDecal, planDecal,
+} from "./decals.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -650,6 +664,29 @@ reg(
 );
 
 reg(
+  "dx12_set_mesh_shader_params",
+  "カスタムシェーダーのパラメーターを動かす",
+  "カスタムシェーダーの自由枠(b0 の effectValue / shaderParams(float4) / shaderParamsB(float3))へ値を書く。"
+  + "★これが無いとシェーダーは【貼れるが動かない】。割り当てた直後は全パラメーターが 0 なので、"
+  + "波の高さ 0・流速 0 の水面のように『貼ったのに何も起きない』状態になる(実際にそう見える)。"
+  + "各値の意味はシェーダー自身のヘッダコメントにある(dx12_read_shader で読める)。"
+  + "ルート定数なので毎フレーム撃っても安い(頂点バッファの作り直しは起きない)。"
+  + "返り値に現在値が全部入るので、撃った後の確認は要らない。"
+  + "★時間で動かしたい(徐々に溶ける/波が高くなる)なら Trigger の AnimShaderParam"
+  + "(dx12_set_component component='trigger' の actions に type:12 を入れる)を使うこと。"
+  + "Lua からシェーダーパラメーターを動かす口はまだ無い。",
+  {
+    ...entityRef,
+    effect: z.number().optional().describe("effectValue(汎用の 1 個目。多くの雛形で『効果の強さ 0..1』)。"),
+    params: z.array(z.number()).max(4).optional().describe("shaderParams へ先頭から代入する最大 4 要素の配列。"),
+    paramsB: z.array(z.number()).max(3).optional().describe("shaderParamsB へ先頭から代入する最大 3 要素の配列。"),
+  },
+  { idempotentHint: true },
+  ({ entity, name, effect, params, paramsB }) =>
+    run(() => engine.call("set_mesh_shader_params", { entity, name, effect, params, paramsB })),
+);
+
+reg(
   "dx12_set_sprite_shader",
   "Sprite2Dカスタムシェーダー割当",
   "エンティティの Sprite2D::shaderPath を設定/解除する(Inspector の Sprite2D「Shader」欄と同じ操作)。world-space スプライトのみ対応(HUD不可)。dx12_create_shader で作った .hlsl の assets/shaders 相対パスを渡す。shaderPath 省略/空文字で既定 Sprite シェーダーに戻す。★MeshRendererのカスタムシェーダーとはルートシグネチャ/頂点フォーマットの契約が異なる(cbuffer b0 = float4x4 transform + float time、頂点は POSITION/TEXCOORD0/COLOR0/TEXCOORD1(effect)、詳細はdocs/AUTHORING.md)ため同じ.hlslは使い回せない。alphaBlend は Inspector の「アルファブレンド有効」と同じ。entity(id) か name 指定。",
@@ -665,10 +702,15 @@ reg(
 reg(
   "dx12_set_scene_settings",
   "シーン設定変更",
-  "シーンのスカイボックス/IBL を設定する。skybox 内の指定フィールドだけ適用。★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。",
+  "シーンのスカイボックス/IBL とデカールアトラスを設定する。skybox 内の指定フィールドだけ適用。"
+  + "★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。"
+  + "★decalAtlasPath は【デカールの絵】。空だとデカールを置いても【無言で何も出ない】"
+  + "(dx12_decal_apply が自動で用意するので、普通は直接触らなくてよい)。",
   {
     // ★入れ子も passthrough。素の z.object は skybox 内の未知キーを黙って捨てるため、
     //   skybox:{envMapPath:...} の打ち間違いが無言で無視されていた(下のハンドラで弾く)。
+    decalAtlasPath: z.string().optional().describe(
+      "デカールアトラス画像の assets 相対パス(RGBA。alpha=覆う度合い)。空文字でデカールを無効化。"),
     skybox: z.object({
       envMapPath: z.string().optional().describe("環境マップ(HDR/EXR 等)の assets 相対パス。"),
       iblIntensity: z.number().optional().describe("IBL(間接光)の強さ。"),
@@ -677,12 +719,13 @@ reg(
     }).passthrough().describe("スカイボックス設定。指定したフィールドのみ適用。"),
   },
   { idempotentHint: true },
-  ({ skybox }) => run(async () => {
+  ({ skybox, decalAtlasPath }) => run(async () => {
     const known = ["envMapPath", "iblIntensity", "skyboxIntensity", "drawSkybox"];
     const bad = unknownParamKeys(skybox, known);
     if (bad.length > 0) throw unknownKeyError("dx12_set_scene_settings skybox", bad, known);
     const clean = definedOnly(skybox ?? {});
-    const r = await engine.call("set_scene_settings", { skybox: clean }) as Record<string, unknown>;
+    const r = await engine.call("set_scene_settings",
+      definedOnly({ skybox: clean, decalAtlasPath })) as Record<string, unknown>;
     const current = await engine.call("get_scene_settings", {}).catch(() => null);
     const mismatched = verifyApplied({ skybox: clean }, current);
     return {
@@ -759,12 +802,14 @@ reg(
   "カスタムシェーダー(.hlsl)を assets/shaders/ に作成/上書きする(MeshRenderer::shaderPath 割当用)。★Lua と違い書く前の静的検証はできない(DXC はファイルからしかコンパイルできない)ので、まず書き込んでから即コンパイルを試し、成否をそのまま返す(失敗しても書いたファイルは残る=直して dx12_create_shader を撃ち直す反復修正が前提)。エントリポイントは VSMain(vs_6_0)/PSMain(ps_6_0)固定、静的メッシュ用の共有 RootSignature(b0=PerObject mvp+model, b1=PerFrameの先頭部分, t0+s0=アルベド)に合わせて書く。返り値 {path, compiled, error?}。compiled=false なら error を読んで直し、再度このツールで書き戻す。エンティティへの割当は dx12_set_mesh_shader。",
   {
     name: z.string().describe("シェーダー名(拡張子・パス区切りなし)。例: ToonShade"),
-    code: z.string().describe("HLSL コード全体(VSMain/PSMain を含む)。dx12_read_shader で既存のテンプレ/ソースを読んでから書き換えるとよい。"),
+    code: z.string().optional().describe("HLSL コード全体(VSMain/PSMain を含む)。dx12_read_shader で既存のテンプレ/ソースを読んでから書き換えるとよい。template を渡すなら省略できる。"),
     template: z.string().optional()
       .describe("雛形から起こす場合のテンプレート id（water / ocean / particle_ember。一覧は dx12_list_shader_templates）。code を省略したときだけ使われ、両方あれば code が勝つ。"),
   },
   {},
-  ({ name, code }) => run(() => engine.call("create_shader", { name, code })),
+  // ★template を engine へ渡すこと。以前は destructure から漏れていて、
+  //   「template だけ渡す」呼び方が missing 'code' で必ず失敗していた(説明文だけが嘘をついていた)。
+  ({ name, code, template }) => run(() => engine.call("create_shader", { name, code, template })),
 );
 
 reg(
@@ -774,6 +819,35 @@ reg(
   { path: z.string().describe("assets/shaders 相対パス。例: ToonShade.hlsl") },
   { readOnlyHint: true },
   ({ path }) => run(() => engine.call("read_shader", { path })),
+);
+
+reg(
+  "dx12_list_shader_templates",
+  "シェーダー雛形一覧",
+  "同梱のシェーダー雛形(water / ocean / particle_ember 等)を {name, title, summary} で列挙する。"
+  + "★白紙から 200 行の HLSL を書くのは失敗率が高い。『水を作って』と言われたら、まずここから "
+  + "dx12_create_shader(template:<name>) で【動くもの】を作って、そこから削っていくこと。"
+  + "雛形はコンパイルが通ることが確認済みで、b0/b1 の契約にも合っている。",
+  {},
+  { readOnlyHint: true, idempotentHint: true },
+  () => run(() => engine.call("list_shader_templates", {})),
+);
+
+reg(
+  "dx12_describe_shader_contract",
+  "シェーダーの契約を読む",
+  "カスタムシェーダーが使える定数(b0/b1)・テクスチャ・入出力・注意点を kind ごとに返す。"
+  + "★cbuffer は【オフセットで対応が決まる】ので、1 つでもズレるとコンパイルは通るのに値だけ化ける"
+  + "(エラーが出ないので気付けない)。書き始める前に必ずこれを読むこと。"
+  + "kind: 'mesh'(MeshRenderer 用・既定) / 'particle'(ParticleLayer::shaderPath 用。mesh とは別契約) / "
+  + "'sprite'(Sprite2D 用) / 'screen'(CameraComponent::screenShaderPath 用の画面フィルタ)。"
+  + "共有ヘッダ(UnoCustom.hlsli / UnoParticle.hlsli)を include すれば宣言を自分で書かなくてよい。",
+  {
+    kind: z.enum(["mesh", "particle", "sprite", "screen"]).optional()
+      .describe("契約の種別。既定 'mesh'。メッシュ用の雛形を粒に貼っても動かない(別のルートシグネチャ)。"),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  ({ kind }) => run(() => engine.call("describe_shader_contract", { kind })),
 );
 
 // ════════════════════════════════════════════════════════════════
@@ -2545,6 +2619,171 @@ reg(
 //  Blender 連携（自動起動 → 規約どおりの書き出し → 取り込み → 実寸検証）
 // ════════════════════════════════════════════════════════════════
 
+/**
+ * PolyHaven を有効にする（CC0・API キー不要・テクスチャ 859 種 + HDRI）。
+ *
+ * ★アドオンの既定は **全部 OFF**。この状態だと AI は素材を一切持たずにプリミティブだけで
+ *   モデルを組むことになり、真っ白でのっぺりした物しか出てこない（実測で確認）。
+ *   キーが要る Hyper3D / Sketchfab は勝手に触らず、状態だけ報告する。
+ */
+async function enableAssetSources(): Promise<Record<string, unknown>> {
+  try {
+    const resp = await blenderCall("execute_code", {
+      code: [
+        "import bpy, json",
+        "sc = bpy.context.scene",
+        "sc.blendermcp_use_polyhaven = True",
+        "print(json.dumps({",
+        "  'polyhaven': sc.blendermcp_use_polyhaven,",
+        "  'hyper3d': getattr(sc, 'blendermcp_use_hyper3d', False),",
+        "  'sketchfab': getattr(sc, 'blendermcp_use_sketchfab', False),",
+        "  'blender': bpy.app.version_string}))",
+      ].join("\n"),
+    }, { timeoutMs: 30_000 });
+    const { json } = parseCodeResult(resp);
+    const st = (json ?? {}) as Record<string, unknown>;
+    const off: string[] = [];
+    if (!st.hyper3d) off.push("Hyper3D Rodin（テキスト→3D。API キーが要る）");
+    if (!st.sketchfab) off.push("Sketchfab（既存モデルの検索。API キーが要る）");
+    return {
+      assetSources: st,
+      ...(off.length ? { assetSourcesOff: off } : {}),
+      assetNote: "PolyHaven を有効にした（CC0・キー不要）。dx12_blender_material が使う",
+    };
+  } catch (e) {
+    return { assetSourcesError: (e as Error).message };
+  }
+}
+
+reg(
+  "dx12_blender_polish",
+  "モデルの仕上げ（うすぺらいを消す）",
+  "Blender のオブジェクトに『安っぽさを消す』処理を一括で掛ける。★AI が作ったモデルが『うすぺらい』のはほぼこれをやっていないから: ①スケール適用（★ベベルより先。非一様スケールのまま掛けると軸ごとに幅が変わり片側だけ角が丸い歪んだ形になる）②厚みゼロの板に Solidify ③UV を実寸で切り直す（プリミティブの既定 UV は【面ごとに 0..1】なので 60cm の箱にも 6m の壁にもテクスチャが 1 枚だけ貼られ、模様の大きさが物と合わず玩具に見える）④スムーズ+自動スムーズ ⑤ベベル 3mm/2 段/harden normals ⑥加重法線。★実測（木箱 60cm で比較）: ベベル無しの角は光を一切拾わず、どんなに良いテクスチャを貼っても紙細工に見える。4mm 入れると角にハイライトの線が走り固まりとして見える。書き出す前に必ず通すこと。",
+  {
+    objects: z.array(z.string()).optional().describe("対象のオブジェクト名。省略で選択中（それも無ければ全メッシュ）。"),
+    bevelWidth: z.number().optional().describe("ベベル幅 m（既定 0.003 = 3mm）。小物ほど効く。"),
+    bevelSegments: z.number().int().optional().describe("ベベルの段数（既定 2）。"),
+    smoothAngle: z.number().optional().describe("自動スムーズの角度（度、既定 30）。"),
+    uvMeters: z.number().optional().describe("1 UV = 何メートルで UV を切り直すか（既定 1.0）。0 で UV を触らない。"),
+    minThickness: z.number().optional().describe("これ以下の厚みなら Solidify する m（既定 0.004）。0 で無効。"),
+  },
+  { destructiveHint: true },
+  ({ objects, bevelWidth, bevelSegments, smoothAngle, uvMeters, minThickness }) =>
+    run(async () => {
+      if (!(await isPortOpen(BLENDER_PORT)))
+        throw new Error("Blender に接続できない。先に dx12_blender_ensure を撃つこと");
+      const code = buildPolishScript({
+        objectNames: objects ?? [], bevelWidth, bevelSegments, smoothAngle, uvMeters, minThickness,
+      });
+      const resp = await blenderCall("execute_code", { code }, { timeoutMs: 300_000 });
+      if (resp?.status && resp.status !== "success")
+        throw new Error(`Blender 側で失敗: ${resp.message ?? JSON.stringify(resp)}`);
+      const { json, stdout } = parseCodeResult(resp);
+      if (!json) throw new Error(`結果を読めなかった（stdout: ${stdout.slice(0, 400)}）`);
+      return { ...(json as object),
+               next: "素材は dx12_blender_material、書き出しは dx12_blender_export" };
+    }),
+);
+
+reg(
+  "dx12_blender_material",
+  "PolyHaven の PBR 素材を貼る",
+  "PolyHaven（CC0・API キー不要・テクスチャ 859 種）から素材を落として貼る。★エンジンは glTF の baseColorFactor を読まないので、テクスチャ無しのマテリアルは【真っ白】になる（茶色に設定した木箱が白い箱として出る。実測で確認）。単色で済ませたい物にも必ずこれを通すこと。★ORM は R=AO / G=roughness / B=metallic。PolyHaven の arm マップがあればそのまま使い、無ければ Rough から B=0 で合成する（rough 単体をそのまま metallicRoughness として出すと B に粗さが入り、木や布が金属として描かれる）。UV も実寸で切り直すのでテクセル密度が揃う。",
+  {
+    objects: z.array(z.string()).optional().describe("貼る対象。省略で選択中。"),
+    assetId: z.string().optional().describe("PolyHaven のアセット ID（例 brown_planks_05）。"),
+    keyword: z.string().optional().describe("ID が分からないときの検索語（wood / concrete / rust / fabric 等）。"),
+    resolution: z.enum(["1k", "2k", "4k"]).optional().describe("解像度（既定 2k）。"),
+    uvMeters: z.number().optional().describe("1 UV = 何メートル（既定 2.0。2k なら約 1024 texel/m）。"),
+  },
+  { destructiveHint: true },
+  ({ objects, assetId, keyword, resolution, uvMeters }) =>
+    run(async () => {
+      if (!(await isPortOpen(BLENDER_PORT)))
+        throw new Error("Blender に接続できない。先に dx12_blender_ensure を撃つこと");
+      if (!assetId && !keyword) throw new Error("assetId か keyword のどちらかが要る");
+      const code = buildMaterialScript({
+        objectNames: objects ?? [], assetId, keyword, resolution, uvMeters,
+      });
+      const resp = await blenderCall("execute_code", { code }, { timeoutMs: 600_000 });
+      if (resp?.status && resp.status !== "success")
+        throw new Error(`Blender 側で失敗: ${resp.message ?? JSON.stringify(resp)}`);
+      const { json, stdout } = parseCodeResult(resp);
+      if (!json) throw new Error(`結果を読めなかった（stdout: ${stdout.slice(0, 400)}）`);
+      const r = json as Record<string, unknown>;
+      if (r.error) throw new Error(String(r.error));
+      return { ...r, next: "dx12_blender_export で書き出す。置いた後の見栄えは dx12_scene_env で環境光を入れてから判断する" };
+    }),
+);
+
+reg(
+  "dx12_scene_env",
+  "環境光を HDRI にする",
+  "PolyHaven の HDRI（CC0・キー不要）を落としてシーンの環境マップにする。★既定の手続き空のままだと【全部に青が乗って彩度が落ちる】ので、モデルの見栄えを判断する前にこれを通すこと（実測: 同じ木箱が青灰色 → 本来の木の色になった）。金属と光沢は環境に映るものが無いと質感そのものが出ない。keyword で探すか assetId を直接指定する（studio_small_09 / kloofendal_48d_partly_cloudy_puresky 等）。★屋内シーンで環境光を効かせたくない場合は使わないこと（envMapPath があると DirectionalLight.ambient が無視される）。",
+  {
+    assetId: z.string().optional().describe("PolyHaven の HDRI ID。"),
+    keyword: z.string().optional().describe("検索語（studio / sunset / overcast / interior 等）。"),
+    resolution: z.enum(["1k", "2k", "4k"]).optional().describe("解像度（既定 2k）。"),
+    iblIntensity: z.number().optional().describe("環境光の強さ（既定 1.0）。"),
+    skyboxIntensity: z.number().optional().describe("背景として描く明るさ（既定 0.35）。"),
+    drawSkybox: z.boolean().optional().describe("背景に空を描くか（既定 true）。"),
+  },
+  { destructiveHint: true },
+  ({ assetId, keyword, resolution, iblIntensity, skyboxIntensity, drawSkybox }) =>
+    run(async () => {
+      if (!assetId && !keyword) throw new Error("assetId か keyword のどちらかが要る");
+      const res = resolution ?? "2k";
+      const ping = await engine.call("ping", {});
+
+      // PolyHaven の API を直接引く（Blender を起動していなくても使える）
+      const get = async (url: string): Promise<any> => {
+        const r = await fetch(url, { headers: { "User-Agent": "blender-mcp" } });
+        if (!r.ok) throw new Error(`PolyHaven: HTTP ${r.status} (${url})`);
+        return r.json();
+      };
+      let id = assetId;
+      if (!id) {
+        const list = await get("https://api.polyhaven.com/assets?t=hdris");
+        const kw = keyword!.toLowerCase();
+        const hits = Object.keys(list).filter((k) => k.toLowerCase().includes(kw));
+        const byTag = hits.length ? hits : Object.entries(list)
+          .filter(([, v]: [string, any]) =>
+            [...(v.tags ?? []), ...(v.categories ?? [])].some((t: string) => t.toLowerCase().includes(kw)))
+          .map(([k]) => k);
+        if (!byTag.length) throw new Error(`PolyHaven に該当する HDRI が無い: ${keyword}`);
+        id = byTag.sort()[0];
+      }
+      const files = await get(`https://api.polyhaven.com/files/${id}`);
+      const node = files.hdri?.[res] ?? Object.values(files.hdri ?? {})[0];
+      if (!node) throw new Error(`HDRI のファイルが見つからない: ${id}`);
+      const url = (node as any).hdr?.url ?? Object.values(node as any)[0].url;
+
+      const rel = `env/${id}_${res}.hdr`;
+      const abs = path.join(ping.assetsDir, rel);
+      await fs.promises.mkdir(path.dirname(abs), { recursive: true });
+      if (!fs.existsSync(abs)) {
+        const r = await fetch(url, { headers: { "User-Agent": "blender-mcp" } });
+        if (!r.ok) throw new Error(`HDRI の取得に失敗: HTTP ${r.status}`);
+        await fs.promises.writeFile(abs, Buffer.from(await r.arrayBuffer()));
+      }
+
+      await engine.call("set_scene_settings", {
+        skybox: {
+          envMapPath: rel,
+          drawSkybox: drawSkybox !== false,
+          iblIntensity: iblIntensity ?? 1.0,
+          skyboxIntensity: skyboxIntensity ?? 0.35,
+        },
+      });
+      const st = await engine.call("get_scene_settings", {});
+      return {
+        assetId: id, path: rel, bytes: fs.statSync(abs).size,
+        skybox: st?.skybox ?? st,
+        note: "環境光が入った。金属と光沢はこれが無いと質感が出ない",
+      };
+    }),
+);
+
 reg(
   "dx12_blender_ensure",
   "Blenderの起動確認/起動",
@@ -2558,7 +2797,7 @@ reg(
     run(async () => {
       if (await isPortOpen(BLENDER_PORT))
         return { running: true, started: false, port: BLENDER_PORT,
-                 note: "既に起動していて接続できる" };
+                 note: "既に起動していて接続できる", ...(await enableAssetSources()) };
 
       let exe = blenderPath;
       if (!exe) {
@@ -2579,7 +2818,8 @@ reg(
       while (Date.now() - t0 < limit) {
         if (await isPortOpen(BLENDER_PORT))
           return { running: true, started: true, port: BLENDER_PORT, blenderPath: exe,
-                   waitedMs: Date.now() - t0, pid: child.pid };
+                   waitedMs: Date.now() - t0, pid: child.pid,
+                   ...(await enableAssetSources()) };
         await new Promise((r) => setTimeout(r, 1000));
       }
       throw new Error(
@@ -3590,12 +3830,16 @@ regRaw(
         "mode:\"depth\" のヒートマップを正規化する距離(m。既定 100)。屋内なら 20、遠景なら 500 等。"),
       exposure: z.number().optional().describe(
         "HDR を出すモード(ssr / ssgi)の露出倍率(既定 1)。真っ黒/真っ白なときに動かす。"),
-    },
+          path: z.string().optional().describe(
+        "保存先の絶対パス(.png)。省略するとエンジンの CWD へ書く。"
+        + "★ヘッドレス起動で CWD が書けない場所だと『WIC stream open failed』で撮影ごと失敗するので、"
+        + "そのときは必ず指定すること。"),
+},
     annotations: { title: "中間バッファ可視化", openWorldHint: false, readOnlyHint: true, idempotentHint: true },
   },
-  async ({ mode, frames, gain, depthRange, exposure }) => {
+  async ({ mode, frames, gain, depthRange, exposure, path }) => {
     try {
-      const r = await engine.call("render_debug", definedOnly({ mode, frames, gain, depthRange, exposure }));
+      const r = await engine.call("render_debug", definedOnly({ mode, frames, gain, depthRange, exposure, path }));
       const meta = {
         mode: r?.mode ?? mode,
         width: r?.width, height: r?.height,
@@ -3666,12 +3910,16 @@ regRaw(
   {
     title: "ゲーム画面スクショ",
     description: "アクティブな CameraComponent(ゲームカメラ)視点でシーンを1フレーム描画して PNG で返す。★Editor 中でも Play せずにゲームカメラの見え方(画角・構図)を確認できる。アクティブなカメラが無いとエラー(camera.isActive=true にする)。image ブロック + text(path/サイズ/mode)を返す。",
-    inputSchema: {},
+    inputSchema: {
+      path: z.string().optional().describe(
+        "保存先の絶対パス(.png)。省略するとエンジンの CWD へ書く。"
+        + "★ヘッドレス起動で CWD が書けない場所だと撮影ごと失敗するので、そのときは指定すること。"),
+    },
     annotations: { title: "ゲーム画面スクショ", openWorldHint: false, readOnlyHint: true },
   },
-  async () => {
+  async ({ path }) => {
     try {
-      const shot = await engine.call("screenshot_game_view", {});
+      const shot = await engine.call("screenshot_game_view", definedOnly({ path }));
       if (!shot || !shot.path) throw new Error("screenshot_game_view が path を返さんかった");
       return imageResult(shot.path, { width: shot.width, height: shot.height, mode: shot.mode });
     } catch (e: any) {
@@ -4140,6 +4388,415 @@ reg(
 );
 
 // ════════════════════════════════════════════════════════════════
+//  VFX（パーティクル / トレイル）
+// ════════════════════════════════════════════════════════════════
+// エンジンのパーティクルは 1 レイヤー 40 フィールド近くあり、生の数値を並べても
+// まず「それらしく」ならない。ここは 3 段構えにしてある:
+//   ① dx12_vfx_library  … 何が作れるかを知る（レシピ一覧）
+//   ② dx12_vfx_apply    … レシピ + 倍率で【複数レイヤーまとめて】置く
+//   ③ dx12_vfx_preview  … 時間を進めながら連写して「本当に出ているか」を数える
+// 生のレイヤー操作(下の 3 本)は、レシピから外れた微調整をするときに使う。
+
+reg(
+  "dx12_list_particle_layers",
+  "パーティクルのレイヤー一覧",
+  "放出器のレイヤーを {index, name, kind, rate, looping, offset, vfxPath} で列挙する。"
+  + "★dx12_set_component の layer 引数に渡す名前/添字はここで分かる。"
+  + "Trigger の PlayEffect / StopEffect に渡すレイヤー名も同じもの。"
+  + "名前が空のレイヤーは \"Layer 1\" のように 1 始まりの既定名で引ける。",
+  { ...entityRef },
+  { readOnlyHint: true, idempotentHint: true },
+  ({ entity, name }) => run(() => engine.call("list_particle_layers", { entity, name })),
+);
+
+reg(
+  "dx12_add_particle_layer",
+  "パーティクルのレイヤーを追加",
+  "放出器にレイヤーを 1 枚足す(上限 16 枚)。中身は続けて dx12_set_component(component:'particleEmitter', layer:<index か名前>) で書く。"
+  + "★これが無いと 1 枚目しか触れない＝『炎に煙を重ねる』ができない。本物の炎/爆発は必ず複数レイヤーの重ね合わせ。"
+  + "レシピから一気に組むなら dx12_vfx_apply の方が速い(このツールを内部で呼んでいる)。",
+  {
+    ...entityRef,
+    layerName: z.string().optional().describe("レイヤー名(省略で \"Layer N\")。Trigger/Lua から指すのに使うので付けた方がよい。"),
+  },
+  {},
+  ({ entity, name, layerName }) => run(() => engine.call("add_particle_layer", { entity, name, layerName })),
+);
+
+reg(
+  "dx12_remove_particle_layer",
+  "パーティクルのレイヤーを削除",
+  "放出器のレイヤーを 1 枚消す。★最後の 1 枚は消せない(付いているのに何も出ない状態を作らないため)。"
+  + "放出器ごと消すなら dx12_remove_component component='particleEmitter'。",
+  {
+    ...entityRef,
+    layer: z.union([z.number().int(), z.string()]).describe("消すレイヤーの index(0 始まり)か名前。"),
+  },
+  { destructiveHint: true },
+  ({ entity, name, layer }) => run(() => engine.call("remove_particle_layer", { entity, name, layer })),
+);
+
+reg(
+  "dx12_vfx_library",
+  "VFX レシピ一覧",
+  "使える VFX レシピ(松明/焚き火/爆発/魔法陣/雨/雪/剣閃 など)を一覧する。"
+  + "各項目は {id, title, summary, tags, sizeHint, layers, layerNames, hasTrail, oneShot}。"
+  + "★どれも【複数レイヤーの重ね合わせ】で作ってある(炎＋煙＋火の粉)。1 種類の粒だけでは本物に見えないため。"
+  + "id を dx12_vfx_apply に渡して置き、dx12_vfx_preview で確認するのが基本の流れ。"
+  + "tag で絞れる: fire / smoke / magic / impact / weather / water / electric / trail / ambient / oneshot / loop / light。",
+  {
+    tag: z.string().optional().describe("タグで絞る(fire / smoke / magic / impact / weather / water / electric / trail / ambient / oneshot / loop / light 等)。"),
+    id: z.string().optional().describe("1 つの id を指定すると、そのレシピの【全レイヤーの実値】と注意書きまで返す(適用前に中身を確かめたいとき)。"),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  ({ tag, id }) => run(async () => {
+    if (id) {
+      const r = resolveVfx(id);
+      return {
+        id: r.preset.id, title: r.preset.title, summary: r.preset.summary,
+        tags: r.preset.tags, sizeHint: r.preset.sizeHint, notes: r.preset.notes,
+        lookHint: r.preset.lookHint,
+        layers: r.layers, trail: r.trail,
+        estimatedLiveParticles: r.estimatedLiveParticles,
+        warnings: r.warnings,
+      };
+    }
+    const list = describeLibrary(tag);
+    if (list.length === 0) {
+      throw argError(`タグ "${tag}" に当てはまるレシピが無い`, "tag を省略して全件見るか、下の有効値から選ぶ", VFX_TAGS);
+    }
+    return {
+      presets: list, count: list.length, tags: VFX_TAGS,
+      next: "dx12_vfx_apply(preset:<id>, position:[x,y,z]) で置いて、dx12_vfx_preview で出ているか確認する",
+    };
+  }),
+);
+
+reg(
+  "dx12_vfx_apply",
+  "VFX レシピを置く / 貼る",
+  "レシピから【複数レイヤーの放出器】を 1 コールで組み立てる(新規エンティティを作るか、既存エンティティへ付ける)。"
+  + "内部では create_entity → add_particle_layer ×N → set_component(layer 指定) ×N を順に撃っている。"
+  + "★倍率で調整する: scale(大きさ。size/speed/offset/lightRange に掛かる) / rate(密度) / intensity(HDR 強度) / "
+  + "color(主色。加算レイヤーだけ塗り替え、煙は元の色のまま。終了色は明度比を保って追従) / oneShot / life。"
+  + "★Editor 限定(新規生成を伴うため)。既存エンティティへ付けるだけなら Play 中でも通るが、Stop で巻き戻る。"
+  + "置いた後は必ず dx12_vfx_preview で『本当に出ているか』を確認すること(粒は静止画 1 枚では判断できない)。",
+  {
+    preset: z.string().describe("レシピ id(dx12_vfx_library で一覧)。例: torch / campfire / explosion / magic_circle / rain。"),
+    ...entityRef,
+    position: v3().optional().describe("[x,y,z]。新規作成時の置き場所。既存エンティティに渡すと移動する。"),
+    entityName: z.string().optional().describe("新規作成するエンティティ名(既定 'FX_<preset>')。name は【既存を指す】引数なので別物。"),
+    parentName: z.string().optional().describe("親にするエンティティ名。命名規約に従うなら 'FX'(dx12_scene_scaffold が作るグループ)。"),
+    scale: z.number().optional().describe("大きさの倍率(既定 1)。0.5 で半分、2 で倍。寿命は変えない。"),
+    rate: z.number().optional().describe("放出レートの倍率(既定 1)。粒の密度。"),
+    intensity: z.number().optional().describe("HDR 強度の倍率(既定 1)。ブルームの乗り方が変わる。"),
+    color: v3().optional().describe("[r,g,b] 0..1。加算レイヤーの主色を置き換える(魔法陣の色替え等)。"),
+    oneShot: z.boolean().optional().describe("true で全レイヤーをワンショット化(looping=false, playOnStart=false)。Trigger の PlayEffect で鳴らす。"),
+    duration: z.number().optional().describe("ワンショットの放出継続秒。"),
+    life: z.number().optional().describe("粒の寿命の倍率(既定 1)。長くすると滞空が増える＝粒数も増える。"),
+    light: z.boolean().optional().describe("実ポイントライト化の強制 ON/OFF(省略でレシピのまま)。同じ効果を大量に置くときは false にして予算を守る。"),
+    replaceLayers: z.boolean().optional().describe("既存の放出器に付けるとき、余ったレイヤーを消すか(既定 true)。false なら残す。"),
+    dryRun: z.boolean().optional().describe("true で【何も変更せず】適用予定の値だけ返す。値を確かめてから撃ちたいとき。"),
+  },
+  {},
+  ({ preset, entity, name, position, entityName, parentName, scale, rate, intensity, color,
+     oneShot, duration, life, light, replaceLayers, dryRun }) => run(async () => {
+    const r = resolveVfx(preset, { scale, rate, intensity, color, oneShot, duration, life, light });
+    if (dryRun) {
+      return {
+        dryRun: true, preset: r.preset.id, layers: r.layers, trail: r.trail,
+        notes: r.preset.notes, warnings: r.warnings,
+        estimatedLiveParticles: r.estimatedLiveParticles,
+      };
+    }
+
+    // ── ① 対象エンティティを決める ──
+    const needsEmitter = r.layers.length > 0;
+    let targetId: number | undefined = entity;
+    let targetName: string | undefined = name;
+    let created = false;
+    if (targetId === undefined && !targetName) {
+      const nm = entityName ?? `FX_${r.preset.id}`;
+      const res = await engine.call("create_entity", {
+        // レイヤーが 0 枚のレシピ(剣閃など)は放出器を持たせない＝空エンティティで作る
+        type: needsEmitter ? "particle_emitter" : "empty",
+        name: nm, position: position ?? [0, 0, 0], parentName,
+      }) as any;
+      targetId = res?.entityId;
+      targetName = res?.name ?? nm;
+      created = true;
+    } else if (position) {
+      await engine.call("set_transform", { entity: targetId, name: targetName, position });
+    }
+    const ref = targetId !== undefined ? { entity: targetId } : { name: targetName };
+
+    // ── ② レイヤーを必要枚数そろえる ──
+    const applied: Array<Record<string, unknown>> = [];
+    let removed = 0;
+    if (needsEmitter) {
+      let have = 0;
+      try {
+        const cur = await engine.call("list_particle_layers", ref) as any;
+        have = cur?.count ?? 0;
+      } catch {
+        // ParticleEmitter がまだ無い。下の set_component(layer 無し)が 1 枚目ごと作る。
+        have = 0;
+      }
+      for (let i = 0; i < r.layers.length; i++) {
+        const layer = r.layers[i];
+        if (i >= have) {
+          if (i === 0 && have === 0) {
+            // 1 枚目は set_component が放出器ごと作る(layer を渡さない＝1 枚目の意味)
+            await engine.call("set_component", {
+              ...ref, component: "particleEmitter", data: { ...layer },
+            });
+            have = 1;
+            applied.push({ index: 0, name: layer.name });
+            continue;
+          }
+          await engine.call("add_particle_layer", { ...ref, layerName: layer.name });
+          have = i + 1;
+        }
+        await engine.call("set_component", {
+          ...ref, component: "particleEmitter", layer: i, data: { ...layer },
+        });
+        applied.push({ index: i, name: layer.name });
+      }
+      // 余分なレイヤーを消す(最後の 1 枚は消せない仕様なので、needed >= 1 のときだけ)
+      if (replaceLayers !== false && have > r.layers.length && r.layers.length >= 1) {
+        for (let i = have - 1; i >= r.layers.length; i--) {
+          await engine.call("remove_particle_layer", { ...ref, layer: i });
+          removed++;
+        }
+      }
+    }
+
+    // ── ③ トレイル ──
+    let trailApplied = false;
+    if (r.trail) {
+      await engine.call("set_component", { ...ref, component: "trailRenderer", data: { ...r.trail } });
+      trailApplied = true;
+    }
+
+    // ── ④ 読み返して嘘をつかない ──
+    let layersNow: unknown = null;
+    if (needsEmitter) {
+      layersNow = await engine.call("list_particle_layers", ref).catch(() => null);
+    }
+
+    const oneShotNow = r.layers.length > 0 && r.layers.every((l) => l.looping === false);
+    return {
+      applied: true,
+      preset: r.preset.id, title: r.preset.title,
+      entityId: targetId, name: targetName, created,
+      layersApplied: applied, layersRemoved: removed, trailApplied,
+      current: layersNow,
+      estimatedLiveParticles: r.estimatedLiveParticles,
+      notes: r.preset.notes,
+      lookHint: r.preset.lookHint,
+      warnings: r.warnings,
+      next: oneShotNow
+        ? "ワンショットなので置いただけでは鳴らない。dx12_vfx_preview(fire:true) で試し撃ちするか、"
+          + "Trigger の PlayEffect(type:4, target:このエンティティ名) で鳴らす配線をすること"
+        : "dx12_vfx_preview で『本当に出ているか』を確認する(粒は静止画 1 枚では判断できない)",
+    };
+  }),
+);
+
+// プレビュー: 時間を進めながら連写して 1 枚の格子画像 + 計測値を返す。
+// ★パーティクルは時間方向にしか存在しない。静止画 1 枚だと「たまたま写っていない」のか
+//   「そもそも出ていない」のか区別できず、AI が延々と見当違いの修正を繰り返す原因になる。
+regRaw(
+  "dx12_vfx_preview",
+  {
+    title: "VFX を時間で見る",
+    description:
+      "放出器に寄って【時間を進めながら N 枚連写】し、格子画像 1 枚 + 計測値を返す。"
+      + "★測り方: 先に放出器を一時的に遠くへ退けて『効果が無いときの絵』(baseline)を 1 枚撮り、"
+      + "それとの差で効果の影響範囲・明るさ・白飛びを数える。"
+      + "同じ場所で燃え続ける炎のように【動かない効果】でも正しく測れるのはこのため"
+      + "(フレーム間の差だけで測ると、止まって見える効果を『出ていない』と誤判定する)。"
+      + "退けた放出器は必ず元の位置へ戻す(失敗しても戻す)。"
+      + "★deterministic ステップで進めるので、往復の遅さに関係なく毎回同じ間隔で撮れる(撮り終わりに解除する)。"
+      + "★ワンショット(looping=false)は置いただけでは鳴らない。fire:true を渡すと "
+      + "fx:play で鳴らしてから撮る(Editor のまま鳴らせるので Play/Stop は不要)。"
+      + "image ブロック + text(計測値と助言)を返す。",
+    inputSchema: {
+      ...entityRef,
+      seconds: z.number().optional().describe("撮る合計の長さ(秒)。既定 1.5。炎や煙は 2〜3 秒、爆発は 1 秒で足りる。"),
+      frames: z.number().int().optional().describe("撮る枚数(2..12)。既定 6。"),
+      distance: z.number().optional().describe("カメラを離す距離 m(既定 3)。効果が大きいレシピでは 6〜10 にする。"),
+      height: z.number().optional().describe("注視点を放出器から何 m 上にするか(既定 0.5)。立ち上る炎/煙は 1〜2 が見やすい。"),
+      fire: z.boolean().optional().describe("true でワンショットを試し撃ちする(一時的に playOnStart を立てて Play→Stop。元に戻す)。"),
+      columns: z.number().int().optional().describe("格子の列数(既定 3)。"),
+      additive: z.boolean().optional().describe("加算系の効果として判定する(既定 true)。煙/雪/血だけのレシピでは false にすると『暗い』警告が出なくなる。"),
+      baseline: z.boolean().optional().describe(
+        "効果を退けた基準画を撮るか(既定 true)。false にすると時間方向の中央値で代用する"
+        + "＝速いが、動かない効果を『出ていない』と誤判定することがある。"),
+    },
+    annotations: { title: "VFX を時間で見る", openWorldHint: false, readOnlyHint: false },
+  },
+  async ({ entity, name, seconds, frames, distance, height, fire, columns, additive, baseline }) => {
+    const ref: Record<string, unknown> = entity !== undefined ? { entity } : { name };
+    let restorePos: number[] | null = null;   // 退けた放出器を戻すための元位置
+    let firedLayers: number[] = [];
+    let playing = false;
+    const preNotes: string[] = [];
+    try {
+      if (entity === undefined && !name) {
+        throw argError("entity か name のどちらかが要る", "放出器のエンティティを指定する");
+      }
+      const info = await engine.call("get_entity", ref) as any;
+      const pos: number[] = info?.transform?.position ?? info?.position ?? [0, 0, 0];
+      const layers: any[] = info?.particleEmitter?.layers ?? [];
+      const dist = Math.max(0.3, distance ?? 3);
+      const lookY = height ?? 0.5;
+      const nFrames = Math.max(2, Math.min(12, Math.round(frames ?? 6)));
+      const total = Math.max(0.1, seconds ?? 1.5);
+      const stepFrames = Math.max(1, Math.round((total * 60) / nFrames));
+      const stamp = Date.now();
+      let shotIndex = 0;
+
+      // カメラを 3/4 の位置へ。target は少し上(立ち上る効果を画角に入れるため)。
+      const camPos: [number, number, number] = [pos[0] + dist * 0.75, pos[1] + dist * 0.45, pos[2] + dist * 0.75];
+      const camTarget: [number, number, number] = [pos[0], pos[1] + lookY, pos[2]];
+      await engine.call("set_editor_camera", { position: camPos, target: camTarget });
+
+      // ★撮影先は必ず【絶対パスで明示】する。省略するとエンジンは自分の CWD へ書くが、
+      //   ヘッドレス起動だと CWD が書けない場所(C:\Windows\System32 等)になることがあり、
+      //   その場合 "WIC stream open failed" で撮影ごと失敗する(実際に踏んだ)。
+      const shoot = async (): Promise<Buffer> => {
+        const outFrame = path.join(os.tmpdir(), `dx12_vfx_frame_${stamp}_${shotIndex++}.png`);
+        const shot = await engine.call("screenshot_final", { gizmos: false, path: outFrame }) as any;
+        const got = shot?.path ?? outFrame;
+        if (!fs.existsSync(got)) throw new Error(`screenshot_final が PNG を残さなかった: ${got}`);
+        const buf = fs.readFileSync(got);
+        fs.rmSync(got, { force: true });
+        return buf;
+      };
+      const step = async (n: number) => {
+        for (let left = n; left > 0; left -= 600) {
+          await engine.call("step_frames", {
+            frames: Math.min(600, left), deterministic: true, hold: true,
+          });
+        }
+      };
+
+      const isOneShot = layers.length > 0 && layers.every((l) => l.looping === false);
+      const settleSec = Math.min(2.0, maxParticleLife(layers) + 0.2);
+      const settleFrames = Math.max(6, Math.round(settleSec * 60));
+
+      // ── baseline(効果が無いときの絵)──
+      let baselineBuf: Buffer | undefined;
+      if (baseline !== false) {
+        if (isOneShot && !fire) {
+          // ワンショットはまだ鳴っていない＝今の絵がそのまま基準画
+          baselineBuf = await shoot();
+        } else {
+          // 放出器を遠くへ退けて、生きている粒が寿命で消えるまで待ってから撮る
+          await engine.call("set_transform", { ...ref, position: [pos[0], pos[1] + 5000, pos[2]] });
+          restorePos = pos;
+          await step(settleFrames);
+          baselineBuf = await shoot();
+          await engine.call("set_transform", { ...ref, position: pos });
+          restorePos = null;
+          await step(settleFrames);   // 戻してから定常状態になるまで待つ
+        }
+      }
+
+      // ── ワンショットを鳴らす ──
+      // ★engine v1.18.0+ の fx:play を使う。Editor のまま鳴らせるので Play/Stop が要らない
+      //   （以前は playOnStart を立てて Play→Stop→戻す、という往復をしていた。
+      //     シーンが作り直されるぶん遅く、戻し損ねると playOnStart が残る危険もあった）。
+      if (fire) {
+        const nm = (info?.name ?? name) as string | undefined;
+        if (!nm) {
+          preNotes.push("fire:true だが名前が引けなかったので鳴らせなかった(name 指定で呼ぶこと)。");
+        } else {
+          for (const l of layers) if (l.looping === false) firedLayers.push(layers.indexOf(l));
+          const r = await engine.call("eval_lua", {
+            code: `return tostring(fx:play(${JSON.stringify(nm)}))`,
+          }).catch(() => null) as any;
+          const okFire = typeof r?.result === "string" ? r.result.includes("true") : false;
+          if (!okFire) {
+            preNotes.push(
+              "fx:play が false を返した(エンジンが v1.18.0 より古いか、放出器が無い)。"
+              + "古いエンジンなら Trigger の PlayEffect で鳴らすこと。",
+            );
+          }
+        }
+      }
+
+      const shots: Buffer[] = [];
+      for (let i = 0; i < nFrames; i++) {
+        await step(stepFrames);
+        shots.push(await shoot());
+      }
+      // 時間を止めたままにしない(hold の解除)。
+      await engine.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
+
+      if (playing) {
+        await engine.call("stop", {}).catch(() => {});
+        playing = false;
+        for (const idx of firedLayers) {
+          await engine.call("set_component", {
+            ...ref, component: "particleEmitter", layer: idx, data: { playOnStart: false },
+          }).catch(() => {});
+        }
+        firedLayers = [];
+      }
+
+      const sheet = buildContactSheet(shots, { columns: columns ?? 3 });
+      const measure = measureVfxFrames(shots, { additive: additive !== false, baseline: baselineBuf });
+      const outPath = path.join(os.tmpdir(), `dx12_vfx_preview_${stamp}.png`);
+      fs.writeFileSync(outPath, sheet.sheetPng);
+
+      return {
+        content: [
+          { type: "image", data: sheet.sheetPng.toString("base64"), mimeType: "image/png" },
+          {
+            type: "text",
+            text: JSON.stringify({
+              path: outPath,
+              entityId: info?.entityId ?? entity, name: info?.name ?? name,
+              frames: nFrames, secondsTotal: Number((stepFrames * nFrames / 60).toFixed(3)),
+              secondsPerFrame: Number((stepFrames / 60).toFixed(4)),
+              camera: { position: camPos, target: camTarget },
+              firedOneShotLayers: firedLayers,
+              ...(preNotes.length > 0 ? { notes: preNotes } : {}),
+              backgroundFrom: measure.backgroundFrom,
+              visible: measure.visible,
+              sceneLuma: measure.sceneLuma,
+              stats: measure.frames,
+              frameDiffs: sheet.frameDiffs,
+              suggestions: measure.suggestions,
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (e: any) {
+      return errResult(e);
+    } finally {
+      // 退けたまま / Play したまま / 時間を止めたままにしない。
+      if (restorePos) {
+        await engine.call("set_transform", { ...ref, position: restorePos }).catch(() => {});
+      }
+      if (playing) {
+        await engine.call("stop", {}).catch(() => {});
+        for (const idx of firedLayers) {
+          await engine.call("set_component", {
+            ...ref, component: "particleEmitter", layer: idx, data: { playOnStart: false },
+          }).catch(() => {});
+        }
+      }
+      await engine.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
+      // 撮影用のカメラ固定を残さない(残るとゲーム画面の撮影が全部この視点になる)
+      await engine.call("set_editor_camera", { release: true }).catch(() => {});
+    }
+  },
+);
+
+// ════════════════════════════════════════════════════════════════
 //  ライティング
 // ════════════════════════════════════════════════════════════════
 
@@ -4198,6 +4855,650 @@ reg(
   },
   { idempotentHint: true },
   ({ preset }) => run(() => engine.call("apply_lighting_preset", { preset })),
+);
+
+// ── 絵作り(ルック): 光 + 空気 + グレーディングを 1 セットで当てる ──
+// ★ポストは約 90 フィールドある。1 つずつ触っても「それっぽい絵」にはならず、
+//   bloom と exposure だけ上げて終わる(実際にそうなっていた)。
+//   映画的な絵は【光 → 空気 → グレーディング】が噛み合って初めて出るので、組み合わせで渡す。
+
+reg(
+  "dx12_look_library",
+  "ルック(絵作り)一覧",
+  "使えるルック(ゴールデンアワー / ネオンノワール / ホラー / 白黒 / 水中 …)を一覧する。"
+  + "各項目は {id, title, summary, tags, touches(何を触るか), pairsWith(相性の良い VFX)}。"
+  + "★dx12_apply_lighting_preset(エンジンの 6 種)は【太陽 + ごく一部のポスト】の土台。"
+  + "こちらは【フォグ・トーンマッパー・ビネットの形・粒子・色収差まで含めた完成形】で、土台の上に乗せる仕上げ。"
+  + "id を指定すると、そのルックが設定する全フィールドの実値と注意書きまで返す。",
+  {
+    tag: z.string().optional().describe("タグで絞る(outdoor / indoor / night / dark / warm / cool / stylized / cinematic / neutral / bright / moody / product)。"),
+    id: z.string().optional().describe("1 つの id を指定すると全フィールドの実値と注意書きを返す。"),
+  },
+  { readOnlyHint: true, idempotentHint: true },
+  ({ tag, id }) => run(async () => {
+    if (id) {
+      const r = resolveLook(id);
+      return {
+        id: r.preset.id, title: r.preset.title, summary: r.preset.summary,
+        tags: r.preset.tags, notes: r.preset.notes, pairsWith: r.preset.pairsWith ?? [],
+        sun: r.sun, fog: r.fog, sky: r.sky, post: r.post, warnings: r.warnings,
+      };
+    }
+    const list = describeLooks(tag);
+    if (list.length === 0) {
+      throw argError(`タグ "${tag}" に当てはまるルックが無い`, "tag を省略して全件見るか、下の有効値から選ぶ", LOOK_TAGS);
+    }
+    return {
+      looks: list, count: list.length, tags: LOOK_TAGS,
+      next: "dx12_look_apply(preset:<id>) で当てて、dx12_screenshot_game_view で見る",
+    };
+  }),
+);
+
+reg(
+  "dx12_look_apply",
+  "ルック(絵作り)を当てる",
+  "太陽 + ボリュメトリックフォグ + 背景の強さ + ポスト約 20 項目を 1 コールでまとめて当てる(冪等)。"
+  + "内部では set_sun / set_volumetric_fog / set_scene_settings / set_post_process を順に撃ち、"
+  + "最後に読み返した実値を返す(要求と食い違うものは mismatched に出す＝嘘をつかない)。"
+  + "★strength(0..1)はポストにだけ効く。0 に向かって【無味無臭の値】へ寄る(0 になるのではない)ので、"
+  + "0.5 で『半分だけ効いた絵』になる。太陽とフォグは常に指定どおり。"
+  + "★parts で部分適用できる: ['post'] なら今のライティングを壊さずグレーディングだけ乗せる。"
+  + "★暗いルックは【光源を置いてから】当てること。真っ暗なシーンに当てても真っ黒になるだけ。",
+  {
+    preset: z.string().describe("ルック id(dx12_look_library で一覧)。例: golden_hour / neon_noir / horror_candle / clean_studio。"),
+    strength: z.number().optional().describe("ポストの効き具合 0..1(既定 1)。0.5 で半分。太陽とフォグには効かない。"),
+    parts: z.array(z.enum(["sun", "fog", "post", "sky"])).optional()
+      .describe("当てる範囲(既定は全部)。['post'] = 今の光を壊さずグレーディングだけ。['sun','fog'] = 色味は自分で決める。"),
+    dryRun: z.boolean().optional().describe("true で【何も変更せず】適用予定の値だけ返す。"),
+  },
+  { idempotentHint: true },
+  ({ preset, strength, parts, dryRun }) => run(async () => {
+    const r = resolveLook(preset, { strength, parts });
+    if (dryRun) {
+      return {
+        dryRun: true, preset: r.preset.id, title: r.preset.title,
+        sun: r.sun, fog: r.fog, sky: r.sky, post: r.post,
+        notes: r.preset.notes, warnings: r.warnings,
+      };
+    }
+
+    const applied: string[] = [];
+    if (r.sun) { await engine.call("set_sun", definedOnly(r.sun)); applied.push("sun"); }
+    if (r.fog) { await engine.call("set_volumetric_fog", definedOnly(r.fog)); applied.push("fog"); }
+    if (r.sky) {
+      await engine.call("set_scene_settings", { skybox: definedOnly(r.sky) });
+      applied.push("sky");
+    }
+    let mismatched: unknown[] = [];
+    let currentPost: unknown = null;
+    if (Object.keys(r.post).length > 0) {
+      await engine.call("set_post_process", r.post);
+      applied.push("post");
+      currentPost = await engine.call("get_post_process", {}).catch(() => null);
+      mismatched = verifyApplied(r.post, currentPost);
+    }
+
+    const warnings = [...r.warnings];
+    // 「当てたのに真っ黒」を先回りして言う。暗いルックは光源が要る。
+    if ((r.sun?.intensity ?? 1) < 0.5) {
+      const lights = await engine.call("list_lights", { limit: 1 }).catch(() => null) as any;
+      const count = lights?.count ?? lights?.total ?? null;
+      if (count !== null && count <= 1) {
+        warnings.push(
+          "このルックは太陽をほぼ消すが、シーンに他のライトが見当たらない＝ただの真っ黒な絵になる。"
+          + "松明/窓/ランプなどの光源を置いてから当て直すこと(dx12_vfx_apply preset='torch' が早い)。",
+        );
+      }
+    }
+
+    return {
+      applied: mismatched.length === 0,
+      preset: r.preset.id, title: r.preset.title,
+      parts: applied,
+      strength: strength ?? 1,
+      sun: r.sun, fog: r.fog, sky: r.sky,
+      postRequested: r.post,
+      currentPost,
+      ...(mismatched.length > 0
+        ? { mismatched, hint: "要求した値がエンジンに入っていない(クランプされたか、そのフィールドを見ていない)。currentPost の実値を見て次の手を決めること" }
+        : {}),
+      notes: r.preset.notes,
+      pairsWith: r.preset.pairsWith ?? [],
+      warnings,
+      next: "dx12_screenshot_game_view か dx12_screenshot_from(gizmos:false) で絵を見る。"
+        + "参照写真に寄せたいなら dx12_look_compare",
+    };
+  }),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  演出(カットシーン / シーケンス)
+// ════════════════════════════════════════════════════════════════
+// ★カメラ・ポスト・時間・エフェクト・音が【同じ時間軸で噛み合って】初めて演出になる。
+//   AI に Lua を直接書かせると毎回ちがう自己流の状態機械が生え、時間の進め方
+//   (スケール適用/未適用)もバラバラで、スローモを入れた瞬間に台本が壊れる。
+//   宣言的な台本 → 生成コード に固定して、時間の扱いと後始末を 1 箇所で正しくする。
+
+reg(
+  "dx12_sequence_author",
+  "演出(カットシーン)を台本から作る",
+  "時間軸の台本(JSON)から Lua コンポーネントを生成して、エンティティに貼る。"
+  + "生成前に台本を全部検査して、足りない引数・知らないプリセット・重なったカメラ・"
+  + "戻し忘れたスローモを【実行する前に】教える。"
+  + "\ntrack の type: "
+  + "camera(位置移動 + 注視) / fade(black|white|clear) / post(グレーディングを時間で動かす) / "
+  + "timeScale(スローモ・ヒットストップ) / shake(画面揺れ) / vfx(VFX レシピを撃つ) / "
+  + "sound(SFX/BGM) / move・rotate(物を動かす) / light(明るさ・色) / event(Lua イベント発火) / "
+  + "scene(フェードしてシーン遷移) / log(デバッグ出力)。"
+  + "\n各 track は {t:開始秒, type:…, dur:長さ秒, ease:linear|in|out|inOut|outBack|outBounce} + 型ごとの引数。"
+  + "\n例: " + JSON.stringify(SEQUENCE_EXAMPLE.tracks.slice(0, 5))
+  + "\n★時計は time.realDt()(タイムスケール非適用)で進むので、スローモを掛けても台本は実時間で流れる。"
+  + "★終了時にタイムスケールを 1.0 へ戻し、'<name>:done' イベントを発火する。"
+  + "他のスクリプトからは events:emit('<name>:play') / ('<name>:stop') で操作できる。"
+  + "★カメラを動かすには spec.camera に【CameraComponent を持つエンティティ名】が要る"
+  + "(グローバルのカメラは毎フレーム上書きされるので、カメラ役のエンティティを動かすのが正しい)。",
+  {
+    name: z.string().describe("演出名(英数字と _ のみ)。components/<name>.lua として生成される。"),
+    tracks: z.array(z.record(z.string(), z.any())).describe("台本。t(秒)順でなくてよい(生成時に並べ替える)。"),
+    camera: z.string().optional().describe("動かすカメラのエンティティ名(camera トラックを使うなら必須)。"),
+    loop: z.boolean().optional().describe("true で最後まで行ったら頭から繰り返す。"),
+    attachTo: z.string().optional().describe("この演出スクリプトを貼るエンティティ名。省略すると 'SEQ_<name>' を新規作成して貼る。"),
+    doneEvent: z.string().optional().describe("終了時に発火するイベント名(既定 '<name>:done')。"),
+    activateCamera: z.boolean().optional().describe(
+      "true で camera に指定したカメラを【映るカメラ】にする(他のカメラの isActive を false にする)。"
+      + "省略時は切り替えず、映らない指定なら警告だけ返す。"),
+    dryRun: z.boolean().optional().describe("true で【何も書かず】生成される Lua と検査結果だけ返す。"),
+  },
+  {},
+  ({ name, tracks, camera, loop, attachTo, doneEvent, activateCamera, dryRun }) => run(async () => {
+    const preWarnings: string[] = [];
+    let resolvedCamera = camera;
+    const usesCameraTrack = (tracks as any[]).some((t) => t?.type === "camera");
+
+    // ★「映るカメラ」を確かめる。CameraComponent が isActive でないカメラを動かしても
+    //   画面は 1mm も変わらない(同期ループは最初の isActive を拾う)。
+    //   ここを黙って通すと「演出は動いているのに絵が静止している」で長時間溶かす。
+    if (usesCameraTrack || camera) {
+      const list = await engine.call("list_entities", { component_type: "camera" }).catch(() => null) as any;
+      const cams: Array<{ name: string; id: number; active: boolean }> = [];
+      for (const e of list?.entities ?? []) {
+        const info = await engine.call("get_entity", { entity: e.entityId }).catch(() => null) as any;
+        if (info) cams.push({ name: info.name, id: info.entityId, active: !!info.camera?.isActive });
+      }
+      const active = cams.find((c) => c.active);
+      if (cams.length === 0) {
+        preWarnings.push("シーンに CameraComponent を持つエンティティが 1 つも無い。"
+          + "dx12_create_entity(type:'camera', name:'CutsceneCam') で作ってから撃つこと。");
+      } else if (!resolvedCamera) {
+        if (!active) {
+          preWarnings.push(`有効なカメラが無い(${cams.map((c) => c.name).join(", ")} はどれも isActive=false)。`
+            + "dx12_set_component(name:<カメラ名>, component:'camera', data:{isActive:true}) で有効にすること。");
+        } else {
+          resolvedCamera = active.name;
+          preWarnings.push(`camera を省略したので、今アクティブなカメラ "${active.name}" を動かす台本として生成した。`);
+        }
+      } else if (active && active.name !== resolvedCamera) {
+        if (activateCamera) {
+          await engine.call("set_component", { name: resolvedCamera, component: "camera", data: { isActive: true } });
+          await engine.call("set_component", { name: active.name, component: "camera", data: { isActive: false } });
+          preWarnings.push(`アクティブなカメラを "${active.name}" から "${resolvedCamera}" へ切り替えた。`
+            + "ゲームへ戻すときは元のカメラを isActive:true に戻すこと。");
+        } else {
+          preWarnings.push(`★"${resolvedCamera}" は isActive=false。今 映っているのは "${active.name}" なので、`
+            + "このままだと演出が動いても画面は変わらない。"
+            + "activateCamera:true で切り替えるか、camera を \"" + active.name + "\" にすること。");
+        }
+      }
+    }
+
+    const spec = { name, camera: resolvedCamera, loop, doneEvent, tracks: tracks as any[] } as SequenceSpec;
+    const v = validateSpec(spec);
+    if (v.errors.length > 0) {
+      throw argError(
+        `台本に ${v.errors.length} 件の問題がある:\n- ${v.errors.join("\n- ")}`,
+        "上の指摘を直してから撃ち直すこと。track の形は dx12_sequence_author の説明にある例を参照",
+      );
+    }
+    const code = generateLua(spec);
+    const warnings = [...preWarnings, ...v.warnings];
+
+    // 参照しているエンティティが本当に居るか(居ないと実行時に logWarn が出るだけで静かに壊れる)
+    const missing: string[] = [];
+    for (const ent of referencedEntities(spec)) {
+      const found = await engine.call("find_entity", { name: ent }).catch(() => null) as any;
+      const ok = found && (found.entityId !== undefined || (found.entities?.length ?? 0) > 0);
+      if (!ok) missing.push(ent);
+    }
+    if (missing.length > 0) {
+      warnings.push(
+        `シーンに見つからないエンティティ: ${missing.join(", ")}。`
+        + "このままだと実行時に警告が出てそのトラックだけ無視される。名前を直すか先に作ること。",
+      );
+    }
+
+    if (dryRun) {
+      return {
+        dryRun: true, name, duration: v.duration, trackCount: v.sorted.length,
+        code, warnings, referenced: referencedEntities(spec), vfx: referencedVfx(spec),
+      };
+    }
+
+    // ★create_lua_component はエンジン側で Lua の構文チェックをしてから書く
+    //   (壊れたコードはファイルにならず、理由がそのまま返る)。
+    const written = await engine.call("create_lua_component", { name, code }) as any;
+
+    let target = attachTo;
+    let created = false;
+    if (!target) {
+      target = `SEQ_${name}`;
+      const found = await engine.call("find_entity", { name: target }).catch(() => null) as any;
+      if (!found || found.entityId === undefined) {
+        await engine.call("create_entity", { type: "empty", name: target, position: [0, 0, 0] });
+        created = true;
+      }
+    }
+    await engine.call("attach_lua_component", { name: target, script: `components/${name}.lua` });
+
+    return {
+      applied: true,
+      name, path: written?.path ?? `components/${name}.lua`,
+      camera: resolvedCamera ?? null,
+      attachedTo: target, createdEntity: created,
+      duration: v.duration, trackCount: v.sorted.length,
+      playEvent: `${name}:play`, stopEvent: `${name}:stop`, doneEvent: doneEvent ?? `${name}:done`,
+      referenced: referencedEntities(spec), vfx: referencedVfx(spec),
+      warnings,
+      next: "dx12_sequence_preview(name:\"" + name + "\") で実際に流して連写で確認する。"
+        + "台本を直すときは同じ name で撃ち直せば上書きされる",
+    };
+  }),
+);
+
+// 演出を実際に流して連写する。Play 中のゲーム画面(＝演出がカメラを動かした結果)を撮る。
+regRaw(
+  "dx12_sequence_preview",
+  {
+    title: "演出を流して見る",
+    description:
+      "Play して演出を実際に流し、【ゲーム画面】を時間で連写して格子画像 1 枚にして返す。"
+      + "撮り終わったら必ず Stop する(シーンは Play 前の状態へ戻る)。"
+      + "★カメラは演出が動かす。撮る前に dx12_set_editor_camera の固定を必ず解除するので、"
+      + "『演出は動いているのに絵が静止している』事故が起きない。"
+      + "★deterministic ステップで進めるので毎回同じ間隔で撮れる。"
+      + "連続フレーム間の差分率も返すので、『カメラが動いていない』『途中で絵が飛んだ』が数値で分かる。"
+      + "image ブロック + text(撮影情報)を返す。",
+    inputSchema: {
+      seconds: z.number().optional().describe("流す長さ(秒)。既定 5。台本の duration に合わせるとよい。"),
+      frames: z.number().int().optional().describe("撮る枚数(2..12)。既定 6。"),
+      startDelay: z.number().optional().describe("Play してから撮り始めるまでの待ち(秒)。既定 0。"),
+      columns: z.number().int().optional().describe("格子の列数(既定 3)。"),
+      name: z.string().optional().describe("記録用の演出名(撮影内容には影響しない)。"),
+    },
+    annotations: { title: "演出を流して見る", openWorldHint: false, readOnlyHint: false },
+  },
+  async ({ seconds, frames, startDelay, columns, name }) => {
+    let playing = false;
+    try {
+      const nFrames = Math.max(2, Math.min(12, Math.round(frames ?? 6)));
+      const total = Math.max(0.2, seconds ?? 5);
+      const stepFrames = Math.max(1, Math.round((total * 60) / nFrames));
+      const stamp = Date.now();
+
+      // ★撮影用のカメラ固定を必ず外してから Play する。
+      //   固定が残っていると、演出がカメラを動かしても【絵が 1mm も変わらない】。
+      //   「演出は動いているのに静止画が並ぶ」で長時間溶かす原因(実際に踏んだ)。
+      await engine.call("set_editor_camera", { release: true }).catch(() => {});
+      const mode = await engine.call("get_mode", {}) as any;
+      if (mode?.mode !== "Playing") {
+        await engine.call("play", {});
+        playing = true;
+      }
+      if (startDelay && startDelay > 0) {
+        await engine.call("step_frames", { frames: Math.round(startDelay * 60), deterministic: true, hold: true });
+      }
+
+      const shots: Buffer[] = [];
+      for (let i = 0; i < nFrames; i++) {
+        await engine.call("step_frames", { frames: stepFrames, deterministic: true, hold: true });
+        const outFrame = path.join(os.tmpdir(), `dx12_seq_${stamp}_${i}.png`);
+        const shot = await engine.call("screenshot_final", { gizmos: false, path: outFrame }) as any;
+        const got = shot?.path ?? outFrame;
+        if (!fs.existsSync(got)) throw new Error(`screenshot_final が PNG を残さなかった: ${got}`);
+        shots.push(fs.readFileSync(got));
+        fs.rmSync(got, { force: true });
+      }
+      await engine.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
+      if (playing) { await engine.call("stop", {}).catch(() => {}); playing = false; }
+
+      const sheet = buildContactSheet(shots, { columns: columns ?? 3 });
+      const outPath = path.join(os.tmpdir(), `dx12_seq_preview_${stamp}.png`);
+      fs.writeFileSync(outPath, sheet.sheetPng);
+
+      const moved = sheet.frameDiffs.some((d) => d > 0.5);
+      const logs = await engine.call("get_log", { lines: 40 }).catch(() => null) as any;
+      const lines: string[] = Array.isArray(logs) ? logs : (logs?.lines ?? []);
+      const complaints = lines.filter((l) =>
+        /が見つからない|エラー|error|warn/i.test(l)).slice(-6);
+
+      return {
+        content: [
+          { type: "image", data: sheet.sheetPng.toString("base64"), mimeType: "image/png" },
+          {
+            type: "text",
+            text: JSON.stringify({
+              path: outPath, name: name ?? null,
+              frames: nFrames, secondsTotal: Number((stepFrames * nFrames / 60).toFixed(3)),
+              secondsPerFrame: Number((stepFrames / 60).toFixed(4)),
+              frameDiffs: sheet.frameDiffs,
+              moved,
+              recentLog: complaints,
+              hint: moved
+                ? "絵が動いている。あとは構図と間(ま)を見て台本の秒数を詰めること"
+                : "フレーム間の差がほとんど無い＝演出が動いていない。確認する順番: "
+                  + "①スクリプトが貼れているか(dx12_get_lua_component_state) "
+                  + "②autoPlay が true か ③camera に指定した名前のエンティティが居るか "
+                  + "④recentLog に『が見つからない』が出ていないか",
+            }, null, 2),
+          },
+        ],
+      };
+    } catch (e: any) {
+      return errResult(e);
+    } finally {
+      await engine.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
+      if (playing) await engine.call("stop", {}).catch(() => {});
+    }
+  },
+);
+
+// 「まだ安っぽいのはなぜか」を測って言う。壊れているかを見る dx12_diagnose とは別物。
+regRaw(
+  "dx12_polish_audit",
+  {
+    title: "絵の仕上がりを検査する",
+    description:
+      "今のシーンに【高品質な絵に必ず入っている要素】が揃っているかを測り、足りないものを"
+      + "効く順(光 → 空気 → 階調 → 動き → 素材 → 接地)に並べて返す。"
+      + "各指摘には『なぜそれで安っぽく見えるか』と『次に撃つコマンド』が必ず付く。"
+      + "★dx12_diagnose は【壊れているか】、dx12_look_compare は【参照画像との差】を見る。"
+      + "こちらは参照画像が無い状態で『作りかけに見える理由』を言うためのもの。"
+      + "screenshot:true(既定)で最終画も撮って、眠い絵・白飛び・真っ黒・彩度ゼロを画素で判定する。"
+      + "返り値 {score, verdict, findings:[{category, severity, what, why, fix}], facts}。",
+    inputSchema: {
+      screenshot: z.boolean().optional().describe("false で絵を撮らずシーン設定だけ見る(速い)。既定 true。"),
+      only: z.array(z.enum(["light", "air", "grade", "motion", "material", "contact", "image"])).optional()
+        .describe("見るカテゴリを絞る。省略で全部。"),
+      sampleMeshes: z.number().int().optional().describe("マテリアルを調べるメッシュの上限(既定 24)。大きいシーンで遅いとき下げる。"),
+    },
+    annotations: { title: "絵の仕上がりを検査する", openWorldHint: false, readOnlyHint: true },
+  },
+  async ({ screenshot, only, sampleMeshes }) => {
+    try {
+      const facts: SceneFacts = {};
+
+      // ── シーン設定(環境光) ──
+      const settings = await engine.call("get_scene_settings", {}).catch(() => null) as any;
+      const sky = settings?.skybox ?? settings;
+      if (sky) {
+        facts.envMapPath = String(sky.envMapPath ?? "");
+        facts.iblIntensity = typeof sky.iblIntensity === "number" ? sky.iblIntensity : undefined;
+        if (typeof sky.drawSkybox === "boolean") facts.outdoor = sky.drawSkybox;
+      }
+
+      // ── ライト ──
+      const lights = await engine.call("list_lights", { limit: 200 }).catch(() => null) as any;
+      if (lights?.lights ?? lights?.entries) {
+        const arr: any[] = lights.lights ?? lights.entries;
+        facts.lights = arr.map((l) => ({
+          type: String(l.type ?? ""),
+          intensity: Number(l.intensity ?? 0),
+          castShadow: l.castShadow ?? l.shadow ?? false,
+          overBudget: l.overBudget === true,
+        }));
+      }
+
+      // ── 空気・ポスト・接地 ──
+      facts.fog = await engine.call("get_volumetric_fog", {}).catch(() => undefined) as any;
+      facts.post = await engine.call("get_post_process", {}).catch(() => undefined) as any;
+      facts.ssao = await engine.call("get_ssao", {}).catch(() => undefined) as any;
+      facts.contactShadow = await engine.call("get_contact_shadow", {}).catch(() => undefined) as any;
+
+      // ── 動くもの / メッシュとマテリアル ──
+      const ents = await engine.call("list_entities", { verbose: true }).catch(() => null) as any;
+      const list: any[] = ents?.entities ?? [];
+      facts.entityCount = list.length;
+      facts.emitterCount = list.filter((e) =>
+        (e.componentTypes ?? []).includes("particleEmitter")).length;
+      const meshes = list.filter((e) => (e.componentTypes ?? []).includes("meshRenderer"));
+      facts.meshCount = meshes.length;
+      if (meshes.length > 0) {
+        const cap = Math.max(1, Math.min(64, sampleMeshes ?? 24));
+        // 全部見ると往復が増えるので先頭 N 件だけ(偏らないよう等間隔で拾う)
+        const step = Math.max(1, Math.floor(meshes.length / cap));
+        const picked = meshes.filter((_, i) => i % step === 0).slice(0, cap);
+        let normals = 0, defaults = 0, seen = 0;
+        for (const m of picked) {
+          const info = await engine.call("get_entity", { entity: m.entityId }).catch(() => null) as any;
+          if (!info) continue;
+          seen++;
+          const mr = info.meshRenderer ?? info;
+          const tex = mr?.textures ?? mr;
+          const hasNormal = !!(tex?.normal || mr?.normalTexture || mr?.normalPath);
+          if (hasNormal) normals++;
+          const rough = mr?.roughness ?? info?.pbr?.roughness;
+          const metal = mr?.metallic ?? info?.pbr?.metallic;
+          const isDefault = (rough === undefined || Math.abs(Number(rough) - 0.5) < 0.001)
+            && (metal === undefined || Math.abs(Number(metal)) < 0.001);
+          if (isDefault) defaults++;
+        }
+        if (seen > 0) {
+          // 抽出した割合をシーン全体へ引き伸ばす(件数ではなく比率で判定するので問題ない)
+          facts.normalMapCount = Math.round((normals / seen) * meshes.length);
+          facts.defaultPbrCount = Math.round((defaults / seen) * meshes.length);
+        }
+      }
+
+      // ── 最終画 ──
+      let shotPath: string | null = null;
+      if (screenshot !== false) {
+        const out = path.join(os.tmpdir(), `dx12_polish_${Date.now()}.png`);
+        const shot = await engine.call("screenshot_final", { gizmos: false, path: out }).catch(() => null) as any;
+        const got = shot?.path ?? out;
+        if (fs.existsSync(got)) {
+          shotPath = got;
+          facts.image = imageFacts(fs.readFileSync(got));
+        }
+      }
+
+      let findings = auditScene(facts);
+      if (only && only.length > 0) findings = findings.filter((f) => only.includes(f.category));
+      const score = polishScore(findings);
+
+      const text = JSON.stringify({
+        score, verdict: verdict(score, findings),
+        findings,
+        facts: {
+          envMapPath: facts.envMapPath, lights: facts.lights?.length ?? null,
+          fogEnabled: facts.fog?.enabled ?? null,
+          emitters: facts.emitterCount ?? null, meshes: facts.meshCount ?? null,
+          normalMapped: facts.normalMapCount ?? null, defaultPbr: facts.defaultPbrCount ?? null,
+          image: facts.image ?? null,
+        },
+        next: findings.length === 0
+          ? "必須要素は揃っている。dx12_look_compare で参照写真と比べるか、構図を詰める段階"
+          : "findings の上から順に fix をそのまま撃つ(効く順に並んでいる)",
+      }, null, 2);
+
+      if (shotPath) {
+        return {
+          content: [
+            { type: "image", data: fs.readFileSync(shotPath).toString("base64"), mimeType: "image/png" },
+            { type: "text", text },
+          ],
+        };
+      }
+      return { content: [{ type: "text", text }] };
+    } catch (e: any) {
+      return errResult(e);
+    }
+  },
+);
+
+// ── デカール(投影テクスチャ): 弾痕・焦げ・血・水たまり・苔・汚れ ──
+// ★「そこで何かが起きた」を語る唯一の安い手段。1 つも無い床は、どれだけ光を凝っても
+//   出荷前のショールームに見える。エンジンには DecalComponent があったが
+//   MCP から触れず、しかも【シーンにアトラス画像が無いと無言で何も出ない】ので
+//   実質使えない機能だった。アトラスはここで手続き生成して自動で用意する。
+
+reg(
+  "dx12_decal_library",
+  "デカール一覧",
+  "貼れる汚れ・傷の一覧を返す。各項目は {id, title, summary, defaultSize, surface(床専用か), changes(粗さ/金属感の上書き), notes}。"
+  + "id を dx12_decal_apply に渡して貼る。"
+  + "★水たまり/血だまり/油/雪は【ほぼ水平面専用】(角度フェードが小さい)。壁には dirt / leak / blood_splatter を使う。",
+  {},
+  { readOnlyHint: true, idempotentHint: true },
+  () => run(async () => ({
+    decals: describeDecals(),
+    count: DECAL_IDS.length,
+    atlas: "初回の dx12_decal_apply が assets/textures/decals/atlas.png を生成してシーンに設定する(手続き生成・16 セル)",
+    next: "dx12_decal_apply(preset:'dirt', position:[x,y,z], normal:[0,1,0]) で貼る。"
+      + "面の座標と法線は dx12_raycast_precise か dx12_pick が返すものをそのまま渡すのが正確",
+  })),
+);
+
+reg(
+  "dx12_decal_apply",
+  "デカールを貼る",
+  "汚れ・傷・水たまりを面へ投影する。位置と法線から姿勢を計算し、DecalComponent 付きのエンティティを作る。"
+  + "★初回はアトラス画像(assets/textures/decals/atlas.png)を手続き生成して、シーンのデカールアトラスに設定する"
+  + "(アトラスが無いとデカールは【無言で何も出ない】ため)。"
+  + "★面の座標と法線は dx12_raycast_precise / dx12_pick の worldPos・worldNormal をそのまま渡すのが正確。"
+  + "normal を省略すると真上[0,1,0](床)として扱う。"
+  + "★Editor 限定(エンティティを作るため)。count を渡すと、その面のまわりへ散らして複数枚貼る(弾痕・汚れ向き)。",
+  {
+    preset: z.string().describe("デカール id(dx12_decal_library で一覧)。例: dirt / bullet_hole / puddle / blood_pool / moss。"),
+    position: v3().describe("[x,y,z] 貼る面の点(ワールド)。"),
+    normal: v3().optional().describe("[x,y,z] 面の法線。省略で [0,1,0]。raycast の worldNormal をそのまま渡す。"),
+    size: z.number().optional().describe("1 辺の大きさ m。省略でレシピの既定。"),
+    depth: z.number().optional().describe("投影の厚み m。省略で size*0.35。面の凹凸より厚くすること。"),
+    rotationDeg: z.number().optional().describe("面の中での回転(度)。垂れ跡の向きを合わせるときに使う。"),
+    opacity: z.number().optional().describe("濃さ 0..1。薄く重ねるほど自然。"),
+    tint: v3().optional().describe("[r,g,b] 色の乗算。"),
+    sortOrder: z.number().int().optional().describe("重なり順(小さいほど下)。"),
+    count: z.number().int().optional().describe("まとめて貼る枚数(1..24)。2 以上で spread の範囲に散らす。"),
+    spread: z.number().optional().describe("count>1 のときの散らばり半径 m(既定 size*1.5)。"),
+    seed: z.number().int().optional().describe("散らしの乱数シード(同じ値なら同じ配置)。"),
+    entityName: z.string().optional().describe("作るエンティティ名(既定 'DECAL_<preset>')。複数枚なら連番。"),
+    parentName: z.string().optional().describe("親にするエンティティ名(命名規約に従うなら 'ENV')。"),
+    dryRun: z.boolean().optional().describe("true で何も作らず、計算結果(姿勢と値)だけ返す。"),
+  },
+  {},
+  ({ preset, position, normal, size, depth, rotationDeg, opacity, tint, sortOrder,
+     count, spread, seed, entityName, parentName, dryRun }) => run(async () => {
+    const n = (normal ?? [0, 1, 0]) as [number, number, number];
+    const base = planDecal(preset, {
+      position: position as [number, number, number], normal: n,
+      size, depth, rotationDeg, opacity,
+      tint: tint as [number, number, number] | undefined, sortOrder,
+    });
+    const num = Math.max(1, Math.min(24, Math.round(count ?? 1)));
+
+    // 散らす: 面内の 2 軸(法線に直交する基底)へランダムにずらす
+    const rng = (() => { let a = (seed ?? 12345) >>> 0;
+      return () => { a = (a * 1664525 + 1013904223) >>> 0; return a / 4294967296; }; })();
+    const ref: [number, number, number] = Math.abs(n[1]) > 0.99 ? [1, 0, 0] : [0, 1, 0];
+    const dotv = ref[0] * n[0] + ref[1] * n[1] + ref[2] * n[2];
+    const tx = [ref[0] - n[0] * dotv, ref[1] - n[1] * dotv, ref[2] - n[2] * dotv];
+    const tl = Math.hypot(tx[0], tx[1], tx[2]) || 1;
+    const T: [number, number, number] = [tx[0] / tl, tx[1] / tl, tx[2] / tl];
+    const B: [number, number, number] = [
+      T[1] * n[2] - T[2] * n[1], T[2] * n[0] - T[0] * n[2], T[0] * n[1] - T[1] * n[0],
+    ];
+    const radius = spread ?? (size ?? base.scale[0]) * 1.5;
+
+    const placements = Array.from({ length: num }, (_, i) => {
+      if (i === 0 && num === 1) return { ...base, index: 0 };
+      const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * radius;
+      const off: [number, number, number] = [
+        Math.cos(a) * r * T[0] + Math.sin(a) * r * B[0],
+        Math.cos(a) * r * T[1] + Math.sin(a) * r * B[1],
+        Math.cos(a) * r * T[2] + Math.sin(a) * r * B[2],
+      ];
+      const p = planDecal(preset, {
+        position: [position[0] + off[0], position[1] + off[1], position[2] + off[2]],
+        normal: n,
+        size: (size ?? base.scale[0]) * (0.7 + rng() * 0.6),   // 大きさを散らす(同じ判が並ぶと嘘っぽい)
+        depth, rotationDeg: (rotationDeg ?? 0) + rng() * 360,   // 向きも散らす
+        opacity, tint: tint as [number, number, number] | undefined,
+        sortOrder: (sortOrder ?? 0) + i,
+      });
+      return { ...p, index: i };
+    });
+
+    if (dryRun) {
+      return {
+        dryRun: true, preset, count: num,
+        placements: placements.map((p) => ({
+          position: p.position, rotation: p.rotation, scale: p.scale, decal: p.decal,
+        })),
+        warnings: base.warnings,
+      };
+    }
+
+    // ── アトラスを用意する(無ければ生成してシーンに設定) ──
+    const ping = await engine.call("ping", {}) as any;
+    const assetsDir: string = ping?.assetsDir ?? "";
+    if (!assetsDir) throw new Error("dx12_ping が assetsDir を返さない(古いエンジン?)");
+    const rel = "textures/decals/atlas.png";
+    const abs = path.join(assetsDir, rel);
+    let atlasCreated = false;
+    if (!fs.existsSync(abs)) {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, buildAtlasPng());
+      atlasCreated = true;
+    }
+    const settings = await engine.call("get_scene_settings", {}).catch(() => null) as any;
+    const curAtlas: string = settings?.decalAtlasPath ?? "";
+    let atlasSet = false;
+    if (curAtlas !== rel) {
+      const r = await engine.call("set_scene_settings", { decalAtlasPath: rel }).catch(() => null) as any;
+      atlasSet = r?.decalAtlasPath === rel;
+      if (!atlasSet) {
+        base.warnings.push(
+          "シーンのデカールアトラスを設定できなかった(エンジンが古い可能性)。"
+          + "この場合デカールは【無言で何も出ない】。シーン JSON の decalAtlas を直接書くか、エンジンを更新すること。",
+        );
+      }
+    }
+
+    // ── 置く ──
+    const made: Array<Record<string, unknown>> = [];
+    for (const p of placements) {
+      const nm = num === 1
+        ? (entityName ?? `DECAL_${preset}`)
+        : `${entityName ?? `DECAL_${preset}`}_${String(p.index + 1).padStart(2, "0")}`;
+      const res = await engine.call("create_entity", {
+        type: "decal", name: nm, position: p.position, parentName,
+      }) as any;
+      const id = res?.entityId;
+      await engine.call("set_transform", { entity: id, rotation: p.rotation, scale: p.scale });
+      await engine.call("set_component", { entity: id, component: "decal", data: p.decal });
+      made.push({ entityId: id, name: res?.name ?? nm, position: p.position });
+    }
+
+    return {
+      applied: true,
+      preset, count: made.length, entities: made,
+      atlas: { path: rel, created: atlasCreated, sceneSet: atlasSet || curAtlas === rel },
+      rotation: placements[0].rotation,
+      notes: findDecal(preset)?.notes ?? [],
+      warnings: base.warnings,
+      next: "dx12_screenshot_from(gizmos:false) で見る。薄い汚れ(dirt/dust)は opacity 0.3〜0.5 で"
+        + "重ねると自然。濡れ表現(puddle/oil/blood_pool)は dx12_set_ssr(enabled:true) で反射が出る",
+    };
+  }),
 );
 
 // ════════════════════════════════════════════════════════════════

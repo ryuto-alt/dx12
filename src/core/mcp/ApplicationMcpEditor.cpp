@@ -66,11 +66,14 @@ void Application::RegisterMcpEditorMethods()
             resp["result"] = {{"skybox", {
                                   {"envMapPath", sky.envMapPath}, {"iblIntensity", sky.iblIntensity},
                                   {"skyboxIntensity", sky.skyboxIntensity}, {"drawSkybox", sky.drawSkybox}}},
+                              // ★デカールのアトラス。空 = デカールは描かれない(コンポーネントを
+                              //   付けても無言で何も出ない)ので、読める/書けるようにしてある。
+                              {"decalAtlasPath", m_scene->GetDecalAtlasPath()},
                               {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi、ボリュメトリックフォグは dx12_get_volumetric_fog を使う"}};
         });
 
-    McpDefine("set_scene_settings", "skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,skybox.iblIntensity:any,"
-              "skybox.skyboxIntensity:any", DX12E_MCP_HANDLER
+    McpDefine("set_scene_settings", "decalAtlasPath:string,skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,"
+              "skybox.iblIntensity:any,skybox.skyboxIntensity:any", DX12E_MCP_HANDLER
         {
             const json sky = params.value("skybox", json::object());
             auto& s = m_scene->GetSkyboxSettings();
@@ -87,8 +90,20 @@ void Application::RegisterMcpEditorMethods()
             if (sky.contains("skyboxIntensity")) s.skyboxIntensity = sky["skyboxIntensity"].get<float>();
             if (sky.contains("drawSkybox"))      s.drawSkybox      = sky["drawSkybox"].get<bool>();
             if (envChanged) { m_loadedSkyboxPath.clear(); m_skyboxDirty = true; }  // 環境マップ再ベイク要求
+
+            // デカールアトラス(assets 相対)。空文字でデカールを無効化できる。
+            if (params.contains("decalAtlasPath"))
+            {
+                std::string d = params["decalAtlasPath"].get<std::string>();
+                if (!d.empty() && (d.front() == '/' || d.find('\\') != std::string::npos ||
+                    d.find(':') != std::string::npos || d.find("..") != std::string::npos))
+                    throw McpError(McpErr::InvalidParam, "invalid decalAtlasPath (assets 相対のみ)");
+                m_scene->SetDecalAtlasPath(d);
+            }
+
             resp["ok"] = true;
-            resp["result"] = {{"applied", true}, {"envMapRebake", envChanged}};
+            resp["result"] = {{"applied", true}, {"envMapRebake", envChanged},
+                              {"decalAtlasPath", m_scene->GetDecalAtlasPath()}};
         });
 
     McpDefine("play", "", DX12E_MCP_HANDLER
@@ -474,7 +489,8 @@ void Application::RegisterMcpEditorMethods()
             resp["result"] = {{"key", vk}, {"pressed", true}};
         });
 
-    McpDefine("render_debug", "depthRange:number,exposure:number,frames:int,gain:number,mode:string", DX12E_MCP_HANDLER
+    McpDefine("render_debug", "depthRange:number,exposure:number,frames:int,gain:number,mode:string,path:string",
+              DX12E_MCP_HANDLER
         {
             // 中間バッファ可視化。mode を受けて必要な機能を一時的に ON にし、N フレーム描いてから
             // スクリーンショットを撮って返し、設定を元へ戻す（＝呼ぶ前と完全に同じ状態に戻る）。
@@ -642,6 +658,7 @@ void Application::RegisterMcpEditorMethods()
             }
 
             m_mcpRenderDebugFramesLeft = frames;   // 検証済み（上で clamp 済み）
+            m_mcpRenderDebugPath       = params.value("path", std::string());
             m_mcpRenderDebugReply      = deferred;
             m_renderDebugWarnings      = warn.dump();
             isDeferred = true;
@@ -854,7 +871,7 @@ void Application::RegisterMcpEditorMethods()
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"color", {c[0], c[1], c[2]}}};
         });
 
-    McpDefine("screenshot_game_view", "", DX12E_MCP_HANDLER
+    McpDefine("screenshot_game_view", "path:string", DX12E_MCP_HANDLER
         {
             // アクティブな CameraComponent 視点でシーンを1フレーム描いて撮る(遅延応答)。
             // Editor 中でもゲームカメラの画角を確認できる。Playing 中は通常 screenshot と同じ絵。
@@ -867,6 +884,7 @@ void Application::RegisterMcpEditorMethods()
                     "no active CameraComponent (camera.isActive=true にするか dx12_screenshot を使う)");
             if (m_mcpGameViewReply.client != 0)
                 throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly");
+            m_mcpGameViewPath  = params.value("path", std::string());
             m_mcpGameViewReply = deferred;   // フレーム境界で描画→撮影→応答(Run ループ側)
             isDeferred = true;
         });

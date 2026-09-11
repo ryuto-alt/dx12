@@ -62,6 +62,7 @@ DX12Engine.exe --headless --project <dir> --mcp-port 8850 --scene scenes/main.js
 | `--scene <rel>` | プロジェクトを開いた直後にこのシーンを開く（assets 相対） |
 | `--allow-autosave` | ヘッドレスでもディスクへ書く。**既定は読み取り専用** |
 
+- ★**撮影系は `path` を明示する**: `dx12_screenshot` / `dx12_screenshot_final` / `dx12_render_debug` / `dx12_screenshot_game_view` は省略するとエンジンの CWD へ書くので、書けない場所（`C:\Windows\System32` 等）で起動していると `WIC stream open failed` で撮影ごと失敗する。
 - **ヘッドレスは既定でディスクへ書かない。** 検証しただけでプロジェクトが書き換わるのは事故なので、
   MCP の自動保存を止めてある（`navmesh_build` は編集扱いなので、これが無いと検証を回すだけで
   シーンが書き直される）。背景でエージェントに作らせるときだけ `--allow-autosave` を付ける。
@@ -331,41 +332,59 @@ dx12_autoplay(goalName:"GP_Goal")
 ```
 # ① 何が足りないか
 dx12_asset_gap()
-# → {missing:[{name:"ENV_Statue_01", modelPath:"models/statue.glb"}],
-#    placeholders:[{name:"ENV_Prop_03", primitive:"box"}]}
 
 # ② 規約を読む（作り始める前に必ず）
 dx12_model_brief(kind:"prop")
 
-# ③ Blender を起こす（人に開いてもらう必要は無い）
+# ③ Blender を起こす（人に開いてもらう必要は無い。PolyHaven も自動で有効になる）
 dx12_blender_ensure()
-# → {running:true, started:true, port:9876, waitedMs:8400}
 
-# ④ mcp__blender__* でモデリングする（execute_blender_code 等）
+# ④ 形を作る（mcp__blender__execute_blender_code 等）
 
-# ⑤ 規約どおりに書き出して取り込む（★手で export_scene.gltf を呼ばないこと）
-dx12_blender_export(objects:["Statue"], destPath:"models/statue/statue.gltf")
-# → {exported:["Statue"], renamedImages:[{from:"tmp8a3f.jpg", to:"statue_0.jpg"}],
-#    warnings:["Statue / Material: 画像テクスチャが 1 枚も無い → …真っ白になる"],
-#    assetInfo:{aabbMin:[...], aabbMax:[...]}}
+# ⑤ ★仕上げる ← ここを飛ばすと「うすぺらい」物ができる
+dx12_blender_polish(objects:["Barrel"])
 
-# ⑥ 置いて検査
-dx12_spawn_model(path:"models/statue/statue.gltf", group:"ENV")   # scale は常に 1
+# ⑥ ★素材を貼る ← ここを飛ばすと【真っ白】になる
+dx12_blender_material(objects:["Barrel"], keyword:"wood")
+
+# ⑦ 規約どおりに書き出して取り込む
+dx12_blender_export(objects:["Barrel"], destPath:"models/barrel/barrel.gltf")
+
+# ⑧ 置いて検査（見栄えを判断する前に環境光を入れる）
+dx12_scene_env(keyword:"studio")
+dx12_spawn_model(path:"models/barrel/barrel.gltf", group:"ENV")
 dx12_validate_layout(fix:"safe")
 ```
+
+### なぜ「うすぺらい」「安っぽい」のか（2026-09-11 に実物で確かめた）
+
+| 症状 | 原因 | 直し方 |
+|---|---|---|
+| 紙細工に見える | **角にベベルが無い**。完全に鋭い角は光を一切拾わない | `dx12_blender_polish`（3〜4mm / 2 段 / harden normals） |
+| 模様の大きさが物と合わない | **プリミティブの既定 UV は面ごとに 0..1**。60cm の箱にも 6m の壁にもテクスチャが 1 枚 | polish が実寸で切り直す（1 UV = 1m） |
+| 板が紙に見える / ちらつく | 厚みゼロの面 | polish が Solidify を掛ける |
+| **真っ白な物が出る** | エンジンは glTF の `baseColorFactor` を読まない。テクスチャ無しは白 | `dx12_blender_material`（PolyHaven の CC0 素材） |
+| 木や布が金属に見える | `rough` 単体を metallicRoughness として出すと **B（= metallic）に粗さが入る** | material が `arm` を優先、無ければ B=0 で合成 |
+| 全部に青が乗って彩度が低い | 環境光が既定の**手続き空** | `dx12_scene_env`（PolyHaven の HDRI） |
+| 仕上げてもシルエットが角ばる | **分割が足りない**。ベベルは角を丸めるだけ | 作る時点で 24〜32 分割にする（polish が面数を警告する） |
+
+★**素材の入手先は既定で全部 OFF だった**（PolyHaven / Hyper3D / Sketchfab / Hunyuan3D）。
+その状態だと AI は素材を一切持たずにプリミティブだけで組むことになる。
+`dx12_blender_ensure` が **PolyHaven（CC0・API キー不要・テクスチャ 859 種 + HDRI）を自動で有効にする**。
+Hyper3D と Sketchfab は API キーが要るので状態だけ報告する。
 
 **`dx12_blender_export` に埋めてある罠**（全部実際に踏んだもの。手で書き出すと再発する）:
 
 - `use_selection=False` は **.blend 内の全シーン**を書き出す（glTF の `scenes` は配列なので合法）。
-  → 全シーンの全 view_layer で deselect してから対象だけ選ぶ。
+- **`export_format` を渡さないと既定の GLB になる**。`models/rock.gltf` を頼んだのに `rock.glb` ができて、
+  参照が全部切れる（`spawn_model` が "model not found" で落ちる）。拡張子から決めて必ず渡し、
+  書き出し後に**頼んだパスに本当にできたか**を確かめる。
 - Blender 5.2 の glTF エクスポータは画像を **`tmpXXXX.jpg`** という一時名で出す。
   再書き出しで名前が変わり、**前に出したモデルの参照が切れる**（額縁が白・絨毯が黒になった）。
-  → 意味のある名前へ改名して `uri` も書き換える。
-- **エンジンは `baseColorFactor` を読まない**。画像テクスチャの無いマテリアルは**真っ白**になる。
-  → 単色で済ませたい物にも必ず col テクスチャを作る。書き出し時に警告が出る。
+- **エンジンは `baseColorFactor` を読まない**。画像テクスチャの無いマテリアルは**真っ白**になる
+  → 書き出し時に警告が出る。
 - シェイプキーが `.bin` の大半を占めることがある（実例: 75MB のうち 70MB）→ 既定で捨てる。
-- **アルファ抜きが無い**。葉・枝カード・角膜のような α 前提の面は Blender で消してから出す
-  （残すと不透明な板になる）。
+- **アルファ抜きが無い**。葉・枝カード・角膜のような α 前提の面は Blender で消してから出す。
 - 取り込み後に `dx12_asset_info` で実寸を読み返すので、**cm/m の取り違えはその場で分かる**。
 
 ---
@@ -460,6 +479,31 @@ dx12_attach_lua_component(entity: 88, script:"components/Rotate.lua")
 ```
 
 ### 4b. カスタムシェーダーを作ってメッシュに割り当てる
+
+**書き始める前に 2 つ読む**（白紙から 200 行を書くのは失敗率が高い）:
+
+```
+dx12_list_shader_templates()                     # 動く雛形(water / ocean / particle_ember)
+dx12_describe_shader_contract(kind:"mesh")       # b0/b1 の中身・テクスチャ・入出力・落とし穴
+# kind: mesh(既定) / particle / sprite / screen。★契約が全部違うので取り違えないこと
+dx12_create_shader(name:"Sea", template:"ocean") # 雛形から起こす(code 省略可)
+```
+
+★**割り当てただけでは動かない**。b0 の自由枠(effectValue / shaderParams / shaderParamsB)は
+最初 0 なので、波の高さ 0・流速 0 の水面のように「貼ったのに何も起きない」状態になる。
+
+```
+dx12_set_mesh_shader(name:"Sea_Plane", shaderPath:"Sea.hlsl")
+dx12_set_mesh_shader_params(name:"Sea_Plane", effect:1.0, params:[0.6, 1.2, 0.35, 0], paramsB:[0.2, 0, 0])
+# → 現在値が全部返る。意味は各シェーダーのヘッダコメント(dx12_read_shader で読める)
+```
+
+時間で動かす(溶ける・波が高くなる)口は 3 つ:
+- Lua: **`shader.set("Sea", { effect = 0.4, p1 = 0.6 })`** / `shader.get(target)`(v1.18.0+。渡した項目だけ書く)
+- 演出: `dx12_sequence_author` の `shaderParam` トラック(現在値から目標値へイージングで動かす)
+- 配線: Trigger の `AnimShaderParam`(actions の type:12)
+
+自分で全部書く場合:
 
 ```
 dx12_create_shader(name:"ToonShade", code:[[
@@ -1523,6 +1567,248 @@ dx12_screenshot_game_view()
 **影が落ちるのは spot 4 / point 2 のまま**＝灯数の上限が消えても影の上限は消えていない。
 **超えた分は無言で描画されない**（パーティクルの発光ライトも枠を使う）。
 「増やしたのに明るくならない」はほぼこれ。
+
+### ワークフロー: ルック(絵作り)を決める — 光・空気・グレーディングを 1 セットで
+
+ポストは約 90 フィールドある。1 つずつ触っても「それっぽい絵」にはならない
+（bloom と exposure だけ上げて終わる、が典型）。映画的な絵は
+**光 → 空気(フォグ) → グレーディング** の 3 段が噛み合って初めて出る。
+
+```
+dx12_look_library()                        # 13 種。tag で絞る(night / stylized / indoor …)
+dx12_look_library(id:"neon_noir")          # 1 つの全フィールドの実値と注意書き
+
+dx12_look_apply(preset:"golden_hour")                    # 太陽 + フォグ + 空 + ポストを全部
+dx12_look_apply(preset:"horror_candle", strength:0.6)    # ポストだけ 6 割の効き
+dx12_look_apply(preset:"neon_noir", parts:["post"])      # 今の光は壊さずグレーディングだけ乗せる
+dx12_look_apply(preset:"clean_studio", dryRun:true)      # 何も変えずに適用値を見る
+```
+
+- `strength`(0..1) は**ポストにだけ**効き、0 に向かって **無味無臭の値**へ寄る
+  （0 になるのではない。contrast を 0 にしたら灰色になってしまう）。太陽とフォグは常に指定どおり。
+- 当てた後は **必ずエンジンから読み返して** `currentPost` を返す。
+  食い違いは `mismatched` に出る（＝「当てたのに変わらない」を AI 自身が検知できる）。
+- `dx12_apply_lighting_preset`(エンジンの 6 種)は**土台**（エディタのライティング窓と同じ実装）。
+  `dx12_look_apply` はその上に乗せる**仕上げ**。両方使ってよい。
+
+**ルック一覧**: golden_hour / blue_hour / moonlit_night / overcast_gloom / neon_noir /
+horror_candle / clean_studio / anime_daylight / desert_heat / underwater / film_noir /
+dreamy_soft / retro_vhs。それぞれ `pairsWith` に相性の良い VFX が入っている
+（neon_noir なら rain + steam_vent、horror_candle なら candle + ground_mist）。
+
+#### 絵作りで踏む罠
+
+- **暗いルックは「光源を置いてから」当てる**。真っ暗なシーンに horror を当てても真っ黒なだけ。
+  `dx12_look_apply` は、太陽を消すルックなのにライトが 1 つも無いと警告を返す。
+- **envMap(HDRI)があると `DirectionalLight.ambient` は無視される**。暗くならないときはこれ。
+  `dx12_set_scene_settings` で `iblIntensity` を下げるか、`parts` に `sky` を含めること。
+- **フォグとゴッドレイを両方強くすると太陽の散乱が二重に乗る**。どちらかを主役にする。
+- **`<name>On` を立てないと数値は効かない**。ルックは必ずスイッチ込みで当てる（テストで担保）。
+- **彩度の高い光源(ネオン/魔法)が ACES で色割れする**ときは `tonemapper:1`(AgX)。
+  neon_noir / anime_daylight / dreamy_soft は既にそうしてある。
+
+### ワークフロー: エフェクト(VFX)を置く — レシピ → 置く → 時間で見る
+
+炎・煙・魔法・爆発・雨のようなパーティクルは **1 レイヤーでは絶対にそれらしくならない**
+（本物の炎は「炎＋煙＋火の粉」）。レシピ集から複数レイヤーごと置くのが速い。
+
+```
+# ① 何が作れるか（33 レシピ。tag で絞れる: fire/smoke/magic/impact/weather/water/electric/trail/ambient）
+dx12_vfx_library(tag:"fire")
+# → presets:[{id:"torch", title:"松明の炎", layers:3, layerNames:["Flame","Smoke","Sparks"], ...}]
+dx12_vfx_library(id:"campfire")        # 1 つの全レイヤーの実値と注意書きまで見る
+
+# ② 置く（新規エンティティを作るか、既存へ付ける。倍率で調整）
+dx12_vfx_apply(preset:"torch", position:[3, 2.1, -4], parentName:"FX")
+dx12_vfx_apply(preset:"magic_circle", position:[0,0.05,0], scale:1.5, color:[0.9,0.2,0.2])
+dx12_vfx_apply(preset:"explosion", name:"Boss_DeathFX")     # 既存エンティティに付ける
+dx12_vfx_apply(preset:"torch", dryRun:true)                  # 何も変えずに適用値だけ見る
+
+# ③ ★時間で見る（静止画 1 枚では「出ていない」のか「たまたま写っていない」のか分からない）
+dx12_vfx_preview(name:"FX_torch", seconds:2, frames:6, distance:3)
+# → 格子画像 + {visible, sceneLuma, stats:[{changedPct, effectPeak, blownAreaPct, motionPct}], suggestions}
+dx12_vfx_preview(name:"FX_explosion", fire:true, seconds:1, frames:8)   # ワンショットを試し撃ち
+```
+
+`dx12_vfx_preview` は **先に放出器を一時的に遠くへ退けて「効果が無いときの絵」を 1 枚撮り**、
+それとの差で効果の面積・明るさ・白飛びを数える（撮り終わったら必ず元へ戻す）。
+フレーム間の差だけで測ると、**同じ場所で燃え続ける炎を「出ていない」と誤判定する**ため。
+
+**倍率**: `scale`(大きさ。size/speed/offset/lightRange) / `rate`(密度) / `intensity`(HDR 強度) /
+`color`(加算レイヤーの主色だけ。煙は元の色のまま・終了色は明度比を保って追従) / `oneShot` / `life` / `light`。
+
+#### ★パーティクルで「安っぽく」なる 3 つの原因（実測して分かった）
+
+1. **密度 × 強度の掛けすぎ**。加算ブレンドは重なった枚数だけ足し算になるので、
+   `rate` を上げたまま `intensity` を上げると **芯が真っ白に潰れて色も形も消える**
+   （松明を intensity 4.0 で置くと、暗い部屋でもただの白い球にしかならなかった）。
+   粒が重なる層は **rate × intensity ≒ 50** が目安（rate 34 → 1.6 / rate 55 → 1.0 / rate 80 → 0.9）。
+   逆に**火の粉・星屑のような細かくて重ならない粒は intensity 6〜8 で構わない**。
+   「点が光っている」ように見せる唯一の作り方で、炎の中の粒立ちもこれで出す。
+2. **大きい Glow を強くする**。`kind:0`(Glow) は 1 枚でも画面を覆うので、size 0.5 以上なら
+   intensity は 1.2 まで。魔法陣の中心を size 0.9 / intensity 2.0 にしたら、
+   リングが見えない **白いドーム** になった。
+3. **色が淡い**。加算＋ブルームは色を白へ流すので、`[0.6,0.9,1.0]` のような淡い青は画面では
+   **ただの白**になる。狙った色相を残すなら `[0.25,0.65,1.0]` くらいまで濃くして指定する。
+
+その他の定石:
+- **煙・埃・血・雪・灰は `blend:1`(前乗算アルファ)**。加算にすると白く光って煙に見えない。
+- **暗いアルファの粒は暗い背景では文字通り見えない**。煙や血の確認は明るい床/空を背にして撮ること。
+- **上へ立ち上る物は `gravity` を正**にする（浮力）。落ちる物は負。
+- `light:true` は明るい粒を実ポイントライト化する。**ライト予算を食う**ので、同じ効果を 4 個以上
+  並べるなら `light:false` で置いて代表 1 個だけ点ける（`dx12_list_lights` で確認）。
+- CPU パーティクルの上限は**シーン全体で 8000 粒**。`dx12_vfx_apply` の返り値
+  `estimatedLiveParticles` で 1 個あたりの目安が分かる。大量に撒く雨/雪は `gpu:true`（別枠 131072）。
+- **ワンショット(explosion / impact_sparks / dust_puff …)は置いただけでは鳴らない**。鳴らす口は 3 つ:
+  - Lua: **`fx:play("FX_Boom")`**(v1.18.0+。レイヤー名を渡せば 1 枚だけ。`fx:stop` で止める)
+  - 演出: `dx12_sequence_author` の `vfxPlay` / `vfxStop` トラック
+  - 配線: Trigger の `PlayEffect`(type:4, target:放出器の名前)
+
+  確認だけなら `dx12_vfx_preview(fire:true)`（内部で `fx:play` を撃つので **Editor のまま鳴る**）。
+
+#### レシピから外れた微調整（生のレイヤー操作）
+
+```
+dx12_list_particle_layers(name:"FX_torch")                  # index / name を見る
+dx12_set_component(name:"FX_torch", component:"particleEmitter", layer:1,
+                   data:{ rate: 4, size: 0.3 })              # layer 指定で 2 枚目を触る
+dx12_add_particle_layer(name:"FX_torch", layerName:"Ash")    # 4 枚目を足す（上限 16）
+dx12_remove_particle_layer(name:"FX_torch", layer:"Ash")     # 最後の 1 枚は消せない
+```
+
+`layer` を省いた `set_component` は **1 枚目だけ**を書き換える（レイヤーは追加されない）。
+2 枚目以降を触るには必ず `layer`(index か名前)を渡すこと。
+
+#### 粒に自作シェーダーを貼る
+
+```
+dx12_describe_shader_contract(kind:"particle")   # ★書く前に必ず読む(mesh とは別契約)
+dx12_list_shader_templates()                      # 動く雛形から始める
+dx12_create_shader(name:"Ember", template:"particle_ember")
+dx12_set_component(name:"FX_torch", component:"particleEmitter", layer:0,
+                   data:{ shaderPath:"Ember.hlsl" })
+```
+
+### ワークフロー: 演出(カットシーン)を作る — 台本 → 生成 → 流して見る
+
+カメラ・ポスト・時間・エフェクト・音が【同じ時間軸で噛み合って】初めて演出になる。
+Lua を手書きすると毎回ちがう自己流の状態機械が生えて、スローモを入れた瞬間に台本が壊れる。
+
+```
+dx12_sequence_author(
+  name: "BossReveal",
+  camera: "CutsceneCam",        # ★CameraComponent を持つエンティティ名
+  activateCamera: true,          # そのカメラを「映るカメラ」にする
+  tracks: [
+    { t:0.0, type:"fade",   to:"clear", dur:0.8 },
+    { t:0.0, type:"camera", from:[0,6,14], to:[0,2.2,6], lookAtName:"Boss", dur:3.2, ease:"inOut" },
+    { t:0.4, type:"sound",  path:"audio/boss_theme.wav", bgm:true },
+    { t:2.6, type:"vfx",    preset:"explosion", atName:"Boss", scale:1.4 },
+    { t:2.6, type:"shake",  amp:0.35, freq:26, dur:0.7 },
+    { t:2.6, type:"timeScale", value:0.25 },
+    { t:3.1, type:"timeScale", value:1.0, dur:0.4 },
+    { t:3.2, type:"post",   set:{ saturation:1.35, contrast:1.2 }, dur:1.0 },
+    { t:4.4, type:"event",  name:"bossFightStart" },
+  ])
+# → components/BossReveal.lua を生成して SEQ_BossReveal に貼る
+#   {duration, trackCount, playEvent, stopEvent, doneEvent, referenced, warnings}
+
+dx12_sequence_preview(name:"BossReveal", seconds:5, frames:6)
+# → ゲーム画面の連写(格子画像) + frameDiffs + recentLog
+```
+
+**track の type**: `camera`(移動+注視) / `fade`(black|white|clear) / `post`(グレーディングを時間で) /
+`timeScale`(スローモ・ヒットストップ) / `shake`(画面揺れ) / `vfx`(VFX レシピをその場で撃つ) /
+`vfxPlay`・`vfxStop`(**置いてある放出器**を鳴らす/止める) / `shaderParam`(カスタムシェーダーの値を時間で動かす) /
+`sound`(SFX/BGM) / `move`・`rotate`(物を動かす) / `light`(明るさ・色) / `event`(Lua イベント) /
+`scene`(フェードして遷移) / `log`。共通で `t`(開始秒) `dur`(長さ)
+`ease`(linear/in/out/inOut/outBack/outBounce)。
+
+```
+# 置いた多層エフェクトを鳴らす(fx:burst と違い Inspector で組んだ構成をそのまま使う)
+{ t:2.6, type:"vfxPlay", target:"FX_BossAura" }
+{ t:5.0, type:"vfxStop", target:"FX_Rain", layer:"Drops" }
+# カスタムシェーダーを時間で動かす(param: effect / p1..p4 / b1..b3)
+{ t:0.2, type:"shaderParam", target:"Sea", param:"effect", from:0, to:1, dur:2.5, ease:"inOut" }
+```
+
+生成された Lua は**読める・手で直せる**。ただし同じ `name` で撃ち直すと上書きされる。
+他のスクリプトからは `events:emit("<name>:play")` / `("<name>:stop")` で操作でき、
+終わると `"<name>:done"` が飛ぶ。
+
+#### 演出で踏む罠（全部ツール側で先回りしてある）
+
+- **★動かすカメラが「映るカメラ」でないと画面は 1mm も変わらない**。
+  CameraComponent は `isActive` が立っている 1 つだけが使われる。
+  `dx12_sequence_author` は今アクティブなカメラを調べ、食い違っていれば警告する
+  （`activateCamera:true` で切り替える。`camera` 省略時はアクティブなカメラを自動で使う）。
+- **★`dx12_set_editor_camera` の固定が残っているとゲーム画面が撮れない**。
+  固定中はゲームカメラの同期が止まるので、演出が動いても静止画が並ぶだけになる。
+  `dx12_sequence_preview` は撮る前に必ず `release` する（VFX プレビューも後始末で外す）。
+- **時計はタイムスケール非適用(`time.realDt()`)**。スローモを掛けても台本は実時間で流れる
+  （スケール適用だと「0.25 倍速の 3 秒後」が実時間 12 秒になって台本が壊れる）。
+- **終了時にタイムスケールを 1.0 へ戻す**。演出がスローモのまま終わるとゲームが壊れるため。
+- **画面揺れは前フレームぶんを引いてから足す**。足しっぱなしだとカメラが少しずつ漂う。
+- **グローバルの `camera` を Lua から動かしても無駄**。毎フレーム
+  `ApplyCameraTransformToGlobal` が上書きするので、**カメラ役エンティティの transform** を動かす。
+  生成コードはそうなっている（pitch の符号反転も込み）。
+- `scene` トラックの後ろに置いたトラックは実行されない（遷移でスクリプトごと消える）。検査が警告する。
+
+### ワークフロー: 汚れ・傷を入れる（デカール）
+
+弾痕・焦げ・血・水たまり・苔・汚れは「そこで何かが起きた」を語る。1 つも無い床は、
+どれだけ光を凝っても**出荷前のショールーム**に見える。
+
+```
+dx12_decal_library()                 # 14 種。床専用か壁にも貼れるかが surface に出る
+dx12_decal_apply(preset:"dirt",   position:[0,0,0], size:2.4, opacity:0.4)
+dx12_decal_apply(preset:"bullet_hole", position:[1,1.2,-3], normal:[0,0,1], count:6, spread:0.5)
+dx12_decal_apply(preset:"puddle", position:[2,0,1], size:2)     # roughness を落とすので SSR で映る
+dx12_decal_apply(preset:"scorch", position:[0,0,0], dryRun:true) # 姿勢と値だけ見る
+```
+
+- **面の座標と法線は `dx12_raycast_precise` / `dx12_pick` の `worldPos` / `worldNormal` をそのまま渡す**のが正確。
+  `normal` 省略は「床(真上)」扱い。
+- `count` を渡すと**大きさ・向き・位置を散らして**複数枚貼る（同じ判が並ぶと一発で嘘に見える）。
+- 初回に **アトラス画像を手続き生成**して `assets/textures/decals/atlas.png` に置き、
+  シーンの `decalAtlasPath` に設定する（**アトラスが無いとデカールは無言で何も出ない**ため）。
+
+#### デカールで踏む罠
+
+- ★**エディタのグリッド平面と床が同じ高さだと、グリッドが上に描かれてデカールが見えない**
+  （グリッドはデカールを受けない）。「貼ったのに出ない」ときは床を少し上げるか Grid を消して確認する。
+- ★**箱は面をまたぐように置く**（中心＝面）。法線方向へずらすと面が箱の底面に来て、
+  縁フェードで 0 になり何も描かれない。`dx12_decal_apply` はそう置いている。
+- **`puddle` / `blood_pool` / `oil` / `snow` は角度フェードが小さい＝ほぼ水平面専用**。
+  壁に貼ると薄くなって消える（ツールが先に警告する）。壁には `dirt` / `leak` / `blood_splatter`。
+- **投影軸はデカールのローカル +Y**。面内で回したいときは `rotationDeg`（法線まわりの回転として扱う）。
+  euler の roll に直接入れると投影軸ごと傾いて薄くなる。
+- 上限は**シーン全体で 256 枚 / クラスタ 1 マスあたり 16 枚**。密集させると切り捨てられる
+  （`dx12_render_debug(mode:"decalCount")` で白くなる所が切り捨て中）。
+
+### ワークフロー: 「まだ安っぽい」を潰す — `dx12_polish_audit`
+
+`dx12_diagnose` は**壊れているか**、`dx12_look_compare` は**参照画像との差**を見る。
+参照が無い状態で「作りかけに見える理由」を言うのがこれ。
+
+```
+dx12_polish_audit()                      # 最終画も撮って全カテゴリ
+dx12_polish_audit(screenshot:false)      # 設定だけ見る(速い)
+dx12_polish_audit(only:["light","air"])  # カテゴリを絞る
+# → {score, verdict, findings:[{category, severity, what, why, fix}], facts}
+```
+
+`findings` は**効く順**（光 → 空気 → 階調 → 動き → 素材 → 接地 → 絵そのもの）に並び、
+各項目に **why（なぜ安っぽく見えるか）** と **fix（そのまま撃てるコマンド）** が付く。
+上から順に `fix` を実行して撃ち直せばスコアが上がる（実測: 既定シーン 34 →
+`dx12_look_apply` + `dx12_vfx_apply(dust_motes)` + SSAO + コンタクトシャドウで 64）。
+
+拾うもの: HDRI が無く手続き空のまま / 光源が 1 灯だけ / 影を落とすライトが無い /
+フォグが無い / ポスト素通し / ブルーム無し / 動くものがゼロ / 法線マップ無し /
+PBR が既定のまま / SSAO 無し / 眠い絵（実効レンジ < 0.35）/ 白飛び / 真っ黒すぎ / 彩度ゼロ。
+
+**読めなかった項目は判定しない**（「読めなかった」を「無い」と決めつけない）ので、
+Play 中や一部 API が使えない状況でも嘘を言わない。
 
 ### ワークフロー: 壊れてないか 1 発で確認する
 

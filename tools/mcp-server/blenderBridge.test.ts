@@ -13,7 +13,8 @@
 
 import assert from "node:assert/strict";
 import {
-  blenderCandidatePaths, buildExportScript, modelBrief, parseCodeResult, planImageRenames,
+  blenderCandidatePaths, buildExportScript, buildMaterialScript, buildPolishScript, modelBrief,
+  parseCodeResult, planImageRenames,
 } from "./blenderBridge.ts";
 
 let passed = 0;
@@ -62,6 +63,23 @@ console.log("\n[4-6] buildExportScript（罠が埋まっているか）");
   const win = buildExportScript({ objectNames: [], outPath: "C:\\a\\b.glb" });
   assert.ok(win.includes('"C:/a/b.glb"'));
   pass("Windows のパス区切りを / に直して埋める");
+
+  // ★拡張子から形式を決めて渡すこと。渡さないと既定の GLB になり、
+  //   models/rock.gltf を頼んだのに rock.glb ができて参照が全部切れる（実際に踏んだ）。
+  assert.ok(buildExportScript({ objectNames: [], outPath: "a/x.gltf" })
+            .includes('EXPORT_FORMAT = "GLTF_SEPARATE"'));
+  assert.ok(buildExportScript({ objectNames: [], outPath: "a/x.glb" })
+            .includes('EXPORT_FORMAT = "GLB"'));
+  pass("拡張子から書き出し形式を決めて渡す");
+
+  assert.ok(code.includes("頼んだパスにファイルができていない"));
+  pass("書き出し後に実在を確かめて、違えば error を返す");
+
+  // PNG マジックが JS のテンプレートリテラルに食われて改行で割れていないこと
+  const mat0 = buildMaterialScript({ objectNames: [], assetId: "a" });
+  const pngLine = mat0.split("\n").find((l) => l.includes("png = b"));
+  assert.ok(pngLine && pngLine.includes("x89PNG"), "PNG マジックが壊れている: " + pngLine);
+  pass("PNG マジックがテンプレートリテラルに食われていない");
 }
 
 // ─── [7-9] planImageRenames ─────────────────────────────────────────────────
@@ -104,6 +122,77 @@ console.log("\n[11] blenderCandidatePaths");
   assert.ok(p[0].includes("Blender 5.2"), "新しい版が先頭");
   assert.ok(p.every((x) => x.endsWith("blender.exe")));
   pass("新しい版から順に候補を返す");
+}
+
+// ─── [12-17] buildPolishScript（「うすぺらい」を消す幾何の処理） ─────────────
+console.log("\n[12-17] buildPolishScript（罠が埋まっているか）");
+{
+  const code = buildPolishScript({ objectNames: ["Crate"] });
+
+  // ★スケール適用がベベルより【前】に来ていること。順番が逆だと軸ごとに幅が変わる。
+  const iScale = code.indexOf("transform_apply");
+  const iBevel = code.indexOf("'BEVEL'");
+  assert.ok(iScale > 0 && iBevel > 0 && iScale < iBevel,
+    `スケール適用(${iScale}) がベベル(${iBevel}) より前に来ていない`);
+  pass("スケール適用がベベルより前に来る（幅が軸ごとに変わるのを防ぐ）");
+
+  assert.ok(code.includes("harden_normals"), "ベベルの陰影が平面へ漏れないように");
+  pass("harden normals が入っている");
+
+  assert.ok(code.includes("WEIGHTED_NORMAL"));
+  pass("加重法線が入っている");
+
+  // Blender 4.1 で消えた API を使っていないこと
+  assert.ok(!code.includes("use_auto_smooth"), "4.1 以降で消えた API");
+  assert.ok(code.includes("shade_auto_smooth"));
+  pass("自動スムーズは新しい API を使う（use_auto_smooth は 4.1 で消えた）");
+
+  assert.ok(code.includes("cube_project"), "実寸で UV を切り直す");
+  pass("UV を実寸で切り直す（既定 UV は面ごとに 0..1 で縮尺が合わない）");
+
+  assert.ok(code.includes("SOLIDIFY"));
+  pass("厚みゼロの板に Solidify を掛ける");
+
+  // 数値がそのまま埋まること
+  const custom = buildPolishScript({ objectNames: [], bevelWidth: 0.005, bevelSegments: 3, smoothAngle: 40 });
+  assert.ok(custom.includes("BEVEL_W = 0.005") && custom.includes("BEVEL_SEG = 3")
+            && custom.includes("SMOOTH_ANGLE = 40"));
+  pass("指定した数値がスクリプトに埋まる");
+}
+
+// ─── [18-21] buildMaterialScript（PolyHaven の PBR） ────────────────────────
+console.log("\n[18-21] buildMaterialScript（ORM の扱い）");
+{
+  const code = buildMaterialScript({ objectNames: ["Crate"], assetId: "brown_planks_05" });
+
+  // ★arm（ORM 済み）を優先すること
+  assert.ok(code.includes('grab("arm")'));
+  pass("arm（ORM 済みマップ）を優先して使う");
+
+  // ★rough 単体をそのまま metallicRoughness にすると B に粗さが入って金属になる。
+  //   合成側で B=0 を書いていることを確かめる。
+  assert.ok(/bytes\(\(r, g, 0\)\)/.test(code), "合成 ORM の B が 0 でない");
+  pass("arm が無いときは B=0 の ORM を合成する（木が金属になるのを防ぐ）");
+
+  // glTF エクスポータが metallicRoughness と認識する結線
+  assert.ok(code.includes('sep.outputs["Green"]') && code.includes('bsdf.inputs["Roughness"]'));
+  assert.ok(code.includes('sep.outputs["Blue"]') && code.includes('bsdf.inputs["Metallic"]'));
+  pass("G→Roughness / B→Metallic に結線する（エクスポータが認識する形）");
+
+  assert.ok(code.includes('grab("nor_gl")') && !code.includes('grab("nor_dx")'));
+  pass("法線は OpenGL 規約（nor_gl）だけを取る");
+}
+
+// ─── [22] modelBrief に実測で分かった項目が入っているか ─────────────────────
+console.log("\n[22] modelBrief（実測に基づく注意）");
+{
+  const b = modelBrief("prop");
+  assert.ok(b.rules.some((r) => r.includes("ベベル")), "うすぺらいの主因");
+  assert.ok(b.rules.some((r) => r.includes("UV は実寸")), "既定 UV は面ごとに 0..1");
+  assert.ok(b.materials.some((m) => m.includes("PolyHaven")), "素材の入手先");
+  assert.ok(b.materials.some((m) => m.includes("B=metallic")), "ORM の並び");
+  assert.ok(b.gotchas.some((g) => g.includes("HDRI")), "環境光が無いと質感が出ない");
+  pass("ベベル / 実寸 UV / PolyHaven / ORM / HDRI が全部入っている");
 }
 
 console.log(`\nOK: ${passed} 件すべて成功`);

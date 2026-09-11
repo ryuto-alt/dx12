@@ -170,6 +170,22 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   "dx12_record_playtest", "dx12_run_playtests",
   // Blender 連携: engine method ではなく Blender のソケットとファイル操作。
   "dx12_blender_ensure", "dx12_model_brief", "dx12_blender_export", "dx12_asset_gap",
+  "dx12_blender_polish", "dx12_blender_material", "dx12_scene_env",
+  // VFX: レシピ(vfx.ts)を TS 側で解決してから create_entity / add_particle_layer /
+  // set_component / step_frames / screenshot_final として届く合成ツール。
+  "dx12_vfx_library", "dx12_vfx_apply", "dx12_vfx_preview",
+  // ルック: lookDev.ts のプリセットを set_sun / set_volumetric_fog /
+  // set_scene_settings / set_post_process へ分解して撃つ合成ツール。
+  "dx12_look_library", "dx12_look_apply",
+  // 演出: 台本(sequence.ts)から Lua を生成して create_lua_component /
+  // attach_lua_component / play / step_frames / screenshot_final として届く。
+  "dx12_sequence_author", "dx12_sequence_preview",
+  // 仕上がり検査: get_scene_settings / list_lights / get_* / list_entities /
+  // screenshot_final を集めて polish.ts で判定する読み取り専用の合成ツール。
+  "dx12_polish_audit",
+  // デカール: アトラス PNG の手続き生成 + create_entity / set_transform /
+  // set_component / set_scene_settings を畳んだ合成ツール。
+  "dx12_decal_library", "dx12_decal_apply",
 ]);
 
 /**
