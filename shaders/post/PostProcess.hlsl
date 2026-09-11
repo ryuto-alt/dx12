@@ -365,22 +365,34 @@ float4 PostPS(FSQuadVSOut i) : SV_TARGET
 
     // ===== HDR ステージ（トーンマップ前・リニア輝度に対して行う） =====
 
-    if (mask & E_AUTOEXP)    col *= gExposureBuf[0];             // 自動露出（GPU内で完結）
-    if (mask & E_EXPOSURE)   col *= cg0.x;                       // 露出（手動・自動の上乗せ可）
+    // ★露出は「シーン」と「シーンから作った光の滲み」の**両方**へ同じだけ掛ける。
+    //   ブルーム / ゴッドレイ / レンズフレアは露出を掛ける**前**のシーンから作られ、
+    //   露出を掛けた**後**に加算されていた。つまり露出だけが片側にしか掛からず、
+    //   シーンと滲みの比率が露出で崩れていた:
+    //     ・暗いシーンで露出を上げる → シーンだけ明るくなり**光暈が消える**
+    //     ・明るいシーンで露出を下げる → シーンだけ暗くなり**滲みだけが残って白く濁る**
+    //   自動露出は明るさに応じてこの倍率を動かし続けるので、併用すると破綻が常時起きる
+    //   （＝自動露出が実質使い物にならない。実際どのルックも autoExposureOn を使っていない）。
+    //   ★E_AUTOEXP も E_EXPOSURE も無いときは expo = 1.0 なので、
+    //     既存シーンの絵は 1 ビットも変わらない（float の 1.0 倍は厳密）。
+    float expo = 1.0;
+    if (mask & E_AUTOEXP)    expo *= gExposureBuf[0];            // 自動露出（GPU内で完結）
+    if (mask & E_EXPOSURE)   expo *= cg0.x;                      // 露出（手動・自動の上乗せ可）
+    col *= expo;
 
     // --- ブルーム（BloomPass のダウン/アップサンプルチェーン結果を合成）---
     // トーンマップ前のリニアHDRで合成するので、光源・発光体の輝度エネルギー(>1)が正しく咲く。
     // gBloom はビューポートローカル 0..1（UVエフェクト後の luv でサンプルして歪みと整合させる）
     if (mask & E_BLOOM)
-        col += gBloom.Sample(gSamp, saturate(luv)).rgb * cg1.z;
+        col += gBloom.Sample(gSamp, saturate(luv)).rgb * cg1.z * expo;
 
     // --- ゴッドレイ（強度焼き込み済み・シーンと同レイアウトなので uv でサンプル）---
     if (mask & E_GODRAYS)
-        col += gGodrays.Sample(gSamp, uv).rgb;
+        col += gGodrays.Sample(gSamp, uv).rgb * expo;
 
     // --- レンズフレア（強度焼き込み済み・ローカル 0..1）---
     if (mask & E_LENSFLARE)
-        col += gFlare.Sample(gSamp, saturate(luv)).rgb;
+        col += gFlare.Sample(gSamp, saturate(luv)).rgb * expo;
 
     // ===== トーンマップ（ACES）+ ガンマ =====
     // ここから先は表示基準(LDR, 0..1)の色として扱う
