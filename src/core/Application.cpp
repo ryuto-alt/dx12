@@ -2250,9 +2250,9 @@ void Application::Update()
         // GetAsyncKeyState はフォーカスに関係なく物理キー状態を読むため、ウィンドウが前面に
         // いる時だけ有効化する（別アプリ作業中の ` / Ctrl+Z / WASD などがエディタに効くのを防ぐ）。
         bool kbActive = isForeground && !ImGui::GetIO().WantCaptureKeyboard;  // 非フォーカス/テキスト入力中は無効
-        if (kbActive && (GetAsyncKeyState(VK_OEM_3) & 1))     // ` キーでトグル
+        if (kbActive && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false))     // ` キーでトグル
             m_editorCtx->flyMode = !m_editorCtx->flyMode;
-        if (m_editorCtx->flyMode && kbActive && (GetAsyncKeyState(VK_ESCAPE) & 1))
+        if (m_editorCtx->flyMode && kbActive && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
             m_editorCtx->flyMode = false;
 
         if (m_editorCtx->flyMode && kbActive && !m_inputSystem->IsMouseCaptured()
@@ -2291,8 +2291,19 @@ void Application::Update()
             if ((GetAsyncKeyState('S') & 0x8000) || (GetAsyncKeyState(VK_DOWN)  & 0x8000)) m_camera->MoveUp(-pan);
         }
 
+        // ★エディタのショートカットは ImGui のキー状態で判定する（GetAsyncKeyState を使わない）。
+        //   GetAsyncKeyState の下位ビットは「前回この関数をそのキーで呼んでから押されたか」という
+        //   **呼び出し側ごとに溜まるラッチ**で、読むまで消えない。下の Ctrl+Z/Y/C/V/D は
+        //   `!WantCaptureKeyboard` で囲まれているためテキスト入力中は 1 度も読まれず、
+        //   入力欄で打った 'V' や 'D' がラッチに残り続ける。入力を終えて Ctrl を握った瞬間に
+        //   まとめて発火し、**貼り付け・複製・Undo が勝手に走る**（Ctrl+S / Ctrl+N も
+        //   Ctrl を押していない間は読まれないので同じ事故を起こす）。
+        //   ImGui::IsKeyPressed(key, /*repeat=*/false) はフレーム単位の立ち上がり判定で、
+        //   読まなかったフレームの押下が後から湧いてくることがない。
+        ImGuiIO& shortcutIo = ImGui::GetIO();
+
         // Ctrl+S でクイック保存
-        if (isForeground && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('S') & 1))
+        if (isForeground && shortcutIo.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
         {
             if (m_editorCtx->currentScenePath.empty())
             {
@@ -2323,7 +2334,7 @@ void Application::Update()
         }
 
         // Ctrl+N で新規シーン名入力ダイアログを開く
-        if (isForeground && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && (GetAsyncKeyState('N') & 1))
+        if (isForeground && shortcutIo.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false))
         {
             m_editorCtx->showNewSceneDialog = true;
             m_editorCtx->newSceneDialogIsCreate = true;
@@ -2333,16 +2344,16 @@ void Application::Update()
 
         // Undo/Redo (Ctrl+Z / Ctrl+Y) + Copy/Paste/Duplicate (Ctrl+C/V/D)
         // ImGui のテキスト入力にフォーカスがある時、ウィンドウが裏にある時はエンティティ操作を抑制
-        if (isForeground && (GetAsyncKeyState(VK_CONTROL) & 0x8000) && !ImGui::GetIO().WantCaptureKeyboard)
+        if (isForeground && shortcutIo.KeyCtrl && !shortcutIo.WantCaptureKeyboard)
         {
-            if (GetAsyncKeyState('Z') & 1)
+            if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
                 m_editorCtx->pendingUndo = true;
-            if (GetAsyncKeyState('Y') & 1)
+            if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
                 m_editorCtx->pendingRedo = true;
 
             // コピー (Ctrl+C) — 選択の最上位ごとにサブツリー（子孫+Lua+コライダー込み）を
             // JSON スナップショットで保持。親子両方選択時の子二重コピーは TopmostRoots が防ぐ
-            if (GetAsyncKeyState('C') & 1)
+            if (ImGui::IsKeyPressed(ImGuiKey_C, false))
             {
                 m_editorCtx->clipboard.clear();
                 for (auto e : SceneSerializer::TopmostRoots(*m_scene, m_editorCtx->selectedEntities))
@@ -2355,11 +2366,11 @@ void Application::Update()
             }
 
             // ペースト (Ctrl+V) — フレーム境界（cmdList 有効時）で生成
-            if ((GetAsyncKeyState('V') & 1) && !m_editorCtx->clipboard.empty())
+            if (ImGui::IsKeyPressed(ImGuiKey_V, false) && !m_editorCtx->clipboard.empty())
                 m_editorCtx->pendingPastes = m_editorCtx->clipboard;
 
             // 複製 (Ctrl+D) — 全コンポーネントのディープコピー
-            if ((GetAsyncKeyState('D') & 1) && m_editorCtx->HasSelection())
+            if (ImGui::IsKeyPressed(ImGuiKey_D, false) && m_editorCtx->HasSelection())
             {
                 for (auto e : m_editorCtx->selectedEntities)
                     m_editorCtx->pendingDuplications.push_back(e);
@@ -2372,19 +2383,22 @@ void Application::Update()
             // フライモード中・2Dビュー中は W/E/R/T をカメラ移動(パン)に使うのでギズモ切替は抑制
             if (!m_editorCtx->flyMode && !m_editorCtx->view2D)
             {
-                if (GetAsyncKeyState('W') & 1) m_editorCtx->gizmoMode = GizmoMode::Translate;
-                if (GetAsyncKeyState('E') & 1) m_editorCtx->gizmoMode = GizmoMode::Rotate;
-                if (GetAsyncKeyState('R') & 1) m_editorCtx->gizmoMode = GizmoMode::Scale;
-                if (GetAsyncKeyState('T') & 1) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
+                // ★ImGui のキー判定を使う理由は Ctrl 系ショートカットと同じ（上のコメント参照）。
+                //   GetAsyncKeyState のラッチだと、名前欄に "wall" と打って抜けた瞬間に
+                //   W の押下が湧いてギズモが黙って移動モードへ切り替わる。
+                if (ImGui::IsKeyPressed(ImGuiKey_W, false)) m_editorCtx->gizmoMode = GizmoMode::Translate;
+                if (ImGui::IsKeyPressed(ImGuiKey_E, false)) m_editorCtx->gizmoMode = GizmoMode::Rotate;
+                if (ImGui::IsKeyPressed(ImGuiKey_R, false)) m_editorCtx->gizmoMode = GizmoMode::Scale;
+                if (ImGui::IsKeyPressed(ImGuiKey_T, false)) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
             }
 
             // F2: 編集用の照らし込み。暗い屋内シーンは「見えないから置けない」になるので、
             //     ビューポートにだけ環境光の下限を被せる。シーンには保存しない。
-            if (GetAsyncKeyState(VK_F2) & 1)
+            if (ImGui::IsKeyPressed(ImGuiKey_F2, false))
                 m_editorCtx->viewportFill = (m_editorCtx->viewportFill > 0.0f) ? 0.0f : 0.35f;
 
             // F: 選択エンティティにフォーカス（Unity 風）
-            if ((GetAsyncKeyState('F') & 1) && m_editorCtx->HasSelection())
+            if (ImGui::IsKeyPressed(ImGuiKey_F, false) && m_editorCtx->HasSelection())
             {
                 auto& reg = m_scene->GetRegistry();
                 auto sel = m_editorCtx->selectedEntity;

@@ -279,7 +279,12 @@ void LightHandlesFrame(entt::registry& reg, EditorContext& ctx, Camera* camera)
     //     (UE の Ctrl+L 相当。Ctrl+L は「新規スクリプト」に取られているので L 単独)
     // =======================================================================
     {
-        const bool keyHeld = ImGui::IsKeyDown(ImGuiKey_L) && !io.WantTextInput;
+        // ★修飾キーを握っている間は太陽ドラッグを拾わない。
+        //   L 単独に割り当てているのは Ctrl+L が「新規スクリプト」に取られているからで、
+        //   ここで Ctrl/Alt/Shift を除外しないと **Ctrl+L を押した人の太陽が黙って回る**
+        //   （ヘルプには「Ctrl+L = 新規スクリプト」と書いてあるので原因が分からない）。
+        const bool keyHeld = ImGui::IsKeyDown(ImGuiKey_L) && !io.WantTextInput
+                          && !io.KeyCtrl && !io.KeyAlt;
 
         if (!st.sunDragging && keyHeld && inViewport && !gizmoBusy)
         {
