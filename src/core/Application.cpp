@@ -1736,7 +1736,7 @@ void Application::Run()
         if (gvShot)
         {
             std::string serr;
-            const std::string p = CaptureSceneScreenshot(serr);
+            const std::string p = CaptureSceneScreenshot(serr, m_mcpGameViewPath);
             if (p.empty())
                 FailMcp(m_mcpBridge.get(), m_mcpGameViewReply, McpErr::Internal,
                         serr.empty() ? "screenshot failed" : serr);
@@ -1774,7 +1774,7 @@ void Application::Run()
             std::string rerr;
             const std::string rpath = (m_renderDebugModeName == "off")
                                     ? std::string("(no capture)")
-                                    : CaptureSceneScreenshot(rerr);
+                                    : CaptureSceneScreenshot(rerr, m_mcpRenderDebugPath);
 
             nlohmann::json warnJson = nlohmann::json::array();
             if (!m_renderDebugWarnings.empty())

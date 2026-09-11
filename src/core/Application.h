@@ -1247,6 +1247,10 @@ private:
     McpDeferred m_mcpStepReply;          // step_frames の遅延応答（N フレーム経過後に送る）。client=0 で無効。
     int         m_mcpStepFramesLeft = 0; // step_frames で残り何フレーム回すか。0 で非アクティブ。
     McpDeferred m_mcpGameViewReply;      // screenshot_game_view の遅延応答（1フレーム描画後に送る）。client=0 で無効。
+    // ★撮影先の絶対パス（空ならエンジンの CWD へ書く）。ヘッドレス起動では CWD が
+    //   書けない場所（C:\Windows\System32 等）になることがあり、その場合 WIC が開けず
+    //   撮影ごと失敗する。呼び出し側が path を指定できるようにするための受け皿。
+    std::string m_mcpGameViewPath;
     McpFinalShot m_mcpFinalShot;         // screenshot_final の状態（バックバッファ読み戻し）。
     // dx12_set_editor_camera が Play 中にカメラを固定している間 true（アクティブ CameraComponent の
     // 毎フレーム同期を止める）。Play/Stop の遷移と {"release":true} で解除。
@@ -1358,6 +1362,7 @@ private:
     // render_debug の遅延応答（N フレーム描いてからスクショを撮って返す）
     McpDeferred m_mcpRenderDebugReply;
     int         m_mcpRenderDebugFramesLeft = 0;
+    std::string m_mcpRenderDebugPath;    // render_debug の撮影先（同上。空で CWD）
     // 一時的に ON にした機能を元へ戻すためのスナップショット
     struct RenderDebugRestore
     {
