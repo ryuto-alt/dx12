@@ -7,6 +7,14 @@ Texture2D    g_normalMap      : register(t1);
 Texture2D    g_metalRoughness : register(t2);
 SamplerState g_sampler        : register(s0);
 
+// 自己発光（emissive、t24）。★材質 SRV ブロックの 4 枚目。
+//   レジスタは t0,t1,t2 から t24 へ飛んでいるが、ルートシグネチャの材質テーブルは
+//   OFFSET_APPEND なので**ヒープ上は t2 の直後**（graphics/RootSignature.cpp 参照）。
+//   t3..t23 は骨/影/IBL/SSAO/クラスタ/デカール/DDGI で埋まっていて、空きが t24 だけだった。
+//   ★pbrFlags bit3 が立っていないときは絶対にサンプルしないこと（材質ブロックを持たない
+//     フォールバック描画では 4 枚目が別物のディスクリプタになる）。
+Texture2D    g_emissive       : register(t24);
+
 // Bones (t3 - moved from t1)
 StructuredBuffer<float4x4> g_bones : register(t3);
 
@@ -61,7 +69,22 @@ cbuffer PBRMaterial : register(b2)
     uint  packedTint;
     // UV 変換 (xy=スケール, zw=オフセット)。MeshRenderer の UV スクロール/連番アニメ用。
     float4 uvScaleOffset;
+    // 自己発光（9 本目のルート定数）。詰め方の正は renderer/Material.h の PackEmissive()。
+    uint  packedEmissive;
 };
+
+// packedEmissive（b2）を放射輝度へ戻す。CPU 側 renderer/Material.h の PackEmissive と対。
+// ★0 なら丸ごと 0 を返す＝ emissive を持たないマテリアルは 1 ピクセルも変わらない。
+float3 UnpackEmissive(uint packed, float2 uv)
+{
+    if (packed == 0u) return 0.0;
+    const float3 c = float3((packed >> 16) & 0xFF, (packed >> 8) & 0xFF, packed & 0xFF) / 255.0;
+    // 強度は二乗で伸長（0 付近を細かく、ブルームに要る 1 超の領域まで 8bit で届かせるため）
+    const float n = float((packed >> 24) & 0xFF) / 255.0;
+    float3 e = c * (n * n * 64.0);
+    if (pbrFlags & 8u) e *= g_emissive.Sample(g_sampler, uv).rgb;
+    return e;
+}
 
 struct VSInput
 {
@@ -303,7 +326,10 @@ float4 PSMain(PSInput input) : SV_TARGET
                        ssgiConf);
     }
 
-    float3 color = ambient + Lo + decalEmissive;
+    // ===== 自己発光（emissive）=====
+    // ★影・AO・ライティングを一切通さずそのまま足す（デカールの emissive と同じ扱い）。
+    //   リニア HDR のまま出すので、1 を超えた分はブルームがそのまま拾う。
+    float3 color = ambient + Lo + decalEmissive + UnpackEmissive(packedEmissive, uv);
 
     // カスケード可視化デバッグ（shadowParams.w>0.5）
     if (shadowParams.w > 0.5f)

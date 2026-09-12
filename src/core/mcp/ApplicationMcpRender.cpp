@@ -468,6 +468,9 @@ void Application::RegisterMcpRenderMethods()
                          {"skippedTransparent", s.skippedTransparent},
                          {"skippedAlphaTest", s.skippedAlphaTest},
                          {"droppedOverLimit", s.droppedOverLimit},
+                         // TLAS 再利用（静止シーンでは組み直さない）。何フレーム連続で
+                         // 前フレームの TLAS を使い回しているか。0 = 今フレームは組み直した。
+                         {"tlasReuseFrames", s.tlasReuseFrames},
                          // スキンド（計画09 Step 4 / compute スキニング）
                          {"skinnedInstances", s.skinnedInstances},
                          {"skinnedTriangles", s.skinnedTriangles},

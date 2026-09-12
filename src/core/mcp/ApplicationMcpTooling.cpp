@@ -119,7 +119,10 @@ void Application::RegisterMcpToolingMethods()
             if      (slot == "albedo")         MeshRenderer::SetOverride(mr.overrideAlbedoTexture, submesh, rel);
             else if (slot == "normal")         MeshRenderer::SetOverride(mr.overrideNormalTexture, submesh, rel);
             else if (slot == "metalRoughness") MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, submesh, rel);
-            else throw McpError(McpErr::InvalidParam, "slot must be albedo|normal|metalRoughness");
+            // 自己発光。★テクスチャを貼っただけでは光らない（色×強度が既定で 0 のため）。
+            //   dx12_set_pbr の emissiveIntensity を一緒に上げること。
+            else if (slot == "emissive")       MeshRenderer::SetOverride(mr.overrideEmissiveTexture, submesh, rel);
+            else throw McpError(McpErr::InvalidParam, "slot must be albedo|normal|metalRoughness|emissive");
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"slot", slot},
                               {"submesh", submesh}, {"path", rel}};

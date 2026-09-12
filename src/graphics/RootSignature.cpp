@@ -14,12 +14,12 @@ void RootSignature::Initialize(GraphicsDevice& device)
     //   失敗して全描画が死ぬ）:
     //     slot0  32bit定数          40 DWORD
     //     slot1  CBV                 2 DWORD
-    //     slot5  32bit定数           8 DWORD
+    //     slot5  32bit定数           9 DWORD（8 → 9: 末尾 1 本が emissive。下記参照）
     //     slot2,3,4,6,7,8,9,10,11,12,13 テーブル × 11 = 11 DWORD
-    //     -------------------------------------- 合計 61 / 64
-    //   残り 3 DWORD。ディスクリプタテーブルはレンジを何本持っても 1 DWORD なので、
+    //     -------------------------------------- 合計 62 / 64
+    //   残り 2 DWORD。ディスクリプタテーブルはレンジを何本持っても 1 DWORD なので、
     //   これ以降 SRV を足す機能は新規スロットを取らず、既存テーブルへレンジを足して
-    //   相乗りすること（slot11 が既にその例＝クラスタ 3 本 + デカール予約 4 本）。
+    //   相乗りすること（slot2 が材質 t0..t2 + emissive t24、slot11 がクラスタ + デカール予約）。
     D3D12_ROOT_PARAMETER1 rootParams[14]{};
 
     // [0] Per-Object: 32bit constants (40 DWORDs = MVP(16) + Model(16) + CustomEffect(1) + pad(3) + CustomParams(4))
@@ -40,18 +40,30 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[1].Descriptor.Flags          = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     rootParams[1].ShaderVisibility          = D3D12_SHADER_VISIBILITY_ALL;
 
-    // [2] PBR Textures: DescriptorTable (t0=albedo, t1=normal, t2=metalRoughness)
-    D3D12_DESCRIPTOR_RANGE1 pbrRange{};
-    pbrRange.RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    pbrRange.NumDescriptors                    = 3;  // 3連続: t0, t1, t2
-    pbrRange.BaseShaderRegister                = 0;
-    pbrRange.RegisterSpace                     = 0;
-    pbrRange.Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
-    pbrRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    // [2] PBR Textures: DescriptorTable (t0=albedo, t1=normal, t2=metalRoughness, t24=emissive)
+    // ★emissive は新しいルートスロットを取らず、材質テーブルへ**レンジを 1 本足して**相乗りする
+    //   （テーブルはレンジを何本持っても 1 DWORD＝ルート定数の予算はびた一文増えない）。
+    //   t3..t23 は骨/影/IBL/SSAO/クラスタ/デカール/DDGI が使用済みで、空いていたのが t24。
+    //   ★OFFSET_APPEND なので **ヒープ上は t0,t1,t2 の直後（+3）が t24**＝材質ブロックは
+    //     「連続 4 枚」で確保する（renderer/Material.h の kMaterialSrvBlockSize）。
+    D3D12_DESCRIPTOR_RANGE1 pbrRanges[2]{};
+    pbrRanges[0].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    pbrRanges[0].NumDescriptors                    = 3;  // 3連続: t0, t1, t2
+    pbrRanges[0].BaseShaderRegister                = 0;
+    pbrRanges[0].RegisterSpace                     = 0;
+    pbrRanges[0].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+    pbrRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    pbrRanges[1].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    pbrRanges[1].NumDescriptors                    = 1;  // t24 = emissive（ヒープ上は +3）
+    pbrRanges[1].BaseShaderRegister                = 24;
+    pbrRanges[1].RegisterSpace                     = 0;
+    pbrRanges[1].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+    pbrRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     rootParams[2].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    rootParams[2].DescriptorTable.NumDescriptorRanges = 1;
-    rootParams[2].DescriptorTable.pDescriptorRanges   = &pbrRange;
+    rootParams[2].DescriptorTable.NumDescriptorRanges = _countof(pbrRanges);
+    rootParams[2].DescriptorTable.pDescriptorRanges   = pbrRanges;
     rootParams[2].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
     // [3] Bones SRV DescriptorTable (t3)
@@ -82,12 +94,15 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[4].DescriptorTable.pDescriptorRanges   = &shadowRange;
     rootParams[4].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
-    // [5] PBR Material: 8 constants (metallic, roughness, flags, pad, uvScaleOffset(float4))
+    // [5] PBR Material: 9 constants (metallic, roughness, flags, pad, uvScaleOffset(float4), packedEmissive)
     // uvScaleOffset は MeshRenderer の UV スクロール/連番アニメ用: PS が texCoord * xy + zw で
     // サンプリング UV を作る。無効時は (1,1,0,0) を入れる = 従来と同じ結果。float4 は 16 バイト
     // 境界から始まる HLSL の詰め方に合わせて pad の後ろへ置いてあるのでオフセットが一致する。
+    // ★9 本目 packedEmissive は自己発光（色 RGB888 + 強度 8bit）。既存 8 本のオフセットは
+    //   1 バイトも動かないので、b2 を読む地形/影/速度パスのシェーダは無改造で通る
+    //   （読まない側は書かなくてよい＝ルート定数は残留するが誰も参照しない）。
     rootParams[5].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
-    rootParams[5].Constants.Num32BitValues  = 8;
+    rootParams[5].Constants.Num32BitValues  = 9;
     rootParams[5].Constants.ShaderRegister  = 2;  // b2
     rootParams[5].Constants.RegisterSpace   = 0;
     rootParams[5].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -335,7 +350,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
         m_serialized->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 14 slots, 61/64 DWORD)");
+    Logger::Info("RootSignature created (PBR: 14 slots, 62/64 DWORD)");
 }
 
 } // namespace dx12e

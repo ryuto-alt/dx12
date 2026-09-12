@@ -1187,6 +1187,41 @@ ModelData ModelLoader::LoadFromFile(
             if (!material->metalRoughnessTexture)
                 material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false, TextureUsage::NonColor);
 
+            // ---- 自己発光（emissive）----
+            // ★屋内の絵は天井照明パネル・看板・非常口サインの emissive が作る。ここを読まないと
+            //   「光っている面が 1 枚も無い」＝どれだけライトを足しても平坦なままになる。
+            //   emissive テクスチャは色なので sRGB（albedo と同じ扱い）。
+            material->emissiveTexture = loadPBRTexture(aiTextureType_EMISSIVE, true, TextureUsage::BaseColor);
+            {
+                aiColor3D ec(0.0f, 0.0f, 0.0f);
+                const bool hasColor = (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, ec) == AI_SUCCESS);
+                float strength = 1.0f;
+                // KHR_materials_emissive_strength（無ければ 1.0）
+                aiMat->Get(AI_MATKEY_EMISSIVE_INTENSITY, strength);
+
+                if (hasColor && (ec.r > 0.0f || ec.g > 0.0f || ec.b > 0.0f))
+                    material->emissiveColor = { ec.r, ec.g, ec.b };
+                else if (material->emissiveTexture)
+                    material->emissiveColor = { 1.0f, 1.0f, 1.0f };   // テクスチャだけの指定＝素通し
+                // それ以外は既定の黒のまま。
+
+                // ★強度は「発光する材質」だけに入れる。色が黒でテクスチャも無いのに 1.0 を
+                //   入れてしまうと、実効値の解決側（ResolveEmissiveParams）が「強度だけ指定＝白」の
+                //   救済に引っかかって **emissive を持たないモデルまで真っ白に光る**。
+                const bool emissiveAuthored =
+                    (material->emissiveTexture != nullptr)
+                    || material->emissiveColor.x > 0.0f || material->emissiveColor.y > 0.0f
+                    || material->emissiveColor.z > 0.0f;
+                material->emissiveIntensity = emissiveAuthored ? (std::max)(strength, 0.0f) : 0.0f;
+
+                if (material->emissiveIntensity > 0.0f)
+                    Logger::Info("マテリアル自己発光: color=({:.2f},{:.2f},{:.2f}) x{:.2f} tex={} ({})",
+                                 material->emissiveColor.x, material->emissiveColor.y,
+                                 material->emissiveColor.z, material->emissiveIntensity,
+                                 material->emissiveTexture ? "あり" : "なし",
+                                 aiMat->GetName().C_Str());
+            }
+
             // PBR scalar factors
             float metallic = 0.0f, roughness = 0.5f;
             aiMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
@@ -1236,22 +1271,25 @@ ModelData ModelLoader::LoadFromFile(
             }
         }
 
-        // PBR SRVブロック確保（albedo, normal, metalRoughness の3連続SRV）
+        // PBR SRVブロック確保（albedo, normal, metalRoughness, emissive の4連続SRV）
         {
             auto* srvHeap = resourceManager.GetSrvHeap();
             auto* dev = resourceManager.GetDevice();
             Texture* albedo = material->albedoTexture ? material->albedoTexture : resourceManager.GetDefaultWhiteTexture();
             Texture* normal = material->normalMapTexture ? material->normalMapTexture : resourceManager.GetDefaultNormalTexture();
             Texture* mr     = material->metalRoughnessTexture ? material->metalRoughnessTexture : resourceManager.GetDefaultMetalRoughnessTexture();
+            Texture* emis   = material->emissiveTexture ? material->emissiveTexture : resourceManager.GetDefaultBlackTexture();
 
-            // albedo/normal/metalRoughness は連続3スロットでなければならない
-            // (描画側が srvBlockIndex 起点のテーブルとして1回でバインドするため)。
+            // albedo/normal/metalRoughness/emissive は連続4スロットでなければならない
+            // (描画側が srvBlockIndex 起点のテーブルとして1回でバインドするため。
+            //  レジスタは t0,t1,t2 と t24 に飛んでいるがヒープ上は詰まっている＝OFFSET_APPEND)。
             // free-list 化後は個別確保だと連続性が保証されないので必ずブロック確保する。
-            u32 blockStart = srvHeap->AllocateBlock(3);
+            u32 blockStart = srvHeap->AllocateBlock(kMaterialSrvBlockSize);
 
             albedo->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart));
             normal->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 1));
             mr->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 2));
+            emis->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 3));
 
             material->srvBlockIndex = blockStart;
         }

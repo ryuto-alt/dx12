@@ -121,7 +121,7 @@ struct PendingScriptAttach
 // アセットブラウザからテクスチャをドラッグ&ドロップしてマテリアルに割り当てる要求
 // (SceneView 上のメッシュへドロップ、または Inspector のマテリアルスロットへドロップ)。
 // テクスチャロード(GetOrLoadTexture)が cmdList を要するためフレーム境界で処理する。
-enum class MaterialTextureSlot { Albedo, Normal, MetalRoughness };
+enum class MaterialTextureSlot { Albedo, Normal, MetalRoughness, Emissive };
 struct PendingMaterialTextureDrop
 {
     entt::entity entity = entt::null;

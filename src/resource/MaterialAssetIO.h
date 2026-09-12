@@ -17,9 +17,15 @@ struct MaterialAssetData
     std::string albedoPath;
     std::string normalPath;
     std::string metalRoughnessPath;  // Poly Haven の ARM（R=AO 未使用/G=Roughness/B=Metallic）互換
+    std::string emissivePath;        // 自己発光（sRGB。看板・照明パネル・非常口サイン）
 
     f32 metallic  = 1.0f;  // スケーリングファクター（glTF 意味論: テクスチャ値 * この係数）
     f32 roughness = 1.0f;
+
+    // 自己発光。実効値 = emissiveColor * emissiveIntensity * (emissivePath があればその値)。
+    // 既定は黒 x 0 = 無発光なので、既存の .dxmat は 1 ピクセルも変わらない。
+    f32 emissiveColor[3] = {0.0f, 0.0f, 0.0f};
+    f32 emissiveIntensity = 0.0f;
 
     f32 uvTilingU = 1.0f;
     f32 uvTilingV = 1.0f;

@@ -19,6 +19,9 @@ namespace dx12e
 enum CpuScope { CpuUpdate, CpuBuildList, CpuListSort, CpuShadowRec, CpuMainRec, CpuEditorUi,
                 CpuPicking, CpuGizmo,
                 CpuLights, CpuPrepass, CpuImGui, CpuMcp,
+                // DXR。DDGI を ON にすると other が 11ms 増えるのに内訳が見えなかったので足した
+                // （2026-09-12。犯人は TLAS の毎フレーム再構築とその手前の詰め込みだった）。
+                CpuRtFeed, CpuRtBuild,
                 CpuScopeCount };
 const char* CpuScopeName(u32 i);
 

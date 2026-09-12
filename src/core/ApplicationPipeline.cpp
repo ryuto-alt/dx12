@@ -1354,7 +1354,7 @@ ID3D12PipelineState* Application::EnsureScreenShaderPso(const std::string& shade
 // ★**毎フレーム無条件に**呼ぶこと。以前はこの掃除が EnsureMaterialOverrideSrv /
 //   EnsureTerrainSrv の中（しかも早期 return より後ろ）にあったので、
 //   「次に開いたシーンに上書きマテリアルもレイヤーセット地形も 1 つも無い」場合に
-//   一度も走らず、ディスクリプタ 3 個/件がセッション終了まで残り続けた。
+//   一度も走らず、ディスクリプタ 4 個/件がセッション終了まで残り続けた。
 //   SRV ヒープが静かに埋まって、最後は無関係な描画が落ちる（原因は地形とは見えない）。
 void Application::SweepSceneGenerationSrvCaches()
 {
@@ -1363,7 +1363,8 @@ void Application::SweepSceneGenerationSrvCaches()
     if (m_materialOverrideSrvGeneration != sceneGen)
     {
         for (auto& kv : m_materialOverrideSrvCache)
-            if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+            if (kv.second.blockStart != 0xFFFFFFFF)
+                m_srvHeap->FreeBlock(kv.second.blockStart, kMaterialSrvBlockSize);
         m_materialOverrideSrvCache.clear();
         m_materialOverrideSrvGeneration = sceneGen;
     }
@@ -1371,7 +1372,8 @@ void Application::SweepSceneGenerationSrvCaches()
     if (m_terrainSrvGeneration != sceneGen)
     {
         for (auto& kv : m_terrainSrvCache)
-            if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+            if (kv.second.blockStart != 0xFFFFFFFF)
+                m_srvHeap->FreeBlock(kv.second.blockStart, kMaterialSrvBlockSize);
         m_terrainSrvCache.clear();
         m_terrainSrvGeneration = sceneGen;
     }
@@ -1386,12 +1388,13 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     const std::string& albedoPath = MeshRenderer::SafeGetOverride(renderer.overrideAlbedoTexture, submeshIndex);
     const std::string& normalPath = MeshRenderer::SafeGetOverride(renderer.overrideNormalTexture, submeshIndex);
     const std::string& mrPath     = MeshRenderer::SafeGetOverride(renderer.overrideMetalRoughnessTexture, submeshIndex);
+    const std::string& emisPath   = MeshRenderer::SafeGetOverride(renderer.overrideEmissiveTexture, submeshIndex);
 
     const u64 key = (static_cast<u64>(e) << 16) | submeshIndex;
     auto it = m_materialOverrideSrvCache.find(key);
     if (it != m_materialOverrideSrvCache.end() && it->second.blockStart != 0xFFFFFFFF
         && it->second.albedoPath == albedoPath && it->second.normalPath == normalPath
-        && it->second.mrPath == mrPath)
+        && it->second.mrPath == mrPath && it->second.emissivePath == emisPath)
     {
         return it->second.blockStart;
     }
@@ -1414,24 +1417,29 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     Texture* albedoFallback = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
     Texture* normalFallback = (mat && mat->normalMapTexture) ? mat->normalMapTexture : m_resourceManager->GetDefaultNormalTexture();
     Texture* mrFallback     = (mat && mat->metalRoughnessTexture) ? mat->metalRoughnessTexture : m_resourceManager->GetDefaultMetalRoughnessTexture();
+    // 自己発光は「未指定＝黒」。ここを白にすると上書きを 1 枚貼っただけで全面が光る。
+    Texture* emisFallback   = (mat && mat->emissiveTexture) ? mat->emissiveTexture : m_resourceManager->GetDefaultBlackTexture();
 
     Texture* albedo = resolve(albedoPath, albedoFallback, /*srgb=*/true,  TextureUsage::BaseColor);
     Texture* normal = resolve(normalPath, normalFallback, /*srgb=*/false, TextureUsage::Normal);
     Texture* mr     = resolve(mrPath,     mrFallback,     /*srgb=*/false, TextureUsage::NonColor);
-    if (!albedo || !normal || !mr)
+    Texture* emis   = resolve(emisPath,   emisFallback,   /*srgb=*/true,  TextureUsage::BaseColor);
+    if (!albedo || !normal || !mr || !emis)
         return 0xFFFFFFFF;
 
     MaterialOverrideSrv& entry = m_materialOverrideSrvCache[key];
     if (entry.blockStart == 0xFFFFFFFF)
-        entry.blockStart = m_srvHeap->AllocateBlock(3);
+        entry.blockStart = m_srvHeap->AllocateBlock(kMaterialSrvBlockSize);
 
     albedo->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart));
     normal->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 1));
     mr->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 2));
+    emis->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 3));
 
     entry.albedoPath = albedoPath;
     entry.normalPath = normalPath;
     entry.mrPath = mrPath;
+    entry.emissivePath = emisPath;
     return entry.blockStart;
 }
 
@@ -1487,9 +1495,11 @@ u32 Application::EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
         entry.splatSize    = splatSize;
     }
 
-    // ---- t0,t1,t2 の連続 3 ディスクリプタ ----
+    // ---- t0,t1,t2 (+ 材質テーブル 4 枚目) の連続ディスクリプタ ----
+    // 地形は t24(emissive) を読まないが、ルートシグネチャの材質テーブルが 4 枚を宣言して
+    // いるので ブロックも 4 枚で取る。3 枚のままだと 4 枚目に隣の割当が写る。
     if (entry.blockStart == 0xFFFFFFFF)
-        entry.blockStart = m_srvHeap->AllocateBlock(3);
+        entry.blockStart = m_srvHeap->AllocateBlock(kMaterialSrvBlockSize);
 
     // レイヤーセットが差し替わった / ホットリロードされた / スプラットを作り直した時だけ張り直す。
     if (splatStale || entry.layerGeneration != layers->generation
@@ -1500,6 +1510,10 @@ u32 Application::EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
         layers->albedoArray ->CreateArraySRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart));
         layers->surfaceArray->CreateArraySRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 1));
         entry.splatTex      ->CreateSRV     (*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 2));
+        // 4 枚目(t24)は黒で埋める。Terrain.hlsl は宣言していないので読まれないが、
+        // 未初期化ディスクリプタをテーブルへ入れないための蓋。
+        if (auto* black = m_resourceManager->GetDefaultBlackTexture())
+            black->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 3));
         entry.layerGeneration = layers->generation;
         entry.layerSetPath    = terrain.layerSetPath;
     }

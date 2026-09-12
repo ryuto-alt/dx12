@@ -203,6 +203,10 @@ nlohmann::json McpComponentSchema()
     }), "mutually exclusive with rigidBody; do not add both."));
     comps.push_back(C("convexHullCollider", false, true, json::array({}),
         "auto-generated from mesh on load; not settable via MCP. Removable."));
+    comps.push_back(C("meshCollider", true, true, json::array({
+        F("offset", "float3", json::array({0, 0, 0})),
+    }), "triangle-mesh collider taken from the entity's MeshRenderer (hollow shapes stay hollow). "
+        "Needs rigidBody motionType:0 (STATIC); non-static bodies fall back to a convex hull."));
     comps.push_back(C("sprite2d", true, true, json::array({
         F("texturePath", "string (assets-relative)", ""), F("layer", "int", 0),
         F("size", "float2", json::array({1, 1})), F("uvMin", "float2", json::array({0, 0})),
@@ -731,6 +735,7 @@ nlohmann::json McpLuaApi()
         "overlapBox(center,half,maxN?) -> {entity..}", "overlapSphere(center,radius,maxN?) -> {entity..}",
         "setGravity(vec3)", "setPaused(b)", "step(dt)",
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
+        "warp(e,x,y,z)  ※任意座標へ即テレポート。CharacterController>RigidBody>Transformの優先で処理先を切替、CC は縦速度もリセット",
     })));
     objects.push_back(O("nav", "global (':' で呼ぶ)。ナビメッシュ経路探索", json::array({
         "ready() -> bool  (ナビメッシュが焼けているか。エディタの『ツール > ナビメッシュ』か dx12_navmesh_build で焼く)",

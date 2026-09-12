@@ -20,8 +20,10 @@ class Mesh;
 // 契約:
 //  - BLAS は **Mesh 単位・LOD0 固定**でキャッシュする。LOD が切り替わるたびに
 //    BLAS を作り直すのは論外だし、影 / GI の精度は LOD0 で持つべき。
-//  - TLAS は **毎フレーム全再構築**（NVIDIA のベストプラクティス:
-//    "Build the Top-Level Acceleration Structure rather than Update"）。
+//  - TLAS は **中身が変わったフレームだけ全再構築**（更新ではなく再構築なのは NVIDIA の
+//    ベストプラクティス: "Build the Top-Level Acceleration Structure rather than Update"）。
+//    中身が 1 ビットも変わらないフレームは ReuseLastFrame() で前フレームの TLAS を
+//    そのまま使う。変化検知は呼び出し元（Application::BuildDrawList のハッシュ）の担当。
 //  - **半透明とスキンドは入れない。** 半透明を入れると any-hit が要る（2〜10 倍遅い）。
 //    スキンドは変形後の頂点が GPU のどこにも存在しない（頂点シェーダ内スキニング）ので
 //    compute スキニング（計画09 Step 4）を作るまで原理的に無理。
@@ -76,6 +78,9 @@ public:
         u32 geoInfoWritten     = 0;   // GeometryInfo を書いたインスタンス数
         u32 geoInfoWithAlbedo  = 0;   // うちアルベドテクスチャの SRV が有効だった数
         u32 droppedOverLimit   = 0;   // 上限超過で切った数
+        // 前フレームの TLAS をそのまま使ったフレームが何連続しているか（ReuseLastFrame）。
+        // 0 = このフレームは組み直した。静止シーンで 0 のままなら再利用が効いていない。
+        u32 tlasReuseFrames    = 0;
         u64 blasBytes          = 0;   // BLAS 実サイズ合計（PrebuildInfo の実測値）
         u64 blasTriangles      = 0;   // BLAS に入っている三角形の総数
         u64 tlasBytes          = 0;
@@ -141,6 +146,23 @@ public:
     // 戻り値: この後 RayQuery を投げてよいか（TLAS が有効か）。
     bool Build(GraphicsDevice& device, ID3D12GraphicsCommandList* cmd, const BuildDesc& d);
 
+    // 「シーンが 1 ビットも変わっていない」と呼び出し元が判断したフレームで、
+    // BeginFrame / AddInstance / Build を丸ごと省いて前フレームの TLAS を使い回す。
+    //   ★これが本命の最適化。dead_mall（静的メッシュ 13,522 体 / 20,346 インスタンス）では
+    //     m_pending の作り直し・距離ソート・2 万回の BLAS ハッシュ検索・インスタンス記述の
+    //     書き出し・TLAS 再構築で CPU 11ms/フレームを使っていて、静止シーンでは全部無駄だった。
+    //   ★安全性: TLAS バッファ(m_tlas)は多重化されていない 1 本で、書かない限り前フレームの
+    //     内容がそのまま残る＝GPU から読んでも問題ない（むしろ WAR ハザードが消える）。
+    //     GeometryInfo テーブルだけはフレームリングだが、再利用中は**書かない**ので
+    //     m_geoInfoAddress を前回書いたスロットのまま据え置く（下の m_writeSlot を参照）。
+    // 戻り値 false = 使い回せない（前フレームの構築が中途半端 / まだ 1 度も建っていない）。
+    //   その場合は従来どおり BeginFrame → AddInstance → Build を回すこと。
+    bool ReuseLastFrame();
+
+    // 直近の Build() の結果が次フレームで使い回せるか（スキンド無し・上限間引き無し・
+    // BLAS の遅延構築が残っていない）。ReuseLastFrame() が内部で同じ判定をする。
+    bool IsLastBuildCacheable() const { return m_cacheable; }
+
     bool IsReady() const { return m_tlasValid; }
     D3D12_GPU_VIRTUAL_ADDRESS GetTlasAddress() const { return m_tlas.GetGpuAddress(); }
     // GeometryInfo テーブルの GPU アドレス（ルート SRV で渡す）。0 = このフレームは無効。
@@ -203,6 +225,15 @@ private:
     bool  m_tlasValid      = false;
     bool  m_initialized    = false;
     bool  m_cmdList4Failed = false;   // Gate 4 に落ちた（以後 no-op）
+    // 直近の Build() が「完全な」TLAS を作れたか。ReuseLastFrame() の前提条件。
+    bool  m_cacheable      = false;
+    u32   m_blasDeferred   = 0;       // 予算切れで今フレーム建てられなかった BLAS の数
+    // インスタンス記述 / GeometryInfo のリング添字。★フレーム番号ではなく
+    // 「実際に書いた回数」で回す。TLAS 再利用で書かないフレームが挟まると、
+    // フレーム番号で回した場合に「再利用中の全フレームが読んでいるスロット」を
+    // 上書きしてしまう（フェンス待ちは kFrameCount 前のフレームしか保証しない）。
+    // 書いた回数で回せば、直前 kFrameCount-1 フレームが参照するスロットとは必ず別になる。
+    u32   m_writeSlot      = 0;
     u64   m_frameCounter   = 0;
     Stats m_stats;
 };

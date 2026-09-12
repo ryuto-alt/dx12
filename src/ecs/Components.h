@@ -160,6 +160,17 @@ struct MeshRenderer
     float overrideMetallic  = -1.0f;  // < 0 = Material の値を使う
     float overrideRoughness = -1.0f;
 
+    // ---- 自己発光（emissive）のエンティティ単位オーバーライド ----
+    // 実効値 = overrideEmissiveColor(x<0 なら Material の色) × overrideEmissiveIntensity(<0 なら
+    // Material の強度) × emissive テクスチャ。合成は必ず ResolveEmissiveParams()
+    // （renderer/Material.h）に一本化すること（描画・Inspector・保存で規則がズレると必ず食い違う）。
+    // ★既定は「継承」＝ Material 側が黒×0 なら加算値はゼロ＝絵は 1 ピクセルも変わらない。
+    // シーン JSON は "material": { "emissiveColor": [r,g,b], "emissiveIntensity": 4.0 }
+    // MCP は dx12_set_pbr の emissiveColor / emissiveIntensity、テクスチャは
+    // dx12_set_texture の slot:"emissive"。
+    DirectX::XMFLOAT3 overrideEmissiveColor{-1.0f, -1.0f, -1.0f};  // x<0 = Material に従う
+    float             overrideEmissiveIntensity = -1.0f;           // <0  = Material に従う
+
     // UV タイリング（頂点バッファへ焼き込む方式。値を変えると Mesh::ApplyUVScale で VB を作り直す）
     float uvScaleU = 1.0f;
     float uvScaleV = 1.0f;
@@ -233,6 +244,7 @@ struct MeshRenderer
     std::vector<std::string> overrideAlbedoTexture;
     std::vector<std::string> overrideNormalTexture;
     std::vector<std::string> overrideMetalRoughnessTexture;
+    std::vector<std::string> overrideEmissiveTexture;   // 自己発光（材質ブロックの 4 枚目 = t24）
 
     // マテリアルアセット割当(assets/materials/*.dxmat、サブメッシュ単位、Unrealのマテリアルインスタンス
     // 相当)。空文字列 = 未割当。優先度は materialAsset > overrideXxxTexture(上記3ベクタ) > モデル焼き込み
@@ -254,7 +266,8 @@ struct MeshRenderer
     {
         return !SafeGetOverride(overrideAlbedoTexture, mi).empty()
             || !SafeGetOverride(overrideNormalTexture, mi).empty()
-            || !SafeGetOverride(overrideMetalRoughnessTexture, mi).empty();
+            || !SafeGetOverride(overrideMetalRoughnessTexture, mi).empty()
+            || !SafeGetOverride(overrideEmissiveTexture, mi).empty();
     }
     bool HasMaterialAsset(u32 mi) const
     {
@@ -1164,6 +1177,17 @@ struct CapsuleCollider
 struct ConvexHullCollider
 {
     std::vector<DirectX::XMFLOAT3> points; // スケール適用済みワールド頂点
+    DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f};
+};
+
+// --- Mesh Collider（MeshRenderer のメッシュそのままの三角形コライダー）---
+// 凸包では表現できない「中が空洞の形」（部屋の殻・廊下・階段・アーチ）をそのまま当たり判定にする。
+// Jolt の MeshShape は静的専用なので motionType が Static のときだけ三角形メッシュになり、
+// 動かす剛体では凸包へフォールバックする（SculptMesh と同じ規約）。
+// 形状は (modelPath, scale) でキャッシュして共有するので、同じモデルを何千個置いても
+// BVH の構築は 1 回で済む。
+struct MeshCollider
+{
     DirectX::XMFLOAT3 offset = {0.0f, 0.0f, 0.0f};
 };
 

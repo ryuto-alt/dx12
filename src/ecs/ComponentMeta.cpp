@@ -101,6 +101,10 @@ void RegisterCoreComponentMeta()
         .data<&CapsuleCollider::halfHeight>("halfHeight")
         .data<&CapsuleCollider::offset>("offset");
 
+    entt::meta_factory<MeshCollider>{}
+        .type("MeshCollider")
+        .data<&MeshCollider::offset>("offset");
+
     entt::meta_factory<CharacterController>{}
         .type("CharacterController")
         .data<&CharacterController::radius>("radius")

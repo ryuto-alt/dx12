@@ -273,6 +273,7 @@ inline bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const
     else if (key == "trigger")             reg.remove<Trigger>(e);
     else if (key == "gimmick")             reg.remove<Gimmick>(e);
     else if (key == "convexHullCollider")  reg.remove<ConvexHullCollider>(e);
+    else if (key == "meshCollider")        reg.remove<MeshCollider>(e);
     else if (key == "luaScript")           reg.remove<LuaScript>(e);
     else if (key == "trailRenderer")       reg.remove<TrailRenderer>(e);
     else if (key == "decal")               reg.remove<DecalComponent>(e);
@@ -466,6 +467,11 @@ inline const char* CpuScopeName(u32 i)
     case CpuPrepass:    return "prepass";     // 深度プリパス / SSAO / SSR / SSGI / RT の記録
     case CpuImGui:      return "imgui";       // ImGui の描画データ生成と記録（editorUi とは別。ゲーム内 UI も含む）
     case CpuMcp:        return "mcp";         // MCP コマンドの処理（AI が叩いている間だけ増える）
+    // DXR の CPU 側。rtFeed = DrawItem を舐めて TLAS 用インスタンスを積む（BLAS 遅延構築の
+    // 発行を含む）/ rtBuild = RaytracingScene::Build（距離ソート・記述の書き出し・TLAS 再構築）。
+    // ★シーンが動いていないフレームは両方 0 になる（前フレームの TLAS を使い回すため）。
+    case CpuRtFeed:     return "rtFeed";
+    case CpuRtBuild:    return "rtBuild";
     default:            return "?";
     }
 }
@@ -872,6 +878,7 @@ inline nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entit
     if (reg.all_of<CapsuleCollider>(e))     a.push_back("capsuleCollider");
     if (reg.all_of<CharacterController>(e))  a.push_back("characterController");
     if (reg.all_of<ConvexHullCollider>(e))  a.push_back("convexHullCollider");
+    if (reg.all_of<MeshCollider>(e))        a.push_back("meshCollider");
     if (reg.all_of<Sprite2D>(e))            a.push_back("sprite2d");
     if (reg.all_of<Tag>(e))                 a.push_back("tags");
     if (reg.all_of<DataComponent>(e))       a.push_back("data");

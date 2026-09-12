@@ -596,9 +596,13 @@ reg(
 reg(
   "dx12_set_pbr",
   "PBR マテリアル設定",
-  "エンティティの PBR パラメータ(metallic/roughness/UV スケール/透明)を設定する。指定分のみ更新。"
-  + "即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity} を返す。"
-  + "透明は alphaMode(auto/opaque/mask/blend) + alphaCutoff + opacity。mask は影も同じ形に抜ける。",
+  "エンティティの PBR パラメータ(metallic/roughness/UV スケール/透明/自己発光)を設定する。指定分のみ更新。"
+  + "即時反映で {entityId, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity, "
+  + "emissiveIntensity, emissiveColor} を返す。"
+  + "透明は alphaMode(auto/opaque/mask/blend) + alphaCutoff + opacity。mask は影も同じ形に抜ける。"
+  + "★自己発光(emissive)は emissiveIntensity を上げるだけで光る(色を省くと白)。ライティングも影も "
+  + "通さず最終色へ加算するので、1 を超えるとブルームが乗る。天井照明パネル・看板・非常口サイン向け。"
+  + "テクスチャで発光形状を指定したいときは dx12_set_texture の slot:\"emissive\" と併用する。",
   {
     ...entityRef,
     metallic: z.number().optional().describe("金属度 0..1"),
@@ -621,9 +625,22 @@ reg(
       .number()
       .optional()
       .describe("不透明度 0..1。1 未満なら alphaMode を省いても半透明になる(ガラス・水面)"),
+    emissiveIntensity: z
+      .number()
+      .optional()
+      .describe(
+        "自己発光の強さ 0..64(0=消灯、負=マテリアルに従う)。1 を超えるとブルームが乗る。" +
+          "目安: 看板 2..5 / 天井照明パネル 4..10 / 非常口サイン 3..6",
+      ),
+    emissiveColor: z
+      .array(z.number())
+      .length(3)
+      .optional()
+      .describe("自己発光の色 [r,g,b](0..1、リニア)。省略して強度だけ指定すると白になる"),
   },
   { idempotentHint: true },
-  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity }) =>
+  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity,
+     emissiveIntensity, emissiveColor }) =>
     run(() =>
       engine.call("set_pbr", {
         entity,
@@ -635,6 +652,8 @@ reg(
         alphaMode,
         alphaCutoff,
         opacity,
+        emissiveIntensity,
+        emissiveColor,
       }),
     ),
 );
@@ -1725,9 +1744,11 @@ reg(
   + "\n■ 実際に走ったか: shadowActive(ON でも本当に RT 影パスが走ったフレームか) / tlasReady(TLAS が建っているか)。"
   + "enabled:true なのに shadowActive:false なら supported / tlasReady / カメラ(正射)を疑う。"
   + "\n■ stats(直近フレームの加速構造の実測): instances, blasCount, blasBytes, blasTriangles, tlasBytes, "
-  + "scratchBytes, instanceDescBytes, skippedSkinned, skippedTransparent, droppedOverLimit, bytesPerTriangle。"
+  + "scratchBytes, instanceDescBytes, skippedSkinned, skippedTransparent, droppedOverLimit, "
+  + "tlasReuseFrames, bytesPerTriangle。"
   + "skippedSkinned / skippedTransparent は仕様(スキンドと半透明は TLAS に入らず CSM が担当する)。"
   + "droppedOverLimit > 0 なら maxInstances に引っかかっている。"
+  + "tlasReuseFrames は「前フレームの TLAS をそのまま使い回しているフレーム数」。シーンが動いていない間は毎フレーム増える(= CPU の再構築を省けている)。動く物があるフレームや forceBuildTlas:true では 0 のまま。"
   + "\n■ 加速構造が正しいかの目視は dx12_render_debug の mode:\"rtDiff\"(黒 = ラスタと一致)が本命。",
   {},
   { readOnlyHint: true },
@@ -3081,11 +3102,11 @@ reg(
 reg(
   "dx12_set_texture",
   "テクスチャ上書き割当",
-  "エンティティの MeshRenderer にテクスチャを割り当てる(Inspector のアセットブラウザ D&D と同じ操作)。Material はモデル共有なので直接触らず、インスタンス単位の override に書く=他のインスタンスに波及しない。slot は albedo(既定)/normal/metalRoughness、submesh はサブメッシュ index(既定 0)。path 空文字で解除(Material 既定に戻る)。即時反映。entity(id) か name 指定。スプライトのテクスチャは set_component(sprite2d, {texturePath}) の方。",
+  "エンティティの MeshRenderer にテクスチャを割り当てる(Inspector のアセットブラウザ D&D と同じ操作)。Material はモデル共有なので直接触らず、インスタンス単位の override に書く=他のインスタンスに波及しない。slot は albedo(既定)/normal/metalRoughness/emissive、submesh はサブメッシュ index(既定 0)。path 空文字で解除(Material 既定に戻る)。即時反映。entity(id) か name 指定。スプライトのテクスチャは set_component(sprite2d, {texturePath}) の方。★emissive は貼っただけでは光らない(色×強度が既定 0)。dx12_set_pbr の emissiveIntensity を一緒に上げること。",
   {
     ...entityRef,
     path: z.string().describe("assets 相対パス(例: textures/rust.png)。空文字で override 解除。"),
-    slot: z.enum(["albedo", "normal", "metalRoughness"]).optional().describe("テクスチャスロット。省略で albedo。"),
+    slot: z.enum(["albedo", "normal", "metalRoughness", "emissive"]).optional().describe("テクスチャスロット。省略で albedo。emissive は自己発光(dx12_set_pbr の emissiveIntensity と併用)。"),
     submesh: z.number().int().optional().describe("サブメッシュ index。省略で 0。"),
   },
   { idempotentHint: true },

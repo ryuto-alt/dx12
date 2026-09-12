@@ -93,6 +93,28 @@ void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap
         m_defaultMetalRoughness->SetSrvIndex(mIdx);
         m_defaultMetalRoughness->CreateSRV(*device, m_srvHeap->GetCpuHandle(mIdx));
     }
+
+    // 1x1 デフォルト黒テクスチャ (0,0,0,255) — 自己発光(emissive)の既定。
+    // ★材質 SRV ブロックの 4 枚目は「必ず有効なディスクリプタで埋める」必要がある
+    //   (ルートシグネチャのテーブルが 4 枚を宣言しているため)。黒を貼っておけば、
+    //   万一 pbrFlags のビットが立ったままサンプルされても加算値は 0＝絵は変わらない。
+    {
+        u32 black = 0xFF000000;   // RGBA: 0,0,0,255
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        desc.Width = 1; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;   // emissive は sRGB 扱い(albedo と同じ)
+        desc.SampleDesc = {1, 0};
+
+        D3D12_SUBRESOURCE_DATA subData{};
+        subData.pData = &black; subData.RowPitch = 4; subData.SlicePitch = 4;
+
+        m_defaultBlack = std::make_unique<Texture>();
+        m_defaultBlack->Initialize(*device, cmdList, desc, &subData, 1);
+        u32 bIdx = m_srvHeap->AllocateIndex();
+        m_defaultBlack->SetSrvIndex(bIdx);
+        m_defaultBlack->CreateSRV(*device, m_srvHeap->GetCpuHandle(bIdx));
+    }
     m_uploadsPending = true;  // 既定テクスチャのアップロードを初回フレームで確定させる
 }
 
@@ -334,7 +356,7 @@ const CachedModel* ResourceManager::FindModel(const std::string& key) const
 
 void ResourceManager::RefreshMaterialSrvBlocks()
 {
-    // Material::srvBlockIndex は albedo/normal/metalRoughness の SRV を**コピーではなく
+    // Material::srvBlockIndex は albedo/normal/metalRoughness/emissive の SRV を**コピーではなく
     // その場で作った**ものなので、テクスチャの ID3D12Resource を差し替えたら張り直しが要る。
     // 張り直さないと「テクスチャ単体を見る dx12_view_texture は新しいのに、
     // モデルに貼られた絵だけ古い」という最悪の食い違いになる。
@@ -348,10 +370,12 @@ void ResourceManager::RefreshMaterialSrvBlocks()
             Texture* albedo = mat->albedoTexture         ? mat->albedoTexture         : m_defaultWhite.get();
             Texture* normal = mat->normalMapTexture      ? mat->normalMapTexture      : m_defaultNormal.get();
             Texture* mr     = mat->metalRoughnessTexture ? mat->metalRoughnessTexture : m_defaultMetalRoughness.get();
-            if (!albedo || !normal || !mr) continue;
+            Texture* emis   = mat->emissiveTexture       ? mat->emissiveTexture       : m_defaultBlack.get();
+            if (!albedo || !normal || !mr || !emis) continue;
             albedo->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex));
             normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex + 1));
             mr    ->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex + 2));
+            emis  ->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex + 3));
         }
     }
 }
@@ -463,14 +487,14 @@ AssetReloadResult ResourceManager::ReloadChangedAssets(ID3D12GraphicsCommandList
         //   死んだポインタを FinishUpload することになるので先に抜く。
         if (entry.model)
         {
-            // 古いマテリアルが握っていた 3 連続 SRV ブロックを返す。Material は POD で
-            // デストラクタが無いので、返さないと読み直すたびにディスクリプタが 3×マテリアル数
+            // 古いマテリアルが握っていた 4 連続 SRV ブロックを返す。Material は POD で
+            // デストラクタが無いので、返さないと読み直すたびにディスクリプタが 4×マテリアル数
             // ずつ減り続ける(Mesh は自前で VB/IB の SRV を返すので対象外)。
             // ★解放は **新しい実体を作り終えてから**。先に返すと同じブロックが即再確保され、
             //   今フレームの GPU がまだ読んでいる SRV を書き換えることになる。
             for (auto& oldMat : entry.model->materials)
                 if (oldMat && oldMat->srvBlockIndex != 0xFFFFFFFFu)
-                    m_srvHeap->FreeBlock(oldMat->srvBlockIndex, 3);
+                    m_srvHeap->FreeBlock(oldMat->srvBlockIndex, kMaterialSrvBlockSize);
             for (auto& oldMesh : entry.model->meshes)
                 m_pendingMeshUploads.erase(
                     std::remove(m_pendingMeshUploads.begin(), m_pendingMeshUploads.end(),
@@ -489,6 +513,7 @@ void ResourceManager::FinishUploads()
     if (m_defaultWhite) m_defaultWhite->FinishUpload();
     if (m_defaultNormal) m_defaultNormal->FinishUpload();
     if (m_defaultMetalRoughness) m_defaultMetalRoughness->FinishUpload();
+    if (m_defaultBlack) m_defaultBlack->FinishUpload();
     for (auto& [key, entry] : m_textureCache)
     {
         if (entry.texture) entry.texture->FinishUpload();   // 失敗キャッシュ(null)はスキップ

@@ -6,6 +6,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/Texture.h"
+#include "renderer/Material.h"   // kMaterialSrvBlockSize
 #include "resource/ResourceManager.h"
 
 #include <cctype>
@@ -39,6 +40,7 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
     entry.attempted = true;
     entry.hasNormalTex = false;
     entry.hasMRTex = false;
+    entry.hasEmissiveTex = false;
 
     // mtime は成否に関わらずここで先に刻む(失敗時も含めて)。こうすることで
     // PollHotReload は「ファイルが変化したときだけ」再試行し、壊れたままの .dxmat を毎回叩かない。
@@ -79,18 +81,23 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
                               /*srgb=*/false, TextureUsage::Normal);
     Texture* mr     = resolve(data.metalRoughnessPath, m_resourceManager->GetDefaultMetalRoughnessTexture(),
                               /*srgb=*/false, TextureUsage::NonColor);
-    if (!albedo || !normal || !mr)
+    // 自己発光は色なので sRGB。未指定は黒(無発光)へ落とす。
+    Texture* emis   = resolve(data.emissivePath, m_resourceManager->GetDefaultBlackTexture(),
+                              /*srgb=*/true,  TextureUsage::BaseColor);
+    if (!albedo || !normal || !mr || !emis)
         return;
 
     if (entry.srvBlockStart == 0xFFFFFFFF)
-        entry.srvBlockStart = m_srvHeap->AllocateBlock(3);
+        entry.srvBlockStart = m_srvHeap->AllocateBlock(kMaterialSrvBlockSize);
 
     albedo->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart));
     normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 1));
     mr->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 2));
+    emis->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 3));
 
-    entry.hasNormalTex = !data.normalPath.empty();
-    entry.hasMRTex     = !data.metalRoughnessPath.empty();
+    entry.hasNormalTex   = !data.normalPath.empty();
+    entry.hasMRTex       = !data.metalRoughnessPath.empty();
+    entry.hasEmissiveTex = !data.emissivePath.empty();
     entry.valid = true;
 }
 

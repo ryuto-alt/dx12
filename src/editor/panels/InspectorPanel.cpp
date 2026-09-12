@@ -363,7 +363,7 @@ dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::Edit
     if (reg.all_of<MeshRenderer>(e))                          return ic.entMesh;
     if (reg.all_of<AudioSource>(e))                           return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
-                   CapsuleCollider, ConvexHullCollider, CharacterController>(e))   return ic.entPhysics;
+                   CapsuleCollider, ConvexHullCollider, MeshCollider, CharacterController>(e))   return ic.entPhysics;
     if (reg.all_of<LuaScript>(e))                             return ic.entScript;
     return ic.entEmpty;
 }
@@ -3027,6 +3027,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     };
                     pushRemove.template operator()<RigidBody>("RigidBody");
                     pushRemove.template operator()<ConvexHullCollider>("Convex Hull Collider");
+                    pushRemove.template operator()<MeshCollider>("Mesh Collider");
                     pushRemove.template operator()<BoxCollider>("Box Collider");
                     pushRemove.template operator()<SphereCollider>("Sphere Collider");
                     pushRemove.template operator()<CapsuleCollider>("Capsule Collider");
@@ -3146,6 +3147,28 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        if (reg.all_of<MeshCollider>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Mesh Collider");
+            bool removed = ComponentRemoveMenu<MeshCollider>(reg, ctx, ctx.selectedEntity, "Mesh Collider");
+            if (open && !removed)
+            {
+                auto& col = reg.get<MeshCollider>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                if (pg::Begin("MeshCollider"))
+                {
+                    changed |= pg::Float3("オフセット Offset", &col.offset.x, 0.05f, 0, 0, "%.2f", &active);
+                    pg::End();
+                }
+                ImGui::TextDisabled("(メッシュの三角形そのまま。RigidBody は Static 推奨)");
+                if (changed)
+                {
+                    auto* rb = reg.try_get<RigidBody>(ctx.selectedEntity);
+                    if (rb) rb->bodyId = kInvalidBodyId;   // 次の Play で作り直す
+                }
+            }
+        }
+
         if (reg.all_of<ConvexHullCollider>(ctx.selectedEntity))
         {
             bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Convex Hull Collider");
@@ -3198,8 +3221,19 @@ void InspectorPanel::Render(entt::registry& reg,
 
                     bool cutoffActive = false, opacityActive = false;
                     bool metalActive = false, roughActive = false;
+                    bool emisActive = false;
                     bool hasNormal = mat->normalMapTexture != nullptr;
                     bool hasMR2 = mat->metalRoughnessTexture != nullptr;
+                    bool hasEmis = mat->emissiveTexture != nullptr;
+
+                    // ---- 自己発光（emissive）----
+                    // 表示は「実効値」（合成規則は ResolveEmissiveParams が正）。metallic/roughness と
+                    // 同じで、スライダーを動かしたときだけ override を書く＝開いただけでは潰さない。
+                    const EmissiveParams effEmis = ResolveEmissiveParams(
+                        mat->emissiveColor, mat->emissiveIntensity,
+                        mr.overrideEmissiveColor, mr.overrideEmissiveIntensity);
+                    float uiEmisColor[3] = { effEmis.color.x, effEmis.color.y, effEmis.color.z };
+                    float uiEmisIntensity = effEmis.intensity;
                     if (pg::Begin("MaterialPBR"))
                     {
                         if (pg::SliderFloat("金属感 Metallic", &uiMetal, 0.0f, 1.0f, "%.3f", &metalActive))
@@ -3208,6 +3242,32 @@ void InspectorPanel::Render(entt::registry& reg,
                             mr.overrideRoughness = uiRough;
                         pg::Text("Normal Map", "%s", hasNormal ? "あり" : "なし");
                         pg::Text("MetalRough Map", "%s", hasMR2 ? "あり" : "なし");
+
+                        // ---- 自己発光（emissive）----
+                        // 最終色へライティングも影も通さずそのまま加算する。1 を超えるとブルームが乗る
+                        // （天井照明パネル・看板・非常口サイン。屋内の絵の大半はこれで決まる）。
+                        pg::Group("自己発光 Emissive");
+                        if (pg::SliderFloat("強さ Intensity", &uiEmisIntensity,
+                                            0.0f, kEmissiveIntensityMax, "%.2f", &emisActive,
+                                            "0 で消灯。1 を超えるとブルームが乗る"
+                                            "（看板 2..5 / 天井照明 4..10 が目安）"))
+                        {
+                            mr.overrideEmissiveIntensity = uiEmisIntensity;
+                            // 色が未指定（＝マテリアルも黒）なら白を入れておく。入れないと
+                            // 黒×強度=0 で「スライダーを上げても何も起きない」になる。
+                            if (mr.overrideEmissiveColor.x < 0.0f
+                                && mat->emissiveColor.x <= 0.0f && mat->emissiveColor.y <= 0.0f
+                                && mat->emissiveColor.z <= 0.0f)
+                                mr.overrideEmissiveColor = {1.0f, 1.0f, 1.0f};
+                        }
+                        if (uiEmisIntensity > 0.0f
+                            && pg::Color3("発光色 Emissive Color", uiEmisColor))
+                        {
+                            mr.overrideEmissiveColor = { uiEmisColor[0], uiEmisColor[1], uiEmisColor[2] };
+                            if (mr.overrideEmissiveIntensity < 0.0f)
+                                mr.overrideEmissiveIntensity = uiEmisIntensity;
+                        }
+                        pg::Text("Emissive Map", "%s", hasEmis ? "あり" : "なし");
 
                         // ---- 透明（アルファクリップ / アルファブレンド）----
                         // 既定は「継承」＝モデルの glTF alphaMode に従う。ここを触ると
@@ -3240,7 +3300,9 @@ void InspectorPanel::Render(entt::registry& reg,
                         if (inheritMetal || inheritRough)
                             WarnRow("継承中（この値はモデル/マテリアル側の既定。動かすと上書きになります）");
                         if (!inheritMetal || !inheritRough || mr.alphaModeOverride >= 0
-                            || mr.alphaCutoffOverride >= 0.0f || mr.opacity != 1.0f)
+                            || mr.alphaCutoffOverride >= 0.0f || mr.opacity != 1.0f
+                            || mr.overrideEmissiveIntensity >= 0.0f
+                            || mr.overrideEmissiveColor.x >= 0.0f)
                         {
                             pg::Label("");
                             if (ImGui::SmallButton("継承に戻す"))
@@ -3262,7 +3324,8 @@ void InspectorPanel::Render(entt::registry& reg,
                         pg::End();
                     }
 
-                    const bool pbrActive = metalActive || roughActive || cutoffActive || opacityActive;
+                    const bool pbrActive = metalActive || roughActive || cutoffActive
+                                        || opacityActive || emisActive;
                     if (pbrActive)
                         m_pbrEditing = true;
 
@@ -3586,6 +3649,9 @@ void InspectorPanel::Render(entt::registry& reg,
                             drawTextureOverrideSlot("Albedo", mr.overrideAlbedoTexture, smi);
                             drawTextureOverrideSlot("Normal", mr.overrideNormalTexture, smi);
                             drawTextureOverrideSlot("MetalRoughness", mr.overrideMetalRoughnessTexture, smi);
+                            // 自己発光。貼っただけでは光らない（Material セクションの
+                            // 「強さ Intensity」を上げること）。
+                            drawTextureOverrideSlot("Emissive", mr.overrideEmissiveTexture, smi);
                             if (matAssigned)
                                 ImGui::EndDisabled();
                         }

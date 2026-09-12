@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "terrain/HeightField.h"   // 地形コライダー（Terrain::_hf の高さ配列を Jolt へ渡す）
 #include "terrain/SculptMesh.h"    // スカルプトコライダー（SculptMesh::_data の三角形を Jolt へ渡す）
+#include "renderer/Mesh.h"      // meshCollider（MeshRenderer のメッシュを Jolt へ渡す）
 
 #include <algorithm>
 #include <cstdarg>
@@ -27,6 +28,7 @@
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>   // スカルプトメッシュ（彫った異形）のコライダー
+#include <Jolt/Physics/Collision/Shape/ScaledShape.h>  // meshCollider（形状はモデル単位で共有し、拡縮だけ被せる）
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
@@ -214,6 +216,11 @@ struct PhysicsSystem::JoltImpl
     // 端数で補間する（→ SyncCharactersToTransforms）。ここに置いてあるのは
     // CharacterController のレイアウトを変えずに済ませるため。
     std::unordered_map<entt::entity, JPH::RVec3> prevCharPos;
+
+    // MeshCollider の三角形形状キャッシュ。キー = modelPath + "|" + scale。
+    // 同じモデルを何千個置く「レベル丸ごと取り込み」で BVH を毎回組むと数十秒かかるので、
+    // 形状は共有する（Jolt の Shape は refcount 管理＝複数ボディから安全に指せる）。
+    std::unordered_map<std::string, JPH::RefConst<JPH::Shape>> meshShapeCache;
 };
 
 // ========== Trace/Assert callbacks ==========
@@ -267,10 +274,17 @@ void PhysicsSystem::Initialize()
     m_impl->jobSystem = std::make_unique<JPH::JobSystemThreadPool>(
         JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, 4);
 
-    constexpr JPH::uint maxBodies             = 4096;
+    // ★body 上限。4096 だとレベルを丸ごと取り込む使い方（実測: Dreamcore の Dead_Mall は
+    //   静的コライダー 13,522 個）で【黙って作られない】。Jolt は上限に達すると
+    //   CreateAndAddBody が無効な BodyID を返すだけでログも出さないので、
+    //   「一部の床だけすり抜ける」「Play した瞬間に落ち続ける」という形でしか気付けない。
+    //   静的 body 1 個あたりのコストは数百バイト程度なので、上限は素直に大きく取る。
+    constexpr JPH::uint maxBodies             = 65536;
     constexpr JPH::uint numBodyMutexes        = 0; // default
-    constexpr JPH::uint maxBodyPairs           = 4096;
-    constexpr JPH::uint maxContactConstraints  = 2048;
+    // 衝突ペア/接触拘束は【動いている物】の数に比例する。静的 body をいくら増やしても
+    // ここは増えないが、body 上限に合わせて多少は広げておく。
+    constexpr JPH::uint maxBodyPairs           = 16384;
+    constexpr JPH::uint maxContactConstraints  = 8192;
 
     m_impl->physicsSystem = std::make_unique<JPH::PhysicsSystem>();
     m_impl->physicsSystem->Init(
@@ -333,7 +347,7 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
     //   registry に on_destroy フックも無かったので、`scene:remove(e)` で消した
     //   敵・箱・弾の**当たり判定だけが最後の位置に残り続けていた**（見えない壁になる）。
     //   overlapSphere / overlapBox も破棄済みエンティティを返し続け、
-    //   Jolt の body 上限（maxBodies=4096）にも効くので、弾のような使い捨てで枯渇する。
+    //   Jolt の body 上限（maxBodies）にも効くので、弾のような使い捨てで枯渇する。
     ReleaseOrphanedPhysicsBodies(registry);
 
     // 地形を彫った直後なら、ステップ前にコライダーを作り直しておく
@@ -579,6 +593,8 @@ void PhysicsSystem::SyncPhysicsToTransforms(entt::registry& registry)
         auto* sphere  = registry.try_get<SphereCollider>(entity);
         auto* capsule = registry.try_get<CapsuleCollider>(entity);
         if (convex)  { offsetX = convex->offset.x;  offsetY = convex->offset.y;  offsetZ = convex->offset.z; }
+        if (auto* meshCol = registry.try_get<MeshCollider>(entity))
+        { offsetX = meshCol->offset.x; offsetY = meshCol->offset.y; offsetZ = meshCol->offset.z; }
         if (box)     { offsetX = box->offset.x;     offsetY = box->offset.y;     offsetZ = box->offset.z; }
         if (sphere)  { offsetX = sphere->offset.x;  offsetY = sphere->offset.y;  offsetZ = sphere->offset.z; }
         if (capsule) { offsetX = capsule->offset.x; offsetY = capsule->offset.y; offsetZ = capsule->offset.z; }
@@ -831,6 +847,109 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
         if (shape.GetPtr() == nullptr) return;
     }
 
+    // ---- MeshCollider（描いてる形そのままの三角形コライダー）------------------
+    // 部屋の殻・廊下・階段のように「中が空洞」の形は凸包では歩けない（中身が詰まる）。
+    // MeshRenderer のメッシュから Jolt の MeshShape を作る。
+    // ★形状は **スケール抜き** で modelPath 単位にキャッシュし、拡縮は ScaledShape を
+    //   被せて表現する。レベルを丸ごと取り込むと同じモデルが数千個・スケールは
+    //   1 個ずつ微妙に違う（Dead_Mall は 9096 配置で 3387 通り）ので、スケールを
+    //   形状に焼くとキャッシュが効かず BVH を数千回組むことになる。
+    if (shape.GetPtr() == nullptr && registry.try_get<MeshCollider>(entity) != nullptr)
+    {
+        const auto* mr = registry.try_get<MeshRenderer>(entity);
+        if (mr == nullptr || mr->meshes.empty())
+        {
+            // メッシュがまだ読めていない＝形が無い。箱で代用すると「見えない壁」になるので作らない。
+            Logger::Warn("meshCollider が付いているのに MeshRenderer のメッシュが空です（entity {}）",
+                         static_cast<uint32_t>(entt::to_integral(entity)));
+            return;
+        }
+
+        const bool isStatic = (rb->motionType == MotionType::Static);
+        const std::string key = mr->modelPath + (isStatic ? "|tri" : "|hull");
+
+        JPH::RefConst<JPH::Shape> base;
+        if (auto it = m_impl->meshShapeCache.find(key); it != m_impl->meshShapeCache.end())
+        {
+            base = it->second;
+        }
+        else if (isStatic)
+        {
+            JPH::VertexList          verts;
+            JPH::IndexedTriangleList tris;
+            uint32_t                 vbase = 0;
+            for (size_t mi = 0; mi < mr->meshes.size(); ++mi)
+            {
+                const Mesh* mesh = mr->meshes[mi];
+                if (mesh == nullptr) continue;
+                const auto& positions = mesh->GetPositions();
+                const auto& indices   = mesh->GetIndices();
+                if (positions.empty() || indices.size() < 3) continue;
+
+                // 静的モデルはノード変換を頂点へ焼き込み済み（＝単位行列）だが、
+                // 焼いていない経路のために持っていれば掛ける。
+                DirectX::XMMATRIX node = DirectX::XMMatrixIdentity();
+                if (mi < mr->meshNodeTransforms.size())
+                    node = DirectX::XMLoadFloat4x4(&mr->meshNodeTransforms[mi]);
+
+                verts.reserve(verts.size() + positions.size());
+                for (const auto& lp : positions)
+                {
+                    DirectX::XMFLOAT3 wp{};
+                    DirectX::XMStoreFloat3(&wp,
+                        DirectX::XMVector3Transform(DirectX::XMLoadFloat3(&lp), node));
+                    verts.push_back(JPH::Float3(wp.x, wp.y, wp.z));
+                }
+
+                tris.reserve(tris.size() + indices.size() / 3);
+                for (size_t t = 0; t + 2 < indices.size(); t += 3)
+                    tris.push_back(JPH::IndexedTriangle(vbase + indices[t],
+                                                        vbase + indices[t + 1],
+                                                        vbase + indices[t + 2], 0));
+                vbase += static_cast<uint32_t>(positions.size());
+            }
+
+            if (!verts.empty() && !tris.empty())
+            {
+                JPH::MeshShapeSettings settings(std::move(verts), std::move(tris));
+                auto result = settings.Create();
+                if (result.IsValid()) base = result.Get();
+                else Logger::Error("meshCollider の三角形形状を作れませんでした（{}）: {}",
+                                   mr->modelPath, result.GetError().c_str());
+            }
+            m_impl->meshShapeCache[key] = base;
+        }
+        else
+        {
+            // 動く剛体は MeshShape を持てない（Jolt の制約）ので凸包で妥協する＝凹みは埋まる。
+            std::vector<JPH::Vec3> hull;
+            for (const Mesh* mesh : mr->meshes)
+            {
+                if (mesh == nullptr) continue;
+                for (const auto& lp : mesh->GetPositions())
+                    hull.push_back(JPH::Vec3(lp.x, lp.y, lp.z));
+            }
+            if (!hull.empty())
+            {
+                JPH::ConvexHullShapeSettings hs(hull.data(), static_cast<int>(hull.size()), 0.01f);
+                hs.mMaxConvexRadius = 0.05f;
+                auto result = hs.Create();
+                if (result.IsValid()) base = result.Get();
+            }
+            m_impl->meshShapeCache[key] = base;
+            Logger::Warn("meshCollider '{}' は Static ではないので凸包にフォールバックしました"
+                         "（三角形メッシュ形状は静的な剛体にしか付けられません）", mr->modelPath);
+        }
+
+        if (base.GetPtr() == nullptr) return;   // 形が作れなかったら箱で代用しない
+
+        const JPH::Vec3 scl(wtrs.scale.x, wtrs.scale.y, wtrs.scale.z);
+        if (scl != JPH::Vec3::sOne() && base->IsValidScale(scl))
+            shape = new JPH::ScaledShape(base, scl);
+        else
+            shape = base;
+    }
+
     // Determine shape
     auto* convex  = registry.try_get<ConvexHullCollider>(entity);
     auto* box     = registry.try_get<BoxCollider>(entity);
@@ -904,6 +1023,8 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
 
     // Position & Rotation（コライダーのオフセットを加算）
     f32 offsetX = 0.0f, offsetY = 0.0f, offsetZ = 0.0f;
+    if (auto* meshCol = registry.try_get<MeshCollider>(entity))
+    { offsetX = meshCol->offset.x; offsetY = meshCol->offset.y; offsetZ = meshCol->offset.z; }
     if (convex)  { offsetX = convex->offset.x;  offsetY = convex->offset.y;  offsetZ = convex->offset.z; }
     if (box)     { offsetX = box->offset.x;     offsetY = box->offset.y;     offsetZ = box->offset.z; }
     if (sphere)  { offsetX = sphere->offset.x;  offsetY = sphere->offset.y;  offsetZ = sphere->offset.z; }
@@ -938,6 +1059,19 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     bodySettings.mAllowSleeping  = true;
 
     JPH::BodyID id = bodyInterface.CreateAndAddBody(bodySettings, JPH::EActivation::Activate);
+    if (id.IsInvalid())
+    {
+        // ★Jolt は body 上限に達しても例外も警告も出さず無効な ID を返すだけ。
+        //   ここで言わないと「床だけすり抜ける」形でしか表面化しない。
+        static bool warned = false;
+        if (!warned)
+        {
+            warned = true;
+            Logger::Error("Jolt の body を作れませんでした（上限に到達した可能性）。"
+                          "これ以降の当たり判定は作られません。PhysicsSystem の maxBodies を上げてください");
+        }
+        return;
+    }
     rb->bodyId = id.GetIndexAndSequenceNumber();
     m_bodyToEntity[rb->bodyId] = entity;   // bodyId→entity 逆引きを登録
 }
@@ -974,6 +1108,7 @@ void PhysicsSystem::UnregisterAllBodies(entt::registry& registry)
         rb.bodyId = kInvalidBodyId;
     }
     m_bodyToEntity.clear();   // 念のため全消去
+    m_impl->meshShapeCache.clear();   // メッシュ形状キャッシュも捨てる（次のシーンの Mesh* とは無関係）
 }
 
 // ========== Character Controller（CharacterVirtual）==========

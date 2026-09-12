@@ -617,7 +617,16 @@ void Application::RegisterMcpEditorMethods()
                 if (!m_dxrEnabled)
                     warn.push_back("この GPU では inline raytracing が使えないので何も出ない"
                                    "（要 DXR Tier 1.1 / Shader Model 6.5）");
-                m_scene->GetRtSettings().forceBuildTlas = true;   // 退避は上で済ませてある
+                // ★RT 影 / RT-AO / DDGI のどれかで既に TLAS が建つなら**触らない**。
+                //   forceBuildTlas は「毎フレーム組み直す」も意味する（静止シーンの TLAS
+                //   再利用を止める）ので、ここで立てると rtDiff が『実際に使われている
+                //   TLAS』ではなく『撮影用に建て直した TLAS』を検証することになり、
+                //   再利用側が壊れていても黒く出てしまう＝検証にならない。
+                const RtSettings& rs = m_scene->GetRtSettings();
+                const bool tlasAlreadyBuilt = rs.shadowEnabled || rs.aoEnabled
+                                           || (m_ddgi && m_scene->GetDdgiSettings().enabled);
+                if (!tlasAlreadyBuilt)
+                    m_scene->GetRtSettings().forceBuildTlas = true;   // 退避は上で済ませてある
                 if (mode == "rtAlbedo")
                     warn.push_back("ヒット点のアルベド（計画09 Step 5 のバインドレス検証）。"
                                    "ラスタの絵と色が一致すれば配線が全部正しい。"

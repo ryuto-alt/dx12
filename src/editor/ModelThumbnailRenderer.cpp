@@ -491,7 +491,7 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
 
         // PBR
         struct { float metallic; float roughness; u32 flags; float pad;
-                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbr;
+                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; u32 packedEmissive; } pbr;
         pbr.metallic  = mat ? mat->defaultMetallic  : 0.0f;
         pbr.roughness = mat ? mat->defaultRoughness : 0.5f;
         pbr.flags     = 0;
@@ -499,8 +499,16 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         // サムネイルは UV スクロール/連番を適用しない（恒等変換）
         pbr.uvScaleX = 1.0f; pbr.uvScaleY = 1.0f;
         pbr.uvOffsetX = 0.0f; pbr.uvOffsetY = 0.0f;
+        // 自己発光。★モデル側に SRV ブロックがあるときだけテクスチャを許す（無いときは
+        //   白 1 枚だけを貼るフォールバックで 4 枚目が別物になるため）。
+        if (mat && mat->srvBlockIndex != 0xFFFFFFFF && mat->emissiveTexture)
+            pbr.flags |= kPbrFlagEmissiveTex;
+        pbr.packedEmissive = mat
+            ? PackEmissive(ResolveEmissiveParams(mat->emissiveColor, mat->emissiveIntensity,
+                                                 DirectX::XMFLOAT3{-1.0f, -1.0f, -1.0f}, -1.0f))
+            : 0u;
         cmdList->SetGraphicsRoot32BitConstants(
-            RootSignature::kSlotPBRMaterial, 8, &pbr, 0);
+            RootSignature::kSlotPBRMaterial, 9, &pbr, 0);
 
         // 頂点/インデックス
         auto& vbv = mesh->GetVertexBuffer().GetView();

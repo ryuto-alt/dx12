@@ -1583,6 +1583,8 @@ void Application::EnterPlayMode()
                 snap.alphaModeOverride   = mr.alphaModeOverride;
                 snap.alphaCutoffOverride = mr.alphaCutoffOverride;
                 snap.alphaOpacity        = mr.opacity;
+                snap.emissiveColorOverride     = mr.overrideEmissiveColor;
+                snap.emissiveIntensityOverride = mr.overrideEmissiveIntensity;
             }
 
             m_editorSnapshots[name.name] = snap;
@@ -1664,6 +1666,7 @@ void Application::EnterPlayMode()
             {
                 reg.remove<RigidBody>(entity);
                 reg.remove<ConvexHullCollider>(entity);
+                reg.remove<MeshCollider>(entity);
                 reg.remove<BoxCollider>(entity);
                 reg.remove<SphereCollider>(entity);
                 reg.remove<CapsuleCollider>(entity);
@@ -1717,6 +1720,8 @@ void Application::EnterPlayMode()
                 mr.alphaModeOverride   = snap.alphaModeOverride;
                 mr.alphaCutoffOverride = snap.alphaCutoffOverride;
                 mr.opacity             = snap.alphaOpacity;
+                mr.overrideEmissiveColor     = snap.emissiveColorOverride;
+                mr.overrideEmissiveIntensity = snap.emissiveIntensityOverride;
                 mr.overrideRoughness = snap.materialRoughnessOverride;
             }
         }

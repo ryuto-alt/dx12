@@ -1,6 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
+
+#include <DirectXMath.h>
 
 #include "core/Types.h"
 
@@ -28,9 +31,17 @@ struct Material
     Texture* albedoTexture         = nullptr;
     Texture* normalMapTexture      = nullptr;  // PBR: 法線マップ
     Texture* metalRoughnessTexture = nullptr;  // PBR: R=unused, G=roughness, B=metallic
+    Texture* emissiveTexture       = nullptr;  // 自己発光（sRGB。glTF emissiveTexture 相当）
 
     float defaultMetallic  = 1.0f;   // スケーリングファクター（1.0=テクスチャ値そのまま）
     float defaultRoughness = 1.0f;
+
+    // ---- 自己発光（emissive）------------------------------------------------
+    // 実効の放射輝度 = emissiveColor * emissiveIntensity * (emissiveTexture があればその値)。
+    // ★既定は黒 × 0＝加算値が完全にゼロ。emissive を持たないモデルは 1 ピクセルも変わらない。
+    //   屋内の絵（天井照明パネル・看板・非常口サイン）はこの 1 チャンネルの有無で決まる。
+    DirectX::XMFLOAT3 emissiveColor{0.0f, 0.0f, 0.0f};  // リニア色（glTF emissiveFactor）
+    float             emissiveIntensity = 0.0f;         // 倍率（KHR_materials_emissive_strength）
 
     // ---- 透明（モデルに焼き込まれた値。glTF の alphaMode / alphaCutoff / baseColorFactor.a）----
     // ★既定は Opaque / 1.0。ModelLoader がここを埋めない限り従来と完全に同じ絵になる。
@@ -38,8 +49,15 @@ struct Material
     float     alphaCutoff    = 0.5f;   // Mask のしきい値（glTF 既定 0.5）
     float     baseColorAlpha = 1.0f;   // Blend の基準不透明度（glTF baseColorFactor.a）
 
-    u32 srvBlockIndex = 0xFFFFFFFF;  // SRVヒープ上の連続3スロットの先頭
+    u32 srvBlockIndex = 0xFFFFFFFF;  // SRVヒープ上の連続4スロットの先頭
 };
+
+// マテリアルの SRV ブロック長。albedo(t0) / normal(t1) / metalRoughness(t2) / emissive(t24)。
+// ★レジスタ番号は t2 と t24 で飛んでいるが、ディスクリプタテーブルは OFFSET_APPEND なので
+//   **ヒープ上は 4 連続**。t3..t23 は他の用途で埋まっていて、材質側が使える空きが t24 だった。
+//   ブロックを確保する側（ModelLoader / MaterialAssetManager / Application の上書き・地形）は
+//   必ずこの定数を使うこと。3 のまま確保すると 4 枚目に無関係なディスクリプタが写る。
+constexpr u32 kMaterialSrvBlockSize = 4;
 
 // マテリアル（モデル焼き込み）とエンティティ側オーバーライド（MeshRenderer）を合成した実効値。
 struct AlphaParams
@@ -75,6 +93,10 @@ inline AlphaParams ResolveAlphaParams(const Material* mat, int modeOverride,
 // ★packedTint の上位バイトは従来 0 が入っていた。opacity として読むようになったので
 //   **不透明でも必ず 255 を書くこと**（0 のままだと全部消える）。
 constexpr u32 kPbrFlagAlphaTest = 4u;
+// bit3 = emissive テクスチャ有り（t24 をサンプルしてよい）。
+// ★材質ブロックを持たない描画（フォールバックで白 1 枚だけを貼る経路）では t24 が
+//   別物のディスクリプタになる。このビットが立っていないときは絶対にサンプルさせない。
+constexpr u32 kPbrFlagEmissiveTex = 8u;
 
 inline u32 QuantizeUnorm8(f32 v)
 {
@@ -92,6 +114,52 @@ inline u32 PackAlphaTestFlags(u32 flags, const AlphaParams& a)
 inline u32 PackTintWithOpacity(u32 rgb888, f32 opacity)
 {
     return (rgb888 & 0x00FFFFFFu) | (QuantizeUnorm8(opacity) << 24);
+}
+
+// ---- 自己発光（emissive）の b2 への詰め方 -----------------------------------
+// ★ルート定数は 61/64 だったので b2 を 8→9 DWORD へ **1 本だけ**伸ばした（62/64）。
+//   色 3 成分 + 強度を素直に float で置くと 4 DWORD 要って予算を超える。1 DWORD の内訳:
+//     bit0..23  = 発光色 RGB888（packedTint と同じ詰め方。リニア色として扱う）
+//     bit24..31 = 強度。**二乗曲線**で 8bit 量子化する
+//                 （格納 = sqrt(I/kEmissiveIntensityMax)*255、復元 = (v/255)^2*kMax）。
+//   ★線形 8bit にすると刻みが kMax/255 になり、弱い発光（0.2 とか）が丸ごと 0 に落ちる。
+//     二乗なら 0 付近が細かく、ブルームに要る「1 を大きく超える」側まで同じ 1 DWORD で届く。
+constexpr f32 kEmissiveIntensityMax = 64.0f;
+
+// マテリアル焼き込み値とエンティティ側オーバーライド（MeshRenderer）を合成した実効値。
+struct EmissiveParams
+{
+    DirectX::XMFLOAT3 color{0.0f, 0.0f, 0.0f};
+    f32               intensity = 0.0f;
+};
+
+// colorOverride.x < 0 / intensityOverride < 0 で「マテリアルに従う」（metallic/roughness と同じ流儀）。
+inline EmissiveParams ResolveEmissiveParams(const DirectX::XMFLOAT3& matColor, f32 matIntensity,
+                                            const DirectX::XMFLOAT3& colorOverride,
+                                            f32 intensityOverride)
+{
+    EmissiveParams e;
+    e.color     = (colorOverride.x >= 0.0f) ? colorOverride : matColor;
+    e.intensity = (intensityOverride >= 0.0f) ? intensityOverride : matIntensity;
+    // ★強度だけ指定された（＝色は黒のまま）ときは白とみなす。
+    //   これが無いと「dx12_set_pbr emissiveIntensity:8」が黒×8=0 で何も光らず、
+    //   成功が返るのに絵が変わらないという一番たちの悪い失敗になる。
+    if (e.intensity > 0.0f && e.color.x <= 0.0f && e.color.y <= 0.0f && e.color.z <= 0.0f)
+        e.color = {1.0f, 1.0f, 1.0f};
+    e.intensity = std::clamp(e.intensity, 0.0f, kEmissiveIntensityMax);
+    return e;
+}
+
+// EmissiveParams → b2 の 9 番目の DWORD（Forward.hlsl の packedEmissive と同じ並び）。
+inline u32 PackEmissive(const EmissiveParams& e)
+{
+    if (e.intensity <= 0.0f) return 0u;   // 無発光は 0 固定＝シェーダ側の分岐が丸ごと消える
+    const u32 rgb = (QuantizeUnorm8(e.color.x) << 16)
+                  | (QuantizeUnorm8(e.color.y) <<  8)
+                  |  QuantizeUnorm8(e.color.z);
+    const f32 norm = std::sqrt(std::clamp(e.intensity, 0.0f, kEmissiveIntensityMax)
+                               / kEmissiveIntensityMax);
+    return rgb | (QuantizeUnorm8(norm) << 24);
 }
 
 } // namespace dx12e

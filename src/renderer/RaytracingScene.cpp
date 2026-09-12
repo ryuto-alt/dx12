@@ -37,8 +37,9 @@ bool RaytracingScene::Initialize(GraphicsDevice& device)
     }
 
     m_initialized = true;
+    m_writeSlot   = 0;
     m_pending.reserve(4096);
-    Logger::Info("RaytracingScene initialized (BLAS=LOD0固定 / TLAS=毎フレーム再構築 / 上限 {} インスタンス)",
+    Logger::Info("RaytracingScene initialized (BLAS=LOD0固定 / TLAS=変化時のみ再構築 / 上限 {} インスタンス)",
                  kMaxRtInstances);
     return true;
 }
@@ -54,6 +55,7 @@ void RaytracingScene::Shutdown()
     m_pending.clear();
     m_pending.shrink_to_fit();
     m_tlasValid   = false;
+    m_cacheable   = false;
     m_initialized = false;
     m_stats = Stats{};
 }
@@ -61,7 +63,10 @@ void RaytracingScene::Shutdown()
 void RaytracingScene::RemoveBlas(const Mesh* mesh)
 {
     if (m_blas.erase(mesh) > 0)
+    {
         m_tlasValid = false;   // 次フレームで TLAS を組み直す
+        m_cacheable = false;   // 消した BLAS を指したままの TLAS を使い回してはいけない
+    }
 }
 
 void RaytracingScene::Invalidate()
@@ -69,6 +74,7 @@ void RaytracingScene::Invalidate()
     m_blas.clear();
     m_skinnedBlas.clear();   // エンティティ id が再利用されるので必ず捨てる（N30 と同じ理由）
     m_tlasValid = false;
+    m_cacheable = false;     // 全 BLAS を捨てたので前フレームの TLAS は壊れたアドレスを指している
     m_stats.blasBytes        = 0;
     m_stats.blasTriangles    = 0;
     m_stats.blasCount        = 0;
@@ -93,6 +99,24 @@ void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, 
     m_stats.skinnedStale       = 0;
     m_stats.geoInfoWritten     = 0;
     m_stats.geoInfoWithAlbedo  = 0;
+    m_stats.tlasReuseFrames    = 0;   // BeginFrame まで来た＝このフレームは組み直す
+    m_blasDeferred             = 0;
+}
+
+// 前フレームの TLAS をそのまま使う。ヘッダのコメント参照。
+bool RaytracingScene::ReuseLastFrame()
+{
+    // まだ 1 度も建っていない / 前フレームの構築が中途半端（BLAS 予算切れ・上限間引き・
+    // スキンド）なら使い回せない。
+    if (!m_initialized || !m_cacheable || !m_tlasValid || m_stats.instances == 0) return false;
+    if (!m_tlas.IsValid() || m_geoInfoAddress == 0) return false;
+
+    // ★フレームカウンタは進める。BLAS の lastUsedFrame（未使用 BLAS の掃除）が
+    //   「使われ続けている」と正しく認識できるようにするため。
+    ++m_frameCounter;
+    ++m_stats.tlasReuseFrames;
+    // m_tlasValid / m_geoInfoAddress / m_tlas は前フレームのまま据え置く（＝何も書かない）。
+    return true;
 }
 
 void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const XMFLOAT3& center,
@@ -268,7 +292,14 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
         m_blas.erase(it);
     }
 
-    if (budget == 0) return nullptr;   // 今フレームの構築予算切れ。次フレームで作る
+    if (budget == 0)
+    {
+        // 今フレームの構築予算切れ。次フレームで作る。
+        // ★数えておく。「まだ全部の BLAS が建っていない TLAS」を次フレームで
+        //   使い回すと、建ち終わるまで永久にそのインスタンスが欠けたままになる。
+        ++m_blasDeferred;
+        return nullptr;
+    }
 
     D3D12_RAYTRACING_GEOMETRY_DESC geom{};
     geom.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
@@ -340,6 +371,7 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
 bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* cmd, const BuildDesc& d)
 {
     m_tlasValid = false;
+    m_cacheable = false;   // 途中で return した TLAS は使い回さない（最後まで通ったら立てる）
     if (!m_initialized || m_cmdList4Failed || !cmd) return false;
 
     // Gate 4: ID3D12GraphicsCommandList4。BuildRaytracingAccelerationStructure は List4 のメソッド。
@@ -367,7 +399,9 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     if (m_pending.empty()) return false;
 
     // ---- インスタンス記述を書く（BLAS は必要になった時点で遅延構築）----
-    RtBuffer& descBuf = m_instanceDescs[d.frameIndex % FrameResources::kFrameCount];
+    // ★リング添字は d.frameIndex ではなく「実際に書いた回数」(m_writeSlot)。理由はヘッダ参照。
+    const u32 slot = m_writeSlot % FrameResources::kFrameCount;
+    RtBuffer& descBuf = m_instanceDescs[slot];
     const u64 needBytes = static_cast<u64>(m_pending.size()) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
     if (!descBuf.EnsureCapacity(device, needBytes, RtBuffer::Kind::Upload, L"TLAS instance descs"))
         return false;
@@ -377,12 +411,14 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
 
     // GeometryInfo テーブル（ヒット点で頂点属性 / アルベドを引くため）。
     // ★インスタンス記述とまったく同じ添字で書く。下のループの count が両方の添字になる。
-    RtBuffer& geoBuf = m_geoInfos[d.frameIndex % FrameResources::kFrameCount];
+    RtBuffer& geoBuf = m_geoInfos[slot];
     GeometryInfo* geos = nullptr;
     if (geoBuf.EnsureCapacity(device, static_cast<u64>(m_pending.size()) * sizeof(GeometryInfo),
                               RtBuffer::Kind::Upload, L"RT geometry info"))
         geos = static_cast<GeometryInfo*>(geoBuf.GetMappedPtr());
     m_geoInfoAddress = geos ? geoBuf.GetGpuAddress() : 0;
+    // ここまで来たらこのスロットへ書く＝次の構築は次のスロットを使う。
+    m_writeSlot = (m_writeSlot + 1) % FrameResources::kFrameCount;
 
     u32 budget      = d.maxBlasBuildsPerFrame;
     u32 skinBudget  = d.maxSkinnedTrianglesPerFrame;
@@ -472,6 +508,16 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     m_stats.scratchBytes      = m_blasScratch.GetSizeInBytes() + m_tlasScratch.GetSizeInBytes();
     m_stats.instanceDescBytes = descBuf.GetSizeInBytes();
     m_tlasValid = true;
+
+    // ---- この TLAS を次フレームで使い回してよいか ----
+    // ・スキンド: 変形後頂点が毎フレーム変わる＝BLAS ごと作り直しになるので不可。
+    // ・上限超過で間引き中: 残す 20k はカメラ距離で決まる＝カメラが動くと中身が変わるので不可。
+    // ・BLAS の遅延構築が残っている: 欠けたままの TLAS を固定してしまうので不可。
+    // ・GeometryInfo が書けなかった: アドレスが 0 のまま固定されるので不可。
+    m_cacheable = (m_stats.skinnedInstances == 0)
+               && (m_stats.droppedOverLimit == 0)
+               && (m_blasDeferred == 0)
+               && (geos != nullptr);
     return true;
 }
 

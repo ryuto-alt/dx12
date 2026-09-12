@@ -958,6 +958,7 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
         for (const std::string& p : mr.overrideAlbedoTexture)        checkFile(p, who, "アルベド");
         for (const std::string& p : mr.overrideNormalTexture)        checkFile(p, who, "法線マップ");
         for (const std::string& p : mr.overrideMetalRoughnessTexture)checkFile(p, who, "metalRoughness");
+        for (const std::string& p : mr.overrideEmissiveTexture)      checkFile(p, who, "emissive");
         for (const std::string& p : mr.materialAsset)                checkFile(p, who, "マテリアル");
         if (!mr.shaderPath.empty())
         {

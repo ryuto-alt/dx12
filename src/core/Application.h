@@ -782,11 +782,13 @@ private:
     // MeshRenderer::overrideAlbedoTexture 等(インスタンス単位のマテリアルテクスチャ上書き、
     // アセットブラウザからのテクスチャD&D用)の SRV ブロックキャッシュ。Mesh::GetMaterial() は
     // 同一モデルパスの全インスタンスで共有されるため、上書き分だけこの専用ブロックへ
-    // albedo/normal/metalRoughness の3連続SRVを合成し、通常の mat->srvBlockIndex の代わりに使う。
+    // albedo/normal/metalRoughness/emissive の4連続SRVを合成し、通常の mat->srvBlockIndex の
+    // 代わりに使う(ブロック長は renderer/Material.h の kMaterialSrvBlockSize)。
     struct MaterialOverrideSrv
     {
-        u32 blockStart = 0xFFFFFFFF;   // srvHeap 上の3連続ブロックの先頭(未確保なら0xFFFFFFFF)
-        std::string albedoPath, normalPath, mrPath;  // 直近ビルド時の上書きパス(変化検知用)
+        u32 blockStart = 0xFFFFFFFF;   // srvHeap 上の4連続ブロックの先頭(未確保なら0xFFFFFFFF)
+        // 直近ビルド時の上書きパス(変化検知用)
+        std::string albedoPath, normalPath, mrPath, emissivePath;
     };
     // key = (entityID << 16) | submeshIndex。エンティティ削除時の明示破棄は行わない
     // (無効エンティティは次回描画されない=実害なし)。
@@ -1408,6 +1410,15 @@ private:
     std::unique_ptr<DdgiVolume> m_ddgi;
     bool m_dxrEnabled = false;                       // 6 段ゲートを全部通ったか
     int  m_rtSceneGenSeen = -1;                      // BLAS キャッシュ無効化用（N30 と同じ理由）
+    // ---- TLAS 再利用（静止シーンで毎フレーム再構築を省く）----
+    // BuildDrawList が走査のついでに作る「TLAS に入る内容」のハッシュ。ワールド行列・
+    // メッシュ・ジオメトリ版・マテリアルの SRV を混ぜる。★カメラ位置は混ぜない
+    // （距離ソートは上限超過時の間引きにしか効かず、間引き中は RaytracingScene 側が
+    //   cacheable=false を返して毎フレーム組み直しになるため）。
+    u64  m_rtContentHash      = 0;
+    bool m_rtContentHashValid = false;   // false = 今フレームは計算していない（＝必ず組み直す）
+    u32  m_rtSkinnedItems     = 0;       // TLAS 対象のスキンド DrawItem 数。>0 なら再利用しない
+    u64  m_rtBuiltHash        = 0;       // 現在の TLAS を建てたときのハッシュ。0 = 使い回し不可
     // このフレームで RT サン影が実際に走ったか。CSM 側の排他描画（skipRtCovered）と
     // フォワードの min() 合成が食い違わないよう、判定は必ずこの 1 変数を見ること。
     bool m_rtShadowActiveThisFrame = false;
@@ -1617,6 +1628,9 @@ private:
         int   alphaModeOverride   = -1;
         float alphaCutoffOverride = -1.0f;
         float alphaOpacity        = 1.0f;
+        // 自己発光のオーバーライド（透明と同じ理由。Play 中に光らせても Stop で編集時へ戻す）
+        DirectX::XMFLOAT3 emissiveColorOverride{-1.0f, -1.0f, -1.0f};
+        float emissiveIntensityOverride = -1.0f;
         float materialRoughnessOverride = -1.0f;
     };
     std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;

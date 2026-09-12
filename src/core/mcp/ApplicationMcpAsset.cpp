@@ -821,7 +821,8 @@ void Application::ProcessMcpAssetReloads(ID3D12GraphicsCommandList* cmdList)
         if (!r.textures.empty() && m_srvHeap)
         {
             for (auto& kv : m_materialOverrideSrvCache)
-                if (kv.second.blockStart != 0xFFFFFFFF) m_srvHeap->FreeBlock(kv.second.blockStart, 3);
+                if (kv.second.blockStart != 0xFFFFFFFF)
+                    m_srvHeap->FreeBlock(kv.second.blockStart, kMaterialSrvBlockSize);
             m_materialOverrideSrvCache.clear();
         }
 

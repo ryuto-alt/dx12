@@ -2541,6 +2541,33 @@ void ScriptEngine::RegisterPhysicsBindings()
         "isGrounded", [](PhysicsSystem& /*ps*/, Entity& e) -> bool {
             if (!e.HasComponent<CharacterController>()) return false;
             return e.GetComponent<CharacterController>()._grounded;
+        },
+        // warp(e, x, y, z) — 任意座標へ即座にテレポートする。setPosition(e, vec3) と
+        // 中身はほぼ同じだが、Lua 側で Vec3.new を書かずに済むよう x,y,z を個別引数にした
+        // （「穴に落ちたら開始地点へ戻す」のような復帰処理を1行で書きたいスクリプト向け）。
+        // CharacterVirtual は move/jump のような入力ベースではなく毎フレーム
+        // SyncCharactersToTransforms が Transform を上書きするので、Transform に直接
+        // 書いても効かない → 必ず SetCharacterPosition を経由する。
+        "warp", [](PhysicsSystem& ps, Entity& e, float x, float y, float z) {
+            XMFLOAT3 pos{ x, y, z };
+            if (e.HasComponent<CharacterController>())
+            {
+                // 落下速度が残ったままだと着地した瞬間にまた沈み始めるので、
+                // RegisterCharacter / setPosition と同じ流儀で縦速度と移動入力を捨てる。
+                auto& cc = e.GetComponent<CharacterController>();
+                cc._verticalVel = 0.0f;
+                cc._desiredVel  = { 0.0f, 0.0f, 0.0f };
+                ps.SetCharacterPosition(e.GetHandle(), pos);
+                return;
+            }
+            if (e.HasComponent<RigidBody>())
+            {
+                ps.SetPosition(e.GetComponent<RigidBody>().bodyId, pos);
+                return;
+            }
+            // 物理コンポーネントが無い（純粋な演出用エンティティ等）は Transform を直接書く
+            if (e.HasComponent<Transform>())
+                e.GetComponent<Transform>().position = pos;
         }
     );
 

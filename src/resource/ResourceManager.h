@@ -85,6 +85,8 @@ public:
     Texture* GetDefaultWhiteTexture() const { return m_defaultWhite.get(); }
     Texture* GetDefaultNormalTexture() const { return m_defaultNormal.get(); }
     Texture* GetDefaultMetalRoughnessTexture() const { return m_defaultMetalRoughness.get(); }
+    // 自己発光(emissive)の既定。材質 SRV ブロックの 4 枚目を必ず埋めるために使う。
+    Texture* GetDefaultBlackTexture() const { return m_defaultBlack.get(); }
     GraphicsDevice* GetDevice() const { return m_device; }
     DescriptorHeap* GetSrvHeap() const { return m_srvHeap; }
 
@@ -136,6 +138,7 @@ private:
     std::unique_ptr<Texture> m_defaultWhite;
     std::unique_ptr<Texture> m_defaultNormal;         // (128,128,255,255) = flat normal
     std::unique_ptr<Texture> m_defaultMetalRoughness; // (0,128,0,255) = non-metal, mid-rough
+    std::unique_ptr<Texture> m_defaultBlack;          // (0,0,0,255) = 無発光(emissive の既定)
     struct ModelCacheEntry
     {
         std::unique_ptr<CachedModel> model;

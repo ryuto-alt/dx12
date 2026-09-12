@@ -87,6 +87,17 @@ static XMFLOAT3 DeserializeFloat3(const json& j,
     return {j[0].get<float>(), j[1].get<float>(), j[2].get<float>()};
 }
 
+// シーン JSON の "material" ブロックから自己発光のオーバーライドを読む。
+// 透明と同じく読み込み経路が 2 つあるのでここへ一本化する。
+// キーが無ければ何もしない＝既存シーンは全部「継承（＝無発光）」のまま。
+static void ReadEmissiveOverrides(const nlohmann::json& mj, MeshRenderer& mr)
+{
+    if (mj.contains("emissiveColor"))
+        mr.overrideEmissiveColor = DeserializeFloat3(mj["emissiveColor"], mr.overrideEmissiveColor);
+    if (mj.contains("emissiveIntensity"))
+        mr.overrideEmissiveIntensity = mj["emissiveIntensity"].get<f32>();
+}
+
 // --- スクリプトプロパティ型 ↔ 文字列（自己記述的に保存するため）---
 static const char* ScriptPropTypeStr(ScriptPropType t)
 {
@@ -272,6 +283,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<BoxCollider>("BoxCollider", "boxCollider", true));
     R.Register(MakeReflectedInfo<SphereCollider>("SphereCollider", "sphereCollider", true));
     R.Register(MakeReflectedInfo<CapsuleCollider>("CapsuleCollider", "capsuleCollider", true));
+    R.Register(MakeReflectedInfo<MeshCollider>("MeshCollider", "meshCollider", true));
     R.Register(MakeReflectedInfo<CharacterController>("CharacterController", "characterController", true));
     R.Register(MakeReflectedInfo<Sprite2D>("Sprite2D", "sprite2d", true));
     R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
@@ -530,7 +542,8 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             {
                 size_t maxLen = (std::max)({mr.overrideAlbedoTexture.size(),
                                              mr.overrideNormalTexture.size(),
-                                             mr.overrideMetalRoughnessTexture.size()});
+                                             mr.overrideMetalRoughnessTexture.size(),
+                                             mr.overrideEmissiveTexture.size()});
                 bool anyOverride = false;
                 json overridesJson = json::array();
                 for (size_t i = 0; i < maxLen; ++i)
@@ -539,9 +552,11 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     const std::string& a = MeshRenderer::SafeGetOverride(mr.overrideAlbedoTexture, static_cast<u32>(i));
                     const std::string& n = MeshRenderer::SafeGetOverride(mr.overrideNormalTexture, static_cast<u32>(i));
                     const std::string& m = MeshRenderer::SafeGetOverride(mr.overrideMetalRoughnessTexture, static_cast<u32>(i));
+                    const std::string& em = MeshRenderer::SafeGetOverride(mr.overrideEmissiveTexture, static_cast<u32>(i));
                     if (!a.empty()) { entry["albedo"] = a; anyOverride = true; }
                     if (!n.empty()) { entry["normal"] = n; anyOverride = true; }
                     if (!m.empty()) { entry["metalRoughness"] = m; anyOverride = true; }
+                    if (!em.empty()) { entry["emissive"] = em; anyOverride = true; }
                     overridesJson.push_back(entry);
                 }
                 if (anyOverride)
@@ -590,6 +605,10 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             //   override が入っているなら mat が無くても書く。
             const auto* mat = (!mr.meshes.empty() && mr.meshes[0]) ? mr.meshes[0]->GetMaterial() : nullptr;
             const bool  hasPbrOverride = (mr.overrideMetallic >= 0.0f) || (mr.overrideRoughness >= 0.0f);
+            // 自己発光は「上書きが入っているときだけ」書く。既定（継承）のままなら
+            // キーが 1 つも増えない＝既存シーンを開いて保存し直しても JSON は変わらない。
+            const bool  hasEmissive = (mr.overrideEmissiveIntensity >= 0.0f)
+                                   || (mr.overrideEmissiveColor.x >= 0.0f);
             if (mat || hasPbrOverride)
             {
                 // 既定値は描画側（ApplicationRender.cpp:553-556）と同じものを使う。
@@ -601,6 +620,16 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                     {"metallic",  metallic},
                     {"roughness", roughness}
                 };
+            }
+            if (hasEmissive)
+            {
+                if (!ej.contains("material")) ej["material"] = nlohmann::json::object();
+                if (mr.overrideEmissiveColor.x >= 0.0f)
+                    ej["material"]["emissiveColor"] = json::array({ mr.overrideEmissiveColor.x,
+                                                                    mr.overrideEmissiveColor.y,
+                                                                    mr.overrideEmissiveColor.z });
+                if (mr.overrideEmissiveIntensity >= 0.0f)
+                    ej["material"]["emissiveIntensity"] = mr.overrideEmissiveIntensity;
             }
 
             // ---- 透明（アルファクリップ / アルファブレンド）----
@@ -1736,6 +1765,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     auto& mr = reg.get<MeshRenderer>(e);
                     if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
                     if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
+                    ReadEmissiveOverrides(mj, mr);
                     ReadAlphaOverrides(mj, mr);
                 }
             }
@@ -1830,6 +1860,8 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                         MeshRenderer::SetOverride(mrOv.overrideNormalTexture, smi, entry.value("normal", ""));
                     if (entry.contains("metalRoughness"))
                         MeshRenderer::SetOverride(mrOv.overrideMetalRoughnessTexture, smi, entry.value("metalRoughness", ""));
+                    if (entry.contains("emissive"))
+                        MeshRenderer::SetOverride(mrOv.overrideEmissiveTexture, smi, entry.value("emissive", ""));
                 }
             }
 
@@ -2278,6 +2310,7 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
             auto& mr = reg.get<MeshRenderer>(e);
             if (mj.contains("metallic"))  mr.overrideMetallic  = mj["metallic"].get<f32>();
             if (mj.contains("roughness")) mr.overrideRoughness = mj["roughness"].get<f32>();
+            ReadEmissiveOverrides(mj, mr);
             ReadAlphaOverrides(mj, mr);
         }
 
@@ -2684,6 +2717,7 @@ void ForEachAssetPathField(Scene& scene, Fn&& fn)
         for (auto& p : mr.overrideAlbedoTexture)         fn(p, who, "albedo");
         for (auto& p : mr.overrideNormalTexture)         fn(p, who, "normal");
         for (auto& p : mr.overrideMetalRoughnessTexture) fn(p, who, "metalRoughness");
+        for (auto& p : mr.overrideEmissiveTexture)       fn(p, who, "emissive");
         for (auto& p : mr.materialAsset)                 fn(p, who, "material");
     }
     for (auto [e, t] : reg.view<Terrain>().each())

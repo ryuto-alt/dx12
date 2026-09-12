@@ -40,6 +40,17 @@ u64 HashBonesFnv1a(const std::vector<DirectX::XMFLOAT4X4>& mats)
     return h ? h : 1ull;
 }
 
+// TLAS 再利用の変化検知用ハッシュ（FNV-1a 64）。1 フレームに 13,500 体 × 十数回混ぜるので、
+// 1 バイトずつではなく 8 バイト単位で回す（同じ内容で 8 倍速い）。
+inline void RtHashMix(u64& h, u64 v) { h = (h ^ v) * 1099511628211ull; }
+inline void RtHashMixBytes(u64& h, const void* p, size_t len)
+{
+    const auto* q = static_cast<const u8*>(p);
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8) { u64 b; std::memcpy(&b, q + i, 8); RtHashMix(h, b); }
+    for (; i < len; ++i) RtHashMix(h, q[i]);
+}
+
 // フォワードと深度パスで共通の UV 変換（連番アニメ > UVスクロール > 恒等）。
 // ★アルファクリップの影は「フォワードとまったく同じ UV で同じテクセル」を読まないと
 //   本体と影の抜けがズレる。ここを 1 箇所にまとめておくこと。
@@ -101,6 +112,20 @@ void Application::BuildDrawList()
     // GridPlane は view の exclude で弾く（1体ごとの all_of プローブぶんの
     // スパースセット参照が丸ごと消える。10万体規模では効く）。
     auto renderView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane>);
+
+    // ---- TLAS 再利用のための内容ハッシュ（DXR/DDGI が要るフレームだけ計算する）----
+    // ★ここで作るのが肝。RT ブロックで別ループを回すと、20,000 サブメッシュぶんの
+    //   Mesh/Material へのランダムアクセスがもう 1 往復増えて 1ms 級になる。この走査は
+    //   AABB とアルファ判定で既に同じ Mesh/Material を触っているので、混ぜるだけならほぼタダ。
+    // ★カメラ位置は混ぜない（カメラが動いただけで TLAS を組み直す必要は無い）。
+    const bool wantRtHash = m_dxrEnabled && m_rtScene && m_rtScene->IsInitialized()
+                         && (m_scene->GetRtSettings().shadowEnabled
+                             || m_scene->GetRtSettings().aoEnabled
+                             || m_scene->GetRtSettings().forceBuildTlas
+                             || (m_ddgi && m_scene->GetDdgiSettings().enabled));
+    m_rtContentHashValid = wantRtHash;
+    m_rtContentHash      = 1469598103934665603ull;
+    m_rtSkinnedItems     = 0;
     {
     CpuScopeTimer _scan(&m_cpuMs[CpuBuildList]); DX12_PROFILE_ZONE_N("BuildDrawList");   // 走査部（ソートは listSort で別計上）
     for (auto [e, transform, renderer] : renderView.each())
@@ -153,6 +178,9 @@ void Application::BuildDrawList()
         XMVECTOR lmn = XMVectorReplicate( FLT_MAX);
         XMVECTOR lmx = XMVectorReplicate(-FLT_MAX);
         bool hasAabb = false;
+        // TLAS 再利用の変化検知用。メッシュの差し替え / 頂点バッファの作り直し
+        // （地形スカルプト等の geometryVersion 更新）/ バインドレス SRV の張り直しを拾う。
+        u64 rtItemHash = wantRtHash ? 1469598103934665603ull : 0;
         for (const auto* m : renderer.meshes)
         {
             if (!m) continue;
@@ -160,6 +188,12 @@ void Application::BuildDrawList()
             lmn = XMVectorMin(lmn, XMLoadFloat3(&a));
             lmx = XMVectorMax(lmx, XMLoadFloat3(&b));
             hasAabb = true;
+            if (wantRtHash)
+            {
+                RtHashMix(rtItemHash, reinterpret_cast<u64>(m));
+                RtHashMix(rtItemHash, (static_cast<u64>(m->GetGeometryVersion()) << 32)
+                                    | m->GetVbSrvIndex());
+            }
         }
         f32 meshRadius = 1.0f;
         XMVECTOR localCenter = XMVectorZero();
@@ -244,9 +278,16 @@ void Application::BuildDrawList()
             for (const auto* m : renderer.meshes)
             {
                 if (!m) continue;
-                const AlphaParams ap = ResolveAlphaParams(m->GetMaterial(), renderer.alphaModeOverride,
+                const Material* mat = m->GetMaterial();
+                const AlphaParams ap = ResolveAlphaParams(mat, renderer.alphaModeOverride,
                                                           renderer.alphaCutoffOverride, renderer.opacity);
                 aclass = (std::max)(aclass, static_cast<u32>(ap.mode));
+                // GeometryInfo.baseColorSrvIndex の材料。テクスチャの非同期ロードが
+                // 終わって SRV ブロックが割り当たった瞬間を拾わないと、TLAS を使い回した
+                // 場合に RT のアルベド（DDGI の色）が古いまま固定される。
+                if (wantRtHash)
+                    RtHashMix(rtItemHash, mat ? ((static_cast<u64>(mat->srvBlockIndex) << 32)
+                                                 ^ reinterpret_cast<u64>(mat->albedoTexture)) : 0ull);
             }
             // エンティティ側で opacity を下げただけ（マテリアルは OPAQUE）でも半透明にする。
             // ★マテリアル焼き込みの baseColorAlpha ではこの昇格をしない（glTF の意味論では
@@ -292,6 +333,12 @@ void Application::BuildDrawList()
             auto bits = [](f32 f) { u32 u; std::memcpy(&u, &f, 4); return static_cast<u64>(u); };
             mix(bits(renderer.overrideMetallic));
             mix(bits(renderer.overrideRoughness));
+            // ★自己発光も混ぜる。混ぜないと「同じメッシュで emissive だけ違う N 体」が
+            //   1 バッチに畳まれ、先頭の 1 体の発光で全部が描かれる（看板が全部同じ色に光る）。
+            mix(bits(renderer.overrideEmissiveIntensity));
+            mix(bits(renderer.overrideEmissiveColor.x));
+            mix(bits(renderer.overrideEmissiveColor.y));
+            mix(bits(renderer.overrideEmissiveColor.z));
             // ★カスタムシェーダーの自由枠 8 float を 1 つ残らず混ぜる。漏らすと「値だけ違う
             //   同じメッシュ」が同じバッチへ畳まれ、先頭の値で全部が描かれてしまう。
             for (u32 i = 0; i < shaderparams::kMeshFreeFloats; ++i)
@@ -303,6 +350,23 @@ void Application::BuildDrawList()
             mix(bits(renderer.opacity));
             mix(static_cast<u64>(renderer.alphaModeOverride + 2));
             item.batchKey = k | 1ull;   // 0 は「不可」の予約値なので必ず非 0 にする
+        }
+
+        // ---- TLAS 再利用の内容ハッシュ（TLAS に入る候補だけ混ぜる）----
+        // 条件は IsRaytracedItem() のスキンド以外の部分と揃えること。半透明 / アルファテストは
+        // TLAS に入らないので、それらが動いても組み直す必要は無い。
+        if (wantRtHash && item.sortKey != 3u && item.alphaClass != 1u)
+        {
+            if (item.skin) ++m_rtSkinnedItems;   // >0 なら再利用しない（ポーズが毎フレーム変わる）
+            RtHashMix(m_rtContentHash, rtItemHash);
+            RtHashMix(m_rtContentHash, static_cast<u64>(entt::to_integral(e)));
+            RtHashMixBytes(m_rtContentHash, &item.world, sizeof(item.world));
+            if (item.hasNodeAnim)
+            {
+                // ノードアニメはメッシュ単位の変換が別に掛かる（RT 側も同じ式で合成する）。
+                RtHashMixBytes(m_rtContentHash, renderer.meshNodeTransforms.data(),
+                               renderer.meshNodeTransforms.size() * sizeof(XMFLOAT4X4));
+            }
         }
         m_drawItems.push_back(item);
     }
@@ -811,6 +875,8 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 tp.tile1 = ls ? ls->tiling[1] : 0.35f;
                 tp.tile2 = ls ? ls->tiling[2] : 0.35f;
                 tp.tile3 = ls ? ls->tiling[3] : 0.35f;
+                // ★9 本目（packedEmissive）は書かない。Terrain.hlsl の cbuffer は 8 本で
+                //   終わっていて読まないため、前のドローの残留値があっても影響しない。
                 nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &tp, 0);
 
                 if (mesh != lastVbMesh || lod != lastLod)
@@ -838,7 +904,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             //   （色違い 3 体を保存して開くと 3 体とも同じ色。色未指定の兄弟まで染まる）。
             //   ルート定数の予算（61/64）に余裕が無いので float4 は足せない。8bit×3 で十分。
             struct { float metallic; float roughness; u32 flags; u32 packedTint;
-                     float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbrParams;
+                     float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; u32 packedEmissive; } pbrParams;
             if (matAsset)
             {
                 // MeshRenderer のスカラーオーバーライドは materialAsset の係数よりさらに優先
@@ -848,6 +914,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.flags = 0;
                 if (matAsset->hasNormalTex) pbrParams.flags |= 1u;
                 if (matAsset->hasMRTex)     pbrParams.flags |= 2u;
+                if (matAsset->hasEmissiveTex) pbrParams.flags |= kPbrFlagEmissiveTex;
             }
             else
             {
@@ -874,6 +941,11 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 //   SceneSerializer が全モデルに material{metallic,roughness} を必ず書くため、
                 //   旧実装では「保存し直したシーンでは ORM テクスチャが必ず死ぬ」状態だった。
                 if (ovMR || (mat && mat->metalRoughnessTexture))     pbrParams.flags |= 2u;
+                // ★自己発光テクスチャ。上書き（dx12_set_texture slot:"emissive"）も見る。
+                //   ブロックが取れなかったときは 4 枚目が別物なので絶対に立てない。
+                const bool ovEmis = ovBlockOk &&
+                    !MeshRenderer::SafeGetOverride(renderer.overrideEmissiveTexture, mi).empty();
+                if (ovEmis || (mat && mat->emissiveTexture)) pbrParams.flags |= kPbrFlagEmissiveTex;
             }
             // 一律色ティント（未指定は白＝従来と同じ絵）
             {
@@ -889,6 +961,24 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             //   packedTint の上位バイトは opacity。不透明でも 255 が入る＝従来と同じ絵。
             pbrParams.flags      = PackAlphaTestFlags(pbrParams.flags, alphaP);
             pbrParams.packedTint = PackTintWithOpacity(pbrParams.packedTint, alphaP.opacity);
+
+            // ---- 自己発光（emissive）----
+            // 優先度は metallic/roughness と同じ（MeshRenderer 上書き > materialAsset > 焼き込み Material）。
+            // ★未設定なら packedEmissive = 0 ＝シェーダ側が丸ごと分岐で抜ける＝絵は変わらない。
+            {
+                DirectX::XMFLOAT3 baseColor = mat ? mat->emissiveColor
+                                                  : DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f};
+                f32 baseIntensity = mat ? mat->emissiveIntensity : 0.0f;
+                if (matAsset)
+                {
+                    baseColor = { matAsset->data.emissiveColor[0], matAsset->data.emissiveColor[1],
+                                  matAsset->data.emissiveColor[2] };
+                    baseIntensity = matAsset->data.emissiveIntensity;
+                }
+                pbrParams.packedEmissive = PackEmissive(ResolveEmissiveParams(
+                    baseColor, baseIntensity,
+                    renderer.overrideEmissiveColor, renderer.overrideEmissiveIntensity));
+            }
 
             // UV 変換: 連番アニメ > UVスクロール > 恒等 の優先順（renderer/SpriteAnim.h の純関数）
             pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
@@ -913,7 +1003,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.uvOffsetX = du - std::floor(du);
                 pbrParams.uvOffsetY = dv - std::floor(dv);
             }
-            nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
+            nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 9, &pbrParams, 0);
 
             // 透明バリアントへ切り替える（サブメッシュ単位）。PSO が無ければ従来どおり不透明で描く。
             {
@@ -1097,7 +1187,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
         // 適格判定で materialAsset/上書きテクスチャ/UVアニメは除外済みなので単純形でよい
         struct { float metallic; float roughness; u32 flags; u32 packedTint;
-                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } pbrParams;
+                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; u32 packedEmissive; } pbrParams;
         const MeshRenderer& r = *head.renderer;
         pbrParams.metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic
                                                             : (mat ? mat->defaultMetallic : 0.0f);
@@ -1108,6 +1198,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         // ★metallic/roughness のスカラーは glTF 意味論の「係数」＝ MR テクスチャを殺さない
         //   （非インスタンス経路 / matAsset 経路と同じ規則。#26 で揃えた）
         if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+        if (mat && mat->emissiveTexture)       pbrParams.flags |= kPbrFlagEmissiveTex;
         // ★インスタンス経路の色は per-instance 頂点ストリーム（inst.color）で掛かるのでここは白。
         //   b0 も同様に 16 DWORD しか書かないので、この経路では b0 の 16 番以降を読んではいけない。
         pbrParams.packedTint = 0x00FFFFFFu;
@@ -1116,7 +1207,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         pbrParams.packedTint = PackTintWithOpacity(pbrParams.packedTint, alphaP.opacity);
         pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
         pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
-        nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 8, &pbrParams, 0);
+        // 自己発光（バッチ内は batchKey で同値が保証されているので先頭の値でよい）
+        pbrParams.packedEmissive = PackEmissive(ResolveEmissiveParams(
+            mat ? mat->emissiveColor : DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f},
+            mat ? mat->emissiveIntensity : 0.0f,
+            r.overrideEmissiveColor, r.overrideEmissiveIntensity));
+        nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 9, &pbrParams, 0);
 
         m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());              // slot0
@@ -1455,13 +1551,15 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, srv);
 
         struct { float metallic; float roughness; u32 flags; u32 packedTint;
-                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; } cb{};
+                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; u32 packedEmissive; } cb{};
         cb.metallic = 0.0f; cb.roughness = 0.5f;
         cb.flags      = PackAlphaTestFlags(0u, ap);
         cb.packedTint = PackTintWithOpacity(0x00FFFFFFu, 1.0f);
         ComputeMeshUvScaleOffset(r, cb.uvScaleX, cb.uvScaleY, cb.uvOffsetX, cb.uvOffsetY);
+        // 深度/影パスは自己発光を読まないが、ルート定数は残留するので 0 を明示的に書いておく。
+        cb.packedEmissive = 0u;
         m_commandList->GetNative()->SetGraphicsRoot32BitConstants(
-            RootSignature::kSlotPBRMaterial, 8, &cb, 0);
+            RootSignature::kSlotPBRMaterial, 9, &cb, 0);
     };
 
     const size_t itemCount = m_drawItems.size();
@@ -3306,6 +3404,9 @@ void Application::Render()
                 case MaterialTextureSlot::MetalRoughness:
                     MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, req.submeshIndex, rel);
                     break;
+                case MaterialTextureSlot::Emissive:
+                    MeshRenderer::SetOverride(mr.overrideEmissiveTexture, req.submeshIndex, rel);
+                    break;
             }
             m_editorCtx->undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
                 &reg, req.entity, before, mr, "Material Texture"));
@@ -3683,16 +3784,55 @@ void Application::Render()
             {
                 m_rtScene->Invalidate();
                 m_rtSceneGenSeen = m_sceneGeneration;
+                m_rtBuiltHash    = 0;   // 前フレームの TLAS は死んだ BLAS を指している
             }
 
-            m_gpuTimer->Begin(nativeCmdList, GpuTimer::Raytracing);
             const XMFLOAT3 camP = m_camera->GetPosition();
 
             // スキンドを TLAS に入れられるのは compute スキニングが生きているフレームだけ。
             // ★この 1 変数を IsRaytracedItem() の両方の呼び出し側が見る（CSM 排他 / TLAS 詰め込み）。
             const bool skinnedInTlas = (m_skinningCompute != nullptr);
             m_rtSkinnedActiveThisFrame = skinnedInTlas;
+            // ヒット点で頂点属性 / アルベドを引く表（GeometryInfo）を作れる GPU か。
+            const bool wantGeoInfo = m_graphicsDevice->SupportsDynamicResources();
+
+            RaytracingScene::BuildDesc bd;
+            bd.frameIndex   = frameIndex;
+            bd.maxInstances = (rtCfg.maxInstances > 0)
+                            ? static_cast<u32>(rtCfg.maxInstances) : RaytracingScene::kMaxRtInstances;
+
+            // ===== シーンが動いていないフレームは TLAS を組み直さない =====
+            // dead_mall（静的メッシュ 13,522 体 / TLAS 20,346 インスタンス）で計測すると、
+            // 下の詰め込みループ(rtFeed)と Build(rtBuild)だけで CPU 11ms/フレーム 使っていた。
+            // 全部静的なので 2 フレーム目以降はまるごと無駄。BuildDrawList が走査のついでに
+            // 作った内容ハッシュ（ワールド行列・メッシュ・ジオメトリ版・マテリアル SRV）が
+            // 前回の構築時と一致するなら、前フレームの TLAS をそのまま使う。
+            // ★カメラが動いただけでは組み直さない（ハッシュにカメラを混ぜていない）。距離ソートは
+            //   上限超過時の間引きにしか効かず、間引き中は IsLastBuildCacheable() が false を返す。
+            // ★forceBuildTlas / スキンドがいるフレーム / ハッシュ未計算 は従来どおり毎フレーム構築。
+            u64 rtHash = 0;
+            if (m_rtContentHashValid && m_rtSkinnedItems == 0 && !rtCfg.forceBuildTlas)
+            {
+                rtHash = m_rtContentHash;
+                RtHashMix(rtHash, bd.maxInstances);   // 上限が変われば入る中身も変わる
+                RtHashMix(rtHash, (skinnedInTlas ? 1u : 0u) | (wantGeoInfo ? 2u : 0u));
+                if (rtHash == 0) rtHash = 1;          // 0 は「使い回し不可」の予約値
+            }
+
+            bool tlasOk = false;
+            if (rtHash != 0 && rtHash == m_rtBuiltHash && m_rtScene->ReuseLastFrame())
+            {
+                // コマンドを 1 本も積まない＝GPU の raytracing パスも 0ms になる。
+                tlasOk = true;
+            }
+            else
+            {
+            // ★ここから下は BuildDrawList の計時ブロックと同じ流儀で、字下げを増やさずに
+            //   スコープだけ開ける（従来経路の中身は 1 行も変えていない）。
+            m_gpuTimer->Begin(nativeCmdList, GpuTimer::Raytracing);
             if (m_skinningCompute) m_skinningCompute->BeginFrame();
+            {
+            CpuScopeTimer _tRtFeed(&m_cpuMs[CpuRtFeed]); DX12_PROFILE_ZONE_N("Rt/Feed");
 
             // 除外された数は診断（dx12_diagnose の dxr 検査）で「なぜキャラの影が
             // RT に出ないのか」を説明するために数えておく。
@@ -3712,7 +3852,6 @@ void Application::Render()
             // ★スキンドでも「属性用 VB」は元メッシュのものを渡す。変形後バッファには
             //   位置しか入っていない（UV も法線も無い）が、インデックスは共有なので
             //   PrimitiveIndex と バリセントリック はそのまま使える。
-            const bool wantGeoInfo = m_graphicsDevice->SupportsDynamicResources();
             auto makeGeoInfo = [&](Mesh* mesh) -> RaytracingScene::GeometryInfo
             {
                 RaytracingScene::GeometryInfo g{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u};
@@ -3789,14 +3928,20 @@ void Application::Render()
             //   compute の出力には当てはまらない。ここを抜かすとゴミの BVH ができる。
             if (m_skinningCompute)
                 m_skinningCompute->TransitionForAccelerationStructureBuild(nativeCmdList);
+            }   // _tRtFeed
 
-            RaytracingScene::BuildDesc bd;
-            bd.frameIndex   = frameIndex;
-            bd.maxInstances = (rtCfg.maxInstances > 0)
-                            ? static_cast<u32>(rtCfg.maxInstances) : RaytracingScene::kMaxRtInstances;
-            const bool tlasOk = m_rtScene->Build(*m_graphicsDevice, nativeCmdList, bd);
+            {
+            CpuScopeTimer _tRtBuild(&m_cpuMs[CpuRtBuild]); DX12_PROFILE_ZONE_N("Rt/Build");
+            tlasOk = m_rtScene->Build(*m_graphicsDevice, nativeCmdList, bd);
+            }   // _tRtBuild
+
             if (m_skinningCompute) m_skinningCompute->EndFrame();
             m_gpuTimer->End(nativeCmdList, GpuTimer::Raytracing);
+
+            // 次フレームで使い回せるのは「欠けの無い TLAS が建った」ときだけ。
+            // （スキンド / 上限間引き / BLAS の遅延構築が残っている場合は false が返る）
+            m_rtBuiltHash = (tlasOk && m_rtScene->IsLastBuildCacheable()) ? rtHash : 0;
+            }   // 従来経路
 
             if (tlasOk)
             {

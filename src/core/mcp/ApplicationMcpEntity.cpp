@@ -1384,7 +1384,8 @@ void Application::RegisterMcpEntityMethods()
                               {"target", {wpos.x, wpos.y, wpos.z}}, {"distance", dist}};
         });
 
-    McpDefine("set_pbr", "alphaCutoff:any,alphaMode:string,entity:int,metallic:any,name:string,opacity:any,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
+    McpDefine("set_pbr", "alphaCutoff:any,alphaMode:string,emissiveColor:any,emissiveIntensity:any,"
+              "entity:int,metallic:any,name:string,opacity:any,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -1393,6 +1394,25 @@ void Application::RegisterMcpEntityMethods()
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
             if (params.contains("roughness")) mr.overrideRoughness = params["roughness"].get<float>();
+            // ---- 自己発光（emissive）----
+            // emissiveIntensity: 発光の強さ 0..64（0 で消灯、負で「マテリアルに従う」へ戻す）
+            // emissiveColor: [r,g,b] 0..1（リニア）。省略して強度だけ指定すると白として扱う
+            //                （ResolveEmissiveParams の救済。renderer/Material.h 参照）
+            if (params.contains("emissiveIntensity"))
+            {
+                const float v = params["emissiveIntensity"].get<float>();
+                mr.overrideEmissiveIntensity = (v < 0.0f) ? -1.0f
+                                             : std::clamp(v, 0.0f, kEmissiveIntensityMax);
+            }
+            if (params.contains("emissiveColor"))
+            {
+                const auto& c = params["emissiveColor"];
+                if (!c.is_array() || c.size() < 3)
+                    throw McpError(McpErr::InvalidParam, "emissiveColor は [r,g,b]（0..1）");
+                mr.overrideEmissiveColor = { std::clamp(c[0].get<float>(), 0.0f, 1.0f),
+                                             std::clamp(c[1].get<float>(), 0.0f, 1.0f),
+                                             std::clamp(c[2].get<float>(), 0.0f, 1.0f) };
+            }
             // ---- 透明（アルファクリップ / アルファブレンド）----
             // alphaMode: "auto"(既定=モデルのマテリアルに従う) / "opaque" / "mask" / "blend"
             // alphaCutoff: MASK のしきい値 0..1（負でマテリアルに従う）
@@ -1432,7 +1452,11 @@ void Application::RegisterMcpEntityMethods()
                                                 ? std::string("auto")
                                                 : std::string(modeNames[mr.alphaModeOverride])},
                               {"alphaCutoff", mr.alphaCutoffOverride},
-                              {"opacity", mr.opacity}};
+                              {"opacity", mr.opacity},
+                              {"emissiveIntensity", mr.overrideEmissiveIntensity},
+                              {"emissiveColor", {mr.overrideEmissiveColor.x,
+                                                 mr.overrideEmissiveColor.y,
+                                                 mr.overrideEmissiveColor.z}}};
         });
 
     McpDefine("duplicate_entity", "entity:int,name:string", DX12E_MCP_HANDLER

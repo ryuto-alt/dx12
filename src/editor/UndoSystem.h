@@ -64,6 +64,10 @@ struct PbrOverrides
     int   alphaMode   = -1;      // -1=継承 / 0=opaque / 1=mask / 2=blend
     float alphaCutoff = -1.0f;   // <0=継承
     float opacity     = 1.0f;
+    // 自己発光。色は x<0、強度は <0 が「継承」。透明と同じくここへ相乗りさせる
+    // （別コマンドに分けると色と強度で Undo が 2 回要る＝片方だけ戻る状態が作れてしまう）。
+    DirectX::XMFLOAT3 emissiveColor{-1.0f, -1.0f, -1.0f};
+    float emissiveIntensity = -1.0f;
 
     static PbrOverrides From(const MeshRenderer& mr)
     {
@@ -73,6 +77,8 @@ struct PbrOverrides
         v.alphaMode   = mr.alphaModeOverride;
         v.alphaCutoff = mr.alphaCutoffOverride;
         v.opacity     = mr.opacity;
+        v.emissiveColor     = mr.overrideEmissiveColor;
+        v.emissiveIntensity = mr.overrideEmissiveIntensity;
         return v;
     }
     void ApplyTo(MeshRenderer& mr) const
@@ -82,8 +88,18 @@ struct PbrOverrides
         mr.alphaModeOverride   = alphaMode;
         mr.alphaCutoffOverride = alphaCutoff;
         mr.opacity             = opacity;
+        mr.overrideEmissiveColor     = emissiveColor;
+        mr.overrideEmissiveIntensity = emissiveIntensity;
     }
-    bool operator==(const PbrOverrides& o) const = default;
+    // XMFLOAT3 は operator== を持たないので明示比較（= default が使えない）。
+    bool operator==(const PbrOverrides& o) const
+    {
+        return metallic == o.metallic && roughness == o.roughness
+            && alphaMode == o.alphaMode && alphaCutoff == o.alphaCutoff
+            && opacity == o.opacity && emissiveIntensity == o.emissiveIntensity
+            && emissiveColor.x == o.emissiveColor.x && emissiveColor.y == o.emissiveColor.y
+            && emissiveColor.z == o.emissiveColor.z;
+    }
 };
 
 // ── PBR パラメータ変更コマンド（metallic / roughness / 透明の上書き）──

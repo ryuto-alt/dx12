@@ -902,6 +902,7 @@ void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
                 MeshRenderer::SetOverride(mr.overrideAlbedoTexture, smi, "");
                 MeshRenderer::SetOverride(mr.overrideNormalTexture, smi, "");
                 MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, smi, "");
+                MeshRenderer::SetOverride(mr.overrideEmissiveTexture, smi, "");
                 ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
                     &reg, e, before, mr, "Material Texture"));
             }
