@@ -1063,6 +1063,7 @@ properties = {
               <tr><td><code>physics:applyImpulse(e, vec)</code></td><td><code>applyForce</code> / <code>setVelocity</code> / <code>getVelocity</code> / <code>setPosition</code></td></tr>
               <tr><td><code>physics:setGravity(vec)</code> / <code>setPaused(b)</code> / <code>step(dt)</code></td><td>重力変更 / 物理停止 / 手動1ステップ</td></tr>
               <tr><td><code>physics:addCharacterController(e, r, halfH)</code></td><td>キャラ操作。毎フレーム <code>move(e, vx, vz)</code>、<code>jump(e[, amt])</code>、<code>isGrounded(e)</code></td></tr>
+              <tr><td><code>physics:warp(e, x, y, z)</code></td><td>任意座標へ即テレポート。CharacterController なら縦速度もリセット、無ければ RigidBody→Transform の順にフォールバック</td></tr>
             </tbody>
           </table>
         </div>

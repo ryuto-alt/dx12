@@ -321,6 +321,7 @@ lamp.range = 12
 | `:move(e, vx, vz)` | — | 水平移動入力（world XZ 目標速度・毎フレーム呼ぶ） |
 | `:jump(e, amount?)` | — | ジャンプ（接地中のみ・amount<=0 で既定 jumpSpeed） |
 | `:isGrounded(e)` | bool | 接地判定 |
+| `:warp(e, x, y, z)` | — | 任意座標へ即テレポート。CharacterController があれば SetCharacterPosition + 縦速度/移動入力リセット、無ければ RigidBody の位置、それも無ければ Transform を直接書く |
 
 ### RaycastHit
 ```lua

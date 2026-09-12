@@ -413,6 +413,13 @@ input:getPadLeftStickX(0)                 -- スティックXY・トリガー・
 local hit = physics:raycast(origin, dir, maxDist)  -- RaycastHit{hit,distance,point,normal}
 physics:applyImpulse(e, Vec3.new(0, 5, 0))
 
+-- warp(e,x,y,z) は任意座標へ即テレポート。CharacterController は
+-- e.transform.position に書いても毎フレーム上書きされて効かないので、
+-- 「穴に落ちたら開始地点へ戻す」ような復帰処理には必ずこちらを使う。
+if e.transform.position.y < -25 then
+    physics:warp(e, startX, startY, startZ)  -- CC なら縦速度もリセットされ、着地直後の再落下を防ぐ
+end
+
 scene:setSpriteAlpha(e, 0.4)             -- Sprite2D の不透明度(0..1)。半透明演出(毎フレーム可)
 scene:setSpriteEffect(e, 0.5)            -- カスタムスプライトシェーダーへの汎用値(毎フレーム可)
 scene:setSpriteParams(e, 1, 0.5, 0, 0)   -- カスタムスプライトシェーダーへの汎用float4(毎フレーム可)
