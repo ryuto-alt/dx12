@@ -2648,9 +2648,10 @@ void Application::Update()
             {
                 if (src.spatial)
                     src.runtimeSlot = m_audioSystem->PlaySFXSpatial(
-                        src.clipPath, wx, wy, wz, src.minDistance, src.maxDistance, src.volume, src.loop);
+                        src.clipPath, wx, wy, wz, src.minDistance, src.maxDistance, src.volume, src.loop,
+                        src.bus);
                 else
-                    m_audioSystem->PlaySFX(src.clipPath, src.loop, src.volume);
+                    m_audioSystem->PlaySFX(src.clipPath, src.loop, src.volume, src.bus);
                 src.startedThisPlay = true;
             }
             if (src.runtimeSlot >= 0 && src.spatial)

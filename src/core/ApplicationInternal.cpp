@@ -233,6 +233,7 @@ nlohmann::json McpComponentSchema()
         F("clipPath", "string (assets-relative)", ""), F("volume", "float", 1.0), F("loop", "bool", false),
         F("spatial", "bool", true), F("playOnStart", "bool", true),
         F("minDistance", "float", 1.0), F("maxDistance", "float", 30.0),
+        F("bus", "string (mixer bus name; empty = sfx. builtin: master/music/sfx/ambience/voice/ui)", ""),
     })));
     comps.push_back(C("particleEmitter", true, true, json::array({
         F("kind", "int (0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star)", 0),
@@ -759,6 +760,17 @@ nlohmann::json McpLuaApi()
         "getCurrentBGM() で判定して呼ばないこと（曲の途中で遷移するとイントロへ戻る）",
         "getBGMList()/getSFXList() -> table",
         "rescan()  (assets 配下の音声ファイルを列挙し直す。実行中に wav を足したとき用)",
+        "-- 汎用の再生口 --",
+        "play(path, opts?) -> id  (opts: bus='sfx', volume=1, loop=false, pos=Vec3 (渡すと 3D 空間音), "
+        "minDistance=1, maxDistance=30。失敗 -1)",
+        "-- ミキサーのバス（XAudio2 のサブミックス）。既定は master ← music/sfx/ambience/voice/ui --",
+        "createBus(name, parent?='master') -> bool  (ユーザー定義バス。既にあれば何もしない。入れ子は 8 段まで)",
+        "setBusVolume(name, v) / getBusVolume(name) -> float  (0..4。setMasterVolume/setBGMVolume/setSFXVolume は "
+        "master/music/sfx の別名)",
+        "setBusMute(name, bool) / isBusMuted(name) -> bool",
+        "setBusLowpass(name, hz) / getBusLowpass(name) -> float  (0 = 無し。上限は出力のサンプルレート/6 ≒ 8kHz)",
+        "getBuses() -> {name,...}  (親 → 子の順。master が先頭)",
+        "★AudioSource.bus / audio:play{bus=...} で送り先を選ぶ。無いバス名は sfx で鳴らして警告を 1 度出す",
     })));
     objects.push_back(O("time", "global ('.' で呼ぶ)", json::array({
         "time.now() -> float  — Play開始からの経過秒(タイムスケール適用済み)",

@@ -10,6 +10,28 @@
 namespace dx12e
 {
 
+namespace
+{
+// master の ProcessingStage。子は深さ 1 段ごとに 16 ずつ下げる（子 → 親の順に処理させる）。
+constexpr UINT32 kMasterStage = 1u << 20;
+constexpr u32    kMaxBusDepth = 8;
+
+// 1 本だけの送り先を組む（CreateSourceVoice / CreateSubmixVoice の pSendList 用）。
+struct OneSend
+{
+    XAUDIO2_SEND_DESCRIPTOR desc{};
+    XAUDIO2_VOICE_SENDS     sends{};
+    explicit OneSend(IXAudio2Voice* v)
+    {
+        desc.Flags        = 0;
+        desc.pOutputVoice = v;
+        sends.SendCount   = 1;
+        sends.pSends      = &desc;
+    }
+    XAUDIO2_VOICE_SENDS* Get() { return desc.pOutputVoice ? &sends : nullptr; }
+};
+} // namespace
+
 AudioSystem::AudioSystem() = default;
 
 AudioSystem::~AudioSystem()
@@ -21,6 +43,44 @@ void AudioSystem::Initialize(const std::string& assetsDir)
 {
     m_assetsDir = assetsDir;
 
+    // バスは「値だけ」先に作る。デバイスが無い環境（ヘッドレス CI / 音声デバイス無しの PC）でも
+    // setBusVolume などの状態は保持し、audio_state も返せるようにするため。
+    if (m_buses.empty())
+    {
+        auto add = [&](const char* name, i32 parent, f32 vol) {
+            Bus b;
+            b.name    = name;
+            b.parent  = parent;
+            b.depth   = (parent < 0) ? 0u : m_buses[static_cast<size_t>(parent)].depth + 1u;
+            b.volume  = vol;
+            b.builtin = true;
+            m_buses.push_back(std::move(b));
+        };
+        add("master",   -1, 1.0f);
+        add("music",     0, 0.7f);   // ★旧 m_bgmVolume の既定 0.7 をそのまま引き継ぐ（音量が変わらない）
+        add("sfx",       0, 1.0f);
+        add("ambience",  0, 1.0f);
+        add("voice",     0, 1.0f);
+        add("ui",        0, 1.0f);
+    }
+
+    // ★テスト用の口: DX12_AUDIO_DEVICE=none で「音声デバイスが無い PC」を再現する。
+    //   ヘッドレス CI やリモートデスクトップでは実際にこの状態になるので、落ちない・状態は返すを
+    //   手元で確かめられるようにしておく。
+    {
+        char env[32] = {};
+        size_t len = 0;
+        if (getenv_s(&len, env, sizeof(env), "DX12_AUDIO_DEVICE") == 0 && len > 0
+            && _stricmp(env, "none") == 0)
+        {
+            m_deviceStatus = "disabled (DX12_AUDIO_DEVICE=none)";
+            Logger::Warn("音声デバイスを使わずに起動します（DX12_AUDIO_DEVICE=none）。"
+                         "再生要求は状態だけ記録し、音は出ません");
+            ScanAudioFiles();
+            return;
+        }
+    }
+
     // COM初期化（XAudio2に必要）
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     m_comInitialized = (hr == S_OK);  // S_FALSE = 既に初期化済み
@@ -30,6 +90,9 @@ void AudioSystem::Initialize(const std::string& assetsDir)
     if (FAILED(hr))
     {
         Logger::Error("XAudio2 の初期化に失敗しました: 0x{:08X}", static_cast<u32>(hr));
+        m_deviceStatus = "XAudio2Create failed";
+        m_xaudio2.Reset();
+        ScanAudioFiles();
         return;
     }
 
@@ -37,11 +100,17 @@ void AudioSystem::Initialize(const std::string& assetsDir)
     hr = m_xaudio2->CreateMasteringVoice(&m_masterVoice);
     if (FAILED(hr))
     {
-        Logger::Error("マスタリングボイスの作成に失敗しました: 0x{:08X}", static_cast<u32>(hr));
+        // ★音声デバイスが無い PC ではここで落ちる。以前は m_xaudio2 を残したまま return していたので、
+        //   以降の再生のたびに CreateSourceVoice が失敗してエラーログが 1 回ずつ出続けていた。
+        Logger::Error("マスタリングボイスの作成に失敗しました（音声デバイスが無い可能性）: 0x{:08X}",
+                      static_cast<u32>(hr));
+        m_deviceStatus = "no audio device (CreateMasteringVoice failed)";
+        m_masterVoice = nullptr;
+        m_xaudio2.Reset();
+        ScanAudioFiles();
         return;
     }
-
-    m_masterVoice->SetVolume(m_masterVolume);
+    m_deviceStatus = "ok";
 
     // X3DAudio 初期化（3D 空間オーディオ）
     {
@@ -49,6 +118,10 @@ void AudioSystem::Initialize(const std::string& assetsDir)
         m_masterVoice->GetVoiceDetails(&details);
         m_outChannels = (details.InputChannels > 0) ? details.InputChannels : 2;
         if (m_outChannels > 8) m_outChannels = 8;
+        m_outSampleRate = (details.InputSampleRate > 0) ? details.InputSampleRate : 48000;
+
+        // バスのサブミックスボイスを親から順に作る（m_buses は親が必ず子より前）。
+        for (auto& b : m_buses) CreateBusVoice(b);
 
         DWORD channelMask = 0;
         m_masterVoice->GetChannelMask(&channelMask);
@@ -88,6 +161,18 @@ void AudioSystem::Shutdown()
     {
         m_bgmVoice->DestroyVoice();
         m_bgmVoice = nullptr;
+    }
+
+    // バス破棄。★子から先に壊す（送り先として使われているボイスは壊せない）。
+    //   m_buses は親が子より前に並ぶので逆順に回せば子が先になる。
+    for (auto it = m_buses.rbegin(); it != m_buses.rend(); ++it)
+    {
+        if (it->voice)
+        {
+            it->voice->DestroyVoice();
+            it->voice = nullptr;
+        }
+        it->appliedGain = it->appliedFilter = -1.0f;
     }
 
     // マスタリングボイス破棄
@@ -244,16 +329,17 @@ void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
         m_bgmVoice = nullptr;
     }
 
-    // 新しいソースボイス作成
+    // 新しいソースボイス作成（送り先は music バス。音量はバス側で掛ける）
     WAVEFORMATEX fmt = clip->GetFormat();
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&m_bgmVoice, &fmt);
+    OneSend send(BusOutputVoice(FindBus("music")));
+    HRESULT hr = m_xaudio2->CreateSourceVoice(&m_bgmVoice, &fmt, 0, XAUDIO2_DEFAULT_FREQ_RATIO,
+                                              nullptr, send.Get());
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成（BGM）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
+        m_bgmVoice = nullptr;
         return;
     }
-
-    m_bgmVoice->SetVolume(m_bgmVolume);
 
     // バッファ送信
     XAUDIO2_BUFFER buffer{};
@@ -347,16 +433,18 @@ void AudioSystem::ResumeBGM()
 
 // ===== SFX =====
 
-void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume)
+void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume, const std::string& bus)
 {
-    PlaySFXTracked(filePath, loop, volume);
+    PlaySFXTracked(filePath, loop, volume, bus);
 }
 
 // ★中身は元の PlaySFX そのままで、最後にスロット ID を返すだけ。
 //   ループ再生した環境音を後から止める・絞る・回転を落とす、が ID 無しでは書けなかった。
-i32 AudioSystem::PlaySFXTracked(const std::string& filePath, bool loop, float volume)
+i32 AudioSystem::PlaySFXTracked(const std::string& filePath, bool loop, float volume,
+                                const std::string& bus)
 {
-    if (!m_xaudio2) return -1;
+    if (!m_xaudio2 || !m_masterVoice) return -1;
+    const i32 busIndex = ResolveBusOrSfx(bus);
 
     AudioClip* clip = GetOrLoadClip(filePath);
     if (!clip) return -1;
@@ -412,15 +500,19 @@ i32 AudioSystem::PlaySFXTracked(const std::string& filePath, bool loop, float vo
     }
 
     WAVEFORMATEX fmt = clip->GetFormat();
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt);
+    OneSend send(BusOutputVoice(busIndex));
+    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt, 0, XAUDIO2_DEFAULT_FREQ_RATIO,
+                                              nullptr, send.Get());
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
+        slot.voice = nullptr;
         return -1;
     }
 
+    slot.bus        = busIndex;
     slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
-    slot.voice->SetVolume(m_sfxVolume * slot.clipVolume);
+    slot.voice->SetVolume(slot.clipVolume);   // バス音量はバス側で掛かる
 
     XAUDIO2_BUFFER buffer{};
     buffer.AudioBytes = clip->GetSizeInBytes();
@@ -468,8 +560,8 @@ void AudioSystem::SetVoiceVolume(i32 slotId, float volume)
     SFXSlot* slot = ResolveVoice(slotId);
     if (!slot) return;
     slot->clipVolume = std::clamp(volume, 0.0f, 1.0f);
-    // 空間音は距離減衰を ComputeAndApply が毎フレーム掛け直すので、そちらに任せる。
-    if (!slot->spatial) slot->voice->SetVolume(slot->clipVolume * m_sfxVolume);
+    // 空間音は遮蔽込みの音量を ApplyOcclusion が毎フレーム掛け直すので、そちらに任せる。
+    if (!slot->spatial) slot->voice->SetVolume(slot->clipVolume);
 }
 
 void AudioSystem::SetVoicePitch(i32 slotId, float ratio)
@@ -553,7 +645,7 @@ void AudioSystem::ApplyOcclusion(SFXSlot& slot)
 {
     if (!slot.voice) return;
     const float occ = std::clamp(slot.occ, 0.0f, 1.0f);
-    slot.voice->SetVolume(m_sfxVolume * slot.clipVolume * (1.0f - kOccVolumeDrop * occ));
+    slot.voice->SetVolume(slot.clipVolume * (1.0f - kOccVolumeDrop * occ));
 
     // XAudio2 のフィルタ Frequency は 2*sin(pi*fc/fs)。1.0（＝上限）が素通し。
     const float fs   = static_cast<float>(slot.sampleRate > 0 ? slot.sampleRate : 44100);
@@ -586,9 +678,11 @@ void AudioSystem::GetListenerPos(float& x, float& y, float& z) const
 }
 
 i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
-                                float minDistance, float maxDistance, float volume, bool loop)
+                                float minDistance, float maxDistance, float volume, bool loop,
+                                const std::string& bus)
 {
-    if (!m_xaudio2) return -1;
+    if (!m_xaudio2 || !m_masterVoice) return -1;
+    const i32 busIndex = ResolveBusOrSfx(bus);
 
     AudioClip* clip = GetOrLoadClip(filePath);
     if (!clip) return -1;
@@ -621,13 +715,17 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
 
     WAVEFORMATEX fmt = clip->GetFormat();
     // ★USEFILTER はボイス生成時にしか付けられない。遮蔽のローパスに要る。
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt, XAUDIO2_VOICE_USEFILTER);
+    OneSend send(BusOutputVoice(busIndex));
+    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt, XAUDIO2_VOICE_USEFILTER,
+                                              XAUDIO2_DEFAULT_FREQ_RATIO, nullptr, send.Get());
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成（空間SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
+        slot.voice = nullptr;
         return -1;
     }
 
+    slot.bus            = busIndex;
     slot.sampleRate     = fmt.nSamplesPerSec;
     slot.occ            = 0.0f;
     slot.occTarget      = 0.0f;
@@ -638,7 +736,7 @@ i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, f
     slot.emitterPos[1]  = y;
     slot.emitterPos[2]  = z;
     slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
-    slot.voice->SetVolume(slot.clipVolume * m_sfxVolume);
+    slot.voice->SetVolume(slot.clipVolume);
 
     XAUDIO2_BUFFER buffer{};
     buffer.AudioBytes = clip->GetSizeInBytes();
@@ -703,35 +801,195 @@ void AudioSystem::StopAllSFX()
     }
 }
 
-// ===== Volume =====
+// ===== バス（サブミックス）=====
+// ★以前の setSFXVolume は「鳴っている全ボイスへ音量を掛け直す」実装で、クリップ個別音量や
+//   遮蔽の掛け忘れで何度も事故っていた（小さい音が最大音量へ跳ねる / こもった音が一瞬素に戻る）。
+//   今はバスのサブミックスボイス 1 本の音量を変えるだけなので、ボイス側の値には一切触らない。
 
-void AudioSystem::SetMasterVolume(f32 volume)
+i32 AudioSystem::FindBus(const std::string& name) const
 {
-    m_masterVolume = std::clamp(volume, 0.0f, 1.0f);
-    if (m_masterVoice)
-        m_masterVoice->SetVolume(m_masterVolume);
+    for (size_t i = 0; i < m_buses.size(); ++i)
+        if (m_buses[i].name == name) return static_cast<i32>(i);
+    return -1;
 }
 
-void AudioSystem::SetBGMVolume(f32 volume)
+i32 AudioSystem::ResolveBusOrSfx(const std::string& name)
 {
-    m_bgmVolume = std::clamp(volume, 0.0f, 1.0f);
-    if (m_bgmVoice)
-        m_bgmVoice->SetVolume(m_bgmVolume);
-}
-
-void AudioSystem::SetSFXVolume(f32 volume)
-{
-    m_sfxVolume = std::clamp(volume, 0.0f, 1.0f);
-    for (auto& slot : m_sfxSlots)
+    if (name.empty()) return FindBus("sfx");
+    const i32 i = FindBus(name);
+    if (i >= 0) return i;
+    // 未知のバス名で無音にすると「鳴らない」の原因が分からなくなるので、sfx へ流して 1 度だけ警告する。
+    if (std::find(m_warnedUnknownBus.begin(), m_warnedUnknownBus.end(), name) == m_warnedUnknownBus.end())
     {
-        // ★クリップ個別音量を掛け直す。以前はマスター値をそのまま書いていたので、
-        //   再生中の小さい音がスライダーを触った瞬間に最大音量へ跳ね上がっていた
-        //   （再生時は個別音量を掛けているので、ここだけ規約が破れていた）。
-        // ★ApplyOcclusion 経由で書く。直接 SetVolume すると壁越しでこもらせた音が
-        //   スライダーを触った瞬間だけ素の音量へ戻る（次の Update で戻るので一瞬鳴る）。
-        if (slot.voice)
-            ApplyOcclusion(slot);
+        m_warnedUnknownBus.push_back(name);
+        Logger::Warn("バス '{}' がありません。sfx バスで鳴らします（audio:createBus('{}') で作るか、"
+                     "既定の master/music/sfx/ambience/voice/ui のどれかを指定してください）", name, name);
     }
+    return FindBus("sfx");
+}
+
+IXAudio2Voice* AudioSystem::BusOutputVoice(i32 busIndex) const
+{
+    if (busIndex < 0 || busIndex >= static_cast<i32>(m_buses.size())) return nullptr;
+    return m_buses[static_cast<size_t>(busIndex)].voice;
+}
+
+f32 AudioSystem::BusEffectiveGain(const Bus& bus) const
+{
+    return bus.muted ? 0.0f : bus.volume * bus.snap.gain;
+}
+
+bool AudioSystem::CreateBusVoice(Bus& bus)
+{
+    if (bus.voice) return true;
+    if (!m_xaudio2 || !m_masterVoice) return false;
+
+    IXAudio2Voice* parentVoice = nullptr;
+    if (bus.parent >= 0)
+    {
+        parentVoice = m_buses[static_cast<size_t>(bus.parent)].voice;
+        if (!parentVoice) return false;   // 親が作れていない（デバイス無し等）
+    }
+    OneSend send(parentVoice);   // master は null → 既定の mastering voice へ
+    // ★入力チャンネル数は出力デバイスと同じにする。空間音の X3DAudio の行列が
+    //   「ボイス → バス」をそのままスピーカー配置で書けるようにするため。
+    const UINT32 stage = kMasterStage - bus.depth * 16u;
+    HRESULT hr = m_xaudio2->CreateSubmixVoice(&bus.voice, m_outChannels, m_outSampleRate,
+                                              XAUDIO2_VOICE_USEFILTER, stage, send.Get(), nullptr);
+    if (FAILED(hr))
+    {
+        Logger::Error("バス '{}' のサブミックスボイス作成に失敗しました: 0x{:08X}",
+                      bus.name, static_cast<u32>(hr));
+        bus.voice = nullptr;
+        return false;
+    }
+    ApplyBus(bus, true);
+    return true;
+}
+
+void AudioSystem::ApplyBus(Bus& bus, bool force)
+{
+    const f32 gain   = BusEffectiveGain(bus);
+    const f32 hz     = audio::CombineLowpass(bus.lowpassHz, bus.snap.lowpassHz);
+    const f32 filter = audio::CutoffToFilterFrequency(hz, static_cast<f32>(m_outSampleRate));
+    if (!bus.voice)
+    {
+        bus.appliedGain = gain;
+        bus.appliedFilter = filter;
+        return;
+    }
+    if (force || std::fabs(gain - bus.appliedGain) > 1e-5f)
+    {
+        bus.voice->SetVolume(gain);
+        bus.appliedGain = gain;
+    }
+    if (force || std::fabs(filter - bus.appliedFilter) > 1e-5f)
+    {
+        XAUDIO2_FILTER_PARAMETERS fp{};
+        fp.Type      = LowPassFilter;
+        fp.Frequency = filter;    // 1.0 = 素通し（Frequency=1, OneOverQ=1 はバイパスと等価）
+        fp.OneOverQ  = 1.0f;
+        bus.voice->SetFilterParameters(&fp);
+        bus.appliedFilter = filter;
+    }
+}
+
+bool AudioSystem::CreateBus(const std::string& name, const std::string& parent)
+{
+    if (name.empty())
+    {
+        Logger::Warn("audio:createBus: バス名が空です");
+        return false;
+    }
+    if (FindBus(name) >= 0) return true;   // 既にある（Play のたびに OnStart で呼んでよい）
+
+    const i32 p = FindBus(parent.empty() ? std::string("master") : parent);
+    if (p < 0)
+    {
+        Logger::Warn("audio:createBus('{}'): 親バス '{}' がありません", name, parent);
+        return false;
+    }
+    const u32 depth = m_buses[static_cast<size_t>(p)].depth + 1u;
+    if (depth > kMaxBusDepth)
+    {
+        Logger::Warn("audio:createBus('{}'): 入れ子が深すぎます（最大 {} 段）", name, kMaxBusDepth);
+        return false;
+    }
+    Bus b;
+    b.name   = name;
+    b.parent = p;
+    b.depth  = depth;
+    m_buses.push_back(std::move(b));
+    // ★push_back の後で参照を取り直す（再確保で前の参照は無効）
+    CreateBusVoice(m_buses.back());
+    Logger::Info("バスを作成: {} (親 {})", name, m_buses[static_cast<size_t>(p)].name);
+    return true;
+}
+
+void AudioSystem::SetBusVolume(const std::string& name, f32 volume)
+{
+    const i32 i = FindBus(name);
+    if (i < 0) { Logger::Warn("setBusVolume: バス '{}' がありません", name); return; }
+    auto& b = m_buses[static_cast<size_t>(i)];
+    b.volume = std::clamp(volume, 0.0f, 4.0f);
+    ApplyBus(b);
+}
+
+f32 AudioSystem::GetBusVolume(const std::string& name) const
+{
+    const i32 i = FindBus(name);
+    return (i < 0) ? 0.0f : m_buses[static_cast<size_t>(i)].volume;
+}
+
+void AudioSystem::SetBusMute(const std::string& name, bool muted)
+{
+    const i32 i = FindBus(name);
+    if (i < 0) { Logger::Warn("setBusMute: バス '{}' がありません", name); return; }
+    auto& b = m_buses[static_cast<size_t>(i)];
+    b.muted = muted;
+    ApplyBus(b);
+}
+
+bool AudioSystem::IsBusMuted(const std::string& name) const
+{
+    const i32 i = FindBus(name);
+    return (i >= 0) && m_buses[static_cast<size_t>(i)].muted;
+}
+
+void AudioSystem::SetBusLowpass(const std::string& name, f32 hz)
+{
+    const i32 i = FindBus(name);
+    if (i < 0) { Logger::Warn("setBusLowpass: バス '{}' がありません", name); return; }
+    auto& b = m_buses[static_cast<size_t>(i)];
+    b.lowpassHz = (hz > 0.0f) ? std::clamp(hz, 20.0f, 24000.0f) : 0.0f;
+    ApplyBus(b);
+}
+
+f32 AudioSystem::GetBusLowpass(const std::string& name) const
+{
+    const i32 i = FindBus(name);
+    return (i < 0) ? 0.0f : m_buses[static_cast<size_t>(i)].lowpassHz;
+}
+
+std::vector<AudioSystem::BusInfo> AudioSystem::GetBuses() const
+{
+    std::vector<BusInfo> out;
+    out.reserve(m_buses.size());
+    for (const auto& b : m_buses)
+    {
+        BusInfo bi;
+        bi.name            = b.name;
+        bi.parent          = (b.parent >= 0) ? m_buses[static_cast<size_t>(b.parent)].name : std::string();
+        bi.volume          = b.volume;
+        bi.muted           = b.muted;
+        bi.lowpassHz       = b.lowpassHz;
+        bi.snapshotGain    = b.snap.gain;
+        bi.snapshotLowpass = b.snap.lowpassHz;
+        bi.effectiveGain   = BusEffectiveGain(b);
+        bi.builtin         = b.builtin;
+        out.push_back(std::move(bi));
+    }
+    return out;
 }
 
 } // namespace dx12e

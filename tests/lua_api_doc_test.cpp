@@ -117,7 +117,15 @@ bool IsDocumentedAsFamily(const std::string& name)
 int main()
 {
     // パスは CMake から絶対パスで渡す（ctest の作業ディレクトリに依存させない）。
-    const std::string engineSrc = ReadFile(DX12E_SCRIPT_ENGINE_CPP);
+    // ★束縛は担当別の TU（ScriptAudioBindings.cpp など）にも分かれているので、
+    //   '|' 区切りで渡された src/scripting/*.cpp を全部つないで 1 本のテキストとして読む。
+    std::string engineSrc;
+    {
+        std::istringstream paths(DX12E_SCRIPT_ENGINE_CPP);
+        std::string one;
+        while (std::getline(paths, one, '|'))
+            if (!one.empty()) engineSrc += ReadFile(one) + '\n';
+    }
     const std::string doc = ExtractMcpLuaApi(ReadFile(DX12E_APP_INTERNAL_CPP));
     if (engineSrc.empty() || doc.empty())
     {

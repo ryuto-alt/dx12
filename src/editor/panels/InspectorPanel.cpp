@@ -4203,6 +4203,11 @@ void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, en
         changed |= pg::Checkbox("開始時に再生 Play On Start", &as.playOnStart);
         changed |= pg::Checkbox("ループ Loop", &as.loop);
 
+        pg::Group("ミキサー");
+        changed |= pg::InputTextStr("バス Bus", as.bus, &active,
+            "送り先のミキサーバス。空 = sfx。既定: master / music / sfx / ambience / voice / ui。"
+            "Lua の audio:createBus で作ったバス名も書ける（無い名前は sfx で鳴らして警告）。");
+
         pg::Group("空間化");
         changed |= pg::Checkbox("3D 空間音にする Spatial", &as.spatial,
             "空間化はモノラル wav のみ。位置は Transform。");

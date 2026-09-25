@@ -626,9 +626,14 @@ add_test(NAME McpParamSpecTests COMMAND McpParamSpecTests)
 # Lua 束縛 ⇔ dx12_describe_lua_api のドリフト検出（display / net がテーブルごと
 # 未ドキュメントだったのを二度と起こさないため）。McpParamSpecTests と同じく
 # ソースをテキストとして読むだけなのでエンジンをリンクしない。
+# ★束縛は ScriptEngine.cpp 以外（ScriptAudioBindings.cpp など担当別の TU）にもあるので、
+#   src/scripting/*.cpp を全部 '|' 区切りで渡す。決め打ちにすると新しい TU の束縛を黙って見逃す。
+file(GLOB DX12E_SCRIPTING_TUS CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/*.cpp")
+list(JOIN DX12E_SCRIPTING_TUS "|" DX12E_SCRIPTING_SOURCES)
 add_executable(LuaApiDocTests lua_api_doc_test.cpp)
 target_compile_definitions(LuaApiDocTests PRIVATE
-    DX12E_SCRIPT_ENGINE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/ScriptEngine.cpp"
+    DX12E_SCRIPT_ENGINE_CPP="${DX12E_SCRIPTING_SOURCES}"
     DX12E_APP_INTERNAL_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/core/ApplicationInternal.cpp")
 if(MSVC)
     target_compile_options(LuaApiDocTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)

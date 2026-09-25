@@ -3,21 +3,53 @@
 #include <string>
 #include <memory>
 #include <array>
+#include <vector>
 #include <unordered_map>
 #include <filesystem>
 #include <wrl/client.h>
 #include <xaudio2.h>
 #include <x3daudio.h>
 #include "core/Types.h"
+#include "audio/AudioMath.h"
 
 namespace dx12e
 {
 
 class AudioClip;
 
+// ===========================================================================
+// ミキサーの構造（バス = XAudio2 のサブミックスボイス）
+//
+//   mastering voice ← master ← music     … BGM（playBGM）
+//                            ← sfx       … 効果音の既定（playSFX / playSpatial / AudioSource）
+//                            ← ambience  … 環境音
+//                            ← voice     … 声・セリフ
+//                            ← ui        … UI の操作音
+//                            ← (createBus で足したユーザー定義バス。親は任意のバス)
+//
+// ★バスは「子 → 親」の順に処理しないと音が 1 クォンタム遅れる/消える。XAudio2 は
+//   ProcessingStage の小さい方から処理し、「自分以下の stage へは送れない」ので、
+//   深さに応じて stage を下げている（master が最大）。
+// ★旧 API は互換のまま内部でバスへ写す: setMasterVolume = master、setBGMVolume = music、
+//   setSFXVolume = sfx。ボイス側はクリップ個別の音量しか持たない（バス音量は掛けない）。
+// ===========================================================================
 class AudioSystem
 {
 public:
+    // バス 1 本ぶんの読み出し用の写し（エディタのミキサー窓 / MCP audio_state / Lua getBuses）。
+    struct BusInfo
+    {
+        std::string name;
+        std::string parent;          // master は空
+        f32  volume     = 1.0f;      // ユーザー設定（setBusVolume）
+        bool muted      = false;
+        f32  lowpassHz  = 0.0f;      // ユーザー設定（0 = 無し）
+        f32  snapshotGain    = 1.0f; // スナップショット補正（線形）
+        f32  snapshotLowpass = 0.0f;
+        f32  effectiveGain   = 1.0f; // このバスが実際に掛けている量（volume*snapshot*mute）
+        bool builtin    = false;     // 既定の 6 本（消せない・親を変えられない）
+    };
+
     AudioSystem();
     ~AudioSystem();
 
@@ -39,10 +71,12 @@ public:
     void SetBGMRate(f32 ratio);  // 再生速度倍率(ピッチ連動)。1=通常、0.5=半速+1oct下。スローモ演出用
 
     // SFX
-    // volume は 0..1 のクリップ個別音量（マスター m_sfxVolume に乗算される）。
+    // volume は 0..1 のクリップ個別音量（バス音量 sfx / master はバス側で掛かる）。
     // ★以前は引数が無く、AudioSource::volume は spatial=true の経路でしか効かなかった
     //   （Inspector のスライダに注記も無いので「動かしたのに変わらない」になっていた）。
-    void PlaySFX(const std::string& filePath, bool loop = false, float volume = 1.0f);
+    // bus は空なら "sfx"。存在しないバス名は警告を 1 度だけ出して "sfx" へ流す（無音にはしない）。
+    void PlaySFX(const std::string& filePath, bool loop = false, float volume = 1.0f,
+                 const std::string& bus = {});
     // 今鳴っている BGM の assets 相対パス（鳴っていなければ空）。
     // ★playBGM は同じパスでも必ず頭出しするので、「シーンをまたいで同じ曲を鳴らし続ける」は
     //   これで判定して呼ばない、という形でしか書けない（曲の途中で切り替わると
@@ -71,7 +105,8 @@ public:
     // 空間 SFX をワンショット再生。戻り値スロット ID（追従用）、失敗/非対応は -1。
     i32  PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
                         float minDistance, float maxDistance,
-                        float volume = 1.0f, bool loop = false);
+                        float volume = 1.0f, bool loop = false,
+                        const std::string& bus = {});
     void UpdateSpatialEmitter(i32 slotId, float x, float y, float z);
     // ★鳴っている 1 本を掴んで操作する 3 つ。PlaySFXSpatial / PlaySFXTracked が返す ID を使う。
     //   ループ再生した環境音を止める・フェードさせる・回転数が落ちるように鳴らす、が
@@ -82,7 +117,8 @@ public:
     void SetVoicePitch(i32 slotId, float ratio);          // 再生速度＝ピッチ。0.1..2.0
     bool IsVoicePlaying(i32 slotId) const;
     // 非空間の SFX を ID 付きで鳴らす（上の 3 つで操作できる）。失敗時 -1。
-    i32  PlaySFXTracked(const std::string& filePath, bool loop = false, float volume = 1.0f);
+    i32  PlaySFXTracked(const std::string& filePath, bool loop = false, float volume = 1.0f,
+                        const std::string& bus = {});
     // 遮蔽量 0..1（1=リスナーとの間に壁がある）。ローパスで「こもった」音にし、音量も落とす。
     // 値は Update() 内で時定数 ~0.1s で追従するので、毎フレーム 0/1 を投げてよい。
     void SetOcclusion(i32 slotId, float amount);
@@ -90,13 +126,31 @@ public:
     void GetListenerPos(float& x, float& y, float& z) const;
     void Update(f32 dt);  // 毎フレーム: 空間ボイスの定位と遮蔽を再計算
 
-    // Volume (0.0 - 1.0)
-    void SetMasterVolume(f32 volume);
-    void SetBGMVolume(f32 volume);
-    void SetSFXVolume(f32 volume);
-    f32  GetMasterVolume() const { return m_masterVolume; }
-    f32  GetBGMVolume() const { return m_bgmVolume; }
-    f32  GetSFXVolume() const { return m_sfxVolume; }
+    // Volume (0.0 - 1.0)。★中身はバス音量（master / music / sfx）の別名。
+    void SetMasterVolume(f32 volume) { SetBusVolume("master", volume); }
+    void SetBGMVolume(f32 volume)    { SetBusVolume("music", volume); }
+    void SetSFXVolume(f32 volume)    { SetBusVolume("sfx", volume); }
+    f32  GetMasterVolume() const { return GetBusVolume("master"); }
+    f32  GetBGMVolume() const    { return GetBusVolume("music"); }
+    f32  GetSFXVolume() const    { return GetBusVolume("sfx"); }
+
+    // ---- バス（サブミックス）----
+    // 新しいバスを parent（空なら master）の子として作る。既にあれば何もせず true。
+    // 失敗（親が無い / 深すぎる / 名前が空）は false とログ。
+    bool CreateBus(const std::string& name, const std::string& parent = {});
+    bool HasBus(const std::string& name) const { return FindBus(name) >= 0; }
+    void SetBusVolume(const std::string& name, f32 volume);     // 0..4（1 超は増幅）
+    f32  GetBusVolume(const std::string& name) const;          // 無いバスは 0
+    void SetBusMute(const std::string& name, bool muted);
+    bool IsBusMuted(const std::string& name) const;
+    void SetBusLowpass(const std::string& name, f32 hz);       // 0 = 無し
+    f32  GetBusLowpass(const std::string& name) const;
+    std::vector<BusInfo> GetBuses() const;                      // 親 → 子の順（master が先頭）
+    // デバイスが使えているか（ヘッドレス/音声デバイス無しでは false。状態は保持し続ける）。
+    bool IsDeviceReady() const { return m_masterVoice != nullptr; }
+    const std::string& GetDeviceStatus() const { return m_deviceStatus; }
+    u32  GetOutputChannels() const { return m_outChannels; }
+    u32  GetOutputSampleRate() const { return m_outSampleRate; }
 
     // assets/audio/ 以下の音声ファイルを自動検出
     const std::vector<std::string>& GetBGMList() const { return m_bgmList; }
@@ -108,6 +162,34 @@ private:
 
     Microsoft::WRL::ComPtr<IXAudio2> m_xaudio2;
     IXAudio2MasteringVoice*          m_masterVoice = nullptr;
+    std::string                      m_deviceStatus = "not initialized";
+    u32                              m_outSampleRate = 48000;
+
+    // ---- バス ----
+    struct Bus
+    {
+        std::string          name;
+        i32                  parent = -1;       // m_buses の添字。master は -1
+        u32                  depth  = 0;        // master = 0
+        IXAudio2SubmixVoice* voice  = nullptr;  // デバイスが無ければ null（値だけ保持）
+        f32  volume    = 1.0f;
+        bool muted     = false;
+        f32  lowpassHz = 0.0f;
+        audio::BusMod snap;                     // スナップショット補正の現在値
+        bool builtin   = false;
+        // 直近に XAudio2 へ書いた値（同じ値を毎フレーム書かない）
+        f32  appliedGain   = -1.0f;
+        f32  appliedFilter = -1.0f;
+    };
+    std::vector<Bus> m_buses;                   // [0] = master。親は必ず子より前に並ぶ
+    i32  FindBus(const std::string& name) const;
+    i32  ResolveBusOrSfx(const std::string& name);    // 空/未知 → sfx（未知は 1 度だけ警告）
+    bool CreateBusVoice(Bus& bus);
+    void ApplyBus(Bus& bus, bool force = false);      // volume/mute/snap → SetVolume / フィルタ
+    f32  BusEffectiveGain(const Bus& bus) const;
+    // ソースボイスの送り先（バス）。デバイスが無ければ null を返す＝呼び出し側は作らない。
+    IXAudio2Voice* BusOutputVoice(i32 busIndex) const;
+    std::vector<std::string> m_warnedUnknownBus;
 
     // BGM
     IXAudio2SourceVoice* m_bgmVoice = nullptr;
@@ -143,6 +225,7 @@ private:
         float occTarget  = 0.0f;
         float occ        = 0.0f;
         u32   sampleRate = 44100;   // ローパスのカットオフ計算に要る
+        i32   bus = -1;             // 送り先バス（m_buses の添字）
     };
     std::array<SFXSlot, kMaxSFXVoices> m_sfxSlots{};
 
@@ -163,10 +246,6 @@ private:
     //   これが無いと、エディタを起動したまま素材を作り直しても【古い音が鳴り続ける】。
     //   「直したのに何も変わらない」の原因になり、実際に半日ぶん溶かした(2026-08-27)。
     std::unordered_map<std::string, std::filesystem::file_time_type> m_clipStamp;
-
-    f32 m_masterVolume = 1.0f;
-    f32 m_bgmVolume    = 0.7f;
-    f32 m_sfxVolume    = 1.0f;
 
     std::string m_assetsDir;
     bool m_comInitialized = false;

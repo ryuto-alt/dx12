@@ -159,7 +159,8 @@ void RegisterCoreComponentMeta()
         .data<&AudioSource::spatial>("spatial")
         .data<&AudioSource::playOnStart>("playOnStart")
         .data<&AudioSource::minDistance>("minDistance")
-        .data<&AudioSource::maxDistance>("maxDistance");
+        .data<&AudioSource::maxDistance>("maxDistance")
+        .data<&AudioSource::bus>("bus");
 
     entt::meta_factory<Tag>{}
         .type("Tag")

@@ -1096,6 +1096,9 @@ struct AudioSource
     bool playOnStart = true;          // Play 開始時に自動再生
     f32  minDistance = 1.0f;
     f32  maxDistance = 30.0f;
+    // 送り先のバス名（空 = "sfx"）。既定は master/music/sfx/ambience/voice/ui。
+    // 環境音は "ambience" にしておくと、スナップショットやオプションの音量で別に絞れる。
+    std::string bus;
 
     // ランタイム専有（非シリアライズ）
     i32  runtimeSlot     = -1;
