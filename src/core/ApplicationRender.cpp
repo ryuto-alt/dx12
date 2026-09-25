@@ -5723,9 +5723,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
         if (srcIdx != DescriptorHeap::kInvalidIndex)
         {
-            // 深度は DEPTH_WRITE のままなので PS から読める状態へ往復させる。
-            m_commandList->TransitionResource(depthRes,
-                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            // 深度を PS から読める状態へ（戻すのはビューの出口。続くポストも深度を読むことが多い）。
+            depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
             auto drtv = sceneRT->GetRtv();
             nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);   // DSV は張らない
@@ -5744,9 +5743,6 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             dd.depthRange = m_renderDebugDepthRange;
             dd.exposure   = m_renderDebugExposure;
             m_renderDebugPass->Draw(*m_commandList, dd);
-
-            m_commandList->TransitionResource(depthRes,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
         }
     }
 
@@ -5877,18 +5873,18 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             const bool wantDepthPost = ppApplied.enabled && persp &&
                 depthRes && depthSrvIndex != DescriptorHeap::kInvalidIndex &&
                 (ppApplied.dofOn || ppApplied.motionBlurOn || ppApplied.godraysOn);
-            // TAA も深度を読む（空の速度再構成 + closest-depth dilation）。深度の遷移は
-            // 1 箇所にまとめる＝二重遷移で D3D12 の状態追跡が壊れるのを防ぐ。
+            // TAA も深度を読む（空の速度再構成 + closest-depth dilation）。
             // スクリーンシェーダーも t1 で深度を受け取る（霧・被写界深度・輪郭を自分で書けるように）。
-            // ただし遷移を戻すのはスクリーンシェーダーのパスが終わったあと（下の "戻す" を参照）。
+            // ★深度の遷移はビューの状態追跡（depthState）に任せる。読む前に PIXEL を要求するだけで、
+            //   戻すのはビューの出口（uber とスクリーンシェーダーの後）。以前は「スクリーンシェーダーが
+            //   深度を読むかどうか」で戻す場所を 2 通りに書き分けていた。
             const bool screenShaderWantsDepth =
                 useScreenShader && depthRes && depthSrvIndex != DescriptorHeap::kInvalidIndex;
             const bool needDepthSrv = wantDepthPost || taaResolve || screenShaderWantsDepth;
             D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu{};
             if (needDepthSrv)
             {
-                m_commandList->TransitionResource(depthRes,
-                    D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 depthSrvGpu = m_srvHeap->GetGpuHandle(depthSrvIndex);
             }
 
@@ -6032,12 +6028,6 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             }
             const bool lfReady = (flareSrv != DescriptorHeap::kInvalidIndex);
 
-            // 深度を DSV 用途（エディタアイコン等）へ戻す（遷移した時だけ。needDepthSrv と対で閉じる）。
-            // ★スクリーンシェーダーが深度を読む回は【まだ戻さない】。戻すのは uber パスの後、
-            //   スクリーンシェーダーのパスを撃ってから（下の対になる TransitionResource）。
-            if (needDepthSrv && !screenShaderWantsDepth)
-                m_commandList->TransitionResource(depthRes,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
             // ---- 3D LUT（assets 相対パス。sRGB 無効=バイト列そのままロード。ストリップ形式 N*N x N）----
             auto lutSrvGpu = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
@@ -6128,10 +6118,6 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                                                          : m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
                 m_screenShaderPass->Apply(nativeCmdList, screenPso, colorSrv, dSrv, sc);
             }
-            // 深度を DSV 用途へ戻す（上の "まだ戻さない" と対になる閉じ処理）。
-            if (screenShaderWantsDepth)
-                m_commandList->TransitionResource(depthRes,
-                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
             // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
             // 静止時に全面が均一な (0.5,0.5,0.5) グレーになるのが「ジッタが正しく除去されている」証拠。
@@ -6158,6 +6144,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             m_prevFrameIndexValid = true;
         }
     }   // ポスト一式（主ビュー → バックバッファ）
+    // ビューの出口の契約: 深度は DEPTH_WRITE（次フレームのプリパス / Forward と、ビューの外の
+    // コードはこの置き場を前提にする）。render_debug / ポストが PIXEL にしていればここで戻す。
+    depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     gpuEnd(GpuTimer::PostFX);
 
     // ---- 後段（オーバーレイ / ImGui / 送信 / 副ビュー）へ渡す ----
