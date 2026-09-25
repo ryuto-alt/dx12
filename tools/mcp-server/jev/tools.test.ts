@@ -12,6 +12,8 @@
  *   4) 鍵が無いプロセスでは Jev へ一切出ず、ルールで返る
  *   5) status は鍵の値を出さず、記録(log.jsonl)から累計を返す
  *   6) jev_eval はケースファイルを流して正解率と誤差を返す
+ *   7) polish_audit の判断段: 1 リクエストで 3 種の質問が届き、judge が付く。judge:false で止まる。
+ *      Brief が無ければ judge.source="rules" + briefMissing。既存の score/verdict/findings は壊れない
  *
  * 実行: node jev/tools.test.ts
  */
@@ -24,6 +26,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { PNG } from "pngjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_TS = path.join(here, "..", "index.ts");
@@ -36,6 +39,17 @@ const pass = (label: string) => { passed++; console.log(`  OK  ${label}`); };
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "dx12-jev-tools-"));
 const PROJ = path.join(TMP, "proj");
 fs.mkdirSync(path.join(PROJ, "assets"), { recursive: true });
+
+// 最終画: 7 割が真っ黒・残りが暗い灰色(黒つぶれ + 眠い + 無彩色の指摘が出る絵)
+const DARK_PNG = path.join(TMP, "dark.png");
+{
+  const png = new PNG({ width: 40, height: 20 });
+  for (let i = 0; i < 40 * 20; i++) {
+    const v = i % 10 < 7 ? 1 : 55;
+    png.data[i * 4] = v; png.data[i * 4 + 1] = v; png.data[i * 4 + 2] = v; png.data[i * 4 + 3] = 255;
+  }
+  fs.writeFileSync(DARK_PNG, PNG.sync.write(png));
+}
 
 type EngineHandler = (method: string, params: any) => any;
 async function startFakeEngine(handler: EngineHandler) {
@@ -80,6 +94,7 @@ function engineHandler(method: string, _params: any): any {
       { entityId: 2, name: "Dirt", componentTypes: ["transform", "decal"] },
     ] };
     case "get_entity": return { material: { roughness: 0.8, metallic: 0 }, materialTextureOverrides: [{ normal: "t.png" }] };
+    case "screenshot_final": return { path: DARK_PNG, width: 40, height: 20 };
     default: return undefined;
   }
 }
@@ -281,7 +296,60 @@ try {
     pass("ケースファイルを流して正解率と平均絶対誤差を返す");
   }
 
-  console.log("[6] 鍵の無いプロセスは Jev へ出ない");
+  console.log("[6] dx12_polish_audit の判断段");
+  {
+    const before = jevReqs.length;
+    const res = await mcp.call("dx12_polish_audit", {});
+    assert.equal(res.result.content[0].type, "image", "最終画は従来どおり先頭に付く");
+    const r = payload(res);
+    // 既存のフィールドは壊さない(後方互換)
+    assert.equal(typeof r.score, "number");
+    assert.equal(typeof r.verdict, "string");
+    assert.ok(Array.isArray(r.findings) && r.findings.length > 0);
+    assert.ok(r.findings.every((f: any) => f.code && f.what && f.why && f.fix), "指摘は code 付きで、what/why/fix は従来どおり");
+    const codes = r.findings.map((f: any) => f.code);
+    assert.ok(codes.includes("CRUSHED_BLACKS"), codes.join(","));
+    pass("score / verdict / findings(what, why, fix)は従来どおり、指摘に code が増えた");
+
+    assert.equal(jevReqs.length - before, 1, "判断段は 1 往復");
+    const req = jevReqs[jevReqs.length - 1];
+    assert.equal(Object.keys(req.questions).length, 2 + codes.length, "brief_fit + next_fix + 指摘ごとの intended");
+    assert.equal(req.state.brief.genre, "一人称ホラー");
+    assert.ok(!/\d/.test(JSON.stringify(req.state.facts.look)), `look に数値が入っている: ${JSON.stringify(req.state.facts.look)}`);
+    assert.equal(req.state.facts.look.dirtAndWearDecals, "ひとつ", "デカールの有無も言葉で渡る");
+    pass("1 リクエストで 2 + 指摘数の質問。state は Brief + 数値を含まない言葉");
+
+    const j = r.judge;
+    assert.equal(j.source, "jev");
+    assert.equal(j.briefFit.value, 3.4);
+    assert.deepEqual(j.findings.filter((f: any) => f.keep).map((f: any) => f.code), ["CRUSHED_BLACKS"]);
+    assert.equal(j.nextFix.id, "add_fog");
+    assert.equal(j.nextFix.tool, "dx12_set_volumetric_fog");
+    assert.ok(j.scoreExcludingKept > r.score);
+    assert.ok(r.facts.words && r.facts.words.brightness, "Jev に渡した言葉を facts.words に返す");
+    pass("judge: {source:jev, briefFit, findings[keep], nextFix(ツールと引数), scoreExcludingKept}");
+
+    const before2 = jevReqs.length;
+    const off = payload(await mcp.call("dx12_polish_audit", { judge: false, screenshot: false }));
+    assert.equal(off.judge, undefined);
+    assert.equal(jevReqs.length, before2);
+    pass("judge:false で判断段を止める(Jev に出ない)");
+
+    fs.renameSync(path.join(PROJ, "brief.json"), path.join(PROJ, "brief.json.bak"));
+    try {
+      const nb = payload(await mcp.call("dx12_polish_audit", { screenshot: false }));
+      assert.equal(jevReqs.length, before2, "Brief が無ければ聞かない");
+      assert.equal(nb.judge.source, "rules");
+      assert.equal(nb.judge.briefMissing, true);
+      assert.equal(nb.judge.nextFix.id !== undefined, true);
+      assert.equal(nb.judge.scoreExcludingKept, nb.score, "ルールのときはスコアも従来どおり");
+      pass("Brief が無い → judge.source:rules + briefMissing、nextFix は効く順の先頭");
+    } finally {
+      fs.renameSync(path.join(PROJ, "brief.json.bak"), path.join(PROJ, "brief.json"));
+    }
+  }
+
+  console.log("[7] 鍵の無いプロセスは Jev へ出ない");
   {
     const noKey = new McpStdio(engine.port, "");
     await noKey.init();
@@ -295,6 +363,11 @@ try {
       assert.equal(r.results[0].decided, false);
       assert.equal(r.keyPresent, false);
       pass("鍵なし → source:rules(finding.intended は既定で「直す」)、偽 Jev に 1 本も届かない");
+      const pa = payload(await noKey.call("dx12_polish_audit", { screenshot: false }));
+      assert.equal(jevReqs.length, before);
+      assert.equal(pa.judge.source, "rules");
+      assert.ok(!pa.judge.briefMissing, "Brief はあるので briefMissing ではない");
+      pass("鍵なしの polish_audit も judge.source:rules で従来の結論");
     } finally { noKey.kill(); }
   }
 } catch (e) {

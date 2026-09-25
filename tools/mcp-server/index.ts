@@ -70,6 +70,7 @@ import { runEval as jevRunEval, runEvalAll as jevRunEvalAll, summarize as jevSum
 import {
   BRIEF_EXAMPLE, isBriefEmpty, mergeBrief, readBrief, validateBrief, writeBrief,
 } from "./jev/brief.ts";
+import { POLISH_RULES, judgePolish, wordifyLook } from "./jev/polishJudge.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -5334,16 +5335,24 @@ regRaw(
       + "★dx12_diagnose は【壊れているか】、dx12_look_compare は【参照画像との差】を見る。"
       + "こちらは参照画像が無い状態で『作りかけに見える理由』を言うためのもの。"
       + "screenshot:true(既定)で最終画も撮って、眠い絵・白飛び・真っ黒・彩度ゼロを画素で判定する。"
-      + "返り値 {score, verdict, findings:[{category, severity, what, why, fix}], facts}。",
+      + "返り値 {score, verdict, findings:[{code, category, severity, what, why, fix}], facts, judge}。"
+      + "★judge は判断段: 測った数値を言葉にして作品の意図(dx12_brief)と一緒に Jev へ 1 往復で聞き、"
+      + "{source, briefFit(0..4), findings:[{code, intended, keep}], nextFix:{id, tool, args, confidence}, uncertain[], scoreExcludingKept} を返す。"
+      + "keep:true の指摘は Brief に照らすと意図どおり＝直さない(ホラーの暗さなど)。nextFix はそのまま撃てる。"
+      + "uncertain があるものは境界付近なので、絵を見て自分で決めること。"
+      + "Brief が無い / 鍵(TYPESAFE_API_KEY)が無い / Jev が落ちている → judge.source:\"rules\" で従来の結論(指摘の先頭を直す)。"
+      + "judge:false で判断段を止める。",
     inputSchema: {
       screenshot: z.boolean().optional().describe("false で絵を撮らずシーン設定だけ見る(速い)。既定 true。"),
       only: z.array(z.enum(["light", "air", "grade", "motion", "material", "contact", "image"])).optional()
         .describe("見るカテゴリを絞る。省略で全部。"),
       sampleMeshes: z.number().int().optional().describe("マテリアルを調べるメッシュの上限(既定 24)。大きいシーンで遅いとき下げる。"),
+      judge: z.boolean().optional().describe("false で判断段(Jev に Brief と照らして聞く段)を止め、ルールの結論だけ返す。既定 true。"),
     },
-    annotations: { title: "絵の仕上がりを検査する", openWorldHint: false, readOnlyHint: true },
+    // 判断段は外部の Jev へ出る(鍵があるときだけ)ので openWorldHint は true。
+    annotations: { title: "絵の仕上がりを検査する", openWorldHint: true, readOnlyHint: true },
   },
-  async ({ screenshot, only, sampleMeshes }) => {
+  async ({ screenshot, only, sampleMeshes, judge }) => {
     try {
       const facts: SceneFacts = {};
 
@@ -5374,6 +5383,8 @@ regRaw(
       facts.entityCount = list.length;
       facts.emitterCount = list.filter((e) =>
         (e.componentTypes ?? []).includes("particleEmitter")).length;
+      // デカールはルールでは見ない(有無の良し悪しは作品による)が、判断段へ「汚れ・傷の有無」として渡す。
+      facts.decalCount = list.filter((e) => (e.componentTypes ?? []).includes("decal")).length;
       const meshes = list.filter((e) => (e.componentTypes ?? []).includes("meshRenderer"));
       facts.meshCount = meshes.length;
       if (meshes.length > 0) {
@@ -5412,6 +5423,16 @@ regRaw(
       if (only && only.length > 0) findings = findings.filter((f) => only.includes(f.category));
       const score = polishScore(findings);
 
+      // ── 判断段(Jev): 測った数値を言葉にして、Brief と一緒に 1 往復で聞く ──
+      // ★既存の score / verdict / findings は一切変えない(後方互換)。判断は judge にだけ足す。
+      let judgeOut: unknown = undefined;
+      if (judge !== false) {
+        const baseDir = await jevProjectBaseDir();
+        const brief = baseDir ? readBrief(baseDir).brief : null;
+        judgeOut = await judgePolish({ brief, facts, findings, askOptions: { baseDir } })
+          .catch((e: any) => ({ source: "rules", reason: `判断段で想定外の失敗: ${e?.message ?? e}` }));
+      }
+
       const text = JSON.stringify({
         score, verdict: verdict(score, findings),
         findings,
@@ -5420,8 +5441,12 @@ regRaw(
           fogEnabled: facts.fog?.enabled ?? null,
           emitters: facts.emitterCount ?? null, meshes: facts.meshCount ?? null,
           normalMapped: facts.normalMapCount ?? null, defaultPbr: facts.defaultPbrCount ?? null,
+          decals: facts.decalCount ?? null,
           image: facts.image ?? null,
+          // Jev に渡した言葉(数値は入れていない)。判断の根拠を人が追えるように返す。
+          words: wordifyLook(facts).look,
         },
+        ...(judgeOut !== undefined ? { judge: judgeOut } : {}),
         next: findings.length === 0
           ? "必須要素は揃っている。dx12_look_compare で参照写真と比べるか、構図を詰める段階"
           : "findings の上から順に fix をそのまま撃つ(効く順に並んでいる)",
@@ -6369,7 +6394,7 @@ regRaw(
   },
   ({ question, questions, vars, context, raw, cache }) => run(async () => {
     const baseDir = await jevProjectBaseDir();
-    const opts = { baseDir, cache: cache as JevCacheMode | undefined };
+    const opts = { baseDir, cache: cache as JevCacheMode | undefined, rules: POLISH_RULES };
     if (raw) {
       const out = await jevAskRaw(raw.state, raw.questions as any, opts);
       return { ...out, keyPresent: hasApiKey() };
@@ -6415,7 +6440,7 @@ regRaw(
   },
   ({ question, casesPath, cache }) => run(async () => {
     const baseDir = await jevProjectBaseDir();
-    const opts = { baseDir, cache: cache as JevCacheMode | undefined };
+    const opts = { baseDir, cache: cache as JevCacheMode | undefined, rules: POLISH_RULES };
     if (question || casesPath) {
       const r = await jevRunEval({ ...opts, question, casesPath });
       return {
