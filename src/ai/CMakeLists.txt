@@ -1,5 +1,8 @@
 add_library(AI STATIC
     AiSystem.cpp
+    Blackboard.cpp
+    Utility.cpp
+    Perception.cpp
 )
 
 target_include_directories(AI PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

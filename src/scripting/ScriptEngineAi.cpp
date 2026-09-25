@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <unordered_map>
 #include <string>
 #include <vector>
 
@@ -647,6 +648,625 @@ void ScriptEngine::RegisterNavBindings()
         t["corners"] = cs;
         return t;
     });
+}
+
+// ===========================================================================
+// ゲーム AI（Brain）
+// ===========================================================================
+namespace
+{
+// Brain の行動 1 つぶんの Lua 関数
+struct AiLuaAction
+{
+    sol::protected_function enter, update, exit;
+};
+struct AiLuaStore
+{
+    std::unordered_map<u32, std::vector<AiLuaAction>> fns;
+    std::unordered_map<u32, int> errors;   // エンティティごとのエラー回数（ログの連打を止める）
+};
+
+// Lua に渡す Brain のハンドル（中身はエンティティ id だけ。状態は AiSystem が持つ）
+struct LuaBrain
+{
+    u32 entity = 0xffffffffu;
+};
+
+u32 EntId(entt::entity e) { return static_cast<u32>(entt::to_integral(e)); }
+entt::entity EntOf(u32 id) { return static_cast<entt::entity>(id); }
+
+// 黒板の値 ⇔ Lua の値
+sol::object BbToLua(sol::state_view sv, entt::registry& reg, const ai::BbValue& v)
+{
+    switch (v.index())
+    {
+    case 1: return sol::make_object(sv, std::get<f64>(v));
+    case 2: return sol::make_object(sv, std::get<bool>(v));
+    case 3: return sol::make_object(sv, std::get<std::string>(v));
+    case 4: { const ai::BbVec3& p = std::get<ai::BbVec3>(v); return sol::make_object(sv, XMFLOAT3{ p.x, p.y, p.z }); }
+    case 5:
+    {
+        const entt::entity e = EntOf(std::get<ai::BbEntity>(v).id);
+        if (!reg.valid(e)) return sol::make_object(sv, sol::lua_nil);
+        return sol::make_object(sv, Entity(e, &reg));
+    }
+    default: return sol::make_object(sv, sol::lua_nil);
+    }
+}
+
+ai::BbValue LuaToBb(const sol::object& o)
+{
+    switch (o.get_type())
+    {
+    case sol::type::number:  return ai::BbValue{ o.as<f64>() };
+    case sol::type::boolean: return ai::BbValue{ o.as<bool>() };
+    case sol::type::string:  return ai::BbValue{ o.as<std::string>() };
+    default: break;
+    }
+    if (o.is<Entity>()) return ai::BbValue{ ai::BbEntity{ EntId(o.as<Entity>().GetHandle()) } };
+    XMFLOAT3 v{};
+    if (LuaToVec3(o, v)) return ai::BbValue{ ai::BbVec3{ v.x, v.y, v.z } };
+    return ai::BbValue{};
+}
+
+// { input=, curve=, min=, max=, ... } → 考慮事項
+ai::Consideration ReadConsideration(const sol::table& t, const std::string& actionName)
+{
+    ai::Consideration c;
+    c.input = t.get_or<std::string>("input", "");
+    if (c.input.empty())
+        throw sol::error("brain:action('" + actionName + "'): 考慮事項に input（黒板のキー）が無い");
+    c.name = t.get_or<std::string>("name", "");
+    c.lo = t.get_or("min", 0.0f);
+    c.hi = t.get_or("max", 1.0f);
+    c.fallback = t.get_or("default", 0.0f);
+    const std::string type = t.get_or<std::string>("curve", "linear");
+    ai::CurveType ct;
+    if (!ai::ParseCurveType(type, ct))
+        throw sol::error("brain:action('" + actionName + "'): 未知のカーブ '" + type +
+                         "'（linear / quadratic / logistic / step / inverse / smooth）");
+    c.curve = ai::ResponseCurve::Make(ct);
+    sol::optional<float> m = t["m"], k = t["k"], b = t["b"], cc = t["c"];
+    if (m) c.curve.m = *m;
+    if (k) c.curve.k = *k;
+    if (b) c.curve.b = *b;
+    if (cc) c.curve.c = *cc;
+    c.curve.invert = t.get_or("invert", false);
+    return c;
+}
+
+// b:config{...} / ai.brain(self, {...}) で Brain コンポーネントの設定を書く
+void ApplyBrainConfig(Brain& br, const sol::table& t)
+{
+    for (const auto& kv : t)
+    {
+        if (!kv.first.is<std::string>()) continue;
+        const std::string k = kv.first.as<std::string>();
+        const sol::object& v = kv.second;
+        auto f = [&](f32& dst) { if (v.get_type() == sol::type::number) dst = v.as<f32>(); };
+        auto b = [&](bool& dst) { if (v.get_type() == sol::type::boolean) dst = v.as<bool>(); };
+        if      (k == "enabled")       b(br.enabled);
+        else if (k == "targets")       { if (v.get_type() == sol::type::string) br.targets = v.as<std::string>(); }
+        else if (k == "seed")          { if (v.get_type() == sol::type::number) br.seed = v.as<i32>(); }
+        else if (k == "thinkInterval") f(br.thinkInterval);
+        else if (k == "hysteresis")    f(br.hysteresis);
+        else if (k == "minCommitTime") f(br.minCommitTime);
+        else if (k == "sightRange")    f(br.sightRange);
+        else if (k == "sightFov")      f(br.sightFov);
+        else if (k == "nearSense")     f(br.nearSense);
+        else if (k == "eyeHeight")     f(br.eyeHeight);
+        else if (k == "targetHeight")  f(br.targetHeight);
+        else if (k == "confirmTime")   f(br.confirmTime);
+        else if (k == "sightInterval") f(br.sightInterval);
+        else if (k == "hearingScale")  f(br.hearingScale);
+        else if (k == "occlusion")     f(br.occlusion);
+        else if (k == "memoryTime")    f(br.memoryTime);
+        else if (k == "useCrowd")      b(br.useCrowd);
+        else if (k == "agentRadius")   f(br.agentRadius);
+        else if (k == "maxSpeed")      f(br.maxSpeed);
+        else if (k == "maxAccel")      f(br.maxAccel);
+        else if (k == "separation")    f(br.separation);
+        else if (k == "wallMargin")    f(br.wallMargin);
+        else if (k == "turnRate")      f(br.turnRate);
+        else if (k == "debugDraw")     b(br.debugDraw);
+        else Logger::Warn("brain:config: 未知のキー '{}'（describe_components の brain を参照）", k);
+    }
+}
+
+sol::object BrainConfigValue(sol::state_view sv, const Brain& br, const std::string& k)
+{
+    auto num = [&](f32 v) { return sol::make_object(sv, v); };
+    auto bl = [&](bool v) { return sol::make_object(sv, v); };
+    if (k == "enabled") return bl(br.enabled);
+    if (k == "targets") return sol::make_object(sv, br.targets);
+    if (k == "seed") return sol::make_object(sv, br.seed);
+    if (k == "thinkInterval") return num(br.thinkInterval);
+    if (k == "hysteresis") return num(br.hysteresis);
+    if (k == "minCommitTime") return num(br.minCommitTime);
+    if (k == "sightRange") return num(br.sightRange);
+    if (k == "sightFov") return num(br.sightFov);
+    if (k == "nearSense") return num(br.nearSense);
+    if (k == "eyeHeight") return num(br.eyeHeight);
+    if (k == "targetHeight") return num(br.targetHeight);
+    if (k == "confirmTime") return num(br.confirmTime);
+    if (k == "sightInterval") return num(br.sightInterval);
+    if (k == "hearingScale") return num(br.hearingScale);
+    if (k == "occlusion") return num(br.occlusion);
+    if (k == "memoryTime") return num(br.memoryTime);
+    if (k == "useCrowd") return bl(br.useCrowd);
+    if (k == "agentRadius") return num(br.agentRadius);
+    if (k == "maxSpeed") return num(br.maxSpeed);
+    if (k == "maxAccel") return num(br.maxAccel);
+    if (k == "separation") return num(br.separation);
+    if (k == "wallMargin") return num(br.wallMargin);
+    if (k == "turnRate") return num(br.turnRate);
+    if (k == "debugDraw") return bl(br.debugDraw);
+    return sol::make_object(sv, sol::lua_nil);
+}
+} // namespace
+
+void ScriptEngine::SetAiSystem(ai::AiSystem* a)
+{
+    m_aiSystem = a;
+    if (a)
+        a->SetActionInvoker([this](entt::entity e, i32 idx, ai::ActionPhase ph, f32 dt)
+        {
+            return InvokeAiAction(e, idx, static_cast<int>(ph), dt);
+        });
+}
+
+void ScriptEngine::ClearAiLua()
+{
+    m_aiLua.reset();
+}
+
+int ScriptEngine::InvokeAiAction(entt::entity e, int idx, int phase, float dt)
+{
+    auto* store = static_cast<AiLuaStore*>(m_aiLua.get());
+    if (!store || !m_lua) return -2;
+    const u32 id = EntId(e);
+    auto it = store->fns.find(id);
+    if (it == store->fns.end() || idx < 0 || idx >= static_cast<int>(it->second.size())) return -2;
+    // ★関数を写してから呼ぶ（呼んだ先で brain:action が同じ表を書き換えても壊れない）
+    const AiLuaAction act = it->second[static_cast<size_t>(idx)];
+    const sol::protected_function& fn = (phase == 0) ? act.enter : (phase == 1) ? act.update : act.exit;
+    if (!fn.valid()) return 0;
+    LuaBrain h{ id };
+    sol::protected_function_result r = (phase == 1) ? fn(h, dt) : fn(h);
+    if (!r.valid())
+    {
+        sol::error err = r;
+        int& n = store->errors[id];
+        if (++n <= 3)
+        {
+            std::string actName = "?";
+            if (const ai::BrainState* st = m_aiSystem ? m_aiSystem->GetBrain(e) : nullptr)
+                if (idx < static_cast<int>(st->actions.size())) actName = st->actions[static_cast<size_t>(idx)].name;
+            static const char* kPh[] = { "enter", "update", "exit" };
+            Logger::Warn("Brain(entity {}) の行動 '{}' の {} でエラー{}: {}", id, actName,
+                         kPh[(std::clamp)(phase, 0, 2)], n == 3 ? "（以降は表示しない）" : "", err.what());
+        }
+        return -1;
+    }
+    if (phase == 1 && r.return_count() > 0)
+    {
+        sol::object o = r;
+        if (o.get_type() == sol::type::boolean && o.as<bool>()) return 1;
+        if (o.get_type() == sol::type::string && o.as<std::string>() == "done") return 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// ai グローバルと Brain のハンドル
+//   local b = ai.brain(self, config?)    -- Brain が無ければ付ける。config で設定を上書き
+//   b:action(name, { weight, cooldown, minDuration, considerations = {...}, enter, update, exit })
+//   b:set / get / has / unset（黒板）、b:moveTo / stop / setSpeed（群衆で移動）、b:random（シード付き）
+//   ai.emitSound(pos, radius, { tag, loudness, source })  -- EventBus の "ai.sound" を発火
+//   ai.soundOnEvent(eventName, radius, { tag, loudness }) -- アニメイベント等を音にする（足音）
+// ---------------------------------------------------------------------------
+void ScriptEngine::RegisterAiBindings()
+{
+    auto& lua = *m_lua;
+    m_aiLua = std::make_shared<AiLuaStore>();
+    sol::table aiT = lua.create_named_table("ai");
+
+    auto store = [this]() { return static_cast<AiLuaStore*>(m_aiLua.get()); };
+    auto brainOf = [this](const LuaBrain& b) -> ai::BrainState*
+    {
+        return m_aiSystem ? m_aiSystem->GetBrain(EntOf(b.entity)) : nullptr;
+    };
+    auto requireBrain = [brainOf](const LuaBrain& b, const char* fn) -> ai::BrainState&
+    {
+        ai::BrainState* st = brainOf(b);
+        if (!st) throw sol::error(std::string("brain:") + fn + ": Brain が無い（Play 中に ai.brain(self) で取ること）");
+        return *st;
+    };
+    auto cfgOf = [this](const LuaBrain& b) -> Brain*
+    {
+        if (!m_scene) return nullptr;
+        auto& reg = m_scene->GetRegistry();
+        const entt::entity e = EntOf(b.entity);
+        return (reg.valid(e) && reg.all_of<Brain>(e)) ? &reg.get<Brain>(e) : nullptr;
+    };
+
+    // ---- ai.brain(self, config?) ----
+    aiT.set_function("brain", [this](sol::this_state ts, sol::object target, sol::optional<sol::table> config)
+        -> sol::object
+    {
+        sol::state_view sv(ts);
+        if (!m_aiSystem || !m_scene) return sol::make_object(sv, sol::lua_nil);
+        const entt::entity e = ResolveEntityArg(m_scene, target);
+        if (e == entt::null) throw sol::error("ai.brain: entity が見つからない（self / Entity / 名前を渡すこと）");
+        auto& reg = m_scene->GetRegistry();
+        Brain& br = reg.get_or_emplace<Brain>(e);
+        if (config) ApplyBrainConfig(br, *config);
+        if (!m_aiSystem->EnsureBrain(*m_scene, e)) return sol::make_object(sv, sol::lua_nil);
+        return sol::make_object(sv, LuaBrain{ EntId(e) });
+    });
+
+    // ---- ai.brains() -> { Entity, ... }（id 昇順）----
+    aiT.set_function("brains", [this](sol::this_state ts) -> sol::table
+    {
+        sol::state_view sv(ts);
+        sol::table t = sv.create_table();
+        if (!m_aiSystem || !m_scene) return t;
+        auto& reg = m_scene->GetRegistry();
+        int i = 1;
+        for (const entt::entity e : m_aiSystem->Brains())
+            if (reg.valid(e)) t[i++] = Entity(e, &reg);
+        return t;
+    });
+
+    // ---- ai.emitSound(pos, radius, opts?) ----
+    aiT.set_function("emitSound", [this](sol::object pos, float radius, sol::optional<sol::table> opts)
+    {
+        if (!m_eventBus && !m_aiSystem) return;
+        XMFLOAT3 p{};
+        if (!LuaToVec3(pos, p)) throw sol::error("ai.emitSound: pos には Vec3 を渡すこと");
+        EngineEvent ev;
+        ev.name = "ai.sound";
+        ev.set("x", static_cast<double>(p.x));
+        ev.set("y", static_cast<double>(p.y));
+        ev.set("z", static_cast<double>(p.z));
+        ev.set("radius", static_cast<double>(radius));
+        if (opts)
+        {
+            ev.set("loudness", opts->get_or("loudness", 1.0));
+            ev.set("tag", opts->get_or<std::string>("tag", ""));
+            sol::object src = (*opts)["source"];
+            if (src.valid() && src.get_type() != sol::type::lua_nil)
+                ev.source = ResolveEntityArg(m_scene, src);
+        }
+        if (m_eventBus) m_eventBus->Emit(ev);   // AiSystem は "ai.sound" を購読している（他の購読者にも届く）
+        else if (m_aiSystem)
+        {
+            ai::SoundEvent s;
+            s.pos[0] = p.x; s.pos[1] = p.y; s.pos[2] = p.z;
+            s.radius = radius;
+            m_aiSystem->EmitSound(s);
+        }
+    });
+
+    // ---- ai.soundOnEvent(eventName, radius, opts?) ----
+    aiT.set_function("soundOnEvent", [this](const std::string& name, float radius, sol::optional<sol::table> opts)
+        -> bool
+    {
+        if (!m_aiSystem || name.empty()) return false;
+        const float loud = opts ? opts->get_or("loudness", 1.0f) : 1.0f;
+        const std::string tag = opts ? opts->get_or<std::string>("tag", "") : std::string();
+        m_aiSystem->AddSoundBridge(name, radius, loud, tag);
+        return true;
+    });
+
+    // ---- ai.curve(type, x, params?) -> number（カーブの形を試す）----
+    aiT.set_function("curve", [](const std::string& type, float x, sol::optional<sol::table> params) -> float
+    {
+        ai::CurveType ct;
+        if (!ai::ParseCurveType(type, ct)) throw sol::error("ai.curve: 未知のカーブ '" + type + "'");
+        ai::ResponseCurve c = ai::ResponseCurve::Make(ct);
+        if (params)
+        {
+            sol::optional<float> m = (*params)["m"], k = (*params)["k"], b = (*params)["b"], cc = (*params)["c"];
+            if (m) c.m = *m;
+            if (k) c.k = *k;
+            if (b) c.b = *b;
+            if (cc) c.c = *cc;
+            c.invert = params->get_or("invert", false);
+        }
+        return c.Evaluate(x);
+    });
+
+    // ---- Brain のハンドル ----
+    lua.new_usertype<LuaBrain>("AiBrain",
+        sol::no_constructor,
+        // 行動の定義（同じ名前なら置き換え）。戻り値 = 行動の番号（1 始まり）
+        "action", [this, store](LuaBrain& self, const std::string& name, sol::table def) -> int
+        {
+            if (!m_aiSystem) return 0;
+            ai::ActionDef ad;
+            ad.name = name;
+            ad.weight = def.get_or("weight", 1.0f);
+            ad.cooldown = def.get_or("cooldown", 0.0f);
+            ad.minDuration = def.get_or("minDuration", 0.0f);
+            sol::object cons = def["considerations"];
+            if (cons.get_type() == sol::type::table)
+            {
+                sol::table ct = cons;
+                for (size_t i = 1; i <= ct.size(); ++i)
+                {
+                    sol::object c = ct[i];
+                    if (c.get_type() != sol::type::table)
+                        throw sol::error("brain:action('" + name + "'): considerations の要素はテーブル");
+                    ad.considerations.push_back(ReadConsideration(c.as<sol::table>(), name));
+                }
+            }
+            const i32 idx = m_aiSystem->DefineAction(EntOf(self.entity), std::move(ad));
+            if (idx < 0) throw sol::error("brain:action: Brain が無い（ai.brain(self) で取ったハンドルを使うこと）");
+            AiLuaAction fns;
+            sol::object en = def["enter"], up = def["update"], ex = def["exit"];
+            if (en.get_type() == sol::type::function) fns.enter = en.as<sol::protected_function>();
+            if (up.get_type() == sol::type::function) fns.update = up.as<sol::protected_function>();
+            if (ex.get_type() == sol::type::function) fns.exit = ex.as<sol::protected_function>();
+            auto& v = store()->fns[self.entity];
+            if (v.size() <= static_cast<size_t>(idx)) v.resize(static_cast<size_t>(idx) + 1);
+            v[static_cast<size_t>(idx)] = std::move(fns);
+            return idx + 1;
+        },
+        "clearActions", [this, store](LuaBrain& self)
+        {
+            if (m_aiSystem) m_aiSystem->ClearActions(EntOf(self.entity));
+            store()->fns.erase(self.entity);
+        },
+        // ---- 黒板 ----
+        "set", [brainOf](LuaBrain& self, const std::string& key, sol::object value)
+        {
+            if (ai::BrainState* st = brainOf(self)) st->bb.Set(key, LuaToBb(value));
+        },
+        "get", [this, brainOf](LuaBrain& self, sol::this_state ts, const std::string& key, sol::object def)
+            -> sol::object
+        {
+            sol::state_view sv(ts);
+            ai::BrainState* st = brainOf(self);
+            const ai::BbValue* v = st ? st->bb.Find(key) : nullptr;
+            if (!v) return def;
+            return BbToLua(sv, m_scene->GetRegistry(), *v);
+        },
+        "has", [brainOf](LuaBrain& self, const std::string& key) -> bool
+        {
+            ai::BrainState* st = brainOf(self);
+            return st && st->bb.Has(key);
+        },
+        "unset", [brainOf](LuaBrain& self, const std::string& key)
+        {
+            if (ai::BrainState* st = brainOf(self)) st->bb.Erase(key);
+        },
+        // ---- 行動 ----
+        "current", [brainOf](LuaBrain& self, sol::this_state ts) -> sol::object
+        {
+            sol::state_view sv(ts);
+            ai::BrainState* st = brainOf(self);
+            if (!st || st->current < 0) return sol::make_object(sv, sol::lua_nil);
+            return sol::make_object(sv, st->actions[static_cast<size_t>(st->current)].name);
+        },
+        "timeInAction", [this, brainOf](LuaBrain& self) -> double
+        {
+            ai::BrainState* st = brainOf(self);
+            return (st && st->current >= 0 && m_aiSystem) ? m_aiSystem->Time() - st->enteredAt : 0.0;
+        },
+        "force", [this](LuaBrain& self, const std::string& name) -> bool
+        {
+            return m_aiSystem && m_aiSystem->ForceAction(EntOf(self.entity), name);
+        },
+        "think", [this](LuaBrain& self)
+        {
+            if (m_aiSystem) m_aiSystem->RequestThink(EntOf(self.entity));
+        },
+        // 最後の評価の内訳 { chosen, reason, time, actions = { {name, score, final, bonus, weight, cooldown,
+        //   considerations = { {name, input, value, x, score, missing} } } } }
+        "scores", [brainOf](LuaBrain& self, sol::this_state ts) -> sol::table
+        {
+            sol::state_view sv(ts);
+            sol::table t = sv.create_table();
+            ai::BrainState* st = brainOf(self);
+            if (!st) return t;
+            const ai::Decision& d = st->last;
+            if (d.chosen >= 0 && d.chosen < static_cast<i32>(st->actions.size()))
+                t["chosen"] = st->actions[static_cast<size_t>(d.chosen)].name;
+            t["reason"] = ai::DecisionReasonName(d.reason);
+            t["time"] = d.time;
+            sol::table acts = sv.create_table();
+            int i = 1;
+            for (const ai::ActionEval& ae : d.actions)
+            {
+                sol::table a = sv.create_table();
+                a["name"] = ae.name; a["score"] = ae.score; a["final"] = ae.final; a["bonus"] = ae.bonus;
+                a["weight"] = ae.weight; a["cooldown"] = ae.cooldown;
+                sol::table cs = sv.create_table();
+                int j = 1;
+                for (const ai::ConsiderationEval& ce : ae.considerations)
+                {
+                    sol::table c = sv.create_table();
+                    c["name"] = ce.name; c["input"] = ce.input; c["value"] = ce.raw;
+                    c["x"] = ce.x; c["score"] = ce.score; c["missing"] = ce.missing;
+                    cs[j++] = c;
+                }
+                a["considerations"] = cs;
+                acts[i++] = a;
+            }
+            t["actions"] = acts;
+            return t;
+        },
+        // ---- 移動（群衆）----
+        "moveTo", [this](LuaBrain& self, sol::object pos, sol::optional<float> speed) -> bool
+        {
+            XMFLOAT3 p{};
+            if (!m_aiSystem || !LuaToVec3(pos, p)) return false;
+            const float pp[3] = { p.x, p.y, p.z };
+            if (speed && *speed > 0.0f) m_aiSystem->SetBrainSpeed(EntOf(self.entity), *speed);
+            return m_aiSystem->MoveTo(EntOf(self.entity), pp, speed.value_or(0.0f));
+        },
+        "stop", [this](LuaBrain& self) -> bool
+        {
+            return m_aiSystem && m_aiSystem->Stop(EntOf(self.entity));
+        },
+        "setSpeed", [this](LuaBrain& self, float speed)
+        {
+            if (m_aiSystem) m_aiSystem->SetBrainSpeed(EntOf(self.entity), speed);
+        },
+        "arrived", [this](LuaBrain& self, sol::optional<float> tol) -> bool
+        {
+            return m_aiSystem && m_aiSystem->Arrived(EntOf(self.entity), tol.value_or(0.5f));
+        },
+        "moveState", [this](LuaBrain& self) -> std::string
+        {
+            const nav::NavCrowdAgent* ag = m_aiSystem ? m_aiSystem->GetAgent(EntOf(self.entity)) : nullptr;
+            if (!ag) return "none";
+            if (ag->targetState == nav::NavMoveState::Valid && ag->partial) return "partial";
+            return nav::NavMoveStateName(ag->targetState);
+        },
+        "distanceToGoal", [this](LuaBrain& self) -> float
+        {
+            return m_aiSystem ? m_aiSystem->DistanceToGoal(EntOf(self.entity)) : 0.0f;
+        },
+        "speed", [this](LuaBrain& self) -> float
+        {
+            f32 v[3]{};
+            if (!m_aiSystem || !m_aiSystem->ActualVelocity(EntOf(self.entity), v)) return 0.0f;
+            return std::sqrt(v[0] * v[0] + v[2] * v[2]);
+        },
+        "position", [this](LuaBrain& self) -> XMFLOAT3
+        {
+            auto& reg = m_scene->GetRegistry();
+            const entt::entity e = EntOf(self.entity);
+            return (reg.valid(e) && reg.all_of<Transform>(e)) ? reg.get<Transform>(e).position : XMFLOAT3{};
+        },
+        // ---- 乱数（Brain ごとのシード付き＝決定論）----
+        "random", [requireBrain](LuaBrain& self) -> double
+        {
+            return requireBrain(self, "random").rng.Uniform();
+        },
+        "randomRange", [requireBrain](LuaBrain& self, double lo, double hi) -> double
+        {
+            return requireBrain(self, "randomRange").rng.Range(lo, hi);
+        },
+        "randomInt", [requireBrain](LuaBrain& self, lua_Integer lo, lua_Integer hi) -> lua_Integer
+        {
+            return static_cast<lua_Integer>(requireBrain(self, "randomInt").rng.Int(lo, hi));
+        },
+        // center のまわり radius 以内のナビ上の点（見つからなければ nil）
+        "randomPoint", [this, requireBrain](LuaBrain& self, sol::this_state ts, sol::object center, float radius)
+            -> sol::object
+        {
+            sol::state_view sv(ts);
+            ai::BrainState& st = requireBrain(self, "randomPoint");
+            XMFLOAT3 c{};
+            if (!LuaToVec3(center, c) || !m_scene || !m_scene->HasNavMesh()) return sol::make_object(sv, sol::lua_nil);
+            const auto& nm = m_scene->GetNavMesh();
+            const float ext[3] = { 2.0f, (std::max)(4.0f, m_scene->GetNavConfig().agentHeight * 2.0f), 2.0f };
+            for (int i = 0; i < 12; ++i)
+            {
+                const double a = st.rng.Uniform() * 6.283185307179586;
+                const double r = std::sqrt(st.rng.Uniform()) * radius;
+                const float p[3] = { c.x + static_cast<float>(std::cos(a) * r), c.y,
+                                     c.z + static_cast<float>(std::sin(a) * r) };
+                float out[3];
+                if (nm.FindNearestPoly(p, ext, out) >= 0)
+                    return sol::make_object(sv, XMFLOAT3{ out[0], out[1], out[2] });
+            }
+            return sol::make_object(sv, sol::lua_nil);
+        },
+        // ---- 知覚 ----
+        "canSee", [brainOf](LuaBrain& self) -> bool
+        {
+            ai::BrainState* st = brainOf(self);
+            return st && st->bb.Bool("target.seen", false);
+        },
+        "target", [this, brainOf](LuaBrain& self, sol::this_state ts) -> sol::object
+        {
+            sol::state_view sv(ts);
+            ai::BrainState* st = brainOf(self);
+            const ai::BbValue* v = st ? st->bb.Find("target") : nullptr;
+            if (!v) return sol::make_object(sv, sol::lua_nil);
+            return BbToLua(sv, m_scene->GetRegistry(), *v);
+        },
+        "awareness", [brainOf](LuaBrain& self) -> double
+        {
+            ai::BrainState* st = brainOf(self);
+            return st ? st->bb.Number("target.awareness", 0.0) : 0.0;
+        },
+        "lastKnown", [brainOf](LuaBrain& self, sol::this_state ts) -> sol::object
+        {
+            sol::state_view sv(ts);
+            ai::BrainState* st = brainOf(self);
+            ai::BbVec3 p;
+            if (!st || !st->bb.Vec3("target.lastKnown", p)) return sol::make_object(sv, sol::lua_nil);
+            return sol::make_object(sv, XMFLOAT3{ p.x, p.y, p.z });
+        },
+        "lastSeenAge", [brainOf](LuaBrain& self) -> double
+        {
+            ai::BrainState* st = brainOf(self);
+            return st ? st->bb.Number("target.lastSeenAge", 1e9) : 1e9;
+        },
+        // 直近に聞いた音 { pos, loudness, age, tag, occluded } | nil
+        "heard", [this, brainOf](LuaBrain& self, sol::this_state ts) -> sol::object
+        {
+            sol::state_view sv(ts);
+            ai::BrainState* st = brainOf(self);
+            if (!st || st->heard.empty() || !m_aiSystem) return sol::make_object(sv, sol::lua_nil);
+            const ai::HeardSound& h = st->heard.back();
+            sol::table t = sv.create_table();
+            t["pos"] = XMFLOAT3{ h.pos[0], h.pos[1], h.pos[2] };
+            t["loudness"] = h.loudness;
+            t["age"] = m_aiSystem->Time() - h.time;
+            t["tag"] = h.tag;
+            t["occluded"] = h.occluded;
+            return t;
+        },
+        "remember", [this](LuaBrain& self, sol::object pos) -> bool
+        {
+            XMFLOAT3 p{};
+            if (!m_aiSystem || !LuaToVec3(pos, p)) return false;
+            const float pp[3] = { p.x, p.y, p.z };
+            return m_aiSystem->Remember(EntOf(self.entity), pp);
+        },
+        "forget", [this](LuaBrain& self)
+        {
+            if (m_aiSystem) m_aiSystem->Forget(EntOf(self.entity));
+        },
+        // 自分の位置で音を出す（自分には聞こえない）
+        "sound", [this](LuaBrain& self, float radius, sol::optional<std::string> tag)
+        {
+            if (!m_aiSystem || !m_scene) return;
+            auto& reg = m_scene->GetRegistry();
+            const entt::entity e = EntOf(self.entity);
+            if (!reg.valid(e) || !reg.all_of<Transform>(e)) return;
+            const auto& p = reg.get<Transform>(e).position;
+            EngineEvent ev;
+            ev.name = "ai.sound";
+            ev.source = e;
+            ev.set("x", static_cast<double>(p.x));
+            ev.set("y", static_cast<double>(p.y));
+            ev.set("z", static_cast<double>(p.z));
+            ev.set("radius", static_cast<double>(radius));
+            ev.set("tag", tag.value_or(std::string()));
+            if (m_eventBus) m_eventBus->Emit(ev);
+        },
+        // ---- 設定（Brain コンポーネント）----
+        "config", [cfgOf](LuaBrain& self, sol::table t)
+        {
+            if (Brain* br = cfgOf(self)) ApplyBrainConfig(*br, t);
+        },
+        "getConfig", [cfgOf](LuaBrain& self, sol::this_state ts, const std::string& key) -> sol::object
+        {
+            sol::state_view sv(ts);
+            Brain* br = cfgOf(self);
+            if (!br) return sol::make_object(sv, sol::lua_nil);
+            return BrainConfigValue(sv, *br, key);
+        },
+        "entity", [this](LuaBrain& self) -> Entity { return Entity(EntOf(self.entity), &m_scene->GetRegistry()); },
+        "id", [](LuaBrain& self) -> lua_Integer { return static_cast<lua_Integer>(self.entity); }
+    );
 }
 
 } // namespace dx12e

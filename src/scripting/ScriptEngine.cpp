@@ -412,7 +412,12 @@ bool InitializeLuaScriptInstance(sol::state& lua,
 } // namespace
 
 ScriptEngine::ScriptEngine() = default;
-ScriptEngine::~ScriptEngine() { Shutdown(); }
+ScriptEngine::~ScriptEngine()
+{
+    Shutdown();
+    // AiSystem に渡した「Lua の行動を呼ぶ口」は this を握っている。先に外す
+    if (m_aiSystem) m_aiSystem->SetActionInvoker(nullptr);
+}
 
 void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
                                AudioSystem* audio, PhysicsSystem* physics,
@@ -546,6 +551,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
             if (type == "AnimatorController") return e.HasComponent<AnimatorController>();
             if (type == "FootIK")             return e.HasComponent<FootIK>();
+            if (type == "Brain")              return e.HasComponent<Brain>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
             {
@@ -2319,6 +2325,7 @@ void ScriptEngine::RegisterBindings()
     RegisterEventsBinding();
     RegisterNetworkBindings();
     RegisterNavBindings();
+    RegisterAiBindings();
 
     Logger::Info("Lua bindings registered");
 }
@@ -4583,6 +4590,7 @@ void ScriptEngine::OnPlayStop()
     // Application::EnterEditorMode でも Clear を呼ぶが、OnPlayStop 経路を一本化して確実に除去する。
     if (m_eventBus) m_eventBus->Clear();
     if (m_aiSystem) m_aiSystem->Clear();
+    ClearAiLua();
     Logger::Info("ScriptEngine: OnPlayStop done");
 }
 
@@ -4911,6 +4919,10 @@ void ScriptEngine::Shutdown()
 
     m_propSchemaCache.clear();
     m_scriptMtimes.clear();   // 次の Play で mtime の基準を取り直す
+    // Brain の行動（sol::protected_function）も lua_State より先に捨てる。AiSystem の状態も
+    // ここで空にする（行動の番号が、もう無い Lua 関数を指さないように）。
+    if (m_aiSystem) m_aiSystem->Clear();
+    ClearAiLua();
     if (m_lua)
     {
         m_lua.reset();

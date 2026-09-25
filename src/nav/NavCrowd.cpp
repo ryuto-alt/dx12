@@ -624,21 +624,34 @@ void NavCrowd::Update(f32 dt)
             }
         }
 
-        // 壁の余白（wallMargin）: 余白の内側では壁へ向かう成分を削り、通路側へ押し返す
+        // 壁の余白（wallMargin）: 余白の内側では壁へ向かう成分を削り、通路側へ押し返す。
+        // ★押す向きは「壁の上の一番近い点 → 自分」。一番近い点が壁の【端】（通路の入口の角）の時に
+        //   壁の法線で速度を削ると、角を回り込む進路そのものを消してしまい入口で立ち往生する
+        //   （chase.json の迷路で実際に起きた）。端では削らずに放射方向へ軽く押すだけにする。
         if (ag.params.wallMargin > 0.0f && ag.desiredSpeed > 0.0f)
         {
             for (size_t s = 0; s + 5 < ag.walls.size(); s += 6)
             {
                 const f32* seg = &ag.walls[s];
-                f32 n[3];
-                WallNormal(seg, n);
+                f32 wn[3];
+                WallNormal(seg, wn);
                 const f32 rel[3] = { ag.npos[0] - seg[0], 0.0f, ag.npos[2] - seg[2] };
-                if (Dot2D(rel, n) < 0.0f) continue;   // 壁の裏側（別の通路）
+                if (Dot2D(rel, wn) < 0.0f) continue;   // 壁の裏側（別の通路）
                 f32 t = 0.0f;
                 const f32 d = std::sqrt(DistPtSegSqr2D(ag.npos, seg, seg + 3, t));
                 if (d >= ag.params.wallMargin) continue;
-                const f32 into = -Dot2D(dvel, n);
-                if (into > 0.0f) { dvel[0] += n[0] * into; dvel[2] += n[2] * into; }
+                f32 n[3] = { wn[0], 0.0f, wn[2] };
+                const bool interior = (t > 0.001f && t < 0.999f);
+                if (!interior && d > 1e-4f)
+                {
+                    const f32 cx = seg[0] + (seg[3] - seg[0]) * t, cz = seg[2] + (seg[5] - seg[2]) * t;
+                    Set3(n, (ag.npos[0] - cx) / d, 0.0f, (ag.npos[2] - cz) / d);
+                }
+                if (interior)
+                {
+                    const f32 into = -Dot2D(dvel, n);
+                    if (into > 0.0f) { dvel[0] += n[0] * into; dvel[2] += n[2] * into; }
+                }
                 const f32 push = (ag.params.wallMargin - d) / ag.params.wallMargin * ag.desiredSpeed * 0.5f;
                 dvel[0] += n[0] * push;
                 dvel[2] += n[2] * push;

@@ -76,7 +76,8 @@ public:
 
     // ゲーム AI（群衆 / Brain）。Application が所有し、ここは借りるだけ（null 許容）。
     // nav.agent* / ai.* / brain の Lua API がこれを叩く。Play 開始・停止で中身を Clear する。
-    void SetAiSystem(ai::AiSystem* a) { m_aiSystem = a; }
+    // ★Brain の行動（Lua 関数）を呼ぶ差し込み口も AiSystem へ渡す（実体は ScriptEngineAi.cpp）
+    void SetAiSystem(ai::AiSystem* a);
     ai::AiSystem* GetAiSystem() const { return m_aiSystem; }
     // Lua に渡している時間の倍率（time.setScale）。AI もスクリプトと同じ時間で動かすために読む
     f32 GetTimeScale() const { return m_timeScale; }
@@ -240,6 +241,12 @@ private:
     void RegisterNetworkBindings();
     // nav グローバル（ナビメッシュの経路探索）を登録する。
     void RegisterNavBindings();
+    // ai グローバルと Brain のハンドル（AiBrain）を登録する（ScriptEngineAi.cpp）。
+    void RegisterAiBindings();
+    // Brain の行動（enter/update/exit）を呼ぶ。戻り値: 0=続ける / 1=done / -1=エラー / -2=関数なし
+    int  InvokeAiAction(entt::entity e, int actionIndex, int phase, float dt);
+    // Brain の Lua 関数の置き場を捨てる（lua_State を壊す前に必ず呼ぶ）
+    void ClearAiLua();
     // .lua の properties テーブルを解析して out へ詰める（失敗時は out 空のまま）。
     void ParsePropertySchema(const std::string& scriptPath, std::vector<ScriptPropDef>& out);
 
@@ -254,6 +261,9 @@ private:
     NetworkSystem* m_network = nullptr;   // マルチプレイ（net:host/join等）。null 許容
     UISystem*      m_uiSystem = nullptr;  // input:isUiCapturing* 用。null 許容
     ai::AiSystem*  m_aiSystem = nullptr;  // ゲーム AI。null 許容
+    // Brain の行動の Lua 関数（sol::protected_function）の置き場。中身の型は ScriptEngineAi.cpp。
+    // ★sol の参照を持つので lua_State より先に捨てる（Shutdown / OnPlayStop が ClearAiLua を呼ぶ）
+    std::shared_ptr<void> m_aiLua;
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     ActionMap*   m_actionMap = nullptr;  // Application が所有、null 許容
     // Trigger の SetShaderParam / AnimShaderParam の実体。Play 停止で捨てる

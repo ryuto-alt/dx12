@@ -246,6 +246,43 @@ int main()
         std::printf("  ⑥ min distance to edge with wallMargin 0.5 = %.3f\n", minWall);
     }
 
+    // ================= ⑥' wallMargin が戸口（通路の入口の角）で立ち往生しない =================
+    // ★余白の内側で「壁の法線方向の速度」を削っていた頃は、斜めに戸口へ入る時に入口の角（壁の端）の
+    //   法線で進路が消え、戸口の前で止まっていた（chase.json の迷路で実際に起きた）。
+    {
+        NavInputGeometry gd;
+        AddFloor(gd, -6, -6, 6, 6, 0.0f);
+        AddWallX(gd, 0.0f, -6.0f, -0.9f, 0.0f, 2.0f);   // 幅 1.8m の戸口（削ると 1.2m）
+        AddWallX(gd, 0.0f, 0.9f, 6.0f, 0.0f, 2.0f);
+        gd.ComputeBounds();
+        NavMesh door; NavBuildReport rep2;
+        CHECK(BuildNavMesh(gd, Cfg(), door, rep2));
+        for (const float margin : { 0.3f, 0.7f })
+        {
+            NavCrowd crowd;
+            crowd.SetNavMesh(&door);
+            NavAgentParams p;
+            p.radius = 0.3f;
+            p.maxSpeed = 2.4f;
+            p.wallMargin = margin;
+            const float s[3] = { -3.0f, 0.0f, -3.5f };
+            const float e[3] = { 3.0f, 0.0f, 3.5f };
+            const int a = crowd.AddAgent(s, p);
+            crowd.RequestMoveTarget(a, e);
+            bool arrived = false;
+            int k = 0, off = 0;
+            for (; k < 60 * 12; ++k)
+            {
+                crowd.Update(dt);
+                if (!OnMesh(door, *crowd.Agent(a))) ++off;
+                if (crowd.Arrived(a, 0.2f)) { arrived = true; break; }
+            }
+            CHECK(arrived);
+            CHECK(off == 0);
+            std::printf("  ⑥' doorway with wallMargin %.1f: %s in %.2fs\n", margin, arrived ? "arrived" : "STUCK", k * dt);
+        }
+    }
+
     // ================= ⑦ 速度指定で壁へ突っ込む =================
     {
         NavCrowd crowd;

@@ -326,6 +326,36 @@ nlohmann::json McpComponentSchema()
         "ONLY RUNS IN PLAY MODE (physics bodies exist only while playing). Bone names left empty "
         "are auto-detected from common rig naming; check the resolved result in dx12_get_anim_state's "
         "footIK block. Uses PhysicsSystem::Raycast for true surface normals."));
+    comps.push_back(C("brain", true, true, json::array({
+        F("enabled", "bool", true),
+        F("targets", "string (perception targets: comma separated entity names, or \"tag:<tag>\")", "MainCamera"),
+        F("seed", "int (seed of brain:random(); same seed = same sequence)", 1),
+        F("thinkInterval", "float (seconds between action re-selection)", 0.1),
+        F("hysteresis", "float (score bonus for the current action; stops flip-flopping)", 0.1),
+        F("minCommitTime", "float (seconds an action is kept once chosen, unless it returns done)", 0.3),
+        F("sightRange", "float (metres, horizontal)", 20.0),
+        F("sightFov", "float (full field of view, degrees)", 140.0),
+        F("nearSense", "float (metres; sensed regardless of view angle, still needs line of sight)", 2.0),
+        F("eyeHeight", "float (metres above the transform)", 1.6),
+        F("targetHeight", "float (metres above the target transform to aim the sight ray; 0 for a camera)", 1.0),
+        F("confirmTime", "float (seconds of continuous sight until the target is 'seen')", 0.3),
+        F("sightInterval", "float (seconds between line-of-sight raycasts)", 0.1),
+        F("hearingScale", "float (multiplier on the radius of ai.sound events)", 1.0),
+        F("occlusion", "float (radius multiplier when a wall is between the sound and the ear)", 0.5),
+        F("memoryTime", "float (seconds until a lost target's position is forgotten)", 10.0),
+        F("useCrowd", "bool (move with the crowd: navmesh corridor + local avoidance)", true),
+        F("agentRadius", "float (metres, crowd spacing)", 0.5),
+        F("maxSpeed", "float (m/s; brain:moveTo(pos, speed) overrides)", 3.5),
+        F("maxAccel", "float (m/s^2)", 20.0),
+        F("separation", "float (crowd separation weight)", 2.0),
+        F("wallMargin", "float (extra metres kept from walls)", 0.0),
+        F("turnRate", "float (1/s, turn towards movement; 0 = never rotate)", 10.0),
+        F("debugDraw", "bool (draw sight cone / heard sounds / scores when selected in the editor)", true),
+    }), "Game AI brain: perception (sight cone + physics line of sight, hearing of ai.sound events with "
+        "occlusion, memory) -> blackboard -> utility scoring with hysteresis -> Lua actions. "
+        "Actions are defined by the entity's Lua script: ai.brain(self):action(name, {considerations=..., "
+        "enter=, update=, exit=}). ONLY RUNS IN PLAY MODE. Inspect the live state with the brain_state "
+        "engine method (blackboard, perception, score breakdown). Runtime state is not stored in the component."));
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
@@ -559,7 +589,7 @@ nlohmann::json McpLuaApi()
         "SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,Sprite2D,"
         "AudioSource,Gimmick,RigidBody,BoxCollider,SphereCollider,CapsuleCollider,ConvexHullCollider,"
         "CharacterController,LuaScript,ParticleEmitter,TrailRenderer,DecalComponent,Trigger,UICanvas,UIRect,"
-        "UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator,AnimatorController,FootIK)"
+        "UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator,AnimatorController,FootIK,Brain)"
         "  ※知らない型名は false ではなくログに警告が出る(タイプミスを黙って握り潰さない)",
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
@@ -764,6 +794,42 @@ nlohmann::json McpLuaApi()
         "★群衆のエンティティは親を持たないこと / CharacterController・動的 RigidBody と併用しないこと。"
         "ゲーム側で transform.position を書いた（ワープした）ら次のステップで気づいて置き直す",
         "★findPath は毎フレーム全員ぶん呼ばないこと。追いかけるなら corridor か群衆（nav.agent*）を使う",
+    })));
+    objects.push_back(O("ai", "global（'.' で呼ぶ）。ゲーム AI（Brain / 音）", json::array({
+        "ai.brain(self|entity|name, config?) -> AiBrain  (Brain コンポーネントが無ければ付ける。config は brain の設定キー"
+        "（sightRange 等。describe_components の brain を参照）。Play 中の OnStart で取って行動を定義する)",
+        "ai.brains() -> { Entity.. }  (Brain を持つエンティティ。id 順。ディレクターが全員の黒板へ書く時に使う)",
+        "ai.emitSound(pos, radius, { tag=, loudness=, source= }?)  (EventBus の \"ai.sound\" を発火。Brain は半径 × 耳の良さ、"
+        "壁越しなら × occlusion の内側で聞く。source を渡すとその相手の居場所として覚える)",
+        "ai.soundOnEvent(eventName, radius, { tag=, loudness= }?) -> bool  (source 付きイベント → 音。"
+        ".animfsm の clipEvents の足音（例 'footstep'）をそのまま聞かせる)",
+        "ai.curve(type, x, { m=, k=, b=, c=, invert= }?) -> number  (応答カーブを試す。type: linear / quadratic / "
+        "logistic / step / inverse / smooth)",
+        "★黒板に自動で入る事実: target(Entity) / target.visible / target.seen（awareness=1 で確定）/ target.awareness / "
+        "target.distance / target.known / target.lastKnown(Vec3) / target.lastSeenAge / target.lastHeardAge / "
+        "heard.age / heard.pos / heard.loudness / heard.tag / self.speed / action（今の行動名）/ time",
+        "★決定論: 1/60 秒の固定ステップ・エンティティ id 順・乱数は brain:random（math.random は Play ごとに種が変わる）",
+    })));
+    objects.push_back(O("AiBrain", "ai.brain(self) の戻り値（':' で呼ぶ）", json::array({
+        "action(name, { weight=1, cooldown=0, minDuration=0, considerations = { { input='target.distance', min=0, max=30, "
+        "curve='linear', invert=true, name=?, default=0, m=, k=, b=, c= }, ... }, enter=fn(b), update=fn(b, dt), exit=fn(b) }) -> int"
+        "  (行動の定義。得点 = weight × 考慮事項の積（多いほど痩せない補正つき）。update が 'done' か true を返すと"
+        " cooldown 秒は選ばない)",
+        "clearActions()",
+        "set(key, value) / get(key, default?) / has(key) -> bool / unset(key)  (黒板。値は number/bool/string/Vec3/Entity)",
+        "current() -> name|nil / timeInAction() -> sec / force(name) -> bool / think()  (次のステップで選び直す)",
+        "scores() -> { chosen, reason='best'|'hysteresis'|'commit'|'forced'|'none', time, actions={ {name, score, final, "
+        "bonus, weight, cooldown, considerations={ {name, input, value, x, score, missing} } } } }  (なぜその行動か)",
+        "moveTo(pos, speed?) -> bool / stop() / setSpeed(s)  (群衆で動かす。通路 + 局所回避。Transform はエンジンが書く)",
+        "arrived(tol?) -> bool / moveState() -> 'none'|'pending'|'valid'|'partial'|'failed' / distanceToGoal() / "
+        "speed()（実際に進んだ速さ）/ position() -> Vec3",
+        "random() / randomRange(a, b) / randomInt(a, b) / randomPoint(center, radius) -> Vec3|nil  (シード付き＝決定論)",
+        "canSee() -> bool / target() -> Entity|nil / awareness() / lastKnown() -> Vec3|nil / lastSeenAge() / "
+        "heard() -> { pos, loudness, age, tag, occluded }|nil",
+        "remember(pos) -> bool（ディレクターが「このあたり」を渡す）/ forget()",
+        "sound(radius, tag?)  (自分の位置で ai.sound を出す。自分には聞こえない)",
+        "config{ key = value, ... } / getConfig(key)  (Brain コンポーネントの設定を読み書き。例 b:config{ sightRange = 30 })",
+        "entity() -> Entity / id() -> int",
     })));
     objects.push_back(O("NavCorridor", "nav.corridor(pos) の戻り値（':' で呼ぶ）", json::array({
         "setTarget(pos, radius?) -> 'complete'|'partial'|'failed'  (現在地から目標まで A* で通路を張る)",

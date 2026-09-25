@@ -1271,6 +1271,10 @@ private:
     // C++ は逆宣言順にデストラクトするため m_eventBus が後に置かれていると
     // ~ScriptEngine()/~PhysicsSystem() が m_eventBus.Clear() を踏んで UAF になる。
     EventBus                           m_eventBus;
+    // ゲーム AI（群衆 / Brain）。Play 中だけ Update する。
+    // ★宣言順注意: m_scriptEngine より前に置く（~ScriptEngine() → Shutdown() が AiSystem::Clear を呼ぶので、
+    //   自動デストラクタの逆宣言順で AiSystem が先に消えると UAF になる）。
+    std::unique_ptr<ai::AiSystem>      m_aiSystem;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
     std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。
@@ -1340,7 +1344,6 @@ private:
     std::unordered_map<std::string, McpMethodEntry> m_mcpMethods;
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
-    std::unique_ptr<ai::AiSystem>      m_aiSystem;        // ゲーム AI（群衆 / Brain）。Play 中だけ Update する
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
     std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。

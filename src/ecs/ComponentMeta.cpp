@@ -425,6 +425,34 @@ void RegisterCoreComponentMeta()
         .data<&FootIK::alignToNormal>("alignToNormal")
         .data<&FootIK::kneeForward>("kneeForward");
 
+    // Brain: 設定だけ（実行時の状態は ai::AiSystem が持つので、ここに漏れるものは無い）
+    entt::meta_factory<Brain>{}
+        .type("Brain")
+        .data<&Brain::enabled>("enabled")
+        .data<&Brain::targets>("targets")
+        .data<&Brain::seed>("seed")
+        .data<&Brain::thinkInterval>("thinkInterval")
+        .data<&Brain::hysteresis>("hysteresis")
+        .data<&Brain::minCommitTime>("minCommitTime")
+        .data<&Brain::sightRange>("sightRange")
+        .data<&Brain::sightFov>("sightFov")
+        .data<&Brain::nearSense>("nearSense")
+        .data<&Brain::eyeHeight>("eyeHeight")
+        .data<&Brain::targetHeight>("targetHeight")
+        .data<&Brain::confirmTime>("confirmTime")
+        .data<&Brain::sightInterval>("sightInterval")
+        .data<&Brain::hearingScale>("hearingScale")
+        .data<&Brain::occlusion>("occlusion")
+        .data<&Brain::memoryTime>("memoryTime")
+        .data<&Brain::useCrowd>("useCrowd")
+        .data<&Brain::agentRadius>("agentRadius")
+        .data<&Brain::maxSpeed>("maxSpeed")
+        .data<&Brain::maxAccel>("maxAccel")
+        .data<&Brain::separation>("separation")
+        .data<&Brain::wallMargin>("wallMargin")
+        .data<&Brain::turnRate>("turnRate")
+        .data<&Brain::debugDraw>("debugDraw");
+
     entt::meta_factory<PrefabLink>{}
         .type("PrefabLink")
         .data<&PrefabLink::sourcePath>("sourcePath");

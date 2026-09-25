@@ -731,6 +731,21 @@ else()
 endif()
 add_test(NAME NavCrowdTests COMMAND NavCrowdTests)
 
+# ゲーム AI（Brain）の純ロジック（黒板 / 応答カーブ / ユーティリティ評価 / 知覚の判定 / 記憶 / 乱数）。
+# ECS も Lua も物理も要らないので .cpp を直接ビルドする。
+add_executable(AiBrainTests
+    ai_brain_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ai/Blackboard.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ai/Utility.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ai/Perception.cpp)
+target_include_directories(AiBrainTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AiBrainTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AiBrainTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AiBrainTests COMMAND AiBrainTests)
+
 
 
 

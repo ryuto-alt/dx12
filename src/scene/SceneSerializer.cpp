@@ -308,6 +308,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<AnimatorController>("AnimatorController", "animatorController", true));
     // フット IK（接地補正）。ボーン名が空なら一般的な命名から自動推定する
     R.Register(MakeReflectedInfo<FootIK>("FootIK", "footIK", true));
+    R.Register(MakeReflectedInfo<Brain>("Brain", "brain", true));
     // プレハブインスタンスの紐付け。.prefab 側へ書き出す時だけ StripPrefabLinks で落とす
     R.Register(MakeReflectedInfo<PrefabLink>("PrefabLink", "prefabLink", true));
 
