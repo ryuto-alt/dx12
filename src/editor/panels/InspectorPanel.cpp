@@ -5,6 +5,7 @@
 #include "editor/UndoSystem.h"
 #include "editor/AssetDrop.h"
 #include "ecs/Components.h"
+#include "ai/AiSystem.h"   // Brain の実行中の状態（得点の内訳）
 #include "renderer/Camera.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
@@ -2336,6 +2337,108 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // Brain（ゲーム AI の頭脳）。行動の中身は同じエンティティの Lua が brain:action で定義する
+        if (reg.all_of<Brain>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Brain");
+            bool removed = ComponentRemoveMenu<Brain>(reg, ctx, ctx.selectedEntity, "Brain");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_brainEdit);
+                auto& br = reg.get<Brain>(ctx.selectedEntity);
+                bool changed = false, active = false;
+
+                if (pg::Begin("Brain"))
+                {
+                    changed |= pg::Checkbox("有効 Enabled", &br.enabled);
+                    changed |= pg::InputTextStr("知覚の対象 Targets", br.targets, &active,
+                        "名前のカンマ区切り、または tag:タグ名（例: MainCamera / tag:player）");
+                    changed |= pg::Int("乱数の種 Seed", &br.seed, 1.0f, 0, 0, &active,
+                        "brain:random() の種。同じ種なら同じ列（決定論）");
+                    pg::End();
+                }
+                if (pg::Begin("思考 Think"))
+                {
+                    changed |= pg::Float("選び直す間隔 Interval", &br.thinkInterval, 0.01f, 0.0f, 5.0f, "%.2f",
+                        &active, "行動を選び直す間隔(秒)");
+                    changed |= pg::Float("粘り Hysteresis", &br.hysteresis, 0.01f, 0.0f, 1.0f, "%.2f", &active,
+                        "今の行動に足す得点。僅差で行ったり来たりしない");
+                    changed |= pg::Float("最低継続 Min Commit", &br.minCommitTime, 0.01f, 0.0f, 10.0f, "%.2f",
+                        &active, "選んだ行動を最低これだけ続ける(秒)");
+                    pg::End();
+                }
+                if (pg::Begin("視覚 Sight"))
+                {
+                    changed |= pg::Float("距離 Range", &br.sightRange, 0.1f, 0.0f, 500.0f, "%.1f", &active);
+                    changed |= pg::Float("視野角 FOV", &br.sightFov, 1.0f, 1.0f, 360.0f, "%.0f", &active,
+                        "全角（度）");
+                    changed |= pg::Float("気配 Near Sense", &br.nearSense, 0.05f, 0.0f, 50.0f, "%.2f", &active,
+                        "この距離は視野角を問わず気づく（視線は要る）");
+                    changed |= pg::Float("目の高さ Eye", &br.eyeHeight, 0.01f, 0.0f, 10.0f, "%.2f", &active);
+                    changed |= pg::Float("対象の高さ Target Height", &br.targetHeight, 0.01f, -5.0f, 10.0f,
+                        "%.2f", &active, "対象の Transform から見る点までの高さ（カメラなら 0）");
+                    changed |= pg::Float("確認時間 Confirm", &br.confirmTime, 0.01f, 0.0f, 10.0f, "%.2f",
+                        &active, "見えてから『見つけた』と確定するまで(秒)");
+                    changed |= pg::Float("視線の間隔 Ray Interval", &br.sightInterval, 0.01f, 0.0f, 2.0f,
+                        "%.2f", &active);
+                    pg::End();
+                }
+                if (pg::Begin("聴覚・記憶 Hearing / Memory"))
+                {
+                    changed |= pg::Float("耳の良さ Hearing", &br.hearingScale, 0.01f, 0.0f, 10.0f, "%.2f",
+                        &active, "ai.sound の半径に掛ける倍率");
+                    changed |= pg::Float("壁越し Occlusion", &br.occlusion, 0.01f, 0.0f, 1.0f, "%.2f", &active,
+                        "壁越しの音が届く半径の倍率");
+                    changed |= pg::Float("忘れるまで Memory", &br.memoryTime, 0.1f, 0.0f, 600.0f, "%.1f",
+                        &active, "見失ってから位置を忘れるまで(秒)");
+                    pg::End();
+                }
+                if (pg::Begin("移動 Movement（群衆）"))
+                {
+                    changed |= pg::Checkbox("群衆で動かす Use Crowd", &br.useCrowd,
+                        "OFF なら移動はスクリプトに任せる");
+                    changed |= pg::Float("半径 Radius", &br.agentRadius, 0.01f, 0.05f, 5.0f, "%.2f", &active);
+                    changed |= pg::Float("最高速度 Max Speed", &br.maxSpeed, 0.05f, 0.0f, 50.0f, "%.2f", &active);
+                    changed |= pg::Float("加速度 Max Accel", &br.maxAccel, 0.1f, 0.1f, 200.0f, "%.1f", &active);
+                    changed |= pg::Float("分離 Separation", &br.separation, 0.05f, 0.0f, 20.0f, "%.2f", &active);
+                    changed |= pg::Float("壁の余白 Wall Margin", &br.wallMargin, 0.01f, 0.0f, 3.0f, "%.2f",
+                        &active, "壁からさらに離す距離(m)");
+                    changed |= pg::Float("向きの速さ Turn Rate", &br.turnRate, 0.1f, 0.0f, 60.0f, "%.1f",
+                        &active, "0 で向きを変えない");
+                    pg::End();
+                }
+                changed |= pg::Checkbox("デバッグ表示 Debug Draw", &br.debugDraw,
+                    "選択中に視界・視線・聞いた音・行動の内訳を描く");
+
+                // ---- 実行中の状態（Play 中のみ）: 今の行動・選んだ理由・得点の内訳 ----
+                const ai::BrainState* bst = ctx.aiSystem ? ctx.aiSystem->GetBrain(ctx.selectedEntity) : nullptr;
+                if (bst && pg::Begin("実行中 Live（なぜこの行動か）"))
+                {
+                    const ai::Decision& d = bst->last;
+                    const char* curName = (bst->current >= 0 && bst->current < static_cast<i32>(bst->actions.size()))
+                                              ? bst->actions[static_cast<size_t>(bst->current)].name.c_str() : "(なし)";
+                    pg::Text("行動", "%s  [%s]", curName, ai::DecisionReasonName(d.reason));
+                    pg::Text("知覚", "seen=%s  aw=%.2f  距離=%.1fm  最後に見て %.1fs",
+                             bst->bb.Bool("target.seen", false) ? "○" : "×",
+                             bst->bb.Number("target.awareness", 0.0), bst->bb.Number("target.distance", 0.0),
+                             bst->bb.Number("target.lastSeenAge", 0.0));
+                    for (const ai::ActionEval& ae : d.actions)
+                    {
+                        pg::Text(ae.name.c_str(), "%.3f = %.2f × %.3f%s%s", ae.final, ae.weight, ae.product,
+                                 ae.bonus > 0.0f ? " +粘り" : "", ae.cooldown ? " (cooldown)" : "");
+                        for (const ai::ConsiderationEval& ce : ae.considerations)
+                            pg::Text("", "   %s = %.2f → x %.2f → %.2f%s", ce.name.c_str(), ce.raw, ce.x, ce.score,
+                                     ce.missing ? " (黒板に無い)" : "");
+                    }
+                    if (!bst->lastError.empty())
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", bst->lastError.c_str());
+                    pg::End();
+                }
+                ImGui::TextDisabled("※ Play 中のみ動きます。行動は Lua の ai.brain(self):action(...) で定義");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_brainEdit, changed, active, "Brain");
+            }
+        }
+
         // AudioReverbZone（リバーブ域）
         if (reg.all_of<AudioReverbZone>(ctx.selectedEntity))
         {
@@ -3930,6 +4033,8 @@ void InspectorPanel::Render(entt::registry& reg,
                                                      "Animator Controller (.animfsm ステートマシン)");
             AddComponentMenuItem<FootIK>(reg, ctx, ctx.selectedEntity,
                                          "Foot IK (接地補正・Play 中のみ)");
+            AddComponentMenuItem<Brain>(reg, ctx, ctx.selectedEntity,
+                                        "Brain (ゲーム AI の頭脳・Play 中のみ)");
             AddComponentMenuItem<AudioReverbZone>(reg, ctx, ctx.selectedEntity,
                                                   "Audio Reverb Zone (部屋・廊下・洞窟の響き)");
             ImGui::Separator();

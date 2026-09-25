@@ -27,6 +27,7 @@
 #include "audio/AudioSystem.h"
 #include "scripting/ScriptAudioBindings.h"
 #include "physics/PhysicsSystem.h"
+#include "ai/AiSystem.h"
 #include "network/NetworkSystem.h"
 #include "animation/Skeleton.h"
 #include "animation/Animator.h"
@@ -412,7 +413,12 @@ bool InitializeLuaScriptInstance(sol::state& lua,
 } // namespace
 
 ScriptEngine::ScriptEngine() = default;
-ScriptEngine::~ScriptEngine() { Shutdown(); }
+ScriptEngine::~ScriptEngine()
+{
+    Shutdown();
+    // AiSystem に渡した「Lua の行動を呼ぶ口」は this を握っている。先に外す
+    if (m_aiSystem) m_aiSystem->SetActionInvoker(nullptr);
+}
 
 void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
                                AudioSystem* audio, PhysicsSystem* physics,
@@ -494,6 +500,11 @@ void ScriptEngine::RegisterBindings()
     lua.new_usertype<Entity>("Entity",
         "isValid", &Entity::IsValid,
 
+        // 数値 id（events の data.source / data.other と同じ値。比べて「誰の出来事か」を判定する）
+        "id", sol::property(
+            [](const Entity& e) -> std::uint32_t { return static_cast<std::uint32_t>(entt::to_integral(e.GetHandle())); }
+        ),
+
         // Name access
         "name", sol::property(
             [](const Entity& e) -> std::string {
@@ -546,6 +557,7 @@ void ScriptEngine::RegisterBindings()
             if (type == "UIAnimator")         return e.HasComponent<UIAnimator>();
             if (type == "AnimatorController") return e.HasComponent<AnimatorController>();
             if (type == "FootIK")             return e.HasComponent<FootIK>();
+            if (type == "Brain")              return e.HasComponent<Brain>();
             // タイプミスや未対応型を「持ってない」と誤認させない（デバッグ困難の元）。
             // 毎フレーム呼ばれてもスパムしないよう型名ごとに1回だけ警告する。
             {
@@ -2261,6 +2273,7 @@ void ScriptEngine::RegisterBindings()
     RegisterEventsBinding();
     RegisterNetworkBindings();
     RegisterNavBindings();
+    RegisterAiBindings();
 
     Logger::Info("Lua bindings registered");
 }
@@ -2517,100 +2530,7 @@ void ScriptEngine::RegisterPhysicsBindings()
     lua["physics"] = m_physics;
 }
 
-// ---------------------------------------------------------------------------
-// nav グローバル（ナビメッシュ）。追いかける AI の実装に必要な最小限だけ出す。
-//   nav:ready()                        -> bool          焼けているか
-//   nav:sample(pos, radius?)           -> Vec3|nil      位置を歩行面へ落とす（坂道でも正確な高さ）
-//   nav:findPath(from, to, radius?)    -> {Vec3,...}    A* + ファネルの折れ線（空なら経路なし）
-//   nav:raycast(from, to)              -> bool, Vec3    壁に当たるか / 当たった点（直進できるかの判定）
-//   nav:moveAlong(from, to)            -> Vec3          壁で滑らせた移動先（精密な当たり判定）
-// ★毎フレーム findPath を全員ぶん呼ばないこと（経路は数十フレームに 1 回引き直せば足りる）。
-// ---------------------------------------------------------------------------
-void ScriptEngine::RegisterNavBindings()
-{
-    using namespace DirectX;
-    auto& lua = *m_lua;
-    sol::table nav = lua.create_named_table("nav");
-
-    auto ext = [this](sol::optional<float> radius, float out[3])
-    {
-        const auto& cfg = m_scene->GetNavConfig();
-        const float r = (radius && *radius > 0.0f) ? *radius
-                                                   : (std::max)(2.0f, cfg.cellSize * 8.0f);
-        out[0] = r;
-        out[1] = (std::max)(cfg.agentHeight * 2.0f, 4.0f);
-        out[2] = r;
-    };
-
-    nav["ready"] = [this](sol::this_state) -> bool
-    {
-        return m_scene && m_scene->HasNavMesh();
-    };
-
-    nav["sample"] = [this, ext](sol::this_state ts, XMFLOAT3 p, sol::optional<float> radius)
-        -> sol::object
-    {
-        sol::state_view sv(ts);
-        if (!m_scene || !m_scene->HasNavMesh()) return sol::lua_nil;
-        float e[3]; ext(radius, e);
-        const float pos[3] = { p.x, p.y, p.z };
-        float out[3]{};
-        const int poly = m_scene->GetNavMesh().FindNearestPoly(pos, e, out);
-        if (poly < 0) return sol::lua_nil;
-        float y = out[1];
-        m_scene->GetNavMesh().GetHeightAt(out, poly, y);
-        return sol::make_object(sv, XMFLOAT3{ out[0], y, out[2] });
-    };
-
-    nav["findPath"] = [this, ext](sol::this_state ts, XMFLOAT3 a, XMFLOAT3 b,
-                                  sol::optional<float> radius) -> sol::table
-    {
-        sol::state_view sv(ts);
-        sol::table t = sv.create_table();
-        if (!m_scene || !m_scene->HasNavMesh()) return t;
-        float e[3]; ext(radius, e);
-        const float from[3] = { a.x, a.y, a.z };
-        const float to[3]   = { b.x, b.y, b.z };
-        std::vector<float> path;
-        const int n = m_scene->GetNavMesh().FindPath(from, to, e, path);
-        for (int i = 0; i < n; ++i)
-            t[i + 1] = XMFLOAT3{ path[static_cast<size_t>(i) * 3 + 0],
-                                 path[static_cast<size_t>(i) * 3 + 1],
-                                 path[static_cast<size_t>(i) * 3 + 2] };
-        return t;
-    };
-
-    nav["raycast"] = [this, ext](sol::this_state ts, XMFLOAT3 a, XMFLOAT3 b)
-        -> std::tuple<bool, sol::object>
-    {
-        sol::state_view sv(ts);
-        if (!m_scene || !m_scene->HasNavMesh()) return { false, sol::lua_nil };
-        float e[3]; ext(sol::nullopt, e);
-        const float from[3] = { a.x, a.y, a.z };
-        const float to[3]   = { b.x, b.y, b.z };
-        float start[3]{};
-        const int poly = m_scene->GetNavMesh().FindNearestPoly(from, e, start);
-        if (poly < 0) return { false, sol::lua_nil };
-        float t = 1.0f, n[3]{}, hit[3]{};
-        const bool blocked = m_scene->GetNavMesh().Raycast(start, to, poly, t, n, hit);
-        return { blocked, sol::make_object(sv, XMFLOAT3{ hit[0], hit[1], hit[2] }) };
-    };
-
-    nav["moveAlong"] = [this, ext](sol::this_state ts, XMFLOAT3 a, XMFLOAT3 b) -> sol::object
-    {
-        sol::state_view sv(ts);
-        if (!m_scene || !m_scene->HasNavMesh()) return sol::make_object(sv, a);
-        float e[3]; ext(sol::nullopt, e);
-        const float from[3] = { a.x, a.y, a.z };
-        const float to[3]   = { b.x, b.y, b.z };
-        float start[3]{};
-        const int poly = m_scene->GetNavMesh().FindNearestPoly(from, e, start);
-        if (poly < 0) return sol::make_object(sv, a);
-        float out[3]{}; int outPoly = poly;
-        m_scene->GetNavMesh().MoveAlongSurface(start, to, poly, out, outPoly);
-        return sol::make_object(sv, XMFLOAT3{ out[0], out[1], out[2] });
-    };
-}
+// nav グローバルの登録は ScriptEngineAi.cpp（ナビ / 群衆 / Brain の Lua API をまとめた TU）。
 
 // events グローバルを C++ EventBus への薄いバインドとして登録する。
 //   events:on(name, fn)     → EventBus::On で購読。fn は EngineEvent を Lua テーブルへ
@@ -4540,6 +4460,10 @@ void ScriptEngine::OnPlayStart()
     // 通常は Application が OnPlayStart 直前に m_eventBus.Clear() を呼ぶが、念のため。
     if (m_eventBus) m_eventBus->Clear();
 
+    // ゲーム AI の中身（群衆のエージェント / Brain の状態）を捨てる。
+    // ★この後の OnStart で brain:action(...) や nav.agentAdd が呼ばれるので、必ずその前に空にする。
+    if (m_aiSystem) m_aiSystem->Clear();
+
     // パーティクル放出器のランタイム状態を初期化（playOnStart で放出 ON/OFF を決める）
     {
         auto peView = reg.view<ParticleEmitter>();
@@ -4613,6 +4537,8 @@ void ScriptEngine::OnPlayStop()
     // Lua state がここで無効化されるため、残留ハンドラが後続 Flush/Emit で呼ばれると UAF になる。
     // Application::EnterEditorMode でも Clear を呼ぶが、OnPlayStop 経路を一本化して確実に除去する。
     if (m_eventBus) m_eventBus->Clear();
+    if (m_aiSystem) m_aiSystem->Clear();
+    ClearAiLua();
     Logger::Info("ScriptEngine: OnPlayStop done");
 }
 
@@ -4941,6 +4867,10 @@ void ScriptEngine::Shutdown()
 
     m_propSchemaCache.clear();
     m_scriptMtimes.clear();   // 次の Play で mtime の基準を取り直す
+    // Brain の行動（sol::protected_function）も lua_State より先に捨てる。AiSystem の状態も
+    // ここで空にする（行動の番号が、もう無い Lua 関数を指さないように）。
+    if (m_aiSystem) m_aiSystem->Clear();
+    ClearAiLua();
     if (m_lua)
     {
         m_lua.reset();

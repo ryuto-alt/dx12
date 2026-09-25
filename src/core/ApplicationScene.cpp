@@ -526,6 +526,7 @@ void Application::WireScriptCallbacks()
     // マルチプレイシステムを Lua net API へ注入（net:host/join 等が薄いバインドになる）。
     m_scriptEngine->SetNetworkSystem(m_networkSystem.get());
     m_scriptEngine->SetUiSystem(m_uiSystem.get());   // input:isUiCapturing* 用
+    m_scriptEngine->SetAiSystem(m_aiSystem.get());   // nav.agent* / ai.* / Brain
 }
 
 void Application::ApplyCameraTransformToGlobal(entt::entity camEntity)

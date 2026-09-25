@@ -26,7 +26,7 @@ add_library(Editor STATIC
 
 target_include_directories(Editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # Ui: UiAnimRuntime（.uianim/.spranim のロードと ECS への適用）をアニメ系パネルが使う
-target_link_libraries(Editor PUBLIC Core Scene ECS Renderer Gui Resource Audio Physics Ui Nav)
+target_link_libraries(Editor PUBLIC Core Scene ECS Renderer Gui Resource Audio Physics Ui Nav AI)
 
 # MCP / AI Bridge パネルの接続コマンド表示用フォールバックパス。
 # 通常はパネルが exe を基準に tools/mcp-server を「実行時」解決する（別 PC・フォルダ移動でも有効）。
@@ -44,6 +44,11 @@ endif()
 target_sources(Editor PRIVATE
     LightHandles.cpp
     panels/LightingPanel.cpp
+)
+
+# 選択中の Brain（ゲーム AI）のデバッグ表示。ImGui の背景ドローリストへ描くだけ。
+target_sources(Editor PRIVATE
+    AiDebugOverlay.cpp
 )
 
 # 任意メッシュの頂点スカルプト窓（洞窟・アーチ・岩などの異形。地形ツールの相棒）。

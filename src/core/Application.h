@@ -93,6 +93,7 @@ namespace dx12e
     class AudioSystem;
     class PhysicsSystem;
     class NetworkSystem;
+    namespace ai { class AiSystem; }
     class PhysicsDebugRenderer;
     class EditorIconRenderer;
     class EditorContext;
@@ -222,6 +223,7 @@ public:
     Scene*         GetScene() { return m_scene.get(); }
     // 物理系への読み取りアクセス（UI テスト / 診断用。所有権は Application）。
     PhysicsSystem* GetPhysicsSystem() const { return m_physicsSystem.get(); }
+    ai::AiSystem*  GetAiSystem() const { return m_aiSystem.get(); }
 
     // 表示パイプラインのフォーマット構成。ガンマ二重適用の検出用（DeepDiag::Gamma）。
     // DXGI_FORMAT を u32 で渡すのは、この診断を将来ヘッドレス側から呼んでも
@@ -407,6 +409,7 @@ private:
     // ハンドラが「書き換える前に触るコンポーネントを申告する」口。McpUndo().Track<T>(e)。
     McpUndoTracker& McpUndo() { return m_mcpUndoTrack; }
     void RegisterMcpAudioMethods();       // 音の観測（audio_state: バス・メーター・ボイス・リバーブ）
+    void RegisterMcpAiMethods();          // ゲーム AI の観測（brain_state: 黒板 / 知覚 / 得点の内訳 / 移動）
 
     // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
     // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。
@@ -1302,6 +1305,10 @@ private:
     // C++ は逆宣言順にデストラクトするため m_eventBus が後に置かれていると
     // ~ScriptEngine()/~PhysicsSystem() が m_eventBus.Clear() を踏んで UAF になる。
     EventBus                           m_eventBus;
+    // ゲーム AI（群衆 / Brain）。Play 中だけ Update する。
+    // ★宣言順注意: m_scriptEngine より前に置く（~ScriptEngine() → Shutdown() が AiSystem::Clear を呼ぶので、
+    //   自動デストラクタの逆宣言順で AiSystem が先に消えると UAF になる）。
+    std::unique_ptr<ai::AiSystem>      m_aiSystem;
     std::unique_ptr<ScriptEngine>      m_scriptEngine;
     std::unique_ptr<McpBridge>         m_mcpBridge;   // エディタ専用 AI ブリッジ(TCP)。ゲームでは null。
     std::unique_ptr<VfxEditorPanel>    m_vfxEditorPanel;   // パーティクルエディタ（ツール窓）。ゲームでは null。

@@ -115,6 +115,7 @@
 #include <unordered_set>  // 先読みアセットの重複除去
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
+#include "ai/AiSystem.h"
 #include "network/NetworkSystem.h"
 #include "network/NetworkConfig.h"
 #include "physics/PhysicsDebugRenderer.h"
@@ -295,6 +296,7 @@ inline bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const
     else if (key == "spriteAnimator")      reg.remove<SpriteAnimator>(e);
     else if (key == "animatorController")  reg.remove<AnimatorController>(e);
     else if (key == "footIK")              reg.remove<FootIK>(e);
+    else if (key == "brain")               reg.remove<Brain>(e);
     else if (key == "audioReverbZone")     reg.remove<AudioReverbZone>(e);
     else return false;
     return true;
@@ -910,6 +912,7 @@ inline nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entit
     if (reg.all_of<SpriteAnimator>(e))      a.push_back("spriteAnimator");
     if (reg.all_of<AnimatorController>(e))  a.push_back("animatorController");
     if (reg.all_of<FootIK>(e))              a.push_back("footIK");
+    if (reg.all_of<Brain>(e))               a.push_back("brain");
     if (reg.all_of<AudioReverbZone>(e))     a.push_back("audioReverbZone");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     // ★ゲーム内 UI と編集用グリッド。長らくここから漏れていて、

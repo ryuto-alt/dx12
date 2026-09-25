@@ -9,6 +9,8 @@
 #include "nav/NavTypes.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -45,9 +47,106 @@ void NavMesh::Clear()
 {
     m_polys.clear(); m_verts.clear(); m_polyVerts.clear(); m_neis.clear();
     m_grid.clear(); m_samples.clear();
+    m_bucketStart.clear(); m_bucketPolys.clear(); m_polyBounds.clear();
+    m_bw = m_bh = 0;
     m_gw = m_gh = 0;
     for (i32 k = 0; k < 3; ++k) { m_contentMin[k] = m_contentMax[k] = 0.0f; }
     m_stats = Stats{};
+    BumpGeneration();
+}
+
+// 世代はプロセス全体で一意（別シーンのメッシュの ref を渡されても、世代が違うので弾ける）
+void NavMesh::BumpGeneration()
+{
+    static std::atomic<u32> s_gen{ 0 };
+    u32 g = ++s_gen;
+    if (g == 0) g = ++s_gen;   // 0 は「一度も作っていない」に取っておく
+    m_generation = g;
+}
+
+NavPolyRef NavMesh::MakeRef(i32 poly) const
+{
+    if (!IsValidPoly(poly)) return kNullPolyRef;
+    return (static_cast<NavPolyRef>(m_generation) << 32) | static_cast<NavPolyRef>(static_cast<u32>(poly) + 1u);
+}
+
+i32 NavMesh::DecodeRef(NavPolyRef ref) const
+{
+    if (ref == kNullPolyRef) return -1;
+    if (static_cast<u32>(ref >> 32) != m_generation) return -1;
+    const u32 lo = static_cast<u32>(ref & 0xffffffffull);
+    if (lo == 0) return -1;
+    const i32 poly = static_cast<i32>(lo - 1u);
+    return IsValidPoly(poly) ? poly : -1;
+}
+
+void NavMesh::BuildPolyIndex()
+{
+    m_bucketStart.clear(); m_bucketPolys.clear(); m_polyBounds.clear();
+    m_bw = m_bh = 0;
+    if (m_polys.empty()) return;
+
+    // ---- ポリゴンごとの AABB ----
+    m_polyBounds.resize(m_polys.size() * 6);
+    f32 xmin = FLT_MAX, zmin = FLT_MAX, xmax = -FLT_MAX, zmax = -FLT_MAX;
+    for (size_t p = 0; p < m_polys.size(); ++p)
+    {
+        const NavPoly& poly = m_polys[p];
+        f32* b = &m_polyBounds[p * 6];
+        b[0] = b[1] = b[2] = FLT_MAX;
+        b[3] = b[4] = b[5] = -FLT_MAX;
+        for (u32 i = 0; i < poly.vertCount; ++i)
+        {
+            const u32 vi = m_polyVerts[poly.firstVert + i];
+            for (i32 k = 0; k < 3; ++k)
+            {
+                b[k]     = (std::min)(b[k], m_verts[vi * 3 + k]);
+                b[k + 3] = (std::max)(b[k + 3], m_verts[vi * 3 + k]);
+            }
+        }
+        xmin = (std::min)(xmin, b[0]); zmin = (std::min)(zmin, b[2]);
+        xmax = (std::max)(xmax, b[3]); zmax = (std::max)(zmax, b[5]);
+    }
+
+    // ---- 粗いバケット（一辺 128 前後に収める）----
+    const f32 span = (std::max)(xmax - xmin, zmax - zmin);
+    m_bucketSize = (std::max)(1.0f, span / 128.0f);
+    m_bucketOrigin[0] = xmin;
+    m_bucketOrigin[1] = zmin;
+    m_bw = (std::max)(1, static_cast<i32>(std::floor((xmax - xmin) / m_bucketSize)) + 1);
+    m_bh = (std::max)(1, static_cast<i32>(std::floor((zmax - zmin) / m_bucketSize)) + 1);
+
+    auto range = [&](const f32* b, i32& x0, i32& z0, i32& x1, i32& z1)
+    {
+        x0 = std::clamp(static_cast<i32>(std::floor((b[0] - xmin) / m_bucketSize)), 0, m_bw - 1);
+        z0 = std::clamp(static_cast<i32>(std::floor((b[2] - zmin) / m_bucketSize)), 0, m_bh - 1);
+        x1 = std::clamp(static_cast<i32>(std::floor((b[3] - xmin) / m_bucketSize)), 0, m_bw - 1);
+        z1 = std::clamp(static_cast<i32>(std::floor((b[5] - zmin) / m_bucketSize)), 0, m_bh - 1);
+    };
+
+    // 2 パス（数える → 詰める）。ポリゴン番号の昇順で入る＝候補の並びが決定論的
+    std::vector<u32> counts(static_cast<size_t>(m_bw) * m_bh + 1, 0);
+    for (size_t p = 0; p < m_polys.size(); ++p)
+    {
+        i32 x0, z0, x1, z1;
+        range(&m_polyBounds[p * 6], x0, z0, x1, z1);
+        for (i32 z = z0; z <= z1; ++z)
+            for (i32 x = x0; x <= x1; ++x) ++counts[static_cast<size_t>(x + z * m_bw)];
+    }
+    m_bucketStart.assign(counts.size(), 0);
+    u32 acc = 0;
+    for (size_t i = 0; i + 1 < counts.size(); ++i) { m_bucketStart[i] = acc; acc += counts[i]; }
+    m_bucketStart.back() = acc;
+    m_bucketPolys.assign(acc, 0);
+    std::vector<u32> fill(m_bucketStart.begin(), m_bucketStart.end() - 1);
+    for (size_t p = 0; p < m_polys.size(); ++p)
+    {
+        i32 x0, z0, x1, z1;
+        range(&m_polyBounds[p * 6], x0, z0, x1, z1);
+        for (i32 z = z0; z <= z1; ++z)
+            for (i32 x = x0; x <= x1; ++x)
+                m_bucketPolys[fill[static_cast<size_t>(x + z * m_bw)]++] = static_cast<u32>(p);
+    }
 }
 
 void NavMesh::GetBounds(f32 outMin[3], f32 outMax[3]) const
@@ -221,6 +320,7 @@ void NavMesh::BuildFromPolyMesh(const NavPolyMeshRaw& pm, const NavCompactHeight
     m_samples.swap(samples);
 
     ComputeStats();
+    BuildPolyIndex();
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +424,7 @@ bool NavMesh::LoadFromMemory(const u8* data, size_t size, std::string& err)
     { err = "格子サイズが不整合"; Clear(); return false; }
 
     ComputeStats();
+    BuildPolyIndex();
     return true;
 }
 

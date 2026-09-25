@@ -342,6 +342,36 @@ nlohmann::json McpComponentSchema()
         "ONLY RUNS IN PLAY MODE (physics bodies exist only while playing). Bone names left empty "
         "are auto-detected from common rig naming; check the resolved result in dx12_get_anim_state's "
         "footIK block. Uses PhysicsSystem::Raycast for true surface normals."));
+    comps.push_back(C("brain", true, true, json::array({
+        F("enabled", "bool", true),
+        F("targets", "string (perception targets: comma separated entity names, or \"tag:<tag>\")", "MainCamera"),
+        F("seed", "int (seed of brain:random(); same seed = same sequence)", 1),
+        F("thinkInterval", "float (seconds between action re-selection)", 0.1),
+        F("hysteresis", "float (score bonus for the current action; stops flip-flopping)", 0.1),
+        F("minCommitTime", "float (seconds an action is kept once chosen, unless it returns done)", 0.3),
+        F("sightRange", "float (metres, horizontal)", 20.0),
+        F("sightFov", "float (full field of view, degrees)", 140.0),
+        F("nearSense", "float (metres; sensed regardless of view angle, still needs line of sight)", 2.0),
+        F("eyeHeight", "float (metres above the transform)", 1.6),
+        F("targetHeight", "float (metres above the target transform to aim the sight ray; 0 for a camera)", 1.0),
+        F("confirmTime", "float (seconds of continuous sight until the target is 'seen')", 0.3),
+        F("sightInterval", "float (seconds between line-of-sight raycasts)", 0.1),
+        F("hearingScale", "float (multiplier on the radius of ai.sound events)", 1.0),
+        F("occlusion", "float (radius multiplier when a wall is between the sound and the ear)", 0.5),
+        F("memoryTime", "float (seconds until a lost target's position is forgotten)", 10.0),
+        F("useCrowd", "bool (move with the crowd: navmesh corridor + local avoidance)", true),
+        F("agentRadius", "float (metres, crowd spacing)", 0.5),
+        F("maxSpeed", "float (m/s; brain:moveTo(pos, speed) overrides)", 3.5),
+        F("maxAccel", "float (m/s^2)", 20.0),
+        F("separation", "float (crowd separation weight)", 2.0),
+        F("wallMargin", "float (extra metres kept from walls)", 0.0),
+        F("turnRate", "float (1/s, turn towards movement; 0 = never rotate)", 10.0),
+        F("debugDraw", "bool (draw sight cone / heard sounds / scores when selected in the editor)", true),
+    }), "Game AI brain: perception (sight cone + physics line of sight, hearing of ai.sound events with "
+        "occlusion, memory) -> blackboard -> utility scoring with hysteresis -> Lua actions. "
+        "Actions are defined by the entity's Lua script: ai.brain(self):action(name, {considerations=..., "
+        "enter=, update=, exit=}). ONLY RUNS IN PLAY MODE. Inspect the live state with the brain_state "
+        "engine method (blackboard, perception, score breakdown). Runtime state is not stored in the component."));
     comps.push_back(C("trigger", true, true, json::array({
         F("shape", "int (0=Box,1=Sphere)", 0), F("halfExtents", "float3", json::array({1, 1, 1})),
         F("radius", "float", 1.0), F("offset", "float3", json::array({0, 0, 0})),
@@ -568,6 +598,7 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("entity", "scene:findEntity(name) / scene:spawn* / physics:overlap*", json::array({
         "isValid() -> bool",
         "name  (string, read-only property)",
+        "id  (int, read-only property。数値 id。events の data.source / data.other と同じ値で、誰の出来事かを比べられる)",
         "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
         // ★型名は ScriptEngine.cpp:507-544 の if 連鎖と 1:1。ここが短いと「対応していない」と
         //   誤解されて使われなくなるので、増やしたら必ず両方直すこと。
@@ -575,7 +606,7 @@ nlohmann::json McpLuaApi()
         "SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,Sprite2D,"
         "AudioSource,Gimmick,RigidBody,BoxCollider,SphereCollider,CapsuleCollider,ConvexHullCollider,"
         "CharacterController,LuaScript,ParticleEmitter,TrailRenderer,DecalComponent,Trigger,UICanvas,UIRect,"
-        "UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator,AnimatorController,FootIK)"
+        "UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator,AnimatorController,FootIK,Brain)"
         "  ※知らない型名は false ではなくログに警告が出る(タイプミスを黙って握り潰さない)",
         "playAnim(clipIndex:int, blend:float)",
         "playAnimByName(name:string, blend:float)",
@@ -753,14 +784,79 @@ nlohmann::json McpLuaApi()
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
         "warp(e,x,y,z)  ※任意座標へ即テレポート。CharacterController>RigidBody>Transformの優先で処理先を切替、CC は縦速度もリセット",
     })));
-    objects.push_back(O("nav", "global (':' で呼ぶ)。ナビメッシュ経路探索", json::array({
+    objects.push_back(O("nav", "global（nav.f(...) でも nav:f(...) でも呼べる）。ナビメッシュ経路探索", json::array({
         "ready() -> bool  (ナビメッシュが焼けているか。エディタの『ツール > ナビメッシュ』か dx12_navmesh_build で焼く)",
-        "sample(pos, radius?) -> Vec3|nil  (位置を一番近い歩行面へ落とす。高さは坂道でもボクセル分解能で正確)",
+        "sample(pos, radius?) -> Vec3|nil  (位置を一番近い歩行面へ落とす。点を含むポリゴン上の最近点・高さは坂道でも正確)",
         "findPath(from, to, radius?) -> {Vec3,...}  (A* + ファネル。空テーブルなら経路なし。"
         "最後の点が to から離れていれば『そこまでしか行けない』意味)",
-        "raycast(from, to) -> hit:bool, point:Vec3  (壁に当たるまで直進。『経路を張らずに真っ直ぐ行けるか』の判定)",
-        "moveAlong(from, to) -> Vec3  (壁で滑らせた移動先。精密な当たり判定つきの1歩)",
-        "★findPath は毎フレーム全員ぶん呼ばないこと。数十フレームに 1 回引き直して、間は折れ線を追うだけで足りる",
+        "raycast(from, to) -> hit:bool, point:Vec3  (★旧 API。true は『壁に当たった』だけ。false は通れたとは限らない"
+        "（始点がナビの外でも false）。新規コードは raycastEx を使う)",
+        "moveAlong(from, to) -> Vec3  (壁で滑らせた移動先。始点から届くポリゴンだけを辿るので壁を抜けない。着地は壁の辺から少し内側)",
+        "locate(pos, radius?) -> ref:int, Vec3 | nil  (点を含むポリゴンの参照 polyRef とその上の点。ref は焼き直すと無効になる)",
+        "isValidRef(ref) -> bool  (焼き直し後の古い ref は false)",
+        "raycastEx(from, to, ref?) -> { status='clear'|'hit'|'startOffMesh'|'truncated', hit, t, point, normal, ref }"
+        "  (4 状態を区別するレイ。ref を渡すとそのポリゴンから撃つ＝縁で取り違えない)",
+        "moveAlongEx(from, to, ref?) -> Vec3, ref  (ref を持ち回る滑り移動。毎回位置から探し直さない)",
+        "findPathEx(from, to, radius?) -> { status='complete'|'partial'|'failed', points={Vec3..}, length, reached }",
+        "corridor(pos, radius?) -> NavCorridor|nil  (通路。張った後は毎フレーム corners/advance を呼ぶだけ＝A* をやり直さない)",
+        "---- 群衆（エンティティを入れるとエンジンが 1/60 秒の固定ステップで動かし Transform へ書く）----",
+        "agentAdd(entity, params?) -> bool  (params: radius, height, maxSpeed, maxAccel, separation(重み|false), "
+        "wallMargin(壁からさらに離す m), avoidance(0..3|false), anticipateTurns, optimize, queryRange, optimizeRange, "
+        "slowDownRadius, faceMovement(移動方向を向く), turnRate, yOffset。entity は Entity / 名前 / self)",
+        "agentMoveTo(entity, pos, speed?) -> bool  (目標へ。近くへ動いただけなら A* をやり直さない。speed で最高速度を切り替え)",
+        "agentVelocity(entity, vel) -> bool  (速度で動かす。通路を使わない)",
+        "agentStop(entity) -> bool / agentRemove(entity) / agentSet(entity, params) -> bool",
+        "agentState(entity) -> { pos, vel, desiredVel, speed(実際に進んだ速さ), state='none'|'pending'|'valid'|'failed'|'velocity', "
+        "partial, distance, arrived, target, neighbors, corners={Vec3..} } | nil",
+        "★群衆のエンティティは親を持たないこと / CharacterController・動的 RigidBody と併用しないこと。"
+        "ゲーム側で transform.position を書いた（ワープした）ら次のステップで気づいて置き直す",
+        "★findPath は毎フレーム全員ぶん呼ばないこと。追いかけるなら corridor か群衆（nav.agent*）を使う",
+    })));
+    objects.push_back(O("ai", "global（'.' で呼ぶ）。ゲーム AI（Brain / 音）", json::array({
+        "ai.brain(self|entity|name, config?) -> AiBrain  (Brain コンポーネントが無ければ付ける。config は brain の設定キー"
+        "（sightRange 等。describe_components の brain を参照）。Play 中の OnStart で取って行動を定義する)",
+        "ai.brains() -> { Entity.. }  (Brain を持つエンティティ。id 順。ディレクターが全員の黒板へ書く時に使う)",
+        "ai.emitSound(pos, radius, { tag=, loudness=, source= }?)  (EventBus の \"ai.sound\" を発火。Brain は半径 × 耳の良さ、"
+        "壁越しなら × occlusion の内側で聞く。source を渡すとその相手の居場所として覚える)",
+        "ai.soundOnEvent(eventName, radius, { tag=, loudness= }?) -> bool  (source 付きイベント → 音。"
+        ".animfsm の clipEvents の足音（例 'footstep'）をそのまま聞かせる)",
+        "ai.curve(type, x, { m=, k=, b=, c=, invert= }?) -> number  (応答カーブを試す。type: linear / quadratic / "
+        "logistic / step / inverse / smooth)",
+        "★黒板に自動で入る事実: target(Entity) / target.visible / target.seen（awareness=1 で確定）/ target.awareness / "
+        "target.distance / target.known / target.lastKnown(Vec3) / target.lastSeenAge / target.lastHeardAge / "
+        "heard.age / heard.pos / heard.loudness / heard.tag / self.speed / action（今の行動名）/ time",
+        "★決定論: 1/60 秒の固定ステップ・エンティティ id 順・乱数は brain:random（math.random は Play ごとに種が変わる）",
+    })));
+    objects.push_back(O("AiBrain", "ai.brain(self) の戻り値（':' で呼ぶ）", json::array({
+        "action(name, { weight=1, cooldown=0, minDuration=0, considerations = { { input='target.distance', min=0, max=30, "
+        "curve='linear', invert=true, name=?, default=0, m=, k=, b=, c= }, ... }, enter=fn(b), update=fn(b, dt), exit=fn(b) }) -> int"
+        "  (行動の定義。得点 = weight × 考慮事項の積（多いほど痩せない補正つき）。update が 'done' か true を返すと"
+        " cooldown 秒は選ばない)",
+        "clearActions()",
+        "set(key, value) / get(key, default?) / has(key) -> bool / unset(key)  (黒板。値は number/bool/string/Vec3/Entity)",
+        "current() -> name|nil / timeInAction() -> sec / force(name) -> bool / think()  (次のステップで選び直す)",
+        "scores() -> { chosen, reason='best'|'hysteresis'|'commit'|'forced'|'none', time, actions={ {name, score, final, "
+        "bonus, weight, cooldown, considerations={ {name, input, value, x, score, missing} } } } }  (なぜその行動か)",
+        "moveTo(pos, speed?) -> bool / stop() / setSpeed(s)  (群衆で動かす。通路 + 局所回避。Transform はエンジンが書く)",
+        "arrived(tol?) -> bool / moveState() -> 'none'|'pending'|'valid'|'partial'|'failed' / distanceToGoal() / "
+        "speed()（実際に進んだ速さ）/ position() -> Vec3",
+        "random() / randomRange(a, b) / randomInt(a, b) / randomPoint(center, radius) -> Vec3|nil  (シード付き＝決定論)",
+        "canSee() -> bool / target() -> Entity|nil / awareness() / lastKnown() -> Vec3|nil / lastSeenAge() / "
+        "heard() -> { pos, loudness, age, tag, occluded }|nil",
+        "remember(pos) -> bool（ディレクターが「このあたり」を渡す）/ forget()",
+        "sound(radius, tag?)  (自分の位置で ai.sound を出す。自分には聞こえない)",
+        "config{ key = value, ... } / getConfig(key)  (Brain コンポーネントの設定を読み書き。例 b:config{ sightRange = 30 })",
+        "entity() -> Entity / id() -> int",
+    })));
+    objects.push_back(O("NavCorridor", "nav.corridor(pos) の戻り値（':' で呼ぶ）", json::array({
+        "setTarget(pos, radius?) -> 'complete'|'partial'|'failed'  (現在地から目標まで A* で通路を張る)",
+        "moveTarget(pos) -> bool  (目標を少し動かす。A* をやり直さず末尾を伸ばす。壁で止まったら false→setTarget し直す)",
+        "move(pos) -> Vec3  (現在地を pos へ滑らせて動かす。壁は抜けない。戻り値が実際の位置)",
+        "advance(dist, margin?) -> Vec3  (通路に沿って dist メートル進める。角を順にたどる)",
+        "corners(n?, margin?) -> {Vec3..}  (現在地から先の角。margin>0 で壁の角から離して返す＝壁を擦らない)",
+        "optimize(range?)  (見通せる所まで近道する)",
+        "reset(pos) -> bool / position() -> Vec3 / target() -> Vec3 / ref() -> int",
+        "status() -> 'none'|'complete'|'partial'|'failed' / isValid() -> bool（焼き直しで false）/ length() -> float / polyCount() -> int",
     })));
     objects.push_back(O("audio", "global", json::array({
         "playBGM(path, loop?=true, fade?)/stopBGM()/pauseBGM()/resumeBGM()  (fade 秒で今の曲からクロスフェード。"

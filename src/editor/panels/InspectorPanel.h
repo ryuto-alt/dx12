@@ -120,6 +120,7 @@ private:
     EditState<SpriteAnimator>   m_spriteAnimatorEdit;
     EditState<AnimatorController> m_animatorControllerEdit;
     EditState<FootIK>           m_footIkEdit;
+    EditState<Brain>            m_brainEdit;
     EditState<AudioReverbZone>  m_reverbZoneEdit;
 
     // プレハブ差分のキャッシュ。差分計算はサブツリー全体を JSON 化するので、

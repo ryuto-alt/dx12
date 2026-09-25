@@ -405,6 +405,56 @@ struct FootIK
     DirectX::XMFLOAT3 _rNormal{0.0f, 1.0f, 0.0f};
 };
 
+// -------------------------------------------------------------------------
+// ゲーム AI の頭脳（Brain）。知覚（視覚・聴覚・記憶）→ 黒板 → ユーティリティ評価で行動を選ぶ。
+// 行動の中身（OnEnter / OnUpdate / OnExit）は同じエンティティの Lua が brain:action(...) で定義する。
+// 移動は群衆（nav の通路 + 局所回避）で、エンジンが Transform を書く。
+//
+// ★ここにあるのは【設定だけ】。黒板・記憶・選んだ行動・得点の内訳などの実行時の状態は
+//   ai::AiSystem が持つ（Play 開始で空になる。コピー / Undo / 保存に乗らない）。
+// ⚠️ Play 中しか動かない。親を持たないエンティティに付けること（Transform をワールド座標として書く）。
+// -------------------------------------------------------------------------
+struct Brain
+{
+    bool        enabled = true;
+    std::string targets = "MainCamera";   // 知覚の対象。名前のカンマ区切り、または "tag:タグ名"
+    i32         seed    = 1;              // brain:random() の種（同じ種なら同じ列＝決定論）
+
+    // ---- 思考 ----
+    f32 thinkInterval = 0.10f;   // 行動を選び直す間隔（秒）
+    f32 hysteresis    = 0.10f;   // 今の行動に足す得点（僅差で行ったり来たりしない）
+    f32 minCommitTime = 0.30f;   // 選んだ行動を最低これだけ続ける（秒）
+
+    // ---- 視覚 ----
+    f32 sightRange    = 20.0f;   // 見える距離（水平）m
+    f32 sightFov      = 140.0f;  // 視野角（全角・度）
+    f32 nearSense     = 2.0f;    // この距離は視野角を問わず気づく（背後の気配）m
+    f32 eyeHeight     = 1.6f;    // 目の高さ（Transform から）m
+    f32 targetHeight  = 1.0f;    // 対象の Transform から見る点までの高さ m（カメラ自体なら 0）
+    f32 confirmTime   = 0.30f;   // 見えてから「見つけた」と確定するまで（秒）
+    f32 sightInterval = 0.10f;   // 視線（レイ）を撃つ間隔（秒）
+
+    // ---- 聴覚 ----
+    f32 hearingScale  = 1.0f;    // 音の半径に掛ける倍率（耳の良さ）
+    f32 occlusion     = 0.5f;    // 壁越しの音が届く半径の倍率
+
+    // ---- 記憶 ----
+    f32 memoryTime    = 10.0f;   // 見失って / 聞こえなくなってから忘れるまで（秒）
+
+    // ---- 移動（群衆エージェント）----
+    bool useCrowd     = true;    // false なら移動はスクリプトに任せる（brain:moveTo は効かない）
+    f32 agentRadius   = 0.5f;    // 群衆どうしの間合いの半径 m
+    f32 maxSpeed      = 3.5f;    // 既定の最高速度 m/s（brain:moveTo(pos, speed) で切り替え）
+    f32 maxAccel      = 20.0f;   // 加速度 m/s^2
+    f32 separation    = 2.0f;    // 分離の強さ
+    f32 wallMargin    = 0.0f;    // 壁からさらに離す距離 m
+    f32 turnRate      = 10.0f;   // 移動方向へ向く速さ（0 で向きを変えない）
+
+    bool debugDraw    = true;    // エディタで選択中に視界・聞いた音・行動の内訳を描く
+
+    bool operator==(const Brain&) const = default;
+};
+
 struct NodeAnimationComp
 {
     std::unique_ptr<NodeGraph>    nodeGraph;

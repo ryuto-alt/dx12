@@ -1,5 +1,6 @@
 add_library(Scripting STATIC
     ScriptEngine.cpp
+    ScriptEngineAi.cpp      # nav / 群衆 / Brain の Lua API
     ScriptAudioBindings.cpp   # Lua の audio（音の担当。ScriptEngine.cpp から分けて衝突を避ける）
 )
 
@@ -19,6 +20,8 @@ target_link_libraries(Scripting PUBLIC
     Audio
     Physics
     Network
+    Nav
+    AI
     ${LUA_LIBRARIES}
     sol2::sol2
     Microsoft::DirectXMath

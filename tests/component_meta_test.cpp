@@ -96,6 +96,13 @@ int main()
     // _lHip / _lLift 等のランタイム状態は meta に出てはいけない
     // （永続フィールドは 11 本のボーン名/有効/重み + 9 本のパラメータ = 20 本）
     CHECK(FieldNames<FootIK>().size() == 20);
+    Expect<Brain>({ "enabled", "targets", "seed", "thinkInterval", "hysteresis", "minCommitTime",
+                    "sightRange", "sightFov", "nearSense", "eyeHeight", "targetHeight",
+                    "confirmTime", "sightInterval", "hearingScale", "occlusion", "memoryTime",
+                    "useCrowd", "agentRadius", "maxSpeed", "maxAccel", "separation",
+                    "wallMargin", "turnRate", "debugDraw" });
+    // 実行時の状態（黒板・記憶・得点）はコンポーネントに持たない＝設定の 24 本だけ
+    CHECK(FieldNames<Brain>().size() == 24);
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();

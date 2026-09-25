@@ -623,6 +623,66 @@ static void Test_FootIK()
         });
 }
 
+// ゲーム AI の頭脳。設定だけが往復する（実行時の状態は AiSystem 側）
+static void Test_Brain()
+{
+    Case<Brain>(
+        [](entt::registry& r, entt::entity e) {
+            Brain b;
+            b.enabled = false;
+            b.targets = "MainCamera, tag:player";
+            b.seed = 42;
+            b.thinkInterval = 0.25f;
+            b.hysteresis = 0.2f;
+            b.minCommitTime = 0.5f;
+            b.sightRange = 30.0f;
+            b.sightFov = 120.0f;
+            b.nearSense = 4.0f;
+            b.eyeHeight = 3.2f;
+            b.targetHeight = 0.0f;
+            b.confirmTime = 0.6f;
+            b.sightInterval = 0.15f;
+            b.hearingScale = 1.5f;
+            b.occlusion = 0.3f;
+            b.memoryTime = 8.0f;
+            b.useCrowd = false;
+            b.agentRadius = 0.9f;
+            b.maxSpeed = 6.2f;
+            b.maxAccel = 24.0f;
+            b.separation = 1.5f;
+            b.wallMargin = 0.7f;
+            b.turnRate = 12.0f;
+            b.debugDraw = false;
+            r.emplace<Brain>(e, b);
+        },
+        [](const Brain& b) {
+            CHECK(b.enabled == false);
+            CHECK(b.targets == "MainCamera, tag:player");
+            CHECK(b.seed == 42);
+            CHECK_F(b.thinkInterval, 0.25f);
+            CHECK_F(b.hysteresis, 0.2f);
+            CHECK_F(b.minCommitTime, 0.5f);
+            CHECK_F(b.sightRange, 30.0f);
+            CHECK_F(b.sightFov, 120.0f);
+            CHECK_F(b.nearSense, 4.0f);
+            CHECK_F(b.eyeHeight, 3.2f);
+            CHECK_F(b.targetHeight, 0.0f);
+            CHECK_F(b.confirmTime, 0.6f);
+            CHECK_F(b.sightInterval, 0.15f);
+            CHECK_F(b.hearingScale, 1.5f);
+            CHECK_F(b.occlusion, 0.3f);
+            CHECK_F(b.memoryTime, 8.0f);
+            CHECK(b.useCrowd == false);
+            CHECK_F(b.agentRadius, 0.9f);
+            CHECK_F(b.maxSpeed, 6.2f);
+            CHECK_F(b.maxAccel, 24.0f);
+            CHECK_F(b.separation, 1.5f);
+            CHECK_F(b.wallMargin, 0.7f);
+            CHECK_F(b.turnRate, 12.0f);
+            CHECK(b.debugDraw == false);
+        });
+}
+
 static void Test_BoxCollider()
 {
     Case<BoxCollider>(
@@ -2160,6 +2220,7 @@ int main()
     Test_TerrainSplatPathIsWrittenWithoutLayerSet();
     Test_AnimatorController();
     Test_FootIK();
+    Test_Brain();
     Test_AudioReverbZone();
     Test_BoxCollider();
     Test_SphereCollider();

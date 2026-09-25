@@ -303,6 +303,7 @@ bool McpUndoTracker::TrackByJsonKey(entt::entity e, const std::string& key)
     else if (key == "spriteAnimator")      Track<SpriteAnimator>(e);
     else if (key == "animatorController")  Track<AnimatorController>(e);
     else if (key == "footIK")              Track<FootIK>(e);
+    else if (key == "brain")               Track<Brain>(e);
     else return false;
     return true;
 }

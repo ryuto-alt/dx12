@@ -726,6 +726,7 @@ add_executable(NavMeshTests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavPolyMesh.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavMesh.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavQuery.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavCorridor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavBuilder.cpp)
 target_include_directories(NavMeshTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 if(MSVC)
@@ -735,6 +736,42 @@ else()
     target_compile_options(NavMeshTests PRIVATE -Wall -Wextra -Werror)
 endif()
 add_test(NAME NavMeshTests COMMAND NavMeshTests)
+
+# 群衆（NavCrowd: 操舵・分離・速度サンプリング・押し出し・通路の上で確定）のテスト。
+# NavMeshTests と同じく nav/ の .cpp を直接ビルドする（依存ゼロ）。
+add_executable(NavCrowdTests
+    nav_crowd_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavRasterize.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavRegion.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavContour.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavPolyMesh.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavMesh.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavQuery.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavCorridor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavCrowd.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavBuilder.cpp)
+target_include_directories(NavCrowdTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(NavCrowdTests PRIVATE /W4 /WX /permissive- /utf-8 /bigobj)
+else()
+    target_compile_options(NavCrowdTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME NavCrowdTests COMMAND NavCrowdTests)
+
+# ゲーム AI（Brain）の純ロジック（黒板 / 応答カーブ / ユーティリティ評価 / 知覚の判定 / 記憶 / 乱数）。
+# ECS も Lua も物理も要らないので .cpp を直接ビルドする。
+add_executable(AiBrainTests
+    ai_brain_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ai/Blackboard.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ai/Utility.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/ai/Perception.cpp)
+target_include_directories(AiBrainTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AiBrainTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AiBrainTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AiBrainTests COMMAND AiBrainTests)
 
 
 
