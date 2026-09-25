@@ -6264,7 +6264,6 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
     const XMMATRIX camVP = XMLoadFloat4x4(&frame.camVP);
     ID3D12Resource* const             backBuffer = frame.backBuffer;
     const D3D12_CPU_DESCRIPTOR_HANDLE rtv        = frame.rtv;
-    const FrameConstants&             fc         = frame.mainConstants;
 
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
 
@@ -6409,90 +6408,45 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
                                            cam.nearClip, cam.farClip);
             XMMATRIX camViewProj = view * proj;
 
-            // メインパスの fc（ライト等）を流用し、視点だけ差し替えて専用 CB へ
-            FrameConstants fcp = fc;
-            XMStoreFloat4x4(&fcp.view, XMMatrixTranspose(view));
-            XMStoreFloat4x4(&fcp.proj, XMMatrixTranspose(proj));
-            fcp.cameraPos = tf.position;
-            fcp.aoEnabled = 0.0f;   // プレビューは白ダミー AO（SSAO 非対応）なので AO を読まない
-            fcp.contactShadowEnabled = 0.0f;   // 同上（コンタクトシャドウもプレビューでは作らない）
-            // クラスタは「メインカメラ視点」で作ってあるので、別視点のプレビューで引くと
-            // 完全に間違ったライトリストになる。総当たりフォールバックへ倒す。
-            // ★これでデカール（計画06）もプレビューでは無効になる（ApplyDecals が
-            //   clusterGrid.w <= 0.5 で丸ごと return する）。ビニングが別視点なので正しい挙動。
-            fcp.clusterGrid.w  = 0.0f;
-            fcp.clusterExtra.z = 0.0f;   // デバッグ可視化もプレビューでは出さない
-            m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
+            // ★以前はここに「機能を削ったメインパスの複製」（b1 の流用・バインド・RenderSceneMeshes・
+            //   ワールドスプライト・トーンマップ）が 120 行あった。今は ViewDesc を詰めて
+            //   RenderView を呼ぶだけ。削っていた機能は features のビットで表す:
+            //     影マップは描かない（主ビューが作った影を読む）/ 画面空間（SSAO 等）なし /
+            //     クラスタなし（総当たり。デカールも出ない）/ フォグ・パーティクル・デバッグ線なし /
+            //     ポストはトーンマップだけ（LDR へ解決して ImGui に渡す）。
+            //   スカイボックスは描く（Play のゲーム画面には空が出るのに、複製コードが描き忘れていて
+            //   プレビューだけ空が黒かった。「Play を押さずにゲームカメラの見え方を確かめる窓」なので
+            //   空が出る方が正しい）。
+            ViewDesc pv{};
+            pv.name = "cameraPreview";
+            XMStoreFloat4x4(&pv.view, view);
+            XMStoreFloat4x4(&pv.proj, proj);
+            XMStoreFloat4x4(&pv.viewProj, camViewProj);
+            pv.viewProjJittered = pv.viewProj;   // ジッタなし（TAA は主ビューだけ）
+            pv.position     = tf.position;
+            pv.nearZ        = cam.nearClip;
+            pv.farZ         = cam.farClip;
+            pv.orthographic = (cam.projection == CameraProjection::Orthographic);
+            pv.width  = pw;
+            pv.height = ph;
+            pv.sceneColor    = m_cameraPreviewRT.get();
+            pv.depth         = m_previewDepthBuffer.Get();
+            pv.depthDsv      = m_previewDsvHandle;
+            pv.depthSrvIndex = DescriptorHeap::kInvalidIndex;   // 深度を読む機能は無い
+            pv.perFrameCB    = m_previewFrameCB.get();           // 主ビューの b1 を上書きしない
+            pv.outputToBackBuffer = false;
+            pv.output = m_cameraPreviewLdrRT.get();
+            pv.outX = 0;  pv.outY = 0;  pv.outW = pw;  pv.outH = ph;
+            pv.features   = kViewSkybox | kViewWorldSprites;
+            pv.primary    = false;
+            pv.isGameView = true;   // グリッドは出さない
+            RenderView(pv, frame);
 
-            m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float pvClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // ★sceneRT と同じ背景色
-            m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
-            m_commandList->ClearDepthStencil(m_previewDsvHandle);
-            m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_previewDsvHandle);
-            m_commandList->SetViewportAndScissor(pw, ph);
-
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            m_commandList->SetRootSignature(*m_rootSignature);
-            m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame,
-                m_previewFrameCB->GetGpuAddress(frameIndex));
-            m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
-                m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
-            if (m_iblReady && m_iblBaker)
-                m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
-                    m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
-            // クラスタテーブルはフォールバック時も必ずバインドする（PS が t13..t15 を参照するため）
-            if (m_clusteredLighting && m_clusteredLighting->IsReady())
-                m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
-                    m_clusteredLighting->GetSrvTable(frameIndex));
-
-            // グリッドは出さない＝isGameView=true。プレビューは SSAO 非対応＝白ダミー。
-            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex,
-                              /*depthPrepassActive=*/false, m_ssaoWhiteSrvIndex);
-
-            // ワールド空間スプライトもプレビューへ（このカメラ視点で。ビルボードは行列の右/上ベクトル）。
-            XMFLOAT3 pvRight, pvUp;
-            XMStoreFloat3(&pvRight, rot.r[0]);
-            XMStoreFloat3(&pvUp,    rot.r[1]);
-            DrawWorldSprites(nativeCmdList, camViewProj, pvRight, pvUp,
-                             m_cameraPreviewRT->GetRtv(), m_previewDsvHandle, 0u, 0u, pw, ph, totalTime);
-
-            m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-            // プレビューRT(リニアHDR)をトーンマップして LDR RT へ解決する。
-            // ImGui へ FP16 の SRV を直接渡すとトーンマップ/ガンマ無しで暗く表示されるため。
-            // enabled=false → mask=0 = PostProcess はトーンマップ+ガンマのみ適用。
-            if (m_cameraPreviewLdrRT && m_postProcess && m_postProcess->IsReady())
-            {
-                m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-                D3D12_CPU_DESCRIPTOR_HANDLE ldrRtv = m_cameraPreviewLdrRT->GetRtv();
-                nativeCmdList->OMSetRenderTargets(1, &ldrRtv, FALSE, nullptr);  // 深度なし
-                m_commandList->SetViewportAndScissor(pw, ph);
-
-                PostProcessSettings pvPost{};
-                pvPost.enabled = false;
-                // トーンマッパはシーン設定と揃える（プレビューと本画面の見た目一致）
-                pvPost.tonemapper = m_scene->GetPostSettings().tonemapper;
-                const auto pvDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
-                PostProcess::Inputs pvIn{};
-                pvIn.sceneSrv   = m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex());
-                pvIn.bloomSrv   = pvDummy;
-                pvIn.lutSrv     = pvDummy;
-                pvIn.godraysSrv = pvDummy;
-                pvIn.flareSrv   = pvDummy;
-                pvIn.distortSrv = pvDummy;
-                pvIn.exposureVA = m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0;
-                m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
-                    1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime, frameIndex);
-
-                m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-                m_editorCtx->cameraPreviewTexHandle =
-                    m_srvHeap->GetGpuHandle(m_cameraPreviewLdrRT->GetSrvIndex()).ptr;
-            }
-            else
-            {
-                m_editorCtx->cameraPreviewTexHandle =
-                    m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()).ptr;
-            }
+            // LDR へ解決できたらそれを、できなければ HDR をそのまま小窓へ（従来どおり）。
+            m_editorCtx->cameraPreviewTexHandle =
+                (m_cameraPreviewLdrRT && m_postProcess && m_postProcess->IsReady())
+                    ? m_srvHeap->GetGpuHandle(m_cameraPreviewLdrRT->GetSrvIndex()).ptr
+                    : m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()).ptr;
 
             // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
             // これをしないと直後の ImGui がプレビューRTへ描かれ、画面に出なくなる。
