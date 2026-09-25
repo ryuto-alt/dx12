@@ -14,8 +14,14 @@
 //
 // ★Jev は 1 往復: 各検査は「plan(聞く質問と言葉の事実)」を返すだけで自分では聞かない。ゲートが全部の plan を
 //   1 つの context(brief + facts.{look, findings, ui, layout, play})に集めて ask を 1 回撃ち、答えを各検査の
-//   interpret へ配り直す。bundle:"one"(既定)は library の stateUnion で全質問の state を揃えて 1 リクエストに束ねる。
-//   facts のキーがぶつかる plan(落ちたプレイテストが 2 本 = facts.play が 2 つ)だけは別のリクエストに分ける。
+//   interpret へ配り直す。facts のキーがぶつかる plan(落ちたプレイテストが 2 本)だけは別の束に分ける。
+//   ・bundle:"perDomain"(既定)… 質問ごとの射影のまま。検査ごとに 1 リクエストで、全部を並列に撃つ(待ち時間は 1 往復ぶん)
+//   ・bundle:"one" … library の stateUnion で全質問の state を揃えて本当に 1 リクエストにする
+//   ★既定を perDomain にした理由(2026-09-25 実測、各ケースに他の検査の事実を足して和集合の state で評価):
+//     noul(指摘ごとの keep)は劣化しない(finding.intended margin +0.11→+0.19、ui.finding_intended +0.52→+0.64、
+//     layout.* も同等以上)が、score / choice は関係ない事実に引っ張られる: ui.brief_fit の合否 margin 0.78→0.26
+//     (分布ごと下へずれる)、play.confusion は困っている線をまたいでずれる、play.cause 0.98→0.875、look.next_fix 0.79→0.74。
+//     閾値は検査ごとの state で測ってあるので、既定はそちらに合わせた。Brief のトークンを検査の数だけ払うが 1 回 $0.0002 前後の差。
 //
 // ★検査を足す口: GATE_CHECKS(下の配列)。検査は { id, title, enabled(opts), run(ctx) } で、run は
 //   ルールの結論(items)と、聞くなら judges[{plan, interpret}] を返す。知覚層(perceive)の読みやすさの検査も
@@ -102,7 +108,7 @@ export type GateOptions = {
   playtests?: boolean | string[];
   /** false で Jev を使わない(ルールだけ)。 */
   judge?: boolean;
-  /** "one" = 全質問を 1 リクエストに束ねる / "perDomain" = 検査ごとの state で並列に聞く。 */
+  /** "perDomain"(既定)= 検査ごとの state で並列に聞く / "one" = 全質問を 1 リクエストに束ねる(精度が落ちる。上の解説)。 */
   bundle?: "one" | "perDomain";
 };
 
@@ -452,7 +458,7 @@ export async function runQualityGate(ctx0: Omit<GateContext, "mode"> & { checks?
 
   // ── ② 判断段: 全部の plan を束ねて聞く ──
   const useJudge = opts.judge !== false;
-  const bundleMode = opts.bundle ?? "one";
+  const bundleMode = opts.bundle ?? "perDomain";
   const units = useJudge ? ran.flatMap(({ check, r }) => (r.judges ?? []).filter((u) => u.plan.refs.length > 0).map((u) => ({ checkId: check.id, ...u }))) : [];
   const bundles = bundleUnits(units);
   const judgments = new Map<(typeof units)[number], CheckJudgment>();

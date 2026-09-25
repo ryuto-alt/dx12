@@ -272,6 +272,10 @@ console.log("[10] stateUnion: 違う state 路の質問を和集合で射影し�
   const nb = fakeJev();
   const r = await ask(["t.dark", "t.fix"], { ...CONTEXT, brief: null }, base({ fetch: nb.fetch, baseDir: freshBase(), cache: "off", stateUnion: true }));
   check("stateUnion でも Brief が無ければ聞かない", nb.calls.length === 0 && r.briefMissing === true);
+  const sp = fakeJev();
+  await ask(["t.dark"], CONTEXT, base({ fetch: sp.fetch, baseDir: freshBase(), cache: "off", statePaths: ["brief", "facts.findings", "unrelated"] }));
+  check("statePaths は質問の state 路より優先(評価で品質ゲートの state を再現する用)",
+    JSON.stringify(Object.keys(sp.calls[0].state).sort()) === '["brief","facts","unrelated"]' && !("look" in sp.calls[0].state.facts));
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

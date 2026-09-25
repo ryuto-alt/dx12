@@ -6567,7 +6567,8 @@ regRaw(
       + "判断したものは blocking から外し、判断結果と確信度を keep[].judge に残す(直さない)。"
       + "uncertain は合否に入れず列挙するだけ: 各項目の look のツール呼び出しで自分(Claude)が絵を見て決める。"
       + "suggestions は次の一手(そのまま撃てる tool / args 付きのものがある)。"
-      + "★Jev は全検査ぶんを 1 往復に束ねる(bundle:\"one\"。\"perDomain\" で検査ごとの state に分けて並列に聞く)。"
+      + "★Jev は全検査ぶんを 1 往復で聞く: 既定(bundle:\"perDomain\")は検査ごとの state で並列に撃つ(待ち時間は 1 往復)。"
+      + "bundle:\"one\" は全質問を 1 リクエストに束ねるが、他の検査の事実が混ざって score / choice の判断が落ちる(実測)ので既定にしていない。"
       + "Brief / 鍵が無いときはルールだけで同じ形を返す(judge.source:\"rules\")。judge:false で Jev を使わない。"
       + "★playtests はシーンを開き直して再生するので、指定したときだけ走る(Editor 中に撃つこと)。Playing 中は配置検査を飛ばす。",
     inputSchema: {
@@ -6581,7 +6582,7 @@ regRaw(
         .describe("保存済みプレイテストを再生する(true = 全部 / 名前の配列)。既定は再生しない。"),
       judge: z.boolean().optional().describe("false で判断段(Jev)を使わずルールだけで返す。既定 true。"),
       bundle: z.enum(["one", "perDomain"]).optional()
-        .describe("one(既定)= 全検査の質問を 1 リクエストに束ねる / perDomain = 検査ごとの state で並列に聞く。"),
+        .describe("perDomain(既定)= 検査ごとの state で並列に聞く / one = 全検査の質問を 1 リクエストに束ねる(判断の精度が落ちる)。"),
     },
     outputSchema: OUT,
     // 判断段は外部の Jev へ出る。playtests はシーンを開き直すので読み取り専用ではない。

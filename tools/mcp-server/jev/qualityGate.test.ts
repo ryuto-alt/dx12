@@ -78,7 +78,9 @@ function makeJev(o: { lowConfUi?: boolean } = {}) {
       const t = JSON.stringify(q.instructions);
       if (q.type === "noul") {
         const keep = /flagged issue A /.test(t) || /BUSY_GLOSS/.test(t) || /: NO_FOG =/.test(t);
-        answers[k] = { type: "noul", noul: o.lowConfUi && /on the current screen|polish checklist/.test(t) ? 0.66 : keep ? 0.93 : 0.05 };
+        // 閾値付近(各質問の閾値 ±0.1 以内)の答え: ui.finding_intended は 0.5、finding.intended は 0.67
+        const near = /on the current screen/.test(t) ? 0.52 : /polish checklist/.test(t) ? 0.66 : null;
+        answers[k] = { type: "noul", noul: o.lowConfUi && near !== null ? near : keep ? 0.93 : 0.05 };
       } else if (q.type === "choice") {
         const keys = Object.keys(q.criteria);
         const c = keys.includes("add_fog") ? "enable_ssao" : keys.includes("stuck_geometry") ? "stuck_geometry" : keys[0];
@@ -98,7 +100,7 @@ const gate = (e: ReturnType<typeof makeCall>, j: ReturnType<typeof makeJev>, opt
 console.log("[1] 合否の規則");
 {
   const e = makeCall(), j = makeJev();
-  const r = await gate(e, j);
+  const r = await gate(e, j, { bundle: "one" });
   const bcodes = r.blocking.map((b) => `${b.check}:${b.code}`).sort();
   check("ルールの error は blocking(Z_FIGHT / 小さすぎるボタン)、keep した本棚の本は外れる",
     JSON.stringify(bcodes) === JSON.stringify(["layout:Z_FIGHT", "ui:SMALL_HIT_TARGET"]), JSON.stringify(bcodes));
@@ -121,7 +123,7 @@ console.log("[1] 合否の規則");
   check("next に何をすればいいかが書いてある", /blocking 2 件/.test(r.next) && /keep/.test(r.next), r.next);
 
   const ju = makeJev({ lowConfUi: true });
-  const ru = await gate(makeCall(), ju);
+  const ru = await gate(makeCall(), ju, { bundle: "one" });
   check("uncertain は列挙するだけで合否は変えない / 見るためのツール呼び出し付き",
     ru.uncertain.some((u) => u.check === "ui" && u.look.tool === "dx12_ui_screenshot") && ru.pass === r.pass
     && JSON.stringify(ru.blocking.map((b) => b.code).sort()) === JSON.stringify(r.blocking.map((b) => b.code).sort()), JSON.stringify(ru.uncertain));
@@ -153,14 +155,15 @@ console.log("[1] 合否の規則");
 console.log("[2] 1 往復に束ねる");
 {
   const j = makeJev();
-  await gate(makeCall(), j);
+  await gate(makeCall(), j, { bundle: "one" });
   const qs = Object.values<any>(j.reqs[0].questions).length;
   check("bundle:one = 全検査の質問が 1 リクエスト(state は brief + look/findings/ui/layout)", j.reqs.length === 1 && qs >= 6
     && JSON.stringify(Object.keys(j.reqs[0].state.facts).sort()) === '["findings","layout","look","ui"]', JSON.stringify(Object.keys(j.reqs[0]?.state?.facts ?? {})));
   const jp = makeJev();
-  await gate(makeCall(), jp, { bundle: "perDomain" });
-  check("bundle:perDomain = 検査ごとの state(polish / ui / layout の 3 リクエスト)", jp.reqs.length === 3,
-    JSON.stringify(jp.reqs.map((r: any) => Object.keys(r.state.facts))));
+  const rp = await gate(makeCall(), jp);
+  check("既定(perDomain)= 検査ごとの state(polish / ui / layout の 3 リクエストを並列)", jp.reqs.length === 3 && rp.judge.bundle === "perDomain"
+    && jp.reqs.every((r: any) => Object.keys(r.state.facts).length <= 2), JSON.stringify(jp.reqs.map((r: any) => Object.keys(r.state.facts))));
+  check("perDomain でも ask は 1 回(束 1 つ)で、cost は 3 リクエストぶん", rp.judge.bundles === 1 && rp.cost.requests === 3, JSON.stringify(rp.cost));
 
   // 落ちたプレイテストが 2 本 = facts.play が 2 つ → 束ねられないので別リクエスト
   const dir = path.join(TMP, ".dx12", "playtests");
@@ -174,13 +177,13 @@ console.log("[2] 1 往復に束ねる");
     trace: Array.from({ length: 51 }, (_, i) => ({ t: i / 10, pos: [0, 1, 0] })),
   });
   const jr = makeJev();
-  const rr = await gate(makeCall(), jr, { playtests: true }, { replay });
+  const rr = await gate(makeCall(), jr, { playtests: true, bundle: "one" }, { replay });
   check("落ちたプレイテストは blocking(再生の合否はルールのまま)", rr.blocking.filter((b) => b.code === "PLAYTEST_FAILED").length === 2);
   check("facts.play がぶつかる 2 本は別リクエスト(計 2 リクエスト)", jr.reqs.length === 2 && rr.judge.bundles === 2, `${jr.reqs.length} req`);
   check("落ちた原因が suggestions に入る", rr.suggestions.some((s) => s.check === "playtests" && /引っかかる/.test(s.text)), JSON.stringify(rr.suggestions));
   check("cost は束ねた全リクエストの合計", rr.cost.requests === 2 && rr.cost.tokens === 3000);
   const jn = makeJev();
-  const rn = await gate(makeCall(), jn, { playtests: ["run_b"] }, { replay });
+  const rn = await gate(makeCall(), jn, { playtests: ["run_b"], bundle: "one" }, { replay });
   check("名前で絞れる", rn.blocking.filter((b) => b.code === "PLAYTEST_FAILED").length === 1 && jn.reqs.length === 1);
 }
 
@@ -220,7 +223,7 @@ console.log("[4] 検査を足す口 / 状態による分岐");
     }),
   };
   const j = makeJev();
-  const r = await gate(makeCall(), j, {}, { checks: [...GATE_CHECKS, extra] });
+  const r = await gate(makeCall(), j, { bundle: "one" }, { checks: [...GATE_CHECKS, extra] });
   check("足した検査も走り、質問は同じ 1 リクエストに束ねる", j.reqs.length === 1 && "custom" in j.reqs[0].state.facts === false
     && r.checks.some((c) => c.id === "custom" && c.ran), JSON.stringify(Object.keys(j.reqs[0]?.state?.facts ?? {})));
   check("足した検査の keep も blocking から外れる", r.keep.some((k) => k.code === "X_FLAGGED") && !r.blocking.some((b) => b.code === "X_FLAGGED"));

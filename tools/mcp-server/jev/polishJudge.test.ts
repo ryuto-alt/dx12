@@ -177,7 +177,8 @@ console.log("[4] 判断の組み立て");
 
 console.log("[5] 評価ケースの語が本番の wordify と食い違っていない");
 {
-  const casesFiles = [...lib.questions.values()].filter((q) => q.casesPath && fs.existsSync(q.casesPath));
+  // ★look の語彙で見るので polish の質問(state に facts.look)だけ。ui / layout / play のケースはそれぞれのテストが見る
+  const casesFiles = [...lib.questions.values()].filter((q) => q.casesPath && fs.existsSync(q.casesPath) && q.state.includes("facts.look"));
   if (casesFiles.length === 0) console.log("  --  評価ケースがまだ無い");
   for (const q of casesFiles) {
     const file = JSON.parse(fs.readFileSync(q.casesPath!, "utf8"));

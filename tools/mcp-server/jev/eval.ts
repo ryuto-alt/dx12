@@ -94,7 +94,27 @@ export type EvalOptions = AskOptions & {
   question?: string;
   casesPath?: string;
   concurrency?: number;
+  /**
+   * 各ケースの context に「足りないキーだけ」足す材料({facts:{…}})。statePaths と組み合わせて、
+   * 品質ゲートのように他の検査の事実も state に入った状態で精度が落ちないかを測る。
+   */
+  mixin?: Record<string, unknown>;
 };
+
+/** base に無いキーだけ extra から足す(2 段目まで。facts.ui があるケースに facts.layout を足す用)。 */
+export function mixDefaults(base: unknown, extra: Record<string, unknown> | undefined): unknown {
+  if (!extra || !base || typeof base !== "object") return base;
+  const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(extra)) {
+    if (out[k] === undefined) out[k] = v;
+    else if (v && typeof v === "object" && !Array.isArray(v) && out[k] && typeof out[k] === "object" && !Array.isArray(out[k])) {
+      const inner: Record<string, unknown> = { ...(out[k] as Record<string, unknown>) };
+      for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) if (inner[k2] === undefined) inner[k2] = v2;
+      out[k] = inner;
+    }
+  }
+  return out;
+}
 
 export type CaseOutcome = {
   name: string;
@@ -170,11 +190,12 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
   const outcomes = await pooled(file.cases, opts.concurrency ?? 6, async (c) => {
     const ref = { id: qid!, vars: c.vars };
     const common = { ...opts, library: lib, ...(c.state !== undefined ? { stateOverride: c.state } : {}) };
-    const out = await ask([ref], c.context ?? {}, common);
+    const context = mixDefaults(c.context ?? {}, opts.mixin);
+    const out = await ask([ref], context, common);
     usd += out.usd; inputTokens += out.inputTokens; requests += out.requests.length; maxMs = Math.max(maxMs, out.ms);
     const r = out.results[0];
     // ルールならどう答えたか(ネットにもキャッシュにも行かない)。
-    const rules = await ask([ref], c.context ?? {}, { ...common, apiKey: undefined, cache: "off", log: false,
+    const rules = await ask([ref], context, { ...common, apiKey: undefined, cache: "off", log: false,
                                                      fetch: undefined, forceRules: true } as AskOptions);
     const rr = rules.results[0];
     const oc: CaseOutcome = {

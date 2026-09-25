@@ -3,11 +3,13 @@
 //   node jev/runEval.ts                         # ケースを持つ質問を全部(キャッシュ使用)
 //   node jev/runEval.ts --question finding.intended --cache off --verbose
 //   node jev/runEval.ts --json > result.json
+//   node jev/runEval.ts --union --mixin other-facts.json   # 品質ゲートと同じ state(全検査の事実入り)で測る
 //
 // ★鍵は環境変数 TYPESAFE_API_KEY から読むだけで、表示もファイルへの書き出しもしない。
 // ★記録とキャッシュは --baseDir(既定: OS temp の dx12-jev-eval)の .dx12/jev/ に置く。
 //   費用は最後にその log.jsonl から集計して出す(Jev の請求と突き合わせられるように)。
 
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { hasApiKey } from "./client.ts";
@@ -27,6 +29,10 @@ const baseDir = args.get("baseDir") ?? path.join(os.tmpdir(), "dx12-jev-eval");
 const cache = (args.get("cache") ?? "use") as CacheMode;
 const verbose = args.get("verbose") === "true";
 const asJson = args.get("json") === "true";
+// --union: 全質問の state 路の和集合で射影する(品質ゲートの bundle:"one" と同じ state)。
+// --mixin <file>: 各ケースに足りない facts を足す(他の検査の事実。{facts:{…}} の JSON)。
+const union = args.get("union") === "true";
+const mixin = args.get("mixin") ? JSON.parse(fs.readFileSync(args.get("mixin")!, "utf8")) : undefined;
 
 if (!hasApiKey() && cache !== "only") {
   console.error("TYPESAFE_API_KEY が無いので全部ルールで答える(実測にならない)。--cache only でキャッシュだけ見ることはできる");
@@ -37,9 +43,11 @@ const ids = args.get("question")
   ? [args.get("question")!]
   : [...lib.questions.values()].filter((q) => q.casesPath).map((q) => q.id);
 
+const statePaths = union ? [...new Set([...lib.questions.values()].flatMap((q) => q.state))] : undefined;
+if (statePaths) console.log(`state の路(和集合): ${statePaths.join(", ")}${mixin ? " / mixin あり" : ""}`);
 const reports: EvalReport[] = [];
 for (const id of ids) {
-  const r = await runEval({ baseDir, cache, library: lib, question: id, rules: JEV_RULES });
+  const r = await runEval({ baseDir, cache, library: lib, question: id, rules: JEV_RULES, statePaths, mixin });
   reports.push(r);
   if (asJson) continue;
   const s = summarize(r);

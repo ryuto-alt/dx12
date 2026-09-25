@@ -78,7 +78,10 @@ export type SectionMetrics = {
   falls: number;
   sentBackAfterFall: number;
   sentBackOther: number;
-  /** 見回しの速さ(度/秒)。向きが無ければ null。 */
+  /**
+   * 見回しの速さ = 立ち止まっている間のカメラの振り(度/秒)。向きが無ければ null。
+   * ★歩きながらの向き変えは「舵取り」なので数えない(数えると、よく曲がるコースを歩くだけで「見回している」になる)。
+   */
   lookRate: number | null;
   /** その場ジャンプの回数(入力が分からなければ null)。 */
   jumpsInPlace: number | null;
@@ -188,7 +191,7 @@ export function playMetrics(input: PlayInput): { sections: SectionMetrics[]; dur
     const t0 = T0 + (duration * s) / K, t1 = T0 + (duration * (s + 1)) / K;
     const last = s === K - 1;
     const inSec = (t: number) => t >= t0 && (last ? t <= t1 : t < t1);
-    let still = 0, push = 0, look = 0, span = 0, runStart = -1, bestRun = 0, bestSpot: Vec3 | null = null, run = 0;
+    let still = 0, push = 0, lookStill = 0, span = 0, runStart = -1, bestRun = 0, bestSpot: Vec3 | null = null, run = 0;
     let lookSeen = false;
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1], b = pts[i];
@@ -197,14 +200,16 @@ export function playMetrics(input: PlayInput): { sections: SectionMetrics[]; dur
       if (dt <= 0 || isTeleportStep.has(i)) continue;
       span += dt;
       const v = hdist(a.pos, b.pos) / dt;
+      const turn = a.yaw !== undefined && b.yaw !== undefined ? Math.abs(wrapDeg(b.yaw - a.yaw)) : null;
+      if (turn !== null) lookSeen = true;
       if (v < STILL_SPEED) {
         still += dt;
+        if (turn !== null) lookStill += turn;
         if (inAny(a.t, moveHeld)) push += dt;
         if (runStart < 0) runStart = i - 1;
         run += dt;
         if (run > bestRun) { bestRun = run; bestSpot = pts[runStart].pos; }
       } else { runStart = -1; run = 0; }
-      if (a.yaw !== undefined && b.yaw !== undefined) { look += Math.abs(wrapDeg(b.yaw - a.yaw)); lookSeen = true; }
     }
     const dur = Math.max(1e-3, span);
     const secPts = pts.filter((p) => inSec(p.t));
@@ -216,7 +221,8 @@ export function playMetrics(input: PlayInput): { sections: SectionMetrics[]; dur
       falls: falls.filter((f) => inSec(f.tEnd)).length,
       sentBackAfterFall: sentBack.filter((x) => x.afterFall && inSec(x.t)).length,
       sentBackOther: sentBack.filter((x) => !x.afterFall && inSec(x.t)).length,
-      lookRate: lookSeen ? look / dur : null,
+      // 立ち止まりが 0.5 秒未満なら「見回していない」(ほんの一瞬の停止で割ると値が暴れる)
+      lookRate: lookSeen ? (still >= 0.5 ? lookStill / still : 0) : null,
       jumpsInPlace: jumpTimes ? jumpTimes.filter(inSec).length : null,
       goalStart: goal && secPts.length ? hdist(secPts[0].pos, goal) : null,
       goalEnd: goal && secPts.length ? hdist(secPts[secPts.length - 1].pos, goal) : null,

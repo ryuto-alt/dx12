@@ -17,6 +17,7 @@ import {
 } from "./layoutJudge.ts";
 import { BINS } from "./wordify.ts";
 import { loadLibrary } from "./library.ts";
+import { validateCases } from "./eval.ts";
 import type { EntityInfo } from "../sceneOrganize.ts";
 import type { FetchLike } from "./client.ts";
 
@@ -217,6 +218,41 @@ console.log("[6] 判断の組み立て");
   const none = await judgeLayout({ brief, report: { issues: ISSUES.filter((i) => i.kind === "Z_FIGHT") }, ctx, askOptions: { ...base, fetch: fake({}) } });
   check("聞く指摘が無ければ Jev に出ない", reqs.length === 0 && none.findings.length === 0 && none.notAsked.includes("Z_FIGHT"));
   fs.rmSync(TMP, { recursive: true, force: true });
+}
+
+console.log("[7] 評価ケース(*.cases.json)の語が本番の wordifyLayout と食い違っていない");
+{
+  const qs = ["layout.intended", "layout.no_collider_ok"].map((id) => lib.questions.get(id)!);
+  for (const q of qs) {
+    const file = JSON.parse(fs.readFileSync(q.casesPath!, "utf8"));
+    check(`${q.id}: ケースファイルの形`, validateCases(file).length === 0, validateCases(file).join(" / "));
+    check(`${q.id}: 12 件以上`, file.cases.length >= 12, String(file.cases.length));
+    check(`${q.id}: question が一致`, file.question === q.id);
+    const bad: string[] = [];
+    for (const c of file.cases) {
+      const facts = c.context?.facts?.layout;
+      if (!facts) { bad.push(`${c.name}: facts.layout が無い`); continue; }
+      if (!c.context?.brief) bad.push(`${c.name}: brief が無い(Brief 依存の質問なのでルールに落ちる)`);
+      if (JSON.stringify(Object.keys(c.context.facts)) !== '["layout"]') bad.push(`${c.name}: facts に layout 以外がある`);
+      for (const is of facts.issues ?? []) {
+        for (const [k, v] of Object.entries<any>(is)) if (!isLayoutWord(k, v)) bad.push(`${c.name}: ${is.ref}.${k}=${JSON.stringify(v)}`);
+      }
+      if (q.type === "noul" && typeof c.expect !== "boolean") bad.push(`${c.name}: expect は true/false`);
+      const asked = (facts.issues ?? []).find((i: any) => i.ref === c.vars?.ref);
+      if (!asked) bad.push(`${c.name}: 聞いている ref ${c.vars?.ref} が issues に無い`);
+      else if (q.id === "layout.intended" && (asked.kind === "NO_COLLIDER" || asked.kind !== c.vars?.kind)) bad.push(`${c.name}: kind が食い違う`);
+      else if (q.id === "layout.no_collider_ok" && asked.kind !== "NO_COLLIDER") bad.push(`${c.name}: NO_COLLIDER ではない指摘を聞いている`);
+    }
+    check(`${q.id}: 全ケースの語・期待値が本番と一致`, bad.length === 0, bad.join("\n      "));
+    const briefs = new Set(file.cases.map((c: any) => JSON.stringify(c.context?.brief)));
+    check(`${q.id}: Brief が 4 種以上`, briefs.size >= 4, String(briefs.size));
+    const byFacts = new Map<string, Set<string>>();
+    for (const c of file.cases) {
+      const key = JSON.stringify([c.context?.facts, c.vars ?? null]);
+      byFacts.set(key, new Set([...(byFacts.get(key) ?? []), JSON.stringify(c.expect)]));
+    }
+    check(`${q.id}: 同じ facts で Brief によって正解が変わる組がある`, [...byFacts.values()].some((s) => s.size >= 2));
+  }
 }
 
 console.log(failed === 0 ? "\nOK: jev/layoutJudge テストすべて通過" : `\nNG: ${failed} 件失敗`);

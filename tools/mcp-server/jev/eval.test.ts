@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadCases, marginOf, runEval, runEvalAll, validateCases } from "./eval.ts";
+import { loadCases, marginOf, mixDefaults, runEval, runEvalAll, validateCases } from "./eval.ts";
 import type { FetchLike } from "./client.ts";
 
 let failed = 0;
@@ -138,6 +138,15 @@ console.log("[5] ケースファイルの検査");
   let threw = false;
   try { loadCases(bad); } catch { threw = true; }
   check("空のケースファイルは読み込みで弾く", threw);
+}
+
+console.log("[mixin] 他の検査の事実を足して測る(品質ゲートの和集合 state の再現)");
+{
+  const base = { brief: { genre: "x" }, facts: { ui: { a: "case" } } };
+  const mixed = mixDefaults(base, { facts: { ui: { a: "mixin" }, layout: { b: "mixin" } }, other: 1 }) as any;
+  check("足りないキーだけ足す(ケースの facts.ui は上書きしない)", mixed.facts.ui.a === "case" && mixed.facts.layout.b === "mixin" && mixed.other === 1);
+  check("元の context は壊さない", !("layout" in base.facts));
+  check("mixin が無ければそのまま", mixDefaults(base, undefined) === base);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

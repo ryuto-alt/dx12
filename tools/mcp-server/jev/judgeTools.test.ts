@@ -321,18 +321,28 @@ try {
     assert.deepEqual(Object.keys(g.cost).sort(), ["ms", "requests", "tokens", "usd"]);
     pass("{pass, blocking[], keep[], suggestions[], uncertain[], cost:{requests, tokens, usd, ms}} の形");
 
-    assert.equal(jev.reqs.length - before, 1, "全検査の質問が 1 往復");
-    const req = jev.reqs[jev.reqs.length - 1];
-    assert.deepEqual(Object.keys(req.state.facts).sort(), ["findings", "layout", "look", "ui"]);
-    assert.equal(g.cost.requests, 1);
-    pass("全検査(配置・仕上がり・UI)の質問を 1 リクエストに束ねる");
+    // ★配置の 2 問は [layout] と同じ state なのでキャッシュから返る(リクエストは polish と ui の 2 本)
+    const mine = jev.reqs.slice(before);
+    const domains = mine.map((r) => Object.keys(r.state.facts).sort().join("+"));
+    assert.ok(domains.every((d) => ["findings+look", "ui", "layout"].includes(d)), `検査をまたいだ state がある: ${JSON.stringify(domains)}`);
+    assert.ok(domains.includes("findings+look") && domains.includes("ui"), JSON.stringify(domains));
+    assert.equal(g.cost.requests, mine.length);
+    const layJudge = g.checks.find((c: any) => c.id === "layout")?.judge;
+    assert.ok(["cache", "jev"].includes(layJudge?.source), JSON.stringify(layJudge));
+    assert.equal(g.judge.bundle, "perDomain");
+    const before1 = jev.reqs.length;
+    const one = payload(await mcp.call("dx12_quality_gate", { screenshot: false, bundle: "one" }, 60000));
+    assert.equal(jev.reqs.length - before1, 1, "bundle:one なら全検査の質問が 1 リクエスト");
+    assert.deepEqual(Object.keys(jev.reqs[jev.reqs.length - 1].state.facts).sort(), ["findings", "layout", "look", "ui"]);
+    assert.equal(one.cost.requests, 1);
+    pass("既定は検査ごとの state で並列(1 往復ぶんの待ち)、bundle:one で本当に 1 リクエスト");
 
     assert.equal(g.pass, false);
     const bl = g.blocking.map((b: any) => b.code);
     assert.ok(bl.includes("Z_FIGHT") && bl.includes("SMALL_HIT_TARGET"), bl.join(","));
     assert.ok(!g.blocking.some((b: any) => b.name === "ENV_Book_07"), "keep した本棚の本は blocking から外れる");
     const kb = g.keep.find((k: any) => k.name === "ENV_Book_07");
-    assert.ok(kb && kb.judge.value === 0.93 && kb.judge.source === "jev" && kb.judge.confidence === 0.93, JSON.stringify(g.keep));
+    assert.ok(kb && kb.judge.value === 0.93 && ["jev", "cache"].includes(kb.judge.source) && kb.judge.confidence === 0.93, JSON.stringify(g.keep));
     assert.ok(g.suggestions.some((s: any) => s.tool === "dx12_set_ssao"), "polish の次の一手");
     const vl = engine.received.filter((x) => x.method === "validate_layout").pop()!;
     assert.equal(vl.params.fix, "none", "ゲートは検査だけ(勝手に直さない)");

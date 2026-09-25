@@ -112,6 +112,8 @@ export type AskOptions = ClientOptions & {
    *   (他の検査の事実も見える)ので、精度が落ちないかは評価(eval.ts の mixin + stateUnion)で測ってから使う。
    */
   stateUnion?: boolean;
+  /** 全質問をこの路で射影する(stateUnion より優先)。評価で「品質ゲートと同じ state」を再現するため。 */
+  statePaths?: string[];
   /** false で log.jsonl に書かない。 */
   log?: boolean;
   /** キャッシュもネットも使わずルールで答える(評価で「ルールならどう答えたか」を並べる比較用)。 */
@@ -509,7 +511,8 @@ export async function ask(refs: QuestionRef[], context: any, opts: AskOptions = 
   });
   const results: JevResult[] = new Array(plan.length);
   const instances: Instance[] = [];
-  const unionPaths = opts.stateUnion ? [...new Set(plan.flatMap(({ def }) => def?.state ?? []))] : null;
+  const unionPaths = opts.statePaths?.length ? opts.statePaths
+    : opts.stateUnion ? [...new Set(plan.flatMap(({ def }) => def?.state ?? []))] : null;
 
   plan.forEach(({ ref, def }, idx) => {
     const id = instanceIdOf(ref.id, ref.vars, ref.key);

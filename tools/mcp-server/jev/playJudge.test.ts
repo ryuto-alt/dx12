@@ -17,6 +17,7 @@ import {
   type PlayEvent, type PlayFacts, type PlayInput, type PlayPoint, type Vec3,
 } from "./playJudge.ts";
 import { loadLibrary } from "./library.ts";
+import { validateCases } from "./eval.ts";
 import type { FetchLike } from "./client.ts";
 
 let failed = 0;
@@ -101,6 +102,10 @@ console.log("[2] 区間の事実の数え方");
 
   const spin = playMetrics(human(trace([{ sec: 10, yawRate: 90 }])));
   check("見回し 90 度/秒", Math.abs((spin.sections[0].lookRate ?? 0) - 90) < 1, String(spin.sections[0].lookRate));
+  const steer = playMetrics(human(trace([{ sec: 10, v: [0, 0, 4], yawRate: 90 }])));
+  check("歩きながらの向き変え(舵取り)は見回しに数えない", steer.sections[0].lookRate === 0, String(steer.sections[0].lookRate));
+  const mixed = playMetrics(human(trace([{ sec: 5, v: [0, 0, 4], yawRate: 40 }, { sec: 5, yawRate: 60 }])));
+  check("見回しは立ち止まっている間の振りの速さ(60 度/秒)", Math.abs((mixed.sections[0].lookRate ?? 0) - 60) < 2, String(mixed.sections[0].lookRate));
 
   const toGoal = playMetrics(human(trace([{ sec: 10, v: [0, 0, 3] }]), [], [0, 1.6, 40]));
   check("ゴールへ近づいた(40m → 10m)", (toGoal.sections[0].goalStart ?? 0) > (toGoal.sections[0].goalEnd ?? 99) + 20);
@@ -212,6 +217,38 @@ console.log("[5] 判断の組み立て");
   const short = await judgePlay({ kind: "human", points: [{ t: 0, pos: [0, 0, 0] }], brief, askOptions: { ...base, fetch: fake({}) } });
   check("短すぎる軌跡は聞かない", reqs.length === 0 && short.cause === null && /短すぎ/.test(short.reason ?? ""));
   fs.rmSync(TMP, { recursive: true, force: true });
+}
+
+console.log("[6] 評価ケース(*.cases.json)の語が本番の wordifyPlay と食い違っていない");
+{
+  const qs = ["play.confusion", "play.cause"].map((id) => lib.questions.get(id)!);
+  for (const q of qs) {
+    const file = JSON.parse(fs.readFileSync(q.casesPath!, "utf8"));
+    check(`${q.id}: ケースファイルの形`, validateCases(file).length === 0, validateCases(file).join(" / "));
+    check(`${q.id}: 12 件以上`, file.cases.length >= 12, String(file.cases.length));
+    check(`${q.id}: question が一致`, file.question === q.id);
+    const bad: string[] = [];
+    for (const c of file.cases) {
+      const facts = c.context?.facts?.play;
+      if (!facts) { bad.push(`${c.name}: facts.play が無い`); continue; }
+      if (!c.context?.brief) bad.push(`${c.name}: brief が無い(Brief 依存の質問なのでルールに落ちる)`);
+      if (JSON.stringify(Object.keys(c.context.facts)) !== '["play"]') bad.push(`${c.name}: facts に play 以外がある`);
+      for (const [k, v] of Object.entries<any>(facts)) if (!isPlayWord(k, v)) bad.push(`${c.name}: play.${k}=${JSON.stringify(v)}`);
+      if (q.type === "noul" && typeof c.expect !== "boolean") bad.push(`${c.name}: expect は true/false`);
+      if (q.id === "play.confusion" && facts.player !== PLAYER_WORD.human) bad.push(`${c.name}: 困り度は人のプレイだけ聞く`);
+      if (q.type === "choice") for (const e of Array.isArray(c.expect) ? c.expect : [c.expect]) if (!(e in CAUSES)) bad.push(`${c.name}: 選択肢に無い ${e}`);
+      if (q.type === "score" && !(Number.isInteger(c.expect) && c.expect >= 0 && c.expect <= 4)) bad.push(`${c.name}: expect は 0..4`);
+    }
+    check(`${q.id}: 全ケースの語・期待値が本番と一致`, bad.length === 0, bad.join("\n      "));
+    const briefs = new Set(file.cases.map((c: any) => JSON.stringify(c.context?.brief)));
+    check(`${q.id}: Brief が 4 種以上`, briefs.size >= 4, String(briefs.size));
+    const byFacts = new Map<string, Set<string>>();
+    for (const c of file.cases) {
+      const key = JSON.stringify([c.context?.facts, c.vars ?? null]);
+      byFacts.set(key, new Set([...(byFacts.get(key) ?? []), JSON.stringify(c.expect)]));
+    }
+    check(`${q.id}: 同じ facts で Brief によって正解が変わる組がある`, [...byFacts.values()].some((s) => s.size >= 2));
+  }
 }
 
 console.log(failed === 0 ? "\nOK: jev/playJudge テストすべて通過" : `\nNG: ${failed} 件失敗`);
