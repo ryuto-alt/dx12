@@ -59,6 +59,7 @@ import {
   DECAL_IDS, buildAtlasPng, describeDecals, findDecal, planDecal,
 } from "./decals.ts";
 import { collectSceneFacts } from "./polishCollect.ts";
+import { planBatchTransaction } from "./batchTx.ts";
 import { perceptionFacts } from "./perceive.ts";
 import { JEV_ENDPOINT, JEV_MODEL, hasApiKey } from "./jev/client.ts";
 import {
@@ -798,28 +799,83 @@ reg(
   }),
 );
 
+// ── Undo / Redo / トランザクション(エンジンは ebd7b32 から MCP の編集を Undo に積む) ──
+// ★MCP の書き込みは 1 呼び出し = 1 エントリ「AI: <method>」として積まれ、応答に undoEntry が載る。
+//   まとまった編集は dx12_transaction_begin 〜 commit で 1 エントリにまとめ、失敗したら rollback で丸ごと戻す。
+// ★undo / redo の onlyAi は既定 true: 一番上が人の編集なら戻さずに MODE_CONFLICT(3)+ ヒントを返す。
+//   AI が undo を呼ぶのはほぼ「自分の直前の変更を取り消したい」ときで、人の作業を黙って消すと
+//   人には理由が分からない(画面の外で AI がやったこと)。人の編集ごと戻すときだけ onlyAi:false を明示する。
+
 reg(
   "dx12_undo",
   "Undo",
-  "エディタの Undo スタックを 1 つ戻す。フレーム境界で適用され {queuedUndo, undoable, willUndo} を返す。" +
-    "★Undo に積まれる MCP 編集は dx12_group_entities / dx12_spawn_prefab / 地形とスカルプトの編集" +
-    "(dx12_terrain_generate・dx12_terrain_sculpt・dx12_terrain_erode・dx12_terrain_paint・" +
-    "dx12_terrain_autopaint・dx12_sculpt_brush)だけ。" +
-    "set_transform / set_component 等は積まれないので、それらを取り消すつもりで呼ぶと" +
-    "スタックの一番上にある別の操作(エディタでの編集や entity 生成)が戻る。戻す前に willUndo を見て、" +
-    "自分の操作でなければ呼ばないこと。MCP の変更を戻したいなら反対の値を set し直す。",
+  "エディタの Undo スタックを 1 つ戻す(フレーム境界で適用される遅延応答)。"
+    + "返り値 {undone, wasAi, onlyAi, undoable, willUndo, next:{undo, redo}}(互換で queuedUndo も残る)。スタックが空なら ok で undoable:false。"
+    + "★MCP の編集は 1 呼び出し = 1 エントリ「AI: <method>」として積まれる(トランザクション中は「AI: <label>」の 1 エントリ)ので、"
+    + "直前の自分の変更はそのまま undo で戻せる。"
+    + "★onlyAi は既定 true: 一番上が人の編集なら戻さずに MODE_CONFLICT(3)+ ヒントを返す(人の作業を黙って消さない)。"
+    + "人の編集ごと戻すときだけ onlyAi:false を明示すること。既定を信じて、MODE_CONFLICT が返ったら人に確かめる。"
+    + "トランザクションが開いている / Play 中も MODE_CONFLICT(開いているなら rollback か commit で閉じてから)。",
+  { onlyAi: z.boolean().optional().describe("true(既定)= 一番上が AI の編集のときだけ戻す / false = 人の編集でも戻す。") },
   {},
-  {},
-  () => run(() => engine.call("undo", {})),
+  ({ onlyAi }) => run(() => engine.call("undo", definedOnly({ onlyAi }))),
 );
 
 reg(
   "dx12_redo",
   "Redo",
-  "取り消した操作をやり直す。フレーム境界で適用され {queuedRedo, redoable, willRedo} を返す。",
+  "取り消した操作をやり直す(遅延応答)。返り値 {redone, wasAi, onlyAi, redoable, willRedo, next:{undo, redo}}(互換で queuedRedo も残る)。"
+    + "onlyAi は既定 true(一番上が人の操作なら MODE_CONFLICT)。トランザクションが開いている / Play 中は MODE_CONFLICT。",
+  { onlyAi: z.boolean().optional().describe("true(既定)= AI の操作だけやり直す / false = 人の操作でもやり直す。") },
+  {},
+  ({ onlyAi }) => run(() => engine.call("redo", definedOnly({ onlyAi }))),
+);
+
+reg(
+  "dx12_transaction_begin",
+  "トランザクション開始",
+  "以降の MCP の編集(生成・削除・複製・Transform・コンポーネント・親子・名前・色/PBR/テクスチャ・Lua プロパティ・地形/スカルプト)を"
+    + " 1 つの Undo エントリ「AI: <label>」へまとめ始める。返り値 {open, label, entryName, undoDepth, idleTimeoutSec}。"
+    + "★まとまった編集(部屋を 1 つ組む・レベルの一区画を直す)は begin 〜 commit で囲む。途中で失敗したら dx12_transaction_rollback で"
+    + " begin 前へ丸ごと戻せる。入れ子は不可・Play 中は不可(MODE_CONFLICT)。開いている間の MCP の play / open_scene / new_scene / open_project は断られる。"
+    + "人の Play・シーン切り替え・Ctrl+Z、または 600 秒放置で「確定扱い」に自動で閉じる(理由は dx12_transaction_status の lastClosed)。"
+    + "dx12_batch は既定(atomic:true)でこれを自動で撃つ。",
+  { label: z.string().optional().describe("Undo 履歴に出る名前(「AI: <label>」)。省略で transaction。") },
+  {},
+  ({ label }) => run(() => engine.call("transaction_begin", definedOnly({ label }))),
+);
+
+reg(
+  "dx12_transaction_commit",
+  "トランザクション確定",
+  "begin 以降の MCP の編集を 1 エントリとして Undo に積んで閉じる(遅延応答)。"
+    + "返り値 {committed, label, calls, pushed, entryName, humanEditsDuringTransaction, top}。以後 dx12_undo 1 回で丸ごと戻せる。"
+    + "★応答が返る前に次の書き込みを送ると MODE_CONFLICT(内外どちらか決められないため)。開いていなければ MODE_CONFLICT + 直前に閉じた理由。",
   {},
   {},
-  () => run(() => engine.call("redo", {})),
+  () => run(() => engine.call("transaction_commit", {})),
+);
+
+reg(
+  "dx12_transaction_rollback",
+  "トランザクション巻き戻し",
+  "begin 以降の MCP の編集を全部逆順に戻して閉じる(遅延応答。消した物も guid ごと復元される)。"
+    + "返り値 {rolledBack, label, calls, humanEditsDuringTransaction, top, sceneGeneration}。"
+    + "★途中で人が編集していたら humanEditsDuringTransaction に数が出る(人の編集は戻さない)。Play 中は不可。",
+  {},
+  { destructiveHint: true },
+  () => run(() => engine.call("transaction_rollback", {})),
+);
+
+reg(
+  "dx12_transaction_status",
+  "トランザクションの状態",
+  "開いているか・中身・放置時間・直前に閉じた理由を返す。"
+    + "{open, label?, calls?, callNames?, ageSec?, idleSec?, autoCloseInSec?, humanEditsDuringTransaction?, closePending, lastClosed:{label, reason, calls, agoSec}|null, top:{undo, redo}, undoDepth, redoDepth, mode}。"
+    + "commit / rollback が「開いていない」で弾かれたら、lastClosed.reason(commit / rollback / 人の操作 / 放置)を見る。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("transaction_status", {})),
 );
 
 reg(
@@ -3824,16 +3880,46 @@ function batchDeclaredKeys(method: string): string[] | null {
 reg(
   "dx12_batch",
   "一括実行",
-  "複数のエンジン操作を順番に実行して往復を減らす。各 op は engine の method 名(dx12_ 接頭辞なし。例 create_entity)と params。結果は {results:[{index, ok, result?|error?, error_code?, skipped?}]}。stopOnError=true なら最初の失敗で打ち切り、残りは skipped 記録。各 op は同期結果なので確実(ただし1フレーム原子性は無い)。★params のキーは対応する dx12_<method> ツールと同じ。知らないキーが混じっていたらそのopは実行せずエラーにする(エンジンは知らないキーを黙って無視するため)。",
+  "複数のエンジン操作を順番に実行して往復を減らす。各 op は engine の method 名(dx12_ 接頭辞なし。例 create_entity)と params。結果は {results:[{index, ok, result?|error?, error_code?, skipped?}], transaction?}。"
+  + "★atomic(既定 true)はトランザクションで包む: transaction_begin → 順に実行 → どれかが失敗したらそこで止めて transaction_rollback(begin 前へ丸ごと戻る)、"
+  + "全部成功したら transaction_commit(Undo 1 回で丸ごと戻せる 1 エントリ)。atomic のときは stopOnError に関係なく最初の失敗で止まる(戻すので続けても意味が無い)。"
+  + "atomic:false は従来どおり 1 つずつ確定し、stopOnError=true なら最初の失敗で打ち切って残りを skipped 記録。"
+  + "★play / stop / open_scene / new_scene / open_project と undo / redo / transaction_* はトランザクションの中で使えない: atomic を省略したら自動で atomic:false にし、"
+  + "atomic:true を明示していたらエラーにする。呼ぶ側が既にトランザクションを開いていたら、その中で実行する(閉じるのは呼んだ側)。"
+  + "★params のキーは対応する dx12_<method> ツールと同じ。知らないキーが混じっていたらそのopは実行せずエラーにする(エンジンは知らないキーを黙って無視するため)。",
   {
     ops: z.array(z.object({
       method: z.string().describe("エンジン method 名(dx12_ 接頭辞なし)。例: create_entity, set_component"),
       params: z.record(z.any()).optional().describe("その method の params。省略で {}。"),
     })).describe("順に実行する操作の配列。"),
-    stopOnError: z.boolean().optional().describe("true なら最初の失敗で打ち切り、残りを skipped 記録。"),
+    stopOnError: z.boolean().optional().describe("atomic:false のとき: true なら最初の失敗で打ち切り、残りを skipped 記録。atomic のときは常に最初の失敗で止まる。"),
+    atomic: z.boolean().optional().describe("true(既定)= トランザクションで包み、失敗したら丸ごと戻す / false = 1 つずつ確定(従来)。"),
+    label: z.string().optional().describe("atomic のときの Undo 履歴の名前(「AI: <label>」)。省略で batch(<件数>)。"),
   },
   {},
-  ({ ops, stopOnError }) => run(async () => {
+  ({ ops, stopOnError, atomic, label }) => run(async () => {
+    // ★atomic の既定を true にした理由: batch は「部屋を 1 つ組む」のようなまとまった編集に使われるが、
+    //   途中で 1 つ失敗すると半端な状態(床だけある・壁が 3 枚)がシーンに残り、AI は何を消せば元に戻るか
+    //   分からなかった。トランザクションで包めば失敗時は begin 前へ丸ごと戻り、成功時も Undo 1 回で戻せる。
+    const txPlan = planBatchTransaction(ops, atomic);
+    if (txPlan.error) throw argError(txPlan.error, "該当の op を別の呼び出しに分けるか、atomic:false にする");
+    let tx: Record<string, unknown> | undefined;
+    let ownTx = false;
+    if (txPlan.atomic) {
+      try {
+        const b = await engine.call("transaction_begin", { label: label ?? `batch(${ops.length})` });
+        ownTx = true;
+        tx = { label: b?.label ?? label, entryName: b?.entryName };
+      } catch (e: any) {
+        // 既に開いている(呼んだ側が begin 済み)ならその中で実行する。閉じるのは呼んだ側。
+        if (/already open/i.test(String(e?.message ?? ""))) tx = { label: null, note: "既に開いているトランザクションの中で実行した(commit / rollback は呼んだ側で)" };
+        // トランザクションの無い古いエンジン / Play 中などは従来どおり 1 つずつ確定する(何が起きたかは note に残す)
+        else tx = { atomic: false, note: `トランザクションを開けなかったので 1 つずつ確定した: ${e?.message ?? e}` };
+      }
+    } else if (txPlan.note) {
+      tx = { atomic: false, note: txPlan.note };
+    }
+    const stopFirst = ownTx || !!stopOnError;
     const results: any[] = [];
     let aborted = false;
     for (let i = 0; i < ops.length; i++) {
@@ -3853,12 +3939,30 @@ reg(
         const entry: any = { index: i, ok: false, error: e.message };
         if (e.code != null) entry.error_code = e.code;
         results.push(entry);
-        if (stopOnError) aborted = true;
+        if (stopFirst) aborted = true;
       }
     }
-    return { results };
+    if (ownTx) {
+      const failed = results.some((r) => !r.ok);
+      try {
+        if (failed) {
+          const rb = await engine.call("transaction_rollback", {});
+          tx = { ...tx, rolledBack: true, calls: rb?.calls, humanEditsDuringTransaction: rb?.humanEditsDuringTransaction,
+                 note: "失敗したので begin 前へ丸ごと戻した(成功した op の変更も残っていない)" };
+        } else {
+          const cm = await engine.call("transaction_commit", {});
+          tx = { ...tx, committed: true, calls: cm?.calls, entryName: cm?.entryName ?? tx?.entryName,
+                 note: "1 エントリとして Undo に積んだ(dx12_undo 1 回で丸ごと戻せる)" };
+        }
+      } catch (e: any) {
+        // 人の Play / シーン切り替えで確定扱いに自動で閉じられた等。変更は残っている(Undo 1 回で戻せる)
+        tx = { ...tx, closeError: String(e?.message ?? e), note: "閉じるときに失敗した。dx12_transaction_status の lastClosed を見る" };
+      }
+    }
+    return { results, ...(tx ? { transaction: tx } : {}) };
   }),
 );
+
 
 // 画像を返す合成ツール(focus → 1フレーム描画 → 撮影)。outputSchema は宣言しない(構造化結果ではなく image)。
 regRaw(

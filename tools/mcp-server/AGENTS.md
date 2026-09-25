@@ -731,6 +731,24 @@ dx12_scene_write(
 
 返り値の `results[i].result.entityId` にそれぞれの id が入る。
 
+### まとまった編集はトランザクションで囲む / 戻すときは onlyAi の既定を信じる
+
+MCP の編集は 1 呼び出し = 1 エントリ「AI: <method>」として Undo に積まれる。部屋を 1 つ組む・一区画を直す、のような
+まとまった編集は 1 エントリにまとめ、失敗したら丸ごと戻す:
+
+```
+dx12_transaction_begin(label:"書斎を組む")
+…編集…(失敗したら)dx12_transaction_rollback()   # begin 前へ丸ごと戻る
+…確かめて良ければ…   dx12_transaction_commit()     # Undo 1 回で丸ごと戻せる 1 エントリ
+```
+
+- **`dx12_batch` は既定(`atomic:true`)でこれを自動でやる**。途中で 1 つ失敗すると begin 前へ戻るので、半端な状態(床だけある・壁が 3 枚)が残らない。
+  play / open_scene / new_scene などトランザクションの中で使えない op が混じると自動で atomic を外す(`transaction.note` に理由)。
+- 開いている間、MCP の play / open_scene / new_scene / open_project は断られる。人の Play・シーン切り替え・Ctrl+Z、600 秒放置で「確定扱い」に閉じる
+  (commit / rollback が「開いていない」と言われたら `dx12_transaction_status` の `lastClosed.reason` を見る)。
+- **戻すときは `dx12_undo` の `onlyAi`(既定 true)を信じる**。一番上が人の編集なら戻さずに MODE_CONFLICT が返る＝人の作業を消していない。
+  そのときは人に確かめ、人の編集ごと戻すときだけ `onlyAi:false` を明示する。
+
 ---
 
 ## Lua スクリプトの検証(API 確認 / プロパティ / 入力シミュレーション)

@@ -130,7 +130,7 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧（全 209 ツール）
+## 4. ツール一覧（全 213 ツール）
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -268,8 +268,12 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 **⚠️ `normal` / `roughness` / `metallic` / `velocity` は「深度+速度プリパス」でしか書かれない**ので、TAA も SSR も SSGI も
 OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る）。この 4 モードが「ジオメトリだけの粗い絵」に見えるのは仕様。
-| `dx12_undo` | `{}` | `{queuedUndo, undoable, willUndo}` ※MCP の編集は積まれない。`willUndo` で何が戻るか確認してから使う |
-| `dx12_redo` | `{}` | `{queuedRedo, redoable, willRedo}` |
+| `dx12_undo` | `{onlyAi?:bool=true}` | `{undone, wasAi, onlyAi, undoable, willUndo, next:{undo, redo}}`(互換で `queuedUndo`) ※遅延応答。**MCP の編集は 1 呼び出し = 1 エントリ「AI: <method>」として積まれる**(トランザクション中は「AI: <label>」の 1 エントリ)。★`onlyAi` は既定 true: 一番上が人の編集なら戻さずに MODE_CONFLICT(3)+ヒント(人の作業を黙って消さない)。人の編集ごと戻すときだけ `onlyAi:false` を明示。トランザクションが開いている / Play 中も MODE_CONFLICT |
+| `dx12_redo` | `{onlyAi?:bool=true}` | `{redone, wasAi, onlyAi, redoable, willRedo, next}`(互換で `queuedRedo`) ※遅延応答。onlyAi は undo と同じ |
+| `dx12_transaction_begin` | `{label?:string}` | `{open, label, entryName, undoDepth, idleTimeoutSec}` ※以降の MCP の編集を 1 エントリ「AI: <label>」へまとめ始める。入れ子・Play 中は MODE_CONFLICT。開いている間の MCP の play / open_scene / new_scene / open_project は断られる。人の Play・シーン切り替え・Ctrl+Z か 600 秒放置で「確定扱い」に自動で閉じる |
+| `dx12_transaction_commit` | `{}` | `{committed, label, calls, pushed, entryName, humanEditsDuringTransaction, top}` ※遅延応答。1 エントリとして積んで閉じる(undo 1 回で丸ごと戻せる)。応答前に次の書き込みを送ると MODE_CONFLICT |
+| `dx12_transaction_rollback` | `{}` | `{rolledBack, label, calls, humanEditsDuringTransaction, top, sceneGeneration}` ※遅延応答。begin 以降の MCP の編集を全部逆順に戻す(消した物は guid ごと復元)。人の編集は戻さない |
+| `dx12_transaction_status` | `{}` | `{open, label?, calls?, callNames?, ageSec?, idleSec?, autoCloseInSec?, humanEditsDuringTransaction?, closePending, lastClosed, top, undoDepth, redoDepth, mode}` ※commit / rollback が「開いていない」で弾かれたら `lastClosed.reason` を見る |
 | `dx12_save_scene` | `{path?:string}` | `{path}` ※省略で現在シーンへ上書き |
 | `dx12_create_lua_component` | `{name:string, code:string}` | `{path}` ※書込前に構文検証。既存パスなら上書き更新も兼ねる |
 | `dx12_create_shader` | `{name:string, code:string}` | `{path, compiled, error?}` ※assets/shaders/に作成/上書き後、即コンパイルを試す。Luaと違い失敗してもファイルは残る(反復修正前提) |
@@ -337,7 +341,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_batch` | `{ops:[{method:string, params:object}], stopOnError?:bool}` | `{results:[{index, ok, result?, error?, error_code?}]}` |
+| `dx12_batch` | `{ops:[{method:string, params:object}], atomic?:bool=true, label?:string, stopOnError?:bool}` | `{results:[{index, ok, result?, error?, error_code?, skipped?}], transaction?:{label, committed?\|rolledBack?, calls, entryName?, note}}` ※`atomic`(既定)はトランザクションで包む: 失敗したらそこで止めて begin 前へ丸ごと戻し、成功したら Undo 1 エントリにまとめる |
 | `dx12_focus_and_screenshot` | `{entity:int}` | 画像コンテンツ(PNG) |
 
 | `dx12_scatter` | `{type\|model\|prefab(どれか1つ), count:int(1..200), area:[minX,minZ,maxX,maxZ], y?:f, placement?:"random"\|"grid", seed?:int, randomYaw?:bool, scaleRange?:[min,max], snapToGround?:bool, namePrefix?:string}` | `{entities:[{entityId,name}], count, seed, placement, errors?}` |
@@ -349,7 +353,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_camera_path` | `{path:[[x,y,z],...] または keyframes, shots?:int, source?:"backbuffer"\|"sceneRT", ...}` | 連写をタイル化した 1 枚（コンタクトシート）※静止画 1 枚では分からない TAA のゴースト / LOD ポップ / 影のちらつき / カリング抜けを探す用。既定は `screenshot_final`（TAA の解決結果はポスト前の RT に出ない） |
 | `dx12_preview_model` | `{path:string(.gltf/.glb/.fbx/.obj)}` | 画像コンテンツ(PNG) ※一時 spawn→撮影→削除。シーンは変更されない |
 
-**`dx12_batch` 実装**: 各 op を順に await。`stopOnError=true` なら最初の失敗以降を skip 記録。往復削減用。
+**`dx12_batch` 実装**: 各 op を順に await。★`atomic:true`(既定)は `transaction_begin` → 実行 → どれかが失敗したらそこで止めて `transaction_rollback`、全部成功したら `transaction_commit`(戻すので atomic のときは `stopOnError` に関係なく最初の失敗で止まる)。play / stop / open_scene / new_scene / open_project と undo / redo / transaction_* はトランザクションの中で使えないので、atomic を省略していれば自動で外し(`transaction.note` に理由)、`atomic:true` を明示していればエラー。呼ぶ側が既にトランザクションを開いていたらその中で実行する(閉じるのは呼んだ側)。`atomic:false` は従来どおり 1 つずつ確定し、`stopOnError=true` なら最初の失敗以降を skip 記録。往復削減用。
 **`dx12_focus_and_screenshot` 実装**: `focus_camera` → (1フレーム描画) → `screenshot` → 画像読み込み → 画像コンテンツ返却。
 **`dx12_scatter` 実装**: seed 付き乱数(mulberry32)で位置を決め、`create_entity`/`spawn_model`/`spawn_prefab` を1体ずつ実行(+必要なら `set_transform`/`snap_to_ground`)。同じ seed なら同じ配置になる(リトライで再現)。失敗3件で打ち切り。
 **`dx12_screenshot_from` 実装**: `set_editor_camera` → (1フレーム描画) → `screenshot`。
@@ -711,14 +715,13 @@ Node 側は `Error.hint` / `Error.valid_values` として受け取り、ツー�
 1. dx12_set_transform / dx12_set_component で変更
 2. dx12_focus_and_screenshot(entity: <entityId>) → PNG で確認
 3. dx12_get_log(lines: 30) → エンジンのエラー/警告を確認
-4. 問題があれば**同じ set_* を反対の値で呼び直す**
+4. 問題があれば dx12_undo で自分の直前の変更を戻す(または同じ set_* を反対の値で呼び直す)
 ```
 
-★ここで `dx12_undo` を使ってはいけない。**MCP の編集ツールはほぼ Undo に積まれない**
-（積むのは `dx12_group_entities` だけ）。`set_transform` を取り消すつもりで `dx12_undo` を
-呼ぶと、スタックの一番上にある別の操作（エディタでの編集や entity 生成）が戻る。
-`dx12_undo` は戻り値に `willUndo`（次に戻る操作の名前）と `undoable` を返すので、
-どうしても使うなら**自分の操作かどうかを確かめてから**呼ぶこと。
+★**まとまった編集はトランザクションで囲む**: `dx12_transaction_begin(label)` → 編集 → 確かめて良ければ `dx12_transaction_commit`、だめなら `dx12_transaction_rollback`(begin 前へ丸ごと戻る)。`dx12_batch` は既定(`atomic:true`)でこれを自動でやる。
+MCP の編集は 1 呼び出し = 1 エントリ「AI: <method>」として Undo に積まれ(2026-09-25 から。以前はほぼ積まれなかった)、応答の `undoEntry` に名前が出る。
+
+★**戻すときは `onlyAi` の既定(true)を信じる**: `dx12_undo` は一番上が人の編集なら戻さずに MODE_CONFLICT(3)を返す。そのときは人に確かめる。人の編集ごと戻すのは `onlyAi:false` を明示したときだけ。
 
 Play/Stop テスト:
 ```
