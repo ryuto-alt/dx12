@@ -66,6 +66,39 @@ inline bool operator==(const BusMod& a, const BusMod& b)
     return a.gain == b.gain && a.lowpassHz == b.lowpassHz;
 }
 
+// 「ローパス無し」を補間の端点として扱うときの周波数（耳の上限付近）。
+inline constexpr float kLowpassOpenHz = 24000.0f;
+
+// スナップショットの補間。音量は線形、ローパスは対数（オクターブ）で補間する。
+// ★周波数を線形で補間すると、無し(24k) → 800Hz の遷移が前半ほとんど変わらず最後に急に
+//   こもる（人の耳は周波数を対数で聞く）。log で補間すると 1 オクターブずつ等速で下がる。
+// 結果が 20kHz 以上なら「無し」(0) に戻す。
+inline BusMod LerpBusMod(const BusMod& a, const BusMod& b, float t)
+{
+    t = std::clamp(t, 0.0f, 1.0f);
+    BusMod r;
+    r.gain = a.gain + (b.gain - a.gain) * t;
+    const float fa = (a.lowpassHz > 0.0f) ? a.lowpassHz : kLowpassOpenHz;
+    const float fb = (b.lowpassHz > 0.0f) ? b.lowpassHz : kLowpassOpenHz;
+    if (fa == fb)
+    {
+        r.lowpassHz = (a.lowpassHz > 0.0f) ? a.lowpassHz : 0.0f;
+        return r;
+    }
+    const float f = std::exp(std::log(fa) + (std::log(fb) - std::log(fa)) * t);
+    r.lowpassHz = (f >= 20000.0f) ? 0.0f : f;
+    return r;
+}
+
+// スナップショット遷移の進み具合 0..1。smoothstep（出だしと終わりをなめらかに）。
+// duration <= 0 は即座に 1。
+inline float TransitionProgress(float elapsed, float duration)
+{
+    if (!(duration > 0.0f)) return 1.0f;
+    const float x = std::clamp(elapsed / duration, 0.0f, 1.0f);
+    return x * x * (3.0f - 2.0f * x);
+}
+
 // ---- 距離減衰 ----------------------------------------------------------------
 // X3DAudio に渡している曲線と同じもの（minDistance までフル音量、maxDistance で 0 の直線）。
 // 仮想化の判定と audio_state の「どれだけ聞こえているか」に使う（実際のパンニングは X3DAudio）。

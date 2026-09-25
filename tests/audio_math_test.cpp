@@ -136,6 +136,49 @@ void TestPickVictim()
     Check(PickVictim(nullptr, 0, 128, 1.0f) == -1, "候補が無ければ -1");
 }
 
+void TestSnapshot()
+{
+    std::printf("[スナップショットの補間]\n");
+    const BusMod idn{};
+    const BusMod hidden{0.5f, 800.0f};
+    {
+        const BusMod a = LerpBusMod(idn, hidden, 0.0f);
+        const BusMod b = LerpBusMod(idn, hidden, 1.0f);
+        Check(a.gain == 1.0f && a.lowpassHz == 0.0f, "t=0 は遷移元（補正なし）");
+        Check(b.gain == 0.5f && Near(b.lowpassHz, 800.0f, 0.01f), "t=1 は遷移先");
+    }
+    {
+        const BusMod m = LerpBusMod(idn, hidden, 0.5f);
+        Check(Near(m.gain, 0.75f), "音量は線形");
+        Check(Near(m.lowpassHz, std::sqrt(kLowpassOpenHz * 800.0f), 1.0f),
+              "ローパスは対数で補間（無し=24k と 800Hz の幾何平均 ≒ 4.4kHz。線形なら 12.4kHz）");
+    }
+    {
+        const BusMod m = LerpBusMod(hidden, idn, 0.999f);
+        Check(m.lowpassHz == 0.0f || m.lowpassHz > 15000.0f, "戻りの終わり際はほぼ開いている");
+        const BusMod e = LerpBusMod(hidden, idn, 1.0f);
+        Check(e.lowpassHz == 0.0f, "戻り切ったら『無し』（0）に戻る（24kHz のフィルタを残さない）");
+    }
+    {
+        const BusMod m = LerpBusMod(idn, BusMod{0.2f, 0.0f}, 0.5f);
+        Check(m.lowpassHz == 0.0f, "両端とも無しなら途中も無し");
+    }
+    Check(TransitionProgress(0.0f, 0.0f) == 1.0f, "duration 0 は即座に完了");
+    Check(TransitionProgress(0.0f, 2.0f) == 0.0f, "始まりは 0");
+    Check(TransitionProgress(2.0f, 2.0f) == 1.0f && TransitionProgress(5.0f, 2.0f) == 1.0f, "終わりは 1 で止まる");
+    Check(Near(TransitionProgress(1.0f, 2.0f), 0.5f), "中点は 0.5（smoothstep）");
+    Check(TransitionProgress(0.2f, 2.0f) < 0.1f, "出だしはゆっくり（smoothstep）");
+    float prev = 0.0f;
+    bool mono = true;
+    for (int i = 1; i <= 50; ++i)
+    {
+        const float p = TransitionProgress(i * 0.04f, 2.0f);
+        if (p < prev) mono = false;
+        prev = p;
+    }
+    Check(mono, "単調に増える（戻ったりしない）");
+}
+
 void TestZoneShape()
 {
     std::printf("[リバーブ域の形と重み]\n");
@@ -269,6 +312,7 @@ int main()
     TestDistance();
     TestVirtual();
     TestPickVictim();
+    TestSnapshot();
     TestZoneShape();
     TestReverbPresets();
     TestReverbBlend();

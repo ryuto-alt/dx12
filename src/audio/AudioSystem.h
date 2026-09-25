@@ -260,8 +260,33 @@ public:
     // 今フレームのリバーブ域（重み > 0 のものだけでよい）。Play 中に Application が毎フレーム渡す。
     void SetReverbZones(std::vector<ReverbZoneInput> zones) { m_reverbZones = std::move(zones); }
     ReverbState GetReverbState() const;
-    // Play → Stop で呼ぶ: ゲームが設定したミックス（リバーブ域・既定の響き）を初期状態へ戻す。
+    // Play → Stop で呼ぶ: ゲームが設定したミックス（リバーブ域・既定の響き・スナップショット）を
+    // 初期状態へ戻す。
     void ResetMixForStop();
+
+    // ---- スナップショット（バスの音量・ローパスの組に名前を付け、時間を掛けて遷移する）----
+    // 例: 「追跡中」= 音楽を上げて環境音を絞る / 「隠れている」= 効果音をこもらせる。
+    // 値はバスのユーザー設定（setBusVolume / setBusLowpass）に「掛ける」補正なので、
+    // オプション画面の音量とぶつからない。載っていないバスは補正なし（1.0 / ローパス無し）。
+    // "default" は常にある（全バス補正なし）。
+    struct SnapshotBus
+    {
+        std::string   bus;
+        audio::BusMod mod;
+    };
+    bool DefineSnapshot(const std::string& name, std::vector<SnapshotBus> buses);
+    bool SetSnapshot(const std::string& name, f32 seconds);   // 未定義は false
+    const std::string& GetSnapshot() const { return m_snapTarget; }
+    std::vector<std::string> GetSnapshotNames() const;
+    struct SnapshotState
+    {
+        std::string current;      // 遷移元（遷移が終わっていれば target と同じ）
+        std::string target;
+        f32         progress = 1.0f;   // 0..1
+        f32         duration = 0.0f;
+        std::vector<std::string> defined;
+    };
+    SnapshotState GetSnapshotState() const;
     // デバイスが使えているか（ヘッドレス/音声デバイス無しでは false。状態は保持し続ける）。
     bool IsDeviceReady() const { return m_masterVoice != nullptr; }
     const std::string& GetDeviceStatus() const { return m_deviceStatus; }
@@ -298,6 +323,7 @@ private:
         bool muted     = false;
         f32  lowpassHz = 0.0f;
         audio::BusMod snap;                     // スナップショット補正の現在値
+        audio::BusMod snapFrom, snapTo;         // 遷移の両端
         u32  voiceLimit = 0;
         f32  reverbSend = 0.0f;                 // このバスのボイスがリバーブへ送る量
         bool isReverb  = false;                 // リバーブの戻りバス（ソースを直接つながない）
@@ -393,6 +419,15 @@ private:
     void   ComputeAndApply(Voice& v);                  // X3DAudio の定位（実ボイスのみ）
     void   UpdateDistance(Voice& v);
     void   RestartVoiceAt(Voice& v, f64 frame);        // シーク
+
+    // ---- スナップショット ----
+    std::unordered_map<std::string, std::vector<SnapshotBus>> m_snapshots;
+    std::string m_snapCurrent = "default";
+    std::string m_snapTarget  = "default";
+    f32  m_snapElapsed  = 0.0f;
+    f32  m_snapDuration = 0.0f;
+    bool m_snapMoving   = false;
+    void UpdateSnapshot(f32 dt);
 
     // ---- リバーブ ----
     i32  m_reverbBus = -1;                 // m_buses の添字

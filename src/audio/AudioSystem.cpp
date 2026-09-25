@@ -1021,6 +1021,7 @@ void AudioSystem::Update(f32 dt)
 void AudioSystem::Tick(f32 dt)
 {
     if (dt < 0.0f) dt = 0.0f;
+    UpdateSnapshot(dt);        // バスの補正が変わるので、バスの積より先に
     UpdateReverb(dt);          // 響きの量が変わるので、バスの積より先に
     UpdateBusChainGains();
 
@@ -1536,6 +1537,96 @@ void AudioSystem::ResetMixForStop()
     m_reverbZones.clear();
     m_defaultReverbPreset = "none";
     m_defaultReverbWet    = 0.0f;
+    // スナップショットは即座に default（遷移させない。エディタへ戻った瞬間から素の音で聞く）
+    SetSnapshot("default", 0.0f);
+    UpdateSnapshot(0.0f);
+}
+
+// ===== スナップショット =====
+
+bool AudioSystem::DefineSnapshot(const std::string& name, std::vector<SnapshotBus> buses)
+{
+    if (name.empty() || name == "default")
+    {
+        Logger::Warn("audio:defineSnapshot: '{}' は定義できません（default は全バス補正なしで固定）", name);
+        return false;
+    }
+    for (auto& b : buses)
+    {
+        b.mod.gain      = std::clamp(b.mod.gain, 0.0f, 4.0f);
+        b.mod.lowpassHz = (b.mod.lowpassHz > 0.0f) ? std::clamp(b.mod.lowpassHz, 20.0f, 24000.0f) : 0.0f;
+    }
+    m_snapshots[name] = std::move(buses);
+    return true;
+}
+
+bool AudioSystem::SetSnapshot(const std::string& name, f32 seconds)
+{
+    const std::vector<SnapshotBus>* def = nullptr;
+    if (name != "default")
+    {
+        auto it = m_snapshots.find(name);
+        if (it == m_snapshots.end())
+        {
+            Logger::Warn("audio:setSnapshot: スナップショット '{}' がありません（先に audio:defineSnapshot）", name);
+            return false;
+        }
+        def = &it->second;
+        for (const auto& sb : *def)
+            if (FindBus(sb.bus) < 0)
+                Logger::Warn("audio:setSnapshot('{}'): バス '{}' がありません（無視します）", name, sb.bus);
+    }
+    // 遷移の起点は「今の補正値」（遷移の途中で切り替えても跳ねない）
+    for (auto& b : m_buses)
+    {
+        b.snapFrom = b.snap;
+        b.snapTo   = audio::BusMod{};
+        if (def)
+            for (const auto& sb : *def)
+                if (sb.bus == b.name) { b.snapTo = sb.mod; break; }
+    }
+    m_snapCurrent  = m_snapMoving ? m_snapCurrent : m_snapTarget;
+    m_snapTarget   = name;
+    m_snapElapsed  = 0.0f;
+    m_snapDuration = (std::max)(seconds, 0.0f);
+    m_snapMoving   = true;
+    return true;
+}
+
+void AudioSystem::UpdateSnapshot(f32 dt)
+{
+    if (!m_snapMoving) return;
+    m_snapElapsed += dt;
+    const f32 t = audio::TransitionProgress(m_snapElapsed, m_snapDuration);
+    for (auto& b : m_buses)
+    {
+        b.snap = audio::LerpBusMod(b.snapFrom, b.snapTo, t);
+        ApplyBus(b);
+    }
+    if (t >= 1.0f)
+    {
+        m_snapMoving  = false;
+        m_snapCurrent = m_snapTarget;
+    }
+}
+
+std::vector<std::string> AudioSystem::GetSnapshotNames() const
+{
+    std::vector<std::string> names{"default"};
+    for (const auto& kv : m_snapshots) names.push_back(kv.first);
+    std::sort(names.begin() + 1, names.end());
+    return names;
+}
+
+AudioSystem::SnapshotState AudioSystem::GetSnapshotState() const
+{
+    SnapshotState st;
+    st.current  = m_snapCurrent;
+    st.target   = m_snapTarget;
+    st.progress = m_snapMoving ? audio::TransitionProgress(m_snapElapsed, m_snapDuration) : 1.0f;
+    st.duration = m_snapDuration;
+    st.defined  = GetSnapshotNames();
+    return st;
 }
 
 std::vector<AudioSystem::BusInfo> AudioSystem::GetBuses() const

@@ -146,6 +146,37 @@ void RegisterAudioBindings(sol::state& lua)
                                 a.GetVoiceCounts(real, virt);
                                 return std::make_tuple(real, virt);
                             },
+        // ---- スナップショット ----
+        //   audio:defineSnapshot("chase", { music = {volume=1.0}, ambience = {volume=0.3},
+        //                                   sfx = {lowpass=1200} })
+        //   audio:setSnapshot("chase", 1.5)   -- 1.5 秒かけて遷移
+        // 値はバスのユーザー音量に掛ける補正（volume は線形 0..4、db= でも書ける。lowpass は Hz、0 = 無し）。
+        "defineSnapshot",   [](AudioSystem& a, const std::string& name, sol::table buses) {
+                                std::vector<AudioSystem::SnapshotBus> list;
+                                for (auto& kv : buses)
+                                {
+                                    if (!kv.first.is<std::string>() || !kv.second.is<sol::table>()) continue;
+                                    sol::table t = kv.second.as<sol::table>();
+                                    AudioSystem::SnapshotBus sb;
+                                    sb.bus = kv.first.as<std::string>();
+                                    sb.mod.gain = t.get_or("volume", 1.0f);
+                                    if (sol::optional<float> db = t["db"]) sb.mod.gain = audio::DbToLinear(*db);
+                                    sb.mod.lowpassHz = t.get_or("lowpass", 0.0f);
+                                    list.push_back(std::move(sb));
+                                }
+                                return a.DefineSnapshot(name, std::move(list));
+                            },
+        "setSnapshot",      [](AudioSystem& a, const std::string& name, sol::optional<float> sec) {
+                                return a.SetSnapshot(name, sec.value_or(0.5f));
+                            },
+        "getSnapshot",      &AudioSystem::GetSnapshot,
+        "getSnapshots",     [](AudioSystem& a, sol::this_state ts) {
+                                sol::state_view lv(ts);
+                                sol::table t = lv.create_table();
+                                int i = 1;
+                                for (const auto& n : a.GetSnapshotNames()) t[i++] = n;
+                                return t;
+                            },
         // ---- リバーブ ----
         // ゾーン（AudioReverbZone）の外で使う既定の響き。wet 0..1。未知のプリセットは false。
         "setReverb",        [](AudioSystem& a, const std::string& preset, sol::optional<float> wet) {

@@ -795,6 +795,13 @@ nlohmann::json McpLuaApi()
         "setBusLowpass(name, hz) / getBusLowpass(name) -> float  (0 = 無し。上限は出力のサンプルレート/6 ≒ 8kHz)",
         "getBuses() -> {name,...}  (親 → 子の順。master が先頭)",
         "★AudioSource.bus / audio:play{bus=...} で送り先を選ぶ。無いバス名は sfx で鳴らして警告を 1 度出す",
+        "-- スナップショット（バスの音量・ローパスの組を名前で切り替える）--",
+        "defineSnapshot(name, {bus={volume=v | db=d, lowpass=hz}, ...}) -> bool  "
+        "(例: audio:defineSnapshot('hidden', {sfx={lowpass=900, volume=0.7}, ambience={db=-6}}))",
+        "setSnapshot(name, sec?=0.5) -> bool  (sec 秒で遷移。途中で切り替えても跳ねない。'default' = 補正なし)",
+        "getSnapshot() -> string / getSnapshots() -> {name,...}",
+        "★スナップショットはバスのユーザー音量（setBusVolume・オプション画面）に掛ける補正なので互いを上書きしない。"
+        "音量は線形、ローパスはオクターブ等速で補間。Play を止めると default に戻る",
         "-- リバーブ（XAudio2 組み込みリバーブへの送り）--",
         "setReverb(preset, wet?=0.35) -> bool  (AudioReverbZone の外で使う既定の響き。Play を止めると none/0 に戻る)",
         "getReverbPresets() -> {name,...}  (none/generic/closet/room/smallroom/largeroom/bathroom/stoneroom/"
