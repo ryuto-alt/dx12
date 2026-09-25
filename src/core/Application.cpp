@@ -209,6 +209,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // ゲーム AI（群衆 / Brain）。GPU 非依存。Play 開始・停止で中身だけ捨てる（ScriptEngine が Clear を呼ぶ）
     m_aiSystem = std::make_unique<ai::AiSystem>();
+    if (m_editorCtx) m_editorCtx->aiSystem = m_aiSystem.get();   // 選択中の Brain のデバッグ表示
 
     // Network System（GPU非依存。Play/Stopで再構築しない＝m_eventBusはここで一度だけ注入）。
     // assets/network.json が無い(初回起動等)場合は既定値のまま続行する。

@@ -377,6 +377,7 @@ private:
     // ハンドラが「書き換える前に触るコンポーネントを申告する」口。McpUndo().Track<T>(e)。
     McpUndoTracker& McpUndo() { return m_mcpUndoTrack; }
     void RegisterMcpAudioMethods();       // 音の観測（audio_state: バス・メーター・ボイス・リバーブ）
+    void RegisterMcpAiMethods();          // ゲーム AI の観測（brain_state: 黒板 / 知覚 / 得点の内訳 / 移動）
 
     // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
     // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。

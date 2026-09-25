@@ -46,6 +46,11 @@ target_sources(Editor PRIVATE
     panels/LightingPanel.cpp
 )
 
+# 選択中の Brain（ゲーム AI）のデバッグ表示。ImGui の背景ドローリストへ描くだけ。
+target_sources(Editor PRIVATE
+    AiDebugOverlay.cpp
+)
+
 # 任意メッシュの頂点スカルプト窓（洞窟・アーチ・岩などの異形。地形ツールの相棒）。
 # 上と同じ理由で target_sources の末尾追記にしている。
 target_sources(Editor PRIVATE

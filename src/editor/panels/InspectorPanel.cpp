@@ -5,6 +5,7 @@
 #include "editor/UndoSystem.h"
 #include "editor/AssetDrop.h"
 #include "ecs/Components.h"
+#include "ai/AiSystem.h"   // Brain の実行中の状態（得点の内訳）
 #include "renderer/Camera.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
@@ -2408,6 +2409,31 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
                 changed |= pg::Checkbox("デバッグ表示 Debug Draw", &br.debugDraw,
                     "選択中に視界・視線・聞いた音・行動の内訳を描く");
+
+                // ---- 実行中の状態（Play 中のみ）: 今の行動・選んだ理由・得点の内訳 ----
+                const ai::BrainState* bst = ctx.aiSystem ? ctx.aiSystem->GetBrain(ctx.selectedEntity) : nullptr;
+                if (bst && pg::Begin("実行中 Live（なぜこの行動か）"))
+                {
+                    const ai::Decision& d = bst->last;
+                    const char* curName = (bst->current >= 0 && bst->current < static_cast<i32>(bst->actions.size()))
+                                              ? bst->actions[static_cast<size_t>(bst->current)].name.c_str() : "(なし)";
+                    pg::Text("行動", "%s  [%s]", curName, ai::DecisionReasonName(d.reason));
+                    pg::Text("知覚", "seen=%s  aw=%.2f  距離=%.1fm  最後に見て %.1fs",
+                             bst->bb.Bool("target.seen", false) ? "○" : "×",
+                             bst->bb.Number("target.awareness", 0.0), bst->bb.Number("target.distance", 0.0),
+                             bst->bb.Number("target.lastSeenAge", 0.0));
+                    for (const ai::ActionEval& ae : d.actions)
+                    {
+                        pg::Text(ae.name.c_str(), "%.3f = %.2f × %.3f%s%s", ae.final, ae.weight, ae.product,
+                                 ae.bonus > 0.0f ? " +粘り" : "", ae.cooldown ? " (cooldown)" : "");
+                        for (const ai::ConsiderationEval& ce : ae.considerations)
+                            pg::Text("", "   %s = %.2f → x %.2f → %.2f%s", ce.name.c_str(), ce.raw, ce.x, ce.score,
+                                     ce.missing ? " (黒板に無い)" : "");
+                    }
+                    if (!bst->lastError.empty())
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", bst->lastError.c_str());
+                    pg::End();
+                }
                 ImGui::TextDisabled("※ Play 中のみ動きます。行動は Lua の ai.brain(self):action(...) で定義");
                 EndEdit(reg, ctx, ctx.selectedEntity, m_brainEdit, changed, active, "Brain");
             }

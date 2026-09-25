@@ -18,6 +18,7 @@ namespace dx12e
 {
 
 class Camera;
+namespace ai { class AiSystem; }
 
 enum class GizmoMode { Translate, Rotate, Scale };
 
@@ -143,6 +144,9 @@ struct PendingModelSwap
 class EditorContext
 {
 public:
+    // ゲーム AI（Application が所有。Brain のデバッグ表示と Inspector の実行状態が読む）。null 許容
+    ai::AiSystem* aiSystem = nullptr;
+
     // ---- マルチ選択 ----
     entt::entity selectedEntity = entt::null;   // プライマリ（後方互換）
     std::vector<entt::entity> selectedEntities; // 全選択リスト

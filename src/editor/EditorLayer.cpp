@@ -17,6 +17,7 @@
 #include "core/Logger.h"
 // シーンビューのライティング編集（太陽ドラッグ / ライトのハンドル / ライティング・パネル）
 #include "editor/LightHandles.h"
+#include "editor/AiDebugOverlay.h"
 #include "editor/panels/LightingPanel.h"
 #include "editor/panels/AudioMixerPanel.h"
 
@@ -611,6 +612,9 @@ void EditorLayer::Render(bool isPlaying,
                                               m_viewportPos.x, m_viewportPos.y,
                                               m_viewportSize.x, m_viewportSize.y);
     }
+
+    // 選択中の Brain の知覚・行動（Play 中・一時停止中。エディタの編集操作には関わらない表示だけ）
+    AiDebugOverlayFrame(reg, *m_ctx, camera);
 
     // ===== 最下部のステータスバー（3D ビューに重ねない情報の置き場）=====
     RenderStatusBar(scene, camera, clock, isPlaying);
