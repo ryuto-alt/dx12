@@ -4981,28 +4981,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     //   クラスタ）だけを差し替える。シーン側は下の if (primary) の中でしか書かない。
     static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
     FrameConstants fc = primary ? FrameConstants{} : frame.mainConstants;
+    // シーン側（太陽 / CSM / DDGI / スポット影行列 / IBL / 法線フィルタ）はフレームで 1 回＝主ビューだけ。
+    if (primary) FillSceneFrameConstants(fc, frame);
+
+    // ---- ここから下は視点に依る値（副ビューも自分の視点で書き直す）----
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(camView));
     XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(camProj));
-    if (primary)
-    {
-    fc.lightDir = lightDirF3;
-    fc.time = totalTime;
-    fc.lightColor = lightColorF3;
-    fc.ambientStrength = lightAmbient;
-    // 編集用の照らし込み（F2 / 表示メニュー）。シーンの環境光へ「下限」として被せるだけなので、
-    // 元から明るいシーンでは何も起きない。★Editor モード限定＝ゲームの絵は絶対に変わらないし、
-    // DirectionalLight.ambient 自体は触っていないのでシーンにも保存されない。
-    if (m_engineMode == EngineMode::Editor && m_editorCtx && m_editorCtx->viewportFill > 0.0f)
-        fc.ambientStrength = (std::max)(fc.ambientStrength, m_editorCtx->viewportFill);
-    // CSM: カスケード行列（HLSL は列優先 mul(row,mat) なので転置して格納）
-    for (u32 i = 0; i < kNumCascades; ++i)
-        XMStoreFloat4x4(&fc.cascadeViewProj[i],
-            XMMatrixTranspose(XMLoadFloat4x4(&m_cascadeViewProj[i])));
-    fc.cascadeSplitsView = {m_cascadeSplitsView[0], m_cascadeSplitsView[1],
-                            m_cascadeSplitsView[2], m_cascadeSplitsView[3]};
-    fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), m_shadowDepthBias,
-                       m_cascadeBlendBand, m_showCascadeDebug ? 1.0f : 0.0f};
-    }   // primary（シーン側）
     fc.cameraPos = viewPos;
     fc.spotShadowTexel = 1.0f / static_cast<f32>(kSpotShadowMapSize);
     fc.pointShadowNear = 0.1f;
@@ -5024,72 +5008,6 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             phase,
             (std::max)(pcss.blockerSearchTexels, 1.0f)};
     }
-    if (primary)   // シーン側: DDGI のディスクリプタ / スポット影行列 / IBL
-    {
-        // ===== DDGI: フォワード PS へのバインド（計画09 Step 6 / 段階1）=====
-        // ★プローブ更新（上の TLAS 直後）はもう終わっているので、ここでは「今フレーム読めるか」
-        //   だけを見る。読めないなら 1x1 黒ダミーで t22 を埋めて ddgiOrigin.w=0 にする
-        //   ＝ PS は 1 テクセルも読まず、絵は DDGI 導入前とビット一致する。
-        {
-            const DdgiSettings& ddgiCfg = m_scene->GetDdgiSettings();
-            const bool ddgiActive = m_ddgi && ddgiCfg.enabled && ddgiCfg.intensity > 0.0f
-                                 && m_ddgi->GetIrradianceSrvIndex() != DescriptorHeap::kInvalidIndex;
-
-            // t22 は slot11 テーブルの中（＝専用 SRV index では届かない）。毎フレーム書き直す。
-            // ディスクリプタ 1 本の CreateSRV は数百 ns なので、変化検出を持つより安い。
-            // ★BeginFrame がこのフレームの GPU 完了を待っているので、いま書いて安全。
-            if (m_clusteredLighting && m_clusteredLighting->IsReady() && m_srvHeap)
-            {
-                const u32 block = m_clusteredLighting->GetSrvTableIndex(frameIndex);
-                if (block != DescriptorHeap::kInvalidIndex)
-                {
-                    const auto dst = m_srvHeap->GetCpuHandle(
-                        block + ClusteredLightCulling::kDdgiSrvOffset);
-                    const bool wrote = ddgiActive
-                                    && m_ddgi->WriteIrradianceSrv(*m_graphicsDevice, dst);
-                    if (!wrote && m_ssBlackTex)
-                        m_ssBlackTex->CreateSRV(*m_graphicsDevice, dst);   // 1x1 黒 RGBA16F
-
-                    // t23: 距離モーメント（段階2 の Chebyshev 可視性）。同じ扱い。
-                    const auto dstDist = m_srvHeap->GetCpuHandle(
-                        block + ClusteredLightCulling::kDdgiDistSrvOffset);
-                    const bool wroteDist = ddgiActive
-                                        && m_ddgi->WriteDistanceSrv(*m_graphicsDevice, dstDist);
-                    if (!wroteDist && m_ssBlackTex)
-                        m_ssBlackTex->CreateSRV(*m_graphicsDevice, dstDist);
-                }
-            }
-
-            if (ddgiActive)
-            {
-                // .w は「読むか」の 1/0 だけ。★intensity は BlendCS がアトラスへ書く時点で
-                //   既に掛かっているので、ここで渡すと 2 乗になる（実機で踏んだ）。
-                //   その代わり intensity の変更は hysteresis ぶんかけて絵に効く。
-                fc.ddgiOrigin  = {ddgiCfg.originX, ddgiCfg.originY, ddgiCfg.originZ, 1.0f};
-                fc.ddgiSpacing = {ddgiCfg.spacing, ddgiCfg.spacing, ddgiCfg.spacing,
-                                  (std::max)(ddgiCfg.normalBias, 0.0f)};
-                fc.ddgiCounts  = {static_cast<f32>(ddgiCfg.probeCountX),
-                                  static_cast<f32>(ddgiCfg.probeCountY),
-                                  static_cast<f32>(ddgiCfg.probeCountZ), 0.0f};
-            }
-            else
-            {
-                fc.ddgiOrigin = fc.ddgiSpacing = fc.ddgiCounts = {0.0f, 0.0f, 0.0f, 0.0f};
-            }
-            m_ddgiActiveThisFrame = ddgiActive;
-        }
-
-        // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。上で割り当てたスロット分だけ埋める）
-        for (u32 i = 0; i < kMaxShadowSpot; ++i)
-            XMStoreFloat4x4(&fc.spotShadowMatrix[i],
-                i < m_numSpotShadowSlots ? XMMatrixTranspose(XMLoadFloat4x4(&m_spotShadowViewProj[i])) : XMMatrixIdentity());
-
-        // IBL 制御
-        fc.iblIntensity    = m_iblReady ? m_iblIntensity : 0.0f;
-        fc.maxPrefilterMip = m_iblBaker ? m_iblBaker->GetMaxPrefilterMip() : 4.0f;
-        fc.hasIBL          = (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()) ? 1u : 0u;
-        fc.skyboxIntensity = m_skyboxIntensity;
-    }   // primary: DDGI / spot / IBL
 
     // AO: 実 AO テクスチャがバインドされている時だけシェーダで読む。SSAO 無効/正射/フォールバック時は
     // 白ダミー(1x1)で、Load は範囲外 0 を返して環境光を潰すため、シェーダ側で読まず ao=1 にする。
@@ -5098,178 +5016,14 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
     fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
 
-    // 法線マップフィルタリング（分散→ラフネス / 平均法線の復元）。強さ 0 でシェーダは恒等。
-    if (primary)   // シーン側
-    {
-        const NormalFilterSettings nf = m_scene ? m_scene->GetNormalFilterSettings()
-                                                : NormalFilterSettings{};
-        fc.normalFilterParams = XMFLOAT3(
-            nf.enabled ? (std::max)(nf.strength, 0.0f) : 0.0f,
-            (std::max)(nf.varianceClamp, 0.0f),
-            (std::max)(nf.geometricBlend, 0.0f));
-    }
-
     // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
     // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
     // m_clusterLights はフレーム間で使い回すメンバ（毎フレーム malloc しない）。
-    using ClusterLightGPU = ClusteredLightCulling::LightGPU;
     // ★ここは ECS を全走査して灯ごとに ComputeWorldMatrix を回す。灯が増えるほど効く。
     //   prepass と同じ理由で RAII を使わない（区間の外まで生きて二重計上になる）。
     const auto _lightsT0 = std::chrono::high_resolution_clock::now();
-    if (primary)   // シーン側: ライト / デカールの収集（副ビューは主ビューの結果を読むだけ）
-    {
-        m_clusterLights.clear();
-        m_clusterLights.reserve(64);
-        fc.numPointLights = 0;
-        fc.numSpotLights  = 0;
-
-        // PointLight を ECS から収集
-        {
-            auto& reg = m_scene->GetRegistry();
-            auto plView = reg.view<const dx12e::PointLight, const Transform>();
-            for (auto [e, pl, tf] : plView.each())
-            {
-                if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
-                ClusterLightGPU pld{};
-                XMMATRIX world = (tf.parent != entt::null)
-                    ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-                XMStoreFloat3(&pld.position, world.r[3]);
-                pld.range = pl.range;
-                pld.color = {pl.color.x * pl.intensity,
-                             pl.color.y * pl.intensity,
-                             pl.color.z * pl.intensity};
-                pld.type      = 0.0f;   // point
-                pld.direction = {0.0f, 0.0f, 1.0f};
-                pld.cosOuter  = -1.0f;
-                pld.cosInner  = 1.0f;
-                pld.sinOuter  = 0.0f;
-
-                // 影スロット割当（上で計算済みの m_pointShadowEntity[]）と突合
-                pld.shadowIndex = -1.0f;
-                for (u32 si = 0; si < m_numPointShadowSlots; ++si)
-                {
-                    if (m_pointShadowEntity[si] == e) { pld.shadowIndex = static_cast<f32>(si); break; }
-                }
-
-                m_clusterLights.push_back(pld);
-                fc.numPointLights++;
-            }
-        }
-
-        // SpotLight を ECS から収集（位置=Transform、軸=direction、内外コーン角を cos へ）
-        {
-            auto& reg = m_scene->GetRegistry();
-            auto slView = reg.view<const dx12e::SpotLight, const Transform>();
-            for (auto [e, sl, tf] : slView.each())
-            {
-                if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
-                ClusterLightGPU sld{};
-                XMMATRIX world = (tf.parent != entt::null)
-                    ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-                XMStoreFloat3(&sld.position, world.r[3]);
-                sld.range = sl.range;
-                sld.type  = 1.0f;   // spot
-
-                XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
-                XMStoreFloat3(&sld.direction, dir);
-
-                // outer >= inner を保証してから cos 化（cos は単調減少なので inner の cos の方が大きい）
-                float outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
-                sld.cosInner = std::cos(XMConvertToRadians(sl.innerConeDeg));
-                sld.cosOuter = std::cos(XMConvertToRadians(outerDeg));
-                // 円錐カリング用の sin（GPU で acos を回さないよう CPU で 1 回だけ）
-                sld.sinOuter = std::sqrt((std::max)(0.0f, 1.0f - sld.cosOuter * sld.cosOuter));
-
-                sld.color = {sl.color.x * sl.intensity,
-                             sl.color.y * sl.intensity,
-                             sl.color.z * sl.intensity};
-
-                // 影スロット割当（上で計算済みの m_spotShadowEntity[]）と突合
-                sld.shadowIndex = -1.0f;
-                for (u32 si = 0; si < m_numSpotShadowSlots; ++si)
-                {
-                    if (m_spotShadowEntity[si] == e) { sld.shadowIndex = static_cast<f32>(si); break; }
-                }
-
-                m_clusterLights.push_back(sld);
-                fc.numSpotLights++;
-            }
-        }
-
-        // パーティクルライト: light=true の明るい粒子上位を空き枠へ注ぐ
-        // （炎や魔法が実際に周囲を照らす。シーン配置のライトが優先）
-        if (m_particleSystem && m_clusterLights.size() < ClusteredLightCulling::kMaxSceneLights)
-        {
-            const u32 room = ClusteredLightCulling::kMaxSceneLights
-                           - static_cast<u32>(m_clusterLights.size());
-            // 粒子ライトは実用上せいぜい数十灯。1024 枠ぶんの一時配列をスタックへ積むのは
-            // 無駄なので受け皿は 64 で頭打ちにする（従来は 8 だった）。
-            constexpr u32 kMaxParticleLights = 64;
-            ParticleSystem::LightInfo pls[kMaxParticleLights];
-            const u32 want = (std::min)(room, kMaxParticleLights);
-            const u32 got = m_particleSystem->CollectLights(want, pls);
-            for (u32 li = 0; li < got; ++li)
-            {
-                ClusterLightGPU pld{};
-                pld.position    = pls[li].pos;
-                pld.range       = pls[li].range;
-                pld.color       = pls[li].color;
-                pld.type        = 0.0f;
-                pld.direction   = {0.0f, 0.0f, 1.0f};
-                pld.cosOuter    = -1.0f;
-                pld.cosInner    = 1.0f;
-                pld.sinOuter    = 0.0f;
-                pld.shadowIndex = -1.0f;
-                m_clusterLights.push_back(pld);
-                fc.numPointLights++;
-            }
-        }
-
-        // ===== デカールの収集（sortOrder 昇順）=====
-        // ★クラスタのフォールバック経路（正射 / プレビュー / 設定 OFF）にはデカールリストが無いので、
-        //   そのときは 0 個扱いにしてフォワード PS の分岐ごと切る。
-        m_decalEntries.clear();
-        if (m_decalSystem && m_decalSystem->IsReady())
-        {
-            auto& reg = m_scene->GetRegistry();
-            auto dView = reg.view<const Transform, const DecalComponent>();
-            for (auto [e, tf, dc] : dView.each())
-            {
-                if (m_decalEntries.size() >= DecalSystem::kMaxDecals) break;
-                if (dc.opacity <= 0.0f) continue;
-
-                XMMATRIX world = (tf.parent != entt::null)
-                    ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-
-                DecalEntry entry{};
-                entry.sortOrder = dc.sortOrder;
-                auto& d = entry.gpu;
-                XMStoreFloat4x4(&d.invWorld, XMMatrixTranspose(XMMatrixInverse(nullptr, world)));
-                // 投影軸 = ローカル +Y のワールド方向 / 接線 = ローカル +X のワールド方向。
-                // invWorld から逆算せずここで直接送る（PS 側の逆行列計算を丸ごと省ける）。
-                XMStoreFloat3(&d.axisW,    XMVector3Normalize(world.r[1]));
-                XMStoreFloat3(&d.tangentW, XMVector3Normalize(world.r[0]));
-                d.atlasUV        = dc.atlasUV;
-                d.atlasUVNormal  = dc.atlasUVNormal;
-                d.tint           = dc.tint;
-                d.opacity        = dc.opacity;
-                d.emissive       = dc.emissive;
-                d.normalStrength = dc.normalStrength;
-                d.roughness      = dc.roughness;
-                d.metallic       = dc.metallic;
-                // cos は CPU で 1 回だけ（GPU で acos/cos を回さない。クラスタライトの sinOuter と同じ流儀）
-                const f32 fadeDeg = (std::min)((std::max)(dc.angleFadeDeg, 0.0f), 89.0f);
-                d.cosAngleFade   = std::cos(XMConvertToRadians(fadeDeg));
-                d.fadeEdge       = (std::max)(dc.fadeEdge, 0.001f);
-                m_decalEntries.push_back(entry);
-            }
-            std::stable_sort(m_decalEntries.begin(), m_decalEntries.end(),
-                             [](const DecalEntry& a, const DecalEntry& b) { return a.sortOrder < b.sortOrder; });
-            m_decalGpu.clear();
-            m_decalGpu.reserve(m_decalEntries.size());
-            for (const auto& en : m_decalEntries) m_decalGpu.push_back(en.gpu);
-        }
-    }   // primary: ライト / デカールの収集
+    // シーン側: ライト / デカールの収集（副ビューは主ビューの結果を読むだけ）
+    if (primary) CollectLightsAndDecals(fc);
 
     // ===== クラスタードライティングのパラメータ =====
     // クラスタ AABB の構築が透視前提なので、正射カメラ（俯瞰ゲーム / 2D ビュー）と
@@ -6155,6 +5909,273 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         frame.backBuffer    = backBuffer;
         frame.rtv           = rtv;
         frame.mainConstants = fc;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// b1 のシーン側（太陽 / CSM / DDGI / スポット影行列 / IBL / 法線フィルタ）を書く。
+// フレームで 1 回＝主ビューの仕事。副ビューは主ビューの b1 を写してから視点に依る値だけ書き直す。
+// ★DDGI の t22/t23 はクラスタの SRV テーブルの中なので、ここでディスクリプタも書き直す（CPU だけ）。
+// ---------------------------------------------------------------------------
+void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    const u32 frameIndex = frame.frameIndex;
+
+    fc.lightDir = frame.lightDirF3;
+    fc.time = frame.totalTime;
+    fc.lightColor = frame.lightColorF3;
+    fc.ambientStrength = frame.lightAmbient;
+    // 編集用の照らし込み（F2 / 表示メニュー）。シーンの環境光へ「下限」として被せるだけなので、
+    // 元から明るいシーンでは何も起きない。★Editor モード限定＝ゲームの絵は絶対に変わらないし、
+    // DirectionalLight.ambient 自体は触っていないのでシーンにも保存されない。
+    if (m_engineMode == EngineMode::Editor && m_editorCtx && m_editorCtx->viewportFill > 0.0f)
+        fc.ambientStrength = (std::max)(fc.ambientStrength, m_editorCtx->viewportFill);
+    // CSM: カスケード行列（HLSL は列優先 mul(row,mat) なので転置して格納）
+    for (u32 i = 0; i < kNumCascades; ++i)
+        XMStoreFloat4x4(&fc.cascadeViewProj[i],
+            XMMatrixTranspose(XMLoadFloat4x4(&m_cascadeViewProj[i])));
+    fc.cascadeSplitsView = {m_cascadeSplitsView[0], m_cascadeSplitsView[1],
+                            m_cascadeSplitsView[2], m_cascadeSplitsView[3]};
+    fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), m_shadowDepthBias,
+                       m_cascadeBlendBand, m_showCascadeDebug ? 1.0f : 0.0f};
+
+    // ===== DDGI: フォワード PS へのバインド（計画09 Step 6 / 段階1）=====
+    // ★プローブ更新（TLAS 直後）はもう終わっているので、ここでは「今フレーム読めるか」
+    //   だけを見る。読めないなら 1x1 黒ダミーで t22 を埋めて ddgiOrigin.w=0 にする
+    //   ＝ PS は 1 テクセルも読まず、絵は DDGI 導入前とビット一致する。
+    {
+        const DdgiSettings& ddgiCfg = m_scene->GetDdgiSettings();
+        const bool ddgiActive = m_ddgi && ddgiCfg.enabled && ddgiCfg.intensity > 0.0f
+                             && m_ddgi->GetIrradianceSrvIndex() != DescriptorHeap::kInvalidIndex;
+
+        // t22 は slot11 テーブルの中（＝専用 SRV index では届かない）。毎フレーム書き直す。
+        // ディスクリプタ 1 本の CreateSRV は数百 ns なので、変化検出を持つより安い。
+        // ★BeginFrame がこのフレームの GPU 完了を待っているので、いま書いて安全。
+        if (m_clusteredLighting && m_clusteredLighting->IsReady() && m_srvHeap)
+        {
+            const u32 block = m_clusteredLighting->GetSrvTableIndex(frameIndex);
+            if (block != DescriptorHeap::kInvalidIndex)
+            {
+                const auto dst = m_srvHeap->GetCpuHandle(
+                    block + ClusteredLightCulling::kDdgiSrvOffset);
+                const bool wrote = ddgiActive
+                                && m_ddgi->WriteIrradianceSrv(*m_graphicsDevice, dst);
+                if (!wrote && m_ssBlackTex)
+                    m_ssBlackTex->CreateSRV(*m_graphicsDevice, dst);   // 1x1 黒 RGBA16F
+
+                // t23: 距離モーメント（段階2 の Chebyshev 可視性）。同じ扱い。
+                const auto dstDist = m_srvHeap->GetCpuHandle(
+                    block + ClusteredLightCulling::kDdgiDistSrvOffset);
+                const bool wroteDist = ddgiActive
+                                    && m_ddgi->WriteDistanceSrv(*m_graphicsDevice, dstDist);
+                if (!wroteDist && m_ssBlackTex)
+                    m_ssBlackTex->CreateSRV(*m_graphicsDevice, dstDist);
+            }
+        }
+
+        if (ddgiActive)
+        {
+            // .w は「読むか」の 1/0 だけ。★intensity は BlendCS がアトラスへ書く時点で
+            //   既に掛かっているので、ここで渡すと 2 乗になる（実機で踏んだ）。
+            //   その代わり intensity の変更は hysteresis ぶんかけて絵に効く。
+            fc.ddgiOrigin  = {ddgiCfg.originX, ddgiCfg.originY, ddgiCfg.originZ, 1.0f};
+            fc.ddgiSpacing = {ddgiCfg.spacing, ddgiCfg.spacing, ddgiCfg.spacing,
+                              (std::max)(ddgiCfg.normalBias, 0.0f)};
+            fc.ddgiCounts  = {static_cast<f32>(ddgiCfg.probeCountX),
+                              static_cast<f32>(ddgiCfg.probeCountY),
+                              static_cast<f32>(ddgiCfg.probeCountZ), 0.0f};
+        }
+        else
+        {
+            fc.ddgiOrigin = fc.ddgiSpacing = fc.ddgiCounts = {0.0f, 0.0f, 0.0f, 0.0f};
+        }
+        m_ddgiActiveThisFrame = ddgiActive;
+    }
+
+    // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。影の段で割り当てたスロット分だけ埋める）
+    for (u32 i = 0; i < kMaxShadowSpot; ++i)
+        XMStoreFloat4x4(&fc.spotShadowMatrix[i],
+            i < m_numSpotShadowSlots ? XMMatrixTranspose(XMLoadFloat4x4(&m_spotShadowViewProj[i])) : XMMatrixIdentity());
+
+    // IBL 制御
+    fc.iblIntensity    = m_iblReady ? m_iblIntensity : 0.0f;
+    fc.maxPrefilterMip = m_iblBaker ? m_iblBaker->GetMaxPrefilterMip() : 4.0f;
+    fc.hasIBL          = (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()) ? 1u : 0u;
+    fc.skyboxIntensity = m_skyboxIntensity;
+
+    // 法線マップフィルタリング（分散→ラフネス / 平均法線の復元）。強さ 0 でシェーダは恒等。
+    {
+        const NormalFilterSettings nf = m_scene ? m_scene->GetNormalFilterSettings()
+                                                : NormalFilterSettings{};
+        fc.normalFilterParams = XMFLOAT3(
+            nf.enabled ? (std::max)(nf.strength, 0.0f) : 0.0f,
+            (std::max)(nf.varianceClamp, 0.0f),
+            (std::max)(nf.geometricBlend, 0.0f));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ライト（点光源 → スポット → パーティクル発光の順）とデカールを ECS から集める。
+// m_clusterLights / m_decalEntries / m_decalGpu と fc の灯数（統計用）を書く。
+// フレームで 1 回＝主ビューの仕事（副ビューは主ビューの結果を読む）。GPU 命令は積まない。
+// 影スロット（m_*ShadowEntity）は影の段で確定済みであること（shadowIndex の突き合わせに使う）。
+// ---------------------------------------------------------------------------
+void Application::CollectLightsAndDecals(FrameConstants& fc)
+{
+    using namespace DirectX;
+    using ClusterLightGPU = ClusteredLightCulling::LightGPU;
+
+    m_clusterLights.clear();
+    m_clusterLights.reserve(64);
+    fc.numPointLights = 0;
+    fc.numSpotLights  = 0;
+
+    // PointLight を ECS から収集
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto plView = reg.view<const dx12e::PointLight, const Transform>();
+        for (auto [e, pl, tf] : plView.each())
+        {
+            if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            ClusterLightGPU pld{};
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMStoreFloat3(&pld.position, world.r[3]);
+            pld.range = pl.range;
+            pld.color = {pl.color.x * pl.intensity,
+                         pl.color.y * pl.intensity,
+                         pl.color.z * pl.intensity};
+            pld.type      = 0.0f;   // point
+            pld.direction = {0.0f, 0.0f, 1.0f};
+            pld.cosOuter  = -1.0f;
+            pld.cosInner  = 1.0f;
+            pld.sinOuter  = 0.0f;
+
+            // 影スロット割当（上で計算済みの m_pointShadowEntity[]）と突合
+            pld.shadowIndex = -1.0f;
+            for (u32 si = 0; si < m_numPointShadowSlots; ++si)
+            {
+                if (m_pointShadowEntity[si] == e) { pld.shadowIndex = static_cast<f32>(si); break; }
+            }
+
+            m_clusterLights.push_back(pld);
+            fc.numPointLights++;
+        }
+    }
+
+    // SpotLight を ECS から収集（位置=Transform、軸=direction、内外コーン角を cos へ）
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto slView = reg.view<const dx12e::SpotLight, const Transform>();
+        for (auto [e, sl, tf] : slView.each())
+        {
+            if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            ClusterLightGPU sld{};
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+            XMStoreFloat3(&sld.position, world.r[3]);
+            sld.range = sl.range;
+            sld.type  = 1.0f;   // spot
+
+            XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
+            XMStoreFloat3(&sld.direction, dir);
+
+            // outer >= inner を保証してから cos 化（cos は単調減少なので inner の cos の方が大きい）
+            float outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
+            sld.cosInner = std::cos(XMConvertToRadians(sl.innerConeDeg));
+            sld.cosOuter = std::cos(XMConvertToRadians(outerDeg));
+            // 円錐カリング用の sin（GPU で acos を回さないよう CPU で 1 回だけ）
+            sld.sinOuter = std::sqrt((std::max)(0.0f, 1.0f - sld.cosOuter * sld.cosOuter));
+
+            sld.color = {sl.color.x * sl.intensity,
+                         sl.color.y * sl.intensity,
+                         sl.color.z * sl.intensity};
+
+            // 影スロット割当（上で計算済みの m_spotShadowEntity[]）と突合
+            sld.shadowIndex = -1.0f;
+            for (u32 si = 0; si < m_numSpotShadowSlots; ++si)
+            {
+                if (m_spotShadowEntity[si] == e) { sld.shadowIndex = static_cast<f32>(si); break; }
+            }
+
+            m_clusterLights.push_back(sld);
+            fc.numSpotLights++;
+        }
+    }
+
+    // パーティクルライト: light=true の明るい粒子上位を空き枠へ注ぐ
+    // （炎や魔法が実際に周囲を照らす。シーン配置のライトが優先）
+    if (m_particleSystem && m_clusterLights.size() < ClusteredLightCulling::kMaxSceneLights)
+    {
+        const u32 room = ClusteredLightCulling::kMaxSceneLights
+                       - static_cast<u32>(m_clusterLights.size());
+        // 粒子ライトは実用上せいぜい数十灯。1024 枠ぶんの一時配列をスタックへ積むのは
+        // 無駄なので受け皿は 64 で頭打ちにする（従来は 8 だった）。
+        constexpr u32 kMaxParticleLights = 64;
+        ParticleSystem::LightInfo pls[kMaxParticleLights];
+        const u32 want = (std::min)(room, kMaxParticleLights);
+        const u32 got = m_particleSystem->CollectLights(want, pls);
+        for (u32 li = 0; li < got; ++li)
+        {
+            ClusterLightGPU pld{};
+            pld.position    = pls[li].pos;
+            pld.range       = pls[li].range;
+            pld.color       = pls[li].color;
+            pld.type        = 0.0f;
+            pld.direction   = {0.0f, 0.0f, 1.0f};
+            pld.cosOuter    = -1.0f;
+            pld.cosInner    = 1.0f;
+            pld.sinOuter    = 0.0f;
+            pld.shadowIndex = -1.0f;
+            m_clusterLights.push_back(pld);
+            fc.numPointLights++;
+        }
+    }
+
+    // ===== デカールの収集（sortOrder 昇順）=====
+    // ★クラスタのフォールバック経路（正射 / プレビュー / 設定 OFF）にはデカールリストが無いので、
+    //   そのときは 0 個扱いにしてフォワード PS の分岐ごと切る。
+    m_decalEntries.clear();
+    if (m_decalSystem && m_decalSystem->IsReady())
+    {
+        auto& reg = m_scene->GetRegistry();
+        auto dView = reg.view<const Transform, const DecalComponent>();
+        for (auto [e, tf, dc] : dView.each())
+        {
+            if (m_decalEntries.size() >= DecalSystem::kMaxDecals) break;
+            if (dc.opacity <= 0.0f) continue;
+
+            XMMATRIX world = (tf.parent != entt::null)
+                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+
+            DecalEntry entry{};
+            entry.sortOrder = dc.sortOrder;
+            auto& d = entry.gpu;
+            XMStoreFloat4x4(&d.invWorld, XMMatrixTranspose(XMMatrixInverse(nullptr, world)));
+            // 投影軸 = ローカル +Y のワールド方向 / 接線 = ローカル +X のワールド方向。
+            // invWorld から逆算せずここで直接送る（PS 側の逆行列計算を丸ごと省ける）。
+            XMStoreFloat3(&d.axisW,    XMVector3Normalize(world.r[1]));
+            XMStoreFloat3(&d.tangentW, XMVector3Normalize(world.r[0]));
+            d.atlasUV        = dc.atlasUV;
+            d.atlasUVNormal  = dc.atlasUVNormal;
+            d.tint           = dc.tint;
+            d.opacity        = dc.opacity;
+            d.emissive       = dc.emissive;
+            d.normalStrength = dc.normalStrength;
+            d.roughness      = dc.roughness;
+            d.metallic       = dc.metallic;
+            // cos は CPU で 1 回だけ（GPU で acos/cos を回さない。クラスタライトの sinOuter と同じ流儀）
+            const f32 fadeDeg = (std::min)((std::max)(dc.angleFadeDeg, 0.0f), 89.0f);
+            d.cosAngleFade   = std::cos(XMConvertToRadians(fadeDeg));
+            d.fadeEdge       = (std::max)(dc.fadeEdge, 0.001f);
+            m_decalEntries.push_back(entry);
+        }
+        std::stable_sort(m_decalEntries.begin(), m_decalEntries.end(),
+                         [](const DecalEntry& a, const DecalEntry& b) { return a.sortOrder < b.sortOrder; });
+        m_decalGpu.clear();
+        m_decalGpu.reserve(m_decalEntries.size());
+        for (const auto& en : m_decalEntries) m_decalGpu.push_back(en.gpu);
     }
 }
 

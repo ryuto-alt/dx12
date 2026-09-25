@@ -343,6 +343,9 @@ private:
     void PrepareFrame(RenderFrameContext& frame);
     ViewDesc MakeMainViewDesc(const RenderFrameContext& frame) const;
     void RenderView(const ViewDesc& view, RenderFrameContext& frame);
+    // RenderView の下請け（主ビューだけが呼ぶ「フレームで 1 回」の CPU 側の仕事）
+    void FillSceneFrameConstants(FrameConstants& fc, const RenderFrameContext& frame);
+    void CollectLightsAndDecals(FrameConstants& fc);
     void RenderViewportOverlays(RenderFrameContext& frame);
     void RenderImGuiFrame(RenderFrameContext& frame);
     void SubmitFrame(RenderFrameContext& frame);
