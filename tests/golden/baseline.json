@@ -3,13 +3,13 @@
     "perftest_ddgi_probe": {
       "nativeWidth": 1043,
       "nativeHeight": 587,
-      "nativeSha256": "92049fe5870ed54daedacee4232851b2e9024d113a4d84f6adb8850f5c2d8dfc",
-      "compareSha256": "20df9d0817f99ebdbf4b5d7affe95ff4840f4e7121374c07e128cca9fefb0dd4",
+      "nativeSha256": "e8b7906c5d7ae52b08f09352b44afcf3d41b1cded612aee0e1bf6f9c037679f9",
+      "compareSha256": "1ebbad379e11662629cf71b70618a47fa000cf692a306938b7eeaa0a915f2bc5",
       "width": 640,
       "height": 360,
-      "commit": "545c025",
-      "capturedAt": "2026-09-25T12:22:07.524Z",
-      "deterministicInSession": true
+      "commit": "d5193dd",
+      "capturedAt": "2026-09-25T13:10:51.123Z",
+      "deterministicInSession": null
     },
     "perftest_stress_5000": {
       "nativeWidth": 1043,
@@ -18,9 +18,9 @@
       "compareSha256": "67e588b46aa191b14e6001ac8b4d72815b6c25c66bfa3b30879e601fa2a32d22",
       "width": 640,
       "height": 360,
-      "commit": "545c025",
-      "capturedAt": "2026-09-25T12:22:11.556Z",
-      "deterministicInSession": true
+      "commit": "d5193dd",
+      "capturedAt": "2026-09-25T13:10:53.389Z",
+      "deterministicInSession": null
     },
     "nocturne_hall": {
       "nativeWidth": 1043,
@@ -29,20 +29,20 @@
       "compareSha256": "a6481fc9a68e5ef59459e68ab9ee47739ba153a8e1ed52ed9c377ae9431f64e6",
       "width": 640,
       "height": 360,
-      "commit": "545c025",
-      "capturedAt": "2026-09-25T12:22:14.311Z",
-      "deterministicInSession": true
+      "commit": "d5193dd",
+      "capturedAt": "2026-09-25T13:10:55.544Z",
+      "deterministicInSession": null
     },
     "junction_f6": {
       "nativeWidth": 1043,
       "nativeHeight": 587,
-      "nativeSha256": "3df50451976a86e63082c5a9c37dd4ac6e1dcbac018773160b9845f1aa5645ed",
-      "compareSha256": "a4010cf4d4c0d410e23a96a26098054fafbf9a3604d360fb3c834de575c5a992",
+      "nativeSha256": "ea7de4f5fa1fcdb2457f122ea12149e640cc1f33a0389074565c5be0dd0ba5f8",
+      "compareSha256": "16f1ed95334d5e88ba3bb2335ab881837945b2cf399d4f6c251047c995406f70",
       "width": 640,
       "height": 360,
-      "commit": "545c025",
-      "capturedAt": "2026-09-25T12:22:17.638Z",
-      "deterministicInSession": true
+      "commit": "d5193dd",
+      "capturedAt": "2026-09-25T13:10:58.233Z",
+      "deterministicInSession": null
     }
   }
 }

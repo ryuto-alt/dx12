@@ -1,0 +1,27 @@
+{
+  "id": "layout.intended",
+  "version": 1,
+  "type": "noul",
+  "instructions": {
+    "what": "An automatic layout checker flagged issue {{ref}} in a 3D game scene: {{kind}} = {{gloss}}. The checker assumes every object should rest cleanly on the surface below it without touching other objects. Read state.brief (the creator's intent) and the entry with ref {{ref}} in state.facts.layout.issues: the object's name, its scene group and parent, its size, the other object involved and how strong the condition is, all in words. Is this placement a deliberate part of the scene, something the object names, the groups or the brief make clear is intended (for example books inside a bookshelf, a chair tucked under a table, a lamp hanging in the air, a rock half sunk into the ground), so it should be kept?",
+    "not_for": "Answer no when it looks like an accidental placement: a crate or prop sinking into the floor, a character or item stuck inside a wall, two unrelated objects interpenetrating, an ordinary object hovering in the air. Answer no when nothing in the names, groups or brief suggests the placement is intended. Judge only issue {{ref}}; the other issues are context."
+  },
+  "criteria": {
+    "true": "Keep it: the names, groups or brief make this placement clearly intended.",
+    "false": "Fix it: this looks like an accidental placement, or nothing suggests it is intended."
+  },
+  "state": ["brief", "facts.layout"],
+  "threshold": { "yes": 0.7, "band": 0.1 },
+  "fallback": "no",
+  "lookup": {
+    "gloss": {
+      "by": "kind",
+      "map": {
+        "OVERLAP": "two objects' volumes interpenetrate",
+        "FLOATING": "the object hangs in the air above the surface below it",
+        "BURIED": "the object is sunk into the floor or ground"
+      }
+    }
+  },
+  "notes": "配置の指摘 1 件ごとに 1 質問。state は layout.no_collider_ok と共通(brief + facts.layout)で、どの指摘かは {{ref}}(英字)で名指しする。閾値は評価ケースの実測で決める(初版は既定の 0.7)。"
+}

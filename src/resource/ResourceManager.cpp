@@ -19,6 +19,26 @@
 namespace dx12e
 {
 
+namespace
+{
+// サブメッシュに描画順の安定キーを振る（Mesh::SetStableKey の説明を参照）。
+// (キャッシュキー = 正規化したパス, サブメッシュ番号) の FNV-1a。キャッシュキーは
+// 1 ファイル 1 件なので、同じキーの Mesh が同時に 2 個生きることは無い（読み直しは旧実体を捨てる）。
+// ★0 は「鍵なし」の予約値なので避ける。
+void StampMeshStableKeys(CachedModel& model, const std::string& cacheKey)
+{
+    u64 base = 1469598103934665603ull;
+    for (unsigned char c : cacheKey) { base ^= c; base *= 1099511628211ull; }
+    for (size_t i = 0; i < model.meshes.size(); ++i)
+    {
+        if (!model.meshes[i]) continue;
+        u64 k = base;
+        k ^= static_cast<u64>(i) + 1; k *= 1099511628211ull;
+        model.meshes[i]->SetStableKey(k ? k : 1ull);
+    }
+}
+} // namespace
+
 void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap,
                                   ID3D12GraphicsCommandList* cmdList)
 {
@@ -273,6 +293,7 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     cached->animClips     = std::move(modelData.animClips);
     cached->nodeGraph     = std::move(modelData.nodeGraph);
     cached->nodeAnimClips = std::move(modelData.nodeAnimClips);
+    StampMeshStableKeys(*cached, key);
 
     const CachedModel* rawPtr = cached.get();
     ModelCacheEntry entry;
@@ -476,6 +497,7 @@ AssetReloadResult ResourceManager::ReloadChangedAssets(ID3D12GraphicsCommandList
         rebuilt->animClips     = std::move(data.animClips);
         rebuilt->nodeGraph     = std::move(data.nodeGraph);
         rebuilt->nodeAnimClips = std::move(data.nodeAnimClips);
+        StampMeshStableKeys(*rebuilt, key);
 
         for (auto& mesh : rebuilt->meshes) m_pendingMeshUploads.push_back(mesh.get());
         m_uploadsPending = true;

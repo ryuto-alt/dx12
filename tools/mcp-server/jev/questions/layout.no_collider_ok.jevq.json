@@ -1,0 +1,17 @@
+{
+  "id": "layout.no_collider_ok",
+  "version": 1,
+  "type": "noul",
+  "instructions": {
+    "what": "An automatic layout checker flagged issue {{ref}} in a 3D game scene: NO_COLLIDER = an object large enough for a player to walk into has no collision, so the player passes straight through it. Read state.brief (the creator's intent) and the entry with ref {{ref}} in state.facts.layout.issues: the object's name, its scene group and parent, and its size, all in words. Is this an object that does not need collision, one that is purely visual, out of the player's reach, or meant to be walked through (for example grass, fog or light shafts, a distant backdrop, a hanging banner, a hologram), so the missing collision should be kept as it is?",
+    "not_for": "Answer no for floors, walls, stairs, platforms, doors, large furniture, vehicles, tree trunks and anything the player is meant to stand on or be blocked by, unless the brief says the player should pass through it. Judge only issue {{ref}}; the other issues are context."
+  },
+  "criteria": {
+    "true": "Keep it: this object does not need collision.",
+    "false": "Fix it: the player should be blocked by or stand on this object, so it needs collision."
+  },
+  "state": ["brief", "facts.layout"],
+  "threshold": { "yes": 0.7, "band": 0.1 },
+  "fallback": "layout.noColliderByGroup",
+  "notes": "NO_COLLIDER 1 件ごとに 1 質問。state は layout.intended と共通。ルールのフォールバックはグループの規約(ENV / FX / LIGHT なら要らない)。閾値は評価ケースの実測で決める(初版は既定の 0.7)。"
+}

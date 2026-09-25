@@ -148,6 +148,9 @@ void Application::BuildDrawList()
         DrawItem item{};
         item.e        = e;
         item.renderer = &renderer;
+        // 並べ替え専用の安定キー（DrawItem.h の meshKey / guid の説明を参照）
+        item.meshKey  = renderer.meshes[0] ? renderer.meshes[0]->GetStableKey() : 0ull;
+        if (const auto* g = reg.try_get<EntityGuid>(e)) item.guid = g->value;
         XMStoreFloat4x4(&item.world, world);
         // 速度バッファ用の前フレームワールド行列。TAA 無効時は追跡しない＝world と同値（速度0）。
         // 新規スポーン直後も PrevWorldMatrix が無いので world と同値になり、初回のゴーストを防ぐ。
@@ -318,7 +321,8 @@ void Application::BuildDrawList()
         if (const auto* tc = reg.try_get<Terrain>(e))
             splatTerrain = !tc->layerSetPath.empty();
 
-        item.batchKey = 0;
+        item.batchKey   = 0;
+        item.batchOrder = 0;
         if (item.sortKey == 0u && !item.skin && !item.hasNodeAnim && !splatTerrain
             && renderer.meshes.size() == 1 && renderer.meshes[0]
             && !renderer.HasMaterialAsset(0) && !renderer.HasAnyTextureOverride(0)
@@ -326,9 +330,11 @@ void Application::BuildDrawList()
             && renderer.uvScrollU == 0.0f && renderer.uvScrollV == 0.0f)
         {
             // FNV-1a でメッシュ/LOD/PBR値/シェーダパラメータを 1 本の鍵に潰す。
+            // ★メッシュは安定キーで混ぜる（並べ替え用の batchOrder）。実体の同一性は
+            //   最後にポインタを混ぜた batchKey で判定する（鍵なしのメッシュ同士を畳まないため）。
             u64 k = 1469598103934665603ull;
             auto mix = [&k](u64 v) { k ^= v; k *= 1099511628211ull; };
-            mix(reinterpret_cast<u64>(renderer.meshes[0]));
+            mix(item.meshKey);
             mix(item.lod);
             auto bits = [](f32 f) { u32 u; std::memcpy(&u, &f, 4); return static_cast<u64>(u); };
             mix(bits(renderer.overrideMetallic));
@@ -349,7 +355,9 @@ void Application::BuildDrawList()
             mix(bits(renderer.alphaCutoffOverride));
             mix(bits(renderer.opacity));
             mix(static_cast<u64>(renderer.alphaModeOverride + 2));
-            item.batchKey = k | 1ull;   // 0 は「不可」の予約値なので必ず非 0 にする
+            item.batchOrder = k | 1ull;   // 0 は「不可」の予約値なので必ず非 0 にする
+            mix(reinterpret_cast<u64>(renderer.meshes[0]));
+            item.batchKey   = k | 1ull;
         }
 
         // ---- TLAS 再利用の内容ハッシュ（TLAS に入る候補だけ混ぜる）----
@@ -382,10 +390,16 @@ void Application::BuildDrawList()
     }
 
     CpuScopeTimer _sort(&m_cpuMs[CpuListSort]); DX12_PROFILE_ZONE_N("SortDrawList");
-    // PSO バケツ → シェーダ → メッシュ → LOD → バッチ鍵 の順に整列。
+    // PSO バケツ → シェーダ → メッシュ → LOD → バッチ鍵 → エンティティ の順に整列。
     // 前半はパイプライン/マテリアル/VB の切替最小化（従来通り）、
-    // 末尾の LOD/batchKey は「同一キーが連続する」ことを保証してインスタンシングの
+    // 中ほどの LOD/batchOrder は「同一キーが連続する」ことを保証してインスタンシングの
     // ラン検出を O(n) の 1 パスにするため（ハッシュマップ不要）。
+    // ★全部の段が起動をまたいで同じ値になる鍵（DrawItem.h）。かつては最後にメッシュの
+    //   ポインタ値で並べていて、同じ深さの面の描画順が起動ごとに入れ替わり、ゴールデン画像が
+    //   z-fight の画素だけ揺れていた。末尾の guid / entity で全順序になるので、入力順にも
+    //   std::sort の不安定さにも依存しない。
+    // ★batchKey（ポインタ入り）が同じ物は meshKey / lod / batchOrder も必ず同じなので連続する。
+    //   逆は成り立たない（鍵なしの別メッシュ同士）が、それはラン検出が別バッチに割るだけで正しい。
     std::sort(m_drawItems.begin(), m_drawItems.end(),
         [](const DrawItem& a, const DrawItem& b) {
             if (a.sortKey != b.sortKey) return a.sortKey < b.sortKey;
@@ -398,10 +412,11 @@ void Application::BuildDrawList()
                 const int c = a.renderer->shaderPath.compare(b.renderer->shaderPath);
                 if (c != 0) return c < 0;
             }
-            if (a.renderer->meshes[0] != b.renderer->meshes[0])
-                return a.renderer->meshes[0] < b.renderer->meshes[0];
+            if (a.meshKey != b.meshKey) return a.meshKey < b.meshKey;
             if (a.lod != b.lod) return a.lod < b.lod;
-            return a.batchKey < b.batchKey;
+            if (a.batchOrder != b.batchOrder) return a.batchOrder < b.batchOrder;
+            if (a.guid != b.guid) return a.guid < b.guid;
+            return entt::to_integral(a.e) < entt::to_integral(b.e);
         });
 
     // ---- インスタンシングのバッチ区間を確定する（オクルージョンカリング用）----

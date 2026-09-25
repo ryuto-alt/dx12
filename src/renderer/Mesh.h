@@ -105,6 +105,15 @@ public:
     void SetMaterialName(std::string name) { m_materialName = std::move(name); }
     const std::string& GetMaterialName() const { return m_materialName; }
 
+    // 描画リストの並べ替えに使う「起動をまたいで同じ値」になる鍵。
+    // モデル由来は ResourceManager が (正規化したパス, サブメッシュ番号) から振る。
+    // 0 = 鍵なし（プリミティブ / 地形 / スカルプトのようにエンティティ 1 体が 1 個持つメッシュ）。
+    // ★BuildDrawList はかつてここを Mesh* のポインタ値で並べていた。ヒープの番地は起動ごとに
+    //   違うので、同じ深さの面（z-fight）の描画順が起動ごとに入れ替わり、ゴールデン画像が揺れた。
+    //   鍵なしのメッシュはエンティティの guid で並ぶので、ここが 0 でも決定論は保たれる。
+    void SetStableKey(u64 key) { m_stableKey = key; }
+    u64  GetStableKey() const { return m_stableKey; }
+
     void SetMaterial(Material* mat) { m_material = mat; }
     const Material* GetMaterial() const { return m_material; }
     Material* GetMaterialMutable() { return m_material; }
@@ -196,6 +205,7 @@ private:
     std::vector<Vertex> m_verticesCache;         // UV スケール用の頂点データキャッシュ
     std::vector<u32>    m_indicesCache;          // LOD0 インデックスの CPU コピー（レイ-三角形判定用）
     u32                 m_geometryVersion = 0;   // VB を作り直すたびに +1（BLAS キャッシュ無効化用）
+    u64                 m_stableKey = 0;         // 描画順の安定キー（SetStableKey 参照。0 = 鍵なし）
     // バインドレス用の SRV（計画09 Step 5）。0xFFFFFFFF = 未払い出し。
     u32                 m_vbSrvIndex = 0xFFFFFFFFu;
     u32                 m_ibSrvIndex = 0xFFFFFFFFu;

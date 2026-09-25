@@ -28,6 +28,11 @@ console.log("[1] 境界と語の固定(動かすなら評価ケースも見直�
     kinds: { edges: [2, 4, 6, 9], words: ["ひとつだけ", "少ない", "普通", "多い", "とても多い"] },
     palette: { edges: [4, 7, 13, 20], words: ["ごく少ない", "少ない", "普通", "多い", "とても多い"] },
     centered: { edges: [0.05, 0.35, 0.8, 0.95], words: ["ほぼ無い", "一部だけ", "半分くらい", "大半", "ほぼ全部"] },
+    // 配置(境界と ApplicationMcpValidate.cpp の閾値の揃いは jev/layoutJudge.test.ts で見る)
+    objectSize: { edges: [0.3, 1, 2, 6, 20], words: ["手のひらくらい", "小物", "人の背丈くらい", "人より大きい(家具や壁くらい)", "建物くらい", "とても大きい(床や地形くらい)"] },
+    overlap: { edges: [0.5, 0.8], words: ["浅くめり込んでいる", "深くめり込んでいる", "ほぼ丸ごと重なっている"] },
+    lift: { edges: [1, 3], words: ["自分の高さより低く浮いている", "自分の高さの数倍浮いている", "はるか上に浮いている"] },
+    buried: { edges: [0.5, 0.9], words: ["下の方が埋まっている", "半分以上埋まっている", "ほぼ全部埋まっている"] },
   };
   check("BINS がスナップショットと一致", JSON.stringify(BINS) === JSON.stringify(snapshot),
     `実際: ${JSON.stringify(BINS)}`);

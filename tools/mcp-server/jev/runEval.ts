@@ -13,7 +13,7 @@ import path from "node:path";
 import { hasApiKey } from "./client.ts";
 import { loadLibrary, summarizeLog, type CacheMode } from "./library.ts";
 import { runEval, summarize, type EvalReport } from "./eval.ts";
-import { POLISH_RULES } from "./polishJudge.ts";
+import { JEV_RULES } from "./rules.ts";
 
 const args = new Map<string, string>();
 for (let i = 2; i < process.argv.length; i++) {
@@ -39,7 +39,7 @@ const ids = args.get("question")
 
 const reports: EvalReport[] = [];
 for (const id of ids) {
-  const r = await runEval({ baseDir, cache, library: lib, question: id, rules: POLISH_RULES });
+  const r = await runEval({ baseDir, cache, library: lib, question: id, rules: JEV_RULES });
   reports.push(r);
   if (asJson) continue;
   const s = summarize(r);

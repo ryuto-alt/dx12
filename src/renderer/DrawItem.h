@@ -50,7 +50,18 @@ struct DrawItem
     f32                 camDist;
     // 自動インスタンシングのバッチ鍵。0 = インスタンシング不可（従来の per-object 描画）。
     // 同一キー同士は「同じメッシュ・同じLOD・同じマテリアル/PBR値」＝1ドローに畳んで良い。
+    // ★Mesh* のポインタ値を混ぜてある＝「同じ実体か」の判定専用。並べ替えには使わない
+    //   （番地は起動ごとに違うので、並べると描画順が起動ごとに変わる）。
     u64                 batchKey;
+    // ---- 並べ替え専用の安定キー（起動をまたいで同じ値）----
+    // meshKey    … meshes[0] の Mesh::GetStableKey()（モデル = パス+サブメッシュ番号 / 0 = 鍵なし）
+    // batchOrder … batchKey と同じ材料をポインタ抜き（meshKey で代用）で潰したもの。0 = 不可
+    // guid       … EntityGuid（0 = 未付与。そのときは entt の番号で並ぶ）
+    // 並べ替えは (sortKey, camDist, shader, meshKey, lod, batchOrder, guid, entity) の全順序なので、
+    // 入力順（entt の格納順）にも std::sort の不安定さにも依存しない。
+    u64                 meshKey;
+    u64                 batchOrder;
+    u64                 guid;
 };
 
 // 自動インスタンシングで 1 ドローに畳まれる連続区間（ソート済み描画リスト上の [first, first+count)）。
