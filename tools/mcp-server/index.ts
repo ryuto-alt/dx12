@@ -1390,6 +1390,15 @@ reg(
   ({ entity, name }) => run(() => engine.call("get_physics_state", { entity, name })),
 );
 
+reg(
+  "dx12_audio_state",
+  "音の状態を観測",
+  "今鳴っている音とミキサーの状態を数値で読む(AI が音を観測できる唯一の口)。{device, listener, limits, buses[](name / volume / mute / lowpass / peakDb / rmsDb / peakNowDb …), voices[](clip / bus / gainDb / distance / occlusion / virtual / virtualReason / priority / positionSec …), bgm, snapshot, reverb, streams}。dB は dBFS で、無音は -120(-inf は JSON に載らないため)。★メーターはフェーダー後の値で、1 フレームに直近 10ms しか見ないので瞬間的なピークは取りこぼし得る。「音が鳴らない」は voices に居るか(居なければ再生されていない)→ virtual(遠い・小さいので仮想化中)→ バスの mute / volume の順に見る。音声デバイスが無い環境でも落ちず device に理由が出る。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("audio_state", {})),
+);
+
 // ════════════════════════════════════════════════════════════════
 //  コンテンツ制作ヘルパー拡充
 // ════════════════════════════════════════════════════════════════
