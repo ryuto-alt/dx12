@@ -243,8 +243,11 @@ export function regionWord(r: PerceiveRegionRaw | undefined): string | undefined
   if (r.luma < PERCEIVE_BINS.luma.edges[1] && flat) parts.push("暗くて何も見えない");
   else if (flat) parts.push("一様（霧か無地の面だけ）");
   else {
-    const d = perceiveWord("distance", r.distance);
-    parts.push(d ? `面が見える（${d}）` : "面が見える");
+    // ★暗い領域は明るさも添える（真下を覗いて「面はあるが、とても暗い」を「面が見える」だけで済ませない）
+    const notes = [perceiveWord("distance", r.distance)];
+    if (r.luma < PERCEIVE_BINS.luma.edges[2]) notes.push(perceiveWord("luma", r.luma));
+    const n = notes.filter((x): x is string => !!x);
+    parts.push(n.length ? `面が見える（${n.join("・")}）` : "面が見える");
   }
   return parts.join("・");
 }

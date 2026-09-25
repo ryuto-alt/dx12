@@ -147,6 +147,9 @@ console.log("[6] シーン全体と facts に数値が混ざらないこと");
   check("明るいがのっぺり → 霧か無地", regionWord({ empty: 0, luma: 0.5, lumaStd: 0.005, distance: 30 }) === "一様（霧か無地の面だけ）");
   check("面が見える（距離付き）", regionWord({ empty: 0, luma: 0.5, lumaStd: 0.1, distance: 6 }) === "面が見える（近い）");
   check("空が半分", regionWord({ empty: 0.5, luma: 0.5, lumaStd: 0.1, distance: 6 }) === "空が半分くらい・面が見える（近い）");
+  // 実測（井戸の真上から真下、底の灯りなし）: 面はあるが真っ暗に近い。明るさを添えて言う
+  check("暗い面は明るさも添える", regionWord({ empty: 0, luma: 0.14, lumaStd: 0.03, distance: 9.8 }) === "面が見える（中くらいの距離・とても暗い）",
+    regionWord({ empty: 0, luma: 0.14, lumaStd: 0.03, distance: 9.8 }));
 
   const raw: PerceiveRaw = {
     mode: "Editor",
