@@ -343,9 +343,12 @@ private:
     void PrepareFrame(RenderFrameContext& frame);
     ViewDesc MakeMainViewDesc(const RenderFrameContext& frame) const;
     void RenderView(const ViewDesc& view, RenderFrameContext& frame);
-    // RenderView の下請け（主ビューだけが呼ぶ「フレームで 1 回」の CPU 側の仕事）
+    // RenderView の下請け（主ビューだけが呼ぶ「フレームで 1 回」の仕事）
     void FillSceneFrameConstants(FrameConstants& fc, const RenderFrameContext& frame);
     void CollectLightsAndDecals(FrameConstants& fc);
+    struct PostChainInputs;
+    void RenderPostChain(const PostChainInputs& in, ID3D12Resource*& outBackBuffer,
+                         D3D12_CPU_DESCRIPTOR_HANDLE& outRtv);
     void RenderViewportOverlays(RenderFrameContext& frame);
     void RenderImGuiFrame(RenderFrameContext& frame);
     void SubmitFrame(RenderFrameContext& frame);
