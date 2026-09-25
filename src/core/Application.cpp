@@ -1752,7 +1752,12 @@ void Application::Run()
                 CompleteMcp(m_mcpBridge.get(), m_mcpGameViewReply,
                     nlohmann::json{{"path", p}, {"width", m_sceneRT->GetWidth()},
                                    {"height", m_sceneRT->GetHeight()},
-                                   {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"}});
+                                   {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                                   // 撮った投影（編集カメラを戻す前の値）。ゲームカメラの fovDegrees と
+                                   // 一致するはず。正射なら orthoHeight を返す
+                                   {"orthographic", m_camera->IsOrthographic()},
+                                   {"fovDeg", DirectX::XMConvertToDegrees(m_camera->GetFovY())},
+                                   {"orthoHeight", m_camera->GetOrthoHeight()}});
             m_mcpGameViewReply = {};
             if (gvOverride)   // 編集カメラを完全に復元(位置/向き/投影)
             {

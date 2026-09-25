@@ -3731,7 +3731,13 @@ void Application::Render()
 
     // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
     // 回転/ドリーは入力側で無効化済み。Play 中は CameraComponent 同期が優先する。
-    if (!m_isGameMode && m_engineMode == EngineMode::Editor)
+    // ★MCP screenshot_game_view（Editor 中）のフレームだけはエディタの投影を当てず、下の
+    //   Play と同じ「アクティブな CameraComponent の投影」で描く。以前はここで毎フレーム 45 度へ
+    //   戻していたので、ゲームカメラの位置から 45 度で撮っていた（fovDegrees が効かない）。
+    //   2D ビュー中も同じ（正射＋XY 正対を当てると位置まで書き換わる）。撮った直後に
+    //   Run ループが編集カメラを丸ごと復元するので、シーンビューの挙動は変わらない。
+    const bool gameViewShot = (m_mcpGameViewReply.client != 0) && m_engineMode != EngineMode::Playing;
+    if (!m_isGameMode && m_engineMode == EngineMode::Editor && !gameViewShot)
     {
         if (m_editorCtx->view2D)
         {
@@ -3766,8 +3772,8 @@ void Application::Render()
     }
     else
     {
-        // Play / 単体ゲーム: アクティブな CameraComponent の投影（透視/正射・FOV・orthoSize・near/far）を
-        // 実ビューポートのアスペクトで m_camera に毎フレーム反映する。
+        // Play / 単体ゲーム / Editor 中の screenshot_game_view: アクティブな CameraComponent の
+        // 投影（透視/正射・FOV・orthoSize・near/far）を実ビューポートのアスペクトで m_camera に反映する。
         bool applied = false;
         auto& reg = m_scene->GetRegistry();
         for (auto [e, cam] : reg.view<const CameraComponent>().each())
