@@ -242,8 +242,62 @@ audio:moveVoice(hum, x, y, z)             -- 音源が動くなら毎フレー�
 audio:setVoiceVolume(hum, 0.3)            -- フェードアウト
 audio:setVoicePitch(hum, 0.6)             -- スピンダウン（0.1〜2.0）
 if audio:isVoicePlaying(hum) then audio:stopVoice(hum) end   -- その 1 本だけ止める
+audio:stopVoice(hum, 1.5)                 -- 1.5 秒でフェードアウトしてから止める
 ```
 ID は世代つきなので、鳴り終わってスロットが使い回された後の古い ID は無視される（他人の音を誤って止めない）。
+
+#### ミキサー（バス・優先度・スナップショット・リバーブ・ストリーミング）
+音は必ずどれかの**バス**（XAudio2 のサブミックス）を通る。既定は
+`master ← music / sfx / ambience / voice / ui`（＋リバーブの戻り `reverb`）。
+`setMasterVolume / setBGMVolume / setSFXVolume` は `master / music / sfx` の別名。
+```lua
+-- 汎用の再生口。オプションは全部省略可（pos を渡すと 3D 空間音）
+local id = audio:play("audio/se/step.wav", {
+    bus = "sfx", volume = 0.8, pitch = 1.0, loop = false,
+    priority = 200,                      -- 0..255。上限に達したら低い方から奪われる
+    pos = Vec3.new(x, y, z), minDistance = 1, maxDistance = 25,
+    reverb = 1.0,                        -- リバーブへの送りの倍率
+})
+
+-- バス（オプション画面・演出）
+audio:createBus("monster", "sfx")        -- sfx の子バス（子は親の音量・ミュートの影響を受ける）
+audio:setBusVolume("ambience", 0.6)
+audio:setBusMute("voice", true)
+audio:setBusLowpass("sfx", 1200)         -- こもらせる（0 = 無し。上限は出力サンプルレート/6）
+local peakDb, rmsDb = audio:getBusLevel("sfx")   -- メーター（dBFS、-120 = 無音）
+
+-- 同時発音数: 実ボイスは全体 32 本（既定）。超えた分と「遠くて聞こえない音」は仮想ボイスになり、
+-- 位置だけ進めて、聞こえる/空きができたら続きから鳴る（isVoicePlaying は仮想中も true）。
+audio:setMaxVoices(24)
+audio:setBusVoiceLimit("ambience", 6)
+local real, virt = audio:getVoiceCount()
+
+-- スナップショット: バス設定の組に名前を付け、時間を掛けて切り替える。
+-- 値はユーザー音量（setBusVolume）に掛ける補正なので、オプション画面の値とぶつからない。
+audio:defineSnapshot("chase",  { music = {volume = 1.0}, ambience = {db = -9} })
+audio:defineSnapshot("hidden", { sfx = {lowpass = 900, volume = 0.7}, ambience = {lowpass = 1500} })
+audio:setSnapshot("hidden", 0.8)         -- 0.8 秒で遷移（'default' = 補正なし）
+
+-- リバーブ: 部屋ごとの響きは AudioReverbZone コンポーネントで置く（下の表）。
+-- ゾーンの外で使う既定の響き:
+audio:setReverb("outdoor", 0.2)          -- getReverbPresets() で一覧
+
+-- BGM: .ogg は自動でストリーミング（丸ごとデコードしない）。フェードつき切り替え:
+audio:playBGM("audio/bgm/chase.ogg", true, 1.5)   -- 1.5 秒でクロスフェード
+audio:setBGMLoopPoints(12.0, 96.0)       -- イントロ付きの曲（OGG の LOOPSTART/LOOPLENGTH タグでも可）
+local amb = audio:playStream("audio/amb/rain.ogg", {volume = 0.5, fadeIn = 3})  -- 長い環境音
+audio:fadeVoice(amb, 0.2, 1.0)           -- 止めずに 1 秒で 0.2 へ（ダッキング）
+```
+- **AudioReverbZone**（Inspector「✚ コンポーネント追加 > Audio Reverb Zone」）: `preset`（none / generic /
+  closet / room / smallroom / largeroom / bathroom / stoneroom / hallway / stonecorridor / hall / cave /
+  sewer / hangar / forest / city / outdoor / underwater）、箱（`halfExtents`）か球（`radius`）、
+  `fadeDistance`（形の外側この幅で響きが 0 へ）、`wet`（響きの量）、`priority`（重なったら大きい方が内側）。
+  リスナーが入ると響きが補間で切り替わる（時間方向にも 0.35 秒でならす）
+- リバーブへの送り量 = バスの `reverbSend`（既定 sfx/ambience 1、voice 0.6、music/ui 0）× `play{reverb=}`
+  × √(距離減衰)。遠い音ほど響きの割合が増える＝距離感が出る。バスのミュート・ローパスは響きにも掛かる
+- Play を止めると、スナップショット・既定の響き・ゾーンは初期状態へ戻る（バスの音量はそのまま）
+- 何がどれだけ鳴っているかは **ツール > オーディオミキサー**（メーター・フェーダー・鳴っている音の一覧）と、
+  AI からは MCP `audio_state`（数値だけ）で見る
 
 ### エフェクトを鳴らす / シェーダーを動かす
 
