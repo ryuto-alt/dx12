@@ -655,6 +655,7 @@ add_test(NAME McpUndoTests COMMAND McpUndoTests)
 add_executable(LuaApiDocTests lua_api_doc_test.cpp)
 target_compile_definitions(LuaApiDocTests PRIVATE
     DX12E_SCRIPT_ENGINE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/ScriptEngine.cpp"
+    DX12E_SCRIPT_ENGINE_AI_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/ScriptEngineAi.cpp"
     DX12E_APP_INTERNAL_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../src/core/ApplicationInternal.cpp")
 if(MSVC)
     target_compile_options(LuaApiDocTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
@@ -698,6 +699,7 @@ add_executable(NavMeshTests
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavPolyMesh.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavMesh.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavQuery.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavCorridor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavBuilder.cpp)
 target_include_directories(NavMeshTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 if(MSVC)

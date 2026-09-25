@@ -737,14 +737,32 @@ nlohmann::json McpLuaApi()
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
         "warp(e,x,y,z)  ※任意座標へ即テレポート。CharacterController>RigidBody>Transformの優先で処理先を切替、CC は縦速度もリセット",
     })));
-    objects.push_back(O("nav", "global (':' で呼ぶ)。ナビメッシュ経路探索", json::array({
+    objects.push_back(O("nav", "global（nav.f(...) でも nav:f(...) でも呼べる）。ナビメッシュ経路探索", json::array({
         "ready() -> bool  (ナビメッシュが焼けているか。エディタの『ツール > ナビメッシュ』か dx12_navmesh_build で焼く)",
-        "sample(pos, radius?) -> Vec3|nil  (位置を一番近い歩行面へ落とす。高さは坂道でもボクセル分解能で正確)",
+        "sample(pos, radius?) -> Vec3|nil  (位置を一番近い歩行面へ落とす。点を含むポリゴン上の最近点・高さは坂道でも正確)",
         "findPath(from, to, radius?) -> {Vec3,...}  (A* + ファネル。空テーブルなら経路なし。"
         "最後の点が to から離れていれば『そこまでしか行けない』意味)",
-        "raycast(from, to) -> hit:bool, point:Vec3  (壁に当たるまで直進。『経路を張らずに真っ直ぐ行けるか』の判定)",
-        "moveAlong(from, to) -> Vec3  (壁で滑らせた移動先。精密な当たり判定つきの1歩)",
-        "★findPath は毎フレーム全員ぶん呼ばないこと。数十フレームに 1 回引き直して、間は折れ線を追うだけで足りる",
+        "raycast(from, to) -> hit:bool, point:Vec3  (★旧 API。true は『壁に当たった』だけ。false は通れたとは限らない"
+        "（始点がナビの外でも false）。新規コードは raycastEx を使う)",
+        "moveAlong(from, to) -> Vec3  (壁で滑らせた移動先。始点から届くポリゴンだけを辿るので壁を抜けない。着地は壁の辺から少し内側)",
+        "locate(pos, radius?) -> ref:int, Vec3 | nil  (点を含むポリゴンの参照 polyRef とその上の点。ref は焼き直すと無効になる)",
+        "isValidRef(ref) -> bool  (焼き直し後の古い ref は false)",
+        "raycastEx(from, to, ref?) -> { status='clear'|'hit'|'startOffMesh'|'truncated', hit, t, point, normal, ref }"
+        "  (4 状態を区別するレイ。ref を渡すとそのポリゴンから撃つ＝縁で取り違えない)",
+        "moveAlongEx(from, to, ref?) -> Vec3, ref  (ref を持ち回る滑り移動。毎回位置から探し直さない)",
+        "findPathEx(from, to, radius?) -> { status='complete'|'partial'|'failed', points={Vec3..}, length, reached }",
+        "corridor(pos, radius?) -> NavCorridor|nil  (通路。張った後は毎フレーム corners/advance を呼ぶだけ＝A* をやり直さない)",
+        "★findPath は毎フレーム全員ぶん呼ばないこと。追いかけるなら corridor か群衆（nav.agent*）を使う",
+    })));
+    objects.push_back(O("NavCorridor", "nav.corridor(pos) の戻り値（':' で呼ぶ）", json::array({
+        "setTarget(pos, radius?) -> 'complete'|'partial'|'failed'  (現在地から目標まで A* で通路を張る)",
+        "moveTarget(pos) -> bool  (目標を少し動かす。A* をやり直さず末尾を伸ばす。壁で止まったら false→setTarget し直す)",
+        "move(pos) -> Vec3  (現在地を pos へ滑らせて動かす。壁は抜けない。戻り値が実際の位置)",
+        "advance(dist, margin?) -> Vec3  (通路に沿って dist メートル進める。角を順にたどる)",
+        "corners(n?, margin?) -> {Vec3..}  (現在地から先の角。margin>0 で壁の角から離して返す＝壁を擦らない)",
+        "optimize(range?)  (見通せる所まで近道する)",
+        "reset(pos) -> bool / position() -> Vec3 / target() -> Vec3 / ref() -> int",
+        "status() -> 'none'|'complete'|'partial'|'failed' / isValid() -> bool（焼き直しで false）/ length() -> float / polyCount() -> int",
     })));
     objects.push_back(O("audio", "global", json::array({
         "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",

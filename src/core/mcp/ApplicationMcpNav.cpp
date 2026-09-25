@@ -275,14 +275,19 @@ void Application::RegisterMcpNavMethods()
                 throw McpError(McpErr::InvalidParam, "from is not on the navmesh",
                                "searchRadius / searchHeight を広げるか、from をナビメッシュの上に置くこと");
 
-            f32 t = 1.0f, n[3]{}, hit[3]{};
-            const bool blocked = nm.Raycast(start, to, poly, t, n, hit);
-            resp["hit"]  = blocked;
-            resp["t"]    = t;
-            resp["point"]  = { hit[0], hit[1], hit[2] };
-            resp["normal"] = { n[0], n[1], n[2] };
+            // ★status で 4 状態を区別する（旧版は hit=false が「通れた / 始点が外 / 打ち切り」を兼ねていた）
+            const nav::NavRaycastResult r = nm.RaycastEx(start, to, poly);
+            const bool blocked = (r.status == nav::NavRayStatus::Hit);
+            resp["hit"]    = blocked;
+            resp["status"] = nav::NavRayStatusName(r.status);
+            resp["t"]      = blocked ? r.t : (r.status == nav::NavRayStatus::Clear ? 1.0f : r.t);
+            resp["point"]  = { r.hitPos[0], r.hitPos[1], r.hitPos[2] };
+            resp["normal"] = { r.hitNormal[0], r.hitNormal[1], r.hitNormal[2] };
+            resp["poly"]   = r.lastPoly;
+            resp["visited"] = r.visitedCount;
             resp["note"] = "ナビメッシュの壁（隣のポリゴンが無い辺）に対する精密な当たり判定。"
-                           "AABB ではなく実際の輪郭の辺と交差を取る";
+                           "status: clear=届いた / hit=壁に当たった / startOffMesh=始点がナビの外 / "
+                           "truncated=打ち切り（判定不能）。normal は通路の内側を向く";
         });
 }
 

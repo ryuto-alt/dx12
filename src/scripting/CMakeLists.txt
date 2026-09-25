@@ -1,5 +1,6 @@
 add_library(Scripting STATIC
     ScriptEngine.cpp
+    ScriptEngineAi.cpp      # nav / 群衆 / Brain の Lua API
 )
 
 target_include_directories(Scripting PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
@@ -18,6 +19,7 @@ target_link_libraries(Scripting PUBLIC
     Audio
     Physics
     Network
+    Nav
     ${LUA_LIBRARIES}
     sol2::sol2
     Microsoft::DirectXMath

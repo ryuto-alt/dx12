@@ -117,7 +117,11 @@ bool IsDocumentedAsFamily(const std::string& name)
 int main()
 {
     // パスは CMake から絶対パスで渡す（ctest の作業ディレクトリに依存させない）。
-    const std::string engineSrc = ReadFile(DX12E_SCRIPT_ENGINE_CPP);
+    // ★nav / 群衆 / Brain の束縛は ScriptEngineAi.cpp に分けてある。両方を 1 本のテキストとして見る。
+    std::string engineSrc = ReadFile(DX12E_SCRIPT_ENGINE_CPP);
+#ifdef DX12E_SCRIPT_ENGINE_AI_CPP
+    engineSrc += std::string(1, '\n') + ReadFile(DX12E_SCRIPT_ENGINE_AI_CPP);
+#endif
     const std::string doc = ExtractMcpLuaApi(ReadFile(DX12E_APP_INTERNAL_CPP));
     if (engineSrc.empty() || doc.empty())
     {
