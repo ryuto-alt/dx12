@@ -1,0 +1,20 @@
+{
+  "id": "look.brief_fit",
+  "version": 1,
+  "type": "score",
+  "instructions": {
+    "what": "Rate how well the current visual look of a game scene serves the creator's intent. state.brief is the creative brief (genre, mood, what the player should feel, things to avoid, lighting budget). state.facts.look describes the rendered frame and scene settings in words (brightness, contrast, color saturation, fog, lights, post effects, moving particles, dirt decals, materials). state.facts.findings lists what a generic polish checklist flagged; the checklist assumes every scene should be a bright, fully dressed showcase, so its flags may not apply to this brief.",
+    "not_for": "Do not rate technical polish or completeness on its own. A dark, empty or colorless frame can fit perfectly when the brief asks for it, and a bright, colorful, busy frame can be a total miss. Judge only the match between the look and the brief."
+  },
+  "criteria": [
+    { "summary": "Contradicts the brief", "signals": ["the look creates the opposite of the intended mood", "things listed in brief.avoid dominate the frame"] },
+    { "summary": "Mostly off", "signals": ["key qualities of the look work against the intended feeling", "something from brief.avoid is clearly present"] },
+    { "summary": "Neutral or generic", "signals": ["a default-looking frame that neither supports nor fights the brief"] },
+    { "summary": "Mostly fits", "signals": ["brightness, contrast and color mostly support the intended feeling", "only minor mismatches"] },
+    { "summary": "Strongly fits", "signals": ["brightness, contrast, color, atmosphere and motion all serve the intended feeling", "nothing from brief.avoid is present"] }
+  ],
+  "state": ["brief", "facts.look", "facts.findings"],
+  "threshold": { "pass": 2.5, "minConfidence": 0.5, "band": 0.5 },
+  "cases": "look.brief_fit.cases.json",
+  "notes": "0..4 の 5 段。decided は pass 2.5 以上で pass。"
+}

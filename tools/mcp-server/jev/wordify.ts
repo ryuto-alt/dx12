@@ -1,0 +1,103 @@
+// 数値 → 言葉のビン。Jev に渡す state はここを通してから作る。
+//
+// ★なぜ数値をそのまま渡さないか(公式 model-jaggedness と実測):
+//   Jev は数を数えられず、数値の大小・近さ(0.28 と 0.31 のどちらが暗いか)に弱い。
+//   「平均輝度 0.07」を渡すと判断がぶれるが、「とても暗い」なら安定する。
+//   だから比較と境界はここ(TS)で済ませ、Jev には結論の語だけを渡す。
+//   元の数値は結果の raw に別途残す(人とログのため。state には入れない)。
+//
+// ★境界は下の BINS に 1 か所で集める。polish.ts の閾値(眠い絵 0.35 / 白飛び 8% /
+//   真っ黒 35% / 彩度 0.08)と境界を揃えてあるので、ルールの指摘と語が食い違わない
+//   (「眠い」と言っているのにルールは眠くないと言う、が起きない)。
+//   境界を動かしたら wordify.test.ts が落ちる。動かすなら評価ケースも見直すこと。
+//
+// このファイルは純関数だけ。
+
+/** edges[i] 未満なら words[i]、最後の edge 以上なら words の末尾。words.length === edges.length + 1。 */
+export type Bin = { readonly edges: readonly number[]; readonly words: readonly string[] };
+
+export const BINS = {
+  /** 最終画の平均輝度 0..1(polish の meanLuma)。 */
+  luma: {
+    edges: [0.06, 0.15, 0.3, 0.5, 0.7],
+    words: ["ほぼ真っ暗", "とても暗い", "暗い", "中くらい", "明るい", "とても明るい"],
+  },
+  /** 実効レンジ 0..1(上下 1% を落とした明暗差)。0.35 未満が polish の「眠い絵」。 */
+  contrast: {
+    edges: [0.2, 0.35, 0.55, 0.75],
+    words: ["とても眠い", "眠い", "普通", "メリハリがある", "とても強い"],
+  },
+  /** 平均彩度 0..1。0.08 未満が polish の「彩度ほぼゼロ」。 */
+  saturation: {
+    edges: [0.04, 0.08, 0.18, 0.3],
+    words: ["ほぼ無彩色", "くすんでいる", "普通", "鮮やか", "とても鮮やか"],
+  },
+  /** 画面に占める割合(%)。白飛び 8% / 真っ黒 35% が polish の閾値。 */
+  areaPct: {
+    edges: [1, 8, 20, 35, 60],
+    words: ["ほぼ無い", "少し", "目立つ", "多い", "とても多い", "画面の大半"],
+  },
+  /** 全体に対する割合 0..1(法線マップの付いたメッシュの割合など)。 */
+  ratio: {
+    edges: [0.05, 0.35, 0.65, 0.95],
+    words: ["ほぼ無い", "一部", "半分くらい", "大半", "ほぼ全部"],
+  },
+  /** 個数。Jev は数を数えられないので、比較に要る粒度の語へ丸める。 */
+  count: {
+    edges: [1, 2, 4, 11],
+    words: ["なし", "ひとつ", "少し", "いくつも", "たくさん"],
+  },
+  /** ボリュメトリックフォグの密度。0.001 以下は polish でも「フォグ無し」扱い。 */
+  fogDensity: {
+    edges: [0.001, 0.008, 0.025],
+    words: ["なし", "薄い", "中くらい", "濃い"],
+  },
+  /** ブルームの強さ(post.bloom)。look_apply のプリセットは 0.2〜0.6、1 を超えると画面が滲む。 */
+  bloom: {
+    edges: [0.2, 0.5, 1.0],
+    words: ["弱い", "中くらい", "強い", "とても強い"],
+  },
+} as const satisfies Record<string, Bin>;
+
+export type BinName = keyof typeof BINS;
+
+/** 値 → ビンの番号(0..words.length-1)。NaN / 非数は -1。 */
+export function binIndex(value: number, bin: Bin): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return -1;
+  for (let i = 0; i < bin.edges.length; i++) if (value < bin.edges[i]) return i;
+  return bin.edges.length;
+}
+
+/** 値 → 語。読めない値は undefined(「無い」と決めつけない＝ state から落とす)。 */
+export function binWord(value: number | undefined | null, bin: Bin): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const i = binIndex(value, bin);
+  return i < 0 ? undefined : bin.words[i];
+}
+
+export function wordOf(name: BinName, value: number | undefined | null): string | undefined {
+  return binWord(value, BINS[name]);
+}
+
+/** 人が読む表示用「暗い(0.28)」。★Jev の state には使わない(数値を渡さない方針)。 */
+export function labelOf(name: BinName, value: number | undefined | null, digits = 2): string | undefined {
+  const w = wordOf(name, value);
+  if (w === undefined || value === undefined || value === null) return undefined;
+  return `${w}(${Number(value).toFixed(digits)})`;
+}
+
+/** ある語がそのビンの語彙に含まれるか(評価ケースの語が wordify と食い違っていないかの検査用)。 */
+export function isBinWord(name: BinName, word: string): boolean {
+  return (BINS[name].words as readonly string[]).includes(word);
+}
+
+/** 有無の 2 値。undefined は「読めなかった」なので語を出さない。 */
+export function yesNo(v: boolean | undefined, yes: string, no: string): string | undefined {
+  return v === undefined ? undefined : v ? yes : no;
+}
+
+/** 比率(分子/分母)を ratio ビンの語へ。分母 0 や片方不明は undefined。 */
+export function ratioWord(num: number | undefined, den: number | undefined): string | undefined {
+  if (num === undefined || den === undefined || !(den > 0)) return undefined;
+  return wordOf("ratio", Math.max(0, Math.min(1, num / den)));
+}

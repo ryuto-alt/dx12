@@ -1,0 +1,44 @@
+{
+  "id": "finding.intended",
+  "version": 1,
+  "type": "noul",
+  "instructions": {
+    "what": "A generic polish checklist flagged this condition in a game scene: {{code}} = {{gloss}}. The checklist assumes every scene should be a bright, fully dressed showcase. Read state.brief (the creator's intent) and state.facts.look (the current frame in words). Is this particular condition intentional for this work, something the brief's mood, intended player feeling, lighting budget or avoid list calls for, so it should be kept instead of fixed?",
+    "not_for": "Answer no when the brief is silent or neutral about this condition, or when fixing it would make the scene serve the brief better. Do not answer yes only because the scene is dark or minimal overall; the brief itself must call for this specific condition."
+  },
+  "criteria": {
+    "true": "Keep it: the brief's mood, intended feeling, lighting budget or avoid list calls for this condition.",
+    "false": "Fix it: the condition is a real gap for this brief, or the brief does not call for it."
+  },
+  "state": ["brief", "facts.look", "facts.findings"],
+  "threshold": { "yes": 0.7, "band": 0.1 },
+  "fallback": "no",
+  "lookup": {
+    "gloss": {
+      "by": "code",
+      "map": {
+        "NO_LIGHTS": "there are no light sources at all, so shapes have no shading",
+        "SUN_ONLY": "the only light is the sun; there are no fill or rim lights, so shadows are pitch black and shapes do not separate from the background",
+        "LIGHTS_OVER_BUDGET": "more lights are placed than the renderer can draw, so the extra lights are silently dropped",
+        "NO_SHADOW_CASTER": "no light casts shadows, so objects look like they float",
+        "NO_HDRI": "there is no HDRI environment map; ambient light comes from the default procedural sky",
+        "NO_FOG": "there is no volumetric fog, so the air has no haze, depth falloff or visible light shafts",
+        "POST_PASSTHROUGH": "there is no color grading at all (tone mapping only), which reads as a raw, sleepy CG frame",
+        "NO_BLOOM": "bloom is off, so bright lights and emissive things do not glow",
+        "NO_VIGNETTE": "there is no vignette; the frame corners are as bright as the center",
+        "GODRAYS_FOG_DOUBLE": "god rays and volumetric fog are both strong, so sunlight scattering is doubled and washes the frame out",
+        "NO_MOTION": "nothing moves in the frame (no particles such as dust, embers, insects or leaves)",
+        "NO_NORMAL_MAPS": "no surface uses normal maps, so every surface looks perfectly smooth",
+        "DEFAULT_PBR": "most materials still use the default roughness and metallic values, so wood, metal and cloth look like the same plastic",
+        "NO_SSAO": "ambient occlusion is off, so there is no darkening where objects meet",
+        "NO_CONTACT_SHADOW": "contact shadows are off, so small objects lack tight shadows at their base",
+        "FLAT_IMAGE": "the frame has a narrow tonal range (low contrast), so it looks flat and hazy",
+        "CLIPPED_WHITES": "a large area of the frame is blown out to pure white",
+        "CRUSHED_BLACKS": "a large area of the frame is crushed to pure black",
+        "DESATURATED": "the frame has almost no color (very low saturation)"
+      }
+    }
+  },
+  "cases": "finding.intended.cases.json",
+  "notes": "指摘ごとに 1 質問。state は 3 問共通(brief + facts)にして polish_audit の 1 リクエストに束ねる。"
+}
