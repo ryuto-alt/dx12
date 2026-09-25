@@ -1,6 +1,8 @@
 add_library(Scripting STATIC
     ScriptEngine.cpp
     ScriptAudioBindings.cpp   # Lua の audio（音の担当。ScriptEngine.cpp から分けて衝突を避ける）
+    ScriptSaveBindings.cpp    # Lua の save（セーブの担当。同上）
+    LuaJson.cpp               # Lua の値 ⇔ JSON（セーブ本体。tests/lua_json_test.cpp）
 )
 
 target_include_directories(Scripting PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

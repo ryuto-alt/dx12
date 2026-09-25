@@ -5,6 +5,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm（バックグラウンドの BC 圧縮先読み）
+#include "core/save/SaveService.h"      // save.write の scene（WireScriptCallbacks）
 
 namespace dx12e
 {
@@ -519,6 +520,9 @@ void Application::WireScriptCallbacks()
             [this](const std::string& key, double v) { PersistSet(key, v); },
             [this](const std::string& key, double def) { return PersistGet(key, def); });
     }
+
+    // セーブの本体に「どのシーンで保存したか」を書くための問い合わせ口（save.write / save.list の scene）。
+    save::SaveService::Get().SetSceneProvider([this]() { return m_currentSceneRel; });
 
     // C++ EventBus を ScriptEngine へ注入（events:on/emit/clear が薄いバインドになる）。
     m_scriptEngine->SetEventBus(&m_eventBus);

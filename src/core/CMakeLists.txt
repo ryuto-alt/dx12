@@ -50,6 +50,9 @@ add_library(Core STATIC
     vfs/PakArchive.cpp
     vfs/Vfs.cpp
     mcp/McpBridge.cpp
+    save/UserData.cpp                # ユーザー領域（%LOCALAPPDATA%/<ゲーム名> / <プロジェクト>/.dx12）
+    save/SaveFile.cpp                # セーブファイル 1 本の読み書き（純粋な部分。tests/save_file_test.cpp）
+    save/SaveService.cpp             # Lua の save.* の窓口（置き場・プレイ時間）
 )
 
 target_include_directories(Core

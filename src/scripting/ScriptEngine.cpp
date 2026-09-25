@@ -26,6 +26,8 @@
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
 #include "scripting/ScriptAudioBindings.h"
+#include "scripting/ScriptSaveBindings.h"
+#include "core/save/SaveService.h"
 #include "physics/PhysicsSystem.h"
 #include "network/NetworkSystem.h"
 #include "animation/Skeleton.h"
@@ -1567,6 +1569,10 @@ void ScriptEngine::RegisterBindings()
     // --- Audio ---
     // ★束縛の本体は ScriptAudioBindings.cpp（音の担当が他の担当とぶつからないよう分けてある）。
     RegisterAudioBindings(lua);
+
+    // --- セーブ（save.*）---
+    // ★束縛の本体は ScriptSaveBindings.cpp（セーブの担当が他の担当とぶつからないよう分けてある）。
+    RegisterSaveBindings(lua, m_scene, this);
 
     // --- グローバル変数 ---
     lua["scene"]  = m_scene;
@@ -4521,6 +4527,8 @@ std::vector<std::string> ScriptEngine::GetCompletions(const std::string& line)
 void ScriptEngine::ClearBlackboard()
 {
     m_blackboard.clear();
+    // Play を押し直したら新しいプレイ＝プレイ時間も 0 から（save.playTime）。
+    save::SaveService::Get().ResetSession();
 }
 
 void ScriptEngine::OnPlayStart()
