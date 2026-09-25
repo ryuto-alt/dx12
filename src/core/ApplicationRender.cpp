@@ -4739,68 +4739,62 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     gpuBegin(GpuTimer::PrepassSSAO);
     if (useDepthPrepass)
     {
-        // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ書く）---
+        // --- 深度プリパス（カメラ視点で深度へ書く）---
         // ★ラスタライズは camVPJ（ジッタあり）。ここをジッタなしにするとフォワードと
         //   深度がビット一致せず LESS_EQUAL で面が欠落する。
-        // この段の状態は入口で自分で張る（影の段が無いビューでも同じに動くように）。
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_commandList->SetRootSignature(*m_rootSignature);
-        m_commandList->ClearDepthStencil(depthDsv);
-        m_commandList->SetViewportAndScissor(rW, rH);
-
         // 半透明（sortKey==3）はカメラのプリパスから除外する（00-COORDINATION §6 B3）。
         // 影パスは従来どおり半透明も描く＝影の見た目は不変。
         PrepassParams pp{};
         pp.skipTransparent = true;
         pp.jitterNdc       = jitterNdc;
-
         if (velocityPrepass)
         {
-            // 深度 + 速度を同時に書く（RTV=速度RT / DSV=m_dsvHandle）。
             // 前フレームは「ジッタなし」viewProj。履歴が無い初回は現フレームを使う＝速度0。
             pp.mode = PrepassMode::DepthVelocityGBuffer;
             XMStoreFloat4x4(&pp.prevViewProj,
                 m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP);
-            // RTV1 = G-Buffer。全面 0 クリア（背景は深度 1.0 で弾かれるので中身は問われない）。
-            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float gbufZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            m_commandList->ClearRenderTarget(m_gbufferRT->GetRtv(), gbufZero);
-            m_taaPass->BeginVelocity(*m_commandList, depthDsv, m_gbufferRT->GetRtv(),
-                                     0u, 0u, rW, rH);
-            gpuBegin(GpuTimer::DepthPrepass);
-            // ★MASK は速度パスでも抜くこと。抜かないと板の深度が書かれ、葉の隙間の背後が
-            //   forward の LESS_EQUAL で弾かれて真っ黒になる（TAA を入れた時だけ出る不具合）。
-            const DepthMaskPsos velocityMaskPsos{ m_velocityMaskPSO.get(),
-                                                  m_velocityMaskPSOInst.get(),
-                                                  m_velocityMaskPSOSkinned.get() };
-            RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                                 m_velocityPSOInst.get(), &pp,
-                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
-                                 &velocityMaskPsos);
-            gpuEnd(GpuTimer::DepthPrepass);
-            m_taaPass->EndVelocity(*m_commandList);
-            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
-        else
         {
-            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &depthDsv);
-            // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
-            // シャドウパスの ci==0 で更新済み＝ここでは false）。
-            gpuBegin(GpuTimer::DepthPrepass);
-            const DepthMaskPsos prepassMaskPsos{ m_depthPrepassMaskPSO.get(),
-                                                 m_depthPrepassMaskPSOInst.get(),
-                                                 m_depthPrepassMaskPSOSkinned.get() };
-            RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                                 m_depthPrepassPSOInst.get(), &pp,
-                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
-                                 &prepassMaskPsos);
-            gpuEnd(GpuTimer::DepthPrepass);
+            DepthPrepassPass::Inputs dp{};
+            dp.rootSig         = m_rootSignature.get();
+            dp.depthDsv        = depthDsv;
+            dp.width           = rW;
+            dp.height          = rH;
+            dp.velocityGBuffer = velocityPrepass;
+            dp.gbuffer         = m_gbufferRT.get();
+            dp.taa             = m_taaPass.get();
+            dp.drawDepth = [&]()
+            {
+                // ★MASK は速度パスでも抜くこと。抜かないと板の深度が書かれ、葉の隙間の背後が
+                //   forward の LESS_EQUAL で弾かれて真っ黒になる（TAA を入れた時だけ出る不具合）。
+                // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（ここでは false）。
+                if (velocityPrepass)
+                {
+                    const DepthMaskPsos velocityMaskPsos{ m_velocityMaskPSO.get(),
+                                                          m_velocityMaskPSOInst.get(),
+                                                          m_velocityMaskPSOSkinned.get() };
+                    RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
+                                         /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                         m_velocityPSOInst.get(), &pp,
+                                         /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                         &velocityMaskPsos);
+                }
+                else
+                {
+                    const DepthMaskPsos prepassMaskPsos{ m_depthPrepassMaskPSO.get(),
+                                                         m_depthPrepassMaskPSOInst.get(),
+                                                         m_depthPrepassMaskPSOSkinned.get() };
+                    RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
+                                         /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                         m_depthPrepassPSOInst.get(), &pp,
+                                         /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                         &prepassMaskPsos);
+                }
+            };
+            DepthPrepassPass(std::move(dp)).Execute(passCtx);
         }
 
-        m_commandList->TransitionResource(depthRes,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        const D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpuPre = m_srvHeap->GetGpuHandle(depthSrvIndex);
 
         // --- Hi-Z 深度ピラミッド構築（オクルージョンカリングの入力）---
         // ★ここで作るピラミッドは「今フレーム・今のカメラ」の完全な不透明深度から来る。
@@ -4808,51 +4802,42 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         //   camVPJ / 同じ LOD）ので、前フレーム深度の再投影も 2 フェーズ方式も要らない。
         if (useHiZ)
         {
-            // ★compute から読むので NON_PIXEL が要る。このエンジンで深度を
-            //   NON_PIXEL_SHADER_RESOURCE へ遷移するのはここが初めて（既存の深度読者は
-            //   SSAO/SSGI/SSR/コンタクトシャドウ/RT すべてフルスクリーン PS）。
-            //   前後で PIXEL へ戻すので、以降のパスの前提は一切変わらない。
-            m_commandList->TransitionResource(depthRes,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            // ★GpuTimer は 1 スコープにつき 1 フレーム 1 組しか記録できないので、
-            //   ピラミッド構築と可視性判定をまとめて hiZ で挟む（= 機能全体のコスト）。
-            gpuBegin(GpuTimer::HiZ);
-            m_hiZPass->Build(nativeCmdList, m_srvHeap->GetGpuHandle(depthSrvIndex));
-
+            HiZOcclusionPass::Inputs hz{};
+            hz.hiz      = m_hiZPass.get();
+            hz.depthSrv = depthSrvGpuPre;
             if (m_occlusionCull && m_occlusionCull->IsReady())
             {
-                OcclusionCullPass::Params op{};
+                hz.occlusion = m_occlusionCull.get();
+                hz.device    = m_graphicsDevice.get();
+                hz.bounds    = &m_occlusionBounds;
                 // ★プリパスと同じジッタ付き VP を渡すこと。素の VP を使うと半テクセルずれて、
                 //   細い物（手すり・柵・ワイヤ）が明滅する。
-                XMStoreFloat4x4(&op.viewProj, camVPJ);
-                op.vpX = 0.0f;  op.vpY = 0.0f;
-                op.vpW = static_cast<f32>(rW);
-                op.vpH = static_cast<f32>(rH);
-                op.hzbW = static_cast<f32>(m_hiZPass->GetWidth());
-                op.hzbH = static_cast<f32>(m_hiZPass->GetHeight());
-                op.mipCount = m_hiZPass->GetMipCount();
-                m_occlusionCull->Dispatch(nativeCmdList, *m_graphicsDevice,
-                                          m_occlusionBounds, op,
-                                          m_srvHeap->GetGpuHandle(m_hiZPass->GetSrvIndex()),
-                                          frameIndex);
+                XMStoreFloat4x4(&hz.params.viewProj, camVPJ);
+                hz.params.vpX = 0.0f;  hz.params.vpY = 0.0f;
+                hz.params.vpW = static_cast<f32>(rW);
+                hz.params.vpH = static_cast<f32>(rH);
+                hz.params.hzbW = static_cast<f32>(m_hiZPass->GetWidth());
+                hz.params.hzbH = static_cast<f32>(m_hiZPass->GetHeight());
+                hz.params.mipCount = m_hiZPass->GetMipCount();
             }
-            gpuEnd(GpuTimer::HiZ);
-
-            m_commandList->TransitionResource(depthRes,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            HiZOcclusionPass(hz).Execute(passCtx);
         }
 
         // --- SSAO 生成（depth SRV を読み AO→Blur）---
         if (useSSAO)
         {
-            aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
-                m_srvHeap->GetGpuHandle(depthSrvIndex), ssaoCfg,
-                camProj, viewNear, viewFar,
-                0u, 0u, rW, rH, frameIndex);
+            SsaoGeneratePass::Inputs si{};
+            si.ssao     = m_ssaoPass.get();
+            si.settings = &ssaoCfg;
+            si.depthSrv = depthSrvGpuPre;
+            si.proj     = view.proj;
+            si.zNear    = viewNear;
+            si.zFar     = viewFar;
+            si.width    = rW;
+            si.height   = rH;
+            SsaoGeneratePass ssaoPass(si);
+            ssaoPass.Execute(passCtx);
+            aoSrv = ssaoPass.ResultSrv();
             // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
             if (aoSrv == DescriptorHeap::kInvalidIndex)
                 aoSrv = m_ssaoWhiteSrvIndex;
@@ -4861,10 +4846,18 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // --- コンタクトシャドウ生成（同じ深度を太陽方向へレイマーチ）---
         if (useContactShadow)
         {
-            csSrv = m_contactShadowPass->Generate(nativeCmdList,
-                m_srvHeap->GetGpuHandle(depthSrvIndex), csCfg,
-                camView, camProj, lightDirF3,
-                0u, 0u, rW, rH, frameIndex);
+            ContactShadowGeneratePass::Inputs ci{};
+            ci.pass     = m_contactShadowPass.get();
+            ci.settings = &csCfg;
+            ci.depthSrv = depthSrvGpuPre;
+            ci.view     = view.view;
+            ci.proj     = view.proj;
+            ci.lightDir = lightDirF3;
+            ci.width    = rW;
+            ci.height   = rH;
+            ContactShadowGeneratePass csPass(ci);
+            csPass.Execute(passCtx);
+            csSrv = csPass.ResultSrv();
             if (csSrv == DescriptorHeap::kInvalidIndex)
                 csSrv = m_ssaoWhiteSrvIndex;
         }
@@ -4874,9 +4867,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         //   ルートシグネチャも b1 も 1 ビットも増えない。フォワード PS は無改造のまま。
         if (useRtShadow || useRtAo || useRtDebug)
         {
-            gpuBegin(GpuTimer::RtScreen);
             RtScreenPass::GenerateDesc rd;
-            rd.depthSrv  = m_srvHeap->GetGpuHandle(depthSrvIndex);
+            rd.depthSrv  = depthSrvGpuPre;
             // SSAO が実際に生成されていれば min 合成の相手にする。
             // 白 1x1 ダミーのままだと範囲外 Load が 0 を返して画面が真っ黒になるので、
             // ssaoValid を必ず添えること。
@@ -4909,57 +4901,59 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             // ヒット点のバインドレス情報は使えない＝アルベド可視化は黒になる。
             rd.geometryInfo = m_rtScene->GetGeometryInfoAddress();
 
-            const RtSettings& rtCfg = m_scene->GetRtSettings();
-            if (useRtShadow)
-            {
-                const u32 s = m_rtScreenPass->GenerateShadow(nativeCmdList, rd, rtCfg);
-                if (s != DescriptorHeap::kInvalidIndex) csSrv = s;
-            }
-            if (useRtAo)
-            {
-                const u32 s = m_rtScreenPass->GenerateAo(nativeCmdList, rd, rtCfg);
-                if (s != DescriptorHeap::kInvalidIndex) aoSrv = s;
-            }
-            if (useRtDebug)
-            {
-                rtDebugSrv = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo))
-                           ? m_rtScreenPass->GenerateAlbedo(nativeCmdList, rd)
-                           : m_rtScreenPass->GenerateDebug(nativeCmdList, rd);
-            }
-            gpuEnd(GpuTimer::RtScreen);
+            RtScreenGeneratePass::Inputs ri{};
+            ri.rt          = m_rtScreenPass.get();
+            ri.desc        = &rd;
+            ri.settings    = &m_scene->GetRtSettings();
+            ri.shadow      = useRtShadow;
+            ri.ao          = useRtAo;
+            ri.debug       = useRtDebug;
+            ri.debugAlbedo = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo));
+            RtScreenGeneratePass rtPass(ri);
+            rtPass.Execute(passCtx);
+            if (rtPass.ShadowSrv() != DescriptorHeap::kInvalidIndex) csSrv = rtPass.ShadowSrv();
+            if (rtPass.AoSrv()     != DescriptorHeap::kInvalidIndex) aoSrv = rtPass.AoSrv();
+            if (useRtDebug) rtDebugSrv = rtPass.DebugSrv();
         }
 
         // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
         // ★前フレームカラーが無いフレーム（初回 / シーン切替直後 / リサイズ直後）は
         //   ScreenSpaceGiPass::Generate が何もせず kInvalidIndex を返す＝黒ダミーへフォールバック。
-        gpuBegin(GpuTimer::ScreenSpaceGI);
-        if ((useSsr || useSsgi) && velocityPrepass && m_screenSpaceGi->HasHistory())
         {
+            const bool runGi = (useSsr || useSsgi) && velocityPrepass && m_screenSpaceGi->HasHistory();
             ScreenSpaceGiPass::GenerateDesc gd;
-            gd.ssr        = useSsr  ? &ssrCfg  : nullptr;
-            gd.ssgi       = useSsgi ? &ssgiCfg : nullptr;
-            gd.view       = camView;
-            gd.proj       = camProj;   // ジッタなし（深度線形化は無誤差）
-            gd.zNear      = viewNear;
-            gd.zFar       = viewFar;
-            gd.vpLeft = 0; gd.vpTop = 0; gd.vpW = rW; gd.vpH = rH;
-            gd.frameIndex = frameIndex;
-            gd.hasIbl     = (m_iblReady && m_iblBaker != nullptr);
-            gd.depthSrv     = m_srvHeap->GetGpuHandle(depthSrvIndex);
-            gd.gbufferSrv   = m_srvHeap->GetGpuHandle(m_gbufferRT->GetSrvIndex());
-            gd.velocitySrv  = m_srvHeap->GetGpuHandle(m_taaPass->GetVelocitySrvIndex());
-            // irradiance キューブ(t5)。IBLBaker が居れば SRV ブロックは常に有効なので
-            // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
-            // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
-            gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
-            m_screenSpaceGi->Generate(*m_commandList, gd, ssrSrv, ssgiSrv);
+            if (runGi)
+            {
+                gd.ssr        = useSsr  ? &ssrCfg  : nullptr;
+                gd.ssgi       = useSsgi ? &ssgiCfg : nullptr;
+                gd.view       = camView;
+                gd.proj       = camProj;   // ジッタなし（深度線形化は無誤差）
+                gd.zNear      = viewNear;
+                gd.zFar       = viewFar;
+                gd.vpLeft = 0; gd.vpTop = 0; gd.vpW = rW; gd.vpH = rH;
+                gd.frameIndex = frameIndex;
+                gd.hasIbl     = (m_iblReady && m_iblBaker != nullptr);
+                gd.depthSrv     = depthSrvGpuPre;
+                gd.gbufferSrv   = m_srvHeap->GetGpuHandle(m_gbufferRT->GetSrvIndex());
+                gd.velocitySrv  = m_srvHeap->GetGpuHandle(m_taaPass->GetVelocitySrvIndex());
+                // irradiance キューブ(t5)。IBLBaker が居れば SRV ブロックは常に有効なので
+                // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
+                // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
+                gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+            }
+            ScreenSpaceGiGeneratePass::Inputs gi{};
+            gi.gi   = m_screenSpaceGi.get();
+            gi.desc = &gd;
+            gi.run  = runGi;
+            ScreenSpaceGiGeneratePass giPass(gi);
+            giPass.Execute(passCtx);
+            ssrSrv  = giPass.SsrSrv();
+            ssgiSrv = giPass.SsgiSrv();
         }
-        gpuEnd(GpuTimer::ScreenSpaceGI);
 
-        m_commandList->TransitionResource(depthRes,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        // ★ここで Forward 用に RootSig / ヒープを張り直していたが、今は Forward+ の段
-        //   （ForwardScenePass）が入口で自分で張る。
+        // 深度プリパス群の出口: 追跡の外（Forward 以降の生のコード）は DEPTH_WRITE 前提。
+        // ★Forward 用の RootSig / ヒープの張り直しは要らない（ForwardScenePass が入口で張る）。
+        depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     }
     gpuEnd(GpuTimer::PrepassSSAO);
     if (primary)

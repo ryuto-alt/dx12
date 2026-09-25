@@ -18,6 +18,11 @@
 #include "renderer/SkyboxRenderer.h"
 #include "renderer/ParticleSystem.h"
 #include "renderer/GpuParticleSystem.h"
+#include "renderer/TaaPass.h"
+#include "renderer/HiZPass.h"
+#include "renderer/SSAOPass.h"
+#include "renderer/ContactShadowPass.h"
+#include "renderer/DrawItem.h"
 
 namespace dx12e
 {
@@ -87,6 +92,157 @@ void ShadowMapPass::Execute(const RenderPassContext& ctx)
     // 出口の契約: 既定の置き場（PIXEL_SHADER_RESOURCE）へ戻す
     cmd.TransitionResource(m_in.map,
         D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+}
+
+// ---- DepthPrepassPass -------------------------------------------------------------------
+void DepthPrepassPass::DeclareResources(std::vector<PassResourceUse>& out) const
+{
+    out.push_back({"depth", nullptr, D3D12_RESOURCE_STATE_DEPTH_WRITE, PassAccess::Write});
+    if (m_in.velocityGBuffer)
+    {
+        out.push_back({"velocity", nullptr, D3D12_RESOURCE_STATE_RENDER_TARGET, PassAccess::Write});
+        out.push_back({"gbuffer", m_in.gbuffer ? m_in.gbuffer->GetResource() : nullptr,
+                       D3D12_RESOURCE_STATE_RENDER_TARGET, PassAccess::Write});
+    }
+}
+
+void DepthPrepassPass::Execute(const RenderPassContext& ctx)
+{
+    if (!m_in.rootSig || !m_in.drawDepth) return;
+    CommandList& cmd = *ctx.cmd;
+    if (ctx.depth) ctx.depth->Require(cmd, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    cmd.SetDescriptorHeap(ctx.srvHeap->GetHeap());
+    cmd.SetRootSignature(*m_in.rootSig);
+    cmd.ClearDepthStencil(m_in.depthDsv);
+    cmd.SetViewportAndScissor(m_in.width, m_in.height);
+
+    if (m_in.velocityGBuffer && m_in.gbuffer && m_in.taa)
+    {
+        // 深度 + 速度を同時に書く（RTV0=速度RT / RTV1=G-Buffer / DSV=深度）。
+        // G-Buffer は全面 0 クリア（背景は深度 1.0 で弾かれるので中身は問われない）。
+        m_in.gbuffer->Transition(cmd, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        constexpr float gbufZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        cmd.ClearRenderTarget(m_in.gbuffer->GetRtv(), gbufZero);
+        m_in.taa->BeginVelocity(cmd, m_in.depthDsv, m_in.gbuffer->GetRtv(),
+                                0u, 0u, m_in.width, m_in.height);
+        {
+            GpuScope t(ctx, GpuTimer::DepthPrepass);
+            m_in.drawDepth();
+        }
+        m_in.taa->EndVelocity(cmd);
+        // 出口の契約: G-Buffer は読む側（SSR/SSGI/RT/render_debug）の置き場へ
+        m_in.gbuffer->Transition(cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+    else
+    {
+        ctx.native->OMSetRenderTargets(0, nullptr, FALSE, &m_in.depthDsv);
+        GpuScope t(ctx, GpuTimer::DepthPrepass);
+        m_in.drawDepth();
+    }
+}
+
+// ---- HiZOcclusionPass -------------------------------------------------------------------
+void HiZOcclusionPass::DeclareResources(std::vector<PassResourceUse>& out) const
+{
+    out.push_back({"depth",      nullptr, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"hiz",        nullptr, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,          PassAccess::Write});
+    out.push_back({"visibility", nullptr, D3D12_RESOURCE_STATE_PREDICATION,               PassAccess::Write});
+}
+
+void HiZOcclusionPass::Execute(const RenderPassContext& ctx)
+{
+    if (!m_in.hiz) return;
+    // ★compute から読むので NON_PIXEL が要る（他の深度読者はすべてフルスクリーン PS）。
+    if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
+    // ★GpuTimer は 1 スコープにつき 1 フレーム 1 組しか記録できないので、
+    //   ピラミッド構築と可視性判定をまとめて hiZ で挟む（= 機能全体のコスト）。
+    GpuScope t(ctx, GpuTimer::HiZ);
+    m_in.hiz->Build(ctx.native, m_in.depthSrv);
+    if (m_in.occlusion && m_in.device && m_in.bounds)
+        m_in.occlusion->Dispatch(ctx.native, *m_in.device, *m_in.bounds, m_in.params,
+                                 ctx.srvHeap->GetGpuHandle(m_in.hiz->GetSrvIndex()), ctx.frameIndex);
+}
+
+// ---- SsaoGeneratePass -------------------------------------------------------------------
+void SsaoGeneratePass::DeclareResources(std::vector<PassResourceUse>& out) const
+{
+    out.push_back({"depth", nullptr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"ao",    nullptr, D3D12_RESOURCE_STATE_RENDER_TARGET,         PassAccess::Write});
+}
+
+void SsaoGeneratePass::Execute(const RenderPassContext& ctx)
+{
+    m_result = 0xFFFFFFFFu;
+    if (!m_in.ssao || !m_in.settings) return;
+    if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
+    const XMMATRIX proj = XMLoadFloat4x4(&m_in.proj);
+    m_result = m_in.ssao->Generate(ctx.native, ctx.srvHeap, m_in.depthSrv, *m_in.settings,
+                                   proj, m_in.zNear, m_in.zFar,
+                                   0u, 0u, m_in.width, m_in.height, ctx.frameIndex);
+}
+
+// ---- ContactShadowGeneratePass ----------------------------------------------------------
+void ContactShadowGeneratePass::DeclareResources(std::vector<PassResourceUse>& out) const
+{
+    out.push_back({"depth",         nullptr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"contactShadow", nullptr, D3D12_RESOURCE_STATE_RENDER_TARGET,         PassAccess::Write});
+}
+
+void ContactShadowGeneratePass::Execute(const RenderPassContext& ctx)
+{
+    m_result = 0xFFFFFFFFu;
+    if (!m_in.pass || !m_in.settings) return;
+    if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
+    const XMMATRIX view = XMLoadFloat4x4(&m_in.view);
+    const XMMATRIX proj = XMLoadFloat4x4(&m_in.proj);
+    m_result = m_in.pass->Generate(ctx.native, m_in.depthSrv, *m_in.settings,
+                                   view, proj, m_in.lightDir,
+                                   0u, 0u, m_in.width, m_in.height, ctx.frameIndex);
+}
+
+// ---- RtScreenGeneratePass ---------------------------------------------------------------
+void RtScreenGeneratePass::DeclareResources(std::vector<PassResourceUse>& out) const
+{
+    out.push_back({"depth", nullptr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"tlas",  nullptr, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, PassAccess::Read});
+    if (m_in.shadow) out.push_back({"rtShadow", nullptr, D3D12_RESOURCE_STATE_RENDER_TARGET, PassAccess::Write});
+    if (m_in.ao)     out.push_back({"rtAo",     nullptr, D3D12_RESOURCE_STATE_RENDER_TARGET, PassAccess::Write});
+}
+
+void RtScreenGeneratePass::Execute(const RenderPassContext& ctx)
+{
+    m_shadow = m_ao = m_debug = 0xFFFFFFFFu;
+    if (!m_in.rt || !m_in.desc || !(m_in.shadow || m_in.ao || m_in.debug)) return;
+    if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
+    GpuScope t(ctx, GpuTimer::RtScreen);
+    if (m_in.shadow && m_in.settings) m_shadow = m_in.rt->GenerateShadow(ctx.native, *m_in.desc, *m_in.settings);
+    if (m_in.ao && m_in.settings)     m_ao     = m_in.rt->GenerateAo(ctx.native, *m_in.desc, *m_in.settings);
+    if (m_in.debug)
+        m_debug = m_in.debugAlbedo ? m_in.rt->GenerateAlbedo(ctx.native, *m_in.desc)
+                                   : m_in.rt->GenerateDebug(ctx.native, *m_in.desc);
+}
+
+// ---- ScreenSpaceGiGeneratePass ----------------------------------------------------------
+void ScreenSpaceGiGeneratePass::DeclareResources(std::vector<PassResourceUse>& out) const
+{
+    out.push_back({"depth",           nullptr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"gbuffer",         nullptr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"velocity",        nullptr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"prevSceneColor",  nullptr, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+    out.push_back({"ssrSsgi",         nullptr, D3D12_RESOURCE_STATE_RENDER_TARGET,         PassAccess::Write});
+}
+
+void ScreenSpaceGiGeneratePass::Execute(const RenderPassContext& ctx)
+{
+    GpuScope t(ctx, GpuTimer::ScreenSpaceGI);
+    if (!m_in.run || !m_in.gi || !m_in.desc) return;
+    if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
+    m_in.gi->Generate(*ctx.cmd, *m_in.desc, m_ssr, m_ssgi);
 }
 
 // ---- ClusterCullPass --------------------------------------------------------------------

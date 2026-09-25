@@ -16,12 +16,23 @@
 #include "renderer/RenderPass.h"
 #include "renderer/DdgiVolume.h"
 #include "renderer/VolumetricFogPass.h"
+#include "renderer/OcclusionCullPass.h"
+#include "renderer/RtScreenPass.h"
+#include "renderer/ScreenSpaceGiPass.h"
 
 namespace dx12e
 {
 
 class ClusteredLightCulling;
 class DecalSystem;
+class TaaPass;
+class HiZPass;
+class SSAOPass;
+class ContactShadowPass;
+struct SSAOSettings;
+struct ContactShadowSettings;
+struct RtSettings;
+struct OcclusionBounds;
 class SkyboxRenderer;
 class ParticleSystem;
 class GpuParticleSystem;
@@ -61,6 +72,155 @@ public:
 
 private:
     Inputs m_in;
+};
+
+// ===========================================================================================
+// 深度プリパス群（カメラ視点の深度を先に完成させ、それを読む画面空間のパス）
+// ★深度の状態は ctx.depth に対して入口で Require するだけ（プリパス = DEPTH_WRITE /
+//   Hi-Z = NON_PIXEL / それ以外 = PIXEL）。群の最後でビューが DEPTH_WRITE へ戻す。
+//   旧コードは「プリパス後に PIXEL へ、Hi-Z の前後で NON_PIXEL と往復、最後に DEPTH_WRITE へ」を
+//   手で書いていた（誰も深度を読まないフレームでも往復していた）。
+// ===========================================================================================
+
+// ---- 深度プリパス（深度のみ / 深度 + 速度 + G-Buffer の 2 モード。00-COORDINATION §5.5）------
+class DepthPrepassPass final : public IRenderPass
+{
+public:
+    struct Inputs
+    {
+        RootSignature*              rootSig = nullptr;
+        D3D12_CPU_DESCRIPTOR_HANDLE depthDsv{};
+        u32  width = 0, height = 0;
+        bool velocityGBuffer = false;          // true = RTV0 速度（TaaPass 所有）+ RTV1 G-Buffer
+        RenderTarget*               gbuffer = nullptr;
+        TaaPass*                    taa     = nullptr;
+        std::function<void()>       drawDepth; // RenderDepthOnlyScene（呼び出し側）
+    };
+    explicit DepthPrepassPass(Inputs in) : m_in(std::move(in)) {}
+    const char* Name() const override { return "DepthPrepass"; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override;
+    void Execute(const RenderPassContext& ctx) override;
+
+private:
+    Inputs m_in;
+};
+
+// ---- Hi-Z 深度ピラミッド + オクルージョン判定（compute）--------------------------------
+class HiZOcclusionPass final : public IRenderPass
+{
+public:
+    struct Inputs
+    {
+        HiZPass*                            hiz       = nullptr;
+        OcclusionCullPass*                  occlusion = nullptr;   // null なら判定しない
+        GraphicsDevice*                     device    = nullptr;
+        const std::vector<OcclusionBounds>* bounds    = nullptr;
+        OcclusionCullPass::Params           params{};
+        D3D12_GPU_DESCRIPTOR_HANDLE         depthSrv{};
+    };
+    explicit HiZOcclusionPass(const Inputs& in) : m_in(in) {}
+    const char* Name() const override { return "HiZOcclusion"; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override;
+    void Execute(const RenderPassContext& ctx) override;
+
+private:
+    Inputs m_in;
+};
+
+// ---- SSAO（深度 → AO → ブラー）---------------------------------------------------------
+class SsaoGeneratePass final : public IRenderPass
+{
+public:
+    struct Inputs
+    {
+        SSAOPass*                   ssao = nullptr;
+        const SSAOSettings*         settings = nullptr;
+        D3D12_GPU_DESCRIPTOR_HANDLE depthSrv{};
+        DirectX::XMFLOAT4X4         proj{};              // ジッタなし
+        float zNear = 0.1f, zFar = 1000.0f;
+        u32   width = 0, height = 0;
+    };
+    explicit SsaoGeneratePass(const Inputs& in) : m_in(in) {}
+    const char* Name() const override { return "Ssao"; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override;
+    void Execute(const RenderPassContext& ctx) override;
+    u32  ResultSrv() const { return m_result; }   // 失敗時 kInvalidIndex
+
+private:
+    Inputs m_in;
+    u32    m_result = 0xFFFFFFFFu;
+};
+
+// ---- コンタクトシャドウ（同じ深度を太陽方向へレイマーチ）-------------------------------
+class ContactShadowGeneratePass final : public IRenderPass
+{
+public:
+    struct Inputs
+    {
+        ContactShadowPass*           pass = nullptr;
+        const ContactShadowSettings* settings = nullptr;
+        D3D12_GPU_DESCRIPTOR_HANDLE  depthSrv{};
+        DirectX::XMFLOAT4X4          view{}, proj{};     // ジッタなし
+        DirectX::XMFLOAT3            lightDir{};
+        u32 width = 0, height = 0;
+    };
+    explicit ContactShadowGeneratePass(const Inputs& in) : m_in(in) {}
+    const char* Name() const override { return "ContactShadow"; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override;
+    void Execute(const RenderPassContext& ctx) override;
+    u32  ResultSrv() const { return m_result; }
+
+private:
+    Inputs m_in;
+    u32    m_result = 0xFFFFFFFFu;
+};
+
+// ---- DXR の画面パス（RT サン影 / RT-AO / デバッグ。深度 + TLAS）-------------------------
+class RtScreenGeneratePass final : public IRenderPass
+{
+public:
+    struct Inputs
+    {
+        RtScreenPass*                      rt = nullptr;
+        const RtScreenPass::GenerateDesc*  desc = nullptr;   // XMMATRIX を含むので借りる
+        const RtSettings*                  settings = nullptr;
+        bool shadow = false, ao = false, debug = false, debugAlbedo = false;
+    };
+    explicit RtScreenGeneratePass(const Inputs& in) : m_in(in) {}
+    const char* Name() const override { return "RtScreen"; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override;
+    void Execute(const RenderPassContext& ctx) override;
+    // 生成できなかったものは kInvalidIndex（呼び出し側は既定の枠を使い続ける）
+    u32 ShadowSrv() const { return m_shadow; }
+    u32 AoSrv()     const { return m_ao; }
+    u32 DebugSrv()  const { return m_debug; }
+
+private:
+    Inputs m_in;
+    u32 m_shadow = 0xFFFFFFFFu, m_ao = 0xFFFFFFFFu, m_debug = 0xFFFFFFFFu;
+};
+
+// ---- SSR / SSGI（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）-------------------
+// run=false でも Execute は呼ぶ（GPU 計測の区間を旧コードと同じに保つ）。
+class ScreenSpaceGiGeneratePass final : public IRenderPass
+{
+public:
+    struct Inputs
+    {
+        ScreenSpaceGiPass*                     gi = nullptr;
+        const ScreenSpaceGiPass::GenerateDesc* desc = nullptr;   // XMMATRIX を含むので借りる
+        bool run = false;
+    };
+    explicit ScreenSpaceGiGeneratePass(const Inputs& in) : m_in(in) {}
+    const char* Name() const override { return "ScreenSpaceGi"; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override;
+    void Execute(const RenderPassContext& ctx) override;
+    u32 SsrSrv()  const { return m_ssr; }
+    u32 SsgiSrv() const { return m_ssgi; }
+
+private:
+    Inputs m_in;
+    u32 m_ssr = 0xFFFFFFFFu, m_ssgi = 0xFFFFFFFFu;
 };
 
 // ---- クラスタライトカリング（compute 2 パス）-------------------------------------------
