@@ -67,6 +67,7 @@ const char* kWinLighting    = "//ライティング###LightingPanelFloating";
 const char* kWinTerrain     = "//地形ツール###TerrainToolFloating";
 const char* kWinSculpt      = "//スカルプト（異形）###SculptToolFloating";
 const char* kWinNavMesh     = "//ナビメッシュ###NavMeshFloating";
+const char* kWinAudioMixer  = "//オーディオミキサー###AudioMixerFloating";
 
 // パーティクルエディタは中身を BeginChild で 3 分割している。子ウィンドウの中の項目は
 // 親窓からの ID パスでは引けない（子窓の実 ID は "親名/str_id_XXXXXXXX" のハッシュ）ので、
@@ -831,6 +832,7 @@ void T_NewFloatingPanels(ImGuiTestContext* ctx)
         { &EditorContext::showTerrainEditor, kWinTerrain,  "地形ツール"   },
         { &EditorContext::showSculptEditor,  kWinSculpt,   "スカルプト"   },
         { &EditorContext::showNavMesh,       kWinNavMesh,  "ナビメッシュ" },
+        { &EditorContext::showAudioMixer,    kWinAudioMixer, "オーディオミキサー" },
     };
 
     // 失敗は集めて最後にまとめて投げる（1 件で中断すると残りが検査されない）
