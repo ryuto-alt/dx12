@@ -11,6 +11,7 @@
 #include "editor/PostPresetSwatch.h"
 #include "renderer/TransitionPresets.h"
 #include "renderer/ViewDesc.h"
+#include "renderer/ViewPasses.h"
 #include "editor/AssetDrop.h"
 
 namespace dx12e
@@ -4982,10 +4983,19 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
     if (!useDepthPrepass)
         m_commandList->ClearDepthStencil(depthDsv);
-    m_commandList->SetRenderTarget(sceneRT->GetRtv(), depthDsv);
-    m_commandList->SetViewportAndScissor(rW, rH);
+    // ★RT / ビューポート / PSO はここでは張らない。この先の段（IRenderPass）は使うものを
+    //   入口で自分で張る（renderer/RenderPass.h の状態の契約）。
 
-    m_commandList->SetPipelineState(*m_pipelineState);
+    // ここから先のパスが共有する実行文脈。深度はこのビューが追いかける（パスは入口で要る状態を
+    // Require する。追跡の外へ出す前にビューが DEPTH_WRITE へ戻す）。
+    TrackedState depthState{depthRes, D3D12_RESOURCE_STATE_DEPTH_WRITE};
+    RenderPassContext passCtx{};
+    passCtx.cmd        = m_commandList.get();
+    passCtx.native     = nativeCmdList;
+    passCtx.srvHeap    = m_srvHeap.get();
+    passCtx.frameIndex = frameIndex;
+    passCtx.timer      = primary ? m_gpuTimer.get() : nullptr;
+    passCtx.depth      = &depthState;
 
     // PerFrame CB（ライト本体はクラスタードライティングの StructuredBuffer(t13) 側）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること
@@ -5333,33 +5343,27 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // ===== クラスタライトカリング（compute 2 パス）=====
         // ライトを UPLOAD リングへ書いてから AABB 構築 → カリング。呼び出し後は
         // インデックス/カウントが PIXEL_SHADER_RESOURCE 状態になる。
-        // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を必ず再設定する。
+        // ★compute が PSO を上書きしても、後段は入口で自分の状態を張るので張り直さない（RenderPass.h）。
+        // 投影の _11/_22 はクラスタとデカールのカリングで共用する。
+        XMFLOAT4X4 cullProjF;
+        XMStoreFloat4x4(&cullProjF, camProj);
         u32 ddgiLightSrvIndex = DescriptorHeap::kInvalidIndex;   // DDGI が読む t13 の SRV index
         u32 ddgiLightCount    = 0;
         if (m_clusteredLighting && m_clusteredLighting->IsReady())
         {
             const u32 uploaded = m_clusteredLighting->UploadLights(
                 m_clusterLights.data(), numClusterLights, frameIndex);
-            if (clusterOn)
-            {
-                XMFLOAT4X4 projF;
-                XMStoreFloat4x4(&projF, camProj);
-                gpuBegin(GpuTimer::ClusterCull);
-                m_clusteredLighting->Dispatch(nativeCmdList, camView,
-                                              projF._11, projF._22,
-                                              fc.clusterParams.x, fc.clusterParams.y,
-                                              viewFar, uploaded, frameIndex);
-                gpuEnd(GpuTimer::ClusterCull);
-                m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-                m_commandList->SetRootSignature(*m_rootSignature);
-                m_commandList->SetPipelineState(*m_pipelineState);
-            }
-            else
-            {
-                // フォールバック（正射 / 設定 OFF）でもテーブルはバインドするので、
-                // インデックス/カウントは読取状態にしておく（中身は読まれない）。
-                m_clusteredLighting->EnsureReadable(nativeCmdList);
-            }
+            ClusterCullPass::Inputs ci{};
+            ci.culling     = m_clusteredLighting.get();
+            ci.cull        = clusterOn;
+            ci.view        = view.view;
+            ci.proj11      = cullProjF._11;
+            ci.proj22      = cullProjF._22;
+            ci.zNear       = fc.clusterParams.x;
+            ci.zFarCluster = fc.clusterParams.y;
+            ci.zFarCamera  = viewFar;
+            ci.lightCount  = uploaded;
+            ClusterCullPass(ci).Execute(passCtx);
             ddgiLightSrvIndex = m_clusteredLighting->GetSrvTableIndex(frameIndex);  // = t13
             ddgiLightCount    = uploaded;
         }
@@ -5374,11 +5378,13 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // ★t14/t15（クラスタのインデックス/カウント）は使わない。あれは画面空間のクラスタで、
         //   視錐台の外にあるプローブには対応するクラスタが存在しないため。
         // プローブは画面空間ではないので compute。ヒット点は Step 5 のバインドレスを流用。
-        // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を再設定する。
         if (ddgiTlasOk && m_ddgi && m_ddgi->IsReady())
         {
-            gpuBegin(GpuTimer::Ddgi);
-            DdgiVolume::UpdateDesc dd;
+            DdgiUpdatePass::Inputs di{};
+            di.ddgi     = m_ddgi.get();
+            di.device   = m_graphicsDevice.get();
+            di.settings = &m_scene->GetDdgiSettings();
+            DdgiVolume::UpdateDesc& dd = di.desc;
             dd.tlas         = ddgiTlas;
             dd.geometryInfo = ddgiGeoInfo;
             dd.sunDir       = lightDirF3;
@@ -5401,11 +5407,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             dd.lightCount    = ddgiLightCount;
             dd.frameIndex   = m_deterministicCapture
                             ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
-            m_ddgi->Update(nativeCmdList, *m_graphicsDevice, m_scene->GetDdgiSettings(), dd);
-            gpuEnd(GpuTimer::Ddgi);
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            m_commandList->SetRootSignature(*m_rootSignature);
-            m_commandList->SetPipelineState(*m_pipelineState);
+            DdgiUpdatePass(di).Execute(passCtx);
         }
 
         // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====
@@ -5453,24 +5455,17 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
             const u32 uploadedDecals =
                 m_decalSystem->Upload(m_decalGpu.data(), static_cast<u32>(m_decalGpu.size()), frameIndex);
-            if (clusterOn && uploadedDecals > 0)
-            {
-                XMFLOAT4X4 projF;
-                XMStoreFloat4x4(&projF, camProj);
-                m_decalSystem->Cull(nativeCmdList, camView,
-                                    projF._11, projF._22,
-                                    fc.clusterParams.x, fc.clusterParams.y,
-                                    viewFar, uploadedDecals, frameIndex);
-                m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-                m_commandList->SetRootSignature(*m_rootSignature);
-                m_commandList->SetPipelineState(*m_pipelineState);
-            }
-            else
-            {
-                // デカール 0 個でもテーブルはバインドするので読取状態にしておく
-                // （フォワード PS は clusterExtra.w==0 で読まないが、状態は正しく保つ）。
-                m_decalSystem->EnsureReadable(nativeCmdList);
-            }
+            DecalCullPass::Inputs dci{};
+            dci.decals      = m_decalSystem.get();
+            dci.cull        = clusterOn && uploadedDecals > 0;   // 0 個 / 総当たりなら読取状態にするだけ
+            dci.view        = view.view;
+            dci.proj11      = cullProjF._11;
+            dci.proj22      = cullProjF._22;
+            dci.zNear       = fc.clusterParams.x;
+            dci.zFarCluster = fc.clusterParams.y;
+            dci.zFarCamera  = viewFar;
+            dci.decalCount  = uploadedDecals;
+            DecalCullPass(dci).Execute(passCtx);
         }
     }   // primary: クラスタ / DDGI / デカール
 
@@ -5478,7 +5473,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // クラスタカリングの直後に置く理由: 散乱パスがクラスタライトリストを読むため。
     // ここは (1) CSM が完成済み・(2) カスケード行列/分割が確定済み・(3) 深度は DEPTH_WRITE のまま
     // ＝ フォグの compute が誰の状態も壊さない位置。合成はパーティクル直前で行う（下）。
-    // ★compute は PSO を graphics と共有するので、直後に RootSig/PSO/ヒープを必ず再設定する。
+    // ★compute が PSO を上書きしても張り直さない（後段は入口で自分の状態を張る。RenderPass.h）。
     const VolumetricFogSettings& fogCfg = m_scene->GetVolumetricFogSettings();
     // 透視限定（froxel の Z 分布と深度線形化が透視前提）。正射 / 2D ビューでは丸ごと素通し。
     // ★クラスタライトリスト（t3..t5）は散乱シェーダが必ず参照する＝テーブルを必ずバインドする
@@ -5491,23 +5486,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                             && m_clusteredLighting && m_clusteredLighting->IsReady()
                             && viewSupportsScreenSpace;
     bool volFogBuilt = false;
+    // ViewParams は XMMATRIX を持つのでパスに値で持たせず、ここのローカルを Execute の間だけ貸す。
+    VolumetricFogPass::ViewParams fv{};
     if (volFogActive)
     {
-        gpuBegin(GpuTimer::VolumetricFog);
-        // 影テクスチャは PIXEL_SHADER_RESOURCE で置かれている。compute から読むには NON_PIXEL が要る。
-        // （クラスタのインデックス/カウントは ClusteredLightCulling が最初から
-        //   PIXEL|NON_PIXEL の合成状態で置いているので遷移不要。）
-        m_commandList->TransitionResource(m_shadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_spotShadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_pointShadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        VolumetricFogPass::ViewParams fv{};
         fv.view         = camView;          // ジッタなし
         fv.prevViewProj = m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP;
         {
@@ -5537,90 +5519,79 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // t9,t10 と同じ「スポット影配列 → ポイント影キューブ配列」の 2 本連番。
         fv.punctualShadowSrv = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
 
-        m_volumetricFogPass->BuildVolumes(nativeCmdList, *m_graphicsDevice, fogCfg, fv, frameIndex);
+        // 影マップ 3 種の NON_PIXEL 往復はパスの中（出口で PIXEL_SHADER_RESOURCE へ戻す）。
+        VolumetricFogBuildPass::Inputs fi{};
+        fi.fog          = m_volumetricFogPass.get();
+        fi.device       = m_graphicsDevice.get();
+        fi.settings     = &fogCfg;
+        fi.params       = &fv;
+        fi.csm          = m_shadowMap.Get();
+        fi.spotShadows  = m_spotShadowMap.Get();
+        fi.pointShadows = m_pointShadowMap.Get();
+        VolumetricFogBuildPass(fi).Execute(passCtx);
         volFogBuilt = m_volumetricFogPass->VolumesAllocated();
-
-        m_commandList->TransitionResource(m_shadowMap.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_spotShadowMap.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_pointShadowMap.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        gpuEnd(GpuTimer::VolumetricFog);
-
-        // compute で PSO/RootSig を奪ったので forward 用に戻す（クラスタカリング直後と同じ作法）。
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_commandList->SetRootSignature(*m_rootSignature);
-        m_commandList->SetPipelineState(*m_pipelineState);
-        m_commandList->SetRenderTarget(sceneRT->GetRtv(), depthDsv);
-        m_commandList->SetViewportAndScissor(rW, rH);
     }
 
     // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
-    // skybox は自前 RootSig/PSO を bind するため、直後にメイン RootSig/PSO を再設定してから
-    // per-frame CBV / shadow / IBL を bind し直す。
+    // RT / ビューポート / ヒープはパスが自分で張る。後始末（メインの RootSig/PSO の張り直し）は要らない。
     if (view.Has(kViewSkybox) &&
         m_iblReady && m_drawSkybox && m_skyboxIntensity > 0.0f && m_skyboxRenderer &&
         m_iblBaker && m_iblBaker->HasEnvironment() &&
         m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
     {
+        SkyboxPass::Inputs si{};
+        si.sky        = m_skyboxRenderer.get();
+        si.envCube    = m_srvHeap->GetGpuHandle(m_envCubeSrvIndex);
         // スカイボックスもジッタさせる（させないと TAA で空だけ滲む）。
-        XMFLOAT4X4 invVP;
-        XMStoreFloat4x4(&invVP, XMMatrixTranspose(XMMatrixInverse(nullptr, camVPJ)));
-        m_skyboxRenderer->Render(nativeCmdList, m_srvHeap->GetGpuHandle(m_envCubeSrvIndex),
-                                 invVP, m_skyboxIntensity);
-        // メイン RootSig / PSO を再設定
-        m_commandList->SetRootSignature(*m_rootSignature);
-        m_commandList->SetPipelineState(*m_pipelineState);
+        XMStoreFloat4x4(&si.invViewProjT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVPJ)));
+        si.intensity  = m_skyboxIntensity;
+        si.sceneRtv   = sceneRT->GetRtv();
+        si.depthDsv   = depthDsv;
+        si.sceneColor = sceneRT->GetResource();
+        si.width  = rW;
+        si.height = rH;
+        SkyboxPass(si).Execute(passCtx);
     }
 
-    // Forward+ が読むものを全部ここで張る。★前の段が何を張っていてもこの下だけで完結させる
-    //   （副ビューはここに来るまでメインのルートシグネチャを 1 度も張っていない）。
-    m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-    m_commandList->SetRootSignature(*m_rootSignature);
-    m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, frameCB->GetGpuAddress(frameIndex));
-
-    // シャドウマップSRVをバインド
-    m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
-        m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
-
-    // スポット/ポイント影SRV(t9,t10)をバインド（連番確保なのでスポット側の1個渡しで2枚とも有効になる）
-    m_commandList->SetSRVTable(RootSignature::kSlotPunctualShadowSRV,
-        m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex));
-
-    // IBL テーブル(t5,t6,t7)をバインド（常に有効＝ダミー含む。hasIBL で読むか分岐）
-    if (m_iblReady && m_iblBaker)
-        m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
-            m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
-
-    // クラスタライト テーブル(t13,t14,t15 + デカール予約 t18..t21)をバインド。
-    // フォワード PS が t13..t15 を参照する以上、クラスタード無効時（フォールバック経路）でも
-    // 必ずバインドが要る（未バインドのテーブルはデバッグレイヤ違反）。
-    if (m_clusteredLighting && m_clusteredLighting->IsReady())
-        m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
-            m_clusteredLighting->GetSrvTable(frameIndex));
-
-    // フォワード本体はジッタあり（深度プリパスとビット一致させる）。
-    XMMATRIX viewProj = camVPJ;
-
-    // 全Entityを描画（メインパス: 編集カメラ視点）。AO / コンタクトシャドウは有効時のみ実テクスチャ、
-    // 無効時は白（＝素通し）。深度プリパスが走ったときだけ深度が完成済み →
-    // LESS_EQUAL forward PSO で再利用する。
-    gpuBegin(GpuTimer::MainScene);
-    m_passBucket = primary ? &m_passMain : &m_passOther;
+    // ===== Forward+（全Entity。メインパスなら編集カメラ視点）=====
+    // AO / コンタクトシャドウは有効時のみ実テクスチャ、無効時は白（＝素通し）。深度プリパスが
+    // 走ったときだけ深度が完成済み → LESS_EQUAL forward PSO で再利用する。
+    // ★Forward の PS が読むもの（ヒープ / RootSig / RT / b1 / 影 / IBL / クラスタ）はパスが張る。
+    //   メッシュごとのもの（AO / 影の読み分け / SSR / SSGI / マテリアル / ボーン）は RenderSceneMeshes。
     {
-        CpuScopeTimer _tMain(cpuSlot(CpuMainRec)); DX12_PROFILE_ZONE_N("Rec/Main");
-        // ★applyOcclusion はここ（メインカメラ視点）でだけ true。Hi-Z はこの視点の
-        //   深度プリパスから作られているので、別視点の呼び出しで適用してはいけない。
-        RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
-                          view.isGameView, aoSrv,
-                          useDepthPrepass, csSrv, ssrSrv, ssgiSrv, /*applyOcclusion*/ useHiZ);
+        ForwardScenePass::Inputs fwd{};
+        fwd.rootSig             = m_rootSignature.get();
+        fwd.perFrameCB          = frameCB->GetGpuAddress(frameIndex);
+        fwd.csmTable            = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
+        fwd.punctualShadowTable = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
+        fwd.hasIblTable         = (m_iblReady && m_iblBaker);
+        if (fwd.hasIblTable)
+            fwd.iblTable        = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+        fwd.hasClusterTable     = (m_clusteredLighting && m_clusteredLighting->IsReady());
+        if (fwd.hasClusterTable)
+            fwd.clusterTable    = m_clusteredLighting->GetSrvTable(frameIndex);
+        fwd.sceneRtv   = sceneRT->GetRtv();
+        fwd.depthDsv   = depthDsv;
+        fwd.sceneColor = sceneRT->GetResource();
+        fwd.width  = rW;
+        fwd.height = rH;
+        fwd.drawMeshes = [&]()
+        {
+            // フォワード本体はジッタあり（深度プリパスとビット一致させる）。
+            const XMMATRIX viewProj = camVPJ;
+            m_passBucket = primary ? &m_passMain : &m_passOther;
+            {
+                CpuScopeTimer _tMain(cpuSlot(CpuMainRec)); DX12_PROFILE_ZONE_N("Rec/Main");
+                // ★applyOcclusion はここ（メインカメラ視点）でだけ true。Hi-Z はこの視点の
+                //   深度プリパスから作られているので、別視点の呼び出しで適用してはいけない。
+                RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
+                                  view.isGameView, aoSrv,
+                                  useDepthPrepass, csSrv, ssrSrv, ssgiSrv, /*applyOcclusion*/ useHiZ);
+            }
+            m_passBucket = &m_passOther;
+        };
+        ForwardScenePass(std::move(fwd)).Execute(passCtx);
     }
-    m_passBucket = &m_passOther;
-    gpuEnd(GpuTimer::MainScene);
 
     // ---- Physics / NavMesh Debug Draw（オフスクリーン RT へ・同じ線パイプラインを共有）----
     // ナビメッシュのワイヤは物理デバッグとは独立にトグルできる（別々に見たいので）。
@@ -5662,96 +5633,69 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 }
             }
 
+            // 線は Forward と同じ RT + 深度へ（PSO は kSceneColorFormat + D32。RootSig/PSO は自前）。
+            m_commandList->SetRenderTarget(sceneRT->GetRtv(), depthDsv);
+            m_commandList->SetViewportAndScissor(rW, rH);
             XMFLOAT4X4 vp;
             XMStoreFloat4x4(&vp, XMMatrixTranspose(camVPJ));
             m_physicsDebugRenderer->Render(nativeCmdList, vp);
         }
     }
 
-    // ---- パーティクル（プロシージャル質感ビルボード）: HDR scene RT へ ----
+    // ---- フォグ合成 + パーティクル（プロシージャル質感ビルボード）: HDR scene RT へ ----
     // エディタ編集中も描画する（配置エミッタ/トレイルの常時プレビュー。従来は Play/ゲームのみ）
+    // ★どちらも深度を SRV で読む（DSV は張らない）。深度の遷移は depthState に対する Require で、
+    //   フォグ合成 → パーティクルと続くときは往復のバリアを出さない（旧コードと同じ 1 往復）。
+    // ★合成の GPU 時間は GpuTimer::Particles の内数になる（GpuTimer は 1 スコープにつき
+    //   フレーム 1 回の Begin/End しか記録できないので、volFog スコープは compute 3 パス専用）。
     gpuBegin(GpuTimer::Particles);
     bool particleDistortDrawn = false;
+    // パーティクルより「前」なので、加算合成のパーティクルにはフォグがかからない（意図どおり）。
+    if (volFogBuilt)
+    {
+        FogCompositePass::Inputs ci{};
+        ci.fog        = m_volumetricFogPass.get();
+        ci.depthSrv   = m_srvHeap->GetGpuHandle(depthSrvIndex);
+        ci.sceneRtv   = sceneRT->GetRtv();
+        ci.sceneColor = sceneRT->GetResource();
+        ci.width  = rW;
+        ci.height = rH;
+        FogCompositePass(ci).Execute(passCtx);
+    }
     if (view.Has(kViewParticles) && m_particleSystem)
     {
-        // 深度を読み取り可能へ遷移し soft particles 用 SRV を供給。DSV はバインドせず PS で手動オクルージョン。
-        m_commandList->TransitionResource(depthRes,
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-        auto srtv = sceneRT->GetRtv();
-        nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
-        m_commandList->SetViewportAndScissor(rW, rH);
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-
-        // ---- ボリュメトリックフォグの合成（フルスクリーン 1 枚をブレンドで scene RT へ）----
-        // ★ここに挿すのは偶然ではない。(1) 深度が既に PIXEL_SHADER_RESOURCE、
-        //   (2) OMSetRenderTargets が DSV を意図的にバインドしていない、
-        //   (3) scene RT がまだ RENDER_TARGET —— の 3 条件が同時に揃う唯一の場所で、
-        //   深度の遷移を 1 回も追加せずに済む。
-        // パーティクルより「前」なので、加算合成のパーティクルにはフォグがかからない（意図どおり）。
-        // ★合成の GPU 時間は GpuTimer::Particles の内数になる（GpuTimer は 1 スコープにつき
-        //   フレーム 1 回の Begin/End しか記録できないので、volFog スコープは compute 3 パス専用）。
-        if (volFogBuilt)
-        {
-            m_volumetricFogPass->Composite(nativeCmdList,
-                m_srvHeap->GetGpuHandle(depthSrvIndex),
-                0u, 0u, rW, rH, frameIndex);
-            // フォグ用の RootSig/PSO を張ったので、後続（パーティクル）のために作法どおり戻す。
-            nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(rW, rH);
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        }
+        ParticlesPass::Inputs pi{};
+        pi.particles    = m_particleSystem.get();
+        pi.gpuParticles = m_gpuParticles.get();
+        pi.distortRT    = m_distortRT.get();
+        pi.sceneRtv     = sceneRT->GetRtv();
+        pi.sceneColor   = sceneRT->GetResource();
+        pi.width  = rW;
+        pi.height = rH;
 
         XMMATRIX invView = XMMatrixInverse(nullptr, camView);
-        XMFLOAT3 camRight, camUp, camPos;
-        XMStoreFloat3(&camRight, invView.r[0]);
-        XMStoreFloat3(&camUp,    invView.r[1]);
-        XMStoreFloat3(&camPos,   invView.r[3]);
+        XMStoreFloat3(&pi.camRight, invView.r[0]);
+        XMStoreFloat3(&pi.camUp,    invView.r[1]);
+        XMStoreFloat3(&pi.camPos,   invView.r[3]);
 
         XMFLOAT4X4 proj; XMStoreFloat4x4(&proj, camProj);
-        const float rtw = static_cast<float>(sceneRT->GetWidth());
-        const float rth = static_cast<float>(sceneRT->GetHeight());
-        if (depthSrvIndex != DescriptorHeap::kInvalidIndex)
-            m_particleSystem->SetSceneDepth(m_srvHeap->GetGpuHandle(depthSrvIndex),
-                proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
-        else
-            m_particleSystem->DisableSceneDepth();
-        m_particleSystem->SetTime(totalTime);
-        // ラスタライズ系はジッタあり（TAA でアンチエイリアスされる）。
-        m_particleSystem->Render(nativeCmdList, camVPJ, camRight, camUp, camPos);
+        pi.hasDepthSrv = (depthSrvIndex != DescriptorHeap::kInvalidIndex);
+        if (pi.hasDepthSrv) pi.depthSrv = m_srvHeap->GetGpuHandle(depthSrvIndex);
+        pi.projA    = proj._33;
+        pi.projB    = proj._43;
+        pi.rtWidth  = static_cast<float>(sceneRT->GetWidth());
+        pi.rtHeight = static_cast<float>(sceneRT->GetHeight());
+        XMStoreFloat4x4(&pi.viewProjJittered, camVPJ);
+        pi.time  = totalTime;
+        // 決定論キャプチャ中は dt=0（#31。GPU 粒子が前進すると 2 枚が一致しない）。
+        pi.gpuDt = m_deterministicCapture ? 0.0f : m_gameClock.GetDeltaTime();
 
-        // ---- GPUパーティクル（compute シム + ExecuteIndirect）: 同じ HDR RT へ加算 ----
-        if (m_gpuParticles)
-        {
-            if (depthSrvIndex != DescriptorHeap::kInvalidIndex)
-                m_gpuParticles->SetSceneDepth(m_srvHeap->GetGpuHandle(depthSrvIndex),
-                    proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
-            else
-                m_gpuParticles->DisableSceneDepth();
-            // 決定論キャプチャ中は dt=0（#31。GPU 粒子が前進すると 2 枚が一致しない）。
-            m_gpuParticles->SimulateAndRender(nativeCmdList,
-                                              m_deterministicCapture ? 0.0f : m_gameClock.GetDeltaTime(),
-                                              totalTime, camVPJ, camRight, camUp);
-        }
-
-        // ---- 歪みパーティクル（熱ゆらぎ/衝撃波）: 歪みバッファ(RG16F)へ ----
-        // Render() と同一フレームのインスタンスバッファを共有するため直後に描く。
-        if (m_particleSystem->HasDistortion() && m_distortRT)
-        {
-            m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float distClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            m_commandList->ClearRenderTarget(m_distortRT->GetRtv(), distClear);
-            auto drtv = m_distortRT->GetRtv();
-            nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(rW, rH);
-            m_particleSystem->RenderDistortion(nativeCmdList, camVPJ, camRight, camUp);
-            m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            particleDistortDrawn = true;
-        }
-
-        m_commandList->TransitionResource(depthRes,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        ParticlesPass pp(pi);
+        pp.Execute(passCtx);
+        particleDistortDrawn = pp.DistortionDrawn();
     }
+    // 追跡の外（ワールドスプライト / render_debug / ポスト）は深度が DEPTH_WRITE で置かれている前提。
+    depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     gpuEnd(GpuTimer::Particles);
 
     // ---- ワールド空間 2D スプライト（Sprite2D, worldSpace=true）: HDR scene RT へ ----
