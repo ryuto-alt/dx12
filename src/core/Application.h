@@ -112,6 +112,7 @@ namespace dx12e
     class MaterialLibraryPanel;
     struct Material;
     class PerceptionPass;      // renderer/PerceptionPass.h（知覚層の ID パス。dx12_perceive の要求時だけ作る）
+    struct ViewDesc;           // renderer/ViewDesc.h（1 ビューの記述。Application::RenderView が受け取る）
     struct McpPerceiveJob;     // core/mcp/McpPerceive.h（dx12_perceive 1 回ぶんの状態）
 }
 
@@ -330,7 +331,8 @@ private:
     //   BeginRenderFrame             フェンス待ち / コマンドリスト / GPU 計測の開始 / ホットリロード監視
     //   ProcessFrameBoundaryCommands MCP・エディタの遅延コマンドの消化（★必ず Render のトップレベルから無条件に）
     //   PrepareFrame                 ボーン / 解像度 / カメラ投影 / ライト / ジッタ / 描画リスト / TLAS
-    //   RenderMainView               メインカメラの 1 ビュー（影 → … → ポスト → バックバッファ）
+    //   RenderView                   1 ビュー（影 → … → ポスト → 出力先）。メインカメラは
+    //                                MakeMainViewDesc の ViewDesc で呼ぶ（renderer/ViewDesc.h）
     //   RenderViewportOverlays       エディタアイコン / 2D スプライト / プレビュー類 / 最終画の撮影
     //   RenderImGuiFrame             ImGui（エディタ UI / ゲーム内 UI）とトランジション
     //   SubmitFrame                  送信 / Present / 遅延解放 / 性能記録
@@ -339,7 +341,8 @@ private:
     void BeginRenderFrame(RenderFrameContext& frame);
     void ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* nativeCmdList);
     void PrepareFrame(RenderFrameContext& frame);
-    void RenderMainView(RenderFrameContext& frame);
+    ViewDesc MakeMainViewDesc(const RenderFrameContext& frame) const;
+    void RenderView(const ViewDesc& view, RenderFrameContext& frame);
     void RenderViewportOverlays(RenderFrameContext& frame);
     void RenderImGuiFrame(RenderFrameContext& frame);
     void SubmitFrame(RenderFrameContext& frame);
