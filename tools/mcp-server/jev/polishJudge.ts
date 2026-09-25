@@ -12,7 +12,8 @@
 //   他の指摘が state に並んでいるのは「関係ない state」ではなく、画面の全体像として判断に要る情報。
 
 import { polishScore, type Finding, type FindingCode, type SceneFacts, PROCEDURAL_SKY } from "../polish.ts";
-import { ask, type AskOptions, type JevResult, type RuleFn } from "./library.ts";
+import { ask, type AskOptions, type AskOutcome, type JevResult, type QuestionRef, type RuleFn } from "./library.ts";
+import type { JudgePlan } from "./judgeCommon.ts";
 import { BINS, ratioWord, wordOf, yesNo } from "./wordify.ts";
 import type { Brief } from "./brief.ts";
 
@@ -321,25 +322,39 @@ export function rulesJudge(findings: Finding[], reason: string, brief: Brief | n
 
 const live = (r: JevResult | undefined) => !!r && (r.source === "jev" || r.source === "cache");
 
+export type PolishJudgeInput = { brief: Brief | null | undefined; facts: SceneFacts; findings: Finding[] };
+
 /**
- * 判断段。findings は auditScene の結果(only で絞った後)。例外は投げない。
+ * 聞く質問と材料(plan)。★品質ゲートは各検査の plan を集めて 1 往復で聞くので、
+ * 「質問を作る」と「答えを読む」を分けてある(judgePolish は 2 つを続けて呼ぶだけ)。
  */
-export async function judgePolish(input: {
-  brief: Brief | null | undefined;
-  facts: SceneFacts;
-  findings: Finding[];
-  askOptions?: AskOptions;
-}): Promise<Judge> {
-  const { brief, facts, findings } = input;
-  const context = buildJudgeContext(brief, facts, findings);
-  const codes = [...new Set(findings.map((f) => f.code))];
-  const refs = [
+export function planPolish(input: PolishJudgeInput): JudgePlan & { codes: FindingCode[] } {
+  const context = buildJudgeContext(input.brief, input.facts, input.findings);
+  const codes = [...new Set(input.findings.map((f) => f.code))];
+  const refs: QuestionRef[] = [
     "look.brief_fit",
     "look.next_fix",
     ...codes.map((code) => ({ id: "finding.intended", vars: { code } })),
   ];
-  const out = await ask(refs, context, { ...input.askOptions, rules: { ...POLISH_RULES, ...input.askOptions?.rules } });
-  const [fitRes, nextRes, ...findRes] = out.results;
+  return { facts: context.facts, refs, codes };
+}
+
+/**
+ * 判断段。findings は auditScene の結果(only で絞った後)。例外は投げない。
+ */
+export async function judgePolish(input: PolishJudgeInput & { askOptions?: AskOptions }): Promise<Judge> {
+  const plan = planPolish(input);
+  const out = await ask(plan.refs, { brief: input.brief ?? null, facts: plan.facts },
+    { ...input.askOptions, rules: { ...POLISH_RULES, ...input.askOptions?.rules } });
+  return interpretPolish(input, plan, out.results, out);
+}
+
+/** ask の答え(plan.refs と同じ順)→ judge。out は費用と Brief の有無(ゲートでは束ねた 1 往復の値)。 */
+export function interpretPolish(input: PolishJudgeInput, plan: ReturnType<typeof planPolish>, results: JevResult[],
+                                out: Pick<AskOutcome, "usd" | "ms" | "briefMissing">): Judge {
+  const { brief, findings } = input;
+  const codes = plan.codes;
+  const [fitRes, nextRes, ...findRes] = results;
 
   if (![fitRes, nextRes, ...findRes].some(live)) {
     const why = out.briefMissing

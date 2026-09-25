@@ -10,6 +10,8 @@
  *   [play] get_play_session / record_playtest(人のプレイ: 困り度 + 原因の 2 問)と autoplay / run_playtests
  *        (機械の軌跡: 原因の 1 問だけ)に judge が付く。到達・再生の合否はルールのまま変わらない。
  *        偽エンジンは W を押している間だけプレイヤーを前へ進める(blocked のときは進まない=詰まり)。
+ *   [gate] dx12_quality_gate: 全検査の質問が 1 往復に束なり、{pass, blocking, keep, suggestions, uncertain, cost} が返る。
+ *        ルールの error は blocking、Jev の keep は blocking から外れて keep に判断が残る。judge:false はルールだけ。
  *
  * 実行: node jev/judgeTools.test.ts
  */
@@ -82,6 +84,14 @@ const HUMAN_SESSION = (() => {
 
 function engineHandler(method: string, params: any): any {
   switch (method) {
+    // ── 品質ゲートが集めるもの(polish の材料・シーン検証・診断) ──
+    case "validate_scene": return { pass: true, exitCode: 0, scenePath: "scenes/main.json", report: "PASS" };
+    case "diagnose": return { summary: { errors: 0, warnings: 0, ok: true }, checks: [] };
+    case "get_scene_settings": return { skybox: { envMapPath: "__procedural_sky__", iblIntensity: 1, drawSkybox: false } };
+    case "list_lights": return { lights: [{ type: "Point", intensity: 0.8, castShadows: true }] };
+    case "get_volumetric_fog": return { enabled: false, density: 0 };
+    case "get_post_process": return { vignetteOn: true };
+    case "get_ssao": case "get_contact_shadow": return { enabled: true };
     case "get_play_session": return HUMAN_SESSION;
     case "get_mode": return { mode: sim.mode };
     case "play": sim.mode = "Playing"; resetSim(); return { mode: "Playing", sceneGeneration: 4 };
@@ -296,6 +306,49 @@ try {
     assert.equal(questionTypes(jev.reqs[jev.reqs.length - 1]), "choice,score");
     assert.equal(rec.judge.cause.id, "jump_too_hard");
     pass("record_playtest: 保存はそのまま、人の記録の困り度 + 原因を 1 往復で");
+  }
+
+  console.log("[gate] dx12_quality_gate");
+  {
+    jev.cfg.answers = {
+      noul: (text) => (text.includes("flagged issue A ") ? 0.93 : 0.05),
+      score: () => ({ score: 3, confidence: 0.9 }),
+      choice: (keys) => ({ choice: keys.includes("enable_ssao") ? "enable_ssao" : keys[0], confidence: 0.8 }),
+    };
+    const before = jev.reqs.length;
+    const g = payload(await mcp.call("dx12_quality_gate", { screenshot: false }, 60000));
+    for (const k of ["pass", "blocking", "keep", "suggestions", "uncertain", "cost", "checks", "judge", "next"]) assert.ok(k in g, `${k} が無い`);
+    assert.deepEqual(Object.keys(g.cost).sort(), ["ms", "requests", "tokens", "usd"]);
+    pass("{pass, blocking[], keep[], suggestions[], uncertain[], cost:{requests, tokens, usd, ms}} の形");
+
+    assert.equal(jev.reqs.length - before, 1, "全検査の質問が 1 往復");
+    const req = jev.reqs[jev.reqs.length - 1];
+    assert.deepEqual(Object.keys(req.state.facts).sort(), ["findings", "layout", "look", "ui"]);
+    assert.equal(g.cost.requests, 1);
+    pass("全検査(配置・仕上がり・UI)の質問を 1 リクエストに束ねる");
+
+    assert.equal(g.pass, false);
+    const bl = g.blocking.map((b: any) => b.code);
+    assert.ok(bl.includes("Z_FIGHT") && bl.includes("SMALL_HIT_TARGET"), bl.join(","));
+    assert.ok(!g.blocking.some((b: any) => b.name === "ENV_Book_07"), "keep した本棚の本は blocking から外れる");
+    const kb = g.keep.find((k: any) => k.name === "ENV_Book_07");
+    assert.ok(kb && kb.judge.value === 0.93 && kb.judge.source === "jev" && kb.judge.confidence === 0.93, JSON.stringify(g.keep));
+    assert.ok(g.suggestions.some((s: any) => s.tool === "dx12_set_ssao"), "polish の次の一手");
+    const vl = engine.received.filter((x) => x.method === "validate_layout").pop()!;
+    assert.equal(vl.params.fix, "none", "ゲートは検査だけ(勝手に直さない)");
+    pass("ルールの error は blocking、keep は外れて判断と確信度が残る。ゲートは勝手に直さない");
+
+    const before2 = jev.reqs.length;
+    const r = payload(await mcp.call("dx12_quality_gate", { judge: false, screenshot: false, checks: ["layout"] }, 60000));
+    assert.equal(jev.reqs.length, before2);
+    assert.equal(r.keep.length, 0);
+    assert.ok(r.blocking.some((b: any) => b.name === "ENV_Book_07"), "ルールだけなら本棚の本も blocking");
+    assert.equal(r.checks.length, 1);
+    pass("judge:false はルールだけ(Jev に出ない)。checks で絞れる");
+
+    const bad = await mcp.call("dx12_quality_gate", { checks: ["nope"] });
+    assert.equal(bad.result.isError, true, "知らない検査はエラー");
+    pass("知らない検査 id はスキーマで弾く");
   }
 } catch (e) {
   console.log(`  NG  ${(e as Error).message}`);

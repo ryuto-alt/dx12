@@ -259,6 +259,21 @@ console.log("[9] アドホックな直接質問(raw)");
   check("壊れた質問はエラー結果", bad.results[0].source === "error");
 }
 
+console.log("[10] stateUnion: 違う state 路の質問を和集合で射影して 1 リクエストに束ねる(品質ゲート用)");
+{
+  const j = fakeJev();
+  await ask(["t.dark", "t.fix"], CONTEXT, base({ fetch: j.fetch, baseDir: freshBase(), cache: "off" }));
+  check("既定は質問ごとの射影 = 2 リクエスト", j.calls.length === 2);
+  const u = fakeJev();
+  await ask(["t.dark", "t.fix"], CONTEXT, base({ fetch: u.fetch, baseDir: freshBase(), cache: "off", stateUnion: true }));
+  check("stateUnion なら 1 リクエスト", u.calls.length === 1 && Object.keys(u.calls[0].questions).length === 2);
+  check("state は和集合(brief + facts.look + facts.findings)で、関係ない unrelated は入らない",
+    JSON.stringify(Object.keys(u.calls[0].state.facts).sort()) === '["findings","look"]' && !("unrelated" in u.calls[0].state));
+  const nb = fakeJev();
+  const r = await ask(["t.dark", "t.fix"], { ...CONTEXT, brief: null }, base({ fetch: nb.fetch, baseDir: freshBase(), cache: "off", stateUnion: true }));
+  check("stateUnion でも Brief が無ければ聞かない", nb.calls.length === 0 && r.briefMissing === true);
+}
+
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(failed === 0 ? "\nOK: jev/library テストすべて通過" : `\nNG: ${failed} 件失敗`);
 process.exit(failed === 0 ? 0 : 1);

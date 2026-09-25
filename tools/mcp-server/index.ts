@@ -54,13 +54,11 @@ import {
   SEQUENCE_EXAMPLE, generateLua, referencedEntities, referencedVfx, validateSpec,
   type SequenceSpec,
 } from "./sequence.ts";
-import {
-  auditScene, imageFacts, polishScore, verdict,
-  lightFactsFrom, entityHasNormalMap, entityHasDefaultPbr, type SceneFacts,
-} from "./polish.ts";
+import { auditScene, polishScore, verdict } from "./polish.ts";
 import {
   DECAL_IDS, buildAtlasPng, describeDecals, findDecal, planDecal,
 } from "./decals.ts";
+import { collectSceneFacts } from "./polishCollect.ts";
 import { JEV_ENDPOINT, JEV_MODEL, hasApiKey } from "./jev/client.ts";
 import {
   ask as jevAsk, askRaw as jevAskRaw, countCache as jevCountCache, jevDir, loadLibrary as loadJevLibrary,
@@ -74,6 +72,7 @@ import { judgePolish, wordifyLook } from "./jev/polishJudge.ts";
 import { UI_SCREENS, judgeUi } from "./jev/uiJudge.ts";
 import { collectLayoutContext, judgeLayout } from "./jev/layoutJudge.ts";
 import { JEV_RULES } from "./jev/rules.ts";
+import { GATE_CHECKS, runQualityGate } from "./jev/qualityGate.ts";
 import {
   eventsFromSteps, fromSession, judgePlay, pointsFromTrace, type PlayInput, type Vec3 as PlayVec3,
 } from "./jev/playJudge.ts";
@@ -5475,70 +5474,8 @@ regRaw(
   },
   async ({ screenshot, only, sampleMeshes, judge }) => {
     try {
-      const facts: SceneFacts = {};
-
-      // ── シーン設定(環境光) ──
-      const settings = await engine.call("get_scene_settings", {}).catch(() => null) as any;
-      const sky = settings?.skybox ?? settings;
-      if (sky) {
-        facts.envMapPath = String(sky.envMapPath ?? "");
-        facts.iblIntensity = typeof sky.iblIntensity === "number" ? sky.iblIntensity : undefined;
-        if (typeof sky.drawSkybox === "boolean") facts.outdoor = sky.drawSkybox;
-      }
-
-      // ── ライト ──
-      const lights = await engine.call("list_lights", { limit: 200 }).catch(() => null) as any;
-      // ★抽出は polish.ts の純関数へ。index.ts に直書きしていた頃はキー名のズレを
-      //   どのテストも検出できず、誤検出が何ヶ月も残った（polish.ts の解説参照）。
-      if (lights?.lights ?? lights?.entries) facts.lights = lightFactsFrom(lights);
-
-      // ── 空気・ポスト・接地 ──
-      facts.fog = await engine.call("get_volumetric_fog", {}).catch(() => undefined) as any;
-      facts.post = await engine.call("get_post_process", {}).catch(() => undefined) as any;
-      facts.ssao = await engine.call("get_ssao", {}).catch(() => undefined) as any;
-      facts.contactShadow = await engine.call("get_contact_shadow", {}).catch(() => undefined) as any;
-
-      // ── 動くもの / メッシュとマテリアル ──
-      const ents = await engine.call("list_entities", { verbose: true }).catch(() => null) as any;
-      const list: any[] = ents?.entities ?? [];
-      facts.entityCount = list.length;
-      facts.emitterCount = list.filter((e) =>
-        (e.componentTypes ?? []).includes("particleEmitter")).length;
-      // デカールはルールでは見ない(有無の良し悪しは作品による)が、判断段へ「汚れ・傷の有無」として渡す。
-      facts.decalCount = list.filter((e) => (e.componentTypes ?? []).includes("decal")).length;
-      const meshes = list.filter((e) => (e.componentTypes ?? []).includes("meshRenderer"));
-      facts.meshCount = meshes.length;
-      if (meshes.length > 0) {
-        const cap = Math.max(1, Math.min(64, sampleMeshes ?? 24));
-        // 全部見ると往復が増えるので先頭 N 件だけ(偏らないよう等間隔で拾う)
-        const step = Math.max(1, Math.floor(meshes.length / cap));
-        const picked = meshes.filter((_, i) => i % step === 0).slice(0, cap);
-        let normals = 0, defaults = 0, seen = 0;
-        for (const m of picked) {
-          const info = await engine.call("get_entity", { entity: m.entityId }).catch(() => null) as any;
-          if (!info) continue;
-          seen++;
-          if (entityHasNormalMap(info)) normals++;
-          if (entityHasDefaultPbr(info)) defaults++;
-        }
-        if (seen > 0) {
-          // 抽出した割合をシーン全体へ引き伸ばす(件数ではなく比率で判定するので問題ない)
-          facts.normalMapCount = Math.round((normals / seen) * meshes.length);
-          facts.defaultPbrCount = Math.round((defaults / seen) * meshes.length);
-        }
-      }
-
-      // ── 最終画 ──
-      let shotPath: string | null = null;
-      if (screenshot !== false) {
-        const out = path.join(os.tmpdir(), `dx12_polish_${Date.now()}.png`);
-        const shot = await engine.call("screenshot_final", { gizmos: false, path: out }).catch(() => null) as any;
-        const got = shot?.path ?? out;
-        if (fs.existsSync(got)) {
-          shotPath = got;
-          facts.image = imageFacts(fs.readFileSync(got));
-        }
-      }
+      // 材料集めは polishCollect.ts(dx12_quality_gate と同じ集め方を共有する)。
+      const { facts, shotPath } = await collectSceneFacts((m, p) => engine.call(m, p), { screenshot, sampleMeshes });
 
       let findings = auditScene(facts);
       if (only && only.length > 0) findings = findings.filter((f) => only.includes(f.category));
@@ -6607,6 +6544,56 @@ reg(
       log: jevSummarizeLog(baseDir),
       cacheEntries: jevCountCache(baseDir),
     };
+  }),
+);
+
+// ════════════════════════════════════════════════════════════════
+//  品質ゲート(作業の区切りで 1 回撃つ): ルールの検査 + 判断段をまとめて 1 つの合否にする
+// ════════════════════════════════════════════════════════════════
+// ★本体は jev/qualityGate.ts(検査は GATE_CHECKS に足す)。ここはエンジン・Brief・再生の口を渡すだけ。
+
+const GATE_CHECK_IDS = GATE_CHECKS.map((c) => c.id) as [string, ...string[]];
+
+regRaw(
+  "dx12_quality_gate",
+  {
+    title: "品質ゲート",
+    description:
+      "作業の区切りで 1 回撃つ品質ゲート。(a) シーンの検証(validate_scene の参照切れ + diagnose の軽い検査。textures/models は既定で外す)"
+      + " (b) 配置検査(validate_layout)+ 判断段 (c) 絵の仕上がり(polish_audit)+ 判断段 (d) UI があれば ui_audit + 判断段"
+      + " (e) playtests を指定すれば保存済みプレイテストの再生 + 判断段、をまとめて 1 つの合否にする。"
+      + "返り値 {pass, blocking[], keep[], suggestions[], uncertain[], cost:{requests, tokens, usd, ms}, checks[], judge, elapsedMs, next}。"
+      + "★合否: ルールの error は blocking(直すまで先へ進まない)。Jev が作品の意図(dx12_brief)に照らして keep(意図どおり)と"
+      + "判断したものは blocking から外し、判断結果と確信度を keep[].judge に残す(直さない)。"
+      + "uncertain は合否に入れず列挙するだけ: 各項目の look のツール呼び出しで自分(Claude)が絵を見て決める。"
+      + "suggestions は次の一手(そのまま撃てる tool / args 付きのものがある)。"
+      + "★Jev は全検査ぶんを 1 往復に束ねる(bundle:\"one\"。\"perDomain\" で検査ごとの state に分けて並列に聞く)。"
+      + "Brief / 鍵が無いときはルールだけで同じ形を返す(judge.source:\"rules\")。judge:false で Jev を使わない。"
+      + "★playtests はシーンを開き直して再生するので、指定したときだけ走る(Editor 中に撃つこと)。Playing 中は配置検査を飛ばす。",
+    inputSchema: {
+      checks: z.array(z.enum(GATE_CHECK_IDS)).optional()
+        .describe(`走らせる検査を絞る(${GATE_CHECK_IDS.join(" / ")})。省略で既定のもの全部(playtests は指定したときだけ)。`),
+      heavy: z.boolean().optional().describe("true で diagnose の重い検査(textures / models。数十秒)も入れる。既定 false。"),
+      screenshot: z.boolean().optional().describe("false で polish の最終画を撮らない(速い)。既定 true。"),
+      strictness: z.enum(["balanced", "strict"]).optional().describe("strict は UI の warning も blocking にする。既定 balanced。"),
+      screen: z.enum(UI_SCREENS).optional().describe("UI の画面の役割(判断段に渡す)。"),
+      playtests: z.union([z.boolean(), z.array(z.string())]).optional()
+        .describe("保存済みプレイテストを再生する(true = 全部 / 名前の配列)。既定は再生しない。"),
+      judge: z.boolean().optional().describe("false で判断段(Jev)を使わずルールだけで返す。既定 true。"),
+      bundle: z.enum(["one", "perDomain"]).optional()
+        .describe("one(既定)= 全検査の質問を 1 リクエストに束ねる / perDomain = 検査ごとの state で並列に聞く。"),
+    },
+    outputSchema: OUT,
+    // 判断段は外部の Jev へ出る。playtests はシーンを開き直すので読み取り専用ではない。
+    annotations: { title: "品質ゲート", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  (args) => run(async () => {
+    const baseDir = await jevProjectBaseDir();
+    const brief = baseDir ? readBrief(baseDir).brief : null;
+    return runQualityGate({
+      call: (m, p) => engine.call(m, p), baseDir, brief, opts: args,
+      replay: (pt) => replayPlaytest(pt),
+    });
   }),
 );
 

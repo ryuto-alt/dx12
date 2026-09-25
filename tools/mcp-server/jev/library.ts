@@ -106,6 +106,12 @@ export type AskOptions = ClientOptions & {
   questionDirs?: string[];
   /** 射影せずこの state をそのまま使う(評価ケースの state 直指定用)。 */
   stateOverride?: unknown;
+  /**
+   * true なら、この ask に来た全質問を「全質問の state 路の和集合」で射影する(= 全部が同じ state になり 1 リクエストに束なる)。
+   * ★品質ゲートが polish / ui / layout / play の質問を 1 往復で聞くため。質問ごとの射影より state が大きくなる
+   *   (他の検査の事実も見える)ので、精度が落ちないかは評価(eval.ts の mixin + stateUnion)で測ってから使う。
+   */
+  stateUnion?: boolean;
   /** false で log.jsonl に書かない。 */
   log?: boolean;
   /** キャッシュもネットも使わずルールで答える(評価で「ルールならどう答えたか」を並べる比較用)。 */
@@ -503,6 +509,7 @@ export async function ask(refs: QuestionRef[], context: any, opts: AskOptions = 
   });
   const results: JevResult[] = new Array(plan.length);
   const instances: Instance[] = [];
+  const unionPaths = opts.stateUnion ? [...new Set(plan.flatMap(({ def }) => def?.state ?? []))] : null;
 
   plan.forEach(({ ref, def }, idx) => {
     const id = instanceIdOf(ref.id, ref.vars, ref.key);
@@ -517,7 +524,7 @@ export async function ask(refs: QuestionRef[], context: any, opts: AskOptions = 
       results[idx] = { ...base, source: "error", value: null, uncertain: true, error: rendered.error };
       return;
     }
-    const state = opts.stateOverride !== undefined ? opts.stateOverride : project(context, def.state);
+    const state = opts.stateOverride !== undefined ? opts.stateOverride : project(context, unionPaths ?? def.state);
     const stateKey = stableStringify(state);
     instances.push({
       idx, base, def, question: rendered.question, vars: rendered.vars, state, stateKey,
