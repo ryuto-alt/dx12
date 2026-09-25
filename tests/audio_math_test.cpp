@@ -179,6 +179,33 @@ void TestSnapshot()
     Check(mono, "単調に増える（戻ったりしない）");
 }
 
+void TestMeter()
+{
+    std::printf("[メーターの針]\n");
+    MeterBallistics m;
+    for (int i = 0; i < 60; ++i) MeterStep(m, 0.0f, 0.0f, 1.0f / 60.0f);
+    Check(MeterPeakDb(m) == kSilenceDb && MeterRmsDb(m) == kSilenceDb, "無音なら -120（-inf ではない）");
+
+    MeterStep(m, 0.5f, 0.35f, 1.0f / 60.0f);
+    Check(Near(MeterPeakDb(m), -6.02f, 0.05f), "ピークは上がるとき即座");
+    Check(MeterRmsDb(m) < -20.0f, "RMS はならすので 1 フレームでは上がり切らない");
+    for (int i = 0; i < 120; ++i) MeterStep(m, 0.5f, 0.35f, 1.0f / 60.0f);
+    Check(Near(MeterRmsDb(m), LinearToDb(0.35f), 0.2f), "2 秒続けば RMS は実際の値に落ち着く");
+
+    // 音が止まってもピークは 0.5 秒保持してから落ちる
+    for (int i = 0; i < 20; ++i) MeterStep(m, 0.0f, 0.0f, 1.0f / 60.0f);   // 0.33 秒
+    Check(Near(MeterPeakDb(m), -6.02f, 0.05f), "止まって 0.33 秒はピークを保持");
+    for (int i = 0; i < 60; ++i) MeterStep(m, 0.0f, 0.0f, 1.0f / 60.0f);   // さらに 1 秒
+    const float after = MeterPeakDb(m);
+    Check(after < -20.0f && after > -40.0f, "保持の後は 24dB/秒で落ちる（約 0.83 秒で -20dB）");
+    for (int i = 0; i < 600; ++i) MeterStep(m, 0.0f, 0.0f, 1.0f / 60.0f);
+    Check(MeterPeakDb(m) == kSilenceDb && MeterRmsDb(m) == kSilenceDb, "十分経てば無音へ戻る");
+
+    MeterBallistics bad;
+    MeterStep(bad, std::nanf(""), -1.0f, 0.016f);
+    Check(MeterPeakDb(bad) == kSilenceDb && MeterRmsDb(bad) == kSilenceDb, "NaN / 負の読みは 0 扱い");
+}
+
 void TestZoneShape()
 {
     std::printf("[リバーブ域の形と重み]\n");
@@ -313,6 +340,7 @@ int main()
     TestVirtual();
     TestPickVictim();
     TestSnapshot();
+    TestMeter();
     TestZoneShape();
     TestReverbPresets();
     TestReverbBlend();

@@ -74,6 +74,10 @@ public:
         u32  virtualVoices = 0;
         f32  reverbSend = 0.0f;      // このバスの音をリバーブへどれだけ送るか 0..1
         bool reverbReturn = false;   // reverb（戻り）バス
+        // メーター（バスの出力 = フェーダー後。dBFS。-120 = 無音）
+        f32  peakDb    = audio::kSilenceDb;   // ピーク（0.5 秒保持してから 24dB/s で落ちる）
+        f32  rmsDb     = audio::kSilenceDb;   // RMS（時定数 0.3 秒）
+        f32  peakNowDb = audio::kSilenceDb;   // 直近 1 処理パス（10ms）のピーク
         bool builtin    = false;     // 既定のバス（消せない・親を変えられない）
     };
 
@@ -280,6 +284,8 @@ public:
     void SetBusReverbSend(const std::string& name, f32 send);  // 0..1
     f32  GetBusReverbSend(const std::string& name) const;
     std::vector<BusInfo> GetBuses() const;                      // 親 → 子の順（master が先頭）
+    // バスのメーター（dBFS、-120 = 無音）。無いバスは false。
+    bool GetBusLevel(const std::string& name, f32& peakDb, f32& rmsDb) const;
 
     // ---- リバーブ ----
     // ゾーンの外で使う既定の響き。preset は "none" / "room" / "hallway" / "cave" ...（未知は false）。
@@ -361,6 +367,11 @@ private:
         f32  chainGain = 1.0f;                  // Tick で更新（master までの積）
         f32  sendChain = 1.0f;                  // master を除いた積（リバーブ送りに掛ける）
         f32  sendLowpass = 0.0f;                // master を除いた経路のローパス（送りに掛ける）
+        // メーター（XAudio2 の VolumeMeter APO をエフェクトチェーンの最後に載せる）
+        bool hasMeter      = false;
+        u32  meterIndex    = 0;                 // エフェクトチェーン内の位置（reverb は 1）
+        u32  meterChannels = 0;
+        audio::MeterBallistics meter;
         // 直近に XAudio2 へ書いた値（同じ値を毎フレーム書かない）
         f32  appliedGain   = -1.0f;
         f32  appliedFilter = -1.0f;
@@ -373,6 +384,7 @@ private:
     f32  BusEffectiveGain(const Bus& bus) const;
     bool BusInSubtree(i32 bus, i32 root) const;
     void UpdateBusChainGains();
+    void UpdateMeters(f32 dt);
     // ソースボイスの送り先（バス）。デバイスが無ければ null を返す＝呼び出し側は作らない。
     IXAudio2Voice* BusOutputVoice(i32 busIndex) const;
     std::vector<std::string> m_warnedUnknownBus;

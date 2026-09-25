@@ -802,6 +802,8 @@ nlohmann::json McpLuaApi()
         "setBusMute(name, bool) / isBusMuted(name) -> bool",
         "setBusLowpass(name, hz) / getBusLowpass(name) -> float  (0 = 無し。上限は出力のサンプルレート/6 ≒ 8kHz)",
         "getBuses() -> {name,...}  (親 → 子の順。master が先頭)",
+        "getBusLevel(name) -> peakDb, rmsDb  (バスのメーター・フェーダー後の dBFS。-120 = 無音。"
+        "ピークは 0.5 秒保持、RMS は 0.3 秒でならす。例: 足音の大きさで敵が気付く)",
         "★AudioSource.bus / audio:play{bus=...} で送り先を選ぶ。無いバス名は sfx で鳴らして警告を 1 度出す",
         "-- スナップショット（バスの音量・ローパスの組を名前で切り替える）--",
         "defineSnapshot(name, {bus={volume=v | db=d, lowpass=hz}, ...}) -> bool  "

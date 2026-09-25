@@ -229,6 +229,12 @@ void RegisterAudioBindings(sol::state& lua)
                             },
         "setBusReverbSend", &AudioSystem::SetBusReverbSend,
         "getBusReverbSend", &AudioSystem::GetBusReverbSend,
+        // バスのメーター（dBFS。-120 = 無音）。例: 足音の大きさで敵が気付く、を音量で決める
+        "getBusLevel",      [](AudioSystem& a, const std::string& name) {
+                                f32 peak = audio::kSilenceDb, rms = audio::kSilenceDb;
+                                a.GetBusLevel(name, peak, rms);
+                                return std::make_tuple(peak, rms);
+                            },
         "getBuses",         [](AudioSystem& a, sol::this_state ts) {
                                 sol::state_view lv(ts);
                                 sol::table t = lv.create_table();

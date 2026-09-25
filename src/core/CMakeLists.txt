@@ -31,6 +31,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpNav.cpp
     mcp/ApplicationMcpGit.cpp
     mcp/ApplicationMcpValidate.cpp   # 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
+    mcp/ApplicationMcpAudio.cpp      # 音の観測（audio_state）
     Window.cpp
     SplashScreen.cpp
     Logger.cpp

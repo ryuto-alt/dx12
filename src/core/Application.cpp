@@ -2707,8 +2707,11 @@ void Application::Update()
     }
     // ★ボイスの終了検出・仮想⇔実の入れ替え・フェード・バスの反映はモードに関係なく毎フレーム回す
     //   （エディタのプレビュー再生・一時停止中の BGM も対象。上の Update は Play 中の定位だけ）。
+    // ★dt は実時間（クランプ前）。XAudio2 の実ボイスはフレームが詰まっても実時間で鳴り進むので、
+    //   0.1 秒で切った dt で仮想ボイスの位置を進めると、重いフレームの後で実ボイスへ戻したとき
+    //   位置がずれる（音声デバイスが無いときの位置も実時間と合わなくなる）。
     if (m_audioSystem)
-        { DX12_PROFILE_ZONE_N("Audio/Tick"); m_audioSystem->Tick(dt); }
+        { DX12_PROFILE_ZONE_N("Audio/Tick"); m_audioSystem->Tick(m_gameClock.GetRawDeltaTime()); }
 
     // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
     if (simRunning)

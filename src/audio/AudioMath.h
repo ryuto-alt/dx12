@@ -171,6 +171,47 @@ inline float SmoothFactor(float dt, float tau)
 
 inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
 
+// ---- メーター ------------------------------------------------------------------
+// XAudio2 の VolumeMeter は「直近 1 処理パス（10ms）」のピーク/RMS しか返さない。
+// ゲームは 1 フレーム（16ms 前後）に 1 回しか読まないので、そのまま出すと数字が暴れて
+// 読めない。ここで針の動き（バリスティクス）を付ける:
+//   ピーク … 上がるときは即座、下がるときは holdSec 保持してから decayDbPerSec で落とす
+//   RMS   … 平均二乗を時定数 rmsTau でならす（≒ 聞こえている大きさ）
+struct MeterBallistics
+{
+    float peak    = 0.0f;   // 線形（保持つき）
+    float hold    = 0.0f;   // 残り保持時間
+    float ms      = 0.0f;   // 平均二乗（平滑後）
+    float peakNow = 0.0f;   // 直近の読み（線形）
+};
+
+inline void MeterStep(MeterBallistics& m, float peakLin, float rmsLin, float dt,
+                      float holdSec = 0.5f, float decayDbPerSec = 24.0f, float rmsTau = 0.3f)
+{
+    if (!(peakLin >= 0.0f)) peakLin = 0.0f;
+    if (!(rmsLin >= 0.0f))  rmsLin = 0.0f;
+    m.peakNow = peakLin;
+    if (peakLin >= m.peak)
+    {
+        m.peak = peakLin;
+        m.hold = holdSec;
+    }
+    else if (m.hold > 0.0f)
+    {
+        m.hold -= dt;
+    }
+    else
+    {
+        m.peak *= DbToLinear(-decayDbPerSec * dt);
+        if (m.peak < peakLin) m.peak = peakLin;
+    }
+    m.ms += (rmsLin * rmsLin - m.ms) * SmoothFactor(dt, rmsTau);
+    if (m.ms < 1e-14f) m.ms = 0.0f;
+}
+
+inline float MeterPeakDb(const MeterBallistics& m) { return LinearToDb(m.peak); }
+inline float MeterRmsDb(const MeterBallistics& m)  { return LinearToDb(std::sqrt(m.ms)); }
+
 // ---- リバーブ ------------------------------------------------------------------
 // XAudio2 の I3DL2 パラメータと同じ並び（室内音響の標準。mB = 1/100 dB）。
 // 補間はこの空間で行う（mB は dB の線形なので耳の感覚に近い）。ネイティブ値への変換は

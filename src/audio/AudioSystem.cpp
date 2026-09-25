@@ -1285,6 +1285,46 @@ void AudioSystem::Tick(f32 dt)
     // 4) 実ボイスへ音量・遮蔽を反映（値が変わったときだけ XAudio2 を呼ぶ）
     for (auto& v : m_voices)
         if (v.active && v.src) ApplyVoiceGain(v);
+
+    // 5) メーター
+    UpdateMeters(dt);
+}
+
+void AudioSystem::UpdateMeters(f32 dt)
+{
+    for (auto& b : m_buses)
+    {
+        f32 peak = 0.0f, rms = 0.0f;
+        if (b.voice && b.hasMeter && b.meterChannels > 0 && b.meterChannels <= 8)
+        {
+            float peaks[8] = {}, rmss[8] = {};
+            XAUDIO2FX_VOLUMEMETER_LEVELS lv{};
+            lv.pPeakLevels  = peaks;
+            lv.pRMSLevels   = rmss;
+            lv.ChannelCount = b.meterChannels;
+            if (SUCCEEDED(b.voice->GetEffectParameters(b.meterIndex, &lv, sizeof(lv))))
+            {
+                f32 ss = 0.0f;
+                for (u32 c = 0; c < b.meterChannels; ++c)
+                {
+                    peak = (std::max)(peak, peaks[c]);
+                    ss  += rmss[c] * rmss[c];
+                }
+                rms = std::sqrt(ss / static_cast<f32>(b.meterChannels));
+            }
+        }
+        audio::MeterStep(b.meter, peak, rms, dt);
+    }
+}
+
+bool AudioSystem::GetBusLevel(const std::string& name, f32& peakDb, f32& rmsDb) const
+{
+    const i32 i = FindBus(name);
+    if (i < 0) { peakDb = rmsDb = audio::kSilenceDb; return false; }
+    const auto& m = m_buses[static_cast<size_t>(i)].meter;
+    peakDb = audio::MeterPeakDb(m);
+    rmsDb  = audio::MeterRmsDb(m);
+    return true;
 }
 
 // ===== ボイス上限 / 読み出し =====
@@ -1440,11 +1480,29 @@ bool AudioSystem::CreateBusVoice(Bus& bus)
         if (!parentVoice) return false;   // 親が作れていない（デバイス無し等）
     }
     OneSend send(parentVoice);   // master は null → 既定の mastering voice へ
+    // メーター（VolumeMeter APO）。★サブミックスの SetVolume はエフェクトより前に掛かるので、
+    //   これはフェーダー後の値＝ミュートすれば下がる（公式: 「submix の volume は filter と
+    //   effect chain の直前に掛かる」）。作れなくても鳴らすことはできるので失敗は警告だけ。
+    IUnknown* meterApo = nullptr;
+    XAUDIO2_EFFECT_DESCRIPTOR md{};
+    XAUDIO2_EFFECT_CHAIN mchain{0, &md};
+    if (SUCCEEDED(XAudio2CreateVolumeMeter(&meterApo)) && meterApo)
+    {
+        md.pEffect        = meterApo;
+        md.InitialState   = TRUE;
+        md.OutputChannels = m_outChannels;
+        mchain.EffectCount = 1;
+    }
     // ★入力チャンネル数は出力デバイスと同じにする。空間音の X3DAudio の行列が
     //   「ボイス → バス」をそのままスピーカー配置で書けるようにするため。
     const UINT32 stage = kMasterStage - bus.depth * 16u;
     HRESULT hr = m_xaudio2->CreateSubmixVoice(&bus.voice, m_outChannels, m_outSampleRate,
-                                              XAUDIO2_VOICE_USEFILTER, stage, send.Get(), nullptr);
+                                              XAUDIO2_VOICE_USEFILTER, stage, send.Get(),
+                                              mchain.EffectCount ? &mchain : nullptr);
+    if (meterApo) meterApo->Release();   // ボイスが参照を持つ
+    bus.hasMeter      = SUCCEEDED(hr) && mchain.EffectCount > 0;
+    bus.meterIndex    = 0;
+    bus.meterChannels = m_outChannels;
     if (FAILED(hr))
     {
         Logger::Error("バス '{}' のサブミックスボイス作成に失敗しました: 0x{:08X}",
@@ -1602,16 +1660,30 @@ bool AudioSystem::CreateReverbVoice(Bus& bus)
         Logger::Warn("リバーブの作成に失敗しました（響き無しで続けます）: 0x{:08X}", static_cast<u32>(hr));
         return false;
     }
-    XAUDIO2_EFFECT_DESCRIPTOR desc{};
-    desc.pEffect        = apo;
-    desc.InitialState   = TRUE;
-    desc.OutputChannels = m_reverbOutCh;
-    XAUDIO2_EFFECT_CHAIN chain{1, &desc};
+    // チェーン: [リバーブ, メーター]。メーターは響きの出力（戻り）を測る
+    XAUDIO2_EFFECT_DESCRIPTOR desc[2] = {};
+    desc[0].pEffect        = apo;
+    desc[0].InitialState   = TRUE;
+    desc[0].OutputChannels = m_reverbOutCh;
+    UINT32 effectCount = 1;
+    IUnknown* meterApo = nullptr;
+    if (SUCCEEDED(XAudio2CreateVolumeMeter(&meterApo)) && meterApo)
+    {
+        desc[1].pEffect        = meterApo;
+        desc[1].InitialState   = TRUE;
+        desc[1].OutputChannels = m_reverbOutCh;
+        effectCount = 2;
+    }
+    XAUDIO2_EFFECT_CHAIN chain{effectCount, desc};
     OneSend send(parentVoice);
     const UINT32 stage = kMasterStage - 8u;   // master より前、どのバスより後（ソースからしか受けない）
     hr = m_xaudio2->CreateSubmixVoice(&bus.voice, m_reverbInCh, m_reverbRate, 0, stage,
                                       send.Get(), &chain);
     apo->Release();   // ボイスが参照を持つ
+    if (meterApo) meterApo->Release();
+    bus.hasMeter      = SUCCEEDED(hr) && effectCount == 2;
+    bus.meterIndex    = 1;
+    bus.meterChannels = m_reverbOutCh;
     if (FAILED(hr))
     {
         Logger::Warn("リバーブのサブミックス作成に失敗しました（響き無しで続けます）: 0x{:08X}",
@@ -1839,6 +1911,9 @@ std::vector<AudioSystem::BusInfo> AudioSystem::GetBuses() const
         bi.voiceLimit      = b.voiceLimit;
         bi.reverbSend      = b.reverbSend;
         bi.reverbReturn    = b.isReverb;
+        bi.peakDb          = audio::MeterPeakDb(b.meter);
+        bi.rmsDb           = audio::MeterRmsDb(b.meter);
+        bi.peakNowDb       = audio::LinearToDb(b.meter.peakNow);
         bi.builtin         = b.builtin;
         const i32 self = static_cast<i32>(&b - m_buses.data());
         for (const auto& v : m_voices)

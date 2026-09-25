@@ -47,6 +47,7 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpNavMethods();
     RegisterMcpGitMethods();
     RegisterMcpValidateMethods();
+    RegisterMcpAudioMethods();
 }
 
 
@@ -178,6 +179,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_contact_shadow",
             "get_normal_filter",
             "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
+            "audio_state",
             "get_anim_state", "get_lua_component_state", "get_script_errors",
             "get_play_session", "read_lua_component", "read_shader", "describe_components",
             "describe_lua_api", "describe_anim_graph", "describe_mcp_params",
