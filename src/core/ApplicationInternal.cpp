@@ -752,6 +752,17 @@ nlohmann::json McpLuaApi()
         "moveAlongEx(from, to, ref?) -> Vec3, ref  (ref を持ち回る滑り移動。毎回位置から探し直さない)",
         "findPathEx(from, to, radius?) -> { status='complete'|'partial'|'failed', points={Vec3..}, length, reached }",
         "corridor(pos, radius?) -> NavCorridor|nil  (通路。張った後は毎フレーム corners/advance を呼ぶだけ＝A* をやり直さない)",
+        "---- 群衆（エンティティを入れるとエンジンが 1/60 秒の固定ステップで動かし Transform へ書く）----",
+        "agentAdd(entity, params?) -> bool  (params: radius, height, maxSpeed, maxAccel, separation(重み|false), "
+        "wallMargin(壁からさらに離す m), avoidance(0..3|false), anticipateTurns, optimize, queryRange, optimizeRange, "
+        "slowDownRadius, faceMovement(移動方向を向く), turnRate, yOffset。entity は Entity / 名前 / self)",
+        "agentMoveTo(entity, pos, speed?) -> bool  (目標へ。近くへ動いただけなら A* をやり直さない。speed で最高速度を切り替え)",
+        "agentVelocity(entity, vel) -> bool  (速度で動かす。通路を使わない)",
+        "agentStop(entity) -> bool / agentRemove(entity) / agentSet(entity, params) -> bool",
+        "agentState(entity) -> { pos, vel, desiredVel, speed(実際に進んだ速さ), state='none'|'pending'|'valid'|'failed'|'velocity', "
+        "partial, distance, arrived, target, neighbors, corners={Vec3..} } | nil",
+        "★群衆のエンティティは親を持たないこと / CharacterController・動的 RigidBody と併用しないこと。"
+        "ゲーム側で transform.position を書いた（ワープした）ら次のステップで気づいて置き直す",
         "★findPath は毎フレーム全員ぶん呼ばないこと。追いかけるなら corridor か群衆（nav.agent*）を使う",
     })));
     objects.push_back(O("NavCorridor", "nav.corridor(pos) の戻り値（':' で呼ぶ）", json::array({

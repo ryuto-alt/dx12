@@ -93,6 +93,7 @@ namespace dx12e
     class AudioSystem;
     class PhysicsSystem;
     class NetworkSystem;
+    namespace ai { class AiSystem; }
     class PhysicsDebugRenderer;
     class EditorIconRenderer;
     class EditorContext;
@@ -221,6 +222,7 @@ public:
     Scene*         GetScene() { return m_scene.get(); }
     // 物理系への読み取りアクセス（UI テスト / 診断用。所有権は Application）。
     PhysicsSystem* GetPhysicsSystem() const { return m_physicsSystem.get(); }
+    ai::AiSystem*  GetAiSystem() const { return m_aiSystem.get(); }
 
     // 表示パイプラインのフォーマット構成。ガンマ二重適用の検出用（DeepDiag::Gamma）。
     // DXGI_FORMAT を u32 で渡すのは、この診断を将来ヘッドレス側から呼んでも
@@ -1338,6 +1340,7 @@ private:
     std::unordered_map<std::string, McpMethodEntry> m_mcpMethods;
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
+    std::unique_ptr<ai::AiSystem>      m_aiSystem;        // ゲーム AI（群衆 / Brain）。Play 中だけ Update する
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
     std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。

@@ -23,6 +23,8 @@
 #include "scene/Entity.h"
 #include "ecs/Components.h"
 #include "nav/NavCorridor.h"
+#include "nav/NavCrowd.h"
+#include "ai/AiSystem.h"
 
 #include <DirectXMath.h>
 #include <algorithm>
@@ -97,6 +99,65 @@ struct NavArgs
 };
 
 lua_Integer RefToLua(nav::NavPolyRef r) { return static_cast<lua_Integer>(r); }
+
+// エンティティ引数: Entity / 数値 id / 名前 / self テーブル（self.entity）のどれでも受ける
+entt::entity ResolveEntityArg(Scene* scene, const sol::object& o)
+{
+    if (!scene) return entt::null;
+    auto& reg = scene->GetRegistry();
+    auto valid = [&](entt::entity e) { return reg.valid(e) ? e : entt::null; };
+    if (o.is<Entity>()) return valid(o.as<Entity>().GetHandle());
+    if (o.get_type() == sol::type::number)
+        return valid(static_cast<entt::entity>(o.as<std::uint32_t>()));
+    auto byName = [&](const std::string& n) -> entt::entity
+    {
+        for (auto [e, nt] : reg.view<NameTag>().each())
+            if (nt.name == n) return e;
+        return entt::null;
+    };
+    if (o.get_type() == sol::type::string) return byName(o.as<std::string>());
+    if (o.get_type() == sol::type::table)
+    {
+        sol::table t = o;
+        sol::object id = t["entity"];
+        if (id.get_type() == sol::type::number) return valid(static_cast<entt::entity>(id.as<std::uint32_t>()));
+        sol::object nm = t["name"];
+        if (nm.get_type() == sol::type::string) return byName(nm.as<std::string>());
+    }
+    return entt::null;
+}
+
+// { radius=, maxSpeed=, ... } を群衆エージェントの設定へ（書いていないキーは base のまま）
+void ReadAgentParams(const sol::object& o, nav::NavAgentParams& p, ai::AgentOptions& opt)
+{
+    if (o.get_type() != sol::type::table) return;
+    sol::table t = o;
+    auto num = [&](const char* k, f32& dst) { sol::optional<f32> v = t[k]; if (v) dst = *v; };
+    auto flag = [&](const char* k, bool& dst) { sol::object v = t[k]; if (v.get_type() == sol::type::boolean) dst = v.as<bool>(); };
+    num("radius", p.radius);
+    num("height", p.height);
+    num("maxSpeed", p.maxSpeed);
+    num("maxAccel", p.maxAccel);
+    num("separation", p.separationWeight);
+    num("queryRange", p.collisionQueryRange);
+    num("optimizeRange", p.pathOptimizationRange);
+    num("wallMargin", p.wallMargin);
+    num("slowDownRadius", p.slowDownRadius);
+    {
+        sol::object v = t["avoidance"];
+        if (v.get_type() == sol::type::boolean) p.obstacleAvoidance = v.as<bool>();
+        else if (v.get_type() == sol::type::number) { p.obstacleAvoidance = true; p.avoidanceQuality = v.as<int>(); }
+    }
+    flag("anticipateTurns", p.anticipateTurns);
+    flag("optimize", p.optimizeVisibility);
+    {
+        sol::object v = t["separation"];
+        if (v.get_type() == sol::type::boolean) { p.separation = v.as<bool>(); }
+    }
+    flag("faceMovement", opt.faceMovement);
+    num("turnRate", opt.turnRate);
+    num("yOffset", opt.yOffset);
+}
 
 // Lua に渡す通路。ナビメッシュは焼き直されうるので参照は持たず、呼ぶたびにシーンから引く。
 struct LuaNavCorridor
@@ -488,6 +549,103 @@ void ScriptEngine::RegisterNavBindings()
         LuaNavCorridor c;
         c.c.Reset(poly, out, nm.Generation());
         return sol::make_object(sv, std::move(c));
+    });
+
+    // ---- 群衆（エンティティを群衆に入れると、エンジンが毎ステップ動かして Transform へ書く）----
+    //   nav.agentAdd(entity, params?) -> bool     params: radius / maxSpeed / maxAccel / separation /
+    //                                              wallMargin / avoidance(0..3|false) / faceMovement / turnRate / yOffset
+    //   nav.agentMoveTo(entity, pos, speed?) -> bool
+    //   nav.agentVelocity(entity, vel) -> bool     速度で動かす（通路を使わない。プレイヤー操作の NPC 等）
+    //   nav.agentStop(entity) / nav.agentRemove(entity) / nav.agentSet(entity, params)
+    //   nav.agentState(entity) -> table|nil
+    auto aiOk = [this]() { return m_aiSystem && m_scene && m_scene->HasNavMesh(); };
+
+    navT.set_function("agentAdd", [this, aiOk](sol::variadic_args va) -> bool
+    {
+        NavArgs a(va);
+        if (!aiOk()) return false;
+        const entt::entity e = ResolveEntityArg(m_scene, a.At(0));
+        if (e == entt::null) throw sol::error("nav.agentAdd: entity が見つからない（Entity / 名前 / self を渡すこと）");
+        nav::NavAgentParams p;
+        ai::AgentOptions o;
+        if (const nav::NavCrowdAgent* cur = m_aiSystem->GetAgent(e)) p = cur->params;
+        if (const ai::AgentOptions* co = m_aiSystem->GetOptions(e)) o = *co;
+        ReadAgentParams(a.At(1), p, o);
+        return m_aiSystem->AddAgent(*m_scene, e, p, o);
+    });
+    navT.set_function("agentRemove", [this](sol::variadic_args va)
+    {
+        NavArgs a(va);
+        if (!m_aiSystem) return;
+        const entt::entity e = ResolveEntityArg(m_scene, a.At(0));
+        if (e != entt::null) m_aiSystem->RemoveAgent(e);
+    });
+    navT.set_function("agentMoveTo", [this](sol::variadic_args va) -> bool
+    {
+        NavArgs a(va);
+        if (!m_aiSystem) return false;
+        const entt::entity e = ResolveEntityArg(m_scene, a.At(0));
+        if (e == entt::null) return false;
+        const XMFLOAT3 p = a.Vec(1, "agentMoveTo", "pos");
+        const float pos[3] = { p.x, p.y, p.z };
+        return m_aiSystem->MoveTo(e, pos, a.Num(2).value_or(0.0f));
+    });
+    navT.set_function("agentVelocity", [this](sol::variadic_args va) -> bool
+    {
+        NavArgs a(va);
+        if (!m_aiSystem) return false;
+        const entt::entity e = ResolveEntityArg(m_scene, a.At(0));
+        if (e == entt::null) return false;
+        const XMFLOAT3 v = a.Vec(1, "agentVelocity", "vel");
+        const float vel[3] = { v.x, 0.0f, v.z };
+        return m_aiSystem->MoveVelocity(e, vel);
+    });
+    navT.set_function("agentStop", [this](sol::variadic_args va) -> bool
+    {
+        NavArgs a(va);
+        if (!m_aiSystem) return false;
+        const entt::entity e = ResolveEntityArg(m_scene, a.At(0));
+        return e != entt::null && m_aiSystem->Stop(e);
+    });
+    navT.set_function("agentSet", [this](sol::variadic_args va) -> bool
+    {
+        NavArgs a(va);
+        if (!m_aiSystem) return false;
+        const entt::entity e = ResolveEntityArg(m_scene, a.At(0));
+        const nav::NavCrowdAgent* cur = (e != entt::null) ? m_aiSystem->GetAgent(e) : nullptr;
+        const ai::AgentOptions* co = (e != entt::null) ? m_aiSystem->GetOptions(e) : nullptr;
+        if (!cur || !co) return false;
+        nav::NavAgentParams p = cur->params;
+        ai::AgentOptions o = *co;
+        ReadAgentParams(a.At(1), p, o);
+        return m_aiSystem->SetParams(e, p) && m_aiSystem->SetOptions(e, o);
+    });
+    navT.set_function("agentState", [this](sol::this_state ts, sol::variadic_args va) -> sol::object
+    {
+        sol::state_view sv(ts);
+        NavArgs a(va);
+        if (!m_aiSystem) return sol::lua_nil;
+        const entt::entity e = ResolveEntityArg(m_scene, a.At(0));
+        const nav::NavCrowdAgent* ag = (e != entt::null) ? m_aiSystem->GetAgent(e) : nullptr;
+        if (!ag) return sol::lua_nil;
+        sol::table t = sv.create_table();
+        t["pos"] = XMFLOAT3{ ag->npos[0], ag->npos[1], ag->npos[2] };
+        t["vel"] = XMFLOAT3{ ag->vel[0], ag->vel[1], ag->vel[2] };
+        t["desiredVel"] = XMFLOAT3{ ag->dvel[0], ag->dvel[1], ag->dvel[2] };
+        f32 av[3]{};
+        m_aiSystem->ActualVelocity(e, av);
+        t["speed"] = std::sqrt(av[0] * av[0] + av[2] * av[2]);   // 実際に進んだ速さ（アニメの足に使う）
+        t["state"] = nav::NavMoveStateName(ag->targetState);
+        t["partial"] = ag->partial;
+        t["distance"] = m_aiSystem->DistanceToGoal(e);
+        t["arrived"] = m_aiSystem->Arrived(e, (std::max)(0.2f, ag->params.radius * 0.5f));
+        t["target"] = XMFLOAT3{ ag->corridor.Target()[0], ag->corridor.Target()[1], ag->corridor.Target()[2] };
+        t["neighbors"] = static_cast<int>(ag->neis.size());
+        sol::table cs = sv.create_table();
+        for (size_t i = 0; i + 2 < ag->corners.size(); i += 3)
+            cs[static_cast<int>(i / 3) + 1] = XMFLOAT3{ ag->corners[i], ag->corners[i + 1], ag->corners[i + 2] };
+        t["corners"] = cs;
+        return t;
     });
 }
 

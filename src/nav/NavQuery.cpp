@@ -991,8 +991,16 @@ i32 NavMesh::FindLocalWalls(i32 startPoly, const f32 pos[3], f32 radius, std::ve
             const u32 nei = m_neis[p.firstNei + j];
             if (nei == 0xffffffffu)
             {
-                segs.push_back({ d, static_cast<i32>(segs.size()),
-                                 { vj[0], vj[1], vj[2], vi[0], vi[1], vi[2] } });
+                // 向きをそろえる: p→q の左手（(-dz, dx) の側）が通路の内側になるように並べる
+                f32 n[3];
+                EdgeInwardNormal(cur, j, n);
+                const f32 lx = -(vi[2] - vj[2]), lz = vi[0] - vj[0];
+                if (lx * n[0] + lz * n[2] >= 0.0f)
+                    segs.push_back({ d, static_cast<i32>(segs.size()),
+                                     { vj[0], vj[1], vj[2], vi[0], vi[1], vi[2] } });
+                else
+                    segs.push_back({ d, static_cast<i32>(segs.size()),
+                                     { vi[0], vi[1], vi[2], vj[0], vj[1], vj[2] } });
             }
             else
             {

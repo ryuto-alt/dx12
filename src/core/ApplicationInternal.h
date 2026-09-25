@@ -115,6 +115,7 @@
 #include <unordered_set>  // 先読みアセットの重複除去
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
+#include "ai/AiSystem.h"
 #include "network/NetworkSystem.h"
 #include "network/NetworkConfig.h"
 #include "physics/PhysicsDebugRenderer.h"

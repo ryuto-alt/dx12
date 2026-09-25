@@ -26,6 +26,7 @@
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsSystem.h"
+#include "ai/AiSystem.h"
 #include "network/NetworkSystem.h"
 #include "animation/Skeleton.h"
 #include "animation/Animator.h"
@@ -4504,6 +4505,10 @@ void ScriptEngine::OnPlayStart()
     // 通常は Application が OnPlayStart 直前に m_eventBus.Clear() を呼ぶが、念のため。
     if (m_eventBus) m_eventBus->Clear();
 
+    // ゲーム AI の中身（群衆のエージェント / Brain の状態）を捨てる。
+    // ★この後の OnStart で brain:action(...) や nav.agentAdd が呼ばれるので、必ずその前に空にする。
+    if (m_aiSystem) m_aiSystem->Clear();
+
     // パーティクル放出器のランタイム状態を初期化（playOnStart で放出 ON/OFF を決める）
     {
         auto peView = reg.view<ParticleEmitter>();
@@ -4577,6 +4582,7 @@ void ScriptEngine::OnPlayStop()
     // Lua state がここで無効化されるため、残留ハンドラが後続 Flush/Emit で呼ばれると UAF になる。
     // Application::EnterEditorMode でも Clear を呼ぶが、OnPlayStop 経路を一本化して確実に除去する。
     if (m_eventBus) m_eventBus->Clear();
+    if (m_aiSystem) m_aiSystem->Clear();
     Logger::Info("ScriptEngine: OnPlayStop done");
 }
 

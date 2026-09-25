@@ -6,6 +6,7 @@ add_library(Nav STATIC
     NavMesh.cpp
     NavQuery.cpp
     NavCorridor.cpp
+    NavCrowd.cpp
     NavBuilder.cpp
 )
 target_include_directories(Nav PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

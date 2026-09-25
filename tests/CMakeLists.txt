@@ -710,6 +710,27 @@ else()
 endif()
 add_test(NAME NavMeshTests COMMAND NavMeshTests)
 
+# 群衆（NavCrowd: 操舵・分離・速度サンプリング・押し出し・通路の上で確定）のテスト。
+# NavMeshTests と同じく nav/ の .cpp を直接ビルドする（依存ゼロ）。
+add_executable(NavCrowdTests
+    nav_crowd_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavRasterize.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavRegion.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavContour.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavPolyMesh.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavMesh.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavQuery.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavCorridor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavCrowd.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nav/NavBuilder.cpp)
+target_include_directories(NavCrowdTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(NavCrowdTests PRIVATE /W4 /WX /permissive- /utf-8 /bigobj)
+else()
+    target_compile_options(NavCrowdTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME NavCrowdTests COMMAND NavCrowdTests)
+
 
 
 

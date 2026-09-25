@@ -207,6 +207,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // PhysicsSystem 側はこのポインタを保持し続ける（Shutdown では null 化しない）。
     m_physicsSystem->SetEventBus(&m_eventBus);
 
+    // ゲーム AI（群衆 / Brain）。GPU 非依存。Play 開始・停止で中身だけ捨てる（ScriptEngine が Clear を呼ぶ）
+    m_aiSystem = std::make_unique<ai::AiSystem>();
+
     // Network System（GPU非依存。Play/Stopで再構築しない＝m_eventBusはここで一度だけ注入）。
     // assets/network.json が無い(初回起動等)場合は既定値のまま続行する。
     m_networkSystem = std::make_unique<NetworkSystem>();
@@ -2491,6 +2494,14 @@ void Application::Update()
         { DX12_PROFILE_ZONE_N("Lua/OnUpdate");   m_scriptEngine->CallOnUpdate(dt); }
         { DX12_PROFILE_ZONE_N("Lua/Components"); m_scriptEngine->UpdateAttachedScripts(dt); }
         { DX12_PROFILE_ZONE_N("Lua/Triggers");   m_scriptEngine->UpdateTriggers(dt); }   // Trigger（イベント）評価
+        // ゲーム AI（知覚 → 行動の選択 → Lua の行動 → 群衆の移動）。Lua の OnUpdate の後に回すので、
+        // スクリプトがこのフレームに書いた黒板の値を同じフレームの判断で使える。
+        // dt はスクリプトと同じ（タイムスケール適用済み）。内部は 1/60 秒の固定ステップ。
+        if (m_aiSystem)
+        {
+            DX12_PROFILE_ZONE_N("AI");
+            m_aiSystem->Update(*m_scene, m_physicsSystem.get(), &m_eventBus, dt * m_scriptEngine->GetTimeScale());
+        }
 
         // アクティブカメラの Transform をグローバル Camera に同期。
         // 親階層込みのワールド変換で反映するので、親オブジェクトにアタッチした

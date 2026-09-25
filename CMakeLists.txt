@@ -60,6 +60,7 @@ add_subdirectory(src/nav)       # 自作ナビメッシュ（Scene が保持し�
 add_subdirectory(src/scene)
 add_subdirectory(src/scripting)
 add_subdirectory(src/physics)
+add_subdirectory(src/ai)        # ゲーム AI（群衆とエンティティの対応 / Brain）。Scripting / Core / Editor が使う
 add_subdirectory(src/network)
 add_subdirectory(src/gui)
 add_subdirectory(src/ui)
@@ -90,6 +91,7 @@ target_link_libraries(DX12Engine
         Input
         Terrain
         Nav
+        AI
         Scene
         Scripting
         Physics
@@ -156,6 +158,7 @@ target_link_libraries(GameRuntime
         Input
         Terrain
         Nav
+        AI
         Scene
         Scripting
         Physics
@@ -190,7 +193,7 @@ endif()
 if(MSVC)
     foreach(DX12_PCH_TARGET IN ITEMS
         Core Graphics Renderer Resource Animation ECS Audio Input
-        Terrain Nav Scene Scripting Physics Network Gui Ui Editor ProjectLib
+        Terrain Nav AI Scene Scripting Physics Network Gui Ui Editor ProjectLib
         DX12Engine GameRuntime)
         target_precompile_headers(${DX12_PCH_TARGET} PRIVATE "${CMAKE_SOURCE_DIR}/src/pch.h")
     endforeach()

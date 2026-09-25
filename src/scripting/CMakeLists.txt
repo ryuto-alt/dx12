@@ -20,6 +20,7 @@ target_link_libraries(Scripting PUBLIC
     Physics
     Network
     Nav
+    AI
     ${LUA_LIBRARIES}
     sol2::sol2
     Microsoft::DirectXMath

@@ -319,6 +319,7 @@ public:
     bool MoveAlongSurface(const f32 start[3], const f32 end[3], i32 startPoly,
                           f32 outPos[3], i32& outPoly, std::vector<i32>* visited = nullptr) const;
     // 周囲の壁の辺を集める（群衆回避の壁判定用）。outSegs に 6 float（p,q）ずつ、近い順。
+    // 向きはそろえてある: p→q の左手 (-(q-p).z, (q-p).x) が通路の内側。
     i32  FindLocalWalls(i32 startPoly, const f32 pos[3], f32 radius, std::vector<f32>& outSegs,
                         i32 maxSegs) const;
 
