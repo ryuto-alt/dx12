@@ -97,7 +97,7 @@ build/debug/Debug/DX12Engine.exe
 ### ★コマンドラインからビルドするときは `chcp 65001` を先頭に
 PowerShell / Git Bash から vcvars 経由で建てるときは必ずこう書く:
 ```
-cmd /c 'chcp 65001 >nul && "C:\Program Files\Microsoft Visual Studio8\Community\VC\Auxiliary\Buildcvars64.bat" >nul && cmake --build build/release'
+cmd /c 'chcp 65001 >nul && "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --build build/release\'
 ```
 `chcp 65001` が無いと `cl /showIncludes` の「メモ: インクルード ファイル:」が **CP932** で出て、
 CMake が UTF-8 で書いた `msvc_deps_prefix` と一致せず、ninja が依存を 1 つも記録しない（`#deps 0`）。
