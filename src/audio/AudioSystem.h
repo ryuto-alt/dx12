@@ -11,6 +11,7 @@
 #include <x3daudio.h>
 #include "core/Types.h"
 #include "audio/AudioMath.h"
+#include "audio/AudioStream.h"
 
 namespace dx12e
 {
@@ -99,6 +100,23 @@ public:
         f32   positionSec = 0.0f;
         f32   lengthSec   = 0.0f;
         f32   reverbSend  = 0.0f;    // 今リバーブへ送っている量（バス×音ごと×距離×バス音量）
+        bool  stream      = false;   // OGG をストリーミング再生している
+        u32   bufferedChunks = 0;    // ストリームの先読み（デコード済みで鳴り終わっていないチャンク数）
+        u64   underruns   = 0;       // ストリームが途切れた回数
+        f32   loopStartSec = 0.0f;   // ループ点（0/0 = 全体）
+        f32   loopEndSec   = 0.0f;
+    };
+
+    // ストリーミング全体の計測（audio_state）
+    struct StreamStats
+    {
+        u32 count         = 0;
+        u64 memoryBytes   = 0;       // 圧縮データ + リングの PCM
+        u64 underruns     = 0;
+        f64 decodeMs      = 0.0;     // ワーカーがデコードに使った累計
+        u64 chunksDecoded = 0;
+        u64 watchdogPumps = 0;       // メインが止まっていてワーカーが代わりに渡した回数
+        f64 audioSecondsDecoded = 0.0;
     };
 
     // リバーブ域 1 つぶんの入力（Application が毎フレーム、リスナー位置から重みを出して渡す）。
@@ -136,6 +154,10 @@ public:
         f32  minDistance = 1.0f;
         f32  maxDistance = 30.0f;
         f32  reverb      = 1.0f;            // リバーブへの送りの倍率（バスの reverbSend に掛かる）
+        bool stream      = false;           // OGG をストリーミングで鳴らす（BGM・長い環境音向け。2D のみ）
+        f32  fadeIn      = 0.0f;            // 秒。0 = いきなり鳴らす
+        f32  loopStart   = 0.0f;            // 秒。loopStart/loopEnd = 0/0 は全体をループ
+        f32  loopEnd     = 0.0f;            // 秒。0 = 曲の終わりまで
     };
 
     AudioSystem();
@@ -151,7 +173,12 @@ public:
     void SetAssetsDir(const std::string& assetsDir) { m_assetsDir = assetsDir; ScanAudioFiles(); }
 
     // BGM
-    void PlayBGM(const std::string& filePath, bool loop = true);
+    // fadeSec > 0 なら今の曲をその秒数でフェードアウトしながら新しい曲をフェードインする（クロスフェード）。
+    // .ogg は自動でストリーミング再生（丸ごとデコードしない。3 分の曲で約 31MB → 数 MB）。
+    void PlayBGM(const std::string& filePath, bool loop = true, f32 fadeSec = 0.0f);
+    // 今の BGM のループ点（秒）。end = 0 は曲の終わりまで。OGG の LOOPSTART/LOOPLENGTH タグがあれば既定でそれ。
+    // ★ストリームは先読み（最大約 4.5 秒）の後から効く。
+    void SetBGMLoopPoints(f32 startSec, f32 endSec);
     void StopBGM();
     void PauseBGM();
     void ResumeBGM();
@@ -293,6 +320,9 @@ public:
     u32  GetOutputChannels() const { return m_outChannels; }
     u32  GetOutputSampleRate() const { return m_outSampleRate; }
     // XAudio2 のボイスを作る/壊すのに掛かった累計時間（仮想化の往復が高く付いていないかを測る）。
+    StreamStats GetStreamStats() const;
+    // その 1 本の音量を sec 秒かけて target（0..1）へ（ダッキングやフェードイン）。止めはしない。
+    void FadeVoice(i32 slotId, f32 target, f32 sec);
     f64  GetVoiceChurnMs() const { return m_voiceChurnMs; }
     u64  GetVoiceChurnCount() const { return m_voiceChurnCount; }
 
@@ -355,6 +385,9 @@ private:
         u64   order      = 0;              // 鳴らし始めた順（奪う相手の同点決着）
         std::string path;
         std::shared_ptr<AudioClip> clip;   // ★再生中は必ず握る（キャッシュが入れ替わっても解放させない）
+        std::shared_ptr<AudioStream> stream;   // ストリーミング再生（clip の代わり）
+        u64   loopStartFrame = 0;          // ループ点（0/0 = 全体）
+        u64   loopEndFrame   = 0;
         u32   sampleRate = 44100;
         u32   channels   = 1;
         u64   totalFrames = 0;
@@ -419,6 +452,11 @@ private:
     void   ComputeAndApply(Voice& v);                  // X3DAudio の定位（実ボイスのみ）
     void   UpdateDistance(Voice& v);
     void   RestartVoiceAt(Voice& v, f64 frame);        // シーク
+    // BGM とストリームは「管理外」: 上限に数えない・奪わない・仮想化しない（途切れたら一番困る音）。
+    static bool Unmanaged(const Voice& v) { return v.bgm || v.stream != nullptr; }
+    audio::StreamLoop LoopOf(const Voice& v) const { return {v.loop, v.loopStartFrame, v.loopEndFrame}; }
+    std::shared_ptr<AudioStream> OpenStream(const std::string& path);
+    AudioStreamWorker m_streamWorker;
 
     // ---- スナップショット ----
     std::unordered_map<std::string, std::vector<SnapshotBus>> m_snapshots;

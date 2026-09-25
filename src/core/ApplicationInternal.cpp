@@ -763,7 +763,14 @@ nlohmann::json McpLuaApi()
         "★findPath は毎フレーム全員ぶん呼ばないこと。数十フレームに 1 回引き直して、間は折れ線を追うだけで足りる",
     })));
     objects.push_back(O("audio", "global", json::array({
-        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
+        "playBGM(path, loop?=true, fade?)/stopBGM()/pauseBGM()/resumeBGM()  (fade 秒で今の曲からクロスフェード。"
+        ".ogg は自動でストリーミング再生＝丸ごとデコードしない)",
+        "crossfadeBGM(path, sec?=2, loop?=true)  (playBGM(path, loop, sec) と同じ)",
+        "setBGMLoopPoints(startSec, endSec?)  (イントロ付きの曲のループ範囲。end 省略 = 曲の終わり。"
+        "OGG に LOOPSTART/LOOPLENGTH タグがあれば既定でそれ。ストリームは先読み(最大約4.5秒)の後から効く)",
+        "playStream(path, opts?) -> id  (長い環境音を OGG のままストリーミング。既定 bus='ambience', loop=true。"
+        "opts: volume, pitch, reverb, fadeIn, loopStart, loopEnd)",
+        "fadeVoice(id, target, sec)  (その 1 本を sec 秒で音量 target 0..1 へ。止めない＝ダッキング/フェードイン)", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
         "playSFXId(path,loop?,vol?) -> id / playSpatialId(path,x,y,z,minD,maxD,vol?,loop?) -> id  (★ID を返す版。ループ音はこちらで鳴らす)",
         "stopVoice(id) / setVoiceVolume(id,v) / setVoicePitch(id,ratio) / moveVoice(id,x,y,z) / isVoicePlaying(id) -> bool  (鳴っている 1 本だけを止める/絞る/回転を落とす/追従させる。stopAllSFX の巻き添えを避ける)",
@@ -777,7 +784,8 @@ nlohmann::json McpLuaApi()
         "rescan()  (assets 配下の音声ファイルを列挙し直す。実行中に wav を足したとき用)",
         "-- 汎用の再生口 --",
         "play(path, opts?) -> id  (opts: bus='sfx', volume=1, pitch=1, loop=false, priority=128, "
-        "pos=Vec3 (渡すと 3D 空間音), minDistance=1, maxDistance=30, reverb=1 (リバーブ送りの倍率)。失敗 -1)",
+        "pos=Vec3 (渡すと 3D 空間音), minDistance=1, maxDistance=30, reverb=1 (リバーブ送りの倍率), "
+        "stream=false (.ogg の 2D をストリーミング), fadeIn=0 (秒), loopStart/loopEnd (秒)。失敗 -1)",
         "stopVoice(id, fade?)  (fade 秒で 0 まで下げてから止める。省略 = 即停止)",
         "setVoicePriority(id, p)  (0..255。大きいほど大事)",
         "-- 同時発音数（優先度と仮想化）--",

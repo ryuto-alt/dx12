@@ -46,8 +46,18 @@ void RegisterAudioBindings(sol::state& lua)
     lua.new_usertype<AudioSystem>("AudioSystem",
         // メンバ関数ポインタ直バインドだと C++ 側のデフォルト引数(loop)が効かず
         // 1引数呼びでエラーになるので、sol::optional で loop を省略可にする
-        "playBGM",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
-                               a.PlayBGM(path, loop.value_or(true));
+        // fade 秒で今の曲からクロスフェード（省略 = 即切り替え）。.ogg は自動でストリーミング再生。
+        "playBGM",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop,
+                              sol::optional<float> fade) {
+                               a.PlayBGM(path, loop.value_or(true), fade.value_or(0.0f));
+                           },
+        "crossfadeBGM",    [](AudioSystem& a, const std::string& path, sol::optional<float> sec,
+                              sol::optional<bool> loop) {
+                               a.PlayBGM(path, loop.value_or(true), sec.value_or(2.0f));
+                           },
+        // ループ点（秒）。end 省略/0 = 曲の終わりまで。イントロ付きの曲に。
+        "setBGMLoopPoints", [](AudioSystem& a, float startSec, sol::optional<float> endSec) {
+                               a.SetBGMLoopPoints(startSec, endSec.value_or(0.0f));
                            },
         "stopBGM",         &AudioSystem::StopBGM,
         "pauseBGM",        &AudioSystem::PauseBGM,
@@ -103,10 +113,37 @@ void RegisterAudioBindings(sol::state& lua)
                                    p.minDistance = o.get_or("minDistance", 1.0f);
                                    p.maxDistance = o.get_or("maxDistance", 30.0f);
                                    p.reverb      = o.get_or("reverb", 1.0f);
+                                   p.stream      = o.get_or("stream", false);
+                                   p.fadeIn      = o.get_or("fadeIn", 0.0f);
+                                   p.loopStart   = o.get_or("loopStart", 0.0f);
+                                   p.loopEnd     = o.get_or("loopEnd", 0.0f);
                                    p.spatial     = ReadPos(o, p.pos);
                                }
                                return a.Play(p);
                            },
+        // 長い環境音を OGG のままストリーミングで鳴らす（play{stream=true} と同じ。既定は ambience バス・ループ）。
+        "playStream",      [](AudioSystem& a, const std::string& path, sol::optional<sol::table> opts) {
+                               AudioSystem::PlayParams p;
+                               p.path   = path;
+                               p.stream = true;
+                               p.loop   = true;
+                               p.bus    = "ambience";
+                               if (opts)
+                               {
+                                   const sol::table& o = *opts;
+                                   p.bus       = o.get_or("bus", std::string("ambience"));
+                                   p.volume    = o.get_or("volume", 1.0f);
+                                   p.pitch     = o.get_or("pitch", 1.0f);
+                                   p.loop      = o.get_or("loop", true);
+                                   p.reverb    = o.get_or("reverb", 1.0f);
+                                   p.fadeIn    = o.get_or("fadeIn", 0.0f);
+                                   p.loopStart = o.get_or("loopStart", 0.0f);
+                                   p.loopEnd   = o.get_or("loopEnd", 0.0f);
+                               }
+                               return a.Play(p);
+                           },
+        // その 1 本を sec 秒かけて音量 target（0..1）へ。止めない（ダッキング / 後からフェードイン）
+        "fadeVoice",       &AudioSystem::FadeVoice,
         "moveVoice",       &AudioSystem::UpdateSpatialEmitter,
         // fade 秒で音量を 0 まで下げてから止める（省略/0 = 即停止）
         "stopVoice",       [](AudioSystem& a, int id, sol::optional<float> fade) {

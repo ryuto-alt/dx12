@@ -82,6 +82,17 @@ else()
 endif()
 add_test(NAME AudioMathTests COMMAND AudioMathTests)
 
+# ストリーミング再生のリングとチャンク詰め（src/audio/AudioStreamRing.h）。偽デコーダで
+# ループ点・終端・「鳴っているチャンクを上書きしない」を確かめる。依存ゼロ。
+add_executable(AudioStreamTests audio_stream_test.cpp)
+target_include_directories(AudioStreamTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AudioStreamTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AudioStreamTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AudioStreamTests COMMAND AudioStreamTests)
+
 # UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
 add_executable(UiRichTextTests ui_rich_text_test.cpp)
 target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

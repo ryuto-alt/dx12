@@ -148,6 +148,9 @@ void AudioSystem::Initialize(const std::string& assetsDir)
 
     ScanAudioFiles();
 
+    // ストリーミングのデコード用ワーカー（デバイスが無ければ鳴らさないので起こさない）
+    m_streamWorker.Start();
+
     Logger::Info("AudioSystem initialized (XAudio2{})", m_x3dReady ? " + X3DAudio" : "");
 }
 
@@ -158,6 +161,8 @@ void AudioSystem::Shutdown()
         if (v.active) FreeVoice(v);
     m_bgmId = -1;
     m_currentBGMPath.clear();
+    // ★ボイスを壊してからワーカーを止める（止める前にストリームはボイスから外れている）
+    m_streamWorker.Stop();
 
     // バス破棄。★子から先に壊す（送り先として使われているボイスは壊せない）。
     //   m_buses は親が子より前に並ぶので逆順に回せば子が先になる。
@@ -390,7 +395,7 @@ u32 AudioSystem::CountReal(i32 busRoot) const
     u32 n = 0;
     for (const auto& v : m_voices)
     {
-        if (!v.active || !v.src || v.bgm) continue;
+        if (!v.active || !v.src || Unmanaged(v)) continue;
         if (busRoot >= 0 && !BusInSubtree(v.bus, busRoot)) continue;
         ++n;
     }
@@ -422,15 +427,12 @@ f32 AudioSystem::ComputeAudibility(const Voice& v) const
 f64 AudioSystem::CurrentFrame(const Voice& v) const
 {
     if (v.totalFrames == 0) return 0.0;
-    f64 p = v.virtualPos;
-    if (v.src)
-    {
-        XAUDIO2_VOICE_STATE st{};
-        v.src->GetState(&st, 0);
-        p = static_cast<f64>(v.startFrame) + static_cast<f64>(st.SamplesPlayed);
-    }
-    const f64 total = static_cast<f64>(v.totalFrames);
-    return v.loop ? std::fmod(p, total) : (std::min)(p, total);
+    if (!v.src) return v.virtualPos;
+    if (v.stream) return static_cast<f64>(v.stream->PositionFrames());
+    XAUDIO2_VOICE_STATE st{};
+    v.src->GetState(&st, 0);
+    const u64 p = v.startFrame + st.SamplesPlayed;
+    return static_cast<f64>(audio::WrapLoopPosition(p, LoopOf(v), v.totalFrames));
 }
 
 void AudioSystem::ApplyVoiceGain(Voice& v)
@@ -534,16 +536,18 @@ void AudioSystem::ComputeAndApply(Voice& v)
 bool AudioSystem::MakeReal(Voice& v, f64 startFrame)
 {
     if (v.src) return true;
-    if (!m_xaudio2 || !m_masterVoice || !v.clip || v.totalFrames == 0) return false;
+    if (!m_xaudio2 || !m_masterVoice || (!v.clip && !v.stream) || v.totalFrames == 0) return false;
 
     LARGE_INTEGER t0{}, t1{}, freq{};
     QueryPerformanceCounter(&t0);
 
+    // ループ点があればその範囲へ畳む（ループ終点より後ろから鳴らし始めると XAudio2 が拒否する）
     u64 begin = (startFrame > 0.0) ? static_cast<u64>(startFrame) : 0u;
-    if (begin >= v.totalFrames) begin = v.loop ? (begin % v.totalFrames) : v.totalFrames;
-    if (begin >= v.totalFrames) return false;   // ワンショットの末尾を過ぎている＝鳴らす物が無い
+    begin = audio::WrapLoopPosition(begin, LoopOf(v), v.totalFrames);
+    if (!v.stream && begin >= v.totalFrames) return false;   // ワンショットの末尾を過ぎている
 
-    WAVEFORMATEX fmt = v.clip->GetFormat();
+    // ★ストリームはここではシークしない（呼び出し側が SeekTo 済み）。フォーマットはストリームから。
+    WAVEFORMATEX fmt = v.stream ? v.stream->Format() : v.clip->GetFormat();
     // 送り先: 自分のバス + （BGM 以外は）リバーブの戻り。リバーブへの送りにはフィルタを付けて、
     // バスのローパス（スナップショットの「こもり」）を響きにも掛けられるようにする。
     XAUDIO2_SEND_DESCRIPTOR sd[2] = {};
@@ -563,20 +567,38 @@ bool AudioSystem::MakeReal(Voice& v, f64 startFrame)
         return false;
     }
 
-    XAUDIO2_BUFFER buffer{};
-    buffer.AudioBytes = v.clip->GetSizeInBytes();
-    buffer.pAudioData = v.clip->GetPCMData();
-    buffer.Flags      = XAUDIO2_END_OF_STREAM;
-    buffer.LoopCount  = v.loop ? XAUDIO2_LOOP_INFINITE : 0;
-    // 途中から鳴らす（仮想から戻る / シーク）。ループは末尾 → 先頭に戻る（LoopBegin=0, 全長）。
-    buffer.PlayBegin  = static_cast<UINT32>(begin);
-    hr = v.src->SubmitSourceBuffer(&buffer);
-    if (FAILED(hr))
+    if (v.stream)
     {
-        Logger::Error("バッファ送信に失敗しました（{}）: 0x{:08X}", v.path, static_cast<u32>(hr));
-        v.src->DestroyVoice();
-        v.src = nullptr;
-        return false;
+        // デコード済みのチャンクを渡すのは AudioStream::Pump（以降は Tick が毎フレーム呼ぶ）
+        v.stream->AttachVoice(v.src);
+        v.stream->Pump(v.paused);
+    }
+    else
+    {
+        XAUDIO2_BUFFER buffer{};
+        buffer.AudioBytes = v.clip->GetSizeInBytes();
+        buffer.pAudioData = v.clip->GetPCMData();
+        buffer.Flags      = XAUDIO2_END_OF_STREAM;
+        buffer.LoopCount  = v.loop ? XAUDIO2_LOOP_INFINITE : 0;
+        // 途中から鳴らす（仮想から戻る / シーク）。ループは既定で末尾 → 先頭（LoopBegin=0, 全長）。
+        buffer.PlayBegin  = static_cast<UINT32>(begin);
+        if (v.loop && (v.loopStartFrame > 0 || v.loopEndFrame > 0))
+        {
+            // ループ点（イントロ付きの曲）: [start, end) を繰り返す
+            const audio::StreamLoop lp = LoopOf(v);
+            const u64 ls = audio::LoopStartOf(lp, v.totalFrames);
+            const u64 le = audio::LoopEndOf(lp, v.totalFrames);
+            buffer.LoopBegin  = static_cast<UINT32>(ls);
+            buffer.LoopLength = static_cast<UINT32>(le - ls);
+        }
+        hr = v.src->SubmitSourceBuffer(&buffer);
+        if (FAILED(hr))
+        {
+            Logger::Error("バッファ送信に失敗しました（{}）: 0x{:08X}", v.path, static_cast<u32>(hr));
+            v.src->DestroyVoice();
+            v.src = nullptr;
+            return false;
+        }
     }
 
     v.startFrame    = begin;
@@ -601,6 +623,7 @@ bool AudioSystem::MakeReal(Voice& v, f64 startFrame)
 
 void AudioSystem::MakeVirtual(Voice& v, const char* reason)
 {
+    if (v.stream) return;   // ストリームは仮想化しない（続きから鳴らすにはデコードし直しが要る）
     v.virtualReason = reason;
     if (!v.src) return;
     v.virtualPos = CurrentFrame(v);   // ★壊す前に位置を控える（戻ったときに続きから鳴らす）
@@ -616,10 +639,17 @@ void AudioSystem::MakeVirtual(Voice& v, const char* reason)
 
 void AudioSystem::FreeVoice(Voice& v)
 {
+    // ★ストリームはボイスを壊す前に外す（ワーカーの代わり渡しが壊れたボイスへ触らないように）
+    if (v.stream) v.stream->DetachVoice();
     if (v.src)
     {
         v.src->DestroyVoice();
         v.src = nullptr;
+    }
+    if (v.stream)
+    {
+        m_streamWorker.Remove(v.stream.get());
+        v.stream.reset();
     }
     if (v.bgm)
     {
@@ -651,7 +681,7 @@ i32 AudioSystem::AllocateSlot(i32 newPriority, f32 newAudibility)
         for (u32 i = 0; i < kMaxLogicalVoices; ++i)
         {
             const Voice& v = m_voices[i];
-            if (v.bgm) continue;
+            if (Unmanaged(v)) continue;
             if (pass == 0 && v.src) continue;
             c.push_back({static_cast<int>(i), v.priority, v.audibility, v.order});
         }
@@ -684,7 +714,7 @@ bool AudioSystem::HasRoomFor(const Voice& v, f32 margin, i32* victim)
     for (u32 i = 0; i < kMaxLogicalVoices; ++i)
     {
         const Voice& w = m_voices[i];
-        if (!w.active || !w.src || w.bgm || &w == &v) continue;
+        if (!w.active || !w.src || Unmanaged(w) || &w == &v) continue;
         if (scope >= 0 && !BusInSubtree(w.bus, scope)) continue;
         c.push_back({static_cast<int>(i), w.priority, w.audibility, w.order});
     }
@@ -698,12 +728,57 @@ i32 AudioSystem::Play(const PlayParams& p)
     return PlayInternal(p, false);
 }
 
+namespace
+{
+bool IsOggPath(const std::string& path)
+{
+    const auto dot = path.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = path.substr(dot);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return ext == ".ogg";
+}
+} // namespace
+
+std::shared_ptr<AudioStream> AudioSystem::OpenStream(const std::string& path)
+{
+    // ★配布ゲームでは assets は pak の中にしか無い。std::filesystem で存在確認すると必ず false に
+    //   なるので、vfs で読む（ディスクモードでも同じ関数が assets のファイルを返す）。
+    const bool isRelative = (path.size() < 2 || path[1] != ':');
+    std::vector<uint8_t> bytes = isRelative ? vfs::ReadAsset(path) : vfs::ReadAssetAbs(path);
+    if (bytes.empty())
+    {
+        Logger::Warn("ストリームを開けません: '{}'（vfs で読めない。gameMode={}）", path, vfs::InGameMode());
+        return nullptr;
+    }
+    std::string err;
+    auto s = AudioStream::Open(std::move(bytes), path, err);
+    if (!s) Logger::Warn("ストリームを開けません: '{}'（{}）", path, err);
+    return s;
+}
+
 i32 AudioSystem::PlayInternal(const PlayParams& p, bool bgm)
 {
     if (p.path.empty()) return -1;
-    auto clip = GetOrLoadClip(p.path, p.spatial);
-    if (!clip) return -1;
-    const WAVEFORMATEX& fmt = clip->GetFormat();
+    // ストリーミングは OGG の 2D だけ（空間音はモノ化が要るのでメモリへ読む）。
+    const bool wantStream = p.stream && !p.spatial && IsOggPath(p.path);
+    if (p.stream && !wantStream)
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            warned = true;
+            Logger::Info("ストリーミングは .ogg の 2D 再生だけです。'{}' はメモリへ読んで鳴らします", p.path);
+        }
+    }
+    std::shared_ptr<AudioStream> stream = wantStream ? OpenStream(p.path) : nullptr;
+    std::shared_ptr<AudioClip> clip;
+    if (!stream)
+    {
+        clip = GetOrLoadClip(p.path, p.spatial);
+        if (!clip) return -1;
+    }
+    const WAVEFORMATEX fmt = stream ? stream->Format() : clip->GetFormat();
     if (fmt.nBlockAlign == 0 || fmt.nSamplesPerSec == 0) return -1;
 
     // 聞こえ具合を先に見積もる（論理ボイスが満杯のときの奪い合いに要る）
@@ -739,9 +814,28 @@ i32 AudioSystem::PlayInternal(const PlayParams& p, bool bgm)
     v.order       = ++m_voiceOrder;
     v.path        = p.path;
     v.clip        = std::move(clip);
+    v.stream      = std::move(stream);
     v.sampleRate  = fmt.nSamplesPerSec;
     v.channels    = fmt.nChannels;
-    v.totalFrames = v.clip->GetSizeInBytes() / fmt.nBlockAlign;
+    v.totalFrames = v.stream ? v.stream->TotalFrames() : v.clip->GetSizeInBytes() / fmt.nBlockAlign;
+    // ループ点（秒 → フレーム）。指定が無く OGG にタグがあればタグを使う
+    if (p.loopStart > 0.0f || p.loopEnd > 0.0f)
+    {
+        v.loopStartFrame = static_cast<u64>((std::max)(p.loopStart, 0.0f) * static_cast<f32>(fmt.nSamplesPerSec));
+        v.loopEndFrame   = static_cast<u64>((std::max)(p.loopEnd, 0.0f) * static_cast<f32>(fmt.nSamplesPerSec));
+    }
+    else if (v.stream && v.stream->HasTaggedLoop())
+    {
+        const audio::StreamLoop tl = v.stream->GetLoop();
+        v.loopStartFrame = tl.start;
+        v.loopEndFrame   = tl.end;
+    }
+    if (p.fadeIn > 0.0f)
+    {
+        v.fade       = 0.0f;
+        v.fadeTarget = 1.0f;
+        v.fadeSpeed  = 1.0f / p.fadeIn;
+    }
     v.bus         = probe.bus;
     v.priority    = prio;
     v.clipVolume  = probe.clipVolume;
@@ -763,7 +857,14 @@ i32 AudioSystem::PlayInternal(const PlayParams& p, bool bgm)
         v.virtualReason = "noDevice";   // 音は出ないが位置は進める＝状態は普段どおり追える
         return id;
     }
-    if (bgm)
+    if (v.stream)
+    {
+        // 鳴り出しが空かないよう 2 チャンク（約 0.7 秒）だけここでデコードし、残りはワーカーへ
+        v.stream->SetLoop(v.loop, v.loopStartFrame, v.loopEndFrame);
+        v.stream->DecodeAvailable(2);
+        m_streamWorker.Add(v.stream);
+    }
+    if (bgm || v.stream)
     {
         if (!MakeReal(v, 0.0)) { FreeVoice(v); return -1; }
         return id;
@@ -799,20 +900,83 @@ i32 AudioSystem::PlayInternal(const PlayParams& p, bool bgm)
 
 // ===== BGM =====
 
-void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
+void AudioSystem::PlayBGM(const std::string& filePath, bool loop, f32 fadeSec)
 {
-    if (Voice* cur = Resolve(m_bgmId)) FreeVoice(*cur);
+    if (Voice* cur = Resolve(m_bgmId))
+    {
+        if (fadeSec > 0.0f)
+        {
+            // クロスフェード: 今の曲はフェードアウトしてから止まる（BGM 扱いのまま＝奪われない）
+            cur->fadeTarget    = 0.0f;
+            cur->fadeSpeed     = (std::max)(cur->fade, 0.001f) / fadeSec;
+            cur->stopAtFadeEnd = true;
+        }
+        else
+        {
+            FreeVoice(*cur);
+        }
+    }
     m_bgmId = -1;
     m_currentBGMPath.clear();
 
     PlayParams p;
-    p.path = filePath;
-    p.loop = loop;
+    p.path   = filePath;
+    p.loop   = loop;
+    p.stream = IsOggPath(filePath);   // ★OGG の BGM は丸ごとデコードせずストリーミング
+    p.fadeIn = fadeSec;
     const i32 id = PlayInternal(p, true);
     if (id < 0) return;
     m_bgmId = id;
     m_currentBGMPath = filePath;
-    Logger::Info("BGM playing: {} (loop={}{})", filePath, loop, IsDeviceReady() ? "" : ", no device");
+    const Voice* v = Resolve(id);
+    Logger::Info("BGM playing: {} (loop={}{}{})", filePath, loop,
+                 (v && v->stream) ? ", stream" : "", IsDeviceReady() ? "" : ", no device");
+}
+
+void AudioSystem::SetBGMLoopPoints(f32 startSec, f32 endSec)
+{
+    Voice* v = Resolve(m_bgmId);
+    if (!v) return;
+    const f32 sr = static_cast<f32>(v->sampleRate);
+    v->loopStartFrame = static_cast<u64>((std::max)(startSec, 0.0f) * sr);
+    v->loopEndFrame   = static_cast<u64>((std::max)(endSec, 0.0f) * sr);
+    if (v->stream)
+    {
+        v->stream->SetLoop(v->loop, v->loopStartFrame, v->loopEndFrame);   // 先読みの後から効く
+    }
+    else if (v->src)
+    {
+        // メモリ上のクリップはループ範囲をバッファに書くので、今の位置から出し直す
+        RestartVoiceAt(*v, CurrentFrame(*v));
+    }
+}
+
+void AudioSystem::FadeVoice(i32 slotId, f32 target, f32 sec)
+{
+    Voice* v = Resolve(slotId);
+    if (!v) return;
+    v->fadeTarget    = std::clamp(target, 0.0f, 1.0f);
+    v->stopAtFadeEnd = false;
+    if (sec <= 0.0f) { v->fade = v->fadeTarget; v->fadeSpeed = 0.0f; ApplyVoiceGain(*v); return; }
+    v->fadeSpeed = (std::max)(std::fabs(v->fadeTarget - v->fade), 0.001f) / sec;
+}
+
+AudioSystem::StreamStats AudioSystem::GetStreamStats() const
+{
+    StreamStats st;
+    for (const auto& v : m_voices)
+    {
+        if (!v.active || !v.stream) continue;
+        ++st.count;
+        st.memoryBytes   += v.stream->MemoryBytes();
+        st.underruns     += v.stream->Underruns();
+        st.decodeMs      += v.stream->DecodeMs();
+        st.chunksDecoded += v.stream->ChunksDecoded();
+        st.watchdogPumps += v.stream->WatchdogPumps();
+        st.audioSecondsDecoded += static_cast<f64>(v.stream->ChunksDecoded()) * AudioStream::kChunkFrames
+                                  / static_cast<f64>((std::max)(v.sampleRate, 1u));
+    }
+    return st;
 }
 
 bool AudioSystem::IsBGMPlaying() const
@@ -823,6 +987,20 @@ bool AudioSystem::IsBGMPlaying() const
 
 void AudioSystem::RestartVoiceAt(Voice& v, f64 frame)
 {
+    if (v.stream)
+    {
+        // ★ボイスを外して壊してから巻き戻す（渡し済みのチャンクを捨てるため）
+        v.stream->DetachVoice();
+        if (v.src) { v.src->DestroyVoice(); v.src = nullptr; }
+        v.stream->SeekTo(static_cast<u64>((std::max)(frame, 0.0)));
+        v.virtualPos = frame;
+        if (IsDeviceReady())
+        {
+            v.stream->DecodeAvailable(2);
+            if (!MakeReal(v, frame)) v.virtualReason = "noDevice";
+        }
+        return;
+    }
     if (v.src)
     {
         v.src->DestroyVoice();
@@ -1029,7 +1207,12 @@ void AudioSystem::Tick(f32 dt)
     for (auto& v : m_voices)
     {
         if (!v.active) continue;
-        if (v.src)
+        if (v.src && v.stream)
+        {
+            // ストリーム: デコード済みを渡すだけ（デコードはワーカー）。曲が終わって鳴らし切ったら解放
+            if (v.stream->Pump(v.paused)) { FreeVoice(v); continue; }
+        }
+        else if (v.src)
         {
             XAUDIO2_VOICE_STATE st{};
             v.src->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
@@ -1038,11 +1221,11 @@ void AudioSystem::Tick(f32 dt)
         else if (!v.paused && v.totalFrames > 0)
         {
             v.virtualPos += static_cast<f64>(dt) * v.sampleRate * v.pitch;
-            if (v.virtualPos >= static_cast<f64>(v.totalFrames))
-            {
-                if (!v.loop) { FreeVoice(v); continue; }
-                v.virtualPos = std::fmod(v.virtualPos, static_cast<f64>(v.totalFrames));
-            }
+            if (v.virtualPos >= static_cast<f64>(v.totalFrames) && !v.loop) { FreeVoice(v); continue; }
+            // ループ点つきはその範囲で回す（仮想から戻ったとき正しい位置から鳴る）
+            const f64 frac = v.virtualPos - std::floor(v.virtualPos);
+            v.virtualPos = static_cast<f64>(audio::WrapLoopPosition(static_cast<u64>(v.virtualPos),
+                                                                    LoopOf(v), v.totalFrames)) + frac;
         }
         if (v.fadeSpeed > 0.0f)
         {
@@ -1062,7 +1245,7 @@ void AudioSystem::Tick(f32 dt)
 
     // 2) 実 → 仮想: 聞こえなくなった音はボイスを手放す（BGM は対象外）
     for (auto& v : m_voices)
-        if (v.active && v.src && !v.bgm && audio::NextVirtualState(false, v.audibility))
+        if (v.active && v.src && !Unmanaged(v) && audio::NextVirtualState(false, v.audibility))
             MakeVirtual(v, "inaudible");
 
     // 3) 仮想 → 実: 聞こえるようになった音を、大事な順に 1 フレーム最大 4 本まで戻す
@@ -1071,7 +1254,7 @@ void AudioSystem::Tick(f32 dt)
     for (u32 i = 0; i < kMaxLogicalVoices; ++i)
     {
         const Voice& v = m_voices[i];
-        if (v.active && !v.src && !v.paused && !audio::NextVirtualState(true, v.audibility))
+        if (v.active && !v.src && !v.paused && !v.stream && !audio::NextVirtualState(true, v.audibility))
             wake.push_back(i);
     }
     std::sort(wake.begin(), wake.end(), [&](u32 a, u32 b) {
@@ -1088,7 +1271,7 @@ void AudioSystem::Tick(f32 dt)
         if (!v.active || v.src) continue;   // 上で奪われた等
         i32 victim = -1;
         // ★同じ優先度で奪い返すには 2 倍大きく聞こえている必要がある（奪い合いのちらつき防止）
-        if (!v.bgm && !HasRoomFor(v, 2.0f, &victim))
+        if (!Unmanaged(v) && !HasRoomFor(v, 2.0f, &victim))
         {
             if (victim < 0) { v.virtualReason = "limit"; continue; }
             Voice& w = m_voices[static_cast<size_t>(victim)];
@@ -1116,7 +1299,7 @@ void AudioSystem::SetMaxVoices(u32 n)
         for (u32 i = 0; i < kMaxLogicalVoices; ++i)
         {
             const Voice& w = m_voices[i];
-            if (w.active && w.src && !w.bgm)
+            if (w.active && w.src && !Unmanaged(w))
                 c.push_back({static_cast<int>(i), w.priority, w.audibility, w.order});
         }
         const int k = audio::PickVictim(c.data(), c.size(), 1 << 20, 1e9f);
@@ -1179,6 +1362,14 @@ std::vector<AudioSystem::VoiceInfo> AudioSystem::GetVoices() const
         vi.positionSec  = static_cast<f32>(CurrentFrame(v)) / sr;
         vi.lengthSec    = static_cast<f32>(v.totalFrames) / sr;
         vi.reverbSend   = v.hasReverbSend ? v.sendLevel : 0.0f;
+        vi.stream       = (v.stream != nullptr);
+        if (v.stream)
+        {
+            vi.bufferedChunks = v.stream->BufferedChunks();
+            vi.underruns      = v.stream->Underruns();
+        }
+        vi.loopStartSec = static_cast<f32>(v.loopStartFrame) / sr;
+        vi.loopEndSec   = static_cast<f32>(v.loopEndFrame) / sr;
         out.push_back(std::move(vi));
     }
     return out;
