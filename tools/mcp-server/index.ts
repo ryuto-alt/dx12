@@ -6615,7 +6615,9 @@ regRaw(
       + "★Jev は全検査ぶんを 1 往復で聞く: 既定(bundle:\"perDomain\")は検査ごとの state で並列に撃つ(待ち時間は 1 往復)。"
       + "bundle:\"one\" は全質問を 1 リクエストに束ねるが、他の検査の事実が混ざって score / choice の判断が落ちる(実測)ので既定にしていない。"
       + "Brief / 鍵が無いときはルールだけで同じ形を返す(judge.source:\"rules\")。judge:false で Jev を使わない。"
-      + "★playtests はシーンを開き直して再生するので、指定したときだけ走る(Editor 中に撃つこと)。Playing 中は配置検査を飛ばす。",
+      + "★playtests はシーンを開き直して再生するので、指定したときだけ走る(Editor 中に撃つこと)。Playing 中は配置検査を飛ばす。"
+      + "★readability に視点(焦点)と対象を渡すと、知覚層(dx12_perceive)で対象が初見で数秒のうちに気づけて読めるか(read.noticeable)と"
+      + "主な原因(read.main_problem)も聞く。壊れてはいないので blocking にはせず、気づけない対象は suggestions で名指しする。",
     inputSchema: {
       checks: z.array(z.enum(GATE_CHECK_IDS)).optional()
         .describe(`走らせる検査を絞る(${GATE_CHECK_IDS.join(" / ")})。省略で既定のもの全部(playtests は指定したときだけ)。`),
@@ -6628,6 +6630,18 @@ regRaw(
       judge: z.boolean().optional().describe("false で判断段(Jev)を使わずルールだけで返す。既定 true。"),
       bundle: z.enum(["one", "perDomain"]).optional()
         .describe("perDomain(既定)= 検査ごとの state で並列に聞く / one = 全検査の質問を 1 リクエストに束ねる(判断の精度が落ちる)。"),
+      readability: z.array(z.object({
+        label: z.string().optional().describe("視点の名前(例「継ぎ目6 の焦点」)。判断段にも渡す。"),
+        camera: z.union([
+          z.enum(["editor", "game"]),
+          z.object({ position: v3(), target: v3(), fovDeg: z.number().optional() }),
+        ]).optional().describe("dx12_perceive の camera と同じ(既定 editor)。"),
+        targets: z.array(z.union([
+          z.string(),
+          z.object({ name: z.string(), role: z.string().optional().describe("何の物か(例「見つけてほしい破片」)。") }),
+        ])).min(1).max(12).describe("読めるか確かめる対象(名前か {name, role})。"),
+      })).max(4).optional()
+        .describe("読みやすさの検査(知覚層)。視点ごとに dx12_perceive を撃ち、初見で数秒のうちに気づいて読めるかを Jev に聞く。指定したときだけ走る。"),
     },
     outputSchema: OUT,
     // 判断段は外部の Jev へ出る。playtests はシーンを開き直すので読み取り専用ではない。

@@ -25,7 +25,7 @@
 //
 // ★検査を足す口: GATE_CHECKS(下の配列)。検査は { id, title, enabled(opts), run(ctx) } で、run は
 //   ルールの結論(items)と、聞くなら judges[{plan, interpret}] を返す。知覚層(perceive)の読みやすさの検査も
-//   ここへ 1 つ足すだけで、束ね・合否・keep・uncertain の組み立てはゲートがやる。
+//   ここへ 1 つ足すだけで、束ね・合否・keep・uncertain の組み立てはゲートがやる(読みやすさの検査 READABILITY_CHECK がその例)。
 
 import fs from "node:fs";
 import path from "node:path";
@@ -40,6 +40,7 @@ import { UI_LOOK, interpretUi, planUi } from "./uiJudge.ts";
 import { collectLayoutContext, interpretLayout, planLayout, type LayoutIssue } from "./layoutJudge.ts";
 import { interpretPolish, planPolish } from "./polishJudge.ts";
 import { eventsFromSteps, interpretPlay, planPlay, pointsFromTrace } from "./playJudge.ts";
+import { READ_PROBLEMS, interpretRead, planRead, ruleProblem, wordifyRead, type ReadViewpoint } from "./readJudge.ts";
 import { JEV_RULES } from "./rules.ts";
 import type { Brief } from "./brief.ts";
 
@@ -108,6 +109,11 @@ export type GateOptions = {
   playtests?: boolean | string[];
   /** false で Jev を使わない(ルールだけ)。 */
   judge?: boolean;
+  /**
+   * 読みやすさの検査(知覚層 perceive)。視点(焦点)と対象を渡したときだけ走る(最大 4 視点)。
+   * 例 [{label:"継ぎ目6 の焦点", camera:{position:[14,5.1,122], target:[14,5,126], fovDeg:72}, targets:[{name:"C6_p0", role:"見つけてほしい破片"}]}]
+   */
+  readability?: ReadViewpoint[];
   /** "perDomain"(既定)= 検査ごとの state で並列に聞く / "one" = 全質問を 1 リクエストに束ねる(精度が落ちる。上の解説)。 */
   bundle?: "one" | "perDomain";
 };
@@ -403,8 +409,74 @@ export const PLAYTEST_CHECK: GateCheck = {
   },
 };
 
+export const MAX_READ_VIEWPOINTS = 4;
+
+/**
+ * (f) 読みやすさ(知覚層)+ 判断段。視点(焦点)ごとに perceive を 1 回撃ち、対象ごとに
+ * 「初見で数秒のうちに気づいて何か読めるか」(read.noticeable)と主な原因(read.main_problem)を聞く。
+ * ★壊れているわけではないので blocking にしない。気づけない対象は suggestions で名指しし、原因と直し方を添える。
+ *   ルールの印(暗い・小さい・遮られている…)が付いたのに Jev が「気づける」と言ったものは keep に残す。
+ */
+export const READABILITY_CHECK: GateCheck = {
+  id: "readability",
+  title: "読みやすさ(知覚層 perceive)+ 判断段",
+  enabled: (o) => Array.isArray(o.readability) && o.readability.length > 0,
+  async run(ctx) {
+    const vps = (ctx.opts.readability ?? []).slice(0, MAX_READ_VIEWPOINTS);
+    if (vps.length === 0) return { skipped: "視点(readability)が指定されていない", items: [] };
+    const items: GateItem[] = [];
+    const suggestions: GateSuggestion[] = [];
+    const judges: JudgeUnit[] = [];
+    const summary: Record<string, unknown>[] = [];
+    for (const vp of vps) {
+      const names = vp.targets.map((t) => (typeof t === "string" ? t : t.name));
+      const raw = await ctx.call("perceive", { ...(vp.camera ? { camera: vp.camera } : {}), targets: names, top: 3 });
+      const w = wordifyRead(raw, vp);
+      const base = items.length;
+      // ルールの印(Brief を見ない)。読みにくいと言った対象だけ item にする(keep の対象)。
+      w.read.targets.forEach((t, i) => {
+        const p = ruleProblem(t);
+        if (p === "fine") return;
+        const name = w.refs[i].name;
+        items.push({ check: "readability", code: "READ_HARD", level: "warning", blocking: false, name,
+                     text: `${vp.label ?? "視点"}: ${name}${w.refs[i].role ? `(${w.refs[i].role})` : ""} が読みにくい(${READ_PROBLEMS[p].label})`,
+                     fix: READ_PROBLEMS[p].hint });
+        suggestions.push({ check: "readability", text: `${name}: ${READ_PROBLEMS[p].label} → ${READ_PROBLEMS[p].hint}` });
+      });
+      summary.push({ viewpoint: w.read.viewpoint, targets: w.read.targets.map((t) => ({ name: t.name, ...(t.role ? { role: t.role } : {}), problem: ruleProblem(t) })) });
+      const input = { brief: ctx.brief, raw, viewpoint: vp };
+      const plan = planRead(input);
+      if (plan.refs.length === 0) continue;
+      judges.push({
+        plan,
+        interpret: (res, out) => {
+          const j = interpretRead(input, plan, res, out);
+          const keep: CheckJudgment["keep"] = [];
+          const sugg: GateSuggestion[] = [];
+          j.targets.forEach((t) => {
+            const idx = items.findIndex((it, k) => k >= base && it.name === t.name);
+            if (t.noticeable.decided === true && idx >= 0) {
+              keep.push({ index: idx, question: "read.noticeable", value: t.noticeable.value, threshold: null,
+                          source: j.source, why: "ルールの印は付いたが、Jev は初見で気づけると判断" });
+            }
+            if (t.noticeable.decided === false) {
+              const mp = t.mainProblem;
+              sugg.push({ check: "readability",
+                          text: `${vp.label ?? "視点"}: ${t.name}${t.role ? `(${t.role})` : ""} は初見で気づけない`
+                            + (mp && mp.id !== "fine" ? `(${mp.label})→ ${mp.hint}` : "(原因は絵を見て決める)"),
+                          tool: "dx12_perceive", args: { ...(vp.camera ? { camera: vp.camera } : {}), targets: [t.name] } });
+            }
+          });
+          return { judge: j, keep, uncertain: j.uncertain, suggestions: sugg };
+        },
+      });
+    }
+    return { items, summary: { viewpoints: summary }, suggestions, judges };
+  },
+};
+
 /** ★検査を足す口。順番がそのまま実行順(シーンを開き直す playtests は最後)。 */
-export const GATE_CHECKS: GateCheck[] = [SCENE_CHECK, LAYOUT_CHECK, POLISH_CHECK, UI_CHECK, PLAYTEST_CHECK];
+export const GATE_CHECKS: GateCheck[] = [SCENE_CHECK, LAYOUT_CHECK, POLISH_CHECK, UI_CHECK, READABILITY_CHECK, PLAYTEST_CHECK];
 
 // ────────────────────────────────────────────────────────────────
 //  本体

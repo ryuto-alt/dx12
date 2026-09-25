@@ -61,14 +61,26 @@ function makeCall(o: { mode?: string; ui?: boolean; validatePass?: boolean; diag
       case "get_contact_shadow": return { enabled: true };
       case "get_entity": return { material: { roughness: 0.8, metallic: 0 } };
       case "ui_tree": return o.ui === false ? { canvases: [] } : UI_TREE;
+      case "perceive": return PERCEIVE;
       default: throw new Error(`偽エンジンは ${method} を知らない`);
     }
   };
   return { call, calls };
 }
 
+// 知覚層: JUNCTION の実測(破片の灯りを裏へ回した「真っ黒な板」)と、明るく目立つ出口
+const shard = { name: "C6_p0", pixels: 22414, share: 0.0366, bbox: [0.55, 0.47, 0.63, 0.54], center: [0.5897, 0.504], luma: 0.2706, lumaStd: 0.05,
+  lumaRing: 0.6807, contrast: 0.4387, saturation: 0.17, distance: 4.1, fullyInView: true, projectedExtent: [0.08, 0.07], occlusion: 0,
+  litFacing: 0.0006, backFacing: 0, mainLight: { name: "C6_fill", facing: 0 } };
+const door = { ...shard, name: "GP_Exit", share: 0.08, luma: 0.72, lumaRing: 0.3, contrast: 2.2, lumaStd: 0.09, litFacing: 0.9, mainLight: null };
+const PERCEIVE = { mode: "Editor", camera: { source: "explicit" }, targets: [shard, door], top: [],
+  scene: { empty: 0.02, farthest: 30, luma: { mean: 0.57, p5: 0.3, p50: 0.58, p95: 0.8, crushed: 0, clipped: 0 },
+           regions: { top: { empty: 0, luma: 0.55, lumaStd: 0.08, distance: 9 }, bottom: { empty: 0, luma: 0.6, lumaStd: 0.07, distance: 4 },
+                      left: { empty: 0, luma: 0.58, lumaStd: 0.07, distance: 7 }, right: { empty: 0, luma: 0.57, lumaStd: 0.08, distance: 6 } } } };
+
 // ── 偽 Jev: 本棚の本(layout ref A)・光沢(BUSY_GLOSS)・フォグ無し(NO_FOG)だけ「意図どおり」 ──
-function makeJev(o: { lowConfUi?: boolean } = {}) {
+//    読みやすさ: readNoul(ref → yes の確率)。既定は「A(破片)は気づけない / B(出口)は気づける」
+function makeJev(o: { lowConfUi?: boolean; readNoul?: Record<string, number> } = {}) {
   const reqs: any[] = [];
   const fetch: FetchLike = async (_u, init) => {
     const b = JSON.parse(init.body);
@@ -76,14 +88,18 @@ function makeJev(o: { lowConfUi?: boolean } = {}) {
     const answers: Record<string, unknown> = {};
     for (const [k, q] of Object.entries<any>(b.questions)) {
       const t = JSON.stringify(q.instructions);
-      if (q.type === "noul") {
+      if (q.type === "noul" && /first-time player/.test(t)) {
+        const ref = (t.match(/target ([A-L])\b/) ?? [])[1] ?? "";
+        answers[k] = { type: "noul", noul: (o.readNoul ?? { A: 0.1, B: 0.9 })[ref] ?? 0.5 };
+      } else if (q.type === "noul") {
         const keep = /flagged issue A /.test(t) || /BUSY_GLOSS/.test(t) || /: NO_FOG =/.test(t);
         // 閾値付近(各質問の閾値 ±0.1 以内)の答え: ui.finding_intended は 0.5、finding.intended は 0.67
         const near = /on the current screen/.test(t) ? 0.52 : /polish checklist/.test(t) ? 0.66 : null;
         answers[k] = { type: "noul", noul: o.lowConfUi && near !== null ? near : keep ? 0.93 : 0.05 };
       } else if (q.type === "choice") {
         const keys = Object.keys(q.criteria);
-        const c = keys.includes("add_fog") ? "enable_ssao" : keys.includes("stuck_geometry") ? "stuck_geometry" : keys[0];
+        const c = keys.includes("add_fog") ? "enable_ssao" : keys.includes("stuck_geometry") ? "stuck_geometry"
+          : keys.includes("unlit_side") ? (/target A\b/.test(t) ? "unlit_side" : "fine") : keys[0];
         answers[k] = { type: "choice", choice: c, confidence: 0.8, probabilities: {} };
       } else answers[k] = { type: "score", score: 3.4, confidence: 0.9 };
     }
@@ -243,6 +259,35 @@ console.log("[4] 検査を足す口 / 状態による分岐");
   const broken: GateCheck = { id: "boom", title: "壊れた検査", enabled: () => true, run: async () => { throw new Error("爆発"); } };
   const rb = await gate(makeCall(), makeJev(), {}, { checks: [broken, ...GATE_CHECKS] });
   check("検査が例外を投げてもゲートは止まらない(skipped に理由)", rb.checks[0].ran === false && /爆発/.test(rb.checks[0].skipped ?? ""));
+}
+
+console.log("[5] 読みやすさの検査(知覚層)");
+{
+  const vp = { label: "継ぎ目 F の焦点", camera: { position: [14, 5.1, 122], target: [14, 5, 126], fovDeg: 72 },
+               targets: [{ name: "C6_p0", role: "見つけてほしい破片" }, "GP_Exit"] };
+  const e0 = makeCall();
+  const r0 = await gate(e0, makeJev());
+  check("視点を渡さなければ走らない(perceive を撃たない)", !r0.checks.some((c) => c.id === "readability") && !e0.calls.some((c) => c.method === "perceive"));
+  const e = makeCall(), j = makeJev();
+  const r = await gate(e, j, { readability: [vp] });
+  const pc = e.calls.find((c) => c.method === "perceive");
+  check("視点ごとに perceive を 1 回(camera と対象の名前を渡す)", !!pc && JSON.stringify(pc.params.camera) === JSON.stringify(vp.camera)
+    && JSON.stringify(pc.params.targets) === '["C6_p0","GP_Exit"]', JSON.stringify(pc?.params));
+  const rq = j.reqs.find((x: any) => "read" in x.state.facts);
+  check("1 視点 = 1 リクエスト(対象 × 2 問)で、state は brief + facts.read", !!rq && Object.keys(rq.questions).length === 4
+    && JSON.stringify(Object.keys(rq.state.facts)) === '["read"]');
+  check("気づけない対象を suggestions で名指しし、原因と測り直しのツールを添える",
+    r.suggestions.some((s) => s.check === "readability" && /C6_p0/.test(s.text) && /裏から/.test(s.text) && s.tool === "dx12_perceive"), JSON.stringify(r.suggestions));
+  check("読みにくさは blocking にしない", !r.blocking.some((b) => b.check === "readability"));
+  check("気づける出口は名指ししない", !r.suggestions.some((s) => /GP_Exit/.test(s.text)));
+  const rk = await gate(makeCall(), makeJev({ readNoul: { A: 0.9, B: 0.9 } }), { readability: [vp] });
+  check("ルールの印(裏から当たる)が付いても Jev が気づけると言えば keep に残る", rk.keep.some((k) => k.check === "readability" && k.name === "C6_p0"
+    && k.judge.question === "read.noticeable"), JSON.stringify(rk.keep.filter((k) => k.check === "readability")));
+  const ru = await gate(makeCall(), makeJev({ readNoul: { A: 0.62, B: 0.9 } }), { readability: [vp] });
+  check("閾値付近は uncertain + 同じ視点から撮るツール", ru.uncertain.some((u) => u.check === "readability" && u.look.tool === "dx12_screenshot_from"),
+    JSON.stringify(ru.uncertain));
+  const rr = await gate(makeCall(), makeJev(), { readability: [vp], judge: false });
+  check("judge:false でもルールの印で名指しする", rr.suggestions.some((s) => s.check === "readability" && /C6_p0/.test(s.text)), JSON.stringify(rr.suggestions));
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });
