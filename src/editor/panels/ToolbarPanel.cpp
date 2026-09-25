@@ -332,6 +332,8 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::MenuItem("ライティング",             nullptr, &ctx.showLighting);
             // 追いかける AI 用の経路探索メッシュを焼く窓
             ImGui::MenuItem("ナビメッシュ",             nullptr, &ctx.showNavMesh);
+            // バスのメーター/フェーダー・スナップショット・鳴っている音
+            ImGui::MenuItem("オーディオミキサー",       nullptr, &ctx.showAudioMixer);
             ImGui::MenuItem("パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
             ImGui::MenuItem("UIアニメーション",         nullptr, &ctx.showAnimEditor);
             ImGui::MenuItem("スプライトシート",         nullptr, &ctx.showSpriteSheetEditor);
@@ -692,6 +694,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::MenuItem("Network 設定",            nullptr, &ctx.showNetworkSettings);
         ImGui::MenuItem("ライティング",            nullptr, &ctx.showLighting);
         ImGui::MenuItem("ナビメッシュ",            nullptr, &ctx.showNavMesh);
+        ImGui::MenuItem("オーディオミキサー",      nullptr, &ctx.showAudioMixer);
         ImGui::MenuItem("パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
         ImGui::MenuItem("UIエディタ",              nullptr, &ctx.showUiEditor);
         ImGui::MenuItem("UIアニメーション",        nullptr, &ctx.showAnimEditor);
@@ -709,6 +712,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 ctx.showAnimEditor = ctx.showSpriteSheetEditor =
                 ctx.showTransitionPreview = false;
             ctx.showLighting = false;
+            ctx.showAudioMixer = false;
         }
         ImGui::EndPopup();
     }

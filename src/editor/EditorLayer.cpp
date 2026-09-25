@@ -18,6 +18,7 @@
 // シーンビューのライティング編集（太陽ドラッグ / ライトのハンドル / ライティング・パネル）
 #include "editor/LightHandles.h"
 #include "editor/panels/LightingPanel.h"
+#include "editor/panels/AudioMixerPanel.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -331,6 +332,9 @@ void EditorLayer::Render(bool isPlaying,
     // 影/CSM の実体は Application が持つのでここで参照を渡す（「エンジン設定」窓と同じ値を触る）。
     RenderLightingPanel(scene, *m_ctx, shadowQualityIndex, shadowMapSize, shadowMapDirty,
                         cascadeSplitLambda, cascadeBlendBand, showCascadeDebug);
+
+    // オーディオミキサー（中で showAudioMixer を見て早期 return する）
+    RenderAudioMixerPanel(audioSystem, *m_ctx);
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
 
