@@ -376,6 +376,7 @@ private:
     void McpUndoAutoClose(const char* reason);
     // ハンドラが「書き換える前に触るコンポーネントを申告する」口。McpUndo().Track<T>(e)。
     McpUndoTracker& McpUndo() { return m_mcpUndoTrack; }
+    void RegisterMcpAudioMethods();       // 音の観測（audio_state: バス・メーター・ボイス・リバーブ）
 
     // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
     // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。

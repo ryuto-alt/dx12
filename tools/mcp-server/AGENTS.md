@@ -117,10 +117,10 @@ dx12_save_scene()
 | `BURIED` | 地面へ 25% 以上 / 50cm 以上 沈んでいる | ○ 接地させる |
 | `FLOATING` | 地面から浮いている | ○ 接地させる |
 | `Z_FIGHT` | 2 つの面が 1mm 以内で重なっている＝**描画がちらつく正体** | ○ 小さい方を 5mm 逃がす |
-| `OVERLAP` | 体積比 30% 以上めり込んでいる | × 設計判断なので人/AI が決める |
+| `OVERLAP` | 体積比 30% 以上めり込んでいる | × 設計判断。`judge` が名前・グループ・大きさと Brief から意図か判断する(本棚の中の本は keep:true) |
 | `DUPLICATE` | 同じ大きさの物が同じ場所に 2 つ（**リトライで 2 回撃った**） | × `dx12_delete_entity` で片方を消す |
 | `COLLIDER_WITHOUT_BODY` | コライダーはあるが `rigidBody` が無い | ○ 静的 rigidBody を付ける |
-| `NO_COLLIDER` | 人がぶつかる大きさなのに当たり判定が無い | × 飾りなら無視してよい |
+| `NO_COLLIDER` | 人がぶつかる大きさなのに当たり判定が無い | × `judge` が「当たり判定が要らない物か」を判断する(草・光の筋は keep:true) |
 | `SCALE_ANOMALY` / `NAN_TRANSFORM` | 一辺 1km 超 / 5mm 未満 / 負スケール / NaN | × 単位の取り違えを疑う |
 
 - **★`COLLIDER_WITHOUT_BODY` はこのエンジン固有の罠**。`boxCollider` を付けただけでは Jolt に
@@ -130,6 +130,30 @@ dx12_save_scene()
 - `NO_COLLIDER` は**シーンが物理を使っているときだけ**出る（当たり判定を 1 つも使っていない
   見せ物シーンで全オブジェクトに「すり抜ける」と言い続けても意味が無いため）。
 - 検出内容はエンジンログにも `配置検査 [KIND] …` として残る（後から共同開発者が追える）。
+
+---
+
+## ★ 作業の区切りで品質ゲートを回す — `dx12_quality_gate`
+
+部屋を組み終えた・UI を作った・ステージを直した、の区切りで **1 回だけ** 撃つ。検査を思い出して個別に撃つ必要は無い。
+
+```
+dx12_quality_gate()                                   # シーン検証・配置・仕上がり・UI をまとめて
+dx12_quality_gate(readability:[{label:"焦点 F", camera:{position:[14,5.1,122], target:[14,5,126]},
+                   targets:[{name:"C6_p0", role:"見つけてほしい破片"}]}])   # 焦点から見て初見で気づけるかも
+dx12_quality_gate(playtests:true)                     # 保存済みの .playtest も再生(シーンを開き直すので区切りでだけ)
+# → {pass, blocking[], keep[], suggestions[], uncertain[], cost}
+```
+
+読み方は 4 つだけ:
+
+1. **`blocking` を上から直す**(ルールの error: 参照切れ・Z_FIGHT・押せないボタン・落ちたプレイテスト…)。直したらもう一度ゲート。
+2. **`keep` は直さない**。Brief に照らして意図どおり(ホラーの暗さ・本棚の中の本・ガチャの光沢)と判断したもので、`judge` に根拠が残る。
+3. **目で見るのは `uncertain` だけ**。各項目の `look`(`dx12_screenshot_from` など)をそのまま撃って自分で決める。全部をスクショで確かめ直さない。
+4. `suggestions` は次の一手(`tool` / `args` 付きはそのまま撃てる)。読みにくい対象はここで名指しされる。
+
+- 判断の材料は作品の意図(`dx12_brief`)。無いと `briefMissing` が付いてルールだけになる。最初に書いておく。
+- 費用の目安は 1 回 $0.0003 前後・Jev の待ち 0.5 秒(本物の Jev で実測)。`judge:false` で Jev を使わない。
 
 ---
 
@@ -319,6 +343,13 @@ dx12_autoplay(goalName:"GP_Goal")
 それでも進まなければ座標付きで諦める。★静的に通っても実際は詰まる
 （見えない当たり判定・傾斜・キャラの幅）ことがあるので、
 **「クリアできる」と言う前にこれを通すこと**。
+
+### ④' 困っている理由を聞く — プレイの `judge`
+
+`dx12_get_play_session` / `dx12_record_playtest`(人のプレイ)は `judge.confusion`(Brief が狙っていない迷い・苛立ち。`troubled`)と
+`judge.cause`(道が分からない / 目的が分からない / 跳躍が難しすぎる / 地形に引っかかる / 落下以外でやられる / 問題なし)を返す。
+`dx12_autoplay`(届かなかったとき)と `dx12_run_playtests`(落ちたテスト)は原因だけ。**合否はルールのまま**で、`cause.hint` が次の一手。
+ホラーの慎重な歩きのように Brief が狙う振る舞いは困りごとに数えない。`goalName` を渡すとゴールへの進みも判断材料になる。
 
 ### ⑤ 人間のプレイを読む（従来どおり）
 
@@ -1353,6 +1384,11 @@ dx12_set_transform(name:"Player", position:[0,1,0])
 「主役が1つか」「全要素が同じ角丸カードになっていないか」「青紫ネオン/グラデ/影を
 無意味に重ねていないか」「作品固有の構図か」を必ず判断する。
 
+★ただし好みのルール(CENTERED_MONOTONY / FONT_SIZE_SPRAWL / PALETTE_SPRAWL / OVER_DECORATED / BUSY_GLOSS / EFFECT_STACKING / OUT_OF_CANVAS)は
+`judge` が Brief(`dx12_brief` の `ui` に UI の方向性を書くと効く)と照らして仕分ける。**`judge.findings` の `keep:true` は直さない**
+(ガチャ画面の光沢・スタイリッシュな UI のはみ出す帯など)。目で見るのは `judge.uncertain` に入ったものだけでよい(`look` の
+`dx12_ui_screenshot` を撃つ)。押せない・読めない・崩れている系は `notAsked` でルールのまま＝必ず直す。`screen` に画面の役割を渡すと判断材料になる。
+
 手動で細部を組む場合の基本:
 
 1. `dx12_create_entity(type: "ui_canvas")` — UI ルート。既にあれば省略（`dx12_ui_tree` で確認）
@@ -1864,6 +1900,7 @@ dx12_polish_audit()
   直したら **`dx12_jev_eval`** で margin(noul: yes 群の最小 − no 群の最大)を測る。**負なら閾値ではなく質問文を直す。**
 - 費用は `dx12_jev_status` の `log.usd`(入力 $0.042/100 万トークン、出力無料)。実測で polish_audit 1 回 = 1 リクエスト・3,000〜4,500 トークン(指摘の数で増える)≈ $0.0002・0.5〜0.7 秒。
 - Jev は開発時専用。配布ゲームには入らない。
+- 同じ判断段は `dx12_ui_audit` / `dx12_validate_layout` / プレイテスト系 / 品質ゲートの読みやすさにもある。形は共通で、`{source, findings:[{code, intended, keep}], uncertain:[{id, why, look}], briefMissing?, cost}` にツール固有の物が足される(docs/MCP.md §4-16)。
 
 ### ワークフロー: 壊れてないか 1 発で確認する
 

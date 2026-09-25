@@ -233,7 +233,23 @@ nlohmann::json McpComponentSchema()
         F("clipPath", "string (assets-relative)", ""), F("volume", "float", 1.0), F("loop", "bool", false),
         F("spatial", "bool", true), F("playOnStart", "bool", true),
         F("minDistance", "float", 1.0), F("maxDistance", "float", 30.0),
+        F("bus", "string (mixer bus name; empty = sfx. builtin: master/music/sfx/ambience/voice/ui)", ""),
+        F("priority", "int 0..255 (higher = kept when the voice limit is hit; lower ones are virtualized/stolen first)", 128),
     })));
+    comps.push_back(C("audioReverbZone", true, true, json::array({
+        F("preset", "string (none/generic/closet/room/smallroom/largeroom/bathroom/stoneroom/hallway/"
+                    "stonecorridor/hall/cave/sewer/hangar/forest/city/outdoor/underwater)", "room"),
+        F("shape", "int (0=box uses halfExtents, 1=sphere uses radius)", 0),
+        F("halfExtents", "float3 (local units, includes the entity scale)", json::array({4, 2.5, 4})),
+        F("radius", "float", 5.0),
+        F("fadeDistance", "float (outside the shape, reverb fades 1->0 over this width)", 2.0),
+        F("wet", "float 0..1 (amount of reverb while inside)", 0.5),
+        F("priority", "int (overlapping zones: higher = inner, wins)", 0),
+        F("enabled", "bool", true),
+    }), "Reverb area. When the listener is inside, the mix reverb morphs to this preset (spatial fade "
+        "+ 0.35s temporal smoothing). Sounds send to the reverb by bus (sfx/ambience 1, voice 0.6, "
+        "music/ui 0) x play{reverb=} x sqrt(distance gain). Check the result with dx12 audio_state "
+        "(reverb.dominant / currentWet)."));
     comps.push_back(C("particleEmitter", true, true, json::array({
         F("kind", "int (0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star)", 0),
         F("blend", "int (0=Additive,1=Alpha)", 0), F("rate", "float (per sec)", 30.0),
@@ -842,7 +858,14 @@ nlohmann::json McpLuaApi()
         "status() -> 'none'|'complete'|'partial'|'failed' / isValid() -> bool（焼き直しで false）/ length() -> float / polyCount() -> int",
     })));
     objects.push_back(O("audio", "global", json::array({
-        "playBGM(path)/stopBGM()/pauseBGM()/resumeBGM()", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
+        "playBGM(path, loop?=true, fade?)/stopBGM()/pauseBGM()/resumeBGM()  (fade 秒で今の曲からクロスフェード。"
+        ".ogg は自動でストリーミング再生＝丸ごとデコードしない)",
+        "crossfadeBGM(path, sec?=2, loop?=true)  (playBGM(path, loop, sec) と同じ)",
+        "setBGMLoopPoints(startSec, endSec?)  (イントロ付きの曲のループ範囲。end 省略 = 曲の終わり。"
+        "OGG に LOOPSTART/LOOPLENGTH タグがあれば既定でそれ。ストリームは先読み(最大約4.5秒)の後から効く)",
+        "playStream(path, opts?) -> id  (長い環境音を OGG のままストリーミング。既定 bus='ambience', loop=true。"
+        "opts: volume, pitch, reverb, fadeIn, loopStart, loopEnd)",
+        "fadeVoice(id, target, sec)  (その 1 本を sec 秒で音量 target 0..1 へ。止めない＝ダッキング/フェードイン)", "seekBGM(sec)  (再生位置を秒指定でジャンプ。ループ維持、イントロスキップ等)", "setBGMRate(ratio)  (再生速度倍率・ピッチ連動0.05〜2.0。1=通常。playBGMで1.0に戻る)", "setListener(x,y,z)  (空間SFXのリスナー位置上書き。プレイヤー中心の定位に。毎フレーム呼ぶ想定)", "playSFX(path)",
         "playSpatial(path,x,y,z,minD,maxD,vol?,loop?)", "stopAllSFX()",
         "playSFXId(path,loop?,vol?) -> id / playSpatialId(path,x,y,z,minD,maxD,vol?,loop?) -> id  (★ID を返す版。ループ音はこちらで鳴らす)",
         "stopVoice(id) / setVoiceVolume(id,v) / setVoicePitch(id,ratio) / moveVoice(id,x,y,z) / isVoicePlaying(id) -> bool  (鳴っている 1 本だけを止める/絞る/回転を落とす/追従させる。stopAllSFX の巻き添えを避ける)",
@@ -854,6 +877,43 @@ nlohmann::json McpLuaApi()
         "getCurrentBGM() で判定して呼ばないこと（曲の途中で遷移するとイントロへ戻る）",
         "getBGMList()/getSFXList() -> table",
         "rescan()  (assets 配下の音声ファイルを列挙し直す。実行中に wav を足したとき用)",
+        "-- 汎用の再生口 --",
+        "play(path, opts?) -> id  (opts: bus='sfx', volume=1, pitch=1, loop=false, priority=128, "
+        "pos=Vec3 (渡すと 3D 空間音), minDistance=1, maxDistance=30, reverb=1 (リバーブ送りの倍率), "
+        "stream=false (.ogg の 2D をストリーミング), fadeIn=0 (秒), loopStart/loopEnd (秒)。失敗 -1)",
+        "stopVoice(id, fade?)  (fade 秒で 0 まで下げてから止める。省略 = 即停止)",
+        "setVoicePriority(id, p)  (0..255。大きいほど大事)",
+        "-- 同時発音数（優先度と仮想化）--",
+        "setMaxVoices(n) / getMaxVoices() -> int  (実ボイスの全体上限。既定 32。BGM は数えない)",
+        "setBusVoiceLimit(bus, n) / getBusVoiceLimit(bus) -> int  (0 = 上限なし。子孫のバスも数える)",
+        "getVoiceCount() -> real, virtual  (2 値返し。仮想ボイス = 音は出さず再生位置だけ進めている音)",
+        "★上限に達したら 優先度が低い → 小さく聞こえている → 古い の順に 1 本奪う（ループ音は仮想へ落とすだけ、"
+        "ワンショットは止める）。遠くて聞こえない音（-60dB 未満）も仮想になり、近づくと続きから鳴る。"
+        "isVoicePlaying は仮想中も true",
+        "-- ミキサーのバス（XAudio2 のサブミックス）。既定は master ← music/sfx/ambience/voice/ui --",
+        "createBus(name, parent?='master') -> bool  (ユーザー定義バス。既にあれば何もしない。入れ子は 8 段まで)",
+        "setBusVolume(name, v) / getBusVolume(name) -> float  (0..4。setMasterVolume/setBGMVolume/setSFXVolume は "
+        "master/music/sfx の別名)",
+        "setBusMute(name, bool) / isBusMuted(name) -> bool",
+        "setBusLowpass(name, hz) / getBusLowpass(name) -> float  (0 = 無し。上限は出力のサンプルレート/6 ≒ 8kHz)",
+        "getBuses() -> {name,...}  (親 → 子の順。master が先頭)",
+        "getBusLevel(name) -> peakDb, rmsDb  (バスのメーター・フェーダー後の dBFS。-120 = 無音。"
+        "ピークは 0.5 秒保持、RMS は 0.3 秒でならす。例: 足音の大きさで敵が気付く)",
+        "★AudioSource.bus / audio:play{bus=...} で送り先を選ぶ。無いバス名は sfx で鳴らして警告を 1 度出す",
+        "-- スナップショット（バスの音量・ローパスの組を名前で切り替える）--",
+        "defineSnapshot(name, {bus={volume=v | db=d, lowpass=hz}, ...}) -> bool  "
+        "(例: audio:defineSnapshot('hidden', {sfx={lowpass=900, volume=0.7}, ambience={db=-6}}))",
+        "setSnapshot(name, sec?=0.5) -> bool  (sec 秒で遷移。途中で切り替えても跳ねない。'default' = 補正なし)",
+        "getSnapshot() -> string / getSnapshots() -> {name,...}",
+        "★スナップショットはバスのユーザー音量（setBusVolume・オプション画面）に掛ける補正なので互いを上書きしない。"
+        "音量は線形、ローパスはオクターブ等速で補間。Play を止めると default に戻る",
+        "-- リバーブ（XAudio2 組み込みリバーブへの送り）--",
+        "setReverb(preset, wet?=0.35) -> bool  (AudioReverbZone の外で使う既定の響き。Play を止めると none/0 に戻る)",
+        "getReverbPresets() -> {name,...}  (none/generic/closet/room/smallroom/largeroom/bathroom/stoneroom/"
+        "hallway/stonecorridor/hall/cave/sewer/hangar/forest/city/outdoor/underwater)",
+        "setBusReverbSend(bus, v) / getBusReverbSend(bus) -> float  (0..1。既定 sfx/ambience=1, voice=0.6, music/ui=0)",
+        "★部屋ごとの響きは AudioReverbZone コンポーネント（箱/球 + fadeDistance + priority）で置く。"
+        "送り量 = バスの reverbSend × play{reverb} × √(距離減衰)（遠い音ほど響きの割合が増える）",
     })));
     objects.push_back(O("time", "global ('.' で呼ぶ)", json::array({
         "time.now() -> float  — Play開始からの経過秒(タイムスケール適用済み)",

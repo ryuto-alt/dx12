@@ -1146,10 +1146,34 @@ struct AudioSource
     bool playOnStart = true;          // Play 開始時に自動再生
     f32  minDistance = 1.0f;
     f32  maxDistance = 30.0f;
+    // 送り先のバス名（空 = "sfx"）。既定は master/music/sfx/ambience/voice/ui。
+    // 環境音は "ambience" にしておくと、スナップショットやオプションの音量で別に絞れる。
+    std::string bus;
+    // 優先度 0..255（大きいほど大事）。ボイス上限に達したら低い方から奪われる／仮想化される。
+    // 既定 128。プレイヤーの足音・敵の接近音など「絶対に消えてほしくない音」は上げる。
+    i32  priority = 128;
 
     // ランタイム専有（非シリアライズ）
     i32  runtimeSlot     = -1;
     bool startedThisPlay = false;
+};
+
+// リバーブ域（部屋・廊下・洞窟・屋外…の響き）。リスナーが中に入ると、そのプリセットの響きへ
+// 補間で切り替わる（境界の外側 fadeDistance の幅で 1 → 0。時間方向にも 0.35 秒でならす）。
+// 形は Transform のローカル空間（回転・スケール込み）の箱か球。重なったら priority の高い方が
+// 内側として勝つ（洞窟 0 の中の小部屋 1 など）。ゾーンの外は Lua の audio:setReverb の既定。
+// preset: none / generic / closet / room / smallroom / largeroom / bathroom / stoneroom /
+//         hallway / stonecorridor / hall / cave / sewer / hangar / forest / city / outdoor / underwater
+struct AudioReverbZone
+{
+    std::string preset       = "room";
+    i32         shape        = 0;                     // 0 = 箱（halfExtents）/ 1 = 球（radius）
+    DirectX::XMFLOAT3 halfExtents{4.0f, 2.5f, 4.0f};  // ローカル単位（スケール込み）
+    f32         radius       = 5.0f;
+    f32         fadeDistance = 2.0f;                  // 境界の外側この幅で響きが 0 へ
+    f32         wet          = 0.5f;                  // 響きの量 0..1
+    i32         priority     = 0;                     // 重なったら大きい方が内側
+    bool        enabled      = true;
 };
 
 // ステージギミック。Transform を基準位置として、時間で動く/塞ぐ「ステージ部品」を表す。

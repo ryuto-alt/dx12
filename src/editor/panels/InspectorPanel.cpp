@@ -361,7 +361,7 @@ dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::Edit
     if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e)) return ic.entLight;
     if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton, UIAnimator>(e)) return ic.entUi;
     if (reg.all_of<MeshRenderer>(e))                          return ic.entMesh;
-    if (reg.all_of<AudioSource>(e))                           return ic.entAudio;
+    if (reg.any_of<AudioSource, AudioReverbZone>(e))          return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
                    CapsuleCollider, ConvexHullCollider, MeshCollider, CharacterController>(e))   return ic.entPhysics;
     if (reg.all_of<LuaScript>(e))                             return ic.entScript;
@@ -2413,6 +2413,58 @@ void InspectorPanel::Render(entt::registry& reg,
             }
         }
 
+        // AudioReverbZone（リバーブ域）
+        if (reg.all_of<AudioReverbZone>(ctx.selectedEntity))
+        {
+            bool open = IconHeader(ic, ic ? ic->entAudio : 0, "Audio Reverb Zone");
+            bool removed = ComponentRemoveMenu<AudioReverbZone>(reg, ctx, ctx.selectedEntity, "AudioReverbZone");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_reverbZoneEdit);
+                auto& z = reg.get<AudioReverbZone>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                if (pg::Begin("AudioReverbZone"))
+                {
+                    changed |= pg::Checkbox("有効 Enabled", &z.enabled);
+                    // プリセットは audio::ReverbPresetTable の名前（シーン JSON にも名前で入る）
+                    std::size_t presetCount = 0;
+                    const audio::ReverbPreset* presets = audio::ReverbPresetTable(presetCount);
+                    int cur = -1;
+                    std::vector<const char*> labels;
+                    std::vector<std::string> labelStore;
+                    labelStore.reserve(presetCount);
+                    for (std::size_t i = 0; i < presetCount; ++i)
+                    {
+                        labelStore.push_back(std::string(presets[i].label) + " (" + presets[i].name + ")");
+                        if (z.preset == presets[i].name) cur = static_cast<int>(i);
+                    }
+                    for (const auto& s : labelStore) labels.push_back(s.c_str());
+                    if (cur < 0)
+                        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                                           "未知のプリセット '%s'（汎用で鳴ります）", z.preset.c_str());
+                    int sel = (cur < 0) ? 0 : cur;
+                    if (pg::Combo("プリセット Preset", &sel, labels.data(), static_cast<int>(labels.size()),
+                                  "部屋・廊下・洞窟などの響きの性格。量は下の Wet で決める"))
+                    { z.preset = presets[sel].name; changed = true; }
+                    changed |= pg::SliderFloat("響きの量 Wet", &z.wet, 0.0f, 1.0f, "%.2f", &active);
+                    static const char* kShapes[] = {"箱 Box", "球 Sphere"};
+                    changed |= pg::Combo("形 Shape", &z.shape, kShapes, 2);
+                    if (z.shape == 1)
+                        changed |= pg::Float("半径 Radius", &z.radius, 0.05f, 0.1f, 1000.0f, "%.2f", &active);
+                    else
+                        changed |= pg::Float3("半径 Half Extents", &z.halfExtents.x, 0.05f, 0.05f, 1000.0f,
+                                              "%.2f", &active, "ローカル単位（エンティティのスケールが掛かる）");
+                    changed |= pg::Float("境界のぼかし Fade", &z.fadeDistance, 0.05f, 0.0f, 100.0f, "%.2f",
+                                         &active, "形の外側この幅で響きが 0 まで下がる（0 = くっきり切り替え）");
+                    changed |= pg::Int("優先度 Priority", &z.priority, 1.0f, -100, 100, &active,
+                                       "重なったら大きい方が内側として勝つ（洞窟 0 の中の小部屋 1 など）");
+                    pg::End();
+                }
+                ImGui::TextDisabled("Play 中にリスナーが入ると響きが切り替わります（audio_state で確認）");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_reverbZoneEdit, changed, active, "AudioReverbZone");
+            }
+        }
+
         // NodeAnimation
         if (reg.all_of<NodeAnimationComp>(ctx.selectedEntity))
         {
@@ -3957,6 +4009,8 @@ void InspectorPanel::Render(entt::registry& reg,
                                          "Foot IK (接地補正・Play 中のみ)");
             AddComponentMenuItem<Brain>(reg, ctx, ctx.selectedEntity,
                                         "Brain (ゲーム AI の頭脳・Play 中のみ)");
+            AddComponentMenuItem<AudioReverbZone>(reg, ctx, ctx.selectedEntity,
+                                                  "Audio Reverb Zone (部屋・廊下・洞窟の響き)");
             ImGui::Separator();
             AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
             AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
@@ -4281,6 +4335,14 @@ void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, en
         pg::Group("再生");
         changed |= pg::Checkbox("開始時に再生 Play On Start", &as.playOnStart);
         changed |= pg::Checkbox("ループ Loop", &as.loop);
+
+        pg::Group("ミキサー");
+        changed |= pg::InputTextStr("バス Bus", as.bus, &active,
+            "送り先のミキサーバス。空 = sfx。既定: master / music / sfx / ambience / voice / ui。"
+            "Lua の audio:createBus で作ったバス名も書ける（無い名前は sfx で鳴らして警告）。");
+        changed |= pg::Int("優先度 Priority", &as.priority, 1.0f, 0, 255, &active,
+            "0..255（大きいほど大事）。同時発音数の上限に達したら、低い方から仮想化（音を止めて"
+            "位置だけ進める）されるか止められる。既定 128。");
 
         pg::Group("空間化");
         changed |= pg::Checkbox("3D 空間音にする Spatial", &as.spatial,

@@ -309,6 +309,8 @@ static void RegisterCoreComponentSerializers()
     // フット IK（接地補正）。ボーン名が空なら一般的な命名から自動推定する
     R.Register(MakeReflectedInfo<FootIK>("FootIK", "footIK", true));
     R.Register(MakeReflectedInfo<Brain>("Brain", "brain", true));
+    // リバーブ域（音の担当）。純フィールドなので反射で直列化する
+    R.Register(MakeReflectedInfo<AudioReverbZone>("AudioReverbZone", "audioReverbZone", true));
     // プレハブインスタンスの紐付け。.prefab 側へ書き出す時だけ StripPrefabLinks で落とす
     R.Register(MakeReflectedInfo<PrefabLink>("PrefabLink", "prefabLink", true));
 
@@ -763,6 +765,9 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 {"minDistance", as.minDistance},
                 {"maxDistance", as.maxDistance}
             };
+            // 空（= sfx）のときは書かない。既存シーンの保存結果を変えないため。
+            if (!as.bus.empty()) ej["audioSource"]["bus"] = as.bus;
+            if (as.priority != 128) ej["audioSource"]["priority"] = as.priority;
         }
 
         if (reg.all_of<ParticleEmitter>(entity))
@@ -1931,6 +1936,8 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 as.playOnStart = aj.value("playOnStart", true);
                 as.minDistance = aj.value("minDistance", 1.0f);
                 as.maxDistance = aj.value("maxDistance", 30.0f);
+                as.bus         = aj.value("bus", std::string());
+                as.priority    = aj.value("priority", 128);
                 reg.emplace_or_replace<AudioSource>(e, std::move(as));
             }
         }

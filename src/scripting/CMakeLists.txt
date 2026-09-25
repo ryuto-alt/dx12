@@ -1,6 +1,7 @@
 add_library(Scripting STATIC
     ScriptEngine.cpp
     ScriptEngineAi.cpp      # nav / 群衆 / Brain の Lua API
+    ScriptAudioBindings.cpp   # Lua の audio（音の担当。ScriptEngine.cpp から分けて衝突を避ける）
 )
 
 target_include_directories(Scripting PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

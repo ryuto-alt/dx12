@@ -151,6 +151,17 @@ void RegisterCoreComponentMeta()
         .data<&SculptMesh::collision>("collision")
         .data<&SculptMesh::color>("color");
 
+    entt::meta_factory<AudioReverbZone>{}
+        .type("AudioReverbZone")
+        .data<&AudioReverbZone::preset>("preset")
+        .data<&AudioReverbZone::shape>("shape")
+        .data<&AudioReverbZone::halfExtents>("halfExtents")
+        .data<&AudioReverbZone::radius>("radius")
+        .data<&AudioReverbZone::fadeDistance>("fadeDistance")
+        .data<&AudioReverbZone::wet>("wet")
+        .data<&AudioReverbZone::priority>("priority")
+        .data<&AudioReverbZone::enabled>("enabled");
+
     entt::meta_factory<AudioSource>{}
         .type("AudioSource")
         .data<&AudioSource::clipPath>("clipPath")
@@ -159,7 +170,9 @@ void RegisterCoreComponentMeta()
         .data<&AudioSource::spatial>("spatial")
         .data<&AudioSource::playOnStart>("playOnStart")
         .data<&AudioSource::minDistance>("minDistance")
-        .data<&AudioSource::maxDistance>("maxDistance");
+        .data<&AudioSource::maxDistance>("maxDistance")
+        .data<&AudioSource::bus>("bus")
+        .data<&AudioSource::priority>("priority");
 
     entt::meta_factory<Tag>{}
         .type("Tag")

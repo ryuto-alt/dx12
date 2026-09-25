@@ -597,6 +597,11 @@ public:
     // 地形/彫刻と同じ独立フローティング窓なので AnyToolWindowOpen には含めない。
     // メニュー「ツール > ナビメッシュ」で開く。
     bool showNavMesh = false;
+
+    // オーディオミキサー窓（バスのメーター/フェーダー・スナップショット・鳴っている音）。
+    // 他の独立フローティング窓と同じく AnyToolWindowOpen には含めない。
+    // メニュー「ツール > オーディオミキサー」で開く。
+    bool showAudioMixer = false;
 };
 
 } // namespace dx12e
