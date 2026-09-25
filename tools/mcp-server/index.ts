@@ -1399,6 +1399,15 @@ reg(
   () => run(() => engine.call("audio_state", {})),
 );
 
+reg(
+  "dx12_brain_state",
+  "ゲームAI(Brain)の状態を観測",
+  "Brain コンポーネント(ゲーム AI)の中身を読む。entity / name を省くと Brain を持つエンティティの一覧(今の行動つき)。指定するとその 1 体の {action, decision.actions(行動ごと・考慮事項ごとの得点の内訳=なぜその行動を選んだか), history, blackboard, perception(見えている相手・最後に見た位置・聞いた音), movement}。★Brain は Play 中だけ動くので、実行時の状態は Play 中(dx12_step_frames の deterministic で止めている間も含む)にしか無い。「敵が変な行動をする」は decision.actions の得点から読む。読み取り専用。",
+  { ...entityRef },
+  { readOnlyHint: true },
+  ({ entity, name }) => run(() => engine.call("brain_state", { entity, name })),
+);
+
 // ════════════════════════════════════════════════════════════════
 //  コンテンツ制作ヘルパー拡充
 // ════════════════════════════════════════════════════════════════
