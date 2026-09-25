@@ -24,6 +24,10 @@ console.log("[1] 境界と語の固定(動かすなら評価ケースも見直�
     count: { edges: [1, 2, 4, 11], words: ["なし", "ひとつ", "少し", "いくつも", "たくさん"] },
     fogDensity: { edges: [0.001, 0.008, 0.025], words: ["なし", "薄い", "中くらい", "濃い"] },
     bloom: { edges: [0.2, 0.5, 1.0], words: ["弱い", "中くらい", "強い", "とても強い"] },
+    // UI(境界と uiQuality.ts のルール閾値の揃いは jev/uiJudge.test.ts の [3] で見る)
+    kinds: { edges: [2, 4, 6, 9], words: ["ひとつだけ", "少ない", "普通", "多い", "とても多い"] },
+    palette: { edges: [4, 7, 13, 20], words: ["ごく少ない", "少ない", "普通", "多い", "とても多い"] },
+    centered: { edges: [0.05, 0.35, 0.8, 0.95], words: ["ほぼ無い", "一部だけ", "半分くらい", "大半", "ほぼ全部"] },
   };
   check("BINS がスナップショットと一致", JSON.stringify(BINS) === JSON.stringify(snapshot),
     `実際: ${JSON.stringify(BINS)}`);

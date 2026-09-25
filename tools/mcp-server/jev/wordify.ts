@@ -57,6 +57,24 @@ export const BINS = {
     edges: [0.2, 0.5, 1.0],
     words: ["弱い", "中くらい", "強い", "とても強い"],
   },
+
+  // ── UI(uiQuality.ts の auditUiTree と境界を揃える) ──
+  /** 種類の数(表示中のフォントサイズの種類)。6 種以上 = FONT_SIZE_SPRAWL(>5)と同じ線。 */
+  kinds: {
+    edges: [2, 4, 6, 9],
+    words: ["ひとつだけ", "少ない", "普通", "多い", "とても多い"],
+  },
+  /** 面色の系統数(RGB を 1/16 に量子化した数)。13 以上 = PALETTE_SPRAWL(>12)と同じ線。 */
+  palette: {
+    edges: [4, 7, 13, 20],
+    words: ["ごく少ない", "少ない", "普通", "多い", "とても多い"],
+  },
+  /** 操作+テキスト要素のうち水平中央に乗っている割合。0.8 以上 = CENTERED_MONOTONY と同じ線。 */
+  centered: {
+    edges: [0.05, 0.35, 0.8, 0.95],
+    words: ["ほぼ無い", "一部だけ", "半分くらい", "大半", "ほぼ全部"],
+  },
+
 } as const satisfies Record<string, Bin>;
 
 export type BinName = keyof typeof BINS;

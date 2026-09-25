@@ -71,6 +71,7 @@ import {
   BRIEF_EXAMPLE, isBriefEmpty, mergeBrief, readBrief, validateBrief, writeBrief,
 } from "./jev/brief.ts";
 import { POLISH_RULES, judgePolish, wordifyLook } from "./jev/polishJudge.ts";
+import { UI_SCREENS, judgeUi } from "./jev/uiJudge.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -403,13 +404,36 @@ reg(
   ({ genre, screen, tone }) => run(async () => designBrief(genre, screen, tone)),
 );
 
-reg(
+regRaw(
   "dx12_ui_audit",
-  "ゲームUI品質監査",
-  "現在のui_treeを自動解析し、崩れ・入力遮断・小さな操作領域・文字切れ・文字あふれ・rich/wrap競合・操作要素の重なり・過装飾・色の散乱を検出する。score/grade/passと、entityId付きの修正案を返す。★UI生成後は必ずstrictでpassさせ、その後ui_screenshotで美的判断を行う。数値監査だけで完成扱いにしない。",
-  { strictness: z.enum(["balanced", "strict"]).optional().describe("strictはwarningが1件でもpass=false。最終検証ではstrict推奨。") },
-  { readOnlyHint: true },
-  ({ strictness }) => run(async () => auditUiTree(await engine.call("ui_tree", {}), strictness ?? "balanced")),
+  {
+    title: "ゲームUI品質監査",
+    description:
+      "現在のui_treeを自動解析し、崩れ・入力遮断・小さな操作領域・文字切れ・文字あふれ・rich/wrap競合・操作要素の重なり・過装飾・色の散乱を検出する。score/grade/passと、entityId付きの修正案を返す。★UI生成後は必ずstrictでpassさせ、その後ui_screenshotで美的判断を行う。数値監査だけで完成扱いにしない。"
+      + "★judge は判断段: 好みのルール(CENTERED_MONOTONY / FONT_SIZE_SPRAWL / PALETTE_SPRAWL / OVER_DECORATED / BUSY_GLOSS / EFFECT_STACKING / OUT_OF_CANVAS)を"
+      + "作品の意図(dx12_brief)と一緒に Jev へ 1 往復で聞き、{source, briefFit(0..4), findings:[{code, intended, keep}], uncertain[], passExcludingKept, scoreExcludingKept, notAsked} を返す。"
+      + "keep:true は Brief に照らすと意図どおり＝直さない(ガチャ画面の光沢など)。押せない・読めない・崩れている系は聞かずにルールのまま(notAsked)。"
+      + "uncertain は dx12_ui_screenshot で自分の目で見て決める。Brief / 鍵が無いときは judge.source:\"rules\"(全部直す＝従来どおり)。judge:false で止める。",
+    inputSchema: {
+      strictness: z.enum(["balanced", "strict"]).optional().describe("strictはwarningが1件でもpass=false。最終検証ではstrict推奨。"),
+      screen: z.enum(UI_SCREENS).optional().describe("画面の役割(title/hud/inventory/settings/result/dialog/other)。判断段に「何の画面か」として渡す。"),
+      judge: z.boolean().optional().describe("false で判断段(Jev に Brief と照らして聞く段)を止め、ルールの結果だけ返す。既定 true。"),
+    },
+    outputSchema: OUT,
+    // 判断段は外部の Jev へ出る(鍵があるときだけ)ので openWorldHint は true。
+    annotations: { title: "ゲームUI品質監査", readOnlyHint: true, openWorldHint: true },
+  },
+  ({ strictness, screen, judge }) => run(async () => {
+    const tree = await engine.call("ui_tree", {});
+    const audit = auditUiTree(tree, strictness ?? "balanced");
+    if (judge === false) return audit;
+    // ★既存の pass / score / grade / issues / metrics は一切変えない(後方互換)。判断は judge にだけ足す。
+    const baseDir = await jevProjectBaseDir();
+    const brief = baseDir ? readBrief(baseDir).brief : null;
+    const judged = await judgeUi({ brief, tree, audit, strictness, screen, askOptions: { baseDir } })
+      .catch((e: any) => ({ source: "rules", reason: `判断段で想定外の失敗: ${e?.message ?? e}` }));
+    return { ...audit, judge: judged };
+  }),
 );
 
 reg(

@@ -1,0 +1,19 @@
+{
+  "id": "ui.brief_fit",
+  "version": 1,
+  "type": "score",
+  "instructions": {
+    "what": "Rate how well the current in-game UI screen serves the creator's intent. state.brief is the creative brief (genre, mood, what the player should feel, things to avoid, and any direction for the UI). state.facts.ui describes the screen in words: which screen it is, how many buttons and texts, the words shown on screen, where elements sit, how many font sizes and surface colors are used, how much decoration, animated shine and text effects there are, and what a generic UI lint flagged. The lint assumes one restrained, tidy house style, so its flags may not apply to this brief.",
+    "not_for": "Do not rate technical tidiness or completeness on its own. A loud, glittering, crowded screen can fit perfectly when the brief asks for it, and a clean, quiet, centered screen can be a total miss. Judge only the match between the screen's style and the brief."
+  },
+  "criteria": [
+    { "summary": "Contradicts the brief", "signals": ["the screen's style produces the opposite of the intended mood", "things the brief says to avoid dominate the screen"] },
+    { "summary": "Mostly off", "signals": ["a competent screen, but its style belongs to a different kind of game than the brief", "something the brief says to avoid is clearly present"] },
+    { "summary": "Neutral or generic", "signals": ["a default-looking screen with no style of its own, neither helping nor hurting the brief"] },
+    { "summary": "Mostly fits", "signals": ["the overall style matches the brief, with one or two clear mismatches"] },
+    { "summary": "Strongly fits", "signals": ["layout, type, color and decoration all serve the intended feeling", "nothing the brief says to avoid is present", "any remaining lint flags are minor or intended by the brief"] }
+  ],
+  "state": ["brief", "facts.ui"],
+  "threshold": { "pass": 2.5, "minConfidence": 0.5, "band": 0.5 },
+  "notes": "0..4 の 5 段。decided は pass 以上で pass。look.brief_fit と同じ組み立て(段の番号より合否を使う)。閾値は評価ケースの実測で決める(初版は仮の 2.5)。"
+}

@@ -1,0 +1,31 @@
+{
+  "id": "ui.finding_intended",
+  "version": 1,
+  "type": "noul",
+  "instructions": {
+    "what": "A generic game-UI lint flagged this condition on the current screen: {{code}} = {{gloss}}. The lint assumes every game UI should follow one restrained, tidy house style. Read state.brief (the creator's intent: genre, mood, what the player should feel, things to avoid, and any direction for the UI) and state.facts.ui (the current screen described in words; the lint's flags are listed in state.facts.ui.issues). Is this particular condition a deliberate stylistic choice that the brief calls for, so it should be kept instead of fixed?",
+    "not_for": "Answer no when the brief is silent or neutral about this condition, when the brief's avoid list or its wish for calm, clean or readable screens rules it out, or when fixing it would serve the brief better. Do not answer yes only because the genre is flashy or unusual; the brief itself must call for this specific style."
+  },
+  "criteria": {
+    "true": "Keep it: the brief's UI direction, mood or genre calls for this condition.",
+    "false": "Fix it: the brief does not call for this condition, or it works against the brief."
+  },
+  "state": ["brief", "facts.ui"],
+  "threshold": { "yes": 0.7, "band": 0.1 },
+  "fallback": "no",
+  "lookup": {
+    "gloss": {
+      "by": "code",
+      "map": {
+        "CENTERED_MONOTONY": "almost every button and text sits on the horizontal center line of the screen (a symmetric, centered composition)",
+        "FONT_SIZE_SPRAWL": "the screen uses many different font sizes instead of a short type scale",
+        "PALETTE_SPRAWL": "panels and images use many different surface colors instead of a small palette",
+        "OVER_DECORATED": "some panels stack a gradient, an outline, a drop shadow and a special shape at the same time",
+        "BUSY_GLOSS": "an animated shine sweeps quickly across some elements",
+        "EFFECT_STACKING": "some texts combine per-character animation with an outline or a shadow",
+        "OUT_OF_CANVAS": "some elements extend past the edge of the screen"
+      }
+    }
+  },
+  "notes": "指摘コードごとに 1 質問。state は ui.brief_fit と共通(brief + facts.ui)にして ui_audit の 1 リクエストに束ねる。閾値は評価ケースの実測で決める(初版は既定の 0.7)。"
+}
