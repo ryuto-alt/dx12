@@ -112,6 +112,7 @@ namespace dx12e
     class MaterialLibraryPanel;
     struct Material;
     class PerceptionPass;      // renderer/PerceptionPass.h（知覚層の ID パス。dx12_perceive の要求時だけ作る）
+    struct ViewDesc;           // renderer/ViewDesc.h（1 ビューの記述。Application::RenderView が受け取る）
     struct McpPerceiveJob;     // core/mcp/McpPerceive.h（dx12_perceive 1 回ぶんの状態）
 }
 
@@ -321,6 +322,37 @@ public:
 private:
     void Update();
     void Render();
+
+    // ---- Render() の分割（実装はすべて ApplicationRender.cpp）----------------------
+    // Render() は 1 フレームを次の順に並べるだけ。段の間で受け渡す値（コマンドリスト /
+    // frameIndex / 表示矩形 / レンダー解像度 / ジッタ / ライト / TLAS 等）は RenderFrameContext に
+    // まとめる。中身を知るのは ApplicationRender.cpp だけなので、ここでは前方宣言に留める
+    // （＝sizeof(Application) は変わらない）。
+    //   BeginRenderFrame             フェンス待ち / コマンドリスト / GPU 計測の開始 / ホットリロード監視
+    //   ProcessFrameBoundaryCommands MCP・エディタの遅延コマンドの消化（★必ず Render のトップレベルから無条件に）
+    //   PrepareFrame                 ボーン / 解像度 / カメラ投影 / ライト / ジッタ / 描画リスト / TLAS
+    //   RenderView                   1 ビュー（影 → … → ポスト → 出力先）。メインカメラは
+    //                                MakeMainViewDesc の ViewDesc で呼ぶ（renderer/ViewDesc.h）
+    //   RenderViewportOverlays       エディタアイコン / 2D スプライト / プレビュー類 / 最終画の撮影
+    //   RenderImGuiFrame             ImGui（エディタ UI / ゲーム内 UI）とトランジション
+    //   SubmitFrame                  送信 / Present / 遅延解放 / 性能記録
+    struct RenderFrameContext;
+    struct FrameConstants;      // b1（shaders/forward/Lighting.hlsli の PerFrameConstants と同じ並び）
+    void BeginRenderFrame(RenderFrameContext& frame);
+    void ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* nativeCmdList);
+    void PrepareFrame(RenderFrameContext& frame);
+    ViewDesc MakeMainViewDesc(const RenderFrameContext& frame) const;
+    void RenderView(const ViewDesc& view, RenderFrameContext& frame);
+    // RenderView の下請け（主ビューだけが呼ぶ「フレームで 1 回」の仕事）
+    void FillSceneFrameConstants(FrameConstants& fc, const RenderFrameContext& frame);
+    void CollectLightsAndDecals(FrameConstants& fc);
+    struct PostChainInputs;
+    void RenderPostChain(const PostChainInputs& in, ID3D12Resource*& outBackBuffer,
+                         D3D12_CPU_DESCRIPTOR_HANDLE& outRtv);
+    void RenderViewportOverlays(RenderFrameContext& frame);
+    void RenderImGuiFrame(RenderFrameContext& frame);
+    void SubmitFrame(RenderFrameContext& frame);
+
     // MCP ブリッジから来た 1 行(JSON リクエスト)を処理して応答 JSON 行を返す。
     // メインスレッドで呼ばれるので m_scene / m_scriptEngine を直接触ってよい。
     // 戻り値が空文字列なら「遅延応答」(フレーム境界で結果確定後に SendToClient で送る)。

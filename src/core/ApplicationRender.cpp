@@ -10,6 +10,8 @@
 #include "editor/PostPresets.h"
 #include "editor/PostPresetSwatch.h"
 #include "renderer/TransitionPresets.h"
+#include "renderer/ViewDesc.h"
+#include "renderer/ViewPasses.h"
 #include "editor/AssetDrop.h"
 
 namespace dx12e
@@ -2117,14 +2119,140 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
     }
 }
 
+// ===========================================================================
+// Render() の分割
+// ---------------------------------------------------------------------------
+// 以前は Render() 1 関数（約 5,400 行）に「遅延コマンドの消化 / フレームの準備 / 全パス /
+// エディタ UI / 送信」が同居していた。ここでは振る舞いを 1 ビットも変えずに段へ分けてある
+// （tools/bench/golden.mjs で bitExact を確認済み）。段の間で受け渡す値は RenderFrameContext。
+// ===========================================================================
+
+// b1 の CPU 側。★レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること
+// （サイズは 4 箇所で 1536B を static_assert。00-COORDINATION §4）。
+// 以前は Render() の関数内ローカル型だったが、カメラプレビューが「メインビューの値を流用して
+// 視点だけ差し替える」ために段をまたいで持ち回すので、Application の入れ子型にした。
+struct Application::FrameConstants
+{
+    DirectX::XMFLOAT4X4 view;
+    DirectX::XMFLOAT4X4 proj;
+    DirectX::XMFLOAT3   lightDir;
+    float      time;
+    DirectX::XMFLOAT3   lightColor;
+    float      ambientStrength;
+    DirectX::XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B
+    DirectX::XMFLOAT4   cascadeSplitsView;             // 16B
+    DirectX::XMFLOAT4   shadowParams;                  // 16B
+    DirectX::XMFLOAT3   cameraPos;
+    float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
+    u32        numPointLights;   // 統計/デバッグ用（シェーダは読まない）
+    u32        numSpotLights;
+    float      spotShadowTexel;   // 1/kSpotShadowMapSize
+    float      pointShadowNear;
+    // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
+    DirectX::XMFLOAT4   clusterParams;    // .x=zNear .y=zFar(クラスタ用) .z=sliceScale .w=sliceBias
+    DirectX::XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
+    DirectX::XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
+    DirectX::XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
+    DirectX::XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
+    // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
+    DirectX::XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
+    DirectX::XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
+    DirectX::XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
+    DirectX::XMFLOAT4   _clusterReserved[40];             // 640B (offset 608..1247)
+    DirectX::XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
+    // ▼ IBL 制御 16B
+    float iblIntensity;
+    float maxPrefilterMip;
+    u32   hasIBL;
+    float skyboxIntensity;
+    // ▼ コンタクトシャドウ制御 16B
+    float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
+    // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
+    //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
+    DirectX::XMFLOAT3 normalFilterParams;
+};
+// ★サイズの static_assert は RenderMainView の fc の直前にある（private な入れ子型なので
+//   名前空間スコープからは sizeof を取れない）。
+
+// 段の間で受け渡す 1 フレームぶんの値。旧 Render() のローカル変数のうち、段をまたいで
+// 読まれていたものだけをここへ移した（名前も旧ローカル変数に揃えてある）。
+struct Application::RenderFrameContext
+{
+    // ---- BeginRenderFrame が決める ----
+    ID3D12GraphicsCommandList* cmd = nullptr;   // 今フレームの記録先（フレームで 1 本だけ）
+
+    // ---- PrepareFrame が決める（ビューに依らない、フレーム共通の値）----
+    u32 frameIndex = 0;
+    f32 totalTime  = 0.0f;
+    u32 vpLeft = 0, vpTop = 0, vpW = 0, vpH = 0;   // 表示矩形（バックバッファ上。uber 以降だけが使う）
+    u32 rW = 0, rH = 0;                              // レンダー解像度（シーン系 RT の大きさ）
+    DirectX::XMFLOAT3 lightDirF3{};        // 太陽の向き（正規化済み）
+    DirectX::XMFLOAT3 lightColorF3{};      // 太陽の色 × 強さ（太陽が無ければ黒）
+    f32      lightAmbient = 0.25f;
+    bool     taaActive = false;   // TAA が今フレーム有効か（BuildDrawList より前に確定）
+    DirectX::XMFLOAT2 jitterNdc{};         // 今フレームの NDC ジッタ（TAA 無効なら 0）
+    DirectX::XMFLOAT4X4 camVP{};           // メインカメラの viewProj（ジッタなし）
+    DirectX::XMFLOAT4X4 camVPJ{};          // 同（ジッタあり。ラスタライズ用）
+    // メインカメラの確定値（投影の差し替え・非有限値ガードの後）。MakeMainViewDesc が詰める。
+    DirectX::XMFLOAT4X4 camView{};
+    DirectX::XMFLOAT4X4 camProj{};
+    DirectX::XMFLOAT3   camPos{};
+    f32  camNear  = 0.1f;
+    f32  camFar   = 1000.0f;
+    bool camOrtho = false;
+    bool rtAoActive = false;      // TLAS が建ち RT-AO が有効（RT 影は m_rtShadowActiveThisFrame）
+    bool ddgiTlasOk = false;      // DDGI 用に TLAS を持ち越せるか
+    D3D12_GPU_VIRTUAL_ADDRESS ddgiTlas = 0, ddgiGeoInfo = 0;
+
+    // ---- メインビューが決めて後段（オーバーレイ / ImGui / 送信）へ渡す ----
+    ID3D12Resource*             backBuffer = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+    FrameConstants              mainConstants{};   // メインビューの b1（カメラプレビューが流用する）
+};
+
+// RenderView → RenderPostChain へ渡す値（ポスト一式が読む RenderView のローカル変数だけ）。
+struct Application::PostChainInputs
+{
+    ID3D12GraphicsCommandList* cmd = nullptr;
+    u32 frameIndex = 0;
+    f32 totalTime  = 0.0f;
+    u32 vpLeft = 0, vpTop = 0, vpW = 0, vpH = 0;   // 出力矩形（バックバッファ上）
+    u32 rW = 0, rH = 0;                              // レンダー解像度
+    DirectX::XMFLOAT4X4 camVP{}, camView{}, camProj{};   // ジッタなし・非転置
+    DirectX::XMFLOAT3   viewPos{};
+    bool viewOrtho  = false;
+    bool isGameView = false;
+    RenderTarget*   sceneRT       = nullptr;
+    ID3D12Resource* depthRes      = nullptr;
+    u32             depthSrvIndex = 0xFFFFFFFFu;
+    TrackedState*   depthState    = nullptr;
+    bool taaActive            = false;
+    bool taaResolveActive     = false;
+    bool velocityPrepass      = false;
+    bool particleDistortDrawn = false;
+};
+
 void Application::Render()
 {
-    using namespace DirectX;
+    RenderFrameContext frame{};
+    BeginRenderFrame(frame);
+    // ★MCP / エディタの遅延コマンド（生成・削除・複製・Undo・シーンロード等）のドレインは
+    //   必ずここ＝Render のトップレベルから無条件に呼ぶこと。エディタ UI の分岐（ランチャー
+    //   表示中は通らない）の中へ移すと、ランチャー表示中に MCP の遅延応答が返らず永久に
+    //   待たせる（前例あり）。
+    ProcessFrameBoundaryCommands(frame.cmd);
+    PrepareFrame(frame);
+    RenderView(MakeMainViewDesc(frame), frame);
+    RenderViewportOverlays(frame);
+    RenderImGuiFrame(frame);
+    SubmitFrame(frame);
+}
 
-    // MASK（アルファクリップ）マテリアルを影パスでも抜くための PSO 束。
-    // ★これを渡さないと「葉は抜けているのに影は板」になる。ShadowMask.hlsl 参照。
-    const DepthMaskPsos shadowMaskPsos{ m_shadowMaskPSO.get(), m_shadowMaskPSOInst.get(),
-                                        m_shadowMaskPSOSkinned.get() };
+// フェンス待ち → コマンドリストを開く → GPU 計測の開始 → ホットリロード監視。
+// Skybox の再ベイク（専用 cmdList + WaitIdle）はコマンドリストを開く前にここで済ませる。
+void Application::BeginRenderFrame(RenderFrameContext& frame)
+{
+    using namespace DirectX;
 
     // シーンの Skybox 設定 → ランタイム値を毎フレーム引き直す。
     // 以前は「Skybox / IBL 窓を開いている間」と再ベイク時しか同期しておらず、
@@ -2187,6 +2315,20 @@ void Application::Render()
     // 地形レイヤーセット(.terrainlayers)のホットリロード監視（同上）。
     if (!m_isGameMode && m_terrainLayerSets)
         m_terrainLayerSets->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
+
+    frame.cmd = nativeCmdList;
+}
+
+// ---------------------------------------------------------------------------
+// フレーム境界で消化する遅延コマンド（新規シーン / シーンロード / ネットスポーン / 生成 /
+// 地形・スカルプト / グループ化 / プレハブ / 複製 / MCP の削除・複製 / ペースト /
+// スクリプトアタッチ / モデル差し替え / マテリアル D&D / MCP の Undo）とサムネイル類。
+// モデル・テクスチャのアップロードに記録中の cmdList が要るので Render の中で回す。
+// ★呼び出しは Render のトップレベルから無条件に（Render() のコメント参照）。
+// ---------------------------------------------------------------------------
+void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* nativeCmdList)
+{
+    using namespace DirectX;
 
     // Deferred: new scene（描画前に処理しないと GPU リソース解放でクラッシュする）
     // 未保存なら先に確認する（保存 / 破棄 / 取り消し）。取り消されたら要求ごと捨てる。
@@ -3641,6 +3783,18 @@ void Application::Render()
     // ModelThumbnailRenderer と同様、後段のパスが自分でRT/ビューポートを設定するのでここで戻す必要はない。
     if (m_materialEditorPanel)
         m_materialEditorPanel->GetPreviewRenderer().RenderPendingThumbnails(*m_commandList);
+}
+
+// ---------------------------------------------------------------------------
+// フレームの準備（ビューに依らない）: 決定論キャプチャ / フット IK / ボーン行列 /
+// シャドウマップの作り直し / 表示矩形とレンダー解像度 / カメラ投影 / ライト / CSM 分割 /
+// TAA の有効判定とジッタ / 描画リスト / DXR の TLAS。
+// 結果は RenderFrameContext へ書き、RenderMainView 以降が読む。
+// ---------------------------------------------------------------------------
+void Application::PrepareFrame(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
 
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
@@ -3910,9 +4064,9 @@ void Application::Render()
         ComputeCascades(lightDir, camNear, camFar);
     }
 
-    // SRV ヒープをバインド（シャドウパスでもボーンSRVが必要）
-    m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-    m_commandList->SetRootSignature(*m_rootSignature);
+    // ★以前はここで「影パスのために」SRV ヒープとメインのルートシグネチャを張っていた。
+    //   今は影 / 深度プリパスの段が入口で自分で張る（renderer/RenderPass.h の状態の契約）。
+    //   間の TLAS 構築（SkinningCompute / AS ビルド）はルート記述子だけでヒープを使わない。
 
     // ===== TAA の有効判定（BuildDrawList より前に決めること）=====
     // 「速度バッファ用に前フレームのワールド行列を追跡するか」がここで決まるため、
@@ -4190,216 +4344,324 @@ void Application::Render()
         }
     }
 
-    // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
-    // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
-    // 後段のライト収集(shadowIndex書き込み)の両方で使う。
-    m_numSpotShadowSlots = 0;
+    // ---- 後段（ビュー / オーバーレイ / ImGui / 送信）へ渡す ----
+    frame.frameIndex = frameIndex;
+    frame.totalTime  = totalTime;
+    frame.vpLeft = vpLeft;  frame.vpTop = vpTop;  frame.vpW = vpW;  frame.vpH = vpH;
+    frame.rW = rW;  frame.rH = rH;
+    frame.lightDirF3   = lightDirF3;
+    frame.lightColorF3 = lightColorF3;
+    frame.lightAmbient = lightAmbient;
+    frame.taaActive    = taaActive;
+    frame.jitterNdc    = jitterNdc;
+    XMStoreFloat4x4(&frame.camVP,  camVP);
+    XMStoreFloat4x4(&frame.camVPJ, camVPJ);
+    XMStoreFloat4x4(&frame.camView, m_camera->GetViewMatrix());
+    XMStoreFloat4x4(&frame.camProj, m_camera->GetProjectionMatrix());
+    frame.camPos   = m_camera->GetPosition();
+    frame.camNear  = m_camera->GetNearZ();
+    frame.camFar   = m_camera->GetFarZ();
+    frame.camOrtho = m_camera->IsOrthographic();
+    frame.rtAoActive  = rtAoActive;
+    frame.ddgiTlasOk  = ddgiTlasOk;
+    frame.ddgiTlas    = ddgiTlas;
+    frame.ddgiGeoInfo = ddgiGeoInfo;
+}
+
+// ---------------------------------------------------------------------------
+// メインカメラの ViewDesc。PrepareFrame が確定したカメラ・ジッタ・解像度をそのまま詰める
+// （行列は PrepareFrame が Camera から 1 回だけ取った値＝旧コードが各所で Camera から
+//  取り直していた値とビット単位で同じ）。
+// ---------------------------------------------------------------------------
+ViewDesc Application::MakeMainViewDesc(const RenderFrameContext& frame) const
+{
+    ViewDesc v{};
+    v.name             = "main";
+    v.view             = frame.camView;
+    v.proj             = frame.camProj;
+    v.viewProj         = frame.camVP;
+    v.position         = frame.camPos;
+    v.nearZ            = frame.camNear;
+    v.farZ             = frame.camFar;
+    v.orthographic     = frame.camOrtho;
+    v.jitterNdc        = frame.jitterNdc;
+    v.viewProjJittered = frame.camVPJ;
+    v.width            = frame.rW;
+    v.height           = frame.rH;
+    v.sceneColor       = m_sceneRT.get();
+    v.depth            = m_depthBuffer.Get();
+    v.depthDsv         = m_dsvHandle;
+    v.depthSrvIndex    = m_depthSrvIndex;
+    v.perFrameCB       = m_perFrameCB.get();
+    v.outputToBackBuffer = true;
+    v.outX = frame.vpLeft;  v.outY = frame.vpTop;  v.outW = frame.vpW;  v.outH = frame.vpH;
+    v.features   = kViewAllFeatures;
+    v.primary    = true;
+    v.isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// 1 ビューを描く: 影 → 深度プリパス群 → クラスタ / DDGI / デカール / フォグ →
+// スカイ → Forward+ → デバッグ線 → パーティクル → ワールドスプライト → render_debug →
+// ポスト（TAA → … → uber）→ 出力先。
+// 何を走らせるかは view.features、フレームで 1 回だけの仕事（計測 / 統計 / シーン側の更新 /
+// 履歴）は view.primary が決める（renderer/ViewDesc.h）。メインカメラは全部立てて呼ぶ。
+// ---------------------------------------------------------------------------
+void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+
+    // MASK（アルファクリップ）マテリアルを影パスでも抜くための PSO 束。
+    // ★これを渡さないと「葉は抜けているのに影は板」になる。ShadowMask.hlsl 参照。
+    const DepthMaskPsos shadowMaskPsos{ m_shadowMaskPSO.get(), m_shadowMaskPSOInst.get(),
+                                        m_shadowMaskPSOSkinned.get() };
+
+    // ---- このビューの視点（Camera は読まない。ViewDesc だけが真実）----
+    const XMMATRIX camView  = XMLoadFloat4x4(&view.view);
+    const XMMATRIX camProj  = XMLoadFloat4x4(&view.proj);
+    const XMFLOAT3 viewPos  = view.position;
+    const f32      viewNear = view.nearZ;
+    const f32      viewFar  = view.farZ;
+    const bool     viewOrtho = view.orthographic;
+    const bool     primary   = view.primary;
+
+    // PrepareFrame / ViewDesc が確定した値（名前は旧 Render() のローカル変数に揃えてある）
+    const u32 frameIndex = frame.frameIndex;
+    const f32 totalTime  = frame.totalTime;
+    // 出力矩形（旧: 表示矩形 vpLeft/vpTop/vpW/vpH）とレンダー解像度（旧: rW/rH）
+    const u32 vpLeft = view.outX, vpTop = view.outY, vpW = view.outW, vpH = view.outH;
+    const u32 rW = view.width, rH = view.height;
+    RenderTarget* const               sceneRT  = view.sceneColor;
+    ID3D12Resource* const             depthRes = view.depth;
+    const D3D12_CPU_DESCRIPTOR_HANDLE depthDsv = view.depthDsv;
+    const u32                         depthSrvIndex = view.depthSrvIndex;
+    const XMFLOAT3 lightDirF3   = frame.lightDirF3;
+    const XMFLOAT3 lightColorF3 = frame.lightColorF3;
+    const float    lightAmbient = frame.lightAmbient;
+    // TAA は主ビューの履歴に紐づく（副ビューには履歴も速度バッファも無い）。
+    const bool     taaActive    = frame.taaActive && primary
+                               && view.Has(kViewScreenSpace | kViewPostChain);
+    const XMFLOAT2 jitterNdc    = view.jitterNdc;
+    const XMMATRIX camVP  = XMLoadFloat4x4(&view.viewProj);
+    const XMMATRIX camVPJ = XMLoadFloat4x4(&view.viewProjJittered);
+    const bool     rtAoActive   = frame.rtAoActive;
+    const bool     ddgiTlasOk   = frame.ddgiTlasOk;
+    const D3D12_GPU_VIRTUAL_ADDRESS ddgiTlas    = frame.ddgiTlas;
+    const D3D12_GPU_VIRTUAL_ADDRESS ddgiGeoInfo = frame.ddgiGeoInfo;
+
+    // GPU / CPU の計測と描画統計は主ビューだけ（GpuTimer は 1 スコープにつきフレーム 1 組しか
+    // 記録できないので、副ビューが同じスコープを開くと主ビューの値を壊す）。
+    auto gpuBegin = [&](GpuTimer::Scope s) { if (primary) m_gpuTimer->Begin(nativeCmdList, s); };
+    auto gpuEnd   = [&](GpuTimer::Scope s) { if (primary) m_gpuTimer->End(nativeCmdList, s); };
+    auto cpuSlot  = [&](CpuScope s) -> f32* { return primary ? &m_cpuMs[s] : nullptr; };
+
+    // パス（renderer/RenderPass.h）が共有する実行文脈。深度はこのビューが追いかける（パスは入口で
+    // 要る状態を Require する。追跡の外のコードへ渡す前にビューが DEPTH_WRITE へ戻す）。
+    // ★深度プリパス群（まだパスになっていない）は生の遷移で往復して DEPTH_WRITE に戻して抜けるので、
+    //   追跡の値（DEPTH_WRITE）とずれない。
+    TrackedState depthState{depthRes, D3D12_RESOURCE_STATE_DEPTH_WRITE};
+    RenderPassContext passCtx{};
+    passCtx.cmd        = m_commandList.get();
+    passCtx.native     = nativeCmdList;
+    passCtx.srvHeap    = m_srvHeap.get();
+    passCtx.frameIndex = frameIndex;
+    passCtx.timer      = primary ? m_gpuTimer.get() : nullptr;
+    passCtx.depth      = &depthState;
+
+    if (view.Has(kViewShadows))
     {
-        auto& reg = m_scene->GetRegistry();
-        struct SpotShadowCandidate { entt::entity e; f32 distSq; };
-        std::vector<SpotShadowCandidate> candidates;
-        XMFLOAT3 camPosF3 = m_camera->GetPosition();
-        XMVECTOR camPos = XMLoadFloat3(&camPosF3);
-        auto slView = reg.view<const dx12e::SpotLight, const Transform>();
-        for (auto [e, sl, tf] : slView.each())
+        // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
+        // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
+        // 後段のライト収集(shadowIndex書き込み)の両方で使う。
+        m_numSpotShadowSlots = 0;
         {
-            if (!sl.castShadows) continue;
-            XMMATRIX world = (tf.parent != entt::null)
-                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-            XMVECTOR d = XMVectorSubtract(world.r[3], camPos);
-            candidates.push_back({e, XMVectorGetX(XMVector3LengthSq(d))});
-        }
-        std::sort(candidates.begin(), candidates.end(),
-                 [](const auto& a, const auto& b) { return a.distSq < b.distSq; });
-
-        const u32 n = (std::min)(static_cast<u32>(candidates.size()), kMaxShadowSpot);
-        for (u32 i = 0; i < n; ++i)
-        {
-            entt::entity e = candidates[i].e;
-            const auto& sl = reg.get<const dx12e::SpotLight>(e);
-            const auto& tf = reg.get<const Transform>(e);
-            XMMATRIX world = (tf.parent != entt::null)
-                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-            XMVECTOR pos = world.r[3];
-            XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
-            // dir がワールドYにほぼ平行だと LookToLH の up ベクトルが縮退するので切り替える。
-            XMVECTOR up = (std::fabs(XMVectorGetY(dir)) > 0.99f)
-                ? XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f) : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-
-            f32 outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
-            f32 fov = (std::min)(XMConvertToRadians(outerDeg) * 2.0f * 1.02f, XMConvertToRadians(170.0f));
-            f32 range = (std::max)(sl.range, 0.2f);
-
-            XMMATRIX lightView = XMMatrixLookToLH(pos, dir, up);
-            XMMATRIX lightProj = XMMatrixPerspectiveFovLH(fov, 1.0f, 0.1f, range);
-            XMStoreFloat4x4(&m_spotShadowViewProj[i], lightView * lightProj);
-            m_spotShadowEntity[i] = e;
-        }
-        m_numSpotShadowSlots = n;
-    }
-
-    m_gpuTimer->Begin(nativeCmdList, GpuTimer::Shadows);
-    m_passBucket = &m_passShadow;
-
-    // ===== スポットライト影パス =====
-    if (m_scene && m_scene->GetShadowsEnabled() && m_numSpotShadowSlots > 0)
-    {
-        m_commandList->TransitionResource(m_spotShadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-        D3D12_VIEWPORT spotVp{};
-        spotVp.Width = spotVp.Height = static_cast<f32>(kSpotShadowMapSize);
-        spotVp.MinDepth = 0.0f;
-        spotVp.MaxDepth = 1.0f;
-        D3D12_RECT spotScissor = {0, 0, static_cast<LONG>(kSpotShadowMapSize), static_cast<LONG>(kSpotShadowMapSize)};
-        nativeCmdList->RSSetViewports(1, &spotVp);
-        nativeCmdList->RSSetScissorRects(1, &spotScissor);
-
-        for (u32 i = 0; i < m_numSpotShadowSlots; ++i)
-        {
-            XMMATRIX lvp = XMLoadFloat4x4(&m_spotShadowViewProj[i]);
-            m_commandList->ClearDepthStencil(m_spotShadowDsvHandles[i]);
-            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_spotShadowDsvHandles[i]);
-            RenderDepthOnlyScene(lvp, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                 m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
-                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
-                                 &shadowMaskPsos);
-        }
-
-        m_commandList->TransitionResource(m_spotShadowMap.Get(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    }
-
-    // ===== ポイントライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowPoint灯）=====
-    m_numPointShadowSlots = 0;
-    {
-        auto& reg = m_scene->GetRegistry();
-        struct PointShadowCandidate { entt::entity e; f32 distSq; };
-        std::vector<PointShadowCandidate> candidates;
-        XMFLOAT3 camPosF3 = m_camera->GetPosition();
-        XMVECTOR camPos = XMLoadFloat3(&camPosF3);
-        auto plShadowView = reg.view<const dx12e::PointLight, const Transform>();
-        for (auto [e, pl, tf] : plShadowView.each())
-        {
-            if (!pl.castShadows) continue;
-            XMMATRIX world = (tf.parent != entt::null)
-                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-            XMVECTOR d = XMVectorSubtract(world.r[3], camPos);
-            candidates.push_back({e, XMVectorGetX(XMVector3LengthSq(d))});
-        }
-        std::sort(candidates.begin(), candidates.end(),
-                 [](const auto& a, const auto& b) { return a.distSq < b.distSq; });
-
-        const u32 n = (std::min)(static_cast<u32>(candidates.size()), kMaxShadowPoint);
-        for (u32 i = 0; i < n; ++i)
-            m_pointShadowEntity[i] = candidates[i].e;
-        m_numPointShadowSlots = n;
-    }
-
-    // ===== ポイントライト影パス（灯ごとに6面。D3Dキューブ面順: +X,-X,+Y,-Y,+Z,-Z）=====
-    if (m_scene && m_scene->GetShadowsEnabled() && m_numPointShadowSlots > 0)
-    {
-        static const XMFLOAT3 kFaceDir[6] = {
-            { 1,  0,  0}, {-1,  0,  0}, { 0,  1,  0}, { 0, -1,  0}, { 0,  0,  1}, { 0,  0, -1},
-        };
-        static const XMFLOAT3 kFaceUp[6] = {
-            {0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0},
-        };
-
-        m_commandList->TransitionResource(m_pointShadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-        D3D12_VIEWPORT pointVp{};
-        pointVp.Width = pointVp.Height = static_cast<f32>(kPointShadowMapSize);
-        pointVp.MinDepth = 0.0f;
-        pointVp.MaxDepth = 1.0f;
-        D3D12_RECT pointScissor = {0, 0, static_cast<LONG>(kPointShadowMapSize), static_cast<LONG>(kPointShadowMapSize)};
-        nativeCmdList->RSSetViewports(1, &pointVp);
-        nativeCmdList->RSSetScissorRects(1, &pointScissor);
-
-        auto& reg = m_scene->GetRegistry();
-        for (u32 i = 0; i < m_numPointShadowSlots; ++i)
-        {
-            entt::entity e = m_pointShadowEntity[i];
-            const auto& pl = reg.get<const dx12e::PointLight>(e);
-            const auto& tf = reg.get<const Transform>(e);
-            XMMATRIX world = (tf.parent != entt::null)
-                ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-            XMVECTOR pos = world.r[3];
-            f32 range = (std::max)(pl.range, 0.2f);
-            XMMATRIX faceProj = XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.1f, range);
-
-            for (u32 f = 0; f < 6; ++f)
+            auto& reg = m_scene->GetRegistry();
+            struct SpotShadowCandidate { entt::entity e; f32 distSq; };
+            std::vector<SpotShadowCandidate> candidates;
+            XMFLOAT3 camPosF3 = viewPos;
+            XMVECTOR camPos = XMLoadFloat3(&camPosF3);
+            auto slView = reg.view<const dx12e::SpotLight, const Transform>();
+            for (auto [e, sl, tf] : slView.each())
             {
-                XMMATRIX faceView = XMMatrixLookToLH(pos, XMLoadFloat3(&kFaceDir[f]), XMLoadFloat3(&kFaceUp[f]));
-                u32 slice = i * 6 + f;
-                m_commandList->ClearDepthStencil(m_pointShadowDsvHandles[slice]);
-                nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_pointShadowDsvHandles[slice]);
-                RenderDepthOnlyScene(faceView * faceProj, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
+                if (!sl.castShadows) continue;
+                XMMATRIX world = (tf.parent != entt::null)
+                    ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+                XMVECTOR d = XMVectorSubtract(world.r[3], camPos);
+                candidates.push_back({e, XMVectorGetX(XMVector3LengthSq(d))});
+            }
+            std::sort(candidates.begin(), candidates.end(),
+                     [](const auto& a, const auto& b) { return a.distSq < b.distSq; });
+
+            const u32 n = (std::min)(static_cast<u32>(candidates.size()), kMaxShadowSpot);
+            for (u32 i = 0; i < n; ++i)
+            {
+                entt::entity e = candidates[i].e;
+                const auto& sl = reg.get<const dx12e::SpotLight>(e);
+                const auto& tf = reg.get<const Transform>(e);
+                XMMATRIX world = (tf.parent != entt::null)
+                    ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+                XMVECTOR pos = world.r[3];
+                XMVECTOR dir = XMVector3Normalize(XMLoadFloat3(&sl.direction));
+                // dir がワールドYにほぼ平行だと LookToLH の up ベクトルが縮退するので切り替える。
+                XMVECTOR up = (std::fabs(XMVectorGetY(dir)) > 0.99f)
+                    ? XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f) : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+                f32 outerDeg = (std::max)(sl.outerConeDeg, sl.innerConeDeg);
+                f32 fov = (std::min)(XMConvertToRadians(outerDeg) * 2.0f * 1.02f, XMConvertToRadians(170.0f));
+                f32 range = (std::max)(sl.range, 0.2f);
+
+                XMMATRIX lightView = XMMatrixLookToLH(pos, dir, up);
+                XMMATRIX lightProj = XMMatrixPerspectiveFovLH(fov, 1.0f, 0.1f, range);
+                XMStoreFloat4x4(&m_spotShadowViewProj[i], lightView * lightProj);
+                m_spotShadowEntity[i] = e;
+            }
+            m_numSpotShadowSlots = n;
+        }
+
+        gpuBegin(GpuTimer::Shadows);
+        m_passBucket = primary ? &m_passShadow : &m_passOther;
+        // ヒープ / ルートシグネチャ / 遷移 / ビューポート / クリアは ShadowMapPass が張る
+        // （RenderPass.h の状態の契約）。ここは「どのスライスをどの viewProj で描くか」だけ。
+        // 描く中身は 3 種とも RenderDepthOnlyScene（影 PSO / 1 段粗い LOD / MASK は ShadowMask）。
+        auto shadowDepth = [&](bool skipRtCovered)
+        {
+            return [&, skipRtCovered](const ShadowMapPass::Slice& s)
+            {
+                RenderDepthOnlyScene(XMLoadFloat4x4(&s.viewProj),
+                                     *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                      /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
                                      m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
-                                     /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                     skipRtCovered, /*cascadeTexelWorld*/ s.texelWorld,
                                      &shadowMaskPsos);
+            };
+        };
+
+        // ===== スポットライト影パス =====
+        if (m_scene && m_scene->GetShadowsEnabled() && m_numSpotShadowSlots > 0)
+        {
+            std::array<ShadowMapPass::Slice, kMaxShadowSpot> slices{};
+            for (u32 i = 0; i < m_numSpotShadowSlots; ++i)
+            {
+                slices[i].dsv      = m_spotShadowDsvHandles[i];
+                slices[i].viewProj = m_spotShadowViewProj[i];
             }
+            ShadowMapPass::Inputs si{};
+            si.name       = "SpotShadows";
+            si.map        = m_spotShadowMap.Get();
+            si.size       = kSpotShadowMapSize;
+            si.rootSig    = m_rootSignature.get();
+            si.slices     = slices.data();
+            si.sliceCount = m_numSpotShadowSlots;
+            si.drawDepth  = shadowDepth(/*skipRtCovered*/ false);
+            ShadowMapPass(std::move(si)).Execute(passCtx);
         }
 
-        m_commandList->TransitionResource(m_pointShadowMap.Get(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    }
-
-    // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
-    // シーンで影 OFF / 正射カメラのときは丸ごとスキップ＝(全アクティブ敵 × 4カスケード)の
-    // ドローと 2048²×4 のデプスフィルを撤廃（lv35 の主因）。m_shadowMap は生成時 PSR のまま＝
-    // forward の t4 バインドは有効（センチネルで読まれないので未クリアでも安全）。
-    if (m_scene && m_scene->GetShadowsEnabled() && !m_camera->IsOrthographic())
-    {
-        // 配列リソース全体を一括で DEPTH_WRITE へ遷移（カスケードループの外で1回）
-        m_commandList->TransitionResource(m_shadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-        // シャドウマップ用ビューポート（全カスケード共通＝各スライス同サイズ正方）
-        D3D12_VIEWPORT shadowVp{};
-        shadowVp.Width    = static_cast<f32>(m_shadowMapSize);
-        shadowVp.Height   = static_cast<f32>(m_shadowMapSize);
-        shadowVp.MinDepth = 0.0f;
-        shadowVp.MaxDepth = 1.0f;
-        D3D12_RECT shadowScissor = {0, 0, static_cast<LONG>(m_shadowMapSize), static_cast<LONG>(m_shadowMapSize)};
-        nativeCmdList->RSSetViewports(1, &shadowVp);
-        nativeCmdList->RSSetScissorRects(1, &shadowScissor);
-
-        CpuScopeTimer _tShadow(&m_cpuMs[CpuShadowRec]); DX12_PROFILE_ZONE_N("Rec/Shadows");
-        for (u32 ci = 0; ci < kNumCascades; ++ci)
+        // ===== ポイントライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowPoint灯）=====
+        m_numPointShadowSlots = 0;
         {
-            XMMATRIX cascadeVP = XMLoadFloat4x4(&m_cascadeViewProj[ci]);
+            auto& reg = m_scene->GetRegistry();
+            struct PointShadowCandidate { entt::entity e; f32 distSq; };
+            std::vector<PointShadowCandidate> candidates;
+            XMFLOAT3 camPosF3 = viewPos;
+            XMVECTOR camPos = XMLoadFloat3(&camPosF3);
+            auto plShadowView = reg.view<const dx12e::PointLight, const Transform>();
+            for (auto [e, pl, tf] : plShadowView.each())
+            {
+                if (!pl.castShadows) continue;
+                XMMATRIX world = (tf.parent != entt::null)
+                    ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+                XMVECTOR d = XMVectorSubtract(world.r[3], camPos);
+                candidates.push_back({e, XMVectorGetX(XMVector3LengthSq(d))});
+            }
+            std::sort(candidates.begin(), candidates.end(),
+                     [](const auto& a, const auto& b) { return a.distSq < b.distSq; });
 
-            m_commandList->ClearDepthStencil(m_shadowDsvHandles[ci]);
-            // RTVなし、DSVのみ（該当カスケードのスライス）
-            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_shadowDsvHandles[ci]);
+            const u32 n = (std::min)(static_cast<u32>(candidates.size()), kMaxShadowPoint);
+            for (u32 i = 0; i < n; ++i)
+                m_pointShadowEntity[i] = candidates[i].e;
+            m_numPointShadowSlots = n;
+        }
 
+        // ===== ポイントライト影パス（灯ごとに6面。D3Dキューブ面順: +X,-X,+Y,-Y,+Z,-Z）=====
+        if (m_scene && m_scene->GetShadowsEnabled() && m_numPointShadowSlots > 0)
+        {
+            static const XMFLOAT3 kFaceDir[6] = {
+                { 1,  0,  0}, {-1,  0,  0}, { 0,  1,  0}, { 0, -1,  0}, { 0,  0,  1}, { 0,  0, -1},
+            };
+            static const XMFLOAT3 kFaceUp[6] = {
+                {0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0},
+            };
+
+            std::array<ShadowMapPass::Slice, kMaxShadowPoint * 6> slices{};
+            auto& reg = m_scene->GetRegistry();
+            for (u32 i = 0; i < m_numPointShadowSlots; ++i)
+            {
+                entt::entity e = m_pointShadowEntity[i];
+                const auto& pl = reg.get<const dx12e::PointLight>(e);
+                const auto& tf = reg.get<const Transform>(e);
+                XMMATRIX world = (tf.parent != entt::null)
+                    ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+                XMVECTOR pos = world.r[3];
+                f32 range = (std::max)(pl.range, 0.2f);
+                XMMATRIX faceProj = XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.1f, range);
+
+                for (u32 f = 0; f < 6; ++f)
+                {
+                    XMMATRIX faceView = XMMatrixLookToLH(pos, XMLoadFloat3(&kFaceDir[f]), XMLoadFloat3(&kFaceUp[f]));
+                    u32 slice = i * 6 + f;
+                    slices[slice].dsv = m_pointShadowDsvHandles[slice];
+                    XMStoreFloat4x4(&slices[slice].viewProj, faceView * faceProj);
+                }
+            }
+            ShadowMapPass::Inputs pi{};
+            pi.name       = "PointShadows";
+            pi.map        = m_pointShadowMap.Get();
+            pi.size       = kPointShadowMapSize;
+            pi.rootSig    = m_rootSignature.get();
+            pi.slices     = slices.data();
+            pi.sliceCount = m_numPointShadowSlots * 6;
+            pi.drawDepth  = shadowDepth(/*skipRtCovered*/ false);
+            ShadowMapPass(std::move(pi)).Execute(passCtx);
+        }
+
+        // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
+        // シーンで影 OFF / 正射カメラのときは丸ごとスキップ＝(全アクティブ敵 × 4カスケード)の
+        // ドローと 2048²×4 のデプスフィルを撤廃（lv35 の主因）。m_shadowMap は生成時 PSR のまま＝
+        // forward の t4 バインドは有効（センチネルで読まれないので未クリアでも安全）。
+        if (m_scene && m_scene->GetShadowsEnabled() && !viewOrtho)
+        {
             // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
             // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
             // ★RT サン影が有効なフレームは、CSM は「RT が担当できないもの」だけを描く
             //   （スキンド / 半透明）。担当を排他にすることで、フォワードの min() 合成が
             //   静的ジオメトリのアクネ・peter-panning・カスケード境界を完全に消す。
             //   副産物として CSM のドロー数も大きく減る。
-            // このカスケードの 1 テクセルが何メートルか。遠カスケードほど大きくなり、
+            // texelWorld = このカスケードの 1 テクセルが何メートルか。遠カスケードほど大きくなり、
             //   そこへフル解像度のメッシュを投げる無駄を passLod が落とす。
-            const f32 texelWorld = 2.0f * m_cascadeRadius[ci] / static_cast<f32>(m_shadowMapSize);
-            RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                 m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
-                                 /*skipRtCovered*/ m_rtShadowActiveThisFrame,
-                                 /*cascadeTexelWorld*/ texelWorld,
-                                 &shadowMaskPsos);
+            std::array<ShadowMapPass::Slice, kNumCascades> slices{};
+            for (u32 ci = 0; ci < kNumCascades; ++ci)
+            {
+                slices[ci].dsv        = m_shadowDsvHandles[ci];
+                slices[ci].viewProj   = m_cascadeViewProj[ci];
+                slices[ci].texelWorld = 2.0f * m_cascadeRadius[ci] / static_cast<f32>(m_shadowMapSize);
+            }
+            ShadowMapPass::Inputs csmIn{};
+            csmIn.name       = "Csm";
+            csmIn.map        = m_shadowMap.Get();
+            csmIn.size       = m_shadowMapSize;
+            csmIn.rootSig    = m_rootSignature.get();
+            csmIn.slices     = slices.data();
+            csmIn.sliceCount = kNumCascades;
+            csmIn.drawDepth  = shadowDepth(/*skipRtCovered*/ m_rtShadowActiveThisFrame);
+            CpuScopeTimer _tShadow(cpuSlot(CpuShadowRec)); DX12_PROFILE_ZONE_N("Rec/Shadows");
+            ShadowMapPass(std::move(csmIn)).Execute(passCtx);
         }
 
-        m_commandList->TransitionResource(m_shadowMap.Get(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    }
-
-    m_gpuTimer->End(nativeCmdList, GpuTimer::Shadows);
-    m_passBucket = &m_passOther;
+        gpuEnd(GpuTimer::Shadows);
+        m_passBucket = &m_passOther;
+    }   // kViewShadows
 
     // ===== メインパス（オフスクリーン RT へ描画）=====
 
@@ -4411,14 +4673,20 @@ void Application::Render()
     // SSAO は透視前提（深度線形化が透視射影に依存）。正射カメラ（俯瞰ゲーム/2Dビュー）では
     // AO 計算が壊れて全面 AO≈0 になり、ambient を黒く潰す（ゲームだけ真っ暗の原因）。→ 正射は無効化。
     // コンタクトシャドウもビュー空間でレイを飛ばす＝同じ理由で透視限定。
-    const bool viewSupportsScreenSpace = !(m_editorCtx && m_editorCtx->view2D)
-                                       && !m_camera->IsOrthographic();
+    // ★view2D はエディタの主ビューの状態（2D ビューのトグル）なので主ビューにだけ効かせる。
+    const bool screenSpaceOn = view.Has(kViewScreenSpace);
+    const bool viewSupportsScreenSpace = screenSpaceOn
+                                       && !(primary && m_editorCtx && m_editorCtx->view2D)
+                                       && !viewOrtho;
     // DXR（計画09）。深度からワールドを復元してレイを飛ばすので、こちらも深度プリパスが要る。
     // ★m_rtShadowActiveThisFrame / rtAoActive は BuildDrawList 直後の TLAS 構築ブロックで
     //   既に確定している（CSM の排他描画の判定に先に必要だったため）。ここで作り直さないこと。
-    const bool useRtShadow = m_rtShadowActiveThisFrame && m_rtScene && m_rtScene->IsReady();
-    const bool useRtAo     = rtAoActive && m_rtScene && m_rtScene->IsReady();
-    const bool useRtDebug  = m_rtScene && m_rtScene->IsReady() && m_rtScreenPass
+    // ★RT の画面パスの出力は主ビューの解像度で 1 枚ずつしか無いので、画面空間の機能が
+    //   無いビュー（カメラプレビュー等）では走らせない（＝RT 影 / RT-AO の枠は白のまま）。
+    const bool useRtShadow = screenSpaceOn && m_rtShadowActiveThisFrame && m_rtScene && m_rtScene->IsReady();
+    const bool useRtAo     = screenSpaceOn && rtAoActive && m_rtScene && m_rtScene->IsReady();
+    const bool useRtDebug  = screenSpaceOn && view.Has(kViewDebugDraw)
+                           && m_rtScene && m_rtScene->IsReady() && m_rtScreenPass
                            && (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtHit)
                             || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtDiff)
                                 || m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo));
@@ -4458,8 +4726,11 @@ void Application::Render()
                                  || useRtShadow || useRtAo || useRtDebug
                                  || (m_forceDepthPrepass && viewSupportsScreenSpace);
     const bool useDepthPrepass = prepassWithoutHiZ || useHiZ;
-    m_diagPrepassWithoutHiZ = prepassWithoutHiZ;
-    m_diagOcclusionActive   = useHiZ;
+    if (primary)
+    {
+        m_diagPrepassWithoutHiZ = prepassWithoutHiZ;
+        m_diagOcclusionActive   = useHiZ;
+    }
     // 速度＋G-Buffer モードで走らせるか（PSO 3 本が揃っていることが条件）。
     // ★SSR/SSGI は G-Buffer が必要なので TAA が OFF でもこのモードで走らせる。
     //   速度バッファは書かれるが TAA が読まないだけ（fp16×2ch のフィル 1 枚ぶん ≒ 0.05ms）。
@@ -4474,8 +4745,8 @@ void Application::Render()
     // ★taaActive を必ず併記すること。SSR だけ ON のときに TAA が勝手に効いてしまう。
     const bool taaResolveActive = taaActive && velocityPrepass && m_taaPass->IsResolveReady();
     // 走らないフレームでは履歴を捨てる。TAA を OFF→ON したり 2D ビューを往復したときに
-    // 何十フレームも前の絵が半透明で残るのを防ぐ。
-    if (!taaResolveActive && m_taaPass) m_taaPass->InvalidateHistory();
+    // 何十フレームも前の絵が半透明で残るのを防ぐ。★履歴は主ビューのものなので主ビューだけが触る。
+    if (primary && !taaResolveActive && m_taaPass) m_taaPass->InvalidateHistory();
     u32 aoSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（AO=1.0 素通し）
     u32 csSrv = m_ssaoWhiteSrvIndex;  // 既定 = 白（遮蔽なし素通し。SSAO と同じ 1x1 白を共用）
     u32 ssrSrv  = DescriptorHeap::kInvalidIndex;   // 無効 = 黒ダミー（RenderSceneMeshes が差し替える）
@@ -4486,68 +4757,65 @@ void Application::Render()
     //   二重計上になる（実際に踏んだ。lights+prepass の合計が workMs を超えた）。
     //   計りたいのは GpuTimer::PrepassSSAO の Begin..End と同じ区間なので明示的に取る。
     const auto _prepassT0 = std::chrono::high_resolution_clock::now();
-    m_gpuTimer->Begin(nativeCmdList, GpuTimer::PrepassSSAO);
+    gpuBegin(GpuTimer::PrepassSSAO);
     if (useDepthPrepass)
     {
-        // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ書く）---
+        // --- 深度プリパス（カメラ視点で深度へ書く）---
         // ★ラスタライズは camVPJ（ジッタあり）。ここをジッタなしにするとフォワードと
         //   深度がビット一致せず LESS_EQUAL で面が欠落する。
-        m_commandList->ClearDepthStencil(m_dsvHandle);
-        m_commandList->SetViewportAndScissor(rW, rH);
-
         // 半透明（sortKey==3）はカメラのプリパスから除外する（00-COORDINATION §6 B3）。
         // 影パスは従来どおり半透明も描く＝影の見た目は不変。
         PrepassParams pp{};
         pp.skipTransparent = true;
         pp.jitterNdc       = jitterNdc;
-
         if (velocityPrepass)
         {
-            // 深度 + 速度を同時に書く（RTV=速度RT / DSV=m_dsvHandle）。
             // 前フレームは「ジッタなし」viewProj。履歴が無い初回は現フレームを使う＝速度0。
             pp.mode = PrepassMode::DepthVelocityGBuffer;
             XMStoreFloat4x4(&pp.prevViewProj,
                 m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP);
-            // RTV1 = G-Buffer。全面 0 クリア（背景は深度 1.0 で弾かれるので中身は問われない）。
-            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float gbufZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            m_commandList->ClearRenderTarget(m_gbufferRT->GetRtv(), gbufZero);
-            m_taaPass->BeginVelocity(*m_commandList, m_dsvHandle, m_gbufferRT->GetRtv(),
-                                     0u, 0u, rW, rH);
-            m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
-            // ★MASK は速度パスでも抜くこと。抜かないと板の深度が書かれ、葉の隙間の背後が
-            //   forward の LESS_EQUAL で弾かれて真っ黒になる（TAA を入れた時だけ出る不具合）。
-            const DepthMaskPsos velocityMaskPsos{ m_velocityMaskPSO.get(),
-                                                  m_velocityMaskPSOInst.get(),
-                                                  m_velocityMaskPSOSkinned.get() };
-            RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                                 m_velocityPSOInst.get(), &pp,
-                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
-                                 &velocityMaskPsos);
-            m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
-            m_taaPass->EndVelocity(*m_commandList);
-            m_gbufferRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
-        else
         {
-            nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_dsvHandle);
-            // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（このプリパスより前に
-            // シャドウパスの ci==0 で更新済み＝ここでは false）。
-            m_gpuTimer->Begin(nativeCmdList, GpuTimer::DepthPrepass);
-            const DepthMaskPsos prepassMaskPsos{ m_depthPrepassMaskPSO.get(),
-                                                 m_depthPrepassMaskPSOInst.get(),
-                                                 m_depthPrepassMaskPSOSkinned.get() };
-            RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
-                                 /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
-                                 m_depthPrepassPSOInst.get(), &pp,
-                                 /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
-                                 &prepassMaskPsos);
-            m_gpuTimer->End(nativeCmdList, GpuTimer::DepthPrepass);
+            DepthPrepassPass::Inputs dp{};
+            dp.rootSig         = m_rootSignature.get();
+            dp.depthDsv        = depthDsv;
+            dp.width           = rW;
+            dp.height          = rH;
+            dp.velocityGBuffer = velocityPrepass;
+            dp.gbuffer         = m_gbufferRT.get();
+            dp.taa             = m_taaPass.get();
+            dp.drawDepth = [&]()
+            {
+                // ★MASK は速度パスでも抜くこと。抜かないと板の深度が書かれ、葉の隙間の背後が
+                //   forward の LESS_EQUAL で弾かれて真っ黒になる（TAA を入れた時だけ出る不具合）。
+                // skinningBuffer は毎フレーム1回どこかで Update されていれば良い（ここでは false）。
+                if (velocityPrepass)
+                {
+                    const DepthMaskPsos velocityMaskPsos{ m_velocityMaskPSO.get(),
+                                                          m_velocityMaskPSOInst.get(),
+                                                          m_velocityMaskPSOSkinned.get() };
+                    RenderDepthOnlyScene(camVPJ, *m_velocityPSO, *m_velocityPSOSkinned,
+                                         /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                         m_velocityPSOInst.get(), &pp,
+                                         /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                         &velocityMaskPsos);
+                }
+                else
+                {
+                    const DepthMaskPsos prepassMaskPsos{ m_depthPrepassMaskPSO.get(),
+                                                         m_depthPrepassMaskPSOInst.get(),
+                                                         m_depthPrepassMaskPSOSkinned.get() };
+                    RenderDepthOnlyScene(camVPJ, *m_depthPrepassPSO, *m_depthPrepassSkinnedPSO,
+                                         /*updateSkinning*/ false, frameIndex, /*lodBias*/ 0,
+                                         m_depthPrepassPSOInst.get(), &pp,
+                                         /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
+                                         &prepassMaskPsos);
+                }
+            };
+            DepthPrepassPass(std::move(dp)).Execute(passCtx);
         }
 
-        m_commandList->TransitionResource(m_depthBuffer.Get(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        const D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpuPre = m_srvHeap->GetGpuHandle(depthSrvIndex);
 
         // --- Hi-Z 深度ピラミッド構築（オクルージョンカリングの入力）---
         // ★ここで作るピラミッドは「今フレーム・今のカメラ」の完全な不透明深度から来る。
@@ -4555,51 +4823,42 @@ void Application::Render()
         //   camVPJ / 同じ LOD）ので、前フレーム深度の再投影も 2 フェーズ方式も要らない。
         if (useHiZ)
         {
-            // ★compute から読むので NON_PIXEL が要る。このエンジンで深度を
-            //   NON_PIXEL_SHADER_RESOURCE へ遷移するのはここが初めて（既存の深度読者は
-            //   SSAO/SSGI/SSR/コンタクトシャドウ/RT すべてフルスクリーン PS）。
-            //   前後で PIXEL へ戻すので、以降のパスの前提は一切変わらない。
-            m_commandList->TransitionResource(m_depthBuffer.Get(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            // ★GpuTimer は 1 スコープにつき 1 フレーム 1 組しか記録できないので、
-            //   ピラミッド構築と可視性判定をまとめて hiZ で挟む（= 機能全体のコスト）。
-            m_gpuTimer->Begin(nativeCmdList, GpuTimer::HiZ);
-            m_hiZPass->Build(nativeCmdList, m_srvHeap->GetGpuHandle(m_depthSrvIndex));
-
+            HiZOcclusionPass::Inputs hz{};
+            hz.hiz      = m_hiZPass.get();
+            hz.depthSrv = depthSrvGpuPre;
             if (m_occlusionCull && m_occlusionCull->IsReady())
             {
-                OcclusionCullPass::Params op{};
+                hz.occlusion = m_occlusionCull.get();
+                hz.device    = m_graphicsDevice.get();
+                hz.bounds    = &m_occlusionBounds;
                 // ★プリパスと同じジッタ付き VP を渡すこと。素の VP を使うと半テクセルずれて、
                 //   細い物（手すり・柵・ワイヤ）が明滅する。
-                XMStoreFloat4x4(&op.viewProj, camVPJ);
-                op.vpX = 0.0f;  op.vpY = 0.0f;
-                op.vpW = static_cast<f32>(rW);
-                op.vpH = static_cast<f32>(rH);
-                op.hzbW = static_cast<f32>(m_hiZPass->GetWidth());
-                op.hzbH = static_cast<f32>(m_hiZPass->GetHeight());
-                op.mipCount = m_hiZPass->GetMipCount();
-                m_occlusionCull->Dispatch(nativeCmdList, *m_graphicsDevice,
-                                          m_occlusionBounds, op,
-                                          m_srvHeap->GetGpuHandle(m_hiZPass->GetSrvIndex()),
-                                          frameIndex);
+                XMStoreFloat4x4(&hz.params.viewProj, camVPJ);
+                hz.params.vpX = 0.0f;  hz.params.vpY = 0.0f;
+                hz.params.vpW = static_cast<f32>(rW);
+                hz.params.vpH = static_cast<f32>(rH);
+                hz.params.hzbW = static_cast<f32>(m_hiZPass->GetWidth());
+                hz.params.hzbH = static_cast<f32>(m_hiZPass->GetHeight());
+                hz.params.mipCount = m_hiZPass->GetMipCount();
             }
-            m_gpuTimer->End(nativeCmdList, GpuTimer::HiZ);
-
-            m_commandList->TransitionResource(m_depthBuffer.Get(),
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            HiZOcclusionPass(hz).Execute(passCtx);
         }
 
         // --- SSAO 生成（depth SRV を読み AO→Blur）---
         if (useSSAO)
         {
-            aoSrv = m_ssaoPass->Generate(nativeCmdList, m_srvHeap.get(),
-                m_srvHeap->GetGpuHandle(m_depthSrvIndex), ssaoCfg,
-                m_camera->GetProjectionMatrix(), m_camera->GetNearZ(), m_camera->GetFarZ(),
-                0u, 0u, rW, rH, frameIndex);
+            SsaoGeneratePass::Inputs si{};
+            si.ssao     = m_ssaoPass.get();
+            si.settings = &ssaoCfg;
+            si.depthSrv = depthSrvGpuPre;
+            si.proj     = view.proj;
+            si.zNear    = viewNear;
+            si.zFar     = viewFar;
+            si.width    = rW;
+            si.height   = rH;
+            SsaoGeneratePass ssaoPass(si);
+            ssaoPass.Execute(passCtx);
+            aoSrv = ssaoPass.ResultSrv();
             // 生成失敗（未準備）時は白ダミー(AO=1.0)へフォールバック。誤テクスチャの読み出しを防ぐ。
             if (aoSrv == DescriptorHeap::kInvalidIndex)
                 aoSrv = m_ssaoWhiteSrvIndex;
@@ -4608,10 +4867,18 @@ void Application::Render()
         // --- コンタクトシャドウ生成（同じ深度を太陽方向へレイマーチ）---
         if (useContactShadow)
         {
-            csSrv = m_contactShadowPass->Generate(nativeCmdList,
-                m_srvHeap->GetGpuHandle(m_depthSrvIndex), csCfg,
-                m_camera->GetViewMatrix(), m_camera->GetProjectionMatrix(), lightDirF3,
-                0u, 0u, rW, rH, frameIndex);
+            ContactShadowGeneratePass::Inputs ci{};
+            ci.pass     = m_contactShadowPass.get();
+            ci.settings = &csCfg;
+            ci.depthSrv = depthSrvGpuPre;
+            ci.view     = view.view;
+            ci.proj     = view.proj;
+            ci.lightDir = lightDirF3;
+            ci.width    = rW;
+            ci.height   = rH;
+            ContactShadowGeneratePass csPass(ci);
+            csPass.Execute(passCtx);
+            csSrv = csPass.ResultSrv();
             if (csSrv == DescriptorHeap::kInvalidIndex)
                 csSrv = m_ssaoWhiteSrvIndex;
         }
@@ -4621,21 +4888,20 @@ void Application::Render()
         //   ルートシグネチャも b1 も 1 ビットも増えない。フォワード PS は無改造のまま。
         if (useRtShadow || useRtAo || useRtDebug)
         {
-            m_gpuTimer->Begin(nativeCmdList, GpuTimer::RtScreen);
             RtScreenPass::GenerateDesc rd;
-            rd.depthSrv  = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
+            rd.depthSrv  = depthSrvGpuPre;
             // SSAO が実際に生成されていれば min 合成の相手にする。
             // 白 1x1 ダミーのままだと範囲外 Load が 0 を返して画面が真っ黒になるので、
             // ssaoValid を必ず添えること。
             rd.ssaoSrv   = m_srvHeap->GetGpuHandle(aoSrv);
             rd.ssaoValid = (aoSrv != m_ssaoWhiteSrvIndex);
             rd.tlas      = m_rtScene->GetTlasAddress();
-            rd.view      = m_camera->GetViewMatrix();
-            rd.proj      = m_camera->GetProjectionMatrix();   // ★ジッタなし
-            rd.cameraPos = m_camera->GetPosition();
+            rd.view      = camView;
+            rd.proj      = camProj;   // ★ジッタなし
+            rd.cameraPos = viewPos;
             rd.lightDir  = lightDirF3;
-            rd.zNear     = m_camera->GetNearZ();
-            rd.zFar      = m_camera->GetFarZ();
+            rd.zNear     = viewNear;
+            rd.zFar      = viewFar;
             rd.vpLeft = 0; rd.vpTop = 0; rd.vpW = rW; rd.vpH = rH;
             rd.frameIndex  = frameIndex;
             // 時間ディザは TAA が有効なときだけ回す（無効時に回すとチラつくだけ。PCSS と同じ方針）。
@@ -4656,129 +4922,1096 @@ void Application::Render()
             // ヒット点のバインドレス情報は使えない＝アルベド可視化は黒になる。
             rd.geometryInfo = m_rtScene->GetGeometryInfoAddress();
 
-            const RtSettings& rtCfg = m_scene->GetRtSettings();
-            if (useRtShadow)
-            {
-                const u32 s = m_rtScreenPass->GenerateShadow(nativeCmdList, rd, rtCfg);
-                if (s != DescriptorHeap::kInvalidIndex) csSrv = s;
-            }
-            if (useRtAo)
-            {
-                const u32 s = m_rtScreenPass->GenerateAo(nativeCmdList, rd, rtCfg);
-                if (s != DescriptorHeap::kInvalidIndex) aoSrv = s;
-            }
-            if (useRtDebug)
-            {
-                rtDebugSrv = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo))
-                           ? m_rtScreenPass->GenerateAlbedo(nativeCmdList, rd)
-                           : m_rtScreenPass->GenerateDebug(nativeCmdList, rd);
-            }
-            m_gpuTimer->End(nativeCmdList, GpuTimer::RtScreen);
+            RtScreenGeneratePass::Inputs ri{};
+            ri.rt          = m_rtScreenPass.get();
+            ri.desc        = &rd;
+            ri.settings    = &m_scene->GetRtSettings();
+            ri.shadow      = useRtShadow;
+            ri.ao          = useRtAo;
+            ri.debug       = useRtDebug;
+            ri.debugAlbedo = (m_renderDebugMode == static_cast<u32>(RenderDebugMode::RtAlbedo));
+            RtScreenGeneratePass rtPass(ri);
+            rtPass.Execute(passCtx);
+            if (rtPass.ShadowSrv() != DescriptorHeap::kInvalidIndex) csSrv = rtPass.ShadowSrv();
+            if (rtPass.AoSrv()     != DescriptorHeap::kInvalidIndex) aoSrv = rtPass.AoSrv();
+            if (useRtDebug) rtDebugSrv = rtPass.DebugSrv();
         }
 
         // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
         // ★前フレームカラーが無いフレーム（初回 / シーン切替直後 / リサイズ直後）は
         //   ScreenSpaceGiPass::Generate が何もせず kInvalidIndex を返す＝黒ダミーへフォールバック。
-        m_gpuTimer->Begin(nativeCmdList, GpuTimer::ScreenSpaceGI);
-        if ((useSsr || useSsgi) && velocityPrepass && m_screenSpaceGi->HasHistory())
         {
+            const bool runGi = (useSsr || useSsgi) && velocityPrepass && m_screenSpaceGi->HasHistory();
             ScreenSpaceGiPass::GenerateDesc gd;
-            gd.ssr        = useSsr  ? &ssrCfg  : nullptr;
-            gd.ssgi       = useSsgi ? &ssgiCfg : nullptr;
-            gd.view       = m_camera->GetViewMatrix();
-            gd.proj       = m_camera->GetProjectionMatrix();   // ジッタなし（深度線形化は無誤差）
-            gd.zNear      = m_camera->GetNearZ();
-            gd.zFar       = m_camera->GetFarZ();
-            gd.vpLeft = 0; gd.vpTop = 0; gd.vpW = rW; gd.vpH = rH;
-            gd.frameIndex = frameIndex;
-            gd.hasIbl     = (m_iblReady && m_iblBaker != nullptr);
-            gd.depthSrv     = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
-            gd.gbufferSrv   = m_srvHeap->GetGpuHandle(m_gbufferRT->GetSrvIndex());
-            gd.velocitySrv  = m_srvHeap->GetGpuHandle(m_taaPass->GetVelocitySrvIndex());
-            // irradiance キューブ(t5)。IBLBaker が居れば SRV ブロックは常に有効なので
-            // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
-            // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
-            gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
-            m_screenSpaceGi->Generate(*m_commandList, gd, ssrSrv, ssgiSrv);
+            if (runGi)
+            {
+                gd.ssr        = useSsr  ? &ssrCfg  : nullptr;
+                gd.ssgi       = useSsgi ? &ssgiCfg : nullptr;
+                gd.view       = camView;
+                gd.proj       = camProj;   // ジッタなし（深度線形化は無誤差）
+                gd.zNear      = viewNear;
+                gd.zFar       = viewFar;
+                gd.vpLeft = 0; gd.vpTop = 0; gd.vpW = rW; gd.vpH = rH;
+                gd.frameIndex = frameIndex;
+                gd.hasIbl     = (m_iblReady && m_iblBaker != nullptr);
+                gd.depthSrv     = depthSrvGpuPre;
+                gd.gbufferSrv   = m_srvHeap->GetGpuHandle(m_gbufferRT->GetSrvIndex());
+                gd.velocitySrv  = m_srvHeap->GetGpuHandle(m_taaPass->GetVelocitySrvIndex());
+                // irradiance キューブ(t5)。IBLBaker が居れば SRV ブロックは常に有効なので
+                // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
+                // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
+                gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+            }
+            ScreenSpaceGiGeneratePass::Inputs gi{};
+            gi.gi   = m_screenSpaceGi.get();
+            gi.desc = &gd;
+            gi.run  = runGi;
+            ScreenSpaceGiGeneratePass giPass(gi);
+            giPass.Execute(passCtx);
+            ssrSrv  = giPass.SsrSrv();
+            ssgiSrv = giPass.SsgiSrv();
         }
-        m_gpuTimer->End(nativeCmdList, GpuTimer::ScreenSpaceGI);
 
-        m_commandList->TransitionResource(m_depthBuffer.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-        // プリパス/SSAO/コンタクトシャドウ/SSR/SSGI で RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_commandList->SetRootSignature(*m_rootSignature);
+        // 深度プリパス群の出口: 追跡の外（Forward 以降の生のコード）は DEPTH_WRITE 前提。
+        // ★Forward 用の RootSig / ヒープの張り直しは要らない（ForwardScenePass が入口で張る）。
+        depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
     }
-    m_gpuTimer->End(nativeCmdList, GpuTimer::PrepassSSAO);
-    m_cpuMs[CpuPrepass] += std::chrono::duration<f32, std::milli>(
-        std::chrono::high_resolution_clock::now() - _prepassT0).count();
+    gpuEnd(GpuTimer::PrepassSSAO);
+    if (primary)
+        m_cpuMs[CpuPrepass] += std::chrono::duration<f32, std::milli>(
+            std::chrono::high_resolution_clock::now() - _prepassT0).count();
 
-    m_sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
     // ★背景は黒。skybox を描かないシーン(屋内)では、ここがそのまま「空の色」になる。
     //   以前はコーンフラワーブルーで、壁の穴やステージの外へ出た瞬間に青が見えていた。
     //   skybox を描くシーンでは全面塗り潰されるので、この値は見えない。
     constexpr float clearColor[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    m_commandList->ClearRenderTarget(m_sceneRT->GetRtv(), clearColor);
+    m_commandList->ClearRenderTarget(sceneRT->GetRtv(), clearColor);
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
     if (!useDepthPrepass)
-        m_commandList->ClearDepthStencil(m_dsvHandle);
-    m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
+        m_commandList->ClearDepthStencil(depthDsv);
+    // クリアした直後にこのビューの描画先（シーン RT + 深度）とビューポートを張っておく。
+    // ★この先の段（IRenderPass）は使うものを入口で自分で張り直すので、状態の契約のためではない。
+    //   これを抜くと、GPU 律速のシーンでクリアの後始末が次の計測区間（clusterCull）へ数えられ、
+    //   perf_stats の内訳が狂う（実測 stress_5000: clusterCull 0.01 → 0.3ms。GPU 合計は同等）。
+    //   PSO は張らない（旧コードはここでメインの PSO も張っていたが、計測にも絵にも効かない）。
+    m_commandList->SetRenderTarget(sceneRT->GetRtv(), depthDsv);
     m_commandList->SetViewportAndScissor(rW, rH);
 
-    m_commandList->SetPipelineState(*m_pipelineState);
-
     // PerFrame CB（ライト本体はクラスタードライティングの StructuredBuffer(t13) 側）
-    // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
-    struct FrameConstants {
-        XMFLOAT4X4 view;
-        XMFLOAT4X4 proj;
-        XMFLOAT3   lightDir;
-        float      time;
-        XMFLOAT3   lightColor;
-        float      ambientStrength;
-        XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B
-        XMFLOAT4   cascadeSplitsView;             // 16B
-        XMFLOAT4   shadowParams;                  // 16B
-        XMFLOAT3   cameraPos;
-        float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
-        u32        numPointLights;   // 統計/デバッグ用（シェーダは読まない）
-        u32        numSpotLights;
-        float      spotShadowTexel;   // 1/kSpotShadowMapSize
-        float      pointShadowNear;
-        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
-        XMFLOAT4   clusterParams;    // .x=zNear .y=zFar(クラスタ用) .z=sliceScale .w=sliceBias
-        XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
-        XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
-        XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
-        XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
-        // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
-        XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
-        XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
-        XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
-        XMFLOAT4   _clusterReserved[40];             // 640B (offset 608..1247)
-        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
-        // ▼ IBL 制御 16B
-        float iblIntensity;
-        float maxPrefilterMip;
-        u32   hasIBL;
-        float skyboxIntensity;
-        // ▼ コンタクトシャドウ制御 16B
-        float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
-        // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
-        //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
-        XMFLOAT3 normalFilterParams;
-    };
+    // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること
+    // （型は Application::FrameConstants。このファイルの先頭で定義）。
+    // ★副ビューは主ビューが作った b1 のシーン側（ライト / 影行列 / IBL / DDGI / 法線フィルタ /
+    //   灯数）をそのまま流用し、視点に依る値（view / proj / cameraPos / PCSS / AO・影の読み分け /
+    //   クラスタ）だけを差し替える。シーン側は下の if (primary) の中でしか書かない。
     static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
+    FrameConstants fc = primary ? FrameConstants{} : frame.mainConstants;
+    // シーン側（太陽 / CSM / DDGI / スポット影行列 / IBL / 法線フィルタ）はフレームで 1 回＝主ビューだけ。
+    if (primary) FillSceneFrameConstants(fc, frame);
 
-    FrameConstants fc{};
-    XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
-    XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(m_camera->GetProjectionMatrix()));
-    fc.lightDir = lightDirF3;
-    fc.time = totalTime;
-    fc.lightColor = lightColorF3;
-    fc.ambientStrength = lightAmbient;
+    // ---- ここから下は視点に依る値（副ビューも自分の視点で書き直す）----
+    XMStoreFloat4x4(&fc.view, XMMatrixTranspose(camView));
+    XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(camProj));
+    fc.cameraPos = viewPos;
+    fc.spotShadowTexel = 1.0f / static_cast<f32>(kSpotShadowMapSize);
+    fc.pointShadowNear = 0.1f;
+
+    // ---- PCSS（ソフトシャドウ）----
+    // .x = 0 なら HLSL 側は従来の 3x3 PCF 経路を通る＝絵はビット一致。
+    // 時間ディザはフレーム連番 × 黄金比。★TAA が無効なときに回すとチラつくだけなので 0 にする
+    //  （時間蓄積を持つパスはディザをフレーム連番×黄金比で回さないと収束しない、の裏返し）。
+    {
+        const ShadowPcssSettings& pcss = m_scene->GetShadowPcssSettings();
+        const bool pcssOn = pcss.enabled && !viewOrtho
+                         && m_scene->GetShadowsEnabled();
+        f32 phase = 0.0f;
+        if (pcssOn && pcss.temporalDither && taaActive)
+            phase = std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f);
+        fc.pcssParams = {
+            pcssOn ? (std::max)(pcss.lightTanAngle, 1e-4f) : 0.0f,
+            (std::max)(pcss.maxPenumbraTexels,   1.0f),
+            phase,
+            (std::max)(pcss.blockerSearchTexels, 1.0f)};
+    }
+
+    // AO: 実 AO テクスチャがバインドされている時だけシェーダで読む。SSAO 無効/正射/フォールバック時は
+    // 白ダミー(1x1)で、Load は範囲外 0 を返して環境光を潰すため、シェーダ側で読まず ao=1 にする。
+    fc.aoEnabled = (aoSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
+
+    // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
+    fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
+
+    // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
+    // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
+    // m_clusterLights はフレーム間で使い回すメンバ（毎フレーム malloc しない）。
+    // ★ここは ECS を全走査して灯ごとに ComputeWorldMatrix を回す。灯が増えるほど効く。
+    //   prepass と同じ理由で RAII を使わない（区間の外まで生きて二重計上になる）。
+    const auto _lightsT0 = std::chrono::high_resolution_clock::now();
+    // シーン側: ライト / デカールの収集（副ビューは主ビューの結果を読むだけ）
+    if (primary) CollectLightsAndDecals(fc);
+
+    // ===== クラスタードライティングのパラメータ =====
+    // クラスタ AABB の構築が透視前提なので、正射カメラ（俯瞰ゲーム / 2D ビュー）と
+    // 設定 OFF のときは「先頭 64 灯の総当たり」フォールバックへ倒す（旧 8 灯より緩い）。
+    // ★クラスタのリスト（t14/t15）とデカールのビニングはフレームに 1 組しか無く、主ビューの視点で
+    //   作る。副ビューは総当たりへ倒す（別視点でメインのクラスタを引くと完全に間違ったライトになる）。
+    const u32 numClusterLights = static_cast<u32>(m_clusterLights.size());
+    const bool clusterOn = primary && view.Has(kViewClustered)
+                        && m_clusteredEnabled && m_clusteredLighting
+                        && m_clusteredLighting->IsReady() && !viewOrtho;
+    {
+        const float zN    = (std::max)(viewNear, 0.001f);
+        const float zFcam = (std::max)(viewFar, zN + 1.0f);
+        const float zFcl  = (std::max)((std::min)(zFcam, cluster::kClusterFarLimit), zN + 1.0f);
+
+        fc.clusterParams = {zN, zFcl,
+                            cluster::SliceScale(zN, zFcl), cluster::SliceBias(zN, zFcl)};
+        fc.clusterGrid   = {static_cast<f32>(cluster::kGridX),
+                            static_cast<f32>(cluster::kGridY),
+                            static_cast<f32>(cluster::kGridZ),
+                            clusterOn ? 1.0f : 0.0f};
+        // SV_Position.xy は RT 座標。#16 でシーンは RT 全面に描くようになったので原点は常に 0
+        // （かつては m_sceneRT のサブ矩形に描いていたので vpLeft/vpTop を引いていた）。
+        fc.clusterViewport = {0.0f, 0.0f,
+                              static_cast<f32>(cluster::kGridX) / static_cast<f32>(rW),
+                              static_cast<f32>(cluster::kGridY) / static_cast<f32>(rH)};
+        // デバッグ表示はエディタのライティング窓から（ゲームモードは常に 0）
+        if (primary) m_clusterDebugMode = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
+        // ★clusterExtra.w は計画02 が「予約」として空けておいた枠。
+        //   計画06 のデカール数がここに入る（PerFrameConstants のレイアウトは 1 バイトも動かない）。
+        //   0 ならフォワード PS のデカールブロックが [branch] で丸ごと飛ぶ。
+        fc.clusterExtra    = {static_cast<f32>(numClusterLights),
+                              static_cast<f32>(cluster::kMaxLightsPerCluster),
+                              view.Has(kViewDebugDraw) ? static_cast<f32>(m_clusterDebugMode) : 0.0f,
+                              clusterOn ? static_cast<f32>(m_decalGpu.size()) : 0.0f};
+    }
+
+    // b1 はビューごとに別バッファ（同じフレーム内で別視点を描くので主ビューの分を上書きできない）。
+    ConstantBuffer* const frameCB = view.perFrameCB;
+    frameCB->Update(&fc, sizeof(fc), frameIndex);
+
+    // ===== ここから下の compute（クラスタ / DDGI / デカール / フォグ）はフレームで 1 回だけ ====
+    // ＝主ビューの仕事。副ビューは主ビューが作ったライトリスト / プローブ / フォグを読むだけ。
+    if (primary)   // フレームで 1 回: クラスタ / DDGI / デカール
+    {
+
+        // ===== クラスタライトカリング（compute 2 パス）=====
+        // ライトを UPLOAD リングへ書いてから AABB 構築 → カリング。呼び出し後は
+        // インデックス/カウントが PIXEL_SHADER_RESOURCE 状態になる。
+        // ★compute が PSO を上書きしても、後段は入口で自分の状態を張るので張り直さない（RenderPass.h）。
+        // 投影の _11/_22 はクラスタとデカールのカリングで共用する。
+        XMFLOAT4X4 cullProjF;
+        XMStoreFloat4x4(&cullProjF, camProj);
+        u32 ddgiLightSrvIndex = DescriptorHeap::kInvalidIndex;   // DDGI が読む t13 の SRV index
+        u32 ddgiLightCount    = 0;
+        if (m_clusteredLighting && m_clusteredLighting->IsReady())
+        {
+            const u32 uploaded = m_clusteredLighting->UploadLights(
+                m_clusterLights.data(), numClusterLights, frameIndex);
+            ClusterCullPass::Inputs ci{};
+            ci.culling     = m_clusteredLighting.get();
+            ci.cull        = clusterOn;
+            ci.view        = view.view;
+            ci.proj11      = cullProjF._11;
+            ci.proj22      = cullProjF._22;
+            ci.zNear       = fc.clusterParams.x;
+            ci.zFarCluster = fc.clusterParams.y;
+            ci.zFarCamera  = viewFar;
+            ci.lightCount  = uploaded;
+            ClusterCullPass(ci).Execute(passCtx);
+            ddgiLightSrvIndex = m_clusteredLighting->GetSrvTableIndex(frameIndex);  // = t13
+            ddgiLightCount    = uploaded;
+        }
+        // ライト収集〜クラスタ転送まで（灯数に比例する CPU コスト）。
+        m_cpuMs[CpuLights] += std::chrono::duration<f32, std::milli>(
+            std::chrono::high_resolution_clock::now() - _lightsT0).count();
+
+        // ===== DDGI: プローブ更新（計画09 Step 6）=====
+        // ★必ず UploadLights の【後】に置くこと。プローブは点光源/スポットを t13 から
+        //   総当たりで拾うので、ここより前で回すと前フレームの灯りを見てしまう
+        //   （影スロットの割当も上のシャドウパスで初めて確定する）。
+        // ★t14/t15（クラスタのインデックス/カウント）は使わない。あれは画面空間のクラスタで、
+        //   視錐台の外にあるプローブには対応するクラスタが存在しないため。
+        // プローブは画面空間ではないので compute。ヒット点は Step 5 のバインドレスを流用。
+        if (ddgiTlasOk && m_ddgi && m_ddgi->IsReady())
+        {
+            DdgiUpdatePass::Inputs di{};
+            di.ddgi     = m_ddgi.get();
+            di.device   = m_graphicsDevice.get();
+            di.settings = &m_scene->GetDdgiSettings();
+            DdgiVolume::UpdateDesc& dd = di.desc;
+            dd.tlas         = ddgiTlas;
+            dd.geometryInfo = ddgiGeoInfo;
+            dd.sunDir       = lightDirF3;
+            // ★lightColorF3 には既に intensity が掛かっている（color * intensity）。
+            //   ここで再度掛けると二重になるので 1.0 にする。
+            dd.sunColor     = lightColorF3;
+            dd.sunIntensity = 1.0f;
+            // ミス時の放射輝度。envMap があるならフォワードの拡散 IBL と
+            // 【同じ irradiance キューブ】を bindless で引かせる（段階1）。
+            // ★これが無いと空の見えている面まで真っ暗になり、DDGI を ON にした
+            //   瞬間にシーン全体が暗くなる（実機で踏んだ）。
+            // envMap が無い屋内は従来どおり環境光の下限をスカラーで使う。
+            //   ここを明るくしすぎると壁の外から光が漏れてくるので控えめに。
+            dd.skyColor     = {lightAmbient, lightAmbient, lightAmbient};
+            dd.skyCubeSrvIndex =
+                (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment())
+                    ? m_iblBaker->GetIrradianceSrv() : 0xFFFFFFFFu;
+            // 点光源/スポット（t13 のライト配列を bindless で引く）。屋内はこれが本体。
+            dd.lightSrvIndex = ddgiLightSrvIndex;
+            dd.lightCount    = ddgiLightCount;
+            dd.frameIndex   = m_deterministicCapture
+                            ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+            DdgiUpdatePass(di).Execute(passCtx);
+        }
+
+        // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====
+        // ★クラスタカリングの直後（同じ compute のかたまり）に置く。
+        //   フォワード PS は t18..t21 を kSlotClusterSRV のテーブル越しに読むので、
+        //   バインドはクラスタライトと同じ 1 本のままで増えない。
+        if (m_decalSystem && m_decalSystem->IsReady()
+            && m_clusteredLighting && m_clusteredLighting->IsReady())
+        {
+            // アトラスの解決（パスが変わったときだけ。空なら 1x1 黒ダミー＝アルファ 0 で不可視）。
+            const std::string& atlasPath = m_scene->GetDecalAtlasPath();
+            if (atlasPath != m_decalAtlasLoaded)
+            {
+                m_decalAtlasLoaded   = atlasPath;
+                m_decalAtlasSrvIndex = DescriptorHeap::kInvalidIndex;
+                m_decalAtlasTex      = nullptr;
+                if (!atlasPath.empty() && m_resourceManager)
+                {
+                    const std::wstring wpath =
+                        PathResolver::Utf8ToWide(PathResolver::AssetsDir() + atlasPath);
+                    if (Texture* tex = m_resourceManager->GetOrLoadTexture(
+                            wpath, nativeCmdList, /*srgb*/ true, TextureUsage::BaseColor))
+                    {
+                        m_decalAtlasSrvIndex = tex->GetSrvIndex();
+                        m_decalAtlasTex      = tex;
+                    }
+                    if (m_decalAtlasSrvIndex == DescriptorHeap::kInvalidIndex)
+                        Logger::Warn("デカールアトラスを読めませんでした: {}", atlasPath);
+                }
+                m_decalSrvDirty = true;
+            }
+            if (m_decalSrvDirty)
+            {
+                Texture* atlasTex = m_decalAtlasTex ? m_decalAtlasTex : m_ssBlackTex.get();
+                if (atlasTex)
+                {
+                    for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
+                    {
+                        const u32 block = m_clusteredLighting->GetSrvTableIndex(f);
+                        m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap, block, f, atlasTex);
+                    }
+                    m_decalSrvDirty = false;
+                }
+            }
+
+            const u32 uploadedDecals =
+                m_decalSystem->Upload(m_decalGpu.data(), static_cast<u32>(m_decalGpu.size()), frameIndex);
+            DecalCullPass::Inputs dci{};
+            dci.decals      = m_decalSystem.get();
+            dci.cull        = clusterOn && uploadedDecals > 0;   // 0 個 / 総当たりなら読取状態にするだけ
+            dci.view        = view.view;
+            dci.proj11      = cullProjF._11;
+            dci.proj22      = cullProjF._22;
+            dci.zNear       = fc.clusterParams.x;
+            dci.zFarCluster = fc.clusterParams.y;
+            dci.zFarCamera  = viewFar;
+            dci.decalCount  = uploadedDecals;
+            DecalCullPass(dci).Execute(passCtx);
+        }
+    }   // primary: クラスタ / DDGI / デカール
+
+    // ===== ボリュメトリックフォグ: froxel ボリュームの構築（compute 3 パス）=====
+    // クラスタカリングの直後に置く理由: 散乱パスがクラスタライトリストを読むため。
+    // ここは (1) CSM が完成済み・(2) カスケード行列/分割が確定済み・(3) 深度は DEPTH_WRITE のまま
+    // ＝ フォグの compute が誰の状態も壊さない位置。合成はパーティクル直前で行う（下）。
+    // ★compute が PSO を上書きしても張り直さない（後段は入口で自分の状態を張る。RenderPass.h）。
+    const VolumetricFogSettings& fogCfg = m_scene->GetVolumetricFogSettings();
+    // 透視限定（froxel の Z 分布と深度線形化が透視前提）。正射 / 2D ビューでは丸ごと素通し。
+    // ★クラスタライトリスト（t3..t5）は散乱シェーダが必ず参照する＝テーブルを必ずバインドする
+    //   必要があるので、クラスタードライティングが生きていることをフォグの前提条件にしている。
+    //   （生きていないのは初期化に失敗したときだけ。その場合フォグを諦める方が安全。）
+    // ★froxel ボリュームと履歴は主ビューの解像度で 1 組だけ＝主ビューだけが作る。
+    const bool volFogActive = primary && view.Has(kViewVolumetricFog)
+                            && fogCfg.enabled && fogCfg.density > 0.0f
+                            && m_volumetricFogPass && m_volumetricFogPass->IsReady()
+                            && m_clusteredLighting && m_clusteredLighting->IsReady()
+                            && viewSupportsScreenSpace;
+    bool volFogBuilt = false;
+    // ViewParams は XMMATRIX を持つのでパスに値で持たせず、ここのローカルを Execute の間だけ貸す。
+    VolumetricFogPass::ViewParams fv{};
+    if (volFogActive)
+    {
+        fv.view         = camView;          // ジッタなし
+        fv.prevViewProj = m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP;
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, camProj);
+            fv.proj11 = projF._11;
+            fv.proj22 = projF._22;
+        }
+        fv.cameraPos        = fc.cameraPos;
+        fv.sunDir           = lightDirF3;
+        fv.sunColor         = lightColorF3;
+        fv.cascadeViewProj  = m_cascadeViewProj;              // 非転置（パス内で転置する）
+        fv.cascadeSplits    = fc.cascadeSplitsView;
+        fv.shadowParams     = fc.shadowParams;
+        fv.clusterParams    = fc.clusterParams;
+        fv.clusterGrid      = fc.clusterGrid;
+        fv.vpLeft = 0; fv.vpTop = 0; fv.vpW = rW; fv.vpH = rH;
+        fv.nearZ = viewNear;
+        fv.farZ  = viewFar;
+        fv.numLights     = numClusterLights;
+        fv.maxPerCluster = cluster::kMaxLightsPerCluster;
+        fv.spotShadowMatrixTransposed = fc.spotShadowMatrix;   // ★転置済み（未使用枠は単位行列）
+        fv.spotShadowTexel = fc.spotShadowTexel;
+        fv.pointShadowNear = fc.pointShadowNear;
+        fv.csmSrv          = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
+        fv.clusterSrv      = m_clusteredLighting->GetSrvTable(frameIndex);
+        // t9,t10 と同じ「スポット影配列 → ポイント影キューブ配列」の 2 本連番。
+        fv.punctualShadowSrv = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
+
+        // 影マップ 3 種の NON_PIXEL 往復はパスの中（出口で PIXEL_SHADER_RESOURCE へ戻す）。
+        VolumetricFogBuildPass::Inputs fi{};
+        fi.fog          = m_volumetricFogPass.get();
+        fi.device       = m_graphicsDevice.get();
+        fi.settings     = &fogCfg;
+        fi.params       = &fv;
+        fi.csm          = m_shadowMap.Get();
+        fi.spotShadows  = m_spotShadowMap.Get();
+        fi.pointShadows = m_pointShadowMap.Get();
+        VolumetricFogBuildPass(fi).Execute(passCtx);
+        volFogBuilt = m_volumetricFogPass->VolumesAllocated();
+    }
+
+    // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
+    // RT / ビューポート / ヒープはパスが自分で張る。後始末（メインの RootSig/PSO の張り直し）は要らない。
+    if (view.Has(kViewSkybox) &&
+        m_iblReady && m_drawSkybox && m_skyboxIntensity > 0.0f && m_skyboxRenderer &&
+        m_iblBaker && m_iblBaker->HasEnvironment() &&
+        m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        SkyboxPass::Inputs si{};
+        si.sky        = m_skyboxRenderer.get();
+        si.envCube    = m_srvHeap->GetGpuHandle(m_envCubeSrvIndex);
+        // スカイボックスもジッタさせる（させないと TAA で空だけ滲む）。
+        XMStoreFloat4x4(&si.invViewProjT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVPJ)));
+        si.intensity  = m_skyboxIntensity;
+        si.sceneRtv   = sceneRT->GetRtv();
+        si.depthDsv   = depthDsv;
+        si.sceneColor = sceneRT->GetResource();
+        si.width  = rW;
+        si.height = rH;
+        SkyboxPass(si).Execute(passCtx);
+    }
+
+    // ===== Forward+（全Entity。メインパスなら編集カメラ視点）=====
+    // AO / コンタクトシャドウは有効時のみ実テクスチャ、無効時は白（＝素通し）。深度プリパスが
+    // 走ったときだけ深度が完成済み → LESS_EQUAL forward PSO で再利用する。
+    // ★Forward の PS が読むもの（ヒープ / RootSig / RT / b1 / 影 / IBL / クラスタ）はパスが張る。
+    //   メッシュごとのもの（AO / 影の読み分け / SSR / SSGI / マテリアル / ボーン）は RenderSceneMeshes。
+    {
+        ForwardScenePass::Inputs fwd{};
+        fwd.rootSig             = m_rootSignature.get();
+        fwd.perFrameCB          = frameCB->GetGpuAddress(frameIndex);
+        fwd.csmTable            = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
+        fwd.punctualShadowTable = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
+        fwd.hasIblTable         = (m_iblReady && m_iblBaker);
+        if (fwd.hasIblTable)
+            fwd.iblTable        = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+        fwd.hasClusterTable     = (m_clusteredLighting && m_clusteredLighting->IsReady());
+        if (fwd.hasClusterTable)
+            fwd.clusterTable    = m_clusteredLighting->GetSrvTable(frameIndex);
+        fwd.sceneRtv   = sceneRT->GetRtv();
+        fwd.depthDsv   = depthDsv;
+        fwd.sceneColor = sceneRT->GetResource();
+        fwd.width  = rW;
+        fwd.height = rH;
+        fwd.drawMeshes = [&]()
+        {
+            // フォワード本体はジッタあり（深度プリパスとビット一致させる）。
+            const XMMATRIX viewProj = camVPJ;
+            m_passBucket = primary ? &m_passMain : &m_passOther;
+            {
+                CpuScopeTimer _tMain(cpuSlot(CpuMainRec)); DX12_PROFILE_ZONE_N("Rec/Main");
+                // ★applyOcclusion はここ（メインカメラ視点）でだけ true。Hi-Z はこの視点の
+                //   深度プリパスから作られているので、別視点の呼び出しで適用してはいけない。
+                RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
+                                  view.isGameView, aoSrv,
+                                  useDepthPrepass, csSrv, ssrSrv, ssgiSrv, /*applyOcclusion*/ useHiZ);
+            }
+            m_passBucket = &m_passOther;
+        };
+        ForwardScenePass(std::move(fwd)).Execute(passCtx);
+    }
+
+    // ---- Physics / NavMesh Debug Draw（オフスクリーン RT へ・同じ線パイプラインを共有）----
+    // ナビメッシュのワイヤは物理デバッグとは独立にトグルできる（別々に見たいので）。
+    {
+        const bool physDraw = m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled();
+        const bool navDraw  = m_scene && m_scene->GetNavDebugDraw() && m_scene->HasNavMesh();
+        if (view.Has(kViewDebugDraw) && (physDraw || navDraw)
+            && !McpHidingGizmos())   // gizmos:false のスクショ中は止める
+        {
+            m_physicsDebugRenderer->BeginFrame();
+            // 選択中のエンティティとカメラ位置を渡す＝「選択中のみ」「カメラの近くだけ」で絞れる。
+            // ★全部出すと壁と床の線で画面が埋まって読めないので、実シーンではほぼ必須。
+            if (physDraw)
+                m_physicsDebugRenderer->CollectFromRegistry(
+                    m_scene->GetRegistry(),
+                    m_editorCtx ? m_editorCtx->selectedEntity : entt::null,
+                    viewPos);
+            if (navDraw)
+            {
+                // 壁の辺（隣が無い＝そこから先へ行けない）は明るく、
+                // ポリゴン同士のポータルは暗く描く＝「どこが通れるか」が一目で分かる。
+                const nav::NavMesh& nm = m_scene->GetNavMesh();
+                const XMFLOAT3 kWallCol   { 0.20f, 0.95f, 1.00f };
+                const XMFLOAT3 kPortalCol { 0.10f, 0.35f, 0.45f };
+                const f32 lift = 0.03f;   // 床とのZファイト防止に少し浮かせる
+                for (const nav::NavPoly& p : nm.Polys())
+                {
+                    for (u32 e = 0; e < p.vertCount; ++e)
+                    {
+                        f32 a[3], b[3];
+                        nm.GetPolyVert(p, e, a);
+                        nm.GetPolyVert(p, (e + 1) % p.vertCount, b);
+                        const bool wall = nm.Neis()[p.firstNei + e] == 0xffffffffu;
+                        m_physicsDebugRenderer->AddLine(
+                            XMFLOAT3{ a[0], a[1] + lift, a[2] },
+                            XMFLOAT3{ b[0], b[1] + lift, b[2] },
+                            wall ? kWallCol : kPortalCol);
+                    }
+                }
+            }
+
+            // 線は Forward と同じ RT + 深度へ（PSO は kSceneColorFormat + D32。RootSig/PSO は自前）。
+            m_commandList->SetRenderTarget(sceneRT->GetRtv(), depthDsv);
+            m_commandList->SetViewportAndScissor(rW, rH);
+            XMFLOAT4X4 vp;
+            XMStoreFloat4x4(&vp, XMMatrixTranspose(camVPJ));
+            m_physicsDebugRenderer->Render(nativeCmdList, vp);
+        }
+    }
+
+    // ---- フォグ合成 + パーティクル（プロシージャル質感ビルボード）: HDR scene RT へ ----
+    // エディタ編集中も描画する（配置エミッタ/トレイルの常時プレビュー。従来は Play/ゲームのみ）
+    // ★どちらも深度を SRV で読む（DSV は張らない）。深度の遷移は depthState に対する Require で、
+    //   フォグ合成 → パーティクルと続くときは往復のバリアを出さない（旧コードと同じ 1 往復）。
+    // ★合成の GPU 時間は GpuTimer::Particles の内数になる（GpuTimer は 1 スコープにつき
+    //   フレーム 1 回の Begin/End しか記録できないので、volFog スコープは compute 3 パス専用）。
+    gpuBegin(GpuTimer::Particles);
+    bool particleDistortDrawn = false;
+    // パーティクルより「前」なので、加算合成のパーティクルにはフォグがかからない（意図どおり）。
+    if (volFogBuilt)
+    {
+        FogCompositePass::Inputs ci{};
+        ci.fog        = m_volumetricFogPass.get();
+        ci.depthSrv   = m_srvHeap->GetGpuHandle(depthSrvIndex);
+        ci.sceneRtv   = sceneRT->GetRtv();
+        ci.sceneColor = sceneRT->GetResource();
+        ci.width  = rW;
+        ci.height = rH;
+        FogCompositePass(ci).Execute(passCtx);
+    }
+    if (view.Has(kViewParticles) && m_particleSystem)
+    {
+        ParticlesPass::Inputs pi{};
+        pi.particles    = m_particleSystem.get();
+        pi.gpuParticles = m_gpuParticles.get();
+        pi.distortRT    = m_distortRT.get();
+        pi.sceneRtv     = sceneRT->GetRtv();
+        pi.sceneColor   = sceneRT->GetResource();
+        pi.width  = rW;
+        pi.height = rH;
+
+        XMMATRIX invView = XMMatrixInverse(nullptr, camView);
+        XMStoreFloat3(&pi.camRight, invView.r[0]);
+        XMStoreFloat3(&pi.camUp,    invView.r[1]);
+        XMStoreFloat3(&pi.camPos,   invView.r[3]);
+
+        XMFLOAT4X4 proj; XMStoreFloat4x4(&proj, camProj);
+        pi.hasDepthSrv = (depthSrvIndex != DescriptorHeap::kInvalidIndex);
+        if (pi.hasDepthSrv) pi.depthSrv = m_srvHeap->GetGpuHandle(depthSrvIndex);
+        pi.projA    = proj._33;
+        pi.projB    = proj._43;
+        pi.rtWidth  = static_cast<float>(sceneRT->GetWidth());
+        pi.rtHeight = static_cast<float>(sceneRT->GetHeight());
+        XMStoreFloat4x4(&pi.viewProjJittered, camVPJ);
+        pi.time  = totalTime;
+        // 決定論キャプチャ中は dt=0（#31。GPU 粒子が前進すると 2 枚が一致しない）。
+        pi.gpuDt = m_deterministicCapture ? 0.0f : m_gameClock.GetDeltaTime();
+
+        ParticlesPass pp(pi);
+        pp.Execute(passCtx);
+        particleDistortDrawn = pp.DistortionDrawn();
+    }
+    // 追跡の外（ワールドスプライト / render_debug / ポスト）は深度が DEPTH_WRITE で置かれている前提。
+    depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    gpuEnd(GpuTimer::Particles);
+
+    // ---- ワールド空間 2D スプライト（Sprite2D, worldSpace=true）: HDR scene RT へ ----
+    // 各スプライトをエンティティのワールド行列で配置（3D 空間の任意位置/向き/スケール、billboard 可）。
+    // layer 昇順ソート・アルファブレンド・深度テスト(書込みOFF)。PostProcess 前なのでブルーム等の対象。
+    // ゲームビュー/Play に加え、エディタのシーンビュー(編集中)でも描画して配置を可視化する。
+    // ★頂点リングの巻き戻しはフレームで 1 回だけ（副ビューは主ビューの後ろへ追記する）。
+    if (primary && m_spriteRenderer) m_spriteRenderer->BeginWorldVertexFrame();  // 本フレームの頂点書込みを先頭へ
+    if (view.Has(kViewWorldSprites))
+    {
+        XMMATRIX invView = XMMatrixInverse(nullptr, camView);
+        XMFLOAT3 camRight, camUp;
+        XMStoreFloat3(&camRight, invView.r[0]);
+        XMStoreFloat3(&camUp,    invView.r[1]);
+        DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
+                         sceneRT->GetRtv(), depthDsv, 0u, 0u, rW, rH, totalTime);
+    }
+
+    // ===== 中間バッファ可視化（dx12_render_debug）=====
+    // ★ここに挿す理由: シーン RT がまだ RENDER_TARGET で、ポストチェーンより前。
+    //   readback（CaptureSceneScreenshot）は m_sceneRT を読むので必ず絵に写る（B5 の罠を回避）。
+    //   フォワード PS には 1 行も足していない（N24: [branch] でも occupancy が落ちる）。
+    if (primary && view.Has(kViewDebugDraw)
+        && m_renderDebugMode != 0 && m_renderDebugPass && m_renderDebugPass->IsReady()
+        && depthSrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        const auto dbgMode = static_cast<RenderDebugMode>(m_renderDebugMode);
+        u32 srcIdx = DescriptorHeap::kInvalidIndex;
+        switch (dbgMode)
+        {
+        case RenderDebugMode::Normal:
+        case RenderDebugMode::Roughness:
+        case RenderDebugMode::Metallic:
+            if (velocityPrepass && m_gbufferRT) srcIdx = m_gbufferRT->GetSrvIndex();
+            break;
+        case RenderDebugMode::Depth:          srcIdx = depthSrvIndex; break;   // t0 は使わないが有効な物を渡す
+        case RenderDebugMode::Ao:             srcIdx = aoSrv; break;
+        case RenderDebugMode::ContactShadow:  srcIdx = csSrv; break;
+        case RenderDebugMode::Velocity:
+            if (velocityPrepass && m_taaPass) srcIdx = m_taaPass->GetVelocitySrvIndex();
+            break;
+        case RenderDebugMode::Ssr:            srcIdx = ssrSrv;  break;
+        case RenderDebugMode::Ssgi:           srcIdx = ssgiSrv; break;
+        case RenderDebugMode::RtHit:
+        case RenderDebugMode::RtDiff:
+        case RenderDebugMode::RtAlbedo:       srcIdx = rtDebugSrv; break;
+        default: break;
+        }
+
+        if (srcIdx != DescriptorHeap::kInvalidIndex)
+        {
+            // 深度を PS から読める状態へ（戻すのはビューの出口。続くポストも深度を読むことが多い）。
+            depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+            auto drtv = sceneRT->GetRtv();
+            nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);   // DSV は張らない
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+            XMFLOAT4X4 dbgProj; XMStoreFloat4x4(&dbgProj, camProj);
+
+            RenderDebugPass::DrawDesc dd{};
+            dd.mode       = dbgMode;
+            dd.sourceSrv  = m_srvHeap->GetGpuHandle(srcIdx);
+            dd.depthSrv   = m_srvHeap->GetGpuHandle(depthSrvIndex);
+            dd.vpLeft = 0; dd.vpTop = 0; dd.vpW = rW; dd.vpH = rH;
+            dd.gain       = m_renderDebugGain;
+            dd.projA      = dbgProj._33;
+            dd.projB      = dbgProj._43;
+            dd.depthRange = m_renderDebugDepthRange;
+            dd.exposure   = m_renderDebugExposure;
+            m_renderDebugPass->Draw(*m_commandList, dd);
+        }
+    }
+
+    // ===== 次フレームの SSR/SSGI 用に、このフレームの HDR シーンカラーを退避 =====
+    // ★ポストチェーン（DoF/モーションブラー/ブルーム/トーンマップ）より前でなければならない。
+    //   トーンマップ後の絵を GI ソースにすると露出変動でフィードバックが暴れる。
+    //   m_sceneRT はリニア HDR で露出が焼き込まれていないので、その事故が構造的に起きない。
+    //   この位置ならパーティクル / ワールドスプライト / 歪みまで含んだ「見えている絵」が入る。
+    // ★m_sceneRT の ping-pong 化は禁止（33 参照あり）。CopyResource 1 発が唯一安全な手段。
+    // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
+    gpuBegin(GpuTimer::PostFX);
+    if (m_screenSpaceGi && (useSsr || useSsgi))
+        m_screenSpaceGi->CaptureSceneColor(*m_commandList, *sceneRT);
+    ID3D12Resource*             backBuffer = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+    // ポスト一式は主ビューだけ（TAA / DoF / ブルーム等の中間 RT と履歴は主ビューの解像度で 1 組）。
+    if (!(primary && view.Has(kViewPostChain) && view.outputToBackBuffer))
+    {
+        // ---- トーンマップだけ（副ビュー: カメラプレビュー等）→ view.output ----
+        // ImGui へ FP16 の SRV を直接渡すとトーンマップ / ガンマ無しで暗く表示されるため LDR へ解決する。
+        // enabled=false → mask=0 = PostProcess はトーンマップ + ガンマのみ適用。
+        // 露出は主ビューの自動露出を読む（プレビューと本画面の明るさを揃える）。
+        sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if (view.output && m_postProcess && m_postProcess->IsReady())
+        {
+            view.output->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            D3D12_CPU_DESCRIPTOR_HANDLE outRtv = view.output->GetRtv();
+            nativeCmdList->OMSetRenderTargets(1, &outRtv, FALSE, nullptr);  // 深度なし
+            m_commandList->SetViewportAndScissor(vpW, vpH);
+
+            PostProcessSettings pvPost{};
+            pvPost.enabled = false;
+            // トーンマッパはシーン設定と揃える（プレビューと本画面の見た目一致）
+            pvPost.tonemapper = m_scene->GetPostSettings().tonemapper;
+            const auto pvDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
+            PostProcess::Inputs pvIn{};
+            pvIn.sceneSrv   = m_srvHeap->GetGpuHandle(sceneRT->GetSrvIndex());
+            pvIn.bloomSrv   = pvDummy;
+            pvIn.lutSrv     = pvDummy;
+            pvIn.godraysSrv = pvDummy;
+            pvIn.flareSrv   = pvDummy;
+            pvIn.distortSrv = pvDummy;
+            pvIn.exposureVA = m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0;
+            m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
+                1.0f / static_cast<f32>(rW), 1.0f / static_cast<f32>(rH), totalTime, frameIndex);
+
+            view.output->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+    }
+    else   // ポスト一式（主ビュー → バックバッファ）
+    {
+        PostChainInputs pci{};
+        pci.cmd        = nativeCmdList;
+        pci.frameIndex = frameIndex;
+        pci.totalTime  = totalTime;
+        pci.vpLeft = vpLeft;  pci.vpTop = vpTop;  pci.vpW = vpW;  pci.vpH = vpH;
+        pci.rW = rW;  pci.rH = rH;
+        pci.camVP      = view.viewProj;
+        pci.camView    = view.view;
+        pci.camProj    = view.proj;
+        pci.viewPos    = viewPos;
+        pci.viewOrtho  = viewOrtho;
+        pci.isGameView = view.isGameView;
+        pci.sceneRT       = sceneRT;
+        pci.depthRes      = depthRes;
+        pci.depthSrvIndex = depthSrvIndex;
+        pci.depthState    = &depthState;
+        pci.taaActive            = taaActive;
+        pci.taaResolveActive     = taaResolveActive;
+        pci.velocityPrepass      = velocityPrepass;
+        pci.particleDistortDrawn = particleDistortDrawn;
+        RenderPostChain(pci, backBuffer, rtv);
+    }
+    // ビューの出口の契約: 深度は DEPTH_WRITE（次フレームのプリパス / Forward と、ビューの外の
+    // コードはこの置き場を前提にする）。render_debug / ポストが PIXEL にしていればここで戻す。
+    depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    gpuEnd(GpuTimer::PostFX);
+
+    // ---- 後段（オーバーレイ / ImGui / 送信 / 副ビュー）へ渡す ----
+    if (primary)
+    {
+        frame.backBuffer    = backBuffer;
+        frame.rtv           = rtv;
+        frame.mainConstants = fc;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ポスト一式（主ビュー → バックバッファ）: TAA → DoF → モーションブラー → 自動露出 → ブルーム →
+// ゴッドレイ → レンズフレア → LUT → uber → スクリーンシェーダー → 速度の可視化、と
+// 次フレーム用の前フレーム行列の保存。中間 RT と履歴は主ビューの解像度で 1 組しか無いので、
+// 主ビューだけが呼ぶ（副ビューは RenderView の中でトーンマップだけを通る）。
+// ★深度は in.depthState に対して読む前に PIXEL を Require するだけ（戻すのは RenderView の出口）。
+// ---------------------------------------------------------------------------
+void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& outBackBuffer,
+                                  D3D12_CPU_DESCRIPTOR_HANDLE& outRtv)
+{
+    using namespace DirectX;
+    // RenderView から受けた値（名前は RenderView のローカル変数に揃えてある＝本体は無改変）
+    ID3D12GraphicsCommandList* const nativeCmdList = in.cmd;
+    const u32 frameIndex = in.frameIndex;
+    const f32 totalTime  = in.totalTime;
+    const u32 vpLeft = in.vpLeft, vpTop = in.vpTop, vpW = in.vpW, vpH = in.vpH;
+    const u32 rW = in.rW, rH = in.rH;
+    const XMMATRIX camVP   = XMLoadFloat4x4(&in.camVP);
+    const XMMATRIX camView = XMLoadFloat4x4(&in.camView);
+    const XMMATRIX camProj = XMLoadFloat4x4(&in.camProj);
+    const XMFLOAT3 viewPos   = in.viewPos;
+    const bool     viewOrtho = in.viewOrtho;
+    RenderTarget* const   sceneRT       = in.sceneRT;
+    ID3D12Resource* const depthRes      = in.depthRes;
+    const u32             depthSrvIndex = in.depthSrvIndex;
+    TrackedState&         depthState    = *in.depthState;
+    const TaaSettings& taaCfg           = m_scene->GetTaaSettings();
+    const bool taaActive            = in.taaActive;
+    const bool taaResolveActive     = in.taaResolveActive;
+    const bool velocityPrepass      = in.velocityPrepass;
+    const bool particleDistortDrawn = in.particleDistortDrawn;
+    ID3D12Resource*             backBuffer = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+
+    backBuffer = m_swapChain->GetCurrentBackBuffer();
+    rtv        = m_swapChain->GetCurrentRTV();
+
+    // シーンRT は PS（ブルーム/uber）と CS（自動露出）の両方から読むので複合読取状態へ遷移
+    sceneRT->Transition(*m_commandList,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    m_commandList->TransitionResource(backBuffer,
+        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    {
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+
+        // ★#16: シーンは RT 全面に描かれているので「サブ矩形の UV」は常に (0,0,1,1)。
+        //   かつてここで計算していた uvOfs/uvScl は 7 パスから丸ごと消えた。
+        //   fullW/fullH ＝ レンダー解像度（テクセルサイズの供給元）。
+        const f32 fullW = static_cast<f32>(sceneRT->GetWidth());
+        const f32 fullH = static_cast<f32>(sceneRT->GetHeight());
+        const auto sceneSrvGpu = m_srvHeap->GetGpuHandle(sceneRT->GetSrvIndex());
+
+        // ポストエフェクトも Scene/Game で同じ設定を適用する。
+        // ここを分けると「Scene では明るいのに Play すると暗い」など、ライティング調整が破綻する。
+        PostProcessSettings ppApplied = m_scene->GetPostSettings();
+        const bool isGameView = in.isGameView;
+
+        // ヒット時の画面インパクト（fx:pulse）: クロマ + 放射ブラーを瞬間的に上乗せ
+        if (isGameView && m_particleSystem)
+        {
+            float pulse = m_particleSystem->GetPulse();
+            if (pulse > 0.001f)
+            {
+                ppApplied.chromaticOn = true;
+                ppApplied.chromatic   = (std::max)(ppApplied.chromatic, pulse * 1.2f);
+                ppApplied.radialOn    = true;
+                ppApplied.radial      = (std::max)(ppApplied.radial, pulse * 0.8f);
+            }
+        }
+
+        // ---- TAA と FXAA の排他 ----
+        // TAA 解決済みの絵に FXAA を掛けると輪郭が二重にぼける。TAA が走るなら FXAA は落とす。
+        const bool taaResolve = taaResolveActive;
+        if (taaResolve) ppApplied.fxaaOn = false;
+
+        // ---- 画面全体のカスタムシェーダー（CameraComponent::screenShaderPath）----
+        // ★ポストと同じ思想で Scene ビューにも同じものを掛ける。
+        //   「エディタでは素の絵なのに Play すると別物」を作らないため
+        //   （＝割り当てた瞬間に結果が見えるので、そもそも試行錯誤が成立する）。
+        //   採用するのは【アクティブなカメラ】1 つだけ。複数のカメラが持っていても
+        //   合成はしない（順序が決まらず、事故のもとにしかならない）。
+        std::string screenShaderRel;
+        DirectX::XMFLOAT4 screenShaderParams{0.0f, 0.0f, 0.0f, 0.0f};
+        f32  screenCamNear = 0.1f, screenCamFar = 1000.0f, screenCamFov = 60.0f;
+        bool screenCamOrtho = false;
+        if (m_scene)
+        {
+            auto camEnts = m_scene->GetRegistry().view<const CameraComponent>();
+            for (auto ce : camEnts)
+            {
+                const auto& cc = camEnts.get<const CameraComponent>(ce);
+                if (!cc.isActive || !cc.screenShaderEnabled || cc.screenShaderPath.empty())
+                    continue;
+                screenShaderRel   = cc.screenShaderPath;
+                screenShaderParams = cc.screenShaderParams;
+                screenCamNear = cc.nearClip; screenCamFar = cc.farClip;
+                screenCamFov  = cc.fovDegrees;
+                screenCamOrtho = (cc.projection == CameraProjection::Orthographic);
+                break;
+            }
+        }
+        ID3D12PipelineState* screenPso =
+            screenShaderRel.empty() ? nullptr : EnsureScreenShaderPso(screenShaderRel);
+        const bool useScreenShader = (screenPso != nullptr) && m_screenShaderRT
+                                  && m_screenShaderPass && m_screenShaderPass->IsReady();
+
+        // ---- 深度依存パス（TAA/DoF/モーションブラー/ゴッドレイ）の準備 ----
+        // 透視カメラのみ（正射は CoC/再投影/太陽投影が破綻するため無効）
+        const bool persp = !viewOrtho;
+        const bool wantDepthPost = ppApplied.enabled && persp &&
+            depthRes && depthSrvIndex != DescriptorHeap::kInvalidIndex &&
+            (ppApplied.dofOn || ppApplied.motionBlurOn || ppApplied.godraysOn);
+        // TAA も深度を読む（空の速度再構成 + closest-depth dilation）。
+        // スクリーンシェーダーも t1 で深度を受け取る（霧・被写界深度・輪郭を自分で書けるように）。
+        // ★深度の遷移はビューの状態追跡（depthState）に任せる。読む前に PIXEL を要求するだけで、
+        //   戻すのはビューの出口（uber とスクリーンシェーダーの後）。以前は「スクリーンシェーダーが
+        //   深度を読むかどうか」で戻す場所を 2 通りに書き分けていた。
+        const bool screenShaderWantsDepth =
+            useScreenShader && depthRes && depthSrvIndex != DescriptorHeap::kInvalidIndex;
+        const bool needDepthSrv = wantDepthPost || taaResolve || screenShaderWantsDepth;
+        D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu{};
+        if (needDepthSrv)
+        {
+            depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            depthSrvGpu = m_srvHeap->GetGpuHandle(depthSrvIndex);
+        }
+
+        // ---- シーン変換チェーン: TAA → DoF → モーションブラー（結果を以降の「シーン」として使う）----
+        D3D12_GPU_DESCRIPTOR_HANDLE curSceneSrv = sceneSrvGpu;
+
+        // ★TAA はチェーンの先頭。トーンマップ前のリニア HDR に対して解決する。
+        //   露出に依存するアーティファクトを避けるためと、以降の DoF / モーションブラー /
+        //   自動露出 / ブルーム / レンズフレアが「安定した絵」を入力に取れるようにするため
+        //   （ブルームとレンズフレアのちらつきが目に見えて減る）。
+        if (taaResolve)
+        {
+            XMFLOAT4X4 invVpT, prevVpT;
+            XMStoreFloat4x4(&invVpT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVP)));
+            XMStoreFloat4x4(&prevVpT, XMMatrixTranspose(
+                m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP));
+            const u32 o = m_taaPass->Resolve(*m_commandList, curSceneSrv, depthSrvGpu,
+                invVpT, prevVpT, rW, rH, taaCfg);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+            // TaaPass は自前のルートシグネチャ/PSO を張るので、後段のために SRV ヒープを張り直す。
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        }
+        if (wantDepthPost && ppApplied.dofOn && m_dofPass)
+        {
+            XMFLOAT4X4 projF;
+            XMStoreFloat4x4(&projF, camProj);
+            // ★合焦をエンティティに任せる（dofFocusName）。毎フレームその子孫込みのワールド位置を
+            //   ビュー空間へ落として z を取る＝「被写体に合焦したまま寄る/回る」が Lua 無しで作れる。
+            //   見つからない/名前が空なら -1 を渡して dofFocusDist にフォールバックする。
+            float focusOverride = -1.0f;
+            if (!ppApplied.dofFocusName.empty() && m_scene)
+            {
+                Entity fe = m_scene->FindEntity(ppApplied.dofFocusName);
+                if (fe.IsValid())
+                {
+                    const XMMATRIX w = ComputeWorldMatrix(m_scene->GetRegistry(), fe.GetHandle());
+                    const XMVECTOR vp = XMVector3TransformCoord(w.r[3], camView);
+                    const float vz = XMVectorGetZ(vp);
+                    if (vz > 0.0f) focusOverride = vz;
+                }
+            }
+            const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
+                curSceneSrv, depthSrvGpu, projF._33, projF._43, projF._22,
+                ppApplied, focusOverride);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+        }
+        if (wantDepthPost && ppApplied.motionBlurOn && m_motionBlurPass && m_prevViewProjValid)
+        {
+            // モーションブラーの再投影はジッタなし（ジッタ込みだと毎フレーム微ブラーが乗る）。
+            const XMMATRIX vp  = camVP;
+            const XMMATRIX inv = XMMatrixInverse(nullptr, vp);
+            XMFLOAT4X4 invT, prevT;
+            XMStoreFloat4x4(&invT,  XMMatrixTranspose(inv));
+            XMStoreFloat4x4(&prevT, XMMatrixTranspose(XMLoadFloat4x4(&m_prevViewProj)));
+            // 速度バッファが今フレーム書かれていれば、それを使って「オブジェクト毎の」
+            // モーションブラーにする（従来の深度再構成はカメラの動きしか拾えない）。
+            // 使えない時は深度 SRV をダミーとして張る（params.w=0 なのでシェーダは読まない）。
+            const u32 velIdx = velocityPrepass ? m_taaPass->GetVelocitySrvIndex()
+                                               : DescriptorHeap::kInvalidIndex;
+            const bool mbUseVelocity = (velIdx != DescriptorHeap::kInvalidIndex);
+            const auto velSrvGpu = mbUseVelocity ? m_srvHeap->GetGpuHandle(velIdx) : depthSrvGpu;
+            const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
+                curSceneSrv, depthSrvGpu, velSrvGpu, mbUseVelocity, invT, prevT,
+                rW, rH, ppApplied);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+        }
+
+        // ---- 自動露出（compute。ビューポート矩形のヒストグラム→露出値を GPU 内バッファへ）----
+        if (m_autoExposure && ppApplied.enabled && ppApplied.autoExposureOn)
+            m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, rW, rH,
+                                     m_gameClock.GetDeltaTime(), ppApplied);
+        D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
+        if (m_autoExposure)
+        {
+            m_autoExposure->EnsureReadable(nativeCmdList);
+            exposureVA = m_autoExposure->GetExposureBufferVA();
+        }
+
+        // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
+        u32 bloomSrv = DescriptorHeap::kInvalidIndex;
+        if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
+            bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), curSceneSrv,
+                                             1.0f / fullW, 1.0f / fullH, ppApplied);
+        const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
+        const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
+
+        // ---- ゴッドレイ（太陽=最初の平行光源をスクリーンへ投影）----
+        u32 godraysSrv = DescriptorHeap::kInvalidIndex;
+        if (wantDepthPost && ppApplied.godraysOn && m_godRaysPass)
+        {
+            XMFLOAT3 sunDir{}; XMFLOAT3 sunColI{}; bool hasSun = false;
+            auto& greg = m_scene->GetRegistry();
+            auto dlView = greg.view<DirectionalLight>();
+            if (dlView.begin() != dlView.end())
+            {
+                const auto& dl = dlView.get<DirectionalLight>(*dlView.begin());
+                sunDir  = dl.direction;
+                sunColI = XMFLOAT3(dl.color.x * dl.intensity,
+                                   dl.color.y * dl.intensity,
+                                   dl.color.z * dl.intensity);
+                hasSun = true;
+            }
+            if (hasSun)
+            {
+                // 太陽ワールド位置 ≒ カメラ位置 - 光方向×遠距離 → スクリーン投影
+                const XMFLOAT3 camPos = viewPos;
+                XMVECTOR d  = XMVector3Normalize(XMLoadFloat3(&sunDir));
+                XMVECTOR wp = XMVectorSubtract(XMLoadFloat3(&camPos), XMVectorScale(d, 5000.0f));
+                XMVECTOR clip = XMVector4Transform(XMVectorSetW(wp, 1.0f), camVP);  // 太陽投影はジッタなし
+                const f32 cw = XMVectorGetW(clip);
+                if (cw > 0.01f)
+                {
+                    const f32 lu = XMVectorGetX(clip) / cw * 0.5f + 0.5f;   // ローカルUV
+                    const f32 lv = 0.5f - XMVectorGetY(clip) / cw * 0.5f;
+                    // 画面中心からの距離でフェード（画面外に離れると消える）
+                    const f32 dc = std::sqrt((lu - 0.5f) * (lu - 0.5f) + (lv - 0.5f) * (lv - 0.5f));
+                    const f32 fade = (std::min)((std::max)((1.1f - dc) / 0.4f, 0.0f), 1.0f);
+                    if (fade > 0.001f)
+                    {
+                        // ★#16: シーンは RT 全面なので、ローカル UV がそのまま RT の UV。
+                        //   （かつては lu * uvScl + uvOfs でサブ矩形へ写していた）
+                        godraysSrv = m_godRaysPass->Generate(*m_commandList, m_srvHeap.get(),
+                            depthSrvGpu, rW, rH, lu, lv, fade, sunColI, ppApplied);
+                    }
+                }
+            }
+        }
+        const bool grReady = (godraysSrv != DescriptorHeap::kInvalidIndex);
+
+        // ---- レンズフレア（ブルームチェーンの縮小ミップから生成）----
+        u32 flareSrv = DescriptorHeap::kInvalidIndex;
+        if (m_lensFlarePass && ppApplied.enabled && ppApplied.lensflareOn && bloomReady)
+        {
+            const u32 mip = m_bloomPass->GetMipSrvIndex(1);
+            if (mip != DescriptorHeap::kInvalidIndex)
+                flareSrv = m_lensFlarePass->Generate(*m_commandList, m_srvHeap.get(),
+                    m_srvHeap->GetGpuHandle(mip), ppApplied);
+        }
+        const bool lfReady = (flareSrv != DescriptorHeap::kInvalidIndex);
+
+
+        // ---- 3D LUT（assets 相対パス。sRGB 無効=バイト列そのままロード。ストリップ形式 N*N x N）----
+        auto lutSrvGpu = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
+        f32  lutSize   = 0.0f;
+        if (ppApplied.enabled && ppApplied.lutOn && !ppApplied.lutPath.empty() && m_resourceManager)
+        {
+            const std::string lutAbs = PathResolver::AssetsDir() + ppApplied.lutPath;
+            if (Texture* lut = m_resourceManager->GetOrLoadTexture(
+                    PathResolver::Utf8ToWide(lutAbs), nativeCmdList, /*srgb=*/false))
+            {
+                if (lut->GetHeight() >= 2 &&
+                    lut->GetWidth() == lut->GetHeight() * lut->GetHeight())
+                {
+                    lutSrvGpu = m_srvHeap->GetGpuHandle(lut->GetSrvIndex());
+                    lutSize   = static_cast<f32>(lut->GetHeight());
+                }
+            }
+        }
+
+        // ---- 最終(uber)パス: バックバッファへ ----
+        // ★スクリーンシェーダーがある回だけ、ここの出力先を中間 RT へ差し替える
+        //   （中間 RT はバックバッファと同じ寸法・同じビューポートで描くので、
+        //     後段はピクセル位置がそのまま一致する）。
+        constexpr float bbClear[4] = {0.05f, 0.05f, 0.06f, 1.0f};
+        m_commandList->ClearRenderTarget(rtv, bbClear);   // 表示矩形の外（ImGui の下地）は常に塗る
+        D3D12_CPU_DESCRIPTOR_HANDLE postRtv = rtv;
+        if (useScreenShader)
+        {
+            m_screenShaderRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            postRtv = m_screenShaderRT->GetRtv();
+            m_commandList->ClearRenderTarget(postRtv, bbClear);
+        }
+        nativeCmdList->OMSetRenderTargets(1, &postRtv, FALSE, nullptr);  // 深度なし
+        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+
+        const auto whiteDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
+        PostProcess::Inputs pin{};
+        pin.sceneSrv     = curSceneSrv;
+        pin.bloomSrv     = bloomSrvGpu;
+        pin.lutSrv       = lutSrvGpu;
+        pin.godraysSrv   = grReady ? m_srvHeap->GetGpuHandle(godraysSrv) : whiteDummy;
+        pin.flareSrv     = lfReady ? m_srvHeap->GetGpuHandle(flareSrv)   : whiteDummy;
+        pin.distortSrv   = (particleDistortDrawn && m_distortRT)
+                         ? m_srvHeap->GetGpuHandle(m_distortRT->GetSrvIndex()) : whiteDummy;
+        pin.lutSize      = lutSize;
+        pin.exposureVA   = exposureVA;
+        pin.bloomReady   = bloomReady;
+        pin.godraysReady = grReady;
+        pin.flareReady   = lfReady;
+        pin.distortReady = particleDistortDrawn;
+
+        // ★ここが唯一の「レンダー解像度 → 表示解像度」の橋渡し。ビューポートが表示矩形で、
+        //   シーン RT の全面をサンプルする＝renderScale < 1 なら自動的にバイリニア拡大になる。
+        m_postProcess->Apply(nativeCmdList, pin, ppApplied,
+            1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
+
+        // ---- 画面全体のカスタムシェーダー（中間 RT → バックバッファ）----
+        if (useScreenShader)
+        {
+            m_screenShaderRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+
+            const f32 rtW = static_cast<f32>(m_screenShaderRT->GetWidth());
+            const f32 rtH = static_cast<f32>(m_screenShaderRT->GetHeight());
+            ScreenShaderPass::Constants sc{};
+            sc.resolution[0] = static_cast<f32>(vpW);
+            sc.resolution[1] = static_cast<f32>(vpH);
+            sc.resolution[2] = (vpW > 0) ? 1.0f / static_cast<f32>(vpW) : 0.0f;
+            sc.resolution[3] = (vpH > 0) ? 1.0f / static_cast<f32>(vpH) : 0.0f;
+            sc.timeParams[0] = totalTime;
+            sc.timeParams[1] = m_gameClock.GetDeltaTime();
+            sc.timeParams[2] = (vpH > 0) ? static_cast<f32>(vpW) / static_cast<f32>(vpH) : 1.0f;
+            sc.timeParams[3] = static_cast<f32>(frameIndex);
+            sc.params[0] = screenShaderParams.x; sc.params[1] = screenShaderParams.y;
+            sc.params[2] = screenShaderParams.z; sc.params[3] = screenShaderParams.w;
+            sc.cameraParams[0] = screenCamNear;  sc.cameraParams[1] = screenCamFar;
+            sc.cameraParams[2] = screenCamFov;   sc.cameraParams[3] = screenCamOrtho ? 1.0f : 0.0f;
+            // 中間 RT はウィンドウ全面で、絵は表示矩形にしか入っていない。
+            // uv(0..1) → テクセルの写像を CB で渡し、雛形の SampleScreen() が内部で掛ける。
+            sc.uvOffsetScale[0] = (rtW > 0.0f) ? static_cast<f32>(vpLeft) / rtW : 0.0f;
+            sc.uvOffsetScale[1] = (rtH > 0.0f) ? static_cast<f32>(vpTop)  / rtH : 0.0f;
+            sc.uvOffsetScale[2] = (rtW > 0.0f) ? static_cast<f32>(vpW)    / rtW : 1.0f;
+            sc.uvOffsetScale[3] = (rtH > 0.0f) ? static_cast<f32>(vpH)    / rtH : 1.0f;
+
+            const auto colorSrv = m_srvHeap->GetGpuHandle(m_screenShaderRT->GetSrvIndex());
+            const auto dSrv = screenShaderWantsDepth ? depthSrvGpu
+                                                     : m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
+            m_screenShaderPass->Apply(nativeCmdList, screenPso, colorSrv, dSrv, sc);
+        }
+
+        // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
+        // 静止時に全面が均一な (0.5,0.5,0.5) グレーになるのが「ジッタが正しく除去されている」証拠。
+        if (taaActive && taaCfg.debugVelocity && m_taaPass)
+        {
+            const u32 velSrv = m_taaPass->GetVelocitySrvIndex();
+            if (velSrv != DescriptorHeap::kInvalidIndex)
+            {
+                nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+                m_taaPass->DrawVelocityDebug(*m_commandList, m_srvHeap->GetGpuHandle(velSrv),
+                    vpLeft, vpTop, vpW, vpH, /*scale*/ 20.0f);
+            }
+        }
+
+        // 次フレームのモーションブラー用に今フレームの viewProj を保存
+        XMStoreFloat4x4(&m_prevViewProj, camVP);   // ジッタなし（従来より正確になる）
+        m_prevViewProjValid = true;
+        // 速度バッファ/TAA 用に「ジッタなし」viewProj と frameIndex を保存する。
+        // frameIndex は SkinningBuffer の前フレームスロットを指すため
+        //（GetCurrentBackBufferIndex() の巡回順は DXGI 仕様上保証されないので明示記録）。
+        XMStoreFloat4x4(&m_prevViewProjNoJitter, camVP);
+        m_prevViewProjNJValid = true;
+        m_prevFrameIndex      = frameIndex;
+        m_prevFrameIndexValid = true;
+    }
+
+    outBackBuffer = backBuffer;
+    outRtv        = rtv;
+}
+
+// ---------------------------------------------------------------------------
+// b1 のシーン側（太陽 / CSM / DDGI / スポット影行列 / IBL / 法線フィルタ）を書く。
+// フレームで 1 回＝主ビューの仕事。副ビューは主ビューの b1 を写してから視点に依る値だけ書き直す。
+// ★DDGI の t22/t23 はクラスタの SRV テーブルの中なので、ここでディスクリプタも書き直す（CPU だけ）。
+// ---------------------------------------------------------------------------
+void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    const u32 frameIndex = frame.frameIndex;
+
+    fc.lightDir = frame.lightDirF3;
+    fc.time = frame.totalTime;
+    fc.lightColor = frame.lightColorF3;
+    fc.ambientStrength = frame.lightAmbient;
     // 編集用の照らし込み（F2 / 表示メニュー）。シーンの環境光へ「下限」として被せるだけなので、
     // 元から明るいシーンでは何も起きない。★Editor モード限定＝ゲームの絵は絶対に変わらないし、
     // DirectionalLight.ambient 自体は触っていないのでシーンにも保存されない。
@@ -4792,29 +6025,9 @@ void Application::Render()
                             m_cascadeSplitsView[2], m_cascadeSplitsView[3]};
     fc.shadowParams = {1.0f / static_cast<f32>(m_shadowMapSize), m_shadowDepthBias,
                        m_cascadeBlendBand, m_showCascadeDebug ? 1.0f : 0.0f};
-    fc.cameraPos = m_camera->GetPosition();
-    fc.spotShadowTexel = 1.0f / static_cast<f32>(kSpotShadowMapSize);
-    fc.pointShadowNear = 0.1f;
 
-    // ---- PCSS（ソフトシャドウ）----
-    // .x = 0 なら HLSL 側は従来の 3x3 PCF 経路を通る＝絵はビット一致。
-    // 時間ディザはフレーム連番 × 黄金比。★TAA が無効なときに回すとチラつくだけなので 0 にする
-    //  （時間蓄積を持つパスはディザをフレーム連番×黄金比で回さないと収束しない、の裏返し）。
-    {
-        const ShadowPcssSettings& pcss = m_scene->GetShadowPcssSettings();
-        const bool pcssOn = pcss.enabled && !m_camera->IsOrthographic()
-                         && m_scene->GetShadowsEnabled();
-        f32 phase = 0.0f;
-        if (pcssOn && pcss.temporalDither && taaActive)
-            phase = std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f);
-        fc.pcssParams = {
-            pcssOn ? (std::max)(pcss.lightTanAngle, 1e-4f) : 0.0f,
-            (std::max)(pcss.maxPenumbraTexels,   1.0f),
-            phase,
-            (std::max)(pcss.blockerSearchTexels, 1.0f)};
-    }
     // ===== DDGI: フォワード PS へのバインド（計画09 Step 6 / 段階1）=====
-    // ★プローブ更新（上の TLAS 直後）はもう終わっているので、ここでは「今フレーム読めるか」
+    // ★プローブ更新（TLAS 直後）はもう終わっているので、ここでは「今フレーム読めるか」
     //   だけを見る。読めないなら 1x1 黒ダミーで t22 を埋めて ddgiOrigin.w=0 にする
     //   ＝ PS は 1 テクセルも読まず、絵は DDGI 導入前とビット一致する。
     {
@@ -4866,7 +6079,7 @@ void Application::Render()
         m_ddgiActiveThisFrame = ddgiActive;
     }
 
-    // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。上で割り当てたスロット分だけ埋める）
+    // スポット影行列（HLSL は列優先 mul(row,mat) なので転置して格納。影の段で割り当てたスロット分だけ埋める）
     for (u32 i = 0; i < kMaxShadowSpot; ++i)
         XMStoreFloat4x4(&fc.spotShadowMatrix[i],
             i < m_numSpotShadowSlots ? XMMatrixTranspose(XMLoadFloat4x4(&m_spotShadowViewProj[i])) : XMMatrixIdentity());
@@ -4877,13 +6090,6 @@ void Application::Render()
     fc.hasIBL          = (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()) ? 1u : 0u;
     fc.skyboxIntensity = m_skyboxIntensity;
 
-    // AO: 実 AO テクスチャがバインドされている時だけシェーダで読む。SSAO 無効/正射/フォールバック時は
-    // 白ダミー(1x1)で、Load は範囲外 0 を返して環境光を潰すため、シェーダ側で読まず ao=1 にする。
-    fc.aoEnabled = (aoSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
-
-    // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
-    fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
-
     // 法線マップフィルタリング（分散→ラフネス / 平均法線の復元）。強さ 0 でシェーダは恒等。
     {
         const NormalFilterSettings nf = m_scene ? m_scene->GetNormalFilterSettings()
@@ -4893,14 +6099,19 @@ void Application::Render()
             (std::max)(nf.varianceClamp, 0.0f),
             (std::max)(nf.geometricBlend, 0.0f));
     }
+}
 
-    // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
-    // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
-    // m_clusterLights はフレーム間で使い回すメンバ（毎フレーム malloc しない）。
+// ---------------------------------------------------------------------------
+// ライト（点光源 → スポット → パーティクル発光の順）とデカールを ECS から集める。
+// m_clusterLights / m_decalEntries / m_decalGpu と fc の灯数（統計用）を書く。
+// フレームで 1 回＝主ビューの仕事（副ビューは主ビューの結果を読む）。GPU 命令は積まない。
+// 影スロット（m_*ShadowEntity）は影の段で確定済みであること（shadowIndex の突き合わせに使う）。
+// ---------------------------------------------------------------------------
+void Application::CollectLightsAndDecals(FrameConstants& fc)
+{
+    using namespace DirectX;
     using ClusterLightGPU = ClusteredLightCulling::LightGPU;
-    // ★ここは ECS を全走査して灯ごとに ComputeWorldMatrix を回す。灯が増えるほど効く。
-    //   prepass と同じ理由で RAII を使わない（区間の外まで生きて二重計上になる）。
-    const auto _lightsT0 = std::chrono::high_resolution_clock::now();
+
     m_clusterLights.clear();
     m_clusterLights.reserve(64);
     fc.numPointLights = 0;
@@ -5052,900 +6263,24 @@ void Application::Render()
         m_decalGpu.reserve(m_decalEntries.size());
         for (const auto& en : m_decalEntries) m_decalGpu.push_back(en.gpu);
     }
+}
 
-    // ===== クラスタードライティングのパラメータ =====
-    // クラスタ AABB の構築が透視前提なので、正射カメラ（俯瞰ゲーム / 2D ビュー）と
-    // 設定 OFF のときは「先頭 64 灯の総当たり」フォールバックへ倒す（旧 8 灯より緩い）。
-    const u32 numClusterLights = static_cast<u32>(m_clusterLights.size());
-    const bool clusterOn = m_clusteredEnabled && m_clusteredLighting
-                        && m_clusteredLighting->IsReady() && !m_camera->IsOrthographic();
-    {
-        const float zN    = (std::max)(m_camera->GetNearZ(), 0.001f);
-        const float zFcam = (std::max)(m_camera->GetFarZ(), zN + 1.0f);
-        const float zFcl  = (std::max)((std::min)(zFcam, cluster::kClusterFarLimit), zN + 1.0f);
+// ---------------------------------------------------------------------------
+// ポスト後のバックバッファへ重ねるもの（ImGui より前）: エディタアイコン / 2D スプライト・
+// ゲーム内 UI 画像 / カメラプレビュー / 各エディタのオフスクリーンプレビュー /
+// 最終画の撮影（screenshot_final）/ 知覚層の ID パス（dx12_perceive）。
+// ---------------------------------------------------------------------------
+void Application::RenderViewportOverlays(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+    const u32 frameIndex = frame.frameIndex;
+    const f32 totalTime  = frame.totalTime;
+    const u32 vpLeft = frame.vpLeft, vpTop = frame.vpTop, vpW = frame.vpW, vpH = frame.vpH;
+    const XMMATRIX camVP = XMLoadFloat4x4(&frame.camVP);
+    ID3D12Resource* const             backBuffer = frame.backBuffer;
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv        = frame.rtv;
 
-        fc.clusterParams = {zN, zFcl,
-                            cluster::SliceScale(zN, zFcl), cluster::SliceBias(zN, zFcl)};
-        fc.clusterGrid   = {static_cast<f32>(cluster::kGridX),
-                            static_cast<f32>(cluster::kGridY),
-                            static_cast<f32>(cluster::kGridZ),
-                            clusterOn ? 1.0f : 0.0f};
-        // SV_Position.xy は RT 座標。#16 でシーンは RT 全面に描くようになったので原点は常に 0
-        // （かつては m_sceneRT のサブ矩形に描いていたので vpLeft/vpTop を引いていた）。
-        fc.clusterViewport = {0.0f, 0.0f,
-                              static_cast<f32>(cluster::kGridX) / static_cast<f32>(rW),
-                              static_cast<f32>(cluster::kGridY) / static_cast<f32>(rH)};
-        // デバッグ表示はエディタのライティング窓から（ゲームモードは常に 0）
-        m_clusterDebugMode = m_editorCtx ? m_editorCtx->clusterDebugMode : 0u;
-        // ★clusterExtra.w は計画02 が「予約」として空けておいた枠。
-        //   計画06 のデカール数がここに入る（PerFrameConstants のレイアウトは 1 バイトも動かない）。
-        //   0 ならフォワード PS のデカールブロックが [branch] で丸ごと飛ぶ。
-        fc.clusterExtra    = {static_cast<f32>(numClusterLights),
-                              static_cast<f32>(cluster::kMaxLightsPerCluster),
-                              static_cast<f32>(m_clusterDebugMode),
-                              clusterOn ? static_cast<f32>(m_decalGpu.size()) : 0.0f};
-    }
-
-    m_perFrameCB->Update(&fc, sizeof(fc), frameIndex);
-
-    // ===== クラスタライトカリング（compute 2 パス）=====
-    // ライトを UPLOAD リングへ書いてから AABB 構築 → カリング。呼び出し後は
-    // インデックス/カウントが PIXEL_SHADER_RESOURCE 状態になる。
-    // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を必ず再設定する。
-    u32 ddgiLightSrvIndex = DescriptorHeap::kInvalidIndex;   // DDGI が読む t13 の SRV index
-    u32 ddgiLightCount    = 0;
-    if (m_clusteredLighting && m_clusteredLighting->IsReady())
-    {
-        const u32 uploaded = m_clusteredLighting->UploadLights(
-            m_clusterLights.data(), numClusterLights, frameIndex);
-        if (clusterOn)
-        {
-            XMFLOAT4X4 projF;
-            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
-            m_gpuTimer->Begin(nativeCmdList, GpuTimer::ClusterCull);
-            m_clusteredLighting->Dispatch(nativeCmdList, m_camera->GetViewMatrix(),
-                                          projF._11, projF._22,
-                                          fc.clusterParams.x, fc.clusterParams.y,
-                                          m_camera->GetFarZ(), uploaded, frameIndex);
-            m_gpuTimer->End(nativeCmdList, GpuTimer::ClusterCull);
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            m_commandList->SetRootSignature(*m_rootSignature);
-            m_commandList->SetPipelineState(*m_pipelineState);
-        }
-        else
-        {
-            // フォールバック（正射 / 設定 OFF）でもテーブルはバインドするので、
-            // インデックス/カウントは読取状態にしておく（中身は読まれない）。
-            m_clusteredLighting->EnsureReadable(nativeCmdList);
-        }
-        ddgiLightSrvIndex = m_clusteredLighting->GetSrvTableIndex(frameIndex);  // = t13
-        ddgiLightCount    = uploaded;
-    }
-    // ライト収集〜クラスタ転送まで（灯数に比例する CPU コスト）。
-    m_cpuMs[CpuLights] += std::chrono::duration<f32, std::milli>(
-        std::chrono::high_resolution_clock::now() - _lightsT0).count();
-
-    // ===== DDGI: プローブ更新（計画09 Step 6）=====
-    // ★必ず UploadLights の【後】に置くこと。プローブは点光源/スポットを t13 から
-    //   総当たりで拾うので、ここより前で回すと前フレームの灯りを見てしまう
-    //   （影スロットの割当も上のシャドウパスで初めて確定する）。
-    // ★t14/t15（クラスタのインデックス/カウント）は使わない。あれは画面空間のクラスタで、
-    //   視錐台の外にあるプローブには対応するクラスタが存在しないため。
-    // プローブは画面空間ではないので compute。ヒット点は Step 5 のバインドレスを流用。
-    // ★compute は PSO を共有するので、直後にグラフィクスの RootSig/PSO を再設定する。
-    if (ddgiTlasOk && m_ddgi && m_ddgi->IsReady())
-    {
-        m_gpuTimer->Begin(nativeCmdList, GpuTimer::Ddgi);
-        DdgiVolume::UpdateDesc dd;
-        dd.tlas         = ddgiTlas;
-        dd.geometryInfo = ddgiGeoInfo;
-        dd.sunDir       = lightDirF3;
-        // ★lightColorF3 には既に intensity が掛かっている（color * intensity）。
-        //   ここで再度掛けると二重になるので 1.0 にする。
-        dd.sunColor     = lightColorF3;
-        dd.sunIntensity = 1.0f;
-        // ミス時の放射輝度。envMap があるならフォワードの拡散 IBL と
-        // 【同じ irradiance キューブ】を bindless で引かせる（段階1）。
-        // ★これが無いと空の見えている面まで真っ暗になり、DDGI を ON にした
-        //   瞬間にシーン全体が暗くなる（実機で踏んだ）。
-        // envMap が無い屋内は従来どおり環境光の下限をスカラーで使う。
-        //   ここを明るくしすぎると壁の外から光が漏れてくるので控えめに。
-        dd.skyColor     = {lightAmbient, lightAmbient, lightAmbient};
-        dd.skyCubeSrvIndex =
-            (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment())
-                ? m_iblBaker->GetIrradianceSrv() : 0xFFFFFFFFu;
-        // 点光源/スポット（t13 のライト配列を bindless で引く）。屋内はこれが本体。
-        dd.lightSrvIndex = ddgiLightSrvIndex;
-        dd.lightCount    = ddgiLightCount;
-        dd.frameIndex   = m_deterministicCapture
-                        ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
-        m_ddgi->Update(nativeCmdList, *m_graphicsDevice, m_scene->GetDdgiSettings(), dd);
-        m_gpuTimer->End(nativeCmdList, GpuTimer::Ddgi);
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_commandList->SetRootSignature(*m_rootSignature);
-        m_commandList->SetPipelineState(*m_pipelineState);
-    }
-
-    // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====
-    // ★クラスタカリングの直後（同じ compute のかたまり）に置く。
-    //   フォワード PS は t18..t21 を kSlotClusterSRV のテーブル越しに読むので、
-    //   バインドはクラスタライトと同じ 1 本のままで増えない。
-    if (m_decalSystem && m_decalSystem->IsReady()
-        && m_clusteredLighting && m_clusteredLighting->IsReady())
-    {
-        // アトラスの解決（パスが変わったときだけ。空なら 1x1 黒ダミー＝アルファ 0 で不可視）。
-        const std::string& atlasPath = m_scene->GetDecalAtlasPath();
-        if (atlasPath != m_decalAtlasLoaded)
-        {
-            m_decalAtlasLoaded   = atlasPath;
-            m_decalAtlasSrvIndex = DescriptorHeap::kInvalidIndex;
-            m_decalAtlasTex      = nullptr;
-            if (!atlasPath.empty() && m_resourceManager)
-            {
-                const std::wstring wpath =
-                    PathResolver::Utf8ToWide(PathResolver::AssetsDir() + atlasPath);
-                if (Texture* tex = m_resourceManager->GetOrLoadTexture(
-                        wpath, nativeCmdList, /*srgb*/ true, TextureUsage::BaseColor))
-                {
-                    m_decalAtlasSrvIndex = tex->GetSrvIndex();
-                    m_decalAtlasTex      = tex;
-                }
-                if (m_decalAtlasSrvIndex == DescriptorHeap::kInvalidIndex)
-                    Logger::Warn("デカールアトラスを読めませんでした: {}", atlasPath);
-            }
-            m_decalSrvDirty = true;
-        }
-        if (m_decalSrvDirty)
-        {
-            Texture* atlasTex = m_decalAtlasTex ? m_decalAtlasTex : m_ssBlackTex.get();
-            if (atlasTex)
-            {
-                for (u32 f = 0; f < DecalSystem::kFrameCount; ++f)
-                {
-                    const u32 block = m_clusteredLighting->GetSrvTableIndex(f);
-                    m_decalSystem->WriteSrvsInto(*m_graphicsDevice, *m_srvHeap, block, f, atlasTex);
-                }
-                m_decalSrvDirty = false;
-            }
-        }
-
-        const u32 uploadedDecals =
-            m_decalSystem->Upload(m_decalGpu.data(), static_cast<u32>(m_decalGpu.size()), frameIndex);
-        if (clusterOn && uploadedDecals > 0)
-        {
-            XMFLOAT4X4 projF;
-            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
-            m_decalSystem->Cull(nativeCmdList, m_camera->GetViewMatrix(),
-                                projF._11, projF._22,
-                                fc.clusterParams.x, fc.clusterParams.y,
-                                m_camera->GetFarZ(), uploadedDecals, frameIndex);
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            m_commandList->SetRootSignature(*m_rootSignature);
-            m_commandList->SetPipelineState(*m_pipelineState);
-        }
-        else
-        {
-            // デカール 0 個でもテーブルはバインドするので読取状態にしておく
-            // （フォワード PS は clusterExtra.w==0 で読まないが、状態は正しく保つ）。
-            m_decalSystem->EnsureReadable(nativeCmdList);
-        }
-    }
-
-    // ===== ボリュメトリックフォグ: froxel ボリュームの構築（compute 3 パス）=====
-    // クラスタカリングの直後に置く理由: 散乱パスがクラスタライトリストを読むため。
-    // ここは (1) CSM が完成済み・(2) カスケード行列/分割が確定済み・(3) 深度は DEPTH_WRITE のまま
-    // ＝ フォグの compute が誰の状態も壊さない位置。合成はパーティクル直前で行う（下）。
-    // ★compute は PSO を graphics と共有するので、直後に RootSig/PSO/ヒープを必ず再設定する。
-    const VolumetricFogSettings& fogCfg = m_scene->GetVolumetricFogSettings();
-    // 透視限定（froxel の Z 分布と深度線形化が透視前提）。正射 / 2D ビューでは丸ごと素通し。
-    // ★クラスタライトリスト（t3..t5）は散乱シェーダが必ず参照する＝テーブルを必ずバインドする
-    //   必要があるので、クラスタードライティングが生きていることをフォグの前提条件にしている。
-    //   （生きていないのは初期化に失敗したときだけ。その場合フォグを諦める方が安全。）
-    const bool volFogActive = fogCfg.enabled && fogCfg.density > 0.0f
-                            && m_volumetricFogPass && m_volumetricFogPass->IsReady()
-                            && m_clusteredLighting && m_clusteredLighting->IsReady()
-                            && viewSupportsScreenSpace;
-    bool volFogBuilt = false;
-    if (volFogActive)
-    {
-        m_gpuTimer->Begin(nativeCmdList, GpuTimer::VolumetricFog);
-        // 影テクスチャは PIXEL_SHADER_RESOURCE で置かれている。compute から読むには NON_PIXEL が要る。
-        // （クラスタのインデックス/カウントは ClusteredLightCulling が最初から
-        //   PIXEL|NON_PIXEL の合成状態で置いているので遷移不要。）
-        m_commandList->TransitionResource(m_shadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_spotShadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_pointShadowMap.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-
-        VolumetricFogPass::ViewParams fv{};
-        fv.view         = m_camera->GetViewMatrix();          // ジッタなし
-        fv.prevViewProj = m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP;
-        {
-            XMFLOAT4X4 projF;
-            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
-            fv.proj11 = projF._11;
-            fv.proj22 = projF._22;
-        }
-        fv.cameraPos        = fc.cameraPos;
-        fv.sunDir           = lightDirF3;
-        fv.sunColor         = lightColorF3;
-        fv.cascadeViewProj  = m_cascadeViewProj;              // 非転置（パス内で転置する）
-        fv.cascadeSplits    = fc.cascadeSplitsView;
-        fv.shadowParams     = fc.shadowParams;
-        fv.clusterParams    = fc.clusterParams;
-        fv.clusterGrid      = fc.clusterGrid;
-        fv.vpLeft = 0; fv.vpTop = 0; fv.vpW = rW; fv.vpH = rH;
-        fv.nearZ = m_camera->GetNearZ();
-        fv.farZ  = m_camera->GetFarZ();
-        fv.numLights     = numClusterLights;
-        fv.maxPerCluster = cluster::kMaxLightsPerCluster;
-        fv.spotShadowMatrixTransposed = fc.spotShadowMatrix;   // ★転置済み（未使用枠は単位行列）
-        fv.spotShadowTexel = fc.spotShadowTexel;
-        fv.pointShadowNear = fc.pointShadowNear;
-        fv.csmSrv          = m_srvHeap->GetGpuHandle(m_shadowSrvIndex);
-        fv.clusterSrv      = m_clusteredLighting->GetSrvTable(frameIndex);
-        // t9,t10 と同じ「スポット影配列 → ポイント影キューブ配列」の 2 本連番。
-        fv.punctualShadowSrv = m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex);
-
-        m_volumetricFogPass->BuildVolumes(nativeCmdList, *m_graphicsDevice, fogCfg, fv, frameIndex);
-        volFogBuilt = m_volumetricFogPass->VolumesAllocated();
-
-        m_commandList->TransitionResource(m_shadowMap.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_spotShadowMap.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_commandList->TransitionResource(m_pointShadowMap.Get(),
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_gpuTimer->End(nativeCmdList, GpuTimer::VolumetricFog);
-
-        // compute で PSO/RootSig を奪ったので forward 用に戻す（クラスタカリング直後と同じ作法）。
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_commandList->SetRootSignature(*m_rootSignature);
-        m_commandList->SetPipelineState(*m_pipelineState);
-        m_commandList->SetRenderTarget(m_sceneRT->GetRtv(), m_dsvHandle);
-        m_commandList->SetViewportAndScissor(rW, rH);
-    }
-
-    // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
-    // skybox は自前 RootSig/PSO を bind するため、直後にメイン RootSig/PSO を再設定してから
-    // per-frame CBV / shadow / IBL を bind し直す。
-    if (m_iblReady && m_drawSkybox && m_skyboxIntensity > 0.0f && m_skyboxRenderer &&
-        m_iblBaker && m_iblBaker->HasEnvironment() &&
-        m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
-    {
-        // スカイボックスもジッタさせる（させないと TAA で空だけ滲む）。
-        XMFLOAT4X4 invVP;
-        XMStoreFloat4x4(&invVP, XMMatrixTranspose(XMMatrixInverse(nullptr, camVPJ)));
-        m_skyboxRenderer->Render(nativeCmdList, m_srvHeap->GetGpuHandle(m_envCubeSrvIndex),
-                                 invVP, m_skyboxIntensity);
-        // メイン RootSig / PSO を再設定
-        m_commandList->SetRootSignature(*m_rootSignature);
-        m_commandList->SetPipelineState(*m_pipelineState);
-    }
-
-    m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame, m_perFrameCB->GetGpuAddress(frameIndex));
-
-    // シャドウマップSRVをバインド
-    m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
-        m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
-
-    // スポット/ポイント影SRV(t9,t10)をバインド（連番確保なのでスポット側の1個渡しで2枚とも有効になる）
-    m_commandList->SetSRVTable(RootSignature::kSlotPunctualShadowSRV,
-        m_srvHeap->GetGpuHandle(m_spotShadowSrvIndex));
-
-    // IBL テーブル(t5,t6,t7)をバインド（常に有効＝ダミー含む。hasIBL で読むか分岐）
-    if (m_iblReady && m_iblBaker)
-        m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
-            m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
-
-    // クラスタライト テーブル(t13,t14,t15 + デカール予約 t18..t21)をバインド。
-    // フォワード PS が t13..t15 を参照する以上、クラスタード無効時（フォールバック経路）でも
-    // 必ずバインドが要る（未バインドのテーブルはデバッグレイヤ違反）。
-    if (m_clusteredLighting && m_clusteredLighting->IsReady())
-        m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
-            m_clusteredLighting->GetSrvTable(frameIndex));
-
-    // フォワード本体はジッタあり（深度プリパスとビット一致させる）。
-    XMMATRIX viewProj = camVPJ;
-
-    // 全Entityを描画（メインパス: 編集カメラ視点）。AO / コンタクトシャドウは有効時のみ実テクスチャ、
-    // 無効時は白（＝素通し）。深度プリパスが走ったときだけ深度が完成済み →
-    // LESS_EQUAL forward PSO で再利用する。
-    m_gpuTimer->Begin(nativeCmdList, GpuTimer::MainScene);
-    m_passBucket = &m_passMain;
-    {
-        CpuScopeTimer _tMain(&m_cpuMs[CpuMainRec]); DX12_PROFILE_ZONE_N("Rec/Main");
-        // ★applyOcclusion はここ（メインカメラ視点）でだけ true。Hi-Z はこの視点の
-        //   深度プリパスから作られているので、別視点の呼び出しで適用してはいけない。
-        RenderSceneMeshes(nativeCmdList, frameIndex, viewProj,
-                          (m_isGameMode || m_engineMode == EngineMode::Playing), aoSrv,
-                          useDepthPrepass, csSrv, ssrSrv, ssgiSrv, /*applyOcclusion*/ useHiZ);
-    }
-    m_passBucket = &m_passOther;
-    m_gpuTimer->End(nativeCmdList, GpuTimer::MainScene);
-
-    // ---- Physics / NavMesh Debug Draw（オフスクリーン RT へ・同じ線パイプラインを共有）----
-    // ナビメッシュのワイヤは物理デバッグとは独立にトグルできる（別々に見たいので）。
-    {
-        const bool physDraw = m_physicsDebugDraw && m_physicsDebugRenderer->IsEnabled();
-        const bool navDraw  = m_scene && m_scene->GetNavDebugDraw() && m_scene->HasNavMesh();
-        if ((physDraw || navDraw) && !McpHidingGizmos())   // gizmos:false のスクショ中は止める
-        {
-            m_physicsDebugRenderer->BeginFrame();
-            // 選択中のエンティティとカメラ位置を渡す＝「選択中のみ」「カメラの近くだけ」で絞れる。
-            // ★全部出すと壁と床の線で画面が埋まって読めないので、実シーンではほぼ必須。
-            if (physDraw)
-                m_physicsDebugRenderer->CollectFromRegistry(
-                    m_scene->GetRegistry(),
-                    m_editorCtx ? m_editorCtx->selectedEntity : entt::null,
-                    m_camera->GetPosition());
-            if (navDraw)
-            {
-                // 壁の辺（隣が無い＝そこから先へ行けない）は明るく、
-                // ポリゴン同士のポータルは暗く描く＝「どこが通れるか」が一目で分かる。
-                const nav::NavMesh& nm = m_scene->GetNavMesh();
-                const XMFLOAT3 kWallCol   { 0.20f, 0.95f, 1.00f };
-                const XMFLOAT3 kPortalCol { 0.10f, 0.35f, 0.45f };
-                const f32 lift = 0.03f;   // 床とのZファイト防止に少し浮かせる
-                for (const nav::NavPoly& p : nm.Polys())
-                {
-                    for (u32 e = 0; e < p.vertCount; ++e)
-                    {
-                        f32 a[3], b[3];
-                        nm.GetPolyVert(p, e, a);
-                        nm.GetPolyVert(p, (e + 1) % p.vertCount, b);
-                        const bool wall = nm.Neis()[p.firstNei + e] == 0xffffffffu;
-                        m_physicsDebugRenderer->AddLine(
-                            XMFLOAT3{ a[0], a[1] + lift, a[2] },
-                            XMFLOAT3{ b[0], b[1] + lift, b[2] },
-                            wall ? kWallCol : kPortalCol);
-                    }
-                }
-            }
-
-            XMFLOAT4X4 vp;
-            XMStoreFloat4x4(&vp, XMMatrixTranspose(camVPJ));
-            m_physicsDebugRenderer->Render(nativeCmdList, vp);
-        }
-    }
-
-    // ---- パーティクル（プロシージャル質感ビルボード）: HDR scene RT へ ----
-    // エディタ編集中も描画する（配置エミッタ/トレイルの常時プレビュー。従来は Play/ゲームのみ）
-    m_gpuTimer->Begin(nativeCmdList, GpuTimer::Particles);
-    bool particleDistortDrawn = false;
-    if (m_particleSystem)
-    {
-        // 深度を読み取り可能へ遷移し soft particles 用 SRV を供給。DSV はバインドせず PS で手動オクルージョン。
-        m_commandList->TransitionResource(m_depthBuffer.Get(),
-            D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-        auto srtv = m_sceneRT->GetRtv();
-        nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
-        m_commandList->SetViewportAndScissor(rW, rH);
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-
-        // ---- ボリュメトリックフォグの合成（フルスクリーン 1 枚をブレンドで scene RT へ）----
-        // ★ここに挿すのは偶然ではない。(1) 深度が既に PIXEL_SHADER_RESOURCE、
-        //   (2) OMSetRenderTargets が DSV を意図的にバインドしていない、
-        //   (3) scene RT がまだ RENDER_TARGET —— の 3 条件が同時に揃う唯一の場所で、
-        //   深度の遷移を 1 回も追加せずに済む。
-        // パーティクルより「前」なので、加算合成のパーティクルにはフォグがかからない（意図どおり）。
-        // ★合成の GPU 時間は GpuTimer::Particles の内数になる（GpuTimer は 1 スコープにつき
-        //   フレーム 1 回の Begin/End しか記録できないので、volFog スコープは compute 3 パス専用）。
-        if (volFogBuilt)
-        {
-            m_volumetricFogPass->Composite(nativeCmdList,
-                m_srvHeap->GetGpuHandle(m_depthSrvIndex),
-                0u, 0u, rW, rH, frameIndex);
-            // フォグ用の RootSig/PSO を張ったので、後続（パーティクル）のために作法どおり戻す。
-            nativeCmdList->OMSetRenderTargets(1, &srtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(rW, rH);
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        }
-
-        XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
-        XMFLOAT3 camRight, camUp, camPos;
-        XMStoreFloat3(&camRight, invView.r[0]);
-        XMStoreFloat3(&camUp,    invView.r[1]);
-        XMStoreFloat3(&camPos,   invView.r[3]);
-
-        XMFLOAT4X4 proj; XMStoreFloat4x4(&proj, m_camera->GetProjectionMatrix());
-        const float rtw = static_cast<float>(m_sceneRT->GetWidth());
-        const float rth = static_cast<float>(m_sceneRT->GetHeight());
-        if (m_depthSrvIndex != DescriptorHeap::kInvalidIndex)
-            m_particleSystem->SetSceneDepth(m_srvHeap->GetGpuHandle(m_depthSrvIndex),
-                proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
-        else
-            m_particleSystem->DisableSceneDepth();
-        m_particleSystem->SetTime(totalTime);
-        // ラスタライズ系はジッタあり（TAA でアンチエイリアスされる）。
-        m_particleSystem->Render(nativeCmdList, camVPJ, camRight, camUp, camPos);
-
-        // ---- GPUパーティクル（compute シム + ExecuteIndirect）: 同じ HDR RT へ加算 ----
-        if (m_gpuParticles)
-        {
-            if (m_depthSrvIndex != DescriptorHeap::kInvalidIndex)
-                m_gpuParticles->SetSceneDepth(m_srvHeap->GetGpuHandle(m_depthSrvIndex),
-                    proj._33, proj._43, 1.0f / rtw, 1.0f / rth);
-            else
-                m_gpuParticles->DisableSceneDepth();
-            // 決定論キャプチャ中は dt=0（#31。GPU 粒子が前進すると 2 枚が一致しない）。
-            m_gpuParticles->SimulateAndRender(nativeCmdList,
-                                              m_deterministicCapture ? 0.0f : m_gameClock.GetDeltaTime(),
-                                              totalTime, camVPJ, camRight, camUp);
-        }
-
-        // ---- 歪みパーティクル（熱ゆらぎ/衝撃波）: 歪みバッファ(RG16F)へ ----
-        // Render() と同一フレームのインスタンスバッファを共有するため直後に描く。
-        if (m_particleSystem->HasDistortion() && m_distortRT)
-        {
-            m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float distClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            m_commandList->ClearRenderTarget(m_distortRT->GetRtv(), distClear);
-            auto drtv = m_distortRT->GetRtv();
-            nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(rW, rH);
-            m_particleSystem->RenderDistortion(nativeCmdList, camVPJ, camRight, camUp);
-            m_distortRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            particleDistortDrawn = true;
-        }
-
-        m_commandList->TransitionResource(m_depthBuffer.Get(),
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-    }
-    m_gpuTimer->End(nativeCmdList, GpuTimer::Particles);
-
-    // ---- ワールド空間 2D スプライト（Sprite2D, worldSpace=true）: HDR scene RT へ ----
-    // 各スプライトをエンティティのワールド行列で配置（3D 空間の任意位置/向き/スケール、billboard 可）。
-    // layer 昇順ソート・アルファブレンド・深度テスト(書込みOFF)。PostProcess 前なのでブルーム等の対象。
-    // ゲームビュー/Play に加え、エディタのシーンビュー(編集中)でも描画して配置を可視化する。
-    if (m_spriteRenderer) m_spriteRenderer->BeginWorldVertexFrame();  // 本フレームの頂点書込みを先頭へ
-    {
-        XMMATRIX invView = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
-        XMFLOAT3 camRight, camUp;
-        XMStoreFloat3(&camRight, invView.r[0]);
-        XMStoreFloat3(&camUp,    invView.r[1]);
-        DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
-                         m_sceneRT->GetRtv(), m_dsvHandle, 0u, 0u, rW, rH, totalTime);
-    }
-
-    // ===== 中間バッファ可視化（dx12_render_debug）=====
-    // ★ここに挿す理由: シーン RT がまだ RENDER_TARGET で、ポストチェーンより前。
-    //   readback（CaptureSceneScreenshot）は m_sceneRT を読むので必ず絵に写る（B5 の罠を回避）。
-    //   フォワード PS には 1 行も足していない（N24: [branch] でも occupancy が落ちる）。
-    if (m_renderDebugMode != 0 && m_renderDebugPass && m_renderDebugPass->IsReady()
-        && m_depthSrvIndex != DescriptorHeap::kInvalidIndex)
-    {
-        const auto dbgMode = static_cast<RenderDebugMode>(m_renderDebugMode);
-        u32 srcIdx = DescriptorHeap::kInvalidIndex;
-        switch (dbgMode)
-        {
-        case RenderDebugMode::Normal:
-        case RenderDebugMode::Roughness:
-        case RenderDebugMode::Metallic:
-            if (velocityPrepass && m_gbufferRT) srcIdx = m_gbufferRT->GetSrvIndex();
-            break;
-        case RenderDebugMode::Depth:          srcIdx = m_depthSrvIndex; break;   // t0 は使わないが有効な物を渡す
-        case RenderDebugMode::Ao:             srcIdx = aoSrv; break;
-        case RenderDebugMode::ContactShadow:  srcIdx = csSrv; break;
-        case RenderDebugMode::Velocity:
-            if (velocityPrepass && m_taaPass) srcIdx = m_taaPass->GetVelocitySrvIndex();
-            break;
-        case RenderDebugMode::Ssr:            srcIdx = ssrSrv;  break;
-        case RenderDebugMode::Ssgi:           srcIdx = ssgiSrv; break;
-        case RenderDebugMode::RtHit:
-        case RenderDebugMode::RtDiff:
-        case RenderDebugMode::RtAlbedo:       srcIdx = rtDebugSrv; break;
-        default: break;
-        }
-
-        if (srcIdx != DescriptorHeap::kInvalidIndex)
-        {
-            // 深度は DEPTH_WRITE のままなので PS から読める状態へ往復させる。
-            m_commandList->TransitionResource(m_depthBuffer.Get(),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-            auto drtv = m_sceneRT->GetRtv();
-            nativeCmdList->OMSetRenderTargets(1, &drtv, FALSE, nullptr);   // DSV は張らない
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-
-            XMFLOAT4X4 dbgProj; XMStoreFloat4x4(&dbgProj, m_camera->GetProjectionMatrix());
-
-            RenderDebugPass::DrawDesc dd{};
-            dd.mode       = dbgMode;
-            dd.sourceSrv  = m_srvHeap->GetGpuHandle(srcIdx);
-            dd.depthSrv   = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
-            dd.vpLeft = 0; dd.vpTop = 0; dd.vpW = rW; dd.vpH = rH;
-            dd.gain       = m_renderDebugGain;
-            dd.projA      = dbgProj._33;
-            dd.projB      = dbgProj._43;
-            dd.depthRange = m_renderDebugDepthRange;
-            dd.exposure   = m_renderDebugExposure;
-            m_renderDebugPass->Draw(*m_commandList, dd);
-
-            m_commandList->TransitionResource(m_depthBuffer.Get(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-        }
-    }
-
-    // ===== 次フレームの SSR/SSGI 用に、このフレームの HDR シーンカラーを退避 =====
-    // ★ポストチェーン（DoF/モーションブラー/ブルーム/トーンマップ）より前でなければならない。
-    //   トーンマップ後の絵を GI ソースにすると露出変動でフィードバックが暴れる。
-    //   m_sceneRT はリニア HDR で露出が焼き込まれていないので、その事故が構造的に起きない。
-    //   この位置ならパーティクル / ワールドスプライト / 歪みまで含んだ「見えている絵」が入る。
-    // ★m_sceneRT の ping-pong 化は禁止（33 参照あり）。CopyResource 1 発が唯一安全な手段。
-    // ===== ポストプロセス: オフスクリーン RT → バックバッファ =====
-    m_gpuTimer->Begin(nativeCmdList, GpuTimer::PostFX);
-    if (m_screenSpaceGi && (useSsr || useSsgi))
-        m_screenSpaceGi->CaptureSceneColor(*m_commandList, *m_sceneRT);
-    auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
-    auto  rtv        = m_swapChain->GetCurrentRTV();
-
-    // シーンRT は PS（ブルーム/uber）と CS（自動露出）の両方から読むので複合読取状態へ遷移
-    m_sceneRT->Transition(*m_commandList,
-        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-    m_commandList->TransitionResource(backBuffer,
-        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-    {
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-
-        // ★#16: シーンは RT 全面に描かれているので「サブ矩形の UV」は常に (0,0,1,1)。
-        //   かつてここで計算していた uvOfs/uvScl は 7 パスから丸ごと消えた。
-        //   fullW/fullH ＝ レンダー解像度（テクセルサイズの供給元）。
-        const f32 fullW = static_cast<f32>(m_sceneRT->GetWidth());
-        const f32 fullH = static_cast<f32>(m_sceneRT->GetHeight());
-        const auto sceneSrvGpu = m_srvHeap->GetGpuHandle(m_sceneRT->GetSrvIndex());
-
-        // ポストエフェクトも Scene/Game で同じ設定を適用する。
-        // ここを分けると「Scene では明るいのに Play すると暗い」など、ライティング調整が破綻する。
-        PostProcessSettings ppApplied = m_scene->GetPostSettings();
-        const bool isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
-
-        // ヒット時の画面インパクト（fx:pulse）: クロマ + 放射ブラーを瞬間的に上乗せ
-        if (isGameView && m_particleSystem)
-        {
-            float pulse = m_particleSystem->GetPulse();
-            if (pulse > 0.001f)
-            {
-                ppApplied.chromaticOn = true;
-                ppApplied.chromatic   = (std::max)(ppApplied.chromatic, pulse * 1.2f);
-                ppApplied.radialOn    = true;
-                ppApplied.radial      = (std::max)(ppApplied.radial, pulse * 0.8f);
-            }
-        }
-
-        // ---- TAA と FXAA の排他 ----
-        // TAA 解決済みの絵に FXAA を掛けると輪郭が二重にぼける。TAA が走るなら FXAA は落とす。
-        const bool taaResolve = taaResolveActive;
-        if (taaResolve) ppApplied.fxaaOn = false;
-
-        // ---- 画面全体のカスタムシェーダー（CameraComponent::screenShaderPath）----
-        // ★ポストと同じ思想で Scene ビューにも同じものを掛ける。
-        //   「エディタでは素の絵なのに Play すると別物」を作らないため
-        //   （＝割り当てた瞬間に結果が見えるので、そもそも試行錯誤が成立する）。
-        //   採用するのは【アクティブなカメラ】1 つだけ。複数のカメラが持っていても
-        //   合成はしない（順序が決まらず、事故のもとにしかならない）。
-        std::string screenShaderRel;
-        DirectX::XMFLOAT4 screenShaderParams{0.0f, 0.0f, 0.0f, 0.0f};
-        f32  screenCamNear = 0.1f, screenCamFar = 1000.0f, screenCamFov = 60.0f;
-        bool screenCamOrtho = false;
-        if (m_scene)
-        {
-            auto camView = m_scene->GetRegistry().view<const CameraComponent>();
-            for (auto ce : camView)
-            {
-                const auto& cc = camView.get<const CameraComponent>(ce);
-                if (!cc.isActive || !cc.screenShaderEnabled || cc.screenShaderPath.empty())
-                    continue;
-                screenShaderRel   = cc.screenShaderPath;
-                screenShaderParams = cc.screenShaderParams;
-                screenCamNear = cc.nearClip; screenCamFar = cc.farClip;
-                screenCamFov  = cc.fovDegrees;
-                screenCamOrtho = (cc.projection == CameraProjection::Orthographic);
-                break;
-            }
-        }
-        ID3D12PipelineState* screenPso =
-            screenShaderRel.empty() ? nullptr : EnsureScreenShaderPso(screenShaderRel);
-        const bool useScreenShader = (screenPso != nullptr) && m_screenShaderRT
-                                  && m_screenShaderPass && m_screenShaderPass->IsReady();
-
-        // ---- 深度依存パス（TAA/DoF/モーションブラー/ゴッドレイ）の準備 ----
-        // 透視カメラのみ（正射は CoC/再投影/太陽投影が破綻するため無効）
-        const bool persp = !m_camera->IsOrthographic();
-        const bool wantDepthPost = ppApplied.enabled && persp &&
-            m_depthBuffer && m_depthSrvIndex != DescriptorHeap::kInvalidIndex &&
-            (ppApplied.dofOn || ppApplied.motionBlurOn || ppApplied.godraysOn);
-        // TAA も深度を読む（空の速度再構成 + closest-depth dilation）。深度の遷移は
-        // 1 箇所にまとめる＝二重遷移で D3D12 の状態追跡が壊れるのを防ぐ。
-        // スクリーンシェーダーも t1 で深度を受け取る（霧・被写界深度・輪郭を自分で書けるように）。
-        // ただし遷移を戻すのはスクリーンシェーダーのパスが終わったあと（下の "戻す" を参照）。
-        const bool screenShaderWantsDepth =
-            useScreenShader && m_depthBuffer && m_depthSrvIndex != DescriptorHeap::kInvalidIndex;
-        const bool needDepthSrv = wantDepthPost || taaResolve || screenShaderWantsDepth;
-        D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu{};
-        if (needDepthSrv)
-        {
-            m_commandList->TransitionResource(m_depthBuffer.Get(),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            depthSrvGpu = m_srvHeap->GetGpuHandle(m_depthSrvIndex);
-        }
-
-        // ---- シーン変換チェーン: TAA → DoF → モーションブラー（結果を以降の「シーン」として使う）----
-        D3D12_GPU_DESCRIPTOR_HANDLE curSceneSrv = sceneSrvGpu;
-
-        // ★TAA はチェーンの先頭。トーンマップ前のリニア HDR に対して解決する。
-        //   露出に依存するアーティファクトを避けるためと、以降の DoF / モーションブラー /
-        //   自動露出 / ブルーム / レンズフレアが「安定した絵」を入力に取れるようにするため
-        //   （ブルームとレンズフレアのちらつきが目に見えて減る）。
-        if (taaResolve)
-        {
-            XMFLOAT4X4 invVpT, prevVpT;
-            XMStoreFloat4x4(&invVpT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVP)));
-            XMStoreFloat4x4(&prevVpT, XMMatrixTranspose(
-                m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP));
-            const u32 o = m_taaPass->Resolve(*m_commandList, curSceneSrv, depthSrvGpu,
-                invVpT, prevVpT, rW, rH, taaCfg);
-            if (o != DescriptorHeap::kInvalidIndex)
-                curSceneSrv = m_srvHeap->GetGpuHandle(o);
-            // TaaPass は自前のルートシグネチャ/PSO を張るので、後段のために SRV ヒープを張り直す。
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        }
-        if (wantDepthPost && ppApplied.dofOn && m_dofPass)
-        {
-            XMFLOAT4X4 projF;
-            XMStoreFloat4x4(&projF, m_camera->GetProjectionMatrix());
-            // ★合焦をエンティティに任せる（dofFocusName）。毎フレームその子孫込みのワールド位置を
-            //   ビュー空間へ落として z を取る＝「被写体に合焦したまま寄る/回る」が Lua 無しで作れる。
-            //   見つからない/名前が空なら -1 を渡して dofFocusDist にフォールバックする。
-            float focusOverride = -1.0f;
-            if (!ppApplied.dofFocusName.empty() && m_scene)
-            {
-                Entity fe = m_scene->FindEntity(ppApplied.dofFocusName);
-                if (fe.IsValid())
-                {
-                    const XMMATRIX w = ComputeWorldMatrix(m_scene->GetRegistry(), fe.GetHandle());
-                    const XMVECTOR vp = XMVector3TransformCoord(w.r[3], m_camera->GetViewMatrix());
-                    const float vz = XMVectorGetZ(vp);
-                    if (vz > 0.0f) focusOverride = vz;
-                }
-            }
-            const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu, projF._33, projF._43, projF._22,
-                ppApplied, focusOverride);
-            if (o != DescriptorHeap::kInvalidIndex)
-                curSceneSrv = m_srvHeap->GetGpuHandle(o);
-        }
-        if (wantDepthPost && ppApplied.motionBlurOn && m_motionBlurPass && m_prevViewProjValid)
-        {
-            // モーションブラーの再投影はジッタなし（ジッタ込みだと毎フレーム微ブラーが乗る）。
-            const XMMATRIX vp  = camVP;
-            const XMMATRIX inv = XMMatrixInverse(nullptr, vp);
-            XMFLOAT4X4 invT, prevT;
-            XMStoreFloat4x4(&invT,  XMMatrixTranspose(inv));
-            XMStoreFloat4x4(&prevT, XMMatrixTranspose(XMLoadFloat4x4(&m_prevViewProj)));
-            // 速度バッファが今フレーム書かれていれば、それを使って「オブジェクト毎の」
-            // モーションブラーにする（従来の深度再構成はカメラの動きしか拾えない）。
-            // 使えない時は深度 SRV をダミーとして張る（params.w=0 なのでシェーダは読まない）。
-            const u32 velIdx = velocityPrepass ? m_taaPass->GetVelocitySrvIndex()
-                                               : DescriptorHeap::kInvalidIndex;
-            const bool mbUseVelocity = (velIdx != DescriptorHeap::kInvalidIndex);
-            const auto velSrvGpu = mbUseVelocity ? m_srvHeap->GetGpuHandle(velIdx) : depthSrvGpu;
-            const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
-                curSceneSrv, depthSrvGpu, velSrvGpu, mbUseVelocity, invT, prevT,
-                rW, rH, ppApplied);
-            if (o != DescriptorHeap::kInvalidIndex)
-                curSceneSrv = m_srvHeap->GetGpuHandle(o);
-        }
-
-        // ---- 自動露出（compute。ビューポート矩形のヒストグラム→露出値を GPU 内バッファへ）----
-        if (m_autoExposure && ppApplied.enabled && ppApplied.autoExposureOn)
-            m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, rW, rH,
-                                     m_gameClock.GetDeltaTime(), ppApplied);
-        D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
-        if (m_autoExposure)
-        {
-            m_autoExposure->EnsureReadable(nativeCmdList);
-            exposureVA = m_autoExposure->GetExposureBufferVA();
-        }
-
-        // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
-        u32 bloomSrv = DescriptorHeap::kInvalidIndex;
-        if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
-            bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), curSceneSrv,
-                                             1.0f / fullW, 1.0f / fullH, ppApplied);
-        const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
-        const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
-
-        // ---- ゴッドレイ（太陽=最初の平行光源をスクリーンへ投影）----
-        u32 godraysSrv = DescriptorHeap::kInvalidIndex;
-        if (wantDepthPost && ppApplied.godraysOn && m_godRaysPass)
-        {
-            XMFLOAT3 sunDir{}; XMFLOAT3 sunColI{}; bool hasSun = false;
-            auto& greg = m_scene->GetRegistry();
-            auto dlView = greg.view<DirectionalLight>();
-            if (dlView.begin() != dlView.end())
-            {
-                const auto& dl = dlView.get<DirectionalLight>(*dlView.begin());
-                sunDir  = dl.direction;
-                sunColI = XMFLOAT3(dl.color.x * dl.intensity,
-                                   dl.color.y * dl.intensity,
-                                   dl.color.z * dl.intensity);
-                hasSun = true;
-            }
-            if (hasSun)
-            {
-                // 太陽ワールド位置 ≒ カメラ位置 - 光方向×遠距離 → スクリーン投影
-                const XMFLOAT3 camPos = m_camera->GetPosition();
-                XMVECTOR d  = XMVector3Normalize(XMLoadFloat3(&sunDir));
-                XMVECTOR wp = XMVectorSubtract(XMLoadFloat3(&camPos), XMVectorScale(d, 5000.0f));
-                XMVECTOR clip = XMVector4Transform(XMVectorSetW(wp, 1.0f), camVP);  // 太陽投影はジッタなし
-                const f32 cw = XMVectorGetW(clip);
-                if (cw > 0.01f)
-                {
-                    const f32 lu = XMVectorGetX(clip) / cw * 0.5f + 0.5f;   // ローカルUV
-                    const f32 lv = 0.5f - XMVectorGetY(clip) / cw * 0.5f;
-                    // 画面中心からの距離でフェード（画面外に離れると消える）
-                    const f32 dc = std::sqrt((lu - 0.5f) * (lu - 0.5f) + (lv - 0.5f) * (lv - 0.5f));
-                    const f32 fade = (std::min)((std::max)((1.1f - dc) / 0.4f, 0.0f), 1.0f);
-                    if (fade > 0.001f)
-                    {
-                        // ★#16: シーンは RT 全面なので、ローカル UV がそのまま RT の UV。
-                        //   （かつては lu * uvScl + uvOfs でサブ矩形へ写していた）
-                        godraysSrv = m_godRaysPass->Generate(*m_commandList, m_srvHeap.get(),
-                            depthSrvGpu, rW, rH, lu, lv, fade, sunColI, ppApplied);
-                    }
-                }
-            }
-        }
-        const bool grReady = (godraysSrv != DescriptorHeap::kInvalidIndex);
-
-        // ---- レンズフレア（ブルームチェーンの縮小ミップから生成）----
-        u32 flareSrv = DescriptorHeap::kInvalidIndex;
-        if (m_lensFlarePass && ppApplied.enabled && ppApplied.lensflareOn && bloomReady)
-        {
-            const u32 mip = m_bloomPass->GetMipSrvIndex(1);
-            if (mip != DescriptorHeap::kInvalidIndex)
-                flareSrv = m_lensFlarePass->Generate(*m_commandList, m_srvHeap.get(),
-                    m_srvHeap->GetGpuHandle(mip), ppApplied);
-        }
-        const bool lfReady = (flareSrv != DescriptorHeap::kInvalidIndex);
-
-        // 深度を DSV 用途（エディタアイコン等）へ戻す（遷移した時だけ。needDepthSrv と対で閉じる）。
-        // ★スクリーンシェーダーが深度を読む回は【まだ戻さない】。戻すのは uber パスの後、
-        //   スクリーンシェーダーのパスを撃ってから（下の対になる TransitionResource）。
-        if (needDepthSrv && !screenShaderWantsDepth)
-            m_commandList->TransitionResource(m_depthBuffer.Get(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-        // ---- 3D LUT（assets 相対パス。sRGB 無効=バイト列そのままロード。ストリップ形式 N*N x N）----
-        auto lutSrvGpu = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
-        f32  lutSize   = 0.0f;
-        if (ppApplied.enabled && ppApplied.lutOn && !ppApplied.lutPath.empty() && m_resourceManager)
-        {
-            const std::string lutAbs = PathResolver::AssetsDir() + ppApplied.lutPath;
-            if (Texture* lut = m_resourceManager->GetOrLoadTexture(
-                    PathResolver::Utf8ToWide(lutAbs), nativeCmdList, /*srgb=*/false))
-            {
-                if (lut->GetHeight() >= 2 &&
-                    lut->GetWidth() == lut->GetHeight() * lut->GetHeight())
-                {
-                    lutSrvGpu = m_srvHeap->GetGpuHandle(lut->GetSrvIndex());
-                    lutSize   = static_cast<f32>(lut->GetHeight());
-                }
-            }
-        }
-
-        // ---- 最終(uber)パス: バックバッファへ ----
-        // ★スクリーンシェーダーがある回だけ、ここの出力先を中間 RT へ差し替える
-        //   （中間 RT はバックバッファと同じ寸法・同じビューポートで描くので、
-        //     後段はピクセル位置がそのまま一致する）。
-        constexpr float bbClear[4] = {0.05f, 0.05f, 0.06f, 1.0f};
-        m_commandList->ClearRenderTarget(rtv, bbClear);   // 表示矩形の外（ImGui の下地）は常に塗る
-        D3D12_CPU_DESCRIPTOR_HANDLE postRtv = rtv;
-        if (useScreenShader)
-        {
-            m_screenShaderRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            postRtv = m_screenShaderRT->GetRtv();
-            m_commandList->ClearRenderTarget(postRtv, bbClear);
-        }
-        nativeCmdList->OMSetRenderTargets(1, &postRtv, FALSE, nullptr);  // 深度なし
-        m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
-
-        const auto whiteDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
-        PostProcess::Inputs pin{};
-        pin.sceneSrv     = curSceneSrv;
-        pin.bloomSrv     = bloomSrvGpu;
-        pin.lutSrv       = lutSrvGpu;
-        pin.godraysSrv   = grReady ? m_srvHeap->GetGpuHandle(godraysSrv) : whiteDummy;
-        pin.flareSrv     = lfReady ? m_srvHeap->GetGpuHandle(flareSrv)   : whiteDummy;
-        pin.distortSrv   = (particleDistortDrawn && m_distortRT)
-                         ? m_srvHeap->GetGpuHandle(m_distortRT->GetSrvIndex()) : whiteDummy;
-        pin.lutSize      = lutSize;
-        pin.exposureVA   = exposureVA;
-        pin.bloomReady   = bloomReady;
-        pin.godraysReady = grReady;
-        pin.flareReady   = lfReady;
-        pin.distortReady = particleDistortDrawn;
-
-        // ★ここが唯一の「レンダー解像度 → 表示解像度」の橋渡し。ビューポートが表示矩形で、
-        //   シーン RT の全面をサンプルする＝renderScale < 1 なら自動的にバイリニア拡大になる。
-        m_postProcess->Apply(nativeCmdList, pin, ppApplied,
-            1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
-
-        // ---- 画面全体のカスタムシェーダー（中間 RT → バックバッファ）----
-        if (useScreenShader)
-        {
-            m_screenShaderRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-            m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
-
-            const f32 rtW = static_cast<f32>(m_screenShaderRT->GetWidth());
-            const f32 rtH = static_cast<f32>(m_screenShaderRT->GetHeight());
-            ScreenShaderPass::Constants sc{};
-            sc.resolution[0] = static_cast<f32>(vpW);
-            sc.resolution[1] = static_cast<f32>(vpH);
-            sc.resolution[2] = (vpW > 0) ? 1.0f / static_cast<f32>(vpW) : 0.0f;
-            sc.resolution[3] = (vpH > 0) ? 1.0f / static_cast<f32>(vpH) : 0.0f;
-            sc.timeParams[0] = totalTime;
-            sc.timeParams[1] = m_gameClock.GetDeltaTime();
-            sc.timeParams[2] = (vpH > 0) ? static_cast<f32>(vpW) / static_cast<f32>(vpH) : 1.0f;
-            sc.timeParams[3] = static_cast<f32>(frameIndex);
-            sc.params[0] = screenShaderParams.x; sc.params[1] = screenShaderParams.y;
-            sc.params[2] = screenShaderParams.z; sc.params[3] = screenShaderParams.w;
-            sc.cameraParams[0] = screenCamNear;  sc.cameraParams[1] = screenCamFar;
-            sc.cameraParams[2] = screenCamFov;   sc.cameraParams[3] = screenCamOrtho ? 1.0f : 0.0f;
-            // 中間 RT はウィンドウ全面で、絵は表示矩形にしか入っていない。
-            // uv(0..1) → テクセルの写像を CB で渡し、雛形の SampleScreen() が内部で掛ける。
-            sc.uvOffsetScale[0] = (rtW > 0.0f) ? static_cast<f32>(vpLeft) / rtW : 0.0f;
-            sc.uvOffsetScale[1] = (rtH > 0.0f) ? static_cast<f32>(vpTop)  / rtH : 0.0f;
-            sc.uvOffsetScale[2] = (rtW > 0.0f) ? static_cast<f32>(vpW)    / rtW : 1.0f;
-            sc.uvOffsetScale[3] = (rtH > 0.0f) ? static_cast<f32>(vpH)    / rtH : 1.0f;
-
-            const auto colorSrv = m_srvHeap->GetGpuHandle(m_screenShaderRT->GetSrvIndex());
-            const auto dSrv = screenShaderWantsDepth ? depthSrvGpu
-                                                     : m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
-            m_screenShaderPass->Apply(nativeCmdList, screenPso, colorSrv, dSrv, sc);
-        }
-        // 深度を DSV 用途へ戻す（上の "まだ戻さない" と対になる閉じ処理）。
-        if (screenShaderWantsDepth)
-            m_commandList->TransitionResource(m_depthBuffer.Get(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-        // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
-        // 静止時に全面が均一な (0.5,0.5,0.5) グレーになるのが「ジッタが正しく除去されている」証拠。
-        if (taaActive && taaCfg.debugVelocity && m_taaPass)
-        {
-            const u32 velSrv = m_taaPass->GetVelocitySrvIndex();
-            if (velSrv != DescriptorHeap::kInvalidIndex)
-            {
-                nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-                m_taaPass->DrawVelocityDebug(*m_commandList, m_srvHeap->GetGpuHandle(velSrv),
-                    vpLeft, vpTop, vpW, vpH, /*scale*/ 20.0f);
-            }
-        }
-
-        // 次フレームのモーションブラー用に今フレームの viewProj を保存
-        XMStoreFloat4x4(&m_prevViewProj, camVP);   // ジッタなし（従来より正確になる）
-        m_prevViewProjValid = true;
-        // 速度バッファ/TAA 用に「ジッタなし」viewProj と frameIndex を保存する。
-        // frameIndex は SkinningBuffer の前フレームスロットを指すため
-        //（GetCurrentBackBufferIndex() の巡回順は DXGI 仕様上保証されないので明示記録）。
-        XMStoreFloat4x4(&m_prevViewProjNoJitter, camVP);
-        m_prevViewProjNJValid = true;
-        m_prevFrameIndex      = frameIndex;
-        m_prevFrameIndexValid = true;
-    }
-    m_gpuTimer->End(nativeCmdList, GpuTimer::PostFX);
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
 
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモード + 一時停止中）----
@@ -6089,90 +6424,45 @@ void Application::Render()
                                            cam.nearClip, cam.farClip);
             XMMATRIX camViewProj = view * proj;
 
-            // メインパスの fc（ライト等）を流用し、視点だけ差し替えて専用 CB へ
-            FrameConstants fcp = fc;
-            XMStoreFloat4x4(&fcp.view, XMMatrixTranspose(view));
-            XMStoreFloat4x4(&fcp.proj, XMMatrixTranspose(proj));
-            fcp.cameraPos = tf.position;
-            fcp.aoEnabled = 0.0f;   // プレビューは白ダミー AO（SSAO 非対応）なので AO を読まない
-            fcp.contactShadowEnabled = 0.0f;   // 同上（コンタクトシャドウもプレビューでは作らない）
-            // クラスタは「メインカメラ視点」で作ってあるので、別視点のプレビューで引くと
-            // 完全に間違ったライトリストになる。総当たりフォールバックへ倒す。
-            // ★これでデカール（計画06）もプレビューでは無効になる（ApplyDecals が
-            //   clusterGrid.w <= 0.5 で丸ごと return する）。ビニングが別視点なので正しい挙動。
-            fcp.clusterGrid.w  = 0.0f;
-            fcp.clusterExtra.z = 0.0f;   // デバッグ可視化もプレビューでは出さない
-            m_previewFrameCB->Update(&fcp, sizeof(fcp), frameIndex);
+            // ★以前はここに「機能を削ったメインパスの複製」（b1 の流用・バインド・RenderSceneMeshes・
+            //   ワールドスプライト・トーンマップ）が 120 行あった。今は ViewDesc を詰めて
+            //   RenderView を呼ぶだけ。削っていた機能は features のビットで表す:
+            //     影マップは描かない（主ビューが作った影を読む）/ 画面空間（SSAO 等）なし /
+            //     クラスタなし（総当たり。デカールも出ない）/ フォグ・パーティクル・デバッグ線なし /
+            //     ポストはトーンマップだけ（LDR へ解決して ImGui に渡す）。
+            //   スカイボックスは描く（Play のゲーム画面には空が出るのに、複製コードが描き忘れていて
+            //   プレビューだけ空が黒かった。「Play を押さずにゲームカメラの見え方を確かめる窓」なので
+            //   空が出る方が正しい）。
+            ViewDesc pv{};
+            pv.name = "cameraPreview";
+            XMStoreFloat4x4(&pv.view, view);
+            XMStoreFloat4x4(&pv.proj, proj);
+            XMStoreFloat4x4(&pv.viewProj, camViewProj);
+            pv.viewProjJittered = pv.viewProj;   // ジッタなし（TAA は主ビューだけ）
+            pv.position     = tf.position;
+            pv.nearZ        = cam.nearClip;
+            pv.farZ         = cam.farClip;
+            pv.orthographic = (cam.projection == CameraProjection::Orthographic);
+            pv.width  = pw;
+            pv.height = ph;
+            pv.sceneColor    = m_cameraPreviewRT.get();
+            pv.depth         = m_previewDepthBuffer.Get();
+            pv.depthDsv      = m_previewDsvHandle;
+            pv.depthSrvIndex = DescriptorHeap::kInvalidIndex;   // 深度を読む機能は無い
+            pv.perFrameCB    = m_previewFrameCB.get();           // 主ビューの b1 を上書きしない
+            pv.outputToBackBuffer = false;
+            pv.output = m_cameraPreviewLdrRT.get();
+            pv.outX = 0;  pv.outY = 0;  pv.outW = pw;  pv.outH = ph;
+            pv.features   = kViewSkybox | kViewWorldSprites;
+            pv.primary    = false;
+            pv.isGameView = true;   // グリッドは出さない
+            RenderView(pv, frame);
 
-            m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            constexpr float pvClear[4] = {0.0f, 0.0f, 0.0f, 1.0f};   // ★sceneRT と同じ背景色
-            m_commandList->ClearRenderTarget(m_cameraPreviewRT->GetRtv(), pvClear);
-            m_commandList->ClearDepthStencil(m_previewDsvHandle);
-            m_commandList->SetRenderTarget(m_cameraPreviewRT->GetRtv(), m_previewDsvHandle);
-            m_commandList->SetViewportAndScissor(pw, ph);
-
-            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            m_commandList->SetRootSignature(*m_rootSignature);
-            m_commandList->SetPerFrameCBV(RootSignature::kSlotPerFrame,
-                m_previewFrameCB->GetGpuAddress(frameIndex));
-            m_commandList->SetSRVTable(RootSignature::kSlotShadowSRV,
-                m_srvHeap->GetGpuHandle(m_shadowSrvIndex));
-            if (m_iblReady && m_iblBaker)
-                m_commandList->SetSRVTable(RootSignature::kSlotIBLTable,
-                    m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv()));
-            // クラスタテーブルはフォールバック時も必ずバインドする（PS が t13..t15 を参照するため）
-            if (m_clusteredLighting && m_clusteredLighting->IsReady())
-                m_commandList->SetSRVTable(RootSignature::kSlotClusterSRV,
-                    m_clusteredLighting->GetSrvTable(frameIndex));
-
-            // グリッドは出さない＝isGameView=true。プレビューは SSAO 非対応＝白ダミー。
-            RenderSceneMeshes(nativeCmdList, frameIndex, camViewProj, true, m_ssaoWhiteSrvIndex,
-                              /*depthPrepassActive=*/false, m_ssaoWhiteSrvIndex);
-
-            // ワールド空間スプライトもプレビューへ（このカメラ視点で。ビルボードは行列の右/上ベクトル）。
-            XMFLOAT3 pvRight, pvUp;
-            XMStoreFloat3(&pvRight, rot.r[0]);
-            XMStoreFloat3(&pvUp,    rot.r[1]);
-            DrawWorldSprites(nativeCmdList, camViewProj, pvRight, pvUp,
-                             m_cameraPreviewRT->GetRtv(), m_previewDsvHandle, 0u, 0u, pw, ph, totalTime);
-
-            m_cameraPreviewRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-            // プレビューRT(リニアHDR)をトーンマップして LDR RT へ解決する。
-            // ImGui へ FP16 の SRV を直接渡すとトーンマップ/ガンマ無しで暗く表示されるため。
-            // enabled=false → mask=0 = PostProcess はトーンマップ+ガンマのみ適用。
-            if (m_cameraPreviewLdrRT && m_postProcess && m_postProcess->IsReady())
-            {
-                m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-                D3D12_CPU_DESCRIPTOR_HANDLE ldrRtv = m_cameraPreviewLdrRT->GetRtv();
-                nativeCmdList->OMSetRenderTargets(1, &ldrRtv, FALSE, nullptr);  // 深度なし
-                m_commandList->SetViewportAndScissor(pw, ph);
-
-                PostProcessSettings pvPost{};
-                pvPost.enabled = false;
-                // トーンマッパはシーン設定と揃える（プレビューと本画面の見た目一致）
-                pvPost.tonemapper = m_scene->GetPostSettings().tonemapper;
-                const auto pvDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
-                PostProcess::Inputs pvIn{};
-                pvIn.sceneSrv   = m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex());
-                pvIn.bloomSrv   = pvDummy;
-                pvIn.lutSrv     = pvDummy;
-                pvIn.godraysSrv = pvDummy;
-                pvIn.flareSrv   = pvDummy;
-                pvIn.distortSrv = pvDummy;
-                pvIn.exposureVA = m_autoExposure ? m_autoExposure->GetExposureBufferVA() : 0;
-                m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
-                    1.0f / static_cast<f32>(pw), 1.0f / static_cast<f32>(ph), totalTime, frameIndex);
-
-                m_cameraPreviewLdrRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-                m_editorCtx->cameraPreviewTexHandle =
-                    m_srvHeap->GetGpuHandle(m_cameraPreviewLdrRT->GetSrvIndex()).ptr;
-            }
-            else
-            {
-                m_editorCtx->cameraPreviewTexHandle =
-                    m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()).ptr;
-            }
+            // LDR へ解決できたらそれを、できなければ HDR をそのまま小窓へ（従来どおり）。
+            m_editorCtx->cameraPreviewTexHandle =
+                (m_cameraPreviewLdrRT && m_postProcess && m_postProcess->IsReady())
+                    ? m_srvHeap->GetGpuHandle(m_cameraPreviewLdrRT->GetSrvIndex()).ptr
+                    : m_srvHeap->GetGpuHandle(m_cameraPreviewRT->GetSrvIndex()).ptr;
 
             // プレビュー描画でRT/ビューポートを切り替えたので、バックバッファへ戻す。
             // これをしないと直後の ImGui がプレビューRTへ描かれ、画面に出なくなる。
@@ -6217,6 +6507,17 @@ void Application::Render()
     CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, vpLeft, vpTop, vpW, vpH);
     // ---- MCP dx12_perceive: 同じ位置の最終画 + エンティティ ID パス（要求があるフレームだけ）----
     RecordPerceptionIds(nativeCmdList, backBuffer, rtv, vpLeft, vpTop, vpW, vpH, frameIndex);
+}
+
+// ---------------------------------------------------------------------------
+// ImGui フレーム（ランチャー / エディタ UI / 各種設定窓 / ゲーム内 UI）とシーントランジション。
+// ---------------------------------------------------------------------------
+void Application::RenderImGuiFrame(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+    const u32 vpLeft = frame.vpLeft, vpTop = frame.vpTop, vpW = frame.vpW, vpH = frame.vpH;
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = frame.rtv;
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
@@ -7455,6 +7756,15 @@ void Application::Render()
         float aspect = (tH > 0) ? static_cast<f32>(tW) / static_cast<f32>(tH) : 1.0f;
         m_sceneTransition->Render(nativeCmdList, aspect);
     }
+}
+
+// ---------------------------------------------------------------------------
+// GPU 計測の締め → バックバッファを PRESENT へ → 送信 → Present → 遅延解放 → 性能記録。
+// ---------------------------------------------------------------------------
+void Application::SubmitFrame(RenderFrameContext& frame)
+{
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+    ID3D12Resource* const            backBuffer    = frame.backBuffer;
 
     m_gpuTimer->End(nativeCmdList, GpuTimer::UI);
     m_gpuTimer->End(nativeCmdList, GpuTimer::Total);

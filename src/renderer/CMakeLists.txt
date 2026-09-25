@@ -31,6 +31,7 @@ add_library(Renderer STATIC
     GpuParticleSystem.cpp
     IBLBaker.cpp
     SkyboxRenderer.cpp
+    ViewPasses.cpp          # RenderView の段を IRenderPass（RenderPass.h の状態の契約）として切り出したもの
     PerceptionPass.cpp      # 知覚層（dx12_perceive）の ID パス + 読み戻し
     PerceptionStats.cpp     # 知覚層の集計（GPU 非依存の純関数。tests/perception_stats_test.cpp）
 )
