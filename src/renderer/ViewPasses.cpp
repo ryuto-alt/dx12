@@ -47,6 +47,48 @@ void TrackedState::Require(CommandList& cmd, D3D12_RESOURCE_STATES next)
     state = next;
 }
 
+// ---- ShadowMapPass ----------------------------------------------------------------------
+void ShadowMapPass::DeclareResources(std::vector<PassResourceUse>& out) const
+{
+    out.push_back({m_in.name, m_in.map, D3D12_RESOURCE_STATE_DEPTH_WRITE, PassAccess::Write});
+}
+
+void ShadowMapPass::Execute(const RenderPassContext& ctx)
+{
+    if (!m_in.map || !m_in.rootSig || m_in.sliceCount == 0 || !m_in.drawDepth) return;
+    CommandList& cmd = *ctx.cmd;
+    // 深度パスはメインのルートシグネチャで描き、スキンドのボーン SRV をテーブルで読む。
+    cmd.SetDescriptorHeap(ctx.srvHeap->GetHeap());
+    cmd.SetRootSignature(*m_in.rootSig);
+
+    // リソース全体（全スライス）を一括で DEPTH_WRITE へ（スライスのループの外で 1 回）
+    cmd.TransitionResource(m_in.map,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    // 全スライス共通（同サイズの正方形）
+    D3D12_VIEWPORT vp{};
+    vp.Width    = static_cast<f32>(m_in.size);
+    vp.Height   = static_cast<f32>(m_in.size);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    D3D12_RECT scissor = {0, 0, static_cast<LONG>(m_in.size), static_cast<LONG>(m_in.size)};
+    ctx.native->RSSetViewports(1, &vp);
+    ctx.native->RSSetScissorRects(1, &scissor);
+
+    for (u32 i = 0; i < m_in.sliceCount; ++i)
+    {
+        const Slice& s = m_in.slices[i];
+        cmd.ClearDepthStencil(s.dsv);
+        // RTV なし、DSV のみ（該当スライス）
+        ctx.native->OMSetRenderTargets(0, nullptr, FALSE, &s.dsv);
+        m_in.drawDepth(s);
+    }
+
+    // 出口の契約: 既定の置き場（PIXEL_SHADER_RESOURCE）へ戻す
+    cmd.TransitionResource(m_in.map,
+        D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+}
+
 // ---- ClusterCullPass --------------------------------------------------------------------
 void ClusterCullPass::DeclareResources(std::vector<PassResourceUse>& out) const
 {

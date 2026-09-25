@@ -4436,6 +4436,19 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     auto gpuEnd   = [&](GpuTimer::Scope s) { if (primary) m_gpuTimer->End(nativeCmdList, s); };
     auto cpuSlot  = [&](CpuScope s) -> f32* { return primary ? &m_cpuMs[s] : nullptr; };
 
+    // パス（renderer/RenderPass.h）が共有する実行文脈。深度はこのビューが追いかける（パスは入口で
+    // 要る状態を Require する。追跡の外のコードへ渡す前にビューが DEPTH_WRITE へ戻す）。
+    // ★深度プリパス群（まだパスになっていない）は生の遷移で往復して DEPTH_WRITE に戻して抜けるので、
+    //   追跡の値（DEPTH_WRITE）とずれない。
+    TrackedState depthState{depthRes, D3D12_RESOURCE_STATE_DEPTH_WRITE};
+    RenderPassContext passCtx{};
+    passCtx.cmd        = m_commandList.get();
+    passCtx.native     = nativeCmdList;
+    passCtx.srvHeap    = m_srvHeap.get();
+    passCtx.frameIndex = frameIndex;
+    passCtx.timer      = primary ? m_gpuTimer.get() : nullptr;
+    passCtx.depth      = &depthState;
+
     if (view.Has(kViewShadows))
     {
         // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
@@ -4488,39 +4501,40 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
         gpuBegin(GpuTimer::Shadows);
         m_passBucket = primary ? &m_passShadow : &m_passOther;
-        // 影の段が使う状態は入口で自分で張る（RenderDepthOnlyScene はメインのルートシグネチャで
-        // 描き、スキンドのボーン SRV をテーブルで読むのでヒープも要る）。RT / ビューポートは下の各パス。
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_commandList->SetRootSignature(*m_rootSignature);
+        // ヒープ / ルートシグネチャ / 遷移 / ビューポート / クリアは ShadowMapPass が張る
+        // （RenderPass.h の状態の契約）。ここは「どのスライスをどの viewProj で描くか」だけ。
+        // 描く中身は 3 種とも RenderDepthOnlyScene（影 PSO / 1 段粗い LOD / MASK は ShadowMask）。
+        auto shadowDepth = [&](bool skipRtCovered)
+        {
+            return [&, skipRtCovered](const ShadowMapPass::Slice& s)
+            {
+                RenderDepthOnlyScene(XMLoadFloat4x4(&s.viewProj),
+                                     *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
+                                     /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
+                                     m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
+                                     skipRtCovered, /*cascadeTexelWorld*/ s.texelWorld,
+                                     &shadowMaskPsos);
+            };
+        };
 
         // ===== スポットライト影パス =====
         if (m_scene && m_scene->GetShadowsEnabled() && m_numSpotShadowSlots > 0)
         {
-            m_commandList->TransitionResource(m_spotShadowMap.Get(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-            D3D12_VIEWPORT spotVp{};
-            spotVp.Width = spotVp.Height = static_cast<f32>(kSpotShadowMapSize);
-            spotVp.MinDepth = 0.0f;
-            spotVp.MaxDepth = 1.0f;
-            D3D12_RECT spotScissor = {0, 0, static_cast<LONG>(kSpotShadowMapSize), static_cast<LONG>(kSpotShadowMapSize)};
-            nativeCmdList->RSSetViewports(1, &spotVp);
-            nativeCmdList->RSSetScissorRects(1, &spotScissor);
-
+            std::array<ShadowMapPass::Slice, kMaxShadowSpot> slices{};
             for (u32 i = 0; i < m_numSpotShadowSlots; ++i)
             {
-                XMMATRIX lvp = XMLoadFloat4x4(&m_spotShadowViewProj[i]);
-                m_commandList->ClearDepthStencil(m_spotShadowDsvHandles[i]);
-                nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_spotShadowDsvHandles[i]);
-                RenderDepthOnlyScene(lvp, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                     /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                     m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
-                                     /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
-                                     &shadowMaskPsos);
+                slices[i].dsv      = m_spotShadowDsvHandles[i];
+                slices[i].viewProj = m_spotShadowViewProj[i];
             }
-
-            m_commandList->TransitionResource(m_spotShadowMap.Get(),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            ShadowMapPass::Inputs si{};
+            si.name       = "SpotShadows";
+            si.map        = m_spotShadowMap.Get();
+            si.size       = kSpotShadowMapSize;
+            si.rootSig    = m_rootSignature.get();
+            si.slices     = slices.data();
+            si.sliceCount = m_numSpotShadowSlots;
+            si.drawDepth  = shadowDepth(/*skipRtCovered*/ false);
+            ShadowMapPass(std::move(si)).Execute(passCtx);
         }
 
         // ===== ポイントライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowPoint灯）=====
@@ -4559,17 +4573,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 {0, 1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {0, 1, 0}, {0, 1, 0},
             };
 
-            m_commandList->TransitionResource(m_pointShadowMap.Get(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-            D3D12_VIEWPORT pointVp{};
-            pointVp.Width = pointVp.Height = static_cast<f32>(kPointShadowMapSize);
-            pointVp.MinDepth = 0.0f;
-            pointVp.MaxDepth = 1.0f;
-            D3D12_RECT pointScissor = {0, 0, static_cast<LONG>(kPointShadowMapSize), static_cast<LONG>(kPointShadowMapSize)};
-            nativeCmdList->RSSetViewports(1, &pointVp);
-            nativeCmdList->RSSetScissorRects(1, &pointScissor);
-
+            std::array<ShadowMapPass::Slice, kMaxShadowPoint * 6> slices{};
             auto& reg = m_scene->GetRegistry();
             for (u32 i = 0; i < m_numPointShadowSlots; ++i)
             {
@@ -4586,18 +4590,19 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 {
                     XMMATRIX faceView = XMMatrixLookToLH(pos, XMLoadFloat3(&kFaceDir[f]), XMLoadFloat3(&kFaceUp[f]));
                     u32 slice = i * 6 + f;
-                    m_commandList->ClearDepthStencil(m_pointShadowDsvHandles[slice]);
-                    nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_pointShadowDsvHandles[slice]);
-                    RenderDepthOnlyScene(faceView * faceProj, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                         /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                         m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
-                                         /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
-                                         &shadowMaskPsos);
+                    slices[slice].dsv = m_pointShadowDsvHandles[slice];
+                    XMStoreFloat4x4(&slices[slice].viewProj, faceView * faceProj);
                 }
             }
-
-            m_commandList->TransitionResource(m_pointShadowMap.Get(),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            ShadowMapPass::Inputs pi{};
+            pi.name       = "PointShadows";
+            pi.map        = m_pointShadowMap.Get();
+            pi.size       = kPointShadowMapSize;
+            pi.rootSig    = m_rootSignature.get();
+            pi.slices     = slices.data();
+            pi.sliceCount = m_numPointShadowSlots * 6;
+            pi.drawDepth  = shadowDepth(/*skipRtCovered*/ false);
+            ShadowMapPass(std::move(pi)).Execute(passCtx);
         }
 
         // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
@@ -4606,48 +4611,31 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // forward の t4 バインドは有効（センチネルで読まれないので未クリアでも安全）。
         if (m_scene && m_scene->GetShadowsEnabled() && !viewOrtho)
         {
-            // 配列リソース全体を一括で DEPTH_WRITE へ遷移（カスケードループの外で1回）
-            m_commandList->TransitionResource(m_shadowMap.Get(),
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-            // シャドウマップ用ビューポート（全カスケード共通＝各スライス同サイズ正方）
-            D3D12_VIEWPORT shadowVp{};
-            shadowVp.Width    = static_cast<f32>(m_shadowMapSize);
-            shadowVp.Height   = static_cast<f32>(m_shadowMapSize);
-            shadowVp.MinDepth = 0.0f;
-            shadowVp.MaxDepth = 1.0f;
-            D3D12_RECT shadowScissor = {0, 0, static_cast<LONG>(m_shadowMapSize), static_cast<LONG>(m_shadowMapSize)};
-            nativeCmdList->RSSetViewports(1, &shadowVp);
-            nativeCmdList->RSSetScissorRects(1, &shadowScissor);
-
-            CpuScopeTimer _tShadow(cpuSlot(CpuShadowRec)); DX12_PROFILE_ZONE_N("Rec/Shadows");
+            // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
+            // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
+            // ★RT サン影が有効なフレームは、CSM は「RT が担当できないもの」だけを描く
+            //   （スキンド / 半透明）。担当を排他にすることで、フォワードの min() 合成が
+            //   静的ジオメトリのアクネ・peter-panning・カスケード境界を完全に消す。
+            //   副産物として CSM のドロー数も大きく減る。
+            // texelWorld = このカスケードの 1 テクセルが何メートルか。遠カスケードほど大きくなり、
+            //   そこへフル解像度のメッシュを投げる無駄を passLod が落とす。
+            std::array<ShadowMapPass::Slice, kNumCascades> slices{};
             for (u32 ci = 0; ci < kNumCascades; ++ci)
             {
-                XMMATRIX cascadeVP = XMLoadFloat4x4(&m_cascadeViewProj[ci]);
-
-                m_commandList->ClearDepthStencil(m_shadowDsvHandles[ci]);
-                // RTVなし、DSVのみ（該当カスケードのスライス）
-                nativeCmdList->OMSetRenderTargets(0, nullptr, FALSE, &m_shadowDsvHandles[ci]);
-
-                // skinningBuffer はフレーム先頭で全 SkeletalAnimation を一括 Update 済み
-                // （シャドウパスは影OFF/正射カメラでスキップされるため、ここでは更新しない）。
-                // ★RT サン影が有効なフレームは、CSM は「RT が担当できないもの」だけを描く
-                //   （スキンド / 半透明）。担当を排他にすることで、フォワードの min() 合成が
-                //   静的ジオメトリのアクネ・peter-panning・カスケード境界を完全に消す。
-                //   副産物として CSM のドロー数も大きく減る。
-                // このカスケードの 1 テクセルが何メートルか。遠カスケードほど大きくなり、
-                //   そこへフル解像度のメッシュを投げる無駄を passLod が落とす。
-                const f32 texelWorld = 2.0f * m_cascadeRadius[ci] / static_cast<f32>(m_shadowMapSize);
-                RenderDepthOnlyScene(cascadeVP, *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
-                                     /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
-                                     m_shadowPipelineStateInst.get(), /*prepass*/ nullptr,
-                                     /*skipRtCovered*/ m_rtShadowActiveThisFrame,
-                                     /*cascadeTexelWorld*/ texelWorld,
-                                     &shadowMaskPsos);
+                slices[ci].dsv        = m_shadowDsvHandles[ci];
+                slices[ci].viewProj   = m_cascadeViewProj[ci];
+                slices[ci].texelWorld = 2.0f * m_cascadeRadius[ci] / static_cast<f32>(m_shadowMapSize);
             }
-
-            m_commandList->TransitionResource(m_shadowMap.Get(),
-                D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            ShadowMapPass::Inputs csmIn{};
+            csmIn.name       = "Csm";
+            csmIn.map        = m_shadowMap.Get();
+            csmIn.size       = m_shadowMapSize;
+            csmIn.rootSig    = m_rootSignature.get();
+            csmIn.slices     = slices.data();
+            csmIn.sliceCount = kNumCascades;
+            csmIn.drawDepth  = shadowDepth(/*skipRtCovered*/ m_rtShadowActiveThisFrame);
+            CpuScopeTimer _tShadow(cpuSlot(CpuShadowRec)); DX12_PROFILE_ZONE_N("Rec/Shadows");
+            ShadowMapPass(std::move(csmIn)).Execute(passCtx);
         }
 
         gpuEnd(GpuTimer::Shadows);
@@ -4990,17 +4978,6 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         m_commandList->ClearDepthStencil(depthDsv);
     // ★RT / ビューポート / PSO はここでは張らない。この先の段（IRenderPass）は使うものを
     //   入口で自分で張る（renderer/RenderPass.h の状態の契約）。
-
-    // ここから先のパスが共有する実行文脈。深度はこのビューが追いかける（パスは入口で要る状態を
-    // Require する。追跡の外へ出す前にビューが DEPTH_WRITE へ戻す）。
-    TrackedState depthState{depthRes, D3D12_RESOURCE_STATE_DEPTH_WRITE};
-    RenderPassContext passCtx{};
-    passCtx.cmd        = m_commandList.get();
-    passCtx.native     = nativeCmdList;
-    passCtx.srvHeap    = m_srvHeap.get();
-    passCtx.frameIndex = frameIndex;
-    passCtx.timer      = primary ? m_gpuTimer.get() : nullptr;
-    passCtx.depth      = &depthState;
 
     // PerFrame CB（ライト本体はクラスタードライティングの StructuredBuffer(t13) 側）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること

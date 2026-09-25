@@ -31,6 +31,38 @@ class GraphicsDevice;
 struct DdgiSettings;
 struct VolumetricFogSettings;
 
+// ---- 影マップ（スポット配列 / ポイントのキューブ配列 / CSM の各スライスへ深度だけを描く）------
+// 1 枚の深度リソースの複数スライス（DSV）へ、それぞれの viewProj で深度を描く。
+// ★影マップの既定の置き場は PIXEL_SHADER_RESOURCE（Forward / フォグが読む）。入口で DEPTH_WRITE へ、
+//   出口で戻す（契約どおり）。描く中身（描画リスト / PSO / MASK）は drawDepth（呼び出し側）に任せる。
+class ShadowMapPass final : public IRenderPass
+{
+public:
+    struct Slice
+    {
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+        DirectX::XMFLOAT4X4         viewProj{};      // 非転置
+        float                       texelWorld = 0.0f;   // CSM だけ: 1 テクセルが何 m か（遠い LOD 落とし用）
+    };
+    struct Inputs
+    {
+        const char*     name    = "ShadowMap";
+        ID3D12Resource* map     = nullptr;
+        u32             size    = 0;          // スライスは正方形（ビューポート / シザー）
+        RootSignature*  rootSig = nullptr;    // 深度パスのルートシグネチャ（メインと共用）
+        const Slice*    slices  = nullptr;
+        u32             sliceCount = 0;
+        std::function<void(const Slice&)> drawDepth;
+    };
+    explicit ShadowMapPass(Inputs in) : m_in(std::move(in)) {}
+    const char* Name() const override { return m_in.name; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override;
+    void Execute(const RenderPassContext& ctx) override;
+
+private:
+    Inputs m_in;
+};
+
 // ---- クラスタライトカリング（compute 2 パス）-------------------------------------------
 // cull=false（正射 / 設定 OFF / 副ビュー）でもテーブルはバインドされるので読取状態にだけする。
 class ClusterCullPass final : public IRenderPass
