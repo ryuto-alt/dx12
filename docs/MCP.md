@@ -480,7 +480,7 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 |--------|--------|--------|
 | `dx12_asset_gap` | `{includePlaceholders?:bool=true}` | `{missing:[{entityId,name,modelPath}], placeholders:[{entityId,name,primitive,sizeHint}], count, next}` ※参照切れ(modelPath があるのにファイルが無い)と、プリミティブで代用しているだけの仮置きを集める。Blender で作り始める前の入口 |
 | `dx12_validate_layout` | `{fix?:"none"\|"safe"\|"all"(既定 none), tolerance?:f=0.001}` | `{pass, checked, errors, warnings, fixed, issues:[{kind, level, entityId, name, otherEntityId?, text, fixed}]}` ※埋まり(BURIED)/浮き(FLOATING)/ちらつき(Z_FIGHT)/深いめり込み(OVERLAP)/二重配置(DUPLICATE)/当たり判定欠落(NO_COLLIDER・COLLIDER_WITHOUT_BODY)/スケール異常(SCALE_ANOMALY・NAN_TRANSFORM)を数値で拾う。Editor 限定(Playing 中は MODE_CONFLICT)。★`COLLIDER_WITHOUT_BODY` はこのエンジン固有の罠(boxCollider だけでは Jolt に載らず床をすり抜ける)。`fix:'safe'` で BURIED/FLOATING・Z_FIGHT・COLLIDER_WITHOUT_BODY を自動修正。DUPLICATE は取り返しがつかないので報告のみ |
-| `dx12_polish_audit` | `{screenshot?:bool=true, only?:("light"\|"air"\|"grade"\|"motion"\|"material"\|"contact"\|"image")[], sampleMeshes?:int=24}` | `{score, verdict, findings:[{category, severity, what, why, fix}], facts}` ※高品質な絵に必ず入っている要素が揃っているかを測り、足りないものを効く順(光→空気→階調→動き→素材→接地)で返す。各指摘に「なぜ安っぽく見えるか」と「次に撃つコマンド」が付く。★`dx12_diagnose` は壊れているか、`dx12_look_compare` は参照画像との差を見る道具で、これは参照画像なしに「作りかけに見える理由」を言うためのもの |
+| `dx12_polish_audit` | `{screenshot?:bool=true, only?:("light"\|"air"\|"grade"\|"motion"\|"material"\|"contact"\|"image")[], sampleMeshes?:int=24, judge?:bool=true}` | `{score, verdict, findings:[{code, category, severity, what, why, fix}], facts, judge?:{source, briefFit, findings:[{code, intended, keep}], nextFix:{id, tool, args, confidence}, uncertain[], scoreExcludingKept, briefMissing?}}` ※高品質な絵に必ず入っている要素が揃っているかを測り、足りないものを効く順(光→空気→階調→動き→素材→接地)で返す。各指摘に「なぜ安っぽく見えるか」と「次に撃つコマンド」が付く。★`dx12_diagnose` は壊れているか、`dx12_look_compare` は参照画像との差を見る道具で、これは参照画像なしに「作りかけに見える理由」を言うためのもの。★`judge` は判断段(§4-16): 同じ指摘を作品の意図(Brief)に照らして仕分け、意図どおりのもの(`keep:true`)は直さない。`judge:false` で止まる |
 
 ### 4-14. Blender 連携(自動起動 → PBR素材/仕上げ → 規約どおり書き出し → 実寸検証)
 
@@ -522,6 +522,25 @@ Jev(TypeSafe System One)は文章を生成せず型付きの判断(noul / choice
 | `dx12_jev_ask` | `{question?:string, questions?:(string\|{id, vars?})[], vars?:object, context?:object, raw?:{state, questions}, cache?:"use"\|"only"\|"off"}` | `{results:[{id, question, version, type, source:"jev"\|"cache"\|"rules"\|"error", value, probabilities?, confidence?, decided?, uncertain?, reason?, error?, briefMissing?}], requests, usd, inputTokens, ms, briefMissing, keyPresent, briefFrom?, next?}` ※質問ライブラリ(組み込み `tools/mcp-server/jev/questions/` + プロジェクト `assets/jev/`)の質問を聞く。context から質問ごとに要るフィールドだけを state に射影し、同じ state の質問は 1 リクエストに束ねる。context に brief が無ければ brief.json を自動で入れる。`raw` は質問ファイルを使わない直接質問。★`uncertain:true` は境界付近＝Claude がスクショを見て決める |
 | `dx12_jev_eval` | `{question?:string, casesPath?:string, cache?:"use"\|"only"\|"off"}` | `{question, version, type, n, accuracy, rulesAccuracy, margin?:{yesMin, noMax, margin, suggestedThreshold}, mae?, confusion?, threshold, wrong, uncertainCount, sources, usd, inputTokens, draftLabels, cases[]}`(省略時は `{reports[], usd}`) ※評価ケース(`*.cases.json`)を流して質問文の良し悪しを測る。★noul の margin が負＝分布が重なっている＝閾値ではなく質問文を直す。rulesAccuracy は同じケースをルールで答えた場合の正解率 |
 | `dx12_jev_status` | `{}` | `{keyPresent, model, endpoint, baseDir, jevDir, brief, questions:[{id, version, type, origin, cases, file}], questionErrors, log:{requests, errors, cacheHits, inputTokens, outputTokens, usd}, cacheEntries}` ※鍵の有無(値は出さない)・質問一覧・`<baseDir>/.dx12/jev/log.jsonl` からの累計費用・キャッシュ件数 |
+
+**仕組み**
+
+- 流れは「エンジンが測る → 数値を言葉にする(`jev/wordify.ts`) → Jev が型で判断する → Claude が直す」。
+  Jev は数値の大小・近さに弱い(公式 model-jaggedness)ので、比較は TS で済ませて **state には言葉だけ**を入れる
+  (「平均輝度 0.07」ではなく「とても暗い」)。元の数値は結果の `raw` / `facts` に残す。ビンの境界は `BINS` の 1 か所で、
+  polish の閾値(眠い 0.35 / 白飛び 8% / 真っ黒 35% / 彩度 0.08)と揃えてある。
+- 質問は `tools/mcp-server/jev/questions/*.jevq.json`: `{id, version, type, instructions, criteria?, state:["brief","facts.look",…],
+  threshold?:{yes?, pass?, minConfidence?, band?}, fallback?, cases?, notes?, lookup?}`。質問文は英語、state は日本語でよい。
+  同じ id をプロジェクトの `assets/jev/` に置くとそちらが勝つ。
+- **state は質問ごとに要るフィールドだけへ射影し、射影が同じ質問は 1 リクエストに束ねる**(並列評価なので遅延は増えない)。
+  `dx12_polish_audit` の 3 種(`look.brief_fit` / `look.next_fix` / 指摘ごとの `finding.intended`)は state が共通なので 1 往復。
+- キャッシュ: `<baseDir>/.dx12/jev/cache/`(キー = 質問 id + 版 + モデル + 質問本文 + 正規化 state)。
+  `cache:"only"` はネットに出ない(無ければルール)。記録: `<baseDir>/.dx12/jev/log.jsonl` に 1 行 1 リクエスト(state 本文は書かない)。
+- 閾値は評価ケースで決める: noul の `yes` は margin の境界の中点(肯定側が甘いので 0.5 にしない)。score は段の番号より合否(`pass`)を使う
+  (強く合う絵を 3.2〜3.4 と控えめに付ける癖がある)。choice は `minConfidence` 未満を uncertain にする。
+  根拠(日付・件数・margin・直した回数)は各質問ファイルの `notes`。実 API での再測定は `node tools/mcp-server/jev/runEval.ts --cache off`。
+- 2026-09-25 時点の実測(ラベルは claude-draft): `finding.intended` 正解率 1.0・margin +0.13〜+0.19(ルールだけなら 0.52) /
+  `look.brief_fit` 合否 16/16・合否 margin 0.95〜1.13 / `look.next_fix` 正解率 0.79〜0.84(ルールだけなら 0.21)、外れは全部 uncertain。
 
 ---
 

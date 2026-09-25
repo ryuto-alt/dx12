@@ -1810,6 +1810,43 @@ PBR が既定のまま / SSAO 無し / 眠い絵（実効レンジ < 0.35）/ �
 **読めなかった項目は判定しない**（「読めなかった」を「無い」と決めつけない）ので、
 Play 中や一部 API が使えない状況でも嘘を言わない。
 
+### Jev の判断段と Brief — 「良し悪し」は作品の意図に照らして決める
+
+`dx12_polish_audit` のルールは「高品質な絵に必ず入っている要素」が無いと全部指摘する。
+**ホラーの黒つぶれも、明るいパズルの黒つぶれも同じ重さで「直せ」と言う**ので、そのまま従うと
+作品の意図を壊す方向へ直してしまう。判断段はそこを Brief(作品の意図)に照らして仕分ける。
+
+```
+# ① 最初に 1 回だけ、作品の意図を書く(<baseDir>/brief.json)
+dx12_brief(action:"set", brief:{
+  genre:"一人称ホラー", mood:["暗い","息苦しい"],
+  player_should_feel:"懐中電灯の外に何かいる気がして、進むのが怖い",
+  avoid:["明るく均一な照明","鮮やかな色"], light_budget:"懐中電灯と弱い電球だけ"})
+
+# ② いつもどおり撃つ。judge が増えている
+dx12_polish_audit()
+# → {score, verdict, findings:[{code:"CRUSHED_BLACKS", …}],
+#    judge:{source:"jev", briefFit:{value:3.8, level:"よく合う"},
+#           findings:[{code:"CRUSHED_BLACKS", intended:0.8, keep:true}, {code:"NO_FOG", intended:0.2, keep:false}],
+#           nextFix:{id:"add_fog", tool:"dx12_set_volumetric_fog", args:{enabled:true, density:0.02, anisotropy:0.5}},
+#           uncertain:[], scoreExcludingKept:94}}
+```
+
+- **`keep:true` の指摘は直さない**(Brief に照らすと意図どおり)。`nextFix` はそのまま撃てる形で返る
+  (`<対象>` のような山括弧だけは自分で埋める)。撃ったら `dx12_polish_audit` を撃ち直して確かめる。
+- **`uncertain` に何か入っていたら、そこは自分(Claude)が `dx12_screenshot_final` の絵を見て決める。**
+  閾値付近・confidence が低い・2 つの判断が食い違った(「意図どおり」と言った指摘を直そうとしている等)ものが入る。
+  実測では外れた判断は全部 uncertain 側に出ていた(自動で直してよいのは uncertain が空のときだけ)。
+- **Brief が無い / 鍵(`TYPESAFE_API_KEY`)が無い / Jev が落ちている → `judge.source:"rules"`** で
+  従来の結論(効く順の先頭を直す)がそのまま入る。分岐しなくてよい。Brief が無いときは `briefMissing:true`
+  が付くので、ユーザーに意図を聞いて `dx12_brief` で書くこと。
+- Jev は**数値の大小に弱い**ので、判断材料は言葉にしてから渡している(`facts.words` に渡した語が出る)。
+  自分で `dx12_jev_ask` を使うときも数値をそのまま context に入れないこと。
+- 質問文は `tools/mcp-server/jev/questions/*.jevq.json`(プロジェクトの `assets/jev/` に同じ id を置けば上書き)。
+  直したら **`dx12_jev_eval`** で margin(noul: yes 群の最小 − no 群の最大)を測る。**負なら閾値ではなく質問文を直す。**
+- 費用は `dx12_jev_status` の `log.usd`(入力 $0.042/100 万トークン、出力無料)。実測で polish_audit 1 回 = 1 リクエスト・3,000〜4,500 トークン(指摘の数で増える)≈ $0.0002・0.5〜0.7 秒。
+- Jev は開発時専用。配布ゲームには入らない。
+
 ### ワークフロー: 壊れてないか 1 発で確認する
 
 ```
