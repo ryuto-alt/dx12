@@ -99,6 +99,23 @@ export const BINS = {
     edges: [0.5, 0.9],
     words: ["下の方が埋まっている", "半分以上埋まっている", "ほぼ全部埋まっている"],
   },
+
+  // ── プレイ(jev/playJudge.ts の区間の事実) ──
+  /** 見回しの速さ(yaw の変化量の合計 / 秒、度)。 */
+  lookRate: {
+    edges: [15, 45, 90],
+    words: ["ほとんど見回さない", "少し見回す", "よく見回す", "激しく見回す"],
+  },
+  /** ゴールまでの水平距離(m)。autoplay の到達判定(1.5m)より十分外を「目の前」の上限にする。 */
+  goalDistance: {
+    edges: [3, 15, 50],
+    words: ["目の前", "近い", "遠い", "とても遠い"],
+  },
+  /** 1 回のプレイの長さ(秒)。 */
+  playLength: {
+    edges: [20, 90, 300],
+    words: ["とても短い", "短い", "普通", "長い"],
+  },
 } as const satisfies Record<string, Bin>;
 
 export type BinName = keyof typeof BINS;

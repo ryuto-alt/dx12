@@ -74,6 +74,9 @@ import { judgePolish, wordifyLook } from "./jev/polishJudge.ts";
 import { UI_SCREENS, judgeUi } from "./jev/uiJudge.ts";
 import { collectLayoutContext, judgeLayout } from "./jev/layoutJudge.ts";
 import { JEV_RULES } from "./jev/rules.ts";
+import {
+  eventsFromSteps, fromSession, judgePlay, pointsFromTrace, type PlayInput, type Vec3 as PlayVec3,
+} from "./jev/playJudge.ts";
 
 // DX12 ゲームエンジン用 MCP サーバ。Codex / Claude Code から接続し、
 // 起動中のエディタ(TCP 127.0.0.1:<port>)を叩いてゲームを作っていくための入口。
@@ -1135,16 +1138,54 @@ reg(
   () => run(() => engine.call("stop", {})),
 );
 
-reg(
+// ── プレイテストの判断段(jev/playJudge.ts)──────────────────────────
+// ★到達判定・リプレイ比較の合否はルールのまま。Jev は「なぜ・どれくらい困っているか」の説明だけ。
+//   judge を返すのは get_play_session / record_playtest(人のプレイ: 困り度 + 原因)と
+//   autoplay / run_playtests(機械の軌跡: 原因だけ。機械は迷わないので困り度は聞かない)。
+
+/** 目標の座標(goal をそのまま / goalName は子を含む AABB の中心)。分からなければ null。 */
+async function goalPosition(goal?: number[], goalName?: string): Promise<PlayVec3 | null> {
+  if (Array.isArray(goal) && goal.length >= 3) return [goal[0], goal[1], goal[2]];
+  if (!goalName) return null;
+  const b = await engine.call("get_bounds", { name: goalName, includeChildren: true }).catch(() => null) as any;
+  return Array.isArray(b?.center) ? [b.center[0], b.center[1], b.center[2]] : null;
+}
+
+/** プレイの判断段(Brief を読んで 1 往復)。例外は投げない。 */
+async function judgePlayFor(input: PlayInput): Promise<unknown> {
+  const baseDir = await jevProjectBaseDir();
+  const brief = baseDir ? readBrief(baseDir).brief : null;
+  return judgePlay({ ...input, brief, askOptions: { baseDir } })
+    .catch((e: any) => ({ source: "rules", reason: `判断段で想定外の失敗: ${e?.message ?? e}` }));
+}
+
+regRaw(
   "dx12_get_play_session",
-  "人間のプレイ記録を取る",
-  "直近の Play 1 回ぶんの記録を返す。★dx12_play を押した時点で自動的に記録が始まる(開始ツールは無い)。Stop 後も次の Play まで残るので、人間に遊んでもらってから取りに来ればよい。返る形: {started, recording, durationSec, frames, fpsMin, summary:{errors,warnings,inputEvents,...}, events:[{t,kind,detail}], samples:[{t,fps,camPos,camYaw,camPitch,mouse}]}。kind は key_down/key_up/pad_down/pad_up(操作) と error/warn/lua(ログ)。detail のキー名は dx12_key_press にそのまま渡せる。samples は 10Hz。★挙動のデバッグは AI が合成入力で動かすより、人間に遊ばせてこれを読む方が正確。",
   {
-    maxEvents: z.number().int().optional().describe("返すイベント数の上限(既定 400、最大 8000)。新しい方から残す。"),
-    maxSamples: z.number().int().optional().describe("返すサンプル数の上限(既定 200、最大 4000)。新しい方から残す。"),
+    title: "人間のプレイ記録を取る",
+    description:
+      "直近の Play 1 回ぶんの記録を返す。★dx12_play を押した時点で自動的に記録が始まる(開始ツールは無い)。Stop 後も次の Play まで残るので、人間に遊んでもらってから取りに来ればよい。返る形: {started, recording, durationSec, frames, fpsMin, summary:{errors,warnings,inputEvents,...}, events:[{t,kind,detail}], samples:[{t,fps,camPos,camYaw,camPitch,mouse}], judge?}。kind は key_down/key_up/pad_down/pad_up(操作) と error/warn/lua(ログ)。detail のキー名は dx12_key_press にそのまま渡せる。samples は 10Hz。★挙動のデバッグは AI が合成入力で動かすより、人間に遊ばせてこれを読む方が正確。"
+      + "★judge は判断段: 区間ごとの事実(止まっていた割合・進もうとして動けない割合・行き来・落下・戻された回数・見回し・その場ジャンプ・ゴールへの進み)を言葉にして"
+      + "作品の意図(dx12_brief)と一緒に Jev へ 1 往復で聞き、{source, confusion:{value(0..4), level, troubled}, cause:{id, label, hint, confidence}, words, uncertain[{id, why, look}], cost} を返す。"
+      + "ホラーの慎重な歩きのように Brief が狙う振る舞いは困りごとに数えない。goal / goalName を渡すとゴールへの進みも数える。judge:false で止める。",
+    inputSchema: {
+      maxEvents: z.number().int().optional().describe("返すイベント数の上限(既定 400、最大 8000)。新しい方から残す。"),
+      maxSamples: z.number().int().optional().describe("返すサンプル数の上限(既定 200、最大 4000)。新しい方から残す。"),
+      goal: v3().optional().describe("判断段用: ゴールの座標(ゴールへの進みと残りの距離を数える)。"),
+      goalName: z.string().optional().describe("判断段用: ゴールのエンティティ名(goal の代わり)。"),
+      judge: z.boolean().optional().describe("false で判断段(Jev に Brief と照らして聞く段)を止める。既定 true。"),
+    },
+    outputSchema: OUT,
+    annotations: { title: "人間のプレイ記録を取る", readOnlyHint: true, openWorldHint: true },
   },
-  { readOnlyHint: true },
-  ({ maxEvents, maxSamples }) => run(() => engine.call("get_play_session", { maxEvents, maxSamples })),
+  ({ maxEvents, maxSamples, goal, goalName, judge }) => run(async () => {
+    const s = await engine.call("get_play_session", { maxEvents, maxSamples });
+    if (judge === false || !s?.started) return s;
+    // ★判断は間引いていない全体で数える(返す本体は従来どおり maxEvents / maxSamples で切ったもの)。
+    const full = (maxEvents ?? 0) >= 8000 && (maxSamples ?? 0) >= 4000
+      ? s : await engine.call("get_play_session", { maxEvents: 8000, maxSamples: 4000 });
+    return { ...s, judge: await judgePlayFor(fromSession(full, await goalPosition(goal, goalName))) };
+  }),
 );
 
 // ── 入力シミュレーション(Playing 中の挙動確認用)─────────────────
@@ -2489,9 +2530,10 @@ reg(
     jumpKey: z.string().optional().describe("ジャンプキー(既定 SPACE)。"),
     arriveRadius: z.number().optional().describe("到達とみなす距離(既定 1.5m)。"),
     timeoutSec: z.number().optional().describe("打ち切り時間(既定 60 秒ぶんのシミュレーション)。"),
+    judge: z.boolean().optional().describe("false で判断段(届かなかった原因を Jev に聞く段)を止める。既定 true。"),
   },
   { destructiveHint: false },
-  ({ goal, goalName, player, forwardKey, jumpKey, arriveRadius, timeoutSec }) =>
+  ({ goal, goalName, player, forwardKey, jumpKey, arriveRadius, timeoutSec, judge }) =>
     run(async () => {
       const fwd = forwardKey ?? "W";
       const jmp = jumpKey ?? "SPACE";
@@ -2531,7 +2573,9 @@ reg(
       let t = 0;
       let wi = 0;
       let stuckFor = 0;
-      let last = here.pos;
+      // ★last は位置の配列ではなくサンプル(下で last.pos を読む)。以前は here.pos を入れていて、
+      //   最初の 1 歩で last.pos[0] が undefined になり autoplay が必ず例外で落ちていた(e2e で発覚)。
+      let last = here;
       await engine.call("key_down", { key: fwd });
       try {
         while (t < limit && wi < waypoints.length) {
@@ -2552,14 +2596,14 @@ reg(
           trace.push(after);
 
           const moved = Math.hypot(after.pos[0] - last.pos[0], after.pos[2] - last.pos[2]);
-          last = after.pos;
+          last = after;
           if (moved < 0.05) {
             stuckFor += 12 * dt;
             // 段差かもしれないので跳んでみる
             if (stuckFor > 0.4) { await engine.call("key_press", { key: jmp }); }
             if (stuckFor > 3.0) {
               await engine.call("key_up", { key: fwd });
-              return {
+              const stuck = {
                 cleared: false, player: name, goal: target, notes,
                 stuckAt: after.pos, stuckAtWaypoint: wi, waypoints, trace,
                 elapsedSec: Number(t.toFixed(2)),
@@ -2567,6 +2611,9 @@ reg(
                 next: "その座標を dx12_screenshot_from で見る。壁・段差・隙間のどれかが塞いでいる。" +
                       "dx12_check_reachable で区間の登り/隙間も確認できる",
               };
+              // 判断段: なぜ詰まったか(原因だけ。機械は迷わないので困り度は聞かない)
+              if (judge === false) return stuck;
+              return { ...stuck, judge: await judgePlayFor({ kind: "autoplay", points: pointsFromTrace(trace), goal: target, cleared: false }) };
             }
           } else stuckFor = 0;
         }
@@ -2577,7 +2624,7 @@ reg(
       const end = await sampleState(name, t);
       const remain = Math.hypot(end.pos[0] - target[0], end.pos[2] - target[2]);
       const cleared = remain < radius;
-      return {
+      const result = {
         cleared, player: name, goal: target, finalPos: end.pos, notes,
         remainingDistance: Number(remain.toFixed(2)),
         waypointsReached: wi, waypoints: waypoints.length, trace,
@@ -2585,6 +2632,9 @@ reg(
         ...(cleared ? {} : { reason: `打ち切り(${limit}s)までにゴールへ届かなかった`,
                              next: "timeoutSec を伸ばすか、dx12_check_reachable で経路の問題を見る" }),
       };
+      // 判断段は届かなかったときだけ(届いたなら説明することが無い)
+      if (judge === false || cleared) return result;
+      return { ...result, judge: await judgePlayFor({ kind: "autoplay", points: pointsFromTrace(trace), goal: target, cleared }) };
     }),
 );
 
@@ -2663,9 +2713,11 @@ reg(
     endTolerance: z.number().optional().describe("終点のずれの許容(m)。既定 1.0（実測のゆらぎは 0.002m）。"),
     pathTolerance: z.number().optional().describe("経路のずれの許容(m)。既定 2.0。ランダム要素があるゲームは緩める。"),
     note: z.string().optional().describe("何を確かめるテストかのメモ。"),
+    goalName: z.string().optional().describe("判断段用: ゴールのエンティティ名(人のプレイがゴールへ近づいたかを数える)。"),
+    judge: z.boolean().optional().describe("false で判断段(人のプレイの困り度と原因を Jev に聞く段)を止める。既定 true。"),
   },
   { destructiveHint: false },
-  ({ name, endTolerance, pathTolerance, note }) =>
+  ({ name, endTolerance, pathTolerance, note, goalName, judge }) =>
     run(async () => {
       const ping = await engine.call("ping", {});
       const session = await engine.call("get_play_session", { maxEvents: 8000, maxSamples: 4000 });
@@ -2694,7 +2746,11 @@ reg(
       const { dir, file } = await playtestPaths(name);
       await fs.promises.mkdir(dir, { recursive: true });
       await fs.promises.writeFile(file!, JSON.stringify(pt, null, 2), "utf8");
+      // 判断段: 人が遊んだ記録そのもの(再生ではない)がどれくらい困っていたか。保存の成否には関係しない。
+      const judged = judge === false ? undefined
+        : await judgePlayFor(fromSession(session, await goalPosition(undefined, goalName)));
       return {
+        ...(judged !== undefined ? { judge: judged } : {}),
         saved: file, name: safeName(name), scene: pt.scene,
         durationSec: Number(pt.durationSec.toFixed(2)),
         inputs: pt.steps.length, samples: pt.reference.length,
@@ -2710,9 +2766,10 @@ reg(
   "保存済みの .playtest を再生して、記録どおりに動くか確かめる。キー列は記録どおり、向きは記録した yaw をマウス注入の閉ループで追いかける(記録にあるのは 10Hz の角度であって毎フレームのマウス移動量ではないため、移動量の流し直しはできない)。落ちたときは【いつ・どれだけ】ずれたかを返す: 『t=4.20s で経路が 6.10m ずれた』『終点が 8.30m ずれた(記録は [0,1.6,20]、今回は [3,0.1,12])』。ジャンプ力を変えた・コライダーをずらした・Lua を直した、でステージがクリアできなくなったのを機械が拾うための機能。name 省略で全部走らせる。",
   {
     name: z.string().optional().describe("走らせるテスト名。省略で全部。"),
+    judge: z.boolean().optional().describe("false で判断段(落ちたテストの原因を Jev に聞く段)を止める。既定 true。"),
   },
   { destructiveHint: false },
-  ({ name }) =>
+  ({ name, judge }) =>
     run(async () => {
       const { dir } = await playtestPaths();
       let files: string[];
@@ -2726,7 +2783,8 @@ reg(
       }
       if (files.length === 0) throw new Error(`該当する .playtest が無い（${dir}）`);
 
-      const results = [];
+      const results: any[] = [];
+      const judgeLater: { index: number; input: PlayInput }[] = [];
       for (const f of files) {
         const raw = JSON.parse(await fs.promises.readFile(path.join(dir, f), "utf8"));
         const bad = validatePlaytest(raw);
@@ -2735,13 +2793,21 @@ reg(
           continue;
         }
         const pt = raw as PlaytestFile;
-        const { verdict } = await replayPlaytest(pt);
+        const { verdict, trace } = await replayPlaytest(pt);
         results.push({
           name: pt.name, scene: pt.scene, pass: verdict.pass,
           endDistance: verdict.endDistance, maxDeviation: verdict.maxDeviation,
           maxDeviationAt: verdict.maxDeviationAt, reasons: verdict.reasons,
         });
+        // 落ちたものだけ、なぜ落ちたか(原因)を後でまとめて聞く(再生はエンジンを占有するので先に全部回す)
+        if (!verdict.pass && judge !== false) {
+          judgeLater.push({ index: results.length - 1, input: {
+            kind: "replay", points: pointsFromTrace(trace), events: eventsFromSteps(pt.steps as any), deviation: verdict,
+          } });
+        }
       }
+      const judged = await Promise.all(judgeLater.map((j) => judgePlayFor(j.input)));
+      judgeLater.forEach((j, i) => { results[j.index].judge = judged[i]; });
       const failed = results.filter((r) => !r.pass);
       return {
         ran: results.length, passed: results.length - failed.length, failed: failed.length,

@@ -7,6 +7,9 @@
  *        judge:false で Jev に出ない。Brief が無ければ judge.source="rules" + briefMissing。
  *   [layout] dx12_validate_layout: 聞く種類(OVERLAP 等)だけが 1 往復で届き、明らかな欠陥(Z_FIGHT)は聞かない。
  *        大きさはその物だけ get_bounds で測る。エンジンの結果(pass / errors / issues)は壊れない。judge:false で止まる。
+ *   [play] get_play_session / record_playtest(人のプレイ: 困り度 + 原因の 2 問)と autoplay / run_playtests
+ *        (機械の軌跡: 原因の 1 問だけ)に judge が付く。到達・再生の合否はルールのまま変わらない。
+ *        偽エンジンは W を押している間だけプレイヤーを前へ進める(blocked のときは進まない=詰まり)。
  *
  * 実行: node jev/judgeTools.test.ts
  */
@@ -58,13 +61,56 @@ const ENTS = [
 ];
 const hierNode = (id: number): any => ({ entityId: id, children: ENTS.filter((e) => e.parent === id).map((e) => hierNode(e.entityId)) });
 
+// ── 偽エンジンのプレイヤー: W を押している間だけ +Z へ 4m/s。blocked のときは動かない(壁に詰まった) ──
+const sim = { mode: "Editor", held: new Set<string>(), pos: [0, 1, 0] as number[], blocked: false };
+const resetSim = () => { sim.held.clear(); sim.pos = [0, 1, 0]; };
+// 人のプレイ記録(10Hz・5 秒): W で前へ進み、途中で 2 回 8m 落ちて戻される
+const HUMAN_SESSION = (() => {
+  const samples: any[] = [];
+  let z = 0, y = 1.6;
+  for (let i = 0; i <= 150; i++) {
+    const t = i / 10;
+    if ((i > 30 && i <= 40) || (i > 90 && i <= 100)) y -= 0.8;          // 1 秒で 8m 落ちる
+    else if (i === 41 || i === 101) { y = 1.6; z = 0; }                  // 戻される
+    else z += 0.4;
+    samples.push({ t, fps: 60, camPos: [0, y, z], camYaw: 0, camPitch: 0, mouse: [0, 0] });
+  }
+  return { started: true, recording: false, durationSec: 15, frames: 900, fpsMin: 60,
+           summary: { errors: 0, warnings: 0, inputEvents: 2 },
+           events: [{ t: 0.1, kind: "key_down", detail: "W" }, { t: 14.9, kind: "key_up", detail: "W" }], samples };
+})();
+
 function engineHandler(method: string, params: any): any {
   switch (method) {
+    case "get_play_session": return HUMAN_SESSION;
+    case "get_mode": return { mode: sim.mode };
+    case "play": sim.mode = "Playing"; resetSim(); return { mode: "Playing", sceneGeneration: 4 };
+    case "stop": sim.mode = "Editor"; resetSim(); return { mode: "Editor", sceneGeneration: 5 };
+    case "open_scene": resetSim(); return { opened: params.path };
+    case "step_frames": {
+      const n = Number(params.frames ?? 1);
+      if (!sim.blocked && sim.held.has("W")) sim.pos[2] += (4 / 60) * n;
+      return { stepped: true, frames: n };
+    }
+    case "key_down": sim.held.add(String(params.key).toUpperCase()); return { ok: true };
+    case "key_up": sim.held.delete(String(params.key).toUpperCase()); return { ok: true };
+    case "key_press": case "mouse_move": return { ok: true };
+    case "get_script_errors": return { count: 0, errors: [] };
+    case "get_physics_state": return { velocity: [0, 0, sim.held.has("W") && !sim.blocked ? 4 : 0], isGrounded: true };
+    case "navmesh_path": return { points: [[0, 1, 10]], reached: true };
+    case "get_entity":
+      if (params.name === "CAM") return { camera: { isActive: true }, transform: { rotation: [0, 0, 0] } };
+      return { transform: { position: [...sim.pos], rotation: [0, 0, 0] } };
     case "ping": return { pong: true, mode: "Editor", protocolVersion: 4, baseDir: PROJ, assetsDir: path.join(PROJ, "assets"), cwd: TMP };
     case "ui_tree": return UI_TREE;
     case "validate_layout": return LAYOUT_REPORT;
-    case "get_bounds": return { size: params.entity === 21 ? [2, 2.2, 0.4] : [0.5, 0.5, 0.5], center: [0, 0, 0], min: [0, 0, 0], max: [1, 1, 1] };
-    case "list_entities": return { entities: ENTS.map((e) => ({ entityId: e.entityId, name: e.name, componentTypes: [] })) };
+    case "get_bounds":
+      if (params.name === "GP_Goal") return { size: [1, 1, 1], center: [0, 1, 40], min: [0, 0, 39], max: [1, 2, 41] };
+      return { size: params.entity === 21 ? [2, 2.2, 0.4] : [0.5, 0.5, 0.5], center: [0, 0, 0], min: [0, 0, 0], max: [1, 1, 1] };
+    case "list_entities":
+      if (params.component_type === "characterController") return { entities: [{ entityId: 99, name: "GP_Player" }] };
+      if (params.component_type === "camera") return { entities: [{ entityId: 98, name: "CAM" }] };
+      return { entities: ENTS.map((e) => ({ entityId: e.entityId, name: e.name, componentTypes: [] })) };
     case "get_hierarchy": return { roots: ENTS.filter((e) => e.parent === undefined).map((e) => hierNode(e.entityId)) };
     default: return undefined;
   }
@@ -174,6 +220,82 @@ try {
     assert.equal(sent.params.judge, undefined, "judge はエンジンへ送らない");
     assert.equal(sent.params.fix, "none");
     pass("judge:false で止まる。judge はエンジンへ渡さない");
+  }
+
+  console.log("[play] プレイテストの判断段");
+  {
+    const questionTypes = (req: any) => Object.values<any>(req.questions).map((q) => q.type).sort().join(",");
+    jev.cfg.answers = {
+      score: () => ({ score: 3.2, confidence: 0.8 }),
+      choice: (keys) => ({ choice: keys.includes("jump_too_hard") ? "jump_too_hard" : keys[0], confidence: 0.82 }),
+    };
+
+    // ① 人のプレイ: get_play_session
+    let before = jev.reqs.length;
+    const gp = engine.received.filter((x) => x.method === "get_play_session").length;
+    const s = payload(await mcp.call("dx12_get_play_session", { maxSamples: 20, goalName: "GP_Goal" }));
+    assert.equal(s.started, true);
+    assert.equal(s.samples.length, 151, "偽エンジンは間引かないので本体はそのまま");
+    const calls = engine.received.filter((x) => x.method === "get_play_session").slice(gp);
+    assert.equal(calls.length, 2, "本体(maxSamples:20)+ 判断用の全体(8000/4000)");
+    assert.equal(calls[1].params.maxSamples, 4000);
+    assert.equal(jev.reqs.length - before, 1);
+    assert.equal(questionTypes(jev.reqs[jev.reqs.length - 1]), "choice,score", "人のプレイは困り度 + 原因の 2 問");
+    const pf = jev.reqs[jev.reqs.length - 1].state.facts.play;
+    assert.ok(!/[0-9]/.test(JSON.stringify(pf)), "play の語に数字が無い");
+    assert.equal(pf.player, "人のプレイ");
+    assert.ok(pf.sections.some((x: any) => x.falls !== "なし"), "落下を数えている");
+    assert.equal(s.judge.source, "jev");
+    assert.equal(s.judge.cause.id, "jump_too_hard");
+    assert.equal(s.judge.confusion.value, 3.2);
+    pass("get_play_session: 全体で数えて 1 往復(困り度 + 原因)、goalName でゴールへの進みも数える");
+
+    before = jev.reqs.length;
+    const off = payload(await mcp.call("dx12_get_play_session", { judge: false }));
+    assert.equal(off.judge, undefined);
+    assert.equal(jev.reqs.length, before);
+    pass("get_play_session: judge:false で止まる");
+
+    // ② 機械の軌跡: autoplay が壁に詰まる
+    sim.blocked = true;
+    before = jev.reqs.length;
+    const ap = payload(await mcp.call("dx12_autoplay", { goal: [0, 1, 10] }, 60000));
+    assert.equal(ap.cleared, false, "到達判定はルールのまま");
+    assert.ok(ap.stuckAt, "詰まった座標もルールのまま");
+    assert.equal(jev.reqs.length - before, 1);
+    assert.equal(questionTypes(jev.reqs[jev.reqs.length - 1]), "choice", "機械の軌跡は原因だけ");
+    assert.match(jev.reqs[jev.reqs.length - 1].state.facts.play.player, /迷うことはない/);
+    assert.equal(ap.judge.confusion, null);
+    assert.ok(ap.judge.cause?.id);
+    pass("autoplay: 届かなかったら原因だけ 1 問。cleared / stuckAt はルールのまま");
+
+    // ③ 保存済みの .playtest を再生して落ちる(壁に詰まって記録どおり進めない)
+    const dir = path.join(PROJ, ".dx12", "playtests");
+    fs.mkdirSync(dir, { recursive: true });
+    const ref = Array.from({ length: 51 }, (_, i) => ({ t: i / 10, pos: [0, 1, (i / 10) * 4] }));
+    fs.writeFileSync(path.join(dir, "blocked_run.json"), JSON.stringify({
+      version: 1, name: "blocked_run", scene: "scenes/main.json", recordedAt: "2026-09-25T00:00:00Z", durationSec: 5,
+      steps: [{ t: 0, down: "W" }, { t: 4.9, up: "W" }], look: [], reference: ref, endTolerance: 1, pathTolerance: 2, expect: [],
+    }));
+    before = jev.reqs.length;
+    const rp = payload(await mcp.call("dx12_run_playtests", { name: "blocked_run" }, 60000));
+    assert.equal(rp.failed, 1, "再生の合否はルールのまま");
+    assert.ok(rp.results[0].reasons.some((r: string) => /ずれた/.test(r)));
+    assert.equal(jev.reqs.length - before, 1);
+    assert.equal(questionTypes(jev.reqs[jev.reqs.length - 1]), "choice");
+    assert.match(jev.reqs[jev.reqs.length - 1].state.facts.play.player, /再生/);
+    assert.ok(rp.results[0].judge?.cause, "落ちたテストに原因が付く");
+    pass("run_playtests: 落ちたテストだけ原因を 1 問。合否と reasons はルールのまま");
+
+    // ④ 人のプレイを保存(record_playtest): 再生して基準を焼き、人の記録そのものの困り度を聞く
+    sim.blocked = false;
+    before = jev.reqs.length;
+    const rec = payload(await mcp.call("dx12_record_playtest", { name: "human_run" }, 60000));
+    assert.ok(fs.existsSync(rec.saved), "保存はこれまでどおり");
+    assert.equal(jev.reqs.length - before, 1);
+    assert.equal(questionTypes(jev.reqs[jev.reqs.length - 1]), "choice,score");
+    assert.equal(rec.judge.cause.id, "jump_too_hard");
+    pass("record_playtest: 保存はそのまま、人の記録の困り度 + 原因を 1 往復で");
   }
 } catch (e) {
   console.log(`  NG  ${(e as Error).message}`);

@@ -1,0 +1,21 @@
+{
+  "id": "play.cause",
+  "version": 1,
+  "type": "choice",
+  "instructions": {
+    "what": "Pick the single main reason the player has trouble in this play session, judged against the creator's intent. state.brief is the creative brief. state.facts.play describes the session in words, section by section: standing still, pushing forward without moving, coming back to places already left, falls, being sent back to a checkpoint after a fall or without one, swinging the camera around, repeated jumps in one spot, progress toward the goal, and any static check of the route. state.facts.play.player says who played: a machine that follows the navigation path or replays recorded inputs never gets lost and never misreads the goal.",
+    "not_for": "Pick none when the session flows as intended or when the only trouble is behavior the brief calls for. Never pick lost_way or unclear_goal for a machine player. Do not guess a reason that none of the facts show."
+  },
+  "criteria": {
+    "none": "No problem: the session flows as the brief intends, or the only trouble is behavior the brief calls for.",
+    "lost_way": "The player does not know which way to go: they stand around, swing the camera and come back to places already visited, without falling.",
+    "unclear_goal": "The player does not know what to do: from the start they wander or stand around and never get closer to the goal.",
+    "jump_too_hard": "A jump is too hard: repeated falls, repeated jumps in one spot, or the static check reports a gap or ledge beyond the measured jump.",
+    "stuck_geometry": "The player is caught on the level: they keep pushing forward but do not move (an invisible wall, a step or a narrow gap).",
+    "unfair_hazard": "Something keeps knocking the player out: they are sent back to a checkpoint without having fallen (enemies or traps)."
+  },
+  "state": ["brief", "facts.play"],
+  "threshold": { "minConfidence": 0.5 },
+  "fallback": "play.causeRules",
+  "notes": "選択肢は jev/playJudge.ts の CAUSES と一致させる(テストで突き合わせ)。軌跡から数えた事実で区別できるものだけ(カメラ・操作の良し悪しは 10Hz の角度では見回しと区別できないので入れていない)。閾値は評価ケースの実測で決める。"
+}

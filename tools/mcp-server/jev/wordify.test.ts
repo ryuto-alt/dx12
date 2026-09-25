@@ -33,6 +33,10 @@ console.log("[1] 境界と語の固定(動かすなら評価ケースも見直�
     overlap: { edges: [0.5, 0.8], words: ["浅くめり込んでいる", "深くめり込んでいる", "ほぼ丸ごと重なっている"] },
     lift: { edges: [1, 3], words: ["自分の高さより低く浮いている", "自分の高さの数倍浮いている", "はるか上に浮いている"] },
     buried: { edges: [0.5, 0.9], words: ["下の方が埋まっている", "半分以上埋まっている", "ほぼ全部埋まっている"] },
+    // プレイ(jev/playJudge.ts の区間の事実)
+    lookRate: { edges: [15, 45, 90], words: ["ほとんど見回さない", "少し見回す", "よく見回す", "激しく見回す"] },
+    goalDistance: { edges: [3, 15, 50], words: ["目の前", "近い", "遠い", "とても遠い"] },
+    playLength: { edges: [20, 90, 300], words: ["とても短い", "短い", "普通", "長い"] },
   };
   check("BINS がスナップショットと一致", JSON.stringify(BINS) === JSON.stringify(snapshot),
     `実際: ${JSON.stringify(BINS)}`);
