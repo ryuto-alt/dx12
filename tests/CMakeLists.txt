@@ -777,3 +777,36 @@ add_test(NAME AiBrainTests COMMAND AiBrainTests)
 
 
 
+
+# セーブファイル（core/save/SaveFile.h / UserData.h）: スロット名の検査・往復・一覧・フォルダ名。
+# ファイル操作は偽物（メモリ上）で回して失敗を注入する。実ファイルでも 1 往復だけ確かめる。
+if(TARGET Core)
+    add_executable(SaveFileTests save_file_test.cpp)
+    target_link_libraries(SaveFileTests PRIVATE Core)
+    target_include_directories(SaveFileTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(SaveFileTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SaveFileTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SaveFileTests COMMAND SaveFileTests)
+endif()
+
+# Lua の値 ⇔ JSON（scripting/LuaJson.h）の往復。セーブ本体の心臓部。
+# LuaJson.cpp は Lua / sol2 / nlohmann / DirectXMath だけに依存するので、Scripting を丸ごと
+# リンクせず直接ビルドする（エンジンの他の部分を巻き込まない）。統合ビルドでのみ有効。
+if(TARGET Scripting)
+    find_package(Lua REQUIRED)
+    find_package(sol2 CONFIG REQUIRED)
+    find_package(directxmath CONFIG REQUIRED)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    add_executable(LuaJsonTests lua_json_test.cpp
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/LuaJson.cpp)
+    target_include_directories(LuaJsonTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${LUA_INCLUDE_DIR})
+    target_link_libraries(LuaJsonTests PRIVATE ${LUA_LIBRARIES} sol2::sol2 Microsoft::DirectXMath
+                                               nlohmann_json::nlohmann_json)
+    if(MSVC)
+        target_compile_options(LuaJsonTests PRIVATE ${DX12_COMPILE_OPTIONS} /bigobj)
+        target_compile_definitions(LuaJsonTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME LuaJsonTests COMMAND LuaJsonTests)
+endif()

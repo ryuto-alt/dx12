@@ -986,6 +986,19 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("events", "global (Play 中のみ)", json::array({
         "events:on(name,fn) -> id", "events:off(id)", "events:emit(name,data?)", "events:clear()",
     })));
+    objects.push_back(O("save", "global ('.' で呼ぶ)。セーブスロット。置き場は配布=%LOCALAPPDATA%/<ゲーム名>/saves、"
+                                "エディタ=<プロジェクト>/.dx12/saves（本番のセーブを汚さない）", json::array({
+        "save.write(slot, data, opts?) -> true | false, err  (slot は整数か英数_-の名前。data は入れ子テーブル/"
+        "配列/数値/文字列/真偽/Vec3/Entity。関数などは飛ばして警告。opts.entities={Entity|名前,...} で"
+        "Transform・DataComponent・Lua コンポーネントの self の値を guid 付きで一緒に保存、opts.meta={...} は一覧用)",
+        "save.read(slot, opts?) -> data, info | nil, err, info  (既定でエンティティの状態を今のシーンへ戻し、"
+        "プレイ時間をセーブの値に合わせる。opts.applyEntities=false / opts.adoptPlayTime=false で抑止。"
+        "info = {slot, savedAt, savedAtLocal, savedAtUnix, playTime, scene, meta, entitiesApplied, entitiesMissing}。"
+        "★シーンを切り替えてから戻すなら、切替先の OnStart で read する)",
+        "save.list() -> { info, ... }  (新しい順。壊れたスロットも ok=false / status 付きで出る)",
+        "save.info(slot) -> info|nil  /  save.exists(slot) -> bool  /  save.delete(slot) -> bool",
+        "save.playTime() -> 秒  /  save.resetPlayTime(sec?)  (ニューゲーム時に 0 へ)  /  save.dir() -> 置き場の絶対パス",
+    })));
     objects.push_back(O("globals", "", json::array({
         "log(...) / logWarn(...) / logError(...) / print(...)  (可変長。tostring でタブ区切り連結。"
         "print は素の Lua print を差し替えたもの＝どれもエディタのコンソールに出る)",
