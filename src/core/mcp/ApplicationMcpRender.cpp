@@ -220,7 +220,8 @@ void Application::RegisterMcpRenderMethods()
     McpDefine("set_render_scale", "scale:number", DX12E_MCP_HANDLER
         {
             if (!params.contains("scale"))
-                throw McpError(McpErr::InvalidParam, "need scale (0.25..1.0)");
+                throw McpError(McpErr::InvalidParam, "need scale (0.25..1.0)",
+                    "例: scale:0.75（0.25..1.0。1.0 がネイティブ解像度、下げるほど軽い）");
             SetRenderScale(static_cast<f32>(McpFloatParam(params, "scale", 1.0f, 0.25f, 1.0f)));
             resp["ok"] = true;
             resp["result"] = RenderScaleJson();
@@ -235,7 +236,8 @@ void Application::RegisterMcpRenderMethods()
     McpDefine("set_depth_prepass", "enabled:bool", DX12E_MCP_HANDLER
         {
             if (!params.contains("enabled"))
-                throw McpError(McpErr::InvalidParam, "need enabled (bool)");
+                throw McpError(McpErr::InvalidParam, "need enabled (bool)",
+                    "例: enabled:true（深度プリパスを常に走らせる）/ false（必要なときだけ）");
             m_forceDepthPrepass = params.value("enabled", false);
             PersistSet("render_depth_prepass", m_forceDepthPrepass ? 1.0 : 0.0);
             resp["ok"] = true;
@@ -253,7 +255,8 @@ void Application::RegisterMcpRenderMethods()
     McpDefine("set_occlusion", "enabled:bool", DX12E_MCP_HANDLER
         {
             if (!params.contains("enabled"))
-                throw McpError(McpErr::InvalidParam, "need enabled (bool)");
+                throw McpError(McpErr::InvalidParam, "need enabled (bool)",
+                    "例: enabled:true。★TAA/SSAO/SSR/DXR が全部無効なシーンでは逆に遅くなる（dx12_get_occlusion で確かめる）");
             m_occlusionCulling = params.value("enabled", false);
             PersistSet("render_occlusion_culling", m_occlusionCulling ? 1.0 : 0.0);
             resp["ok"] = true;

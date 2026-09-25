@@ -163,7 +163,8 @@ void Application::RegisterMcpTerrainMethods()
                 *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
             Terrain& t = reg.get<Terrain>(e);
             if (!t._hf || !t._hf->IsValid())
-                throw McpError(McpErr::Internal, "terrain has no valid height field");
+                throw McpError(McpErr::Internal, "terrain has no valid height field",
+                    ".hf の読み込みに失敗している。dx12_get_log で原因を見て、heightmapPath を直すか dx12_terrain_create で作り直す");
             HeightField& hf = *t._hf;
             const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
 
@@ -260,7 +261,8 @@ void Application::RegisterMcpTerrainMethods()
                 *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
             Terrain& t = reg.get<Terrain>(e);
             if (!t._hf || !t._hf->IsValid())
-                throw McpError(McpErr::Internal, "terrain has no valid height field");
+                throw McpError(McpErr::Internal, "terrain has no valid height field",
+                    ".hf の読み込みに失敗している。dx12_get_log で原因を見て、heightmapPath を直すか dx12_terrain_create で作り直す");
             if (t.layerSetPath.empty())
                 throw McpError(McpErr::InvalidParam, "terrain has no layer set",
                     "先に地形ツール窓（またはシーン JSON）で terrain.layerSetPath へ "
@@ -320,9 +322,11 @@ void Application::RegisterMcpTerrainMethods()
                 if (params.contains("points"))
                 {
                     if (!params["points"].is_array())
-                        throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]");
+                        throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]",
+                            "例: points:[[0, 0], [10, 5], [20, 0]]（ワールド XZ の配列。1 点なら point:[x,z]）");
                     if (params["points"].size() > 512)
-                        throw McpError(McpErr::InvalidParam, "too many points (max 512)");
+                        throw McpError(McpErr::InvalidParam, "too many points (max 512)",
+                            "512 点ずつに分けて複数回呼ぶ（同じ筆を続けて塗るのと同じ結果になる）");
                     for (const auto& a : params["points"]) pushPoint(a);
                 }
                 if (params.contains("point"))    pushPoint(params["point"]);
@@ -369,7 +373,8 @@ void Application::RegisterMcpTerrainMethods()
                 *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
             Terrain& t = reg.get<Terrain>(e);
             if (!t._hf || !t._hf->IsValid())
-                throw McpError(McpErr::Internal, "terrain has no valid height field");
+                throw McpError(McpErr::Internal, "terrain has no valid height field",
+                    ".hf の読み込みに失敗している。dx12_get_log で原因を見て、heightmapPath を直すか dx12_terrain_create で作り直す");
 
             if (!params.contains("layerSetPath"))
                 throw McpError(McpErr::InvalidParam, "missing 'layerSetPath'",
@@ -566,7 +571,8 @@ void Application::RegisterMcpTerrainMethods()
                     json samples = json::array();
                     auto sample = [&](const nlohmann::json& a) {
                         if (!a.is_array() || (a.size() != 2 && a.size() != 3))
-                            throw McpError(McpErr::InvalidParam, "point must be [x,z] or [x,y,z]");
+                            throw McpError(McpErr::InvalidParam, "point must be [x,z] or [x,y,z]",
+                                "例: [12.5, -3]（ワールド XZ）か [12.5, 0, -3]（y は無視される）");
                         const f32 wx = a[0].get<f32>();
                         const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
                         const i32 tx = sp.LocalToTexelX(wx - origin.x, worldSize);
@@ -582,7 +588,8 @@ void Application::RegisterMcpTerrainMethods()
                     if (params.contains("points"))
                     {
                         if (!params["points"].is_array() || params["points"].size() > 256)
-                            throw McpError(McpErr::InvalidParam, "points must be an array (max 256)");
+                            throw McpError(McpErr::InvalidParam, "points must be an array (max 256)",
+                                "例: points:[[0, 0], [5, 5]]。256 点を超えるなら分けて呼ぶ");
                         for (const auto& a : params["points"]) sample(a);
                     }
                     if (params.contains("point")) sample(params["point"]);
@@ -605,7 +612,8 @@ void Application::RegisterMcpTerrainMethods()
                 *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
             Terrain& t = reg.get<Terrain>(e);
             if (!t._hf || !t._hf->IsValid())
-                throw McpError(McpErr::Internal, "terrain has no valid height field");
+                throw McpError(McpErr::Internal, "terrain has no valid height field",
+                    ".hf の読み込みに失敗している。dx12_get_log で原因を見て、heightmapPath を直すか dx12_terrain_create で作り直す");
             HeightField& hf = *t._hf;
             const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
 
@@ -658,7 +666,8 @@ void Application::RegisterMcpTerrainMethods()
                 *m_scene, params, "terrain", "先に dx12_terrain_create で地形を作ってくれ");
             const Terrain& t = reg.get<Terrain>(e);
             if (!t._hf || !t._hf->IsValid())
-                throw McpError(McpErr::Internal, "terrain has no valid height field");
+                throw McpError(McpErr::Internal, "terrain has no valid height field",
+                    ".hf の読み込みに失敗している。dx12_get_log で原因を見て、heightmapPath を直すか dx12_terrain_create で作り直す");
             const HeightField& hf = *t._hf;
             const DirectX::XMFLOAT3 origin = McpTerrainOrigin(reg, e);
             const f32 half = hf.HalfSize();
@@ -668,14 +677,16 @@ void Application::RegisterMcpTerrainMethods()
             {
                 const auto& arr = params["points"];
                 if (!arr.is_array())
-                    throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]");
+                    throw McpError(McpErr::InvalidParam, "points must be an array of [x,z]",
+                        "例: points:[[0, 0], [10, 10]]（ワールド XZ の配列）");
                 if (arr.size() > 512)
                     throw McpError(McpErr::InvalidParam, "too many points (max 512)",
                                    "分割して複数回呼んでくれ");
                 for (const auto& a : arr)
                 {
                     if (!a.is_array() || (a.size() != 2 && a.size() != 3))
-                        throw McpError(McpErr::InvalidParam, "each point must be [x,z] or [x,y,z]");
+                        throw McpError(McpErr::InvalidParam, "each point must be [x,z] or [x,y,z]",
+                            "各点は [x,z]（ワールド）か [x,y,z]（y は無視）。例: [[0, 0], [3.5, -2]]");
                     const f32 wx = a[0].get<f32>();
                     const f32 wz = (a.size() == 2) ? a[1].get<f32>() : a[2].get<f32>();
                     const f32 lx = wx - origin.x, lz = wz - origin.z;
@@ -828,7 +839,8 @@ void Application::RegisterMcpTerrainMethods()
                 "dx12_sculpt_create で素体を作るか、dx12_sculpt_make_editable でモデルを変換してくれ");
             SculptMesh& sc = reg.get<SculptMesh>(e);
             if (!sc._data || !sc._data->IsValid())
-                throw McpError(McpErr::Internal, "sculpt mesh has no valid vertex data");
+                throw McpError(McpErr::Internal, "sculpt mesh has no valid vertex data",
+                    ".smsh の読み込みに失敗している。dx12_get_log で原因を見て、dx12_sculpt_create で素体から作り直す");
             SculptMeshData& md = *sc._data;
 
             static const std::vector<std::string> kSculptBrushes{

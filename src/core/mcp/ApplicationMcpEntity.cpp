@@ -109,9 +109,11 @@ void Application::RegisterMcpEntityMethods()
             const std::string name = params.value("name", std::string());
             std::string code       = params.value("code", std::string());
             const std::string tmpl = params.value("template", std::string());
-            if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'");
+            if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'",
+                "name にシェーダ名を渡す（例: name:\"water_ripple\" → assets/shaders/water_ripple.hlsl）");
             if (name.find_first_of("/\\:*?\"<>|") != std::string::npos)
-                throw McpError(McpErr::InvalidParam, "invalid shader name");
+                throw McpError(McpErr::InvalidParam, "invalid shader name",
+                    "ファイル名に使えない文字（/ \\ : * ? \" < > |）を除く。英数字と _ だけにするのが安全");
 
             // code 未指定なら template から起こす。両方あれば code を優先（明示が勝つ）。
             if (code.empty())
@@ -133,7 +135,8 @@ void Application::RegisterMcpEntityMethods()
             fs::create_directories(full.parent_path());
             {
                 std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
-                if (!ofs) throw McpError(McpErr::Internal, "cannot write " + full.string());
+                if (!ofs) throw McpError(McpErr::Internal, "cannot write " + full.string(),
+                    "assets/shaders が書き込み可能か、同名ファイルがエディタ等で開かれていないか確かめる（dx12_get_log に OS のエラー）");
                 ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
             }
 
@@ -158,15 +161,19 @@ void Application::RegisterMcpEntityMethods()
     McpDefine("read_shader", "path:string", DX12E_MCP_HANDLER
         {
             const std::string rel = params.value("path", std::string());
-            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'",
+                "path に assets/shaders 相対のファイル名を渡す（例: water_ripple.hlsl）。一覧は dx12_list_shader_templates / dx12_list_assets");
             if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                 rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                throw McpError(McpErr::InvalidParam, "invalid path (assets/shaders 相対のみ)");
+                throw McpError(McpErr::InvalidParam, "invalid path (assets/shaders 相対のみ)",
+                    "path は assets/shaders 相対（例: water_ripple.hlsl）。絶対パス・..・バックスラッシュは不可");
 
             const fs::path full = fs::path(PathResolver::ProjectShaderDir()) / rel;
-            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "shader not found: " + rel);
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "shader not found: " + rel,
+                "dx12_list_assets で shaders/ 以下の実在と綴りを確かめる。新しく作るなら dx12_create_shader");
             std::ifstream ifs(full, std::ios::binary);
-            if (!ifs) throw McpError(McpErr::Internal, "cannot open " + full.string());
+            if (!ifs) throw McpError(McpErr::Internal, "cannot open " + full.string(),
+                "ファイルが他のプログラムで排他ロックされていないか確かめる。dx12_get_log に OS のエラーが出る");
             std::ostringstream oss; oss << ifs.rdbuf();
 
             resp["ok"] = true;
@@ -182,7 +189,8 @@ void Application::RegisterMcpEntityMethods()
             // modelPath と違いメッシュ再ロードを伴わない(PSO 選択が変わるだけ)ので即時反映して安全。
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer",
+                "set_mesh_shader はメッシュ（モデル / プリミティブ）にだけ効く。スプライトなら dx12_set_sprite_shader");
             McpUndo().Track<MeshRenderer>(e);   // Undo 用（書き換える前に申告）
             auto& mr = reg.get<MeshRenderer>(e);
 
@@ -192,12 +200,15 @@ void Application::RegisterMcpEntityMethods()
                 if (rel.rfind("shaders/", 0) == 0)
                     rel.erase(0, 8);  // assets相対表記("shaders/foo.hlsl")も受け付けて正規化
                 if (rel.empty())     // 入力が "shaders/" ちょうどだと erase で空になる
-                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)",
+                        "shaderPath はファイル名まで含める（例: shaders/water_ripple.hlsl か water_ripple.hlsl）。外すなら空文字 \"\"");
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)",
+                        "shaderPath は assets/shaders 相対（例: water_ripple.hlsl）。絶対パス・..・バックスラッシュは不可");
                 if (!fs::exists(fs::path(PathResolver::ProjectShaderDir()) / rel))
-                    throw McpError(McpErr::NotFound, "shader not found: " + rel);
+                    throw McpError(McpErr::NotFound, "shader not found: " + rel,
+                        "dx12_list_assets で shaders/ 以下を確かめる。無ければ dx12_create_shader で作ってから割り当てる");
             }
             mr.shaderPath = rel;
             if (params.contains("alphaBlend"))
@@ -215,7 +226,8 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<ParticleEmitter>(e))
-                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter",
+                    "パーティクルの放出器が付いていない。dx12_create_entity type:\"particle_emitter\" で作るか、dx12_vfx_apply で付ける");
             const auto& em = reg.get<ParticleEmitter>(e);
             json arr = json::array();
             for (size_t i = 0; i < em.layers.size(); ++i)
@@ -243,11 +255,13 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<ParticleEmitter>(e))
-                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter",
+                    "放出器が無い。dx12_create_entity type:\"particle_emitter\" で作ってからレイヤーを足す");
             McpUndo().Track<ParticleEmitter>(e);
             auto& em = reg.get<ParticleEmitter>(e);
             if (em.layers.size() >= 16)
-                throw McpError(McpErr::InvalidParam, "レイヤーが多すぎます（上限 16 枚）");
+                throw McpError(McpErr::InvalidParam, "レイヤーが多すぎます（上限 16 枚）",
+                    "要らないレイヤーを dx12_remove_particle_layer で消すか、別の放出器エンティティに分ける");
             em.layers.emplace_back();
             auto& l = em.layers.back();
             l.name = params.value("layerName", std::string());
@@ -264,7 +278,8 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<ParticleEmitter>(e))
-                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+                throw McpError(McpErr::NotFound, "entity has no ParticleEmitter",
+                    "放出器が無い。レイヤーの一覧は dx12_list_particle_layers（放出器の付いたエンティティで呼ぶ）");
             McpUndo().Track<ParticleEmitter>(e);
             auto& em = reg.get<ParticleEmitter>(e);
             // 最後の 1 枚は消せない（0 枚 = 付いているのに何も出ない状態を作らない）。
@@ -306,7 +321,8 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<MeshRenderer>(e))
-                throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+                throw McpError(McpErr::NotFound, "entity has no MeshRenderer",
+                    "set_mesh_shader_params はメッシュにだけ効く。先に dx12_set_mesh_shader でカスタムシェーダを割り当てる");
             McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
 
@@ -315,14 +331,16 @@ void Application::RegisterMcpEntityMethods()
             if (params.contains("params"))
             {
                 const auto v = params["params"].get<std::vector<float>>();
-                if (v.size() > 4) throw McpError(McpErr::InvalidParam, "params は最大 4 要素");
+                if (v.size() > 4) throw McpError(McpErr::InvalidParam, "params は最大 4 要素",
+                    "params は最大 4 要素の数値配列（例: [0.5, 2.0, 0, 0]）。5 つ目以降は paramsB（3 要素）か effect へ");
                 float* dst = &mr.shaderParams.x;
                 for (size_t i = 0; i < v.size(); ++i) dst[i] = v[i];
             }
             if (params.contains("paramsB"))
             {
                 const auto v = params["paramsB"].get<std::vector<float>>();
-                if (v.size() > 3) throw McpError(McpErr::InvalidParam, "paramsB は最大 3 要素");
+                if (v.size() > 3) throw McpError(McpErr::InvalidParam, "paramsB は最大 3 要素",
+                    "paramsB は最大 3 要素の数値配列（例: [1, 0, 0]）。各要素の意味は dx12_read_shader のヘッダコメント");
                 float* dst = &mr.shaderParamsB.x;
                 for (size_t i = 0; i < v.size(); ++i) dst[i] = v[i];
             }
@@ -347,7 +365,8 @@ void Application::RegisterMcpEntityMethods()
             // (ルートシグネチャ/頂点フォーマットがメッシュ用と異なる別キャッシュ。docs/AUTHORING.md参照)。
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.all_of<Sprite2D>(e)) throw McpError(McpErr::NotFound, "entity has no Sprite2D");
+            if (!reg.all_of<Sprite2D>(e)) throw McpError(McpErr::NotFound, "entity has no Sprite2D",
+                "set_sprite_shader は Sprite2D 付きにだけ効く。メッシュなら dx12_set_mesh_shader");
             McpUndo().Track<Sprite2D>(e);
             auto& sp = reg.get<Sprite2D>(e);
 
@@ -357,12 +376,15 @@ void Application::RegisterMcpEntityMethods()
                 if (rel.rfind("shaders/", 0) == 0)
                     rel.erase(0, 8);  // assets相対表記("shaders/foo.hlsl")も受け付けて正規化
                 if (rel.empty())     // 入力が "shaders/" ちょうどだと erase で空になる
-                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)",
+                        "shaderPath はファイル名まで含める（例: shaders/sprite_glow.hlsl か sprite_glow.hlsl）。外すなら空文字 \"\"");
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid shaderPath (assets/shaders 相対のみ)",
+                        "shaderPath は assets/shaders 相対（例: sprite_glow.hlsl）。絶対パス・..・バックスラッシュは不可");
                 if (!fs::exists(fs::path(PathResolver::ProjectShaderDir()) / rel))
-                    throw McpError(McpErr::NotFound, "shader not found: " + rel);
+                    throw McpError(McpErr::NotFound, "shader not found: " + rel,
+                        "dx12_list_assets で shaders/ 以下を確かめる。無ければ dx12_create_shader で作ってから割り当てる");
             }
             sp.shaderPath = rel;
             if (params.contains("alphaBlend"))
@@ -397,11 +419,13 @@ void Application::RegisterMcpEntityMethods()
             // 生成はメッシュ構築に cmdList が要るためフレーム境界で遅延処理。本物の entityId は
             // 生成後に SendToClient で返す(遅延同期)。Play 中は spawn キューが drain されないため拒否。
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot create entities while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot create entities while Playing; call dx12_stop first",
+                    "dx12_stop で Editor へ戻してから作る（Play 中に作っても Stop で消える）");
             const std::string type = params.value("type", std::string("box"));
             std::string name = params.value("name", std::string());
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
-            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
+                "例: position:[0, 0.5, 0]（ワールド座標の 3 要素）");
             std::string marker;
             if      (type == "box")    marker = "__primitive_box__";
             else if (type == "sphere") marker = "__primitive_sphere__";
@@ -424,7 +448,8 @@ void Application::RegisterMcpEntityMethods()
             else throw McpError(McpErr::InvalidParam,
                 "type must be one of: box, sphere, plane, empty, camera, light_directional, "
                 "light_point, light_spot, particle_emitter, trigger, decal, ui_canvas, ui_image, "
-                "ui_text, ui_button, ui_slider, ui_toggle, ui_scrollview");
+                "ui_text, ui_button, ui_slider, ui_toggle, ui_scrollview",
+                "3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"。モデルは dx12_spawn_model、プレハブは dx12_spawn_prefab");
 
             // UI 要素の親の明示指定(id か名前)。ui_canvas はルート生成なので対象外。
             entt::entity uiParentOverride = entt::null;
@@ -435,7 +460,8 @@ void Application::RegisterMcpEntityMethods()
                 if (params.contains("parent"))
                 {
                     const auto pe = static_cast<entt::entity>(params["parent"].get<u32>());
-                    if (!reg.valid(pe)) throw McpError(McpErr::NotFound, "invalid parent entity id");
+                    if (!reg.valid(pe)) throw McpError(McpErr::NotFound, "invalid parent entity id",
+                        "parent は既存エンティティの entityId（dx12_list_entities で取り直す）。名前で指すなら parentName");
                     uiParentOverride = pe;
                 }
                 else
@@ -444,7 +470,8 @@ void Application::RegisterMcpEntityMethods()
                     for (auto [pe, tag] : reg.view<const NameTag>().each())
                         if (tag.name == pname) { uiParentOverride = pe; break; }
                     if (uiParentOverride == entt::null)
-                        throw McpError(McpErr::NotFound, "parentName not found: " + pname);
+                        throw McpError(McpErr::NotFound, "parentName not found: " + pname,
+                            "parentName は既存の名前と完全一致が要る。dx12_find_entity で確かめるか、UI なら先に type:\"ui_canvas\" を作る");
                 }
             }
             if (name.empty())   // 既定名: 種別名を先頭大文字に
@@ -499,7 +526,8 @@ void Application::RegisterMcpEntityMethods()
         {
             // 削除ドレイン(Render)は Editor モード限定。Play 中に積むと drain されず未応答ハングするため弾く。
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot delete while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot delete while Playing; call dx12_stop first",
+                    "dx12_stop で Editor へ戻してから消す（Play 中の削除は Stop で元に戻る）");
             const auto e = ResolveMcpEntity(*m_scene, params);
             // 子ごと削除+Undo はフレーム境界で処理し、deletedCount を遅延応答で返す。
             m_editorCtx->mcpDeletions.push_back(McpPendingDelete{ e, deferred });
@@ -511,26 +539,30 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);   // 無効 id は "invalid entity id" を投げる
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<Transform>(e))
-                throw McpError(McpErr::NotFound, "entity has no Transform");
+                throw McpError(McpErr::NotFound, "entity has no Transform",
+                    "Transform を持たないエンティティ。dx12_get_entity で componentTypes を確かめる");
             McpUndo().Track<Transform>(e);
             auto& t = reg.get<Transform>(e);
             if (params.contains("position"))
             {
                 const auto p = params["position"].get<std::vector<float>>();
-                if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+                if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
+                    "例: position:[1, 0, -2]（ワールド座標の 3 要素）");
                 t.position = { p[0], p[1], p[2] };
             }
             if (params.contains("rotation"))
             {
                 const auto r = params["rotation"].get<std::vector<float>>();
-                if (r.size() != 3) throw McpError(McpErr::InvalidParam, "rotation must be [x,y,z]");
+                if (r.size() != 3) throw McpError(McpErr::InvalidParam, "rotation must be [x,y,z]",
+                    "例: rotation:[0, 90, 0]（度単位のオイラー角 [x,y,z]）。四元数なら quaternion:[x,y,z,w]");
                 t.rotation = { r[0], r[1], r[2] };
                 t.useQuaternion = false;   // Euler を反映(物理同期の quaternion に上書きされないように)
             }
             if (params.contains("quaternion"))
             {
                 const auto q = params["quaternion"].get<std::vector<float>>();
-                if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]");
+                if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]",
+                    "例: quaternion:[0, 0.7071, 0, 0.7071]（[x,y,z,w] の 4 要素）。度で指定するなら rotation:[x,y,z]");
                 t.quaternion = { q[0], q[1], q[2], q[3] };
                 t.useQuaternion = true;   // set_component の transform 経路と同じ挙動に揃える
                 // ★euler も揃える。シーン JSON は rotation(euler) しか持たないので、
@@ -541,7 +573,8 @@ void Application::RegisterMcpEntityMethods()
             if (params.contains("scale"))
             {
                 const auto s = params["scale"].get<std::vector<float>>();
-                if (s.size() != 3) throw McpError(McpErr::InvalidParam, "scale must be [x,y,z]");
+                if (s.size() != 3) throw McpError(McpErr::InvalidParam, "scale must be [x,y,z]",
+                    "例: scale:[1, 1, 1]（3 要素。一様に大きくするなら [2, 2, 2]）");
                 t.scale = { s[0], s[1], s[2] };
             }
             resp["ok"] = true;
@@ -623,13 +656,16 @@ void Application::RegisterMcpEntityMethods()
     McpDefine("open_scene", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
-            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'",
+                "path に assets 相対のシーン（例: scenes/main.json）を渡す。一覧は dx12_list_scenes");
             if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                 rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
+                    "path は assets 相対（例: scenes/main.json）。絶対パス・..・バックスラッシュは不可");
             // pendingLoadPath は Editor モードでのみ drain される(Play 中はロードしない)。
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot open scene while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot open scene while Playing; call dx12_stop first",
+                    "先に dx12_stop で Editor へ戻してから開く");
             // 単一スロット: 既に未処理の open_scene があれば 2件目を弾く(上書きで1件目が宙吊りになるのを防ぐ)。
             // ★m_sceneLoadJob も見ること。pendingLoadPath は「段階ロードのジョブを作った時点で」
             //   空になるので、ジョブ進行中はここが素通りしていた。その状態で open_scene を受けると、
@@ -637,9 +673,11 @@ void Application::RegisterMcpEntityMethods()
             //   要求したシーンがまだ読まれていないのに ok が返る（実際に踏んだ: 別シーンの
             //   完了で 9 秒後に ok が返り、要求したシーンのロードはその後に始まっていた）。
             if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob)
-                throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes");
+                throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes",
+                    "読み込み中のシーンが終わるまで待つ。dx12_ping の currentScene が変わったら呼び直す");
             const std::string full = PathResolver::AssetsDir() + rel;
-            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "scene not found: " + rel);
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "scene not found: " + rel,
+                "dx12_list_scenes で実在するシーンのパスを確かめる。新しく作るなら dx12_new_scene");
             // 遅延ロード: フレーム境界の機構が pendingLoadPath を消費し SceneSerializer::Load を行う。
             // 完了後に m_mcpLoadReply 経由で sceneName/entityCount/sceneGeneration を返す(遅延同期)。
             m_editorCtx->pendingLoadPath    = full;
@@ -654,18 +692,24 @@ void Application::RegisterMcpEntityMethods()
             // BeginProjectLoad は数フレームかけて非同期にロードする(スプラッシュ表示→シーン差替)ので、
             // ここでは開始だけして即応答する。完了確認は dx12_ping の currentScene で行える。
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot open project while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot open project while Playing; call dx12_stop first",
+                    "先に dx12_stop で Editor へ戻してから開く");
             if (m_loading)
-                throw McpError(McpErr::ModeConflict, "a project load is already in progress; retry after it completes");
+                throw McpError(McpErr::ModeConflict, "a project load is already in progress; retry after it completes",
+                    "プロジェクトの読み込みが終わるまで待つ（dx12_ping が currentScene を返すようになったら終わり）");
             if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob)
-                throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes");
+                throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes",
+                    "読み込み中のシーンが終わるまで待つ。dx12_ping の currentScene が変わったら呼び直す");
             const std::string root = params.value("path", std::string());
-            if (root.empty()) throw McpError(McpErr::InvalidParam, "missing 'path' (project root absolute path)");
+            if (root.empty()) throw McpError(McpErr::InvalidParam, "missing 'path' (project root absolute path)",
+                "path にプロジェクトのルートフォルダの絶対パス（.dx12proj がある所。例: C:/Users/me/Documents/dev/game/Nocturne）");
             if (!fs::exists(root) || !fs::is_directory(root))
-                throw McpError(McpErr::NotFound, "project folder not found: " + root);
+                throw McpError(McpErr::NotFound, "project folder not found: " + root,
+                    "path はプロジェクトのルートフォルダの絶対パス。フォルダが実在するか確かめる");
             ProjectInfo info;
             if (!ProjectManager::ProjectFromFolder(root, info))
-                throw McpError(McpErr::NotFound, "not a project folder: " + root);
+                throw McpError(McpErr::NotFound, "not a project folder: " + root,
+                    ".dx12proj があるフォルダを渡す（assets フォルダではなくその 1 つ上）");
             BeginProjectLoad(info, /*isNew=*/false);
             resp["ok"] = true;
             resp["result"] = {{"name", info.name}, {"rootDir", info.rootDir},
@@ -728,16 +772,21 @@ void Application::RegisterMcpEntityMethods()
     McpDefine("spawn_model", "name:string,path:string,position:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first",
+                    "dx12_stop で Editor へ戻してから置く（Play 中に置いても Stop で消える）");
             std::string path = params.value("path", std::string());
-            if (path.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (path.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'",
+                "path に assets 相対のモデル（例: models/tree.glb）を渡す。一覧は dx12_list_assets");
             if (path.front() == '/' || path.find('\\') != std::string::npos ||
                 path.find(':') != std::string::npos || path.find("..") != std::string::npos)
-                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
+                    "path は assets 相対（例: models/tree.glb）。外部のファイルは先に dx12_import_asset で取り込む");
             if (!fs::exists(PathResolver::AssetsDir() + path))
-                throw McpError(McpErr::NotFound, "model not found: " + path);
+                throw McpError(McpErr::NotFound, "model not found: " + path,
+                    "dx12_list_assets で実在と綴り（拡張子・大文字小文字）を確かめる。外部のファイルなら dx12_import_asset");
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
-            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
+                "例: position:[0, 0, 5]（ワールド座標の 3 要素）");
             std::string name = params.value("name", std::string());
             if (name.empty()) name = fs::path(path).stem().string();
             // idempotency: 同 key で生成済みかつ有効ならそれを即返す。
@@ -790,7 +839,8 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             const std::string comp = params.value("component", std::string());
-            if (comp.empty()) throw McpError(McpErr::InvalidParam, "missing 'component'");
+            if (comp.empty()) throw McpError(McpErr::InvalidParam, "missing 'component'",
+                "component に jsonKey を渡す（例: \"pointLight\" / \"rigidBody\"）。一覧は dx12_describe_components");
             // フィールドは 'data'（'values' も別名として許容）。どちらも無ければエラー。
             // 旧実装は無指定を空オブジェクト扱い＝全フィールドをデフォルトで再生成する事故になっていた
             // （onClickEvent 等が黙って消える）。
@@ -799,7 +849,8 @@ void Application::RegisterMcpEntityMethods()
             else if (params.contains("values")) data = params["values"];
             if (!data.is_object() || data.empty())
                 throw McpError(McpErr::InvalidParam,
-                    "missing component fields: pass a non-empty 'data' object");
+                    "missing component fields: pass a non-empty 'data' object",
+                    "例: data:{\"intensity\": 2.5}（変えたいフィールドだけでよい。名前と型は dx12_describe_components）");
             // 'layer'（どのパーティクルレイヤーを編集するか）はデータではなく【選択子】なので
             // params 直下に書けるほうが自然。実処理側は data の中しか見ないため、ここで移し替える。
             // ★これをやらないと layer 指定が黙って無視され、常に 1 枚目が書き換わる
@@ -814,20 +865,23 @@ void Application::RegisterMcpEntityMethods()
                 if (data.contains("position"))
                 {
                     auto p = data["position"].get<std::vector<float>>();
-                    if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+                    if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
+                        "例: data:{\"position\":[0, 1, 0]}（3 要素）");
                     t.position = { p[0], p[1], p[2] };
                 }
                 if (data.contains("rotation"))
                 {
                     auto r = data["rotation"].get<std::vector<float>>();
-                    if (r.size() != 3) throw McpError(McpErr::InvalidParam, "rotation must be [x,y,z]");
+                    if (r.size() != 3) throw McpError(McpErr::InvalidParam, "rotation must be [x,y,z]",
+                        "例: data:{\"rotation\":[0, 90, 0]}（度単位のオイラー角 3 要素）");
                     t.rotation = { r[0], r[1], r[2] };
                     t.useQuaternion = false;
                 }
                 if (data.contains("quaternion"))
                 {
                     auto q = data["quaternion"].get<std::vector<float>>();
-                    if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]");
+                    if (q.size() != 4) throw McpError(McpErr::InvalidParam, "quaternion must be [x,y,z,w]",
+                        "例: data:{\"quaternion\":[0, 0, 0, 1]}（[x,y,z,w] の 4 要素）");
                     t.quaternion = { q[0], q[1], q[2], q[3] };
                     t.useQuaternion = true;
                     // set_transform と同じ理由で euler も揃える（保存で姿勢が戻らないように）
@@ -836,7 +890,8 @@ void Application::RegisterMcpEntityMethods()
                 if (data.contains("scale"))
                 {
                     auto s = data["scale"].get<std::vector<float>>();
-                    if (s.size() != 3) throw McpError(McpErr::InvalidParam, "scale must be [x,y,z]");
+                    if (s.size() != 3) throw McpError(McpErr::InvalidParam, "scale must be [x,y,z]",
+                        "例: data:{\"scale\":[1, 1, 1]}（3 要素）");
                     t.scale = { s[0], s[1], s[2] };
                 }
             }
@@ -859,7 +914,8 @@ void Application::RegisterMcpEntityMethods()
                 // 既存を remove してから登録済みデシリアライザで再生成する。
                 if (!RemoveRegisteredComponent(reg, e, comp))
                     throw McpError(McpErr::UnknownComponent,
-                        "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
+                        "unknown/unsupported component: " + comp + " (call dx12_describe_components)",
+                        "dx12_describe_components で settable な jsonKey を確かめる。メッシュの見た目は set_pbr / set_color / set_texture、Lua は set_lua_property");
                 json ej;
                 ej[comp] = merged;        // deserialize は ej.contains(jsonKey) を見る形
                 RuntimeComponentRegistry::Get().ForEach([&](const RuntimeComponentInfo& info) {
@@ -876,11 +932,13 @@ void Application::RegisterMcpEntityMethods()
             auto& reg = m_scene->GetRegistry();
             const std::string comp = params.value("component", std::string());
             if (comp == "transform" || comp == "name")
-                throw McpError(McpErr::InvalidParam, "cannot remove core component (transform/name)");
+                throw McpError(McpErr::InvalidParam, "cannot remove core component (transform/name)",
+                    "transform と name は外せない。エンティティごと消すなら dx12_delete_entity、名前を変えるなら dx12_rename_entity");
             McpUndo().TrackByJsonKey(e, comp);
             if (!RemoveRegisteredComponent(reg, e, comp))
                 throw McpError(McpErr::UnknownComponent,
-                    "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
+                    "unknown/unsupported component: " + comp + " (call dx12_describe_components)",
+                    "dx12_describe_components で removable な jsonKey を確かめる（get_entity の componentTypes に出る名前）");
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"removed", comp}};
         });
@@ -892,9 +950,11 @@ void Application::RegisterMcpEntityMethods()
     //   （名前で onClick を直接呼ぶ実装にすると、そこが嘘になってテストの意味が無くなる）。
     McpDefine("ui_click", "name:string,entity:int,x:number,y:number,move:bool", DX12E_MCP_HANDLER
         {
-            if (!m_uiSystem) throw McpError(McpErr::InvalidParam, "UI システムが無い");
+            if (!m_uiSystem) throw McpError(McpErr::InvalidParam, "UI システムが無い",
+                "ゲーム内 UI の初期化前。dx12_ping が応答し、シーンが開いてから呼ぶ");
             if (m_mcpStepReply.client != 0)
-                throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly");
+                throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly",
+                    "前の ui_click / step_frames の応答（2〜3 フレーム）を待ってから押す");
 
             const float uiVw = (m_renderW > 0) ? static_cast<float>(m_renderW) : 1920.0f;
             const float uiVh = (m_renderH > 0) ? static_cast<float>(m_renderH) : 1080.0f;
@@ -1119,7 +1179,8 @@ void Application::RegisterMcpEntityMethods()
                 for (auto& c : all["components"])
                     if (c.value("jsonKey", std::string()) == only) filtered.push_back(c);
                 if (filtered.empty())
-                    throw McpError(McpErr::UnknownComponent, "unknown component: " + only);
+                    throw McpError(McpErr::UnknownComponent, "unknown component: " + only,
+                        "only は jsonKey（例: \"pointLight\"）。only を外して呼ぶと全部の一覧が返る");
                 resp["ok"] = true;
                 resp["result"] = {{"components", std::move(filtered)}};
             }
@@ -1173,7 +1234,8 @@ void Application::RegisterMcpEntityMethods()
                 {
                     auto e = static_cast<entt::entity>(v.get<u32>());
                     if (!reg.valid(e)) throw McpError(McpErr::NotFound,
-                        "invalid entity id: " + std::to_string(v.get<u32>()));
+                        "invalid entity id: " + std::to_string(v.get<u32>()),
+                        "entities には今のシーンの entityId を渡す（Stop / シーン再読込で id は変わる。dx12_list_entities で取り直す）");
                     targets.push_back(e);
                 }
             if (params.contains("names"))
@@ -1183,7 +1245,8 @@ void Application::RegisterMcpEntityMethods()
                     entt::entity found = entt::null;
                     for (auto [oe, tag] : reg.view<NameTag>().each())
                         if (tag.name == want) { found = oe; break; }
-                    if (found == entt::null) throw McpError(McpErr::NotFound, "entity not found: " + want);
+                    if (found == entt::null) throw McpError(McpErr::NotFound, "entity not found: " + want,
+                        "names は完全一致の名前。dx12_find_entity で確かめるか、entities に id で渡す");
                     targets.push_back(found);
                 }
             if (targets.empty()) throw std::runtime_error("missing 'entities' or 'names'");
@@ -1258,8 +1321,10 @@ void Application::RegisterMcpEntityMethods()
             // ここの "name" は新しい名前。エンティティ指定は entity(id) のみ(name 引きは曖昧なので不可)。
             const auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
             auto& reg = m_scene->GetRegistry();
-            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id");
-            if (!reg.all_of<NameTag>(e)) throw McpError(McpErr::NotFound, "entity has no NameTag");
+            if (!reg.valid(e)) throw McpError(McpErr::NotFound, "invalid entity id",
+                "entity に今のシーンの entityId を渡す（rename_entity は name を新しい名前に使うので id 指定のみ。dx12_find_entity で id を引く）");
+            if (!reg.all_of<NameTag>(e)) throw McpError(McpErr::NotFound, "entity has no NameTag",
+                "名前を持たない内部エンティティ（グリッド等）は改名できない。dx12_list_entities に出る物を選ぶ");
             std::string base = params.value("name", std::string());
             if (base.empty()) throw std::runtime_error("missing 'name'");
             auto taken = [&](const std::string& s) {
@@ -1316,7 +1381,8 @@ void Application::RegisterMcpEntityMethods()
     McpDefine("find_entity", "name:string", DX12E_MCP_HANDLER
         {
             const std::string name = params.value("name", std::string());
-            if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'");
+            if (name.empty()) throw McpError(McpErr::InvalidParam, "missing 'name'",
+                "name に探す名前（完全一致）を渡す。前方一致で探すなら dx12_list_entities の name_prefix");
             auto ent = m_scene->FindEntity(name);
             resp["ok"] = true;
             if (ent.IsValid())
@@ -1341,7 +1407,8 @@ void Application::RegisterMcpEntityMethods()
             }
             else
             {
-                throw McpError(McpErr::InvalidParam, "provide 'tag' and/or 'box':[minX,minZ,maxX,maxZ]");
+                throw McpError(McpErr::InvalidParam, "provide 'tag' and/or 'box':[minX,minZ,maxX,maxZ]",
+                    "タグで絞るなら tag:\"enemy\"、範囲で絞るなら box:[minX, minZ, maxX, maxZ]（両方でも可）");
             }
             json arr = json::array();
             for (auto e : hits)
@@ -1367,7 +1434,8 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<Transform>(e))
-                throw McpError(McpErr::NotFound, "entity has no Transform");
+                throw McpError(McpErr::NotFound, "entity has no Transform",
+                    "Transform を持たないエンティティには寄れない。dx12_list_entities で 3D の物を選ぶ");
             const auto& t = reg.get<Transform>(e);
             float dist = 8.0f;
             if (reg.all_of<MeshRenderer>(e))
@@ -1405,7 +1473,8 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<MeshRenderer>(e))
-                throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+                throw McpError(McpErr::NotFound, "entity has no MeshRenderer",
+                    "set_pbr はメッシュ（モデル / プリミティブ）にだけ効く。ライトは set_component の pointLight / spotLight / directionalLight（太陽は dx12_set_sun）、UI は uiImage");
             McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
@@ -1424,7 +1493,8 @@ void Application::RegisterMcpEntityMethods()
             {
                 const auto& c = params["emissiveColor"];
                 if (!c.is_array() || c.size() < 3)
-                    throw McpError(McpErr::InvalidParam, "emissiveColor は [r,g,b]（0..1）");
+                    throw McpError(McpErr::InvalidParam, "emissiveColor は [r,g,b]（0..1）",
+                        "例: emissiveColor:[1, 0.6, 0.2]（0..1 の RGB 3 要素）。光らせるには emissiveIntensity も上げる");
                 mr.overrideEmissiveColor = { std::clamp(c[0].get<float>(), 0.0f, 1.0f),
                                              std::clamp(c[1].get<float>(), 0.0f, 1.0f),
                                              std::clamp(c[2].get<float>(), 0.0f, 1.0f) };
@@ -1443,7 +1513,9 @@ void Application::RegisterMcpEntityMethods()
                 else if (m == "mask")         mr.alphaModeOverride = 1;
                 else if (m == "blend")        mr.alphaModeOverride = 2;
                 else throw McpError(McpErr::InvalidParam,
-                                    "alphaMode は auto / opaque / mask / blend のいずれか");
+                                    "alphaMode は auto / opaque / mask / blend のいずれか",
+                                    "葉・柵など抜くなら mask（alphaCutoff と一緒に）、ガラスや煙なら blend（opacity と一緒に）",
+                                    {"auto", "opaque", "mask", "blend"});
             }
             if (params.contains("alphaCutoff"))
                 mr.alphaCutoffOverride = std::clamp(params["alphaCutoff"].get<float>(), -1.0f, 1.0f);
@@ -1478,7 +1550,8 @@ void Application::RegisterMcpEntityMethods()
     McpDefine("duplicate_entity", "entity:int,name:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot duplicate while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot duplicate while Playing; call dx12_stop first",
+                    "dx12_stop で Editor へ戻してから複製する（Play 中の複製は Stop で消える）");
             const auto e = ResolveMcpEntity(*m_scene, params);
             m_editorCtx->mcpDuplications.push_back(McpPendingDelete{ e, deferred });  // .entity=複製元
             isDeferred = true;
@@ -1489,13 +1562,15 @@ void Application::RegisterMcpEntityMethods()
     McpDefine("new_scene", "savePath:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot create a new scene while Playing");
+                throw McpError(McpErr::ModeConflict, "cannot create a new scene while Playing",
+                    "先に dx12_stop で Editor へ戻してから作る");
             std::string rel = params.value("savePath", std::string());
             if (!rel.empty())
             {
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                    throw McpError(McpErr::InvalidParam, "invalid savePath (assets 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid savePath (assets 相対のみ)",
+                        "savePath は assets 相対（例: scenes/level2.json）。省略すると未保存の新規シーンになる");
                 m_editorCtx->pendingNewScenePath = PathResolver::AssetsDir() + rel;
             }
             m_editorCtx->pendingNewScene        = true;   // フレーム境界で空シーン生成 + sceneGeneration++
@@ -1507,18 +1582,24 @@ void Application::RegisterMcpEntityMethods()
     McpDefine("spawn_prefab", "name:string,path:string,position:any", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot spawn while Playing; call dx12_stop first",
+                    "dx12_stop で Editor へ戻してから置く（Play 中に置いても Stop で消える）");
             std::string path = params.value("path", std::string());
-            if (path.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (path.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'",
+                "path に assets 相対のプレハブ（例: prefabs/enemy.prefab）を渡す。一覧は dx12_list_assets");
             if (path.front() == '/' || path.find('\\') != std::string::npos ||
                 path.find(':') != std::string::npos || path.find("..") != std::string::npos)
-                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
+                    "path は assets 相対（例: prefabs/enemy.prefab）。絶対パス・..・バックスラッシュは不可");
             if (fs::path(path).extension() != ".prefab")
-                throw McpError(McpErr::InvalidParam, "path must be a .prefab");
+                throw McpError(McpErr::InvalidParam, "path must be a .prefab",
+                    "プレハブは .prefab。モデル（.glb / .fbx）なら dx12_spawn_model、作るなら dx12_create_prefab");
             if (!fs::exists(PathResolver::AssetsDir() + path))
-                throw McpError(McpErr::NotFound, "prefab not found: " + path);
+                throw McpError(McpErr::NotFound, "prefab not found: " + path,
+                    "dx12_list_assets で prefabs/ 以下の実在を確かめる。無ければ dx12_create_prefab でエンティティから作る");
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
-            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+            if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
+                "例: position:[0, 0, 5]（ワールド座標の 3 要素）");
             // ★idempotency のリプレイ判定（#20-4。ここが無かったので実バグだった）。
             //   スポーン完了時に root id を m_mcpIdempotency へ記録してはいたが、
             //   **再送されたときに参照する側が無く、同じ key で何度でも重複生成できた**。

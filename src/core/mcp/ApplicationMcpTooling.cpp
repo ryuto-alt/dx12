@@ -27,17 +27,20 @@ void Application::RegisterMcpToolingMethods()
             if (rel.empty())
             {
                 if (m_editorCtx->currentScenePath.empty())
-                    throw McpError(McpErr::InvalidParam, "no scene currently open and 'path' not given");
+                    throw McpError(McpErr::InvalidParam, "no scene currently open and 'path' not given",
+                        "path に検証するシーン（例: scenes/main.json）を渡すか、先に dx12_open_scene で開く");
                 scenePath = m_editorCtx->currentScenePath;
             }
             else
             {
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
+                        "path は assets 相対（例: scenes/main.json）。絶対パス・..・バックスラッシュは不可");
                 scenePath = fs::path(PathResolver::AssetsDir()) / rel;
             }
-            if (!fs::exists(scenePath)) throw McpError(McpErr::NotFound, "scene not found: " + scenePath.string());
+            if (!fs::exists(scenePath)) throw McpError(McpErr::NotFound, "scene not found: " + scenePath.string(),
+                "dx12_list_scenes で実在するシーンのパスを確かめる");
 
             wchar_t exeBuf[MAX_PATH] = {};
             GetModuleFileNameW(nullptr, exeBuf, MAX_PATH);
@@ -85,10 +88,12 @@ void Application::RegisterMcpToolingMethods()
     McpDefine("eval_lua", "code:string", DX12E_MCP_HANDLER
         {
             const std::string code = params.value("code", std::string());
-            if (code.empty()) throw McpError(McpErr::InvalidParam, "missing 'code'");
+            if (code.empty()) throw McpError(McpErr::InvalidParam, "missing 'code'",
+                "code に実行する Lua を渡す（例: code:\"return 1 + 1\"）。return した値が result に入る");
             std::string resultStr, err;
             const bool ok = m_scriptEngine->EvalLua(code, resultStr, err);
-            if (!ok) throw McpError(McpErr::Internal, "Lua error: " + err);
+            if (!ok) throw McpError(McpErr::Internal, "Lua error: " + err,
+                "エラー文の行番号を見て直す。使える API は dx12_describe_lua_api で引ける");
             resp["ok"] = true;
             resp["result"] = {{"result", resultStr}};
         });
@@ -101,7 +106,8 @@ void Application::RegisterMcpToolingMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<MeshRenderer>(e))
-                throw McpError(McpErr::InvalidParam, "entity has no meshRenderer");
+                throw McpError(McpErr::InvalidParam, "entity has no meshRenderer",
+                    "set_texture はメッシュ（モデル / プリミティブ）にだけ効く。スプライトは set_component の sprite2d.texturePath");
             const std::string slot = params.value("slot", std::string("albedo"));
             const u32 submesh = params.value("submesh", 0u);
             std::string rel = params.value("path", std::string());
@@ -109,9 +115,11 @@ void Application::RegisterMcpToolingMethods()
             {
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
+                        "path は assets 相対（例: textures/brick_albedo.png）。外すなら空文字 \"\"");
                 if (!fs::exists(fs::path(PathResolver::AssetsDir()) / rel))
-                    throw McpError(McpErr::NotFound, "texture not found: " + rel);
+                    throw McpError(McpErr::NotFound, "texture not found: " + rel,
+                        "dx12_list_assets で textures/ 以下の実在と綴りを確かめる。外部のファイルなら dx12_import_asset");
             }
             McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
@@ -123,7 +131,8 @@ void Application::RegisterMcpToolingMethods()
             // 自己発光。★テクスチャを貼っただけでは光らない（色×強度が既定で 0 のため）。
             //   dx12_set_pbr の emissiveIntensity を一緒に上げること。
             else if (slot == "emissive")       MeshRenderer::SetOverride(mr.overrideEmissiveTexture, submesh, rel);
-            else throw McpError(McpErr::InvalidParam, "slot must be albedo|normal|metalRoughness|emissive");
+            else throw McpError(McpErr::InvalidParam, "slot must be albedo|normal|metalRoughness|emissive",
+                "slot は albedo / normal / metalRoughness / emissive のどれか（色の画像なら albedo）");
             resp["ok"] = true;
             resp["result"] = {{"entityId", static_cast<u32>(e)}, {"slot", slot},
                               {"submesh", submesh}, {"path", rel}};
@@ -138,9 +147,11 @@ void Application::RegisterMcpToolingMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<SkeletalAnimation>(e))
-                throw McpError(McpErr::InvalidParam, "entity has no skeletalAnimation");
+                throw McpError(McpErr::InvalidParam, "entity has no skeletalAnimation",
+                    "スキンメッシュ（ボーン入りのモデル）にだけ使える。dx12_get_anim_state でアニメを持つか確かめる");
             auto& sa = reg.get<SkeletalAnimation>(e);
-            if (!sa.animator) throw McpError(McpErr::Internal, "animator not initialized");
+            if (!sa.animator) throw McpError(McpErr::Internal, "animator not initialized",
+                "モデルの読み込みが終わっていない可能性。数フレーム後（dx12_step_frames）に呼び直す");
             const float blend = params.value("blend", 0.3f);
 
             // state を渡された場合は FSM の遷移（AnimatorController が必要）。
@@ -149,16 +160,19 @@ void Application::RegisterMcpToolingMethods()
             {
                 const std::string want = params["state"].get<std::string>();
                 if (!reg.all_of<AnimatorController>(e))
-                    throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+                    throw McpError(McpErr::InvalidParam, "entity has no animatorController",
+                        "state 指定はアニメーショングラフ（.animfsm）が要る。set_component で animatorController.graphPath を付けるか、clip / clipName で直接再生する");
                 auto& ac = reg.get<AnimatorController>(e);
                 if (!ac._state || !ac._state->valid)
                     throw McpError(McpErr::Internal,
-                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')",
+                        "graphPath の .animfsm が読めていない。dx12_describe_anim_graph path:<graphPath> で中身とエラーを確かめる");
                 const u32 layer = params.value("layer", 0u);
                 if (!anim_graph::PlayState(*ac._state, layer, want, blend))
                     throw McpError(McpErr::NotFound,
                         "no state named '" + want + "' on layer " + std::to_string(layer)
-                        + " (dx12_describe_anim_graph で一覧を確認)");
+                        + " (dx12_describe_anim_graph で一覧を確認)",
+                        "dx12_describe_anim_graph で layer ごとの state 名を確かめる（大文字小文字も一致させる）");
                 resp["ok"] = true;
                 resp["result"] = {{"entityId", static_cast<u32>(e)}, {"state", want},
                                   {"layer", layer}, {"blend", blend}};
@@ -171,14 +185,16 @@ void Application::RegisterMcpToolingMethods()
                     const std::string want = params["clipName"].get<std::string>();
                     for (int i = 0; i < static_cast<int>(sa.clips.size()); ++i)
                         if (sa.clips[i]->GetName() == want) { idx = i; break; }
-                    if (idx < 0) throw McpError(McpErr::NotFound, "no clip named '" + want + "' (dx12_get_anim_state で一覧を確認)");
+                    if (idx < 0) throw McpError(McpErr::NotFound, "no clip named '" + want + "' (dx12_get_anim_state で一覧を確認)",
+                        "dx12_get_anim_state の clips（名前の配列）で正しい名前を確かめる。番号で指すなら clip:<index>");
                 }
                 else
                 {
                     idx = params.value("clip", 0);
                     if (idx < 0 || idx >= static_cast<int>(sa.clips.size()))
                         throw McpError(McpErr::InvalidParam, "clip index out of range (0.." +
-                            std::to_string(sa.clips.empty() ? 0 : sa.clips.size() - 1) + ")");
+                            std::to_string(sa.clips.empty() ? 0 : sa.clips.size() - 1) + ")",
+                            "dx12_get_anim_state の clips（名前の配列）の長さを確かめ、0 から数えた番号を渡す。名前で指すなら clipName");
                 }
                 sa.animator->CrossFadeTo(sa.clips[idx].get(), blend);
                 if (params.contains("loop")) sa.animator->SetLooping(params["loop"].get<bool>());
@@ -316,11 +332,13 @@ void Application::RegisterMcpToolingMethods()
                 else                                                e = ResolveMcpEntity(*m_scene, params);
             }
             if (!reg.all_of<AnimatorController>(e))
-                throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+                throw McpError(McpErr::InvalidParam, "entity has no animatorController",
+                    "パラメータはアニメーショングラフ（.animfsm）が要る。set_component で animatorController.graphPath を付ける");
             auto& ac = reg.get<AnimatorController>(e);
             if (!ac._state || !ac._state->valid)
                 throw McpError(McpErr::Internal,
-                    "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+                    "animatorController graph not loaded (graphPath='" + ac.graphPath + "')",
+                    "graphPath の .animfsm が読めていない。dx12_describe_anim_graph path:<graphPath> で中身とエラーを確かめる");
             std::string name = params.value("param", std::string());
             if (name.empty()) name = params.value("name", std::string());
             if (name.empty())
@@ -329,7 +347,8 @@ void Application::RegisterMcpToolingMethods()
             auto it = ac._state->params.find(name);
             if (it == ac._state->params.end())
                 throw McpError(McpErr::NotFound,
-                    "no parameter named '" + name + "' (dx12_describe_anim_graph で一覧を確認)");
+                    "no parameter named '" + name + "' (dx12_describe_anim_graph で一覧を確認)",
+                    "dx12_describe_anim_graph の parameters[].name で正しい名前を確かめる");
 
             if (params.value("trigger", false))
             {
@@ -340,11 +359,13 @@ void Application::RegisterMcpToolingMethods()
                 const json& v = params["value"];
                 if (v.is_boolean())     it->second.b = v.get<bool>();
                 else if (v.is_number()) it->second.f = v.get<float>();
-                else throw McpError(McpErr::InvalidParam, "value must be a number or a boolean");
+                else throw McpError(McpErr::InvalidParam, "value must be a number or a boolean",
+                    "float のパラメータは数値（例: value:0.8）、bool は真偽値（value:true）、trigger は trigger:true");
             }
             else
             {
-                throw McpError(McpErr::InvalidParam, "either 'value' or 'trigger' is required");
+                throw McpError(McpErr::InvalidParam, "either 'value' or 'trigger' is required",
+                    "float / bool なら value を、trigger なら trigger:true を渡す");
             }
 
             json out;
@@ -366,21 +387,25 @@ void Application::RegisterMcpToolingMethods()
             {
                 source = params["path"].get<std::string>();
                 const std::vector<uint8_t> bytes = vfs::ReadAsset(source);
-                if (bytes.empty()) throw McpError(McpErr::NotFound, "cannot read " + source);
+                if (bytes.empty()) throw McpError(McpErr::NotFound, "cannot read " + source,
+                    "path は assets 相対の .animfsm（例: animfsm/humanoid.animfsm）。dx12_list_assets で確かめる");
                 std::string err;
                 if (!ParseAnimGraphAsset(bytes, asset, err))
-                    throw McpError(McpErr::InvalidParam, "invalid .animfsm: " + err);
+                    throw McpError(McpErr::InvalidParam, "invalid .animfsm: " + err,
+                        "エラー文の位置を直す。書式はエディタのアニメーション窓で保存した .animfsm を参考にする");
             }
             else
             {
                 const auto e = ResolveMcpEntity(*m_scene, params);
                 auto& reg = m_scene->GetRegistry();
                 if (!reg.all_of<AnimatorController>(e))
-                    throw McpError(McpErr::InvalidParam, "entity has no animatorController");
+                    throw McpError(McpErr::InvalidParam, "entity has no animatorController",
+                        "このエンティティにはグラフが無い。path に .animfsm を渡して中身だけ見るか、animatorController を付ける");
                 auto& ac = reg.get<AnimatorController>(e);
                 if (!ac._state || !ac._state->valid)
                     throw McpError(McpErr::Internal,
-                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')");
+                        "animatorController graph not loaded (graphPath='" + ac.graphPath + "')",
+                        "graphPath の .animfsm が読めていない。path:<graphPath> で呼ぶとファイル単体の解析結果が見える");
                 asset  = ac._state->asset;
                 source = ac.graphPath;
             }
@@ -433,7 +458,8 @@ void Application::RegisterMcpToolingMethods()
             if (role == "host")         m_editorCtx->netTestRole = NetTestRole::Host;
             else if (role == "client")  m_editorCtx->netTestRole = NetTestRole::Client;
             else if (role == "offline") m_editorCtx->netTestRole = NetTestRole::Offline;
-            else throw McpError(McpErr::InvalidParam, "role must be host|client|offline");
+            else throw McpError(McpErr::InvalidParam, "role must be host|client|offline",
+                "role は host / client / offline のどれか（自分がサーバなら host）");
             if (params.contains("address")) m_editorCtx->netTestJoinAddress = params["address"].get<std::string>();
             // ★port は指定されたときだけ更新する。以前は既定 0 を無条件に代入していたので、
             //   role だけ変える呼び出し（port 省略）で**前回設定した port が黙って消えて**いた。
@@ -441,7 +467,8 @@ void Application::RegisterMcpToolingMethods()
             {
                 const int port = params.value("port", 0);
                 if (port < 0 || port > 65535)
-                    throw McpError(McpErr::InvalidParam, "port must be 0..65535");
+                    throw McpError(McpErr::InvalidParam, "port must be 0..65535",
+                        "port は 0..65535（0 は既定のポート）。例: port:7777");
                 m_editorCtx->netTestJoinPort = static_cast<u16>(port);
             }
             resp["ok"] = true;
@@ -453,7 +480,8 @@ void Application::RegisterMcpToolingMethods()
         {
             if (!m_networkSystem || !m_networkSystem->IsServer())
                 throw McpError(McpErr::ModeConflict,
-                    "not hosting (dx12_net_setup role=host → dx12_play してからテストクライアントを起動する)");
+                    "not hosting (dx12_net_setup role=host → dx12_play してからテストクライアントを起動する)",
+                    "先に dx12_net_setup role:\"host\" → dx12_play でホストを立ててから呼ぶ");
             // ツールバーの「テストクライアント起動」ボタンと同じ: フレーム境界で CreateProcess。
             m_editorCtx->netTestLaunchClientRequested = true;
             resp["ok"] = true;

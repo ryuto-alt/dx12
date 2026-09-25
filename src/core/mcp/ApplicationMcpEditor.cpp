@@ -83,7 +83,8 @@ void Application::RegisterMcpEditorMethods()
                 std::string p = sky["envMapPath"].get<std::string>();
                 if (!p.empty() && (p.front() == '/' || p.find('\\') != std::string::npos ||
                     p.find(':') != std::string::npos || p.find("..") != std::string::npos))
-                    throw McpError(McpErr::InvalidParam, "invalid envMapPath (assets 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid envMapPath (assets 相対のみ)",
+                        "例: skybox.envMapPath:\"textures/sky/sunset.hdr\"（assets 相対・スラッシュ区切り。空文字で外す）");
                 if (p != s.envMapPath) { s.envMapPath = p; envChanged = true; }
             }
             if (sky.contains("iblIntensity"))    s.iblIntensity    = sky["iblIntensity"].get<float>();
@@ -97,7 +98,8 @@ void Application::RegisterMcpEditorMethods()
                 std::string d = params["decalAtlasPath"].get<std::string>();
                 if (!d.empty() && (d.front() == '/' || d.find('\\') != std::string::npos ||
                     d.find(':') != std::string::npos || d.find("..") != std::string::npos))
-                    throw McpError(McpErr::InvalidParam, "invalid decalAtlasPath (assets 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid decalAtlasPath (assets 相対のみ)",
+                        "例: decalAtlasPath:\"textures/decals/atlas.png\"（assets 相対・スラッシュ区切り）");
                 m_scene->SetDecalAtlasPath(d);
             }
 
@@ -119,7 +121,8 @@ void Application::RegisterMcpEditorMethods()
             {
                 // 単一スロット: 既にモード遷移待ちなら 2件目を弾く(上書きで1件目が宙吊りになるのを防ぐ)。
                 if (m_mcpModeReply.client != 0)
-                    throw McpError(McpErr::ModeConflict, "a mode change is already pending; retry shortly");
+                    throw McpError(McpErr::ModeConflict, "a mode change is already pending; retry shortly",
+                        "直前の play / stop の応答を待ってから呼ぶ。今の状態は dx12_get_mode で分かる");
                 // ★配置検査は「Editor の今」でやること。Play に入ってから測ると物理が
                 //   落とした後・押し出した後の位置を見ることになり、埋まりも浮きも嘘になる。
                 //   結果は遅延応答へ持ち越す（m_mcpPlayLayout）。
@@ -145,7 +148,8 @@ void Application::RegisterMcpEditorMethods()
             else
             {
                 if (m_mcpModeReply.client != 0)
-                    throw McpError(McpErr::ModeConflict, "a mode change is already pending; retry shortly");
+                    throw McpError(McpErr::ModeConflict, "a mode change is already pending; retry shortly",
+                        "直前の play / stop の応答を待ってから呼ぶ。今の状態は dx12_get_mode で分かる");
                 m_pendingMode = EngineMode::Editor;
                 m_modeChangeRequested = true;     // 次フレームで EnterEditorMode()(snapshot 復元)
                 m_mcpModeReply = deferred;
@@ -191,7 +195,8 @@ void Application::RegisterMcpEditorMethods()
             {
                 if (m_deterministicCapture || m_mcpFinalShot.reply.client != 0)
                     throw McpError(McpErr::ModeConflict,
-                        "another deterministic screenshot is in flight; retry shortly");
+                        "another deterministic screenshot is in flight; retry shortly",
+                        "前の決定論スクショの応答を待ってから撮る（settleFrames ぶん、既定 8 フレームで返る）");
                 m_mcpFinalShot = {};
                 m_mcpFinalShot.path          = params.value("path", std::string());
                 m_mcpFinalShot.reply         = deferred;
@@ -234,7 +239,8 @@ void Application::RegisterMcpEditorMethods()
         {
             if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
                 throw McpError(McpErr::ModeConflict,
-                    "a final screenshot is already pending; retry shortly");
+                    "a final screenshot is already pending; retry shortly",
+                    "前の screenshot_final の応答を待ってから撮る（通常 1〜9 フレームで返る）");
             const bool det = params.value("deterministic", false);
             m_mcpFinalShot = {};
             m_mcpFinalShot.path          = params.value("path", std::string());
@@ -316,7 +322,8 @@ void Application::RegisterMcpEditorMethods()
             // get_entity は保存済みオーバーライドしか出さないので、スキーマを基準に既定も含めて出す。
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript");
+            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript",
+                "このエンティティには Lua が付いていない。dx12_attach_lua_component で付けるか、dx12_list_entities で luaScript を持つ物を探す");
             const auto& ls = reg.get<LuaScript>(e);
             const auto& schema = m_scriptEngine->GetPropertySchema(ls.scriptPath);
             auto typeStr = [](ScriptPropType t) -> const char* {
@@ -405,18 +412,22 @@ void Application::RegisterMcpEditorMethods()
             // 実行中(Playing)なら ReloadScript で再注入、Editor では保存だけ(次 Play で反映)。
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript");
+            if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript",
+                "このエンティティには Lua が付いていない。先に dx12_attach_lua_component でスクリプトを付ける");
             McpUndo().Track<LuaScript>(e);
             const std::string key = params.value("key", std::string());
-            if (key.empty()) throw McpError(McpErr::InvalidParam, "missing 'key'");
-            if (!params.contains("value")) throw McpError(McpErr::InvalidParam, "missing 'value'");
+            if (key.empty()) throw McpError(McpErr::InvalidParam, "missing 'key'",
+                "key にプロパティ名を渡す。名前の一覧は dx12_get_lua_component_state の properties[].name");
+            if (!params.contains("value")) throw McpError(McpErr::InvalidParam, "missing 'value'",
+                "value に新しい値を渡す（型は dx12_get_lua_component_state の properties[].type に合わせる）");
             const json& value = params["value"];
             auto& ls = reg.get<LuaScript>(e);
             const auto& schema = m_scriptEngine->GetPropertySchema(ls.scriptPath);
             const ScriptPropDef* def = nullptr;
             for (const auto& d : schema) if (d.name == key) { def = &d; break; }
             if (!def) throw McpError(McpErr::InvalidParam,
-                "unknown property '" + key + "' (script の properties に未宣言。dx12_get_lua_component_state で確認)");
+                "unknown property '" + key + "' (script の properties に未宣言。dx12_get_lua_component_state で確認)",
+                "スクリプト先頭の properties = { ... } に宣言した名前だけ設定できる。宣言を足すなら dx12_read_lua_component で中身を見て書き換える");
             ScriptProp* p = nullptr;
             for (auto& ex : ls.props) if (ex.name == key) { p = &ex; break; }
             if (!p) { ls.props.push_back(def->def); p = &ls.props.back(); }
@@ -425,17 +436,21 @@ void Application::RegisterMcpEditorMethods()
             {
             case ScriptPropType::Float:
             case ScriptPropType::Int:
-                if (!value.is_number()) throw McpError(McpErr::InvalidParam, "value must be a number");
+                if (!value.is_number()) throw McpError(McpErr::InvalidParam, "value must be a number",
+                    "このプロパティは数値。例: value:1.5（文字列の \"1.5\" ではなく数値で渡す）");
                 p->num = value.get<double>(); break;
             case ScriptPropType::Bool:
-                if (!value.is_boolean()) throw McpError(McpErr::InvalidParam, "value must be a bool");
+                if (!value.is_boolean()) throw McpError(McpErr::InvalidParam, "value must be a bool",
+                    "このプロパティは真偽値。例: value:true（文字列の \"true\" は不可）");
                 p->b = value.get<bool>(); break;
             case ScriptPropType::String:
-                if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string");
+                if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string",
+                    "このプロパティは文字列。例: value:\"door_open\"");
                 p->str = value.get<std::string>(); break;
             case ScriptPropType::Entity:
             {
-                if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string");
+                if (!value.is_string()) throw McpError(McpErr::InvalidParam, "value must be a string",
+                    "entity 型はエンティティの名前を文字列で渡す。例: value:\"Door_01\"（dx12_list_entities の name）");
                 // ★名前で指定されたら guid も差し替える。名前だけ書くと古い guid が勝って
                 //   この呼び出しが黙って無視される（参照の正は guid）。
                 //   まだ guid が振られていない相手なら 0（次の保存で付き、読み込みで昇格する）。
@@ -453,7 +468,8 @@ void Application::RegisterMcpEditorMethods()
             case ScriptPropType::Color:
             {
                 if (!value.is_array() || value.size() != 3)
-                    throw McpError(McpErr::InvalidParam, "value must be [x,y,z]");
+                    throw McpError(McpErr::InvalidParam, "value must be [x,y,z]",
+                        "vec3 / color 型は 3 要素の配列。例: value:[1, 0.5, 0]");
                 auto a = value.get<std::vector<float>>();
                 p->vec = { a[0], a[1], a[2] }; break;
             }
@@ -502,8 +518,10 @@ void Application::RegisterMcpEditorMethods()
             //       shadowCascade = shadowParams.w / lightComplexity,clusterGrid,decalCount =
             //       clusterExtra.z / fog* = FogParams.gMisc.z
             if (m_mcpRenderDebugReply.client != 0)
-                throw McpError(McpErr::ModeConflict, "a render_debug capture is already pending; retry shortly");
-            if (!m_scene) throw McpError(McpErr::Internal, "no scene");
+                throw McpError(McpErr::ModeConflict, "a render_debug capture is already pending; retry shortly",
+                    "前の render_debug の応答を待ってから呼ぶ（frames ぶん、既定 3 フレームで返る）");
+            if (!m_scene) throw McpError(McpErr::Internal, "no scene",
+                "シーンがまだ無い（ランチャー表示中）。dx12_open_project / dx12_open_scene の後に呼ぶ");
 
             const std::string mode = params.value("mode", std::string());
             // (mode, パスモード(0=既存トグル), 説明)
@@ -554,7 +572,8 @@ void Application::RegisterMcpEditorMethods()
             int frames = params.value("frames", 3);
             frames = std::clamp(frames, 1, 120);
             if ((mode == "lightComplexity" || mode == "clusterGrid" || mode == "decalCount") && !m_editorCtx)
-                throw McpError(McpErr::Internal, "editor context not available");
+                throw McpError(McpErr::Internal, "editor context not available",
+                    "lightComplexity / clusterGrid / decalCount はエディタ窓の中でしか描けない。ゲームモードでは他の mode を使う");
 
             // ---- 現在の状態を退避（返す直前に必ず戻す）----
             auto& taaS  = m_scene->GetTaaSettings();
@@ -682,8 +701,10 @@ void Application::RegisterMcpEditorMethods()
             const float dx = params.value("dx", 0.0f);
             const float dy = params.value("dy", 0.0f);
             if (!std::isfinite(dx) || !std::isfinite(dy))
-                throw McpError(McpErr::InvalidParam, "dx / dy が NaN か Inf");
-            if (!m_inputSystem) throw McpError(McpErr::Internal, "input system not ready");
+                throw McpError(McpErr::InvalidParam, "dx / dy が NaN か Inf",
+                    "dx / dy は有限の数値（ピクセル相当の移動量）。例: dx:40, dy:-10");
+            if (!m_inputSystem) throw McpError(McpErr::Internal, "input system not ready",
+                "入力システムの初期化前。dx12_ping が応答してから呼び直す");
             m_inputSystem->InjectMouseDelta(dx, dy);
             resp["ok"] = true;
             resp["result"] = {
@@ -706,7 +727,8 @@ void Application::RegisterMcpEditorMethods()
             if (n < 1) n = 1;
             if (n > 600) n = 600;   // ~10s 上限(クライアント timeout 対策)
             if (m_mcpStepReply.client != 0)
-                throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly");
+                throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly",
+                    "前の step_frames（または ui_click）の応答を待ってから呼ぶ");
 
             const bool deterministic = params.value("deterministic", false);
             if (deterministic)
@@ -742,7 +764,8 @@ void Application::RegisterMcpEditorMethods()
         {
             // 直近 window フレームのリングバッファを平均して即答（ベンチ不要の現状把握用）。
             const u32 have = static_cast<u32>((std::min<u64>)(m_perfTotalFrames, kPerfHistory));
-            if (have == 0) throw McpError(McpErr::Internal, "no frames recorded yet");
+            if (have == 0) throw McpError(McpErr::Internal, "no frames recorded yet",
+                "起動直後でまだ 1 フレームも描いていない。dx12_step_frames frames:10 の後に呼び直す");
             const int windowReq = params.value("window", 60);
             const u32 n = static_cast<u32>(std::clamp(windowReq, 1, static_cast<int>(have)));
 
@@ -838,7 +861,8 @@ void Application::RegisterMcpEditorMethods()
             if (n < 30) n = 30;
             if (n > 3600) n = 3600;
             if (m_benchFramesLeft > 0 || m_benchReply.client != 0)
-                throw McpError(McpErr::ModeConflict, "a benchmark is already running; wait for it to finish");
+                throw McpError(McpErr::ModeConflict, "a benchmark is already running; wait for it to finish",
+                    "走っているベンチマークの応答（frames ぶん）を待ってから次を始める");
             m_benchSamples.clear();
             m_benchSamples.reserve(static_cast<size_t>(n));
             m_benchDraws = m_benchCulled = m_benchTris = 0;
@@ -866,11 +890,14 @@ void Application::RegisterMcpEditorMethods()
             // 足場やコインの色付けに。色は [r,g,b](0..1)。
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer",
+                "set_color はメッシュ（モデル / プリミティブ）にだけ効く。ライトの色は set_component の pointLight / spotLight / directionalLight の color（太陽は dx12_set_sun）、UI は uiImage の color");
             auto c = params.value("color", std::vector<float>{1.0f, 1.0f, 1.0f});
-            if (c.size() != 3) throw McpError(McpErr::InvalidParam, "color must be [r,g,b]");
+            if (c.size() != 3) throw McpError(McpErr::InvalidParam, "color must be [r,g,b]",
+                "例: color:[1, 0.2, 0.2]（0..1 の RGB 3 要素。アルファは付けない）");
             auto* device = m_scene->GetDevice();
-            if (!device) throw McpError(McpErr::Internal, "no graphics device");
+            if (!device) throw McpError(McpErr::Internal, "no graphics device",
+                "グラフィックスデバイスの初期化前。dx12_ping が応答してから呼び直す");
             McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
             mr.colorTint    = {c[0], c[1], c[2], 1.0f};   // シーン保存で色指定が消えないよう記録
@@ -892,9 +919,11 @@ void Application::RegisterMcpEditorMethods()
                 if (cam.isActive) { hasActiveCam = true; break; }
             if (!hasActiveCam && m_engineMode != EngineMode::Playing)
                 throw McpError(McpErr::NotFound,
-                    "no active CameraComponent (camera.isActive=true にするか dx12_screenshot を使う)");
+                    "no active CameraComponent (camera.isActive=true にするか dx12_screenshot を使う)",
+                    "先にカメラを置く: dx12_create_entity type:\"camera\"。既にあるなら set_component component:\"camera\" data:{isActive:true}");
             if (m_mcpGameViewReply.client != 0)
-                throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly");
+                throw McpError(McpErr::ModeConflict, "a game-view screenshot is already pending; retry shortly",
+                    "前の screenshot_game_view の応答を待ってから撮る（1 フレームで返る）");
             m_mcpGameViewPath  = params.value("path", std::string());
             m_mcpGameViewReply = deferred;   // フレーム境界で描画→撮影→応答(Run ループ側)
             isDeferred = true;
@@ -910,7 +939,8 @@ void Application::RegisterMcpEditorMethods()
             auto originV = params.value("origin", std::vector<float>{});
             auto dirV = params.value("direction", std::vector<float>{});
             if (originV.size() != 3 || dirV.size() != 3)
-                throw McpError(McpErr::InvalidParam, "origin and direction must be [x,y,z]");
+                throw McpError(McpErr::InvalidParam, "origin and direction must be [x,y,z]",
+                    "例: origin:[0, 1, 0], direction:[0, -1, 0]（どちらもワールド座標の 3 要素。direction は正規化しなくてよい）");
             const float maxDist = params.value("maxDistance", 1000.0f);
             RaycastHit hit = m_physicsSystem->Raycast(
                 {originV[0], originV[1], originV[2]}, {dirV[0], dirV[1], dirV[2]}, maxDist);
@@ -944,7 +974,8 @@ void Application::RegisterMcpEditorMethods()
                 auto centerV = params.value("center", std::vector<float>{});
                 auto halfV = params.value("halfExtents", std::vector<float>{});
                 if (centerV.size() != 3 || halfV.size() != 3)
-                    throw McpError(McpErr::InvalidParam, "center and halfExtents must be [x,y,z]");
+                    throw McpError(McpErr::InvalidParam, "center and halfExtents must be [x,y,z]",
+                        "例: center:[0, 1, 0], halfExtents:[0.5, 0.5, 0.5]（箱の中心と半分の大きさ）");
                 n = m_physicsSystem->OverlapBox({centerV[0], centerV[1], centerV[2]},
                                                  {halfV[0], halfV[1], halfV[2]}, buf.data(), buf.size());
             }
@@ -952,7 +983,8 @@ void Application::RegisterMcpEditorMethods()
             {
                 auto centerV = params.value("center", std::vector<float>{});
                 if (centerV.size() != 3)
-                    throw McpError(McpErr::InvalidParam, "center must be [x,y,z]");
+                    throw McpError(McpErr::InvalidParam, "center must be [x,y,z]",
+                        "例: center:[0, 1, 0], radius:0.5");
                 const float radius = params.value("radius", 1.0f);
                 n = m_physicsSystem->OverlapSphere({centerV[0], centerV[1], centerV[2]}, radius,
                                                     buf.data(), buf.size());
@@ -1001,14 +1033,18 @@ void Application::RegisterMcpEditorMethods()
     McpDefine("read_lua_component", "path:string", DX12E_MCP_HANDLER
         {
             std::string rel = params.value("path", std::string());
-            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'");
+            if (rel.empty()) throw McpError(McpErr::InvalidParam, "missing 'path'",
+                "path は assets 相対の .lua（例: components/Door.lua）。一覧は dx12_list_assets");
             if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                 rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
+                    "path は assets 相対（例: components/Door.lua）。絶対パス・..・バックスラッシュは不可");
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
-            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "script not found: " + rel);
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "script not found: " + rel,
+                "dx12_list_assets で .lua の実在と綴りを確かめる。新しく作るなら dx12_create_lua_component");
             std::ifstream ifs(full, std::ios::binary);
-            if (!ifs) throw McpError(McpErr::Internal, "cannot open " + full.string());
+            if (!ifs) throw McpError(McpErr::Internal, "cannot open " + full.string(),
+                "ファイルが他のプログラムで排他ロックされていないか確かめる。dx12_get_log に OS のエラーが出る");
             std::ostringstream ss; ss << ifs.rdbuf();
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"code", ss.str()}};
@@ -1017,7 +1053,8 @@ void Application::RegisterMcpEditorMethods()
     McpDefine("create_prefab", "entity:int,name:string,path:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
-                throw McpError(McpErr::ModeConflict, "cannot create a prefab while Playing; call dx12_stop first");
+                throw McpError(McpErr::ModeConflict, "cannot create a prefab while Playing; call dx12_stop first",
+                    "先に dx12_stop で Editor へ戻す（Play 中の状態をプレハブにすると Stop で消える値を焼き込む）");
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             std::string rel = params.value("path", std::string());
@@ -1037,14 +1074,17 @@ void Application::RegisterMcpEditorMethods()
             {
                 if (rel.front() == '/' || rel.find('\\') != std::string::npos ||
                     rel.find(':') != std::string::npos || rel.find("..") != std::string::npos)
-                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)");
+                    throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
+                        "path は assets 相対（例: prefabs/enemy.prefab）。省略すると prefabs/<エンティティ名>.prefab");
                 if (fs::path(rel).extension() != ".prefab")
-                    throw McpError(McpErr::InvalidParam, "path must end with .prefab");
+                    throw McpError(McpErr::InvalidParam, "path must end with .prefab",
+                        "拡張子を .prefab にする（例: prefabs/enemy.prefab）");
                 file = fs::path(PathResolver::AssetsDir()) / rel;
                 fs::create_directories(file.parent_path());
             }
             if (!SceneSerializer::SavePrefab(*m_scene, e, file.string(), PathResolver::AssetsDir()))
-                throw McpError(McpErr::Internal, "failed to save prefab");
+                throw McpError(McpErr::Internal, "failed to save prefab",
+                    "書き込み先のフォルダが書けるか、同名ファイルが開かれていないかを確かめる。詳細は dx12_get_log");
             resp["ok"] = true;
             resp["result"] = {{"path", rel}, {"entityId", static_cast<u32>(e)}};
         });

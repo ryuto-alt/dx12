@@ -75,14 +75,16 @@ void Application::RegisterMcpAssetMethods()
             if (params.contains("position"))
             {
                 const auto p = params["position"].get<std::vector<float>>();
-                if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]");
+                if (p.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
+                    "例: position:[0, 1.7, -6]（ワールド座標の 3 要素。今の値は dx12_get_editor_camera で読める）");
                 pos = { p[0], p[1], p[2] };
                 m_camera->SetPosition(pos);
             }
             if (params.contains("target"))
             {
                 const auto tp = params["target"].get<std::vector<float>>();
-                if (tp.size() != 3) throw McpError(McpErr::InvalidParam, "target must be [x,y,z]");
+                if (tp.size() != 3) throw McpError(McpErr::InvalidParam, "target must be [x,y,z]",
+                    "例: target:[0, 1, 0]（注視点のワールド座標 3 要素）。角度で向けるなら target の代わりに yawDeg / pitchDeg");
                 m_camera->LookAt(pos, { tp[0], tp[1], tp[2] });   // yaw/pitch を逆算してくれる
             }
             else
@@ -120,7 +122,8 @@ void Application::RegisterMcpAssetMethods()
             DirectX::XMFLOAT3 mn, mx;
             bool hasMesh = false;
             if (!McpWorldAabb(reg, e, mn, mx, hasMesh))
-                throw McpError(McpErr::NotFound, "entity has no Transform");
+                throw McpError(McpErr::NotFound, "entity has no Transform",
+                    "get_bounds は Transform を持つエンティティにだけ使える。dx12_list_entities の entityId か name で指し直す");
             if (params.value("includeChildren", false))
             {
                 auto view = reg.view<const Transform>();
@@ -154,7 +157,8 @@ void Application::RegisterMcpAssetMethods()
             {
                 using namespace DirectX;
                 const auto* mr = reg.try_get<MeshRenderer>(e);
-                if (!mr) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+                if (!mr) throw McpError(McpErr::NotFound, "entity has no MeshRenderer",
+                    "perSubmesh はメッシュ（モデル / プリミティブ）を持つ物だけ。ライト・カメラ・Empty なら perSubmesh を外して AABB だけ取る");
                 const XMMATRIX world = ComputeWorldMatrix(reg, e);
                 json arr = json::array();
                 f32 biggest = 0.0f;
@@ -217,12 +221,14 @@ void Application::RegisterMcpAssetMethods()
             using namespace DirectX;
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.all_of<Transform>(e)) throw McpError(McpErr::NotFound, "entity has no Transform");
+            if (!reg.all_of<Transform>(e)) throw McpError(McpErr::NotFound, "entity has no Transform",
+                "look_at で回す側は Transform が要る（UI 要素は不可）。dx12_list_entities で 3D のエンティティを選ぶ");
             XMFLOAT3 tgt;
             if (params.contains("target"))
             {
                 const auto tp = params["target"].get<std::vector<float>>();
-                if (tp.size() != 3) throw McpError(McpErr::InvalidParam, "target must be [x,y,z]");
+                if (tp.size() != 3) throw McpError(McpErr::InvalidParam, "target must be [x,y,z]",
+                    "例: target:[0, 1.5, 0]（ワールド座標 3 要素）。エンティティを向かせるなら targetEntity か targetName");
                 tgt = { tp[0], tp[1], tp[2] };
             }
             else
@@ -231,9 +237,11 @@ void Application::RegisterMcpAssetMethods()
                 if (params.contains("targetEntity"))    tref["entity"] = params["targetEntity"];
                 else if (params.contains("targetName")) tref["name"]   = params["targetName"];
                 else throw McpError(McpErr::InvalidParam,
-                    "need 'target' [x,y,z] or 'targetEntity'(id) / 'targetName'");
+                    "need 'target' [x,y,z] or 'targetEntity'(id) / 'targetName'",
+                    "target:[x,y,z] / targetEntity:<id> / targetName:\"名前\" のどれか 1 つを渡す");
                 const auto te = ResolveMcpEntity(*m_scene, tref);
-                if (te == e) throw McpError(McpErr::InvalidParam, "cannot look at itself");
+                if (te == e) throw McpError(McpErr::InvalidParam, "cannot look at itself",
+                    "target* に自分以外を指定する。自分の向きを変えるだけなら dx12_set_transform の rotation");
                 XMFLOAT4X4 twf;
                 XMStoreFloat4x4(&twf, ComputeWorldMatrix(reg, te));
                 tgt = { twf._41, twf._42, twf._43 };
@@ -242,7 +250,8 @@ void Application::RegisterMcpAssetMethods()
             XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, e));
             const XMFLOAT3 dir{ tgt.x - wf._41, tgt.y - wf._42, tgt.z - wf._43 };
             const float len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-            if (len < 1e-6f) throw McpError(McpErr::InvalidParam, "target coincides with entity position");
+            if (len < 1e-6f) throw McpError(McpErr::InvalidParam, "target coincides with entity position",
+                "注視点がエンティティの原点と同じ位置にある。target を少しずらすか、別の対象を指定する");
             const float yawDeg = XMConvertToDegrees(std::atan2(dir.x, dir.z));
             float pitchDeg = 0.0f;
             if (!params.value("upright", false))
@@ -263,7 +272,8 @@ void Application::RegisterMcpAssetMethods()
             // (Playing 中の物理レイキャストは dx12_raycast を使う)
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
-            if (!reg.all_of<Transform>(e)) throw McpError(McpErr::NotFound, "entity has no Transform");
+            if (!reg.all_of<Transform>(e)) throw McpError(McpErr::NotFound, "entity has no Transform",
+                "snap_to_ground は Transform を持つエンティティにだけ使える。dx12_list_entities の entityId か name で指し直す");
             McpUndo().Track<Transform>(e);
             DirectX::XMFLOAT3 mn, mx;
             bool hasMesh = false;
@@ -382,12 +392,14 @@ void Application::RegisterMcpAssetMethods()
             // 外部ファイル/フォルダを assets へコピーする(唯一 assets 外を「読む」ツール。
             // 書き先は assets 限定)。/asset コマンド等で落とした素材の取り込みに使う。
             const std::string src = params.value("sourcePath", std::string());
-            if (src.empty()) throw McpError(McpErr::InvalidParam, "missing 'sourcePath'");
+            if (src.empty()) throw McpError(McpErr::InvalidParam, "missing 'sourcePath'",
+                "sourcePath に取り込む元の絶対パス（例: C:/Users/me/Downloads/tree.glb）、destPath に assets 相対の置き先を渡す");
             const std::string destRel =
                 ValidateMcpAssetRelPath(params.value("destPath", std::string()), "destPath");
             const bool overwrite = params.value("overwrite", false);
             const fs::path srcPath(src);
-            if (!fs::exists(srcPath)) throw McpError(McpErr::NotFound, "source not found: " + src);
+            if (!fs::exists(srcPath)) throw McpError(McpErr::NotFound, "source not found: " + src,
+                "sourcePath は取り込み元の絶対パス。エクスプローラーのパスをスラッシュ区切りで渡し、存在を確かめてから呼ぶ");
             const fs::path assetsRoot(PathResolver::AssetsDir());
             fs::path dest = assetsRoot / destRel;
             json imported = json::array();
@@ -395,7 +407,8 @@ void Application::RegisterMcpAssetMethods()
             {
                 if (fs::exists(dest) && !overwrite)
                     throw McpError(McpErr::InvalidParam,
-                        "destination exists (overwrite:true で上書き): " + destRel);
+                        "destination exists (overwrite:true で上書き): " + destRel,
+                        "上書きしてよければ overwrite:true、残すなら destPath を別名にする（dx12_list_assets で空きを確認）");
                 fs::create_directories(dest);
                 fs::copy(srcPath, dest,
                          fs::copy_options::recursive | fs::copy_options::overwrite_existing);
@@ -411,7 +424,8 @@ void Application::RegisterMcpAssetMethods()
                 if (fs::exists(dest) && !overwrite)
                     throw McpError(McpErr::InvalidParam,
                         "destination exists (overwrite:true で上書き): "
-                        + fs::relative(dest, assetsRoot).generic_string());
+                        + fs::relative(dest, assetsRoot).generic_string(),
+                        "上書きしてよければ overwrite:true、残すなら destPath を別名にする（dx12_list_assets で空きを確認）");
                 fs::create_directories(dest.parent_path());
                 fs::copy_file(srcPath, dest, fs::copy_options::overwrite_existing);
                 imported.push_back(fs::relative(dest, assetsRoot).generic_string());
@@ -433,7 +447,8 @@ void Application::RegisterMcpAssetMethods()
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
             if (!fs::exists(full) || !fs::is_regular_file(full))
-                throw McpError(McpErr::NotFound, "asset not found: " + rel);
+                throw McpError(McpErr::NotFound, "asset not found: " + rel,
+                    "path は assets 相対（例: models/tree.glb）。dx12_list_assets で実在するパスを確かめる");
             std::string ext = full.extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             json result{{"path", rel}, {"fileSizeBytes", static_cast<u64>(fs::file_size(full))}};
@@ -441,7 +456,8 @@ void Application::RegisterMcpAssetMethods()
             {
                 result["type"] = "model";
                 const auto info = ModelLoader::Probe(full);
-                if (!info.ok) throw McpError(McpErr::Internal, "model probe failed: " + info.error);
+                if (!info.ok) throw McpError(McpErr::Internal, "model probe failed: " + info.error,
+                    "ファイルが壊れているか未対応の形式。dx12_get_log で Assimp のエラーを見て、gltf/glb/fbx/obj で書き出し直す");
                 result["meshCount"]      = info.meshCount;
                 result["materialCount"]  = info.materialCount;
                 result["totalVertices"]  = info.totalVertices;
@@ -461,7 +477,8 @@ void Application::RegisterMcpAssetMethods()
             {
                 result["type"] = "texture";
                 const auto info = TextureLoader::Probe(full.wstring());
-                if (!info.ok) throw McpError(McpErr::Internal, "texture probe failed: " + info.error);
+                if (!info.ok) throw McpError(McpErr::Internal, "texture probe failed: " + info.error,
+                    "画像が壊れているか未対応の形式。png / jpg / tga / dds / hdr で保存し直して再度呼ぶ");
                 result["width"]     = info.width;
                 result["height"]    = info.height;
                 result["mipLevels"] = info.mipLevels;
@@ -497,7 +514,8 @@ void Application::RegisterMcpAssetMethods()
             //
             // 実ロードは GPU アップロードを伴うので cmdList が有効なフレーム境界へ回す
             // (mcpProcCreates と同じ流儀)。応答は遅延。
-            if (!m_editorCtx) throw McpError(McpErr::Internal, "editor context not ready");
+            if (!m_editorCtx) throw McpError(McpErr::Internal, "editor context not ready",
+                "エディタの初期化が終わっていない。dx12_ping が応答してから呼び直す");
             McpPendingAssetReload req;
             req.force = params.value("force", false);
             const std::string rel = params.value("path", std::string());
@@ -511,7 +529,8 @@ void Application::RegisterMcpAssetMethods()
                 const std::string v = ValidateMcpAssetRelPath(rel);
                 const fs::path full = fs::path(PathResolver::AssetsDir()) / v;
                 if (!fs::exists(full))
-                    throw McpError(McpErr::NotFound, "asset not found: " + v);
+                    throw McpError(McpErr::NotFound, "asset not found: " + v,
+                        "path は assets 相対のファイルかフォルダ（例: models/ か textures/brick.png）。省略すると更新時刻の変わった物を全部読む");
                 req.prefix   = full.lexically_normal().generic_string();
                 req.relLabel = v;
             }
@@ -526,16 +545,19 @@ void Application::RegisterMcpAssetMethods()
             // Node 側が画像ブロックとして AI に見せる(dx12_view_texture)。
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
-            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "texture not found: " + rel);
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "texture not found: " + rel,
+                "path は assets 相対（例: textures/brick_albedo.png）。dx12_list_assets で実在を確かめる");
             const int maxSize = params.value("maxSize", 1024);
             if (maxSize < 16 || maxSize > 4096)
-                throw McpError(McpErr::InvalidParam, "maxSize must be 16..4096");
+                throw McpError(McpErr::InvalidParam, "maxSize must be 16..4096",
+                    "maxSize は 16..4096（既定 1024）。細部を見たいときだけ 2048 以上にする");
             const fs::path outPath = fs::absolute("mcp_texture.png");   // screenshot と同じく CWD へ上書き
             std::string err;
             uint32_t w = 0, h = 0;
             if (!TextureLoader::ConvertToPng(full.wstring(), outPath.wstring(),
                                              static_cast<uint32_t>(maxSize), err, w, h))
-                throw McpError(McpErr::Internal, "texture convert failed: " + err);
+                throw McpError(McpErr::Internal, "texture convert failed: " + err,
+                    "dx12_asset_info で画像として読めるか確かめる。読めないなら png で保存し直す");
             resp["ok"] = true;
             resp["result"] = {{"path", outPath.string()}, {"width", w}, {"height", h},
                               {"sourcePath", rel}};
@@ -551,14 +573,17 @@ void Application::RegisterMcpAssetMethods()
             const fs::path assetsRoot(PathResolver::AssetsDir());
             const fs::path fromP = assetsRoot / fromRel;
             const fs::path toP   = assetsRoot / toRel;
-            if (!fs::exists(fromP)) throw McpError(McpErr::NotFound, "asset not found: " + fromRel);
+            if (!fs::exists(fromP)) throw McpError(McpErr::NotFound, "asset not found: " + fromRel,
+                "from は今ある assets 相対パス。dx12_list_assets で正しい綴り（大文字小文字・拡張子）を確かめる");
             if (fs::exists(toP))
             {
                 if (!params.value("overwrite", false))
                     throw McpError(McpErr::InvalidParam,
-                        "destination exists (overwrite:true で上書き): " + toRel);
+                        "destination exists (overwrite:true で上書き): " + toRel,
+                        "上書きしてよければ overwrite:true、残すなら to を別名にする");
                 if (fs::is_directory(toP))
-                    throw McpError(McpErr::InvalidParam, "cannot overwrite a directory: " + toRel);
+                    throw McpError(McpErr::InvalidParam, "cannot overwrite a directory: " + toRel,
+                        "to にフォルダ名を渡すなら、その中のファイル名まで含めたパスにする（例: models/props/crate.glb）");
                 fs::remove(toP);
             }
             fs::create_directories(toP.parent_path());
@@ -604,7 +629,8 @@ void Application::RegisterMcpAssetMethods()
             // assets 内のファイル削除。ディレクトリは recursive:true 必須(誤爆防止)。
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
-            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "asset not found: " + rel);
+            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "asset not found: " + rel,
+                "path は assets 相対（例: textures/old.png）。dx12_list_assets で実在を確かめる。既に消えていれば何もしなくてよい");
 
             // 消す前に「まだ誰が使っているか」を数える。消してから数えても手遅れなので順序が要点。
             // 削除は止めない（消したい理由がある場合を邪魔しない）が、黙って壊すのはやめる。
@@ -620,7 +646,8 @@ void Application::RegisterMcpAssetMethods()
                 wasDirectory = true;
                 if (!params.value("recursive", false))
                     throw McpError(McpErr::InvalidParam,
-                        "'" + rel + "' is a directory (recursive:true で丸ごと削除)");
+                        "'" + rel + "' is a directory (recursive:true で丸ごと削除)",
+                        "フォルダごと消すなら recursive:true を付ける（中身も全部消える）。1 ファイルだけならそのファイルのパスを渡す");
                 removed = fs::remove_all(full);
             }
             else
@@ -645,11 +672,13 @@ void Application::RegisterMcpAssetMethods()
     McpDefine("pick", "all:bool,includeIcons:bool,maxCandidates:int,maxHits:int,trianglePrecise:bool,"
               "u:number,v:number,x:number,y:number", DX12E_MCP_HANDLER
         {
-            if (!m_camera || !m_sceneRT) throw McpError(McpErr::Internal, "renderer not ready");
+            if (!m_camera || !m_sceneRT) throw McpError(McpErr::Internal, "renderer not ready",
+                "レンダラの準備前（起動直後 / ランチャー表示中）。dx12_ping でシーンが開いているのを確かめてから呼ぶ");
             const f32 vw = static_cast<f32>(m_sceneRT->GetWidth());
             const f32 vh = static_cast<f32>(m_sceneRT->GetHeight());
             if (!(vw > 1.0f && vh > 1.0f))
-                throw McpError(McpErr::Internal, "scene render target has no size");
+                throw McpError(McpErr::Internal, "scene render target has no size",
+                    "ビューポートの大きさが 0（ウィンドウ最小化中など）。ウィンドウを戻してから、または数フレーム後に呼び直す");
 
             f32 sx = 0.0f, sy = 0.0f;
             if (params.contains("x") && params.contains("y"))

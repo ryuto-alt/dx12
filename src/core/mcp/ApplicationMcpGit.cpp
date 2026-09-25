@@ -178,7 +178,8 @@ void Application::RegisterMcpGitMethods()
             const std::string root = RequireRepoRoot(m_projectInfo.rootDir);
             const std::string msg  = params.value("message", std::string());
             if (msg.empty())
-                throw McpError(McpErr::InvalidParam, "commit message must not be empty");
+                throw McpError(McpErr::InvalidParam, "commit message must not be empty",
+                    "message に 1 行目が要約のコミットメッセージを渡す（例: \"feat: 2 面の敵配置を調整\"）");
 
             // 解消し残したコンフリクトがあるままコミットさせない
             // （git は通らないし、通ったとしても競合マーカー入りのファイルが入るだけ）。

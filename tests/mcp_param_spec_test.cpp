@@ -255,12 +255,13 @@ int main()
 
         const int pct = (errTotal > 0) ? (errWithHint * 100 / errTotal) : 100;
         std::printf("  --  McpError %d 件中 %d 件に hint（%d%%）\n", errTotal, errWithHint, pct);
-        // ★下限は「今の実測値」に置いてある（ラチェット）。まず現状より悪くならないことだけを守る。
-        //   2026-09-11 時点で 257 件中 65 件 = 25%。ここを上げていくのが宿題で、
-        //   網羅率を上げたらこの数字も一緒に上げること（下げるのは後退なので許さない）。
-        //   足す順の目安は件数の多い順:
-        //     ApplicationMcpEntity.cpp 79 / Editor.cpp 40 / Asset.cpp 29 / Tooling.cpp 28 / Terrain.cpp 12
-        constexpr int kMinHintPercent = 25;
+        // ★下限は「今の実測値」に置いてある（ラチェット）。現状より悪くならないことを守る。
+        //   2026-09-11: 257 件中 65 件 = 25%。2026-09-25: 288 件中 288 件 = 100%
+        //   （Entity 80 / Editor 40 / Asset 29 / Tooling 28 / Terrain 12 / Render 3 / Git 1 に
+        //   「有効な値の例・先に呼ぶべきメソッド・よくある取り違え」を 1 件ずつ書いた）。
+        //   ★新しい McpError は第 3 引数（hint）まで書かないとここで落ちる。定型文で埋めないこと
+        //   （「パラメータを確認してください」では AI は次の一手を決められない）。
+        constexpr int kMinHintPercent = 100;
         Check(pct >= kMinHintPercent,
               "McpError の hint 網羅率が " + std::to_string(pct) + "% まで落ちている（下限 "
               + std::to_string(kMinHintPercent) + "%）。"
