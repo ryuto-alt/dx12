@@ -4970,8 +4970,13 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
     if (!useDepthPrepass)
         m_commandList->ClearDepthStencil(depthDsv);
-    // ★RT / ビューポート / PSO はここでは張らない。この先の段（IRenderPass）は使うものを
-    //   入口で自分で張る（renderer/RenderPass.h の状態の契約）。
+    // クリアした直後にこのビューの描画先（シーン RT + 深度）とビューポートを張っておく。
+    // ★この先の段（IRenderPass）は使うものを入口で自分で張り直すので、状態の契約のためではない。
+    //   これを抜くと、GPU 律速のシーンでクリアの後始末が次の計測区間（clusterCull）へ数えられ、
+    //   perf_stats の内訳が狂う（実測 stress_5000: clusterCull 0.01 → 0.3ms。GPU 合計は同等）。
+    //   PSO は張らない（旧コードはここでメインの PSO も張っていたが、計測にも絵にも効かない）。
+    m_commandList->SetRenderTarget(sceneRT->GetRtv(), depthDsv);
+    m_commandList->SetViewportAndScissor(rW, rH);
 
     // PerFrame CB（ライト本体はクラスタードライティングの StructuredBuffer(t13) 側）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること
