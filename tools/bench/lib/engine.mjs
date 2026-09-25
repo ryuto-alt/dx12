@@ -31,8 +31,13 @@ export function portOpen(port, timeoutMs = 300) {
   });
 }
 
-/** 8850..8899 から空きポートを探す（人のエディタは 8787〜 を使う）。 */
-export async function findFreePort(start = 8850, end = 8899) {
+/**
+ * 8850..8899 から空きポートを探す（人のエディタは 8787〜 を使う）。
+ * 環境変数 DX12_BENCH_PORT_START / DX12_BENCH_PORT_END で範囲を変えられる
+ * （複数の worktree が同時にゴールデンを回すとき、担当ごとに範囲を分けて取り合いを避ける）。
+ */
+export async function findFreePort(start = Number(process.env.DX12_BENCH_PORT_START) || 8850,
+                                   end = Number(process.env.DX12_BENCH_PORT_END) || 8899) {
   for (let p = start; p <= end; p++) if (!(await portOpen(p, 150))) return p;
   throw new Error(`空きポートが ${start}..${end} に無い`);
 }

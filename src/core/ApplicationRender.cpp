@@ -2117,14 +2117,111 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
     }
 }
 
+// ===========================================================================
+// Render() の分割
+// ---------------------------------------------------------------------------
+// 以前は Render() 1 関数（約 5,400 行）に「遅延コマンドの消化 / フレームの準備 / 全パス /
+// エディタ UI / 送信」が同居していた。ここでは振る舞いを 1 ビットも変えずに段へ分けてある
+// （tools/bench/golden.mjs で bitExact を確認済み）。段の間で受け渡す値は RenderFrameContext。
+// ===========================================================================
+
+// b1 の CPU 側。★レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること
+// （サイズは 4 箇所で 1536B を static_assert。00-COORDINATION §4）。
+// 以前は Render() の関数内ローカル型だったが、カメラプレビューが「メインビューの値を流用して
+// 視点だけ差し替える」ために段をまたいで持ち回すので、Application の入れ子型にした。
+struct Application::FrameConstants
+{
+    DirectX::XMFLOAT4X4 view;
+    DirectX::XMFLOAT4X4 proj;
+    DirectX::XMFLOAT3   lightDir;
+    float      time;
+    DirectX::XMFLOAT3   lightColor;
+    float      ambientStrength;
+    DirectX::XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B
+    DirectX::XMFLOAT4   cascadeSplitsView;             // 16B
+    DirectX::XMFLOAT4   shadowParams;                  // 16B
+    DirectX::XMFLOAT3   cameraPos;
+    float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
+    u32        numPointLights;   // 統計/デバッグ用（シェーダは読まない）
+    u32        numSpotLights;
+    float      spotShadowTexel;   // 1/kSpotShadowMapSize
+    float      pointShadowNear;
+    // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
+    DirectX::XMFLOAT4   clusterParams;    // .x=zNear .y=zFar(クラスタ用) .z=sliceScale .w=sliceBias
+    DirectX::XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
+    DirectX::XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
+    DirectX::XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
+    DirectX::XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
+    // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
+    DirectX::XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
+    DirectX::XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
+    DirectX::XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
+    DirectX::XMFLOAT4   _clusterReserved[40];             // 640B (offset 608..1247)
+    DirectX::XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
+    // ▼ IBL 制御 16B
+    float iblIntensity;
+    float maxPrefilterMip;
+    u32   hasIBL;
+    float skyboxIntensity;
+    // ▼ コンタクトシャドウ制御 16B
+    float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
+    // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
+    //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
+    DirectX::XMFLOAT3 normalFilterParams;
+};
+// ★サイズの static_assert は RenderMainView の fc の直前にある（private な入れ子型なので
+//   名前空間スコープからは sizeof を取れない）。
+
+// 段の間で受け渡す 1 フレームぶんの値。旧 Render() のローカル変数のうち、段をまたいで
+// 読まれていたものだけをここへ移した（名前も旧ローカル変数に揃えてある）。
+struct Application::RenderFrameContext
+{
+    // ---- BeginRenderFrame が決める ----
+    ID3D12GraphicsCommandList* cmd = nullptr;   // 今フレームの記録先（フレームで 1 本だけ）
+
+    // ---- PrepareFrame が決める（ビューに依らない、フレーム共通の値）----
+    u32 frameIndex = 0;
+    f32 totalTime  = 0.0f;
+    u32 vpLeft = 0, vpTop = 0, vpW = 0, vpH = 0;   // 表示矩形（バックバッファ上。uber 以降だけが使う）
+    u32 rW = 0, rH = 0;                              // レンダー解像度（シーン系 RT の大きさ）
+    DirectX::XMFLOAT3 lightDirF3{};        // 太陽の向き（正規化済み）
+    DirectX::XMFLOAT3 lightColorF3{};      // 太陽の色 × 強さ（太陽が無ければ黒）
+    f32      lightAmbient = 0.25f;
+    bool     taaActive = false;   // TAA が今フレーム有効か（BuildDrawList より前に確定）
+    DirectX::XMFLOAT2 jitterNdc{};         // 今フレームの NDC ジッタ（TAA 無効なら 0）
+    DirectX::XMFLOAT4X4 camVP{};           // メインカメラの viewProj（ジッタなし）
+    DirectX::XMFLOAT4X4 camVPJ{};          // 同（ジッタあり。ラスタライズ用）
+    bool rtAoActive = false;      // TLAS が建ち RT-AO が有効（RT 影は m_rtShadowActiveThisFrame）
+    bool ddgiTlasOk = false;      // DDGI 用に TLAS を持ち越せるか
+    D3D12_GPU_VIRTUAL_ADDRESS ddgiTlas = 0, ddgiGeoInfo = 0;
+
+    // ---- メインビューが決めて後段（オーバーレイ / ImGui / 送信）へ渡す ----
+    ID3D12Resource*             backBuffer = nullptr;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+    FrameConstants              mainConstants{};   // メインビューの b1（カメラプレビューが流用する）
+};
+
 void Application::Render()
 {
-    using namespace DirectX;
+    RenderFrameContext frame{};
+    BeginRenderFrame(frame);
+    // ★MCP / エディタの遅延コマンド（生成・削除・複製・Undo・シーンロード等）のドレインは
+    //   必ずここ＝Render のトップレベルから無条件に呼ぶこと。エディタ UI の分岐（ランチャー
+    //   表示中は通らない）の中へ移すと、ランチャー表示中に MCP の遅延応答が返らず永久に
+    //   待たせる（前例あり）。
+    ProcessFrameBoundaryCommands(frame.cmd);
+    PrepareFrame(frame);
+    RenderMainView(frame);
+    RenderViewportOverlays(frame);
+    RenderImGuiFrame(frame);
+    SubmitFrame(frame);
+}
 
-    // MASK（アルファクリップ）マテリアルを影パスでも抜くための PSO 束。
-    // ★これを渡さないと「葉は抜けているのに影は板」になる。ShadowMask.hlsl 参照。
-    const DepthMaskPsos shadowMaskPsos{ m_shadowMaskPSO.get(), m_shadowMaskPSOInst.get(),
-                                        m_shadowMaskPSOSkinned.get() };
+// フェンス待ち → コマンドリストを開く → GPU 計測の開始 → ホットリロード監視。
+// Skybox の再ベイク（専用 cmdList + WaitIdle）はコマンドリストを開く前にここで済ませる。
+void Application::BeginRenderFrame(RenderFrameContext& frame)
+{
+    using namespace DirectX;
 
     // シーンの Skybox 設定 → ランタイム値を毎フレーム引き直す。
     // 以前は「Skybox / IBL 窓を開いている間」と再ベイク時しか同期しておらず、
@@ -2187,6 +2284,20 @@ void Application::Render()
     // 地形レイヤーセット(.terrainlayers)のホットリロード監視（同上）。
     if (!m_isGameMode && m_terrainLayerSets)
         m_terrainLayerSets->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
+
+    frame.cmd = nativeCmdList;
+}
+
+// ---------------------------------------------------------------------------
+// フレーム境界で消化する遅延コマンド（新規シーン / シーンロード / ネットスポーン / 生成 /
+// 地形・スカルプト / グループ化 / プレハブ / 複製 / MCP の削除・複製 / ペースト /
+// スクリプトアタッチ / モデル差し替え / マテリアル D&D / MCP の Undo）とサムネイル類。
+// モデル・テクスチャのアップロードに記録中の cmdList が要るので Render の中で回す。
+// ★呼び出しは Render のトップレベルから無条件に（Render() のコメント参照）。
+// ---------------------------------------------------------------------------
+void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* nativeCmdList)
+{
+    using namespace DirectX;
 
     // Deferred: new scene（描画前に処理しないと GPU リソース解放でクラッシュする）
     // 未保存なら先に確認する（保存 / 破棄 / 取り消し）。取り消されたら要求ごと捨てる。
@@ -3641,6 +3752,18 @@ void Application::Render()
     // ModelThumbnailRenderer と同様、後段のパスが自分でRT/ビューポートを設定するのでここで戻す必要はない。
     if (m_materialEditorPanel)
         m_materialEditorPanel->GetPreviewRenderer().RenderPendingThumbnails(*m_commandList);
+}
+
+// ---------------------------------------------------------------------------
+// フレームの準備（ビューに依らない）: 決定論キャプチャ / フット IK / ボーン行列 /
+// シャドウマップの作り直し / 表示矩形とレンダー解像度 / カメラ投影 / ライト / CSM 分割 /
+// TAA の有効判定とジッタ / 描画リスト / DXR の TLAS。
+// 結果は RenderFrameContext へ書き、RenderMainView 以降が読む。
+// ---------------------------------------------------------------------------
+void Application::PrepareFrame(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
 
     u32 frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     f32 totalTime = m_gameClock.GetTotalTime();
@@ -4190,6 +4313,57 @@ void Application::Render()
         }
     }
 
+    // ---- 後段（ビュー / オーバーレイ / ImGui / 送信）へ渡す ----
+    frame.frameIndex = frameIndex;
+    frame.totalTime  = totalTime;
+    frame.vpLeft = vpLeft;  frame.vpTop = vpTop;  frame.vpW = vpW;  frame.vpH = vpH;
+    frame.rW = rW;  frame.rH = rH;
+    frame.lightDirF3   = lightDirF3;
+    frame.lightColorF3 = lightColorF3;
+    frame.lightAmbient = lightAmbient;
+    frame.taaActive    = taaActive;
+    frame.jitterNdc    = jitterNdc;
+    XMStoreFloat4x4(&frame.camVP,  camVP);
+    XMStoreFloat4x4(&frame.camVPJ, camVPJ);
+    frame.rtAoActive  = rtAoActive;
+    frame.ddgiTlasOk  = ddgiTlasOk;
+    frame.ddgiTlas    = ddgiTlas;
+    frame.ddgiGeoInfo = ddgiGeoInfo;
+}
+
+// ---------------------------------------------------------------------------
+// メインカメラの 1 ビュー: 影 → 深度プリパス群 → クラスタ / DDGI / デカール / フォグ →
+// スカイ → Forward+ → デバッグ線 → パーティクル → ワールドスプライト → render_debug →
+// ポスト（TAA → … → uber）→ バックバッファ。
+// ---------------------------------------------------------------------------
+void Application::RenderMainView(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+
+    // MASK（アルファクリップ）マテリアルを影パスでも抜くための PSO 束。
+    // ★これを渡さないと「葉は抜けているのに影は板」になる。ShadowMask.hlsl 参照。
+    const DepthMaskPsos shadowMaskPsos{ m_shadowMaskPSO.get(), m_shadowMaskPSOInst.get(),
+                                        m_shadowMaskPSOSkinned.get() };
+
+    // PrepareFrame が確定した値（名前は旧 Render() のローカル変数に揃えてある）
+    const u32 frameIndex = frame.frameIndex;
+    const f32 totalTime  = frame.totalTime;
+    const u32 vpLeft = frame.vpLeft, vpTop = frame.vpTop, vpW = frame.vpW, vpH = frame.vpH;
+    const u32 rW = frame.rW, rH = frame.rH;
+    const XMFLOAT3 lightDirF3   = frame.lightDirF3;
+    const XMFLOAT3 lightColorF3 = frame.lightColorF3;
+    const float    lightAmbient = frame.lightAmbient;
+    const TaaSettings& taaCfg   = m_scene->GetTaaSettings();
+    const bool     taaActive    = frame.taaActive;
+    const XMFLOAT2 jitterNdc    = frame.jitterNdc;
+    const XMMATRIX camVP  = XMLoadFloat4x4(&frame.camVP);
+    const XMMATRIX camVPJ = XMLoadFloat4x4(&frame.camVPJ);
+    const bool     rtAoActive   = frame.rtAoActive;
+    const bool     ddgiTlasOk   = frame.ddgiTlasOk;
+    const D3D12_GPU_VIRTUAL_ADDRESS ddgiTlas    = frame.ddgiTlas;
+    const D3D12_GPU_VIRTUAL_ADDRESS ddgiGeoInfo = frame.ddgiGeoInfo;
+
     // ===== スポットライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowSpot灯）=====
     // 結果は m_spotShadowViewProj[] / m_spotShadowEntity[] に格納し、直後の影パス描画と
     // 後段のライト収集(shadowIndex書き込み)の両方で使う。
@@ -4730,48 +4904,9 @@ void Application::Render()
     m_commandList->SetPipelineState(*m_pipelineState);
 
     // PerFrame CB（ライト本体はクラスタードライティングの StructuredBuffer(t13) 側）
-    // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
-    struct FrameConstants {
-        XMFLOAT4X4 view;
-        XMFLOAT4X4 proj;
-        XMFLOAT3   lightDir;
-        float      time;
-        XMFLOAT3   lightColor;
-        float      ambientStrength;
-        XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B
-        XMFLOAT4   cascadeSplitsView;             // 16B
-        XMFLOAT4   shadowParams;                  // 16B
-        XMFLOAT3   cameraPos;
-        float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
-        u32        numPointLights;   // 統計/デバッグ用（シェーダは読まない）
-        u32        numSpotLights;
-        float      spotShadowTexel;   // 1/kSpotShadowMapSize
-        float      pointShadowNear;
-        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
-        XMFLOAT4   clusterParams;    // .x=zNear .y=zFar(クラスタ用) .z=sliceScale .w=sliceBias
-        XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
-        XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
-        XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
-        XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
-        // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
-        XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
-        XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
-        XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
-        XMFLOAT4   _clusterReserved[40];             // 640B (offset 608..1247)
-        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
-        // ▼ IBL 制御 16B
-        float iblIntensity;
-        float maxPrefilterMip;
-        u32   hasIBL;
-        float skyboxIntensity;
-        // ▼ コンタクトシャドウ制御 16B
-        float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
-        // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
-        //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
-        XMFLOAT3 normalFilterParams;
-    };
+    // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること
+    // （型は Application::FrameConstants。このファイルの先頭で定義）。
     static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
-
     FrameConstants fc{};
     XMStoreFloat4x4(&fc.view, XMMatrixTranspose(m_camera->GetViewMatrix()));
     XMStoreFloat4x4(&fc.proj, XMMatrixTranspose(m_camera->GetProjectionMatrix()));
@@ -5946,6 +6081,30 @@ void Application::Render()
         m_prevFrameIndexValid = true;
     }
     m_gpuTimer->End(nativeCmdList, GpuTimer::PostFX);
+
+    // ---- 後段（オーバーレイ / ImGui / 送信）へ渡す ----
+    frame.backBuffer    = backBuffer;
+    frame.rtv           = rtv;
+    frame.mainConstants = fc;
+}
+
+// ---------------------------------------------------------------------------
+// ポスト後のバックバッファへ重ねるもの（ImGui より前）: エディタアイコン / 2D スプライト・
+// ゲーム内 UI 画像 / カメラプレビュー / 各エディタのオフスクリーンプレビュー /
+// 最終画の撮影（screenshot_final）/ 知覚層の ID パス（dx12_perceive）。
+// ---------------------------------------------------------------------------
+void Application::RenderViewportOverlays(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+    const u32 frameIndex = frame.frameIndex;
+    const f32 totalTime  = frame.totalTime;
+    const u32 vpLeft = frame.vpLeft, vpTop = frame.vpTop, vpW = frame.vpW, vpH = frame.vpH;
+    const XMMATRIX camVP = XMLoadFloat4x4(&frame.camVP);
+    ID3D12Resource* const             backBuffer = frame.backBuffer;
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv        = frame.rtv;
+    const FrameConstants&             fc         = frame.mainConstants;
+
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
 
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモード + 一時停止中）----
@@ -6217,6 +6376,17 @@ void Application::Render()
     CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, vpLeft, vpTop, vpW, vpH);
     // ---- MCP dx12_perceive: 同じ位置の最終画 + エンティティ ID パス（要求があるフレームだけ）----
     RecordPerceptionIds(nativeCmdList, backBuffer, rtv, vpLeft, vpTop, vpW, vpH, frameIndex);
+}
+
+// ---------------------------------------------------------------------------
+// ImGui フレーム（ランチャー / エディタ UI / 各種設定窓 / ゲーム内 UI）とシーントランジション。
+// ---------------------------------------------------------------------------
+void Application::RenderImGuiFrame(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+    const u32 vpLeft = frame.vpLeft, vpTop = frame.vpTop, vpW = frame.vpW, vpH = frame.vpH;
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = frame.rtv;
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();
@@ -7455,6 +7625,15 @@ void Application::Render()
         float aspect = (tH > 0) ? static_cast<f32>(tW) / static_cast<f32>(tH) : 1.0f;
         m_sceneTransition->Render(nativeCmdList, aspect);
     }
+}
+
+// ---------------------------------------------------------------------------
+// GPU 計測の締め → バックバッファを PRESENT へ → 送信 → Present → 遅延解放 → 性能記録。
+// ---------------------------------------------------------------------------
+void Application::SubmitFrame(RenderFrameContext& frame)
+{
+    ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
+    ID3D12Resource* const            backBuffer    = frame.backBuffer;
 
     m_gpuTimer->End(nativeCmdList, GpuTimer::UI);
     m_gpuTimer->End(nativeCmdList, GpuTimer::Total);
