@@ -4772,11 +4772,11 @@ void ScriptEngine::UpdateTriggers(f32 dt)
                         DirectX::XMStoreFloat3(&wp, ComputeWorldMatrix(reg, at).r[3]);
                         m_audio->PlaySFXSpatial(as->clipPath, wp.x, wp.y, wp.z,
                                                 as->minDistance, as->maxDistance,
-                                                as->volume, as->loop, as->bus);
+                                                as->volume, as->loop, as->bus, as->priority);
                     }
                     else
                     {
-                        m_audio->PlaySFX(as->clipPath, as->loop, as->volume, as->bus);
+                        m_audio->PlaySFXTracked(as->clipPath, as->loop, as->volume, as->bus, as->priority);
                     }
                 }
             }

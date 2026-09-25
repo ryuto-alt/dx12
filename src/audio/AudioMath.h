@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace dx12e::audio
@@ -63,6 +64,66 @@ struct BusMod
 inline bool operator==(const BusMod& a, const BusMod& b)
 {
     return a.gain == b.gain && a.lowpassHz == b.lowpassHz;
+}
+
+// ---- 距離減衰 ----------------------------------------------------------------
+// X3DAudio に渡している曲線と同じもの（minDistance までフル音量、maxDistance で 0 の直線）。
+// 仮想化の判定と audio_state の「どれだけ聞こえているか」に使う（実際のパンニングは X3DAudio）。
+inline float DistanceGain(float dist, float minDist, float maxDist)
+{
+    if (!(maxDist > 0.01f)) return 1.0f;
+    const float mn = std::clamp(minDist, 0.0f, maxDist * 0.99f);
+    if (dist <= mn) return 1.0f;
+    if (dist >= maxDist) return 0.0f;
+    return 1.0f - (dist - mn) / (maxDist - mn);
+}
+
+// ---- 仮想化 ------------------------------------------------------------------
+// 「聞こえていない音」は XAudio2 のボイスを手放し、再生位置だけ進める（仮想ボイス）。
+// 聞こえる距離へ戻ったら、進めた位置から鳴らし直す（ループ音が頭から鳴り直さない）。
+// ★入る閾値と出る閾値をずらす（ヒステリシス）。同じ値だと境界の上で毎フレーム
+//   ボイスを作っては壊す（プチプチ鳴る・CPU を食う）。
+inline constexpr float kVirtualOnGain  = 0.001f;   // これ未満で仮想へ（-60 dB）
+inline constexpr float kVirtualOffGain = 0.002f;   // これを超えたら実ボイスへ戻す（-54 dB）
+
+inline bool NextVirtualState(bool isVirtual, float audibility)
+{
+    return isVirtual ? !(audibility > kVirtualOffGain) : (audibility < kVirtualOnGain);
+}
+
+// ---- ボイスを奪う相手の選び方 --------------------------------------------------
+// 上限に達したとき「一番どうでもいい 1 本」を選ぶ。順序は
+//   1) 優先度が低い  2) 同じ優先度なら小さく聞こえている  3) それも同じなら古い
+// その 1 本が新しい音より大事（優先度が高い / 同じ優先度で大きく聞こえている）なら奪わない。
+// margin は「同じ優先度で奪うには何倍大きく聞こえていないといけないか」。
+// 仮想 → 実へ戻すときは 2 にして、似た音量同士が毎フレーム奪い合う（ちらつく）のを防ぐ。
+struct VoiceCandidate
+{
+    int           slot       = -1;     // 呼び出し側の添字（そのまま返す）
+    int           priority   = 128;
+    float         audibility = 1.0f;   // 0..（最終的な聞こえ具合。線形）
+    std::uint64_t order      = 0;      // 鳴らし始めた順（小さいほど古い）
+};
+
+// 戻り値は c の添字（奪ってよい相手）。奪えないなら -1。
+inline int PickVictim(const VoiceCandidate* c, std::size_t n,
+                      int newPriority, float newAudibility, float margin = 1.0f)
+{
+    int weakest = -1;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        if (weakest < 0) { weakest = static_cast<int>(i); continue; }
+        const VoiceCandidate& a = c[i];
+        const VoiceCandidate& w = c[weakest];
+        if (a.priority != w.priority)       { if (a.priority < w.priority) weakest = static_cast<int>(i); continue; }
+        if (a.audibility != w.audibility)   { if (a.audibility < w.audibility) weakest = static_cast<int>(i); continue; }
+        if (a.order < w.order) weakest = static_cast<int>(i);
+    }
+    if (weakest < 0) return -1;
+    const VoiceCandidate& w = c[weakest];
+    if (w.priority < newPriority) return weakest;
+    if (w.priority > newPriority) return -1;
+    return (w.audibility * margin <= newAudibility) ? weakest : -1;
 }
 
 } // namespace dx12e::audio

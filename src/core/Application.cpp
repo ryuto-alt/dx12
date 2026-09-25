@@ -2649,9 +2649,10 @@ void Application::Update()
                 if (src.spatial)
                     src.runtimeSlot = m_audioSystem->PlaySFXSpatial(
                         src.clipPath, wx, wy, wz, src.minDistance, src.maxDistance, src.volume, src.loop,
-                        src.bus);
+                        src.bus, src.priority);
                 else
-                    m_audioSystem->PlaySFX(src.clipPath, src.loop, src.volume, src.bus);
+                    src.runtimeSlot = m_audioSystem->PlaySFXTracked(src.clipPath, src.loop, src.volume,
+                                                                    src.bus, src.priority);
                 src.startedThisPlay = true;
             }
             if (src.runtimeSlot >= 0 && src.spatial)
@@ -2679,6 +2680,10 @@ void Application::Update()
         }
         { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(dt); }
     }
+    // ★ボイスの終了検出・仮想⇔実の入れ替え・フェード・バスの反映はモードに関係なく毎フレーム回す
+    //   （エディタのプレビュー再生・一時停止中の BGM も対象。上の Update は Play 中の定位だけ）。
+    if (m_audioSystem)
+        { DX12_PROFILE_ZONE_N("Audio/Tick"); m_audioSystem->Tick(dt); }
 
     // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
     if (simRunning)

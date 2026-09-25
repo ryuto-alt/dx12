@@ -764,6 +764,7 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             };
             // 空（= sfx）のときは書かない。既存シーンの保存結果を変えないため。
             if (!as.bus.empty()) ej["audioSource"]["bus"] = as.bus;
+            if (as.priority != 128) ej["audioSource"]["priority"] = as.priority;
         }
 
         if (reg.all_of<ParticleEmitter>(entity))
@@ -1933,6 +1934,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                 as.minDistance = aj.value("minDistance", 1.0f);
                 as.maxDistance = aj.value("maxDistance", 30.0f);
                 as.bus         = aj.value("bus", std::string());
+                as.priority    = aj.value("priority", 128);
                 reg.emplace_or_replace<AudioSource>(e, std::move(as));
             }
         }

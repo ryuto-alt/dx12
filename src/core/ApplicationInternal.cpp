@@ -234,6 +234,7 @@ nlohmann::json McpComponentSchema()
         F("spatial", "bool", true), F("playOnStart", "bool", true),
         F("minDistance", "float", 1.0), F("maxDistance", "float", 30.0),
         F("bus", "string (mixer bus name; empty = sfx. builtin: master/music/sfx/ambience/voice/ui)", ""),
+        F("priority", "int 0..255 (higher = kept when the voice limit is hit; lower ones are virtualized/stolen first)", 128),
     })));
     comps.push_back(C("particleEmitter", true, true, json::array({
         F("kind", "int (0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star)", 0),
@@ -761,8 +762,17 @@ nlohmann::json McpLuaApi()
         "getBGMList()/getSFXList() -> table",
         "rescan()  (assets 配下の音声ファイルを列挙し直す。実行中に wav を足したとき用)",
         "-- 汎用の再生口 --",
-        "play(path, opts?) -> id  (opts: bus='sfx', volume=1, loop=false, pos=Vec3 (渡すと 3D 空間音), "
-        "minDistance=1, maxDistance=30。失敗 -1)",
+        "play(path, opts?) -> id  (opts: bus='sfx', volume=1, pitch=1, loop=false, priority=128, "
+        "pos=Vec3 (渡すと 3D 空間音), minDistance=1, maxDistance=30。失敗 -1)",
+        "stopVoice(id, fade?)  (fade 秒で 0 まで下げてから止める。省略 = 即停止)",
+        "setVoicePriority(id, p)  (0..255。大きいほど大事)",
+        "-- 同時発音数（優先度と仮想化）--",
+        "setMaxVoices(n) / getMaxVoices() -> int  (実ボイスの全体上限。既定 32。BGM は数えない)",
+        "setBusVoiceLimit(bus, n) / getBusVoiceLimit(bus) -> int  (0 = 上限なし。子孫のバスも数える)",
+        "getVoiceCount() -> real, virtual  (2 値返し。仮想ボイス = 音は出さず再生位置だけ進めている音)",
+        "★上限に達したら 優先度が低い → 小さく聞こえている → 古い の順に 1 本奪う（ループ音は仮想へ落とすだけ、"
+        "ワンショットは止める）。遠くて聞こえない音（-60dB 未満）も仮想になり、近づくと続きから鳴る。"
+        "isVoicePlaying は仮想中も true",
         "-- ミキサーのバス（XAudio2 のサブミックス）。既定は master ← music/sfx/ambience/voice/ui --",
         "createBus(name, parent?='master') -> bool  (ユーザー定義バス。既にあれば何もしない。入れ子は 8 段まで)",
         "setBusVolume(name, v) / getBusVolume(name) -> float  (0..4。setMasterVolume/setBGMVolume/setSFXVolume は "

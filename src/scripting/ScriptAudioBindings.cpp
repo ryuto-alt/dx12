@@ -12,6 +12,7 @@
 
 #include <DirectXMath.h>
 #include <string>
+#include <tuple>
 
 namespace dx12e
 {
@@ -84,32 +85,33 @@ void RegisterAudioBindings(sol::state& lua)
                                                        vol.value_or(1.0f), loop.value_or(false));
                            },
         // ---- 汎用の再生口（バス指定つき）。オプションは全部省略可 ----
-        //   audio:play("audio/se/door.wav", { bus="sfx", volume=0.8, loop=false,
-        //                                      pos=Vec3.new(x,y,z), minDistance=1, maxDistance=30 })
+        //   audio:play("audio/se/door.wav", { bus="sfx", volume=0.8, loop=false, priority=128,
+        //                                      pitch=1, pos=Vec3.new(x,y,z), minDistance=1, maxDistance=30 })
         //   pos を渡すと 3D 空間音、渡さなければ 2D。戻り値は ID（失敗 -1）。
+        //   priority は 0..255（大きいほど大事）。上限に達したら低い方から仮想化/停止される。
         "play",            [](AudioSystem& a, const std::string& path, sol::optional<sol::table> opts) {
-                               std::string bus;
-                               float vol = 1.0f, minD = 1.0f, maxD = 30.0f;
-                               bool loop = false;
-                               float pos[3] = {0, 0, 0};
-                               bool spatial = false;
+                               AudioSystem::PlayParams p;
+                               p.path = path;
                                if (opts)
                                {
                                    const sol::table& o = *opts;
-                                   bus  = o.get_or("bus", std::string());
-                                   vol  = o.get_or("volume", 1.0f);
-                                   loop = o.get_or("loop", false);
-                                   minD = o.get_or("minDistance", 1.0f);
-                                   maxD = o.get_or("maxDistance", 30.0f);
-                                   spatial = ReadPos(o, pos);
+                                   p.bus         = o.get_or("bus", std::string());
+                                   p.volume      = o.get_or("volume", 1.0f);
+                                   p.pitch       = o.get_or("pitch", 1.0f);
+                                   p.loop        = o.get_or("loop", false);
+                                   p.priority    = o.get_or("priority", AudioSystem::kDefaultPriority);
+                                   p.minDistance = o.get_or("minDistance", 1.0f);
+                                   p.maxDistance = o.get_or("maxDistance", 30.0f);
+                                   p.spatial     = ReadPos(o, p.pos);
                                }
-                               if (spatial)
-                                   return a.PlaySFXSpatial(path, pos[0], pos[1], pos[2], minD, maxD,
-                                                           vol, loop, bus);
-                               return a.PlaySFXTracked(path, loop, vol, bus);
+                               return a.Play(p);
                            },
         "moveVoice",       &AudioSystem::UpdateSpatialEmitter,
-        "stopVoice",       &AudioSystem::StopVoice,
+        // fade 秒で音量を 0 まで下げてから止める（省略/0 = 即停止）
+        "stopVoice",       [](AudioSystem& a, int id, sol::optional<float> fade) {
+                               a.StopVoice(id, fade.value_or(0.0f));
+                           },
+        "setVoicePriority", &AudioSystem::SetVoicePriority,
         "setVoiceVolume",  &AudioSystem::SetVoiceVolume,
         "setVoicePitch",   &AudioSystem::SetVoicePitch,
         "isVoicePlaying",  &AudioSystem::IsVoicePlaying,
@@ -131,6 +133,18 @@ void RegisterAudioBindings(sol::state& lua)
         "isBusMuted",       &AudioSystem::IsBusMuted,
         "setBusLowpass",    &AudioSystem::SetBusLowpass,
         "getBusLowpass",    &AudioSystem::GetBusLowpass,
+        // ---- 同時発音数 ----
+        // 実ボイス（本当に XAudio2 で鳴らす本数）の上限。超えた分は優先度の低い順に
+        // 仮想ボイス（音は出さず位置だけ進める）へ落ちる。既定 32。
+        "setMaxVoices",     &AudioSystem::SetMaxVoices,
+        "getMaxVoices",     &AudioSystem::GetMaxVoices,
+        "setBusVoiceLimit", &AudioSystem::SetBusVoiceLimit,
+        "getBusVoiceLimit", &AudioSystem::GetBusVoiceLimit,
+        "getVoiceCount",    [](AudioSystem& a) {
+                                u32 real = 0, virt = 0;
+                                a.GetVoiceCounts(real, virt);
+                                return std::make_tuple(real, virt);
+                            },
         "getBuses",         [](AudioSystem& a, sol::this_state ts) {
                                 sol::state_view lv(ts);
                                 sol::table t = lv.create_table();

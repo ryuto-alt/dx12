@@ -32,10 +32,22 @@ class AudioClip;
 //   深さに応じて stage を下げている（master が最大）。
 // ★旧 API は互換のまま内部でバスへ写す: setMasterVolume = master、setBGMVolume = music、
 //   setSFXVolume = sfx。ボイス側はクリップ個別の音量しか持たない（バス音量は掛けない）。
+//
+// ボイス（1 回の再生）
+//   論理ボイスは最大 kMaxLogicalVoices 本。そのうち XAudio2 のソースボイスを実際に持つ
+//   （= 実ボイス）のは全体上限 maxVoices 本とバスごとの上限まで。残りは「仮想ボイス」で、
+//   音は出さず再生位置だけ進める。聞こえない（遠い / バスがミュート）音も仮想になる。
+//   上限に達したら 優先度が低い → 小さく聞こえている → 古い の順に 1 本選んで奪う
+//   （ループ音は仮想へ落とすだけで止めない。ワンショットは止める）。
+//   BGM は数えない・奪わない・仮想化しない（音楽が消えるのは最悪の壊れ方なので）。
+//   音声デバイスが無いときは全部が仮想ボイスになる＝状態は普段どおり追える。
 // ===========================================================================
 class AudioSystem
 {
 public:
+    static constexpr u32 kMaxLogicalVoices = 128;   // ID の下位 8 bit が添字なので 256 未満
+    static constexpr i32 kDefaultPriority  = 128;   // 0..255。大きいほど大事
+
     // バス 1 本ぶんの読み出し用の写し（エディタのミキサー窓 / MCP audio_state / Lua getBuses）。
     struct BusInfo
     {
@@ -47,7 +59,50 @@ public:
         f32  snapshotGain    = 1.0f; // スナップショット補正（線形）
         f32  snapshotLowpass = 0.0f;
         f32  effectiveGain   = 1.0f; // このバスが実際に掛けている量（volume*snapshot*mute）
+        f32  chainGain       = 1.0f; // master までの積（このバスの音が最終的に何倍になるか）
+        u32  voiceLimit = 0;         // 0 = 上限なし（全体上限だけ）
+        u32  realVoices = 0;         // このバス以下（子孫含む）で鳴っている実ボイス数
+        u32  virtualVoices = 0;
         bool builtin    = false;     // 既定の 6 本（消せない・親を変えられない）
+    };
+
+    // ボイス 1 本ぶんの読み出し用の写し。
+    struct VoiceInfo
+    {
+        i32         id = -1;
+        std::string path;
+        std::string bus;
+        i32   priority   = kDefaultPriority;
+        f32   volume     = 1.0f;     // クリップ個別音量（setVoiceVolume）
+        f32   fade       = 1.0f;     // フェードの現在値
+        f32   pitch      = 1.0f;
+        f32   audibility = 1.0f;     // 最終的な聞こえ具合（音量×フェード×距離×遮蔽×バス）
+        bool  spatial    = false;
+        f32   distance   = 0.0f;     // リスナーまで（2D は 0）
+        f32   distanceGain = 1.0f;
+        f32   occlusion  = 0.0f;     // 平滑後の遮蔽量 0..1
+        bool  loop       = false;
+        bool  isVirtual  = false;
+        std::string virtualReason;   // inaudible / limit / stolen / noDevice（実ボイスは空）
+        bool  bgm        = false;
+        bool  paused     = false;
+        f32   positionSec = 0.0f;
+        f32   lengthSec   = 0.0f;
+    };
+
+    // 汎用の再生要求（audio:play / AudioSource / 旧 API は全部これへ写す）。
+    struct PlayParams
+    {
+        std::string path;
+        std::string bus;                    // 空 = sfx
+        i32  priority    = kDefaultPriority;
+        f32  volume      = 1.0f;
+        f32  pitch       = 1.0f;
+        bool loop        = false;
+        bool spatial     = false;
+        f32  pos[3]      = {0.0f, 0.0f, 0.0f};
+        f32  minDistance = 1.0f;
+        f32  maxDistance = 30.0f;
     };
 
     AudioSystem();
@@ -77,18 +132,17 @@ public:
     // bus は空なら "sfx"。存在しないバス名は警告を 1 度だけ出して "sfx" へ流す（無音にはしない）。
     void PlaySFX(const std::string& filePath, bool loop = false, float volume = 1.0f,
                  const std::string& bus = {});
-    // 今鳴っている BGM の assets 相対パス（鳴っていなければ空）。
+    // 今鳴っている BGM の assets 相対パス（鳴っていなければ空。ループしない曲が終わっても空に戻る）。
     // ★playBGM は同じパスでも必ず頭出しするので、「シーンをまたいで同じ曲を鳴らし続ける」は
     //   これで判定して呼ばない、という形でしか書けない（曲の途中で切り替わると
     //   イントロへ戻ってしまうため、engine 側で勝手に早期 return はしない）。
     const std::string& GetCurrentBGM() const { return m_currentBGMPath; }
     // ★「ボイスが存在するか」ではなく「実際に鳴っているか」。
-    //   StopBGM はボイスを使い回すために破棄しないので、以前の実装だと
-    //   **一度 playBGM したら永久に true** だった。結果、一番自然な書き方
+    //   以前の実装だと **一度 playBGM したら永久に true** で、一番自然な書き方
     //   `if not audio:isBGMPlaying() then audio:playBGM(...) end` が
-    //   stopBGM 後も曲の終了後も二度と鳴らない。Play/Stop もまたぐ
-    //   （Stop で StopBGM されるので、次の Play の OnStart では「鳴っている」判定になる）。
-    bool IsBGMPlaying() const { return m_bgmPlaying; }
+    //   stopBGM 後も曲の終了後も二度と鳴らなかった。今は BGM ボイスが生きていて
+    //   一時停止していないときだけ true（曲が終わったら false）。
+    bool IsBGMPlaying() const;
 
     void StopAllSFX();
     // Lua の setListener による上書きを解除してカメラ位置へ戻す。
@@ -106,25 +160,43 @@ public:
     i32  PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
                         float minDistance, float maxDistance,
                         float volume = 1.0f, bool loop = false,
-                        const std::string& bus = {});
+                        const std::string& bus = {}, i32 priority = kDefaultPriority);
     void UpdateSpatialEmitter(i32 slotId, float x, float y, float z);
-    // ★鳴っている 1 本を掴んで操作する 3 つ。PlaySFXSpatial / PlaySFXTracked が返す ID を使う。
+    // ★鳴っている 1 本を掴んで操作する。PlaySFXSpatial / PlaySFXTracked / Play が返す ID を使う。
     //   ループ再生した環境音を止める・フェードさせる・回転数が落ちるように鳴らす、が
     //   これが無いと書けなかった（StopAllSFX しか無く、他の音まで巻き添えになる）。
     //   世代が食い違う ID（スロットが使い回された後）は黙って無視する。
-    void StopVoice(i32 slotId);
+    // fadeSec > 0 ならその秒数で音量を 0 まで下げてから止める（ブツッと切れない）。
+    void StopVoice(i32 slotId, f32 fadeSec = 0.0f);
     void SetVoiceVolume(i32 slotId, float volume);        // 0..1（クリップ個別音量）
     void SetVoicePitch(i32 slotId, float ratio);          // 再生速度＝ピッチ。0.1..2.0
+    void SetVoicePriority(i32 slotId, i32 priority);      // 0..255
+    // ★仮想ボイス（遠くて聞こえない・上限で押し出された）も「鳴っている」扱い。
+    //   ゲームの論理としてはまだ再生中なので、isVoicePlaying で分岐しているコードが壊れない。
     bool IsVoicePlaying(i32 slotId) const;
-    // 非空間の SFX を ID 付きで鳴らす（上の 3 つで操作できる）。失敗時 -1。
+    // 非空間の SFX を ID 付きで鳴らす（上の操作で掴める）。失敗時 -1。
     i32  PlaySFXTracked(const std::string& filePath, bool loop = false, float volume = 1.0f,
-                        const std::string& bus = {});
+                        const std::string& bus = {}, i32 priority = kDefaultPriority);
+    // 汎用の再生口。-1 = 失敗（ファイルが無い / 上限で全部こちらより大事な音が鳴っているワンショット）。
+    i32  Play(const PlayParams& p);
     // 遮蔽量 0..1（1=リスナーとの間に壁がある）。ローパスで「こもった」音にし、音量も落とす。
     // 値は Update() 内で時定数 ~0.1s で追従するので、毎フレーム 0/1 を投げてよい。
     void SetOcclusion(i32 slotId, float amount);
     // 実際に使われているリスナー位置（Lua の setListener 上書き込み）。遮蔽レイの終点用。
     void GetListenerPos(float& x, float& y, float& z) const;
-    void Update(f32 dt);  // 毎フレーム: 空間ボイスの定位と遮蔽を再計算
+    // Play 中だけ: 空間ボイスの距離・定位（X3DAudio の行列）と遮蔽の平滑を再計算する。
+    void Update(f32 dt);
+    // ★毎フレーム（エディタでも一時停止中でも）: ボイスの終了検出・仮想ボイスの位置送り・
+    //   仮想⇔実の入れ替え・フェード・バスの反映。Update（Play 中だけ）とは別に呼ぶこと。
+    void Tick(f32 dt);
+
+    // ---- ボイス上限 ----
+    void SetMaxVoices(u32 n);                          // 実ボイスの全体上限（1..kMaxLogicalVoices）
+    u32  GetMaxVoices() const { return m_maxRealVoices; }
+    void SetBusVoiceLimit(const std::string& bus, u32 n);   // 0 = 上限なし。子孫のバスも数える
+    u32  GetBusVoiceLimit(const std::string& bus) const;
+    void GetVoiceCounts(u32& real, u32& virt) const;   // BGM も含めた実 / 仮想の本数
+    std::vector<VoiceInfo> GetVoices() const;          // 生きている論理ボイス全部
 
     // Volume (0.0 - 1.0)。★中身はバス音量（master / music / sfx）の別名。
     void SetMasterVolume(f32 volume) { SetBusVolume("master", volume); }
@@ -151,6 +223,9 @@ public:
     const std::string& GetDeviceStatus() const { return m_deviceStatus; }
     u32  GetOutputChannels() const { return m_outChannels; }
     u32  GetOutputSampleRate() const { return m_outSampleRate; }
+    // XAudio2 のボイスを作る/壊すのに掛かった累計時間（仮想化の往復が高く付いていないかを測る）。
+    f64  GetVoiceChurnMs() const { return m_voiceChurnMs; }
+    u64  GetVoiceChurnCount() const { return m_voiceChurnCount; }
 
     // assets/audio/ 以下の音声ファイルを自動検出
     const std::vector<std::string>& GetBGMList() const { return m_bgmList; }
@@ -158,7 +233,10 @@ public:
     void ScanAudioFiles();
 
 private:
-    AudioClip* GetOrLoadClip(const std::string& filePath);
+    // mono=true は空間音用のモノラル版（元のクリップとは別にキャッシュする。
+    // ★以前は元のクリップをその場でモノ化していたので、同じ素材を 2D で鳴らしている最中に
+    //   空間で鳴らすと、再生中のバッファが解放されていた）。
+    std::shared_ptr<AudioClip> GetOrLoadClip(const std::string& filePath, bool mono = false);
 
     Microsoft::WRL::ComPtr<IXAudio2> m_xaudio2;
     IXAudio2MasteringVoice*          m_masterVoice = nullptr;
@@ -176,7 +254,9 @@ private:
         bool muted     = false;
         f32  lowpassHz = 0.0f;
         audio::BusMod snap;                     // スナップショット補正の現在値
+        u32  voiceLimit = 0;
         bool builtin   = false;
+        f32  chainGain = 1.0f;                  // Tick で更新（master までの積）
         // 直近に XAudio2 へ書いた値（同じ値を毎フレーム書かない）
         f32  appliedGain   = -1.0f;
         f32  appliedFilter = -1.0f;
@@ -187,47 +267,79 @@ private:
     bool CreateBusVoice(Bus& bus);
     void ApplyBus(Bus& bus, bool force = false);      // volume/mute/snap → SetVolume / フィルタ
     f32  BusEffectiveGain(const Bus& bus) const;
+    bool BusInSubtree(i32 bus, i32 root) const;
+    void UpdateBusChainGains();
     // ソースボイスの送り先（バス）。デバイスが無ければ null を返す＝呼び出し側は作らない。
     IXAudio2Voice* BusOutputVoice(i32 busIndex) const;
     std::vector<std::string> m_warnedUnknownBus;
 
-    // BGM
-    IXAudio2SourceVoice* m_bgmVoice = nullptr;
-    std::string          m_currentBGMPath;
-    // 実際に鳴っているか。ボイスは使い回すので存在では判定できない
-    // （StopBGM / PauseBGM で false、PlayBGM / ResumeBGM で true）。
-    bool                 m_bgmPlaying = false;
-    // 空きスロットが無いときに奪う位置（ラウンドロビン）。0 番固定だと全部が 0 番を
-    // 奪い合って 1 音しか聞こえなくなる。
-    u32                  m_sfxStealCursor = 0;
-    bool                 m_sfxStealWarned = false;
-    bool                 m_bgmLoop = true;
-
-    // SFX pool
-    static constexpr u32 kMaxSFXVoices = 16;
-    struct SFXSlot {
-        IXAudio2SourceVoice* voice = nullptr;
-        bool  spatial = false;
-        float minDist = 1.0f;
-        float maxDist = 30.0f;
-        float emitterPos[3] = {0, 0, 0};
-        // ★スロットの世代。PlaySFXSpatial のたびに +1 する。
-        //   AudioSource::runtimeSlot は鳴り終わっても -1 に戻らないので、スロットが
-        //   使い回されると**古いエンティティが新しい音の定位を毎フレーム上書き**していた
-        //   （遠くの敵の足音が自分の足元から鳴る）。返す ID に世代を混ぜて弾く。
+    // ---- ボイス ----
+    struct Voice
+    {
+        bool  active     = false;
         u32   generation = 0;
-        // ★このクリップ個別の音量（0..1）。SetSFXVolume がマスターを掛け直すのに要る。
-        //   持っていなかったので、オプション画面の SE スライダーを触った瞬間に
-        //   小さく鳴らしていた環境音や遠くの空間音が**マスター音量の大きさに跳ね上がって**いた。
-        float clipVolume = 1.0f;
-        // 遮蔽（壁越し）。target が呼び出し側の指定、cur が時間平滑した実効値。
-        // 直接入れるとドア枠を通るたびにブツッと切り替わる。
-        float occTarget  = 0.0f;
-        float occ        = 0.0f;
-        u32   sampleRate = 44100;   // ローパスのカットオフ計算に要る
-        i32   bus = -1;             // 送り先バス（m_buses の添字）
+        u64   order      = 0;              // 鳴らし始めた順（奪う相手の同点決着）
+        std::string path;
+        std::shared_ptr<AudioClip> clip;   // ★再生中は必ず握る（キャッシュが入れ替わっても解放させない）
+        u32   sampleRate = 44100;
+        u32   channels   = 1;
+        u64   totalFrames = 0;
+        i32   bus        = -1;
+        i32   priority   = kDefaultPriority;
+        f32   clipVolume = 1.0f;
+        f32   pitch      = 1.0f;
+        bool  loop       = false;
+        bool  spatial    = false;
+        bool  bgm        = false;
+        bool  paused     = false;
+        f32   minDist    = 1.0f;
+        f32   maxDist    = 30.0f;
+        f32   pos[3]     = {0.0f, 0.0f, 0.0f};
+        // 遮蔽（壁越し）。target が呼び出し側の指定、occ が時間平滑した実効値。
+        f32   occTarget  = 0.0f;
+        f32   occ        = 0.0f;
+        f32   distance   = 0.0f;
+        f32   distGain   = 1.0f;
+        // フェード（stopVoice(id, sec)）
+        f32   fade       = 1.0f;
+        f32   fadeTarget = 1.0f;
+        f32   fadeSpeed  = 0.0f;           // 1 秒あたりの変化量（0 = 止まっている）
+        bool  stopAtFadeEnd = false;
+        f32   audibility = 1.0f;
+        // XAudio2 側
+        IXAudio2SourceVoice* src = nullptr;   // null = 仮想ボイス
+        const char* virtualReason = "";
+        f64   virtualPos = 0.0;            // 仮想中の再生位置（フレーム）
+        u64   startFrame = 0;              // src を作ったときの開始フレーム
+        f32   appliedVolume = -1.0f;
+        f32   appliedFilter = -1.0f;
     };
-    std::array<SFXSlot, kMaxSFXVoices> m_sfxSlots{};
+    std::array<Voice, kMaxLogicalVoices> m_voices{};
+    u64  m_voiceOrder = 0;
+    u32  m_maxRealVoices = 32;
+    i32  m_bgmId = -1;
+    std::string m_currentBGMPath;
+    bool m_limitWarned = false;
+    f64  m_voiceChurnMs = 0.0;
+    u64  m_voiceChurnCount = 0;
+
+    i32    MakeId(u32 index) const;
+    Voice* Resolve(i32 id);
+    const Voice* Resolve(i32 id) const;
+    i32    PlayInternal(const PlayParams& p, bool bgm);
+    i32    AllocateSlot(i32 newPriority, f32 newAudibility);
+    void   FreeVoice(Voice& v);                        // 実ボイスなら壊して論理ボイスも空ける
+    bool   MakeReal(Voice& v, f64 startFrame);         // 仮想 → 実（XAudio2 のボイスを作って鳴らす）
+    void   MakeVirtual(Voice& v, const char* reason);  // 実 → 仮想（位置を控えてボイスを壊す）
+    f64    CurrentFrame(const Voice& v) const;         // 再生位置（フレーム）
+    f32    ComputeAudibility(const Voice& v) const;
+    // v を実ボイスにしてよいか（全体上限 / バス上限）。ダメなら奪ってよい相手を *victim に返す。
+    bool   HasRoomFor(const Voice& v, f32 margin, i32* victim);
+    u32    CountReal(i32 busRoot) const;               // busRoot < 0 = 全体（BGM は数えない）
+    void   ApplyVoiceGain(Voice& v);                   // 音量・遮蔽ローパス
+    void   ComputeAndApply(Voice& v);                  // X3DAudio の定位（実ボイスのみ）
+    void   UpdateDistance(Voice& v);
+    void   RestartVoiceAt(Voice& v, f64 frame);        // シーク
 
     // X3DAudio
     X3DAUDIO_HANDLE   m_x3d{};
@@ -236,12 +348,9 @@ private:
     float m_lopX = 0, m_lopY = 0, m_lopZ = 0;
     u32  m_outChannels = 2;
     bool m_x3dReady = false;
-    SFXSlot* ResolveVoice(i32 slotId);    // ID → スロット（世代が食い違えば nullptr）
-    void ComputeAndApply(SFXSlot& slot);
-    void ApplyOcclusion(SFXSlot& slot);   // slot.occ を音量とローパスへ反映
 
     // Clip cache
-    std::unordered_map<std::string, std::unique_ptr<AudioClip>> m_clipCache;
+    std::unordered_map<std::string, std::shared_ptr<AudioClip>> m_clipCache;
     // ★★キャッシュした時点のファイル更新時刻。焼き直した wav を反映するために要る。
     //   これが無いと、エディタを起動したまま素材を作り直しても【古い音が鳴り続ける】。
     //   「直したのに何も変わらない」の原因になり、実際に半日ぶん溶かした(2026-08-27)。

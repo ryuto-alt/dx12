@@ -330,7 +330,7 @@ inline bool ApplyOrphanComponent(entt::registry& reg, entt::entity e,
         as.loop = d.value("loop", as.loop); as.spatial = d.value("spatial", as.spatial);
         as.playOnStart = d.value("playOnStart", as.playOnStart);
         as.minDistance = d.value("minDistance", as.minDistance); as.maxDistance = d.value("maxDistance", as.maxDistance);
-        as.bus = d.value("bus", as.bus);
+        as.bus = d.value("bus", as.bus); as.priority = d.value("priority", as.priority);
         reg.emplace_or_replace<AudioSource>(e, std::move(as));
         return true;
     }

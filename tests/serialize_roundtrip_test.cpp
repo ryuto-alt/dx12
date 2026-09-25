@@ -257,6 +257,7 @@ static void Test_AudioSource()
             as.minDistance = 2.0f;
             as.maxDistance = 40.0f;
             as.bus = "ambience";
+            as.priority = 200;
             r.emplace<AudioSource>(e, as);
         },
         [](const AudioSource& as) {
@@ -268,6 +269,7 @@ static void Test_AudioSource()
             CHECK_F(as.minDistance, 2.0f);
             CHECK_F(as.maxDistance, 40.0f);
             CHECK(as.bus == "ambience");
+            CHECK(as.priority == 200);
         });
 }
 

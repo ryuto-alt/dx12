@@ -4207,6 +4207,9 @@ void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, en
         changed |= pg::InputTextStr("バス Bus", as.bus, &active,
             "送り先のミキサーバス。空 = sfx。既定: master / music / sfx / ambience / voice / ui。"
             "Lua の audio:createBus で作ったバス名も書ける（無い名前は sfx で鳴らして警告）。");
+        changed |= pg::Int("優先度 Priority", &as.priority, 1.0f, 0, 255, &active,
+            "0..255（大きいほど大事）。同時発音数の上限に達したら、低い方から仮想化（音を止めて"
+            "位置だけ進める）されるか止められる。既定 128。");
 
         pg::Group("空間化");
         changed |= pg::Checkbox("3D 空間音にする Spatial", &as.spatial,

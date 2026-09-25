@@ -70,6 +70,18 @@ else()
 endif()
 add_test(NAME ClusterMathTests COMMAND ClusterMathTests)
 
+# 音の純粋ロジック（src/audio/AudioMath.h: 奪う相手の選び方 / 仮想化のヒステリシス /
+# dB 換算 / フィルタ係数 / スナップショットとリバーブ域の補間）。ヘッダオンリー・依存ゼロ
+# （XAudio2 も音声デバイスも要らない）なのでスタンドアロンでも動く。
+add_executable(AudioMathTests audio_math_test.cpp)
+target_include_directories(AudioMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AudioMathTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AudioMathTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AudioMathTests COMMAND AudioMathTests)
+
 # UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
 add_executable(UiRichTextTests ui_rich_text_test.cpp)
 target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

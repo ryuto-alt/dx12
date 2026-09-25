@@ -160,7 +160,8 @@ void RegisterCoreComponentMeta()
         .data<&AudioSource::playOnStart>("playOnStart")
         .data<&AudioSource::minDistance>("minDistance")
         .data<&AudioSource::maxDistance>("maxDistance")
-        .data<&AudioSource::bus>("bus");
+        .data<&AudioSource::bus>("bus")
+        .data<&AudioSource::priority>("priority");
 
     entt::meta_factory<Tag>{}
         .type("Tag")

@@ -143,25 +143,11 @@ void AudioSystem::Initialize(const std::string& assetsDir)
 
 void AudioSystem::Shutdown()
 {
-    StopBGM();
-    StopAllSFX();
-
-    // SFXボイス破棄
-    for (auto& slot : m_sfxSlots)
-    {
-        if (slot.voice)
-        {
-            slot.voice->DestroyVoice();
-            slot.voice = nullptr;
-        }
-    }
-
-    // BGMボイス破棄
-    if (m_bgmVoice)
-    {
-        m_bgmVoice->DestroyVoice();
-        m_bgmVoice = nullptr;
-    }
+    // ボイス破棄（BGM 含む）。★バスより先に壊す（送り先として使われているボイスは壊せない）。
+    for (auto& v : m_voices)
+        if (v.active) FreeVoice(v);
+    m_bgmId = -1;
+    m_currentBGMPath.clear();
 
     // バス破棄。★子から先に壊す（送り先として使われているボイスは壊せない）。
     //   m_buses は親が子より前に並ぶので逆順に回せば子が先になる。
@@ -184,6 +170,7 @@ void AudioSystem::Shutdown()
 
     // クリップキャッシュクリア
     m_clipCache.clear();
+    m_clipStamp.clear();
 
     // XAudio2エンジン解放
     m_xaudio2.Reset();
@@ -247,8 +234,26 @@ void AudioSystem::ScanAudioFiles()
     Logger::Info("Audio scan: {} BGM, {} SFX found", m_bgmList.size(), m_sfxList.size());
 }
 
-AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
+
+std::shared_ptr<AudioClip> AudioSystem::GetOrLoadClip(const std::string& filePath, bool mono)
 {
+    if (mono)
+    {
+        // 元の（ステレオかもしれない）クリップを先に確保する。ここで更新時刻の検査も済む
+        // （焼き直されていたらモノ版も一緒に捨てられている）。
+        auto base = GetOrLoadClip(filePath, false);
+        if (!base) return nullptr;
+        if (base->GetFormat().nChannels == 1) return base;
+        const std::string key = filePath + "|mono";
+        auto mit = m_clipCache.find(key);
+        if (mit != m_clipCache.end()) return mit->second;
+        auto m = std::make_shared<AudioClip>(*base);
+        m->DownmixToMono();
+        Logger::Info("空間再生のため '{}' のモノラル版を作りました（元のステレオ版はそのまま）", filePath);
+        m_clipCache[key] = m;
+        return m;
+    }
+
     // フルパス構築（相対パスならassetsDir基準）
     const bool isRelative = (filePath.size() < 2 || filePath[1] != ':');
     std::string fullPath = filePath;
@@ -261,6 +266,9 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
     //   ★以前は「一度読んだら二度と読み直さない」だったので、エディタを起動したまま
     //     素材を作り直しても古い音が鳴り続けた(直したはずの音が変わらない、の原因)。
     //   ★stat は 1 回の再生につき 1 回だけ。実測でも足音(毎秒 2 回)で問題にならない。
+    //   ★キャッシュから外しても、鳴っている最中のボイスは shared_ptr で握っているので
+    //     バッファは解放されない（以前は unique_ptr で、焼き直した瞬間に再生中の音の
+    //     PCM が解放されていた）。
     std::error_code fec;
     const auto stamp = std::filesystem::last_write_time(fullPath, fec);
     auto it = m_clipCache.find(filePath);
@@ -269,9 +277,10 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
         auto st = m_clipStamp.find(filePath);
         const bool fresh = fec || st == m_clipStamp.end() || st->second == stamp;
         if (fresh)
-            return it->second.get();
+            return it->second;
         Logger::Info("音声が更新されたので読み直します: {}", filePath);
         m_clipCache.erase(it);
+        m_clipCache.erase(filePath + "|mono");
         m_clipStamp.erase(filePath);
     }
     if (!fec) m_clipStamp[filePath] = stamp;
@@ -280,7 +289,7 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
     std::string ext = std::filesystem::path(filePath).extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-    auto clip = std::make_unique<AudioClip>();
+    auto clip = std::make_shared<AudioClip>();
 
     // VFS 経由でロード試行（ゲームモードは pak から復号展開、ディスクモードは空を返す）
     bool loaded = false;
@@ -307,128 +316,493 @@ AudioClip* AudioSystem::GetOrLoadClip(const std::string& filePath)
         return nullptr;
     }
 
-    AudioClip* rawPtr = clip.get();
-    m_clipCache[filePath] = std::move(clip);
-    return rawPtr;
+    m_clipCache[filePath] = clip;
+    return clip;
+}
+
+// ===========================================================================
+// ボイス（論理ボイス = 1 回の再生。実ボイス = XAudio2 のソースボイスを持っているもの）
+// ===========================================================================
+
+// ★ID は (generation<<8)|index。スロットが別の音へ使い回されていたら世代が食い違うので、
+//   古い ID で新しい音を止めてしまう事故が起きない。
+i32 AudioSystem::MakeId(u32 index) const
+{
+    return static_cast<i32>((m_voices[index].generation << 8) | index);
+}
+
+AudioSystem::Voice* AudioSystem::Resolve(i32 id)
+{
+    return const_cast<Voice*>(static_cast<const AudioSystem*>(this)->Resolve(id));
+}
+
+const AudioSystem::Voice* AudioSystem::Resolve(i32 id) const
+{
+    if (id < 0) return nullptr;
+    const u32 index = static_cast<u32>(id) & 0xFFu;
+    const u32 gen   = static_cast<u32>(id) >> 8;
+    if (index >= kMaxLogicalVoices) return nullptr;
+    const Voice& v = m_voices[index];
+    if (!v.active || v.generation != gen) return nullptr;
+    return &v;
+}
+
+bool AudioSystem::BusInSubtree(i32 bus, i32 root) const
+{
+    for (i32 b = bus; b >= 0; b = m_buses[static_cast<size_t>(b)].parent)
+        if (b == root) return true;
+    return false;
+}
+
+void AudioSystem::UpdateBusChainGains()
+{
+    // 親が子より前に並んでいるので 1 パスで master からの積が出る
+    for (auto& b : m_buses)
+    {
+        const f32 own = BusEffectiveGain(b);
+        b.chainGain = (b.parent >= 0) ? own * m_buses[static_cast<size_t>(b.parent)].chainGain : own;
+    }
+}
+
+u32 AudioSystem::CountReal(i32 busRoot) const
+{
+    u32 n = 0;
+    for (const auto& v : m_voices)
+    {
+        if (!v.active || !v.src || v.bgm) continue;
+        if (busRoot >= 0 && !BusInSubtree(v.bus, busRoot)) continue;
+        ++n;
+    }
+    return n;
+}
+
+void AudioSystem::UpdateDistance(Voice& v)
+{
+    if (!v.spatial) { v.distance = 0.0f; v.distGain = 1.0f; return; }
+    const f32 dx = v.pos[0] - m_listener.Position.x;
+    const f32 dy = v.pos[1] - m_listener.Position.y;
+    const f32 dz = v.pos[2] - m_listener.Position.z;
+    v.distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    v.distGain = audio::DistanceGain(v.distance, v.minDist, v.maxDist);
+}
+
+// 遮蔽の効き。壁越しは「高域が落ちて音量も下がる」。数値は完全に趣味の範囲。
+static constexpr float kOccVolumeDrop = 0.65f;    // 全遮蔽で音量 -65%
+static constexpr float kOccCutoffHz   = 420.0f;   // 全遮蔽時のローパス
+static constexpr float kOccSmooth     = 8.0f;     // 1/s。時定数 ~0.12s
+
+f32 AudioSystem::ComputeAudibility(const Voice& v) const
+{
+    const f32 busGain = (v.bus >= 0) ? m_buses[static_cast<size_t>(v.bus)].chainGain : 1.0f;
+    const f32 occ     = v.spatial ? (1.0f - kOccVolumeDrop * std::clamp(v.occ, 0.0f, 1.0f)) : 1.0f;
+    return v.clipVolume * v.fade * v.distGain * occ * busGain;
+}
+
+f64 AudioSystem::CurrentFrame(const Voice& v) const
+{
+    if (v.totalFrames == 0) return 0.0;
+    f64 p = v.virtualPos;
+    if (v.src)
+    {
+        XAUDIO2_VOICE_STATE st{};
+        v.src->GetState(&st, 0);
+        p = static_cast<f64>(v.startFrame) + static_cast<f64>(st.SamplesPlayed);
+    }
+    const f64 total = static_cast<f64>(v.totalFrames);
+    return v.loop ? std::fmod(p, total) : (std::min)(p, total);
+}
+
+void AudioSystem::ApplyVoiceGain(Voice& v)
+{
+    if (!v.src) return;
+    const f32 occ = std::clamp(v.occ, 0.0f, 1.0f);
+    const f32 vol = v.clipVolume * v.fade * (v.spatial ? (1.0f - kOccVolumeDrop * occ) : 1.0f);
+    if (std::fabs(vol - v.appliedVolume) > 1e-5f)
+    {
+        v.src->SetVolume(vol);
+        v.appliedVolume = vol;
+    }
+    if (!v.spatial) return;   // USEFILTER を付けていないボイスにフィルタは書けない
+    // XAudio2 のフィルタ Frequency は 2*sin(pi*fc/fs)。1.0（＝上限）が素通し。
+    const f32 fs   = static_cast<f32>(v.sampleRate > 0 ? v.sampleRate : 44100);
+    const f32 shut = audio::CutoffToFilterFrequency(kOccCutoffHz, fs);
+    const f32 freq = 1.0f + (shut - 1.0f) * occ;
+    if (std::fabs(freq - v.appliedFilter) > 1e-5f)
+    {
+        XAUDIO2_FILTER_PARAMETERS fp{};
+        fp.Type      = LowPassFilter;
+        fp.Frequency = freq;
+        fp.OneOverQ  = 1.0f;
+        v.src->SetFilterParameters(&fp);
+        v.appliedFilter = freq;
+    }
+}
+
+void AudioSystem::ComputeAndApply(Voice& v)
+{
+    if (!m_x3dReady || !v.src || !v.spatial) return;
+    IXAudio2Voice* dest = BusOutputVoice(v.bus);
+    if (!dest) return;
+
+    X3DAUDIO_EMITTER emitter{};
+    emitter.Position            = {v.pos[0], v.pos[1], v.pos[2]};
+    emitter.OrientFront         = {0.0f, 0.0f, 1.0f};
+    emitter.OrientTop           = {0.0f, 1.0f, 0.0f};
+    emitter.ChannelCount        = 1;
+    emitter.CurveDistanceScaler = (v.maxDist > 0.01f) ? v.maxDist : 1.0f;
+
+    // minDist までフル音量、maxDist で 0 になる線形カーブ（audio::DistanceGain と同じ）
+    float minR = (v.maxDist > 0.01f) ? (v.minDist / v.maxDist) : 0.0f;
+    minR = std::clamp(minR, 0.0f, 0.99f);
+    X3DAUDIO_DISTANCE_CURVE_POINT pts[3] = { {0.0f, 1.0f}, {minR, 1.0f}, {1.0f, 0.0f} };
+    X3DAUDIO_DISTANCE_CURVE curve{};
+    curve.pPoints    = pts;
+    curve.PointCount = 3;
+    emitter.pVolumeCurve = &curve;
+
+    float matrix[8] = {};
+    X3DAUDIO_DSP_SETTINGS dsp{};
+    dsp.SrcChannelCount     = 1;
+    dsp.DstChannelCount     = m_outChannels;
+    dsp.pMatrixCoefficients = matrix;
+
+    X3DAudioCalculate(m_x3d, &m_listener, &emitter, X3DAUDIO_CALCULATE_MATRIX, &dsp);
+    // ★送り先を明示する（null は「送り先が 1 本だけ」のときしか使えない）
+    v.src->SetOutputMatrix(dest, 1, m_outChannels, matrix);
+}
+
+bool AudioSystem::MakeReal(Voice& v, f64 startFrame)
+{
+    if (v.src) return true;
+    if (!m_xaudio2 || !m_masterVoice || !v.clip || v.totalFrames == 0) return false;
+
+    LARGE_INTEGER t0{}, t1{}, freq{};
+    QueryPerformanceCounter(&t0);
+
+    u64 begin = (startFrame > 0.0) ? static_cast<u64>(startFrame) : 0u;
+    if (begin >= v.totalFrames) begin = v.loop ? (begin % v.totalFrames) : v.totalFrames;
+    if (begin >= v.totalFrames) return false;   // ワンショットの末尾を過ぎている＝鳴らす物が無い
+
+    WAVEFORMATEX fmt = v.clip->GetFormat();
+    OneSend send(BusOutputVoice(v.bus));
+    // ★USEFILTER はボイス生成時にしか付けられない。遮蔽のローパスに要る。
+    const UINT32 flags = v.spatial ? XAUDIO2_VOICE_USEFILTER : 0u;
+    HRESULT hr = m_xaudio2->CreateSourceVoice(&v.src, &fmt, flags, XAUDIO2_DEFAULT_FREQ_RATIO,
+                                              nullptr, send.Get());
+    if (FAILED(hr))
+    {
+        Logger::Error("ソースボイス作成に失敗しました（{}）: 0x{:08X}", v.path, static_cast<u32>(hr));
+        v.src = nullptr;
+        return false;
+    }
+
+    XAUDIO2_BUFFER buffer{};
+    buffer.AudioBytes = v.clip->GetSizeInBytes();
+    buffer.pAudioData = v.clip->GetPCMData();
+    buffer.Flags      = XAUDIO2_END_OF_STREAM;
+    buffer.LoopCount  = v.loop ? XAUDIO2_LOOP_INFINITE : 0;
+    // 途中から鳴らす（仮想から戻る / シーク）。ループは末尾 → 先頭に戻る（LoopBegin=0, 全長）。
+    buffer.PlayBegin  = static_cast<UINT32>(begin);
+    hr = v.src->SubmitSourceBuffer(&buffer);
+    if (FAILED(hr))
+    {
+        Logger::Error("バッファ送信に失敗しました（{}）: 0x{:08X}", v.path, static_cast<u32>(hr));
+        v.src->DestroyVoice();
+        v.src = nullptr;
+        return false;
+    }
+
+    v.startFrame    = begin;
+    v.virtualPos    = static_cast<f64>(begin);
+    v.appliedVolume = -1.0f;
+    v.appliedFilter = -1.0f;
+    v.virtualReason = "";
+    v.src->SetFrequencyRatio(v.pitch);
+    ApplyVoiceGain(v);
+    ComputeAndApply(v);
+    if (!v.paused) v.src->Start();
+
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    m_voiceChurnMs += 1000.0 * static_cast<f64>(t1.QuadPart - t0.QuadPart) / static_cast<f64>(freq.QuadPart);
+    ++m_voiceChurnCount;
+    return true;
+}
+
+void AudioSystem::MakeVirtual(Voice& v, const char* reason)
+{
+    v.virtualReason = reason;
+    if (!v.src) return;
+    v.virtualPos = CurrentFrame(v);   // ★壊す前に位置を控える（戻ったときに続きから鳴らす）
+    LARGE_INTEGER t0{}, t1{}, freq{};
+    QueryPerformanceCounter(&t0);
+    v.src->DestroyVoice();
+    v.src = nullptr;
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    m_voiceChurnMs += 1000.0 * static_cast<f64>(t1.QuadPart - t0.QuadPart) / static_cast<f64>(freq.QuadPart);
+    ++m_voiceChurnCount;
+}
+
+void AudioSystem::FreeVoice(Voice& v)
+{
+    if (v.src)
+    {
+        v.src->DestroyVoice();
+        v.src = nullptr;
+    }
+    if (v.bgm)
+    {
+        const Voice* cur = Resolve(m_bgmId);
+        if (cur == &v)
+        {
+            m_bgmId = -1;
+            m_currentBGMPath.clear();
+        }
+    }
+    v.active = false;
+    v.clip.reset();
+    v.path.clear();
+    v.bgm = false;
+    v.paused = false;
+    v.stopAtFadeEnd = false;
+}
+
+i32 AudioSystem::AllocateSlot(i32 newPriority, f32 newAudibility)
+{
+    for (u32 i = 0; i < kMaxLogicalVoices; ++i)
+        if (!m_voices[i].active) return static_cast<i32>(i);
+
+    // 論理ボイスも満杯: 仮想ボイスから先に奪う（鳴っていない分だけ失うものが少ない）。
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        std::vector<audio::VoiceCandidate> c;
+        c.reserve(kMaxLogicalVoices);
+        for (u32 i = 0; i < kMaxLogicalVoices; ++i)
+        {
+            const Voice& v = m_voices[i];
+            if (v.bgm) continue;
+            if (pass == 0 && v.src) continue;
+            c.push_back({static_cast<int>(i), v.priority, v.audibility, v.order});
+        }
+        const int k = audio::PickVictim(c.data(), c.size(), newPriority, newAudibility);
+        if (k >= 0)
+        {
+            Voice& w = m_voices[static_cast<size_t>(c[static_cast<size_t>(k)].slot)];
+            FreeVoice(w);
+            return c[static_cast<size_t>(k)].slot;
+        }
+    }
+    return -1;
+}
+
+bool AudioSystem::HasRoomFor(const Voice& v, f32 margin, i32* victim)
+{
+    *victim = -1;
+    // 一番狭い（近い）上限を探す。バスの上限を奪って空ければ全体の枠も 1 つ空く。
+    i32 scope = -2;   // -2 = どこも溢れていない
+    for (i32 b = v.bus; b >= 0; b = m_buses[static_cast<size_t>(b)].parent)
+    {
+        const u32 lim = m_buses[static_cast<size_t>(b)].voiceLimit;
+        if (lim > 0 && CountReal(b) >= lim) { scope = b; break; }
+    }
+    if (scope == -2 && CountReal(-1) >= m_maxRealVoices) scope = -1;
+    if (scope == -2) return true;
+
+    std::vector<audio::VoiceCandidate> c;
+    c.reserve(64);
+    for (u32 i = 0; i < kMaxLogicalVoices; ++i)
+    {
+        const Voice& w = m_voices[i];
+        if (!w.active || !w.src || w.bgm || &w == &v) continue;
+        if (scope >= 0 && !BusInSubtree(w.bus, scope)) continue;
+        c.push_back({static_cast<int>(i), w.priority, w.audibility, w.order});
+    }
+    const int k = audio::PickVictim(c.data(), c.size(), v.priority, v.audibility, margin);
+    if (k >= 0) *victim = c[static_cast<size_t>(k)].slot;
+    return false;
+}
+
+i32 AudioSystem::Play(const PlayParams& p)
+{
+    return PlayInternal(p, false);
+}
+
+i32 AudioSystem::PlayInternal(const PlayParams& p, bool bgm)
+{
+    if (p.path.empty()) return -1;
+    auto clip = GetOrLoadClip(p.path, p.spatial);
+    if (!clip) return -1;
+    const WAVEFORMATEX& fmt = clip->GetFormat();
+    if (fmt.nBlockAlign == 0 || fmt.nSamplesPerSec == 0) return -1;
+
+    // 聞こえ具合を先に見積もる（論理ボイスが満杯のときの奪い合いに要る）
+    Voice probe;
+    probe.bus        = bgm ? FindBus("music") : ResolveBusOrSfx(p.bus);
+    probe.clipVolume = std::clamp(p.volume, 0.0f, 1.0f);
+    probe.spatial    = p.spatial;
+    probe.minDist    = p.minDistance;
+    probe.maxDist    = p.maxDistance;
+    probe.pos[0] = p.pos[0]; probe.pos[1] = p.pos[1]; probe.pos[2] = p.pos[2];
+    UpdateBusChainGains();
+    UpdateDistance(probe);
+    const f32 aud = ComputeAudibility(probe);
+    const i32 prio = bgm ? 256 : std::clamp(p.priority, 0, 255);
+
+    const i32 slot = AllocateSlot(prio, aud);
+    if (slot < 0)
+    {
+        if (!m_limitWarned)
+        {
+            m_limitWarned = true;
+            Logger::Warn("論理ボイス（{} 本）が全部こちらより大事な音で埋まっているため '{}' を鳴らしません"
+                         "（priority を上げるか、ループ音を stopVoice してください）", kMaxLogicalVoices, p.path);
+        }
+        return -1;
+    }
+
+    Voice& v = m_voices[static_cast<size_t>(slot)];
+    const u32 gen = (v.generation + 1u) & 0x7FFFFFu;
+    v = Voice{};
+    v.generation  = (gen == 0) ? 1u : gen;
+    v.active      = true;
+    v.order       = ++m_voiceOrder;
+    v.path        = p.path;
+    v.clip        = std::move(clip);
+    v.sampleRate  = fmt.nSamplesPerSec;
+    v.channels    = fmt.nChannels;
+    v.totalFrames = v.clip->GetSizeInBytes() / fmt.nBlockAlign;
+    v.bus         = probe.bus;
+    v.priority    = prio;
+    v.clipVolume  = probe.clipVolume;
+    v.pitch       = std::clamp(p.pitch, 0.05f, 2.0f);
+    v.loop        = p.loop;
+    v.spatial     = p.spatial;
+    v.bgm         = bgm;
+    v.minDist     = p.minDistance;
+    v.maxDist     = p.maxDistance;
+    v.pos[0] = p.pos[0]; v.pos[1] = p.pos[1]; v.pos[2] = p.pos[2];
+    v.distance    = probe.distance;
+    v.distGain    = probe.distGain;
+    v.audibility  = aud;
+    const i32 id = MakeId(static_cast<u32>(slot));
+
+    if (!IsDeviceReady())
+    {
+        v.virtualReason = "noDevice";   // 音は出ないが位置は進める＝状態は普段どおり追える
+        return id;
+    }
+    if (bgm)
+    {
+        if (!MakeReal(v, 0.0)) { FreeVoice(v); return -1; }
+        return id;
+    }
+    if (audio::NextVirtualState(false, aud))
+    {
+        v.virtualReason = "inaudible";  // 遠い / バスがミュート。近づいたら続きから鳴る
+        return id;
+    }
+    i32 victim = -1;
+    if (!HasRoomFor(v, 1.0f, &victim))
+    {
+        if (victim < 0)
+        {
+            if (v.loop) { v.virtualReason = "limit"; return id; }   // 枠が空いたら鳴り始める
+            if (!m_limitWarned)
+            {
+                m_limitWarned = true;
+                Logger::Warn("ボイス上限（全体 {} 本 / バスごとの上限）に達していて、鳴っている音が全部 "
+                             "'{}' より大事なので鳴らしません（以降このログは出しません）",
+                             m_maxRealVoices, p.path);
+            }
+            FreeVoice(v);
+            return -1;
+        }
+        Voice& w = m_voices[static_cast<size_t>(victim)];
+        if (w.loop) MakeVirtual(w, "stolen");   // ループ音は止めずに仮想へ（枠が空いたら戻る）
+        else        FreeVoice(w);
+    }
+    if (!MakeReal(v, 0.0)) { FreeVoice(v); return -1; }
+    return id;
 }
 
 // ===== BGM =====
 
 void AudioSystem::PlayBGM(const std::string& filePath, bool loop)
 {
-    if (!m_xaudio2) return;
+    if (Voice* cur = Resolve(m_bgmId)) FreeVoice(*cur);
+    m_bgmId = -1;
+    m_currentBGMPath.clear();
 
-    AudioClip* clip = GetOrLoadClip(filePath);
-    if (!clip) return;
-
-    // 既存BGMボイスを停止・破棄
-    if (m_bgmVoice)
-    {
-        m_bgmVoice->Stop();
-        m_bgmVoice->DestroyVoice();
-        m_bgmVoice = nullptr;
-    }
-
-    // 新しいソースボイス作成（送り先は music バス。音量はバス側で掛ける）
-    WAVEFORMATEX fmt = clip->GetFormat();
-    OneSend send(BusOutputVoice(FindBus("music")));
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&m_bgmVoice, &fmt, 0, XAUDIO2_DEFAULT_FREQ_RATIO,
-                                              nullptr, send.Get());
-    if (FAILED(hr))
-    {
-        Logger::Error("ソースボイス作成（BGM）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        m_bgmVoice = nullptr;
-        return;
-    }
-
-    // バッファ送信
-    XAUDIO2_BUFFER buffer{};
-    buffer.AudioBytes = clip->GetSizeInBytes();
-    buffer.pAudioData = clip->GetPCMData();
-    buffer.Flags      = XAUDIO2_END_OF_STREAM;
-    buffer.LoopCount  = loop ? XAUDIO2_LOOP_INFINITE : 0;
-
-    hr = m_bgmVoice->SubmitSourceBuffer(&buffer);
-    if (FAILED(hr))
-    {
-        Logger::Error("バッファ送信（BGM）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return;
-    }
-
-    m_bgmVoice->SetFrequencyRatio(1.0f);   // 前曲のスローモ演出を持ち越さない
-    m_bgmVoice->Start();
+    PlayParams p;
+    p.path = filePath;
+    p.loop = loop;
+    const i32 id = PlayInternal(p, true);
+    if (id < 0) return;
+    m_bgmId = id;
     m_currentBGMPath = filePath;
-    m_bgmLoop = loop;
-    m_bgmPlaying = true;
+    Logger::Info("BGM playing: {} (loop={}{})", filePath, loop, IsDeviceReady() ? "" : ", no device");
+}
 
-    Logger::Info("BGM playing: {} (loop={})", filePath, loop);
+bool AudioSystem::IsBGMPlaying() const
+{
+    const Voice* v = Resolve(m_bgmId);
+    return v && !v->paused;
+}
+
+void AudioSystem::RestartVoiceAt(Voice& v, f64 frame)
+{
+    if (v.src)
+    {
+        v.src->DestroyVoice();
+        v.src = nullptr;
+        if (!MakeReal(v, frame)) v.virtualPos = frame;
+    }
+    else
+    {
+        v.virtualPos = frame;
+    }
 }
 
 void AudioSystem::SeekBGM(f32 seconds)
 {
-    if (!m_bgmVoice || m_currentBGMPath.empty()) return;
-
-    AudioClip* clip = GetOrLoadClip(m_currentBGMPath);
-    if (!clip) return;
-
-    const WAVEFORMATEX& fmt = clip->GetFormat();
-    if (fmt.nBlockAlign == 0 || fmt.nSamplesPerSec == 0) return;
-
-    const u32 totalFrames = clip->GetSizeInBytes() / fmt.nBlockAlign;
-    if (totalFrames == 0) return;
-    u32 frame = static_cast<u32>(seconds * static_cast<f32>(fmt.nSamplesPerSec));
-    frame %= totalFrames;   // ループ範囲内に丸める(負は呼び出し側で扱わない)
-
-    m_bgmVoice->Stop();
-    m_bgmVoice->FlushSourceBuffers();
-
-    XAUDIO2_BUFFER buffer{};
-    buffer.AudioBytes = clip->GetSizeInBytes();
-    buffer.pAudioData = clip->GetPCMData();
-    buffer.Flags      = XAUDIO2_END_OF_STREAM;
-    buffer.LoopCount  = m_bgmLoop ? XAUDIO2_LOOP_INFINITE : 0;
-    buffer.PlayBegin  = frame;   // ここから再生(ループ時は末尾→先頭に戻る)
-
-    HRESULT hr = m_bgmVoice->SubmitSourceBuffer(&buffer);
-    if (FAILED(hr))
-    {
-        Logger::Error("バッファ送信（BGMシーク）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return;
-    }
-    m_bgmVoice->Start();
+    Voice* v = Resolve(m_bgmId);
+    if (!v || v->totalFrames == 0) return;
+    u64 frame = static_cast<u64>((std::max)(0.0f, seconds) * static_cast<f32>(v->sampleRate));
+    frame %= v->totalFrames;   // ループ範囲内に丸める(負は呼び出し側で扱わない)
+    RestartVoiceAt(*v, static_cast<f64>(frame));
 }
 
 void AudioSystem::SetBGMRate(f32 ratio)
 {
-    if (!m_bgmVoice) return;
+    Voice* v = Resolve(m_bgmId);
+    if (!v) return;
     // XAudio2 の既定 MaxFrequencyRatio は 2.0。下限は無音同然になる前に打ち切る
-    if (ratio < 0.05f) ratio = 0.05f;
-    if (ratio > 2.0f)  ratio = 2.0f;
-    m_bgmVoice->SetFrequencyRatio(ratio);
+    v->pitch = std::clamp(ratio, 0.05f, 2.0f);
+    if (v->src) v->src->SetFrequencyRatio(v->pitch);
 }
 
 void AudioSystem::StopBGM()
 {
-    if (m_bgmVoice)
-    {
-        m_bgmVoice->Stop();
-        m_bgmVoice->FlushSourceBuffers();
-    }
+    if (Voice* v = Resolve(m_bgmId)) FreeVoice(*v);
+    m_bgmId = -1;
     m_currentBGMPath.clear();
-    m_bgmPlaying = false;
 }
 
 void AudioSystem::PauseBGM()
 {
-    if (m_bgmVoice)
-        m_bgmVoice->Stop();
-    m_bgmPlaying = false;
+    Voice* v = Resolve(m_bgmId);
+    if (!v) return;
+    v->paused = true;
+    if (v->src) v->src->Stop();
 }
 
 void AudioSystem::ResumeBGM()
 {
-    if (m_bgmVoice)
-    { m_bgmVoice->Start(); m_bgmPlaying = true; }
+    Voice* v = Resolve(m_bgmId);
+    if (!v) return;
+    v->paused = false;
+    if (v->src) v->src->Start();
 }
 
 // ===== SFX =====
@@ -438,150 +812,81 @@ void AudioSystem::PlaySFX(const std::string& filePath, bool loop, float volume, 
     PlaySFXTracked(filePath, loop, volume, bus);
 }
 
-// ★中身は元の PlaySFX そのままで、最後にスロット ID を返すだけ。
-//   ループ再生した環境音を後から止める・絞る・回転を落とす、が ID 無しでは書けなかった。
 i32 AudioSystem::PlaySFXTracked(const std::string& filePath, bool loop, float volume,
-                                const std::string& bus)
+                                const std::string& bus, i32 priority)
 {
-    if (!m_xaudio2 || !m_masterVoice) return -1;
-    const i32 busIndex = ResolveBusOrSfx(bus);
-
-    AudioClip* clip = GetOrLoadClip(filePath);
-    if (!clip) return -1;
-
-    // 空きスロットを探す
-    i32 freeSlot = -1;
-    for (u32 i = 0; i < kMaxSFXVoices; ++i)
-    {
-        if (!m_sfxSlots[i].voice)
-        {
-            freeSlot = static_cast<i32>(i);
-            break;
-        }
-
-        // 再生終了チェック
-        XAUDIO2_VOICE_STATE state{};
-        m_sfxSlots[i].voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-        if (state.BuffersQueued == 0)
-        {
-            freeSlot = static_cast<i32>(i);
-            break;
-        }
-    }
-
-    // 空きがなければ一番古いスロットを奪う。
-    // ★以前は無条件に 0 番だった。ループ再生の SE（環境音など）は BuffersQueued が
-    //   永久に 0 にならずスロットを占有し続けるので、混み合うと**新しい音が全部 0 番へ
-    //   集中して互いを切り合い、1 つしか聞こえないうえ鳴り直し続ける**。
-    //   ラウンドロビンなら少なくとも 16 個ぶんは分散する。ログも 1 度だけ出して、
-    //   「音が鳴らない/途切れる」の原因に気づけるようにする。
-    if (freeSlot < 0)
-    {
-        freeSlot = static_cast<i32>(m_sfxStealCursor % kMaxSFXVoices);
-        m_sfxStealCursor = (m_sfxStealCursor + 1) % kMaxSFXVoices;
-        if (!m_sfxStealWarned)
-        {
-            m_sfxStealWarned = true;
-            Logger::Warn("SE の同時発音数が上限({})に達しました。以降は古い音を止めて鳴らします"
-                         "（ループ再生の SE はスロットを占有し続けるので、"
-                         "使い終わったら stopAllSFX するか loop=false にしてください）",
-                         kMaxSFXVoices);
-        }
-    }
-
-    auto& slot = m_sfxSlots[freeSlot];
-
-    // 既存ボイスを破棄して再作成（フォーマットが違う可能性）
-    if (slot.voice)
-    {
-        slot.voice->Stop();
-        slot.voice->DestroyVoice();
-        slot.voice = nullptr;
-    }
-
-    WAVEFORMATEX fmt = clip->GetFormat();
-    OneSend send(BusOutputVoice(busIndex));
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt, 0, XAUDIO2_DEFAULT_FREQ_RATIO,
-                                              nullptr, send.Get());
-    if (FAILED(hr))
-    {
-        Logger::Error("ソースボイス作成（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        slot.voice = nullptr;
-        return -1;
-    }
-
-    slot.bus        = busIndex;
-    slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
-    slot.voice->SetVolume(slot.clipVolume);   // バス音量はバス側で掛かる
-
-    XAUDIO2_BUFFER buffer{};
-    buffer.AudioBytes = clip->GetSizeInBytes();
-    buffer.pAudioData = clip->GetPCMData();
-    buffer.Flags      = XAUDIO2_END_OF_STREAM;
-    buffer.LoopCount  = loop ? XAUDIO2_LOOP_INFINITE : 0;
-
-    hr = slot.voice->SubmitSourceBuffer(&buffer);
-    if (FAILED(hr))
-    {
-        Logger::Error("バッファ送信（SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return -1;
-    }
-
-    slot.spatial = false;  // 非空間
-    slot.voice->Start();
-    ++slot.generation;
-    return static_cast<i32>((slot.generation << 8) | static_cast<u32>(freeSlot));
+    PlayParams p;
+    p.path     = filePath;
+    p.loop     = loop;
+    p.volume   = volume;
+    p.bus      = bus;
+    p.priority = priority;
+    return Play(p);
 }
 
-// ===== 鳴っている 1 本を掴んで操作する =====
-// ★ID は (generation<<8)|index。スロットが別の音へ使い回されていたら世代が食い違うので、
-//   古い ID で新しい音を止めてしまう事故が起きない。
-AudioSystem::SFXSlot* AudioSystem::ResolveVoice(i32 slotId)
+i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
+                                float minDistance, float maxDistance, float volume, bool loop,
+                                const std::string& bus, i32 priority)
 {
-    if (slotId < 0) return nullptr;
-    const u32 index = static_cast<u32>(slotId) & 0xFFu;
-    const u32 gen   = static_cast<u32>(slotId) >> 8;
-    if (index >= kMaxSFXVoices) return nullptr;
-    auto& slot = m_sfxSlots[index];
-    if (!slot.voice || slot.generation != gen) return nullptr;
-    return &slot;
+    PlayParams p;
+    p.path        = filePath;
+    p.loop        = loop;
+    p.volume      = volume;
+    p.bus         = bus;
+    p.priority    = priority;
+    p.spatial     = true;
+    p.pos[0] = x; p.pos[1] = y; p.pos[2] = z;
+    p.minDistance = minDistance;
+    p.maxDistance = maxDistance;
+    return Play(p);
 }
 
-void AudioSystem::StopVoice(i32 slotId)
+void AudioSystem::StopVoice(i32 slotId, f32 fadeSec)
 {
-    SFXSlot* slot = ResolveVoice(slotId);
-    if (!slot) return;
-    slot->voice->Stop();
-    slot->voice->FlushSourceBuffers();   // ループ中でもこれで確実に止まる
+    Voice* v = Resolve(slotId);
+    if (!v) return;
+    if (fadeSec > 0.0f)
+    {
+        v->fadeTarget    = 0.0f;
+        v->fadeSpeed     = (std::max)(v->fade, 0.001f) / fadeSec;
+        v->stopAtFadeEnd = true;
+        return;
+    }
+    FreeVoice(*v);
 }
 
 void AudioSystem::SetVoiceVolume(i32 slotId, float volume)
 {
-    SFXSlot* slot = ResolveVoice(slotId);
-    if (!slot) return;
-    slot->clipVolume = std::clamp(volume, 0.0f, 1.0f);
-    // 空間音は遮蔽込みの音量を ApplyOcclusion が毎フレーム掛け直すので、そちらに任せる。
-    if (!slot->spatial) slot->voice->SetVolume(slot->clipVolume);
+    Voice* v = Resolve(slotId);
+    if (!v) return;
+    v->clipVolume = std::clamp(volume, 0.0f, 1.0f);
+    ApplyVoiceGain(*v);
 }
 
 void AudioSystem::SetVoicePitch(i32 slotId, float ratio)
 {
-    SFXSlot* slot = ResolveVoice(slotId);
-    if (!slot) return;
-    slot->voice->SetFrequencyRatio(std::clamp(ratio, 0.1f, 2.0f));
+    Voice* v = Resolve(slotId);
+    if (!v) return;
+    v->pitch = std::clamp(ratio, 0.1f, 2.0f);
+    if (v->src) v->src->SetFrequencyRatio(v->pitch);
+}
+
+void AudioSystem::SetVoicePriority(i32 slotId, i32 priority)
+{
+    Voice* v = Resolve(slotId);
+    if (!v || v->bgm) return;
+    v->priority = std::clamp(priority, 0, 255);
 }
 
 bool AudioSystem::IsVoicePlaying(i32 slotId) const
 {
-    if (slotId < 0) return false;
-    const u32 index = static_cast<u32>(slotId) & 0xFFu;
-    const u32 gen   = static_cast<u32>(slotId) >> 8;
-    if (index >= kMaxSFXVoices) return false;
-    const auto& slot = m_sfxSlots[index];
-    if (!slot.voice || slot.generation != gen) return false;
-    XAUDIO2_VOICE_STATE state{};
-    slot.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-    return state.BuffersQueued > 0;
+    return Resolve(slotId) != nullptr;
+}
+
+void AudioSystem::StopAllSFX()
+{
+    for (auto& v : m_voices)
+        if (v.active && !v.bgm) FreeVoice(v);
 }
 
 // ===== 3D 空間オーディオ =====
@@ -606,68 +911,11 @@ void AudioSystem::SetListenerPos(float x, float y, float z)
     m_lopX = x; m_lopY = y; m_lopZ = z;
 }
 
-void AudioSystem::ComputeAndApply(SFXSlot& slot)
-{
-    if (!m_x3dReady || !slot.voice) return;
-
-    X3DAUDIO_EMITTER emitter{};
-    emitter.Position            = {slot.emitterPos[0], slot.emitterPos[1], slot.emitterPos[2]};
-    emitter.OrientFront         = {0.0f, 0.0f, 1.0f};
-    emitter.OrientTop           = {0.0f, 1.0f, 0.0f};
-    emitter.ChannelCount        = 1;
-    emitter.CurveDistanceScaler = (slot.maxDist > 0.01f) ? slot.maxDist : 1.0f;
-
-    // minDist までフル音量、maxDist で 0 になる線形カーブ
-    float minR = (slot.maxDist > 0.01f) ? (slot.minDist / slot.maxDist) : 0.0f;
-    minR = std::clamp(minR, 0.0f, 0.99f);
-    X3DAUDIO_DISTANCE_CURVE_POINT pts[3] = { {0.0f, 1.0f}, {minR, 1.0f}, {1.0f, 0.0f} };
-    X3DAUDIO_DISTANCE_CURVE curve{};
-    curve.pPoints    = pts;
-    curve.PointCount = 3;
-    emitter.pVolumeCurve = &curve;
-
-    float matrix[8] = {};
-    X3DAUDIO_DSP_SETTINGS dsp{};
-    dsp.SrcChannelCount     = 1;
-    dsp.DstChannelCount     = m_outChannels;
-    dsp.pMatrixCoefficients = matrix;
-
-    X3DAudioCalculate(m_x3d, &m_listener, &emitter, X3DAUDIO_CALCULATE_MATRIX, &dsp);
-    slot.voice->SetOutputMatrix(nullptr, 1, m_outChannels, matrix);
-}
-
-// 遮蔽の効き。壁越しは「高域が落ちて音量も下がる」。数値は完全に趣味の範囲。
-static constexpr float kOccVolumeDrop = 0.65f;    // 全遮蔽で音量 -65%
-static constexpr float kOccCutoffHz   = 420.0f;   // 全遮蔽時のローパス
-static constexpr float kOccSmooth     = 8.0f;     // 1/s。時定数 ~0.12s
-
-void AudioSystem::ApplyOcclusion(SFXSlot& slot)
-{
-    if (!slot.voice) return;
-    const float occ = std::clamp(slot.occ, 0.0f, 1.0f);
-    slot.voice->SetVolume(slot.clipVolume * (1.0f - kOccVolumeDrop * occ));
-
-    // XAudio2 のフィルタ Frequency は 2*sin(pi*fc/fs)。1.0（＝上限）が素通し。
-    const float fs   = static_cast<float>(slot.sampleRate > 0 ? slot.sampleRate : 44100);
-    const float shut = std::clamp(2.0f * std::sin(3.14159265f * kOccCutoffHz / fs),
-                                  0.0f, XAUDIO2_MAX_FILTER_FREQUENCY);
-    XAUDIO2_FILTER_PARAMETERS fp{};
-    fp.Type      = LowPassFilter;
-    fp.Frequency = XAUDIO2_MAX_FILTER_FREQUENCY + (shut - XAUDIO2_MAX_FILTER_FREQUENCY) * occ;
-    fp.OneOverQ  = 1.0f;
-    slot.voice->SetFilterParameters(&fp);
-}
-
 void AudioSystem::SetOcclusion(i32 slotId, float amount)
 {
-    if (slotId < 0) return;
-    const u32 index = static_cast<u32>(slotId) & 0xFFu;
-    const u32 gen   = static_cast<u32>(slotId) >> 8;
-    if (index >= kMaxSFXVoices) return;
-    auto& slot = m_sfxSlots[index];
-    if (!slot.voice || !slot.spatial) return;
-    if (slot.generation != gen) return;   // 使い回された後のスロット。触らない
-    slot.occTarget = std::clamp(amount, 0.0f, 1.0f);
+    Voice* v = Resolve(slotId);
+    if (!v || !v->spatial) return;   // 世代違い（使い回された後のスロット）は触らない
+    v->occTarget = std::clamp(amount, 0.0f, 1.0f);
 }
 
 void AudioSystem::GetListenerPos(float& x, float& y, float& z) const
@@ -677,128 +925,189 @@ void AudioSystem::GetListenerPos(float& x, float& y, float& z) const
     z = m_listener.Position.z;
 }
 
-i32 AudioSystem::PlaySFXSpatial(const std::string& filePath, float x, float y, float z,
-                                float minDistance, float maxDistance, float volume, bool loop,
-                                const std::string& bus)
-{
-    if (!m_xaudio2 || !m_masterVoice) return -1;
-    const i32 busIndex = ResolveBusOrSfx(bus);
-
-    AudioClip* clip = GetOrLoadClip(filePath);
-    if (!clip) return -1;
-
-    // ステレオ素材は自動でモノにダウンミックスして空間化(キャッシュごと変換、次回からはモノ)
-    if (clip->GetFormat().nChannels != 1)
-    {
-        Logger::Info("PlaySFXSpatial: '{}' をモノにダウンミックスして空間再生します", filePath);
-        clip->DownmixToMono();
-    }
-
-    // 空きスロット探索（PlaySFX と同じ方針）
-    i32 freeSlot = -1;
-    for (u32 i = 0; i < kMaxSFXVoices; ++i)
-    {
-        if (!m_sfxSlots[i].voice) { freeSlot = static_cast<i32>(i); break; }
-        XAUDIO2_VOICE_STATE state{};
-        m_sfxSlots[i].voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-        if (state.BuffersQueued == 0) { freeSlot = static_cast<i32>(i); break; }
-    }
-    if (freeSlot < 0) freeSlot = 0;
-
-    auto& slot = m_sfxSlots[freeSlot];
-    if (slot.voice)
-    {
-        slot.voice->Stop();
-        slot.voice->DestroyVoice();
-        slot.voice = nullptr;
-    }
-
-    WAVEFORMATEX fmt = clip->GetFormat();
-    // ★USEFILTER はボイス生成時にしか付けられない。遮蔽のローパスに要る。
-    OneSend send(BusOutputVoice(busIndex));
-    HRESULT hr = m_xaudio2->CreateSourceVoice(&slot.voice, &fmt, XAUDIO2_VOICE_USEFILTER,
-                                              XAUDIO2_DEFAULT_FREQ_RATIO, nullptr, send.Get());
-    if (FAILED(hr))
-    {
-        Logger::Error("ソースボイス作成（空間SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        slot.voice = nullptr;
-        return -1;
-    }
-
-    slot.bus            = busIndex;
-    slot.sampleRate     = fmt.nSamplesPerSec;
-    slot.occ            = 0.0f;
-    slot.occTarget      = 0.0f;
-    slot.spatial        = true;
-    slot.minDist        = minDistance;
-    slot.maxDist        = maxDistance;
-    slot.emitterPos[0]  = x;
-    slot.emitterPos[1]  = y;
-    slot.emitterPos[2]  = z;
-    slot.clipVolume = std::clamp(volume, 0.0f, 1.0f);
-    slot.voice->SetVolume(slot.clipVolume);
-
-    XAUDIO2_BUFFER buffer{};
-    buffer.AudioBytes = clip->GetSizeInBytes();
-    buffer.pAudioData = clip->GetPCMData();
-    buffer.Flags      = XAUDIO2_END_OF_STREAM;
-    buffer.LoopCount  = loop ? XAUDIO2_LOOP_INFINITE : 0;
-    hr = slot.voice->SubmitSourceBuffer(&buffer);
-    if (FAILED(hr))
-    {
-        Logger::Error("バッファ送信（空間SFX）に失敗しました: 0x{:08X}", static_cast<u32>(hr));
-        return -1;
-    }
-
-    ComputeAndApply(slot);
-    slot.voice->Start();
-    // 世代を進めて (generation<<8)|index を返す。呼び出し側はこれをそのまま持ち、
-    // UpdateSpatialEmitter へ渡す。スロットが別の音に使い回されたら世代が食い違って弾かれる。
-    ++slot.generation;
-    return static_cast<i32>((slot.generation << 8) | static_cast<u32>(freeSlot));
-}
-
 void AudioSystem::UpdateSpatialEmitter(i32 slotId, float x, float y, float z)
 {
-    if (slotId < 0) return;
-    const u32 index = static_cast<u32>(slotId) & 0xFFu;
-    const u32 gen   = static_cast<u32>(slotId) >> 8;
-    if (index >= kMaxSFXVoices) return;
-    auto& slot = m_sfxSlots[index];
-    if (!slot.voice || !slot.spatial) return;
+    Voice* v = Resolve(slotId);
     // ★世代が違う＝このスロットは既に別の音へ使い回されている。触らない。
-    if (slot.generation != gen) return;
-    slot.emitterPos[0] = x;
-    slot.emitterPos[1] = y;
-    slot.emitterPos[2] = z;
+    if (!v || !v->spatial) return;
+    v->pos[0] = x;
+    v->pos[1] = y;
+    v->pos[2] = z;
 }
 
 void AudioSystem::Update(f32 dt)
 {
-    if (!m_x3dReady) return;
     const float k = std::clamp(dt * kOccSmooth, 0.0f, 1.0f);
-    for (auto& slot : m_sfxSlots)
+    for (auto& v : m_voices)
     {
-        if (!slot.voice || !slot.spatial) continue;
-        XAUDIO2_VOICE_STATE state{};
-        slot.voice->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-        if (state.BuffersQueued == 0) { slot.spatial = false; continue; }
-        ComputeAndApply(slot);
-        slot.occ += (slot.occTarget - slot.occ) * k;
-        ApplyOcclusion(slot);
+        if (!v.active || !v.spatial) continue;
+        v.occ += (v.occTarget - v.occ) * k;
+        UpdateDistance(v);
+        ComputeAndApply(v);
     }
 }
 
-void AudioSystem::StopAllSFX()
+void AudioSystem::Tick(f32 dt)
 {
-    for (auto& slot : m_sfxSlots)
+    if (dt < 0.0f) dt = 0.0f;
+    UpdateBusChainGains();
+
+    // 1) 終了検出・仮想ボイスの位置送り・フェード
+    for (auto& v : m_voices)
     {
-        if (slot.voice)
+        if (!v.active) continue;
+        if (v.src)
         {
-            slot.voice->Stop();
-            slot.voice->FlushSourceBuffers();
+            XAUDIO2_VOICE_STATE st{};
+            v.src->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+            if (st.BuffersQueued == 0 && !v.paused) { FreeVoice(v); continue; }
         }
+        else if (!v.paused && v.totalFrames > 0)
+        {
+            v.virtualPos += static_cast<f64>(dt) * v.sampleRate * v.pitch;
+            if (v.virtualPos >= static_cast<f64>(v.totalFrames))
+            {
+                if (!v.loop) { FreeVoice(v); continue; }
+                v.virtualPos = std::fmod(v.virtualPos, static_cast<f64>(v.totalFrames));
+            }
+        }
+        if (v.fadeSpeed > 0.0f)
+        {
+            const f32 step = v.fadeSpeed * dt;
+            if (v.fade < v.fadeTarget) v.fade = (std::min)(v.fade + step, v.fadeTarget);
+            else                       v.fade = (std::max)(v.fade - step, v.fadeTarget);
+            if (v.fade == v.fadeTarget)
+            {
+                v.fadeSpeed = 0.0f;
+                if (v.stopAtFadeEnd && v.fade <= 0.0f) { FreeVoice(v); continue; }
+            }
+        }
+        v.audibility = ComputeAudibility(v);
     }
+
+    if (!IsDeviceReady()) return;
+
+    // 2) 実 → 仮想: 聞こえなくなった音はボイスを手放す（BGM は対象外）
+    for (auto& v : m_voices)
+        if (v.active && v.src && !v.bgm && audio::NextVirtualState(false, v.audibility))
+            MakeVirtual(v, "inaudible");
+
+    // 3) 仮想 → 実: 聞こえるようになった音を、大事な順に 1 フレーム最大 4 本まで戻す
+    //   （一度に大量に作ると 1 フレームだけ重くなる。4 本/フレームでも 60fps なら 0.25 秒で 60 本）
+    std::vector<u32> wake;
+    for (u32 i = 0; i < kMaxLogicalVoices; ++i)
+    {
+        const Voice& v = m_voices[i];
+        if (v.active && !v.src && !v.paused && !audio::NextVirtualState(true, v.audibility))
+            wake.push_back(i);
+    }
+    std::sort(wake.begin(), wake.end(), [&](u32 a, u32 b) {
+        const Voice& va = m_voices[a];
+        const Voice& vb = m_voices[b];
+        if (va.priority != vb.priority) return va.priority > vb.priority;
+        return va.audibility > vb.audibility;
+    });
+    int budget = 4;
+    for (u32 i : wake)
+    {
+        if (budget <= 0) break;
+        Voice& v = m_voices[i];
+        if (!v.active || v.src) continue;   // 上で奪われた等
+        i32 victim = -1;
+        // ★同じ優先度で奪い返すには 2 倍大きく聞こえている必要がある（奪い合いのちらつき防止）
+        if (!v.bgm && !HasRoomFor(v, 2.0f, &victim))
+        {
+            if (victim < 0) { v.virtualReason = "limit"; continue; }
+            Voice& w = m_voices[static_cast<size_t>(victim)];
+            if (w.loop) MakeVirtual(w, "stolen");
+            else        FreeVoice(w);
+        }
+        MakeReal(v, v.virtualPos);
+        --budget;
+    }
+
+    // 4) 実ボイスへ音量・遮蔽を反映（値が変わったときだけ XAudio2 を呼ぶ）
+    for (auto& v : m_voices)
+        if (v.active && v.src) ApplyVoiceGain(v);
+}
+
+// ===== ボイス上限 / 読み出し =====
+
+void AudioSystem::SetMaxVoices(u32 n)
+{
+    m_maxRealVoices = std::clamp<u32>(n, 1u, kMaxLogicalVoices);
+    // 減らした分は次の Tick で順に仮想へ落ちるのではなく、今ここで弱い順に落とす
+    while (CountReal(-1) > m_maxRealVoices)
+    {
+        std::vector<audio::VoiceCandidate> c;
+        for (u32 i = 0; i < kMaxLogicalVoices; ++i)
+        {
+            const Voice& w = m_voices[i];
+            if (w.active && w.src && !w.bgm)
+                c.push_back({static_cast<int>(i), w.priority, w.audibility, w.order});
+        }
+        const int k = audio::PickVictim(c.data(), c.size(), 1 << 20, 1e9f);
+        if (k < 0) break;
+        Voice& w = m_voices[static_cast<size_t>(c[static_cast<size_t>(k)].slot)];
+        if (w.loop) MakeVirtual(w, "limit");
+        else        FreeVoice(w);
+    }
+}
+
+void AudioSystem::SetBusVoiceLimit(const std::string& bus, u32 n)
+{
+    const i32 i = FindBus(bus);
+    if (i < 0) { Logger::Warn("setBusVoiceLimit: バス '{}' がありません", bus); return; }
+    m_buses[static_cast<size_t>(i)].voiceLimit = (std::min)(n, kMaxLogicalVoices);
+}
+
+u32 AudioSystem::GetBusVoiceLimit(const std::string& bus) const
+{
+    const i32 i = FindBus(bus);
+    return (i < 0) ? 0u : m_buses[static_cast<size_t>(i)].voiceLimit;
+}
+
+void AudioSystem::GetVoiceCounts(u32& real, u32& virt) const
+{
+    real = virt = 0;
+    for (const auto& v : m_voices)
+    {
+        if (!v.active) continue;
+        if (v.src) ++real; else ++virt;
+    }
+}
+
+std::vector<AudioSystem::VoiceInfo> AudioSystem::GetVoices() const
+{
+    std::vector<VoiceInfo> out;
+    for (u32 i = 0; i < kMaxLogicalVoices; ++i)
+    {
+        const Voice& v = m_voices[i];
+        if (!v.active) continue;
+        VoiceInfo vi;
+        vi.id           = MakeId(i);
+        vi.path         = v.path;
+        vi.bus          = (v.bus >= 0) ? m_buses[static_cast<size_t>(v.bus)].name : std::string();
+        vi.priority     = v.priority;
+        vi.volume       = v.clipVolume;
+        vi.fade         = v.fade;
+        vi.pitch        = v.pitch;
+        vi.audibility   = v.audibility;
+        vi.spatial      = v.spatial;
+        vi.distance     = v.distance;
+        vi.distanceGain = v.distGain;
+        vi.occlusion    = v.occ;
+        vi.loop         = v.loop;
+        vi.isVirtual    = (v.src == nullptr);
+        vi.virtualReason = vi.isVirtual ? v.virtualReason : "";
+        vi.bgm          = v.bgm;
+        vi.paused       = v.paused;
+        const f32 sr    = static_cast<f32>(v.sampleRate > 0 ? v.sampleRate : 44100);
+        vi.positionSec  = static_cast<f32>(CurrentFrame(v)) / sr;
+        vi.lengthSec    = static_cast<f32>(v.totalFrames) / sr;
+        out.push_back(std::move(vi));
+    }
+    return out;
 }
 
 // ===== バス（サブミックス）=====
@@ -986,7 +1295,15 @@ std::vector<AudioSystem::BusInfo> AudioSystem::GetBuses() const
         bi.snapshotGain    = b.snap.gain;
         bi.snapshotLowpass = b.snap.lowpassHz;
         bi.effectiveGain   = BusEffectiveGain(b);
+        bi.chainGain       = b.chainGain;
+        bi.voiceLimit      = b.voiceLimit;
         bi.builtin         = b.builtin;
+        const i32 self = static_cast<i32>(&b - m_buses.data());
+        for (const auto& v : m_voices)
+        {
+            if (!v.active || !BusInSubtree(v.bus, self)) continue;
+            if (v.src) ++bi.realVoices; else ++bi.virtualVoices;
+        }
         out.push_back(std::move(bi));
     }
     return out;
