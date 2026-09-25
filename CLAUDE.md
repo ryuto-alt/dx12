@@ -94,6 +94,17 @@ cmake --build build/debug --config Debug
 build/debug/Debug/DX12Engine.exe
 ```
 
+### ★コマンドラインからビルドするときは `chcp 65001` を先頭に
+PowerShell / Git Bash から vcvars 経由で建てるときは必ずこう書く:
+```
+cmd /c 'chcp 65001 >nul && "C:\Program Files\Microsoft Visual Studio8\Community\VC\Auxiliary\Buildcvars64.bat" >nul && cmake --build build/release'
+```
+`chcp 65001` が無いと `cl /showIncludes` の「メモ: インクルード ファイル:」が **CP932** で出て、
+CMake が UTF-8 で書いた `msvc_deps_prefix` と一致せず、ninja が依存を 1 つも記録しない（`#deps 0`）。
+するとヘッダを変えても .obj が再コンパイルされず、`sizeof(Application)` が TU ごとに食い違って
+起動直後に落ちる（2026-07-30 と 2026-09-25 に実際に起きた）。確認は
+`ninja -C build/release -t deps | grep '#deps 0'`、出た .obj は消して建て直す。
+
 ### プロファイリング（Tracy）
 CPU のどこで時間を食っているかを**フレーム単位の時系列**で見る。
 `dx12_perf_stats` は「N フレーム平均を 8 スロットに畳んだ数値」で、Update の中身
