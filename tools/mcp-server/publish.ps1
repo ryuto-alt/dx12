@@ -32,6 +32,17 @@ foreach ($f in $files) {
 }
 Write-Host ("同期対象: " + ($files.Name -join ", "))
 
+# サブフォルダ(jev/ など)も丸ごとミラーする。index.ts が ./jev/*.ts を import していて、
+# 直下のファイルだけ写すと配布版が起動しない。node_modules / .git / 実行時に書かれる .dx12 は除外。
+# 配布側で消えたファイルが残らないよう、フォルダ単位で消してから写し直す。
+$dirs = Get-ChildItem $here -Directory -Force | Where-Object { $_.Name -notin "node_modules", ".git", ".dx12" }
+foreach ($d in $dirs) {
+  $dest = Join-Path $work $d.Name
+  if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
+  Copy-Item $d.FullName -Destination $dest -Recurse -Force
+}
+if ($dirs) { Write-Host ("同期フォルダ: " + ($dirs.Name -join ", ")) }
+
 git -C $work add -A
 if (git -C $work status --porcelain) {
   git -C $work commit -m $Message

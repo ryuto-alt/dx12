@@ -52,6 +52,12 @@ target_sources(Editor PRIVATE
     panels/SculptPanel.cpp
 )
 
+# オーディオミキサー窓（バスのメーター/フェーダー・スナップショット・鳴っている音）。
+# 上と同じ理由で target_sources の末尾追記にしている。
+target_sources(Editor PRIVATE
+    panels/AudioMixerPanel.cpp
+)
+
 # トランジション専用プレビュー窓（架空のゲーム画面 2 枚 + プリセット全件のサムネイルアトラス）。
 # 上と同じ理由で target_sources の末尾追記にしている。
 target_sources(Editor PRIVATE

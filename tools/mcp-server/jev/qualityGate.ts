@@ -25,7 +25,7 @@
 //
 // ★検査を足す口: GATE_CHECKS(下の配列)。検査は { id, title, enabled(opts), run(ctx) } で、run は
 //   ルールの結論(items)と、聞くなら judges[{plan, interpret}] を返す。知覚層(perceive)の読みやすさの検査も
-//   ここへ 1 つ足すだけで、束ね・合否・keep・uncertain の組み立てはゲートがやる。
+//   ここへ 1 つ足すだけで、束ね・合否・keep・uncertain の組み立てはゲートがやる(読みやすさの検査 READABILITY_CHECK がその例)。
 
 import fs from "node:fs";
 import path from "node:path";
@@ -40,6 +40,7 @@ import { UI_LOOK, interpretUi, planUi } from "./uiJudge.ts";
 import { collectLayoutContext, interpretLayout, planLayout, type LayoutIssue } from "./layoutJudge.ts";
 import { interpretPolish, planPolish } from "./polishJudge.ts";
 import { eventsFromSteps, interpretPlay, planPlay, pointsFromTrace } from "./playJudge.ts";
+import { READ_PROBLEMS, interpretRead, planRead, ruleProblem, wordifyRead, type ReadViewpoint } from "./readJudge.ts";
 import { JEV_RULES } from "./rules.ts";
 import type { Brief } from "./brief.ts";
 
@@ -108,6 +109,11 @@ export type GateOptions = {
   playtests?: boolean | string[];
   /** false で Jev を使わない(ルールだけ)。 */
   judge?: boolean;
+  /**
+   * 読みやすさの検査(知覚層 perceive)。視点(焦点)と対象を渡したときだけ走る(最大 4 視点)。
+   * 例 [{label:"継ぎ目6 の焦点", camera:{position:[14,5.1,122], target:[14,5,126], fovDeg:72}, targets:[{name:"C6_p0", role:"見つけてほしい破片"}]}]
+   */
+  readability?: ReadViewpoint[];
   /** "perDomain"(既定)= 検査ごとの state で並列に聞く / "one" = 全質問を 1 リクエストに束ねる(精度が落ちる。上の解説)。 */
   bundle?: "one" | "perDomain";
 };
@@ -403,8 +409,74 @@ export const PLAYTEST_CHECK: GateCheck = {
   },
 };
 
+export const MAX_READ_VIEWPOINTS = 4;
+
+/**
+ * (f) 読みやすさ(知覚層)+ 判断段。視点(焦点)ごとに perceive を 1 回撃ち、対象ごとに
+ * 「初見で数秒のうちに気づいて何か読めるか」(read.noticeable)と主な原因(read.main_problem)を聞く。
+ * ★壊れているわけではないので blocking にしない。気づけない対象は suggestions で名指しし、原因と直し方を添える。
+ *   ルールの印(暗い・小さい・遮られている…)が付いたのに Jev が「気づける」と言ったものは keep に残す。
+ */
+export const READABILITY_CHECK: GateCheck = {
+  id: "readability",
+  title: "読みやすさ(知覚層 perceive)+ 判断段",
+  enabled: (o) => Array.isArray(o.readability) && o.readability.length > 0,
+  async run(ctx) {
+    const vps = (ctx.opts.readability ?? []).slice(0, MAX_READ_VIEWPOINTS);
+    if (vps.length === 0) return { skipped: "視点(readability)が指定されていない", items: [] };
+    const items: GateItem[] = [];
+    const suggestions: GateSuggestion[] = [];
+    const judges: JudgeUnit[] = [];
+    const summary: Record<string, unknown>[] = [];
+    for (const vp of vps) {
+      const names = vp.targets.map((t) => (typeof t === "string" ? t : t.name));
+      const raw = await ctx.call("perceive", { ...(vp.camera ? { camera: vp.camera } : {}), targets: names, top: 3 });
+      const w = wordifyRead(raw, vp);
+      const base = items.length;
+      // ルールの印(Brief を見ない)。読みにくいと言った対象だけ item にする(keep の対象)。
+      w.read.targets.forEach((t, i) => {
+        const p = ruleProblem(t);
+        if (p === "fine") return;
+        const name = w.refs[i].name;
+        items.push({ check: "readability", code: "READ_HARD", level: "warning", blocking: false, name,
+                     text: `${vp.label ?? "視点"}: ${name}${w.refs[i].role ? `(${w.refs[i].role})` : ""} が読みにくい(${READ_PROBLEMS[p].label})`,
+                     fix: READ_PROBLEMS[p].hint });
+        suggestions.push({ check: "readability", text: `${name}: ${READ_PROBLEMS[p].label} → ${READ_PROBLEMS[p].hint}` });
+      });
+      summary.push({ viewpoint: w.read.viewpoint, targets: w.read.targets.map((t) => ({ name: t.name, ...(t.role ? { role: t.role } : {}), problem: ruleProblem(t) })) });
+      const input = { brief: ctx.brief, raw, viewpoint: vp };
+      const plan = planRead(input);
+      if (plan.refs.length === 0) continue;
+      judges.push({
+        plan,
+        interpret: (res, out) => {
+          const j = interpretRead(input, plan, res, out);
+          const keep: CheckJudgment["keep"] = [];
+          const sugg: GateSuggestion[] = [];
+          j.targets.forEach((t) => {
+            const idx = items.findIndex((it, k) => k >= base && it.name === t.name);
+            if (t.noticeable.decided === true && idx >= 0) {
+              keep.push({ index: idx, question: "read.noticeable", value: t.noticeable.value, threshold: null,
+                          source: j.source, why: "ルールの印は付いたが、Jev は初見で気づけると判断" });
+            }
+            if (t.noticeable.decided === false) {
+              const mp = t.mainProblem;
+              sugg.push({ check: "readability",
+                          text: `${vp.label ?? "視点"}: ${t.name}${t.role ? `(${t.role})` : ""} は初見で気づけない`
+                            + (mp && mp.id !== "fine" ? `(${mp.label})→ ${mp.hint}` : "(原因は絵を見て決める)"),
+                          tool: "dx12_perceive", args: { ...(vp.camera ? { camera: vp.camera } : {}), targets: [t.name] } });
+            }
+          });
+          return { judge: j, keep, uncertain: j.uncertain, suggestions: sugg };
+        },
+      });
+    }
+    return { items, summary: { viewpoints: summary }, suggestions, judges };
+  },
+};
+
 /** ★検査を足す口。順番がそのまま実行順(シーンを開き直す playtests は最後)。 */
-export const GATE_CHECKS: GateCheck[] = [SCENE_CHECK, LAYOUT_CHECK, POLISH_CHECK, UI_CHECK, PLAYTEST_CHECK];
+export const GATE_CHECKS: GateCheck[] = [SCENE_CHECK, LAYOUT_CHECK, POLISH_CHECK, UI_CHECK, READABILITY_CHECK, PLAYTEST_CHECK];
 
 // ────────────────────────────────────────────────────────────────
 //  本体
@@ -416,12 +488,48 @@ export type GateReport = {
   keep: GateKeep[];
   suggestions: GateSuggestion[];
   uncertain: GateUncertain[];
+  /** 全件の数(blocking / keep / uncertain は MAX_LISTED 件までしか並べない)。 */
+  counts: { blocking: number; keep: number; uncertain: number; suggestions: number };
+  /** blocking を「検査:コード」ごとに数えたもの(並べきれなくても何が何件あるか分かる)。 */
+  blockingByCode: Record<string, number>;
+  /** 並べきれずに省いたものがあるか。 */
+  truncated: boolean;
   cost: JudgeCost;
   checks: { id: string; title: string; ran: boolean; skipped?: string; ms: number; summary?: Record<string, unknown>; judge?: unknown }[];
   judge: { used: boolean; source: string; briefMissing?: boolean; bundle: "one" | "perDomain"; bundles: number };
   elapsedMs: number;
   next: string;
 };
+
+/**
+ * 返り値に並べる件数の上限。★実機の JUNCTION(ステージ丸ごと)では blocking が 307 件(ほとんど Z_FIGHT)になり、
+ * 全部並べると応答が 60KB を超えて読めなかった。件数は counts / blockingByCode に全部残す。
+ */
+export const MAX_LISTED = 30;
+
+/**
+ * 「検査:コード」ごとに順繰りに取り出して max 件まで並べる。先頭から切ると 300 件の Z_FIGHT で
+ * UI のエラーや参照切れが見えなくなるので、種類ごとに 1 件ずつ回して、どの種類も最低 1 件は見えるようにする。
+ */
+export function listByKind<T extends { check: string; code?: string }>(items: T[], max = MAX_LISTED): T[] {
+  if (items.length <= max) return items;
+  const groups = new Map<string, T[]>();
+  for (const it of items) {
+    const k = `${it.check}:${it.code ?? ""}`;
+    const g = groups.get(k) ?? [];
+    g.push(it);
+    groups.set(k, g);
+  }
+  const out: T[] = [];
+  for (let round = 0; out.length < max; round++) {
+    let took = false;
+    for (const g of groups.values()) {
+      if (round < g.length && out.length < max) { out.push(g[round]); took = true; }
+    }
+    if (!took) break;
+  }
+  return out;
+}
 
 /** facts のキーがぶつからない plan どうしを 1 束にする(ぶつかるものは別の束 = 別のリクエスト)。 */
 function bundleUnits<T extends { plan: JudgePlan }>(units: T[]): T[][] {
@@ -512,14 +620,25 @@ export async function runQualityGate(ctx0: Omit<GateContext, "mode"> & { checks?
   const source = allResults.some((x) => x?.source === "jev") ? "jev" : allResults.some((x) => x?.source === "cache") ? "cache" : "rules";
   const briefMissing = outs.some((o) => o.briefMissing);
   const pass = blocking.length === 0;
+  const blockingByCode: Record<string, number> = {};
+  for (const b of blocking) blockingByCode[`${b.check}:${b.code}`] = (blockingByCode[`${b.check}:${b.code}`] ?? 0) + 1;
+  const uncertainKinds = uncertain.map((u) => ({ ...u, code: u.id.split("#")[0] }));
+  const listedBlocking = listByKind(blocking);
+  const listedKeep = listByKind(keep);
+  const listedUncertain = listByKind(uncertainKinds).map(({ code: _c, ...u }) => u);
+  const truncated = listedBlocking.length < blocking.length || listedKeep.length < keep.length
+    || listedUncertain.length < uncertain.length || suggestions.length > 20;
   const next = [
     blocking.length ? `blocking ${blocking.length} 件を上から直してから、もう一度 dx12_quality_gate を撃つ` : "blocking は無い",
+    truncated ? `件数が多いので種類ごとに ${MAX_LISTED} 件まで並べた(全件の数は counts / blockingByCode)。個別の一覧は各ツール(dx12_validate_layout 等)で見る` : "",
     uncertain.length ? `uncertain ${uncertain.length} 件は look のツールで自分の目で見て決める(合否には入れていない)` : "",
     keep.length ? `keep ${keep.length} 件は Brief に照らして意図どおり＝直さない` : "",
     briefMissing ? "Brief が無いので判断はルールだけ。dx12_brief で作品の意図を書くと keep の判断が入る" : "",
   ].filter(Boolean).join("。");
   return {
-    pass, blocking, keep, suggestions: suggestions.slice(0, 20), uncertain, cost, checks,
+    pass, blocking: listedBlocking, keep: listedKeep, suggestions: suggestions.slice(0, 20), uncertain: listedUncertain,
+    counts: { blocking: blocking.length, keep: keep.length, uncertain: uncertain.length, suggestions: suggestions.length },
+    blockingByCode, truncated, cost, checks,
     judge: { used: useJudge && units.length > 0, source, ...(briefMissing ? { briefMissing: true } : {}), bundle: bundleMode, bundles: bundles.length },
     elapsedMs: now() - t0,
     next,

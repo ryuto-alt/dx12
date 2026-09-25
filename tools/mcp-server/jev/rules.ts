@@ -7,5 +7,6 @@ import type { RuleFn } from "./library.ts";
 import { POLISH_RULES } from "./polishJudge.ts";
 import { LAYOUT_RULES } from "./layoutJudge.ts";
 import { PLAY_RULES } from "./playJudge.ts";
+import { READ_RULES } from "./readJudge.ts";
 
-export const JEV_RULES: Record<string, RuleFn> = { ...POLISH_RULES, ...LAYOUT_RULES, ...PLAY_RULES };
+export const JEV_RULES: Record<string, RuleFn> = { ...POLISH_RULES, ...LAYOUT_RULES, ...PLAY_RULES, ...READ_RULES };

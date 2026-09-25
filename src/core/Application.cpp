@@ -2662,9 +2662,11 @@ void Application::Update()
             {
                 if (src.spatial)
                     src.runtimeSlot = m_audioSystem->PlaySFXSpatial(
-                        src.clipPath, wx, wy, wz, src.minDistance, src.maxDistance, src.volume, src.loop);
+                        src.clipPath, wx, wy, wz, src.minDistance, src.maxDistance, src.volume, src.loop,
+                        src.bus, src.priority);
                 else
-                    m_audioSystem->PlaySFX(src.clipPath, src.loop, src.volume);
+                    src.runtimeSlot = m_audioSystem->PlaySFXTracked(src.clipPath, src.loop, src.volume,
+                                                                    src.bus, src.priority);
                 src.startedThisPlay = true;
             }
             if (src.runtimeSlot >= 0 && src.spatial)
@@ -2690,8 +2692,40 @@ void Application::Update()
                 m_audioSystem->SetOcclusion(src.runtimeSlot, occ);
             }
         }
+        // リバーブ域: リスナー位置をゾーンのローカル空間へ写して重みを出し、AudioSystem へ渡す。
+        // 混ぜ方（優先度・時間方向の平滑）は AudioSystem 側（audio::BlendZones）。
+        {
+            float lx, ly, lz;
+            m_audioSystem->GetListenerPos(lx, ly, lz);
+            std::vector<AudioSystem::ReverbZoneInput> zones;
+            for (auto [e, z] : reg.view<AudioReverbZone>().each())
+            {
+                if (!z.enabled) continue;
+                DirectX::XMVECTOR det;
+                const DirectX::XMMATRIX inv = DirectX::XMMatrixInverse(&det, ComputeWorldMatrix(reg, e));
+                DirectX::XMFLOAT3 lp;
+                DirectX::XMStoreFloat3(&lp, DirectX::XMVector3TransformCoord(
+                                                DirectX::XMVectorSet(lx, ly, lz, 1.0f), inv));
+                const float local[3] = {lp.x, lp.y, lp.z};
+                const float half[3]  = {z.halfExtents.x, z.halfExtents.y, z.halfExtents.z};
+                const float outside  = (z.shape == 1) ? audio::SphereOutsideDistance(local, z.radius)
+                                                      : audio::BoxOutsideDistance(local, half);
+                const float w = audio::ZoneWeight(outside, z.fadeDistance);
+                if (w <= 0.0f) continue;
+                const auto* nt = reg.try_get<NameTag>(e);
+                zones.push_back({nt ? nt->name : std::string(), z.preset, w, z.wet, z.priority});
+            }
+            m_audioSystem->SetReverbZones(std::move(zones));
+        }
         { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(dt); }
     }
+    // ★ボイスの終了検出・仮想⇔実の入れ替え・フェード・バスの反映はモードに関係なく毎フレーム回す
+    //   （エディタのプレビュー再生・一時停止中の BGM も対象。上の Update は Play 中の定位だけ）。
+    // ★dt は実時間（クランプ前）。XAudio2 の実ボイスはフレームが詰まっても実時間で鳴り進むので、
+    //   0.1 秒で切った dt で仮想ボイスの位置を進めると、重いフレームの後で実ボイスへ戻したとき
+    //   位置がずれる（音声デバイスが無いときの位置も実時間と合わなくなる）。
+    if (m_audioSystem)
+        { DX12_PROFILE_ZONE_N("Audio/Tick"); m_audioSystem->Tick(m_gameClock.GetRawDeltaTime()); }
 
     // Trigger の Post や接触 Post を同フレーム内で配信（Playing のみ）。
     if (simRunning)

@@ -25,6 +25,7 @@
 #include "engine/input/ActionMap.h"
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
+#include "scripting/ScriptAudioBindings.h"
 #include "physics/PhysicsSystem.h"
 #include "network/NetworkSystem.h"
 #include "animation/Skeleton.h"
@@ -1564,66 +1565,8 @@ void ScriptEngine::RegisterBindings()
     );
 
     // --- Audio ---
-    lua.new_usertype<AudioSystem>("AudioSystem",
-        // メンバ関数ポインタ直バインドだと C++ 側のデフォルト引数(loop)が効かず
-        // 1引数呼びでエラーになるので、sol::optional で loop を省略可にする
-        "playBGM",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop) {
-                               a.PlayBGM(path, loop.value_or(true));
-                           },
-        "stopBGM",         &AudioSystem::StopBGM,
-        "pauseBGM",        &AudioSystem::PauseBGM,
-        "resumeBGM",       &AudioSystem::ResumeBGM,
-        "seekBGM",         &AudioSystem::SeekBGM,
-        "setBGMRate",      &AudioSystem::SetBGMRate,
-        "setListener",     &AudioSystem::SetListenerPos,
-        // ★vol を受け取って渡す。以前は引数を取らず C++ 既定の 1.0 が常に勝っていたので、
-        //   `audio:playSFX("hit.wav", false, 0.2)` はエラーも警告も無しに全音量で鳴っていた
-        //   （sol2 は余った引数を黙って捨てる）。すぐ下の playSpatial には vol があるので、
-        //   2D だけ音量を下げられない状態だった。
-        "playSFX",         [](AudioSystem& a, const std::string& path, sol::optional<bool> loop,
-                              sol::optional<float> vol) {
-                               a.PlaySFX(path, loop.value_or(false), vol.value_or(1.0f));
-                           },
-        "playSpatial",     [](AudioSystem& a, const std::string& path, float x, float y, float z,
-                              float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
-                               a.PlaySFXSpatial(path, x, y, z, minD, maxD,
-                                                vol.value_or(1.0f), loop.value_or(false));
-                           },
-        "stopAllSFX",      &AudioSystem::StopAllSFX,
-        // ---- 鳴っている 1 本を掴んで操作する（環境音・機械の唸り・スピンダウン用）----
-        // ★playSFX / playSpatial は「撃ちっぱなし」なので、ループ再生した音を止められない。
-        //   止めるのに stopAllSFX しか無いと、他の音まで巻き添えで消える。
-        //   下の 3 つは ID を返す版の再生と、その ID への操作。
-        //   ID は世代つきなので、鳴り終わってスロットが使い回された後の ID は無視される
-        //   （古い ID で他人の音を止めてしまう事故が起きない）。
-        "playSFXId",       [](AudioSystem& a, const std::string& path, sol::optional<bool> loop,
-                              sol::optional<float> vol) {
-                               return a.PlaySFXTracked(path, loop.value_or(false), vol.value_or(1.0f));
-                           },
-        "playSpatialId",   [](AudioSystem& a, const std::string& path, float x, float y, float z,
-                              float minD, float maxD, sol::optional<float> vol, sol::optional<bool> loop) {
-                               return a.PlaySFXSpatial(path, x, y, z, minD, maxD,
-                                                       vol.value_or(1.0f), loop.value_or(false));
-                           },
-        "moveVoice",       &AudioSystem::UpdateSpatialEmitter,
-        "stopVoice",       &AudioSystem::StopVoice,
-        "setVoiceVolume",  &AudioSystem::SetVoiceVolume,
-        "setVoicePitch",   &AudioSystem::SetVoicePitch,
-        "isVoicePlaying",  &AudioSystem::IsVoicePlaying,
-        "setMasterVolume",  &AudioSystem::SetMasterVolume,
-        "setBGMVolume",     &AudioSystem::SetBGMVolume,
-        "setSFXVolume",     &AudioSystem::SetSFXVolume,
-        "getMasterVolume",  &AudioSystem::GetMasterVolume,
-        "getBGMVolume",     &AudioSystem::GetBGMVolume,
-        "getSFXVolume",     &AudioSystem::GetSFXVolume,
-        // 「今なにが鳴っているか」。playBGM は同じパスでも頭出しするので、
-        // シーンをまたいで同じ曲を流し続けたいときはこれで判定して呼ばない。
-        "getCurrentBGM",    &AudioSystem::GetCurrentBGM,
-        "isBGMPlaying",     &AudioSystem::IsBGMPlaying,
-        "getBGMList",       &AudioSystem::GetBGMList,
-        "getSFXList",       &AudioSystem::GetSFXList,
-        "rescan",           &AudioSystem::ScanAudioFiles
-    );
+    // ★束縛の本体は ScriptAudioBindings.cpp（音の担当が他の担当とぶつからないよう分けてある）。
+    RegisterAudioBindings(lua);
 
     // --- グローバル変数 ---
     lua["scene"]  = m_scene;
@@ -4829,11 +4772,11 @@ void ScriptEngine::UpdateTriggers(f32 dt)
                         DirectX::XMStoreFloat3(&wp, ComputeWorldMatrix(reg, at).r[3]);
                         m_audio->PlaySFXSpatial(as->clipPath, wp.x, wp.y, wp.z,
                                                 as->minDistance, as->maxDistance,
-                                                as->volume, as->loop);
+                                                as->volume, as->loop, as->bus, as->priority);
                     }
                     else
                     {
-                        m_audio->PlaySFX(as->clipPath, as->loop, as->volume);
+                        m_audio->PlaySFXTracked(as->clipPath, as->loop, as->volume, as->bus, as->priority);
                     }
                 }
             }

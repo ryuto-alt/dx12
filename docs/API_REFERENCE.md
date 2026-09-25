@@ -279,7 +279,9 @@ lamp.range = 12
 ### AudioSystem（`audio`）
 | メソッド | 説明 |
 |---|---|
-| `:playBGM(path)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御（対応形式: `.wav` / `.mp3` / `.ogg`） |
+| `:playBGM(path, loop?=true, fade?)` / `:stopBGM()` / `:pauseBGM()` / `:resumeBGM()` | BGM 制御（対応形式: `.wav` / `.mp3` / `.ogg`）。`fade` 秒で今の曲からクロスフェード。**`.ogg` は自動でストリーミング**（丸ごとデコードしない） |
+| `:crossfadeBGM(path, sec?=2, loop?=true)` | `playBGM(path, loop, sec)` と同じ |
+| `:setBGMLoopPoints(startSec, endSec?)` | ループ範囲（イントロ付きの曲）。end 省略 = 曲の終わり。OGG の `LOOPSTART`/`LOOPLENGTH`/`LOOPEND` タグ（サンプル数）があれば既定でそれ。ストリームは先読み（最大約 4.5 秒）の後から効く |
 | `:seekBGM(sec)` | 再生中 BGM の位置を秒指定でジャンプ（ループ設定維持。イントロスキップ等に） |
 | `:setBGMRate(ratio)` | BGM 再生速度倍率（ピッチ連動、0.05〜2.0）。1=通常、0.5=半速+1oct下。スローモ演出用。playBGM で 1.0 に戻る |
 | `:setListener(x, y, z)` | 空間SFXのリスナー位置を上書き（プレイヤー中心の定位に）。毎フレーム呼ぶ想定。一度呼ぶとカメラ位置より優先 |
@@ -288,7 +290,9 @@ lamp.range = 12
 | `:stopAllSFX()` | 全 SE 停止 |
 | `:playSFXId(path, loop?, vol?)` | **ID を返す** 2D 効果音。ループ音（環境音・機械の唸り）はこちらで鳴らす |
 | `:playSpatialId(path, x, y, z, minD, maxD, vol?, loop?)` | **ID を返す** 3D 空間効果音 |
-| `:stopVoice(id)` | その 1 本だけ止める（`stopAllSFX` の巻き添えを避ける） |
+| `:stopVoice(id, fade?)` | その 1 本だけ止める（`stopAllSFX` の巻き添えを避ける）。`fade` 秒でフェードアウトしてから止める |
+| `:fadeVoice(id, target, sec)` | その 1 本を `sec` 秒で音量 `target`（0..1）へ。止めない（ダッキング / 後からフェードイン） |
+| `:setVoicePriority(id, p)` | 優先度 0..255（大きいほど大事） |
 | `:setVoiceVolume(id, v)` | その 1 本の音量 0..1（フェードアウトに） |
 | `:setVoicePitch(id, ratio)` | その 1 本の再生速度＝ピッチ 0.1〜2.0（機械のスピンダウン等） |
 | `:moveVoice(id, x, y, z)` | 空間音源の位置を更新（動く物に音を追従させる） |
@@ -297,6 +301,26 @@ lamp.range = 12
 | `:getMasterVolume()` / `:getBGMVolume()` / `:getSFXVolume()` | 音量取得 |
 | `:getBGMList()` / `:getSFXList()` | ファイル一覧。**エディタ専用**（配布ゲームでは常に空。一覧はエディタのピッカ用で、pak の中身は列挙しない）。サウンドテスト画面を作るならスクリプト側に曲名の配列を持つこと |
 | `:rescan()` | オーディオフォルダ再スキャン |
+| `:play(path, opts?)` → id | 汎用の再生口。`opts`: `bus='sfx'`, `volume=1`, `pitch=1`, `loop=false`, `priority=128`, `pos=Vec3`（渡すと 3D）, `minDistance=1`, `maxDistance=30`, `reverb=1`（リバーブ送りの倍率）, `stream=false`（`.ogg` の 2D をストリーミング）, `fadeIn=0`, `loopStart`/`loopEnd`（秒）。失敗 -1 |
+| `:playStream(path, opts?)` → id | 長い環境音を OGG のままストリーミング。既定 `bus='ambience'`, `loop=true` |
+| `:createBus(name, parent?='master')` → bool | ユーザー定義バス（XAudio2 サブミックス）。既にあれば何もしない。入れ子 8 段まで |
+| `:setBusVolume(name, v)` / `:getBusVolume(name)` | バス音量 0..4（`setMasterVolume/setBGMVolume/setSFXVolume` は `master/music/sfx` の別名） |
+| `:setBusMute(name, b)` / `:isBusMuted(name)` | ミュート |
+| `:setBusLowpass(name, hz)` / `:getBusLowpass(name)` | ローパス（0 = 無し。上限は出力サンプルレート/6 ≒ 8kHz） |
+| `:setBusReverbSend(name, v)` / `:getBusReverbSend(name)` | リバーブへの送り量 0..1（既定 sfx/ambience 1, voice 0.6, music/ui 0） |
+| `:setBusVoiceLimit(name, n)` / `:getBusVoiceLimit(name)` | バスごとの実ボイス上限（0 = なし。子孫バスも数える） |
+| `:getBuses()` → {name,...} | 親 → 子の順（master が先頭） |
+| `:getBusLevel(name)` → peakDb, rmsDb | バスのメーター（フェーダー後の dBFS、-120 = 無音。ピーク 0.5 秒保持、RMS 0.3 秒平滑） |
+| `:setMaxVoices(n)` / `:getMaxVoices()` | 実ボイスの全体上限（既定 32。BGM とストリームは数えない） |
+| `:getVoiceCount()` → real, virtual | 実ボイス / 仮想ボイス（音は出さず位置だけ進めている）の本数 |
+| `:defineSnapshot(name, {bus={volume=, db=, lowpass=}, ...})` → bool | スナップショット定義（バス設定の組）。値はユーザー音量に掛ける補正 |
+| `:setSnapshot(name, sec?=0.5)` → bool / `:getSnapshot()` / `:getSnapshots()` | スナップショットへ sec 秒で遷移（`'default'` = 補正なし）。音量は線形、ローパスは対数で補間 |
+| `:setReverb(preset, wet?=0.35)` → bool / `:getReverbPresets()` | AudioReverbZone の外で使う既定の響き（Play を止めると none に戻る） |
+
+**ボイス上限と仮想化**: 上限に達したら 優先度が低い → 小さく聞こえている → 古い の順に 1 本奪う（ループ音は仮想へ落とすだけ、
+ワンショットは止める。全部こちらより大事ならワンショットは鳴らさず -1）。遠い / バスがミュートで -60dB 未満の音も仮想になり、
+近づくと続きから鳴る（-54dB で復帰するヒステリシス付き）。`isVoicePlaying` は仮想中も true。
+BGM とストリームは上限に数えず、奪わず、仮想化しない。音声デバイスが無い PC では全部が仮想ボイス（`noDevice`）として位置だけ進む。
 
 ### PhysicsSystem（`physics`）
 | メソッド | 戻り値 | 説明 |
@@ -1029,7 +1053,8 @@ end)
 |---|---|
 | `CameraComponent` | `fovDegrees=60`, `nearClip=0.1`, `farClip=1000`, `isActive=false`, `projection`(Perspective/Orthographic), `orthoSize=10` |
 | `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false`, `animFrames=0`(フリップブック総フレーム。>0でuvMin/Max自動), `animFps=8`, `animCols=0`(0=animFrames), `animRow=0`, `animRows=0`(0=自動), `animMode=0`(0=ループ 1=単発 2=往復), `scrollU/scrollV=0`(UVスクロール 単位/秒。animFrames>0中は無視) |
-| `AudioSource` | `clipPath`, `volume=1`, `loop=false`, `spatial=true`, `playOnStart=true`, `minDistance=1`, `maxDistance=30` |
+| `AudioSource` | `clipPath`, `volume=1`, `loop=false`, `spatial=true`, `playOnStart=true`, `minDistance=1`, `maxDistance=30`, `bus=""`（空 = sfx）, `priority=128`（0..255） |
+| `AudioReverbZone` | `preset="room"`（none/generic/closet/room/smallroom/largeroom/bathroom/stoneroom/hallway/stonecorridor/hall/cave/sewer/hangar/forest/city/outdoor/underwater）, `shape=0`（0=箱 1=球）, `halfExtents=(4,2.5,4)`, `radius=5`, `fadeDistance=2`, `wet=0.5`, `priority=0`（重なったら大きい方が内側）, `enabled=true`。形は Transform のローカル空間（回転・スケール込み）。リスナーが入ると響きが補間で切り替わる |
 
 **連番アニメ（UIImage / Sprite2D / MeshRenderer 共通）**: UV 計算は `renderer/SpriteAnim.h` の純関数を3者で共有する
 （テクスチャを `animCols` x `animRows` グリッドとみなし `frame = floor(t*animFps)` のセルを写す。`animCols=0`=横1行ストリップ、
@@ -1457,14 +1482,26 @@ Lua の `physics:*`（§3）の C++ 実体。加えて以下を持つ:
 `RaycastHit`(C++): `hit` / `distance` / `bodyId` / `point` / `normal`
 
 ### AudioSystem（`audio/AudioSystem.h`）— XAudio2 / X3DAudio
-Lua の `audio:*`（§3）の C++ 実体。加えて:
+Lua の `audio:*`（§3）の C++ 実体。構成は `mastering ← master ← music/sfx/ambience/voice/ui/(ユーザー定義)`
+＋ `reverb`（XAudio2CreateReverb の戻り）。各バスの最後に VolumeMeter APO（フェーダー後のメーター）。加えて:
 | メソッド | 説明 |
 |---|---|
-| `Initialize(assetsDir)` / `Shutdown()` / `SetAssetsDir(dir)` | ライフサイクル |
+| `Initialize(assetsDir)` / `Shutdown()` / `SetAssetsDir(dir)` | ライフサイクル。`DX12_AUDIO_DEVICE=none` で「音声デバイス無し」を再現できる |
 | `SetListener(px,py,pz, fx,fy,fz, ux,uy,uz)` | 3D リスナー設定（通常カメラ） |
-| `PlaySFXSpatial(path, x,y,z, minD, maxD, vol=1, loop=false)` → slotId | 空間 SFX |
-| `UpdateSpatialEmitter(slotId, x,y,z)` | エミッタ追従 |
-| `Update()` | 毎フレーム定位再計算 |
+| `Play(PlayParams)` → id | 汎用の再生口（Lua の `play` と同じ。bus/priority/pos/reverb/stream/fadeIn/ループ点） |
+| `PlaySFXSpatial(path, x,y,z, minD, maxD, vol=1, loop=false, bus="", priority=128)` → id | 空間 SFX |
+| `UpdateSpatialEmitter(id, x,y,z)` / `SetOcclusion(id, amount)` | エミッタ追従 / 遮蔽 |
+| `Update(dt)` | Play 中だけ: 空間ボイスの距離・X3DAudio の定位・遮蔽の平滑 |
+| `Tick(realDt)` | **毎フレーム（Editor / 一時停止中も）**: 終了検出・仮想⇔実の入れ替え・フェード・スナップショット・リバーブ・ストリームの受け渡し・メーター |
+| `SetReverbZones(zones)` | その フレームのリバーブ域（Application がリスナー位置から重みを出して渡す） |
+| `ResetMixForStop()` | Play → Stop でスナップショット・既定の響き・ゾーンを初期状態へ |
+| `GetBuses()` / `GetVoices()` / `GetSnapshotState()` / `GetReverbState()` / `GetStreamStats()` | 読み出し（ミキサー窓と MCP `audio_state` が使う） |
+
+純粋ロジックは `audio/AudioMath.h`（奪う相手の選び方・仮想化のヒステリシス・距離減衰・スナップショットと
+リバーブ域の補間・メーターの針・I3DL2 プリセット表）と `audio/AudioStreamRing.h`（ストリームのリングとループ点）。
+それぞれ `tests/audio_math_test.cpp` / `tests/audio_stream_test.cpp` で検査している。
+ストリーミング（`audio/AudioStream.h`）は OGG を圧縮のまま持ち、ワーカースレッドが 16384 フレーム × 12 チャンクの
+リングへデコードし、メイン（Tick）は XAudio2 へ渡すだけ。メインが 200ms 以上止まるとワーカーが代わりに渡す。
 
 ### ParticleSystem（`renderer/ParticleSystem.h`）— CPU sim + GPU インスタンシング
 Lua の `fx:*`（§6）の C++ 実体。

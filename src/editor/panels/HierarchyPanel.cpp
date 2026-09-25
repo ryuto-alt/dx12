@@ -49,7 +49,7 @@ static u64 PickEntityIcon(entt::registry& reg, entt::entity e, const EditorUiIco
     if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return ic.entLight;
     if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return ic.entUi;
     if (reg.all_of<MeshRenderer>(e))                              return ic.entMesh;
-    if (reg.all_of<AudioSource>(e))                              return ic.entAudio;
+    if (reg.any_of<AudioSource, AudioReverbZone>(e))             return ic.entAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
                    CapsuleCollider, ConvexHullCollider, MeshCollider, CharacterController>(e))      return ic.entPhysics;
     if (reg.all_of<LuaScript>(e))                                 return ic.entScript;
@@ -64,7 +64,7 @@ static ImVec4 PickEntityTint(entt::registry& reg, entt::entity e)
     if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return TypeLight;
     if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return TypeUi;
     if (reg.all_of<MeshRenderer>(e))                              return TypeMesh;
-    if (reg.all_of<AudioSource>(e))                              return TypeAudio;
+    if (reg.any_of<AudioSource, AudioReverbZone>(e))             return TypeAudio;
     if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
                    CapsuleCollider, ConvexHullCollider, MeshCollider, CharacterController>(e))      return TypePhysics;
     if (reg.all_of<LuaScript>(e))                                 return TypeScript;

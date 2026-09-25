@@ -388,6 +388,14 @@ try {
     assert.equal(r.checks.length, 1);
     pass("judge:false はルールだけ(Jev に出ない)。checks で絞れる");
 
+    const rd = payload(await mcp.call("dx12_quality_gate", { screenshot: false, checks: ["readability"],
+      readability: [{ label: "継ぎ目 F の焦点", camera: { position: [14, 5.1, 122], target: [14, 5, 126] }, targets: [{ name: "C6_p0", role: "見つけてほしい破片" }] }] }, 60000));
+    const pv = engine.received.filter((x) => x.method === "perceive").pop()!;
+    assert.deepEqual(pv.params.targets, ["C6_p0"]);
+    assert.ok(rd.suggestions.some((s: any) => s.check === "readability" && /C6_p0/.test(s.text)), JSON.stringify(rd.suggestions));
+    assert.equal(rd.blocking.length, 0, "読みにくさは blocking にしない");
+    pass("readability: 視点ごとに perceive → 気づけない対象を suggestions で名指し(blocking にはしない)");
+
     const bad = await mcp.call("dx12_quality_gate", { checks: ["nope"] });
     assert.equal(bad.result.isError, true, "知らない検査はエラー");
     pass("知らない検査 id はスキーマで弾く");
