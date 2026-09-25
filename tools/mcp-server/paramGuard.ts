@@ -186,6 +186,9 @@ export const COMPOSITE_TOOLS: ReadonlySet<string> = new Set([
   // デカール: アトラス PNG の手続き生成 + create_entity / set_transform /
   // set_component / set_scene_settings を畳んだ合成ツール。
   "dx12_decal_library", "dx12_decal_apply",
+  // 判断段(Jev)と作品の意図(Brief): エンジンを介さない TS 専用ツール。engine へは
+  // baseDir を知るための ping しか届かない(Jev は開発時専用で、エンジン側には対応 method が無い)。
+  "dx12_brief", "dx12_jev_ask", "dx12_jev_eval", "dx12_jev_status",
 ]);
 
 /**

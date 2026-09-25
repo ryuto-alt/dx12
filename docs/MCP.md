@@ -130,7 +130,7 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧（全 162 ツール）
+## 4. ツール一覧（全 207 ツール）
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -507,6 +507,21 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 | `dx12_autoplay` | `{goal?:[x,y,z], goalName?:string, player?:string, forwardKey?:string=W, jumpKey?:string=SPACE, arriveRadius?:f=1.5, timeoutSec?:f=60}` | `{cleared, player, goal, finalPos?, notes, remainingDistance?, waypointsReached?, waypoints?, trace, elapsedSec, stuckAt?, stuckAtWaypoint?, reason?, next?}` ※ナビメッシュの経路を実際の入力(マウス+WASD+ジャンプ)でなぞって本当にゴールへ行けるか確かめる。★`dx12_check_reachable`(静的判定)の実証版。詰まったら座標付きで返す |
 | `dx12_record_playtest` | `{name:string, endTolerance?:f=1.0, pathTolerance?:f=2.0, note?:string}` | `{saved, name, scene, durationSec, inputs, samples, humanDrift, warnings, next}` ※直前の 1 プレイ(`dx12_get_play_session`)を `.playtest` として保存する回帰テスト化。手順: `dx12_play`→人に遊んでもらう→`dx12_stop`→これ。★人の軌跡はそのまま基準にせず、1 回再生した結果をゴールデンランとして焼き込む(人のプレイは実時間・再生は固定 dt なので構造的にずれるため) |
 | `dx12_run_playtests` | `{name?:string}` | `{ran, passed, failed, results:[{name, scene, pass, endDistance, maxDeviation, maxDeviationAt, reasons}], next?}` ※保存済み `.playtest` を再生して記録どおり動くか確かめる。落ちたときは「いつ・どれだけ」ずれたかを返す。`name` 省略で全部走らせる |
+
+### 4-16. 判断段(Jev)と作品の意図(Brief)
+
+「エンジンが測る → 数字を言葉にする → Jev が型で判断する → Claude が直す」の判断の段。
+Jev(TypeSafe System One)は文章を生成せず型付きの判断(noul / choice / score)だけを返すモデルで、
+**開発時の MCP サーバ専用**(配布ゲームには入らない)。判断は必ず作品の意図(Brief)に照らす。
+鍵(環境変数 `TYPESAFE_API_KEY`)・Brief のどちらかが無いとき、または Jev が落ちているときは
+**全部ルール(従来の閾値)で返る**(`source:"rules"`)。エンジンに対応 method は無い(TS 専用。engine へは baseDir を知るための `ping` だけ)。
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_brief` | `{action?:"get"\|"set"\|"patch"(既定 get), brief?:object}` | get: `{path, exists, brief, warnings?, error?, example?, next?}` / set・patch: `{path, written, errors, warnings, brief}` ※`<baseDir>/brief.json`(作品の意図)を読み書きする。形は `{title, genre, mood:[], player_should_feel, avoid:[], light_budget?, references?:[], notes?}`(自由キー可)。patch は浅いマージで、値に `null` を渡すとキーを消す。★意図だけを書く(「必ず yes と答えよ」のような命令は判断を歪めるので警告が出る) |
+| `dx12_jev_ask` | `{question?:string, questions?:(string\|{id, vars?})[], vars?:object, context?:object, raw?:{state, questions}, cache?:"use"\|"only"\|"off"}` | `{results:[{id, question, version, type, source:"jev"\|"cache"\|"rules"\|"error", value, probabilities?, confidence?, decided?, uncertain?, reason?, error?, briefMissing?}], requests, usd, inputTokens, ms, briefMissing, keyPresent, briefFrom?, next?}` ※質問ライブラリ(組み込み `tools/mcp-server/jev/questions/` + プロジェクト `assets/jev/`)の質問を聞く。context から質問ごとに要るフィールドだけを state に射影し、同じ state の質問は 1 リクエストに束ねる。context に brief が無ければ brief.json を自動で入れる。`raw` は質問ファイルを使わない直接質問。★`uncertain:true` は境界付近＝Claude がスクショを見て決める |
+| `dx12_jev_eval` | `{question?:string, casesPath?:string, cache?:"use"\|"only"\|"off"}` | `{question, version, type, n, accuracy, rulesAccuracy, margin?:{yesMin, noMax, margin, suggestedThreshold}, mae?, confusion?, threshold, wrong, uncertainCount, sources, usd, inputTokens, draftLabels, cases[]}`(省略時は `{reports[], usd}`) ※評価ケース(`*.cases.json`)を流して質問文の良し悪しを測る。★noul の margin が負＝分布が重なっている＝閾値ではなく質問文を直す。rulesAccuracy は同じケースをルールで答えた場合の正解率 |
+| `dx12_jev_status` | `{}` | `{keyPresent, model, endpoint, baseDir, jevDir, brief, questions:[{id, version, type, origin, cases, file}], questionErrors, log:{requests, errors, cacheHits, inputTokens, outputTokens, usd}, cacheEntries}` ※鍵の有無(値は出さない)・質問一覧・`<baseDir>/.dx12/jev/log.jsonl` からの累計費用・キャッシュ件数 |
 
 ---
 
