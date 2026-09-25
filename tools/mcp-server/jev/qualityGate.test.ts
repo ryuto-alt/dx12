@@ -10,7 +10,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { GATE_CHECKS, runQualityGate, type GateCheck } from "./qualityGate.ts";
+import { GATE_CHECKS, MAX_LISTED, listByKind, runQualityGate, type GateCheck } from "./qualityGate.ts";
 import type { FetchLike } from "./client.ts";
 
 let failed = 0;
@@ -288,6 +288,27 @@ console.log("[5] 読みやすさの検査(知覚層)");
     JSON.stringify(ru.uncertain));
   const rr = await gate(makeCall(), makeJev(), { readability: [vp], judge: false });
   check("judge:false でもルールの印で名指しする", rr.suggestions.some((s) => s.check === "readability" && /C6_p0/.test(s.text)), JSON.stringify(rr.suggestions));
+}
+
+console.log("[6] 大きなレベルでも読める長さ(実機の JUNCTION で blocking 307 件)");
+{
+  const many: GateCheck = {
+    id: "many", title: "大量の指摘", enabled: () => true,
+    run: async () => ({ items: [
+      ...Array.from({ length: 300 }, (_, i) => ({ check: "layout", code: "Z_FIGHT", level: "error" as const, blocking: true, text: `z${i}` })),
+      { check: "ui", code: "SMALL_HIT_TARGET", level: "error" as const, blocking: true, text: "小さいボタン" },
+      { check: "scene", code: "SCENE_REFERENCE", level: "error" as const, blocking: true, text: "参照切れ" },
+    ] }),
+  };
+  const r = await gate(makeCall(), makeJev(), { judge: false }, { checks: [many] });
+  check(`blocking は ${MAX_LISTED} 件まで、全件の数は counts に`, r.blocking.length === MAX_LISTED && r.counts.blocking === 302 && r.truncated === true,
+    JSON.stringify({ n: r.blocking.length, counts: r.counts }));
+  check("種類ごとに順繰りに並べる(300 件の Z_FIGHT に UI のエラーと参照切れが埋もれない)",
+    r.blocking.some((b) => b.code === "SMALL_HIT_TARGET") && r.blocking.some((b) => b.code === "SCENE_REFERENCE"));
+  check("blockingByCode で何が何件か分かる", r.blockingByCode["layout:Z_FIGHT"] === 300 && r.blockingByCode["ui:SMALL_HIT_TARGET"] === 1);
+  check("next に省いたことを書く", /counts/.test(r.next), r.next);
+  const small = [{ check: "a", code: "X" }, { check: "b", code: "Y" }];
+  check("少なければそのまま", listByKind(small) === small);
 }
 
 fs.rmSync(TMP, { recursive: true, force: true });

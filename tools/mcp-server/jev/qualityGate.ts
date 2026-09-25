@@ -488,12 +488,48 @@ export type GateReport = {
   keep: GateKeep[];
   suggestions: GateSuggestion[];
   uncertain: GateUncertain[];
+  /** 全件の数(blocking / keep / uncertain は MAX_LISTED 件までしか並べない)。 */
+  counts: { blocking: number; keep: number; uncertain: number; suggestions: number };
+  /** blocking を「検査:コード」ごとに数えたもの(並べきれなくても何が何件あるか分かる)。 */
+  blockingByCode: Record<string, number>;
+  /** 並べきれずに省いたものがあるか。 */
+  truncated: boolean;
   cost: JudgeCost;
   checks: { id: string; title: string; ran: boolean; skipped?: string; ms: number; summary?: Record<string, unknown>; judge?: unknown }[];
   judge: { used: boolean; source: string; briefMissing?: boolean; bundle: "one" | "perDomain"; bundles: number };
   elapsedMs: number;
   next: string;
 };
+
+/**
+ * 返り値に並べる件数の上限。★実機の JUNCTION(ステージ丸ごと)では blocking が 307 件(ほとんど Z_FIGHT)になり、
+ * 全部並べると応答が 60KB を超えて読めなかった。件数は counts / blockingByCode に全部残す。
+ */
+export const MAX_LISTED = 30;
+
+/**
+ * 「検査:コード」ごとに順繰りに取り出して max 件まで並べる。先頭から切ると 300 件の Z_FIGHT で
+ * UI のエラーや参照切れが見えなくなるので、種類ごとに 1 件ずつ回して、どの種類も最低 1 件は見えるようにする。
+ */
+export function listByKind<T extends { check: string; code?: string }>(items: T[], max = MAX_LISTED): T[] {
+  if (items.length <= max) return items;
+  const groups = new Map<string, T[]>();
+  for (const it of items) {
+    const k = `${it.check}:${it.code ?? ""}`;
+    const g = groups.get(k) ?? [];
+    g.push(it);
+    groups.set(k, g);
+  }
+  const out: T[] = [];
+  for (let round = 0; out.length < max; round++) {
+    let took = false;
+    for (const g of groups.values()) {
+      if (round < g.length && out.length < max) { out.push(g[round]); took = true; }
+    }
+    if (!took) break;
+  }
+  return out;
+}
 
 /** facts のキーがぶつからない plan どうしを 1 束にする(ぶつかるものは別の束 = 別のリクエスト)。 */
 function bundleUnits<T extends { plan: JudgePlan }>(units: T[]): T[][] {
@@ -584,14 +620,25 @@ export async function runQualityGate(ctx0: Omit<GateContext, "mode"> & { checks?
   const source = allResults.some((x) => x?.source === "jev") ? "jev" : allResults.some((x) => x?.source === "cache") ? "cache" : "rules";
   const briefMissing = outs.some((o) => o.briefMissing);
   const pass = blocking.length === 0;
+  const blockingByCode: Record<string, number> = {};
+  for (const b of blocking) blockingByCode[`${b.check}:${b.code}`] = (blockingByCode[`${b.check}:${b.code}`] ?? 0) + 1;
+  const uncertainKinds = uncertain.map((u) => ({ ...u, code: u.id.split("#")[0] }));
+  const listedBlocking = listByKind(blocking);
+  const listedKeep = listByKind(keep);
+  const listedUncertain = listByKind(uncertainKinds).map(({ code: _c, ...u }) => u);
+  const truncated = listedBlocking.length < blocking.length || listedKeep.length < keep.length
+    || listedUncertain.length < uncertain.length || suggestions.length > 20;
   const next = [
     blocking.length ? `blocking ${blocking.length} 件を上から直してから、もう一度 dx12_quality_gate を撃つ` : "blocking は無い",
+    truncated ? `件数が多いので種類ごとに ${MAX_LISTED} 件まで並べた(全件の数は counts / blockingByCode)。個別の一覧は各ツール(dx12_validate_layout 等)で見る` : "",
     uncertain.length ? `uncertain ${uncertain.length} 件は look のツールで自分の目で見て決める(合否には入れていない)` : "",
     keep.length ? `keep ${keep.length} 件は Brief に照らして意図どおり＝直さない` : "",
     briefMissing ? "Brief が無いので判断はルールだけ。dx12_brief で作品の意図を書くと keep の判断が入る" : "",
   ].filter(Boolean).join("。");
   return {
-    pass, blocking, keep, suggestions: suggestions.slice(0, 20), uncertain, cost, checks,
+    pass, blocking: listedBlocking, keep: listedKeep, suggestions: suggestions.slice(0, 20), uncertain: listedUncertain,
+    counts: { blocking: blocking.length, keep: keep.length, uncertain: uncertain.length, suggestions: suggestions.length },
+    blockingByCode, truncated, cost, checks,
     judge: { used: useJudge && units.length > 0, source, ...(briefMissing ? { briefMissing: true } : {}), bundle: bundleMode, bundles: bundles.length },
     elapsedMs: now() - t0,
     next,
