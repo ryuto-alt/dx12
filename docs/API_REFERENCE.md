@@ -85,7 +85,8 @@ end
 | `Anim` / `Ease` / `LIGHT_STYLES` | table | Tween の実行リスト / イージング関数表 / lightstyle プリセット |
 | `display` | table | 映像設定（VSync / FPS 上限 / 窓モード / 解像度）。設定画面はこれで作る |
 | `net` | table | マルチプレイ（host/join/RPC/スポーン）。詳細は §7 |
-| `nav` | table | ナビメッシュ経路探索（`findPath` / `sample` / `raycast` / `moveAlong` / `ready`）|
+| `nav` | table | ナビメッシュ経路探索（`findPath` / `sample` / `raycast` / `moveAlong` / `ready`、polyRef・4 状態のレイ・通路 `corridor`・群衆 `agent*`）|
+| `ai` | table | ゲーム AI（`ai.brain(self)` で Brain のハンドル、`ai.emitSound` / `ai.soundOnEvent` / `ai.brains` / `ai.curve`）|
 | `ASSETS` | string | assets ディレクトリの絶対パス |
 | `SCREEN_W` / `SCREEN_H` | int | 画面解像度（`SetScreenSize` で更新） |
 
@@ -406,6 +407,73 @@ end
 
 MCP からは `dx12_navmesh_build` / `settings` / `info` / `path` / `sample` / `raycast` / `debug` / `clear` の
 8 ツールで同じことができる（`dx12_navmesh_debug` でシーンビューにワイヤを重ねられる）。
+
+#### polyRef / 4 状態のレイ / 通路（パス・コリドー）/ 群衆（v1.20+）
+`nav.f(...)` でも `nav:f(...)` でも呼べる。旧 API（上の表）は互換のまま、欠陥だけ直した
+（`sample` はセル中心へ飛ばず点を含むポリゴン上の最近点を返す / `moveAlong` は壁を抜けず、着地が壁の辺から少し内側 /
+`raycast` の偽陰性＝始点を含まないポリゴンから撃っていた、を直した。★ただし旧 `raycast` の `false` は今も
+「通れた」とは限らない）。
+
+| 関数 | 戻り値 | 説明 |
+|---|---|---|
+| `nav.locate(pos, radius?)` | ref:int, Vec3 \| nil | 点を含むポリゴンの参照（polyRef）。焼き直すと古い ref は無効 |
+| `nav.isValidRef(ref)` | bool | |
+| `nav.raycastEx(from, to, ref?)` | `{status, hit, t, point, normal, ref}` | `status` = `clear` / `hit` / `startOffMesh` / `truncated`（判定不能を区別） |
+| `nav.moveAlongEx(from, to, ref?)` | Vec3, ref | ref を持ち回る滑り移動 |
+| `nav.findPathEx(from, to, radius?)` | `{status, points, length, reached}` | `status` = `complete` / `partial` / `failed` |
+| `nav.corridor(pos, radius?)` | NavCorridor \| nil | 通路。`c:setTarget(pos)` で A*、以後は `c:corners(n, margin)` / `c:advance(dist, margin)` / `c:move(pos)` / `c:moveTarget(pos)` / `c:optimize()` を毎フレーム（A* をやり直さない） |
+| `nav.agentAdd(entity, params?)` | bool | 群衆に入れる。エンジンが 1/60 秒の固定ステップで動かし Transform を書く。`params`: `radius, maxSpeed, maxAccel, separation, wallMargin, avoidance(0..3\|false), faceMovement, turnRate, yOffset` |
+| `nav.agentMoveTo(entity, pos, speed?)` / `agentVelocity(entity, vel)` / `agentStop` / `agentRemove` / `agentSet(entity, params)` | bool | 目標 / 速度で動かす |
+| `nav.agentState(entity)` | table \| nil | `pos, vel, desiredVel, speed, state, partial, distance, arrived, target, neighbors, corners` |
+
+群衆は Detour の dtCrowd と同じ組み立て（操舵 → 分離 → 速度サンプリングの回避 → 押し出し → 通路の上で確定＝ナビの外へ
+出ない）。乱数を使わず id 順に処理するので決定論。群衆のエンティティは親を持たないこと・CharacterController / 動的
+RigidBody と併用しないこと。ゲーム側で `transform.position` を書くと（ワープ）次のステップで気づいて置き直す。
+
+### ai（`ai`）/ Brain — ゲーム AI（v1.20+）
+Brain コンポーネント（§7）＝ 知覚（視覚: 視野角・距離・物理レイで遮蔽、確認時間 / 聴覚: `ai.sound` を半径と遮蔽で /
+記憶）→ 黒板 → ユーティリティ評価（考慮事項 × カーブ、ヒステリシス・最低継続・クールダウン）→ Lua の行動。
+**Play 中だけ動く**。1/60 秒の固定ステップ・シード付き乱数で決定論（`math.random` は Play ごとに種が変わるので使わない）。
+
+```lua
+function OnStart(self)
+    local b = ai.brain(self, { targets = "MainCamera", sightRange = 25, maxSpeed = 3.0 })
+    b:action("wander", { weight = 0.2,
+        update = function(b) if b:moveState() ~= "valid" or b:arrived(1.5) then
+            local t = b:randomPoint(b:position(), 30); if t then b:moveTo(t) end end end })
+    b:action("chase", {
+        considerations = {
+            { input = "target.lastSeenAge", min = 0, max = 6, curve = "step", invert = true },   -- 3 秒以内に見た
+            { input = "target.distance",    min = 0, max = 30, curve = "linear", invert = true }, -- 近いほど
+        },
+        enter  = function(b) log("見つけた") end,
+        update = function(b, dt) local p = b:lastKnown(); if p then b:moveTo(p, 6.0) end end })
+end
+```
+
+| 関数 / メソッド | 説明 |
+|---|---|
+| `ai.brain(self\|entity\|name, config?)` | Brain のハンドル（無ければ付ける）。`config` は §7 の Brain のキー |
+| `ai.brains()` | Brain を持つエンティティ（id 順） |
+| `ai.emitSound(pos, radius, {tag, loudness, source}?)` | EventBus の `"ai.sound"` を発火（Trigger や C++ からも同じ名前で出せる） |
+| `ai.soundOnEvent(eventName, radius, {tag, loudness}?)` | source 付きイベント → 音。`.animfsm` の clipEvents の足音をそのまま聞かせる |
+| `ai.curve(type, x, {m,k,b,c,invert}?)` | カーブを試す。`linear / quadratic / logistic / step / inverse / smooth` |
+| `b:action(name, {weight, cooldown, minDuration, considerations, enter, update, exit})` | 行動。`update` が `"done"` か `true` を返すと `cooldown` 秒は選ばない |
+| `b:set/get/has/unset(key, ...)` | 黒板（number / bool / string / Vec3 / Entity） |
+| `b:current()` / `timeInAction()` / `force(name)` / `think()` / `scores()` | 今の行動 / 強制 / 選び直し / **なぜその行動か**（`reason` と行動ごと・考慮事項ごとの内訳） |
+| `b:moveTo(pos, speed?)` / `stop()` / `setSpeed(s)` / `arrived(tol?)` / `moveState()` / `distanceToGoal()` / `speed()` / `position()` | 群衆で移動 |
+| `b:random()` / `randomRange(a,b)` / `randomInt(a,b)` / `randomPoint(center, r)` | シード付き乱数 |
+| `b:canSee()` / `target()` / `awareness()` / `lastKnown()` / `lastSeenAge()` / `heard()` / `remember(pos)` / `forget()` / `sound(radius, tag?)` | 知覚と記憶 |
+| `b:config{...}` / `getConfig(key)` / `entity()` / `id()` | 設定の読み書き（例 懐中電灯で視界を変える `b:config{ sightRange = 10 }`） |
+
+黒板に自動で入る事実: `target`（Entity）/ `target.visible` / `target.seen`（awareness が 1 で確定）/ `target.awareness` /
+`target.distance` / `target.known` / `target.lastKnown` / `target.lastSeenAge` / `target.lastHeardAge` /
+`heard.age` / `heard.pos` / `heard.loudness` / `heard.tag` / `self.speed` / `action` / `time`。
+
+デバッグ: エディタで Brain を選ぶと視界の扇形・視線・聞いた音・通路・行動の上位得点がシーンビューに出る（Inspector の
+「実行中」に得点の内訳）。MCP のエンジンメソッド `brain_state {entity|name}` が黒板・知覚・得点の内訳・移動を JSON で返す。
+ルールで書くディレクターのひな型は `assets/components/AiDirector.lua`（静寂 / 気配 / 追跡 / ヒントの拍を決めて
+Brain の黒板 `director.beat` / `director.calm` / `director.intensity` へ書く）。
 
 ### net（`net`）— オンラインマルチプレイ（リッスンサーバー方式・ENetベース、開発中）
 | メソッド | 戻り値 | 説明 |
@@ -1090,6 +1158,7 @@ MeshRenderer はシーン JSON では `uvScroll`（`{u,v}`）と `flipbook`（`{
 | `Gimmick` | `kind`(0=StaticWall/1=SpikePulse/2=SlideX/3=SlideZ), `period=4`, `phase`, `amplitude=1.6`, `threshold=0.5`, `solid=true`, `deadly=false` |
 | `ParticleEmitter` | §8 参照（配置できるエフェクト部品） |
 | `Trigger` | §8 参照（範囲イベント部品） |
+| `Brain` | ゲーム AI の頭脳（Play 中のみ。§3 の ai）。`enabled`, `targets="MainCamera"`（名前のカンマ区切り / `tag:x`）, `seed=1`, 思考 `thinkInterval=0.1` `hysteresis=0.1` `minCommitTime=0.3`, 視覚 `sightRange=20` `sightFov=140` `nearSense=2` `eyeHeight=1.6` `targetHeight=1` `confirmTime=0.3` `sightInterval=0.1`, 聴覚 `hearingScale=1` `occlusion=0.5`, 記憶 `memoryTime=10`, 移動 `useCrowd=true` `agentRadius=0.5` `maxSpeed=3.5` `maxAccel=20` `separation=2` `wallMargin=0` `turnRate=10`, `debugDraw=true`。黒板・記憶・得点は実行時の状態（保存されない） |
 
 ### デカール（投影デカール）
 

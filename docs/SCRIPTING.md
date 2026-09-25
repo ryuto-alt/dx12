@@ -340,6 +340,28 @@ ui:text(x, y, "HUD text", size, r, g, b, a)   -- 画面に文字（再生中の�
 下部の入力欄からは Lua を1行その場で実行できる（`scene`/`fx`/`camera` などそのまま使える簡易コンソール）。
 入力中は**予測変換**が出る: `time.` や `scene:fi` まで打つと候補がポップアップし、Tab で確定・↑↓ で選択・クリックで挿入できる（候補は実際の Lua 環境から動的に列挙されるので自作のグローバルも出る）。
 
+### 敵の頭脳（ai / Brain）とナビ
+敵やNPCの「見る・聞く・覚える・選ぶ・歩く」はエンジンが持つ。スクリプトは**行動の中身**だけ書く。
+```lua
+function OnStart(self)
+    local b = ai.brain(self, { targets = "MainCamera", sightRange = 25 })   -- Brain が無ければ付く
+    b:action("wander", { weight = 0.2, update = function(b)
+        if b:moveState() ~= "valid" or b:arrived(1.5) then
+            local t = b:randomPoint(b:position(), 30); if t then b:moveTo(t) end
+        end end })
+    b:action("chase", { considerations = {
+            { input = "target.seen", curve = "step" },                              -- 見つけている
+            { input = "target.distance", min = 0, max = 30, curve = "linear", invert = true } },
+        update = function(b) b:moveTo(b:lastKnown(), 6.0) end })
+end
+```
+- 移動は `b:moveTo`（ナビの通路 + 群衆回避。壁を抜けない・ナビの外へ出ない・Transform はエンジンが書く）
+- 物音は `ai.emitSound(pos, 半径, {source = プレイヤー})`。壁越しは届く半径が `occlusion` 倍になる
+- 「なぜその行動か」は `b:scores()`、エディタで選ぶとシーンビューに視界と得点、MCP は `brain_state`
+- 乱数は `b:random()`（シード付き）。`math.random` を AI の判断に使うと毎回結果が変わる
+- 緊張の拍（静寂 / 気配 / 追跡 / ヒント）はディレクターのひな型 `assets/components/AiDirector.lua` を参照
+- 細かい API は [API_REFERENCE.md](API_REFERENCE.md) の nav / ai を参照
+
 ### ゲーム内UI（コンポーネント方式）
 `ui:text/button/image/rect` は**簡易/デバッグ用**の即時 API。タイトルメニューや HUD 一式など恒常的な画面は、
 Hierarchy の「作成」→「UI（ゲーム内UI）」で `UICanvas`/`UIRect`/`UIImage`/`UIText`/`UIButton` コンポーネントの

@@ -598,6 +598,7 @@ nlohmann::json McpLuaApi()
     objects.push_back(O("entity", "scene:findEntity(name) / scene:spawn* / physics:overlap*", json::array({
         "isValid() -> bool",
         "name  (string, read-only property)",
+        "id  (int, read-only property。数値 id。events の data.source / data.other と同じ値で、誰の出来事かを比べられる)",
         "transform  (Transform getter。フィールドは書込可: entity.transform.position = Vec3.new(x,y,z)。ただし entity.transform 自体の再代入は read-only) — 唯一直接読めるコンポーネントデータ",
         // ★型名は ScriptEngine.cpp:507-544 の if 連鎖と 1:1。ここが短いと「対応していない」と
         //   誤解されて使われなくなるので、増やしたら必ず両方直すこと。

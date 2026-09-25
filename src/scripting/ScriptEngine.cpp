@@ -500,6 +500,11 @@ void ScriptEngine::RegisterBindings()
     lua.new_usertype<Entity>("Entity",
         "isValid", &Entity::IsValid,
 
+        // 数値 id（events の data.source / data.other と同じ値。比べて「誰の出来事か」を判定する）
+        "id", sol::property(
+            [](const Entity& e) -> std::uint32_t { return static_cast<std::uint32_t>(entt::to_integral(e.GetHandle())); }
+        ),
+
         // Name access
         "name", sol::property(
             [](const Entity& e) -> std::string {
