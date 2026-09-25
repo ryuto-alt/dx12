@@ -10,6 +10,7 @@
  *   [play] get_play_session / record_playtest(人のプレイ: 困り度 + 原因の 2 問)と autoplay / run_playtests
  *        (機械の軌跡: 原因の 1 問だけ)に judge が付く。到達・再生の合否はルールのまま変わらない。
  *        偽エンジンは W を押している間だけプレイヤーを前へ進める(blocked のときは進まない=詰まり)。
+ *   [perceive] dx12_perceive: 引数はそのままエンジンへ、返りは {facts(数値を含まない言葉), raw(数値)}。
  *   [gate] dx12_quality_gate: 全検査の質問が 1 往復に束なり、{pass, blocking, keep, suggestions, uncertain, cost} が返る。
  *        ルールの error は blocking、Jev の keep は blocking から外れて keep に判断が残る。judge:false はルールだけ。
  *
@@ -82,8 +83,20 @@ const HUMAN_SESSION = (() => {
            events: [{ t: 0.1, kind: "key_down", detail: "W" }, { t: 14.9, kind: "key_up", detail: "W" }], samples };
 })();
 
+// ── 偽エンジンの知覚層: JUNCTION の実測(破片 C6_p0 の灯りを裏へ回した「真っ黒な板」)──
+const SHARD_DARK = { name: "C6_p0", pixels: 22414, share: 0.0366, bbox: [0.55, 0.47, 0.63, 0.54], center: [0.5897, 0.504],
+  luma: 0.2706, lumaStd: 0.05, lumaRing: 0.6807, contrast: 0.4387, saturation: 0.1714, distance: 4.114, distanceMin: 3.9,
+  fullyInView: true, projectedExtent: [0.08, 0.07], occlusion: 0, litFacing: 0.0006, backFacing: 0,
+  mainLight: { name: "C6_fill", facing: 0 }, isolatedPixels: 22414 };
+const PERCEIVE_RAW = { mode: "Editor", camera: { source: "explicit", position: [14, 5.1, 122], forward: [0, 0, 1], fovDeg: 72 },
+  scene: { empty: 0.02, regions: { top: { empty: 0.04, luma: 0.55, lumaStd: 0.08, distance: 9 }, bottom: { empty: 0, luma: 0.6, lumaStd: 0.07, distance: 4 },
+                                   left: { empty: 0.02, luma: 0.58, lumaStd: 0.07, distance: 7 }, right: { empty: 0.02, luma: 0.57, lumaStd: 0.08, distance: 6 } },
+           luma: { mean: 0.57, p5: 0.3, p50: 0.58, p95: 0.8, crushed: 0.001, clipped: 0.004 }, farthest: 31.5, visibleEntities: 40 },
+  targets: [SHARD_DARK], top: [{ ...SHARD_DARK, name: "C6_wall", share: 0.41, occlusion: null }] };
+
 function engineHandler(method: string, params: any): any {
   switch (method) {
+    case "perceive": return PERCEIVE_RAW;
     // ── 品質ゲートが集めるもの(polish の材料・シーン検証・診断) ──
     case "validate_scene": return { pass: true, exitCode: 0, scenePath: "scenes/main.json", report: "PASS" };
     case "diagnose": return { summary: { errors: 0, warnings: 0, ok: true }, checks: [] };
@@ -306,6 +319,25 @@ try {
     assert.equal(questionTypes(jev.reqs[jev.reqs.length - 1]), "choice,score");
     assert.equal(rec.judge.cause.id, "jump_too_hard");
     pass("record_playtest: 保存はそのまま、人の記録の困り度 + 原因を 1 往復で");
+  }
+
+  console.log("[perceive] dx12_perceive");
+  {
+    const r = payload(await mcp.call("dx12_perceive", { camera: { position: [14, 5.1, 122], target: [14, 5, 126], fovDeg: 72 }, targets: ["C6_p0"] }));
+    const sent = engine.received.filter((x) => x.method === "perceive").pop()!;
+    assert.deepEqual(sent.params.camera, { position: [14, 5.1, 122], target: [14, 5, 126], fovDeg: 72 });
+    assert.deepEqual(sent.params.targets, ["C6_p0"]);
+    assert.equal(r.raw.targets[0].litFacing, 0.0006, "raw はエンジンの数値のまま");
+    const f = r.facts.targets[0];
+    assert.equal(f.name, "C6_p0");
+    assert.equal(f.facts.lit_side, "影（灯りは裏側から当たっている）");
+    assert.equal(f.facts.brightness, "暗い");
+    // 名前(C6_fill / C6_wall)は識別子なので除いて見る
+    assert.ok(!/[0-9]/.test(JSON.stringify({ ...f.facts, main_light: "" })) && !/[0-9]/.test(JSON.stringify({ ...r.facts.scene, dominant: "" })), "facts に数値が無い");
+    pass("引数はそのままエンジンへ、返りは facts(言葉)+ raw(数値)");
+    const bad = await mcp.call("dx12_perceive", { camera: "sideways" });
+    assert.equal(bad.result.isError, true, "camera は editor / game / {position,target}");
+    pass("camera の形が違えばスキーマで弾く");
   }
 
   console.log("[gate] dx12_quality_gate");

@@ -130,7 +130,7 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧（全 208 ツール）
+## 4. ツール一覧（全 209 ツール）
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -481,6 +481,7 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 | `dx12_asset_gap` | `{includePlaceholders?:bool=true}` | `{missing:[{entityId,name,modelPath}], placeholders:[{entityId,name,primitive,sizeHint}], count, next}` ※参照切れ(modelPath があるのにファイルが無い)と、プリミティブで代用しているだけの仮置きを集める。Blender で作り始める前の入口 |
 | `dx12_validate_layout` | `{fix?:"none"\|"safe"\|"all"(既定 none), tolerance?:f=0.001}` | `{pass, checked, errors, warnings, fixed, issues:[{kind, level, entityId, name, otherEntityId?, text, fixed}]}` ※埋まり(BURIED)/浮き(FLOATING)/ちらつき(Z_FIGHT)/深いめり込み(OVERLAP)/二重配置(DUPLICATE)/当たり判定欠落(NO_COLLIDER・COLLIDER_WITHOUT_BODY)/スケール異常(SCALE_ANOMALY・NAN_TRANSFORM)を数値で拾う。Editor 限定(Playing 中は MODE_CONFLICT)。★`COLLIDER_WITHOUT_BODY` はこのエンジン固有の罠(boxCollider だけでは Jolt に載らず床をすり抜ける)。`fix:'safe'` で BURIED/FLOATING・Z_FIGHT・COLLIDER_WITHOUT_BODY を自動修正。DUPLICATE は取り返しがつかないので報告のみ |
 | `dx12_polish_audit` | `{screenshot?:bool=true, only?:("light"\|"air"\|"grade"\|"motion"\|"material"\|"contact"\|"image")[], sampleMeshes?:int=24, judge?:bool=true}` | `{score, verdict, findings:[{code, category, severity, what, why, fix}], facts, judge?:{source, briefFit, findings:[{code, intended, keep}], nextFix:{id, tool, args, confidence}, uncertain[], scoreExcludingKept, briefMissing?}}` ※高品質な絵に必ず入っている要素が揃っているかを測り、足りないものを効く順(光→空気→階調→動き→素材→接地)で返す。各指摘に「なぜ安っぽく見えるか」と「次に撃つコマンド」が付く。★`dx12_diagnose` は壊れているか、`dx12_look_compare` は参照画像との差を見る道具で、これは参照画像なしに「作りかけに見える理由」を言うためのもの。★`judge` は判断段(§4-16): 同じ指摘を作品の意図(Brief)に照らして仕分け、意図どおりのもの(`keep:true`)は直さない。`judge:false` で止まる |
+| `dx12_perceive` | `{camera?:"editor"\|"game"\|{position:[x,y,z], target:[x,y,z], fovDeg?:f}, targets?:string\|string[], top?:int=8, width?:int, height?:int, settleFrames?:int=8, path?:string, includeTransparent?:bool=true}` | `{facts:{viewpoint, scene:{brightness, upper_half, lower_half, left_half, right_half, sky_or_void, black_crush, blown_out, farthest_surface, dominant}, targets:[{name, facts:{visibility, screen_share, position, brightness, contrast, texture, lit_side, main_light?, occluded, fits_in_view, distance, saturation, material?}}], top[]}, raw}` ※知覚層。指定の視点から見た画面を ID パスで集計し、対象が【プレイヤーの目にどう見えるか】を数値(raw)と数値を含まない言葉(facts。言葉の境界は `perceive.ts` の `PERCEIVE_BINS`)で返す(遅延応答。普段 0.1〜0.4 秒)。遮蔽率は targets で名指しした対象だけ。スプライト/パーティクル/UI は数えない。★`lit_side`(litFacing)はカスタムシェーダの照明を見ていないので、「照らされている」でも brightness / contrast が暗ければ暗い(必ず一緒に読む)。品質ゲートの読みやすさの検査(`readability`)が使う |
 | `dx12_quality_gate` | `{checks?:("scene"\|"layout"\|"polish"\|"ui"\|"playtests")[], heavy?:bool=false, screenshot?:bool=true, strictness?:"balanced"\|"strict", screen?:string, playtests?:bool\|string[], judge?:bool=true, bundle?:"one"\|"perDomain"}` | `{pass, blocking[], keep[], suggestions[], uncertain[], cost:{requests, tokens, usd, ms}, checks[], judge, elapsedMs, next}` ※作業の区切りで 1 回撃つ品質ゲート。シーンの検証・配置・仕上がり・UI・(指定すれば)プレイテストのルールの結論を 1 つの合否にまとめ、Jev が Brief に照らして意図どおり(keep)と判断したものは blocking から外す。uncertain は合否に入れず、見るためのツール呼び出し付きで返す |
 
 ### 4-14. Blender 連携(自動起動 → PBR素材/仕上げ → 規約どおり書き出し → 実寸検証)

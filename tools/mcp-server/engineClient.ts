@@ -85,6 +85,9 @@ TIMEOUT_BY_METHOD["import_asset"] = 60000;
 TIMEOUT_BY_METHOD["read_texture"] = 15000;
 // step_frames は最大 600 フレーム(~10s)回ってから返るので長めに。
 TIMEOUT_BY_METHOD["step_frames"] = 30000;
+// 知覚層: 指定視点へ切り替え → 決定論で settleFrames(最大 240)落ち着かせる → ID パスの読み戻しと集計。
+// 普段 0.1〜0.4 秒だが、settleFrames を大きくしたときと重いシーンのために長めに取る。
+TIMEOUT_BY_METHOD["perceive"] = 30000;
 // 遅延同期(エンティティ生成/削除/複製) = 15000ms
 for (const m of ["create_entity", "delete_entity", "duplicate_entity"]) TIMEOUT_BY_METHOD[m] = 15000;
 // 遅延同期(モデル/プレハブ読込・シーン遷移、GPU/IO が重い) = 45000ms
