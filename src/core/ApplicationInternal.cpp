@@ -236,6 +236,20 @@ nlohmann::json McpComponentSchema()
         F("bus", "string (mixer bus name; empty = sfx. builtin: master/music/sfx/ambience/voice/ui)", ""),
         F("priority", "int 0..255 (higher = kept when the voice limit is hit; lower ones are virtualized/stolen first)", 128),
     })));
+    comps.push_back(C("audioReverbZone", true, true, json::array({
+        F("preset", "string (none/generic/closet/room/smallroom/largeroom/bathroom/stoneroom/hallway/"
+                    "stonecorridor/hall/cave/sewer/hangar/forest/city/outdoor/underwater)", "room"),
+        F("shape", "int (0=box uses halfExtents, 1=sphere uses radius)", 0),
+        F("halfExtents", "float3 (local units, includes the entity scale)", json::array({4, 2.5, 4})),
+        F("radius", "float", 5.0),
+        F("fadeDistance", "float (outside the shape, reverb fades 1->0 over this width)", 2.0),
+        F("wet", "float 0..1 (amount of reverb while inside)", 0.5),
+        F("priority", "int (overlapping zones: higher = inner, wins)", 0),
+        F("enabled", "bool", true),
+    }), "Reverb area. When the listener is inside, the mix reverb morphs to this preset (spatial fade "
+        "+ 0.35s temporal smoothing). Sounds send to the reverb by bus (sfx/ambience 1, voice 0.6, "
+        "music/ui 0) x play{reverb=} x sqrt(distance gain). Check the result with dx12 audio_state "
+        "(reverb.dominant / currentWet)."));
     comps.push_back(C("particleEmitter", true, true, json::array({
         F("kind", "int (0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star)", 0),
         F("blend", "int (0=Additive,1=Alpha)", 0), F("rate", "float (per sec)", 30.0),
@@ -763,7 +777,7 @@ nlohmann::json McpLuaApi()
         "rescan()  (assets 配下の音声ファイルを列挙し直す。実行中に wav を足したとき用)",
         "-- 汎用の再生口 --",
         "play(path, opts?) -> id  (opts: bus='sfx', volume=1, pitch=1, loop=false, priority=128, "
-        "pos=Vec3 (渡すと 3D 空間音), minDistance=1, maxDistance=30。失敗 -1)",
+        "pos=Vec3 (渡すと 3D 空間音), minDistance=1, maxDistance=30, reverb=1 (リバーブ送りの倍率)。失敗 -1)",
         "stopVoice(id, fade?)  (fade 秒で 0 まで下げてから止める。省略 = 即停止)",
         "setVoicePriority(id, p)  (0..255。大きいほど大事)",
         "-- 同時発音数（優先度と仮想化）--",
@@ -781,6 +795,13 @@ nlohmann::json McpLuaApi()
         "setBusLowpass(name, hz) / getBusLowpass(name) -> float  (0 = 無し。上限は出力のサンプルレート/6 ≒ 8kHz)",
         "getBuses() -> {name,...}  (親 → 子の順。master が先頭)",
         "★AudioSource.bus / audio:play{bus=...} で送り先を選ぶ。無いバス名は sfx で鳴らして警告を 1 度出す",
+        "-- リバーブ（XAudio2 組み込みリバーブへの送り）--",
+        "setReverb(preset, wet?=0.35) -> bool  (AudioReverbZone の外で使う既定の響き。Play を止めると none/0 に戻る)",
+        "getReverbPresets() -> {name,...}  (none/generic/closet/room/smallroom/largeroom/bathroom/stoneroom/"
+        "hallway/stonecorridor/hall/cave/sewer/hangar/forest/city/outdoor/underwater)",
+        "setBusReverbSend(bus, v) / getBusReverbSend(bus) -> float  (0..1。既定 sfx/ambience=1, voice=0.6, music/ui=0)",
+        "★部屋ごとの響きは AudioReverbZone コンポーネント（箱/球 + fadeDistance + priority）で置く。"
+        "送り量 = バスの reverbSend × play{reverb} × √(距離減衰)（遠い音ほど響きの割合が増える）",
     })));
     objects.push_back(O("time", "global ('.' で呼ぶ)", json::array({
         "time.now() -> float  — Play開始からの経過秒(タイムスケール適用済み)",

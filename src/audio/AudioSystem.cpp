@@ -3,6 +3,8 @@
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
 
+#include <xaudio2fx.h>
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -47,21 +49,29 @@ void AudioSystem::Initialize(const std::string& assetsDir)
     // setBusVolume などの状態は保持し、audio_state も返せるようにするため。
     if (m_buses.empty())
     {
-        auto add = [&](const char* name, i32 parent, f32 vol) {
+        auto add = [&](const char* name, i32 parent, f32 vol, f32 reverbSend) {
             Bus b;
-            b.name    = name;
-            b.parent  = parent;
-            b.depth   = (parent < 0) ? 0u : m_buses[static_cast<size_t>(parent)].depth + 1u;
-            b.volume  = vol;
-            b.builtin = true;
+            b.name       = name;
+            b.parent     = parent;
+            b.depth      = (parent < 0) ? 0u : m_buses[static_cast<size_t>(parent)].depth + 1u;
+            b.volume     = vol;
+            b.reverbSend = reverbSend;
+            b.builtin    = true;
             m_buses.push_back(std::move(b));
         };
-        add("master",   -1, 1.0f);
-        add("music",     0, 0.7f);   // ★旧 m_bgmVolume の既定 0.7 をそのまま引き継ぐ（音量が変わらない）
-        add("sfx",       0, 1.0f);
-        add("ambience",  0, 1.0f);
-        add("voice",     0, 1.0f);
-        add("ui",        0, 1.0f);
+        // リバーブ送りの既定: 空間に鳴る音（sfx / ambience）は全量、声は少し、音楽と UI は送らない
+        //（BGM や UI 音が洞窟で響くと「画面の外の音」と「世界の中の音」の区別が崩れる）。
+        add("master",   -1, 1.0f, 0.0f);
+        add("music",     0, 0.7f, 0.0f);   // ★旧 m_bgmVolume の既定 0.7 をそのまま引き継ぐ（音量が変わらない）
+        add("sfx",       0, 1.0f, 1.0f);
+        add("ambience",  0, 1.0f, 1.0f);
+        add("voice",     0, 1.0f, 0.6f);
+        add("ui",        0, 1.0f, 0.0f);
+        add("reverb",    0, 1.0f, 0.0f);
+        m_buses.back().isReverb = true;
+        m_reverbBus = static_cast<i32>(m_buses.size()) - 1;
+        audio::FindReverbPreset("none", m_reverbCur);
+        m_reverbTarget = m_reverbApplied = m_reverbCur;
     }
 
     // ★テスト用の口: DX12_AUDIO_DEVICE=none で「音声デバイスが無い PC」を再現する。
@@ -360,7 +370,18 @@ void AudioSystem::UpdateBusChainGains()
     for (auto& b : m_buses)
     {
         const f32 own = BusEffectiveGain(b);
-        b.chainGain = (b.parent >= 0) ? own * m_buses[static_cast<size_t>(b.parent)].chainGain : own;
+        if (b.parent < 0)
+        {
+            b.chainGain   = own;
+            b.sendChain   = 1.0f;   // master はリバーブの戻りにも掛かるので送りには含めない
+            b.sendLowpass = 0.0f;
+            continue;
+        }
+        const Bus& par = m_buses[static_cast<size_t>(b.parent)];
+        b.chainGain   = own * par.chainGain;
+        b.sendChain   = own * par.sendChain;
+        b.sendLowpass = audio::CombineLowpass(audio::CombineLowpass(b.lowpassHz, b.snap.lowpassHz),
+                                              par.sendLowpass);
     }
 }
 
@@ -422,6 +443,45 @@ void AudioSystem::ApplyVoiceGain(Voice& v)
         v.src->SetVolume(vol);
         v.appliedVolume = vol;
     }
+    // ---- リバーブへの送り ----
+    // 量 = バスの reverbSend × 音ごとの倍率 × バス音量の積（master 除く）× 距離。
+    // ★距離は √（乾いた音より遅く減衰させる）。遠い音ほど響きの割合が増える＝距離感が出る。
+    // ★バス音量を掛けるのは、sfx をミュートしたときに響きだけ残らないようにするため
+    //   （送りはバスを経由しないので、掛けないとバスの操作が響きに効かない）。
+    if (v.hasReverbSend && m_reverbBus >= 0)
+    {
+        IXAudio2Voice* rv = BusOutputVoice(m_reverbBus);
+        const Bus& vb = m_buses[static_cast<size_t>(v.bus)];
+        const f32 dist = v.spatial ? std::sqrt((std::max)(v.distGain, 0.0f)) : 1.0f;
+        v.sendLevel = vb.reverbSend * v.reverbMul * vb.sendChain * dist;
+        const u32 sc = v.channels, dc = m_reverbInCh;
+        if (rv && sc >= 1 && sc <= 8 && std::fabs(v.sendLevel - v.appliedSend) > 1e-4f)
+        {
+            float m[16] = {};
+            for (u32 d = 0; d < dc; ++d)
+                for (u32 s = 0; s < sc; ++s)
+                {
+                    float lv = 0.0f;
+                    if (dc == 1)      lv = v.sendLevel / static_cast<f32>(sc);   // モノの戻りへは平均
+                    else if (sc == 1) lv = v.sendLevel;                          // モノ音源は左右両方へ
+                    else              lv = (s % dc == d) ? v.sendLevel : 0.0f;   // ステレオはそのまま
+                    m[sc * d + s] = lv;
+                }
+            v.src->SetOutputMatrix(rv, sc, dc, m);
+            v.appliedSend = v.sendLevel;
+        }
+        const f32 sf = audio::CutoffToFilterFrequency(vb.sendLowpass, static_cast<f32>(m_reverbRate));
+        if (rv && std::fabs(sf - v.appliedSendFilter) > 1e-5f)
+        {
+            XAUDIO2_FILTER_PARAMETERS fp{};
+            fp.Type      = LowPassFilter;
+            fp.Frequency = sf;
+            fp.OneOverQ  = 1.0f;
+            v.src->SetOutputFilterParameters(rv, &fp);
+            v.appliedSendFilter = sf;
+        }
+    }
+
     if (!v.spatial) return;   // USEFILTER を付けていないボイスにフィルタは書けない
     // XAudio2 のフィルタ Frequency は 2*sin(pi*fc/fs)。1.0（＝上限）が素通し。
     const f32 fs   = static_cast<f32>(v.sampleRate > 0 ? v.sampleRate : 44100);
@@ -484,11 +544,18 @@ bool AudioSystem::MakeReal(Voice& v, f64 startFrame)
     if (begin >= v.totalFrames) return false;   // ワンショットの末尾を過ぎている＝鳴らす物が無い
 
     WAVEFORMATEX fmt = v.clip->GetFormat();
-    OneSend send(BusOutputVoice(v.bus));
+    // 送り先: 自分のバス + （BGM 以外は）リバーブの戻り。リバーブへの送りにはフィルタを付けて、
+    // バスのローパス（スナップショットの「こもり」）を響きにも掛けられるようにする。
+    XAUDIO2_SEND_DESCRIPTOR sd[2] = {};
+    UINT32 sendCount = 0;
+    sd[sendCount++] = {0, BusOutputVoice(v.bus)};
+    IXAudio2Voice* reverbVoice = (m_reverbReady && !v.bgm) ? BusOutputVoice(m_reverbBus) : nullptr;
+    if (reverbVoice) sd[sendCount++] = {XAUDIO2_SEND_USEFILTER, reverbVoice};
+    XAUDIO2_VOICE_SENDS sends{sendCount, sd};
     // ★USEFILTER はボイス生成時にしか付けられない。遮蔽のローパスに要る。
     const UINT32 flags = v.spatial ? XAUDIO2_VOICE_USEFILTER : 0u;
     HRESULT hr = m_xaudio2->CreateSourceVoice(&v.src, &fmt, flags, XAUDIO2_DEFAULT_FREQ_RATIO,
-                                              nullptr, send.Get());
+                                              nullptr, sd[0].pOutputVoice ? &sends : nullptr);
     if (FAILED(hr))
     {
         Logger::Error("ソースボイス作成に失敗しました（{}）: 0x{:08X}", v.path, static_cast<u32>(hr));
@@ -516,6 +583,9 @@ bool AudioSystem::MakeReal(Voice& v, f64 startFrame)
     v.virtualPos    = static_cast<f64>(begin);
     v.appliedVolume = -1.0f;
     v.appliedFilter = -1.0f;
+    v.appliedSend   = -1.0f;
+    v.appliedSendFilter = -1.0f;
+    v.hasReverbSend = (reverbVoice != nullptr);
     v.virtualReason = "";
     v.src->SetFrequencyRatio(v.pitch);
     ApplyVoiceGain(v);
@@ -682,6 +752,7 @@ i32 AudioSystem::PlayInternal(const PlayParams& p, bool bgm)
     v.minDist     = p.minDistance;
     v.maxDist     = p.maxDistance;
     v.pos[0] = p.pos[0]; v.pos[1] = p.pos[1]; v.pos[2] = p.pos[2];
+    v.reverbMul   = std::clamp(p.reverb, 0.0f, 4.0f);
     v.distance    = probe.distance;
     v.distGain    = probe.distGain;
     v.audibility  = aud;
@@ -950,6 +1021,7 @@ void AudioSystem::Update(f32 dt)
 void AudioSystem::Tick(f32 dt)
 {
     if (dt < 0.0f) dt = 0.0f;
+    UpdateReverb(dt);          // 響きの量が変わるので、バスの積より先に
     UpdateBusChainGains();
 
     // 1) 終了検出・仮想ボイスの位置送り・フェード
@@ -1105,6 +1177,7 @@ std::vector<AudioSystem::VoiceInfo> AudioSystem::GetVoices() const
         const f32 sr    = static_cast<f32>(v.sampleRate > 0 ? v.sampleRate : 44100);
         vi.positionSec  = static_cast<f32>(CurrentFrame(v)) / sr;
         vi.lengthSec    = static_cast<f32>(v.totalFrames) / sr;
+        vi.reverbSend   = v.hasReverbSend ? v.sendLevel : 0.0f;
         out.push_back(std::move(vi));
     }
     return out;
@@ -1126,6 +1199,17 @@ i32 AudioSystem::ResolveBusOrSfx(const std::string& name)
 {
     if (name.empty()) return FindBus("sfx");
     const i32 i = FindBus(name);
+    if (i >= 0 && m_buses[static_cast<size_t>(i)].isReverb)
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            warned = true;
+            Logger::Warn("reverb はリバーブの戻りバスなので音を直接流せません。sfx で鳴らします"
+                         "（響かせたいなら play{{reverb=1}} や setBusReverbSend で送り量を決めてください）");
+        }
+        return FindBus("sfx");
+    }
     if (i >= 0) return i;
     // 未知のバス名で無音にすると「鳴らない」の原因が分からなくなるので、sfx へ流して 1 度だけ警告する。
     if (std::find(m_warnedUnknownBus.begin(), m_warnedUnknownBus.end(), name) == m_warnedUnknownBus.end())
@@ -1145,13 +1229,17 @@ IXAudio2Voice* AudioSystem::BusOutputVoice(i32 busIndex) const
 
 f32 AudioSystem::BusEffectiveGain(const Bus& bus) const
 {
-    return bus.muted ? 0.0f : bus.volume * bus.snap.gain;
+    if (bus.muted) return 0.0f;
+    const f32 g = bus.volume * bus.snap.gain;
+    // リバーブの戻りは「今の響きの量（ゾーンから補間した wet）」も掛ける
+    return bus.isReverb ? g * m_reverbWetCur : g;
 }
 
 bool AudioSystem::CreateBusVoice(Bus& bus)
 {
     if (bus.voice) return true;
     if (!m_xaudio2 || !m_masterVoice) return false;
+    if (bus.isReverb) return CreateReverbVoice(bus);
 
     IXAudio2Voice* parentVoice = nullptr;
     if (bus.parent >= 0)
@@ -1218,6 +1306,11 @@ bool AudioSystem::CreateBus(const std::string& name, const std::string& parent)
         Logger::Warn("audio:createBus('{}'): 親バス '{}' がありません", name, parent);
         return false;
     }
+    if (m_buses[static_cast<size_t>(p)].isReverb)
+    {
+        Logger::Warn("audio:createBus('{}'): reverb（リバーブの戻り）の下にはバスを作れません", name);
+        return false;
+    }
     const u32 depth = m_buses[static_cast<size_t>(p)].depth + 1u;
     if (depth > kMaxBusDepth)
     {
@@ -1225,9 +1318,10 @@ bool AudioSystem::CreateBus(const std::string& name, const std::string& parent)
         return false;
     }
     Bus b;
-    b.name   = name;
-    b.parent = p;
-    b.depth  = depth;
+    b.name       = name;
+    b.parent     = p;
+    b.depth      = depth;
+    b.reverbSend = m_buses[static_cast<size_t>(p)].reverbSend;   // 親の送り量を引き継ぐ
     m_buses.push_back(std::move(b));
     // ★push_back の後で参照を取り直す（再確保で前の参照は無効）
     CreateBusVoice(m_buses.back());
@@ -1280,6 +1374,170 @@ f32 AudioSystem::GetBusLowpass(const std::string& name) const
     return (i < 0) ? 0.0f : m_buses[static_cast<size_t>(i)].lowpassHz;
 }
 
+void AudioSystem::SetBusReverbSend(const std::string& name, f32 send)
+{
+    const i32 i = FindBus(name);
+    if (i < 0) { Logger::Warn("setBusReverbSend: バス '{}' がありません", name); return; }
+    m_buses[static_cast<size_t>(i)].reverbSend = std::clamp(send, 0.0f, 1.0f);
+}
+
+f32 AudioSystem::GetBusReverbSend(const std::string& name) const
+{
+    const i32 i = FindBus(name);
+    return (i < 0) ? 0.0f : m_buses[static_cast<size_t>(i)].reverbSend;
+}
+
+// ===== リバーブ =====
+// XAudio2 の組み込みリバーブ（XAudio2CreateReverb）を 1 本のサブミックスに載せ、各ボイスから送る。
+// ★入出力のチャンネル構成は「モノ→モノ / モノ→5.1 / ステレオ→ステレオ / ステレオ→5.1」しか
+//   受け付けず、サンプルレートも 20k〜48kHz に限られる（xaudio2fx.h）。出力デバイスに合わせて選ぶ。
+
+bool AudioSystem::CreateReverbVoice(Bus& bus)
+{
+    m_reverbReady = false;
+    m_reverbInCh  = (m_outChannels == 1) ? 1u : 2u;
+    m_reverbOutCh = (m_outChannels == 1) ? 1u : (m_outChannels >= 6 ? 6u : 2u);
+    m_reverbRate  = std::clamp<u32>(m_outSampleRate, XAUDIO2FX_REVERB_MIN_FRAMERATE,
+                                    XAUDIO2FX_REVERB_MAX_FRAMERATE);
+    if (bus.parent < 0) return false;
+    IXAudio2Voice* parentVoice = m_buses[static_cast<size_t>(bus.parent)].voice;
+    if (!parentVoice) return false;
+
+    IUnknown* apo = nullptr;
+    HRESULT hr = XAudio2CreateReverb(&apo);
+    if (FAILED(hr) || !apo)
+    {
+        Logger::Warn("リバーブの作成に失敗しました（響き無しで続けます）: 0x{:08X}", static_cast<u32>(hr));
+        return false;
+    }
+    XAUDIO2_EFFECT_DESCRIPTOR desc{};
+    desc.pEffect        = apo;
+    desc.InitialState   = TRUE;
+    desc.OutputChannels = m_reverbOutCh;
+    XAUDIO2_EFFECT_CHAIN chain{1, &desc};
+    OneSend send(parentVoice);
+    const UINT32 stage = kMasterStage - 8u;   // master より前、どのバスより後（ソースからしか受けない）
+    hr = m_xaudio2->CreateSubmixVoice(&bus.voice, m_reverbInCh, m_reverbRate, 0, stage,
+                                      send.Get(), &chain);
+    apo->Release();   // ボイスが参照を持つ
+    if (FAILED(hr))
+    {
+        Logger::Warn("リバーブのサブミックス作成に失敗しました（響き無しで続けます）: 0x{:08X}",
+                     static_cast<u32>(hr));
+        bus.voice = nullptr;
+        return false;
+    }
+    m_reverbReady = true;
+    ApplyReverbParams(true);
+    ApplyBus(bus, true);
+    return true;
+}
+
+void AudioSystem::ApplyReverbParams(bool force)
+{
+    if (!m_reverbReady || m_reverbBus < 0) return;
+    IXAudio2SubmixVoice* rv = m_buses[static_cast<size_t>(m_reverbBus)].voice;
+    if (!rv) return;
+    // ★毎フレーム書かない。聞き分けられない差（0.25 dB / 25ms 相当未満）は捨てる。
+    if (!force && audio::ReverbDistance(m_reverbCur, m_reverbApplied) < 0.25f) return;
+
+    const audio::ReverbParams& p = m_reverbCur;
+    XAUDIO2FX_REVERB_I3DL2_PARAMETERS i3{};
+    i3.WetDryMix         = 100.0f;   // 送りバスなので 100% ウェット。量はバスの音量で決める
+    i3.Room              = static_cast<INT32>(std::lround(p.room));
+    i3.RoomHF            = static_cast<INT32>(std::lround(p.roomHF));
+    i3.RoomRolloffFactor = p.roomRolloff;
+    i3.DecayTime         = std::clamp(p.decayTime, 0.1f, 20.0f);
+    i3.DecayHFRatio      = std::clamp(p.decayHFRatio, 0.1f, 2.0f);
+    i3.Reflections       = static_cast<INT32>(std::lround(p.reflections));
+    i3.ReflectionsDelay  = std::clamp(p.reflectionsDelay, 0.0f, 0.3f);
+    i3.Reverb            = static_cast<INT32>(std::lround(p.reverb));
+    i3.ReverbDelay       = std::clamp(p.reverbDelay, 0.0f, 0.1f);
+    i3.Diffusion         = std::clamp(p.diffusion, 0.0f, 100.0f);
+    i3.Density           = std::clamp(p.density, 0.0f, 100.0f);
+    i3.HFReference       = std::clamp(p.hfReference, 20.0f, 20000.0f);
+    XAUDIO2FX_REVERB_PARAMETERS native{};
+    // ★7.1 用の後方ディレイ（既定 TRUE）は 5.1 以下の出力だと範囲外になるので FALSE で変換する
+    ReverbConvertI3DL2ToNative(&i3, &native, FALSE);
+    const HRESULT hr = rv->SetEffectParameters(0, &native, sizeof(native));
+    if (SUCCEEDED(hr)) m_reverbApplied = m_reverbCur;
+}
+
+void AudioSystem::UpdateReverb(f32 dt)
+{
+    // 目標 = 既定の響き（ゾーンの外）を土台に、優先度の低い順にゾーンを重みで重ねたもの
+    audio::ReverbParams base;
+    if (!audio::FindReverbPreset(m_defaultReverbPreset.c_str(), base))
+        audio::FindReverbPreset("none", base);
+
+    std::vector<ReverbZoneInput> zones = m_reverbZones;
+    std::stable_sort(zones.begin(), zones.end(),
+                     [](const ReverbZoneInput& a, const ReverbZoneInput& b) { return a.priority < b.priority; });
+    std::vector<audio::ZoneSample> samples;
+    samples.reserve(zones.size());
+    m_reverbDominant.clear();
+    for (const auto& z : zones)
+    {
+        audio::ZoneSample s;
+        s.priority = z.priority;
+        s.weight   = z.weight;
+        s.wet      = z.wet;
+        if (!audio::FindReverbPreset(z.preset.c_str(), s.params))
+            audio::FindReverbPreset("generic", s.params);   // 未知のプリセットは汎用で鳴らす（無音にしない）
+        samples.push_back(s);
+        if (z.weight > 0.0f) m_reverbDominant = z.name;     // 並びの最後 = 一番優先度が高い
+    }
+    const audio::ReverbMix mix = audio::BlendZones(samples.data(), samples.size(), base, m_defaultReverbWet);
+    m_reverbTarget    = mix.params;
+    m_reverbWetTarget = std::clamp(mix.wet, 0.0f, 1.0f);
+
+    // 時間方向にもならす（ゾーンの境界を跨いだ瞬間に響きが切り替わらない）。
+    // ★響きがほぼ無いところからは性格を即座に目標へ合わせる（量だけ時間で上げる）。
+    const f32 k = audio::SmoothFactor(dt, 0.35f);
+    if (m_reverbWetCur <= 1e-4f) m_reverbCur = m_reverbTarget;
+    else                         m_reverbCur = audio::LerpReverb(m_reverbCur, m_reverbTarget, k);
+    m_reverbWetCur = audio::Lerp(m_reverbWetCur, m_reverbWetTarget, k);
+    if (std::fabs(m_reverbWetCur - m_reverbWetTarget) < 1e-4f) m_reverbWetCur = m_reverbWetTarget;
+
+    ApplyReverbParams(false);
+    if (m_reverbBus >= 0) ApplyBus(m_buses[static_cast<size_t>(m_reverbBus)]);
+}
+
+bool AudioSystem::SetDefaultReverb(const std::string& preset, f32 wet)
+{
+    audio::ReverbParams tmp;
+    if (!audio::FindReverbPreset(preset.c_str(), tmp))
+    {
+        Logger::Warn("audio:setReverb: プリセット '{}' がありません（audio:getReverbPresets() で一覧）", preset);
+        return false;
+    }
+    m_defaultReverbPreset = preset;
+    m_defaultReverbWet    = std::clamp(wet, 0.0f, 1.0f);
+    return true;
+}
+
+AudioSystem::ReverbState AudioSystem::GetReverbState() const
+{
+    ReverbState st;
+    st.available     = m_reverbReady;
+    st.defaultPreset = m_defaultReverbPreset;
+    st.defaultWet    = m_defaultReverbWet;
+    for (const auto& z : m_reverbZones)
+        if (z.weight > 0.0f) st.zones.push_back(z);
+    st.dominant   = m_reverbDominant;
+    st.targetWet  = m_reverbWetTarget;
+    st.currentWet = m_reverbWetCur;
+    st.current    = m_reverbCur;
+    return st;
+}
+
+void AudioSystem::ResetMixForStop()
+{
+    m_reverbZones.clear();
+    m_defaultReverbPreset = "none";
+    m_defaultReverbWet    = 0.0f;
+}
+
 std::vector<AudioSystem::BusInfo> AudioSystem::GetBuses() const
 {
     std::vector<BusInfo> out;
@@ -1297,6 +1555,8 @@ std::vector<AudioSystem::BusInfo> AudioSystem::GetBuses() const
         bi.effectiveGain   = BusEffectiveGain(b);
         bi.chainGain       = b.chainGain;
         bi.voiceLimit      = b.voiceLimit;
+        bi.reverbSend      = b.reverbSend;
+        bi.reverbReturn    = b.isReverb;
         bi.builtin         = b.builtin;
         const i32 self = static_cast<i32>(&b - m_buses.data());
         for (const auto& v : m_voices)

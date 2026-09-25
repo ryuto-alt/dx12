@@ -2678,6 +2678,31 @@ void Application::Update()
                 m_audioSystem->SetOcclusion(src.runtimeSlot, occ);
             }
         }
+        // リバーブ域: リスナー位置をゾーンのローカル空間へ写して重みを出し、AudioSystem へ渡す。
+        // 混ぜ方（優先度・時間方向の平滑）は AudioSystem 側（audio::BlendZones）。
+        {
+            float lx, ly, lz;
+            m_audioSystem->GetListenerPos(lx, ly, lz);
+            std::vector<AudioSystem::ReverbZoneInput> zones;
+            for (auto [e, z] : reg.view<AudioReverbZone>().each())
+            {
+                if (!z.enabled) continue;
+                DirectX::XMVECTOR det;
+                const DirectX::XMMATRIX inv = DirectX::XMMatrixInverse(&det, ComputeWorldMatrix(reg, e));
+                DirectX::XMFLOAT3 lp;
+                DirectX::XMStoreFloat3(&lp, DirectX::XMVector3TransformCoord(
+                                                DirectX::XMVectorSet(lx, ly, lz, 1.0f), inv));
+                const float local[3] = {lp.x, lp.y, lp.z};
+                const float half[3]  = {z.halfExtents.x, z.halfExtents.y, z.halfExtents.z};
+                const float outside  = (z.shape == 1) ? audio::SphereOutsideDistance(local, z.radius)
+                                                      : audio::BoxOutsideDistance(local, half);
+                const float w = audio::ZoneWeight(outside, z.fadeDistance);
+                if (w <= 0.0f) continue;
+                const auto* nt = reg.try_get<NameTag>(e);
+                zones.push_back({nt ? nt->name : std::string(), z.preset, w, z.wet, z.priority});
+            }
+            m_audioSystem->SetReverbZones(std::move(zones));
+        }
         { DX12_PROFILE_ZONE_N("Audio"); m_audioSystem->Update(dt); }
     }
     // ★ボイスの終了検出・仮想⇔実の入れ替え・フェード・バスの反映はモードに関係なく毎フレーム回す

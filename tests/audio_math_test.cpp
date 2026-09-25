@@ -11,7 +11,14 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <vector>
+
+#if defined(_WIN32)
+// プリセット表が SDK の XAUDIO2FX_I3DL2_PRESET_* を正しく写しているかを突き合わせる
+#include <windows.h>
+#include <xaudio2fx.h>
+#endif
 
 using namespace dx12e::audio;
 
@@ -128,6 +135,131 @@ void TestPickVictim()
     }
     Check(PickVictim(nullptr, 0, 128, 1.0f) == -1, "候補が無ければ -1");
 }
+
+void TestZoneShape()
+{
+    std::printf("[リバーブ域の形と重み]\n");
+    const float half[3] = {4.0f, 2.0f, 4.0f};
+    const float in[3]   = {3.9f, -1.9f, 0.0f};
+    const float side[3] = {5.0f, 0.0f, 0.0f};
+    const float corner[3] = {7.0f, 6.0f, 0.0f};
+    Check(BoxOutsideDistance(in, half) == 0.0f, "箱の内側は距離 0");
+    Check(Near(BoxOutsideDistance(side, half), 1.0f), "面の外側は面までの距離");
+    Check(Near(BoxOutsideDistance(corner, half), 5.0f), "角の外側は角までの距離（3-4-5）");
+    const float s[3] = {0.0f, 6.0f, 0.0f};
+    Check(Near(SphereOutsideDistance(s, 5.0f), 1.0f), "球の外側は表面までの距離");
+    Check(SphereOutsideDistance(in, 5.0f) == 0.0f, "球の内側は 0");
+
+    Check(ZoneWeight(0.0f, 2.0f) == 1.0f, "内側は重み 1");
+    Check(Near(ZoneWeight(1.0f, 2.0f), 0.5f), "fade の中ほどで 0.5");
+    Check(ZoneWeight(2.0f, 2.0f) == 0.0f, "fade の外端で 0");
+    Check(ZoneWeight(0.01f, 0.0f) == 0.0f, "fade 0 はくっきり切り替え（外に出たら 0）");
+}
+
+void TestReverbPresets()
+{
+    std::printf("[リバーブのプリセット]\n");
+    ReverbParams r;
+    Check(FindReverbPreset("room", r) && Near(r.decayTime, 0.40f), "room が引ける");
+    Check(FindReverbPreset("CAVE", r) && Near(r.decayTime, 2.91f), "大文字小文字は区別しない");
+    ReverbParams keep;
+    keep.decayTime = 9.9f;
+    Check(!FindReverbPreset("dungeon", keep) && keep.decayTime == 9.9f, "未知は false で書き換えない");
+    Check(!FindReverbPreset("roo", r) && !FindReverbPreset("rooms", r), "前方一致では引かない");
+
+#if defined(_WIN32)
+    struct { const char* name; XAUDIO2FX_REVERB_I3DL2_PARAMETERS sdk; } kSdk[] = {
+        {"none",          XAUDIO2FX_I3DL2_PRESET_DEFAULT},
+        {"generic",       XAUDIO2FX_I3DL2_PRESET_GENERIC},
+        {"closet",        XAUDIO2FX_I3DL2_PRESET_PADDEDCELL},
+        {"room",          XAUDIO2FX_I3DL2_PRESET_ROOM},
+        {"smallroom",     XAUDIO2FX_I3DL2_PRESET_SMALLROOM},
+        {"largeroom",     XAUDIO2FX_I3DL2_PRESET_LARGEROOM},
+        {"bathroom",      XAUDIO2FX_I3DL2_PRESET_BATHROOM},
+        {"stoneroom",     XAUDIO2FX_I3DL2_PRESET_STONEROOM},
+        {"hallway",       XAUDIO2FX_I3DL2_PRESET_HALLWAY},
+        {"stonecorridor", XAUDIO2FX_I3DL2_PRESET_STONECORRIDOR},
+        {"hall",          XAUDIO2FX_I3DL2_PRESET_CONCERTHALL},
+        {"cave",          XAUDIO2FX_I3DL2_PRESET_CAVE},
+        {"sewer",         XAUDIO2FX_I3DL2_PRESET_SEWERPIPE},
+        {"hangar",        XAUDIO2FX_I3DL2_PRESET_HANGAR},
+        {"forest",        XAUDIO2FX_I3DL2_PRESET_FOREST},
+        {"city",          XAUDIO2FX_I3DL2_PRESET_CITY},
+        {"outdoor",       XAUDIO2FX_I3DL2_PRESET_PLAIN},
+        {"underwater",    XAUDIO2FX_I3DL2_PRESET_UNDERWATER},
+    };
+    std::size_t n = 0;
+    ReverbPresetTable(n);
+    Check(n == sizeof(kSdk) / sizeof(kSdk[0]), "プリセットの数が SDK 突き合わせ表と同じ");
+    for (const auto& e : kSdk)
+    {
+        ReverbParams p;
+        const bool found = FindReverbPreset(e.name, p);
+        const bool same = found
+            && p.room == static_cast<float>(e.sdk.Room) && p.roomHF == static_cast<float>(e.sdk.RoomHF)
+            && Near(p.decayTime, e.sdk.DecayTime) && Near(p.decayHFRatio, e.sdk.DecayHFRatio)
+            && p.reflections == static_cast<float>(e.sdk.Reflections)
+            && Near(p.reflectionsDelay, e.sdk.ReflectionsDelay)
+            && p.reverb == static_cast<float>(e.sdk.Reverb) && Near(p.reverbDelay, e.sdk.ReverbDelay)
+            && Near(p.diffusion, e.sdk.Diffusion) && Near(p.density, e.sdk.Density)
+            && Near(p.hfReference, e.sdk.HFReference);
+        char label[96];
+        std::snprintf(label, sizeof(label), "プリセット '%s' が SDK の値と一致", e.name);
+        Check(same, label);
+    }
+#endif
+}
+
+void TestReverbBlend()
+{
+    std::printf("[リバーブ域の混ぜ方]\n");
+    ReverbParams none, room, cave;
+    FindReverbPreset("none", none);
+    FindReverbPreset("room", room);
+    FindReverbPreset("cave", cave);
+
+    {
+        const ReverbMix m = BlendZones(nullptr, 0, none, 0.0f);
+        Check(m.wet == 0.0f && m.params.room == none.room, "ゾーンが無ければ既定のまま");
+    }
+    {
+        ZoneSample z;
+        z.weight = 1.0f; z.wet = 0.6f; z.params = room;
+        const ReverbMix m = BlendZones(&z, 1, none, 0.0f);
+        Check(Near(m.wet, 0.6f) && Near(m.params.decayTime, room.decayTime), "内側ではゾーンそのもの");
+    }
+    {
+        ZoneSample z;
+        z.weight = 0.5f; z.wet = 0.6f; z.params = room;
+        const ReverbMix m = BlendZones(&z, 1, none, 0.0f);
+        Check(Near(m.wet, 0.3f), "fade の中ほどでは量が半分");
+        Check(Near(m.params.room, room.room),
+              "響きが無いところから入るときは性格は即座にゾーンのもの（none と混ぜて二重に絞らない）");
+    }
+    {
+        // 洞窟（外側, 優先度 0）の中の小部屋（内側, 優先度 1）
+        ZoneSample zs[2];
+        zs[0].priority = 0; zs[0].weight = 1.0f; zs[0].wet = 0.8f; zs[0].params = cave;
+        zs[1].priority = 1; zs[1].weight = 1.0f; zs[1].wet = 0.4f; zs[1].params = room;
+        const ReverbMix m = BlendZones(zs, 2, none, 0.0f);
+        Check(Near(m.params.decayTime, room.decayTime) && Near(m.wet, 0.4f), "入れ子の内側（優先度が高い方）が勝つ");
+        zs[1].weight = 0.5f;
+        const ReverbMix h = BlendZones(zs, 2, none, 0.0f);
+        Check(Near(h.params.decayTime, (cave.decayTime + room.decayTime) * 0.5f) && Near(h.wet, 0.6f),
+              "内側の境界では外側と内側の中間");
+    }
+    {
+        ReverbParams a = none, b = room;
+        const ReverbParams mid = LerpReverb(a, b, 0.5f);
+        Check(Near(mid.room, (a.room + b.room) * 0.5f) && Near(mid.decayTime, (a.decayTime + b.decayTime) * 0.5f),
+              "LerpReverb の中点");
+        Check(ReverbDistance(a, a) == 0.0f && ReverbDistance(a, b) > 1.0f, "同じなら差 0、違えば大きい");
+    }
+    Check(SmoothFactor(0.0f, 0.35f) == 0.0f, "dt=0 なら動かない");
+    Check(SmoothFactor(1.0f, 0.0f) == 1.0f, "tau=0 は即座に追従");
+    Check(Near(SmoothFactor(0.35f, 0.35f), 1.0f - std::exp(-1.0f)), "時定数ぶんで 63%");
+    Check(SmoothFactor(100.0f, 0.35f) <= 1.0f, "dt が大きくても行き過ぎない");
+}
 } // namespace
 
 int main()
@@ -137,6 +269,9 @@ int main()
     TestDistance();
     TestVirtual();
     TestPickVictim();
+    TestZoneShape();
+    TestReverbPresets();
+    TestReverbBlend();
 
     std::printf("\naudio_math: %d チェック / %d 件 NG\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

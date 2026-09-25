@@ -1784,6 +1784,9 @@ void Application::EnterEditorMode()
         //   **次の Play でも前セッションの座標にリスナーが固定**されたままだった
         //   （タイトルや別ステージの空間 SE が全部そこ基準で定位する）。
         m_audioSystem->ClearListenerOverride();
+        // ゲームが設定したミックス（リバーブ域・既定の響き・スナップショット）も初期状態へ戻す。
+        // 戻さないと、洞窟の中で Stop したエディタでプレビュー再生した音まで響き続ける。
+        m_audioSystem->ResetMixForStop();
     }
 
     // ★パッドの振動も止める。`padVibrate(1,1)`（seconds 省略＝手動で止めるまで鳴り続ける形）の

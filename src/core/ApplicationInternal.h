@@ -293,6 +293,7 @@ inline bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const
     else if (key == "spriteAnimator")      reg.remove<SpriteAnimator>(e);
     else if (key == "animatorController")  reg.remove<AnimatorController>(e);
     else if (key == "footIK")              reg.remove<FootIK>(e);
+    else if (key == "audioReverbZone")     reg.remove<AudioReverbZone>(e);
     else return false;
     return true;
 }
@@ -899,6 +900,7 @@ inline nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entit
     if (reg.all_of<SpriteAnimator>(e))      a.push_back("spriteAnimator");
     if (reg.all_of<AnimatorController>(e))  a.push_back("animatorController");
     if (reg.all_of<FootIK>(e))              a.push_back("footIK");
+    if (reg.all_of<AudioReverbZone>(e))     a.push_back("audioReverbZone");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     // ★ゲーム内 UI と編集用グリッド。長らくここから漏れていて、
     //   dx12_list_entities(verbose) では UI 要素が「transform だけの空エンティティ」に見えていた

@@ -273,6 +273,34 @@ static void Test_AudioSource()
         });
 }
 
+// リバーブ域（音）。反射で直列化するのでフィールドを足したら ComponentMeta にも足すこと。
+static void Test_AudioReverbZone()
+{
+    Case<AudioReverbZone>(
+        [](entt::registry& r, entt::entity e) {
+            AudioReverbZone z;
+            z.preset       = "cave";
+            z.shape        = 1;
+            z.halfExtents  = {1.5f, 2.5f, 3.5f};
+            z.radius       = 7.0f;
+            z.fadeDistance = 0.75f;
+            z.wet          = 0.8f;
+            z.priority     = 3;
+            z.enabled      = false;
+            r.emplace<AudioReverbZone>(e, z);
+        },
+        [](const AudioReverbZone& z) {
+            CHECK(z.preset == "cave");
+            CHECK(z.shape == 1);
+            CHECK_V3(z.halfExtents, 1.5f, 2.5f, 3.5f);
+            CHECK_F(z.radius, 7.0f);
+            CHECK_F(z.fadeDistance, 0.75f);
+            CHECK_F(z.wet, 0.8f);
+            CHECK(z.priority == 3);
+            CHECK(z.enabled == false);
+        });
+}
+
 static void Test_ParticleEmitter()
 {
     Case<ParticleEmitter>(
@@ -2132,6 +2160,7 @@ int main()
     Test_TerrainSplatPathIsWrittenWithoutLayerSet();
     Test_AnimatorController();
     Test_FootIK();
+    Test_AudioReverbZone();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

@@ -102,6 +102,7 @@ void RegisterAudioBindings(sol::state& lua)
                                    p.priority    = o.get_or("priority", AudioSystem::kDefaultPriority);
                                    p.minDistance = o.get_or("minDistance", 1.0f);
                                    p.maxDistance = o.get_or("maxDistance", 30.0f);
+                                   p.reverb      = o.get_or("reverb", 1.0f);
                                    p.spatial     = ReadPos(o, p.pos);
                                }
                                return a.Play(p);
@@ -145,6 +146,21 @@ void RegisterAudioBindings(sol::state& lua)
                                 a.GetVoiceCounts(real, virt);
                                 return std::make_tuple(real, virt);
                             },
+        // ---- リバーブ ----
+        // ゾーン（AudioReverbZone）の外で使う既定の響き。wet 0..1。未知のプリセットは false。
+        "setReverb",        [](AudioSystem& a, const std::string& preset, sol::optional<float> wet) {
+                                return a.SetDefaultReverb(preset, wet.value_or(0.35f));
+                            },
+        "getReverbPresets", [](AudioSystem& /*a*/, sol::this_state ts) {
+                                sol::state_view lv(ts);
+                                sol::table t = lv.create_table();
+                                std::size_t n = 0;
+                                const audio::ReverbPreset* p = audio::ReverbPresetTable(n);
+                                for (std::size_t i = 0; i < n; ++i) t[i + 1] = std::string(p[i].name);
+                                return t;
+                            },
+        "setBusReverbSend", &AudioSystem::SetBusReverbSend,
+        "getBusReverbSend", &AudioSystem::GetBusReverbSend,
         "getBuses",         [](AudioSystem& a, sol::this_state ts) {
                                 sol::state_view lv(ts);
                                 sol::table t = lv.create_table();
