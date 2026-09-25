@@ -4042,9 +4042,9 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         ComputeCascades(lightDir, camNear, camFar);
     }
 
-    // SRV ヒープをバインド（シャドウパスでもボーンSRVが必要）
-    m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-    m_commandList->SetRootSignature(*m_rootSignature);
+    // ★以前はここで「影パスのために」SRV ヒープとメインのルートシグネチャを張っていた。
+    //   今は影 / 深度プリパスの段が入口で自分で張る（renderer/RenderPass.h の状態の契約）。
+    //   間の TLAS 構築（SkinningCompute / AS ビルド）はルート記述子だけでヒープを使わない。
 
     // ===== TAA の有効判定（BuildDrawList より前に決めること）=====
     // 「速度バッファ用に前フレームのワールド行列を追跡するか」がここで決まるため、
@@ -4488,6 +4488,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
         gpuBegin(GpuTimer::Shadows);
         m_passBucket = primary ? &m_passShadow : &m_passOther;
+        // 影の段が使う状態は入口で自分で張る（RenderDepthOnlyScene はメインのルートシグネチャで
+        // 描き、スキンドのボーン SRV をテーブルで読むのでヒープも要る）。RT / ビューポートは下の各パス。
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRootSignature(*m_rootSignature);
 
         // ===== スポットライト影パス =====
         if (m_scene && m_scene->GetShadowsEnabled() && m_numSpotShadowSlots > 0)
@@ -4750,6 +4754,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // --- 深度プリパス（カメラ視点で m_depthBuffer/m_dsvHandle へ書く）---
         // ★ラスタライズは camVPJ（ジッタあり）。ここをジッタなしにするとフォワードと
         //   深度がビット一致せず LESS_EQUAL で面が欠落する。
+        // この段の状態は入口で自分で張る（影の段が無いビューでも同じに動くように）。
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRootSignature(*m_rootSignature);
         m_commandList->ClearDepthStencil(depthDsv);
         m_commandList->SetViewportAndScissor(rW, rH);
 
@@ -4963,10 +4970,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
         m_commandList->TransitionResource(depthRes,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
-
-        // プリパス/SSAO/コンタクトシャドウ/SSR/SSGI で RootSig/PSO/RT/ヒープを切り替えたので forward 用に再設定
-        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-        m_commandList->SetRootSignature(*m_rootSignature);
+        // ★ここで Forward 用に RootSig / ヒープを張り直していたが、今は Forward+ の段
+        //   （ForwardScenePass）が入口で自分で張る。
     }
     gpuEnd(GpuTimer::PrepassSSAO);
     if (primary)
