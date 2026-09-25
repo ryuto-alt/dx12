@@ -31,6 +31,8 @@ add_library(Renderer STATIC
     GpuParticleSystem.cpp
     IBLBaker.cpp
     SkyboxRenderer.cpp
+    PerceptionPass.cpp      # 知覚層（dx12_perceive）の ID パス + 読み戻し
+    PerceptionStats.cpp     # 知覚層の集計（GPU 非依存の純関数。tests/perception_stats_test.cpp）
 )
 target_include_directories(Renderer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

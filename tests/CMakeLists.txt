@@ -57,6 +57,20 @@ else()
 endif()
 add_test(NAME NetBufferTests COMMAND NetBufferTests)
 
+# 知覚層（dx12_perceive）の集計ロジック（renderer/PerceptionStats.{h,cpp}）。
+# ID 画素と表示色の配列 → エンティティごとの占有率・周囲との輝度比・遮蔽・灯りの向き。
+# GPU も DirectXMath も使わない純関数なので、依存ゼロのスタンドアロン構成でも回る。
+# ★TS 側（tools/mcp-server/perceive.ts）の言葉の境界はここの定義が前提。黙って変えさせない。
+add_executable(PerceptionStatsTests perception_stats_test.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/../src/renderer/PerceptionStats.cpp)
+target_include_directories(PerceptionStatsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(PerceptionStatsTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(PerceptionStatsTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME PerceptionStatsTests COMMAND PerceptionStatsTests)
+
 # クラスタードライティング（Forward+）の Z 指数分割とカリング判定のテスト。
 # renderer/ClusterMath.h はヘッダオンリー・GPU/DirectXMath 非依存なのでスタンドアロンでも動く。
 # HLSL 側（shaders/forward/ClusterCommon.hlsli）は同じ式を手で写しているので、

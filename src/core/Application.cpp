@@ -1656,6 +1656,7 @@ void Application::Run()
         {
             { CpuScopeTimer _t(&m_cpuMs[CpuUpdate]); DX12_PROFILE_ZONE_N("Update"); Update(); }
             if (gvOverride) SyncActiveCameraToGlobal();   // Update の後に上書き(編集カメラ操作に勝つ)
+            ApplyPerceptionCamera();                      // dx12_perceive の視点（要求中だけ。同じ理由で Update の後）
             Render();
             m_consecFrameErrors = 0;   // 1 枚描けたら「復帰した」＝連続失敗を数え直す
         }
@@ -1704,7 +1705,12 @@ void Application::Run()
         //   中でしかコピーできないので pending を立てて次フレームに撮らせる。
         if (m_deterministicCapture && m_deterministicFramesLeft > 0 && --m_deterministicFramesLeft == 0)
         {
-            if (m_mcpFinalShot.wantSceneRt)
+            if (m_mcpPerceive && m_mcpPerceive->phase == McpPerceiveJob::Phase::Settling)
+            {
+                // dx12_perceive: 次フレームの Render が最終画のコピーと ID パスを同じコマンドリストへ積む
+                m_mcpPerceive->phase = McpPerceiveJob::Phase::Pending;
+            }
+            else if (m_mcpFinalShot.wantSceneRt)
             {
                 std::string derr;
                 const std::string dpath = CaptureSceneScreenshot(derr, m_mcpFinalShot.path);
@@ -1731,6 +1737,8 @@ void Application::Run()
 
         // screenshot_final: Render() 内でバックバッファをコピー済みなら PNG 化して遅延応答を返す。
         FinishFinalScreenshot();
+        // dx12_perceive: Render() が ID パスを記録済みなら読み戻して集計し、遅延応答を返す。
+        FinishPerception();
 
         // screenshot_game_view: このフレームの描画(ゲームカメラ視点)を撮って遅延応答 → 編集カメラ復元。
         if (gvShot)
@@ -1978,6 +1986,7 @@ void Application::Shutdown()
     m_hiZPass.reset();
     if (m_occlusionCull) m_occlusionCull->Shutdown();
     m_occlusionCull.reset();
+    m_perceptionPass.reset();   // 知覚層（RT / 読み戻し / 専用ヒープ）。要求が無ければ最初から null
     m_contactShadowPass.reset();
     m_taaPass.reset();
     m_gbufferRT.reset();

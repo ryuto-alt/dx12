@@ -1823,6 +1823,182 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     }
 }
 
+// ---------------------------------------------------------------------------
+// 知覚層（dx12_perceive）の ID パス。流れの全体は core/mcp/McpPerceive.h。
+// ---------------------------------------------------------------------------
+// ★深度プリパス（RenderDepthOnlyScene）と同じ m_drawItems を同じ LOD・同じ透明の扱いで回す:
+//   ・半透明（マテリアル由来 alphaClass==2 / カスタムシェーダ sortKey==3）は【不透明の後に】描く。
+//     深度テストあり・深度を書く＝「手前に見えている面」として ID を取る（JUNCTION の未完成の破片は
+//     半透明の幽霊表示なので、除外すると肝心の対象が 0 画素になる）。includeTransparent:false なら
+//     深度プリパスと同じく描かない
+//   ・MASK（アルファクリップ）は同じ SRV・同じ cutoff・同じ UV で抜く（bindMaskMaterial と同じ優先順）
+//   ・スキンドは同じフレームのボーン SRV、ノードアニメはサブメッシュの姿勢を掛ける
+//   ・インスタンシングはしない（ID をドローごとに変えるため。要求時だけなので 1 体 1 ドローで足りる）
+// ★呼ばれるのは Pending のフレームだけ。それ以外では 1 命令も積まない（＝最終画は変わらない）。
+void Application::RecordPerceptionIds(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
+                                      D3D12_CPU_DESCRIPTOR_HANDLE rtv, u32 vpX, u32 vpY, u32 vpW, u32 vpH,
+                                      u32 frameIndex)
+{
+    if (!m_mcpPerceive || m_mcpPerceive->phase != McpPerceiveJob::Phase::Pending) return;
+    if (!cmd || !backBuffer || !m_perceptionPass || !m_scene || !m_camera) return;
+    using namespace DirectX;
+    McpPerceiveJob& job = *m_mcpPerceive;
+    const auto t0 = std::chrono::high_resolution_clock::now();
+
+    auto fail = [&](const std::string& why)
+    {
+        FailMcp(m_mcpBridge.get(), job.reply, McpErr::Internal, "perceive: " + why);
+        job.reply = {};
+        EndPerception();
+    };
+
+    // ---- 解析解像度（既定 = 表示矩形。片方だけならアスペクトを保って決める）----
+    u32 w = job.width, h = job.height;
+    if (vpW == 0 || vpH == 0) { fail("viewport rect is empty"); return; }
+    if (w == 0 && h == 0)  { w = vpW; h = vpH; }
+    else if (h == 0)       h = (std::max)(1u, static_cast<u32>(std::lround(static_cast<double>(w) * vpH / vpW)));
+    else if (w == 0)       w = (std::max)(1u, static_cast<u32>(std::lround(static_cast<double>(h) * vpW / vpH)));
+    job.analysisW = w;
+    job.analysisH = h;
+
+    // ---- 対象（名前で指定）→ 描画アイテム（自分 + 子孫）----
+    auto& reg = m_scene->GetRegistry();
+    const u32 targetCount = static_cast<u32>(job.targetEntities.size());
+    job.groupItems.assign(targetCount, {});
+    job.groups.assign(targetCount, {});
+    for (u32 t = 0; t < targetCount; ++t)
+    {
+        const entt::entity te = job.targetEntities[t];
+        perception::Group& g = job.groups[t];
+        g.name = job.targetNames[t];
+        XMVECTOR mn = XMVectorReplicate(FLT_MAX), mx = XMVectorReplicate(-FLT_MAX);
+        for (u32 i = 0; i < static_cast<u32>(m_drawItems.size()); ++i)
+        {
+            const DrawItem& it = m_drawItems[i];
+            if (!reg.valid(te) || (it.e != te && !McpIsDescendantOf(reg, it.e, te))) continue;
+            job.groupItems[t].push_back(i);
+            g.ids.push_back(i + 1);
+            mn = XMVectorMin(mn, XMLoadFloat3(&it.aabbMin));
+            mx = XMVectorMax(mx, XMLoadFloat3(&it.aabbMax));
+            g.hasAabb = true;
+        }
+        if (g.hasAabb)
+        {
+            XMFLOAT3 a, b;
+            XMStoreFloat3(&a, mn);
+            XMStoreFloat3(&b, mx);
+            g.aabbMin = { a.x, a.y, a.z };
+            g.aabbMax = { b.x, b.y, b.z };
+        }
+    }
+    job.isolationUsed = targetCount;
+
+    try { m_perceptionPass->EnsureTargets(*m_graphicsDevice, w, h, (std::max)(1u, targetCount)); }
+    catch (const std::exception& e) { fail(std::string("render target alloc failed: ") + e.what()); return; }
+
+    std::string err;
+    if (!m_perceptionPass->CaptureColor(cmd, backBuffer, vpX, vpY, vpW, vpH, err)) { fail(err); return; }
+
+    // ---- カメラ（ジッタなし。TAA の解決後の最終画と同じ視点）----
+    const XMMATRIX viewProj = m_camera->GetViewProjMatrix();
+    const XMFLOAT3 camPos   = m_camera->GetPosition();
+    {
+        XMFLOAT4X4 vp;
+        XMStoreFloat4x4(&vp, viewProj);
+        std::memcpy(job.camera.viewProj, &vp, sizeof(job.camera.viewProj));
+        job.camera.position = { camPos.x, camPos.y, camPos.z };
+        job.camForward = m_camera->GetForward();
+        job.camFovDeg  = XMConvertToDegrees(m_camera->GetFovY());
+    }
+    const auto white = m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultWhiteTexture()->GetSrvIndex());
+    m_perceptionPass->BeginIds(cmd, m_srvHeap->GetHeap(), viewProj, camPos, white);
+
+    // MASK 用の albedo SRV（RenderDepthOnlyScene の bindMaskMaterial と同じ優先順）
+    auto maskAlbedo = [&](entt::entity e, u32 mi, const MeshRenderer& r, const Mesh* m)
+    {
+        const Material* mat = m ? m->GetMaterial() : nullptr;
+        const MaterialAssetManager::Entry* matAsset = nullptr;
+        if (m_materialAssetManager && r.HasMaterialAsset(mi))
+        {
+            const auto* loaded = m_materialAssetManager->GetOrLoad(
+                MeshRenderer::SafeGetOverride(r.materialAsset, mi), cmd);
+            if (loaded && loaded->valid) matAsset = loaded;
+        }
+        const u32 ovBlock = EnsureMaterialOverrideSrv(e, mi, r, mat, cmd);
+        if (matAsset)                                      return m_srvHeap->GetGpuHandle(matAsset->srvBlockStart);
+        if (ovBlock != 0xFFFFFFFFu)                        return m_srvHeap->GetGpuHandle(ovBlock);
+        if (mat && mat->srvBlockIndex != 0xFFFFFFFFu)      return m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
+        Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
+        return m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+    };
+    auto drawItem = [&](const DrawItem& item, u32 id)
+    {
+        const MeshRenderer& r = *item.renderer;
+        const XMMATRIX world = XMLoadFloat4x4(&item.world);
+        D3D12_GPU_DESCRIPTOR_HANDLE bones = white;
+        if (item.skin) bones = m_srvHeap->GetGpuHandle(item.skin->GetSrvIndex(frameIndex));
+        float uv[4];
+        ComputeMeshUvScaleOffset(r, uv[0], uv[1], uv[2], uv[3]);
+        for (u32 mi = 0; mi < static_cast<u32>(r.meshes.size()); ++mi)
+        {
+            const Mesh* mesh = r.meshes[mi];
+            if (!mesh) continue;
+            XMMATRIX meshWorld = world;
+            if (item.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
+                meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
+            const AlphaParams ap = ResolveAlphaParams(mesh->GetMaterial(), r.alphaModeOverride,
+                                                      r.alphaCutoffOverride, r.opacity);
+            const bool mask = (ap.mode == AlphaMode::Mask);
+            const D3D12_GPU_DESCRIPTOR_HANDLE albedo = mask ? maskAlbedo(item.e, mi, r, mesh) : white;
+            m_perceptionPass->SetDraw(cmd, item.skin != nullptr, meshWorld, id, mask, ap.cutoff, uv, albedo, bones);
+            const D3D12_VERTEX_BUFFER_VIEW vbv = mesh->GetVertexBuffer().GetView();
+            const D3D12_INDEX_BUFFER_VIEW  ibv = mesh->GetIndexBufferLod(item.lod).GetView();
+            cmd->IASetVertexBuffers(0, 1, &vbv);
+            cmd->IASetIndexBuffer(&ibv);
+            cmd->DrawIndexedInstanced(mesh->GetIndexCountLod(item.lod), 1, 0, 0, 0);
+            ++job.drawCalls;
+        }
+    };
+    auto isTransparent = [](const DrawItem& it) { return it.alphaClass == 2u || it.sortKey == 3u; };
+
+    // ---- 1) ID パス（見えている物）。不透明 → 半透明の順（半透明は手前の面として上書きする）----
+    const Frustum frustum = Frustum::FromViewProj(viewProj);
+    for (int phase = 0; phase < 2; ++phase)
+    {
+        for (u32 i = 0; i < static_cast<u32>(m_drawItems.size()); ++i)
+        {
+            const DrawItem& it = m_drawItems[i];
+            if (isTransparent(it) != (phase == 1)) continue;
+            if (phase == 1)
+            {
+                ++job.transparentCount;
+                if (!job.includeTransparent) continue;
+            }
+            if (!frustum.SphereVisible(XMLoadFloat3(&it.center), it.radius)) continue;
+            drawItem(it, i + 1);
+        }
+    }
+    m_perceptionPass->EndIds(cmd);
+
+    // ---- 2) 被覆マスク（対象だけを深度なしで。遮蔽率の分母）----
+    for (u32 t = 0; t < targetCount; ++t)
+    {
+        m_perceptionPass->BeginIsolation(cmd, t);
+        for (u32 i : job.groupItems[t])
+            if (job.includeTransparent || !isTransparent(m_drawItems[i])) drawItem(m_drawItems[i], 1u);
+        m_perceptionPass->EndIsolation(cmd, t);
+    }
+
+    // ---- 後段（ImGui）のためにメインの状態へ戻す ----
+    m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+    m_commandList->SetRootSignature(*m_rootSignature);
+    m_commandList->SetRenderTarget(rtv);
+    m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+
+    job.phase    = McpPerceiveJob::Phase::Captured;
+    job.recordMs = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
+}
+
 void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar)
 {
     using namespace DirectX;
@@ -3593,6 +3769,8 @@ void Application::Render()
         if (!applied)
             m_camera->SetAspect(renderAspect);  // アクティブカメラが無ければアスペクトのみ更新
     }
+    // dx12_perceive の視野角（要求中だけ。それ以外は何もしない）
+    ApplyPerceptionProjection(renderAspect);
 
     // ===== カメラ非有限値ガード =====
     // スクリプト/物理の発散で NaN 化した Transform がカメラ同期・focus_camera 経由で m_camera に
@@ -5998,6 +6176,8 @@ void Application::Render()
     // ---- MCP screenshot_final: ImGui を描く前のバックバッファ（＝ポスト適用後の絵だけ）を撮る ----
     //   ここより後は ImGui のパネル / ギズモ / オーバーレイが乗るので、必ずこの位置で撮ること（§6 B5）。
     CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, vpLeft, vpTop, vpW, vpH);
+    // ---- MCP dx12_perceive: 同じ位置の最終画 + エンティティ ID パス（要求があるフレームだけ）----
+    RecordPerceptionIds(nativeCmdList, backBuffer, rtv, vpLeft, vpTop, vpW, vpH, frameIndex);
 
     // ---- ImGui フレーム ----
     m_imguiManager->BeginFrame();

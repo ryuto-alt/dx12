@@ -31,6 +31,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpNav.cpp
     mcp/ApplicationMcpGit.cpp
     mcp/ApplicationMcpValidate.cpp   # 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
+    mcp/ApplicationMcpPerceive.cpp   # 知覚層（dx12_perceive: プレイヤーの目から見た事実を数値で）
     Window.cpp
     SplashScreen.cpp
     Logger.cpp

@@ -74,6 +74,7 @@
 #include "renderer/SceneTransition.h"
 #include "renderer/IBLBaker.h"
 #include "renderer/SkyboxRenderer.h"
+#include "renderer/PerceptionPass.h"
 #include "resource/ShaderCompiler.h"
 #include "resource/ShaderManager.h"
 #include "resource/ShaderParams.h"
@@ -101,6 +102,7 @@
 #include "animation/AnimGraphRuntime.h"
 #include "animation/FootIK.h"
 #include "core/mcp/McpBridge.h"
+#include "core/mcp/McpPerceive.h"
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>

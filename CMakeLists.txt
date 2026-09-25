@@ -294,6 +294,8 @@ if(DXC_EXECUTABLE)
     # Hi-Z オクルージョンカリング。深度ピラミッド構築 compute（コピー + 縮約の 2 エントリ）。
     set(SHADER_HIZ_BUILD     "${CMAKE_SOURCE_DIR}/shaders/hiz/HiZBuild.hlsl")
     set(SHADER_HIZ_CULL      "${CMAKE_SOURCE_DIR}/shaders/hiz/HiZCull.hlsl")
+    # 知覚層（dx12_perceive）の ID パス。要求があったフレームだけ走る（エディタ専用）。
+    set(SHADER_PERCEPTION    "${CMAKE_SOURCE_DIR}/shaders/perception/PerceptionId.hlsl")
     # デカール（クラスタードフォワードデカール）。カリング compute 1 本 + 共有 .hlsli 2 本。
     set(SHADER_DECAL_CULL    "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCullDecals.hlsl")
     set(SHADER_DECAL_INC     "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
@@ -472,6 +474,9 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/HiZBuildCopy_CS.cso"
         "${SHADER_OUTPUT_DIR}/HiZBuildReduce_CS.cso"
         "${SHADER_OUTPUT_DIR}/HiZCull_CS.cso"
+        "${SHADER_OUTPUT_DIR}/PerceptionId_VS.cso"
+        "${SHADER_OUTPUT_DIR}/PerceptionIdSkinned_VS.cso"
+        "${SHADER_OUTPUT_DIR}/PerceptionId_PS.cso"
         "${SHADER_OUTPUT_DIR}/ScreenSpace_VS.cso"
         "${SHADER_OUTPUT_DIR}/SsrTrace_PS.cso"
         "${SHADER_OUTPUT_DIR}/SsrUpsample_PS.cso"
@@ -629,6 +634,26 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/HiZCull_CS.cso" "${SHADER_HIZ_CULL}"
         DEPENDS "${SHADER_HIZ_CULL}"
         COMMENT "Compiling HiZCull.hlsl -> HiZCull_CS.cso (cs_6_0)"
+    )
+
+    # --- 知覚層の ID パス（静的 / スキンドの VS と共有 PS）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PerceptionId_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/PerceptionId_VS.cso" "${SHADER_PERCEPTION}"
+        DEPENDS "${SHADER_PERCEPTION}"
+        COMMENT "Compiling PerceptionId.hlsl -> PerceptionId_VS.cso (vs_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PerceptionIdSkinned_VS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMainSkinned -Fo "${SHADER_OUTPUT_DIR}/PerceptionIdSkinned_VS.cso" "${SHADER_PERCEPTION}"
+        DEPENDS "${SHADER_PERCEPTION}"
+        COMMENT "Compiling PerceptionId.hlsl -> PerceptionIdSkinned_VS.cso (vs_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PerceptionId_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/PerceptionId_PS.cso" "${SHADER_PERCEPTION}"
+        DEPENDS "${SHADER_PERCEPTION}"
+        COMMENT "Compiling PerceptionId.hlsl -> PerceptionId_PS.cso (ps_6_0)"
     )
 
     add_custom_command(

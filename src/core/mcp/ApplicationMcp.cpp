@@ -47,6 +47,7 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpNavMethods();
     RegisterMcpGitMethods();
     RegisterMcpValidateMethods();
+    RegisterMcpPerceiveMethods();
 }
 
 
@@ -184,7 +185,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             "asset_info", "perf_stats", "diagnose", "validate_scene", "raycast",
             "raycast_precise", "overlap_box", "overlap_sphere", "pick",
             "project_world_to_screen", "screenshot", "screenshot_final",
-            "screenshot_game_view", "read_texture", "preview_model", "ui_tree",
+            "screenshot_game_view", "read_texture", "preview_model", "ui_tree", "perceive",
             "ui_screenshot", "terrain_sample", "terrain_splat_info", "net_status",
             // play/stop はシーンを汚さない（Stop がスナップショットへ戻す）。
             // undo/redo は状態を変えるので入れない（安全側に倒す）。

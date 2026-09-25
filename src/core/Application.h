@@ -110,6 +110,8 @@ namespace dx12e
     class MaterialEditorPanel;
     class MaterialLibraryPanel;
     struct Material;
+    class PerceptionPass;      // renderer/PerceptionPass.h（知覚層の ID パス。dx12_perceive の要求時だけ作る）
+    struct McpPerceiveJob;     // core/mcp/McpPerceive.h（dx12_perceive 1 回ぶんの状態）
 }
 
 namespace dx12e
@@ -362,6 +364,7 @@ private:
     void RegisterMcpNavMethods();         // ナビメッシュ（生成 / 設定 / 経路 / レイ / 可視化）
     void RegisterMcpGitMethods();         // Git / GitHub（状態 / ブランチ / マージ / コミット / プッシュ）
     void RegisterMcpValidateMethods();    // 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
+    void RegisterMcpPerceiveMethods();    // 知覚層（dx12_perceive: プレイヤーの目から見た事実を数値で）
 
     // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
     // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。
@@ -424,8 +427,9 @@ private:
     // 数フレームのあいだ m_deterministicCapture が立っている（どちらもこの 1 発ぶん）。
     bool McpHidingGizmos() const
     {
-        return m_mcpFinalShot.hideGizmos
-            && (m_mcpFinalShot.pending || m_deterministicCapture);
+        return (m_mcpFinalShot.hideGizmos
+                && (m_mcpFinalShot.pending || m_deterministicCapture))
+            || m_mcpPerceive != nullptr;   // dx12_perceive の間も止める（ID パスに無い線が最終画に乗らないように）
     }
 
     // Render() の ImGui フレーム直前で呼ぶ。pending が立っていなければ何もしない。
@@ -433,6 +437,22 @@ private:
                                       u32 vpX, u32 vpY, u32 vpW, u32 vpH);
     // Run ループの Render() 直後で呼ぶ。captured が立っていれば PNG 化して遅延応答を返す。
     void FinishFinalScreenshot();
+
+    // ---- dx12_perceive（知覚層）。状態は m_mcpPerceive、GPU は m_perceptionPass ----
+    // Render() の CaptureFinalBackBufferRegion の直後で呼ぶ。要求が Pending のフレームだけ
+    // 最終画のコピー・ID パス・被覆マスクを記録する（それ以外は 1 命令も積まない）。実装は ApplicationRender.cpp。
+    void RecordPerceptionIds(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
+                             D3D12_CPU_DESCRIPTOR_HANDLE rtv, u32 vpX, u32 vpY, u32 vpW, u32 vpH,
+                             u32 frameIndex);
+    // Run ループの Render() 直後。Captured なら読み戻して集計し、遅延応答を返して後始末する。
+    void FinishPerception();
+    // Update() の後に毎フレーム呼ぶ。要求中は指定のカメラ（視点 / ゲームカメラ）を上書きし続ける。
+    void ApplyPerceptionCamera();
+    // Render() の投影確定の直後に呼ぶ。視野角（fovDeg / ゲームカメラの FOV・near・far）を掛け直す。
+    // ★エディタは Render() の中で毎フレーム投影を 45 度へ戻すので、Update 後に掛けただけでは消える。
+    void ApplyPerceptionProjection(f32 aspect);
+    // カメラと決定論モードを元へ戻して要求を捨てる（成功・失敗の両方から呼ぶ）。
+    void EndPerception();
     // m_sceneRT を CPU へ読み戻し、現在のポスト設定と同じ表示変換を掛けて BGRA8 にする。
     // CaptureSceneScreenshot と超詳細診断のフレーム統計で共用する実体。
     // フレーム境界からのみ呼ぶこと(内部で BeginFrame/WaitIdle する)。
@@ -1265,6 +1285,9 @@ private:
     //   撮影ごと失敗する。呼び出し側が path を指定できるようにするための受け皿。
     std::string m_mcpGameViewPath;
     McpFinalShot m_mcpFinalShot;         // screenshot_final の状態（バックバッファ読み戻し）。
+    // dx12_perceive の状態（null = 受け付けていない）と GPU 側（最初の要求で作る）。
+    std::unique_ptr<McpPerceiveJob> m_mcpPerceive;
+    std::unique_ptr<PerceptionPass> m_perceptionPass;
     // dx12_set_editor_camera が Play 中にカメラを固定している間 true（アクティブ CameraComponent の
     // 毎フレーム同期を止める）。Play/Stop の遷移と {"release":true} で解除。
     bool m_mcpCameraOverride = false;
