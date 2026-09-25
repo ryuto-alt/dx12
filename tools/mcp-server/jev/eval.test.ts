@@ -36,6 +36,14 @@ w("e.choice.cases.json", { question: "e.choice", cases: [
 ] });
 w("e.score.jevq.json", { id: "e.score", version: 1, type: "score", instructions: "?", state: ["x"],
                          criteria: ["0", "1", "2", "3", "4"], cases: "e.score.cases.json" });
+w("e.pass.jevq.json", { id: "e.pass", version: 1, type: "score", instructions: "?", state: ["x"],
+                        criteria: ["0", "1", "2", "3", "4"], threshold: { pass: 2.5 }, cases: "e.pass.cases.json" });
+w("e.pass.cases.json", { question: "e.pass", cases: [
+  { name: "s4", context: { x: "s4" }, expect: 4, labelSource: "human" },
+  { name: "s3", context: { x: "s3" }, expect: 3, labelSource: "human" },
+  { name: "s0", context: { x: "s0" }, expect: 0, labelSource: "human" },
+  { name: "s1", context: { x: "s1" }, expect: 1, labelSource: "human" },
+] });
 w("e.score.cases.json", { question: "e.score", cases: [
   { name: "s4", context: { x: "s4" }, expect: 4, labelSource: "human" },
   { name: "s0", context: { x: "s0" }, expect: 0, labelSource: "human" },
@@ -44,7 +52,7 @@ w("e.score.cases.json", { question: "e.score", cases: [
 /** state.x を見て答える偽 Jev。 */
 const NOUL: Record<string, number> = { y1: 0.92, y2: 0.75, n1: 0.3, n2: 0.72 };
 const CHOICE: Record<string, string> = { ca: "a", cb: "c", cbc: "c" };
-const SCORE: Record<string, number> = { s4: 3.6, s0: 1.0 };
+const SCORE: Record<string, number> = { s4: 3.6, s0: 1.0, s3: 2.9, s1: 2.2 };
 let calls = 0;
 const fetch: FetchLike = async (_u, init) => {
   calls++;
@@ -74,6 +82,7 @@ console.log("[2] noul の評価");
   const r = await runEval({ ...opts, question: "e.noul" });
   check("4 件", r.n === 4 && r.type === "noul" && r.version === 2);
   check("n2(0.72 ≥ 0.7)だけ外す", r.correct === 3 && r.wrong.join() === "n2", JSON.stringify(r.wrong));
+  check("n2 は閾値 ±0.1 以内なので uncertain = 自信満々の誤りではない", r.confidentWrong.length === 0, JSON.stringify(r.confidentWrong));
   check("正解率 0.75", r.accuracy === 0.75);
   check("margin = 0.75 − 0.72 = 0.03、推奨 0.735", r.margin?.margin === 0.03 && r.margin?.suggestedThreshold === 0.735, JSON.stringify(r.margin));
   check("ルール(fallback no)の正解率は no 群だけ当たる 0.5", r.rulesAccuracy === 0.5, String(r.rulesAccuracy));
@@ -87,12 +96,22 @@ console.log("[3] choice / score の評価");
   const c = await runEval({ ...opts, question: "e.choice" });
   check("配列の expect はどれでも正解(cbc は c で正解)", c.cases.find((x) => x.name === "cbc")?.correct === true);
   check("cb は外す", c.wrong.join() === "cb" && c.accuracy === 0.667, JSON.stringify({ w: c.wrong, a: c.accuracy }));
+  check("confidence 0.8 で外した cb は自信満々の誤り", c.confidentWrong.join() === "cb");
   check("混同行列[期待][答え]", c.confusion?.b?.c === 2 && c.confusion?.a?.a === 1, JSON.stringify(c.confusion));
   check("ルール(choice:a)は a だけ当たる", c.rulesAccuracy === 0.333, String(c.rulesAccuracy));
   const s = await runEval({ ...opts, question: "e.score" });
   check("score: 平均絶対誤差 (0.4 + 1.0)/2 = 0.7", s.mae === 0.7, String(s.mae));
   check("score: 最寄りの段で正解判定(3.6→4 は正解、1.0→1 は外れ)", s.correct === 1 && s.wrong.join() === "s0");
   check("ルールの無い質問は rulesAccuracy null", s.rulesAccuracy === null);
+  check("pass の無い score は合否を出さない", s.pass === undefined);
+}
+
+{
+  const p = await runEval({ ...opts, question: "e.pass" });
+  // 合格群 {3.6, 2.9} / 不合格群 {1.0, 2.2}: 段の正解率は 3.6→4, 2.9→3, 1.0→1(期待 0 で外れ), 2.2→2(期待 1 で外れ) の 2/4
+  check("段の正解率は厳しい(2/4)", p.accuracy === 0.5, String(p.accuracy));
+  check("合否の正解率は 4/4", p.pass?.accuracy === 1, JSON.stringify(p.pass));
+  check("合否の margin = 合格群の最小 2.9 − 不合格群の最大 2.2", p.pass?.margin === 0.7 && p.pass?.suggestedPass === 2.55, JSON.stringify(p.pass));
 }
 
 console.log("[4] キャッシュで 2 回目は無料 / 全部評価");

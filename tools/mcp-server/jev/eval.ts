@@ -127,11 +127,21 @@ export type EvalReport = {
   confusion?: Record<string, Record<string, number>>;
   /** score のみ。|答え − 期待| の平均。 */
   mae?: number;
+  /**
+   * score で threshold.pass があるときだけ。判断段が実際に使うのは段の番号ではなく pass/fail なので、
+   * 「期待 ≥ pass の群の最小 − 期待 < pass の群の最大」を noul の margin と同じ見方で出す。
+   */
+  pass?: { accuracy: number; passMin: number; failMax: number; margin: number; suggestedPass: number | null } | null;
   /** 同じケースをルール(fallback)で答えた場合の正解率。Jev を使う意味があるかの比較対象。 */
   rulesAccuracy?: number | null;
   sources: Record<string, number>;
   uncertainCount: number;
   wrong: string[];
+  /**
+   * 外したのに uncertain でなかったケース。判断段は uncertain を Claude に上げるので、
+   * 外れても uncertain なら実害は小さい。自動で直してしまう「自信満々の誤り」はこちらで数える。
+   */
+  confidentWrong: string[];
   usd: number;
   inputTokens: number;
   requests: number;
@@ -184,6 +194,7 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
     sources: outcomes.reduce<Record<string, number>>((a, o) => { a[o.source] = (a[o.source] ?? 0) + 1; return a; }, {}),
     uncertainCount: outcomes.filter((o) => o.uncertain).length,
     wrong: outcomes.filter((o) => !o.correct).map((o) => o.name),
+    confidentWrong: outcomes.filter((o) => !o.correct && !o.uncertain).map((o) => o.name),
     usd: Number(usd.toFixed(8)), inputTokens, requests, maxMs,
     draftLabels: file.cases.filter((c) => c.labelSource === "claude-draft").length,
     cases: outcomes,
@@ -210,6 +221,16 @@ export async function runEval(opts: EvalOptions): Promise<EvalReport> {
     const errs = outcomes.filter((o) => typeof o.value === "number" && typeof o.expect === "number")
       .map((o) => Math.abs((o.value as number) - (o.expect as number)));
     report.mae = errs.length ? r3(errs.reduce((a, b) => a + b, 0) / errs.length) : undefined;
+    const pass = def.threshold?.pass;
+    if (typeof pass === "number") {
+      const scored = outcomes.filter((o) => typeof o.value === "number" && typeof o.expect === "number");
+      const hi = scored.filter((o) => (o.expect as number) >= pass).map((o) => o.value as number);
+      const lo = scored.filter((o) => (o.expect as number) < pass).map((o) => o.value as number);
+      const ok = scored.filter((o) => ((o.value as number) >= pass) === ((o.expect as number) >= pass)).length;
+      const m = marginOf(hi, lo);
+      report.pass = m ? { accuracy: r3(ok / scored.length), passMin: m.yesMin, failMax: m.noMax, margin: m.margin,
+                          suggestedPass: m.suggestedThreshold } : null;
+    }
   }
   return report;
 }
@@ -232,7 +253,8 @@ export function summarize(r: EvalReport) {
     accuracy: r.accuracy, rulesAccuracy: r.rulesAccuracy,
     ...(r.margin !== undefined ? { margin: r.margin } : {}),
     ...(r.mae !== undefined ? { mae: r.mae } : {}),
-    threshold: r.threshold, wrong: r.wrong, uncertainCount: r.uncertainCount,
+    ...(r.pass ? { pass: r.pass } : {}),
+    threshold: r.threshold, wrong: r.wrong, confidentWrong: r.confidentWrong, uncertainCount: r.uncertainCount,
     sources: r.sources, usd: r.usd, inputTokens: r.inputTokens, draftLabels: r.draftLabels,
     casesPath: path.basename(r.casesPath),
   };
