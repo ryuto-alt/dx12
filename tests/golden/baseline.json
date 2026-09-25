@@ -1,0 +1,48 @@
+{
+  "scenes": {
+    "perftest_ddgi_probe": {
+      "nativeWidth": 1043,
+      "nativeHeight": 587,
+      "nativeSha256": "92049fe5870ed54daedacee4232851b2e9024d113a4d84f6adb8850f5c2d8dfc",
+      "compareSha256": "20df9d0817f99ebdbf4b5d7affe95ff4840f4e7121374c07e128cca9fefb0dd4",
+      "width": 640,
+      "height": 360,
+      "commit": "545c025",
+      "capturedAt": "2026-09-25T12:22:07.524Z",
+      "deterministicInSession": true
+    },
+    "perftest_stress_5000": {
+      "nativeWidth": 1043,
+      "nativeHeight": 587,
+      "nativeSha256": "1eff813d7be5e11710da19e8464df40122457f9deb94ce206700199aaa031b03",
+      "compareSha256": "67e588b46aa191b14e6001ac8b4d72815b6c25c66bfa3b30879e601fa2a32d22",
+      "width": 640,
+      "height": 360,
+      "commit": "545c025",
+      "capturedAt": "2026-09-25T12:22:11.556Z",
+      "deterministicInSession": true
+    },
+    "nocturne_hall": {
+      "nativeWidth": 1043,
+      "nativeHeight": 587,
+      "nativeSha256": "e34ed1f92a803862ff6392ea8461ccd6199b85f7f22613114089c111c8ca022b",
+      "compareSha256": "a6481fc9a68e5ef59459e68ab9ee47739ba153a8e1ed52ed9c377ae9431f64e6",
+      "width": 640,
+      "height": 360,
+      "commit": "545c025",
+      "capturedAt": "2026-09-25T12:22:14.311Z",
+      "deterministicInSession": true
+    },
+    "junction_f6": {
+      "nativeWidth": 1043,
+      "nativeHeight": 587,
+      "nativeSha256": "3df50451976a86e63082c5a9c37dd4ac6e1dcbac018773160b9845f1aa5645ed",
+      "compareSha256": "a4010cf4d4c0d410e23a96a26098054fafbf9a3604d360fb3c834de575c5a992",
+      "width": 640,
+      "height": 360,
+      "commit": "545c025",
+      "capturedAt": "2026-09-25T12:22:17.638Z",
+      "deterministicInSession": true
+    }
+  }
+}

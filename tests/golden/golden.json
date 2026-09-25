@@ -1,0 +1,55 @@
+{
+  "$comment": [
+    "描画の回帰テスト（ゴールデン画像）の設定。実行は node tools/bench/golden.mjs（--update で基準を撮り直す）。",
+    "camera はエディタカメラ（set_editor_camera の position/target）。fov はエディタ既定の 45 度。",
+    "width/height は【比べる解像度】。エンジンはヘッドレスの表示矩形（今は 1043x587）で撮り、面積平均でここへ縮める。",
+    "ネイティブ解像度の画素ハッシュも tests/golden/baseline.json に残すので、1 ビットでも変わったかは別に分かる。",
+    "tolerance: pixelThreshold = 1 画素の RGB ユークリッド距離(0..441)がこれを超えたら『違う画素』。",
+    "           maxDiffRatio = 違う画素の割合の上限。maxMeanAbs = 全チャンネル平均絶対差(0..255)の上限。",
+    "★決定論（2026-09-25 実測）: 同じプロセス内で撮り直すと 4 シーンとも 1 ビットも変わらない（--repeat 2）。",
+    "  ただしプロセスを起動し直すと、回によって一部が変わる: ddgi_probe は赤い壁の根元 57 画素（z-fight）、",
+    "  nocturne_hall は階段の縁 10 画素、junction_f6 は全面に散る ±1〜2 LSB が約 1000 画素。stress_5000 は常に一致。",
+    "  原因は BuildDrawList のソートが最後に『メッシュのポインタ値』で並べていること。ヒープの番地は起動ごとに",
+    "  違うので、同じ深さの面（z-fight）や同じ距離の半透明の重なり順が起動ごとに入れ替わる。",
+    "  許容差（違う画素 0.1% / 平均差 0.25）はこの揺れ（最大 0.022% / 0.009）を十分に上回るように置いてある。",
+    "  『1 ビットも変わっていないか』を厳密に見たいときは、同じプロセス内で前後を撮り比べるか、",
+    "  常に一致する stress_5000 の bitExact を見ること。"
+  ],
+  "defaults": {
+    "width": 640,
+    "height": 360,
+    "settleFrames": 8,
+    "warmupFrames": 60,
+    "tolerance": { "pixelThreshold": 12, "maxDiffRatio": 0.001, "maxMeanAbs": 0.25 }
+  },
+  "scenes": [
+    {
+      "name": "perftest_ddgi_probe",
+      "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
+      "scene": "scenes/ddgi_probe.json",
+      "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
+      "note": "DDGI は既定 OFF のまま（ON にすると deterministic で frameIndex が止まり絵が変わる）"
+    },
+    {
+      "name": "perftest_stress_5000",
+      "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
+      "scene": "scenes/stress_5000.json",
+      "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
+      "note": "インスタンシングと LOD の経路（5000 体）"
+    },
+    {
+      "name": "nocturne_hall",
+      "project": "C:/Users/ryuto/Documents/dev/game/Nocturne",
+      "scene": "scenes/main.json",
+      "camera": { "position": [0.0, 1.66, -8.0], "target": [-6.0, 1.4, -14.0] },
+      "note": "屋内。TAA / ボリュメトリックフォグ / SSAO / コンタクトシャドウ / ブルーム"
+    },
+    {
+      "name": "junction_f6",
+      "project": "C:/Users/ryuto/Documents/dev/game/Junction",
+      "scene": "scenes/stagedemo3.json",
+      "camera": { "position": [14.0, 5.1, 122.0], "target": [14.0, 4.9, 117.0] },
+      "note": "継ぎ目6 の焦点（Liminal.lua の focus）から破片 C6_p0/p1 を見る。フォグ / グレイン / FXAA / AgX"
+    }
+  ]
+}
