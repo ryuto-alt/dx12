@@ -253,10 +253,23 @@ void ToolbarPanel::Render(bool isPlaying,
         // ---- 編集 ----
         if (ImGui::BeginMenu("編集"))
         {
-            if (ImGui::MenuItem("元に戻す", "Ctrl+Z", false, ctx.undoSystem.CanUndo()))
-                ctx.pendingUndo = true;
-            if (ImGui::MenuItem("やり直す", "Ctrl+Y", false, ctx.undoSystem.CanRedo()))
-                ctx.pendingRedo = true;
+            // 何が戻るかを名前で出す。AI（MCP）の操作は「AI: <method>」の名前で積まれるので、
+            // 人の操作と見分けられる（AI のトランザクション中はその旨も出す）。
+            {
+                const char* un = ctx.undoSystem.PeekUndoName();
+                const char* rn = ctx.undoSystem.PeekRedoName();
+                const std::string undoLabel = std::string("元に戻す") + (un ? std::string("（") + un + "）" : "")
+                                            + "###edit_undo";
+                const std::string redoLabel = std::string("やり直す") + (rn ? std::string("（") + rn + "）" : "")
+                                            + "###edit_redo";
+                if (ImGui::MenuItem(undoLabel.c_str(), "Ctrl+Z", false, ctx.undoSystem.CanUndo()))
+                    ctx.pendingUndo = true;
+                if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Y", false, ctx.undoSystem.CanRedo()))
+                    ctx.pendingRedo = true;
+                if (ctx.mcpUndo.TxOpen())
+                    ImGui::TextDisabled("AI のまとめ操作「%s」が進行中（Ctrl+Z で確定して丸ごと戻す）",
+                                        ctx.mcpUndo.TxLabel().c_str());
+            }
 
             ImGui::Separator();
 

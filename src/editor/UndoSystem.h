@@ -8,21 +8,14 @@
 #include <entt/entt.hpp>
 #include "core/Types.h"
 #include "ecs/Components.h"
+#include "editor/UndoCore.h"
 
 namespace dx12e
 {
 
 class Scene;
 
-// ── Undo/Redo コマンド基底 ──
-class IUndoCommand
-{
-public:
-    virtual ~IUndoCommand() = default;
-    virtual void Undo() = 0;
-    virtual void Redo() = 0;
-    virtual const char* GetName() const = 0;
-};
+// IUndoCommand / CompositeCommand / AiUndoEntry / UndoSystem は editor/UndoCore.h（依存ゼロ）。
 
 // ── Transform 変更コマンド ──
 class TransformCommand : public IUndoCommand
@@ -384,35 +377,6 @@ private:
     std::string m_old, m_new;
 };
 
-// ── 複合コマンド（複数コマンドを 1 回の Undo/Redo で実行） ──
-class CompositeCommand : public IUndoCommand
-{
-public:
-    explicit CompositeCommand(const char* name) : m_name(name) {}
-
-    void Add(std::unique_ptr<IUndoCommand> cmd) { m_commands.push_back(std::move(cmd)); }
-    bool Empty() const { return m_commands.empty(); }
-    size_t Size() const { return m_commands.size(); }
-
-    void Undo() override
-    {
-        for (auto it = m_commands.rbegin(); it != m_commands.rend(); ++it)
-            (*it)->Undo();
-    }
-
-    void Redo() override
-    {
-        for (auto& cmd : m_commands)
-            cmd->Redo();
-    }
-
-    const char* GetName() const override { return m_name; }
-
-private:
-    std::vector<std::unique_ptr<IUndoCommand>> m_commands;
-    const char* m_name;
-};
-
 // ── 汎用コンポーネント編集コマンド（値のコピーで before/after を保持） ──
 template<typename T>
 class ComponentEditCommand : public IUndoCommand
@@ -595,72 +559,6 @@ private:
     std::string     m_oldPath;
     bool            m_oldEnabled;
     std::vector<ScriptProp> m_oldProps;   // Detach で失うのは主にここ（詰めた値）
-};
-
-// ── Undo/Redo スタック ──
-class UndoSystem
-{
-public:
-    void PushCommand(std::unique_ptr<IUndoCommand> cmd)
-    {
-        ++m_editSeq;          // 未保存判定用（下記 EditSeq のコメント参照）
-        m_undoStack.push_back(std::move(cmd));
-        m_redoStack.clear();  // 新しい操作が入ったら redo は破棄
-        // スタック上限
-        if (m_undoStack.size() > kMaxHistory)
-            m_undoStack.erase(m_undoStack.begin());
-    }
-
-    // ── 「シーンが変更されたか」の指標 ──
-    // スタックの深さは指標に使えない: kMaxHistory を超えると先頭から捨てるし、
-    // Clear() は Play/Stop とシーンロードで呼ばれる。なので単調増加カウンタを別に持つ。
-    // ★Clear() ではリセットしない。Undo スタックが消えることと、
-    //   「保存していない変更があること」は別の話なので。
-    u64  EditSeq() const { return m_editSeq; }
-    // Undo を積まない変更経路（レンダ設定の窓・Lua プロパティ・MCP など）から呼ぶ。
-    // Undo できないこと自体は別問題だが、少なくとも「保存し忘れ」からは守る。
-    void MarkEdited() { ++m_editSeq; }
-
-    // 次の Undo / Redo が何に当たるか。押す前に呼び出し側へ見せるため。
-    // ★MCP の編集ツールはほぼ Undo を積まない（積むのは group_entities だけ）。
-    //   dx12_undo を「直前の自分の変更を戻す」つもりで呼ぶと**別の操作**が戻る。
-    //   何が戻るのかを名前で返せるようにして、その事故を見えるようにする。
-    const char* PeekUndoName() const
-    {
-        return m_undoStack.empty() ? nullptr : m_undoStack.back()->GetName();
-    }
-    const char* PeekRedoName() const
-    {
-        return m_redoStack.empty() ? nullptr : m_redoStack.back()->GetName();
-    }
-
-    void Undo()
-    {
-        if (m_undoStack.empty()) return;
-        auto cmd = std::move(m_undoStack.back());
-        m_undoStack.pop_back();
-        cmd->Undo();
-        m_redoStack.push_back(std::move(cmd));
-    }
-
-    void Redo()
-    {
-        if (m_redoStack.empty()) return;
-        auto cmd = std::move(m_redoStack.back());
-        m_redoStack.pop_back();
-        cmd->Redo();
-        m_undoStack.push_back(std::move(cmd));
-    }
-
-    bool CanUndo() const { return !m_undoStack.empty(); }
-    bool CanRedo() const { return !m_redoStack.empty(); }
-    void Clear() { m_undoStack.clear(); m_redoStack.clear(); }
-
-private:
-    static constexpr size_t kMaxHistory = 100;
-    u64 m_editSeq = 0;
-    std::vector<std::unique_ptr<IUndoCommand>> m_undoStack;
-    std::vector<std::unique_ptr<IUndoCommand>> m_redoStack;
 };
 
 } // namespace dx12e

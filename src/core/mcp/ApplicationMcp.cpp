@@ -6,12 +6,60 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace dx12e
 {
 using namespace appdetail;
 
+
+namespace
+{
+// シーンのデータを変えない method（未保存フラグ / トランザクション確定待ちの受付判定に使う）。
+// ★読み取り専用リストの方を持つ（新しい書き込み系メソッドが増えたときに黙って漏れる側にしない）。
+bool IsMcpReadOnlyMethod(const std::string& method)
+{
+    static const std::unordered_set<std::string> kReadOnly = {
+        "ping", "get_mode", "get_log", "get_entity", "get_hierarchy", "list_entities",
+        "list_scenes", "list_assets", "list_lights", "query_entities", "find_entity",
+        "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
+        "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_contact_shadow",
+        "get_normal_filter",
+        "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
+        "get_anim_state", "get_lua_component_state", "get_script_errors",
+        "get_play_session", "read_lua_component", "read_shader", "describe_components",
+        "describe_lua_api", "describe_anim_graph", "describe_mcp_params",
+        "asset_info", "perf_stats", "diagnose", "validate_scene", "raycast",
+        "raycast_precise", "overlap_box", "overlap_sphere", "pick",
+        "project_world_to_screen", "screenshot", "screenshot_final",
+        "screenshot_game_view", "read_texture", "preview_model", "ui_tree", "perceive",
+        "ui_screenshot", "terrain_sample", "terrain_splat_info", "net_status",
+        // トランザクションの開閉と状態はシーンのデータを変えない（rollback と undo/redo は変える）。
+        "transaction_status", "transaction_begin", "transaction_commit",
+        // play/stop はシーンを汚さない（Stop がスナップショットへ戻す）。
+        // undo/redo は状態を変えるので入れない（安全側に倒す）。
+        // アセット操作: シーンを汚すのは move_asset が参照を実際に書き換えたときだけで、
+        // その場合はハンドラ内で MarkEdited を呼んでいる。ここで一律に汚すと
+        // 「参照していないアセットを整理しただけ」で未保存扱いになる。
+        "move_asset", "delete_asset", "import_asset",
+        "benchmark", "step_frames", "play", "stop", "save_scene", "select_entity",
+        "focus_camera", "look_at", "set_editor_camera", "key_down",
+        "key_up", "key_press", "mouse_move", "render_debug", "eval_lua",
+        // reload_scripts は env を作り直すだけでシーンのデータは変えない。
+        // reload_assets も同じ（MeshRenderer の参照先を新しい実体へ差し替えるだけで、
+        // シリアライズされる値は 1 つも変わらない＝未保存扱いにしてはいけない）。
+        "reload_scripts", "reload_assets",
+    };
+    return kReadOnly.find(method) != kReadOnly.end();
+}
+
+// Undo スタックそのものを操作する method。呼び出し 1 回ぶんの横取り（AI エントリ化）はしない。
+bool IsMcpUndoControlMethod(const std::string& method)
+{
+    return method == "undo" || method == "redo" || method.rfind("transaction_", 0) == 0;
+}
+} // namespace
 
 // names は "a" または "a|b"（get/set を 1 本のハンドラで捌く場合。本文が method を見て分ける）。
 void Application::McpDefine(const char* names, const char* paramSpec, McpHandler fn)
@@ -48,6 +96,7 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpGitMethods();
     RegisterMcpValidateMethods();
     RegisterMcpPerceiveMethods();
+    RegisterMcpUndoMethods();
 }
 
 
@@ -71,7 +120,27 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
     // 該当ハンドラで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
     McpDeferred deferred{ client, req.value("id", 0LL), params.value("idempotency_key", std::string()) };
+    deferred.method = method;   // 遅延系が Undo に「AI: <method>」を付けるため
     bool isDeferred = false;
+
+    // ---- MCP の編集を Undo に積む（editor/McpUndoRouter.h / core/mcp/McpUndoTrack.h）----
+    // 呼び出し 1 回ぶんを「AI: <method>」1 エントリへまとめる（トランザクション中はそちらへ）。
+    // ★Editor の間だけ。Play 中の変更は Stop で丸ごと捨てられ、Undo 履歴も Stop で消えるので積まない。
+    // ★ハンドラが投げても、途中まで変わった分は積む（変更が起きたのに戻せない、を作らない）。
+    const bool undoRec = m_editorCtx && m_scene && m_scriptEngine && !m_isGameMode
+                      && m_engineMode == EngineMode::Editor && !IsMcpUndoControlMethod(method);
+    bool undoEnded = false;
+    auto endUndo = [&]() -> bool
+    {
+        if (!undoRec || undoEnded) return false;
+        undoEnded = true;
+        std::vector<std::unique_ptr<IUndoCommand>> snaps;
+        try { snaps = m_mcpUndoTrack.Finish(); }
+        catch (const std::exception& ex) { Logger::Warn("MCP undo: スナップショットの確定に失敗: {}", ex.what()); }
+        for (auto& snap : snaps) m_editorCtx->mcpUndo.AddToCall(std::move(snap));
+        return m_editorCtx->mcpUndo.EndCall(McpNowSec());
+    };
+    if (m_editorCtx) m_editorCtx->mcpUndo.Touch(McpNowSec());   // 放置タイマー（読み取りも活動に数える）
 
     try
     {
@@ -84,13 +153,45 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         const bool busyPlaying = (m_engineMode == EngineMode::Playing) ||
                                  (m_modeChangeRequested && m_pendingMode == EngineMode::Playing);
 
+        // ---- トランザクションの約束事（ハンドラより前に弾く）----
+        if (m_editorCtx)
+        {
+            // Play / シーン切り替えは Undo 履歴を消す（Stop とシーン読み込みがスタックを空にする）。
+            // 開いたまま進むと rollback できなくなるので、先に閉じさせる。
+            static const std::unordered_set<std::string> kClearsHistory = {
+                "play", "open_scene", "new_scene", "open_project"};
+            if (m_editorCtx->mcpUndo.TxOpen() && kClearsHistory.count(method))
+                throw McpError(McpErr::ModeConflict,
+                    "transaction '" + m_editorCtx->mcpUndo.TxLabel() + "' is open; " + method +
+                    " would clear the undo history",
+                    "先に transaction_commit（変更を残す）か transaction_rollback（begin 前へ戻す）で"
+                    "閉じてから " + method + " を呼ぶこと");
+            // commit / rollback はフレーム境界で処理する。その応答が返る前に届いた書き込みは、
+            // トランザクションの内外どちらに入るべきか決められないので断る。
+            const bool closing = std::any_of(m_mcpUndoRequests.begin(), m_mcpUndoRequests.end(),
+                [](const McpUndoRequest& r) {
+                    return r.kind == McpUndoRequest::Kind::Commit || r.kind == McpUndoRequest::Kind::Rollback;
+                });
+            if (closing && !IsMcpReadOnlyMethod(method) && !IsMcpUndoControlMethod(method))
+                throw McpError(McpErr::ModeConflict,
+                    "transaction commit/rollback is still being processed",
+                    "transaction_commit / transaction_rollback の応答を待ってから次の編集を送ること"
+                    "（1 フレームで返る）");
+        }
+
         // ★ディスパッチ（旧: 118 本の else-if 連鎖 = C1061 の温床。N37 / N43）。
         //   表引きなので method を何本足しても入れ子は深くならない。
         EnsureMcpMethodTable();
         const auto it = m_mcpMethods.find(method);
         if (it != m_mcpMethods.end())
         {
+            if (undoRec)
+            {
+                m_editorCtx->mcpUndo.BeginCall(method);
+                m_mcpUndoTrack.Begin(m_scene.get(), PathResolver::AssetsDir());
+            }
             it->second.fn(params, resp, method, deferred, isDeferred, busyPlaying);
+            const bool undoRecorded = endUndo();
 
             // ★ハンドラが resp["result"] を作らず、resp へ直接キーを書く流儀のものを救う。
             //
@@ -113,6 +214,19 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                 {
                     for (auto it2 = extra.begin(); it2 != extra.end(); ++it2) resp.erase(it2.key());
                     resp["result"] = std::move(extra);
+                }
+            }
+
+            // 積んだら応答に名前を載せる（AI が「今のは戻せるか / 何という名前で積まれたか」を知る）。
+            // ★上の「result を作らないハンドラを救う」より後に置く（先に result を作ると救済が走らない）。
+            if (undoRecorded && !isDeferred && resp.value("ok", true))
+            {
+                if (!resp.contains("result") || resp["result"].is_null()) resp["result"] = json::object();
+                if (resp["result"].is_object())
+                {
+                    resp["result"]["undoEntry"] = "AI: " + method;
+                    if (m_editorCtx->mcpUndo.TxOpen())   // トランザクションの中身として積まれた
+                        resp["result"]["undoTransaction"] = m_editorCtx->mcpUndo.TxLabel();
                 }
             }
 
@@ -146,6 +260,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     }
     catch (const McpError& e)
     {
+        endUndo();
         resp["ok"] = false;
         resp["error"] = e.what();
         resp["error_code"] = e.code;
@@ -156,6 +271,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     }
     catch (const std::exception& e)
     {
+        endUndo();
         resp["ok"] = false;
         resp["error"] = e.what();
         resp["error_code"] = McpErr::InvalidParam;   // 大半は引数検証エラー
@@ -172,39 +288,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     // 余計に聞くだけで済むが、取りこぼすと黙って作業が消える。
     if (m_editorCtx && resp.value("ok", false) && !method.empty())
     {
-        static const std::unordered_set<std::string> kReadOnly = {
-            "ping", "get_mode", "get_log", "get_entity", "get_hierarchy", "list_entities",
-            "list_scenes", "list_assets", "list_lights", "query_entities", "find_entity",
-            "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
-            "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_contact_shadow",
-            "get_normal_filter",
-            "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
-            "get_anim_state", "get_lua_component_state", "get_script_errors",
-            "get_play_session", "read_lua_component", "read_shader", "describe_components",
-            "describe_lua_api", "describe_anim_graph", "describe_mcp_params",
-            "asset_info", "perf_stats", "diagnose", "validate_scene", "raycast",
-            "raycast_precise", "overlap_box", "overlap_sphere", "pick",
-            "project_world_to_screen", "screenshot", "screenshot_final",
-            "screenshot_game_view", "read_texture", "preview_model", "ui_tree", "perceive",
-            "ui_screenshot", "terrain_sample", "terrain_splat_info", "net_status",
-            // play/stop はシーンを汚さない（Stop がスナップショットへ戻す）。
-            // undo/redo は状態を変えるので入れない（安全側に倒す）。
-            // アセット操作: シーンを汚すのは move_asset が参照を実際に書き換えたときだけで、
-            // その場合はハンドラ内で MarkEdited を呼んでいる。ここで一律に汚すと
-            // 「参照していないアセットを整理しただけ」で未保存扱いになる。
-            "move_asset", "delete_asset", "import_asset",
-            "benchmark", "step_frames", "play", "stop", "save_scene", "select_entity",
-            "focus_camera", "look_at", "set_editor_camera", "key_down",
-            "key_up", "key_press", "mouse_move", "render_debug", "eval_lua",
-            // reload_scripts は env を作り直すだけでシーンのデータは変えない。
-            // reload_assets も同じ（MeshRenderer の参照先を新しい実体へ差し替えるだけで、
-            // シリアライズされる値は 1 つも変わらない＝未保存扱いにしてはいけない）。
-            "reload_scripts", "reload_assets",
-        };
         // eval_lua と render_debug は「シーンを変えうる」が、変えないことの方が多い。
         // 変えた場合は設定フィンガープリント（Run ループの定期比較）か、
         // ハンドラ内で積まれる Undo の側で拾われる。
-        if (kReadOnly.find(method) == kReadOnly.end())
+        if (!IsMcpReadOnlyMethod(method))
         {
             m_editorCtx->undoSystem.MarkEdited();
             // 最後の書き込みから kMcpAutoSaveDelay 秒アイドルしたらディスクへ本保存する

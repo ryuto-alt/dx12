@@ -152,6 +152,7 @@ void Application::RegisterMcpLightingMethods()
             if (sun == entt::null)
                 throw McpError(McpErr::NotFound, "no DirectionalLight (sun) in this scene",
                     "dx12_create_entity(type:\"light_directional\") で太陽を作ってから呼んでくれ");
+            McpUndo().Track<DirectionalLight>(sun);
             DirectionalLight& dl = reg.get<DirectionalLight>(sun);
 
             const bool byTime = params.contains("timeOfDay");
@@ -214,8 +215,10 @@ void Application::RegisterMcpLightingMethods()
             // view.front() は空なら entt::null。break 付きの for だと MSVC が C4702 を出す。
             const entt::entity sun = reg.view<DirectionalLight>().front();
             json sunJson = nullptr;
+            McpUndo().TrackSceneValue(m_scene->GetPostSettings());   // 太陽とポストを 1 エントリで戻す
             if (sun != entt::null)
             {
+                McpUndo().Track<DirectionalLight>(sun);
                 DirectionalLight& dl = reg.get<DirectionalLight>(sun);
                 dl = ApplyLightingPresetToSun(p, dl);
                 sunJson = {{"entityId", static_cast<u32>(sun)},

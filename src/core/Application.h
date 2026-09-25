@@ -27,6 +27,7 @@
 #include "editor/EditorIcons.h"
 #include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
 #include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
+#include "core/mcp/McpUndoTrack.h"  // MCP の編集の値スナップショット（値メンバで持つので完全型が要る）
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
 #include "core/PlaySession.h"       // Play 1 回ぶんの記録（値メンバで持つので完全型が要る）
 #include "engine/input/ActionMap.h"  // キーリバインド（値メンバで持つので完全型が要る）
@@ -365,6 +366,14 @@ private:
     void RegisterMcpGitMethods();         // Git / GitHub（状態 / ブランチ / マージ / コミット / プッシュ）
     void RegisterMcpValidateMethods();    // 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
     void RegisterMcpPerceiveMethods();    // 知覚層（dx12_perceive: プレイヤーの目から見た事実を数値で）
+    void RegisterMcpUndoMethods();        // Undo / Redo / トランザクション（mcp/ApplicationMcpUndo.cpp）
+    // undo / redo / transaction_commit / transaction_rollback の実処理。フレーム境界で 1 度だけ呼ぶ
+    // （削除の取り消しはモデルの再読み込みを伴うので cmdList が要る。生成・削除の遅延処理より後に置く）。
+    void ProcessMcpUndoRequests(ID3D12GraphicsCommandList* cmdList);
+    // 開いているトランザクションを確定扱いで閉じる（Play / シーン切り替え / 人の Ctrl+Z の直前）。
+    void McpUndoAutoClose(const char* reason);
+    // ハンドラが「書き換える前に触るコンポーネントを申告する」口。McpUndo().Track<T>(e)。
+    McpUndoTracker& McpUndo() { return m_mcpUndoTrack; }
 
     // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
     // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。
@@ -1312,6 +1321,19 @@ private:
     int  m_deterministicFramesLeft = 0;
     static constexpr f32 kDeterministicTime = 8.0f;   // 固定する totalTime（0 は「未初期化」と紛れるので避ける）
     std::unordered_map<std::string, uint32_t> m_mcpIdempotency;  // idempotency_key -> 生成済み entityId
+    // ---- MCP の Undo（McpUndoRouter は EditorContext::mcpUndo。ここはエンジン側の部品）----
+    McpUndoTracker m_mcpUndoTrack;   // 呼び出し 1 回ぶんの値スナップショット
+    // フレーム境界で処理する undo / redo / commit / rollback（受けた順に処理する）
+    struct McpUndoRequest
+    {
+        enum class Kind { Undo, Redo, Commit, Rollback } kind = Kind::Undo;
+        bool        onlyAi = true;
+        McpDeferred reply;
+    };
+    std::vector<McpUndoRequest> m_mcpUndoRequests;
+    // 放置で自動確定するまでの秒数（最後の MCP 活動から。読み取りも活動に数える）
+    static constexpr double kMcpTxIdleTimeoutSec = 600.0;
+    double McpNowSec() const;
     // method 名 → ハンドラ。EnsureMcpMethodTable() が初回に 1 度だけ組む（#30 / N37 の根治）。
     std::unordered_map<std::string, McpMethodEntry> m_mcpMethods;
     std::unique_ptr<AudioSystem>       m_audioSystem;

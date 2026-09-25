@@ -406,6 +406,7 @@ void Application::RegisterMcpEditorMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<LuaScript>(e)) throw McpError(McpErr::NotFound, "entity has no LuaScript");
+            McpUndo().Track<LuaScript>(e);
             const std::string key = params.value("key", std::string());
             if (key.empty()) throw McpError(McpErr::InvalidParam, "missing 'key'");
             if (!params.contains("value")) throw McpError(McpErr::InvalidParam, "missing 'value'");
@@ -870,6 +871,7 @@ void Application::RegisterMcpEditorMethods()
             if (c.size() != 3) throw McpError(McpErr::InvalidParam, "color must be [r,g,b]");
             auto* device = m_scene->GetDevice();
             if (!device) throw McpError(McpErr::Internal, "no graphics device");
+            McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
             mr.colorTint    = {c[0], c[1], c[2], 1.0f};   // シーン保存で色指定が消えないよう記録
             mr.hasColorTint = true;

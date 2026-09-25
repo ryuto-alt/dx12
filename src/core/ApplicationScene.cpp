@@ -1201,6 +1201,7 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
 
     // ---- エディタでシーンを開く ----
     m_editorCtx->ClearSelection();
+    McpUndoAutoClose("scene_changed");   // 履歴ごと消えるので、開いているトランザクションは確定扱いで閉じる
     m_editorCtx->undoSystem.Clear();
     // 前のシーンの粒子・トレイルを持ち込まない（ランタイム側の DoRuntimeSceneLoad と同じ規律）
     if (m_particleSystem) m_particleSystem->Clear();
@@ -1500,6 +1501,10 @@ void Application::EnterPlayMode()
             return;
         }
     }
+
+    // AI のトランザクションが開いていたら確定扱いで閉じる（Stop で Undo 履歴ごと消えるので、
+    // 開いたまま Play に入っても rollback できない。MCP の play は開いている間は断っている）。
+    McpUndoAutoClose("play");
 
     // GPU を待機してコマンドリスト状態を安全にする
     m_commandQueue->WaitIdle();
@@ -1933,6 +1938,7 @@ void Application::EnterEditorMode()
     m_playSceneJson.shrink_to_fit();
 
     // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
+    McpUndoAutoClose("play");
     m_editorCtx->undoSystem.Clear();
     m_editorCtx->ClearSelection();
 

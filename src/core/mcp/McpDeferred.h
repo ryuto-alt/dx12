@@ -15,6 +15,9 @@ struct McpDeferred
     uint64_t    client = 0;       // McpBridge のクライアントトークン(= SOCKET の値)
     long long   requestId = 0;    // リクエストの id。Node クライアントからは常に正整数
     std::string idempotencyKey;   // 任意。create/spawn の再試行重複防止に使う
+    // 受けた method 名。フレーム境界で実処理する遅延系（生成・削除・複製）が Undo に
+    // 「AI: <method>」のラベルを付けるために持ち回る（McpUndoRouter）。
+    std::string method;
 };
 
 } // namespace dx12e

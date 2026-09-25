@@ -637,6 +637,18 @@ if(MSVC)
 endif()
 add_test(NAME McpParamSpecTests COMMAND McpParamSpecTests)
 
+# MCP（AI）の編集を Undo に積む規則（editor/McpUndoRouter.h + editor/UndoCore.h）。
+# 呼び出し 1 回 = 「AI: <method>」1 エントリ / onlyAi は人の編集を戻さない /
+# トランザクションは 1 エントリ・rollback は逆順。ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く。
+add_executable(McpUndoTests mcp_undo_test.cpp)
+target_include_directories(McpUndoTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(McpUndoTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(McpUndoTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME McpUndoTests COMMAND McpUndoTests)
+
 # Lua 束縛 ⇔ dx12_describe_lua_api のドリフト検出（display / net がテーブルごと
 # 未ドキュメントだったのを二度と起こさないため）。McpParamSpecTests と同じく
 # ソースをテキストとして読むだけなのでエンジンをリンクしない。

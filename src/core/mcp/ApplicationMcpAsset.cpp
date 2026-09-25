@@ -264,6 +264,7 @@ void Application::RegisterMcpAssetMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<Transform>(e)) throw McpError(McpErr::NotFound, "entity has no Transform");
+            McpUndo().Track<Transform>(e);
             DirectX::XMFLOAT3 mn, mx;
             bool hasMesh = false;
             McpWorldAabb(reg, e, mn, mx, hasMesh);

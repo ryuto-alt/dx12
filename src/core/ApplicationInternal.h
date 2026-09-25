@@ -843,6 +843,14 @@ inline void FailMcp(McpBridge* bridge, const McpDeferred& d, int code, const std
 {
     SendMcp(bridge, d, nlohmann::json{{"ok", false}, {"error", msg}, {"error_code", code}});
 }
+// 遅延応答のエラーにも「次の一手」を付ける版（同期応答の McpError の hint と同じ形で届く）。
+inline void FailMcp(McpBridge* bridge, const McpDeferred& d, int code, const std::string& msg,
+                    const std::string& hint)
+{
+    nlohmann::json j{{"ok", false}, {"error", msg}, {"error_code", code}};
+    if (!hint.empty()) j["error_hint"] = hint;
+    SendMcp(bridge, d, std::move(j));
+}
 
 // dx12_describe_components 用のコンポーネントスキーマ表。
 // AI がフィールド名/型/既定値を推測せず set_component を正しく呼べるようにする。

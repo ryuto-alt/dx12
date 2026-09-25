@@ -183,6 +183,7 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<MeshRenderer>(e)) throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            McpUndo().Track<MeshRenderer>(e);   // Undo 用（書き換える前に申告）
             auto& mr = reg.get<MeshRenderer>(e);
 
             std::string rel = params.value("shaderPath", std::string());
@@ -243,6 +244,7 @@ void Application::RegisterMcpEntityMethods()
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<ParticleEmitter>(e))
                 throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+            McpUndo().Track<ParticleEmitter>(e);
             auto& em = reg.get<ParticleEmitter>(e);
             if (em.layers.size() >= 16)
                 throw McpError(McpErr::InvalidParam, "レイヤーが多すぎます（上限 16 枚）");
@@ -263,6 +265,7 @@ void Application::RegisterMcpEntityMethods()
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<ParticleEmitter>(e))
                 throw McpError(McpErr::NotFound, "entity has no ParticleEmitter");
+            McpUndo().Track<ParticleEmitter>(e);
             auto& em = reg.get<ParticleEmitter>(e);
             // 最後の 1 枚は消せない（0 枚 = 付いているのに何も出ない状態を作らない）。
             // 丸ごと消したいときは remove_component で ParticleEmitter を外すこと。
@@ -304,6 +307,7 @@ void Application::RegisterMcpEntityMethods()
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<MeshRenderer>(e))
                 throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
 
             if (params.contains("effect"))
@@ -344,6 +348,7 @@ void Application::RegisterMcpEntityMethods()
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<Sprite2D>(e)) throw McpError(McpErr::NotFound, "entity has no Sprite2D");
+            McpUndo().Track<Sprite2D>(e);
             auto& sp = reg.get<Sprite2D>(e);
 
             std::string rel = params.value("shaderPath", std::string());
@@ -379,6 +384,7 @@ void Application::RegisterMcpEntityMethods()
                 script.find(':') != std::string::npos || script.find("..") != std::string::npos)
                 throw std::runtime_error("invalid script path (assets 相対のみ)");
             const auto e = ResolveMcpEntity(*m_scene, params);
+            McpUndo().Track<LuaScript>(e);   // 付いていなければ「無し」を覚える（Undo で外れる）
             m_scriptEngine->AttachScriptToEntity(e, script);
             m_scriptEngine->ReloadScript(e);
             resp["ok"] = true;
@@ -506,6 +512,7 @@ void Application::RegisterMcpEntityMethods()
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<Transform>(e))
                 throw McpError(McpErr::NotFound, "entity has no Transform");
+            McpUndo().Track<Transform>(e);
             auto& t = reg.get<Transform>(e);
             if (params.contains("position"))
             {
@@ -799,6 +806,7 @@ void Application::RegisterMcpEntityMethods()
             //   （実際に踏んだ: 3 枚のレイヤーを作ったのに全部 1 枚目へ上書きされた）。
             if (params.contains("layer") && !data.contains("layer"))
                 data["layer"] = params["layer"];
+            McpUndo().TrackByJsonKey(e, comp);   // 未知のキーは下で UNKNOWN_COMPONENT になる
             if (comp == "transform")
             {
                 // コア不変: 専用処理(set_transform 相当)
@@ -869,6 +877,7 @@ void Application::RegisterMcpEntityMethods()
             const std::string comp = params.value("component", std::string());
             if (comp == "transform" || comp == "name")
                 throw McpError(McpErr::InvalidParam, "cannot remove core component (transform/name)");
+            McpUndo().TrackByJsonKey(e, comp);
             if (!RemoveRegisteredComponent(reg, e, comp))
                 throw McpError(McpErr::UnknownComponent,
                     "unknown/unsupported component: " + comp + " (call dx12_describe_components)");
@@ -1145,6 +1154,7 @@ void Application::RegisterMcpEntityMethods()
                 }
                 if (depth >= 4096) throw std::runtime_error("parent chain broken (cycle)");
             }
+            McpUndo().Track<Transform>(child);
             auto& t = reg.get_or_emplace<Transform>(child);
             t.parent = parent;   // 階層は Transform.parent が駆動。SerializeEntity に自動反映。
             resp["ok"] = true;
@@ -1261,10 +1271,15 @@ void Application::RegisterMcpEntityMethods()
             int n = 2;            // 重複時は連番付与(MakeUniqueName 相当をインライン)
             while (taken(name)) name = base + "_" + std::to_string(n++);
             const std::string oldName = reg.get<NameTag>(e).name;
+            McpUndo().Track<NameTag>(e);
             reg.get<NameTag>(e).name = name;
             // 名前で結ばれた参照（Lua の entity プロパティ / Trigger の filter・target）を
             // 追従させる。これが無いとリネームした瞬間に無言で切れる。
             RewriteEntityNameRefs(reg, oldName, name);
+            // 参照の書き換えは他のエンティティに及ぶので、エディタのリネームと同じコマンドで戻す
+            // （ここで積んだ物は MCP の呼び出しとして横取りされ、NameTag の値と 1 エントリにまとまる）
+            if (oldName != name && m_editorCtx && m_engineMode == EngineMode::Editor)
+                m_editorCtx->undoSystem.PushCommand(std::make_unique<RenameRefsCommand>(&reg, oldName, name));
             resp["ok"] = true;
             resp["result"] = {{"name", name}, {"previousName", oldName}};
         });
@@ -1391,6 +1406,7 @@ void Application::RegisterMcpEntityMethods()
             auto& reg = m_scene->GetRegistry();
             if (!reg.all_of<MeshRenderer>(e))
                 throw McpError(McpErr::NotFound, "entity has no MeshRenderer");
+            McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
             if (params.contains("roughness")) mr.overrideRoughness = params["roughness"].get<float>();
@@ -1468,38 +1484,7 @@ void Application::RegisterMcpEntityMethods()
             isDeferred = true;
         });
 
-    // ★MCP の編集ツールはほぼ Undo を積まない（積むのは group_entities のみ）。
-    //   「直前の set_transform を取り消す」つもりで undo を呼ぶと、
-    //   スタックの一番上にある**別の操作**（エディタでの編集や entity 生成）が戻る。
-    //   何が戻るのかを willUndo で返し、undoable でスタックの有無も伝える。
-    McpDefine("undo", "", DX12E_MCP_HANDLER
-        {
-            const char* name = m_editorCtx->undoSystem.PeekUndoName();
-            m_editorCtx->pendingUndo = true;   // フレーム境界で適用
-            resp["ok"] = true;
-            resp["result"] = {
-                {"queuedUndo", true},
-                {"undoable", name != nullptr},
-                {"willUndo", name ? std::string(name) : std::string()},
-                {"note", "MCP の編集で Undo に積まれるのは group_entities / spawn_prefab / "
-                         "地形とスカルプトの編集（terrain_generate・terrain_sculpt・terrain_erode・"
-                         "terrain_paint・terrain_autopaint・sculpt_brush）。"
-                         "それ以外（set_component・set_transform 等）は積まれないので、"
-                         "willUndo が自分の操作でなければ、それは別の変更を戻している"},
-            };
-        });
-
-    McpDefine("redo", "", DX12E_MCP_HANDLER
-        {
-            const char* name = m_editorCtx->undoSystem.PeekRedoName();
-            m_editorCtx->pendingRedo = true;
-            resp["ok"] = true;
-            resp["result"] = {
-                {"queuedRedo", true},
-                {"redoable", name != nullptr},
-                {"willRedo", name ? std::string(name) : std::string()},
-            };
-        });
+    // undo / redo は mcp/ApplicationMcpUndo.cpp（トランザクションと一緒に置いてある）。
 
     McpDefine("new_scene", "savePath:string", DX12E_MCP_HANDLER
         {

@@ -113,6 +113,7 @@ void Application::RegisterMcpToolingMethods()
                 if (!fs::exists(fs::path(PathResolver::AssetsDir()) / rel))
                     throw McpError(McpErr::NotFound, "texture not found: " + rel);
             }
+            McpUndo().Track<MeshRenderer>(e);
             auto& mr = reg.get<MeshRenderer>(e);
             // Material は同一モデルの全インスタンスで共有されるため直接触らず、
             // インスタンス単位の override に書く(描画側 EnsureMaterialOverrideSrv が合成)。

@@ -10,6 +10,7 @@
 #include "core/Types.h"
 #include "core/mcp/McpDeferred.h"
 #include "editor/UndoSystem.h"
+#include "editor/McpUndoRouter.h"   // MCP の編集を Undo に積む窓口 + トランザクション
 #include "editor/EditorIcons.h"
 #include "renderer/DrawItem.h"   // ピッキングのブロードフェーズ候補（Application が毎フレーム構築）
 
@@ -478,6 +479,9 @@ public:
 
     // Undo/Redo
     UndoSystem undoSystem;
+    // MCP（AI）の編集は必ずここを通して積む（「AI: <method>」のラベル・トランザクション・
+    // onlyAi の undo）。★undoSystem より後に宣言すること（参照で持つので初期化順が要る）。
+    McpUndoRouter mcpUndo{undoSystem};
 
     // ── 未保存フラグ ──
     // 変更の検知経路は2つある。どちらか一方でも食い違えば未保存。

@@ -2206,6 +2206,7 @@ void Application::Render()
         std::string starterPath = std::move(m_editorCtx->pendingNewScenePath);
         m_editorCtx->pendingNewScenePath.clear();
         m_editorCtx->ClearSelection();
+        McpUndoAutoClose("scene_changed");   // 履歴ごと消えるので、開いているトランザクションは確定扱いで閉じる
         m_editorCtx->undoSystem.Clear();
         // 新規シーンは「作った直後」を基準にする（保存先が指定されていればこの後 Save される）
         MarkSceneClean();
@@ -2443,6 +2444,10 @@ void Application::Render()
 
         for (auto& req : spawns)
         {
+            // MCP 由来なら、ここで積まれる生成の Undo を「AI: <method>」1 エントリへまとめる
+            // （トランザクション中ならそちらへ）。人の D&D / メニュー生成（client==0）は素通し。
+            McpUndoRouter::CallScope undoScope(m_editorCtx->mcpUndo, req.mcp.client != 0,
+                                               req.mcp.method, McpNowSec());
             std::string name = std::filesystem::path(req.modelPath).stem().string();
             if (!req.name.empty()) name = req.name;   // MCP 等からの任意名で上書き
 
@@ -3001,6 +3006,8 @@ void Application::Render()
 
         for (const auto& req : procReqs)
         {
+            McpUndoRouter::CallScope undoScope(m_editorCtx->mcpUndo, req.mcp.client != 0,
+                                               req.mcp.method, McpNowSec());
             Entity      created{};
             std::string err;
 
@@ -3291,6 +3298,9 @@ void Application::Render()
     {
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
+        // 人の Ctrl+Z / Ctrl+Y。AI のトランザクションが開いていたら確定扱いで閉じてから戻す
+        // （閉じないと、人の Ctrl+Z が画面に見えている AI の変更を飛ばしてその下を戻してしまう）。
+        McpUndoAutoClose("human_undo");
         if (m_editorCtx->pendingUndo) m_editorCtx->undoSystem.Undo();
         if (m_editorCtx->pendingRedo) m_editorCtx->undoSystem.Redo();
         m_editorCtx->pendingUndo = false;
@@ -3337,6 +3347,8 @@ void Application::Render()
         auto& reg = m_scene->GetRegistry();
         for (auto& d : dels)
         {
+            McpUndoRouter::CallScope undoScope(m_editorCtx->mcpUndo, d.mcp.client != 0,
+                                               d.mcp.method, McpNowSec());
             const entt::entity root = d.entity;
             if (!reg.valid(root))
             {
@@ -3401,6 +3413,8 @@ void Application::Render()
         auto& reg = m_scene->GetRegistry();
         for (auto& d : dups)
         {
+            McpUndoRouter::CallScope undoScope(m_editorCtx->mcpUndo, d.mcp.client != 0,
+                                               d.mcp.method, McpNowSec());
             if (!reg.valid(d.entity))
             {
                 FailMcp(m_mcpBridge.get(), d.mcp, McpErr::NotFound, "source entity no longer valid");
@@ -3610,6 +3624,10 @@ void Application::Render()
                 static_cast<u32>(req.entity), req.submeshIndex, static_cast<int>(req.slot), rel);
         }
     }
+
+    // MCP の undo / redo / transaction_commit / transaction_rollback。生成・削除・複製の
+    // 遅延処理より後に置く（同じバッチで先に受けた生成が積む Undo まで含めて判定・確定するため）。
+    ProcessMcpUndoRequests(nativeCmdList);
 
     // サムネイルテクスチャのロード（描画コマンドの前に実行）
     m_editorLayer->LoadPendingThumbnails(nativeCmdList);

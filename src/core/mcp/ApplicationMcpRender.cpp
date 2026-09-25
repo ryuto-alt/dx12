@@ -46,6 +46,7 @@ void Application::RegisterMcpRenderMethods()
 
     McpDefine("set_post_process", McpPostParamSpec(), DX12E_MCP_HANDLER
         {
+            McpUndo().TrackSceneValue(m_scene->GetPostSettings());   // Undo 用（apply_lighting_preset と揃える）
             auto& pp = m_scene->GetPostSettings();
             auto vec3In = [&params](const char* key, DirectX::XMFLOAT3& dst)
             {
