@@ -16,6 +16,8 @@
 #include <imgui.h>
 #pragma warning(pop)
 
+#include "editor/ThemeVariants.h"   // Hex() / Variant / 各案のトークン表（Default = 現行値）
+
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -23,74 +25,105 @@
 namespace dx12e::theme
 {
 
-// 0xRRGGBB → ImVec4（sRGB のまま。ImGui の頂点カラーに合わせてガンマ変換はしない）
-inline ImVec4 Hex(unsigned int rgb, float a = 1.0f)
-{
-    return ImVec4(((rgb >> 16) & 0xFF) / 255.0f,
-                  ((rgb >> 8)  & 0xFF) / 255.0f,
-                  ( rgb        & 0xFF) / 255.0f,
-                  a);
-}
+// ---- テーマ・バリアント（アイデンティティ候補。既定 = 現行）----
+// 下のトークン（Bg0 等）は【可変】。SetVariant() が案の表（ThemeVariants.h）から書き換える。
+// 起動引数 --theme-variant a|b|c（main.cpp）→ ImGuiManager::Initialize の前に SetVariant → ApplyStyle が ImGuiStyle へ流す。
+// 実行中の切替は ImGuiManager::SetThemeVariant()（基準スタイルの作り直しまで行う）。
+inline Variant g_variant = Variant::Default;
+inline Variant CurrentVariant() { return g_variant; }
+inline const Spec& CurrentSpec() { return SpecOf(g_variant); }
+inline const Deco& CurrentDeco() { return SpecOf(g_variant).deco; }
+inline bool IsDefaultVariant() { return g_variant == Variant::Default; }
+// 実行中の切替要求（コマンドパレット等から）。ImGuiManager::BeginFrame が NewFrame の前に適用する（-1 = 要求なし）。
+inline bool g_variantSwitchEnabled = false;   // --theme-variant を付けて起動した時だけ true（パレットに切替コマンドを出す）
+inline int  g_pendingVariant = -1;
+inline void RequestVariant(Variant v) { g_pendingVariant = static_cast<int>(v); }
+// 窓外装飾（ui::deco::PaintChrome）の呼び出し口。Gui ライブラリは Editor に依存できないので、EditorLayer が設定する
+// （g_restoreMainScaleFn と同じ流儀）。ImGuiManager::EndFrame が全パネルの描画後に 1 回呼ぶ。
+inline void (*g_paintChromeFn)() = nullptr;
 
 // ---- 面（深 → 浅）----
-inline const ImVec4 Bg0         = Hex(0x0E0E10);  // 最深部: ビューポート周辺 / タブ井戸 / ステータスバー / ドックの隙間
-inline const ImVec4 Bg1         = Hex(0x171719);  // パネル本体
-inline const ImVec4 Bg2         = Hex(0x1F1F23);  // ヘッダ帯 / 非選択タブ / ポップアップ / 行ゼブラ
-inline const ImVec4 Bg3         = Hex(0x2A2A2F);  // ホバー面 / ボタン地
-inline const ImVec4 Bg4         = Hex(0x34343B);  // ボタンのホバー / 押下（Bg3 の一段上）
-inline const ImVec4 InputBg     = Hex(0x0C0C0E);  // 入力欄（パネルより暗い凹み）
-inline const ImVec4 InputBgHover  = Hex(0x111114);
-inline const ImVec4 InputBgActive = Hex(0x141418);
-inline const ImVec4 InputBorder      = Hex(0x2E2E34);  // 入力欄の 1px 枠
-inline const ImVec4 InputBorderHover = Hex(0x46464E);
-inline const ImVec4 Border      = Hex(0x2A2A2F);  // 面の境界（控えめ）
-inline const ImVec4 BorderStrong = Hex(0x3A3A42); // ポップアップ / フローティング窓の枠
+// ★初期値は Default の表（= 現行値）。SetVariant で案の値に置き換わる。
+inline ImVec4 Bg0         = SpecOf(Variant::Default).pal.bg0;   // 最深部: ビューポート周辺 / タブ井戸 / ステータスバー / ドックの隙間
+inline ImVec4 Bg1         = SpecOf(Variant::Default).pal.bg1;   // パネル本体
+inline ImVec4 Bg2         = SpecOf(Variant::Default).pal.bg2;   // ヘッダ帯 / 非選択タブ / ポップアップ / 行ゼブラ
+inline ImVec4 Bg3         = SpecOf(Variant::Default).pal.bg3;   // ホバー面 / ボタン地
+inline ImVec4 Bg4         = SpecOf(Variant::Default).pal.bg4;   // ボタンのホバー / 押下（Bg3 の一段上）
+inline ImVec4 InputBg     = SpecOf(Variant::Default).pal.inputBg;   // 入力欄（パネルより暗い凹み）
+inline ImVec4 InputBgHover  = SpecOf(Variant::Default).pal.inputBgHover;
+inline ImVec4 InputBgActive = SpecOf(Variant::Default).pal.inputBgActive;
+inline ImVec4 InputBorder      = SpecOf(Variant::Default).pal.inputBorder;       // 入力欄の 1px 枠
+inline ImVec4 InputBorderHover = SpecOf(Variant::Default).pal.inputBorderHover;
+inline ImVec4 Border      = SpecOf(Variant::Default).pal.border;         // 面の境界（控えめ）
+inline ImVec4 BorderStrong = SpecOf(Variant::Default).pal.borderStrong;  // ポップアップ / フローティング窓の枠
 
-// ---- アクセント（UE5 の選択青）----
-inline const ImVec4 Accent        = Hex(0x2F8CFF);
-inline const ImVec4 AccentHover   = Hex(0x57A3FF);
-inline const ImVec4 AccentPressed = Hex(0x1F6FD6);
-inline const ImVec4 Selection      = Hex(0x2F8CFF, 0.30f);  // 選択行の面
-inline const ImVec4 SelectionHover = Hex(0x2F8CFF, 0.16f);
-inline const ImVec4 SelectionActive = Hex(0x2F8CFF, 0.42f);
+// ---- アクセント（既定 = UE5 の選択青。案ごとに色相が違う）----
+inline ImVec4 Accent        = SpecOf(Variant::Default).pal.accent;
+inline ImVec4 AccentHover   = SpecOf(Variant::Default).pal.accentHover;
+inline ImVec4 AccentPressed = SpecOf(Variant::Default).pal.accentPressed;
+inline ImVec4 OnAccent      = SpecOf(Variant::Default).pal.onAccent;   // アクセント塗りの上の文字 / ✓
+inline ImVec4 Selection      = SpecOf(Variant::Default).pal.selection;        // 選択行の面
+inline ImVec4 SelectionHover = SpecOf(Variant::Default).pal.selectionHover;
+inline ImVec4 SelectionActive = SpecOf(Variant::Default).pal.selectionActive;
 
 // ---- テキスト（3 段。TextHi/TextMid は旧名の互換）----
-inline const ImVec4 Text        = Hex(0xD6D6DB);
-inline const ImVec4 TextDim     = Hex(0x9C9CA6);
-inline const ImVec4 TextFaint   = Hex(0x90909A);   // 実測: Bg0-Bg3 / 入力欄の上で 4.5:1 以上（旧 #74767f は 3.96）
-inline const ImVec4 TextHi      = Text;
-inline const ImVec4 TextMid     = Hex(0xBEBEC7);   // ラベル（Text と TextDim の間）
+inline ImVec4 Text        = SpecOf(Variant::Default).pal.text;
+inline ImVec4 TextDim     = SpecOf(Variant::Default).pal.textDim;
+inline ImVec4 TextFaint   = SpecOf(Variant::Default).pal.textFaint;   // 実測: Bg0-Bg3 / 入力欄の上で 4.5:1 以上（旧 #74767f は 3.96）
+inline ImVec4 TextHi      = Text;
+inline ImVec4 TextMid     = SpecOf(Variant::Default).pal.textMid;     // ラベル（Text と TextDim の間）
 
 // ---- ステータス色 ----
-inline const ImVec4 Good        = Hex(0x4CBF7A);
-inline const ImVec4 Warn        = Hex(0xE5A03C);
-inline const ImVec4 Bad         = Hex(0xEE6A62);   // 文字色として Bg1-Bg3 で 4.5:1 以上になるよう少し明るく（初期値 #E5534B は Bg2 で 4.44）
+inline ImVec4 Good        = SpecOf(Variant::Default).pal.good;
+inline ImVec4 Warn        = SpecOf(Variant::Default).pal.warn;
+inline ImVec4 Bad         = SpecOf(Variant::Default).pal.bad;         // 文字色として Bg1-Bg3 で 4.5:1 以上になるよう少し明るく（初期値 #E5534B は Bg2 で 4.44）
 
 // ---- 種別カラー（アイコングリフの tint。「控えめな色味」= 彩度を落とし、全部同じ青にしない）----
-inline const ImVec4 TypeMesh    = Hex(0xA9AFBC);   // 中性（メッシュは数が多いので色を主張しない）
-inline const ImVec4 TypeLight   = Hex(0xE7B55A);   // 琥珀
-inline const ImVec4 TypeCamera  = Hex(0x5FA8FF);   // 青
-inline const ImVec4 TypeAudio   = Hex(0x55C4C4);   // ティール
-inline const ImVec4 TypeScript  = Hex(0xA994F0);   // 紫
-inline const ImVec4 TypePhysics = Hex(0x6DBE7A);   // 緑
-inline const ImVec4 TypeUi      = Hex(0xD97BBB);   // マゼンタ
-inline const ImVec4 TypePrefab  = Hex(0x6FA8FF);
-inline const ImVec4 TypeEmpty   = Hex(0x8E919C);
-inline const ImVec4 TypeFolder  = Hex(0xB4B6C0);   // フォルダ（中性の明るいグレー）
-inline const ImVec4 TypeScene   = Hex(0xE58A55);   // シーン = 橙
+inline ImVec4 TypeMesh    = SpecOf(Variant::Default).pal.typeMesh;      // 中性（メッシュは数が多いので色を主張しない）
+inline ImVec4 TypeLight   = SpecOf(Variant::Default).pal.typeLight;     // 琥珀
+inline ImVec4 TypeCamera  = SpecOf(Variant::Default).pal.typeCamera;    // 青
+inline ImVec4 TypeAudio   = SpecOf(Variant::Default).pal.typeAudio;     // ティール
+inline ImVec4 TypeScript  = SpecOf(Variant::Default).pal.typeScript;    // 紫
+inline ImVec4 TypePhysics = SpecOf(Variant::Default).pal.typePhysics;   // 緑
+inline ImVec4 TypeUi      = SpecOf(Variant::Default).pal.typeUi;        // マゼンタ
+inline ImVec4 TypePrefab  = SpecOf(Variant::Default).pal.typePrefab;
+inline ImVec4 TypeEmpty   = SpecOf(Variant::Default).pal.typeEmpty;
+inline ImVec4 TypeFolder  = SpecOf(Variant::Default).pal.typeFolder;    // フォルダ（中性の明るいグレー）
+inline ImVec4 TypeScene   = SpecOf(Variant::Default).pal.typeScene;     // シーン = 橙
 
-// ---- 旧名の互換（散在する参照を壊さない。値は新トークンへ寄せてある）----
-inline const ImVec4 AppBg       = Bg0;
-inline const ImVec4 PanelBg     = Bg1;
-inline const ImVec4 Chrome      = Bg1;      // ツールバー / メニュー帯（旧: パネルより少し明るい別色）
-inline const ImVec4 GroupBg     = Bg2;
-inline const ImVec4 FrameBg     = InputBg;
-inline const ImVec4 FrameBgHi   = InputBgHover;
-inline const ImVec4 FrameBgActive = InputBgActive;
-inline const ImVec4 BorderSoft  = InputBorder;
-inline const ImVec4 AccentLight = AccentHover;
-inline const ImVec4 AccentDim   = SelectionHover;
-inline const ImVec4 AccentDim2  = Selection;
+// ---- 旧名の互換（散在する参照を壊さない。値は新トークンへ寄せてある。SetVariant で同じく更新する）----
+inline ImVec4 AppBg       = Bg0;
+inline ImVec4 PanelBg     = Bg1;
+inline ImVec4 Chrome      = Bg1;      // ツールバー / メニュー帯（旧: パネルより少し明るい別色）
+inline ImVec4 GroupBg     = Bg2;
+inline ImVec4 FrameBg     = InputBg;
+inline ImVec4 FrameBgHi   = InputBgHover;
+inline ImVec4 FrameBgActive = InputBgActive;
+inline ImVec4 BorderSoft  = InputBorder;
+inline ImVec4 AccentLight = AccentHover;
+inline ImVec4 AccentDim   = SelectionHover;
+inline ImVec4 AccentDim2  = Selection;
+
+// 案を切り替える（トークンを書き換える）。ImGuiStyle への反映は ApplyStyle（と ImGuiManager::SetThemeVariant）が行う。
+inline void SetVariant(Variant v)
+{
+    g_variant = v;
+    const Palette& p = SpecOf(v).pal;
+    Bg0 = p.bg0; Bg1 = p.bg1; Bg2 = p.bg2; Bg3 = p.bg3; Bg4 = p.bg4;
+    InputBg = p.inputBg; InputBgHover = p.inputBgHover; InputBgActive = p.inputBgActive;
+    InputBorder = p.inputBorder; InputBorderHover = p.inputBorderHover;
+    Border = p.border; BorderStrong = p.borderStrong;
+    Accent = p.accent; AccentHover = p.accentHover; AccentPressed = p.accentPressed; OnAccent = p.onAccent;
+    Selection = p.selection; SelectionHover = p.selectionHover; SelectionActive = p.selectionActive;
+    Text = p.text; TextDim = p.textDim; TextFaint = p.textFaint; TextHi = p.text; TextMid = p.textMid;
+    Good = p.good; Warn = p.warn; Bad = p.bad;
+    TypeMesh = p.typeMesh; TypeLight = p.typeLight; TypeCamera = p.typeCamera; TypeAudio = p.typeAudio;
+    TypeScript = p.typeScript; TypePhysics = p.typePhysics; TypeUi = p.typeUi; TypePrefab = p.typePrefab;
+    TypeEmpty = p.typeEmpty; TypeFolder = p.typeFolder; TypeScene = p.typeScene;
+    AppBg = p.bg0; PanelBg = p.bg1; Chrome = p.bg1; GroupBg = p.bg2;
+    FrameBg = p.inputBg; FrameBgHi = p.inputBgHover; FrameBgActive = p.inputBgActive;
+    BorderSoft = p.inputBorder; AccentLight = p.accentHover; AccentDim = p.selectionHover; AccentDim2 = p.selection;
+}
 
 // ---- 寸法トークン ----
 namespace size
@@ -231,17 +264,21 @@ inline ImVec4 WithAlpha(const ImVec4& c, float a) { return ImVec4(c.x, c.y, c.z,
 inline ImVec4 Mul(const ImVec4& c, float k) { return ImVec4(c.x * k, c.y * k, c.z * k, c.w); }
 
 // ---- ImGuiStyle への流し込み（エディタ用。配布 GameRuntime では呼ばない）----
+// 現在のバリアント（g_variant）の Metrics / Palette を流す。Default は第 1 波の値そのもの（UI テストと単体テストが監視）。
 inline void ApplyStyle(ImGuiStyle& style)
 {
-    // --- 形状: UE5 は角ばり気味。ウィンドウは 0、入力欄は 2、ポップアップだけ 4 ---
-    style.WindowRounding          = 0.0f;
-    style.ChildRounding           = 2.0f;
-    style.FrameRounding           = 2.0f;
-    style.GrabRounding            = 2.0f;
-    style.PopupRounding           = 4.0f;
-    style.TabRounding             = 3.0f;
-    style.ScrollbarRounding       = 6.0f;
-    // --- 余白: 行高 23（16 + 3.5*2）。Details は密（行間 4）---
+    const Spec& sp = CurrentSpec();
+    const Palette& P = sp.pal;
+    const Metrics& M = sp.m;
+    // --- 形状: UE5 は角ばり気味。ウィンドウは 0、入力欄は 2、ポップアップだけ 4（案ごとに Metrics で変わる）---
+    style.WindowRounding          = M.windowRounding;
+    style.ChildRounding           = M.childRounding;
+    style.FrameRounding           = M.frameRounding;
+    style.GrabRounding            = M.grabRounding;
+    style.PopupRounding           = M.popupRounding;
+    style.TabRounding             = M.tabRounding;
+    style.ScrollbarRounding       = M.scrollbarRounding;
+    // --- 余白: 行高 23（16 + 3.5*2）。Details は密（行間 4）。★案では動かさない（レイアウト・UI テストが共通）---
     style.WindowPadding           = ImVec2(8.0f, 8.0f);
     style.FramePadding            = ImVec2(7.0f, 3.5f);
     style.CellPadding             = ImVec2(6.0f, 3.0f);
@@ -252,14 +289,14 @@ inline void ApplyStyle(ImGuiStyle& style)
     style.ScrollbarSize           = 10.0f;
     style.GrabMinSize             = 8.0f;
     // --- 枠 ---
-    style.WindowBorderSize        = 1.0f;
-    style.ChildBorderSize         = 1.0f;
-    style.PopupBorderSize         = 1.0f;
-    style.FrameBorderSize         = 1.0f;
+    style.WindowBorderSize        = M.windowBorder;
+    style.ChildBorderSize         = M.childBorder;
+    style.PopupBorderSize         = M.popupBorder;
+    style.FrameBorderSize         = M.frameBorder;
     style.TabBorderSize           = 0.0f;
-    style.TabBarBorderSize        = 1.0f;    // タブバーの下線
-    style.TabBarOverlineSize      = 2.0f;    // 選択タブ上端のアクセントライン
-    style.DockingSeparatorSize    = 3.0f;    // パネル間の隙間（Bg0 が見える）
+    style.TabBarBorderSize        = M.tabBarBorder;    // タブバーの下線
+    style.TabBarOverlineSize      = M.tabOverline;     // 選択タブ上端のアクセントライン
+    style.DockingSeparatorSize    = M.dockSeparator;   // パネル間の隙間（Bg0 が見える）
     style.SeparatorTextBorderSize = 1.0f;
     style.SeparatorTextPadding    = ImVec2(12.0f, 4.0f);
     // --- 配置 ---
@@ -276,78 +313,78 @@ inline void ApplyStyle(ImGuiStyle& style)
 
     ImVec4* c = style.Colors;
     // テキスト
-    c[ImGuiCol_Text]                 = Text;
-    c[ImGuiCol_TextDisabled]         = TextFaint;
-    c[ImGuiCol_TextSelectedBg]       = Hex(0x2F8CFF, 0.35f);
-    c[ImGuiCol_TextLink]             = AccentHover;
-    // ベース背景（ポップアップは Bg2 を不透明で: ビューポート上でも同化しない）
-    c[ImGuiCol_WindowBg]             = Bg1;
+    c[ImGuiCol_Text]                 = P.text;
+    c[ImGuiCol_TextDisabled]         = P.textFaint;
+    c[ImGuiCol_TextSelectedBg]       = P.textSelectedBg;
+    c[ImGuiCol_TextLink]             = P.accentHover;
+    // ベース背景（ポップアップは Bg2 を不透明で: ビューポート上でも同化しない。B だけ半透明）
+    c[ImGuiCol_WindowBg]             = P.windowBg;
     c[ImGuiCol_ChildBg]              = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_PopupBg]              = Bg2;
-    c[ImGuiCol_Border]               = InputBorder;
+    c[ImGuiCol_PopupBg]              = P.popupBg;
+    c[ImGuiCol_Border]               = P.inputBorder;
     c[ImGuiCol_BorderShadow]         = ImVec4(0, 0, 0, 0);
     // タイトル（フローティング窓）/ ドックのタブ井戸 / メニューバー
-    c[ImGuiCol_TitleBg]              = Bg0;
-    c[ImGuiCol_TitleBgActive]        = Bg0;
-    c[ImGuiCol_TitleBgCollapsed]     = Bg0;
-    c[ImGuiCol_MenuBarBg]            = Bg0;
+    c[ImGuiCol_TitleBg]              = P.bg0;
+    c[ImGuiCol_TitleBgActive]        = P.bg0;
+    c[ImGuiCol_TitleBgCollapsed]     = P.bg0;
+    c[ImGuiCol_MenuBarBg]            = P.bg0;
     // フレーム（入力欄・スライダー溝: パネルより暗い凹み）
-    c[ImGuiCol_FrameBg]              = InputBg;
-    c[ImGuiCol_FrameBgHovered]       = InputBgHover;
-    c[ImGuiCol_FrameBgActive]        = InputBgActive;
+    c[ImGuiCol_FrameBg]              = P.inputBg;
+    c[ImGuiCol_FrameBgHovered]       = P.inputBgHover;
+    c[ImGuiCol_FrameBgActive]        = P.inputBgActive;
     // ボタン（フラット。通常 Bg3、ホバーで一段明るく）
-    c[ImGuiCol_Button]               = Bg3;
-    c[ImGuiCol_ButtonHovered]        = Bg4;
-    c[ImGuiCol_ButtonActive]         = Hex(0x3E3E46);
+    c[ImGuiCol_Button]               = P.bg3;
+    c[ImGuiCol_ButtonHovered]        = P.bg4;
+    c[ImGuiCol_ButtonActive]         = P.btnActive;
     // ヘッダ（選択行 = アクセント 30%。ホバー = Bg3）
-    c[ImGuiCol_Header]               = Selection;
-    c[ImGuiCol_HeaderHovered]        = Bg3;
-    c[ImGuiCol_HeaderActive]         = SelectionActive;
+    c[ImGuiCol_Header]               = P.selection;
+    c[ImGuiCol_HeaderHovered]        = P.bg3;
+    c[ImGuiCol_HeaderActive]         = P.selectionActive;
     // タブ（非選択 = Bg2 / 選択 = パネル色で立ち上がり上端アクセント）
-    c[ImGuiCol_Tab]                       = Bg2;
-    c[ImGuiCol_TabHovered]                = Bg3;
-    c[ImGuiCol_TabSelected]               = Bg1;
-    c[ImGuiCol_TabSelectedOverline]       = Accent;
-    c[ImGuiCol_TabDimmed]                 = Bg2;
-    c[ImGuiCol_TabDimmedSelected]         = Bg1;
-    c[ImGuiCol_TabDimmedSelectedOverline] = Hex(0x2F8CFF, 0.40f);
+    c[ImGuiCol_Tab]                       = P.bg2;
+    c[ImGuiCol_TabHovered]                = P.bg3;
+    c[ImGuiCol_TabSelected]               = P.bg1;
+    c[ImGuiCol_TabSelectedOverline]       = P.tabOverline;
+    c[ImGuiCol_TabDimmed]                 = P.bg2;
+    c[ImGuiCol_TabDimmedSelected]         = P.bg1;
+    c[ImGuiCol_TabDimmedSelectedOverline] = P.tabOverlineDim;
     // スクロール（トラック透明、細い丸グラブ）
     c[ImGuiCol_ScrollbarBg]          = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_ScrollbarGrab]        = Hex(0x36363D);
-    c[ImGuiCol_ScrollbarGrabHovered] = Hex(0x4A4A53);
-    c[ImGuiCol_ScrollbarGrabActive]  = Hex(0x5C5C67);
+    c[ImGuiCol_ScrollbarGrab]        = P.scrollGrab;
+    c[ImGuiCol_ScrollbarGrabHovered] = P.scrollGrabHover;
+    c[ImGuiCol_ScrollbarGrabActive]  = P.scrollGrabActive;
     // スライダー / チェック（ui:: の自前描画が主役。素の ImGui 描画に落ちたときの保険）
-    c[ImGuiCol_SliderGrab]           = AccentHover;
-    c[ImGuiCol_SliderGrabActive]     = Text;
-    c[ImGuiCol_CheckMark]            = Hex(0xFFFFFF);
+    c[ImGuiCol_SliderGrab]           = P.accentHover;
+    c[ImGuiCol_SliderGrabActive]     = P.text;
+    c[ImGuiCol_CheckMark]            = P.onAccent;
     // セパレータ（ドッキング分割バーもこの色。ホバー/ドラッグでアクセント）
-    c[ImGuiCol_Separator]            = Border;
-    c[ImGuiCol_SeparatorHovered]     = Hex(0x2F8CFF, 0.60f);
-    c[ImGuiCol_SeparatorActive]      = Accent;
+    c[ImGuiCol_Separator]            = P.separator;
+    c[ImGuiCol_SeparatorHovered]     = P.separatorHover;
+    c[ImGuiCol_SeparatorActive]      = P.accent;
     // リサイズグリップ（通常は不可視）
     c[ImGuiCol_ResizeGrip]           = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_ResizeGripHovered]    = Hex(0x2F8CFF, 0.40f);
-    c[ImGuiCol_ResizeGripActive]     = Accent;
+    c[ImGuiCol_ResizeGripHovered]    = P.resizeGripHover;
+    c[ImGuiCol_ResizeGripActive]     = P.accent;
     // ドッキング
-    c[ImGuiCol_DockingPreview]       = Hex(0x2F8CFF, 0.30f);
-    c[ImGuiCol_DockingEmptyBg]       = Bg0;
+    c[ImGuiCol_DockingPreview]       = P.dockingPreview;
+    c[ImGuiCol_DockingEmptyBg]       = P.bg0;
     // テーブル
-    c[ImGuiCol_TableHeaderBg]        = Bg2;
-    c[ImGuiCol_TableBorderStrong]    = Border;
-    c[ImGuiCol_TableBorderLight]     = Hex(0x222226);
+    c[ImGuiCol_TableHeaderBg]        = P.bg2;
+    c[ImGuiCol_TableBorderStrong]    = P.border;
+    c[ImGuiCol_TableBorderLight]     = P.tableBorderLight;
     c[ImGuiCol_TableRowBg]           = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_TableRowBgAlt]        = Hex(0xFFFFFF, 0.02f);
+    c[ImGuiCol_TableRowBgAlt]        = P.tableRowAlt;
     // ナビ / ドラッグ&ドロップ / モーダル
-    c[ImGuiCol_NavCursor]            = Accent;
-    c[ImGuiCol_DragDropTarget]       = Accent;
+    c[ImGuiCol_NavCursor]            = P.accent;
+    c[ImGuiCol_DragDropTarget]       = P.accent;
     c[ImGuiCol_NavWindowingHighlight] = Hex(0xFFFFFF, 0.70f);
     c[ImGuiCol_NavWindowingDimBg]    = Hex(0x000000, 0.45f);
     c[ImGuiCol_ModalWindowDimBg]     = Hex(0x000000, 0.55f);
-    c[ImGuiCol_TreeLines]            = Hex(0xFFFFFF, 0.14f);
-    c[ImGuiCol_PlotLines]            = TextDim;
-    c[ImGuiCol_PlotLinesHovered]     = AccentHover;
-    c[ImGuiCol_PlotHistogram]        = Accent;
-    c[ImGuiCol_PlotHistogramHovered] = AccentHover;
+    c[ImGuiCol_TreeLines]            = P.treeLines;
+    c[ImGuiCol_PlotLines]            = P.textDim;
+    c[ImGuiCol_PlotLinesHovered]     = P.accentHover;
+    c[ImGuiCol_PlotHistogram]        = P.accent;
+    c[ImGuiCol_PlotHistogramHovered] = P.accentHover;
 }
 
 } // namespace dx12e::theme

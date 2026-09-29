@@ -112,4 +112,46 @@ bool MenuItem(const char* icon, const char* label, const char* shortcut, bool* s
 void PushMenuStyle();
 void PopMenuStyle();
 
+
+// ===========================================================================
+// deco:: — テーマ・バリアント（アイデンティティ候補 A/B/C。EditorTheme.h / ThemeVariants.h）の共通装飾ヘルパ
+// ---------------------------------------------------------------------------
+// ★グロー / 光のヘアライン / シグナルバー / 影 / 状態遷移のイージングは、パネルごとに書かずここに集約する。
+//   Variant::Default（既定）では、どの関数も従来と同じ描画・同じ値を返す（＝見た目は 1px も変わらない）。
+//   案を 1 つに決めたら、その案の分岐だけ残して他を消せる構造（呼び出し側は Variant を見ない）。
+// ★色は EditorTheme.h のトークン（ThemeVariants.h の Deco 方針）だけを引く。寸法は Px()。
+// ===========================================================================
+namespace deco
+{
+// 既定（現行）以外の案が有効か。
+bool Active();
+
+// 状態の滑らかな遷移: (id, slot) ごとの 0..1 の値が target へ寄っていく（時間 = Deco::easeSec）。
+// Default（easeSec == 0）は target をそのまま返す（＝即時・記憶なし）。slot: 0=hover 1=active 2=focus。
+float Ease(ImGuiID id, int slot, float target);
+
+// 外側へ淡く広がるハロー（多重の細い枠で疑似ブラー）。strength 0..1（案の glow 係数が掛かる）。
+// 窓のクリップを広げて描くので、テーブルのセルの縁でも切れない。
+void Glow(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, const ImVec4& col, float strength);
+
+// 行の面（ヒエラルキー / コマンドパレット / ツリー行）。窓幅いっぱいの矩形 [mn, mx] を渡す。
+//   Default = 選択: アクセント 30% + 左 2px アクセントライン / ホバー: Bg3 / 押下: アクセント 42%
+//   A = ネオンバー（左ライン + 光のにじみ）/ B = ガラスの丸い面 + 光の縁 / C = 左のシグナルバー + 無彩色の面
+void RowFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool selected, bool hovered, bool held);
+
+// 選択中カード（アセットブラウザ）の縁取り。Default = アクセント 2px。
+void CardSelected(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding);
+
+// 左端の選択バー（ツリー行の選択）。Default = 2px のアクセント。
+void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx);
+
+// 浮遊するカード（トースト等）。影 + 面 + 縁。Default は従来のトーストと同じ描画。
+// face = 面の色（alpha 込み）、alpha = 全体のフェード。
+void FloatingCard(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, const ImVec4& face, float alpha);
+
+// 全パネルの描画後（ImGuiManager::EndFrame）に 1 回呼ぶ。パネル上端のヘアライン / フォーカス中パネルのエッジ /
+// 選択タブの光 / ポップアップ・メニュー・パレットの影 / ステータスバーの線など「窓の外側から足す」装飾。Default は何もしない。
+void PaintChrome();
+} // namespace deco
+
 } // namespace dx12e::ui

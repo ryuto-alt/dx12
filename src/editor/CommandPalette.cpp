@@ -237,6 +237,8 @@ void CommandPalette::BuildCommandItems(EditorContext& ctx, const std::string& q,
     {
         // パレット自身の起動コマンドは出さない（開いているのに「パレットを開く」は無意味）
         if (std::string_view(d.id).rfind("palette.", 0) == 0) continue;
+        // 開発用のテーマ案切替は --theme-variant を付けて起動した時だけ出す（既定の見た目・候補一覧を変えない）
+        if (!theme::g_variantSwitchEnabled && std::string_view(d.id).rfind("view.theme.", 0) == 0) continue;
         add(d.id, d.label, d.labelEn, d.category, cmd::ChordLabel(d));
     }
     for (const tools::Desc& t : tools::kAll)
@@ -576,8 +578,13 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
                 const ImVec2 p1(p0.x + w, p0.y + rowH);
                 if (sel)
                 {
-                    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(th::Selection), ui::Px(3.0f));
-                    dl->AddRectFilled(p0, ImVec2(p0.x + ui::Px(2.0f), p1.y), ImGui::GetColorU32(th::Accent), ui::Px(2.0f));
+                    if (ui::deco::Active())
+                        ui::deco::RowFace(dl, p0, p1, true, false, false);
+                    else
+                    {
+                        dl->AddRectFilled(p0, p1, ImGui::GetColorU32(th::Selection), ui::Px(3.0f));
+                        dl->AddRectFilled(p0, ImVec2(p0.x + ui::Px(2.0f), p1.y), ImGui::GetColorU32(th::Accent), ui::Px(2.0f));
+                    }
                 }
                 const float cy = (p0.y + p1.y) * 0.5f;
                 const float alpha = it.enabled ? 1.0f : 0.45f;

@@ -85,6 +85,11 @@ inline constexpr Def kCommands[] = {
     {"view.toggle2D",    "2D / 3D ビューを切り替え",         "2D 3D View",        "表示",     "",             "", "",                                     Scope::Editor, KeyMode::Global},
     {"view.resetLayout", "レイアウトをリセット",             "Reset Layout",      "表示",     "",             "", "",                                     Scope::Always, KeyMode::Global},
     {"view.closeTools",  "ツール窓をすべて閉じる",           "Close All Tool Windows", "表示", "",            "", "",                                     Scope::Always, KeyMode::Global},
+    // 開発用: エディタのアイデンティティ案の切替（ThemeVariants.h）。パレット(Ctrl+K)からだけ。案が決まったら表ごと消す。
+    {"view.theme.default","テーマ案: 現行",                 "Theme Variant Default", "表示", "",           "", "",                                     Scope::Always, KeyMode::Global},
+    {"view.theme.a",     "テーマ案 A: ネオン・エッジ",       "Theme Variant A Neon Edge",   "表示", "",     "", "",                                     Scope::Always, KeyMode::Global},
+    {"view.theme.b",     "テーマ案 B: グラス・レイヤー",     "Theme Variant B Glass Layer", "表示", "",     "", "",                                     Scope::Always, KeyMode::Global},
+    {"view.theme.c",     "テーマ案 C: インク・アンド・シグナル", "Theme Variant C Ink Signal", "表示", "",  "", "",                                     Scope::Always, KeyMode::Global},
     {"view.fullscreen",  "ボーダレスフルスクリーン",         "Fullscreen",        "表示",     "F11",          "", "ボーダレスフルスクリーン切り替え",     Scope::Always, KeyMode::External},
 
     // ---- 再生 ----

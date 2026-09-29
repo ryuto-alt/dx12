@@ -193,6 +193,7 @@ void EditorLayer::Render(bool isPlaying,
                          ID3D12GraphicsCommandList* cmdList)
 {
     m_ctx->isPlaying = isPlaying;   // 各パネルが「Play 中は押せない」を判定するのに使う
+    theme::g_paintChromeFn = &ui::deco::PaintChrome;   // テーマ・バリアントの窓外装飾（Gui は Editor に依存できないので口を渡す）
     toolbarHeight = ui::Px(toolbarHeight);   // Application::kToolbarHeight は論理 px（100% 表示）。以降は物理 px
 
     auto& reg = scene->GetRegistry();

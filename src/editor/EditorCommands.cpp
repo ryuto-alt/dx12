@@ -1,5 +1,6 @@
 #include "editor/EditorCommands.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
 #include "editor/EditorIcons.h"
 #include "editor/ToolWindows.h"
 #include "editor/UiWidgets.h"
@@ -121,6 +122,7 @@ const char* IconFor(std::string_view id)
         {"view.gizmoSpace", ICON_SPACE_WORLD}, {"view.fill", ICON_T_SUN}, {"view.flyMode", ICON_KEYBOARD},
         {"view.toggle2D", ICON_VIEW_2D}, {"view.resetLayout", ICON_REFRESH}, {"view.closeTools", ICON_CLOSE},
         {"view.fullscreen", ICON_T_MONITOR},
+        {"view.theme.default", ICON_T_SUN}, {"view.theme.a", ICON_T_SUN}, {"view.theme.b", ICON_T_SUN}, {"view.theme.c", ICON_T_SUN},
         {"play.toggle", ICON_PLAY}, {"play.stop", ICON_STOP}, {"play.pause", ICON_PAUSE},
         {"palette.commands", ICON_SEARCH}, {"palette.quickOpen", ICON_SEARCH},
     };
@@ -152,6 +154,10 @@ bool IsChecked(const EditorContext& ctx, std::string_view id)
     if (id == "view.fill")    return ctx.viewportFill > 0.0f;
     if (id == "view.flyMode") return ctx.flyMode;
     if (id == "view.toggle2D") return ctx.view2D;
+    if (id == "view.theme.default") return theme::CurrentVariant() == theme::Variant::Default;
+    if (id == "view.theme.a") return theme::CurrentVariant() == theme::Variant::A;
+    if (id == "view.theme.b") return theme::CurrentVariant() == theme::Variant::B;
+    if (id == "view.theme.c") return theme::CurrentVariant() == theme::Variant::C;
     return false;
 }
 
@@ -284,6 +290,10 @@ bool Execute(EditorContext& ctx, const Env& env, std::string_view id)
     if (id == "view.resetLayout") { ctx.resetLayout = true; return true; }
     if (id == "view.closeTools")  { tools::CloseAll(ctx); return true; }
     if (id == "view.fullscreen")  { ctx.pendingToggleFullscreen = true; return true; }
+    if (id == "view.theme.default") { theme::RequestVariant(theme::Variant::Default); return true; }
+    if (id == "view.theme.a")       { theme::RequestVariant(theme::Variant::A);       return true; }
+    if (id == "view.theme.b")       { theme::RequestVariant(theme::Variant::B);       return true; }
+    if (id == "view.theme.c")       { theme::RequestVariant(theme::Variant::C);       return true; }
 
     // ---- 再生 ----
     if (id == "play.toggle") { ctx.pendingPlayRequest = ctx.isPlaying ? 2 : 1; return true; }

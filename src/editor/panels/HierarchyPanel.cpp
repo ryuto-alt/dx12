@@ -53,16 +53,9 @@ void PushRenameCommand(entt::registry& reg, EditorContext& ctx, entt::entity e,
 // ImGui 側の Header 色は透明にして呼ぶこと（二重に塗らない）。
 static void PaintRowBg(ImDrawList* dl, float y0, float y1, bool selected, bool hovered, bool held)
 {
-    namespace th = dx12e::theme;
+    // 見た目はテーマ・バリアントの共通ヘルパ（Default は従来と同じ描画）
     const ImRect r = ImGui::GetCurrentWindowRead()->InnerRect;
-    const ImVec4* col = nullptr;
-    if (held)          col = &th::SelectionActive;
-    else if (selected) col = hovered ? &th::SelectionActive : &th::Selection;
-    else if (hovered)  col = &th::Bg3;
-    if (col)
-        dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(*col));
-    if (selected)
-        dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Min.x + ui::Px(2.0f), y1), ImGui::GetColorU32(th::Accent));
+    ui::deco::RowFace(dl, ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), selected, hovered, held);
 }
 
 // 大文字小文字を無視した部分一致（Hierarchy フィルタ用）

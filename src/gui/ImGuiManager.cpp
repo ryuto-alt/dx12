@@ -717,6 +717,19 @@ void ImGuiManager::BeginFrame()
 {
     // DPI: メインビューポートの倍率が変わっていたら（別モニターへ移動 / OS 設定変更 / オーバーライド）ここで切り替える。
     //   NewFrame の前に済ませる＝そのフレームは最初から新しい倍率のスタイルとフォントで描かれる。
+    if (g_editorStyle && theme::g_pendingVariant >= 0)
+    {
+        // テーマ・バリアントの切替要求（開発用。ThemeVariants.h）。NewFrame の前にスタイルごと差し替える。
+        const theme::Variant v = static_cast<theme::Variant>(theme::g_pendingVariant);
+        theme::g_pendingVariant = -1;
+        if (v != theme::CurrentVariant() && theme::BaseStyleValid())
+        {
+            theme::SetVariant(v);
+            theme::ApplyStyle(theme::BaseStyle());   // 100% の基準スタイルを作り直し、下で現在の倍率へ展開し直す
+            g_appliedScale = 0.0f;
+            Logger::Info("テーマ案を切り替え: {}", theme::VariantName(v));
+        }
+    }
     if (g_editorStyle)
     {
         const float want = ComputeMainScale();
@@ -781,6 +794,8 @@ void ImGuiManager::EndFrame(ID3D12GraphicsCommandList* cmdList)
         vinput_gui::DrawVirtualCursor();   // スクショに「AI が今どこを操作しているか」が映る
     if (g_editorStyle)
         floatguard::Apply(vinput::Enabled() || g_viewportsForbidden);   // 全パネルの描画後: フローティング窓をメイン窓内へ収める
+    if (g_editorStyle && theme::g_paintChromeFn)
+        theme::g_paintChromeFn();   // テーマ・バリアントの窓外装飾（パネルの光の縁 / ポップアップの影 等。Default は何もしない）
     WarnSecondaryViewports();              // 別 OS 窓が 1 枚でも生えたらログに警告（実画面に窓が出ている合図）
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);

@@ -135,10 +135,7 @@ void RenderToasts(float dt, float bottomInset)
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p0 = pos, p1(pos.x + kW, pos.y + h);
         // 面 + 枠 + 左の種別色バー
-        dl->AddRectFilled(ImVec2(p0.x + Px(1.0f), p0.y + Px(2.0f)), ImVec2(p1.x + Px(1.0f), p1.y + Px(3.0f)),
-                          IM_COL32(0, 0, 0, static_cast<int>(70 * alpha)), kR);   // 影
-        dl->AddRectFilled(p0, p1, Col(hovered ? theme::Bg3 : theme::Bg2, alpha), kR);
-        dl->AddRect(p0, p1, Col(theme::BorderStrong, alpha), kR, 0, Px(1.0f));
+        ui::deco::FloatingCard(dl, p0, p1, kR, hovered ? theme::Bg3 : theme::Bg2, alpha);   // 影 + 面 + 縁（テーマ案ごとに変わる）
         dl->AddRectFilled(p0, ImVec2(p0.x + kBar, p1.y), Col(KindColor(t.kind), alpha), kR, ImDrawFlags_RoundCornersLeft);
 
         // アイコン + 本文（折り返し）

@@ -7,6 +7,8 @@
 #include "core/Version.h"
 #include "core/vfs/Vfs.h"
 #include "core/DpiScale.h"
+#include "editor/EditorTheme.h"   // --theme-variant（エディタのアイデンティティ案。開発用）
+#include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
 #include "project/Project.h"
 
 #include <Windows.h>
@@ -356,6 +358,10 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         dx12e::BackgroundOptions bgOpt;
         std::string bgError;
         int  mcpPort  = 0;
+        // フリート運用（複数エンジンを MCP サーバが起動・管理する）: 親が消えたら / 無操作が続いたら自分で終了する。
+        unsigned long fleetOwnerPid = 0;
+        double       fleetIdleExitMin = 0.0;
+        std::string  fleetInstanceId;
         std::string startupScene;
 #endif
 #ifndef DX12_GAME_RUNTIME
@@ -527,8 +533,25 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         if (dx12e::dpi::ParseScale(value, v)) dx12e::dpi::SetOverride(v);
                         else OutputDebugStringA(("--dpi-scale の値が不正です（0.75〜3.0）: " + value + "\n").c_str());
                     }
+                    else if (wcscmp(argv[i], L"--theme-variant") == 0 || wcsncmp(argv[i], L"--theme-variant=", 16) == 0)
+                    {
+                        // 開発用: エディタの見た目のアイデンティティ案。a | b | c | default（既定 = 現行。指定なしなら 1px も変わらない）。
+                        std::string value;
+                        if (argv[i][15] == L'=') value = toUtf8(argv[i] + 16);
+                        else if (i + 1 < argc)   value = toUtf8(argv[++i]);
+                        dx12e::theme::Variant tv = dx12e::theme::Variant::Default;
+                        dx12e::theme::g_variantSwitchEnabled = true;   // 切替コマンド（コマンドパレット）を有効にする
+                        if (dx12e::theme::ParseVariant(value, tv)) dx12e::theme::SetVariant(tv);
+                        else OutputDebugStringA(("--theme-variant の値が不正です（a | b | c | default）: " + value + "\n").c_str());
+                    }
                     else if (wcscmp(argv[i], L"--mcp-port") == 0 && i + 1 < argc)
                         mcpPort = _wtoi(argv[++i]);
+                    else if (wcscmp(argv[i], L"--owner-pid") == 0 && i + 1 < argc)
+                        fleetOwnerPid = wcstoul(argv[++i], nullptr, 10);
+                    else if (wcscmp(argv[i], L"--idle-exit") == 0 && i + 1 < argc)
+                        fleetIdleExitMin = _wtof(argv[++i]);
+                    else if (wcscmp(argv[i], L"--instance-id") == 0 && i + 1 < argc)
+                        fleetInstanceId = toUtf8(argv[++i]);
                     else if (wcscmp(argv[i], L"--scene") == 0 && i + 1 < argc)
                         startupScene = toUtf8(argv[++i]);
                 }
@@ -636,6 +659,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         if (virtualInput) app.SetVirtualInput(true);
         if (bgOpt.Active()) app.SetBackground(bgOpt);   // 仮想入力モードも含意する
         if (mcpPort > 0)  app.SetMcpPort(mcpPort);
+        dx12e::fleet::Instance().Configure(static_cast<uint32_t>(fleetOwnerPid), fleetIdleExitMin, fleetInstanceId);
         if (!startupScene.empty()) app.SetStartupScene(startupScene);
 #endif
         app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);

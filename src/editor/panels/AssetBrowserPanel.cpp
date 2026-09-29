@@ -307,7 +307,7 @@ void AssetBrowserPanel::DrawFolderTree(const std::filesystem::path& dir, bool& n
             const float cy = (mn.y + mx.y) * 0.5f;
             const bool hov = ImGui::IsItemHovered();
             if (isSelected)
-                tdl->AddRectFilled(mn, ImVec2(mn.x + dx12e::ui::Px(2.0f), mx.y), ImGui::GetColorU32(th::Accent));
+                dx12e::ui::deco::SelectionBar(tdl, mn, mx);
             if (hasSubDirs)
                 dx12e::ui::DrawIconCentered(tdl, open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT,
                                             ImVec2(rowX + dx12e::ui::Px(4.0f) + ImGui::GetFontSize() * 0.5f, cy),
@@ -704,9 +704,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     m_selectedPath = entry.path;
                 // 選択中はアクセント枠でハイライト
                 if (!m_selectedPath.empty() && m_selectedPath == entry.path)
-                    ImGui::GetWindowDrawList()->AddRect(
-                        ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                        ImGui::GetColorU32(dx12e::theme::Accent), ui::PxF(3.0f), 0, ui::Px(2.0f));
+                    ui::deco::CardSelected(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ui::PxF(3.0f));
 
                 // --- ダブルクリック（EndGroup 後 = グループ全体のホバー判定）---
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))

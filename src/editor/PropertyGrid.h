@@ -231,12 +231,20 @@ inline bool FloatN(const char* label, float* v, int n, float speed,
                    float mn, float mx, const char* fmt, bool* active,
                    const char* tip = nullptr)
 {
-    static const ImU32 axisCol[4] = {
+    // XYZ の色帯。C（インク・アンド・シグナル）だけは彩度を落とす（色は状態のためにとっておく）。
+    static const ImU32 axisColDefault[4] = {
         IM_COL32(226,  84,  84, 255),   // X
         IM_COL32(126, 204,  88, 255),   // Y
         IM_COL32( 84, 132, 240, 255),   // Z
         IM_COL32(160, 162, 170, 255),   // W
     };
+    static const ImU32 axisColMuted[4] = {
+        IM_COL32(184, 118, 114, 255),
+        IM_COL32(148, 176, 128, 255),
+        IM_COL32(124, 148, 194, 255),
+        IM_COL32(150, 150, 150, 255),
+    };
+    const ImU32* axisCol = (theme::CurrentVariant() == theme::Variant::C) ? axisColMuted : axisColDefault;
     Label(label, tip);
     ImGui::PushID(label);
     const ImGuiStyle& st = ImGui::GetStyle();
