@@ -8,6 +8,7 @@
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
 #include "core/CrashHandler.h"
+#include "project/LauncherLogic.h"
 
 namespace dx12e
 {
@@ -247,6 +248,84 @@ void Application::UpdateProjectLoad(f32 dt)
             Logger::Info("起動シーンを開きます: {}", m_startupScene);
         }
     }
+}
+
+// ===== ランチャーのサムネイル =====
+void Application::RequestProjectThumbnail(bool force)
+{
+    if (m_isGameMode || m_projectInfo.rootDir.empty()) return;
+    m_thumbRequested = true;
+    m_thumbForce = m_thumbForce || force;
+}
+
+void Application::UpdateProjectThumbnail(f32 dt)
+{
+    if (m_isGameMode || m_loading || !m_sceneRT) { m_thumbRequested = false; return; }
+    const std::string root = m_projectInfo.rootDir;
+    if (root.empty()) { m_thumbRequested = false; return; }
+    const std::string thumbPath = launcher::ThumbnailPath(root);
+
+    // 自動: プロジェクトを開いて数秒後（絵が安定してから）、サムネイルがまだ無ければ 1 度だけ撮る。
+    if (!m_showLauncher && m_engineMode == EngineMode::Editor)
+    {
+        if (m_thumbAutoRoot != root) { m_thumbAutoRoot = root; m_thumbAutoTimer = 0.0f; m_thumbAutoDone = false; }
+        if (!m_thumbAutoDone)
+        {
+            m_thumbAutoTimer += dt;
+            if (m_thumbAutoTimer > 6.0f)
+            {
+                m_thumbAutoDone = true;
+                std::error_code ec;
+                if (!std::filesystem::exists(launcher::PathFromUtf8(thumbPath), ec)) { m_thumbRequested = true; }
+            }
+        }
+    }
+    if (!m_thumbRequested) return;
+
+    const bool force = m_thumbForce;
+    // Play 中は撮らない（ゲーム画面は別物で、読み戻しの GPU 待ちがゲームを止める）。
+    if (m_engineMode != EngineMode::Editor && !force) { m_thumbRequested = false; return; }
+    // 保存のたびに撮るとディスクと GPU の無駄なので、通常要求は前回から 45 秒以上あけて 1 回だけ。
+    const u64 now = GetTickCount64();
+    if (!force && m_thumbLastTick != 0 && now - m_thumbLastTick < 45000ull) { m_thumbRequested = false; return; }
+    m_thumbRequested = false;
+    m_thumbForce = false;
+
+    std::vector<u8> bgra;
+    u32 w = 0, h = 0;
+    std::string err;
+    if (!ReadbackSceneBgra(bgra, w, h, err))
+    {
+        Logger::Warn("サムネイルの撮影に失敗しました（{}）", err);
+        return;
+    }
+    const launcher::ThumbCrop crop = launcher::CenterCrop16x9(static_cast<int>(w), static_cast<int>(h));
+    if (crop.w <= 0 || crop.h <= 0) return;
+    // 小さいビューポートは拡大しない（元の大きさまで）。
+    const int dw = (std::min)(launcher::kThumbW, crop.w);
+    const int dh = (std::max)(1, dw * 9 / 16);
+    const std::vector<u8> thumb = launcher::DownscaleBgra(bgra.data(), static_cast<int>(w), static_cast<int>(h),
+                                                          static_cast<int>(w) * 4, crop, dw, dh);
+    // 暗転中・ロード直後の真っ黒 / 単色は、前の良いサムネイルを上書きしない。
+    if (launcher::ThumbnailLooksBlank(thumb, dw, dh))
+    {
+        Logger::Info("サムネイル: 暗転または単色のため更新しません");
+        return;
+    }
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path out = launcher::PathFromUtf8(thumbPath);
+    fs::create_directories(out.parent_path(), ec);
+    const fs::path tmp = out.wstring() + L".tmp";
+    if (!WriteBgraPng(tmp.wstring(), thumb.data(), static_cast<u32>(dw), static_cast<u32>(dh), err))
+    {
+        Logger::Warn("サムネイルの書き出しに失敗しました（{}）", err);
+        fs::remove(tmp, ec);
+        return;
+    }
+    fs::rename(tmp, out, ec);
+    if (ec) { fs::remove(out, ec); ec.clear(); fs::rename(tmp, out, ec); }
+    if (!ec) { m_thumbLastTick = now; Logger::Info("サムネイルを更新しました: {}", thumbPath); }
 }
 
 void Application::RunGitAsync(const std::string& label, std::function<GitResult()> task, bool isLogin)

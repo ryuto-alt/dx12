@@ -27,6 +27,7 @@
 #include "editor/EditorIcons.h"
 #include "engine/core/EventBus.h"   // ヘッダオンリー、GPU 非依存。entt の後に置く
 #include "core/mcp/McpDeferred.h"   // MCP 遅延応答の相関情報（値メンバで持つので完全型が要る）
+#include "core/mcp/McpMeta.h"       // MCP マニフェストのメタ情報（McpMethodEntry が値で持つ。依存ゼロ）
 #include "core/mcp/McpUndoTrack.h"  // MCP の編集の値スナップショット（値メンバで持つので完全型が要る）
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
 #include "core/PlaySession.h"       // Play 1 回ぶんの記録（値メンバで持つので完全型が要る）
@@ -408,10 +409,23 @@ private:
         // dx12_describe_mcp_params がそのまま返す。**本文で読むキーと一致させること。**
         const char* paramSpec = "";
         McpHandler  fn;
+        // マニフェスト用のメタ情報（core/mcp/McpMeta.h）。EnsureMcpMethodTable の最後に
+        // ApplyMcpManifest() が全 method へ流し込む（データ表 or paramSpec からの自動導出）。
+        // meta を McpDefine へ直接渡した method は登録時から入っていて、params は中央検査される。
+        McpMeta     meta;
+        bool        hasMeta = false;
+        bool        derived = false;   // データ表に無く paramSpec から導出した（ctest は 0 件を要求する）
     };
     // 名前は "a" か "a|b"（get/set を 1 本のハンドラで捌く場合。本文が method を見て分ける）。
     void McpDefine(const char* names, const char* paramSpec, McpHandler fn);
+    // meta を直接渡す版（新規 method はこちら）。params の必須/型/列挙/範囲がハンドラの前に検査される。
+    // paramSpec（describe_mcp_params 用）は meta.params から作る。
+    void McpDefine(const char* names, McpMeta meta, McpHandler fn);
     void EnsureMcpMethodTable();          // 初回の MCP コマンドで 1 度だけ表を組む
+    void ApplyMcpManifest();              // 既存 method へ meta を流し込み、ハッシュを 1 度だけ計算する
+    void RegisterMcpManifestMethods();    // describe_mcp_manifest（mcp/ApplicationMcpManifest.cpp）
+    // method 名の打ち間違いに近い候補（編集距離 + 別名 + 前方/部分一致。最大 5 件）。
+    std::vector<std::string> SuggestMcpMethodNames(const std::string& method) const;
     void RegisterMcpEntityMethods();      // エンティティ / コンポーネント / シーン入出力
     void RegisterMcpEditorMethods();      // エディタ操作（設定 / Play / 入力 / スクショ / 計測）
     void RegisterMcpRenderMethods();      // 描画設定（ポスト / SSAO / SSR / SSGI / TAA / フォグ / PCSS / DXR）
@@ -960,6 +974,17 @@ private:
     // 非同期プロジェクトロード: 作成/読込のCPU処理をワーカーで回しローディング表示
     void BeginProjectLoad(const ProjectInfo& info, bool isNew);
     void UpdateProjectLoad(f32 dt);   // 毎フレーム状態機械を進める（!m_loading なら何もしない）
+    // ---- ランチャーのサムネイル（<project>/.dx12/thumbnail.png。project/LauncherLogic.h の ThumbnailPath）----
+    // 保存したとき / プロジェクトを閉じるとき / 開いて数秒後にまだ無いときに、直近のシーン描画を 640x360 で書く。
+    // 実行は次の Update（フレーム境界。ReadbackSceneBgra が要求するため）。force=true は間引かない。
+    void RequestProjectThumbnail(bool force);
+    void UpdateProjectThumbnail(f32 dt);
+    bool        m_thumbRequested = false;
+    bool        m_thumbForce = false;
+    bool        m_thumbAutoDone = false;
+    f32         m_thumbAutoTimer = 0.0f;
+    u64         m_thumbLastTick = 0;
+    std::string m_thumbAutoRoot;
     void RenderLoadingOverlay();      // ローディングオーバーレイ描画
 
     // ---- 段階的シーンロード（重いシーンでウィンドウが固まらないようにする）----
@@ -1431,6 +1456,7 @@ private:
     double McpNowSec() const;
     // method 名 → ハンドラ。EnsureMcpMethodTable() が初回に 1 度だけ組む（#30 / N37 の根治）。
     std::unordered_map<std::string, McpMethodEntry> m_mcpMethods;
+    std::string m_mcpManifestHash;   // 表を組んだ時に 1 度だけ計算（ping / describe_mcp_manifest が読む）
     std::unique_ptr<AudioSystem>       m_audioSystem;
     std::unique_ptr<PhysicsSystem>     m_physicsSystem;
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）

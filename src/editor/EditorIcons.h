@@ -128,6 +128,29 @@
 #define ICON_GIT_PULL       "\xee\x83\xa5"   // U+E0E5 lucide:git-pull-request
 #define ICON_SQUARE_PLUS    "\xee\x85\xb3"   // U+E173 lucide:square-plus
 #define ICON_CIRCLE_PLAY    "\xee\x82\x80"   // U+E080 lucide:circle-play
+// ---- プロジェクトランチャー用（2026-09-30）----
+#define ICON_CLOCK          "\xee\x82\x87"   // U+E087 lucide:clock
+#define ICON_PIN            "\xee\x89\x99"   // U+E259 lucide:pin
+#define ICON_PIN_OFF        "\xee\x8a\xb6"   // U+E2B6 lucide:pin-off
+#define ICON_NEWSPAPER      "\xee\x8d\x88"   // U+E348 lucide:newspaper
+#define ICON_BOOK_OPEN      "\xee\x81\x9f"   // U+E05F lucide:book-open
+#define ICON_CROSSHAIR      "\xee\x82\xac"   // U+E0AC lucide:crosshair
+#define ICON_ROCKET         "\xee\x8a\x86"   // U+E286 lucide:rocket
+#define ICON_GITHUB         "\xee\x83\xa6"   // U+E0E6 lucide:github
+#define ICON_STAR           "\xee\x85\xb6"   // U+E176 lucide:star
+#define ICON_GAMEPAD        "\xee\x83\x9f"   // U+E0DF lucide:gamepad-2
+#define ICON_SPARKLES       "\xee\x90\x92"   // U+E412 lucide:sparkles
+#define ICON_GIT_FORK       "\xee\x8a\x8d"   // U+E28D lucide:git-fork
+#define ICON_CLOUD_DOWNLOAD "\xee\x82\x89"   // U+E089 lucide:cloud-download
+#define ICON_ARROW_RIGHT    "\xee\x81\x89"   // U+E049 lucide:arrow-right
+#define ICON_GRAD_CAP       "\xee\x88\xb4"   // U+E234 lucide:graduation-cap
+#define ICON_LIFE_BUOY      "\xee\x84\x81"   // U+E101 lucide:life-buoy
+#define ICON_MEGAPHONE      "\xee\x88\xb5"   // U+E235 lucide:megaphone
+#define ICON_CIRCLE_USER    "\xee\x91\xa1"   // U+E461 lucide:circle-user
+#define ICON_LOG_IN         "\xee\x84\x8d"   // U+E10D lucide:log-in
+#define ICON_WAND           "\xee\x8d\x97"   // U+E357 lucide:wand-sparkles
+#define ICON_HISTORY        "\xee\x87\xb5"   // U+E1F5 lucide:history
+#define ICON_FOLDER_GIT     "\xee\x90\x8a"   // U+E40A lucide:folder-git-2
 
 namespace dx12e
 {

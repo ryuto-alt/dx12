@@ -434,6 +434,27 @@ namespace McpErr
     constexpr int NotFound         = 1;  // entity / scene / asset が無い
     constexpr int UnknownComponent = 6;  // 未対応コンポーネント jsonKey
     constexpr int Internal         = 7;  // エンジン内部エラー
+    // ---- 2026-09 追加（設計書 §4.3.2）。既存の値は不変。error_name（文字列コード）と対で返す ----
+    constexpr int UnknownMethod    = 8;  // method 名が無い（従来は InvalidParam=2 に潰れていた）
+    constexpr int Busy             = 9;  // 別クライアントが単一ブリッジを保持
+    constexpr int Unsupported      = 10; // GPU / 環境が非対応（再送しても無駄）
+    constexpr int Guarded          = 11; // guarded な method を確認無しで要求
+    constexpr int Cancelled        = 12; // 呼び出しが中断された
+    constexpr int ModalOpen        = 13; // ImGui のモーダルが開いていて UI 操作できない
+    constexpr int FileIo           = 14; // ファイルの読み書きに失敗
+}
+
+// 「そのまま撃ち直せる」次の一手（error_fix の 1 要素）。argsJson は JSON オブジェクトの文字列。
+struct McpFix
+{
+    std::string tool;
+    std::string argsJson = "{}";
+    std::string why;
+};
+
+inline McpFix MakeMcpFix(std::string tool, const nlohmann::json& args, std::string why)
+{
+    return McpFix{std::move(tool), args.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), std::move(why)};
 }
 
 // error_code を運べる例外。HandleMcpCommand の catch で resp へ写す。
@@ -447,10 +468,34 @@ struct McpError : std::runtime_error
     std::string              hint;         // 「次にどうすればいいか」を必ず 1 文で
     std::vector<std::string> validValues;  // 列挙型の引数なら有効値を全部返す（推測させない）
 
+    // ---- 構造化エラー（加算フィールド。付けたものだけ応答へ error_* として載る）----
+    std::string              name;         // 文字列コード（"E_UNKNOWN_TOOL" など）
+    std::string              cause;        // 原因の説明 1 文
+    std::vector<McpFix>      fix;          // そのまま撃ち直せる候補
+    std::vector<std::string> didYouMean;   // 打ち間違いの近い候補（近い順・最大 5 件）
+    nlohmann::json           details;      // 追加情報（null なら出さない）
+
     McpError(int c, const std::string& m) : std::runtime_error(m), code(c) {}
     McpError(int c, const std::string& m, std::string h, std::vector<std::string> v = {})
         : std::runtime_error(m), code(c), hint(std::move(h)), validValues(std::move(v)) {}
 };
+
+// meta を持つ method の引数を検査する（required / type / enum / range）。違反は McpError を投げる。
+// enforce=true の引数だけが対象＝データ表由来の既存 method は素通し（既存クライアントを壊さない）。
+// 実装は mcp/ApplicationMcpManifest.cpp。
+void McpValidateMeta(const McpMeta& meta, const nlohmann::json& params, const std::string& method);
+
+// プロセス起動時刻（epoch ms）。ping.engineStartedAtMs。実装は mcp/ApplicationMcpManifest.cpp。
+long long McpEngineStartedAtMs();
+
+// シーン内の名前から name に近いものを最大 maxN 件（大文字小文字違いを最優先。O(N) の素朴な走査）。
+inline std::vector<std::string> McpSuggestEntityNames(Scene& scene, const std::string& name, size_t maxN = 5)
+{
+    std::vector<std::string> names;
+    for (auto e : scene.GetRegistry().view<NameTag>())
+        names.push_back(scene.GetRegistry().get<NameTag>(e).name);
+    return McpSuggest(name, names, maxN);
+}
 
 // ---- perf_stats / benchmark 共通の集計・整形 ----
 // 平均値を詰めた PerfSummary を JSON レポート（数値 + 簡易ボトルネック解析）へ変換する。
@@ -525,13 +570,86 @@ inline entt::entity ResolveMcpEntity(Scene& scene, const nlohmann::json& params)
     {
         auto ent = scene.FindEntity(it->get<std::string>());
         if (ent.IsValid()) return ent.GetHandle();
-        throw McpError(McpErr::NotFound, "no entity named '" + it->get<std::string>() + "'");
+        // ★error 文字列は従来のまま。近い名前と list_entities への誘導だけを加算で付ける。
+        const std::string want = it->get<std::string>();
+        McpError err(McpErr::NotFound, "no entity named '" + want + "'");
+        err.name       = "E_NOT_FOUND_ENTITY";
+        err.cause      = "この名前のエンティティがシーンに無い。名前は大文字小文字も含めて完全一致で引く";
+        err.didYouMean = McpSuggestEntityNames(scene, want);
+        const std::u32string w = McpDecodeUtf8(want);
+        err.fix.push_back(MakeMcpFix("list_entities",
+            nlohmann::json{{"name_prefix", McpEncodeUtf8(w.substr(0, 3))}},
+            "先頭が同じ名前の一覧で正しい名前を確かめる"));
+        throw err;
     }
     auto e = static_cast<entt::entity>(params.value("entity", 0xFFFFFFFFu));
     if (scene.GetRegistry().valid(e)) return e;
     // 数値 id が無効: Stop/open_scene で世代が変わると古い id はここに来る。再取得を促す。
-    throw McpError(McpErr::NotFound,
+    McpError err(McpErr::NotFound,
         "invalid entity id (Stop/シーン再読込で id は変わる。dx12_list_entities で取り直すか name 指定で操作してくれ)");
+    err.name  = "E_NOT_FOUND_ENTITY";
+    err.cause = "この id のエンティティは存在しない。Stop / シーン再読込で id は振り直される";
+    err.fix.push_back(MakeMcpFix("list_entities", nlohmann::json::object(), "id を取り直す（name 指定でも操作できる）"));
+    throw err;
+}
+
+// assets 以下の実在ファイルから rel に近いパスを最大 maxN 件（存在しないパスを打ち間違えたとき用）。
+// subdir 以下だけを走査し、exts（小文字の拡張子。空なら全部）で絞る。エラー経路でしか呼ばれない。
+// まずパス全体で、無ければファイル名（拡張子なし）だけで探す。走査は 5 万件で打ち切る。
+inline std::vector<std::string> McpSuggestAssetPaths(const std::string& rel, const std::string& subdir,
+                                                     std::initializer_list<const char*> exts, size_t maxN = 5)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root(PathResolver::AssetsDir());
+    const fs::path base = subdir.empty() ? root : root / subdir;
+    std::vector<std::string> all;
+    if (fs::exists(base, ec))
+    {
+        size_t visited = 0;
+        for (fs::recursive_directory_iterator it(base, fs::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end; it.increment(ec))
+        {
+            if (++visited > 50000) break;
+            if (!it->is_regular_file(ec)) continue;
+            if (exts.size() > 0)
+            {
+                std::string ext = it->path().extension().string();
+                for (char& c : ext) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                bool ok = false;
+                for (const char* e : exts) if (ext == e) { ok = true; break; }
+                if (!ok) continue;
+            }
+            all.push_back(fs::relative(it->path(), root, ec).generic_string());
+        }
+    }
+    std::vector<std::string> out = McpSuggest(rel, all, maxN);
+    if (out.empty())
+    {
+        std::vector<std::string> stems;
+        for (const auto& a : all) stems.push_back(fs::path(a).stem().string());
+        for (const auto& hit : McpSuggest(fs::path(rel).stem().string(), stems, maxN))
+        {
+            const auto k = std::find(stems.begin(), stems.end(), hit);
+            const std::string& full = all[static_cast<size_t>(k - stems.begin())];
+            if (std::find(out.begin(), out.end(), full) == out.end()) out.push_back(full);
+        }
+    }
+    return out;
+}
+
+// 存在しないアセット / シーンの NotFound。error 文字列と hint は呼び出し側が従来のまま渡し、
+// 近い候補（didYouMean）と一覧ツールへの誘導（fix）だけを加算で付ける。
+inline McpError McpNotFoundAsset(const std::string& msg, const std::string& hint, const std::string& rel,
+                                 const std::string& subdir, std::initializer_list<const char*> exts,
+                                 const char* errName, const char* listTool, const nlohmann::json& listArgs)
+{
+    McpError err(McpErr::NotFound, msg, hint);
+    err.name       = errName;
+    err.cause      = "このパスのファイルが assets 以下に無い。綴り・拡張子・大文字小文字を確かめる";
+    err.didYouMean = McpSuggestAssetPaths(rel, subdir, exts);
+    err.fix.push_back(MakeMcpFix(listTool, listArgs, "実在するパスの一覧で確かめる"));
+    return err;
 }
 
 // MCP パス系ツール共通: assets 相対パスの検証。絶対パス/ドライブレター/バックスラッシュ/".."

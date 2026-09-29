@@ -5,6 +5,7 @@
 // ===========================================================================
 #include "core/GameUiFont.h"
 #include "editor/UiWidgets.h"
+#include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 
@@ -3431,6 +3432,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         if (ConfirmDiscardScene(cancelled))
         {
             m_editorCtx->pendingCloseProject = false;
+            RequestProjectThumbnail(/*force*/ true);   // 閉じる直前の絵をカードに残す（撮るのは次の Update）
             m_showLauncher = true;
         }
         else if (cancelled)
@@ -6596,18 +6598,55 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             m_window->SetCaptionInfo(static_cast<u32>(kBarH), inBand);
         }
 
-        LauncherIcons li;
-        li.logo        = m_icons.logo;
-        li.newProject  = m_icons.newProject;
-        li.openProject = m_icons.openProject;
-        li.recent      = m_icons.recent;
-        li.tmplFps     = m_icons.tmplFps;
-        li.tmplTps     = m_icons.tmplTps;
-        li.tmpl2d      = m_icons.tmpl2d;
-        li.tmplEmpty   = m_icons.tmplEmpty;
+        // ランチャー画面（editor/LauncherScreen.cpp）。画像は Application がロードして返す。
+        //   ・同じファイルは更新日時 + サイズをキーにキャッシュ（サムネイルが更新されたら別物として読み直す）
+        //   ・呼ばれるのは ImGui フレーム中（nativeCmdList が開いている間）
+        LauncherHost host;
+        host.hwnd      = m_window->GetHwnd();
+        host.logo      = m_icons.logo;
+        // ★エンジン組み込みの assets/。プロジェクトを開くと PathResolver::AssetsDir() はそのプロジェクトの assets/ へ
+        //   切り替わるので、ランチャーへ「戻った」あとはそこにヒーロー画像などが無い。exe の位置から引き直して固定する
+        //   （配布 = exe 隣の assets/、開発 = build/release の 2 つ上のリポジトリ直下 assets/）。
+        static const std::string s_engineAssets = []() -> std::string
+        {
+            namespace fs = std::filesystem;
+            wchar_t exe[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exe, MAX_PATH);
+            const fs::path dir = fs::path(exe).parent_path();
+            std::error_code ec;
+            for (const fs::path& c : { dir / "assets", dir / ".." / ".." / "assets", dir / ".." / "assets" })
+                if (fs::exists(c / "editor" / "icons" / "logo.png", ec))
+                    return launcher::PathToUtf8(fs::weakly_canonical(c, ec)) + "/";
+            return PathResolver::AssetsDir();
+        }();
+        host.assetsDir = s_engineAssets;
+        host.loadImage = [this, nativeCmdList](const std::string& abs) -> LauncherImage
+        {
+            LauncherImage out;
+            if (!m_resourceManager || !m_srvHeap) return out;
+            namespace fs = std::filesystem;
+            const fs::path p = launcher::PathFromUtf8(abs);
+            std::error_code ec;
+            const auto sz = fs::file_size(p, ec);
+            if (ec || sz == 0 || sz > (64u << 20)) return out;
+            const auto mt = fs::last_write_time(p, ec);
+            std::ifstream f(p, std::ios::binary);
+            if (!f) return out;
+            std::vector<uint8_t> bytes(static_cast<size_t>(sz));
+            f.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            if (!f) return out;
+            const std::string key = "launcher:" + abs + "|" + std::to_string(sz) + "|"
+                                  + std::to_string(static_cast<long long>(mt.time_since_epoch().count()));
+            Texture* t = m_resourceManager->GetOrLoadEmbeddedTexture(key, bytes.data(), bytes.size(), "png", nativeCmdList, /*srgb*/ true);
+            if (!t) return out;
+            out.id = m_srvHeap->GetGpuHandle(t->GetSrvIndex()).ptr;
+            out.w  = static_cast<int>(t->GetWidth());
+            out.h  = static_cast<int>(t->GetHeight());
+            return out;
+        };
 
         ProjectInfo selected;
-        LauncherAction action = ProjectManager::RenderLauncher(selected, m_window->GetHwnd(), li);
+        LauncherAction action = LauncherScreen::Render(selected, host);
         if (action == LauncherAction::CreateNew)
             BeginProjectLoad(selected, /*isNew=*/true);
         else if (action == LauncherAction::OpenExisting)

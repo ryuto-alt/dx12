@@ -37,6 +37,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpImGui.cpp      # 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作: dx12_imgui_*）
     mcp/McpUndoTrack.cpp             # MCP の編集の値スナップショット（McpUndo().Track<T>）
     mcp/ApplicationMcpAudio.cpp      # 音の観測（audio_state）
+    mcp/ApplicationMcpManifest.cpp   # マニフェスト（method ごとのメタ情報）と引数の中央検査（データ表は ApplicationMcpManifestData.inc）
     Window.cpp
     SplashScreen.cpp                # 起動画面の窓 + スレッド + API（D2D 描画 / GDI+ 縮退）
     SplashRenderer.cpp              # Direct2D + DirectWrite の描画器（実窓とプレビューが共有）

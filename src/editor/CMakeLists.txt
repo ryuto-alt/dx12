@@ -84,3 +84,9 @@ target_sources(Editor PRIVATE
     CommandPalette.cpp
     Toast.cpp
 )
+
+# プロジェクトランチャー（UE5 プロジェクトブラウザ風の起動後画面）。純ロジックは project/LauncherLogic.h・LauncherMotion.h。
+# 上のリストへ挿し込まず target_sources の末尾追記にしている（同時編集とぶつからないように）。
+target_sources(Editor PRIVATE
+    LauncherScreen.cpp
+)

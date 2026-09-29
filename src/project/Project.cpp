@@ -1,9 +1,12 @@
 #include "project/Project.h"
 #include "project/ProjectTemplates.h"
+#include "project/LauncherLogic.h"   // PathFromUtf8（日本語パスを ANSI 解釈させない）
+#include "project/GitIntegration.h"
 #include "core/Logger.h"
 
 #include <fstream>
 #include <filesystem>
+#include <algorithm>
 #include <string_view>
 #include <nlohmann/json.hpp>
 
@@ -20,7 +23,7 @@ bool Project::Save(const ProjectInfo& info, const std::string& path)
     j["assetsDir"]        = "assets";
     j["scriptsDir"]       = "scripts";
 
-    std::ofstream ofs(path);
+    std::ofstream ofs(launcher::PathFromUtf8(path));
     if (!ofs.is_open())
     {
         Logger::Error("プロジェクトの保存に失敗しました: {}", path);
@@ -33,7 +36,7 @@ bool Project::Save(const ProjectInfo& info, const std::string& path)
 
 bool Project::Load(const std::string& path, ProjectInfo& outInfo)
 {
-    std::ifstream ifs(path);
+    std::ifstream ifs(launcher::PathFromUtf8(path));
     if (!ifs.is_open())
     {
         Logger::Error("プロジェクトの読み込みに失敗しました: {}", path);
@@ -44,16 +47,16 @@ bool Project::Load(const std::string& path, ProjectInfo& outInfo)
     ifs >> j;
 
     namespace fs = std::filesystem;
-    fs::path projDir = fs::path(path).parent_path();
+    fs::path projDir = launcher::PathFromUtf8(path).parent_path();
 
     outInfo.name             = j.value("name", j.value("title", "Untitled"));
     outInfo.engineVersion    = j.value("version", "0.1.0");
     // game.json は "startScene"、プロジェクトファイルは "defaultScene" を使う（両対応）
     outInfo.defaultScene     = j.value("startScene", j.value("defaultScene", "scenes/default.json"));
     outInfo.lastOpenedScene  = j.value("lastOpenedScene", "");
-    outInfo.rootDir          = projDir.string();
-    outInfo.assetsDir     = (projDir / j.value("assetsDir", "assets")).string() + "/";
-    outInfo.scriptsDir    = (projDir / j.value("scriptsDir", "scripts")).string() + "/";
+    outInfo.rootDir          = launcher::PathToUtf8(projDir);
+    outInfo.assetsDir     = launcher::PathToUtf8(projDir / j.value("assetsDir", "assets")) + "/";
+    outInfo.scriptsDir    = launcher::PathToUtf8(projDir / j.value("scriptsDir", "scripts")) + "/";
 
     Logger::Info("Project loaded: {} ({})", outInfo.name, path);
     return true;
@@ -61,19 +64,26 @@ bool Project::Load(const std::string& path, ProjectInfo& outInfo)
 
 // テンプレートの実体（シーン JSON / Lua コンポーネント / sceneflow）は
 // ProjectTemplates.cpp が持つ。ここではフォルダ規約とファイル書き出しだけを行う。
+// ★パスは UTF-8 の std::string で来る。std::filesystem へ直接渡すと ANSI 扱いになって日本語フォルダが壊れるので、
+//   必ず launcher::PathFromUtf8 を通す。
 void Project::CreateDefaultStructure(const ProjectInfo& info)
 {
     namespace fs = std::filesystem;
+    using launcher::PathFromUtf8;
 
-    fs::create_directories(info.assetsDir + "scenes");
-    fs::create_directories(info.assetsDir + "components");
-    fs::create_directories(info.assetsDir + "prefabs");
-    fs::create_directories(info.assetsDir + "shaders");
-    fs::create_directories(info.assetsDir + "models");
-    fs::create_directories(info.assetsDir + "textures");
-    fs::create_directories(info.assetsDir + "audio/bgm");
-    fs::create_directories(info.assetsDir + "audio/sfx");
-    fs::create_directories(info.scriptsDir);
+    std::error_code ec;
+    const fs::path assets  = PathFromUtf8(info.assetsDir);
+    const fs::path scripts = PathFromUtf8(info.scriptsDir);
+    const fs::path root    = PathFromUtf8(info.rootDir);
+    fs::create_directories(assets / "scenes", ec);
+    fs::create_directories(assets / "components", ec);
+    fs::create_directories(assets / "prefabs", ec);
+    fs::create_directories(assets / "shaders", ec);
+    fs::create_directories(assets / "models", ec);
+    fs::create_directories(assets / "textures", ec);
+    fs::create_directories(assets / "audio/bgm", ec);
+    fs::create_directories(assets / "audio/sfx", ec);
+    fs::create_directories(scripts, ec);
 
     const std::string tmpl = info.templateId.empty() ? "empty" : info.templateId;
     const auto& files = templates::GetFiles(tmpl);
@@ -81,12 +91,12 @@ void Project::CreateDefaultStructure(const ProjectInfo& info)
     const char* mainSceneContent = nullptr;
     for (const auto& f : files)
     {
-        fs::path outPath = fs::path(info.rootDir) / f.relPath;
-        fs::create_directories(outPath.parent_path());
+        fs::path outPath = root / f.relPath;
+        fs::create_directories(outPath.parent_path(), ec);
         std::ofstream ofs(outPath);
         if (!ofs.is_open())
         {
-            Logger::Error("テンプレートファイルの書き出しに失敗しました: {}", outPath.string());
+            Logger::Error("テンプレートファイルの書き出しに失敗しました: {}", launcher::PathToUtf8(outPath));
             continue;
         }
         if (std::string_view(f.relPath) == "scripts/game.lua")
@@ -100,11 +110,31 @@ void Project::CreateDefaultStructure(const ProjectInfo& info)
     // ちゃんと存在するように、メインシーンを defaultScene のパスへも書いておく。
     if (mainSceneContent && !info.defaultScene.empty() && info.defaultScene != "scenes/main.json")
     {
-        fs::path scenePath = fs::path(info.assetsDir) / info.defaultScene;
-        fs::create_directories(scenePath.parent_path());
+        fs::path scenePath = assets / PathFromUtf8(info.defaultScene);
+        fs::create_directories(scenePath.parent_path(), ec);
         std::ofstream ofs(scenePath);
         if (ofs.is_open())
             ofs << mainSceneContent;
+    }
+
+    // 新規作成フォームで選んだ描画設定。エンジンが読む settings.json（プロジェクトルート直下。数値だけの JSON）へ書く。
+    // 選ばなかった項目は書かない＝エンジンの既定のまま。
+    {
+        nlohmann::json st = nlohmann::json::object();
+        if (info.newShadowQuality >= 0) st["shadow_quality"] = std::clamp(info.newShadowQuality, 0, 3);
+        if (info.newVsync >= 0)         st["video_vsync"]    = info.newVsync != 0 ? 1 : 0;
+        if (!st.empty())
+        {
+            std::ofstream ofs(root / "settings.json");
+            if (ofs.is_open()) ofs << st.dump(2);
+        }
+    }
+
+    // Git リポジトリの初期化（任意）。git が無い / 失敗しても作成自体は成功扱い。
+    if (info.newGitInit && GitIntegration::IsGitAvailable())
+    {
+        const auto r = GitIntegration::Init(info.rootDir);
+        if (!r.ok()) Logger::Warn("git init に失敗しました（プロジェクトの作成は続けます）: {}", r.output);
     }
 
     Logger::Info("Created project structure ({} template, {} files): {}",

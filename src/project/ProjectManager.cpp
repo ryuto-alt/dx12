@@ -2,126 +2,231 @@
 #include "project/GitIntegration.h"
 #include "core/Logger.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中はネイティブダイアログを出さない
-#include "core/CrashHandler.h"
-#include "core/Version.h"   // kEngineName（ランチャーの見出し）
 
 #include <Windows.h>
-#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
-#include <array>
+#include <mutex>
 #include <thread>
 #include <commdlg.h>
 #include <ShlObj.h>
 #include <shobjidl.h>
 #include <nlohmann/json.hpp>
 
-#pragma warning(push)
-#pragma warning(disable: 4100 4189 4201 4244 4267 4996)
-#include <imgui.h>
-#pragma warning(pop)
-
 namespace dx12e
 {
 
+namespace
+{
+namespace fs = std::filesystem;
+
+std::string WideToUtf8(const std::wstring& w)
+{
+    if (w.empty()) return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
+    std::string s(static_cast<size_t>(len), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), s.data(), len, nullptr, nullptr);
+    return s;
+}
+
+// recent.json / editor_state.json の読み書きは同じプロセス内の複数スレッド（ロードスレッド + メイン）から来る。
+std::mutex& StoreMutex()
+{
+    static std::mutex m;
+    return m;
+}
+
+bool ReadJsonFile(const fs::path& p, nlohmann::json& out)
+{
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return false;
+    out = nlohmann::json::parse(f, nullptr, /*allow_exceptions*/ false);
+    return !out.is_discarded();
+}
+
+bool WriteJsonFile(const fs::path& p, const nlohmann::json& j)
+{
+    std::error_code ec;
+    fs::create_directories(p.parent_path(), ec);
+    // 途中で落ちても壊れた JSON を残さないよう、一時ファイルへ書いてから置き換える。
+    const fs::path tmp = p.wstring() + L".tmp";
+    {
+        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f << j.dump(2);
+        if (!f) return false;
+    }
+    fs::rename(tmp, p, ec);
+    if (ec)
+    {
+        // 置き換えに失敗（別プロセスが握っている等）したら直接書く。
+        fs::remove(tmp, ec);
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f << j.dump(2);
+    }
+    return true;
+}
+}  // namespace
+
+// ---------------------------------------------------------------- 保存先
+
+std::string ProjectManager::DataDir()
+{
+    // 検証用の差し替え（実ユーザーの一覧を触らない）。
+    char* env = nullptr;
+    size_t n = 0;
+    if (_dupenv_s(&env, &n, "DX12E_DATA_DIR") == 0 && env && *env)
+    {
+        std::string r(env);
+        free(env);
+        std::error_code ec;
+        fs::create_directories(launcher::PathFromUtf8(r), ec);
+        return r;
+    }
+    if (env) free(env);
+
+    PWSTR appData = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData)) && appData)
+    {
+        const fs::path dir = fs::path(appData) / L"DX12Engine";
+        CoTaskMemFree(appData);
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        return WideToUtf8(dir.wstring());
+    }
+    return ".";
+}
+
 std::string ProjectManager::GetRecentsFilePath()
 {
-    char appDataPath[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appDataPath)))
+    return launcher::JoinPath(DataDir(), "recent.json");
+}
+
+std::string ProjectManager::GetEditorStatePath()
+{
+    return launcher::JoinPath(DataDir(), "editor_state.json");
+}
+
+int64_t ProjectManager::NowEpoch()
+{
+    return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// ---------------------------------------------------------------- 最近のプロジェクト
+
+static std::vector<launcher::RecentRecord> ReadRecentsLocked(const std::string& file)
+{
+    std::vector<launcher::RecentRecord> out;
+    nlohmann::json j;
+    if (!ReadJsonFile(launcher::PathFromUtf8(file), j) || !j.is_object()) return out;
+    const auto it = j.find("recents");
+    if (it == j.end() || !it->is_array()) return out;
+    for (const auto& e : *it)
     {
-        std::filesystem::path dir = std::filesystem::path(appDataPath) / "DX12Engine";
-        std::filesystem::create_directories(dir);
-        return (dir / "recent.json").string();
+        if (!e.is_object()) continue;
+        launcher::RecentRecord r;
+        r.name       = e.value("name", std::string());
+        r.path       = e.value("path", std::string());
+        r.lastOpened = e.value("lastOpened", static_cast<int64_t>(0));
+        r.pinned     = e.value("pinned", false);
+        if (!r.name.empty() && !r.path.empty()) out.push_back(std::move(r));
     }
-    return "recent.json";
+    return out;
+}
+
+static void WriteRecentsLocked(const std::string& file, const std::vector<launcher::RecentRecord>& v)
+{
+    nlohmann::json j;
+    j["recents"] = nlohmann::json::array();
+    for (const auto& r : v)
+    {
+        nlohmann::json e;
+        e["name"] = r.name;
+        e["path"] = r.path;
+        if (r.lastOpened > 0) e["lastOpened"] = r.lastOpened;
+        if (r.pinned) e["pinned"] = true;
+        j["recents"].push_back(std::move(e));
+    }
+    WriteJsonFile(launcher::PathFromUtf8(file), j);
+}
+
+std::vector<launcher::RecentRecord> ProjectManager::LoadRecents()
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    auto v = ReadRecentsLocked(GetRecentsFilePath());
+    launcher::SortRecents(v);
+    return v;
+}
+
+void ProjectManager::AddToRecents(const ProjectInfo& info)
+{
+    if (info.rootDir.empty()) return;
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const std::string file = GetRecentsFilePath();
+    auto v = ReadRecentsLocked(file);
+    launcher::UpsertRecent(v, info.name, info.rootDir, NowEpoch());
+    WriteRecentsLocked(file, v);
+}
+
+bool ProjectManager::RemoveFromRecents(const std::string& projectRoot)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const std::string file = GetRecentsFilePath();
+    auto v = ReadRecentsLocked(file);
+    const bool removed = launcher::RemoveRecent(v, projectRoot);
+    if (removed) WriteRecentsLocked(file, v);
+    return removed;
+}
+
+bool ProjectManager::SetRecentPinned(const std::string& projectRoot, bool pinned)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const std::string file = GetRecentsFilePath();
+    auto v = ReadRecentsLocked(file);
+    const bool ok = launcher::SetPinned(v, projectRoot, pinned);
+    if (ok) WriteRecentsLocked(file, v);
+    return ok;
 }
 
 std::vector<ProjectInfo> ProjectManager::GetRecents()
 {
     std::vector<ProjectInfo> recents;
-    std::string path = GetRecentsFilePath();
-
-    std::ifstream ifs(path);
-    if (!ifs.is_open()) return recents;
-
-    nlohmann::json j;
-    ifs >> j;
-
-    for (const auto& entry : j.value("recents", nlohmann::json::array()))
+    for (const auto& r : LoadRecents())
     {
         ProjectInfo info;
-        info.name    = entry.value("name", "");
-        info.rootDir = entry.value("path", "");
-        if (!info.name.empty() && !info.rootDir.empty())
-            recents.push_back(info);
+        info.name    = r.name;
+        info.rootDir = r.path;
+        recents.push_back(std::move(info));
     }
-
     return recents;
 }
 
-void ProjectManager::AddToRecents(const ProjectInfo& info)
-{
-    auto recents = GetRecents();
-
-    // Remove existing entry with same path
-    recents.erase(
-        std::remove_if(recents.begin(), recents.end(),
-            [&](const ProjectInfo& p) { return p.rootDir == info.rootDir; }),
-        recents.end());
-
-    // Insert at front
-    recents.insert(recents.begin(), info);
-
-    // Limit to 10 recent projects
-    if (recents.size() > 10)
-        recents.resize(10);
-
-    // Save
-    nlohmann::json j;
-    j["recents"] = nlohmann::json::array();
-    for (const auto& r : recents)
-    {
-        nlohmann::json entry;
-        entry["name"] = r.name;
-        entry["path"] = r.rootDir;
-        j["recents"].push_back(entry);
-    }
-
-    std::ofstream ofs(GetRecentsFilePath());
-    if (ofs.is_open())
-        ofs << j.dump(2);
-}
+// ---------------------------------------------------------------- 開く
 
 bool ProjectManager::OpenProjectDialog(ProjectInfo& outInfo, HWND hwnd)
 {
-    char filePath[MAX_PATH] = "";
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd;
-    ofn.lpstrFilter = "DX12 Project (*.dx12proj)\0*.dx12proj\0All Files\0*.*\0";
-    ofn.lpstrFile = filePath;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.Flags = OFN_FILEMUSTEXIST;
-
-    if (!dx12e::guard::Blocked("プロジェクトを開くダイアログ") && GetOpenFileNameA(&ofn))
+    std::string picked;
+    if (!PickProjectFile(hwnd, picked)) return false;
+    if (Project::Load(picked, outInfo))
     {
-        if (Project::Load(filePath, outInfo))
-        {
-            AddToRecents(outInfo);
-            return true;
-        }
+        AddToRecents(outInfo);
+        return true;
     }
     return false;
 }
 
-bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar_t* title)
+// 専用の STA スレッドでダイアログを出す共通処理。
+// ★メインスレッドは XAudio2 が COINIT_MULTITHREADED(MTA) で COM 初期化済み。
+//   IFileOpenDialog は STA を要求するため、MTA スレッドで Show() すると固まる。
+//   → 専用の STA スレッドで開く。オーナー window は渡さない（メインスレッドが
+//     join() でブロック中なので、クロススレッド SendMessage によるデッドロックを避ける）。
+template <class Setup>
+static bool RunOpenDialog(std::string& outPath, Setup setup)
 {
-    if (dx12e::guard::Blocked("フォルダ選択ダイアログ")) return false;   // 仮想入力モード: モーダルでフォーカスを奪う
-    // ★メインスレッドは XAudio2 が COINIT_MULTITHREADED(MTA) で COM 初期化済み。
-    //   IFileOpenDialog は STA を要求するため、MTA スレッドで Show() すると固まる。
-    //   → 専用の STA スレッドで開く。オーナー window は渡さない（メインスレッドが
-    //     join() でブロック中なので、クロススレッド SendMessage によるデッドロックを避ける）。
     std::string picked;
     bool ok = false;
 
@@ -135,11 +240,7 @@ bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar
         if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                                        IID_PPV_ARGS(&dlg))))
         {
-            DWORD opts = 0;
-            dlg->GetOptions(&opts);
-            dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-            if (title) dlg->SetTitle(title);
-
+            setup(dlg);
             if (SUCCEEDED(dlg->Show(nullptr)))
             {
                 IShellItem* item = nullptr;
@@ -148,15 +249,8 @@ bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar
                     PWSTR pathW = nullptr;
                     if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &pathW)) && pathW)
                     {
-                        int len = WideCharToMultiByte(CP_UTF8, 0, pathW, -1, nullptr, 0, nullptr, nullptr);
-                        if (len > 0)
-                        {
-                            std::string s(static_cast<size_t>(len), '\0');
-                            WideCharToMultiByte(CP_UTF8, 0, pathW, -1, s.data(), len, nullptr, nullptr);
-                            s.pop_back();
-                            picked = s;
-                            ok = true;
-                        }
+                        picked = WideToUtf8(pathW);
+                        ok = !picked.empty();
                         CoTaskMemFree(pathW);
                     }
                     item->Release();
@@ -172,6 +266,35 @@ bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar
     return ok;
 }
 
+bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar_t* title)
+{
+    if (dx12e::guard::Blocked("フォルダ選択ダイアログ")) return false;   // 仮想入力モード: モーダルでフォーカスを奪う
+    return RunOpenDialog(outPath, [&](IFileOpenDialog* dlg)
+    {
+        DWORD opts = 0;
+        dlg->GetOptions(&opts);
+        dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        if (title) dlg->SetTitle(title);
+    });
+}
+
+bool ProjectManager::PickProjectFile(HWND /*hwnd*/, std::string& outPath)
+{
+    if (dx12e::guard::Blocked("プロジェクトを開くダイアログ")) return false;
+    return RunOpenDialog(outPath, [&](IFileOpenDialog* dlg)
+    {
+        DWORD opts = 0;
+        dlg->GetOptions(&opts);
+        dlg->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+        static const COMDLG_FILTERSPEC kFilter[] = {
+            { L"Uno Engine プロジェクト (*.dx12proj)", L"*.dx12proj" },
+            { L"すべてのファイル", L"*.*" },
+        };
+        dlg->SetFileTypes(2, kFilter);
+        dlg->SetTitle(L"プロジェクトを開く");
+    });
+}
+
 bool ProjectManager::NewProjectDialog(ProjectInfo& outInfo, HWND hwnd)
 {
     // 作成先フォルダを選ぶだけ。ディスク作成は呼び出し側が非同期で行う。
@@ -179,14 +302,14 @@ bool ProjectManager::NewProjectDialog(ProjectInfo& outInfo, HWND hwnd)
     if (!PickFolder(hwnd, folder, L"新規プロジェクトの作成先フォルダを選択"))
         return false;
 
-    std::filesystem::path projDir(folder);
-    outInfo.name         = projDir.filename().string();
+    const fs::path projDir = launcher::PathFromUtf8(folder);
+    outInfo.name         = launcher::PathToUtf8(projDir.filename());
     if (outInfo.name.empty()) outInfo.name = "MyGame";
-    outInfo.rootDir      = projDir.string();
-    outInfo.assetsDir    = (projDir / "assets").string() + "/";
-    outInfo.scriptsDir   = (projDir / "scripts").string() + "/";
+    outInfo.rootDir      = launcher::PathToUtf8(projDir);
+    outInfo.assetsDir    = launcher::PathToUtf8(projDir / "assets") + "/";
+    outInfo.scriptsDir   = launcher::PathToUtf8(projDir / "scripts") + "/";
     outInfo.defaultScene = "scenes/main.json";
-    // templateId は呼び出し側(ランチャーのテンプレ選択)が設定する
+    // templateId は呼び出し側が設定する
     return true;
 }
 
@@ -194,404 +317,29 @@ bool ProjectManager::NewProjectDialog(ProjectInfo& outInfo, HWND hwnd)
 // .dx12proj があれば読み込み、無ければフォルダをプロジェクトルートとして合成する。
 static bool MakeProjectFromFolder(const std::string& repoDir, ProjectInfo& out)
 {
-    namespace fs = std::filesystem;
     std::error_code ec;
-    if (!fs::exists(repoDir, ec)) return false;
+    const fs::path dirPath = launcher::PathFromUtf8(repoDir);
+    if (!fs::exists(dirPath, ec)) return false;
 
     // .dx12proj を探す
-    for (auto& e : fs::directory_iterator(repoDir, ec))
+    for (auto& e : fs::directory_iterator(dirPath, ec))
     {
         if (e.is_regular_file() && e.path().extension() == ".dx12proj")
         {
-            if (Project::Load(e.path().string(), out))
+            if (Project::Load(launcher::PathToUtf8(e.path()), out))
                 return true;
         }
     }
 
     // 無ければフォルダをそのままプロジェクトとして扱う
-    fs::path dir(repoDir);
     out = ProjectInfo{};
-    out.name         = dir.filename().string();
+    out.name         = launcher::PathToUtf8(dirPath.filename());
     if (out.name.empty()) out.name = "ClonedProject";
-    out.rootDir      = dir.string();
-    out.assetsDir    = (dir / "assets").string() + "/";
-    out.scriptsDir   = (dir / "scripts").string() + "/";
+    out.rootDir      = launcher::PathToUtf8(dirPath);
+    out.assetsDir    = launcher::PathToUtf8(dirPath / "assets") + "/";
+    out.scriptsDir   = launcher::PathToUtf8(dirPath / "scripts") + "/";
     out.defaultScene = "scenes/default.json";
     return true;
-}
-
-// アイコン付きの大きなアクションボタン（アイコン無しなら絵文字フォールバック）
-static bool IconActionButton(unsigned long long icon, const char* fallback,
-                             const char* label, const char* sub, const ImVec2& size)
-{
-    ImGui::PushID(label);
-    ImVec2 cursor = ImGui::GetCursorScreenPos();
-    bool clicked = ImGui::Button("##btn", size);
-
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float pad = 14.0f;
-    float iconSz = size.y - pad * 2.0f;
-    float textX = cursor.x + pad;
-    if (icon != 0)
-    {
-        dl->AddImage(static_cast<ImTextureID>(icon),
-                     ImVec2(cursor.x + pad, cursor.y + pad),
-                     ImVec2(cursor.x + pad + iconSz, cursor.y + pad + iconSz));
-        textX = cursor.x + pad + iconSz + 12.0f;
-    }
-    else
-    {
-        dl->AddText(ImVec2(cursor.x + pad, cursor.y + size.y * 0.5f - 8.0f),
-                    ImGui::GetColorU32(ImGuiCol_Text), fallback);
-        textX = cursor.x + pad + 24.0f;
-    }
-    float titleY = sub ? cursor.y + size.y * 0.5f - 14.0f : cursor.y + size.y * 0.5f - 8.0f;
-    dl->AddText(ImVec2(textX, titleY), ImGui::GetColorU32(ImGuiCol_Text), label);
-    if (sub)
-        dl->AddText(ImVec2(textX, cursor.y + size.y * 0.5f + 2.0f),
-                    ImGui::GetColorU32(ImGuiCol_TextDisabled), sub);
-    ImGui::PopID();
-    return clicked;
-}
-
-LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
-                                              const LauncherIcons& icons)
-{
-    LauncherAction action = LauncherAction::None;
-
-    // 画面全体を覆う背景（モーダル感）
-    ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->Pos);
-    ImGui::SetNextWindowSize(vp->Size);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.09f, 0.12f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::Begin("##LauncherBG", nullptr,
-        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse
-        | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus
-        | ImGuiWindowFlags_NoScrollbar);
-
-    // ── 重い外部チェックはフレーム毎に実行しない ──────────────────
-    // ランチャーはカーソルを動かすたび毎フレーム再描画される。git/gh の存在確認は
-    // 内部で CreateProcess（git/gh --version 起動）、GetRecents は recent.json の
-    // ディスク読込なので、毎フレームやると重くてカクつく（＝点滅して見える）。
-    // ウィンドウ出現時にだけ評価してキャッシュする。
-    const bool launcherAppearing = ImGui::IsWindowAppearing();
-    static int  s_gitAvail = -1, s_ghAvail = -1;
-    static std::vector<ProjectInfo> s_recents;
-    static bool s_cacheReady = false;
-    if (launcherAppearing || !s_cacheReady)
-    {
-        s_cacheReady = true;
-        s_gitAvail = GitIntegration::IsGitAvailable() ? 1 : 0;
-        s_ghAvail  = GitIntegration::IsGhAvailable()  ? 1 : 0;
-        s_recents  = GetRecents();
-    }
-
-    // 中央パネル
-    ImVec2 panelSize(560, 520);
-    ImVec2 panelPos(vp->Pos.x + (vp->Size.x - panelSize.x) * 0.5f,
-                    vp->Pos.y + (vp->Size.y - panelSize.y) * 0.5f);
-    ImGui::SetCursorScreenPos(panelPos);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.11f, 0.13f, 0.17f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
-    ImGui::BeginChild("##LauncherPanel", panelSize, ImGuiChildFlags_None);
-
-    ImGui::Dummy(ImVec2(0, 8));
-    // ロゴ + タイトル
-    {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImVec2 c = ImGui::GetCursorScreenPos();
-        float logoSz = 56.0f;
-        if (icons.logo != 0)
-            dl->AddImage(static_cast<ImTextureID>(icons.logo),
-                         ImVec2(c.x + 24, c.y), ImVec2(c.x + 24 + logoSz, c.y + logoSz));
-        dl->AddText(ImGui::GetFont(), 28.0f, ImVec2(c.x + 24 + logoSz + 16, c.y + 4),
-                    IM_COL32(255, 255, 255, 255), kEngineName);
-        dl->AddText(ImVec2(c.x + 24 + logoSz + 16, c.y + 36),
-                    ImGui::GetColorU32(ImGuiCol_TextDisabled), "Game Engine v0.1");
-        ImGui::Dummy(ImVec2(0, logoSz + 8));
-    }
-    ImGui::Separator();
-    ImGui::Dummy(ImVec2(0, 6));
-
-    float btnW = panelSize.x - 48.0f;
-    ImGui::SetCursorPosX(24);
-    if (IconActionButton(icons.newProject, "[N]", "新規プロジェクト",
-                         "テンプレートを選んで作成 (FPS / TPS / 2D / 空)", ImVec2(btnW, 64)))
-    {
-        ImGui::OpenPopup("テンプレートを選択");
-    }
-
-    // --- テンプレート選択ポップアップ ---
-    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
-    if (ImGui::BeginPopupModal("テンプレートを選択", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::TextWrapped("作りたいゲームのテンプレートを選んでください。"
-                           "選ぶと作成先フォルダを聞かれ、そのテンプレートで初期化されます。");
-        ImGui::Dummy(ImVec2(0, 6));
-
-        // テンプレ選択 → フォルダ選択 → info 構築 → CreateNew
-        auto pick = [&](const char* tmpl)
-        {
-            ProjectInfo tmp;
-            if (NewProjectDialog(tmp, hwnd))
-            {
-                tmp.templateId = tmpl;
-                outInfo = tmp;
-                action  = LauncherAction::CreateNew;
-                ImGui::CloseCurrentPopup();
-            }
-        };
-
-        float tW = 472.0f;
-        if (IconActionButton(icons.tmplFps, "[F]", "FPS  (一人称シューター)",
-                             "物理ベースの射撃レンジ。的・木箱・HUD・タイトル/クリア画面つき", ImVec2(tW, 60)))
-            pick("fps");
-        if (IconActionButton(icons.tmplTps, "[T]", "TPS  (三人称アクション)",
-                             "コイン集めアクション。物理ジャンプ・ゴールトリガー・画面遷移つき", ImVec2(tW, 60)))
-            pick("tps");
-        if (IconActionButton(icons.tmpl2d, "[2]", "2D  (横スクロール)",
-                             "プラットフォーマー1コース。動く床・トゲ・コイン・ゴール旗つき", ImVec2(tW, 60)))
-            pick("2d");
-        if (IconActionButton(icons.tmplEmpty, "[E]", "空  (最小構成)",
-                             "グリッド + キューブ + ライト + カメラ。部品サンプル Spinner.lua つき", ImVec2(tW, 60)))
-            pick("empty");
-
-        ImGui::Dummy(ImVec2(0, 4));
-        if (ImGui::Button("キャンセル", ImVec2(120, 30)))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
-    ImGui::SetCursorPosX(24);
-    if (IconActionButton(icons.openProject, "[O]", "プロジェクトを開く",
-                         "既存の .dx12proj を開く", ImVec2(btnW, 64)))
-    {
-        if (OpenProjectDialog(outInfo, hwnd))
-            action = LauncherAction::OpenExisting;
-    }
-
-    // --- Git からクローンして開く ---
-    static std::array<char, 512> s_cloneUrl{};
-    static std::string s_cloneStatus;
-    ImGui::SetCursorPosX(24);
-    if (IconActionButton(icons.openProject, "[G]", "Git からクローン",
-                         "URL を貼り付けてリポジトリを取得", ImVec2(btnW, 64)))
-    {
-        s_cloneStatus.clear();
-        ImGui::OpenPopup("Clone from Git");
-    }
-
-    // クローン用ポップアップ
-    ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
-    if (ImGui::BeginPopupModal("Clone from Git", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
-    {
-        ImGui::TextWrapped("リポジトリの URL を貼り付けて「クローン」を押すと、保存先フォルダを選んで取得します。");
-        ImGui::TextDisabled("例: https://github.com/owner/repo.git");
-        ImGui::Dummy(ImVec2(0, 4));
-        ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextWithHint("##cloneurl", "https://github.com/owner/repo.git",
-                                 s_cloneUrl.data(), s_cloneUrl.size());
-
-        if (s_gitAvail == 0)
-            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "git が見つかりません（PATH を通してください）");
-
-        if (!s_cloneStatus.empty())
-            ImGui::TextWrapped("%s", s_cloneStatus.c_str());
-
-        ImGui::Dummy(ImVec2(0, 4));
-        bool hasUrl = s_cloneUrl[0] != '\0';
-        ImGui::BeginDisabled(!hasUrl || s_gitAvail != 1);
-        if (ImGui::Button("クローン", ImVec2(160, 30)))
-        {
-            std::string parent;
-            if (PickFolder(hwnd, parent, L"クローン先の親フォルダを選択"))
-            {
-                s_cloneStatus = "クローン中...";
-                std::string repoDir;
-                auto r = GitIntegration::Clone(s_cloneUrl.data(), parent, repoDir);
-                if (r.ok() && MakeProjectFromFolder(repoDir, outInfo))
-                {
-                    AddToRecents(outInfo);
-                    action = LauncherAction::OpenExisting;
-                    s_cloneUrl.fill('\0');
-                    ImGui::CloseCurrentPopup();
-                }
-                else
-                {
-                    s_cloneStatus = r.output.empty() ? "クローンに失敗しました" : r.output;
-                }
-            }
-        }
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        if (ImGui::Button("閉じる", ImVec2(120, 30)))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
-
-    // --- GitHub ログイン状態 ---
-    {
-        // ここから下はメインスレッド専有（ImGui のフレーム内でしか触らない）。
-        static bool        s_loginChecked = false;
-        static std::string s_loginUser;
-        static bool        s_loginRunning = false;
-
-        // ランチャーはアプリ全体の m_gitAbort を持たないので、ログイン待ちスレッドは
-        // detach する（gh.exe の終了待ちだけで Application/ProjectManager の状態には触れない）。
-        // 中断UIが要るなら Application 側に寄せる。
-        //
-        // ★スレッドと共有する状態は**意図的に leak する**。detach したスレッドは
-        //   gh.exe のブラウザ認証が終わる前にアプリを閉じるとまだ生きていて、その後に
-        //   done / user へ書き込む。関数ローカル static のままだと静的デストラクタで
-        //   先に消えた std::string へ書くことになり、終了時に落ちて
-        //   「身に覚えのないクラッシュレポート」だけが残る（原因が一番分かりにくい形）。
-        //   leak させれば書き込み先はプロセスが死ぬまで有効なので、この事故が原理的に起きない。
-        //   大きさは 1 個ぶんで、ランチャーの寿命 = プロセスの寿命なので実害も無い。
-        struct LoginShared
-        {
-            std::atomic<bool> done{false};
-            std::atomic<bool> neverAbort{false};   // LoginAndWait が参照で受ける
-            std::string       user;                // done が true になった後だけ読む
-        };
-        static LoginShared* const s_login = new LoginShared();
-
-        if (launcherAppearing) s_loginChecked = false;  // ランチャー再入時だけ再確認
-        if (!s_loginChecked && !s_loginRunning)
-        {
-            s_loginChecked = true;
-            s_loginUser = (s_ghAvail == 1) ? GitIntegration::GitHubUser() : std::string();
-        }
-        if (s_loginRunning && s_login->done.load())       // 非同期ログイン待ちの完了を取り込む
-        {
-            s_loginUser    = s_login->user;
-            s_loginRunning = false;
-        }
-
-        ImGui::SetCursorPosX(24);
-        if (s_ghAvail == 0)
-            ImGui::TextDisabled("GitHub CLI (gh) が無いため、ログインは使えません");
-        else if (s_loginRunning)
-            ImGui::TextDisabled("ログイン待ち中...（別ウィンドウでブラウザ認証してください）");
-        else if (s_loginUser.empty())
-        {
-            ImGui::TextDisabled("GitHub: 未ログイン");
-            ImGui::SameLine();
-            if (ImGui::SmallButton("ログイン"))
-            {
-                s_loginRunning = true;
-                s_login->done.store(false);
-                std::thread([sh = s_login]{
-                    CrashHandler::PrepareThread();
-                    auto r = GitIntegration::LoginAndWait(sh->neverAbort);
-                    sh->user = r.output;
-                    sh->done.store(true);   // ★user を書いた後に立てる（メイン側はこれを見てから読む）
-                }).detach();
-            }
-        }
-        else
-        {
-            ImGui::TextDisabled("GitHub: @%s でログイン中", s_loginUser.c_str());
-            ImGui::SameLine();
-            if (ImGui::SmallButton("再確認"))
-                s_loginChecked = false;
-        }
-    }
-
-    ImGui::Dummy(ImVec2(0, 8));
-    ImGui::SetCursorPosX(24);
-    ImGui::TextDisabled("最近のプロジェクト");
-    ImGui::SetCursorPosX(24);
-    ImGui::BeginChild("##recents", ImVec2(btnW, 210), ImGuiChildFlags_Borders);
-
-    auto& recents = s_recents;
-    if (recents.empty())
-    {
-        ImGui::TextDisabled("まだプロジェクトがありません");
-    }
-    else
-    {
-        for (const auto& recent : recents)
-        {
-            ImGui::PushID(recent.rootDir.c_str());
-            std::filesystem::path projFile =
-                std::filesystem::path(recent.rootDir) / (recent.name + ".dx12proj");
-            bool exists = std::filesystem::exists(projFile);
-
-            ImVec2 c = ImGui::GetCursorScreenPos();
-            bool sel = ImGui::Selectable("##rec", false, ImGuiSelectableFlags_None, ImVec2(0, 40));
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            float ic = 28.0f;
-            if (icons.recent != 0)
-                dl->AddImage(static_cast<ImTextureID>(icons.recent),
-                             ImVec2(c.x + 4, c.y + 6), ImVec2(c.x + 4 + ic, c.y + 6 + ic));
-            ImU32 nameCol = exists ? IM_COL32(235, 235, 235, 255) : IM_COL32(130, 130, 130, 255);
-            dl->AddText(ImVec2(c.x + 4 + ic + 8, c.y + 4), nameCol, recent.name.c_str());
-            dl->AddText(ImVec2(c.x + 4 + ic + 8, c.y + 22),
-                        ImGui::GetColorU32(ImGuiCol_TextDisabled), recent.rootDir.c_str());
-
-            if (sel && exists && Project::Load(projFile.string(), outInfo))
-            {
-                AddToRecents(outInfo);
-                action = LauncherAction::OpenExisting;
-            }
-            ImGui::PopID();
-        }
-    }
-    ImGui::EndChild();
-
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::SetCursorPosX(24);
-    if (ImGui::Button("スキップ（組み込みデフォルトで開く）", ImVec2(btnW, 28)))
-    {
-        outInfo = ProjectInfo{};
-        outInfo.name    = "Default";
-        outInfo.rootDir = "";  // 組み込みパスを使う合図
-        action = LauncherAction::Skip;
-    }
-
-    ImGui::EndChild();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
-
-    ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
-
-    return action;
-}
-
-std::string ProjectManager::GetEditorStatePath()
-{
-    char appDataPath[MAX_PATH];
-    if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appDataPath)))
-    {
-        std::filesystem::path dir = std::filesystem::path(appDataPath) / "DX12Engine";
-        std::filesystem::create_directories(dir);
-        return (dir / "editor_state.json").string();
-    }
-    return "editor_state.json";
-}
-
-void ProjectManager::SaveLastOpenedScene(const std::string& scenePath)
-{
-    std::string filePath = GetEditorStatePath();
-
-    // 既存の state を読み込んでマージ
-    nlohmann::json j;
-    {
-        std::ifstream ifs(filePath);
-        if (ifs.is_open())
-        {
-            try { ifs >> j; }
-            catch (...) { j = nlohmann::json::object(); }
-        }
-    }
-
-    j["lastOpenedScene"] = scenePath;
-
-    std::ofstream ofs(filePath);
-    if (ofs.is_open())
-        ofs << j.dump(2);
 }
 
 bool ProjectManager::ProjectFromFolder(const std::string& dir, ProjectInfo& out)
@@ -599,22 +347,86 @@ bool ProjectManager::ProjectFromFolder(const std::string& dir, ProjectInfo& out)
     return MakeProjectFromFolder(dir, out);
 }
 
+bool ProjectManager::ResolveProjectPath(const std::string& rawPath, ProjectInfo& out, std::string& err)
+{
+    std::string p = launcher::Trim(rawPath);
+    // 「パスのコピー」で付く引用符を外す
+    if (p.size() >= 2 && p.front() == '"' && p.back() == '"') p = p.substr(1, p.size() - 2);
+    if (p.empty()) { err = "パスを入力するか、「参照」から選んでください"; return false; }
+
+    std::error_code ec;
+    const fs::path path = launcher::PathFromUtf8(p);
+    if (!fs::exists(path, ec)) { err = "そのパスが見つかりません"; return false; }
+    if (fs::is_directory(path, ec))
+    {
+        bool has = false;
+        for (auto it = fs::directory_iterator(path, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
+            if (it->path().extension() == ".dx12proj") { has = true; break; }
+        if (!has) { err = "このフォルダに .dx12proj が見つかりません（プロジェクトのフォルダを指定してください）"; return false; }
+        return MakeProjectFromFolder(p, out);
+    }
+    if (path.extension() != ".dx12proj") { err = ".dx12proj のファイルか、プロジェクトのフォルダを指定してください"; return false; }
+    if (!Project::Load(p, out)) { err = "プロジェクトファイルを読み込めませんでした"; return false; }
+    return true;
+}
+
+// ---------------------------------------------------------------- エディタ状態
+
+static nlohmann::json ReadEditorStateLocked(const std::string& file)
+{
+    nlohmann::json j;
+    if (!ReadJsonFile(launcher::PathFromUtf8(file), j) || !j.is_object())
+        j = nlohmann::json::object();
+    return j;
+}
+
+void ProjectManager::SaveLastOpenedScene(const std::string& scenePath)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const std::string file = GetEditorStatePath();
+    nlohmann::json j = ReadEditorStateLocked(file);   // 既存の state を読み込んでマージ
+    j["lastOpenedScene"] = scenePath;
+    WriteJsonFile(launcher::PathFromUtf8(file), j);
+}
+
 std::string ProjectManager::LoadLastOpenedScene()
 {
-    std::string filePath = GetEditorStatePath();
-    std::ifstream ifs(filePath);
-    if (!ifs.is_open()) return "";
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    return ReadEditorStateLocked(GetEditorStatePath()).value("lastOpenedScene", std::string());
+}
 
-    try
-    {
-        nlohmann::json j;
-        ifs >> j;
-        return j.value("lastOpenedScene", "");
-    }
-    catch (...)
-    {
-        return "";
-    }
+bool ProjectManager::GetEditorBool(const char* key, bool def)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const nlohmann::json j = ReadEditorStateLocked(GetEditorStatePath());
+    if (j.contains(key) && j[key].is_boolean()) return j[key].get<bool>();
+    return def;
+}
+
+void ProjectManager::SetEditorBool(const char* key, bool value)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const std::string file = GetEditorStatePath();
+    nlohmann::json j = ReadEditorStateLocked(file);
+    j[key] = value;
+    WriteJsonFile(launcher::PathFromUtf8(file), j);
+}
+
+std::string ProjectManager::GetEditorString(const char* key, const std::string& def)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const nlohmann::json j = ReadEditorStateLocked(GetEditorStatePath());
+    if (j.contains(key) && j[key].is_string()) return j[key].get<std::string>();
+    return def;
+}
+
+void ProjectManager::SetEditorString(const char* key, const std::string& value)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const std::string file = GetEditorStatePath();
+    nlohmann::json j = ReadEditorStateLocked(file);
+    j[key] = value;
+    WriteJsonFile(launcher::PathFromUtf8(file), j);
 }
 
 } // namespace dx12e

@@ -667,6 +667,7 @@ void GitIntegration::WriteGitignore(const std::string& workDir)
         "assets/.thumbcache/",  // モデル/マテリアルのサムネイル
         "assets/scenes/.autosave/",   // 自動保存（本体を保存すれば用済み）
         ".mcp.json",            // MCP の接続設定は各自の環境依存
+        ".dx12/",               // エディタのユーザー領域（セーブ・バックアップ・ランチャーのサムネイル）。各自の環境の産物
     };
 
     fs::path path = fs::path(workDir) / ".gitignore";

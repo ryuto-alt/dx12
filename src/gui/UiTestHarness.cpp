@@ -12,6 +12,8 @@
 #include "editor/Toast.h"          // トースト通知
 #include "editor/EditorTheme.h"   // DPI: theme::Px（診断パネルの寸法）
 #include "editor/UiWidgets.h"     // DPI テストの等幅フォント測定（ui::PushMono）
+#include "editor/LauncherScreen.h"  // プロジェクトランチャーの検査
+#include "project/LauncherLogic.h"
 #include "core/DpiScale.h"         // DPI: 表示倍率テスト（--dpi-scale と同じオーバーライド）
 #include "gui/DeepDiagnostics.h"
 #include "scene/Scene.h"
@@ -913,6 +915,90 @@ void T_LayoutReset(ImGuiTestContext* ctx)
     ctx->Yield(20);
     ed->showEngineDiagnostics = wasDiag;
     IM_CHECK_NO_RET(!ed->resetLayout);   // 消費されていない＝リセットが走っていない
+}
+
+// ---- プロジェクトランチャー ----
+// プロジェクトを閉じてランチャーへ戻り、タブ切替 / 新規フォームの検証表示 / テンプレ選択 / 検索 / アニメ設定を
+// 内部状態（LauncherScreen::Debug）で確かめ、最後に同じプロジェクトを開き直して他のテストへ戻す。
+void T_LauncherScreen(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(g_app != nullptr && ed != nullptr);
+    using dx12e::LauncherScreen;
+    const std::string projRoot = PathResolver::BaseDir();
+    if (projRoot.empty()) { ctx->LogWarning("プロジェクトが開かれていないためランチャーの検査を飛ばします"); return; }
+
+    Step(ctx, "プロジェクトを閉じてランチャーへ戻る");
+    if (ed->IsSceneDirty()) ed->unsavedChoice = EditorContext::UnsavedChoice::Discard;   // 未保存の確認モーダルを出さない
+    ed->pendingCloseProject = true;
+    for (int i = 0; i < 90 && !LauncherScreen::Debug().visible; ++i) ctx->Yield(2);
+    IM_CHECK(LauncherScreen::Debug().visible);
+
+    const bool animOrig = LauncherScreen::Debug().animations;
+
+    Step(ctx, "ナビの 5 タブを切り替える");
+    for (int t = 0; t < 5; ++t)
+    {
+        LauncherScreen::DebugSetTab(t);
+        ctx->Yield(4);
+        IM_CHECK_EQ(LauncherScreen::Debug().tab, t);
+    }
+
+    Step(ctx, "新規フォーム: 不正な名前 / 相対パス / 日本語 / 正常を検証表示に反映する");
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const std::string tmp = dx12e::launcher::PathToUtf8(fs::temp_directory_path(ec) / "uno_launcher_uitest");
+    LauncherScreen::DebugSetTab(1);
+    ctx->Yield(4);
+    LauncherScreen::DebugSetForm("bad:name", tmp);
+    ctx->Yield(6);
+    IM_CHECK(LauncherScreen::Debug().formHasError);
+    IM_CHECK(LauncherScreen::Debug().formFirstIssueCode == "name.chars");
+    LauncherScreen::DebugSetForm("Good_Name", "relative\\path");
+    ctx->Yield(6);
+    IM_CHECK(LauncherScreen::Debug().formHasError);
+    IM_CHECK(LauncherScreen::Debug().formFirstIssueCode == "loc.relative");
+    LauncherScreen::DebugSetForm("日本語のゲーム", tmp);
+    ctx->Yield(6);
+    IM_CHECK(!LauncherScreen::Debug().formHasError);
+    IM_CHECK(LauncherScreen::Debug().formHasWarn);            // 日本語は警告（作成は止めない）
+    LauncherScreen::DebugSetForm("Good_Name", tmp + "\\nested\\deeper");
+    ctx->Yield(6);
+    IM_CHECK(!LauncherScreen::Debug().formHasError);           // 保存場所が無くても作成される（情報だけ）
+
+    Step(ctx, "テンプレートの選択");
+    const int nT = static_cast<int>(dx12e::launcher::Templates().size());
+    IM_CHECK_GT(nT, 3);
+    LauncherScreen::DebugSelectTemplate(nT - 1);
+    ctx->Yield(3);
+    IM_CHECK_EQ(LauncherScreen::Debug().templateIndex, nT - 1);
+    LauncherScreen::DebugSelectTemplate(0);
+
+    Step(ctx, "最近のプロジェクトの検索");
+    LauncherScreen::DebugSetTab(0);
+    LauncherScreen::DebugReloadRecents();
+    ctx->Yield(6);
+    const int total = LauncherScreen::Debug().recentCount;
+    LauncherScreen::DebugSetSearch("zzzz_no_such_project_zzzz");
+    ctx->Yield(3);
+    IM_CHECK_EQ(LauncherScreen::Debug().visibleRecentCount, 0);
+    LauncherScreen::DebugSetSearch("");
+    ctx->Yield(3);
+    IM_CHECK_EQ(LauncherScreen::Debug().visibleRecentCount, total);
+
+    Step(ctx, "アニメーション設定の切替（画面の状態だけ。保存はしない）");
+    LauncherScreen::DebugSetAnimations(false);
+    ctx->Yield(3);
+    IM_CHECK(!LauncherScreen::Debug().animations);
+    LauncherScreen::DebugSetAnimations(animOrig);
+
+    Step(ctx, "同じプロジェクトを開き直す（他のテストへ戻す）");
+    LauncherScreen::DebugRequestOpen(projRoot);
+    for (int i = 0; i < 120 && LauncherScreen::Debug().visible; ++i) ctx->Yield(2);
+    IM_CHECK(!LauncherScreen::Debug().visible);
+    ctx->Yield(30);
+    ctx->Yield(300);   // 段階ロード（テクスチャの先読み → シーン構築）が終わるまで
+    IM_CHECK(!Ed()->currentScenePath.empty());
 }
 
 // ---- UI エディタ ----
@@ -2953,6 +3039,9 @@ const DiagReg kTests[] = {
     { "deep",  "deep_prefab_roundtrip", "超詳細: プレハブ",   "プレハブ化→配置→リンク→構成維持",      T_DeepPrefabRoundtrip,  true },
     { "deep",  "deep_primitive_save",   "超詳細: 保存",       "プリミティブの寸法と PBR が保存往復するか", T_DeepPrimitiveSaveRoundtrip, true },
     { "deep",  "deep_alpha_save",       "超詳細: 保存",       "透明(アルファ)の上書きが保存往復するか", T_DeepAlphaSaveRoundtrip, true },
+
+    // ★最後に置く: プロジェクトを閉じて開き直すので、シーンの中身（前のテストが作った物）は入れ替わる。
+    { "launcher","launcher_screen",     "ランチャー",         "タブ切替 / 新規フォームの検証 / テンプレ選択 / 検索",  T_LauncherScreen        },
 };
 
 const DiagReg* FindReg(const ImGuiTest* test)

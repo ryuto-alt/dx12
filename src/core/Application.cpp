@@ -2277,6 +2277,8 @@ void Application::Update()
 
     // 非同期プロジェクトロードの状態機械を進める
     UpdateProjectLoad(dt);
+    // ランチャー用サムネイル（保存 / 閉じる / 初回）
+    UpdateProjectThumbnail(dt);
     // 非同期 git 操作の完了回収
     UpdateGitOp();
 
@@ -3276,6 +3278,7 @@ void Application::EditorSaveScene()
     {
         MarkSceneClean();
         ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
+        RequestProjectThumbnail(/*force*/ false);   // ランチャーのカード用（45 秒に 1 回まで）
         m_editorCtx->Notify(ui::ToastKind::Success, "保存しました: " + name);
     }
     else

@@ -682,6 +682,22 @@ if(MSVC)
 endif()
 add_test(NAME McpParamSpecTests COMMAND McpParamSpecTests)
 
+# MCP マニフェスト（method ごとのメタ情報）の整合性: McpDefine の全 method = データ表（ApplicationMcpManifestData.inc）、
+# 各 meta の妥当性、FNV-1a / paramSpec パーサ / 近い名前の提案 / McpErr のコード値。
+# McpParamSpecTests と同じくソースをテキストで読むだけ＋依存ゼロのヘッダ（McpMeta.h / McpManifestBuild.h）と
+# 生成物のデータ表を include するので、エンジンをリンクしない。
+add_executable(McpManifestTests mcp_manifest_test.cpp)
+target_include_directories(McpManifestTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(McpManifestTests PRIVATE
+    DX12E_MCP_SOURCES="${DX12E_MCP_SOURCES}"
+    DX12E_INTERNAL_H="${CMAKE_CURRENT_SOURCE_DIR}/../src/core/ApplicationInternal.h")
+if(MSVC)
+    target_compile_options(McpManifestTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(McpManifestTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME McpManifestTests COMMAND McpManifestTests)
+
 # MCP（AI）の編集を Undo に積む規則（editor/McpUndoRouter.h + editor/UndoCore.h）。
 # 呼び出し 1 回 = 「AI: <method>」1 エントリ / onlyAi は人の編集を戻さない /
 # トランザクションは 1 エントリ・rollback は逆順。ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く。
@@ -901,3 +917,18 @@ if(TARGET Gui)
     endif()
     add_test(NAME DpiScaleTests COMMAND DpiScaleTests)
 endif()
+
+# プロジェクトランチャーの純ロジック（project/LauncherLogic.h・LauncherMotion.h）。
+#   テンプレート登録表（ID 一意・GetFiles に実体・画像ファイルの実在）/ 名前・保存場所・Git URL の検証 /
+#   最近のプロジェクトの並び・検索・ピン留め / サムネイルの切り出しと縮小 / 補間・スプリング・背景の粒。
+# 依存は std だけ（+ ProjectTemplates.cpp）なのでスタンドアロン構成でも回る。
+add_executable(LauncherTests launcher_logic_test.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/../src/project/ProjectTemplates.cpp)
+target_include_directories(LauncherTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(LauncherTests PRIVATE LAUNCHER_ASSET_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../assets/editor/launcher")
+if(MSVC)
+    target_compile_options(LauncherTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(LauncherTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME LauncherTests COMMAND LauncherTests)
