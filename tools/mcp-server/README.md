@@ -55,18 +55,63 @@ command = "node"
 args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 ```
 
+## まず使う: shell 5 本(常時ロード)
+
+ツールは 220 本を超えるので、名前を推測せず shell 5 本で探して撃つ。**旧 220 ツールは名前・引数・成功時の返り値とも従来のまま**残っている。
+
+| ツール | 使いどころ |
+|---|---|
+| `dx12_doctor` | 最初に撃つ。接続・ポート・プロセス・版(マニフェストのハッシュ)・直近エラーを診断し、原因と直し方(起動は `--background`)を返す |
+| `dx12_tool_search {query}` | 日本語/英語の自然文・旧ツール名で全ツール + エンジンの全 method を検索(決定論) |
+| `dx12_tool_describe {name}` | 引数(型・必須・enum・範囲)・副作用・例・次の一手・`callTemplate` |
+| `dx12_call {name, args, dryRun?, confirm?}` | 任意のツール/method を**送信前にスキーマ検証**して実行。エンジンに後から足した method も**再起動なし**で呼べる |
+| `dx12_guide {topic}` | 目的別の最短手順・危険操作の注意・仮想入力の運用ルール(`guides/*.md`) |
+
+エラーは `{error_code, error, cause, fix:[{tool,args}], didYouMean, validValues, retryable}` の JSON で返り、`fix[0]` をそのまま `dx12_call` に渡して撃ち直せる。
+詳細は [docs/MCP.md §0](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md)。`DX12_MCP_SURFACE=full|core|shell|legacy` で見せ方を切り替える(既定 full = shell 5 + 旧 220。`DX12_MCP_TOOLSET` は旧名の互換)。
+
+### ツール面(surface): full / core / shell
+| 面 | `tools/list` | サイズ(実測) |
+|---|---|---|
+| `full`(既定) | shell 5 + 旧 220(共通の `outputSchema` だけ削った。名前・引数・説明は従来のまま) | 225 本 / 約 351 KB(M0 の 408,638 B 以下) |
+| `core` | shell 5 + **Core 28** + `dx12_batch` + `dx12_call_guarded` | **35 本 / 約 56 KB** |
+| `shell` | shell 5 | 5 本 / 約 6.7 KB |
+
+**`core` を試す**: MCP の登録に `DX12_MCP_SURFACE=core` を足す(登録し直す: `claude mcp remove dx12-engine -s user` → `claude mcp add dx12-engine -s user -e DX12_MCP_SURFACE=core -- node <index.ts のパス>`。または `.mcp.json` の `"env": {"DX12_MCP_SURFACE": "core"}`)→ **Claude Code を再起動**。
+戻すときは `full`(または env を消す)。core でも旧 220 名は `dx12_call {name:"dx12_set_ssao", …}` のように**旧名・旧引数のまま**呼べる。
+Core = 一覧・取得・生成・変形・コンポーネント・削除・シーン開閉/保存・ルック/マテリアル/VFX・地形・Lua・UI・Play/Stop・台本/プレイテスト・品質ゲート・ログ・性能・撮影・描画設定(統合)・エディタ UI(仮想入力)。一覧と alias 表は `docs/MCP.md` §0-5。
+guarded(git push・`eval_lua`・`delete_asset`・`build_game` 等)は core 面では `dx12_call` に `confirm:true` を付けても通らず、`dx12_call_guarded`(毎回ユーザー承認)から実行する。
+
+**動的登録**: エンジンの method に `McpMeta.expose="core"` を付けると、MCP サーバが再起動なしで `tools/list` に足して `notifications/tools/list_changed` を送る(Claude Code が反映するかは**未確認**。`dx12_tool_describe` / `dx12_call` では常に使える。`DX12_MCP_LIST_CHANGED=0` で止める)。
+
+### エンジンに method を足したら(最短手順)
+1. `src/core/mcp/ApplicationMcp*.cpp` に `McpDefine(...)` を 1 本足す(推奨は `McpMeta` 付き。`docs/MCP.md` §12-1〜12-2)
+2. エンジンを再ビルド・再起動する(`tools/build.ps1`)
+3. **MCP サーバの再起動は不要**。`dx12_tool_search` → `dx12_tool_describe` → `dx12_call` で使える
+3b. Core にも載せたければ `McpMeta` の `.expose = "core"`(1 行。`tools/list` に動的に足される)
+4. 専用ツール名が要るときだけ `toolset/*.ts` に `reg(...)` を足す(この場合は MCP サーバの再起動が要る)。`searchHints.ts` と `eval/discovery_tasks.json` も更新する
+5. `node scripts/gen_manifest_snapshot.mjs`(エンジンを `--background` で起動した状態で)で `manifest.snapshot.json` を更新し、`docs/MCP.md` を直し、`publish.ps1` で配布リポジトリへ(push は人が確認する)
+
+**TODO(設計書 M4)**: docs / README / `guides` / スナップショット更新 / `publish` 差分確認を 1 コマンドにする `npm run finalize` は未実装(現状は上の手順を手で行う)。
+
 ## 構成
-- `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント（ポートは env `DX12_MCP_PORT` → `%TEMP%/dx12_mcp.port` → 8787 の順で自動解決。別マシンは `DX12_MCP_HOST`）
-- `index.ts` … MCP サーバ本体(stdio)。220 ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
+- `index.ts` … MCP サーバの入口(stdio)。`toolset/all.ts` を読み込んで接続するだけ(220 ツールの定義は下記へ機械分割済み)
+- `toolset/` … ツール定義。`core.ts`(サーバ・登録ラッパ `reg`/`regRaw`・登録表)/ `shell.ts`(shell 5 本の登録)/ カテゴリ別 30 モジュール(`read` `edit` `spawn` `render` `terrain` `vfx` …)。**並び(= `tools/list` の順)は `toolset/all.ts` の import 順**
+- `shellRuntime.ts` … shell 5 本の中身(検索・describe・call・dryRun・doctor・guide)。`catalog.ts`(ツール一覧の統合)/ `search.ts` + `searchHints.ts`(検索と同義語辞書)/ `manifest.ts`(エンジンのマニフェスト取得・スナップショット)/ `validate.ts`(事前検証)/ `errors.ts` + `structure.ts`(構造化エラー)/ `doctor.ts`(自己診断)
+- `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント（ポートは env `DX12_MCP_PORT` → `%TEMP%/dx12_mcp.port` → 8787 の順で自動解決。別マシンは `DX12_MCP_HOST`）。接続失敗は 0.3/0.6/1.2 秒で再試行、タイムアウト後の応答は遅延結果として保持
+- `guides/*.md` … `dx12_guide` の本文。`eval/` … 発見性の評価タスクとエラー再現ケース。`manifest.snapshot.json` … エンジン未接続時の代役。`legacy-tools.snapshot.json` … 旧 220 ツールの表面の固定
+- `mockEngine.ts` … テスト用の偽エンジン(実エンジン不要)
 - `sceneTools.ts` … 地形/スカルプト/診断の引数正規化と共通 zod 部品（純ロジック・エンジン非依存）
 - `materialApply.ts` … `dx12_material_apply` の純ロジック（ファイル名からのテクスチャ用途推定、`hasOverride` の罠の回避）
 - `paramGuard.ts` … 未知の引数を黙って捨てず「近い正解」を返す共通部品 + 適用後の読み返し照合
-- `schemaDrift.ts` … `Application.cpp` と TS スキーマの食い違いを検出するパーサ（`schemaDrift.test.ts` が使う）
+- `schemaDrift.ts` … `Application.cpp` と TS スキーマの食い違いを検出するパーサ（`schemaDrift.test.ts` が使う。ツール定義は `toolSource.ts` 経由で全モジュールを読む）
 - `lookCompare.ts` … 3D の絵の測光（対数輝度ヒストグラム/CCT/彩度/黒潰れ）と参照画像との差分・示唆生成
 - `contactSheet.ts` … カメラ経路の生成とコンタクトシート合成（連続フレーム差分つき）
 - `sceneWrite.ts` … シーン JSON の検証・要約・書き出し先の解決（`SceneSerializer.cpp` のスキーマと 1:1）
 - `test.ts` … mock エンジンで framing/相関/エラーを検証(`node test.ts`)
-- `*.test.ts` … 各純ロジックの回帰テスト。`npm test` で全部、`npm run test:offline` でネット不要分のみ
+- `*.test.ts` … 各純ロジックの回帰テスト。`npm test` で全部、`npm run test:offline` でネット不要分のみ。shell/エラー系は `shell.test.ts` `discovery.test.ts`(recall@3)`errors.test.ts`(エラー再現 47 件・自己修復率)`manifestRefresh.test.ts`(再起動なしの追加)`coreSurface.test.ts`(core 面の stdio 一巡・動的登録・guarded)`toolSurface.test.ts`(legacy 面は M0 とバイト同一 / full 面は意味的に同一 / core・shell のサイズと lint / alias 網羅)
+- `coreSpec.ts` … Core 面の仕様(Core の一覧と並び・説明テンプレ・統合ツールの振り分け表・alias 表・命名規約の動詞表。純データ)。`toolset/coreTools.ts` … 統合ツール 6 本の登録とマニフェストの `expose:"core"` による動的昇格
+- `stdioClient.ts` … テスト用の最小 MCP stdio クライアント(`coreSurface.test.ts` が使う)
 - `AGENTS.md` … AI エージェント向け運用ガイド（典型ワークフロー・禁止パターン）
 
 ## ツール(抜粋)
@@ -92,11 +137,13 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 | 診断 | `dx12_diagnose`（シェーダー/テクスチャ/シーン参照/ライト/地形/ピッキング/Lua/**dxr** を一括検査） `dx12_describe_mcp_params`（エンジンが実際に受け付ける引数キーと型を method 名で引く。「設定したのに変わらない」ときの現物照合） |
 | 品質判断 | `dx12_look_compare`（参照画像との測光比較: EV/コントラスト/CCT/彩度/黒潰れ + 具体的な示唆。既定でポスト後の最終画を測る） `dx12_camera_path`（動かして連写 → コンタクトシート + フレーム間差分） `dx12_scene_write`（シーン JSON を検証つきで直接書く） |
 
+(以下は旧ツールの抜粋。全量と検索は shell 5 本 / `docs/MCP.md`)
+
 生成/削除/シーン読込/Play/Stop は**遅延同期**: エンジンはフレーム境界で実処理し、完了後に
 本物の結果(`entityId` 等)を同期で返す。「name で list して探す」旧パターンは不要。
 
 ## 使い方
 1. エディタ(`DX12Engine.exe`)を起動してシーンを開く（ブリッジが 8787〜8797 で待ち受け）
-2. AI から `dx12_ping` → 疎通確認
+2. AI から `dx12_doctor`(または `dx12_ping`)→ 疎通確認
 3. `dx12_create_entity` / `dx12_set_component` / `dx12_attach_lua_component` でシーンを組む
 4. `dx12_play` → `dx12_screenshot_final` / `dx12_get_log` で結果を確認

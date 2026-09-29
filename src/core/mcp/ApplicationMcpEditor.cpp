@@ -53,7 +53,7 @@ void Application::RegisterMcpEditorMethods()
             resp["ok"] = true;
             resp["result"] = {{"methods", methods},
                               {"count", methods.size()},
-                              {"globalKeys", json::array({"idempotency_key"})},
+                              {"globalKeys", json::array({"idempotency_key", "expectGeneration"})},
                               {"note", "type は bool/int/number/string/vec3/object/any。"
                                        "\"親.子\" は入れ子オブジェクトのキー（例 skybox.envMapPath）。"
                                        "any は C++ 側で型を静的に決められなかったもので、値の型制約が無い意味ではない"}};

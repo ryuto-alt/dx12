@@ -21,6 +21,23 @@ Claude Code と Codex の両方が読む運用ルール集。
 
 ---
 
+## ★ ツールの探し方: shell 5 本(220 本の名前を推測しない)
+
+- 最初に `dx12_doctor`(接続と版の確認。エンジンが落ちていれば原因と起動手順を返す)。
+- 目的の操作の名前が分からなければ `dx12_tool_search {query}`(日本語/英語)→ `dx12_tool_describe {name}`(引数・副作用・`callTemplate`)→ `dx12_call {name, args}`。
+  旧ツール名(`dx12_set_ssao`)もエンジンの method 名も渡せる。**エンジンに足した method は MCP の再起動なしで使える。**
+- `dx12_call {dryRun:true}` は副作用のある操作を実行せず、対象・破壊性・Undo 可否を返す(`look_apply` などは native dryRun)。
+  guarded(`git_*` の書き込み系 / `eval_lua` / `delete_asset` / `build_game`)は `confirm:true` が要る(core 面は `dx12_call_guarded`)= **人の承認を取ってから**。
+- **エラーは `error_code` / `fix` / `didYouMean` / `validValues` を読み、`fix[0]`(tool + args)をそのまま `dx12_call` に渡して撃ち直す。同じ呼び出しを繰り返さない。**
+  `retryable:false` は引数か状態を直さない限り通らない。`E_ENGINE_TIMEOUT` はエンジンが処理を続けている可能性があるので、`dx12_ping` と結果を確認してから撃ち直す(遅れて届いた結果は次の `meta.lateResults`)。
+- 手順は `dx12_guide {topic}`(`build_scene` `test` `lighting` `ui` `editor` `safety` `errors` `perf` `engine_dev`)。コード表は `docs/MCP.md` §0-2。
+- **ツール面(`DX12_MCP_SURFACE`)**: 既定 `full` は従来どおり shell 5 + 旧 220。**`core`** は shell 5 + **Core 28 本**(+ `dx12_batch` + `dx12_call_guarded`)だけを `tools/list` に出す。
+  Core に無い操作(undo・アニメ・ナビ・Blender・アセット・git …)は `dx12_tool_search` → `dx12_call {name:"dx12_undo"}` のように**旧名・旧引数のまま**呼ぶ。統合ツール(`dx12_set_render_settings {target, values}` / `dx12_capture {view}` /
+  `dx12_edit_terrain {op}` / `dx12_imgui {op}` / `dx12_get_perf {mode}`)の引数は `dx12_tool_describe {name, target:"<target|op|view>"}` で引く。**core 面の guarded は `dx12_call_guarded` から**(`dx12_call` の `confirm:true` では通らない。先に `dryRun:true`)。
+  一覧・alias 表・命名規約は `docs/MCP.md` §0-5。エンジンに method を足す最短手順は §0-6 / `dx12_guide {topic:"engine_dev"}`。
+
+---
+
 ## ★ 最重要ルール: entityId は「同じ sceneGeneration の間だけ」安定。
 
 `dx12_create_entity` / `dx12_spawn_model` などの遅延同期ツールは、

@@ -17,6 +17,164 @@ AI がシーンを読み・エンティティを生成し・コンポーネン�
 
 ---
 
+## 0. まずここから: shell 5 本(ツールの探し方・呼び方・診断・ガイド)
+
+ツールは 200 本を超える。AI が名前を推測せず、**常時ロードの shell 5 本**で探して撃つ(設計は `docs/MCP_ENHANCEMENT_DESIGN.md` §4.1.4)。
+旧 220 ツールは**名前・引数・成功時の返り値とも従来のまま**登録されている(`DX12_MCP_SURFACE` で見せ方を切り替えられる。§0-5)。
+**主力 28 本だけを `tools/list` に出す `core` 面**(M3。既定は `full` のまま)もある。
+
+| ツール | 使いどころ | 返り値 |
+|---|---|---|
+| `dx12_tool_search {query, category?, effect?, tier?, limit?}` | 目的の操作の名前が分からないとき。日本語/英語の自然文・旧ツール名・エンジン method 名で検索(決定論。同義語辞書つき) | `{hits:[{name, tier, kind, summary, category, effect, mode, example, score}], total, hint, catalog}`。0 件なら `didYouMean` / `categories` |
+| `dx12_tool_describe {name, target?}` | 引数(型・必須・enum・範囲)・副作用・タイムアウト・例・次の一手・起こりうるエラー・旧名を見る。`target` は引数が多いツールの絞り込み | `{name, kind, effect, mode, timeoutMs, dryRun, params[], examples[], next[], errors[], legacy, callTemplate:{name,args}}` |
+| `dx12_call {name, args?, dryRun?, confirm?, timeoutMs?, idempotency_key?}` | 任意のツール/エンジン method を、送信前にスキーマ検証してから実行。旧名でもエンジン method 名でもよい | 成功 `{ok:true, result, meta:{tool, method, effect, tookMs, warnings?, lateResults?, undoEntry?}}` / 失敗は構造化エラー(下) |
+| `dx12_doctor {deep?}` | エンジンに繋がらない/おかしいときの自己診断。最初に撃つ入口 | `{ok, summary, engine, ports, process, versions, tsServer, recentErrors, issues[{code, severity, message, fix[]}], log?, next}` |
+| `dx12_guide {topic?}` | 目的別の最短手順・危険操作の注意・仮想入力の運用ルール(Markdown) | トピック一覧 / 本文。`build_scene` `test` `lighting` `ui` `editor` `safety` `errors` `perf` `engine_dev` |
+
+サーバの `instructions`(2,048 字以内)にも同じ使い分けと最重要ルール(人の PC 操作を奪わない・`--background`)を載せてある。
+
+```
+dx12_tool_search {query:"ブルームを調整"}            → dx12_set_post_process ほか
+dx12_tool_describe {name:"dx12_set_post_process", target:"bloom"}   → bloom 関連の引数を説明つきで
+dx12_call {name:"dx12_set_post_process", args:{bloomOn:true, bloom:0.8}}
+dx12_call {name:"dx12_delete_entity", args:{name:"Wall_01"}, dryRun:true}   → 実行せず対象・破壊性・Undo 可否だけ返す
+```
+
+### 0-1. 再起動不要でエンジンの新しい method を使う
+
+エンジンの登録表(`McpDefine` + `McpMeta`)が唯一の真実。エンジンに method を足して再ビルド・再起動すると、`ping.manifestHash` が変わり、
+**MCP サーバ(Node)を再起動しなくても**、次の `dx12_tool_search` / `dx12_tool_describe` / `dx12_call` が `describe_mcp_manifest` を取り直して新 method を扱う
+(TS ラッパも Claude Code の再起動も要らない。これが**主経路**)。
+Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると、MCP サーバが `notifications/tools/list_changed` を送って `tools/list` にも増やす(補助。
+**Claude Code がこの通知を反映するかは未確認**なので、これに依存しない。`DX12_MCP_LIST_CHANGED=0` で止められる)。最短手順は §0-6、全体は `dx12_guide {topic:"engine_dev"}`(= `tools/mcp-server/guides/engine_dev.md`)。
+
+### 0-2. 構造化エラー(`dx12_call` の失敗 / 旧ツールの失敗に付く JSON)
+
+```jsonc
+{"ok":false,
+ "error":"…",                      // 人が読む 1 文(エンジンの error をそのまま)
+ "error_code":"E_BAD_ENUM",        // 文字列コード(下表)
+ "engineCode":2,                   // 旧来の数値 error_code(あれば)
+ "cause":"…", "retryable":false,
+ "didYouMean":["night"],           // 打ち間違いの近い候補(ツール名/引数キー/enum 値/エンティティ名/シーン/アセット)
+ "validValues":["day","dusk","night", …],
+ "fix":[{"tool":"dx12_apply_lighting_preset","args":{"preset":"night"},"why":"…"}],   // そのまま dx12_call へ渡せる。shell コマンドは {command, why}
+ "details":{…}, "docs":"dx12_tool_describe {name:'…'}"}
+```
+
+旧ツールを MCP から**直接**呼んだ場合は、従来の日本語本文(1 ブロック目)は変えず、**2 ブロック目**に同じ JSON が付く。
+引数の誤りは**エンジンへ送る前に**検出する(旧ツールは zod スキーマ、TS ラッパの無い method はマニフェストの params で検証)。
+
+| error_code | 旧 | 意味 | 既定の fix |
+|---|---:|---|---|
+| `E_ENGINE_UNREACHABLE` | — | エンジンに繋がらない(ポート閉鎖/プロセス無し/切断) | `dx12_doctor`、`Start-Process … --background` |
+| `E_ENGINE_BUSY` | — | 接続は通るが応答が無い(別クライアントが単一ブリッジを保持) | 他セッションを閉じる(doctor が判定) |
+| `E_ENGINE_TIMEOUT` | — | 期限内に応答が来ない。**エンジンは処理を続けている可能性**(`details.engineResponsive`、遅れて届いた結果は次の `meta.lateResults`) | `dx12_ping` → 結果確認 → 撃ち直し |
+| `E_ENGINE_TOO_OLD` | — | 旧ツールが呼ぶ method をエンジンが持たない / マニフェスト無しの古いエンジン | エンジンを更新して再起動 |
+| `E_UNKNOWN_TOOL` | 8 | ツール/method 名が無い | `didYouMean`(編集距離+別名+検索)、`dx12_tool_search` |
+| `E_UNKNOWN_PARAM` `E_MISSING_PARAM` `E_BAD_TYPE` `E_BAD_ENUM` `E_OUT_OF_RANGE` | 2 | 引数不正 | `fix[0].args`(機械的に直した引数)/ `validValues` |
+| `E_NOT_FOUND_ENTITY` `E_NOT_FOUND_ASSET` `E_NOT_FOUND_SCENE` `E_NOT_FOUND_COMPONENT` | 1 / 6 | 対象が無い(近い名前を最大 5 件) | `didYouMean` を入れた撃ち直し |
+| `E_STALE_SCENE` | 4 | `expectGeneration` が古い | `dx12_list_entities` |
+| `E_MODE_CONFLICT` | 3 | Editor/Playing の不一致・トランザクション中の禁止 method | `dx12_stop` など(`thenRetry:true` は撃ってから元の呼び出しを再送) |
+| `E_VIRTUAL_INPUT_OFF` `E_MODAL_OPEN` | 3 / 13 | 仮想入力が OFF / モーダルが開いている | `dx12_imgui_virtual_input {enable:true}` |
+| `E_UNSUPPORTED` | 10 | 環境が非対応(再送は無駄) | 代替の案内 |
+| `E_GUARDED` | 11 | guarded な操作に `confirm:true` が無い | dryRun → 承認 → `confirm:true` |
+| `E_VALIDATION_FAILED` `E_FILE_IO` `E_CANCELLED` `E_SAFETY_VIOLATION` `E_INTERNAL` | 2 / 14 / 12 / — / 7 | 宣言的入力の検証失敗 / ファイル I/O / 中断 / 仮想入力の安全違反 / 内部エラー | 各ガイド(`dx12_guide {topic:"errors"}`) |
+| `E_NOT_FOUND` `E_INVALID_PARAM` | 1 / 2 | 種類を特定できなかった旧経路 | メッセージと hint を読む |
+
+エンジン側の加算フィールド(`error_name` など)は §12-3。`docs` の語調は標準語・簡潔に統一(方言・命令口調は `errors.test.ts` の lint が見張る)。
+
+### 0-3. dryRun / guarded / 警告(`dx12_call`)
+
+- `dryRun:true`: 読み取り系はそのまま実行(`dryRun:"ignored(read-only)"`)。`look_apply` / `vfx_apply` / `decal_apply` / `sequence_author` / `organize_scene` は各ツールの native dryRun(計算結果を返す)。
+  それ以外の書き込み系は**実行せず**、対象の存在(`get_entity` で確認)・破壊性・Undo 可否・ファイルを書くか、を `preview` に返す(非対応の範囲は `supported` に明示)。
+- **guarded**(`git_*` の書き込み系 7 種 / `eval_lua` / `delete_asset` / `build_game` / `net_launch_test_client`。`git_status` / `git_branches` は read): `full` / `shell` 面では `confirm:true` が無いと `E_GUARDED`。
+  **`core` 面では `dx12_call` に `confirm:true` を付けても通らず**、`dx12_call_guarded`(`_meta["anthropic/requiresUserInteraction"]:true` = 毎回ユーザーが承認)から実行する。
+  `dx12_batch` の op に guarded な method が混じっていたら、`core` / `shell` 面では 1 つも実行せず `E_GUARDED`(batch はエンジン method 直叩きでゲートを素通りできるため)。
+  **未対応(M5)**: エンジン側ディスパッチャの guarded ゲート(生 TCP で撃てば通る)、`full` 面の batch。旧ツールを直接呼ぶ場合はクライアントの権限設定(名前ベース)が効く。
+- 未保存の変更を消す操作(`open_scene` / `new_scene` / `open_project`)は、`sceneDirty:true` のとき `meta.warnings` で事前に警告する。
+- タイムアウト後に届いた応答は捨てずに保持し、次の `dx12_call` の `meta.lateResults` に載せる。切断後の次の呼び出しで自動再接続(接続失敗は 0.3 / 0.6 / 1.2 秒で再試行)し、再接続した事実(entityId の失効)を `meta.warnings` に載せる。
+
+### 0-4. 環境変数
+
+| 変数 | 内容 |
+|---|---|
+| `DX12_MCP_SURFACE` | ツール面(§0-5)。`full`(既定: shell 5 本 + 旧 220 本。現状互換)/ `core`(shell 5 + Core 28 + `dx12_batch` + `dx12_call_guarded` = 35 本)/ `shell`(shell 5 本だけ)/ `legacy`(旧 220 本だけ・instructions 無し・outputSchema 有り。M0 と同一の回帰基準) |
+| `DX12_MCP_TOOLSET` | `DX12_MCP_SURFACE` の旧名(互換)。`SURFACE` が有効ならそちらが優先。`full` / `legacy` / `shell`(設計書どおり `core` も可) |
+| `DX12_MCP_LIST_CHANGED` | `0` / `false` / `off` で、マニフェストの `expose:"core"` による動的登録(`tools/list` の差し替えと `list_changed` 送出)を止める。既定は有効。止めても `dx12_tool_describe` / `dx12_call` では新 method が使える |
+| `DX12_MCP_PORT` / `DX12_MCP_HOST` | 接続先(従来どおり) |
+| `DX12_MCP_CONNECT_BACKOFF_MS` / `DX12_MCP_PORT_FILE` | テスト用(再試行間隔 / ポートファイルの場所) |
+| `DX12_MCP_DEV_PROBE`(**エンジン側**) | `1` で動的登録の実機確認用ダミー method `dev_probe`(`expose:"core"`)をエンジンが登録する。通常起動では存在しない |
+
+### 0-5. ツール面(surface)3 モードと Core
+
+`tools/list` に何を出すかを環境変数 `DX12_MCP_SURFACE` で選ぶ(MCP 設定の `env` に書く)。**既定は `full`(現状互換)**。`core` を既定にするかは M3 合格後の別判断。
+どの面でも旧 220 名は `dx12_call` の別名として**恒久サポート**(名前・引数・返り値の形は不変)。
+
+| 面 | `tools/list` | 本数 / サイズ(実測) | 使いどころ |
+|---|---|---:|---|
+| `full`(既定) | shell 5 + 旧 220(情報の無い共通 `outputSchema` を削っただけ) | 225 本 / 350,762 B(M0 408,638 B 比 85.8%) | 従来どおり。許可リストに旧名を書いている人 |
+| `core` | shell 5 + Core 28 + `dx12_batch` + `dx12_call_guarded` | **35 本 / 約 56 KB**(M0 比 13.7%・上限 120 KB の 46%) | 通常の AI 作業。長尾は `dx12_tool_search` → `dx12_call` |
+| `shell` | shell 5 | 5 本 / 6,708 B | 最小(全部 `dx12_call` 経由) |
+| `legacy` | 旧 220 のみ | 220 本 / 408,638 B | 回帰基準(M0 と同一) |
+
+**Core 28 本(選定は設計書 §4.1.5 と付録 A の使用頻度。M3 時点で存在する機能だけ)**
+
+| # | Core ツール | 中身 |
+|---|---|---|
+| 1-2 | `dx12_list_entities` `dx12_get_entity` | 旧ツールのまま |
+| 3-4 | `dx12_get_render_settings` / `dx12_set_render_settings` | **統合(28 → 2)**: `target` = post_process / ssao / ssr / ssgi / taa / volumetric_fog / shadow_pcss / dxr / contact_shadow / occlusion / depth_prepass / normal_filter / render_scale / scene_settings。set は `values{…}`(旧 `dx12_set_<target>` の引数)。get は target 省略で 14 target をまとめて返す |
+| 5-6 | `dx12_get_log` `dx12_get_script_errors` | 旧ツールのまま |
+| 7 | `dx12_get_perf` | **統合(2 → 1)**: `mode` = snapshot(`perf_stats`)/ benchmark(`benchmark`)。`frames` / `uncap` があれば benchmark |
+| 8 | `dx12_capture` | **統合(8 → 1)**: `view` = final(既定)/ scene / game / ui / debug / texture / from / focus |
+| 9 | `dx12_scene_write` | 旧ツールのまま(設計書の `apply_scene_spec` は M11 まで無いので、その代役) |
+| 10-14 | `dx12_create_entity` `dx12_spawn_model` `dx12_set_transform` `dx12_set_component` `dx12_delete_entity` | 旧ツールのまま |
+| 15-17 | `dx12_look_apply` `dx12_material_apply` `dx12_vfx_apply` | 旧ツールのまま |
+| 18 | `dx12_edit_terrain` | **統合(10 → 1)**: `op` = create / generate / sculpt / erode / paint / autopaint / set_layers / sculpt_create / sculpt_make_editable / sculpt_brush |
+| 19-20 | `dx12_create_lua_component` `dx12_ui_compose` | 旧ツールのまま |
+| 21-25 | `dx12_play` `dx12_stop` `dx12_play_script` `dx12_run_playtests` `dx12_quality_gate` | 旧ツールのまま |
+| 26 | `dx12_imgui` | **統合(5 → 1)**: `op` = virtual_input / find / pointer / key / screenshot(仮想入力のみ。実マウス・実キーボードには触れない) |
+| 27-28 | `dx12_open_scene` `dx12_save_scene` | 旧ツールのまま |
+| +1 | `dx12_batch` | 旧ツールのまま(core / shell 面では guarded な op を拒否) |
+| +2 | `dx12_call_guarded`(core 面のみ) | guarded 専用の実行口。毎回ユーザー承認(`requiresUserInteraction`) |
+
+- 「旧ツールのまま」の Core は、**名前・inputSchema・annotations が旧ツールと同一**で、説明文だけ Core テンプレ(1 文の要約 / 使う / 使わない / 副作用 / 注意 / 次。600 字以内)に差し替わる(core 面のみ。旧文は `dx12_tool_describe` の `description` に残る)。
+- 統合ツールは旧ツールの登録済みハンドラをそのまま呼ぶ**薄いルーター**で、返り値の形は旧ツールのまま。他のキーは `target` / `op` / `view` ごとの旧引数(`dx12_tool_describe {name:"dx12_set_render_settings", target:"ssao"}` で引ける)。
+  `values` を省略して旧引数をフラットに渡しても通る。`fix` は統合ツールの形(`dx12_edit_terrain {op, …}`)で返る。
+- **alias 表(220 名)**: Core に同名で入る **23**(Core 22 + `dx12_batch`)/ 統合ツールが置換 **53**(描画設定 28 + perf 2 + capture 8 + terrain 10 + imgui 5)/ 長尾 **144**(`dx12_call` で使う: undo・アニメ・ナビ・Blender・アセット・git・decal・sequence・jev …)。
+  置換された旧名は旧名のまま呼べ、`dx12_tool_describe` が `replacedBy`(統合ツールでの呼び方)を案内する。
+- **命名規約**(lint = `toolSurface.test.ts`): `dx12_<動詞>_<対象>`。動詞が副作用を決める — `get/list/find/describe/check/validate/query` = read(`readOnlyHint:true`)/ `capture` = read + ファイル出力 /
+  `set/create/add/remove/apply/edit/spawn/delete/open/save/write/attach` = write / `play/stop/run/record/step` = runtime / `git/eval/build/launch` = guarded。読み取り専用の一括許可は `mcp__dx12-engine__dx12_get_*` の 1 行で書ける。
+- **サーバ `instructions`** は面ごとに変わる(core 面は Core の使い分けと `dx12_call_guarded` を載せる。2,048 字以内)。
+
+**effect(副作用)の確定と見直し(M3)**: `read` / `write_scene`(Undo 可)/ `write_setting`(設定・エディタカメラ)/ `write_file`(Undo 不可)/ `runtime`(実行状態)/ `guarded`。
+
+| 見直した点 | 内容 |
+|---|---|
+| `look_at` | `write_setting` → **`write_scene`**(rotation を書く。エンジン側の表も修正) |
+| `screenshot_from` / `focus_and_screenshot` / `camera_path` | `write_scene` → **`write_setting`**(エディタカメラを動かして撮るだけ。Undo に積まれるシーン変更ではない) |
+| `vfx_preview` / `sequence_preview` | `write_scene` → **`runtime`**(時間を進めて連写 / Play して流す) |
+| `validate_layout` | 通常 read のまま。**`fix:'safe'|'all'` のときは書く**ので `dx12_call {dryRun:true}` は実行しない(`CONDITIONAL_WRITE`) |
+| guarded の `destructiveHint` | `eval_lua` / `net_launch_test_client` / `git_checkout|merge|merge_abort|commit|push|pull` の 8 本に `destructiveHint:true` を足した(ヒントを足しただけ。許可・確認は緩めていない) |
+| 据え置き | `select_entity` / `focus_camera` = write_setting、`reload_scripts` / `reload_assets` / `ui_click` = runtime、`navmesh_build|clear` = write_scene、`terrain_*` / `create_prefab` = write_file、`net_launch_test_client` = guarded、`git_fetch` = guarded(`readOnlyHint:true` の旧ヒントは変えない)、`diagnose` / `render_debug` / `perceive` = read |
+| 旧ヒントの不整合(互換のため据え置き) | `benchmark` は `readOnlyHint:true` だが effect=runtime(時間が進む)/ `jev_ask` は `readOnlyHint:true` だが write_file(記録を書く)/ `git_fetch` は `readOnlyHint:true` だが guarded |
+
+### 0-6. エンジンに method を足す最短手順(再起動不要で AI が使う)
+
+1. `McpDefine("my_method", McpMeta{ .summary=…, .keywords=…, .category=…, .effect=McpEffect::WriteScene, .params={P(…)}, … }, DX12E_MCP_HANDLER { … });`(新規は meta を直接渡す。`source:"meta"` で必須/型/enum/範囲を**中央検証**する)
+2. `pwsh tools\build.ps1` → エンジンを(再)起動する。
+3. **何もしなくても** AI は `dx12_tool_search {query:"…"}` → `dx12_tool_describe {name:"my_method"}` → `dx12_call {name:"my_method", args:{…}}` で使える(MCP サーバ・Claude Code の再起動は不要。`ping.manifestHash` が変わるので次の呼び出しで取り込む)。
+4. Core にも載せたければ **1 行**: `McpMeta` に `.expose = "core"`(末尾のフィールド)。MCP サーバが再接続時にマニフェストを取り直し、`dx12_my_method` を `tools/list` に足して `notifications/tools/list_changed` を送る
+   (guarded な method は昇格しない)。TS ラッパを書きたいとき(専用の説明・合成処理)だけ `tools/mcp-server/toolset/*.ts` に `reg()` を足す(この場合はクライアントの再起動が要る)。
+   静的に Core へ入れたい旧ツールは `coreSpec.ts` の `CORE_LEGACY` / `CORE_ORDER` / `CORE_DESCRIPTIONS` に足す。
+5. 後始末(手作業): `docs/MCP.md` §4 の表 / `tools/mcp-server/manifest.snapshot.json`(`node scripts/gen_manifest_snapshot.mjs`。エンジン起動中に実行)/ ヒント(`searchHints.ts` と `eval/discovery_tasks.json`)。
+
+**後始末の自動化の現状**: `npm run check:legacy-snapshot`(旧 220 の表面)・`schemaDrift.test.ts`・`toolSurface.test.ts` は自動。`docs/MCP.md` / README / `AGENTS.md` の表、`manifest.snapshot.json` の更新、Lua API の 4 点セット
+(`McpLuaApi()` 辞書 + `docs/API_REFERENCE.md` + `docs/SCRIPTING.md` + `docs/index.html`)は**まだ手作業**。M4 で `npm run finalize`(`gen:docs` + `lua_api.json` → 辞書/表の生成と `--check` + manifest snapshot 更新 + `test:offline` を 1 コマンドに。
+push は人の確認を挟む)にまとめる案。Lua API を足したときに 1 コマンドで何を更新するかの対応表は `dx12_guide {topic:"engine_dev"}` に書いてある。
+
+---
+
 ## ★ 最重要: 遅延同期の仕組み(旧 `queued:true` は廃止)
 
 `create_entity` / `spawn_model` / `spawn_prefab` / `duplicate_entity` / `delete_entity` /
@@ -142,7 +300,9 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧（全 220 ツール）
+## 4. ツール一覧（全 220 ツール + shell 5 本）
+
+> shell 5 本(`dx12_tool_search` / `dx12_tool_describe` / `dx12_call` / `dx12_doctor` / `dx12_guide`)は §0。以下の 220 本は従来どおり(名前・引数・成功時の返り値は不変)。
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -925,11 +1085,11 @@ dx12_play → (ゲームロジック動作) → dx12_stop
 
 | 症状 | 対処 |
 |------|------|
-| `エディタに繋がらない` | エディタが起動しているか・シーンを開いているか確認。ゲームモードではブリッジ起動しない。 |
-| `engine timeout` | エディタがフレームを回していない(別モーダル等)。エディタを前面にしてリトライ。 |
+| `エディタに繋がらない` | まず `dx12_doctor`(ポート・プロセス・ログを診断して原因と起動コマンドを返す)。エディタが起動しているか・`--mcp-port` と `DX12_MCP_PORT` が合っているか確認。ゲームモードではブリッジ起動しない。 |
+| `engine timeout`(`E_ENGINE_TIMEOUT`) | エンジンが処理中か、フレームを回していない(別モーダル等)。エンジンは処理を続けている可能性があるので、撃ち直す前に `dx12_ping` と結果(`dx12_list_entities` 等)を確認する。エディタを前面にする必要は無い(人のカーソルを奪わない `--background` を使う)。 |
 | ポート競合 | `%TEMP%\dx12_mcp.port` を読む、または `DX12_MCP_PORT` 環境変数を合わせる。 |
 | `node が見つからない` / `.ts` 実行不可 | Node **v24+** を入れる(`node --version` で確認)。 |
-| ツールが AI 側に出ない | `claude mcp add` 済みか、`.mcp.json` の `args` パスが正しいか確認。登録後はクライアント再起動。 |
+| ツールが AI 側に出ない | `claude mcp add` 済みか、`.mcp.json` の `args` パスが正しいか確認。登録後はクライアント再起動。**エンジンに足した method** は再起動不要(§0-1)。 |
 | 古い entityId で `NOT_FOUND(1)` | シーンを開き直した。`dx12_ping` で `sceneGeneration` 確認 → `dx12_list_entities` で引き直す。 |
 | `MODE_CONFLICT(3)` | Playing 中に生成系ツールを呼んだ。`dx12_stop` してから再試行。 |
 | 生成したのに entityId が見つからない | `entityId` をそのまま使う。`name` で検索し直す必要はない(遅延同期で本物の id が返る)。 |
@@ -974,16 +1134,95 @@ dx12_play → (ゲームロジック動作) → dx12_stop
    `bool` / `int` / `number` / `string` / `vec3` / `object` / `any`、入れ子は `"親.子"`。
    **本文で読むキーと必ず一致させること。**
    ポスト / SSAO だけは `DX12E_POST_FIELDS` / `DX12E_SSAO_FIELDS`（X マクロ）から自動生成している。
-3. `tools/mcp-server/index.ts` の zod スキーマとこのドキュメントにも同じキーを足す
-   （**足し忘れると zod が黙って引数を捨てる**。`schemaDrift.test.ts` が見張っている）。
+3. TS ラッパ(`tools/mcp-server/toolset/*.ts` の zod スキーマ)を持つ method は、そのスキーマとこのドキュメントにも同じキーを足す
+   （**足し忘れると zod が黙って引数を捨てる**。`schemaDrift.test.ts` が見張っている）。ラッパの無い新 method は足さなくても、
+   `dx12_tool_describe` → `dx12_call` で MCP サーバの再起動なしに使える(§0-1)。
 
 テーマ別ファイルを新設したときだけ、`src/core/CMakeLists.txt` のソース一覧と
 `tests/CMakeLists.txt` の `DX12E_MCP_SOURCES`（`McpParamSpecTests` が走査する対象）にも足すこと。
+
+★`McpDefine(names, "key:type,...", fn)` の形で足したら、`src/core/mcp/ApplicationMcpManifestData.inc` にも同じ名前の行を足すこと
+（足し忘れると ctest `McpManifestTests` が落ちる。詳細は 12-2）。新規は `McpDefine(names, McpMeta{...}, fn)` の多重定義でもよい。
 
 - 例外は `throw McpError(McpErr::…, msg, hint, validValues)`。呼び出し側の try/catch が拾う。
 - 遅延応答は `deferred` を保存して `isDeferred = true`。
 - ハンドラの中で `return;` してよい（旧 else-if 連鎖では `HandleMcpCommand` ごと抜けてしまい
   `RecordCommand` を飛ばしていたので使えなかった）。
+
+### 12-2. マニフェスト（method ごとのメタ情報）
+
+`describe_mcp_params`（引数名と型だけ）とは別に、**カテゴリ・副作用・タイムアウト・引数の詳細**を返す
+`describe_mcp_manifest` がある（設計は `docs/MCP_ENHANCEMENT_DESIGN.md` §4.2.2）。
+TS サーバはこれを引いて、エンジンを再ビルドしても**再起動せずに**新しい method を呼ぶ。
+
+`describe_mcp_manifest {method?:string, category?:string, brief?:bool}` →
+
+```jsonc
+{"ok":true,"result":{
+  "protocol":1,
+  "manifestHash":"<16 桁 hex>",          // 全 method（名前順）の meta をキー順固定の JSON にして FNV-1a 64
+  "engineVersion":"1.x.y",
+  "count":175, "total":175,               // count = 返した件数 / total = 全 method 数（絞り込み時に違う）
+  "categories":[{"id":"entity","count":21}, ...],   // 常に全 method の集計
+  "methods":[{
+    "name":"set_ssao", "category":"render", "summary":"…", "keywords":"…",
+    "effect":"write_setting",             // read | write_scene | write_setting | write_file | runtime | guarded
+    "mode":"any",                         // any | editor | playing
+    "timeoutMs":8000, "idempotent":true, "deferred":false,
+    "dryRun":"none",                      // none | native
+    "group":"render_setting", "target":"ssao",   // 付くものだけ
+    "aliases":["dx12_set_ssao"],          // 旧 TS ツール名
+    "expose":"core",                      // 付けたときだけ出る（末尾のフィールド）。MCP サーバが tools/list へ動的に昇格させる（M3。guarded は昇格しない）
+    "params":[{"name":"radius","type":"number","required":false,"min":0,"max":10,"default":0.5,"desc":"…","enforce":true}],
+    "next":[{"tool":"…","when":"…"}], "examples":[{"args":{…},"note":"…"}],
+    "source":"meta"                       // meta | derived（paramSpec から自動導出。ctest は 0 件を要求する）
+  }]}}
+```
+
+- `expose:"core"`（`McpMeta.expose`。既定は空）: TS 側がこの method を Core として `tools/list` に足し `notifications/tools/list_changed` を送る。空のときは canonical JSON にも出ない（既存 method のハッシュを変えない）。
+  実機確認用に、環境変数 `DX12_MCP_DEV_PROBE=1` で起動したエンジンだけがダミー method `dev_probe`（`expose:"core"`）を登録する。
+- `brief:true` は `params` / `examples` / `next` を省く。`method` 指定は 1 件だけ返し、未知の名前は下記の `E_UNKNOWN_TOOL`。
+- `params[].type` は `bool int number string vec2 vec3 vec4 entityRef assetPath enum object array any`。
+  `enum`（有効値 `enum`）/ `min` / `max` / `default` / `desc` は付くものだけ。`enforce:true` の引数はディスパッチャが中央検査する（下記）。
+- **`manifestHash` は `ping` にも載る**（`manifestHash` / `manifestProtocol` / `engineVersion` / `engineStartedAtMs` / `methodCount`）。
+  表を組んだ時に 1 度だけ計算した値で、method や meta が変わると必ず変わり、同じビルドでは毎回同じ。
+  TS 側は `ping` の値が前回と違うときだけ `describe_mcp_manifest` を取り直す。`engineStartedAtMs` の変化はエンジンの再起動を示す。
+
+**meta の入れ方（2 通り）**
+
+- 既存 method（`McpDefine(names, "key:type,...", fn)`）は 1 行も書き換えない。meta は
+  `src/core/mcp/ApplicationMcpManifestData.inc`（データ表。機械生成した一度きりのブートストラップで、**以後は直接編集してよい**）から
+  `ApplyMcpManifest()` が起動後の最初の MCP コマンドで流し込む。表の引数は `enforce:false`（中央検査しない＝既存クライアントを壊さない）。
+- 新しい method は `McpDefine(names, McpMeta{...}, DX12E_MCP_HANDLER {...})` の多重定義で書く（`src/core/mcp/McpMeta.h`）。
+  `source:"meta"` で、`params` の必須 / 型 / 列挙 / 範囲がハンドラの前に中央検査される。
+  `describe_mcp_manifest` 自身がその最初の例（`brief` に文字列を渡すと `E_BAD_TYPE`）。
+- ctest `McpManifestTests` が「McpDefine の全 method = データ表の全名」「全 meta が有効」「申告表と表の引数名が一致」を見張る。
+  表に行を足し忘れると落ちる（`describe_mcp_manifest` が `source:"derived"` を返す状態を作らない）。
+
+### 12-3. 構造化エラー（加算フィールド）
+
+既存の `error` / `error_code` / `error_hint` / `error_values` は変えない。次のフィールドが**付くものだけ**加算で乗る（旧クライアントは無視できる）。
+
+| フィールド | 内容 |
+|---|---|
+| `error_name` | 文字列コード（下表） |
+| `error_cause` | 原因の 1 文 |
+| `error_fix` | `[{tool, args, why}]`。そのまま撃ち直せる次の一手（`tool` は `dx12_` 接頭辞なしの method 名） |
+| `error_did_you_mean` | 打ち間違いの近い候補（近い順・最大 5 件。編集距離 + 大文字小文字 + 前方/部分一致） |
+| `error_details` | 追加情報（オブジェクト） |
+
+`McpErr` の追加コード（既存の 1〜7 は不変）: `UnknownMethod=8` `Busy=9` `Unsupported=10` `Guarded=11` `Cancelled=12` `ModalOpen=13` `FileIo=14`。
+現時点でエンジンが実際に送るのは `8` だけ（残りは TS 側 / 今後の段階用に予約）。
+
+| `error_name` | `error_code` | 出る場所 |
+|---|---:|---|
+| `E_UNKNOWN_TOOL` | 8 | 未知の method。**`error` は従来どおり `unknown method: X` のまま**、`error_code` だけ 2 → 8 に変えた。`error_did_you_mean` は method 名と別名（`dx12_` を外した名前）から。`error_fix` は `describe_mcp_manifest {brief:true}` |
+| `E_NOT_FOUND_ENTITY` | 1 | `name` 指定のエンティティが無い（`error_did_you_mean` はシーン内の名前、大文字小文字違いが先頭）。無効な数値 id も同じ名前。`error_fix` は `list_entities {name_prefix}` |
+| `E_NOT_FOUND_SCENE` / `E_NOT_FOUND_ASSET` | 1 | `open_scene` / `spawn_model` / `asset_info` のパス違い（`error_did_you_mean` は実在するパスの近いもの）。`error_fix` は `list_scenes` / `list_assets` |
+| `E_STALE_SCENE` | 4 | 全 method 共通の任意キー **`expectGeneration`**（int）が現在の `sceneGeneration` と違う。ハンドラの前に断る（読み取り専用でも）。`error_fix` は `list_entities`。これで初めて `4` が送出される |
+| `E_MISSING_PARAM` / `E_BAD_TYPE` / `E_BAD_ENUM` / `E_OUT_OF_RANGE` | 2 | **meta を直接渡した method だけ**の中央検査。`E_BAD_ENUM` は `error_values`（有効値）と `error_did_you_mean`（最も近い値）付き。未知キーは検出しない（互換のため） |
+
+`describe_mcp_params` の `globalKeys` は `["idempotency_key","expectGeneration"]`（全 method 共通で渡せるキー）。
 
 ---
 

@@ -470,8 +470,17 @@ void Application::RegisterMcpEntityMethods()
                     for (auto [pe, tag] : reg.view<const NameTag>().each())
                         if (tag.name == pname) { uiParentOverride = pe; break; }
                     if (uiParentOverride == entt::null)
-                        throw McpError(McpErr::NotFound, "parentName not found: " + pname,
+                    {
+                        McpError err(McpErr::NotFound, "parentName not found: " + pname,
                             "parentName は既存の名前と完全一致が要る。dx12_find_entity で確かめるか、UI なら先に type:\"ui_canvas\" を作る");
+                        err.name       = "E_NOT_FOUND_ENTITY";
+                        err.cause      = "parentName に一致する名前のエンティティが無い";
+                        err.didYouMean = McpSuggestEntityNames(*m_scene, pname);
+                        err.fix.push_back(MakeMcpFix("list_entities",
+                            json{{"name_prefix", McpEncodeUtf8(McpDecodeUtf8(pname).substr(0, 3))}},
+                            "先頭が同じ名前の一覧で正しい名前を確かめる"));
+                        throw err;
+                    }
                 }
             }
             if (name.empty())   // 既定名: 種別名を先頭大文字に
@@ -676,8 +685,9 @@ void Application::RegisterMcpEntityMethods()
                 throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes",
                     "読み込み中のシーンが終わるまで待つ。dx12_ping の currentScene が変わったら呼び直す");
             const std::string full = PathResolver::AssetsDir() + rel;
-            if (!fs::exists(full)) throw McpError(McpErr::NotFound, "scene not found: " + rel,
-                "dx12_list_scenes で実在するシーンのパスを確かめる。新しく作るなら dx12_new_scene");
+            if (!fs::exists(full)) throw McpNotFoundAsset("scene not found: " + rel,
+                "dx12_list_scenes で実在するシーンのパスを確かめる。新しく作るなら dx12_new_scene",
+                rel, "scenes", {".json"}, "E_NOT_FOUND_SCENE", "list_scenes", json::object());
             // 遅延ロード: フレーム境界の機構が pendingLoadPath を消費し SceneSerializer::Load を行う。
             // 完了後に m_mcpLoadReply 経由で sceneName/entityCount/sceneGeneration を返す(遅延同期)。
             m_editorCtx->pendingLoadPath    = full;
@@ -782,8 +792,10 @@ void Application::RegisterMcpEntityMethods()
                 throw McpError(McpErr::InvalidParam, "invalid path (assets 相対のみ)",
                     "path は assets 相対（例: models/tree.glb）。外部のファイルは先に dx12_import_asset で取り込む");
             if (!fs::exists(PathResolver::AssetsDir() + path))
-                throw McpError(McpErr::NotFound, "model not found: " + path,
-                    "dx12_list_assets で実在と綴り（拡張子・大文字小文字）を確かめる。外部のファイルなら dx12_import_asset");
+                throw McpNotFoundAsset("model not found: " + path,
+                    "dx12_list_assets で実在と綴り（拡張子・大文字小文字）を確かめる。外部のファイルなら dx12_import_asset",
+                    path, "", {".glb", ".gltf", ".fbx", ".obj"}, "E_NOT_FOUND_ASSET", "list_assets",
+                    json{{"type", "model"}});
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
             if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
                 "例: position:[0, 0, 5]（ワールド座標の 3 要素）");
@@ -1380,7 +1392,14 @@ void Application::RegisterMcpEntityMethods()
                 // 表示倍率（1.0 = 100%）。エディタの UI 倍率 = OS の倍率（--dpi-scale があればそれ）。
                 // imgui_pointer 等の座標は【物理クライアント px】（論理 px ではない）。論理 = 物理 ÷ dpiScale。
                 {"dpiScale", m_imguiManager ? m_imguiManager->GetUiScale() : 1.0f},
-                {"protocolVersion", 4}
+                {"protocolVersion", 4},
+                // ---- マニフェスト（TS サーバが「method 表が変わったか」を 1 往復で知るための加算キー）----
+                // manifestHash は表を組んだ時に 1 度だけ計算したもの（ここでは計算しない）。
+                {"manifestHash", m_mcpManifestHash},
+                {"manifestProtocol", 1},
+                {"engineVersion", kEngineVersion},
+                {"engineStartedAtMs", McpEngineStartedAtMs()},   // プロセス起動の epoch ms。再起動の検知に使う
+                {"methodCount", m_mcpMethods.size()}
             };
         });
 

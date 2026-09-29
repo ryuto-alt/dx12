@@ -31,7 +31,7 @@ bool IsMcpReadOnlyMethod(const std::string& method)
         "brain_state",
         "get_anim_state", "get_lua_component_state", "get_script_errors",
         "get_play_session", "read_lua_component", "read_shader", "describe_components",
-        "describe_lua_api", "describe_anim_graph", "describe_mcp_params",
+        "describe_lua_api", "describe_anim_graph", "describe_mcp_params", "describe_mcp_manifest",
         "asset_info", "perf_stats", "diagnose", "validate_scene", "raycast",
         "raycast_precise", "overlap_box", "overlap_sphere", "pick",
         "project_world_to_screen", "screenshot", "screenshot_final",
@@ -84,6 +84,34 @@ void Application::McpDefine(const char* names, const char* paramSpec, McpHandler
     }
 }
 
+// meta を直接渡す版。params は全部 enforce（ディスパッチャの中央検査の対象）にする。
+// paramSpec（describe_mcp_params 互換の申告表）は meta.params から作る。
+// const char* が指す文字列は起動中ずっと生きている必要があるので、内容ごとに 1 度だけ確保して使い回す。
+void Application::McpDefine(const char* names, McpMeta meta, McpHandler fn)
+{
+    static std::unordered_set<std::string> s_specs;   // ノード型なので要素のアドレスは動かない
+    for (McpParam& p : meta.params) p.enforce = true;
+    const char* spec = s_specs.insert(McpParamsToSpec(meta.params)).first->c_str();
+
+    const std::string all(names);
+    size_t pos = 0;
+    for (;;)
+    {
+        const size_t bar = all.find('|', pos);
+        const std::string one = all.substr(pos, bar == std::string::npos ? std::string::npos : bar - pos);
+        if (!one.empty())
+        {
+            McpMethodEntry entry{spec, fn};
+            entry.meta    = meta;
+            entry.hasMeta = true;
+            if (!m_mcpMethods.emplace(one, std::move(entry)).second)
+                Logger::Error("MCP: duplicate method name '{}' (dispatch table)", one);
+        }
+        if (bar == std::string::npos) break;
+        pos = bar + 1;
+    }
+}
+
 // 表は初回の MCP コマンドで 1 度だけ組む（起動時コストをエディタ操作に持ち込まない）。
 void Application::EnsureMcpMethodTable()
 {
@@ -104,7 +132,40 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpAudioMethods();
     RegisterMcpAiMethods();
     RegisterMcpImGuiMethods();      // 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作）
+    RegisterMcpManifestMethods();   // describe_mcp_manifest（meta を直接渡す最初の method）
+    ApplyMcpManifest();             // 全 method へ meta を流し込み、manifestHash を 1 度だけ計算する
 }
+
+namespace
+{
+// McpError の構造化フィールドを応答へ載せる（付いているものだけ。旧来のエラー形は変えない）。
+void FillMcpErrorFields(nlohmann::json& resp, const McpError& e)
+{
+    using json = nlohmann::json;
+    resp["ok"] = false;
+    resp["error"] = e.what();
+    resp["error_code"] = e.code;
+    // 「次の一手」と有効値。付いているときだけ載せる(旧来のエラー形は変えない)。
+    if (!e.hint.empty())        resp["error_hint"]   = e.hint;
+    if (!e.validValues.empty()) resp["error_values"] = e.validValues;
+    // ---- 加算フィールド（旧クライアントは無視する）----
+    if (!e.name.empty())        resp["error_name"]   = e.name;
+    if (!e.cause.empty())       resp["error_cause"]  = e.cause;
+    if (!e.fix.empty())
+    {
+        json arr = json::array();
+        for (const McpFix& f : e.fix)
+        {
+            json args = json::parse(f.argsJson, nullptr, /*allow_exceptions=*/false);
+            if (args.is_discarded()) args = json::object();
+            arr.push_back({{"tool", f.tool}, {"args", std::move(args)}, {"why", f.why}});
+        }
+        resp["error_fix"] = std::move(arr);
+    }
+    if (!e.didYouMean.empty())  resp["error_did_you_mean"] = e.didYouMean;
+    if (!e.details.is_null())   resp["error_details"]      = e.details;
+}
+} // namespace
 
 
 std::string Application::HandleMcpCommand(uint64_t client, const std::string& line)
@@ -192,6 +253,25 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         const auto it = m_mcpMethods.find(method);
         if (it != m_mcpMethods.end())
         {
+            // ---- 全 method 共通の任意キー expectGeneration（古いシーンへの書き込みを弾く）----
+            // entityId を取ってからシーンが切り替わった（open_scene / new_scene / Stop）後の呼び出しを、
+            // ハンドラが動く前に E_STALE_SCENE で断る。読み取り専用 method にも適用する（一貫させるため）。
+            if (const auto eg = params.find("expectGeneration");
+                eg != params.end() && eg->is_number_integer() && eg->get<long long>() != m_sceneGeneration)
+            {
+                McpError err(McpErr::StaleScene,
+                    "stale scene: expectGeneration " + std::to_string(eg->get<long long>()) +
+                    " but the current sceneGeneration is " + std::to_string(m_sceneGeneration),
+                    "list_entities を引き直して entityId を取り直す（シーンの切り替え / Stop で id は振り直される）");
+                err.name  = "E_STALE_SCENE";
+                err.cause = "expectGeneration が現在の sceneGeneration と違う。シーンが入れ替わった後の古い id を使っている";
+                err.fix.push_back(MakeMcpFix("list_entities", json::object(), "現在のシーンの entityId を取り直す"));
+                err.details = {{"expectGeneration", eg->get<long long>()}, {"sceneGeneration", m_sceneGeneration}};
+                throw err;
+            }
+            // ---- 中央検査: meta を直接渡した method だけ（enforce=true の引数の必須 / 型 / 列挙 / 範囲）----
+            if (it->second.hasMeta) McpValidateMeta(it->second.meta, params, method);
+
             if (undoRec)
             {
                 m_editorCtx->mcpUndo.BeginCall(method);
@@ -259,21 +339,22 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         }
         else
         {
-            resp["ok"] = false;
-            resp["error"] = "unknown method: " + method;
-            resp["error_code"] = McpErr::InvalidParam;
+            // ★error 文字列は従来のまま。error_code だけ 2(InvalidParam) → 8(UnknownMethod) に変えた。
+            //   近い method 名（編集距離 + 別名 + 前方/部分一致）と、一覧の取り方を加算で返す。
+            McpError err(McpErr::UnknownMethod, "unknown method: " + method);
+            err.name  = "E_UNKNOWN_TOOL";
+            err.cause = "この名前の method は無い。名前は dx12_ 接頭辞なし（例 set_transform）で、綴りは完全一致";
+            err.didYouMean = SuggestMcpMethodNames(method);
+            err.fix.push_back(MakeMcpFix("describe_mcp_manifest",
+                nlohmann::json{{"brief", true}}, "全 method の名前・カテゴリ・要約を引いて正しい名前を探す"));
+            FillMcpErrorFields(resp, err);
         }
         if (isDeferred) resp["ok"] = true;   // パネル表示用: dispatch 成功(本応答は遅延)
     }
     catch (const McpError& e)
     {
         endUndo();
-        resp["ok"] = false;
-        resp["error"] = e.what();
-        resp["error_code"] = e.code;
-        // 「次の一手」と有効値。付いているときだけ載せる(旧来のエラー形は変えない)。
-        if (!e.hint.empty())        resp["error_hint"]   = e.hint;
-        if (!e.validValues.empty()) resp["error_values"] = e.validValues;
+        FillMcpErrorFields(resp, e);
         isDeferred = false;
     }
     catch (const std::exception& e)

@@ -447,8 +447,9 @@ void Application::RegisterMcpAssetMethods()
             const std::string rel = ValidateMcpAssetRelPath(params.value("path", std::string()));
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
             if (!fs::exists(full) || !fs::is_regular_file(full))
-                throw McpError(McpErr::NotFound, "asset not found: " + rel,
-                    "path は assets 相対（例: models/tree.glb）。dx12_list_assets で実在するパスを確かめる");
+                throw McpNotFoundAsset("asset not found: " + rel,
+                    "path は assets 相対（例: models/tree.glb）。dx12_list_assets で実在するパスを確かめる",
+                    rel, "", {}, "E_NOT_FOUND_ASSET", "list_assets", json::object());
             std::string ext = full.extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             json result{{"path", rel}, {"fileSizeBytes", static_cast<u64>(fs::file_size(full))}};

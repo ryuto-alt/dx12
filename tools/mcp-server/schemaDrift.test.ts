@@ -20,6 +20,7 @@ import {
   SCULPT_BRUSHES, SCULPT_PRIMITIVES, TERRAIN_BRUSHES, TERRAIN_PRESETS,
 } from "./sceneTools.ts";
 import { SCENE_ROOT_KEYS } from "./sceneWrite.ts";
+import { readToolSource } from "./toolSource.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..", "..");
@@ -49,7 +50,7 @@ if (CPP_SOURCES.length === 0 || !fs.existsSync(POST_H)) {
 
 const cpp = CPP_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n");
 const header = fs.readFileSync(POST_H, "utf8");
-const indexSrc = fs.readFileSync(INDEX_TS, "utf8");
+const indexSrc = readToolSource(here);   // index.ts は toolset/*.ts への import だけなので連結して読む
 
 const engine = parseEngineMethods(cpp);
 const tools = parseTsTools(indexSrc);
