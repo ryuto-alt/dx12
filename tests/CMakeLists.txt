@@ -107,6 +107,28 @@ else()
 endif()
 add_test(NAME AudioStreamTests COMMAND AudioStreamTests)
 
+# 起動画面（スプラッシュ）の純ロジック。ヘッダオンリー・依存ゼロ（Win32 も GPU も音デバイスも使わない）なので
+# スタンドアロン構成でも回る。
+#   SplashMotionTests … イージング/スプリング/タイムライン状態機械（早着・定刻・遅着）/進捗の重み付け/
+#                       startup.json の EMA とクランプ/Tips ローテーション（core/SplashMotion.h, SplashProgress.h）
+#   SplashMixerTests  … 起動音ミキサー（頂点の整列/クロスフェード/ループ保持/クリック無し。core/SplashMixer.h）
+#   SplashSyncDump    … 検証用（テストではない）: ミキサーの計算結果を 3 シナリオ分 WAV に書き出す。音デバイスは開かない
+add_executable(SplashMotionTests splash_motion_test.cpp)
+target_include_directories(SplashMotionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_executable(SplashMixerTests splash_mixer_test.cpp)
+target_include_directories(SplashMixerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_executable(SplashSyncDump splash_sync_dump.cpp)
+target_include_directories(SplashSyncDump PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+foreach(t SplashMotionTests SplashMixerTests SplashSyncDump)
+    if(MSVC)
+        target_compile_options(${t} PRIVATE /W4 /WX /permissive- /utf-8)
+    else()
+        target_compile_options(${t} PRIVATE -Wall -Wextra -Werror)
+    endif()
+endforeach()
+add_test(NAME SplashMotionTests COMMAND SplashMotionTests)
+add_test(NAME SplashMixerTests COMMAND SplashMixerTests)
+
 # UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
 add_executable(UiRichTextTests ui_rich_text_test.cpp)
 target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

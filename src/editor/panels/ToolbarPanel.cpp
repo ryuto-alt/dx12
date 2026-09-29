@@ -302,14 +302,14 @@ void ToolbarPanel::Render(bool isPlaying,
 
         // ---- 中央: シーン名(UEのプロジェクト名表示の位置) ----
         {
-            std::string title = "DX12 Engine";
+            std::string title = kEngineName;   // 表示名の単一ソースは Version.cpp
             if (!ctx.currentScenePath.empty())
             {
                 // パス区切り・拡張子を手で剥がす(UTF-8のままでも安全な操作だけにする)
                 std::string name = ctx.currentScenePath;
                 if (size_t p = name.find_last_of("/\\"); p != std::string::npos) name = name.substr(p + 1);
                 if (size_t d = name.find_last_of('.');   d != std::string::npos) name = name.substr(0, d);
-                if (!name.empty()) title = name + " - DX12 Engine";
+                if (!name.empty()) title = name + " - " + kEngineName;
             }
             // 未保存なら先頭に * を出す（エディタの慣習。ここが唯一の常時見える手掛かり）
             if (ctx.IsSceneDirty()) title = "*" + title;
@@ -676,7 +676,7 @@ void ToolbarPanel::Render(bool isPlaying,
         if (ImGui::BeginPopupModal("バージョン情報##AboutPopup", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize))
         {
-            ImGui::Text("DX12 Engine");
+            ImGui::TextUnformatted(kEngineName);
             ImGui::TextDisabled("DirectX 12 ゲームエンジン + エディタ");
             ImGui::Separator();
             ImGui::TextUnformatted("https://github.com/ryuto-alt/dx12");

@@ -38,7 +38,11 @@ add_library(Core STATIC
     mcp/McpUndoTrack.cpp             # MCP の編集の値スナップショット（McpUndo().Track<T>）
     mcp/ApplicationMcpAudio.cpp      # 音の観測（audio_state）
     Window.cpp
-    SplashScreen.cpp
+    SplashScreen.cpp                # 起動画面の窓 + スレッド + API（D2D 描画 / GDI+ 縮退）
+    SplashRenderer.cpp              # Direct2D + DirectWrite の描画器（実窓とプレビューが共有）
+    SplashAudio.cpp                 # 起動音（winmm waveOut の薄いラッパー。ミキサーは SplashMixer.h）
+    SplashCommon.cpp                # 起動画面の共有部品（Tips / 最近のプロジェクト / ビルド日時 / DPI）
+    SplashPreview.cpp               # --splash-preview（窓なしで PNG 連番を書く検証用の軽量経路）
     Logger.cpp
     CrashHandler.cpp
     GameClock.cpp
@@ -69,7 +73,9 @@ target_link_libraries(Core
     # Dx12Profiler は Tracy 無効時は空の INTERFACE ターゲット。ここ 1 箇所で
     # 全ライブラリへ伝播する（全部が直接/間接に Core を PUBLIC リンクしているため）。
     PUBLIC spdlog::spdlog Dx12Profiler
-    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib gdiplus.lib  # gdiplus はスプラッシュのPNGロゴ用
+    PRIVATE imgui::imgui bcrypt.lib Cabinet.lib ws2_32.lib gdiplus.lib  # gdiplus はスプラッシュの縮退描画用
+            # 起動画面: Direct2D + DirectWrite（D3D11 上）/ WIC（PNG ロゴ・プレビュー出力）/ winmm（起動音）
+            d2d1.lib d3d11.lib dwrite.lib windowscodecs.lib dxguid.lib winmm.lib ole32.lib shell32.lib
 )
 
 target_compile_options(Core PRIVATE ${DX12_COMPILE_OPTIONS})

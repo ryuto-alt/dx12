@@ -1,12 +1,12 @@
-# DX12 Engine MCP server
+# Uno Engine MCP server
 
-起動中の [DX12 Engine](https://github.com/ryuto-alt/dx12) エディタを Claude Code / Codex から
+起動中の [Uno Engine](https://github.com/ryuto-alt/dx12) エディタを Claude Code / Codex から
 叩いてゲームを作るための MCP サーバ。エディタ(C++)が `127.0.0.1:8787` で待ち受ける TCP ブリッジに
 改行区切り JSON で繋ぐ。ゲーム(封印ランタイム)ではブリッジは起動しない＝外から触れない。
 
 - **配布リポジトリ**: https://github.com/ryuto-alt/dx12-mcp （エンジン本体には同梱されない）
 - **ソース・オブ・トゥルース**: エンジンリポジトリの `tools/mcp-server`（`publish.ps1` で dx12-mcp へ同期）
-- **必要環境**: Node.js **v24+**（`.ts` を型ストリップで直接実行。tsc ビルド不要）、起動中の DX12 Engine エディタ
+- **必要環境**: Node.js **v24+**（`.ts` を型ストリップで直接実行。tsc ビルド不要）、起動中の Uno Engine エディタ
 
 ## インストール
 

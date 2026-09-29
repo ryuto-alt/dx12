@@ -1,4 +1,4 @@
-# CLAUDE.md - DX12 Engine Project
+# CLAUDE.md - Uno Engine Project
 
 ## 応答スタイル
 - **標準語の日本語**で応答すること。関西弁・方言は使わない
@@ -451,6 +451,27 @@ MCP `dx12_set_occlusion`。実装は `src/renderer/HiZPass.{h,cpp}`（深度ピ�
   地形は Jolt の `HeightFieldShape`、スカルプトは `MeshShape`（動く剛体に付いている場合だけ凸包へフォールバック）
 - ピッキング/ギズモの CPU 時間は `dx12_perf_stats` の `cpuScopeMs` に `picking` / `gizmo` として出る
   （どちらも `editorUi` の内数＝二重計上。「エディタ UI が重い」の内訳を名指しするため）
+
+---
+
+## 起動画面（スプラッシュ）
+
+エディタ起動 + プロジェクト読込の窓（`src/core/Splash*`）。専用スレッド + 60fps 自前タイマ + Direct2D/DirectWrite +
+`UpdateLayeredWindow`（角丸カード + 影の per-pixel alpha）。D2D が使えなければ GDI+ の簡易描画へ縮退する。
+
+- **構成**: `SplashMotion.h`（イージング/スプリング/タイムライン状態機械 Intro→Loading→Ready→Transition）/
+  `SplashProgress.h`（重み付き進捗・startup.json の EMA）/ `SplashMixer.h`（起動音のミキサー計算）/
+  `SplashDirector.h`（文言・Tips・ready の一言）— ここまでは**ヘッダオンリーの純ロジックで単体テスト対象**
+  （`tests/splash_motion_test.cpp` / `splash_mixer_test.cpp`）。`SplashRenderer.cpp`（D2D 描画）/ `SplashScreen.cpp`（窓 + API）/
+  `SplashAudio.cpp`（waveOut の薄いラッパー）/ `SplashPreview.cpp`（検証入口）が Win32 側。
+- **API**: `SplashScreen::SetStage(Stage)`（段階に入る。段階内は微進み）/ `SetStageProgress(0..1)`（件数などの実測）/ `SetProgress` /
+  `SetStep` / `SetStatus`（文言だけ）/ `Finish(cb)`（非ブロッキング。ready の演出のあとメインスレッドの `PumpMainThread()` が cb でメイン窓を出す）/
+  `Close()`（即時。更新適用・例外時）。**段階の重み**は `SplashProgress.h` の `StartupPlan`（実測: Application が `スプラッシュ: stage X @ N ms` を Info ログへ出す）。
+- **★検証は必ず窓を出さない入口で**: `DX12Engine.exe --splash-preview <dir> [--dpi-scale N]`（PNG 連番）/ `--splash-selftest <dir>`（実窓コードを非表示で通す・CPU 計測）。
+  **実窓（前面に出る layered 窓）を人の画面へ出す確認は人が行う**（AI が実窓を出さない）。音も AI は実デバイスで鳴らさない（ミキサーの計算結果を WAV に書く: `SplashSyncDump` + `tools/check_splash_sync.py`）。
+- **起動音 splash_d は【コミット・配布しない】**（出どころ/ライセンス未確認・リポジトリは PUBLIC）。`assets/editor/sounds/splash_d.*` は `.gitignore` 済みで、
+  `installer/build.ps1` も配布物から落とす。変換は `tools/prep_splash_sound.py`（ffmpeg）。WAV が無ければ埋め込みの案 A（`SplashSoundData.h`）へ自動で縮退する。
+- **ユーザー向け文言は標準語**（Tips は `SplashTips.h`）。名前は `kEngineName`（Version.cpp = "Uno Engine"）を使い、直書きしない。
 
 ---
 

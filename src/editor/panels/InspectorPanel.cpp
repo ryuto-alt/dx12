@@ -1,5 +1,6 @@
 #include "editor/panels/InspectorPanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
+#include "core/SplashScreen.h"   // 「起動音」設定（エンジン設定 > 設定）
 #include "editor/EditorContext.h"
 #include "editor/PropertyGrid.h"
 #include "editor/UiWidgets.h"
@@ -4474,6 +4475,17 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
         if (pg::Begin("EngineMisc"))
         {
             pg::Checkbox("VSync", &useVsync);
+
+            // 起動音（エディタ起動画面の効果音）。プロジェクトに依らない設定なので editor_state.json に保存する。
+            // 読むのは表示中の一度だけ（ディスクを毎フレーム叩かない）。
+            {
+                static bool s_startupSound = true, s_startupSoundLoaded = false;
+                if (!s_startupSoundLoaded) { s_startupSound = SplashScreen::GetStartupSoundSetting(); s_startupSoundLoaded = true; }
+                if (pg::Checkbox("起動音", &s_startupSound,
+                        "エディタの起動画面で鳴る効果音。次回の起動から反映される。"
+                        "音量はシステムの音量に従う（--no-splash-sound でも切れる）"))
+                    SplashScreen::SetStartupSoundSetting(s_startupSound);
+            }
 
             bool debugDraw = physicsDebugRenderer->IsEnabled();
             if (pg::Checkbox("当たり判定を表示", &debugDraw,

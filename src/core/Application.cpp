@@ -112,7 +112,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // （スプラッシュが進行状況を見せるので、白い未応答ウィンドウを出さない）。
     // ゲーム/ヘッドレスビルドはスプラッシュを出さないので従来どおり即表示。
     const bool deferMainWindow = !gameMode && !buildMode;
-    SplashScreen::SetStatus("ウィンドウを作成中...");
+    SplashScreen::SetStage(splash::Stage::Window);
     // ゲーム(GameRuntime)は最大化せずビルド設定の解像度のまま表示する。最大化すると
     // クライアント領域が 16:9 より横長になり、UI の ScaleToFit が左右に余白を作るため。
     m_window->Initialize(hInstance, nCmdShow, winW, winH, windowTitle.c_str(),
@@ -177,7 +177,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     // グラフィックスデバイス初期化
-    SplashScreen::SetStatus("グラフィックスデバイスを初期化中...");
+    SplashScreen::SetStage(splash::Stage::Graphics);
     m_graphicsDevice = std::make_unique<GraphicsDevice>();
     m_graphicsDevice->Initialize(*m_window);
 
@@ -210,12 +210,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_window->SetInputSystem(m_inputSystem.get());
 
     // Audio System
-    SplashScreen::SetStatus("オーディオを初期化中...");
+    SplashScreen::SetStage(splash::Stage::Audio);
     m_audioSystem = std::make_unique<AudioSystem>();
     m_audioSystem->Initialize(PathResolver::AssetsDir());
 
     // Physics System
-    SplashScreen::SetStatus("物理エンジンを初期化中...");
+    SplashScreen::SetStage(splash::Stage::Physics);
     m_physicsSystem = std::make_unique<PhysicsSystem>();
     m_physicsSystem->Initialize();
     // 接触イベント（engine.contact.enter/exit）を C++ EventBus へ配信させる。
@@ -326,7 +326,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     // シェーダー読み込み & PipelineState
-    SplashScreen::SetStatus("シェーダーとパイプラインを構築中...");
+    SplashScreen::SetStage(splash::Stage::Shaders);
     RecreateForwardPsos();
 
     // Camera
@@ -344,7 +344,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
 
         // ResourceManager 初期化（デフォルト白テクスチャ作成にcmdListが必要）
-        SplashScreen::SetStatus("アセットを読み込み中...");
+        SplashScreen::SetStage(splash::Stage::Assets);
         m_resourceManager = std::make_unique<ResourceManager>();
         m_resourceManager->Initialize(m_graphicsDevice.get(), m_srvHeap.get(), cmdList);
 
@@ -407,7 +407,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                             m_srvHeap.get(), cmdList);
 
         // ScriptEngine 初期化 + ゲームスクリプト実行
-        SplashScreen::SetStatus("スクリプトエンジンを初期化中...");
+        SplashScreen::SetStage(splash::Stage::Scripts);
         m_scriptEngine = std::make_unique<ScriptEngine>();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                    m_camera.get(), m_audioSystem.get(),
@@ -598,7 +598,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     // シャドウマップ作成（CSM: Texture2DArray, ArraySize=kNumCascades）
-    SplashScreen::SetStatus("シャドウマップを準備中...");
+    SplashScreen::SetStage(splash::Stage::ShadowMap);
     {
         m_shadowDsvHeap = std::make_unique<DescriptorHeap>();
         m_shadowDsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, kNumCascades, false);
@@ -820,7 +820,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_commandList = std::make_unique<CommandList>();
 
     // ImGui 初期化
-    SplashScreen::SetStatus("エディタUIを初期化中...");
+    SplashScreen::SetStage(splash::Stage::EditorUi);
     m_imguiManager = std::make_unique<ImGuiManager>();
     m_imguiManager->Initialize(
         m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
@@ -869,7 +869,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_swapChain->GetFormat(), DXGI_FORMAT_D32_FLOAT, PathResolver::ShaderDirW());
 
     // オフスクリーン描画用 RT + ポストプロセス（WP3）
-    SplashScreen::SetStatus("レンダラーを初期化中...");
+    SplashScreen::SetStage(splash::Stage::Renderer);
     {
         // sceneRT(1)+cameraPreview(2)+ブルームチェーン(6)+ゴッドレイ/レンズフレア/DoF/
         // モーションブラー+SSAO(2)+コンタクトシャドウ(1)+歪みRT で 20 個ほど使う。
@@ -1306,7 +1306,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                         char st[96];
                         snprintf(st, sizeof(st), "サムネイルを生成中... (%zu / %zu)",
                                  completed, uncachedCount);
-                        SplashScreen::SetStatus(st);
+                        SplashScreen::SetStage(splash::Stage::Thumbnails, st);
+                        SplashScreen::SetStageProgress(static_cast<float>(completed) / static_cast<float>(uncachedCount));
                     }
 
                     // ローディング画面をバックバッファに描画
@@ -1372,7 +1373,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
 
     // IBL: シーンの skybox 設定に応じて環境キューブを読み込み派生をベイク（専用 cmdList）。
-    SplashScreen::SetStatus("環境マップをベイク中...");
+    SplashScreen::SetStage(splash::Stage::EnvMap);
     {
         auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
         LoadSkyboxIfNeeded(cmdList);
@@ -1394,7 +1395,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // deferMainWindow でない経路（ゲーム/ヘッドレスビルド）はウィンドウが既に表示済み。
     m_deferredFirstShow = deferMainWindow;
     if (deferMainWindow)
-        SplashScreen::SetStatus("画面を準備しています...");
+        SplashScreen::SetStage(splash::Stage::Finalize);
 
     Logger::Info("Application initialized successfully");
 
@@ -1776,11 +1777,13 @@ void Application::Run()
         if (m_deferredFirstShow && ++m_warmupFrames >= 3 && !m_loading)
         {
             // ロード中(--project直開き等)はまだ出さない。ロード完了時に
-            // UpdateProjectLoad 側が表示+スプラッシュClose を引き継ぐ。
+            // UpdateProjectLoad 側が Finish（メイン窓の表示 + スプラッシュの退場）を引き継ぐ。
             m_deferredFirstShow = false;
-            m_window->Show();       // 最大化。直後の微小リサイズは描画継続中に処理される
-            SplashScreen::Close();
+            // ready の演出（リング完成 → ハイライト → ポン）のあと、演出が PumpMainThread 経由でこのラムダを呼び、
+            // メイン窓を出して、その上でスプラッシュが拡大しながらフェードアウトする。スプラッシュが無ければ即出す。
+            SplashScreen::Finish([this] { if (m_window) m_window->Show(); });   // 最大化。直後の微小リサイズは描画継続中に処理される
         }
+        SplashScreen::PumpMainThread();
 
         // ★決定論キャプチャ（#31）: 時間依存を固定したまま N フレーム回して履歴を収束させ、
         //   0 になった時点で撮る。sceneRT はここで直接読めるが、バックバッファは Render() の

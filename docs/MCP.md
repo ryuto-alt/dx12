@@ -629,8 +629,11 @@ Jev(TypeSafe System One)は文章を生成せず型付きの判断(noul / choice
 | `--virtual-input` | 仮想入力モードで起動(実マウス/キーボードを受けない。窓は普通に出る)。AI 操作専用 |
 | `--background[=方式][,tool\|notool]` | **手前に出てこない静かな起動**。仮想入力モードを含意。方式は下表。`--headless` とは別(こちらは窓もレンダリングも普通に動く) |
 | `--dpi-scale <0.75〜3.0>` | **表示倍率(DPI)の検証用オーバーライド**(エディタ専用。`1.5` / `150%` / `150` のどれでも可)。OS の表示倍率を無視してその倍率で全体を描く(Windows の設定は一切触らない)。`--background` の窓は論理 1920×1080 × 倍率 の物理サイズになる(例: `--dpi-scale 1.5` → 2880×1620)。指定が無ければ OS の倍率(窓のいるモニターの DPI)に従う |
+| `--splash-preview <出力dir> [--dpi-scale N] [--splash-mode startup\|project] [--splash-backdrop mid\|light\|dark]` | **起動画面の見た目の検証**(エディタ専用)。窓を一切表示せず、実窓と同じ描画コードをオフスクリーンで決定論的な時刻/進捗で走らせ、PNG 連番と `frames.csv` を書いて即終了する(音は出さない・D3D12/エンジン本体は初期化しない)。人の画面に起動画面を出さずに確認できる。コンタクトシートは `tools/splash_contact_sheet.py` |
+| `--splash-selftest <出力dir>` | 起動画面の実窓コード(専用スレッド・60fps・D2D・UpdateLayeredWindow・Finish の連携)を**窓を表示せずに**通し、フレーム数/描画時間/CPU 使用率を `<dir>/selftest.txt` に書く。終了コード 0 = 合格 |
+| `--no-splash-sound` | 起動画面の起動音を鳴らさない(環境変数 `UNO_NO_SPLASH_SOUND=1` と、エンジン設定 > 設定 の「起動音」チェック(`%APPDATA%\DX12Engine\editor_state.json` の `startupSound`)でも切れる)。`--background` / `--headless` では元から鳴らさない |
 
-`--background` の共通の挙動: `WS_EX_NOACTIVATE`(クリックされてもアクティブ化しない)/ `SetForegroundWindow` を一切呼ばない / スプラッシュ窓を出さない(起動・プロジェクト読込とも)/
+`--background` の共通の挙動: `WS_EX_NOACTIVATE`(クリックされてもアクティブ化しない)/ `SetForegroundWindow` を一切呼ばない / スプラッシュ窓を出さない(起動・プロジェクト読込とも。起動音も鳴らさない)/
 自動更新の確認をしない / 最大化・最小化・フルスクリーン・リサイズ・F11 を無効化 / クライアント領域は論理解像度 **1920×1080 × 表示倍率(`--dpi-scale` か OS の倍率。既定 100% なら 1920×1080 の物理 px)** 固定(最小化しても WM_SIZE で縮めない)/
 VSync を使わず 60fps 上限(見えていない窓は Present が即返る＝上限が無いと CPU/GPU を回し続けるため。設定は書き換えない)/ OS の省電力(EcoQoS・タイマー粗化)から外れる /
 `imgui.ini`(レイアウト)を保存しない(画面外の位置が普段のレイアウトに焼き付かないように)。

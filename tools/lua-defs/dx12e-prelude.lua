@@ -1,6 +1,6 @@
 ---@meta
 -- ============================================================
---  DX12 Engine — 高レベル prelude ヘルパーの型定義
+--  Uno Engine — 高レベル prelude ヘルパーの型定義
 --  ◆ 正（source of truth）: src/scripting/ScriptEngine.cpp の
 --      LoadPrelude() 内 kPrelude（自動ロードされる Lua コード）
 --  ◆ prelude にヘルパーを追加・変更したら必ずこのファイルも更新すること

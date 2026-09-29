@@ -83,10 +83,13 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
     // ローディングのくるくるは専用スレッドのスプラッシュ窓に任せる(起動時と同じ仕組み)。
     // メインスレッドがシーンロードやマテリアルサムネイル生成(同期テクスチャデコード)で
     // ブロックしてもアニメが止まらない(ImGui側の演出はフレームが止まると固まるため)。
-    SplashScreen::Show(kEngineName,
-                       std::string("v") + kEngineVersion,
-                       PathResolver::AssetsDir() + "editor/icons/logo.png");
-    SplashScreen::SetStatus(m_loadStatus);
+    SplashScreen::ShowProjectLoad(kEngineName,
+                                  std::string("v") + kEngineVersion,
+                                  PathResolver::AssetsDir() + "editor/icons/logo.png",
+                                  info.name, isNew);
+    SplashScreen::SetProjectInfo(info.name, info.defaultScene);
+    if (isNew) SplashScreen::SetStage(splash::Stage::ProjectCreate);
+    else SplashScreen::SetStatus(m_loadStatus);
 
     // ロードが終わるまでメインウィンドウを隠す。ロード中に古いシーンやテンプレートが
     // 一瞬見えるのを防ぐ(表示はスプラッシュのみ。完了時に UpdateProjectLoad が再表示する)。
@@ -137,7 +140,7 @@ void Application::UpdateProjectLoad(f32 dt)
     if (!m_loadProjectStarted)
     {
         m_loadStatus = "シーンを読み込み中...";
-        SplashScreen::SetStatus(m_loadStatus);
+        SplashScreen::SetStage(splash::Stage::ProjectScene);
         LoadProject(m_loadInfo);
         m_loadProjectStarted  = true;
         m_loadSceneWaitFrames = 2;  // pending* が Render で消化されるまで猶予
@@ -171,7 +174,15 @@ void Application::UpdateProjectLoad(f32 dt)
             snprintf(buf, sizeof(buf), "シーンを構築中...");
         }
         m_loadStatus = buf;
-        SplashScreen::SetStatus(m_loadStatus);
+        if (!job.assets.empty())
+        {
+            SplashScreen::SetStage(splash::Stage::ProjectAssets, m_loadStatus);
+            SplashScreen::SetStageProgress(static_cast<float>(job.next) / static_cast<float>(job.assets.size()));
+        }
+        else
+        {
+            SplashScreen::SetStatus(m_loadStatus);
+        }
     }
 
     bool pendingScene = !m_editorCtx->pendingLoadPath.empty() || m_editorCtx->pendingNewScene
@@ -193,7 +204,9 @@ void Application::UpdateProjectLoad(f32 dt)
                          "マテリアルを読み込み中... (%zu / %zu)",
                          m_matThumbPreloadTotal - remaining, m_matThumbPreloadTotal);
                 m_loadStatus = buf;
-                SplashScreen::SetStatus(m_loadStatus);
+                SplashScreen::SetStage(splash::Stage::ProjectMaterials, m_loadStatus);
+                if (m_matThumbPreloadTotal > 0)
+                    SplashScreen::SetStageProgress(static_cast<float>(m_matThumbPreloadTotal - remaining) / static_cast<float>(m_matThumbPreloadTotal));
                 return;
             }
         }
@@ -217,9 +230,11 @@ void Application::UpdateProjectLoad(f32 dt)
         // 起動直後の遅延表示(--project直開き等でまだ未表示)もここで役目を引き継ぐ。
         // ★ヘッドレスでは窓を出さない。ここを素通しにすると --headless でも窓が出て、
         //   人が作業している画面を奪う（そもそもそれを避けるための機能）。
-        if (m_window && !m_headless) m_window->Show();
         m_deferredFirstShow = false;
-        SplashScreen::Close();
+        SplashScreen::SetStage(splash::Stage::ProjectFinalize);
+        // メイン窓は ready の演出のあとにスプラッシュが呼ぶ（PumpMainThread）。スプラッシュが無ければ即出す。
+        // ★ヘッドレスでは窓を出さない（人の作業している画面を奪わない）。
+        SplashScreen::Finish([this] { if (m_window && !m_headless) m_window->Show(); });
 
         // --scene: プロジェクトを開き終えた直後に指定シーンを開く。
         // ★ここで直接ロードせず pending にする。この関数はロード完了処理の途中なので、

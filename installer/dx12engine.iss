@@ -1,4 +1,4 @@
-﻿; DX12 Engine 個人用インストーラー（Inno Setup）
+﻿; Uno Engine 個人用インストーラー（Inno Setup）
 ; - 管理者不要（%LOCALAPPDATA%\Programs\DX12Engine へインストール）
 ; - 既存の GitHub リリース自動更新(Updater)はそのまま動く（書き込み可能フォルダのため）
 ; ビルド: ISCC.exe installer\dx12engine.iss  （/DMyAppVersion=0.5.1 で版を上書き可）
@@ -6,7 +6,7 @@
 #ifndef MyAppVersion
   #define MyAppVersion "0.5.2"
 #endif
-#define MyAppName "DX12 Engine"
+#define MyAppName "Uno Engine"
 #define MyAppPublisher "ryuto-alt"
 #define MyAppURL "https://github.com/ryuto-alt/dx12"
 #define MyAppExeName "DX12Engine.exe"
@@ -22,7 +22,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 DefaultDirName={localappdata}\Programs\DX12Engine
-DefaultGroupName=DX12 Engine
+DefaultGroupName=Uno Engine
 DisableProgramGroupPage=yes
 ; 管理者不要の個人用インストール（自己更新が UAC 無しで効くようにするため）
 PrivilegesRequired=lowest

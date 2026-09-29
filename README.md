@@ -1,4 +1,4 @@
-# DX12 Engine
+# Uno Engine
 
 自作の DirectX 12 ゲームエンジン + エディタ（`DX12Engine.exe` がエディタ兼ランタイム）。
 ECS(entt) / 物理(Jolt) / Lua スクリプト / glTF・FBX モデル / シーンの暗号化パック配布に対応。

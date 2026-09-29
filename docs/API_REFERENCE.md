@@ -1,4 +1,4 @@
-# DX12 Engine — API リファレンス（完全版）
+# Uno Engine — API リファレンス（完全版）
 
 DX12 ゲームエンジン（C++20 / ECS=entt / Lua=sol2 / 物理=Jolt）の **公開 API 全一覧**。
 ソース（`src/scripting/ScriptEngine.cpp` / `src/ecs/Components.h` / `src/main.cpp` / `docs/MCP.md`）から実体を抽出して構成している。

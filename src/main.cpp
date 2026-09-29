@@ -3,6 +3,7 @@
 #include "core/PathResolver.h"
 #include "core/Updater.h"
 #include "core/SplashScreen.h"
+#include "core/SplashPreview.h"
 #include "core/Version.h"
 #include "core/vfs/Vfs.h"
 #include "core/DpiScale.h"
@@ -316,6 +317,21 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                   "cmake --build <builddir> -- -t deps で \"#deps 0\" の .obj を探してください。");
         }
 
+#ifndef DX12_GAME_RUNTIME
+        // --splash-preview <dir> [--dpi-scale N] ...: 起動画面を窓なし・オフスクリーンで描いて PNG 連番を書き、即終了する
+        // （検証用。エンジン本体は初期化しない = D3D12 デバイス不要。実窓を人の画面に出さずに見た目を確かめる入口）。
+        {
+            int pargc = 0;
+            if (LPWSTR* pargv = CommandLineToArgvW(GetCommandLineW(), &pargc))
+            {
+                int previewExit = 0;
+                const bool handled = dx12e::RunSplashPreviewIfRequested(pargc, pargv, previewExit);
+                LocalFree(pargv);
+                if (handled) return previewExit;
+            }
+        }
+#endif
+
         bool gameMode  = false;
         bool buildMode = false;
         std::string buildProjectDir;  // --build <dir> で指定したプロジェクト（空=組み込み）
@@ -483,6 +499,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         { uiTests = true; uiTestsSpeed = _wtoi(argv[i] + 17); }
                     else if (wcscmp(argv[i], L"--headless") == 0)
                         headless = true;
+                    else if (wcscmp(argv[i], L"--no-splash-sound") == 0)
+                        dx12e::SplashScreen::SetSoundEnabled(false);   // 起動音を鳴らさない（既定は鳴らす）
                     else if (wcscmp(argv[i], L"--allow-autosave") == 0)
                         headlessAllowSave = true;
                     else if (wcscmp(argv[i], L"--virtual-input") == 0)
@@ -573,11 +591,13 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             dx12e::SplashScreen::SetSuppressed(true);
         if (!gameMode && !buildMode && !headless && !bgOpt.Active())
         {
+            // --project 直開きは起動の直後にプロジェクトを開くので、進捗の計画にその段階を含める。
+            dx12e::SplashScreen::ExpectProjectLoad(!netClientProject.empty());
             dx12e::SplashScreen::Show(
                 dx12e::kEngineName,
                 std::string("v") + dx12e::kEngineVersion,
                 dx12e::PathResolver::AssetsDir() + "editor/icons/logo.png");
-            dx12e::SplashScreen::SetStatus("アップデートを確認中...");
+            dx12e::SplashScreen::SetStage(dx12e::splash::Stage::UpdateCheck);   // 更新確認（WinHTTP）は最大数秒: 微進みで止まって見せない
         }
 
         // justUpdated（--updated）による1回スキップは廃止した。「毎回絶対に確認してほしい」という

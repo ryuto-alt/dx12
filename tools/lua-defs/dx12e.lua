@@ -1,6 +1,6 @@
 ---@meta
 -- ============================================================
---  DX12 Engine — Lua API 型定義（LuaLS / EmmyLua アノテーション）
+--  Uno Engine — Lua API 型定義（LuaLS / EmmyLua アノテーション）
 --  VSCode の Lua 拡張（sumneko.lua）がこれを読むと、エンジン API の
 --  補完・ホバードキュメント・引数ヒント・型チェックが効くようになる。
 --

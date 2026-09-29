@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# DX12 Engine 配布物ビルド（個人用）。
+# Uno Engine 配布物ビルド（個人用）。
 #   1) Inno Setup インストーラを生成（installer\output\DX12Engine-Setup-vX.Y.Z.exe）
 #   2) 自動アップデート用 zip を生成（installer\output\dx12-engine-vX.Y.Z.zip）
 #      … exe 隣に assets/ が入った構成。GitHub Releases に上げると
@@ -21,7 +21,7 @@ $outDir   = Join-Path $here "output"
 $verLine = Select-String -Path (Join-Path $repoRoot "src\core\Version.cpp") -Pattern 'kEngineVersion\s*=\s*"([0-9.]+)"'
 if (-not $verLine) { Write-Error "Version.cpp から kEngineVersion を取得できませんでした" }
 $version = $verLine.Matches[0].Groups[1].Value
-Write-Host "DX12 Engine v$version の配布物をビルドするで" -ForegroundColor Cyan
+Write-Host "Uno Engine v$version の配布物をビルドします" -ForegroundColor Cyan
 
 if (-not (Test-Path (Join-Path $srcDir "DX12Engine.exe"))) {
   Write-Error "build\release\DX12Engine.exe が無い。先に build_release.bat を実行してください。"
@@ -146,6 +146,11 @@ Copy-Item (Join-Path $srcDir "shaders") -Destination (Join-Path $stage "shaders"
 Copy-Item (Join-Path $repoRoot "shaders") -Destination (Join-Path $stage "shaders-src") -Recurse -ErrorAction SilentlyContinue
 # assets
 Copy-Item (Join-Path $repoRoot "assets") -Destination (Join-Path $stage "assets") -Recurse
+# ★起動音 splash_d.*（出どころ/ライセンス未確認の素材）は配布物へ入れない。開発機に変換済み WAV があっても
+#   ここで落とす（.gitignore 済みだが、assets を丸ごとコピーするのでファイルが手元にあると混ざる）。
+#   無くても起動音は埋め込みの案 A へ自動で縮退する。
+Get-ChildItem -Path (Join-Path $stage "assets\editor\sounds") -Filter "splash_d.*" -ErrorAction SilentlyContinue |
+  Remove-Item -Force
 # ★ tools\mcp-server は同梱しない（別リポジトリ ryuto-alt/dx12-mcp から配布）
 # tools\lua-defs（VSCode 補完用の Lua API 型定義）
 $luaDefs = Join-Path $repoRoot "tools\lua-defs"

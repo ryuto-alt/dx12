@@ -184,6 +184,13 @@ if(MSVC)
     # (Application::Initialize、!m_isGameMode 時のみ生成)ため、delay-load にしておけば
     # 実行時に一切ロードされず、同梱しなくても安全に起動できる。
     target_link_options(GameRuntime PRIVATE "/DELAYLOAD:dxcompiler.dll")
+
+    # 起動画面（エディタ専用: Direct2D / DirectWrite / D3D11 / WIC）の DLL も delay-load にする。SplashScreen は
+    # Core に居るので GameRuntime にもリンクされるが、ゲームは Show() を一切呼ばない（呼び出し側が !gameMode）ので
+    # 実行時にロードされない。素のリンクだと、ゲームの起動時に使わない DLL を 4 本ロードして起動が遅くなり、
+    # 配布ゲームの依存も増える。
+    target_link_options(GameRuntime PRIVATE
+        "/DELAYLOAD:d2d1.dll" "/DELAYLOAD:dwrite.dll" "/DELAYLOAD:d3d11.dll" "/DELAYLOAD:windowscodecs.dll")
     target_link_libraries(GameRuntime PRIVATE delayimp.lib)
 endif()
 

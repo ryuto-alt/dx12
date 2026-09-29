@@ -91,3 +91,8 @@ dx12_engine.log
 mcp_screenshot.png
 mcp_screenshot_final.png
 mcp_ui_screenshot.png
+
+# 起動音 splash_d（出どころ/ライセンス未確認の素材。リポジトリは PUBLIC なのでコミット・配布しない）。
+# mp3（原本）/ wav（tools/prep_splash_sound.py の出力）/ json（メタ情報）をまとめて除外。
+# 実行時に無ければ埋め込みの案 A（src/core/SplashSoundData.h）へ自動で縮退する。
+assets/editor/sounds/splash_d.*
