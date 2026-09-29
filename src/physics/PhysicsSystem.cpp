@@ -837,7 +837,7 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
             if (hullResult.IsValid()) shape = hullResult.Get();
 
             Logger::Warn("スカルプトメッシュ '{}' は Static ではないので凸包コライダーに"
-                         "フォールバックしました（三角形メッシュ形状は静的な剛体にしか付けられへん）。"
+                         "フォールバックしました（三角形メッシュ形状は静的な剛体にしか付けられません）。"
                          "彫った凹み/穴は当たり判定では埋まるで。",
                          registry.all_of<NameTag>(entity) ? registry.get<NameTag>(entity).name
                                                           : std::string("Sculpt"));

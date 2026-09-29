@@ -3,6 +3,9 @@
 #include "editor/EditorContext.h"
 #include "editor/ScenePick.h"
 #include "editor/UiEditUtil.h"
+#include "editor/TransformMath.h"
+#include "editor/UiWidgets.h"
+#include "editor/EditorCommands.h"
 #include "editor/UndoSystem.h"
 #include "core/CpuScope.h"
 #include "ecs/Components.h"
@@ -30,78 +33,9 @@ using namespace DirectX;
 
 namespace
 {
-    // ImGuizmo の DecomposeMatrixToComponents は回転を Rx*Ry*Rz 順で分解するが、
-    // このエンジンの Transform::GetWorldMatrix は XMMatrixRotationRollPitchYaw
-    // (= Rz*Rx*Ry 順) で行列を組み立てる。順序が食い違うため、ギズモが作った行列を
-    // ImGuizmo 分解→オイラー保存→次フレームに RollPitchYaw で再構築すると回転が
-    // 毎フレーム壊れていた（マウスと回転が合わない・オブジェクトごとに挙動が変わる原因）。
-    // ここでは GetWorldMatrix と完全に逆対応する分解を行い、ラウンドトリップを無損失にする。
-    // (Rz*Rx*Ry を展開した行列成分から閉形式で抽出。20万ケースのランダム検証で誤差ゼロ確認済み)
-    void DecomposeWorldToRPY(const XMFLOAT4X4& w, float t[3], float eulerDeg[3], float s[3])
-    {
-        constexpr float kRad2Deg = 57.2957795130823f;
-
-        // スケール = 各基底行の長さ
-        const float sx = sqrtf(w.m[0][0]*w.m[0][0] + w.m[0][1]*w.m[0][1] + w.m[0][2]*w.m[0][2]);
-        const float sy = sqrtf(w.m[1][0]*w.m[1][0] + w.m[1][1]*w.m[1][1] + w.m[1][2]*w.m[1][2]);
-        const float sz = sqrtf(w.m[2][0]*w.m[2][0] + w.m[2][1]*w.m[2][1] + w.m[2][2]*w.m[2][2]);
-        s[0] = sx; s[1] = sy; s[2] = sz;
-
-        // 平行移動 = 第4行
-        t[0] = w.m[3][0]; t[1] = w.m[3][1]; t[2] = w.m[3][2];
-
-        // 回転行を正規化（スケール除去）
-        const float i0 = sx > 1e-8f ? 1.0f / sx : 0.0f;
-        const float i1 = sy > 1e-8f ? 1.0f / sy : 0.0f;
-        const float i2 = sz > 1e-8f ? 1.0f / sz : 0.0f;
-        float m[3][3];
-        for (int j = 0; j < 3; ++j)
-        {
-            m[0][j] = w.m[0][j] * i0;
-            m[1][j] = w.m[1][j] * i1;
-            m[2][j] = w.m[2][j] * i2;
-        }
-
-        // R = Rz(z)*Rx(x)*Ry(y) の成分: m[2][1]=-sin x, m[2][0]=cx*sy, m[2][2]=cx*cy,
-        //                              m[0][1]=sz*cx, m[1][1]=cz*cx
-        float sinx = -m[2][1];
-        sinx = sinx > 1.0f ? 1.0f : (sinx < -1.0f ? -1.0f : sinx);
-        const float cosx = sqrtf(m[2][0]*m[2][0] + m[2][2]*m[2][2]); // = |cos x|
-        const float x = asinf(sinx);
-        float y, z;
-        if (cosx > 1e-6f)
-        {
-            y = atan2f(m[2][0], m[2][2]);
-            z = atan2f(m[0][1], m[1][1]);
-        }
-        else
-        {
-            // ジンバルロック (cos x ~ 0): 行列は (y - sgn*z) のみに依存。z=0 に固定。
-            const float sgn = (sinx >= 0.0f) ? 1.0f : -1.0f;
-            y = atan2f(sgn * m[1][0], m[0][0]);
-            z = 0.0f;
-        }
-        eulerDeg[0] = x * kRad2Deg;
-        eulerDeg[1] = y * kRad2Deg;
-        eulerDeg[2] = z * kRad2Deg;
-    }
-
-    // 行列（ローカル or 親を外した後の行列）を Transform の TRS へ書き戻す。
-    // DecomposeWorldToRPY と対で「GetWorldMatrix と無損失にラウンドトリップする」のが要点。
-    void ApplyMatrixToTransform(Transform& t, const XMMATRIX& m)
-    {
-        XMFLOAT4X4 f;
-        XMStoreFloat4x4(&f, m);
-        float translation[3], rotation[3], scale[3];
-        DecomposeWorldToRPY(f, translation, rotation, scale);
-        t.position = {translation[0], translation[1], translation[2]};
-        t.rotation = {rotation[0], rotation[1], rotation[2]};
-        // Scale が 0 以下になると行列が壊れてギズモが消えるので最小値でクランプ
-        constexpr float kMinScale = 0.001f;
-        t.scale = {(std::max)(scale[0], kMinScale),
-                   (std::max)(scale[1], kMinScale),
-                   (std::max)(scale[2], kMinScale)};
-    }
+    // ギズモ/親替えが共有する行列<->TRS 変換は editor/TransformMath.h（GetWorldMatrix と無損失に往復する）
+    using xform::DecomposeWorldToRPY;
+    using xform::ApplyMatrixToTransform;
 
     // ギズモのドラッグ増分をマウス脇に小さく表示する。
     // 注: 引数なし GetBackgroundDrawList() は「カレントウィンドウのビューポート」の
@@ -849,6 +783,11 @@ SubmeshPickResult SceneViewPanel::PickEntityAndSubmesh(entt::registry& reg,
     return result;
 }
 
+// ビューポートの右クリックメニュー（選択対象のコンテキストメニュー）。
+// ★以前は「テクスチャを外す」1 項目（しかも大半は無効）だけの実質空のメニューだった。
+//   対象（クリック位置のエンティティ）に応じて フォーカス / 複製 / 削除 / 親から外す / テクスチャを外す を出す。
+//   何も無い所を右クリックしたときは出さない（右ドラッグのフライカメラと競合して邪魔になるため）。
+//   右ボタンを押した位置から 6px 以上動かした（＝フライカメラで視点を回した）ときも出さない。
 void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
                                               EditorContext& ctx,
                                               Camera* camera,
@@ -867,9 +806,18 @@ void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
         ImVec2 mp = io.MousePos;
         bool inViewport = !ctx.floatingToolWindowHovered
             && mp.x >= vpX && mp.x < vpX + vpW && mp.y >= vpY && mp.y < vpY + vpH;
-        m_textureCtxTarget = inViewport
-            ? PickEntityAndSubmesh(reg, ctx, camera, vpX, vpY, vpW, vpH)
-            : SubmeshPickResult{};
+        m_textureCtxTarget = {};
+        if (inViewport && camera)
+        {
+            // メッシュに限らずライト/カメラのアイコンも対象にする（左クリックの選択と同じ当たり判定）
+            const std::vector<ScenePickHit> hits = RaycastScene(
+                reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mp.x, mp.y);
+            if (!hits.empty())
+            {
+                m_textureCtxTarget.entity       = hits.front().entity;
+                m_textureCtxTarget.submeshIndex = hits.front().submeshIndex;
+            }
+        }
     }
 
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && m_textureCtxTarget.entity != entt::null)
@@ -877,39 +825,80 @@ void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
         ImVec2 downPos = io.MouseClickedPos[ImGuiMouseButton_Right];
         ImVec2 upPos = io.MousePos;
         float dx = upPos.x - downPos.x, dy = upPos.y - downPos.y;
-        if (dx * dx + dy * dy <= kClickDragThresholdSq)
+        if (dx * dx + dy * dy <= kClickDragThresholdSq && reg.valid(m_textureCtxTarget.entity))
+        {
+            // 対象が選択に入っていなければ選び直す（右クリックした物に対する操作にする）
+            if (!ctx.IsSelected(m_textureCtxTarget.entity))
+                ctx.Select(m_textureCtxTarget.entity);
             ImGui::OpenPopup("SceneViewTextureCtxMenu");
+        }
     }
 
+    ui::PushMenuStyle();
     if (ImGui::BeginPopup("SceneViewTextureCtxMenu"))
     {
-        entt::entity e = m_textureCtxTarget.entity;
-        u32 smi = m_textureCtxTarget.submeshIndex;
-        bool valid = e != entt::null && reg.valid(e) && reg.all_of<MeshRenderer>(e);
-        bool hasOverride = valid && reg.get<MeshRenderer>(e).HasAnyTextureOverride(smi);
-
-        if (!valid)
+        const entt::entity e = m_textureCtxTarget.entity;
+        const u32 smi = m_textureCtxTarget.submeshIndex;
+        if (e == entt::null || !reg.valid(e))
         {
-            ImGui::TextDisabled("(no mesh)");
+            ImGui::CloseCurrentPopup();
         }
         else
         {
-            ImGui::BeginDisabled(!hasOverride);
-            if (ImGui::MenuItem("\xe3\x83\x86\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x81\xe3\x83\xa3\xe3\x82\x92\xe5\xa4\x96\xe3\x81\x99"))
+            const NameTag* nt = reg.try_get<NameTag>(e);
+            ImGui::TextDisabled("%s", nt ? nt->name.c_str() : "(名前なし)");
+            if (ctx.selectedEntities.size() > 1)
             {
-                auto& mr = reg.get<MeshRenderer>(e);
-                MeshRenderer before = mr;
-                MeshRenderer::SetOverride(mr.overrideAlbedoTexture, smi, "");
-                MeshRenderer::SetOverride(mr.overrideNormalTexture, smi, "");
-                MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, smi, "");
-                MeshRenderer::SetOverride(mr.overrideEmissiveTexture, smi, "");
-                ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
-                    &reg, e, before, mr, "Material Texture"));
+                ImGui::SameLine();
+                ImGui::TextDisabled("ほか %zu 件", ctx.selectedEntities.size() - 1);
             }
-            ImGui::EndDisabled();
+            ImGui::Separator();
+
+            if (ImGui::MenuItem("選択にフォーカス", cmd::ShortcutText("edit.focus")))
+                ctx.pendingFocusSelection = true;
+            if (ImGui::MenuItem("複製", cmd::ShortcutText("edit.duplicate")))
+                for (auto s : ctx.selectedEntities) ctx.pendingDuplications.push_back(s);
+            if (ImGui::MenuItem("削除", cmd::ShortcutText("edit.delete")))
+            {
+                // Undo コマンドは Application の遅延削除処理で積まれる
+                for (auto s : ctx.selectedEntities) if (reg.valid(s)) ctx.pendingDeletions.push_back(s);
+                ctx.ClearSelection();
+            }
+
+            const Transform* tf = reg.try_get<Transform>(e);
+            if (tf && tf->parent != entt::null)
+            {
+                ImGui::Separator();
+                if (ImGui::MenuItem("親から外す"))
+                {
+                    // ワールド位置は保つ（外した瞬間に物が飛ばない）
+                    Transform before = reg.get<Transform>(e);
+                    if (xform::Reparent(reg, e, entt::null, /*keepWorld=*/true))
+                        ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
+                            &reg, e, before, reg.get<Transform>(e)));
+                }
+            }
+
+            // テクスチャを差し替えている面だけに出す（無ければ項目ごと出さない）
+            if (reg.all_of<MeshRenderer>(e) && reg.get<MeshRenderer>(e).HasAnyTextureOverride(smi))
+            {
+                ImGui::Separator();
+                if (ImGui::MenuItem("テクスチャを外す"))
+                {
+                    auto& mr = reg.get<MeshRenderer>(e);
+                    MeshRenderer before = mr;
+                    MeshRenderer::SetOverride(mr.overrideAlbedoTexture, smi, "");
+                    MeshRenderer::SetOverride(mr.overrideNormalTexture, smi, "");
+                    MeshRenderer::SetOverride(mr.overrideMetalRoughnessTexture, smi, "");
+                    MeshRenderer::SetOverride(mr.overrideEmissiveTexture, smi, "");
+                    ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+                        &reg, e, before, mr, "Material Texture"));
+                }
+            }
         }
         ImGui::EndPopup();
     }
+    ui::PopMenuStyle();
 }
 
 void SceneViewPanel::HandleCameraNavigation(entt::registry& reg,
@@ -1109,7 +1098,13 @@ void SceneViewPanel::HandleDeleteKey(entt::registry& reg,
                                      f32 /*vpX*/, f32 /*vpY*/, f32 /*vpW*/, f32 /*vpH*/)
 {
     if (!ctx.HasSelection()) return;
-    if (ImGui::GetIO().WantCaptureKeyboard) return;
+    // 文字入力中は反応しない。※ WantCaptureKeyboard は NavEnableKeyboard 有効だと「どこかの窓にフォーカスが
+    //   あるだけ」で true になるので使わない（EditorCommands.cpp の Typing の注記を参照）。
+    if (ImGui::GetIO().WantTextInput || ImGui::IsAnyItemActive()) return;
+    // ★フォーカスのあるパネルだけが Del に反応する。ヒエラルキー / アセットブラウザ等にフォーカスがある間は
+    //   ここ（ビューポート）は反応しない。以前は WantCaptureKeyboard しか見ておらず、アセットの削除確認と
+    //   エンティティ削除が同時に走り得た。focusedPanel==None は「ビューポートが最後にクリックされた」状態。
+    if (ctx.focusedPanel != EditorContext::Panel::None) return;
 
     // ビューポートの右クリックはフライカメラ専用にしたので、削除は Del キーで行う
     // （右クリック削除は Hierarchy パネルのコンテキストメニューで担保）。

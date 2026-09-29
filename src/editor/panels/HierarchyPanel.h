@@ -19,7 +19,9 @@ public:
     void SetAssetsDir(const std::string& assetsDir) { m_assetsDir = assetsDir; }
 
 private:
-    void DrawEntityNode(entt::registry& reg, EditorContext& ctx, entt::entity e);
+    // flat=true: 名前フィルタ中の行。子の開閉はせず（葉として描く）、選択 / 右クリック / D&D / 改名は通常行と同じ。
+    void DrawEntityNode(entt::registry& reg, EditorContext& ctx, entt::entity e, bool flat = false);
+    void StartRename(entt::entity e, const std::string& currentName);
     // クリックの選択処理（通常 / Ctrl=トグル / Shift=範囲）。ツリー表示とフィルタ表示で共用。
     void HandleRowClick(EditorContext& ctx, entt::entity e);
     // m_rows（今フレームの可視行）上で a〜b の行をまとめて選択する
@@ -51,6 +53,9 @@ private:
     entt::entity m_renamingEntity = entt::null;
     char m_renameBuf[128] = {};
     int  m_renameWarmup = 0;  // フォーカス安定まで数フレーム待つ
+
+    // 名前フィルタ（以前は関数内の static で全パネル共有だった）
+    char m_filterBuf[64] = {};
 
     std::string m_assetsDir;
 };

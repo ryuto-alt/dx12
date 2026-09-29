@@ -2091,7 +2091,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 {
                     changed |= pg::InputTextStr("クリップ Clip", pl.clipPath, &active,
                         "assets 相対の .uianim パス（例 uianim/menu_open.uianim）。\n"
-                        "アセットブラウザからドラッグしてもええ");
+                        "アセットブラウザからドラッグしてもかまいません");
                     changed |= AcceptAssetPathDrop(pl.clipPath, ".uianim", m_assetsDir);
                     changed |= pg::Checkbox("開始時に再生 Play On Start", &pl.playOnStart);
                     changed |= pg::Checkbox("ループ Loop", &pl.loop,
@@ -2144,7 +2144,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
                 if (!reg.any_of<Sprite2D, UIImage>(ctx.selectedEntity))
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
-                                       "Sprite2D か UIImage が無いと何も表示されへん");
+                                       "Sprite2D か UIImage が無いと何も表示されません");
                 if (ImGui::Button("スプライトシートを開く"))
                 {
                     ctx.showSpriteSheetEditor = true;   // ↑と同じ理由でパスも渡す
@@ -4187,7 +4187,7 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
         }
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("ただのコピーに戻す（以後 適用/元に戻す は出えへん）");
+        ImGui::SetTooltip("ただのコピーに戻す（以後 適用/元に戻す は出ません）");
     if (!m_prefabDiffOk || ctx.isPlaying) ImGui::EndDisabled();
 
     if (dirty)
@@ -4386,7 +4386,7 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
 
     // --- Gizmo ---
     // ギズモのスナップ量。従来は SceneViewPanel にハードコード（移動1.0 / 回転15 / スケール0.1）
-    // やったのでここに出す。既定値は同じなので、触らなければ挙動は変わらない。
+    // だったのでここに出す。既定値は同じなので、触らなければ挙動は変わらない。
     if (IconHeader(nullptr, 0, "ギズモ"))
     {
         if (pg::Begin("EngineGizmo"))

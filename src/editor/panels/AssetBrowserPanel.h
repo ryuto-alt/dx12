@@ -41,6 +41,21 @@ public:
     // .dxmat の球体サムネイル用(MaterialEditorPanel が所有する MaterialPreviewRenderer を借りる)
     void SetMaterialPreviewRenderer(MaterialPreviewRenderer* r) { m_materialPreview = r; }
 
+    // クイックオープン(Ctrl+P)用: 指定のアセットがあるフォルダへ移り、そのアセットを選択状態にする。
+    // 検索欄は空に戻す（検索結果に隠れて見つからない、を防ぐ）。
+    void RevealAsset(const std::filesystem::path& absPath)
+    {
+        std::error_code ec;
+        if (!std::filesystem::exists(absPath, ec)) return;
+        m_searchBuf[0] = '\0';
+        m_filterIndex = 0;
+        m_currentDir = std::filesystem::is_directory(absPath, ec) ? absPath : absPath.parent_path();
+        m_selectedPath = absPath;
+        Refresh();
+    }
+    // アセット/スクリプトのルート（クイックオープンの索引用）
+    const std::filesystem::path& AssetsRoot()  const { return m_assetsRoot; }
+    const std::filesystem::path& ScriptsRoot() const { return m_scriptsRoot; }
     // フレーム先頭でcmdListが有効な間に呼ぶ（テクスチャアップロード用）
     void LoadPendingThumbnails(ID3D12GraphicsCommandList* cmdList);
 

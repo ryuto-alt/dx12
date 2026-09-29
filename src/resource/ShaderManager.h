@@ -20,7 +20,7 @@ namespace dx12e
 // 使い方の要点:
 //  - Initialize() を最初の ShaderCompiler::LoadFromFile より前に呼ぶ(RootSignature 生成直後)。
 //  - Poll() を 0.5s おきに呼ぶ。戻り値が非空なら CommandQueue::WaitIdle() 後に該当ハンドラを実行し、
-//    Application 側で hotReloadFlash 等を立てる。
+//    Application 側でトースト通知を出す。
 //  - ShaderCompiler::LoadFromFile はコンパイル成否に関わらず TryGetOverride() を先に見る
 //    (ゲームモードでは Instance() が未生成のため常にヒットしない=挙動不変)。
 // 所有権は Application(unique_ptr)。ShaderCompiler::LoadFromFile 等からグローバルに参照できるよう

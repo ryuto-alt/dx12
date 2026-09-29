@@ -2,6 +2,10 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UiWidgets.h"
+#include "editor/EditorCommands.h"   // ショートカット処理（コマンド表が唯一の正）
+#include "editor/CommandPalette.h"   // Ctrl+K / Ctrl+P
+#include "editor/ToolWindows.h"      // ツール窓レジストリ（既定のドック先・すべて閉じる）
+#include "editor/Toast.h"            // 右下トースト
 #include "gui/FloatingGuard.h"   // フローティング窓の収容領域
 #include "ecs/Components.h"
 #include "editor/panels/ToolbarPanel.h"
@@ -32,6 +36,7 @@
 #include <DirectXMath.h>
 #include <cmath>
 #include <cctype>
+#include <cstring>
 #include <fstream>
 #include <string>
 #include <filesystem>
@@ -101,62 +106,43 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_sceneView    = std::make_unique<SceneViewPanel>();
     m_assetBrowser = std::make_unique<AssetBrowserPanel>();
     m_console      = std::make_unique<ConsolePanel>();
+    m_palette      = std::make_unique<CommandPalette>();
 
     m_hierarchy->SetAssetsDir(assetsDir);
     m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
     m_inspector->SetAssetBrowser(m_assetBrowser.get());
 }
 
-// 作り直す前に、いまユーザーが見ている実ノードの寸法から分割比を吸い上げる。
-// 比は「親ノードに対する割合」＝DockBuilderSplitNode へそのまま渡せる形で持つ。
-// ノードが無い / 潰れている場合は触らない（既定値のまま）。
-void EditorLayer::CaptureDockRatios()
-{
-    auto ratioOf = [](ImGuiID id, bool horizontal, f32& out)
-    {
-        if (id == 0) return;
-        const ImGuiDockNode* n = ImGui::DockBuilderGetNode(id);
-        if (!n || !n->ParentNode) return;
-        const ImVec2 self = n->Size, parent = n->ParentNode->Size;
-        const f32 s = horizontal ? self.x   : self.y;
-        const f32 p = horizontal ? parent.x : parent.y;
-        if (p <= 1.0f || s <= 0.0f) return;
-        // 端まで寄せて潰した状態を保存すると次回そのパネルが開けなくなるのでクランプする。
-        out = (std::min)(0.75f, (std::max)(0.05f, s / p));
-    };
-    ratioOf(m_nodeLeft,        true,  m_ratioLeft);
-    ratioOf(m_nodeRightCol,    true,  m_ratioRight);
-    ratioOf(m_nodeBottom,      false, m_ratioBottom);
-    ratioOf(m_nodeRightBottom, false, m_ratioRightBottom);
-}
-
+// 既定レイアウトを作る。★呼ぶのは起動時と「レイアウトをリセット」だけ（窓の開閉では呼ばない）。
+//
+//   左            : ヒエラルキー（全高）
+//   中央上        : ビューポート（3D）
+//   中央下        : アセットブラウザ + コンソール（タブ）
+//   右            : インスペクター（全高）。ツール窓（Post Process / Skybox / エンジン設定 / Git …）は
+//                   ここに**タブとして追加される**（開くと最前面のタブになる）。分割は変えない。
+//
+// 以前はツール窓が 1 個でも開くと右カラムを縦に割り（右下にツールタブ領域）、閉じると割りを畳む方式で、
+// 開閉のたびにドックを丸ごと作り直していた。実ノードの寸法から比を吸い上げて再現していたが、
+// 丸め誤差（分割バー・タブ帯）が毎回積もり、開閉を繰り返すほどビューポートが縮んだ。
+// 「作り直さない」が最も確実なので、ツール窓は最初から全部インスペクターのタブ群へ入れておく
+// （未表示の窓は Begin されないだけでタブも出ない）。
 void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
 {
     ImGui::DockBuilderRemoveNode(dockspaceId);
     ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
 
-    // ── レイアウト方針（中核4窓は常時固定。ツール窓は開いた時だけ右下に出す）──
-    //  左            : ヒエラルキー（全高）
-    //  中央上        : ビューポート（3D）
-    //  中央下        : アセットブラウザ（横長・単独）
-    //  右            : インスペクター（全高）。ツール窓が1個でも開くと上半分に縮み、
-    //                  下半分にツール系タブ（Post Process / IBL / SSAO / 設定 / Flow / Project / VC）が出る。
-
     // 左(18%): ヒエラルキー | 残り
     ImGuiID dockLeft = 0, dockRemaining = 0;
-    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, m_ratioLeft, &dockLeft, &dockRemaining);
-    m_nodeLeft = dockLeft;
+    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, kRatioLeft, &dockLeft, &dockRemaining);
 
     // 残り → 右(24%): 右カラム | センター
     ImGuiID dockRightCol = 0, dockCenter = 0;
-    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, m_ratioRight, &dockRightCol, &dockCenter);
-    m_nodeRightCol = dockRightCol;
+    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, kRatioRight, &dockRightCol, &dockCenter);
 
     // センター → 下(33%): アセットブラウザ | ビューポート(中央)
     ImGuiID dockBottom = 0, dockViewport = 0;
-    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, m_ratioBottom, &dockBottom, &dockViewport);
-    m_nodeBottom = dockBottom;
+    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, kRatioBottom, &dockBottom, &dockViewport);
 
     // 左: ヒエラルキー
     ImGui::DockBuilderDockWindow(
@@ -168,37 +154,13 @@ void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
     ImGui::DockBuilderDockWindow(
         "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
 
-    const char* kInspector =
-        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc";
-    const bool anyTool = (m_ctx && m_ctx->AnyToolWindowOpen());
-    if (anyTool)
-    {
-        // 右カラム → 上=インスペクター / 下=ツール系タブ（下 42%）
-        ImGuiID dockRightTop = 0, dockRightBottom = 0;
-        ImGui::DockBuilderSplitNode(dockRightCol, ImGuiDir_Down, m_ratioRightBottom, &dockRightBottom, &dockRightTop);
-        m_nodeRightBottom = dockRightBottom;
-        ImGui::DockBuilderDockWindow(kInspector, dockRightTop);
-
-        // 開いているかに関わらず全ツール窓をここへドック付け（後で開いた窓も同じタブ群に入る）。
-        ImGui::DockBuilderDockWindow("Post Process",            dockRightBottom);
-        ImGui::DockBuilderDockWindow("Post Process パラメータ", dockRightBottom);
-        ImGui::DockBuilderDockWindow("Skybox / IBL",            dockRightBottom);
-        ImGui::DockBuilderDockWindow("SSAO",                    dockRightBottom);
-        ImGui::DockBuilderDockWindow("SSR / SSGI",              dockRightBottom);
-        ImGui::DockBuilderDockWindow("Volumetric Fog",          dockRightBottom);
-        ImGui::DockBuilderDockWindow("エンジン設定",            dockRightBottom);
-        ImGui::DockBuilderDockWindow("ビルド設定",              dockRightBottom);
-        ImGui::DockBuilderDockWindow("Scene Flow",              dockRightBottom);
-        ImGui::DockBuilderDockWindow("Project",                 dockRightBottom);
-        ImGui::DockBuilderDockWindow("Version Control (Git)",   dockRightBottom);
-        ImGui::DockBuilderDockWindow("Network",                 dockRightBottom);
-        ImGui::DockBuilderDockWindow("Network 設定",            dockRightBottom);
-    }
-    else
-    {
-        // ツール窓が全部OFF: インスペクターが右カラム全高（スッキリ4窓）。
-        ImGui::DockBuilderDockWindow(kInspector, dockRightCol);
-    }
+    // 右: ツール窓（レジストリの RightTab 全部）→ 最後にインスペクター。
+    // 後からドックした窓が既定のアクティブタブになるので、インスペクターを最後にして初期表示にする。
+    for (const tools::Desc& t : tools::kAll)
+        if (t.slot == tools::DockSlot::RightTab && t.imguiName && t.imguiName[0])
+            ImGui::DockBuilderDockWindow(t.imguiName, dockRightCol);
+    ImGui::DockBuilderDockWindow(
+        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc", dockRightCol);  // インスペクター
 
     ImGui::DockBuilderFinish(dockspaceId);
 }
@@ -232,6 +194,59 @@ void EditorLayer::Render(bool isPlaying,
 
     auto& reg = scene->GetRegistry();
 
+    // フォーカスのあるパネルを確定する（Del / F2 が「押した先のパネルだけ」で効くように）。
+    // ImGui の NavWindow（最後にクリック/フォーカスされた窓）の名前で判定する。
+    // どの窓でもない（ビューポート / ツールバー / ステータスバー / トースト）は None = ビューポート扱い。
+    {
+        using P = EditorContext::Panel;
+        P p = P::None;
+        if (ImGuiContext* g = ImGui::GetCurrentContext(); g && g->NavWindow)
+        {
+            const char* n = g->NavWindow->RootWindow ? g->NavWindow->RootWindow->Name : g->NavWindow->Name;
+            auto is = [n](const char* w) { return std::strcmp(n, w) == 0; };
+            auto starts = [n](const char* w) { return std::strncmp(n, w, std::strlen(w)) == 0; };
+            if (is("\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc"))          p = P::Hierarchy;     // ヒエラルキー
+            else if (is("\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc")) p = P::Inspector; // インスペクター
+            else if (is("\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6")) p = P::AssetBrowser; // アセットブラウザ
+            else if (is("\xe3\x82\xb3\xe3\x83\xb3\xe3\x82\xbd\xe3\x83\xbc\xe3\x83\xab"))                 p = P::Console;       // コンソール
+            else if (starts("##DockHost") || starts("##StatusBar") || starts("##Toolbar") || starts("##Toast")
+                     || starts("##SceneDropTarget") || is("gizmo") || is("Camera Preview"))
+                p = P::None;
+            else
+                p = P::Other;   // フローティングのツール窓 / ポップアップなど
+        }
+        m_ctx->focusedPanel = p;
+    }
+
+    // エディタカメラの位置と向き（「カメラの前にエンティティを作る」に使う）
+    if (camera)
+    {
+        m_ctx->camPos = camera->GetPosition();
+        m_ctx->camFwd = camera->GetForward();
+        m_ctx->camValid = true;
+    }
+
+    // ===== ショートカット（コマンド表が唯一の正）=====
+    // 表のキーが押されたら Execute。Application に散っていた処理の移設先。
+    const cmd::Env cmdEnv{scene, assetsDir};
+    cmd::ProcessShortcuts(*m_ctx, cmdEnv);
+
+    // Play / Stop の要求（F5 / Shift+F5 / Esc(一時停止中) / パレット）をモード切替へ
+    if (m_ctx->pendingPlayRequest != 0)
+    {
+        if (m_ctx->pendingPlayRequest == 1 && !isPlaying)
+        {
+            outPendingPlayMode = true;
+            outModeChangeRequested = true;
+        }
+        else if (m_ctx->pendingPlayRequest == 2 && isPlaying)
+        {
+            outPendingPlayMode = false;
+            outModeChangeRequested = true;
+        }
+        m_ctx->pendingPlayRequest = 0;
+    }
+
     // ===== ツールバー（画面上部、DockSpace の外に固定） =====
     m_toolbar->Render(isPlaying, *m_ctx, outModeChangeRequested, outPendingPlayMode,
                       scriptEngine, clock, scene, window, audioSystem, assetsDir, toolbarHeight);
@@ -264,37 +279,13 @@ void EditorLayer::Render(bool isPlaying,
 
         dockspaceId = ImGui::GetID("EditorDockSpace");
 
-        // ツール窓の開閉が「空 ⇔ 非空」を跨いだらレイアウトを作り直す。
-        // （右下タブ領域を出す / 畳んで Inspector を右カラム全高へ戻す）
-        const bool anyToolNow = m_ctx->AnyToolWindowOpen();
-        if (anyToolNow != m_prevAnyToolShown)
-        {
-            // ★壊す前にユーザーの分割比を吸い上げる。これが無いと、ツール窓を
-            //   1 個開け閉めするだけで調整した幅が既定へ戻る。
-            CaptureDockRatios();
-            m_prevAnyToolShown = anyToolNow;
-            m_dockspaceBuilt = false;
-        }
-
-        // メニュー「表示 > レイアウトをリセット」要求でデフォルト配置を作り直す
+        // メニュー「表示 > レイアウトをリセット」要求でデフォルト配置を作り直す。
+        // ドックを作り直すのはここと起動時だけ（ツール窓の開閉では作り直さない＝ビューポートが縮まない）。
         if (m_ctx->resetLayout)
         {
-            // リセット時はツール窓を全部畳んでスッキリ中核4窓へ戻す
-            m_ctx->showPostProcess = m_ctx->showPostParams = m_ctx->showSkybox =
-                m_ctx->showScreenSpaceGi = m_ctx->showSSAO = m_ctx->showVolumetricFog =
-                m_ctx->showEngineSettings = m_ctx->showSceneFlow =
-                m_ctx->showProject = m_ctx->showVersionControl =
-                m_ctx->showMcpBridge = m_ctx->showBuildSettings =
-                m_ctx->showNetworkStatus = m_ctx->showNetworkSettings =
-                m_ctx->showVfxEditor = m_ctx->showUiEditor =
-                m_ctx->showAnimEditor = m_ctx->showSpriteSheetEditor =
-                m_ctx->showTransitionPreview = false;
-            m_prevAnyToolShown = false;
+            // ツール窓を全部閉じてスッキリ中核 4 窓へ戻す（レジストリの全窓。取りこぼしなし）。
+            tools::CloseAll(*m_ctx);
             m_dockspaceBuilt = false;
-            // 「リセット」はユーザーの調整も含めて既定へ戻すのが期待どおり
-            //（ツール窓の開閉による作り直しとは意味が違うので、ここだけ比も戻す）。
-            m_ratioLeft = 0.18f; m_ratioRight = 0.24f;
-            m_ratioBottom = 0.33f; m_ratioRightBottom = 0.42f;
             m_ctx->resetLayout = false;
         }
 
@@ -624,6 +615,11 @@ void EditorLayer::Render(bool isPlaying,
 
     // ===== 最下部のステータスバー（3D ビューに重ねない情報の置き場）=====
     RenderStatusBar(scene, camera, clock, isPlaying);
+
+    // ===== コマンドパレット (Ctrl+K) / クイックオープン (Ctrl+P) と、右下のトースト通知 =====
+    // どちらも最後に描く＝他のパネルより手前。トーストはステータスバーの上に積む。
+    m_palette->Render(*m_ctx, cmdEnv, reg, m_assetBrowser.get());
+    ui::RenderToasts(ImGui::GetIO().DeltaTime, kStatusBarHeight);
 
     // ===== フローティング窓をメインウィンドウ内へ収める領域を渡す =====
     // ImGui は保存位置の無い新規窓を (60,60) に開くのでツールバーに被っていた。ツールバーの下〜

@@ -1650,7 +1650,7 @@ void Application::Run()
                     m_commandQueue->WaitIdle();
                     ReloadGameScript();
                     m_scriptLastWriteTime = currentTime;
-                    m_editorCtx->hotReloadFlash = 2.0f;
+                    m_editorCtx->Notify(ui::ToastKind::Success, "スクリプトを再読み込みしました: game.lua");
                     Logger::Info("Hot-reload complete");
                 }
             }
@@ -1683,8 +1683,13 @@ void Application::Run()
             // コンポーネント .lua（assets/components/*.lua 等）のホットリロード。
             // game.lua と違い RebuildScene は要らない: 該当エンティティの env を捨てるだけで、
             // 次の UpdateAttachedScripts が作り直す。Play を止めずにスクリプトを差し替えられる。
-            if (m_scriptEngine && m_scriptEngine->ReloadChangedScripts() > 0)
-                m_editorCtx->hotReloadFlash = 2.0f;
+            if (m_scriptEngine)
+            {
+                const auto reloaded = m_scriptEngine->ReloadChangedScripts();
+                if (reloaded > 0)
+                    m_editorCtx->Notify(ui::ToastKind::Success,
+                        "スクリプトを再読み込みしました（" + std::to_string(reloaded) + " 件）");
+            }
         }
 
         // シェーダーホットリロード（0.5秒ごとに .hlsl/.hlsli 変更チェック）
@@ -1699,7 +1704,8 @@ void Application::Run()
                 {
                     m_commandQueue->WaitIdle();
                     m_shaderManager->DispatchReloadHandlers(changed);
-                    m_editorCtx->hotReloadFlash = 2.0f;
+                    m_editorCtx->Notify(ui::ToastKind::Success,
+                        "シェーダーを再読み込みしました（" + std::to_string(changed.size()) + " 件）");
                 }
             }
         }
@@ -2283,6 +2289,37 @@ void Application::Update()
         m_prevPaused = paused;
     }
 
+    // ===== エディタのコマンド（ショートカット / メニュー / パレット）が立てた要求の消化 =====
+    // 実処理を持つのは Application だけのもの（保存・カメラのフォーカス・全画面）。
+    // ショートカットの判定は EditorLayer::Render の cmd::ProcessShortcuts（editor/EditorCommandTable.h）。
+    if (m_editorCtx && !m_isGameMode)
+    {
+        // Application の前面判定を共有する（ショートカットを別アプリ作業中に効かせない）。
+        // 仮想入力モードでは「前面にいるか」を見ない（入力は全部 AI の仮想入力で、人の実入力は遮断済み）。
+        m_editorCtx->appForeground = vinput::Enabled() || (GetForegroundWindow() == m_window->GetHwnd());
+        m_editorCtx->mouseCaptured = m_inputSystem && m_inputSystem->IsMouseCaptured();
+
+        if (m_editorCtx->pendingSaveScene)
+        {
+            m_editorCtx->pendingSaveScene = false;
+            EditorSaveScene();
+        }
+
+        if (m_editorCtx->pendingToggleFullscreen)
+        {
+            m_editorCtx->pendingToggleFullscreen = false;
+            m_window->ToggleFullscreen();
+        }
+
+        // 選択へカメラを寄せる（F / パレットのジャンプ）。Editor モード（と一時停止中）でだけ動かす。
+        if (m_editorCtx->pendingFocusSelection)
+        {
+            m_editorCtx->pendingFocusSelection = false;
+            if ((m_engineMode == EngineMode::Editor || m_editorCtx->paused) && m_editorCtx->HasSelection())
+                FocusEditorCameraOnSelection();
+        }
+    }
+
     // ★paused のときは Editor 分岐へ入れる。これだけで
     //   「Lua を回さない・ゲームカメラの同期をしない・エディタのフライカメラが効く」が
     //   まとめて成立する（Lua もカメラ同期も下の else 側にあるため）。
@@ -2356,11 +2393,8 @@ void Application::Update()
         // --- タッチパッド向け: キーボードフライモード（マウス/ボタン長押し不要）---
         // GetAsyncKeyState はフォーカスに関係なく物理キー状態を読むため、ウィンドウが前面に
         // いる時だけ有効化する（別アプリ作業中の ` / Ctrl+Z / WASD などがエディタに効くのを防ぐ）。
+        // （` キーでのトグルと Esc での解除は cmd::ProcessShortcuts の view.flyMode / edit.selectNone へ移した）
         bool kbActive = isForeground && !ImGui::GetIO().WantCaptureKeyboard;  // 非フォーカス/テキスト入力中は無効
-        if (kbActive && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false))     // ` キーでトグル
-            m_editorCtx->flyMode = !m_editorCtx->flyMode;
-        if (m_editorCtx->flyMode && kbActive && ImGui::IsKeyPressed(ImGuiKey_Escape, false))
-            m_editorCtx->flyMode = false;
 
         if (m_editorCtx->flyMode && kbActive && !m_inputSystem->IsMouseCaptured()
             && !m_editorCtx->view2D)   // 2D中はフライ無効（パン/ズームのみ）
@@ -2398,157 +2432,11 @@ void Application::Update()
             if ((m_inputSystem->IsAsyncKeyDown('S')) || (m_inputSystem->IsAsyncKeyDown(VK_DOWN))) m_camera->MoveUp(-pan);
         }
 
-        // ★エディタのショートカットは ImGui のキー状態で判定する（GetAsyncKeyState を使わない）。
-        //   GetAsyncKeyState の下位ビットは「前回この関数をそのキーで呼んでから押されたか」という
-        //   **呼び出し側ごとに溜まるラッチ**で、読むまで消えない。下の Ctrl+Z/Y/C/V/D は
-        //   `!WantCaptureKeyboard` で囲まれているためテキスト入力中は 1 度も読まれず、
-        //   入力欄で打った 'V' や 'D' がラッチに残り続ける。入力を終えて Ctrl を握った瞬間に
-        //   まとめて発火し、**貼り付け・複製・Undo が勝手に走る**（Ctrl+S / Ctrl+N も
-        //   Ctrl を押していない間は読まれないので同じ事故を起こす）。
-        //   ImGui::IsKeyPressed(key, /*repeat=*/false) はフレーム単位の立ち上がり判定で、
-        //   読まなかったフレームの押下が後から湧いてくることがない。
-        ImGuiIO& shortcutIo = ImGui::GetIO();
-
-        // Ctrl+S でクイック保存
-        if (isForeground && shortcutIo.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false))
-        {
-            if (m_editorCtx->currentScenePath.empty())
-            {
-                // パス未設定 → 名前入力ダイアログを開く（保存モード）
-                m_editorCtx->showNewSceneDialog = true;
-                m_editorCtx->newSceneDialogIsCreate = false;
-                std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
-                strncpy_s(m_editorCtx->newSceneNameBuf, "Untitled", _TRUNCATE);
-            }
-            else
-            {
-                // ★未保存フラグだけは成否を見ていたのに、緑の「✓ Saved」と
-                //   SaveLastOpenedScene は無条件だった。書けていないのに保存できたように
-                //   見え、しかもプロジェクトは「そのシーンを開いていた」と記録する。
-                if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
-                {
-                    MarkSceneClean();
-                    ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
-                    m_editorCtx->hotReloadFlash = 1.5f;
-                }
-                else
-                {
-                    Logger::Error("シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
-                    m_editorCtx->saveErrorFlash = 6.0f;
-                }
-                m_editorLayer->RefreshAssetBrowser();
-            }
-        }
-
-        // Ctrl+N で新規シーン名入力ダイアログを開く
-        if (isForeground && shortcutIo.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false))
-        {
-            m_editorCtx->showNewSceneDialog = true;
-            m_editorCtx->newSceneDialogIsCreate = true;
-            std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
-            strncpy_s(m_editorCtx->newSceneNameBuf, "NewScene", _TRUNCATE);
-        }
-
-        // Undo/Redo (Ctrl+Z / Ctrl+Y) + Copy/Paste/Duplicate (Ctrl+C/V/D)
-        // ImGui のテキスト入力にフォーカスがある時、ウィンドウが裏にある時はエンティティ操作を抑制
-        if (isForeground && shortcutIo.KeyCtrl && !shortcutIo.WantCaptureKeyboard)
-        {
-            if (ImGui::IsKeyPressed(ImGuiKey_Z, false))
-                m_editorCtx->pendingUndo = true;
-            if (ImGui::IsKeyPressed(ImGuiKey_Y, false))
-                m_editorCtx->pendingRedo = true;
-
-            // コピー (Ctrl+C) — 選択の最上位ごとにサブツリー（子孫+Lua+コライダー込み）を
-            // JSON スナップショットで保持。親子両方選択時の子二重コピーは TopmostRoots が防ぐ
-            if (ImGui::IsKeyPressed(ImGuiKey_C, false))
-            {
-                m_editorCtx->clipboard.clear();
-                for (auto e : SceneSerializer::TopmostRoots(*m_scene, m_editorCtx->selectedEntities))
-                {
-                    std::string snap = SceneSerializer::SerializeSubtree(
-                        *m_scene, e, PathResolver::AssetsDir());
-                    if (!snap.empty())
-                        m_editorCtx->clipboard.push_back(std::move(snap));
-                }
-            }
-
-            // ペースト (Ctrl+V) — フレーム境界（cmdList 有効時）で生成
-            if (ImGui::IsKeyPressed(ImGuiKey_V, false) && !m_editorCtx->clipboard.empty())
-                m_editorCtx->pendingPastes = m_editorCtx->clipboard;
-
-            // 複製 (Ctrl+D) — 全コンポーネントのディープコピー
-            if (ImGui::IsKeyPressed(ImGuiKey_D, false) && m_editorCtx->HasSelection())
-            {
-                for (auto e : m_editorCtx->selectedEntities)
-                    m_editorCtx->pendingDuplications.push_back(e);
-            }
-        }
-
-        // ギズモモード切替（右クリック中・ImGuiフォーカス中・非フォーカス時は無効）
-        if (isForeground && !ImGui::GetIO().WantCaptureKeyboard && !m_inputSystem->IsMouseCaptured())
-        {
-            // フライモード中・2Dビュー中は W/E/R/T をカメラ移動(パン)に使うのでギズモ切替は抑制
-            if (!m_editorCtx->flyMode && !m_editorCtx->view2D)
-            {
-                // ★ImGui のキー判定を使う理由は Ctrl 系ショートカットと同じ（上のコメント参照）。
-                //   GetAsyncKeyState のラッチだと、名前欄に "wall" と打って抜けた瞬間に
-                //   W の押下が湧いてギズモが黙って移動モードへ切り替わる。
-                if (ImGui::IsKeyPressed(ImGuiKey_W, false)) m_editorCtx->gizmoMode = GizmoMode::Translate;
-                if (ImGui::IsKeyPressed(ImGuiKey_E, false)) m_editorCtx->gizmoMode = GizmoMode::Rotate;
-                if (ImGui::IsKeyPressed(ImGuiKey_R, false)) m_editorCtx->gizmoMode = GizmoMode::Scale;
-                if (ImGui::IsKeyPressed(ImGuiKey_T, false)) m_editorCtx->gizmoLocalSpace = !m_editorCtx->gizmoLocalSpace;
-            }
-
-            // F2: 編集用の照らし込み。暗い屋内シーンは「見えないから置けない」になるので、
-            //     ビューポートにだけ環境光の下限を被せる。シーンには保存しない。
-            if (ImGui::IsKeyPressed(ImGuiKey_F2, false))
-                m_editorCtx->viewportFill = (m_editorCtx->viewportFill > 0.0f) ? 0.0f : 0.35f;
-
-            // F: 選択エンティティにフォーカス（Unity 風）
-            if (ImGui::IsKeyPressed(ImGuiKey_F, false) && m_editorCtx->HasSelection())
-            {
-                auto& reg = m_scene->GetRegistry();
-                auto sel = m_editorCtx->selectedEntity;
-                if (reg.valid(sel) && reg.all_of<Transform>(sel))
-                {
-                    const auto& t = reg.get<Transform>(sel);
-
-                    // 対象サイズからフォーカス距離を決める
-                    f32 dist = 5.0f;
-                    if (reg.all_of<MeshRenderer>(sel))
-                    {
-                        const auto& mr = reg.get<MeshRenderer>(sel);
-                        f32 maxExtent = 0.0f;
-                        for (const auto* mesh : mr.meshes)
-                        {
-                            if (!mesh) continue;
-                            auto mn = mesh->GetAABBMin();
-                            auto mx = mesh->GetAABBMax();
-                            maxExtent = std::max({maxExtent,
-                                (mx.x - mn.x) * t.scale.x,
-                                (mx.y - mn.y) * t.scale.y,
-                                (mx.z - mn.z) * t.scale.z});
-                        }
-                        if (maxExtent > 0.0f)
-                            dist = std::clamp(maxExtent * 2.0f, 2.0f, 100.0f);
-                    }
-
-                    // 親階層込みのワールド位置にフォーカス
-                    DirectX::XMFLOAT3 wpos = t.position;
-                    if (t.parent != entt::null && reg.valid(t.parent))
-                    {
-                        DirectX::XMFLOAT4X4 wf;
-                        XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, sel));
-                        wpos = {wf._41, wf._42, wf._43};
-                    }
-
-                    auto fwd = m_camera->GetForward();
-                    m_camera->SetPosition({wpos.x - fwd.x * dist,
-                                           wpos.y - fwd.y * dist,
-                                           wpos.z - fwd.z * dist});
-                }
-            }
-        }
+        // ★エディタのショートカット（Ctrl+S/N/O/Z/Y/C/V/D、W/E/R/T、F、F2、Del、Esc、F5 …）は
+        //   EditorLayer::Render → cmd::ProcessShortcuts（editor/EditorCommandTable.h が唯一の表）へ移した。
+        //   ここに手書きで散っていた処理は、メニュー・ヘルプの表記と食い違って
+        //   「Ctrl+O / Ctrl+L と書いてあるのに効かない」を生んでいた。
+        //   実行結果は EditorContext の pending* フラグで受け取り、上の共通ブロックが消化する。
 
     }
     else
@@ -3334,6 +3222,84 @@ void Application::MarkSceneClean(bool dropAutosave)
     //   特に「破棄」は 「以後もう聞かない」 つもりの操作なのに、ディスク側は何も変わって
     //   いなかったので必ず再発した。
     if (dropAutosave) DiscardAutosaveFor(m_editorCtx->currentScenePath);
+}
+
+void Application::EditorSaveScene()
+{
+    if (!m_editorCtx || !m_scene) return;
+    if (m_engineMode != EngineMode::Editor)
+    {
+        m_editorCtx->Notify(ui::ToastKind::Warn, "Play 中は保存できません。停止してから保存してください");
+        return;
+    }
+    if (m_editorCtx->currentScenePath.empty())
+    {
+        // 保存先が未設定 → 名前入力ダイアログ（保存モード）。OS のダイアログは仮想入力中に出せないので使わない。
+        m_editorCtx->showNewSceneDialog = true;
+        m_editorCtx->newSceneDialogIsCreate = false;
+        std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
+        strncpy_s(m_editorCtx->newSceneNameBuf, "Untitled", _TRUNCATE);
+        return;
+    }
+
+    const std::string name = std::filesystem::path(m_editorCtx->currentScenePath).filename().string();
+    // ★成否を見てから通知する（以前は Save の戻り値を見ずに緑の「✓ Saved」を出していた＝
+    //   書けていないのに保存できたように見え、プロジェクトは「そのシーンを開いていた」と記録してしまう）。
+    if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
+    {
+        MarkSceneClean();
+        ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
+        m_editorCtx->Notify(ui::ToastKind::Success, "保存しました: " + name);
+    }
+    else
+    {
+        Logger::Error("シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
+        m_editorCtx->Notify(ui::ToastKind::Error, "保存に失敗しました: " + name + "（詳細は dx12_engine.log）");
+    }
+    if (m_editorLayer) m_editorLayer->RefreshAssetBrowser();
+}
+
+void Application::FocusEditorCameraOnSelection()
+{
+    if (!m_editorCtx || !m_scene || !m_camera || !m_editorCtx->HasSelection()) return;
+    auto& reg = m_scene->GetRegistry();
+    auto sel = m_editorCtx->selectedEntity;
+    if (!reg.valid(sel) || !reg.all_of<Transform>(sel)) return;
+    const auto& t = reg.get<Transform>(sel);
+
+    // 対象サイズからフォーカス距離を決める
+    f32 dist = 5.0f;
+    if (reg.all_of<MeshRenderer>(sel))
+    {
+        const auto& mr = reg.get<MeshRenderer>(sel);
+        f32 maxExtent = 0.0f;
+        for (const auto* mesh : mr.meshes)
+        {
+            if (!mesh) continue;
+            auto mn = mesh->GetAABBMin();
+            auto mx = mesh->GetAABBMax();
+            maxExtent = std::max({maxExtent,
+                (mx.x - mn.x) * t.scale.x,
+                (mx.y - mn.y) * t.scale.y,
+                (mx.z - mn.z) * t.scale.z});
+        }
+        if (maxExtent > 0.0f)
+            dist = std::clamp(maxExtent * 2.0f, 2.0f, 100.0f);
+    }
+
+    // 親階層込みのワールド位置にフォーカス
+    DirectX::XMFLOAT3 wpos = t.position;
+    if (t.parent != entt::null && reg.valid(t.parent))
+    {
+        DirectX::XMFLOAT4X4 wf;
+        XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, sel));
+        wpos = {wf._41, wf._42, wf._43};
+    }
+
+    auto fwd = m_camera->GetForward();
+    m_camera->SetPosition({wpos.x - fwd.x * dist,
+                           wpos.y - fwd.y * dist,
+                           wpos.z - fwd.z * dist});
 }
 
 // 指定シーンの退避（オートセーブ）を捨てる。別シーンの退避なら触らない

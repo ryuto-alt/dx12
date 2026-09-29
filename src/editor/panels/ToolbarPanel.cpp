@@ -4,6 +4,9 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UiWidgets.h"
+#include "editor/EditorCommands.h"   // メニュー/ショートカットはコマンド表から描く
+#include "editor/ToolWindows.h"      // ツール窓レジストリ（表示 / ツール / 窓▾ の共通の表）
+#include "editor/Toast.h"
 #include "scripting/ScriptEngine.h"
 #include "core/GameClock.h"
 #include "scene/Scene.h"
@@ -79,12 +82,30 @@ void OpenInVSCode(const std::string& filePath)
 namespace dx12e
 {
 
+// レジストリ（editor/ToolWindows.h）の窓をカテゴリ見出し付きのトグル項目として描く。
+// home 指定なら「表示」「ツール」のどちらに置く窓だけ、allHomes=true なら全部（ツールバーの「窓▾」）。
+static void DrawToolWindowItems(EditorContext& ctx, tools::MenuHome home, bool allHomes)
+{
+    const char* cat = nullptr;
+    for (const tools::Desc& d : tools::kAll)
+    {
+        if (!allHomes && d.home != home) continue;
+        if (!cat || std::strcmp(cat, d.category) != 0)
+        {
+            if (cat) ImGui::Separator();   // 最初の見出しの前には出さない（呼び出し側が区切る）
+            ImGui::TextDisabled("%s", d.category);
+            cat = d.category;
+        }
+        ui::MenuItem(d.icon, d.title, nullptr, &(ctx.*(d.flag)));
+    }
+}
+
 void ToolbarPanel::Render(bool isPlaying,
                           EditorContext& ctx,
                           bool& outModeChangeRequested,
                           bool& outPendingPlayMode,
                           ScriptEngine* scriptEngine,
-                          GameClock* clock,
+                          GameClock* /*clock*/,
                           Scene* scene,
                           Window* window,
                           AudioSystem* /*audioSystem*/,
@@ -94,6 +115,29 @@ void ToolbarPanel::Render(bool isPlaying,
     // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート原点基準で置く
     const ImGuiViewport* mainVp = ImGui::GetMainViewport();
     f32 displayW = mainVp->Size.x;
+
+    // メニュー / ショートカット / パレットが共有する実行環境（コピー・貼り付けに使う）
+    const cmd::Env cmdEnv{scene, assetsDir};
+
+    // 「シーンを開く」(Ctrl+O / メニュー / パレット) の要求を消化する。ファイルダイアログは
+    // 窓のハンドルが要るのでこのパネルで出す。仮想入力中（AI 操作中）は OS のダイアログを出さない。
+    if (ctx.pendingOpenSceneDialog)
+    {
+        ctx.pendingOpenSceneDialog = false;
+        char loadPath[MAX_PATH] = "";
+        OPENFILENAMEA ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.hwndOwner = window->GetHwnd();
+        ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
+        ofn.lpstrFile = loadPath;
+        ofn.nMaxFile = MAX_PATH;
+        ofn.Flags = OFN_FILEMUSTEXIST;
+        std::string initDir = assetsDir + "scenes";
+        std::filesystem::create_directories(initDir);
+        ofn.lpstrInitialDir = initDir.c_str();
+        if (!dx12e::guard::Blocked("シーンを開くダイアログ") && GetOpenFileNameA(&ofn))
+            ctx.pendingLoadPath = loadPath;
+    }
 
     ImGui::SetNextWindowPos(mainVp->Pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(displayW, toolbarHeight), ImGuiCond_Always);
@@ -138,125 +182,20 @@ void ToolbarPanel::Render(bool isPlaying,
         dx12e::vinput_gui::AnchorLastItem("menu", "ファイル");   // dx12_imgui_find 用（メニューバーの項目）
         if (menuOpen1)
         {
-            if (ui::MenuItem(ICON_FILE_PLUS, "新規シーン", "Ctrl+N"))
-            {
-                ctx.showNewSceneDialog = true;
-                ctx.newSceneDialogIsCreate = true;
-                std::memset(ctx.newSceneNameBuf, 0, sizeof(ctx.newSceneNameBuf));
-                strncpy_s(ctx.newSceneNameBuf, "NewScene", _TRUNCATE);
-            }
-
-            if (ui::MenuItem(ICON_FOLDER_OPEN, "シーンを開く", "Ctrl+O"))
-            {
-                char loadPath[MAX_PATH] = "";
-                OPENFILENAMEA ofn = {};
-                ofn.lStructSize = sizeof(ofn);
-                ofn.hwndOwner = window->GetHwnd();
-                ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-                ofn.lpstrFile = loadPath;
-                ofn.nMaxFile = MAX_PATH;
-                ofn.Flags = OFN_FILEMUSTEXIST;
-                std::string initDir = assetsDir + "scenes";
-                std::filesystem::create_directories(initDir);
-                ofn.lpstrInitialDir = initDir.c_str();
-                if (!dx12e::guard::Blocked("シーンを開くダイアログ") && GetOpenFileNameA(&ofn))
-                    ctx.pendingLoadPath = loadPath;
-            }
-
+            // 項目のラベル・アイコン・キー表記は editor/EditorCommandTable.h（唯一の正）から描く。
+            // 実処理は cmd::Execute（保存は Application、ファイルダイアログはこのパネル上部が消費）。
+            cmd::MenuItem(ctx, cmdEnv, "file.new");
+            cmd::MenuItem(ctx, cmdEnv, "file.open");
             ImGui::Separator();
-
-            if (ui::MenuItem(ICON_SAVE, "保存", "Ctrl+S"))
-            {
-                if (ctx.currentScenePath.empty())
-                {
-                    char savePath[MAX_PATH] = "";
-                    OPENFILENAMEA ofn = {};
-                    ofn.lStructSize = sizeof(ofn);
-                    ofn.hwndOwner = window->GetHwnd();
-                    ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-                    ofn.lpstrFile = savePath;
-                    ofn.nMaxFile = MAX_PATH;
-                    ofn.lpstrDefExt = "json";
-                    ofn.Flags = OFN_OVERWRITEPROMPT;
-                    std::string initDir = assetsDir + "scenes";
-                    std::filesystem::create_directories(initDir);
-                    ofn.lpstrInitialDir = initDir.c_str();
-                    if (!dx12e::guard::Blocked("シーン保存ダイアログ") && GetSaveFileNameA(&ofn))
-                        ctx.currentScenePath = savePath;
-                }
-                if (!ctx.currentScenePath.empty())
-                {
-                    // ★Save の戻り値を見ずに緑の「✓ Saved」を出し、SaveLastOpenedScene まで
-                    //   走らせていた。書けていないのに保存できたように見え、しかも
-                    //   プロジェクトは「そのシーンを開いていた」と記録してしまう。
-                    if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
-                    {
-                        ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
-                        ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
-                        ctx.hotReloadFlash = 1.5f;
-                    }
-                    else
-                    {
-                        Logger::Error("シーンを保存できませんでした: {}", ctx.currentScenePath);
-                        ctx.saveErrorFlash = 6.0f;
-                    }
-                }
-            }
-
-            if (ui::MenuItem(ICON_SAVE, "名前を付けて保存"))
-            {
-                char savePath[MAX_PATH] = "";
-                OPENFILENAMEA ofn = {};
-                ofn.lStructSize = sizeof(ofn);
-                ofn.hwndOwner = window->GetHwnd();
-                ofn.lpstrFilter = "Scene Files (*.json)\0*.json\0All Files\0*.*\0";
-                ofn.lpstrFile = savePath;
-                ofn.nMaxFile = MAX_PATH;
-                ofn.lpstrDefExt = "json";
-                ofn.Flags = OFN_OVERWRITEPROMPT;
-                std::string initDir = assetsDir + "scenes";
-                std::filesystem::create_directories(initDir);
-                ofn.lpstrInitialDir = initDir.c_str();
-                if (!dx12e::guard::Blocked("シーン保存ダイアログ") && GetSaveFileNameA(&ofn))
-                {
-                    ctx.currentScenePath = savePath;
-                    if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
-                    {
-                        ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
-                        ProjectManager::SaveLastOpenedScene(ctx.currentScenePath);
-                        ctx.hotReloadFlash = 1.5f;
-                    }
-                    else
-                    {
-                        Logger::Error("シーンを保存できませんでした: {}", ctx.currentScenePath);
-                        ctx.saveErrorFlash = 6.0f;
-                    }
-                }
-            }
-
+            cmd::MenuItem(ctx, cmdEnv, "file.save");
+            cmd::MenuItem(ctx, cmdEnv, "file.saveAs");
             ImGui::Separator();
-
-            if (ui::MenuItem(ICON_FILE_CODE, "新規スクリプト", "Ctrl+L"))
-            {
-                ctx.showNewScriptDialog = true;
-                std::memset(ctx.newScriptNameBuf, 0, sizeof(ctx.newScriptNameBuf));
-                strncpy_s(ctx.newScriptNameBuf, "NewScript", _TRUNCATE);
-            }
-
-            if (ui::MenuItem(ICON_T_SHADER, "新規シェーダー"))
-            {
-                ctx.showNewShaderDialog = true;
-                std::memset(ctx.newShaderNameBuf, 0, sizeof(ctx.newShaderNameBuf));
-                strncpy_s(ctx.newShaderNameBuf, "NewShader", _TRUNCATE);
-            }
-
+            cmd::MenuItem(ctx, cmdEnv, "file.newScript");
+            cmd::MenuItem(ctx, cmdEnv, "file.newShader");
             ImGui::Separator();
-
             // プロジェクトを閉じてランチャー（プロジェクト選択/新規作成）に戻る。
             // ファイル操作は一切不要＝現在のプロジェクトフォルダはそのまま残る。
-            if (ui::MenuItem(ICON_POWER, "プロジェクトを閉じる（ランチャーに戻る）"))
-                ctx.pendingCloseProject = true;
-
+            cmd::MenuItem(ctx, cmdEnv, "file.closeProject");
             ImGui::EndMenu();
         }
         ui::PopMenuStyle();
@@ -276,57 +215,44 @@ void ToolbarPanel::Render(bool isPlaying,
                                             + "###edit_undo";
                 const std::string redoLabel = std::string("やり直す") + (rn ? std::string("（") + rn + "）" : "")
                                             + "###edit_redo";
-                if (ui::MenuItem(ICON_UNDO, undoLabel.c_str(), "Ctrl+Z", false, ctx.undoSystem.CanUndo()))
-                    ctx.pendingUndo = true;
-                if (ui::MenuItem(ICON_REDO, redoLabel.c_str(), "Ctrl+Y", false, ctx.undoSystem.CanRedo()))
-                    ctx.pendingRedo = true;
+                if (ui::MenuItem(ICON_UNDO, undoLabel.c_str(), cmd::ShortcutText("edit.undo"), false, cmd::IsEnabled(ctx, "edit.undo")))
+                    cmd::Execute(ctx, cmdEnv, "edit.undo");
+                if (ui::MenuItem(ICON_REDO, redoLabel.c_str(), cmd::ShortcutText("edit.redo"), false, cmd::IsEnabled(ctx, "edit.redo")))
+                    cmd::Execute(ctx, cmdEnv, "edit.redo");
                 if (ctx.mcpUndo.TxOpen())
                     ImGui::TextDisabled("AI のまとめ操作「%s」が進行中（Ctrl+Z で確定して丸ごと戻す）",
                                         ctx.mcpUndo.TxLabel().c_str());
             }
 
             ImGui::Separator();
-
-            const bool hasSel = ctx.HasSelection();
-            if (ui::MenuItem(ICON_COPY, "コピー", "Ctrl+C", false, hasSel))
-            {
-                ctx.clipboard.clear();
-                for (auto e : SceneSerializer::TopmostRoots(*scene, ctx.selectedEntities))
-                {
-                    std::string snap = SceneSerializer::SerializeSubtree(*scene, e, assetsDir);
-                    if (!snap.empty())
-                        ctx.clipboard.push_back(std::move(snap));
-                }
-            }
-            if (ui::MenuItem(ICON_PASTE, "貼り付け", "Ctrl+V", false, !ctx.clipboard.empty()))
-                ctx.pendingPastes = ctx.clipboard;
-            if (ui::MenuItem(ICON_T_LAYERS, "複製", "Ctrl+D", false, hasSel))
-            {
-                for (auto e : ctx.selectedEntities)
-                    ctx.pendingDuplications.push_back(e);
-            }
-            if (ui::MenuItem(ICON_TRASH, "削除", "Del", false, hasSel))
-            {
-                for (auto e : ctx.selectedEntities)
-                    ctx.pendingDeletions.push_back(e);
-            }
-
+            cmd::MenuItem(ctx, cmdEnv, "edit.copy");
+            cmd::MenuItem(ctx, cmdEnv, "edit.paste");
+            cmd::MenuItem(ctx, cmdEnv, "edit.duplicate");
+            cmd::MenuItem(ctx, cmdEnv, "edit.delete");
+            cmd::MenuItem(ctx, cmdEnv, "edit.rename");
+            ImGui::Separator();
+            cmd::MenuItem(ctx, cmdEnv, "edit.selectNone");
+            cmd::MenuItem(ctx, cmdEnv, "edit.focus");
+            ImGui::Separator();
+            cmd::MenuItem(ctx, cmdEnv, "palette.commands");
+            cmd::MenuItem(ctx, cmdEnv, "palette.quickOpen");
             ImGui::EndMenu();
         }
         ui::PopMenuStyle();
 
         // ---- 表示 ----
+        // ウィンドウの一覧は editor/ToolWindows.h のレジストリから描く（「ツール」「窓▾」と同じ表）。
         ui::PushMenuStyle();
         const bool menuOpen3 = ImGui::BeginMenu("表示");
         dx12e::vinput_gui::AnchorLastItem("menu", "表示");   // dx12_imgui_find 用（メニューバーの項目）
         if (menuOpen3)
         {
-            if (ui::MenuItem(ICON_REFRESH, "レイアウトをリセット"))
-                ctx.resetLayout = true;
+            cmd::MenuItem(ctx, cmdEnv, "view.resetLayout");
+            cmd::MenuItem(ctx, cmdEnv, "view.closeTools");
             ImGui::Separator();
             {
                 bool fill = ctx.viewportFill > 0.0f;
-                if (ui::MenuItem(ICON_T_SUN, "編集用の照らし込み", "F2", &fill))
+                if (ui::MenuItem(cmd::IconFor("view.fill"), "編集用の照らし込み", cmd::ShortcutText("view.fill"), &fill))
                     ctx.viewportFill = fill ? 0.35f : 0.0f;
                 if (fill)
                 {
@@ -337,19 +263,7 @@ void ToolbarPanel::Render(bool isPlaying,
                     ImGui::SetTooltip("暗いシーンを編集するための光。シーンには保存されず、Play 中は効かない。");
             }
             ImGui::Separator();
-            ImGui::TextDisabled("ツール窓（右下に開く）");
-            ui::MenuItem(ICON_T_LAYERS, "Post Process",            nullptr, &ctx.showPostProcess);
-            ui::MenuItem(ICON_T_SLIDERS, "Post Process パラメータ",  nullptr, &ctx.showPostParams);
-            ui::MenuItem(ICON_T_SUN, "Skybox / IBL",            nullptr, &ctx.showSkybox);
-            ui::MenuItem(ICON_T_GRID, "SSAO",                    nullptr, &ctx.showSSAO);
-            ui::MenuItem(ICON_T_MONITOR, "SSR / SSGI",              nullptr, &ctx.showScreenSpaceGi);
-            ui::MenuItem(ICON_T_FOG, "Volumetric Fog",          nullptr, &ctx.showVolumetricFog);
-            ui::MenuItem(ICON_SETTINGS, "エンジン設定",            nullptr, &ctx.showEngineSettings);
-            ui::MenuItem(ICON_HAMMER, "ビルド設定",              nullptr, &ctx.showBuildSettings);
-            ui::MenuItem(ICON_T_SPLINE, "Scene Flow",              nullptr, &ctx.showSceneFlow);
-            ui::MenuItem(ICON_FILM, "トランジション",          nullptr, &ctx.showTransitionPreview);
-            ui::MenuItem(ICON_FOLDER, "Project",                 nullptr, &ctx.showProject);
-            ui::MenuItem(ICON_GIT_BRANCH, "Git 変更",                nullptr, &ctx.showVersionControl);
+            DrawToolWindowItems(ctx, tools::MenuHome::View, /*allHomes=*/false);
             ImGui::EndMenu();
         }
         ui::PopMenuStyle();
@@ -363,22 +277,8 @@ void ToolbarPanel::Render(bool isPlaying,
             // 「ビルド」はまずビルド設定パネルを開く（構成・開始シーン・出力先を決めてから実行）
             if (ui::MenuItem(ICON_HAMMER, "ビルド"))
                 ctx.showBuildSettings = true;
-            // シーンの光を1画面で詰めるパネル（太陽/影/スカイ/プリセット）
-            ui::MenuItem(ICON_T_LIGHT, "ライティング",             nullptr, &ctx.showLighting);
-            // 追いかける AI 用の経路探索メッシュを焼く窓
-            ui::MenuItem(ICON_T_NAV, "ナビメッシュ",             nullptr, &ctx.showNavMesh);
-            // バスのメーター/フェーダー・スナップショット・鳴っている音
-            ui::MenuItem(ICON_T_AUDIO, "オーディオミキサー",       nullptr, &ctx.showAudioMixer);
-            ui::MenuItem(ICON_T_PARTICLE, "パーティクルエディタ",     nullptr, &ctx.showVfxEditor);
-            ui::MenuItem(ICON_T_ANIM, "UIアニメーション",         nullptr, &ctx.showAnimEditor);
-            ui::MenuItem(ICON_T_SPRITE, "スプライトシート",         nullptr, &ctx.showSpriteSheetEditor);
-            ui::MenuItem(ICON_T_MATERIAL, "マテリアルエディタ",       nullptr, &ctx.showMaterialEditor);
-            ui::MenuItem(ICON_PACKAGE, "マテリアルライブラリ (Poly Haven)", nullptr, &ctx.showMaterialLibrary);
-            ui::MenuItem(ICON_CLOUD, "MCP / AI Bridge",         nullptr, &ctx.showMcpBridge);
-            ui::MenuItem(ICON_T_NET, "Network",                 nullptr, &ctx.showNetworkStatus);
-            ui::MenuItem(ICON_SETTINGS, "Network 設定",             nullptr, &ctx.showNetworkSettings);
             ImGui::Separator();
-            ui::MenuItem(ICON_BUG, "エンジン診断 (UI 自動テスト)", nullptr, &ctx.showEngineDiagnostics);
+            DrawToolWindowItems(ctx, tools::MenuHome::Tools, /*allHomes=*/false);
             ImGui::EndMenu();
         }
         ui::PopMenuStyle();
@@ -494,9 +394,6 @@ void ToolbarPanel::Render(bool isPlaying,
         window->SetCaptionInfo(static_cast<u32>(titleBarRect.Max.y - mainVp->Pos.y), inBand && !blocked);
     }
 
-    if (openShortcutsPopup) ImGui::OpenPopup("ショートカット一覧##ShortcutsPopup");
-    if (openAboutPopup)     ImGui::OpenPopup("バージョン情報##AboutPopup");
-
     // ===== ツール行（フラットなアイコンボタン + 縦区切り。UE5 風）=====
     // ボタンは 28x28 の正方形・ラベル無し（ホバーでツールチップ）。それより低い部品（コンボ・文字）は
     // 縦中央へ置く。配置はカーソルを明示指定する（SameLine は高さの違う部品の縦位置が揃わないため）。
@@ -554,50 +451,18 @@ void ToolbarPanel::Render(bool isPlaying,
     // ===== ツール窓（「窓 ▾」ドロップダウン1個に集約）=====
     sep();
     put(kBtn + 14.0f + 2.0f, kBtn);
-    if (ui::IconDropdownButton("windows", ICON_WINDOWS, "ツール窓の表示/非表示", ctx.AnyToolWindowOpen(), kBtn))
+    if (ui::IconDropdownButton("windows", ICON_WINDOWS, "ツール窓の表示/非表示", tools::AnyOpen(ctx), kBtn))
         ImGui::OpenPopup("##ToolWindowsMenu");
     dx12e::vinput_gui::AnchorLastItem("button", "窓");
     ui::PushMenuStyle();
     if (ImGui::BeginPopup("##ToolWindowsMenu"))
     {
-        ImGui::TextDisabled("ツール窓（右下にタブで開く）");
+        // 全ツール窓（レジストリ editor/ToolWindows.h）。「表示」「ツール」メニューと同じ表から描く。
+        // 右タブの窓は右カラムのインスペクターのタブに、浮かぶ窓はビューポートの上に開く。
+        DrawToolWindowItems(ctx, tools::MenuHome::View, /*allHomes=*/true);
         ImGui::Separator();
-        ui::MenuItem(ICON_T_LAYERS,  "Post Process",           nullptr, &ctx.showPostProcess);
-        ui::MenuItem(ICON_T_SLIDERS, "Post Process パラメータ", nullptr, &ctx.showPostParams);
-        ui::MenuItem(ICON_T_SUN,     "Skybox / IBL",           nullptr, &ctx.showSkybox);
-        ui::MenuItem(ICON_T_GRID,    "SSAO",                   nullptr, &ctx.showSSAO);
-        ui::MenuItem(ICON_T_MONITOR, "SSR / SSGI",             nullptr, &ctx.showScreenSpaceGi);
-        ui::MenuItem(ICON_T_FOG,     "Volumetric Fog",         nullptr, &ctx.showVolumetricFog);
-        ui::MenuItem(ICON_SETTINGS,  "エンジン設定",           nullptr, &ctx.showEngineSettings);
-        ui::MenuItem(ICON_HAMMER,    "ビルド設定",             nullptr, &ctx.showBuildSettings);
-        ui::MenuItem(ICON_T_SPLINE,  "Scene Flow",             nullptr, &ctx.showSceneFlow);
-        ui::MenuItem(ICON_FOLDER,    "Project",                nullptr, &ctx.showProject);
-        ui::MenuItem(ICON_GIT_BRANCH, "Git 変更",              nullptr, &ctx.showVersionControl);
-        ui::MenuItem(ICON_CLOUD,     "MCP / AI Bridge",        nullptr, &ctx.showMcpBridge);
-        ui::MenuItem(ICON_T_NET,     "Network",                nullptr, &ctx.showNetworkStatus);
-        ui::MenuItem(ICON_SETTINGS,  "Network 設定",            nullptr, &ctx.showNetworkSettings);
-        ui::MenuItem(ICON_T_LIGHT,   "ライティング",            nullptr, &ctx.showLighting);
-        ui::MenuItem(ICON_T_NAV,     "ナビメッシュ",            nullptr, &ctx.showNavMesh);
-        ui::MenuItem(ICON_T_AUDIO,   "オーディオミキサー",      nullptr, &ctx.showAudioMixer);
-        ui::MenuItem(ICON_T_PARTICLE, "パーティクルエディタ",    nullptr, &ctx.showVfxEditor);
-        ui::MenuItem(ICON_T_UI,      "UIエディタ",              nullptr, &ctx.showUiEditor);
-        ui::MenuItem(ICON_T_ANIM,    "UIアニメーション",        nullptr, &ctx.showAnimEditor);
-        ui::MenuItem(ICON_T_SPRITE,  "スプライトシート",        nullptr, &ctx.showSpriteSheetEditor);
-        ui::MenuItem(ICON_FILM,      "トランジション",          nullptr, &ctx.showTransitionPreview);
-        ImGui::Separator();
-        if (ui::MenuItem(ICON_CLOSE, "すべて閉じる"))
-        {
-            ctx.showScreenSpaceGi = ctx.showVolumetricFog =
-            ctx.showPostProcess = ctx.showPostParams = ctx.showSkybox = ctx.showSSAO =
-                ctx.showEngineSettings = ctx.showSceneFlow = ctx.showProject =
-                ctx.showVersionControl = ctx.showMcpBridge = ctx.showBuildSettings =
-                ctx.showNetworkStatus = ctx.showNetworkSettings =
-                ctx.showVfxEditor = ctx.showUiEditor =
-                ctx.showAnimEditor = ctx.showSpriteSheetEditor =
-                ctx.showTransitionPreview = false;
-            ctx.showLighting = false;
-            ctx.showAudioMixer = false;
-        }
+        cmd::MenuItem(ctx, cmdEnv, "view.closeTools");
+        cmd::MenuItem(ctx, cmdEnv, "view.resetLayout");
         ImGui::EndPopup();
     }
     ui::PopMenuStyle();
@@ -713,173 +578,90 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PopStyleColor();
     }
 
-    // Hot reload flash
-    if (ctx.hotReloadFlash > 0.0f)
-    {
-        const char* msg = ICON_CHECK " 保存しました";
-        put(ImGui::CalcTextSize(msg).x + 16.0f, lineH);
-        ImGui::PushStyleColor(ImGuiCol_Text, th::WithAlpha(th::Good, (std::min)(1.0f, ctx.hotReloadFlash)));
-        ImGui::TextUnformatted(msg);
-        ImGui::PopStyleColor();
-        ctx.hotReloadFlash -= clock->GetDeltaTime();
-    }
-    // 保存失敗。緑より長く出す（見逃すと書けていないことに気づけない）
-    if (ctx.saveErrorFlash > 0.0f)
-    {
-        const char* msg = ICON_CLOSE " 保存に失敗 (dx12_engine.log)";
-        put(ImGui::CalcTextSize(msg).x + 16.0f, lineH);
-        ImGui::PushStyleColor(ImGuiCol_Text, th::Bad);
-        ImGui::TextUnformatted(msg);
-        ImGui::PopStyleColor();
-        ctx.saveErrorFlash -= clock->GetDeltaTime();
-    }
-
+    // 結果の通知はトースト（右下）へ。以前は「緑文字 1.5 秒（狭いツール行の右端）」「赤文字」
+    // 「中央モーダル（OK を押すまで操作不能）」の 3 通りが混在していた。
+    // 判断が要る確認（未保存 / 削除 / オートセーブ復旧）だけがモーダルのまま残る。
     // ※ FPS/描画統計は下部ステータスバー(EditorLayer::RenderStatusBar)に集約した。
     //    ここに出すと同じ数字が2箇所に並ぶだけなので置かない。
 
-    // Error popup (中央モーダル)
+    // 「Play できません」「モデル差し替え失敗」など、errorMessage + errorFlash で要求されたエラー
     if (ctx.errorFlash > 0.0f)
     {
-        ctx.errorFlash = 0.0f;  // フラグをリセット（トリガー用のみ）
-        ImGui::OpenPopup("##ErrorPopup");
+        ctx.errorFlash = 0.0f;   // トリガー用（消費したら戻す）
+        ctx.Notify(ui::ToastKind::Error, ctx.errorMessage, 8.0f);
     }
 
-    // ポップアップの最小サイズを設定
-    ImGui::SetNextWindowSizeConstraints(ImVec2(360, 0), ImVec2(500, 300));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24, 20));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, dx12e::theme::Bg2);
-    ImGui::PushStyleColor(ImGuiCol_Border, dx12e::theme::WithAlpha(dx12e::theme::Bad, 0.6f));
-
-    if (ImGui::BeginPopupModal("##ErrorPopup", nullptr,
-            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoTitleBar))
-    {
-        // ウィンドウ中央に配置
-        ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-        ImGui::SetWindowPos(ImVec2(center.x - ImGui::GetWindowWidth() * 0.5f,
-                                    center.y - ImGui::GetWindowHeight() * 0.5f));
-
-        // 警告アイコン（大）
-        ImGui::PushFont(nullptr);  // デフォルトフォント
-        ImGui::SetWindowFontScale(2.0f);
-        ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::Bad);
-        ImGui::TextUnformatted(ICON_WARN);
-        ImGui::PopStyleColor();
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopFont();
-
-        ImGui::SameLine();
-
-        // タイトル
-        ImGui::BeginGroup();
-        ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::Bad);
-        ImGui::SetWindowFontScale(1.3f);
-        ImGui::Text("Play \xe3\x81\xa7\xe3\x81\x8d\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93");  // Playできません
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopStyleColor();
-        ImGui::EndGroup();
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        // メッセージ本文（選択・コピー可能な InputText）
-        ImGui::SetWindowFontScale(1.1f);
-        static char errorBuf[512] = {};
-        strncpy_s(errorBuf, ctx.errorMessage.c_str(), _TRUNCATE);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, dx12e::theme::InputBg);
-        ImGui::InputTextMultiline("##ErrorMsg", errorBuf, sizeof(errorBuf),
-            ImVec2(-1, ImGui::GetTextLineHeight() * 3.5f),
-            ImGuiInputTextFlags_ReadOnly);
-        ImGui::PopStyleColor();
-        ImGui::SetWindowFontScale(1.0f);
-
-        ImGui::Spacing();
-
-        // コピー + OK ボタン
-        float totalWidth = 120.0f + 8.0f + 120.0f;
-        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - totalWidth) * 0.5f);
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
-
-        // コピーボタン
-        ImGui::PushStyleColor(ImGuiCol_Button, dx12e::theme::Bg3);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dx12e::theme::Bg4);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, dx12e::theme::Bg4);
-        if (ImGui::Button(ICON_COPY " コピー", ImVec2(120.0f, 32.0f)))
-        {
-            ImGui::SetClipboardText(ctx.errorMessage.c_str());
-        }
-        ImGui::PopStyleColor(3);
-
-        ImGui::SameLine(0, 8.0f);
-
-        // OK ボタン
-        ImGui::PushStyleColor(ImGuiCol_Button, dx12e::theme::Accent);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, dx12e::theme::AccentHover);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, dx12e::theme::AccentPressed);
-        if (ImGui::Button("OK", ImVec2(120.0f, 32.0f)))
-        {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::PopStyleColor(3);
-
-        ImGui::PopStyleVar();
-
-        ImGui::EndPopup();
-    }
-
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(2);
 
     ImGui::End();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);   // WindowPadding + WindowBorderSize
 
+    // ★OpenPopup は BeginPopupModal と同じウィンドウ（ID スタック）で呼ぶこと。以前は ##Toolbar の中で
+    //   OpenPopup していたので ID が食い違い、ヘルプの「ショートカット一覧」「バージョン情報」は
+    //   一度も開いていなかった（メニューの項目を押しても何も起きない）。
+    if (openShortcutsPopup) ImGui::OpenPopup("ショートカット一覧##ShortcutsPopup");
+    if (openAboutPopup)     ImGui::OpenPopup("バージョン情報##AboutPopup");
+
     // ===== ヘルプ: ショートカット一覧モーダル =====
+    // 内容は editor/EditorCommandTable.h のコマンド表から生成する（手書きの静的表は廃止）。
+    // キーを足す / 変えるとこの一覧・メニューの表記・実際のキー処理が同時に変わる＝表記と実装が食い違わない。
     {
         ImVec2 c = ImGui::GetMainViewport()->GetCenter();
         ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
         if (ImGui::BeginPopupModal("ショートカット一覧##ShortcutsPopup", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize))
         {
-            struct KeyRow { const char* key; const char* desc; };
-            static const KeyRow rows[] = {
-                {"W / E / R",     "ギズモ切替（移動 / 回転 / スケール）"},
-                {"T",             "ローカル / ワールド空間の切替"},
-                {"左クリック",    "エンティティ選択（Ctrl+クリックで複数選択）"},
-                {"右クリック+WASD","フライカメラ移動（Space/Shift で上下）"},
-                {"F",             "選択エンティティにフォーカス"},
-                {"F2",            "編集用の照らし込み（暗いシーンを見る。ゲームには影響なし）"},
-                {"L + マウス移動", "太陽（DirectionalLight）の向きを直接回す"},
-                {"F11",           "ボーダレスフルスクリーン切替"},
-                {"Ctrl+Z / Y",   "元に戻す / やり直す"},
-                {"Ctrl+C / V",   "コピー / 貼り付け"},
-                {"Ctrl+D",        "複製"},
-                {"Del",           "削除"},
-                {"Ctrl+S / N",   "シーン保存 / 新規シーン"},
-                {"Ctrl+O / L",   "シーンを開く / 新規スクリプト"},
-            };
-            if (ImGui::BeginTable("##shortcuts", 2,
-                    ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg))
+            const float tableH = (std::min)(ImGui::GetMainViewport()->Size.y * 0.78f, 800.0f);
+            if (ImGui::BeginChild("##shortcutsScroll", ImVec2(0.0f, tableH), false))
             {
-                ImGui::TableSetupColumn("キー", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-                ImGui::TableSetupColumn("動作", ImGuiTableColumnFlags_WidthStretch);
-                for (const auto& r : rows)
+                if (ImGui::BeginTable("##shortcuts", 2,
+                        ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg))
                 {
-                    ImGui::TableNextRow();
-                    ImGui::TableSetColumnIndex(0);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.85f, 1.0f, 1.0f));
-                    ImGui::TextUnformatted(r.key);
-                    ImGui::PopStyleColor();
-                    ImGui::TableSetColumnIndex(1);
-                    ImGui::TextUnformatted(r.desc);
+                    ImGui::TableSetupColumn("キー", ImGuiTableColumnFlags_WidthFixed, 190.0f);
+                    ImGui::TableSetupColumn("動作", ImGuiTableColumnFlags_WidthStretch);
+
+                    auto row = [](const std::string& key, const char* desc)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ui::PushMono();
+                        ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::AccentHover);
+                        ImGui::TextUnformatted(key.c_str());
+                        ImGui::PopStyleColor();
+                        ui::PopMono();
+                        ImGui::TableSetColumnIndex(1);
+                        ImGui::TextUnformatted(desc);
+                    };
+                    auto section = [](const char* title)
+                    {
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(0);
+                        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+                        ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextDim);
+                        ui::PushBold();
+                        ImGui::TextUnformatted(title);
+                        ui::PopBold();
+                        ImGui::PopStyleColor();
+                    };
+
+                    const char* cat = nullptr;
+                    for (const cmd::Def& d : cmd::kCommands)
+                    {
+                        const std::string chord = cmd::ChordLabel(d);
+                        if (chord.empty()) continue;   // キーの無いコマンドは一覧に載せない（メニュー / パレットから使う）
+                        if (!cat || std::strcmp(cat, d.category) != 0) { section(d.category); cat = d.category; }
+                        row(chord, (d.help && d.help[0]) ? d.help : d.label);
+                    }
+                    section("マウス");
+                    for (const cmd::MouseHelp& m : cmd::kMouseHelp)
+                        row(m.key, m.desc);
+                    ImGui::EndTable();
                 }
-                ImGui::EndTable();
             }
+            ImGui::EndChild();
             ImGui::Separator();
-            if (ImGui::Button("閉じる", ImVec2(120, 0)))
+            if (ImGui::Button("閉じる", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
@@ -946,9 +728,17 @@ void ToolbarPanel::Render(bool isPlaying,
             else
             {
                 // 今のシーンをそのまま名前を付けて保存
+                const std::string savedName = std::filesystem::path(ctx.currentScenePath).filename().string();
                 if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
+                {
                     ctx.MarkSceneSaved(SceneSettingsFingerprint(*scene));
-                ctx.hotReloadFlash = 1.5f;
+                    ctx.Notify(ui::ToastKind::Success, "保存しました: " + savedName);
+                }
+                else
+                {
+                    Logger::Error("シーンを保存できませんでした: {}", ctx.currentScenePath);
+                    ctx.Notify(ui::ToastKind::Error, "保存に失敗しました: " + savedName + "（詳細は dx12_engine.log）");
+                }
             }
             ImGui::CloseCurrentPopup();
         }
@@ -1007,11 +797,12 @@ void ToolbarPanel::Render(bool isPlaying,
                 ofs.close();
 
                 Logger::Info("Created script: {}", scriptPath);
-                ctx.hotReloadFlash = 1.5f;
+                ctx.Notify(ui::ToastKind::Success, "スクリプトを作成しました: " + std::string(ctx.newScriptNameBuf) + ".lua");
             }
             else
             {
                 Logger::Warn("スクリプトは既に存在します: {}", scriptPath);
+                ctx.Notify(ui::ToastKind::Warn, "スクリプトは既に存在します: " + std::string(ctx.newScriptNameBuf) + ".lua");
             }
 
             // VS Code で開く
@@ -1085,11 +876,12 @@ void ToolbarPanel::Render(bool isPlaying,
                 ofs.close();
 
                 Logger::Info("Created shader: {}", shaderPath);
-                ctx.hotReloadFlash = 1.5f;
+                ctx.Notify(ui::ToastKind::Success, "シェーダーを作成しました: " + std::string(ctx.newShaderNameBuf) + ".hlsl");
             }
             else
             {
                 Logger::Warn("シェーダーは既に存在します: {}", shaderPath);
+                ctx.Notify(ui::ToastKind::Warn, "シェーダーは既に存在します: " + std::string(ctx.newShaderNameBuf) + ".hlsl");
             }
 
             // VS Code で開く

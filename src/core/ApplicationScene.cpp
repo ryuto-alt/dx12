@@ -1222,7 +1222,7 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
         m_editorCtx->currentScenePath = fullPath;
         m_currentSceneRel = rel;
         ProjectManager::SaveLastOpenedScene(fullPath);
-        m_editorCtx->hotReloadFlash = 1.5f;
+        m_editorCtx->Notify(ui::ToastKind::Info, "シーンを開きました: " + std::filesystem::path(fullPath).filename().string());
         m_editorLayer->RefreshAssetBrowser();
         // 開いたシーン(既存ゲーム / プロジェクト / Grid 無しテンプレ)に Grid が無ければ補う。
         // Scene::Initialize 済み(有効 cmdList)なのでここでメッシュ生成して安全。
@@ -1513,7 +1513,7 @@ void Application::EnterPlayMode()
                 m_isRunning = false;   // 動かないウィンドウを残さない
                 return;
             }
-            m_editorCtx->errorMessage = "シーンに Camera が配置されていません。\nHierarchy 右クリック → Camera で追加してください。";
+            m_editorCtx->errorMessage = "Play できません: シーンに Camera が配置されていません。\nヒエラルキーの右クリック → Camera で追加してください。";
             m_editorCtx->errorFlash = 1.0f;
             return;
         }

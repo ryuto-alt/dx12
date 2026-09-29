@@ -997,7 +997,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             if (changed)
                 ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<UIRect>>(
                     &reg, m_dragEntity, before, after, "UI Rect"));
-            // マルチ選択ぶんも 1 要素 1 コマンドで積む。Ctrl+Z 1 回では 1 要素しか戻らへんが、
+            // マルチ選択ぶんも 1 要素 1 コマンドで積む。Ctrl+Z 1 回では 1 要素しか戻らないが、
             // グループ用のコマンド型を足すより既存の仕組みに乗る方が壊れにくい。
             for (const auto& [other, startRect] : m_dragExtra)
             {
@@ -1104,7 +1104,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     std::vector<UiResolvedRect> rects;
     UISystem::ResolveRects(reg, ox, oy, vw, vh, rects);
     // スマートガイドの吸着候補は「前フレームの解決結果」を使う。移動中の要素の矩形は
-    // 開始矩形 + 移動量で解析的に求まるので、候補側（動かへん兄弟）は 1 フレーム古くて問題ない。
+    // 開始矩形 + 移動量で解析的に求まるので、候補側（動かない兄弟）は 1 フレーム古くて問題ない。
     m_lastRects = rects;
 
     const auto findRect = [&rects](entt::entity e) -> const UiResolvedRect* {
@@ -1319,7 +1319,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
                 else
                 {
                     // 既に複数選択の一部を掴んだ場合は選択を壊さずグループ移動に入る
-                    // （選択し直しになると「まとめて動かす」が永遠にできへん）。
+                    // （選択し直しになると「まとめて動かす」が永遠にできない）。
                     const bool groupDrag = ctx.IsSelected(target) && ctx.selectedEntities.size() > 1;
                     if (!groupDrag) ctx.Select(target);
 

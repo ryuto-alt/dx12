@@ -207,7 +207,7 @@ void RaycastSceneMeshes(entt::registry& reg,
             if (!mesh) continue;
 
             // 描画側（Application::RenderSceneMeshes）と同じくノード行列を掛ける。
-            // これを無視していたのが「ノードアニメ付きモデルで当たりがズレる」原因やった。
+            // これを無視していたのが「ノードアニメ付きモデルで当たりがズレる」原因だった。
             // 描画側は hasNodeAnim のときだけ掛けるが、meshNodeTransforms はモデル生成時に
             // 単位行列で初期化され、NodeAnimationComp が無ければ単位行列のまま
             // （Scene.cpp の spawn 処理）。よって無条件に掛けても結果は同じで、
@@ -344,7 +344,7 @@ std::vector<ScenePickHit> RaycastScene(entt::registry& reg,
 
             // アイコン: ワールド位置をスクリーンへ投影してピクセル半径で判定する。
             // 旧実装は 0.5m の固定ボックスで、遠景では豆粒・近景では巨大というデタラメな
-            // 当たりやった。EditorIconRenderer のアイコンは「常に一定スクリーンサイズの
+            // 当たりだった。EditorIconRenderer のアイコンは「常に一定スクリーンサイズの
             // ビルボード」なので、見た目と一致させるにはスクリーン基準しかない。
             XMFLOAT3 wpos{};
             XMStoreFloat3(&wpos, wm.r[3]);

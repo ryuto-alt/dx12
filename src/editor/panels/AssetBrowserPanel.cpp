@@ -828,8 +828,11 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             ImGui::EndTable();
         }
 
-        // Del キー: このパネルにフォーカスがあり選択中のアセットがあれば削除確認へ
+        // Del キー: このパネルにフォーカスがあり選択中のアセットがあれば削除確認へ。
+        // ★検索欄で文字を消すための Del では反応しない（WantTextInput）。ヒエラルキー / ビューポートの
+        //   Del（エンティティ削除）は「フォーカスのあるパネルだけ」で効くので、ここと同時には発火しない。
         if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+            && !ImGui::GetIO().WantTextInput
             && !m_selectedPath.empty()
             && std::filesystem::exists(m_selectedPath)
             && ImGui::IsKeyPressed(ImGuiKey_Delete))

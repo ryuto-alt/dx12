@@ -840,3 +840,29 @@ if(TARGET Gui)
     endif()
     add_test(NAME VirtualInputImGuiTests COMMAND VirtualInputImGuiTests)
 endif()
+
+# ============================================================================
+# エディタ操作性の基盤（第2波）: コマンド表 / 作成表 / ファジー検索 / トーストのキュー。
+# すべてヘッダオンリー・標準ライブラリだけ（ImGui も GPU も不要）なのでスタンドアロンでも回る。
+# ★ショートカット表の衝突・欠落（「Ctrl+O と書いてあるのに効かない」の再発）をここで起動前に落とす。
+# ============================================================================
+add_executable(EditorUxTests editor_ux_test.cpp)
+target_include_directories(EditorUxTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(EditorUxTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(EditorUxTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME EditorUxTests COMMAND EditorUxTests)
+
+# ヒエラルキーの親替えでワールド変換が保たれる（editor/TransformMath.h）。ECS（entt + Transform）が要る。
+if(TARGET ECS)
+    add_executable(ReparentTests reparent_test.cpp)
+    target_link_libraries(ReparentTests PRIVATE ECS)
+    target_include_directories(ReparentTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(ReparentTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ReparentTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ReparentTests COMMAND ReparentTests)
+endif()

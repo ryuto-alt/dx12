@@ -758,7 +758,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     if (!tc || !tc->_hf || !tc->_hf->IsValid())
     {
         ImGui::Separator();
-        ImGui::TextWrapped("地形エンティティがありません。上の「地形を作成」で作ってな。");
+        ImGui::TextWrapped("地形エンティティがありません。上の「地形を作成」で作ってください。");
         ImGui::End();
         return;
     }

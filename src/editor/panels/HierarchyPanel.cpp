@@ -4,6 +4,8 @@
 #include "editor/UiWidgets.h"
 #include "editor/EntityGlyph.h"
 #include "editor/UndoSystem.h"
+#include "editor/EditorCommands.h"   // 作成メニュー（エンティティ追加と共用）
+#include "editor/TransformMath.h"    // ワールド位置を保つ親替え
 #include "gui/VirtualInputImGui.h"   // dx12_imgui_find 用アンカー
 #include "ecs/Components.h"
 #include "scene/Scene.h"
@@ -113,7 +115,15 @@ void HierarchyPanel::HandleRowClick(EditorContext& ctx, entt::entity e)
     m_selectAnchor = e;
 }
 
-void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, entt::entity e)
+void HierarchyPanel::StartRename(entt::entity e, const std::string& currentName)
+{
+    m_renamingEntity = e;
+    m_renameWarmup = 3;  // 3フレーム分フォーカス安定を待つ
+    std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
+    strncpy_s(m_renameBuf, currentName.c_str(), _TRUNCATE);
+}
+
+void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, entt::entity e, bool flat)
 {
     if (!reg.all_of<NameTag>(e)) return;
     auto& tag = reg.get<NameTag>(e);
@@ -121,7 +131,8 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     // ID スコープを明示分離 (ImGui 1.92 の TreeNode + D&D + popup 衝突対策)
     ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
 
-    auto itKids = m_childIndex.find(e);
+    // フィルタ中の行は子の開閉をしない（一致した行だけを平らに並べる）。子を持つ親でも葉として描く。
+    auto itKids = flat ? m_childIndex.end() : m_childIndex.find(e);
     const std::vector<entt::entity>& children =
         (itKids == m_childIndex.end()) ? s_noChildren : itKids->second;
     bool hasChildren = !children.empty();
@@ -259,12 +270,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
 
     // ダブルクリックでリネーム開始
     if (itemHov && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-    {
-        m_renamingEntity = e;
-        m_renameWarmup = 3;  // 3フレーム分フォーカス安定を待つ
-        std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
-        strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
-    }
+        StartRename(e, tag.name);
     // シングルクリック選択（Ctrl=トグル / Shift=範囲）— ダブルクリック時は選択処理をスキップ
     else if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
     {
@@ -326,27 +332,19 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
                 return false;
             };
 
+            // ★ワールド位置（位置・向き・大きさ）を保ったまま親を替える（UE / Unity と同じ既定）。
+            //   parent だけ差し替えるとローカル値に新しい親の変換が掛かり直って見た目が飛ぶ。
+            //   Shift を押しながら落とすと従来どおり「ローカル値そのまま」で付け替える。
+            const bool keepWorld = !ImGui::GetIO().KeyShift;
             auto composite = std::make_unique<CompositeCommand>("Reparent");
             for (entt::entity d : moving)
             {
                 if (d == e || !reg.valid(d) || !reg.all_of<Transform>(d)) continue;
                 if (ancestorAlsoMoving(d)) continue;
-                // 循環防止: e が d の子孫でないかチェック。
-                // 祖先鎖が既にサイクル化した壊れデータでも無限ループしないよう深さ上限付き。
-                bool isCyclic = false;
-                entt::entity check = e;
-                int depth = 0;
-                while (check != entt::null && reg.valid(check) && reg.all_of<Transform>(check))
-                {
-                    if (check == d || ++depth >= 4096) { isCyclic = true; break; }
-                    check = reg.get<Transform>(check).parent;
-                }
-                if (isCyclic) continue;
-
-                auto& dt = reg.get<Transform>(d);
-                Transform before = dt;
-                dt.parent = e;
-                composite->Add(std::make_unique<TransformCommand>(&reg, d, before, dt));
+                // 循環（e が d の子孫）は Reparent が拒む（壊れた祖先鎖でも止まる深さ上限つき）。
+                Transform before = reg.get<Transform>(d);
+                if (!xform::Reparent(reg, d, e, keepWorld)) continue;
+                composite->Add(std::make_unique<TransformCommand>(&reg, d, before, reg.get<Transform>(d)));
             }
             if (!composite->Empty())
                 ctx.undoSystem.PushCommand(std::move(composite));
@@ -380,12 +378,12 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
     ui::PushMenuStyle();
     if (ImGui::BeginPopupContextItem("EntityCtx", ImGuiPopupFlags_MouseButtonRight))
     {
-        if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
+        if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4", cmd::ShortcutText("edit.rename")))  // 名前変更
+            StartRename(e, tag.name);
+        if (ImGui::MenuItem("選択にフォーカス", cmd::ShortcutText("edit.focus")))
         {
-            m_renamingEntity = e;
-            m_renameWarmup = 3;  // 3フレーム分フォーカス安定を待つ
-            std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
-            strncpy_s(m_renameBuf, tag.name.c_str(), _TRUNCATE);
+            if (!ctx.IsSelected(e)) ctx.Select(e);
+            ctx.pendingFocusSelection = true;
         }
         if (ImGui::MenuItem("\xe8\xa4\x87\xe8\xa3\xbd"))  // 複製
         {
@@ -431,11 +429,11 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         {
             if (ImGui::MenuItem("\xe8\xa6\xaa\xe3\x81\x8b\xe3\x82\x89\xe5\xa4\x96\xe3\x81\x99"))  // 親から外す
             {
-                auto& t = reg.get<Transform>(e);
-                Transform before = t;
-                t.parent = entt::null;
-                ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
-                    &reg, e, before, t));
+                // ワールド位置は保つ（外した瞬間に物が飛ばない）
+                Transform before = reg.get<Transform>(e);
+                if (xform::Reparent(reg, e, entt::null, /*keepWorld=*/true))
+                    ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
+                        &reg, e, before, reg.get<Transform>(e)));
             }
         }
 
@@ -458,11 +456,9 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     {
         if (reg.valid(ctx.requestRenameEntity) && reg.all_of<NameTag>(ctx.requestRenameEntity))
         {
-            m_renamingEntity = ctx.requestRenameEntity;
-            m_renameWarmup   = 3;
+            StartRename(ctx.requestRenameEntity, reg.get<NameTag>(ctx.requestRenameEntity).name);
             m_openNodes.insert(ctx.requestRenameEntity);
-            std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
-            strncpy_s(m_renameBuf, reg.get<NameTag>(ctx.requestRenameEntity).name.c_str(), _TRUNCATE);
+            m_scrollToEntity = ctx.requestRenameEntity;   // 画面外なら見える位置へ（F2 で行が見えない事故を避ける）
         }
         ctx.requestRenameEntity = entt::null;
     }
@@ -503,7 +499,6 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     // ---- ヘッダ（件数 + 全展開/全折りたたみ + 検索）----
     // オブジェクトが増えると縦に膨れて目的の行が探せなくなるので、
     // 「一発で全部畳む」と「名前で絞る」を常に手元に置く。
-    static char s_filterBuf[64] = {};
     {
         ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextFaint);
         ImGui::AlignTextToFramePadding();
@@ -520,7 +515,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
             for (const auto& kv : m_childIndex) m_openNodes.insert(kv.first);
 
         ImGui::SetNextItemWidth(-1.0f);
-        ui::SearchField("##HierFilter", s_filterBuf, sizeof(s_filterBuf), "名前で検索");
+        ui::SearchField("##HierFilter", m_filterBuf, sizeof(m_filterBuf), "名前で検索");
     }
     ImGui::Spacing();
 
@@ -565,15 +560,16 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         const float yMid = std::floor(rowStart.y + rowH * 0.5f) + 0.5f;
         dl->AddLine(ImVec2(xIn, yMid), ImVec2(rowStart.x + chevX - 2.0f, yMid), col);
     };
-
-    if (s_filterBuf[0] != '\0')
+    if (m_filterBuf[0] != '\0')
     {
-        // フィルタ中はツリーを畳んで、名前一致のフラットリストを表示（こちらも clipper で間引く）
+        // フィルタ中はツリーを畳んで、名前一致のフラットリストを表示（こちらも clipper で間引く）。
+        // 行は通常のツリー行と同じ DrawEntityNode（flat）で描く＝右クリックメニュー / D&D（親子付け替え）/
+        // 改名(F2・ダブルクリック) / 複数選択が、フィルタ中も通常時と同じに効く。
         m_rows.clear();
         for (auto [e, tag] : nameView.each())
         {
             if (reg.all_of<GridPlane>(e)) continue;
-            if (!ContainsCI(tag.name, s_filterBuf)) continue;
+            if (!ContainsCI(tag.name, m_filterBuf)) continue;
             m_rows.push_back({e, 0});
         }
         ImGuiListClipper fclip;
@@ -581,34 +577,8 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         while (fclip.Step())
         for (int fi = fclip.DisplayStart; fi < fclip.DisplayEnd; ++fi)
         {
-            const entt::entity e = m_rows[static_cast<size_t>(fi)].e;
-            const auto& tag = reg.get<NameTag>(e);
-
             zebra(fi);
-            ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
-            {
-                namespace th = dx12e::theme;
-                const bool selected = ctx.IsSelected(e);
-                const float rowX = ImGui::GetCursorScreenPos().x;
-                // 行全体を 1 つの Selectable にして、アイコンと名前を上から描く（階層行と同じ見た目）
-                ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0, 0, 0, 0));   // 面は PaintRowBg が塗る
-                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
-                ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0, 0, 0, 0));
-                if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_None, ImVec2(0, rowH)))
-                    HandleRowClick(ctx, e);   // フィルタ中も Shift 範囲 / Ctrl トグルが効く
-                ImGui::PopStyleColor(3);
-                dx12e::vinput_gui::AnchorLastItem("row", tag.name.c_str());
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                const ImVec2 mn = ImGui::GetItemRectMin();
-                const ImVec2 mx = ImGui::GetItemRectMax();
-                const float cy = (mn.y + mx.y) * 0.5f;
-                PaintRowBg(dl, mn.y, mx.y, selected, ImGui::IsItemHovered(), ImGui::IsItemActive());
-                const EntityGlyph g = PickEntityGlyph(reg, e, false);
-                ui::DrawIconCentered(dl, g.glyph, ImVec2(rowX + 12.0f, cy), ImGui::GetColorU32(*g.tint), 16.0f);
-                dl->AddText(ImVec2(rowX + 26.0f, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
-                            ImGui::GetColorU32(th::Text), tag.name.c_str());
-            }
-            ImGui::PopID();
+            DrawEntityNode(reg, ctx, m_rows[static_cast<size_t>(fi)].e, /*flat=*/true);
         }
     }
     else
@@ -670,40 +640,14 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     }
 
     ImGui::PopStyleVar(2);     // ItemSpacing / FramePadding
-
-    // ヒエラルキーの空白部分への D&D（親子解除）
-    if (ImGui::BeginDragDropTarget())
-    {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
-        {
-            const entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
-            // 行の上と同じく、掴んだ行が選択に含まれていれば選択ぜんぶをルートへ出す（グループ解除）。
-            std::vector<entt::entity> moving;
-            if (ctx.IsSelected(droppedEntity)) moving = ctx.selectedEntities;
-            else                               moving.push_back(droppedEntity);
-
-            auto composite = std::make_unique<CompositeCommand>("Unparent");
-            for (entt::entity d : moving)
-            {
-                if (!reg.valid(d) || !reg.all_of<Transform>(d)) continue;
-                auto& t = reg.get<Transform>(d);
-                if (t.parent == entt::null) continue;
-                Transform before = t;
-                t.parent = entt::null;
-                composite->Add(std::make_unique<TransformCommand>(&reg, d, before, t));
-            }
-            if (!composite->Empty())
-                ctx.undoSystem.PushCommand(std::move(composite));
-        }
-        ImGui::EndDragDropTarget();
-    }
-
     // ヒエラルキーにフォーカスがある状態で Del キー → 選択エンティティを削除。
     // 実際の削除は pendingDeletions 経由でフレーム境界に行われ、Undo も積まれる。
-    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
-        && m_renamingEntity == entt::null
-        && ctx.HasSelection()
-        && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
+    // ★フォーカスのあるパネルだけが反応する（ビューポート側の Del は focusedPanel==None のときだけ）。
+    //   名前フィルタなどテキスト入力中は反応しない（"Del" で文字を消したいだけなのに削除される事故を防ぐ）。
+    const bool keyOk = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
+                    && m_renamingEntity == entt::null
+                    && !ImGui::GetIO().WantTextInput;
+    if (keyOk && ctx.HasSelection() && ImGui::IsKeyPressed(ImGuiKey_Delete, false))
     {
         for (auto e : ctx.selectedEntities)
             if (reg.valid(e)) ctx.pendingDeletions.push_back(e);
@@ -711,9 +655,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     }
 
     // Ctrl+G: 選択をグループ化（空の親にまとめる）。実処理は Application のフレーム境界。
-    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)
-        && m_renamingEntity == entt::null
-        && ctx.HasSelection()
+    if (keyOk && ctx.HasSelection()
         && ImGui::GetIO().KeyCtrl
         && ImGui::IsKeyPressed(ImGuiKey_G, false))
     {
@@ -722,144 +664,73 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
 
     ImGui::Separator();
 
-    // Add entity menu
+    // Add entity menu（作成項目は editor/EditorCreateTable.h の表。空白の右クリックと共用）
     if (ImGui::Button(ICON_PLUS " エンティティ追加"))
         ImGui::OpenPopup("AddEntityPopup");
 
     ui::PushMenuStyle();
     if (ImGui::BeginPopup("AddEntityPopup"))
     {
-        if (ImGui::MenuItem("Box"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__primitive_box__";
-            req.position = {0.0f, 0.5f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        if (ImGui::MenuItem("Sphere"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__primitive_sphere__";
-            req.position = {0.0f, 0.5f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        if (ImGui::MenuItem("Plane"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__primitive_plane__";
-            req.position = {0.0f, 0.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        if (ImGui::MenuItem("Empty"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__empty__";
-            req.position = {0.0f, 0.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        // 地形（ハイトフィールド）。エンティティ生成そのものは解像度/サイズを決めてからなので、
-        // ここでは地形ツール窓を開くだけ（窓の「＋ 地形を作成」で作る）。
-        if (ImGui::MenuItem("Terrain（地形・山を作る）"))
-        {
-            ctx.showTerrainEditor = true;
-        }
-        // スカルプト（任意メッシュの頂点編集）。地形と同じく素体の分割数を決めてからなので、
-        // ここではスカルプト窓を開くだけ（窓の「＋ 素体を作成」で作る）。
-        if (ImGui::MenuItem("Sculpt（異形・洞窟・アーチ・岩）"))
-        {
-            ctx.showSculptEditor = true;
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Camera"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__camera__";
-            req.position = {0.0f, 2.0f, -5.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Directional Light"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__directional_light__";
-            req.position = {0.0f, 5.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        if (ImGui::MenuItem("Point Light"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__point_light__";
-            req.position = {0.0f, 3.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        if (ImGui::MenuItem("Spot Light"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__spot_light__";
-            req.position = {0.0f, 5.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        ImGui::Separator();
-        if (ImGui::BeginMenu("Gimmick（ステージ部品）"))
-        {
-            auto spawnGimmick = [&](const char* marker, float y)
-            {
-                PendingSpawnRequest req;
-                req.modelPath = marker;
-                req.position = {0.0f, y, 0.0f};
-                ctx.pendingSpawns.push_back(req);
-            };
-            if (ImGui::MenuItem("Spike Pulse（上下するトゲ）")) spawnGimmick("__gimmick_spike__", 0.7f);
-            if (ImGui::MenuItem("Slide Wall（左右に動く壁）")) spawnGimmick("__gimmick_slide__", 0.75f);
-            if (ImGui::MenuItem("Static Wall（動かない壁）"))   spawnGimmick("__gimmick_wall__", 0.7f);
-            ImGui::EndMenu();
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Particle Emitter（配置エフェクト）"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__particle_emitter__";
-            req.position = {0.0f, 1.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        if (ImGui::MenuItem("Trigger（イベント範囲）"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__trigger__";
-            req.position = {0.0f, 1.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        if (ImGui::MenuItem("Decal（投影デカール・弾痕/汚れ）"))
-        {
-            PendingSpawnRequest req;
-            req.modelPath = "__decal__";
-            req.position = {0.0f, 1.0f, 0.0f};
-            ctx.pendingSpawns.push_back(req);
-        }
-        ImGui::Separator();
-        if (ImGui::BeginMenu("UI（ゲーム内UI）"))
-        {
-            // Image/Text/Button は Application 側で「選択エンティティが UI ツリー内なら
-            // その子 → 無ければ最初の UICanvas の子 → Canvas 不在なら自動生成」に配置される
-            auto spawnUi = [&](const char* marker)
-            {
-                PendingSpawnRequest req;
-                req.modelPath = marker;
-                req.position = {0.0f, 0.0f, 0.0f};
-                ctx.pendingSpawns.push_back(req);
-            };
-            if (ImGui::MenuItem("Canvas（UIルート）"))       spawnUi("__ui_canvas__");
-            if (ImGui::MenuItem("Image（画像/単色矩形）"))   spawnUi("__ui_image__");
-            if (ImGui::MenuItem("Text（テキスト）"))         spawnUi("__ui_text__");
-            if (ImGui::MenuItem("Button（ボタン）"))         spawnUi("__ui_button__");
-            if (ImGui::MenuItem("Slider（スライダー）"))     spawnUi("__ui_slider__");
-            if (ImGui::MenuItem("Toggle（トグル）"))         spawnUi("__ui_toggle__");
-            if (ImGui::MenuItem("ScrollView（スクロール）")) spawnUi("__ui_scrollview__");
-            ImGui::EndMenu();
-        }
+        cmd::DrawCreateMenu(ctx);
         ImGui::EndPopup();
     }
     ui::PopMenuStyle();
+
+    // ---- 空白部分（行の下の残り全部）----
+    // 以前の「空白への D&D」は直前の行を的にしていて、空白に落としても効かず、最後の行に落とすと
+    // 「子にする」と「親を外す」が同じフレームで両方走りかねなかった。残りの領域を 1 つの項目にして的にする。
+    //   ・右クリック: エンティティ作成メニュー（作成位置はエディタカメラの前 / 床との交点）
+    //   ・ドロップ: 親を外してルートへ（ワールド位置は保つ。Shift でローカル値そのまま）
+    //   ・左クリック: 選択解除
+    {
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::InvisibleButton("##HierBg", ImVec2((std::max)(avail.x, 1.0f), (std::max)(avail.y, 24.0f)));
+        dx12e::vinput_gui::AnchorLastItem("hier-bg", "空白");
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift)
+            ctx.ClearSelection();
+
+        if (ImGui::BeginDragDropTarget())
+        {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("HIERARCHY_ENTITY"))
+            {
+                const entt::entity droppedEntity = *static_cast<const entt::entity*>(payload->Data);
+                // 行の上と同じく、掴んだ行が選択に含まれていれば選択ぜんぶをルートへ出す（グループ解除）。
+                std::vector<entt::entity> moving;
+                if (ctx.IsSelected(droppedEntity)) moving = ctx.selectedEntities;
+                else                               moving.push_back(droppedEntity);
+
+                const bool keepWorld = !ImGui::GetIO().KeyShift;
+                auto composite = std::make_unique<CompositeCommand>("Unparent");
+                for (entt::entity d : moving)
+                {
+                    if (!reg.valid(d) || !reg.all_of<Transform>(d)) continue;
+                    if (reg.get<Transform>(d).parent == entt::null) continue;
+                    Transform before = reg.get<Transform>(d);
+                    if (!xform::Reparent(reg, d, entt::null, keepWorld)) continue;
+                    composite->Add(std::make_unique<TransformCommand>(&reg, d, before, reg.get<Transform>(d)));
+                }
+                if (!composite->Empty())
+                    ctx.undoSystem.PushCommand(std::move(composite));
+            }
+            ImGui::EndDragDropTarget();
+        }
+
+        ui::PushMenuStyle();
+        if (ImGui::BeginPopupContextItem("##HierBgCtx", ImGuiPopupFlags_MouseButtonRight))
+        {
+            ImGui::TextDisabled("エンティティを作成");
+            ImGui::Separator();
+            cmd::DrawCreateMenu(ctx);
+            if (!ctx.clipboard.empty())
+            {
+                ImGui::Separator();
+                if (ImGui::MenuItem("貼り付け", cmd::ShortcutText("edit.paste")))
+                    ctx.pendingPastes = ctx.clipboard;
+            }
+            ImGui::EndPopup();
+        }
+        ui::PopMenuStyle();
+    }
 
     ImGui::End();
 }

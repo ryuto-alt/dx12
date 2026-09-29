@@ -31,6 +31,7 @@ class InspectorPanel;
 class SceneViewPanel;
 class AssetBrowserPanel;
 class ConsolePanel;
+class CommandPalette;   // Ctrl+K / Ctrl+P（editor/CommandPalette.h）
 
 class EditorLayer
 {
@@ -113,23 +114,14 @@ private:
 
     EditorContext* m_ctx = nullptr;
     bool m_dockspaceBuilt = false;
-    // ツール窓が「1個でも開いているか」の前フレーム状態。空⇔非空に変わった時だけ
-    // レイアウトを作り直す（右下タブ領域を出す/畳んで Inspector を全高に戻す）。
-    bool m_prevAnyToolShown = false;
 
-    // ★ユーザーがドラッグで決めた分割比。BuildDefaultLayout は DockBuilderRemoveNode で
-    //   ドックツリーを丸ごと壊すので、既定値を焼き込んだままだと**ツール窓を 1 個開閉する
-    //   たびに調整した幅が既定へ戻る**（毎日使うと効いてくる種類の不便）。
-    //   作り直す前に実ノードの寸法から比を吸い上げ、作り直しでそれを使う。
-    //   ＝「ツール窓の開閉でレイアウトを作り直す」という元の意図は保ったまま、
-    //     ユーザーの調整だけを引き継ぐ。
-    f32 m_ratioLeft        = 0.18f;   // 左カラム(ヒエラルキー) / ドックスペース全体
-    f32 m_ratioRight       = 0.24f;   // 右カラム / (全体 - 左)
-    f32 m_ratioBottom      = 0.33f;   // 中央下(アセットブラウザ) / センター
-    f32 m_ratioRightBottom = 0.42f;   // 右下(ツールタブ) / 右カラム
-    // 比を吸い上げるためのノード id（BuildDefaultLayout が毎回書く。未構築は 0）。
-    ImGuiID m_nodeLeft = 0, m_nodeRightCol = 0, m_nodeBottom = 0, m_nodeRightBottom = 0;
-    void CaptureDockRatios();
+    // ドックの既定の分割比。★レイアウトは起動時と「レイアウトをリセット」でしか作らない。
+    //   以前はツール窓の開閉のたびにドックを壊して作り直しており、実ノードから吸い上げた比の
+    //   丸め誤差が積もって、開閉するほどビューポートが縮んでいった（1145x645 → 320x180）。
+    //   今はツール窓が右カラムの「インスペクター」のタブとして入るだけで、分割は一切変わらない。
+    static constexpr f32 kRatioLeft   = 0.18f;   // 左カラム(ヒエラルキー) / ドックスペース全体
+    static constexpr f32 kRatioRight  = 0.24f;   // 右カラム / (全体 - 左)
+    static constexpr f32 kRatioBottom = 0.33f;   // 中央下(アセットブラウザ) / センター
 
     ImVec2 m_viewportPos  = {0, 0};
     ImVec2 m_viewportSize = {1, 1};
@@ -140,6 +132,7 @@ private:
     std::unique_ptr<SceneViewPanel>    m_sceneView;
     std::unique_ptr<AssetBrowserPanel> m_assetBrowser;
     std::unique_ptr<ConsolePanel>      m_console;
+    std::unique_ptr<CommandPalette>    m_palette;
     class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
 };
 

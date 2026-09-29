@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env pwsh
 # MCP サーバを配布リポジトリ https://github.com/ryuto-alt/dx12-mcp へ同期する。
-# ソース・オブ・トゥルースはこのフォルダ(tools/mcp-server)。変更をコミットしたら実行してや。
+# ソース・オブ・トゥルースはこのフォルダ(tools/mcp-server)。変更をコミットしたら実行してください。
 # 使い方: pwsh -ExecutionPolicy Bypass -File tools\mcp-server\publish.ps1 [-Message "コミットメッセージ"]
 param([string]$Message = "sync from dx12 engine repo")
 $ErrorActionPreference = "Stop"
@@ -22,7 +22,7 @@ git -C $work config user.name  (git -C $engineRepo config user.name)
 git -C $work config user.email (git -C $engineRepo config user.email)
 
 # 配布対象ファイルをミラー（node_modules / ログ / .git / publish.ps1 自身は除外）
-# ponytail: 列挙やなくglob。ファイル追加したのにここに書き忘れる事故(ui*.ts 漏れ)を防ぐ。
+# ponytail: 列挙ではなくglob。ファイル追加したのにここに書き忘れる事故(ui*.ts 漏れ)を防ぐ。
 $files = Get-ChildItem $here -File -Force | Where-Object {
   $_.Name -ne "publish.ps1" -and
   ($_.Extension -in ".ts", ".json", ".ps1", ".sh", ".md" -or $_.Name -in ".mcp.json.example", ".gitignore")
@@ -49,5 +49,5 @@ if (git -C $work status --porcelain) {
   git -C $work push
   Write-Host "dx12-mcp へ同期完了" -ForegroundColor Green
 } else {
-  Write-Host "差分なし。同期不要や" -ForegroundColor Yellow
+  Write-Host "差分なし。同期不要です" -ForegroundColor Yellow
 }

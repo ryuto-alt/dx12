@@ -74,3 +74,13 @@ target_sources(Editor PRIVATE
 target_sources(Editor PRIVATE
     UiWidgets.cpp
 )
+
+# 第2波（操作性の基盤）: コマンド表 + ショートカット処理 / コマンドパレット / トースト通知。
+# 表そのもの（EditorCommandTable.h / ToolWindows.h / EditorCreateTable.h）と純ロジック
+# （FuzzyMatch.h / ToastQueue.h / TransformMath.h）はヘッダオンリー。tests/editor_ux_test.cpp・
+# tests/reparent_test.cpp が単体で検証する。
+target_sources(Editor PRIVATE
+    EditorCommands.cpp
+    CommandPalette.cpp
+    Toast.cpp
+)

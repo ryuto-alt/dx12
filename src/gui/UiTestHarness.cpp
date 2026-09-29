@@ -7,6 +7,9 @@
 #include "ecs/Components.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorIcons.h"   // ICON_PLUS（追加ボタンの参照名）
+#include "editor/EditorCommands.h" // コマンド表（ショートカット / window.* コマンド）
+#include "editor/ToolWindows.h"    // ツール窓レジストリ
+#include "editor/Toast.h"          // トースト通知
 #include "gui/DeepDiagnostics.h"
 #include "scene/Scene.h"
 #include "ui/UISystem.h"   // ゲーム UI のフォーカス検査（合成ポインタ / WantsNav）
@@ -29,6 +32,7 @@
 #include "gui/ImGuizmo.h"   // ImVec2/ImDrawList を使うので imgui.h より後に置くこと
 #pragma warning(pop)
 
+#include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -190,6 +194,8 @@ const ImGuiTestItemInfo* SelectLastItem(ImGuiTestItemList& items)
         const ImGuiTestItemInfo* item = items[i];
         if (item == nullptr || item->ID == 0 || item->Window == nullptr) continue;
         if (std::strstr(item->DebugLabel, ICON_PLUS) != nullptr) continue;
+        if (std::strstr(item->DebugLabel, "HierBg") != nullptr) continue;      // 空白の受け皿（行ではない）
+        if (item->RectFull.GetHeight() > 60.0f) continue;                       // 行より明らかに大きい＝空白領域
         return item;
     }
     return nullptr;
@@ -215,6 +221,7 @@ void ClickEveryHierarchyItem(ImGuiTestContext* ctx, int maxItems)
         const ImGuiTestItemInfo* item = items[i];
         if (item == nullptr || item->ID == 0 || item->Window == nullptr) continue;
         if (std::strstr(item->DebugLabel, ICON_PLUS) != nullptr) continue;
+        if (std::strstr(item->DebugLabel, "HierBg") != nullptr || item->RectFull.GetHeight() > 60.0f) continue;   // 空白の受け皿
         if (!ctx->ItemExists(item->ID)) continue;   // クリッパで消えた行は飛ばす
 
         ctx->MouseMove(item->ID);
@@ -462,16 +469,15 @@ void T_AttachScript(ImGuiTestContext* ctx)
 
 // ---- パネル ----
 
-// ツール窓を開け閉めしても、ユーザーが調整したパネル幅が既定へ戻らないこと。
+// ツール窓を何度開け閉めしても、ビューポートとパネルの分割が一切変わらないこと。
 //
-// ★何を守っているか
-//   EditorLayer::BuildDefaultLayout は DockBuilderRemoveNode でドックツリーを丸ごと壊して
-//   建て直す。そして「ツール窓が 1 個でも開いているか」が変わるたびに呼ばれる
-//   （右下のツールタブ領域を出す / 畳んで Inspector を右カラム全高へ戻すため）。
-//   分割比を既定値で焼き込んだままだと、**ライティング窓を 1 回開け閉めしただけで
-//   ドラッグして決めたヒエラルキーの幅が 18% に戻る**。毎日触ると効いてくる種類の不便で、
-//   しかも「自分が何かしたせい」に見えないので原因にたどり着きにくい。
-//   直す側は「壊す前に実ノードから比を吸い上げて、建て直しでそれを使う」。
+// ★何を守っているか（2 つの不具合）
+//   (1) ツール窓を開閉するたびにドックを壊して作り直していたため、ユーザーがドラッグで決めた幅が
+//       既定へ戻った。
+//   (2) 作り直しのたびに「実ノードの寸法から吸い上げた分割比」の丸め誤差が積もり、開閉を繰り返すほど
+//       ビューポートが縮んだ（実機で 1145x645 → 320x180）。
+//   今はツール窓が右カラムのインスペクターのタブとして入るだけで、ドックは作り直さない。
+//   ここでは「ヒエラルキーの幅を広げてから、窓を 6 往復開閉しても、幅もビューポートも動かない」を確かめる。
 void T_DockLayoutSurvivesToolToggle(ImGuiTestContext* ctx)
 {
     EditorContext* ed = Ed();
@@ -479,10 +485,11 @@ void T_DockLayoutSurvivesToolToggle(ImGuiTestContext* ctx)
 
     const char* kHierarchy = "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc";
 
-    Step(ctx, "ツール窓を閉じた状態から始める");
-    const bool wasPost = ed->showPostProcess;
-    ed->showPostProcess = false;
-    ctx->Yield(3);
+    Step(ctx, "ツール窓を全部閉じた状態から始める（診断パネルは検査中なので触らない）");
+    const bool wasDiag = ed->showEngineDiagnostics;
+    tools::CloseAll(*ed);
+    ed->showEngineDiagnostics = wasDiag;
+    ctx->Yield(6);
 
     ImGuiWindow* hier = ImGui::FindWindowByName(kHierarchy);
     IM_CHECK(hier != nullptr);
@@ -490,8 +497,7 @@ void T_DockLayoutSurvivesToolToggle(ImGuiTestContext* ctx)
 
     Step(ctx, "ヒエラルキーの幅を既定から動かす（ユーザーのドラッグ相当）");
     const f32 before = hier->DockNode->Size.x;
-    const f32 target = before * 1.6f;          // 既定 18% → 約 29% 相当
-    ImGui::DockBuilderSetNodeSize(hier->DockNode->ID, ImVec2(target, hier->DockNode->Size.y));
+    ImGui::DockBuilderSetNodeSize(hier->DockNode->ID, ImVec2(before * 1.6f, hier->DockNode->Size.y));
     ImGui::DockBuilderFinish(hier->DockNode->ID);
     ctx->Yield(4);
 
@@ -500,26 +506,41 @@ void T_DockLayoutSurvivesToolToggle(ImGuiTestContext* ctx)
     const f32 widened = hier->DockNode->Size.x;
     IM_CHECK_GT(widened, before * 1.2f);       // 実際に広がったことを確かめてから本題へ
 
-    Step(ctx, "ツール窓を開く（ここでレイアウトが建て直される）");
-    ed->showPostProcess = true;
-    ctx->Yield(5);
+    const f32 vpW0 = ed->viewportW, vpH0 = ed->viewportH;
+    IM_CHECK_GT(vpW0, 100.0f);
+    IM_CHECK_GT(vpH0, 50.0f);
 
-    Step(ctx, "ツール窓を閉じる（もう一度建て直される）");
-    ed->showPostProcess = false;
-    ctx->Yield(5);
+    // 右タブの窓（ドックに入る）と浮かぶ窓（NoDocking）を混ぜて 6 往復
+    for (int cycle = 0; cycle < 6; ++cycle)
+    {
+        Step(ctx, "ツール窓を開閉 %d/6", cycle + 1);
+        ed->showPostProcess = true;
+        ed->showSkybox = true;
+        ed->showEngineSettings = true;
+        ed->showVersionControl = true;
+        ed->showLighting = true;
+        ctx->Yield(8);
+
+        const f32 vpWNow = ed->viewportW, vpHNow = ed->viewportH;
+        if (std::fabs(vpWNow - vpW0) > 1.0f || std::fabs(vpHNow - vpH0) > 1.0f)
+        { IM_ERRORF("ツール窓を開いたらビューポートが変わった: %.1fx%.1f → %.1fx%.1f", vpW0, vpH0, vpWNow, vpHNow); break; }
+
+        ed->showPostProcess = false;
+        ed->showSkybox = false;
+        ed->showEngineSettings = false;
+        ed->showVersionControl = false;
+        ed->showLighting = false;
+        ctx->Yield(8);
+    }
 
     hier = ImGui::FindWindowByName(kHierarchy);
     IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
     const f32 after = hier->DockNode->Size.x;
-
-    // 建て直しを 2 回挟んでも、広げた幅が保たれていること。
-    // 修正前はここが既定幅（before 相当）に戻っていた。
-    ctx->LogInfo("hierarchy width: 既定 %.1f → 広げた %.1f → 開閉後 %.1f", before, widened, after);
-    IM_CHECK_GT(after, before * 1.2f);
-    IM_CHECK_LT(std::fabs(after - widened), widened * 0.15f);
-
-    ed->showPostProcess = wasPost;
-    ctx->Yield(3);
+    ctx->LogInfo("hierarchy width: 既定 %.1f → 広げた %.1f → 開閉後 %.1f / viewport %.1fx%.1f → %.1fx%.1f",
+                 before, widened, after, vpW0, vpH0, ed->viewportW, ed->viewportH);
+    IM_CHECK_LT(std::fabs(after - widened), 1.5f);              // 幅が 1px 以上動いていない
+    IM_CHECK_LT(std::fabs(ed->viewportW - vpW0), 1.0f);         // ビューポートが縮んでいない
+    IM_CHECK_LT(std::fabs(ed->viewportH - vpH0), 1.0f);
 }
 
 // Inspector の一括編集: 複数選択していると、プライマリの変更が同じ選択の全員へ届くこと。
@@ -690,35 +711,26 @@ void T_OpenAllToolWindows(ImGuiTestContext* ctx)
     // optional=true: 環境によって存在しない窓（MCP ブリッジ未起動など）。出なくても失敗にしない。
     // textOnlyOk=true: 中身が案内テキストだけになる状態が正常な窓。GatherItems は ID 付き
     //   アイテムしか拾わない（TextDisabled は ID 無し）ので、空判定から除外する。
-    struct Entry { bool EditorContext::* flag; const char* window; const char* label; bool optional; bool textOnlyOk; };
-    static const Entry kEntries[] = {
-        { &EditorContext::showPostProcess,     "//Post Process",            "Post Process",           false },
-        // マスター OFF / 有効エフェクト 0 件なら案内文だけ＝正常（Application.cpp の showPostParams 参照）
-        { &EditorContext::showPostParams,      "//Post Process パラメータ", "Post Process パラメータ", false, true },
-        { &EditorContext::showSkybox,          "//Skybox / IBL",            "Skybox / IBL",           false },
-        { &EditorContext::showSSAO,            "//SSAO",                    "SSAO",                   false },
-        { &EditorContext::showScreenSpaceGi,   "//SSR / SSGI",              "SSR / SSGI",             false },
-        { &EditorContext::showVolumetricFog,   "//Volumetric Fog",          "Volumetric Fog",         false },
-        { &EditorContext::showEngineSettings,  "//エンジン設定",            "エンジン設定",           false },
-        { &EditorContext::showSceneFlow,       "//Scene Flow",              "Scene Flow",             false },
-        { &EditorContext::showProject,         "//Project",                 "Project",                false },
-        { &EditorContext::showVersionControl,  "//Git 変更###Version Control (Git)", "Git 変更",      false },
-        { &EditorContext::showMcpBridge,       "//MCP / AI Bridge",         "MCP / AI Bridge",        true  },
-        { &EditorContext::showNetworkStatus,   "//Network",                 "Network",                false },
-        { &EditorContext::showNetworkSettings, "//Network 設定",            "Network 設定",           false },
-        { &EditorContext::showBuildSettings,   kWinBuild,                   "ビルド設定",             false },
-        { &EditorContext::showTransitionPreview, "//トランジション",        "トランジション",         false },
-        // ※ 診断パネル自身はここに入れない。検査中にユーザーが見ている窓を勝手に開閉・
-        //   フォーカス移動させると「検査の途中で UI が消えた」ように見えるため。
-        //   パネルの描画自体は検査中ずっと画面に出ている＝毎フレーム検査されている。
-    };
+    struct Entry { bool EditorContext::* flag; std::string window; const char* label; bool optional; bool textOnlyOk; };
+    // ★窓の一覧は editor/ToolWindows.h のレジストリから作る（窓を足しても、ここの追加漏れが起きない）。
+    //   ImGui 上の窓名を持つもの（右タブの窓とトランジション）が対象。浮かぶ窓は T_NewFloatingPanels が見る。
+    //   optional: 環境によって存在しない窓（MCP ブリッジ未起動）。textOnlyOk: 案内文だけが正常な窓
+    //   （マスター OFF / 有効エフェクト 0 件のポストパラメータ。Application.cpp の showPostParams 参照）。
+    // ※ 診断パネル自身はここに入れない（検査中に開閉・フォーカス移動しない）。
+    std::vector<Entry> kEntries;
+    for (const tools::Desc& d : tools::kAll)
+    {
+        if (!d.imguiName || !d.imguiName[0]) continue;
+        kEntries.push_back({ d.flag, std::string("//") + d.imguiName, d.title,
+                             std::strcmp(d.id, "mcp") == 0, std::strcmp(d.id, "postParams") == 0 });
+    }
 
     // まとめて開く。1つずつ開閉すると「ツール窓が 0 個」になった瞬間に右下ドックノードが
     // 畳まれ、次の窓が数フレーム 0 サイズ扱い＝「出ていない」と誤判定されるため。
     // 元の開閉状態は最後に戻す（診断パネル自身を閉じてしまわないように）。
     Step(ctx, "ツール窓をすべて開く");
-    bool wasOpen[IM_ARRAYSIZE(kEntries)] = {};
-    for (int i = 0; i < IM_ARRAYSIZE(kEntries); ++i)
+    std::vector<char> wasOpen(kEntries.size(), 0);
+    for (size_t i = 0; i < kEntries.size(); ++i)
     {
         wasOpen[i] = Ed()->*(kEntries[i].flag);
         Ed()->*(kEntries[i].flag) = true;
@@ -730,7 +742,7 @@ void T_OpenAllToolWindows(ImGuiTestContext* ctx)
     for (const Entry& e : kEntries)
     {
         Step(ctx, "ツール窓を検査: %s", e.label);
-        const ImGuiID id = FocusWindow(ctx, e.window);
+        const ImGuiID id = FocusWindow(ctx, e.window.c_str());
         if (id == 0)
         {
             if (e.optional)
@@ -752,8 +764,8 @@ void T_OpenAllToolWindows(ImGuiTestContext* ctx)
         ctx->Yield(3);
     }
 
-    for (int i = 0; i < IM_ARRAYSIZE(kEntries); ++i)
-        Ed()->*(kEntries[i].flag) = wasOpen[i];
+    for (size_t i = 0; i < kEntries.size(); ++i)
+        Ed()->*(kEntries[i].flag) = wasOpen[i] != 0;
     ctx->Yield(6);
 
     if (!bad.empty())
@@ -892,8 +904,11 @@ void T_LayoutReset(ImGuiTestContext* ctx)
     EditorContext* ed = Ed();
     IM_CHECK(ed != nullptr);
     Step(ctx, "ドックレイアウトをリセット（ドックツリーの再構築）");
+    // リセットは全ツール窓を閉じる。診断パネル自身も表の一員だが、検査の途中で閉じないよう戻しておく。
+    const bool wasDiag = ed->showEngineDiagnostics;
     ed->resetLayout = true;
     ctx->Yield(20);
+    ed->showEngineDiagnostics = wasDiag;
     IM_CHECK_NO_RET(!ed->resetLayout);   // 消費されていない＝リセットが走っていない
 }
 
@@ -2438,6 +2453,242 @@ void T_DeepPrefabRoundtrip(ImGuiTestContext* ctx)
     if (ec) ctx->LogWarning("テスト用 .prefab の削除に失敗: %s", createdFile.c_str());
 }
 
+// ---- 第2波: 操作性の基盤 ----
+
+// ツール窓レジストリ（表示 / ツール / 窓▾ の共通の表）が一貫していること。
+// ★以前は 3 つのメニューが別々の一覧を持ち、UIエディタが「窓▾」にしか無い・「すべて閉じる」が窓を
+//   取りこぼす、が起きていた。表が 1 つなら「全窓が同じ操作で開閉でき、全部閉じられる」ことを保証できる。
+void T_ToolRegistry(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    const cmd::Env env{g_app ? g_app->GetScene() : nullptr, PathResolver::AssetsDir()};
+
+    Step(ctx, "レジストリの整合（id / 開閉フラグの重複無し・ドック先の窓名）");
+    std::set<std::string> ids;
+    std::vector<bool EditorContext::*> flags;   // メンバポインタは < で比べられないので set にしない
+    std::string bad;
+    for (const tools::Desc& d : tools::kAll)
+    {
+        if (!d.id || !d.id[0] || !d.title || !d.title[0] || !d.icon || !d.category || !d.flag)
+            bad += std::string("\n  ・空の項目: ") + (d.id ? d.id : "(null)");
+        if (!ids.insert(d.id).second)   bad += std::string("\n  ・id 重複: ") + d.id;
+        if (std::find(flags.begin(), flags.end(), d.flag) != flags.end()) bad += std::string("\n  ・フラグ重複: ") + d.id;
+        flags.push_back(d.flag);
+        if (d.slot == tools::DockSlot::RightTab && (!d.imguiName || !d.imguiName[0]))
+            bad += std::string("\n  ・右タブ窓なのに窓名が無い: ") + d.id;
+    }
+    if (!bad.empty()) IM_ERRORF("ツール窓レジストリに不整合があります:%s", bad.c_str());
+
+    // 診断パネル自身は検査中に閉じない（開閉を試すのは別の窓だけ）
+    const bool wasDiag = ed->showEngineDiagnostics;
+
+    Step(ctx, "全窓を window.<id> コマンドで開閉（トグル）");
+    for (const tools::Desc& d : tools::kAll)
+    {
+        if (d.flag == &EditorContext::showEngineDiagnostics) continue;
+        const bool start = ed->*(d.flag);
+        cmd::Execute(*ed, env, std::string("window.") + d.id);
+        if (ed->*(d.flag) == start) bad += std::string("\n  ・開閉できない: ") + d.id;
+        cmd::Execute(*ed, env, std::string("window.") + d.id);
+        if (ed->*(d.flag) != start) bad += std::string("\n  ・元に戻らない: ") + d.id;
+    }
+    if (!bad.empty()) IM_ERRORF("window.<id> コマンドで開閉できない窓があります:%s", bad.c_str());
+
+    Step(ctx, "全部開いてから「すべて閉じる」で 1 つも残らない");
+    for (const tools::Desc& d : tools::kAll) ed->*(d.flag) = true;
+    cmd::Execute(*ed, env, "view.closeTools");
+    for (const tools::Desc& d : tools::kAll)
+        if (ed->*(d.flag)) bad += std::string("\n  ・閉じ残し: ") + d.id;
+    ed->showEngineDiagnostics = wasDiag;
+    if (!bad.empty()) IM_ERRORF("「すべて閉じる」が取りこぼしています:%s", bad.c_str());
+    ctx->Yield(4);
+}
+
+// ショートカット（コマンド表）が実際に効くこと。
+// Esc=選択解除 / F2=改名 / Shift+F2=照らし込み / F5・Shift+F5=Play・停止 / Ctrl+K・Ctrl+P=パレット。
+// ★「メニューに書いてあるのに効かない」の再発を実機で確かめる（表の単体テストは tests/editor_ux_test.cpp）。
+void T_Shortcuts(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr && g_app != nullptr);
+
+    Step(ctx, "Box を作って選択");
+    AddEntity(ctx, "Box");
+    SelectLastEntity(ctx);
+    IM_CHECK(ed->HasSelection());
+
+    Step(ctx, "Esc で選択解除");
+    ctx->KeyPress(ImGuiKey_Escape);
+    ctx->Yield(4);
+    IM_CHECK(!ed->HasSelection());
+
+    Step(ctx, "F2 で名前変更（ヒエラルキーにインライン入力が出る）");
+    SelectLastEntity(ctx);
+    IM_CHECK(ed->HasSelection());
+    ctx->KeyPress(ImGuiKey_F2);
+    ctx->Yield(6);
+    ctx->SetRef(kWinHierarchy);
+    IM_CHECK(ctx->ItemExists("**/##Rename"));
+    ctx->KeyPress(ImGuiKey_Escape);   // 改名をキャンセル（名前欄の Esc は改名だけを閉じる）
+    ctx->Yield(4);
+    IM_CHECK(!ctx->ItemExists("**/##Rename"));
+
+    Step(ctx, "Shift+F2 で編集用の照らし込み（F2 は改名に譲った）");
+    const f32 fill0 = ed->viewportFill;
+    ctx->KeyPress(ImGuiKey_F2 | ImGuiMod_Shift);
+    ctx->Yield(3);
+    IM_CHECK((ed->viewportFill > 0.0f) != (fill0 > 0.0f));
+    ctx->KeyPress(ImGuiKey_F2 | ImGuiMod_Shift);
+    ctx->Yield(3);
+    IM_CHECK((ed->viewportFill > 0.0f) == (fill0 > 0.0f));
+
+    Step(ctx, "Ctrl+K でコマンドパレットを開く → 検索して Enter で実行 → 閉じる");
+    const bool lightingWas = ed->showLighting;
+    ed->showLighting = false;
+    ctx->KeyPress(ImGuiKey_K | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(ed->paletteOpen);
+    ctx->KeyChars("lighting");
+    ctx->Yield(6);
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(6);
+    IM_CHECK(!ed->paletteOpen);
+    IM_CHECK(ed->showLighting);           // 「ライティング」窓が開いた
+    ed->showLighting = lightingWas;
+    ctx->Yield(4);
+
+    Step(ctx, "Ctrl+P でクイックオープン → Esc で閉じる");
+    ctx->KeyPress(ImGuiKey_P | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(ed->paletteOpen);
+    ctx->KeyPress(ImGuiKey_Escape);
+    ctx->Yield(6);
+    IM_CHECK(!ed->paletteOpen);
+
+    Step(ctx, "F5 で Play → Shift+F5 で停止");
+    ctx->KeyPress(ImGuiKey_F5);
+    int frames = 0;
+    while (g_app->GetEngineMode() != Application::EngineMode::Playing && frames < 300) { ctx->Yield(); ++frames; }
+    IM_CHECK(g_app->GetEngineMode() == Application::EngineMode::Playing);
+    ctx->Yield(10);
+    ctx->KeyPress(ImGuiKey_F5 | ImGuiMod_Shift);
+    frames = 0;
+    while (g_app->GetEngineMode() != Application::EngineMode::Editor && frames < 300) { ctx->Yield(); ++frames; }
+    IM_CHECK(g_app->GetEngineMode() == Application::EngineMode::Editor);
+    ctx->Yield(6);
+
+    // 後片付け
+    for (auto e : ed->selectedEntities) ed->pendingDeletions.push_back(e);
+    ed->ClearSelection();
+    ctx->Yield(6);
+}
+
+// トースト: 積む / 同じ本文は 1 枚に畳む / クリックで閉じる。
+void T_ToastFlow(ImGuiTestContext* ctx)
+{
+    Step(ctx, "トーストを積む（同じ本文は畳む）");
+    ui::ToastClearAll();
+    const uint32_t id1 = ui::ToastInfo("テスト通知");
+    ui::ToastInfo("テスト通知");
+    ctx->Yield(4);
+    IM_CHECK_EQ(static_cast<int>(ui::ToastLiveCount()), 1);
+    ui::ToastError("エラーの通知");
+    ctx->Yield(4);
+    IM_CHECK_EQ(static_cast<int>(ui::ToastLiveCount()), 2);
+
+    Step(ctx, "クリックで閉じる");
+    char ref[48];
+    std::snprintf(ref, sizeof(ref), "//##Toast%u", id1);
+    ctx->SetRef(ref);
+    IM_CHECK(ctx->ItemExists("##dismiss"));
+    ctx->ItemClick("##dismiss");
+    ctx->Yield(4);
+    IM_CHECK_EQ(static_cast<int>(ui::ToastLiveCount()), 1);
+
+    ui::ToastClearAll();
+    ctx->Yield(2);
+}
+
+// ヒエラルキーでの親替えでワールド位置が保たれる（フィルタ中の D&D も効く）。
+// ★以前は parent だけ差し替えていたため、ローカル値に新しい親の変換が掛かり直って見た目が飛んだ。
+void T_HierarchyReparent(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "親（Empty）と子（Box）を作って、名前を付け、親を回転・拡大しておく");
+    AddEntity(ctx, "Empty");
+    SelectLastEntity(ctx);
+    const entt::entity parent = ed->selectedEntity;
+    AddEntity(ctx, "Box");
+    SelectLastEntity(ctx);
+    const entt::entity child = ed->selectedEntity;
+    IM_CHECK(reg.valid(parent) && reg.valid(child) && parent != child);
+    reg.get<NameTag>(parent).name = "ReparentTestParent";
+    reg.get<NameTag>(child).name  = "ReparentTestChild";
+    {
+        auto& pt = reg.get<Transform>(parent);
+        pt.position = {10.0f, 0.0f, 4.0f}; pt.rotation = {0.0f, 90.0f, 0.0f}; pt.scale = {2.0f, 2.0f, 2.0f};
+        auto& ct = reg.get<Transform>(child);
+        ct.position = {3.0f, 1.0f, 0.0f};
+    }
+    ctx->Yield(3);
+    DirectX::XMFLOAT3 worldBefore{};
+    DirectX::XMStoreFloat3(&worldBefore, ComputeWorldMatrix(reg, child).r[3]);
+
+    Step(ctx, "名前フィルタで 2 行に絞る（フィルタ中も D&D が効く）");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "ReparentTest");
+    ctx->Yield(6);
+
+    ImGuiID rowChild = 0, rowParent = 0;
+    {
+        ctx->SetRef(kWinHierarchy);
+        ImGuiTestItemList items;
+        ctx->GatherItems(&items, "", 3);
+        for (int i = 0; i < items.GetSize(); ++i)
+        {
+            const ImGuiTestItemInfo* it = items[i];
+            if (it == nullptr || it->ID == 0) continue;
+            if (std::strncmp(it->DebugLabel, "ReparentTestChild", 17) == 0)  rowChild = it->ID;
+            if (std::strncmp(it->DebugLabel, "ReparentTestParent", 18) == 0) rowParent = it->ID;
+        }
+    }
+    IM_CHECK(rowChild != 0 && rowParent != 0);
+
+    Step(ctx, "子の行を親の行へドラッグ&ドロップ");
+    ctx->ItemDragAndDrop(rowChild, rowParent);
+    ctx->Yield(6);
+    IM_CHECK(reg.valid(child));
+    IM_CHECK(reg.get<Transform>(child).parent == parent);
+
+    DirectX::XMFLOAT3 worldAfter{};
+    DirectX::XMStoreFloat3(&worldAfter, ComputeWorldMatrix(reg, child).r[3]);
+    ctx->LogInfo("world before (%.2f,%.2f,%.2f) after (%.2f,%.2f,%.2f)",
+                 worldBefore.x, worldBefore.y, worldBefore.z, worldAfter.x, worldAfter.y, worldAfter.z);
+    IM_CHECK_LT(std::fabs(worldAfter.x - worldBefore.x), 0.01f);   // ワールド位置が飛んでいない
+    IM_CHECK_LT(std::fabs(worldAfter.y - worldBefore.y), 0.01f);
+    IM_CHECK_LT(std::fabs(worldAfter.z - worldBefore.z), 0.01f);
+    IM_CHECK_GT(std::fabs(reg.get<Transform>(child).position.x - 3.0f), 0.5f);   // ローカル値は逆算し直された
+
+    Step(ctx, "Undo で親子もローカル値も元に戻る");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    IM_CHECK(reg.get<Transform>(child).parent == entt::null);
+    IM_CHECK_LT(std::fabs(reg.get<Transform>(child).position.x - 3.0f), 0.01f);
+
+    Step(ctx, "後片付け（フィルタを消して 2 体を削除）");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "");
+    ed->pendingDeletions.push_back(child);
+    ed->pendingDeletions.push_back(parent);
+    ed->ClearSelection();
+    ctx->Yield(8);
+}
+
 // ===================== テスト表 =====================
 
 struct DiagReg
@@ -2462,7 +2713,11 @@ const DiagReg kTests[] = {
     { "comp",  "attach_script",         "コンポーネント",     "スクリプトを追加",                     T_AttachScript          },
 
     { "panel", "open_all_tool_windows", "パネル",             "すべてのツール窓を開いて描画",         T_OpenAllToolWindows    },
-    { "panel", "dock_layout_persist",   "パネル",             "調整したパネル幅がツール窓の開閉で戻らない", T_DockLayoutSurvivesToolToggle },
+    { "panel", "dock_layout_persist",   "パネル",             "ツール窓を開閉してもビューポート/パネル幅が変わらない", T_DockLayoutSurvivesToolToggle },
+    { "panel", "tool_registry",         "パネル",             "ツール窓レジストリ（全窓の開閉 / すべて閉じる）", T_ToolRegistry },
+    { "basic", "shortcuts",             "基本操作",           "ショートカット（Esc / F2 / F5 / Ctrl+K / Ctrl+P）", T_Shortcuts },
+    { "basic", "toast",                 "基本操作",           "トースト通知（積む / 畳む / クリックで閉じる）", T_ToastFlow },
+    { "panel", "hierarchy_reparent",    "パネル",             "親替えでワールド位置が保たれる（フィルタ中も）", T_HierarchyReparent },
     { "panel", "inspector_multi_edit",  "パネル",             "複数選択したライトを一括で編集できる", T_InspectorMultiEdit },
     { "play",  "ui_focus_releases",     "再生",               "HUD を押した後もパッド操作が死なない", T_UiFocusReleases },
     { "panel", "console",               "パネル",             "コンソール（フィルタ / Lua 実行）",    T_ConsolePanel          },

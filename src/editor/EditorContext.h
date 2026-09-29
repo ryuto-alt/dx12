@@ -12,6 +12,7 @@
 #include "editor/UndoSystem.h"
 #include "editor/McpUndoRouter.h"   // MCP の編集を Undo に積む窓口 + トランザクション
 #include "editor/EditorIcons.h"
+#include "editor/Toast.h"          // ctx.Notify(): 右下トースト通知
 #include "renderer/DrawItem.h"   // ピッキングのブロードフェーズ候補（Application が毎フレーム構築）
 
 namespace dx12e
@@ -55,7 +56,7 @@ struct PendingSpawnRequest
 
     // UI エディタのキャンバスへ .prefab をドロップした時だけ立つ。
     // 生成後に root の UIRect を uiCanvasPos（キャンバス基準解像度の px 座標）へ移す。
-    // position(3D ワールド座標)とは別枠にしてあるのは、UI は Transform を使わへんため。
+    // position(3D ワールド座標)とは別枠にしてあるのは、UI は Transform を使わないため。
     bool placeInUiCanvas = false;
     DirectX::XMFLOAT2 uiCanvasPos{0.0f, 0.0f};
 
@@ -208,7 +209,7 @@ public:
     GizmoMode gizmoMode      = GizmoMode::Translate;
     bool      gizmoLocalSpace = false;
 
-    // ギズモのスナップ量（従来はハードコードやった。エンジン設定ウィンドウで編集する）。
+    // ギズモのスナップ量（従来はハードコードだった。エンジン設定ウィンドウで編集する）。
     // 既定値は元のハードコード値と同じ＝挙動は変わらない。
     f32  snapTranslate  = 1.0f;    // m
     f32  snapRotateDeg  = 15.0f;   // degree
@@ -261,7 +262,7 @@ public:
     // EditorLayer が検知してデフォルトドックレイアウトを再構築する。
     bool resetLayout = false;
 
-    // 編集用の照らし込み（F2 でトグル）。シーンの環境光に「下限」として被せるだけで、
+    // 編集用の照らし込み（Shift+F2 でトグル。F2 は名前変更に譲った）。シーンの環境光に「下限」として被せるだけで、
     // シーンには保存されず Play 中は無効＝ゲームの絵は暗いまま。暗い屋内シーンを
     // 触るときに「見えないから置けない」を潰すためだけのもの。
     // 0 で無効。0.35 くらいで真っ暗な部屋の形が読めるようになる。
@@ -336,13 +337,8 @@ public:
     // Apply 後に「他のインスタンスも更新する」を押した時だけ立てる（伝播元を除いて Revert）
     std::vector<entt::entity> pendingPrefabPropagate;
 
-    bool AnyToolWindowOpen() const
-    {
-        return showPostProcess || showPostParams || showSkybox || showSSAO || showScreenSpaceGi
-            || showVolumetricFog
-            || showEngineSettings || showSceneFlow || showProject || showVersionControl
-            || showMcpBridge || showBuildSettings || showNetworkStatus || showNetworkSettings;
-    }
+    // ※ ツール窓の一覧・開閉・すべて閉じる は editor/ToolWindows.h のレジストリが唯一の正。
+    //   （かつてここにあった AnyToolWindowOpen は、開閉のたびにドックを割り直す仕組みの残りで廃止した）
 
     // タッチパッド向けキーボードフライモード（` キーでトグル）。
     // ON 中は WASD 移動 / Q・E 上下 / 矢印キーで視点回転（マウス・ボタン長押し不要）。
@@ -397,16 +393,15 @@ public:
     // シーンパス
     std::string currentScenePath;
 
-    // 通知フラッシュ
-    f32 hotReloadFlash    = 0.0f;
+    // 通知。結果を知らせるものは右下のトースト（ctx.Notify / ui::Toast）に統一した。
+    // 以前の hotReloadFlash（緑文字 1.5 秒）・saveErrorFlash（赤文字）は廃止。
+    // 下のフラグはビルド系のバナー（ビルド設定窓）と UI 自動テストの参照用に残している。
     f32 buildCompleteFlash = 0.0f;
-    f32 buildErrorFlash    = 0.0f;  // ビルド失敗表示（>0 の間 赤で「✗ ビルド失敗」）
-    // ★シーン保存の失敗表示。以前は SceneSerializer::Save の戻り値を見ずに
-    //   緑の「✓ Saved」を出していたので、書けていないのに保存できたように見えた。
-    f32 saveErrorFlash     = 0.0f;
+    f32 buildErrorFlash    = 0.0f;  // ビルド失敗表示（>0 の間 ビルド設定窓の赤いバナー）
     std::string buildErrorMsg;      // ビルド失敗の具体理由（空なら汎用メッセージ）
 
-    // エラー通知（Play 不可等）
+    // エラー通知（Play 不可等）。errorFlash > 0 を ToolbarPanel が見てトースト（Error, 8 秒）にする。
+    // ※かつては中央モーダルだった。判断が要らないので OK を押させない。
     std::string errorMessage;
     f32 errorFlash = 0.0f;
 
@@ -602,6 +597,36 @@ public:
     // メニュー「ツール > ナビメッシュ」で開く。
     bool showNavMesh = false;
 
+    // ===== ショートカット / コマンドの要求フラグ（editor/EditorCommands.cpp が立て、下記の担当が消費）=====
+    // Application / ToolbarPanel / EditorLayer は消費側。フレーム境界で処理する pendingUndo 等と同じ流儀。
+    bool pendingSaveScene        = false;   // 保存（Ctrl+S）。Application が Editor モードで処理し、通知も出す
+    bool pendingOpenSceneDialog  = false;   // シーンを開く（Ctrl+O）。ToolbarPanel がファイルダイアログを出す
+    int  pendingPlayRequest      = 0;       // 0=なし / 1=Play / 2=Stop。EditorLayer が Play/Stop 要求へ変換する
+    bool pendingFocusSelection   = false;   // 選択へカメラを寄せる（F / パレットのジャンプ）。Application が処理
+    int  paletteRequest          = 0;       // 0=なし / 1=コマンドパレット(Ctrl+K) / 2=クイックオープン(Ctrl+P)
+    bool paletteOpen             = false;   // パレット表示中（ショートカットを止める）
+    bool pendingToggleFullscreen = false;   // ボーダレスフルスクリーン切り替え（F11 は Window が直接処理。パレット用）
+
+    // Application が毎フレーム書く（ショートカット判定に使う）。
+    bool appForeground = true;    // エディタ窓が前面か（仮想入力中は常に true）
+    bool mouseCaptured = false;   // 右ドラッグのフライ等でマウスを掴んでいるか
+
+    // フォーカスのあるパネル（Del / F2 が「押した先のパネルだけ」で効くようにする）。
+    // EditorLayer がフレーム冒頭に ImGui の NavWindow（最後にフォーカスされた窓）の名前から決める。
+    // ビューポート / ツールバー / ステータスバー / トーストは None、フローティングのツール窓は Other。
+    enum class Panel : unsigned char { None, Hierarchy, Inspector, AssetBrowser, Console, Other };
+    Panel focusedPanel     = Panel::None;   // None = ビューポート（どのパネルにもフォーカスが無い）
+
+    // エディタカメラ（EditorLayer が毎フレーム写す）。「カメラの前に作る」の位置決めに使う。
+    DirectX::XMFLOAT3 camPos{0.0f, 1.7f, -5.0f};
+    DirectX::XMFLOAT3 camFwd{0.0f, 0.0f, 1.0f};
+    bool camValid = false;
+
+    // 右下のトースト通知（ui::Toast と同じ。パネルから ctx.Notify(...) で呼べる）。
+    void Notify(ui::ToastKind kind, std::string message, float seconds = -1.0f) const
+    {
+        ui::Toast(kind, std::move(message), seconds);
+    }
     // オーディオミキサー窓（バスのメーター/フェーダー・スナップショット・鳴っている音）。
     // 他の独立フローティング窓と同じく AnyToolWindowOpen には含めない。
     // メニュー「ツール > オーディオミキサー」で開く。

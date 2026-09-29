@@ -563,7 +563,7 @@ void AnimationEditorPanel::DrawAddTrackPopup(entt::registry& reg, EditorContext&
 
     if (!ok)
     {
-        ImGui::TextDisabled("対象ルート配下の要素を\nヒエラルキー/UIエディタで選んでから開いてや。");
+        ImGui::TextDisabled("対象ルート配下の要素を\nヒエラルキー/UIエディタで選んでから開いてください。");
         ImGui::EndPopup();
         return;
     }

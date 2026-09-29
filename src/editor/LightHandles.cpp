@@ -284,7 +284,7 @@ void LightHandlesFrame(entt::registry& reg, EditorContext& ctx, Camera* camera)
         //   ここで Ctrl/Alt/Shift を除外しないと **Ctrl+L を押した人の太陽が黙って回る**
         //   （ヘルプには「Ctrl+L = 新規スクリプト」と書いてあるので原因が分からない）。
         const bool keyHeld = ImGui::IsKeyDown(ImGuiKey_L) && !io.WantTextInput
-                          && !io.KeyCtrl && !io.KeyAlt;
+                          && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift;
 
         if (!st.sunDragging && keyHeld && inViewport && !gizmoBusy)
         {

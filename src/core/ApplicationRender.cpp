@@ -2388,14 +2388,15 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             {
                 MarkSceneClean();
                 ProjectManager::SaveLastOpenedScene(m_editorCtx->currentScenePath);
-                m_editorCtx->hotReloadFlash = 1.5f;
+                m_editorCtx->Notify(ui::ToastKind::Success, "シーンを作成しました: " +
+                    std::filesystem::path(m_editorCtx->currentScenePath).filename().string());
             }
             else
             {
-                // 新規シーンのファイルを作れなかった。緑の Saved を出すと
+                // 新規シーンのファイルを作れなかった。成功の通知を出すと
                 // 「作られている」と誤解したまま作業が進む。
                 Logger::Error("新規シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
-                m_editorCtx->saveErrorFlash = 6.0f;
+                m_editorCtx->Notify(ui::ToastKind::Error, "シーンのファイルを作れませんでした（詳細は dx12_engine.log）");
             }
         }
         m_editorLayer->RefreshAssetBrowser();
@@ -3334,7 +3335,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             std::string base = reg.get<NameTag>(root).name;
             if (base.empty()) base = "Prefab";
             // UI 要素は assets/prefabs/ui/ へ分ける。UIエディタのパレットがこの階層を直接読むので、
-            // 3D プレハブと混ざらへんようにしておく。
+            // 3D プレハブと混ざらないようにしておく。
             const bool isUi = reg.any_of<UIRect, UICanvas>(root);
             fs::path dir = fs::path(PathResolver::AssetsDir()) / "prefabs";
             if (isUi) dir /= "ui";
@@ -3352,7 +3353,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 if (ec) rel = file.filename().string();
                 reg.emplace_or_replace<PrefabLink>(root, PrefabLink{rel});
 
-                m_editorCtx->hotReloadFlash = 1.0f;   // 保存通知のフラッシュを流用
+                m_editorCtx->Notify(ui::ToastKind::Success, "プレハブを作成しました: " + file.filename().string());
                 Logger::Info("Prefab created: {}", file.string());
             }
         }
@@ -3373,7 +3374,8 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             int propagated = 0;
             if (SceneSerializer::ApplyPrefabInstance(*m_scene, e, assets, &propagated))
             {
-                m_editorCtx->hotReloadFlash = 1.0f;
+                m_editorCtx->Notify(ui::ToastKind::Success,
+                    "プレハブへ適用しました（他 " + std::to_string(propagated) + " インスタンスへ反映）");
                 Logger::Info("Prefab applied: {} (他 {} インスタンスへ反映)",
                              reg.get<PrefabLink>(e).sourcePath, propagated);
             }
@@ -3414,7 +3416,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             // 代わりに件数をログへ残して何が起きたか追えるようにする。
             const int n = SceneSerializer::RefreshPrefabInstances(*m_scene, src, assets, e);
             Logger::Info("Prefab propagated to {} instance(s): {}", n, src);
-            m_editorCtx->hotReloadFlash = 1.0f;
+            m_editorCtx->Notify(ui::ToastKind::Success, "プレハブの変更を " + std::to_string(n) + " インスタンスへ反映しました");
         }
         m_editorCtx->pendingPrefabPropagate.clear();
     }
@@ -7469,6 +7471,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             if (ok)
             {
                 m_editorCtx->buildCompleteFlash = 3.0f;
+                m_editorCtx->Notify(ui::ToastKind::Success, "ゲームをビルドしました: " + m_editorCtx->lastBuildDir);
                 if (m_editorCtx->buildConfig.openFolderAfterBuild && !m_editorCtx->lastBuildDir.empty())
                     dx12e::guard::ShellExecuteGuarded(nullptr, "open", m_editorCtx->lastBuildDir.c_str(),
                                   nullptr, nullptr, SW_SHOWNORMAL);
@@ -7480,7 +7483,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                     ? "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。"
                     : m_editorCtx->buildErrorMsg;
                 m_editorCtx->buildErrorMsg.clear();  // 次回ビルドへ持ち越さない
-                m_editorCtx->errorFlash = 1.0f;   // 中央モーダルで通知
+                m_editorCtx->errorFlash = 1.0f;   // トーストで通知（ビルド失敗の理由は長いので 8 秒出す）
             }
         }
 

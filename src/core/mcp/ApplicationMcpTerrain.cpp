@@ -655,7 +655,7 @@ void Application::RegisterMcpTerrainMethods()
                 {"talusDeg", talusDeg}, {"changed", changed.Valid()},
                 {"minHeight", hMin}, {"maxHeight", hMax},
                 {"note", "熱浸食(安息角を超えた斜面の土砂を隣へ落とす)。相対操作なので繰り返すほど崩れる。"
-                         "重いので iterations は 16〜40 くらいから試すとええ。"}};
+                         "重いので iterations は 16〜40 くらいから試すとよいです。"}};
         });
 
     McpDefine("terrain_sample", "entity:int,name:string,points:any", DX12E_MCP_HANDLER

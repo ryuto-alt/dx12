@@ -627,7 +627,7 @@ void Application::SaveCurrentProject()
         {
             // 書けていないシーンを「最後に開いていたシーン」として記録しない。
             Logger::Error("シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
-            m_editorCtx->saveErrorFlash = 6.0f;
+            m_editorCtx->Notify(ui::ToastKind::Error, "シーンを保存できませんでした（詳細は dx12_engine.log）");
         }
     }
 
@@ -640,6 +640,7 @@ void Application::SaveCurrentProject()
         Project::Save(m_projectInfo, projPath);
     }
     m_editorCtx->buildCompleteFlash = 2.0f;
+    m_editorCtx->Notify(ui::ToastKind::Success, "プロジェクトを保存しました");
     Logger::Info("Project saved");
 }
 
@@ -792,7 +793,7 @@ void Application::RenderVersionControlWindow()
         if (ImGui::Button("Git をインストール"))
         {
             m_gitOutput = "Git をインストール中...（winget があれば自動、無ければブラウザでダウンロード"
-                          "ページを開くで。別ウィンドウが出たら指示に従ってや）";
+                          "ページを開きます。別ウィンドウが出たら指示に従ってください）";
             m_gitInstallPending = true;
             RunGitAsync("Git インストール", [this]{ return GitIntegration::InstallGit(m_gitAbort); });
         }
@@ -920,7 +921,7 @@ void Application::RenderVersionControlWindow()
     // ================= リポジトリ未初期化 =================
     if (!m_gitRepoCache)
     {
-        ImGui::TextWrapped("このプロジェクトはまだ Git リポジトリやないで。");
+        ImGui::TextWrapped("このプロジェクトはまだ Git リポジトリではありません。");
         ImGui::Spacing();
         statusBanner();
         ImGui::Spacing();

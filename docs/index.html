@@ -722,14 +722,17 @@ properties = {                                     <span class="tok-c">-- Inspec
               <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">Z</span> / <span class="kbd">Ctrl</span>+<span class="kbd">Y</span></td><td>Undo / Redo（移動・編集・追加削除・複製・リネーム・親子変更を網羅）</td></tr>
               <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">D</span></td><td>複製（<span class="kbd">Ctrl</span>+<span class="kbd">C</span> / <span class="kbd">V</span> でコピー / ペースト、全コンポーネントをディープコピー）</td></tr>
               <tr><td><span class="kbd">Del</span></td><td>削除（子も一括。Undoでサブツリーごと復元）</td></tr>
-              <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">S</span> / <span class="kbd">Ctrl</span>+<span class="kbd">N</span></td><td>シーン保存 / 新規シーン</td></tr>
-              <tr><td><span class="kbd">ダブルクリック</span></td><td>リネーム</td></tr>
+              <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">S</span> / <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">S</span> / <span class="kbd">Ctrl</span>+<span class="kbd">N</span> / <span class="kbd">Ctrl</span>+<span class="kbd">O</span></td><td>シーン保存 / 名前を付けて保存 / 新規シーン / シーンを開く（結果は右下のトーストで通知）</td></tr>
+              <tr><td><span class="kbd">F5</span> / <span class="kbd">Shift</span>+<span class="kbd">F5</span></td><td>Play の開始・停止 / 停止</td></tr>
+              <tr><td><span class="kbd">Esc</span></td><td>選択解除（キーボードフライ中は解除。Play を一時停止中は停止）</td></tr>
+              <tr><td><span class="kbd">F2</span> / <span class="kbd">ダブルクリック</span></td><td>リネーム（<span class="kbd">Shift</span>+<span class="kbd">F2</span> は編集用の照らし込み）</td></tr>
+              <tr><td><span class="kbd">Ctrl</span>+<span class="kbd">K</span> / <span class="kbd">Ctrl</span>+<span class="kbd">P</span></td><td>コマンドパレット（メニュー・ウィンドウ・作成を検索して実行）/ クイックオープン（エンティティ・アセットへジャンプ）</td></tr>
             </tbody>
           </table>
         </div>
 
         <ul class="clean">
-          <li><b>Hierarchy へドラッグ&amp;ドロップ</b>で親子付け（空白へドロップで解除）。<code class="inl">.lua</code> をドロップでスクリプトをアタッチ。</li>
+          <li><b>Hierarchy へドラッグ&amp;ドロップ</b>で親子付け（ワールド位置は保たれる。<span class="kbd">Shift</span> でローカル値そのまま。空白へドロップで解除）。<code class="inl">.lua</code> をドロップでスクリプトをアタッチ。</li>
           <li><b>Inspector「＋コンポーネント追加」</b>でライト / カメラ / RigidBody / コライダー等を後付け。ヘッダ右クリックで削除。</li>
           <li><b>Play / Stop</b> で即実行・即停止。停止すると編集状態に戻る（配置したライトやマテリアルもスナップショット復元される）。</li>
           <li><b>MeshRenderer の「UV &amp; Anim」</b>で 3D メッシュの UV タイリング（<code class="inl">uvScaleU/V</code>、頂点へ焼き込み）に加え、

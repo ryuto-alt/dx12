@@ -544,7 +544,7 @@ reg(
 reg(
   "dx12_set_component",
   "コンポーネント設定",
-  "コンポーネントを設定(無ければ追加・あれば置換)。component は jsonKey、data は dx12_describe_components の形。tags は data=文字列配列、DataComponent(data) は {key:{t,v}} オブジェクト。即時反映で {entityId, component} を返す。形が不安なら先に dx12_describe_components を見るとええ。",
+  "コンポーネントを設定(無ければ追加・あれば置換)。component は jsonKey、data は dx12_describe_components の形。tags は data=文字列配列、DataComponent(data) は {key:{t,v}} オブジェクト。即時反映で {entityId, component} を返す。形が不安なら先に dx12_describe_components を見るとよいです。",
   {
     ...entityRef,
     component: z.string().describe("jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags, data, particleEmitter, trailRenderer, decal, networkIdentity, networkTransform, sprite2d, audioSource, trigger, uiCanvas, uiRect, uiImage, uiText, uiButton, uiSlider, uiToggle, uiScrollView, uiAnimator"),
@@ -966,13 +966,13 @@ reg(
 );
 
 // ════════════════════════════════════════════════════════════════
-//  編集系(遅延同期)— 本物の結果が【同期で】返る。{queued} は返らへん。
+//  編集系(遅延同期)— 本物の結果が【同期で】返る。{queued} は返りません。
 // ════════════════════════════════════════════════════════════════
 
 reg(
   "dx12_create_entity",
   "エンティティ生成",
-  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返らへん)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。light_*/camera/particle_emitter/trigger は既定パラメータで生成される空エンティティ+コンポーネント(中身は dx12_describe_components 参照)。細かい値は生成後 dx12_set_component / dx12_set_transform で調整する。★ui_* はゲーム内UI: エディタと同じ部品構成で生成(ui_button=背景+ラベル子、ui_toggle=箱+ラベル子)され、応答に entityIds(生成された全id)も付く。親は parent/parentName で明示指定(省略時は最初のCanvas、Canvas不在なら自動生成)。レイアウト調整は set_component の uiRect、構造確認は dx12_ui_tree、見た目確認は dx12_ui_screenshot。",
+  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返りません)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。light_*/camera/particle_emitter/trigger は既定パラメータで生成される空エンティティ+コンポーネント(中身は dx12_describe_components 参照)。細かい値は生成後 dx12_set_component / dx12_set_transform で調整する。★ui_* はゲーム内UI: エディタと同じ部品構成で生成(ui_button=背景+ラベル子、ui_toggle=箱+ラベル子)され、応答に entityIds(生成された全id)も付く。親は parent/parentName で明示指定(省略時は最初のCanvas、Canvas不在なら自動生成)。レイアウト調整は set_component の uiRect、構造確認は dx12_ui_tree、見た目確認は dx12_ui_screenshot。",
   {
     type: z.enum([
       "box", "sphere", "plane", "empty", "camera",
@@ -3953,7 +3953,7 @@ reg(
   (args: any) => run(async () => {
     const { count, area, placement = "random", seed = 1, scaleRange, snapToGround } = args;
     const sources = [args.type, args.model, args.prefab].filter((s: any) => s != null);
-    if (sources.length !== 1) throw new Error("type / model / prefab のどれか1つだけ指定してや");
+    if (sources.length !== 1) throw new Error("type / model / prefab のどれか1つだけ指定してください");
     const [minX, minZ, maxX, maxZ] = area;
     const y = args.y ?? 0;
     const randomYaw = args.randomYaw ?? (placement === "random");

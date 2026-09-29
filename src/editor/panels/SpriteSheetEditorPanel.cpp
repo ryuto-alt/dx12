@@ -233,7 +233,7 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
         ImGui::EndDragDropTarget();
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("アセットブラウザから画像をここへドラッグしてもええ");
+        ImGui::SetTooltip("アセットブラウザから画像をここへドラッグしてもかまいません");
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f);
@@ -545,7 +545,7 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
     }
     if (!hasSel || m_currentPath.empty()) ImGui::EndDisabled();
     if (m_currentPath.empty())
-        ImGui::TextDisabled("※ 先に保存してからやないと割り当てられへん");
+        ImGui::TextDisabled("※ 先に保存してからでないと割り当てられません");
 }
 
 } // namespace dx12e

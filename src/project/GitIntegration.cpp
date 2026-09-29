@@ -156,7 +156,7 @@ GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
         if (!ok)
         {
             result.exitCode = -1;
-            result.output   = "winget の起動に失敗したで。手動でダウンロードページを開くで。";
+            result.output   = "winget の起動に失敗しました。手動でダウンロードページを開きます。";
             dx12e::guard::ShellExecuteGuarded(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
             return result;
         }
@@ -180,7 +180,7 @@ GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
         else
         {
             result.output = "winget でのインストールに失敗した（コード " + std::to_string((int)code) +
-                             "）。手動でダウンロードページを開くで。";
+                             "）。手動でダウンロードページを開きます。";
             dx12e::guard::ShellExecuteGuarded(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
         }
         return result;

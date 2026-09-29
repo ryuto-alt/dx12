@@ -205,7 +205,7 @@ struct MeshRenderer
     // カスタムシェーダーのアルファブレンド有効化(shaderPath 指定時のみ意味を持つ)。
     // false(既定) = 不透明固定(BlendEnable=FALSE、DepthWrite=ON)。PSシェーダーが float4 の
     // alpha を書いても Forward 既定 PSO と同様に無視される(これが「カスタムシェーダーでアルファが
-    // 効かない」不具合の原因やった)。true にすると SrcAlpha/InvSrcAlpha の通常アルファブレンドで
+    // 効かない」不具合の原因だった)。true にすると SrcAlpha/InvSrcAlpha の通常アルファブレンドで
     // DepthWrite=OFF(半透明物の定石、ForwardGrid と同じ考え方)の専用 PSO を使う。
     bool shaderAlphaBlend = false;
 

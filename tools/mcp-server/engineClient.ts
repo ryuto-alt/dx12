@@ -188,7 +188,7 @@ export class EngineClient {
       s.once("connect", () => { this.sock = s; this.connecting = null; resolve(s); });
       s.once("error", (e: Error) => {
         this.connecting = null;
-        reject(new Error(`エディタに繋がらへん (${this.host}:${this.port}) — エディタ起動してる? : ${e.message}`));
+        reject(new Error(`エディタに繋がりません (${this.host}:${this.port}) — エディタは起動していますか? : ${e.message}`));
       });
     });
     return this.connecting;

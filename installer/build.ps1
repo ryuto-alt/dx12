@@ -19,12 +19,12 @@ $outDir   = Join-Path $here "output"
 
 # --- バージョンを Version.cpp から取得（定数の実体は Version.cpp に一本化した） ---
 $verLine = Select-String -Path (Join-Path $repoRoot "src\core\Version.cpp") -Pattern 'kEngineVersion\s*=\s*"([0-9.]+)"'
-if (-not $verLine) { Write-Error "Version.cpp から kEngineVersion を取得できへんかった" }
+if (-not $verLine) { Write-Error "Version.cpp から kEngineVersion を取得できませんでした" }
 $version = $verLine.Matches[0].Groups[1].Value
 Write-Host "DX12 Engine v$version の配布物をビルドするで" -ForegroundColor Cyan
 
 if (-not (Test-Path (Join-Path $srcDir "DX12Engine.exe"))) {
-  Write-Error "build\release\DX12Engine.exe が無い。先に build_release.bat を実行してや。"
+  Write-Error "build\release\DX12Engine.exe が無い。先に build_release.bat を実行してください。"
 }
 
 # --- 再コンパイル漏れ(stale obj)検査 ---
@@ -89,7 +89,7 @@ if (-not $depsRaw) {
     $detail = ($stale | Select-Object -First 6 | ForEach-Object {
       "$($_.Obj) ($($_.ObjTime)) < $([IO.Path]::GetFileName($_.Dep)) ($($_.DepTime))" }) -join "; "
     Write-Error ("再コンパイル漏れを検出: 自分が include するヘッダーより古い .obj が " +
-      "$($stale.Count) 個ある — $detail 。build\release を削除してクリーンビルドしてからやり直してや。")
+      "$($stale.Count) 個ある — $detail 。build\release を削除してクリーンビルドしてからやり直してください。")
   }
   Write-Host "再コンパイル漏れ検査 OK (ninja 依存グラフで全 obj が最新)" -ForegroundColor Green
 }
@@ -106,10 +106,10 @@ $proc = Start-Process -FilePath (Join-Path $srcDir "DX12Engine.exe") `
 $exeVersion = if (Test-Path $verProbe) { (Get-Content $verProbe -Raw).Trim() } else { "" }
 Remove-Item -Force $verProbe -ErrorAction SilentlyContinue
 if ($proc.ExitCode -ne 0 -or -not $exeVersion) {
-  Write-Error "exe の版の自己申告(--write-version)に失敗した。旧版の exe が残ってへんか、build_release.bat からやり直してや。"
+  Write-Error "exe の版の自己申告(--write-version)に失敗した。旧版の exe が残っていないか確認し、build_release.bat からやり直してください。"
 }
 if ($exeVersion -ne $version) {
-  Write-Error "版の不一致: Version.cpp は $version やのに exe は $exeVersion と自己申告した。再コンパイル漏れの疑い。build\release を消してクリーンビルドしてや。"
+  Write-Error "版の不一致: Version.cpp は $version ですが exe は $exeVersion と自己申告した。再コンパイル漏れの疑い。build\release を消してクリーンビルドしてください。"
 }
 Write-Host "exe の版検証 OK (v$exeVersion)" -ForegroundColor Green
 
@@ -127,7 +127,7 @@ if ($iscc) {
   Write-Host "[1/2] インストーラを生成 (ISCC)..." -ForegroundColor Yellow
   & $iscc "/DMyAppVersion=$version" (Join-Path $here "dx12engine.iss")
 } else {
-  Write-Warning "[1/2] ISCC.exe が見つからへんのでインストーラはスキップ（Inno Setup 6 を入れてな）。"
+  Write-Warning "[1/2] ISCC.exe が見つからないためインストーラはスキップします（Inno Setup 6 を入れてください）。"
 }
 
 # --- 2) 自動アップデート用 zip ---

@@ -697,7 +697,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
                     ctx.Select(created.GetHandle());
                     if (reg.all_of<SkeletalAnimation>(sel))
                         Logger::Warn("スキン付きモデルを編集可能にしました。"
-                                     "ボーンの追従は落ちます（静的な形として彫る前提やで）。");
+                                     "ボーンの追従は落ちます（静的な形として彫る前提です）。");
                     Logger::Info("モデルを編集可能にしました: {} ({} verts)",
                                  srcName, sc._data->VertexCount());
                 }
@@ -719,7 +719,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     {
         ImGui::Separator();
         ImGui::TextWrapped("スカルプト対象がありません。上の「素体を作る」で作るか、"
-                           "モデルを選んで「編集可能にする」を押してな。");
+                           "モデルを選んで「編集可能にする」を押してください。");
         ImGui::End();
         return;
     }
