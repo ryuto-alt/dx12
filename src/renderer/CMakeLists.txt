@@ -44,3 +44,13 @@ target_link_libraries(Renderer PUBLIC Graphics Microsoft::DirectXMath Resource m
 
 target_compile_options(Renderer PRIVATE ${DX12_COMPILE_OPTIONS})
 target_compile_definitions(Renderer PRIVATE ${DX12_COMPILE_DEFS})
+
+# 仮想ジオメトリ(Nanite 風) P0: スタブ .vgeo 生成 CLI（tools/vgeo_stub。EXCLUDE_FROM_ALL = 既定ビルドに入らない）。
+# 実装は src/renderer/vg/ のヘッダオンリー（VgeoFormat.h ほか）。ターゲットが要るのは CLI とテストだけで、Renderer には何も足さない。
+if(EXISTS ${PROJECT_SOURCE_DIR}/tools/vgeo_stub/CMakeLists.txt)
+    add_subdirectory(${PROJECT_SOURCE_DIR}/tools/vgeo_stub ${PROJECT_BINARY_DIR}/tools/vgeo_stub)
+endif()
+# 仮想ジオメトリ P1: オフライン cooker（tools/vgeo_cook。CLI は EXCLUDE_FROM_ALL、ライブラリ VgeoCookLib はテストのビルドで建つ）。Renderer には何も足さない。
+if(EXISTS ${PROJECT_SOURCE_DIR}/tools/vgeo_cook/CMakeLists.txt)
+    add_subdirectory(${PROJECT_SOURCE_DIR}/tools/vgeo_cook ${PROJECT_BINARY_DIR}/tools/vgeo_cook)
+endif()

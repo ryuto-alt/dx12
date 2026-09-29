@@ -84,6 +84,28 @@ else()
 endif()
 add_test(NAME ClusterMathTests COMMAND ClusterMathTests)
 
+# 仮想ジオメトリ(Nanite 風)の `.vgeo` 形式（renderer/vg/VgeoFormat.h + VgsrcFormat.h + VgeoBvh.h）。
+# ヘッダオンリー・標準ライブラリのみなので、依存ゼロのスタンドアロン構成（CI）でも回る。
+# 構造体のサイズ/オフセット固定・往復・境界値・破損入力の拒否・決定論・手書き 3 レベル DAG の不変条件を見る。
+# 仕様の正本は docs/VGEO_SPEC.md。形式を変えたらここが落ちる（＝意図した変更か確認する）。
+add_executable(VgeoFormatTests vgeo_format_test.cpp)
+target_include_directories(VgeoFormatTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(VgeoFormatTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(VgeoFormatTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME VgeoFormatTests COMMAND VgeoFormatTests)
+# 診断用: 同じテスト(ファズ含む)を AddressSanitizer で回す。既定ビルドには入れない（EXCLUDE_FROM_ALL）。
+#   pwsh tools/build.ps1 -Target VgeoFormatTestsAsan → build/release/tests/VgeoFormatTestsAsan.exe
+#   実行には MSVC の clang_rt.asan_dynamic-x86_64.dll が PATH に要る（vcvars64 を読んだシェルで動かす）。
+# 未署名の平置きファイルを読むローダなので、壊れた入力での範囲外アクセスをここで確かめる。
+if(MSVC)
+    add_executable(VgeoFormatTestsAsan EXCLUDE_FROM_ALL vgeo_format_test.cpp)
+    target_include_directories(VgeoFormatTestsAsan PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_options(VgeoFormatTestsAsan PRIVATE /W4 /WX /permissive- /utf-8 /fsanitize=address)
+endif()
+
 # 音の純粋ロジック（src/audio/AudioMath.h: 奪う相手の選び方 / 仮想化のヒステリシス /
 # dB 換算 / フィルタ係数 / スナップショットとリバーブ域の補間）。ヘッダオンリー・依存ゼロ
 # （XAudio2 も音声デバイスも要らない）なのでスタンドアロンでも動く。
@@ -642,6 +664,48 @@ if(TARGET Renderer)
     add_test(NAME LightMathTests COMMAND LightMathTests)
 endif()
 
+# スタブ .vgeo 生成器（tools/vgeo_stub/VgeoStubGen.h）の出力が VgeoFormat の検証を通ること・往復・決定論。
+# meshoptimizer が要るので統合ビルドでのみ有効（Renderer が meshoptimizer をリンクしている）。
+if(TARGET Renderer)
+    add_executable(VgeoStubTests vgeo_stub_test.cpp)
+    target_include_directories(VgeoStubTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_stub)
+    target_link_libraries(VgeoStubTests PRIVATE meshoptimizer::meshoptimizer)
+    if(MSVC)
+        target_compile_options(VgeoStubTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgeoStubTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    # meshoptimizer.dll をテスト exe の隣へ（コピー先 = tests/ の出力先。ルートの DLL 配布とは独立に単体ビルドでも動くように）
+    add_custom_command(TARGET VgeoStubTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgeoStubTests>")
+    add_test(NAME VgeoStubTests COMMAND VgeoStubTests)
+endif()
+
+# 仮想ジオメトリ P1: オフライン cooker（tools/vgeo_cook）のテスト。クラックなし（距離スイープ + ランダムな一貫カット + 陰性対照）/ 誤差の単調性 /
+# クラスタ上限 / LOD0 カバレッジ / 決定論（スレッド数 1・2・5・8）/ 検証 / GPU 写像（仕様 §14 の HLSL デコードの移植）/ 回帰（縮退・非多様体・
+# 継ぎ目・極端な座標・NONVG）/ 不正入力 / グループ化 4 方式 / ベンチ生成 / スタブ互換。meshoptimizer が要るので統合ビルドでのみ有効。
+if(TARGET Renderer AND TARGET VgeoCookLib)
+    add_executable(VgeoCookTests vgeo_cook_test.cpp)
+    target_include_directories(VgeoCookTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_stub ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_cook)
+    target_link_libraries(VgeoCookTests PRIVATE VgeoCookLib meshoptimizer::meshoptimizer)
+    target_compile_definitions(VgeoCookTests PRIVATE DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(VgeoCookTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgeoCookTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET VgeoCookTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgeoCookTests>")
+    add_test(NAME VgeoCookTests COMMAND VgeoCookTests)
+    # 診断用: cooker 本体ごと AddressSanitizer で回す（範囲外アクセス検出）。既定ビルドには入れない（EXCLUDE_FROM_ALL）。
+    #   pwsh tools/build.ps1 -Target VgeoCookTestsAsan → build/release/tests/VgeoCookTestsAsan.exe（実行は vcvars64 済みのシェルで）
+    if(MSVC)
+        add_executable(VgeoCookTestsAsan EXCLUDE_FROM_ALL vgeo_cook_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_cook/VgeoCook.cpp)
+        target_include_directories(VgeoCookTestsAsan PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_stub ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_cook)
+        target_link_libraries(VgeoCookTestsAsan PRIVATE meshoptimizer::meshoptimizer psapi)
+        target_compile_options(VgeoCookTestsAsan PRIVATE ${DX12_COMPILE_OPTIONS} /fsanitize=address)
+        target_compile_definitions(VgeoCookTestsAsan PRIVATE ${DX12_COMPILE_DEFS} _CRT_SECURE_NO_WARNINGS DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    endif()
+endif()
+
 # モデルのインポートサイズ回帰テスト（FBX の cm→m 正規化）。ModelLoader::Probe は GPU を
 # 触らないが Resource ライブラリ(assimp)が要るので統合ビルドでのみ有効。
 if(TARGET Resource AND TARGET Renderer)
@@ -709,6 +773,18 @@ else()
     target_compile_options(McpUndoTests PRIVATE -Wall -Wextra -Werror)
 endif()
 add_test(NAME McpUndoTests COMMAND McpUndoTests)
+
+# フリート運用の自己終了（core/mcp/FleetGuard.h: --owner-pid / --idle-exit）。時計とプロセス生存判定を差し替えて検査する。
+# ヘッダオンリー・エンジン非リンク。
+add_executable(FleetGuardTests fleet_guard_test.cpp)
+target_include_directories(FleetGuardTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(FleetGuardTests PRIVATE /W4 /WX /permissive- /utf-8)
+    target_link_libraries(FleetGuardTests PRIVATE d3d12 dxgi)
+else()
+    target_compile_options(FleetGuardTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME FleetGuardTests COMMAND FleetGuardTests)
 
 # Lua 束縛 ⇔ dx12_describe_lua_api のドリフト検出（display / net がテーブルごと
 # 未ドキュメントだったのを二度と起こさないため）。McpParamSpecTests と同じく
@@ -916,6 +992,19 @@ if(TARGET Gui)
         target_compile_definitions(DpiScaleTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME DpiScaleTests COMMAND DpiScaleTests)
+endif()
+
+# エディタのテーマ・バリアント（アイデンティティ候補 A/B/C）: editor/ThemeVariants.h + EditorTheme.h の純データ。
+# Default が現行値のままであること / 全案の文字コントラスト AA / 案でレイアウトが動かないこと / SetVariant の往復。
+if(TARGET Gui)
+    add_executable(ThemeVariantTests theme_variant_test.cpp)
+    target_link_libraries(ThemeVariantTests PRIVATE Gui)
+    target_include_directories(ThemeVariantTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(ThemeVariantTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ThemeVariantTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ThemeVariantTests COMMAND ThemeVariantTests)
 endif()
 
 # プロジェクトランチャーの純ロジック（project/LauncherLogic.h・LauncherMotion.h）。

@@ -96,3 +96,12 @@ mcp_ui_screenshot.png
 # mp3（原本）/ wav（tools/prep_splash_sound.py の出力）/ json（メタ情報）をまとめて除外。
 # 実行時に無ければ埋め込みの案 A（src/core/SplashSoundData.h）へ自動で縮退する。
 assets/editor/sounds/splash_d.*
+
+# tools/ue_cook（UE cooked アセット → VGSRC の C# プロトタイプ）。リポジトリは PUBLIC なので
+# UE / Dreamcore 由来の実データ（usmap・抽出メッシュ・出力 VGSRC・CSV）は絶対にコミットしない。
+tools/ue_cook/bin/
+tools/ue_cook/obj/
+tools/ue_cook/out/
+tools/ue_cook/**/__pycache__/
+*.usmap
+*.vgsrc
