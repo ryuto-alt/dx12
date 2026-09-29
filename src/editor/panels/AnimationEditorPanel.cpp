@@ -21,11 +21,12 @@ namespace dx12e
 namespace
 {
 
+// ★以下 5 定数は論理 px。使う側で ui::Px(...) を通す（DPI）
 constexpr f32 kTrackListW = 250.0f;   // 左のトラック一覧の幅
 constexpr f32 kRulerH     = 24.0f;    // 時間目盛りの高さ
 constexpr f32 kRowH       = 22.0f;    // トラック1行の高さ
-constexpr f32 kKeyR       = 5.0f;     // キーのひし形の半径（px）
-constexpr f32 kKeyGrabPx  = 7.0f;     // キーを掴める距離（px）
+constexpr f32 kKeyR       = 5.0f;     // キーのひし形の半径（論理 px。使う側で Px する）
+constexpr f32 kKeyGrabPx  = 7.0f;     // キーを掴める距離（論理 px）
 
 const char* EntityLabel(const entt::registry& reg, entt::entity e)
 {
@@ -53,17 +54,18 @@ void DrawKeyDiamond(ImDrawList* dl, ImVec2 c, bool selected, bool stepProp)
 {
     const ImU32 fill = selected ? IM_COL32(255, 220, 120, 255) : IM_COL32(210, 170, 70, 255);
     const ImU32 edge = selected ? IM_COL32(255, 255, 255, 255) : IM_COL32(40, 40, 40, 255);
+    const f32 kr = ui::PxF(kKeyR);   // DPI
     if (stepProp)
     {
         // step プロパティは「補間しない」ことが図形で分かるよう四角にする
-        const ImVec2 a(c.x - kKeyR, c.y - kKeyR), b(c.x + kKeyR, c.y + kKeyR);
-        dl->AddRectFilled(a, b, fill, 1.0f);
-        dl->AddRect(a, b, edge, 1.0f);
+        const ImVec2 a(c.x - kr, c.y - kr), b(c.x + kr, c.y + kr);
+        dl->AddRectFilled(a, b, fill, ui::PxF(1.0f));
+        dl->AddRect(a, b, edge, ui::PxF(1.0f));
         return;
     }
-    const ImVec2 pts[4] = {{c.x, c.y - kKeyR}, {c.x + kKeyR, c.y}, {c.x, c.y + kKeyR}, {c.x - kKeyR, c.y}};
+    const ImVec2 pts[4] = {{c.x, c.y - kr}, {c.x + kr, c.y}, {c.x, c.y + kr}, {c.x - kr, c.y}};
     dl->AddConvexPolyFilled(pts, 4, fill);
-    dl->AddPolyline(pts, 4, edge, ImDrawFlags_Closed, 1.0f);
+    dl->AddPolyline(pts, 4, edge, ImDrawFlags_Closed, ui::Px(1.0f));
 }
 
 } // namespace
@@ -281,7 +283,7 @@ void AnimationEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx,
     if (!m_assetListLoaded) RefreshAssetList(assetsDir);
     if (m_clip.tracks.empty() && m_clip.name.empty()) NewAsset();
 
-    ImGui::SetNextWindowSize(ImVec2(1100.0f, 560.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(1100.0f, 560.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("UIアニメーション###AnimationEditorPanelFloating", &ctx.showAnimEditor,
                       ImGuiWindowFlags_NoDocking))
     {
@@ -297,7 +299,7 @@ void AnimationEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx,
     ImGui::Separator();
 
     // ---- 本体: 左トラック一覧 + 右タイムライン ----
-    const f32 bottomH = 118.0f;   // 下部のキー編集欄ぶんを残す
+    const f32 bottomH = ui::Px(118.0f);   // 下部のキー編集欄ぶんを残す
     ImGui::BeginChild("##AnimBody", ImVec2(0.0f, -bottomH), false);
     DrawTrackList(reg, ctx);
     ImGui::SameLine(0.0f, 0.0f);
@@ -412,11 +414,11 @@ void AnimationEditorPanel::DrawToolbar(entt::registry& reg, EditorContext& ctx,
     if (!canSave) ImGui::EndDisabled();
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(150.0f);
+    ImGui::SetNextItemWidth(ui::Px(150.0f));
     ui::InputText("##AnimName", m_nameBuf, sizeof(m_nameBuf));
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(70.0f);
+    ImGui::SetNextItemWidth(ui::Px(70.0f));
     if (ui::DragFloat("尺(秒)", &m_clip.duration, 0.05f, 0.05f, 600.0f, "%.2f"))
         m_time = std::clamp(m_time, 0.0f, m_clip.duration);
     ImGui::SameLine();
@@ -463,7 +465,7 @@ void AnimationEditorPanel::DrawToolbar(entt::registry& reg, EditorContext& ctx,
         ApplyAtTime(reg, m_time);
     }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(70.0f);
+    ImGui::SetNextItemWidth(ui::Px(70.0f));
     ui::DragFloat("速度", &m_playSpeed, 0.05f, 0.05f, 8.0f, "%.2fx");
 
     ImGui::SameLine();
@@ -482,21 +484,21 @@ void AnimationEditorPanel::DrawToolbar(entt::registry& reg, EditorContext& ctx,
                           "再生ヘッドの位置に自動でキーが打たれる（時間は止まったまま）");
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(80.0f);
+    ImGui::SetNextItemWidth(ui::Px(80.0f));
     ui::DragFloat("スナップ", &m_snapStep, 0.005f, 0.0f, 1.0f, "%.3fs");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("キーと再生ヘッドを丸める間隔。0 でスナップ無し");
 }
 
 void AnimationEditorPanel::DrawTrackList(entt::registry& reg, EditorContext& ctx)
 {
-    ImGui::BeginChild("##AnimTracks", ImVec2(kTrackListW, 0.0f), true);
+    ImGui::BeginChild("##AnimTracks", ImVec2(ui::Px(kTrackListW), 0.0f), true);
 
     if (ImGui::Button("＋ トラック追加", ImVec2(-1.0f, 0.0f)))
         ImGui::OpenPopup("##AddTrackPopup");
     DrawAddTrackPopup(reg, ctx);
 
     ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, kRulerH - ImGui::GetStyle().ItemSpacing.y));   // 目盛りぶん行を揃える
+    ImGui::Dummy(ImVec2(0.0f, ui::Px(kRulerH) - ImGui::GetStyle().ItemSpacing.y));   // 目盛りぶん行を揃える
 
     for (size_t i = 0; i < m_clip.tracks.size(); ++i)
     {
@@ -511,7 +513,7 @@ void AnimationEditorPanel::DrawTrackList(entt::registry& reg, EditorContext& ctx
 
         const std::string label = TrackLabel(tr);
         if (ImGui::Selectable(label.c_str(), m_selTrack == static_cast<int>(i),
-                              0, ImVec2(0.0f, kRowH)))
+                              0, ImVec2(0.0f, ui::Px(kRowH))))
         {
             m_selTrack = static_cast<int>(i);
             m_selKey = -1;
@@ -607,8 +609,12 @@ void AnimationEditorPanel::DrawTimeline(entt::registry& reg, EditorContext& /*ct
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const f32 avail = (std::max)(60.0f, ImGui::GetContentRegionAvail().x);
-    const f32 rowsH = kRulerH + kRowH * static_cast<f32>(m_clip.tracks.size()) + 8.0f;
+    // DPI: 寸法定数は論理 px。この関数内で物理 px にして、描画とヒット判定の両方に同じ値を使う
+    const f32 rulerH = ui::Px(kRulerH);
+    const f32 rowH   = ui::Px(kRowH);
+    const f32 keyGrab = ui::Px(kKeyGrabPx);
+    const f32 avail = (std::max)(ui::Px(60.0f), ImGui::GetContentRegionAvail().x);
+    const f32 rowsH = rulerH + rowH * static_cast<f32>(m_clip.tracks.size()) + ui::Px(8.0f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     const f32 dur = (std::max)(0.05f, m_clip.duration);
@@ -617,7 +623,7 @@ void AnimationEditorPanel::DrawTimeline(entt::registry& reg, EditorContext& /*ct
     auto xToTime = [&](f32 x) { return (x - origin.x) / pxPerSec + m_scroll; };
 
     // 操作を受け取る透明ボタン（先に置いて、描画をこの上に重ねる）
-    ImGui::InvisibleButton("##TimelineCanvas", ImVec2(avail, (std::max)(rowsH, 60.0f)),
+    ImGui::InvisibleButton("##TimelineCanvas", ImVec2(avail, (std::max)(rowsH, ui::Px(60.0f))),
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     const bool canvasHovered = ImGui::IsItemHovered();
     const ImVec2 mouse = ImGui::GetIO().MousePos;
@@ -632,29 +638,29 @@ void AnimationEditorPanel::DrawTimeline(entt::registry& reg, EditorContext& /*ct
     // 1目盛りが 60px を下回らない範囲で 0.05/0.1/0.25/0.5/1/2/5/10 秒から選ぶ
     static const f32 kSteps[] = {0.05f, 0.1f, 0.25f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f, 30.0f};
     f32 step = kSteps[0];
-    for (f32 s : kSteps) { step = s; if (s * pxPerSec >= 60.0f) break; }
+    for (f32 s : kSteps) { step = s; if (s * pxPerSec >= ui::Px(60.0f)) break; }
     for (f32 t = 0.0f; t <= dur + step * 0.5f; t += step)
     {
         const f32 x = timeToX(t);
-        if (x < origin.x - 40.0f || x > origin.x + avail + 40.0f) continue;
+        if (x < origin.x - ui::Px(40.0f) || x > origin.x + avail + ui::Px(40.0f)) continue;
         dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + rowsH), IM_COL32(70, 70, 80, 160));
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.2fs", t);
-        dl->AddText(ImVec2(x + 3.0f, origin.y + 3.0f), IM_COL32(160, 160, 175, 255), buf);
+        dl->AddText(ImVec2(x + ui::Px(3.0f), origin.y + ui::Px(3.0f)), IM_COL32(160, 160, 175, 255), buf);
     }
-    dl->AddLine(ImVec2(origin.x, origin.y + kRulerH), ImVec2(origin.x + avail, origin.y + kRulerH),
+    dl->AddLine(ImVec2(origin.x, origin.y + rulerH), ImVec2(origin.x + avail, origin.y + rulerH),
                 IM_COL32(90, 90, 100, 255));
 
     // --- トラック行とキー ---
     int hitTrack = -1, hitKey = -1;
     for (size_t i = 0; i < m_clip.tracks.size(); ++i)
     {
-        const f32 rowY = origin.y + kRulerH + kRowH * static_cast<f32>(i);
-        const f32 cy = rowY + kRowH * 0.5f;
+        const f32 rowY = origin.y + rulerH + rowH * static_cast<f32>(i);
+        const f32 cy = rowY + rowH * 0.5f;
         if (m_selTrack == static_cast<int>(i))
-            dl->AddRectFilled(ImVec2(origin.x, rowY), ImVec2(origin.x + avail, rowY + kRowH),
+            dl->AddRectFilled(ImVec2(origin.x, rowY), ImVec2(origin.x + avail, rowY + rowH),
                               IM_COL32(60, 70, 95, 120));
-        dl->AddLine(ImVec2(origin.x, rowY + kRowH), ImVec2(origin.x + avail, rowY + kRowH),
+        dl->AddLine(ImVec2(origin.x, rowY + rowH), ImVec2(origin.x + avail, rowY + rowH),
                     IM_COL32(55, 55, 62, 255));
 
         const auto& tr = m_clip.tracks[i];
@@ -664,16 +670,16 @@ void AnimationEditorPanel::DrawTimeline(entt::registry& reg, EditorContext& /*ct
         for (size_t k = 0; k + 1 < tr.keys.size(); ++k)
         {
             dl->AddLine(ImVec2(timeToX(tr.keys[k].time), cy),
-                        ImVec2(timeToX(tr.keys[k + 1].time), cy), IM_COL32(150, 130, 70, 180), 2.0f);
+                        ImVec2(timeToX(tr.keys[k + 1].time), cy), IM_COL32(150, 130, 70, 180), ui::PxF(2.0f));
         }
         for (size_t k = 0; k < tr.keys.size(); ++k)
         {
             const ImVec2 c(timeToX(tr.keys[k].time), cy);
-            if (c.x < origin.x - 20.0f || c.x > origin.x + avail + 20.0f) continue;
+            if (c.x < origin.x - ui::Px(20.0f) || c.x > origin.x + avail + ui::Px(20.0f)) continue;
             const bool sel = (m_selTrack == static_cast<int>(i) && m_selKey == static_cast<int>(k));
             DrawKeyDiamond(dl, c, sel, stepProp);
-            if (canvasHovered && std::fabs(mouse.x - c.x) <= kKeyGrabPx
-                && std::fabs(mouse.y - c.y) <= kKeyGrabPx)
+            if (canvasHovered && std::fabs(mouse.x - c.x) <= keyGrab
+                && std::fabs(mouse.y - c.y) <= keyGrab)
             {
                 hitTrack = static_cast<int>(i);
                 hitKey   = static_cast<int>(k);
@@ -685,16 +691,16 @@ void AnimationEditorPanel::DrawTimeline(entt::registry& reg, EditorContext& /*ct
     for (const auto& ev : m_clip.events)
     {
         const f32 x = timeToX(ev.time);
-        dl->AddTriangleFilled(ImVec2(x, origin.y + kRulerH - 8.0f), ImVec2(x - 5.0f, origin.y + kRulerH),
-                              ImVec2(x + 5.0f, origin.y + kRulerH), IM_COL32(120, 220, 140, 255));
+        dl->AddTriangleFilled(ImVec2(x, origin.y + rulerH - ui::Px(8.0f)), ImVec2(x - ui::Px(5.0f), origin.y + rulerH),
+                              ImVec2(x + ui::Px(5.0f), origin.y + rulerH), IM_COL32(120, 220, 140, 255));
     }
 
     // --- 再生ヘッド ---
     {
         const f32 x = timeToX(m_time);
-        dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + rowsH), IM_COL32(255, 90, 90, 230), 2.0f);
-        dl->AddTriangleFilled(ImVec2(x - 6.0f, origin.y), ImVec2(x + 6.0f, origin.y),
-                              ImVec2(x, origin.y + 9.0f), IM_COL32(255, 90, 90, 255));
+        dl->AddLine(ImVec2(x, origin.y), ImVec2(x, origin.y + rowsH), IM_COL32(255, 90, 90, 230), ui::PxF(2.0f));
+        dl->AddTriangleFilled(ImVec2(x - ui::Px(6.0f), origin.y), ImVec2(x + ui::Px(6.0f), origin.y),
+                              ImVec2(x, origin.y + ui::Px(9.0f)), IM_COL32(255, 90, 90, 255));
     }
 
     // --- 入力 ---
@@ -722,7 +728,7 @@ void AnimationEditorPanel::DrawTimeline(entt::registry& reg, EditorContext& /*ct
                 m_dragTrack = hitTrack;
                 m_dragKey   = hitKey;
             }
-            else if (mouse.y < origin.y + kRulerH)
+            else if (mouse.y < origin.y + rulerH)
             {
                 m_draggingPlayhead = true;   // 目盛り帯のクリックは再生ヘッド移動
                 m_playing = false;
@@ -730,7 +736,7 @@ void AnimationEditorPanel::DrawTimeline(entt::registry& reg, EditorContext& /*ct
             else
             {
                 // トラック行の空きをクリック = 再生ヘッドをそこへ（キー打ちは Ctrl+クリック）
-                const int row = static_cast<int>((mouse.y - origin.y - kRulerH) / kRowH);
+                const int row = static_cast<int>((mouse.y - origin.y - rulerH) / rowH);
                 if (ImGui::GetIO().KeyCtrl && row >= 0 && row < static_cast<int>(m_clip.tracks.size()))
                 {
                     const f32 t = std::clamp(SnapTo(xToTime(mouse.x), m_snapStep), 0.0f, dur);
@@ -856,7 +862,7 @@ void AnimationEditorPanel::DrawKeyInspector()
     }
 
     auto& key = track.keys[static_cast<size_t>(m_selKey)];
-    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SetNextItemWidth(ui::Px(120.0f));
     if (ui::DragFloat("時刻", &key.time, 0.01f, 0.0f, m_clip.duration, "%.3fs"))
     {
         std::stable_sort(track.keys.begin(), track.keys.end(),
@@ -865,10 +871,10 @@ void AnimationEditorPanel::DrawKeyInspector()
         return;
     }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
+    ImGui::SetNextItemWidth(ui::Px(140.0f));
     ui::DragFloat("値", &key.value, 0.5f);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(180.0f);
+    ImGui::SetNextItemWidth(ui::Px(180.0f));
     if (UiAnimPropIsStep(track.prop))
     {
         ImGui::TextDisabled("(step プロパティ = 補間しない)");
@@ -887,7 +893,7 @@ void AnimationEditorPanel::DrawKeyInspector()
     if (!UiAnimPropIsStep(track.prop) && m_selKey + 1 < static_cast<int>(track.keys.size()))
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const ImVec2 sz(160.0f, 42.0f);
+        const ImVec2 sz = ui::Px(160.0f, 42.0f);
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), IM_COL32(24, 24, 28, 255));
         ImVec2 prev(p.x, p.y + sz.y);
@@ -895,7 +901,7 @@ void AnimationEditorPanel::DrawKeyInspector()
         {
             const f32 u = static_cast<f32>(s) / 32.0f;
             const ImVec2 cur(p.x + sz.x * u, p.y + sz.y * (1.0f - UiEase(key.easing, u)));
-            dl->AddLine(prev, cur, IM_COL32(120, 200, 255, 255), 1.5f);
+            dl->AddLine(prev, cur, IM_COL32(120, 200, 255, 255), ui::PxF(1.5f));
             prev = cur;
         }
         ImGui::Dummy(sz);

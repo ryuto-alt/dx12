@@ -134,7 +134,8 @@ bool MaterialEditorPanel::SaveAsset(const std::string& assetsDir)
 void MaterialEditorPanel::DrawTextureSlot(const std::string& assetsDir, const char* label, std::string& texRelPath)
 {
     ImGui::PushID(label);
-    constexpr float kThumbSize = 72.0f;
+    constexpr float kThumbSizeL = 72.0f;   // 論理 px
+    const float kThumbSize = ui::Px(kThumbSizeL);   // DPI
 
     bool hasTex = !texRelPath.empty();
     u64 gpuHandle = (hasTex && m_assetBrowser) ? m_assetBrowser->GetOrQueueThumbnail(assetsDir + texRelPath) : 0;
@@ -169,7 +170,7 @@ void MaterialEditorPanel::DrawTextureSlot(const std::string& assetsDir, const ch
     {
         ImGui::SameLine();
         ImGui::BeginGroup();
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 180.0f);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ui::Px(180.0f));
         ImGui::TextWrapped("%s", texRelPath.c_str());
         ImGui::PopTextWrapPos();
         if (ImGui::SmallButton("x")) { texRelPath.clear(); changed = true; }
@@ -332,7 +333,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
 
     if (!ctx.showMaterialEditor) return;
 
-    ImGui::SetNextWindowSize(ImVec2(1300.0f, 980.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(1300.0f, 980.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab\xe3\x82\xa8\xe3\x83\x87\xe3\x82\xa3\xe3\x82\xbf###MaterialEditorFloating",  // マテリアルエディタ
                       &ctx.showMaterialEditor, ImGuiWindowFlags_NoDocking))
     {
@@ -361,7 +362,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     {
         const char* shapeLabel = (m_previewShape == MaterialPreviewShape::Sphere)
             ? "\xe7\x90\x83\xe4\xbd\x93 Sphere" : "\xe5\xb9\xb3\xe9\x9d\xa2 Plane";  // 球体/平面
-        if (ImGui::Button(shapeLabel, ImVec2(140.0f, 0.0f)))
+        if (ImGui::Button(shapeLabel, ImVec2(ui::Px(140.0f), 0.0f)))
             m_previewShape = (m_previewShape == MaterialPreviewShape::Sphere)
                 ? MaterialPreviewShape::Plane : MaterialPreviewShape::Sphere;
 
@@ -370,7 +371,8 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
             // ImGui::Image は「掴めない」アイテムのため、その上で左ドラッグを始めるとImGui標準の
             // ウィンドウ移動として扱われ、回転操作と一緒に窓ごと動いてしまう。InvisibleButton を
             // 敷いてドラッグをアイテムとして捕捉し(=アクティブアイテム化)、画像は DrawList で重ね描きする。
-            const float previewSize = static_cast<float>(MaterialPreviewRenderer::kPreviewSize);
+            // DPI: RT 解像度はそのまま、画面上の表示寸法だけ倍率に比例させる
+            const float previewSize = ui::Px(static_cast<float>(MaterialPreviewRenderer::kPreviewSize));
             const ImVec2 imgPos = ImGui::GetCursorScreenPos();
             ImGui::InvisibleButton("##previewOrbit", ImVec2(previewSize, previewSize));
             ImGui::GetWindowDrawList()->AddImage(
@@ -436,7 +438,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     ImGui::SameLine();
     ImGui::BeginGroup();
 
-    ImGui::SetNextItemWidth(240.0f);
+    ImGui::SetNextItemWidth(ui::Px(240.0f));
     ui::InputText("\xe5\x90\x8d\xe5\x89\x8d Name", m_nameBuf, sizeof(m_nameBuf));  // 名前
     ImGui::SameLine();
     if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98 Save"))

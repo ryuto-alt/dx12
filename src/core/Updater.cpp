@@ -217,6 +217,30 @@ bool IsNewer(const std::string& latest, const std::string& current)
 struct ProgressUI
 {
     HWND hwnd = nullptr, bar = nullptr, label = nullptr, pct = nullptr;
+    HFONT uiFont = nullptr;   // DPI に合わせて作ったメッセージフォント（DEFAULT_GUI_FONT は倍率に追従しない）
+
+    // プロセスは Per-Monitor V2。窓はプライマリモニタの DPI（=システム DPI）で物理 px 寸法にする。
+    static UINT SystemDpi()
+    {
+        using Fn = UINT(WINAPI*)();
+        if (HMODULE u = GetModuleHandleW(L"user32.dll"))
+            if (auto fn = reinterpret_cast<Fn>(GetProcAddress(u, "GetDpiForSystem")))
+                if (UINT d = fn()) return d;
+        return 96;
+    }
+    static HFONT MakeMessageFont(UINT dpi)
+    {
+        using Fn = BOOL(WINAPI*)(UINT, UINT, PVOID, UINT, UINT);
+        if (HMODULE u = GetModuleHandleW(L"user32.dll"))
+            if (auto fn = reinterpret_cast<Fn>(GetProcAddress(u, "SystemParametersInfoForDpi")))
+            {
+                NONCLIENTMETRICSW ncm{};
+                ncm.cbSize = sizeof(ncm);
+                if (fn(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi))
+                    return CreateFontIndirectW(&ncm.lfMessageFont);
+            }
+        return nullptr;
+    }
 
     static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
     {
@@ -242,7 +266,9 @@ struct ProgressUI
             registered = true;
         }
 
-        const int w = 460, h = 168;
+        const UINT dpi = SystemDpi();
+        auto S = [dpi](int v) { return MulDiv(v, static_cast<int>(dpi), 96); };
+        const int w = S(460), h = S(168);
         const int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         const int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
         // WS_SYSMENU を付けない＝閉じる×無し（ダウンロード中の誤操作防止）
@@ -254,14 +280,15 @@ struct ProgressUI
             nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
         if (!hwnd) return false;
 
-        HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        uiFont = MakeMessageFont(dpi);
+        HFONT font = uiFont ? uiFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         label = CreateWindowExW(0, L"STATIC",
             L"アップデートを準備しています...",
-            WS_CHILD | WS_VISIBLE, 20, 18, 410, 22, hwnd, nullptr, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE, S(20), S(18), S(410), S(22), hwnd, nullptr, nullptr, nullptr);
         bar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
-            WS_CHILD | WS_VISIBLE, 20, 52, 418, 26, hwnd, nullptr, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE, S(20), S(52), S(418), S(26), hwnd, nullptr, nullptr, nullptr);
         pct = CreateWindowExW(0, L"STATIC", L"",
-            WS_CHILD | WS_VISIBLE, 20, 88, 410, 22, hwnd, nullptr, nullptr, nullptr);
+            WS_CHILD | WS_VISIBLE, S(20), S(88), S(410), S(22), hwnd, nullptr, nullptr, nullptr);
         SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(pct,   WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         SendMessageW(bar, PBM_SETRANGE32, 0, 100);
@@ -333,6 +360,7 @@ struct ProgressUI
     {
         if (hwnd) { DestroyWindow(hwnd); hwnd = nullptr; }
         Pump();
+        if (uiFont) { DeleteObject(uiFont); uiFont = nullptr; }
     }
 };
 

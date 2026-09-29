@@ -41,7 +41,7 @@ void OutlineRect(ImVec2 mn, ImVec2 mx, bool hovered, bool active, float rounding
 {
     if (!hovered && !active) return;
     ImGui::GetWindowDrawList()->AddRect(
-        mn, mx, Col(active ? th::Accent : th::InputBorderHover), rounding, 0, 1.0f);
+        mn, mx, Col(active ? th::Accent : th::InputBorderHover), rounding, 0, Px(1.0f));
 }
 
 // スライダー描画の共通処理。ImGui のスライダーは「溝 → つまみ → 値の文字」の順に描くので、
@@ -89,23 +89,24 @@ struct FillSlider
         dl->AddRectFilled(mn, mx, Col(act ? th::InputBgActive : hov ? th::InputBgHover : th::InputBg), r);
         // 塗りバー（アクセント 40%）
         t = std::min(1.0f, std::max(0.0f, t));
-        const float x0 = mn.x + 1.0f, x1 = mx.x - 1.0f;
+        const float b1px = Px(1.0f);
+        const float x0 = mn.x + b1px, x1 = mx.x - b1px;
         const float fx = x0 + (x1 - x0) * t;
-        if (fx - x0 >= 1.0f)
+        if (fx - x0 >= b1px)
         {
-            dl->AddRectFilled(ImVec2(x0, mn.y + 1.0f), ImVec2(fx, mx.y - 1.0f),
+            dl->AddRectFilled(ImVec2(x0, mn.y + b1px), ImVec2(fx, mx.y - b1px),
                               Col(th::WithAlpha(th::Accent, act ? 0.55f : 0.40f)),
-                              std::max(0.0f, r - 1.0f),
+                              std::max(0.0f, r - b1px),
                               t >= 0.999f ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft);
         }
         // つまみ = 塗りの先端の細い縦線。値の文字に重なるときは描かない（読みやすさ優先）。
         {
-            const float gx = std::min(x1 - 1.0f, std::max(x0 + 1.0f, fx));
+            const float gx = std::min(x1 - b1px, std::max(x0 + b1px, fx));
             const float cx = (mn.x + mx.x) * 0.5f;
-            const bool overText = std::fabs(gx - cx) < textW * 0.5f + 4.0f;
+            const bool overText = std::fabs(gx - cx) < textW * 0.5f + Px(4.0f);
             if (!overText || act)
-                dl->AddRectFilled(ImVec2(gx - 1.0f, mn.y + 3.0f), ImVec2(gx + 1.0f, mx.y - 3.0f),
-                                  Col(act ? th::Text : th::AccentHover), 1.0f);
+                dl->AddRectFilled(ImVec2(gx - b1px, mn.y + Px(3.0f)), ImVec2(gx + b1px, mx.y - Px(3.0f)),
+                                  Col(act ? th::Text : th::AccentHover), Px(1.0f));
         }
         sp.Merge(dl);
 
@@ -174,6 +175,7 @@ void DrawIconCentered(ImDrawList* dl, const char* glyph, ImVec2 center, ImU32 co
 bool IconButton(const char* id, const char* glyph, const char* tooltip, bool active,
                 const ImVec4* tint, float sizePx, float iconPx, const ImVec4* activeFace)
 {
+    if (sizePx <= 0.0f) sizePx = Px(th::size::kToolbarBtn);   // 0 以下 = 既定（論理 28px を倍率換算）
     const ImVec4& face = activeFace ? *activeFace : th::Accent;
     ImGui::PushID(id);
     const bool clicked = ImGui::InvisibleButton("##ib", ImVec2(sizePx, sizePx));
@@ -184,18 +186,18 @@ bool IconButton(const char* id, const char* glyph, const char* tooltip, bool act
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
     if (active)
-        dl->AddRectFilled(mn, mx, Col(th::WithAlpha(face, held ? 0.32f : hov ? 0.28f : 0.22f)), 3.0f);
+        dl->AddRectFilled(mn, mx, Col(th::WithAlpha(face, held ? 0.32f : hov ? 0.28f : 0.22f)), Px(3.0f));
     else if (held)
-        dl->AddRectFilled(mn, mx, Col(th::Bg4), 3.0f);
+        dl->AddRectFilled(mn, mx, Col(th::Bg4), Px(3.0f));
     else if (hov)
-        dl->AddRectFilled(mn, mx, Col(th::Bg3), 3.0f);
+        dl->AddRectFilled(mn, mx, Col(th::Bg3), Px(3.0f));
 
     ImVec4 ic = tint ? *tint : (active ? (activeFace ? *activeFace : th::AccentHover) : hov ? th::Text : th::TextDim);
     if (tint && !active && !hov) ic = th::Mul(*tint, 0.88f);
     DrawIconCentered(dl, glyph, ImVec2((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f), Col(ic),
-                     iconPx > 0.0f ? iconPx : th::size::kIconPx + 2.0f);
+                     iconPx > 0.0f ? iconPx : Px(th::size::kIconPx + 2.0f));
     if (active)
-        dl->AddRectFilled(ImVec2(mn.x + 5.0f, mx.y - 2.0f), ImVec2(mx.x - 5.0f, mx.y), Col(face), 1.0f);
+        dl->AddRectFilled(ImVec2(mn.x + Px(5.0f), mx.y - Px(2.0f)), ImVec2(mx.x - Px(5.0f), mx.y), Col(face), Px(1.0f));
 
     if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("%s", tooltip);
@@ -205,7 +207,8 @@ bool IconButton(const char* id, const char* glyph, const char* tooltip, bool act
 
 bool IconDropdownButton(const char* id, const char* glyph, const char* tooltip, bool active, float sizePx)
 {
-    const float w = sizePx + 14.0f;
+    if (sizePx <= 0.0f) sizePx = Px(th::size::kToolbarBtn);
+    const float w = sizePx + Px(14.0f);
     ImGui::PushID(id);
     const bool clicked = ImGui::InvisibleButton("##idb", ImVec2(w, sizePx));
     const bool hov  = ImGui::IsItemHovered();
@@ -214,15 +217,15 @@ bool IconDropdownButton(const char* id, const char* glyph, const char* tooltip, 
     const ImVec2 mx = ImGui::GetItemRectMax();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (active)
-        dl->AddRectFilled(mn, mx, Col(th::WithAlpha(th::Accent, held ? 0.32f : hov ? 0.28f : 0.22f)), 3.0f);
+        dl->AddRectFilled(mn, mx, Col(th::WithAlpha(th::Accent, held ? 0.32f : hov ? 0.28f : 0.22f)), Px(3.0f));
     else if (held)
-        dl->AddRectFilled(mn, mx, Col(th::Bg4), 3.0f);
+        dl->AddRectFilled(mn, mx, Col(th::Bg4), Px(3.0f));
     else if (hov)
-        dl->AddRectFilled(mn, mx, Col(th::Bg3), 3.0f);
+        dl->AddRectFilled(mn, mx, Col(th::Bg3), Px(3.0f));
     const ImVec4& ic = active ? th::AccentHover : (hov ? th::Text : th::TextDim);
     const float cy = (mn.y + mx.y) * 0.5f;
-    DrawIconCentered(dl, glyph, ImVec2(mn.x + sizePx * 0.5f, cy), Col(ic), th::size::kIconPx + 2.0f);
-    DrawIconCentered(dl, ICON_CHEVRON_DOWN, ImVec2(mx.x - 9.0f, cy), Col(ic), 13.0f);
+    DrawIconCentered(dl, glyph, ImVec2(mn.x + sizePx * 0.5f, cy), Col(ic), Px(th::size::kIconPx + 2.0f));
+    DrawIconCentered(dl, ICON_CHEVRON_DOWN, ImVec2(mx.x - Px(9.0f), cy), Col(ic), Px(13.0f));
     if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("%s", tooltip);
     ImGui::PopID();
@@ -315,10 +318,10 @@ bool Checkbox(const char* label, bool* v)
     const ImGuiStyle& st = ImGui::GetStyle();
     const char* labelEnd = ImGui::FindRenderedTextEnd(label);
     const bool hasLabel = labelEnd > label;
-    const float box    = th::size::kCheckBox;
+    const float box    = Px(th::size::kCheckBox);
     const float frameH = ImGui::GetFrameHeight();
     const ImVec2 labelSz = hasLabel ? ImGui::CalcTextSize(label, labelEnd, true) : ImVec2(0, 0);
-    const ImVec2 total(box + (hasLabel ? st.ItemInnerSpacing.x + 2.0f + labelSz.x : 0.0f), frameH);
+    const ImVec2 total(box + (hasLabel ? st.ItemInnerSpacing.x + Px(2.0f) + labelSz.x : 0.0f), frameH);
 
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const bool pressed = ImGui::InvisibleButton(label, total);
@@ -330,7 +333,7 @@ bool Checkbox(const char* label, bool* v)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 b0(p.x, p.y + (frameH - box) * 0.5f);
     const ImVec2 b1(b0.x + box, b0.y + box);
-    const float r = 2.0f;
+    const float r = Px(2.0f);
     if (*v)
     {
         const ImVec4& fill = held ? th::AccentPressed : hov ? th::AccentHover : th::Accent;
@@ -340,20 +343,20 @@ bool Checkbox(const char* label, bool* v)
         const ImVec2 a(b0.x + box * 0.24f, b0.y + box * 0.52f);
         const ImVec2 m(b0.x + box * 0.43f, b0.y + box * 0.71f);
         const ImVec2 e(b0.x + box * 0.77f, b0.y + box * 0.30f);
-        dl->AddPolyline(std::array<ImVec2, 3>{a, m, e}.data(), 3, white, ImDrawFlags_None, 2.0f);
+        dl->AddPolyline(std::array<ImVec2, 3>{a, m, e}.data(), 3, white, ImDrawFlags_None, Px(2.0f));
     }
     else
     {
         dl->AddRectFilled(b0, b1, Col(held ? th::InputBgActive : hov ? th::InputBgHover : th::InputBg), r);
-        dl->AddRect(b0, b1, Col(hov ? th::InputBorderHover : th::InputBorder), r, 0, 1.0f);
+        dl->AddRect(b0, b1, Col(hov ? th::InputBorderHover : th::InputBorder), r, 0, Px(1.0f));
     }
     if (focused)
-        dl->AddRect(ImVec2(b0.x - 2, b0.y - 2), ImVec2(b1.x + 2, b1.y + 2), Col(th::Accent), r + 1.0f, 0, 1.0f);
+        dl->AddRect(ImVec2(b0.x - Px(2.0f), b0.y - Px(2.0f)), ImVec2(b1.x + Px(2.0f), b1.y + Px(2.0f)), Col(th::Accent), r + Px(1.0f), 0, Px(1.0f));
 
     if (hasLabel)
     {
         const float ty = p.y + (frameH - ImGui::GetTextLineHeight()) * 0.5f;
-        dl->AddText(ImVec2(b1.x + st.ItemInnerSpacing.x + 2.0f, std::floor(ty + 0.5f)),
+        dl->AddText(ImVec2(b1.x + st.ItemInnerSpacing.x + Px(2.0f), std::floor(ty + 0.5f)),
                     Col(th::Text), label, labelEnd);
     }
     return pressed;
@@ -374,14 +377,14 @@ bool BeginCombo(const char* id, const char* preview, ImGuiComboFlags flags)
     const bool open = ImGui::BeginCombo(id, "", flags | ImGuiComboFlags_NoArrowButton);
     const bool hov = !open && ImGui::IsItemHovered();
 
-    const float chevW = 24.0f;
+    const float chevW = Px(24.0f);
     const ImVec4 clip(p.x, p.y, p.x + w - chevW, p.y + h);
     if (preview && *preview)
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
                     ImVec2(p.x + st.FramePadding.x, p.y + st.FramePadding.y), Col(th::Text),
                     preview, nullptr, 0.0f, &clip);
-    DrawIconCentered(dl, ICON_CHEVRON_DOWN, ImVec2(p.x + w - 13.0f, p.y + h * 0.5f),
-                     Col(open || hov ? th::Text : th::TextDim), 14.0f);
+    DrawIconCentered(dl, ICON_CHEVRON_DOWN, ImVec2(p.x + w - Px(13.0f), p.y + h * 0.5f),
+                     Col(open || hov ? th::Text : th::TextDim), Px(14.0f));
     OutlineRect(p, ImVec2(p.x + w, p.y + h), hov, open, st.FrameRounding);
     return open;
 }
@@ -447,7 +450,7 @@ bool ColorEdit4(const char* id, float* col, ImGuiColorEditFlags flags)
 
 bool SearchField(const char* id, char* buf, size_t size, const char* hint)
 {
-    const float padX = 26.0f;
+    const float padX = Px(26.0f);
     const FrameRect fr = FrameRect::Peek();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padX, ImGui::GetStyle().FramePadding.y));
     const bool ch = ImGui::InputTextWithHint(id, hint, buf, size);
@@ -460,14 +463,15 @@ bool SearchField(const char* id, char* buf, size_t size, const char* hint)
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float cy = (mn.y + mx.y) * 0.5f;
-    DrawIconCentered(dl, ICON_SEARCH, ImVec2(mn.x + 13.0f, cy), Col(act ? th::Text : th::TextDim), 15.0f);
+    DrawIconCentered(dl, ICON_SEARCH, ImVec2(mn.x + Px(13.0f), cy), Col(act ? th::Text : th::TextDim), Px(15.0f));
 
     bool cleared = false;
     if (buf[0] != '\0')
     {
-        const ImVec2 c(mx.x - 13.0f, cy);
-        const bool overX = ImGui::IsMouseHoveringRect(ImVec2(c.x - 9, c.y - 9), ImVec2(c.x + 9, c.y + 9));
-        DrawIconCentered(dl, ICON_CLOSE, c, Col(overX ? th::Text : th::TextFaint), 14.0f);
+        const ImVec2 c(mx.x - Px(13.0f), cy);
+        const float hit = Px(9.0f);
+        const bool overX = ImGui::IsMouseHoveringRect(ImVec2(c.x - hit, c.y - hit), ImVec2(c.x + hit, c.y + hit));
+        DrawIconCentered(dl, ICON_CLOSE, c, Col(overX ? th::Text : th::TextFaint), Px(14.0f));
         if (overX && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
             buf[0] = '\0';
@@ -482,8 +486,8 @@ bool SearchField(const char* id, char* buf, size_t size, const char* hint)
 // ---------------------------------------------------------------------------
 bool SectionHeader(const char* label, const char* glyph, const ImVec4* tint, ImGuiTreeNodeFlags flags)
 {
-    const float h = th::size::kHeaderH;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, (h - ImGui::GetFontSize()) * 0.5f));
+    const float h = Px(th::size::kHeaderH);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Px(8.0f), (h - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);   // 帯は面で見せる（枠線なし）
     ImGui::PushStyleColor(ImGuiCol_Header,        th::Bg2);
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, th::Bg3);
@@ -498,14 +502,14 @@ bool SectionHeader(const char* label, const char* glyph, const ImVec4* tint, ImG
     const float cy = (mn.y + mx.y) * 0.5f;
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
-    float x = mn.x + 8.0f;
-    DrawIconCentered(dl, open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, ImVec2(x + 7.0f, cy),
-                     Col(th::TextDim), 14.0f);
-    x += 21.0f;
+    float x = mn.x + Px(8.0f);
+    DrawIconCentered(dl, open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, ImVec2(x + Px(7.0f), cy),
+                     Col(th::TextDim), Px(14.0f));
+    x += Px(21.0f);
     if (glyph && *glyph)
     {
-        DrawIconCentered(dl, glyph, ImVec2(x + 8.0f, cy), Col(tint ? *tint : th::TextDim), 16.0f);
-        x += 25.0f;
+        DrawIconCentered(dl, glyph, ImVec2(x + Px(8.0f), cy), Col(tint ? *tint : th::TextDim), Px(16.0f));
+        x += Px(25.0f);
     }
     PushBold();
     const char* end = ImGui::FindRenderedTextEnd(label);
@@ -524,8 +528,8 @@ bool HeaderMenuButton()
 {
     const ImVec2 mn = ImGui::GetItemRectMin();
     const ImVec2 mx = ImGui::GetItemRectMax();
-    const float s = 22.0f;
-    const ImVec2 pos(mx.x - s - 4.0f, mn.y + ((mx.y - mn.y) - s) * 0.5f);
+    const float s = Px(22.0f);
+    const ImVec2 pos(mx.x - s - Px(4.0f), mn.y + ((mx.y - mn.y) - s) * 0.5f);
     const ImVec2 save = ImGui::GetCursorScreenPos();
 
     ImGui::SetCursorScreenPos(pos);
@@ -535,9 +539,9 @@ bool HeaderMenuButton()
     const bool held = ImGui::IsItemActive();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (held || hov)
-        dl->AddRectFilled(pos, ImVec2(pos.x + s, pos.y + s), Col(held ? th::Bg4 : th::Bg3), 3.0f);
+        dl->AddRectFilled(pos, ImVec2(pos.x + s, pos.y + s), Col(held ? th::Bg4 : th::Bg3), Px(3.0f));
     DrawIconCentered(dl, ICON_ELLIPSIS, ImVec2(pos.x + s * 0.5f, pos.y + s * 0.5f),
-                     Col(hov ? th::Text : th::TextFaint), 16.0f);
+                     Col(hov ? th::Text : th::TextFaint), Px(16.0f));
     if (hov) ImGui::SetTooltip("コンポーネントのメニュー");
     ImGui::SetCursorScreenPos(save);
     return clicked;
@@ -564,8 +568,8 @@ bool MenuItem(const char* icon, const char* label, const char* shortcut, bool* s
 void PushMenuStyle()
 {
     const ImGuiStyle& st = ImGui::GetStyle();
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(st.ItemSpacing.x, 9.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(st.ItemSpacing.x, Px(9.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Px(6.0f), Px(6.0f)));
 }
 
 void PopMenuStyle()

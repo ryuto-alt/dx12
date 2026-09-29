@@ -4,6 +4,8 @@
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/GameUiFont.h"
+#include "core/DpiScale.h"
+#include "gui/ImGuizmo.h"
 #include <vector>
 #include <set>
 #include <unordered_map>
@@ -47,6 +49,132 @@ bool GetWindowMinimizedOverride(ImGuiViewport* vp)
 bool g_viewportsWanted = false;   // 通常起動で multi-viewport を有効にしたか（仮想入力を切ったら戻す）
 bool g_viewportsForbidden = false; // --background: multi-viewport を二度と有効にしない
 bool g_editorStyle     = false;   // エディタのテーマを適用したか（ゲームモードでは false）
+
+// ---- DPI（表示倍率）----
+//   ・g_mainScale   : メインビューポートの UI 倍率（OS の倍率 or --dpi-scale）。ini の保存にも使う
+//   ・g_appliedScale: 今 ImGuiStyle / theme::Scale() に反映している倍率（ビューポートごとに切り替わり得る）
+HWND  g_mainHwnd      = nullptr;
+float g_mainScale     = 1.0f;
+float g_appliedScale  = 0.0f;
+float g_iniScale      = 0.0f;   // imgui.ini に書かれていた倍率（0 = 記録なし = 旧版の ini = 100% 基準）
+float g_initialScale  = 1.0f;   // ini を読む時点のメイン倍率
+float (*g_origGetWindowDpiScale)(ImGuiViewport*) = nullptr;
+
+float ScaleForHwnd(HWND h)
+{
+    UINT dpiVal = 96;
+    if (h)
+    {
+        using Fn = UINT(WINAPI*)(HWND);
+        static Fn fn = [] { HMODULE u = GetModuleHandleW(L"user32.dll");
+                            return u ? reinterpret_cast<Fn>(GetProcAddress(u, "GetDpiForWindow")) : nullptr; }();
+        if (fn) { const UINT d = fn(h); if (d) dpiVal = d; }
+    }
+    return dx12e::dpi::DpiToScale(dpiVal);
+}
+
+// メインビューポートの倍率。ゲームは 1.0 固定（旧来の見た目・ゲーム内 UI の論理解像度を守る）。
+float ComputeMainScale()
+{
+    if (!g_editorStyle) return 1.0f;
+    return dx12e::dpi::EffectiveScale(ScaleForHwnd(g_mainHwnd));
+}
+
+// 倍率を ImGuiStyle と theme::Scale() へ反映する。基準スタイル（100%）から毎回作り直す（累積しない・往復で戻る）。
+void ApplyUiScale(float scale)
+{
+    if (!g_editorStyle || !theme::BaseStyleValid()) return;
+    if (scale <= 0.0f) scale = 1.0f;
+    if (scale == g_appliedScale) return;
+    g_appliedScale = scale;
+    ImGui::GetStyle() = theme::ScaleStyleFrom(theme::BaseStyle(), scale);
+    theme::SetScale(scale);
+    ImGuizmo::SetScreenScale(scale);
+    // マウスのドラッグ/ダブルクリックの許容距離（物理 px）も倍率に比例させる（200% で 6px だと手ぶれでドラッグ扱いになる）
+    ImGuiIO& io = ImGui::GetIO();
+    io.MouseDragThreshold = 6.0f * scale;
+    io.MouseDoubleClickMaxDist = 6.0f * scale;
+}
+
+// ビューポートごとの DPI（multi-viewport で別モニターへ引き出した窓）。--dpi-scale があれば全ビューポートがそれ。
+float GetWindowDpiScaleHook(ImGuiViewport* vp)
+{
+    if (!g_editorStyle) return 1.0f;
+    if (dx12e::dpi::HasOverride()) return dx12e::dpi::Override();
+    HWND h = vp ? static_cast<HWND>(vp->PlatformHandleRaw ? vp->PlatformHandleRaw : vp->PlatformHandle) : nullptr;
+    if (!h) h = g_mainHwnd;
+    return dx12e::dpi::ClampScale(ScaleForHwnd(h));
+}
+
+// Begin() が窓のビューポートを切り替えるたびに呼ばれる（imgui 1.92 の Platform_OnChangedViewport）。
+// そのビューポートの倍率でスタイルを切り替える＝各窓が自分のモニターの倍率で描かれる。
+// 全ビューポートが同じ倍率なら ApplyUiScale は何もしない（コストゼロ・PushStyleVar の巻き戻しも起きない）。
+void OnChangedViewportHook(ImGuiViewport* vp)
+{
+    if (!g_editorStyle || !vp) return;
+    const float s = (vp == ImGui::GetMainViewport()) ? g_mainScale
+                  : (vp->DpiScale > 0.0f ? vp->DpiScale : g_mainScale);
+    ApplyUiScale(s);
+}
+
+// ドックのノード（分割の大きさ）を f 倍する。ImGui は窓の Pos/Size は倍率変更で拡縮する（ConfigDpiScaleViewports）が、
+// ドックの分割は「ピクセル固定」のまま残す＝倍率が 1.5 倍になっても左右のパネル幅は物理 px のまま（論理では 2/3 に縮む）。
+// 論理サイズを保つため、倍率が変わった時 / 倍率違いの ini を読んだ時に SizeRef と Size を同じ比で拡縮する。
+int ScaleDockNodes(ImGuiContext* ctx, float f)
+{
+    int n = 0;
+    ImGuiStorage& nodes = ctx->DockContext.Nodes;
+    for (int i = 0; i < nodes.Data.Size; ++i)
+        if (ImGuiDockNode* node = static_cast<ImGuiDockNode*>(nodes.Data[i].val_p))
+        {
+            // 丸めない（float のまま）: 倍率を往復（1.0 -> 1.5 -> 2.0 -> 1.0）しても 1px もずれない。ImGui が配置時に整数へ丸める。
+            node->Size.x *= f;    node->Size.y *= f;
+            node->SizeRef.x *= f; node->SizeRef.y *= f;
+            ++n;
+        }
+    return n;
+}
+
+// ---- imgui.ini の倍率マーカー ----
+// ini の窓位置/サイズ/ドックのサイズは【物理 px】で保存される。倍率が変わっても崩れないよう、
+// 保存時の倍率を [DpiScale][Main] に記録し、読み込み時に (今の倍率 / 保存時の倍率) で拡縮する。
+// 旧版の ini（マーカー無し）は DPI 非対応＝論理 px（100% 基準）とみなす。
+// ★ドックのノードは imgui 内蔵ハンドラの ApplyAll が設定から構築するので、その【後】（ハンドラは末尾に登録）に、
+//   出来上がったノードの Size / SizeRef を拡縮する。窓の Pos/Size は最初の Begin で設定から適用されるので、設定側を拡縮する。
+void* DpiIniReadOpen(ImGuiContext*, ImGuiSettingsHandler*, const char* name)
+{
+    return std::strcmp(name, "Main") == 0 ? reinterpret_cast<void*>(1) : nullptr;
+}
+void DpiIniReadLine(ImGuiContext*, ImGuiSettingsHandler*, void*, const char* line)
+{
+    if (std::strncmp(line, "Scale=", 6) == 0)
+    {
+        const float v = static_cast<float>(std::atof(line + 6));
+        if (v > 0.0f) g_iniScale = v;
+    }
+}
+void DpiIniClearAll(ImGuiContext*, ImGuiSettingsHandler*) { g_iniScale = 0.0f; }
+void DpiIniApplyAll(ImGuiContext* ctx, ImGuiSettingsHandler*)
+{
+    const float from = g_iniScale > 0.0f ? g_iniScale : 1.0f;
+    const float f = g_mainScale / from;   // 起動時だけでなく実行中の ini 読み込み（テスト）でも今の倍率へ換算する
+    if (std::fabs(f - 1.0f) < 0.001f) return;
+    auto sc = [f](ImVec2ih& v) {
+        v.x = static_cast<short>(std::lround(static_cast<float>(v.x) * f));
+        v.y = static_cast<short>(std::lround(static_cast<float>(v.y) * f));
+    };
+    int nWin = 0, nNode = 0;
+    for (ImGuiWindowSettings* ws = ctx->SettingsWindows.begin(); ws != nullptr; ws = ctx->SettingsWindows.next_chunk(ws))
+    {
+        sc(ws->Pos); sc(ws->Size); ++nWin;
+    }
+    nNode = ScaleDockNodes(ctx, f);
+    Logger::Info("imgui.ini の倍率を換算: {:.2f} -> {:.2f} (窓 {} / ドックノード {})", from, g_mainScale, nWin, nNode);
+}
+void DpiIniWriteAll(ImGuiContext*, ImGuiSettingsHandler* h, ImGuiTextBuffer* buf)
+{
+    buf->appendf("[%s][Main]\nScale=%.4f\n\n", h->TypeName, static_cast<double>(g_mainScale));
+}
 
 // 起動時に別ビューポート(OS 窓)が 1 枚でも生成されたらログに警告する（画面に窓が出ている合図）。
 void WarnSecondaryViewports()
@@ -465,6 +593,28 @@ void ImGuiManager::Initialize(
         theme::ApplyStyle(style);
         style.FontSizeBase = theme::size::kFontBase;
         g_editorStyle = true;
+        // 基準スタイル（100% 相当）を保持。倍率が変わるたびにここから作り直す（累積しない）。
+        theme::BaseStyle() = style;
+        theme::BaseStyleValid() = true;
+        g_mainHwnd     = hwnd;
+        g_mainScale    = ComputeMainScale();
+        g_initialScale = g_mainScale;
+        g_appliedScale = 0.0f;
+        ApplyUiScale(g_mainScale);
+        theme::g_restoreMainScaleFn = [] { ApplyUiScale(g_mainScale); };   // フォントはダイナミック（FontScaleDpi）なので作り直し不要
+        // imgui.ini の窓サイズ/ドックのサイズを保存時の倍率から換算する
+        {
+            ImGuiSettingsHandler h;
+            h.TypeName = "DpiScale";
+            h.TypeHash = ImHashStr("DpiScale");
+            h.ClearAllFn = DpiIniClearAll;
+            h.ReadOpenFn = DpiIniReadOpen;
+            h.ReadLineFn = DpiIniReadLine;
+            h.ApplyAllFn = DpiIniApplyAll;
+            h.WriteAllFn = DpiIniWriteAll;
+            ImGui::AddSettingsHandler(&h);   // 末尾＝Docking ハンドラの ApplyAll の後に走る
+        }
+        Logger::Info("DPI: UI scale = {:.2f} ({})", g_mainScale, dx12e::dpi::HasOverride() ? "--dpi-scale override" : "OS setting");
     }
     else
     {
@@ -473,6 +623,18 @@ void ImGuiManager::Initialize(
 
     // Win32 backend
     ImGui_ImplWin32_Init(hwnd);
+
+    // DPI: ビューポートごとの倍率（--dpi-scale の上書きを含む）と、窓ごとのスタイル切替。
+    //   ConfigDpiScaleViewports: 別倍率のモニターへ移った時に imgui が窓の位置/サイズを比で拡縮し、
+    //   引き出した窓（別 OS 窓）の WM_DPICHANGED では推奨矩形へ動かす。メイン窓の WM_DPICHANGED は Window::WndProc が処理する。
+    if (g_editorStyle)
+    {
+        ImGuiPlatformIO& dpio = ImGui::GetPlatformIO();
+        g_origGetWindowDpiScale = dpio.Platform_GetWindowDpiScale;
+        dpio.Platform_GetWindowDpiScale = GetWindowDpiScaleHook;
+        dpio.Platform_OnChangedViewport = OnChangedViewportHook;
+        ImGui::GetIO().ConfigDpiScaleViewports = true;
+    }
 
     // 仮想入力モード用: 最小化判定の差し替え（バックエンドの実装を包む。OFF の間は素通し）。
     {
@@ -544,8 +706,31 @@ void ImGuiManager::SetVirtualInput(bool on)
     }
 }
 
+float ImGuiManager::GetUiScale() const { return g_editorStyle ? g_mainScale : 1.0f; }
+
+void ImGuiManager::SetUiScaleOverride(float scale)
+{
+    dx12e::dpi::SetOverride(scale);
+}
+
 void ImGuiManager::BeginFrame()
 {
+    // DPI: メインビューポートの倍率が変わっていたら（別モニターへ移動 / OS 設定変更 / オーバーライド）ここで切り替える。
+    //   NewFrame の前に済ませる＝そのフレームは最初から新しい倍率のスタイルとフォントで描かれる。
+    if (g_editorStyle)
+    {
+        const float want = ComputeMainScale();
+        if (want != g_mainScale)
+        {
+            Logger::Info("DPI: UI scale {:.2f} -> {:.2f}", g_mainScale, want);
+            const float ratio = want / g_mainScale;
+            g_mainScale = want;
+            // ドックの分割も同じ比で拡縮（窓の Pos/Size は ImGui が ConfigDpiScaleViewports で拡縮するが、ドックは物理 px 固定のまま残る）
+            if (ImGui::GetCurrentContext()) ScaleDockNodes(ImGui::GetCurrentContext(), ratio);
+        }
+        ApplyUiScale(g_mainScale);
+    }
+
     if (vinput::Enabled())
     {
         ImGuiIO& io = ImGui::GetIO();

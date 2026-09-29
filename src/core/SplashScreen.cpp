@@ -38,6 +38,8 @@ std::wstring      g_logoPath;
 
 HANDLE            g_thread = nullptr;
 std::atomic<HWND> g_hwnd{nullptr};
+float             g_dpiScale = 1.0f;              // 表示倍率（プロセスは Per-Monitor V2 = 物理 px で描くので寸法を掛ける）
+int  Sc(int logicalPx) { return static_cast<int>(logicalPx * g_dpiScale + 0.5f); }
 std::atomic<bool> g_suppressed{false};   // --background: Show() を無効化
 HANDLE            g_readyEvent = nullptr;         // ウィンドウ生成完了の合図
 float             g_anim = 0.0f;                  // 進行バーの位相 0..1
@@ -69,10 +71,10 @@ void Paint(HWND hwnd, HDC dc, Gdiplus::Bitmap* logo)
         HBRUSH bg = CreateSolidBrush(kBg);
         FillRect(mem, &rc, bg);
         DeleteObject(bg);
-        HPEN pen = CreatePen(PS_SOLID, 1, kBorder);
+        HPEN pen = CreatePen(PS_SOLID, Sc(1), kBorder);
         HGDIOBJ oldPen = SelectObject(mem, pen);
         HGDIOBJ oldBr  = SelectObject(mem, GetStockObject(NULL_BRUSH));
-        RoundRect(mem, 0, 0, w, h, kCorner * 2, kCorner * 2);
+        RoundRect(mem, 0, 0, w, h, Sc(kCorner) * 2, Sc(kCorner) * 2);
         SelectObject(mem, oldPen);
         SelectObject(mem, oldBr);
         DeleteObject(pen);
@@ -85,8 +87,8 @@ void Paint(HWND hwnd, HDC dc, Gdiplus::Bitmap* logo)
     }
 
     // ロゴ（GDI+。PNG のアルファをそのまま合成）
-    const int logoSize = 88;
-    const int logoX = 36, logoY = 52;
+    const int logoSize = Sc(88);
+    const int logoX = Sc(36), logoY = Sc(52);
     bool hasLogo = false;
     if (logo && logo->GetLastStatus() == Gdiplus::Ok)
     {
@@ -100,19 +102,19 @@ void Paint(HWND hwnd, HDC dc, Gdiplus::Bitmap* logo)
 
     // タイトル
     {
-        HFONT f = CreateFontW(-30, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        HFONT f = CreateFontW(-Sc(30), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
         HGDIOBJ of = SelectObject(mem, f);
         SetTextColor(mem, kTitle);
-        RECT tr{ hasLogo ? logoX + logoSize + 24 : 36, 78, w - 24, 130 };
+        RECT tr{ hasLogo ? logoX + logoSize + Sc(24) : Sc(36), Sc(78), w - Sc(24), Sc(130) };
         DrawTextW(mem, title.c_str(), -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
         SelectObject(mem, of);
         DeleteObject(f);
     }
 
     // 小さめフォント（ステータス / 版数）。※変数名 "small" は Windows ヘッダのマクロと衝突する
-    HFONT fontSmall = CreateFontW(-14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    HFONT fontSmall = CreateFontW(-Sc(14), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                   CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Yu Gothic UI");
     HGDIOBJ oldF = SelectObject(mem, fontSmall);
@@ -120,13 +122,13 @@ void Paint(HWND hwnd, HDC dc, Gdiplus::Bitmap* logo)
 
     // ステータス（左下・バーの上）
     {
-        RECT sr{ 36, h - 64, w - 120, h - 42 };
+        RECT sr{ Sc(36), h - Sc(64), w - Sc(120), h - Sc(42) };
         DrawTextW(mem, status.c_str(), -1, &sr, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
     // 版数（右下）
     if (!version.empty())
     {
-        RECT vr{ w - 120, h - 64, w - 36, h - 42 };
+        RECT vr{ w - Sc(120), h - Sc(64), w - Sc(36), h - Sc(42) };
         DrawTextW(mem, version.c_str(), -1, &vr, DT_RIGHT | DT_TOP | DT_SINGLELINE);
     }
     SelectObject(mem, oldF);
@@ -134,7 +136,7 @@ void Paint(HWND hwnd, HDC dc, Gdiplus::Bitmap* logo)
 
     // 不確定進行バー（トラック + 左右に流れるハイライト）
     {
-        const int bx0 = 36, bx1 = w - 36, by0 = h - 36, by1 = h - 30;
+        const int bx0 = Sc(36), bx1 = w - Sc(36), by0 = h - Sc(36), by1 = h - Sc(30);
         HBRUSH track = CreateSolidBrush(kTrack);
         RECT trr{ bx0, by0, bx1, by1 };
         FillRect(mem, &trr, track);
@@ -225,20 +227,30 @@ DWORD WINAPI SplashThread(LPVOID)
     wc.lpszClassName = L"DX12SplashWnd";
     RegisterClassExW(&wc);   // 二重登録は失敗するだけで無害
 
+    // 表示倍率: プライマリモニタの DPI（Per-Monitor V2 の GetDpiForSystem）。寸法は論理 px → 物理 px。
+    {
+        using Fn = UINT(WINAPI*)();
+        UINT d = 96;
+        if (HMODULE u = GetModuleHandleW(L"user32.dll"))
+            if (auto fn = reinterpret_cast<Fn>(GetProcAddress(u, "GetDpiForSystem"))) { const UINT v = fn(); if (v) d = v; }
+        g_dpiScale = static_cast<float>(d) / 96.0f;
+    }
+    const int winW = Sc(kWidth), winH = Sc(kHeight);
+
     // プライマリモニタ中央
     const int sw = GetSystemMetrics(SM_CXSCREEN);
     const int sh = GetSystemMetrics(SM_CYSCREEN);
-    const int x = (sw - kWidth) / 2, y = (sh - kHeight) / 2;
+    const int x = (sw - winW) / 2, y = (sh - winH) / 2;
 
     // WS_POPUP=枠なし / WS_EX_TOOLWINDOW=タスクバー非表示。
     // TOPMOST にはしない（アップデータの MessageBox 等を隠さないため）。
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW, L"DX12SplashWnd", L"",
-                                WS_POPUP, x, y, kWidth, kHeight,
+                                WS_POPUP, x, y, winW, winH,
                                 nullptr, nullptr, wc.hInstance, nullptr);
     if (hwnd)
     {
         // 角丸のウィンドウ形状
-        HRGN rgn = CreateRoundRectRgn(0, 0, kWidth + 1, kHeight + 1, kCorner * 2, kCorner * 2);
+        HRGN rgn = CreateRoundRectRgn(0, 0, winW + 1, winH + 1, Sc(kCorner) * 2, Sc(kCorner) * 2);
         SetWindowRgn(hwnd, rgn, TRUE);   // 所有権は OS へ移る
         ShowWindow(hwnd, SW_SHOWNORMAL);
         UpdateWindow(hwnd);

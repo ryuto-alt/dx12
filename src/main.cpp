@@ -5,6 +5,7 @@
 #include "core/SplashScreen.h"
 #include "core/Version.h"
 #include "core/vfs/Vfs.h"
+#include "core/DpiScale.h"
 #include "project/Project.h"
 
 #include <Windows.h>
@@ -236,8 +237,46 @@ int RunValidate(const std::string& scenePathStr)
 } // namespace
 #endif // !DX12_GAME_RUNTIME
 
+namespace {
+// プロセスを Per-Monitor V2 の DPI aware にする（表示倍率 125% / 150% ... で Windows に引き伸ばされない）。
+// 通常は resources/dx12.manifest が既に指定していて、ここは「マニフェストが効かない経路」の保険
+// （二重指定は失敗するが無害。既に PMv2 ならフォールバックへ進まない）。
+// どの窓（スプラッシュ・スワップチェイン・ImGui の別窓）よりも前に呼ぶこと。
+void EnableProcessDpiAwareness()
+{
+    using SetCtxFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+    using GetThreadCtxFn = DPI_AWARENESS_CONTEXT(WINAPI*)();
+    using EqualFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT);
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32)
+    {
+        auto setCtx = reinterpret_cast<SetCtxFn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+        if (setCtx)
+        {
+            if (setCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return;
+            // 失敗: マニフェストで設定済み（ERROR_ACCESS_DENIED）なら何もしなくてよい
+            auto getThread = reinterpret_cast<GetThreadCtxFn>(GetProcAddress(user32, "GetThreadDpiAwarenessContext"));
+            auto equal = reinterpret_cast<EqualFn>(GetProcAddress(user32, "AreDpiAwarenessContextsEqual"));
+            if (getThread && equal && equal(getThread(), DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return;
+        }
+    }
+    // Windows 8.1〜10 1511: Shcore の Per-Monitor（V1）。それも無ければシステム DPI aware。
+    if (HMODULE shcore = LoadLibraryW(L"shcore.dll"))
+    {
+        using SetAwFn = HRESULT(WINAPI*)(int);
+        if (auto setAw = reinterpret_cast<SetAwFn>(GetProcAddress(shcore, "SetProcessDpiAwareness")))
+            if (SUCCEEDED(setAw(2 /*PROCESS_PER_MONITOR_DPI_AWARE*/))) { FreeLibrary(shcore); return; }
+        FreeLibrary(shcore);
+    }
+    SetProcessDPIAware();
+}
+} // namespace
+
 int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCmdLine, _In_ int nCmdShow)
 {
+    // 最初期: DPI aware（窓を 1 枚も作る前）。
+    EnableProcessDpiAwareness();
+
     // ネイティブクラッシュ(アクセス違反等)でも原因が追えるよう、最初にクラッシュハンドラを仕込む。
     // クラッシュ時は CWD に dx12_crash.log(スタックトレース) + dx12_crash.dmp(ミニダンプ)が残る。
     dx12e::CrashHandler::Install();
@@ -459,6 +498,16 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                             bgOpt.mode = dx12e::BackgroundMode::Offscreen;   // 不明な値でも「静かに」は守る
                             bgOpt.toolWindow = true;
                         }
+                    }
+                    else if (wcscmp(argv[i], L"--dpi-scale") == 0 || wcsncmp(argv[i], L"--dpi-scale=", 12) == 0)
+                    {
+                        // 検証用: OS の表示倍率を無視してこの倍率で全体を描く（0.75〜3.0 / "150%" も可）。
+                        std::string value;
+                        if (argv[i][11] == L'=') value = toUtf8(argv[i] + 12);
+                        else if (i + 1 < argc)   value = toUtf8(argv[++i]);
+                        float v = 1.0f;
+                        if (dx12e::dpi::ParseScale(value, v)) dx12e::dpi::SetOverride(v);
+                        else OutputDebugStringA(("--dpi-scale の値が不正です（0.75〜3.0）: " + value + "\n").c_str());
                     }
                     else if (wcscmp(argv[i], L"--mcp-port") == 0 && i + 1 < argc)
                         mcpPort = _wtoi(argv[++i]);

@@ -1321,7 +1321,7 @@ void Application::RenderSceneLoadingOverlay()
     const ImVec2 c(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f);
 
     // スピナー（プロジェクト読込のオーバーレイと同じ意匠）
-    const float r = 30.0f;
+    const float r = theme::Px(30.0f);   // DPI
     const int   segs = 28;
     const float t = job.spin * 3.2f;
     for (int i = 0; i < segs; ++i)
@@ -1331,7 +1331,7 @@ void Application::RenderSceneLoadingOverlay()
         const ImU32 col = ImGui::ColorConvertFloat4ToU32(
             ImVec4(0.39f, 0.58f, 0.93f, static_cast<float>(i) / segs));
         dl->AddLine(ImVec2(c.x + cosf(a0) * r, c.y + sinf(a0) * r),
-                    ImVec2(c.x + cosf(a1) * r, c.y + sinf(a1) * r), col, 5.0f);
+                    ImVec2(c.x + cosf(a1) * r, c.y + sinf(a1) * r), col, theme::PxF(5.0f));
     }
 
     auto centerText = [&](const char* s, float dy, ImU32 col) {
@@ -1353,9 +1353,9 @@ void Application::RenderSceneLoadingOverlay()
                      static_cast<int>(frac * 100.0f + 0.5f));
         else
             snprintf(head, sizeof(head), "シーンを構築中...");
-        centerText(head, r + 22.0f, IM_COL32(235, 235, 235, 255));
+        centerText(head, r + theme::Px(22.0f), IM_COL32(235, 235, 235, 255));
     }
-    centerText(job.rel.c_str(), r + 44.0f, IM_COL32(140, 143, 152, 255));
+    centerText(job.rel.c_str(), r + theme::Px(44.0f), IM_COL32(140, 143, 152, 255));
 
     // 「今なにをしているか」。件数だけだと 1 件に数秒かかる初回 BC 圧縮で
     // 止まって見えるので、処理中のファイル名まで出す。
@@ -1366,7 +1366,7 @@ void Application::RenderSceneLoadingOverlay()
         const size_t slash = cur.find_last_of('/');
         const char* base = (slash == std::string::npos) ? cur.c_str() : cur.c_str() + slash + 1;
         snprintf(line, sizeof(line), "%zu / %zu   %s", job.next, job.assets.size(), base);
-        centerText(line, r + 66.0f, IM_COL32(120, 124, 134, 255));
+        centerText(line, r + theme::Px(66.0f), IM_COL32(120, 124, 134, 255));
 
         // 経過と残り時間の見込み。%が動かない時間が長い（1 枚の BC7 圧縮に数秒かかる）ので、
         // 秒が増えていること自体が「生きている」証拠になる。
@@ -1386,14 +1386,14 @@ void Application::RenderSceneLoadingOverlay()
             {
                 snprintf(timeLine, sizeof(timeLine), "経過 %.0f 秒", elapsed);
             }
-            centerText(timeLine, r + 88.0f, IM_COL32(120, 124, 134, 255));
+            centerText(timeLine, r + theme::Px(88.0f), IM_COL32(120, 124, 134, 255));
         }
     }
 
     // 進捗バー（アセット先読みの消化率）。件数が分かるのは先読みフェーズだけなので、
     // 構築フェーズでは端から端へ往復するバーにする＝満タンのまま止まって見せない。
-    const float barW = (std::min)(size.x * 0.5f, 320.0f), barH = 6.0f;
-    const float y    = c.y + r + 116.0f;   // 経過/残り時間の行(r+88)より下
+    const float barW = (std::min)(size.x * 0.5f, theme::Px(320.0f)), barH = theme::Px(6.0f);
+    const float y    = c.y + r + theme::Px(116.0f);   // 経過/残り時間の行(r+88)より下
     const float x0   = c.x - barW * 0.5f;
     dl->AddRectFilled(ImVec2(x0, y), ImVec2(x0 + barW, y + barH),
                       IM_COL32(40, 42, 50, 255), barH * 0.5f);

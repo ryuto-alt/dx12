@@ -23,6 +23,7 @@ namespace
     constexpr int kDragMove = 0;
     constexpr int kEdgeL = 1, kEdgeR = 2, kEdgeT = 4, kEdgeB = 8;
 
+    // ★以下の px 定数は論理 px。使う側で ui::Px(...) を通す（DPI）
     constexpr f32 kHandleHalf    = 4.0f;   // リサイズハンドル矩形の半径（描画）
     constexpr f32 kHandleHitHalf = 6.0f;   // ハンドルの当たり判定半径
 
@@ -129,7 +130,7 @@ namespace
     SnapResult SnapToCandidates(const f32 mine[3], const std::vector<f32>& cand)
     {
         SnapResult best;
-        f32 bestDist = kSmartSnapPx;
+        f32 bestDist = ui::Px(kSmartSnapPx);   // DPI
         for (f32 c : cand)
         {
             for (int i = 0; i < 3; ++i)
@@ -155,8 +156,8 @@ namespace
     // 名前ラベル（矩形の左上の上に、視認用の影つきで描く）
     void DrawNameLabel(ImDrawList* dl, const ImVec2& rectMin, const char* text, ImU32 col)
     {
-        const ImVec2 pos(rectMin.x, rectMin.y - ImGui::GetTextLineHeight() - 3.0f);
-        dl->AddText(ImVec2(pos.x + 1.0f, pos.y + 1.0f), IM_COL32(0, 0, 0, 200), text);
+        const ImVec2 pos(rectMin.x, rectMin.y - ImGui::GetTextLineHeight() - ui::Px(3.0f));
+        dl->AddText(ImVec2(pos.x + ui::Px(1.0f), pos.y + ui::Px(1.0f)), IM_COL32(0, 0, 0, 200), text);
         dl->AddText(pos, col, text);
     }
 
@@ -348,7 +349,7 @@ void UiEditorPanel::DrawUiTreeNode(entt::registry& reg, EditorContext& ctx, entt
                 else
                 {
                     const f32 y = (zone == 0) ? rmin.y : rmax.y;
-                    fdl->AddLine(ImVec2(rmin.x, y), ImVec2(rmax.x, y), kAccentCol, 2.0f);
+                    fdl->AddLine(ImVec2(rmin.x, y), ImVec2(rmax.x, y), kAccentCol, ui::PxF(2.0f));
                 }
 
                 if (payload->IsDelivery())
@@ -618,7 +619,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         return;
     }
 
-    ImGui::SetNextWindowSize(ImVec2(1040.0f, 720.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(1040.0f, 720.0f), ImGuiCond_FirstUseEver);
     // NoDocking: 右下タブ領域(狭い)へ誤ってドッキングされて手狭になるのを防ぐ。常にフローティング。
     if (!ImGui::Begin("UIエディタ###UiEditorPanelFloating", &ctx.showUiEditor,
                       ImGuiWindowFlags_NoDocking))
@@ -670,9 +671,9 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     ImGui::SetItemTooltip("UIScrollView を追加（子をクリップ + ホイールスクロール。\n"
                           "階層ツリーで子をぶら下げて使う）");
 
-    ImGui::SameLine(0.0f, 14.0f);
+    ImGui::SameLine(0.0f, ui::Px(14.0f));
     ImGui::TextDisabled("|");
-    ImGui::SameLine(0.0f, 14.0f);
+    ImGui::SameLine(0.0f, ui::Px(14.0f));
 
     // ---- 配置テンプレ（9 方位。アンカー + 位置を同時スナップ。Unity の Alt+プリセット相当）----
     ImGui::BeginDisabled(!selHasRectTb);
@@ -695,7 +696,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             {
                 if (rx > 0) ImGui::SameLine();
                 ImGui::PushID(ry * 3 + rx);
-                if (ImGui::Button(kPlaceLabels[ry][rx], ImVec2(30.0f, 30.0f))
+                if (ImGui::Button(kPlaceLabels[ry][rx], ui::Px(30.0f, 30.0f))
                     && selHasRectTb)
                 {
                     const UIRect before = reg.get<UIRect>(ctx.selectedEntity);
@@ -747,11 +748,11 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     ui::Checkbox("ガイド", &m_smartGuides);
     ImGui::SetItemTooltip("ドラッグ中に他の要素・画面の端/中央へ吸着する（Alt 押下で一時無効）");
 
-    ImGui::SameLine(0.0f, 14.0f);
+    ImGui::SameLine(0.0f, ui::Px(14.0f));
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("画面");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(170.0f);
+    ImGui::SetNextItemWidth(ui::Px(170.0f));
     if (ui::BeginCombo("##UiEdScreenSize", kScreenSizes[m_screenSizeIdx].label))
     {
         for (int i = 0; i < IM_ARRAYSIZE(kScreenSizes); ++i)
@@ -770,7 +771,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     {
         ImGui::SameLine();
         int wh[2] = {m_customW, m_customH};
-        ImGui::SetNextItemWidth(130.0f);
+        ImGui::SetNextItemWidth(ui::Px(130.0f));
         if (ImGui::InputInt2("##UiEdCustomWH", wh))
         {
             m_customW = std::clamp(wh[0], 16, 16384);
@@ -778,7 +779,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         }
     }
 
-    ImGui::SameLine(0.0f, 14.0f);
+    ImGui::SameLine(0.0f, ui::Px(14.0f));
     if (ImGui::Button("Fit")) m_fitRequested = true;
     ImGui::SetItemTooltip("画面全体が収まるようにズームを合わせる");
     ImGui::SameLine();
@@ -794,10 +795,10 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     // ===== 左: 階層ツリー / 右: キャンバス領域（下 1 行はステータスバーに残す）=====
     const f32 statusH = ImGui::GetFrameHeightWithSpacing();
 
-    if (ImGui::BeginChild("##UiEdTree", ImVec2(235.0f, -statusH), ImGuiChildFlags_Borders))
+    if (ImGui::BeginChild("##UiEdTree", ImVec2(ui::Px(235.0f), -statusH), ImGuiChildFlags_Borders))
     {
         // 上: 階層 / 下: UI プレハブのパレット。パレットは高さを固定して階層を潰さない。
-        const f32 paletteH = 152.0f;
+        const f32 paletteH = ui::Px(152.0f);
         if (ImGui::BeginChild("##UiEdTreeInner", ImVec2(0.0f, -paletteH)))
             DrawHierarchyPane(reg, ctx);
         ImGui::EndChild();
@@ -811,7 +812,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     avail.y -= statusH;
     const ImVec2 cPos = ImGui::GetCursorScreenPos();
 
-    if (avail.x < 64.0f || avail.y < 64.0f)
+    if (avail.x < ui::Px(64.0f) || avail.y < ui::Px(64.0f))
     {
         ImGui::End();
         return;
@@ -847,7 +848,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     // ---- Fit / ズーム / パン ----
     if (m_fitRequested)
     {
-        constexpr f32 kFitMargin = 24.0f;
+        const f32 kFitMargin = ui::Px(24.0f);   // DPI
         m_zoom = (std::min)((avail.x - kFitMargin * 2.0f) / refW,
                             (avail.y - kFitMargin * 2.0f) / refH);
         m_zoom = std::clamp(m_zoom, 0.05f, 8.0f);
@@ -911,7 +912,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         {
             if (m_checkerBg)
             {
-                constexpr f32 kTile = 24.0f;
+                const f32 kTile = ui::Px(24.0f);   // DPI: 市松の 1 マスは画面 px
                 const int ix0 = (int)std::floor((sx0 - ox) / kTile);
                 const int iy0 = (int)std::floor((sy0 - oy) / kTile);
                 const int ix1 = (int)std::ceil((sx1 - ox) / kTile);
@@ -934,8 +935,8 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
 
         if (m_showGrid)
         {
-            const f32 step = 50.0f * m_zoom;   // 画面座標 50px 間隔
-            if (step >= 8.0f && sx0 < sx1 && sy0 < sy1)
+            const f32 step = 50.0f * m_zoom;   // キャンバス座標 50px 間隔（ゲームのデータ寸法なのでスケールしない）
+            if (step >= ui::Px(8.0f) && sx0 < sx1 && sy0 < sy1)
             {
                 for (f32 x = ox + std::ceil((sx0 - ox) / step) * step; x <= sx1; x += step)
                     dl->AddLine(ImVec2(x, sy0), ImVec2(x, sy1), kGridCol);
@@ -954,12 +955,12 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     for (const auto& g : m_guides)
     {
         constexpr ImU32 kGuideCol = IM_COL32(255, 70, 160, 220);
-        if (g.vertical) dl->AddLine(ImVec2(g.pos, g.a), ImVec2(g.pos, g.b), kGuideCol, 1.0f);
-        else            dl->AddLine(ImVec2(g.a, g.pos), ImVec2(g.b, g.pos), kGuideCol, 1.0f);
+        if (g.vertical) dl->AddLine(ImVec2(g.pos, g.a), ImVec2(g.pos, g.b), kGuideCol, ui::Px(1.0f));
+        else            dl->AddLine(ImVec2(g.a, g.pos), ImVec2(g.b, g.pos), kGuideCol, ui::Px(1.0f));
     }
 
     // 仮想スクリーンの枠（プレビューの上に描いて輪郭を出す）
-    dl->AddRect(ImVec2(ox - 1.0f, oy - 1.0f), ImVec2(ox + vw + 1.0f, oy + vh + 1.0f), kScreenBorder);
+    dl->AddRect(ImVec2(ox - ui::Px(1.0f), oy - ui::Px(1.0f)), ImVec2(ox + vw + ui::Px(1.0f), oy + vh + ui::Px(1.0f)), kScreenBorder);
 
     // UICanvas が 1 つも無い場合は中央にヒント
     const bool anyCanvas = (reg.view<UICanvas>().front() != entt::null);
@@ -969,9 +970,9 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         const char* msg2 = "上の「+ Canvas」または右クリックメニューから追加できます";
         const ImVec2 s1 = ImGui::CalcTextSize(msg1);
         const ImVec2 s2 = ImGui::CalcTextSize(msg2);
-        dl->AddText(ImVec2(regionCenter.x - s1.x * 0.5f, regionCenter.y - s1.y - 4.0f),
+        dl->AddText(ImVec2(regionCenter.x - s1.x * 0.5f, regionCenter.y - s1.y - ui::Px(4.0f)),
                     IM_COL32(255, 255, 255, 170), msg1);
-        dl->AddText(ImVec2(regionCenter.x - s2.x * 0.5f, regionCenter.y + 4.0f),
+        dl->AddText(ImVec2(regionCenter.x - s2.x * 0.5f, regionCenter.y + ui::Px(4.0f)),
                     IM_COL32(255, 255, 255, 110), msg2);
     }
 
@@ -1140,8 +1141,8 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             const f32 myC = (io.MousePos.y - sr->canvasOrigin.y) / cs;
             const f32 pw = (std::max)(1e-3f, m_anchorParentMaxC.x - m_anchorParentMinC.x);
             const f32 ph = (std::max)(1e-3f, m_anchorParentMaxC.y - m_anchorParentMinC.y);
-            const f32 snapX = kAnchorSnapPx / (pw * cs);
-            const f32 snapY = kAnchorSnapPx / (ph * cs);
+            const f32 snapX = ui::Px(kAnchorSnapPx) / (pw * cs);
+            const f32 snapY = ui::Px(kAnchorSnapPx) / (ph * cs);
             f32 nx = SnapAnchor(std::clamp((mxC - m_anchorParentMinC.x) / pw, 0.0f, 1.0f), snapX);
             f32 ny = SnapAnchor(std::clamp((myC - m_anchorParentMinC.y) / ph, 0.0f, 1.0f), snapY);
 
@@ -1219,27 +1220,30 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     const UiResolvedRect* hoveredElem = nullptr;
     if (canvasHovered && !editDragging)
     {
+        const f32 anchorHitR    = ui::Px(kAnchorHitR);      // DPI: 描画・当たり判定とも物理 px
+        const f32 anchorCenterR = ui::Px(6.0f);
+        const f32 handleHitHalf = ui::Px(kHandleHitHalf);
         if (hasParentRect)
         {
             for (int i = 0; i < 4; ++i)
             {
                 const f32 dx = io.MousePos.x - anchorPosS[i].x;
                 const f32 dy = io.MousePos.y - anchorPosS[i].y;
-                if (dx * dx + dy * dy <= kAnchorHitR * kAnchorHitR) { hoveredAnchor = i; break; }
+                if (dx * dx + dy * dy <= anchorHitR * anchorHitR) { hoveredAnchor = i; break; }
             }
             if (hoveredAnchor < 0)
             {
                 const f32 dx = io.MousePos.x - anchorCenterS.x;
                 const f32 dy = io.MousePos.y - anchorCenterS.y;
-                if (dx * dx + dy * dy <= 6.0f * 6.0f) hoveredAnchor = 4;
+                if (dx * dx + dy * dy <= anchorCenterR * anchorCenterR) hoveredAnchor = 4;
             }
         }
         if (hoveredAnchor < 0 && selRect && !selRect->hasXform)
         {
             for (int i = 0; i < 8; ++i)
             {
-                if (std::fabs(io.MousePos.x - handles[i].x) <= kHandleHitHalf
-                    && std::fabs(io.MousePos.y - handles[i].y) <= kHandleHitHalf)
+                if (std::fabs(io.MousePos.x - handles[i].x) <= handleHitHalf
+                    && std::fabs(io.MousePos.y - handles[i].y) <= handleHitHalf)
                 {
                     hoveredHandle = i;
                     break;
@@ -1374,7 +1378,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         {
             if (const UiResolvedRect* hr = findRect(hoverTarget))
             {
-                uiedit::DrawResolvedOutline(dl, *hr, kHoverCol);
+                uiedit::DrawResolvedOutline(dl, *hr, kHoverCol, ui::PxF(1.0f));
                 DrawNameLabel(dl, hr->min, EntityName(reg, hoverTarget), kHoverCol);
             }
         }
@@ -1384,39 +1388,41 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     {
         if (e == ctx.selectedEntity) continue;
         if (const UiResolvedRect* rr = findRect(e))
-            uiedit::DrawResolvedOutline(dl, *rr, kAccentCol);
+            uiedit::DrawResolvedOutline(dl, *rr, kAccentCol, ui::PxF(1.0f));
     }
     // プライマリ選択: アウトライン + 名前 + 8 ハンドル + アンカーハンドル
     // （回転/スキュー中はハンドル無し = hasParentRect/handles とも上のガードで空）
     if (selRect)
     {
-        uiedit::DrawResolvedOutline(dl, *selRect, kAccentCol, 2.0f);
+        uiedit::DrawResolvedOutline(dl, *selRect, kAccentCol, ui::PxF(2.0f));
         DrawNameLabel(dl, selRect->min, EntityName(reg, ctx.selectedEntity), kAccentCol);
 
         if (hasParentRect)
         {
             // アンカー三角（花弁）。中心から外向き。ドラッグ/ホバー中は黄色。
             const f32 inv = 0.70710678f;   // 1/sqrt(2)
+            const f32 anchorTriLen  = ui::Px(kAnchorTriLen);    // DPI
+            const f32 anchorTriHalf = ui::Px(kAnchorTriHalf);
             for (int i = 0; i < 4; ++i)
             {
                 const f32 sx = (i & 1) ? 1.0f : -1.0f;
                 const f32 sy = (i & 2) ? 1.0f : -1.0f;
                 const ImVec2 d(sx * inv, sy * inv);
                 const ImVec2 perp(-d.y, d.x);
-                const ImVec2 tip(anchorPosS[i].x + d.x * kAnchorTriLen,
-                                 anchorPosS[i].y + d.y * kAnchorTriLen);
-                const ImVec2 b1(anchorPosS[i].x + perp.x * kAnchorTriHalf,
-                                anchorPosS[i].y + perp.y * kAnchorTriHalf);
-                const ImVec2 b2(anchorPosS[i].x - perp.x * kAnchorTriHalf,
-                                anchorPosS[i].y - perp.y * kAnchorTriHalf);
+                const ImVec2 tip(anchorPosS[i].x + d.x * anchorTriLen,
+                                 anchorPosS[i].y + d.y * anchorTriLen);
+                const ImVec2 b1(anchorPosS[i].x + perp.x * anchorTriHalf,
+                                anchorPosS[i].y + perp.y * anchorTriHalf);
+                const ImVec2 b2(anchorPosS[i].x - perp.x * anchorTriHalf,
+                                anchorPosS[i].y - perp.y * anchorTriHalf);
                 const bool hot = (m_anchorDrag == i) || (m_anchorDrag < 0 && hoveredAnchor == i);
                 dl->AddTriangleFilled(tip, b1, b2, hot ? kAnchorHotCol : kAnchorCol);
                 dl->AddTriangle(tip, b1, b2, IM_COL32(0, 0, 0, 160));
             }
             // 中央ハンドル（4 つまとめて移動）
             const bool hotC = (m_anchorDrag == 4) || (m_anchorDrag < 0 && hoveredAnchor == 4);
-            dl->AddCircleFilled(anchorCenterS, 3.5f, hotC ? kAnchorHotCol : kAnchorCol);
-            dl->AddCircle(anchorCenterS, 3.5f, IM_COL32(0, 0, 0, 160));
+            dl->AddCircleFilled(anchorCenterS, ui::PxF(3.5f), hotC ? kAnchorHotCol : kAnchorCol);
+            dl->AddCircle(anchorCenterS, ui::PxF(3.5f), IM_COL32(0, 0, 0, 160));
         }
 
         for (int i = 0; !selRect->hasXform && i < 8; ++i)
@@ -1424,15 +1430,15 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             const bool hot = (m_dragEdges > kDragMove)
                 ? (handles[i].edges == m_dragEdges)
                 : (i == hoveredHandle);
-            const ImVec2 hmin(handles[i].x - kHandleHalf, handles[i].y - kHandleHalf);
-            const ImVec2 hmax(handles[i].x + kHandleHalf, handles[i].y + kHandleHalf);
+            const ImVec2 hmin(handles[i].x - ui::Px(kHandleHalf), handles[i].y - ui::Px(kHandleHalf));
+            const ImVec2 hmax(handles[i].x + ui::Px(kHandleHalf), handles[i].y + ui::Px(kHandleHalf));
             dl->AddRectFilled(hmin, hmax, hot ? kHandleHotCol : kHandleCol);
             dl->AddRect(hmin, hmax, kAccentCol);
         }
     }
 
     // 操作ヒント（左下）
-    dl->AddText(ImVec2(cPos.x + 8.0f, cPos.y + avail.y - ImGui::GetTextLineHeight() - 6.0f),
+    dl->AddText(ImVec2(cPos.x + ui::Px(8.0f), cPos.y + avail.y - ImGui::GetTextLineHeight() - ui::Px(6.0f)),
                 IM_COL32(255, 255, 255, 90),
                 "ホイール: ズーム   中/右ドラッグ: パン   クリック: 選択   矢印: 移動(Shift=10px)   Del: 削除   Ctrl+D: 複製");
 
@@ -1505,7 +1511,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
         m_rmbDownOnCanvas = false;
         const f32 dx = io.MousePos.x - m_rmbDownPos.x;
         const f32 dy = io.MousePos.y - m_rmbDownPos.y;
-        if (dx * dx + dy * dy < 4.0f * 4.0f && canvasHovered)
+        if (dx * dx + dy * dy < ui::Px(4.0f) * ui::Px(4.0f) && canvasHovered)
             ImGui::OpenPopup("##UiEdContext");
     }
     if (ImGui::BeginPopup("##UiEdContext"))
@@ -1643,7 +1649,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
             const f32 ry = (selRect->min.y - selRect->canvasOrigin.y) / cs;
             const f32 rw = (selRect->max.x - selRect->min.x) / cs;
             const f32 rh = (selRect->max.y - selRect->min.y) / cs;
-            ImGui::SameLine(0.0f, 20.0f);
+            ImGui::SameLine(0.0f, ui::Px(20.0f));
             ImGui::Text("選択: %s", EntityName(reg, ctx.selectedEntity));
             ImGui::SameLine();
             ImGui::TextDisabled("(%.0f, %.0f)  %.0f x %.0f px", rx, ry, rw, rh);

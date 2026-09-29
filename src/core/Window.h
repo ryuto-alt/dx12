@@ -88,6 +88,21 @@ public:
     void ToggleMaximize()    { if (m_hwnd && !m_bg.Active()) ::ShowWindow(m_hwnd, IsMaximized() ? SW_RESTORE : SW_MAXIMIZE); }
     void RequestClose()      { if (m_hwnd) ::PostMessageW(m_hwnd, WM_CLOSE, 0, 0); }  // closeHandler を通す
 
+    // ===== DPI（Per-Monitor V2。プロセスは main.cpp / マニフェストで aware）=====
+    // 窓のいるモニターの OS の表示倍率（1.0 = 100%）。--dpi-scale の検証用オーバーライドは含まない。
+    float        GetOsDpiScale() const { return static_cast<float>(m_dpi) / 96.0f; }
+    unsigned     GetDpi() const { return m_dpi; }
+    // UI に使う倍率 = --dpi-scale（あれば）/ 無ければ OS の倍率。
+    float        GetUiScale() const;
+    // 実行中に倍率を切り替える（UI 自動テスト用。--background の窓は 1920x1080 論理 × 倍率へ作り直す）。
+    // 0 以下で OS の倍率へ戻す。
+    void         SetUiScaleOverride(float scale);
+    // 起動時の窓のクライアントサイズ（論理 px）を物理 px にする（--background の 1920x1080 論理など）。
+    unsigned     ScaleLogical(unsigned logicalPx) const;
+    // 直近の WM_DPICHANGED を Application が 1 回だけ拾うためのフラグ（倍率が変わった / 別倍率のモニターへ移った）。
+    bool         WasDpiChanged() const { return m_dpiChanged; }
+    void         ResetDpiChangedFlag() { m_dpiChanged = false; }
+
     HWND         GetHwnd() const { return m_hwnd; }
     u32          GetWidth() const { return m_width; }
     u32          GetHeight() const { return m_height; }
@@ -105,6 +120,9 @@ public:
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    // DPI 対応のフレーム計算（AdjustWindowRectEx の DPI 版。窓のスタイルは Initialize / SetMode と同じ）
+    static bool AdjustRectForDpi(RECT* rect, DWORD style, DWORD exStyle, unsigned dpi);
+    void ApplyBackgroundClientSize();   // --background: クライアントを 論理 1920x1080 × 倍率 へ合わせる
 
     HWND         m_hwnd = nullptr;
     u32          m_width = 1280;
@@ -112,6 +130,8 @@ private:
     std::wstring m_title;   // Initialize で kEngineNameW を既定にする
     bool         m_shouldClose = false;
     bool         m_resized = false;
+    unsigned     m_dpi = 96;             // 窓のいるモニターの DPI（WM_DPICHANGED で更新）
+    bool         m_dpiChanged = false;
     bool         m_fullscreen = false;   // m_mode != Windowed と同義（WndProc の既存判定用に維持）
     WindowMode   m_mode = WindowMode::Windowed;
     bool         m_displayModeChanged = false;   // CDS_FULLSCREEN 適用中か

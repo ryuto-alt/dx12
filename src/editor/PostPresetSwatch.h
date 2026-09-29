@@ -22,6 +22,7 @@
 #include <imgui.h>
 #pragma warning(pop)
 
+#include "editor/EditorTheme.h"   // DPI: theme::PxF
 #include "renderer/PostProcessSettings.h"
 
 namespace dx12e
@@ -136,7 +137,7 @@ inline void DrawSwatch(ImDrawList* dl, ImVec2 a, ImVec2 b, const PostProcessSett
         const Rgb bg{ p.outlineBg.x, p.outlineBg.y, p.outlineBg.z };
         const Rgb ln{ p.outlineColor.x, p.outlineColor.y, p.outlineColor.z };
         dl->AddRectFilled(a, b, ToU32(bg));
-        const float t = 1.0f + p.outlineThickness * 0.6f;
+        const float t = theme::PxF(1.0f + p.outlineThickness * 0.6f);   // DPI
         const ImU32 lc = ToU32(ln);
         dl->AddLine(ImVec2(a.x, a.y + h * 0.62f), ImVec2(b.x, a.y + h * 0.62f), lc, t);
         dl->AddRect(ImVec2(a.x + w * 0.10f, a.y + h * 0.28f),
@@ -152,7 +153,7 @@ inline void DrawSwatch(ImDrawList* dl, ImVec2 a, ImVec2 b, const PostProcessSett
     if (p.pixelizeOn && p.pixelSize > 1.0f)
     {
         // ピクセル化: 見本画をブロック単位でサンプルして塗る（そのままドット絵に見える）
-        const float block = std::max<float>(3.0f, std::min<float>(16.0f, p.pixelSize * 1.6f));
+        const float block = theme::PxF(std::max<float>(3.0f, std::min<float>(16.0f, p.pixelSize * 1.6f)));   // DPI
         for (float y = a.y; y < b.y; y += block)
             for (float x = a.x; x < b.x; x += block)
             {
@@ -206,7 +207,7 @@ inline void DrawSwatch(ImDrawList* dl, ImVec2 a, ImVec2 b, const PostProcessSett
             for (int k = 0; k < 9; ++k)
                 pts[k] = ImVec2(a.x + w * (k / 8.0f),
                                 y + std::sin(k * 0.9f + i * 1.7f) * h * 0.035f);
-            dl->AddPolyline(pts, 9, col, 0, 1.5f);
+            dl->AddPolyline(pts, 9, col, 0, theme::PxF(1.5f));
         }
     }
 
@@ -228,7 +229,7 @@ inline void DrawSwatch(ImDrawList* dl, ImVec2 a, ImVec2 b, const PostProcessSett
     // ---- 色収差: 縁に赤/シアンのズレを置く ----
     if (p.chromaticOn && p.chromatic > 0.01f)
     {
-        const float o = std::min<float>(4.0f, 1.0f + p.chromatic * 5.0f);
+        const float o = theme::PxF(std::min<float>(4.0f, 1.0f + p.chromatic * 5.0f));
         const int   al = static_cast<int>(std::min<float>(150.0f, 50.0f + p.chromatic * 160.0f));
         dl->AddRectFilled(ImVec2(a.x, a.y), ImVec2(a.x + o, b.y), IM_COL32(255, 60, 60, al));
         dl->AddRectFilled(ImVec2(b.x - o, a.y), ImVec2(b.x, b.y), IM_COL32(60, 200, 255, al));
@@ -238,8 +239,8 @@ inline void DrawSwatch(ImDrawList* dl, ImVec2 a, ImVec2 b, const PostProcessSett
     if (p.scanlineOn && p.scanline > 0.01f)
     {
         const int al = static_cast<int>(std::min<float>(200.0f, p.scanline * 230.0f));
-        for (float y = a.y; y < b.y; y += 3.0f)
-            dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0, 0, 0, al), 1.0f);
+        for (float y = a.y; y < b.y; y += theme::PxF(3.0f))
+            dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(0, 0, 0, al), theme::PxF(1.0f));
     }
 
     // ---- グレイン（粒子）----
@@ -247,7 +248,7 @@ inline void DrawSwatch(ImDrawList* dl, ImVec2 a, ImVec2 b, const PostProcessSett
     {
         const int n  = static_cast<int>(40 + p.grain * 220.0f);
         const int al = static_cast<int>(std::min<float>(190.0f, 70.0f + p.grain * 190.0f));
-        const float s = std::max<float>(1.0f, p.grainSize * 0.8f);
+        const float s = theme::PxF(std::max<float>(1.0f, p.grainSize * 0.8f));
         for (int i = 0; i < n; ++i)
         {
             const float x = a.x + Hash01(i * 3 + 1) * w;
@@ -287,7 +288,7 @@ inline void DrawSwatch(ImDrawList* dl, ImVec2 a, ImVec2 b, const PostProcessSett
     if (p.outlineOn && !p.outlineOnly)
     {
         const Rgb ln{ p.outlineColor.x, p.outlineColor.y, p.outlineColor.z };
-        const float t = 1.0f + p.outlineThickness * 0.5f;
+        const float t = theme::PxF(1.0f + p.outlineThickness * 0.5f);
         dl->AddRect(ImVec2(a.x + w * 0.10f, a.y + h * 0.28f),
                     ImVec2(a.x + w * 0.36f, a.y + h * 0.62f), ToU32(ln), 0.0f, 0, t);
     }

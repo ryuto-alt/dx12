@@ -218,7 +218,7 @@ void TransitionPreviewPanel::DrawPresetThumb(ImDrawList* dl, const ImVec2& a, co
     if (!m_atlasValid || !m_srvHeap || presetIndex < 0 || presetIndex >= kTransitionPresetCount)
     {
         // まだ焼けていない（窓を開いた最初の 1 フレーム）。枠だけ出しておく。
-        dl->AddRectFilled(a, b, IM_COL32(18, 19, 24, 255), 3.0f);
+        dl->AddRectFilled(a, b, IM_COL32(18, 19, 24, 255), ui::PxF(3.0f));
         return;
     }
 
@@ -243,7 +243,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
 
     bool changed = false;
 
-    ImGui::SetNextWindowSize(ImVec2(1180.0f, 620.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(1180.0f, 620.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("トランジション", &ctx.showTransitionPreview))
     {
         ImGui::End();
@@ -268,7 +268,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
 
     // 左 = プレビューと再生コントロール（常に見えている） / 右 = プリセット一覧（縦スクロール）。
     // 縦 1 列にすると 28 枚のタイルがプレビューの下へ押し出され、選ぶたびにスクロールが要る。
-    const float kLeftW = 560.0f;
+    const float kLeftW = ui::Px(560.0f);
     ImGui::BeginChild("##transLeft", ImVec2(kLeftW, 0.0f), ImGuiChildFlags_None);
 
     ImGui::PushTextWrapPos(0.0f);
@@ -283,7 +283,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     if (m_ready)
     {
         const float availW = ImGui::GetContentRegionAvail().x;
-        const float imgW   = std::clamp(availW, 240.0f, 720.0f);
+        const float imgW   = std::clamp(availW, ui::Px(240.0f), ui::Px(720.0f));
         const float imgH   = imgW * static_cast<float>(kPreviewH) / static_cast<float>(kPreviewW);
 
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
@@ -292,7 +292,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
 
         const D3D12_GPU_DESCRIPTOR_HANDLE h = m_srvHeap->GetGpuHandle(m_previewRT.GetSrvIndex());
         dl->AddImage(static_cast<ImTextureID>(h.ptr), p0, p1);
-        dl->AddRect(p0, p1, IM_COL32(70, 72, 82, 255), 3.0f);
+        dl->AddRect(p0, p1, IM_COL32(70, 72, 82, 255), ui::PxF(3.0f));
 
         // どちらのシーンを見ているか（HLSL では文字を出せないのでここで重ねる）。
         // 架空 HUD（左上のゲージ / 右上のミニマップ / 下中央のホットバー）を隠さないよう左下へ置く。
@@ -300,10 +300,10 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
         const char* tag    = sceneB ? "シーンB（切り替え後）" : "シーンA（切り替え前）";
         const ImU32 tagCol = sceneB ? IM_COL32(150, 120, 235, 255) : IM_COL32(90, 175, 235, 255);
         const ImVec2 ts = ImGui::CalcTextSize(tag);
-        const ImVec2 tp(p0.x + 8.0f, p1.y - 10.0f - ts.y);
-        dl->AddRectFilled(tp, ImVec2(tp.x + 12.0f + ts.x, tp.y + 6.0f + ts.y),
-                          IM_COL32(8, 9, 14, 205), 3.0f);
-        dl->AddText(ImVec2(tp.x + 6.0f, tp.y + 3.0f), tagCol, tag);
+        const ImVec2 tp(p0.x + ui::Px(8.0f), p1.y - ui::Px(10.0f) - ts.y);
+        dl->AddRectFilled(tp, ImVec2(tp.x + ui::Px(12.0f) + ts.x, tp.y + ui::Px(6.0f) + ts.y),
+                          IM_COL32(8, 9, 14, 205), ui::PxF(3.0f));
+        dl->AddText(ImVec2(tp.x + ui::Px(6.0f), tp.y + ui::Px(3.0f)), tagCol, tag);
 
         ImGui::Dummy(ImVec2(imgW, imgH));
     }
@@ -311,10 +311,10 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     ImGui::Spacing();
 
     // ================= 再生コントロール =================
-    if (ImGui::Button(m_playing ? "一時停止" : "▶ 再生", ImVec2(110.0f, 0.0f)))
+    if (ImGui::Button(m_playing ? "一時停止" : "▶ 再生", ImVec2(ui::Px(110.0f), 0.0f)))
         m_playing = !m_playing;
     ImGui::SameLine();
-    if (ImGui::Button("最初から", ImVec2(110.0f, 0.0f)))
+    if (ImGui::Button("最初から", ImVec2(ui::Px(110.0f), 0.0f)))
     {
         m_t       = 0.0f;
         m_playing = true;
@@ -322,7 +322,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     ImGui::SameLine();
     ui::Checkbox("ループ", &m_loop);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
+    ImGui::SetNextItemWidth(ui::Px(140.0f));
     ui::SliderFloat("再生速度", &m_speed, 0.15f, 2.0f, "x%.2f");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("形をじっくり見たいときは 0.25 くらいまで落とす。\n"
@@ -331,7 +331,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     // スクラブ（手で遷移の途中を掴む）
     {
         float scrub = TotalNorm();
-        ImGui::SetNextItemWidth(-160.0f);
+        ImGui::SetNextItemWidth(-ui::Px(160.0f));
         if (ui::SliderFloat("##transScrub", &scrub, 0.0f, 1.0f, "コマ送り %.2f"))
         {
             m_t       = scrub * m_dur;
@@ -342,7 +342,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     }
 
     // 長さ（＝実機の遷移秒。settings.json へ入る）
-    ImGui::SetNextItemWidth(260.0f);
+    ImGui::SetNextItemWidth(ui::Px(260.0f));
     ui::SliderFloat("長さ（秒）", &defaultDur, 0.2f, 3.0f, "%.2f");
     // スライダーは掴んでいる間ずっと値が変わる。ディスクへ書くのは離した時だけ。
     if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
@@ -381,6 +381,10 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     ImGui::PopTextWrapPos();
 
     ImDrawList*  dl      = ImGui::GetWindowDrawList();
+    // DPI: タイル寸法は論理 px の定数を毎フレーム物理 px へ
+    const float  tileW   = ui::Px(kTileDrawW);
+    const float  tileH   = ui::Px(kTileDrawH);
+    const float  tileImgH = ui::Px(kTileImgH);
     const float  sp      = ImGui::GetStyle().ItemSpacing.x;
     TransitionGroup curGroup = TransitionGroup::Count;
     float  lineW = 0.0f;
@@ -399,38 +403,38 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
         }
 
         const float availW = ImGui::GetContentRegionAvail().x;
-        if (!first && lineW + sp + kTileDrawW <= availW)
+        if (!first && lineW + sp + tileW <= availW)
         {
             ImGui::SameLine();
-            lineW += sp + kTileDrawW;
+            lineW += sp + tileW;
         }
         else
         {
-            lineW = kTileDrawW;
+            lineW = tileW;
         }
         first = false;
 
         ImGui::PushID(i);
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("##transtile", ImVec2(kTileDrawW, kTileDrawH));
+        ImGui::InvisibleButton("##transtile", ImVec2(tileW, tileH));
         const bool hovered = ImGui::IsItemHovered();
         const bool clicked = ImGui::IsItemClicked();
         const bool sel     = (i == selPreset);
 
-        const ImVec2 s0(p0.x + 3.0f, p0.y + 3.0f);
-        const ImVec2 s1(p0.x + kTileDrawW - 3.0f, p0.y + 3.0f + kTileImgH);
+        const ImVec2 s0(p0.x + ui::Px(3.0f), p0.y + ui::Px(3.0f));
+        const ImVec2 s1(p0.x + tileW - ui::Px(3.0f), p0.y + ui::Px(3.0f) + tileImgH);
         DrawPresetThumb(dl, s0, s1, i);
 
         const ImVec2 ls = ImGui::CalcTextSize(pr.label);
-        dl->AddText(ImVec2(p0.x + (kTileDrawW - ls.x) * 0.5f, s1.y + 6.0f),
+        dl->AddText(ImVec2(p0.x + (tileW - ls.x) * 0.5f, s1.y + ui::Px(6.0f)),
                     sel ? IM_COL32(120, 190, 255, 255) : IM_COL32(205, 205, 212, 255),
                     pr.label);
 
-        dl->AddRect(p0, ImVec2(p0.x + kTileDrawW, p0.y + kTileDrawH),
+        dl->AddRect(p0, ImVec2(p0.x + tileW, p0.y + tileH),
                     sel       ? IM_COL32(60, 140, 245, 255)
                     : hovered ? IM_COL32(150, 152, 162, 220)
                               : IM_COL32(64, 65, 74, 180),
-                    4.0f, 0, sel ? 2.5f : 1.0f);
+                    ui::PxF(4.0f), 0, sel ? ui::PxF(2.5f) : ui::Px(1.0f));
 
         if (hovered)
             ImGui::SetTooltip("%s\n\nID: \"%s\"  /  既定 %.1f 秒\n"

@@ -38,22 +38,22 @@ void DrawMeter(const char* id, float rmsDb, float peakDb, ImVec2 size)
     const ImVec2 a = ImGui::GetItemRectMin();
     const ImVec2 b = ImGui::GetItemRectMax();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, b, IM_COL32(24, 26, 30, 255), 2.0f);
+    dl->AddRectFilled(a, b, IM_COL32(24, 26, 30, 255), ui::PxF(2.0f));
     const float h = b.y - a.y;
     const float rmsY = b.y - h * DbToMeter01(rmsDb);
     if (rmsY < b.y - 0.5f)
-        dl->AddRectFilled(ImVec2(a.x + 2, rmsY), ImVec2(b.x - 2, b.y - 1), MeterColor(rmsDb), 1.0f);
+        dl->AddRectFilled(ImVec2(a.x + ui::Px(2.0f), rmsY), ImVec2(b.x - ui::Px(2.0f), b.y - ui::Px(1.0f)), MeterColor(rmsDb), ui::PxF(1.0f));
     if (peakDb > kMeterFloorDb)
     {
         const float py = b.y - h * DbToMeter01(peakDb);
-        dl->AddLine(ImVec2(a.x + 1, py), ImVec2(b.x - 1, py), MeterColor(peakDb), 2.0f);
+        dl->AddLine(ImVec2(a.x + ui::Px(1.0f), py), ImVec2(b.x - ui::Px(1.0f), py), MeterColor(peakDb), ui::PxF(2.0f));
     }
     for (float t : {-12.0f, -24.0f, -48.0f})
     {
         const float ty = b.y - h * DbToMeter01(t);
-        dl->AddLine(ImVec2(a.x, ty), ImVec2(a.x + 4, ty), IM_COL32(255, 255, 255, 60));
+        dl->AddLine(ImVec2(a.x, ty), ImVec2(a.x + ui::Px(4.0f), ty), IM_COL32(255, 255, 255, 60));
     }
-    dl->AddRect(a, b, IM_COL32(255, 255, 255, 30), 2.0f);
+    dl->AddRect(a, b, IM_COL32(255, 255, 255, 30), ui::PxF(2.0f));
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("RMS %.1f dBFS / ピーク %.1f dBFS（-120 = 無音）", rmsDb, peakDb);
 }
@@ -61,14 +61,14 @@ void DrawMeter(const char* id, float rmsDb, float peakDb, ImVec2 size)
 void RenderBusStrips(AudioSystem& a)
 {
     const auto buses = a.GetBuses();
-    const float stripW = 64.0f;
-    const float meterH = 150.0f;
-    ImGui::BeginChild("##strips", ImVec2(0, meterH + 118.0f), false,
+    const float stripW = ui::Px(64.0f);
+    const float meterH = ui::Px(150.0f);
+    ImGui::BeginChild("##strips", ImVec2(0, meterH + ui::Px(118.0f)), false,
                       ImGuiWindowFlags_HorizontalScrollbar);
     for (size_t i = 0; i < buses.size(); ++i)
     {
         const auto& b = buses[i];
-        if (i > 0) ImGui::SameLine(0.0f, 6.0f);
+        if (i > 0) ImGui::SameLine(0.0f, ui::Px(6.0f));
         ImGui::BeginGroup();
         ImGui::PushID(b.name.c_str());
 
@@ -80,10 +80,10 @@ void RenderBusStrips(AudioSystem& a)
             ImGui::TextDisabled("%s", b.reverbReturn ? "(戻り)" : " ");
 
         // メーターとフェーダーを横に並べる
-        DrawMeter("##meter", b.rmsDb, b.peakDb, ImVec2(16.0f, meterH));
-        ImGui::SameLine(0.0f, 4.0f);
+        DrawMeter("##meter", b.rmsDb, b.peakDb, ImVec2(ui::Px(16.0f), meterH));
+        ImGui::SameLine(0.0f, ui::Px(4.0f));
         float vol = b.volume;
-        if (ImGui::VSliderFloat("##fader", ImVec2(22.0f, meterH), &vol, 0.0f, 2.0f, ""))
+        if (ImGui::VSliderFloat("##fader", ImVec2(ui::Px(22.0f), meterH), &vol, 0.0f, 2.0f, ""))
             a.SetBusVolume(b.name, vol);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("音量 %.2f（%.1f dB）\nスナップショット補正 ×%.2f / 実効 ×%.2f",
@@ -127,16 +127,16 @@ void RenderSnapshots(AudioSystem& a)
     if (s_sel >= static_cast<int>(st.defined.size())) s_sel = 0;
     std::vector<const char*> names;
     for (const auto& n : st.defined) names.push_back(n.c_str());
-    ImGui::SetNextItemWidth(160.0f);
+    ImGui::SetNextItemWidth(ui::Px(160.0f));
     ui::Combo("##snap", &s_sel, names.data(), static_cast<int>(names.size()));
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(90.0f);
+    ImGui::SetNextItemWidth(ui::Px(90.0f));
     ui::DragFloat("秒", &s_sec, 0.05f, 0.0f, 10.0f, "%.2f");
     ImGui::SameLine();
     if (ImGui::Button("切り替え") && !names.empty()) a.SetSnapshot(names[static_cast<size_t>(s_sel)], s_sec);
     ImGui::Text("現在: %s → %s", st.current.c_str(), st.target.c_str());
     ImGui::SameLine();
-    ImGui::ProgressBar(st.progress, ImVec2(120.0f, 0.0f));
+    ImGui::ProgressBar(st.progress, ui::Px(120.0f, 0.0f));
     if (st.defined.size() <= 1)
         ImGui::TextDisabled("スナップショットは Lua の audio:defineSnapshot で定義する（Play 中に出る）");
 }
@@ -154,7 +154,7 @@ void RenderReverb(AudioSystem& a)
     ImGui::TextDisabled("既定 %s / wet %.2f", rv.defaultPreset.c_str(), rv.defaultWet);
     char buf[64];
     std::snprintf(buf, sizeof(buf), "wet %.2f → %.2f", rv.currentWet, rv.targetWet);
-    ImGui::ProgressBar(rv.currentWet, ImVec2(200.0f, 0.0f), buf);
+    ImGui::ProgressBar(rv.currentWet, ui::Px(200.0f, 0.0f), buf);
     ImGui::SameLine();
     ImGui::Text("残響 %.2f 秒", rv.current.decayTime);
     for (const auto& z : rv.zones)
@@ -173,7 +173,7 @@ void RenderVoices(AudioSystem& a)
     const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                                   ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit |
                                   ImGuiTableFlags_Resizable;
-    if (!ImGui::BeginTable("##voices", 8, flags, ImVec2(0, 220.0f))) return;
+    if (!ImGui::BeginTable("##voices", 8, flags, ImVec2(0, ui::Px(220.0f)))) return;
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("音", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("バス");
@@ -215,7 +215,7 @@ void RenderAudioMixerPanel(AudioSystem* audio, EditorContext& ctx)
 {
     if (!ctx.showAudioMixer) return;
 
-    ImGui::SetNextWindowSize(ImVec2(620.0f, 720.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(620.0f, 720.0f), ImGuiCond_FirstUseEver);
     // ### 付きの固定 ID（UI 自動テストが窓を引くのに使う。表示名を変えても壊れない）
     if (!ImGui::Begin("オーディオミキサー###AudioMixerFloating", &ctx.showAudioMixer,
                       ImGuiWindowFlags_NoDocking))

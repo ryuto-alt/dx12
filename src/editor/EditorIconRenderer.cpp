@@ -1,5 +1,6 @@
 #include "editor/EditorIconRenderer.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
 #include "graphics/GraphicsDevice.h"
 #include "resource/ShaderCompiler.h"
 #include "ecs/Components.h"
@@ -239,8 +240,10 @@ void EditorIconRenderer::AddBillboardLine(const XMFLOAT3& center,
                                           const XMFLOAT3& color)
 {
     if (m_billboardVerts.size() + 2 > kMaxVertices) return;
-    m_billboardVerts.push_back({ center, a, color });
-    m_billboardVerts.push_back({ center, b, color });
+    // DPI: a/b は論理 px のオフセット。アイコンの画面上の大きさを表示倍率に比例させる（100% で恒等）
+    const f32 s = theme::Scale();
+    m_billboardVerts.push_back({ center, { a.x * s, a.y * s }, color });
+    m_billboardVerts.push_back({ center, { b.x * s, b.y * s }, color });
 }
 
 // ========== 常時表示アイコン ==========

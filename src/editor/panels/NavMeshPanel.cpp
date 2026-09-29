@@ -221,7 +221,7 @@ void Render(Scene& scene, EditorContext& ctx)
 
     static PanelState st;
 
-    ImGui::SetNextWindowSize(ImVec2(470, 760), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(470, 760), ImGuiCond_FirstUseEver);
     // ### 付きの固定 ID（UI 自動テストが窓を引くのに使う。表示名を変えても壊れない）
     if (!ImGui::Begin("ナビメッシュ###NavMeshFloating", &ctx.showNavMesh))
     {
@@ -239,14 +239,14 @@ void Render(Scene& scene, EditorContext& ctx)
 
     ImGui::Spacing();
     const float w = ImGui::GetContentRegionAvail().x;
-    if (ImGui::Button("ビルド", ImVec2(w * 0.48f, 30)))
+    if (ImGui::Button("ビルド", ImVec2(w * 0.48f, ui::Px(30))))
     {
         st.error.clear();
         if (!BuildForScene(scene, st.log, st.error))
             Logger::Warn("ナビメッシュのビルドに失敗: {}", st.error);
     }
     ImGui::SameLine();
-    if (ImGui::Button("クリア", ImVec2(-FLT_MIN, 30)))
+    if (ImGui::Button("クリア", ImVec2(-FLT_MIN, ui::Px(30))))
     {
         scene.GetNavMesh().Clear();
         st.log.clear(); st.error.clear(); st.testPoints = -1; st.testMsg.clear();
@@ -276,7 +276,7 @@ void Render(Scene& scene, EditorContext& ctx)
         ImGui::Spacing();
         if (ui::CollapsingHeader("生成ログ"))
         {
-            ImGui::BeginChild("##navlog", ImVec2(0, 150), true,
+            ImGui::BeginChild("##navlog", ImVec2(0, ui::Px(150)), true,
                               ImGuiWindowFlags_HorizontalScrollbar);
             ImGui::TextUnformatted(st.log.c_str());
             ImGui::EndChild();

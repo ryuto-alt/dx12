@@ -352,7 +352,7 @@ void Application::RenderLoadingOverlay()
     ImVec2 c(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + vp->Size.y * 0.5f);
 
     // 回転スピナー（円弧をぐるぐる）
-    const float r = 34.0f;
+    const float r = ui::Px(34.0f);
     const int   segs = 28;
     float t = m_loadSpinTime * 3.2f;
     for (int i = 0; i < segs; ++i)
@@ -362,19 +362,19 @@ void Application::RenderLoadingOverlay()
         float alpha = (float)i / segs;  // フェードする尾
         ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(0.39f, 0.58f, 0.93f, alpha));
         dl->AddLine(ImVec2(c.x + cosf(a0) * r, c.y + sinf(a0) * r),
-                    ImVec2(c.x + cosf(a1) * r, c.y + sinf(a1) * r), col, 5.0f);
+                    ImVec2(c.x + cosf(a1) * r, c.y + sinf(a1) * r), col, ui::Px(5.0f));
     }
 
     // ステータステキスト（中央寄せ）
     const char* msg = m_loadStatus.c_str();
     ImVec2 ts = ImGui::CalcTextSize(msg);
-    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y + r + 24.0f),
+    dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y + r + ui::Px(24.0f)),
                 IM_COL32(235, 235, 235, 255), msg);
 
     if (!m_loadInfo.name.empty())
     {
         ImVec2 ns = ImGui::CalcTextSize(m_loadInfo.name.c_str());
-        dl->AddText(ImVec2(c.x - ns.x * 0.5f, c.y + r + 48.0f),
+        dl->AddText(ImVec2(c.x - ns.x * 0.5f, c.y + r + ui::Px(48.0f)),
                     ImGui::GetColorU32(ImGuiCol_TextDisabled), m_loadInfo.name.c_str());
     }
 
@@ -397,8 +397,8 @@ void Application::RenderWhatsNewPopup()
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowViewport(vp->ID);
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    const float wnH = (vp->WorkSize.y * 0.8f < 720.0f) ? vp->WorkSize.y * 0.8f : 720.0f;
-    ImGui::SetNextWindowSize(ImVec2(760.0f, wnH), ImGuiCond_Appearing);
+    const float wnH = (vp->WorkSize.y * 0.8f < ui::Px(720.0f)) ? vp->WorkSize.y * 0.8f : ui::Px(720.0f);
+    ImGui::SetNextWindowSize(ImVec2(ui::Px(760.0f), wnH), ImGuiCond_Appearing);
     bool open = true;  // ESC で閉じられるように p_open を渡す（保険）
     if (ImGui::BeginPopupModal(kId, &open, ImGuiWindowFlags_NoSavedSettings))
     {
@@ -421,7 +421,7 @@ void Application::RenderWhatsNewPopup()
         }
         ImGui::EndChild();
         ImGui::Separator();
-        if (ImGui::Button("閉じる", ImVec2(160.0f, 0.0f)) || !open)
+        if (ImGui::Button("閉じる", ui::Px(160.0f, 0.0f)) || !open)
         {
             // この版は表示済みとして記録 → 次回以降は版が変わるまで出さない。
             WriteShownVersion(kEngineVersion);
@@ -664,7 +664,7 @@ void Application::RenderProjectWindow()
     auto icon = [](const char* glyph, float /*s*/) { ImGui::AlignTextToFramePadding(); ui::Icon(glyph, dx12e::theme::TextDim); ImGui::SameLine(); };
 
     icon(ICON_SAVE, 22);
-    if (ImGui::Button("プロジェクトを保存", ImVec2(-1, 30)))
+    if (ImGui::Button("プロジェクトを保存", ImVec2(-1, ui::Px(30.0f))))
         SaveCurrentProject();
 
     icon(ICON_FILE_PLUS, 22);
@@ -773,7 +773,7 @@ void Application::RenderVersionControlWindow()
         if (m_gitOutput.empty()) return;
         if (ui::CollapsingHeader("出力ログ"))
         {
-            ImGui::BeginChild("##gitout", ImVec2(0, 120), true,
+            ImGui::BeginChild("##gitout", ImVec2(0, ui::Px(120.0f)), true,
                               ImGuiWindowFlags_HorizontalScrollbar);
             ImGui::TextUnformatted(m_gitOutput.c_str());
             ImGui::EndChild();
@@ -937,11 +937,11 @@ void Application::RenderVersionControlWindow()
 
             ImGui::BeginDisabled(busy || m_ghUser.empty() || m_gitNewRepoNameBuf[0] == '\0');
             icon(ICON_GIT_BRANCH, 22);
-            if (ImGui::Button("GitHub にリポジトリを作成 (Public)", ImVec2(-1, 32)))
+            if (ImGui::Button("GitHub にリポジトリを作成 (Public)", ImVec2(-1, ui::Px(32.0f))))
                 createGitHubRepo(/*isPrivate=*/false, /*needInit=*/true, "Initial commit",
                                   m_gitNewRepoNameBuf.data());
             icon(ICON_GIT_BRANCH, 22);
-            if (ImGui::Button("GitHub にリポジトリを作成 (Private)", ImVec2(-1, 32)))
+            if (ImGui::Button("GitHub にリポジトリを作成 (Private)", ImVec2(-1, ui::Px(32.0f))))
                 createGitHubRepo(/*isPrivate=*/true, /*needInit=*/true, "Initial commit",
                                   m_gitNewRepoNameBuf.data());
             ImGui::EndDisabled();
@@ -958,7 +958,7 @@ void Application::RenderVersionControlWindow()
         {
             ImGui::BeginDisabled(busy);
             icon(ICON_GIT_BRANCH, 22);
-            if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 32)))
+            if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, ui::Px(32.0f))))
                 RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
             ImGui::EndDisabled();
         }
@@ -1084,7 +1084,7 @@ void Application::RenderVersionControlWindow()
         ImGui::Text("今いるブランチ「%s」へ取り込みます", branch.c_str());
         ImGui::Spacing();
         ImGui::TextUnformatted("取り込み元");
-        ImGui::SetNextItemWidth(320.0f);
+        ImGui::SetNextItemWidth(ui::Px(320.0f));
         if (ui::BeginCombo("##mergesrc",
                 m_gitBranchOpTarget.empty() ? "(ブランチを選ぶ)" : m_gitBranchOpTarget.c_str()))
         {
@@ -1129,7 +1129,7 @@ void Application::RenderVersionControlWindow()
 
         ImGui::Spacing();
         ImGui::BeginDisabled(busy || m_gitBranchOpTarget.empty());
-        if (ImGui::Button("マージ", ImVec2(120, 0)))
+        if (ImGui::Button("マージ", ui::Px(120.0f, 0.0f)))
         {
             const std::string target = m_gitBranchOpTarget;
             const bool        noff   = m_gitMergeNoFF;
@@ -1139,14 +1139,14 @@ void Application::RenderVersionControlWindow()
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("キャンセル", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 
     if (ImGui::BeginPopupModal("##branchRename", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::Text("ブランチ名を変更: %s", m_gitBranchOpTarget.c_str());
-        ImGui::SetNextItemWidth(320.0f);
+        ImGui::SetNextItemWidth(ui::Px(320.0f));
         const bool enter = ui::InputText("##newbrname", m_gitRenameBranchBuf.data(),
                                             m_gitRenameBranchBuf.size(),
                                             ImGuiInputTextFlags_EnterReturnsTrue);
@@ -1160,7 +1160,7 @@ void Application::RenderVersionControlWindow()
             ImGui::TextDisabled("空白や ~ ^ : ? * [ \\ .. は使えません");
 
         ImGui::BeginDisabled(busy || !nameOk);
-        if (ImGui::Button("変更", ImVec2(120, 0)) || (enter && nameOk))
+        if (ImGui::Button("変更", ui::Px(120.0f, 0.0f)) || (enter && nameOk))
         {
             const std::string oldName = m_gitBranchOpTarget;
             const std::string nn      = newName;
@@ -1170,7 +1170,7 @@ void Application::RenderVersionControlWindow()
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("キャンセル", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 
@@ -1181,7 +1181,7 @@ void Application::RenderVersionControlWindow()
                            "「強制削除」はそのコミットを捨てます（元に戻せません）。");
         ImGui::Spacing();
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button("削除", ImVec2(120, 0)))
+        if (ImGui::Button("削除", ui::Px(120.0f, 0.0f)))
         {
             const std::string target = m_gitBranchOpTarget;
             RunGitAsync("ブランチ削除",
@@ -1190,7 +1190,7 @@ void Application::RenderVersionControlWindow()
         }
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.15f, 0.15f, 1.0f));
-        if (ImGui::Button("強制削除", ImVec2(120, 0)))
+        if (ImGui::Button("強制削除", ui::Px(120.0f, 0.0f)))
         {
             const std::string target = m_gitBranchOpTarget;
             RunGitAsync("ブランチ強制削除",
@@ -1200,7 +1200,7 @@ void Application::RenderVersionControlWindow()
         ImGui::PopStyleColor();
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("キャンセル", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+        if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
 
@@ -1226,7 +1226,7 @@ void Application::RenderVersionControlWindow()
         // Lucide のアイコンボタン（フラット。ホバーで名前と意味が出る）。
         auto iconBtn = [&](const char* glyph, const char* id, const char* /*label*/, const char* tip) -> bool
         {
-            return ui::IconButton(id, glyph, tip, false, nullptr, 28.0f, 17.0f);
+            return ui::IconButton(id, glyph, tip, false, nullptr, ui::Px(28.0f), ui::Px(17.0f));
         };
 
         if (iconBtn(ICON_REFRESH, "##girefresh", "更新",
@@ -1341,7 +1341,7 @@ void Application::RenderVersionControlWindow()
                               ImVec2(-FLT_MIN, fh * 2.2f));
     if (m_gitCommitMsgBuf[0] == '\0')
         ImGui::GetWindowDrawList()->AddText(
-            ImVec2(msgPos.x + 6, msgPos.y + ImGui::GetStyle().FramePadding.y),
+            ImVec2(msgPos.x + ui::Px(6.0f), msgPos.y + ImGui::GetStyle().FramePadding.y),
             ImGui::GetColorU32(ImGuiCol_TextDisabled), "メッセージを入力してください <必須>");
 
     // ---- コミット スプリットボタン（既定=コミット、▼=コミット&プッシュ）----
@@ -1368,9 +1368,9 @@ void Application::RenderVersionControlWindow()
     const bool canCommit = (!m_gitChanges.empty() || m_gitMergeInProgress) && m_gitCommitMsgBuf[0] != '\0';
     ImGui::BeginDisabled(busy || !canCommit);
     icon(ICON_GIT_COMMIT, 18);
-    if (ImGui::Button("すべてをコミット", ImVec2(ImGui::GetContentRegionAvail().x - fh - 1.0f, 0)))
+    if (ImGui::Button("すべてをコミット", ImVec2(ImGui::GetContentRegionAvail().x - fh - ui::Px(1.0f), 0)))
         doCommit(false);
-    ImGui::SameLine(0, 1);
+    ImGui::SameLine(0, ui::Px(1.0f));
     if (ImGui::ArrowButton("##commitdrop", ImGuiDir_Down))
         ImGui::OpenPopup("##commitopts");
     ImGui::EndDisabled();
@@ -1426,11 +1426,11 @@ void Application::RenderVersionControlWindow()
                     ImGui::TreeNodeEx(f.first.c_str(), ImGuiTreeNodeFlags_Leaf
                         | ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_SpanAvailWidth);
                     char s[2] = { f.second, 0 };
-                    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(s).x - 2.0f);
+                    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(s).x - ui::Px(2.0f));
                     ImGui::TextColored(stColor(f.second), "%s", s);
                 }
             };
-            ImGui::BeginChild("##changes", ImVec2(0, 220), true);
+            ImGui::BeginChild("##changes", ImVec2(0, ui::Px(220.0f)), true);
             draw(rootNode);
             ImGui::EndChild();
         }
@@ -1441,7 +1441,7 @@ void Application::RenderVersionControlWindow()
     {
         ImGui::SeparatorText("リモート未設定");
         ImGui::TextDisabled("プッシュ先がまだありません。URL を設定するか、GitHub に新規作成してください。");
-        ImGui::SetNextItemWidth(-70);
+        ImGui::SetNextItemWidth(-ui::Px(70.0f));
         ui::InputTextWithHint("##remote", "https://github.com/owner/repo.git",
                                  m_gitRemoteBuf.data(), m_gitRemoteBuf.size());
         ImGui::SameLine();
@@ -1920,7 +1920,7 @@ void Application::RenderBuildSettingsWindow()
     auto& cfg = m_editorCtx->buildConfig;
     const auto before = cfg;   // フレーム末尾の変更検知→プロジェクトへ自動保存用
 
-    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(380.0f, 0.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("ビルド設定", &m_editorCtx->showBuildSettings))
     {
         ImGui::End();
@@ -1975,7 +1975,7 @@ void Application::RenderBuildSettingsWindow()
             {"2560 x 1440 (QHD)", 2560, 1440},
         };
         std::string cur = std::to_string(cfg.width) + " x " + std::to_string(cfg.height);
-        ImGui::SetNextItemWidth(210.0f);
+        ImGui::SetNextItemWidth(ui::Px(210.0f));
         if (ui::BeginCombo("##respreset", cur.c_str()))
         {
             for (auto& p : presets)
@@ -1986,10 +1986,10 @@ void Application::RenderBuildSettingsWindow()
                 }
             ImGui::EndCombo();
         }
-        ImGui::SetNextItemWidth(90.0f);
+        ImGui::SetNextItemWidth(ui::Px(90.0f));
         ImGui::InputInt("\xe5\xb9\x85##w", &cfg.width, 0);    // 幅
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(90.0f);
+        ImGui::SetNextItemWidth(ui::Px(90.0f));
         ImGui::InputInt("\xe9\xab\x98\xe3\x81\x95##h", &cfg.height, 0);  // 高さ
         cfg.width  = std::clamp(cfg.width,  320, 7680);
         cfg.height = std::clamp(cfg.height, 240, 4320);
@@ -2005,7 +2005,7 @@ void Application::RenderBuildSettingsWindow()
                     ? "(\xe6\x9c\xaa\xe9\x81\xb8\xe6\x8a\x9e \xe2\x80\x94 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe6\x99\x82\xe3\x81\xab\xe9\x81\xb8\xe6\x8a\x9e)"  // (未選択 — ビルド時に選択)
                     : cfg.outputDir.c_str(),
                   _TRUNCATE);
-        ImGui::SetNextItemWidth(-92.0f);
+        ImGui::SetNextItemWidth(-ui::Px(92.0f));
         ui::InputText("##outdir", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
         ImGui::SameLine();
         if (ImGui::Button("\xe5\x8f\x82\xe7\x85\xa7...", ImVec2(-1.0f, 0.0f)))  // 参照...
@@ -2025,7 +2025,7 @@ void Application::RenderBuildSettingsWindow()
     // ===== ビルド実行 =====
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.42f, 0.68f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.82f, 1.0f));
-    const bool doBuild = ImGui::Button("ビルド", ImVec2(-1.0f, 38.0f));
+    const bool doBuild = ImGui::Button("ビルド", ImVec2(-1.0f, ui::Px(38.0f)));
     ImGui::PopStyleColor(2);
     if (doBuild)
     {

@@ -398,9 +398,9 @@ void MaterialLibraryPanel::StartDownload(const std::string& id, const std::strin
 void MaterialLibraryPanel::DrawGrid(EditorContext& /*ctx*/, const std::string& assetsDir,
                                     const std::vector<const CatalogItem*>& items)
 {
-    constexpr float kCellSize = 144.0f;
+    const float kCellSize = ui::Px(144.0f);   // DPI
     float avail = ImGui::GetContentRegionAvail().x;
-    int columns = (std::max)(1, static_cast<int>(avail / (kCellSize + 12.0f)));
+    int columns = (std::max)(1, static_cast<int>(avail / (kCellSize + ui::Px(12.0f))));
 
     if (ImGui::BeginTable("MatLibGrid", columns))
     {
@@ -423,7 +423,7 @@ void MaterialLibraryPanel::DrawGrid(EditorContext& /*ctx*/, const std::string& a
                 ImGui::Dummy(ImVec2(kCellSize, kCellSize));
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
-                dl->AddRectFilled(mn, mx, IM_COL32(38, 40, 46, 255), 4.0f);
+                dl->AddRectFilled(mn, mx, IM_COL32(38, 40, 46, 255), ui::Px(4.0f));
             }
 
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kCellSize);
@@ -478,7 +478,7 @@ void MaterialLibraryPanel::RenderWindow(EditorContext& ctx, const std::string& a
 
     EnsureCatalogRequested(assetsDir);
 
-    ImGui::SetNextWindowSize(ImVec2(920.0f, 760.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(920.0f, 760.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab\xe3\x83\xa9\xe3\x82\xa4\xe3\x83\x96\xe3\x83\xa9\xe3\x83\xaa "
                       "(Poly Haven)###MaterialLibraryFloating",  // マテリアルライブラリ (Poly Haven)
                       &ctx.showMaterialLibrary, ImGuiWindowFlags_NoDocking))
@@ -530,10 +530,10 @@ void MaterialLibraryPanel::RenderWindow(EditorContext& ctx, const std::string& a
         ImGui::EndTabBar();
     }
 
-    ImGui::SetNextItemWidth(200.0f);
+    ImGui::SetNextItemWidth(ui::Px(200.0f));
     ui::InputTextWithHint("##Search", "\xe6\xa4\x9c\xe7\xb4\xa2 (\xe8\x8b\xb1\xe5\x8d\x98\xe8\xaa\x9e)", m_searchBuf, sizeof(m_searchBuf));  // 検索 (英単語)
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100.0f);
+    ImGui::SetNextItemWidth(ui::Px(100.0f));
     const char* resLabels[] = { "1k", "2k", "4k" };
     ui::Combo("\xe8\xa7\xa3\xe5\x83\x8f\xe5\xba\xa6", &m_resolutionIndex, resLabels, 3);  // 解像度
 

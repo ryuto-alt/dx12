@@ -75,9 +75,11 @@ endif()
 
 # アプリアイコン（exe 埋め込み + ウィンドウアイコン）。両 exe に同じリソースを付ける。
 set(DX12_APP_ICON_RC "${CMAKE_SOURCE_DIR}/resources/app.rc")
+# アプリケーションマニフェスト（Per-Monitor V2 DPI。MSVC のリンカ既定マニフェストへ CMake が /MANIFESTINPUT で併合する）。
+set(DX12_APP_MANIFEST "${CMAKE_SOURCE_DIR}/resources/dx12.manifest")
 
 # Main executable
-add_executable(DX12Engine WIN32 src/main.cpp ${DX12_APP_ICON_RC})
+add_executable(DX12Engine WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_APP_MANIFEST})
 
 target_link_libraries(DX12Engine
     PRIVATE
@@ -145,7 +147,7 @@ if(EXISTS "${DX12_GH_CLI_EXE}")
 endif()
 
 # --- GameRuntime: ゲーム専用実行ファイル（DX12_GAME_RUNTIME で常にゲームモード固定）---
-add_executable(GameRuntime WIN32 src/main.cpp ${DX12_APP_ICON_RC})
+add_executable(GameRuntime WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_APP_MANIFEST})
 target_link_libraries(GameRuntime
     PRIVATE
         Core

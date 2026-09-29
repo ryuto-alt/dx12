@@ -122,7 +122,7 @@ void SpriteSheetEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ct
     if (!ctx.showSpriteSheetEditor) return;
     if (!m_assetListLoaded) RefreshAssetList(assetsDir);
 
-    ImGui::SetNextWindowSize(ImVec2(1080.0f, 640.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(1080.0f, 640.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("スプライトシート###SpriteSheetEditorPanelFloating",
                       &ctx.showSpriteSheetEditor, ImGuiWindowFlags_NoDocking))
     {
@@ -137,12 +137,12 @@ void SpriteSheetEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ct
     DrawToolbar(ctx, assetsDir, runtime);
     ImGui::Separator();
 
-    ImGui::BeginChild("##SprLeft", ImVec2(190.0f, 0.0f), true);
+    ImGui::BeginChild("##SprLeft", ImVec2(ui::Px(190.0f), 0.0f), true);
     DrawSeqList();
     ImGui::EndChild();
     ImGui::SameLine();
 
-    ImGui::BeginChild("##SprGrid", ImVec2(-380.0f, 0.0f), true);
+    ImGui::BeginChild("##SprGrid", ImVec2(-ui::Px(380.0f), 0.0f), true);
     DrawSheetGrid(assetsDir, resources, srvHeap, cmdList);
     ImGui::EndChild();
     ImGui::SameLine();
@@ -211,12 +211,12 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
     if (!canSave) ImGui::EndDisabled();
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(140.0f);
+    ImGui::SetNextItemWidth(ui::Px(140.0f));
     ui::InputText("##SprName", m_nameBuf, sizeof(m_nameBuf));
 
     // テクスチャは assets 相対で持つ。アセットブラウザからの D&D も受ける。
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(240.0f);
+    ImGui::SetNextItemWidth(ui::Px(240.0f));
     char texBuf[260];
     std::snprintf(texBuf, sizeof(texBuf), "%s", m_sheet.texturePath.c_str());
     if (ui::InputText("テクスチャ", texBuf, sizeof(texBuf))) m_sheet.texturePath = texBuf;
@@ -236,10 +236,10 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
         ImGui::SetTooltip("アセットブラウザから画像をここへドラッグしてもかまいません");
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(60.0f);
+    ImGui::SetNextItemWidth(ui::Px(60.0f));
     if (ui::DragInt("列", &m_sheet.cols, 0.2f, 1, 64)) m_sheet.cols = (std::max)(1, m_sheet.cols);
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(60.0f);
+    ImGui::SetNextItemWidth(ui::Px(60.0f));
     if (ui::DragInt("行", &m_sheet.rows, 0.2f, 1, 64)) m_sheet.rows = (std::max)(1, m_sheet.rows);
 
     if (m_statusFlash > 0.0f)
@@ -307,7 +307,7 @@ void SpriteSheetEditorPanel::DrawSheetGrid(const std::string& assetsDir, Resourc
     f32 texW = 0.0f, texH = 0.0f;
     const ImTextureID texId = ResolveTexture(assetsDir, m_sheet.texturePath, resources, srvHeap,
                                              cmdList, texW, texH);
-    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SetNextItemWidth(ui::Px(120.0f));
     ui::SliderFloat("拡大", &m_gridZoom, 0.25f, 4.0f, "%.2fx");
     ImGui::SameLine();
     ui::Checkbox("番号", &m_showCellIndex);
@@ -343,7 +343,7 @@ void SpriteSheetEditorPanel::DrawSheetGrid(const std::string& assetsDir, Resourc
     const int rows = (std::max)(1, m_sheet.rows);
 
     // 表示サイズ: 窓幅に収めた上で拡大率を掛ける
-    const f32 availW = (std::max)(80.0f, ImGui::GetContentRegionAvail().x - 8.0f);
+    const f32 availW = (std::max)(ui::Px(80.0f), ImGui::GetContentRegionAvail().x - ui::Px(8.0f));
     const f32 baseW  = (std::min)(availW, texW);
     const f32 dispW  = baseW * m_gridZoom;
     const f32 dispH  = dispW * (texH / (std::max)(1.0f, texW));
@@ -375,18 +375,18 @@ void SpriteSheetEditorPanel::DrawSheetGrid(const std::string& assetsDir, Resourc
             if (useCount > 0)
             {
                 dl->AddRectFilled(a, b, IM_COL32(80, 170, 255, 60));
-                dl->AddRect(a, b, IM_COL32(110, 190, 255, 255), 0.0f, 0, 2.0f);
+                dl->AddRect(a, b, IM_COL32(110, 190, 255, 255), 0.0f, 0, ui::PxF(2.0f));
             }
             else
             {
                 dl->AddRect(a, b, IM_COL32(255, 255, 255, 55));
             }
-            if (m_showCellIndex && cw > 18.0f && ch > 14.0f)
+            if (m_showCellIndex && cw > ui::Px(18.0f) && ch > ui::Px(14.0f))
             {
                 char buf[24];
                 if (useCount > 1) std::snprintf(buf, sizeof(buf), "%d x%d", cell, useCount);
                 else              std::snprintf(buf, sizeof(buf), "%d", cell);
-                dl->AddText(ImVec2(a.x + 2.0f, a.y + 1.0f), IM_COL32(255, 255, 255, 200), buf);
+                dl->AddText(ImVec2(a.x + ui::Px(2.0f), a.y + ui::Px(1.0f)), IM_COL32(255, 255, 255, 200), buf);
             }
         }
     }
@@ -441,9 +441,9 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
     ImGui::SetNextItemWidth(-1.0f);
     if (ui::InputText("##SeqName", nameBuf, sizeof(nameBuf))) seq.name = nameBuf;
 
-    ImGui::SetNextItemWidth(90.0f);
+    ImGui::SetNextItemWidth(ui::Px(90.0f));
     ui::DragFloat("fps", &seq.fps, 0.5f, 1.0f, 120.0f, "%.1f");
-    ImGui::SetNextItemWidth(120.0f);
+    ImGui::SetNextItemWidth(ui::Px(120.0f));
     ui::Combo("再生", &seq.mode, kModeNames, IM_ARRAYSIZE(kModeNames));
 
     char evBuf[96];
@@ -466,20 +466,20 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("コマごとに表示時間の倍率を持たせる（溜めのある攻撃モーション用）");
 
-    ImGui::BeginChild("##FrameList", ImVec2(0.0f, 170.0f), true);
+    ImGui::BeginChild("##FrameList", ImVec2(0.0f, ui::Px(170.0f)), true);
     for (size_t i = 0; i < seq.frames.size(); ++i)
     {
         ImGui::PushID(static_cast<int>(i));
         ImGui::Text("%2d:", static_cast<int>(i));
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(60.0f);
+        ImGui::SetNextItemWidth(ui::Px(60.0f));
         int cell = seq.frames[i];
         if (ui::DragInt("##cell", &cell, 0.2f, 0, m_sheet.cols * m_sheet.rows - 1))
             seq.frames[i] = cell;
         if (seq.holds.size() == seq.frames.size())
         {
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(60.0f);
+            ImGui::SetNextItemWidth(ui::Px(60.0f));
             ui::DragFloat("尺", &seq.holds[i], 0.05f, 0.0f, 20.0f, "%.2f");
         }
         ImGui::SameLine();
@@ -521,7 +521,7 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
     if (texId != 0 && !seq.frames.empty())
     {
         const SpriteUvRect uv = SpriteSeqUvAt(m_sheet, seq, m_previewTime);
-        const f32 side = (std::min)(150.0f, (std::max)(60.0f, ImGui::GetContentRegionAvail().x - 8.0f));
+        const f32 side = (std::min)(ui::Px(150.0f), (std::max)(ui::Px(60.0f), ImGui::GetContentRegionAvail().x - ui::Px(8.0f)));
         ImGui::Image(texId, ImVec2(side, side), ImVec2(uv.u0, uv.v0), ImVec2(uv.u1, uv.v1));
         const i32 idx = SpriteSeqIndexAt(seq, m_previewTime);
         if (idx >= 0)

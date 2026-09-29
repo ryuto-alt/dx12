@@ -49,12 +49,14 @@ json Application::McpVirtualInputState() const
     j["enabled"] = vinput::Enabled();
     j["background"] = {{"mode", BackgroundModeName(m_bgOptions.mode)},
                        {"toolWindow", m_bgOptions.toolWindow}};
+    // 表示倍率。座標(pointer/find/screenshot)は物理クライアント px。論理 px = 物理 ÷ dpiScale
+    j["dpiScale"] = m_imguiManager ? m_imguiManager->GetUiScale() : 1.0f;
 
     const vinput::Queue& q = vinput::Global();
     const vinput::Queue::Applied& st = q.State();
     j["pointer"] = {{"known", st.hasPos}, {"x", st.x}, {"y", st.y},
                     {"left", st.button[0]}, {"right", st.button[1]}, {"middle", st.button[2]},
-                    {"note", "エディタウィンドウのクライアント座標(px)。dx12_imgui_screenshot の画像ピクセルと同じ"}};
+                    {"note", "エディタウィンドウのクライアント座標（物理 px。表示倍率 dpiScale を掛けた後の座標）。dx12_imgui_screenshot の画像ピクセルと同じ"}};
     j["queue"] = {{"pending", q.Pending()}, {"pumped", q.Pumped()}};
 
     if (ImGui::GetCurrentContext())

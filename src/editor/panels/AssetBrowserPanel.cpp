@@ -237,7 +237,7 @@ static void DrawAssetGlyph(ImDrawList* dl, ImVec2 cardMin, float sz, int type,
                            const ImVec4& color, bool isUp)
 {
     const ImVec2 c(cardMin.x + sz * 0.5f, cardMin.y + sz * 0.5f - sz * 0.03f);
-    const float px = (std::max)(16.0f, sz * 0.62f);
+    const float px = (std::max)(dx12e::ui::Px(16.0f), sz * 0.62f);   // DPI
     dx12e::ui::DrawIconCentered(dl, isUp ? ICON_ARROW_UP : AssetTypeGlyph(type), c,
                                 ImGui::GetColorU32(color), px);
 }
@@ -249,8 +249,8 @@ static void DecoratePreview(ImVec2 mn, float sz, const ImVec4& typeColor)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 mx = ImVec2(mn.x + sz, mn.y + sz);
     const bool hov = ImGui::IsItemHovered();
-    dl->AddRect(mn, mx, ImGui::GetColorU32(hov ? th::BorderStrong : th::Border), 2.0f, 0, 1.0f);
-    dl->AddRectFilled(ImVec2(mn.x + 1.0f, mx.y - 3.0f), ImVec2(mx.x - 1.0f, mx.y - 1.0f),
+    dl->AddRect(mn, mx, ImGui::GetColorU32(hov ? th::BorderStrong : th::Border), dx12e::ui::PxF(2.0f), 0, dx12e::ui::Px(1.0f));
+    dl->AddRectFilled(ImVec2(mn.x + dx12e::ui::Px(1.0f), mx.y - dx12e::ui::Px(3.0f)), ImVec2(mx.x - dx12e::ui::Px(1.0f), mx.y - dx12e::ui::Px(1.0f)),
                       ImGui::GetColorU32(th::WithAlpha(typeColor, 0.9f)));
 }
 
@@ -295,7 +295,7 @@ void AssetBrowserPanel::DrawFolderTree(const std::filesystem::path& dir, bool& n
 
         namespace th = dx12e::theme;
         const float rowX = ImGui::GetCursorScreenPos().x;
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, dx12e::ui::Px(4.0f, 3.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));   // 標準の矢印と文字は隠す
         bool open = ImGui::TreeNodeEx(name.c_str(), flags);
         ImGui::PopStyleColor();
@@ -307,15 +307,15 @@ void AssetBrowserPanel::DrawFolderTree(const std::filesystem::path& dir, bool& n
             const float cy = (mn.y + mx.y) * 0.5f;
             const bool hov = ImGui::IsItemHovered();
             if (isSelected)
-                tdl->AddRectFilled(mn, ImVec2(mn.x + 2.0f, mx.y), ImGui::GetColorU32(th::Accent));
+                tdl->AddRectFilled(mn, ImVec2(mn.x + dx12e::ui::Px(2.0f), mx.y), ImGui::GetColorU32(th::Accent));
             if (hasSubDirs)
                 dx12e::ui::DrawIconCentered(tdl, open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT,
-                                            ImVec2(rowX + 4.0f + ImGui::GetFontSize() * 0.5f, cy),
-                                            ImGui::GetColorU32(hov || isSelected ? th::Text : th::TextDim), 13.0f);
-            const float tx = rowX + ImGui::GetFontSize() + 8.0f;
+                                            ImVec2(rowX + dx12e::ui::Px(4.0f) + ImGui::GetFontSize() * 0.5f, cy),
+                                            ImGui::GetColorU32(hov || isSelected ? th::Text : th::TextDim), dx12e::ui::Px(13.0f));
+            const float tx = rowX + ImGui::GetFontSize() + dx12e::ui::Px(8.0f);
             dx12e::ui::DrawIconCentered(tdl, open && hasSubDirs ? ICON_FOLDER_OPEN : ICON_FOLDER,
-                                        ImVec2(tx + 8.0f, cy), ImGui::GetColorU32(th::TypeFolder), 16.0f);
-            tdl->AddText(ImVec2(tx + 22.0f, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
+                                        ImVec2(tx + dx12e::ui::Px(8.0f), cy), ImGui::GetColorU32(th::TypeFolder), dx12e::ui::Px(16.0f));
+            tdl->AddText(ImVec2(tx + dx12e::ui::Px(22.0f), std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
                          ImGui::GetColorU32(th::Text), name.c_str());
         }
 
@@ -349,18 +349,18 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
     // ===== 上部: 検索 + 種別フィルタ + サイズスライダー =====
     {
         // 検索が一番よく使うので左端・幅広に置く（フォルダを掘らずに名前で辿り着ける）
-        ImGui::SetNextItemWidth(220);
+        ImGui::SetNextItemWidth(ui::Px(220.0f));
         if (ui::SearchField("##Search", m_searchBuf, sizeof(m_searchBuf), "検索（このフォルダ以下）"))
             needRefresh = true;
 
-        ImGui::SameLine(0, 12);
+        ImGui::SameLine(0, ui::Px(12.0f));
         const char* filterNames[] = {"All", "3D Models", "Scenes", "Textures", "Scripts", "Audio", "Materials"};
         // フィルタは平たい「ピル」。選択中だけ面（アクセント 30%）を敷き、他は文字だけ（色付きボタンの羅列にしない）。
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui::PxF(10.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
         for (int i = 0; i < 7; ++i)
         {
-            if (i > 0) ImGui::SameLine(0, 2);
+            if (i > 0) ImGui::SameLine(0, ui::Px(2.0f));
             bool active = (m_filterIndex == i);
             ImGui::PushStyleColor(ImGuiCol_Button,
                 active ? dx12e::theme::Selection : ImVec4(0, 0, 0, 0));
@@ -375,7 +375,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         ImGui::PopStyleVar(2);
 
         // サイズスライダーは右端へ（普段触らないものが左にあると検索/フィルタが探しにくい）
-        const float sliderW = 110.0f;
+        const float sliderW = ui::Px(110.0f);
         ImGui::SameLine(ImGui::GetContentRegionMax().x - sliderW);
         ImGui::SetNextItemWidth(sliderW);
         ui::SliderFloat("##Size", &m_cellSize, 56.0f, 192.0f, "%.0f px");
@@ -384,7 +384,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
     ImGui::Separator();
 
     // ===== 2カラムレイアウト: 左=フォルダツリー | 右=ファイルグリッド =====
-    float treeWidth = 160.0f;
+    float treeWidth = ui::Px(160.0f);
     ImGui::BeginChild("##FolderTree", ImVec2(treeWidth, 0), true);
     {
         // assets ルート
@@ -461,9 +461,9 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     for (const auto& part : relative)
                     {
                         current /= part;
-                        ImGui::SameLine(0, 2);
+                        ImGui::SameLine(0, ui::Px(2.0f));
                         ImGui::TextDisabled("%s", ICON_CHEVRON_RIGHT);
-                        ImGui::SameLine(0, 2);
+                        ImGui::SameLine(0, ui::Px(2.0f));
                         std::string partStr = part.string();
                         ImGui::PushID(current.string().c_str());
                         if (ImGui::SmallButton(partStr.c_str()))
@@ -481,7 +481,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             // 検索中はそれを明示（今見ているのがフォルダの中身ではないと分かるように）
             if (m_searchBuf[0] != '\0')
             {
-                ImGui::SameLine(0, 10);
+                ImGui::SameLine(0, ui::Px(10.0f));
                 ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::AccentLight);
                 ImGui::Text("\"%s\" の検索結果 %zu 件%s",
                             m_searchBuf, m_entries.size(), m_searchTruncated ? "+" : "");
@@ -493,7 +493,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
 
         // ファイルグリッド
         float gridWidth = ImGui::GetContentRegionAvail().x;
-        int columns = (std::max)(1, static_cast<int>(gridWidth / (m_cellSize + 8.0f)));
+        int columns = (std::max)(1, static_cast<int>(gridWidth / ui::Px(m_cellSize + 8.0f)));
 
         // フィルタ適用
         auto entries = m_entries;
@@ -517,8 +517,8 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 entries.end());
         }
 
-        float thumbnailSize = m_cellSize - 24.0f;
-        if (thumbnailSize < 16.0f) thumbnailSize = 16.0f;
+        float thumbnailSize = ui::Px((std::max)(m_cellSize - 24.0f, 0.0f));   // m_cellSize は論理 px
+        if (thumbnailSize < ui::Px(16.0f)) thumbnailSize = ui::Px(16.0f);
 
         if (ImGui::BeginTable("AssetGrid", columns))
         {
@@ -620,10 +620,10 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     // （旧: 種別色の太い枠。色が画面中に散ってうるさかった）。
                     namespace th = dx12e::theme;
                     dl->AddRectFilled(cardMin, cardMax,
-                        ImGui::GetColorU32(hovered ? th::Bg3 : th::Bg2), 3.0f);
+                        ImGui::GetColorU32(hovered ? th::Bg3 : th::Bg2), ui::PxF(3.0f));
                     dl->AddRect(cardMin, cardMax,
-                        ImGui::GetColorU32(hovered ? th::BorderStrong : th::Border), 3.0f, 0, 1.0f);
-                    dl->AddRectFilled(ImVec2(cardMin.x + 1.0f, cardMax.y - 3.0f), ImVec2(cardMax.x - 1.0f, cardMax.y - 1.0f),
+                        ImGui::GetColorU32(hovered ? th::BorderStrong : th::Border), ui::PxF(3.0f), 0, ui::Px(1.0f));
+                    dl->AddRectFilled(ImVec2(cardMin.x + ui::Px(1.0f), cardMax.y - ui::Px(3.0f)), ImVec2(cardMax.x - ui::Px(1.0f), cardMax.y - ui::Px(1.0f)),
                         ImGui::GetColorU32(th::WithAlpha(typeColor, entry.isDirectory ? 0.0f : 0.85f)));
 
                     // ベクターアイコン（中央）
@@ -638,11 +638,11 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                         {
                             dx12e::ui::PushMono();
                             ImVec2 ts = ImGui::CalcTextSize(ext.c_str());
-                            ImVec2 bMin = ImVec2(cardMin.x + (thumbnailSize - ts.x) * 0.5f - 4.0f,
-                                                 cardMax.y - ts.y - 8.0f);
-                            ImVec2 bMax = ImVec2(bMin.x + ts.x + 8.0f, bMin.y + ts.y + 2.0f);
-                            dl->AddRectFilled(bMin, bMax, ImGui::GetColorU32(th::WithAlpha(th::Bg0, 0.75f)), 3.0f);
-                            dl->AddText(ImVec2(bMin.x + 4.0f, bMin.y + 1.0f),
+                            ImVec2 bMin = ImVec2(cardMin.x + (thumbnailSize - ts.x) * 0.5f - ui::Px(4.0f),
+                                                 cardMax.y - ts.y - ui::Px(8.0f));
+                            ImVec2 bMax = ImVec2(bMin.x + ts.x + ui::Px(8.0f), bMin.y + ts.y + ui::Px(2.0f));
+                            dl->AddRectFilled(bMin, bMax, ImGui::GetColorU32(th::WithAlpha(th::Bg0, 0.75f)), ui::PxF(3.0f));
+                            dl->AddText(ImVec2(bMin.x + ui::Px(4.0f), bMin.y + ui::Px(1.0f)),
                                 ImGui::GetColorU32(th::TextDim), ext.c_str());
                             dx12e::ui::PopMono();
                         }
@@ -706,7 +706,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 if (!m_selectedPath.empty() && m_selectedPath == entry.path)
                     ImGui::GetWindowDrawList()->AddRect(
                         ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                        ImGui::GetColorU32(dx12e::theme::Accent), 3.0f, 0, 2.0f);
+                        ImGui::GetColorU32(dx12e::theme::Accent), ui::PxF(3.0f), 0, ui::Px(2.0f));
 
                 // --- ダブルクリック（EndGroup 後 = グループ全体のホバー判定）---
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
@@ -894,7 +894,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         ImGui::OpenPopup("##DeleteAssetConfirm");
         m_deletePopupOpen = true;
     }
-    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ui::Px(380.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("##DeleteAssetConfirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         const bool isDir = std::filesystem::is_directory(m_pendingDeletePath);
@@ -924,7 +924,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
         if (!m_deleteError.empty())
             ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", m_deleteError.c_str());
 
-        if (ImGui::Button("\xe5\x89\x8a\xe9\x99\xa4", ImVec2(120, 0)))  // 削除
+        if (ImGui::Button("\xe5\x89\x8a\xe9\x99\xa4", ui::Px(120.0f, 0.0f)))  // 削除
         {
             // ごみ箱へ。失敗しても完全削除へフォールバックしない（戻せない操作に化けるため）。
             const bool moved = MoveToRecycleBin(m_pendingDeletePath);
@@ -955,7 +955,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             needRefresh = true;   // 成否どちらでも実際の状態を出し直す
         }
         ImGui::SameLine();
-        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ui::Px(120.0f, 0.0f)))  // キャンセル
         {
             m_pendingDeletePath.clear();
             m_deleteError.clear();

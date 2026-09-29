@@ -799,6 +799,9 @@ namespace IMGUIZMO_NAMESPACE
    static int GetRotateType(OPERATION op);
    static int GetScaleType(OPERATION op);
 
+   static float gPx = 1.0f;   // DPI: 画面 px 固定寸法の倍率（SetScreenScale）
+   void SetScreenScale(float scale) { gPx = (scale > 0.05f) ? scale : 1.0f; }
+
    Style& GetStyle()
    {
       return gContext.mStyle;
@@ -1117,8 +1120,8 @@ namespace IMGUIZMO_NAMESPACE
 
       ImVec2 centerSSpace = worldToPos(makeVect(0.f, 0.f), gContext.mMVP);
       gContext.mScreenSquareCenter = centerSSpace;
-      gContext.mScreenSquareMin = ImVec2(centerSSpace.x - 10.f, centerSSpace.y - 10.f);
-      gContext.mScreenSquareMax = ImVec2(centerSSpace.x + 10.f, centerSSpace.y + 10.f);
+      gContext.mScreenSquareMin = ImVec2(centerSSpace.x - 10.f * gPx, centerSSpace.y - 10.f * gPx);
+      gContext.mScreenSquareMax = ImVec2(centerSSpace.x + 10.f * gPx, centerSSpace.y + 10.f * gPx);
 
       ComputeCameraRay(gContext.mRayOrigin, gContext.mRayVector);
    }
@@ -1500,8 +1503,8 @@ namespace IMGUIZMO_NAMESPACE
          /*vec_t dif(destinationPosOnScreen.x - sourcePosOnScreen.x, destinationPosOnScreen.y - sourcePosOnScreen.y);
          dif.Normalize();
          dif *= 5.f;
-         drawList->AddCircle(sourcePosOnScreen, 6.f, translationLineColor);
-         drawList->AddCircle(destinationPosOnScreen, 6.f, translationLineColor);
+         drawList->AddCircle(sourcePosOnScreen, 6.f * gPx, translationLineColor);
+         drawList->AddCircle(destinationPosOnScreen, 6.f * gPx, translationLineColor);
          drawList->AddLine(ImVec2(sourcePosOnScreen.x + dif.x, sourcePosOnScreen.y + dif.y), ImVec2(destinationPosOnScreen.x - dif.x, destinationPosOnScreen.y - dif.y), translationLineColor, 2.f);
          */
          char tmps[512];
@@ -1560,8 +1563,8 @@ namespace IMGUIZMO_NAMESPACE
 #if 0
                if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID))
                {
-                  drawList->AddLine(baseSSpace, worldDirSSpaceNoScale, IM_COL32(0x40, 0x40, 0x40, 0xFF), 3.f);
-                  drawList->AddCircleFilled(worldDirSSpaceNoScale, 6.f, IM_COL32(0x40, 0x40, 0x40, 0xFF));
+                  drawList->AddLine(baseSSpace, worldDirSSpaceNoScale, IM_COL32(0x40, 0x40, 0x40, 0xFF), 3.f * gPx);
+                  drawList->AddCircleFilled(worldDirSSpaceNoScale, 6.f * gPx, IM_COL32(0x40, 0x40, 0x40, 0xFF));
                }
                /*
                if (!hasTranslateOnAxis || gContext.mbUsing)
@@ -1570,13 +1573,13 @@ namespace IMGUIZMO_NAMESPACE
                }
                */
 #endif
-               drawList->AddCircleFilled(worldDirSSpace, 12.f, colors[i + 1]);
+               drawList->AddCircleFilled(worldDirSSpace, 12.f * gPx, colors[i + 1]);
             }
          }
       }
 
       // draw screen cirle
-      drawList->AddCircle(gContext.mScreenSquareCenter, 20.f, colors[0], 32, gContext.mStyle.CenterCircleSize);
+      drawList->AddCircle(gContext.mScreenSquareCenter, 20.f * gPx, colors[0], 32, gContext.mStyle.CenterCircleSize);
 
       if (gContext.mbUsing && (gContext.GetCurrentID() == gContext.mEditingID) && IsScaleType(type))
       {
@@ -1585,8 +1588,8 @@ namespace IMGUIZMO_NAMESPACE
          /*vec_t dif(destinationPosOnScreen.x - sourcePosOnScreen.x, destinationPosOnScreen.y - sourcePosOnScreen.y);
          dif.Normalize();
          dif *= 5.f;
-         drawList->AddCircle(sourcePosOnScreen, 6.f, translationLineColor);
-         drawList->AddCircle(destinationPosOnScreen, 6.f, translationLineColor);
+         drawList->AddCircle(sourcePosOnScreen, 6.f * gPx, translationLineColor);
+         drawList->AddCircle(destinationPosOnScreen, 6.f * gPx, translationLineColor);
          drawList->AddLine(ImVec2(sourcePosOnScreen.x + dif.x, sourcePosOnScreen.y + dif.y), ImVec2(destinationPosOnScreen.x - dif.x, destinationPosOnScreen.y - dif.y), translationLineColor, 2.f);
          */
          char tmps[512];
@@ -1681,8 +1684,8 @@ namespace IMGUIZMO_NAMESPACE
          vec_t dif = { destinationPosOnScreen.x - sourcePosOnScreen.x, destinationPosOnScreen.y - sourcePosOnScreen.y, 0.f, 0.f };
          dif.Normalize();
          dif *= 5.f;
-         drawList->AddCircle(sourcePosOnScreen, 6.f, translationLineColor);
-         drawList->AddCircle(destinationPosOnScreen, 6.f, translationLineColor);
+         drawList->AddCircle(sourcePosOnScreen, 6.f * gPx, translationLineColor);
+         drawList->AddCircle(destinationPosOnScreen, 6.f * gPx, translationLineColor);
          drawList->AddLine(ImVec2(sourcePosOnScreen.x + dif.x, sourcePosOnScreen.y + dif.y), ImVec2(destinationPosOnScreen.x - dif.x, destinationPosOnScreen.y - dif.y), translationLineColor, 2.f);
 
          char tmps[512];
@@ -1801,7 +1804,7 @@ namespace IMGUIZMO_NAMESPACE
                continue;
             }
             float boundDistance = sqrtf(ImLengthSqr(worldBound1 - worldBound2));
-            int stepCount = (int)(boundDistance / 10.f);
+            int stepCount = (int)(boundDistance / (10.f * gPx));
             stepCount = min(stepCount, 1000);
             for (int j = 0; j < stepCount; j++)
             {
@@ -1815,8 +1818,8 @@ namespace IMGUIZMO_NAMESPACE
             }
             vec_t midPoint = (aabb[i] + aabb[(i + 1) % 4]) * 0.5f;
             ImVec2 midBound = worldToPos(midPoint, boundsMVP);
-            static const float AnchorBigRadius = 8.f;
-            static const float AnchorSmallRadius = 6.f;
+            const float AnchorBigRadius = 8.f * gPx;
+            const float AnchorSmallRadius = 6.f * gPx;
             bool overBigAnchor = ImLengthSqr(worldBound1 - io.MousePos) <= (AnchorBigRadius * AnchorBigRadius);
             bool overSmallAnchor = ImLengthSqr(midBound - io.MousePos) <= (AnchorBigRadius * AnchorBigRadius);
 
@@ -1848,10 +1851,10 @@ namespace IMGUIZMO_NAMESPACE
             unsigned int smallAnchorColor = overSmallAnchor ? selectionColor : (IM_COL32(0xAA, 0xAA, 0xAA, 0) + anchorAlpha);
 
             drawList->AddCircleFilled(worldBound1, AnchorBigRadius, IM_COL32_BLACK);
-            drawList->AddCircleFilled(worldBound1, AnchorBigRadius - 1.2f, bigAnchorColor);
+            drawList->AddCircleFilled(worldBound1, AnchorBigRadius - 1.2f * gPx, bigAnchorColor);
 
             drawList->AddCircleFilled(midBound, AnchorSmallRadius, IM_COL32_BLACK);
-            drawList->AddCircleFilled(midBound, AnchorSmallRadius - 1.2f, smallAnchorColor);
+            drawList->AddCircleFilled(midBound, AnchorSmallRadius - 1.2f * gPx, smallAnchorColor);
             int oppositeIndex = (i + 2) % 4;
             // big anchor on corners
             if (!gContext.mbUsingBounds && gContext.mbEnable && overBigAnchor && CanActivate())
@@ -2019,7 +2022,7 @@ namespace IMGUIZMO_NAMESPACE
 
          vec_t closestPointOnAxis = PointOnSegment(makeVect(posOnPlanScreen), makeVect(axisStartOnScreen), makeVect(axisEndOnScreen));
 
-         if ((closestPointOnAxis - makeVect(posOnPlanScreen)).Length() < 12.f) // pixel size
+         if ((closestPointOnAxis - makeVect(posOnPlanScreen)).Length() < 12.f * gPx) // pixel size
          {
             if (!isAxisMasked)
                type = MT_SCALE_X + i;
@@ -2056,7 +2059,7 @@ namespace IMGUIZMO_NAMESPACE
             ImVec2 worldDirSSpace = worldToPos((dirAxis * markerScale) * gContext.mScreenFactor, gContext.mMVPLocal);
 
             float distance = sqrtf(ImLengthSqr(worldDirSSpace - io.MousePos));
-            if (distance < 12.f)
+            if (distance < 12.f * gPx)
             {
                type = MT_SCALE_X + i;
             }
@@ -2080,7 +2083,7 @@ namespace IMGUIZMO_NAMESPACE
 
       vec_t deltaScreen = { io.MousePos.x - gContext.mScreenSquareCenter.x, io.MousePos.y - gContext.mScreenSquareCenter.y, 0.f, 0.f };
       float dist = deltaScreen.Length();
-      if (Intersects(op, ROTATE_SCREEN) && dist >= (gContext.mRadiusSquareCenter - 4.0f) && dist < (gContext.mRadiusSquareCenter + 4.0f))
+      if (Intersects(op, ROTATE_SCREEN) && dist >= (gContext.mRadiusSquareCenter - 4.0f * gPx) && dist < (gContext.mRadiusSquareCenter + 4.0f * gPx))
       {
          if (!isNoAxesMasked)
             return MT_NONE;
@@ -2108,7 +2111,7 @@ namespace IMGUIZMO_NAMESPACE
       viewDirNormalized.TransformVector(gContext.mModelInverse);
 
       const vec_t mouseVec = makeVect(io.MousePos);
-      float bestDistance = 10.f; // pixel size（細い弧でも掴みやすいよう少し広め）
+      float bestDistance = 10.f * gPx; // pixel size（細い弧でも掴みやすいよう少し広め）
       int bestType = MT_NONE;
       for (int axis = 0; axis < 3; axis++)
       {
@@ -2201,7 +2204,7 @@ namespace IMGUIZMO_NAMESPACE
          const ImVec2 axisEndOnScreen = worldToPos(gContext.mModel.v.position + dirAxis * gContext.mScreenFactor, gContext.mViewProjection) - ImVec2(gContext.mX, gContext.mY);
 
          vec_t closestPointOnAxis = PointOnSegment(screenCoord, makeVect(axisStartOnScreen), makeVect(axisEndOnScreen));
-         if ((closestPointOnAxis - screenCoord).Length() < 12.f && Intersects(op, static_cast<OPERATION>(TRANSLATE_X << i))) // pixel size
+         if ((closestPointOnAxis - screenCoord).Length() < 12.f * gPx && Intersects(op, static_cast<OPERATION>(TRANSLATE_X << i))) // pixel size
          {
             if (isAxisMasked)
                break;

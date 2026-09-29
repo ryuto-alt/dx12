@@ -55,6 +55,15 @@ public:
     void RenderPlatformWindows();
     void Shutdown();
 
+    // ===== DPI（表示倍率）=====
+    // エディタの UI 倍率（メインビューポート。1.0 = 100%）。OS の表示倍率、--dpi-scale があればそれ。
+    // 倍率が変わった（別倍率のモニターへ移動 / OS の設定変更 / オーバーライド）フレームの BeginFrame で
+    // ImGuiStyle（基準スタイルから作り直し）とフォント倍率（FontScaleDpi）が切り替わる。
+    float GetUiScale() const;
+    // 検証用: 実行中に倍率を上書きする（0 以下で OS の倍率へ戻す）。次の BeginFrame で反映。
+    void  SetUiScaleOverride(float scale);
+    // ゲームモード（配布ランタイム）は倍率を持たない（常に 1.0）。
+
     static LRESULT WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 private:

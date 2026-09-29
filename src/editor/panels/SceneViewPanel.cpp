@@ -45,12 +45,12 @@ namespace
     {
         ImDrawList* dl = ImGui::GetBackgroundDrawList(ImGui::GetMainViewport());
         const ImVec2 mp = ImGui::GetIO().MousePos;
-        const ImVec2 pos(mp.x + 18.0f, mp.y + 18.0f);
+        const ImVec2 pos(mp.x + ui::Px(18.0f), mp.y + ui::Px(18.0f));
         const ImVec2 ts = ImGui::CalcTextSize(text);
-        const ImVec2 bmin(pos.x - 6.0f, pos.y - 4.0f);
-        const ImVec2 bmax(pos.x + ts.x + 6.0f, pos.y + ts.y + 4.0f);
-        dl->AddRectFilled(bmin, bmax, IM_COL32(18, 20, 26, 225), 4.0f);
-        dl->AddRect(bmin, bmax, IM_COL32(255, 204, 26, 200), 4.0f);
+        const ImVec2 bmin(pos.x - ui::Px(6.0f), pos.y - ui::Px(4.0f));
+        const ImVec2 bmax(pos.x + ts.x + ui::Px(6.0f), pos.y + ts.y + ui::Px(4.0f));
+        dl->AddRectFilled(bmin, bmax, IM_COL32(18, 20, 26, 225), ui::Px(4.0f));
+        dl->AddRect(bmin, bmax, IM_COL32(255, 204, 26, 200), ui::Px(4.0f));
         dl->AddText(pos, IM_COL32(255, 255, 255, 255), text);
     }
 
@@ -66,6 +66,7 @@ namespace
     constexpr int kUiDragMove = 0;    // 移動ドラッグ
     constexpr int kUiEdgeL = 1, kUiEdgeR = 2, kUiEdgeT = 4, kUiEdgeB = 8;
 
+    // DPI: 論理 px。使う側で ui::Px() を通す
     constexpr f32 kUiHandleHalf    = 4.0f;   // リサイズハンドル矩形の半径（描画、スクリーン px）
     constexpr f32 kUiHandleHitHalf = 6.0f;   // ハンドルの当たり判定半径（掴みやすく描画より広め）
 
@@ -161,11 +162,14 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     {
         ImGuizmo::Style& gz = ImGuizmo::GetStyle();
         const float boost = gizmoHovered ? 1.5f : 1.0f;
-        gz.RotationLineThickness      = 4.0f * boost;   // 軸リング（既定2.0）
-        gz.RotationOuterLineThickness = 3.0f * boost;   // 外周のスクリーン回転円
-        gz.TranslationLineThickness   = 4.0f * boost;
-        gz.ScaleLineThickness         = 4.0f * boost;
-        gz.CenterCircleSize           = gizmoHovered ? 8.0f : 6.0f;
+        gz.RotationLineThickness      = ui::PxF(4.0f) * boost;   // 軸リング（既定2.0）
+        gz.RotationOuterLineThickness = ui::PxF(3.0f) * boost;   // 外周のスクリーン回転円
+        gz.TranslationLineThickness   = ui::PxF(4.0f) * boost;
+        gz.ScaleLineThickness         = ui::PxF(4.0f) * boost;
+        gz.CenterCircleSize           = ui::PxF(gizmoHovered ? 8.0f : 6.0f);
+        gz.TranslationLineArrowSize   = ui::PxF(6.0f);   // DPI: 矢じり
+        gz.ScaleLineCircleSize        = ui::PxF(6.0f);
+        ImGuizmo::SetScreenScale(ui::Scale());           // DPI: 当たり判定の許容距離・小円の半径など
         gz.Colors[ImGuizmo::DIRECTION_X] = ImVec4(0.95f, 0.22f, 0.22f, 1.0f); // 鮮やかな赤=X
         gz.Colors[ImGuizmo::DIRECTION_Y] = ImVec4(0.30f, 0.90f, 0.30f, 1.0f); // 鮮やかな緑=Y
         gz.Colors[ImGuizmo::DIRECTION_Z] = ImVec4(0.25f, 0.55f, 1.00f, 1.0f); // 鮮やかな青=Z
@@ -502,8 +506,8 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
     {
         for (int i = 0; i < 8; ++i)
         {
-            if (std::abs(mousePos.x - handles[i].x) <= kUiHandleHitHalf
-                && std::abs(mousePos.y - handles[i].y) <= kUiHandleHitHalf)
+            if (std::abs(mousePos.x - handles[i].x) <= ui::Px(kUiHandleHitHalf)
+                && std::abs(mousePos.y - handles[i].y) <= ui::Px(kUiHandleHitHalf))
             {
                 hoveredHandle = i;
                 break;
@@ -612,14 +616,14 @@ void SceneViewPanel::HandleUiEditing(entt::registry& reg,
     {
         ImDrawList* dl = ImGui::GetBackgroundDrawList(ImGui::GetMainViewport());
         dl->PushClipRect(ImVec2(vpX, vpY), ImVec2(vpX + vpW, vpY + vpH), true);
-        uiedit::DrawResolvedOutline(dl, *selRect, kUiAccentCol, 2.0f);
+        uiedit::DrawResolvedOutline(dl, *selRect, kUiAccentCol, ui::PxF(2.0f));
         for (int i = 0; !selRect->hasXform && i < 8; ++i)
         {
             const bool hot = (m_uiDragEdges > kUiDragMove)
                 ? (handles[i].edges == m_uiDragEdges)
                 : (i == hoveredHandle);
-            const ImVec2 hmin(handles[i].x - kUiHandleHalf, handles[i].y - kUiHandleHalf);
-            const ImVec2 hmax(handles[i].x + kUiHandleHalf, handles[i].y + kUiHandleHalf);
+            const ImVec2 hmin(handles[i].x - ui::Px(kUiHandleHalf), handles[i].y - ui::Px(kUiHandleHalf));
+            const ImVec2 hmax(handles[i].x + ui::Px(kUiHandleHalf), handles[i].y + ui::Px(kUiHandleHalf));
             dl->AddRectFilled(hmin, hmax, hot ? kUiHandleHotCol : kUiHandleCol);
             dl->AddRect(hmin, hmax, kUiAccentCol);
         }
@@ -666,8 +670,11 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
 
     // 三角形単位の精密ピッキング（ScenePick）。ブロードフェーズに Application の描画リストを
     // 使うので、旧実装のように 10 万体ぶんの ComputeWorldMatrix を回し直すことはもう無い。
+    // DPI: アイコンの当たり半径は描画（EditorIconRenderer の倍率比例）と揃える
+    ScenePickOptions pickOpt;
+    pickOpt.iconPixelRadius = ui::Px(pickOpt.iconPixelRadius);
     const std::vector<ScenePickHit> hits = RaycastScene(
-        reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mousePos.x, mousePos.y);
+        reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mousePos.x, mousePos.y, pickOpt);
 
     // ヒットをエンティティ単位に畳む（同一エンティティの複数サブメッシュは 1 件扱い）。
     // 順序は距離（アイコン優先）そのままなので「手前 → 奥」の並びになる。
@@ -684,7 +691,8 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     // 重なり列が前回と一致していることも条件にする（カメラを動かして中身が変わったら先頭へ戻す）。
     // Ctrl+クリック（トグル選択）中は循環させず常に最前面を対象にする
     //   ＝「奥のを意図せず足す/外す」が起きない＝マルチ選択の操作感を壊さない。
-    constexpr f32    kCycleRadiusSq = 4.0f * 4.0f;   // 4px 以内は同じ場所とみなす
+    const f32        kCycleRadius   = ui::Px(4.0f);  // 4px(論理) 以内は同じ場所とみなす
+    const f32        kCycleRadiusSq = kCycleRadius * kCycleRadius;
     constexpr double kCycleTimeout  = 1.2;           // 秒。空くと先頭へリセット
     const double nowSec = ImGui::GetTime();
     const f32 mdx = mousePos.x - m_cyclePos.x;
@@ -799,7 +807,7 @@ void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
     // フライカメラ(右クリック長押し+視点回転)は Application::Update が GetAsyncKeyState で
     // 独自に処理しており、ここでの ImGui 側クリック/ドラッグ判定とは完全に独立(同じ物理入力を
     // 両方が見ているだけなので、実際に視点を動かした操作はこの距離チェックで自然に弾かれる)。
-    constexpr float kClickDragThresholdSq = 6.0f * 6.0f;
+    const float kClickDragThresholdSq = ui::Px(6.0f) * ui::Px(6.0f);  // DPI
 
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
     {
@@ -810,8 +818,10 @@ void SceneViewPanel::HandleTextureContextMenu(entt::registry& reg,
         if (inViewport && camera)
         {
             // メッシュに限らずライト/カメラのアイコンも対象にする（左クリックの選択と同じ当たり判定）
+            ScenePickOptions pickOpt;   // DPI: アイコン当たり半径は倍率に比例
+            pickOpt.iconPixelRadius = ui::Px(pickOpt.iconPixelRadius);
             const std::vector<ScenePickHit> hits = RaycastScene(
-                reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mp.x, mp.y);
+                reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mp.x, mp.y, pickOpt);
             if (!hits.empty())
             {
                 m_textureCtxTarget.entity       = hits.front().entity;

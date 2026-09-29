@@ -1377,6 +1377,9 @@ void Application::RegisterMcpEntityMethods()
                 // 仮想入力モード（AI が OS のカーソル/フォーカスを奪わず UI を操作する）と --background の状態。
                 {"virtualInput", vinput::Enabled()},
                 {"background", BackgroundModeName(m_bgOptions.mode)},
+                // 表示倍率（1.0 = 100%）。エディタの UI 倍率 = OS の倍率（--dpi-scale があればそれ）。
+                // imgui_pointer 等の座標は【物理クライアント px】（論理 px ではない）。論理 = 物理 ÷ dpiScale。
+                {"dpiScale", m_imguiManager ? m_imguiManager->GetUiScale() : 1.0f},
                 {"protocolVersion", 4}
             };
         });

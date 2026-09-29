@@ -50,9 +50,9 @@ void NetworkPanel::RenderStatus(NetworkSystem& net, entt::registry& reg, EditorC
     else
         ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "○ %s", RoleLabel(net.Role()));
 
-    ImGui::SameLine(0, 12);
+    ImGui::SameLine(0, ui::Px(12.0f));
     ImGui::Text("tick %u", static_cast<unsigned>(net.CurrentTick()));
-    ImGui::SameLine(0, 12);
+    ImGui::SameLine(0, ui::Px(12.0f));
     ImGui::Text("複製 %u体", static_cast<unsigned>(net.SyncedEntityCount(reg)));
 
     ImGui::Separator();
@@ -64,9 +64,9 @@ void NetworkPanel::RenderStatus(NetworkSystem& net, entt::registry& reg, EditorC
                                    ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
     if (ImGui::BeginTable("##net_players", 4, tflags, ImVec2(0.0f, ImGui::GetContentRegionAvail().y)))
     {
-        ImGui::TableSetupColumn("clientId", ImGuiTableColumnFlags_WidthFixed, 70.0f);
-        ImGui::TableSetupColumn("RTT(ms)",  ImGuiTableColumnFlags_WidthFixed, 80.0f);
-        ImGui::TableSetupColumn("送信",     ImGuiTableColumnFlags_WidthFixed, 90.0f);
+        ImGui::TableSetupColumn("clientId", ImGuiTableColumnFlags_WidthFixed, ui::Px(70.0f));
+        ImGui::TableSetupColumn("RTT(ms)",  ImGuiTableColumnFlags_WidthFixed, ui::Px(80.0f));
+        ImGui::TableSetupColumn("送信",     ImGuiTableColumnFlags_WidthFixed, ui::Px(90.0f));
         ImGui::TableSetupColumn("受信",     ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 
@@ -148,13 +148,13 @@ void NetworkPanel::RenderSettings(NetworkSystem& net, EditorContext& ctx, const 
         ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
                            "接続中: 変更は保存しても現在のセッションには反映されません(次回接続から有効)。");
 
-    if (ImGui::Button("保存", ImVec2(120, 0)))
+    if (ImGui::Button("保存", ui::Px(120.0f, 0.0f)))
     {
         net.SetConfig(m_staging);
         m_staging.Save(assetsDir + "network.json");
     }
     ImGui::SameLine();
-    if (ImGui::Button("既定値に戻す", ImVec2(120, 0)))
+    if (ImGui::Button("既定値に戻す", ui::Px(120.0f, 0.0f)))
         m_staging = NetworkConfig{};
 
     ImGui::End();

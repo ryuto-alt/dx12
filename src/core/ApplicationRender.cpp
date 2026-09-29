@@ -6550,7 +6550,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
         {
             const ImGuiIO& lio = ImGui::GetIO();
             const ImGuiViewport* mainVp = ImGui::GetMainViewport();
-            const float kBarH = 36.0f, kBtnW = 44.0f;
+            const float kBarH = ui::Px(36.0f), kBtnW = ui::Px(44.0f);   // DPI
             ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x + mainVp->Size.x - kBtnW * 2.0f, mainVp->Pos.y),
                                     ImGuiCond_Always);
             ImGui::SetNextWindowSize(ImVec2(kBtnW * 2.0f, kBarH), ImGuiCond_Always);
@@ -6573,14 +6573,14 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                 const ImU32 fg = (isClose && hovered) ? IM_COL32(255, 255, 255, 255)
                                                       : IM_COL32(198, 200, 207, 255);
                 const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
-                const float r = 5.0f;
+                const float r = ui::Px(5.0f);
                 if (isClose)
                 {
-                    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, 1.0f);
-                    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), fg, 1.0f);
+                    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, ui::Px(1.0f));
+                    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), fg, ui::Px(1.0f));
                 }
                 else
-                    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), fg, 1.0f);
+                    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), fg, ui::Px(1.0f));
                 ImGui::SameLine(0.0f, 0.0f);
                 return clicked;
             };
@@ -6946,8 +6946,8 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                     "Play 中の変更は Stop で破棄されます（残すなら Stop してから調整）");
             ui::Checkbox("有効（マスター）", &pp.enabled);
             // トーンマップ（表示変換）はマスターOFF でも常に適用されるのでディセーブル外
-            ImGui::SameLine(0, 24);
-            ImGui::SetNextItemWidth(200.0f);
+            ImGui::SameLine(0, ui::Px(24.0f));
+            ImGui::SetNextItemWidth(ui::Px(200.0f));
             ui::Combo("トーンマップ", &pp.tonemapper, "ACES\0AgX\0なし(ガンマのみ)\0");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
@@ -7003,8 +7003,8 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
 
                 ImDrawList*  dl      = ImGui::GetWindowDrawList();
                 const float  sp      = ImGui::GetStyle().ItemSpacing.x;
-                const ImVec2 tile(136.0f, 92.0f);
-                const float  swatchH = 62.0f;
+                const ImVec2 tile = ui::Px(136.0f, 92.0f);
+                const float  swatchH = ui::Px(62.0f);
                 const float  availW  = ImGui::GetContentRegionAvail().x;
                 float        lineW   = 0.0f;
                 bool         first   = true;
@@ -7032,8 +7032,8 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                     // サムネイル: そのプリセット【単体】を素の絵に当てた結果を描く。
                     // 設定値から描いているので、プリセットの数値を直せば絵も一緒に変わる。
                     const PostProcessSettings preview = ApplyPostPreset(pr, PostProcessSettings{});
-                    const ImVec2 s0(p0.x + 3.0f, p0.y + 3.0f);
-                    const ImVec2 s1(p0.x + tile.x - 3.0f, p0.y + 3.0f + swatchH);
+                    const ImVec2 s0(p0.x + ui::Px(3.0f), p0.y + ui::Px(3.0f));
+                    const ImVec2 s1(p0.x + tile.x - ui::Px(3.0f), p0.y + ui::Px(3.0f) + swatchH);
                     postswatch::DrawSwatch(dl, s0, s1, preview);
 
                     // 選択中は重なる順番（1,2,3…）を右上に出す＝「後ろが勝つ」が見て分かる
@@ -7044,15 +7044,15 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                         char num[8];
                         std::snprintf(num, sizeof(num), "%d", order);
                         const ImVec2 ts = ImGui::CalcTextSize(num);
-                        const ImVec2 bc(s1.x - ts.x * 0.5f - 9.0f, s0.y + ts.y * 0.5f + 5.0f);
-                        dl->AddCircleFilled(bc, ts.y * 0.72f + 3.0f, IM_COL32(60, 140, 245, 255), 16);
+                        const ImVec2 bc(s1.x - ts.x * 0.5f - ui::Px(9.0f), s0.y + ts.y * 0.5f + ui::Px(5.0f));
+                        dl->AddCircleFilled(bc, ts.y * 0.72f + ui::Px(3.0f), IM_COL32(60, 140, 245, 255), 16);
                         dl->AddText(ImVec2(bc.x - ts.x * 0.5f, bc.y - ts.y * 0.5f),
                                     IM_COL32(255, 255, 255, 255), num);
                     }
 
                     // ラベル（選択中はアクセント色）
                     const ImVec2 ls = ImGui::CalcTextSize(pr.label);
-                    dl->AddText(ImVec2(p0.x + (tile.x - ls.x) * 0.5f, s1.y + 6.0f),
+                    dl->AddText(ImVec2(p0.x + (tile.x - ls.x) * 0.5f, s1.y + ui::Px(6.0f)),
                                 sel ? IM_COL32(120, 190, 255, 255) : IM_COL32(205, 205, 212, 255),
                                 pr.label);
 
@@ -7061,7 +7061,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                                 sel     ? IM_COL32(60, 140, 245, 255)
                                 : hovered ? IM_COL32(150, 152, 162, 220)
                                           : IM_COL32(64, 65, 74, 180),
-                                4.0f, 0, sel ? 2.5f : 1.0f);
+                                ui::Px(4.0f), 0, sel ? ui::PxF(2.5f) : ui::Px(1.0f));
 
                     if (hovered)
                         ImGui::SetTooltip("%s\n\nクリックで %s", pr.tip, sel ? "外す" : "重ねる");
@@ -7107,7 +7107,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             }
 
             ImGui::Separator();
-            ImGui::SetNextItemWidth(-90.0f);
+            ImGui::SetNextItemWidth(-ui::Px(90.0f));
             ui::InputTextWithHint("##postfilter", "絞り込み（例: 魚眼 / bloom / グリッチ）",
                                      postFilter, sizeof(postFilter));
             ImGui::SameLine();
@@ -7145,16 +7145,16 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                 {
                     if (f.reset)
                     {
-                        ImGui::SameLine(ImGui::GetContentRegionMax().x - 24.0f);
+                        ImGui::SameLine(ImGui::GetContentRegionMax().x - ui::Px(24.0f));
                         if (ImGui::SmallButton("↺"))
                             f.reset();
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("このエフェクトのパラメータを既定へ戻す");
                     }
-                    ImGui::Indent(12.0f);
-                    ImGui::PushItemWidth(-140.0f);
+                    ImGui::Indent(ui::Px(12.0f));
+                    ImGui::PushItemWidth(-ui::Px(140.0f));
                     f.params();
                     ImGui::PopItemWidth();
-                    ImGui::Unindent(12.0f);
+                    ImGui::Unindent(ui::Px(12.0f));
                     ImGui::Spacing();
                 }
                 ImGui::PopID();
@@ -7184,7 +7184,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                 ImGui::TextDisabled("エフェクトを有効にすると、ここに調整項目が出ます");
             else
             {
-                ImGui::PushItemWidth(-140.0f);
+                ImGui::PushItemWidth(-ui::Px(140.0f));
                 for (const auto& f : fx)
                 {
                     if (!*f.on || !f.params) continue;
@@ -7192,7 +7192,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                     ImGui::PushID(f.label);
                     if (f.reset)
                     {
-                        ImGui::SameLine(ImGui::GetContentRegionMax().x - 24.0f);
+                        ImGui::SameLine(ImGui::GetContentRegionMax().x - ui::Px(24.0f));
                         if (ImGui::SmallButton("↺")) f.reset();
                     }
                     f.params();
@@ -7414,7 +7414,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
 
                 // 選択中プリセットのサムネイル（アトラスの切り出し＝実物と同じシェーダーの絵）
                 const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                const ImVec2 thumb(160.0f, 90.0f);
+                const ImVec2 thumb = ui::Px(160.0f, 90.0f);
                 ImGui::InvisibleButton("##transCurrent", thumb);
                 const bool thumbClicked = ImGui::IsItemClicked();
                 ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -7422,7 +7422,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                     m_transitionPreviewPanel->DrawPresetThumb(
                         dl, p0, ImVec2(p0.x + thumb.x, p0.y + thumb.y), cur);
                 dl->AddRect(p0, ImVec2(p0.x + thumb.x, p0.y + thumb.y),
-                            IM_COL32(64, 65, 74, 200), 4.0f);
+                            IM_COL32(64, 65, 74, 200), ui::Px(4.0f));
 
                 ImGui::SameLine();
                 ImGui::BeginGroup();
@@ -7432,7 +7432,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                 if (cur >= 0)
                     ImGui::TextDisabled("ID: \"%s\"", kTransitionPresets[cur].id);
 
-                ImGui::SetNextItemWidth(200.0f);
+                ImGui::SetNextItemWidth(ui::Px(200.0f));
                 ui::SliderFloat("長さ（秒）", &m_defaultTransitionDur, 0.2f, 3.0f, "%.2f");
                 // スライダーは掴んでいる間ずっと値が変わる。PersistSet は毎回ディスクへ
                 // 書くので、離した時だけ保存する。

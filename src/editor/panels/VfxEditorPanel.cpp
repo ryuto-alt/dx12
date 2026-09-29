@@ -399,7 +399,7 @@ void VfxEditorPanel::DrawColorGradient()
     ui::Checkbox("中間色を使う HasColorMid", &m_current.hasColorMid);
 
     const float barW = ImGui::GetContentRegionAvail().x;
-    const float barH = 26.0f;
+    const float barH = ui::Px(26.0f);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -424,18 +424,18 @@ void VfxEditorPanel::DrawColorGradient()
             toU32(m_current.colorEnd), toU32(m_current.color));
     }
     dl->AddRect(p0, ImVec2(p0.x + barW, p0.y + barH), IM_COL32(90, 90, 100, 255));
-    ImGui::Dummy(ImVec2(barW, barH + 4.0f));
+    ImGui::Dummy(ImVec2(barW, barH + ui::Px(4.0f)));
 
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(ui::Px(120.0f));
     ImGui::ColorEdit3("開始 Start##col", &m_current.color.x);
     if (m_current.hasColorMid)
     {
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(120);
+        ImGui::SetNextItemWidth(ui::Px(120.0f));
         ImGui::ColorEdit3("中間 Mid##col", &m_current.colorMid.x);
     }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(120);
+    ImGui::SetNextItemWidth(ui::Px(120.0f));
     ImGui::ColorEdit3("終了 End##col", &m_current.colorEnd.x);
 }
 
@@ -448,7 +448,7 @@ void VfxEditorPanel::DrawSizeCurve()
         m_current.sizeMid = useMid ? (m_current.size + m_current.sizeEnd) * 0.5f : -1.0f;
 
     const float graphW = ImGui::GetContentRegionAvail().x;
-    const float graphH = 84.0f;
+    const float graphH = ui::Px(84.0f);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const ImVec2 p1 = ImVec2(p0.x + graphW, p0.y + graphH);
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -466,18 +466,18 @@ void VfxEditorPanel::DrawSizeCurve()
     if (useMid)
     {
         const ImVec2 ptMid = toPt(0.5f, m_current.sizeMid);
-        dl->AddLine(ptStart, ptMid, IM_COL32(130, 200, 255, 255), 2.0f);
-        dl->AddLine(ptMid, ptEnd,   IM_COL32(130, 200, 255, 255), 2.0f);
+        dl->AddLine(ptStart, ptMid, IM_COL32(130, 200, 255, 255), ui::PxF(2.0f));
+        dl->AddLine(ptMid, ptEnd,   IM_COL32(130, 200, 255, 255), ui::PxF(2.0f));
     }
     else
     {
-        dl->AddLine(ptStart, ptEnd, IM_COL32(130, 200, 255, 255), 2.0f);
+        dl->AddLine(ptStart, ptEnd, IM_COL32(130, 200, 255, 255), ui::PxF(2.0f));
     }
 
     ImGui::PushID("SizeCurve");
     auto handle = [&](const char* id, ImVec2 pos, float& value) {
-        ImGui::SetCursorScreenPos(ImVec2(pos.x - 6.0f, pos.y - 6.0f));
-        ImGui::InvisibleButton(id, ImVec2(12.0f, 12.0f));
+        ImGui::SetCursorScreenPos(ImVec2(pos.x - ui::Px(6.0f), pos.y - ui::Px(6.0f)));
+        ImGui::InvisibleButton(id, ui::Px(12.0f, 12.0f));
         const bool hovered = ImGui::IsItemHovered();
         const bool active  = ImGui::IsItemActive();
         if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
@@ -485,7 +485,7 @@ void VfxEditorPanel::DrawSizeCurve()
             value -= ImGui::GetIO().MouseDelta.y / graphH * maxV;
             if (value < 0.0f) value = 0.0f;
         }
-        dl->AddCircleFilled(pos, (hovered || active) ? 6.0f : 4.5f,
+        dl->AddCircleFilled(pos, (hovered || active) ? ui::PxF(6.0f) : ui::PxF(4.5f),
             active ? IM_COL32(255, 220, 120, 255) : IM_COL32(220, 220, 230, 255));
     };
     handle("start", ptStart, m_current.size);
@@ -493,18 +493,18 @@ void VfxEditorPanel::DrawSizeCurve()
     handle("end", ptEnd, m_current.sizeEnd);
     ImGui::PopID();
 
-    ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y + 6.0f));
+    ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y + ui::Px(6.0f)));
 
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(ui::Px(100.0f));
     ui::DragFloat("開始 Start##sz", &m_current.size, 0.01f, 0.0f, 20.0f);
     if (useMid)
     {
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
+        ImGui::SetNextItemWidth(ui::Px(100.0f));
         ui::DragFloat("中間 Mid##sz", &m_current.sizeMid, 0.01f, 0.0f, 20.0f);
     }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
+    ImGui::SetNextItemWidth(ui::Px(100.0f));
     ui::DragFloat("終了 End##sz", &m_current.sizeEnd, 0.01f, 0.0f, 20.0f);
 }
 
@@ -516,7 +516,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
 
     // ID を専用にして過去バージョン(旧: 右下タブに強制ドックしていた時代)の imgui.ini 保存状態
     // （小さくドックされた Pos/Size/DockId）を引き継がないようにする。タイトル表示は "###" の前だけ。
-    ImGui::SetNextWindowSize(ImVec2(900.0f, 720.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(900.0f, 720.0f), ImGuiCond_FirstUseEver);
     // NoDocking: 右下タブ領域(狭い)へ誤ってドッキングされて再び手狭になるのを防ぐ。常にフローティング。
     if (!ImGui::Begin("パーティクルエディタ###VfxEditorPanelFloating", &ctx.showVfxEditor,
                       ImGuiWindowFlags_NoDocking))
@@ -533,7 +533,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
         ctx.floatingToolWindowHoveredThisFrame = true;
 
     // ---- 左: アセット一覧 ----
-    ImGui::BeginChild("##VfxAssetList", ImVec2(170.0f, 0.0f), true);
+    ImGui::BeginChild("##VfxAssetList", ImVec2(ui::Px(170.0f), 0.0f), true);
     ImGui::TextDisabled("VFX アセット");
     ImGui::Separator();
     if (ImGui::Button("＋ 新規 New", ImVec2(-1.0f, 0.0f))) NewAsset();
@@ -552,7 +552,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     // ---- 右: プレビュー + パラメータ編集 ----
     ImGui::BeginChild("##VfxMain", ImVec2(0.0f, 0.0f));
 
-    ImGui::SetNextItemWidth(220.0f);
+    ImGui::SetNextItemWidth(ui::Px(220.0f));
     if (ui::InputText("名前 Name", m_nameBuf, sizeof(m_nameBuf)))
         m_current.name = m_nameBuf;
 
@@ -613,9 +613,9 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
         // 敷いてドラッグをアイテムとして捕捉し、画像は DrawList で重ね描きする(MaterialEditorPanelと同じ対処)。
         const D3D12_GPU_DESCRIPTOR_HANDLE h = m_srvHeap->GetGpuHandle(m_previewRT.GetSrvIndex());
         const ImVec2 imgPos = ImGui::GetCursorScreenPos();
-        ImGui::InvisibleButton("##vfxPreviewOrbit", ImVec2(256.0f, 256.0f));
+        ImGui::InvisibleButton("##vfxPreviewOrbit", ui::Px(256.0f, 256.0f));
         ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(h.ptr),
-            imgPos, ImVec2(imgPos.x + 256.0f, imgPos.y + 256.0f));
+            imgPos, ImVec2(imgPos.x + ui::Px(256.0f), imgPos.y + ui::Px(256.0f)));
 
         ImGuiIO& io = ImGui::GetIO();
         // カーソル固定オービット(無限回転)。Win32 の物理カーソル位置を直接読み書きする
@@ -656,15 +656,15 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     }
     else
     {
-        ImGui::Dummy(ImVec2(256.0f, 256.0f));
+        ImGui::Dummy(ui::Px(256.0f, 256.0f));
     }
-    if (ImGui::Button("プレビューをクリア Clear", ImVec2(256.0f, 0.0f)))
+    if (ImGui::Button("プレビューをクリア Clear", ImVec2(ui::Px(256.0f), 0.0f)))
         m_previewParticles.Clear();
     ImGui::TextDisabled("ドラッグ:回転 / ホイール:ズーム");
     ImGui::EndGroup();
 
     ImGui::SameLine();
-    ImGui::BeginChild("##VfxEmission", ImVec2(0.0f, 256.0f), false);
+    ImGui::BeginChild("##VfxEmission", ImVec2(0.0f, ui::Px(256.0f)), false);
     ui::Combo("見た目 Kind", &m_current.kind, kKindNames, IM_ARRAYSIZE(kKindNames));
     const char* blends[] = { "加算 Additive", "アルファ Alpha" };
     ui::Combo("合成 Blend", &m_current.blend, blends, IM_ARRAYSIZE(blends));
@@ -713,7 +713,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
 
     ImGui::Separator();
 
-    ImGui::BeginChild("##VfxScroll", ImVec2(0.0f, -68.0f));
+    ImGui::BeginChild("##VfxScroll", ImVec2(0.0f, -ui::Px(68.0f)));
     DrawColorGradient();
     ImGui::Spacing();
     DrawSizeCurve();

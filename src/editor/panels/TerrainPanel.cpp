@@ -491,16 +491,16 @@ void DrawBrushCursor(const ViewportInput& in, const HeightField& hf,
             return;   // 一部でもカメラ後方なら描かない（画面を横切る変な線を出さない）
     }
 
-    dl->AddPolyline(pts, kSegments, IM_COL32(255, 214, 92, 220), ImDrawFlags_Closed, 2.0f);
+    dl->AddPolyline(pts, kSegments, IM_COL32(255, 214, 92, 220), ImDrawFlags_Closed, ui::PxF(2.0f));   // DPI
 
     const XMFLOAT3 center{ origin.x + lcx, origin.y + hf.SampleHeight(lcx, lcz), origin.z + lcz };
     ImVec2 c;
     if (WorldToScreen(*in.camera, center, in.vpX, in.vpY, in.vpW, in.vpH, c))
     {
-        dl->AddLine(ImVec2(c.x - 6.0f, c.y), ImVec2(c.x + 6.0f, c.y),
-                    IM_COL32(255, 214, 92, 220), 1.5f);
-        dl->AddLine(ImVec2(c.x, c.y - 6.0f), ImVec2(c.x, c.y + 6.0f),
-                    IM_COL32(255, 214, 92, 220), 1.5f);
+        dl->AddLine(ImVec2(c.x - ui::Px(6.0f), c.y), ImVec2(c.x + ui::Px(6.0f), c.y),
+                    IM_COL32(255, 214, 92, 220), ui::PxF(1.5f));
+        dl->AddLine(ImVec2(c.x, c.y - ui::Px(6.0f)), ImVec2(c.x, c.y + ui::Px(6.0f)),
+                    IM_COL32(255, 214, 92, 220), ui::PxF(1.5f));
     }
 }
 
@@ -696,7 +696,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
 
     if (!ctx.showTerrainEditor) return;
 
-    ImGui::SetNextWindowSize(ImVec2(430.0f, 760.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(430.0f, 760.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("地形ツール###TerrainToolFloating", &ctx.showTerrainEditor,
                       ImGuiWindowFlags_NoDocking))
     {

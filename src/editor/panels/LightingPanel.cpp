@@ -234,7 +234,7 @@ void RenderLightingPanel(Scene* scene,
 {
     if (!ctx.showLighting || !scene) return;
 
-    ImGui::SetNextWindowSize(ImVec2(430.0f, 760.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(430.0f, 760.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("ライティング###LightingPanelFloating",
                       &ctx.showLighting, ImGuiWindowFlags_NoDocking))
     {
@@ -307,7 +307,7 @@ void RenderLightingPanel(Scene* scene,
             const int totalPunctual = pointCount + spotCount;
             const bool over = totalPunctual > kMaxTotalLights;
             ImGui::TextUnformatted("ライト");
-            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::SameLine(0.0f, ui::Px(4.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, over ? theme::Bad : theme::TextDim);
             ImGui::Text("%d / %d", totalPunctual, kMaxTotalLights);
             ImGui::PopStyleColor();
@@ -321,15 +321,15 @@ void RenderLightingPanel(Scene* scene,
                                   kMaxTotalLights, kMaxPerCluster);
             if (over)
             {
-                ImGui::SameLine(0.0f, 6.0f);
+                ImGui::SameLine(0.0f, ui::Px(6.0f));
                 ImGui::PushStyleColor(ImGuiCol_Text, theme::Bad);
                 ImGui::TextUnformatted("超過");
                 ImGui::PopStyleColor();
             }
-            ImGui::SameLine(0.0f, 18.0f);
+            ImGui::SameLine(0.0f, ui::Px(18.0f));
             ImGui::TextDisabled("点 %d / スポット %d", pointCount, spotCount);
         }
-        ImGui::SameLine(0.0f, 18.0f);
+        ImGui::SameLine(0.0f, ui::Px(18.0f));
         ImGui::TextDisabled("平行光 %d（太陽は先頭の1灯のみ有効）", dirCount);
 
         if (!s_muted.empty())
@@ -352,7 +352,7 @@ void RenderLightingPanel(Scene* scene,
             }
         }
 
-        ImGui::BeginChild("##LightList", ImVec2(0.0f, 150.0f), ImGuiChildFlags_Borders);
+        ImGui::BeginChild("##LightList", ui::Px(0.0f, 150.0f), ImGuiChildFlags_Borders);
         if (rows.empty())
         {
             ImGui::TextDisabled("ライトがありません（Inspector の「コンポーネント追加」から足せます）");
@@ -386,20 +386,20 @@ void RenderLightingPanel(Scene* scene,
             else
             { const auto& c = reg.get<SpotLight>(r.e);        col = c.color; intensity = c.intensity; kindLabel = "S"; }
 
-            ImGui::SameLine(42.0f);   // ON/OFF で幅が変わっても以降の桁が揃うよう絶対位置で置く
+            ImGui::SameLine(ui::Px(42.0f));   // ON/OFF で幅が変わっても以降の桁が揃うよう絶対位置で置く
             ImGui::ColorButton("##sw", SwatchColor(col, intensity),
                                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
-                               ImVec2(14.0f, 14.0f));
+                               ui::Px(14.0f, 14.0f));
 
-            ImGui::SameLine(0.0f, 6.0f);
+            ImGui::SameLine(0.0f, ui::Px(6.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, theme::TypeLight);
             ImGui::TextUnformatted(kindLabel);
             ImGui::PopStyleColor();
 
-            ImGui::SameLine(0.0f, 6.0f);
+            ImGui::SameLine(0.0f, ui::Px(6.0f));
             const char* name = reg.all_of<NameTag>(r.e)
                 ? reg.get<NameTag>(r.e).name.c_str() : "(no name)";
-            if (ImGui::Selectable(name, ctx.IsSelected(r.e), 0, ImVec2(180.0f, 0.0f)))
+            if (ImGui::Selectable(name, ctx.IsSelected(r.e), 0, ui::Px(180.0f, 0.0f)))
                 ctx.Select(r.e);
 
             ImGui::SameLine();
@@ -441,7 +441,7 @@ void RenderLightingPanel(Scene* scene,
 
             ImGui::ColorButton("##sunpreview", SwatchColor(dl.color, dl.intensity),
                                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
-                               ImVec2(ImGui::GetContentRegionAvail().x, 14.0f));
+                               ImVec2(ImGui::GetContentRegionAvail().x, ui::Px(14.0f)));
             ImGui::Spacing();
 
             lm::SunAngles ang = lm::DirectionToSunAngles(dl.direction);
@@ -496,7 +496,7 @@ void RenderLightingPanel(Scene* scene,
             };
             for (int i = 0; i < 6; ++i)
             {
-                if (i % 3 != 0) ImGui::SameLine(0.0f, 4.0f);
+                if (i % 3 != 0) ImGui::SameLine(0.0f, ui::Px(4.0f));
                 if (ImGui::SmallButton(kKelvins[i].label))
                 {
                     dl.color = lm::KelvinToRGB(kKelvins[i].k);

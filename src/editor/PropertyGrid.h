@@ -38,7 +38,7 @@ inline void Track(bool* active)
 // テーブル開始。false ならクリップ等で非表示（End 不要、内部で後始末済み）。
 inline bool Begin(const char* id)
 {
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(6.0f, 3.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, theme::Px(6.0f, 3.0f));
     ImGui::PushStyleColor(ImGuiCol_TableRowBg,    theme::Hex(0xffffff, 0.02f));
     ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, theme::Hex(0xffffff, 0.00f));
     const ImGuiTableFlags flags = ImGuiTableFlags_Resizable
@@ -78,7 +78,7 @@ inline void Label(const char* label, const char* tip = nullptr)
     {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
             ImGui::SetTooltip("%s", tip);
-        ImGui::SameLine(0.0f, 4.0f);
+        ImGui::SameLine(0.0f, theme::Px(4.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, theme::TextFaint);
         ImGui::TextUnformatted(ICON_HELP);
         ImGui::PopStyleColor();
@@ -248,14 +248,14 @@ inline bool FloatN(const char* label, float* v, int n, float speed,
     {
         if (i) ImGui::SameLine(0.0f, st.ItemInnerSpacing.x);
         ImGui::PushID(i);
-        ImGui::SetNextItemWidth(std::max(w, 32.0f));
+        ImGui::SetNextItemWidth(std::max(w, theme::Px(32.0f)));
         ch |= ui::DragFloat("##v", v + i, speed, mn, mx, fmt);
         detail::Track(active);
         const ImVec2 rmin = ImGui::GetItemRectMin();
         const ImVec2 rmax = ImGui::GetItemRectMax();
         // 細い色帯（枠の内側 2px）。X/Y/Z の見分けだけを担い、入力欄の面を塗らない。
         ImGui::GetWindowDrawList()->AddRectFilled(
-            ImVec2(rmin.x + 1.0f, rmin.y + 1.0f), ImVec2(rmin.x + 3.0f, rmax.y - 1.0f), axisCol[i],
+            ImVec2(rmin.x + theme::Px(1.0f), rmin.y + theme::Px(1.0f)), ImVec2(rmin.x + theme::Px(3.0f), rmax.y - theme::Px(1.0f)), axisCol[i],
             st.FrameRounding, ImDrawFlags_RoundCornersLeft);
         ImGui::PopID();
     }

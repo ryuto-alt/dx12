@@ -92,14 +92,15 @@ void RenderToasts(float dt, float bottomInset)
     if (q.Items().empty()) return;
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float kW = 340.0f, kMargin = 16.0f, kGap = 8.0f;
-    const float kPadX = 12.0f, kPadY = 10.0f, kIconW = 22.0f, kCloseW = 22.0f, kBar = 3.0f;
+    const float kW = Px(340.0f), kMargin = Px(16.0f), kGap = Px(8.0f);
+    const float kPadX = Px(12.0f), kPadY = Px(10.0f), kIconW = Px(22.0f), kCloseW = Px(22.0f), kBar = Px(3.0f);
     const float wrapW = kW - kBar - kPadX * 2.0f - kIconW - kCloseW;
     const float right = vp->Pos.x + vp->Size.x - kMargin;
     float bottom = vp->Pos.y + vp->Size.y - bottomInset - kMargin;
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    const float kR = Px(4.0f);   // 角丸
 
     // 新しいものが一番下（画面の隅に近い側）。古いものが上へ積み上がる。
     const auto& items = q.Items();
@@ -110,8 +111,8 @@ void RenderToasts(float dt, float bottomInset)
         if (alpha <= 0.0f) continue;
 
         const ImVec2 ts = ImGui::CalcTextSize(t.text.c_str(), nullptr, false, wrapW);
-        const float h = (std::max)(44.0f, ts.y + kPadY * 2.0f);
-        const float slide = (1.0f - alpha) * 20.0f;               // 出入りで少し右から滑らせる
+        const float h = (std::max)(Px(44.0f), ts.y + kPadY * 2.0f);
+        const float slide = (1.0f - alpha) * Px(20.0f);               // 出入りで少し右から滑らせる
         const ImVec2 pos(right - kW + slide, bottom - h);
 
         char name[32];
@@ -134,15 +135,15 @@ void RenderToasts(float dt, float bottomInset)
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p0 = pos, p1(pos.x + kW, pos.y + h);
         // 面 + 枠 + 左の種別色バー
-        dl->AddRectFilled(ImVec2(p0.x + 1.0f, p0.y + 2.0f), ImVec2(p1.x + 1.0f, p1.y + 3.0f),
-                          IM_COL32(0, 0, 0, static_cast<int>(70 * alpha)), 4.0f);   // 影
-        dl->AddRectFilled(p0, p1, Col(hovered ? theme::Bg3 : theme::Bg2, alpha), 4.0f);
-        dl->AddRect(p0, p1, Col(theme::BorderStrong, alpha), 4.0f);
-        dl->AddRectFilled(p0, ImVec2(p0.x + kBar, p1.y), Col(KindColor(t.kind), alpha), 4.0f, ImDrawFlags_RoundCornersLeft);
+        dl->AddRectFilled(ImVec2(p0.x + Px(1.0f), p0.y + Px(2.0f)), ImVec2(p1.x + Px(1.0f), p1.y + Px(3.0f)),
+                          IM_COL32(0, 0, 0, static_cast<int>(70 * alpha)), kR);   // 影
+        dl->AddRectFilled(p0, p1, Col(hovered ? theme::Bg3 : theme::Bg2, alpha), kR);
+        dl->AddRect(p0, p1, Col(theme::BorderStrong, alpha), kR, 0, Px(1.0f));
+        dl->AddRectFilled(p0, ImVec2(p0.x + kBar, p1.y), Col(KindColor(t.kind), alpha), kR, ImDrawFlags_RoundCornersLeft);
 
         // アイコン + 本文（折り返し）
-        ui::DrawIconCentered(dl, KindIcon(t.kind), ImVec2(p0.x + kBar + kPadX + kIconW * 0.5f - 4.0f, (p0.y + p1.y) * 0.5f),
-                             Col(KindColor(t.kind), alpha), 16.0f);
+        ui::DrawIconCentered(dl, KindIcon(t.kind), ImVec2(p0.x + kBar + kPadX + kIconW * 0.5f - Px(4.0f), (p0.y + p1.y) * 0.5f),
+                             Col(KindColor(t.kind), alpha), Px(16.0f));
         const float tx = p0.x + kBar + kPadX + kIconW;
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(tx, p0.y + (h - ts.y) * 0.5f),
                     Col(theme::Text, alpha), t.text.c_str(), nullptr, wrapW);
@@ -150,8 +151,8 @@ void RenderToasts(float dt, float bottomInset)
         // 右端: 畳んだ回数 / ホバーで ✕
         if (hovered)
         {
-            ui::DrawIconCentered(dl, ICON_CLOSE, ImVec2(p1.x - kPadX - 4.0f, p0.y + 16.0f),
-                                 Col(theme::TextMid, alpha), 14.0f);
+            ui::DrawIconCentered(dl, ICON_CLOSE, ImVec2(p1.x - kPadX - Px(4.0f), p0.y + Px(16.0f)),
+                                 Col(theme::TextMid, alpha), Px(14.0f));
         }
         else if (t.count > 1)
         {
@@ -159,7 +160,7 @@ void RenderToasts(float dt, float bottomInset)
             std::snprintf(cnt, sizeof(cnt), "x%d", t.count);
             ui::PushMono();
             const ImVec2 cs = ImGui::CalcTextSize(cnt);
-            dl->AddText(ImVec2(p1.x - kPadX - cs.x, p0.y + 8.0f), Col(theme::TextDim, alpha), cnt);
+            dl->AddText(ImVec2(p1.x - kPadX - cs.x, p0.y + Px(8.0f)), Col(theme::TextDim, alpha), cnt);
             ui::PopMono();
         }
 

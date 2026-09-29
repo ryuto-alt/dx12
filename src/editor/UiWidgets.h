@@ -25,6 +25,13 @@
 namespace dx12e::ui
 {
 
+// ---- DPI スケール（実体は EditorTheme.h の theme::Px 系。ui:: からも引けるようにしてある）----
+// ImGui へ渡す寸法・描画座標のオフセットは「論理 px（100% 表示の px）」で書き、Px() を通す。
+using theme::Px;
+using theme::PxF;
+using theme::Scale;
+using theme::ToLogical;
+
 // ---- フォント切替（ペアで使う）。サイズは今のまま、字体だけ変える ----
 void PushBold();   // 見出し / 選択名（Semibold 相当）
 void PopBold();
@@ -41,11 +48,11 @@ void DrawIconCentered(ImDrawList* dl, const char* glyph, ImVec2 center, ImU32 co
 // active=true のときは薄いアクセント面 + 下辺のアクセントライン。tint を渡すとアイコン色を固定する。
 bool IconButton(const char* id, const char* glyph, const char* tooltip = nullptr,
                 bool active = false, const ImVec4* tint = nullptr,
-                float sizePx = theme::size::kToolbarBtn, float iconPx = 0.0f,
+                float sizePx = 0.0f, float iconPx = 0.0f,
                 const ImVec4* activeFace = nullptr);   // activeFace: active の面/下線の色（既定はアクセント）
 // アイコン + 右に小さい chevron の「▾」付きボタン（クリックでメニューを開く用途）。
 bool IconDropdownButton(const char* id, const char* glyph, const char* tooltip = nullptr,
-                        bool active = false, float sizePx = theme::size::kToolbarBtn);
+                        bool active = false, float sizePx = 0.0f);
 
 // ---- ボタン ----
 bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0, 0));   // 主要アクション（アクセント塗り）

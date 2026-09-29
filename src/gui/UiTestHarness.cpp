@@ -10,6 +10,9 @@
 #include "editor/EditorCommands.h" // コマンド表（ショートカット / window.* コマンド）
 #include "editor/ToolWindows.h"    // ツール窓レジストリ
 #include "editor/Toast.h"          // トースト通知
+#include "editor/EditorTheme.h"   // DPI: theme::Px（診断パネルの寸法）
+#include "editor/UiWidgets.h"     // DPI テストの等幅フォント測定（ui::PushMono）
+#include "core/DpiScale.h"         // DPI: 表示倍率テスト（--dpi-scale と同じオーバーライド）
 #include "gui/DeepDiagnostics.h"
 #include "scene/Scene.h"
 #include "ui/UISystem.h"   // ゲーム UI のフォーカス検査（合成ポインタ / WantsNav）
@@ -2689,6 +2692,190 @@ void T_HierarchyReparent(ImGuiTestContext* ctx)
     ctx->Yield(8);
 }
 
+// ===== 表示倍率（DPI）=====
+// ★何を守っているか
+//   倍率 100% / 150% / 200% のどれでも、主要パネルの矩形を倍率で割った「論理サイズ」が 100% と同じ（±1.5px）で、
+//   フォントも線形に拡大される（文字が箱からはみ出ない）こと。倍率を実行中に 1.0 → 1.5 → 2.0 → 1.0 と切り替える
+//   （--dpi-scale と同じオーバーライド。OS の設定は触らない）。--background の窓は論理 1920x1080 × 倍率 の物理サイズへ
+//   作り直されるので、ドックの比率もそのまま論理サイズに換算できる。--background でない窓（人の作業窓）では
+//   窓サイズを勝手に変えられないので、倍率の切替が「落ちない・戻る」ことだけを確かめる。
+struct DpiSample
+{
+    float scale = 1.0f;
+    ImVec2 win[6] = {};       // ##Toolbar / ヒエラルキー / インスペクター / アセットブラウザ / ##StatusBar / ビューポート
+    float fontPx = 0.0f, frameH = 0.0f, spacingY = 0.0f, scrollbar = 0.0f;
+    float textBody = 0.0f, textJp = 0.0f, textMono = 0.0f;   // 同じ文字列の描画幅
+    ImVec2 client = {};
+};
+
+const char* const kDpiWinNames[5] = {
+    "##Toolbar",
+    "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc",                                             // ヒエラルキー
+    "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc",                                 // インスペクター
+    "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6",                     // アセットブラウザ
+    "##StatusBar",
+};
+
+DpiSample DpiMeasure(EditorContext* ed)
+{
+    DpiSample s;
+    s.scale = g_app->GetUiScale();
+    for (int i = 0; i < 5; ++i)
+        if (ImGuiWindow* w = ImGui::FindWindowByName(kDpiWinNames[i])) s.win[i] = w->Size;
+    s.win[5] = ImVec2(ed->viewportW, ed->viewportH);
+    const ImGuiStyle& st = ImGui::GetStyle();
+    s.fontPx = ImGui::GetFontSize();
+    s.frameH = ImGui::GetFrameHeight();
+    s.spacingY = st.ItemSpacing.y;
+    s.scrollbar = st.ScrollbarSize;
+    s.textBody = ImGui::CalcTextSize("Transform Position Hello").x;
+    s.textJp = ImGui::CalcTextSize("\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc\xe3\x81\xae\xe8\xa1\xa8\xe7\xa4\xba").x;
+    ui::PushMono();
+    s.textMono = ImGui::CalcTextSize("0.123 -45.678 FPS 120").x;
+    ui::PopMono();
+    s.client = ImVec2(static_cast<float>(g_app->GetClientWidthPx()), static_cast<float>(g_app->GetClientHeightPx()));
+    return s;
+}
+
+bool DpiSetAndSettle(ImGuiTestContext* ctx, float scale, bool bg)
+{
+    g_app->SetUiScaleOverride(scale);
+    for (int f = 0; f < 90; ++f)
+    {
+        ctx->Yield(1);
+        const bool sizeOk = !bg || (std::fabs(static_cast<float>(g_app->GetClientWidthPx()) - 1920.0f * scale) < 1.5f
+                                    && std::fabs(static_cast<float>(g_app->GetClientHeightPx()) - 1080.0f * scale) < 1.5f);
+        if (std::fabs(g_app->GetUiScale() - scale) < 0.001f && sizeOk && f >= 4)
+        {
+            ctx->Yield(10);   // ドックの寸法・行の位置が落ち着くまで
+            return true;
+        }
+    }
+    return false;
+}
+
+void T_DpiScaleLayout(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(g_app != nullptr && ed != nullptr);
+    const bool bg = g_app->IsBackground();
+    const float origOverride = dpi::Override();
+
+    Step(ctx, "倍率 1.0 を基準に採る（bg=%d）", bg ? 1 : 0);
+    tools::CloseAll(*ed);   // 右タブの窓が増えると比較が濁るので中核 4 窓の状態へ
+    IM_CHECK(DpiSetAndSettle(ctx, 1.0f, bg));
+    const DpiSample base = DpiMeasure(ed);
+    if (bg)
+    {
+        IM_CHECK_GT(base.win[1].x, 100.0f);     // 主要パネルが実際に出ている
+        IM_CHECK_GT(base.win[2].x, 100.0f);
+        IM_CHECK_GT(base.win[3].y, 50.0f);
+        IM_CHECK_GT(base.win[0].x, 500.0f);
+        IM_CHECK_GT(base.win[5].x, 300.0f);
+    }
+    ctx->LogInfo("base: font %.1f frame %.1f toolbar %.0fx%.0f hier %.0fx%.0f insp %.0fx%.0f assets %.0fx%.0f status %.0fx%.0f viewport %.0fx%.0f",
+                 base.fontPx, base.frameH, base.win[0].x, base.win[0].y, base.win[1].x, base.win[1].y, base.win[2].x,
+                 base.win[2].y, base.win[3].x, base.win[3].y, base.win[4].x, base.win[4].y, base.win[5].x, base.win[5].y);
+
+    static const float kScales[] = { 1.5f, 2.0f, 1.0f };
+    const char* kNames[] = { "toolbar", "hierarchy", "inspector", "assets", "status", "viewport" };
+    for (float sc : kScales)
+    {
+        Step(ctx, "倍率 %.2f へ切替", sc);
+        IM_CHECK(DpiSetAndSettle(ctx, sc, bg));
+        const DpiSample s = DpiMeasure(ed);
+        IM_CHECK_LT(std::fabs(s.scale - sc), 0.001f);
+
+        // フォント・スタイル: 線形（±1px 物理 = 丸めの範囲）。論理へ直すと 100% と同じ
+        IM_CHECK_LT(std::fabs(s.fontPx / sc - base.fontPx), 1.0f / sc + 0.01f);
+        IM_CHECK_LT(std::fabs(s.frameH / sc - base.frameH), 1.0f / sc + 0.51f);
+        IM_CHECK_LT(std::fabs(s.spacingY / sc - base.spacingY), 1.0f);
+        IM_CHECK_LT(std::fabs(s.scrollbar / sc - base.scrollbar), 1.0f);
+        // 同じ文字列の描画幅: 論理へ直して ±6%（字送りは各サイズで整数 px に丸められるので 1 字あたり最大 0.5px 動く）
+        //   = 文字が箱に対して同じ比率で伸びる（固定 px のままだと 1.5 倍で 33% ずれる）
+        IM_CHECK_LT(std::fabs(s.textBody / sc - base.textBody), base.textBody * 0.06f);
+        IM_CHECK_LT(std::fabs(s.textJp / sc - base.textJp), base.textJp * 0.06f);
+        IM_CHECK_LT(std::fabs(s.textMono / sc - base.textMono), base.textMono * 0.06f);
+        ctx->LogInfo("scale %.2f: font %.1f frame %.1f textBody %.1f/%.1f textJp %.1f/%.1f", sc, s.fontPx, s.frameH,
+                     s.textBody / sc, base.textBody, s.textJp / sc, base.textJp);
+
+        if (!bg) continue;   // 人の作業窓: 窓サイズが変わらないのでパネルの論理サイズ比較は意味が無い
+        IM_CHECK_LT(std::fabs(s.client.x - 1920.0f * sc), 1.5f);
+        IM_CHECK_LT(std::fabs(s.client.y - 1080.0f * sc), 1.5f);
+        for (int i = 0; i < 6; ++i)
+        {
+            const float lw = s.win[i].x / sc, lh = s.win[i].y / sc;
+            ctx->LogInfo("  %-9s logical %.1fx%.1f (base %.1fx%.1f)", kNames[i], lw, lh, base.win[i].x, base.win[i].y);
+            if (std::fabs(lw - base.win[i].x) > 1.5f || std::fabs(lh - base.win[i].y) > 1.5f)
+                IM_ERRORF("倍率 %.2f で %s の論理サイズが 100%% と違う: %.1fx%.1f (100%%: %.1fx%.1f)",
+                          sc, kNames[i], lw, lh, base.win[i].x, base.win[i].y);
+        }
+    }
+
+    Step(ctx, "元の倍率設定へ戻す");
+    g_app->SetUiScaleOverride(origOverride);
+    ctx->Yield(30);
+}
+
+// imgui.ini の倍率マーカー（[DpiScale][Main] Scale=）と、倍率が違う ini を読んだ時のドックの換算。
+// ★何を守っているか: ini は物理 px で保存されるので、150% で保存した ini を 100% で開くとパネルが 1.5 倍の大きさのまま
+//   はみ出す（逆ならスカスカ）。保存時の倍率を ini に書き、読み込み時に (今の倍率 / 保存時の倍率) で窓とドックのサイズを換算する。
+//   ここでは今のレイアウトを ini に書き出し → 「半分の倍率で保存された」ことにして読み直し → ドックの SizeRef が 2 倍に
+//   換算されること → 元の ini を読み戻すと元のレイアウトに戻ること、を確かめる。
+void T_DpiIniRoundTrip(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(g_app != nullptr && ed != nullptr);
+    const char* kHierarchy = "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc";
+    tools::CloseAll(*ed);
+    ctx->Yield(8);
+    ImGuiWindow* hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
+    const ImGuiID nodeId = hier->DockNode->ID;
+    const float widthBefore = hier->DockNode->Size.x;
+
+    Step(ctx, "今のレイアウトを ini へ書き出す（倍率マーカーの確認）");
+    ImGui::SaveIniSettingsToDisk("dx12_dpi_test_unused.ini");   // 保存経路（WriteAll）を一度通す。ファイルは後で消す
+    std::error_code ec;
+    std::filesystem::remove("dx12_dpi_test_unused.ini", ec);
+    size_t len = 0;
+    const char* raw = ImGui::SaveIniSettingsToMemory(&len);
+    IM_CHECK(raw != nullptr && len > 0);
+    const std::string ini0(raw, len);   // 内部バッファは次の呼び出しで変わるので即コピー
+    const size_t hdr = ini0.find("[DpiScale][Main]");
+    IM_CHECK(hdr != std::string::npos);
+    const size_t eq = ini0.find("Scale=", hdr);
+    IM_CHECK(eq != std::string::npos);
+    const float saved = static_cast<float>(std::atof(ini0.c_str() + eq + 6));
+    ctx->LogInfo("ini scale marker = %.4f (現在の倍率 %.4f)", saved, g_app->GetUiScale());
+    IM_CHECK_LT(std::fabs(saved - g_app->GetUiScale()), 0.001f);
+
+    // ドックの SizeRef（ini に書かれた値そのもの）を読む: 換算の期待値の基準
+    const size_t dockPos = ini0.find("[Docking][Data]");
+    IM_CHECK(dockPos != std::string::npos);
+    const float sizeRefNow = hier->DockNode->SizeRef.x;
+
+    Step(ctx, "半分の倍率で保存された ini として読み直す → 2 倍に換算される");
+    const size_t valEnd = ini0.find('\n', eq);
+    IM_CHECK(valEnd != std::string::npos);
+    char half[64];
+    std::snprintf(half, sizeof(half), "Scale=%.4f", static_cast<double>(saved * 0.5f));
+    const std::string ini1 = ini0.substr(0, eq) + half + ini0.substr(valEnd);
+    ImGui::LoadIniSettingsFromMemory(ini1.c_str(), ini1.size());
+    ImGuiDockNode* n = ImGui::DockBuilderGetNode(nodeId);
+    IM_CHECK(n != nullptr);
+    ctx->LogInfo("SizeRef %.1f -> %.1f (期待 %.1f)", sizeRefNow, n->SizeRef.x, sizeRefNow * 2.0f);
+    IM_CHECK_LT(std::fabs(n->SizeRef.x - sizeRefNow * 2.0f), 3.0f);
+
+    Step(ctx, "元の ini を読み戻す → 元のレイアウトへ戻る");
+    ImGui::LoadIniSettingsFromMemory(ini0.c_str(), ini0.size());
+    ctx->Yield(10);
+    hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
+    ctx->LogInfo("hierarchy dock width %.1f -> %.1f", widthBefore, hier->DockNode->Size.x);
+    IM_CHECK_LT(std::fabs(hier->DockNode->Size.x - widthBefore), 3.0f);
+}
+
 // ===================== テスト表 =====================
 
 struct DiagReg
@@ -2724,6 +2911,8 @@ const DiagReg kTests[] = {
     { "panel", "asset_browser",         "パネル",             "アセットブラウザ",                     T_AssetBrowser          },
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
     { "panel", "layout_reset",          "パネル",             "ドックレイアウトのリセット",           T_LayoutReset           },
+    { "panel", "dpi_scale_layout",      "パネル",             "表示倍率 1.0 / 1.5 / 2.0 で論理レイアウトが変わらない", T_DpiScaleLayout },
+    { "panel", "dpi_ini_roundtrip",     "パネル",             "imgui.ini の倍率マーカーと、倍率違いの ini の換算", T_DpiIniRoundTrip },
     { "panel", "mesh_gc",               "パネル",             "未参照メッシュの回収（リーク）",       T_MeshGarbageCollect    },
     { "panel", "delete_undo_parent",    "パネル",             "親子を消して Undo で親子が戻る",       T_DeleteUndoKeepsParent },
     { "panel", "prefab_geo_propagate",  "パネル",             "プレハブ適用で形状が配られる",         T_PrefabGeometryPropagate },
@@ -3033,7 +3222,7 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
         if (m_panelPosX != 0.0f || m_panelPosY != 0.0f)
             ImGui::SetNextWindowPos(ImVec2(m_panelPosX, m_panelPosY), ImGuiCond_Always);
     }
-    ImGui::SetNextWindowSize(ImVec2(680, 620), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(theme::Px(680.0f, 620.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("エンジン診断", show, panelFlags))
     {
         ImGui::End();
@@ -3089,10 +3278,10 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
 
     // ---- 実行ボタン ----
     ImGui::BeginDisabled(m_running);
-    if (ImGui::Button("▶ すべて検査する", ImVec2(180, 36)))
+    if (ImGui::Button("▶ すべて検査する", theme::Px(180.0f, 36.0f)))
         QueueTests(nullptr, false, 0);
     ImGui::SameLine();
-    if (ImGui::Button("🔬 超詳細診断", ImVec2(150, 36)))
+    if (ImGui::Button("🔬 超詳細診断", theme::Px(150.0f, 36.0f)))
         QueueTests(nullptr, false, 1);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(
@@ -3112,13 +3301,13 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
             "アセット数が多いと数分かかります。");
     ImGui::SameLine();
     ImGui::BeginDisabled(ng == 0);
-    if (ImGui::Button("失敗だけ再検査", ImVec2(140, 36)))
+    if (ImGui::Button("失敗だけ再検査", theme::Px(140.0f, 36.0f)))
         QueueTests(nullptr, true);
     ImGui::EndDisabled();
     ImGui::EndDisabled();
 
     ImGui::SameLine();
-    if (ImGui::Button("結果をコピー", ImVec2(130, 36)))
+    if (ImGui::Button("結果をコピー", theme::Px(130.0f, 36.0f)))
     {
         ImGui::SetClipboardText(BuildReport().c_str());
         m_statusText = "結果をクリップボードにコピーしました。";
@@ -3182,7 +3371,7 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
             lastGroup = group;
             ImGui::Spacing();
             groupOpen = ImGui::CollapsingHeader(group, ImGuiTreeNodeFlags_DefaultOpen);
-            ImGui::SameLine(ImGui::GetContentRegionMax().x - 130.0f);
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - theme::Px(130.0f));
             ImGui::PushID(group);
             ImGui::BeginDisabled(m_running);
             if (ImGui::SmallButton("ここだけ検査"))
@@ -3199,8 +3388,8 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
         ImGui::PushID(test->Name);
 
         // 状態バッジ → 項目名。バッジ幅がまちまちなので、名前の開始 X を固定して縦に揃える。
-        const float kNameColumnX = 96.0f;
-        ImGui::Indent(8.0f);
+        const float kNameColumnX = theme::Px(96.0f);
+        ImGui::Indent(theme::Px(8.0f));
         switch (test->Output.Status)
         {
         case ImGuiTestStatus_Success:
@@ -3219,7 +3408,7 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
             ImGui::TextDisabled("未実行");
             break;
         }
-        ImGui::Unindent(8.0f);
+        ImGui::Unindent(theme::Px(8.0f));
         ImGui::SameLine(kNameColumnX);
         ImGui::TextUnformatted(DisplayName(test));
 
@@ -3239,11 +3428,11 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
                 ImGuiTestVerboseLevel_Error, ImGuiTestVerboseLevel_Error, &buf);
             if (buf.size() > 0)
             {
-                ImGui::Indent(24.0f);
+                ImGui::Indent(theme::Px(24.0f));
                 ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.5f, 1.0f));
                 ImGui::TextWrapped("%s", buf.c_str());
                 ImGui::PopStyleColor();
-                ImGui::Unindent(24.0f);
+                ImGui::Unindent(theme::Px(24.0f));
             }
         }
 
@@ -3251,11 +3440,11 @@ void UiTestHarness::DrawDiagnosticsPanel(bool* show, bool* hoveredOut)
         auto note = g_testNotes.find(test->Name);
         if (note != g_testNotes.end() && !note->second.empty())
         {
-            ImGui::Indent(24.0f);
+            ImGui::Indent(theme::Px(24.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.8f, 0.4f, 1.0f));
             ImGui::TextWrapped("実行中のエラーログ:\n%s", note->second.c_str());
             ImGui::PopStyleColor();
-            ImGui::Unindent(24.0f);
+            ImGui::Unindent(theme::Px(24.0f));
         }
 
         ImGui::PopID();

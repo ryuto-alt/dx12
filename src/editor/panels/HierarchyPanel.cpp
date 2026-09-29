@@ -62,7 +62,7 @@ static void PaintRowBg(ImDrawList* dl, float y0, float y1, bool selected, bool h
     if (col)
         dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(*col));
     if (selected)
-        dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Min.x + 2.0f, y1), ImGui::GetColorU32(th::Accent));
+        dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Min.x + ui::Px(2.0f), y1), ImGui::GetColorU32(th::Accent));
 }
 
 // 大文字小文字を無視した部分一致（Hierarchy フィルタ用）
@@ -241,12 +241,12 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         if (hasChildren)
             ui::DrawIconCentered(dl, open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT,
                                  ImVec2(rowX + st.FramePadding.x + fs * 0.5f, cy),
-                                 ImGui::GetColorU32(hov || selected ? th::Text : th::TextDim), 13.0f);
+                                 ImGui::GetColorU32(hov || selected ? th::Text : th::TextDim), ui::Px(13.0f));
         // 種別アイコン + 名前
         const float tx = rowX + fs + st.FramePadding.x * 2.0f;
         const EntityGlyph g = PickEntityGlyph(reg, e, hasChildren);
-        ui::DrawIconCentered(dl, g.glyph, ImVec2(tx + 8.0f, cy), ImGui::GetColorU32(*g.tint), 16.0f);
-        dl->AddText(ImVec2(tx + 22.0f, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
+        ui::DrawIconCentered(dl, g.glyph, ImVec2(tx + ui::Px(8.0f), cy), ImGui::GetColorU32(*g.tint), ui::Px(16.0f));
+        dl->AddText(ImVec2(tx + ui::Px(22.0f), std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
                     ImGui::GetColorU32(th::Text), tag.name.c_str());
     }
 
@@ -261,7 +261,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         const ImVec2 mx = ImGui::GetItemRectMax();
         const ImVec2 ts = ImGui::CalcTextSize(cntBuf);
         ImGui::GetWindowDrawList()->AddText(
-            ImVec2(mx.x - ts.x - 10.0f, std::floor((mn.y + mx.y) * 0.5f - ts.y * 0.5f + 0.5f)),
+            ImVec2(mx.x - ts.x - ui::Px(10.0f), std::floor((mn.y + mx.y) * 0.5f - ts.y * 0.5f + 0.5f)),
             ImGui::GetColorU32(dx12e::theme::TextFaint), cntBuf);
         ui::PopMono();
     }
@@ -506,12 +506,12 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         ImGui::PopStyleColor();
 
         // 右端に折りたたむ/展開のアイコンボタン
-        const float btn = 22.0f;
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - btn * 2.0f - 2.0f);
-        if (ui::IconButton("collapseAll", ICON_FOLD_ALL, "すべて折りたたむ", false, nullptr, btn, 15.0f))
+        const float btn = ui::Px(22.0f);   // DPI
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - btn * 2.0f - ui::Px(2.0f));
+        if (ui::IconButton("collapseAll", ICON_FOLD_ALL, "すべて折りたたむ", false, nullptr, btn, ui::Px(15.0f)))
             m_openNodes.clear();
-        ImGui::SameLine(0.0f, 2.0f);
-        if (ui::IconButton("expandAll", ICON_UNFOLD_ALL, "すべて展開", false, nullptr, btn, 15.0f))
+        ImGui::SameLine(0.0f, ui::Px(2.0f));
+        if (ui::IconButton("expandAll", ICON_UNFOLD_ALL, "すべて展開", false, nullptr, btn, ui::Px(15.0f)))
             for (const auto& kv : m_childIndex) m_openNodes.insert(kv.first);
 
         ImGui::SetNextItemWidth(-1.0f);
@@ -522,9 +522,9 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     // ---- 行の見やすさ（行高 23 + ごく弱いゼブラ + 階層ガイド線）----
     // 行ピッチ = フレーム高 23 + 1。標準の行間(4)だと選択面の間に隙間ができて縞に見える。
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-        ImVec2(ImGui::GetStyle().ItemSpacing.x, 1.0f));
+        ImVec2(ImGui::GetStyle().ItemSpacing.x, ui::Px(1.0f)));
     // ツリー矢印スペースは FontSize + FramePadding.x*2。詰めて（アイコン+名前を 1 つの行として）見せる。
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ui::Px(4.0f, 3.5f));
     // 選択行はアクセント 30%（テーマの Header 色）。ホバーは Bg3。テーマ既定のままで良いので色は上書きしない。
 
     const float rowH = ImGui::GetFrameHeight();   // 描画される 1 行の高さ（行間を除く）
@@ -553,12 +553,12 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         for (int j = 1; j <= depth; ++j)
         {
             const float x = std::floor(rowStart.x - indentW * static_cast<float>(j) + chevX) + 0.5f;
-            dl->AddLine(ImVec2(x, rowStart.y), ImVec2(x, rowStart.y + rowH + 1.0f), col);
+            dl->AddLine(ImVec2(x, rowStart.y), ImVec2(x, rowStart.y + rowH + ui::Px(1.0f)), col);
         }
         // 一番内側だけ横に伸ばして「この親の子」と分かるようにする
         const float xIn = std::floor(rowStart.x - indentW + chevX) + 0.5f;
         const float yMid = std::floor(rowStart.y + rowH * 0.5f) + 0.5f;
-        dl->AddLine(ImVec2(xIn, yMid), ImVec2(rowStart.x + chevX - 2.0f, yMid), col);
+        dl->AddLine(ImVec2(xIn, yMid), ImVec2(rowStart.x + chevX - ui::Px(2.0f), yMid), col);
     };
     if (m_filterBuf[0] != '\0')
     {
@@ -684,7 +684,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     //   ・左クリック: 選択解除
     {
         const ImVec2 avail = ImGui::GetContentRegionAvail();
-        ImGui::InvisibleButton("##HierBg", ImVec2((std::max)(avail.x, 1.0f), (std::max)(avail.y, 24.0f)));
+        ImGui::InvisibleButton("##HierBg", ImVec2((std::max)(avail.x, 1.0f), (std::max)(avail.y, ui::Px(24.0f))));
         dx12e::vinput_gui::AnchorLastItem("hier-bg", "空白");
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift)
             ctx.ClearSelection();

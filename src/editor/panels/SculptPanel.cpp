@@ -259,17 +259,17 @@ void DrawBrushCursor(const ViewportInput& in, const XMMATRIX& world,
         if (!WorldToScreen(*in.camera, wp, in.vpX, in.vpY, in.vpW, in.vpH, pts[i]))
             return;   // 一部でもカメラ後方なら描かない（画面を横切る変な線を出さない）
     }
-    dl->AddPolyline(pts, kSegments, IM_COL32(126, 204, 255, 220), ImDrawFlags_Closed, 2.0f);
+    dl->AddPolyline(pts, kSegments, IM_COL32(126, 204, 255, 220), ImDrawFlags_Closed, ui::PxF(2.0f));   // DPI
 
     XMFLOAT3 wc;
     XMStoreFloat3(&wc, XMVector3TransformCoord(c, world));
     ImVec2 sc;
     if (WorldToScreen(*in.camera, wc, in.vpX, in.vpY, in.vpW, in.vpH, sc))
     {
-        dl->AddLine(ImVec2(sc.x - 6.0f, sc.y), ImVec2(sc.x + 6.0f, sc.y),
-                    IM_COL32(126, 204, 255, 220), 1.5f);
-        dl->AddLine(ImVec2(sc.x, sc.y - 6.0f), ImVec2(sc.x, sc.y + 6.0f),
-                    IM_COL32(126, 204, 255, 220), 1.5f);
+        dl->AddLine(ImVec2(sc.x - ui::Px(6.0f), sc.y), ImVec2(sc.x + ui::Px(6.0f), sc.y),
+                    IM_COL32(126, 204, 255, 220), ui::PxF(1.5f));
+        dl->AddLine(ImVec2(sc.x, sc.y - ui::Px(6.0f)), ImVec2(sc.x, sc.y + ui::Px(6.0f)),
+                    IM_COL32(126, 204, 255, 220), ui::PxF(1.5f));
     }
 }
 
@@ -605,7 +605,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
 
     if (!ctx.showSculptEditor) return;
 
-    ImGui::SetNextWindowSize(ImVec2(430.0f, 700.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ui::Px(430.0f, 700.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("スカルプト（異形）###SculptToolFloating", &ctx.showSculptEditor,
                       ImGuiWindowFlags_NoDocking))
     {

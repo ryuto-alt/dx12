@@ -16,6 +16,8 @@
 #include <imgui.h>
 #pragma warning(pop)
 
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
 
 namespace dx12e::theme
@@ -102,6 +104,104 @@ inline constexpr float kToolbarBtn   = 28.0f;   // ツールバーのアイコ�
 inline constexpr float kTitleBarH    = 32.0f;   // メニューバー兼タイトルバー
 inline constexpr float kCheckBox     = 16.0f;   // チェックボックスの箱
 } // namespace size
+
+// ===========================================================================
+// DPI スケール（Windows の表示倍率）
+// ---------------------------------------------------------------------------
+// ★エディタのピクセル値は「論理 px（= 100% 表示での px）」で書く。ImGui の座標は物理 px なので、
+//   ImGui へ渡す寸法・描画座標のオフセットは必ず Px() を通す。
+//     ImVec2(28, 28)                →  theme::Px(28, 28)          （ui:: 名前空間からも ui::Px で引ける）
+//     ImGui::SetNextItemWidth(120)   →  ImGui::SetNextItemWidth(ui::Px(120))
+//     dl->AddLine(a, b, col, 1.5f)   →  dl->AddLine(a, b, col, ui::Px(1.5f))
+//   Px() は倍率 100% のとき恒等（小数もそのまま）。それ以外は整数 px へ丸める（にじみ防止）。
+//   ★スケールしないもの: 色・アルファ・0..1 の割合・UV・ImVec2(0,0)・ImVec2(-1,0) / -FLT_MIN の「残り全部」記号・
+//     ワールド座標・3D ビューポートの描画解像度（物理 px のまま）・GetFontSize()/GetFrameHeight() 等
+//     ImGui が既にスケールして返す値・ImGui 内部でスケール済みのスタイル値（ItemSpacing 等）。
+//   倍率は ImGuiManager が（OS の表示倍率 or --dpi-scale から）決め、ビューポートごとに切り替える。
+// ===========================================================================
+inline float g_scale = 1.0f;                                     // 現在の UI 倍率（1.0 = 100%）
+inline float Scale() { return g_scale; }
+inline void  SetScale(float s) { g_scale = (s > 0.05f) ? s : 1.0f; }
+// 論理 px → 物理 px。倍率 1.0 のときは恒等（100% の見た目を 1px も変えない）。
+inline float Px(float logical)
+{
+    if (g_scale == 1.0f) return logical;
+    return std::floor(logical * g_scale + 0.5f);
+}
+inline ImVec2 Px(float x, float y) { return ImVec2(Px(x), Px(y)); }
+inline ImVec2 Px(const ImVec2& v)  { return Px(v.x, v.y); }
+// 丸めない版（線の太さ・半径など、小数のまま比例させたい値）。
+inline float PxF(float logical) { return logical * g_scale; }
+// 物理 px → 論理 px（テスト・ログ・ini 用）。
+inline float ToLogical(float physical) { return physical / g_scale; }
+
+// multi-viewport で別倍率のモニターに引き出した窓を描くと、その窓の Begin から End まで theme::Scale() が切り替わる
+// （ImGuiManager の Platform_OnChangedViewport フック）。メイン窓の座標計算（DockSpace / ステータスバー / トースト）に入る前に
+// これを呼んで、倍率をメインビューポートのものへ戻す。全ビューポートが同じ倍率なら何もしない。
+inline void (*g_restoreMainScaleFn)() = nullptr;   // ImGuiManager が設定
+inline void RestoreMainScale() { if (g_restoreMainScaleFn) g_restoreMainScaleFn(); }
+
+// ---- ImGuiStyle への倍率適用 ----
+// 基準スタイル（100% 相当）を 1 回だけ保持し、倍率が変わるたびに【基準から】作り直す（累積させない・往復で元に戻る）。
+// 純ロジック部（ScaleStyleFrom）は imgui のコンテキスト不要で単体テストできる。
+inline ImGuiStyle& BaseStyle() { static ImGuiStyle s; return s; }
+inline bool&       BaseStyleValid() { static bool v = false; return v; }
+
+// 100% スタイル → scale 倍のスタイル。フォントは FontScaleDpi で拡大される（ダイナミックフォント）。
+// 行高 kRowH の整数化: FramePadding.y は「Px(kRowH) - フォント高」から逆算する（分数 px の行境界でのにじみ防止）。
+inline ImGuiStyle ScaleStyleFrom(const ImGuiStyle& base, float scale)
+{
+    ImGuiStyle s = base;
+    if (scale == 1.0f) return s;               // 100% は基準そのもの（ImTrunc で 3.5→3 になる等の劣化を避ける）
+    auto r  = [&](float v) { return std::floor(v * scale + 0.5f); };
+    auto r2 = [&](ImVec2 v) { return ImVec2(r(v.x), r(v.y)); };
+    s.WindowPadding = r2(base.WindowPadding);   s.WindowRounding = r(base.WindowRounding);
+    s.WindowMinSize = r2(base.WindowMinSize);   s.WindowBorderHoverPadding = r(base.WindowBorderHoverPadding);
+    s.ChildRounding = r(base.ChildRounding);    s.PopupRounding = r(base.PopupRounding);
+    s.FramePadding = r2(base.FramePadding);     s.FrameRounding = r(base.FrameRounding);
+    s.ItemSpacing = r2(base.ItemSpacing);       s.ItemInnerSpacing = r2(base.ItemInnerSpacing);
+    s.CellPadding = r2(base.CellPadding);       s.TouchExtraPadding = r2(base.TouchExtraPadding);
+    s.IndentSpacing = r(base.IndentSpacing);    s.ColumnsMinSpacing = r(base.ColumnsMinSpacing);
+    s.ScrollbarSize = r(base.ScrollbarSize);    s.ScrollbarRounding = r(base.ScrollbarRounding);
+    s.ScrollbarPadding = r(base.ScrollbarPadding);
+    s.GrabMinSize = r(base.GrabMinSize);        s.GrabRounding = r(base.GrabRounding);
+    s.LogSliderDeadzone = r(base.LogSliderDeadzone);
+    s.ImageRounding = r(base.ImageRounding);    s.ImageBorderSize = r(base.ImageBorderSize);
+    s.TabRounding = r(base.TabRounding);
+    s.TabMinWidthBase = r(base.TabMinWidthBase); s.TabMinWidthShrink = r(base.TabMinWidthShrink);
+    if (base.TabCloseButtonMinWidthSelected > 0.0f && base.TabCloseButtonMinWidthSelected != FLT_MAX)
+        s.TabCloseButtonMinWidthSelected = r(base.TabCloseButtonMinWidthSelected);
+    if (base.TabCloseButtonMinWidthUnselected > 0.0f && base.TabCloseButtonMinWidthUnselected != FLT_MAX)
+        s.TabCloseButtonMinWidthUnselected = r(base.TabCloseButtonMinWidthUnselected);
+    s.TabBarOverlineSize = r(base.TabBarOverlineSize);
+    s.TreeLinesRounding = r(base.TreeLinesRounding);
+    s.DragDropTargetRounding = r(base.DragDropTargetRounding);
+    s.DragDropTargetBorderSize = r(base.DragDropTargetBorderSize);
+    s.DragDropTargetPadding = r(base.DragDropTargetPadding);
+    s.ColorMarkerSize = r(base.ColorMarkerSize);
+    s.SeparatorTextPadding = r2(base.SeparatorTextPadding);
+    s.DockingSeparatorSize = r(base.DockingSeparatorSize);
+    s.DisplayWindowPadding = r2(base.DisplayWindowPadding);
+    s.DisplaySafeAreaPadding = r2(base.DisplaySafeAreaPadding);
+    s.MouseCursorScale = r(base.MouseCursorScale);
+    // 枠線は 1 未満にならないよう（0 は 0 のまま）丸める。1.0 → 1.25 倍では 1px のまま（太らせない）。
+    auto border = [&](float v) { return v > 0.0f ? (std::max)(1.0f, r(v)) : 0.0f; };
+    s.WindowBorderSize = border(base.WindowBorderSize);   s.ChildBorderSize = border(base.ChildBorderSize);
+    s.PopupBorderSize = border(base.PopupBorderSize);     s.FrameBorderSize = border(base.FrameBorderSize);
+    s.TabBorderSize = border(base.TabBorderSize);         s.TabBarBorderSize = border(base.TabBarBorderSize);
+    s.SeparatorTextBorderSize = border(base.SeparatorTextBorderSize);
+    s.TreeLinesSize = border(base.TreeLinesSize);
+    // 行高: フォント高（FontSizeBase × scale を ImGui が整数へ丸める）と kRowH の差分を上下均等に割る。
+    {
+        const float font = std::floor(base.FontSizeBase * scale + 0.5f);
+        const float row  = r(size::kRowH);
+        if (base.FramePadding.y * 2.0f + base.FontSizeBase == size::kRowH)     // 基準が kRowH 行のときだけ
+            s.FramePadding.y = (std::max)(1.0f, (row - font) * 0.5f);
+    }
+    s.FontScaleDpi = base.FontScaleDpi * scale;
+    s._MainScale = base._MainScale * scale;
+    return s;
+}
 
 // ---- フォントのハンドル（ImGuiManager が起動時に埋める。null なら既定フォント）----
 struct Fonts

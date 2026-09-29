@@ -866,3 +866,16 @@ if(TARGET ECS)
     endif()
     add_test(NAME ReparentTests COMMAND ReparentTests)
 endif()
+
+# 表示倍率（DPI）: core/DpiScale.h の純ロジック + editor/EditorTheme.h の theme::Px / ScaleStyleFrom（基準スタイルから
+# 再計算するので累積せず、1.0 -> 1.5 -> 2.0 -> 1.0 の往復で元に戻る）。imgui.h の型だけ使う（コンテキスト不要）。
+if(TARGET Gui)
+    add_executable(DpiScaleTests dpi_scale_test.cpp)
+    target_link_libraries(DpiScaleTests PRIVATE Gui)
+    target_include_directories(DpiScaleTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(DpiScaleTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(DpiScaleTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DpiScaleTests COMMAND DpiScaleTests)
+endif()

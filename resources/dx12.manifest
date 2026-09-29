@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  DX12Engine / GameRuntime 共通のアプリケーションマニフェスト。
+  ★DPI: Per-Monitor V2。OS の表示倍率(125% / 150% ...)を持つモニターごとに、ウィンドウは物理ピクセルで動く
+    （Windows による引き伸ばしをしない）。倍率が違うモニターへ動かした時・実行中に倍率を変えた時は WM_DPICHANGED が届く。
+    Windows 10 1607 未満では dpiAware(true/pm)へ落ちる。マニフェストが効かない経路のため、main.cpp でも
+    SetProcessDpiAwarenessContext を最初期に呼んでいる（二重指定は無害）。
+  ★あえて入れないもの: activeCodePage=UTF-8。プロセスの ANSI コードページを変えると、エンジン内の
+    ナロー文字列 API（fopen / std::filesystem::path(std::string) など）の解釈が全部変わるため。
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2,PerMonitor</dpiAwareness>
+    </windowsSettings>
+  </application>
+</assembly>

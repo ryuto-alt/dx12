@@ -210,6 +210,17 @@ public:
       m_uiTestsDeepOnly = deepOnly; }
     int  UiTestExitCode() const { return m_uiTestExitCode; }
 
+    // ===== 表示倍率（DPI。core/DpiScale.h / editor/EditorTheme.h の theme::Px）=====
+    // エディタの UI 倍率（1.0 = 100%）。OS の表示倍率、--dpi-scale があればそれ。ゲームモードは 1.0。
+    float GetUiScale() const;
+    // 検証 / UI 自動テスト用: 実行中に倍率を上書きする（0 以下で OS の倍率へ戻す）。--background の窓は
+    // 論理 1920x1080 × 倍率 の物理サイズへ作り直され、次のフレームで UI のスタイル/フォントが切り替わる。
+    // ★どのスレッドから呼んでもよい（UI テストのコルーチンは別スレッド）。窓の操作はメインスレッドのフレーム先頭で行う。
+    void  SetUiScaleOverride(float scale);
+    // 窓のクライアント矩形（物理 px）。
+    u32   GetClientWidthPx() const;
+    u32   GetClientHeightPx() const;
+
     // ヘッドレスでゲームをビルド（--build CLI 用）。開始シーンは title.json があればそれ。
     // 成否を返す（CLI の終了コード / GUI の完了表示に使う）。
     // projectRoot: --build <dir> で指定されたプロジェクト(空可)。build_settings.json を読む
@@ -1061,6 +1072,9 @@ private:
     bool m_uiTestsDeepOnly  = false;   // --ui-tests-deep（超詳細診断だけ走らせる）
     int  m_uiTestsSpeed     = 0;
     int  m_uiTestExitCode   = 0;
+    // DPI: SetUiScaleOverride の要求（UI テストのコルーチンは別スレッドで動くので、窓を触る処理は
+    // メインスレッドのフレーム先頭で行う＝ここへ置くだけ。-1 = 要求なし、0 = OS の倍率へ戻す）
+    std::atomic<float> m_uiScaleRequest{-1.0f};
     int  m_diagModeRequest  = 0;   // 診断からの Play/Stop 要求（0=なし 1=Editor 2=Playing）
     bool m_diagFrameStatsRequest = false;   // 超詳細診断からのフレーム読み戻し要求
     DiagFrameStats m_diagFrameStats;        // 直近の測定結果（Take で valid を落とす）

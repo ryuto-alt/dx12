@@ -142,7 +142,7 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
         ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.35f, 1.0f), "● 接続中");
     else
         ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "○ 未接続");
-    ImGui::SameLine(0, 12);
+    ImGui::SameLine(0, ui::Px(12.0f));
     if (port != 0)
         ImGui::Text("待受 127.0.0.1:%u", static_cast<unsigned>(port));
     else
@@ -230,8 +230,8 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
     // ScrollY を効かせるため残り高さを明示的に与える（窓のリサイズに追従）。
     if (ImGui::BeginTable("##mcp_history", 3, tflags, ImVec2(0.0f, ImGui::GetContentRegionAvail().y)))
     {
-        ImGui::TableSetupColumn("結果", ImGuiTableColumnFlags_WidthFixed, 44.0f);
-        ImGui::TableSetupColumn("メソッド", ImGuiTableColumnFlags_WidthFixed, 160.0f);
+        ImGui::TableSetupColumn("結果", ImGuiTableColumnFlags_WidthFixed, ui::Px(44.0f));
+        ImGui::TableSetupColumn("メソッド", ImGuiTableColumnFlags_WidthFixed, ui::Px(160.0f));
         ImGui::TableSetupColumn("エラー", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableHeadersRow();
 

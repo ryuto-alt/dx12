@@ -4,6 +4,7 @@
 #include "editor/AiDebugOverlay.h"
 
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
 #include "editor/LightMath.h"
 #include "ecs/Components.h"
 #include "renderer/Camera.h"
@@ -51,7 +52,7 @@ void AiDebugOverlayFrame(entt::registry& reg, EditorContext& ctx, Camera* camera
     auto line3 = [&](const XMFLOAT3& a, const XMFLOAT3& b, ImU32 col, f32 th)
     {
         ImVec2 sa, sb;
-        if (project(a, sa) && project(b, sb)) dl->AddLine(sa, sb, col, th);
+        if (project(a, sa) && project(b, sb)) dl->AddLine(sa, sb, col, theme::PxF(th));   // DPI
     };
     auto circle3 = [&](const XMFLOAT3& c, f32 r, ImU32 col, f32 th, int seg = 32)
     {
@@ -112,7 +113,7 @@ void AiDebugOverlayFrame(entt::registry& reg, EditorContext& ctx, Camera* camera
         {
             std::snprintf(buf, sizeof(buf), "%s %.0f%%%s %.1fs", h.tag.empty() ? "sound" : h.tag.c_str(),
                           h.loudness * 100.0f, h.occluded ? " (壁越し)" : "", age);
-            dl->AddText(ImVec2(sc.x + 6, sc.y - 7), col, buf);
+            dl->AddText(ImVec2(sc.x + theme::Px(6.0f), sc.y - theme::Px(7.0f)), col, buf);
         }
     }
 
@@ -155,15 +156,15 @@ void AiDebugOverlayFrame(entt::registry& reg, EditorContext& ctx, Camera* camera
                              [](const ai::ActionEval* x, const ai::ActionEval* y) { return x->final > y->final; });
             const f32 lineH = ImGui::GetTextLineHeight();
             const int n = static_cast<int>((std::min)(order.size(), size_t(3)));
-            const ImVec2 box0(head.x - 90, head.y - lineH * static_cast<f32>(n + 1) - 6);
-            dl->AddRectFilled(box0, ImVec2(head.x + 150, head.y), IM_COL32(10, 10, 14, 170), 4.0f);
-            dl->AddText(ImVec2(box0.x + 4, box0.y + 2), IM_COL32(255, 255, 255, 255), buf);
+            const ImVec2 box0(head.x - theme::Px(90.0f), head.y - lineH * static_cast<f32>(n + 1) - theme::Px(6.0f));
+            dl->AddRectFilled(box0, ImVec2(head.x + theme::Px(150.0f), head.y), IM_COL32(10, 10, 14, 170), theme::Px(4.0f));
+            dl->AddText(ImVec2(box0.x + theme::Px(4.0f), box0.y + theme::Px(2.0f)), IM_COL32(255, 255, 255, 255), buf);
             for (int i = 0; i < n; ++i)
             {
                 const ai::ActionEval* a = order[static_cast<size_t>(i)];
                 std::snprintf(buf, sizeof(buf), "%-10s %.2f%s", a->name.c_str(), a->final,
                               a->cooldown ? " (cooldown)" : (a->bonus > 0.0f ? " (+粘り)" : ""));
-                dl->AddText(ImVec2(box0.x + 4, box0.y + 2 + lineH * static_cast<f32>(i + 1)),
+                dl->AddText(ImVec2(box0.x + theme::Px(4.0f), box0.y + theme::Px(2.0f) + lineH * static_cast<f32>(i + 1)),
                             i == 0 ? IM_COL32(255, 230, 120, 255) : IM_COL32(200, 200, 200, 255), buf);
             }
         }

@@ -386,6 +386,12 @@ MCP `dx12_set_occlusion`。実装は `src/renderer/HiZPass.{h,cpp}`（深度ピ�
   実行は `src/editor/EditorCommands.cpp`、ウィンドウの一覧は `src/editor/ToolWindows.h`（表示 / ツール / 窓▾ の共通の表）
 - **右下のトースト通知**: `ui::Toast(kind, msg)` / `ctx.Notify(kind, msg)`（`src/editor/Toast.h`）。結果を知らせるだけのものは
   トースト、判断が要る確認（未保存 / 削除 / 復旧）だけがモーダル
+- **表示倍率（DPI）対応**: プロセスは Per-Monitor V2（`resources/dx12.manifest` + `main.cpp`）。ImGui の座標は**物理 px**。エディタの px 値は
+  **論理 px（100% 表示の px）で書き、ImGui へ渡す寸法・描画オフセットは `ui::Px()` / `theme::Px()`（`editor/EditorTheme.h`）を通す**
+  （`ImVec2(28,28)` → `ui::Px(28,28)` / `SetNextItemWidth(120)` → `SetNextItemWidth(ui::Px(120))` / 線の太さ・半径は `ui::PxF`）。倍率 100% では恒等なので見た目は変わらない。
+  スタイルは基準（100%）から毎回作り直し（`theme::ScaleStyleFrom`）、フォントは imgui 1.92 のダイナミックフォント（`FontScaleDpi`）。
+  `static` にスケール済みの値をキャッシュしない。3D ビューポートの解像度・ゲーム内 UI の参照解像度はスケールしない。
+  検証は `DX12Engine.exe --background --dpi-scale 1.5 ...`（OS の設定は触らない）。MCP の座標は物理クライアント px（`ping` の `dpiScale` で倍率）。
 - **Hierarchy D&D**: 親子付け（**ワールド位置を保つ**。Shift を押しながらでローカル値そのまま。空白へドロップで解除）、
   **.lua D&D**: スクリプトアタッチ。空白の右クリック: エンティティ作成（カメラの前 / 床との交点）
 - **ダブルクリック / F2**: リネーム

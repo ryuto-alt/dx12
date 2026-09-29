@@ -1,6 +1,7 @@
 #include "editor/LightHandles.h"
 
 #include "editor/EditorContext.h"
+#include "editor/EditorTheme.h"
 #include "editor/LightMath.h"
 #include "editor/ScenePick.h"     // ScreenRay
 #include "editor/UndoSystem.h"
@@ -30,6 +31,7 @@ namespace
 {
 
 // ---- 見た目 / 操作感の定数 ----
+// DPI: 以下の px 系定数は論理 px。使う側で theme::Px / PxF を通す
 constexpr f32 kHandleRadius    = 5.0f;    // ハンドルの描画半径(px)
 constexpr f32 kHandleHitRadius = 11.0f;   // 当たり判定半径(px。掴みやすいよう描画より広め)
 constexpr f32 kDirArmLength    = 2.0f;    // 平行光の回転ハンドルまでの距離(m)。
@@ -190,7 +192,7 @@ void LightHandlesFrame(entt::registry& reg, EditorContext& ctx, Camera* camera)
     {
         XMFLOAT2 sa{}, sb{};
         if (project(a, sa) && project(b, sb))
-            drawList->AddLine(ImVec2(sa.x, sa.y), ImVec2(sb.x, sb.y), col, thickness);
+            drawList->AddLine(ImVec2(sa.x, sa.y), ImVec2(sb.x, sb.y), col, theme::PxF(thickness));
     };
     // コーンのワイヤ(底円 + 母線 4 本)
     auto drawCone = [&](const XMFLOAT3& apex, const XMFLOAT3& dir,
@@ -217,24 +219,24 @@ void LightHandlesFrame(entt::registry& reg, EditorContext& ctx, Camera* camera)
         if (!project(center, sc) || !project(Offset(center, right, radius), se)) return;
         const f32 rPx = lm::ScreenDistance(sc, se);
         if (rPx < 2.0f || rPx > 8000.0f) return;
-        drawList->AddCircle(ImVec2(sc.x, sc.y), rPx, col, 40, thickness);
+        drawList->AddCircle(ImVec2(sc.x, sc.y), rPx, col, 40, theme::PxF(thickness));
     };
     auto drawHandle = [&](const XMFLOAT2& s, bool hot)
     {
-        drawList->AddCircleFilled(ImVec2(s.x, s.y), kHandleRadius,
+        drawList->AddCircleFilled(ImVec2(s.x, s.y), theme::PxF(kHandleRadius),
                                   hot ? kColHandleHot : kColHandle, 14);
-        drawList->AddCircle(ImVec2(s.x, s.y), kHandleRadius + 1.5f, kColOutline, 14, 1.5f);
+        drawList->AddCircle(ImVec2(s.x, s.y), theme::PxF(kHandleRadius + 1.5f), kColOutline, 14, theme::PxF(1.5f));
     };
     // マウス脇の小さな数値ラベル(ギズモの増分表示と同じ流儀)
     auto drawTip = [&](const char* text)
     {
         const ImVec2 mp = ImGui::GetIO().MousePos;
-        const ImVec2 pos(mp.x + 18.0f, mp.y + 18.0f);
+        const ImVec2 pos(mp.x + theme::Px(18.0f), mp.y + theme::Px(18.0f));
         const ImVec2 ts = ImGui::CalcTextSize(text);
-        const ImVec2 bmin(pos.x - 6.0f, pos.y - 4.0f);
-        const ImVec2 bmax(pos.x + ts.x + 6.0f, pos.y + ts.y + 4.0f);
-        drawList->AddRectFilled(bmin, bmax, IM_COL32(18, 20, 26, 225), 4.0f);
-        drawList->AddRect(bmin, bmax, kColHandleHot, 4.0f);
+        const ImVec2 bmin(pos.x - theme::Px(6.0f), pos.y - theme::Px(4.0f));
+        const ImVec2 bmax(pos.x + ts.x + theme::Px(6.0f), pos.y + ts.y + theme::Px(4.0f));
+        drawList->AddRectFilled(bmin, bmax, IM_COL32(18, 20, 26, 225), theme::Px(4.0f));
+        drawList->AddRect(bmin, bmax, kColHandleHot, theme::Px(4.0f));
         drawList->AddText(pos, IM_COL32(255, 255, 255, 255), text);
     };
 
@@ -355,11 +357,11 @@ void LightHandlesFrame(entt::registry& reg, EditorContext& ctx, Camera* camera)
                           static_cast<double>(st.sunAngles.azimuthDeg),
                           static_cast<double>(st.sunAngles.elevationDeg));
             const ImVec2 ts = ImGui::CalcTextSize(buf);
-            const ImVec2 pos(vpX + (vpW - ts.x) * 0.5f, vpY + 14.0f);
-            const ImVec2 bmin(pos.x - 12.0f, pos.y - 6.0f);
-            const ImVec2 bmax(pos.x + ts.x + 12.0f, pos.y + ts.y + 6.0f);
-            drawList->AddRectFilled(bmin, bmax, IM_COL32(18, 20, 26, 215), 6.0f);
-            drawList->AddRect(bmin, bmax, kColDir, 6.0f);
+            const ImVec2 pos(vpX + (vpW - ts.x) * 0.5f, vpY + theme::Px(14.0f));
+            const ImVec2 bmin(pos.x - theme::Px(12.0f), pos.y - theme::Px(6.0f));
+            const ImVec2 bmax(pos.x + ts.x + theme::Px(12.0f), pos.y + ts.y + theme::Px(6.0f));
+            drawList->AddRectFilled(bmin, bmax, IM_COL32(18, 20, 26, 215), theme::Px(6.0f));
+            drawList->AddRect(bmin, bmax, kColDir, theme::Px(6.0f));
             drawList->AddText(pos, IM_COL32(255, 244, 214, 255), buf);
         }
     }
@@ -445,7 +447,7 @@ void LightHandlesFrame(entt::registry& reg, EditorContext& ctx, Camera* camera)
         DragKind hovered = DragKind::None;
         if (inViewport && !gizmoBusy)
         {
-            f32 best = kHandleHitRadius;
+            f32 best = theme::Px(kHandleHitRadius);
             for (int i = 0; i < handleCount; ++i)
             {
                 if (!handles[i].valid) continue;

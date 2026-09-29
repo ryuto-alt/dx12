@@ -298,17 +298,17 @@ void ShaderIssueBox(const std::string& shaderRel, const char* contractId, const 
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("このシェーダーで宣言してよいレジスタと約束事の一覧");
 
-    ImGui::SetNextWindowSize(ImVec2(720.0f, 520.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(dx12e::theme::Px(720.0f, 520.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal(popupId.c_str(), nullptr, ImGuiWindowFlags_NoSavedSettings))
     {
         // ここも読み取り専用テキスト＝レジスタ名をそのまま選択コピーして HLSL へ貼れる。
         ImGui::InputTextMultiline("##helpBody", const_cast<char*>(help.c_str()), help.size() + 1,
                                   ImVec2(-1.0f, -ImGui::GetFrameHeightWithSpacing()),
                                   ImGuiInputTextFlags_ReadOnly);
-        if (ImGui::Button("全文をコピー", ImVec2(140.0f, 0.0f)))
+        if (ImGui::Button("全文をコピー", dx12e::theme::Px(140.0f, 0.0f)))
             ImGui::SetClipboardText(help.c_str());
         ImGui::SameLine();
-        if (ImGui::Button("閉じる", ImVec2(120.0f, 0.0f)))
+        if (ImGui::Button("閉じる", dx12e::theme::Px(120.0f, 0.0f)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -452,7 +452,7 @@ void DrawLuaScriptSection(entt::registry& reg,
         const char* status = hasLua ? "ATTACHED" : "(none)";
         ImGui::SameLine(ImGui::GetWindowWidth()
                         - ImGui::CalcTextSize(status).x
-                        - ImGui::GetStyle().WindowPadding.x - 24.0f);
+                        - ImGui::GetStyle().WindowPadding.x - dx12e::theme::Px(24.0f));
         if (hasLua)
             ImGui::TextColored(dx12e::theme::Good, "%s", status);
         else
@@ -986,7 +986,7 @@ void InspectorPanel::Render(entt::registry& reg,
             const EntityGlyph g = PickEntityGlyph(reg, ctx.selectedEntity, hasKids);
             ImGui::AlignTextToFramePadding();
             ui::Icon(g.glyph, *g.tint);
-            ImGui::SameLine(0.0f, 8.0f);
+            ImGui::SameLine(0.0f, ui::Px(8.0f));
             ui::PushBold();
             ImGui::TextUnformatted(tag.name.c_str());
             ui::PopBold();
@@ -1360,7 +1360,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         {
                             for (int col = 0; col < 4; ++col)
                             {
-                                if (col) ImGui::SameLine(0.0f, 3.0f);
+                                if (col) ImGui::SameLine(0.0f, ui::Px(3.0f));
                                 ImGui::PushID(row * 4 + col);
                                 const bool current =
                                     std::fabs(ur.anchorMin.x - kAxis[col][0]) < 1e-4f &&
@@ -1384,16 +1384,16 @@ void InspectorPanel::Render(entt::registry& reg,
                                 // ミニ図: 外枠=親矩形、塗り=アンカーの位置/範囲
                                 const ImVec2 bmin = ImGui::GetItemRectMin();
                                 const ImVec2 bmax = ImGui::GetItemRectMax();
-                                dl->AddRect(ImVec2(bmin.x + 2.0f, bmin.y + 2.0f),
-                                            ImVec2(bmax.x - 2.0f, bmax.y - 2.0f),
+                                dl->AddRect(ImVec2(bmin.x + ui::Px(2.0f), bmin.y + ui::Px(2.0f)),
+                                            ImVec2(bmax.x - ui::Px(2.0f), bmax.y - ui::Px(2.0f)),
                                             ImGui::GetColorU32(ImGuiCol_TextDisabled));
-                                const float innerW = bmax.x - bmin.x - 6.0f;
-                                const float innerH = bmax.y - bmin.y - 6.0f;
-                                float x0 = bmin.x + 3.0f + innerW * kAxis[col][0];
-                                float x1 = bmin.x + 3.0f + innerW * kAxis[col][1];
-                                float y0 = bmin.y + 3.0f + innerH * kAxis[row][0];
-                                float y1 = bmin.y + 3.0f + innerH * kAxis[row][1];
-                                const float dot = 2.0f;   // 点アンカーの最低表示幅（半分）
+                                const float innerW = bmax.x - bmin.x - ui::Px(6.0f);
+                                const float innerH = bmax.y - bmin.y - ui::Px(6.0f);
+                                float x0 = bmin.x + ui::Px(3.0f) + innerW * kAxis[col][0];
+                                float x1 = bmin.x + ui::Px(3.0f) + innerW * kAxis[col][1];
+                                float y0 = bmin.y + ui::Px(3.0f) + innerH * kAxis[row][0];
+                                float y1 = bmin.y + ui::Px(3.0f) + innerH * kAxis[row][1];
+                                const float dot = ui::Px(2.0f);   // 点アンカーの最低表示幅（半分）
                                 if (x1 - x0 < dot * 2.0f) { const float c = (x0 + x1) * 0.5f; x0 = c - dot; x1 = c + dot; }
                                 if (y1 - y0 < dot * 2.0f) { const float c = (y0 + y1) * 0.5f; y0 = c - dot; y1 = c + dot; }
                                 dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1),
@@ -1423,12 +1423,12 @@ void InspectorPanel::Render(entt::registry& reg,
                             {"左下", "下", "右下"},
                         };
                         ImGui::PushID("UiPlacement");
-                        const float cell = ImGui::GetFrameHeight() + 4.0f;
+                        const float cell = ImGui::GetFrameHeight() + ui::Px(4.0f);
                         for (int row = 0; row < 3; ++row)
                         {
                             for (int col = 0; col < 3; ++col)
                             {
-                                if (col) ImGui::SameLine(0.0f, 3.0f);
+                                if (col) ImGui::SameLine(0.0f, ui::Px(3.0f));
                                 ImGui::PushID(row * 3 + col);
                                 if (ImGui::Button(kPlaceLabels[row][col], ImVec2(cell, cell)))
                                 {
@@ -2598,7 +2598,7 @@ void InspectorPanel::Render(entt::registry& reg,
                                                   ImGuiTreeNodeFlags_DefaultOpen);
                 if (emitter.layers.size() > 1)
                 {
-                    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20.0f);
+                    ImGui::SameLine(ImGui::GetContentRegionAvail().x - ui::Px(20.0f));
                     if (ImGui::SmallButton("×")) layerToRemove = static_cast<int>(li);
                 }
                 if (!layerOpen) { ImGui::PopID(); continue; }
@@ -3529,11 +3529,11 @@ void InspectorPanel::Render(entt::registry& reg,
                         if (gpuHandle != 0)
                         {
                             clicked = ImGui::ImageButton("##slotThumb", static_cast<ImTextureID>(gpuHandle),
-                                                          ImVec2(kThumbSize, kThumbSize));
+                                                          ui::Px(kThumbSize, kThumbSize));
                         }
                         else
                         {
-                            clicked = ImGui::Button(hasTex ? "..." : "(default)", ImVec2(kThumbSize * 3.0f, kThumbSize));
+                            clicked = ImGui::Button(hasTex ? "..." : "(default)", ui::Px(kThumbSize * 3.0f, kThumbSize));
                         }
                         if (clicked)
                             ImGui::OpenPopup("TexturePicker");
@@ -3566,7 +3566,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         {
                             ImGui::SameLine();
                             ImGui::BeginGroup();
-                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 160.0f);
+                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ui::Px(160.0f));
                             ImGui::TextWrapped("%s", cur.c_str());
                             ImGui::PopTextWrapPos();
                             if (ImGui::SmallButton("x"))
@@ -3611,7 +3611,7 @@ void InspectorPanel::Render(entt::registry& reg,
                                         ? m_assetBrowser->GetOrQueueThumbnail(dirIt->path().string()) : 0;
                                     if (rowThumb != 0)
                                     {
-                                        ImGui::Image(static_cast<ImTextureID>(rowThumb), ImVec2(20.0f, 20.0f));
+                                        ImGui::Image(static_cast<ImTextureID>(rowThumb), ui::Px(20.0f, 20.0f));
                                         ImGui::SameLine();
                                     }
                                     if (ImGui::Selectable(relStr.c_str(), cur == relStr))
@@ -3660,11 +3660,11 @@ void InspectorPanel::Render(entt::registry& reg,
                         if (gpuHandle != 0)
                         {
                             clicked = ImGui::ImageButton("##matThumb", static_cast<ImTextureID>(gpuHandle),
-                                                          ImVec2(kThumbSize, kThumbSize));
+                                                          ui::Px(kThumbSize, kThumbSize));
                         }
                         else
                         {
-                            clicked = ImGui::Button(hasMat ? "..." : "(none)", ImVec2(kThumbSize * 3.0f, kThumbSize));
+                            clicked = ImGui::Button(hasMat ? "..." : "(none)", ui::Px(kThumbSize * 3.0f, kThumbSize));
                         }
                         if (clicked)
                             ImGui::OpenPopup("MaterialPicker");
@@ -3718,7 +3718,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         {
                             ImGui::SameLine();
                             ImGui::BeginGroup();
-                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 160.0f);
+                            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ui::Px(160.0f));
                             ImGui::TextWrapped("%s", cur.c_str());
                             ImGui::PopTextWrapPos();
                             if (ImGui::SmallButton("x"))
@@ -4198,7 +4198,7 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
         if (ImGui::TreeNode(label))
         {
             // 件数が多い時に Inspector を占領しないよう、スクロール枠に閉じ込める
-            ImGui::BeginChild("##OvrList", ImVec2(0.0f, 120.0f), ImGuiChildFlags_Borders);
+            ImGui::BeginChild("##OvrList", ImVec2(0.0f, ui::Px(120.0f)), ImGuiChildFlags_Borders);
             for (const auto& o : m_prefabDiff)
                 ImGui::BulletText("[%s] %s . %s", o.entityName.c_str(), o.component.c_str(),
                                   o.field.c_str());
@@ -4221,11 +4221,11 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
     // ヘッダ（アイコン + 「ライト」 + 種別名）
     ImGui::AlignTextToFramePadding();
     ui::Icon(reg.all_of<DirectionalLight>(e) ? ICON_T_SUN : ICON_T_LIGHT, theme::TypeLight);
-    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::SameLine(0.0f, ui::Px(8.0f));
     ui::PushBold();
     ImGui::TextUnformatted("ライト");
     ui::PopBold();
-    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::SameLine(0.0f, ui::Px(8.0f));
     ImGui::TextDisabled("%s",
         reg.all_of<DirectionalLight>(e) ? "Directional — 太陽光（全体を照らす）" :
         reg.all_of<SpotLight>(e)        ? "Spot — スポット（円錐状）"          :
@@ -4304,11 +4304,11 @@ void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, en
     // ヘッダ（アイコン + 「オーディオ」 + 2D/3D 種別）
     ImGui::AlignTextToFramePadding();
     ui::Icon(ICON_T_AUDIO, theme::TypeAudio);
-    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::SameLine(0.0f, ui::Px(8.0f));
     ui::PushBold();
     ImGui::TextUnformatted("オーディオ");
     ui::PopBold();
-    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::SameLine(0.0f, ui::Px(8.0f));
     ImGui::TextDisabled("%s", as.spatial ? "3D 空間音" : "2D サウンド");
 
     ImGui::Spacing();
@@ -4515,7 +4515,7 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
                 ImGui::PushID(label);
                 ImGui::ColorButton("##swatch", c,
                                    ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
-                                   ImVec2(12, 12));
+                                   ui::Px(12.0f, 12.0f));
                 ImGui::SameLine();
                 ui::Checkbox(label, on);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);

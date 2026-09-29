@@ -155,7 +155,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
     ui::Checkbox("エラーで前面", &m_focusOnError);
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(200.0f);
+    ImGui::SetNextItemWidth(ui::Px(200.0f));
     if (ui::SearchField("##consolefilter", m_filter, sizeof(m_filter), "ログを検索"))
         m_viewDirty = true;
 
@@ -171,10 +171,10 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
             ImGui::PopStyleColor(2);
         };
         // 右端から3個分を逆算して配置（入り切らない時は成り行きで続ける）
-        const float w1 = 78.0f;
+        const float w1 = ui::Px(78.0f);
         ImGui::SameLine();
         const float rightStart = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x
-                               - (w1 * 3.0f + 8.0f);
+                               - (w1 * 3.0f + ui::Px(8.0f));
         if (rightStart > ImGui::GetCursorPosX())
             ImGui::SetCursorPosX(rightStart);
         sevToggle("情報",   m_cntInfo,  &m_showInfo,  theme::TextMid);
@@ -189,15 +189,15 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
     // ============ 高さ配分（リスト / 詳細ペイン / Lua入力行） ============
     const float inputH  = ImGui::GetFrameHeightWithSpacing();
     const bool  hasSel  = (m_selectedId != 0);
-    const float detailH = hasSel ? 110.0f : 0.0f;
-    const float listH   = ImGui::GetContentRegionAvail().y - detailH - inputH - 4.0f;
+    const float detailH = hasSel ? ui::Px(110.0f) : 0.0f;
+    const float listH   = ImGui::GetContentRegionAvail().y - detailH - inputH - ui::Px(4.0f);
 
     // ============ メッセージリスト ============
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::AppBg);
     ImGui::BeginChild("##consolelist", ImVec2(0, listH), ImGuiChildFlags_None);
     ui::PushMono();
     {
-        const float rowH   = ImGui::GetTextLineHeight() + 6.0f;
+        const float rowH   = ImGui::GetTextLineHeight() + ui::Px(6.0f);
         ImDrawList* dl     = ImGui::GetWindowDrawList();
         const float timeW  = ImGui::CalcTextSize("00:00:00").x;
         const float badgeW = ImGui::CalcTextSize("エラー").x;
@@ -220,12 +220,12 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
                     if (sev == 2)
                     {
                         dl->AddRectFilled(rowMin, rowMax, ImGui::GetColorU32(theme::WithAlpha(theme::Bad, 0.10f)));
-                        dl->AddRectFilled(rowMin, ImVec2(rowMin.x + 2.0f, rowMax.y), ImGui::GetColorU32(theme::Bad));
+                        dl->AddRectFilled(rowMin, ImVec2(rowMin.x + ui::Px(2.0f), rowMax.y), ImGui::GetColorU32(theme::Bad));
                     }
                     else if (sev == 1)
                     {
                         dl->AddRectFilled(rowMin, rowMax, ImGui::GetColorU32(theme::WithAlpha(theme::Warn, 0.08f)));
-                        dl->AddRectFilled(rowMin, ImVec2(rowMin.x + 2.0f, rowMax.y), ImGui::GetColorU32(theme::Warn));
+                        dl->AddRectFilled(rowMin, ImVec2(rowMin.x + ui::Px(2.0f), rowMax.y), ImGui::GetColorU32(theme::Warn));
                     }
                     else if ((row & 1) != 0)
                     {
@@ -255,11 +255,11 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
                 }
 
                 // 行の中身は DrawList で重ね描き（時刻=薄 / バッジ=重大度色 / 本文）
-                const float ty = rowMin.y + 3.0f;
-                float x = rowMin.x + 6.0f;
+                const float ty = rowMin.y + ui::Px(3.0f);
+                float x = rowMin.x + ui::Px(6.0f);
                 dl->AddText(ImVec2(x, ty),
                     ImGui::ColorConvertFloat4ToU32(theme::TextFaint), e.time.c_str());
-                x += timeW + 12.0f;
+                x += timeW + ui::Px(12.0f);
 
                 static const char* kBadge[3] = { "情報", "警告", "エラー" };
                 static const ImVec4* kBadgeCol[3] = { &theme::TextDim, &theme::Warn, &theme::Bad };
@@ -267,7 +267,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
                 if (sev == 0 && e.level <= 1) badgeCol = theme::TextFaint;   // debug/trace はさらに薄く
                 dl->AddText(ImVec2(x, ty),
                     ImGui::ColorConvertFloat4ToU32(badgeCol), kBadge[sev]);
-                x += badgeW + 12.0f;
+                x += badgeW + ui::Px(12.0f);
 
                 const ImVec4 textCol = (sev == 2) ? theme::Bad
                                      : (sev == 1) ? theme::Warn
@@ -282,7 +282,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
                     char cnt[16];
                     std::snprintf(cnt, sizeof(cnt), "x%d", m_viewCount[row]);
                     const float cw = ImGui::CalcTextSize(cnt).x;
-                    const float rx = rowMin.x + ImGui::GetContentRegionAvail().x - cw - 10.0f;
+                    const float rx = rowMin.x + ImGui::GetContentRegionAvail().x - cw - ui::Px(10.0f);
                     dl->AddText(ImVec2(rx, ty),
                         ImGui::ColorConvertFloat4ToU32(theme::TextDim), cnt);
                 }
@@ -398,10 +398,10 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
             const int shown = total < 8 ? total : 8;
             const int first = (m_completionSel >= shown) ? (m_completionSel - shown + 1) : 0;
             const float rowH = ImGui::GetTextLineHeightWithSpacing();
-            const float popH = shown * rowH + rowH + 14.0f;   // +1行はヒント表示
+            const float popH = shown * rowH + rowH + ui::Px(14.0f);   // +1行はヒント表示
             const ImVec2 inputMin = ImGui::GetItemRectMin();
-            ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMin.y - popH - 4.0f));
-            ImGui::SetNextWindowSize(ImVec2(380.0f, popH));
+            ImGui::SetNextWindowPos(ImVec2(inputMin.x, inputMin.y - popH - ui::Px(4.0f)));
+            ImGui::SetNextWindowSize(ImVec2(ui::Px(380.0f), popH));
             ImGui::Begin("##luacompl", nullptr,
                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |

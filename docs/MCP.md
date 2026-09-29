@@ -150,7 +150,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, virtualInput, background, protocolVersion:4}` ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
+| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, virtualInput, background, dpiScale, protocolVersion:4}` ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
 | `dx12_describe_mcp_params` | `{method?:string}` | `{methods:{<method名>:[{key,type}]}, count, globalKeys:["idempotency_key"], note}` ※**エンジンのディスパッチ表そのもの**。`type` は `bool`/`int`/`number`/`string`/`vec3`/`object`/`any`。`"親.子"` は入れ子オブジェクトのキー（例 `skybox.envMapPath`）。TS スキーマとのドリフト検出はこれを正にすること |
 | `dx12_list_entities` | `{verbose?:bool, name_prefix?:string, component_type?:string}` | `{entities:[{entityId,id,name,componentTypes?}], count, sceneGeneration}` |
 | `dx12_get_entity` | `{entity:int}` | `{entityId, componentTypes:[...], sceneGeneration, ...(全コンポーネント値)...}` |
@@ -628,9 +628,10 @@ Jev(TypeSafe System One)は文章を生成せず型付きの判断(noul / choice
 |---|---|
 | `--virtual-input` | 仮想入力モードで起動(実マウス/キーボードを受けない。窓は普通に出る)。AI 操作専用 |
 | `--background[=方式][,tool\|notool]` | **手前に出てこない静かな起動**。仮想入力モードを含意。方式は下表。`--headless` とは別(こちらは窓もレンダリングも普通に動く) |
+| `--dpi-scale <0.75〜3.0>` | **表示倍率(DPI)の検証用オーバーライド**(エディタ専用。`1.5` / `150%` / `150` のどれでも可)。OS の表示倍率を無視してその倍率で全体を描く(Windows の設定は一切触らない)。`--background` の窓は論理 1920×1080 × 倍率 の物理サイズになる(例: `--dpi-scale 1.5` → 2880×1620)。指定が無ければ OS の倍率(窓のいるモニターの DPI)に従う |
 
 `--background` の共通の挙動: `WS_EX_NOACTIVATE`(クリックされてもアクティブ化しない)/ `SetForegroundWindow` を一切呼ばない / スプラッシュ窓を出さない(起動・プロジェクト読込とも)/
-自動更新の確認をしない / 最大化・最小化・フルスクリーン・リサイズ・F11 を無効化 / クライアント領域は論理解像度 **1920×1080** 固定(最小化しても WM_SIZE で縮めない)/
+自動更新の確認をしない / 最大化・最小化・フルスクリーン・リサイズ・F11 を無効化 / クライアント領域は論理解像度 **1920×1080 × 表示倍率(`--dpi-scale` か OS の倍率。既定 100% なら 1920×1080 の物理 px)** 固定(最小化しても WM_SIZE で縮めない)/
 VSync を使わず 60fps 上限(見えていない窓は Present が即返る＝上限が無いと CPU/GPU を回し続けるため。設定は書き換えない)/ OS の省電力(EcoQoS・タイマー粗化)から外れる /
 `imgui.ini`(レイアウト)を保存しない(画面外の位置が普段のレイアウトに焼き付かないように)。
 
@@ -642,6 +643,10 @@ VSync を使わず 60fps 上限(見えていない窓は Present が即返る＝
 | `hidden` | 窓を一度も表示しない(HWND だけ作る) | `--headless` と同じ「隠し窓」。スワップチェインは可視性を要求しない |
 
 `tool` / `notool` はタスクバー(WS_EX_TOOLWINDOW)の出し分け。例: `--background=noactivate,tool`。
+
+> **★座標は【物理クライアント px】**(`dx12_imgui_pointer` の x/y・`dx12_imgui_find` の rect/center・`dx12_imgui_screenshot` の画像ピクセルはすべて同じ座標系)。
+> 表示倍率が 100% 以外のとき、UI の論理サイズ(100% 表示での px)= 物理 px ÷ `dpiScale`。`dx12_ping` / `dx12_imgui_virtual_input` の応答の **`dpiScale`**(1.0 = 100%)で現在の倍率が分かる。
+> 倍率が変わる(`--dpi-scale` の違い・OS の設定・別モニターへの移動)と、同じボタンの位置/大きさも物理 px では変わる。**座標を固定値で持ち回らず、毎回 `dx12_imgui_find` で引く**こと。
 
 **ツール**
 

@@ -303,4 +303,8 @@ namespace IMGUIZMO_NAMESPACE
    };
 
    IMGUI_API Style& GetStyle();
+
+   // DPI 対応（エディタ独自の追加）: 画面 px 単位の固定寸法（当たり判定の許容距離・小さな円/アンカーの半径・
+   // スクリーン中央の四角など）へ掛ける倍率。1.0 = 100%。Style の太さ/サイズは呼び出し側が倍率込みで設定する。
+   IMGUI_API void SetScreenScale(float scale);
 }

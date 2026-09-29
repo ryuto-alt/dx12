@@ -104,7 +104,8 @@ public:
     AssetBrowserPanel* GetAssetBrowser() const { return m_assetBrowser.get(); }
 
     // 下部ステータスバーの高さ。DockSpace はこのぶん短くする（重なると下端のパネルが隠れる）。
-    static constexpr f32 kStatusBarHeight = 28.0f;
+    static constexpr f32 kStatusBarHeight = 28.0f;   // 論理 px（100% 表示）
+    static f32 StatusBarHeight();                    // 現在の倍率での物理 px（Px(kStatusBarHeight)）
 
 private:
     void BuildDefaultLayout(ImGuiID dockspaceId, f32 toolbarHeight);

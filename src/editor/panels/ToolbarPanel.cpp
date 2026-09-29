@@ -143,12 +143,12 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::SetNextWindowSize(ImVec2(displayW, toolbarHeight), ImGuiCond_Always);
     ImGui::SetNextWindowViewport(mainVp->ID);
     // 上段(タイトルバー兼メニュー 32px) + 下段(ツール行 36px = 上下 4px の余白 + 28px のボタン)= kToolbarHeight 68。
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(8.0f, 4.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     // メニューバー行はカスタムタイトルバーを兼ねるので縦paddingを増やして高くする(UE風の32px帯)。
     // Begin時点のFramePaddingでメニューバー高さが決まるためBeginより前にpushする。
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-        ImVec2(8, (dx12e::theme::size::kTitleBarH - ImGui::GetFontSize()) * 0.5f));
+        ImVec2(ui::Px(8.0f), (ui::Px(dx12e::theme::size::kTitleBarH) - ImGui::GetFontSize()) * 0.5f));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, dx12e::theme::Bg1);   // ツール行はパネルと同じ面。タイトルバー(MenuBarBg)は最深の Bg0
     ImGui::Begin("##Toolbar", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
@@ -167,13 +167,13 @@ void ToolbarPanel::Render(bool isPlaying,
         // ---- ロゴ(タイトルバー左端。UEのエンジンアイコン位置) ----
         if (ctx.icons && ctx.icons->logo)
         {
-            const float kLogoSz = 20.0f;
+            const float kLogoSz = ui::Px(20.0f);
             ImVec2 cur = ImGui::GetCursorScreenPos();
             ImGui::GetWindowDrawList()->AddImage(
                 static_cast<ImTextureID>(ctx.icons->logo),
                 ImVec2(cur.x, titleBarRect.GetCenter().y - kLogoSz * 0.5f),
                 ImVec2(cur.x + kLogoSz, titleBarRect.GetCenter().y + kLogoSz * 0.5f));
-            ImGui::Dummy(ImVec2(kLogoSz + 8.0f, 0.0f));
+            ImGui::Dummy(ImVec2(kLogoSz + ui::Px(8.0f), 0.0f));
         }
 
         // ---- ファイル ----
@@ -256,7 +256,7 @@ void ToolbarPanel::Render(bool isPlaying,
                     ctx.viewportFill = fill ? 0.35f : 0.0f;
                 if (fill)
                 {
-                    ImGui::SetNextItemWidth(160.0f);
+                    ImGui::SetNextItemWidth(ui::Px(160.0f));
                     ui::SliderFloat("##viewportFill", &ctx.viewportFill, 0.02f, 1.0f, "%.2f");
                 }
                 if (ImGui::IsItemHovered() || ImGui::IsItemActive())
@@ -317,21 +317,21 @@ void ToolbarPanel::Render(bool isPlaying,
             const std::string ver = std::string("v") + kEngineVersion;
             const ImVec2 ts = ImGui::CalcTextSize(title.c_str());
             const ImVec2 vs = ImGui::CalcTextSize(ver.c_str());
-            const float totalW = ts.x + 10.0f + vs.x;
+            const float totalW = ts.x + ui::Px(10.0f) + vs.x;
             float cx = titleBarRect.Min.x + (titleBarRect.GetWidth() - totalW) * 0.5f;
-            cx = (std::max)(cx, menusEndX + 24.0f);   // 窓が狭い時はメニューの右に退避
+            cx = (std::max)(cx, menusEndX + ui::Px(24.0f));   // 窓が狭い時はメニューの右に退避
             ImGui::GetWindowDrawList()->AddText(
                 ImVec2(cx, titleBarRect.GetCenter().y - ts.y * 0.5f),
                 ImGui::GetColorU32(dx12e::theme::TextDim), title.c_str());
             ImGui::GetWindowDrawList()->AddText(
-                ImVec2(cx + ts.x + 10.0f, titleBarRect.GetCenter().y - vs.y * 0.5f),
+                ImVec2(cx + ts.x + ui::Px(10.0f), titleBarRect.GetCenter().y - vs.y * 0.5f),
                 ImGui::GetColorU32(dx12e::theme::TextFaint), ver.c_str());
         }
 
         // ---- 右端: 最小化 / 最大化(復元) / 閉じる(OS標準の代替。グリフはDrawListで描く) ----
         if (window && window->IsCustomTitleBar())
         {
-            const float btnW = 44.0f;
+            const float btnW = ui::Px(44.0f);
             ImDrawList* dl = ImGui::GetWindowDrawList();
             ImGui::SetCursorScreenPos(ImVec2(titleBarRect.Max.x - btnW * 3.0f, titleBarRect.Min.y));
 
@@ -347,26 +347,28 @@ void ToolbarPanel::Render(bool isPlaying,
                 const ImU32 fg = (glyph == 2 && hovered) ? IM_COL32(255, 255, 255, 255)
                                                          : ImGui::GetColorU32(dx12e::theme::TextMid);
                 const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
-                const float r = 5.0f;   // グリフ半径
+                const float r = ui::Px(5.0f);   // グリフ半径
+                const float o = ui::Px(2.0f);   // 復元グリフの重ね量
+                const float lw = ui::Px(1.0f);  // グリフ線幅
                 if (glyph == 0)          // ─
-                    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), fg, 1.0f);
+                    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), fg, lw);
                 else if (glyph == 1)     // □ / ❐(復元)
                 {
                     if (window->IsMaximized())
                     {
-                        dl->AddRect(ImVec2(c.x - r, c.y - r + 2), ImVec2(c.x + r - 2, c.y + r), fg, 1.0f, 0, 1.0f);
-                        dl->AddLine(ImVec2(c.x - r + 2, c.y - r + 2), ImVec2(c.x - r + 2, c.y - r), fg, 1.0f);
-                        dl->AddLine(ImVec2(c.x - r + 2, c.y - r), ImVec2(c.x + r, c.y - r), fg, 1.0f);
-                        dl->AddLine(ImVec2(c.x + r, c.y - r), ImVec2(c.x + r, c.y + r - 2), fg, 1.0f);
-                        dl->AddLine(ImVec2(c.x + r, c.y + r - 2), ImVec2(c.x + r - 2, c.y + r - 2), fg, 1.0f);
+                        dl->AddRect(ImVec2(c.x - r, c.y - r + o), ImVec2(c.x + r - o, c.y + r), fg, lw, 0, lw);
+                        dl->AddLine(ImVec2(c.x - r + o, c.y - r + o), ImVec2(c.x - r + o, c.y - r), fg, lw);
+                        dl->AddLine(ImVec2(c.x - r + o, c.y - r), ImVec2(c.x + r, c.y - r), fg, lw);
+                        dl->AddLine(ImVec2(c.x + r, c.y - r), ImVec2(c.x + r, c.y + r - o), fg, lw);
+                        dl->AddLine(ImVec2(c.x + r, c.y + r - o), ImVec2(c.x + r - o, c.y + r - o), fg, lw);
                     }
                     else
-                        dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, 1.0f, 0, 1.0f);
+                        dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, lw, 0, lw);
                 }
                 else                     // ✕
                 {
-                    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, 1.0f);
-                    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), fg, 1.0f);
+                    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), fg, lw);
+                    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), fg, lw);
                 }
                 ImGui::SameLine(0.0f, 0.0f);
                 return clicked;
@@ -398,10 +400,10 @@ void ToolbarPanel::Render(bool isPlaying,
     // ボタンは 28x28 の正方形・ラベル無し（ホバーでツールチップ）。それより低い部品（コンボ・文字）は
     // 縦中央へ置く。配置はカーソルを明示指定する（SameLine は高さの違う部品の縦位置が揃わないため）。
     namespace th = dx12e::theme;
-    const float kBtn   = th::size::kToolbarBtn;
+    const float kBtn   = th::Px(th::size::kToolbarBtn);   // DPI: 論理 28 -> 物理 px
     const float rowTop = ImGui::GetCursorScreenPos().y;
     const float rowMid = rowTop + kBtn * 0.5f;
-    float x = mainVp->Pos.x + 10.0f;
+    float x = mainVp->Pos.x + ui::Px(10.0f);
     ImDrawList* tdl = ImGui::GetWindowDrawList();
     const float frameH = ImGui::GetFrameHeight();
     const float lineH  = ImGui::GetTextLineHeight();
@@ -409,16 +411,16 @@ void ToolbarPanel::Render(bool isPlaying,
     auto iconBtn = [&](const char* id, const char* glyph, const char* tip, bool active, const char* anchor,
                        const ImVec4* tint = nullptr, const ImVec4* face = nullptr) -> bool
     {
-        put(kBtn + 2.0f, kBtn);
+        put(kBtn + ui::Px(2.0f), kBtn);
         const bool c = ui::IconButton(id, glyph, tip, active, tint, kBtn, 0.0f, face);
         dx12e::vinput_gui::AnchorLastItem("button", anchor);   // dx12_imgui_find 用（従来のラベル名で引ける）
         return c;
     };
     auto sep = [&]()
     {
-        x += 6.0f;
-        tdl->AddLine(ImVec2(x, rowMid - 10.0f), ImVec2(x, rowMid + 10.0f), ImGui::GetColorU32(th::BorderStrong));
-        x += 8.0f;
+        x += ui::Px(6.0f);
+        tdl->AddLine(ImVec2(x, rowMid - ui::Px(10.0f)), ImVec2(x, rowMid + ui::Px(10.0f)), ImGui::GetColorU32(th::BorderStrong));
+        x += ui::Px(8.0f);
     };
 
     // ===== ギズモ（移動 / 回転 / 拡縮 / 空間）=====
@@ -450,7 +452,7 @@ void ToolbarPanel::Render(bool isPlaying,
 
     // ===== ツール窓（「窓 ▾」ドロップダウン1個に集約）=====
     sep();
-    put(kBtn + 14.0f + 2.0f, kBtn);
+    put(kBtn + ui::Px(14.0f) + ui::Px(2.0f), kBtn);
     if (ui::IconDropdownButton("windows", ICON_WINDOWS, "ツール窓の表示/非表示", tools::AnyOpen(ctx), kBtn))
         ImGui::OpenPopup("##ToolWindowsMenu");
     dx12e::vinput_gui::AnchorLastItem("button", "窓");
@@ -470,7 +472,7 @@ void ToolbarPanel::Render(bool isPlaying,
     // ===== Play コントロール（画面中央。UE5 と同じ配置）=====
     // Play ボタンが常に画面中央へ来るよう配置（左のツール群と重なる狭い窓では右へ退避）。
     // フラットなアイコン: 停止中は緑の再生アイコン、Play 中は赤い停止アイコン（押下状態 = 薄い赤の面）。
-    x = (std::max)(x + 12.0f, mainVp->Pos.x + displayW * 0.5f - kBtn * 0.5f);
+    x = (std::max)(x + ui::Px(12.0f), mainVp->Pos.x + displayW * 0.5f - kBtn * 0.5f);
     if (!isPlaying)
     {
         if (iconBtn("play", ICON_PLAY, "Play  再生（プレイモードへ）", false, "再生", &th::Good))
@@ -508,13 +510,13 @@ void ToolbarPanel::Render(bool isPlaying,
     // ===== マルチプレイ テストロール(フェーズ⑨) =====
     // Play中はロール変更不可(Stopしてから変える)。EnterPlayModeがctx.netTestRoleを見て
     // net:host()/net:join()相当を自動実行する(Luaを書かずに素早く2窓テストできるように)。
-    x += 10.0f;
-    put(150.0f + 8.0f, frameH);
+    x += ui::Px(10.0f);
+    put(ui::Px(150.0f) + ui::Px(8.0f), frameH);
     ImGui::BeginDisabled(isPlaying);
     {
         const char* roleLabels[] = { "オフライン", "ホストとしてPlay", "クライアント参加" };
         int roleIdx = static_cast<int>(ctx.netTestRole);
-        ImGui::SetNextItemWidth(150);
+        ImGui::SetNextItemWidth(ui::Px(150.0f));
         if (ui::Combo("##net_test_role", &roleIdx, roleLabels, IM_ARRAYSIZE(roleLabels)))
             ctx.netTestRole = static_cast<NetTestRole>(roleIdx);
     }
@@ -522,11 +524,11 @@ void ToolbarPanel::Render(bool isPlaying,
 
     if (ctx.netTestRole == NetTestRole::Client)
     {
-        put(120.0f + 6.0f, frameH);
+        put(ui::Px(120.0f) + ui::Px(6.0f), frameH);
         ImGui::BeginDisabled(isPlaying);
         char ipBuf[64];
         strncpy_s(ipBuf, ctx.netTestJoinAddress.c_str(), _TRUNCATE);
-        ImGui::SetNextItemWidth(120);
+        ImGui::SetNextItemWidth(ui::Px(120.0f));
         if (ui::InputText("##net_test_ip", ipBuf, sizeof(ipBuf)))
             ctx.netTestJoinAddress = ipBuf;
         ImGui::EndDisabled();
@@ -536,10 +538,10 @@ void ToolbarPanel::Render(bool isPlaying,
     {
         const char* lbl = "テストクライアント起動";
         const float bw = ImGui::CalcTextSize(lbl).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-        put(bw + 6.0f, frameH);
+        put(bw + ui::Px(6.0f), frameH);
         if (ImGui::Button(lbl))
             ctx.netTestLaunchClientRequested = true;
-        put(20.0f, frameH);
+        put(ui::Px(20.0f), frameH);
         ImGui::TextDisabled("%s", ICON_HELP);
         if (ImGui::BeginItemTooltip())
         {
@@ -550,10 +552,10 @@ void ToolbarPanel::Render(bool isPlaying,
     }
 
     // ===== Status =====
-    x += 8.0f;
+    x += ui::Px(8.0f);
     {
         const char* st = isPlaying ? ICON_PLAY " プレイ中" : "エディタ";
-        put(ImGui::CalcTextSize(st).x + 16.0f, lineH);
+        put(ImGui::CalcTextSize(st).x + ui::Px(16.0f), lineH);
         if (isPlaying)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, th::Good);
@@ -572,7 +574,7 @@ void ToolbarPanel::Render(bool isPlaying,
     if (scriptEngine && (!scriptEngine->GetLastError().empty() || scriptEngine->HasScriptErrors()))
     {
         const char* msg = ICON_WARN " Lua Error";
-        put(ImGui::CalcTextSize(msg).x + 16.0f, lineH);
+        put(ImGui::CalcTextSize(msg).x + ui::Px(16.0f), lineH);
         ImGui::PushStyleColor(ImGuiCol_Text, th::Bad);
         ImGui::TextUnformatted(msg);
         ImGui::PopStyleColor();
@@ -608,17 +610,17 @@ void ToolbarPanel::Render(bool isPlaying,
     {
         ImVec2 c = ImGui::GetMainViewport()->GetCenter();
         ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSize(ui::Px(560.0f, 0.0f), ImGuiCond_Appearing);
         if (ImGui::BeginPopupModal("ショートカット一覧##ShortcutsPopup", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize))
         {
-            const float tableH = (std::min)(ImGui::GetMainViewport()->Size.y * 0.78f, 800.0f);
+            const float tableH = (std::min)(ImGui::GetMainViewport()->Size.y * 0.78f, ui::Px(800.0f));
             if (ImGui::BeginChild("##shortcutsScroll", ImVec2(0.0f, tableH), false))
             {
                 if (ImGui::BeginTable("##shortcuts", 2,
                         ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg))
                 {
-                    ImGui::TableSetupColumn("キー", ImGuiTableColumnFlags_WidthFixed, 190.0f);
+                    ImGui::TableSetupColumn("キー", ImGuiTableColumnFlags_WidthFixed, ui::Px(190.0f));
                     ImGui::TableSetupColumn("動作", ImGuiTableColumnFlags_WidthStretch);
 
                     auto row = [](const std::string& key, const char* desc)
@@ -637,7 +639,7 @@ void ToolbarPanel::Render(bool isPlaying,
                     {
                         ImGui::TableNextRow();
                         ImGui::TableSetColumnIndex(0);
-                        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+                        ImGui::Dummy(ImVec2(0.0f, ui::Px(4.0f)));
                         ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextDim);
                         ui::PushBold();
                         ImGui::TextUnformatted(title);
@@ -661,7 +663,7 @@ void ToolbarPanel::Render(bool isPlaying,
             }
             ImGui::EndChild();
             ImGui::Separator();
-            if (ImGui::Button("閉じる", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+            if (ImGui::Button("閉じる", ui::Px(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
@@ -679,7 +681,7 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::Separator();
             ImGui::TextUnformatted("https://github.com/ryuto-alt/dx12");
             ImGui::Spacing();
-            if (ImGui::Button("閉じる", ImVec2(120, 0)))
+            if (ImGui::Button("閉じる", ui::Px(120.0f, 0.0f)))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
@@ -694,7 +696,7 @@ void ToolbarPanel::Render(bool isPlaying,
 
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ui::Px(350.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3##NewScenePopup",
                                nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
@@ -715,7 +717,7 @@ void ToolbarPanel::Render(bool isPlaying,
         const char* btnLabel = ctx.newSceneDialogIsCreate
             ? "\xe4\xbd\x9c\xe6\x88\x90"    // 作成
             : "\xe4\xbf\x9d\xe5\xad\x98";   // 保存
-        if (ImGui::Button(btnLabel, ImVec2(120, 0)) || (enterPressed && nameValid))
+        if (ImGui::Button(btnLabel, ui::Px(120.0f, 0.0f)) || (enterPressed && nameValid))
         {
             std::string scenesDir = assetsDir + "scenes/";
             std::filesystem::create_directories(scenesDir);
@@ -745,7 +747,7 @@ void ToolbarPanel::Render(bool isPlaying,
         if (!nameValid) ImGui::EndDisabled();
 
         ImGui::SameLine();
-        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ui::Px(120.0f, 0.0f)))  // キャンセル
             ImGui::CloseCurrentPopup();
 
         ImGui::EndPopup();
@@ -759,7 +761,7 @@ void ToolbarPanel::Render(bool isPlaying,
     }
 
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ui::Px(350.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88##NewScriptPopup",
                                nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
@@ -776,7 +778,7 @@ void ToolbarPanel::Render(bool isPlaying,
         bool nameValid = std::strlen(ctx.newScriptNameBuf) > 0;
 
         if (!nameValid) ImGui::BeginDisabled();
-        if (ImGui::Button("\xe4\xbd\x9c\xe6\x88\x90", ImVec2(120, 0)) || (enterPressed && nameValid))  // 作成
+        if (ImGui::Button("\xe4\xbd\x9c\xe6\x88\x90", ui::Px(120.0f, 0.0f)) || (enterPressed && nameValid))  // 作成
         {
             // assets/scripts/ にテンプレート生成（プロジェクト内＝アセットブラウザに表示され、
             // scriptPath="scripts/<name>.lua" で添付できる。旧 assets/../scripts はブラウザ外だった）
@@ -813,7 +815,7 @@ void ToolbarPanel::Render(bool isPlaying,
         if (!nameValid) ImGui::EndDisabled();
 
         ImGui::SameLine();
-        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ui::Px(120.0f, 0.0f)))  // キャンセル
             ImGui::CloseCurrentPopup();
 
         ImGui::EndPopup();
@@ -827,7 +829,7 @@ void ToolbarPanel::Render(bool isPlaying,
     }
 
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(350, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ui::Px(350.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("\xe6\x96\xb0\xe8\xa6\x8f\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc##NewShaderPopup",
                                nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
@@ -861,7 +863,7 @@ void ToolbarPanel::Render(bool isPlaying,
         bool nameValid = std::strlen(ctx.newShaderNameBuf) > 0;
 
         if (!nameValid) ImGui::BeginDisabled();
-        if (ImGui::Button("\xe4\xbd\x9c\xe6\x88\x90", ImVec2(120, 0)) || (enterPressed && nameValid))  // 作成
+        if (ImGui::Button("\xe4\xbd\x9c\xe6\x88\x90", ui::Px(120.0f, 0.0f)) || (enterPressed && nameValid))  // 作成
         {
             // assets/shaders/ にテンプレート生成（プロジェクト独自シェーダーの置き場。
             // ShaderManager がここを走査し、Registryに無いものはカスタムとしてホットリロード対象になる）。
@@ -892,7 +894,7 @@ void ToolbarPanel::Render(bool isPlaying,
         if (!nameValid) ImGui::EndDisabled();
 
         ImGui::SameLine();
-        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0)))  // キャンセル
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ui::Px(120.0f, 0.0f)))  // キャンセル
             ImGui::CloseCurrentPopup();
 
         ImGui::EndPopup();
@@ -910,7 +912,7 @@ void ToolbarPanel::Render(bool isPlaying,
     if (!ctx.showUnsavedConfirm) m_unsavedPopupOpen = false;
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ui::Px(440.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("##UnsavedConfirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f),
@@ -936,7 +938,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::Spacing();
 
         if (!canSave) ImGui::BeginDisabled();
-        if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x97\xe3\x81\xa6\xe7\xb6\x9a\xe8\xa1\x8c", ImVec2(132, 0)))  // 保存して続行
+        if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x97\xe3\x81\xa6\xe7\xb6\x9a\xe8\xa1\x8c", ui::Px(132.0f, 0.0f)))  // 保存して続行
         {
             ctx.unsavedChoice = EditorContext::UnsavedChoice::Save;
             ImGui::CloseCurrentPopup();
@@ -947,7 +949,7 @@ void ToolbarPanel::Render(bool isPlaying,
         // 破棄は誤爆すると作業が消えるので赤くしておく（既定フォーカスも持たせない）
         ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.45f, 0.18f, 0.18f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.60f, 0.22f, 0.22f, 1.0f));
-        if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x9b\xe3\x81\x9a\xe7\xb6\x9a\xe8\xa1\x8c", ImVec2(132, 0)))  // 保存せず続行
+        if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\x9b\xe3\x81\x9a\xe7\xb6\x9a\xe8\xa1\x8c", ui::Px(132.0f, 0.0f)))  // 保存せず続行
         {
             ctx.unsavedChoice = EditorContext::UnsavedChoice::Discard;
             ImGui::CloseCurrentPopup();
@@ -955,7 +957,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::PopStyleColor(2);
 
         ImGui::SameLine();
-        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ImVec2(120, 0))  // キャンセル
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ui::Px(120.0f, 0.0f))  // キャンセル
             || ImGui::IsKeyPressed(ImGuiKey_Escape))
         {
             ctx.unsavedChoice = EditorContext::UnsavedChoice::Cancel;
@@ -974,7 +976,7 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::OpenPopup("##AutosaveRecovery");
 
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(460, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ui::Px(460.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal("##AutosaveRecovery", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         // 保存されていない自動保存が見つかりました
@@ -988,13 +990,13 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::Separator();
         ImGui::Spacing();
 
-        if (ImGui::Button("\xe5\xbe\xa9\xe5\x85\x83\xe3\x81\x99\xe3\x82\x8b", ImVec2(140, 0)))  // 復元する
+        if (ImGui::Button("\xe5\xbe\xa9\xe5\x85\x83\xe3\x81\x99\xe3\x82\x8b", ui::Px(140.0f, 0.0f)))  // 復元する
         {
             ctx.autosaveChoice = EditorContext::AutosaveChoice::Restore;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("\xe7\xa0\xb4\xe6\xa3\x84\xe3\x81\x99\xe3\x82\x8b", ImVec2(140, 0)))  // 破棄する
+        if (ImGui::Button("\xe7\xa0\xb4\xe6\xa3\x84\xe3\x81\x99\xe3\x82\x8b", ui::Px(140.0f, 0.0f)))  // 破棄する
         {
             ctx.autosaveChoice = EditorContext::AutosaveChoice::Discard;
             ImGui::CloseCurrentPopup();

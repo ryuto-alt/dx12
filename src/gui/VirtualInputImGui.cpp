@@ -208,6 +208,7 @@ void DrawVirtualCursor()
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImDrawList* dl = ImGui::GetForegroundDrawList(vp);   // ★メインビューポート指定（引数なしは別 OS 窓へ描く罠）
     const double now = ImGui::GetTime();
+    const float dk = ImGui::GetStyle().FontScaleDpi > 0.0f ? ImGui::GetStyle().FontScaleDpi : 1.0f;   // 表示倍率（仮想カーソルの大きさ）
 
     const vinput::ImGuiPoint pos = vinput::ClientToImGui(
         st.x, st.y, vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y);
@@ -229,11 +230,11 @@ void DrawVirtualCursor()
         const float age = static_cast<float>((now - g_ripples[i].t0) / kRippleLife);
         if (age >= 1.0f) { g_ripples.erase(g_ripples.begin() + static_cast<std::ptrdiff_t>(i)); continue; }
         const float ease = 1.0f - (1.0f - age) * (1.0f - age);
-        const float r = 6.0f + 26.0f * ease;
+        const float r = (6.0f + 26.0f * ease) * dk;
         const float alpha = 1.0f - age;
         const ImVec2 c(g_ripples[i].x, g_ripples[i].y);
-        dl->AddCircle(c, r, ButtonColor(g_ripples[i].button, alpha), 32, 3.0f);
-        dl->AddCircle(c, r * 0.55f, ButtonColor(g_ripples[i].button, alpha * 0.7f), 24, 2.0f);
+        dl->AddCircle(c, r, ButtonColor(g_ripples[i].button, alpha), 32, 3.0f * dk);
+        dl->AddCircle(c, r * 0.55f, ButtonColor(g_ripples[i].button, alpha * 0.7f), 24, 2.0f * dk);
         g_lastPrimCount += 2;
         ++i;
     }
@@ -242,13 +243,13 @@ void DrawVirtualCursor()
     for (int b = 0; b < 3; ++b)
     {
         if (!st.button[b]) continue;
-        dl->AddCircleFilled(tip, 9.0f, ButtonColor(b, 0.35f), 20);
-        dl->AddCircle(tip, 9.0f, ButtonColor(b, 0.95f), 20, 2.0f);
+        dl->AddCircleFilled(tip, 9.0f * dk, ButtonColor(b, 0.35f), 20);
+        dl->AddCircle(tip, 9.0f * dk, ButtonColor(b, 0.95f), 20, 2.0f * dk);
         g_lastPrimCount += 2;
     }
 
     // 矢印本体（白地に黒縁。どんな背景でも見える）。先端が (tip) に来る。
-    const float s = 1.25f;
+    const float s = 1.25f * dk;
     const ImVec2 arrow[7] = {
         ImVec2(0.0f, 0.0f),   ImVec2(0.0f, 17.0f),  ImVec2(4.2f, 13.4f), ImVec2(7.4f, 20.6f),
         ImVec2(10.2f, 19.4f), ImVec2(7.0f, 12.4f),  ImVec2(12.0f, 12.4f),
@@ -256,16 +257,16 @@ void DrawVirtualCursor()
     ImVec2 pts[7];
     for (int i = 0; i < 7; ++i) pts[i] = ImVec2(tip.x + arrow[i].x * s, tip.y + arrow[i].y * s);
     dl->AddConcavePolyFilled(pts, 7, IM_COL32(255, 255, 255, 245));     // 矢印全体（凹多角形）
-    dl->AddPolyline(pts, 7, IM_COL32(15, 15, 20, 255), ImDrawFlags_Closed, 1.6f);
+    dl->AddPolyline(pts, 7, IM_COL32(15, 15, 20, 255), ImDrawFlags_Closed, 1.6f * dk);
     g_lastPrimCount += 2;
 
     // 「AI」タグ。人間のカーソルと見分けが付くように。
     const char* tag = "AI";
     const ImVec2 ts = ImGui::CalcTextSize(tag);
     const ImVec2 t0(tip.x + 14.0f * s, tip.y + 16.0f * s);
-    const ImVec2 t1(t0.x + ts.x + 10.0f, t0.y + ts.y + 4.0f);
-    dl->AddRectFilled(t0, t1, IM_COL32(70, 130, 255, 235), 5.0f);
-    dl->AddText(ImVec2(t0.x + 5.0f, t0.y + 2.0f), IM_COL32(255, 255, 255, 255), tag);
+    const ImVec2 t1(t0.x + ts.x + 10.0f * dk, t0.y + ts.y + 4.0f * dk);
+    dl->AddRectFilled(t0, t1, IM_COL32(70, 130, 255, 235), 5.0f * dk);
+    dl->AddText(ImVec2(t0.x + 5.0f * dk, t0.y + 2.0f * dk), IM_COL32(255, 255, 255, 255), tag);
     g_lastPrimCount += 2;
 }
 

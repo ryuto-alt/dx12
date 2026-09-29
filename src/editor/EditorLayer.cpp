@@ -113,6 +113,8 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_inspector->SetAssetBrowser(m_assetBrowser.get());
 }
 
+f32 EditorLayer::StatusBarHeight() { return theme::Px(kStatusBarHeight); }
+
 // 既定レイアウトを作る。★呼ぶのは起動時と「レイアウトをリセット」だけ（窓の開閉では呼ばない）。
 //
 //   左            : ヒエラルキー（全高）
@@ -191,6 +193,7 @@ void EditorLayer::Render(bool isPlaying,
                          ID3D12GraphicsCommandList* cmdList)
 {
     m_ctx->isPlaying = isPlaying;   // 各パネルが「Play 中は押せない」を判定するのに使う
+    toolbarHeight = ui::Px(toolbarHeight);   // Application::kToolbarHeight は論理 px（100% 表示）。以降は物理 px
 
     auto& reg = scene->GetRegistry();
 
@@ -248,10 +251,12 @@ void EditorLayer::Render(bool isPlaying,
     }
 
     // ===== ツールバー（画面上部、DockSpace の外に固定） =====
+    theme::RestoreMainScale();   // DPI: 別倍率のモニターの窓を描いた後でもメイン窓の座標計算は主倍率で
     m_toolbar->Render(isPlaying, *m_ctx, outModeChangeRequested, outPendingPlayMode,
                       scriptEngine, clock, scene, window, audioSystem, assetsDir, toolbarHeight);
 
     // ===== DockSpace（ツールバーの下に全画面） =====
+    theme::RestoreMainScale();
     ImGuiID dockspaceId = 0;
     {
         // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート原点基準で置く
@@ -261,7 +266,7 @@ void EditorLayer::Render(bool isPlaying,
 
         ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight), ImGuiCond_Always);
         // 下端はステータスバーぶん空ける（ドックのパネルが帯に潜り込まないように）
-        ImGui::SetNextWindowSize(ImVec2(displayW, displayH - toolbarHeight - kStatusBarHeight),
+        ImGui::SetNextWindowSize(ImVec2(displayW, displayH - toolbarHeight - StatusBarHeight()),
                                  ImGuiCond_Always);
         ImGui::SetNextWindowViewport(mainVp->ID);
 
@@ -355,7 +360,7 @@ void EditorLayer::Render(bool isPlaying,
             const ImGuiViewport* mainVp = ImGui::GetMainViewport();
             nodePos  = ImVec2(mainVp->Pos.x, mainVp->Pos.y + toolbarHeight);
             nodeSize = mainVp->Size;
-            nodeSize.y -= toolbarHeight + kStatusBarHeight;
+            nodeSize.y -= toolbarHeight + StatusBarHeight();
         }
         if (nodeSize.x < 1.0f) nodeSize.x = 1.0f;
         if (nodeSize.y < 1.0f) nodeSize.y = 1.0f;
@@ -388,15 +393,15 @@ void EditorLayer::Render(bool isPlaying,
     // カメラを選択すると、その視点の映像をシーンビュー右下に表示（Play 不要）。
     if (m_ctx->cameraPreviewTexHandle != 0)
     {
-        const float pw  = 320.0f;
+        const float pw  = ui::Px(320.0f);
         const float ph  = pw * 9.0f / 16.0f;   // 16:9
-        const float pad = 12.0f;
+        const float pad = ui::Px(12.0f);
         ImGui::SetNextWindowPos(
             ImVec2(m_viewportPos.x + m_viewportSize.x - pw - pad,
-                   m_viewportPos.y + m_viewportSize.y - ph - pad - 26.0f),  // タイトルバー分
+                   m_viewportPos.y + m_viewportSize.y - ph - pad - ui::Px(26.0f)),  // タイトルバー分
             ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(0.9f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 6));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(6.0f, 6.0f));
         if (ImGui::Begin("Camera Preview", nullptr,
                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse |
@@ -425,10 +430,10 @@ void EditorLayer::Render(bool isPlaying,
                 dl->AddLine(ImVec2(imgMin.x, fy), ImVec2(imgMax.x, fy), cThird);
             }
             // 中心十字（中央が一目で分かる）
-            const float r = 9.0f;
-            dl->AddLine(ImVec2(ctr.x - r, ctr.y), ImVec2(ctr.x + r, ctr.y), cCross, 1.5f);
-            dl->AddLine(ImVec2(ctr.x, ctr.y - r), ImVec2(ctr.x, ctr.y + r), cCross, 1.5f);
-            dl->AddCircle(ctr, 2.5f, cCross);
+            const float r = ui::Px(9.0f);
+            dl->AddLine(ImVec2(ctr.x - r, ctr.y), ImVec2(ctr.x + r, ctr.y), cCross, ui::PxF(1.5f));
+            dl->AddLine(ImVec2(ctr.x, ctr.y - r), ImVec2(ctr.x, ctr.y + r), cCross, ui::PxF(1.5f));
+            dl->AddCircle(ctr, ui::PxF(2.5f), cCross);
         }
         ImGui::End();
         ImGui::PopStyleVar();
@@ -614,12 +619,14 @@ void EditorLayer::Render(bool isPlaying,
     AiDebugOverlayFrame(reg, *m_ctx, camera);
 
     // ===== 最下部のステータスバー（3D ビューに重ねない情報の置き場）=====
+    theme::RestoreMainScale();
     RenderStatusBar(scene, camera, clock, isPlaying);
 
     // ===== コマンドパレット (Ctrl+K) / クイックオープン (Ctrl+P) と、右下のトースト通知 =====
     // どちらも最後に描く＝他のパネルより手前。トーストはステータスバーの上に積む。
+    theme::RestoreMainScale();
     m_palette->Render(*m_ctx, cmdEnv, reg, m_assetBrowser.get());
-    ui::RenderToasts(ImGui::GetIO().DeltaTime, kStatusBarHeight);
+    ui::RenderToasts(ImGui::GetIO().DeltaTime, StatusBarHeight());
 
     // ===== フローティング窓をメインウィンドウ内へ収める領域を渡す =====
     // ImGui は保存位置の無い新規窓を (60,60) に開くのでツールバーに被っていた。ツールバーの下〜
@@ -629,7 +636,7 @@ void EditorLayer::Render(bool isPlaying,
         const ImGuiViewport* mvp = ImGui::GetMainViewport();
         floatguard::SetArea(
             ImVec2(mvp->Pos.x, mvp->Pos.y + toolbarHeight),
-            ImVec2(mvp->Pos.x + mvp->Size.x, mvp->Pos.y + mvp->Size.y - kStatusBarHeight));
+            ImVec2(mvp->Pos.x + mvp->Size.x, mvp->Pos.y + mvp->Size.y - StatusBarHeight()));
     }
 }
 
@@ -638,16 +645,16 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
     auto& reg = scene->GetRegistry();
 
     const ImGuiViewport* mainVp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x, mainVp->Pos.y + mainVp->Size.y - kStatusBarHeight),
+    ImGui::SetNextWindowPos(ImVec2(mainVp->Pos.x, mainVp->Pos.y + mainVp->Size.y - StatusBarHeight()),
                             ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(mainVp->Size.x, kStatusBarHeight), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(mainVp->Size.x, StatusBarHeight()), ImGuiCond_Always);
     ImGui::SetNextWindowViewport(mainVp->ID);
     // 最深の面（Bg0）＝窓の外の帯。パネルと同色だと続きに見えて読みにくい。
     ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::Bg0);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(12.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 2));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ui::Px(8.0f, 2.0f));
     ImGui::Begin("##StatusBar", nullptr,
         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoDocking   | ImGuiWindowFlags_NoSavedSettings |
@@ -657,7 +664,7 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 wp = ImGui::GetWindowPos();
     const float  ww = ImGui::GetWindowSize().x;
-    const float  midY = kStatusBarHeight * 0.5f;
+    const float  midY = StatusBarHeight() * 0.5f;
     const float  lineH = ImGui::GetTextLineHeight();
 
     // 上辺の区切り線（ドックのパネルとの境目）
@@ -680,11 +687,11 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
         ImGui::PushStyleColor(ImGuiCol_Text, theme::TextDim);
         ImGui::TextUnformatted(ICON_POINTER);
         ImGui::PopStyleColor();
-        ImGui::SameLine(0, 6);
+        ImGui::SameLine(0, ui::Px(6.0f));
         ImGui::TextUnformatted(reg.get<NameTag>(m_ctx->selectedEntity).name.c_str());
         if (m_ctx->selectedEntities.size() > 1)
         {
-            ImGui::SameLine(0, 6);
+            ImGui::SameLine(0, ui::Px(6.0f));
             ImGui::TextDisabled("+%zu 件", m_ctx->selectedEntities.size() - 1);
         }
     }
@@ -710,13 +717,13 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
     ui::PushMono();
     float segW[4];
     float total = 0.0f;
-    const float kGap = 12.0f;   // 区切り線の左右の余白
+    const float kGap = ui::Px(12.0f);   // 区切り線の左右の余白
     for (int i = 0; i < 4; ++i)
     {
         segW[i] = ImGui::CalcTextSize(seg[i]).x;
-        total += segW[i] + (i ? kGap * 2.0f + 1.0f : 0.0f);
+        total += segW[i] + (i ? kGap * 2.0f + ui::Px(1.0f) : 0.0f);
     }
-    float x = wp.x + ww - 12.0f - total;
+    float x = wp.x + ww - ui::Px(12.0f) - total;
     const float ty = std::floor(wp.y + midY - lineH * 0.5f);
     const ImU32 statCol = ImGui::GetColorU32(isPlaying ? theme::Text : theme::TextDim);
     for (int i = 0; i < 4; ++i)
@@ -724,25 +731,25 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
         if (i)
         {
             x += kGap;
-            dl->AddLine(ImVec2(x, wp.y + midY - 6.0f), ImVec2(x, wp.y + midY + 6.0f),
-                        ImGui::GetColorU32(theme::BorderStrong));
-            x += 1.0f + kGap;
+            dl->AddLine(ImVec2(x, wp.y + midY - ui::Px(6.0f)), ImVec2(x, wp.y + midY + ui::Px(6.0f)),
+                        ImGui::GetColorU32(theme::BorderStrong), ui::Px(1.0f));
+            x += ui::Px(1.0f) + kGap;
         }
         dl->AddText(ImVec2(x, ty), statCol, seg[i]);
         x += segW[i];
     }
     ui::PopMono();
-    const float statsLeft = wp.x + ww - 12.0f - total;
+    const float statsLeft = wp.x + ww - ui::Px(12.0f) - total;
 
     // カメラ設定（速度・感度・グリッド表示）。ツール窓を開かず1クリックで触れる場所に置く。
     char camLabel[64];
     snprintf(camLabel, sizeof(camLabel), "カメラ速度 %.1f", camera->GetMoveSpeed());
     const float camW = ImGui::CalcTextSize(camLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    ImGui::SetCursorScreenPos(ImVec2(statsLeft - 18.0f - camW, wp.y + std::floor((kStatusBarHeight - (lineH + 4.0f)) * 0.5f)));
+    ImGui::SetCursorScreenPos(ImVec2(statsLeft - ui::Px(18.0f) - camW, wp.y + std::floor((StatusBarHeight() - (lineH + ui::Px(4.0f))) * 0.5f)));
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_Text, theme::TextDim);
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 2));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ui::Px(8.0f, 2.0f));
     const bool camClicked = ImGui::Button(camLabel);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
@@ -754,7 +761,7 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
     {
         ImGui::TextDisabled("カメラ");
         f32 speed = camera->GetMoveSpeed();
-        ImGui::SetNextItemWidth(200);
+        ImGui::SetNextItemWidth(ui::Px(200.0f));
         // 対数目盛り: 遅い側(1〜10)を細かく、速い側(〜200)をざっくり動かせる
         if (ui::SliderFloat("移動速度", &speed, 0.2f, 200.0f, "%.1f m/s",
                             ImGuiSliderFlags_Logarithmic))
@@ -770,7 +777,7 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
         }
 
         f32 sens = camera->GetMouseSensitivity();
-        ImGui::SetNextItemWidth(200);
+        ImGui::SetNextItemWidth(ui::Px(200.0f));
         if (ui::SliderFloat("マウス感度", &sens, 0.0005f, 0.02f, "%.4f"))
             camera->SetMouseSensitivity(sens);
 

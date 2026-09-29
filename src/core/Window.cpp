@@ -3,6 +3,7 @@
 #include "Version.h"   // kEngineNameW（ウィンドウタイトルの既定表示名）
 #include "input/InputSystem.h"
 #include "input/VirtualInput.h"   // 仮想入力モード中は実マウス/実キーボードを ImGui にも InputSystem にも渡さない
+#include "DpiScale.h"
 
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
 #include <algorithm>
@@ -13,6 +14,72 @@ extern LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam
 
 namespace dx12e
 {
+
+namespace
+{
+// user32 の DPI 関数（Windows 10 1607+）。古い OS では null → 96 DPI / 従来の関数へ落とす。
+struct DpiApi
+{
+    using GetDpiForWindowFn      = UINT(WINAPI*)(HWND);
+    using GetDpiForSystemFn      = UINT(WINAPI*)();
+    using AdjustFn               = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    using GetMetricsForDpiFn     = int(WINAPI*)(int, UINT);
+    using GetDpiForMonitorFn     = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    GetDpiForWindowFn  getDpiForWindow  = nullptr;
+    GetDpiForSystemFn  getDpiForSystem  = nullptr;
+    AdjustFn           adjust           = nullptr;
+    GetMetricsForDpiFn getMetricsForDpi = nullptr;
+    DpiApi()
+    {
+        if (HMODULE u = GetModuleHandleW(L"user32.dll"))
+        {
+            getDpiForWindow  = reinterpret_cast<GetDpiForWindowFn>(GetProcAddress(u, "GetDpiForWindow"));
+            getDpiForSystem  = reinterpret_cast<GetDpiForSystemFn>(GetProcAddress(u, "GetDpiForSystem"));
+            adjust           = reinterpret_cast<AdjustFn>(GetProcAddress(u, "AdjustWindowRectExForDpi"));
+            getMetricsForDpi = reinterpret_cast<GetMetricsForDpiFn>(GetProcAddress(u, "GetSystemMetricsForDpi"));
+        }
+    }
+};
+const DpiApi& Api() { static const DpiApi a; return a; }
+
+UINT DpiOfWindow(HWND h)
+{
+    const DpiApi& a = Api();
+    if (h && a.getDpiForWindow) { const UINT d = a.getDpiForWindow(h); if (d) return d; }
+    if (a.getDpiForSystem) { const UINT d = a.getDpiForSystem(); if (d) return d; }
+    return 96;
+}
+// 窓がまだ無いときの DPI（プライマリモニタ）。Per-Monitor では GetDpiForSystem がプライマリの DPI を返す。
+UINT DpiPrimary()
+{
+    const DpiApi& a = Api();
+    if (a.getDpiForSystem) { const UINT d = a.getDpiForSystem(); if (d) return d; }
+    return 96;
+}
+int MetricForDpi(int index, UINT dpi)
+{
+    const DpiApi& a = Api();
+    if (a.getMetricsForDpi) return a.getMetricsForDpi(index, dpi);
+    return GetSystemMetrics(index);
+}
+} // namespace
+
+bool Window::AdjustRectForDpi(RECT* rect, DWORD style, DWORD exStyle, unsigned dpi)
+{
+    const DpiApi& a = Api();
+    if (a.adjust) return a.adjust(rect, style, FALSE, exStyle, dpi) != FALSE;
+    return AdjustWindowRectEx(rect, style, FALSE, exStyle) != FALSE;
+}
+
+float Window::GetUiScale() const
+{
+    return dpi::EffectiveScale(GetOsDpiScale());
+}
+
+unsigned Window::ScaleLogical(unsigned logicalPx) const
+{
+    return static_cast<unsigned>(dpi::LogicalToPhysical(static_cast<int>(logicalPx), GetUiScale()));
+}
 
 Window::~Window()
 {
@@ -28,11 +95,13 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
                          bool deferShow, bool startMaximized)
 {
     const bool bg = m_bg.Active();
+    m_dpi = DpiPrimary();   // 窓を作る前の仮値（作成後に GetDpiForWindow で確定し、違えば作り直す）
     if (bg)
     {
-        // --background: 論理解像度で作る（画面外 / 最小化でも 0x0 や作業領域への縮小をしない）。
-        width  = kBackgroundClientWidth;
-        height = kBackgroundClientHeight;
+        // --background: 論理解像度（1920x1080）× 倍率 で作る（画面外 / 最小化でも 0x0 や作業領域への縮小をしない）。
+        //   倍率は --dpi-scale（あれば）/ 無ければ OS の倍率。既定 100% では従来どおり 1920x1080 の物理 px。
+        width  = ScaleLogical(kBackgroundClientWidth);
+        height = ScaleLogical(kBackgroundClientHeight);
         startMaximized = false;
     }
     m_width = width;
@@ -43,9 +112,9 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     // exe に埋め込んだアプリアイコン（resources/app.ico, IDI_APPICON=101）を読む。
     // 大（タスクバー/Alt+Tab）と小（タイトルバー）を別サイズで読み、失敗時は既定にフォールバック。
     HICON appIcon = static_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(101 /*IDI_APPICON*/),
-        IMAGE_ICON, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+        IMAGE_ICON, MetricForDpi(SM_CXICON, m_dpi), MetricForDpi(SM_CYICON, m_dpi), LR_DEFAULTCOLOR));
     HICON appIconSm = static_cast<HICON>(LoadImageW(hInstance, MAKEINTRESOURCEW(101 /*IDI_APPICON*/),
-        IMAGE_ICON, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
+        IMAGE_ICON, MetricForDpi(SM_CXSMICON, m_dpi), MetricForDpi(SM_CYSMICON, m_dpi), LR_DEFAULTCOLOR));
 
     WNDCLASSEXW wc = {};
     wc.cbSize        = sizeof(WNDCLASSEXW);
@@ -69,7 +138,7 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
 
     // クライアント領域が指定サイズになるよう調整
     RECT rect = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
-    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
+    AdjustRectForDpi(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, 0, m_dpi);
 
     int winX = CW_USEDEFAULT, winY = CW_USEDEFAULT;
     if (bg)
@@ -127,7 +196,7 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
                     m_height = h;
                 }
                 rect = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
-                AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
+                AdjustRectForDpi(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, 0, m_dpi);
                 Logger::Info("ウィンドウを作業領域に合わせて縮小: {}x{}", m_width, m_height);
             }
             winX = wa.left + ((wa.right - wa.left) - (rect.right - rect.left)) / 2;
@@ -161,6 +230,29 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     {
         Logger::Critical("ウィンドウの作成に失敗しました");
         throw std::runtime_error("ウィンドウの作成に失敗しました");
+    }
+
+    // 実際に乗ったモニターの DPI を確定する。仮値（プライマリ）と違えば、フレーム分が違うので
+    // クライアントサイズを保ったまま窓を取り直す（論理サイズ = 物理 ÷ 倍率 が狂わないように）。
+    {
+        const UINT real = DpiOfWindow(m_hwnd);
+        if (real != m_dpi)
+        {
+            m_dpi = real;
+            if (bg)
+            {
+                m_width  = ScaleLogical(kBackgroundClientWidth);
+                height   = ScaleLogical(kBackgroundClientHeight);
+                m_height = height;
+            }
+            RECT r2 = { 0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height) };
+            AdjustRectForDpi(&r2, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, exStyle, m_dpi);
+            SetWindowPos(m_hwnd, nullptr, 0, 0, r2.right - r2.left, r2.bottom - r2.top,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            m_resized = false;
+        }
+        Logger::Info("DPI: window={} ({}%), uiScale={:.2f}{}", m_dpi, static_cast<int>(m_dpi * 100 / 96), GetUiScale(),
+                     dpi::HasOverride() ? " (--dpi-scale override)" : "");
     }
 
     if (!startMaximized)
@@ -269,21 +361,46 @@ void Window::EnableCustomTitleBar()
     if (m_bg.Active() && !IsIconic(m_hwnd))
     {
         // --background: キャプションを外すとクライアント領域が縦に伸びる。論理解像度
-        // (1920x1080)を保つため、窓の大きさを取り直して合わせる（スワップチェイン生成前）。
-        RECT cr{}, wr{};
-        if (GetClientRect(m_hwnd, &cr) && GetWindowRect(m_hwnd, &wr)
-            && (cr.right != static_cast<LONG>(m_width) || cr.bottom != static_cast<LONG>(m_height)))
-        {
-            SetWindowPos(m_hwnd, nullptr, 0, 0,
-                         (wr.right - wr.left) + (static_cast<LONG>(m_width)  - cr.right),
-                         (wr.bottom - wr.top) + (static_cast<LONG>(m_height) - cr.bottom),
-                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-        }
-        m_width  = kBackgroundClientWidth;
-        m_height = kBackgroundClientHeight;
+        // (1920x1080 × 表示倍率)を保つため、窓の大きさを取り直して合わせる（スワップチェイン生成前）。
+        // ★目標は m_width/m_height ではなく論理解像度から計算し直す: 上の SWP_FRAMECHANGED で届く WM_SIZE が
+        //   m_width/m_height を「キャプションを外した後の（縦に伸びた）クライアント」に書き換えるため、
+        //   それと比べると「合っている」と誤判定して縮めず、クライアントが 1920x1111 のまま残っていた。
+        ApplyBackgroundClientSize();
+        m_width  = ScaleLogical(kBackgroundClientWidth);
+        m_height = ScaleLogical(kBackgroundClientHeight);
         m_resized = false;
     }
     Logger::Info("カスタムタイトルバー有効化");
+}
+
+// --background の窓は「論理 1920x1080 × 倍率」のクライアントで保つ（--dpi-scale や OS 倍率が変わった時に呼ぶ）。
+void Window::ApplyBackgroundClientSize()
+{
+    if (!m_hwnd || !m_bg.Active() || IsIconic(m_hwnd)) return;
+    const LONG w = static_cast<LONG>(ScaleLogical(kBackgroundClientWidth));
+    const LONG h = static_cast<LONG>(ScaleLogical(kBackgroundClientHeight));
+    RECT cr{}, wr{};
+    if (!GetClientRect(m_hwnd, &cr) || !GetWindowRect(m_hwnd, &wr)) return;
+    if (cr.right == w && cr.bottom == h) return;
+    SetWindowPos(m_hwnd, nullptr, 0, 0,
+                 (wr.right - wr.left) + (w - cr.right), (wr.bottom - wr.top) + (h - cr.bottom),
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    // WM_SIZE が m_width/m_height を実際のクライアントサイズで更新して m_resized を立てる（同期）。
+    // ★要求した値ではなく実測値を採る（OS が窓を切り詰めた時に、スワップチェインだけ大きくなって ImGui の表示と食い違わないように）。
+    RECT after{};
+    if (GetClientRect(m_hwnd, &after) && after.right > 0 && after.bottom > 0)
+    {
+        m_width  = static_cast<u32>(after.right);
+        m_height = static_cast<u32>(after.bottom);
+    }
+    m_resized = true;
+}
+
+void Window::SetUiScaleOverride(float scale)
+{
+    dpi::SetOverride(scale);
+    if (m_bg.Active()) ApplyBackgroundClientSize();
+    m_dpiChanged = true;
 }
 
 void Window::SetTitle(const std::wstring& title)
@@ -324,7 +441,7 @@ void Window::SetMode(WindowMode mode, u32 width, u32 height)
             || m_windowedRect.bottom - m_windowedRect.top <= 0)
         {
             RECT r = { 0, 0, 1280, 720 };
-            AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
+            AdjustRectForDpi(&r, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, 0, m_dpi);
             const LONG w = r.right - r.left, h = r.bottom - r.top;
             RECT wa{};
             SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
@@ -411,7 +528,7 @@ void Window::SetClientSize(u32 width, u32 height)
     if (!m_hwnd || m_mode != WindowMode::Windowed || width == 0 || height == 0) return;
     if (m_bg.Active()) return;   // --background: 論理解像度を固定
     RECT rect = { 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
-    AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
+    AdjustRectForDpi(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, 0, m_dpi);
     SetWindowPos(m_hwnd, nullptr, 0, 0,
         rect.right - rect.left, rect.bottom - rect.top,
         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -482,7 +599,7 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     // ImGui にイベントを渡す（キー/マウス等は結果を無視して InputSystem にも常に通知する）
-    LRESULT imguiResult = vblock ? 0 : ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
+    LRESULT imguiResult = (vblock || msg == WM_DPICHANGED) ? 0 : ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 
     if (window)
     {
@@ -509,7 +626,8 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 if (IsZoomed(hwnd))
                 {
                     // 最大化中は枠が画面外にはみ出す仕様のため、その分だけ下げないと上端が切れる
-                    const int frame = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                    const UINT wdpi = DpiOfWindow(hwnd);
+                    const int frame = MetricForDpi(SM_CYSIZEFRAME, wdpi) + MetricForDpi(SM_CXPADDEDBORDER, wdpi);
                     params->rgrc[0].top += frame;
                 }
                 return 0;
@@ -528,7 +646,8 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 ScreenToClient(hwnd, &pt);
                 if (!IsZoomed(hwnd))
                 {
-                    const int frame = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+                    const UINT wdpi = DpiOfWindow(hwnd);
+                    const int frame = MetricForDpi(SM_CYSIZEFRAME, wdpi) + MetricForDpi(SM_CXPADDEDBORDER, wdpi);
                     if (pt.y >= 0 && pt.y < frame) return HTTOP;
                 }
                 // 仮想入力モード中は ImGui のホバー（＝仮想ポインタ）で「ドラッグ可能」を決めているので、
@@ -544,6 +663,40 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_MOUSEACTIVATE:
             if (window->m_bg.Active()) return MA_NOACTIVATE;
             break;
+
+        // --background の窓は「論理 1920x1080 × 倍率」の大きさで居続ける。OS 既定の最大追従サイズ（≒ 画面の大きさ）を
+        // 超えると（200% で 3840x2160 など）窓が切り詰められて論理サイズが崩れるので、上限を外す。
+        case WM_GETMINMAXINFO:
+            if (window->m_bg.Active())
+            {
+                auto* mm = reinterpret_cast<MINMAXINFO*>(lParam);
+                mm->ptMaxTrackSize.x = 16384;  mm->ptMaxTrackSize.y = 16384;
+                mm->ptMaxSize.x = 16384;       mm->ptMaxSize.y = 16384;
+                return 0;
+            }
+            break;
+
+        // ===== 表示倍率が変わった（別倍率のモニターへ動かした / 実行中に OS の倍率を変えた）=====
+        // Per-Monitor V2: OS が推奨する窓矩形（論理サイズを保つ新しい物理サイズ）が lParam で届く。
+        // それを適用すれば WM_SIZE → スワップチェイン/RT のリサイズ → ImGui のスタイル/フォント再構築が続く。
+        // ImGui のバックエンドには渡さない（メイン窓の SetWindowPos は自前で行う。最大化中は OS に任せる）。
+        case WM_DPICHANGED:
+        {
+            window->m_dpi = HIWORD(wParam);
+            window->m_dpiChanged = true;
+            const RECT* sug = reinterpret_cast<const RECT*>(lParam);
+            if (sug && !IsZoomed(hwnd) && !window->m_fullscreen && !window->m_bg.Active())
+            {
+                SetWindowPos(hwnd, nullptr, sug->left, sug->top, sug->right - sug->left, sug->bottom - sug->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            else if (window->m_bg.Active())
+            {
+                window->ApplyBackgroundClientSize();   // 背景窓は論理 1920x1080 × 新しい倍率を保つ
+            }
+            Logger::Info("WM_DPICHANGED: {} DPI ({}%)", window->m_dpi, static_cast<int>(window->m_dpi * 100 / 96));
+            return 0;
+        }
 
         case WM_SIZE:
         {

@@ -93,7 +93,7 @@ void DrawHighlighted(ImDrawList* dl, ImVec2 pos, const std::string& text, const 
 {
     const char* p = text.c_str();
     const char* end = p + text.size();
-    dl->PushClipRect(ImVec2(pos.x, pos.y - 2.0f), ImVec2(pos.x + maxW, pos.y + ImGui::GetTextLineHeight() + 2.0f), true);
+    dl->PushClipRect(ImVec2(pos.x, pos.y - ui::Px(2.0f)), ImVec2(pos.x + maxW, pos.y + ImGui::GetTextLineHeight() + ui::Px(2.0f)), true);
     float x = pos.x;
     while (p < end)
     {
@@ -477,13 +477,14 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
     }
 
     const int rows = static_cast<int>((std::min)(m_items.size(), static_cast<size_t>(kMaxVisibleRows)));
-    const float listH = (m_items.empty() ? 1 : rows) * kRowH;
+    const float rowH = ui::Px(kRowH);
+    const float listH = (m_items.empty() ? 1 : rows) * rowH;
 
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + 84.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(kWidth, 0.0f), ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + ui::Px(84.0f)), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(ui::Px(kWidth), 0.0f), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(10.0f, 10.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Px(6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, ui::Px(1.0f));
     ImGui::PushStyleColor(ImGuiCol_PopupBg, th::Bg2);
     ImGui::PushStyleColor(ImGuiCol_Border, th::BorderStrong);
 
@@ -496,7 +497,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
         ImGuiIO& io = ImGui::GetIO();
 
         // ---- 入力欄 ----
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 8.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ui::Px(10.0f, 8.0f));
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::IsWindowAppearing() || !ImGui::IsAnyItemActive())
             ImGui::SetKeyboardFocusHere();
@@ -537,7 +538,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
             }
         }
 
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::Dummy(ui::Px(0.0f, 2.0f));
 
         // ---- 結果リスト ----
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
@@ -549,7 +550,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
             {
                 const bool needQuery = std::string(m_buf).empty() ||
                     (m_buf[0] != '\0' && m_buf[1] == '\0' && (m_buf[0] == '>' || m_buf[0] == '@' || m_buf[0] == '#'));
-                ImGui::SetCursorPosY(6.0f);
+                ImGui::SetCursorPosY(ui::Px(6.0f));
                 ImGui::PushStyleColor(ImGuiCol_Text, th::TextFaint);
                 ImGui::TextUnformatted(needQuery
                     ? "名前を入力すると検索します（最近使った項目はここに出ます）"
@@ -565,24 +566,24 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
                 ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0, 0, 0, 0));
                 ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
                 ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0, 0, 0, 0));
-                const bool clicked = ImGui::Selectable("##row", m_sel == i, 0, ImVec2(0.0f, kRowH));
+                const bool clicked = ImGui::Selectable("##row", m_sel == i, 0, ImVec2(0.0f, rowH));
                 ImGui::PopStyleColor(3);
                 vinput_gui::AnchorLastItem("palette-item", it.label.c_str());
                 if (ImGui::IsItemHovered() && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) m_sel = i;
                 if (m_sel == i && m_scrollToSel) { ImGui::SetScrollHereY(0.5f); m_scrollToSel = false; }
 
                 const bool sel = (m_sel == i);
-                const ImVec2 p1(p0.x + w, p0.y + kRowH);
+                const ImVec2 p1(p0.x + w, p0.y + rowH);
                 if (sel)
                 {
-                    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(th::Selection), 3.0f);
-                    dl->AddRectFilled(p0, ImVec2(p0.x + 2.0f, p1.y), ImGui::GetColorU32(th::Accent), 2.0f);
+                    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(th::Selection), ui::Px(3.0f));
+                    dl->AddRectFilled(p0, ImVec2(p0.x + ui::Px(2.0f), p1.y), ImGui::GetColorU32(th::Accent), ui::Px(2.0f));
                 }
                 const float cy = (p0.y + p1.y) * 0.5f;
                 const float alpha = it.enabled ? 1.0f : 0.45f;
                 ImVec4 iconCol = TintColor(it.tint);
                 iconCol.w *= alpha;
-                ui::DrawIconCentered(dl, it.icon, ImVec2(p0.x + 20.0f, cy), ImGui::GetColorU32(iconCol), 16.0f);
+                ui::DrawIconCentered(dl, it.icon, ImVec2(p0.x + ui::Px(20.0f), cy), ImGui::GetColorU32(iconCol), ui::Px(16.0f));
 
                 // 右端: キー表記（等幅・dim）
                 float rightW = 0.0f;
@@ -590,25 +591,25 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
                 {
                     ui::PushMono();
                     const ImVec2 cs = ImGui::CalcTextSize(it.chord.c_str());
-                    dl->AddText(ImVec2(p1.x - 12.0f - cs.x, std::floor(cy - cs.y * 0.5f + 0.5f)),
+                    dl->AddText(ImVec2(p1.x - ui::Px(12.0f) - cs.x, std::floor(cy - cs.y * 0.5f + 0.5f)),
                                 ImGui::GetColorU32(th::TextDim), it.chord.c_str());
                     ui::PopMono();
-                    rightW = cs.x + 16.0f;
+                    rightW = cs.x + ui::Px(16.0f);
                 }
                 // 補足（カテゴリ / 親階層 / パス）は dim。ラベルの右に続ける
-                const float lx = p0.x + 38.0f;
+                const float lx = p0.x + ui::Px(38.0f);
                 const float ly = std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f);
-                const float labelMax = (p1.x - rightW) - lx - 8.0f;
+                const float labelMax = (p1.x - rightW) - lx - ui::Px(8.0f);
                 ImVec4 tc = th::Text; tc.w *= alpha;
                 ImVec4 hc = th::AccentHover; hc.w *= alpha;
                 DrawHighlighted(dl, ImVec2(lx, ly), it.label, it.hl, ImGui::GetColorU32(tc), ImGui::GetColorU32(hc), labelMax);
                 if (!it.sub.empty())
                 {
                     const float lw = ImGui::CalcTextSize(it.label.c_str()).x;
-                    const float sx = lx + lw + 10.0f;
-                    if (sx < p1.x - rightW - 24.0f)
+                    const float sx = lx + lw + ui::Px(10.0f);
+                    if (sx < p1.x - rightW - ui::Px(24.0f))
                     {
-                        dl->PushClipRect(ImVec2(sx, p0.y), ImVec2(p1.x - rightW - 8.0f, p1.y), true);
+                        dl->PushClipRect(ImVec2(sx, p0.y), ImVec2(p1.x - rightW - ui::Px(8.0f), p1.y), true);
                         dl->AddText(ImVec2(sx, ly), ImGui::GetColorU32(th::TextFaint), it.sub.c_str());
                         dl->PopClipRect();
                     }
@@ -623,7 +624,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
         ImGui::PopStyleVar();
 
         // ---- フッタ（操作の案内）----
-        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImGui::Dummy(ui::Px(0.0f, 4.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, th::TextFaint);
         ImGui::TextUnformatted("↑↓ 選択    Enter 実行    Esc 閉じる");
         if (n > 0)

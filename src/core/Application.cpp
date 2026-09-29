@@ -1335,14 +1335,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                     // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート中心へ置く
                     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
                         ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-                    ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+                    ImGui::SetNextWindowSize(theme::Px(420.0f, 0.0f), ImGuiCond_Always);
                     ImGui::Begin("##Loading", nullptr,
                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
                     ImGui::Text("%s", kEngineName);
                     ImGui::Separator();
                     ImGui::Text("Rendering thumbnails... (%zu / %zu)", completed, uncachedCount);
-                    ImGui::ProgressBar(progress, ImVec2(-1, 24));
+                    ImGui::ProgressBar(progress, ImVec2(-1, theme::Px(24.0f)));
                     ImGui::End();
                     m_imguiManager->EndFrame(cmdList);
 
@@ -1587,6 +1587,13 @@ void Application::Run()
 
         // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();
+
+        // DPI: 倍率オーバーライドの要求（UI テスト）をメインスレッドで反映する
+        if (const float req = m_uiScaleRequest.exchange(-1.0f); req >= 0.0f && !m_isGameMode)
+        {
+            m_window->SetUiScaleOverride(req);               // 背景窓なら物理サイズも作り直す（WM_SIZE → 下のリサイズ処理）
+            if (m_imguiManager) m_imguiManager->SetUiScaleOverride(req);   // 次の BeginFrame で反映
+        }
 
         // --background=minimized: 窓が最小化されていてもクライアント矩形が 0 になるだけで、
         // 論理解像度（スワップチェインの大きさ）は保たれる。ImGui へはこの論理解像度を伝える。
@@ -1983,6 +1990,23 @@ void Application::Run()
 
     Logger::Info("Main loop ended");
 }
+
+float Application::GetUiScale() const
+{
+    return (m_imguiManager && !m_isGameMode) ? m_imguiManager->GetUiScale() : 1.0f;
+}
+
+void Application::SetUiScaleOverride(float scale)
+{
+    if (m_isGameMode) return;   // 配布ゲームは倍率を持たない
+    // ★UI テストのコルーチンは別スレッドから呼ぶ。SetWindowPos はメインスレッドへの同期メッセージになり、
+    //   メインスレッドはコルーチンの完了待ちでブロックしているのでデッドロックする。要求を置くだけにして、
+    //   実際の窓/ImGui の切替はメインスレッドのフレーム先頭（Run の ProcessMessages 直後）で行う。
+    m_uiScaleRequest.store(scale > 0.0f ? scale : 0.0f);
+}
+
+u32 Application::GetClientWidthPx() const  { return m_window ? m_window->GetWidth()  : 0; }
+u32 Application::GetClientHeightPx() const { return m_window ? m_window->GetHeight() : 0; }
 
 void Application::Shutdown()
 {
