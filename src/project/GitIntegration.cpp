@@ -1,4 +1,5 @@
 #include "project/GitIntegration.h"
+#include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/Logger.h"
 
 #include <Windows.h>
@@ -149,13 +150,14 @@ GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
         si.cb = sizeof(si);
         PROCESS_INFORMATION pi{};
         // gh ログインと同じ流儀: 別コンソールで進捗/確認プロンプトをそのまま見せる。
-        BOOL ok = CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+        BOOL ok = dx12e::guard::Blocked("winget install（別コンソール）") ? FALSE
+                : CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
                                  CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
         if (!ok)
         {
             result.exitCode = -1;
             result.output   = "winget の起動に失敗したで。手動でダウンロードページを開くで。";
-            ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+            dx12e::guard::ShellExecuteGuarded(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
             return result;
         }
 
@@ -179,13 +181,13 @@ GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
         {
             result.output = "winget でのインストールに失敗した（コード " + std::to_string((int)code) +
                              "）。手動でダウンロードページを開くで。";
-            ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+            dx12e::guard::ShellExecuteGuarded(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
         }
         return result;
     }
 
     // winget が無い環境: 公式ダウンロードページを開いて手動インストールしてもらう
-    ShellExecuteA(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
+    dx12e::guard::ShellExecuteGuarded(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
     result.exitCode = 0;
     result.output = "winget が見つからへんかったから、ブラウザで公式ダウンロードページを開いたで。"
                     "インストーラーを実行してから、このパネルを開き直してや。";
@@ -378,10 +380,10 @@ void GitIntegration::OpenConflictFile(const std::string& workDir, const std::str
     std::string fullStr = full.string();
     // VSCode があればそれで開く（コンフリクトマーカーの色分け/マージエディタが効く）。
     // ShellExecuteA の "open" は起動を待たない（フリーズ回避）。
-    HINSTANCE h = ShellExecuteA(nullptr, "open", "code", ("\"" + fullStr + "\"").c_str(),
+    HINSTANCE h = dx12e::guard::ShellExecuteGuarded(nullptr, "open", "code", ("\"" + fullStr + "\"").c_str(),
                                 workDir.c_str(), SW_SHOWNORMAL);
     if ((INT_PTR)h <= 32)   // code が PATH に無い等で起動失敗 → 既定アプリで開く
-        ShellExecuteA(nullptr, "open", fullStr.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        dx12e::guard::ShellExecuteGuarded(nullptr, "open", fullStr.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 GitResult GitIntegration::CreateGitHubRepo(const std::string& workDir,
@@ -421,7 +423,8 @@ GitResult GitIntegration::LoginAndWait(const std::atomic<bool>& abortFlag)
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
     GitResult result;
-    BOOL ok = CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
+    BOOL ok = dx12e::guard::Blocked("gh auth login（別コンソール）") ? FALSE
+            : CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE,
                              CREATE_NEW_CONSOLE, nullptr, nullptr, &si, &pi);
     if (!ok)
     {

@@ -91,7 +91,8 @@ void InputSystem::Update(f32 dt)
     // キャプチャ中はカーソルをウィンドウ中央に固定 + カーソル非表示を維持。
     // ★前面にいるときだけ。ここでフォアグラウンドを見ないと、Alt+Tab して別アプリで
     //   作業している最中も毎フレーム SetCursorPos でカーソルを奪い返してしまう。
-    if (m_mouseCaptured && m_hwnd && GetForegroundWindow() == m_hwnd)
+    // ★仮想入力モード中は OS のカーソルに一切触れない（SetCursor / SetCursorPos を呼ばない）。
+    if (!vinput::Enabled() && m_mouseCaptured && m_hwnd && GetForegroundWindow() == m_hwnd)
     {
         // 復帰直後の掛け直し。ここまで遅らせるとクライアント矩形が確定済みなので
         // （最小化からの復帰でも）正しい範囲に ClipCursor できる。
@@ -127,6 +128,7 @@ void InputSystem::OnKeyUp(int vkCode)
 
 void InputSystem::OnRawInput(LPARAM lParam)
 {
+    if (vinput::Enabled()) return;   // 仮想入力モード: 人の実マウスの移動量は取り込まない
     if (!m_mouseCaptured || m_dropMouseDelta) return;
 
     UINT size = 0;
@@ -176,6 +178,9 @@ void InputSystem::SetMouseCapture(bool capture)
 {
     m_mouseCaptured = capture;
 
+    // 仮想入力モード: 論理状態だけ持つ（Lua / エディタカメラの意図）。OS のカーソルは触らない。
+    if (vinput::Enabled()) return;
+
     // 背面のまま掛けに行かない。MCP/Lua 経由で Play を開始した（= OnStart が
     // setMouseCapture(true) を呼ぶ）とき、ユーザーが別アプリで作業中ならカーソルを
     // 奪ってしまうため。前面に戻ってきた時に Update() が掛け直す。
@@ -187,10 +192,32 @@ void InputSystem::SetMouseCapture(bool capture)
     ApplyCursorConstraint(capture);
 }
 
+void InputSystem::OnVirtualModeChanged(bool on)
+{
+    if (on)
+    {
+        // これまでに掛けた OS の拘束が残っていれば解く。掛けていなければ何もしない
+        // （ClipCursor(nullptr) は他アプリが掛けた拘束も外してしまうため、触らない）。
+        if (m_constraintApplied) ApplyCursorConstraintUnchecked(false);
+        m_reapplyConstraint = false;
+    }
+    else if (m_mouseCaptured)
+    {
+        m_reapplyConstraint = true;   // 論理キャプチャが残っていれば、前面のとき次の Update() が掛け直す
+    }
+}
+
 void InputSystem::ApplyCursorConstraint(bool on)
+{
+    if (vinput::Enabled()) return;   // ★仮想入力モード: ShowCursor / SetCapture / ClipCursor は全部無効
+    ApplyCursorConstraintUnchecked(on);
+}
+
+void InputSystem::ApplyCursorConstraintUnchecked(bool on)
 {
     if (!m_hwnd) return;
 
+    m_constraintApplied = on;
     if (on)
     {
         // ShowCursor はカウンタベースなので確実に非表示にする

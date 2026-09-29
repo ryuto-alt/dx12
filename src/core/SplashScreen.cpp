@@ -38,6 +38,7 @@ std::wstring      g_logoPath;
 
 HANDLE            g_thread = nullptr;
 std::atomic<HWND> g_hwnd{nullptr};
+std::atomic<bool> g_suppressed{false};   // --background: Show() を無効化
 HANDLE            g_readyEvent = nullptr;         // ウィンドウ生成完了の合図
 float             g_anim = 0.0f;                  // 進行バーの位相 0..1
 
@@ -266,6 +267,7 @@ void SplashScreen::Show(const std::string& titleUtf8,
                         const std::string& logoPathUtf8)
 {
     if (g_thread) return;   // 既に表示中
+    if (g_suppressed.load()) return;   // --background: スプラッシュ窓を出さない
 
     {
         std::lock_guard<std::mutex> lk(g_mutex);
@@ -284,6 +286,11 @@ void SplashScreen::Show(const std::string& titleUtf8,
     }
     // ウィンドウ生成まで少しだけ待つ（初期化ログより先に画面へ出すため。失敗しても続行）
     if (g_readyEvent) WaitForSingleObject(g_readyEvent, 1000);
+}
+
+void SplashScreen::SetSuppressed(bool on)
+{
+    g_suppressed.store(on);
 }
 
 void SplashScreen::SetStatus(const std::string& statusUtf8)

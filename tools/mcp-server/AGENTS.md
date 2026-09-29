@@ -5,6 +5,22 @@ Claude Code と Codex の両方が読む運用ルール集。
 
 ---
 
+## ★ 最重要ルール: エディタ UI を触るときは【仮想入力モード + `--background`】。実マウス/キーボード/フォーカスは触らない
+
+過去に AI がエディタを操作してユーザーのカーソルを奪い、PC を操作不能にした。以下は**絶対**:
+
+- **やらない**: `SendInput` / `mouse_event` / `SetCursorPos` / `SetForegroundWindow` / computer-use / PowerShell での前面化とクリック、
+  エディタ窓を前面に出す・最大化する・PrintWindow で撮る、といった実マウス/実キーボード/フォーカスを動かす操作全部。
+- **やる**: エディタを `DX12Engine.exe --background --project <dir>`(必要なら `--mcp-port N`)で起動する。窓は手前に出ない(既定は画面外)。
+  仮想入力モードも自動で ON。起動済みなら `dx12_imgui_virtual_input {enable:true}`。
+  - 操作: `dx12_imgui_pointer`(move / down / up / click / double_click / drag / wheel。座標はクライアント px)、`dx12_imgui_key`(`"Ctrl+S"` / `text`)
+  - 狙う場所: `dx12_imgui_find {label}`(ウィンドウ・ドックのタブ・プロパティ行/見出し/ツールバー/メニュー/Hierarchy 行の矩形。座標を推測しない)
+  - 見る: `dx12_imgui_screenshot`(ImGui 込み。背面/画面外でも撮れる。仮想カーソルが写る)。`dx12_ui_screenshot` も仮想入力モード中は同じ経路。
+- 効果の確認は `dx12_imgui_virtual_input` の `osCursor` / `window.isForegroundWindow`(読み取り専用の値)で「人のカーソルと前面が動いていない」を確かめられる。
+- 詳細・制限は `docs/MCP.md` §4-18。Play 中のゲーム入力(`dx12_key_down` / `dx12_key_press` / `dx12_mouse_move` / `dx12_ui_click`)は従来どおり合成入力で、OS には触れない。
+
+---
+
 ## ★ 最重要ルール: entityId は「同じ sceneGeneration の間だけ」安定。
 
 `dx12_create_entity` / `dx12_spawn_model` などの遅延同期ツールは、
@@ -61,6 +77,8 @@ DX12Engine.exe --headless --project <dir> --mcp-port 8850 --scene scenes/main.js
 | `--mcp-port N` | 待受ポートを固定。**指定すると `%TEMP%/dx12_mcp.port` を書き換えない**＝人が開いているエディタの接続を奪わない |
 | `--scene <rel>` | プロジェクトを開いた直後にこのシーンを開く（assets 相対） |
 | `--allow-autosave` | ヘッドレスでもディスクへ書く。**既定は読み取り専用** |
+| `--background[=offscreen\|minimized\|noactivate\|hidden][,tool\|notool]` | 窓は出す（画面外 / 最小化 / 最背面）が**手前に出ない静かな起動**。仮想入力モードを含意。`--headless` と違い描画・自動保存・ImGui の操作(`dx12_imgui_*`)が普通に動く。既定 `offscreen`。人が使う PC でエディタを AI に触らせるときはこちら（上の「★最重要ルール」参照） |
+| `--virtual-input` | 仮想入力モードだけ ON（実マウス/キーボードを ImGui に渡さず OS のカーソルに触れない）。窓は普通に出る |
 
 - ★**撮影系は `path` を明示する**: `dx12_screenshot` / `dx12_screenshot_final` / `dx12_render_debug` / `dx12_screenshot_game_view` は省略するとエンジンの CWD へ書くので、書けない場所（`C:\Windows\System32` 等）で起動していると `WIC stream open failed` で撮影ごと失敗する。
 - **ヘッドレスは既定でディスクへ書かない。** 検証しただけでプロジェクトが書き換わるのは事故なので、

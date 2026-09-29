@@ -34,6 +34,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpPerceive.cpp   # 知覚層（dx12_perceive: プレイヤーの目から見た事実を数値で）
     mcp/ApplicationMcpUndo.cpp       # Undo / Redo / トランザクション（MCP の編集を Undo に積む）
     mcp/ApplicationMcpAi.cpp         # ゲーム AI の観測（brain_state）
+    mcp/ApplicationMcpImGui.cpp      # 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作: dx12_imgui_*）
     mcp/McpUndoTrack.cpp             # MCP の編集の値スナップショット（McpUndo().Track<T>）
     mcp/ApplicationMcpAudio.cpp      # 音の観測（audio_state）
     Window.cpp

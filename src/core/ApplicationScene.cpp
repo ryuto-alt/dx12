@@ -1458,6 +1458,18 @@ void Application::LaunchNetTestClient()
         }
         cmd += L" --project \"" + wroot + L"\"";
     }
+    // ★仮想入力モード / --background の間に子エディタを普通に起こすと、人の画面に新しい窓が出て
+    //   フォーカスを取る。同じ静かさで起動させる（子も AI が MCP で触れる前提）。
+    if (m_bgOptions.Active())
+    {
+        cmd += L" --background=";
+        for (const char* p = BackgroundModeName(m_bgOptions.mode); *p; ++p) cmd += static_cast<wchar_t>(*p);
+        cmd += m_bgOptions.toolWindow ? L",tool" : L",notool";
+    }
+    else if (vinput::Enabled())
+    {
+        cmd += L" --virtual-input";
+    }
 
     STARTUPINFOW si{};
     si.cb = sizeof(si);

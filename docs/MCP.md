@@ -3,6 +3,18 @@
 起動中の DX12 エディタを Claude Code / Codex から操作するための MCP(Model Context Protocol)連携ガイド。
 AI がシーンを読み・エンティティを生成し・コンポーネントを設定し・Lua を貼り・Play/Stop まで回せる。
 
+> ### ★ AI がエディタ UI を操作・撮影するときは【必ず】仮想入力モード + `--background`
+>
+> エディタ(ImGui の画面)を AI が触るために、実マウス / 実キーボード / フォーカスを操作するスクリプト
+> (`SendInput` / `mouse_event` / `SetCursorPos` / `SetForegroundWindow` / computer-use)を**使ってはいけない**。
+> 人がカーソルを奪われ、PC を使えなくなる。代わりに:
+>
+> 1. エディタを **`DX12Engine.exe --background --project <dir>`** で起動する(窓を手前に出さない静かな起動。仮想入力モードも含意)。
+>    起動済みなら `dx12_imgui_virtual_input {enable:true}`。
+> 2. UI の操作は `dx12_imgui_pointer` / `dx12_imgui_key`、狙う場所は `dx12_imgui_find`、画面は `dx12_imgui_screenshot`(§4-18)。
+>
+> 仮想入力モード中、エンジンは OS のカーソル・フォーカス・前面ウィンドウに一切触れない。
+
 ---
 
 ## ★ 最重要: 遅延同期の仕組み(旧 `queued:true` は廃止)
@@ -130,7 +142,7 @@ SSH ポートフォワード推奨(エンジン側は `127.0.0.1` のみ待受)�
 
 ---
 
-## 4. ツール一覧（全 213 ツール）
+## 4. ツール一覧（全 220 ツール）
 
 MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り、**遅延同期** = フレーム境界後に本物の値が返る。
 
@@ -138,7 +150,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, protocolVersion:4}` ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
+| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, virtualInput, background, protocolVersion:4}` ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
 | `dx12_describe_mcp_params` | `{method?:string}` | `{methods:{<method名>:[{key,type}]}, count, globalKeys:["idempotency_key"], note}` ※**エンジンのディスパッチ表そのもの**。`type` は `bool`/`int`/`number`/`string`/`vec3`/`object`/`any`。`"親.子"` は入れ子オブジェクトのキー（例 `skybox.envMapPath`）。TS スキーマとのドリフト検出はこれを正にすること |
 | `dx12_list_entities` | `{verbose?:bool, name_prefix?:string, component_type?:string}` | `{entities:[{entityId,id,name,componentTypes?}], count, sceneGeneration}` |
 | `dx12_get_entity` | `{entity:int}` | `{entityId, componentTypes:[...], sceneGeneration, ...(全コンポーネント値)...}` |
@@ -180,7 +192,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_screenshot` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240), gizmos?:bool=true}` | PNG 画像ブロック + text(`{path(絶対パス), width, height, source:"sceneRT(pre-post)", note}`) ※**ポストプロセス前の `m_sceneRT`**。グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA の解決結果が一切写らない**。見た目を判断するなら `dx12_screenshot_final` を使うこと。★`gizmos:false` はこの経路では `deterministic:true` のときだけ効く（既定は直前フレームの読み戻しで撮り直さないため） |
 | `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240), gizmos?:bool=true}` | **遅延同期**。`{path, width, height, source:"backbuffer", postApplied, deterministic, gizmos, taa, mode, note}` ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形**。★`gizmos:false` で**この 1 枚だけ**エディタのデバッグ描画（カメラの視錐台の水色の線 / 選択枠 / ライト・カメラのアイコン / 物理・ナビのワイヤ / 床グリッド）を止めて撮る。選択を外しても消えない「アクティブなカメラの視錐台」もこれで消える。**戻す呼び出しは不要 ── 撮影状態と一緒に破棄されるので次の 1 枚では必ず元どおり**（`dx12_render_debug` と同じ作法） |
 | `dx12_screenshot_game_view` | `{}` | PNG 画像ブロック ※**アクティブな `CameraComponent`（ゲームカメラ）視点**で 1 フレーム描いて返す。Editor 中でも Play せずに画角・構図を確認できる。アクティブなカメラが無いとエラー |
-| `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない) |
+| `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない)。★仮想入力モード(§4-18)中は PrintWindow ではなく dx12_imgui_screenshot と同じバックバッファ読み戻しになる(最小化/画面外/背面でも撮れる。遅延同期) |
 | `dx12_render_debug` | `{mode:string, frames?:int=3(1..120), gain?:number=1, depthRange?:number=100, exposure?:number=1}` | `{path(絶対パス), mode, width, height, toneMapped:bool, warnings:[string], mode_engine:"Editor"\|"Playing"}` ※**中間バッファの可視化**（「なぜ変に見えるか」の切り分け用）。`frames` フレーム描いてからスクショを撮り、**必ず元の設定へ戻す**。必要な機能（TAA/SSAO/コンタクトシャドウ/SSR/SSGI）は一時的に自動で ON にし、その旨を `warnings` に返す。返り値の `path` を画像として読むこと |
 | `dx12_ui_tree` | `{}` | `{canvases:[{entityId, name, uiCanvas:{refWidth,refHeight,...}, children:[{entityId, name, components, uiRect, resolvedRect:[x,y,w,h](キャンバス空間px), text?, children}]}]}` ※UIレイアウトの数値確認 |
 | `dx12_ui_click` | `{name?/entity?, x?:0..1, y?:0..1, move?:bool}` | `{target, viewportLocal:{x,y}, viewport:{width,height}, moveOnly, stepped, mode, note}` ※**ゲーム内 UI を合成ポインタで押す**。テストプレイで AI がメニューを操作する口。★実マウスとまったく同じ経路（レイキャスト→最前面判定→押下キャプチャ→release-inside で確定）へ流すので、**前面に別の要素が被っているボタンは押せない**のが正しく再現される（名前で onClick を直接呼ぶ方式ではない）。name/entity でその要素の中心、x,y（ビューポート基準 0..1）で任意の座標。**何も無い所を押してフォーカスを外す**のにも使える。押す→離す→配送の 3 フレームを回してから返る(遅延同期)。Lua の onClick が走るのは Play 中だけ |
@@ -593,6 +605,78 @@ Jev(TypeSafe System One)は文章を生成せず型付きの判断(noul / choice
 
 ---
 
+### 4-18. 仮想入力モード(AI が人の PC 操作を奪わずエディタ UI を操作・撮影する)
+
+**なぜ**: これまで AI がエディタ UI を触るには実マウス/実キーボードを動かすしかなく、ユーザーがカーソルを奪われて PC を使えなくなった。
+仮想入力モードでは、AI の入力を OS を通さずに ImGui へ直接流し込む。
+
+**仕組み**(ON の間):
+
+- **実入力は ImGui に届かない**: `Window::WndProc` が実マウス / 実キーボード / `WM_SETCURSOR` / `WM_INPUT` / フォーカス通知を ImGui にも `InputSystem` にも渡さない
+  (Alt+F4 などのウィンドウ管理系は通す)。Win32 バックエンドが NewFrame で積む「実マウス位置 / 修飾キー」も捨てる。
+- **AI の入力はキュー → `ImGui::NewFrame` の直前**に、メインスレッドで `io.AddMousePosEvent` / `AddMouseButtonEvent` / `AddMouseWheelEvent` / `AddKeyEvent` / `AddInputCharacter` で流し込む。
+  **down と up は必ず別フレーム**(ImGui のクリック判定はフレーム単位)、移動は down の 1 フレーム前。
+- **OS のカーソルに触らない**: `SetCursorPos` / `ClipCursor` / `ShowCursor` / `SetCapture` / `SetForegroundWindow` / `SetFocus` / `SetCursor` を全部無効化
+  (Play 中のマウスキャプチャ・マテリアル/VFX エディタのオービット・ImGui のカーソル形状変更を含む)。
+  ネイティブのファイル選択ダイアログ・`ShellExecute`(エクスプローラー / ブラウザ / VS Code)・別コンソール窓も実行しない(ログに残して失敗扱い)。
+- **仮想カーソルを描く**: ImGui の `ForegroundDrawList(メインビューポート)` に矢印 + クリックの波紋(左=青 / 右=橙 / 中=緑)+ 「AI」タグ。スクショに「AI が今どこを触っているか」が映る。
+- エディタのフライカメラ(右ボタン + WASD)も仮想ポインタ/仮想キーで動く(前面判定は見ない)。
+
+**起動引数**
+
+| 引数 | 意味 |
+|---|---|
+| `--virtual-input` | 仮想入力モードで起動(実マウス/キーボードを受けない。窓は普通に出る)。AI 操作専用 |
+| `--background[=方式][,tool\|notool]` | **手前に出てこない静かな起動**。仮想入力モードを含意。方式は下表。`--headless` とは別(こちらは窓もレンダリングも普通に動く) |
+
+`--background` の共通の挙動: `WS_EX_NOACTIVATE`(クリックされてもアクティブ化しない)/ `SetForegroundWindow` を一切呼ばない / スプラッシュ窓を出さない(起動・プロジェクト読込とも)/
+自動更新の確認をしない / 最大化・最小化・フルスクリーン・リサイズ・F11 を無効化 / クライアント領域は論理解像度 **1920×1080** 固定(最小化しても WM_SIZE で縮めない)/
+VSync を使わず 60fps 上限(見えていない窓は Present が即返る＝上限が無いと CPU/GPU を回し続けるため。設定は書き換えない)/ OS の省電力(EcoQoS・タイマー粗化)から外れる /
+`imgui.ini`(レイアウト)を保存しない(画面外の位置が普段のレイアウトに焼き付かないように)。
+
+| 方式 | 窓の置き場所 | 備考 |
+|---|---|---|
+| `offscreen`(**既定**) | 全モニタの外(仮想デスクトップの左外)。最小化ではない | クライアント矩形が実サイズのまま保たれ ImGui/スワップチェインが素直に動く。既定で `tool`(タスクバー/Alt+Tab に出ない) |
+| `noactivate` | 通常の位置に `SW_SHOWNOACTIVATE` で出し、Z オーダー最背面へ送る | 画面に見える場所に居るが、フォーカスも前面も取らない。他の窓が上を覆う |
+| `minimized` | `SW_SHOWMINNOACTIVE`(最小化のまま) | ImGui へは論理解像度を伝える(DisplaySize 0 を防ぐ)。最小化判定は偽装する |
+| `hidden` | 窓を一度も表示しない(HWND だけ作る) | `--headless` と同じ「隠し窓」。スワップチェインは可視性を要求しない |
+
+`tool` / `notool` はタスクバー(WS_EX_TOOLWINDOW)の出し分け。例: `--background=noactivate,tool`。
+
+**ツール**
+
+| ツール | params | 返り値 |
+|--------|--------|--------|
+| `dx12_imgui_virtual_input` | `{enable?:bool}` | `{enabled, background:{mode,toolWindow}, pointer:{known,x,y,left,right,middle}, queue:{pending,pumped}, client:{width,height}, window:{logicalWidth,logicalHeight,visible,minimized,isForegroundWindow}, osCursor:{x,y}, note}` ※モード切替 + 現在の状態。省略で状態のみ。`osCursor` / `isForegroundWindow` は**読み取り専用**で、「AI の操作中に人のカーソルと前面ウィンドウが動いていないか」を外から確かめる材料 |
+| `dx12_imgui_pointer` | `{action:"move"\|"down"\|"up"\|"click"\|"double_click"\|"drag"\|"wheel", x?:f, y?:f, button?:"left"\|"right"\|"middle", toX?:f, toY?:f, steps?:int=12(1..600), dx?:f, dy?:f}` | `{action, at:{x,y}, frames, clamped, pointer:{x,y,left,right,middle}, hover:{window,focusedWindow,wantCaptureMouse,wantCaptureKeyboard,wantTextInput}}` ※**遅延同期**(全部流れて ImGui が反応してから返る)。座標はエディタウィンドウの**クライアント座標(px)**(= `dx12_imgui_screenshot` の画像ピクセル)。`drag` は (x,y)→(toX,toY) を steps フレームで補間。`wheel` は dx/dy をノッチ単位(dy 正 = 上スクロール)、x,y を付けるとその位置へ先に動く。`down`/`up` は x,y 省略で現在位置。領域外は丸める(`clamped:true`。OS ウィンドウを引き出さないため)。`hover.window` で狙った窓に当たったか分かる |
+| `dx12_imgui_key` | `{key?:string, text?:string, hold?:int=1(1..600)}` | `{key, vk, hold, text, frames, pointer, hover}` ※**遅延同期**。`key` は `"F2"` / `"Ctrl+S"` / `"Ctrl+Shift+Z"` / `"Enter"` / `"Esc"` / `"Delete"` / `"Up"` / `"PageDown"` / `"A"` 等(修飾は Ctrl/Shift/Alt/Win)。`text` は UTF-8 の文字列をそのまま入力(先にテキスト欄をクリックして `hover.wantTextInput:true` にしておく)。`hold` は key を押し続けるフレーム数(フライカメラの WASD など押している間だけ効く操作用)。ImGui のショートカットと VK ベースの入力(F1 一時停止等)の両方へ届く。Play 中のゲームへは `dx12_key_press` を使う |
+| `dx12_imgui_find` | `{label?:string, contains?:bool=true}` | `{client, windows:[{name,title,rect:{x,y,w,h},center,screenRect,visible,focused,hovered,collapsed,docked,popup,dockTabSelected?,tab?:{rect,center}}], items:[{kind,label,window,rect,center,labelRect?}], counts, hover, coordinates}` ※**同期**。ImGui のウィンドウ / ドックのタブ / 名前つき要素を名前で探して矩形を返す(座標を推測しない)。`rect`/`center` はクライアント座標(px)で `dx12_imgui_pointer` にそのまま渡せる。`items` は仮想入力モード ON の間に描かれた名前つき要素(`property`=Inspector 等のプロパティ行[rect は値欄]/ `header`=コンポーネント見出し / `button`=ツールバー / `menu`=メニューバー / `row`=Hierarchy 行)。全ウィジェットは網羅しない — 見つからなければ `windows` の rect を基準にスクショで目視する |
+| `dx12_imgui_screenshot` | `{path?:string}` | 画像 + `{path, width, height, source:"backbuffer+imgui", virtualCursor, mode, note}` ※**遅延同期**。**ImGui 込み**(パネル・ギズモ・仮想カーソル)の最終画面を PNG に保存。ImGui を描いた後・Present の前にバックバッファを読み戻す＝**PrintWindow を使わない**ので窓が背面/画面外/最小化でも撮れる。`dx12_ui_screenshot` も仮想入力モード中はこの経路になる。3D の絵だけなら `dx12_screenshot_final` |
+
+**使い方の型**
+
+```
+(起動) DX12Engine.exe --background --project C:\path\to\proj --mcp-port 8850
+dx12_imgui_find {label:"Inspector"}                  → windows[0].rect / tab を得る
+dx12_imgui_pointer {action:"click", x:…, y:…}        → hover.window が "Inspector…" なら当たり
+dx12_imgui_find {label:"Position"}                   → items の property 行(rect=値欄)
+dx12_imgui_pointer {action:"double_click", x:…, y:…} → 値欄をテキスト編集にする(DragFloat)
+dx12_imgui_key {key:"Ctrl+A"} → dx12_imgui_key {text:"1.5"} → dx12_imgui_key {key:"Enter"}
+dx12_imgui_screenshot {path:"C:/tmp/shot.png"}      → 仮想カーソル込みで確認
+```
+
+**制限・注意**
+
+- **人の脱出口**: 仮想入力モード中は実入力が届かないので、AI が居なくなると人が操作できなくなる。次の 2 つで必ず取り戻せる。
+  ① **Ctrl+Alt+Shift+F12**(実キーボード。窓にフォーカスがあるとき)で OFF。② 実行中に MCP が ON にしたモードは、**MCP が 5 秒以上切れたら自動で OFF**。
+  起動引数(`--virtual-input` / `--background`)で ON にした物は意図的なので自動では戻らない(`dx12_imgui_virtual_input {enable:false}` で OFF)。
+- 仮想入力モード OFF のときは `imgui_pointer` / `imgui_key` を受け付けない(人の実入力と混ざるため)。`imgui_find` / `imgui_screenshot` は OFF でも使える(`items` は ON の間だけ集める)。
+- ImGui のダブルクリックは 0.30 秒以内の 2 回押下。フレームが 10fps を切る重い状態では `double_click` が成立しないことがある。
+- 仮想ポインタはクライアント領域内に丸める。エディタから引き出した OS ウィンドウ(マルチビューポート)は AI からは触れない(実マウスはそこへは届く)。
+- `dx12_imgui_find` の `items` は主要パネルだけ(プロパティ行 / コンポーネント見出し / ツールバー / メニュー / Hierarchy 行)。
+- 起動時のプロジェクトランチャー等、ImGui 上のダイアログは普通に操作できる。ネイティブのファイル選択ダイアログは開かない(ブロックしてログに残す)。
+- 別プロセスの子エディタ(テストクライアント起動)は同じ `--background` / `--virtual-input` を引き継いで起動する。
+
 ### 4-5. 精密ピック / 地形 / スカルプトの約束事
 
 **2 種類のレイキャストを取り違えないこと。**
@@ -779,7 +863,7 @@ dx12_play → (ゲームロジック動作) → dx12_stop
 |---|---|---|---|
 | `dx12_screenshot` | `m_sceneRT`（**ポスト前**） | シーン本体だけ | 幾何 / ライティングの素の値を見たいとき |
 | `dx12_screenshot_final` | **バックバッファ**（ポスト後・ImGui 前） | グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA 解決結果** | **見た目の判断は必ずこちら** |
-| `dx12_ui_screenshot` | ウィンドウ全体（`PrintWindow`） | 上に加えて ImGui のパネル / ギズモ | エディタ UI・ゲーム内 UI の確認 |
+| `dx12_ui_screenshot` | ウィンドウ全体（`PrintWindow`）（仮想入力モード中は dx12_imgui_screenshot と同じバックバッファ読み戻し） | 上に加えて ImGui のパネル / ギズモ | エディタ UI・ゲーム内 UI の確認 |
 
 ### 9-2. `deterministic` — ピクセル差分で A/B を取るとき（#31）
 

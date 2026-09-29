@@ -57,7 +57,7 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 
 ## 構成
 - `engineClient.ts` … TCP フレーミング + id 相関の薄いクライアント（ポートは env `DX12_MCP_PORT` → `%TEMP%/dx12_mcp.port` → 8787 の順で自動解決。別マシンは `DX12_MCP_HOST`）
-- `index.ts` … MCP サーバ本体(stdio)。141 ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
+- `index.ts` … MCP サーバ本体(stdio)。220 ツールを公開（全量はエンジンリポジトリの [docs/MCP.md](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md) 参照）
 - `sceneTools.ts` … 地形/スカルプト/診断の引数正規化と共通 zod 部品（純ロジック・エンジン非依存）
 - `materialApply.ts` … `dx12_material_apply` の純ロジック（ファイル名からのテクスチャ用途推定、`hasOverride` の罠の回避）
 - `paramGuard.ts` … 未知の引数を黙って捨てず「近い正解」を返す共通部品 + 適用後の読み返し照合

@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 
 #include <unordered_set>
 #include "core/Profiler.h"
@@ -7467,7 +7468,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             {
                 m_editorCtx->buildCompleteFlash = 3.0f;
                 if (m_editorCtx->buildConfig.openFolderAfterBuild && !m_editorCtx->lastBuildDir.empty())
-                    ShellExecuteA(nullptr, "open", m_editorCtx->lastBuildDir.c_str(),
+                    dx12e::guard::ShellExecuteGuarded(nullptr, "open", m_editorCtx->lastBuildDir.c_str(),
                                   nullptr, nullptr, SW_SHOWNORMAL);
             }
             else
@@ -7770,6 +7771,16 @@ void Application::SubmitFrame(RenderFrameContext& frame)
     m_gpuTimer->End(nativeCmdList, GpuTimer::Total);
     m_gpuTimer->Resolve(nativeCmdList);
 
+    // ---- MCP dx12_imgui_screenshot: ImGui（パネル / ギズモ / 仮想カーソル）まで描き終えた後の
+    //   バックバッファ全面を撮る。Present の直前なので、窓が背面 / 画面外 / 最小化でも撮れる
+    //   （PrintWindow を使わない）。pending が立っているフレームだけ 1 命令も増やさない範囲で動く。
+    if (m_mcpFinalShot.pending && m_mcpFinalShot.withImGui)
+    {
+        const D3D12_RESOURCE_DESC bbd = backBuffer->GetDesc();
+        CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, 0, 0,
+                                     static_cast<u32>(bbd.Width), bbd.Height, /*afterImGui=*/true);
+    }
+
     m_commandList->TransitionResource(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     m_commandList->Close();
 
@@ -7779,7 +7790,7 @@ void Application::SubmitFrame(RenderFrameContext& frame)
     m_imguiManager->RenderPlatformWindows();
     const auto perfPresentT0 = std::chrono::high_resolution_clock::now();
     { DX12_PROFILE_ZONE_N("Present");
-      m_swapChain->Present(m_useVsync); }
+      m_swapChain->Present(m_useVsync && !m_bgOptions.Active()); }
     m_frameResources->EndFrame(*m_commandQueue);
     m_perfPresentMs = std::chrono::duration<f32, std::milli>(
         std::chrono::high_resolution_clock::now() - perfPresentT0).count();

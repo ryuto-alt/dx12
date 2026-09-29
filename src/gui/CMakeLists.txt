@@ -2,6 +2,7 @@ find_package(imgui CONFIG REQUIRED)
 
 add_library(Gui STATIC
     ImGuiManager.cpp
+    VirtualInputImGui.cpp      # 仮想入力モード（ImGui への流し込み / 仮想カーソル / ウィンドウ探索）
     ImGuizmo.cpp
     UiTestHarness.cpp
     DeepDiagnostics.cpp

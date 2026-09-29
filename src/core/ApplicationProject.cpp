@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
 #include "core/CrashHandler.h"
 
@@ -88,7 +89,10 @@ void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
 
     // ロードが終わるまでメインウィンドウを隠す。ロード中に古いシーンやテンプレートが
     // 一瞬見えるのを防ぐ(表示はスプラッシュのみ。完了時に UpdateProjectLoad が再表示する)。
-    if (m_window && m_window->GetHwnd() && IsWindowVisible(m_window->GetHwnd()))
+    // ★--background は隠さない/再表示しない（隠して Show し直すと、表示のたびに Z オーダーや
+    //   最小化状態が変わりうる。スプラッシュも出さない設定なので隠す理由が無い）。
+    if (m_window && m_window->GetHwnd() && !m_window->IsBackground()
+        && IsWindowVisible(m_window->GetHwnd()))
         ShowWindow(m_window->GetHwnd(), SW_HIDE);
 
     if (isNew)
@@ -1205,7 +1209,7 @@ void Application::RenderVersionControlWindow()
     {
         std::string webUrl = GitIntegration::ToWebUrl(remote);
         if (!webUrl.empty() && ImGui::SmallButton(("🔗 " + webUrl).c_str()))
-            ShellExecuteA(nullptr, "open", webUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            dx12e::guard::ShellExecuteGuarded(nullptr, "open", webUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
     // ---- 行3: 同期ツールバー（アイコンで並べる。ホバーで名前と意味が出る）----

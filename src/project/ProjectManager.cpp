@@ -1,6 +1,7 @@
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
 #include "core/Logger.h"
+#include "core/VirtualGuard.h"   // 仮想入力モード中はネイティブダイアログを出さない
 #include "core/CrashHandler.h"
 #include "core/Version.h"   // kEngineName（ランチャーの見出し）
 
@@ -103,7 +104,7 @@ bool ProjectManager::OpenProjectDialog(ProjectInfo& outInfo, HWND hwnd)
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST;
 
-    if (GetOpenFileNameA(&ofn))
+    if (!dx12e::guard::Blocked("プロジェクトを開くダイアログ") && GetOpenFileNameA(&ofn))
     {
         if (Project::Load(filePath, outInfo))
         {
@@ -116,6 +117,7 @@ bool ProjectManager::OpenProjectDialog(ProjectInfo& outInfo, HWND hwnd)
 
 bool ProjectManager::PickFolder(HWND /*hwnd*/, std::string& outPath, const wchar_t* title)
 {
+    if (dx12e::guard::Blocked("フォルダ選択ダイアログ")) return false;   // 仮想入力モード: モーダルでフォーカスを奪う
     // ★メインスレッドは XAudio2 が COINIT_MULTITHREADED(MTA) で COM 初期化済み。
     //   IFileOpenDialog は STA を要求するため、MTA スレッドで Show() すると固まる。
     //   → 専用の STA スレッドで開く。オーナー window は渡さない（メインスレッドが

@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <Xinput.h>
 #include "core/Types.h"
+#include "input/VirtualInput.h"
 
 namespace dx12e
 {
@@ -38,7 +39,14 @@ public:
     { return (vkCode >= 0 && vkCode < 256) && m_keys[vkCode]; }
     bool IsKeyPressed(int vkCode) const
     { return (vkCode >= 0 && vkCode < 256) && m_keys[vkCode] && !m_prevKeys[vkCode]; }
-    bool IsAsyncKeyDown(int vkCode) const { return (GetAsyncKeyState(vkCode) & 0x8000) != 0; }
+    // 物理キーの押下状態（フォーカスに関係なく OS の現在値）。
+    // ★仮想入力モード中は OS を見ずに、AI が注入した仮想キーの状態を返す
+    //   （エディタのフライカメラ WASD 等が、人の実キーではなく AI の操作で動くように）。
+    bool IsAsyncKeyDown(int vkCode) const
+    {
+        if (vinput::Enabled()) return vinput::VirtualKeyDown(vkCode);
+        return (GetAsyncKeyState(vkCode) & 0x8000) != 0;
+    }
 
     // ゲームパッド（XInput / Xbox コントローラー。pad = 0..3）
     // ボタン判定には PAD_* 定数（ScriptEngine 側で公開、値は XINPUT_GAMEPAD_* と同一）を渡す。
@@ -62,10 +70,18 @@ public:
     f32 GetMouseDeltaX() const { return m_mouseDeltaX; }
     f32 GetMouseDeltaY() const { return m_mouseDeltaY; }
     bool IsMouseCaptured() const { return m_mouseCaptured; }
-    bool IsRightMouseDown() const { return (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0; }
+    bool IsRightMouseDown() const
+    {
+        if (vinput::Enabled()) return vinput::VirtualRightMouseDown();   // 仮想モード: 仮想の右ボタン
+        return (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    }
 
     void SetMouseCapture(bool capture);
     void ToggleMouseCapture();
+    // 仮想入力モードの切り替え時に呼ぶ。ON にするとき、これまでに掛けた OS のカーソル拘束
+    // （非表示 / SetCapture / ClipCursor）が残っていれば解く。OFF にするときは論理キャプチャが
+    // 立っていれば次の Update() で掛け直す。
+    void OnVirtualModeChanged(bool on);
 
     // WndProc から呼ぶ
     void OnKeyDown(int vkCode);
@@ -96,6 +112,7 @@ private:
     // ponytail: 「論理キャプチャ(m_mouseCaptured)」と「物理拘束(カーソル非表示/クリップ/中央固定)」を
     // 分けるための唯一の仕掛け。ShowCursor はカウンタベースなので何度呼んでも同じ状態に落ち着く。
     void ApplyCursorConstraint(bool on);
+    void ApplyCursorConstraintUnchecked(bool on);   // 仮想入力モードのガードを通らない本体
 
     HWND m_hwnd = nullptr;
     bool m_keys[256] = {};
@@ -116,6 +133,10 @@ private:
     // 最小化からの復帰は WM_SETFOCUS 時点でクライアント矩形がまだ最小化サイズ(0x0/画面外)で、
     // その場で ClipCursor するとカーソルを画面外に閉じ込めかねないため。
     bool m_reapplyConstraint = false;
+    // OS のカーソル拘束（ShowCursor / SetCapture / ClipCursor）を実際に掛けているか。
+    // 掛けていないのに ClipCursor(nullptr) 等で「解く」と、他アプリが掛けた拘束まで外してしまうので、
+    // 自分が掛けたときだけ解く。
+    bool m_constraintApplied = false;
 
     GamepadState m_pads[kMaxGamepads];
 };

@@ -6,6 +6,7 @@
 #include <cstring>
 #include "core/vfs/Vfs.h"
 #include "editor/EditorTheme.h"
+#include "gui/VirtualInputImGui.h"
 
 #include <filesystem>
 
@@ -19,6 +20,19 @@
 namespace dx12e
 {
 
+namespace
+{
+// 仮想入力モード中は「メインウィンドウは最小化されていない」と ImGui に答える。
+//   --background=minimized ではウィンドウが本当に最小化されているが、ImGui は最小化された
+//   ビューポートの位置/サイズ更新や描画を省く。論理解像度で動かし続けたいので偽る。
+bool (*g_origGetWindowMinimized)(ImGuiViewport*) = nullptr;
+bool GetWindowMinimizedOverride(ImGuiViewport* vp)
+{
+    if (vinput::Enabled() && vp == ImGui::GetMainViewport()) return false;
+    return g_origGetWindowMinimized ? g_origGetWindowMinimized(vp) : false;
+}
+} // namespace
+
 void ImGuiManager::Initialize(
     HWND hwnd,
     GraphicsDevice& device,
@@ -29,6 +43,7 @@ void ImGuiManager::Initialize(
 {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    m_hwnd = hwnd;
 
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
@@ -203,6 +218,16 @@ void ImGuiManager::Initialize(
     // Win32 backend
     ImGui_ImplWin32_Init(hwnd);
 
+    // 仮想入力モード用: 最小化判定の差し替え（バックエンドの実装を包む。OFF の間は素通し）。
+    {
+        ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        if (pio.Platform_GetWindowMinimized)
+        {
+            g_origGetWindowMinimized = pio.Platform_GetWindowMinimized;
+            pio.Platform_GetWindowMinimized = GetWindowMinimizedOverride;
+        }
+    }
+
     // DX12 backend
     m_srvIndex = srvHeap.AllocateIndex();
 
@@ -223,15 +248,76 @@ void ImGuiManager::Initialize(
     Logger::Info("ImGui initialized (SRV index={})", m_srvIndex);
 }
 
+void ImGuiManager::SetVirtualInput(bool on)
+{
+    vinput_gui::SetImGuiVirtualMode(on);
+    if (!on)
+    {
+        // 押しっぱなしで切ると ImGui 側にボタン/キー押下が残る。離したことにして次フレームへ流す。
+        vinput::Queue& q = vinput::Global();
+        const vinput::Frame release = q.MakeReleaseAllFrame();
+        if (!release.empty() && ImGui::GetCurrentContext())
+        {
+            vinput_gui::ApplyContext ctx;
+            ctx.viewportPos = ImGui::GetMainViewport()->Pos;
+            ctx.displaySize = ImGui::GetIO().DisplaySize;
+            vinput_gui::ApplyFrame(ImGui::GetIO(), release, ctx);
+        }
+        q.Reset();
+        vinput_gui::ResetVirtualCursorState();
+    }
+}
+
 void ImGuiManager::BeginFrame()
 {
-    ImGui_ImplDX12_NewFrame();
-    ImGui_ImplWin32_NewFrame();
+    if (vinput::Enabled())
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        // ★バックエンドが SetCursorPos を呼ぶ唯一の条件を潰す（ナビ由来のマウス移動要求）。
+        io.WantSetMousePos = false;
+
+        // Win32 バックエンドの NewFrame は「実マウス位置の取り込み」「修飾キーの整合」等を
+        // イベントキューへ積む。仮想入力が実入力に上書きされないよう、積まれた分を捨てる。
+        // （実カーソルの位置は GetCursorPos で読まれるだけで、OS には何も書き込まない）
+        const int keep = vinput_gui::InputQueueSize();
+        ImGui_ImplDX12_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        vinput_gui::TruncateInputQueue(keep);
+
+        // 最小化されたままの窓でもレイアウトを潰さない。
+        if ((io.DisplaySize.x < 1.0f || io.DisplaySize.y < 1.0f) && m_logicalW > 0 && m_logicalH > 0)
+            io.DisplaySize = ImVec2(static_cast<float>(m_logicalW), static_cast<float>(m_logicalH));
+
+        // 仮想入力キューから 1 フレームぶんを流し込む（ImGui::NewFrame の直前）。
+        vinput::Queue& q = vinput::Global();
+        q.ClearAnchors();
+        const vinput::Frame frame = q.Pump();
+        vinput_gui::ApplyContext ctx;
+        ctx.viewportPos    = ImGui::GetMainViewport()->Pos;
+        ctx.displaySize    = io.DisplaySize;
+        ctx.mainViewportId = ImGui::GetMainViewport()->ID;
+        ctx.keySink        = m_virtualKeySink;
+        vinput_gui::ApplyFrame(io, frame, ctx);
+    }
+    else
+    {
+        ImGui_ImplDX12_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+    }
     ImGui::NewFrame();
+
+    // レイアウト(imgui.ini)は最初の NewFrame で読まれる。以後は保存しない。
+    if (m_iniSavingDisabled && !m_iniSavingDisabledApplied)
+    {
+        ImGui::GetIO().IniFilename = nullptr;
+        m_iniSavingDisabledApplied = true;
+    }
 }
 
 void ImGuiManager::EndFrame(ID3D12GraphicsCommandList* cmdList)
 {
+    if (vinput::Enabled())
+        vinput_gui::DrawVirtualCursor();   // スクショに「AI が今どこを操作しているか」が映る
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
 }

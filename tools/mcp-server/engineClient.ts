@@ -74,6 +74,13 @@ TIMEOUT_BY_METHOD["git_fetch"] = 120000;
 //     「エンジンは撮り続けているのに TS 側だけタイムアウト」になる。
 TIMEOUT_BY_METHOD["screenshot"]       = 60000;
 TIMEOUT_BY_METHOD["screenshot_final"] = 60000;
+// 仮想入力モード(imgui_pointer / imgui_key / imgui_screenshot)は遅延応答。積んだ入力が全部フレームに流れ切って
+// ImGui が反応してから返る。drag は steps(最大 600)フレームかけるので、重いエディタ(10fps)でも待てる桁を取る。
+TIMEOUT_BY_METHOD["imgui_pointer"]    = 90000;
+TIMEOUT_BY_METHOD["imgui_key"]        = 30000;
+TIMEOUT_BY_METHOD["imgui_screenshot"] = 30000;
+TIMEOUT_BY_METHOD["imgui_virtual_input"] = 8000;
+TIMEOUT_BY_METHOD["imgui_find"]       = 8000;
 // 遅延同期(地形/スカルプトの生成。CPU メッシュ生成 + GPU アップロードをフレーム境界で行う)。
 for (const m of ["terrain_create", "sculpt_create", "sculpt_make_editable"])
   TIMEOUT_BY_METHOD[m] = 45000;

@@ -63,8 +63,24 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_editorCtx->drawItems  = &m_drawItems;
     m_editorCtx->cpuScopeMs = m_cpuMs;
 
+    // ★仮想入力モード / --background は窓を作る【前】に立てる。窓の生成中に届く実入力メッセージも
+    //   最初から遮断でき、起動の最初の 1 フレームからフォアグラウンドを取らない。
+    if (!gameMode && m_virtualInputRequested)
+    {
+        vinput::SetEnabled(true);
+        Logger::Info("仮想入力モード: ON（実マウス/実キーボードを ImGui に渡さず、OS のカーソルに触れない）");
+    }
+    if (!gameMode && m_bgOptions.Active())
+    {
+        SplashScreen::SetSuppressed(true);           // プロジェクト読込のスプラッシュも出さない
+        Window::DisablePowerThrottling();             // 裏の窓でも EcoQoS / タイマ粗化で間引かれない
+        Logger::Info("--background={}{}: 手前に出さない起動",
+                     BackgroundModeName(m_bgOptions.mode), m_bgOptions.toolWindow ? ",tool" : "");
+    }
+
     // ウィンドウ作成（タイトルにエンジンのバージョンを表記＝更新の確認にも使える）
     m_window = std::make_unique<Window>();
+    if (!gameMode) m_window->SetBackground(m_bgOptions);
     std::wstring windowTitle = std::wstring(kEngineNameW) + L" v";
     for (const char* vp = kEngineVersion; *vp; ++vp)
         windowTitle += static_cast<wchar_t>(*vp);  // kEngineVersion は ASCII
@@ -809,6 +825,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_imguiManager->Initialize(
         m_window->GetHwnd(), *m_graphicsDevice, m_commandQueue->GetQueue(),
         *m_srvHeap, m_swapChain->GetFormat(), FrameResources::kFrameCount);
+    // 仮想キー（ImGui へ流したキー）は VK ベースの入力（F1 一時停止などの InputSystem 経由）へも届ける。
+    m_imguiManager->SetVirtualKeySink([this](int vk, bool down)
+    {
+        if (down && m_inputSystem) m_inputSystem->InjectKeyPress(vk);
+    });
+    if (m_bgOptions.Active() && !gameMode)
+        m_imguiManager->SetIniSavingDisabled(true);   // 画面外/最小化の位置を普段のレイアウトへ焼き付けない
+    if (vinput::Enabled())
+        m_imguiManager->SetVirtualInput(true);
 
     // UI 自動テストエンジン。ImGui コンテキスト生成直後・初回 NewFrame より前に開始する。
     // エディタでは常時初期化して「ツール > エンジン診断」からいつでも検査を回せるようにする
@@ -1418,6 +1443,38 @@ void Application::Run()
             });
         }
 
+        // ---- 仮想入力モードの「人の脱出口」----
+        //   ① Ctrl+Alt+Shift+F12（実キーボード。WndProc が要求を立てる）で OFF。
+        //   ② 実行中に MCP が ON にしたモードは、MCP が繋がっていない状態が 5 秒続いたら OFF に戻す
+        //      （AI のセッションが落ちて、人の実入力が効かないまま取り残されるのを防ぐ）。
+        //      起動引数（--virtual-input / --background）で ON にしたモードは意図的なので戻さない。
+        if (vinput::Enabled())
+        {
+            if (vinput::ConsumeEscape())
+            {
+                Logger::Warn("仮想入力モード: 人の脱出操作（Ctrl+Alt+Shift+F12）で OFF にしました");
+                ApplyVirtualInputMode(false);
+                m_virtualInputRuntime = false;
+            }
+            else if (m_virtualInputRuntime)
+            {
+                if (m_mcpBridge && m_mcpBridge->IsConnected()) m_virtualInputOrphanSec = 0.0f;
+                else m_virtualInputOrphanSec += m_gameClock.GetDeltaTime();
+                if (m_virtualInputOrphanSec > 5.0f)
+                {
+                    Logger::Warn("仮想入力モード: MCP が 5 秒以上切れているので OFF に戻しました（人の入力を復帰）");
+                    ApplyVirtualInputMode(false);
+                    m_virtualInputRuntime = false;
+                    m_virtualInputOrphanSec = 0.0f;
+                }
+            }
+        }
+        else
+        {
+            vinput::ConsumeEscape();   // OFF のときに立った要求は捨てる
+            m_virtualInputRuntime = false;
+        }
+
         // 超詳細診断からのフレーム読み戻し要求。ReadbackSceneBgra は内部でコマンドリストを
         // 開くのでフレーム境界のここでしか呼べない（ImGui のテスト本体から直接は呼べない）。
         if (m_diagFrameStatsRequest)
@@ -1530,6 +1587,11 @@ void Application::Run()
 
         // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();
+
+        // --background=minimized: 窓が最小化されていてもクライアント矩形が 0 になるだけで、
+        // 論理解像度（スワップチェインの大きさ）は保たれる。ImGui へはこの論理解像度を伝える。
+        if (m_bgOptions.Active() && m_imguiManager)
+            m_imguiManager->SetLogicalDisplaySize(m_window->GetWidth(), m_window->GetHeight());
 
         if (m_window->ShouldClose())
             break;
@@ -1690,6 +1752,9 @@ void Application::Run()
                 Logger::Error("エディタモードへ強制復帰しました");
             }
         }
+
+        // 仮想入力（dx12_imgui_pointer / key）の遅延応答。キューが流れ切って ImGui が反応した後に返す。
+        ServiceMcpVirtualInput();
 
         // 遅延初回表示: 隠れたまま数フレーム描画して絵（ランチャー）が確定してから
         // ウィンドウを出し、スプラッシュを閉じる。表示された瞬間には既に描画済み＝
@@ -1860,11 +1925,17 @@ void Application::Run()
         }
 
         // フレームレートリミッター（VSync OFF時のCPU暴走を防止。上限はオプション画面から変更可能）
-        if (!m_useVsync && m_fpsLimit > 0.0f)
+        // ★--background は VSync を使わない。見えていない窓（画面外/最小化/最背面）への Present は
+        //   DWM がフレームを消費せず即座に返る＝リミッターが無いと CPU/GPU を回し続ける。
+        //   なので裏の窓は常に「VSync 無し + 60fps 上限」（設定は書き換えない。既存の上限がもっと低ければそちら）。
+        const bool  bgPace     = m_bgOptions.Active();
+        const f32   paceLimit  = bgPace ? (m_fpsLimit > 0.0f ? (std::min)(m_fpsLimit, 60.0f) : 60.0f)
+                                        : m_fpsLimit;
+        if ((!m_useVsync || bgPace) && paceLimit > 0.0f)
         {
             using namespace std::chrono;
             auto targetDuration = duration_cast<high_resolution_clock::duration>(
-                duration<f64>(1.0 / static_cast<f64>(m_fpsLimit)));
+                duration<f64>(1.0 / static_cast<f64>(paceLimit)));
             auto elapsed = high_resolution_clock::now() - m_frameStart;
             auto remaining = targetDuration - elapsed;
 
@@ -2218,10 +2289,23 @@ void Application::Update()
     if (m_engineMode == EngineMode::Editor || paused)
     {
         // エディタモード: C++カメラ操作
-        bool rightMouseHeld = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+        bool rightMouseHeld = m_inputSystem->IsAsyncKeyDown(VK_RBUTTON);
 
         // ウィンドウが非フォーカスならカメラ操作しない
-        bool isForeground = (GetForegroundWindow() == m_window->GetHwnd());
+        // ★仮想入力モードでは「前面にいるか」を見ない。入力は全部 AI の仮想入力で、人の実入力は
+        //   遮断済み。裏（画面外/最小化）の窓でも右ドラッグのフライが効くようにする。
+        bool isForeground = vinput::Enabled() || (GetForegroundWindow() == m_window->GetHwnd());
+
+        // 仮想入力: 仮想ポインタの移動量を「マウスの移動量」として次フレームの視点回転へ渡す
+        // （実マウスの Raw Input は遮断しているので、他に移動量の入口が無い）。
+        // ★毎フレーム読んで捨てる（キャプチャしていない間に溜まった量が後で一気に効かないように）。
+        if (vinput::Enabled())
+        {
+            float vdx = 0.0f, vdy = 0.0f;
+            vinput::Global().TakePointerDelta(vdx, vdy);
+            if (m_inputSystem->IsMouseCaptured() && (vdx != 0.0f || vdy != 0.0f))
+                m_inputSystem->InjectMouseDelta(vdx, vdy);
+        }
 
         // カーソルが 3D ビューポート上にあるか（ImGui の PassthruCentralNode の
         // WantCaptureMouse 挙動に依存せず、中央ノード矩形で直接判定）。
@@ -2251,12 +2335,12 @@ void Application::Update()
                 -m_inputSystem->GetMouseDeltaY() * sensitivity);
 
             f32 speed = m_camera->GetMoveSpeed() * dt;
-            if (GetAsyncKeyState('W') & 0x8000) m_camera->MoveForward(speed);
-            if (GetAsyncKeyState('S') & 0x8000) m_camera->MoveForward(-speed);
-            if (GetAsyncKeyState('D') & 0x8000) m_camera->MoveRight(speed);
-            if (GetAsyncKeyState('A') & 0x8000) m_camera->MoveRight(-speed);
-            if (GetAsyncKeyState(VK_SPACE) & 0x8000) m_camera->MoveUp(speed);
-            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
+            if (m_inputSystem->IsAsyncKeyDown('W')) m_camera->MoveForward(speed);
+            if (m_inputSystem->IsAsyncKeyDown('S')) m_camera->MoveForward(-speed);
+            if (m_inputSystem->IsAsyncKeyDown('D')) m_camera->MoveRight(speed);
+            if (m_inputSystem->IsAsyncKeyDown('A')) m_camera->MoveRight(-speed);
+            if (m_inputSystem->IsAsyncKeyDown(VK_SPACE)) m_camera->MoveUp(speed);
+            if (m_inputSystem->IsAsyncKeyDown(VK_SHIFT)) m_camera->MoveUp(-speed);
         }
 
         // 2D中の右ドラッグ: 回転せずパン（マウスユーザー向け。中ドラッグと同じ操作感）。
@@ -2282,22 +2366,22 @@ void Application::Update()
             && !m_editorCtx->view2D)   // 2D中はフライ無効（パン/ズームのみ）
         {
             f32 speed = m_camera->GetMoveSpeed() * dt;
-            if (GetAsyncKeyState('W') & 0x8000) m_camera->MoveForward(speed);
-            if (GetAsyncKeyState('S') & 0x8000) m_camera->MoveForward(-speed);
-            if (GetAsyncKeyState('D') & 0x8000) m_camera->MoveRight(speed);
-            if (GetAsyncKeyState('A') & 0x8000) m_camera->MoveRight(-speed);
-            if (GetAsyncKeyState('E') & 0x8000) m_camera->MoveUp(speed);
-            if (GetAsyncKeyState('Q') & 0x8000) m_camera->MoveUp(-speed);
-            if (GetAsyncKeyState(VK_SPACE) & 0x8000) m_camera->MoveUp(speed);
-            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) m_camera->MoveUp(-speed);
+            if (m_inputSystem->IsAsyncKeyDown('W')) m_camera->MoveForward(speed);
+            if (m_inputSystem->IsAsyncKeyDown('S')) m_camera->MoveForward(-speed);
+            if (m_inputSystem->IsAsyncKeyDown('D')) m_camera->MoveRight(speed);
+            if (m_inputSystem->IsAsyncKeyDown('A')) m_camera->MoveRight(-speed);
+            if (m_inputSystem->IsAsyncKeyDown('E')) m_camera->MoveUp(speed);
+            if (m_inputSystem->IsAsyncKeyDown('Q')) m_camera->MoveUp(-speed);
+            if (m_inputSystem->IsAsyncKeyDown(VK_SPACE)) m_camera->MoveUp(speed);
+            if (m_inputSystem->IsAsyncKeyDown(VK_SHIFT)) m_camera->MoveUp(-speed);
 
             // 矢印キーで視点回転（マウス不要）
             f32 rot = 1.5f * dt;  // rad/sec
             f32 yawD = 0.0f, pitchD = 0.0f;
-            if (GetAsyncKeyState(VK_LEFT)  & 0x8000) yawD   -= rot;
-            if (GetAsyncKeyState(VK_RIGHT) & 0x8000) yawD   += rot;
-            if (GetAsyncKeyState(VK_UP)    & 0x8000) pitchD += rot;
-            if (GetAsyncKeyState(VK_DOWN)  & 0x8000) pitchD -= rot;
+            if (m_inputSystem->IsAsyncKeyDown(VK_LEFT)) yawD   -= rot;
+            if (m_inputSystem->IsAsyncKeyDown(VK_RIGHT)) yawD   += rot;
+            if (m_inputSystem->IsAsyncKeyDown(VK_UP)) pitchD += rot;
+            if (m_inputSystem->IsAsyncKeyDown(VK_DOWN)) pitchD -= rot;
             if (yawD != 0.0f || pitchD != 0.0f) m_camera->Rotate(yawD, pitchD);
         }
 
@@ -2308,10 +2392,10 @@ void Application::Update()
         if (m_editorCtx->view2D && kbActive)
         {
             f32 pan = (std::max)(0.5f, m_editorCtx->view2DZoom) * 1.5f * dt;
-            if ((GetAsyncKeyState('D') & 0x8000) || (GetAsyncKeyState(VK_RIGHT) & 0x8000)) m_camera->MoveRight(pan);
-            if ((GetAsyncKeyState('A') & 0x8000) || (GetAsyncKeyState(VK_LEFT)  & 0x8000)) m_camera->MoveRight(-pan);
-            if ((GetAsyncKeyState('W') & 0x8000) || (GetAsyncKeyState(VK_UP)    & 0x8000)) m_camera->MoveUp(pan);
-            if ((GetAsyncKeyState('S') & 0x8000) || (GetAsyncKeyState(VK_DOWN)  & 0x8000)) m_camera->MoveUp(-pan);
+            if ((m_inputSystem->IsAsyncKeyDown('D')) || (m_inputSystem->IsAsyncKeyDown(VK_RIGHT))) m_camera->MoveRight(pan);
+            if ((m_inputSystem->IsAsyncKeyDown('A')) || (m_inputSystem->IsAsyncKeyDown(VK_LEFT))) m_camera->MoveRight(-pan);
+            if ((m_inputSystem->IsAsyncKeyDown('W')) || (m_inputSystem->IsAsyncKeyDown(VK_UP))) m_camera->MoveUp(pan);
+            if ((m_inputSystem->IsAsyncKeyDown('S')) || (m_inputSystem->IsAsyncKeyDown(VK_DOWN))) m_camera->MoveUp(-pan);
         }
 
         // ★エディタのショートカットは ImGui のキー状態で判定する（GetAsyncKeyState を使わない）。

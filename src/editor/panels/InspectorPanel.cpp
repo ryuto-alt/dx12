@@ -1,6 +1,8 @@
 #include "editor/panels/InspectorPanel.h"
+#include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "editor/EditorContext.h"
 #include "editor/PropertyGrid.h"
+#include "gui/VirtualInputImGui.h"
 #include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
 #include "editor/AssetDrop.h"
@@ -336,6 +338,7 @@ bool IconHeader(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const char* labe
         open = ImGui::CollapsingHeader(padded.c_str(), flags);
     }
     ImGui::PopStyleColor(4);
+    dx12e::vinput_gui::AnchorLastItem("header", label);   // dx12_imgui_find 用（コンポーネントの見出し）
 
     const ImVec2 mn = ImGui::GetItemRectMin();
     const ImVec2 mx = ImGui::GetItemRectMax();
@@ -517,7 +520,7 @@ void DrawLuaScriptSection(entt::registry& reg,
     {
         namespace fs = std::filesystem;
         fs::path abs = fs::path(assetsDir) / ls.scriptPath;
-        ShellExecuteA(nullptr, "open", abs.string().c_str(),
+        dx12e::guard::ShellExecuteGuarded(nullptr, "open", abs.string().c_str(),
                       nullptr, nullptr, SW_SHOWNORMAL);
     }
     ImGui::SameLine();

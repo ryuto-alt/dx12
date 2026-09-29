@@ -4,6 +4,8 @@
 #include "resource/MaterialAssetManager.h"
 #include "core/Logger.h"
 #include "core/PathResolver.h"
+#include "input/VirtualInput.h"   // 仮想入力モード中は OS のカーソルに触らない
+#include "core/VirtualGuard.h"    // 同 ネイティブダイアログを出さない
 
 #include <imgui.h>
 #include <filesystem>
@@ -231,7 +233,7 @@ void MaterialEditorPanel::ImportFromImage(const std::string& assetsDir)
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     std::wstring initDir = PathResolver::Utf8ToWide(assetsDir);
     ofn.lpstrInitialDir = initDir.c_str();
-    if (!GetOpenFileNameW(&ofn))
+    if (dx12e::guard::Blocked("画像選択ダイアログ") || !GetOpenFileNameW(&ofn))
         return;
 
     fs::path picked(pathBuf);
@@ -380,6 +382,20 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
             // タイミングが噛み合わず回転量が出ないため、Win32 の物理カーソル位置を直接読み書きする:
             // GetCursorPos(即値) でアンカーからの移動量を取り、SetCursorPos で即座にアンカーへ戻す。
             // ワープ→読み取りが同期的なので相殺やフレーム遅延が原理的に起きない。
+            // ★仮想入力モード(AI 操作)では OS のカーソルに触らない: GetCursorPos / SetCursorPos の
+            //   アンカー方式は使わず、ImGui の MouseDelta（仮想ポインタの移動量）で回す。
+            //   仮想ポインタはクライアント領域内に収まっていて画面端で止まらないので、アンカーも要らない。
+            if (vinput::Enabled())
+            {
+                if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                {
+                    m_camYaw   -= io.MouseDelta.x * 0.01f;
+                    m_camPitch -= io.MouseDelta.y * 0.01f;
+                    m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
+                }
+            }
+            else
+            {
             if (ImGui::IsItemActivated())
             {
                 POINT p;
@@ -398,6 +414,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
 
                 ::SetCursorPos(static_cast<int>(m_orbitAnchorX), static_cast<int>(m_orbitAnchorY));
                 ImGui::SetMouseCursor(ImGuiMouseCursor_None);   // ドラッグ中は非表示。離すとアンカー位置に再表示
+            }
             }
             if (ImGui::IsItemHovered())
                 m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.3f, 1.5f, 12.0f);

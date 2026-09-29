@@ -52,6 +52,8 @@ bool IsMcpReadOnlyMethod(const std::string& method)
         // reload_assets も同じ（MeshRenderer の参照先を新しい実体へ差し替えるだけで、
         // シリアライズされる値は 1 つも変わらない＝未保存扱いにしてはいけない）。
         "reload_scripts", "reload_assets",
+        // 仮想入力（imgui_*）は UI を触るだけでシーンのデータは変えない（編集は UI 経由で Undo に積まれる）。
+        "imgui_virtual_input", "imgui_pointer", "imgui_key", "imgui_find", "imgui_screenshot",
     };
     return kReadOnly.find(method) != kReadOnly.end();
 }
@@ -101,6 +103,7 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpUndoMethods();
     RegisterMcpAudioMethods();
     RegisterMcpAiMethods();
+    RegisterMcpImGuiMethods();      // 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作）
 }
 
 
@@ -545,9 +548,11 @@ std::string Application::CaptureSceneScreenshot(std::string& err, const std::str
 //   ImGui のパネル / ギズモ / オーバーレイはまだ 1 ピクセルも乗っていない。
 //   ＝エディタで撮ってもゲームと同じ絵になる。パネル込みが欲しいときは ui_screenshot。
 void Application::CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
-                                               u32 vpX, u32 vpY, u32 vpW, u32 vpH)
+                                               u32 vpX, u32 vpY, u32 vpW, u32 vpH, bool afterImGui)
 {
     if (!m_mcpFinalShot.pending || !cmd || !backBuffer) return;
+    // ImGui の前（従来）と後（dx12_imgui_screenshot）のどちらで撮る要求かで、呼び出し位置を分ける。
+    if (m_mcpFinalShot.withImGui != afterImGui) return;
     m_mcpFinalShot.pending  = false;
     m_mcpFinalShot.captured = false;
 
@@ -682,7 +687,8 @@ void Application::FinishFinalScreenshot()
 
     std::string err;
     std::filesystem::path outPath;
-    try { outPath = McpScreenshotPath(m_mcpFinalShot.path, "mcp_screenshot_final.png"); }
+    try { outPath = McpScreenshotPath(m_mcpFinalShot.path,
+        m_mcpFinalShot.withImGui ? "mcp_imgui_screenshot.png" : "mcp_screenshot_final.png"); }
     catch (const std::exception& e)
     {
         FailMcp(m_mcpBridge.get(), reply, McpErr::InvalidParam, e.what());
@@ -691,6 +697,21 @@ void Application::FinishFinalScreenshot()
     if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err))
     {
         FailMcp(m_mcpBridge.get(), reply, McpErr::Internal, err.empty() ? "png write failed" : err);
+        return;
+    }
+    if (m_mcpFinalShot.withImGui)
+    {
+        // dx12_imgui_screenshot: ImGui（パネル / ギズモ / 仮想カーソル）込みの最終画。
+        CompleteMcp(m_mcpBridge.get(), reply,
+            nlohmann::json{{"path", outPath.string()},
+                           {"width", w}, {"height", h},
+                           {"source", "backbuffer+imgui"},
+                           {"virtualCursor", vinput::Enabled() && vinput::Global().State().hasPos},
+                           {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
+                           {"note", "ImGui を描いた後・Present 直前のバックバッファ全面。窓が背面/画面外/最小化"
+                                    "でも撮れる（PrintWindow を使わない）。仮想入力モード ON なら仮想カーソル"
+                                    "（矢印 + クリックの波紋）も写る。座標はこの画像のピクセル = "
+                                    "dx12_imgui_pointer のクライアント座標"}});
         return;
     }
     const PostProcessSettings& pp = m_scene->GetPostSettings();

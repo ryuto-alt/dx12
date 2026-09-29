@@ -1,4 +1,5 @@
 #include "editor/panels/AssetBrowserPanel.h"
+#include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/ModelThumbnailRenderer.h"
@@ -45,6 +46,7 @@ bool MoveToRecycleBin(const std::filesystem::path& path)
 
 void OpenInVSCode(const std::string& filePath)
 {
+    if (dx12e::guard::Blocked("Open in VS Code")) return;   // 仮想入力モード: 人の画面に窓を出さない
     // Code.exe を SHGetFolderPathA (LOCALAPPDATA) 経由で探す
     static std::string cachedExe;
     static bool resolved = false;
@@ -79,14 +81,14 @@ void OpenInVSCode(const std::string& filePath)
         // ShellExecute はシェル経由でエディタから独立して起動するため、VSCode が自分の
         // ライフサイクルを正しく管理でき、閉じた後でも開き直せる。
         std::string args = "\"" + filePath + "\"";
-        HINSTANCE r = ShellExecuteA(nullptr, "open", cachedExe.c_str(), args.c_str(),
+        HINSTANCE r = dx12e::guard::ShellExecuteGuarded(nullptr, "open", cachedExe.c_str(), args.c_str(),
                                     nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(r) > 32)
             return;  // 起動成功（> 32 が成功の規約）
     }
 
     // フォールバック: 拡張子の関連付けで開く
-    ShellExecuteA(nullptr, "open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    dx12e::guard::ShellExecuteGuarded(nullptr, "open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 } // anonymous namespace
 
@@ -862,14 +864,14 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                                 entry.type == AssetType::Shader)
                                 OpenInVSCode(entry.path.string());
                             else
-                                ShellExecuteA(nullptr, "open", entry.path.string().c_str(),
+                                dx12e::guard::ShellExecuteGuarded(nullptr, "open", entry.path.string().c_str(),
                                               nullptr, nullptr, SW_SHOWNORMAL);
                         }
                     }
                     else
                     {
                         if (ImGui::MenuItem("\xe3\x82\xa8\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x97\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa9\xe3\x83\xbc\xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // エクスプローラーで開く
-                            ShellExecuteA(nullptr, "explore", entry.path.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                            dx12e::guard::ShellExecuteGuarded(nullptr, "explore", entry.path.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                     }
                     // 削除（シーン/スクリプト含む全アセット・フォルダ。確認ダイアログ経由）
                     ImGui::Separator();
@@ -952,7 +954,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             // フォルダを開く
             if (ImGui::MenuItem("\xe3\x82\xa8\xe3\x82\xaf\xe3\x82\xb9\xe3\x83\x97\xe3\x83\xad\xe3\x83\xbc\xe3\x83\xa9\xe3\x83\xbc\xe3\x81\xa7\xe9\x96\x8b\xe3\x81\x8f"))  // エクスプローラーで開く
             {
-                ShellExecuteA(nullptr, "explore", m_currentDir.string().c_str(),
+                dx12e::guard::ShellExecuteGuarded(nullptr, "explore", m_currentDir.string().c_str(),
                     nullptr, nullptr, SW_SHOWNORMAL);
             }
 

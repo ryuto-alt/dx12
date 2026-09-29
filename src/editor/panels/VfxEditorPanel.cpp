@@ -4,6 +4,7 @@
 #include "ecs/Components.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/CommandList.h"
+#include "input/VirtualInput.h"   // 仮想入力モード中は OS のカーソルに触らない
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -618,6 +619,18 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
         ImGuiIO& io = ImGui::GetIO();
         // カーソル固定オービット(無限回転)。Win32 の物理カーソル位置を直接読み書きする
         // (GetCursorPos で移動量→SetCursorPos で即アンカーへ戻す)。MaterialEditorPanel と同じ対処。
+        // ★仮想入力モード(AI 操作)は OS のカーソルに触らない: ImGui の MouseDelta で回す。
+        if (vinput::Enabled())
+        {
+            if (ImGui::IsItemActive() && ImGui::IsMouseDown(ImGuiMouseButton_Left))
+            {
+                m_camYaw   += io.MouseDelta.x * 0.01f;
+                m_camPitch += io.MouseDelta.y * 0.01f;
+                m_camPitch = std::clamp(m_camPitch, -1.5f, 1.5f);
+            }
+        }
+        else
+        {
         if (ImGui::IsItemActivated())
         {
             POINT p;
@@ -635,6 +648,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
 
             ::SetCursorPos(static_cast<int>(m_orbitAnchorX), static_cast<int>(m_orbitAnchorY));
             ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        }
         }
         if (ImGui::IsItemHovered() && io.MouseWheel != 0.0f)
             m_camDist = std::clamp(m_camDist - io.MouseWheel * 0.4f, 1.0f, 30.0f);

@@ -188,6 +188,20 @@ public:
     // 起動直後に開くシーン（assets 相対）。--project と併用する。
     void SetStartupScene(const std::string& rel) { m_startupScene = rel; }
 
+    // ===== 仮想入力モード / --background（AI が人の PC 操作を奪わずにエディタを触る）=====
+    // Initialize より前に呼ぶ。詳細は input/VirtualInput.h / core/BackgroundMode.h / docs/MCP.md。
+    //   SetVirtualInput(true)  … --virtual-input。実マウス/実キーボードを ImGui に渡さず、
+    //                            OS のカーソル/フォーカスに触れない。MCP の dx12_imgui_* だけが UI を操作する。
+    //   SetBackground(opt)     … --background[=offscreen|minimized|noactivate|hidden]。窓を前面に出さない静かな起動。
+    //                            仮想入力モードを含意する。
+    void SetVirtualInput(bool on) { m_virtualInputRequested = on; }
+    void SetBackground(const BackgroundOptions& opt)
+    {
+        m_bgOptions = opt;
+        if (opt.Active()) m_virtualInputRequested = true;
+    }
+    bool IsBackground() const { return m_bgOptions.Active(); }
+
     // ImGuiTestEngine による UI 自動テスト(--ui-tests)。Initialize より前に呼ぶ。
     // runAll=true なら起動後に全テストを走らせ、完了したら終了する(終了コード=UiTestExitCode)。
     // deepOnly=true なら超詳細診断だけを走らせる(--ui-tests-deep。UI 操作をほぼ伴わない)。
@@ -401,6 +415,22 @@ private:
     void RegisterMcpValidateMethods();    // 配置検査（埋まり / ちらつき / 二重 / 当たり無し）
     void RegisterMcpPerceiveMethods();    // 知覚層（dx12_perceive: プレイヤーの目から見た事実を数値で）
     void RegisterMcpUndoMethods();        // Undo / Redo / トランザクション（mcp/ApplicationMcpUndo.cpp）
+    void RegisterMcpImGuiMethods();       // 仮想入力モード（imgui_virtual_input / pointer / key / find / screenshot）
+    // 仮想入力モードの切り替え（メインスレッド）。フラグ・ImGui・InputSystem を一括で整える。
+    void ApplyVirtualInputMode(bool on);
+    nlohmann::json McpVirtualInputState() const;   // モード / ポインタ / キュー / ウィンドウ状態（OS の値は読むだけ）
+    void McpRequireVirtualInput() const;           // OFF なら「先に enable:true」を返して弾く
+    // 毎フレーム（Render() の後）呼ぶ。仮想入力の遅延応答（キューが流れ切った後に返す）を処理する。
+    void ServiceMcpVirtualInput();
+    // dx12_imgui_pointer / key の完了待ち。reply は targetPump フレーム目が流れ切って settle フレーム後に返す。
+    struct McpVInputWait
+    {
+        McpDeferred    reply;
+        uint64_t       targetPump = 0;   // vinput::Global().Pumped() がこの値以上で入力は全部適用済み
+        int            settle = 2;       // その後、ImGui が反応するまで待つフレーム数
+        nlohmann::json info;             // 応答に載せる（積んだ内容）
+    };
+    std::vector<McpVInputWait> m_mcpVInputWaits;
     // undo / redo / transaction_commit / transaction_rollback の実処理。フレーム境界で 1 度だけ呼ぶ
     // （削除の取り消しはモデルの再読み込みを伴うので cmdList が要る。生成・削除の遅延処理より後に置く）。
     void ProcessMcpUndoRequests(ID3D12GraphicsCommandList* cmdList);
@@ -460,6 +490,10 @@ private:
         //   撮影が終われば m_mcpFinalShot ごと {} に戻るので後始末は要らない
         //   ＝「次の 1 枚では必ず元通り」が構造で保証される（render_debug の作法と同じ）。
         bool        hideGizmos = false;
+        // true なら ImGui を描き終えた後（Present 直前）のバックバッファ全面を撮る
+        // （dx12_imgui_screenshot。パネル / ギズモ / 仮想カーソルが写る。PrintWindow を使わない
+        //  ので窓が背面・画面外・最小化でも撮れる）。false は従来どおり ImGui を描く前のビューポート矩形。
+        bool        withImGui = false;
         u32         w = 0, h = 0;       // 撮った矩形（ビューポート）
         u32         rowPitch = 0;
         u64         bytes    = 0;       // readback バッファの実サイズ（Map の read range に使う。
@@ -478,8 +512,9 @@ private:
     }
 
     // Render() の ImGui フレーム直前で呼ぶ。pending が立っていなければ何もしない。
+    // afterImGui=true は ImGui を描いた後の呼び出し（withImGui の撮影だけを拾う）。
     void CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, ID3D12Resource* backBuffer,
-                                      u32 vpX, u32 vpY, u32 vpW, u32 vpH);
+                                      u32 vpX, u32 vpY, u32 vpW, u32 vpH, bool afterImGui = false);
     // Run ループの Render() 直後で呼ぶ。captured が立っていれば PNG 化して遅延応答を返す。
     void FinishFinalScreenshot();
 
@@ -1381,6 +1416,12 @@ private:
     std::unique_ptr<NetworkSystem>     m_networkSystem;   // マルチプレイ（GPU非依存、Play/Stopでも再構築しない）
     std::unique_ptr<NetworkPanel>      m_networkPanel;    // マルチプレイのエディタパネル（状態/設定窓）。ゲームでは null。
     std::string m_pendingNetClientJoin;     // SetNetTestClientJoin で受けた "ip:port"。Initialize 内で1回消費。
+    bool        m_virtualInputRequested = false;   // --virtual-input（--background を含む）
+    // 実行中に MCP（dx12_imgui_virtual_input）が ON にした仮想入力モードか。起動引数で ON にした物は含まない。
+    // AI との接続が切れたまま放置されると人の実入力が効かないままになるので、これだけは自動で OFF に戻す。
+    bool        m_virtualInputRuntime = false;
+    f32         m_virtualInputOrphanSec = 0.0f;    // MCP が繋がっていない時間（m_virtualInputRuntime のときだけ数える）
+    BackgroundOptions m_bgOptions;                 // --background（既定 None）
     bool        m_headless = false;         // --headless: 窓を出さずに MCP だけ開ける
     bool        m_headlessAllowSave = false;// --allow-autosave: ヘッドレスでも自動保存を許す
     int         m_mcpPortRequest = 0;       // --mcp-port: 0 なら既定(8787 から探す)

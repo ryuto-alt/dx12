@@ -294,6 +294,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         bool headless = false;
         // --allow-autosave: ヘッドレスでもディスクへ書く（既定は読み取り専用）。
         bool headlessAllowSave = false;
+        // --virtual-input: 実マウス/実キーボードを ImGui に渡さず OS のカーソルにも触れない（AI 操作用）。
+        // --background[=offscreen|minimized|noactivate|hidden][,tool|notool]: 手前に出てこない静かな起動
+        //   （仮想入力モードを含意。core/BackgroundMode.h）。
+        bool virtualInput = false;
+        dx12e::BackgroundOptions bgOpt;
+        std::string bgError;
         int  mcpPort  = 0;
         std::string startupScene;
 #endif
@@ -440,6 +446,20 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         headless = true;
                     else if (wcscmp(argv[i], L"--allow-autosave") == 0)
                         headlessAllowSave = true;
+                    else if (wcscmp(argv[i], L"--virtual-input") == 0)
+                        virtualInput = true;
+                    else if (wcscmp(argv[i], L"--background") == 0
+                             || wcsncmp(argv[i], L"--background=", 13) == 0)
+                    {
+                        const std::string value = (argv[i][12] == L'=') ? toUtf8(argv[i] + 13) : std::string();
+                        if (!dx12e::ParseBackgroundOption(value, bgOpt, bgError))
+                        {
+                            OutputDebugStringA((bgError + "\n").c_str());
+                            bgOpt = dx12e::BackgroundOptions{};
+                            bgOpt.mode = dx12e::BackgroundMode::Offscreen;   // 不明な値でも「静かに」は守る
+                            bgOpt.toolWindow = true;
+                        }
+                    }
                     else if (wcscmp(argv[i], L"--mcp-port") == 0 && i + 1 < argc)
                         mcpPort = _wtoi(argv[++i]);
                     else if (wcscmp(argv[i], L"--scene") == 0 && i + 1 < argc)
@@ -498,7 +518,11 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // D3D12/シェーダ/アセット初期化）中も固まらずアニメし続ける。
         // ★--headless ではスプラッシュも出さない。窓を出さないための機能なのに
         //   起動のたびにロゴが前面へ出てきては意味が無い。
-        if (!gameMode && !buildMode && !headless)
+        // ★--background も出さない（人の画面に窓を出さないための機能）。読込時のスプラッシュも
+        //   SetSuppressed で止める。
+        if (bgOpt.Active())
+            dx12e::SplashScreen::SetSuppressed(true);
+        if (!gameMode && !buildMode && !headless && !bgOpt.Active())
         {
             dx12e::SplashScreen::Show(
                 dx12e::kEngineName,
@@ -510,7 +534,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // justUpdated（--updated）による1回スキップは廃止した。「毎回絶対に確認してほしい」という
         // 要求のため、更新直後の再起動を含め全ての起動で必ずチェックする（スプラッシュ画面が
         // チェック中もアニメし続けるので、数秒の同期待ちでも固まって見えない）。
-        if (!buildMode && dx12e::Updater::RunStartupCheck())
+        // ★--background / --virtual-input では自動更新を確認しない（更新ダイアログや MessageBox が前面に出るため）。
+        if (!buildMode && !bgOpt.Active() && !virtualInput && dx12e::Updater::RunStartupCheck())
         {
             dx12e::SplashScreen::Close();   // 更新適用へ（更新バッチが上書き→再起動する）
             return EXIT_SUCCESS;
@@ -539,6 +564,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             app.SetHeadless(true);
             app.SetHeadlessAllowSave(headlessAllowSave);
         }
+        if (virtualInput) app.SetVirtualInput(true);
+        if (bgOpt.Active()) app.SetBackground(bgOpt);   // 仮想入力モードも含意する
         if (mcpPort > 0)  app.SetMcpPort(mcpPort);
         if (!startupScene.empty()) app.SetStartupScene(startupScene);
 #endif

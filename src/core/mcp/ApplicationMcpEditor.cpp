@@ -275,6 +275,24 @@ void Application::RegisterMcpEditorMethods()
         {
             // エディタウィンドウ全体(ImGui パネル込み = UIエディタ/ゲーム内 UI プレビューが写る)を
             // PNG にして返す。scene RT には ImGui 描画が乗らないため screenshot とは別経路。
+            //
+            // ★仮想入力モード（--virtual-input / --background）では PrintWindow を使わない。
+            //   最小化された窓は PrintWindow が失敗し（IsIconic）、画面外/背面の窓は DWM 任せで
+            //   絵が古い/欠けることがある。ImGui を描いた後のバックバッファを直接読み戻す
+            //   dx12_imgui_screenshot と同じ経路（遅延応答）へ回す。返り値の形は上位互換（path/width/height + α）。
+            if (vinput::Enabled() && !m_isGameMode && m_imguiManager)
+            {
+                if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+                    throw McpError(McpErr::ModeConflict,
+                        "a screenshot is already pending; retry shortly",
+                        "前のスクショの応答を待ってから撮る（通常 1〜2 フレームで返る）");
+                m_mcpFinalShot = {};
+                m_mcpFinalShot.reply     = deferred;
+                m_mcpFinalShot.withImGui = true;
+                m_mcpFinalShot.pending   = true;
+                isDeferred = true;
+                return;
+            }
             std::string serr;
             const std::string path = CaptureWindowScreenshot(m_window ? m_window->GetHwnd() : nullptr, serr);
             if (path.empty()) throw std::runtime_error(serr.empty() ? "ui_screenshot failed" : serr);

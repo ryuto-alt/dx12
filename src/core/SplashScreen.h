@@ -29,6 +29,10 @@ public:
 
     // 閉じてスレッドを合流する（未表示なら no-op）
     static void Close();
+
+    // true の間 Show() は何もしない（--background: 起動・プロジェクト読込のどちらでもスプラッシュ窓を
+    // 出さない＝人の画面に窓を出さない）。SetStatus / Close は従来どおり安全に no-op。
+    static void SetSuppressed(bool on);
 };
 
 } // namespace dx12e

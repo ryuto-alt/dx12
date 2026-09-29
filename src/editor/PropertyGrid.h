@@ -11,6 +11,7 @@
 // ラベルの tip 引数はホバーで説明ツールチップ（従来の SameLine "(?)" の置き換え）。
 
 #include "editor/EditorTheme.h"
+#include "gui/VirtualInputImGui.h"   // find 用アンカー登録（仮想入力モード ON の間だけ働く）
 
 #pragma warning(push)
 #pragma warning(disable: 4201)
@@ -70,6 +71,8 @@ inline void Label(const char* label, const char* tip = nullptr)
     ImGui::PushStyleColor(ImGuiCol_Text, theme::TextMid);
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
+    const ImVec2 anchorLabelMin = ImGui::GetItemRectMin();   // dx12_imgui_find 用（ラベル文字の矩形）
+    const ImVec2 anchorLabelMax = ImGui::GetItemRectMax();
     if (tip)
     {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
@@ -82,6 +85,13 @@ inline void Label(const char* label, const char* tip = nullptr)
             ImGui::SetTooltip("%s", tip);
     }
     ImGui::TableSetColumnIndex(1);
+    if (vinput::Enabled())
+    {
+        // 値欄の矩形（次に描くウィジェットの位置と幅）。クリック対象はこちら。
+        const ImVec2 vmin = ImGui::GetCursorScreenPos();
+        const ImVec2 vmax(vmin.x + ImGui::GetContentRegionAvail().x, vmin.y + ImGui::GetFrameHeight());
+        vinput_gui::AnchorProperty(label, anchorLabelMin, anchorLabelMax, vmin, vmax);
+    }
     ImGui::SetNextItemWidth(-FLT_MIN);
 }
 

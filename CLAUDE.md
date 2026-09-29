@@ -40,6 +40,13 @@
 - 最終目標: PBR + DXR レイトレーシング
 - GitHub: https://github.com/ryuto-alt/dx12
 
+## ★ エディタ UI を AI が操作・撮影するときは仮想入力モード + `--background`（絶対）
+実マウス / 実キーボード / フォーカスを動かす操作（`SendInput` / `mouse_event` / `SetCursorPos` / `SetForegroundWindow` /
+computer-use / PrintWindow でのキャプチャ）は**使わない**。過去にユーザーがカーソルを奪われて PC を操作できなくなった。
+- 起動: `DX12Engine.exe --background --project <dir> --mcp-port N`（窓は手前に出ない。既定は画面外。仮想入力モードも含意）
+- 操作: `dx12_imgui_pointer` / `dx12_imgui_key`、狙う場所: `dx12_imgui_find`、画面: `dx12_imgui_screenshot`（ImGui 込み・背面でも撮れる）
+- 詳細: [`docs/MCP.md`](docs/MCP.md) §4-18。人の脱出口は Ctrl+Alt+Shift+F12（実キーボード）/ MCP が 5 秒切れると自動 OFF。
+
 ## データ駆動オーサリング（人間 & Claude Code 両対応）
 ゲームの中身は全部データ（シーン JSON + `.lua` コンポーネント）。同じものを人間はエディタで、
 Claude Code はテキストで作れる。新機能の作法はここを参照:

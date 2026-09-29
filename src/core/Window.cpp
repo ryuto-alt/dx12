@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include "Version.h"   // kEngineNameW（ウィンドウタイトルの既定表示名）
 #include "input/InputSystem.h"
+#include "input/VirtualInput.h"   // 仮想入力モード中は実マウス/実キーボードを ImGui にも InputSystem にも渡さない
 
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
 #include <algorithm>
@@ -26,6 +27,14 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
                          u32 width, u32 height, const wchar_t* title,
                          bool deferShow, bool startMaximized)
 {
+    const bool bg = m_bg.Active();
+    if (bg)
+    {
+        // --background: 論理解像度で作る（画面外 / 最小化でも 0x0 や作業領域への縮小をしない）。
+        width  = kBackgroundClientWidth;
+        height = kBackgroundClientHeight;
+        startMaximized = false;
+    }
     m_width = width;
     m_height = height;
     m_title = title ? title : kEngineNameW;   // 既定の表示名は Version.h で一元管理
@@ -63,7 +72,23 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
 
     int winX = CW_USEDEFAULT, winY = CW_USEDEFAULT;
-    if (!startMaximized)
+    if (bg)
+    {
+        const int fullW = rect.right - rect.left;
+        if (m_bg.mode == BackgroundMode::Offscreen)
+        {
+            // 全モニタの仮想デスクトップの外側（左）へ。-32000 のような「最小化の指定席」ではなく、
+            // 最小化扱いにならない普通の窓のまま画面に映らない場所へ置く。
+            winX = GetSystemMetrics(SM_XVIRTUALSCREEN) - fullW - 256;
+            winY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        }
+        else
+        {
+            RECT wa{};
+            if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) { winX = wa.left; winY = wa.top; }
+        }
+    }
+    else if (!startMaximized)
     {
         // 指定解像度のまま表示するモード: 作業領域に収まらない場合はアスペクト比を保って
         // クライアント領域を縮める（比率が崩れると UI の ScaleToFit がレターボックスを作る）。
@@ -110,8 +135,16 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
         }
     }
 
+    // --background: WS_EX_NOACTIVATE（クリックされてもアクティブ化しない）。
+    //   tool 指定（画面外/非表示は既定）は WS_EX_TOOLWINDOW でタスクバー/Alt+Tab から隠す。
+    DWORD exStyle = 0;
+    if (bg)
+    {
+        exStyle |= WS_EX_NOACTIVATE;
+        if (m_bg.toolWindow) exStyle |= WS_EX_TOOLWINDOW;
+    }
     m_hwnd = CreateWindowExW(
-        0,
+        exStyle,
         L"DX12EngineWindowClass",
         m_title.c_str(),
         WS_OVERLAPPEDWINDOW,
@@ -159,8 +192,9 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
         // ほぼ最終解像度で行われ、表示時（最大化）のリサイズ差分が最小になる。
         // WM_SIZE は同期的に届き m_width/m_height を更新するので、この後に作られる
         // スワップチェイン/RT は最初からこのサイズになる。
+        // ★--background は論理解像度(1920x1080)のまま。作業領域へは広げない。
         RECT wa{};
-        if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0))
+        if (!bg && SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0))
             SetWindowPos(m_hwnd, nullptr, wa.left, wa.top,
                          wa.right - wa.left, wa.bottom - wa.top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
@@ -176,10 +210,53 @@ void Window::Initialize(HINSTANCE hInstance, int /*nCmdShow*/,
 
 void Window::Show()
 {
-    if (!m_hwnd || IsWindowVisible(m_hwnd)) return;
+    if (!m_hwnd) return;
+
+    // ===== --background: 前面に出ない表示。SetForegroundWindow / SW_SHOW / SW_SHOWMAXIMIZED は使わない =====
+    if (m_bg.Active())
+    {
+        if (m_bg.mode == BackgroundMode::Hidden) return;   // 一度も表示しない（HWND だけ作る）
+        if (IsWindowVisible(m_hwnd)) return;
+        switch (m_bg.mode)
+        {
+        case BackgroundMode::Minimized:
+            ShowWindow(m_hwnd, SW_SHOWMINNOACTIVE);        // 最小化のまま・アクティブ化しない
+            break;
+        case BackgroundMode::Offscreen:
+        case BackgroundMode::NoActivate:
+        default:
+            ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);         // アクティブ化しない
+            // 表示時に Z オーダーの最上段へ来るのを、最背面へ送って避ける（フォアグラウンドは変えない）。
+            SetWindowPos(m_hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            break;
+        }
+        UpdateWindow(m_hwnd);
+        return;
+    }
+
+    if (IsWindowVisible(m_hwnd)) return;
     ShowWindow(m_hwnd, m_startMaximized ? SW_SHOWMAXIMIZED : SW_SHOW);
     UpdateWindow(m_hwnd);
     SetForegroundWindow(m_hwnd);
+}
+
+void Window::DisablePowerThrottling()
+{
+    // EcoQoS（実行速度の間引き）と、タイマー分解能の無視（Windows 11 は「見えていない窓」の
+    // プロセスの timeBeginPeriod を無視して 15ms 刻みに戻す）の両方から外れる。
+    // StateMask=0 + ControlMask にビット = 「OS の自動判断に任せず、間引きを明示的に OFF」。
+    PROCESS_POWER_THROTTLING_STATE st{};
+    st.Version     = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    st.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+#ifdef PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+    st.ControlMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+#endif
+    st.StateMask   = 0;
+    if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &st, sizeof(st)))
+        Logger::Warn("power throttling opt-out failed (err={})", GetLastError());
+    else
+        Logger::Info("power throttling disabled (background window)");
 }
 
 void Window::EnableCustomTitleBar()
@@ -189,6 +266,23 @@ void Window::EnableCustomTitleBar()
     // WM_NCCALCSIZE を発火させてフレームを再計算(キャプション領域をクライアントに取り込む)
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (m_bg.Active() && !IsIconic(m_hwnd))
+    {
+        // --background: キャプションを外すとクライアント領域が縦に伸びる。論理解像度
+        // (1920x1080)を保つため、窓の大きさを取り直して合わせる（スワップチェイン生成前）。
+        RECT cr{}, wr{};
+        if (GetClientRect(m_hwnd, &cr) && GetWindowRect(m_hwnd, &wr)
+            && (cr.right != static_cast<LONG>(m_width) || cr.bottom != static_cast<LONG>(m_height)))
+        {
+            SetWindowPos(m_hwnd, nullptr, 0, 0,
+                         (wr.right - wr.left) + (static_cast<LONG>(m_width)  - cr.right),
+                         (wr.bottom - wr.top) + (static_cast<LONG>(m_height) - cr.bottom),
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        m_width  = kBackgroundClientWidth;
+        m_height = kBackgroundClientHeight;
+        m_resized = false;
+    }
     Logger::Info("カスタムタイトルバー有効化");
 }
 
@@ -200,6 +294,7 @@ void Window::SetTitle(const std::wstring& title)
 
 void Window::ToggleFullscreen()
 {
+    if (m_bg.Active()) return;   // --background: 窓が画面内へ戻る/最大化されるのを防ぐ
     // F11: ウィンドウ ⇄ ボーダレス（従来挙動）
     SetMode(m_mode == WindowMode::Windowed ? WindowMode::Borderless : WindowMode::Windowed);
 }
@@ -207,6 +302,7 @@ void Window::ToggleFullscreen()
 void Window::SetMode(WindowMode mode, u32 width, u32 height)
 {
     if (!m_hwnd) return;
+    if (m_bg.Active()) return;   // --background: ボーダレス/フルスクリーン遷移は窓を前面へ出すので無効
 
     // Fullscreen から抜けるときはディスプレイモードを元に戻す
     if (m_displayModeChanged && mode != WindowMode::Fullscreen)
@@ -313,6 +409,7 @@ void Window::SetMode(WindowMode mode, u32 width, u32 height)
 void Window::SetClientSize(u32 width, u32 height)
 {
     if (!m_hwnd || m_mode != WindowMode::Windowed || width == 0 || height == 0) return;
+    if (m_bg.Active()) return;   // --background: 論理解像度を固定
     RECT rect = { 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
     AdjustWindowRect(&rect, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX, FALSE);
     SetWindowPos(m_hwnd, nullptr, 0, 0,
@@ -369,8 +466,15 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         window = reinterpret_cast<Window*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
 
+    // ★仮想入力モード（--virtual-input / --background）: 実マウス/実キーボードのメッセージは
+    //   ImGui にも InputSystem にも渡さない。AI（MCP）の入力は vinput のキューだけが正で、
+    //   人が触った実入力と混ざらない（＝AI の操作を人が壊さない / 人の操作を AI が奪わない）。
+    //   ImGui の Win32 バックエンドは WM_LBUTTONDOWN で SetCapture、WM_SETCURSOR で SetCursor を
+    //   呼ぶので、ここで止めることが「OS のカーソルに触らない」ことにもなる。
+    const bool vblock = vinput::BlocksRealInput(msg);
+
     // マウスキャプチャ中は WM_SETCURSOR を自前で処理してカーソルを消す
-    if (window && window->m_inputSystem && window->m_inputSystem->IsMouseCaptured()
+    if (!vblock && window && window->m_inputSystem && window->m_inputSystem->IsMouseCaptured()
         && msg == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT)
     {
         SetCursor(nullptr);
@@ -378,7 +482,7 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     // ImGui にイベントを渡す（キー/マウス等は結果を無視して InputSystem にも常に通知する）
-    LRESULT imguiResult = ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
+    LRESULT imguiResult = vblock ? 0 : ImGui_ImplWin32_WndProcHandler(hwnd, msg, wParam, lParam);
 
     if (window)
     {
@@ -427,14 +531,25 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                     const int frame = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
                     if (pt.y >= 0 && pt.y < frame) return HTTOP;
                 }
-                if (window->m_captionDraggable && pt.y < static_cast<LONG>(window->m_captionHeight))
+                // 仮想入力モード中は ImGui のホバー（＝仮想ポインタ）で「ドラッグ可能」を決めているので、
+                // 実カーソルの位置と食い違う。人が実際に窓を掴んで動かせるよう HTCAPTION は返さない。
+                if (window->m_captionDraggable && !vinput::Enabled()
+                    && pt.y < static_cast<LONG>(window->m_captionHeight))
                     return HTCAPTION;
                 return HTCLIENT;
             }
             break;
 
+        // --background: クリックされても（別のプロセスの窓から）アクティブ化しない。
+        case WM_MOUSEACTIVATE:
+            if (window->m_bg.Active()) return MA_NOACTIVATE;
+            break;
+
         case WM_SIZE:
         {
+            // 最小化では (0,0) が来る。論理解像度を保つため、明示的に無視する
+            // （下の 0 チェックと同じ結果だが、意図を残す＝スワップチェインを 0x0 にしない）。
+            if (wParam == SIZE_MINIMIZED) return 0;
             u32 newWidth = LOWORD(lParam);
             u32 newHeight = HIWORD(lParam);
             if (newWidth > 0 && newHeight > 0)
@@ -448,6 +563,7 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
 
         case WM_KEYDOWN:
+            if (vblock) return 0;   // 仮想入力モード: 実キーボードは InputSystem へも渡さない
             if (wParam == VK_F11)
             {
                 window->ToggleFullscreen();
@@ -458,7 +574,20 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
             return 0;
 
+        // 人の脱出口: 仮想入力モード中に Ctrl+Alt+Shift+F12（実キーボード）で OFF を要求する。
+        // Alt を押しているので WM_SYSKEYDOWN で届く。GetKeyState は読み取りだけ（OS には何も書かない）。
+        // それ以外の Alt 系（Alt+F4 で閉じる等）は素通し＝DefWindowProc へ流す。
+        case WM_SYSKEYDOWN:
+            if (vblock && wParam == VK_F12
+                && (GetKeyState(VK_CONTROL) & 0x8000) && (GetKeyState(VK_SHIFT) & 0x8000))
+            {
+                vinput::RequestEscape();
+                return 0;
+            }
+            break;
+
         case WM_KEYUP:
+            if (vblock) return 0;
             if (window->m_inputSystem)
             {
                 window->m_inputSystem->OnKeyUp(static_cast<int>(wParam));
@@ -466,6 +595,7 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
 
         case WM_INPUT:
+            if (vblock) break;      // Raw Input の後始末は DefWindowProc に任せる（移動量は捨てる）
             if (window->m_inputSystem)
             {
                 window->m_inputSystem->OnRawInput(lParam);
@@ -473,6 +603,7 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             return 0;
 
         case WM_KILLFOCUS:
+            if (vblock) break;
             // 他ウィンドウ/タブへフォーカスが移ると以降の WM_KEYUP が届かず、
             // 最後に押したキーが押しっぱなし判定で残る → 全キー状態をクリア。
             // 同時にカーソルの拘束（非表示/クリップ/中央固定）も解いて裏で作業できるようにする。
@@ -483,6 +614,7 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             break;
 
         case WM_SETFOCUS:
+            if (vblock) break;
             // 戻ってきたら、論理キャプチャが立っていればカーソル拘束を掛け直す
             if (window->m_inputSystem)
             {

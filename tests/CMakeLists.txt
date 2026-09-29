@@ -810,3 +810,33 @@ if(TARGET Scripting)
     endif()
     add_test(NAME LuaJsonTests COMMAND LuaJsonTests)
 endif()
+
+# ============================================================================
+# 仮想入力モード（AI が OS のカーソル/フォーカス/キーボードを奪わずエディタ UI を操作する仕組み）
+# ----------------------------------------------------------------------------
+# VirtualInputTests … 純粋ロジック（input/VirtualInput.h + core/BackgroundMode.h）。
+#   キューの順序 / down と up の間隔 / drag の補間 / 座標変換 / 実入力メッセージの遮断判定 /
+#   キー名の解釈 / --background の値の解釈。ヘッダオンリー・依存ゼロなのでスタンドアロンでも回る。
+# VirtualInputImGuiTests … 実際の ImGui コンテキスト（窓も GPU も無し）に仮想入力を流し込み、
+#   クリック / キー / 文字入力 / ドラッグ / ホイール / 実入力の破棄 / 仮想カーソル描画 / find を確かめる。
+#   Gui（ImGui）が要るので統合ビルドでのみ有効。
+# ============================================================================
+add_executable(VirtualInputTests virtual_input_test.cpp)
+target_include_directories(VirtualInputTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(VirtualInputTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(VirtualInputTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME VirtualInputTests COMMAND VirtualInputTests)
+
+if(TARGET Gui)
+    add_executable(VirtualInputImGuiTests virtual_input_imgui_test.cpp)
+    target_include_directories(VirtualInputImGuiTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(VirtualInputImGuiTests PRIVATE Gui)
+    if(MSVC)
+        target_compile_options(VirtualInputImGuiTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VirtualInputImGuiTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME VirtualInputImGuiTests COMMAND VirtualInputImGuiTests)
+endif()

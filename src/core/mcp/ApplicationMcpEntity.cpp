@@ -1374,6 +1374,9 @@ void Application::RegisterMcpEntityMethods()
                 {"baseDir", PathResolver::BaseDir()},
                 {"projectShaderDir", PathResolver::ProjectShaderDir()},
                 {"cwd", std::filesystem::current_path().string()},
+                // 仮想入力モード（AI が OS のカーソル/フォーカスを奪わず UI を操作する）と --background の状態。
+                {"virtualInput", vinput::Enabled()},
+                {"background", BackgroundModeName(m_bgOptions.mode)},
                 {"protocolVersion", 4}
             };
         });

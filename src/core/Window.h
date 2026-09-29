@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include "Types.h"
+#include "BackgroundMode.h"
 #include <functional>
 #include <string>
 #include <utility>
@@ -41,6 +42,19 @@ public:
     // deferShow=true で作ったウィンドウを表示する（多重呼び出し安全）
     void Show();
 
+    // ===== --background（手前に出てこない静かな起動。core/BackgroundMode.h）=====
+    // Initialize より前に呼ぶ。有効な間は:
+    //   ・WS_EX_NOACTIVATE を付ける（クリックされてもアクティブ化しない）。tool 指定で WS_EX_TOOLWINDOW も
+    //   ・Show() は SW_SHOWNOACTIVATE / SW_SHOWMINNOACTIVE のみ。SetForegroundWindow は一切呼ばない
+    //   ・クライアント領域は論理解像度(1920x1080)で作る。最小化しても WM_SIZE では縮めない
+    //   ・最大化 / 最小化 / フルスクリーン / リサイズの各操作は無効（窓が画面内へ戻ってくるのを防ぐ）
+    void SetBackground(const BackgroundOptions& opt) { m_bg = opt; }
+    const BackgroundOptions& Background() const { return m_bg; }
+    bool IsBackground() const { return m_bg.Active(); }
+    // バックグラウンド（画面外/最小化/遮蔽）の窓を持つプロセスを OS の省電力（EcoQoS・タイマ粗化）
+    // で間引かせない。これが無いと「裏へ回した途端にフレームが 1/10 になる」ことがある。
+    static void DisablePowerThrottling();
+
     bool ProcessMessages();
     void ToggleFullscreen();
 
@@ -69,8 +83,9 @@ public:
         m_captionDraggable = draggable;
     }
     bool IsMaximized() const { return m_hwnd && ::IsZoomed(m_hwnd); }
-    void Minimize()          { if (m_hwnd) ::ShowWindow(m_hwnd, SW_MINIMIZE); }
-    void ToggleMaximize()    { if (m_hwnd) ::ShowWindow(m_hwnd, IsMaximized() ? SW_RESTORE : SW_MAXIMIZE); }
+    // --background 中は無効（ShowWindow は窓を前面へ引き戻す副作用があるため）。
+    void Minimize()          { if (m_hwnd && !m_bg.Active()) ::ShowWindow(m_hwnd, SW_MINIMIZE); }
+    void ToggleMaximize()    { if (m_hwnd && !m_bg.Active()) ::ShowWindow(m_hwnd, IsMaximized() ? SW_RESTORE : SW_MAXIMIZE); }
     void RequestClose()      { if (m_hwnd) ::PostMessageW(m_hwnd, WM_CLOSE, 0, 0); }  // closeHandler を通す
 
     HWND         GetHwnd() const { return m_hwnd; }
@@ -104,6 +119,7 @@ private:
     RECT         m_windowedRect = {};
     InputSystem* m_inputSystem = nullptr;
     std::function<bool()> m_closeHandler;
+    BackgroundOptions m_bg;   // --background（既定 None = 従来どおり）
 
     // カスタムタイトルバー状態(EnableCustomTitleBar / SetCaptionInfo)
     bool m_customTitleBar   = false;

@@ -2,6 +2,7 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UndoSystem.h"
+#include "gui/VirtualInputImGui.h"   // dx12_imgui_find 用アンカー
 #include "ecs/Components.h"
 #include "scene/Scene.h"
 
@@ -220,6 +221,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
 
     // ID は PushID で一意化済みなので TreeNodeEx は固定文字列でOK
     bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());
+    dx12e::vinput_gui::AnchorLastItem("row", tag.name.c_str());   // dx12_imgui_find 用（エンティティ行）
     if (hasChildren && open != wasOpen)
     {
         if (open) m_openNodes.insert(e);

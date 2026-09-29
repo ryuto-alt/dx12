@@ -1,4 +1,6 @@
 #include "editor/panels/ToolbarPanel.h"
+#include "core/VirtualGuard.h"
+#include "gui/VirtualInputImGui.h"   // dx12_imgui_find 用アンカー   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "scripting/ScriptEngine.h"
@@ -30,6 +32,7 @@ namespace
 {
 void OpenInVSCode(const std::string& filePath)
 {
+    if (dx12e::guard::Blocked("Open in VS Code")) return;   // 仮想入力モード: 人の画面に窓を出さない
     static std::string cachedExe;
     static bool resolved = false;
     if (!resolved)
@@ -68,7 +71,7 @@ void OpenInVSCode(const std::string& filePath)
         }
     }
 
-    ShellExecuteA(nullptr, "open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    dx12e::guard::ShellExecuteGuarded(nullptr, "open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 } // anonymous namespace
 
@@ -126,7 +129,9 @@ void ToolbarPanel::Render(bool isPlaying,
         }
 
         // ---- ファイル ----
-        if (ImGui::BeginMenu("ファイル"))
+        const bool menuOpen1 = ImGui::BeginMenu("ファイル");
+        dx12e::vinput_gui::AnchorLastItem("menu", "ファイル");   // dx12_imgui_find 用（メニューバーの項目）
+        if (menuOpen1)
         {
             if (ImGui::MenuItem("新規シーン", "Ctrl+N"))
             {
@@ -149,7 +154,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 std::string initDir = assetsDir + "scenes";
                 std::filesystem::create_directories(initDir);
                 ofn.lpstrInitialDir = initDir.c_str();
-                if (GetOpenFileNameA(&ofn))
+                if (!dx12e::guard::Blocked("シーンを開くダイアログ") && GetOpenFileNameA(&ofn))
                     ctx.pendingLoadPath = loadPath;
             }
 
@@ -171,7 +176,7 @@ void ToolbarPanel::Render(bool isPlaying,
                     std::string initDir = assetsDir + "scenes";
                     std::filesystem::create_directories(initDir);
                     ofn.lpstrInitialDir = initDir.c_str();
-                    if (GetSaveFileNameA(&ofn))
+                    if (!dx12e::guard::Blocked("シーン保存ダイアログ") && GetSaveFileNameA(&ofn))
                         ctx.currentScenePath = savePath;
                 }
                 if (!ctx.currentScenePath.empty())
@@ -207,7 +212,7 @@ void ToolbarPanel::Render(bool isPlaying,
                 std::string initDir = assetsDir + "scenes";
                 std::filesystem::create_directories(initDir);
                 ofn.lpstrInitialDir = initDir.c_str();
-                if (GetSaveFileNameA(&ofn))
+                if (!dx12e::guard::Blocked("シーン保存ダイアログ") && GetSaveFileNameA(&ofn))
                 {
                     ctx.currentScenePath = savePath;
                     if (SceneSerializer::Save(*scene, ctx.currentScenePath, assetsDir))
@@ -251,7 +256,9 @@ void ToolbarPanel::Render(bool isPlaying,
         }
 
         // ---- 編集 ----
-        if (ImGui::BeginMenu("編集"))
+        const bool menuOpen2 = ImGui::BeginMenu("編集");
+        dx12e::vinput_gui::AnchorLastItem("menu", "編集");   // dx12_imgui_find 用（メニューバーの項目）
+        if (menuOpen2)
         {
             // 何が戻るかを名前で出す。AI（MCP）の操作は「AI: <method>」の名前で積まれるので、
             // 人の操作と見分けられる（AI のトランザクション中はその旨も出す）。
@@ -301,7 +308,9 @@ void ToolbarPanel::Render(bool isPlaying,
         }
 
         // ---- 表示 ----
-        if (ImGui::BeginMenu("表示"))
+        const bool menuOpen3 = ImGui::BeginMenu("表示");
+        dx12e::vinput_gui::AnchorLastItem("menu", "表示");   // dx12_imgui_find 用（メニューバーの項目）
+        if (menuOpen3)
         {
             if (ImGui::MenuItem("レイアウトをリセット"))
                 ctx.resetLayout = true;
@@ -336,7 +345,9 @@ void ToolbarPanel::Render(bool isPlaying,
         }
 
         // ---- ツール ----
-        if (ImGui::BeginMenu("ツール"))
+        const bool menuOpen4 = ImGui::BeginMenu("ツール");
+        dx12e::vinput_gui::AnchorLastItem("menu", "ツール");   // dx12_imgui_find 用（メニューバーの項目）
+        if (menuOpen4)
         {
             // 「ビルド」はまずビルド設定パネルを開く（構成・開始シーン・出力先を決めてから実行）
             if (ImGui::MenuItem("ビルド"))
@@ -361,7 +372,9 @@ void ToolbarPanel::Render(bool isPlaying,
         }
 
         // ---- ヘルプ ----
-        if (ImGui::BeginMenu("ヘルプ"))
+        const bool menuOpen5 = ImGui::BeginMenu("ヘルプ");
+        dx12e::vinput_gui::AnchorLastItem("menu", "ヘルプ");   // dx12_imgui_find 用（メニューバーの項目）
+        if (menuOpen5)
         {
             if (ImGui::MenuItem("ショートカット一覧"))
                 openShortcutsPopup = true;
@@ -488,6 +501,7 @@ void ToolbarPanel::Render(bool isPlaying,
         }
         ImVec2 p0 = ImGui::GetCursorScreenPos();
         bool clicked = ImGui::Button("##tb", sz);
+        dx12e::vinput_gui::AnchorLastItem("button", (label && *label) ? label : tip);   // dx12_imgui_find 用
         if (active) ImGui::PopStyleColor(2);
         if (tip && *tip && ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", tip);
