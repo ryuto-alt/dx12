@@ -1,5 +1,7 @@
 // テスト用の最小 MCP stdio クライアント(index.ts を子プロセスで起動し、JSON-RPC を話す)。
 // 通知(id 無しのメッセージ。notifications/tools/list_changed など)も溜める。
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -21,9 +23,14 @@ export type McpClient = {
   close: () => void;
 };
 
+// フリートのレジストリはテストごとの一時フォルダ(実ユーザーの %LOCALAPPDATA%/UnoEngine/fleet を触らない)。テストの終了時に消す。
+const TEST_FLEET_DIR = path.join(os.tmpdir(), `dx12-fleet-test-${process.pid}`);
+process.on("exit", () => { try { fs.rmSync(TEST_FLEET_DIR, { recursive: true, force: true }); } catch { /* 無視 */ } });
+
 export function startMcp(env: Record<string, string>, opts: { cwd?: string } = {}): McpClient {
   const proc = spawn(process.execPath, [path.join(here, "index.ts")], {
-    cwd: opts.cwd ?? here, env: { ...process.env, DX12_MCP_CONNECT_BACKOFF_MS: "0", ...env }, stdio: ["pipe", "pipe", "pipe"],
+    // フリートのレジストリはテストごとの一時フォルダ(実ユーザーの %LOCALAPPDATA%/UnoEngine/fleet を触らない)。
+    cwd: opts.cwd ?? here, env: { ...process.env, DX12_MCP_CONNECT_BACKOFF_MS: "0", DX12_FLEET_DIR: TEST_FLEET_DIR, ...env }, stdio: ["pipe", "pipe", "pipe"],
   });
   let buf = "";
   let nid = 1;

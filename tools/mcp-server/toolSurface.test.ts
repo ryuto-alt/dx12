@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listTools, semanticView, sha, M3_DESTRUCTIVE_HINT_ADDED } from "./scripts/gen_legacy_snapshot.mjs";
 import {
-  CONSOLIDATED, CORE_28, CORE_DESCRIPTION_MAX, CORE_GUARDED_TOOL, CORE_LEGACY, CORE_ORDER, NAME_EXCEPTIONS, SHELL_TOOLS,
+  CONSOLIDATED, CORE_28, CORE_DESCRIPTION_MAX, CORE_FLEET, CORE_GUARDED_TOOL, CORE_LEGACY, CORE_ORDER, FLEET_TOOLS, NAME_EXCEPTIONS, SHELL_TOOLS,
   aliasStats, buildAliasTable, routeConsolidated, toCoreCall, verbOf,
 } from "./coreSpec.ts";
 import { DIALECT_PATTERN } from "./errors.ts";
@@ -45,8 +45,10 @@ check("legacy 面は outputSchema を残す(M0 と同一の回帰基準)", legac
 console.log("[2] full 面(既定): shell 5 本 + 旧 220 本(意味的に同一)");
 const full = await listTools("full");
 check("先頭 5 本が shell", eq(full.tools.slice(0, 5).map((t: any) => t.name), SHELL_TOOLS), full.tools.slice(0, 5).map((t: any) => t.name));
-const rest = full.tools.slice(5);
+const restAll = full.tools.slice(5);
+const rest = restAll.slice(0, 220);
 check("旧 220 本の名前と並びが同一のまま続く", rest.length === 220 && eq(rest.map((t: any) => t.name), LEGACY_NAMES), rest.length);
+check("旧 220 本の後ろ(末尾)にフリートの 6 本だけが足される", eq(restAll.slice(220).map((t: any) => t.name), FLEET_TOOLS), restAll.slice(220).map((t: any) => t.name));
 const semDiff = rest.filter((t: any) => sha(semanticView(t)) !== SNAP_BY_NAME.get(t.name)?.semSha256).map((t: any) => t.name);
 check("旧 220 本の name / title / 説明 / inputSchema / annotations / _meta が意味的に同一(outputSchema と destructiveHint 以外は 1 バイトも変わらない)", semDiff.length === 0, semDiff.slice(0, 10));
 const inputDiff = rest.filter((t: any, i: number) => sha(t.inputSchema) !== sha(legacy.tools[i].inputSchema) || t.description !== legacy.tools[i].description).map((t: any) => t.name);
@@ -61,7 +63,7 @@ check(`full の tools/list(${full.bytes} B)が M0 基準(${M0_BYTES} B)以下`, 
 const shellBytes = full.tools.slice(0, 5).reduce((a: number, t: any) => a + Buffer.byteLength(JSON.stringify(t)), 0);
 console.log(`      full = ${full.bytes} B(旧 220 部分 ${full.bytes - shellBytes} B + shell 5 本 ${shellBytes} B)。M0 ${M0_BYTES} B 比 ${((full.bytes / M0_BYTES) * 100).toFixed(1)}%。outputSchema 削除 ${snap.outputSchemaBytesTotal} B(${snap.tools.filter((t: any) => t.outputSchemaBytes > 0).length} 本)`);
 
-console.log("[3] core 面: shell 5 本 + Core 28 本 + dx12_batch + dx12_call_guarded");
+console.log("[3] core 面: shell 5 本 + Core 28 本 + フリート 5 本 + dx12_batch + dx12_call_guarded");
 const core = await listTools("core");
 const coreNames: string[] = core.tools.map((t: any) => t.name);
 check("並びは shell 5 本 → Core の固定順(決定的)", eq(coreNames, [...SHELL_TOOLS, ...CORE_ORDER]), coreNames);
@@ -72,7 +74,8 @@ console.log(`      core = ${core.tools.length} 本 / ${core.bytes} B(M0 比 ${((
   const core2 = await listTools("core");
   check("決定論: 2 回起動して tools/list が完全に同一", eq(core.tools, core2.tools));
 }
-check("Core 28 本 + dx12_batch + dx12_call_guarded", CORE_28.length === 28 && CORE_ORDER.length === 30);
+check("Core 28 本 + フリート 5 本 + dx12_batch + dx12_call_guarded = 35(shell を足して 40)", CORE_28.length === 28 && CORE_FLEET.length === 5 && CORE_ORDER.length === 35);
+check("core 面はちょうど 40 本(上限。増やすなら選定理由を docs/MCP_FLEET_DESIGN.md §9 に書く)", core.tools.length === 40, core.tools.length);
 check("core 面に outputSchema が無い", core.tools.every((t: any) => !t.outputSchema));
 check("shell の alwaysLoad は 5 本ちょうど(増やさない)", core.tools.filter((t: any) => t._meta?.["anthropic/alwaysLoad"] === true).length === 5 && core.tools.slice(0, 5).every((t: any) => t._meta?.["anthropic/alwaysLoad"] === true));
 {
@@ -129,7 +132,7 @@ check("shell の alwaysLoad は 5 本ちょうど(増やさない)", core.tools.
   }
   check("動詞と annotations(readOnlyHint / destructiveHint)が整合", inconsistent.length === 0, inconsistent);
   const roCore = cores.filter((t: any) => t.annotations?.readOnlyHint === true).map((t: any) => t.name);
-  check("読み取り専用ツールは dx12_get_* / dx12_list_* / shell の読み取り(1 行の許可ルールで書ける)", roCore.every((n: string) => /^dx12_(get|list|tool_search|tool_describe|doctor|guide)/.test(n)), roCore);
+  check("読み取り専用ツールは dx12_get_* / dx12_list_* / shell の読み取り(1 行の許可ルールで書ける)", roCore.every((n: string) => /^dx12_(get|list|engine_list|tool_search|tool_describe|doctor|guide)/.test(n)), roCore);
   check("instructions(core)が 2,048 字以内で Core の主要ツールと dx12_call_guarded を挙げている", INSTRUCTIONS_CORE.length <= 2048 && ["dx12_capture", "dx12_scene_write", "dx12_call_guarded", "dx12_tool_search", "--background"].every((k) => INSTRUCTIONS_CORE.includes(k)), INSTRUCTIONS_CORE.length);
   check("instructions(full / shell)が 2,048 字以内", INSTRUCTIONS.length <= 2048);
   // instructions が挙げた dx12_ 名は core 面に実在するか shell の別名で引ける名前であること
@@ -185,7 +188,7 @@ const { shell } = await import("./toolset/shell.ts");
   // Core 名はすべて catalog にあり core フラグが立つ
   const missing = CORE_ORDER.filter((n) => n !== CORE_GUARDED_TOOL).filter((n) => !shell.catalog.resolve(n)?.core);
   check("Core 一覧の全ツールが catalog で core 扱い(dx12_call_guarded は core 面のみ)", missing.length === 0, missing);
-  check("catalog の core ツール数 = 28 + dx12_batch", docs.filter((d) => d.core).length === 29, docs.filter((d) => d.core).length);
+  check("catalog の core ツール数 = 28 + フリート 5 + dx12_batch", docs.filter((d) => d.core).length === 34, docs.filter((d) => d.core).length);
 }
 
 console.log("[6] effect の分類(M3 で見直した点)");

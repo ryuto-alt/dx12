@@ -21,6 +21,9 @@ export type ErrorCodeName =
   | "E_STALE_SCENE" | "E_MODE_CONFLICT" | "E_MODAL_OPEN" | "E_VIRTUAL_INPUT_OFF"
   | "E_UNSUPPORTED" | "E_GUARDED" | "E_VALIDATION_FAILED" | "E_FILE_IO" | "E_CANCELLED"
   | "E_SAFETY_VIOLATION" | "E_INTERNAL"
+  // フリート(複数エンジンの管理。docs/MCP_FLEET_DESIGN.md)
+  | "E_FLEET_LIMIT" | "E_FLEET_RESOURCE" | "E_FLEET_VISIBLE_DENIED" | "E_FLEET_READONLY" | "E_FLEET_NOT_FOUND" | "E_FLEET_NOT_OWNER"
+  | "E_FLEET_PROJECT_IN_USE" | "E_FLEET_BUILD_IN_PROGRESS" | "E_FLEET_LAUNCH_FAILED" | "E_FLEET_EXE_MISSING" | "E_FLEET_DISABLED"
   // 旧数値コード 1 / 2 を細分化できなかったときの受け皿(エンジンが具体名を付けなかった古い経路)。
   | "E_NOT_FOUND" | "E_INVALID_PARAM";
 
@@ -77,6 +80,17 @@ export const ERROR_CODES: Record<ErrorCodeName, { legacy: number | null; retryab
   E_CANCELLED: { legacy: 12, retryable: true, meaning: "呼び出しが中断された" },
   E_SAFETY_VIOLATION: { legacy: null, retryable: false, meaning: "仮想入力中に OS のカーソル/前面窓が動いた(以降の UI 操作を止める)" },
   E_INTERNAL: { legacy: 7, retryable: false, meaning: "エンジン内部エラー" },
+  E_FLEET_LIMIT: { legacy: null, retryable: true, meaning: "同時起動数の上限(既定 3 台)。止める候補が fix に出る" },
+  E_FLEET_RESOURCE: { legacy: null, retryable: true, meaning: "空き VRAM / RAM が下限未満で起動を断った" },
+  E_FLEET_VISIBLE_DENIED: { legacy: null, retryable: false, meaning: "窓を画面に出す起動(visible)は既定で拒否(DX12_MCP_ALLOW_VISIBLE=1 と confirm:true が要る)" },
+  E_FLEET_READONLY: { legacy: null, retryable: false, meaning: "読み取り専用で繋いだエンジンへ書き込み系の method を送ろうとした" },
+  E_FLEET_NOT_FOUND: { legacy: null, retryable: false, meaning: "指定したエンジン(id / name / port)がフリートに無い" },
+  E_FLEET_NOT_OWNER: { legacy: null, retryable: false, meaning: "他のセッションのエンジンは止められない(force と confirm が要る。孤児は可)" },
+  E_FLEET_PROJECT_IN_USE: { legacy: null, retryable: false, meaning: "同じプロジェクトを別のフリートのエンジンが使っている(自動保存が衝突する)" },
+  E_FLEET_BUILD_IN_PROGRESS: { legacy: null, retryable: true, meaning: "exe の元がビルド中で、コピーできない" },
+  E_FLEET_LAUNCH_FAILED: { legacy: null, retryable: true, meaning: "エンジンが起動しない/期限内に ping に応答しない" },
+  E_FLEET_EXE_MISSING: { legacy: null, retryable: false, meaning: "コピー元の DX12Engine.exe が見つからない" },
+  E_FLEET_DISABLED: { legacy: null, retryable: false, meaning: "フリートが無効(DX12_FLEET_DISABLE=1)" },
   E_NOT_FOUND: { legacy: 1, retryable: false, meaning: "対象が無い(種類を特定できなかった旧経路)" },
   E_INVALID_PARAM: { legacy: 2, retryable: false, meaning: "引数不正(種類を特定できなかった旧経路)" },
 };

@@ -21,6 +21,27 @@ Claude Code と Codex の両方が読む運用ルール集。
 
 ---
 
+## ★ エンジンは「自分専用」を起動する: `dx12_engine_launch`(複数のエージェントが同じエンジンに繋がない)
+
+エンジンの TCP ブリッジは**単一クライアント**。他のエージェントと同じエンジンに繋ぐとハングする/奪い合う。最初に自分専用のエンジンを起動する:
+
+```
+dx12_engine_launch {}                       → {engineId, port, pid, dir}   ★このセッションの既定エンジンに束縛される(以後の全ツールがそこへ向く)
+dx12_list_entities {}                       → 自分のエンジンのシーン
+dx12_engine_stop {}                         → 終わったら止める(閉じ忘れても 10 分操作が無ければ自動終了。MCP サーバが終わっても残らない)
+```
+
+- **上限**: 全体で最大 3 台(他のエージェントの分も数える)。空き VRAM 2 GB / RAM 3 GB 未満でも断る。`E_FLEET_LIMIT` / `E_FLEET_RESOURCE` の `fix` は「自分の idle なエンジンを止める」。**他のセッションのエンジンは止めない**(`details.others` に持ち主が出る。ユーザーに確認)。
+- **ビルドの後**: `tools\build.ps1` は `build\release\DX12Engine.exe` を自由に上書きできる(専用エンジンは別の場所のコピーを動かしている)。`dx12_doctor` が「古い exe コピー」と警告したら `dx12_engine_refresh`。
+- **起動モード**: `background`(既定。窓は画面外・前面化しない)/ `headless`(窓なし・画面が要らない検証)。**`visible` は使わない**(既定で拒否。`DX12_MCP_ALLOW_VISIBLE=1` と `confirm:true` が要り、それでも実マウスとフォーカスを奪い得る。人の PC 操作を妨げる)。
+- **プロジェクト**: 省略すると使い捨てを自動生成(停止後 24 時間は残る)。実プロジェクトを渡すと MCP の自動保存でそのフォルダに書き込まれる(同じフォルダを別のエンジンが使っていれば断る)。
+- **他のエンジンを見る**: `dx12_engine_attach {port|engine}` は**読み取り専用**(`effect:"read"` の method だけ)。持ち主が接続している間は `E_ENGINE_BUSY`(単一クライアントの枠を奪わない)。書き込みが要るなら自分専用を起動する。
+- **複数持つとき**: `dx12_call {name, args, engine:"<id|name|port>"}` でその 1 回だけ別のエンジンへ。既定の切替は `dx12_call {name:"dx12_engine_use", args:{engine}}`(`"none"` で従来の探索へ)。
+- **従来どおりの運用**(ユーザーが手で起動して繋ぐ)も動く: 束縛が無ければ `DX12_MCP_PORT` → ポートファイル → 8787 の順に探す。
+- Codex CLI など**ツール検索が無いクライアント**は `DX12_MCP_SURFACE=core`(40 本にフリート 5 本を含む)を使い、Core に無い操作は `dx12_call {name, args}`。設定例は README と `docs/MCP.md` §0-7。手順は `dx12_guide {topic:"fleet"}`。
+
+---
+
 ## ★ ツールの探し方: shell 5 本(220 本の名前を推測しない)
 
 - 最初に `dx12_doctor`(接続と版の確認。エンジンが落ちていれば原因と起動手順を返す)。

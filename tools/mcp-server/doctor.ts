@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { EngineClient } from "./engineClient.ts";
 import { discoverPort, portFilePath, probePort } from "./engineClient.ts";
 import type { Fix } from "./errors.ts";
+import { fleetToolsEnabled } from "./fleet/enabled.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,6 +24,10 @@ export function launchFixes(o: { port?: number; host?: string } = {}): Fix[] {
   const exe = fs.existsSync(repoExe) ? path.resolve(repoExe) : localExe && fs.existsSync(localExe) ? localExe : "<DX12Engine.exe のパス>";
   const exeDir = exe.startsWith("<") ? "<DX12Engine.exe のフォルダ>" : path.dirname(exe);
   const fixes: Fix[] = [
+    ...(fleetToolsEnabled() ? [{
+      tool: "dx12_engine_launch", args: {},
+      why: "自分専用のエンジンを背景で起動して束縛する(推奨。ポート・作業フォルダ・exe コピーが他のセッションと別で、ビルド中でも衝突しない。10 分操作が無いと自動終了)",
+    } as Fix] : []),
     {
       command: `Start-Process -FilePath "${exe}" -ArgumentList '--background','--project','<プロジェクトのフォルダ>','--mcp-port','${port}' -WorkingDirectory "${exeDir}" -WindowStyle Hidden`,
       why: "エンジンを --background で起動する(窓は画面外・前面化しない・人のカーソルを奪わない)。作業ディレクトリは exe のフォルダにする(スクショ等の相対パスが書けるように)",
@@ -54,6 +59,8 @@ export type DoctorDeps = {
   /** マニフェストの expose:"core" による動的登録(list_changed)が有効か。 */
   listChanged?: boolean;
   manifest: { source: string; hash: string | null; snapshotHash: string | null; count: number; lastError: string | null };
+  /** フリートの状態(台数・資源・古い exe コピー・孤児)。無ければ出さない。null を返したら無効。 */
+  fleet?: () => Promise<Record<string, unknown> | null>;
   /** マニフェストを取り直す(ping の結果を返す)。 */
   refresh: () => Promise<{ ping?: any; engineTooOld?: boolean; changed?: boolean }>;
   recentErrors: () => { at: number; tool: string; code: string; message: string }[];
@@ -117,6 +124,56 @@ function defaultLogTail(cwdHint: string | undefined, lines: number): { path: str
   return null;
 }
 
+/** フリートの状態から診断項目(警告)を作る。純関数(doctor.test / fleet.test から使う)。 */
+export function fleetIssues(f: Record<string, any>): DoctorIssue[] {
+  const issues: DoctorIssue[] = [];
+  const engines: any[] = Array.isArray(f.engines) ? f.engines : [];
+  const stale: string[] = Array.isArray(f.staleExe) ? f.staleExe : [];
+  if (stale.length) {
+    const mine = engines.filter((e) => stale.includes(e.id) && e.ownedByMe).map((e) => e.id);
+    issues.push({
+      code: "FLEET_STALE_EXE", severity: "warn",
+      message: `exe コピーが古いエンジンがある(${stale.join(", ")})。ビルド出力の DX12Engine.exe がコピー後に更新されている`,
+      fix: (mine.length ? mine : stale.slice(0, 1)).map((id) => ({ tool: "dx12_engine_refresh", args: { engine: id }, why: `${id} を最新の exe で再起動する(entityId は失効。シーンは自動保存されたものが開き直される)` })),
+    });
+  }
+  const orphans: string[] = Array.isArray(f.orphans) ? f.orphans : [];
+  if (orphans.length) {
+    issues.push({
+      code: "FLEET_ORPHAN", severity: "warn",
+      message: `owner(MCP サーバ)が消えたエンジンが残っている(${orphans.join(", ")})。エンジン側の --owner-pid で自己終了するはずだが、まだ動いている`,
+      fix: [{ tool: "dx12_engine_list", args: {}, why: "一覧を引くと孤児は回収される(kill してレジストリから消す)" }],
+    });
+  }
+  const swept: { id: string; reason: string }[] = Array.isArray(f.swept) ? f.swept : [];
+  const sweptOrphans = swept.filter((x) => x.reason === "orphan");
+  if (sweptOrphans.length) {
+    issues.push({
+      code: "FLEET_ORPHAN_SWEPT", severity: "info",
+      message: `owner(MCP サーバ)が消えたエンジンを ${sweptOrphans.length} 件回収した(${sweptOrphans.map((x) => x.id).join(", ")}。kill してレジストリとインスタンスを消した)`,
+    });
+  }
+  const viol: string[] = Array.isArray(f.resources?.violations) ? f.resources.violations : [];
+  if (viol.length) {
+    issues.push({
+      code: "FLEET_LOW_RESOURCES", severity: "warn",
+      message: `専用エンジンを増やすには資源が足りない: ${viol.join("・")}`,
+      fix: [{ tool: "dx12_engine_list", args: {}, why: "止める候補(自分の idle なエンジン)を確認する" }],
+    });
+  }
+  if (typeof f.count === "number" && typeof f.max === "number" && f.count >= f.max) {
+    issues.push({
+      code: "FLEET_AT_LIMIT", severity: "info",
+      message: `専用エンジンが上限(${f.max} 台)に達している。新しい dx12_engine_launch は断られる`,
+      fix: engines.filter((e) => e.ownedByMe).map((e) => ({ tool: "dx12_engine_stop", args: { engine: e.id }, why: `自分の ${e.id}(idle ${e.idleSec} 秒)を止めて枠を空ける` })),
+    });
+  }
+  if (f.resources && f.resources.vramSource === "unknown") {
+    issues.push({ code: "FLEET_VRAM_UNKNOWN", severity: "info", message: "空き VRAM を観測できない(nvidia-smi も GPU カウンタも使えない)。VRAM の下限判定は行われない" });
+  }
+  return issues;
+}
+
 export async function runDoctor(d: DoctorDeps, opts: { deep?: boolean } = {}): Promise<Record<string, unknown>> {
   const now = d.now ?? Date.now;
   const deep = !!opts.deep;
@@ -138,7 +195,9 @@ export async function runDoctor(d: DoctorDeps, opts: { deep?: boolean } = {}): P
   const scan: number[] = [];
   const addPort = (p: number | null | undefined) => { if (p && p > 0 && p <= 65535 && !scan.includes(p)) scan.push(p); };
   addPort(targetPort); addPort(envPort); addPort(portFileValue); addPort(discoverPort()); addPort(8787);
-  for (let p = 8850; p <= (deep ? 8899 : 8853); p++) addPort(p);
+  // DX12_DOCTOR_PORTS(例 "8891,8892")があれば、既定の走査範囲(手動起動用の 8850〜)の代わりにそれを使う(テストが他人のポートに触れないため)。
+  if (process.env.DX12_DOCTOR_PORTS) { for (const t of process.env.DX12_DOCTOR_PORTS.split(",")) addPort(Number(t)); }
+  else for (let p = 8850; p <= (deep ? 8899 : 8853); p++) addPort(p);
   if (deep) for (let p = 8788; p <= 8797; p++) addPort(p);
   const probe = d.portProbe ?? ((p: number) => probePort(host, p, 300));
   const states = await Promise.all(scan.map(async (p) => ({ port: p, connect: await probe(p) })));
@@ -233,6 +292,14 @@ export async function runDoctor(d: DoctorDeps, opts: { deep?: boolean } = {}): P
   const late = d.lateResults();
   if (late.length) issues.push({ code: "LATE_RESULTS", severity: "info", message: `タイムアウト後に完了した呼び出しが ${late.length} 件ある(${late.slice(-3).map((l) => l.method).join(", ")})`, fix: [{ why: "結果は次の dx12_call の meta.lateResults に出る。生成/削除系は list_entities で実際の状態を確認する" }] });
 
+  // ── フリート(専用エンジンの管理) ───────────────────────────────────────
+  let fleetReport: Record<string, unknown> | null = null;
+  if (d.fleet) {
+    try { fleetReport = await d.fleet(); }
+    catch (e: any) { issues.push({ code: "FLEET_STATUS_FAILED", severity: "warn", message: `フリートの状態を取得できなかった: ${e?.message ?? e}` }); }
+    if (fleetReport) issues.push(...fleetIssues(fleetReport));
+  }
+
   const errors = issues.filter((i) => i.severity === "error").length;
   const report: Record<string, unknown> = {
     ok: errors === 0,
@@ -260,6 +327,7 @@ export async function runDoctor(d: DoctorDeps, opts: { deep?: boolean } = {}): P
     recentErrors: d.recentErrors().slice(-10),
     issues,
   };
+  if (fleetReport) report.fleet = fleetReport;
   if (logRes) report.log = logRes;
   if (late.length) report.lateResults = late;
   if (!pong && pingError) report.connectError = String(pingError.message ?? pingError);

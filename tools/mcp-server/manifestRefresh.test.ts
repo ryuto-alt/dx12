@@ -4,6 +4,7 @@
 //   TS ラッパも、Claude Code の再起動も要らない。
 // 実行: node manifestRefresh.test.ts
 
+import "./testEnv.ts";   // フリートのレジストリを一時フォルダへ隔離(実ユーザーの %LOCALAPPDATA% を触らない)
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";

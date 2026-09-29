@@ -102,6 +102,8 @@ const RUNTIME_NAMES = new Set([
   "dx12_imgui_pointer", "dx12_imgui_key", "dx12_imgui_virtual_input",
   // M3 で見直し: 時間を進めて連写する/Play して流すツール(シーンのデータは変えないが実行状態に効く)。
   "dx12_vfx_preview", "dx12_sequence_preview",
+  // フリート: プロセスの起動・停止・束縛の切替(シーンのデータは変えない。dx12_engine_list は readOnlyHint で read)。
+  "dx12_engine_launch", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh", "dx12_engine_use",
 ]);
 const WRITE_FILE_NAMES = new Set([
   "dx12_create_lua_component", "dx12_create_shader", "dx12_import_asset", "dx12_move_asset",
@@ -147,7 +149,7 @@ export function inferEffect(name: string, annotations: Record<string, unknown> |
 
 // ── カテゴリ(マニフェストに category が無い/オフライン時の代役。規則 + 例外) ─────────────────────
 const CATEGORY_RULES: [RegExp, string][] = [
-  [/^(git_)/, "git"], [/^(net_)/, "net"], [/^(imgui_)/, "editor_ui"],
+  [/^(engine_)/, "fleet"], [/^(git_)/, "git"], [/^(net_)/, "net"], [/^(imgui_)/, "editor_ui"],
   [/^(terrain_|sculpt_)/, "terrain"], [/^(navmesh_|check_reachable|brain_state)/, "navmesh"],
   [/^(vfx_|.*particle_layer)/, "vfx"], [/^(look_|apply_lighting_preset|list_lights|set_sun)/, "lighting"],
   [/^(decal_)/, "decal"], [/^(sequence_)/, "sequence"], [/^(blender_|model_brief|asset_gap)/, "blender"],

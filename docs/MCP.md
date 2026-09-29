@@ -81,6 +81,10 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | `E_GUARDED` | 11 | guarded な操作に `confirm:true` が無い | dryRun → 承認 → `confirm:true` |
 | `E_VALIDATION_FAILED` `E_FILE_IO` `E_CANCELLED` `E_SAFETY_VIOLATION` `E_INTERNAL` | 2 / 14 / 12 / — / 7 | 宣言的入力の検証失敗 / ファイル I/O / 中断 / 仮想入力の安全違反 / 内部エラー | 各ガイド(`dx12_guide {topic:"errors"}`) |
 | `E_NOT_FOUND` `E_INVALID_PARAM` | 1 / 2 | 種類を特定できなかった旧経路 | メッセージと hint を読む |
+| `E_FLEET_LIMIT` `E_FLEET_RESOURCE` | — | 専用エンジンが全体で上限(既定 3 台)/ 空き VRAM・RAM が下限未満(§0-7) | `fix` の自分の idle なエンジンの `dx12_engine_stop`。他人のエンジンは止めずユーザーに確認 |
+| `E_FLEET_VISIBLE_DENIED` `E_FLEET_READONLY` | — | `visible` は既定で拒否 / 読み取り専用で繋いだエンジンへ書き込み系を送った | `mode:"background"` / `dx12_engine_launch`(自分専用) |
+| `E_FLEET_NOT_FOUND` `E_FLEET_NOT_OWNER` `E_FLEET_PROJECT_IN_USE` | — | engine が無い / 他人のエンジン / 同じプロジェクトを別のエンジンが使用中 | `didYouMean`・`dx12_engine_list` |
+| `E_FLEET_BUILD_IN_PROGRESS` `E_FLEET_LAUNCH_FAILED` `E_FLEET_EXE_MISSING` `E_FLEET_DISABLED` | — | exe の元がビルド中 / 起動失敗・無応答 / exe が無い / フリート無効 | ビルド完了を待つ・`details.logTail`・`tools\build.ps1` |
 
 エンジン側の加算フィールド(`error_name` など)は §12-3。`docs` の語調は標準語・簡潔に統一(方言・命令口調は `errors.test.ts` の lint が見張る)。
 
@@ -104,6 +108,10 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | `DX12_MCP_LIST_CHANGED` | `0` / `false` / `off` で、マニフェストの `expose:"core"` による動的登録(`tools/list` の差し替えと `list_changed` 送出)を止める。既定は有効。止めても `dx12_tool_describe` / `dx12_call` では新 method が使える |
 | `DX12_MCP_PORT` / `DX12_MCP_HOST` | 接続先(従来どおり) |
 | `DX12_MCP_CONNECT_BACKOFF_MS` / `DX12_MCP_PORT_FILE` | テスト用(再試行間隔 / ポートファイルの場所) |
+| `DX12_FLEET_DIR` / `DX12_FLEET_MAX` / `DX12_FLEET_IDLE_MIN` / `DX12_FLEET_MIN_FREE_VRAM_MB` / `DX12_FLEET_MIN_FREE_RAM_MB` / `DX12_FLEET_PORT_RANGE` / `DX12_FLEET_BUILD_DIR` | 専用エンジン(フリート)の設定。既定は置き場 `%LOCALAPPDATA%\UnoEngine\fleet`・上限 3 台・アイドル 10 分・空き VRAM 2048 MB / RAM 3072 MB 未満で拒否・ポート `8860-8899`。詳細は §0-7 |
+| `DX12_MCP_ALLOW_VISIBLE` | `1` で `dx12_engine_launch {mode:"visible"}`(窓を画面に出す起動)を許可する。呼び出しの `confirm:true` も別に要る。既定は拒否(実マウス・フォーカスを奪い得るため) |
+| `DX12_FLEET_AUTOLAUNCH` / `DX12_FLEET_DISABLE` | `1` で「束縛も従来の接続先も無いとき、最初の呼び出しで専用エンジンを自動起動」/ フリートのツールと監視を止める |
+| `DX12_FLEET_ENGINE_CMD` / `DX12_FLEET_FAKE_RESOURCES` / `DX12_FLEET_DISCOVER_PORTS` / `DX12_DOCTOR_PORTS` | **テスト用**(偽エンジンの起動コマンド / 資源の観測値の差し替え / discover と doctor が見るポート) |
 | `DX12_MCP_DEV_PROBE`(**エンジン側**) | `1` で動的登録の実機確認用ダミー method `dev_probe`(`expose:"core"`)をエンジンが登録する。通常起動では存在しない |
 
 ### 0-5. ツール面(surface)3 モードと Core
@@ -114,7 +122,7 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | 面 | `tools/list` | 本数 / サイズ(実測) | 使いどころ |
 |---|---|---:|---|
 | `full`(既定) | shell 5 + 旧 220(情報の無い共通 `outputSchema` を削っただけ) | 225 本 / 350,762 B(M0 408,638 B 比 85.8%) | 従来どおり。許可リストに旧名を書いている人 |
-| `core` | shell 5 + Core 28 + `dx12_batch` + `dx12_call_guarded` | **35 本 / 約 56 KB**(M0 比 13.7%・上限 120 KB の 46%) | 通常の AI 作業。長尾は `dx12_tool_search` → `dx12_call` |
+| `core` | shell 5 + **フリート 5** + Core 28 + `dx12_batch` + `dx12_call_guarded` | **40 本(上限ちょうど)**。フリート追加前は 35 本 / 約 56 KB | 通常の AI 作業。長尾は `dx12_tool_search` → `dx12_call` |
 | `shell` | shell 5 | 5 本 / 6,708 B | 最小(全部 `dx12_call` 経由) |
 | `legacy` | 旧 220 のみ | 220 本 / 408,638 B | 回帰基準(M0 と同一) |
 
@@ -135,6 +143,7 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | 21-25 | `dx12_play` `dx12_stop` `dx12_play_script` `dx12_run_playtests` `dx12_quality_gate` | 旧ツールのまま |
 | 26 | `dx12_imgui` | **統合(5 → 1)**: `op` = virtual_input / find / pointer / key / screenshot(仮想入力のみ。実マウス・実キーボードには触れない) |
 | 27-28 | `dx12_open_scene` `dx12_save_scene` | 旧ツールのまま |
+| +5 | `dx12_engine_launch` `dx12_engine_list` `dx12_engine_stop` `dx12_engine_attach` `dx12_engine_refresh` | **専用エンジン(フリート。§0-7)**。shell の直後に並ぶ。`dx12_engine_use` は Core に入れず長尾(`dx12_call`)。**40 本の上限を守るため 6 本目を外した**(`use` は launch/attach が束縛を自動で切り替えるので頻度が最も低く、1 回だけの切替は `dx12_call {engine}` で足りる) |
 | +1 | `dx12_batch` | 旧ツールのまま(core / shell 面では guarded な op を拒否) |
 | +2 | `dx12_call_guarded`(core 面のみ) | guarded 専用の実行口。毎回ユーザー承認(`requiresUserInteraction`) |
 
@@ -174,6 +183,50 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 push は人の確認を挟む)にまとめる案。Lua API を足したときに 1 コマンドで何を更新するかの対応表は `dx12_guide {topic:"engine_dev"}` に書いてある。
 
 ---
+
+### 0-7. 専用エンジン(フリート): エージェントごとに自分のエンジンを持つ
+
+エンジンの TCP ブリッジは**単一クライアント**なので、複数のエージェント(Claude Code・Codex CLI の各セッション)が同じエンジンに繋ぐと奪い合いになる。
+各セッションが**自分専用のエンジンを背景で起動**する方式にした(設計: `docs/MCP_FLEET_DESIGN.md`)。ポート・作業フォルダ・exe コピー・データ領域(`DX12E_DATA_DIR`)・使い捨てプロジェクトが全部別なので、
+**ビルド(`tools\build.ps1`)が `build\release\DX12Engine.exe` を上書きしても `LNK1104` にならない**(実行中の exe は別の場所のコピー)。
+
+| ツール | 内容 |
+|---|---|
+| `dx12_engine_launch {name?, project?, mode?, scene?, dpiScale?, args?, waitReadyMs?, confirm?}` | 専用エンジンを起動し、**このセッションの既定エンジンに束縛**する(以後の全ツールがそこへ向く)。`{engineId, port, pid, dir, exe, timing, ping}`。`project` 省略で使い捨てプロジェクトを自動生成 |
+| `dx12_engine_list {discover?}` | 全セッションのエンジン一覧(自分のもの・他人のもの・孤児)と台数・上限・空き VRAM/RAM。`discover:true` で手動起動の候補ポートも探す(connect だけ) |
+| `dx12_engine_stop {engine?, all?, force?, confirm?}` | 自分のエンジンを止める(プロセスツリーごと)。他人のエンジンは `force`+`confirm` が無ければ拒否(孤児は可)。`x-<port>`(attach)は外すだけ |
+| `dx12_engine_attach {port?, engine?, readOnly?, confirm?}` | 手動起動/他人のエンジンを**読み取り専用**で見る(`effect:"read"` の method だけ通す。接続は最後の応答から 1.5 秒で閉じ、持ち主の接続枠を塞がない)。`readOnly:false` は `confirm:true` が要る |
+| `dx12_engine_refresh {engine?, waitReadyMs?}` | ビルド後に exe コピーを最新へ差し替え、同じ id・ポート・プロジェクトで再起動する |
+| `dx12_engine_use {engine}` | 既定エンジンの切替(`"none"` で従来の探索へ)。**core 面には出ない**(長尾: `dx12_call {name:"dx12_engine_use", args:{engine}}`) |
+
+- **1 回だけ別のエンジンへ**: `dx12_call {name, args, engine:"<id|name|port>"}`。他の 220 ツールに `engine` 引数は足していない(共通の解決層 `EngineRouter` が向き先を決める)。
+- **上限と資源**: 全セッション合計で最大 **3 台**、空き VRAM 2048 MB 未満・空き RAM 3072 MB 未満は起動を断る(`E_FLEET_LIMIT` / `E_FLEET_RESOURCE`。`cause` に数値、`fix` に止める候補)。
+- **後始末(4 段)**: ① MCP サーバが 10 分操作の無いエンジンを止める ② MCP サーバ終了(stdio クローズ・SIGINT/SIGTERM・例外)で自分のエンジンを全部 `taskkill /T /F` ③ エンジン自身が `--owner-pid`(親が消えたら自殺)と `--idle-exit`(ping を除く操作が無い分数)で終了 ④ 孤児スイープ(launch / list / doctor / 30 秒ごと)。**殺すのはレジストリに載った pid だけで、イメージ名が記録と一致するときに限る**。
+- **起動モード**: `background`(既定。窓は画面外・前面化しない)/ `headless`(窓なし)/ `visible`(**既定で拒否**。環境変数 `DX12_MCP_ALLOW_VISIBLE=1` と `confirm:true` の両方が要り、それでも実マウス・フォーカスを奪い得る)。
+- **レジストリ**: `%LOCALAPPDATA%\UnoEngine\fleet\registry.json`(`registry.lock` の排他 + 一時ファイル → rename の原子的置換。古いロックは自動回収)。インスタンスは `instances\<id>\{bin,data}`、使い捨てプロジェクトは `projects\<id>\`(停止後も 24 時間残る)。
+- **ポート**: 8860〜8899 を自動割当(8850〜8859 は手動用、8787 は従来の既定なので触らない)。
+- **互換**: 束縛が無ければ従来の探索(`DX12_MCP_PORT` → ポートファイル → 8787)。旧 220 ツール・`dx12_call` の挙動・core/shell/full/legacy 面は不変(legacy 面にはフリートのツールを出さない)。
+- **エンジンの起動引数**(フリートが付ける。手動起動でも使える): `--owner-pid <pid>`(その pid が消えたら自分で終了)/ `--idle-exit <分。小数可。0 で無効>`(`ping` と `describe_mcp_manifest` を除く MCP 操作・実入力が無い時間で自動終了)/ `--instance-id <id>`(`ping.instanceId`)。終了は `PostQuitMessage` 経由で、未保存の MCP 編集は先に保存する(保存確認のモーダルは出ない)。実装は `src/core/mcp/FleetGuard.h`(ctest `FleetGuardTests`)。
+- `ping` の加算キー: `pid` `instanceId` `uptimeSec` `idleSec` `idleExitMin` `ownerPid` `vramUsedMB`(このプロセスの使用量。DXGI `QueryVideoMemoryInfo`)`vramBudgetMB`。
+
+環境変数: `DX12_FLEET_DIR` / `DX12_FLEET_MAX`(3)/ `DX12_FLEET_IDLE_MIN`(10。小数可)/ `DX12_FLEET_MIN_FREE_VRAM_MB`(2048)/ `DX12_FLEET_MIN_FREE_RAM_MB`(3072)/ `DX12_FLEET_PORT_RANGE`(`8860-8899`)/ `DX12_FLEET_BUILD_DIR`(exe の元)/ `DX12_MCP_ALLOW_VISIBLE` / `DX12_FLEET_AUTOLAUNCH`(1 で、束縛も従来の接続先も無いとき最初の呼び出しで自動起動)/ `DX12_FLEET_DISABLE`(1 でフリートを止める)。
+
+**クライアント設定の例**(推奨面は `core`: ツール検索が無いクライアントでも 40 本で足りる。Core に無い操作は `dx12_call`)
+
+```toml
+# Codex CLI: ~/.codex/config.toml
+[mcp_servers.dx12-engine]
+command = "node"
+args = ["<REPO>/tools/mcp-server/index.ts"]
+env = { DX12_MCP_SURFACE = "core" }
+```
+
+```bash
+# Claude Code(全プロジェクト共通で登録)
+claude mcp add dx12-engine -s user -e DX12_MCP_SURFACE=core -- node <REPO>/tools/mcp-server/index.ts
+```
+
+`DX12_MCP_PORT` は書かない(専用エンジンは束縛で向き先が決まる。書くと束縛が無いときの従来の探索先だけが固定される)。最初に `dx12_engine_launch` を撃つ。
 
 ## ★ 最重要: 遅延同期の仕組み(旧 `queued:true` は廃止)
 
@@ -310,7 +363,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 
 | ツール | params | 返り値 |
 |--------|--------|--------|
-| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, virtualInput, background, dpiScale, protocolVersion:4}` ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
+| `dx12_ping` | `{}` | `{pong, mode, entityCount, sceneGeneration, currentScene, assetsDir, scriptsDir, baseDir, projectShaderDir, cwd, virtualInput, background, dpiScale, protocolVersion:4, manifestHash…, pid, instanceId, uptimeSec, idleSec, idleExitMin, ownerPid, vramUsedMB, vramBudgetMB}` ※末尾 8 個は専用エンジン(フリート。§0-7)用の加算キー。`idleSec` は ping と `describe_mcp_manifest` を除く操作・実入力からの秒、`vramUsedMB` はこのプロセスの使用量(DXGI)、取れなければ -1 ※**`assetsDir` はエンジンが返す正**（`protocolVersion 4` から）。ログの絶対パスから推定する必要はもう無い |
 | `dx12_describe_mcp_params` | `{method?:string}` | `{methods:{<method名>:[{key,type}]}, count, globalKeys:["idempotency_key"], note}` ※**エンジンのディスパッチ表そのもの**。`type` は `bool`/`int`/`number`/`string`/`vec3`/`object`/`any`。`"親.子"` は入れ子オブジェクトのキー（例 `skybox.envMapPath`）。TS スキーマとのドリフト検出はこれを正にすること |
 | `dx12_list_entities` | `{verbose?:bool, name_prefix?:string, component_type?:string}` | `{entities:[{entityId,id,name,componentTypes?}], count, sceneGeneration}` |
 | `dx12_get_entity` | `{entity:int}` | `{entityId, componentTypes:[...], sceneGeneration, ...(全コンポーネント値)...}` |

@@ -1,5 +1,5 @@
 // core 面(DX12_MCP_SURFACE=core)の stdio 一巡テスト。偽エンジン(TCP)に繋ぎ、実際の MCP クライアントと同じ経路で確かめる。
-//   [1] initialize / tools/list(instructions・capabilities・35 本)
+//   [1] initialize / tools/list(instructions・capabilities・40 本)
 //   [2] Core ツールの直接呼び出し(旧ツールのまま入るもの)と、統合ツール(描画設定 / 地形 / imgui / capture の振り分け)
 //   [3] 旧ツール名の alias(dx12_call で旧名・引数のまま動く。full 面の直接呼び出しと返り値が同一)
 //   [4] guarded: dx12_call は E_GUARDED(confirm:true でも通らない)/ dx12_call_guarded は dryRun と実行 / batch は guarded を通さない
@@ -45,7 +45,7 @@ try {
   const doc = await core.call("dx12_doctor", {});
   check("dx12_doctor が surface:core・listChanged:true・core ツール数を報告", doc.tsServer?.surface === "core" && doc.tsServer?.listChanged === true && doc.tsServer?.toolset === "core" && doc.tsServer?.tools?.core >= 29, doc.tsServer);
   const tools = (await core.rpc("tools/list")).result.tools;
-  check("tools/list は 35 本(shell 5 + Core 28 + batch + call_guarded)", tools.length === 35, tools.length);
+  check("tools/list は 40 本(shell 5 + フリート 5 + Core 28 + batch + call_guarded)", tools.length === 40, tools.length);
   const byName = new Map<string, any>(tools.map((t: any) => [t.name, t]));
 
   console.log("[2] Core ツールの直接呼び出し");

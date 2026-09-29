@@ -14,10 +14,14 @@ import { ShellRuntime } from "../shellRuntime.ts";
 import { envelope } from "../errors.ts";
 import { structureError } from "../structure.ts";
 import { bodyFromIssues, unknownKeyIssues, validateAgainstShape } from "../validate.ts";
+import { getFleet } from "../fleet/runtime.ts";
+import { fleetToolsEnabled } from "../fleet/enabled.ts";
 
 export const manifestStore = new ManifestStore(engine);
 export const shell = new ShellRuntime({
   engine, registry: TOOL_REGISTRY, manifest: manifestStore, toolset: SURFACE, surface: SURFACE, listChanged: LIST_CHANGED_ENABLED, version: SERVER_VERSION,
+  // フリートのツールが有効なときだけ、dx12_doctor にフリートの状態(台数・資源・古い exe コピー・孤児)を載せる。
+  fleetStatus: async () => (fleetToolsEnabled() ? getFleet().status() : (null as any)),
 });
 
 const ALWAYS_LOAD = { "anthropic/alwaysLoad": true };
@@ -91,6 +95,7 @@ if (ENHANCED) {
         : "guarded な操作に必要。ユーザーの承認を得たときだけ true にする。"),
       timeoutMs: z.number().int().min(100).max(600000).optional().describe("エンジン method 呼び出しのタイムアウト(ms)。旧ツール経由では効かない。"),
       idempotency_key: z.string().optional().describe("対応する method(create_entity / spawn_model など)の冪等キー。同じキーの再送は二重生成しない。"),
+      engine: z.union([z.string(), z.number().int()]).optional().describe("この 1 回だけ向ける専用エンジンの id / name / port(dx12_engine_list で確認)。省略で既定(束縛中)のエンジン。"),
     },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
     (a) => shell.call(a),
@@ -123,7 +128,7 @@ if (ENHANCED) {
 
   regShell(
     "dx12_guide", "使い方ガイド",
-    "目的別の最短手順・危険操作の注意・仮想入力の運用ルールを返す(Markdown)。topic 省略で一覧。トピック: build_scene / test / lighting / ui / editor / safety / errors / perf / engine_dev(エンジンに method を足したら何をするか)。",
+    "目的別の最短手順・危険操作の注意・仮想入力の運用ルールを返す(Markdown)。topic 省略で一覧。トピック: build_scene / test / lighting / ui / editor / safety / errors / perf / fleet(専用エンジンの起動・上限・後始末) / engine_dev(エンジンに method を足したら何をするか)。",
     { topic: z.string().optional().describe("トピック id(省略で一覧)。") },
     { readOnlyHint: true, idempotentHint: true },
     async (a) => shell.guide(a),

@@ -94,6 +94,33 @@ guarded(git push・`eval_lua`・`delete_asset`・`build_game` 等)は core 面�
 
 **TODO(設計書 M4)**: docs / README / `guides` / スナップショット更新 / `publish` 差分確認を 1 コマンドにする `npm run finalize` は未実装(現状は上の手順を手で行う)。
 
+## 専用エンジン(フリート): エージェントごとに自分のエンジンを持つ
+
+エンジンの TCP ブリッジは単一クライアントなので、複数のエージェント(Claude Code・Codex CLI の各セッション)が同じエンジンに繋ぐと奪い合いになる。**最初に `dx12_engine_launch` で自分専用のエンジンを背景起動する**(設計: `docs/MCP_FLEET_DESIGN.md`)。
+
+| ツール | 使いどころ |
+|---|---|
+| `dx12_engine_launch` | 専用エンジンを起動して既定に束縛する。ポート(8860〜8899 を自動割当)・exe コピー・データ領域・使い捨てプロジェクトが全部別。**ビルドと衝突しない**(`LNK1104` にならない) |
+| `dx12_engine_list` / `dx12_engine_stop` | 一覧(全セッション分・台数・上限・空き VRAM/RAM)/ 自分のエンジンを止める |
+| `dx12_engine_attach` | 手動起動/他人のエンジンを**読み取り専用**で見る(接続は 1.5 秒で閉じ、持ち主の枠を塞がない) |
+| `dx12_engine_refresh` | ビルド後に exe コピーを最新へ入れ替えて再起動(`dx12_doctor` が古い exe コピーを警告する) |
+| `dx12_engine_use` | 既定エンジンの切替(core 面では `dx12_call {name:"dx12_engine_use"}`) |
+
+全体で最大 3 台・10 分操作が無ければ自動終了・空き VRAM 2 GB / RAM 3 GB 未満は起動を断る(理由と止める候補を構造化エラーで返す)。MCP サーバが終了しても(強制終了でも)エンジンは残らない。
+窓を画面に出す `mode:"visible"` は既定で拒否(`DX12_MCP_ALLOW_VISIBLE=1` と `confirm:true` の両方が要る)。人のカーソル・フォーカスは奪わない。
+環境変数と仕組みは `docs/MCP.md` §0-7、使い方は `dx12_guide {topic:"fleet"}`。
+
+**Codex CLI**(`~/.codex/config.toml`)/ **Claude Code**(ツール検索が無い/弱いクライアントには `core` 面を勧める。`tools/list` 40 本):
+```toml
+[mcp_servers.dx12-engine]
+command = "node"
+args = ["<REPO>/tools/mcp-server/index.ts"]
+env = { DX12_MCP_SURFACE = "core" }
+```
+```bash
+claude mcp add dx12-engine -s user -e DX12_MCP_SURFACE=core -- node <REPO>/tools/mcp-server/index.ts
+```
+
 ## 構成
 - `index.ts` … MCP サーバの入口(stdio)。`toolset/all.ts` を読み込んで接続するだけ(220 ツールの定義は下記へ機械分割済み)
 - `toolset/` … ツール定義。`core.ts`(サーバ・登録ラッパ `reg`/`regRaw`・登録表)/ `shell.ts`(shell 5 本の登録)/ カテゴリ別 30 モジュール(`read` `edit` `spawn` `render` `terrain` `vfx` …)。**並び(= `tools/list` の順)は `toolset/all.ts` の import 順**

@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/FleetGuard.h"   // ping の pid / uptime / idle / VRAM
 #include "resource/ShaderDiagnostics.h"
 #include "resource/ShaderTemplates.h"
 
@@ -1365,6 +1366,14 @@ void Application::RegisterMcpEntityMethods()
         {
             int entityCount = 0;
             for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
+            // フリート運用の観測値（加算キー）。VRAM は「このプロセス」の使用量と OS の予算。取れなければ -1。
+            double vramUsedMB = -1.0, vramBudgetMB = -1.0;
+            if (m_graphicsDevice)
+            {
+                double u = 0.0, b = 0.0;
+                if (fleet::QueryVideoMemoryMB(m_graphicsDevice->GetDevice(), u, b)) { vramUsedMB = u; vramBudgetMB = b; }
+            }
+            const auto& fleetGuard = fleet::Instance();
             resp["ok"] = true;
             resp["result"] = {
                 {"pong", true},
@@ -1399,7 +1408,16 @@ void Application::RegisterMcpEntityMethods()
                 {"manifestProtocol", 1},
                 {"engineVersion", kEngineVersion},
                 {"engineStartedAtMs", McpEngineStartedAtMs()},   // プロセス起動の epoch ms。再起動の検知に使う
-                {"methodCount", m_mcpMethods.size()}
+                {"methodCount", m_mcpMethods.size()},
+                // ---- フリート（複数エンジン管理）用の加算キー ----
+                {"pid", static_cast<unsigned>(GetCurrentProcessId())},
+                {"instanceId", fleetGuard.InstanceId()},
+                {"uptimeSec", fleetGuard.UptimeSec()},
+                {"idleSec", fleetGuard.IdleSec()},          // 最後の MCP 操作(ping / describe_mcp_manifest 除く)か実入力からの秒
+                {"idleExitMin", fleetGuard.IdleExitMin()},  // 0 = 自動終了なし
+                {"ownerPid", static_cast<unsigned>(fleetGuard.OwnerPid())},   // 0 = 親の監視なし
+                {"vramUsedMB", vramUsedMB},
+                {"vramBudgetMB", vramBudgetMB}
             };
         });
 

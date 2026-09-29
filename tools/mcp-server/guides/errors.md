@@ -30,6 +30,13 @@
 | E_CANCELLED | 呼び出しが中断された | 同じ呼び出しを撃ち直せる |
 | E_SAFETY_VIOLATION | 仮想入力中に OS のカーソル/前面窓が動いた(本来起きない) | 以降の UI 操作を止めて人に報告する |
 | E_INTERNAL | エンジン内部エラー | `dx12_get_log` で直前のログ |
+| E_FLEET_LIMIT / E_FLEET_RESOURCE | 専用エンジンが同時 3 台の上限 / 空き VRAM・RAM が下限未満 | `fix` の `dx12_engine_stop {engine}`(自分のエンジンを idle が長い順)。他人のエンジンは止めず、ユーザーに確認 |
+| E_FLEET_VISIBLE_DENIED | 窓を画面に出す起動(visible)は既定で拒否 | `mode:"background"`(または `headless`)で足りる。どうしても要るなら環境変数 `DX12_MCP_ALLOW_VISIBLE=1` と `confirm:true`(実マウス・フォーカスを奪い得る) |
+| E_FLEET_READONLY | 読み取り専用で繋いだエンジンに書き込み系を送った | `dx12_engine_launch` で自分専用のエンジンを起動する |
+| E_FLEET_NOT_FOUND / E_FLEET_NOT_OWNER | エンジンが無い / 他人のエンジン | `dx12_engine_list` → `didYouMean` の id。他人のエンジンは止められない |
+| E_FLEET_PROJECT_IN_USE | 同じプロジェクトを別のエンジンが使用中 | 既存のエンジンを使うか、`project` を省略して使い捨てにする |
+| E_FLEET_BUILD_IN_PROGRESS / E_FLEET_EXE_MISSING | exe の元がビルド中 / 見つからない | ビルドが終わるのを待って撃ち直す / `tools\build.ps1` |
+| E_FLEET_LAUNCH_FAILED / E_FLEET_DISABLED | 起動失敗・無応答 / フリート無効 | `details.logTail` を読む。`DX12_FLEET_DISABLE` を外す |
 | E_NOT_FOUND / E_INVALID_PARAM | 種類を特定できなかった旧経路 | メッセージと hint を読む |
 
 `retryable:true` は「原因を除けば同じ呼び出しが通る」、`false` は「引数か状態を直さないと通らない」。

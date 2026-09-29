@@ -1,6 +1,7 @@
 // サーバ本体 / 登録ラッパ / 共通 zod 部品(全ツールモジュールの土台)
 // index.ts から機械分割したモジュール(コードの移動のみ・挙動不変)。ツールの登録順は index.ts の import 順で決まる。
-import { EngineClient } from "../engineClient.ts";
+import type { EngineClient } from "../engineClient.ts";
+import { EngineRouter } from "../fleet/router.ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import fs from "node:fs";
@@ -14,7 +15,10 @@ import { structureError } from "../structure.ts";
 import { unknownKeyIssues, bodyFromIssues } from "../validate.ts";
 import { instructionsFor } from "../instructions.ts";
 
-export const engine = new EngineClient();
+// engine は EngineRouter(EngineClient と同じ公開面)。束縛が無ければ従来の EngineClient(ポート探索)にそのまま委ねるので、
+// フリートを使わない運用は従来と同じ。束縛は dx12_engine_launch / use / attach が切り替える(docs/MCP_FLEET_DESIGN.md)。
+export const router = new EngineRouter();
+export const engine = router as unknown as EngineClient;
 // instructions は shell 層(M1)の一部。legacy モードは現行と同じ(instructions 無し)。
 export const SERVER_VERSION = "0.8.0";
 export const server = new McpServer(

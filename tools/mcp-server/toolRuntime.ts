@@ -54,6 +54,9 @@ export const callContext = new AsyncLocalStorage<CallContext>();
 /** errResult が作った結果 → 元の Error。dx12_call が構造化エラーを組むときに引く。 */
 export const ERROR_SOURCE = new WeakMap<object, unknown>();
 
+/** 構造化エラー(ErrorBody)を最初から組んで返すツール(dx12_engine_* など)。dx12_call がそのまま使う(組み直さない)。 */
+export const ERROR_BODY = new WeakMap<object, unknown>();
+
 /** 直近のエラー(dx12_doctor の recentErrors)。 */
 export type RecentError = { at: number; tool: string; code: string; message: string };
 const RECENT_ERRORS: RecentError[] = [];

@@ -58,15 +58,26 @@ function nearestNames(target: string, names: string[], n = 5): string[] {
   return names.map((x) => ({ x, s: d(t, x.toLowerCase()) })).filter((o) => o.s <= Math.max(2, Math.floor(t.length / 3))).sort((a, b) => a.s - b.s).slice(0, n).map((o) => o.x);
 }
 
-export type MockOptions = Partial<MockState> & { methods?: MockMethod[] };
+export type MockOptions = Partial<MockState> & {
+  methods?: MockMethod[];
+  /** 待ち受けポート(省略で OS 任せ)。フリートの偽エンジン(mockEngineProc.ts)が使う。 */
+  port?: number;
+  /** 受け取った method ごとに呼ばれる(活動の追跡用)。 */
+  onRequest?: (method: string) => void;
+  /** ping に足すキー(フリートの pid / instanceId / idleSec など)。 */
+  pingExtra?: () => Record<string, unknown>;
+  /** 実エンジンと同じ「単一クライアント」: 先の接続が生きている間、後の接続の要求は処理されない(閉じたら順に処理する)。 */
+  singleClient?: boolean;
+};
 
 export async function startMockEngine(opts: MockOptions = {}) {
   const received: { method: string; params: any }[] = [];
+  const { port: wantPort, onRequest, pingExtra, singleClient, methods: _methods, ...stateOpts } = opts;
   const state: MockState = {
     mode: "Editor", entities: ["Player", "Floor", "Wall_01", "Wall_02", "Light_Main"],
     scenes: ["scenes/default.json", "scenes/level1.json"], assets: ["models/tree.glb", "models/rock.glb", "textures/wood_albedo.png"],
     sceneGeneration: 3, sceneDirty: false, virtualInput: true, hang: new Set(), delayMs: {}, silent: false,
-    legacyEngine: false, structuredErrors: true, oldUnknownMethod: false, ...opts,
+    legacyEngine: false, structuredErrors: true, oldUnknownMethod: false, ...stateOpts,
   };
   const extra = new Map<string, MockMethod>();
   for (const m of opts.methods ?? []) extra.set(m.name, m);
@@ -96,6 +107,7 @@ export async function startMockEngine(opts: MockOptions = {}) {
   const handle = (req: any): any | null => {
     const { id, method } = req; const params = req.params ?? {};
     received.push({ method, params });
+    onRequest?.(method);
     if (state.hang.has(method)) return null;
     const names = allNames();
     if (!names.includes(method)) {
@@ -117,6 +129,7 @@ export async function startMockEngine(opts: MockOptions = {}) {
             pong: true, mode: state.mode, entityCount: state.entities.length, sceneGeneration: state.sceneGeneration,
             currentScene: "scenes/default.json", sceneDirty: state.sceneDirty, protocolVersion: 4, virtualInput: state.virtualInput,
             background: "hidden", baseDir: "C:/mock/project", cwd: "C:/mock/bin", dpiScale: 1,
+            ...(pingExtra ? pingExtra() : {}),
             ...(state.legacyEngine ? {} : { manifestHash: manifestOf().manifestHash, manifestProtocol: 1, engineVersion: "mock-1.0.0", engineStartedAtMs: 1000, methodCount: names.length }),
           },
         };
@@ -181,12 +194,23 @@ export async function startMockEngine(opts: MockOptions = {}) {
     }
   };
 
+  let active: net.Socket | null = null;
+  const waiting: net.Socket[] = [];
   const server = net.createServer((sock) => {
     sockets.add(sock);
     sock.setEncoding("utf8");
     let buf = "";
     sock.on("error", () => {});
-    sock.on("close", () => sockets.delete(sock));
+    if (singleClient) {
+      if (active) { sock.pause(); waiting.push(sock); } else active = sock;
+    }
+    sock.on("close", () => {
+      sockets.delete(sock);
+      if (singleClient) {
+        const w = waiting.indexOf(sock); if (w >= 0) waiting.splice(w, 1);
+        if (active === sock) { active = null; while (waiting.length) { const n = waiting.shift()!; if (!n.destroyed) { active = n; n.resume(); break; } } }
+      }
+    });
     sock.on("data", (chunk: string) => {
       if (state.silent) return;
       buf += chunk;
@@ -203,7 +227,7 @@ export async function startMockEngine(opts: MockOptions = {}) {
       }
     });
   });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  await new Promise<void>((r, rej) => { server.once("error", rej); server.listen(wantPort ?? 0, "127.0.0.1", () => r()); });
   const port = (server.address() as net.AddressInfo).port;
 
   return {

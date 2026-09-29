@@ -15,7 +15,7 @@ import { envelope, nearest, type ErrorBody, type Fix } from "./errors.ts";
 import { structureError } from "./structure.ts";
 import { validateAgainstParams, validateAgainstShape } from "./validate.ts";
 import { runDoctor } from "./doctor.ts";
-import { ERROR_SOURCE, callContext, recentErrors, recordError } from "./toolRuntime.ts";
+import { ERROR_BODY, ERROR_SOURCE, callContext, recentErrors, recordError } from "./toolRuntime.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const GUIDES_DIR = path.join(here, "guides");
@@ -38,7 +38,12 @@ export type ShellDeps = {
   guidesDir?: string;
   /** テスト用: dx12_doctor の外部依存(ポート走査・プロセス一覧・ログ)を差し替える。 */
   doctorHooks?: Record<string, unknown>;
+  /** フリートの状態(台数・資源・古い exe コピー・孤児)。dx12_doctor に統合する。無ければ出さない。 */
+  fleetStatus?: () => Promise<Record<string, unknown>>;
 };
+
+/** EngineRouter(または、それと同じ withEngine を持つクライアント)。dx12_call の engine 引数で 1 回だけ向き先を切り替える。 */
+type Routed = { withEngine?: <T>(ref: string, fn: () => Promise<T>) => Promise<T>; find?: (ref: string | number) => unknown; list?: () => { id: string; name?: string }[]; overrideActive?: () => boolean };
 
 const textResult = (obj: unknown, isError = false): ShellResult => ({
   content: [{ type: "text", text: typeof obj === "string" ? obj : JSON.stringify(obj) }],
@@ -129,8 +134,9 @@ export class ShellRuntime {
   get catalog(): Catalog { return this.ensure().catalog; }
   get index(): SearchIndex { return this.ensure().index; }
 
-  /** マニフェストを(必要なら)取り直す。エンジンが落ちていても throw しない。 */
+  /** マニフェストを(必要なら)取り直す。エンジンが落ちていても throw しない。dx12_call {engine} の呼び出し内では触らない(別エンジンの表で上書きしない)。 */
   async refresh(force = false) {
+    if ((this.deps.engine as unknown as Routed).overrideActive?.()) return null;
     try { return await this.deps.manifest.refresh({ force, maxAgeMs: 3000 }); }
     catch { return null; }
   }
@@ -247,7 +253,26 @@ export class ShellRuntime {
   }
 
   // ── dx12_call ───────────────────────────────────────────────────────
-  async call(input: { name?: unknown; args?: unknown; dryRun?: boolean; confirm?: boolean; timeoutMs?: number; idempotency_key?: string; viaGuardedTool?: boolean }): Promise<ShellResult> {
+  async call(input: { name?: unknown; args?: unknown; dryRun?: boolean; confirm?: boolean; timeoutMs?: number; idempotency_key?: string; viaGuardedTool?: boolean; engine?: unknown }): Promise<ShellResult> {
+    // engine 引数: この 1 回だけ、別のエンジン(id / name / port)へ向ける。束縛は変えない。
+    if (input.engine !== undefined && input.engine !== null && String(input.engine) !== "") {
+      const r = this.deps.engine as unknown as Routed;
+      const ref = String(input.engine);
+      if (typeof r.withEngine !== "function" || !r.find) {
+        return errorResult({ code: "E_UNSUPPORTED", message: "dx12_call: engine 引数はこのサーバでは使えない(フリートが無効)", fix: [{ tool: "dx12_call", args: { name: input.name, args: input.args }, why: "engine 引数を外して撃ち直す" }] });
+      }
+      if (!r.find(ref)) {
+        const ids = (r.list?.() ?? []).map((s) => s.id);
+        const cands = [...new Set((r.list?.() ?? []).flatMap((s) => [s.id, s.name ?? s.id]))];
+        return errorResult({
+          code: "E_FLEET_NOT_FOUND", message: `dx12_call: engine '${ref}' は束縛できるエンジンに無い`, validValues: ids, didYouMean: nearest(ref, cands, 3, { liberal: true }),
+          cause: "engine に指定できるのは、このセッションが起動(dx12_engine_launch)または attach したエンジンの id / name / port",
+          fix: [{ tool: "dx12_engine_list", args: {}, why: "選べるエンジンを確認する" }, { tool: "dx12_engine_attach", args: { port: Number(ref) || undefined, engine: Number(ref) ? undefined : ref }, why: "他のエンジンを読み取り専用で見るなら attach する" }],
+        });
+      }
+      const { engine: _e, ...rest } = input;
+      return r.withEngine(ref, () => this.call(rest));
+    }
     const t0 = Date.now();
     const name = typeof input.name === "string" ? input.name.trim() : "";
     if (!name) return errorResult({ code: "E_MISSING_PARAM", message: "dx12_call: name が空(呼ぶツール名/メソッド名)", fix: [{ tool: "dx12_tool_search", args: { query: "..." }, why: "検索して名前を得る" }] });
@@ -338,7 +363,9 @@ export class ShellRuntime {
     if (thrown || result?.isError) {
       const src = thrown ?? (result ? ERROR_SOURCE.get(result) : undefined);
       let body: ErrorBody;
-      if (src) body = await structureError(src, { tool: ctxTool, args: callArgs, engine: this.deps.engine, suggestNames: () => this.catalog.names() });
+      const prebuilt = result ? (ERROR_BODY.get(result) as ErrorBody | undefined) : undefined;   // dx12_engine_* など、最初から構造化して返すツール
+      if (prebuilt) body = { ...prebuilt };
+      else if (src) body = await structureError(src, { tool: ctxTool, args: callArgs, engine: this.deps.engine, suggestNames: () => this.catalog.names() });
       else {
         const msg = (result?.content ?? []).filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n");
         body = { code: "E_INVALID_PARAM", message: msg || `${doc.id} が失敗した`, retryable: false, fix: [{ tool: "dx12_tool_describe", args: { name: doc.id }, why: "引数と注意点を確認する" }] };
@@ -536,6 +563,7 @@ export class ShellRuntime {
       },
       refresh: async () => { const r = await this.deps.manifest.refresh({ force: true }); return { ping: r.ping, engineTooOld: r.engineTooOld, changed: r.changed }; },
       recentErrors: () => recentErrors(),
+      ...(this.deps.fleetStatus ? { fleet: this.deps.fleetStatus } : {}),
       lateResults: () => this.deps.engine.getLateResults().map((l) => ({ method: l.method, elapsedMs: l.elapsedMs, ok: l.ok, at: l.at })),
       ...(this.deps.doctorHooks as object ?? {}),
     }, { deep: input.deep });

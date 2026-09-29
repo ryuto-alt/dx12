@@ -24,9 +24,12 @@ export const VERB_CLASS: Record<string, VerbClass> = {
 export const NAME_EXCEPTIONS = new Set([
   "dx12_imgui", "dx12_batch", "dx12_quality_gate", "dx12_call", "dx12_call_guarded",
   "dx12_tool_search", "dx12_tool_describe", "dx12_doctor", "dx12_guide",
+  // フリート(専用エンジンの管理)。dx12_engine_<動詞>。launch は「プロセスを起動する」だが自分専用の使い捨てエンジンなので guarded ではない。
+  "dx12_engine_launch", "dx12_engine_list", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh", "dx12_engine_use",
 ]);
 
 export function verbOf(name: string): { verb: string; cls: VerbClass } | null {
+  if (NAME_EXCEPTIONS.has(name)) return null;
   const parts = name.replace(/^dx12_/, "").split("_");
   for (const cand of [parts[0], parts[parts.length - 1]]) {
     if (cand && VERB_CLASS[cand]) return { verb: cand, cls: VERB_CLASS[cand] };
@@ -50,8 +53,14 @@ export const CORE_CONSOLIDATED: string[] = [
 /** shell の隣に置く、guarded 専用の実行口(core 面だけ tools/list に出る)。 */
 export const CORE_GUARDED_TOOL = "dx12_call_guarded";
 
-/** tools/list の並び(shell 5 本を除く)。設計書 §4.1.5 の並びに従う。 */
+/** フリート(専用エンジンの管理。docs/MCP_FLEET_DESIGN.md)。Core に入れるのは 5 本(dx12_engine_use は長尾 = dx12_call)。 */
+export const FLEET_TOOLS: string[] = ["dx12_engine_launch", "dx12_engine_list", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh", "dx12_engine_use"];
+export const CORE_FLEET: string[] = ["dx12_engine_launch", "dx12_engine_list", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh"];
+export const FLEET_TOOL_SET = new Set(FLEET_TOOLS);
+
+/** tools/list の並び(shell 5 本を除く)。設計書 §4.1.5 の並びに従う(フリートの 5 本は shell の直後 = 最初に使う道具)。 */
 export const CORE_ORDER: string[] = [
+  ...CORE_FLEET,
   "dx12_list_entities", "dx12_get_entity", "dx12_get_render_settings", "dx12_set_render_settings",
   "dx12_get_log", "dx12_get_script_errors", "dx12_get_perf", "dx12_capture", "dx12_scene_write",
   "dx12_create_entity", "dx12_spawn_model", "dx12_set_transform", "dx12_set_component", "dx12_delete_entity",
@@ -60,8 +69,8 @@ export const CORE_ORDER: string[] = [
   "dx12_imgui", "dx12_open_scene", "dx12_save_scene",
   "dx12_batch", CORE_GUARDED_TOOL,
 ];
-/** 設計書の「Core 28 本」= 上の並びから batch と call_guarded を除いたもの。 */
-export const CORE_28: string[] = CORE_ORDER.filter((n) => n !== "dx12_batch" && n !== CORE_GUARDED_TOOL);
+/** 設計書の「Core 28 本」= 上の並びから batch・call_guarded・フリートの 5 本を除いたもの。 */
+export const CORE_28: string[] = CORE_ORDER.filter((n) => n !== "dx12_batch" && n !== CORE_GUARDED_TOOL && !CORE_FLEET.includes(n));
 
 export const CORE_LEGACY_SET = new Set(CORE_LEGACY);
 export const CORE_SET = new Set(CORE_ORDER);
@@ -370,6 +379,41 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
     "複数の操作を順に実行して往復を減らす。ops は [{method, params}](method はエンジンの method 名で dx12_ 接頭辞なし)。既定 atomic:true はトランザクションで包み、失敗すれば丸ごとロールバック(成功時は Undo 1 回で戻る)。\n"
     + "使う: 同種の編集の連続。使わない: 数十体以上の配置(→ dx12_scene_write)、guarded な操作(→ dx12_call_guarded)。\n"
     + "副作用: 各 op の副作用に従う。注意: play / stop / open_scene / undo 系は atomic の中で使えない(省略すると自動で atomic:false)。params のキーは対応するツールと同じで、未知キーの op は実行しない。",
+
+  // ── フリート(専用エンジンの管理) ─────────────────────────────────────────────
+  dx12_engine_launch:
+    "自分専用のエンジンを背景で起動し、このセッションの既定エンジンに束縛する。専用エンジンは全体で最大 3 台、10 分操作が無いと自動終了する。ポート・exe コピー・データ領域・使い捨てプロジェクトは全部別で、ビルド中でも衝突しない。\n"
+    + "使う: 作業の最初(dx12_doctor がエンジン無しと言ったとき)。使わない: 手で起動済みのエンジンを見るだけ(→ dx12_engine_attach)、既存エンジンの更新(→ dx12_engine_refresh)。\n"
+    + "引数: name / project(省略で使い捨て)/ mode(background 既定。headless=画面不要。visible は既定で拒否)/ scene / dpiScale。\n"
+    + "副作用: プロセスを起動し約 27 MB をコピーする。窓は画面外でフォーカスを奪わない。返り値: {engineId, port, pid, dir}。次: dx12_list_entities。",
+
+  dx12_engine_list:
+    "起動中の専用エンジンの一覧(自分のもの・他のセッションのもの・孤児)と、台数・上限・空き VRAM/RAM を返す。discover:true で手動起動のエンジン(8787・8850〜8859)も探す。\n"
+    + "使う: 上限で断られたとき、どのエンジンを止めるか決めるとき。使わない: 接続の診断(→ dx12_doctor)。\n"
+    + "副作用: なし(孤児の回収だけ行う)。注意: 他のセッションのエンジンには ping を送らない(接続枠を奪わない)。次: dx12_engine_stop / dx12_call {name:'dx12_engine_use'}。",
+
+  dx12_engine_stop:
+    "自分の専用エンジンを止める(プロセスツリーごと終了)。engine=id / name / port、all:true で自分の全部。他のセッションのエンジンは止められない(孤児は可)。\n"
+    + "使う: 作業の終わり、上限の枠を空けるとき。使わない: 最新の exe への入れ替え(→ dx12_engine_refresh)。\n"
+    + "副作用: エンジンが終了する(未保存は MCP の自動保存の範囲だけ残る)。使い捨てプロジェクトは 24 時間残る。\n"
+    + "注意: 閉じ忘れても 10 分で自動終了する。返り値: {stopped[]}。",
+
+  dx12_engine_attach:
+    "手で起動したエンジンや他のセッションのエンジンを読み取り専用で見る(port か engine)。effect が read の method だけ送れる。接続は最後の応答から 1.5 秒で閉じ、持ち主の接続枠を塞がない。\n"
+    + "使う: 状態・シーンの確認だけしたいとき。使わない: 編集・撮影・Play(→ dx12_engine_launch で自分専用を起動)。\n"
+    + "副作用: 既定エンジンの束縛を切り替える。readOnly:false は confirm:true が要る。\n"
+    + "注意: 持ち主が接続中は応答が無く E_ENGINE_BUSY になる。次: dx12_list_entities。",
+
+  dx12_engine_refresh:
+    "ビルドの後に、専用エンジンの exe コピーを最新へ差し替えて、同じポート・プロジェクトで再起動する。\n"
+    + "使う: tools\\build.ps1 の後、dx12_doctor が古い exe コピーを警告したとき。使わない: エンジンを増やす(→ dx12_engine_launch)。\n"
+    + "副作用: エンジンを再起動する(entityId は全て失効。シーンは自動保存されたものが開き直される)。\n"
+    + "注意: 元の exe がビルド中なら断る(動いているエンジンは止めない)。返り値: {engineId, pid, exe}。",
+
+  dx12_engine_use:
+    "既定エンジンを切り替える(engine=id / name / port。'none' で従来の探索に戻す)。\n"
+    + "使う: 自分が複数のエンジンを持っていて、向き先を切り替えるとき。使わない: 1 回だけ別のエンジンへ撃つ(→ dx12_call の engine 引数)。\n"
+    + "副作用: 以後の全ツールの向き先が変わる。返り値: {bound}。次: dx12_list_entities。",
 
   dx12_call_guarded:
     "取り返しが付かない/外部に影響する操作を実行する: git commit・push・pull・checkout・merge、eval_lua(任意 Lua 実行)、delete_asset、build_game、net_launch_test_client など。ユーザーが毎回承認する。\n"

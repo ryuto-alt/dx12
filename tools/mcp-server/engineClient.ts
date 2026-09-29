@@ -190,6 +190,10 @@ export class EngineClient {
   private connectEpoch = 0;        // 接続が確立するたびに +1(再接続の検知用)
   private lastConnectError: string | null = null;
   private connectListeners: ((epoch: number, reconnect: boolean) => void)[] = [];
+  // 貸し出し接続(フリートの attach): 最後の応答から leaseMs で切断し、次の呼び出しで繋ぎ直す。
+  // エンジンのブリッジは単一クライアントなので、見るだけの接続が枠を塞がないようにする。0 なら従来どおり保持し続ける。
+  private leaseMs = 0;
+  private releaseTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Node の型ストリップ実行はパラメータプロパティ非対応なので明示代入。
   // 引数省略時はポート自動探索。test.ts は (host, port, timeout) を明示指定してくる。
@@ -203,6 +207,24 @@ export class EngineClient {
     this.backoff = opts?.backoffMs ?? (envBackoff !== undefined
       ? envBackoff.split(",").map(Number).filter((n) => Number.isFinite(n) && n > 0)
       : CONNECT_BACKOFF_MS);
+  }
+
+  /** 貸し出し接続にする(ms > 0)。最後の応答から ms で切断し、次の呼び出しで再接続する(再接続は「再起動」として通知しない)。 */
+  setLease(ms: number) { this.leaseMs = Math.max(0, ms); }
+  /** ソケットを閉じる(待機中の呼び出しは切断エラーで終わる)。次の call() でまた繋ぐ。 */
+  close() {
+    if (this.releaseTimer) { clearTimeout(this.releaseTimer); this.releaseTimer = null; }
+    const s = this.sock;
+    if (s && !s.destroyed) s.destroy();
+  }
+  private scheduleRelease() {
+    if (this.leaseMs <= 0) return;
+    if (this.releaseTimer) clearTimeout(this.releaseTimer);
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null;
+      if (this.pending.size === 0 && this.sock && !this.sock.destroyed) this.sock.destroy();
+    }, this.leaseMs);
+    this.releaseTimer.unref?.();
   }
 
   getPort(): number { return this.port; }
@@ -297,7 +319,7 @@ export class EngineClient {
       for (let attempt = 0; attempt <= attempts; attempt++) {
         try {
           const s = await this.connectOnce();
-          const reconnect = this.connectEpoch > 0;
+          const reconnect = this.connectEpoch > 0 && this.leaseMs <= 0;
           this.connectEpoch++;
           this.lastConnectError = null;
           this.connecting = null;
@@ -325,6 +347,7 @@ export class EngineClient {
   // opts.timeout で method 別タイムアウトを上書きできる。
   // opts.retry:false は接続失敗時の再試行(0.3/0.6/1.2 秒)を省く(診断用。すぐ結果が欲しいとき)。
   async call(method: string, params: Record<string, unknown>, opts?: { timeout?: number; retry?: boolean }): Promise<any> {
+    if (this.releaseTimer) { clearTimeout(this.releaseTimer); this.releaseTimer = null; }
     const s = await this.connect(opts?.retry !== false);
     const id = this.nextId++;
     const timeoutMs = opts?.timeout ?? TIMEOUT_BY_METHOD[method] ?? this.defaultTimeoutMs;
@@ -352,6 +375,7 @@ export class EngineClient {
         }
       }, timeoutMs);
     });
+    this.scheduleRelease();
     if (msg.ok === false) {
       // error_code をそのまま Error.code に載せて投げる(Node は型チェックせず実行するので any 経由で代入)。
       // error_hint / error_values(エンジンが「次の一手」と有効値を添えてきた場合)も運ぶ。

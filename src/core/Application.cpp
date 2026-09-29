@@ -6,6 +6,7 @@
 #include "core/ApplicationInternal.h"
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
+#include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
 
 namespace dx12e
 {
@@ -1442,6 +1443,35 @@ void Application::Run()
             m_mcpBridge->Poll([this](uint64_t client, const std::string& line) {
                 return HandleMcpCommand(client, line);
             });
+        }
+
+        // ---- フリート運用の自己終了（--owner-pid / --idle-exit。core/mcp/FleetGuard.h）----
+        //   MCP サーバが落ちた・エージェントが閉じ忘れた・無操作が続いた、のいずれでもエンジンが残らないようにする。
+        //   表示モードで人が触っている間(実入力)は活動に数える。UI 自動テスト中は idle で終わらない。
+        {
+            auto& fg = fleet::Instance();
+            if (ImGui::GetCurrentContext())
+            {
+                const ImGuiIO& fio = ImGui::GetIO();
+                if (fio.MouseDelta.x != 0.0f || fio.MouseDelta.y != 0.0f || fio.MouseWheel != 0.0f
+                    || fio.MouseClicked[0] || fio.MouseClicked[1] || fio.MouseClicked[2]
+                    || !fio.InputQueueCharacters.empty())
+                    fg.TouchInput();
+            }
+            if (m_uiTestsRequested) fg.TouchInput();   // --ui-tests 系（m_uiTests は通常起動でも常に在るので使えない）
+            static bool fleetQuitting = false;
+            const fleet::ExitReason why = fleetQuitting ? fleet::ExitReason::None : fg.PollExit();
+            if (why != fleet::ExitReason::None)
+            {
+                fleetQuitting = true;
+                Logger::Info("Fleet: exiting ({})", fleet::ExitReasonName(why));
+                if (m_editorCtx && m_editorCtx->aiSessionEver && m_editorCtx->IsSceneDirty()
+                    && !(m_headless && !m_headlessAllowSave))
+                {
+                    try { SaveSceneForMcp(); } catch (...) {}   // best-effort（使い捨てプロジェクトが前提）
+                }
+                PostQuitMessage(0);
+            }
         }
 
         // ---- 仮想入力モードの「人の脱出口」----

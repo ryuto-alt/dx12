@@ -124,6 +124,29 @@ console.log("[4] Core 面の選択率(オフライン・決定論): shell 5 本 
   check("Core タスクの正解ツールの callTemplate が事前検証を通る(100%)", bad.length === 0, bad);
 }
 
+console.log("[5] フリート(専用エンジンの管理)ツールの発見性(eval/fleet_tasks.json)");
+{
+  const ft: { id: string; expect: string[]; core: boolean; queries: string[]; holdout: string }[] = JSON.parse(fs.readFileSync(path.join(here, "eval", "fleet_tasks.json"), "utf8")).tasks;
+  check("フリートのタスクの許容ツールがすべて実在する", ft.every((t) => t.expect.every((n) => shell.catalog.resolve(n))));
+  let n = 0, all3 = 0, core3 = 0, cn = 0;
+  const miss: string[] = [];
+  for (const t of ft) for (const q of [...t.queries, t.holdout]) {
+    n++;
+    const r = rankOf(q, t.expect);
+    if (r >= 0 && r < 3) all3++; else miss.push(`${t.id} "${q}" rank=${r}`);
+    if (t.core) {
+      cn++;
+      const rc = shell.index.search(q, { limit: 10, tier: "core" }).hits.map((h) => h.name).findIndex((h) => t.expect.includes(h));
+      if (rc >= 0 && rc < 3) core3++; else miss.push(`(core 面) ${t.id} "${q}" rank=${rc}`);
+    }
+  }
+  console.log(`      フリート ${ft.length} タスク / ${n} クエリ: 全ツール検索 recall@3=${(all3 / n * 100).toFixed(1)}% / Core 面のみ recall@3=${(core3 / cn * 100).toFixed(1)}%`);
+  check(`フリートのツールは全ツール検索で recall@3 >= 90%(${(all3 / n * 100).toFixed(1)}%)`, all3 / n >= 0.9, miss);
+  check(`Core 面のみの検索でも recall@3 >= 90%(${(core3 / cn * 100).toFixed(1)}%)`, core3 / cn >= 0.9, miss);
+  check("dx12_engine_use は Core 面の検索に出ない(長尾)が、全ツール検索では出る", !shell.index.search("既定のエンジンを切り替える", { limit: 20, tier: "core" }).hits.some((h) => h.name === "dx12_engine_use") && shell.index.search("既定のエンジンを切り替える", { limit: 5 }).hits.some((h) => h.name === "dx12_engine_use"));
+  check("既存の 30 タスクの選択率は下がっていない(フリートのツールが割り込まない)", main.r3 >= 0.9 && hold.r3 >= 0.85);
+}
+
 if (failed) { console.log(`\nNG: ${failed}/${total} 件失敗`); process.exit(1); }
 console.log(`\nOK: 発見性テスト ${total} 項目すべて通過`);
 process.exit(0);

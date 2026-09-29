@@ -6,6 +6,7 @@
 //   [5] 語調 lint: メッセージ・ガイド・新規ソースに方言/命令口調が無い
 // 実行: node errors.test.ts
 
+import "./testEnv.ts";   // フリートのレジストリを一時フォルダへ隔離(実ユーザーの %LOCALAPPDATA% を触らない)
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";

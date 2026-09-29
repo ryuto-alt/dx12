@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/FleetGuard.h"   // ping / manifest 以外の method を「活動」に数える（--idle-exit）
 
 #include <algorithm>
 #include <unordered_set>
@@ -184,6 +185,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     resp["id"] = req.value("id", json(nullptr));
     const std::string method = req.value("method", std::string());
     const json params = req.value("params", json::object());
+    fleet::Instance().Touch(method);
 
     // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
     // 該当ハンドラで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。

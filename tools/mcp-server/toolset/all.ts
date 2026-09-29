@@ -34,3 +34,5 @@ import "./perceive.ts";
 import "./qualityGate.ts";
 // Core の統合ツール(旧ツールの登録表を引くので、旧ツールの全モジュールより後ろ)と、マニフェストの expose:"core" による動的昇格。
 import "./coreTools.ts";
+// フリート(専用エンジンの管理)。full 面では旧 220 本の後ろ(tools/list の末尾)。
+import "./fleet.ts";
