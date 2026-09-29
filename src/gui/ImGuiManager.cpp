@@ -2,17 +2,25 @@
 #include "graphics/GraphicsDevice.h"
 #include "graphics/DescriptorHeap.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
+#include "core/GameUiFont.h"
 #include <vector>
+#include <set>
+#include <unordered_map>
+#include <algorithm>
+#include <string>
 #include <cstring>
 #include "core/vfs/Vfs.h"
 #include "editor/EditorTheme.h"
 #include "gui/VirtualInputImGui.h"
+#include "gui/FloatingGuard.h"
 
 #include <filesystem>
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
 #include <imgui.h>
+#include <imgui_internal.h>   // g.Windows（別ビューポートの警告に窓名を出す）
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 #pragma warning(pop)
@@ -31,7 +39,325 @@ bool GetWindowMinimizedOverride(ImGuiViewport* vp)
     if (vinput::Enabled() && vp == ImGui::GetMainViewport()) return false;
     return g_origGetWindowMinimized ? g_origGetWindowMinimized(vp) : false;
 }
+
+// ---- multi-viewport（フローティング窓を別 OS 窓へ引き出す機能）の可否 ----
+// ★仮想入力 / --background の間は必ず切る。imgui.ini の ViewportPos が残っていると、フローティング窓が
+//   メインウィンドウの外（＝ユーザーの実画面）へ別 OS 窓として出てしまう事故があった
+//   （マテリアルエディタが (60,60) に出た）。切っておけば全窓がメインビューポート内に留まる。
+bool g_viewportsWanted = false;   // 通常起動で multi-viewport を有効にしたか（仮想入力を切ったら戻す）
+bool g_viewportsForbidden = false; // --background: multi-viewport を二度と有効にしない
+bool g_editorStyle     = false;   // エディタのテーマを適用したか（ゲームモードでは false）
+
+// 起動時に別ビューポート(OS 窓)が 1 枚でも生成されたらログに警告する（画面に窓が出ている合図）。
+void WarnSecondaryViewports()
+{
+    ImGuiContext* gp = ImGui::GetCurrentContext();
+    if (!gp) return;
+    ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+    if (pio.Viewports.Size <= 1) return;
+    static std::set<ImGuiID> warned;
+    for (int i = 1; i < pio.Viewports.Size; ++i)
+    {
+        ImGuiViewport* vp = pio.Viewports[i];
+        if (!warned.insert(vp->ID).second) continue;
+        const char* name = "(不明)";
+        for (ImGuiWindow* w : gp->Windows)
+            if (w->Viewport == vp && !(w->Flags & ImGuiWindowFlags_ChildWindow)) { name = w->Name; break; }
+        if (vinput::Enabled())
+            Logger::Warn("★警告: 仮想入力モード中に別ビューポート(別 OS 窓)が生成されました。実画面に窓が出ています: "
+                         "window='{}' pos=({:.0f},{:.0f}) size=({:.0f},{:.0f})",
+                         name, vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y);
+        else
+            Logger::Warn("別ビューポート(別 OS 窓)が生成されました: window='{}' pos=({:.0f},{:.0f}) size=({:.0f},{:.0f})",
+                         name, vp->Pos.x, vp->Pos.y, vp->Size.x, vp->Size.y);
+    }
+}
+
+// ---- フォント ----
+struct FontSrc
+{
+    std::string path;
+    ImU32       fontNo    = 0;
+    float       sizeScale = 1.0f;          // ExtraSizeScale（字の大きさの微調整）
+    ImVec2      offset    = ImVec2(0, 0);  // GlyphOffset（縦位置の微調整）
+};
+
+std::string WinFontPath(const char* file)
+{
+    char win[MAX_PATH] = {};
+    const UINT n = ::GetWindowsDirectoryA(win, MAX_PATH);
+    std::string dir = n ? std::string(win) : std::string("C:\\Windows");
+    return dir + "\\Fonts\\" + file;
+}
+
+// 最初に見つかった 1 本を返す（無ければ空）。
+FontSrc FirstExisting(std::initializer_list<FontSrc> cands)
+{
+    for (const FontSrc& c : cands)
+    {
+        std::error_code ec;
+        if (!c.path.empty() && std::filesystem::exists(c.path, ec)) return c;
+    }
+    return FontSrc{};
+}
+
+// 見つかった順に 1 つの ImFont へマージして返す（先頭が主フォント）。何も無ければ nullptr。
+ImFont* BuildFont(ImGuiIO& io, float size, const std::vector<FontSrc>& srcs)
+{
+    ImFont* font = nullptr;
+    for (const FontSrc& s : srcs)
+    {
+        if (s.path.empty()) continue;
+        ImFontConfig cfg;
+        cfg.FontNo         = s.fontNo;
+        cfg.MergeMode      = (font != nullptr);
+        cfg.ExtraSizeScale = s.sizeScale;
+        cfg.GlyphOffset    = s.offset;
+        // Windows 標準フォントは ttc の中に複数入っている。名前はデバッグ用。
+        std::snprintf(cfg.Name, sizeof(cfg.Name), "%s", std::filesystem::path(s.path).filename().string().c_str());
+        ImFont* f = io.Fonts->AddFontFromFileTTF(s.path.c_str(), size, &cfg);
+        if (!font) font = f;
+    }
+    return font;
+}
+
+// エディタのフォント一式（本文 / 太字 / 等幅 + Lucide アイコン）を読み込んで theme::g_fonts へ渡す。
+// 全部 Windows 標準フォント（C:\Windows\Fonts）を存在確認つきで使い、無ければ次の候補へフォールバック。
+//   本文 = Segoe UI（欧文。バックスラッシュも ¥ にならない）
+//        + Yu Gothic UI（日本語。Segoe UI と縦メトリクスが同じなので行がずれない）
+//        + Segoe UI Symbol（▾ ▼ ▲ ▽ → などの記号。無いと '?' になる）
+//        + Lucide（アイコン）
+bool LoadEditorFonts(ImGuiIO& io)
+{
+    using namespace dx12e::theme;
+    const float base = size::kFontBase;
+
+    const FontSrc latin     = FirstExisting({ {WinFontPath("segoeui.ttf")} });
+    const FontSrc latinBold = FirstExisting({ {WinFontPath("segoeuib.ttf")}, {WinFontPath("segoeui.ttf")} });
+    // 日本語（UI 用の字形。ttc の番号は fontTools で確認: YuGothM#1 = Yu Gothic UI Regular / YuGothB#1 = Bold）
+    const FontSrc jp     = FirstExisting({ {WinFontPath("YuGothM.ttc"), 1}, {WinFontPath("YuGothR.ttc"), 1},
+                                           {WinFontPath("meiryo.ttc"), 2}, {WinFontPath("meiryo.ttc"), 0},
+                                           {WinFontPath("msgothic.ttc"), 0} });
+    const FontSrc jpBold = FirstExisting({ {WinFontPath("YuGothB.ttc"), 1}, {WinFontPath("meiryob.ttc"), 2},
+                                           {WinFontPath("meiryob.ttc"), 0}, {WinFontPath("YuGothM.ttc"), 1} });
+    const FontSrc symbol = FirstExisting({ {WinFontPath("seguisym.ttf")} });
+    // 等幅: 字の大きさを本文と揃えるため 0.875 倍（フォントサイズ = 行高は本文と同じにして frame 高を変えない）
+    FontSrc mono = FirstExisting({ {WinFontPath("CascadiaMono.ttf")}, {WinFontPath("consola.ttf")} });
+    mono.sizeScale = 0.875f;
+
+    // Lucide（ISC ライセンス。assets/editor/fonts/ に同梱）。開発時は BaseDir、配布時は exe 隣の assets。
+    FontSrc lucide = FirstExisting({
+        {PathResolver::BaseDir() + "assets/editor/fonts/lucide.ttf"},
+        {PathResolver::AssetsDir() + "editor/fonts/lucide.ttf"},
+    });
+    lucide.sizeScale = 0.90f;                     // 1em = 本文サイズ × 0.9（字の em より一回り大きく見える）
+    lucide.offset    = ImVec2(0.0f, 2.6f);        // 本文のベースラインへ合わせる（アイコンは 1em がベースライン上に乗るため）
+
+    auto stack = [&](const FontSrc& l, const FontSrc& j, float scaleLatin) {
+        std::vector<FontSrc> v;
+        FontSrc ll = l; ll.sizeScale = scaleLatin;
+        // ★Lucide を日本語/記号フォントより【先に】マージする。マージは先勝ちで、Yu Gothic UI / Segoe UI Symbol は
+        //   私用領域(U+E000〜)にも別のグリフを持っているため、後ろに置くと ICON_* が別の絵になる。
+        if (!ll.path.empty()) v.push_back(ll);
+        if (!lucide.path.empty()) v.push_back(lucide);
+        if (!j.path.empty())  v.push_back(j);
+        if (!symbol.path.empty()) v.push_back(symbol);
+        return v;
+    };
+
+    ImFont* body = BuildFont(io, base, stack(latin, jp, 1.0f));
+    if (!body) return false;
+    ImFont* bold = BuildFont(io, base, stack(latinBold.path.empty() ? latin : latinBold,
+                                             jpBold.path.empty() ? jp : jpBold, 1.0f));
+    ImFont* mon  = BuildFont(io, base, stack(mono.path.empty() ? latin : mono, jp, mono.path.empty() ? 1.0f : mono.sizeScale));
+
+    // ゲーム UI 用の既定フォント = 旧来の Yu Gothic Medium 17px（出荷したゲームと文字の幅・行高を揃える。core/GameUiFont.h）。
+    {
+        const FontSrc legacy = FirstExisting({ {WinFontPath("YuGothM.ttc"), 0}, {WinFontPath("meiryo.ttc"), 0} });
+        if (!legacy.path.empty())
+            GameUiDefaultFont() = BuildFont(io, 17.0f, { legacy });
+    }
+
+    theme::g_fonts.body  = body;
+    theme::g_fonts.bold  = bold ? bold : body;
+    theme::g_fonts.mono  = mon  ? mon  : body;
+    theme::g_fonts.icons = !lucide.path.empty();
+    io.FontDefault = body;
+    Logger::Info("UI fonts: latin={} jp={} symbol={} mono={} icons={}",
+                 latin.path.empty() ? "-" : "segoeui", jp.path.empty() ? "-" : "ok",
+                 symbol.path.empty() ? "-" : "ok", mono.path.empty() ? "-" : "ok",
+                 lucide.path.empty() ? "MISSING" : "lucide");
+    if (lucide.path.empty())
+        Logger::Error("assets/editor/fonts/lucide.ttf が見つかりません。ツールバー/ヒエラルキーのアイコンが '?' になります");
+    return true;
+}
+
+// 配布ゲーム(GameRuntime)向けの旧スタイル。エディタ専用テーマ（EditorTheme.h）の値を変えても
+// ゲームの見た目が動かないよう、旧パレットをここへリテラルで固定している。
+void ApplyLegacyGameStyle(ImGuiStyle& style)
+{
+    using theme::Hex;
+    const ImVec4 AppBg = Hex(0x0e0f12), PanelBg = Hex(0x16171b), Chrome = Hex(0x1a1b20), GroupBg = Hex(0x202127);
+    const ImVec4 FrameBg = Hex(0x1d1e23), FrameBgHi = Hex(0x242530), FrameBgActive = Hex(0x2b2c38);
+    const ImVec4 Border = Hex(0x25262c);
+    const ImVec4 Accent = Hex(0x4c8dff), AccentLight = Hex(0x6ba2ff);
+    const ImVec4 AccentDim = Hex(0x4c8dff, 0.18f), AccentDim2 = Hex(0x4c8dff, 0.32f);
+    const ImVec4 TextHi = Hex(0xe6e7ea), TextFaint = Hex(0x74767f);
+
+    ImGui::StyleColorsDark();
+    style.WindowRounding          = 7.0f;
+    style.ChildRounding           = 6.0f;
+    style.FrameRounding           = 5.0f;
+    style.PopupRounding           = 7.0f;
+    style.GrabRounding            = 5.0f;
+    style.TabRounding             = 6.0f;
+    style.ScrollbarRounding       = 7.0f;
+    style.WindowPadding           = ImVec2(9, 8);
+    style.FramePadding            = ImVec2(8, 5);
+    style.CellPadding             = ImVec2(6, 4);
+    style.ItemSpacing             = ImVec2(8, 7);
+    style.ItemInnerSpacing        = ImVec2(6, 5);
+    style.IndentSpacing           = 16.0f;
+    style.ScrollbarSize           = 11.0f;
+    style.GrabMinSize             = 10.0f;
+    style.WindowBorderSize        = 1.0f;
+    style.ChildBorderSize         = 0.0f;
+    style.FrameBorderSize         = 0.0f;
+    style.TabBarBorderSize        = 1.0f;
+    style.TabBarOverlineSize      = 2.0f;
+    style.DockingSeparatorSize    = 1.0f;
+    style.WindowTitleAlign        = ImVec2(0.0f, 0.5f);
+    style.SeparatorTextBorderSize = 2.0f;
+    style.SeparatorTextPadding    = ImVec2(18, 6);
+
+    ImVec4* c = style.Colors;
+    c[ImGuiCol_Text]                 = TextHi;
+    c[ImGuiCol_TextDisabled]         = TextFaint;
+    c[ImGuiCol_WindowBg]             = PanelBg;
+    c[ImGuiCol_ChildBg]              = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_PopupBg]              = Hex(0x1b1c21, 0.98f);
+    c[ImGuiCol_Border]               = Border;
+    c[ImGuiCol_BorderShadow]         = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_TitleBg]              = Chrome;
+    c[ImGuiCol_TitleBgActive]        = Chrome;
+    c[ImGuiCol_TitleBgCollapsed]     = Hex(0x16171b, 0.75f);
+    c[ImGuiCol_MenuBarBg]            = Chrome;
+    c[ImGuiCol_FrameBg]              = FrameBg;
+    c[ImGuiCol_FrameBgHovered]       = FrameBgHi;
+    c[ImGuiCol_FrameBgActive]        = FrameBgActive;
+    c[ImGuiCol_Button]               = GroupBg;
+    c[ImGuiCol_ButtonHovered]        = Hex(0x2a2c33);
+    c[ImGuiCol_ButtonActive]         = Hex(0x32343c);
+    c[ImGuiCol_Header]               = AccentDim;
+    c[ImGuiCol_HeaderHovered]        = Hex(0x4c8dff, 0.12f);
+    c[ImGuiCol_HeaderActive]         = AccentDim2;
+    c[ImGuiCol_Tab]                       = Chrome;
+    c[ImGuiCol_TabHovered]                = Hex(0x2a2c33);
+    c[ImGuiCol_TabSelected]               = PanelBg;
+    c[ImGuiCol_TabSelectedOverline]       = Accent;
+    c[ImGuiCol_TabDimmed]                 = Chrome;
+    c[ImGuiCol_TabDimmedSelected]         = PanelBg;
+    c[ImGuiCol_TabDimmedSelectedOverline] = Hex(0x4c8dff, 0.45f);
+    c[ImGuiCol_ScrollbarBg]          = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab]        = Hex(0x33343c);
+    c[ImGuiCol_ScrollbarGrabHovered] = Hex(0x44454f);
+    c[ImGuiCol_ScrollbarGrabActive]  = Hex(0x55565f);
+    c[ImGuiCol_SliderGrab]           = Accent;
+    c[ImGuiCol_SliderGrabActive]     = AccentLight;
+    c[ImGuiCol_CheckMark]            = AccentLight;
+    c[ImGuiCol_Separator]            = Border;
+    c[ImGuiCol_SeparatorHovered]     = AccentDim2;
+    c[ImGuiCol_SeparatorActive]      = Accent;
+    c[ImGuiCol_ResizeGrip]           = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ResizeGripHovered]    = AccentDim2;
+    c[ImGuiCol_ResizeGripActive]     = Accent;
+    c[ImGuiCol_DockingPreview]       = AccentDim2;
+    c[ImGuiCol_DockingEmptyBg]       = AppBg;
+    c[ImGuiCol_TableHeaderBg]        = Chrome;
+    c[ImGuiCol_TableBorderStrong]    = Border;
+    c[ImGuiCol_TableBorderLight]     = Hex(0x202127);
+    c[ImGuiCol_TableRowBg]           = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_TableRowBgAlt]        = Hex(0xffffff, 0.02f);
+    c[ImGuiCol_TextSelectedBg]       = AccentDim2;
+    c[ImGuiCol_NavCursor]            = Accent;
+}
 } // namespace
+
+// ---------------------------------------------------------------------------
+// フローティング窓の収容（gui/FloatingGuard.h）
+// ---------------------------------------------------------------------------
+namespace floatguard
+{
+namespace
+{
+ImVec2 g_areaMin(0, 0);
+ImVec2 g_areaMax(0, 0);
+bool   g_areaSet = false;
+} // namespace
+
+void SetArea(ImVec2 areaMin, ImVec2 areaMax)
+{
+    g_areaMin = areaMin;
+    g_areaMax = areaMax;
+    g_areaSet = true;
+}
+
+void Apply(bool always)
+{
+    ImGuiContext* gp = ImGui::GetCurrentContext();
+    if (!gp) return;
+    ImGuiContext& g = *gp;
+    static std::unordered_map<ImGuiID, int> s_settle;   // 出現直後の残りフレーム数
+    const ImGuiViewport* mainVp = ImGui::GetMainViewport();
+    const float margin = 8.0f;
+
+    const ImU32 edge = ImGui::GetColorU32(theme::BorderStrong);
+    for (ImGuiWindow* w : g.Windows)
+    {
+        if (!w->Active || w->Hidden) continue;
+
+        // 外枠: メニュー/ポップアップとフローティング窓に 1px の強い枠（ビューポートの暗い絵の上で同化しないように）。
+        // 窓自身の枠は控えめな色で 1 本引かれているので、その上へ重ねる（ドロップシャドウの代わり）。
+        {
+            const bool popup    = (w->Flags & ImGuiWindowFlags_Popup) && !(w->Flags & ImGuiWindowFlags_Tooltip);
+            const bool floating = !(w->Flags & (ImGuiWindowFlags_ChildWindow | ImGuiWindowFlags_Popup | ImGuiWindowFlags_Tooltip |
+                                                ImGuiWindowFlags_NoTitleBar)) && !w->DockIsActive && !w->DockNode;
+            if ((popup || floating) && w->DrawList)
+            {
+                w->DrawList->PushClipRectFullScreen();
+                w->DrawList->AddRect(w->Pos, ImVec2(w->Pos.x + w->Size.x, w->Pos.y + w->Size.y), edge,
+                                     w->WindowRounding, 0, 1.0f);
+                w->DrawList->PopClipRect();
+            }
+        }
+
+        // NoInputs は画面全体を覆う透明オーバーレイ（ImGuizmo の "gizmo" 窓など）。位置は毎フレーム呼び出し側が
+        // SetNextWindowPos で決めているので触らない（触ると UI 自動テストが「窓を動かせない」と誤検知する）。
+        if (w->Flags & (ImGuiWindowFlags_ChildWindow | ImGuiWindowFlags_Popup |
+                        ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs))
+            continue;
+        if (w->DockIsActive || w->DockNode) continue;                       // ドック窓は dock 側が面倒を見る
+        if (w->ViewportOwned && w->Viewport != mainVp) continue;            // 人が意図して別 OS 窓へ出した
+        if (w->Viewport != mainVp && !always) continue;
+
+        if (!g_areaSet) continue;
+        int& settle = s_settle[w->ID];
+        if (w->Appearing) settle = 8;
+        if (!always && settle <= 0) continue;
+        if (settle > 0) --settle;
+
+        const ImVec2 sz = w->Size;
+        const float minX = g_areaMin.x + margin, minY = g_areaMin.y + margin;
+        const float maxX = (std::max)(minX, g_areaMax.x - sz.x - margin);
+        const float maxY = (std::max)(minY, g_areaMax.y - sz.y - margin);
+        const ImVec2 np((std::min)((std::max)(w->Pos.x, minX), maxX),
+                        (std::min)((std::max)(w->Pos.y, minY), maxY));
+        if (np.x != w->Pos.x || np.y != w->Pos.y)
+            ImGui::SetWindowPos(w, np, ImGuiCond_Always);
+    }
+}
+} // namespace floatguard
+
 
 void ImGuiManager::Initialize(
     HWND hwnd,
@@ -52,14 +378,27 @@ void ImGuiManager::Initialize(
     // ドラッグすると独立したOSウィンドウになる(Unreal/Unityと同じ)。ドック中のコアパネルは
     // NoUndocking なので出て行かない。有効時、ImGui座標系は「スクリーン座標」になる点に注意
     // (絶対座標(0,0)前提の窓は GetMainViewport()->Pos 基準に直してある)。
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    // ★仮想入力モード(--background / --virtual-input)では有効にしない。imgui.ini に残った ViewportPos で
+    //   フローティング窓が「ユーザーの実画面」へ別 OS 窓として出る事故を根絶するため（全窓がメインビューポート内に留まる）。
+    g_viewportsWanted = true;
+    if (!vinput::Enabled())
+        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    else
+        Logger::Info("multi-viewport: 無効（仮想入力モード。全ウィンドウはメインウィンドウ内に留まる）");
     io.ConfigViewportsNoTaskBarIcon = true;   // 引き出した窓はタスクバーに出さない(UE/Unityと同じ)
     // ID 衝突警告のビジュアルオーバーレイを抑制（誤検出で popup が塞がれることがある）
     io.ConfigDebugHighlightIdConflicts = false;
 
-    // 日本語フォント読み込み。Yu Gothic Medium（Win標準・レンダリングがくっきり）優先、
-    // 無ければ Meiryo にフォールバック。サイズは 17px（可読性優先＝Unreal 寄りの密度）。
+    // ===== フォント =====
+    // エディタ: 本文/太字/等幅 + アイコン（LoadEditorFonts）。配布ゲーム: 従来どおり 17px 1 本。
+    bool editorFonts = false;
+    if (!vfs::InGameMode())
+        editorFonts = LoadEditorFonts(io);
+
+    if (!editorFonts)
     {
+        // 日本語フォント読み込み。Yu Gothic Medium（Win標準・レンダリングがくっきり）優先、
+        // 無ければ Meiryo にフォールバック。サイズは 17px（可読性優先＝Unreal 寄りの密度）。
         const char* candidates[] = {
             "C:\\Windows\\Fonts\\YuGothM.ttc",   // Yu Gothic Medium
             "C:\\Windows\\Fonts\\meiryo.ttc",
@@ -116,104 +455,21 @@ void ImGuiManager::Initialize(
         }
     }
 
-    // ===== Nebula Engine Editor ライクなダークテーマ =====
-    // 背景は深→浅の階層（AppBg < PanelBg < Chrome < GroupBg）、単一アクセント青。
-    // 選択はアクセントの薄膜、タブは選択時に明色＋上線アクセントで「今どこ」を示す。
-    using namespace dx12e::theme;
-    ImGui::StyleColorsDark();
+    // ===== テーマ =====
     ImGuiStyle& style = ImGui::GetStyle();
-
-    // --- 形状（フローティング窓 / オーバーレイは丸め、ドック窓は自動で矩形）---
-    style.WindowRounding          = 7.0f;
-    style.ChildRounding           = 6.0f;
-    style.FrameRounding           = 5.0f;
-    style.PopupRounding           = 7.0f;
-    style.GrabRounding            = 5.0f;
-    style.TabRounding             = 6.0f;
-    style.ScrollbarRounding       = 7.0f;
-    // --- 余白（密度を上げて締まった印象に）---
-    style.WindowPadding           = ImVec2(9, 8);
-    style.FramePadding            = ImVec2(8, 5);
-    style.CellPadding             = ImVec2(6, 4);
-    style.ItemSpacing             = ImVec2(8, 7);
-    style.ItemInnerSpacing        = ImVec2(6, 5);
-    style.IndentSpacing           = 16.0f;
-    style.ScrollbarSize           = 11.0f;   // Nebula のスリムなスクロールバー
-    style.GrabMinSize             = 10.0f;
-    style.WindowBorderSize        = 1.0f;
-    style.ChildBorderSize         = 0.0f;   // 内側 child は枠なし（パネル境界はドック窓の枠で表現）
-    style.FrameBorderSize         = 0.0f;
-    style.TabBarBorderSize        = 1.0f;
-    style.TabBarOverlineSize      = 2.0f;    // 選択タブ上のアクセント下線
-    style.DockingSeparatorSize    = 1.0f;
-    style.WindowTitleAlign        = ImVec2(0.0f, 0.5f);
-    style.SeparatorTextBorderSize = 2.0f;
-    style.SeparatorTextPadding    = ImVec2(18, 6);
-
-    ImVec4* c = style.Colors;
-    // テキスト
-    c[ImGuiCol_Text]                 = TextHi;
-    c[ImGuiCol_TextDisabled]         = TextFaint;
-    // ベース背景
-    c[ImGuiCol_WindowBg]             = PanelBg;
-    c[ImGuiCol_ChildBg]              = ImVec4(0, 0, 0, 0);   // フラット（親の地に乗る＝Nebula風）
-    c[ImGuiCol_PopupBg]              = Hex(0x1b1c21, 0.98f);
-    c[ImGuiCol_Border]               = Border;
-    c[ImGuiCol_BorderShadow]         = ImVec4(0, 0, 0, 0);
-    // タイトル / メニューバー（クロム色）
-    c[ImGuiCol_TitleBg]              = Chrome;
-    c[ImGuiCol_TitleBgActive]        = Chrome;
-    c[ImGuiCol_TitleBgCollapsed]     = Hex(0x16171b, 0.75f);
-    c[ImGuiCol_MenuBarBg]            = Chrome;
-    // フレーム（入力欄・スライダー溝など）
-    c[ImGuiCol_FrameBg]              = FrameBg;
-    c[ImGuiCol_FrameBgHovered]       = FrameBgHi;
-    c[ImGuiCol_FrameBgActive]        = FrameBgActive;
-    // ボタン（Nebula のセグメント地に寄せ、ホバーで僅かに持ち上げる）
-    c[ImGuiCol_Button]               = GroupBg;
-    c[ImGuiCol_ButtonHovered]        = Hex(0x2a2c33);
-    c[ImGuiCol_ButtonActive]         = Hex(0x32343c);
-    // ヘッダー（選択行＝アクセントの薄膜。CollapsingHeader / Selectable / TreeNode）
-    c[ImGuiCol_Header]               = AccentDim;
-    c[ImGuiCol_HeaderHovered]        = Hex(0x4c8dff, 0.12f);
-    c[ImGuiCol_HeaderActive]         = AccentDim2;
-    // タブ（非選択は地に沈め、選択はパネル色へ持ち上げて上線アクセント）
-    c[ImGuiCol_Tab]                       = Chrome;
-    c[ImGuiCol_TabHovered]                = Hex(0x2a2c33);
-    c[ImGuiCol_TabSelected]               = PanelBg;
-    c[ImGuiCol_TabSelectedOverline]       = Accent;
-    c[ImGuiCol_TabDimmed]                 = Chrome;
-    c[ImGuiCol_TabDimmedSelected]         = PanelBg;
-    c[ImGuiCol_TabDimmedSelectedOverline] = Hex(0x4c8dff, 0.45f);
-    // スクロール（トラック透明、スリムな丸グラブ）
-    c[ImGuiCol_ScrollbarBg]          = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_ScrollbarGrab]        = Hex(0x33343c);
-    c[ImGuiCol_ScrollbarGrabHovered] = Hex(0x44454f);
-    c[ImGuiCol_ScrollbarGrabActive]  = Hex(0x55565f);
-    // スライダー / チェック
-    c[ImGuiCol_SliderGrab]           = Accent;
-    c[ImGuiCol_SliderGrabActive]     = AccentLight;
-    c[ImGuiCol_CheckMark]            = AccentLight;
-    // セパレータ
-    c[ImGuiCol_Separator]            = Border;
-    c[ImGuiCol_SeparatorHovered]     = AccentDim2;
-    c[ImGuiCol_SeparatorActive]      = Accent;
-    // リサイズグリップ（通常は不可視、ホバーで現れる＝すっきり）
-    c[ImGuiCol_ResizeGrip]           = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_ResizeGripHovered]    = AccentDim2;
-    c[ImGuiCol_ResizeGripActive]     = Accent;
-    // ドッキング
-    c[ImGuiCol_DockingPreview]       = AccentDim2;
-    c[ImGuiCol_DockingEmptyBg]       = AppBg;
-    // テーブル
-    c[ImGuiCol_TableHeaderBg]        = Chrome;
-    c[ImGuiCol_TableBorderStrong]    = Border;
-    c[ImGuiCol_TableBorderLight]     = Hex(0x202127);
-    c[ImGuiCol_TableRowBg]           = ImVec4(0, 0, 0, 0);
-    c[ImGuiCol_TableRowBgAlt]        = Hex(0xffffff, 0.02f);
-    // 選択・ナビ
-    c[ImGuiCol_TextSelectedBg]       = AccentDim2;
-    c[ImGuiCol_NavCursor]            = Accent;
+    if (editorFonts)
+    {
+        // エディタ: Unreal Editor 5 風（面の階調 / 角ばり / 凹み入力欄 / アクセントは選択とフォーカスのみ）。
+        // 値の実体は editor/EditorTheme.h（トークン）。
+        ImGui::StyleColorsDark();
+        theme::ApplyStyle(style);
+        style.FontSizeBase = theme::size::kFontBase;
+        g_editorStyle = true;
+    }
+    else
+    {
+        ApplyLegacyGameStyle(style);
+    }
 
     // Win32 backend
     ImGui_ImplWin32_Init(hwnd);
@@ -248,9 +504,29 @@ void ImGuiManager::Initialize(
     Logger::Info("ImGui initialized (SRV index={})", m_srvIndex);
 }
 
+void ImGuiManager::SetIniSavingDisabled(bool on)
+{
+    m_iniSavingDisabled = on;
+    if (on && ImGui::GetCurrentContext())
+    {
+        g_viewportsForbidden = true;
+        ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+    }
+}
+
 void ImGuiManager::SetVirtualInput(bool on)
 {
     vinput_gui::SetImGuiVirtualMode(on);
+    // 仮想入力の間は multi-viewport を切る（別 OS 窓が実画面に出ないように）。切ると ImGui は
+    // 引き出し済みの窓もメインビューポートへ戻す。OFF に戻したら（通常起動で有効だったなら）復帰。
+    if (ImGui::GetCurrentContext() && g_editorStyle)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (on)
+            io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
+        else if (g_viewportsWanted && !g_viewportsForbidden)
+            io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+    }
     if (!on)
     {
         // 押しっぱなしで切ると ImGui 側にボタン/キー押下が残る。離したことにして次フレームへ流す。
@@ -318,6 +594,9 @@ void ImGuiManager::EndFrame(ID3D12GraphicsCommandList* cmdList)
 {
     if (vinput::Enabled())
         vinput_gui::DrawVirtualCursor();   // スクショに「AI が今どこを操作しているか」が映る
+    if (g_editorStyle)
+        floatguard::Apply(vinput::Enabled() || g_viewportsForbidden);   // 全パネルの描画後: フローティング窓をメイン窓内へ収める
+    WarnSecondaryViewports();              // 別 OS 窓が 1 枚でも生えたらログに警告（実画面に窓が出ている合図）
     ImGui::Render();
     ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), cmdList);
 }

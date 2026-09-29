@@ -175,7 +175,7 @@ GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
         if (code == 0)
         {
             result.output = "Git をインストールしたで。このパネルを開き直すと反映されるで"
-                             "（反映されなければ一度エディタを再起動してや＝PATH の再読み込みのため）。";
+                             "（反映されなければ一度エディタを再起動してください＝PATH の再読み込みのため）。";
         }
         else
         {
@@ -189,8 +189,8 @@ GitResult GitIntegration::InstallGit(const std::atomic<bool>& abortFlag)
     // winget が無い環境: 公式ダウンロードページを開いて手動インストールしてもらう
     dx12e::guard::ShellExecuteGuarded(nullptr, "open", kDownloadPage, nullptr, nullptr, SW_SHOWNORMAL);
     result.exitCode = 0;
-    result.output = "winget が見つからへんかったから、ブラウザで公式ダウンロードページを開いたで。"
-                    "インストーラーを実行してから、このパネルを開き直してや。";
+    result.output = "winget が見つからなかったため、ブラウザで公式ダウンロードページを開きました。"
+                    "インストーラーを実行してから、このパネルを開き直してください。";
     return result;
 }
 

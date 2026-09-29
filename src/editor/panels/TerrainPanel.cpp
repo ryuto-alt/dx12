@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/TerrainPanel.h"
 
 #include "editor/EditorContext.h"
@@ -711,7 +712,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     // ---------------- 作成 ----------------
     // 注: 対象エンティティの解決（下）はこのブロックの後に行うこと。ここで SpawnTerrain すると
     //     Terrain のコンポーネントプールが再確保され、先に取った Terrain* が dangling になる。
-    if (ImGui::CollapsingHeader("地形を作成", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("地形を作成", ImGuiTreeNodeFlags_DefaultOpen))
     {
         const int resPick = kResolutionChoices[
             std::clamp(s.newResolutionIdx, 0, IM_ARRAYSIZE(kResolutionChoices) - 1)];
@@ -747,7 +748,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
                 Logger::Info("地形を作成しました: {}", s.newName);
             }
         }
-        ImGui::TextDisabled("床(Ground)と重なるときは、要らん床を消してや");
+        ImGui::TextDisabled("床(Ground)と重なるときは、不要な床を消してください");
     }
 
     // ---- 対象の解決（エンティティ生成の後で取る＝ポインタが dangling しない）----
@@ -775,7 +776,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     }
 
     // ---------------- ブラシ ----------------
-    if (ImGui::CollapsingHeader("スカルプトブラシ", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("スカルプトブラシ", ImGuiTreeNodeFlags_DefaultOpen))
     {
         if (pg::Begin("##TerrainBrush"))
         {
@@ -825,7 +826,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     }
 
     // ---------------- 山を一発生成 ----------------
-    if (ImGui::CollapsingHeader("山を生成（fBm）", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("山を生成（fBm）", ImGuiTreeNodeFlags_DefaultOpen))
     {
         if (!s.genInitialized)
         {
@@ -875,7 +876,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     }
 
     // ---------------- 全面操作 ----------------
-    if (ImGui::CollapsingHeader("全体に適用"))
+    if (ui::CollapsingHeader("全体に適用"))
     {
         if (pg::Begin("##TerrainWhole"))
         {
@@ -902,7 +903,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     }
 
     // ---------------- 見た目 / ハイトマップ保存 ----------------
-    if (ImGui::CollapsingHeader("見た目とハイトマップ", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("見た目とハイトマップ", ImGuiTreeNodeFlags_DefaultOpen))
     {
         bool visualChanged = false;
         if (pg::Begin("##TerrainLook"))
@@ -929,7 +930,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     }
 
     // ---------------- テクスチャ（4 レイヤースプラット）----------------
-    if (ImGui::CollapsingHeader("テクスチャ（レイヤー）", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("テクスチャ（レイヤー）", ImGuiTreeNodeFlags_DefaultOpen))
     {
         const std::string prevLayerSet = tc->layerSetPath;
         bool flagsChanged = false;

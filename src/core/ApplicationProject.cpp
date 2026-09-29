@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
+#include "editor/UiWidgets.h"
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
@@ -658,27 +659,28 @@ void Application::RenderProjectWindow()
     }
     ImGui::Separator();
 
-    auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
+    // ボタンの左に置く Lucide グリフ（旧: 色付きチップ PNG）。ラベルと同じ行の高さに揃える。
+    auto icon = [](const char* glyph, float /*s*/) { ImGui::AlignTextToFramePadding(); ui::Icon(glyph, dx12e::theme::TextDim); ImGui::SameLine(); };
 
-    icon(m_icons.save, 22);
+    icon(ICON_SAVE, 22);
     if (ImGui::Button("プロジェクトを保存", ImVec2(-1, 30)))
         SaveCurrentProject();
 
-    icon(m_icons.newProject, 22);
+    icon(ICON_FILE_PLUS, 22);
     if (ImGui::Button("新規プロジェクト...", ImVec2(-1, 0)))
     {
         ProjectInfo created;
         if (ProjectManager::NewProjectDialog(created, m_window->GetHwnd()))
             BeginProjectLoad(created, /*isNew=*/true);
     }
-    icon(m_icons.openProject, 22);
+    icon(ICON_FOLDER_OPEN, 22);
     if (ImGui::Button("プロジェクトを開く...", ImVec2(-1, 0)))
     {
         ProjectInfo opened;
         if (ProjectManager::OpenProjectDialog(opened, m_window->GetHwnd()))
             BeginProjectLoad(opened, /*isNew=*/false);
     }
-    icon(m_icons.recent, 22);
+    icon(ICON_CHEVRON_LEFT, 22);
     if (ImGui::Button("ランチャーに戻る", ImVec2(-1, 0)))
         m_editorCtx->pendingCloseProject = true;   // 未保存の確認を挟むため直接は遷移しない
 
@@ -758,9 +760,9 @@ void Application::RenderVersionControlWindow()
             // pull 等がコンフリクトで止まっただけなら「失敗」ではなく専用の案内に倒す
             // （下のコンフリクト一覧セクションで解消操作ができる）。
             if (m_gitMergeInProgress && !m_gitConflicts.empty())
-                ImGui::TextColored(th::Warn, "⚠ %s でコンフリクトが発生したで。下の一覧から解消してや", m_gitOpLabel.c_str());
+                ImGui::TextColored(th::Warn, "⚠ %s でコンフリクトが発生しました。下の一覧から解消してください", m_gitOpLabel.c_str());
             else
-                ImGui::TextColored(th::Bad, "✗ %s 失敗 (下の出力ログを確認してや)", m_gitOpLabel.c_str());
+                ImGui::TextColored(th::Bad, "✗ %s 失敗 (下の出力ログを確認してください)", m_gitOpLabel.c_str());
         }
     };
 
@@ -768,7 +770,7 @@ void Application::RenderVersionControlWindow()
     auto outputLog = [&]()
     {
         if (m_gitOutput.empty()) return;
-        if (ImGui::CollapsingHeader("出力ログ"))
+        if (ui::CollapsingHeader("出力ログ"))
         {
             ImGui::BeginChild("##gitout", ImVec2(0, 120), true,
                               ImGuiWindowFlags_HorizontalScrollbar);
@@ -785,7 +787,7 @@ void Application::RenderVersionControlWindow()
     }
     if (!m_gitAvailable)
     {
-        ImGui::TextColored(th::Bad, "✗ git が見つからへん。");
+        ImGui::TextColored(th::Bad, "✗ git が見つかりません。");
         ImGui::BeginDisabled(m_gitOpRunning);
         if (ImGui::Button("Git をインストール"))
         {
@@ -857,7 +859,8 @@ void Application::RenderVersionControlWindow()
         }
     }
 
-    auto icon = [](u64 h, float s) { if (h) { ImGui::Image(static_cast<ImTextureID>(h), ImVec2(s, s)); ImGui::SameLine(); } };
+    // ボタンの左に置く Lucide グリフ（旧: 色付きチップ PNG）。ラベルと同じ行の高さに揃える。
+    auto icon = [](const char* glyph, float /*s*/) { ImGui::AlignTextToFramePadding(); ui::Icon(glyph, dx12e::theme::TextDim); ImGui::SameLine(); };
 
     // GitHub アカウント行（ログイン状態 + ログインボタン）。リポジトリの有無に関わらず使うので
     // 共通化（未初期化の空状態でも、初回からログイン導線を出すため）。
@@ -880,7 +883,7 @@ void Application::RenderVersionControlWindow()
             ImGui::BeginDisabled(busy);
             if (ImGui::SmallButton("GitHub にログイン"))
             {
-                m_gitOutput = "別ウィンドウでブラウザ認証してや。完了したら自動で反映されるで。";
+                m_gitOutput = "別ウィンドウでブラウザ認証してください。完了したら自動で反映されます。";
                 // gh auth login --web の子プロセス終了をそのまま待つ＝ブラウザ承認した瞬間に
                 // 検知できる（ポーリングより速い。詳細は GitIntegration::LoginAndWait 参照）。
                 RunGitAsync("GitHubログイン待ち",
@@ -929,20 +932,20 @@ void Application::RenderVersionControlWindow()
 
             ImGui::TextDisabled("リポジトリ名");
             ImGui::SetNextItemWidth(-FLT_MIN);
-            ImGui::InputText("##reponame", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
+            ui::InputText("##reponame", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
 
             ImGui::BeginDisabled(busy || m_ghUser.empty() || m_gitNewRepoNameBuf[0] == '\0');
-            icon(m_icons.github, 22);
+            icon(ICON_GIT_BRANCH, 22);
             if (ImGui::Button("GitHub にリポジトリを作成 (Public)", ImVec2(-1, 32)))
                 createGitHubRepo(/*isPrivate=*/false, /*needInit=*/true, "Initial commit",
                                   m_gitNewRepoNameBuf.data());
-            icon(m_icons.github, 22);
+            icon(ICON_GIT_BRANCH, 22);
             if (ImGui::Button("GitHub にリポジトリを作成 (Private)", ImVec2(-1, 32)))
                 createGitHubRepo(/*isPrivate=*/true, /*needInit=*/true, "Initial commit",
                                   m_gitNewRepoNameBuf.data());
             ImGui::EndDisabled();
             if (m_ghUser.empty())
-                ImGui::TextDisabled("↑ 先に GitHub にログインしてや");
+                ImGui::TextDisabled("↑ 先に GitHub にログインしてください");
 
             ImGui::Spacing();
             ImGui::BeginDisabled(busy);
@@ -953,7 +956,7 @@ void Application::RenderVersionControlWindow()
         else
         {
             ImGui::BeginDisabled(busy);
-            icon(m_icons.git, 22);
+            icon(ICON_GIT_BRANCH, 22);
             if (ImGui::Button("Git リポジトリを初期化", ImVec2(-1, 32)))
                 RunGitAsync("初期化", [root]{ return GitIntegration::Init(root); });
             ImGui::EndDisabled();
@@ -961,7 +964,7 @@ void Application::RenderVersionControlWindow()
 
         ImGui::SeparatorText("クローン");
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputTextWithHint("##cloneurl", "https://github.com/owner/repo.git",
+        ui::InputTextWithHint("##cloneurl", "https://github.com/owner/repo.git",
                                  m_gitCloneBuf.data(), m_gitCloneBuf.size());
         ImGui::BeginDisabled(busy || m_gitCloneBuf[0] == '\0');
         if (ImGui::Button("このプロジェクトの隣にクローン", ImVec2(-1, 0)))
@@ -992,7 +995,7 @@ void Application::RenderVersionControlWindow()
         ImGui::BeginDisabled(busy);
         const char* curBr = branch.empty() ? "(未コミット)" : branch.c_str();
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::BeginCombo("##branch", curBr))
+        if (ui::BeginCombo("##branch", curBr))
         {
             for (const auto& b : m_gitBranches)
             {
@@ -1044,7 +1047,7 @@ void Application::RenderVersionControlWindow()
             ImGui::Separator();
             ImGui::TextDisabled("右クリックで名前変更 / 削除");
             ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::InputTextWithHint("##nb", "+ 新規ブランチ名 → Enter",
+            if (ui::InputTextWithHint("##nb", "+ 新規ブランチ名 → Enter",
                     m_gitNewBranchBuf.data(), m_gitNewBranchBuf.size(),
                     ImGuiInputTextFlags_EnterReturnsTrue) && m_gitNewBranchBuf[0] != '\0')
             {
@@ -1081,7 +1084,7 @@ void Application::RenderVersionControlWindow()
         ImGui::Spacing();
         ImGui::TextUnformatted("取り込み元");
         ImGui::SetNextItemWidth(320.0f);
-        if (ImGui::BeginCombo("##mergesrc",
+        if (ui::BeginCombo("##mergesrc",
                 m_gitBranchOpTarget.empty() ? "(ブランチを選ぶ)" : m_gitBranchOpTarget.c_str()))
         {
             for (const auto& b : m_gitBranches)
@@ -1117,7 +1120,7 @@ void Application::RenderVersionControlWindow()
                 m_gitChanges.size());
 
         ImGui::Spacing();
-        ImGui::Checkbox("マージコミットを必ず作る (--no-ff)", &m_gitMergeNoFF);
+        ui::Checkbox("マージコミットを必ず作る (--no-ff)", &m_gitMergeNoFF);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("ON: どのブランチから取り込んだかが履歴に残ります（機能ブランチ向け）\n"
                               "OFF: 早送りできるときは履歴を一直線のままにします");
@@ -1143,7 +1146,7 @@ void Application::RenderVersionControlWindow()
     {
         ImGui::Text("ブランチ名を変更: %s", m_gitBranchOpTarget.c_str());
         ImGui::SetNextItemWidth(320.0f);
-        const bool enter = ImGui::InputText("##newbrname", m_gitRenameBranchBuf.data(),
+        const bool enter = ui::InputText("##newbrname", m_gitRenameBranchBuf.data(),
                                             m_gitRenameBranchBuf.size(),
                                             ImGuiInputTextFlags_EnterReturnsTrue);
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere(-1);
@@ -1208,7 +1211,7 @@ void Application::RenderVersionControlWindow()
     if (!remote.empty())
     {
         std::string webUrl = GitIntegration::ToWebUrl(remote);
-        if (!webUrl.empty() && ImGui::SmallButton(("🔗 " + webUrl).c_str()))
+        if (!webUrl.empty() && ImGui::SmallButton((ICON_LINK " " + webUrl).c_str()))
             dx12e::guard::ShellExecuteGuarded(nullptr, "open", webUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
@@ -1219,24 +1222,19 @@ void Application::RenderVersionControlWindow()
     {
         ImGui::BeginDisabled(busy);
 
-        // 画像が読めない環境（配布 assets が古い等）では文字ボタンへ落とす。
-        // アイコンが無いだけで操作そのものが消えるのは困る。
-        auto iconBtn = [&](u64 tex, const char* id, const char* label, const char* tip) -> bool
+        // Lucide のアイコンボタン（フラット。ホバーで名前と意味が出る）。
+        auto iconBtn = [&](const char* glyph, const char* id, const char* /*label*/, const char* tip) -> bool
         {
-            const bool pressed = tex
-                ? ImGui::ImageButton(id, static_cast<ImTextureID>(tex), ImVec2(20.0f, 20.0f))
-                : ImGui::Button(label);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-            return pressed;
+            return ui::IconButton(id, glyph, tip, false, nullptr, 28.0f, 17.0f);
         };
 
-        if (iconBtn(m_icons.refresh, "##girefresh", "更新",
+        if (iconBtn(ICON_REFRESH, "##girefresh", "更新",
                     "更新 — 変更とブランチ状態を取り直す"))
             m_gitForceRefresh = true;
 
         // マージはリモートが無くても使える（ローカルブランチ同士の取り込み）。
         ImGui::SameLine();
-        if (iconBtn(m_icons.merge, "##gimerge", "マージ",
+        if (iconBtn(ICON_GIT_MERGE, "##gimerge", "マージ",
                     "マージ — 他のブランチを今いるブランチへ取り込む"))
         {
             m_gitBranchOpTarget.clear();   // 取り込み元はダイアログで選ばせる
@@ -1247,15 +1245,15 @@ void Application::RenderVersionControlWindow()
         if (!remote.empty())
         {
             ImGui::SameLine(0, sp * 2);
-            if (iconBtn(m_icons.fetch, "##gifetch", "フェッチ",
+            if (iconBtn(ICON_DOWNLOAD, "##gifetch", "フェッチ",
                         "フェッチ — リモートの最新を取ってくるだけ（作業ツリーは変えない）"))
                 RunGitAsync("フェッチ", [root]{ return GitIntegration::Fetch(root); });
             ImGui::SameLine();
-            if (iconBtn(m_icons.pull, "##gipull", "プル",
+            if (iconBtn(ICON_ARROW_DOWN, "##gipull", "プル",
                         "プル — リモートの変更を取り込む（受信）"))
                 RunGitAsync("プル", [root]{ return GitIntegration::Pull(root); });
             ImGui::SameLine();
-            if (iconBtn(m_icons.push, "##gipush", "プッシュ",
+            if (iconBtn(ICON_ARROW_UP, "##gipush", "プッシュ",
                         "プッシュ — 手元のコミットをリモートへ送る（送信）"))
                 RunGitAsync("プッシュ", [root]{ return GitIntegration::Push(root, true); });
 
@@ -1291,7 +1289,7 @@ void Application::RenderVersionControlWindow()
     {
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.35f, 0.12f, 0.12f, 0.35f));
         ImGui::BeginChild("##conflicts", ImVec2(0, 0), true, ImGuiWindowFlags_AlwaysAutoResize);
-        ImGui::TextColored(th::Bad, "⚠ コンフリクト %zu 件（解消してからコミットしてや）", m_gitConflicts.size());
+        ImGui::TextColored(th::Bad, "⚠ コンフリクト %zu 件（解消してからコミットしてください）", m_gitConflicts.size());
         for (const auto& path : m_gitConflicts)
         {
             ImGui::PushID(path.c_str());
@@ -1327,7 +1325,7 @@ void Application::RenderVersionControlWindow()
     }
     else if (m_gitMergeInProgress)
     {
-        ImGui::TextColored(th::Good, "✓ コンフリクトは全部解消したで。下でコミットしてマージを終わらせてや。");
+        ImGui::TextColored(th::Good, "✓ コンフリクトはすべて解消しました。下でコミットしてマージを完了してください。");
         ImGui::SameLine();
         ImGui::BeginDisabled(busy);
         if (ImGui::SmallButton("マージを中止"))
@@ -1368,7 +1366,7 @@ void Application::RenderVersionControlWindow()
     // 成立する = git commit は成功する）ので、mid-merge のときは変更0件でもコミットボタンを塞がない。
     const bool canCommit = (!m_gitChanges.empty() || m_gitMergeInProgress) && m_gitCommitMsgBuf[0] != '\0';
     ImGui::BeginDisabled(busy || !canCommit);
-    icon(m_icons.commit, 18);
+    icon(ICON_GIT_COMMIT, 18);
     if (ImGui::Button("すべてをコミット", ImVec2(ImGui::GetContentRegionAvail().x - fh - 1.0f, 0)))
         doCommit(false);
     ImGui::SameLine(0, 1);
@@ -1386,7 +1384,7 @@ void Application::RenderVersionControlWindow()
 
     // ---- 変更 (N) ツリー ----
     std::string changesHdr = "変更 (" + std::to_string(m_gitChanges.size()) + ")###changes";
-    if (ImGui::CollapsingHeader(changesHdr.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader(changesHdr.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
     {
         if (m_gitChanges.empty())
             ImGui::TextDisabled("変更なし（クリーン）");
@@ -1441,9 +1439,9 @@ void Application::RenderVersionControlWindow()
     if (remote.empty())
     {
         ImGui::SeparatorText("リモート未設定");
-        ImGui::TextDisabled("プッシュ先がまだ無いで。URL 設定か GitHub 新規作成してや。");
+        ImGui::TextDisabled("プッシュ先がまだありません。URL を設定するか、GitHub に新規作成してください。");
         ImGui::SetNextItemWidth(-70);
-        ImGui::InputTextWithHint("##remote", "https://github.com/owner/repo.git",
+        ui::InputTextWithHint("##remote", "https://github.com/owner/repo.git",
                                  m_gitRemoteBuf.data(), m_gitRemoteBuf.size());
         ImGui::SameLine();
         ImGui::BeginDisabled(busy || m_gitRemoteBuf[0] == '\0');
@@ -1458,7 +1456,7 @@ void Application::RenderVersionControlWindow()
         {
             ImGui::TextDisabled("リポジトリ名");
             ImGui::SetNextItemWidth(-FLT_MIN);
-            ImGui::InputText("##reponame2", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
+            ui::InputText("##reponame2", m_gitNewRepoNameBuf.data(), m_gitNewRepoNameBuf.size());
 
             ImGui::BeginDisabled(busy || m_gitNewRepoNameBuf[0] == '\0');
             std::string msg2 = m_gitCommitMsgBuf.data();
@@ -1932,7 +1930,7 @@ void Application::RenderBuildSettingsWindow()
     ImGui::Spacing();
 
     // ===== シーン =====
-    if (ImGui::CollapsingHeader("シーン", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("シーン", ImGuiTreeNodeFlags_DefaultOpen))
     {
         std::vector<std::string> scenes;
         std::string scenesDir = PathResolver::AssetsDir() + "scenes";
@@ -1946,7 +1944,7 @@ void Application::RenderBuildSettingsWindow()
             ? "(\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3)"  // (現在開いているシーン)
             : cfg.startScene.c_str();
         ImGui::SetNextItemWidth(-1.0f);
-        if (ImGui::BeginCombo("##startScene", curLabel))
+        if (ui::BeginCombo("##startScene", curLabel))
         {
             if (ImGui::Selectable("(\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3)",
                                   cfg.startScene.empty()))
@@ -1960,11 +1958,11 @@ void Application::RenderBuildSettingsWindow()
     }
 
     // ===== 製品 =====
-    if (ImGui::CollapsingHeader("製品", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("製品", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextUnformatted("ゲーム名（ウィンドウタイトル / exe名）");
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputText("##title", cfg.title, sizeof(cfg.title));
+        ui::InputText("##title", cfg.title, sizeof(cfg.title));
         ImGui::TextDisabled("※ exe名/フォルダ名には英数・空白・_- のみが使われます");
 
         ImGui::TextUnformatted("解像度");
@@ -1977,7 +1975,7 @@ void Application::RenderBuildSettingsWindow()
         };
         std::string cur = std::to_string(cfg.width) + " x " + std::to_string(cfg.height);
         ImGui::SetNextItemWidth(210.0f);
-        if (ImGui::BeginCombo("##respreset", cur.c_str()))
+        if (ui::BeginCombo("##respreset", cur.c_str()))
         {
             for (auto& p : presets)
                 if (ImGui::Selectable(p.name, p.w == cfg.width && p.h == cfg.height))
@@ -1997,7 +1995,7 @@ void Application::RenderBuildSettingsWindow()
     }
 
     // ===== 出力先 =====
-    if (ImGui::CollapsingHeader("出力先", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("出力先", ImGuiTreeNodeFlags_DefaultOpen))
     {
         ImGui::TextUnformatted("配置先フォルダ");
         char pathBuf[1024];
@@ -2007,7 +2005,7 @@ void Application::RenderBuildSettingsWindow()
                     : cfg.outputDir.c_str(),
                   _TRUNCATE);
         ImGui::SetNextItemWidth(-92.0f);
-        ImGui::InputText("##outdir", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
+        ui::InputText("##outdir", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
         ImGui::SameLine();
         if (ImGui::Button("\xe5\x8f\x82\xe7\x85\xa7...", ImVec2(-1.0f, 0.0f)))  // 参照...
         {
@@ -2015,7 +2013,7 @@ void Application::RenderBuildSettingsWindow()
             if (ProjectManager::PickFolder(m_window->GetHwnd(), dir, L"ビルドの配置先フォルダを選択"))
                 cfg.outputDir = dir;
         }
-        ImGui::Checkbox("ビルド後にフォルダを開く", &cfg.openFolderAfterBuild);
+        ui::Checkbox("ビルド後にフォルダを開く", &cfg.openFolderAfterBuild);
         ImGui::TextDisabled("\xe2\x80\xbb \xe9\x81\xb8\xe3\x82\x93\xe3\x81\xa0\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xab\xe3\x83\x80\xe7\x9b\xb4\xe4\xb8\x8b\xe3\x81\xab \"<\xe8\xa3\xbd\xe5\x93\x81\xe5\x90\x8d>_build\" \xe3\x82\x92\xe4\xbd\x9c\xe3\x81\xa3\xe3\x81\xa6\xe5\x87\xba\xe5\x8a\x9b\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82");  // ※選んだフォルダ直下に "<製品名>_build" を作って出力します。
     }
 

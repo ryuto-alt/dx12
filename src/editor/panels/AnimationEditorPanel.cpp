@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/AnimationEditorPanel.h"
 
 #include <algorithm>
@@ -412,14 +413,14 @@ void AnimationEditorPanel::DrawToolbar(entt::registry& reg, EditorContext& ctx,
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(150.0f);
-    ImGui::InputText("##AnimName", m_nameBuf, sizeof(m_nameBuf));
+    ui::InputText("##AnimName", m_nameBuf, sizeof(m_nameBuf));
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(70.0f);
-    if (ImGui::DragFloat("尺(秒)", &m_clip.duration, 0.05f, 0.05f, 600.0f, "%.2f"))
+    if (ui::DragFloat("尺(秒)", &m_clip.duration, 0.05f, 0.05f, 600.0f, "%.2f"))
         m_time = std::clamp(m_time, 0.0f, m_clip.duration);
     ImGui::SameLine();
-    ImGui::Checkbox("ループ", &m_clip.loop);
+    ui::Checkbox("ループ", &m_clip.loop);
 
     // ---- 2段目: 対象ルート / 再生 / 録画 ----
     ImGui::Text("対象ルート:");
@@ -463,7 +464,7 @@ void AnimationEditorPanel::DrawToolbar(entt::registry& reg, EditorContext& ctx,
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(70.0f);
-    ImGui::DragFloat("速度", &m_playSpeed, 0.05f, 0.05f, 8.0f, "%.2fx");
+    ui::DragFloat("速度", &m_playSpeed, 0.05f, 0.05f, 8.0f, "%.2fx");
 
     ImGui::SameLine();
     ImGui::TextDisabled("|");
@@ -482,7 +483,7 @@ void AnimationEditorPanel::DrawToolbar(entt::registry& reg, EditorContext& ctx,
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(80.0f);
-    ImGui::DragFloat("スナップ", &m_snapStep, 0.005f, 0.0f, 1.0f, "%.3fs");
+    ui::DragFloat("スナップ", &m_snapStep, 0.005f, 0.0f, 1.0f, "%.3fs");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("キーと再生ヘッドを丸める間隔。0 でスナップ無し");
 }
 
@@ -849,14 +850,14 @@ void AnimationEditorPanel::DrawKeyInspector()
 
     if (m_selKey < 0 || m_selKey >= static_cast<int>(track.keys.size()))
     {
-        ImGui::TextDisabled("このトラックのキーを選んでや（キーの数: %d）",
+        ImGui::TextDisabled("このトラックのキーを選んでください（キーの数: %d）",
                             static_cast<int>(track.keys.size()));
         return;
     }
 
     auto& key = track.keys[static_cast<size_t>(m_selKey)];
     ImGui::SetNextItemWidth(120.0f);
-    if (ImGui::DragFloat("時刻", &key.time, 0.01f, 0.0f, m_clip.duration, "%.3fs"))
+    if (ui::DragFloat("時刻", &key.time, 0.01f, 0.0f, m_clip.duration, "%.3fs"))
     {
         std::stable_sort(track.keys.begin(), track.keys.end(),
                          [](const UiAnimKey& a, const UiAnimKey& b) { return a.time < b.time; });
@@ -865,7 +866,7 @@ void AnimationEditorPanel::DrawKeyInspector()
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(140.0f);
-    ImGui::DragFloat("値", &key.value, 0.5f);
+    ui::DragFloat("値", &key.value, 0.5f);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180.0f);
     if (UiAnimPropIsStep(track.prop))
@@ -875,7 +876,7 @@ void AnimationEditorPanel::DrawKeyInspector()
     else
     {
         int easing = key.easing;
-        if (ImGui::Combo("イージング", &easing, UiEaseNames(), kUiEaseCount))
+        if (ui::Combo("イージング", &easing, UiEaseNames(), kUiEaseCount))
         {
             PushUndo();
             key.easing = easing;

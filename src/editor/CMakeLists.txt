@@ -68,3 +68,9 @@ target_sources(Editor PRIVATE
 target_sources(Editor PRIVATE
     panels/TransitionPreviewPanel.cpp
 )
+
+# エディタ共通の見た目部品（ui:: 名前空間。PropertyGrid.h の pg:: が内部で呼ぶ）。
+# 上と同じ理由で target_sources の末尾追記にしている。
+target_sources(Editor PRIVATE
+    UiWidgets.cpp
+)

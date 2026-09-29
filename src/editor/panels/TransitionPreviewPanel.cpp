@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/TransitionPreviewPanel.h"
 #include "editor/EditorContext.h"
 #include "graphics/GraphicsDevice.h"
@@ -319,10 +320,10 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
         m_playing = true;
     }
     ImGui::SameLine();
-    ImGui::Checkbox("ループ", &m_loop);
+    ui::Checkbox("ループ", &m_loop);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(140.0f);
-    ImGui::SliderFloat("再生速度", &m_speed, 0.15f, 2.0f, "x%.2f");
+    ui::SliderFloat("再生速度", &m_speed, 0.15f, 2.0f, "x%.2f");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("形をじっくり見たいときは 0.25 くらいまで落とす。\n"
                           "実機の速さは下の「長さ（秒）」で決まる（ここは見るためだけの倍率）。");
@@ -331,7 +332,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     {
         float scrub = TotalNorm();
         ImGui::SetNextItemWidth(-160.0f);
-        if (ImGui::SliderFloat("##transScrub", &scrub, 0.0f, 1.0f, "コマ送り %.2f"))
+        if (ui::SliderFloat("##transScrub", &scrub, 0.0f, 1.0f, "コマ送り %.2f"))
         {
             m_t       = scrub * m_dur;
             m_playing = false;
@@ -342,7 +343,7 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
 
     // 長さ（＝実機の遷移秒。settings.json へ入る）
     ImGui::SetNextItemWidth(260.0f);
-    ImGui::SliderFloat("長さ（秒）", &defaultDur, 0.2f, 3.0f, "%.2f");
+    ui::SliderFloat("長さ（秒）", &defaultDur, 0.2f, 3.0f, "%.2f");
     // スライダーは掴んでいる間ずっと値が変わる。ディスクへ書くのは離した時だけ。
     if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
     if (ImGui::IsItemHovered())

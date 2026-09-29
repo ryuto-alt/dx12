@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/VfxEditorPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/UndoSystem.h"
@@ -395,7 +396,7 @@ std::string VfxEditorPanel::BuildLuaSnippet() const
 void VfxEditorPanel::DrawColorGradient()
 {
     ImGui::TextUnformatted("色の変化 Color Over Life");
-    ImGui::Checkbox("中間色を使う HasColorMid", &m_current.hasColorMid);
+    ui::Checkbox("中間色を使う HasColorMid", &m_current.hasColorMid);
 
     const float barW = ImGui::GetContentRegionAvail().x;
     const float barH = 26.0f;
@@ -443,7 +444,7 @@ void VfxEditorPanel::DrawSizeCurve()
     ImGui::TextUnformatted("サイズの変化 Size Over Life");
 
     bool useMid = (m_current.sizeMid >= 0.0f);
-    if (ImGui::Checkbox("中間サイズを使う HasSizeMid", &useMid))
+    if (ui::Checkbox("中間サイズを使う HasSizeMid", &useMid))
         m_current.sizeMid = useMid ? (m_current.size + m_current.sizeEnd) * 0.5f : -1.0f;
 
     const float graphW = ImGui::GetContentRegionAvail().x;
@@ -495,16 +496,16 @@ void VfxEditorPanel::DrawSizeCurve()
     ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y + 6.0f));
 
     ImGui::SetNextItemWidth(100);
-    ImGui::DragFloat("開始 Start##sz", &m_current.size, 0.01f, 0.0f, 20.0f);
+    ui::DragFloat("開始 Start##sz", &m_current.size, 0.01f, 0.0f, 20.0f);
     if (useMid)
     {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(100);
-        ImGui::DragFloat("中間 Mid##sz", &m_current.sizeMid, 0.01f, 0.0f, 20.0f);
+        ui::DragFloat("中間 Mid##sz", &m_current.sizeMid, 0.01f, 0.0f, 20.0f);
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(100);
-    ImGui::DragFloat("終了 End##sz", &m_current.sizeEnd, 0.01f, 0.0f, 20.0f);
+    ui::DragFloat("終了 End##sz", &m_current.sizeEnd, 0.01f, 0.0f, 20.0f);
 }
 
 void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir,
@@ -552,7 +553,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     ImGui::BeginChild("##VfxMain", ImVec2(0.0f, 0.0f));
 
     ImGui::SetNextItemWidth(220.0f);
-    if (ImGui::InputText("名前 Name", m_nameBuf, sizeof(m_nameBuf)))
+    if (ui::InputText("名前 Name", m_nameBuf, sizeof(m_nameBuf)))
         m_current.name = m_nameBuf;
 
     ImGui::SameLine();
@@ -664,12 +665,12 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
 
     ImGui::SameLine();
     ImGui::BeginChild("##VfxEmission", ImVec2(0.0f, 256.0f), false);
-    ImGui::Combo("見た目 Kind", &m_current.kind, kKindNames, IM_ARRAYSIZE(kKindNames));
+    ui::Combo("見た目 Kind", &m_current.kind, kKindNames, IM_ARRAYSIZE(kKindNames));
     const char* blends[] = { "加算 Additive", "アルファ Alpha" };
-    ImGui::Combo("合成 Blend", &m_current.blend, blends, IM_ARRAYSIZE(blends));
+    ui::Combo("合成 Blend", &m_current.blend, blends, IM_ARRAYSIZE(blends));
     {
         const char* orients[] = { "ビルボード(カメラ正対)", "水平(地面向き)", "垂直(+Z正対)" };
-        ImGui::Combo("向き Orient", &m_current.orient, orients, IM_ARRAYSIZE(orients));
+        ui::Combo("向き Orient", &m_current.orient, orients, IM_ARRAYSIZE(orients));
         ImGui::SameLine(); ImGui::TextDisabled("(?)");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("粒子クアッドの向き。水平=リング/衝撃波/魔法陣向け。\n"
@@ -679,7 +680,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     {
         static char texBuf[260] = "";
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##vfxtex", "テクスチャ(assetsからの相対パス。空=プロシージャル質感)",
+        ui::InputTextWithHint("##vfxtex", "テクスチャ(assetsからの相対パス。空=プロシージャル質感)",
                                  texBuf, sizeof(texBuf));
         if (ImGui::IsItemDeactivatedAfterEdit()) m_current.texturePath = texBuf;
         if (!ImGui::IsItemActive() && m_current.texturePath != texBuf)
@@ -699,12 +700,12 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
         }
     }
     ImGui::SeparatorText("放出（配置エンティティ用）");
-    ImGui::DragFloat("放出レート Rate(/s)", &m_current.rate, 0.5f, 0.0f, 500.0f);
-    ImGui::Checkbox("Play開始で放出 PlayOnStart", &m_current.playOnStart);
-    ImGui::Checkbox("ループ Looping", &m_current.looping);
+    ui::DragFloat("放出レート Rate(/s)", &m_current.rate, 0.5f, 0.0f, 500.0f);
+    ui::Checkbox("Play開始で放出 PlayOnStart", &m_current.playOnStart);
+    ui::Checkbox("ループ Looping", &m_current.looping);
     if (!m_current.looping)
-        ImGui::DragFloat("継続秒 Duration", &m_current.duration, 0.05f, 0.0f, 60.0f);
-    ImGui::DragInt("Luaバースト数 BurstCount", &m_current.burstCount, 1, 1, 2000);
+        ui::DragFloat("継続秒 Duration", &m_current.duration, 0.05f, 0.0f, 60.0f);
+    ui::DragInt("Luaバースト数 BurstCount", &m_current.burstCount, 1, 1, 2000);
     ImGui::SameLine(); ImGui::TextDisabled("(?)");
     if (ImGui::BeginItemTooltip())
     { ImGui::TextUnformatted("「Luaコードをコピー」で生成する fx:burst{} が一度に出す粒子数"); ImGui::EndTooltip(); }
@@ -717,29 +718,29 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     ImGui::Spacing();
     DrawSizeCurve();
     ImGui::SeparatorText("寿命・輝度");
-    ImGui::DragFloat("寿命 Life(s)", &m_current.life, 0.01f, 0.01f, 30.0f);
-    ImGui::SliderFloat("寿命ばらつき LifeVar", &m_current.lifeVar, 0.0f, 1.0f);
-    ImGui::DragFloat("輝度 Intensity", &m_current.intensity, 0.05f, 0.0f, 30.0f);
+    ui::DragFloat("寿命 Life(s)", &m_current.life, 0.01f, 0.01f, 30.0f);
+    ui::SliderFloat("寿命ばらつき LifeVar", &m_current.lifeVar, 0.0f, 1.0f);
+    ui::DragFloat("輝度 Intensity", &m_current.intensity, 0.05f, 0.0f, 30.0f);
     ImGui::SeparatorText("動き");
     ImGui::DragFloat3("方向 Dir", &m_current.dir.x, 0.01f);
-    ImGui::SliderFloat("拡がり Spread", &m_current.spread, 0.0f, 1.0f);
-    ImGui::DragFloat("速度 Speed", &m_current.speed, 0.02f, 0.0f, 50.0f);
-    ImGui::SliderFloat("速度ばらつき SpeedVar", &m_current.speedVar, 0.0f, 1.0f);
-    ImGui::DragFloat("重力 Gravity", &m_current.gravity, 0.02f, -50.0f, 50.0f);
-    ImGui::DragFloat("抵抗 Drag", &m_current.drag, 0.02f, 0.0f, 10.0f);
-    ImGui::DragFloat("上向き Up", &m_current.up, 0.02f, 0.0f, 10.0f);
-    ImGui::DragFloat("ストレッチ Stretch", &m_current.stretch, 0.02f, 0.0f, 10.0f);
-    ImGui::DragFloat("乱流 TurbStrength", &m_current.turbStrength, 0.01f, 0.0f, 10.0f);
+    ui::SliderFloat("拡がり Spread", &m_current.spread, 0.0f, 1.0f);
+    ui::DragFloat("速度 Speed", &m_current.speed, 0.02f, 0.0f, 50.0f);
+    ui::SliderFloat("速度ばらつき SpeedVar", &m_current.speedVar, 0.0f, 1.0f);
+    ui::DragFloat("重力 Gravity", &m_current.gravity, 0.02f, -50.0f, 50.0f);
+    ui::DragFloat("抵抗 Drag", &m_current.drag, 0.02f, 0.0f, 10.0f);
+    ui::DragFloat("上向き Up", &m_current.up, 0.02f, 0.0f, 10.0f);
+    ui::DragFloat("ストレッチ Stretch", &m_current.stretch, 0.02f, 0.0f, 10.0f);
+    ui::DragFloat("乱流 TurbStrength", &m_current.turbStrength, 0.01f, 0.0f, 10.0f);
     if (m_current.turbStrength > 0.0f)
-        ImGui::DragFloat("乱流の細かさ TurbFreq", &m_current.turbFreq, 0.01f, 0.01f, 10.0f);
+        ui::DragFloat("乱流の細かさ TurbFreq", &m_current.turbFreq, 0.01f, 0.01f, 10.0f);
     ImGui::SeparatorText("特殊効果");
-    ImGui::SliderFloat("画面歪み Distort", &m_current.distort, 0.0f, 3.0f);
-    ImGui::Checkbox("ライト放出 Light", &m_current.light);
+    ui::SliderFloat("画面歪み Distort", &m_current.distort, 0.0f, 3.0f);
+    ui::Checkbox("ライト放出 Light", &m_current.light);
     if (m_current.light)
-        ImGui::DragFloat("光の距離 LightRange", &m_current.lightRange, 0.05f, 0.1f, 50.0f);
-    ImGui::SliderFloat("明滅 Flicker", &m_current.flicker, 0.0f, 1.0f);
+        ui::DragFloat("光の距離 LightRange", &m_current.lightRange, 0.05f, 0.1f, 50.0f);
+    ui::SliderFloat("明滅 Flicker", &m_current.flicker, 0.0f, 1.0f);
     if (m_current.flicker > 0.0f)
-        ImGui::DragFloat("明滅の速さ FlickerFreq", &m_current.flickerFreq, 0.2f, 0.1f, 60.0f);
+        ui::DragFloat("明滅の速さ FlickerFreq", &m_current.flickerFreq, 0.2f, 0.1f, 60.0f);
     ImGui::EndChild();
 
     ImGui::Separator();

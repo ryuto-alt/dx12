@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/McpBridgePanel.h"
 #include "core/mcp/McpBridge.h"
 #include "editor/EditorContext.h"
@@ -170,7 +171,7 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
             "git clone https://github.com/ryuto-alt/dx12-mcp \"$env:USERPROFILE\\dx12-mcp\"; "
             "cd \"$env:USERPROFILE\\dx12-mcp\"; ./install.ps1";
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputText("##mcp_install_cmd", installCmd.data(), installCmd.size() + 1,
+        ui::InputText("##mcp_install_cmd", installCmd.data(), installCmd.size() + 1,
                          ImGuiInputTextFlags_ReadOnly);
         if (ImGui::Button("インストールコマンドをコピー", ImVec2(-FLT_MIN, 0)))
             ImGui::SetClipboardText(installCmd.c_str());
@@ -188,7 +189,7 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
         // 実行時解決した値を毎回反映できるよう static にしない（パスはプロセス内で一定なので再計算は軽い）。
         std::string cmd = SetupCommand();
         ImGui::SetNextItemWidth(-FLT_MIN);
-        ImGui::InputText("##mcp_cmd", cmd.data(), cmd.size() + 1, ImGuiInputTextFlags_ReadOnly);
+        ui::InputText("##mcp_cmd", cmd.data(), cmd.size() + 1, ImGuiInputTextFlags_ReadOnly);
 
         // 主役ボタン: ワンライナーを丸ごとクリップボードへ。
         if (ImGui::Button("セットアップコマンドをコピー", ImVec2(-FLT_MIN, 0)))
@@ -198,12 +199,12 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
         ImGui::Spacing();
 
         // ---- 手動登録（自動が失敗した時だけ）。普段は折りたたみ ----
-        if (ImGui::CollapsingHeader("手動で登録する (Claude Code / Codex / .mcp.json)"))
+        if (ui::CollapsingHeader("手動で登録する (Claude Code / Codex / .mcp.json)"))
         {
             std::string manual = ClaudeCommand();
             ImGui::TextDisabled("Claude Code:");
             ImGui::SetNextItemWidth(-FLT_MIN);
-            ImGui::InputText("##mcp_manual_claude", manual.data(), manual.size() + 1,
+            ui::InputText("##mcp_manual_claude", manual.data(), manual.size() + 1,
                              ImGuiInputTextFlags_ReadOnly);
             if (ImGui::Button("Claude Code のコマンドをコピー", ImVec2(-FLT_MIN, 0)))
                 ImGui::SetClipboardText(manual.c_str());

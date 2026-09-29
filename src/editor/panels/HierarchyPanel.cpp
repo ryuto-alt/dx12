@@ -1,6 +1,8 @@
 #include "editor/panels/HierarchyPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
+#include "editor/UiWidgets.h"
+#include "editor/EntityGlyph.h"
 #include "editor/UndoSystem.h"
 #include "gui/VirtualInputImGui.h"   // dx12_imgui_find 用アンカー
 #include "ecs/Components.h"
@@ -9,6 +11,7 @@
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
 #include <imgui.h>
+#include <imgui_internal.h>   // InnerRect（行の面を窓の左端〜右端いっぱいに塗る）
 #pragma warning(pop)
 
 #include <algorithm>
@@ -43,33 +46,21 @@ void PushRenameCommand(entt::registry& reg, EditorContext& ctx, entt::entity e,
 
 } // namespace
 
-// エンティティの構成コンポーネントから代表アイコンを選ぶ（Hierarchy のノード頭に表示）
-static u64 PickEntityIcon(entt::registry& reg, entt::entity e, const EditorUiIcons& ic)
+// 行の面を窓の左端〜右端いっぱいに塗る（ImGui 標準は窓のパディング内側までしか塗らない）。
+//   選択 = アクセント 30% + 左端 2px のアクセントライン / ホバー = Bg3 / 押下 = アクセント 42%
+// ImGui 側の Header 色は透明にして呼ぶこと（二重に塗らない）。
+static void PaintRowBg(ImDrawList* dl, float y0, float y1, bool selected, bool hovered, bool held)
 {
-    if (reg.all_of<CameraComponent>(e))                            return ic.entCamera;
-    if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return ic.entLight;
-    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return ic.entUi;
-    if (reg.all_of<MeshRenderer>(e))                              return ic.entMesh;
-    if (reg.any_of<AudioSource, AudioReverbZone>(e))             return ic.entAudio;
-    if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
-                   CapsuleCollider, ConvexHullCollider, MeshCollider, CharacterController>(e))      return ic.entPhysics;
-    if (reg.all_of<LuaScript>(e))                                 return ic.entScript;
-    return ic.entEmpty;
-}
-
-// 種別ごとの tint（Nebula のカラフルなアイコンを単色 PNG に着色して再現）
-static ImVec4 PickEntityTint(entt::registry& reg, entt::entity e)
-{
-    using namespace dx12e::theme;
-    if (reg.all_of<CameraComponent>(e))                            return TypeCamera;
-    if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e))   return TypeLight;
-    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return TypeUi;
-    if (reg.all_of<MeshRenderer>(e))                              return TypeMesh;
-    if (reg.any_of<AudioSource, AudioReverbZone>(e))             return TypeAudio;
-    if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
-                   CapsuleCollider, ConvexHullCollider, MeshCollider, CharacterController>(e))      return TypePhysics;
-    if (reg.all_of<LuaScript>(e))                                 return TypeScript;
-    return TypeEmpty;
+    namespace th = dx12e::theme;
+    const ImRect r = ImGui::GetCurrentWindowRead()->InnerRect;
+    const ImVec4* col = nullptr;
+    if (held)          col = &th::SelectionActive;
+    else if (selected) col = hovered ? &th::SelectionActive : &th::Selection;
+    else if (hovered)  col = &th::Bg3;
+    if (col)
+        dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(*col));
+    if (selected)
+        dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Min.x + 2.0f, y1), ImGui::GetColorU32(th::Accent));
 }
 
 // 大文字小文字を無視した部分一致（Hierarchy フィルタ用）
@@ -148,7 +139,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         }
 
         ImGui::SetNextItemWidth(-1);
-        bool entered = ImGui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
+        bool entered = ui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
 
         // Escape でキャンセル（元の名前に戻す）
@@ -192,35 +183,29 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
 
     // NoTreePushOnOpen: 子はこの関数から再帰せず、Render() の平坦化行リスト側で描く
     //（ListClipper で画面外の行を丸ごと省くため）。よって TreePop も不要。
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_OpenOnArrow
+    // SpanFullWidth: 選択/ホバーの面を行頭（インデントに関係なく左端）から右端まで塗る。
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_OpenOnArrow
                              | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     if (!hasChildren) flags |= ImGuiTreeNodeFlags_Leaf;
     if (selected) flags |= ImGuiTreeNodeFlags_Selected;
     const bool wasOpen = hasChildren && m_openNodes.count(e) != 0;
 
-    // 種別アイコンをノード頭に表示（クリック判定は直後の TreeNodeEx が担う）
-    // 単色 PNG を種別カラーで tint して Nebula のカラフルなアイコンを再現。
-    if (ctx.icons)
-    {
-        u64 typeIcon = PickEntityIcon(reg, e, *ctx.icons);
-        if (typeIcon)
-        {
-            float h = ImGui::GetTextLineHeight();
-            ImGui::ImageWithBg(static_cast<ImTextureID>(typeIcon), ImVec2(h, h),
-                ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
-                PickEntityTint(reg, e));
-            ImGui::SameLine(0.0f, 6.0f);
-        }
-    }
-
     // 開閉状態の指定は「TreeNodeEx の直前」でないと効かない。SetNextItemOpen が積む
-    // NextItemData は次に出す 1 アイテムで消費されるので、上のアイコン画像が先に食べてしまい
-    // 全展開/全折りたたみや「選択行を露出」が一切効かなくなっていた（ImGui 内部の
-    // 保存状態だけが真になり、m_openNodes は見た目に反映されない鏡だった）。
+    // NextItemData は次に出す 1 アイテムで消費されるので、間に別アイテムを挟むと
+    // 全展開/全折りたたみや「選択行を露出」が一切効かなくなる（ImGui 内部の
+    // 保存状態だけが真になり、m_openNodes は見た目に反映されない鏡になる）。
+    const float rowX = ImGui::GetCursorScreenPos().x;   // 階層インデント適用後の行頭
     ImGui::SetNextItemOpen(wasOpen, ImGuiCond_Always);
 
+    // ImGui 標準の矢印と文字は Text を透明にして隠し、開閉 chevron・種別アイコン・名前を自前で描く。
+    // （標準の矢印は巨大な三角で UE 風に合わせられない。クリック判定・選択・D&D は TreeNodeEx がそのまま担う）
     // ID は PushID で一意化済みなので TreeNodeEx は固定文字列でOK
-    bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0, 0, 0, 0));   // 行の面は PaintRowBg が窓幅いっぱいに塗る
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0, 0, 0, 0));
+    bool open = ImGui::TreeNodeEx("##node", flags, "%s", tag.name.c_str());   // 文字は透明（UI 自動テストが行名で引けるよう渡しておく）
+    ImGui::PopStyleColor(4);
     dx12e::vinput_gui::AnchorLastItem("row", tag.name.c_str());   // dx12_imgui_find 用（エンティティ行）
     if (hasChildren && open != wasOpen)
     {
@@ -228,18 +213,46 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         else      m_openNodes.erase(e);
     }
 
+    {
+        namespace th = dx12e::theme;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 mn = ImGui::GetItemRectMin();
+        const ImVec2 mx = ImGui::GetItemRectMax();
+        const float cy = (mn.y + mx.y) * 0.5f;
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float fs = ImGui::GetFontSize();
+        const bool hov = ImGui::IsItemHovered();
+
+        // 選択行: アクセント 30% の面 + 左端 2px のアクセントライン（窓の左端〜右端いっぱい）
+        PaintRowBg(dl, mn.y, mx.y, selected, hov, ImGui::IsItemActive());
+
+        // 開閉 chevron（子がある行だけ。葉は領域だけ確保して名前の桁を揃える）
+        if (hasChildren)
+            ui::DrawIconCentered(dl, open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT,
+                                 ImVec2(rowX + st.FramePadding.x + fs * 0.5f, cy),
+                                 ImGui::GetColorU32(hov || selected ? th::Text : th::TextDim), 13.0f);
+        // 種別アイコン + 名前
+        const float tx = rowX + fs + st.FramePadding.x * 2.0f;
+        const EntityGlyph g = PickEntityGlyph(reg, e, hasChildren);
+        ui::DrawIconCentered(dl, g.glyph, ImVec2(tx + 8.0f, cy), ImGui::GetColorU32(*g.tint), 16.0f);
+        dl->AddText(ImVec2(tx + 22.0f, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
+                    ImGui::GetColorU32(th::Text), tag.name.c_str());
+    }
+
     // 折りたたんだ親は「中に何個いるか」を行の右端に出す（畳んだままでも規模が分かる）。
-    // SpanAvailWidth なので SameLine は行外へ飛ぶ。DrawList で右寄せに直接描く。
+    // SpanFullWidth なので SameLine は行外へ飛ぶ。DrawList で右寄せに直接描く（数字は等幅）。
     if (hasChildren && !open)
     {
         char cntBuf[16];
         snprintf(cntBuf, sizeof(cntBuf), "%zu", children.size());
+        ui::PushMono();
         const ImVec2 mn = ImGui::GetItemRectMin();
         const ImVec2 mx = ImGui::GetItemRectMax();
         const ImVec2 ts = ImGui::CalcTextSize(cntBuf);
         ImGui::GetWindowDrawList()->AddText(
-            ImVec2(mx.x - ts.x - 8.0f, mn.y),
+            ImVec2(mx.x - ts.x - 10.0f, std::floor((mn.y + mx.y) * 0.5f - ts.y * 0.5f + 0.5f)),
             ImGui::GetColorU32(dx12e::theme::TextFaint), cntBuf);
+        ui::PopMono();
     }
 
     bool itemHov = ImGui::IsItemHovered();
@@ -364,6 +377,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
 
     // 右クリックコンテキストメニュー (明示 ID 必須 ・ D&D の後に置く)
     // PushID スコープ内なので ID は "EntityCtx" だけで十分 unique
+    ui::PushMenuStyle();
     if (ImGui::BeginPopupContextItem("EntityCtx", ImGuiPopupFlags_MouseButtonRight))
     {
         if (ImGui::MenuItem("\xe5\x90\x8d\xe5\x89\x8d\xe5\xa4\x89\xe6\x9b\xb4"))  // 名前変更
@@ -427,6 +441,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
 
         ImGui::EndPopup();
     }
+    ui::PopMenuStyle();
 
     // 子は Render() の行リストが続けて描く（ここでは再帰しない）。
     ImGui::PopID();
@@ -485,45 +500,41 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     for (auto [e, tag] : nameView.each())
         if (!reg.all_of<GridPlane>(e)) ++objCount;
 
-    // ---- ヘッダ（件数 + 全展開/全折りたたみ + フィルタ）----
+    // ---- ヘッダ（件数 + 全展開/全折りたたみ + 検索）----
     // オブジェクトが増えると縦に膨れて目的の行が探せなくなるので、
     // 「一発で全部畳む」と「名前で絞る」を常に手元に置く。
     static char s_filterBuf[64] = {};
     {
         ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextFaint);
-        ImGui::Text("%zu objects", objCount);
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%zu 個のオブジェクト", objCount);
         ImGui::PopStyleColor();
 
-        // 右端に畳む/展開ボタン（日本語フォントしか無いので記号ではなく漢字ラベル）
-        const float btnW = ImGui::CalcTextSize("閉").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - btnW * 2.0f - ImGui::GetStyle().ItemSpacing.x);
-        if (ImGui::SmallButton("閉"))
+        // 右端に折りたたむ/展開のアイコンボタン
+        const float btn = 22.0f;
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - btn * 2.0f - 2.0f);
+        if (ui::IconButton("collapseAll", ICON_FOLD_ALL, "すべて折りたたむ", false, nullptr, btn, 15.0f))
             m_openNodes.clear();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("全て折りたたむ");
-        ImGui::SameLine();
-        if (ImGui::SmallButton("開"))
+        ImGui::SameLine(0.0f, 2.0f);
+        if (ui::IconButton("expandAll", ICON_UNFOLD_ALL, "すべて展開", false, nullptr, btn, 15.0f))
             for (const auto& kv : m_childIndex) m_openNodes.insert(kv.first);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("全て展開");
 
         ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##HierFilter", "Filter", s_filterBuf, sizeof(s_filterBuf));
+        ui::SearchField("##HierFilter", s_filterBuf, sizeof(s_filterBuf), "名前で検索");
     }
     ImGui::Spacing();
 
-    // ---- 行の見やすさ（縞模様 + 行間 + 階層ガイド線）----
-    // 行間を少し広げる: 詰まった行は名前が塊に見えて目的の行を探しにくい。
+    // ---- 行の見やすさ（行高 23 + ごく弱いゼブラ + 階層ガイド線）----
+    // 行ピッチ = フレーム高 23 + 1。標準の行間(4)だと選択面の間に隙間ができて縞に見える。
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-        ImVec2(ImGui::GetStyle().ItemSpacing.x, 5.0f));
-    // ツリーの矢印スペースは FontSize + FramePadding.x*2。グローバル値(8)のままだと
-    // 種別アイコンと名前の間に 30px 以上の空白ができて視線が飛ぶ。詰めて1つの行に見せる。
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
-    // 選択行をはっきり見せる（既定の淡いヘッダ色だと縞模様に埋もれる）
-    ImGui::PushStyleColor(ImGuiCol_Header,        dx12e::theme::AccentDim2);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, dx12e::theme::AccentDim);
+        ImVec2(ImGui::GetStyle().ItemSpacing.x, 1.0f));
+    // ツリー矢印スペースは FontSize + FramePadding.x*2。詰めて（アイコン+名前を 1 つの行として）見せる。
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.5f));
+    // 選択行はアクセント 30%（テーマの Header 色）。ホバーは Bg3。テーマ既定のままで良いので色は上書きしない。
 
-    const float rowH = ImGui::GetTextLineHeightWithSpacing();
+    const float rowH = ImGui::GetFrameHeight();   // 描画される 1 行の高さ（行間を除く）
 
-    // 行の縞模様。長いリストで「どの名前がどの行か」を目で追えるようにする。
+    // 行の縞模様。ごく弱く（白 3%）: 長いリストで行を目で追える程度に留め、選択面を主役にする。
     // 行を描く直前に呼び、窓幅いっぱいの帯を1本敷く。
     auto zebra = [rowH](int index)
     {
@@ -531,27 +542,28 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         const ImVec2 p  = ImGui::GetCursorScreenPos();
         const ImVec2 wp = ImGui::GetWindowPos();
         ImGui::GetWindowDrawList()->AddRectFilled(
-            ImVec2(wp.x, p.y - 2.0f),
-            ImVec2(wp.x + ImGui::GetWindowSize().x, p.y + rowH - 3.0f),
-            IM_COL32(255, 255, 255, 12));
+            ImVec2(wp.x, p.y),
+            ImVec2(wp.x + ImGui::GetWindowSize().x, p.y + rowH),
+            IM_COL32(255, 255, 255, 8));
     };
 
     // 階層ガイド線。どの行がどの親の下にいるのか、インデント量を数えずに追えるようにする。
-    // rowStart = インデント適用後の行頭スクリーン座標。
+    // rowStart = インデント適用後の行頭スクリーン座標。線は親の開閉 chevron の真下に引く。
     auto indentGuides = [rowH](ImVec2 rowStart, int depth, float indentW)
     {
         if (depth <= 0) return;
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImU32 col = IM_COL32(255, 255, 255, 26);
+        const ImU32 col = ImGui::GetColorU32(ImGuiCol_TreeLines);
+        const float chevX = ImGui::GetStyle().FramePadding.x + ImGui::GetFontSize() * 0.5f;
         for (int j = 1; j <= depth; ++j)
         {
-            const float x = rowStart.x - indentW * static_cast<float>(j) + 7.0f;
-            dl->AddLine(ImVec2(x, rowStart.y - 2.0f), ImVec2(x, rowStart.y + rowH - 3.0f), col);
+            const float x = std::floor(rowStart.x - indentW * static_cast<float>(j) + chevX) + 0.5f;
+            dl->AddLine(ImVec2(x, rowStart.y), ImVec2(x, rowStart.y + rowH + 1.0f), col);
         }
         // 一番内側だけ横に伸ばして「この親の子」と分かるようにする
-        const float xIn = rowStart.x - indentW + 7.0f;
-        const float yMid = rowStart.y + rowH * 0.4f;
-        dl->AddLine(ImVec2(xIn, yMid), ImVec2(rowStart.x - 3.0f, yMid), col);
+        const float xIn = std::floor(rowStart.x - indentW + chevX) + 0.5f;
+        const float yMid = std::floor(rowStart.y + rowH * 0.5f) + 0.5f;
+        dl->AddLine(ImVec2(xIn, yMid), ImVec2(rowStart.x + chevX - 2.0f, yMid), col);
     };
 
     if (s_filterBuf[0] != '\0')
@@ -574,20 +586,28 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
 
             zebra(fi);
             ImGui::PushID(static_cast<int>(static_cast<u32>(e)));
-            if (ctx.icons)
             {
-                u64 ico = PickEntityIcon(reg, e, *ctx.icons);
-                if (ico)
-                {
-                    float h = ImGui::GetTextLineHeight();
-                    ImGui::ImageWithBg(static_cast<ImTextureID>(ico), ImVec2(h, h),
-                        ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
-                        PickEntityTint(reg, e));
-                    ImGui::SameLine(0.0f, 6.0f);
-                }
+                namespace th = dx12e::theme;
+                const bool selected = ctx.IsSelected(e);
+                const float rowX = ImGui::GetCursorScreenPos().x;
+                // 行全体を 1 つの Selectable にして、アイコンと名前を上から描く（階層行と同じ見た目）
+                ImGui::PushStyleColor(ImGuiCol_Header,        ImVec4(0, 0, 0, 0));   // 面は PaintRowBg が塗る
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImVec4(0, 0, 0, 0));
+                if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_None, ImVec2(0, rowH)))
+                    HandleRowClick(ctx, e);   // フィルタ中も Shift 範囲 / Ctrl トグルが効く
+                ImGui::PopStyleColor(3);
+                dx12e::vinput_gui::AnchorLastItem("row", tag.name.c_str());
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 mn = ImGui::GetItemRectMin();
+                const ImVec2 mx = ImGui::GetItemRectMax();
+                const float cy = (mn.y + mx.y) * 0.5f;
+                PaintRowBg(dl, mn.y, mx.y, selected, ImGui::IsItemHovered(), ImGui::IsItemActive());
+                const EntityGlyph g = PickEntityGlyph(reg, e, false);
+                ui::DrawIconCentered(dl, g.glyph, ImVec2(rowX + 12.0f, cy), ImGui::GetColorU32(*g.tint), 16.0f);
+                dl->AddText(ImVec2(rowX + 26.0f, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
+                            ImGui::GetColorU32(th::Text), tag.name.c_str());
             }
-            if (ImGui::Selectable(tag.name.c_str(), ctx.IsSelected(e)))
-                HandleRowClick(ctx, e);   // フィルタ中も Shift 範囲 / Ctrl トグルが効く
             ImGui::PopID();
         }
     }
@@ -649,7 +669,6 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         }
     }
 
-    ImGui::PopStyleColor(2);   // Header / HeaderHovered
     ImGui::PopStyleVar(2);     // ItemSpacing / FramePadding
 
     // ヒエラルキーの空白部分への D&D（親子解除）
@@ -704,9 +723,10 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     ImGui::Separator();
 
     // Add entity menu
-    if (ImGui::Button("\xe2\x9c\x9a \xe3\x82\xa8\xe3\x83\xb3\xe3\x83\x86\xe3\x82\xa3\xe3\x83\x86\xe3\x82\xa3\xe8\xbf\xbd\xe5\x8a\xa0"))
+    if (ImGui::Button(ICON_PLUS " エンティティ追加"))
         ImGui::OpenPopup("AddEntityPopup");
 
+    ui::PushMenuStyle();
     if (ImGui::BeginPopup("AddEntityPopup"))
     {
         if (ImGui::MenuItem("Box"))
@@ -839,6 +859,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         }
         ImGui::EndPopup();
     }
+    ui::PopMenuStyle();
 
     ImGui::End();
 }

@@ -11,6 +11,7 @@
 // ラベルの tip 引数はホバーで説明ツールチップ（従来の SameLine "(?)" の置き換え）。
 
 #include "editor/EditorTheme.h"
+#include "editor/UiWidgets.h"     // 見た目部品（スライダー/チェック/コンボ等の自前描画）
 #include "gui/VirtualInputImGui.h"   // find 用アンカー登録（仮想入力モード ON の間だけ働く）
 
 #pragma warning(push)
@@ -79,7 +80,7 @@ inline void Label(const char* label, const char* tip = nullptr)
             ImGui::SetTooltip("%s", tip);
         ImGui::SameLine(0.0f, 4.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, theme::TextFaint);
-        ImGui::TextUnformatted("?");
+        ImGui::TextUnformatted(ICON_HELP);
         ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", tip);
@@ -122,7 +123,7 @@ inline bool Float(const char* label, float* v, float speed = 0.01f,
 {
     Label(label, tip);
     ImGui::PushID(label);
-    bool ch = ImGui::DragFloat("##v", v, speed, mn, mx, fmt);
+    bool ch = ui::DragFloat("##v", v, speed, mn, mx, fmt);
     detail::Track(active);
     ImGui::PopID();
     return ch;
@@ -134,7 +135,7 @@ inline bool SliderFloat(const char* label, float* v, float mn, float mx,
 {
     Label(label, tip);
     ImGui::PushID(label);
-    bool ch = ImGui::SliderFloat("##v", v, mn, mx, fmt);
+    bool ch = ui::SliderFloat("##v", v, mn, mx, fmt);
     detail::Track(active);
     ImGui::PopID();
     return ch;
@@ -146,7 +147,7 @@ inline bool Int(const char* label, int* v, float speed = 1.0f,
 {
     Label(label, tip);
     ImGui::PushID(label);
-    bool ch = ImGui::DragInt("##v", v, speed, mn, mx);
+    bool ch = ui::DragInt("##v", v, speed, mn, mx);
     detail::Track(active);
     ImGui::PopID();
     return ch;
@@ -157,7 +158,7 @@ inline bool SliderInt(const char* label, int* v, int mn, int mx,
 {
     Label(label, tip);
     ImGui::PushID(label);
-    bool ch = ImGui::SliderInt("##v", v, mn, mx);
+    bool ch = ui::SliderInt("##v", v, mn, mx);
     detail::Track(active);
     ImGui::PopID();
     return ch;
@@ -167,7 +168,7 @@ inline bool Checkbox(const char* label, bool* v, const char* tip = nullptr)
 {
     Label(label, tip);
     ImGui::PushID(label);
-    bool ch = ImGui::Checkbox("##v", v);
+    bool ch = ui::Checkbox("##v", v);
     ImGui::PopID();
     return ch;
 }
@@ -177,7 +178,7 @@ inline bool Combo(const char* label, int* idx, const char* const items[], int co
 {
     Label(label, tip);
     ImGui::PushID(label);
-    bool ch = ImGui::Combo("##v", idx, items, count);
+    bool ch = ui::Combo("##v", idx, items, count);
     ImGui::PopID();
     return ch;
 }
@@ -186,7 +187,7 @@ inline bool Color3(const char* label, float* col, ImGuiColorEditFlags flags = 0)
 {
     Label(label);
     ImGui::PushID(label);
-    bool ch = ImGui::ColorEdit3("##v", col, flags);
+    bool ch = ui::ColorEdit3("##v", col, flags);
     ImGui::PopID();
     return ch;
 }
@@ -195,7 +196,7 @@ inline bool Color4(const char* label, float* col, ImGuiColorEditFlags flags = 0)
 {
     Label(label);
     ImGui::PushID(label);
-    bool ch = ImGui::ColorEdit4("##v", col, flags);
+    bool ch = ui::ColorEdit4("##v", col, flags);
     ImGui::PopID();
     return ch;
 }
@@ -206,7 +207,7 @@ inline bool InputText(const char* label, char* buf, size_t size,
 {
     Label(label, tip);
     ImGui::PushID(label);
-    bool ch = ImGui::InputText("##v", buf, size, flags);
+    bool ch = ui::InputText("##v", buf, size, flags);
     detail::Track(active);
     ImGui::PopID();
     return ch;
@@ -248,12 +249,13 @@ inline bool FloatN(const char* label, float* v, int n, float speed,
         if (i) ImGui::SameLine(0.0f, st.ItemInnerSpacing.x);
         ImGui::PushID(i);
         ImGui::SetNextItemWidth(std::max(w, 32.0f));
-        ch |= ImGui::DragFloat("##v", v + i, speed, mn, mx, fmt);
+        ch |= ui::DragFloat("##v", v + i, speed, mn, mx, fmt);
         detail::Track(active);
         const ImVec2 rmin = ImGui::GetItemRectMin();
         const ImVec2 rmax = ImGui::GetItemRectMax();
+        // 細い色帯（枠の内側 2px）。X/Y/Z の見分けだけを担い、入力欄の面を塗らない。
         ImGui::GetWindowDrawList()->AddRectFilled(
-            rmin, ImVec2(rmin.x + 3.0f, rmax.y), axisCol[i],
+            ImVec2(rmin.x + 1.0f, rmin.y + 1.0f), ImVec2(rmin.x + 3.0f, rmax.y - 1.0f), axisCol[i],
             st.FrameRounding, ImDrawFlags_RoundCornersLeft);
         ImGui::PopID();
     }

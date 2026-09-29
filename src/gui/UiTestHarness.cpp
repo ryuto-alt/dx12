@@ -6,6 +6,7 @@
 #include "core/Version.h"
 #include "ecs/Components.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorIcons.h"   // ICON_PLUS（追加ボタンの参照名）
 #include "gui/DeepDiagnostics.h"
 #include "scene/Scene.h"
 #include "ui/UISystem.h"   // ゲーム UI のフォーカス検査（合成ポインタ / WantsNav）
@@ -76,8 +77,8 @@ const char* kWinVfxAssetList = "//パーティクルエディタ###VfxEditorPane
 const char* kWinVfxMain      = "//パーティクルエディタ###VfxEditorPanelFloating/##VfxMain";
 const char* kWinVfxEmission  = "//パーティクルエディタ###VfxEditorPanelFloating/##VfxMain/##VfxEmission";
 
-const char* kBtnAddEntity    = "✚ エンティティ追加";
-const char* kBtnAddComponent = "✚ コンポーネント追加";
+const char* kBtnAddEntity    = ICON_PLUS " エンティティ追加";      // EditorIcons.h（Lucide グリフ + ラベル）
+const char* kBtnAddComponent = ICON_PLUS " コンポーネント追加";
 const char* kMenuScript      = "スクリプト";
 
 // ===================== 実行中の状態 =====================
@@ -188,7 +189,7 @@ const ImGuiTestItemInfo* SelectLastItem(ImGuiTestItemList& items)
     {
         const ImGuiTestItemInfo* item = items[i];
         if (item == nullptr || item->ID == 0 || item->Window == nullptr) continue;
-        if (std::strstr(item->DebugLabel, "✚") != nullptr) continue;
+        if (std::strstr(item->DebugLabel, ICON_PLUS) != nullptr) continue;
         return item;
     }
     return nullptr;
@@ -213,7 +214,7 @@ void ClickEveryHierarchyItem(ImGuiTestContext* ctx, int maxItems)
 
         const ImGuiTestItemInfo* item = items[i];
         if (item == nullptr || item->ID == 0 || item->Window == nullptr) continue;
-        if (std::strstr(item->DebugLabel, "✚") != nullptr) continue;
+        if (std::strstr(item->DebugLabel, ICON_PLUS) != nullptr) continue;
         if (!ctx->ItemExists(item->ID)) continue;   // クリッパで消えた行は飛ばす
 
         ctx->MouseMove(item->ID);
@@ -1268,7 +1269,7 @@ void T_RapidSelection(ImGuiTestContext* ctx)
         {
             const ImGuiTestItemInfo* item = items[i];
             if (item == nullptr || item->ID == 0) continue;
-            if (std::strstr(item->DebugLabel, "✚") != nullptr) continue;
+            if (std::strstr(item->DebugLabel, ICON_PLUS) != nullptr) continue;
             if (!ctx->ItemExists(item->ID)) continue;
             ctx->MouseMove(item->ID);
             ctx->MouseClick(0);

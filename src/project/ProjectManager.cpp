@@ -471,7 +471,7 @@ LauncherAction ProjectManager::RenderLauncher(ProjectInfo& outInfo, HWND hwnd,
         if (s_ghAvail == 0)
             ImGui::TextDisabled("GitHub CLI (gh) が無いため、ログインは使えません");
         else if (s_loginRunning)
-            ImGui::TextDisabled("ログイン待ち中...（別ウィンドウでブラウザ認証してや）");
+            ImGui::TextDisabled("ログイン待ち中...（別ウィンドウでブラウザ認証してください）");
         else if (s_loginUser.empty())
         {
             ImGui::TextDisabled("GitHub: 未ログイン");

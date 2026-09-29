@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/ConsolePanel.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
@@ -145,23 +146,18 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
     // ============ ツールバー ============
     if (ImGui::Button("クリア")) ClearLocal();
     ImGui::SameLine();
-    ImGui::Checkbox("Play時クリア", &m_clearOnPlay);
+    ui::Checkbox("Play時クリア", &m_clearOnPlay);
     ImGui::SameLine();
-    if (ImGui::Checkbox("折りたたみ", &m_collapse)) m_viewDirty = true;
+    if (ui::Checkbox("折りたたみ", &m_collapse)) m_viewDirty = true;
     ImGui::SameLine();
-    ImGui::Checkbox("自動スクロール", &m_autoScroll);
+    ui::Checkbox("自動スクロール", &m_autoScroll);
     ImGui::SameLine();
-    ImGui::Checkbox("エラーで前面", &m_focusOnError);
+    ui::Checkbox("エラーで前面", &m_focusOnError);
 
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(180.0f);
-    if (ImGui::InputTextWithHint("##consolefilter", "検索...", m_filter, sizeof(m_filter)))
+    ImGui::SetNextItemWidth(200.0f);
+    if (ui::SearchField("##consolefilter", m_filter, sizeof(m_filter), "ログを検索"))
         m_viewDirty = true;
-    if (m_filter[0] != '\0')
-    {
-        ImGui::SameLine();
-        if (ImGui::SmallButton("×##clearfilter")) { m_filter[0] = '\0'; m_viewDirty = true; }
-    }
 
     // 重大度トグル（右寄せ・件数バッジ。OFF はグレーで沈める）
     {
@@ -199,6 +195,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
     // ============ メッセージリスト ============
     ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::AppBg);
     ImGui::BeginChild("##consolelist", ImVec2(0, listH), ImGuiChildFlags_None);
+    ui::PushMono();
     {
         const float rowH   = ImGui::GetTextLineHeight() + 6.0f;
         ImDrawList* dl     = ImGui::GetWindowDrawList();
@@ -217,11 +214,24 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
 
                 ImGui::PushID(row);
                 const ImVec2 rowMin = ImGui::GetCursorScreenPos();
-                // ゼブラ縞（偶数行をわずかに持ち上げる）
-                if ((row & 1) != 0)
-                    dl->AddRectFilled(rowMin,
-                        ImVec2(rowMin.x + ImGui::GetContentRegionAvail().x, rowMin.y + rowH),
-                        ImGui::ColorConvertFloat4ToU32(theme::Hex(0xffffff, 0.025f)));
+                // 行の面: 警告/エラーは色つきの薄い面 + 左端 2px の色帯。情報はごく弱いゼブラだけ。
+                {
+                    const ImVec2 rowMax(rowMin.x + ImGui::GetContentRegionAvail().x, rowMin.y + rowH);
+                    if (sev == 2)
+                    {
+                        dl->AddRectFilled(rowMin, rowMax, ImGui::GetColorU32(theme::WithAlpha(theme::Bad, 0.10f)));
+                        dl->AddRectFilled(rowMin, ImVec2(rowMin.x + 2.0f, rowMax.y), ImGui::GetColorU32(theme::Bad));
+                    }
+                    else if (sev == 1)
+                    {
+                        dl->AddRectFilled(rowMin, rowMax, ImGui::GetColorU32(theme::WithAlpha(theme::Warn, 0.08f)));
+                        dl->AddRectFilled(rowMin, ImVec2(rowMin.x + 2.0f, rowMax.y), ImGui::GetColorU32(theme::Warn));
+                    }
+                    else if ((row & 1) != 0)
+                    {
+                        dl->AddRectFilled(rowMin, rowMax, ImGui::ColorConvertFloat4ToU32(theme::Hex(0xffffff, 0.02f)));
+                    }
+                }
 
                 if (ImGui::Selectable("##row", selected, ImGuiSelectableFlags_None, ImVec2(0, rowH)))
                 {
@@ -274,7 +284,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
                     const float cw = ImGui::CalcTextSize(cnt).x;
                     const float rx = rowMin.x + ImGui::GetContentRegionAvail().x - cw - 10.0f;
                     dl->AddText(ImVec2(rx, ty),
-                        ImGui::ColorConvertFloat4ToU32(theme::AccentLight), cnt);
+                        ImGui::ColorConvertFloat4ToU32(theme::TextDim), cnt);
                 }
                 ImGui::PopID();
             }
@@ -291,6 +301,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
                 m_entries.empty() ? "  ログはまだありません"
                                   : "  フィルタに一致するログがありません");
     }
+    ui::PopMono();
     ImGui::EndChild();
     ImGui::PopStyleColor();
 
@@ -370,7 +381,7 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
             return 0;
         };
 
-        ImGui::TextColored(theme::Accent, "＞");
+        ImGui::TextColored(theme::TextDim, "%s", ICON_TERMINAL);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1.0f);
         const bool entered = ImGui::InputTextWithHint("##luainput",

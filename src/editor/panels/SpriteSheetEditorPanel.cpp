@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/SpriteSheetEditorPanel.h"
 
 #include <algorithm>
@@ -211,14 +212,14 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(140.0f);
-    ImGui::InputText("##SprName", m_nameBuf, sizeof(m_nameBuf));
+    ui::InputText("##SprName", m_nameBuf, sizeof(m_nameBuf));
 
     // テクスチャは assets 相対で持つ。アセットブラウザからの D&D も受ける。
     ImGui::SameLine();
     ImGui::SetNextItemWidth(240.0f);
     char texBuf[260];
     std::snprintf(texBuf, sizeof(texBuf), "%s", m_sheet.texturePath.c_str());
-    if (ImGui::InputText("テクスチャ", texBuf, sizeof(texBuf))) m_sheet.texturePath = texBuf;
+    if (ui::InputText("テクスチャ", texBuf, sizeof(texBuf))) m_sheet.texturePath = texBuf;
     if (ImGui::BeginDragDropTarget())
     {
         // AssetBrowser の payload は絶対パス。assets ルートからの相対へ直して保存する
@@ -236,10 +237,10 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
 
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f);
-    if (ImGui::DragInt("列", &m_sheet.cols, 0.2f, 1, 64)) m_sheet.cols = (std::max)(1, m_sheet.cols);
+    if (ui::DragInt("列", &m_sheet.cols, 0.2f, 1, 64)) m_sheet.cols = (std::max)(1, m_sheet.cols);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(60.0f);
-    if (ImGui::DragInt("行", &m_sheet.rows, 0.2f, 1, 64)) m_sheet.rows = (std::max)(1, m_sheet.rows);
+    if (ui::DragInt("行", &m_sheet.rows, 0.2f, 1, 64)) m_sheet.rows = (std::max)(1, m_sheet.rows);
 
     if (m_statusFlash > 0.0f)
     {
@@ -253,7 +254,7 @@ void SpriteSheetEditorPanel::DrawSeqList()
     ImGui::TextDisabled("シーケンス");
     ImGui::Separator();
     ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputText("##NewSeqName", m_seqNameBuf, sizeof(m_seqNameBuf));
+    ui::InputText("##NewSeqName", m_seqNameBuf, sizeof(m_seqNameBuf));
     if (ImGui::Button("＋ 追加", ImVec2(-1.0f, 0.0f)) && m_seqNameBuf[0] != '\0')
     {
         SpriteAnimSeq s;
@@ -307,9 +308,9 @@ void SpriteSheetEditorPanel::DrawSheetGrid(const std::string& assetsDir, Resourc
     const ImTextureID texId = ResolveTexture(assetsDir, m_sheet.texturePath, resources, srvHeap,
                                              cmdList, texW, texH);
     ImGui::SetNextItemWidth(120.0f);
-    ImGui::SliderFloat("拡大", &m_gridZoom, 0.25f, 4.0f, "%.2fx");
+    ui::SliderFloat("拡大", &m_gridZoom, 0.25f, 4.0f, "%.2fx");
     ImGui::SameLine();
-    ImGui::Checkbox("番号", &m_showCellIndex);
+    ui::Checkbox("番号", &m_showCellIndex);
     ImGui::SameLine();
     if (ImGui::Button("行×列を推定") && texW > 0.0f && texH > 0.0f)
     {
@@ -329,12 +330,12 @@ void SpriteSheetEditorPanel::DrawSheetGrid(const std::string& assetsDir, Resourc
         m_sheet.rows = bestR;
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("セルが正方形だと仮定して縦横比から行列数を当てる。外したら手で直してや");
+        ImGui::SetTooltip("セルが正方形だと仮定して縦横比から行列数を当てる。外したら手で直してください");
     ImGui::Separator();
 
     if (texId == 0)
     {
-        ImGui::TextDisabled("テクスチャが未設定 or 読み込めへん。\n上の欄に assets 相対パスを入れるか、\nアセットブラウザからドラッグしてや。");
+        ImGui::TextDisabled("テクスチャが未設定、または読み込めません。\n上の欄に assets 相対パスを入れるか、\nアセットブラウザからドラッグしてください。");
         return;
     }
 
@@ -430,7 +431,7 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
 {
     if (m_selSeq < 0 || m_selSeq >= static_cast<int>(m_sheet.seqs.size()))
     {
-        ImGui::TextDisabled("シーケンスを選んでや。");
+        ImGui::TextDisabled("シーケンスを選んでください。");
         return;
     }
     auto& seq = m_sheet.seqs[static_cast<size_t>(m_selSeq)];
@@ -438,17 +439,17 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
     char nameBuf[64];
     std::snprintf(nameBuf, sizeof(nameBuf), "%s", seq.name.c_str());
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputText("##SeqName", nameBuf, sizeof(nameBuf))) seq.name = nameBuf;
+    if (ui::InputText("##SeqName", nameBuf, sizeof(nameBuf))) seq.name = nameBuf;
 
     ImGui::SetNextItemWidth(90.0f);
-    ImGui::DragFloat("fps", &seq.fps, 0.5f, 1.0f, 120.0f, "%.1f");
+    ui::DragFloat("fps", &seq.fps, 0.5f, 1.0f, 120.0f, "%.1f");
     ImGui::SetNextItemWidth(120.0f);
-    ImGui::Combo("再生", &seq.mode, kModeNames, IM_ARRAYSIZE(kModeNames));
+    ui::Combo("再生", &seq.mode, kModeNames, IM_ARRAYSIZE(kModeNames));
 
     char evBuf[96];
     std::snprintf(evBuf, sizeof(evBuf), "%s", seq.finishEvent.c_str());
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputTextWithHint("##FinEv", "完了イベント名（単発時、空=なし）", evBuf, sizeof(evBuf)))
+    if (ui::InputTextWithHint("##FinEv", "完了イベント名（単発時、空=なし）", evBuf, sizeof(evBuf)))
         seq.finishEvent = evBuf;
 
     ImGui::Separator();
@@ -473,13 +474,13 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
         ImGui::SameLine();
         ImGui::SetNextItemWidth(60.0f);
         int cell = seq.frames[i];
-        if (ImGui::DragInt("##cell", &cell, 0.2f, 0, m_sheet.cols * m_sheet.rows - 1))
+        if (ui::DragInt("##cell", &cell, 0.2f, 0, m_sheet.cols * m_sheet.rows - 1))
             seq.frames[i] = cell;
         if (seq.holds.size() == seq.frames.size())
         {
             ImGui::SameLine();
             ImGui::SetNextItemWidth(60.0f);
-            ImGui::DragFloat("尺", &seq.holds[i], 0.05f, 0.0f, 20.0f, "%.2f");
+            ui::DragFloat("尺", &seq.holds[i], 0.05f, 0.0f, 20.0f, "%.2f");
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("↑") && i > 0)
@@ -508,7 +509,7 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
 
     // ---- プレビュー ----
     ImGui::Separator();
-    ImGui::Checkbox("再生", &m_previewPlaying);
+    ui::Checkbox("再生", &m_previewPlaying);
     ImGui::SameLine();
     if (ImGui::Button("頭出し")) m_previewTime = 0.0f;
     ImGui::SameLine();

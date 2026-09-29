@@ -3,6 +3,8 @@
 // ---------------------------------------------------------------------------
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
+#include "core/GameUiFont.h"
+#include "editor/UiWidgets.h"
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 
@@ -6692,47 +6694,47 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             };
             const std::vector<PostFx> fx = {
                 {"カラー", "露出 Exposure", "明るさを乗算で調整", &pp.exposureOn,
-                    [&]{ ImGui::SliderFloat("値##exposure", &pp.exposure, 0.0f, 8.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("値##exposure", &pp.exposure, 0.0f, 8.0f, "%.3f"); },
                     [&]{ pp.exposure = kDef.exposure; }},
                 {"カラー", "自動露出 Auto Exposure", "平均輝度に合わせて露出を自動追従（目の順応）", &pp.autoExposureOn,
-                    [&]{ ImGui::SliderFloat("適応速度##aespd", &pp.aeSpeed, 0.1f, 10.0f, "%.2f");
-                         ImGui::SliderFloat("EV補正##aeev", &pp.aeEvComp, -8.0f, 8.0f, "%.2f");
-                         ImGui::SliderFloat("測光下限(log2)##aemin", &pp.aeLogMin, -16.0f, 0.0f, "%.1f");
-                         ImGui::SliderFloat("測光上限(log2)##aemax", &pp.aeLogMax, 0.0f, 16.0f, "%.1f"); },
+                    [&]{ ui::SliderFloat("適応速度##aespd", &pp.aeSpeed, 0.1f, 10.0f, "%.2f");
+                         ui::SliderFloat("EV補正##aeev", &pp.aeEvComp, -8.0f, 8.0f, "%.2f");
+                         ui::SliderFloat("測光下限(log2)##aemin", &pp.aeLogMin, -16.0f, 0.0f, "%.1f");
+                         ui::SliderFloat("測光上限(log2)##aemax", &pp.aeLogMax, 0.0f, 16.0f, "%.1f"); },
                     [&]{ pp.aeSpeed = kDef.aeSpeed; pp.aeEvComp = kDef.aeEvComp;
                          pp.aeLogMin = kDef.aeLogMin; pp.aeLogMax = kDef.aeLogMax; }},
                 {"カラー", "コントラスト Contrast", nullptr, &pp.contrastOn,
-                    [&]{ ImGui::SliderFloat("値##contrast", &pp.contrast, 0.0f, 3.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("値##contrast", &pp.contrast, 0.0f, 3.0f, "%.3f"); },
                     [&]{ pp.contrast = kDef.contrast; }},
                 {"カラー", "明るさ Brightness", "加算で明暗を調整", &pp.brightnessOn,
-                    [&]{ ImGui::SliderFloat("値##brightness", &pp.brightness, -1.0f, 1.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("値##brightness", &pp.brightness, -1.0f, 1.0f, "%.3f"); },
                     [&]{ pp.brightness = kDef.brightness; }},
                 {"カラー", "彩度 Saturation", nullptr, &pp.saturationOn,
-                    [&]{ ImGui::SliderFloat("値##saturation", &pp.saturation, 0.0f, 3.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("値##saturation", &pp.saturation, 0.0f, 3.0f, "%.3f"); },
                     [&]{ pp.saturation = kDef.saturation; }},
                 {"カラー", "色温度 Warmth", "+で暖色、-で寒色", &pp.warmthOn,
-                    [&]{ ImGui::SliderFloat("値##warmth", &pp.warmth, -1.0f, 1.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("値##warmth", &pp.warmth, -1.0f, 1.0f, "%.3f"); },
                     [&]{ pp.warmth = kDef.warmth; }},
                 {"カラー", "色相回転 Hue", "色相を回す（度）", &pp.hueOn,
-                    [&]{ ImGui::SliderFloat("角度##hue", &pp.hueShift, 0.0f, 360.0f, "%.1f°"); },
+                    [&]{ ui::SliderFloat("角度##hue", &pp.hueShift, 0.0f, 360.0f, "%.1f°"); },
                     [&]{ pp.hueShift = kDef.hueShift; }},
                 {"カラー", "色味 Tint", "RGB を乗算", &pp.tintOn,
                     [&]{ ImGui::ColorEdit3("色##tint", &pp.tint.x); },
                     [&]{ pp.tint = kDef.tint; }},
 
                 {"ブルーム/ビネット", "ブルーム Bloom", "明部が咲く（物理ベース・ダウンサンプルチェーン）", &pp.bloomOn,
-                    [&]{ ImGui::SliderFloat("強度##bloom", &pp.bloom, 0.0f, 3.0f, "%.3f");
-                         ImGui::SliderFloat("しきい値##bloomth", &pp.bloomThreshold, 0.0f, 8.0f, "%.3f");
-                         ImGui::SliderFloat("ニー(肩)##bloomknee", &pp.bloomKnee, 0.0f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("広がり##bloomrad", &pp.bloomRadius, 0.05f, 0.95f, "%.3f"); },
+                    [&]{ ui::SliderFloat("強度##bloom", &pp.bloom, 0.0f, 3.0f, "%.3f");
+                         ui::SliderFloat("しきい値##bloomth", &pp.bloomThreshold, 0.0f, 8.0f, "%.3f");
+                         ui::SliderFloat("ニー(肩)##bloomknee", &pp.bloomKnee, 0.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("広がり##bloomrad", &pp.bloomRadius, 0.05f, 0.95f, "%.3f"); },
                     [&]{ pp.bloom = kDef.bloom; pp.bloomThreshold = kDef.bloomThreshold;
                          pp.bloomKnee = kDef.bloomKnee; pp.bloomRadius = kDef.bloomRadius; }},
                 {"ブルーム/ビネット", "ビネット Vignette", "周辺減光。半径・柔らかさ・真円度・色まで作れる", &pp.vignetteOn,
-                    [&]{ ImGui::SliderFloat("濃さ##vig", &pp.vignette, 0.0f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("開始半径##vigr", &pp.vignetteRadius, 0.0f, 1.5f, "%.3f");
+                    [&]{ ui::SliderFloat("濃さ##vig", &pp.vignette, 0.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("開始半径##vigr", &pp.vignetteRadius, 0.0f, 1.5f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("中心=0 / 四隅=1。上げるほど四隅だけが落ちる");
-                         ImGui::SliderFloat("ぼけ幅##vigs", &pp.vignetteSoftness, 0.001f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("真円度##vigrn", &pp.vignetteRoundness, 0.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("ぼけ幅##vigs", &pp.vignetteSoftness, 0.001f, 1.0f, "%.3f");
+                         ui::SliderFloat("真円度##vigrn", &pp.vignetteRoundness, 0.0f, 1.0f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("1=真円 / 0=画面のアスペクト比なりの楕円");
                          ImGui::ColorEdit3("減光の色##vigc", &pp.vignetteColor.x); },
                     [&]{ pp.vignette = kDef.vignette; pp.vignetteRadius = kDef.vignetteRadius;
@@ -6741,83 +6743,83 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                          pp.vignetteColor = kDef.vignetteColor; }},
 
                 {"ライト/カメラ", "ゴッドレイ God Rays", "太陽(平行光源)からの光条。太陽が画面内/近くにある時に見える(透視カメラのみ)", &pp.godraysOn,
-                    [&]{ ImGui::SliderFloat("強度##gri", &pp.grIntensity, 0.0f, 3.0f, "%.3f");
-                         ImGui::SliderFloat("長さ##grd", &pp.grDensity, 0.1f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("減衰##grdc", &pp.grDecay, 0.8f, 0.999f, "%.4f"); },
+                    [&]{ ui::SliderFloat("強度##gri", &pp.grIntensity, 0.0f, 3.0f, "%.3f");
+                         ui::SliderFloat("長さ##grd", &pp.grDensity, 0.1f, 1.0f, "%.3f");
+                         ui::SliderFloat("減衰##grdc", &pp.grDecay, 0.8f, 0.999f, "%.4f"); },
                     [&]{ pp.grIntensity = kDef.grIntensity; pp.grDensity = kDef.grDensity;
                          pp.grDecay = kDef.grDecay; }},
                 {"ライト/カメラ", "レンズフレア Lens Flare", "ゴースト+ハロー。強い光源があると出る(ブルームと入力共有)", &pp.lensflareOn,
-                    [&]{ ImGui::SliderFloat("強度##lfi", &pp.lfIntensity, 0.0f, 3.0f, "%.3f");
-                         ImGui::SliderInt("ゴースト数##lfg", &pp.lfGhosts, 1, 8);
-                         ImGui::SliderFloat("間隔##lfd", &pp.lfDispersal, 0.05f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("ハロー##lfh", &pp.lfHalo, 0.0f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("色収差##lfc", &pp.lfChroma, 0.0f, 0.1f, "%.4f"); },
+                    [&]{ ui::SliderFloat("強度##lfi", &pp.lfIntensity, 0.0f, 3.0f, "%.3f");
+                         ui::SliderInt("ゴースト数##lfg", &pp.lfGhosts, 1, 8);
+                         ui::SliderFloat("間隔##lfd", &pp.lfDispersal, 0.05f, 1.0f, "%.3f");
+                         ui::SliderFloat("ハロー##lfh", &pp.lfHalo, 0.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("色収差##lfc", &pp.lfChroma, 0.0f, 0.1f, "%.4f"); },
                     [&]{ pp.lfIntensity = kDef.lfIntensity; pp.lfGhosts = kDef.lfGhosts;
                          pp.lfDispersal = kDef.lfDispersal; pp.lfHalo = kDef.lfHalo;
                          pp.lfChroma = kDef.lfChroma; }},
                 {"ライト/カメラ", "被写界深度 DoF", "フォーカス距離の前後がボケる(透視カメラのみ)", &pp.dofOn,
-                    [&]{ ImGui::SliderFloat("フォーカス距離##doff", &pp.dofFocusDist, 0.1f, 500.0f, "%.2f");
+                    [&]{ ui::SliderFloat("フォーカス距離##doff", &pp.dofFocusDist, 0.1f, 500.0f, "%.2f");
                          {   // 合焦をエンティティに任せる（空なら上のフォーカス距離）
                              char buf[128]{};
                              std::snprintf(buf, sizeof(buf), "%s", pp.dofFocusName.c_str());
-                             if (ImGui::InputText("合焦エンティティ##dofent", buf, sizeof(buf)))
+                             if (ui::InputText("合焦エンティティ##dofent", buf, sizeof(buf)))
                                  pp.dofFocusName = buf;
                          }
-                         ImGui::SliderFloat("F値(0でレガシー)##dofap", &pp.dofAperture, 0.0f, 32.0f, "%.2f");
-                         ImGui::SliderFloat("焦点距離mm(0=画角)##doffl", &pp.dofFocalLength, 0.0f, 400.0f, "%.0f");
+                         ui::SliderFloat("F値(0でレガシー)##dofap", &pp.dofAperture, 0.0f, 32.0f, "%.2f");
+                         ui::SliderFloat("焦点距離mm(0=画角)##doffl", &pp.dofFocalLength, 0.0f, 400.0f, "%.0f");
                          if (pp.dofAperture <= 0.0f)
-                             ImGui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 100.0f, "%.2f");
-                         ImGui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 96.0f, "%.1f"); },
+                             ui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 100.0f, "%.2f");
+                         ui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 96.0f, "%.1f"); },
                     [&]{ pp.dofFocusDist = kDef.dofFocusDist; pp.dofFocusName.clear();
                          pp.dofAperture = kDef.dofAperture; pp.dofFocalLength = kDef.dofFocalLength;
                          pp.dofFocusRange = kDef.dofFocusRange; pp.dofBlurSize = kDef.dofBlurSize; }},
                 {"ライト/カメラ", "モーションブラー Motion Blur", "カメラの動きで残像(深度再構成方式・透視カメラのみ)", &pp.motionBlurOn,
-                    [&]{ ImGui::SliderFloat("強度##mbs", &pp.mbStrength, 0.0f, 3.0f, "%.3f");
-                         ImGui::SliderInt("サンプル数##mbn", &pp.mbSamples, 4, 16); },
+                    [&]{ ui::SliderFloat("強度##mbs", &pp.mbStrength, 0.0f, 3.0f, "%.3f");
+                         ui::SliderInt("サンプル数##mbn", &pp.mbSamples, 4, 16); },
                     [&]{ pp.mbStrength = kDef.mbStrength; pp.mbSamples = kDef.mbSamples; }},
 
                 {"スタイライズ", "色収差 Chromatic", "RGB をずらす。放射(端ほど強い)/水平/垂直を選べる", &pp.chromaticOn,
-                    [&]{ ImGui::SliderFloat("強度##chroma", &pp.chromatic, 0.0f, 2.0f, "%.3f");
-                         ImGui::Combo("ずらし方##chromam", &pp.chromaMode, "放射（画面端ほど強い）\0水平\0垂直\0"); },
+                    [&]{ ui::SliderFloat("強度##chroma", &pp.chromatic, 0.0f, 2.0f, "%.3f");
+                         ui::Combo("ずらし方##chromam", &pp.chromaMode, "放射（画面端ほど強い）\0水平\0垂直\0"); },
                     [&]{ pp.chromatic = kDef.chromatic; pp.chromaMode = kDef.chromaMode; }},
                 {"スタイライズ", "ピクセル化 Pixelize", "ブロック状にモザイク", &pp.pixelizeOn,
-                    [&]{ ImGui::SliderFloat("ブロックpx##pix", &pp.pixelSize, 1.0f, 128.0f, "%.1f"); },
+                    [&]{ ui::SliderFloat("ブロックpx##pix", &pp.pixelSize, 1.0f, 128.0f, "%.1f"); },
                     [&]{ pp.pixelSize = kDef.pixelSize; }},
                 {"スタイライズ", "ポスタライズ Posterize", "色数を段階化", &pp.posterizeOn,
-                    [&]{ ImGui::SliderInt("階調##post", &pp.posterize, 2, 32); },
+                    [&]{ ui::SliderInt("階調##post", &pp.posterize, 2, 32); },
                     [&]{ pp.posterize = kDef.posterize; }},
                 {"スタイライズ", "ディザ Dither", "順序ディザで階調化", &pp.ditherOn,
-                    [&]{ ImGui::SliderInt("階調##dither", &pp.ditherLevels, 2, 16); },
+                    [&]{ ui::SliderInt("階調##dither", &pp.ditherLevels, 2, 16); },
                     [&]{ pp.ditherLevels = kDef.ditherLevels; }},
                 {"スタイライズ", "CRT走査線 Scanline", "走査線の濃さ・本数・画面湾曲をそれぞれ調整できる", &pp.scanlineOn,
-                    [&]{ ImGui::SliderFloat("濃さ##scan", &pp.scanline, 0.0f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("本数##scanc", &pp.scanCount, 20.0f, 1080.0f, "%.0f");
-                         ImGui::SliderFloat("画面湾曲##scancv", &pp.scanCurve, 0.0f, 1.0f, "%.3f");
+                    [&]{ ui::SliderFloat("濃さ##scan", &pp.scanline, 0.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("本数##scanc", &pp.scanCount, 20.0f, 1080.0f, "%.0f");
+                         ui::SliderFloat("画面湾曲##scancv", &pp.scanCurve, 0.0f, 1.0f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("0 で平面（湾曲なし）"); },
                     [&]{ pp.scanline = kDef.scanline; pp.scanCount = kDef.scanCount;
                          pp.scanCurve = kDef.scanCurve; }},
                 {"スタイライズ", "シャープ Sharpen", "輪郭を強調", &pp.sharpenOn,
-                    [&]{ ImGui::SliderFloat("強度##sharp", &pp.sharpen, 0.0f, 3.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("強度##sharp", &pp.sharpen, 0.0f, 3.0f, "%.3f"); },
                     [&]{ pp.sharpen = kDef.sharpen; }},
                 {"スタイライズ", "フィルムグレイン Grain", "ザラつきノイズ。粒の大きさとカラー/輝度を選べる", &pp.grainOn,
-                    [&]{ ImGui::SliderFloat("強度##grain", &pp.grain, 0.0f, 2.0f, "%.3f");
-                         ImGui::SliderFloat("粒の大きさpx##grains", &pp.grainSize, 0.25f, 16.0f, "%.2f");
-                         ImGui::Checkbox("カラーノイズ##grainc", &pp.grainColored); },
+                    [&]{ ui::SliderFloat("強度##grain", &pp.grain, 0.0f, 2.0f, "%.3f");
+                         ui::SliderFloat("粒の大きさpx##grains", &pp.grainSize, 0.25f, 16.0f, "%.2f");
+                         ui::Checkbox("カラーノイズ##grainc", &pp.grainColored); },
                     [&]{ pp.grain = kDef.grain; pp.grainSize = kDef.grainSize;
                          pp.grainColored = kDef.grainColored; }},
 
                 {"カラー操作", "色反転 Invert", nullptr, &pp.invertOn,
-                    [&]{ ImGui::SliderFloat("強度##inv", &pp.invert, 0.0f, 1.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("強度##inv", &pp.invert, 0.0f, 1.0f, "%.3f"); },
                     [&]{ pp.invert = kDef.invert; }},
                 {"カラー操作", "セピア Sepia", nullptr, &pp.sepiaOn,
-                    [&]{ ImGui::SliderFloat("強度##sepia", &pp.sepia, 0.0f, 1.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("強度##sepia", &pp.sepia, 0.0f, 1.0f, "%.3f"); },
                     [&]{ pp.sepia = kDef.sepia; }},
                 {"カラー操作", "グレースケール Grayscale", nullptr, &pp.grayscaleOn,
-                    [&]{ ImGui::SliderFloat("強度##gray", &pp.grayscale, 0.0f, 1.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("強度##gray", &pp.grayscale, 0.0f, 1.0f, "%.3f"); },
                     [&]{ pp.grayscale = kDef.grayscale; }},
                 {"カラー操作", "LUT グレーディング", "ストリップ画像(N*N x N, 例:1024x32)で色変換。Photoshop等で作った LUT を適用", &pp.lutOn,
                     [&]{ static char lutBuf[260] = "";
-                         ImGui::InputTextWithHint("##lutpath", "assets からの相対パス (例: luts/warm.png)", lutBuf, sizeof(lutBuf));
+                         ui::InputTextWithHint("##lutpath", "assets からの相対パス (例: luts/warm.png)", lutBuf, sizeof(lutBuf));
                          if (ImGui::IsItemDeactivatedAfterEdit()) pp.lutPath = lutBuf;
                          if (!ImGui::IsItemActive() && pp.lutPath != lutBuf)
                          {
@@ -6833,53 +6835,53 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                                                    {".png", ".jpg", ".jpeg", ".tga", ".dds", ".bmp"}))
                                  pp.lutPath = dropped;   // 入力欄は次フレームの同期処理が追従する
                          }
-                         ImGui::SliderFloat("適用量##lutamt", &pp.lutAmount, 0.0f, 1.0f, "%.3f"); },
+                         ui::SliderFloat("適用量##lutamt", &pp.lutAmount, 0.0f, 1.0f, "%.3f"); },
                     [&]{ pp.lutPath.clear(); pp.lutAmount = kDef.lutAmount; }},
 
                 {"歪み", "レンズ歪み / 魚眼 Lens", "バレル・糸巻き・魚眼。縦横比を補正するので円が楕円にならない", &pp.lensOn,
-                    [&]{ ImGui::Combo("種類##lensm", &pp.lensMode,
+                    [&]{ ui::Combo("種類##lensm", &pp.lensMode,
                              "バレル / 糸巻き（多項式）\0魚眼（等距離射影）\0魚眼（等立体角射影）\0");
-                         ImGui::SliderFloat("歪み量##lens", &pp.lens, -1.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("歪み量##lens", &pp.lens, -1.0f, 1.0f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("+ = 樽 / 魚眼、- = 糸巻き");
                          if (pp.lensMode == 0)
-                             ImGui::SliderFloat("2次係数##lensk2", &pp.lensK2, -1.0f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("ズーム補正##lensz", &pp.lensZoom, 0.2f, 3.0f, "%.3f");
+                             ui::SliderFloat("2次係数##lensk2", &pp.lensK2, -1.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("ズーム補正##lensz", &pp.lensZoom, 0.2f, 3.0f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("四隅が空くときに上げる");
-                         ImGui::SliderFloat("倍率色収差##lensca", &pp.lensChroma, 0.0f, 2.0f, "%.3f");
-                         ImGui::Checkbox("円形に歪ませる（縦横比を補正）##lensc", &pp.lensCircular);
-                         ImGui::Combo("はみ出した所##lense", &pp.lensEdge,
+                         ui::SliderFloat("倍率色収差##lensca", &pp.lensChroma, 0.0f, 2.0f, "%.3f");
+                         ui::Checkbox("円形に歪ませる（縦横比を補正）##lensc", &pp.lensCircular);
+                         ui::Combo("はみ出した所##lense", &pp.lensEdge,
                              "端の色を引き伸ばす\0黒で塗る\0鏡のように折り返す\0"); },
                     [&]{ pp.lens = kDef.lens; pp.lensMode = kDef.lensMode; pp.lensK2 = kDef.lensK2;
                          pp.lensZoom = kDef.lensZoom; pp.lensCircular = kDef.lensCircular;
                          pp.lensEdge = kDef.lensEdge; pp.lensChroma = kDef.lensChroma; }},
                 {"歪み", "波ゆらぎ Wave", "水中/陽炎のゆれ", &pp.waveOn,
-                    [&]{ ImGui::SliderFloat("振幅##wamp", &pp.waveAmp, 0.0f, 0.1f, "%.4f");
-                         ImGui::SliderFloat("周波数##wfreq", &pp.waveFreq, 1.0f, 80.0f, "%.2f");
-                         ImGui::SliderFloat("速度##wspd", &pp.waveSpeed, 0.0f, 16.0f, "%.2f"); },
+                    [&]{ ui::SliderFloat("振幅##wamp", &pp.waveAmp, 0.0f, 0.1f, "%.4f");
+                         ui::SliderFloat("周波数##wfreq", &pp.waveFreq, 1.0f, 80.0f, "%.2f");
+                         ui::SliderFloat("速度##wspd", &pp.waveSpeed, 0.0f, 16.0f, "%.2f"); },
                     [&]{ pp.waveAmp = kDef.waveAmp; pp.waveFreq = kDef.waveFreq;
                          pp.waveSpeed = kDef.waveSpeed; }},
                 {"歪み", "放射ブラー Radial", "指定した中心へズームブラー", &pp.radialOn,
-                    [&]{ ImGui::SliderFloat("強度##rad", &pp.radial, 0.0f, 2.0f, "%.3f");
-                         ImGui::SliderInt("サンプル数##radn", &pp.radialSamples, 2, 32);
-                         ImGui::SliderFloat("中心X##radcx", &pp.radialCenterX, 0.0f, 1.0f, "%.3f");
-                         ImGui::SliderFloat("中心Y##radcy", &pp.radialCenterY, 0.0f, 1.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("強度##rad", &pp.radial, 0.0f, 2.0f, "%.3f");
+                         ui::SliderInt("サンプル数##radn", &pp.radialSamples, 2, 32);
+                         ui::SliderFloat("中心X##radcx", &pp.radialCenterX, 0.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("中心Y##radcy", &pp.radialCenterY, 0.0f, 1.0f, "%.3f"); },
                     [&]{ pp.radial = kDef.radial; pp.radialSamples = kDef.radialSamples;
                          pp.radialCenterX = kDef.radialCenterX; pp.radialCenterY = kDef.radialCenterY; }},
                 {"歪み", "グリッチ Glitch", "デジタル乱れ。帯の本数・速さ・RGB分離を調整できる", &pp.glitchOn,
-                    [&]{ ImGui::SliderFloat("横ずれ量##glitch", &pp.glitch, 0.0f, 2.0f, "%.3f");
-                         ImGui::SliderFloat("帯の本数##glitchb", &pp.glitchBlocks, 2.0f, 200.0f, "%.0f");
-                         ImGui::SliderFloat("速さ##glitchs", &pp.glitchSpeed, 0.0f, 60.0f, "%.2f");
-                         ImGui::SliderFloat("RGB分離##glitchc", &pp.glitchColor, 0.0f, 2.0f, "%.3f"); },
+                    [&]{ ui::SliderFloat("横ずれ量##glitch", &pp.glitch, 0.0f, 2.0f, "%.3f");
+                         ui::SliderFloat("帯の本数##glitchb", &pp.glitchBlocks, 2.0f, 200.0f, "%.0f");
+                         ui::SliderFloat("速さ##glitchs", &pp.glitchSpeed, 0.0f, 60.0f, "%.2f");
+                         ui::SliderFloat("RGB分離##glitchc", &pp.glitchColor, 0.0f, 2.0f, "%.3f"); },
                     [&]{ pp.glitch = kDef.glitch; pp.glitchBlocks = kDef.glitchBlocks;
                          pp.glitchSpeed = kDef.glitchSpeed; pp.glitchColor = kDef.glitchColor; }},
 
                 {"輪郭", "輪郭線 Outline", "Sobelエッジ検出。線画モードで下地を塗り潰せる", &pp.outlineOn,
-                    [&]{ ImGui::SliderFloat("強度##outl", &pp.outline, 0.0f, 8.0f, "%.3f");
-                         ImGui::SliderFloat("太さpx##outlt", &pp.outlineThickness, 0.1f, 8.0f, "%.2f");
-                         ImGui::SliderFloat("しきい値##outlth", &pp.outlineThreshold, 0.0f, 1.0f, "%.4f");
+                    [&]{ ui::SliderFloat("強度##outl", &pp.outline, 0.0f, 8.0f, "%.3f");
+                         ui::SliderFloat("太さpx##outlt", &pp.outlineThickness, 0.1f, 8.0f, "%.2f");
+                         ui::SliderFloat("しきい値##outlth", &pp.outlineThreshold, 0.0f, 1.0f, "%.4f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("これ未満の勾配は線にしない（暗部のノイズ止め）");
                          ImGui::ColorEdit3("線の色##outlc", &pp.outlineColor.x);
-                         ImGui::Checkbox("線画モード（絵を捨てる）##outlonly", &pp.outlineOnly);
+                         ui::Checkbox("線画モード（絵を捨てる）##outlonly", &pp.outlineOnly);
                          if (pp.outlineOnly)
                              ImGui::ColorEdit3("下地の色##outlbg", &pp.outlineBg.x); },
                     [&]{ pp.outline = kDef.outline; pp.outlineThickness = kDef.outlineThickness;
@@ -6895,17 +6897,17 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                  "有効にすると FXAA は自動で無視されます（透視ビューのみ。2D 正射では無効）",
                  &taa.enabled,
                     [&]{ int sc = (taa.sampleCount <= 4) ? 0 : (taa.sampleCount >= 16 ? 2 : 1);
-                         if (ImGui::Combo("ジッタ数##taasc", &sc, "4 (シャープ)\0" "8 (標準)\0" "16 (滑らか)\0"))
+                         if (ui::Combo("ジッタ数##taasc", &sc, "4 (シャープ)\0" "8 (標準)\0" "16 (滑らか)\0"))
                              taa.sampleCount = (sc == 0) ? 4 : (sc == 2 ? 16 : 8);
-                         ImGui::SliderFloat("ジッタ量##taajs", &taa.jitterScale, 0.0f, 1.0f, "%.3f");
+                         ui::SliderFloat("ジッタ量##taajs", &taa.jitterScale, 0.0f, 1.0f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("1.0 = ±0.5px。ブラーが強すぎるなら下げる");
-                         ImGui::SliderFloat("履歴 最小##taafbmin", &taa.feedbackMin, 0.5f, 0.98f, "%.3f");
+                         ui::SliderFloat("履歴 最小##taafbmin", &taa.feedbackMin, 0.5f, 0.98f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("現フレームと食い違うピクセルで使う履歴の比率");
-                         ImGui::SliderFloat("履歴 最大##taafbmax", &taa.feedbackMax, 0.5f, 0.995f, "%.3f");
+                         ui::SliderFloat("履歴 最大##taafbmax", &taa.feedbackMax, 0.5f, 0.995f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("安定しているピクセルで使う履歴の比率。高いほど滑らかだがゴーストしやすい");
-                         ImGui::SliderFloat("クリップ幅##taavg", &taa.varianceGamma, 0.25f, 3.0f, "%.3f");
+                         ui::SliderFloat("クリップ幅##taavg", &taa.varianceGamma, 0.25f, 3.0f, "%.3f");
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("近傍色の許容幅 (μ±γσ)。下げるとゴーストが減りチラつきが増える");
-                         ImGui::Checkbox("速度バッファを可視化##taadbg", &taa.debugVelocity);
+                         ui::Checkbox("速度バッファを可視化##taadbg", &taa.debugVelocity);
                          if (ImGui::IsItemHovered()) ImGui::SetTooltip("静止時に全面が均一なグレーになるのが正常"); },
                     [&]{ TaaSettings d{}; bool wasOn = taa.enabled; taa = d; taa.enabled = wasOn; }},
 
@@ -6940,11 +6942,11 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             if (m_engineMode == EngineMode::Playing)
                 ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
                     "Play 中の変更は Stop で破棄されます（残すなら Stop してから調整）");
-            ImGui::Checkbox("有効（マスター）", &pp.enabled);
+            ui::Checkbox("有効（マスター）", &pp.enabled);
             // トーンマップ（表示変換）はマスターOFF でも常に適用されるのでディセーブル外
             ImGui::SameLine(0, 24);
             ImGui::SetNextItemWidth(200.0f);
-            ImGui::Combo("トーンマップ", &pp.tonemapper, "ACES\0AgX\0なし(ガンマのみ)\0");
+            ui::Combo("トーンマップ", &pp.tonemapper, "ACES\0AgX\0なし(ガンマのみ)\0");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::BeginItemTooltip())
@@ -6972,7 +6974,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                 for (bool& s : presetSel) s = false;
             }
 
-            if (ImGui::CollapsingHeader("見た目プリセット", ImGuiTreeNodeFlags_DefaultOpen))
+            if (ui::CollapsingHeader("見た目プリセット", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 // ★窓を右へドッキングすると幅が狭いので、説明は必ず折り返す
                 //   （TextDisabled のままだと右端で切れて読めなくなっていた）。
@@ -7104,7 +7106,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
 
             ImGui::Separator();
             ImGui::SetNextItemWidth(-90.0f);
-            ImGui::InputTextWithHint("##postfilter", "絞り込み（例: 魚眼 / bloom / グリッチ）",
+            ui::InputTextWithHint("##postfilter", "絞り込み（例: 魚眼 / bloom / グリッチ）",
                                      postFilter, sizeof(postFilter));
             ImGui::SameLine();
             if (ImGui::SmallButton("クリア##pf")) postFilter[0] = '\0';
@@ -7127,7 +7129,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                     ImGui::SeparatorText(curCat);
                 }
                 ImGui::PushID(f.label);
-                ImGui::Checkbox(f.label, f.on);
+                ui::Checkbox(f.label, f.on);
                 if (f.help)
                 {
                     ImGui::SameLine();
@@ -7212,12 +7214,12 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             // env map パス入力
             static char pathBuf[260];
             std::snprintf(pathBuf, sizeof(pathBuf), "%s", sk.envMapPath.c_str());
-            if (ImGui::InputText("Env Map (.dds, assets相対)", pathBuf, sizeof(pathBuf)))
+            if (ui::InputText("Env Map (.dds, assets相対)", pathBuf, sizeof(pathBuf)))
                 sk.envMapPath = pathBuf;
 
-            ImGui::SliderFloat("IBL Intensity", &sk.iblIntensity, 0.0f, 3.0f, "%.2f");
-            ImGui::SliderFloat("Skybox Intensity", &sk.skyboxIntensity, 0.0f, 3.0f, "%.2f");
-            ImGui::Checkbox("Draw Skybox (背景を描く)", &sk.drawSkybox);
+            ui::SliderFloat("IBL Intensity", &sk.iblIntensity, 0.0f, 3.0f, "%.2f");
+            ui::SliderFloat("Skybox Intensity", &sk.skyboxIntensity, 0.0f, 3.0f, "%.2f");
+            ui::Checkbox("Draw Skybox (背景を描く)", &sk.drawSkybox);
 
             // ランタイム値へ即時反映（強度/描画フラグは再ベイク不要）
             m_iblIntensity    = sk.iblIntensity;
@@ -7241,18 +7243,18 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             ImGui::TextWrapped("深度プリパス + 深度から法線再構築の半球カーネル AO。"
                                "ambient/IBL へ ao を乗算する。透視ビューのみ（2D 正射では無効）。");
             ImGui::Separator();
-            ImGui::Checkbox("SSAO 有効", &ss.enabled);
+            ui::Checkbox("SSAO 有効", &ss.enabled);
             ImGui::BeginDisabled(!ss.enabled);
-            ImGui::SliderFloat("半径 Radius",  &ss.radius,    0.05f, 2.0f, "%.2f");
-            ImGui::SliderFloat("バイアス Bias", &ss.bias,     0.0f,  0.1f, "%.3f");
-            ImGui::SliderFloat("強度 Intensity", &ss.intensity, 0.0f, 2.0f, "%.2f");
-            ImGui::SliderFloat("べき Power",    &ss.power,     0.5f,  4.0f, "%.2f");
+            ui::SliderFloat("半径 Radius",  &ss.radius,    0.05f, 2.0f, "%.2f");
+            ui::SliderFloat("バイアス Bias", &ss.bias,     0.0f,  0.1f, "%.3f");
+            ui::SliderFloat("強度 Intensity", &ss.intensity, 0.0f, 2.0f, "%.2f");
+            ui::SliderFloat("べき Power",    &ss.power,     0.5f,  4.0f, "%.2f");
             {
                 int s16 = (ss.sampleCount >= 16) ? 1 : 0;
-                if (ImGui::Combo("サンプル数", &s16, "8\0" "16\0"))
+                if (ui::Combo("サンプル数", &s16, "8\0" "16\0"))
                     ss.sampleCount = s16 ? 16 : 8;
             }
-            ImGui::Checkbox("ブラー Blur", &ss.blur);
+            ui::Checkbox("ブラー Blur", &ss.blur);
             ImGui::EndDisabled();
             ImGui::End();
         }
@@ -7270,30 +7272,30 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             ImGui::Separator();
 
             ImGui::SeparatorText("SSR（スクリーン空間反射）");
-            ImGui::Checkbox("SSR 有効", &sr.enabled);
+            ui::Checkbox("SSR 有効", &sr.enabled);
             ImGui::BeginDisabled(!sr.enabled);
-            ImGui::SliderFloat("強度##ssr",        &sr.intensity,       0.0f, 1.0f,   "%.2f");
-            ImGui::SliderFloat("最大距離(m)",       &sr.maxDistance,     1.0f, 200.0f, "%.1f");
-            ImGui::SliderFloat("厚み(m)##ssr",      &sr.thickness,       0.05f, 2.0f,  "%.2f");
+            ui::SliderFloat("強度##ssr",        &sr.intensity,       0.0f, 1.0f,   "%.2f");
+            ui::SliderFloat("最大距離(m)",       &sr.maxDistance,     1.0f, 200.0f, "%.1f");
+            ui::SliderFloat("厚み(m)##ssr",      &sr.thickness,       0.05f, 2.0f,  "%.2f");
             ImGui::SliderInt  ("ステップ数",         &sr.maxSteps,        16, 128);
-            ImGui::SliderFloat("歩幅(px)",          &sr.stride,          1.0f, 8.0f,   "%.1f");
-            ImGui::SliderFloat("ラフネス上限",       &sr.roughnessCutoff, 0.05f, 1.0f,  "%.2f");
-            ImGui::SliderFloat("画面端フェード",      &sr.edgeFade,        0.0f, 0.5f,   "%.2f");
-            ImGui::SliderFloat("バイアス(m)##ssr",   &sr.bias,            0.0f, 0.5f,   "%.3f");
+            ui::SliderFloat("歩幅(px)",          &sr.stride,          1.0f, 8.0f,   "%.1f");
+            ui::SliderFloat("ラフネス上限",       &sr.roughnessCutoff, 0.05f, 1.0f,  "%.2f");
+            ui::SliderFloat("画面端フェード",      &sr.edgeFade,        0.0f, 0.5f,   "%.2f");
+            ui::SliderFloat("バイアス(m)##ssr",   &sr.bias,            0.0f, 0.5f,   "%.3f");
             ImGui::TextDisabled("ラフネス上限を超える面はレイを打たず IBL に任せる");
             ImGui::EndDisabled();
 
             ImGui::SeparatorText("SSGI（スクリーン空間GI）");
-            ImGui::Checkbox("SSGI 有効", &sg.enabled);
+            ui::Checkbox("SSGI 有効", &sg.enabled);
             ImGui::BeginDisabled(!sg.enabled);
-            ImGui::SliderFloat("強度##ssgi",       &sg.intensity,  0.0f, 2.0f,  "%.2f");
-            ImGui::SliderFloat("到達距離(m)",       &sg.radius,     0.5f, 30.0f, "%.1f");
-            ImGui::SliderFloat("厚み(m)##ssgi",     &sg.thickness,  0.05f, 2.0f, "%.2f");
+            ui::SliderFloat("強度##ssgi",       &sg.intensity,  0.0f, 2.0f,  "%.2f");
+            ui::SliderFloat("到達距離(m)",       &sg.radius,     0.5f, 30.0f, "%.1f");
+            ui::SliderFloat("厚み(m)##ssgi",     &sg.thickness,  0.05f, 2.0f, "%.2f");
             ImGui::SliderInt  ("レイ数/px",         &sg.rayCount,   1, 4);
             ImGui::SliderInt  ("ステップ数##ssgi",   &sg.stepCount,  4, 24);
-            ImGui::SliderFloat("輝度クランプ",       &sg.clampValue, 0.1f, 20.0f, "%.2f");
-            ImGui::SliderFloat("時間蓄積 Feedback", &sg.feedback,   0.0f, 0.98f, "%.2f");
-            ImGui::Checkbox("画面外は IBL で埋める", &sg.iblFallback);
+            ui::SliderFloat("輝度クランプ",       &sg.clampValue, 0.1f, 20.0f, "%.2f");
+            ui::SliderFloat("時間蓄積 Feedback", &sg.feedback,   0.0f, 0.98f, "%.2f");
+            ui::Checkbox("画面外は IBL で埋める", &sg.iblFallback);
             ImGui::TextDisabled("IBL 埋めを切るとカメラを回すたびに明るさが変動する");
             ImGui::EndDisabled();
             ImGui::End();
@@ -7309,38 +7311,38 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                                "立体的に見える。透視ビューのみ。有効にした時点で 28MB 確保する。");
             ImGui::Separator();
 
-            ImGui::Checkbox("有効", &f.enabled);
+            ui::Checkbox("有効", &f.enabled);
             ImGui::BeginDisabled(!f.enabled);
 
             ImGui::SeparatorText("媒質");
-            ImGui::SliderFloat("濃度##fog",     &f.density,       0.0f, 0.3f,  "%.4f");
+            ui::SliderFloat("濃度##fog",     &f.density,       0.0f, 0.3f,  "%.4f");
             ImGui::ColorEdit3 ("散乱アルベド",   &f.albedo.x);
-            ImGui::SliderFloat("異方性 g",      &f.anisotropy,   -0.9f, 0.9f,  "%.2f");
+            ui::SliderFloat("異方性 g",      &f.anisotropy,   -0.9f, 0.9f,  "%.2f");
             ImGui::TextDisabled("g>0 = 前方散乱（太陽の方を向くと明るい）。0.6-0.8 で強いシャフト");
-            ImGui::SliderFloat("高さ減衰(1/m)", &f.heightFalloff, 0.0f, 0.5f,  "%.3f");
+            ui::SliderFloat("高さ減衰(1/m)", &f.heightFalloff, 0.0f, 0.5f,  "%.3f");
             ImGui::DragFloat  ("基準高さ(Y)",   &f.heightRef,     0.1f, -500.0f, 500.0f, "%.1f");
 
             ImGui::SeparatorText("ボリューム");
-            ImGui::SliderFloat("到達距離(m)",   &f.distance,        10.0f, 500.0f, "%.0f");
-            ImGui::SliderFloat("深度分布 k",    &f.depthDistribution, 1.0f, 4.0f, "%.2f");
+            ui::SliderFloat("到達距離(m)",   &f.distance,        10.0f, 500.0f, "%.0f");
+            ui::SliderFloat("深度分布 k",    &f.depthDistribution, 1.0f, 4.0f, "%.2f");
             ImGui::TextDisabled("z = 距離 * w^k。1=線形 / 大きいほど手前が細かい");
-            ImGui::Checkbox("到達距離の外を解析フォグで延長", &f.extendBeyondRange);
+            ui::Checkbox("到達距離の外を解析フォグで延長", &f.extendBeyondRange);
 
             ImGui::SeparatorText("ライティング");
             ImGui::ColorEdit3 ("環境散乱",      &f.ambient.x);
-            ImGui::SliderFloat("太陽の寄与",    &f.sunIntensity, 0.0f, 5.0f, "%.2f");
-            ImGui::Checkbox("点光源/スポットも散乱させる", &f.lightScattering);
+            ui::SliderFloat("太陽の寄与",    &f.sunIntensity, 0.0f, 5.0f, "%.2f");
+            ui::Checkbox("点光源/スポットも散乱させる", &f.lightScattering);
             ImGui::TextDisabled("クラスタライトリストを引く（クラスタード無効時はスキップ）");
 
             ImGui::SeparatorText("時間再投影");
-            ImGui::Checkbox("有効##fogTemporal", &f.temporal);
+            ui::Checkbox("有効##fogTemporal", &f.temporal);
             ImGui::BeginDisabled(!f.temporal);
-            ImGui::SliderFloat("現フレーム比率", &f.temporalBlend, 0.01f, 1.0f, "%.3f");
+            ui::SliderFloat("現フレーム比率", &f.temporalBlend, 0.01f, 1.0f, "%.3f");
             ImGui::TextDisabled("小さいほど滑らかだがゴーストが増える（既定 0.08）");
             ImGui::EndDisabled();
 
             ImGui::SeparatorText("デバッグ表示（保存されない）");
-            ImGui::Combo("表示##fogDebug", &f.debugMode,
+            ui::Combo("表示##fogDebug", &f.debugMode,
                          "オフ\0散乱だけ\0透過率だけ\0froxel スライス\0\0");
             ImGui::EndDisabled();
             ImGui::End();
@@ -7363,7 +7365,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             ImGui::TextWrapped("ゲーム開始シーンと、各シーンの次シーンを設定する。");
 
             std::string start = m_sceneFlow->Start();
-            if (ImGui::BeginCombo("Start Scene", start.empty() ? "(none)" : start.c_str()))
+            if (ui::BeginCombo("Start Scene", start.empty() ? "(none)" : start.c_str()))
             {
                 for (auto& s : scenes)
                     if (ImGui::Selectable(s.c_str(), s == start))
@@ -7376,7 +7378,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             {
                 std::string nx = m_sceneFlow->Next(s);
                 ImGui::PushID(s.c_str());
-                if (ImGui::BeginCombo(s.c_str(), nx.empty() ? "(none)" : nx.c_str()))
+                if (ui::BeginCombo(s.c_str(), nx.empty() ? "(none)" : nx.c_str()))
                 {
                     if (ImGui::Selectable("(none)", nx.empty()))
                         m_sceneFlow->SetNext(s, "");
@@ -7429,7 +7431,7 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
                     ImGui::TextDisabled("ID: \"%s\"", kTransitionPresets[cur].id);
 
                 ImGui::SetNextItemWidth(200.0f);
-                ImGui::SliderFloat("長さ（秒）", &m_defaultTransitionDur, 0.2f, 3.0f, "%.2f");
+                ui::SliderFloat("長さ（秒）", &m_defaultTransitionDur, 0.2f, 3.0f, "%.2f");
                 // スライダーは掴んでいる間ずっと値が変わる。PersistSet は毎回ディスクへ
                 // 書くので、離した時だけ保存する。
                 if (ImGui::IsItemDeactivatedAfterEdit())
@@ -7691,7 +7693,8 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
             else if (c.type == UICommand::Type::Text)
             {
                 ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a));
-                dl->AddText(ImGui::GetFont(), c.size, ImVec2(ox + c.x, oy + c.y), col, c.text.c_str());
+                dl->AddText(GameUiDefaultFont() ? GameUiDefaultFont() : ImGui::GetFont(), c.size,
+                            ImVec2(ox + c.x, oy + c.y), col, c.text.c_str());
             }
             else if (c.type == UICommand::Type::Button)
             {

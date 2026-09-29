@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/SculptPanel.h"
 
 #include "editor/EditorContext.h"
@@ -620,7 +621,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     // ---------------- 素体を作成 ----------------
     // 注: 対象エンティティの解決（下）はこのブロックの後に行うこと。ここで SpawnSculpt すると
     //     SculptMesh のコンポーネントプールが再確保され、先に取った SculptMesh* が dangling になる。
-    if (ImGui::CollapsingHeader("素体を作る", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("素体を作る", ImGuiTreeNodeFlags_DefaultOpen))
     {
         if (pg::Begin("##SculptCreate"))
         {
@@ -707,7 +708,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
             }
         }
         ImGui::EndDisabled();
-        ImGui::TextDisabled("元の .glb は書き換えへん。コピーを彫る形式やで");
+        ImGui::TextDisabled("元の .glb は書き換えません。コピーを彫る形式です");
     }
 
     // ---- 対象の解決（エンティティ生成の後で取る＝ポインタが dangling しない）----
@@ -737,7 +738,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     }
 
     // ---------------- ブラシ ----------------
-    if (ImGui::CollapsingHeader("スカルプトブラシ", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("スカルプトブラシ", ImGuiTreeNodeFlags_DefaultOpen))
     {
         if (pg::Begin("##SculptBrush"))
         {
@@ -771,7 +772,7 @@ void Render(Scene& scene, EditorContext& ctx, const std::string& assetsDir,
     }
 
     // ---------------- 見た目 / 当たり判定 / 保存 ----------------
-    if (ImGui::CollapsingHeader("見た目・当たり判定・保存", ImGuiTreeNodeFlags_DefaultOpen))
+    if (ui::CollapsingHeader("見た目・当たり判定・保存", ImGuiTreeNodeFlags_DefaultOpen))
     {
         bool visualChanged = false;
         bool colliderToggled = false;

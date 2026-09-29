@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/MaterialLibraryPanel.h"
 #include "core/CrashHandler.h"
 #include "editor/EditorContext.h"
@@ -530,11 +531,11 @@ void MaterialLibraryPanel::RenderWindow(EditorContext& ctx, const std::string& a
     }
 
     ImGui::SetNextItemWidth(200.0f);
-    ImGui::InputTextWithHint("##Search", "\xe6\xa4\x9c\xe7\xb4\xa2 (\xe8\x8b\xb1\xe5\x8d\x98\xe8\xaa\x9e)", m_searchBuf, sizeof(m_searchBuf));  // 検索 (英単語)
+    ui::InputTextWithHint("##Search", "\xe6\xa4\x9c\xe7\xb4\xa2 (\xe8\x8b\xb1\xe5\x8d\x98\xe8\xaa\x9e)", m_searchBuf, sizeof(m_searchBuf));  // 検索 (英単語)
     ImGui::SameLine();
     ImGui::SetNextItemWidth(100.0f);
     const char* resLabels[] = { "1k", "2k", "4k" };
-    ImGui::Combo("\xe8\xa7\xa3\xe5\x83\x8f\xe5\xba\xa6", &m_resolutionIndex, resLabels, 3);  // 解像度
+    ui::Combo("\xe8\xa7\xa3\xe5\x83\x8f\xe5\xba\xa6", &m_resolutionIndex, resLabels, 3);  // 解像度
 
     if (!m_templatesTab)
     {

@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/NetworkPanel.h"
 #include "network/NetworkSystem.h"
 #include "editor/EditorContext.h"
@@ -113,7 +114,7 @@ void NetworkPanel::RenderSettings(NetworkSystem& net, EditorContext& ctx, const 
     //   disabled + 理由のツールチップにする（値そのものは network.json に残す）。
     ImGui::BeginDisabled(true);
     int tickRate = static_cast<int>(m_staging.tickRate);
-    ImGui::DragInt("シム更新Hz TickRate", &tickRate, 1.0f, 1, 240);
+    ui::DragInt("シム更新Hz TickRate", &tickRate, 1.0f, 1, 240);
     ImGui::EndDisabled();
     ImGui::SameLine(); ImGui::TextDisabled("(?)");
     if (ImGui::BeginItemTooltip())
@@ -125,18 +126,18 @@ void NetworkPanel::RenderSettings(NetworkSystem& net, EditorContext& ctx, const 
     }
 
     int snapshotRate = static_cast<int>(m_staging.snapshotRate);
-    if (ImGui::DragInt("スナップショット送信Hz SnapshotRate", &snapshotRate, 1.0f, 1, 120))
+    if (ui::DragInt("スナップショット送信Hz SnapshotRate", &snapshotRate, 1.0f, 1, 120))
         m_staging.snapshotRate = static_cast<u32>(std::max(1, snapshotRate));
     ImGui::SameLine(); ImGui::TextDisabled("(?)");
     if (ImGui::BeginItemTooltip())
     { ImGui::TextUnformatted("サーバーが複製Transformを送信する頻度。高いほど滑らかだが帯域を食う"); ImGui::EndTooltip(); }
 
     int maxPlayers = static_cast<int>(m_staging.maxPlayers);
-    if (ImGui::DragInt("最大接続数 MaxPlayers", &maxPlayers, 1.0f, 1, 64))
+    if (ui::DragInt("最大接続数 MaxPlayers", &maxPlayers, 1.0f, 1, 64))
         m_staging.maxPlayers = static_cast<u32>(std::max(1, maxPlayers));
 
     int port = static_cast<int>(m_staging.defaultPort);
-    if (ImGui::DragInt("既定ポート DefaultPort", &port, 1.0f, 1024, 65535))
+    if (ui::DragInt("既定ポート DefaultPort", &port, 1.0f, 1024, 65535))
         m_staging.defaultPort = static_cast<u16>(std::clamp(port, 1, 65535));
     ImGui::SameLine(); ImGui::TextDisabled("(?)");
     if (ImGui::BeginItemTooltip())

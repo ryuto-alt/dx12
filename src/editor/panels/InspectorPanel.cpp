@@ -2,6 +2,8 @@
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "editor/EditorContext.h"
 #include "editor/PropertyGrid.h"
+#include "editor/UiWidgets.h"
+#include "editor/EntityGlyph.h"
 #include "gui/VirtualInputImGui.h"
 #include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
@@ -63,7 +65,7 @@ namespace
 // ★色はこの用途で既に使っていた橙（1.0, 0.65, 0.2）に統一。
 void WarnTextV(const char* fmt, va_list args)
 {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.65f, 0.2f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::Warn);
     ImGui::PushTextWrapPos(0.0f);   // 現在の作業矩形の右端で折り返す
     ImGui::TextV(fmt, args);
     ImGui::PopTextWrapPos();
@@ -233,7 +235,7 @@ void DrawShaderParamPicker(const entt::registry& reg, entt::entity target, std::
     pg::Label("パラメーター名 Param",
               "対象のシェーダーが宣言している名前。HLSL に変数を足して保存すれば候補が増えます");
     ImGui::PushID("shaderParamPick");
-    if (ImGui::BeginCombo("##v", name.empty() ? "(未選択)" : name.c_str()))
+    if (dx12e::ui::BeginCombo("##v", name.empty() ? "(未選択)" : name.c_str()))
     {
         for (const sp::Param& p : avail)
         {
@@ -312,64 +314,57 @@ void ShaderIssueBox(const std::string& shaderRel, const char* contractId, const 
     }
 }
 
-// CollapsingHeader を Unreal 風カテゴリ帯（濃いグレー地＋左端アクセントストライプ）で描くヘルパ。
-// tex 指定でラベル頭に種別アイコンを重ね描きする。
+// コンポーネントの見出し帯（Bg2 の帯 + 開閉 chevron + 種別アイコン + 太字の名前）。実体は ui::SectionHeader。
+// アイコンは Lucide グリフ + 種別ごとの控えめな色。旧来の呼び出し（tex に ic->entMesh 等を渡す）は
+// そのまま使えるよう、名前 → tex の同一性の順にグリフを引く（tex==0 は「アイコン無し」= 従来どおり）。
+struct HeaderIcon { const char* glyph; const ImVec4* tint; };
+HeaderIcon HeaderIconFor(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const char* label)
+{
+    namespace th = dx12e::theme;
+    if (tex == 0) return { nullptr, nullptr };
+    auto has = [&](const char* k) { return std::strstr(label, k) != nullptr; };
+    if (has("Network"))                                   return { ICON_T_NET,       &th::TypeEmpty };
+    if (has("Transform"))                                 return { ICON_T_TRANSFORM, &th::TypeEmpty };
+    if (has("Camera"))                                    return { ICON_T_CAMERA,    &th::TypeCamera };
+    if (has("Collider"))                                  return { ICON_T_COLLIDER,  &th::TypePhysics };
+    if (has("Character"))                                 return { ICON_T_CHARACTER, &th::TypePhysics };
+    if (has("MeshRenderer"))                              return { ICON_T_MESH,      &th::TypeMesh };
+    if (has("Material"))                                  return { ICON_T_MATERIAL,  &th::TypeMesh };
+    if (has("Audio"))                                     return { ICON_T_AUDIO,     &th::TypeAudio };
+    if (has("Particle"))                                  return { ICON_T_PARTICLE,  &th::TypeLight };
+    if (has("Trail"))                                     return { ICON_T_TRAIL,     &th::TypeLight };
+    if (has("Decal"))                                     return { ICON_T_DECAL,     &th::TypeMesh };
+    if (has("Brain"))                                     return { ICON_T_BRAIN,     &th::TypeScript };
+    if (has("Trigger"))                                   return { ICON_T_TRIGGER,   &th::TypeScript };
+    if (has("Gimmick"))                                   return { ICON_T_TRIGGER,   &th::TypeScript };
+    if (has("Sprite"))                                    return { ICON_T_SPRITE,    &th::TypeMesh };
+    if (has("UIText"))                                    return { ICON_T_TEXT,      &th::TypeUi };
+    if (has("UIButton"))                                  return { ICON_T_BUTTON,    &th::TypeUi };
+    if (has("UI"))                                        return { ICON_T_UI,        &th::TypeUi };
+    if (has("Anim") || has("FootIK"))                     return { ICON_T_ANIM,      &th::TypeScript };
+    if (has("GridPlane"))                                 return { ICON_T_GRID,      &th::TypeEmpty };
+    if (has("Lua"))                                       return { ICON_T_SCRIPT,    &th::TypeScript };
+    if (ic)
+    {
+        if (tex == ic->entMesh)     return { ICON_T_MESH,     &th::TypeMesh };
+        if (tex == ic->entUi)       return { ICON_T_UI,       &th::TypeUi };
+        if (tex == ic->entAudio)    return { ICON_T_AUDIO,    &th::TypeAudio };
+        if (tex == ic->entCamera)   return { ICON_T_CAMERA,   &th::TypeCamera };
+        if (tex == ic->entCollider) return { ICON_T_COLLIDER, &th::TypePhysics };
+        if (tex == ic->entPhysics)  return { ICON_T_PHYSICS,  &th::TypePhysics };
+        if (tex == ic->entLight)    return { ICON_T_LIGHT,    &th::TypeLight };
+        if (tex == ic->build)       return { ICON_HAMMER,     &th::TypeEmpty };
+    }
+    return { ICON_T_EMPTY, &th::TypeEmpty };
+}
+
 bool IconHeader(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const char* label,
                 ImGuiTreeNodeFlags flags = 0)
 {
-    namespace th = dx12e::theme;
-    ImGui::PushStyleColor(ImGuiCol_Header,        th::GroupBg);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, th::Hex(0x272831));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  th::Hex(0x2b2c36));
-    ImGui::PushStyleColor(ImGuiCol_Text,          th::TextHi);
-
-    bool open;
-    if (!ic || !tex)
-    {
-        open = ImGui::CollapsingHeader(label, flags);
-    }
-    else
-    {
-        const float h = ImGui::GetTextLineHeight();
-        const float spaceW = ImGui::CalcTextSize(" ").x;
-        const int pad = (spaceW > 0.0f) ? static_cast<int>((h + 6.0f) / spaceW) + 1 : 3;
-        std::string padded(static_cast<size_t>(pad), ' ');
-        padded += label;
-        open = ImGui::CollapsingHeader(padded.c_str(), flags);
-    }
-    ImGui::PopStyleColor(4);
+    const HeaderIcon hi = HeaderIconFor(ic, tex, label);
+    const bool open = dx12e::ui::SectionHeader(label, hi.glyph, hi.tint, flags);
     dx12e::vinput_gui::AnchorLastItem("header", label);   // dx12_imgui_find 用（コンポーネントの見出し）
-
-    const ImVec2 mn = ImGui::GetItemRectMin();
-    const ImVec2 mx = ImGui::GetItemRectMax();
-    // 左端のアクセントストライプ（カテゴリの目印。Unreal の Details 風）
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        mn, ImVec2(mn.x + 3.0f, mx.y), ImGui::GetColorU32(th::Accent));
-
-    if (ic && tex)
-    {
-        const float h = ImGui::GetTextLineHeight();
-        const float cy = (mn.y + mx.y) * 0.5f;
-        const float x  = mn.x + ImGui::GetTreeNodeToLabelSpacing();
-        ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(tex),
-            ImVec2(x, cy - h * 0.5f), ImVec2(x + h, cy + h * 0.5f));
-    }
     return open;
-}
-
-// エンティティの構成から代表アイコンを選ぶ（Inspector 上部の見出し用）
-dx12e::u64 PickEntityIcon(entt::registry& reg, entt::entity e, const dx12e::EditorUiIcons& ic)
-{
-    using namespace dx12e;
-    if (reg.all_of<CameraComponent>(e))                       return ic.entCamera;
-    if (reg.any_of<PointLight, DirectionalLight, SpotLight>(e)) return ic.entLight;
-    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton, UIAnimator>(e)) return ic.entUi;
-    if (reg.all_of<MeshRenderer>(e))                          return ic.entMesh;
-    if (reg.any_of<AudioSource, AudioReverbZone>(e))          return ic.entAudio;
-    if (reg.any_of<RigidBody, BoxCollider, SphereCollider,
-                   CapsuleCollider, ConvexHullCollider, MeshCollider, CharacterController>(e))   return ic.entPhysics;
-    if (reg.all_of<LuaScript>(e))                             return ic.entScript;
-    return ic.entEmpty;
 }
 
 // assets 配下の .lua（= スクリプトコンポーネント候補）を列挙する。
@@ -459,16 +454,16 @@ void DrawLuaScriptSection(entt::registry& reg,
                         - ImGui::CalcTextSize(status).x
                         - ImGui::GetStyle().WindowPadding.x - 24.0f);
         if (hasLua)
-            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), status);
+            ImGui::TextColored(dx12e::theme::Good, "%s", status);
         else
-            ImGui::TextDisabled(status);
+            ImGui::TextDisabled("%s", status);
     }
 
     if (!open) return;
 
     if (!hasLua)
     {
-        if (ImGui::Button("＋ スクリプトを付ける", ImVec2(-1, 0)))
+        if (ImGui::Button(ICON_PLUS " スクリプトを付ける", ImVec2(-1, 0)))
             ImGui::OpenPopup("PickScriptPopup");
         ImGui::TextDisabled("または AssetBrowser から .lua をドラッグ");
         if (ImGui::BeginPopup("PickScriptPopup"))
@@ -496,7 +491,7 @@ void DrawLuaScriptSection(entt::registry& reg,
         //   閉じる/別シーンを開くと確認も無しに元へ戻っていた。
         {
             const bool before = ls.enabled;
-            if (ImGui::Checkbox("##lsEnabled", &ls.enabled))
+            if (dx12e::ui::Checkbox("##lsEnabled", &ls.enabled))
             {
                 dx12e::LuaScript snapshot = ls;
                 snapshot.enabled = before;
@@ -636,7 +631,7 @@ void DrawLuaScriptSection(entt::registry& reg,
                         };
                         const char* cur = p.str.empty() ? "(なし)" : p.str.c_str();
                         dx12e::pg::Label(lbl);
-                        if (ImGui::BeginCombo("##ent", cur))
+                        if (dx12e::ui::BeginCombo("##ent", cur))
                         {
                             if (ImGui::Selectable("(なし)", p.str.empty()))
                             { setEntRef(entt::null, p); propsEdited = true; }
@@ -822,6 +817,9 @@ bool ComponentRemoveMenu(entt::registry& reg, EditorContext& ctx,
 {
     bool removed = false;
     ImGui::PushID(name);
+    // 見出しの右端の「⋯」（右クリックと同じメニューを左クリックで開く）。★BeginPopupContextItem は
+    // 「直前の項目 = 見出し」を対象にするので、⋯ の重ね描きはその後に行う。
+    const bool menuBtn = ui::HeaderMenuButton();
     if (ImGui::BeginPopupContextItem("##RemoveComponent"))
     {
         // コンポーネント削除
@@ -834,6 +832,7 @@ bool ComponentRemoveMenu(entt::registry& reg, EditorContext& ctx,
         }
         ImGui::EndPopup();
     }
+    if (menuBtn) ImGui::OpenPopup("##RemoveComponent");
     ImGui::PopID();
     return removed;
 }
@@ -979,24 +978,18 @@ void InspectorPanel::Render(entt::registry& reg,
     {
         const EditorUiIcons* ic = ctx.icons;
 
-        // NameTag（種別アイコン + 名前）
+        // NameTag（種別アイコン + 太字の名前。名前を青くしない: アクセントは選択とフォーカスだけ）
         if (reg.all_of<NameTag>(ctx.selectedEntity))
         {
             auto& tag = reg.get<NameTag>(ctx.selectedEntity);
-            if (ic)
-            {
-                u64 tex = PickEntityIcon(reg, ctx.selectedEntity, *ic);
-                if (tex)
-                {
-                    float s = ImGui::GetTextLineHeight() * 1.3f;
-                    ImGui::Image(static_cast<ImTextureID>(tex), ImVec2(s, s));
-                    ImGui::SameLine(0.0f, 6.0f);
-                    ImGui::AlignTextToFramePadding();
-                }
-            }
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.39f, 0.58f, 0.93f, 1.0f));
-            ImGui::Text("%s", tag.name.c_str());
-            ImGui::PopStyleColor();
+            const bool hasKids = false;   // 子の有無はここでは見ない（グループ表示はヒエラルキー側）
+            const EntityGlyph g = PickEntityGlyph(reg, ctx.selectedEntity, hasKids);
+            ImGui::AlignTextToFramePadding();
+            ui::Icon(g.glyph, *g.tint);
+            ImGui::SameLine(0.0f, 8.0f);
+            ui::PushBold();
+            ImGui::TextUnformatted(tag.name.c_str());
+            ui::PopBold();
         }
 
         ImGui::Separator();
@@ -1092,7 +1085,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     if (pg::Begin("ModelSwap"))
                     {
                         pg::Label("モデル Model");
-                        if (ImGui::BeginCombo("##swapModel", cur.empty() ? "(none)" : cur.c_str()))
+                        if (ui::BeginCombo("##swapModel", cur.empty() ? "(none)" : cur.c_str()))
                         {
                             std::vector<std::string> options;
                             std::error_code ec;
@@ -1230,7 +1223,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     namespace fs = std::filesystem;
                     std::string currentLabel = sp.shaderPath.empty() ? "既定 (Sprite)" : sp.shaderPath;
                     pg::Label("シェーダー");
-                    if (ImGui::BeginCombo("##sprShader", currentLabel.c_str()))
+                    if (ui::BeginCombo("##sprShader", currentLabel.c_str()))
                     {
                         std::vector<std::string> options;
                         std::error_code ec;
@@ -2601,7 +2594,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 const bool layerOpen =
                     (emitter.layers.size() == 1)
                         ? true   // 1 枚だけのときは折りたたまない（従来と同じ見た目）
-                        : ImGui::CollapsingHeader((layerLabel + "###peLayer").c_str(),
+                        : ui::CollapsingHeader((layerLabel + "###peLayer").c_str(),
                                                   ImGuiTreeNodeFlags_DefaultOpen);
                 if (emitter.layers.size() > 1)
                 {
@@ -2614,7 +2607,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 {
                     char nameBuf[64] = {};
                     std::snprintf(nameBuf, sizeof(nameBuf), "%s", pe.name.c_str());
-                    if (ImGui::InputText("名前##peLayerName", nameBuf, sizeof(nameBuf)))
+                    if (ui::InputText("名前##peLayerName", nameBuf, sizeof(nameBuf)))
                     {
                         pe.name = nameBuf;
                         changed = true;
@@ -2653,7 +2646,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         const size_t tn = pe.texturePath.copy(texBuf, sizeof(texBuf) - 1);
                         texBuf[tn] = '\0';
                         pg::Label("テクスチャ", "assetsからの相対パス。空=プロシージャル質感");
-                        if (ImGui::InputTextWithHint("##peTex", "空=プロシージャル質感", texBuf, sizeof(texBuf)))
+                        if (ui::InputTextWithHint("##peTex", "空=プロシージャル質感", texBuf, sizeof(texBuf)))
                         { pe.texturePath = texBuf; changed = true; }
                     }
                     // ★無効になるのは GpuParticleSystem::EmitRequest に無いものが全部。
@@ -2817,7 +2810,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     //   _isLocalOwner + NetworkTransform::syncMode で行っている）。
                     //   触れると「設定したのに何も起きない」になるので触らせない。
                     ImGui::BeginDisabled(true);
-                    ImGui::Checkbox("サーバー権威（予約・未実装）", &ni.serverAuthority);
+                    ui::Checkbox("サーバー権威（予約・未実装）", &ni.serverAuthority);
                     ImGui::EndDisabled();
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("クライアント権威エンティティ用の予約枠。"
@@ -2845,11 +2838,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 {
                     changed |= pg::Combo("同期モード SyncMode", &nt.syncMode, modes, IM_ARRAYSIZE(modes));
                     pg::Label("同期する要素");
-                    changed |= ImGui::Checkbox("位置", &nt.syncPosition);
+                    changed |= ui::Checkbox("位置", &nt.syncPosition);
                     ImGui::SameLine();
-                    changed |= ImGui::Checkbox("回転", &nt.syncRotation);
+                    changed |= ui::Checkbox("回転", &nt.syncRotation);
                     ImGui::SameLine();
-                    changed |= ImGui::Checkbox("拡縮", &nt.syncScale);
+                    changed |= ui::Checkbox("拡縮", &nt.syncScale);
                     changed |= pg::Float("補間遅延 (ms)", &nt.interpDelayMs, 1.0f, 0.0f, 1000.0f, "%.0f", &active,
                         "受信スナップショットをこの時間だけ遅らせて補間する(ジッター吸収)");
                     changed |= pg::Float("テレポート距離", &nt.snapDistance, 0.1f, 0.0f, 100.0f, "%.1f", &active);
@@ -2889,7 +2882,7 @@ void InspectorPanel::Render(entt::registry& reg,
                     {
                         const char* cur = tr.filter.empty() ? "Player（既定）" : tr.filter.c_str();
                         pg::Label("対象 Filter");
-                        if (ImGui::BeginCombo("##trFilter", cur))
+                        if (ui::BeginCombo("##trFilter", cur))
                         {
                             if (ImGui::Selectable("Player（既定）", tr.filter.empty()))
                                 setRef(entt::null, tr.filter, tr.filterGuid);
@@ -2922,7 +2915,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         {
                             const char* cur = a.target.empty() ? "(なし=Filter対象)" : a.target.c_str();
                             pg::Label("対象 Target");
-                            if (ImGui::BeginCombo("##actTarget", cur))
+                            if (ui::BeginCombo("##actTarget", cur))
                             {
                                 if (ImGui::Selectable("(なし=Filter対象)", a.target.empty()))
                                     setRef(entt::null, a.target, a.targetGuid);
@@ -3059,7 +3052,7 @@ void InspectorPanel::Render(entt::registry& reg,
                         std::string label = cam.screenShaderPath.empty()
                             ? "\xe3\x81\xaa\xe3\x81\x97\xef\xbc\x88\xe9\x80\x9a\xe5\xb8\xb8\xe6\x8f\x8f\xe7\x94\xbb\xef\xbc\x89"  // なし（通常描画）
                             : cam.screenShaderPath;
-                        if (ImGui::BeginCombo("##camScreenShader", label.c_str()))
+                        if (ui::BeginCombo("##camScreenShader", label.c_str()))
                         {
                             if (ImGui::Selectable("\xe3\x81\xaa\xe3\x81\x97\xef\xbc\x88\xe9\x80\x9a\xe5\xb8\xb8\xe6\x8f\x8f\xe7\x94\xbb\xef\xbc\x89",
                                                   cam.screenShaderPath.empty()))
@@ -3131,7 +3124,7 @@ void InspectorPanel::Render(entt::registry& reg,
         // --- Physics ---
         {
             bool hasRb = reg.all_of<RigidBody>(ctx.selectedEntity);
-            if (ImGui::Checkbox("Physics", &hasRb))
+            if (ui::Checkbox("Physics", &hasRb))
             {
                 if (hasRb)
                 {
@@ -3911,7 +3904,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 bool shaderGrid = pg::Begin("MeshShader");
                 if (shaderGrid)
                     pg::Label("\xe3\x82\xb7\xe3\x82\xa7\xe3\x83\xbc\xe3\x83\x80\xe3\x83\xbc");  // シェーダー
-                if (ImGui::BeginCombo("##meshShader", currentLabel.c_str()))
+                if (ui::BeginCombo("##meshShader", currentLabel.c_str()))
                 {
                     std::vector<std::string> options;
                     std::error_code ec;
@@ -4002,7 +3995,7 @@ void InspectorPanel::Render(entt::registry& reg,
         // --- Add Component ---
         ImGui::Separator();
         // ✚ コンポーネント追加
-        if (ImGui::Button("\xe2\x9c\x9a \xe3\x82\xb3\xe3\x83\xb3\xe3\x83\x9d\xe3\x83\xbc\xe3\x83\x8d\xe3\x83\xb3\xe3\x83\x88\xe8\xbf\xbd\xe5\x8a\xa0", ImVec2(-1, 0)))
+        if (ImGui::Button(ICON_PLUS " コンポーネント追加", ImVec2(-1, 0)))
             ImGui::OpenPopup("AddComponentPopup");
 
         if (ImGui::BeginPopup("AddComponentPopup"))
@@ -4147,7 +4140,7 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
     if (!m_prefabDiffOk)
     {
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.4f, 1.0f),
-                           "元の .prefab が見つからへん（移動/削除された？）");
+                           "元の .prefab が見つかりません（移動/削除された？）");
     }
 
     const bool dirty = m_prefabDiffOk && !m_prefabDiff.empty();
@@ -4225,20 +4218,13 @@ void InspectorPanel::RenderPrefabHeader(entt::registry& reg, EditorContext& ctx,
 
 void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, entt::entity e)
 {
-    const EditorUiIcons* ic = ctx.icons;
-    const ImVec4 amber(0.96f, 0.72f, 0.25f, 1.0f);
-
     // ヘッダ（アイコン + 「ライト」 + 種別名）
-    if (ic && ic->entLight)
-    {
-        float s = ImGui::GetTextLineHeight() * 1.3f;
-        ImGui::Image(static_cast<ImTextureID>(ic->entLight), ImVec2(s, s));
-        ImGui::SameLine(0.0f, 6.0f);
-        ImGui::AlignTextToFramePadding();
-    }
-    ImGui::PushStyleColor(ImGuiCol_Text, amber);
+    ImGui::AlignTextToFramePadding();
+    ui::Icon(reg.all_of<DirectionalLight>(e) ? ICON_T_SUN : ICON_T_LIGHT, theme::TypeLight);
+    ImGui::SameLine(0.0f, 8.0f);
+    ui::PushBold();
     ImGui::TextUnformatted("ライト");
-    ImGui::PopStyleColor();
+    ui::PopBold();
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::TextDisabled("%s",
         reg.all_of<DirectionalLight>(e) ? "Directional — 太陽光（全体を照らす）" :
@@ -4247,23 +4233,11 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
 
     ImGui::Spacing();
 
-    // 色 × 明るさ の結果を帯でプレビュー（実際の光の見え方の目安）
-    auto previewSwatch = [&](const DirectX::XMFLOAT3& col, float intensity)
-    {
-        float k = intensity > 1.0f ? 1.0f : intensity;
-        ImVec4 c(col.x * k, col.y * k, col.z * k, 1.0f);
-        ImGui::ColorButton("##lightpreview", c,
-            ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
-            ImVec2(ImGui::GetContentRegionAvail().x, 14.0f));
-        ImGui::Spacing();
-    };
-
     if (reg.all_of<PointLight>(e))
     {
         BeginEdit(reg, e, m_plEdit);
         auto& pl = reg.get<PointLight>(e);
         bool changed = false, active = false;
-        previewSwatch(pl.color, pl.intensity);
         if (pg::Begin("PointLight"))
         {
             changed |= pg::Color3("色 Color", &pl.color.x, ImGuiColorEditFlags_NoInputs);
@@ -4283,7 +4257,6 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         BeginEdit(reg, e, m_dlEdit);
         auto& dl = reg.get<DirectionalLight>(e);
         bool changed = false, active = false;
-        previewSwatch(dl.color, dl.intensity);
         if (pg::Begin("DirectionalLight"))
         {
             changed |= pg::Color3("色 Color", &dl.color.x, ImGuiColorEditFlags_NoInputs);
@@ -4301,7 +4274,6 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         BeginEdit(reg, e, m_slEdit);
         auto& sl = reg.get<SpotLight>(e);
         bool changed = false, active = false;
-        previewSwatch(sl.color, sl.intensity);
         if (pg::Begin("SpotLight"))
         {
             changed |= pg::Color3("色 Color", &sl.color.x, ImGuiColorEditFlags_NoInputs);
@@ -4327,22 +4299,15 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
 // ── オーディオ専用インスペクター（クリップ/音量/再生/空間化） ──
 void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, entt::entity e)
 {
-    const EditorUiIcons* ic = ctx.icons;
-    const ImVec4 green(0.37f, 0.78f, 0.49f, 1.0f);
-
     auto& as = reg.get<AudioSource>(e);
 
     // ヘッダ（アイコン + 「オーディオ」 + 2D/3D 種別）
-    if (ic && ic->entAudio)
-    {
-        float s = ImGui::GetTextLineHeight() * 1.3f;
-        ImGui::Image(static_cast<ImTextureID>(ic->entAudio), ImVec2(s, s));
-        ImGui::SameLine(0.0f, 6.0f);
-        ImGui::AlignTextToFramePadding();
-    }
-    ImGui::PushStyleColor(ImGuiCol_Text, green);
+    ImGui::AlignTextToFramePadding();
+    ui::Icon(ICON_T_AUDIO, theme::TypeAudio);
+    ImGui::SameLine(0.0f, 8.0f);
+    ui::PushBold();
     ImGui::TextUnformatted("オーディオ");
-    ImGui::PopStyleColor();
+    ui::PopBold();
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::TextDisabled("%s", as.spatial ? "3D 空間音" : "2D サウンド");
 
@@ -4552,7 +4517,7 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
                                    ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker,
                                    ImVec2(12, 12));
                 ImGui::SameLine();
-                ImGui::Checkbox(label, on);
+                ui::Checkbox(label, on);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
                 ImGui::PopID();
             };

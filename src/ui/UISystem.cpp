@@ -1,3 +1,4 @@
+#include "core/GameUiFont.h"
 #include "ui/UISystem.h"
 
 #include <algorithm>
@@ -1489,7 +1490,8 @@ void DrawUiElement(entt::entity e, const UiRectPx& rect, UiDrawContext& ctx)
              || txt->shadowColor.w > 0.0f);
         if (!txt->text.empty() && anyTextLayerVisible)
         {
-            ImFont* font = ImGui::GetFont();
+            // ゲーム UI の既定フォント（エディタでは Yu Gothic Medium を別途保持。配布ゲームは ImGui の既定 = pak のフォント）
+            ImFont* font = GameUiDefaultFont() ? GameUiDefaultFont() : ImGui::GetFont();
             if (!txt->fontPath.empty())
                 if (ImFont* custom = GetOrLoadUiFont(txt->fontPath))
                     font = custom;

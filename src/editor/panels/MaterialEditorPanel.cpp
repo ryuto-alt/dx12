@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/MaterialEditorPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/panels/AssetBrowserPanel.h"
@@ -436,7 +437,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     ImGui::BeginGroup();
 
     ImGui::SetNextItemWidth(240.0f);
-    ImGui::InputText("\xe5\x90\x8d\xe5\x89\x8d Name", m_nameBuf, sizeof(m_nameBuf));  // 名前
+    ui::InputText("\xe5\x90\x8d\xe5\x89\x8d Name", m_nameBuf, sizeof(m_nameBuf));  // 名前
     ImGui::SameLine();
     if (ImGui::Button("\xe4\xbf\x9d\xe5\xad\x98 Save"))
     {
@@ -460,7 +461,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     // ★即時プレビューに出るのは metallic/roughness だけ。uvTiling は描画側に読み手が無い（下の注記参照）。
     auto liveSlider = [&](const char* label, f32* v, f32 lo, f32 hi)
     {
-        bool dragging = ImGui::SliderFloat(label, v, lo, hi, "%.3f");
+        bool dragging = ui::SliderFloat(label, v, lo, hi, "%.3f");
         if (dragging && m_materialAssetManager && !m_currentPath.empty())
         {
             m_materialAssetManager->UpdateScalarsOnly(m_currentPath, m_current.metallic, m_current.roughness,

@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/LightingPanel.h"
 
 #include "editor/EditorContext.h"
@@ -42,45 +43,14 @@ namespace
 constexpr int kMaxTotalLights  = kLightBudgetTotal;
 constexpr int kMaxPerCluster   = kLightBudgetPerCluster;
 
-// ── InspectorPanel の IconHeader と同じ流儀のカテゴリ帯 ──
+// ── InspectorPanel の IconHeader と同じ見出し帯（実体は ui::SectionHeader）──
+// tex は従来の PNG アイコンの有無（0 = アイコン無し）。あるときはライトのグリフ（琥珀）を出す。
 bool SectionHeader(const EditorUiIcons* ic, u64 tex, const char* label,
                    ImGuiTreeNodeFlags flags = 0)
 {
-    ImGui::PushStyleColor(ImGuiCol_Header,        theme::GroupBg);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, theme::Hex(0x272831));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  theme::Hex(0x2b2c36));
-    ImGui::PushStyleColor(ImGuiCol_Text,          theme::TextHi);
-
-    bool open;
-    if (!ic || !tex)
-    {
-        open = ImGui::CollapsingHeader(label, flags);
-    }
-    else
-    {
-        const float h = ImGui::GetTextLineHeight();
-        const float spaceW = ImGui::CalcTextSize(" ").x;
-        const int pad = (spaceW > 0.0f) ? static_cast<int>((h + 6.0f) / spaceW) + 1 : 3;
-        std::string padded(static_cast<size_t>(pad), ' ');
-        padded += label;
-        open = ImGui::CollapsingHeader(padded.c_str(), flags);
-    }
-    ImGui::PopStyleColor(4);
-
-    const ImVec2 mn = ImGui::GetItemRectMin();
-    const ImVec2 mx = ImGui::GetItemRectMax();
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        mn, ImVec2(mn.x + 3.0f, mx.y), ImGui::GetColorU32(theme::Accent));
-
-    if (ic && tex)
-    {
-        const float h = ImGui::GetTextLineHeight();
-        const float cy = (mn.y + mx.y) * 0.5f;
-        const float x  = mn.x + ImGui::GetTreeNodeToLabelSpacing();
-        ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(tex),
-            ImVec2(x, cy - h * 0.5f), ImVec2(x + h, cy + h * 0.5f));
-    }
-    return open;
+    const bool hasIcon = ic && tex;
+    return ui::SectionHeader(label, hasIcon ? ICON_T_LIGHT : nullptr,
+                             hasIcon ? &theme::TypeLight : nullptr, flags);
 }
 
 // ── コンポーネント編集の Undo 追跡（InspectorPanel の BeginEdit/EndEdit と同じ流儀）──

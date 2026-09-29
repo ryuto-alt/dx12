@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "UiEditorPanel.h"
 
 #include <algorithm>
@@ -743,7 +744,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     }
 
     ImGui::SameLine();
-    ImGui::Checkbox("ガイド", &m_smartGuides);
+    ui::Checkbox("ガイド", &m_smartGuides);
     ImGui::SetItemTooltip("ドラッグ中に他の要素・画面の端/中央へ吸着する（Alt 押下で一時無効）");
 
     ImGui::SameLine(0.0f, 14.0f);
@@ -751,7 +752,7 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     ImGui::TextUnformatted("画面");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(170.0f);
-    if (ImGui::BeginCombo("##UiEdScreenSize", kScreenSizes[m_screenSizeIdx].label))
+    if (ui::BeginCombo("##UiEdScreenSize", kScreenSizes[m_screenSizeIdx].label))
     {
         for (int i = 0; i < IM_ARRAYSIZE(kScreenSizes); ++i)
         {
@@ -784,10 +785,10 @@ void UiEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const 
     if (ImGui::Button("100%")) { m_zoom = 1.0f; m_pan = ImVec2(0.0f, 0.0f); }
     ImGui::SetItemTooltip("等倍表示（1 キャンバス px = 1 画面 px）");
     ImGui::SameLine();
-    ImGui::Checkbox("グリッド", &m_showGrid);
+    ui::Checkbox("グリッド", &m_showGrid);
     ImGui::SetItemTooltip("50px（画面座標）間隔のグリッドを表示");
     ImGui::SameLine();
-    ImGui::Checkbox("市松", &m_checkerBg);
+    ui::Checkbox("市松", &m_checkerBg);
     ImGui::SetItemTooltip("画面背景を市松模様に（透過 UI の視認用）");
 
     // ===== 左: 階層ツリー / 右: キャンバス領域（下 1 行はステータスバーに残す）=====

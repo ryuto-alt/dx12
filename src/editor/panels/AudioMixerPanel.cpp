@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/AudioMixerPanel.h"
 
 #include "audio/AudioSystem.h"
@@ -101,7 +102,7 @@ void RenderBusStrips(AudioSystem& a)
         // ローパス（0 = 無し）
         float lp = b.lowpassHz;
         ImGui::SetNextItemWidth(stripW);
-        if (ImGui::DragFloat("##lp", &lp, 20.0f, 0.0f, 20000.0f, lp > 0.0f ? "%.0fHz" : "LP 無し"))
+        if (ui::DragFloat("##lp", &lp, 20.0f, 0.0f, 20000.0f, lp > 0.0f ? "%.0fHz" : "LP 無し"))
             a.SetBusLowpass(b.name, lp);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("ローパス（Hz、0 = 無し）。スナップショットの分: %.0f Hz\n"
@@ -127,10 +128,10 @@ void RenderSnapshots(AudioSystem& a)
     std::vector<const char*> names;
     for (const auto& n : st.defined) names.push_back(n.c_str());
     ImGui::SetNextItemWidth(160.0f);
-    ImGui::Combo("##snap", &s_sel, names.data(), static_cast<int>(names.size()));
+    ui::Combo("##snap", &s_sel, names.data(), static_cast<int>(names.size()));
     ImGui::SameLine();
     ImGui::SetNextItemWidth(90.0f);
-    ImGui::DragFloat("秒", &s_sec, 0.05f, 0.0f, 10.0f, "%.2f");
+    ui::DragFloat("秒", &s_sec, 0.05f, 0.0f, 10.0f, "%.2f");
     ImGui::SameLine();
     if (ImGui::Button("切り替え") && !names.empty()) a.SetSnapshot(names[static_cast<size_t>(s_sel)], s_sec);
     ImGui::Text("現在: %s → %s", st.current.c_str(), st.target.c_str());
@@ -252,10 +253,10 @@ void RenderAudioMixerPanel(AudioSystem* audio, EditorContext& ctx)
                             ss.audioSecondsDecoded > 0.0 ? ss.decodeMs / ss.audioSecondsDecoded : 0.0);
     ImGui::TextDisabled("フェーダーの操作はシーンに保存されません（Play 中は Lua の setBusVolume と同じ値）");
 
-    if (ImGui::CollapsingHeader("バス", ImGuiTreeNodeFlags_DefaultOpen)) RenderBusStrips(a);
-    if (ImGui::CollapsingHeader("スナップショット", ImGuiTreeNodeFlags_DefaultOpen)) RenderSnapshots(a);
-    if (ImGui::CollapsingHeader("リバーブ", ImGuiTreeNodeFlags_DefaultOpen)) RenderReverb(a);
-    if (ImGui::CollapsingHeader("鳴っている音", ImGuiTreeNodeFlags_DefaultOpen)) RenderVoices(a);
+    if (ui::CollapsingHeader("バス", ImGuiTreeNodeFlags_DefaultOpen)) RenderBusStrips(a);
+    if (ui::CollapsingHeader("スナップショット", ImGuiTreeNodeFlags_DefaultOpen)) RenderSnapshots(a);
+    if (ui::CollapsingHeader("リバーブ", ImGuiTreeNodeFlags_DefaultOpen)) RenderReverb(a);
+    if (ui::CollapsingHeader("鳴っている音", ImGuiTreeNodeFlags_DefaultOpen)) RenderVoices(a);
 
     ImGui::End();
 }

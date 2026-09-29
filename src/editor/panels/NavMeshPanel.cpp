@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/NavMeshPanel.h"
 
 #include "core/Logger.h"
@@ -252,7 +253,7 @@ void Render(Scene& scene, EditorContext& ctx)
     }
 
     bool dbg = scene.GetNavDebugDraw();
-    if (ImGui::Checkbox("シーンビューにワイヤ表示", &dbg)) scene.SetNavDebugDraw(dbg);
+    if (ui::Checkbox("シーンビューにワイヤ表示", &dbg)) scene.SetNavDebugDraw(dbg);
     ImGui::SameLine();
     ImGui::TextDisabled("(?)");
     if (ImGui::IsItemHovered())
@@ -273,7 +274,7 @@ void Render(Scene& scene, EditorContext& ctx)
     if (!st.log.empty())
     {
         ImGui::Spacing();
-        if (ImGui::CollapsingHeader("生成ログ"))
+        if (ui::CollapsingHeader("生成ログ"))
         {
             ImGui::BeginChild("##navlog", ImVec2(0, 150), true,
                               ImGuiWindowFlags_HorizontalScrollbar);

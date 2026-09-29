@@ -48,7 +48,9 @@ public:
     void SetLogicalDisplaySize(u32 w, u32 h) { m_logicalW = w; m_logicalH = h; }
     // --background 用: 最初のフレームでレイアウト(imgui.ini)を読んだ後は保存しない。
     //   画面外/最小化で動かした窓の位置が、人が使う普段のレイアウトに焼き付くのを防ぐ。
-    void SetIniSavingDisabled(bool on) { m_iniSavingDisabled = on; }
+    //   ★同時に multi-viewport を恒久的に無効化する（--background は人の画面に窓を出さないための機能。
+    //     仮想入力を後から切っても、別 OS 窓を出さない）。
+    void SetIniSavingDisabled(bool on);
     // multi-viewportのセカンダリ窓の描画+Present。メインコマンドリストのExecute後・Present前に呼ぶ。
     void RenderPlatformWindows();
     void Shutdown();

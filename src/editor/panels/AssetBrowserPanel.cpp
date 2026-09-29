@@ -1,3 +1,4 @@
+#include "editor/UiWidgets.h"
 #include "editor/panels/AssetBrowserPanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "editor/EditorContext.h"
@@ -189,166 +190,68 @@ const char* AssetBrowserPanel::GetTypeIcon(AssetType type)
     }
 }
 
-// AssetType → 色 ヘルパー（file scope）
+// AssetType → 種別カラー（file scope）。テーマの「控えめな色味」に揃える: フォルダは中性グレー、
+// それ以外は彩度を落とした種別色（旧: 高彩度の黄/水色/緑/橙/青/紫/桃で画面がうるさかった）。
 static ImVec4 AssetTypeColor(int type)
 {
+    namespace th = dx12e::theme;
     switch (type)
     {
-    case 0: return ImVec4(1.0f, 0.85f, 0.3f, 1.0f);  // Folder
-    case 1: return ImVec4(0.4f, 0.75f, 1.0f, 1.0f);  // Model
-    case 2: return ImVec4(0.3f, 0.9f, 0.5f, 1.0f);   // Texture
-    case 3: return ImVec4(1.0f, 0.55f, 0.25f, 1.0f);  // Scene
-    case 4: return ImVec4(0.4f, 0.55f, 1.0f, 1.0f);   // Script
-    case 5: return ImVec4(0.85f, 0.35f, 0.85f, 1.0f);  // Audio
-    case 6: return ImVec4(0.55f, 0.85f, 0.95f, 1.0f);  // Prefab
-    case 7: return ImVec4(0.75f, 0.45f, 0.95f, 1.0f);  // Shader
-    case 8: return ImVec4(0.95f, 0.65f, 0.20f, 1.0f);  // Material
-    case 9: return ImVec4(0.95f, 0.45f, 0.70f, 1.0f);  // UiAnim（アニメ系はピンク寄りで統一）
-    case 10: return ImVec4(0.98f, 0.60f, 0.40f, 1.0f); // SpriteSheet
-    default: return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+    case 0: return th::TypeFolder;               // Folder
+    case 1: return th::Hex(0x8FB4E8);            // Model
+    case 2: return th::Hex(0x7CC49A);            // Texture
+    case 3: return th::TypeScene;                // Scene
+    case 4: return th::TypeScript;               // Script
+    case 5: return th::TypeAudio;                // Audio
+    case 6: return th::TypePrefab;               // Prefab
+    case 7: return th::Hex(0xC08AE6);            // Shader
+    case 8: return th::TypeLight;                // Material（琥珀）
+    case 9: return th::TypeUi;                   // UiAnim（アニメ系はマゼンタ寄りで統一）
+    case 10: return th::Hex(0xE59C7A);           // SpriteSheet
+    default: return th::TypeEmpty;
     }
 }
 
-// AssetType → ベクターアイコン描画（アイコンフォント不要・任意サイズで鮮明）
+// AssetType → アイコングリフ（Lucide。旧: DrawList で描いた立体アイコン。線画に統一）
+static const char* AssetTypeGlyph(int type)
+{
+    switch (type)
+    {
+    case 0:  return ICON_FOLDER;
+    case 1:  return ICON_T_MESH;
+    case 2:  return ICON_IMAGE;
+    case 3:  return ICON_FILM;
+    case 4:  return ICON_FILE_CODE;
+    case 5:  return ICON_MUSIC;
+    case 6:  return ICON_PACKAGE;
+    case 7:  return ICON_T_SHADER;
+    case 8:  return ICON_T_MATERIAL;
+    case 9:  return ICON_T_ANIM;
+    case 10: return ICON_T_GRID;
+    default: return ICON_FILE;
+    }
+}
+
+// AssetType → アイコン描画（線画グリフを中央へ。カードの大きさに合わせて拡縮）
 static void DrawAssetGlyph(ImDrawList* dl, ImVec2 cardMin, float sz, int type,
                            const ImVec4& color, bool isUp)
 {
-    const float u  = sz;
-    const float cx = cardMin.x + sz * 0.5f;
-    const float cy = cardMin.y + sz * 0.5f;
-
-    auto cl = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
-    auto shade = [&](float m, float a) -> ImU32 {
-        return IM_COL32(int(cl(color.x * m) * 255), int(cl(color.y * m) * 255),
-                        int(cl(color.z * m) * 255), int(cl(a) * 255));
-    };
-    const ImU32 base  = shade(1.0f, 1.0f);
-    const ImU32 light = shade(1.4f, 1.0f);
-    const ImU32 dark  = shade(0.55f, 1.0f);
-
-    auto V = [](float x, float y) { return ImVec2(x, y); };
-
-    // 親フォルダ（..）は上矢印
-    if (isUp)
-    {
-        dl->AddTriangleFilled(V(cx, cy - u * 0.24f), V(cx - u * 0.24f, cy + u * 0.02f),
-                              V(cx + u * 0.24f, cy + u * 0.02f), base);
-        dl->AddRectFilled(V(cx - u * 0.09f, cy), V(cx + u * 0.09f, cy + u * 0.24f), base, u * 0.03f);
-        return;
-    }
-
-    switch (type)
-    {
-    case 0: // Folder
-    {
-        float x0 = cx - u * 0.30f, x1 = cx + u * 0.30f;
-        float y0 = cy - u * 0.20f, y1 = cy + u * 0.22f;
-        dl->AddRectFilled(V(x0, y0), V(x0 + u * 0.26f, y0 + u * 0.13f), dark, u * 0.04f,
-                          ImDrawFlags_RoundCornersTop);
-        dl->AddRectFilled(V(x0, y0 + u * 0.07f), V(x1, y1), base, u * 0.06f);
-        dl->AddRectFilled(V(x0, y0 + u * 0.07f), V(x1, y0 + u * 0.12f), light, 0.0f); // 上端ハイライト
-        break;
-    }
-    case 1: // Model（アイソメトリックキューブ）
-    {
-        float R = u * 0.30f, H = R * 0.58f;
-        ImVec2 top = V(cx, cy - 2 * H), upR = V(cx + R, cy - H), loR = V(cx + R, cy + H);
-        ImVec2 bot = V(cx, cy + 2 * H), loL = V(cx - R, cy + H), upL = V(cx - R, cy - H);
-        ImVec2 mid = V(cx, cy);
-        dl->AddQuadFilled(top, upR, mid, upL, light); // 上面
-        dl->AddQuadFilled(upL, mid, bot, loL, base);  // 左面
-        dl->AddQuadFilled(upR, loR, bot, mid, dark);  // 右面
-        break;
-    }
-    case 2: // Texture（画像フレーム）
-    {
-        float x0 = cx - u * 0.30f, y0 = cy - u * 0.26f, x1 = cx + u * 0.30f, y1 = cy + u * 0.26f;
-        dl->AddRectFilled(V(x0, y0), V(x1, y1), shade(0.30f, 1.0f), u * 0.05f);
-        dl->AddCircleFilled(V(x0 + u * 0.16f, y0 + u * 0.15f), u * 0.07f, light);             // 太陽
-        dl->AddTriangleFilled(V(x0, y1), V(x0 + u * 0.22f, cy), V(x0 + u * 0.44f, y1), base);  // 山
-        dl->AddTriangleFilled(V(cx - u * 0.02f, y1), V(cx + u * 0.18f, cy + u * 0.04f), V(x1, y1), light);
-        dl->AddRect(V(x0, y0), V(x1, y1), base, u * 0.05f, 0, 2.0f);                           // フレーム
-        break;
-    }
-    case 3: // Scene（カチンコ / クラップボード）
-    {
-        float x0 = cx - u * 0.30f, x1 = cx + u * 0.30f;
-        float ty0 = cy - u * 0.28f, ty1 = cy - u * 0.10f;  // 上: クラッパー棒
-        float by1 = cy + u * 0.28f;                         // 下: スレート板
-
-        // スレート板（本体）
-        dl->AddRectFilled(V(x0, ty1), V(x1, by1), base, u * 0.04f);
-        dl->AddRect(V(x0, ty1), V(x1, by1), shade(0.35f, 1.0f), u * 0.04f, 0, 1.5f);
-        // 板の罫線（記入欄に見立て）
-        for (int i = 0; i < 2; ++i)
-        {
-            float ly = ty1 + u * 0.10f + i * u * 0.11f;
-            dl->AddLine(V(x0 + u * 0.05f, ly), V(x1 - u * 0.05f, ly), shade(0.4f, 0.85f), 1.5f);
-        }
-
-        // クラッパー棒（上）＋斜めストライプ
-        dl->AddRectFilled(V(x0, ty0), V(x1, ty1), dark, u * 0.03f);
-        float sw = (x1 - x0) / 5.0f, sk = u * 0.05f;
-        for (int k = 1; k < 5; k += 2)
-        {
-            float sx = x0 + k * sw;
-            dl->AddQuadFilled(V(sx, ty1), V(sx + sw, ty1),
-                              V(sx + sw + sk, ty0), V(sx + sk, ty0), light);
-        }
-        break;
-    }
-    case 4: // Script（コードページ </>）
-    {
-        float x0 = cx - u * 0.26f, y0 = cy - u * 0.28f, x1 = cx + u * 0.26f, y1 = cy + u * 0.28f;
-        dl->AddRectFilled(V(x0, y0), V(x1, y1), IM_COL32(236, 239, 245, 255), u * 0.05f);
-        dl->AddRect(V(x0, y0), V(x1, y1), base, u * 0.05f, 0, 1.5f);
-        float th = sz * 0.045f; if (th < 1.8f) th = 1.8f;
-        dl->AddLine(V(cx - u * 0.04f, cy - u * 0.11f), V(cx - u * 0.15f, cy), base, th); // <
-        dl->AddLine(V(cx - u * 0.15f, cy), V(cx - u * 0.04f, cy + u * 0.11f), base, th);
-        dl->AddLine(V(cx + u * 0.04f, cy - u * 0.11f), V(cx + u * 0.15f, cy), base, th); // >
-        dl->AddLine(V(cx + u * 0.15f, cy), V(cx + u * 0.04f, cy + u * 0.11f), base, th);
-        break;
-    }
-    case 5: // Audio（8分音符）
-    {
-        float th = sz * 0.05f; if (th < 2.0f) th = 2.0f;
-        ImVec2 head = V(cx - u * 0.12f, cy + u * 0.20f);
-        float hr = u * 0.11f;
-        dl->AddCircleFilled(head, hr, base);
-        ImVec2 stemTop = V(cx + u * 0.14f, cy - u * 0.26f);
-        dl->AddLine(V(head.x + hr - 1.0f, head.y), stemTop, base, th);
-        dl->AddLine(stemTop, V(cx + u * 0.26f, cy - u * 0.12f), base, th); // 旗
-        break;
-    }
-    default: // Other（書類）
-    {
-        float x0 = cx - u * 0.24f, y0 = cy - u * 0.28f, x1 = cx + u * 0.24f, y1 = cy + u * 0.28f;
-        float fold = u * 0.13f;
-        dl->AddRectFilled(V(x0, y0), V(x1, y1), IM_COL32(226, 229, 236, 255), u * 0.04f);
-        dl->AddTriangleFilled(V(x1 - fold, y0), V(x1, y0), V(x1, y0 + fold), IM_COL32(170, 175, 185, 255));
-        dl->AddRect(V(x0, y0), V(x1, y1), base, u * 0.04f, 0, 1.5f);
-        for (int i = 0; i < 3; ++i)
-        {
-            float ly = cy - u * 0.05f + i * u * 0.10f;
-            dl->AddLine(V(x0 + u * 0.06f, ly), V(x1 - u * 0.06f, ly), IM_COL32(150, 153, 163, 255), 1.5f);
-        }
-        break;
-    }
-    }
+    const ImVec2 c(cardMin.x + sz * 0.5f, cardMin.y + sz * 0.5f - sz * 0.03f);
+    const float px = (std::max)(16.0f, sz * 0.62f);
+    dx12e::ui::DrawIconCentered(dl, isUp ? ICON_ARROW_UP : AssetTypeGlyph(type), c,
+                                ImGui::GetColorU32(color), px);
 }
 
-// プレビュー画像にボーダー＋タイプ色のコーナーバッジを重ねる（直前の Image アイテム基準）
+// プレビュー画像に 1px の枠と、下辺の細い種別カラー帯を重ねる（直前の Image アイテム基準。UE のコンテンツブラウザ風）
 static void DecoratePreview(ImVec2 mn, float sz, const ImVec4& typeColor)
 {
+    namespace th = dx12e::theme;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 mx = ImVec2(mn.x + sz, mn.y + sz);
-    bool hov = ImGui::IsItemHovered();
-    ImU32 border = hov ? ImGui::GetColorU32(ImVec4(typeColor.x, typeColor.y, typeColor.z, 1.0f))
-                       : IM_COL32(0, 0, 0, 140);
-    dl->AddRect(mn, mx, border, 4.0f, 0, hov ? 2.5f : 1.0f);
-    float t = sz * 0.28f;
-    dl->AddTriangleFilled(mn, ImVec2(mn.x + t, mn.y), ImVec2(mn.x, mn.y + t),
-                          ImGui::GetColorU32(typeColor));
+    const bool hov = ImGui::IsItemHovered();
+    dl->AddRect(mn, mx, ImGui::GetColorU32(hov ? th::BorderStrong : th::Border), 2.0f, 0, 1.0f);
+    dl->AddRectFilled(ImVec2(mn.x + 1.0f, mx.y - 3.0f), ImVec2(mx.x - 1.0f, mx.y - 1.0f),
+                      ImGui::GetColorU32(th::WithAlpha(typeColor, 0.9f)));
 }
 
 // ===== フォルダツリー（再帰描画）=====
@@ -373,7 +276,9 @@ void AssetBrowserPanel::DrawFolderTree(const std::filesystem::path& dir, bool& n
         if (name[0] == '.') continue; // .thumbcache 等の隠しフォルダをスキップ
         bool isSelected = (m_currentDir == subDir);
 
-        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
+        // 行全体（左端〜右端）を選択面にし、chevron・フォルダアイコン・名前は自前で描く
+        // （標準の矢印は巨大な三角で UE 風に合わせられない。判定・開閉は TreeNodeEx が担う）。
+        ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanFullWidth;
         if (isSelected) flags |= ImGuiTreeNodeFlags_Selected;
 
         // サブフォルダがあるか簡易チェック
@@ -388,10 +293,31 @@ void AssetBrowserPanel::DrawFolderTree(const std::filesystem::path& dir, bool& n
         }
         if (!hasSubDirs) flags |= ImGuiTreeNodeFlags_Leaf;
 
-        // フォルダアイコン色
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+        namespace th = dx12e::theme;
+        const float rowX = ImGui::GetCursorScreenPos().x;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));   // 標準の矢印と文字は隠す
         bool open = ImGui::TreeNodeEx(name.c_str(), flags);
         ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+        {
+            ImDrawList* tdl = ImGui::GetWindowDrawList();
+            const ImVec2 mn = ImGui::GetItemRectMin();
+            const ImVec2 mx = ImGui::GetItemRectMax();
+            const float cy = (mn.y + mx.y) * 0.5f;
+            const bool hov = ImGui::IsItemHovered();
+            if (isSelected)
+                tdl->AddRectFilled(mn, ImVec2(mn.x + 2.0f, mx.y), ImGui::GetColorU32(th::Accent));
+            if (hasSubDirs)
+                dx12e::ui::DrawIconCentered(tdl, open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT,
+                                            ImVec2(rowX + 4.0f + ImGui::GetFontSize() * 0.5f, cy),
+                                            ImGui::GetColorU32(hov || isSelected ? th::Text : th::TextDim), 13.0f);
+            const float tx = rowX + ImGui::GetFontSize() + 8.0f;
+            dx12e::ui::DrawIconCentered(tdl, open && hasSubDirs ? ICON_FOLDER_OPEN : ICON_FOLDER,
+                                        ImVec2(tx + 8.0f, cy), ImGui::GetColorU32(th::TypeFolder), 16.0f);
+            tdl->AddText(ImVec2(tx + 22.0f, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)),
+                         ImGui::GetColorU32(th::Text), name.c_str());
+        }
 
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
         {
@@ -423,40 +349,36 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
     // ===== 上部: 検索 + 種別フィルタ + サイズスライダー =====
     {
         // 検索が一番よく使うので左端・幅広に置く（フォルダを掘らずに名前で辿り着ける）
-        ImGui::SetNextItemWidth(200);
-        if (ImGui::InputTextWithHint("##Search", "検索（このフォルダ以下）",
-                                     m_searchBuf, sizeof(m_searchBuf)))
+        ImGui::SetNextItemWidth(220);
+        if (ui::SearchField("##Search", m_searchBuf, sizeof(m_searchBuf), "検索（このフォルダ以下）"))
             needRefresh = true;
-        if (m_searchBuf[0] != '\0')
-        {
-            ImGui::SameLine(0, 4);
-            if (ImGui::SmallButton("×"))
-            {
-                m_searchBuf[0] = '\0';
-                needRefresh = true;
-            }
-        }
 
         ImGui::SameLine(0, 12);
         const char* filterNames[] = {"All", "3D Models", "Scenes", "Textures", "Scripts", "Audio", "Materials"};
+        // フィルタは平たい「ピル」。選択中だけ面（アクセント 30%）を敷き、他は文字だけ（色付きボタンの羅列にしない）。
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
         for (int i = 0; i < 7; ++i)
         {
-            if (i > 0) ImGui::SameLine(0, 3);
+            if (i > 0) ImGui::SameLine(0, 2);
             bool active = (m_filterIndex == i);
             ImGui::PushStyleColor(ImGuiCol_Button,
-                active ? dx12e::theme::Accent : dx12e::theme::GroupBg);
+                active ? dx12e::theme::Selection : ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                active ? dx12e::theme::SelectionActive : dx12e::theme::Bg3);
             ImGui::PushStyleColor(ImGuiCol_Text,
-                active ? dx12e::theme::TextHi : dx12e::theme::TextDim);
+                active ? dx12e::theme::Text : dx12e::theme::TextDim);
             if (ImGui::SmallButton(filterNames[i]))
                 m_filterIndex = i;
-            ImGui::PopStyleColor(2);
+            ImGui::PopStyleColor(3);
         }
+        ImGui::PopStyleVar(2);
 
         // サイズスライダーは右端へ（普段触らないものが左にあると検索/フィルタが探しにくい）
         const float sliderW = 110.0f;
         ImGui::SameLine(ImGui::GetContentRegionMax().x - sliderW);
         ImGui::SetNextItemWidth(sliderW);
-        ImGui::SliderFloat("##Size", &m_cellSize, 56.0f, 192.0f, "%.0f px");
+        ui::SliderFloat("##Size", &m_cellSize, 56.0f, 192.0f, "%.0f px");
     }
 
     ImGui::Separator();
@@ -467,15 +389,11 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
     {
         // assets ルート
         bool assetsSelected = (m_currentDir == m_assetsRoot);
-        if (assetsSelected)
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.4f, 1.0f));
         if (ImGui::Selectable("assets##ShortcutRoot", assetsSelected))
         {
             m_currentDir = m_assetsRoot;
             needRefresh = true;
         }
-        if (assetsSelected)
-            ImGui::PopStyleColor();
 
         DrawFolderTree(m_assetsRoot, needRefresh);
 
@@ -491,14 +409,11 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             scriptsSelected = !ec && !rel.empty() && rel.native()[0] != '.';
             if (m_currentDir == m_scriptsRoot) scriptsSelected = true;
         }
-        ImGui::PushStyleColor(ImGuiCol_Text,
-            scriptsSelected ? ImVec4(1.0f, 1.0f, 0.4f, 1.0f) : ImVec4(0.4f, 0.55f, 1.0f, 1.0f));
         if (ImGui::Selectable("scripts##ShortcutScripts", scriptsSelected))
         {
             m_currentDir = m_scriptsRoot;
             needRefresh = true;
         }
-        ImGui::PopStyleColor();
 
         if (std::filesystem::exists(m_scriptsRoot))
             DrawFolderTree(m_scriptsRoot, needRefresh);
@@ -526,6 +441,10 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
             fs::path rootDir = inScripts ? m_scriptsRoot : m_assetsRoot;
             const char* rootLabel = inScripts ? "scripts" : "assets";
 
+            // パンくずは平たい文字ボタン（面はホバーだけ）。区切りは薄い chevron。
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::TextMid);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
             if (ImGui::SmallButton(rootLabel))
             {
                 m_currentDir = rootDir;
@@ -542,9 +461,9 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     for (const auto& part : relative)
                     {
                         current /= part;
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("/");
-                        ImGui::SameLine();
+                        ImGui::SameLine(0, 2);
+                        ImGui::TextDisabled("%s", ICON_CHEVRON_RIGHT);
+                        ImGui::SameLine(0, 2);
                         std::string partStr = part.string();
                         ImGui::PushID(current.string().c_str());
                         if (ImGui::SmallButton(partStr.c_str()))
@@ -556,13 +475,15 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     }
                 }
             }
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(2);
 
             // 検索中はそれを明示（今見ているのがフォルダの中身ではないと分かるように）
             if (m_searchBuf[0] != '\0')
             {
                 ImGui::SameLine(0, 10);
                 ImGui::PushStyleColor(ImGuiCol_Text, dx12e::theme::AccentLight);
-                ImGui::Text("→ \"%s\" の検索結果 %zu 件%s",
+                ImGui::Text("\"%s\" の検索結果 %zu 件%s",
                             m_searchBuf, m_entries.size(), m_searchTruncated ? "+" : "");
                 ImGui::PopStyleColor();
             }
@@ -695,34 +616,35 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
 
                     bool hovered = ImGui::IsMouseHoveringRect(cardMin, cardMax);
 
-                    // カード背景（ホバーで明るく）
+                    // カード背景（Bg2。ホバーで Bg3）+ 1px の枠。種別は下辺の細い色帯で示す
+                    // （旧: 種別色の太い枠。色が画面中に散ってうるさかった）。
+                    namespace th = dx12e::theme;
                     dl->AddRectFilled(cardMin, cardMax,
-                        hovered ? IM_COL32(60, 62, 72, 255) : IM_COL32(38, 40, 46, 255), 6.0f);
-
-                    // タイプ色ボーダー（視認性アップ・ホバーで強調）
-                    ImU32 borderCol = ImGui::GetColorU32(
-                        ImVec4(typeColor.x, typeColor.y, typeColor.z, hovered ? 1.0f : 0.55f));
-                    dl->AddRect(cardMin, cardMax, borderCol, 6.0f, 0, hovered ? 2.5f : 1.5f);
+                        ImGui::GetColorU32(hovered ? th::Bg3 : th::Bg2), 3.0f);
+                    dl->AddRect(cardMin, cardMax,
+                        ImGui::GetColorU32(hovered ? th::BorderStrong : th::Border), 3.0f, 0, 1.0f);
+                    dl->AddRectFilled(ImVec2(cardMin.x + 1.0f, cardMax.y - 3.0f), ImVec2(cardMax.x - 1.0f, cardMax.y - 1.0f),
+                        ImGui::GetColorU32(th::WithAlpha(typeColor, entry.isDirectory ? 0.0f : 0.85f)));
 
                     // ベクターアイコン（中央）
                     bool isUp = (entry.displayName == "..");
                     DrawAssetGlyph(dl, cardMin, thumbnailSize, static_cast<int>(entry.type), typeColor, isUp);
 
-                    // 拡張子バッジ（下部・タイプ色）
+                    // 拡張子（下部。控えめな中性ピル）
                     if (!entry.isDirectory)
                     {
                         std::string ext = entry.path.extension().string();
                         if (!ext.empty())
                         {
+                            dx12e::ui::PushMono();
                             ImVec2 ts = ImGui::CalcTextSize(ext.c_str());
                             ImVec2 bMin = ImVec2(cardMin.x + (thumbnailSize - ts.x) * 0.5f - 4.0f,
-                                                 cardMax.y - ts.y - 5.0f);
+                                                 cardMax.y - ts.y - 8.0f);
                             ImVec2 bMax = ImVec2(bMin.x + ts.x + 8.0f, bMin.y + ts.y + 2.0f);
-                            dl->AddRectFilled(bMin, bMax,
-                                ImGui::GetColorU32(ImVec4(typeColor.x * 0.5f, typeColor.y * 0.5f,
-                                                          typeColor.z * 0.5f, 0.9f)), 3.0f);
+                            dl->AddRectFilled(bMin, bMax, ImGui::GetColorU32(th::WithAlpha(th::Bg0, 0.75f)), 3.0f);
                             dl->AddText(ImVec2(bMin.x + 4.0f, bMin.y + 1.0f),
-                                IM_COL32(235, 235, 235, 255), ext.c_str());
+                                ImGui::GetColorU32(th::TextDim), ext.c_str());
+                            dx12e::ui::PopMono();
                         }
                     }
 
@@ -770,7 +692,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
                     // フォルダは白、ファイルは少し落として「入れ物」と「中身」を見分けやすくする
                     ImGui::PushStyleColor(ImGuiCol_Text,
-                        entry.isDirectory ? dx12e::theme::TextHi : dx12e::theme::TextMid);
+                        entry.isDirectory ? dx12e::theme::Text : dx12e::theme::TextMid);
                     ImGui::TextUnformatted(name.c_str());
                     ImGui::PopStyleColor();
                 }
@@ -784,7 +706,7 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                 if (!m_selectedPath.empty() && m_selectedPath == entry.path)
                     ImGui::GetWindowDrawList()->AddRect(
                         ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                        IM_COL32(76, 141, 255, 255), 4.0f, 0, 2.0f);
+                        ImGui::GetColorU32(dx12e::theme::Accent), 3.0f, 0, 2.0f);
 
                 // --- ダブルクリック（EndGroup 後 = グループ全体のホバー判定）---
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0))
@@ -893,11 +815,11 @@ void AssetBrowserPanel::Render(EditorContext& ctx, f32 dt)
                     ImGui::Text("[%s]", typeLabel);
                     ImGui::PopStyleColor();
                     if (entry.type == AssetType::Model)
-                        ImGui::TextDisabled("Double-click: Spawn | Drag: D&D to scene");
+                        ImGui::TextDisabled("ダブルクリック: シーンに配置 / ドラッグ: シーンへドロップ");
                     else if (entry.type == AssetType::Scene)
-                        ImGui::TextDisabled("Double-click: Load scene");
+                        ImGui::TextDisabled("ダブルクリック: シーンを開く");
                     else if (entry.type == AssetType::Script || entry.type == AssetType::Shader)
-                        ImGui::TextDisabled("Double-click: Open in VS Code");
+                        ImGui::TextDisabled("ダブルクリック: VS Code で開く");
                     ImGui::EndTooltip();
                 }
 
