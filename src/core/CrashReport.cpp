@@ -1,3 +1,6 @@
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "core/CrashReport.h"
 
 #include <algorithm>
@@ -103,7 +106,7 @@ CrashInfo ParseCrashLog(const std::string& text)
 std::string StampFrom(const std::string& at)
 {
     int y, mo, d, h, mi, s;
-    if (std::sscanf(at.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6)
+    if (sscanf_s(at.c_str(), "%d-%d-%d %d:%d:%d", &y, &mo, &d, &h, &mi, &s) == 6)
     {
         char b[32];
         std::snprintf(b, sizeof(b), "%04d%02d%02d-%02d%02d%02d", y, mo, d, h, mi, s);
@@ -148,8 +151,15 @@ std::vector<std::string> TailLines(const fs::path& p, size_t n)
 
 fs::path CrashReport::DefaultRoot()
 {
-    if (const char* d = std::getenv("DX12E_DATA_DIR"); d && *d) return fs::path(d) / "crash";
-    if (const char* l = std::getenv("LOCALAPPDATA"); l && *l) return fs::path(l) / "UnoEngine" / "crash";
+    auto env = [](const char* name) {
+        std::string v;
+        char* p = nullptr;
+        size_t n = 0;
+        if (_dupenv_s(&p, &n, name) == 0 && p) { v = p; free(p); }
+        return v;
+    };
+    if (const std::string d = env("DX12E_DATA_DIR"); !d.empty()) return fs::path(d) / "crash";
+    if (const std::string l = env("LOCALAPPDATA"); !l.empty()) return fs::path(l) / "UnoEngine" / "crash";
     return fs::temp_directory_path() / "UnoEngine" / "crash";
 }
 

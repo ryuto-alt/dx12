@@ -62,6 +62,9 @@ add_library(Core STATIC
     SplashCommon.cpp                # 起動画面の共有部品（Tips / 最近のプロジェクト / ビルド日時 / DPI）
     SplashPreview.cpp               # --splash-preview（窓なしで PNG 連番を書く検証用の軽量経路）
     Logger.cpp
+    LogRing.cpp
+    ErrorLog.cpp
+    CrashReport.cpp
     CrashHandler.cpp
     GameClock.cpp
     PlaySession.cpp                 # Play 1 回ぶんの記録（人間の操作を後から読む）
