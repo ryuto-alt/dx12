@@ -1,0 +1,268 @@
+{
+  "format": "dxseq",
+  "version": 1,
+  "id": "q_00000001",
+  "name": "GoldenShot",
+  "ticksPerSecond": 6000,
+  "frameRate": 30,
+  "range": [0, 27000],
+  "render": {"width": 1920, "height": 1080, "shutter": 0.5, "warmup": 8},
+  "meta": {"author": "tests", "notes": ["a", 1.5, true, null]},
+  "cuts": [
+    {"id": "c_01", "start": 0, "end": 12000, "camera": "b_cam"},
+    {"id": "c_02", "start": 12000, "end": 27000, "camera": "b_cam2", "blend": 300}
+  ],
+  "markers": [
+    {"id": "m_01", "t": 15600, "name": "impact", "color": "red"},
+    {"id": "m_02", "t": 0, "name": ""}
+  ],
+  "bindings": [
+    {
+      "id": "b_cam",
+      "name": "CutsceneCam",
+      "kind": "entity",
+      "hint": {"guid": "00a1b2c3d4e5f607", "path": "Rig/CutsceneCam", "name": "CutsceneCam"},
+      "tracks": [
+        {
+          "id": "t_tr",
+          "type": "transform",
+          "rotation": "euler",
+          "channels": {
+            "position.x": {
+              "keys": [
+                [0, 0, "a"],
+                [19200, 0, "a"]
+              ]
+            },
+            "position.y": {
+              "post": "pingpong",
+              "keys": [
+                [0, 6, "a"],
+                [19200, 2.2, "e:inOutQuad"]
+              ]
+            },
+            "position.z": {
+              "keys": [
+                [0, 14, "a"],
+                [19200, 6, "b", 400, 0, 400, 0]
+              ]
+            },
+            "rotation.y": {
+              "pre": "loop",
+              "post": "linear",
+              "keys": [
+                [0, 0, "l"],
+                [6000, 90, "s"],
+                [12000, 45, "l"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_q",
+          "type": "transform",
+          "name": "QuatRot",
+          "rotation": "quat",
+          "channels": {
+            "rotation.x": {
+              "keys": [
+                [0, 0, "a"],
+                [9000, 0, "a"]
+              ]
+            },
+            "rotation.y": {
+              "keys": [
+                [0, 0, "a"],
+                [9000, 0.7071067811865476, "a"]
+              ]
+            },
+            "rotation.z": {
+              "keys": [
+                [0, 0, "a"],
+                [9000, 0, "a"]
+              ]
+            },
+            "rotation.w": {
+              "keys": [
+                [0, 1, "a"],
+                [9000, 0.7071067811865476, "a"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_fov",
+          "type": "camera",
+          "focus": {"binding": "b_boss"},
+          "channels": {
+            "fov": {
+              "keys": [
+                [0, 60, "l"],
+                [19200, 42, "a"]
+              ]
+            },
+            "dofAperture": {
+              "keys": [
+                [0, 2.8, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_aim",
+          "type": "aim",
+          "offset": [0, 1.2, 0],
+          "roll": 0,
+          "target": {"binding": "b_boss"}
+        },
+        {
+          "id": "t_shk",
+          "type": "shake",
+          "mute": true,
+          "lock": true,
+          "clips": [
+            {"id": "k_s1", "start": 15600, "dur": 4200, "amp": 0.35, "freq": 26, "seed": 7}
+          ]
+        },
+        {
+          "id": "t_col",
+          "type": "property",
+          "path": "PointLight.color",
+          "valueType": "color",
+          "colorSpace": "srgb",
+          "channels": {
+            "r": {
+              "keys": [
+                [0, 1, "l"],
+                [3000, 0.25, "l"]
+              ]
+            },
+            "g": {
+              "keys": [
+                [0, 0.5, "l"]
+              ]
+            },
+            "b": {
+              "keys": [
+                [0, 0, "l"]
+              ]
+            },
+            "a": {
+              "keys": [
+                [0, 1, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_vis",
+          "type": "property",
+          "path": "MeshRenderer.visible",
+          "valueType": "bool",
+          "channels": {
+            "value": {
+              "keys": [
+                [0, 1, "s"],
+                [6000, 0, "s"]
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "b_cam2",
+      "name": "Cam \"Two\"\n日本語",
+      "kind": "entity",
+      "hint": {"name": "Cam \"Two\"\n日本語"},
+      "tracks": []
+    },
+    {
+      "id": "b_boss",
+      "name": "Boss",
+      "kind": "entity",
+      "hint": {"guid": "0123456789abcdef", "name": "Boss"},
+      "tracks": [
+        {
+          "id": "t_anim",
+          "type": "animation",
+          "clips": [
+            {"id": "k_a1", "start": 0, "dur": 12000, "blendIn": 0, "blendOut": 600, "clip": "Idle", "loop": true, "offset": 0, "rate": 1}
+          ]
+        },
+        {
+          "id": "t_aud",
+          "type": "audio",
+          "clips": [
+            {"id": "k_au", "start": 2400, "dur": 0, "bus": "music", "path": "audio/boss_theme.wav", "volume": 0.8}
+          ]
+        },
+        {
+          "id": "t_vfx",
+          "type": "vfx",
+          "clips": [
+            {"id": "k_vf", "start": 15600, "dur": 0, "mode": "burst", "preset": "explosion", "scale": 1.4}
+          ]
+        },
+        {
+          "id": "t_sub",
+          "type": "subsequence",
+          "clips": [
+            {"id": "k_sub", "start": 3000, "dur": 6000, "rate": 0.5, "sequence": "sequences/inner.dxseq"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b_scene",
+      "name": "Scene",
+      "kind": "scene",
+      "tracks": [
+        {
+          "id": "t_post",
+          "type": "post",
+          "channels": {
+            "bloom": {
+              "keys": [
+                [15600, 0.3, "l"],
+                [18000, 0.9, "l"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_ts",
+          "type": "timeScale",
+          "channels": {
+            "value": {
+              "keys": [
+                [15600, 0.25, "s"],
+                [18600, 1, "e:outQuad"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_light",
+          "type": "light",
+          "channels": {
+            "intensity": {
+              "keys": [
+                [0, 3, "l"],
+                [6000, 12, "l"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_ev",
+          "type": "event",
+          "events": [
+            {"id": "e_1", "t": 26400, "kind": "emit", "name": "bossFightStart", "data": {"value": 1}},
+            {"id": "e_2", "t": 1200, "kind": "lua", "name": "OnBossReveal", "args": [1, "x"]}
+          ]
+        }
+      ]
+    }
+  ]
+}

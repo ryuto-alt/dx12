@@ -1,0 +1,237 @@
+{
+  "format": "dxseq",
+  "version": 1,
+  "id": "q_cba1fc63",
+  "name": "PropsShow",
+  "ticksPerSecond": 6000,
+  "frameRate": 30,
+  "range": [0, 27000],
+  "meta": {"legacy": {"camera": "MainCam", "doneEvent": "PropsShow:end", "loop": true}},
+  "cuts": [
+    {"id": "c_01027bf5", "start": 0, "end": 27000, "camera": "b_5be2066e"}
+  ],
+  "markers": [],
+  "bindings": [
+    {
+      "id": "b_5be2066e",
+      "name": "MainCam",
+      "kind": "entity",
+      "hint": {"name": "MainCam"},
+      "tracks": [
+        {
+          "id": "t_b6cda673",
+          "type": "transform",
+          "rotation": "euler",
+          "channels": {
+            "position.x": {
+              "keys": [
+                [0, 0, "e:outQuad"],
+                [12000, 0, "s"],
+                [15000, 0, "e:inOutQuad"],
+                [24000, 5, "s"]
+              ]
+            },
+            "position.y": {
+              "keys": [
+                [0, 3, "e:outQuad"],
+                [12000, 3, "s"],
+                [15000, 3, "e:inOutQuad"],
+                [24000, 3, "s"]
+              ]
+            },
+            "position.z": {
+              "keys": [
+                [0, 20, "e:outQuad"],
+                [12000, 10, "s"],
+                [15000, 10, "e:inOutQuad"],
+                [24000, 10, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_9612e88b",
+          "type": "aim",
+          "end": 12000,
+          "offset": [0, 0, 0],
+          "start": 0,
+          "target": {"point": [0, 1, 0]}
+        },
+        {
+          "id": "t_b436d0b9",
+          "type": "aim",
+          "end": 24000,
+          "offset": [0, 0, 0],
+          "start": 15000,
+          "target": {"binding": "b_f6ef0314"}
+        }
+      ]
+    },
+    {
+      "id": "b_f6ef0314",
+      "name": "Statue",
+      "kind": "entity",
+      "hint": {"name": "Statue"},
+      "tracks": [
+        {
+          "id": "t_0747df71",
+          "type": "property",
+          "path": "MeshRenderer.p1",
+          "channels": {
+            "value": {
+              "keys": [
+                [0, 0, "l"],
+                [18000, 1, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_4fa2f0a0",
+          "type": "transform",
+          "rotation": "euler",
+          "channels": {
+            "position.x": {
+              "keys": [
+                [3000, 0, "e:outBack"],
+                [9000, 0, "s"]
+              ]
+            },
+            "position.y": {
+              "keys": [
+                [3000, 0, "e:outBack"],
+                [9000, 1, "s"]
+              ]
+            },
+            "position.z": {
+              "keys": [
+                [3000, 0, "e:outBack"],
+                [9000, 0, "s"]
+              ]
+            },
+            "rotation.x": {
+              "keys": [
+                [6000, 0, "e:inOutQuad"],
+                [18000, 0, "s"]
+              ]
+            },
+            "rotation.y": {
+              "keys": [
+                [6000, 0, "e:inOutQuad"],
+                [18000, 180, "s"]
+              ]
+            },
+            "rotation.z": {
+              "keys": [
+                [6000, 0, "e:inOutQuad"],
+                [18000, 0, "s"]
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "b_scene",
+      "name": "Scene",
+      "kind": "scene",
+      "tracks": [
+        {
+          "id": "t_ade78dbb",
+          "type": "post",
+          "channels": {
+            "exposure": {
+              "keys": [
+                [0, 1, "l"],
+                [1800, 8, "s"],
+                [1800, 8, "l"],
+                [4800, 1, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_e68000f6",
+          "type": "audio",
+          "clips": [
+            {"id": "k_a931acbb", "start": 1200, "dur": 0, "bus": "music", "loop": false, "path": "audio/bgm.ogg"},
+            {"id": "k_f8b1c875", "start": 7200, "dur": 0, "loop": false, "path": "audio/hit.wav", "volume": 0.7}
+          ]
+        },
+        {
+          "id": "t_e460211c",
+          "type": "vfx",
+          "clips": [
+            {"id": "k_e1941f2b", "start": 24000, "dur": 0, "mode": "burst", "position": [1, 2, 3], "preset": "sparks", "scale": 1}
+          ]
+        },
+        {
+          "id": "t_84447900",
+          "type": "event",
+          "events": [
+            {"id": "e_d6851d2c", "t": 25200, "kind": "log", "name": "done \"quoted\""},
+            {"id": "e_2e542026", "t": 27000, "kind": "loadScene", "name": "scenes/next.json", "fade": 1.2}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b_e8cc5068",
+      "name": "Lamp",
+      "kind": "entity",
+      "hint": {"name": "Lamp"},
+      "tracks": [
+        {
+          "id": "t_6df841ca",
+          "type": "property",
+          "path": "Light.intensity",
+          "channels": {
+            "value": {
+              "keys": [
+                [12000, 8, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_268c2c95",
+          "type": "property",
+          "path": "Light.color",
+          "valueType": "color",
+          "channels": {
+            "r": {
+              "keys": [
+                [12000, 1, "s"]
+              ]
+            },
+            "g": {
+              "keys": [
+                [12000, 0.5, "s"]
+              ]
+            },
+            "b": {
+              "keys": [
+                [12000, 0.2, "s"]
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "b_b5bc61f2",
+      "name": "Sparks",
+      "kind": "entity",
+      "hint": {"name": "Sparks"},
+      "tracks": [
+        {
+          "id": "t_5e9c4c22",
+          "type": "vfx",
+          "clips": [
+            {"id": "k_5fa0ab78", "start": 9000, "dur": 12000, "layer": "core", "mode": "emitter"}
+          ]
+        }
+      ]
+    }
+  ]
+}

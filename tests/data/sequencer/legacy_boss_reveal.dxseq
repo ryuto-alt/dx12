@@ -1,0 +1,152 @@
+{
+  "format": "dxseq",
+  "version": 1,
+  "id": "q_bba6d9bd",
+  "name": "BossReveal",
+  "ticksPerSecond": 6000,
+  "frameRate": 30,
+  "range": [0, 26400],
+  "meta": {"legacy": {"camera": "CutsceneCam"}},
+  "cuts": [
+    {"id": "c_f9e2870e", "start": 0, "end": 26400, "camera": "b_2d277881"}
+  ],
+  "markers": [],
+  "bindings": [
+    {
+      "id": "b_scene",
+      "name": "Scene",
+      "kind": "scene",
+      "tracks": [
+        {
+          "id": "t_25127ba1",
+          "type": "post",
+          "channels": {
+            "exposure": {
+              "keys": [
+                [0, 0, "l"],
+                [4800, 1, "s"]
+              ]
+            },
+            "contrast": {
+              "keys": [
+                [19200, 1, "e:inOutQuad"],
+                [25200, 1.2, "s"]
+              ]
+            },
+            "saturation": {
+              "keys": [
+                [19200, 1, "e:inOutQuad"],
+                [25200, 1.35, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_f03fbfa2",
+          "type": "audio",
+          "clips": [
+            {"id": "k_5d025348", "start": 2400, "dur": 0, "bus": "music", "loop": true, "path": "audio/boss_theme.wav"}
+          ]
+        },
+        {
+          "id": "t_c65fabc5",
+          "type": "timeScale",
+          "channels": {
+            "value": {
+              "keys": [
+                [15600, 0.25, "s"],
+                [18600, 0.25, "l"],
+                [21000, 1, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_5c6cce9b",
+          "type": "event",
+          "events": [
+            {"id": "e_0fc3b2c1", "t": 26400, "kind": "emit", "name": "bossFightStart", "data": {"value": 0}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b_2d277881",
+      "name": "CutsceneCam",
+      "kind": "entity",
+      "hint": {"name": "CutsceneCam"},
+      "tracks": [
+        {
+          "id": "t_92ca8549",
+          "type": "transform",
+          "rotation": "euler",
+          "channels": {
+            "position.x": {
+              "keys": [
+                [0, 0, "e:inOutQuad"],
+                [19200, 0, "s"]
+              ]
+            },
+            "position.y": {
+              "keys": [
+                [0, 6, "e:inOutQuad"],
+                [19200, 2.2, "s"]
+              ]
+            },
+            "position.z": {
+              "keys": [
+                [0, 14, "e:inOutQuad"],
+                [19200, 6, "s"]
+              ]
+            }
+          }
+        },
+        {
+          "id": "t_a8a0275e",
+          "type": "aim",
+          "end": 19200,
+          "offset": [0, 0, 0],
+          "start": 0,
+          "target": {"binding": "b_dfbf3d67"}
+        },
+        {
+          "id": "t_a89eabc7",
+          "type": "shake",
+          "clips": [
+            {"id": "k_9f8a88e7", "start": 15600, "dur": 4200, "amp": 0.35, "freq": 26, "seed": 0}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b_dfbf3d67",
+      "name": "Boss",
+      "kind": "entity",
+      "hint": {"name": "Boss"},
+      "tracks": [
+        {
+          "id": "t_ee199a34",
+          "type": "vfx",
+          "clips": [
+            {"id": "k_49b31347", "start": 15600, "dur": 0, "mode": "burst", "preset": "explosion", "scale": 1.4}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b_78372196",
+      "name": "FX_BossAura",
+      "kind": "entity",
+      "hint": {"name": "FX_BossAura"},
+      "tracks": [
+        {
+          "id": "t_ff6a51bf",
+          "type": "vfx",
+          "clips": [
+            {"id": "k_7c1d2426", "start": 16800, "dur": 9600, "mode": "emitter"}
+          ]
+        }
+      ]
+    }
+  ]
+}
