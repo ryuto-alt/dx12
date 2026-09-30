@@ -32,6 +32,11 @@ public:
         bool valid         = false;
         bool attempted     = false;               // ロードを一度試みたか(失敗時の毎フレーム再試行を防ぐ)
         std::filesystem::file_time_type mtime{};  // ホットリロード検知用(エディタのみ使用)
+        // ★マテリアルグラフ（data.IsGraph()）: LoadInto のたびに +1。GraphMaterialSystem が「.dxmat が読み直されたか」を見る。
+        //   グラフ材質の srvBlockStart は【代理ブロック】（既定の白 / 法線 / MR / 黒）＝影・深度プリパス・パストレ・RT が
+        //   従来どおり 4 枚組として読んでも壊れない（絵は単色のプロキシ。docs/MATGRAPH_G2B.md）。
+        u32  loadSerial    = 0;
+        bool srvIsProxy    = false;   // srvBlockStart が代理ブロック（グラフ材質）で埋まっている。再ロードで作り直さないための印
     };
 
     void Initialize(ResourceManager* resourceManager, GraphicsDevice* device, DescriptorHeap* srvHeap);
@@ -48,6 +53,13 @@ public:
     // キャッシュ済みデータを直接書き換える。相手が未ロードなら何もしない。
     void UpdateScalarsOnly(const std::string& relPath, f32 metallic, f32 roughness,
                             f32 uvTilingU, f32 uvTilingV);
+
+    // マテリアルグラフ（G2b）: ロード済みのグラフ材質の params をメモリ上で書き換える（ファイルは書かない）。
+    //   loadSerial を進めるので、GraphMaterialSystem は次のフレームでレコードだけを書き直す（再コンパイルしない）。
+    //   remove = true でそのパラメータの上書きを消す（グラフの既定値へ戻る）。未ロード / 従来材質なら false。
+    bool SetGraphParam(const std::string& relPath, const std::string& name, const MaterialAssetData::GraphParam& value, bool remove = false);
+    // ロード済みなら Entry（読み取り専用）。ロードは試みない。
+    const Entry* FindLoaded(const std::string& relPath) const;
 
     // エディタのみ: 0.5秒間隔でロード済みエントリの mtime を見て変化があれば自動 Invalidate する。
     void PollHotReload(f32 dt, ID3D12GraphicsCommandList* cmdList);

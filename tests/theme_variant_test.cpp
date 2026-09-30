@@ -1,5 +1,5 @@
-// エディタのテーマ・バリアント（アイデンティティ候補 A/B/C。editor/ThemeVariants.h + EditorTheme.h）の単体テスト。
-//   ・Default が第 1 波の値（＝現行）のまま動かないこと（既定の見た目が 1px も変わらない根拠の 1 つ）
+// エディタのテーマ（既定 = ネオン・エッジ + 別テーマ B/C。editor/ThemeVariants.h + EditorTheme.h）の単体テスト。
+//   ・Default（フェーズ 1a で採用した「ネオン・エッジ」+ 案 C の色の節度）の値が動かないこと
 //   ・--theme-variant の値の解釈
 //   ・全案で文字コントラストが AA(4.5:1)、選択面の上でも読めること / アクセント塗りの上の文字も読めること
 //   ・全案でレイアウトに効く値（余白・行高）が同じ＝案でレイアウトが動かない
@@ -37,56 +37,64 @@ float Saturation(const ImVec4& c)
     return mx <= 0.0f ? 0.0f : (mx - mn) / mx;
 }
 
-const th::Variant kAll[] = { th::Variant::Default, th::Variant::A, th::Variant::B, th::Variant::C };
-const th::Variant kNew[] = { th::Variant::A, th::Variant::B, th::Variant::C };
+const th::Variant kAll[] = { th::Variant::Default, th::Variant::B, th::Variant::C };
+const th::Variant kNew[] = { th::Variant::B, th::Variant::C };   // 既定以外（別テーマ）
 
-void TestDefaultIsLegacy()
+void TestDefaultIsNeon()
 {
-    // 第 1 波の EditorTheme.h の値そのもの（これが変わると既定の見た目が変わる）
+    // フェーズ 1a で採用した既定（ネオン・エッジ）の値。これが変わると既定の見た目が変わる。
     const th::Palette& p = th::SpecOf(th::Variant::Default).pal;
-    CHECK(SameVec4(p.bg0, th::Hex(0x0E0E10)));
-    CHECK(SameVec4(p.bg1, th::Hex(0x171719)));
-    CHECK(SameVec4(p.bg2, th::Hex(0x1F1F23)));
-    CHECK(SameVec4(p.bg3, th::Hex(0x2A2A2F)));
-    CHECK(SameVec4(p.bg4, th::Hex(0x34343B)));
-    CHECK(SameVec4(p.inputBg, th::Hex(0x0C0C0E)));
-    CHECK(SameVec4(p.inputBorder, th::Hex(0x2E2E34)));
-    CHECK(SameVec4(p.inputBorderHover, th::Hex(0x46464E)));
-    CHECK(SameVec4(p.borderStrong, th::Hex(0x3A3A42)));
-    CHECK(SameVec4(p.accent, th::Hex(0x2F8CFF)));
-    CHECK(SameVec4(p.accentHover, th::Hex(0x57A3FF)));
-    CHECK(SameVec4(p.accentPressed, th::Hex(0x1F6FD6)));
-    CHECK(SameVec4(p.onAccent, th::Hex(0xFFFFFF)));
-    CHECK(SameVec4(p.selection, th::Hex(0x2F8CFF, 0.30f)));
-    CHECK(SameVec4(p.text, th::Hex(0xD6D6DB)));
-    CHECK(SameVec4(p.textDim, th::Hex(0x9C9CA6)));
-    CHECK(SameVec4(p.textFaint, th::Hex(0x90909A)));
-    CHECK(SameVec4(p.good, th::Hex(0x4CBF7A)));
-    CHECK(SameVec4(p.warn, th::Hex(0xE5A03C)));
-    CHECK(SameVec4(p.bad, th::Hex(0xEE6A62)));
+    CHECK(SameVec4(p.bg0, th::Hex(0x090A10)));
+    CHECK(SameVec4(p.bg1, th::Hex(0x11131B)));
+    CHECK(SameVec4(p.bg2, th::Hex(0x181B26)));
+    CHECK(SameVec4(p.bg3, th::Hex(0x232736)));
+    CHECK(SameVec4(p.bg4, th::Hex(0x2D3247)));
+    CHECK(SameVec4(p.inputBg, th::Hex(0x0A0B12)));
+    CHECK(SameVec4(p.inputBorder, th::Hex(0x272C3F)));
+    CHECK(SameVec4(p.inputBorderHover, th::Hex(0x414A69)));
+    CHECK(SameVec4(p.borderStrong, th::Hex(0x39415E)));
+    CHECK(SameVec4(p.accent, th::Hex(0x2F96FF)));
+    CHECK(SameVec4(p.accentHover, th::Hex(0x62B4FF)));
+    CHECK(SameVec4(p.accentPressed, th::Hex(0x1C7BE6)));
+    CHECK(SameVec4(p.onAccent, th::Hex(0x06101F)));
+    CHECK(SameVec4(p.selection, th::Hex(0x2F96FF, 0.22f)));
+    CHECK(SameVec4(p.text, th::Hex(0xDCDFEC)));
+    CHECK(SameVec4(p.textDim, th::Hex(0xA0A6BC)));
+    CHECK(SameVec4(p.textFaint, th::Hex(0x9299B2)));
+    CHECK(SameVec4(p.good, th::Hex(0x4FD08A)));
+    CHECK(SameVec4(p.warn, th::Hex(0xF0B04A)));
+    CHECK(SameVec4(p.bad, th::Hex(0xFF7570)));
     CHECK(SameVec4(p.windowBg, p.bg1));   // 既定は不透明
-    CHECK(SameVec4(p.popupBg, p.bg2));
+    CHECK(p.popupBg.w == 1.0f);
 
     const th::Metrics& m = th::SpecOf(th::Variant::Default).m;
-    CHECK(m.windowRounding == 0.0f && m.childRounding == 2.0f && m.frameRounding == 2.0f && m.grabRounding == 2.0f);
-    CHECK(m.popupRounding == 4.0f && m.tabRounding == 3.0f && m.scrollbarRounding == 6.0f);
+    CHECK(m.windowRounding == 0.0f && m.childRounding == 3.0f && m.frameRounding == 3.0f && m.grabRounding == 3.0f);
+    CHECK(m.popupRounding == 6.0f && m.tabRounding == 4.0f && m.scrollbarRounding == 6.0f);
     CHECK(m.tabBarBorder == 1.0f && m.tabOverline == 2.0f && m.dockSeparator == 3.0f);
 
+    // 案 C の節度: グローは案 A（1.0）より小さく、光る装飾はフォーカス / 選択 / アクティブの分だけ。
     const th::Deco& d = th::SpecOf(th::Variant::Default).deco;
-    CHECK(d.glow == 0.0f && d.easeSec == 0.0f && !d.panelFocusEdge && !d.panelTopLine && !d.panelSheen && !d.layeredShadow);
-    CHECK(d.rowStyle == th::RowStyle::Plain && d.headerStyle == th::HeaderStyle::Plain && !d.monoIcons);
+    CHECK(d.glow > 0.0f && d.glow < 1.0f);
+    CHECK(d.easeSec > 0.0f && d.panelFocusEdge && !d.panelTopLine && !d.panelSheen && d.layeredShadow);
+    CHECK(d.rowStyle == th::RowStyle::NeonBar && d.headerStyle == th::HeaderStyle::GlowTick && !d.monoIcons);
+    CHECK(d.rimAlpha == 0.0f && d.popupRim > 0.0f);   // パネルは縁を光らせない。浮遊物だけ案 B から光の縁を借りる
 
-    // 起動時のトークン（SetVariant 前）も Default = 現行
+    // 種別色は控えめ（案 C の規律）: 最も彩度の高い種別色でも旧案 A のほぼ全開（>0.65）より落ちる。
+    const ImVec4* types[] = { &p.typeMesh, &p.typeLight, &p.typeCamera, &p.typeAudio, &p.typeScript, &p.typePhysics,
+                              &p.typeUi, &p.typePrefab, &p.typeEmpty, &p.typeFolder, &p.typeScene };
+    for (const ImVec4* t : types) CHECKF(Saturation(*t) < 0.62f, "既定の種別色は控えめ (s=%.3f)", Saturation(*t));
+
+    // 起動時のトークン（SetVariant 前）も Default
     CHECK(th::CurrentVariant() == th::Variant::Default);
-    CHECK(SameVec4(th::Bg1, th::Hex(0x171719)));
-    CHECK(SameVec4(th::Accent, th::Hex(0x2F8CFF)));
+    CHECK(SameVec4(th::Bg1, th::Hex(0x11131B)));
+    CHECK(SameVec4(th::Accent, th::Hex(0x2F96FF)));
 }
 
 void TestParse()
 {
     th::Variant v = th::Variant::B;
-    CHECK(th::ParseVariant("a", v) && v == th::Variant::A);
-    CHECK(th::ParseVariant("A", v) && v == th::Variant::A);
+    CHECK(th::ParseVariant("a", v) && v == th::Variant::Default);   // a は旧案 A ＝ 既定と同一
+    CHECK(th::ParseVariant("A", v) && v == th::Variant::Default);
     CHECK(th::ParseVariant("b", v) && v == th::Variant::B);
     CHECK(th::ParseVariant("C", v) && v == th::Variant::C);
     CHECK(th::ParseVariant("default", v) && v == th::Variant::Default);
@@ -121,22 +129,20 @@ void TestContrast()
         const ImVec4 selAct = Over(p.selectionActive, p.bg1);
         CHECKF(th::ContrastRatio(p.text, sel) >= 4.5f, "variant %d: text on selection = %.2f", static_cast<int>(var), th::ContrastRatio(p.text, sel));
         CHECKF(th::ContrastRatio(p.text, selAct) >= 4.5f, "variant %d: text on selectionActive = %.2f", static_cast<int>(var), th::ContrastRatio(p.text, selAct));
-        // アクセント塗りの上の文字 / ✓（既定は白 3.4:1 の現行値。新案は 4.5:1 以上）
-        const float need = (var == th::Variant::Default) ? 3.0f : 4.5f;
+        // アクセント塗りの上の文字 / ✓（全テーマ 4.5:1 以上）
+        const float need = 4.5f;
         CHECKF(th::ContrastRatio(p.onAccent, p.accent) >= need, "variant %d: onAccent on accent = %.2f", static_cast<int>(var), th::ContrastRatio(p.onAccent, p.accent));
-        if (var != th::Variant::Default)   // 現行の白 on ホバー青(2.6:1)は第 1 波からの値。新案だけ満たす
-            CHECKF(th::ContrastRatio(p.onAccent, p.accentHover) >= need, "variant %d: onAccent on accentHover = %.2f", static_cast<int>(var), th::ContrastRatio(p.onAccent, p.accentHover));
+        CHECKF(th::ContrastRatio(p.onAccent, p.accentHover) >= need, "variant %d: onAccent on accentHover = %.2f", static_cast<int>(var), th::ContrastRatio(p.onAccent, p.accentHover));
     }
 }
 
 void TestIdentityDiffers()
 {
     // 案の見分け: アクセントの色相が互いに違い、C の種別色は無彩色
-    const ImVec4& a = th::SpecOf(th::Variant::A).pal.accent;
     const ImVec4& b = th::SpecOf(th::Variant::B).pal.accent;
     const ImVec4& c = th::SpecOf(th::Variant::C).pal.accent;
     const ImVec4& d = th::SpecOf(th::Variant::Default).pal.accent;
-    CHECK(!SameVec4(a, b) && !SameVec4(a, c) && !SameVec4(b, c) && !SameVec4(a, d));
+    CHECK(!SameVec4(d, b) && !SameVec4(d, c) && !SameVec4(b, c));
     const th::Palette& pc = th::SpecOf(th::Variant::C).pal;
     const ImVec4* types[] = { &pc.typeMesh, &pc.typeLight, &pc.typeCamera, &pc.typeAudio, &pc.typeScript, &pc.typePhysics,
                               &pc.typeUi, &pc.typePrefab, &pc.typeEmpty, &pc.typeFolder, &pc.typeScene };
@@ -145,15 +151,16 @@ void TestIdentityDiffers()
     // B だけが半透明の窓面 / 大きめの角丸 / 太い分割
     const th::Spec& sb = th::SpecOf(th::Variant::B);
     CHECK(sb.pal.windowBg.w < 1.0f && sb.pal.popupBg.w < 1.0f);
-    CHECK(sb.m.popupRounding > th::SpecOf(th::Variant::A).m.popupRounding);
+    CHECK(sb.m.popupRounding > th::SpecOf(th::Variant::Default).m.popupRounding);
     CHECK(sb.m.frameRounding > th::SpecOf(th::Variant::C).m.frameRounding);
-    CHECK(th::SpecOf(th::Variant::A).deco.glow > th::SpecOf(th::Variant::B).deco.glow);
+    CHECK(th::SpecOf(th::Variant::Default).deco.glow > th::SpecOf(th::Variant::B).deco.glow);
     CHECK(th::SpecOf(th::Variant::C).deco.glow == 0.0f);
 }
 
 void TestLayoutInvariant()
 {
     // 案でレイアウトが動かない: 余白・行高に効く値は全案で同じ
+    th::SetVariant(th::Variant::Default);
     ImGuiStyle base;
     th::ApplyStyle(base);
     for (th::Variant var : kNew)
@@ -214,7 +221,7 @@ void TestNames()
 {
     for (th::Variant var : kAll)
         CHECK(std::strlen(th::VariantName(var)) > 0);
-    CHECK(std::string(th::VariantName(th::Variant::A)).find("ネオン") != std::string::npos);
+    CHECK(std::string(th::VariantName(th::Variant::Default)).find("ネオン") != std::string::npos);
     CHECK(std::string(th::VariantName(th::Variant::B)).find("グラス") != std::string::npos);
     CHECK(std::string(th::VariantName(th::Variant::C)).find("シグナル") != std::string::npos);
 }
@@ -222,7 +229,7 @@ void TestNames()
 
 int main()
 {
-    TestDefaultIsLegacy();
+    TestDefaultIsNeon();
     TestParse();
     TestContrast();
     TestIdentityDiffers();

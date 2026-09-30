@@ -3,6 +3,9 @@
 #include "core/SplashScreen.h"   // 「起動音」設定（エンジン設定 > 設定）
 #include "editor/EditorContext.h"
 #include "editor/PropertyGrid.h"
+#include "editor/InspectorLogic.h"   // Add Component の目録 / 検索 / 最近使った / タグ / Mixed（フェーズ 1b）
+#include "editor/EditorPrefs.h"      // 折りたたみ・最近使ったの永続化
+#include "ecs/EditorFlags.h"         // EntityDisabled
 #include "editor/UiWidgets.h"
 #include "editor/EntityGlyph.h"
 #include "gui/VirtualInputImGui.h"
@@ -10,10 +13,12 @@
 #include "editor/UndoSystem.h"
 #include "editor/AssetDrop.h"
 #include "ecs/Components.h"
+#include "renderer/foliage/FoliageLayerOps.h"   // 植生 F1（Inspector の統計）
 #include "ai/AiSystem.h"   // Brain の実行中の状態（得点の内訳）
 #include "renderer/Camera.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
+#include "renderer/vg/VgEligibility.h"   // 仮想ジオメトリ P4: 対象外の警告
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsDebugRenderer.h"
 #include "core/GameClock.h"
@@ -36,6 +41,9 @@
 
 #include <imgui_internal.h>   // BeginDragDropTargetCustom（ウィンドウ全体をドロップ先に）
 #include <filesystem>
+#include <any>
+#include <set>
+#include <typeindex>
 #include <map>
 #include <fstream>
 #include <algorithm>
@@ -359,12 +367,143 @@ HeaderIcon HeaderIconFor(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const c
     return { ICON_T_EMPTY, &th::TypeEmpty };
 }
 
+// ── フェーズ 1b: インスペクタ内検索 / 折りたたみの保持（Inspector は 1 枚だけなのでパネル共有の状態でよい）──
+//   ・検索中は全コンポーネントを開いて中身を描き、一致する行が 1 つも無い見出しは「次のフレームから」隠す
+//     （見出しを描いてからでないと中身の行数が分からないため。検索語 / 選択が変わったら記録を捨てる＝1 フレームだけ全部出る）
+//   ・見出しをユーザーが開閉したら記録し、次回起動でも同じ開閉で始める（prefs "insp.fold"）
+//   ・「全展開 / 全折りたたみ」は 1 フレームだけ全見出しへ SetNextItemOpen(Always)
+struct InspUiState
+{
+    bool        active = false;         // InspectorPanel::Render の最中だけ true（エンジン設定窓の IconHeader は対象外）
+    std::string filter;                 // プロパティ検索（空 = 検索なし）
+    int         foldAll = 0;            // +1 = 全展開 / -1 = 全折りたたみ（1 フレームだけ）
+    dx12e::insp::FoldList fold;         // ユーザーが触った見出しの開閉（保存対象）
+    bool        foldLoaded = false;
+    bool        foldDirty  = false;
+    std::string curHeader;              // 直前に描いた見出し（行数の集計先）
+    std::set<std::string> noMatch;      // 検索で一致する行が無いと分かった見出し
+    bool        hiddenNow = false;      // 直近の見出しは検索で隠した（続く「⋯」メニューも描かない）
+    // コンポーネントの表示順（見出しメニューの「上へ / 下へ」）。キーは節の名前（"Transform" "BoxCollider" …）。
+    std::vector<std::string> order;     // ユーザーが決めた順（保存対象。空 = 既定の並び）
+    std::vector<std::string> drawn;     // 今フレームに実際に描いた節（メニューを持つもの）の順
+    std::vector<std::string> drawnPrev; // 前フレームの drawn（「上へ / 下へ」が押せるかの判定に使う）
+    const char* curBlockKey = nullptr;  // いま描いている節のキー（RunInspectorBlocks が設定）
+    std::string moveKey;                // 移動要求（キー）と方向（-1 上 / +1 下）。フレーム末で反映
+    int         moveDir = 0;
+};
+InspUiState g_ui;
+
+// 節（コンポーネント 1 個ぶんの UI）。Render が「登録」し、RunInspectorBlocks が表示順に実行する。
+struct InspBlock
+{
+    const char*           key;
+    std::function<void()> fn;
+};
+
+void FinishHeader();   // 直前の見出しの「行が 1 つも出なかった」判定（定義は IconHeader の直前）
+
+// 登録された節を（ユーザー指定 → 既定の並びの順で）実行し、「上へ / 下へ」の要求を反映する。
+void RunInspectorBlocks(std::vector<InspBlock>& blocks)
+{
+    std::vector<size_t> ord(blocks.size());
+    for (size_t i = 0; i < ord.size(); ++i) ord[i] = i;
+    auto rank = [&](size_t i)
+    {
+        for (size_t r = 0; r < g_ui.order.size(); ++r)
+            if (g_ui.order[r] == blocks[i].key) return r;
+        return g_ui.order.size();
+    };
+    std::stable_sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return rank(a) < rank(b); });
+
+    g_ui.drawn.clear();
+    for (size_t i : ord)
+    {
+        // 前の節の検索状態を持ち越さない（見出しを持たない節 = Physics が、前の節の「一致」を引きずらないように）
+        FinishHeader();
+        g_ui.hiddenNow = false;
+        dx12e::pg::SetFilterBypass(false);
+        dx12e::pg::ResetRowStats();
+        g_ui.curBlockKey = blocks[i].key;
+        blocks[i].fn();
+    }
+    FinishHeader();
+    g_ui.curBlockKey = nullptr;
+
+    if (g_ui.moveDir != 0 && !g_ui.moveKey.empty())
+    {
+        // 今の実効順を全部書き出してから、描いた節どうしで 1 つ入れ替える（描いていない節は動かさない）
+        std::vector<std::string> cur;
+        for (size_t i : ord) cur.push_back(blocks[i].key);
+        const auto& d = g_ui.drawnPrev;
+        const auto it = std::find(d.begin(), d.end(), g_ui.moveKey);
+        if (it != d.end())
+        {
+            const auto nb = (g_ui.moveDir < 0) ? (it == d.begin() ? d.end() : it - 1)
+                                               : (it + 1 == d.end() ? d.end() : it + 1);
+            if (nb != d.end())
+            {
+                const auto a = std::find(cur.begin(), cur.end(), g_ui.moveKey);
+                const auto b = std::find(cur.begin(), cur.end(), *nb);
+                if (a != cur.end() && b != cur.end()) std::iter_swap(a, b);
+            }
+        }
+        g_ui.order = cur;
+        dx12e::prefs::SetString("insp.order", dx12e::insp::JoinList(g_ui.order));
+        g_ui.moveKey.clear();
+        g_ui.moveDir = 0;
+    }
+    g_ui.drawnPrev = g_ui.drawn;
+}
+
+// 直前の見出しの「表の行が 1 つも出なかった」判定を確定する。
+void FinishHeader()
+{
+    if (g_ui.curHeader.empty()) return;
+    const bool none = dx12e::pg::TablesBegun() > 0 && dx12e::pg::RowsShown() == 0;
+    if (none) g_ui.noMatch.insert(g_ui.curHeader);
+    else      g_ui.noMatch.erase(g_ui.curHeader);
+    g_ui.curHeader.clear();
+}
+
 bool IconHeader(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const char* label,
                 ImGuiTreeNodeFlags flags = 0)
 {
     const HeaderIcon hi = HeaderIconFor(ic, tex, label);
+    const bool filtering = g_ui.active && !g_ui.filter.empty();
+    if (g_ui.active)
+    {
+        FinishHeader();
+        g_ui.hiddenNow = false;
+        dx12e::pg::ResetRowStats();
+        if (filtering)
+        {
+            // コンポーネント名が一致していれば配下の全行を出す。一致せず、かつ行も無いと分かった見出しは隠す。
+            const bool nameMatch = dx12e::insp::PropertyMatches(g_ui.filter, label);
+            dx12e::pg::SetFilterBypass(nameMatch);
+            if (!nameMatch && g_ui.noMatch.count(label) != 0)
+            {
+                g_ui.hiddenNow = true;
+                return false;
+            }
+            ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        }
+        else
+        {
+            dx12e::pg::SetFilterBypass(false);
+            if (g_ui.foldAll != 0)
+                ImGui::SetNextItemOpen(g_ui.foldAll > 0, ImGuiCond_Always);
+            else if (const int f = dx12e::insp::GetFold(g_ui.fold, label); f >= 0)
+                ImGui::SetNextItemOpen(f == 1, ImGuiCond_Once);   // 前回の開閉で始める（ユーザーの操作にはその後従う）
+        }
+        g_ui.curHeader = label;
+    }
     const bool open = dx12e::ui::SectionHeader(label, hi.glyph, hi.tint, flags);
     dx12e::vinput_gui::AnchorLastItem("header", label);   // dx12_imgui_find 用（コンポーネントの見出し）
+    if (g_ui.active && !filtering && (ImGui::IsItemToggledOpen() || g_ui.foldAll != 0))
+    {
+        dx12e::insp::SetFold(g_ui.fold, label, g_ui.foldAll != 0 ? g_ui.foldAll > 0 : open);
+        g_ui.foldDirty = true;
+    }
     return open;
 }
 
@@ -811,28 +950,170 @@ void EndEdit(entt::registry& reg, EditorContext& ctx, entt::entity e,
     }
 }
 
-// ── ヘッダ右クリックでコンポーネント削除（Undo 対応）。削除したら true ──
+// ── 複数選択: 全員が持つコンポーネントだけを描く ──
+// 単独選択なら reg.all_of<T>(primary) と同じ。複数選択のときは「選択の全員が T を持ち、かつ編集が全員へ伝わる型」
+// （trivially copyable。PropagateEditToSelection と同じ条件）の時だけ true。
+// 持たない人が混じる型・全員へ伝わらない型（文字列やベクタを含む型）は表示しない＝効かない項目を出さない。
+template<typename T>
+bool Common(const entt::registry& reg, const EditorContext& ctx)
+{
+    const entt::entity p = ctx.selectedEntity;
+    if (p == entt::null || !reg.all_of<T>(p)) return false;
+    if (ctx.selectedEntities.size() > insp::kMaxMultiEdit) return false;   // 大量選択は一括編集しない（毎フレームの全員走査を避ける）
+    if (ctx.selectedEntities.size() > 1 && !std::is_trivially_copyable_v<T>) return false;
+    for (entt::entity o : ctx.selectedEntities)
+        if (!reg.valid(o) || !reg.all_of<T>(o)) return false;
+    return true;
+}
+
+// pg:: にコンポーネント文脈（既定値 / 他の選択の実体）を渡す。見出しの直後（ComponentRemoveMenu 内）で呼ぶ。
+// ★Mixed 表示は「編集が全員へ伝わる型」= trivially copyable のときだけ（PropagateEditToSelection と同じ条件）。
+template<typename T>
+void SetPgContext(entt::registry& reg, const EditorContext& ctx, entt::entity e)
+{
+    static const T kDefault{};
+    std::vector<const void*> others;
+    if (ctx.selectedEntities.size() > 1)
+        for (entt::entity o : ctx.selectedEntities)
+            if (o != e && reg.valid(o))
+                if (const T* p = reg.try_get<T>(o)) others.push_back(p);
+    pg::SetComponent(&reg.get<T>(e), sizeof(T), &kDefault, others, std::is_trivially_copyable_v<T>);
+}
+
+// コンポーネントのコピー（メモリ内。型ごとに 1 つ）。別エンティティ / 複数選択へ値を貼り付けられる。
+struct ComponentClip
+{
+    std::any        value;
+    std::type_index type{typeid(void)};
+    std::string     name;
+    // 1 体へ「値を書く（持っていれば上書き / 無ければ追加）」。Undo は out へ足す。コピーした型の知識をここへ閉じ込める。
+    std::function<void(entt::registry&, entt::entity, CompositeCommand&)> applyTo;
+};
+inline ComponentClip g_compClip;
+
+// 実行時のハンドル（Jolt の bodyId など）はコピー / リセットで持ち越さない。
+template<typename T>
+void ClearRuntimeHandles(T& v)
+{
+    if constexpr (requires { v.bodyId = kInvalidBodyId; })
+        v.bodyId = kInvalidBodyId;
+    else
+        (void)v;
+}
+
+// 選択の全員（T を持つ人）の T を newValue へ揃える。Undo は 1 エントリ。
+template<typename T>
+void SetComponentOnSelection(entt::registry& reg, EditorContext& ctx, entt::entity primary,
+                             const T& newValue, const char* name)
+{
+    auto composite = std::make_unique<CompositeCommand>(name);
+    auto apply = [&](entt::entity t)
+    {
+        if (!reg.valid(t) || !reg.all_of<T>(t)) return;
+        const T before = reg.get<T>(t);
+        T after = newValue;
+        ClearRuntimeHandles(after);
+        if constexpr (std::is_same_v<T, Transform>)
+            after.parent = before.parent;   // 親子関係は貼り付け / リセットで変えない
+        reg.get<T>(t) = after;
+        composite->Add(std::make_unique<ComponentEditCommand<T>>(&reg, t, before, after, name));
+    };
+    bool primaryDone = false;
+    for (entt::entity o : ctx.selectedEntities)
+    {
+        apply(o);
+        if (o == primary) primaryDone = true;
+    }
+    if (!primaryDone) apply(primary);
+    if (!composite->Empty()) ctx.undoSystem.PushCommand(std::move(composite));
+}
+
+// ── コンポーネント見出しの右クリック / 「⋯」メニュー（Undo 対応）。削除したら true ──
+//   コピー / 貼り付け（同じ型の値）/ 既定値へリセット / 削除。allowRemove=false は削除だけ出さない（Transform 等）。
+//   ★pg:: のコンポーネント文脈（既定値・Mixed 判定）もここで設定する＝呼び出し側は無変更で全行が右クリック対応になる。
 template<typename T>
 bool ComponentRemoveMenu(entt::registry& reg, EditorContext& ctx,
-                         entt::entity e, const char* name)
+                         entt::entity e, const char* name, bool allowRemove = true)
 {
+    if (g_ui.hiddenNow) return false;   // 検索で隠した見出しには何も重ねない
+    SetPgContext<T>(reg, ctx, e);
+    if (g_ui.curBlockKey && (g_ui.drawn.empty() || g_ui.drawn.back() != g_ui.curBlockKey))
+        g_ui.drawn.push_back(g_ui.curBlockKey);
     bool removed = false;
     ImGui::PushID(name);
-    // 見出しの右端の「⋯」（右クリックと同じメニューを左クリックで開く）。★BeginPopupContextItem は
-    // 「直前の項目 = 見出し」を対象にするので、⋯ の重ね描きはその後に行う。
+    // 見出しの右クリックと、右端の「⋯」（同じメニューを左クリックで開く）。
+    // ★HeaderMenuButton は自分の InvisibleButton を作る（直前の項目が「⋯」に替わる）ので、
+    //   見出しのホバー判定は「⋯」を出す前に取る（従来の BeginPopupContextItem は「⋯」を対象にしていて、
+    //   見出しの右クリックでは開かなかった）。
+    const bool headerRightClicked = ImGui::IsItemHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Right);
     const bool menuBtn = ui::HeaderMenuButton();
-    if (ImGui::BeginPopupContextItem("##RemoveComponent"))
+    if (headerRightClicked) ImGui::OpenPopup("##RemoveComponent");
+    ui::PushMenuStyle();
+    if (ImGui::BeginPopup("##RemoveComponent"))
     {
-        // コンポーネント削除
-        if (ImGui::MenuItem("\xe3\x82\xb3\xe3\x83\xb3\xe3\x83\x9d\xe3\x83\xbc\xe3\x83\x8d\xe3\x83\xb3\xe3\x83\x88\xe5\x89\x8a\xe9\x99\xa4"))
+        if (ui::MenuItem(ICON_COPY, "コンポーネントをコピー"))
         {
-            ctx.undoSystem.PushCommand(std::make_unique<RemoveComponentCommand<T>>(
-                &reg, e, reg.get<T>(e), name));
-            reg.remove<T>(e);
-            removed = true;
+            g_compClip.value = reg.get<T>(e);
+            g_compClip.type  = std::type_index(typeid(T));
+            g_compClip.name  = name;
+            g_compClip.applyTo = [v = reg.get<T>(e), name](entt::registry& r, entt::entity t, CompositeCommand& out)
+            {
+                T after = v;
+                ClearRuntimeHandles(after);
+                if (r.all_of<T>(t))
+                {
+                    const T before = r.get<T>(t);
+                    if constexpr (std::is_same_v<T, Transform>)
+                        after.parent = before.parent;
+                    r.get<T>(t) = after;
+                    out.Add(std::make_unique<ComponentEditCommand<T>>(&r, t, before, after, name));
+                }
+                else
+                {
+                    r.emplace<T>(t, after);
+                    out.Add(std::make_unique<AddComponentCommand<T>>(&r, t, after, name));
+                }
+            };
+            ctx.Notify(ui::ToastKind::Info, std::string(name) + " をコピーしました");
+        }
+        const bool canPaste = g_compClip.value.has_value() && g_compClip.type == std::type_index(typeid(T));
+        const std::string pasteLabel = std::string("値を貼り付け")
+            + (ctx.selectedEntities.size() > 1 ? std::string("（選択の全員へ）") : std::string());
+        if (ui::MenuItem(ICON_PASTE, pasteLabel.c_str(), nullptr, false, canPaste))
+        {
+            if (const T* v = std::any_cast<T>(&g_compClip.value))
+                SetComponentOnSelection<T>(reg, ctx, e, *v, name);
+        }
+        if (ui::MenuItem(ICON_UNDO, "既定値へリセット"))
+            SetComponentOnSelection<T>(reg, ctx, e, T{}, name);
+        if (g_ui.curBlockKey)
+        {
+            // 表示順: 前フレームに描いた節どうしで 1 つ上 / 下と入れ替える（保存される）
+            const auto& d = g_ui.drawnPrev;
+            const auto it = std::find(d.begin(), d.end(), g_ui.curBlockKey);
+            const bool canUp   = it != d.end() && it != d.begin();
+            const bool canDown = it != d.end() && it + 1 != d.end();
+            ImGui::Separator();
+            if (ui::MenuItem(ICON_CHEVRON_UP, "上へ", nullptr, false, canUp))
+            { g_ui.moveKey = g_ui.curBlockKey; g_ui.moveDir = -1; }
+            if (ui::MenuItem(ICON_CHEVRON_DOWN, "下へ", nullptr, false, canDown))
+            { g_ui.moveKey = g_ui.curBlockKey; g_ui.moveDir = +1; }
+        }
+        if (allowRemove)
+        {
+            ImGui::Separator();
+            // コンポーネント削除
+            if (ui::MenuItem(ICON_TRASH, "コンポーネント削除"))
+            {
+                ctx.undoSystem.PushCommand(std::make_unique<RemoveComponentCommand<T>>(
+                    &reg, e, reg.get<T>(e), name));
+                reg.remove<T>(e);
+                removed = true;
+            }
         }
         ImGui::EndPopup();
     }
+    ui::PopMenuStyle();
     if (menuBtn) ImGui::OpenPopup("##RemoveComponent");
     ImGui::PopID();
     return removed;
@@ -930,6 +1211,579 @@ bool InspectorPanel::RevealMatches(const std::string& shaderPath) const
     return shaderdiag::NormalizeKey(shaderPath) == m_revealShaderKey;
 }
 
+// ===========================================================================
+// フェーズ 1b: 上部ヘッダ（名前 / 有効 / 固定 / タグ / 検索）と Add Component
+// ===========================================================================
+namespace
+{
+
+// 名前の変更を 1 コマンドで積む（HierarchyPanel と同じ規約）。
+// ★NameTag を書き換えるだけだと、名前で結ばれた参照（Lua の entity プロパティ / Trigger の filter・target）が
+//   無言で切れる。参照の書き換えと、その巻き戻しを CompositeCommand で束ねて「1 回の Undo で全部戻る」形にする。
+void PushInspectorRename(entt::registry& reg, EditorContext& ctx, entt::entity e, NameTag& tag, const char* newName)
+{
+    NameTag before = tag;
+    const std::string oldName = before.name;
+    tag.name = newName;
+    RewriteEntityNameRefs(reg, oldName, tag.name);
+
+    auto composite = std::make_unique<CompositeCommand>("Rename");
+    composite->Add(std::make_unique<ComponentEditCommand<NameTag>>(&reg, e, before, tag, "Rename"));
+    composite->Add(std::make_unique<RenameRefsCommand>(&reg, oldName, tag.name));
+    ctx.undoSystem.PushCommand(std::move(composite));
+}
+
+// 中身の無いタグ型（EntityDisabled 等）の付け外しの Undo。汎用の Add/RemoveComponentCommand は値を渡す形なので空の型には使えない。
+template<typename T>
+class TagPresenceCommand : public IUndoCommand
+{
+public:
+    TagPresenceCommand(entt::registry* reg, entt::entity e, bool presentAfter, const char* name)
+        : m_reg(reg), m_e(e), m_after(presentAfter), m_name(name) {}
+    void Undo() override { Apply(!m_after); }
+    void Redo() override { Apply(m_after); }
+    const char* GetName() const override { return m_name; }
+private:
+    void Apply(bool present)
+    {
+        if (!m_reg->valid(m_e)) return;
+        if (present) m_reg->emplace_or_replace<T>(m_e);
+        else         m_reg->remove<T>(m_e);
+    }
+    entt::registry* m_reg;
+    entt::entity    m_e;
+    bool            m_after;
+    const char*     m_name;
+};
+
+// 選択の全員の「有効」を揃える（EntityDisabled タグの付け外し）。Undo は 1 エントリ。
+void SetDisabledOnSelection(entt::registry& reg, EditorContext& ctx, bool disabled)
+{
+    auto composite = std::make_unique<CompositeCommand>(disabled ? "無効化" : "有効化");
+    for (entt::entity t : ctx.selectedEntities)
+    {
+        if (!reg.valid(t)) continue;
+        if (eflags::Self<EntityDisabled>(reg, t) == disabled) continue;
+        if (disabled)
+        {
+            reg.emplace_or_replace<EntityDisabled>(t);
+            composite->Add(std::make_unique<TagPresenceCommand<EntityDisabled>>(&reg, t, true, "無効化"));
+        }
+        else
+        {
+            reg.remove<EntityDisabled>(t);
+            composite->Add(std::make_unique<TagPresenceCommand<EntityDisabled>>(&reg, t, false, "有効化"));
+        }
+    }
+    if (!composite->Empty()) ctx.undoSystem.PushCommand(std::move(composite));
+}
+
+// 剛体 + 凸包コライダーの自動付与（Add Component の「Physics」項目。既存の「Physics」チェックボックスと同じ結果）。
+void AddPhysicsAuto(entt::registry& reg, entt::entity e, CompositeCommand& out)
+{
+    if (reg.all_of<MeshRenderer>(e) && !reg.all_of<ConvexHullCollider>(e))
+    {
+        auto* mr = &reg.get<MeshRenderer>(e);
+        auto* tf = &reg.get<Transform>(e);
+        std::vector<DirectX::XMFLOAT3> allPoints;
+        for (const auto* mesh : mr->meshes)
+        {
+            if (!mesh) continue;
+            for (const auto& p : mesh->GetPositions())
+                allPoints.push_back({ p.x * tf->scale.x, p.y * tf->scale.y, p.z * tf->scale.z });
+        }
+        constexpr size_t kMax = 256;
+        if (allPoints.size() > kMax)
+        {
+            size_t step = allPoints.size() / kMax;
+            std::vector<DirectX::XMFLOAT3> sampled;
+            for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
+                sampled.push_back(allPoints[i]);
+            allPoints = std::move(sampled);
+        }
+        if (!allPoints.empty())
+        {
+            ConvexHullCollider col;
+            col.points = std::move(allPoints);
+            reg.emplace_or_replace<ConvexHullCollider>(e, col);
+            out.Add(std::make_unique<AddComponentCommand<ConvexHullCollider>>(&reg, e, std::move(col), "Convex Hull Collider"));
+        }
+    }
+    if (!reg.all_of<RigidBody>(e))
+    {
+        reg.emplace<RigidBody>(e);
+        out.Add(std::make_unique<AddComponentCommand<RigidBody>>(&reg, e, reg.get<RigidBody>(e), "RigidBody"));
+    }
+}
+
+// Add Component の 1 行ぶんの操作（id は insp::kCatalog[i].id と一致させる）。
+struct AddOp
+{
+    const char* id;
+    bool (*has)(const entt::registry&, entt::entity);
+    void (*add)(entt::registry&, entt::entity, CompositeCommand&, const char* label);   // 1 体へ付ける。Undo は out へ足す
+};
+
+template<typename T>
+constexpr AddOp MakeAddOp(const char* id)
+{
+    return AddOp{
+        id,
+        [](const entt::registry& reg, entt::entity e) { return reg.all_of<T>(e); },
+        [](entt::registry& reg, entt::entity e, CompositeCommand& out, const char* label)
+        {
+            reg.emplace<T>(e, T{});
+            out.Add(std::make_unique<AddComponentCommand<T>>(&reg, e, T{}, label));
+        }};
+}
+
+const AddOp* FindAddOp(std::string_view id)
+{
+    static const AddOp kOps[] = {
+        MakeAddOp<PointLight>("PointLight"),
+        MakeAddOp<DirectionalLight>("DirectionalLight"),
+        MakeAddOp<SpotLight>("SpotLight"),
+        MakeAddOp<CameraComponent>("CameraComponent"),
+        MakeAddOp<Sprite2D>("Sprite2D"),
+        MakeAddOp<ParticleEmitter>("ParticleEmitter"),
+        MakeAddOp<TrailRenderer>("TrailRenderer"),
+        MakeAddOp<DecalComponent>("DecalComponent"),
+        MakeAddOp<VirtualGeometry>("VirtualGeometry"),
+        MakeAddOp<FoliageLayer>("FoliageLayer"),
+        MakeAddOp<AudioSource>("AudioSource"),
+        MakeAddOp<AudioReverbZone>("AudioReverbZone"),
+        AddOp{"Physics",
+              [](const entt::registry& reg, entt::entity e) { return reg.all_of<RigidBody>(e); },
+              [](entt::registry& reg, entt::entity e, CompositeCommand& out, const char*) { AddPhysicsAuto(reg, e, out); }},
+        MakeAddOp<RigidBody>("RigidBody"),
+        MakeAddOp<BoxCollider>("BoxCollider"),
+        MakeAddOp<SphereCollider>("SphereCollider"),
+        MakeAddOp<CapsuleCollider>("CapsuleCollider"),
+        MakeAddOp<CharacterController>("CharacterController"),
+        MakeAddOp<UICanvas>("UICanvas"),
+        MakeAddOp<UIRect>("UIRect"),
+        MakeAddOp<UIImage>("UIImage"),
+        MakeAddOp<UIText>("UIText"),
+        MakeAddOp<UIButton>("UIButton"),
+        MakeAddOp<UISlider>("UISlider"),
+        MakeAddOp<UIToggle>("UIToggle"),
+        MakeAddOp<UIScrollView>("UIScrollView"),
+        MakeAddOp<UILayout>("UILayout"),
+        MakeAddOp<UIAnimator>("UIAnimator"),
+        MakeAddOp<UIAnimPlayer>("UIAnimPlayer"),
+        MakeAddOp<SpriteAnimator>("SpriteAnimator"),
+        MakeAddOp<AnimatorController>("AnimatorController"),
+        MakeAddOp<FootIK>("FootIK"),
+        MakeAddOp<Gimmick>("Gimmick"),
+        MakeAddOp<Trigger>("Trigger"),
+        MakeAddOp<Brain>("Brain"),
+        MakeAddOp<NetworkIdentity>("NetworkIdentity"),
+        MakeAddOp<NetworkTransform>("NetworkTransform"),
+    };
+    for (const AddOp& op : kOps)
+        if (id == op.id) return &op;
+    return nullptr;
+}
+
+// タグの追加 / 削除を Undo 1 エントリで積む（Tag コンポーネントが無ければ足す。空になったら外す）。
+void EditTags(entt::registry& reg, EditorContext& ctx, entt::entity e, bool add, const std::string& tagName)
+{
+    const Tag* cur = reg.try_get<Tag>(e);
+    Tag before = cur ? *cur : Tag{};
+    Tag after = before;
+    const bool ok = add ? insp::AddTag(after.tags, tagName) : insp::RemoveTag(after.tags, tagName);
+    if (!ok) return;
+    if (!cur)
+    {
+        reg.emplace<Tag>(e, after);
+        ctx.undoSystem.PushCommand(std::make_unique<AddComponentCommand<Tag>>(&reg, e, after, "タグ追加"));
+    }
+    else if (after.tags.empty())
+    {
+        ctx.undoSystem.PushCommand(std::make_unique<RemoveComponentCommand<Tag>>(&reg, e, before, "タグ削除"));
+        reg.remove<Tag>(e);
+    }
+    else
+    {
+        reg.get<Tag>(e) = after;
+        ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<Tag>>(&reg, e, before, after, add ? "タグ追加" : "タグ削除"));
+    }
+}
+
+} // namespace
+
+// タグのチップ行（単独選択のときだけ）。チップを押すと外す。「＋ タグ」で入力 + 既存タグのサジェスト。
+void InspectorPanel::RenderTags(entt::registry& reg, EditorContext& ctx, entt::entity e)
+{
+    const float gap = ui::Px(4.0f);
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    const Tag* tag = reg.try_get<Tag>(e);
+    std::string toRemove;
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::TextFaint);
+    ImGui::TextUnformatted("タグ");
+    ImGui::PopStyleColor();
+    const float left = ImGui::GetCursorScreenPos().x;
+    float x = ImGui::GetItemRectMax().x;
+    auto place = [&](float w)
+    {
+        // 横に収まれば同じ行へ。収まらなければ次の行の頭から（ImGui は SameLine しなければ改行される）
+        if (x + gap * 2.0f + w <= right) ImGui::SameLine(0.0f, gap * 2.0f);
+        else x = left;
+    };
+    if (tag)
+        for (const std::string& t : tag->tags)
+        {
+            const std::string label = t + "  " ICON_CLOSE;
+            const float w = ImGui::CalcTextSize(label.c_str()).x + ui::Px(14.0f);
+            place(w);
+            if (ui::Chip((std::string("##tag_") + t).c_str(), label.c_str(), false, w)) toRemove = t;
+            vinput_gui::AnchorLastItem("button", ("インスペクタ:タグ:" + t).c_str());
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("クリックでタグ「%s」を外す", t.c_str());
+            x = ImGui::GetItemRectMax().x;
+        }
+    {
+        const char* addLabel = ICON_PLUS " タグ";
+        const float w = ImGui::CalcTextSize(addLabel).x + ui::Px(14.0f);
+        place(w);
+        if (ui::Chip("##tagadd", addLabel, false, w))
+        {
+            ImGui::OpenPopup("##AddTagPopup");
+            m_tagBuf[0] = '\0';
+        }
+        vinput_gui::AnchorLastItem("button", "インスペクタ:タグを追加");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("タグを追加（対象指定・検索に使う名札）");
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetItemRectMin().x, ImGui::GetItemRectMax().y + ui::Px(2.0f)), ImGuiCond_Appearing);
+    }
+    if (ImGui::BeginPopup("##AddTagPopup"))
+    {
+        bool add = false;
+        std::string pick;
+        ImGui::SetNextItemWidth(ui::Px(220.0f));
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        if (ui::InputTextWithHint("##tagname", "タグ名（Enter で追加）", m_tagBuf, sizeof(m_tagBuf), ImGuiInputTextFlags_EnterReturnsTrue))
+            add = true;
+        std::vector<std::string> all;
+        for (auto [ent, t] : reg.view<const Tag>().each())
+            all.insert(all.end(), t.tags.begin(), t.tags.end());
+        const std::vector<std::string> existing = tag ? tag->tags : std::vector<std::string>{};
+        const std::vector<std::string> sug = insp::SuggestTags(all, existing, m_tagBuf);
+        if (!sug.empty())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::TextFaint);
+            ImGui::TextUnformatted("シーン内のタグ");
+            ImGui::PopStyleColor();
+            for (const std::string& s : sug)
+                if (ImGui::Selectable(s.c_str())) pick = s;
+        }
+        if (!pick.empty())
+        {
+            EditTags(reg, ctx, e, true, pick);
+            ImGui::CloseCurrentPopup();
+        }
+        else if (add)
+        {
+            EditTags(reg, ctx, e, true, m_tagBuf);
+            m_tagBuf[0] = '\0';
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    if (!toRemove.empty()) EditTags(reg, ctx, e, false, toRemove);
+}
+
+// 上部ヘッダ: [有効] [種別アイコン] [名前........] [固定] / タグ / 検索。複数選択・固定中の案内もここ。
+void InspectorPanel::RenderHeader(entt::registry& reg, EditorContext& ctx)
+{
+    const entt::entity e = ctx.selectedEntity;
+    const bool multi = ctx.selectedEntities.size() > 1;
+    const float gap = ui::Px(6.0f);
+    const float btn = ui::Px(24.0f);
+
+    // ---- 固定中の案内 ----
+    if (m_pinned != entt::null)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentHover);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(ICON_PIN);
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, gap);
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("固定中: 選択を変えても、この表示は切り替わりません");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("解除"))
+            m_pinned = entt::null;
+    }
+    if (multi)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentHover);
+        ImGui::Text("%zu 件を編集中", ctx.selectedEntities.size());
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ctx.selectedEntities.size() > insp::kMaxMultiEdit)
+            ImGui::TextDisabled("（%zu 件を超える選択は一括編集できません）", insp::kMaxMultiEdit);
+        else
+            ImGui::TextDisabled("（共通の項目だけ表示）");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("全員が持ち、一括編集できるコンポーネントだけを表示します。\n「—」は値がバラバラの項目。触った項目だけが全員に書かれます。");
+    }
+
+    // ---- 行 1: 有効 / アイコン / 名前 / 固定 ----
+    {
+        bool en = !eflags::Self<EntityDisabled>(reg, e);
+        if (ui::Checkbox("##EntEnabled", &en))
+            SetDisabledOnSelection(reg, ctx, !en);
+        vinput_gui::AnchorLastItem("button", "インスペクタ:有効");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("有効\nOFF にすると描画・スクリプト・ライト・物理から外れます（Play にも効きます）");
+        ImGui::SameLine(0.0f, gap);
+
+        NameTag* tag = reg.try_get<NameTag>(e);
+        const EntityGlyph g = PickEntityGlyph(reg, e, false);
+        ImGui::AlignTextToFramePadding();
+        ui::Icon(g.glyph, *g.tint);
+        // 右クリックで ID / GUID をコピー
+        if (ImGui::BeginPopupContextItem("##EntIdCtx"))
+        {
+            char buf[40];
+            if (const EntityGuid* gu = reg.try_get<EntityGuid>(e))
+            {
+                std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(gu->value));
+                if (ui::MenuItem(ICON_COPY, "GUID をコピー"))
+                    ImGui::SetClipboardText(buf);
+            }
+            std::snprintf(buf, sizeof(buf), "%u", static_cast<unsigned>(entt::to_integral(e)));
+            if (ui::MenuItem(ICON_COPY, "エンティティ ID をコピー"))
+                ImGui::SetClipboardText(buf);
+            ImGui::EndPopup();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("右クリックで ID / GUID をコピー");
+        ImGui::SameLine(0.0f, gap);
+
+        const float nameW = (std::max)(ImGui::GetContentRegionAvail().x - btn - gap, ui::Px(60.0f));
+        if (tag && !multi)
+        {
+            // 外から名前が変わった（ヒエラルキーの改名 / Undo）時は、編集中でなければ追従する
+            if (m_nameEntity != e || (!ImGui::IsAnyItemActive() && tag->name != m_nameBuf))
+            {
+                std::snprintf(m_nameBuf, sizeof(m_nameBuf), "%s", tag->name.c_str());
+                m_nameEntity = e;
+            }
+            ImGui::SetNextItemWidth(nameW);
+            ui::PushBold();
+            ui::InputText("##EntName", m_nameBuf, sizeof(m_nameBuf), ImGuiInputTextFlags_AutoSelectAll);
+            ui::PopBold();
+            vinput_gui::AnchorLastItem("input", "インスペクタ:名前");
+            if (ImGui::IsItemDeactivatedAfterEdit())
+            {
+                if (m_nameBuf[0] != '\0' && tag->name != m_nameBuf)
+                    PushInspectorRename(reg, ctx, e, *tag, m_nameBuf);
+                else
+                    std::snprintf(m_nameBuf, sizeof(m_nameBuf), "%s", tag->name.c_str());   // 空にした / 変わらない = 元へ
+            }
+        }
+        else
+        {
+            ImGui::AlignTextToFramePadding();
+            ui::PushBold();
+            if (tag) ImGui::Text("%s ほか %zu 件", tag->name.c_str(), ctx.selectedEntities.size() - 1);
+            else     ImGui::TextUnformatted("（名前なし）");
+            ui::PopBold();
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - btn);
+        }
+        ImGui::SameLine(0.0f, gap);
+        if (ui::IconButton("##pinInspector", m_pinned != entt::null ? ICON_PIN_OFF : ICON_PIN,
+                           m_pinned != entt::null ? "固定を解除（選択に追従）" : "この表示を固定（選択を変えても切り替わらない）",
+                           m_pinned != entt::null, nullptr, btn, ui::Px(15.0f)))
+            m_pinned = (m_pinned != entt::null) ? entt::null : e;
+        vinput_gui::AnchorLastItem("button", "インスペクタ:固定");
+    }
+
+    // ---- 行 2: タグ（単独選択のときだけ）----
+    if (!multi) RenderTags(reg, ctx, e);
+
+    // ---- 行 3: プロパティ検索 + 全展開 / 全折りたたみ ----
+    {
+        const ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && io.KeyCtrl && !io.KeyShift && !io.KeyAlt
+            && ImGui::IsKeyPressed(ImGuiKey_F, false))
+            m_focusFilter = true;
+        if (m_focusFilter)
+        {
+            ImGui::SetKeyboardFocusHere();
+            m_focusFilter = false;
+        }
+        ImGui::SetNextItemWidth((std::max)(ImGui::GetContentRegionAvail().x - btn * 2.0f - gap * 2.0f, ui::Px(60.0f)));
+        const bool changed = ui::SearchField("##InspSearch", m_filterBuf, sizeof(m_filterBuf), "プロパティを検索（Ctrl+F）");
+        vinput_gui::AnchorLastItem("input", "インスペクタ:プロパティ検索");
+        if (changed)
+        {
+            g_ui.noMatch.clear();
+            g_ui.filter = m_filterBuf;
+            pg::SetFilter(m_filterBuf);
+        }
+        ImGui::SameLine(0.0f, gap);
+        if (ui::IconButton("##foldAllInsp", ICON_FOLD_ALL, "すべて折りたたむ", false, nullptr, btn, ui::Px(15.0f)))
+            g_ui.foldAll = -1;
+        vinput_gui::AnchorLastItem("button", "インスペクタ:すべて折りたたむ");
+        ImGui::SameLine(0.0f, ui::Px(2.0f));
+        if (ui::IconButton("##unfoldAllInsp", ICON_UNFOLD_ALL, "すべて展開", false, nullptr, btn, ui::Px(15.0f)))
+            g_ui.foldAll = +1;
+        vinput_gui::AnchorLastItem("button", "インスペクタ:すべて展開");
+    }
+}
+
+// Add Component: 検索付きポップアップ（カテゴリ見出し + 1 行説明 + 最近使った + ↑↓ Enter Esc）。
+// 選択が複数のときは「全員に付ける」（既に持っている人は飛ばす）。Undo は 1 エントリ。
+void InspectorPanel::RenderAddComponent(entt::registry& reg, EditorContext& ctx)
+{
+    ImGui::Separator();
+    // ✚ コンポーネント追加
+    if (ImGui::Button(ICON_PLUS " コンポーネント追加", ImVec2(-1, 0)))
+    {
+        ImGui::OpenPopup("AddComponentPopup");
+        m_addQuery[0] = '\0';
+        m_addSel = 0;
+        m_addFocus = true;
+    }
+    vinput_gui::AnchorLastItem("button", "インスペクタ:コンポーネント追加");
+    const float popupW = ui::Px(400.0f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(popupW, 0.0f), ImVec2(popupW, ui::Px(560.0f)));
+    if (!ImGui::BeginPopup("AddComponentPopup"))
+        return;
+
+    // ---- 検索欄（開いた瞬間に自動フォーカス）----
+    if (m_addFocus)
+    {
+        ImGui::SetKeyboardFocusHere();
+        m_addFocus = false;
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ui::SearchField("##AddSearch", m_addQuery, sizeof(m_addQuery), "コンポーネントを検索（名前・カテゴリ・別名）"))
+        m_addSel = 0;
+    vinput_gui::AnchorLastItem("input", "インスペクタ:コンポーネント検索");
+
+    // 全員が持っているものは候補に出さない（1 人でも持っていなければ「付ける」対象がある）
+    auto owned = [&](const char* id)
+    {
+        const AddOp* op = FindAddOp(id);
+        if (!op) return true;
+        for (entt::entity t : ctx.selectedEntities)
+            if (reg.valid(t) && !op->has(reg, t)) return false;
+        return !ctx.selectedEntities.empty();   // 全員が持っている = 候補に出さない
+    };
+    int recentN = 0;
+    const std::vector<int> ranked = insp::RankCatalog(m_addQuery, m_addRecent, owned, &recentN);
+    const int count = static_cast<int>(ranked.size());
+    m_addSel = count > 0 ? std::clamp(m_addSel, 0, count - 1) : 0;
+
+    // ---- キーボード ----
+    bool moved = false, activate = false;
+    if (count > 0)
+    {
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) { m_addSel = (std::min)(m_addSel + 1, count - 1); moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))   { m_addSel = (std::max)(m_addSel - 1, 0);         moved = true; }
+        if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) activate = true;
+    }
+
+    int pick = -1;   // 目録の添字
+    const float listH = ui::Px(380.0f);
+    ImGui::BeginChild("##addList", ImVec2(0.0f, listH), false);
+    {
+        const float rowH = ui::Px(42.0f);
+        const bool noQuery = (m_addQuery[0] == '\0');
+        std::string lastCat;
+        auto sectionLabel = [](const char* text)
+        {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, theme::TextFaint);
+            ImGui::TextUnformatted(text);
+            ImGui::PopStyleColor();
+        };
+        for (int k = 0; k < count; ++k)
+        {
+            const insp::ComponentInfo& c = insp::kCatalog[ranked[static_cast<size_t>(k)]];
+            if (noQuery)
+            {
+                if (k == 0 && recentN > 0) sectionLabel("最近使った");
+                if (k >= recentN && lastCat != c.category)
+                {
+                    lastCat = c.category;
+                    sectionLabel(c.category);
+                }
+            }
+            ImGui::PushID(c.id);
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.12f));
+            const bool clicked = ImGui::Selectable(c.label, k == m_addSel, ImGuiSelectableFlags_None, ImVec2(0.0f, rowH));
+            ImGui::PopStyleVar();
+            const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+            if (ImGui::IsItemHovered() && (ImGui::GetIO().MouseDelta.x != 0.0f || ImGui::GetIO().MouseDelta.y != 0.0f))
+                m_addSel = k;
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const float lineH = ImGui::GetTextLineHeight();
+            dl->PushClipRect(mn, mx, true);
+            dl->AddText(ImVec2(mn.x + ui::Px(8.0f), std::floor(mn.y + rowH * 0.5f + ui::Px(1.0f))),
+                        ImGui::GetColorU32(theme::TextDim), c.desc);
+            if (!noQuery)
+            {
+                const ImVec2 cs = ImGui::CalcTextSize(c.category);
+                dl->AddText(ImVec2(mx.x - cs.x - ui::Px(8.0f), std::floor(mn.y + (rowH * 0.5f - lineH) * 0.5f)),
+                            ImGui::GetColorU32(theme::TextFaint), c.category);
+            }
+            dl->PopClipRect();
+            if (moved && k == m_addSel) ImGui::SetScrollHereY(0.5f);
+            if (clicked) pick = ranked[static_cast<size_t>(k)];
+            ImGui::PopID();
+        }
+        if (count == 0)
+        {
+            ImGui::Spacing();
+            ImGui::TextDisabled(m_addQuery[0] ? "一致するコンポーネントがありません" : "追加できるコンポーネントはありません");
+        }
+    }
+    ImGui::EndChild();
+    if (activate && pick < 0 && count > 0) pick = ranked[static_cast<size_t>(m_addSel)];
+
+    ImGui::Separator();
+    // コピーしたコンポーネントの値を、選択の全員へ貼り付ける（持っていない人には追加する）
+    if (g_compClip.applyTo)
+    {
+        const std::string lbl = "コピーしたコンポーネントを貼り付け: " + g_compClip.name;
+        if (ui::MenuItem(ICON_PASTE, lbl.c_str()))
+        {
+            auto composite = std::make_unique<CompositeCommand>("コンポーネント貼り付け");
+            for (entt::entity t : ctx.selectedEntities)
+                if (reg.valid(t)) g_compClip.applyTo(reg, t, *composite);
+            if (!composite->Empty()) ctx.undoSystem.PushCommand(std::move(composite));
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    // スクリプト（.lua）をクリックでアタッチ — ドラッグ不要
+    if (ImGui::BeginMenu("\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88"))  // スクリプト
+    {
+        ScriptPicker(ctx, ctx.selectedEntity, m_assetsDir);
+        ImGui::EndMenu();
+    }
+
+    if (pick >= 0)
+    {
+        const insp::ComponentInfo& c = insp::kCatalog[pick];
+        if (const AddOp* op = FindAddOp(c.id))
+        {
+            auto composite = std::make_unique<CompositeCommand>(c.label);
+            for (entt::entity t : ctx.selectedEntities)
+                if (reg.valid(t) && !op->has(reg, t))
+                    op->add(reg, t, *composite, c.label);
+            if (!composite->Empty()) ctx.undoSystem.PushCommand(std::move(composite));
+            insp::PushRecent(m_addRecent, c.id);
+            prefs::SetString("insp.recentComponents", insp::JoinList(m_addRecent));
+        }
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void InspectorPanel::Render(entt::registry& reg,
                             EditorContext& ctx,
                             Scene* scene)
@@ -974,87 +1828,151 @@ void InspectorPanel::Render(entt::registry& reg,
 
     ImGui::Begin("\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc");  // Inspector
 
+    // ---- 固定（ロック）と、検索 / 折りたたみの状態（フェーズ 1b）----
+    if (!m_prefsLoaded)
+    {
+        m_prefsLoaded = true;
+        g_ui.fold   = insp::DecodeFold(prefs::GetString("insp.fold"));
+        m_addRecent = insp::SplitList(prefs::GetString("insp.recentComponents"));
+        g_ui.order  = insp::SplitList(prefs::GetString("insp.order"));
+    }
+    if (m_pinned != entt::null && !reg.valid(m_pinned)) m_pinned = entt::null;   // 固定先が消えたら自動で解除
+    // 固定中は Render の間だけ ctx の選択を差し替える（各セクションは ctx.selectedEntity だけ見ればよい）。終わりに戻す。
+    const entt::entity savedPrimary = ctx.selectedEntity;
+    const std::vector<entt::entity> savedList = ctx.selectedEntities;
+    const entt::entity pinnedAtStart = m_pinned;
+    const bool pinSwap = (m_pinned != entt::null);
+    if (pinSwap)
+    {
+        ctx.selectedEntity = m_pinned;
+        ctx.selectedEntities.assign(1, m_pinned);
+    }
+    // 選択 / 検索語が変わったら「一致行なし」の記録を捨てる（1 フレームだけ全見出しを出して取り直す）
+    if (ctx.selectedEntity != m_lastSelected || g_ui.filter != m_filterBuf)
+    {
+        g_ui.noMatch.clear();
+        m_lastSelected = ctx.selectedEntity;
+    }
+    g_ui.active    = true;
+    g_ui.filter    = m_filterBuf;
+    g_ui.foldAll   = 0;
+    g_ui.hiddenNow = false;
+    g_ui.curHeader.clear();
+    pg::SetFilter(m_filterBuf);
+    pg::ResetRowStats();
+    pg::ClearComponent();
+    pg::SetInternalClipboardOnly(guard::TestRunActive().load() || vinput::Enabled());   // テスト / 仮想入力中は OS のクリップボードを触らない
+    ctx.inspectorPinned = m_pinned;   // 固定中のエンティティ（テスト / 他パネル向けの鏡）
+
     // --- Selected Entity properties ---
     if (ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity))
     {
         const EditorUiIcons* ic = ctx.icons;
 
-        // NameTag（種別アイコン + 太字の名前。名前を青くしない: アクセントは選択とフォーカスだけ）
-        if (reg.all_of<NameTag>(ctx.selectedEntity))
-        {
-            auto& tag = reg.get<NameTag>(ctx.selectedEntity);
-            const bool hasKids = false;   // 子の有無はここでは見ない（グループ表示はヒエラルキー側）
-            const EntityGlyph g = PickEntityGlyph(reg, ctx.selectedEntity, hasKids);
-            ImGui::AlignTextToFramePadding();
-            ui::Icon(g.glyph, *g.tint);
-            ImGui::SameLine(0.0f, ui::Px(8.0f));
-            ui::PushBold();
-            ImGui::TextUnformatted(tag.name.c_str());
-            ui::PopBold();
-        }
+        // 上部ヘッダ: 有効 / 名前 / 固定 / タグ / 検索（複数選択・固定中の案内もここ）
+        RenderHeader(reg, ctx);
 
         ImGui::Separator();
 
         // --- プレハブインスタンス（PrefabLink 持ちのルートだけ）---
         // 変更点の一覧と 適用 / 元に戻す を最上段に出す。Unity のプレハブヘッダー相当で、
         // 「今どのプレハブの実体を触っているのか」を触る前に分からせるのが狙い。
-        if (scene && reg.all_of<PrefabLink>(ctx.selectedEntity))
+        if (scene && ctx.selectedEntities.size() <= 1 && reg.all_of<PrefabLink>(ctx.selectedEntity))
             RenderPrefabHeader(reg, ctx, *scene, ctx.selectedEntity);
 
         // 種別専用インスペクター（ライト/オーディオは専用UIを最前面に。共通部品はこの下）
-        if (reg.any_of<PointLight, DirectionalLight, SpotLight>(ctx.selectedEntity))
+        if (Common<PointLight>(reg, ctx) || Common<DirectionalLight>(reg, ctx) || Common<SpotLight>(reg, ctx))
             RenderLightHero(reg, ctx, ctx.selectedEntity);
-        if (reg.all_of<AudioSource>(ctx.selectedEntity))
+        if (Common<AudioSource>(reg, ctx))
             RenderAudioHero(reg, ctx, ctx.selectedEntity);
 
+        // ---- 各コンポーネントの節は「登録 → 表示順に実行」。見出しの右クリック「上へ / 下へ」で順序を変えられる（prefs "insp.order"）----
+        std::vector<InspBlock> blocks;
+        blocks.reserve(64);
+
         // Transform
-        if (reg.all_of<Transform>(ctx.selectedEntity))
+        // 複数選択: 触った軸だけを「その値」で全員へ書く（Unity / UE と同じ）。値がバラバラの軸は「—」。Undo は 1 エントリ。
+        blocks.push_back({"Transform", [&]() {
+        if (Common<Transform>(reg, ctx))
         {
-            if (IconHeader(ic, ic ? ic->entEmpty : 0, "Transform", ImGuiTreeNodeFlags_DefaultOpen))
+            const bool tOpen = IconHeader(ic, ic ? ic->entEmpty : 0, "Transform", ImGuiTreeNodeFlags_DefaultOpen);
+            ComponentRemoveMenu<Transform>(reg, ctx, ctx.selectedEntity, "Transform", /*allowRemove=*/false);
+            if (tOpen)
             {
                 auto& t = reg.get<Transform>(ctx.selectedEntity);
 
                 // 編集開始前にスナップショットを取る（毎フレーム、非編集中のみ）
                 if (!m_transformEditing)
+                {
                     m_transformSnapshot = t;
+                    m_transformOthersBefore.clear();
+                }
 
-                bool anyActive = false;
+                bool anyActive = false, anyChanged = false;
                 if (pg::Begin("Transform"))
                 {
-                    pg::Float3("位置 Position", &t.position.x, 0.1f,  0, 0, "%.3f", &anyActive);
-                    pg::Float3("回転 Rotation", &t.rotation.x, 1.0f,  0, 0, "%.2f", &anyActive);
-                    pg::Float3("拡縮 Scale",    &t.scale.x,    0.01f, 0, 0, "%.3f", &anyActive);
+                    anyChanged |= pg::Float3("位置 Position", &t.position.x, 0.1f,  0, 0, "%.3f", &anyActive);
+                    anyChanged |= pg::Float3("回転 Rotation", &t.rotation.x, 1.0f,  0, 0, "%.2f", &anyActive);
+                    anyChanged |= pg::Float3("拡縮 Scale",    &t.scale.x,    0.01f, 0, 0, "%.3f", &anyActive);
                     pg::End();
                 }
-                if (anyActive)
+                if (anyActive || anyChanged)   // 右クリックのリセット / 貼り付けは「押している間」が無い＝変化した瞬間に確定へ回す
                     m_transformEditing = true;
+
+                // 触った軸だけを他の選択へ書く（相手の編集前は初めて触った時に控える）
+                if (anyChanged && ctx.selectedEntities.size() > 1)
+                {
+                    using insp::Vec3;
+                    for (entt::entity o : ctx.selectedEntities)
+                    {
+                        if (o == ctx.selectedEntity || !reg.valid(o) || !reg.all_of<Transform>(o)) continue;
+                        Transform& dst = reg.get<Transform>(o);
+                        bool known = false;
+                        for (const auto& kv : m_transformOthersBefore)
+                            if (kv.first == o) { known = true; break; }
+                        if (!known) m_transformOthersBefore.emplace_back(o, dst);
+                        const Transform& b = m_transformSnapshot;
+                        auto axes = [](const DirectX::XMFLOAT3& v) { return Vec3{v.x, v.y, v.z}; };
+                        auto apply = [&](DirectX::XMFLOAT3& d, const DirectX::XMFLOAT3& before, const DirectX::XMFLOAT3& edited)
+                        {
+                            Vec3 dv = axes(d);
+                            insp::ApplyTouchedAxes(dv, axes(before), axes(edited));
+                            d = {dv.x, dv.y, dv.z};
+                        };
+                        apply(dst.position, b.position, t.position);
+                        apply(dst.rotation, b.rotation, t.rotation);
+                        apply(dst.scale,    b.scale,    t.scale);
+                    }
+                }
             }
 
             // Transform 編集中 → 全ウィジェットが非アクティブになったら Undo に積む
             if (m_transformEditing && !ImGui::IsAnyItemActive())
             {
                 auto& t = reg.get<Transform>(ctx.selectedEntity);
-                bool changed =
-                    m_transformSnapshot.position.x != t.position.x ||
-                    m_transformSnapshot.position.y != t.position.y ||
-                    m_transformSnapshot.position.z != t.position.z ||
-                    m_transformSnapshot.rotation.x != t.rotation.x ||
-                    m_transformSnapshot.rotation.y != t.rotation.y ||
-                    m_transformSnapshot.rotation.z != t.rotation.z ||
-                    m_transformSnapshot.scale.x    != t.scale.x ||
-                    m_transformSnapshot.scale.y    != t.scale.y ||
-                    m_transformSnapshot.scale.z    != t.scale.z;
-                if (changed)
+                auto differs = [](const Transform& a, const Transform& b)
                 {
-                    ctx.undoSystem.PushCommand(std::make_unique<TransformCommand>(
-                        &reg, ctx.selectedEntity, m_transformSnapshot, t));
-                }
+                    return a.position.x != b.position.x || a.position.y != b.position.y || a.position.z != b.position.z
+                        || a.rotation.x != b.rotation.x || a.rotation.y != b.rotation.y || a.rotation.z != b.rotation.z
+                        || a.scale.x    != b.scale.x    || a.scale.y    != b.scale.y    || a.scale.z    != b.scale.z;
+                };
+                auto composite = std::make_unique<CompositeCommand>("Transform");
+                if (differs(m_transformSnapshot, t))
+                    composite->Add(std::make_unique<TransformCommand>(&reg, ctx.selectedEntity, m_transformSnapshot, t));
+                for (const auto& [o, before] : m_transformOthersBefore)
+                    if (reg.valid(o) && reg.all_of<Transform>(o) && differs(before, reg.get<Transform>(o)))
+                        composite->Add(std::make_unique<TransformCommand>(&reg, o, before, reg.get<Transform>(o)));
+                m_transformOthersBefore.clear();
+                if (!composite->Empty())
+                    ctx.undoSystem.PushCommand(std::move(composite));
                 m_transformEditing = false;
             }
         }
+        }});
 
         // MeshRenderer
-        if (reg.all_of<MeshRenderer>(ctx.selectedEntity))
+        blocks.push_back({"MeshRenderer", [&]() {
+        if (Common<MeshRenderer>(reg, ctx))
         {
             if (IconHeader(ic, ic ? ic->entMesh : 0, "MeshRenderer"))
             {
@@ -1141,9 +2059,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
         }
+        }});
 
         // Sprite2D（ワールド/HUD スプライト）
-        if (reg.all_of<Sprite2D>(ctx.selectedEntity))
+        blocks.push_back({"Sprite2D", [&]() {
+        if (Common<Sprite2D>(reg, ctx))
         {
             // コンソールのエラー行から飛んできたら、このコンポーネントと下の Shader 節を開く
             const bool revealSprite =
@@ -1286,9 +2206,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_spriteEdit, changed, active, "Sprite2D");
             }
         }
+        }});
 
         // UICanvas（ゲーム内UIのルート。子孫の UIRect ツリーを Play 中に描画する）
-        if (reg.all_of<UICanvas>(ctx.selectedEntity))
+        blocks.push_back({"UICanvas", [&]() {
+        if (Common<UICanvas>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UICanvas");
             bool removed = ComponentRemoveMenu<UICanvas>(reg, ctx, ctx.selectedEntity, "UICanvas");
@@ -1321,9 +2243,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiCanvasEdit, changed, active, "UICanvas");
             }
         }
+        }});
 
         // UIRect（UI レイアウトノード。アンカー＋オフセットで親矩形に追従する）
-        if (reg.all_of<UIRect>(ctx.selectedEntity))
+        blocks.push_back({"UIRect", [&]() {
+        if (Common<UIRect>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UIRect");
             bool removed = ComponentRemoveMenu<UIRect>(reg, ctx, ctx.selectedEntity, "UIRect");
@@ -1509,9 +2433,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiRectEdit, changed, active, "UIRect");
             }
         }
+        }});
 
         // UIImage（UI の画像/単色矩形。UIButton があれば状態色が乗算される）
-        if (reg.all_of<UIImage>(ctx.selectedEntity))
+        blocks.push_back({"UIImage", [&]() {
+        if (Common<UIImage>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "UIImage");
             bool removed = ComponentRemoveMenu<UIImage>(reg, ctx, ctx.selectedEntity, "UIImage");
@@ -1696,9 +2622,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiImageEdit, changed, active, "UIImage");
             }
         }
+        }});
 
         // UIText（UI テキスト。ImGui 共有フォントのスケール描画）
-        if (reg.all_of<UIText>(ctx.selectedEntity))
+        blocks.push_back({"UIText", [&]() {
+        if (Common<UIText>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UIText");
             bool removed = ComponentRemoveMenu<UIText>(reg, ctx, ctx.selectedEntity, "UIText");
@@ -1814,9 +2742,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiTextEdit, changed, active, "UIText");
             }
         }
+        }});
 
         // UIButton（クリックで events へ emit。同一エンティティの UIImage を状態色でティント）
-        if (reg.all_of<UIButton>(ctx.selectedEntity))
+        blocks.push_back({"UIButton", [&]() {
+        if (Common<UIButton>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "UIButton");
             bool removed = ComponentRemoveMenu<UIButton>(reg, ctx, ctx.selectedEntity, "UIButton");
@@ -1864,9 +2794,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiButtonEdit, changed, active, "UIButton");
             }
         }
+        }});
 
         // UISlider（トラック+つまみを自前描画。値変更で onChangeEvent を emit）
-        if (reg.all_of<UISlider>(ctx.selectedEntity))
+        blocks.push_back({"UISlider", [&]() {
+        if (Common<UISlider>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entUi : 0, "UISlider");
             bool removed = ComponentRemoveMenu<UISlider>(reg, ctx, ctx.selectedEntity, "UISlider");
@@ -1905,9 +2837,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiSliderEdit, changed, active, "UISlider");
             }
         }
+        }});
 
         // UIScrollView（子をクリップ + ホイール/ドラッグスクロール。子は階層ツリーでぶら下げる）
-        if (reg.all_of<UIScrollView>(ctx.selectedEntity))
+        blocks.push_back({"UIScrollView", [&]() {
+        if (Common<UIScrollView>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIScrollView");
             bool removed = ComponentRemoveMenu<UIScrollView>(reg, ctx, ctx.selectedEntity, "UIScrollView");
@@ -1943,9 +2877,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiScrollEdit, changed, active, "UIScrollView");
             }
         }
+        }});
 
         // UILayout（自動レイアウト: 直下の子へセル矩形を順に配る）
-        if (reg.all_of<UILayout>(ctx.selectedEntity))
+        blocks.push_back({"UILayout", [&]() {
+        if (Common<UILayout>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entUi : 0, "UILayout");
             bool removed = ComponentRemoveMenu<UILayout>(reg, ctx, ctx.selectedEntity, "UILayout");
@@ -1978,9 +2914,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiLayoutEdit, changed, active, "UILayout");
             }
         }
+        }});
 
         // UIToggle（チェックボックス。クリックで isOn 反転 + onChangeEvent を emit）
-        if (reg.all_of<UIToggle>(ctx.selectedEntity))
+        blocks.push_back({"UIToggle", [&]() {
+        if (Common<UIToggle>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIToggle");
             bool removed = ComponentRemoveMenu<UIToggle>(reg, ctx, ctx.selectedEntity, "UIToggle");
@@ -2011,9 +2949,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiToggleEdit, changed, active, "UIToggle");
             }
         }
+        }});
 
         // UIAnimator（UI の出現/ホバー/ループアニメ。Play 中のみ再生。効果は自分と子孫に掛かる）
-        if (reg.all_of<UIAnimator>(ctx.selectedEntity))
+        blocks.push_back({"UIAnimator", [&]() {
+        if (Common<UIAnimator>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIAnimator");
             bool removed = ComponentRemoveMenu<UIAnimator>(reg, ctx, ctx.selectedEntity, "UIAnimator");
@@ -2076,9 +3016,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_uiAnimatorEdit, changed, active, "UIAnimator");
             }
         }
+        }});
 
         // UIAnimPlayer（タイムラインで作った .uianim クリップの再生器）
-        if (reg.all_of<UIAnimPlayer>(ctx.selectedEntity))
+        blocks.push_back({"UIAnimPlayer", [&]() {
+        if (Common<UIAnimPlayer>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entUi : 0, "UIAnimPlayer");
             bool removed = ComponentRemoveMenu<UIAnimPlayer>(reg, ctx, ctx.selectedEntity, "UIAnimPlayer");
@@ -2117,9 +3059,11 @@ void InspectorPanel::Render(entt::registry& reg,
                         "UIAnimPlayer");
             }
         }
+        }});
 
         // SpriteAnimator（.spranim シートの連番アニメ。Sprite2D / UIImage の UV を駆動する）
-        if (reg.all_of<SpriteAnimator>(ctx.selectedEntity))
+        blocks.push_back({"SpriteAnimator", [&]() {
+        if (Common<SpriteAnimator>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "SpriteAnimator");
             bool removed = ComponentRemoveMenu<SpriteAnimator>(reg, ctx, ctx.selectedEntity,
@@ -2156,9 +3100,11 @@ void InspectorPanel::Render(entt::registry& reg,
                         "SpriteAnimator");
             }
         }
+        }});
 
         // SkeletalAnimation
-        if (reg.all_of<SkeletalAnimation>(ctx.selectedEntity))
+        blocks.push_back({"SkeletalAnimation", [&]() {
+        if (Common<SkeletalAnimation>(reg, ctx))
         {
             auto& skelAnim = reg.get<SkeletalAnimation>(ctx.selectedEntity);
             if (skelAnim.animator && IconHeader(ic, ic ? ic->entMesh : 0, "SkeletalAnimation"))
@@ -2182,11 +3128,13 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
         }
+        }});
 
         // AnimatorController（.animfsm ステートマシン）。
         // 編集できるのはパスとパラメータだけ。グラフの構造は JSON アセット側にあるので
         // ここは「現在の状態を見せるライブ表示」に徹する（決定 2: グラフエディタは作らない）。
-        if (reg.all_of<AnimatorController>(ctx.selectedEntity))
+        blocks.push_back({"AnimatorController", [&]() {
+        if (Common<AnimatorController>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "AnimatorController");
             bool removed = ComponentRemoveMenu<AnimatorController>(reg, ctx, ctx.selectedEntity,
@@ -2250,9 +3198,11 @@ void InspectorPanel::Render(entt::registry& reg,
                         "AnimatorController");
             }
         }
+        }});
 
         // FootIK（接地補正）
-        if (reg.all_of<FootIK>(ctx.selectedEntity))
+        blocks.push_back({"FootIK", [&]() {
+        if (Common<FootIK>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "FootIK");
             bool removed = ComponentRemoveMenu<FootIK>(reg, ctx, ctx.selectedEntity, "FootIK");
@@ -2333,9 +3283,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_footIkEdit, changed, active, "FootIK");
             }
         }
+        }});
 
         // Brain（ゲーム AI の頭脳）。行動の中身は同じエンティティの Lua が brain:action で定義する
-        if (reg.all_of<Brain>(ctx.selectedEntity))
+        blocks.push_back({"Brain", [&]() {
+        if (Common<Brain>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Brain");
             bool removed = ComponentRemoveMenu<Brain>(reg, ctx, ctx.selectedEntity, "Brain");
@@ -2435,9 +3387,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_brainEdit, changed, active, "Brain");
             }
         }
+        }});
 
         // AudioReverbZone（リバーブ域）
-        if (reg.all_of<AudioReverbZone>(ctx.selectedEntity))
+        blocks.push_back({"AudioReverbZone", [&]() {
+        if (Common<AudioReverbZone>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entAudio : 0, "Audio Reverb Zone");
             bool removed = ComponentRemoveMenu<AudioReverbZone>(reg, ctx, ctx.selectedEntity, "AudioReverbZone");
@@ -2487,9 +3441,92 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_reverbZoneEdit, changed, active, "AudioReverbZone");
             }
         }
+        }});
+
+        // VirtualGeometry（仮想ジオメトリ = .vgeo）
+        blocks.push_back({"VirtualGeometry", [&]() {
+        if (Common<VirtualGeometry>(reg, ctx))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Virtual Geometry");
+            bool removed = ComponentRemoveMenu<VirtualGeometry>(reg, ctx, ctx.selectedEntity, "VirtualGeometry");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_virtualGeometryEdit);
+                auto& v = reg.get<VirtualGeometry>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                if (pg::Begin("VirtualGeometry"))
+                {
+                    changed |= pg::Checkbox("有効 Enabled", &v.enabled,
+                                            "OFF にするとこのエンティティだけ VG から外れ、プロキシのまま描かれる");
+                    changed |= pg::InputTextStr(".vgeo パス", v.vgeoPath, &active,
+                                                "assets 相対 or 絶対。空なら MeshRenderer のモデルパスを使う");
+                    pg::End();
+                }
+                if (const char* why = dx12e::vg::VgIneligibleReason(reg, ctx.selectedEntity)) WarnText("%s", why);   // P4: 対象外の材質・設定
+                ImGui::TextDisabled("ON/OFF と LOD しきい値はシーン設定 virtualGeometry（MCP: vg_stats で統計）");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_virtualGeometryEdit, changed, active, "VirtualGeometry");
+            }
+        }
+        }});
+
+        // FoliageLayer（植生 F1。1 コンポーネント = N 個のインスタンス）
+        blocks.push_back({"FoliageLayer", [&]() {
+        if (Common<FoliageLayer>(reg, ctx))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Foliage Layer");
+            bool removed = ComponentRemoveMenu<FoliageLayer>(reg, ctx, ctx.selectedEntity, "FoliageLayer");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_foliageLayerEdit);
+                auto& l = reg.get<FoliageLayer>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                if (pg::Begin("FoliageLayer"))
+                {
+                    changed |= pg::Checkbox("有効 Enabled", &l.enabled);
+                    pg::Group("モデル（種別ごとの LOD チェーン）");
+                    changed |= pg::InputTextStr("種別 0", l.variant0, &active, "「;」区切りで LOD0..3（assets 相対）。例: foliage/tree_lod0.glb;foliage/tree_lod1.glb;foliage/tree_lod2.glb");
+                    changed |= pg::InputTextStr("種別 1", l.variant1, &active, "インスタンスの type バイトが 1 のもの用（空なら種別 0 を使う）");
+                    changed |= pg::InputTextStr("種別 2", l.variant2, &active);
+                    changed |= pg::InputTextStr("種別 3", l.variant3, &active);
+                    pg::Group("距離 m");
+                    changed |= pg::Float("LOD0 → 1", &l.lodDist0, 0.5f, 0.5f, 5000.0f, "%.1f", &active);
+                    changed |= pg::Float("LOD1 → 2", &l.lodDist1, 0.5f, 0.5f, 5000.0f, "%.1f", &active);
+                    changed |= pg::Float("LOD2 → 3", &l.lodDist2, 0.5f, 0.5f, 5000.0f, "%.1f", &active);
+                    changed |= pg::Float("描画の最大距離", &l.cullDistance, 1.0f, 1.0f, 20000.0f, "%.0f", &active, "これより遠くは描かない");
+                    changed |= pg::SliderFloat("間引き開始", &l.thinStart, 0.0f, 0.99f, "%.2f", &active, "最大距離のこの割合から密度を落とす");
+                    changed |= pg::SliderFloat("LOD ディザ幅", &l.lodFade, 0.0f, 0.45f, "%.2f", &active, "切替距離 ±この割合でスクリーンドアのクロスフェード（0 = オフ）");
+                    pg::Group("影");
+                    changed |= pg::Checkbox("影を落とす", &l.castShadow);
+                    changed |= pg::Float("影の距離", &l.shadowDistance, 1.0f, 1.0f, 2000.0f, "%.0f", &active);
+                    changed |= pg::Int("影を落とす最遠 LOD", &l.shadowMaxLod, 1.0f, 0, 3, &active, "遠い LOD（クロスカード等）は影を落とさない");
+                    pg::Group("見た目");
+                    changed |= pg::Color3("色", &l.tint.x);
+                    changed |= pg::SliderFloat("AO の効き", &l.aoStrength, 0.0f, 1.0f, "%.2f", &active, "頂点色 A（焼き込み AO）をどれだけ暗さに使うか");
+                    pg::Group("風（シーンの風は植生ツール窓 / MCP set_wind）");
+                    changed |= pg::Checkbox("風を受ける", &l.windEnabled);
+                    changed |= pg::Float("幹の曲げ", &l.windBend, 0.02f, 0.0f, 20.0f, "%.2f", &active, "1 = 標準。頂点色 B が曲げの重み");
+                    changed |= pg::Float("葉のはばたき m", &l.windFlutter, 0.005f, 0.0f, 2.0f, "%.3f", &active, "頂点色 R が振幅の重み・G が位相。0 = オフ");
+                    changed |= pg::Float("曲げの指数", &l.windBendExp, 0.05f, 0.1f, 8.0f, "%.2f", &active, "大きいほど先端だけが曲がる");
+                    pg::Group("カリング");
+                    changed |= pg::Checkbox("HZB 遮蔽カリング", &l.hzbCulling, "前フレームの Hi-Z ピラミッドで隠れたインスタンスを落とす（オクルージョンカリングが有効なとき）");
+                    int mv = static_cast<int>(l.maxVisible);
+                    if (pg::Int("list 容量", &mv, 1024.0f, 1024, 4194304, &active, "LOD ごとの描画バッファの容量（超えた分は描かれない）")) { l.maxVisible = static_cast<u32>(mv); changed = true; }
+                    pg::End();
+                }
+                const u32 fn = dx12e::foliage::InstanceCount(l);
+                ImGui::TextDisabled("インスタンス %u 個 / %.1f MB（.dxfoliage: %s）", fn, static_cast<double>(fn) * 32.0 / (1024.0 * 1024.0),
+                                    l.instancePath.empty() ? "未保存" : l.instancePath.c_str());
+                if (l.variant0.empty()) WarnText("種別 0 のモデルが空です（何も描かれません）");
+                else if (fn == 0 && l.instancePath.empty()) WarnText("インスタンスがありません（植生ツールで散布するか MCP foliage_scatter）");
+                if (ImGui::SmallButton("植生ツール（散布・ブラシ・風）を開く")) ctx.showFoliageTool = true;
+                EndEdit(reg, ctx, ctx.selectedEntity, m_foliageLayerEdit, changed, active, "FoliageLayer");
+            }
+        }
+        }});
 
         // NodeAnimation
-        if (reg.all_of<NodeAnimationComp>(ctx.selectedEntity))
+        blocks.push_back({"NodeAnimationComp", [&]() {
+        if (Common<NodeAnimationComp>(reg, ctx))
         {
             auto& nodeAnim = reg.get<NodeAnimationComp>(ctx.selectedEntity);
             if (nodeAnim.nodeAnimator && IconHeader(ic, ic ? ic->entMesh : 0, "NodeAnimation"))
@@ -2506,9 +3543,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
         }
+        }});
 
         // GridPlane
-        if (reg.all_of<GridPlane>(ctx.selectedEntity))
+        blocks.push_back({"GridPlane", [&]() {
+        if (Common<GridPlane>(reg, ctx))
         {
             if (IconHeader(ic, ic ? ic->entEmpty : 0, "GridPlane"))
             {
@@ -2520,11 +3559,13 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
         }
+        }});
 
         // ライト（Point / Directional / Spot）は上部の専用ヒーローカード（RenderLightHero）で編集する。
 
         // Gimmick（ステージギミック: 時間で動く/塞ぐ部品。動きは Lua が駆動）
-        if (reg.all_of<Gimmick>(ctx.selectedEntity))
+        blocks.push_back({"Gimmick", [&]() {
+        if (Common<Gimmick>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Gimmick");
             bool removed = ComponentRemoveMenu<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
@@ -2557,9 +3598,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_gimmickEdit, changed, active, "Gimmick");
             }
         }
+        }});
 
         // ParticleEmitter（配置できるエフェクト部品）
-        if (reg.all_of<ParticleEmitter>(ctx.selectedEntity))
+        blocks.push_back({"ParticleEmitter", [&]() {
+        if (Common<ParticleEmitter>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Particle Emitter");
             bool removed = ComponentRemoveMenu<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
@@ -2722,9 +3765,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_emitterEdit, changed, active, "Particle Emitter");
             }
         }
+        }});
 
         // TrailRenderer（軌跡リボン: 剣の残像/弾道/魔法の尾）
-        if (reg.all_of<TrailRenderer>(ctx.selectedEntity))
+        blocks.push_back({"TrailRenderer", [&]() {
+        if (Common<TrailRenderer>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Trail Renderer");
             bool removed = ComponentRemoveMenu<TrailRenderer>(reg, ctx, ctx.selectedEntity, "Trail Renderer");
@@ -2750,9 +3795,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_trailEdit, changed, active, "Trail Renderer");
             }
         }
+        }});
 
         // Decal（投影デカール: 弾痕/血/汚れ/水たまり）
-        if (reg.all_of<DecalComponent>(ctx.selectedEntity))
+        blocks.push_back({"DecalComponent", [&]() {
+        if (Common<DecalComponent>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Decal");
             bool removed = ComponentRemoveMenu<DecalComponent>(reg, ctx, ctx.selectedEntity, "Decal");
@@ -2791,9 +3838,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_decalEdit, changed, active, "Decal");
             }
         }
+        }});
 
         // NetworkIdentity（マルチプレイ複製対象の印。netId/owner はランタイム表示のみ）
-        if (reg.all_of<NetworkIdentity>(ctx.selectedEntity))
+        blocks.push_back({"NetworkIdentity", [&]() {
+        if (Common<NetworkIdentity>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "Network Identity");
             bool removed = ComponentRemoveMenu<NetworkIdentity>(reg, ctx, ctx.selectedEntity, "Network Identity");
@@ -2823,9 +3872,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_netIdEdit, changed, active, "Network Identity");
             }
         }
+        }});
 
         // NetworkTransform（Transformのスナップショット複製設定。NetworkIdentityと併用）
-        if (reg.all_of<NetworkTransform>(ctx.selectedEntity))
+        blocks.push_back({"NetworkTransform", [&]() {
+        if (Common<NetworkTransform>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "Network Transform");
             bool removed = ComponentRemoveMenu<NetworkTransform>(reg, ctx, ctx.selectedEntity, "Network Transform");
@@ -2852,9 +3903,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_netTfEdit, changed, active, "Network Transform");
             }
         }
+        }});
 
         // Trigger（イベント: 範囲に入る/出る/居る で宣言アクションを実行）
-        if (reg.all_of<Trigger>(ctx.selectedEntity))
+        blocks.push_back({"Trigger", [&]() {
+        if (Common<Trigger>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entEmpty : 0, "Trigger");
             bool removed = ComponentRemoveMenu<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
@@ -2987,9 +4040,11 @@ void InspectorPanel::Render(entt::registry& reg,
                         trChanged, ImGui::IsAnyItemActive(), "Trigger");
             }
         }
+        }});
 
         // CameraComponent
-        if (reg.all_of<CameraComponent>(ctx.selectedEntity))
+        blocks.push_back({"CameraComponent", [&]() {
+        if (Common<CameraComponent>(reg, ctx))
         {
             // コンソールのエラー行から飛んできたら、Camera と下の「画面シェーダー」節を開く
             const bool revealCamScreen =
@@ -3119,13 +4174,16 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_camEdit, changed, active, "Camera");
             }
         }
+        }});
 
         // オーディオ（AudioSource）は上部の専用ヒーローカード（RenderAudioHero）で編集する。
 
         // --- Physics ---
+        blocks.push_back({"RigidBody", [&]() {
         {
             bool hasRb = reg.all_of<RigidBody>(ctx.selectedEntity);
-            if (ui::Checkbox("Physics", &hasRb))
+            if (ctx.selectedEntities.size() <= 1 && (!pg::FilterActive() || insp::PropertyMatches(g_ui.filter, "Physics"))
+                && ui::Checkbox("Physics", &hasRb))
             {
                 if (hasRb)
                 {
@@ -3186,7 +4244,7 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
 
-            if (reg.all_of<RigidBody>(ctx.selectedEntity))
+            if (Common<RigidBody>(reg, ctx))
             {
                 BeginEdit(reg, ctx.selectedEntity, m_rbEdit);
                 auto& rb = reg.get<RigidBody>(ctx.selectedEntity);
@@ -3214,9 +4272,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_rbEdit, changed, active, "RigidBody");
             }
         }
+        }});
 
         // --- Colliders ---
-        if (reg.all_of<BoxCollider>(ctx.selectedEntity))
+        blocks.push_back({"BoxCollider", [&]() {
+        if (Common<BoxCollider>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Box Collider");
             bool removed = ComponentRemoveMenu<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
@@ -3234,8 +4294,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_boxColEdit, changed, active, "Box Collider");
             }
         }
+        }});
 
-        if (reg.all_of<SphereCollider>(ctx.selectedEntity))
+        blocks.push_back({"SphereCollider", [&]() {
+        if (Common<SphereCollider>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Sphere Collider");
             bool removed = ComponentRemoveMenu<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
@@ -3253,8 +4315,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_sphereColEdit, changed, active, "Sphere Collider");
             }
         }
+        }});
 
-        if (reg.all_of<CapsuleCollider>(ctx.selectedEntity))
+        blocks.push_back({"CapsuleCollider", [&]() {
+        if (Common<CapsuleCollider>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Capsule Collider");
             bool removed = ComponentRemoveMenu<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
@@ -3273,8 +4337,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_capsuleColEdit, changed, active, "Capsule Collider");
             }
         }
+        }});
 
-        if (reg.all_of<CharacterController>(ctx.selectedEntity))
+        blocks.push_back({"CharacterController", [&]() {
+        if (Common<CharacterController>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entPhysics : 0, "Character Controller");
             bool removed = ComponentRemoveMenu<CharacterController>(reg, ctx, ctx.selectedEntity, "Character Controller");
@@ -3298,8 +4364,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 EndEdit(reg, ctx, ctx.selectedEntity, m_ccEdit, changed, active, "Character Controller");
             }
         }
+        }});
 
-        if (reg.all_of<MeshCollider>(ctx.selectedEntity))
+        blocks.push_back({"MeshCollider", [&]() {
+        if (Common<MeshCollider>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Mesh Collider");
             bool removed = ComponentRemoveMenu<MeshCollider>(reg, ctx, ctx.selectedEntity, "Mesh Collider");
@@ -3320,8 +4388,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
         }
+        }});
 
-        if (reg.all_of<ConvexHullCollider>(ctx.selectedEntity))
+        blocks.push_back({"ConvexHullCollider", [&]() {
+        if (Common<ConvexHullCollider>(reg, ctx))
         {
             bool open = IconHeader(ic, ic ? ic->entCollider : 0, "Convex Hull Collider");
             bool removed = ComponentRemoveMenu<ConvexHullCollider>(reg, ctx, ctx.selectedEntity, "Convex Hull Collider");
@@ -3336,9 +4406,11 @@ void InspectorPanel::Render(entt::registry& reg,
                 ImGui::TextDisabled("(メッシュから自動生成)");
             }
         }
+        }});
 
         // --- Material (PBR) ---
-        if (reg.all_of<MeshRenderer>(ctx.selectedEntity))
+        blocks.push_back({"Material", [&]() {
+        if (Common<MeshRenderer>(reg, ctx))
         {
             auto& mr = reg.get<MeshRenderer>(ctx.selectedEntity);
             if (!mr.meshes.empty() && mr.meshes[0] && mr.meshes[0]->GetMaterial())
@@ -3989,69 +5061,16 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
         }
+        }});
 
-        // LuaScript
-        DrawLuaScriptSection(reg, ctx.selectedEntity, ctx, m_scriptEngine, m_assetsDir);
+        RunInspectorBlocks(blocks);
 
-        // --- Add Component ---
-        ImGui::Separator();
-        // ✚ コンポーネント追加
-        if (ImGui::Button(ICON_PLUS " コンポーネント追加", ImVec2(-1, 0)))
-            ImGui::OpenPopup("AddComponentPopup");
+        // LuaScript（複数選択のときは出さない: スクリプトの中身は全員へは伝わらない）
+        if (ctx.selectedEntities.size() <= 1)
+            DrawLuaScriptSection(reg, ctx.selectedEntity, ctx, m_scriptEngine, m_assetsDir);
 
-        if (ImGui::BeginPopup("AddComponentPopup"))
-        {
-            AddComponentMenuItem<PointLight>(reg, ctx, ctx.selectedEntity, "Point Light");
-            AddComponentMenuItem<DirectionalLight>(reg, ctx, ctx.selectedEntity, "Directional Light");
-            AddComponentMenuItem<SpotLight>(reg, ctx, ctx.selectedEntity, "Spot Light");
-            AddComponentMenuItem<CameraComponent>(reg, ctx, ctx.selectedEntity, "Camera");
-            AddComponentMenuItem<AudioSource>(reg, ctx, ctx.selectedEntity, "Audio Source");
-            AddComponentMenuItem<Gimmick>(reg, ctx, ctx.selectedEntity, "Gimmick");
-            AddComponentMenuItem<ParticleEmitter>(reg, ctx, ctx.selectedEntity, "Particle Emitter");
-            AddComponentMenuItem<TrailRenderer>(reg, ctx, ctx.selectedEntity, "Trail Renderer");
-            AddComponentMenuItem<DecalComponent>(reg, ctx, ctx.selectedEntity, "Decal");
-            AddComponentMenuItem<Trigger>(reg, ctx, ctx.selectedEntity, "Trigger");
-            ImGui::Separator();
-            AddComponentMenuItem<UICanvas>(reg, ctx, ctx.selectedEntity, "UI Canvas");
-            AddComponentMenuItem<UIRect>(reg, ctx, ctx.selectedEntity, "UI Rect");
-            AddComponentMenuItem<UIImage>(reg, ctx, ctx.selectedEntity, "UI Image");
-            AddComponentMenuItem<UIText>(reg, ctx, ctx.selectedEntity, "UI Text");
-            AddComponentMenuItem<UIButton>(reg, ctx, ctx.selectedEntity, "UI Button");
-            AddComponentMenuItem<UISlider>(reg, ctx, ctx.selectedEntity, "UI Slider");
-            AddComponentMenuItem<UIToggle>(reg, ctx, ctx.selectedEntity, "UI Toggle");
-            AddComponentMenuItem<UIScrollView>(reg, ctx, ctx.selectedEntity, "UI Scroll View");
-            AddComponentMenuItem<UILayout>(reg, ctx, ctx.selectedEntity, "UI Layout (VBox/HBox/Grid)");
-            AddComponentMenuItem<UIAnimator>(reg, ctx, ctx.selectedEntity, "UI Animator");
-            AddComponentMenuItem<UIAnimPlayer>(reg, ctx, ctx.selectedEntity,
-                                               "UI Anim Player (.uianim クリップ)");
-            AddComponentMenuItem<SpriteAnimator>(reg, ctx, ctx.selectedEntity,
-                                                 "Sprite Animator (.spranim シート)");
-            AddComponentMenuItem<AnimatorController>(reg, ctx, ctx.selectedEntity,
-                                                     "Animator Controller (.animfsm ステートマシン)");
-            AddComponentMenuItem<FootIK>(reg, ctx, ctx.selectedEntity,
-                                         "Foot IK (接地補正・Play 中のみ)");
-            AddComponentMenuItem<Brain>(reg, ctx, ctx.selectedEntity,
-                                        "Brain (ゲーム AI の頭脳・Play 中のみ)");
-            AddComponentMenuItem<AudioReverbZone>(reg, ctx, ctx.selectedEntity,
-                                                  "Audio Reverb Zone (部屋・廊下・洞窟の響き)");
-            ImGui::Separator();
-            AddComponentMenuItem<RigidBody>(reg, ctx, ctx.selectedEntity, "RigidBody");
-            AddComponentMenuItem<BoxCollider>(reg, ctx, ctx.selectedEntity, "Box Collider");
-            AddComponentMenuItem<SphereCollider>(reg, ctx, ctx.selectedEntity, "Sphere Collider");
-            AddComponentMenuItem<CapsuleCollider>(reg, ctx, ctx.selectedEntity, "Capsule Collider");
-            AddComponentMenuItem<CharacterController>(reg, ctx, ctx.selectedEntity, "Character Controller");
-            ImGui::Separator();
-            AddComponentMenuItem<NetworkIdentity>(reg, ctx, ctx.selectedEntity, "Network Identity");
-            AddComponentMenuItem<NetworkTransform>(reg, ctx, ctx.selectedEntity, "Network Transform");
-            ImGui::Separator();
-            // スクリプト（.lua）をクリックでアタッチ — ドラッグ不要
-            if (ImGui::BeginMenu("\xe3\x82\xb9\xe3\x82\xaf\xe3\x83\xaa\xe3\x83\x97\xe3\x83\x88"))  // スクリプト
-            {
-                ScriptPicker(ctx, ctx.selectedEntity, m_assetsDir);
-                ImGui::EndMenu();
-            }
-            ImGui::EndPopup();
-        }
+        // --- Add Component（検索付きポップアップ。実体は RenderAddComponent）---
+        RenderAddComponent(reg, ctx);
     }
     else
     {
@@ -4107,6 +5126,30 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
             }
             ImGui::EndDragDropTarget();
+        }
+    }
+
+    // ---- 後始末（検索 / 文脈 / 固定の差し替えを戻す）----
+    FinishHeader();
+    ctx.inspectorPinned = m_pinned;
+    g_ui.active = false;
+    g_ui.hiddenNow = false;
+    pg::SetFilter("");
+    pg::ClearComponent();
+    if (g_ui.foldDirty)
+    {
+        g_ui.foldDirty = false;
+        prefs::SetString("insp.fold", insp::EncodeFold(g_ui.fold));
+    }
+    if (pinSwap)
+    {
+        // Render の中で選択が変わっていなければ（= 固定のままの表示だった）元の選択へ戻す
+        const bool untouched = ctx.selectedEntity == pinnedAtStart && ctx.selectedEntities.size() == 1
+                            && ctx.selectedEntities[0] == pinnedAtStart;
+        if (untouched)
+        {
+            ctx.selectedEntity   = savedPrimary;
+            ctx.selectedEntities = savedList;
         }
     }
 
@@ -4239,6 +5282,7 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         BeginEdit(reg, e, m_plEdit);
         auto& pl = reg.get<PointLight>(e);
         bool changed = false, active = false;
+        SetPgContext<PointLight>(reg, ctx, e);
         if (pg::Begin("PointLight"))
         {
             changed |= pg::Color3("色 Color", &pl.color.x, ImGuiColorEditFlags_NoInputs);
@@ -4258,6 +5302,7 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         BeginEdit(reg, e, m_dlEdit);
         auto& dl = reg.get<DirectionalLight>(e);
         bool changed = false, active = false;
+        SetPgContext<DirectionalLight>(reg, ctx, e);
         if (pg::Begin("DirectionalLight"))
         {
             changed |= pg::Color3("色 Color", &dl.color.x, ImGuiColorEditFlags_NoInputs);
@@ -4275,6 +5320,7 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
         BeginEdit(reg, e, m_slEdit);
         auto& sl = reg.get<SpotLight>(e);
         bool changed = false, active = false;
+        SetPgContext<SpotLight>(reg, ctx, e);
         if (pg::Begin("SpotLight"))
         {
             changed |= pg::Color3("色 Color", &sl.color.x, ImGuiColorEditFlags_NoInputs);
@@ -4316,6 +5362,7 @@ void InspectorPanel::RenderAudioHero(entt::registry& reg, EditorContext& ctx, en
 
     BeginEdit(reg, e, m_audioEdit);
     bool changed = false, active = false;
+    SetPgContext<AudioSource>(reg, ctx, e);
 
     if (pg::Begin("AudioSource"))
     {

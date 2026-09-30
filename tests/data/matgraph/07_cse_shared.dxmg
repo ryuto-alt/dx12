@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000007",
+  "name": "cse_shared",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "a": { "type": "Sin", "in": { "X": "uv.UV" } },
+    "a2": { "type": "Sin", "in": { "X": "uv.UV" } },
+    "col": { "type": "Append", "in": { "A": "pq.Out", "B": 0.5 } },
+    "k1": { "type": "Float", "props": { "inline": true, "value": 0.25 } },
+    "k2": { "type": "Float", "props": { "inline": true, "value": 0.25 } },
+    "out": { "type": "MaterialOutput", "in": { "BaseColor": "col.Out", "Metallic": "v.Out", "Roughness": "u.Out" } },
+    "p": { "type": "Multiply", "in": { "A": "sum.Out", "B": "k1.Out" } },
+    "pq": { "type": "Add", "in": { "A": "p.Out", "B": "q.Out" } },
+    "q": { "type": "Multiply", "in": { "A": "sum.Out", "B": "k2.Out" } },
+    "sum": { "type": "Add", "in": { "A": "a.Out", "B": "a2.Out" } },
+    "u": { "type": "ComponentMask", "in": { "X": "pq.Out" }, "props": { "a": false, "b": false, "g": false, "r": true } },
+    "unused": { "type": "Cos", "in": { "X": "uv.UV" } },
+    "uv": { "type": "TexCoord" },
+    "v": { "type": "ComponentMask", "in": { "X": "pq.Out" }, "props": { "a": false, "b": false, "g": true, "r": false } }
+  },
+  "comments": {},
+  "layout": {
+    "a": "0 0",
+    "a2": "0 0",
+    "col": "0 0",
+    "k1": "0 0",
+    "k2": "0 0",
+    "out": "0 0",
+    "p": "0 0",
+    "pq": "0 0",
+    "q": "0 0",
+    "sum": "0 0",
+    "u": "0 0",
+    "unused": "0 0",
+    "uv": "0 0",
+    "v": "0 0"
+  }
+}

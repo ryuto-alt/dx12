@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000003",
+  "name": "texture_pbr",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "base": { "type": "Multiply", "in": { "A": "sAlbedo.RGB", "B": "tint.RGB" } },
+    "decal": { "type": "TextureSample", "props": { "samplerState": "LinearClamp", "texture": "textures/decal.png", "usage": "Color" } },
+    "nrm": { "type": "NormalMap", "in": { "Strength": 1.2, "Tex": "tNormal.Out", "UV": "uv.UV" } },
+    "out": { "type": "MaterialOutput", "in": { "AmbientOcclusion": "sOrm.R", "BaseColor": "base.Out", "Metallic": "sOrm.B", "Normal": "nrm.Out", "Opacity": "decal.A", "Roughness": "sOrm.G" } },
+    "sAlbedo": { "type": "TextureSample", "in": { "Tex": "tAlbedo.Out", "UV": "uv.UV" } },
+    "sOrm": { "type": "TextureSample", "in": { "Tex": "tOrm.Out", "UV": "uv.UV" }, "props": { "samplerState": "LinearWrap" } },
+    "tAlbedo": { "type": "TextureParameter", "props": { "default": "textures/rock/rock_diff.jpg", "group": "Textures", "name": "Albedo", "sampler": "Color" } },
+    "tNormal": { "type": "TextureParameter", "props": { "default": "textures/rock/rock_nor.jpg", "group": "Textures", "name": "NormalMap", "sampler": "Normal" } },
+    "tOrm": { "type": "TextureParameter", "props": { "default": "textures/rock/rock_arm.jpg", "group": "Textures", "name": "ORM", "sampler": "Mask" } },
+    "tint": { "type": "VectorParameter", "props": { "default": [1.0, 1.0, 1.0, 1.0], "name": "Tint", "srgb": true } },
+    "uv": { "type": "TexCoord", "props": { "offset": [0.0, 0.0], "tiling": [2.0, 2.0] } }
+  },
+  "comments": {},
+  "layout": {
+    "base": "0 0",
+    "decal": "0 0",
+    "nrm": "0 0",
+    "out": "0 0",
+    "sAlbedo": "0 0",
+    "sOrm": "0 0",
+    "tAlbedo": "0 0",
+    "tNormal": "0 0",
+    "tOrm": "0 0",
+    "tint": "0 0",
+    "uv": "0 0"
+  }
+}

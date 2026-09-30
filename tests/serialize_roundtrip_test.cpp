@@ -144,12 +144,14 @@ static void Test_PointLight()
             pl.color = {0.1f, 0.2f, 0.3f};
             pl.intensity = 5.0f;
             pl.range = 12.0f;
+            pl.sourceRadius = 0.15f;
             r.emplace<PointLight>(e, pl);
         },
         [](const PointLight& pl) {
             CHECK_V3(pl.color, 0.1f, 0.2f, 0.3f);
             CHECK_F(pl.intensity, 5.0f);
             CHECK_F(pl.range, 12.0f);
+            CHECK_F(pl.sourceRadius, 0.15f);
         });
 }
 
@@ -183,6 +185,7 @@ static void Test_SpotLight()
             sl.direction = {0.0f, -1.0f, 0.2f};
             sl.innerConeDeg = 15.0f;
             sl.outerConeDeg = 35.0f;
+            sl.sourceRadius = 0.05f;
             r.emplace<SpotLight>(e, sl);
         },
         [](const SpotLight& sl) {
@@ -192,6 +195,7 @@ static void Test_SpotLight()
             CHECK_V3(sl.direction, 0.0f, -1.0f, 0.2f);
             CHECK_F(sl.innerConeDeg, 15.0f);
             CHECK_F(sl.outerConeDeg, 35.0f);
+            CHECK_F(sl.sourceRadius, 0.05f);
         });
 }
 
@@ -299,6 +303,84 @@ static void Test_AudioReverbZone()
             CHECK(z.priority == 3);
             CHECK(z.enabled == false);
         });
+}
+
+// 仮想ジオメトリ（.vgeo）。反射で直列化するのでフィールドを足したら ComponentMeta にも足すこと。
+static void Test_VirtualGeometry()
+{
+    Case<VirtualGeometry>(
+        [](entt::registry& r, entt::entity e) {
+            VirtualGeometry v;
+            v.vgeoPath = "vg/rock.vgeo";
+            v.enabled  = false;
+            r.emplace<VirtualGeometry>(e, v);
+        },
+        [](const VirtualGeometry& v) {
+            CHECK(v.vgeoPath == "vg/rock.vgeo");
+            CHECK(v.enabled == false);
+        });
+}
+
+// 植生（F1）。パラメータは反射で直列化される。インスタンスの実体（_set）は .dxfoliage 側なので JSON に出ない。
+static void Test_FoliageLayer()
+{
+    Case<FoliageLayer>(
+        [](entt::registry& r, entt::entity e) {
+            FoliageLayer l;
+            l.instancePath = "foliage/Trees.dxfoliage";
+            l.variant0 = "models/tree_lod0.glb;models/tree_lod1.glb";
+            l.variant1 = "models/pine_lod0.glb";
+            l.lodDist0 = 33.0f; l.lodDist1 = 77.0f; l.lodDist2 = 150.0f; l.cullDistance = 321.0f;
+            l.thinStart = 0.4f; l.lodFade = 0.2f;
+            l.castShadow = false; l.shadowDistance = 44.0f; l.shadowMaxLod = 2;
+            l.tint = {0.9f, 0.8f, 0.7f}; l.aoStrength = 0.5f;
+            l.windEnabled = false; l.windBend = 2.5f; l.windFlutter = 0.12f; l.windBendExp = 3.0f;
+            l.hzbCulling = false; l.maxVisible = 65536; l.enabled = false;
+            r.emplace<FoliageLayer>(e, l);
+        },
+        [](const FoliageLayer& l) {
+            CHECK(l.instancePath == "foliage/Trees.dxfoliage");
+            CHECK(l.variant0 == "models/tree_lod0.glb;models/tree_lod1.glb");
+            CHECK(l.variant1 == "models/pine_lod0.glb");
+            CHECK_F(l.lodDist0, 33.0f); CHECK_F(l.lodDist1, 77.0f); CHECK_F(l.lodDist2, 150.0f); CHECK_F(l.cullDistance, 321.0f);
+            CHECK_F(l.thinStart, 0.4f); CHECK_F(l.lodFade, 0.2f);
+            CHECK(l.castShadow == false); CHECK_F(l.shadowDistance, 44.0f); CHECK(l.shadowMaxLod == 2);
+            CHECK_V3(l.tint, 0.9f, 0.8f, 0.7f); CHECK_F(l.aoStrength, 0.5f);
+            CHECK(l.windEnabled == false); CHECK_F(l.windBend, 2.5f); CHECK_F(l.windFlutter, 0.12f); CHECK_F(l.windBendExp, 3.0f);
+            CHECK(l.hzbCulling == false); CHECK(l.maxVisible == 65536u); CHECK(l.enabled == false);
+            CHECK(l._set == nullptr);   // 実体はシーン JSON に入らない
+        });
+}
+
+// シーンの風（SceneWind）。既定値のときは JSON に何も書かない（既存シーンがバイト不変）。
+static void Test_SceneWind()
+{
+    {
+        Scene src;
+        CHECK(SceneSerializer::SaveToString(src, "").find("\"wind\"") == std::string::npos);
+    }
+    {
+        Scene src;
+        auto& w = src.GetWind();
+        w.enabled = false; w.directionDeg = 120.0f; w.speed = 7.5f; w.gustStrength = 0.9f; w.gustFrequency = 1.5f;
+        w.turbulence = 0.6f; w.phaseOffset = 3.25f;
+        const std::string js = SceneSerializer::SaveToString(src, "");
+        CHECK(js.find("\"wind\"") != std::string::npos);
+        Scene dst;
+        CHECK(SceneSerializer::LoadFromString(dst, js, ""));
+        CHECK(dst.GetWind() == src.GetWind());
+    }
+    {
+        // キー無し = 既定 / 範囲外・非有限は丸める
+        Scene dst;
+        CHECK(SceneSerializer::LoadFromString(dst, "{\"entities\":[]}", ""));
+        CHECK(dst.GetWind() == dx12e::foliage::SceneWind{});
+        Scene dst2;
+        CHECK(SceneSerializer::LoadFromString(dst2, "{\"entities\":[],\"wind\":{\"speed\":-5,\"gustStrength\":9,\"turbulence\":-1}}", ""));
+        CHECK_F(dst2.GetWind().speed, 0.0f);
+        CHECK_F(dst2.GetWind().gustStrength, 1.0f);
+        CHECK_F(dst2.GetWind().turbulence, 0.0f);
+    }
 }
 
 static void Test_ParticleEmitter()
@@ -1368,6 +1450,46 @@ static void Test_DdgiSettings()
     }
 }
 
+// 仮想ジオメトリのシーン設定。既定値のときは JSON に何も書かない（既存シーンがバイト不変）。
+static void Test_VirtualGeometrySettings()
+{
+    // 既定 = 何も出さない
+    {
+        Scene src;
+        const std::string js = SceneSerializer::SaveToString(src, "");
+        CHECK(js.find("virtualGeometry") == std::string::npos);
+    }
+    // 往復
+    {
+        Scene src;
+        auto& v = src.GetVirtualGeometrySettings();
+        v.enabled = true; v.lodPixelError = 2.5f; v.hzbCulling = false; v.coneCulling = false;
+        v.instanceMinPx = 1.5f; v.vramBudgetMB = 1500;
+        const std::string js = SceneSerializer::SaveToString(src, "");
+        CHECK(js.find("virtualGeometry") != std::string::npos);
+        Scene dst;
+        CHECK(SceneSerializer::LoadFromString(dst, js, ""));
+        const auto& d = dst.GetVirtualGeometrySettings();
+        CHECK(d.enabled == true);
+        CHECK_F(d.lodPixelError, 2.5f);
+        CHECK(d.hzbCulling == false);
+        CHECK(d.coneCulling == false);
+        CHECK_F(d.instanceMinPx, 1.5f);
+        CHECK(d.vramBudgetMB == 1500);
+    }
+    // キー無し = 既定 OFF / 範囲外は丸める
+    {
+        Scene dst;
+        CHECK(SceneSerializer::LoadFromString(dst, "{\"entities\":[]}", ""));
+        CHECK(dst.GetVirtualGeometrySettings() == dx12e::vg::VirtualGeometrySettings{});
+        Scene dst2;
+        CHECK(SceneSerializer::LoadFromString(
+            dst2, "{\"entities\":[],\"virtualGeometry\":{\"enabled\":true,\"lodPixelError\":0.0,\"vramBudgetMB\":-1}}", ""));
+        CHECK_F(dst2.GetVirtualGeometrySettings().lodPixelError, 0.25f);
+        CHECK(dst2.GetVirtualGeometrySettings().vramBudgetMB == 64);
+    }
+}
+
 static void Test_SSAOSettings()
 {
     Scene src;
@@ -2222,6 +2344,9 @@ int main()
     Test_FootIK();
     Test_Brain();
     Test_AudioReverbZone();
+    Test_VirtualGeometry();
+    Test_FoliageLayer();
+    Test_SceneWind();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();
@@ -2244,6 +2369,7 @@ int main()
     Test_SkyboxSettings();
     Test_SSAOSettings();
     Test_DdgiSettings();
+    Test_VirtualGeometrySettings();
     Test_EntityOrderStable();
     Test_GuidSurvivesArrayInsertion();
     Test_LegacySceneWithoutGuid();

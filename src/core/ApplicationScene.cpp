@@ -6,6 +6,7 @@
 #include "core/ApplicationInternal.h"
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm（バックグラウンドの BC 圧縮先読み）
 #include "core/save/SaveService.h"      // save.write の scene（WireScriptCallbacks）
+#include "core/SequencerHost.h"       // シーケンサー S1b（Play 直前の復元 / カメラのシェイク）
 
 namespace dx12e
 {
@@ -178,6 +179,10 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     m_iblIntensity    = sky.iblIntensity;
     m_skyboxIntensity = sky.skyboxIntensity;
     m_drawSkybox      = sky.drawSkybox;
+
+    // ★物理ベース大気 A1: 大気が環境の元（enabled && driveIBL）なら、環境キューブを大気から作って IBL を焼く（envMapPath は無視）。
+    //   OFF のときは false を返すだけ＝従来の経路には 1 行も触れない。
+    if (LoadAtmosphereEnvironment(cmd)) return;
 
     // パス未指定: IBL 無し（ダミーを1度だけベイクしてテーブルは常に有効化）
     if (sky.envMapPath.empty())
@@ -531,6 +536,7 @@ void Application::WireScriptCallbacks()
     m_scriptEngine->SetNetworkSystem(m_networkSystem.get());
     m_scriptEngine->SetUiSystem(m_uiSystem.get());   // input:isUiCapturing* 用
     m_scriptEngine->SetAiSystem(m_aiSystem.get());   // nav.agent* / ai.* / Brain
+    if (m_sequencer) m_scriptEngine->SetSequenceApi(m_sequencer.get());   // Sequence.play / stop / seek …
 }
 
 void Application::ApplyCameraTransformToGlobal(entt::entity camEntity)
@@ -560,6 +566,13 @@ void Application::ApplyCameraTransformToGlobal(entt::entity camEntity)
     // 親階層込みのワールド位置を抽出（親オブジェクトの移動に追従する）。
     XMFLOAT3 worldPos; XMStoreFloat3(&worldPos, ComputeWorldMatrix(reg, camEntity).r[3]);
 
+    // シーケンサーのカメラシェイク: 描画側の加算オフセット（Transform は書き換えない＝復元不要）
+    {
+        f32 sx = 0, sy = 0, sz = 0;
+        if (m_sequencer && m_sequencer->ShakeFor(camEntity, sx, sy, sz))
+        { worldPos.x += sx; worldPos.y += sy; worldPos.z += sz; }
+    }
+
     m_camera->SetPosition(worldPos);
     m_camera->SetYaw(yaw);
     m_camera->SetPitch(pitch);
@@ -571,10 +584,13 @@ void Application::ApplyCameraTransformToGlobal(entt::entity camEntity)
 void Application::SyncActiveCameraToGlobal()
 {
     auto& reg = m_scene->GetRegistry();
-    auto camView = reg.view<const CameraComponent, const Transform>();
-    for (auto [e, cam, tf] : camView.each())
+    // ★シーケンサーのカットのカメラを優先する（FindActiveCameraEntity。カットが無ければ従来どおり isActive の先頭）
+    const entt::entity e = FindActiveCameraEntity();
+    if (e == entt::null) return;
+    const auto* camPtr = reg.try_get<CameraComponent>(e);
+    if (!camPtr || !reg.all_of<Transform>(e)) return;
+    const CameraComponent& cam = *camPtr;
     {
-        if (!cam.isActive) continue;
         // 位置・向きは親階層込みのワールド変換で同期（親にアタッチしたカメラの追従）。
         ApplyCameraTransformToGlobal(e);
         const f32 camAspect =
@@ -584,7 +600,6 @@ void Application::SyncActiveCameraToGlobal()
         else
             m_camera->SetPerspective(
                 DirectX::XMConvertToRadians(cam.fovDegrees), camAspect, cam.nearClip, cam.farClip);
-        break;
     }
 }
 
@@ -1488,6 +1503,9 @@ void Application::LaunchNetTestClient()
 
 void Application::EnterPlayMode()
 {
+    // ★シーケンサーのエディタ・スクラブが書き換えた値を、Play のスナップショット（SaveToString）より【前】に元へ戻す。
+    //   （保存フックでも戻るが、ここで明示的に閉じる = 設計書 §3.4 の復元点 (c)）
+    if (m_sequencer) m_sequencer->EditorEnd();
     InvalidateTemporalHistory();   // Editor の絵を Play の履歴に持ち越さない
     m_mcpCameraOverride = false;   // MCP の撮影用カメラ固定はモード遷移で必ず解除する
     if (m_editorCtx) m_editorCtx->paused = false;   // 一時停止(F1)もモード遷移で必ず解除する

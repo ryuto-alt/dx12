@@ -19,7 +19,39 @@ struct PostProcessSettings
     // マスターOFF でも常に適用される（シーンRT はリニアHDRなので表示変換は必須）。
     // 0=ACES（コントラスト強め・定番） 1=AgX（高輝度・高彩度光源の色割れがない/Blender4採用）
     // 2=なし（ガンマのみ。デバッグ/2D向け）
+    // ▼ Q2（UE 同等化の校正）で追加。3〜5 の出力は sRGB の OETF（0〜2 は従来どおり pow(1/2.2)）:
+    // 3=UE Filmic（UE 5 の既定の ACES 系。下の film* が UE の Slope/Toe/Shoulder/BlackClip/WhiteClip）
+    // 4=線形（トーンマップ無し。1 でクリップするだけ。比較・校正用）
+    // 5=Khronos PBR Neutral（glTF の標準ビューア用。色相を保つ）
     int tonemapper = 0;
+    // UE Filmic のパラメータ（UE 5 の既定値。tonemapper=3 のときだけ効く）
+    float filmSlope = 0.88f, filmToe = 0.55f, filmShoulder = 0.26f;
+    float filmBlackClip = 0.0f, filmWhiteClip = 0.04f;
+
+    // ── ライティング単位（Q2。シーン設定。露出と対で使うのでここに置く）──
+    // 0=従来（点/スポットの減衰 saturate(1-d/range)^2・強度は任意単位。絵は従来と 1 ビットも変わらない）
+    // 1=物理（太陽 = lux / 点・スポット = cd の逆二乗（光源半径 sourceRadius・影響半径 range の窓つき）/ 空・IBL・自己発光 = nit。
+    //   シーン RT の 1.0 = 1 nit。表示への変換は下の露出モード(EV100)。詳細は docs/PARITY_HARNESS.md の Q2 節）
+    // 切替はフォワード系のピクセルシェーダを別バリアント(*Phys_PS.cso)へ差し替える（GPU 待ちを 1 回挟む）。
+    int   lightingUnits = 0;
+
+    // ── 露出モード（Q2）──
+    // 0=従来（exposureOn/exposure の乗算と autoExposureOn。絵は従来と 1 ビットも変わらない）
+    // 1=手動 EV100: 係数 = 1/(1.2·2^(ev100 − evComp))。ev100=15（晴天。既定）+ 補正 0 が「露出 0」の基準
+    // 2=自動（ヒストグラム測光）: 平均輝度を 18% グレー(×2^evComp)へ適応。上下限は aeMin/MaxEv100
+    // ★1/2 はマスター(enabled)が OFF でも効く（露出はカメラの性質でエフェクトではないため）。
+    //   物理モード（シーン設定「ライティング単位: 物理」）の単位系と組にして使う（docs/PARITY_HARNESS.md Q2 節）。
+    int   exposureMode = 0;
+    float ev100        = 15.0f;
+    float evComp       = 0.0f;     // 露出補正[EV]。手動・自動の両方に効く
+    float aeMinEv100   = -10.0f;   // 自動露出の EV100 下限 / 上限（UE の既定と同じ範囲）
+    float aeMaxEv100   = 20.0f;
+    float aeSpeedUp    = 0.0f;     // 明るくなる方向 / 暗くなる方向の適応速度[1/秒]。0 = aeSpeed と同じ
+    float aeSpeedDown  = 0.0f;
+    // 測光に使うヒストグラムの範囲（輝度の低い方から数えた割合）。0..1 = 全画素の対数平均（平均輝度）。
+    // 0.8..0.983 = UE のヒストグラム測光の既定（暗部と極端な明部を無視する）。
+    float aeLowPercent  = 0.0f;
+    float aeHighPercent = 1.0f;
 
     // ── カラーグレーディング ──
     bool  exposureOn   = false;  float exposure   = 1.0f;   // 露出（乗算）
@@ -163,6 +195,10 @@ struct PostProcessSettings
 // 引数は種別ごとのマクロ: B=bool / F=float / I=int / V=XMFLOAT3 / S=std::string
 #define DX12E_POST_FIELDS(B, F, I, V, S)                                          \
     B(enabled) I(tonemapper)                                                      \
+    F(filmSlope) F(filmToe) F(filmShoulder) F(filmBlackClip) F(filmWhiteClip)     \
+    I(exposureMode) F(ev100) F(evComp) F(aeMinEv100) F(aeMaxEv100)                \
+    I(lightingUnits)                                                              \
+    F(aeSpeedUp) F(aeSpeedDown) F(aeLowPercent) F(aeHighPercent)                  \
     B(exposureOn)   F(exposure)                                                   \
     B(contrastOn)   F(contrast)                                                   \
     B(brightnessOn) F(brightness)                                                 \

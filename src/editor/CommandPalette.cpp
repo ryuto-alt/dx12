@@ -578,13 +578,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
                 const ImVec2 p1(p0.x + w, p0.y + rowH);
                 if (sel)
                 {
-                    if (ui::deco::Active())
-                        ui::deco::RowFace(dl, p0, p1, true, false, false);
-                    else
-                    {
-                        dl->AddRectFilled(p0, p1, ImGui::GetColorU32(th::Selection), ui::Px(3.0f));
-                        dl->AddRectFilled(p0, ImVec2(p0.x + ui::Px(2.0f), p1.y), ImGui::GetColorU32(th::Accent), ui::Px(2.0f));
-                    }
+                    ui::deco::RowFace(dl, p0, p1, true, false, false);
                 }
                 const float cy = (p0.y + p1.y) * 0.5f;
                 const float alpha = it.enabled ? 1.0f : 0.45f;

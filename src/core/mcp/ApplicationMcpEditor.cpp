@@ -5,6 +5,8 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
+#include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1 の JSON 変換
 
 namespace dx12e
 {
@@ -53,7 +55,7 @@ void Application::RegisterMcpEditorMethods()
             resp["ok"] = true;
             resp["result"] = {{"methods", methods},
                               {"count", methods.size()},
-                              {"globalKeys", json::array({"idempotency_key", "expectGeneration"})},
+                              {"globalKeys", json::array({"idempotency_key", "idempotencyKey", "expectGeneration", "dryRun", "confirm_token"})},
                               {"note", "type は bool/int/number/string/vec3/object/any。"
                                        "\"親.子\" は入れ子オブジェクトのキー（例 skybox.envMapPath）。"
                                        "any は C++ 側で型を静的に決められなかったもので、値の型制約が無い意味ではない"}};
@@ -69,12 +71,29 @@ void Application::RegisterMcpEditorMethods()
                               // ★デカールのアトラス。空 = デカールは描かれない(コンポーネントを
                               //   付けても無言で何も出ない)ので、読める/書けるようにしてある。
                               {"decalAtlasPath", m_scene->GetDecalAtlasPath()},
-                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi、ボリュメトリックフォグは dx12_get_volumetric_fog を使う"}};
+                              // 物理ベース大気 A1。enabled=false(既定)なら従来の空。atmosphereState は enabled のときだけ意味を持つ(実行時の太陽・IBL 再ベイク・GPU 時間)。
+                              {"atmosphere", mcpatmo::ToJson(m_scene->GetAtmosphereSettings())},
+                              {"atmosphereState", mcpatmo::StateJson(m_scene->GetAtmosphereSettings(), m_atmo.get())},
+                              {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi、ボリュメトリックフォグは dx12_get_volumetric_fog を使う。大気は atmosphere(設定)と atmosphereState(実行時の値)"}};
         });
 
-    McpDefine("set_scene_settings", "decalAtlasPath:string,skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,"
+    McpDefine("set_scene_settings", "atmosphere:object,decalAtlasPath:string,skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,"
               "skybox.iblIntensity:any,skybox.skyboxIntensity:any", DX12E_MCP_HANDLER
         {
+            // 物理ベース大気 A1: 先に複製へ適用して検査し、通ったものだけ本体へ入れる(失敗しても半端に変わらない)。
+            bool atmoApplied = false;
+            if (params.contains("atmosphere") && !params["atmosphere"].is_null())
+            {
+                AtmosphereSettings next = m_scene->GetAtmosphereSettings();
+                std::string err;
+                if (!mcpatmo::Apply(next, params["atmosphere"], err))
+                    throw McpError(McpErr::InvalidParam, "atmosphere: " + err,
+                        "有効なキーは preset / enabled / timeOfDay / timeSpeed / latitudeDeg / dayOfYear / sunMode / driveSun / driveIBL / "
+                        "drawStars / drawMoon / sunIlluminance / groundAlbedo / aerialPerspective / apStartDepth / apMaxDistanceKm / apStrength ほか(get_scene_settings の atmosphere と同じ名前)");
+                McpUndo().TrackSceneValue(m_scene->GetAtmosphereSettings());   // Undo は 1 エントリ
+                m_scene->GetAtmosphereSettings() = next;   // enabled の切替は次フレームで UpdateAtmosphereTime が検出して環境を焼き直す
+                atmoApplied = true;
+            }
             const json sky = params.value("skybox", json::object());
             auto& s = m_scene->GetSkyboxSettings();
             bool envChanged = false;
@@ -106,6 +125,14 @@ void Application::RegisterMcpEditorMethods()
             resp["ok"] = true;
             resp["result"] = {{"applied", true}, {"envMapRebake", envChanged},
                               {"decalAtlasPath", m_scene->GetDecalAtlasPath()}};
+            if (atmoApplied)
+            {
+                resp["result"]["atmosphere"] = mcpatmo::ToJson(m_scene->GetAtmosphereSettings());
+                resp["result"]["atmosphereNote"] =
+                    "大気を ON にしても従来の空(skybox.envMapPath)は残る。enabled を false に戻すと従来の空・従来の IBL に戻る。"
+                    "driveSun=true の間は、太陽ライト(最初の DirectionalLight)の向き(sunMode=0 のとき)・色・強度を大気が毎フレーム上書きする"
+                    "(手動で決めたいなら sunMode=1 か driveSun=false)。";
+            }
         });
 
     McpDefine("play", "", DX12E_MCP_HANDLER
@@ -235,7 +262,7 @@ void Application::RegisterMcpEditorMethods()
     // ★§6 B5 の根治。バックバッファ（ポスト適用後の最終画）のビューポート矩形を撮る。
     //   ImGui を描く前にコピーするのでエディタのパネルは写らない＝ゲームと同じ絵になる。
     //   1 フレーム描いてから撮るので遅延応答。
-    McpDefine("screenshot_final", "deterministic:bool,gizmos:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
+    McpDefine("screenshot_final", "deterministic:bool,format:string,formats:any,gizmos:bool,height:int,path:string,settleFrames:int,width:int", DX12E_MCP_HANDLER
         {
             if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
                 throw McpError(McpErr::ModeConflict,
@@ -252,7 +279,30 @@ void Application::RegisterMcpEditorMethods()
             //   状態を m_mcpFinalShot に載せてあるので撮影完了時の {} 代入で自動的に戻る
             //   ＝戻し忘れが構造的に起きない。
             m_mcpFinalShot.hideGizmos    = !params.value("gizmos", true);
-            if (det)
+            // ★Q2: 出力形式（png / pfm / exr。pfm・exr はポスト前の線形 float）と任意解像度（width/height。--size が既定）。
+            //   何も指定しなければ従来どおり PNG のみ・ビューポート矩形（絵もビット一致）。
+            {
+                std::string oerr;
+                if (!SetupFinalShotOptions(params, oerr))
+                {
+                    m_mcpFinalShot = {};
+                    throw McpError(McpErr::InvalidParam, oerr,
+                        "format は png|pfm|exr（formats:[..] で複数）/ width と height は両方指定（1 辺 16〜8192・総画素 8192x4096 まで。"
+                        "pfm/exr は 4096x4096 まで）/ 起動引数 --size WxH が既定");
+                }
+            }
+            if (det && m_mcpFinalShot.offW > 0)
+            {
+                // オフスクリーン: 解像度の切替を待ってから収束フレームを数える（ServiceOffscreenShot が進める）。
+                m_mcpFinalShot.offSettle  = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_deterministicFramesLeft = 0;
+                m_deterministicCapture    = true;
+            }
+            else if (!det && m_mcpFinalShot.offW > 0)
+            {
+                // 非決定論のオフスクリーン: pending は ServiceOffscreenShot が切替後に立てる。
+            }
+            else if (det)
             {
                 // ★#31: time / TAA ジッタ / フォグ・SSGI の位相を固定して N フレーム回し、
                 //   時間蓄積が収束してから撮る。pending は収束後に Run ループが立てる。
@@ -558,6 +608,18 @@ void Application::RegisterMcpEditorMethods()
                 {"rt",               static_cast<u32>(RenderDebugMode::RtHit)},
                 {"rtDiff",           static_cast<u32>(RenderDebugMode::RtDiff)},
                 {"rtAlbedo",         static_cast<u32>(RenderDebugMode::RtAlbedo)},
+                // 仮想ジオメトリ P3: 可視性バッファの可視化（VG のラスタが動いているときだけ絵が出る）
+                {"vgCluster",        static_cast<u32>(RenderDebugMode::VgCluster)},
+                {"vgLod",            static_cast<u32>(RenderDebugMode::VgLod)},
+                {"vgTri",            static_cast<u32>(RenderDebugMode::VgTri)},
+                {"vgDepth",          static_cast<u32>(RenderDebugMode::VgDepth)},
+                {"vgOverdraw",       static_cast<u32>(RenderDebugMode::VgOverdraw)},
+                {"vgCoverage",       static_cast<u32>(RenderDebugMode::VgCoverage)},
+                // 仮想ジオメトリ P4: 材質 resolve の検証（材質 / ミップ段 / タイル内の材質数 / 頂点法線）
+                {"vgMaterial",       static_cast<u32>(RenderDebugMode::VgMaterial)},
+                {"vgMip",            static_cast<u32>(RenderDebugMode::VgMip)},
+                {"vgTileMaterials",  static_cast<u32>(RenderDebugMode::VgTileMaterials)},
+                {"vgNormal",         static_cast<u32>(RenderDebugMode::VgNormal)},
                 {"shadowCascade",    0},
                 {"lightComplexity",  0},
                 {"clusterGrid",      0},
@@ -674,6 +736,25 @@ void Application::RegisterMcpEditorMethods()
                     warn.push_back("半透明は TLAS に入らない仕様なのでマゼンタになる。"
                                    "スキンドは compute スキニングが動いていれば入る"
                                    "（dx12_get_dxr の stats.skinnedInstances で確認できる）");
+            }
+            else if (mode == "vgCluster" || mode == "vgLod" || mode == "vgTri" || mode == "vgDepth" || mode == "vgOverdraw" || mode == "vgCoverage"
+                     || mode == "vgMaterial" || mode == "vgMip" || mode == "vgTileMaterials" || mode == "vgNormal")
+            {
+                if (mode == "vgMip")
+                    warn.push_back("resolve がアルベドに使うミップ段（解析 UV 勾配。青 = 0 … 赤 = 10 以上 / 灰 = テクスチャ無し）。遠くほど赤くなれば勾配が正しい");
+                if (mode == "vgTileMaterials")
+                    warn.push_back("8x8 タイル内の異なる材質の数（1 = 緑 … 4 以上 = 赤）。赤いほど resolve の波面が分岐している");
+                // 仮想ジオメトリの可視性バッファ。VG の設定 / GPU 対応が揃っていないと何も出ない（プロキシは普通に描かれる）。
+                if (!m_scene->GetVirtualGeometrySettings().enabled)
+                    warn.push_back("仮想ジオメトリが OFF なので何も出ない（先に dx12_set_virtual_geometry {enabled:true}）");
+                else if (!m_scene->GetVirtualGeometrySettings().raster)
+                    warn.push_back("仮想ジオメトリの raster が OFF なので何も出ない（dx12_set_virtual_geometry {raster:true}）");
+                else if (!m_graphicsDevice->SupportsMeshShaders())
+                    warn.push_back("この GPU はメッシュシェーダ非対応なので VG は描かれない（プロキシが描かれる）");
+                if (mode == "vgOverdraw")
+                    warn.push_back("断片数（深度テストを通った数）。描画順に依存して毎フレーム少し揺れる。計測モードが自動で ON になる");
+                if (mode == "vgDepth")
+                    warn.push_back("depthRange（m）で黒くなる距離を指定できる");
             }
             else if (mode == "shadowCascade")
             {
@@ -823,6 +904,9 @@ void Application::RegisterMcpEditorMethods()
             // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
             rep["clustered"]  = m_clusteredEnabled;
             rep["occlusion"]  = OcclusionReportJson();
+            if (m_vg) rep["virtualGeometry"] = VirtualGeometryStatsJson();   // 仮想ジオメトリ P2（有効化した後だけ出る）
+            if (m_foliage) rep["foliage"] = FoliageStatsJson();               // 植生 F1（FoliageLayer があるときだけ出る）
+            if (m_water) rep["water"] = WaterStatsJson();                    // 水面 W1（WaterBody があるときだけ出る）
             // 内部解像度スケール（#16）。GPU 時間を読むときは必ずこれも見ること
             // （renderScale=0.5 なら画素数が 1/4 になっているので単純比較できない）。
             {
@@ -1100,6 +1184,7 @@ void Application::RegisterMcpEditorMethods()
                 file = fs::path(PathResolver::AssetsDir()) / rel;
                 fs::create_directories(file.parent_path());
             }
+            mcpsafety::JournalBackup(file);   // M5
             if (!SceneSerializer::SavePrefab(*m_scene, e, file.string(), PathResolver::AssetsDir()))
                 throw McpError(McpErr::Internal, "failed to save prefab",
                     "書き込み先のフォルダが書けるか、同名ファイルが開かれていないかを確かめる。詳細は dx12_get_log");

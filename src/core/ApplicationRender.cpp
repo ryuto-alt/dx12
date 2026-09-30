@@ -5,9 +5,14 @@
 // ===========================================================================
 #include "core/GameUiFont.h"
 #include "editor/UiWidgets.h"
+#include "editor/SelectionOutline.h"   // エディタ専用: 選択 / ホバーの輪郭・ワイヤ表示モード（最終画の撮影より後）
+#include "editor/ViewportLogic.h"       // ビューモード → RenderDebugMode
+#include "ecs/EditorFlags.h"            // [H] エディタ専用の非表示（BuildDrawList）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
+#include "core/PathTracerHost.h"   // DXR パストレーサー(リファレンスレンダー)。PtHost が無ければ何もしない
+#include "core/SequencerHost.h"   // シーケンサー S1b: ポスト / DoF の描画時上書き
 
 #include <unordered_set>
 #include "core/Profiler.h"
@@ -17,6 +22,8 @@
 #include "renderer/ViewDesc.h"
 #include "renderer/ViewPasses.h"
 #include "editor/AssetDrop.h"
+#include "editor/panels/NodeGraphSandboxPanel.h"   // ノードグラフ サンドボックス窓（マテリアルグラフ G0）
+#include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
 
 namespace dx12e
 {
@@ -105,6 +112,7 @@ void Application::BuildDrawList()
 
     m_drawItems.clear();
     if (!m_scene) return;
+    VirtualGeometryCollectProxyHide();   // 仮想ジオメトリ P3: VG 本体が描くエンティティ（既定 OFF では空）
 
     // LOD 選択基準（メインカメラ位置。フレーム内は全パス共通＝深度プリパスとメインの整合を保つ）
     XMVECTOR camPos = XMVectorZero();
@@ -118,6 +126,11 @@ void Application::BuildDrawList()
     // GridPlane は view の exclude で弾く（1体ごとの all_of プローブぶんの
     // スパースセット参照が丸ごと消える。10万体規模では効く）。
     auto renderView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane>);
+    // [H] エディタ専用の非表示（EditorHidden）。編集モードのときだけ、1 個でも立っていれば祖先まで辿って除外する。
+    //     Play / ゲームモードでは無視（ゲームの絵に影響しない）。何も立っていなければ hideActive=false でコスト 0。
+    const bool hideActive = m_engineMode == EngineMode::Editor && !m_isGameMode && eflags::AnyOf<EditorHidden>(reg);
+    // [I] 無効（EntityDisabled）。Editor / Play 両方で描画から外す。1 個も無ければ false（走査コスト 0）。
+    const bool disabledActive = eflags::AnyOf<EntityDisabled>(reg);
 
     // ---- TLAS 再利用のための内容ハッシュ（DXR/DDGI が要るフレームだけ計算する）----
     // ★ここで作るのが肝。RT ブロックで別ループを回すと、20,000 サブメッシュぶんの
@@ -140,6 +153,8 @@ void Application::BuildDrawList()
         // park 済み（scale≈0 で退避したプール要素）は全パスで不可視＝リストから除外。
         const auto& sc = transform.scale;
         if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
+        if (hideActive && eflags::IsHidden(reg, e)) continue;   // [H] エディタ専用の非表示
+        if (disabledActive && eflags::IsDisabled(reg, e)) continue;   // [I] 無効（インスペクタの「有効」OFF。Play にも効く）
         // 発光弾(Pfx*) はメインのパス3で instancing 描画・影/深度は落とさない（従来挙動）。
         // rfind より先頭3文字の直接比較の方が速い（10万体×毎フレームなので効く）。
         if (const auto* nt = reg.try_get<NameTag>(e))
@@ -314,6 +329,9 @@ void Application::BuildDrawList()
         // sortKey==3 は既に「深度プリパスから外す / TLAS に入れない」の判定に使われているので、
         // ここへ入れるだけで半透明の扱いが全パスで一貫する。
         if (item.alphaClass == 2u) item.sortKey = 3u;
+        // マテリアルグラフ（G2b）: 同じグラフ HLSL の物を連続させて PSO 切替を減らす。グラフ材質を使わないシーンは 0 のまま（並び不変）。
+        if (m_graphMaterials && renderer.HasMaterialAsset(0))
+            item.graphHash = m_graphMaterials->PeekShaderHash(MeshRenderer::SafeGetOverride(renderer.materialAsset, 0));
 
         // ---- 自動インスタンシングの適格判定 ----
         // 「per-object 定数を一切必要としない静的メッシュ」だけを畳む。
@@ -382,6 +400,14 @@ void Application::BuildDrawList()
                                renderer.meshNodeTransforms.size() * sizeof(XMFLOAT4X4));
             }
         }
+        // 仮想ジオメトリ P3: VG 本体が描くエンティティはプロキシを主ビューの深度プリパス / フォワードから外す印を立てる。
+        //   自動インスタンシングには混ぜない（バッチ単位で skip できないため）。影 / TLAS / ピッキングはこの印を見ない。
+        if (!m_vgHiddenEntities.empty() && m_vgHiddenEntities.count(static_cast<u32>(entt::to_integral(e))))
+        {
+            item.vg = true;
+            item.batchKey = 0;
+            item.batchOrder = 0;
+        }
         m_drawItems.push_back(item);
     }
     }   // _scan
@@ -418,6 +444,7 @@ void Application::BuildDrawList()
                 const int c = a.renderer->shaderPath.compare(b.renderer->shaderPath);
                 if (c != 0) return c < 0;
             }
+            if (a.graphHash != b.graphHash) return a.graphHash < b.graphHash;   // マテリアルグラフ（G2b）。全部 0 なら従来どおり
             if (a.meshKey != b.meshKey) return a.meshKey < b.meshKey;
             if (a.lod != b.lod) return a.lod < b.lod;
             if (a.batchOrder != b.batchOrder) return a.batchOrder < b.batchOrder;
@@ -588,6 +615,9 @@ void Application::RecordPerfFrame()
             rep["instancing"] = m_instancingEnabled;
             rep["clustered"]  = m_clusteredEnabled;
             rep["occlusion"]  = OcclusionReportJson();
+            if (m_vg) rep["virtualGeometry"] = VirtualGeometryStatsJson();   // 仮想ジオメトリ P2（有効化した後だけ出る）
+            if (m_foliage) rep["foliage"] = FoliageStatsJson();               // 植生 F1（FoliageLayer があるときだけ出る）
+            if (m_water) rep["water"] = WaterStatsJson();                    // 水面 W1（WaterBody があるときだけ出る）
             rep["renderScale"]      = m_renderScale;      // #16。GPU 時間の A/B ではここも見ること
             rep["depthPrepass"]     = m_forceDepthPrepass;
             rep["renderResolution"] = {{"width", m_renderW}, {"height", m_renderH}};
@@ -1024,9 +1054,36 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.uvOffsetX = du - std::floor(du);
                 pbrParams.uvOffsetY = dv - std::floor(dv);
             }
+            // ★マテリアルグラフ（G2b）。.dxmat が graph キーを持つ材質なら、グラフの PSO とパラメータプールのレコードで描く。
+            //   b2 は同じ 9 DWORD を読み替える（DWORD0 = recordBase / DWORD1 = プールの SRV 添字 / DWORD2 = graphFlags。
+            //   tint / uvScaleOffset / emissive はそのまま。ForwardGraph.hlsl の cbuffer GraphMaterial）。DWORD 数は増えない。
+            //   準備中（DXC + PSO 待ち）・失敗・スキンドは Resolve が false / 対象外 = 従来の代理材質（単色）で描く。
+            GraphMaterialSystem::DrawParams graphDraw;
+            bool useGraph = false;
+            if (matAsset && !skin && m_graphMaterials && matAsset->data.IsGraph())
+            {
+                useGraph = m_graphMaterials->Resolve(MeshRenderer::SafeGetOverride(renderer.materialAsset, mi), *matAsset,
+                                                     nativeCmdList, frameIndex, depthPrepassActive, graphDraw);
+                if (useGraph)
+                {
+                    std::memcpy(&pbrParams.metallic,  &graphDraw.recordBase,   sizeof(u32));
+                    std::memcpy(&pbrParams.roughness, &graphDraw.poolSrvIndex, sizeof(u32));
+                    pbrParams.flags = 0;   // graphFlags（予約）
+                }
+            }
             nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 9, &pbrParams, 0);
 
             // 透明バリアントへ切り替える（サブメッシュ単位）。PSO が無ければ従来どおり不透明で描く。
+            // グラフ材質は専用 PSO（v1 は不透明のみ。半透明 / マスクは G3b）。
+            if (useGraph)
+            {
+                if (graphDraw.pso != lastPso)
+                {
+                    nativeCmdList->SetPipelineState(graphDraw.pso);
+                    lastPso = graphDraw.pso;
+                }
+            }
+            else
             {
                 PipelineState* want = psoSel;
                 if (wantBlend && blendPso)     want = blendPso;
@@ -1069,10 +1126,24 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     // 描画は単一スレッドなので関数ローカル static で使い回す（毎フレームの再確保を避ける）。
     static std::vector<MeshInstanceData> instScratch;
 
-    const size_t itemCount = m_drawItems.size();
-    for (size_t i = 0; i < itemCount; )
+    // 水面 W1: 水パスの前後で描く範囲を分ける（m_meshPhase: 0=全部 / 1=不透明 = 半透明（sortKey 3）の手前まで / 2=半透明以降）。
+    //   既定の 0 は従来と同じ [0, itemCount)。リストは sortKey 昇順にソート済みなので sortKey==3 は末尾に固まっている。
+    size_t itemCount = m_drawItems.size();
+    size_t firstItem = 0;
+    if (m_meshPhase != 0)
+    {
+        size_t firstTransparent = itemCount;
+        for (size_t k = 0; k < itemCount; ++k)
+            if (m_drawItems[k].sortKey == 3u) { firstTransparent = k; break; }
+        if (m_meshPhase == 1) itemCount = firstTransparent;
+        else firstItem = firstTransparent;
+    }
+    for (size_t i = firstItem; i < itemCount; )
     {
         const DrawItem& head = m_drawItems[i];
+        // 仮想ジオメトリ P3: VG 本体が描くエンティティのプロキシは主ビューのフォワードから外す（m_vgSkipProxies は主ビューの間だけ true）。
+        //   vg の物は batchKey = 0 なので、この 1 行でバッチ区間の心配は要らない。
+        if (head.vg && m_vgSkipProxies) { ++i; continue; }
         if (head.batchKey == 0 || !instPso)
         {
             XMMATRIX world = XMLoadFloat4x4(&head.world);
@@ -1263,11 +1334,19 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     //   張りっぱなしにすると「エディタ UI が丸ごと消える」という分かりにくい壊れ方をする。
     clearPredication();
 
+    // 植生 F1: 不透明の植生を ExecuteIndirect で描く（グリッド / パーティクルより前）。FoliageLayer が無ければ何もしない。
+    // ★上のループの「直前と同じなら張り直さない」キャッシュ（lastPso など）は、植生が PSO / VB を替えるので無効化する。
+    if (m_meshPhase != 2 && m_foliage && FoliageActive())   // 水パスの後（phase 2）は描かない: 植生は水の前（phase 1）に描き終えている
+    {
+        FoliageDrawMain(nativeCmdList, viewProj, depthPrepassActive);
+        lastPso = nullptr; lastMatSrv = ~0ull; lastVbMesh = nullptr; lastLod = ~0u;
+    }
+
     // パス2: エディタ用グリッド。線だけを後描きする（ForwardGrid 側で線以外 alpha=0）。
     // 床全体へ半透明の膜を被せず、グリッド表示だけ維持する。
     // グリッドは描画リスト対象外なので従来どおり registry を直接走査（エディタのみ・少数）。
     // ★gizmos:false のスクショ中はグリッドも描かない（エディタ専用のデバッグ描画なので）。
-    if (!isGameView && !McpHidingGizmos())
+    if (m_meshPhase != 1 && !isGameView && !McpHidingGizmos())   // 水パスの前（phase 1）は描かない（グリッドは半透明と同じ側 = 水の後）
     {
         for (auto [e, transform, renderer] : renderView.each())
         {
@@ -1281,6 +1360,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
 
     // パス3: 発光弾(Pfx) を GPU instancing で加算合成。同一メッシュ(共有)を1ドローに集約。
     // 弾が数百発でも「メッシュ種類ぶんのドロー」だけで済む（boss3 弾幕の draw 数を一定化）。
+    if (m_meshPhase != 1)   // 発光弾は加算合成 = 半透明と同じ側（水の後）
     {
         std::unordered_map<const Mesh*, std::vector<MeshInstanceData>> byMesh;
         for (auto [e, transform, renderer] : renderView.each())
@@ -1593,6 +1673,9 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     for (size_t i = 0; i < itemCount; ++i)
     {
         const DrawItem& item = m_drawItems[i];
+
+        // 仮想ジオメトリ P3: VG 本体が描くエンティティのプロキシは主ビューの深度プリパスから外す（影パスでは m_vgSkipProxies = false）。
+        if (item.vg && m_vgSkipProxies) continue;
 
         // 半透明（カスタムシェーダ + shaderAlphaBlend）はカメラのプリパスから除外する。
         // ＝プリパスが半透明の深度を書いてしまうと、その裏の不透明が forward の LESS_EQUAL で
@@ -2316,6 +2399,9 @@ void Application::BeginRenderFrame(RenderFrameContext& frame)
     // マテリアルアセット(.dxmat)のホットリロード監視。エディタのみ(内部で0.5秒間隔にスロットリング)。
     if (!m_isGameMode && m_materialAssetManager)
         m_materialAssetManager->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
+    // マテリアルグラフ（G2b）: ワーカー（DXC + PSO）の結果の取り込み・旧版 → 新版の切り替え・.dxmg のホットリロード・プールの複写。
+    if (m_graphMaterials)
+        m_graphMaterials->Update(m_gameClock.GetDeltaTime(), m_swapChain->GetCurrentBackBufferIndex(), nativeCmdList);
     // 地形レイヤーセット(.terrainlayers)のホットリロード監視（同上）。
     if (!m_isGameMode && m_terrainLayerSets)
         m_terrainLayerSets->PollHotReload(m_gameClock.GetDeltaTime(), nativeCmdList);
@@ -2612,6 +2698,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 else if (req.modelPath == "__particle_emitter__") name = "ParticleEmitter";
                 else if (req.modelPath == "__trigger__")          name = "Trigger";
                 else if (req.modelPath == "__decal__")            name = "Decal";
+                else if (req.modelPath == "__water__")            name = "Water";
             }
             name = uniquify(name);
             entt::entity spawnedEntity = entt::null;
@@ -2738,6 +2825,19 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
                 reg.emplace<Trigger>(e, Trigger{});
+                spawnedEntity = e;
+            }
+            else if (req.modelPath == "__water__")
+            {
+                // 水面（W1）: 空エンティティ + WaterBody（湖のプリセット）。Transform の y が水面の高さ。
+                auto& reg = m_scene->GetRegistry();
+                auto e = reg.create();
+                reg.emplace<NameTag>(e, NameTag{name});
+                reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
+                WaterBody wb;
+                water::ApplyPreset(wb, "lake");
+                wb.size = {80.0f, 80.0f};
+                reg.emplace<WaterBody>(e, wb);
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__decal__")
@@ -3049,7 +3149,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                         Logger::Info("Placed world sprite: {}", relStr);
                     }
                 }
-                else if (extIs({".gltf", ".glb", ".obj", ".fbx", ".dae", ".stl", ".ply", ".3ds"}))
+                else if (extIs({".gltf", ".glb", ".obj", ".fbx", ".dae", ".stl", ".ply", ".3ds", ".vgeo"}))
                 {
                     // MCP spawn_model は assets 相対で来る(D&D は絶対)。相対のままだと
                     // VfsIOSystem のディスクフォールバックが CWD 基準になり開けないので絶対化する。
@@ -3906,7 +4006,10 @@ void Application::PrepareFrame(RenderFrameContext& frame)
 
     // アスペクトは**表示側**を使う（レンダー解像度は同じアスペクトで縮めるだけ。
     // ここをレンダー側にすると renderScale の丸め誤差で絵が伸びる）。
-    const f32 renderAspect = static_cast<f32>(vpW) / static_cast<f32>(vpH);
+    // ★Q2: オフスクリーン撮影のフレームだけ、アスペクトは撮影解像度のもの（表示矩形と無関係）。
+    const f32 renderAspect = OffscreenCaptureFrame()
+        ? static_cast<f32>(m_mcpFinalShot.offW) / static_cast<f32>(m_mcpFinalShot.offH)
+        : static_cast<f32>(vpW) / static_cast<f32>(vpH);
 
     // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
     // 回転/ドリーは入力側で無効化済み。Play 中は CameraComponent 同期が優先する。
@@ -3945,7 +4048,11 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                 m_camera->SetYaw(m_cam3DSnapshot.yaw);
                 m_camera->SetPitch(m_cam3DSnapshot.pitch);
             }
-            m_camera->SetPerspective(DirectX::XM_PIDIV4, renderAspect, 0.1f, 1000.0f);
+            // 視野角は帯のカメラ設定（既定 45° = 従来の固定値。45° のときは定数そのままを使い、絵を 1 ulp も動かさない）
+            const f32 edFov = m_editorCtx->vpPrefs.fovDeg;
+            // 物理大気（atmosphere.enabled）のときだけ far を 20 km へ延ばす（地平線・遠景の霞まで見える。OFF のときは従来の 1000 m のまま）。
+            m_camera->SetPerspective(edFov == 45.0f ? DirectX::XM_PIDIV4 : DirectX::XMConvertToRadians(edFov),
+                                     renderAspect, 0.1f, AtmosphereActive() ? 20000.0f : 1000.0f);
         }
         m_editorWas2D = m_editorCtx->view2D;
     }
@@ -3955,16 +4062,16 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         // 投影（透視/正射・FOV・orthoSize・near/far）を実ビューポートのアスペクトで m_camera に反映する。
         bool applied = false;
         auto& reg = m_scene->GetRegistry();
-        for (auto [e, cam] : reg.view<const CameraComponent>().each())
+        // ★シーケンサーのカットのカメラを優先する（FindActiveCameraEntity。カットが無ければ従来どおり isActive の先頭）
+        if (const entt::entity ae = FindActiveCameraEntity(); ae != entt::null)
         {
-            if (!cam.isActive) continue;
+            const auto& cam = reg.get<CameraComponent>(ae);
             if (cam.projection == CameraProjection::Orthographic)
                 m_camera->SetOrthographic(2.0f * cam.orthoSize, renderAspect, cam.nearClip, cam.farClip);
             else
                 m_camera->SetPerspective(DirectX::XMConvertToRadians(cam.fovDegrees),
                                          renderAspect, cam.nearClip, cam.farClip);
             applied = true;
-            break;
         }
         if (!applied)
             m_camera->SetAspect(renderAspect);  // アクティブカメラが無ければアスペクトのみ更新
@@ -4047,9 +4154,13 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     {
         auto& reg = m_scene->GetRegistry();
         auto dlView = reg.view<const dx12e::DirectionalLight>();
-        if (!dlView.empty())
+        // [I] 無効（EntityDisabled）の太陽は使わない。無効が 1 個も無ければ従来と同じ先頭の 1 灯（isDisabled は即 false）。
+        entt::entity dlFirst = entt::null;
+        for (auto d : dlView)
+            if (!eflags::IsDisabled(reg, d)) { dlFirst = d; break; }
+        if (dlFirst != entt::null)
         {
-            auto first = *dlView.begin();
+            auto first = dlFirst;
             const auto& dl = dlView.get<const dx12e::DirectionalLight>(first);
             lightDirF3 = dl.direction;
             lightColorF3 = {dl.color.x * dl.intensity,
@@ -4333,6 +4444,9 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             }
         }
     }
+    // DXR パストレーサー(リファレンスレンダー。既定 OFF)。要求が無ければ PtHost 自体が無く、ここは何もしない。
+    // ★描画経路には触れない: ジョブ中だけ「GPU 時間の予算つき」のディスパッチをこのフレームのコマンドリストへ足す。
+    PathTracerTick(nativeCmdList);
     // エディタのライティング窓へ実行時状態を流す（非対応 GPU で理由を出すため）。
     if (m_editorCtx)
     {
@@ -4402,6 +4516,8 @@ ViewDesc Application::MakeMainViewDesc(const RenderFrameContext& frame) const
     v.perFrameCB       = m_perFrameCB.get();
     v.outputToBackBuffer = true;
     v.outX = frame.vpLeft;  v.outY = frame.vpTop;  v.outW = frame.vpW;  v.outH = frame.vpH;
+    if (OffscreenCaptureFrame())   // Q2: 出力はオフスクリーン RT の全面（RenderPostChain が出力先を差し替える）
+    { v.outX = 0; v.outY = 0; v.outW = m_mcpFinalShot.offW; v.outH = m_mcpFinalShot.offH; }
     v.features   = kViewAllFeatures;
     v.primary    = true;
     v.isGameView = (m_isGameMode || m_engineMode == EngineMode::Playing);
@@ -4433,6 +4549,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     const f32      viewFar  = view.farZ;
     const bool     viewOrtho = view.orthographic;
     const bool     primary   = view.primary;
+    // 仮想ジオメトリ P3: プロキシの skip は主ビューの深度プリパス〜フォワードの間だけ（影パスや別ビューへ漏らさない。どの出口でも戻す）。
+    m_vgSkipProxies = false;
+    struct VgSkipReset { bool& f; ~VgSkipReset() { f = false; } } vgSkipReset{m_vgSkipProxies};
 
     // PrepareFrame / ViewDesc が確定した値（名前は旧 Render() のローカル変数に揃えてある）
     const u32 frameIndex = frame.frameIndex;
@@ -4476,6 +4595,19 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     passCtx.frameIndex = frameIndex;
     passCtx.timer      = primary ? m_gpuTimer.get() : nullptr;
     passCtx.depth      = &depthState;
+
+    // ===== 物理ベース大気 A1: LUT 更新 + IBL 増分再ベイク（主ビューだけ・影パスより前）=====
+    // ★atmosphere.enabled=false（既定）なら即 return ＝ コマンドは 1 命令も増えない。IBL の派生（t5..t7）は影・フォワード・SSGI・DDGI より前に更新される。
+    if (primary) AtmosphereRecordFrame(view, frameIndex, nativeCmdList);
+
+    // ===== 植生 F1: レイヤー収集 + GPU カリング（主ビュー + 影カスケード 0/1）。影パスより前 =====
+    // ★FoliageLayer が 1 つも無いシーンでは foliageOn が false ＝ 以降の植生の呼び出しは全部スキップされ、コマンドは 1 命令も増えない。
+    const bool foliageOn = FoliageActive();
+    if (foliageOn)
+    {
+        const bool foliageShadows = view.Has(kViewShadows) && m_scene && m_scene->GetShadowsEnabled() && !viewOrtho;
+        FoliageBeginAndCull(nativeCmdList, view, frameIndex, totalTime, foliageShadows);
+    }
 
     if (view.Has(kViewShadows))
     {
@@ -4662,6 +4794,18 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             csmIn.slices     = slices.data();
             csmIn.sliceCount = kNumCascades;
             csmIn.drawDepth  = shadowDepth(/*skipRtCovered*/ m_rtShadowActiveThisFrame);
+            // 植生: 近距離の 2 カスケードへ ExecuteIndirect で描く（遠い LOD は影を落とさない）。ShadowMapPass はスライスを 0..n-1 の順に呼ぶ。
+            u32 foliageCsmSlice = 0;
+            if (foliageOn)
+            {
+                auto baseDraw = csmIn.drawDepth;
+                csmIn.drawDepth = [this, nativeCmdList, baseDraw, &foliageCsmSlice](const ShadowMapPass::Slice& sl)
+                {
+                    baseDraw(sl);
+                    if (foliageCsmSlice < 2) FoliageDrawShadow(nativeCmdList, foliageCsmSlice, sl.viewProj);
+                    ++foliageCsmSlice;
+                };
+            }
             CpuScopeTimer _tShadow(cpuSlot(CpuShadowRec)); DX12_PROFILE_ZONE_N("Rec/Shadows");
             ShadowMapPass(std::move(csmIn)).Execute(passCtx);
         }
@@ -4732,7 +4876,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
                                  || useRtShadow || useRtAo || useRtDebug
                                  || (m_forceDepthPrepass && viewSupportsScreenSpace);
-    const bool useDepthPrepass = prepassWithoutHiZ || useHiZ;
+    // 仮想ジオメトリ P2（GPU カリング・統計のみ）。既定 OFF。HZB の入力に深度が要るのでプリパスを走らせる。
+    const bool useVgCull = viewSupportsScreenSpace && VirtualGeometryCullWanted(primary);
+    // P3: メッシュシェーダで VG 本体を可視性バッファ + 深度へ描く（対応 GPU + raster=true）。true の間だけプロキシ（DrawItem::vg）を主ビューから外す。
+    const bool useVgRaster = useVgCull && VirtualGeometryRasterWanted(primary);
+    const bool useDepthPrepass = prepassWithoutHiZ || useHiZ || useVgCull;
+    m_vgSkipProxies = useVgRaster;
     if (primary)
     {
         m_diagPrepassWithoutHiZ = prepassWithoutHiZ;
@@ -4765,6 +4914,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     //   計りたいのは GpuTimer::PrepassSSAO の Begin..End と同じ区間なので明示的に取る。
     const auto _prepassT0 = std::chrono::high_resolution_clock::now();
     gpuBegin(GpuTimer::PrepassSSAO);
+    if (primary && !useHiZ) m_foliageHzbValid = false;   // 植生: HZB を作らないフレームでは履歴を捨てる
     if (useDepthPrepass)
     {
         // --- 深度プリパス（カメラ視点で深度へ書く）---
@@ -4818,6 +4968,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                                          /*skipRtCovered*/ false, /*cascadeTexelWorld*/ 0.0f,
                                          &prepassMaskPsos);
                 }
+                // 植生: 深度（速度モードなら速度 + G-Buffer も）。本体と同じ位置・同じディザで描く（穴が開かないように）。
+                if (foliageOn) FoliageDrawDepth(nativeCmdList, camVPJ, velocityPrepass, pp.prevViewProj, jitterNdc);
             };
             DepthPrepassPass(std::move(dp)).Execute(passCtx);
         }
@@ -4828,6 +4980,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // ★ここで作るピラミッドは「今フレーム・今のカメラ」の完全な不透明深度から来る。
         //   深度プリパスは前方パスとビット厳密に一致する（同じ m_drawItems / 同じジッタ付き
         //   camVPJ / 同じ LOD）ので、前フレーム深度の再投影も 2 フェーズ方式も要らない。
+        if (useHiZ && primary)
+        {
+            // 植生の GPU カリングが次フレームの HZB（今フレームの深度から作る）を使えるよう、作った時のジッタ付き VP を覚える
+            m_foliageHzbValid = true;
+            XMStoreFloat4x4(&m_foliageHzbVP, camVPJ);
+        }
         if (useHiZ)
         {
             HiZOcclusionPass::Inputs hz{};
@@ -4849,6 +5007,28 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 hz.params.mipCount = m_hiZPass->GetMipCount();
             }
             HiZOcclusionPass(hz).Execute(passCtx);
+        }
+
+        // --- 仮想ジオメトリ P2: GPU カリング（統計のみ・描かない。既定 OFF）---
+        // 専用ルートシグネチャ・専用ヒープの compute。終わったらアプリのヒープを張り直す（中で）。
+        if (useVgCull)
+        {
+            depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            gpuBegin(GpuTimer::VgCull);   // ★P3 以降は「VG 全体」（カリング + ラスタ + HZB 再構築）。内訳は vg_stats.cullGpuMs / raster.gpuMs
+            VgRasterIn vgRaster;
+            if (useVgRaster)
+            {
+                vgRaster.active = true;
+                vgRaster.depth  = depthRes;
+                vgRaster.dsv    = depthDsv;
+                vgRaster.toRaster = [&](ID3D12GraphicsCommandList*) { depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE); };
+                vgRaster.toSample = [&](ID3D12GraphicsCommandList*) { depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE); };
+            }
+            RunVirtualGeometryCull(nativeCmdList, view, frameIndex, depthSrvGpuPre, /*depthReady*/ true, useVgRaster ? &vgRaster : nullptr);
+            gpuEnd(GpuTimer::VgCull);
+            // 仮想ジオメトリ P4（H2）: VG 画素の速度 + G-Buffer（プリパスが速度 + G-Buffer モードのフレームだけ）。
+            //   SSAO / コンタクト / RT / SSR / SSGI / TAA が VG 画素を正しく扱うため、この後ろの全パスより前に書く。
+            if (useVgRaster && velocityPrepass) RunVirtualGeometryGBuffer(frameIndex);
         }
 
         // --- SSAO 生成（depth SRV を読み AO→Blur）---
@@ -5297,7 +5477,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
     // ===== Skybox（不透明描画の前に全画面塗り。深度テスト OFF なので後続不透明が上書き）=====
     // RT / ビューポート / ヒープはパスが自分で張る。後始末（メインの RootSig/PSO の張り直し）は要らない。
-    if (view.Has(kViewSkybox) &&
+    // 物理大気（atmosphere.enabled）のときは、従来のスカイボックスの代わりに大気の空を描く（空パス = Sky-View LUT + 太陽円盤 + 星）。
+    const bool atmoSky = AtmosphereSkyUsable(view);
+    if (atmoSky) AtmosphereDrawSky(view, passCtx);
+    if (!atmoSky && view.Has(kViewSkybox) &&
         m_iblReady && m_drawSkybox && m_skyboxIntensity > 0.0f && m_skyboxRenderer &&
         m_iblBaker && m_iblBaker->HasEnvironment() &&
         m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
@@ -5314,6 +5497,23 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         si.width  = rW;
         si.height = rH;
         SkyboxPass(si).Execute(passCtx);
+    }
+
+    // ===== 仮想ジオメトリ P4（H3）: 材質 resolve（スカイの上・非 VG のフォワードの下）=====
+    // 可視性バッファの VG 画素を、フォワードと同じライティング（ForwardShade.hlsli）で塗る。VG 画素だけ塗り（空は discard）、
+    // 深度テスト無し: 非 VG のフォワードは LESS_EQUAL で VG より奥の画素を落とす。
+    // resolve が使えない / resolve:false のときは P3 の暫定シェーディング（面法線ランバート）。
+    if (useVgRaster && primary)
+    {
+        VgResolveIn rv;
+        rv.frameIndex = frameIndex;
+        rv.rtv = sceneRT->GetRtv();
+        rv.width = rW; rv.height = rH;
+        rv.perFrameCB = frameCB->GetGpuAddress(frameIndex);
+        XMStoreFloat4x4(&rv.viewProjJ, camVPJ);
+        rv.aoSrv = aoSrv; rv.csSrv = csSrv; rv.ssrSrv = ssrSrv; rv.ssgiSrv = ssgiSrv;
+        if (!DrawVirtualGeometryResolve(nativeCmdList, rv))
+            DrawVirtualGeometryDebug(nativeCmdList, frameIndex, /*VG_DBG_SHADE*/ 0u, sceneRT->GetRtv(), rW, rH, viewFar);
     }
 
     // ===== Forward+（全Entity。メインパスなら編集カメラ視点）=====
@@ -5353,7 +5553,43 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             }
             m_passBucket = &m_passOther;
         };
-        ForwardScenePass(std::move(fwd)).Execute(passCtx);
+        // ===== 水面 W1: 不透明 → 水（専用パス）→ 半透明 =====
+        // ★WaterBody が 1 つも無いシーンは waterPass=false ＝ 従来と同じ 1 回の Execute（コマンドは 1 命令も変わらない）。
+        //   水があるときだけ Forward+ を 2 回に割り、間に水を挟む（水の専用ルートシグネチャは Record が張り、2 回目の Execute が全部張り直す）。
+        const bool waterPass = primary && !viewOrtho && WaterActive() && WaterBeginFrame(nativeCmdList, view, frameIndex, totalTime);
+        if (!waterPass)
+        {
+            ForwardScenePass(std::move(fwd)).Execute(passCtx);
+        }
+        else
+        {
+            m_meshPhase = 1;   // 不透明（+ 植生）
+            ForwardScenePass(fwd).Execute(passCtx);
+            m_meshPhase = 0;
+            water::PassIn wp{};
+            wp.cmd = nativeCmdList;
+            wp.wrap = m_commandList.get();
+            wp.sceneRT = sceneRT;
+            wp.dsv = depthDsv;
+            wp.depthRes = depthRes;
+            wp.depthState = &depthState;
+            wp.heap = m_srvHeap->GetHeap();
+            wp.perFrameCB = fwd.perFrameCB;
+            wp.csm = fwd.csmTable;
+            wp.punctual = fwd.punctualShadowTable;
+            wp.hasIbl = fwd.hasIblTable;
+            wp.ibl = fwd.iblTable;
+            wp.hasCluster = fwd.hasClusterTable;
+            wp.cluster = fwd.clusterTable;
+            wp.width = rW;
+            wp.height = rH;
+            m_water->Record(wp);
+            m_meshPhase = 2;   // 半透明 + グリッド + 発光弾（GPU タイマーは 1 回目で計測済み）
+            RenderPassContext ctxNoTimer = passCtx;
+            ctxNoTimer.timer = nullptr;
+            ForwardScenePass(std::move(fwd)).Execute(ctxNoTimer);
+            m_meshPhase = 0;
+        }
     }
 
     // ---- Physics / NavMesh Debug Draw（オフスクリーン RT へ・同じ線パイプラインを共有）----
@@ -5425,6 +5661,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         ci.height = rH;
         FogCompositePass(ci).Execute(passCtx);
     }
+    // 物理大気のエアリアルパースペクティブ（遠景の霞）。フォグ合成の直後・同じ合成の作法（Forward は触らない）。
+    // 二重に霞まない規則: 物理大気の AP は froxel フォグ / 距離フォグとは独立に掛かる（AP は大気の光、froxel フォグはユーザーが置く局所のフォグ）。
+    // 遠景まで froxel フォグを伸ばす（extendBeyondRange）と両方が掛かるので、大気モードでは volumetricFog.extendBeyondRange を切るか density を下げること。
+    if (atmoSky) AtmosphereDrawAerialPerspective(view, passCtx, depthSrvIndex);
     if (view.Has(kViewParticles) && m_particleSystem)
     {
         ParticlesPass::Inputs pi{};
@@ -5481,11 +5721,30 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ★ここに挿す理由: シーン RT がまだ RENDER_TARGET で、ポストチェーンより前。
     //   readback（CaptureSceneScreenshot）は m_sceneRT を読むので必ず絵に写る（B5 の罠を回避）。
     //   フォワード PS には 1 行も足していない（N24: [branch] でも occupancy が落ちる）。
-    if (primary && view.Has(kViewDebugDraw)
-        && m_renderDebugMode != 0 && m_renderDebugPass && m_renderDebugPass->IsReady()
+    // ★エディタのビューモード（帯 > ビューモード）: MCP の render_debug が出していない間だけ、エディタ中の主ビューへ被せる
+    //   （既定 = ライティングあり = 0 で何も変わらない。Play / ゲームでは使わない）。
+    static_assert(static_cast<u32>(RenderDebugMode::Normal) == vp::ViewModeToDebugPass(vp::kViewModeNormal)
+               && static_cast<u32>(RenderDebugMode::Roughness) == vp::ViewModeToDebugPass(vp::kViewModeRoughness)
+               && static_cast<u32>(RenderDebugMode::Metallic) == vp::ViewModeToDebugPass(vp::kViewModeMetallic)
+               && static_cast<u32>(RenderDebugMode::Depth) == vp::ViewModeToDebugPass(vp::kViewModeDepth)
+               && static_cast<u32>(RenderDebugMode::Ao) == vp::ViewModeToDebugPass(vp::kViewModeAo),
+                  "ViewportLogic.h の ViewModeToDebugPass が RenderDebugMode と食い違っている");
+    u32 dbgModeNow = m_renderDebugMode;
+    if (dbgModeNow == 0 && m_editorCtx && m_engineMode == EngineMode::Editor && !m_isGameMode)
+        dbgModeNow = vp::ViewModeToDebugPass(m_editorCtx->vpPrefs.viewMode);
+    // 仮想ジオメトリ P3: 可視性バッファの可視化（クラスタ / LOD / 三角形 / 深度 / オーバードロー / 被覆）。VG のラスタが動いているフレームだけ。
+    if (primary && view.Has(kViewDebugDraw) && useVgRaster
+        && dbgModeNow >= static_cast<u32>(RenderDebugMode::VgCluster) && dbgModeNow <= static_cast<u32>(RenderDebugMode::VgNormal)
         && depthSrvIndex != DescriptorHeap::kInvalidIndex)
     {
-        const auto dbgMode = static_cast<RenderDebugMode>(m_renderDebugMode);
+        depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);   // 深度 / 被覆モードが読む
+        DrawVirtualGeometryDebug(nativeCmdList, frameIndex, dbgModeNow - 20u, sceneRT->GetRtv(), rW, rH, viewFar);
+    }
+    if (primary && view.Has(kViewDebugDraw)
+        && dbgModeNow != 0 && m_renderDebugPass && m_renderDebugPass->IsReady()
+        && depthSrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        const auto dbgMode = static_cast<RenderDebugMode>(dbgModeNow);
         u32 srcIdx = DescriptorHeap::kInvalidIndex;
         switch (dbgMode)
         {
@@ -5564,6 +5823,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             pvPost.enabled = false;
             // トーンマッパはシーン設定と揃える（プレビューと本画面の見た目一致）
             pvPost.tonemapper = m_scene->GetPostSettings().tonemapper;
+            {   // Q2: UE Filmic のパラメータと物理露出（EV100）も揃える（プレビューと本画面の明るさを一致させる）
+                const PostProcessSettings& sp = m_scene->GetPostSettings();
+                pvPost.filmSlope = sp.filmSlope; pvPost.filmToe = sp.filmToe; pvPost.filmShoulder = sp.filmShoulder;
+                pvPost.filmBlackClip = sp.filmBlackClip; pvPost.filmWhiteClip = sp.filmWhiteClip;
+                pvPost.exposureMode = sp.exposureMode; pvPost.ev100 = sp.ev100; pvPost.evComp = sp.evComp;
+            }
             const auto pvDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
             PostProcess::Inputs pvIn{};
             pvIn.sceneSrv   = m_srvHeap->GetGpuHandle(sceneRT->GetSrvIndex());
@@ -5688,6 +5953,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             }
         }
 
+        // シーケンサーのポスト / DoF（描画時のコピーへの上書き = シーンの設定は書き換えない）。
+        // エディタの自由カメラのビューには DoF を掛けない（フォーカス距離はカットのカメラ基準のため）。
+        if (m_sequencer) m_sequencer->ApplyPostOverrides(ppApplied, /*cameraView=*/isGameView);
+
         // ---- TAA と FXAA の排他 ----
         // TAA 解決済みの絵に FXAA を掛けると輪郭が二重にぼける。TAA が走るなら FXAA は落とす。
         const bool taaResolve = taaResolveActive;
@@ -5706,10 +5975,14 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         if (m_scene)
         {
             auto camEnts = m_scene->GetRegistry().view<const CameraComponent>();
+            // シーケンサーのカットが有効なら、そのカメラだけを見る（それ以外の isActive は無視）
+            const entt::entity seqCut = m_sequencer ? m_sequencer->CutCameraEntity() : entt::null;
+            const bool seqCutValid = seqCut != entt::null && camEnts.contains(seqCut);
             for (auto ce : camEnts)
             {
                 const auto& cc = camEnts.get<const CameraComponent>(ce);
-                if (!cc.isActive || !cc.screenShaderEnabled || cc.screenShaderPath.empty())
+                if (seqCutValid ? (ce != seqCut) : !cc.isActive) continue;
+                if (!cc.screenShaderEnabled || cc.screenShaderPath.empty())
                     continue;
                 screenShaderRel   = cc.screenShaderPath;
                 screenShaderParams = cc.screenShaderParams;
@@ -5721,8 +5994,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         }
         ID3D12PipelineState* screenPso =
             screenShaderRel.empty() ? nullptr : EnsureScreenShaderPso(screenShaderRel);
+        // Q2: オフスクリーン撮影では画面全体のカスタムシェーダーは走らせない（中間 RT が表示解像度のため）。
         const bool useScreenShader = (screenPso != nullptr) && m_screenShaderRT
-                                  && m_screenShaderPass && m_screenShaderPass->IsReady();
+                                  && m_screenShaderPass && m_screenShaderPass->IsReady()
+                                  && !OffscreenCaptureFrame();
 
         // ---- 深度依存パス（TAA/DoF/モーションブラー/ゴッドレイ）の準備 ----
         // 透視カメラのみ（正射は CoC/再投影/太陽投影が破綻するため無効）
@@ -5813,7 +6088,9 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         }
 
         // ---- 自動露出（compute。ビューポート矩形のヒストグラム→露出値を GPU 内バッファへ）----
-        if (m_autoExposure && ppApplied.enabled && ppApplied.autoExposureOn)
+        // Q2: 露出モード 2（自動 EV100）はマスター(enabled)が OFF でも走らせる。0 は従来どおり。
+        if (m_autoExposure && ((ppApplied.enabled && ppApplied.autoExposureOn && ppApplied.exposureMode == 0)
+                               || ppApplied.exposureMode == 2))
             m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, rW, rH,
                                      m_gameClock.GetDeltaTime(), ppApplied);
         D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
@@ -5822,6 +6099,12 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             m_autoExposure->EnsureReadable(nativeCmdList);
             exposureVA = m_autoExposure->GetExposureBufferVA();
         }
+
+        // ---- Q2: 線形 HDR スクリーンショット（screenshot_final {format:"pfm"|"exr"}）----
+        // トーンマップ前・露出前のシーン色（TAA / DoF / モーションブラー後）を、撮影の要求があるフレームだけ読み出す。
+        // 自動露出と同じ位置・同じ SRV（同じ読み取り状態）。要求が無ければ 1 命令も記録しない。
+        if (m_mcpFinalShot.pending && m_mcpFinalShot.WantLinear() && m_mcpFinalShot.reply.client != 0)
+            RecordLinearCapture(nativeCmdList, curSceneSrv, rW, rH);
 
         // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
@@ -5916,6 +6199,13 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             m_screenShaderRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
             postRtv = m_screenShaderRT->GetRtv();
             m_commandList->ClearRenderTarget(postRtv, bbClear);
+        }
+        // Q2: オフスクリーン撮影のフレームは、uber の出力先を専用の LDR RT（撮影解像度）へ差し替える。
+        //     バックバッファは上で通常どおり遷移・クリア済み（ImGui の下地）で、撮影には写らない。
+        if (OffscreenCaptureFrame())
+        {
+            m_offscreenOutRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            postRtv = m_offscreenOutRT->GetRtv();
         }
         nativeCmdList->OMSetRenderTargets(1, &postRtv, FALSE, nullptr);  // 深度なし
         m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
@@ -6106,6 +6396,9 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
             (std::max)(nf.varianceClamp, 0.0f),
             (std::max)(nf.geometricBlend, 0.0f));
     }
+
+    // 植生 F1: 風のフレーム共通値を予約領域 [0..1] へ（FoliageLayer があるときだけ書く。他の誰も読まない領域）
+    FoliageFillFrameConstants(fc._clusterReserved);
 }
 
 // ---------------------------------------------------------------------------
@@ -6131,6 +6424,7 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
         for (auto [e, pl, tf] : plView.each())
         {
             if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            if (eflags::IsDisabled(reg, e)) continue;   // [I] 無効（インスペクタの「有効」OFF）のライトは寄与しない
             ClusterLightGPU pld{};
             XMMATRIX world = (tf.parent != entt::null)
                 ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
@@ -6144,6 +6438,7 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
             pld.cosOuter  = -1.0f;
             pld.cosInner  = 1.0f;
             pld.sinOuter  = 0.0f;
+            pld.sourceRadius = pl.sourceRadius;   // Q2: 物理ライティング単位の .cso だけが読む（従来 .cso では未使用の padding）
 
             // 影スロット割当（上で計算済みの m_pointShadowEntity[]）と突合
             pld.shadowIndex = -1.0f;
@@ -6164,6 +6459,7 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
         for (auto [e, sl, tf] : slView.each())
         {
             if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            if (eflags::IsDisabled(reg, e)) continue;   // [I] 無効（インスペクタの「有効」OFF）のライトは寄与しない
             ClusterLightGPU sld{};
             XMMATRIX world = (tf.parent != entt::null)
                 ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
@@ -6184,6 +6480,7 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
             sld.color = {sl.color.x * sl.intensity,
                          sl.color.y * sl.intensity,
                          sl.color.z * sl.intensity};
+            sld.sourceRadius = sl.sourceRadius;   // Q2: 同上
 
             // 影スロット割当（上で計算済みの m_spotShadowEntity[]）と突合
             sld.shadowIndex = -1.0f;
@@ -6299,7 +6596,8 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
     //   ライトのハンドルがここ。選択を外しても「アクティブなカメラ」は描かれ続けるので、
     //   選択解除では消せなかったのが元の痛み）。撮り終われば自動で戻る。
     if ((m_engineMode == EngineMode::Editor || iconsWhilePaused) && !m_isGameMode
-        && !McpHidingGizmos())
+        && !McpHidingGizmos()
+        && (!m_editorCtx || m_editorCtx->vpPrefs.showIcons))   // 帯 > 表示 > ライト・カメラのアイコン
     {
         // ★DSV は張らない。アイコンは DepthEnable=FALSE で深度テストをしないうえ、
         //   #16 でメイン深度はレンダー解像度に縮んだので、表示解像度のバックバッファへ
@@ -6511,9 +6809,43 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
 
     // ---- MCP screenshot_final: ImGui を描く前のバックバッファ（＝ポスト適用後の絵だけ）を撮る ----
     //   ここより後は ImGui のパネル / ギズモ / オーバーレイが乗るので、必ずこの位置で撮ること（§6 B5）。
-    CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, vpLeft, vpTop, vpW, vpH);
+    if (OffscreenCaptureFrame())   // Q2: 任意解像度のオフスクリーン RT（uber の出力）を読む
+        CaptureFinalBackBufferRegion(nativeCmdList, m_offscreenOutRT->GetResource(), 0, 0,
+                                     m_mcpFinalShot.offW, m_mcpFinalShot.offH);
+    else
+        CaptureFinalBackBufferRegion(nativeCmdList, backBuffer, vpLeft, vpTop, vpW, vpH);
     // ---- MCP dx12_perceive: 同じ位置の最終画 + エンティティ ID パス（要求があるフレームだけ）----
     RecordPerceptionIds(nativeCmdList, backBuffer, rtv, vpLeft, vpTop, vpW, vpH, frameIndex);
+
+    // ---- エディタ専用: 選択 / ホバーの輪郭 + ワイヤ表示モード（★最終画の撮影・知覚層より後）----
+    //   screenshot_final / dx12_perceive はこの前に撮り終えているので、ゲームの絵は 1 ビットも変わらない。
+    //   選択もワイヤも無ければ 1 命令も記録しない。ImGui のスクショ（dx12_imgui_screenshot）には写る。
+    if (m_engineMode == EngineMode::Editor && !m_isGameMode && m_editorCtx && m_camera && m_scene && !McpHidingGizmos())
+    {
+        EditorViewFrame ev;
+        ev.device = m_graphicsDevice.get();
+        ev.srvHeap = m_srvHeap.get();
+        ev.backBufferFormat = m_swapChain->GetFormat();
+        ev.shaderDir = PathResolver::ShaderDirW();
+        ev.cmd = nativeCmdList;
+        ev.backBuffer = backBuffer;
+        ev.backBufferRtv = rtv;
+        ev.vpX = vpLeft; ev.vpY = vpTop; ev.vpW = vpW; ev.vpH = vpH;
+        ev.viewProj = m_camera->GetViewProjMatrix();   // ジッタなし
+        ev.frameIndex = frameIndex;
+        ev.whiteSrv = m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultWhiteTexture()->GetSrvIndex());
+        ev.reg = &m_scene->GetRegistry();
+        ev.items = &m_drawItems;
+        ev.uiScale = theme::Scale();
+        if (RecordEditorViewOverlays(*m_editorCtx, ev))
+        {
+            // 後段（ImGui）のためにメインの状態へ戻す（RecordPerceptionIds と同じ）
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            m_commandList->SetRootSignature(*m_rootSignature);
+            m_commandList->SetRenderTarget(rtv);
+            m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6714,680 +7046,10 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
         if (m_modeChangeRequested)
             m_pendingMode = pendingPlayMode ? EngineMode::Playing : EngineMode::Editor;
 
-        // ---- ポストプロセス: ON/OFF ＋ パラメータ（1 枚で完結する窓）----
-        // ★以前は「チェックを入れる窓」と「値をいじる窓」が別々で、パラメータ窓を
-        //   開いていない限り何も調整できなかった（＝「パラメータが全然いじれない」の正体）。
-        //   今は Post Process 窓の中に、有効なエフェクトのパラメータがその場で出る。
-        //   従来のパラメータ専用窓も残してある（別ドッキングで広く使いたい人向け）。
-        {
-            auto& pp  = m_scene->GetPostSettings();
-            auto& taa = m_scene->GetTaaSettings();   // TAA は PostProcessSettings とは別（下の注記参照）
-            static const PostProcessSettings kDef{};  // 「このエフェクトだけ既定へ戻す」用
-
-            // 全エフェクトのメタ情報（トグル・パラメータ描画・個別リセットを一元定義）
-            struct PostFx {
-                const char* cat;                 // カテゴリ見出し
-                const char* label;               // 表示名
-                const char* help;                // 説明（null可）
-                bool*       on;                  // 有効フラグ
-                std::function<void()> params;    // パラメータ描画
-                std::function<void()> reset;     // このエフェクトのパラメータだけ既定へ
-            };
-            const std::vector<PostFx> fx = {
-                {"カラー", "露出 Exposure", "明るさを乗算で調整", &pp.exposureOn,
-                    [&]{ ui::SliderFloat("値##exposure", &pp.exposure, 0.0f, 8.0f, "%.3f"); },
-                    [&]{ pp.exposure = kDef.exposure; }},
-                {"カラー", "自動露出 Auto Exposure", "平均輝度に合わせて露出を自動追従（目の順応）", &pp.autoExposureOn,
-                    [&]{ ui::SliderFloat("適応速度##aespd", &pp.aeSpeed, 0.1f, 10.0f, "%.2f");
-                         ui::SliderFloat("EV補正##aeev", &pp.aeEvComp, -8.0f, 8.0f, "%.2f");
-                         ui::SliderFloat("測光下限(log2)##aemin", &pp.aeLogMin, -16.0f, 0.0f, "%.1f");
-                         ui::SliderFloat("測光上限(log2)##aemax", &pp.aeLogMax, 0.0f, 16.0f, "%.1f"); },
-                    [&]{ pp.aeSpeed = kDef.aeSpeed; pp.aeEvComp = kDef.aeEvComp;
-                         pp.aeLogMin = kDef.aeLogMin; pp.aeLogMax = kDef.aeLogMax; }},
-                {"カラー", "コントラスト Contrast", nullptr, &pp.contrastOn,
-                    [&]{ ui::SliderFloat("値##contrast", &pp.contrast, 0.0f, 3.0f, "%.3f"); },
-                    [&]{ pp.contrast = kDef.contrast; }},
-                {"カラー", "明るさ Brightness", "加算で明暗を調整", &pp.brightnessOn,
-                    [&]{ ui::SliderFloat("値##brightness", &pp.brightness, -1.0f, 1.0f, "%.3f"); },
-                    [&]{ pp.brightness = kDef.brightness; }},
-                {"カラー", "彩度 Saturation", nullptr, &pp.saturationOn,
-                    [&]{ ui::SliderFloat("値##saturation", &pp.saturation, 0.0f, 3.0f, "%.3f"); },
-                    [&]{ pp.saturation = kDef.saturation; }},
-                {"カラー", "色温度 Warmth", "+で暖色、-で寒色", &pp.warmthOn,
-                    [&]{ ui::SliderFloat("値##warmth", &pp.warmth, -1.0f, 1.0f, "%.3f"); },
-                    [&]{ pp.warmth = kDef.warmth; }},
-                {"カラー", "色相回転 Hue", "色相を回す（度）", &pp.hueOn,
-                    [&]{ ui::SliderFloat("角度##hue", &pp.hueShift, 0.0f, 360.0f, "%.1f°"); },
-                    [&]{ pp.hueShift = kDef.hueShift; }},
-                {"カラー", "色味 Tint", "RGB を乗算", &pp.tintOn,
-                    [&]{ ImGui::ColorEdit3("色##tint", &pp.tint.x); },
-                    [&]{ pp.tint = kDef.tint; }},
-
-                {"ブルーム/ビネット", "ブルーム Bloom", "明部が咲く（物理ベース・ダウンサンプルチェーン）", &pp.bloomOn,
-                    [&]{ ui::SliderFloat("強度##bloom", &pp.bloom, 0.0f, 3.0f, "%.3f");
-                         ui::SliderFloat("しきい値##bloomth", &pp.bloomThreshold, 0.0f, 8.0f, "%.3f");
-                         ui::SliderFloat("ニー(肩)##bloomknee", &pp.bloomKnee, 0.0f, 1.0f, "%.3f");
-                         ui::SliderFloat("広がり##bloomrad", &pp.bloomRadius, 0.05f, 0.95f, "%.3f"); },
-                    [&]{ pp.bloom = kDef.bloom; pp.bloomThreshold = kDef.bloomThreshold;
-                         pp.bloomKnee = kDef.bloomKnee; pp.bloomRadius = kDef.bloomRadius; }},
-                {"ブルーム/ビネット", "ビネット Vignette", "周辺減光。半径・柔らかさ・真円度・色まで作れる", &pp.vignetteOn,
-                    [&]{ ui::SliderFloat("濃さ##vig", &pp.vignette, 0.0f, 1.0f, "%.3f");
-                         ui::SliderFloat("開始半径##vigr", &pp.vignetteRadius, 0.0f, 1.5f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("中心=0 / 四隅=1。上げるほど四隅だけが落ちる");
-                         ui::SliderFloat("ぼけ幅##vigs", &pp.vignetteSoftness, 0.001f, 1.0f, "%.3f");
-                         ui::SliderFloat("真円度##vigrn", &pp.vignetteRoundness, 0.0f, 1.0f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("1=真円 / 0=画面のアスペクト比なりの楕円");
-                         ImGui::ColorEdit3("減光の色##vigc", &pp.vignetteColor.x); },
-                    [&]{ pp.vignette = kDef.vignette; pp.vignetteRadius = kDef.vignetteRadius;
-                         pp.vignetteSoftness = kDef.vignetteSoftness;
-                         pp.vignetteRoundness = kDef.vignetteRoundness;
-                         pp.vignetteColor = kDef.vignetteColor; }},
-
-                {"ライト/カメラ", "ゴッドレイ God Rays", "太陽(平行光源)からの光条。太陽が画面内/近くにある時に見える(透視カメラのみ)", &pp.godraysOn,
-                    [&]{ ui::SliderFloat("強度##gri", &pp.grIntensity, 0.0f, 3.0f, "%.3f");
-                         ui::SliderFloat("長さ##grd", &pp.grDensity, 0.1f, 1.0f, "%.3f");
-                         ui::SliderFloat("減衰##grdc", &pp.grDecay, 0.8f, 0.999f, "%.4f"); },
-                    [&]{ pp.grIntensity = kDef.grIntensity; pp.grDensity = kDef.grDensity;
-                         pp.grDecay = kDef.grDecay; }},
-                {"ライト/カメラ", "レンズフレア Lens Flare", "ゴースト+ハロー。強い光源があると出る(ブルームと入力共有)", &pp.lensflareOn,
-                    [&]{ ui::SliderFloat("強度##lfi", &pp.lfIntensity, 0.0f, 3.0f, "%.3f");
-                         ui::SliderInt("ゴースト数##lfg", &pp.lfGhosts, 1, 8);
-                         ui::SliderFloat("間隔##lfd", &pp.lfDispersal, 0.05f, 1.0f, "%.3f");
-                         ui::SliderFloat("ハロー##lfh", &pp.lfHalo, 0.0f, 1.0f, "%.3f");
-                         ui::SliderFloat("色収差##lfc", &pp.lfChroma, 0.0f, 0.1f, "%.4f"); },
-                    [&]{ pp.lfIntensity = kDef.lfIntensity; pp.lfGhosts = kDef.lfGhosts;
-                         pp.lfDispersal = kDef.lfDispersal; pp.lfHalo = kDef.lfHalo;
-                         pp.lfChroma = kDef.lfChroma; }},
-                {"ライト/カメラ", "被写界深度 DoF", "フォーカス距離の前後がボケる(透視カメラのみ)", &pp.dofOn,
-                    [&]{ ui::SliderFloat("フォーカス距離##doff", &pp.dofFocusDist, 0.1f, 500.0f, "%.2f");
-                         {   // 合焦をエンティティに任せる（空なら上のフォーカス距離）
-                             char buf[128]{};
-                             std::snprintf(buf, sizeof(buf), "%s", pp.dofFocusName.c_str());
-                             if (ui::InputText("合焦エンティティ##dofent", buf, sizeof(buf)))
-                                 pp.dofFocusName = buf;
-                         }
-                         ui::SliderFloat("F値(0でレガシー)##dofap", &pp.dofAperture, 0.0f, 32.0f, "%.2f");
-                         ui::SliderFloat("焦点距離mm(0=画角)##doffl", &pp.dofFocalLength, 0.0f, 400.0f, "%.0f");
-                         if (pp.dofAperture <= 0.0f)
-                             ui::SliderFloat("シャープ範囲##dofr", &pp.dofFocusRange, 0.1f, 100.0f, "%.2f");
-                         ui::SliderFloat("最大ボケpx##dofb", &pp.dofBlurSize, 1.0f, 96.0f, "%.1f"); },
-                    [&]{ pp.dofFocusDist = kDef.dofFocusDist; pp.dofFocusName.clear();
-                         pp.dofAperture = kDef.dofAperture; pp.dofFocalLength = kDef.dofFocalLength;
-                         pp.dofFocusRange = kDef.dofFocusRange; pp.dofBlurSize = kDef.dofBlurSize; }},
-                {"ライト/カメラ", "モーションブラー Motion Blur", "カメラの動きで残像(深度再構成方式・透視カメラのみ)", &pp.motionBlurOn,
-                    [&]{ ui::SliderFloat("強度##mbs", &pp.mbStrength, 0.0f, 3.0f, "%.3f");
-                         ui::SliderInt("サンプル数##mbn", &pp.mbSamples, 4, 16); },
-                    [&]{ pp.mbStrength = kDef.mbStrength; pp.mbSamples = kDef.mbSamples; }},
-
-                {"スタイライズ", "色収差 Chromatic", "RGB をずらす。放射(端ほど強い)/水平/垂直を選べる", &pp.chromaticOn,
-                    [&]{ ui::SliderFloat("強度##chroma", &pp.chromatic, 0.0f, 2.0f, "%.3f");
-                         ui::Combo("ずらし方##chromam", &pp.chromaMode, "放射（画面端ほど強い）\0水平\0垂直\0"); },
-                    [&]{ pp.chromatic = kDef.chromatic; pp.chromaMode = kDef.chromaMode; }},
-                {"スタイライズ", "ピクセル化 Pixelize", "ブロック状にモザイク", &pp.pixelizeOn,
-                    [&]{ ui::SliderFloat("ブロックpx##pix", &pp.pixelSize, 1.0f, 128.0f, "%.1f"); },
-                    [&]{ pp.pixelSize = kDef.pixelSize; }},
-                {"スタイライズ", "ポスタライズ Posterize", "色数を段階化", &pp.posterizeOn,
-                    [&]{ ui::SliderInt("階調##post", &pp.posterize, 2, 32); },
-                    [&]{ pp.posterize = kDef.posterize; }},
-                {"スタイライズ", "ディザ Dither", "順序ディザで階調化", &pp.ditherOn,
-                    [&]{ ui::SliderInt("階調##dither", &pp.ditherLevels, 2, 16); },
-                    [&]{ pp.ditherLevels = kDef.ditherLevels; }},
-                {"スタイライズ", "CRT走査線 Scanline", "走査線の濃さ・本数・画面湾曲をそれぞれ調整できる", &pp.scanlineOn,
-                    [&]{ ui::SliderFloat("濃さ##scan", &pp.scanline, 0.0f, 1.0f, "%.3f");
-                         ui::SliderFloat("本数##scanc", &pp.scanCount, 20.0f, 1080.0f, "%.0f");
-                         ui::SliderFloat("画面湾曲##scancv", &pp.scanCurve, 0.0f, 1.0f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("0 で平面（湾曲なし）"); },
-                    [&]{ pp.scanline = kDef.scanline; pp.scanCount = kDef.scanCount;
-                         pp.scanCurve = kDef.scanCurve; }},
-                {"スタイライズ", "シャープ Sharpen", "輪郭を強調", &pp.sharpenOn,
-                    [&]{ ui::SliderFloat("強度##sharp", &pp.sharpen, 0.0f, 3.0f, "%.3f"); },
-                    [&]{ pp.sharpen = kDef.sharpen; }},
-                {"スタイライズ", "フィルムグレイン Grain", "ザラつきノイズ。粒の大きさとカラー/輝度を選べる", &pp.grainOn,
-                    [&]{ ui::SliderFloat("強度##grain", &pp.grain, 0.0f, 2.0f, "%.3f");
-                         ui::SliderFloat("粒の大きさpx##grains", &pp.grainSize, 0.25f, 16.0f, "%.2f");
-                         ui::Checkbox("カラーノイズ##grainc", &pp.grainColored); },
-                    [&]{ pp.grain = kDef.grain; pp.grainSize = kDef.grainSize;
-                         pp.grainColored = kDef.grainColored; }},
-
-                {"カラー操作", "色反転 Invert", nullptr, &pp.invertOn,
-                    [&]{ ui::SliderFloat("強度##inv", &pp.invert, 0.0f, 1.0f, "%.3f"); },
-                    [&]{ pp.invert = kDef.invert; }},
-                {"カラー操作", "セピア Sepia", nullptr, &pp.sepiaOn,
-                    [&]{ ui::SliderFloat("強度##sepia", &pp.sepia, 0.0f, 1.0f, "%.3f"); },
-                    [&]{ pp.sepia = kDef.sepia; }},
-                {"カラー操作", "グレースケール Grayscale", nullptr, &pp.grayscaleOn,
-                    [&]{ ui::SliderFloat("強度##gray", &pp.grayscale, 0.0f, 1.0f, "%.3f"); },
-                    [&]{ pp.grayscale = kDef.grayscale; }},
-                {"カラー操作", "LUT グレーディング", "ストリップ画像(N*N x N, 例:1024x32)で色変換。Photoshop等で作った LUT を適用", &pp.lutOn,
-                    [&]{ static char lutBuf[260] = "";
-                         ui::InputTextWithHint("##lutpath", "assets からの相対パス (例: luts/warm.png)", lutBuf, sizeof(lutBuf));
-                         if (ImGui::IsItemDeactivatedAfterEdit()) pp.lutPath = lutBuf;
-                         if (!ImGui::IsItemActive() && pp.lutPath != lutBuf)
-                         {
-                             size_t n = pp.lutPath.size();
-                             if (n >= sizeof(lutBuf)) n = sizeof(lutBuf) - 1;
-                             std::memcpy(lutBuf, pp.lutPath.c_str(), n);
-                             lutBuf[n] = '\0';
-                         }
-                         // アセットブラウザからの D&D（画像を落とすだけで LUT が刺さる）
-                         {
-                             std::string dropped;
-                             if (assetdrop::Accept(dropped, PathResolver::AssetsDir(),
-                                                   {".png", ".jpg", ".jpeg", ".tga", ".dds", ".bmp"}))
-                                 pp.lutPath = dropped;   // 入力欄は次フレームの同期処理が追従する
-                         }
-                         ui::SliderFloat("適用量##lutamt", &pp.lutAmount, 0.0f, 1.0f, "%.3f"); },
-                    [&]{ pp.lutPath.clear(); pp.lutAmount = kDef.lutAmount; }},
-
-                {"歪み", "レンズ歪み / 魚眼 Lens", "バレル・糸巻き・魚眼。縦横比を補正するので円が楕円にならない", &pp.lensOn,
-                    [&]{ ui::Combo("種類##lensm", &pp.lensMode,
-                             "バレル / 糸巻き（多項式）\0魚眼（等距離射影）\0魚眼（等立体角射影）\0");
-                         ui::SliderFloat("歪み量##lens", &pp.lens, -1.0f, 1.0f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("+ = 樽 / 魚眼、- = 糸巻き");
-                         if (pp.lensMode == 0)
-                             ui::SliderFloat("2次係数##lensk2", &pp.lensK2, -1.0f, 1.0f, "%.3f");
-                         ui::SliderFloat("ズーム補正##lensz", &pp.lensZoom, 0.2f, 3.0f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("四隅が空くときに上げる");
-                         ui::SliderFloat("倍率色収差##lensca", &pp.lensChroma, 0.0f, 2.0f, "%.3f");
-                         ui::Checkbox("円形に歪ませる（縦横比を補正）##lensc", &pp.lensCircular);
-                         ui::Combo("はみ出した所##lense", &pp.lensEdge,
-                             "端の色を引き伸ばす\0黒で塗る\0鏡のように折り返す\0"); },
-                    [&]{ pp.lens = kDef.lens; pp.lensMode = kDef.lensMode; pp.lensK2 = kDef.lensK2;
-                         pp.lensZoom = kDef.lensZoom; pp.lensCircular = kDef.lensCircular;
-                         pp.lensEdge = kDef.lensEdge; pp.lensChroma = kDef.lensChroma; }},
-                {"歪み", "波ゆらぎ Wave", "水中/陽炎のゆれ", &pp.waveOn,
-                    [&]{ ui::SliderFloat("振幅##wamp", &pp.waveAmp, 0.0f, 0.1f, "%.4f");
-                         ui::SliderFloat("周波数##wfreq", &pp.waveFreq, 1.0f, 80.0f, "%.2f");
-                         ui::SliderFloat("速度##wspd", &pp.waveSpeed, 0.0f, 16.0f, "%.2f"); },
-                    [&]{ pp.waveAmp = kDef.waveAmp; pp.waveFreq = kDef.waveFreq;
-                         pp.waveSpeed = kDef.waveSpeed; }},
-                {"歪み", "放射ブラー Radial", "指定した中心へズームブラー", &pp.radialOn,
-                    [&]{ ui::SliderFloat("強度##rad", &pp.radial, 0.0f, 2.0f, "%.3f");
-                         ui::SliderInt("サンプル数##radn", &pp.radialSamples, 2, 32);
-                         ui::SliderFloat("中心X##radcx", &pp.radialCenterX, 0.0f, 1.0f, "%.3f");
-                         ui::SliderFloat("中心Y##radcy", &pp.radialCenterY, 0.0f, 1.0f, "%.3f"); },
-                    [&]{ pp.radial = kDef.radial; pp.radialSamples = kDef.radialSamples;
-                         pp.radialCenterX = kDef.radialCenterX; pp.radialCenterY = kDef.radialCenterY; }},
-                {"歪み", "グリッチ Glitch", "デジタル乱れ。帯の本数・速さ・RGB分離を調整できる", &pp.glitchOn,
-                    [&]{ ui::SliderFloat("横ずれ量##glitch", &pp.glitch, 0.0f, 2.0f, "%.3f");
-                         ui::SliderFloat("帯の本数##glitchb", &pp.glitchBlocks, 2.0f, 200.0f, "%.0f");
-                         ui::SliderFloat("速さ##glitchs", &pp.glitchSpeed, 0.0f, 60.0f, "%.2f");
-                         ui::SliderFloat("RGB分離##glitchc", &pp.glitchColor, 0.0f, 2.0f, "%.3f"); },
-                    [&]{ pp.glitch = kDef.glitch; pp.glitchBlocks = kDef.glitchBlocks;
-                         pp.glitchSpeed = kDef.glitchSpeed; pp.glitchColor = kDef.glitchColor; }},
-
-                {"輪郭", "輪郭線 Outline", "Sobelエッジ検出。線画モードで下地を塗り潰せる", &pp.outlineOn,
-                    [&]{ ui::SliderFloat("強度##outl", &pp.outline, 0.0f, 8.0f, "%.3f");
-                         ui::SliderFloat("太さpx##outlt", &pp.outlineThickness, 0.1f, 8.0f, "%.2f");
-                         ui::SliderFloat("しきい値##outlth", &pp.outlineThreshold, 0.0f, 1.0f, "%.4f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("これ未満の勾配は線にしない（暗部のノイズ止め）");
-                         ImGui::ColorEdit3("線の色##outlc", &pp.outlineColor.x);
-                         ui::Checkbox("線画モード（絵を捨てる）##outlonly", &pp.outlineOnly);
-                         if (pp.outlineOnly)
-                             ImGui::ColorEdit3("下地の色##outlbg", &pp.outlineBg.x); },
-                    [&]{ pp.outline = kDef.outline; pp.outlineThickness = kDef.outlineThickness;
-                         pp.outlineThreshold = kDef.outlineThreshold; pp.outlineColor = kDef.outlineColor;
-                         pp.outlineOnly = kDef.outlineOnly; pp.outlineBg = kDef.outlineBg; }},
-
-                {"アンチエイリアス", "FXAA", "簡易アンチエイリアス（TAA が有効なら無視されます）", &pp.fxaaOn, {}, {}},
-                // TAA は PostProcessSettings ではなく TaaSettings（シーン単位の独立設定）に住む。
-                // uber パスの「マスク付きエフェクト」ではなく、チェーンの構造そのものを変える
-                // （深度+速度プリパスの強制・投影行列のジッタ・FXAA 排他）ため。
-                {"アンチエイリアス", "TAA (テンポラル)",
-                 "速度バッファ + 前フレームの履歴でサブピクセル AA。動くものもぼけません。"
-                 "有効にすると FXAA は自動で無視されます（透視ビューのみ。2D 正射では無効）",
-                 &taa.enabled,
-                    [&]{ int sc = (taa.sampleCount <= 4) ? 0 : (taa.sampleCount >= 16 ? 2 : 1);
-                         if (ui::Combo("ジッタ数##taasc", &sc, "4 (シャープ)\0" "8 (標準)\0" "16 (滑らか)\0"))
-                             taa.sampleCount = (sc == 0) ? 4 : (sc == 2 ? 16 : 8);
-                         ui::SliderFloat("ジッタ量##taajs", &taa.jitterScale, 0.0f, 1.0f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("1.0 = ±0.5px。ブラーが強すぎるなら下げる");
-                         ui::SliderFloat("履歴 最小##taafbmin", &taa.feedbackMin, 0.5f, 0.98f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("現フレームと食い違うピクセルで使う履歴の比率");
-                         ui::SliderFloat("履歴 最大##taafbmax", &taa.feedbackMax, 0.5f, 0.995f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("安定しているピクセルで使う履歴の比率。高いほど滑らかだがゴーストしやすい");
-                         ui::SliderFloat("クリップ幅##taavg", &taa.varianceGamma, 0.25f, 3.0f, "%.3f");
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("近傍色の許容幅 (μ±γσ)。下げるとゴーストが減りチラつきが増える");
-                         ui::Checkbox("速度バッファを可視化##taadbg", &taa.debugVelocity);
-                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("静止時に全面が均一なグレーになるのが正常"); },
-                    [&]{ TaaSettings d{}; bool wasOn = taa.enabled; taa = d; taa.enabled = wasOn; }},
-
-                {"仕上げ", "デバンディング Deband", "TPDFディザで空/ビネットの縞(バンディング)を除去", &pp.debandOn, {}, {}},
-            };
-
-            // 有効中エフェクト数（両窓で使うので、窓の表示有無に関わらず先に数える）
-            int enabledCount = 0;
-            for (const auto& fEff : fx)
-                if (*fEff.on) ++enabledCount;
-
-            // エフェクト 1 件を「チェック + (?) + ↺ + その場のパラメータ」で描く。
-            // filter が空でなければ表示名に含まれるものだけ出す（エフェクトが 30 個近くあるので）。
-            static char postFilter[64] = "";
-            auto matchesFilter = [&](const PostFx& f) -> bool
-            {
-                if (postFilter[0] == '\0') return true;
-                std::string hay = std::string(f.cat) + " " + f.label + " " + (f.help ? f.help : "");
-                std::string needle = postFilter;
-                auto lower = [](std::string& s) { for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
-                lower(hay); lower(needle);
-                return hay.find(needle) != std::string::npos;
-            };
-
-            // ===== ウィンドウ1: エフェクト一覧（チェック＋その場でパラメータ）=====
-            if (m_editorCtx->showPostProcess)
-            {
-            ImGui::Begin("Post Process");
-            // ★Play 中の変更は Stop で捨てられる（Stop は Play 開始時のシーン JSON から
-            //   丸ごと復元する）。以前はこの窓も MCP のセッターも Play 中に素通しで、
-            //   警告もタイトルの * も出ないまま、詰めた露出やブルームが黙って巻き戻っていた。
-            if (m_engineMode == EngineMode::Playing)
-                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
-                    "Play 中の変更は Stop で破棄されます（残すなら Stop してから調整）");
-            ui::Checkbox("有効（マスター）", &pp.enabled);
-            // トーンマップ（表示変換）はマスターOFF でも常に適用されるのでディセーブル外
-            ImGui::SameLine(0, ui::Px(24.0f));
-            ImGui::SetNextItemWidth(ui::Px(200.0f));
-            ui::Combo("トーンマップ", &pp.tonemapper, "ACES\0AgX\0なし(ガンマのみ)\0");
-            ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
-            if (ImGui::BeginItemTooltip())
-            {
-                ImGui::TextUnformatted("ACES: コントラスト強めの定番\nAgX: 高輝度・高彩度光源(ネオン/発光体)の色割れがない\nなし: ガンマのみ(デバッグ/2D向け)");
-                ImGui::EndTooltip();
-            }
-
-            // ---- 見た目プリセット（複数選んで重ねられる。サムネイル付き）----
-            // ★以前は「文字のボタンを 1 個押すと丸ごと置き換わる」だけだったので、
-            //   (a) 押してみるまでどんな絵になるか分からない
-            //   (b) シネマ + グリッチ のような組み合わせが作れない（後勝ちで消える）
-            //   の 2 つが不便だった。ここではトグル選択にして、選ばれたものを
-            //   毎回「既定へ戻す → 表の並び順に適用」で作り直す（＝外した分が残らない）。
-            static PostProcessSettings presetBackup{};
-            static bool                hasPresetBackup = false;
-            static bool                presetSel[kPostPresetCount] = {};
-            static u64                 presetSceneGen = ~0ull;
-            // シーンを開き直したら選択も控えも捨てる
-            //（別のシーンで取った控えを「戻す」で流し込むと、無関係な設定が復活する）
-            if (presetSceneGen != static_cast<u64>(m_sceneGeneration))
-            {
-                presetSceneGen  = static_cast<u64>(m_sceneGeneration);
-                hasPresetBackup = false;
-                for (bool& s : presetSel) s = false;
-            }
-
-            if (ui::CollapsingHeader("見た目プリセット", ImGuiTreeNodeFlags_DefaultOpen))
-            {
-                // ★窓を右へドッキングすると幅が狭いので、説明は必ず折り返す
-                //   （TextDisabled のままだと右端で切れて読めなくなっていた）。
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextDisabled("クリックで ON/OFF。複数選べます");
-                ImGui::TextDisabled("並び順に重なり、同じ項目は後ろのプリセットが勝ちます。"
-                                    "露出 / DoF / ブルーム品質などシーン側の設定は残ります。");
-                ImGui::PopTextWrapPos();
-
-                // 選ばれているものから pp を作り直す。1 つも無ければ選ぶ前の状態へ戻す。
-                auto recompose = [&]()
-                {
-                    int n = 0;
-                    for (bool s : presetSel) if (s) ++n;
-                    if (n == 0)
-                    {
-                        if (hasPresetBackup) { pp = presetBackup; hasPresetBackup = false; }
-                    }
-                    else
-                    {
-                        pp = ApplyPostPresets(presetSel, kPostPresetCount, presetBackup);
-                    }
-                };
-
-                ImDrawList*  dl      = ImGui::GetWindowDrawList();
-                const float  sp      = ImGui::GetStyle().ItemSpacing.x;
-                const ImVec2 tile = ui::Px(136.0f, 92.0f);
-                const float  swatchH = ui::Px(62.0f);
-                const float  availW  = ImGui::GetContentRegionAvail().x;
-                float        lineW   = 0.0f;
-                bool         first   = true;
-
-                for (int i = 0; i < kPostPresetCount; ++i)
-                {
-                    const PostPreset& pr = kPostPresets[i];
-                    // 「素の絵」は下の「すべて外す」が担当するので、タイルには出さない
-                    // （ID は MCP / 保存の互換のため表には残してある）。
-                    if (std::strcmp(pr.id, "none") == 0) continue;
-
-                    if (!first && lineW + sp + tile.x <= availW)
-                    { ImGui::SameLine(); lineW += sp + tile.x; }
-                    else
-                        lineW = tile.x;
-                    first = false;
-
-                    ImGui::PushID(i);
-                    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                    ImGui::InvisibleButton("##presettile", tile);
-                    const bool hovered = ImGui::IsItemHovered();
-                    const bool clicked = ImGui::IsItemClicked();
-                    const bool sel     = presetSel[i];
-
-                    // サムネイル: そのプリセット【単体】を素の絵に当てた結果を描く。
-                    // 設定値から描いているので、プリセットの数値を直せば絵も一緒に変わる。
-                    const PostProcessSettings preview = ApplyPostPreset(pr, PostProcessSettings{});
-                    const ImVec2 s0(p0.x + ui::Px(3.0f), p0.y + ui::Px(3.0f));
-                    const ImVec2 s1(p0.x + tile.x - ui::Px(3.0f), p0.y + ui::Px(3.0f) + swatchH);
-                    postswatch::DrawSwatch(dl, s0, s1, preview);
-
-                    // 選択中は重なる順番（1,2,3…）を右上に出す＝「後ろが勝つ」が見て分かる
-                    if (sel)
-                    {
-                        int order = 1;
-                        for (int k = 0; k < i; ++k) if (presetSel[k]) ++order;
-                        char num[8];
-                        std::snprintf(num, sizeof(num), "%d", order);
-                        const ImVec2 ts = ImGui::CalcTextSize(num);
-                        const ImVec2 bc(s1.x - ts.x * 0.5f - ui::Px(9.0f), s0.y + ts.y * 0.5f + ui::Px(5.0f));
-                        dl->AddCircleFilled(bc, ts.y * 0.72f + ui::Px(3.0f), IM_COL32(60, 140, 245, 255), 16);
-                        dl->AddText(ImVec2(bc.x - ts.x * 0.5f, bc.y - ts.y * 0.5f),
-                                    IM_COL32(255, 255, 255, 255), num);
-                    }
-
-                    // ラベル（選択中はアクセント色）
-                    const ImVec2 ls = ImGui::CalcTextSize(pr.label);
-                    dl->AddText(ImVec2(p0.x + (tile.x - ls.x) * 0.5f, s1.y + ui::Px(6.0f)),
-                                sel ? IM_COL32(120, 190, 255, 255) : IM_COL32(205, 205, 212, 255),
-                                pr.label);
-
-                    // 枠（選択 > ホバー > 通常）
-                    dl->AddRect(p0, ImVec2(p0.x + tile.x, p0.y + tile.y),
-                                sel     ? IM_COL32(60, 140, 245, 255)
-                                : hovered ? IM_COL32(150, 152, 162, 220)
-                                          : IM_COL32(64, 65, 74, 180),
-                                ui::Px(4.0f), 0, sel ? ui::PxF(2.5f) : ui::Px(1.0f));
-
-                    if (hovered)
-                        ImGui::SetTooltip("%s\n\nクリックで %s", pr.tip, sel ? "外す" : "重ねる");
-                    if (clicked)
-                    {
-                        // 最初の 1 個を選ぶ瞬間の状態を控える（「戻す」で完全に元へ帰れる）
-                        if (!hasPresetBackup) { presetBackup = pp; hasPresetBackup = true; }
-                        presetSel[i] = !sel;
-                        recompose();
-                    }
-                    ImGui::PopID();
-                }
-
-                // ---- 選択中の要約 + 操作 ----
-                std::string summary;
-                for (int i = 0; i < kPostPresetCount; ++i)
-                    if (presetSel[i])
-                    { if (!summary.empty()) summary += " + "; summary += kPostPresets[i].label; }
-                if (summary.empty())
-                    ImGui::TextDisabled("選択中: なし");
-                else
-                    ImGui::TextColored(ImVec4(0.47f, 0.75f, 1.0f, 1.0f), "選択中: %s", summary.c_str());
-
-                if (ImGui::SmallButton("すべて外す（素の絵）"))
-                {
-                    if (!hasPresetBackup) { presetBackup = pp; hasPresetBackup = true; }
-                    for (bool& s : presetSel) s = false;
-                    pp = PostPresetBaseline(presetBackup);   // 味付けだけ落として素へ
-                }
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("味付けを全部落とします（露出・DoF・ブルーム品質は残ります）");
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!hasPresetBackup);
-                if (ImGui::SmallButton("↩ 選ぶ前に戻す"))
-                {
-                    pp = presetBackup;
-                    hasPresetBackup = false;
-                    for (bool& s : presetSel) s = false;
-                }
-                ImGui::EndDisabled();
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("プリセットを 1 つ目に選ぶ直前の状態へ完全に戻します");
-            }
-
-            ImGui::Separator();
-            ImGui::SetNextItemWidth(-ui::Px(90.0f));
-            ui::InputTextWithHint("##postfilter", "絞り込み（例: 魚眼 / bloom / グリッチ）",
-                                     postFilter, sizeof(postFilter));
-            ImGui::SameLine();
-            if (ImGui::SmallButton("クリア##pf")) postFilter[0] = '\0';
-            ImGui::TextDisabled("SceneビューとGameビューへ同じ見た目を適用します");
-            ImGui::Separator();
-
-            ImGui::BeginDisabled(!pp.enabled);
-            // 下のボタン行（すべてOFF / 初期値に戻す）のぶんだけ高さを残す。
-            // 0 を渡すと一覧が残り全部を食ってフッターが画面外へ落ちる。
-            ImGui::BeginChild("##postlist",
-                ImVec2(0, -(ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f)),
-                false);
-            const char* curCat = nullptr;
-            for (const auto& f : fx)
-            {
-                if (!matchesFilter(f)) continue;
-                if (curCat == nullptr || std::strcmp(curCat, f.cat) != 0)
-                {
-                    curCat = f.cat;
-                    ImGui::SeparatorText(curCat);
-                }
-                ImGui::PushID(f.label);
-                ui::Checkbox(f.label, f.on);
-                if (f.help)
-                {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(?)");
-                    if (ImGui::BeginItemTooltip())
-                    { ImGui::TextUnformatted(f.help); ImGui::EndTooltip(); }
-                }
-                // ★有効なら「その場で」パラメータを出す。別窓を開かないと何も触れなかったのが
-                //   「パラメータが全然いじれない」と言われていた原因。
-                if (*f.on && f.params)
-                {
-                    if (f.reset)
-                    {
-                        ImGui::SameLine(ImGui::GetContentRegionMax().x - ui::Px(24.0f));
-                        if (ImGui::SmallButton("↺"))
-                            f.reset();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("このエフェクトのパラメータを既定へ戻す");
-                    }
-                    ImGui::Indent(ui::Px(12.0f));
-                    ImGui::PushItemWidth(-ui::Px(140.0f));
-                    f.params();
-                    ImGui::PopItemWidth();
-                    ImGui::Unindent(ui::Px(12.0f));
-                    ImGui::Spacing();
-                }
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
-            ImGui::EndDisabled();
-
-            ImGui::Separator();
-            if (ImGui::Button("すべてOFF"))
-                for (const auto& f : fx) *f.on = false;
-            ImGui::SameLine();
-            if (ImGui::Button("初期値に戻す"))
-                pp = PostProcessSettings{};
-            ImGui::SameLine();
-            ImGui::TextDisabled("有効中: %d", enabledCount);
-            ImGui::End();
-            } // if showPostProcess
-
-            // ===== ウィンドウ2: 有効なエフェクトのパラメータだけを詰めた窓 =====
-            // 一覧窓を閉じて、詰め作業だけを広い画面でやりたい人向け（従来どおり）。
-            if (m_editorCtx->showPostParams)
-            {
-            ImGui::Begin("Post Process パラメータ");
-            if (!pp.enabled)
-                ImGui::TextDisabled("マスターが OFF です（Post Process 窓で有効化）");
-            else if (enabledCount == 0)
-                ImGui::TextDisabled("エフェクトを有効にすると、ここに調整項目が出ます");
-            else
-            {
-                ImGui::PushItemWidth(-ui::Px(140.0f));
-                for (const auto& f : fx)
-                {
-                    if (!*f.on || !f.params) continue;
-                    ImGui::SeparatorText(f.label);
-                    ImGui::PushID(f.label);
-                    if (f.reset)
-                    {
-                        ImGui::SameLine(ImGui::GetContentRegionMax().x - ui::Px(24.0f));
-                        if (ImGui::SmallButton("↺")) f.reset();
-                    }
-                    f.params();
-                    ImGui::PopID();
-                }
-                ImGui::PopItemWidth();
-            }
-            ImGui::End();
-            } // if showPostParams
-        }
-
-        // ---- Skybox / IBL 設定ウィンドウ（シーン単位の環境マップ・トグル表示）----
-        if (m_scene && m_editorCtx->showSkybox)
-        {
-            auto& sk = m_scene->GetSkyboxSettings();
-            ImGui::Begin("Skybox / IBL");
-            ImGui::TextWrapped("環境キューブ(.dds, TEXTURECUBE) から irradiance / prefiltered / BRDF LUT を生成し、"
-                               "ambient を IBL 化する。空欄なら従来 ambient。");
-            ImGui::Separator();
-
-            // env map パス入力
-            static char pathBuf[260];
-            std::snprintf(pathBuf, sizeof(pathBuf), "%s", sk.envMapPath.c_str());
-            if (ui::InputText("Env Map (.dds, assets相対)", pathBuf, sizeof(pathBuf)))
-                sk.envMapPath = pathBuf;
-
-            ui::SliderFloat("IBL Intensity", &sk.iblIntensity, 0.0f, 3.0f, "%.2f");
-            ui::SliderFloat("Skybox Intensity", &sk.skyboxIntensity, 0.0f, 3.0f, "%.2f");
-            ui::Checkbox("Draw Skybox (背景を描く)", &sk.drawSkybox);
-
-            // ランタイム値へ即時反映（強度/描画フラグは再ベイク不要）
-            m_iblIntensity    = sk.iblIntensity;
-            m_skyboxIntensity = sk.skyboxIntensity;
-            m_drawSkybox      = sk.drawSkybox;
-
-            ImGui::Separator();
-            if (ImGui::Button("環境マップ適用 / 再ベイク"))
-                m_skyboxDirty = true;   // 次フレーム冒頭で再ベイク（WaitIdle 込み）
-            ImGui::SameLine();
-            ImGui::TextDisabled(m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()
-                                ? "IBL: 有効" : "IBL: フォールバック(ambient)");
-            ImGui::End();
-        }
-
-        // ---- SSAO 設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
-        if (m_scene && m_editorCtx->showSSAO)
-        {
-            auto& ss = m_scene->GetSSAOSettings();
-            ImGui::Begin("SSAO");
-            ImGui::TextWrapped("深度プリパス + 深度から法線再構築の半球カーネル AO。"
-                               "ambient/IBL へ ao を乗算する。透視ビューのみ（2D 正射では無効）。");
-            ImGui::Separator();
-            ui::Checkbox("SSAO 有効", &ss.enabled);
-            ImGui::BeginDisabled(!ss.enabled);
-            ui::SliderFloat("半径 Radius",  &ss.radius,    0.05f, 2.0f, "%.2f");
-            ui::SliderFloat("バイアス Bias", &ss.bias,     0.0f,  0.1f, "%.3f");
-            ui::SliderFloat("強度 Intensity", &ss.intensity, 0.0f, 2.0f, "%.2f");
-            ui::SliderFloat("べき Power",    &ss.power,     0.5f,  4.0f, "%.2f");
-            {
-                int s16 = (ss.sampleCount >= 16) ? 1 : 0;
-                if (ui::Combo("サンプル数", &s16, "8\0" "16\0"))
-                    ss.sampleCount = s16 ? 16 : 8;
-            }
-            ui::Checkbox("ブラー Blur", &ss.blur);
-            ImGui::EndDisabled();
-            ImGui::End();
-        }
-
-        // ---- SSR / SSGI 設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
-        if (m_scene && m_editorCtx->showScreenSpaceGi)
-        {
-            auto& sr = m_scene->GetSsrSettings();
-            auto& sg = m_scene->GetSsgiSettings();
-            ImGui::Begin("SSR / SSGI");
-            ImGui::TextWrapped("深度プリパスの G-Buffer（法線/ラフネス/メタリック）と"
-                               "前フレームのシーンカラーをレイマーチする。透視ビューのみ。"
-                               "どちらか有効にすると深度+速度プリパスが常時走る。"
-                               "反射/間接光は 1 フレーム遅れる。");
-            ImGui::Separator();
-
-            ImGui::SeparatorText("SSR（スクリーン空間反射）");
-            ui::Checkbox("SSR 有効", &sr.enabled);
-            ImGui::BeginDisabled(!sr.enabled);
-            ui::SliderFloat("強度##ssr",        &sr.intensity,       0.0f, 1.0f,   "%.2f");
-            ui::SliderFloat("最大距離(m)",       &sr.maxDistance,     1.0f, 200.0f, "%.1f");
-            ui::SliderFloat("厚み(m)##ssr",      &sr.thickness,       0.05f, 2.0f,  "%.2f");
-            ImGui::SliderInt  ("ステップ数",         &sr.maxSteps,        16, 128);
-            ui::SliderFloat("歩幅(px)",          &sr.stride,          1.0f, 8.0f,   "%.1f");
-            ui::SliderFloat("ラフネス上限",       &sr.roughnessCutoff, 0.05f, 1.0f,  "%.2f");
-            ui::SliderFloat("画面端フェード",      &sr.edgeFade,        0.0f, 0.5f,   "%.2f");
-            ui::SliderFloat("バイアス(m)##ssr",   &sr.bias,            0.0f, 0.5f,   "%.3f");
-            ImGui::TextDisabled("ラフネス上限を超える面はレイを打たず IBL に任せる");
-            ImGui::EndDisabled();
-
-            ImGui::SeparatorText("SSGI（スクリーン空間GI）");
-            ui::Checkbox("SSGI 有効", &sg.enabled);
-            ImGui::BeginDisabled(!sg.enabled);
-            ui::SliderFloat("強度##ssgi",       &sg.intensity,  0.0f, 2.0f,  "%.2f");
-            ui::SliderFloat("到達距離(m)",       &sg.radius,     0.5f, 30.0f, "%.1f");
-            ui::SliderFloat("厚み(m)##ssgi",     &sg.thickness,  0.05f, 2.0f, "%.2f");
-            ImGui::SliderInt  ("レイ数/px",         &sg.rayCount,   1, 4);
-            ImGui::SliderInt  ("ステップ数##ssgi",   &sg.stepCount,  4, 24);
-            ui::SliderFloat("輝度クランプ",       &sg.clampValue, 0.1f, 20.0f, "%.2f");
-            ui::SliderFloat("時間蓄積 Feedback", &sg.feedback,   0.0f, 0.98f, "%.2f");
-            ui::Checkbox("画面外は IBL で埋める", &sg.iblFallback);
-            ImGui::TextDisabled("IBL 埋めを切るとカメラを回すたびに明るさが変動する");
-            ImGui::EndDisabled();
-            ImGui::End();
-        }
-
-        // ---- ボリュメトリックフォグ設定ウィンドウ（シーン単位・グローバルレンダ設定・トグル表示）----
-        if (m_scene && m_editorCtx->showVolumetricFog)
-        {
-            auto& f = m_scene->GetVolumetricFogSettings();
-            ImGui::Begin("Volumetric Fog");
-            ImGui::TextWrapped("視錐台に沿った 3D テクスチャ（160x90x64）へ散乱を焼いてから "
-                               "画面へ合成する。空気そのものが光る＝光の筋（ゴッドレイ）が "
-                               "立体的に見える。透視ビューのみ。有効にした時点で 28MB 確保する。");
-            ImGui::Separator();
-
-            ui::Checkbox("有効", &f.enabled);
-            ImGui::BeginDisabled(!f.enabled);
-
-            ImGui::SeparatorText("媒質");
-            ui::SliderFloat("濃度##fog",     &f.density,       0.0f, 0.3f,  "%.4f");
-            ImGui::ColorEdit3 ("散乱アルベド",   &f.albedo.x);
-            ui::SliderFloat("異方性 g",      &f.anisotropy,   -0.9f, 0.9f,  "%.2f");
-            ImGui::TextDisabled("g>0 = 前方散乱（太陽の方を向くと明るい）。0.6-0.8 で強いシャフト");
-            ui::SliderFloat("高さ減衰(1/m)", &f.heightFalloff, 0.0f, 0.5f,  "%.3f");
-            ImGui::DragFloat  ("基準高さ(Y)",   &f.heightRef,     0.1f, -500.0f, 500.0f, "%.1f");
-
-            ImGui::SeparatorText("ボリューム");
-            ui::SliderFloat("到達距離(m)",   &f.distance,        10.0f, 500.0f, "%.0f");
-            ui::SliderFloat("深度分布 k",    &f.depthDistribution, 1.0f, 4.0f, "%.2f");
-            ImGui::TextDisabled("z = 距離 * w^k。1=線形 / 大きいほど手前が細かい");
-            ui::Checkbox("到達距離の外を解析フォグで延長", &f.extendBeyondRange);
-
-            ImGui::SeparatorText("ライティング");
-            ImGui::ColorEdit3 ("環境散乱",      &f.ambient.x);
-            ui::SliderFloat("太陽の寄与",    &f.sunIntensity, 0.0f, 5.0f, "%.2f");
-            ui::Checkbox("点光源/スポットも散乱させる", &f.lightScattering);
-            ImGui::TextDisabled("クラスタライトリストを引く（クラスタード無効時はスキップ）");
-
-            ImGui::SeparatorText("時間再投影");
-            ui::Checkbox("有効##fogTemporal", &f.temporal);
-            ImGui::BeginDisabled(!f.temporal);
-            ui::SliderFloat("現フレーム比率", &f.temporalBlend, 0.01f, 1.0f, "%.3f");
-            ImGui::TextDisabled("小さいほど滑らかだがゴーストが増える（既定 0.08）");
-            ImGui::EndDisabled();
-
-            ImGui::SeparatorText("デバッグ表示（保存されない）");
-            ui::Combo("表示##fogDebug", &f.debugMode,
-                         "オフ\0散乱だけ\0透過率だけ\0froxel スライス\0\0");
-            ImGui::EndDisabled();
-            ImGui::End();
-        }
+        // ---- ポストプロセス / Skybox / SSAO / SSR / Fog の設定窓 ----
+        // 中身は ApplicationPostWindows.cpp（フェーズ 1b: pg:: 2 カラム化のため移設。窓名・値・挙動は不変）
+        RenderPostProcessWindows();
+        RenderSceneSettingsWindows();
 
         // ---- Scene Flow 設定ウィンドウ（シーンの流れ・トグル表示）----
         if (m_sceneFlow && m_editorCtx->showSceneFlow)
@@ -7657,11 +7319,18 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
         // 地形ツール（ハイトフィールドのスカルプト）。窓が閉じていても呼ぶ＝Undo で戻した
         // 高さがメッシュへ反映される（中で _meshDirty を見て作り直している）。
         TerrainPanel::Render(*m_scene, *m_editorCtx, PathResolver::AssetsDir(), nativeCmdList);
+        FoliagePanel::Render(*m_scene, *m_editorCtx, PathResolver::AssetsDir());   // 植生ツール窓 + ブラシ（窓が閉じていれば何もしない）
         // スカルプト窓（任意メッシュの頂点スカルプト）。地形ツールと同じ理由で
         // 窓が閉じていても呼ぶ＝Undo で戻した頂点がメッシュへ反映される。
         SculptPanel::Render(*m_scene, *m_editorCtx, PathResolver::AssetsDir(), nativeCmdList);
         // ナビメッシュ窓（追いかける AI 用の経路探索メッシュ）。中で showNavMesh を見て早期 return する。
         NavMeshPanel::Render(*m_scene, *m_editorCtx);
+        // リファレンスレンダー窓（DXR パストレーサー。入力と進捗は m_editorCtx->ptUi 越し）。中で showPathTracer を見て早期 return する。
+        PathTracerPanel::Render(*m_editorCtx);
+        // ノードグラフ サンドボックス窓（開発用。マテリアルグラフ G0 の汎用ノードグラフ UI）。中で showNodeGraphSandbox を見て早期 return する。
+        NodeGraphSandboxPanel::Render(*m_editorCtx);
+        // マテリアルグラフ窓の GPU 側（G2c）: プレビューの RT とノード内サムネイルのアトラスを描く（窓が閉じていれば何もしない。UI の直後 = 同フレームの ImGui 描画より前）。
+        MaterialGraphPanel::RenderGpu(nativeCmdList, m_swapChain->GetCurrentBackBufferIndex());
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----
@@ -7874,6 +7543,8 @@ void Application::SubmitFrame(RenderFrameContext& frame)
         //   古い BLAS を掴んで「ラスタは正しいのにレイトレの影/反射だけ前の形」になる。
         if (m_rtScene)
             for (const Mesh* m : freed) m_rtScene->RemoveBlas(m);
+        // パストレーサーの専用スナップショットは解放されたメッシュの VB / IB を指せない＝ジョブを中止する。
+        if (m_ptHost && !freed.empty()) m_ptHost->Invalidate("シーンのメッシュが解放された");
     }
 
     DeferredRelease::Stamp(m_commandQueue->GetLastSignaledValue());

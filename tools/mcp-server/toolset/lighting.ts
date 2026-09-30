@@ -38,9 +38,11 @@ reg(
   + "Lua の Lighting.setTimeOfDay とまったく同じカーブ)。方位/高度で直接指定するなら azimuth / elevation。"
   + "★azimuth / elevation は【太陽が見える方向】(方位: +Z が 0°、+X が 90° / 高度: 0=地平線、90=真上)。"
   + "色は color:[r,g,b] か kelvin(色温度 1000..40000K。電球色 2900 / 昼白色 5600)。"
-  + "timeOfDay と個別指定を同時に渡すと、時刻で決めた値の上に個別指定が乗る。",
+  + "timeOfDay と個別指定を同時に渡すと、時刻で決めた値の上に個別指定が乗る。"
+  + "★物理大気(dx12_set_scene_settings の atmosphere.enabled)が ON のときは、timeOfDay は従来の曲線ではなく大気の時刻を設定し、"
+  + "向き・色・強度は大気が毎フレーム決める(応答の atmosphere に太陽の高度/方位/照度)。azimuth/elevation を渡すと sunMode=1(向きを直接指定)へ切り替わる。",
   {
-    timeOfDay: z.number().optional().describe("0..24 の時刻。向き/色/強度/環境光をまとめて決める。"),
+    timeOfDay: z.number().optional().describe("0..24 の時刻。向き/色/強度/環境光をまとめて決める。物理大気 ON のときは大気の時刻を設定する。"),
     azimuth: z.number().optional().describe("方位角(度)。+Z が 0°、+X が 90°。"),
     elevation: z.number().optional().describe("高度角(度)。0=地平線、90=真上(-89..89)。"),
     color: v3().optional().describe("[r,g,b] 0..1。kelvin より優先。"),

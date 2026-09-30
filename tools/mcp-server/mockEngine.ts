@@ -7,6 +7,9 @@
 //   ＝「再起動なしのツール追加」テストで、エンジンの再ビルド・再起動を模す。
 
 import net from "node:net";
+import fs from "node:fs";
+import nodePath from "node:path";
+import { PNG } from "pngjs";
 import type { ManifestMethod } from "./manifest.ts";
 
 export type MockMethod = ManifestMethod & { handler?: (params: any, ctx: MockCtx) => any };
@@ -32,6 +35,20 @@ export type MockState = {
   structuredErrors: boolean;
   /** 未知 method のとき、旧エンジンの形(error_code 2 の "unknown method: X")で返す。 */
   oldUnknownMethod: boolean;
+  /** M5 の安全層(guarded ゲート・冪等キー・dryRun プレビュー)を模す。実エンジンの docs/MCP.md §13 と同じ約束。 */
+  safety: boolean;
+  /** 有効な確認トークン(guard_token が発行、guarded の実行で消費)。 */
+  tokens: Set<string>;
+  /** 冪等キー → {method, hash, doneAt, result}。 */
+  idem: Map<string, { method: string; hash: string; doneAt: number; result?: unknown }>;
+  /** method ごとの「実際に実行した回数」(dryRun・replay・ゲート拒否は数えない)。 */
+  exec: Record<string, number>;
+  /** dryRun:true でプレビューを返す method(マニフェストの dryRun:"preview" 相当)。 */
+  previewMethods: Set<string>;
+  /** guarded として扱う method。 */
+  guardedMethods: Set<string>;
+  /** method → 次の 1 回だけの遅延 ms(最初の実行だけ遅らせ、再送(Replay / 処理中エラー)は遅らせない)。 */
+  delayOnce: Record<string, number>;
 };
 
 const BASE_METHODS: string[] = [
@@ -40,6 +57,8 @@ const BASE_METHODS: string[] = [
   "step_frames", "undo", "set_sun", "apply_lighting_preset", "terrain_generate", "sculpt_brush", "get_ssao", "set_ssao",
   "get_log", "git_push", "eval_lua", "imgui_pointer", "transaction_begin", "get_mode", "describe_mcp_params",
   "describe_mcp_manifest", "imgui_virtual_input",
+  // ジョブ API(screenshot_batch)の試験用
+  "screenshot_final", "imgui_screenshot", "screenshot", "set_editor_camera", "transaction_commit", "transaction_rollback",
 ];
 
 function fnv1a64(s: string): string {
@@ -77,7 +96,8 @@ export async function startMockEngine(opts: MockOptions = {}) {
     mode: "Editor", entities: ["Player", "Floor", "Wall_01", "Wall_02", "Light_Main"],
     scenes: ["scenes/default.json", "scenes/level1.json"], assets: ["models/tree.glb", "models/rock.glb", "textures/wood_albedo.png"],
     sceneGeneration: 3, sceneDirty: false, virtualInput: true, hang: new Set(), delayMs: {}, silent: false,
-    legacyEngine: false, structuredErrors: true, oldUnknownMethod: false, ...stateOpts,
+    legacyEngine: false, structuredErrors: true, oldUnknownMethod: false,
+    safety: false, tokens: new Set(), idem: new Map(), exec: {}, previewMethods: new Set(), guardedMethods: new Set(["git_push", "eval_lua"]), delayOnce: {}, ...stateOpts,
   };
   const extra = new Map<string, MockMethod>();
   for (const m of opts.methods ?? []) extra.set(m.name, m);
@@ -104,7 +124,55 @@ export async function startMockEngine(opts: MockOptions = {}) {
     return out;
   };
 
+  // ── M5 の安全層(state.safety のときだけ)。ディスパッチャの順序は実エンジンと同じ: dryRun → 冪等キー → guarded ゲート → 実行。
+  const hashOf = (p: any) => { const o: any = {}; for (const k of Object.keys(p).sort()) if (!["dryRun", "confirm_token", "idempotency_key", "idempotencyKey"].includes(k)) o[k] = p[k]; return JSON.stringify(o); };
+  const safetyPre = (req: any): { resp?: any; after?: (out: any) => void } => {
+    if (!state.safety) return {};
+    const { id, method } = req; const params = req.params ?? {};
+    if (method === "guard_token") {
+      const tok = "tok-" + Math.random().toString(16).slice(2, 12);
+      state.tokens.add(tok);
+      return { resp: { id, ok: true, result: { token: tok, method: params.method, ttlSec: 60 } } };
+    }
+    const effect = state.guardedMethods.has(method) ? "guarded" : (manifestOf().methods.find((m) => m.name === method)?.effect ?? "write_scene");
+    if (params.dryRun === true && effect !== "read") {
+      if (state.previewMethods.has(method)) return { resp: { id, ok: true, result: { dryRun: true, executed: false, method, effect, preview: { summary: `mock preview ${method}`, count: 1, destructive: /delete/.test(method), targets: [{ kind: "entity", name: params.name ?? null, exists: true }], files: [] } } } };
+      return { resp: err(id, 10, "dryRun のプレビューを持たない method", { error_name: "E_UNSUPPORTED", error_values: [...state.previewMethods] }) };
+    }
+    const key = params.idempotency_key ?? params.idempotencyKey;
+    const useKey = typeof key === "string" && key && effect !== "read";
+    if (useKey) {
+      const e = state.idem.get(key);
+      if (e) {
+        if (e.method !== method || e.hash !== hashOf(params)) return { resp: err(id, 2, "同じ冪等キーで別の要求", { error_name: "E_IDEMPOTENCY_CONFLICT", error_details: { firstMethod: e.method } }) };
+        if (Date.now() < e.doneAt) return { resp: err(id, 9, "同じ冪等キーの処理中", { error_name: "E_IDEMPOTENCY_IN_FLIGHT" }) };
+        const r: any = e.result && typeof e.result === "object" ? e.result : {};
+        return { resp: { id, ok: true, result: { ...r, idempotentReplay: true, idempotency: { key, firstAtMs: 0 } } } };
+      }
+    }
+    if (effect === "guarded") {
+      const tok = params.confirm_token;
+      if (typeof tok !== "string" || !state.tokens.has(tok)) return { resp: err(id, 11, `guarded な method '${method}' は確認トークンが要る`, { error_name: "E_GUARDED", error_cause: "confirm_token が無い/無効", error_fix: [{ tool: "guard_token", args: { method }, why: "トークンを得る" }], error_details: { method, gate: "engine" } }) };
+      state.tokens.delete(tok);
+    }
+    state.exec[method] = (state.exec[method] ?? 0) + 1;
+    if (useKey) {
+      const entry = { method, hash: hashOf(params), doneAt: Date.now() + (state.delayOnce[method] ?? state.delayMs[method] ?? 0), result: undefined as unknown };
+      state.idem.set(key, entry);
+      return { after: (out) => { if (out?.ok === false) state.idem.delete(key); else entry.result = out?.result; } };
+    }
+    return {};
+  };
+
   const handle = (req: any): any | null => {
+    const pre = safetyPre(req);
+    if (pre.resp) { received.push({ method: req.method, params: req.params ?? {} }); onRequest?.(req.method); return pre.resp; }
+    const out = handleCore(req);
+    pre.after?.(out);
+    return out;
+  };
+
+  const handleCore = (req: any): any | null => {
     const { id, method } = req; const params = req.params ?? {};
     received.push({ method, params });
     onRequest?.(method);
@@ -186,6 +254,18 @@ export async function startMockEngine(opts: MockOptions = {}) {
         if (!state.virtualInput) return err(id, 3, "virtual input is OFF", { error_hint: "imgui_virtual_input {enable:true}" });
         return { id, ok: true, result: { ok: true } };
       case "get_log": return { id, ok: true, result: { lines: ["mock log"] } };
+      case "screenshot_final":
+      case "imgui_screenshot":
+      case "screenshot": {
+        // 撮影: 指定の path へ小さな PNG(色は path のハッシュ)を書いて {path,width,height} を返す(ジョブ API の screenshot_batch の試験用)。
+        const p = params.path;
+        if (!p) return err(id, 2, "path is required in mock");
+        const png = new PNG({ width: 64, height: 48 });
+        let h = 0; for (const ch of String(p)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+        for (let i = 0; i < 64 * 48; i++) { png.data[i * 4] = h & 255; png.data[i * 4 + 1] = (h >> 8) & 255; png.data[i * 4 + 2] = (h >> 16) & 255; png.data[i * 4 + 3] = 255; }
+        try { fs.mkdirSync(nodePath.dirname(String(p)), { recursive: true }); fs.writeFileSync(String(p), PNG.sync.write(png)); } catch (e: any) { return err(id, 14, String(e?.message ?? e), { error_name: "E_FILE_IO" }); }
+        return { id, ok: true, result: { path: String(p), width: 64, height: 48, source: method } };
+      }
       case "save_scene": {
         if (params.path === undefined) return err(id, 14, "WIC stream open failed", { error_name: "E_FILE_IO" });
         return { id, ok: true, result: { saved: params.path } };
@@ -221,7 +301,8 @@ export async function startMockEngine(opts: MockOptions = {}) {
         let req: any; try { req = JSON.parse(line); } catch { continue; }
         const out = handle(req);
         if (out === null) continue;
-        const delay = state.delayMs[req.method] ?? 0;
+        const delay = state.delayOnce[req.method] ?? state.delayMs[req.method] ?? 0;
+        delete state.delayOnce[req.method];
         const send = () => { if (!sock.destroyed) sock.write(JSON.stringify(out) + "\n"); };
         if (delay > 0) setTimeout(send, delay); else send();
       }

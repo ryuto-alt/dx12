@@ -31,7 +31,7 @@
 
 ## 2. ツール(すべて TS 専用ツール。エンジンの method は増やさない)
 
-Core 面 40 本の上限を守るため、**Core に載せるのは 5 本**(launch / list / stop / attach / refresh)。`dx12_engine_use` は長尾(`dx12_call`)に置く(理由は §9)。full 面では 6 本とも tools/list の末尾に出る。旧 220 の名前・引数・返り値は変えない。
+Core 面 40 本の上限を守るため、**Core に載せるのは 5 本**(launch / list / stop / attach / refresh。M6 で 3 本に減らした = §10-3)。`dx12_engine_use` は長尾(`dx12_call`)に置く(理由は §9)。full 面では 6 本とも tools/list の末尾に出る。旧 220 の名前・引数・返り値は変えない。
 
 | ツール | 引数 | 効果 | effect |
 |---|---|---|---|
@@ -127,6 +127,8 @@ headless  : DX12Engine.exe --headless --virtual-input --project <dir> --mcp-port
 
 現在 35 本 + fleet 5 本 = **40 本(上限ちょうど)**。`dx12_engine_use` を外した理由: launch と attach が**束縛を自動で切り替える**ので、`use` が要るのは「自分が複数のエンジンを持って切り替える」場合だけで、頻度が最も低い。1 回だけ別エンジンを使うなら `dx12_call {engine}` で足りる。`refresh` は「ビルド → 更新」というこの機能の中心の流れなので Core に残す。入れ替えで既存 Core を外す案は、`discovery` の選択率(付録 A の Core タスク)を動かすので採らない。
 
+- **シーケンサー S1b の追加(2026-09-30)**: Core に `dx12_sequence {op}` を 1 本足した(時間軸の演出の編集・評価・再生を 1 本に束ねる。エンジン method `sequence_*` を直接呼ぶ)。40 本上限を守るため、代わりに **`dx12_get_script_errors` を長尾(`dx12_call`)へ移した**。理由: ①呼ぶのは `dx12_play` の結果に `scriptErrors>0` が出たときだけで頻度が最も低い ②`dx12_call {name:'dx12_get_script_errors'}` で名前・引数・返り値そのまま代替できる ③引数の無い読み取り 1 本で、長尾でも見つけやすい。
+
 ## 10. 互換
 
 - `DX12_MCP_PORT`・ポートファイル・既定 8787 の探索、旧 220 ツール、core/shell/full/legacy 面、`dx12_call` の挙動は不変。束縛が無ければ従来の `EngineClient` がそのまま使われる。
@@ -159,7 +161,7 @@ headless  : DX12Engine.exe --headless --virtual-input --project <dir> --mcp-port
 5. **`--idle-exit` は「エンジン側 = MCP 側の閾値 + 余裕」**にした(既定 10 分 + 1 分)。本線は MCP サーバの監視(`engine_stop` としてレジストリ・インスタンスまで片付く)で、エンジン側は MCP サーバが強制終了された場合の保険。
 6. `dx12_call {engine}` の呼び出し内では、マニフェストの取り直し(別エンジンの表で上書きしない)を止める。
 7. 終了処理はプロセス終了フック(stdio クローズ・シグナル・未捕捉例外・`exit`)を**フリートを最初に使ったときだけ**入れる(フリートを使わない運用は従来と同じ挙動)。`exit` からは同期の `taskkill` とインスタンスフォルダの削除(殺した直後は cwd のハンドルが残るので数回再試行)を行う。
-8. Core 面は 40 本ちょうど。将来 Core に足す(`dx12_editor_command` など)ときは、選定理由つきで何かを長尾へ移す必要がある。
+8. Core 面は 40 本ちょうど(M6 でフリート 5 → 3、ジョブ 3 本を追加。§10-3)。将来 Core に足す(`dx12_editor_command` など)ときは、選定理由つきで何かを長尾へ移す必要がある。
 
 ## 15. 起動から停止までの流れ(1 セッションの視点)
 
@@ -211,3 +213,37 @@ elease → インストール先)
 - 他セッションのエンジンを「見る」経路(持ち主が接続を持つ間の閲覧)は、エンジンが単一クライアントである限り作れない。必要ならエンジン側に読み取り専用の第 2 ポートを持たせる案があるが、今回は範囲外。
 - `visible` の実機での前面化の検証は行っていない(既定で拒否のため、見張りの対象は background と headless だけ)。
 
+
+
+---
+
+## 10. ジョブ API(M6。長い処理の非同期実行)
+
+### 10-1. 背景と決定
+- Claude Code の 2 分超の自動背景化は**メイン会話だけ**(サブエージェント・`claude -p` には効かない)。並列にエージェントへ振る本計画では自前の非同期 API が要る。ユーザー決定: ジョブ化の対象は **ビルド+ctest/UI テスト / ベンチ・プレイテスト・視覚回帰 / cook・取り込み・大量生成 / スクショのバッチ** の 4 種。クライアントは Claude Code と Codex CLI。**進捗はポーリング(`dx12_job_status`)が主経路**、MCP `notifications/progress` は progressToken があれば送るベストエフォート。
+- ジョブは既定エンジン(束縛)か `engine` 指定で動く(`EngineRouter.withEngine`)。フリートの専用エンジンを一時的に起動して使う kind(`screenshot_batch`)は `Fleet.launch({noBind:true})` で束縛を変えない。
+
+### 10-2. 構成(`tools/mcp-server/jobs/`)
+```
+JobManager(manager.ts)   start / status(wait = long-poll)/ list / cancel / result / logs / reconcile / scheduler
+  ├─ process 型 … runner.ts(切り離した node プロセス)が子を 1 つ走らせ、出力をログへ・進捗を live.json へ
+  │                parsers.ts(build / ctest / uitests / @progress プロトコル / JUnit)
+  ├─ inproc 型  … kinds/engine.ts(bench / playtest / screenshot_batch)が MCP サーバ内でエンジンを呼ぶ
+  └─ store.ts   … %LOCALAPPDATA%\UnoEngine\jobs\<id>\{state,spec,live}.json / log.txt / result.json / artifacts\
+kinds/process.ts … build / ctest / ui_tests / external / vg_cook / ue_import が「コマンドを 1 つ組んで runner に渡す」
+runtime.ts        … EngineRouter・フリート・TS ツール登録表を KindEnv として束ねるシングルトン
+toolset/jobs.ts   … MCP への登録(6 本)・引数の事前検証・notifications/progress・構造化エラー
+```
+- **書き手を分ける**: `state.json` は manager だけ、`live.json` は runner だけ(競合しない)。runner は 5 秒ごとに心拍を書く。
+- **再起動後の復元**: manager 生成時に前のセッションのジョブを reconcile(process 型は live.json から状態を復元、runner が結果を残さず消えていれば `E_JOB_RUNNER_LOST`、inproc 型は owner が死んでいれば `E_JOB_INTERRUPTED`)。
+- **キャンセル**: 自分が記録した runner の pid でイメージ名が node のときだけ `taskkill /T /F`(pwsh → cmake → ninja → cl まで落ちることを実機で確認)。inproc 型は AbortSignal + エンジンの `cancel`(benchmark / step_frames の残りを 1 フレームに切り詰める。エンジン側は §13-6)。
+
+### 10-3. Core 面(40 本上限)の入れ替え
+ジョブ 3 本(start / status / cancel)を Core に入れるため、次の 3 本を長尾(`dx12_call`)へ移した。
+- `dx12_engine_attach`(手動起動のエンジンを読み取り専用で見る。頻度が最も低い)
+- `dx12_engine_refresh`(build ジョブの `refreshEngines:true` が「ビルド → 更新」の流れを担う)
+- `dx12_run_playtests`(playtest ジョブが同じ回帰確認を進捗つきで担う。設計書 M10 の `dx12_playtest` 統合の枠)
+list / result / logs は長尾。`external`(任意のコマンド)は guarded 扱い(`CONDITIONAL_GUARDED`)。
+
+### 10-4. M5 との関係
+`guardCtx.ts` の承認の文脈(`guardApproval`)は、M5 のエンジン側ゲート(`confirm_token`)と `external` ジョブの承認判定で共用する。詳細は `docs/MCP.md` §0-3・§13。

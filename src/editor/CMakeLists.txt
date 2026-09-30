@@ -17,6 +17,7 @@ add_library(Editor STATIC
     panels/AnimationEditorPanel.cpp
     panels/SpriteSheetEditorPanel.cpp
     panels/NetworkPanel.cpp
+    panels/PathTracerPanel.cpp   # リファレンスレンダー窓（DXR パストレーサー。パリティ基盤 Q1a）
     panels/MaterialEditorPanel.cpp
     panels/MaterialLibraryPanel.cpp
     panels/MaterialPreviewRenderer.cpp
@@ -89,4 +90,73 @@ target_sources(Editor PRIVATE
 # 上のリストへ挿し込まず target_sources の末尾追記にしている（同時編集とぶつからないように）。
 target_sources(Editor PRIVATE
     LauncherScreen.cpp
+)
+
+# 第 3 波（フェーズ 1a）: エディタ専用の選択 / ホバー輪郭の後処理・ビューポート専用ツールバー・ビューキューブ。
+# 純ロジックは ViewportLogic.h（tests/viewport_logic_test.cpp）。上と同じ理由で target_sources の末尾追記。
+target_sources(Editor PRIVATE
+    SelectionOutline.cpp
+    panels/ViewportToolbar.cpp
+)
+
+# マテリアルグラフ G0: 汎用ノードグラフ UI（自前 ImDrawList 実装）+ 開発用サンドボックス窓。
+# 純ロジック層（GraphLayout / GraphDocument / GraphIO / GraphPalette / Sandbox*）は ImGui 非依存で、tests/nodegraph_test.cpp が
+# 同じソースを直接ビルドして検証する。上の add_library へ挿し込まず target_sources の末尾追記にしている。
+target_sources(Editor PRIVATE
+    nodegraph/GraphLayout.cpp
+    nodegraph/GraphDocument.cpp
+    nodegraph/GraphIO.cpp
+    nodegraph/GraphPalette.cpp
+    nodegraph/SandboxGraphModel.cpp
+    nodegraph/SandboxSamples.cpp
+)
+
+# 上の純ロジック層に加え、ImGui ビュー（描画・入力・ポップアップ）とサンドボックス窓。
+target_sources(Editor PRIVATE
+    nodegraph/GraphView.cpp
+    nodegraph/GraphViewDraw.cpp
+    nodegraph/GraphViewUi.cpp
+    panels/NodeGraphSandboxPanel.cpp
+)
+
+# マテリアルグラフ G3（UI 接続）: G1 の MaterialGraph を G0 の IGraphModel へ適合させるアダプタ・エディタ文書（保存 / 読込 / 診断 / コンパイル）・
+# HLSL の色分け（純ロジック。ImGui 非依存。tests/matgraph_editor_test.cpp が同じソースを直接ビルドして検証する）と、マテリアルグラフ窓。
+target_sources(Editor PRIVATE
+    matgraph/MatGraphModel.cpp
+    matgraph/MatGraphEditor.cpp
+    matgraph/HlslColorize.cpp
+    matgraph/NodeThumbs.cpp   # マテリアルグラフ G2c: ノード内サムネイルの管理（可視のみ・上限・変更ノードとその下流だけ更新）
+)
+target_link_libraries(Editor PUBLIC MatGraph)
+target_sources(Editor PRIVATE
+    panels/MaterialGraphPanel.cpp
+    panels/MaterialGraphPanelSide.cpp
+    panels/MaterialGraphPanelBottom.cpp
+    panels/MaterialGraphPanelPreview.cpp   # G2c: ライブプレビュー / ノード内サムネイル / 非同期コンパイルの仕上げ
+)
+
+# フェーズ 1b W: エディタ設定の永続化（editor_state.json の "prefs"。純ロジックは EditorPrefsStore.h）。
+target_sources(Editor PRIVATE
+    EditorPrefs.cpp
+    WorkspaceManager.cpp   # ドックの構築 / レイアウト保存 / ワークスペース / 下部ドック
+)
+
+# フェーズ 1b A: アセットブラウザ（非同期の一覧走査 + 変更監視 / テクスチャのサムネイル非同期デコード + ディスクキャッシュ）。純ロジックは AssetBrowserLogic.h。
+target_sources(Editor PRIVATE
+    AssetIndex.cpp
+    ThumbnailCache.cpp
+)
+
+# M7: エディタ操作の全面公開（dx12_editor_command / dx12_editor_state）。表から公開用の分類・可否・実行を作る層と、状態を JSON で読む層。
+# 純ロジック（分類 TraitsFor など）は tests/mcp_editor_command_test.cpp が検査する。上と同じ理由で target_sources の末尾追記。
+target_sources(Editor PRIVATE
+    EditorCommandMcp.cpp
+    EditorStateMcp.cpp
+)
+
+# 植生 F1（FoliageLayer）の編集操作（散布 / ブラシ。MCP とツール窓が共用）+ ツール窓。
+# 上と同じ理由で target_sources の末尾追記にしている。
+target_sources(Editor PRIVATE
+    FoliageOps.cpp
+    panels/FoliagePanel.cpp
 )

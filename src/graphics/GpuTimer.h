@@ -33,6 +33,7 @@ public:
         Particles,     // CPU/GPU パーティクル + 歪み
         PostFX,        // ブルーム/DoF/自動露出/uber 等ポスト一式
         UI,            // エディタアイコン/スプライト/ImGui/トランジション
+        VgCull,        // 仮想ジオメトリ: GPU カリング（インスタンス / BVH 走査 / クラスタ / 二相 HZB。P2 は統計のみ）
         Count
     };
     static const char* Name(u32 s);

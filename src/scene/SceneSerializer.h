@@ -12,6 +12,13 @@ class Scene;
 class SceneSerializer
 {
 public:
+    // ── 直列化の直前フック（シーケンサーのエディタ・スクラブが書き換えた値を、保存に混ぜず元へ戻す）──
+    // Save / SaveToString / SerializeEntity / SerializeSubtree / SavePrefab の全部が、エンティティを 1 つ直列化するたびに
+    // このフックを呼ぶ（SerializeEntityJson の入口）。ctx はそのまま渡る。nullptr で解除。
+    // フックの中で構造（エンティティ / コンポーネントの追加削除）を変えないこと（値を戻すだけ）。
+    using PreSerializeHook = void (*)(void* ctx, const entt::registry& reg);
+    static void SetPreSerializeHook(PreSerializeHook fn, void* ctx);
+
     static bool Save(const Scene& scene, const std::string& filePath,
                      const std::string& assetsDir);
     static bool Load(Scene& scene, const std::string& filePath,

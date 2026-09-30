@@ -1,4 +1,5 @@
 #include "editor/EditorIconRenderer.h"
+#include "ecs/EditorFlags.h"   // [H] 非表示のエンティティのアイコンを出さない
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "graphics/GraphicsDevice.h"
@@ -502,12 +503,15 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
     const XMFLOAT3 colorPointLight = { 1.0f, 0.6f, 0.1f };
     const XMFLOAT3 colorSpotLight = { 0.5f, 0.85f, 1.0f };
     const XMFLOAT3 colorCamActive = { 0.2f, 0.8f, 1.0f };
+    // [H] 非表示のエンティティはアイコン / 補助線も出さない（Play 中は無視。何も立っていなければ判定ごと省く）
+    const bool hideActive = !ctx.isPlaying && eflags::AnyOf<EditorHidden>(registry);
 
     // --- Camera ---
     {
         auto view = registry.view<const Transform, const CameraComponent>();
         for (auto [entity, tf, cam] : view.each())
         {
+            if (hideActive && eflags::IsHidden(registry, entity)) continue;   // [H] エディタ専用の非表示（アイコンも隠す）
             bool selected = ctx.IsSelected(entity);
             XMFLOAT3 iconColor = cam.isActive ? colorCamActive : colorDefault;
 
@@ -551,6 +555,7 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
         auto view = registry.view<const Transform, const DirectionalLight>();
         for (auto [entity, tf, dl] : view.each())
         {
+            if (hideActive && eflags::IsHidden(registry, entity)) continue;   // [H] エディタ専用の非表示（アイコンも隠す）
             bool selected = ctx.IsSelected(entity);
 
             // 常時: 太陽アイコン
@@ -567,6 +572,7 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
         auto view = registry.view<const Transform, const PointLight>();
         for (auto [entity, tf, pl] : view.each())
         {
+            if (hideActive && eflags::IsHidden(registry, entity)) continue;   // [H] エディタ専用の非表示（アイコンも隠す）
             bool selected = ctx.IsSelected(entity);
 
             // 常時: ダイヤモンド十字アイコン
@@ -586,6 +592,7 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
         auto view = registry.view<const Transform, const SpotLight>();
         for (auto [entity, tf, sl] : view.each())
         {
+            if (hideActive && eflags::IsHidden(registry, entity)) continue;   // [H] エディタ専用の非表示（アイコンも隠す）
             bool selected = ctx.IsSelected(entity);
 
             // 常時: アイコン
@@ -607,6 +614,7 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
         auto view = registry.view<const Transform, const ParticleEmitter>();
         for (auto [entity, tf, pe] : view.each())
         {
+            if (hideActive && eflags::IsHidden(registry, entity)) continue;   // [H] エディタ専用の非表示（アイコンも隠す）
             bool selected = ctx.IsSelected(entity);
             AddPointLightIcon(tf.position, selected ? colorSelected : colorEmitter);
         }
@@ -618,6 +626,7 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
         auto view = registry.view<const Transform, const Trigger>();
         for (auto [entity, tf, tr] : view.each())
         {
+            if (hideActive && eflags::IsHidden(registry, entity)) continue;   // [H] エディタ専用の非表示（アイコンも隠す）
             bool selected = ctx.IsSelected(entity);
             XMFLOAT3 col = selected ? colorSelected : colorTrigger;
             XMFLOAT3 c = { tf.position.x + tr.offset.x,
@@ -657,6 +666,7 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
         auto view = registry.view<const Transform, const DecalComponent>();
         for (auto [entity, tf, dc] : view.each())
         {
+            if (hideActive && eflags::IsHidden(registry, entity)) continue;   // [H] エディタ専用の非表示（アイコンも隠す）
             (void)dc;
             bool selected = ctx.IsSelected(entity);
             XMFLOAT3 col = selected ? colorSelected : colorDecal;
@@ -696,6 +706,8 @@ void EditorIconRenderer::CollectFromRegistry(entt::registry& registry,
     //   今どの層にいるかが見えないと機能として成立しない。
     //   Unity / Unreal が例外なく持っている輪郭表示の最小版として、既存の線描画へ相乗りする
     //   （新しいパスも PSO もルートシグネチャも増やさない）。
+    // ★輪郭（SelectionOutline。エディタ専用の後処理）に置き換えたので既定 OFF。帯 > 表示 > バウンディングボックスで戻せる。
+    if (ctx.vpPrefs.showBounds)
     {
         // プライマリ（最後に掴んだもの）だけ明るくして、複数選択の中でも区別できるようにする。
         const XMFLOAT3 colPrimary = { 1.0f, 0.62f, 0.0f };

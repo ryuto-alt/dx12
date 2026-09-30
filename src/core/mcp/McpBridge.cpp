@@ -4,6 +4,7 @@
 #include <ws2tcpip.h>
 
 #include "core/mcp/McpBridge.h"
+#include "core/mcp/McpSafety.h"   // M5: 遅延応答の観測点
 #include "core/Logger.h"
 
 #include <atomic>
@@ -211,6 +212,8 @@ void McpBridge::SendToClient(uint64_t client, const std::string& jsonLine)
 {
     auto& s = *m_impl;
     const SOCKET sock = static_cast<SOCKET>(client);
+    // M5: 遅延応答の完了を冪等ストアへ伝える観測点（接続が切れていても完了は記録する）。
+    mcpsafety::NotifySend(client, jsonLine);
     if (sock == INVALID_SOCKET) return;
     // 受信時のクライアントが既に切断/別クライアントに置き換わっていたら捨てる。
     if (s.clientSock.load() != sock) return;

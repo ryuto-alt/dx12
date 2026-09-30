@@ -247,8 +247,8 @@ parity baseline list
 
 ## 9. 制約・注意
 
-- **ヘッドレスの表示矩形は今 1043×587 系**(実機では 977×550 など。`--size` 未実装)。`resolution: [1920,1080]` は期待値で、違えば `sizePolicy` で合わせる。撮影解像度指定は Q2 の担当。
-- **`screenshot_final` は 8bit PNG**。HDR-FLIP・線形の比較(Tier A)は、リニア float スクショ(Q2 の `screenshot_linear`)が入るまで**エンジン側が LDR**。それまでの PT 基準との比較は
+- **ヘッドレスの表示矩形は 1043×587 系**(実機では 977×550 など)。Q2 で `screenshot_final {width,height}` / `--size WxH` の任意解像度オフスクリーン出力が入った(§11.6)。`resolution: [1920,1080]` は期待値で、違えば `sizePolicy` で合わせる。撮影解像度指定は Q2 の担当。
+- **`screenshot_final` の既定は 8bit PNG**。Q2 で `format:"pfm"|"exr"`(ポスト前の線形 float。§11.5)が入り、HDR-FLIP・線形の比較(Tier A)ができる。旧記述(`screenshot_linear` が入るまで LDR)は解消済み。それまでの PT 基準との比較は
   「PT のリニアにエンジンと同じトーンマップを掛けて 8bit PNG と比べる」形(Tier B)。
 - `set_editor_camera` は FOV を変えられない(45° 固定)。カメラ FOV の違う基準とは比べられない。
 - ランナーは**実プロジェクトを開かない**運用(`engine.setup` の呼び出しや自動保存でシーンが書き変わりうる)。使い捨てのコピーか生成器(`generator`)を使う。
@@ -264,3 +264,170 @@ parity baseline list
 ノイズ床(合成ノイズ)・トーンマップ・ゲート/仕様の検証・ヒートマップ・**偽エンジン(実エンジンと同じ行 JSON の TCP)でのランナー統合**(合格/不合格/skipped/外部基準/領域/性能予算と履歴/生成器/attach/
 MCP ジョブ進捗/baseline の update→approve→check サイクル)・CLI の終了コード。
 `ctest -R ParityHarnessPyTests`(Python か依存が無ければスキップ)。手で回すなら `tools\parity\.venv\Scripts\python.exe -m pytest tools\parity\tests -q`。
+
+---
+
+## 11. Q2 校正（光の物理単位・露出・UE 系トーンマップ・線形 HDR スクリーンショット・任意解像度出力）
+
+設計: `docs/GRAPHICS_PARITY_DESIGN.md` §3.5「揃える条件」の Q2 の行を実装したもの。**すべて既定 OFF / 既定値では従来と 1 ビットも変わらない**
+（フォワード系シェーダの DXIL は既定パスで同一・決定論スクショ 9 シーンの差分 0。証拠は §11.9）。
+
+### 11.1 一覧（何がどこにあるか）
+
+| 機能 | 入口 | 実装 |
+|---|---|---|
+| ライティング単位（従来 / 物理） | `dx12_set_post_process {lightingUnits:0\|1}`・エディタの Post Process 窓 / ライティング窓「スカイ / IBL」の上・シーン JSON `postProcess.lightingUnits` | `shaders/forward/Lighting.hlsli`（`-D UNO_PHYSICAL_LIGHTS=1` の別 .cso: `ForwardPhys_PS` / `ForwardMaskPhys_PS` / `TerrainPhys_PS`）・`Application::UpdateLightingUnits`（PSO 差し替え）・`PointLight/SpotLight::sourceRadius` |
+| 露出（手動 EV100 / 自動） | `exposureMode` / `ev100` / `evComp` / `aeMinEv100` / `aeMaxEv100` / `aeSpeedUp` / `aeSpeedDown` / `aeLowPercent` / `aeHighPercent`（`dx12_set_post_process`） | `PostProcess.cpp`（手動係数）・`AutoExposurePass` + `shaders/post/AutoExposure.hlsl`（ヒストグラム・上下限・窓・上下速度） |
+| トーンマップの選択 | `tonemapper` 0..5 と `film*`（UE Filmic のパラメータ） | `shaders/post/Tonemap.hlsli`（3 = UE Filmic / 4 = 線形 / 5 = Khronos PBR Neutral）。0..2 は従来のまま |
+| 線形 HDR スクリーンショット | `dx12_screenshot_final {format:"pfm"\|"exr"}` / `formats` | `LinearCapturePass` + `shaders/post/LinearCapture.hlsl`（`RenderPostChain` から要求のあるフレームだけ） |
+| 任意解像度のオフスクリーン出力 | `dx12_screenshot_final {width,height}` / 起動引数 `--size WxH` | `ApplicationOffscreenShot.cpp`・`core/OffscreenShot.h`（純ロジック） |
+| 純関数（単位・露出・トーンマップ） | — | `src/renderer/PhotometricMath.h`（単体テスト `PhotometricMathTests`）。MCP の CPU 側スクショもこのトーンマップを共有 |
+
+### 11.2 光の単位（物理モード）と対応表
+
+物理モード（`lightingUnits:1`）の約束: **シーンの線形 RGB は輝度 [nit = cd/m²] そのもの（エンジン単位 1.0 = 1 nit）**。
+表示への変換は露出係数 `F = 1/(1.2·2^EV100)`（§11.3）だけ。エンジン単位への追加スケール（プリエクスポージャ）は持たない
+（fp16 のシーン RT の上限 65504 に対し、物理フォワード PS が最終色を 6.0e4 で頭打ちにして inf / NaN がポスト・TAA に漏れるのを防ぐ。
+太陽 10 万 lux の白いランバート面 = 3.2 万 nit なので実用範囲は収まる）。
+
+| もの | 従来モード（`Lighting.hlsli`） | **物理モード** | パストレーサー（`docs/PATH_TRACER.md` §3） | UE（記憶。未照合） |
+|---|---|---|---|---|
+| 太陽 `DirectionalLight` | `Lo = BRDF·(color·intensity)·N·L`。intensity は任意単位（既定 3） | **intensity = lux**（法線に垂直な面の照度）。式は従来と同じ = 拡散面の放射輝度 `albedo/π·E·cosθ`。**単位を読み替えるだけで式は同一** | 放射照度 `E = color·intensity`（π で割らない）= 同じ | Directional Light の Intensity = lux |
+| 点 / スポット | `att = saturate(1−d/range)²`（**逆二乗ではない**）。intensity は任意単位 | **intensity = 光度 [cd]**。`att = saturate(1−(d/range)⁴)² / max(d², r²)`。r = `sourceRadius`（下限 1 cm）。`L.color`（= color·intensity）に掛けるので面の照度 = `I·cosθ/d²` | 従来式（`lightFalloff:"engine"`）か、`lightFalloff:"physical"` = 純粋な `1/d²`（窓なし） | 逆二乗 + 減衰半径（窓は `saturate(1−(d/R)⁴)²` 系）。cd / lm / EV を選べる |
+| lm ↔ cd | — | 点 `cd = lm/4π`・スポット `cd = lm/(2π(1−cosθ_outer))`（純関数 `LumensToCandelaPoint/Spot`。入力は cd。MCP / UI は cd を直接受ける） | — | 点は `/4π`（スポットは版で式が違う。未確認） |
+| 空 / IBL | `iblIntensity`（拡散 = 放射照度キューブ × 強度）・`skyboxIntensity`・`DirectionalLight.ambient`（IBL 無し）は任意単位 | **同じフィールドを nit として解釈**（`iblIntensity` = キューブ値 1.0 あたりの輝度 [nit]。既定の手続きの空は ≈ 0.5〜1.5 なので 4000〜8000 で晴天相当） | 環境キューブの放射輝度を `iblIntensity` 倍（拡散も鏡面も）= 同じ | Sky Light Intensity Scale / SkyAtmosphere（cd/m²） |
+| 自己発光 | `emissiveIntensity`（色 8bit・強度は二乗曲線 8bit の b2 量子化） | **nit として解釈**（式・量子化は同じ） | 同じ値を放射輝度として持つ（面光源になる） | Emissive は nit ではなく相対値（露出前）。Substrate なら cd/m² の指定もある |
+| 面光源 | 無い（エミッシブ面は他を照らさない） | 同じ（エミッシブが照らすのは PT だけ。既知の差） | エミッシブ三角形を NEE + MIS で面光源にする | Rect Light（cd / nit） |
+| 露出・トーンマップ | uber パスで適用（`exposure` 乗算 / 自動露出） | 露出モード 1/2（§11.3）+ トーンマップ 0..5 | なし（線形出力。露出前・トーンマップ前） | 露出は Auto / Manual（EV100）。トーンマップは既定 Filmic |
+
+- **PT との位置合わせ**: フォワード物理と PT は**同じ nit 単位で同じ線形値**になる（比較は追加のスケールなしで取れる）。PT には `lightFalloff:"physical"` を渡し、
+  光源の `range` は影響半径の窓が事実上 1 になるよう十分大きく（PS-0 は 200〜500 m）取る。光源半径は PT には無い（デルタ光）ので `sourceRadius` は 0〜2 cm にする。
+- `range` は物理モードでも **クラスタカリングの境界**なので必要（`dist ≥ range` の灯は評価しない）。窓 `saturate(1−(d/range)⁴)²` は境界を滑らかに 0 へ落とすためのもので、`d/range < 0.3` ではほぼ 1（誤差 2% 未満）。
+- **物理単位に対応していないもの（従来のまま）**: カスタムシェーダー（`UnoCustom`）・マテリアルグラフ材質・ForwardGrid（エディタの床グリッド）・ボリュメトリックフォグの光・DDGI の点光源寄与・パーティクル発光。
+  これらは物理モードのシーンでも従来式で描かれる（フォワードのメッシュ / スキンド / 地形 / MASK は対応）。
+
+### 11.3 露出
+
+**露出係数**（手動）: `F = 1/(1.2·2^(EV100 − 補正))`。1.2 は ISO 12232 の飽和ベース（`Lmax = 78/(q·S)·N²/t = 1.2·2^EV100`、q = 0.65・S = 100）に由来する定数。
+UE の内部係数（`EV100ToLuminance` 系の 1.2）と同じ形にしてあるが、**UE 本体での照合は未実施**。
+
+| 設定 | 意味 |
+|---|---|
+| `exposureMode = 0`（既定） | 従来: `exposureOn` / `exposure` の乗算と `autoExposureOn`。**絵は従来と不変** |
+| `exposureMode = 1` 手動 | `F` を掛ける。**マスター `enabled` が OFF でも効く**（露出はカメラの性質でエフェクトではない）。従来の `exposure` 乗算は美術用の上乗せとして残る |
+| `exposureMode = 2` 自動 | ヒストグラム測光。平均輝度を 18% グレー × 2^`evComp` へ写す（`F = 0.18·2^evComp/L_avg`）。**上下限 = `aeMinEv100` / `aeMaxEv100`**（ヒストグラムのレンジ = `Log2LuminanceFromEv100`）。速度は `aeSpeed`（`aeSpeedUp` = 明るくなる方向 / `aeSpeedDown` = 暗くなる方向。0 なら `aeSpeed`）。測光窓 `aeLowPercent`〜`aeHighPercent`（0..1 = 全体の対数平均。0.8..0.983 = UE のヒストグラム測光の既定） |
+
+**露出 0 の基準**: 物理モード + `EV100 = 15`（晴天 Sunny 16）+ 補正 0（`kDefaultEv100`）。係数 = 2.543e-5。太陽 10 万 lux の下の 18% グレーは表示 0.146（`PhotometricMathTests` で検証）。
+EV100 の目安: 晴天屋外 15 / 曇り 12〜13 / 明るい屋内 8〜10 / 暗い屋内 4〜6 / 夜景 0〜3。
+
+### 11.4 トーンマップ（選べる 6 種）
+
+| 番号 | 名前 | 出力の符号化 | 備考 |
+|---|---|---|---|
+| 0 | ACES（Narkowicz） | `pow(1/2.2)`（従来） | 既定・従来のまま |
+| 1 | AgX | ガンマ空間の値を直接返す（従来） | 従来のまま |
+| 2 | なし（ガンマのみ） | `pow(x,1/2.2)`（従来） | 従来のまま |
+| **3** | **UE Filmic** | **sRGB OETF** | UE 5 の既定（ACES 系）の再現。`filmSlope`(0.88) / `filmToe`(0.55) / `filmShoulder`(0.26) / `filmBlackClip`(0) / `filmWhiteClip`(0.04) |
+| **4** | **線形（クリップのみ）** | **sRGB OETF** | トーンマップ無し。1 でクリップするだけ（比較・校正用） |
+| **5** | **Khronos PBR Neutral** | **sRGB OETF** | glTF 標準ビューア用（色相を保つ）。公開アルゴリズム（Apache-2.0） |
+
+★**出力の符号化が 0〜2 と 3〜5 で違う**（従来は `pow(1/2.2)`、新規は sRGB の OETF）。パリティ仕様の `engine.png` は `gamma22`（0〜2）/ `srgb`（3〜5）を切り替えること。
+
+**UE Filmic の根拠と不確実性**（`PhotometricMath.h::UeFilmicLinear` の冒頭にも同じ注記）:
+- 確かなもの: 公開文書（Color Grading and the Filmic Tonemapper）が示す既定値 Slope 0.88 / Toe 0.55 / Shoulder 0.26 / Black Clip 0 / White Clip 0.04。UE の既定トーンマッパが ACES 準拠に設計されていること。
+- **記憶から独自に書き起こしたもの**: ACES 1.0 参照実装の RRT（グロー・赤の変調・彩度係数 0.96）+ 対数空間の S 字（toe = ロジスティック / 直線 / shoulder = ロジスティックを smoothstep で継ぐ。中間灰 0.18 → 0.18 を固定点にする `ToeMatch` の求め方）+ 出力側の彩度 0.93。
+  UE のシェーダのコードは 1 行も写していない（EULA 上の注意。法的判断はしていない）。
+- **確かな性質（構成から）**: 0 → 0 / 0.18 の灰 → 0.18 のまま / 単調増加 / 大きな入力 → `1 + WhiteClip` に漸近 / 灰は灰のまま。`PhotometricMathTests` と pytest が numpy 実装との突き合わせ（1e-4 以内）と不変条件で検証している。
+- **不確実**: グロー・赤変調・彩度係数の細部（UE 5.x の版ごとの差）・AP1 → sRGB の色域処理（UE は版によって既定で色域拡張を掛ける）・出力の符号化（UE の既定表示は sRGB だが、HDR ディスプレイ出力は別）。
+  **UE 本体との数値照合は未実施**（UE を再インストールしない方針）。ユーザーが UE のスクリーンショットを撮れたら §5 の校正で残差を見る。
+- 数値の目安（リニア入力 → 出力）: 0.18 → 0.180 / 1.0 → 0.723（sRGB 0.87）/ 10 → 0.9995 / 0.01 → 0.00166。
+
+### 11.5 線形 HDR スクリーンショット（`dx12_screenshot_final`）
+
+```
+dx12_screenshot_final {path:"C:/tmp/a", formats:["png","pfm"], width:1920, height:1080, deterministic:true}
+  → {path:"C:/tmp/a.png", files:{png:"C:/tmp/a.png", pfm:"C:/tmp/a.pfm"}, linear:{...}, offscreen:true, width:1920, height:1080, ...}
+```
+
+- **既定は従来どおり**: 引数を全部省くと PNG のみ・ビューポート矩形・応答のキーも従来 + 加算キー（`files` / `linear` / `offscreen`）だけ。
+- `format` / `formats`: `png`（表示色 8bit）/ `pfm` / `exr`（**線形 float**）。`path` の拡張子は無視され、形式ごとに同じ基準名で書く。pfm/exr だけのときは画像ブロックを返さず JSON（`files` に形式ごとのパス）。
+- **線形 float の意味**（比較ツールが読む規約）: **シーン参照の線形 Rec.709 RGB**。**トーンマップ前・露出前**。TAA / DoF / モーションブラーの後、ブルーム・ゴッドレイ・フレアの前
+  （＝ポスト(uber)へ入る直前のシーン色。`RenderPostChain` で自動露出と同じ位置・同じ SRV から読む）。物理ライティング単位ならシーン値は nit。NaN / Inf は 0 に置き換える。
+  書式はパストレーサーの出力と**同じ writer**（`renderer/pt/PtImageIO.h`）: PFM は下から上の標準（リトルエンディアン `-1.0`）・EXR は無圧縮 float32 / RGB。
+- 線形と PNG は**同じフレーム**から撮る（コピーは同じコマンドリスト）。決定論（`deterministic:true`）なら同じ設定で 2 回撮るとビット一致（§11.9）。
+- 制限: 線形 float 出力は 4096×4096 画素まで（float4 の UAV + readback で 2 倍要る）。ポスト前のシーン色なので、ブルーム・ビネット・LUT・グレーディング・スクリーンシェーダーは写らない（PNG 側には写る）。
+  露出前なので、表示と突き合わせるときは `F`（§11.3）を掛けてトーンマップする（ハーネスの `alignment.exposure: "ev100:15"`）。
+
+### 11.6 任意解像度のオフスクリーン出力（`width` / `height` / `--size WxH`）
+
+- 撮影中だけ、**シーン系 RT 一式（シーン HDR・深度・AO・Hi-Z・ブルーム・TAA 履歴・G-Buffer・SSGI/SSR ほか）を `width x height` で作り直し**、
+  uber パスの出力を専用の LDR RT（バックバッファと同じ形式）へ向けて読む。ビューポート / ウィンドウ / 16:9 レターボックスに依存しない。撮影が終わると次のフレームで元の解像度へ戻る
+  （状態は `m_mcpFinalShot` に載せてあり、応答が返れば自動で消える = 戻し忘れが構造的に起きない）。
+- **アスペクトは `width/height`**（カメラの投影もそれで作る。垂直 FOV は据え置き）。
+- **上限とエラー処理**: 1 辺 16〜8192・総画素 8192×4096 以下（`OffscreenShotTests`）。**GPU メモリの見積**（シーン系 RT ≈ 160 B/画素 + 線形出力なら 32 B/画素）が「予算 − 使用中」の 60% を超えると**撮影前に構造化エラー**
+  （`size WxH needs more GPU memory than is available right now`）。RT の確保に失敗したら撮影を中止してエラー応答（解像度は次のフレームで元へ）。
+- **決定論**: 解像度の切替が完了してから履歴を捨て、`settleFrames` を数え直す（「同じ初期状態 + 同じフレーム数」）。ハンドラがどのタイミングで呼ばれても結果は同じ。
+- **写らないもの**: エディタのアイコン / 選択枠（撮影中は `gizmos` に依らず出ない）・ゲーム内 UI 画像・画面全体のカスタムシェーダー（中間 RT が表示解像度のため）。3D の絵 + ポストだけ。
+- **副作用**: エディタで撮ると、撮影中の数フレームだけシーンビューがクリア色になる（バックバッファにはシーンが描かれない）。ヘッドレス / 背景起動では見えない。
+- `--size WxH`（起動引数）は `width` / `height` を省いた `screenshot_final` の既定になる。不正な値は無視（ログに理由）。
+- **シーケンサーのレンダー出力（S2b）が使う基盤**: 1 フレームごとに `screenshot_final {width,height,formats,deterministic}` を呼べばよい。
+
+### 11.7 パリティ・ハーネス側の追加（`tools/parity`）
+
+- トーンマップ: `ue_filmic`（= `engine_ue_filmic`）/ `pbr_neutral` / `engine_linear` を追加（numpy の独立実装。C++ の参照値と同じ表を pytest が検証）。旧 `ue_filmic_approx`（aces_hill の別名）は残してあるが、以後は `ue_filmic` を使う。
+- 露出の書式 `ev100:15` / `ev100:15,+1`（線形の両者に `F` を掛ける）。`ev100_to_scale` / `ev100_to_ev`。
+- 仕様: `engine.size`（撮影解像度）/ `engine.linear`（線形 PFM も撮って**線形どうしで比較**）/ `cameras[].setup`（カメラごとの MCP 呼び出し = 露出ブラケット）/ `cameras[].alignment`（カメラごとの整列）/ `displayCheck`。
+  **線形どうしを比べると 2 系統が 1 回で出る**: 線形のまま = HDR-FLIP、同じトーンマップ + 露出を両者へ掛けた表示 = LDR-FLIP・SSIM・ΔE。
+- **displayCheck**: 同じフレームの線形 PFM に numpy でトーンマップ + 露出を掛けた期待値と、エンジン自身の表示 PNG（GPU のトーンマップ + 露出）を 8bit で比べる。GPU 実装と numpy 実装の一致の証拠（LSB 単位の平均・p99・最大）。
+- **PT アダプタの実結合**（Q1 の未確認事項）: 実エンジンの `render_reference` は非同期（即座に `accepted` を返す）。`reference.pt.api: "engine"`（既定）で `output` / `formats` / `size` を渡し、`render_reference_status` を `state:"done"` までポーリングして `output.files` から PFM を読む。
+  `frameBudgetMs` の既定は無人実行向けに 40。旧同期 API は `"api": "legacy"`（偽エンジン用）。
+- 追加した仕様: `ps0_calibration`（更新）/ `ps0_lightsteps` / `ps0_invsq` / `ps0_exposure`。生成器 `gen/ps0_calibration.py`（`variant` = calibration / lightsteps / invsq・`units` = legacy / physical）。
+
+### 11.8 PS-0 の実測（フォワード物理 + 線形出力 対 パストレーサー。2026-09-30）
+
+**条件**: 1920×1080・物理ライティング（太陽 8 万 lux・空 8000 nit）・EV100=15・UE Filmic・DDGI / SSGI / SSR / SSAO / TAA / Bloom / ビネット / 自動露出は全部 OFF。
+基準 = `render_reference`（1024 spp × シード 2 本・`bounces=1`・`lightFalloff:"physical"`）。線形どうしを比べ、同じ露出 + トーンマップを両者へ掛けて LDR-FLIP・SSIM・ΔE も出す。
+ゲートは **G2**（LDR-FLIP 平均 ≤ 0.08・p95 ≤ 0.3・HDR-FLIP 平均 ≤ 0.1・輝度差 ≤ 0.25 EV・SSIM ≥ 0.9・ΔE2000 中央 ≤ 3・色相ずれ中央 ≤ 8°）。
+フォワード側のノイズ床はほぼ 0（決定論）。PT 側の床は HDR-FLIP 平均 0.0025〜0.0061・LDR ≈ 0。**しきい値は固定値**（床の 1.5 倍を下回るものが無いため、床規則で緩む項目は無い）。
+表示検証（`displayCheck`: numpy のトーンマップ + 露出 と GPU 出力の PNG の差）は全カメラで平均 0.01〜0.10 LSB・最大 1 LSB（GPU と numpy が一致）。
+
+| 仕様 / カメラ | LDR-FLIP 平均 | LDR p95 | HDR-FLIP 平均 | SSIM | ΔE 中央 | 輝度差 [EV] | ヒストグラム EMD [EV] | 判定 |
+|---|---:|---:|---:|---:|---:|---:|---:|:-:|
+| calibration / overview | 0.0499 | 0.186 | 0.0827 | 0.9645 | 0.14 | +0.045 | 0.149 | pass |
+| calibration / graycard | 0.0309 | 0.092 | 0.0419 | 0.9899 | 0.16 | +0.026 | 0.047 | pass |
+| calibration / patches | 0.0590 | 0.218 | 0.0963 | 0.9574 | 0.23 | +0.047 | 0.164 | pass |
+| calibration / ramp | 0.0539 | 0.218 | 0.0912 | 0.9540 | 0.16 | +0.047 | 0.177 | pass |
+| calibration / bsdf_grid | 0.0835 | 0.284 | 0.1428 | 0.9253 | 0.51 | +0.064 | 0.343 | pass（★既知の差の許容つき） |
+| lightsteps / steps（光 1/4/16/64 倍） | 0.0092 | 0.014 | 0.0112 | 0.9992 | 0.05 | −0.003 | 0.008 | pass |
+| lightsteps / steps_low | 0.0094 | 0.013 | 0.0103 | 0.9997 | 0.05 | −0.002 | 0.002 | pass |
+| invsq / along（逆二乗・軸上） | 0.0032 | 0.013 | 0.0069 | 0.9999 | 0.00 | −0.006 | 0.003 | pass |
+| invsq / side（逆二乗・斜め） | 0.0021 | 0.009 | 0.0087 | 0.9999 | 0.00 | −0.010 | 0.005 | pass |
+| exposure / EV100=13（+2 段） | 0.0641 | 0.319 | 0.0827 | 0.9603 | 0.07 | +0.031 | 0.141 | pass（★p95 の許容つき） |
+| exposure / EV100=15 | 0.0499 | 0.186 | 0.0827 | 0.9643 | 0.14 | +0.045 | 0.149 | pass |
+| exposure / EV100=17（−2 段） | 0.0231 | 0.090 | 0.0827 | 0.9812 | 0.07 | +0.048 | 0.096 | pass |
+
+- **単位系の校正そのもの（光の強さ・逆二乗・露出）は G2 を大きく下回る**（lightsteps・invsq は LDR-FLIP 0.01 以下・輝度差 ±0.01 EV 以内）。露出ブラケット ±2 段でも輝度差は 0.03〜0.05 EV で一定 = 露出係数は正しい。
+- 輝度差が全カメラで +0.03〜0.06 EV の正の偏りを持つ（フォワードが明るい）。原因は下の「既知の差」の 1（空の可視性）と 4（拡散の近似）。
+
+**既知の差**（フォワードの仕様であって Q2 の校正では直さないもの。★は G2 の許容で吸収した箇所 = `bsdf_grid` の LDR-FLIP 平均 ≤ 0.10・HDR-FLIP 平均 ≤ 0.16 / `ev_m2` の LDR p95 ≤ 0.35。全体の上限は他カメラで維持）:
+
+| # | 差 | 見え方 | 担当 |
+|---|---|---|---|
+| 1 | **IBL の空の可視性が無い**: フォワードは直接光 + IBL のみで、球が床へ落とす空の遮蔽（接触影・AO）と、光沢球の下側の写り込みを持たない。PT は環境光を可視性つきで評価する。`features.ssao` を有効にして撮り直しても数値が 1 桁も変わらなかった（SSAO が物理モードの IBL 項に効いていない / 設定が反映されなかった可能性。**原因は未確認**） | `bsdf_grid` の球の下縁・床の球影、`ev_m2`（明るいほど縁が目立つ） | DDGI / SSGI / A1 / 空の遮蔽（AO・RT 影）。★ |
+| 2 | **GI 無し**: PT も `bounces=1` にしてあるので間接拡散は両者とも無い。`bounces=8` の全光輸送とは差が出る（PS-0 では測っていない） | 未計測 | DDGI 段階 1 |
+| 3 | 光沢面が写す周囲の物体（球どうし・床の写り込み）: フォワードは SSR OFF のため環境キューブしか写さない。PT は 1 回目の鏡面反射で環境だけを見る設定なのでほぼ同じだが、球のふちで差が残る | `bsdf_grid` 上段のふち | SSR / RT 反射（RT1） |
+| 4 | 拡散の近似: フォワードの拡散 IBL は放射照度キューブ（1 回のコサイン畳み込み）。PT の環境光は可視性つきの NEE。全球が見える面では一致するが、遮蔽のある面（床の球の近く）でずれる（1 と同根） | 輝度差の +0.03〜0.06 EV | 同上 |
+| 5 | 面光源: エミッシブは PT でだけ光る | PS-0 にエミッシブ光源は無いので出ない | A1 以降 |
+| 6 | 物理モード非対応の描画（カスタムシェーダー・マテリアルグラフ・ForwardGrid・ボリュメトリックフォグ・DDGI の点光源寄与・パーティクル発光）は従来式のまま | PS-0 では出ない | 各段階 |
+| 7 | `furnace` カメラ: 一様な白い環境を設定できる機能が無いので `skip` | 未計測 | 環境の設定 API（Q3 以降） |
+
+### 11.9 検証の証拠（既定 OFF = 従来と 1 ビットも変わらない）
+
+- **DXIL 同値**（`tools/shader_dxil_equiv.ps1`）: Q2 の編集（Lighting.hlsli の物理モード分岐・ForwardShade.hlsli のクランプ）を外した「変更前」の shaders と現在の shaders で、フォワード系 12 本
+  （Forward / ForwardLdr / ForwardMask / ForwardSkinned / ForwardSkinnedMask / Terrain の VS・PS、ForwardInstanced、ForwardGrid）の DXIL を比べて**同一 12 / 順序のみ 0 / 差あり 0**（ハッシュも一致）。
+  物理モードは `-D UNO_PHYSICAL_LIGHTS=1` の別 .cso（`ForwardPhys_PS` / `ForwardMaskPhys_PS` / `TerrainPhys_PS`）で、既定の .cso の中身は変わらない。
+- **決定論スクショ 9 シーン**（indoor_skinned / indoor_skinned_allfx / sponza_ibl / sponza_noibl / terrain / outdoor_fox / quality_pbr_ibl / studio_lumen / synth_translucent_custom）:
+  Q2 の前のビルド（base）を 2 回、Q2 のビルド（new）を 2 回撮って**全シーンでハッシュ一致**（base 同士・new 同士・base と new）。撮影は `deterministic:true` の `screenshot_final`。
+- **オフスクリーン・線形出力の決定論**: 実機（`--size 1280x720` 起動・ヘッドレス）で 1920×1080 の PNG と線形 PFM を 2 回撮って**ビット一致**（md5 一致）。1280×720 / 1920×1080 / 777×333 / 3840×2160 の png / pfm / exr が全部書けて、PFM のバイト数が 幅×高さ×12 + ヘッダに一致。範囲外・片方だけ・不正形式・線形の上限超えは構造化エラー、撮影後は元の解像度へ戻り、エラー後もエンジンは生きている。
+- **単体テスト**: `PhotometricMathTests`（EV100↔係数・トーンマップ参照値・lm/cd）・`OffscreenShotTests`（`--size` の検証）・`TonemapGpuTests`（HLSL と C++ / numpy の最大差 6e-7）・pytest（`tools/parity/tests/test_q2_calibration.py` ほか）。
+- **デバッグレイヤ**(`DX12_D3D_DEBUG=1`・ヘッドレス・`--size` 起動): オフスクリーン撮影 + png/pfm/exr の実機検証中の警告 0 件。`LinearCapturePass` の出力バッファは COMMON で作り、明示バリアで UAV へ遷移する（バッファを他の状態で作ると id=1328 の警告が出る）。

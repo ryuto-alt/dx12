@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000008",
+  "name": "time_anim",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "c": { "type": "Cos", "in": { "X": "ts.Out" } },
+    "col": { "type": "Append", "in": { "A": "f.Out", "B": "pulse01.Out" } },
+    "f": { "type": "Frac", "in": { "X": "moved.Out" } },
+    "moved": { "type": "Add", "in": { "A": "uv.UV", "B": "sc.Out" } },
+    "out": { "type": "MaterialOutput", "in": { "BaseColor": 0.1, "Emissive": "col.Out", "Roughness": "pulse01.Out" } },
+    "pulse": { "type": "Multiply", "in": { "A": "s.Out", "B": 0.5 } },
+    "pulse01": { "type": "Add", "in": { "A": "pulse.Out", "B": 0.5 } },
+    "s": { "type": "Sin", "in": { "X": "ts.Out" } },
+    "sc": { "type": "Append", "in": { "A": "s.Out", "B": "c.Out" } },
+    "speed": { "type": "ScalarParameter", "props": { "default": 1.5, "name": "Speed", "range": [0.0, 5.0] } },
+    "t": { "type": "Time" },
+    "ts": { "type": "Multiply", "in": { "A": "t.Out", "B": "speed.Out" } },
+    "uv": { "type": "TexCoord", "props": { "tiling": [3.0, 3.0] } }
+  },
+  "comments": {},
+  "layout": {
+    "c": "0 0",
+    "col": "0 0",
+    "f": "0 0",
+    "moved": "0 0",
+    "out": "0 0",
+    "pulse": "0 0",
+    "pulse01": "0 0",
+    "s": "0 0",
+    "sc": "0 0",
+    "speed": "0 0",
+    "t": "0 0",
+    "ts": "0 0",
+    "uv": "0 0"
+  }
+}

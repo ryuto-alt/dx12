@@ -68,6 +68,26 @@ private:
     // Undo 用: ウィジェット操作開始時のスナップショット
     bool      m_transformEditing = false;
     Transform m_transformSnapshot{};
+    // 複数選択で Transform を編集している間の「相手の編集前」（確定時に 1 エントリの Undo にまとめる）
+    std::vector<std::pair<entt::entity, Transform>> m_transformOthersBefore;
+
+    // ---- フェーズ 1b: 上部ヘッダ / 固定 / 検索 / Add Component ----
+    entt::entity m_pinned = entt::null;      // 固定（ロック）中のエンティティ。null = 選択に追従
+    entt::entity m_lastSelected = entt::null;   // 選択の変化検知（検索の一致記録を捨てる）
+    entt::entity m_nameEntity = entt::null;  // 名前欄の編集バッファがどのエンティティのものか
+    char         m_nameBuf[128] = {};
+    char         m_filterBuf[64] = {};       // インスペクタ内のプロパティ検索
+    char         m_tagBuf[64]    = {};       // タグの追加入力
+    bool         m_focusFilter = false;      // Ctrl+F で検索欄へ
+    // Add Component
+    char         m_addQuery[64] = {};
+    int          m_addSel = 0;               // 候補の選択位置（↑↓ Enter）
+    bool         m_addFocus = false;         // 開いた最初のフレームだけ検索欄へフォーカス
+    std::vector<std::string> m_addRecent;    // 最近使った（先頭が新しい。prefs "insp.recentComponents"）
+    bool         m_prefsLoaded = false;
+    void RenderHeader(entt::registry& reg, EditorContext& ctx);
+    void RenderAddComponent(entt::registry& reg, EditorContext& ctx);
+    void RenderTags(entt::registry& reg, EditorContext& ctx, entt::entity e);
 
     // 見た目まわり（UV & Anim / シェーダー節）の Undo 用スナップショット。
     // ★以前は毎フレーム取り直すローカル変数だった。ドラッグ中は IsAnyItemActive で
@@ -122,6 +142,8 @@ private:
     EditState<FootIK>           m_footIkEdit;
     EditState<Brain>            m_brainEdit;
     EditState<AudioReverbZone>  m_reverbZoneEdit;
+    EditState<VirtualGeometry>  m_virtualGeometryEdit;
+    EditState<FoliageLayer>     m_foliageLayerEdit;
 
     // プレハブ差分のキャッシュ。差分計算はサブツリー全体を JSON 化するので、
     // 毎フレームやると要素の多い UI プレハブで無駄が大きい。選択が変わった時と

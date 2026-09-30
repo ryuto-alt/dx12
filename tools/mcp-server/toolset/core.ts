@@ -14,6 +14,7 @@ import { envelope } from "../errors.ts";
 import { structureError } from "../structure.ts";
 import { unknownKeyIssues, bodyFromIssues } from "../validate.ts";
 import { instructionsFor } from "../instructions.ts";
+import { guardApproval } from "../guardCtx.ts";
 
 // engine は EngineRouter(EngineClient と同じ公開面)。束縛が無ければ従来の EngineClient(ポート探索)にそのまま委ねるので、
 // フリートを使わない運用は従来と同じ。束縛は dx12_engine_launch / use / attach が切り替える(docs/MCP_FLEET_DESIGN.md)。
@@ -151,6 +152,10 @@ export function regRaw(
       }
       return res;
     }
+    // guarded な旧ツール(git_push / eval_lua / delete_asset など)を直接呼ぶ = そのツールの呼び出し自体が承認の対象
+    // (full 面ではクライアント側の権限確認が、core / shell 面では dx12_call_guarded / confirm がゲート)。エンジン側の最終ゲートを通す。
+    // dx12_batch や他の合成ツールの内部呼び出しはここを通らないので承認済みにならない(エンジンが拒否する)。
+    if (GUARDED_NAMES.has(name)) return guardApproval.run({ approved: true, via: `tool:${name}` }, () => handler(args));
     return handler(args);
   };
   const registered = server.registerTool(

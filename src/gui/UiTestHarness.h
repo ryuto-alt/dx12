@@ -41,6 +41,12 @@ public:
     //              ホイール操作が背後のシーンビューのカメラ操作へ漏れるのを防ぐ。
     void DrawDiagnosticsPanel(bool* show, bool* hoveredOut = nullptr);
 
+    // --ui-tests-skip <名前,名前...>: 自動実行・診断パネルのキューから除外するテスト名（例 build_game）。
+    // 起動引数の解析（main.cpp）から呼ぶ。空文字で解除。
+    static void SetSkipList(const std::string& commaSeparatedNames);
+    // --ui-tests-only <名前,名前...>: 指定したテストだけをキューに入れる（skip と併用可。空で解除）。
+    static void SetOnlyList(const std::string& commaSeparatedNames);
+
     void Shutdown();
 
     bool IsActive() const { return m_engine != nullptr; }

@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1（set_sun の時刻 / 向きの振り分け）
 
 namespace dx12e
 {
@@ -157,7 +158,17 @@ void Application::RegisterMcpLightingMethods()
 
             const bool byTime = params.contains("timeOfDay");
             f32 hour = -1.0f;
-            if (byTime)
+            // 物理ベース大気（atmosphere.enabled）のときは、従来の曲線ではなく大気の時刻系を動かす。OFF なら従来と完全に同じ。
+            const bool atmo = m_scene->GetAtmosphereSettings().enabled;
+            bool atmoTimeSet = false, atmoSunModeSwitched = false;
+            if (byTime && atmo)
+            {
+                hour = McpFloatParam(params, "timeOfDay", 12.0f, 0.0f, 24.0f);
+                McpUndo().TrackSceneValue(m_scene->GetAtmosphereSettings());
+                m_scene->GetAtmosphereSettings().timeOfDay = hour;
+                atmoTimeSet = true;   // 向き・色・強度は大気（driveSun=true のとき）が次フレームで決める
+            }
+            else if (byTime)
             {
                 hour = McpFloatParam(params, "timeOfDay", 12.0f, 0.0f, 24.0f);
                 // エディタのスライダ / Lua の Lighting.setTimeOfDay と同じカーブ（LightMath.h）
@@ -166,6 +177,12 @@ void Application::RegisterMcpLightingMethods()
                 dl.color     = s.color;
                 dl.intensity = s.intensity;
                 dl.ambient   = s.ambient;
+            }
+            if (atmo && (params.contains("azimuth") || params.contains("elevation")))
+            {
+                // 方位・高度の直接指定 = 「太陽の向きを直接指定」モード（sunMode=1）へ切り替える。時刻からは決めなくなる。
+                McpUndo().TrackSceneValue(m_scene->GetAtmosphereSettings());
+                if (m_scene->GetAtmosphereSettings().sunMode != 1) { m_scene->GetAtmosphereSettings().sunMode = 1; atmoSunModeSwitched = true; }
             }
             if (params.contains("azimuth") || params.contains("elevation"))
             {
@@ -186,6 +203,26 @@ void Application::RegisterMcpLightingMethods()
             dl._prevRotInit = false;   // Transform 回転の差分追従をリセット
 
             const lightmath::SunAngles now = lightmath::DirectionToSunAngles(dl.direction);
+            json atmoJson = nullptr;
+            if (atmo)
+            {
+                const AtmosphereSettings& as = m_scene->GetAtmosphereSettings();
+                atmosphere::Vec3d sd;
+                if (as.sunMode == 1)
+                {
+                    const DirectX::XMVECTOR d = DirectX::XMVector3Normalize(DirectX::XMLoadFloat3(&dl.direction));
+                    DirectX::XMFLOAT3 f; DirectX::XMStoreFloat3(&f, DirectX::XMVectorNegate(d));
+                    sd = {f.x, f.y, f.z};
+                }
+                else sd = atmosphere::SunDirectionFromTime(as);
+                const double camAlt = m_camera ? std::max(0.0, static_cast<double>(m_camera->GetPosition().y - as.seaLevelY)) * 0.001 : 0.0;
+                atmoJson = mcpatmo::SunJson(as, sd, camAlt);
+                atmoJson["timeOfDay"] = as.timeOfDay;
+                atmoJson["sunMode"] = as.sunMode;
+                atmoJson["driveSun"] = as.driveSun;
+                atmoJson["timeSet"] = atmoTimeSet;
+                atmoJson["sunModeSwitchedToDirect"] = atmoSunModeSwitched;
+            }
             resp["ok"] = true;
             resp["result"] = {
                 {"entityId", static_cast<u32>(sun)},
@@ -195,9 +232,14 @@ void Application::RegisterMcpLightingMethods()
                 {"color", {dl.color.x, dl.color.y, dl.color.z}},
                 {"intensity", dl.intensity}, {"ambient", dl.ambient},
                 {"timeOfDay", byTime ? json(hour) : json(nullptr)},
-                {"note", "絶対指定＝同じ引数の再実行で同じ結果(冪等)。timeOfDay は 0..24 で "
-                         "向き/色/強度/環境光を一括で決める(Lua の Lighting.setTimeOfDay と同じカーブ)。"
-                         "azimuth/elevation は【太陽が見える方向】(方位 +Z=0°,+X=90° / 高度 0=地平線,90=真上)。"}};
+                {"atmosphere", atmoJson},
+                {"note", atmo
+                    ? "物理大気が ON: timeOfDay は大気の時刻(現地太陽時 0..24)を設定する(従来の曲線は使わない)。向き・色・強度は driveSun=true の間、大気が毎フレーム決める"
+                      "(この応答の direction/color/intensity は書き込み直後の値。実効値は atmosphere と list_lights を見る)。"
+                      "azimuth/elevation を指定すると sunMode=1(太陽の向きを直接指定)へ切り替わり、時刻では太陽が動かなくなる(sunMode=0 に戻すと時刻から決まる)。"
+                    : "絶対指定＝同じ引数の再実行で同じ結果(冪等)。timeOfDay は 0..24 で "
+                      "向き/色/強度/環境光を一括で決める(Lua の Lighting.setTimeOfDay と同じカーブ)。"
+                      "azimuth/elevation は【太陽が見える方向】(方位 +Z=0°,+X=90° / 高度 0=地平線,90=真上)。"}};
         });
 
     McpDefine("apply_lighting_preset", "preset:string", DX12E_MCP_HANDLER

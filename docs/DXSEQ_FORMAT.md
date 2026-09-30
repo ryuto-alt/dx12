@@ -2,7 +2,7 @@
 
 - 対象: `src/sequencer/`(ターゲット `SequencerCore`。標準ライブラリ + nlohmann-json だけ。GPU / ECS / ImGui 非依存)
 - 設計: `docs/SEQUENCER_DESIGN.md`(§2 データモデル・§3 評価と再生・§8 S0)。本書は **S0 で確定した意味論の正本**で、設計書と食い違う点は本書が優先する(§17 に差分を列挙)。
-- 状態: S0 完了(データモデル + 評価コア + 編集操作 + シリアライズ + 旧台本の変換 + 単体テスト)。UI(S1a)・エンジン統合/適用層(S1b)は未着手。
+- 状態: S0 完了(データモデル + 評価コア + 編集操作 + シリアライズ + 旧台本の変換 + 単体テスト)。**S1b 完了**(§18〜§20: op の JSON・エンジンへの適用層・エディタの非破壊スクラブ・Play の再生・MCP)。UI(S1a)は別担当。
 - 表記: 「ティック」= 整数時刻(既定 6000/秒)。「正準形」= `SerializeSequence` が出力するバイト列(§2)。
 
 ---
@@ -19,8 +19,9 @@
 | `SeqSerialize.h/.cpp` | `.dxseq` の読み書き(決定的な書き出し・往復でバイト一致) |
 | `SeqBinding.h/.cpp` | バインディング解決の抽象 `IBindingResolver`・解決順の規則・テスト用 `MapBindingResolver` |
 | `SeqConvert.h/.cpp` | 旧 `dx12_sequence_author` の台本 JSON → `Sequence`(§15) |
+| `SeqOpJson.h/.cpp` | `SeqOp` の JSON 表現(MCP / AI が宣言的に編集する。§18) |
 
-適用層(エンジンへの書き込み)は S1b。`Evaluate` は**値を返すだけ**で、エンジンの型を一切含まない。
+適用層(エンジンへの書き込み)は S1b(`src/core/SequencerBinding.*` / `SequencerApply.*` / `SequencerHost.*`。§19)。`Evaluate` は**値を返すだけ**で、エンジンの型を一切含まない。`SeqOpJson.*` は S1b で足した op の JSON 表現(§18。純ロジック)。
 
 ---
 
@@ -455,3 +456,135 @@ Bool / Int の Property トラックは Step 以外のキーを受け付けな�
 6. **`DeleteBinding` はカットが参照していると拒否**(dangling なカットを作らない。UI は 1 つの txn でカットを先に消す)。
 7. **クォータニオンの Auto / Bezier は squad**(Bezier のハンドルは無視)。設計書は「slerp」までしか触れていない。等間隔を仮定した接線なので、キー間隔が極端に不均一だと速度が不均一になる。
 8. **未知フィールド**: トラック/クリップ/イベント/バインディング/マーカーは params に保持(設計書の「未知フィールドは無視」より保守的。将来の予約種別を失わない)。
+
+---
+
+## 18. `SeqOp` の JSON 表現(MCP `sequence_apply_op` / `dx12_sequence {op:"edit"}`)
+
+`ParseOpJson` / `ParseTxnJson`(`SeqOpJson.h`)。**1 回の呼び出し = 1 つの `SeqTxn` = Undo 1 ステップ**(途中で 1 つでも失敗したら全部巻き戻して何も変えない)。
+
+- op 1 個 = `{"op": "<名前>", …}`。名前は §13.1 の op 名を**大文字小文字・`_`・`-` 無視**で受ける(`addKey` / `AddKey` / `add_key` は同じ)。
+- **ID は省略できる**(新しく作るバインディング `b_` / トラック `t_` / クリップ `k_` / イベント `e_` / マーカー `m_` / カット `c_` は、省略したらホストが発行する)。参照する側(`trackId` など)には既存の ID を書く。
+- 時刻は**ティック**(整数。既定 6000/秒)。秒で書きたいときは「〜Sec」版: `startSec` `endSec` `durSec` `tSec` `newSec` `blendSec`、キーオブジェクトの `sec`。
+- キーは `[t, v, "a"]` のタプル(ティック)か、`{"t"|"sec": …, "v": …, "ip": "a"|"l"|"s"|"b"|"e:<名前>"|"linear"|"auto"|"step"|"bezier"|"ease:<名前>", "inDt"…}` のオブジェクト。ベジェは `inDt inDv outDt outDv` が要る。
+- ヘッダ系(`setBindingHeader` / `setTrackHeader`)は**書いたフィールドだけ変える**(現在の値から始めてマージ)。
+- **ホスト側の追加(`SequencerHost::ApplyOps`)**: `addBinding` の `binding` に `"entity": "<名前>"`(またはエンティティ ID / `{"guid": "…"}`)を書くと、現在のシーンのそのエンティティから `hint`(guid / path / name)と `name` を作る(**guid をその場で確定させる**)。`addCut` / `setCut` の `camera` にバインディングの**名前**を書くと id へ直る(同じ ops で先に `addBinding` した `id` つきのものも引ける)。
+
+| op | フィールド |
+|---|---|
+| `setName` / `setFrameRate` / `setRange` / `setRender` / `setMeta` | `{name}` / `{fps}` / `{start\|startSec, end\|endSec}` または `{has:false}` / `{render:{width,height,shutter,warmup}\|null}` / `{meta:{…}}` |
+| `addBinding` / `deleteBinding` / `moveBinding` / `setBindingHeader` | `{binding:{id?, name, kind?, hint?, entity?, tracks?}, index?}` / `{id}` / `{id, toIndex}` / `{id, header:{name?,kind?,hint?,params?}}` |
+| `addTrack` / `deleteTrack` / `moveTrack` / `setTrackHeader` | `{bindingId, track:{id?, type, path?, valueType?, colorSpace?, rotation?, channels?, clips?, events?, …}, index?}` / `{trackId}` / `{trackId, toBindingId, toIndex}` / `{trackId, header:{name?,mute?,lock?,path?,valueType?,colorSpace?,rotation?,params?}}` |
+| `addChannel` / `deleteChannel` / `setChannelExtrap` | `{trackId, channel:{name, pre?, post?, keys?}, index?}` / `{trackId, channel}` / `{trackId, channel, pre?, post?}` |
+| `addKey` / `deleteKey` / `moveKey` / `setKeyValue` / `setInterp` / `setTangent` / `setKey` | `{trackId, channel, key, index?}` / `{…, index}` / `{…, index, newT\|newSec, newIndex?}` / `{…, index, v}` / `{…, index, ip}` / `{…, index, inDt, inDv, outDt, outDv}` / `{…, index, key}` |
+| `addClip` / `deleteClip` / `setClip` | `{trackId, clip:{id?, start\|startSec, dur\|durSec, …params}, index?}` / `{trackId, clipId}` / `{trackId, clip}` |
+| `addEvent` / `deleteEvent` / `setEvent` | `{trackId, event:{id?, t\|tSec, kind, name?, …params}, index?}` / `{trackId, eventId}` / `{trackId, event}` |
+| `addMarker` / `deleteMarker` / `setMarker` | `{marker:{id?, t\|tSec, name?, …}, index?}` / `{id}` / `{marker}` |
+| `addCut` / `deleteCut` / `setCut` | `{cut:{id?, start\|startSec, end\|endSec, camera, blend?}, index?}` / `{id}` / `{cut}` |
+
+例(Camera を対象にバインディング + 位置トラック + カット。秒で書いたキー):
+```json
+{"label": "カメラを作る", "ops": [
+  {"op": "addBinding", "binding": {"id": "b_cam", "entity": "Camera", "tracks": [
+    {"type": "transform", "channels": {"position.x": {"keys": [{"sec": 0, "v": 0, "ip": "e:outQuad"}, {"sec": 5, "v": 10, "ip": "l"}]}}},
+    {"type": "camera", "channels": {"fov": {"keys": [[0, 60, "l"], [30000, 35, "a"]]}}}]}},
+  {"op": "addCut", "cut": {"startSec": 0, "endSec": 5, "camera": "Camera"}}]}
+```
+
+---
+
+## 19. 適用層(エンジンへの書き込み。`src/core/SequencerApply.*`)
+
+`Evaluate(seq, t)` の結果(`EvalResult`)をエンジンへ書く。**書き込みはバインディング配列順 → トラック順。同じ (対象, プロパティ) を複数のトラックが書くと後ろが勝つ**(決定論。任意の順序で評価・適用した結果が同じ時刻なら同じ = テストで 40 個のランダム時刻を検査)。
+
+### 19.1 何をどこへ書くか
+
+| トラック | 書き込み先 | 非破壊の方法 |
+|---|---|---|
+| `transform` | `Transform` の **ローカル** position / rotation(Euler 度)/ scale。`rotation: "quat"` は `QuaternionToEulerDegrees` で Euler にして書く(`useQuaternion = false`)。書いていないチャンネルは元のまま | PreAnimatedState(エディタ) |
+| `property` / `light` | `entt::meta` に登録されたコンポーネントのフィールド。`path` = `"Component.field"`(`PointLight.intensity` / `CameraComponent.fovDegrees` …)。型は float / int / bool / 列挙 / ベクトル(Vec2/3/4)。ベクトルのチャンネルは `x y z w` または `r g b a`(スカラーは `value`)。`Light.*`(総称)はそのエンティティが持つライトへ解決。対応コンポーネントは `SupportedComponentNames()`(`Transform` `PointLight` `DirectionalLight` `SpotLight` `CameraComponent` `RigidBody` 各 Collider `CharacterController` `AudioSource` `Sprite2D` `TrailRenderer` `DecalComponent` `UI*` `SpriteAnimator` `FootIK` `Brain` …)。未対応(`MeshRenderer` など meta 未登録)・存在しないフィールドは**警告になり書かれない**(データは保持) | PreAnimatedState(エディタ) |
+| `camera` の `fov` `near` `far` `orthoSize` | `CameraComponent` の `fovDegrees` `nearClip` `farClip` `orthoSize` | PreAnimatedState(エディタ) |
+| `camera` の `dofAperture` `dofFocalLength` `dofBlurSize` `dofFocusDist` + params `focus:{binding}` | **書かない**。描画時の `PostProcessSettings` のコピー(`ppApplied`)へ上書き(`dofOn` は自動 ON)。`focus` があれば毎フレーム「カメラ → 対象のビュー距離」(カメラ前方への射影。背後なら直線距離)を `dofFocusDist` に入れる(名前引きの `dofFocusName` は使わない = guid で安全)。**カットで選ばれたカメラの DoF だけ**が効く(カットが無いシーケンスは全カメラトラック)。エディタの自由カメラのビューには掛けない | 不要(シーンを書かない) |
+| `post`(scene バインディング) | **書かない**。`ppApplied` へ上書き。チャンネル名 = `DX12E_POST_FIELDS` のフィールド名(`bloom` `exposure` `vignette` …。ベクトルは `tint.r` `tint.g` `tint.b`)。値を書くと対応する `XxxOn` を自動 ON(名前表から生成: `bloomOn` → `bloom` `bloomThreshold` …)。**明示の `XxxOn` チャンネルが自動 ON に勝つ** | 不要 |
+| `shake`(クリップ) | **書かない**。カメラの最終位置へ加算(`Application::ApplyCameraTransformToGlobal`)。式は旧 `sequence_author` の Lua と同じ: `a = amp·(1−進行)^decay·重み`、位相 = `経過秒·freq (+ seed·12.9898)`、`offset = (sin(ph·1.7)·a, sin(ph·2.3+1.1)·a, sin(ph·1.3+2.7)·a)`(ワールド)。params: `amp`(0.3)`freq`(20)`seed`(0)`decay`(2 = 旧式。0 = 減衰なし) | 不要 |
+| `cuts[]` | **書かない**。`FindActiveCameraEntity()` がカットのカメラを優先(無ければ `isActive` の先頭)。`isActive` は書き換えない = シーンを汚さず、終了時に戻す処理も要らない。投影(FOV)・スクリーンシェーダー・`SyncActiveCameraToGlobal` がこれに従う | 不要 |
+| `timeScale` | `ScriptEngine::SetTimeScale`(Play 中だけ)。終了 / 停止で元の値へ戻す。**このトラックがあるシーケンスの時計は強制的に実時間** | Play 終了で復元 |
+| `event` | `emit` → EventBus / `lua` → グローバル関数 / `log` / `loadScene`(§20.3) | — |
+| `animation` `audio` `vfx` `subsequence` `aim` | S2a / S4 / S5。データは保持され、警告(「未対応」)が出る | — |
+
+### 19.2 物理・親子・スキンド
+
+- **親子**: Transform はいつも**ローカル**に書く(`position` は親からの相対。親が動けば子は付いてくる)。ワールド座標でキーを打つ仕様は無い。カメラの世界姿勢は既存の `ApplyCameraTransformToGlobal`(親のワールド変換込み)がそのまま拾う。
+- **物理との競合規則(Play 中)**:
+  - `RigidBody` の `Dynamic`(物理に登録済み)と `CharacterController`: Transform は**書かない**(`SyncPhysicsToTransforms` / キャラ同期が直後に上書きするため。書かなかった数を `skippedPhysics` に数え、警告を 1 回出す)。「物理に任せたい対象はバインドしない」運用。動かしたいなら `motionType` を `Kinematic` にするか、物理を持たない見た目用エンティティを指す。
+  - `Kinematic`: **書く**。`PhysicsSystem::SyncTransformsToPhysics` が毎フレーム `MoveKinematic` で追従する(速度が入るので動く床の上のキャラも運ばれる)。
+  - `Static`: 書く(見た目は動く)が**当たり判定は動かない**(警告)。
+  - **エディタ(物理は動かない)**では、動的な剛体でも書く(スクラブ終了 / 保存 / Play で元へ戻す)。
+  - Play の再生は元値を退避しない(演出の結果を残す。Stop でシーン JSON ごと復元される)。
+- **スキンド**: スキンドメッシュ(`SkeletalAnimation`)を持つエンティティの Transform はそのまま書ける(メッシュ全体が動く。スキニングはモデル空間なので Transform の書き込みと独立)。`animation` トラック(ボーンのポーズ / クリップの時刻指定)と `AnimatorController` 付きの扱い(グラフの停止)は S4a。
+
+### 19.3 バインディング解決(`SequencerBinding.*` / `BindSequence`)
+
+S0 の規則(§12: 上書き → guid → 階層パス → 名前)を `entt::registry` の上で実装。
+- 名前・パスの候補は **`Scene::FindEntity` と同じ優先順**(`view.each()` の順 = 最後に作られたものが先頭)。重複は `AmbiguousName` / `AmbiguousPath` の警告を出して先頭を採用。
+- **階層パス** = ルートから自分までの `NameTag` を `/` で連ねたもの(`"Rig/CutsceneCam"`。名前の `/` は `%2F`、`%` は `%25`)。プレハブ展開・複製で guid が消えても、パスが同じなら解決できる(`FellBack`)。
+- **guid は保存時にしか付かない**(`BuildSceneJson`)障害への対処: **エディタでは束縛の瞬間に `EnsureEntityGuid` で確定させる**(`BindOptions::ensureGuids`。`addBinding` の `entity:` 指定も `MakeBindingHint` が確定させる)。Play 中の再生はシーンを書き換えないので確定させない。
+- 未解決のバインディングは**データを消さず**、そのトラックだけ評価から外す(`BindingSet::EnabledMask()`)。警告は `sequence_get` / `sequence_eval` の `bindingStatus` / `issues` に出る。
+- 再解決: `BoundIsFresh`(束縛済みエンティティが生きていて guid が同じ・エディタではエンティティ数も同じ)が false になったら、次のフレームで束縛し直す。未解決がある間は 30 フレームごとに再試行(あとから作られたエンティティを拾う)。Play 中の再生はエンティティ数の増減では束縛し直さない(毎フレーム増減するゲームで重くならないように)。`m_sceneGeneration`(open_scene / Stop / ランタイムの loadScene)が変わったら全部やり直す。
+
+### 19.4 PreAnimatedState(エディタの非破壊スクラブ)
+
+エディタのスクラブ / プレビュー再生が書く値を、**書く前に 1 回だけ元値を退避**する(キー = `(guid, "tf")` または `(guid, "Component.field")`)。
+
+**元へ戻すタイミング**(`RestoreAll` = 退避の逆順。guid で引き直す = Undo で作り直されたエンティティにも効く):
+
+| # | いつ | 実装 |
+|---|---|---|
+| (a) | スクラブ終了 | `EditorEnd()`(MCP `sequence_scrub {end:true}` / `sequence_stop`) |
+| (b) | シーケンスを閉じる | `CloseDoc()` |
+| (c) | **Play 開始の直前** | `Application::EnterPlayMode` の最初に `EditorEnd()`(`SaveToString` より前)+ フレーム更新のモード遷移でも保険 |
+| (d) | **あらゆる保存の直前** | `SceneSerializer::SetPreSerializeHook`: `Save` / `SaveToString`(Play のスナップショット・オートセーブ・ビルド・MCP `save_scene`)/ `SerializeEntity` / `SerializeSubtree`(Undo・複製・プレハブ)/ `SavePrefab` の**全部が通る「エンティティ 1 個の直列化」(`SerializeEntityJson`)の入口**にフックを 1 つ置いた。経路の網羅漏れが構造的に起きない |
+| (e) | `open_scene` / `new_scene` / Stop でシーンが作り直された | 退避を**捨てるだけ**(戻す先が別物) |
+
+- (d) は保存の後、セッションが生きていれば `needsApply` を立てて**次の適用で再適用**する(フレーム内の保存 → 描画前に再適用されるのでちらつかない)。フックは**自分の担当の `Scene`(registry)の保存にしか反応しない**(別の Scene の保存では何もしない)。
+- 消えたエンティティの元値は、(d) では**持ち続ける**(Undo で同じ guid で作り直されたら、セッション終了で元値を戻せる)。(a)〜(c) では捨てる。
+- **スクラブ操作自体は Undo に載せない**(一時状態)。編集(キー・トラック)は `SeqOp`(§13)で、`SeqHistory` に載る。
+- **ユーザーが制御中の値を触ったとき**: Transform について「最後に書いた値」と今の値を比べ、差があれば `userDrift` を数える(`sequence_scrub` の `applied.userDrift` / `EditorStatus`)。**元値の復元は変えない**(保存への混入ゼロを優先。UI が「制御中」のトーストを出す判断材料)。
+- エディタでの書き込みは、フレームごとの再適用ではなく「要求があった時だけ」(スクラブ・再生・保存の後・編集・エンティティの増減・シーン変更)。
+
+---
+
+## 20. ホスト(`SequencerHost`)・Play の再生・MCP
+
+### 20.1 構成
+
+`SequencerHost`(`src/core/SequencerHost.*`。Application 非依存 = `tests/sequencer_bind_test.cpp` が単体検査)が 1 つ。`Application` が持ち、`InitSequencer()`(保存フック・Lua の `Sequence.*`・EventBus・Lua 呼び出しを結ぶ)と `UpdateSequencers(dt, paused)` を呼ぶ。
+
+- **フレーム更新の位置**: エディタ / 一時停止中は `m_scene->Update` の**前**。Play 中は Lua・Trigger・AI の**後**・アクティブカメラ同期の**前**(スクリプトが同じフレームに書いた値をシーケンサーが上書きし、その結果〔カット・シェイク〕をカメラ同期が拾う)。
+- **文書** `SeqDoc`: `.dxseq` 1 個 = `Sequence` + `SeqHistory` + `IdAllocator`。`sequences/<名前>.dxseq`(または assets 相対パス)。読み込みは `vfs::ReadAsset`(**配布ゲームの pak からも読める**)。保存はエディタのみ(アトミック・正準形)。編集は必ず `SeqOp`(`ApplyOps` / `ApplyTxn`)。
+- 描画側への出力(`CutCameraEntity()` / `ApplyPostOverrides(pp, cameraView)` / `ShakeFor(camera)`)は、エディタのセッションと Play の再生を合成したもの。`ApplicationRender.cpp` の `ppApplied`(fx:pulse と同じ作法のコピー)と `ApplicationScene.cpp` のカメラ同期が読む。
+
+### 20.2 時計と再生
+
+- **Play 中の既定の時計は実時間**(`GameClock` の dt。タイムスケール非適用)。`clock: "game"` で `dt × timeScale`。**`timeScale` トラックを持つシーケンスは実時間に強制**(自己参照を避ける)。決定論ステップ(`step_frames {deterministic}`)の固定 dt でも同じ。
+- ループ(`Once` / `Loop` / `PingPong`)・一時停止・シーク・再生速度(負 = 逆再生)・開始の待ち(`delay`)。`restoreOnEnd`(既定 true)で終了時にタイムスケール・カットの選択を戻す(false は最後のカットを保つ)。同名の再生は入れ替え。
+- 終了で `events` に `"<name>:done"`(`data.value = 1`)。`<name>:play` / `<name>:stop` の購読(Play 開始時に `assets/sequences/` の名前分を購読)で旧 `sequence_author` の Lua と同じ操作ができる。
+- **シーンの自動再生**: `Scene::GetSequenceAutoPlay()`(シーン JSON の `"sequencePlayers": [{"sequence","loop","rate","startDelay","clock"}]`。空なら JSON に何も書かない = 既存シーンは 1 バイトも変わらない)。Play 開始時(とランタイムのシーン切替時)に順に再生。
+- 再生開始時にシーケンスを**複製**して持つ(再生中に文書を編集しても揺れない)。
+
+### 20.3 イベントの発火(Play のみ)
+
+S0 の規則(§11)どおり**前進で 1 回**(`(u0, u1]`。開始の最初の 1 歩は `t = 0` を含む)。**スクラブ(Seek)・エディタのプレビュー再生では発火しない**。未解決バインディングのイベントトラックは発火しない。
+
+| kind | 動作 |
+|---|---|
+| `emit` | `EngineEvent{name}`。`params.data`(オブジェクトの number / bool / string)または `params.value` をペイロードに。`events:on(name, fn)` で受ける |
+| `lua` | グローバル関数 `name`(または `params.fn`。`"Mod.fn"` の入れ子可)を `params.args`(number / bool / string の配列)つきで呼ぶ。失敗はログ(`Luaエラー（Sequence イベント …）`)に出て、再生は続く |
+| `log` | `Logger::Info("[Sequence] name")` |
+| `loadScene` | `name` = シーンパス。Lua の `loadScene` と同じ経路(フレーム境界) |
+
+### 20.4 MCP(エンジン method)
+
+`sequence_list` / `sequence_load` / `sequence_save` / `sequence_get` / `sequence_eval` / `sequence_scrub` / `sequence_play` / `sequence_stop` / `sequence_apply_op` / `sequence_autoplay`(`src/core/mcp/ApplicationMcpSequence.cpp`。McpMeta 直渡し = 引数は中央検査され、`describe_mcp_manifest` に載り、再起動なしで `dx12_call` から使える)。TS の Core ツール `dx12_sequence {op}` がこれを 1 本に束ねる。仕様は `docs/MCP.md` §4-11b。
+- **`sequence_eval` は非破壊**(何も書かない・guid も確定しない・退避を作らない)。`sequence_scrub` はエディタ上で適用する(PreAnimatedState 管理下)。
+- 既存の `sequence_author` / `sequence_preview` / `camera_path` は**名前も挙動も残す**(移行は S6)。

@@ -58,6 +58,8 @@ public:
     // 速度RTを PIXEL_SHADER_RESOURCE へ遷移する。
     void EndVelocity(CommandList& cmd);
     u32  GetVelocitySrvIndex() const;
+    // 仮想ジオメトリ P4: VG の G-Buffer パスが VG 画素の速度を上書きするために使う（クリアはしない。状態は呼び出し側が遷移する）
+    RenderTarget* GetVelocityRT() const { return m_velocityRT.get(); }
 
     // ---- 解決 ----
     // sceneSrv（トーンマップ前の HDR）を履歴と合成して新しい履歴 RT へ書き、その SRV index を返す。

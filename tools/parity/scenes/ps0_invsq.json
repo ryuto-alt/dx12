@@ -1,0 +1,235 @@
+{
+  "$schema": "./schema.json",
+  "specVersion": 1,
+  "id": "ps0_invsq",
+  "parityScene": "PS-0",
+  "title": "PS-0 逆二乗の距離テスト(点光源 400 cd の下の長い床。物理ライティング単位)",
+  "description": "床の上で光源から 1〜12 m の距離が一度に写り、明るさが約 2 桁落ちる。逆二乗 1/d² と cosθ が正しくないとパストレーサーとの差が距離とともに広がる。",
+  "status": "ready",
+  "notes": [
+    "床は反射率 0.5・粗さ 1。光源は床から 1 m の高さ(sourceRadius 2 cm)。EV100=4.5",
+    "太陽・空なし(直接光だけ)",
+    "パストレーサーは bounces=1(直接光 + 環境の可視性つき NEE のみ)。PS-0 は光の単位・露出・トーンマップ・BRDF の校正で、間接光(GI)は別段階(DDGI / SSGI / Lumen 風 GI)の担当。bounces=8 の全光輸送との差は既知の差として PARITY_Q2_REPORT.md に数値を載せる"
+  ],
+  "scene": {
+    "source": "generator",
+    "script": "gen/ps0_calibration.py",
+    "args": {
+      "variant": "invsq",
+      "units": "physical",
+      "cd": 400,
+      "ev100": 4.5
+    },
+    "scene": "scenes/ps0_invsq.json"
+  },
+  "cameras": [
+    {
+      "name": "along",
+      "position": [
+        0.0,
+        3.0,
+        -6.5
+      ],
+      "target": [
+        0.0,
+        0.0,
+        4.0
+      ],
+      "note": "床の奥行き方向。距離とともに暗くなる"
+    },
+    {
+      "name": "side",
+      "position": [
+        -5.0,
+        2.0,
+        1.0
+      ],
+      "target": [
+        0.0,
+        0.0,
+        3.0
+      ],
+      "note": "斜め。cosθ(入射角)の効き"
+    }
+  ],
+  "engine": {
+    "resolution": [
+      1920,
+      1080
+    ],
+    "size": [
+      1920,
+      1080
+    ],
+    "linear": true,
+    "mode": "headless",
+    "warmupFrames": 60,
+    "settleFrames": 8,
+    "png": "srgb",
+    "features": {
+      "ddgi": false,
+      "ssgi": false,
+      "ssr": false,
+      "ssao": false,
+      "taa": false,
+      "lightingUnits": "physical",
+      "ev100": 4.5,
+      "tonemapper": "ue_filmic"
+    },
+    "requiresMethods": [
+      "render_reference"
+    ]
+  },
+  "reference": {
+    "kind": "pt",
+    "pt": {
+      "spp": 1024,
+      "seeds": [
+        1,
+        2
+      ],
+      "format": "pfm",
+      "api": "engine",
+      "timeoutSec": 1800,
+      "params": {
+        "bounces": 1,
+        "lightFalloff": "physical"
+      }
+    },
+    "external": {
+      "colorspace": "auto",
+      "provenance": "手動撮影の UE / 別エンジンの画像を references/ps0_calibration/<camera>.png に置く"
+    }
+  },
+  "alignment": {
+    "tonemap": "ue_filmic",
+    "exposure": "ev100:4.5",
+    "sizePolicy": "error",
+    "ppd": 67
+  },
+  "displayCheck": {
+    "mean_lsb_max": 0.6,
+    "p99_lsb_max": 2.0,
+    "max_lsb_max": 4.0
+  },
+  "gates": {
+    "G0": {
+      "lum_mean_ev_abs_max": 1.0
+    },
+    "G1": {
+      "flip_ldr_mean_max": 0.15,
+      "lum_mean_ev_abs_max": 0.5,
+      "ssim_min": 0.75,
+      "de2000_median_max": 6.0
+    },
+    "G2": {
+      "flip_ldr_mean_max": 0.08,
+      "flip_ldr_p95_max": 0.3,
+      "flip_hdr_mean_max": 0.1,
+      "lum_mean_ev_abs_max": 0.25,
+      "ssim_min": 0.9,
+      "de2000_median_max": 3.0,
+      "hue_abs_median_deg_max": 8.0
+    }
+  },
+  "milestones": {
+    "Q2": "G2",
+    "Q1": "G1"
+  },
+  "noiseFloor": {
+    "k": 1.5
+  },
+  "perf": {
+    "enabled": false
+  },
+  "analytic": [
+    {
+      "kind": "lambert_plane_point_lights",
+      "name": "床(反射率 0.5)の逆二乗 + cosθ",
+      "camera": "along",
+      "plane": {
+        "point": [
+          0,
+          0,
+          0
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ],
+        "albedo": 0.5,
+        "bounds": {
+          "x": [
+            -3,
+            3
+          ],
+          "z": [
+            -4,
+            12
+          ]
+        }
+      },
+      "lights": [
+        {
+          "pos": [
+            0,
+            1.0,
+            -3.5
+          ],
+          "cd": 400
+        }
+      ],
+      "minLuminanceNit": 0.3,
+      "tolerance": {
+        "median_rel": 0.07,
+        "p95_rel": 0.2,
+        "bias_abs": 0.07
+      }
+    },
+    {
+      "kind": "lambert_plane_point_lights",
+      "name": "床の斜め視点(入射角 cosθ)",
+      "camera": "side",
+      "plane": {
+        "point": [
+          0,
+          0,
+          0
+        ],
+        "normal": [
+          0,
+          1,
+          0
+        ],
+        "albedo": 0.5,
+        "bounds": {
+          "x": [
+            -3,
+            3
+          ],
+          "z": [
+            -4,
+            12
+          ]
+        }
+      },
+      "lights": [
+        {
+          "pos": [
+            0,
+            1.0,
+            -3.5
+          ],
+          "cd": 400
+        }
+      ],
+      "minLuminanceNit": 0.3,
+      "tolerance": {
+        "median_rel": 0.07,
+        "p95_rel": 0.2,
+        "bias_abs": 0.07
+      }
+    }
+  ]
+}

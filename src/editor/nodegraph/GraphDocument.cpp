@@ -857,6 +857,7 @@ std::string GraphDocument::Signature() const
             AppendU(s, static_cast<uint32_t>(v.kind)); s += ':';
             for (int c = 0; c < 4; ++c) { FloatBits(s, v.f[c]); s += ' '; }
         }
+        if (!n->extra.empty()) { s += '#'; s += n->extra; }
         s += '\n';
     }
     for (const Edge& e : m_model->Edges())

@@ -32,8 +32,16 @@ export const SCENE_ROOT_KEYS = [
   //   「ルートの未知キー」警告が出る。schemaDrift.test.ts [11] が SceneSerializer.cpp の
   //   root["..."] 代入と突き合わせるので、次からは足し忘れた時点でテストが赤くなる。
   "shadowPcss", "raytracing",
+  // 物理ベース大気 A1（既定と同じなら書かない）。BuildSceneJson が root["atmosphere"] を書く。
+  "atmosphere",
   // ナビメッシュの生成パラメータ（焼いた実体はシーンの隣の .nav サイドカー）。
   "navmesh",
+  // 仮想ジオメトリ（既定値のときは書かない）。
+  "virtualGeometry",
+  // シーケンサー: Play 開始時に自動再生するシーケンスの一覧(sequence_autoplay / dx12_sequence {op:"autoplay"} が書く)。
+  "sequencePlayers",
+  // 風(グローバルな風場。BuildSceneJson が root["wind"] を書く)。schemaDrift.test.ts [12] が SceneSerializer.cpp と突き合わせる。
+  "wind",
 ] as const;
 
 /** 反射登録されたコア部品の JSON キー(RegisterCoreComponentSerializers の登録順)。 */
@@ -50,6 +58,8 @@ export const REFLECTED_COMPONENT_KEYS = [
   "animatorController", "footIK",
   // ゲーム AI の Brain と音のリバーブ域(どちらも SceneSerializer の反射登録)。
   "brain", "audioReverbZone",
+  // 仮想ジオメトリ（.vgeo）。
+  "virtualGeometry",
 ] as const;
 
 /** SerializeEntityJson が直接書くキー。 */

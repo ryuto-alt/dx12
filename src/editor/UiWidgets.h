@@ -54,6 +54,15 @@ bool IconButton(const char* id, const char* glyph, const char* tooltip = nullptr
 bool IconDropdownButton(const char* id, const char* glyph, const char* tooltip = nullptr,
                         bool active = false, float sizePx = 0.0f);
 
+// アイコン + ラベル + 右に chevron の「▾」付きボタン（ツールバーのドロップダウン。幅はラベルに合わせて自動）。
+// label が空ならアイコンだけの IconDropdownButton と同じ見た目。押されたら true（ポップアップを開く用）。
+// active = 面 + 下辺のネオンライン。value を渡すと等幅の値（"0.25 m" 等）をラベルの右に淡く添える。
+bool LabelDropdownButton(const char* id, const char* glyph, const char* label, const char* tooltip = nullptr,
+                         bool active = false, float sizePx = 0.0f, const char* value = nullptr);
+// 選択 / 非選択の小さなチップ（スナップ量のプリセット等）。押されたら true。selected = アクセントの面 + 縁。
+// widthPx <= 0 でラベル幅に合わせる。
+bool Chip(const char* id, const char* label, bool selected, float widthPx = 0.0f);
+
 // ---- ボタン ----
 bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0, 0));   // 主要アクション（アクセント塗り）
 bool DangerButton(const char* label, const ImVec2& size = ImVec2(0, 0));    // 危険（赤枠・赤文字）
@@ -117,15 +126,14 @@ void PopMenuStyle();
 // deco:: — テーマ・バリアント（アイデンティティ候補 A/B/C。EditorTheme.h / ThemeVariants.h）の共通装飾ヘルパ
 // ---------------------------------------------------------------------------
 // ★グロー / 光のヘアライン / シグナルバー / 影 / 状態遷移のイージングは、パネルごとに書かずここに集約する。
-//   Variant::Default（既定）では、どの関数も従来と同じ描画・同じ値を返す（＝見た目は 1px も変わらない）。
-//   案を 1 つに決めたら、その案の分岐だけ残して他を消せる構造（呼び出し側は Variant を見ない）。
+//   既定（Variant::Default）= ネオン・エッジ。B / C は別テーマ（将来のテーマ切替の下地）で、差は Deco 表と
+//   各関数の Variant 分岐だけ。呼び出し側（各パネル）は Variant を見ない。
+//   後続（ノードグラフ・タイムライン）が使う部品: Ease / Glow / RowFace / CardSelected / SelectionBar /
+//   FloatingCard / PaintChrome / EdgeLine（光の線）/ Halo（点の発光）。
 // ★色は EditorTheme.h のトークン（ThemeVariants.h の Deco 方針）だけを引く。寸法は Px()。
 // ===========================================================================
 namespace deco
 {
-// 既定（現行）以外の案が有効か。
-bool Active();
-
 // 状態の滑らかな遷移: (id, slot) ごとの 0..1 の値が target へ寄っていく（時間 = Deco::easeSec）。
 // Default（easeSec == 0）は target をそのまま返す（＝即時・記憶なし）。slot: 0=hover 1=active 2=focus。
 float Ease(ImGuiID id, int slot, float target);
@@ -148,6 +156,12 @@ void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx);
 // 浮遊するカード（トースト等）。影 + 面 + 縁。Default は従来のトーストと同じ描画。
 // face = 面の色（alpha 込み）、alpha = 全体のフェード。
 void FloatingCard(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, const ImVec4& face, float alpha);
+
+// 光の線（中央が明るく両端へ消える。水平: a→b が左右 / 垂直: 上下）。alpha 0..1。ツールバーの下端・タイムラインのプレイヘッド等。
+void EdgeLine(ImDrawList* dl, ImVec2 a, ImVec2 b, const ImVec4& col, float alpha);
+
+// 点のハロー（プレイヘッド・キー・ノードのピンの発光）。center を中心に radius まで 2 乗で減衰する光。strength 0..1（案の glow 係数が掛かる）。
+void Halo(ImDrawList* dl, ImVec2 center, float radius, const ImVec4& col, float strength);
 
 // 全パネルの描画後（ImGuiManager::EndFrame）に 1 回呼ぶ。パネル上端のヘアライン / フォーカス中パネルのエッジ /
 // 選択タブの光 / ポップアップ・メニュー・パレットの影 / ステータスバーの線など「窓の外側から足す」装飾。Default は何もしない。

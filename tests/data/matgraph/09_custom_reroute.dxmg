@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000009",
+  "name": "custom_reroute",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "ex": { "type": "Custom", "in": { "In0": "r2.Out", "In1": "tint.Out" }, "props": { "code": "In0 * 0.1 + In1 * 0.5", "outputType": "float3" } },
+    "fn": { "type": "Custom", "in": { "In0": "r2.Out" }, "props": { "code": "float3 p = In0 * 3.0;\nfloat h = frac(sin(dot(p, float3(12.9898, 78.233, 37.719))) * 43758.5453);\nreturn h;", "outputType": "float" } },
+    "out": { "type": "MaterialOutput", "in": { "BaseColor": "ex.Out", "Roughness": "fn.Out" } },
+    "r1": { "type": "Reroute", "in": { "In": "wp.Out" } },
+    "r2": { "type": "Reroute", "in": { "In": "r1.Out" } },
+    "tint": { "type": "Float3", "props": { "value": [1.0, 0.8, 0.6] } },
+    "wp": { "type": "WorldPosition" }
+  },
+  "comments": {},
+  "layout": {
+    "ex": "0 0",
+    "fn": "0 0",
+    "out": "0 0",
+    "r1": "0 0",
+    "r2": "0 0",
+    "tint": "0 0",
+    "wp": "0 0"
+  }
+}

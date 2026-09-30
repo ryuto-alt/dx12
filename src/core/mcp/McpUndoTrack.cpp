@@ -209,6 +209,9 @@ std::string McpUndoTracker::Fingerprint(entt::entity e)
     if (fp.empty()) fp = "<unserializable:" + std::to_string(++s_forceChanged) + ">";
     if (const auto* t = reg.try_get<Transform>(e))
         fp += "|parent=" + std::to_string(static_cast<u32>(entt::to_integral(t->parent)));
+    // 植生: インスタンスの実体は JSON に入らない（.dxfoliage）。実体はコピーオンライトなのでポインタが変われば編集された。
+    if (const auto* fl = reg.try_get<FoliageLayer>(e))
+        fp += "|foliageSet=" + std::to_string(reinterpret_cast<std::uintptr_t>(fl->_set.get()));
     return fp;
 }
 
@@ -286,6 +289,8 @@ bool McpUndoTracker::TrackByJsonKey(entt::entity e, const std::string& key)
     else if (key == "meshCollider")        Track<MeshCollider>(e);
     else if (key == "luaScript")           Track<LuaScript>(e);
     else if (key == "trailRenderer")       Track<TrailRenderer>(e);
+    else if (key == "foliageLayer")        Track<FoliageLayer>(e);   // _set はコピーオンライトの shared_ptr（Undo は古い実体へポインタを戻す）
+    else if (key == "waterBody")           Track<WaterBody>(e);
     else if (key == "decal")               Track<DecalComponent>(e);
     else if (key == "networkIdentity")     Track<NetworkIdentity>(e);
     else if (key == "networkTransform")    Track<NetworkTransform>(e);

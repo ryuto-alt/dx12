@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000005",
+  "name": "vector_ops",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "cross": { "type": "Cross", "in": { "A": "wp.Out", "B": "vn.Out" } },
+    "d01": { "type": "Saturate", "in": { "X": "dot.Out" } },
+    "dot": { "type": "Dot", "in": { "A": "nz.Out", "B": "vn.Out" } },
+    "gb": { "type": "ComponentMask", "in": { "X": "rgba.Out" }, "props": { "a": false, "b": true, "g": true, "r": false } },
+    "gbz": { "type": "Append", "in": { "A": "gb.Out", "B": "z.Out" } },
+    "len": { "type": "Length", "in": { "X": "wp.Out" } },
+    "nz": { "type": "Normalize", "in": { "X": "cross.Out" } },
+    "out": { "type": "MaterialOutput", "in": { "BaseColor": "nz.Out", "Emissive": "gbz.Out", "Metallic": "sp.G", "Roughness": "d01.Out" } },
+    "rgba": { "type": "Append", "in": { "A": "xyz1.Out", "B": 1.0 } },
+    "sp": { "type": "Split", "in": { "X": "wp.Out" } },
+    "vn": { "type": "VertexNormalWS" },
+    "wp": { "type": "WorldPosition" },
+    "xy": { "type": "ComponentMask", "in": { "X": "wp.Out" }, "props": { "a": false, "b": false, "g": true, "r": true } },
+    "xyz1": { "type": "Append", "in": { "A": "xy.Out", "B": "len.Out" } },
+    "z": { "type": "ComponentMask", "in": { "X": "wp.Out" }, "props": { "a": false, "b": true, "g": false, "r": false } }
+  },
+  "comments": {},
+  "layout": {
+    "cross": "0 0",
+    "d01": "0 0",
+    "dot": "0 0",
+    "gb": "0 0",
+    "gbz": "0 0",
+    "len": "0 0",
+    "nz": "0 0",
+    "out": "0 0",
+    "rgba": "0 0",
+    "sp": "0 0",
+    "vn": "0 0",
+    "wp": "0 0",
+    "xy": "0 0",
+    "xyz1": "0 0",
+    "z": "0 0"
+  }
+}

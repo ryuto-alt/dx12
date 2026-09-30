@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000002",
+  "name": "params_pbr",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "ao": { "type": "Float", "props": { "value": 0.85 } },
+    "boost": { "type": "ScalarParameter", "props": { "default": 2.0, "name": "GlowBoost", "range": [0.0, 10.0] } },
+    "glow": { "type": "VectorParameter", "props": { "default": [0.0, 0.2, 0.4, 1.0], "group": "Color", "name": "Glow" } },
+    "metal": { "type": "ScalarParameter", "props": { "default": 0.1, "group": "Surface", "name": "Metallic", "priority": 2, "range": [0.0, 1.0] } },
+    "mulGlow": { "type": "Multiply", "in": { "A": "glow.RGB", "B": "boost.Out" } },
+    "out": { "type": "MaterialOutput", "in": { "AmbientOcclusion": "ao.Out", "BaseColor": "tint.RGB", "Emissive": "mulGlow.Out", "Metallic": "metal.Out", "Roughness": "rough.Out" } },
+    "rough": { "type": "ScalarParameter", "props": { "default": 0.6, "group": "Surface", "name": "Roughness", "priority": 1, "range": [0.0, 1.0] } },
+    "tint": { "type": "VectorParameter", "props": { "default": [0.9, 0.6, 0.3, 1.0], "group": "Color", "name": "BaseTint", "srgb": true } }
+  },
+  "comments": {},
+  "layout": {
+    "ao": "0 0",
+    "boost": "0 0",
+    "glow": "0 0",
+    "metal": "0 0",
+    "mulGlow": "0 0",
+    "out": "0 0",
+    "rough": "0 0",
+    "tint": "0 0"
+  }
+}

@@ -8,7 +8,8 @@ import { compareLook, roundDelta, roundStats } from "../lookCompare.ts";
 import os from "node:os";
 import { buildContactSheet, type PathMode, planCameraPath } from "../contactSheet.ts";
 import { assetsDirFromScenePath, checkScenePath, summarizeScene, validateSceneJson } from "../sceneWrite.ts";
-import { engine, errResult, imageResult, regRaw, run } from "./core.ts";
+import { engine, errResult, imageResult, jevProjectBaseDir, regRaw, run } from "./core.ts";
+import { writeJournalEntry } from "../journalTs.ts";
 
 // ════════════════════════════════════════════════════════════════
 //  品質判断系（絵を「見る」だけでなく「測る」ための道具）
@@ -383,6 +384,7 @@ regRaw(
 
       // 4) 既存ファイルの要約とバックアップ(何を壊すのかを必ず言う)
       let replaced: Record<string, unknown> | null = null;
+      let prevBuf: Buffer | null = null;
       if (fs.existsSync(absPath)) {
         if (overwrite === false) {
           throw argError(
@@ -390,7 +392,8 @@ regRaw(
             "上書きしてよいなら overwrite を省く(既定 true)。別名で書くなら path を変える",
           );
         }
-        const prevText = fs.readFileSync(absPath, "utf8");
+        prevBuf = fs.readFileSync(absPath);
+        const prevText = prevBuf.toString("utf8");
         const backupPath = path.join(os.tmpdir(), `dx12_scene_backup_${Date.now()}_${path.basename(absPath)}`);
         fs.writeFileSync(backupPath, prevText);
         let prevSummary: unknown = null;
@@ -404,6 +407,17 @@ regRaw(
           parseError,
           note: "上書き前の内容。バックアップは %TEMP% に置いた(assets を汚さないため)",
         };
+      }
+
+      // 4.5) ファイル書き込みジャーナル(M5): 上書き前の内容(新規なら「無かった」)を <project>/.dx12/journal/ に退避する。
+      //      エンジンの journal_restore で戻せる。プロジェクトが分からない(エンジンに繋がらない)ときは退避しない。
+      let journal: { id: string; restore: unknown } | { skipped: string } | null = null;
+      {
+        const baseDir = await jevProjectBaseDir();
+        if (baseDir) {
+          const je = writeJournalEntry(baseDir, "scene_write", `dx12_scene_write ${relPath ?? path.basename(absPath)}`, [{ absPath, prev: prevBuf }]);
+          journal = je ? { id: je.id, restore: { tool: "dx12_call", args: { name: "journal_restore", args: { id: je.id } }, why: "この書き込みの前の状態へファイルを戻す(新規作成なら削除)" } } : { skipped: "ジャーナルを書けなかった" };
+        } else journal = { skipped: "エンジンに繋がらずプロジェクトが分からない" };
       }
 
       // 5) 書き出し(SceneSerializer と同じ 2 スペースインデント)
@@ -420,6 +434,7 @@ regRaw(
         bytes: Buffer.byteLength(text),
         wrote: validation.summary,
         replaced,
+        journal,
         validation: { ok: validation.ok, errors: validation.errors, warnings: validation.warnings },
         opened,
         nextStep: open

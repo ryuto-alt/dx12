@@ -16,6 +16,7 @@
 #include "editor/ToastQueue.h"
 
 #include <string>
+#include <vector>
 
 namespace dx12e::ui
 {
@@ -36,6 +37,20 @@ void RenderToasts(float dt, float bottomInset);
 size_t ToastLiveCount();
 // 全部消す（テスト用）。
 void ToastClearAll();
+
+// 直近に出したトーストの履歴（新しい順・最大 limit 件。dx12_editor_state {scope:"toasts"} 用）。
+// 表示が消えた後も残る（50 件のリング）。同じ本文の連打は 1 件に畳んで count を増やす。live = いま表示中か。
+struct ToastRecord
+{
+    uint32_t  seq = 0;         // 通し番号（単調増加。「前回以降」の差分取得に使える）
+    uint32_t  id = 0;          // 表示キューの id
+    ToastKind kind = ToastKind::Info;
+    std::string text;
+    int       count = 1;
+    double    ageSec = 0.0;    // 最後に積まれてからの秒（取得時点）
+    bool      live = false;
+};
+std::vector<ToastRecord> ToastHistory(size_t limit);
 
 // 種別 → 文字列（"info" / "success" / "warn" / "error"）と逆変換（MCP の notify 用）。
 const char* ToastKindName(ToastKind k);

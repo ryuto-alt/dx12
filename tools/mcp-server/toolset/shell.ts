@@ -16,12 +16,15 @@ import { structureError } from "../structure.ts";
 import { bodyFromIssues, unknownKeyIssues, validateAgainstShape } from "../validate.ts";
 import { getFleet } from "../fleet/runtime.ts";
 import { fleetToolsEnabled } from "../fleet/enabled.ts";
+import { jobsSummary } from "../jobs/runtime.ts";
 
 export const manifestStore = new ManifestStore(engine);
 export const shell = new ShellRuntime({
   engine, registry: TOOL_REGISTRY, manifest: manifestStore, toolset: SURFACE, surface: SURFACE, listChanged: LIST_CHANGED_ENABLED, version: SERVER_VERSION,
   // フリートのツールが有効なときだけ、dx12_doctor にフリートの状態(台数・資源・古い exe コピー・孤児)を載せる。
   fleetStatus: async () => (fleetToolsEnabled() ? getFleet().status() : (null as any)),
+  // ジョブ API の状態(動いているジョブ・孤児・直近の失敗)。ジョブを一度も使っていなければ何も作らずに空の要約を返す。
+  jobsStatus: () => jobsSummary(),
 });
 
 const ALWAYS_LOAD = { "anthropic/alwaysLoad": true };
@@ -94,7 +97,8 @@ if (ENHANCED) {
         ? "この面では使えない(guarded は dx12_call_guarded から実行する)。"
         : "guarded な操作に必要。ユーザーの承認を得たときだけ true にする。"),
       timeoutMs: z.number().int().min(100).max(600000).optional().describe("エンジン method 呼び出しのタイムアウト(ms)。旧ツール経由では効かない。"),
-      idempotency_key: z.string().optional().describe("対応する method(create_entity / spawn_model など)の冪等キー。同じキーの再送は二重生成しない。"),
+      idempotency_key: z.string().optional().describe("冪等キー(別名 idempotencyKey)。write 系の全 method / ツールで、同じキーの再送は前回の結果を返して再実行しない(エンジンが 10 分・256 件まで覚える)。省略しても、エンジン method に 1:1 の write 系は自動で採番し、タイムアウト時に同じキーで再送する(meta.autoRetried)。"),
+      idempotencyKey: z.string().optional().describe("idempotency_key の別名。"),
       engine: z.union([z.string(), z.number().int()]).optional().describe("この 1 回だけ向ける専用エンジンの id / name / port(dx12_engine_list で確認)。省略で既定(束縛中)のエンジン。"),
     },
     { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
@@ -110,7 +114,8 @@ if (ENHANCED) {
         name: z.string().describe("guarded なツール名/method 名(dx12_git_push / dx12_eval_lua / dx12_delete_asset / dx12_build_game など)。"),
         args: z.record(z.any()).optional().describe("そのツールの引数(オブジェクト)。"),
         dryRun: z.boolean().optional().describe("true=実行せず、対象・破壊性を返す。先にこれで確認する。"),
-        idempotency_key: z.string().optional().describe("対応する method の冪等キー。"),
+        idempotency_key: z.string().optional().describe("冪等キー(別名 idempotencyKey)。"),
+        idempotencyKey: z.string().optional().describe("idempotency_key の別名。"),
       },
       { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
       (a) => shell.callGuarded(a),
@@ -128,7 +133,7 @@ if (ENHANCED) {
 
   regShell(
     "dx12_guide", "使い方ガイド",
-    "目的別の最短手順・危険操作の注意・仮想入力の運用ルールを返す(Markdown)。topic 省略で一覧。トピック: build_scene / test / lighting / ui / editor / safety / errors / perf / fleet(専用エンジンの起動・上限・後始末) / engine_dev(エンジンに method を足したら何をするか)。",
+    "目的別の最短手順・危険操作の注意・仮想入力の運用ルールを返す(Markdown)。topic 省略で一覧。トピック: build_scene / scene_spec(仕様 JSON で部屋・ステージ・街を作る) / test / lighting / ui / editor / safety / errors / perf / fleet(専用エンジンの起動・上限・後始末) / jobs(長い処理のジョブ API) / engine_dev(エンジンに method を足したら何をするか)。",
     { topic: z.string().optional().describe("トピック id(省略で一覧)。") },
     { readOnlyHint: true, idempotentHint: true },
     async (a) => shell.guide(a),

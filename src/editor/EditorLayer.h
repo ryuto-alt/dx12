@@ -32,6 +32,8 @@ class SceneViewPanel;
 class AssetBrowserPanel;
 class ConsolePanel;
 class CommandPalette;   // Ctrl+K / Ctrl+P（editor/CommandPalette.h）
+class ViewportToolbar;  // ビューポート上端の専用ツールバー + ビューキューブ（editor/panels/ViewportToolbar.h）
+class WorkspaceManager; // ドックの構築 / レイアウト保存 / ワークスペース / 下部ドック（editor/WorkspaceManager.h）
 
 class EditorLayer
 {
@@ -103,6 +105,9 @@ public:
     // サムネイルキャッシュを使い回すためのアクセサ(InspectorPanelと同じ理由)。
     AssetBrowserPanel* GetAssetBrowser() const { return m_assetBrowser.get(); }
 
+    // ワークスペース / レイアウト管理（UI 自動テストと ToolbarPanel が状態を読む）。
+    WorkspaceManager* GetWorkspace() const { return m_workspace.get(); }
+
     // 下部ステータスバーの高さ。DockSpace はこのぶん短くする（重なると下端のパネルが隠れる）。
     static constexpr f32 kStatusBarHeight = 28.0f;   // 論理 px（100% 表示）
     static f32 StatusBarHeight();                    // 現在の倍率での物理 px（Px(kStatusBarHeight)）
@@ -126,6 +131,10 @@ private:
 
     ImVec2 m_viewportPos  = {0, 0};
     ImVec2 m_viewportSize = {1, 1};
+    // ビューポート専用ツールバーの帯（中央ノードの上端。3D の矩形のすぐ上）
+    ImVec2 m_viewportBarPos = {0, 0};
+    float  m_viewportBarW = 0.0f;
+    float  m_viewportBarH = 0.0f;
 
     std::unique_ptr<ToolbarPanel>      m_toolbar;
     std::unique_ptr<HierarchyPanel>    m_hierarchy;
@@ -134,6 +143,8 @@ private:
     std::unique_ptr<AssetBrowserPanel> m_assetBrowser;
     std::unique_ptr<ConsolePanel>      m_console;
     std::unique_ptr<CommandPalette>    m_palette;
+    std::unique_ptr<ViewportToolbar>   m_viewportBar;
+    std::unique_ptr<WorkspaceManager>  m_workspace;
     class ModelThumbnailRenderer* m_thumbRenderer = nullptr;
 };
 

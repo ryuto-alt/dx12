@@ -246,7 +246,8 @@ reg(
 reg(
   "dx12_set_scene_settings",
   "シーン設定変更",
-  "シーンのスカイボックス/IBL とデカールアトラスを設定する。skybox 内の指定フィールドだけ適用。"
+  "シーンのスカイボックス/IBL・物理大気・デカールアトラスを設定する。skybox / atmosphere 内の指定フィールドだけ適用。"
+  + "★物理大気は atmosphere:{enabled:true, preset?, timeOfDay?} で ON(既定 OFF=従来の空)。太陽は driveSun=true の間、大気が向き・色・強度を毎フレーム決める。"
   + "★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。"
   + "★decalAtlasPath は【デカールの絵】。空だとデカールを置いても【無言で何も出ない】"
   + "(dx12_decal_apply が自動で用意するので、普通は直接触らなくてよい)。",
@@ -260,18 +261,42 @@ reg(
       iblIntensity: z.number().optional().describe("IBL(間接光)の強さ。"),
       skyboxIntensity: z.number().optional().describe("スカイボックス描画の明るさ。"),
       drawSkybox: z.boolean().optional().describe("スカイボックスを描画するか。"),
-    }).passthrough().describe("スカイボックス設定。指定したフィールドのみ適用。"),
+    }).passthrough().optional().describe("スカイボックス設定。指定したフィールドのみ適用。"),
+    atmosphere: z.object({
+      preset: z.enum(["earth", "mars", "haze", "twilight"]).optional().describe("大気パラメータのプリセット(地球 / 火星風 / 霞 / 薄明)。先に適用され、同時に指定した個別項目で上書きできる。"),
+      enabled: z.boolean().optional().describe("物理大気を使うか。false(既定)= 従来の空。"),
+      timeOfDay: z.number().optional().describe("時刻 0..24(現地太陽時。6/18 時が日の出/日の入り = 春分)。"),
+      timeSpeed: z.number().optional().describe("Play 中に時刻を進める速さ [時間/秒]。0 = 止める。"),
+      latitudeDeg: z.number().optional().describe("緯度(-90..90。北が正)。"),
+      dayOfYear: z.number().optional().describe("年内通日 1..366(81 = 春分)。"),
+      northYawDeg: z.number().optional().describe("ワールド +Z が北から時計回りに何度ずれているか。"),
+      sunMode: z.number().optional().describe("0 = 時刻から太陽の向きを決める / 1 = 太陽ライトの向きを直接指定。"),
+      driveSun: z.boolean().optional().describe("太陽ライトの向き(sunMode=0)・色・強度を大気が決める。"),
+      driveIBL: z.boolean().optional().describe("空を環境マップ(IBL/DDGI)へ反映する。"),
+      drawStars: z.boolean().optional().describe("夜の星。"),
+      drawMoon: z.boolean().optional().describe("夜の月。"),
+      sunIlluminance: z.number().optional().describe("大気上端の太陽照度 [lux](既定 128000)。"),
+      groundAlbedo: z.array(z.number()).optional().describe("地表アルベド [r,g,b]。"),
+      aerialPerspective: z.boolean().optional().describe("遠景の霞(エアリアルパースペクティブ)。"),
+      apStartDepth: z.number().optional().describe("霞を掛け始める距離 [m]。"),
+      apMaxDistanceKm: z.number().optional().describe("霞の froxel が届く最大距離 [km]。"),
+      apStrength: z.number().optional().describe("霞の濃さ倍率(1 = 物理どおり)。"),
+    }).passthrough().optional().describe("物理ベース大気(Hillaire 2020)。指定したフィールドのみ適用。上記以外の物理パラメータ(planetRadiusKm / rayleighScattering / mieG など)も get_scene_settings の atmosphere と同じ名前で渡せる。"),
   },
   { idempotentHint: true },
-  ({ skybox, decalAtlasPath }) => run(async () => {
+  ({ skybox, atmosphere, decalAtlasPath }) => run(async () => {
     const known = ["envMapPath", "iblIntensity", "skyboxIntensity", "drawSkybox"];
     const bad = unknownParamKeys(skybox, known);
     if (bad.length > 0) throw unknownKeyError("dx12_set_scene_settings skybox", bad, known);
     const clean = definedOnly(skybox ?? {});
+    const atmoClean = definedOnly(atmosphere ?? {});
     const r = await engine.call("set_scene_settings",
-      definedOnly({ skybox: clean, decalAtlasPath })) as Record<string, unknown>;
+      definedOnly({ skybox: skybox === undefined ? undefined : clean,
+                    atmosphere: atmosphere === undefined ? undefined : atmoClean, decalAtlasPath })) as Record<string, unknown>;
     const current = await engine.call("get_scene_settings", {}).catch(() => null);
-    const mismatched = verifyApplied({ skybox: clean }, current);
+    // preset は値ではなく操作なので突き合わせから外す(適用後の個別項目は atmosphere に入っている)
+    const { preset: _preset, ...atmoCheck } = atmoClean as Record<string, unknown>;
+    const mismatched = verifyApplied({ skybox: clean, ...(atmosphere === undefined ? {} : { atmosphere: atmoCheck }) }, current);
     return {
       applied: mismatched.length === 0,
       envMapRebake: r?.envMapRebake ?? false,

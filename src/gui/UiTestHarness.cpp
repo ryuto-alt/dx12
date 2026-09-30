@@ -4,11 +4,26 @@
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/Version.h"
+#include "core/VirtualGuard.h"   // テスト中は ShellExecute / ダイアログを止める（guard::TestRunActive）
 #include "ecs/Components.h"
 #include "editor/EditorContext.h"
+#include "editor/InspectorLogic.h"   // [I] insp::SplitList（最近使ったコンポーネントの確認）
+#include "editor/EditorPrefs.h"       // [I] 折りたたみ / 最近使ったの永続値
+#include "editor/PropertyGrid.h"       // [I] pg::InternalClipboard（値コピーの確認）
+#include "editor/panels/AssetBrowserPanel.h"   // [A] アセットブラウザの計測 / 操作
+#include "editor/AssetBrowserLogic.h"
+#include <shlobj.h>   // DROPFILES（OS ファイルドロップのテスト）
+#include "editor/SelectionOutline.h"   // ビューポートの輪郭（マスク描画の実績を見る）
+#include "editor/ViewportLogic.h"     // アスペクト / スナップのプリセット
 #include "editor/EditorIcons.h"   // ICON_PLUS（追加ボタンの参照名）
 #include "editor/EditorCommands.h" // コマンド表（ショートカット / window.* コマンド）
 #include "editor/ToolWindows.h"    // ツール窓レジストリ
+#include "editor/WorkspaceLogic.h"   // ワークスペース / レイアウト（1b W）
+#include "editor/BottomDock.h"       // 下部ドックの登録タブ
+#include "editor/EditorPrefs.h"       // レイアウトの保存（テスト中は書き込まれない）
+#include "editor/EditorCommandTable.h"
+#include "ecs/EditorFlags.h"      // [H] 非表示 / ロック
+#include "editor/HierarchyLogic.h"   // [H] ヒエラルキーの純ロジック
 #include "editor/Toast.h"          // トースト通知
 #include "editor/EditorTheme.h"   // DPI: theme::Px（診断パネルの寸法）
 #include "editor/UiWidgets.h"     // DPI テストの等幅フォント測定（ui::PushMono）
@@ -97,6 +112,10 @@ Application* g_app = nullptr;
 // 各テストが実行中に吐いたエラーログ。クラッシュしなくても「静かに壊れている」を拾うため、
 // テスト名 → 収集した行、で残して診断パネルに出す（失敗扱いにはしない＝誤検知で赤くしない）。
 std::map<std::string, std::string> g_testNotes;
+// --ui-tests-skip で除外するテスト名（UiTestHarness::SetSkipList）
+std::set<std::string> g_skipTests;
+// --ui-tests-only で「これだけ走らせる」テスト名（空 = 全部。UiTestHarness::SetOnlyList）
+std::set<std::string> g_onlyTests;
 uint64_t g_logCursor = 0;
 
 EditorContext* Ed() { return g_app ? g_app->GetEditorContext() : nullptr; }
@@ -200,6 +219,7 @@ const ImGuiTestItemInfo* SelectLastItem(ImGuiTestItemList& items)
         if (item == nullptr || item->ID == 0 || item->Window == nullptr) continue;
         if (std::strstr(item->DebugLabel, ICON_PLUS) != nullptr) continue;
         if (std::strstr(item->DebugLabel, "HierBg") != nullptr) continue;      // 空白の受け皿（行ではない）
+        if (std::strncmp(item->DebugLabel, "##", 2) == 0) continue;            // 行の右端の目 / 鍵ボタン（ホバー中の行にだけ出る。行ではない）
         if (item->RectFull.GetHeight() > 60.0f) continue;                       // 行より明らかに大きい＝空白領域
         return item;
     }
@@ -227,6 +247,7 @@ void ClickEveryHierarchyItem(ImGuiTestContext* ctx, int maxItems)
         if (item == nullptr || item->ID == 0 || item->Window == nullptr) continue;
         if (std::strstr(item->DebugLabel, ICON_PLUS) != nullptr) continue;
         if (std::strstr(item->DebugLabel, "HierBg") != nullptr || item->RectFull.GetHeight() > 60.0f) continue;   // 空白の受け皿
+        if (std::strncmp(item->DebugLabel, "##", 2) == 0) continue;   // 行の右端の目 / 鍵ボタン
         if (!ctx->ItemExists(item->ID)) continue;   // クリッパで消えた行は飛ばす
 
         ctx->MouseMove(item->ID);
@@ -421,6 +442,267 @@ void T_GizmoAndViewModes(ImGuiTestContext* ctx)
     ctx->Yield(8);
 }
 
+// ---- ビューポートの帯（フェーズ 1a）----
+
+// カメラの向きが軸に揃った（ビューキューブ / ブックマークの補間が終わった）とみなす。
+static bool CameraAxisAligned(const EditorContext* ed)
+{
+    const float m = (std::max)({ std::fabs(ed->camFwd.x), std::fabs(ed->camFwd.y), std::fabs(ed->camFwd.z) });
+    return m > 0.995f;
+}
+
+void T_ViewportBar(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    ed->view2D = false;
+    ed->uiEditMode = false;
+    ed->flyMode = false;
+    ed->vpPrefs = EditorContext::ViewportPrefs{};   // 既定へ
+    ed->ClearSelection();
+    ctx->Yield(8);
+
+    // 後続のテストにカメラの向きを持ち越さない: 開始時の視点をブックマーク 9 へ控え、終わりに戻す
+    ed->pendingBookmarkSet = 9;
+    ctx->Yield(4);
+    const DirectX::XMFLOAT3 startPos = ed->camPos;
+
+    ImGuiWindow* bar = ImGui::FindWindowByName("##ViewportBar");
+    IM_CHECK(bar != nullptr && bar->WasActive);
+    if (bar == nullptr) return;
+
+    // 3D の矩形は帯の直下から始まる（帯は 3D の外＝ゲームの絵に重ならない）
+    Step(ctx, "帯は 3D の矩形の外にある");
+    IM_CHECK_NO_RET(ed->viewportY >= bar->Pos.y + bar->Size.y - 1.0f);
+    IM_CHECK_NO_RET(ed->viewportW > 100.0f && ed->viewportH > 100.0f);
+    auto ratioIs = [&](float want) { return std::fabs(ed->viewportW / ed->viewportH - want) < 0.02f; };
+    IM_CHECK_NO_RET(ratioIs(16.0f / 9.0f));   // 既定は従来どおり 16:9
+
+    // アスペクト: 帯のメニューから選ぶ（ポップオーバーの中の項目も実際に押す）
+    Step(ctx, "アスペクトを 4:3 へ（帯 > アスペクト）");
+    ctx->SetRef("//##ViewportBar");
+    ctx->ItemClick("vpAspect/##ldb");
+    ctx->Yield(3);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("4:3");
+    ctx->Yield(6);
+    IM_CHECK_NO_RET(ed->vpPrefs.aspectIndex == 3);
+    IM_CHECK_NO_RET(ratioIs(4.0f / 3.0f));
+    for (int i = 0; i < vp::kAspectCount; ++i)
+    {
+        ed->vpPrefs.aspectIndex = i;
+        ctx->Yield(4);
+        if (vp::kAspects[i].ratio > 0.0f)
+            IM_CHECK_NO_RET(ratioIs(vp::kAspects[i].ratio));
+        else
+            IM_CHECK_NO_RET(ed->viewportW >= bar->Size.x * 0.5f);   // フィット = 領域いっぱい
+        IM_CHECK_NO_RET(ed->viewportX >= bar->Pos.x - 1.0f && ed->viewportX + ed->viewportW <= bar->Pos.x + bar->Size.x + 1.0f);
+    }
+    ed->vpPrefs.aspectIndex = vp::kAspectDefault;
+    ctx->Yield(4);
+    IM_CHECK_NO_RET(ratioIs(16.0f / 9.0f));
+
+    // 帯を隠せば従来と同じ矩形（＝帯の高さぶん 3D が広がる。決定論スクショの基準）
+    Step(ctx, "帯を隠す / 戻す");
+    const float yWith = ed->viewportY, hWith = ed->viewportH;
+    ed->vpPrefs.barVisible = false;
+    ctx->Yield(6);
+    {
+        ImGuiWindow* b2 = ImGui::FindWindowByName("##ViewportBar");
+        IM_CHECK_NO_RET(b2 == nullptr || !b2->WasActive);
+    }
+    IM_CHECK_NO_RET(ed->viewportY <= yWith + 0.5f);
+    IM_CHECK_NO_RET(ed->viewportH >= hWith - 0.5f);
+    ed->vpPrefs.barVisible = true;
+    ctx->Yield(6);
+    IM_CHECK_NO_RET(std::fabs(ed->viewportH - hWith) < 1.0f);   // 元の矩形へ戻る（往復で縮まない）
+
+    // スナップのポップオーバー（量のチップを押すと EditorContext に反映される）
+    Step(ctx, "スナップ量を変える（帯 > スナップ）");
+    const float savedSnap = ed->snapTranslate;
+    ctx->SetRef("//##ViewportBar");
+    ctx->ItemClick("vpSnap/##ldb");
+    ctx->Yield(3);
+    ctx->SetRef("//$FOCUSED");
+    if (ctx->ItemExists("t5/##chip"))
+    {
+        ctx->ItemClick("t5/##chip");
+        ctx->Yield(3);
+        IM_CHECK_NO_RET(std::fabs(ed->snapTranslate - vp::kSnapTranslate[5]) < 1e-5f);
+        IM_CHECK_NO_RET(!ed->vpHudText.empty());   // 変更は帯の一時表示に出る
+    }
+    else
+        IM_ERRORF("スナップのチップが見つかりません");
+    ed->snapTranslate = savedSnap;
+    ctx->KeyPress(ImGuiKey_Escape);
+    ctx->Yield(4);
+
+    // ビューキューブ: クリックでなめらかに軸へ揃う
+    Step(ctx, "ビューキューブをクリック");
+    ctx->SetRef("//##ViewportBar");
+    bool jumped = false;
+    if (const ImGuiTestItemInfo cubeInfo = ctx->ItemInfo("##viewCube", ImGuiTestOpFlags_NoError); cubeInfo.ID != 0)
+    {
+        const ImVec2 c = cubeInfo.RectFull.GetCenter();
+        const float s = cubeInfo.RectFull.GetWidth();
+        const ImVec2 offs[4] = { ImVec2(-0.20f, 0.06f), ImVec2(0.20f, 0.06f), ImVec2(0.0f, -0.22f), ImVec2(0.0f, 0.24f) };
+        for (const ImVec2& o : offs)
+        {
+            const DirectX::XMFLOAT3 before = ed->camFwd;
+            ctx->MouseMoveToPos(ImVec2(c.x + o.x * s, c.y + o.y * s));
+            ctx->MouseClick(0);
+            for (int f = 0; f < 600 && !CameraAxisAligned(ed); ++f) ctx->Yield();
+            ctx->Yield(2);
+            const float d = std::fabs(ed->camFwd.x - before.x) + std::fabs(ed->camFwd.y - before.y) + std::fabs(ed->camFwd.z - before.z);
+            if (d > 0.05f || CameraAxisAligned(ed)) { jumped = true; break; }
+        }
+    }
+    IM_CHECK_NO_RET(jumped);
+    IM_CHECK_NO_RET(CameraAxisAligned(ed));
+
+    // ブックマーク: Ctrl+2 で保存 → 別の面へ動かす → 2 で戻る
+    Step(ctx, "カメラブックマークの保存と呼び出し");
+    ctx->MouseMoveToPos(ImVec2(ed->viewportX + ed->viewportW * 0.5f, ed->viewportY + ed->viewportH * 0.5f));
+    ctx->Yield(2);
+    ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_2);
+    ctx->Yield(4);
+    const DirectX::XMFLOAT3 savedPos = ed->camPos;
+    const DirectX::XMFLOAT3 savedFwd = ed->camFwd;
+    {
+        ctx->SetRef("//##ViewportBar");
+        if (const ImGuiTestItemInfo cubeInfo = ctx->ItemInfo("##viewCube", ImGuiTestOpFlags_NoError); cubeInfo.ID != 0)
+        {
+            const ImVec2 c = cubeInfo.RectFull.GetCenter();
+            const float s = cubeInfo.RectFull.GetWidth();
+            // 今と違う向きになるまで、別の場所を順にクリックする
+            const ImVec2 offs[4] = { ImVec2(0.0f, -0.24f), ImVec2(0.22f, 0.0f), ImVec2(-0.22f, 0.0f), ImVec2(0.0f, 0.24f) };
+            for (const ImVec2& o : offs)
+            {
+                ctx->MouseMoveToPos(ImVec2(c.x + o.x * s, c.y + o.y * s));
+                ctx->MouseClick(0);
+                for (int f = 0; f < 600; ++f) { ctx->Yield(); if (CameraAxisAligned(ed) && f > 30) break; }
+                ctx->Yield(3);
+                const float d = std::fabs(ed->camFwd.x - savedFwd.x) + std::fabs(ed->camFwd.y - savedFwd.y) + std::fabs(ed->camFwd.z - savedFwd.z);
+                if (d > 0.3f) break;
+            }
+        }
+    }
+    ctx->MouseMoveToPos(ImVec2(ed->viewportX + ed->viewportW * 0.5f, ed->viewportY + ed->viewportH * 0.5f));
+    ctx->Yield(2);
+    ctx->KeyPress(ImGuiKey_2);
+    for (int f = 0; f < 800; ++f)
+    {
+        ctx->Yield();
+        const float dp = std::fabs(ed->camPos.x - savedPos.x) + std::fabs(ed->camPos.y - savedPos.y) + std::fabs(ed->camPos.z - savedPos.z);
+        if (dp < 0.05f && f > 4) break;
+    }
+    const float dp = std::fabs(ed->camPos.x - savedPos.x) + std::fabs(ed->camPos.y - savedPos.y) + std::fabs(ed->camPos.z - savedPos.z);
+    IM_CHECK_NO_RET(dp < 0.1f);
+
+    // 他のポップオーバー（ビューモード / 表示 / カメラ / ブックマーク）が開けて、閉じられる
+    Step(ctx, "帯のポップオーバーを順に開く");
+    const char* pops[] = { "vpViewMode/##ldb", "vpShow/##ldb", "vpCamera/##ldb", "vpBookmarks/##ldb" };
+    for (const char* p : pops)
+    {
+        ctx->SetRef("//##ViewportBar");
+        ctx->ItemClick(p);
+        ctx->Yield(3);
+        ctx->KeyPress(ImGuiKey_Escape);
+        ctx->Yield(3);
+    }
+    ed->vpPrefs = EditorContext::ViewportPrefs{};
+    ctx->Yield(4);
+
+    // 開始時の視点へ戻す
+    ed->pendingBookmarkJump = 9;
+    for (int f = 0; f < 800; ++f)
+    {
+        ctx->Yield();
+        const float d = std::fabs(ed->camPos.x - startPos.x) + std::fabs(ed->camPos.y - startPos.y) + std::fabs(ed->camPos.z - startPos.z);
+        if (d < 0.02f && f > 4) break;
+    }
+    ctx->Yield(4);
+}
+
+void T_ViewportSelection(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    ed->view2D = false;
+    ed->uiEditMode = false;
+    ed->vpPrefs = EditorContext::ViewportPrefs{};
+
+    // 選択アウトライン（エディタ専用の後処理）: 選ぶと専用パスが立ち上がり、マスクを描く
+    Step(ctx, "Box を選択 → 輪郭パスが描く");
+    AddEntity(ctx, "Box");
+    SelectLastEntity(ctx);
+    const entt::entity addedBox = ed->selectedEntity;
+    ctx->Yield(30);
+    IM_CHECK_NO_RET(ed->outlinePass != nullptr);
+    if (ed->outlinePass)
+    {
+        IM_CHECK_NO_RET(ed->outlinePass->IsReady());
+        IM_CHECK_NO_RET(ed->outlinePass->LastMaskDraws() >= 1);
+    }
+
+    // ホバー強調: ビューポートの上でマウスを動かしても破綻しない（CPU のレイ）
+    Step(ctx, "ビューポート上でマウスを動かす（ホバー）");
+    for (int i = 0; i < 6; ++i)
+    {
+        ctx->MouseMoveToPos(ImVec2(ed->viewportX + ed->viewportW * (0.3f + 0.1f * i), ed->viewportY + ed->viewportH * 0.55f));
+        ctx->Yield(3);
+    }
+
+    // ビューモード（デプス / 法線 / ワイヤ …）を順に切り替えても描画が落ちない
+    Step(ctx, "ビューモードを順に切り替える");
+    for (int m = 0; m < vp::kViewModeCount; ++m)
+    {
+        ed->vpPrefs.viewMode = m;
+        ctx->Yield(6);
+    }
+    ed->vpPrefs.viewMode = vp::kViewModeLit;
+    ed->clusterDebugMode = 0;
+    ctx->Yield(4);
+
+    // 表示フラグを全部落として戻す
+    Step(ctx, "表示フラグを切り替える");
+    ed->vpPrefs.showGizmo = false; ed->vpPrefs.showIcons = false; ed->vpPrefs.showLightHandles = false;
+    ed->vpPrefs.showViewCube = false; ed->vpPrefs.outline = false; ed->vpPrefs.showBounds = true;
+    ctx->Yield(8);
+    ed->vpPrefs = EditorContext::ViewportPrefs{};
+    ctx->Yield(4);
+
+    // 矩形選択: 空所から左ドラッグ → 離すと矩形に収まる物が選ばれる。空所を押せなかった（物に当たった）ときは検査しない。
+    Step(ctx, "矩形選択");
+    ed->ClearSelection();
+    ctx->Yield(4);
+    const ImVec2 a(ed->viewportX + 6.0f, ed->viewportY + 6.0f);
+    const ImVec2 b(ed->viewportX + ed->viewportW - 6.0f, ed->viewportY + ed->viewportH - 6.0f);
+    ctx->MouseMoveToPos(a);
+    ctx->Yield(2);
+    ctx->MouseDown(0);
+    ctx->Yield(2);
+    bool sawMarquee = false;
+    for (int i = 1; i <= 4; ++i)
+    {
+        ctx->MouseMoveToPos(ImVec2(a.x + (b.x - a.x) * i / 4.0f, a.y + (b.y - a.y) * i / 4.0f));
+        ctx->Yield(2);
+        sawMarquee = sawMarquee || ed->marqueeActive;
+    }
+    ctx->MouseUp(0);
+    ctx->Yield(4);
+    ctx->LogInfo("marquee=%d selected=%d", sawMarquee ? 1 : 0, static_cast<int>(ed->selectedEntities.size()));
+    if (sawMarquee)
+        IM_CHECK_NO_RET(!ed->selectedEntities.empty());
+    IM_CHECK_NO_RET(!ed->marqueeActive);   // 離したら矩形は終わる
+    ed->ClearSelection();
+    ctx->Yield(4);
+    // 足した Box を片付ける（後続のテストへ持ち越さない）
+    if (addedBox != entt::null)
+        ed->pendingDeletions.push_back(addedBox);
+    ctx->Yield(8);
+}
+
 // ---- コンポーネント ----
 
 void T_AddAllComponents(ImGuiTestContext* ctx)
@@ -442,9 +724,11 @@ void T_AddAllComponents(ImGuiTestContext* ctx)
         ctx->SetRef(kWinInspector);
         ctx->ItemClick(kBtnAddComponent);
         ctx->Yield(2);
-        // ラベルに '/' を含むものがあるため、名前ではなくラベル一致 → ID でクリックする
-        if (!ClickPopupItemContaining(ctx, comp))
-            ctx->KeyPress(ImGuiKey_Escape);
+        // 検索付きポップアップ（フェーズ 1b）: 検索欄が自動フォーカスされるので、ラベルを打って Enter（先頭の候補が付く）。
+        // ★一致した先頭がその項目であること自体が「ラベルで引ける」の確認になる。
+        ctx->KeyChars(comp);
+        ctx->Yield(2);
+        ctx->KeyPress(ImGuiKey_Enter);
         ctx->Yield(4);   // 追加直後の Inspector 再描画まで進める
     }
 
@@ -825,6 +1109,8 @@ void T_AssetBrowser(ImGuiTestContext* ctx)
     {
         const ImGuiTestItemInfo* item = items[i];
         if (item == nullptr || item->ID == 0) continue;
+        if (item->DebugLabel[0] == '\0') continue;   // 名前の無い項目（子窓の枠そのもの）は押せない
+        if (ctx->ItemInfo(item->ID, ImGuiTestOpFlags_NoError).ID == 0) continue;   // 直前のクリックで消えた項目（フォルダ移動でツリーが変わる等）
         Step(ctx, "アセットブラウザの項目をクリック: %s", item->DebugLabel);
         ctx->ItemClick(item->ID);
         ctx->Yield(6);   // 一覧の再構築 + サムネイル生成まで進める
@@ -834,6 +1120,249 @@ void T_AssetBrowser(ImGuiTestContext* ctx)
     IM_CHECK_NO_RET(clicked > 0);
     ctx->Yield(6);
 }
+
+// ===================== [A] アセットブラウザ =====================
+
+// 1 万ファイルのフォルダ（scratchpad の使い捨てプロジェクト <assets>/perf/big。tools は scratchpad\e1b\A\gen10k.py）で
+// ブラウザ Render() の CPU 時間を測る。フォルダが無いプロジェクトでは何もせず通る（通常の全件実行を汚さない）。
+void T_AssetPerf10k(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr && ed->assetBrowser != nullptr);
+    namespace fs = std::filesystem;
+    const fs::path big = fs::path(PathResolver::AssetsDir()) / "perf" / "big";
+    std::error_code ec;
+    if (!fs::is_directory(big, ec)) { ctx->LogInfo("perf/big が無いのでスキップ（性能計測は 1 万ファイルの使い捨てプロジェクトで）"); return; }
+
+    Step(ctx, "1 万ファイルのフォルダへ移動");
+    ed->assetBrowser->NavigateTo(big);
+    // 走査(ワーカー)の完了を待つ
+    for (int i = 0; i < 600 && ed->assetBrowser->EntryCount() < 100; ++i) ctx->Yield(1);
+    ctx->LogInfo("entries = %zu", ed->assetBrowser->EntryCount());
+
+    Step(ctx, "60 フレームの Render() CPU ms を計測");
+    std::vector<float> ms;
+    for (int i = 0; i < 60; ++i) { ctx->Yield(1); ms.push_back(ed->assetBrowser->LastRenderMs()); }
+    std::vector<float> sorted = ms;
+    std::sort(sorted.begin(), sorted.end());
+    float sum = 0.0f; for (float v : ms) sum += v;
+    ctx->LogInfo("asset browser Render(): avg %.3f ms / median %.3f ms / p95 %.3f ms / max %.3f ms (60 frames, entries=%zu)",
+                 sum / static_cast<float>(ms.size()), sorted[sorted.size() / 2], sorted[static_cast<size_t>(sorted.size() * 0.95)],
+                 sorted.back(), ed->assetBrowser->EntryCount());
+
+    Step(ctx, "元のフォルダへ戻す");
+    ed->assetBrowser->NavigateTo(fs::path(PathResolver::AssetsDir()));
+    ctx->Yield(10);
+}
+
+// 一覧が期待の件数になるまで待つ（走査はワーカースレッド。最大 600 フレーム）。
+static bool AbWaitEntries(ImGuiTestContext* ctx, AssetBrowserPanel* ab, size_t expect)
+{
+    for (int i = 0; i < 600; ++i)
+    {
+        ctx->Yield(1);
+        if (!ab->IsScanning() && ab->EntryCount() == expect) { ctx->Yield(2); return true; }
+    }
+    ctx->LogWarning("一覧が %zu 件になりません（現在 %zu 件）", expect, ab->EntryCount());
+    return false;
+}
+
+// フォルダ作成 → 名前変更 → 複製 → 移動 → 削除（使い捨てフォルダ <assets>/__ab_ops_test の中だけ）/ 種別フィルタ / 検索 / グリッド⇔リスト /
+// フォルダの移動（パンくず）/ 参照のあるファイルの名前変更で警告が出る。実アセットは触らない。
+void T_AssetBrowserOps(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr && ed->assetBrowser != nullptr);
+    AssetBrowserPanel* ab = ed->assetBrowser;
+    namespace fs = std::filesystem;
+    const fs::path assets = fs::path(PathResolver::AssetsDir()).lexically_normal();
+    const fs::path work = assets / "__ab_ops_test";
+    std::error_code ec;
+    fs::remove_all(work, ec);
+    fs::create_directories(work);
+    auto put = [&](const char* name, const char* body) { std::ofstream(work / name, std::ios::binary) << body; };
+    put("wall.png", "not a real png");
+    put("b.lua", "-- b");
+    put("c.lua", "-- c");
+    put("d.dxmat", "{\"version\":1,\"name\":\"d\",\"metallic\":0.0,\"roughness\":0.5,\"uvTiling\":[1,1]}");
+
+    Step(ctx, "使い捨てフォルダへ移動して 4 件が並ぶ");
+    ab->SetListView(false);
+    ab->NavigateTo(work);
+    IM_CHECK(AbWaitEntries(ctx, ab, 4));
+    IM_CHECK(ab->CurrentDir() == work);
+    const size_t up = 1;   // 「..」の分（ルート以外のフォルダでは先頭に出る）
+    IM_CHECK_EQ(ab->VisibleCount(), static_cast<size_t>(4) + up);
+
+    Step(ctx, "種別フィルタ（スクリプト / テクスチャ / マテリアル / 解除）");
+    ab->SetKindMask(abl::KindBit(abl::Kind::Script));
+    ctx->Yield(3);
+    IM_CHECK_EQ(ab->VisibleCount(), static_cast<size_t>(2) + up);
+    ab->SetKindMask(abl::KindBit(abl::Kind::Texture));
+    ctx->Yield(3);
+    IM_CHECK_EQ(ab->VisibleCount(), static_cast<size_t>(1) + up);
+    ab->SetKindMask(abl::ChipMask(abl::Kind::Material));
+    ctx->Yield(3);
+    IM_CHECK_EQ(ab->VisibleCount(), static_cast<size_t>(1) + up);
+    ab->SetKindMask(0);
+    ctx->Yield(3);
+    IM_CHECK_EQ(ab->VisibleCount(), static_cast<size_t>(4) + up);
+
+    Step(ctx, "検索（.lua）");
+    ab->SetSearch("lua");
+    IM_CHECK(AbWaitEntries(ctx, ab, 2));
+    IM_CHECK_EQ(ab->VisibleCount(), static_cast<size_t>(2));   // 検索中は「..」が出ない
+    ab->SetSearch("");
+    IM_CHECK(AbWaitEntries(ctx, ab, 4));
+
+    Step(ctx, "グリッド ⇔ リスト（帯のボタンを実際に押す）");
+    const ImGuiID win = FocusWindow(ctx, kWinAssets);
+    IM_CHECK(win != 0);
+    ctx->SetRef(win);
+    ctx->ItemClick("##ViewList/##ib");   // ui::IconButton は PushID(id) の中に "##ib" の項目を持つ
+    ctx->Yield(3);
+    IM_CHECK(ab->ListView());
+    IM_CHECK(ab->DrawnCellsLastFrame() > 0);
+    ctx->ItemClick("##ViewGrid/##ib");
+    ctx->Yield(3);
+    IM_CHECK(!ab->ListView());
+    IM_CHECK(ab->DrawnCellsLastFrame() > 0);
+
+    Step(ctx, "新しいフォルダを作る → 名前変更 → 複製 → 移動 → 削除");
+    fs::path made;
+    IM_CHECK(ab->TestCreateFolder(&made));
+    IM_CHECK(fs::is_directory(made));
+    IM_CHECK(AbWaitEntries(ctx, ab, 5));
+    IM_CHECK(ab->TestRename(made, "renamed"));
+    IM_CHECK(fs::is_directory(work / "renamed") && !fs::exists(made));
+    IM_CHECK(AbWaitEntries(ctx, ab, 5));
+    fs::path copy;
+    IM_CHECK(ab->TestDuplicate(work / "renamed", &copy));
+    IM_CHECK(copy.filename() == "renamed_copy" && fs::is_directory(copy));
+    IM_CHECK(AbWaitEntries(ctx, ab, 6));
+    IM_CHECK(ab->TestMove(copy, work / "renamed"));
+    IM_CHECK(fs::is_directory(work / "renamed" / "renamed_copy") && !fs::exists(copy));
+    IM_CHECK(AbWaitEntries(ctx, ab, 5));
+    IM_CHECK(!ab->TestMove(work / "renamed", work / "renamed" / "renamed_copy"));   // 自分の子孫へは動かせない
+    IM_CHECK(!ab->TestMove(work / "b.lua", work / "renamed" / "nope"));            // 存在しない移動先
+    IM_CHECK(ab->TestDelete(work / "renamed"));
+    IM_CHECK(AbWaitEntries(ctx, ab, 4));
+
+    Step(ctx, "同名があるときの名前変更は失敗する / 使えない名前は弾く");
+    IM_CHECK(!ab->TestRename(work / "b.lua", "c.lua"));
+    IM_CHECK(!ab->TestRename(work / "b.lua", "a/b.lua"));
+    IM_CHECK(!ab->TestRename(work / "b.lua", "bad?.lua"));
+    IM_CHECK(fs::exists(work / "b.lua"));
+    IM_CHECK(ab->TestRename(work / "b.lua", "b2.lua"));
+    IM_CHECK(AbWaitEntries(ctx, ab, 4));
+    IM_CHECK(fs::exists(work / "b2.lua") && !fs::exists(work / "b.lua"));
+
+    Step(ctx, "選択（複数選択の API）");
+    ab->SelectOnly(work / "c.lua");
+    IM_CHECK_EQ(ab->SelectionCount(), static_cast<size_t>(1));
+    IM_CHECK(ab->IsSelected(work / "c.lua"));
+
+    Step(ctx, "パンくずの親へ戻る");
+    ab->NavigateTo(assets);
+    ctx->Yield(4);
+    IM_CHECK(ab->CurrentDir() == assets);
+
+    ab->SetKindMask(0);
+    ab->SetListView(false);
+    fs::remove_all(work, ec);
+    ctx->Yield(5);
+}
+
+// エクスプローラーからのファイルドロップ（WM_DROPFILES）→ 現在のフォルダへコピー。拡張子ホワイトリスト / 名前衝突の連番 / フォルダごとのドロップ。
+// 実際に OS のメッセージ（HDROP）を自分の窓へ PostMessage する（SendInput ではないのでフォーカスも奪わない）。
+struct AbFindHwnd { HWND best = nullptr; long area = 0; };
+static BOOL CALLBACK AbEnumWindows(HWND h, LPARAM lp)
+{
+    auto* f = reinterpret_cast<AbFindHwnd*>(lp);
+    DWORD pid = 0;
+    ::GetWindowThreadProcessId(h, &pid);
+    if (pid != ::GetCurrentProcessId() || ::GetParent(h) != nullptr) return TRUE;
+    RECT rc{};
+    ::GetClientRect(h, &rc);
+    const long a = (rc.right - rc.left) * (rc.bottom - rc.top);
+    if (a > f->area) { f->area = a; f->best = h; }
+    return TRUE;
+}
+
+static bool AbPostDrop(HWND hwnd, const std::vector<std::wstring>& paths, int x, int y)
+{
+    size_t chars = 1;
+    for (const auto& p : paths) chars += p.size() + 1;
+    const size_t bytes = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+    HGLOBAL h = ::GlobalAlloc(GHND, bytes);
+    if (!h) return false;
+    auto* df = static_cast<DROPFILES*>(::GlobalLock(h));
+    df->pFiles = sizeof(DROPFILES);
+    df->pt.x = x; df->pt.y = y;
+    df->fNC = FALSE;
+    df->fWide = TRUE;
+    wchar_t* dst = reinterpret_cast<wchar_t*>(reinterpret_cast<char*>(df) + sizeof(DROPFILES));
+    for (const auto& p : paths) { std::wmemcpy(dst, p.c_str(), p.size() + 1); dst += p.size() + 1; }
+    *dst = 0;
+    ::GlobalUnlock(h);
+    if (!::PostMessageW(hwnd, WM_DROPFILES, reinterpret_cast<WPARAM>(h), 0)) { ::GlobalFree(h); return false; }
+    return true;
+}
+
+void T_AssetOsDrop(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr && ed->assetBrowser != nullptr);
+    AssetBrowserPanel* ab = ed->assetBrowser;
+    namespace fs = std::filesystem;
+    const fs::path assets = fs::path(PathResolver::AssetsDir()).lexically_normal();
+    const fs::path dest = assets / "__ab_drop_test";
+    const fs::path src = fs::temp_directory_path() / "dx12e_ab_drop_src";
+    std::error_code ec;
+    fs::remove_all(dest, ec);
+    fs::remove_all(src, ec);
+    fs::create_directories(dest);
+    fs::create_directories(src / "pack" / "inner");
+    auto put = [&](const fs::path& p, const char* body) { std::ofstream(p, std::ios::binary) << body; };
+    put(src / "ok.png", "png-bytes");
+    put(src / "tex2.jpg", "jpg-bytes");
+    put(src / "virus.exe", "MZ");
+    put(src / "pack" / "a.lua", "-- a");
+    put(src / "pack" / "inner" / "b.hlsl", "// b");
+    put(src / "pack" / "notes.zip", "zip");
+
+    AbFindHwnd f;
+    ::EnumWindows(AbEnumWindows, reinterpret_cast<LPARAM>(&f));
+    IM_CHECK(f.best != nullptr);
+
+    Step(ctx, "使い捨てフォルダを開いて、ファイルとフォルダをドロップする");
+    ab->NavigateTo(dest);
+    IM_CHECK(AbWaitEntries(ctx, ab, 0));
+    IM_CHECK(AbPostDrop(f.best, {(src / "ok.png").wstring(), (src / "tex2.jpg").wstring(), (src / "virus.exe").wstring(), (src / "pack").wstring()}, 5, 5));
+    for (int i = 0; i < 600 && !fs::exists(dest / "pack" / "inner" / "b.hlsl"); ++i) ctx->Yield(1);
+    ctx->Yield(10);
+    IM_CHECK(fs::exists(dest / "ok.png"));
+    IM_CHECK(fs::exists(dest / "tex2.jpg"));
+    IM_CHECK(!fs::exists(dest / "virus.exe"));                       // 拡張子ホワイトリスト外は取り込まない
+    IM_CHECK(fs::exists(dest / "pack" / "a.lua"));                   // フォルダごとのドロップは階層を保つ
+    IM_CHECK(fs::exists(dest / "pack" / "inner" / "b.hlsl"));
+    IM_CHECK(!fs::exists(dest / "pack" / "notes.zip"));
+    IM_CHECK(ed->pendingOsDrops.empty());
+
+    Step(ctx, "同じファイルをもう一度ドロップ → 連番で共存する（上書きしない）");
+    IM_CHECK(AbPostDrop(f.best, {(src / "ok.png").wstring()}, 5, 5));
+    for (int i = 0; i < 600 && !fs::exists(dest / "ok_1.png"); ++i) ctx->Yield(1);
+    IM_CHECK(fs::exists(dest / "ok.png") && fs::exists(dest / "ok_1.png"));
+
+    Step(ctx, "一覧に反映される（変更監視）");
+    IM_CHECK(AbWaitEntries(ctx, ab, 4));   // ok.png / ok_1.png / tex2.jpg / pack
+
+    ab->NavigateTo(assets);
+    fs::remove_all(dest, ec);
+    fs::remove_all(src, ec);
+    ctx->Yield(5);
+}
+
 
 // 後から増えたフローティング窓（ライティング / 地形ツール）が、開いて中身が描かれ、
 // 極端なサイズでも落ちず、ちゃんと閉じられるか。
@@ -904,6 +1433,128 @@ void T_NewFloatingPanels(ImGuiTestContext* ctx)
         IM_ERRORF("フローティングパネルに問題があります:%s", bad.c_str());
 }
 
+// ---- [P] 設定窓の pg:: 2 カラム化（フェーズ 1b）----
+// ポストプロセス / SSAO / SSR・SSGI / ボリュメトリックフォグ / Skybox の各窓の行が pg:: の ID
+// （表 / 行ラベル / ##v）で引けること、値が実際に設定へ届くこと、エフェクトの ↺ で既定へ戻ること、
+// トーンマップの行があることを確かめる。設定は必ず元へ戻す（未保存扱いを残さない）。
+void T_SettingsWindowsPg(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+
+    const auto ppBackup   = scene->GetPostSettings();
+    const auto ssaoBackup = scene->GetSSAOSettings();
+    const auto ssrBackup  = scene->GetSsrSettings();
+    const auto ssgiBackup = scene->GetSsgiSettings();
+    const auto fogBackup  = scene->GetVolumetricFogSettings();
+    const auto skyBackup  = scene->GetSkyboxSettings();
+
+    auto expectNear = [&](float got, float want, const char* what)
+    {
+        if (std::fabs(got - want) > 0.02f)
+            IM_ERRORF("%s が設定へ届いていない（%.3f、期待 %.3f）", what, got, want);
+    };
+    auto input = [&](ImGuiID win, const char* path, float v, const char* what) -> bool
+    {
+        if (!ItemExistsIn(ctx, win, path))
+        {
+            IM_ERRORF("行が見つかりません（%s）: %s", what, path);
+            return false;
+        }
+        ctx->SetRef(win);
+        ctx->ItemInputValue(path, v);
+        ctx->Yield(4);
+        return true;
+    };
+
+    // ---- Post Process（エフェクト一覧。パラメータは子窓 ##postlist の中の pg:: 表）----
+    Step(ctx, "Post Process: 露出だけ有効にして値を入れる");
+    {
+        auto& pp = scene->GetPostSettings();
+        pp = PostProcessSettings{};
+        pp.enabled = true;
+        pp.exposureOn = true;
+    }
+    const float exposureDefault = PostProcessSettings{}.exposure;
+    if (const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showPostProcess, "//Post Process"))
+    {
+        ctx->Yield(6);
+        if (!ItemExistsIn(ctx, win, "##ppmaster/トーンマップ/##v"))
+            IM_ERRORF("トーンマップの行が見つかりません（##ppmaster/トーンマップ/##v）");
+        const ImGuiID list = ChildWindowId(ctx, "//Post Process/##postlist");
+        if (list == 0) IM_ERRORF("エフェクト一覧の子窓が見つかりません");
+        else if (input(list, "露出 Exposure/##fxparams/値/##v", 3.0f, "露出の値"))
+        {
+            expectNear(scene->GetPostSettings().exposure, 3.0f, "露出");
+            Step(ctx, "Post Process: ↺ でこのエフェクトだけ既定へ戻る");
+            ClickPath(ctx, list, "露出 Exposure/↺");
+            ctx->Yield(4);
+            expectNear(scene->GetPostSettings().exposure, exposureDefault, "↺ 後の露出");
+        }
+    }
+    CloseToolWindow(ctx, &EditorContext::showPostProcess);
+
+    // ---- Post Process パラメータ（詰めた窓）----
+    Step(ctx, "Post Process パラメータ: 値を入れる");
+    if (const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showPostParams, "//Post Process パラメータ"))
+    {
+        ctx->Yield(6);
+        if (input(win, "露出 Exposure/##fxparams/値/##v", 2.0f, "露出の値（パラメータ窓）"))
+            expectNear(scene->GetPostSettings().exposure, 2.0f, "露出（パラメータ窓）");
+    }
+    CloseToolWindow(ctx, &EditorContext::showPostParams);
+
+    // ---- SSAO ----
+    Step(ctx, "SSAO: 半径を入れる");
+    scene->GetSSAOSettings().enabled = true;
+    if (const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showSSAO, "//SSAO"))
+        if (input(win, "##ssao/半径 Radius/##v", 1.5f, "SSAO 半径"))
+            expectNear(scene->GetSSAOSettings().radius, 1.5f, "SSAO 半径");
+    CloseToolWindow(ctx, &EditorContext::showSSAO);
+
+    // ---- SSR / SSGI ----
+    Step(ctx, "SSR / SSGI: 強度を入れる");
+    scene->GetSsrSettings().enabled = true;
+    scene->GetSsgiSettings().enabled = true;
+    if (const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showScreenSpaceGi, "//SSR / SSGI"))
+    {
+        if (input(win, "##ssrssgi/強度/##v", 0.5f, "SSR 強度"))
+            expectNear(scene->GetSsrSettings().intensity, 0.5f, "SSR 強度");
+        if (input(win, "##ssrssgi/SSGI 強度/##v", 1.25f, "SSGI 強度"))
+            expectNear(scene->GetSsgiSettings().intensity, 1.25f, "SSGI 強度");
+    }
+    CloseToolWindow(ctx, &EditorContext::showScreenSpaceGi);
+
+    // ---- Volumetric Fog ----
+    Step(ctx, "Volumetric Fog: 濃度を入れる");
+    scene->GetVolumetricFogSettings().enabled = true;
+    if (const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showVolumetricFog, "//Volumetric Fog"))
+        if (input(win, "##fog/濃度/##v", 0.1f, "フォグ濃度"))
+            expectNear(scene->GetVolumetricFogSettings().density, 0.1f, "フォグ濃度");
+    CloseToolWindow(ctx, &EditorContext::showVolumetricFog);
+
+    // ---- Skybox / IBL ----
+    Step(ctx, "Skybox / IBL: IBL 強度を入れる");
+    if (const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showSkybox, "//Skybox / IBL"))
+        if (input(win, "##skybox/IBL Intensity/##v", 2.0f, "IBL 強度"))
+            expectNear(scene->GetSkyboxSettings().iblIntensity, 2.0f, "IBL 強度");
+    CloseToolWindow(ctx, &EditorContext::showSkybox);
+
+    // 後片付け（設定を元へ）。ランタイム値は Skybox 窓が開いている間しか写さないので、
+    // 戻した後にもう一度だけ窓を開いて反映させる必要は無い（元の値がそのまま次フレームの正）。
+    scene->GetPostSettings()          = ppBackup;
+    scene->GetSSAOSettings()          = ssaoBackup;
+    scene->GetSsrSettings()           = ssrBackup;
+    scene->GetSsgiSettings()          = ssgiBackup;
+    scene->GetVolumetricFogSettings() = fogBackup;
+    scene->GetSkyboxSettings()        = skyBackup;
+    // Skybox 窓が開いている間だけ「ランタイム値 ← 設定」を写すので、戻した値を反映させるため一瞬だけ開く。
+    if (OpenToolWindow(ctx, &EditorContext::showSkybox, "//Skybox / IBL"))
+        ctx->Yield(4);
+    CloseToolWindow(ctx, &EditorContext::showSkybox);
+}
+
 void T_LayoutReset(ImGuiTestContext* ctx)
 {
     EditorContext* ed = Ed();
@@ -915,6 +1566,333 @@ void T_LayoutReset(ImGuiTestContext* ctx)
     ctx->Yield(20);
     ed->showEngineDiagnostics = wasDiag;
     IM_CHECK_NO_RET(!ed->resetLayout);   // 消費されていない＝リセットが走っていない
+}
+
+// ===================== 1b W: ワークスペース / レイアウト保存 / 下部ドックのスロット / ツール窓の配置先 =====================
+// 共通: 検査の前に「レイアウトをリセット」して基準を揃え、終わったらもう一度リセットして次のテストへ持ち越さない
+// （リセットは診断パネルも閉じるので、検査中の診断パネルは戻す）。永続化はテスト中は書かない（WorkspaceManager::PersistAllowed）。
+void W_ResetLayout(ImGuiTestContext* ctx, EditorContext* ed)
+{
+    const bool wasDiag = ed->showEngineDiagnostics;
+    ed->resetLayout = true;
+    ctx->Yield(14);
+    ed->showEngineDiagnostics = wasDiag;
+}
+
+// ワークスペース 6 種を順に切り替える: 開く窓が期待どおり・ビューポートの矩形がアスペクトどおりで崩れない・
+// 切り替えても各ワークスペースの「最後の状態」が保たれる・level へ戻ると基準のビューポートへ戻る。
+void T_WorkspaceSwitch(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(g_app != nullptr && ed != nullptr);
+    const cmd::Env env{g_app->GetScene(), PathResolver::AssetsDir()};
+
+    Step(ctx, "プリセットの整合（全窓 id がレジストリに在る・対応するコマンドが在る）");
+    for (const ws::Preset& p : ws::Presets())
+    {
+        IM_CHECK(cmd::FindCommand(std::string("workspace.") + p.id) != nullptr);
+        for (const std::string& id : p.layout.open)
+            if (tools::Find(id.c_str()) == nullptr) IM_ERRORF("プリセット %s の窓 id がレジストリに無い: %s", p.id, id.c_str());
+        for (const std::string& id : p.layout.bottomTabs)
+            if (bottomdock::Find(id) == nullptr) IM_ERRORF("プリセット %s の下部タブ id が未登録: %s", p.id, id.c_str());
+    }
+
+    Step(ctx, "既定へリセットして基準のビューポートを測る");
+    W_ResetLayout(ctx, ed);
+    IM_CHECK(ed->currentWorkspace == "level");
+    const f32 vpW0 = ed->viewportW, vpH0 = ed->viewportH;
+    IM_CHECK_GT(vpW0, 100.0f);
+    IM_CHECK_GT(vpH0, 50.0f);
+    ctx->LogInfo("基準: viewport %.1fx%.1f  layout L%.3f R%.3f B%.3f / measured L%.4f R%.4f B%.4f", vpW0, vpH0,
+                 ed->dockRatioLeft, ed->dockRatioRight, ed->dockRatioBottom, ed->dockMeasLeft, ed->dockMeasRight, ed->dockMeasBottom);
+
+    for (const ws::Preset& p : ws::Presets())
+    {
+        Step(ctx, "ワークスペース「%s」へ切り替える", p.id);
+        cmd::Execute(*ed, env, std::string("workspace.") + p.id);
+        ctx->Yield(12);
+        IM_CHECK(ed->currentWorkspace == p.id);
+
+        std::string bad;
+        for (const tools::Desc& d : tools::kAll)
+        {
+            if (d.flag == &EditorContext::showEngineDiagnostics) continue;
+            const bool want = ws::Contains(p.layout.open, d.id);
+            if ((ed->*(d.flag)) != want) bad += std::string("\n  ・") + d.id + (want ? "（開くはず）" : "（閉じるはず）");
+        }
+        for (const bottomdock::Tab& t : bottomdock::Tabs())
+        {
+            const bool want = ws::Contains(p.layout.bottomTabs, t.id);
+            if (t.open != want) bad += std::string("\n  ・下部タブ ") + t.id + (want ? "（開くはず）" : "（閉じるはず）");
+        }
+        if (!bad.empty()) IM_ERRORF("ワークスペース %s の窓の開閉が期待と違う:%s", p.id, bad.c_str());
+
+        // ビューポートは崩れない（16:9 のはめ込みのまま・0 にならない）
+        const f32 w = ed->viewportW, h = ed->viewportH;
+        ctx->LogInfo("  viewport %.1fx%.1f  layout L%.3f R%.3f B%.3f / measured L%.4f R%.4f B%.4f", w, h,
+                     ed->dockRatioLeft, ed->dockRatioRight, ed->dockRatioBottom, ed->dockMeasLeft, ed->dockMeasRight, ed->dockMeasBottom);
+        IM_CHECK_GT(w, 100.0f);
+        IM_CHECK_GT(h, 50.0f);
+        IM_CHECK_LT(std::fabs(w / h - 16.0f / 9.0f), 0.03f);
+    }
+
+    Step(ctx, "ワークスペースの「最後の状態」が保たれる（material に窓を足して往復）");
+    cmd::Execute(*ed, env, "workspace.material");
+    ctx->Yield(10);
+    ed->showLighting = true;   // material のプリセットには無い窓を足す
+    cmd::Execute(*ed, env, "workspace.vfx");
+    ctx->Yield(10);
+    IM_CHECK(!ed->showLighting);
+    cmd::Execute(*ed, env, "workspace.material");
+    ctx->Yield(10);
+    IM_CHECK(ed->showLighting);            // 足した窓が残っている
+    IM_CHECK(ed->showMaterialEditor);      // プリセットの窓も残っている
+
+    Step(ctx, "レベル編集へ戻ると全部閉じ、ビューポートが基準へ戻る");
+    cmd::Execute(*ed, env, "workspace.level");
+    ctx->Yield(14);
+    for (const tools::Desc& d : tools::kAll)
+        if (d.flag != &EditorContext::showEngineDiagnostics && (ed->*(d.flag)))
+            IM_ERRORF("レベル編集なのに窓が開いている: %s", d.id);
+    ctx->LogInfo("viewport 基準 %.1fx%.1f → 往復後 %.1fx%.1f", vpW0, vpH0, ed->viewportW, ed->viewportH);
+    IM_CHECK_LT(std::fabs(ed->viewportW - vpW0), 4.0f);
+    IM_CHECK_LT(std::fabs(ed->viewportH - vpH0), 4.0f);
+
+    Step(ctx, "未知のワークスペース id は何も変えない");
+    ed->pendingWorkspace = "no_such_workspace";
+    ctx->Yield(4);
+    IM_CHECK(ed->currentWorkspace == "level");
+
+    W_ResetLayout(ctx, ed);
+}
+
+// 名前つきレイアウト: 分割比を動かして保存 → リセット → 復元で元の比と窓の開閉へ戻る / 削除 / 壊れたレイアウトは何も変えない。
+void T_LayoutSaveRestore(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    const char* kHierarchy = "ヒエラルキー";
+    const std::string kName = "ui_test_layout";
+
+    W_ResetLayout(ctx, ed);
+    const f32 defaultLeft = ed->dockRatioLeft;
+    ImGuiWindow* hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
+
+    Step(ctx, "ヒエラルキーの幅を広げ、ツール窓を 2 つ開いて、名前つきで保存する");
+    const f32 w0 = hier->DockNode->Size.x;
+    ImGui::DockBuilderSetNodeSize(hier->DockNode->ID, ImVec2(w0 * 1.4f, hier->DockNode->Size.y));
+    ImGui::DockBuilderFinish(hier->DockNode->ID);
+    ctx->Yield(8);
+    hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
+    const f32 widened = hier->DockNode->Size.x;
+    IM_CHECK_GT(widened, w0 * 1.2f);
+    IM_CHECK_GT(ed->dockRatioLeft, defaultLeft + 0.02f);   // ユーザーの操作として分割比に取り込まれた
+    const f32 savedLeft = ed->dockRatioLeft;
+    ed->showPostProcess = true;
+    ed->showLighting = true;
+    ctx->Yield(4);
+    ed->pendingLayoutSaveName = kName;
+    ctx->Yield(4);
+    bool listed = false;
+    for (const std::string& n : ed->savedLayoutNames) listed = listed || n == kName;
+    IM_CHECK(listed);
+
+    Step(ctx, "リセットすると既定へ戻る");
+    W_ResetLayout(ctx, ed);
+    IM_CHECK(!ed->showPostProcess && !ed->showLighting);
+    IM_CHECK_LT(std::fabs(ed->dockRatioLeft - defaultLeft), 0.005f);
+
+    Step(ctx, "復元すると保存時の比・窓の開閉・実際の幅へ戻る");
+    ed->pendingLayoutRestore = kName;
+    ctx->Yield(12);
+    IM_CHECK(ed->showPostProcess && ed->showLighting);
+    IM_CHECK_LT(std::fabs(ed->dockRatioLeft - savedLeft), 0.01f);
+    hier = ImGui::FindWindowByName(kHierarchy);
+    IM_CHECK(hier != nullptr && hier->DockNode != nullptr);
+    ctx->LogInfo("hierarchy width: 既定 %.1f → 広げた %.1f → 復元 %.1f", w0, widened, hier->DockNode->Size.x);
+    IM_CHECK_LT(std::fabs(hier->DockNode->Size.x - widened), 8.0f);
+
+    Step(ctx, "壊れたレイアウトを復元しても今の配置を変えない（黙って既定にもしない）");
+    prefs::SetString((std::string(ws::NamedLayoutPrefix()) + "ui_test_broken").c_str(), "{oops");
+    ed->pendingLayoutRestore = "ui_test_broken";
+    ctx->Yield(6);
+    IM_CHECK(ed->showPostProcess && ed->showLighting);
+    prefs::Erase((std::string(ws::NamedLayoutPrefix()) + "ui_test_broken").c_str());
+
+    Step(ctx, "削除すると一覧から消える");
+    ed->pendingLayoutDelete = kName;
+    ctx->Yield(4);
+    listed = false;
+    for (const std::string& n : ed->savedLayoutNames) listed = listed || n == kName;
+    IM_CHECK(!listed);
+
+    Step(ctx, "空 / 長すぎる名前は保存しない");
+    const size_t before = ed->savedLayoutNames.size();
+    ed->pendingLayoutSaveName = "   ";
+    ctx->Yield(3);
+    ed->pendingLayoutSaveName = std::string(200, 'x');
+    ctx->Yield(3);
+    IM_CHECK_EQ(ed->savedLayoutNames.size(), before);
+
+    ui::ToastClearAll();
+    W_ResetLayout(ctx, ed);
+}
+
+// 下部ドックのスロット: 登録タブ（ダミーのタイムライン）を開くと中央下ノードへ入る・ビューポートの矩形が変わらない・
+// 最大化 / 元に戻す（コマンドとタブ帯のダブルクリック）で寸法が往復・最大化中もゲーム絵の矩形が 0 にならない・再登録で置き換わる。
+void T_BottomDockSlot(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    W_ResetLayout(ctx, ed);
+
+    bottomdock::Tab* tab = bottomdock::Find("timeline");
+    IM_CHECK(tab != nullptr);
+    IM_CHECK(!tab->open);
+    IM_CHECK_GT(ed->dockNodeBottom, 0u);
+    const f32 vpW0 = ed->viewportW, vpH0 = ed->viewportH;
+
+    Step(ctx, "ダミータブを開くと中央下ノード（アセットブラウザと同じ）へ入り、ビューポートは変わらない");
+    bottomdock::SetOpen("timeline", true);
+    ctx->Yield(12);
+    const std::string winName = bottomdock::WindowName(*bottomdock::Find("timeline"));
+    ImGuiWindow* w = ImGui::FindWindowByName(winName.c_str());
+    IM_CHECK(w != nullptr && w->DockNode != nullptr);
+    IM_CHECK_EQ(w->DockNode->ID, static_cast<ImGuiID>(ed->dockNodeBottom));
+    ImGuiWindow* assets = ImGui::FindWindowByName("アセットブラウザ");
+    IM_CHECK(assets != nullptr && assets->DockNode != nullptr);
+    IM_CHECK_EQ(assets->DockNode->ID, w->DockNode->ID);
+    IM_CHECK_LT(std::fabs(ed->viewportW - vpW0), 1.0f);
+    IM_CHECK_LT(std::fabs(ed->viewportH - vpH0), 1.0f);
+
+    Step(ctx, "最大化（コマンド）: 下部ドックが広がり、ビューポートは縮むが 0 にならない");
+    const f32 nodeH0 = w->DockNode->Size.y;
+    ed->bottomDockMaximizeToggle = true;
+    ctx->Yield(10);
+    IM_CHECK(ed->bottomDockMaximized);
+    w = ImGui::FindWindowByName(winName.c_str());
+    IM_CHECK(w != nullptr && w->DockNode != nullptr);
+    ctx->LogInfo("最大化: 下部ノード高 %.1f → %.1f / viewport %.1fx%.1f → %.1fx%.1f", nodeH0, w->DockNode->Size.y, vpW0, vpH0, ed->viewportW, ed->viewportH);
+    IM_CHECK_GT(w->DockNode->Size.y, nodeH0 * 1.25f);
+    IM_CHECK_LT(ed->viewportH, vpH0 - 30.0f);
+    IM_CHECK_GT(ed->viewportH, 40.0f);
+    IM_CHECK_GT(ed->viewportW, 60.0f);
+
+    Step(ctx, "元に戻す: 寸法が往復する");
+    ed->bottomDockMaximizeToggle = true;
+    ctx->Yield(10);
+    IM_CHECK(!ed->bottomDockMaximized);
+    IM_CHECK_LT(std::fabs(ed->viewportW - vpW0), 3.0f);
+    IM_CHECK_LT(std::fabs(ed->viewportH - vpH0), 3.0f);
+
+    Step(ctx, "タブ帯のダブルクリックで最大化 / もう一度で元に戻る");
+    for (int round = 0; round < 2; ++round)
+    {
+        w = ImGui::FindWindowByName(winName.c_str());
+        IM_CHECK(w != nullptr && w->DockNode != nullptr && w->DockNode->TabBar != nullptr);
+        const ImRect bar = w->DockNode->TabBar->BarRect;
+        ctx->MouseMoveToPos(ImVec2(bar.Max.x - ui::Px(60.0f), (bar.Min.y + bar.Max.y) * 0.5f));
+        ctx->MouseDoubleClick(0);
+        ctx->Yield(10);
+        IM_CHECK_EQ(ed->bottomDockMaximized, round == 0);
+    }
+    IM_CHECK_LT(std::fabs(ed->viewportH - vpH0), 3.0f);
+
+    Step(ctx, "閉じてから開き直すとまた下部ドックへ入る");
+    bottomdock::SetOpen("timeline", false);
+    ctx->Yield(6);
+    bottomdock::SetOpen("timeline", true);
+    ctx->Yield(10);
+    w = ImGui::FindWindowByName(winName.c_str());
+    IM_CHECK(w != nullptr && w->DockNode != nullptr);
+    IM_CHECK_EQ(w->DockNode->ID, static_cast<ImGuiID>(ed->dockNodeBottom));
+
+    Step(ctx, "同じ id で再登録すると置き換わる（開閉は保つ。シーケンサーが本物を差し込む経路）");
+    const size_t nTabs = bottomdock::Tabs().size();
+    bool drawn = false;
+    static bool* s_drawn = nullptr;
+    s_drawn = &drawn;
+    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM, [](EditorContext&) { if (s_drawn) *s_drawn = true; }});
+    ctx->Yield(6);
+    s_drawn = nullptr;   // 以降は呼ばれても触らない（drawn はこの関数のローカル）
+    IM_CHECK_EQ(bottomdock::Tabs().size(), nTabs);
+    IM_CHECK(bottomdock::IsOpen("timeline"));
+    IM_CHECK(drawn);
+    // 元のダミーの本文へ戻す（他のテストの見た目に影響させない）
+    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM, [](EditorContext&) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("ここにシーケンサーのタイムラインが入ります（下部ドックのスロット。動作確認用のダミー）。");
+        ImGui::TextDisabled("タブ帯をダブルクリックすると下部ドックが広がります（もう一度で元に戻ります）。");
+    }});
+
+    bottomdock::SetOpen("timeline", false);
+    W_ResetLayout(ctx, ed);
+}
+
+// ツール窓の配置先（右タブ / 右分割 / 下部 / フローティング）: 窓を開いたまま配置先を変えると実際のドックノードが変わる・
+// ビューポートは動かない・右分割の作り直しでも寸法が保たれる・元へ戻せる。
+void T_ToolDockSlots(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+    W_ResetLayout(ctx, ed);
+    const char* kSkybox = "Skybox / IBL";
+    const f32 vpW0 = ed->viewportW, vpH0 = ed->viewportH;
+    ImGuiWindow* insp = ImGui::FindWindowByName("インスペクター");
+    IM_CHECK(insp != nullptr && insp->DockNode != nullptr);
+    const ImGuiID rightNode = insp->DockNode->ID;
+
+    ed->showSkybox = true;
+    ctx->Yield(8);
+    ImGuiWindow* w = ImGui::FindWindowByName(kSkybox);
+    IM_CHECK(w != nullptr && w->DockNode != nullptr);
+    IM_CHECK_EQ(w->DockNode->ID, rightNode);   // 既定は右カラムのタブ（インスペクターと同じノード）
+
+    Step(ctx, "下部ドックへ移す");
+    ed->pendingToolSlots.push_back({"skybox", static_cast<int>(ws::Slot::BottomTab)});
+    ctx->Yield(10);
+    w = ImGui::FindWindowByName(kSkybox);
+    IM_CHECK(w != nullptr && w->DockNode != nullptr);
+    IM_CHECK_EQ(w->DockNode->ID, static_cast<ImGuiID>(ed->dockNodeBottom));
+
+    Step(ctx, "右カラムを分割して並べる（レイアウトの作り直し。ビューポートは動かない）");
+    ed->pendingToolSlots.push_back({"skybox", static_cast<int>(ws::Slot::RightSplit)});
+    ctx->Yield(14);
+    IM_CHECK_GT(ed->dockNodeRightSplit, 0u);
+    w = ImGui::FindWindowByName(kSkybox);
+    IM_CHECK(w != nullptr && w->DockNode != nullptr);
+    IM_CHECK_EQ(w->DockNode->ID, static_cast<ImGuiID>(ed->dockNodeRightSplit));
+    insp = ImGui::FindWindowByName("インスペクター");
+    IM_CHECK(insp != nullptr && insp->DockNode != nullptr);
+    IM_CHECK(insp->DockNode->ID != w->DockNode->ID);   // インスペクターと別ノード＝並んで見える
+    ctx->LogInfo("viewport %.1fx%.1f → %.1fx%.1f", vpW0, vpH0, ed->viewportW, ed->viewportH);
+    IM_CHECK_LT(std::fabs(ed->viewportW - vpW0), 3.0f);
+    IM_CHECK_LT(std::fabs(ed->viewportH - vpH0), 3.0f);
+
+    Step(ctx, "フローティングへ（ドックから外れる）");
+    ed->pendingToolSlots.push_back({"skybox", static_cast<int>(ws::Slot::Floating)});
+    ctx->Yield(14);
+    w = ImGui::FindWindowByName(kSkybox);
+    IM_CHECK(w != nullptr);
+    IM_CHECK(w->DockNode == nullptr);
+    IM_CHECK_LT(std::fabs(ed->viewportW - vpW0), 3.0f);
+
+    Step(ctx, "右タブへ戻す");
+    ed->pendingToolSlots.push_back({"skybox", static_cast<int>(ws::Slot::RightTab)});
+    ctx->Yield(14);
+    w = ImGui::FindWindowByName(kSkybox);
+    insp = ImGui::FindWindowByName("インスペクター");
+    IM_CHECK(w != nullptr && w->DockNode != nullptr && insp != nullptr && insp->DockNode != nullptr);
+    IM_CHECK_EQ(w->DockNode->ID, insp->DockNode->ID);
+
+    Step(ctx, "配置先が動かせない窓（既定がフローティング）は無視される");
+    ed->pendingToolSlots.push_back({"lighting", static_cast<int>(ws::Slot::BottomTab)});
+    ed->pendingToolSlots.push_back({"no_such_tool", 1});
+    ctx->Yield(4);
+
+    W_ResetLayout(ctx, ed);
 }
 
 // ---- プロジェクトランチャー ----
@@ -1064,16 +2042,21 @@ void T_VfxEditorAllKinds(ImGuiTestContext* ctx)
     // 見た目 8 種 / 合成 / 向き を全通り選ぶ（それぞれ別シェーダ・別パラメータ経路）。
     // 「向き Orient」は kind によって出ないことがあるので存在チェック付き。
     const ImGuiID emission = ChildWindowId(ctx, kWinVfxEmission);
-    for (const char* combo : { "見た目 Kind", "合成 Blend", "向き Orient" })
+    // ★フェーズ 1b: 3 つのコンボは pg:: の 2 カラム表（"##vfxEmission"）の行になった。
+    //   行のコンボの実 ID は「表 / 行ラベル(PushID) / ##v」。
+    struct VfxCombo { const char* path; const char* name; };
+    for (const VfxCombo combo : { VfxCombo{"##vfxEmission/見た目 Kind/##v", "見た目 Kind"},
+                                  VfxCombo{"##vfxEmission/合成 Blend/##v", "合成 Blend"},
+                                  VfxCombo{"##vfxEmission/向き Orient/##v", "向き Orient"} })
     {
-        if (!ItemExistsIn(ctx, emission, combo))
+        if (!ItemExistsIn(ctx, emission, combo.path))
         {
-            ctx->LogWarning("コンボが見つかりません(スキップ): %s", combo);
+            ctx->LogWarning("コンボが見つかりません(スキップ): %s", combo.name);
             continue;
         }
-        Step(ctx, "%s を全通り切り替える", combo);
+        Step(ctx, "%s を全通り切り替える", combo.name);
         ctx->SetRef(emission);
-        ctx->ComboClickAll(combo);
+        ctx->ComboClickAll(combo.path);
         ctx->Yield(6);
     }
 
@@ -1312,10 +2295,15 @@ void T_BuildGame(ImGuiTestContext* ctx)
         if (fs::exists(exePath))
         {
             Step(ctx, "配布ゲームを起動して落ちないか見る");
-            std::wstring cmd = exePath.wstring();
+            // ★人の画面に窓を出さず前面も取らない: `--background=offscreen,tool`（画面外・非アクティブ・
+            //   仮想入力）で起動する。以前は素の起動で、約 6 秒間ゲーム窓が前面に出てユーザー操作を奪っていた。
+            //   保険として STARTUPINFO でも「最小化・非アクティブ」を指定する（--background を知らない古い exe 用）。
+            std::wstring cmd = L"\"" + exePath.wstring() + L"\" --background=offscreen,tool";
             std::wstring cwd = fs::path(buildDir).wstring();
             STARTUPINFOW si{};
-            si.cb = sizeof(si);
+            si.cb          = sizeof(si);
+            si.dwFlags     = STARTF_USESHOWWINDOW;
+            si.wShowWindow = SW_SHOWMINNOACTIVE;
             PROCESS_INFORMATION pi{};
             if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
                                 0, nullptr, cwd.c_str(), &si, &pi))
@@ -2778,6 +3766,464 @@ void T_HierarchyReparent(ImGuiTestContext* ctx)
     ctx->Yield(8);
 }
 
+// ===== [H] ヒエラルキーの大量エンティティ計測（フェーズ 1b）=====
+// registry へ直接 10 万体（1000 グループ x 99 子）を作り、HierarchyPanel::Render の CPU ms を測る。
+// 閉じた状態（ルート 1000 行）/ 全展開（10 万行をクリッパで間引く）/ 検索（名前一致 1 件）/ 選択あり の 4 通り。
+// 終了時に作った物を全部消す（他のテストへ持ち越さない）。
+void T_HierarchyPerf(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    constexpr int kGroups = 1000, kKids = 99;
+    Step(ctx, "10 万体を registry へ直接作る（%d グループ x %d 子）", kGroups, kKids);
+    std::vector<entt::entity> made;
+    made.reserve(static_cast<size_t>(kGroups) * (kKids + 1));
+    char nameBuf[48];
+    for (int g = 0; g < kGroups; ++g)
+    {
+        const entt::entity root = reg.create();
+        std::snprintf(nameBuf, sizeof(nameBuf), "PerfGroup_%04d", g);
+        reg.emplace<NameTag>(root, NameTag{nameBuf});
+        reg.emplace<Transform>(root);
+        made.push_back(root);
+        for (int k = 0; k < kKids; ++k)
+        {
+            const entt::entity c = reg.create();
+            std::snprintf(nameBuf, sizeof(nameBuf), "PerfObj_%04d_%02d", g, k);
+            reg.emplace<NameTag>(c, NameTag{nameBuf});
+            Transform t; t.parent = root;
+            reg.emplace<Transform>(c, t);
+            made.push_back(c);
+        }
+    }
+    ed->ClearSelection();
+
+    auto measure = [&](const char* label, int frames)
+    {
+        ctx->Yield(4);   // 索引の作り直しなどの立ち上がりを捨てる
+        double sum = 0.0, mx = 0.0;
+        for (int f = 0; f < frames; ++f)
+        {
+            ctx->Yield(1);
+            const double v = static_cast<double>(ed->hierRenderMs);
+            sum += v; mx = (std::max)(mx, v);
+        }
+        ctx->LogInfo("[perf] hierarchy Render (%s): avg %.3f ms / max %.3f ms (%d frames, %zu entities)",
+                     label, sum / frames, mx, frames, made.size());
+    };
+
+    // 作った直後の 1 フレーム目 = 索引 / 表示行を最初に作る（構造が変わった時の 1 回ぶん）
+    ctx->Yield(1);
+    ctx->LogInfo("[perf] hierarchy Render (最初の 1 フレーム = 索引の構築): %.3f ms (%zu entities)", static_cast<double>(ed->hierRenderMs), made.size());
+    measure("閉じた状態", 20);
+
+    Step(ctx, "すべて展開");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemClick("expandAll/##ib");
+    measure("全展開 10 万行", 20);
+
+    Step(ctx, "1 体選択した状態");
+    ed->Select(made[kKids + 5]);
+    measure("全展開+選択", 10);
+
+    Step(ctx, "検索で 1 件に絞る");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "PerfObj_0500_07");
+    measure("検索 1 件", 10);
+    ctx->ItemInputValue("##HierFilter", "PerfObj_05");
+    measure("検索 約 1000 件", 10);
+    ctx->ItemInputValue("##HierFilter", "");
+    ctx->Yield(4);
+
+    Step(ctx, "後片付け（作った 10 万体を全部削除）");
+    ed->ClearSelection();
+    for (entt::entity e : made) if (reg.valid(e)) reg.destroy(e);
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemClick("collapseAll/##ib");
+    ctx->Yield(6);
+}
+
+// ===== [H] ヒエラルキー: 目と鍵 / 型チップと検索 / 並べ替えとフォルダ（フェーズ 1b）=====
+// 行の項目 ID を名前で探す（ヒエラルキーはクリッパで可視行しか作らない。見えていなければ 0）。
+ImGuiID HierRowId(ImGuiTestContext* ctx, const char* name)
+{
+    ctx->SetRef(kWinHierarchy);
+    ImGuiTestItemList items;
+    ctx->GatherItems(&items, "", 3);
+    const size_t n = std::strlen(name);
+    for (int i = 0; i < items.GetSize(); ++i)
+    {
+        const ImGuiTestItemInfo* it = items[i];
+        if (it != nullptr && it->ID != 0 && std::strncmp(it->DebugLabel, name, n) == 0) return it->ID;
+    }
+    return 0;
+}
+
+// 行の右端の目 / 鍵ボタンの ID（PushID(entity) の下の "##eye" / "##lock"）
+ImGuiID HierFlagId(entt::entity e, const char* which)
+{
+    ImGuiWindow* w = ImGui::FindWindowByName(kWinHierarchyName);
+    if (w == nullptr) return 0;
+    const int ei = static_cast<int>(static_cast<uint32_t>(e));
+    const ImGuiID base = ImHashData(&ei, sizeof(int), w->ID);
+    return ImHashStr(which, 0, base);
+}
+
+entt::entity FindByName(entt::registry& reg, const char* name)
+{
+    for (auto [e, n] : reg.view<NameTag>().each())
+        if (n.name == name) return e;
+    return entt::null;
+}
+
+bool InDrawList(EditorContext* ed, entt::entity e)
+{
+    if (ed == nullptr || ed->drawItems == nullptr) return false;
+    for (const DrawItem& it : *ed->drawItems) if (it.e == e) return true;
+    return false;
+}
+
+// 行にホバーして目 / 鍵のボタンを出し、クリックする（alt=true で Alt+クリック）。
+bool HierClickFlag(ImGuiTestContext* ctx, entt::entity e, const char* rowName, const char* which, bool alt)
+{
+    const ImGuiID row = HierRowId(ctx, rowName);
+    if (row == 0) { IM_ERRORF("ヒエラルキーに行が見つかりません: %s", rowName); return false; }
+    ctx->MouseMove(row);
+    ctx->Yield(3);
+    const ImGuiID id = HierFlagId(e, which);
+    if (!ctx->ItemExists(id)) { IM_ERRORF("%s のボタンが出ていません（ホバーしても現れない）: %s", which, rowName); return false; }
+    ctx->MouseMove(id);
+    if (alt) ctx->KeyDown(ImGuiMod_Alt);
+    ctx->MouseClick(0);
+    if (alt) ctx->KeyUp(ImGuiMod_Alt);
+    ctx->Yield(4);
+    return true;
+}
+
+void T_HierarchyEyeLock(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "Box を 2 つ作って名前を付ける");
+    AddEntity(ctx, "Box"); SelectLastEntity(ctx);
+    entt::entity a = ed->selectedEntity;
+    AddEntity(ctx, "Box"); SelectLastEntity(ctx);
+    entt::entity b = ed->selectedEntity;
+    IM_CHECK(reg.valid(a) && reg.valid(b) && a != b);
+    reg.get<NameTag>(a).name = "EyeTestA";
+    reg.get<NameTag>(b).name = "EyeTestB";
+    ed->ClearSelection();
+    ctx->Yield(4);
+    IM_CHECK(!eflags::AnyOf<EditorHidden>(reg));
+    IM_CHECK(InDrawList(ed, a) && InDrawList(ed, b));
+
+    Step(ctx, "B の目を押す → 描画リストから消える（データは EditorHidden）");
+    IM_CHECK(HierClickFlag(ctx, b, "EyeTestB", "##eye", false));
+    IM_CHECK(eflags::Self<EditorHidden>(reg, b) && !eflags::Self<EditorHidden>(reg, a));
+    ctx->Yield(3);
+    IM_CHECK(!InDrawList(ed, b));
+    IM_CHECK(InDrawList(ed, a));
+
+    Step(ctx, "Undo で戻る（1 操作 1 エントリ）");
+    ed->pendingUndo = true;
+    ctx->Yield(6);
+    IM_CHECK(!eflags::AnyOf<EditorHidden>(reg));
+    IM_CHECK(InDrawList(ed, b));
+    ed->pendingRedo = true;
+    ctx->Yield(6);
+    IM_CHECK(eflags::Self<EditorHidden>(reg, b));
+    ed->pendingUndo = true;
+    ctx->Yield(6);
+    IM_CHECK(!eflags::AnyOf<EditorHidden>(reg));
+
+    Step(ctx, "Alt+クリック = A だけ表示（他は全部隠れる）→ もう一度で全部表示");
+    IM_CHECK(HierClickFlag(ctx, a, "EyeTestA", "##eye", true));
+    ctx->Yield(3);
+    IM_CHECK(!eflags::IsHidden(reg, a));
+    IM_CHECK(eflags::IsHidden(reg, b));
+    IM_CHECK(!InDrawList(ed, b));
+    IM_CHECK(InDrawList(ed, a));
+    IM_CHECK(HierClickFlag(ctx, a, "EyeTestA", "##eye", true));
+    ctx->Yield(3);
+    IM_CHECK(!eflags::AnyOf<EditorHidden>(reg));
+    IM_CHECK(InDrawList(ed, b));
+    ed->ClearSelection();
+
+    Step(ctx, "Play 中は隠していても描かれる（エディタ専用）→ Stop で隠したまま戻る");
+    reg.emplace_or_replace<EditorHidden>(a);
+    ctx->Yield(3);
+    IM_CHECK(!InDrawList(ed, a));
+    g_app->RequestMode(Application::EngineMode::Playing);
+    for (int f = 0; f < 240 && g_app->GetEngineMode() != Application::EngineMode::Playing; ++f) ctx->Yield();
+    if (g_app->GetEngineMode() == Application::EngineMode::Playing)
+    {
+        ctx->Yield(20);
+        const entt::entity ap = FindByName(scene->GetRegistry(), "EyeTestA");
+        IM_CHECK(ap != entt::null);
+        IM_CHECK(InDrawList(ed, ap));   // Play では見える
+        g_app->RequestMode(Application::EngineMode::Editor);
+        for (int f = 0; f < 240 && g_app->GetEngineMode() != Application::EngineMode::Editor; ++f) ctx->Yield();
+        ctx->Yield(10);
+    }
+    else ctx->LogWarning("Play に入れませんでした（アクティブなカメラが無い？）。Play 中の確認は省略");
+    {
+        auto& r2 = g_app->GetScene()->GetRegistry();
+        a = FindByName(r2, "EyeTestA"); b = FindByName(r2, "EyeTestB");
+        IM_CHECK(a != entt::null && b != entt::null);
+        IM_CHECK(eflags::Self<EditorHidden>(r2, a));   // Play → Stop のスナップショット往復でフラグが残る
+        IM_CHECK(!InDrawList(ed, a));
+        r2.remove<EditorHidden>(a);
+        ctx->Yield(3);
+        IM_CHECK(InDrawList(ed, a));
+    }
+    auto& regNow = g_app->GetScene()->GetRegistry();
+
+    Step(ctx, "鍵: ロックした物はビューポートで選べない（奥は素通り）/ 鍵を外すと選べる");
+    ed->ClearSelection();
+    ctx->Yield(3);
+    // 画面上で A に当たる点を探す（作成位置はカメラの前なのでビューポートのどこかに写る）
+    ImVec2 hit(0.0f, 0.0f);
+    bool found = false;
+    for (int j = 2; j <= 8 && !found; ++j)
+        for (int i = 2; i <= 8 && !found; ++i)
+        {
+            const ImVec2 p(ed->viewportX + ed->viewportW * (i / 10.0f), ed->viewportY + ed->viewportH * (j / 10.0f));
+            ctx->MouseMoveToPos(p);
+            ctx->Yield(1);
+            ctx->MouseClick(0);
+            ctx->Yield(3);
+            if (ed->selectedEntity == a || ed->selectedEntity == b) { found = true; hit = p; }
+        }
+    if (!found) ctx->LogWarning("Box がビューポートに写っていないため、ロックの選択テストは省略");
+    else
+    {
+        const entt::entity picked = ed->selectedEntity;
+        ed->ClearSelection();
+        regNow.emplace_or_replace<EditorLocked>(picked);
+        ctx->Yield(3);
+        ctx->MouseMoveToPos(hit);
+        ctx->Yield(1);
+        ctx->MouseClick(0);
+        ctx->Yield(3);
+        IM_CHECK(ed->selectedEntity != picked);          // ロック中は選べない
+        // ヒエラルキーからは選べる
+        ed->Select(picked);
+        IM_CHECK(ed->IsSelected(picked));
+        ed->ClearSelection();
+        regNow.remove<EditorLocked>(picked);
+        ctx->Yield(3);
+        ctx->MouseMoveToPos(hit);
+        ctx->Yield(1);
+        ctx->MouseClick(0);
+        ctx->Yield(3);
+        IM_CHECK(ed->selectedEntity == picked);          // 外すと選べる
+    }
+
+    Step(ctx, "鍵ボタンで切り替え（Undo つき）");
+    ed->ClearSelection();
+    ctx->Yield(3);
+    a = FindByName(regNow, "EyeTestA");
+    IM_CHECK(HierClickFlag(ctx, a, "EyeTestA", "##lock", false));
+    IM_CHECK(eflags::Self<EditorLocked>(regNow, a));
+    ed->pendingUndo = true;
+    ctx->Yield(6);
+    IM_CHECK(!eflags::AnyOf<EditorLocked>(regNow));
+
+    Step(ctx, "後片付け");
+    ed->ClearSelection();
+    a = FindByName(regNow, "EyeTestA"); b = FindByName(regNow, "EyeTestB");
+    for (entt::entity e : {a, b}) if (e != entt::null) ed->pendingDeletions.push_back(e);
+    ctx->Yield(8);
+    for (auto e : hier::PlanClearAll<EditorHidden>(regNow)) regNow.remove<EditorHidden>(e);
+    for (auto e : hier::PlanClearAll<EditorLocked>(regNow)) regNow.remove<EditorLocked>(e);
+}
+
+void T_HierarchyFilterChips(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "型の違う 4 体を registry に作る（タグ付き / ライト / メッシュ / 物理）");
+    std::vector<entt::entity> made;
+    auto mk = [&](const char* name) {
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{name});
+        reg.emplace<Transform>(e);
+        made.push_back(e);
+        return e;
+    };
+    { Tag t; t.tags = {"chipenemy"}; reg.emplace<Tag>(mk("ChipTagged"), t); }
+    reg.emplace<PointLight>(mk("ChipLamp"));
+    reg.emplace<MeshRenderer>(mk("ChipMesh"));
+    reg.emplace<BoxCollider>(mk("ChipPhys"));
+    ctx->Yield(4);
+
+    auto countChipRows = [&]() {
+        ctx->SetRef(kWinHierarchy);
+        ImGuiTestItemList items;
+        ctx->GatherItems(&items, "", 3);
+        int n = 0;
+        for (int i = 0; i < items.GetSize(); ++i)
+            if (items[i] && items[i]->ID != 0 && std::strncmp(items[i]->DebugLabel, "Chip", 4) == 0) ++n;
+        return n;
+    };
+    IM_CHECK(countChipRows() == 4);
+
+    Step(ctx, "検索: tag:chipenemy → タグを持つ 1 体だけ");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "tag:chipenemy");
+    ctx->Yield(6);
+    IM_CHECK(countChipRows() == 1);
+    IM_CHECK(HierRowId(ctx, "ChipTagged") != 0);
+
+    Step(ctx, "検索: c:pointlight chip → ライトだけ / t:mesh chip → メッシュだけ");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "c:pointlight chip");
+    ctx->Yield(6);
+    IM_CHECK(countChipRows() == 1 && HierRowId(ctx, "ChipLamp") != 0);
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "t:mesh chip");
+    ctx->Yield(6);
+    IM_CHECK(countChipRows() == 1 && HierRowId(ctx, "ChipMesh") != 0);
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "chipenemy");   // 接頭辞なし = 名前 or タグ or コンポーネント名
+    ctx->Yield(6);
+    IM_CHECK(countChipRows() == 1 && HierRowId(ctx, "ChipTagged") != 0);
+
+    Step(ctx, "型チップ: 物理 → 名前検索 Chip と組み合わせて 1 体、ライトも足すと OR で 2 体");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "Chip");
+    ctx->Yield(4);
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemClick("##hierTypeChips/type_physics/##ib");
+    ctx->Yield(6);
+    IM_CHECK((ed->hierTypeFilter & hier::kTPhysics) != 0);
+    IM_CHECK(countChipRows() == 1 && HierRowId(ctx, "ChipPhys") != 0);
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemClick("##hierTypeChips/type_light/##ib");
+    ctx->Yield(6);
+    IM_CHECK(countChipRows() == 2);
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemClick("##hierTypeChips/type_clear/##ib");
+    ctx->Yield(6);
+    IM_CHECK(ed->hierTypeFilter == 0);
+    IM_CHECK(countChipRows() == 4);
+
+    Step(ctx, "フィルタ中も行は通常どおり選べる");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "ChipMesh");
+    ctx->Yield(6);
+    const ImGuiID row = HierRowId(ctx, "ChipMesh");
+    IM_CHECK(row != 0);
+    ctx->MouseMove(row);
+    ctx->MouseClick(0);
+    ctx->Yield(4);
+    IM_CHECK(ed->selectedEntity == FindByName(reg, "ChipMesh"));
+
+    Step(ctx, "後片付け");
+    ctx->SetRef(kWinHierarchy);
+    ctx->ItemInputValue("##HierFilter", "");
+    ed->hierTypeFilter = 0;
+    ed->ClearSelection();
+    for (entt::entity e : made) if (reg.valid(e)) reg.destroy(e);
+    ctx->Yield(6);
+}
+
+void T_HierarchyReorder(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "ルートに 3 体（OrdA / OrdB / OrdC）を作る");
+    std::vector<entt::entity> made;
+    auto mk = [&](const char* name) {
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{name});
+        reg.emplace<Transform>(e);
+        made.push_back(e);
+        return e;
+    };
+    const entt::entity ea = mk("OrdA"), eb = mk("OrdB"), ec = mk("OrdC");
+    ed->ClearSelection();
+    ctx->Yield(5);
+    auto pos = [&](entt::entity e) {
+        hier::Index idx; idx.Build(reg);
+        for (size_t i = 0; i < idx.roots.size(); ++i) if (idx.roots[i] == e) return static_cast<int>(i);
+        return -1;
+    };
+    const int pa0 = pos(ea), pb0 = pos(eb), pc0 = pos(ec);
+    IM_CHECK(pa0 >= 0 && pb0 >= 0 && pc0 >= 0);
+
+    // 行の上端 25% へドロップする（掴む → 目的の行の上端へ動かす → 離す）
+    auto dragTo = [&](const char* srcName, const char* dstName, float ratio) {
+        ctx->SleepNoSkip(0.5f, 0.1f);   // 直前の操作と同じ場所を続けて押すとダブルクリック扱いになるので、間を空ける
+        const ImGuiID s = HierRowId(ctx, srcName), d = HierRowId(ctx, dstName);
+        IM_CHECK_RETV(s != 0 && d != 0, false);
+        const ImGuiTestItemInfo di = ctx->ItemInfo(d);
+        ctx->MouseMove(s);
+        ctx->MouseDown(0);
+        ctx->Yield(2);
+        ctx->MouseMoveToPos(ImVec2(di.RectFull.Min.x + di.RectFull.GetWidth() * 0.4f,
+                                   di.RectFull.Min.y + di.RectFull.GetHeight() * ratio));
+        ctx->Yield(3);
+        ctx->MouseUp(0);
+        ctx->Yield(5);
+        return true;
+    };
+
+    Step(ctx, "OrdC を OrdA の上端へドロップ → OrdA の前へ並び替わる（親は変わらない）");
+    IM_CHECK(dragTo("OrdC", "OrdA", 0.08f));
+    IM_CHECK(reg.get<Transform>(ec).parent == entt::null);
+    IM_CHECK(pos(ec) < pos(ea));
+    IM_CHECK(pos(ea) < pos(eb));
+
+    Step(ctx, "Undo で元の並びへ");
+    ed->pendingUndo = true;
+    ctx->Yield(6);
+    IM_CHECK(pos(ea) < pos(eb) && pos(eb) < pos(ec));
+    IM_CHECK(reg.get<Transform>(ec).siblingOrder == 0 && reg.get<Transform>(ea).siblingOrder == 0);
+
+    Step(ctx, "OrdC を OrdA の中央へドロップ → 子になる");
+    IM_CHECK(dragTo("OrdC", "OrdA", 0.5f));
+    IM_CHECK(reg.get<Transform>(ec).parent == ea);
+    ed->pendingUndo = true;
+    ctx->Yield(6);
+    IM_CHECK(reg.get<Transform>(ec).parent == entt::null);
+
+    Step(ctx, "選択を「フォルダに入れる」→ フォルダができて子になる / Undo で戻る");
+    ed->ClearSelection();
+    ed->Select(ea);
+    ed->AddToSelection(eb);
+    ctx->Yield(3);
+    cmd::Execute(*ed, cmd::Env{scene, PathResolver::AssetsDir()}, "edit.newFolder");
+    ctx->Yield(6);
+    const entt::entity folder = FindByName(reg, "Folder");
+    IM_CHECK(folder != entt::null && reg.all_of<EditorFolder>(folder));
+    IM_CHECK(reg.get<Transform>(ea).parent == folder && reg.get<Transform>(eb).parent == folder);
+    IM_CHECK(reg.get<Transform>(ec).parent == entt::null);
+    ed->pendingUndo = true;
+    ctx->Yield(6);
+    IM_CHECK(FindByName(reg, "Folder") == entt::null);
+    IM_CHECK(reg.get<Transform>(ea).parent == entt::null && reg.get<Transform>(eb).parent == entt::null);
+    (void)pa0; (void)pb0; (void)pc0;
+
+    Step(ctx, "後片付け");
+    ed->ClearSelection();
+    ctx->Yield(3);
+    for (entt::entity e : made) if (reg.valid(e)) reg.destroy(e);
+    ctx->Yield(6);
+}
+
 // ===== 表示倍率（DPI）=====
 // ★何を守っているか
 //   倍率 100% / 150% / 200% のどれでも、主要パネルの矩形を倍率で割った「論理サイズ」が 100% と同じ（±1.5px）で、
@@ -2962,6 +4408,439 @@ void T_DpiIniRoundTrip(ImGuiTestContext* ctx)
     IM_CHECK_LT(std::fabs(hier->DockNode->Size.x - widthBefore), 3.0f);
 }
 
+// ===================== [I] インスペクタ（フェーズ 1b）=====================
+// 上部ヘッダ（名前 / 有効 / タグ / 固定）・Add Component の検索・複数選択の Transform 一括編集・行 / 見出しの右クリック・検索と折りたたみ。
+// どのテストも開始時に自分の Box を作り、終わりに消す（後続のテストへ選択・値を持ち越さない）。
+
+namespace inspector1b
+{
+// Box を作って、新しく増えたエンティティを直接選択する。
+// ★ヒエラルキーの「最後の行」を押す SelectLastEntity は行の並び順に依存する（兄弟順・フォルダで変わる）ので使わない。
+entt::entity AddAndSelectBox(ImGuiTestContext* ctx, const char* type = "Box")
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    if (!ed || !scene) return entt::null;
+    auto& reg = scene->GetRegistry();
+    std::set<entt::entity> before;
+    for (auto [e, n] : reg.view<NameTag>().each()) before.insert(e);
+    AddEntity(ctx, type);
+    entt::entity added = entt::null;
+    for (auto [e, n] : reg.view<NameTag>().each())
+        if (before.count(e) == 0) added = e;
+    if (added != entt::null) ed->Select(added);
+    ctx->Yield(4);
+    return added;
+}
+
+bool InDrawList(const EditorContext* ed, entt::entity e)
+{
+    if (!ed || !ed->drawItems) return false;
+    for (const DrawItem& it : *ed->drawItems)
+        if (it.e == e) return true;
+    return false;
+}
+
+void Cleanup(ImGuiTestContext* ctx, std::initializer_list<entt::entity> es)
+{
+    EditorContext* ed = Ed();
+    if (!ed) return;
+    for (entt::entity e : es) ed->pendingDeletions.push_back(e);
+    ed->selectedEntities.clear();
+    ed->selectedEntity = entt::null;
+    ctx->Yield(6);
+}
+} // namespace inspector1b
+
+void T_InspectorHeader(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "Box を作って選択");
+    const entt::entity a = inspector1b::AddAndSelectBox(ctx);
+    IM_CHECK(a != entt::null && reg.valid(a) && reg.all_of<MeshRenderer>(a));
+    const std::string oldName = reg.get<NameTag>(a).name;
+    ctx->Yield(4);
+
+    Step(ctx, "名前欄で改名 → Undo 1 回で戻る");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemInputValue("##EntName", "InspRenamed");
+    ctx->Yield(4);
+    IM_CHECK_STR_EQ(reg.get<NameTag>(a).name.c_str(), "InspRenamed");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    IM_CHECK_STR_EQ(reg.get<NameTag>(a).name.c_str(), oldName.c_str());
+
+    Step(ctx, "有効チェックを外す → 描画リストから消える");
+    IM_CHECK(inspector1b::InDrawList(ed, a));
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("##EntEnabled");
+    ctx->Yield(4);
+    IM_CHECK(eflags::Self<EntityDisabled>(reg, a));
+    IM_CHECK(!inspector1b::InDrawList(ed, a));
+
+    Step(ctx, "Undo で有効へ戻る（描画リストにも戻る）");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    IM_CHECK(!eflags::Self<EntityDisabled>(reg, a));
+    IM_CHECK(inspector1b::InDrawList(ed, a));
+
+    Step(ctx, "タグを追加（＋ タグ → 入力 → Enter）");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("##tagadd/##chip");
+    ctx->Yield(3);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemInputValue("##tagname", "enemy");
+    ctx->Yield(4);
+    ctx->SetRef(kWinInspector);
+    {
+        const Tag* t = reg.try_get<Tag>(a);
+        IM_CHECK(t != nullptr && t->tags.size() == 1 && t->tags[0] == "enemy");
+    }
+    Step(ctx, "タグのチップを押して外す（最後の 1 個 = Tag コンポーネントごと消える）");
+    ctx->ItemClick("##tag_enemy/##chip");
+    ctx->Yield(4);
+    IM_CHECK(!reg.all_of<Tag>(a));
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    IM_CHECK(reg.all_of<Tag>(a));   // Undo で戻る
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    IM_CHECK(!reg.all_of<Tag>(a));
+
+    Step(ctx, "固定: 別のエンティティを選んでも表示は固定先のまま");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("##pinInspector/##ib");
+    ctx->Yield(3);
+    IM_CHECK(ed->inspectorPinned == a);
+    const entt::entity b = inspector1b::AddAndSelectBox(ctx, "Sphere");
+    IM_CHECK(b != entt::null && b != a);
+    ctx->Yield(4);
+    IM_CHECK(ed->inspectorPinned == a);
+    IM_CHECK(ed->selectedEntity == b);   // 選択そのものは元のまま（Render の間だけ差し替える）
+    ctx->SetRef(kWinInspector);
+    {
+        const char* shown = ctx->ItemReadAsString("##EntName");
+        IM_CHECK_STR_EQ(shown, reg.get<NameTag>(a).name.c_str());   // 名前欄は固定先（a）
+    }
+    Step(ctx, "固定先を消すと自動で解除される");
+    ed->pendingDeletions.push_back(a);
+    ctx->Yield(8);
+    IM_CHECK(ed->inspectorPinned == entt::null);
+
+    inspector1b::Cleanup(ctx, {b});
+}
+
+void T_InspectorAddComponentSearch(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "Box を作って選択 → コンポーネント追加を開き、検索欄へ打つ（自動フォーカス）");
+    const entt::entity a = inspector1b::AddAndSelectBox(ctx);
+    IM_CHECK(a != entt::null && !reg.all_of<SphereCollider>(a));
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick(kBtnAddComponent);
+    ctx->Yield(3);
+    ctx->KeyChars("sphere coll");
+    ctx->Yield(3);
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(5);
+    IM_CHECK(reg.all_of<SphereCollider>(a));
+    IM_CHECK(insp::SplitList(prefs::GetString("insp.recentComponents")).front() == "SphereCollider");
+
+    Step(ctx, "Undo で外れる");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    IM_CHECK(!reg.all_of<SphereCollider>(a));
+
+    Step(ctx, "日本語の別名でも引ける（当たり判定 → コライダー。↓ で 2 番目を選んで Enter）");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick(kBtnAddComponent);
+    ctx->Yield(3);
+    ctx->KeyChars("\xe5\xbd\x93\xe3\x81\x9f\xe3\x82\x8a\xe5\x88\xa4\xe5\xae\x9a");   // 当たり判定
+    ctx->Yield(3);
+    ctx->KeyPress(ImGuiKey_DownArrow);
+    ctx->Yield(2);
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(5);
+    const int colliders = (reg.all_of<BoxCollider>(a) ? 1 : 0) + (reg.all_of<SphereCollider>(a) ? 1 : 0) + (reg.all_of<CapsuleCollider>(a) ? 1 : 0);
+    IM_CHECK_EQ(colliders, 1);
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+
+    Step(ctx, "一致が無い検索では Enter しても何も付かない。Esc で閉じる");
+    const size_t before = reg.storage<BoxCollider>().size() + reg.storage<RigidBody>().size();
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick(kBtnAddComponent);
+    ctx->Yield(3);
+    ctx->KeyChars("zzzzqqqq");
+    ctx->Yield(2);
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(3);
+    IM_CHECK_EQ(reg.storage<BoxCollider>().size() + reg.storage<RigidBody>().size(), before);
+    ctx->KeyPress(ImGuiKey_Escape);
+    ctx->Yield(3);
+
+    Step(ctx, "複数選択: 全員へ付く（Undo 1 回で全員から外れる）");
+    const entt::entity b = inspector1b::AddAndSelectBox(ctx);
+    IM_CHECK(b != entt::null && b != a);
+    ed->selectedEntities.assign({a, b});
+    ed->selectedEntity = a;
+    ctx->Yield(4);
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick(kBtnAddComponent);
+    ctx->Yield(3);
+    ctx->KeyChars("capsule coll");
+    ctx->Yield(3);
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(5);
+    IM_CHECK(reg.all_of<CapsuleCollider>(a) && reg.all_of<CapsuleCollider>(b));
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    IM_CHECK(!reg.all_of<CapsuleCollider>(a) && !reg.all_of<CapsuleCollider>(b));
+
+    inspector1b::Cleanup(ctx, {a, b});
+}
+
+void T_InspectorMultiTransform(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "Box を 3 個作り、位置を別々にする");
+    entt::entity e[3] = {};
+    for (int i = 0; i < 3; ++i)
+    {
+        e[i] = inspector1b::AddAndSelectBox(ctx);
+        IM_CHECK(e[i] != entt::null && reg.all_of<Transform>(e[i]));
+    }
+    for (int i = 0; i < 3; ++i)
+    {
+        auto& t = reg.get<Transform>(e[i]);
+        t.position = {1.0f + 3.0f * i, 2.0f + 3.0f * i, 3.0f + 3.0f * i};   // (1,2,3) (4,5,6) (7,8,9)
+    }
+    ctx->Yield(3);
+
+    Step(ctx, "3 個まとめて選択 → Transform の位置 Y だけを 42 にする");
+    ed->selectedEntities.assign(std::begin(e), std::end(e));
+    ed->selectedEntity = e[0];
+    ctx->Yield(4);
+    ctx->SetRef(kWinInspector);
+    // FloatN の各軸は PushID(ラベル) → PushID(int 軸) → "##v"（PropertyGrid.h）
+    ctx->ItemInputValue("**/\xe4\xbd\x8d\xe7\xbd\xae Position/$$1/##v", 42.0f);   // 位置 Position
+    ctx->Yield(6);
+    for (int i = 0; i < 3; ++i)
+    {
+        const auto& p = reg.get<Transform>(e[i]).position;
+        if (std::fabs(p.y - 42.0f) > 0.01f)
+        { IM_ERRORF("Transform%d の Y が届いていない（%.2f、期待 42）", i, p.y); }
+        // 触っていない X / Z は各自のまま（全体コピーになっていない）
+        if (std::fabs(p.x - (1.0f + 3.0f * i)) > 0.01f || std::fabs(p.z - (3.0f + 3.0f * i)) > 0.01f)
+        { IM_ERRORF("Transform%d の X / Z まで上書きされている（%.2f, %.2f）", i, p.x, p.z); }
+    }
+
+    Step(ctx, "Undo 1 回で 3 個とも戻る");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    for (int i = 0; i < 3; ++i)
+    {
+        const auto& p = reg.get<Transform>(e[i]).position;
+        if (std::fabs(p.y - (2.0f + 3.0f * i)) > 0.01f)
+        { IM_ERRORF("Undo 1 回で Transform%d が戻っていない（Y=%.2f）", i, p.y); }
+    }
+
+    inspector1b::Cleanup(ctx, {e[0], e[1], e[2]});
+}
+
+void T_InspectorResetCopy(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "Box を作って選択し、位置を (5,6,7) にする");
+    const entt::entity a = inspector1b::AddAndSelectBox(ctx);
+    IM_CHECK(a != entt::null);
+    reg.get<Transform>(a).position = {5.0f, 6.0f, 7.0f};
+    ctx->Yield(3);
+
+    Step(ctx, "位置の行を右クリック → 既定値へリセット");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("**/\xe4\xbd\x8d\xe7\xbd\xae Position/$$0/##v", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("\xe6\x97\xa2\xe5\xae\x9a\xe5\x80\xa4\xe3\x81\xb8\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88");   // 既定値へリセット
+    ctx->Yield(5);
+    {
+        const auto& p = reg.get<Transform>(a).position;
+        IM_CHECK(p.x == 0.0f && p.y == 0.0f && p.z == 0.0f);
+    }
+    Step(ctx, "Undo で (5,6,7) に戻る");
+    ed->pendingUndo = true;
+    ctx->Yield(8);
+    {
+        const auto& p = reg.get<Transform>(a).position;
+        IM_CHECK(p.x == 5.0f && p.y == 6.0f && p.z == 7.0f);
+    }
+
+    Step(ctx, "値をコピー → 別の値にしてから 値を貼り付け");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("**/\xe4\xbd\x8d\xe7\xbd\xae Position/$$0/##v", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("\xe5\x80\xa4\xe3\x82\x92\xe3\x82\xb3\xe3\x83\x94\xe3\x83\xbc");   // 値をコピー
+    ctx->Yield(3);
+    IM_CHECK(pg::InternalClipboard().rfind("dx12v:f:", 0) == 0);
+    reg.get<Transform>(a).position = {1.0f, 1.0f, 1.0f};
+    ctx->Yield(3);
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("**/\xe4\xbd\x8d\xe7\xbd\xae Position/$$0/##v", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("\xe5\x80\xa4\xe3\x82\x92\xe8\xb2\xbc\xe3\x82\x8a\xe4\xbb\x98\xe3\x81\x91");   // 値を貼り付け
+    ctx->Yield(5);
+    {
+        const auto& p = reg.get<Transform>(a).position;
+        IM_CHECK(p.x == 5.0f && p.y == 6.0f && p.z == 7.0f);
+    }
+
+    Step(ctx, "コンポーネント見出しの右クリック: Box Collider を既定値へ / コピーして貼り付け");
+    reg.emplace<BoxCollider>(a);
+    reg.get<BoxCollider>(a).halfExtents = {2.0f, 3.0f, 4.0f};
+    ctx->Yield(4);
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("Box Collider", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("\xe3\x82\xb3\xe3\x83\xb3\xe3\x83\x9d\xe3\x83\xbc\xe3\x83\x8d\xe3\x83\xb3\xe3\x83\x88\xe3\x82\x92\xe3\x82\xb3\xe3\x83\x94\xe3\x83\xbc");   // コンポーネントをコピー
+    ctx->Yield(3);
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("Box Collider", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("\xe6\x97\xa2\xe5\xae\x9a\xe5\x80\xa4\xe3\x81\xb8\xe3\x83\xaa\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88");   // 既定値へリセット
+    ctx->Yield(5);
+    {
+        const auto& h = reg.get<BoxCollider>(a).halfExtents;
+        IM_CHECK(h.x == 0.5f && h.y == 0.5f && h.z == 0.5f);
+    }
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("Box Collider", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("\xe5\x80\xa4\xe3\x82\x92\xe8\xb2\xbc\xe3\x82\x8a\xe4\xbb\x98\xe3\x81\x91");   // 値を貼り付け
+    ctx->Yield(5);
+    {
+        const auto& h = reg.get<BoxCollider>(a).halfExtents;
+        IM_CHECK(h.x == 2.0f && h.y == 3.0f && h.z == 4.0f);
+    }
+
+    inspector1b::Cleanup(ctx, {a});
+}
+
+void T_InspectorSearchFold(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    IM_CHECK(ed != nullptr);
+
+    Step(ctx, "Box を作って選択");
+    const entt::entity a = inspector1b::AddAndSelectBox(ctx);
+    IM_CHECK(a != entt::null);
+    ctx->Yield(4);
+
+    Step(ctx, "見出しを閉じる / 開く → 折りたたみ状態が prefs に残る");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClose("Transform");
+    ctx->Yield(3);
+    IM_CHECK(prefs::GetString("insp.fold").find("Transform=0") != std::string::npos);
+    ctx->ItemOpen("Transform");
+    ctx->Yield(3);
+    IM_CHECK(prefs::GetString("insp.fold").find("Transform=1") != std::string::npos);
+
+    Step(ctx, "すべて折りたたむ / すべて展開");
+    ctx->ItemClick("##foldAllInsp/##ib");
+    ctx->Yield(4);
+    IM_CHECK(!ctx->ItemIsOpened("Transform"));
+    ctx->ItemClick("##unfoldAllInsp/##ib");
+    ctx->Yield(4);
+    IM_CHECK(ctx->ItemIsOpened("Transform"));
+
+    Step(ctx, "検索 scale → Transform だけ残り、行の無い見出しは隠れる");
+    ctx->ItemClick("##InspSearch");
+    ctx->KeyChars("scale");
+    ctx->Yield(8);   // 1 フレーム目に全部描いて、行の無い見出しを学習 → 次から隠す
+    IM_CHECK(ctx->ItemExists("Transform"));
+    IM_CHECK(!ctx->ItemExists("MeshRenderer"));
+
+    Step(ctx, "検索を空にすると全部戻る");
+    ctx->ItemClick("##InspSearch");
+    ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_A);
+    ctx->KeyPress(ImGuiKey_Backspace);
+    ctx->Yield(6);
+    IM_CHECK(ctx->ItemExists("MeshRenderer"));
+
+    Step(ctx, "Ctrl+F で検索欄へフォーカス");
+    ctx->WindowFocus(kWinInspector);
+    ctx->KeyPress(ImGuiMod_Ctrl | ImGuiKey_F);
+    ctx->Yield(3);
+    IM_CHECK(ImGui::GetActiveID() != 0);
+    ctx->KeyPress(ImGuiKey_Escape);
+    ctx->Yield(2);
+
+    inspector1b::Cleanup(ctx, {a});
+}
+
+void T_InspectorComponentOrder(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Ed();
+    Scene* scene = g_app ? g_app->GetScene() : nullptr;
+    IM_CHECK(ed != nullptr && scene != nullptr);
+    auto& reg = scene->GetRegistry();
+
+    Step(ctx, "Box にコライダーを 2 種付ける（既定の並びは Box Collider → Sphere Collider）");
+    const entt::entity a = inspector1b::AddAndSelectBox(ctx);
+    IM_CHECK(a != entt::null);
+    reg.emplace<BoxCollider>(a);
+    reg.emplace<SphereCollider>(a);
+    ctx->Yield(6);   // 前フレームに描いた節の一覧（上へ / 下へ の可否）が揃うまで
+    ctx->SetRef(kWinInspector);
+    const float boxY0    = ctx->ItemInfo("Box Collider").RectFull.Min.y;
+    const float sphereY0 = ctx->ItemInfo("Sphere Collider").RectFull.Min.y;
+    IM_CHECK(boxY0 < sphereY0);
+
+    Step(ctx, "Sphere Collider の見出しメニュー → 上へ");
+    ctx->ItemClick("Sphere Collider", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("上へ");
+    ctx->Yield(6);
+    ctx->SetRef(kWinInspector);
+    const float boxY1    = ctx->ItemInfo("Box Collider").RectFull.Min.y;
+    const float sphereY1 = ctx->ItemInfo("Sphere Collider").RectFull.Min.y;
+    IM_CHECK(sphereY1 < boxY1);
+    IM_CHECK(insp::SplitList(prefs::GetString("insp.order")).size() > 2);   // 順序が保存される
+
+    Step(ctx, "下へ で元の並びに戻す");
+    ctx->ItemClick("Sphere Collider", ImGuiMouseButton_Right);
+    ctx->Yield(2);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("下へ");
+    ctx->Yield(6);
+    ctx->SetRef(kWinInspector);
+    IM_CHECK(ctx->ItemInfo("Box Collider").RectFull.Min.y < ctx->ItemInfo("Sphere Collider").RectFull.Min.y);
+
+    inspector1b::Cleanup(ctx, {a});
+}
+
 // ===================== テスト表 =====================
 
 struct DiagReg
@@ -2976,6 +4855,8 @@ struct DiagReg
 
 const DiagReg kTests[] = {
     { "basic", "hierarchy_click_all",   "基本操作",           "ヒエラルキーの全項目をクリック",       T_HierarchyClickAll     },
+    { "panel", "viewport_bar",          "パネル",             "ビューポートの帯（アスペクト / 隠す / スナップ / ビューキューブ / ブックマーク）", T_ViewportBar },
+    { "panel", "viewport_selection",    "パネル",             "選択アウトライン / ビューモード / 表示フラグ / 矩形選択", T_ViewportSelection },
     { "basic", "spawn_all_types",       "基本操作",           "全種類のエンティティを生成",           T_SpawnAllEntityTypes   },
     { "basic", "inspector_open_all",    "基本操作",           "インスペクターの全セクションを開く",   T_InspectorOpenAll      },
     { "basic", "undo_redo",             "基本操作",           "Undo / Redo を往復",                   T_UndoRedoStress        },
@@ -2991,12 +4872,30 @@ const DiagReg kTests[] = {
     { "basic", "shortcuts",             "基本操作",           "ショートカット（Esc / F2 / F5 / Ctrl+K / Ctrl+P）", T_Shortcuts },
     { "basic", "toast",                 "基本操作",           "トースト通知（積む / 畳む / クリックで閉じる）", T_ToastFlow },
     { "panel", "hierarchy_reparent",    "パネル",             "親替えでワールド位置が保たれる（フィルタ中も）", T_HierarchyReparent },
+    { "panel", "hier_perf_100k",        "パネル",             "ヒエラルキー 10 万体の CPU ms 計測", T_HierarchyPerf },
+    { "panel", "hierarchy_eye_lock",    "パネル",             "ヒエラルキーの目（非表示）と鍵（ロック）", T_HierarchyEyeLock },
+    { "panel", "hierarchy_filter",      "パネル",             "ヒエラルキーの検索（名前 / コンポーネント / タグ）と型チップ", T_HierarchyFilterChips },
+    { "panel", "hierarchy_reorder",     "パネル",             "ヒエラルキーの並べ替え（前 / 子）とフォルダ", T_HierarchyReorder },
     { "panel", "inspector_multi_edit",  "パネル",             "複数選択したライトを一括で編集できる", T_InspectorMultiEdit },
+    { "panel", "inspector_header",      "パネル",             "インスペクタ上部（名前 / 有効 / タグ / 固定）", T_InspectorHeader },
+    { "panel", "inspector_add_component_search", "パネル",     "コンポーネント追加の検索（別名 / キーボード / 複数選択）", T_InspectorAddComponentSearch },
+    { "panel", "inspector_multi_transform", "パネル",         "複数選択の Transform（触った軸だけ全員へ / Undo 1 回）", T_InspectorMultiTransform },
+    { "panel", "inspector_reset_copy",  "パネル",             "行 / 見出しの右クリック（既定値へ / コピー / 貼り付け）", T_InspectorResetCopy },
+    { "panel", "inspector_search_fold", "パネル",             "インスペクタ内検索と折りたたみの保持", T_InspectorSearchFold },
+    { "panel", "inspector_component_order", "パネル",         "コンポーネントの並べ替え（見出しメニューの 上へ / 下へ）", T_InspectorComponentOrder },
     { "play",  "ui_focus_releases",     "再生",               "HUD を押した後もパッド操作が死なない", T_UiFocusReleases },
     { "panel", "console",               "パネル",             "コンソール（フィルタ / Lua 実行）",    T_ConsolePanel          },
     { "panel", "asset_browser",         "パネル",             "アセットブラウザ",                     T_AssetBrowser          },
+    { "panel", "asset_perf_10k",        "パネル",             "アセットブラウザ: 1 万ファイルの Render() CPU ms（perf/big があるときだけ）", T_AssetPerf10k },
+    { "panel", "asset_browser_ops",     "パネル",             "アセットブラウザ: 作成 / 名前変更 / 複製 / 移動 / 削除 / フィルタ / 検索 / リスト", T_AssetBrowserOps },
+    { "panel", "asset_os_drop",         "パネル",             "アセットブラウザ: OS からのファイルドロップで取り込み（WM_DROPFILES）", T_AssetOsDrop },
     { "panel", "new_floating_panels",   "パネル",             "ライティング / 地形ツールの開閉",       T_NewFloatingPanels     },
+    { "panel", "settings_windows_pg",   "パネル",             "設定窓（ポスト / SSAO / SSR / フォグ / Skybox）が pg:: 行で値を書く", T_SettingsWindowsPg },
     { "panel", "layout_reset",          "パネル",             "ドックレイアウトのリセット",           T_LayoutReset           },
+    { "panel", "workspace_switch",      "パネル",             "ワークスペース 6 種の切替（開く窓 / ビューポート / 最後の状態）", T_WorkspaceSwitch },
+    { "panel", "layout_save_restore",   "パネル",             "名前つきレイアウトの保存 / 復元 / 削除 / 壊れた保存", T_LayoutSaveRestore },
+    { "panel", "bottom_dock_slot",      "パネル",             "下部ドックのスロット（登録タブ / 最大化 / ダブルクリック）", T_BottomDockSlot },
+    { "panel", "tool_dock_slots",       "パネル",             "ツール窓の配置先（右タブ / 右分割 / 下部 / フローティング）", T_ToolDockSlots },
     { "panel", "dpi_scale_layout",      "パネル",             "表示倍率 1.0 / 1.5 / 2.0 で論理レイアウトが変わらない", T_DpiScaleLayout },
     { "panel", "dpi_ini_roundtrip",     "パネル",             "imgui.ini の倍率マーカーと、倍率違いの ini の換算", T_DpiIniRoundTrip },
     { "panel", "mesh_gc",               "パネル",             "未参照メッシュの回収（リーク）",       T_MeshGarbageCollect    },
@@ -3059,6 +4958,38 @@ const char* DisplayName(const ImGuiTest* test)
 
 // ===================== UiTestHarness =====================
 
+void UiTestHarness::SetOnlyList(const std::string& names)
+{
+    g_onlyTests.clear();
+    size_t pos = 0;
+    while (pos <= names.size())
+    {
+        size_t end = names.find_first_of(",;", pos);
+        if (end == std::string::npos) end = names.size();
+        std::string tok = names.substr(pos, end - pos);
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '"')) tok.erase(tok.begin());
+        while (!tok.empty() && (tok.back() == ' ' || tok.back() == '"')) tok.pop_back();
+        if (!tok.empty()) g_onlyTests.insert(tok);
+        pos = end + 1;
+    }
+}
+
+void UiTestHarness::SetSkipList(const std::string& names)
+{
+    g_skipTests.clear();
+    size_t pos = 0;
+    while (pos <= names.size())
+    {
+        size_t end = names.find_first_of(",;", pos);
+        if (end == std::string::npos) end = names.size();
+        std::string tok = names.substr(pos, end - pos);
+        while (!tok.empty() && (tok.front() == ' ' || tok.front() == '"')) tok.erase(tok.begin());
+        while (!tok.empty() && (tok.back() == ' ' || tok.back() == '"')) tok.pop_back();
+        if (!tok.empty()) g_skipTests.insert(tok);
+        pos = end + 1;
+    }
+}
+
 void UiTestHarness::Initialize(Application* app, bool runAllAndExit, int speedMode, bool deepOnly)
 {
     m_app           = app;
@@ -3114,6 +5045,8 @@ void UiTestHarness::QueueTests(const char* filterCategory, bool failedOnly, int 
     {
         ImGuiTest* test = tests[i];
         if (test == nullptr) continue;
+        if (g_skipTests.count(test->Name) != 0) continue;   // --ui-tests-skip
+        if (!g_onlyTests.empty() && g_onlyTests.count(test->Name) == 0) continue;   // --ui-tests-only
         if (filterCategory != nullptr && std::strcmp(test->Category, filterCategory) != 0) continue;
         if (failedOnly && test->Output.Status != ImGuiTestStatus_Error) continue;
         // deepSel: -1=問わない / 0=通常の検査だけ / 1=超詳細だけ
@@ -3153,6 +5086,7 @@ void UiTestHarness::BeginRun()
 
     m_running    = true;
     m_statusText = "検査を実行しています...";
+    guard::TestRunActive().store(true);   // テスト中は OS への副作用（エクスプローラー等）を実行しない
     CrashHandler::Breadcrumb("エンジン診断: 検査を開始");
     Logger::Info("エンジン診断: {} 件の検査を開始しました", m_queuedTotal);
 }
@@ -3166,6 +5100,7 @@ void UiTestHarness::PostRender()
     if (m_running && ImGuiTestEngine_IsTestQueueEmpty(m_engine))
     {
         m_running = false;
+        guard::TestRunActive().store(false);
         RefreshSummary();
         const int failed = m_lastTested - m_lastSuccess;
         m_statusText = (failed == 0)

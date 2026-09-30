@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "editor/UiWidgets.h"
+#include "editor/PropertyGrid.h"   // フェーズ 1b: ビルド設定窓を pg:: 2 カラムへ
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
@@ -1900,6 +1901,27 @@ bool Application::BuildGame()
                     pak.AddBlob("shaders/custom/" + relPath + "_PS.cso", ps->data(), ps->size());
                 }
             }
+
+            // マテリアルグラフ（G2b）: assets 内の全グラフ材質（.dxmat の graph キー）の HLSL を DXC で DXIL にして pak へ焼く。
+            //   ゲームモードは DXC を使わない（GraphMaterialSystem は pak の shaders/graph/*.cso から PSO を作る）。
+            //   1 つでもコンパイルできなければビルドを止める（壊れたグラフを出荷しない。従来のカスタムシェーダーと同じ方針）。
+            if (m_graphMaterials && m_graphMaterials->IsAvailable())
+            {
+                std::vector<GraphMaterialSystem::BakedBlob> graphBlobs;
+                std::vector<std::string> graphErrors;
+                if (!m_graphMaterials->BakeForBuild(graphBlobs, graphErrors))
+                {
+                    std::string msg = "マテリアルグラフのシェーダーのコンパイルに失敗しました。ビルドを中止しました:\n";
+                    for (const auto& e : graphErrors) msg += "  - " + e.substr(0, 400) + "\n";
+                    Logger::Error("{}", msg);
+                    if (m_editorCtx) m_editorCtx->buildErrorMsg = msg;
+                    return false;
+                }
+                for (const auto& b : graphBlobs)
+                    pak.AddBlob(b.relPath, b.bytes.data(), b.bytes.size());
+                if (!graphBlobs.empty())
+                    Logger::Info("マテリアルグラフ: {} 個のシェーダーを pak へ焼きました", graphBlobs.size());
+            }
         }
 
         // 1 件でも詰め損ねていたら「完了」と言わない（欠けた配布物を出さない）。
@@ -2034,11 +2056,12 @@ void Application::RenderBuildSettingsWindow()
                 if (e.is_regular_file() && e.path().extension() == ".json")
                     scenes.push_back("scenes/" + e.path().filename().string());
 
-        ImGui::TextUnformatted("開始シーン");
         const char* curLabel = cfg.startScene.empty()
             ? "(\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3)"  // (現在開いているシーン)
             : cfg.startScene.c_str();
-        ImGui::SetNextItemWidth(-1.0f);
+        if (pg::Begin("##bsScene"))
+        {
+        pg::Label("開始シーン", "全シーンが game.pak に含まれます。起動シーンを選びます。");
         if (ui::BeginCombo("##startScene", curLabel))
         {
             if (ImGui::Selectable("(\xe7\x8f\xbe\xe5\x9c\xa8\xe9\x96\x8b\xe3\x81\x84\xe3\x81\xa6\xe3\x81\x84\xe3\x82\x8b\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3)",
@@ -2049,18 +2072,13 @@ void Application::RenderBuildSettingsWindow()
                     cfg.startScene = s;
             ImGui::EndCombo();
         }
-        ImGui::TextDisabled("\xe2\x80\xbb \xe5\x85\xa8\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x81\x8c game.pak \xe3\x81\xab\xe5\x90\xab\xe3\x81\xbe\xe3\x82\x8c\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82\xe8\xb5\xb7\xe5\x8b\x95\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe3\x82\x92\xe9\x81\xb8\xe3\x81\xb3\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82");  // ※全シーンがgame.pakに含まれます。起動シーンを選びます。
+        pg::End();
+        }
     }
 
     // ===== 製品 =====
     if (ui::CollapsingHeader("製品", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::TextUnformatted("ゲーム名（ウィンドウタイトル / exe名）");
-        ImGui::SetNextItemWidth(-1.0f);
-        ui::InputText("##title", cfg.title, sizeof(cfg.title));
-        ImGui::TextDisabled("※ exe名/フォルダ名には英数・空白・_- のみが使われます");
-
-        ImGui::TextUnformatted("解像度");
         struct Res { const char* name; int w, h; };
         static const Res presets[] = {
             {"1280 x 720 (HD)",   1280, 720},
@@ -2069,22 +2087,25 @@ void Application::RenderBuildSettingsWindow()
             {"2560 x 1440 (QHD)", 2560, 1440},
         };
         std::string cur = std::to_string(cfg.width) + " x " + std::to_string(cfg.height);
-        ImGui::SetNextItemWidth(ui::Px(210.0f));
-        if (ui::BeginCombo("##respreset", cur.c_str()))
+        if (pg::Begin("##bsProduct"))
         {
-            for (auto& p : presets)
-                if (ImGui::Selectable(p.name, p.w == cfg.width && p.h == cfg.height))
-                {
-                    cfg.width  = p.w;
-                    cfg.height = p.h;
-                }
-            ImGui::EndCombo();
+            pg::InputText("ゲーム名", cfg.title, sizeof(cfg.title), 0, nullptr,
+                          "ウィンドウタイトル / exe名。exe名・フォルダ名には英数・空白・_- のみが使われます");
+            pg::Label("解像度");
+            if (ui::BeginCombo("##respreset", cur.c_str()))
+            {
+                for (auto& p : presets)
+                    if (ImGui::Selectable(p.name, p.w == cfg.width && p.h == cfg.height))
+                    {
+                        cfg.width  = p.w;
+                        cfg.height = p.h;
+                    }
+                ImGui::EndCombo();
+            }
+            pg::Int("幅", &cfg.width, 1.0f, 320, 7680);
+            pg::Int("高さ", &cfg.height, 1.0f, 240, 4320);
+            pg::End();
         }
-        ImGui::SetNextItemWidth(ui::Px(90.0f));
-        ImGui::InputInt("\xe5\xb9\x85##w", &cfg.width, 0);    // 幅
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ui::Px(90.0f));
-        ImGui::InputInt("\xe9\xab\x98\xe3\x81\x95##h", &cfg.height, 0);  // 高さ
         cfg.width  = std::clamp(cfg.width,  320, 7680);
         cfg.height = std::clamp(cfg.height, 240, 4320);
     }
@@ -2092,24 +2113,27 @@ void Application::RenderBuildSettingsWindow()
     // ===== 出力先 =====
     if (ui::CollapsingHeader("出力先", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::TextUnformatted("配置先フォルダ");
         char pathBuf[1024];
         strncpy_s(pathBuf,
                   cfg.outputDir.empty()
                     ? "(\xe6\x9c\xaa\xe9\x81\xb8\xe6\x8a\x9e \xe2\x80\x94 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe6\x99\x82\xe3\x81\xab\xe9\x81\xb8\xe6\x8a\x9e)"  // (未選択 — ビルド時に選択)
                     : cfg.outputDir.c_str(),
                   _TRUNCATE);
-        ImGui::SetNextItemWidth(-ui::Px(92.0f));
-        ui::InputText("##outdir", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
-        ImGui::SameLine();
-        if (ImGui::Button("\xe5\x8f\x82\xe7\x85\xa7...", ImVec2(-1.0f, 0.0f)))  // 参照...
+        if (pg::Begin("##bsOutput"))
         {
-            std::string dir;
-            if (ProjectManager::PickFolder(m_window->GetHwnd(), dir, L"ビルドの配置先フォルダを選択"))
-                cfg.outputDir = dir;
+            pg::Label("配置先フォルダ", "選んだフォルダ直下に \"<製品名>_build\" を作って出力します。");
+            ImGui::SetNextItemWidth(-ui::Px(92.0f));
+            ui::InputText("##outdir", pathBuf, sizeof(pathBuf), ImGuiInputTextFlags_ReadOnly);
+            ImGui::SameLine();
+            if (ImGui::Button("\xe5\x8f\x82\xe7\x85\xa7...", ImVec2(-1.0f, 0.0f)))  // 参照...
+            {
+                std::string dir;
+                if (ProjectManager::PickFolder(m_window->GetHwnd(), dir, L"ビルドの配置先フォルダを選択"))
+                    cfg.outputDir = dir;
+            }
+            pg::Checkbox("ビルド後にフォルダを開く", &cfg.openFolderAfterBuild);
+            pg::End();
         }
-        ui::Checkbox("ビルド後にフォルダを開く", &cfg.openFolderAfterBuild);
-        ImGui::TextDisabled("\xe2\x80\xbb \xe9\x81\xb8\xe3\x82\x93\xe3\x81\xa0\xe3\x83\x95\xe3\x82\xa9\xe3\x83\xab\xe3\x83\x80\xe7\x9b\xb4\xe4\xb8\x8b\xe3\x81\xab \"<\xe8\xa3\xbd\xe5\x93\x81\xe5\x90\x8d>_build\" \xe3\x82\x92\xe4\xbd\x9c\xe3\x81\xa3\xe3\x81\xa6\xe5\x87\xba\xe5\x8a\x9b\xe3\x81\x97\xe3\x81\xbe\xe3\x81\x99\xe3\x80\x82");  // ※選んだフォルダ直下に "<製品名>_build" を作って出力します。
     }
 
     ImGui::Spacing();
@@ -2117,10 +2141,7 @@ void Application::RenderBuildSettingsWindow()
     ImGui::Spacing();
 
     // ===== ビルド実行 =====
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.20f, 0.42f, 0.68f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.82f, 1.0f));
-    const bool doBuild = ImGui::Button("ビルド", ImVec2(-1.0f, ui::Px(38.0f)));
-    ImGui::PopStyleColor(2);
+    const bool doBuild = ui::PrimaryButton("ビルド", ImVec2(-1.0f, ui::Px(38.0f)));
     if (doBuild)
     {
         bool proceed = true;
@@ -2138,14 +2159,14 @@ void Application::RenderBuildSettingsWindow()
 
     if (m_editorCtx->buildCompleteFlash > 0.0f)
     {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.5f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::Good);
         ImGui::TextUnformatted("\xe2\x9c\x93 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xae\x8c\xe4\xba\x86");  // ✓ ビルド完了
         ImGui::PopStyleColor();
         m_editorCtx->buildCompleteFlash -= m_gameClock.GetDeltaTime();
     }
     else if (m_editorCtx->buildErrorFlash > 0.0f)
     {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.35f, 0.35f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::Bad);
         ImGui::TextUnformatted("\xe2\x9c\x97 \xe3\x83\x93\xe3\x83\xab\xe3\x83\x89\xe5\xa4\xb1\xe6\x95\x97 (dx12_engine.log)");  // ✗ ビルド失敗
         ImGui::PopStyleColor();
         m_editorCtx->buildErrorFlash -= m_gameClock.GetDeltaTime();

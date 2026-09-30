@@ -1,6 +1,7 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/ColliderShape.h"   // 当たり判定の実効サイズの唯一の規約
 #include "ecs/Components.h"
+#include "ecs/EditorFlags.h"   // EntityDisabled（無効なエンティティは剛体 / キャラを作らない）
 #include "core/Logger.h"
 #include "terrain/HeightField.h"   // 地形コライダー（Terrain::_hf の高さ配列を Jolt へ渡す）
 #include "terrain/SculptMesh.h"    // スカルプトコライダー（SculptMesh::_data の三角形を Jolt へ渡す）
@@ -714,6 +715,7 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     auto* rb = registry.try_get<RigidBody>(entity);
     if (!rb) return;
     if (rb->bodyId != kInvalidBodyId) return; // already registered
+    if (eflags::IsDisabled(registry, entity)) return;   // 無効（インスペクタの「有効」OFF）: 剛体を作らない
 
     auto* transform = registry.try_get<Transform>(entity);
     if (!transform) return;
@@ -1119,6 +1121,7 @@ void PhysicsSystem::RegisterCharacter(entt::registry& registry, entt::entity ent
     auto* cc = registry.try_get<CharacterController>(entity);
     if (!cc) return;
     if (cc->_registered) return;
+    if (eflags::IsDisabled(registry, entity)) return;   // 無効（インスペクタの「有効」OFF）: キャラを作らない
     auto* transform = registry.try_get<Transform>(entity);
     if (!transform) return;
 

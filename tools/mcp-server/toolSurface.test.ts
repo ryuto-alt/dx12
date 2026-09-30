@@ -1,7 +1,7 @@
 // tools/list の表面(公開ツール)のテスト。エンジン不要。設計書 §5.2 M3 の合否基準(tools/list のサイズ・lint・alias 網羅)。
 //   [1] legacy 面  = M0 のスナップショットと完全一致(旧 220 ツールが 1 バイトも変わっていない回帰基準)
 //   [2] full 面(既定)= shell 5 本が先頭 + 旧 220 本が「意味的に同一」(outputSchema を削り、guarded に destructiveHint を足しただけ)。サイズは M0 基準以下
-//   [3] core 面   = shell 5 本 + Core 28 本 + dx12_batch + dx12_call_guarded(計 35 本 ≤ 40 本、≤ 120 KB)。説明テンプレ・名前規約の lint
+//   [3] core 面   = shell 5 本 + Core 28 本(dx12_sequence・dx12_editor_command / state を含む)+ フリート 2 + ジョブ 3 + dx12_batch + dx12_call_guarded(計 40 本 ≤ 40 本、≤ 120 KB)。説明テンプレ・名前規約の lint
 //   [4] shell 面  = shell 5 本だけ
 //   [5] alias 網羅 = 旧 220 名がすべて dx12_call で解決できる(旧名の呼び方は変わらない)。統合ツールの往復変換
 // 実行: node toolSurface.test.ts
@@ -11,7 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listTools, semanticView, sha, M3_DESTRUCTIVE_HINT_ADDED } from "./scripts/gen_legacy_snapshot.mjs";
 import {
-  CONSOLIDATED, CORE_28, CORE_DESCRIPTION_MAX, CORE_FLEET, CORE_GUARDED_TOOL, CORE_LEGACY, CORE_ORDER, FLEET_TOOLS, NAME_EXCEPTIONS, SHELL_TOOLS,
+  CONSOLIDATED, CORE_28, CORE_DESCRIPTION_MAX, CORE_ENGINE_DIRECT, CORE_FLEET, CORE_GUARDED_TOOL, CORE_JOBS, CORE_LEGACY, CORE_ORDER, EDITOR_TOOLS, EDITOR_TOOL_SET, FLEET_TOOLS, FLEET_TOOL_SET, JOB_TOOLS, JOB_TOOL_SET, NAME_EXCEPTIONS, SCENE_SPEC_TOOLS, SCENE_SPEC_TOOL_SET, SHELL_TOOLS,
   aliasStats, buildAliasTable, routeConsolidated, toCoreCall, verbOf,
 } from "./coreSpec.ts";
 import { DIALECT_PATTERN } from "./errors.ts";
@@ -33,6 +33,9 @@ const LEGACY_NAMES: string[] = snap.tools.map((t: any) => t.name);
 const M0_BYTES: number = snap.totalBytes;
 const CORE_MAX_BYTES = 120 * 1024;   // 設計書 §5.2 M3 (d)① / §4.1.7
 
+// DXR パストレーサー(Q1a)。toolset/pathTracer.ts が full / core / shell 面の末尾へ足す(legacy 面には出さない)。
+const PT_TOOLS = ["dx12_render_reference", "dx12_render_reference_status", "dx12_render_reference_cancel"];
+const VG_TOOLS = ["dx12_vg_stats", "dx12_set_virtual_geometry"];
 console.log("[1] legacy 面: M0 のスナップショットと一致");
 const legacy = await listTools("legacy");
 check(`tools/list の総バイト数が M0 と同一(${snap.totalBytes})`, legacy.bytes === snap.totalBytes, `${legacy.bytes} != ${snap.totalBytes}`);
@@ -48,7 +51,7 @@ check("先頭 5 本が shell", eq(full.tools.slice(0, 5).map((t: any) => t.name)
 const restAll = full.tools.slice(5);
 const rest = restAll.slice(0, 220);
 check("旧 220 本の名前と並びが同一のまま続く", rest.length === 220 && eq(rest.map((t: any) => t.name), LEGACY_NAMES), rest.length);
-check("旧 220 本の後ろ(末尾)にフリートの 6 本だけが足される", eq(restAll.slice(220).map((t: any) => t.name), FLEET_TOOLS), restAll.slice(220).map((t: any) => t.name));
+check("旧 220 本の後ろ(末尾)にパストレーサーの 3 本と仮想ジオメトリの 2 本とフリートの 6 本とジョブの 6 本とエディタ操作の 4 本とシーン仕様の 2 本だけが足される", eq(restAll.slice(220).map((t: any) => t.name), [...PT_TOOLS, ...VG_TOOLS, ...FLEET_TOOLS, ...JOB_TOOLS, ...EDITOR_TOOLS, ...SCENE_SPEC_TOOLS]), restAll.slice(220).map((t: any) => t.name));
 const semDiff = rest.filter((t: any) => sha(semanticView(t)) !== SNAP_BY_NAME.get(t.name)?.semSha256).map((t: any) => t.name);
 check("旧 220 本の name / title / 説明 / inputSchema / annotations / _meta が意味的に同一(outputSchema と destructiveHint 以外は 1 バイトも変わらない)", semDiff.length === 0, semDiff.slice(0, 10));
 const inputDiff = rest.filter((t: any, i: number) => sha(t.inputSchema) !== sha(legacy.tools[i].inputSchema) || t.description !== legacy.tools[i].description).map((t: any) => t.name);
@@ -74,7 +77,7 @@ console.log(`      core = ${core.tools.length} 本 / ${core.bytes} B(M0 比 ${((
   const core2 = await listTools("core");
   check("決定論: 2 回起動して tools/list が完全に同一", eq(core.tools, core2.tools));
 }
-check("Core 28 本 + フリート 5 本 + dx12_batch + dx12_call_guarded = 35(shell を足して 40)", CORE_28.length === 28 && CORE_FLEET.length === 5 && CORE_ORDER.length === 35);
+check("Core 28 本(エディタ操作 2 を含む)+ フリート 2 本 + ジョブ 3 本 + dx12_batch + dx12_call_guarded = 35(shell を足して 40)", CORE_28.length === 28 && CORE_FLEET.length === 2 && CORE_JOBS.length === 3 && CORE_ORDER.length === 35, { c28: CORE_28.length, f: CORE_FLEET.length, j: CORE_JOBS.length, o: CORE_ORDER.length });
 check("core 面はちょうど 40 本(上限。増やすなら選定理由を docs/MCP_FLEET_DESIGN.md §9 に書く)", core.tools.length === 40, core.tools.length);
 check("core 面に outputSchema が無い", core.tools.every((t: any) => !t.outputSchema));
 check("shell の alwaysLoad は 5 本ちょうど(増やさない)", core.tools.filter((t: any) => t._meta?.["anthropic/alwaysLoad"] === true).length === 5 && core.tools.slice(0, 5).every((t: any) => t._meta?.["anthropic/alwaysLoad"] === true));
@@ -132,14 +135,14 @@ check("shell の alwaysLoad は 5 本ちょうど(増やさない)", core.tools.
   }
   check("動詞と annotations(readOnlyHint / destructiveHint)が整合", inconsistent.length === 0, inconsistent);
   const roCore = cores.filter((t: any) => t.annotations?.readOnlyHint === true).map((t: any) => t.name);
-  check("読み取り専用ツールは dx12_get_* / dx12_list_* / shell の読み取り(1 行の許可ルールで書ける)", roCore.every((n: string) => /^dx12_(get|list|engine_list|tool_search|tool_describe|doctor|guide)/.test(n)), roCore);
-  check("instructions(core)が 2,048 字以内で Core の主要ツールと dx12_call_guarded を挙げている", INSTRUCTIONS_CORE.length <= 2048 && ["dx12_capture", "dx12_scene_write", "dx12_call_guarded", "dx12_tool_search", "--background"].every((k) => INSTRUCTIONS_CORE.includes(k)), INSTRUCTIONS_CORE.length);
+  check("読み取り専用ツールは dx12_get_* / dx12_list_* / shell の読み取り(1 行の許可ルールで書ける)", roCore.every((n: string) => /^dx12_(get|list|engine_list|editor_state|job_(status|list|result|logs)|tool_search|tool_describe|doctor|guide)/.test(n)), roCore);
+  check("instructions(core)が 2,048 字以内で Core の主要ツールと dx12_call_guarded を挙げている", INSTRUCTIONS_CORE.length <= 2048 && ["dx12_capture", "dx12_apply_scene_spec", "dx12_call_guarded", "dx12_tool_search", "--background"].every((k) => INSTRUCTIONS_CORE.includes(k)), INSTRUCTIONS_CORE.length);
   check("instructions(full / shell)が 2,048 字以内", INSTRUCTIONS.length <= 2048);
   // instructions が挙げた dx12_ 名は core 面に実在するか shell の別名で引ける名前であること
   const named = [...INSTRUCTIONS_CORE.matchAll(/dx12_[a-z_]+/g)].map((m) => m[0]);
   const listedSet = new Set(coreNames);
   const legacySet = new Set(LEGACY_NAMES);
-  const unresolved = [...new Set(named)].filter((n) => !listedSet.has(n) && !legacySet.has(n) && !/^dx12_(get|set|list)_?$/.test(n) && !["dx12_"].includes(n));
+  const unresolved = [...new Set(named)].filter((n) => !listedSet.has(n) && !legacySet.has(n) && !FLEET_TOOL_SET.has(n) && !JOB_TOOL_SET.has(n) && !EDITOR_TOOL_SET.has(n) && !SCENE_SPEC_TOOL_SET.has(n) && !/^dx12_(get|set|list)_?$/.test(n) && !["dx12_"].includes(n));
   check("instructions(core)が挙げる dx12_ 名は tools/list か旧ツールに実在(省略記法を除く)", unresolved.length === 0, unresolved);
 }
 
@@ -169,7 +172,8 @@ const { shell } = await import("./toolset/shell.ts");
   const st = aliasStats(table);
   console.log(`      alias 表: ${st.total} 名 = Core に同名で入る ${st.same} / 統合ツールが置換 ${st.consolidated} / 長尾(dx12_call で使う)${st.long_tail}`);
   check("alias 表は 220 名すべてを 1 回ずつ数える", st.total === 220 && st.same + st.consolidated + st.long_tail === 220);
-  check("Core に同名で入る旧ツールは 23 本(Core 22 + dx12_batch)", st.same === 23, st.same);
+  check("Core に同名で入る旧ツールは 19 本(Core 18 + dx12_batch。dx12_scene_write は M11 で dx12_apply_scene_spec を足すために、dx12_run_playtests は M6、dx12_get_script_errors は dx12_sequence を足すために、dx12_play_script は M7 でエディタ操作を足すために長尾へ)", st.same === 19, st.same);
+  check("dx12_get_script_errors は長尾(旧名のまま dx12_call で使える)・dx12_sequence は Core(エンジン直結。旧ツールの routes を持たない)", table.find((e) => e.legacy === "dx12_get_script_errors")?.via === "long_tail" && !coreNames.includes("dx12_get_script_errors") && coreNames.includes("dx12_sequence") && CORE_ENGINE_DIRECT.includes("dx12_sequence") && shell.catalog.resolve("dx12_sequence")?.tier === "core" && shell.catalog.resolve("dx12_get_script_errors")?.tier === "legacy");
   const missingCore = table.filter((e) => e.via === "same" && !coreNames.includes(e.canonical)).map((e) => e.legacy);
   check("『Core に同名で入る』と分類した旧ツールが実際に core 面の tools/list に出る", missingCore.length === 0, missingCore);
   const badCanon = table.filter((e) => e.via === "consolidated" && !(shell.catalog.resolve(e.canonical)?.core && coreNames.includes(e.canonical))).map((e) => e.legacy);

@@ -1,0 +1,235 @@
+{
+  "$schema": "./schema.json",
+  "specVersion": 1,
+  "id": "ps2_sky_h17",
+  "parityScene": "PS-2",
+  "title": "PS-2 空のみ(物理大気 A1)・17 時(太陽 高度 12.2° 方位 261°)",
+  "description": "平面の地面 + 物理大気だけ。空(Sky-View LUT + 太陽円盤)・地平線の帯・エアリアルパースペクティブ(遠方の地面)・地面の IBL を、同じ大気モデルの空を載せたパストレーサーと比べる。「空のみ G2」= 領域 sky のゲート。",
+  "status": "ready",
+  "notes": [
+    "大気パラメータは既定に頼らず明示(groundAlbedo 0.3 / sunIlluminance 128000 lux / multiScatteringFactor 1 / 緯度 35° / 日付 81)。PT は同じ LUT から引く(A1 の PT 連携)",
+    "エディタカメラの far は大気 ON のとき 20 km(地面は 40 km 四方)。EV100=15・UE Filmic・ポスト全 OFF",
+    "領域 sky = 地平線より上(-4 px)。領域 ground = 地平線より下(+4 px)。ground は IBL(64² キューブ・遮蔽なし)/ AP の一次のみ等の既知の差を数値で載せる",
+    "PT は bounces=1・maxRadiance=6e4(フォワードの太陽円盤クランプと同値)"
+  ],
+  "scene": {
+    "source": "generator",
+    "script": "gen/ps2_sky.py",
+    "args": {
+      "hour": 17
+    },
+    "scene": "scenes/ps2_sky_h17.json"
+  },
+  "cameras": [
+    {
+      "name": "horizon",
+      "position": [
+        0.0,
+        1.7,
+        0.0
+      ],
+      "target": [
+        98.5021,
+        -6.556,
+        15.1387
+      ],
+      "note": "太陽と反対側・地平線が画面の 40%(空だけ。夕方は反太陽側の帯・ビーナスベルト)",
+      "regions": [
+        "sky_horizon",
+        "ground_horizon"
+      ]
+    },
+    {
+      "name": "sun",
+      "position": [
+        0.0,
+        1.7,
+        0.0
+      ],
+      "target": [
+        -95.4716,
+        27.5819,
+        -14.673
+      ],
+      "note": "太陽の方位・仰角 +15°(低い太陽なら円盤・アウレオール・地平線の帯)",
+      "regions": [
+        "sky_sun",
+        "ground_sun"
+      ]
+    },
+    {
+      "name": "up",
+      "position": [
+        0.0,
+        1.7,
+        0.0
+      ],
+      "target": [
+        -49.4197,
+        88.3025,
+        -7.5953
+      ],
+      "note": "太陽側の方位・仰角 +60° の見上げ(空だけ。天頂付近の色と勾配)",
+      "regions": [
+        "sky_up"
+      ]
+    }
+  ],
+  "engine": {
+    "resolution": [
+      1920,
+      1080
+    ],
+    "size": [
+      1920,
+      1080
+    ],
+    "linear": true,
+    "mode": "headless",
+    "warmupFrames": 60,
+    "settleFrames": 8,
+    "png": "srgb",
+    "features": {
+      "ddgi": false,
+      "ssgi": false,
+      "ssr": false,
+      "ssao": false,
+      "taa": false,
+      "lightingUnits": "physical",
+      "ev100": 15.0,
+      "tonemapper": "ue_filmic"
+    },
+    "requiresMethods": [
+      "render_reference"
+    ]
+  },
+  "reference": {
+    "kind": "pt",
+    "pt": {
+      "spp": 1024,
+      "seeds": [
+        1,
+        2
+      ],
+      "format": "pfm",
+      "api": "engine",
+      "timeoutSec": 1800,
+      "params": {
+        "bounces": 1,
+        "maxRadiance": 60000
+      }
+    }
+  },
+  "alignment": {
+    "tonemap": "ue_filmic",
+    "exposure": "ev100:15",
+    "sizePolicy": "error",
+    "ppd": 67
+  },
+  "displayCheck": {
+    "mean_lsb_max": 0.6,
+    "p99_lsb_max": 2.0,
+    "max_lsb_max": 4.0
+  },
+  "regions": [
+    {
+      "name": "sky_horizon",
+      "mask": "masks/ps2_sky_h17_horizon_sky.png",
+      "gates": {
+        "G2": {
+          "flip_ldr_mean_max": 0.08,
+          "flip_ldr_p95_max": 0.3,
+          "flip_hdr_mean_max": 0.1,
+          "lum_mean_ev_abs_max": 0.25,
+          "ssim_min": 0.9,
+          "de2000_median_max": 3.0,
+          "hue_abs_median_deg_max": 8.0
+        }
+      }
+    },
+    {
+      "name": "ground_horizon",
+      "mask": "masks/ps2_sky_h17_horizon_ground.png",
+      "gates": {
+        "G1": {
+          "flip_ldr_mean_max": 0.15,
+          "lum_mean_ev_abs_max": 0.5,
+          "ssim_min": 0.75,
+          "de2000_median_max": 6.0
+        }
+      }
+    },
+    {
+      "name": "sky_sun",
+      "mask": "masks/ps2_sky_h17_sun_sky.png",
+      "gates": {
+        "G2": {
+          "flip_ldr_mean_max": 0.08,
+          "flip_ldr_p95_max": 0.3,
+          "flip_hdr_mean_max": 0.1,
+          "lum_mean_ev_abs_max": 0.25,
+          "ssim_min": 0.9,
+          "de2000_median_max": 3.0,
+          "hue_abs_median_deg_max": 8.0
+        }
+      }
+    },
+    {
+      "name": "ground_sun",
+      "mask": "masks/ps2_sky_h17_sun_ground.png",
+      "gates": {
+        "G1": {
+          "flip_ldr_mean_max": 0.15,
+          "lum_mean_ev_abs_max": 0.5,
+          "ssim_min": 0.75,
+          "de2000_median_max": 6.0
+        }
+      }
+    },
+    {
+      "name": "sky_up",
+      "mask": "masks/ps2_sky_h17_up_sky.png",
+      "gates": {
+        "G2": {
+          "flip_ldr_mean_max": 0.08,
+          "flip_ldr_p95_max": 0.3,
+          "flip_hdr_mean_max": 0.1,
+          "lum_mean_ev_abs_max": 0.25,
+          "ssim_min": 0.9,
+          "de2000_median_max": 3.0,
+          "hue_abs_median_deg_max": 8.0
+        }
+      }
+    }
+  ],
+  "gates": {
+    "G0": {
+      "lum_mean_ev_abs_max": 1.0
+    },
+    "G1": {
+      "flip_ldr_mean_max": 0.15,
+      "lum_mean_ev_abs_max": 0.5,
+      "ssim_min": 0.75,
+      "de2000_median_max": 6.0
+    },
+    "G2": {
+      "flip_ldr_mean_max": 0.08,
+      "flip_ldr_p95_max": 0.3,
+      "flip_hdr_mean_max": 0.1,
+      "lum_mean_ev_abs_max": 0.25,
+      "ssim_min": 0.9,
+      "de2000_median_max": 3.0,
+      "hue_abs_median_deg_max": 8.0
+    }
+  },
+  "milestones": {
+    "A1": "G2",
+    "Q1": "G1"
+  },
+  "noiseFloor": {
+    "k": 1.5
+  },
+  "perf": {
+    "enabled": false
+  }
+}

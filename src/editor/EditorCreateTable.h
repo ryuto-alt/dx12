@@ -38,6 +38,7 @@ inline constexpr CreateItem kCreateItems[] = {
     {"create.particle", "Particle Emitter（配置エフェクト）","Particle Effect","__particle_emitter__",1.0f,"エフェクト", ""},
     {"create.trigger",  "Trigger（イベント範囲）",     "Trigger Volume",   "__trigger__",          1.0f, "エフェクト", ""},
     {"create.decal",    "Decal（投影デカール・弾痕/汚れ）","Decal Projection","__decal__",         1.0f, "エフェクト", ""},
+    {"create.water",    "Water（水面・湖/海/川/プール）",  "Water Lake Ocean River Pool","__water__", 0.0f, "エフェクト", ""},
     {"create.uiCanvas", "Canvas（UIルート）",          "UI Canvas",        "__ui_canvas__",        0.0f, "UI", ""},
     {"create.uiImage",  "Image（画像/単色矩形）",      "UI Image",         "__ui_image__",         0.0f, "UI", ""},
     {"create.uiText",   "Text（テキスト）",            "UI Text Label",    "__ui_text__",          0.0f, "UI", ""},

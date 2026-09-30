@@ -1567,6 +1567,22 @@ scene:<span class="tok-fn">hideUi</span>(modalRoot)</code></pre>
           </table>
         </div>
 
+        <h3><code class="inl">Sequence</code>：シーケンサー（.dxseq）の再生</h3>
+        <p>時間軸で作り込んだ演出（カメラワーク・カメラカット・Transform / プロパティのキー・ポスト・イベント）を Play 中に流す。<code class="inl">.</code> で呼ぶ。台本は <code class="inl">assets/sequences/&lt;名前&gt;.dxseq</code>。<b>既定の時計は実時間</b>（<code class="inl">time.setScale</code> でスローモにしても止まらない）。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>Sequence.play(name, {rate, loop, from, clock, restoreOnEnd, delay})</code></td><td>再生開始。戻り値 <code>id</code>（失敗は <code>nil, エラー文</code>）。<code>loop</code>: <code>true</code> / <code>"loop"</code> / <code>"pingpong"</code>。<code>clock</code>: <code>"real"</code>（既定）/ <code>"game"</code>。同名が再生中なら頭から入れ替える</td></tr>
+              <tr><td><code>Sequence.stop(name?)</code> / <code>pause(name)</code> / <code>resume(name)</code></td><td>止める（省略か <code>"*"</code> で全部）/ 一時停止 / 再開。止めても<b>エンティティの値は戻さない</b>（Stop でシーンごと復元）</td></tr>
+              <tr><td><code>Sequence.seek(name, sec)</code></td><td>再生位置を移す。<b>イベントは発火しない</b></td></tr>
+              <tr><td><code>Sequence.isPlaying(name)</code> / <code>duration(name)</code> / <code>time(name)</code></td><td>再生中か / 長さ（秒） / 再生位置（秒）</td></tr>
+              <tr><td>イベント</td><td>イベントトラックの <code>emit</code> / <code>lua</code> / <code>log</code> / <code>loadScene</code> は前進で 1 回だけ発火。終了で <code>events</code> に <code>"&lt;name&gt;:done"</code>。<code>events:emit("&lt;name&gt;:play")</code> / <code>":stop"</code> でも操作できる</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>動的な剛体・キャラコントローラの <code class="inl">Transform</code> は書かない（物理が上書きするため）。ポスト / DoF / カメラの揺れ / カットは描画時にだけ上書きし、シーンの値は書き換えない。</p>
+
         <h3><code class="inl">events</code> / シーン遷移 / 値の持ち越し</h3>
         <div class="tbl-wrap">
           <table>

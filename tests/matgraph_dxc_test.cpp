@@ -1,4 +1,7 @@
 // マテリアルグラフ G1: 生成 HLSL の DXC コンパイル検証 + WARP（ソフトウェア D3D12）での CPU との数値一致テスト。
+//   ★G2b で「実 GPU（ハードウェアアダプタ）」の数値比較を追加した（同じグラフ群を WARP → 実 GPU の順に流す。
+//     実 GPU が無い / SM 6.6 が無い環境ではその段だけスキップ）。sin / cos / pow の近似は GPU ごとに違うので、実 GPU の許容は
+//     kHwTol（既定 = WARP と同じ 1e-4。超えたらここで報告される）。
 //
 //   ctest ラベル "dxc"。dxcompiler.dll / dxil.dll が無い環境ではスキップ（終了コード 0 + "SKIP" 表示）。
 //   1. ゴールデン 10 本の生成 HLSL を ps_6_6 と cs_6_6 でコンパイルする（参照契約 UnoMatContractRef.hlsli を include）。
@@ -15,7 +18,7 @@
 
 #include <windows.h>
 #include <d3d12.h>
-#include <dxgi1_4.h>
+#include <dxgi1_6.h>
 #include <dxcapi.h>
 #include <wrl/client.h>
 
@@ -180,17 +183,36 @@ std::string ReadFile(const fs::path& p)
 class Warp
 {
 public:
-    bool Init(std::string& why)
+    const std::wstring& Name() const { return m_name; }
+
+    // hardware = true: 実 GPU（ソフトウェアでない最初のアダプタ。高性能優先）。false: WARP
+    bool Init(std::string& why, bool hardware = false)
     {
-        ComPtr<IDXGIFactory4> fac;
+        ComPtr<IDXGIFactory6> fac;
         if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&fac)))) { why = "CreateDXGIFactory1 失敗"; return false; }
         ComPtr<IDXGIAdapter> adapter;
-        if (FAILED(fac->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) { why = "WARP アダプターが無い"; return false; }
-        if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_dev)))) { why = "WARP デバイス作成失敗"; return false; }
+        const char* kind = hardware ? "GPU" : "WARP";
+        if (hardware)
+        {
+            for (UINT i = 0;; ++i)
+            {
+                ComPtr<IDXGIAdapter1> a;
+                if (FAILED(fac->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&a)))) break;
+                DXGI_ADAPTER_DESC1 ad{};
+                a->GetDesc1(&ad);
+                if (ad.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+                adapter = a;
+                m_name = ad.Description;
+                break;
+            }
+            if (!adapter) { why = "ハードウェアアダプタが無い"; return false; }
+        }
+        else if (FAILED(fac->EnumWarpAdapter(IID_PPV_ARGS(&adapter)))) { why = "WARP アダプターが無い"; return false; }
+        if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_dev)))) { why = std::string(kind) + " デバイス作成失敗"; return false; }
         D3D12_FEATURE_DATA_SHADER_MODEL sm = {D3D_SHADER_MODEL_6_6};
         if (FAILED(m_dev->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))) || sm.HighestShaderModel < D3D_SHADER_MODEL_6_6)
         {
-            why = "WARP が Shader Model 6.6 に対応していない";
+            why = std::string(kind) + " が Shader Model 6.6 に対応していない";
             return false;
         }
         D3D12_COMMAND_QUEUE_DESC qd = {};
@@ -295,6 +317,7 @@ private:
         return r;
     }
 
+    std::wstring                      m_name;   // 実 GPU のときのアダプタ名
     ComPtr<ID3D12Device>              m_dev;
     ComPtr<ID3D12CommandQueue>        m_queue;
     ComPtr<ID3D12CommandAllocator>    m_alloc;
@@ -531,16 +554,21 @@ int main()
         CHECK_MSG(mapped, "DXC のエラーが Custom ノード bad の本文 2 行目へ逆引きできない。ログ:\n%s", ps.log.c_str());
     }
 
-    // -------- 3. WARP で数値比較 --------
-    std::printf("[warp-numeric]\n");
+    // -------- 3. WARP → 実 GPU の順に数値比較（G2b で実 GPU を追加。同じグラフ群・同じ入力点）--------
+    int skippedDevices = 0;
+    for (int devKind = 0; devKind < 2; ++devKind)
+    {
+    const bool useHardware = devKind == 1;
+    std::printf(useHardware ? "[gpu-numeric]\n" : "[warp-numeric]\n");
     Warp warp;
     std::string why;
-    if (!warp.Init(why))
+    if (!warp.Init(why, useHardware))
     {
-        std::printf("  SKIP GPU 数値比較: %s（DXC コンパイルの検証は完了）\n", why.c_str());
-        std::printf("matgraph_dxc: %d checks, %d failures (GPU skipped)\n", g_checks, g_failures);
-        return g_failures == 0 ? 0 : 1;
+        std::printf("  SKIP %s の数値比較: %s（DXC コンパイルの検証は完了）\n", useHardware ? "実 GPU" : "WARP", why.c_str());
+        ++skippedDevices;
+        continue;
     }
+    if (useHardware) std::printf("  adapter: %ls\n", warp.Name().c_str());
     const std::vector<Point> pts = MakePoints(1234, 96);
     int graphsRun = 0, totalPoints = 0, totalMismatch = 0, totalSkipped = 0;
     float worst = 0.0f;
@@ -692,7 +720,11 @@ int main()
                 graphsRun, totalPoints, totalMismatch, totalSkipped, static_cast<double>(skipRatio) * 100.0, static_cast<double>(worst));
     CHECK(graphsRun >= 40);
     CHECK(skipRatio < 0.02f);
+    }   // devKind（WARP / 実 GPU）
 
-    std::printf("matgraph_dxc: %d checks, %d failures\n", g_checks, g_failures);
+    if (skippedDevices == 2)
+        std::printf("matgraph_dxc: %d checks, %d failures (GPU skipped)\n", g_checks, g_failures);
+    else
+        std::printf("matgraph_dxc: %d checks, %d failures%s\n", g_checks, g_failures, skippedDevices ? " (one device skipped)" : "");
     return g_failures == 0 ? 0 : 1;
 }

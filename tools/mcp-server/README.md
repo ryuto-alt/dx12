@@ -73,13 +73,13 @@ args = ["C:\\Users\\<you>\\dx12-mcp\\index.ts"]
 ### ツール面(surface): full / core / shell
 | 面 | `tools/list` | サイズ(実測) |
 |---|---|---|
-| `full`(既定) | shell 5 + 旧 220(共通の `outputSchema` だけ削った。名前・引数・説明は従来のまま) | 225 本 / 約 351 KB(M0 の 408,638 B 以下) |
-| `core` | shell 5 + **Core 28** + `dx12_batch` + `dx12_call_guarded` | **35 本 / 約 56 KB** |
+| `full`(既定) | shell 5 + 旧 220(共通の `outputSchema` だけ削った。名前・引数・説明は従来のまま)+ 末尾にパストレーサー 3・仮想ジオメトリ 2・フリート 6・ジョブ 6・エディタ操作 5 | 247 本 |
+| `core` | shell 5 + フリート 2 + **ジョブ 3** + Core 28(**エディタ操作 2 を含む**)+ `dx12_batch` + `dx12_call_guarded` | **40 本(上限)** |
 | `shell` | shell 5 | 5 本 / 約 6.7 KB |
 
 **`core` を試す**: MCP の登録に `DX12_MCP_SURFACE=core` を足す(登録し直す: `claude mcp remove dx12-engine -s user` → `claude mcp add dx12-engine -s user -e DX12_MCP_SURFACE=core -- node <index.ts のパス>`。または `.mcp.json` の `"env": {"DX12_MCP_SURFACE": "core"}`)→ **Claude Code を再起動**。
 戻すときは `full`(または env を消す)。core でも旧 220 名は `dx12_call {name:"dx12_set_ssao", …}` のように**旧名・旧引数のまま**呼べる。
-Core = 一覧・取得・生成・変形・コンポーネント・削除・シーン開閉/保存・ルック/マテリアル/VFX・地形・Lua・UI・Play/Stop・台本/プレイテスト・品質ゲート・ログ・性能・撮影・描画設定(統合)・エディタ UI(仮想入力)。一覧と alias 表は `docs/MCP.md` §0-5。
+Core = 一覧・取得・生成・変形・コンポーネント・削除・シーン開閉/保存・ルック/マテリアル/VFX・地形・Lua・UI・Play/Stop・品質ゲート・ログ・性能・撮影・描画設定(統合)・エディタ操作(`dx12_editor_command` / `dx12_editor_state`)・エディタ UI(仮想入力)。M7 で `dx12_play_script` と `dx12_engine_list` は長尾(`dx12_call`)へ移した。一覧と alias 表は `docs/MCP.md` §0-5。
 guarded(git push・`eval_lua`・`delete_asset`・`build_game` 等)は core 面では `dx12_call` に `confirm:true` を付けても通らず、`dx12_call_guarded`(毎回ユーザー承認)から実行する。
 
 **動的登録**: エンジンの method に `McpMeta.expose="core"` を付けると、MCP サーバが再起動なしで `tools/list` に足して `notifications/tools/list_changed` を送る(Claude Code が反映するかは**未確認**。`dx12_tool_describe` / `dx12_call` では常に使える。`DX12_MCP_LIST_CHANGED=0` で止める)。
@@ -101,14 +101,25 @@ guarded(git push・`eval_lua`・`delete_asset`・`build_game` 等)は core 面�
 | ツール | 使いどころ |
 |---|---|
 | `dx12_engine_launch` | 専用エンジンを起動して既定に束縛する。ポート(8860〜8899 を自動割当)・exe コピー・データ領域・使い捨てプロジェクトが全部別。**ビルドと衝突しない**(`LNK1104` にならない) |
-| `dx12_engine_list` / `dx12_engine_stop` | 一覧(全セッション分・台数・上限・空き VRAM/RAM)/ 自分のエンジンを止める |
-| `dx12_engine_attach` | 手動起動/他人のエンジンを**読み取り専用**で見る(接続は 1.5 秒で閉じ、持ち主の枠を塞がない) |
-| `dx12_engine_refresh` | ビルド後に exe コピーを最新へ入れ替えて再起動(`dx12_doctor` が古い exe コピーを警告する) |
-| `dx12_engine_use` | 既定エンジンの切替(core 面では `dx12_call {name:"dx12_engine_use"}`) |
+| `dx12_engine_list`(長尾)/ `dx12_engine_stop` | 一覧(全セッション分・台数・上限・空き VRAM/RAM。M7 で長尾へ。`dx12_call {name:"dx12_engine_list"}`)/ 自分のエンジンを止める |
+| `dx12_engine_attach`(長尾) | 手動起動/他人のエンジンを**読み取り専用**で見る(接続は 1.5 秒で閉じ、持ち主の枠を塞がない) |
+| `dx12_engine_refresh`(長尾) | ビルド後に exe コピーを最新へ入れ替えて再起動(`dx12_doctor` が古い exe コピーを警告する。build ジョブの `refreshEngines:true` でも同じ) |
+| `dx12_engine_use`(長尾) | 既定エンジンの切替(core 面では `dx12_call {name:"dx12_engine_use"}`) |
 
 全体で最大 3 台・10 分操作が無ければ自動終了・空き VRAM 2 GB / RAM 3 GB 未満は起動を断る(理由と止める候補を構造化エラーで返す)。MCP サーバが終了しても(強制終了でも)エンジンは残らない。
 窓を画面に出す `mode:"visible"` は既定で拒否(`DX12_MCP_ALLOW_VISIBLE=1` と `confirm:true` の両方が要る)。人のカーソル・フォーカスは奪わない。
-環境変数と仕組みは `docs/MCP.md` §0-7、使い方は `dx12_guide {topic:"fleet"}`。
+環境変数と仕組みは `docs/MCP.md` §0-7、使い方は `dx12_guide {topic:"fleet"}`。
+
+## 長い処理のジョブ API(ビルド・テスト・撮影バッチ・cook)と副作用の安全性
+
+2 分を超えうる処理は `dx12_job_start {kind, args}` で裏で走らせ、`dx12_job_status {id, waitSec:30}` で進捗を待つ(Claude Code の自動背景化はサブエージェントや `claude -p` に効かないため自前の非同期 API)。
+kind = `build`(`tools\build.ps1`。全セッションで直列)/ `ctest` / `ui_tests`(既定で `build_game` を除外。背景起動)/ `screenshot_batch`(カメラ × DPI 倍率 × バリアント)/ `bench` / `playtest` / `vg_cook` / `ue_import` / `external`(承認が要る)。
+状態は `%LOCALAPPDATA%\UnoEngine\jobs\` に永続化され、**MCP サーバを再起動しても** process 型は走り続けて `dx12_job_status` で引ける。キャンセルはプロセスツリーごと(`dx12_job_cancel`)。長尾の `dx12_job_list` / `dx12_job_result` / `dx12_job_logs` は `dx12_call` で使う。
+進捗は `progressToken` 付きで待つ間 `notifications/progress` も送る(Claude Code / Codex が受け取るかは未確認。主経路はポーリング)。仕様は `docs/MCP.md` §0-8、手順は `dx12_guide {topic:"jobs"}`。
+
+**副作用の安全性(M5)**: guarded な method(`git_push` / `eval_lua` / `delete_asset` / `build_game` など)は**エンジン側にも最終ゲート**があり、1 回限りの確認トークン(`guard_token` → `confirm_token`)が無いと拒否される(TS は承認済みの経路の中でだけ自動で取って付ける。`dx12_batch` の op は承認済みにならず、全ての面で guarded を拒否)。
+`dx12_call {idempotency_key}` は write 系全般で再送を安全にする(同じキーは前回の結果を返して再実行しない。省略しても 1:1 の write 系は自動採番し、タイムアウト時に同じキーで自動再送する)。`dryRun:true` はエンジンが対応する 18 method で「実際に何が起こるか」を返す。`dx12_batch`(atomic)は主トランザクションで、失敗するとシーンと**ファイル(`.dx12/journal/`)も**戻る。後からは `journal_list` / `journal_restore`。エンジン側の仕様は `docs/MCP.md` §13。
+
 
 **Codex CLI**(`~/.codex/config.toml`)/ **Claude Code**(ツール検索が無い/弱いクライアントには `core` 面を勧める。`tools/list` 40 本):
 ```toml
@@ -120,6 +131,22 @@ env = { DX12_MCP_SURFACE = "core" }
 ```bash
 claude mcp add dx12-engine -s user -e DX12_MCP_SURFACE=core -- node <REPO>/tools/mcp-server/index.ts
 ```
+
+## 宣言的シーン生成: 仕様 JSON で部屋・ステージ・街を作る(`dx12_apply_scene_spec`)
+
+1 体ずつ `create_entity` を並べず、**何を置きたいかを SceneSpec(JSON)で 1 回渡す**。差分だけを 1 トランザクションで作り、自動検証し、失敗は**そのまま撃ち直せる差分(specPatch)**で返る。
+
+```
+dx12_apply_scene_spec {spec, mode:"plan"}        # 何を作る/更新/削除するか(書き込みなし)
+dx12_apply_scene_spec {spec}                     # 適用(1 トランザクション・Undo 1 回)→ 自動検証(配置・命名・到達性)
+dx12_apply_scene_spec {specRef, patch}           # 失敗の fix[0] をそのまま(specPatch = RFC 6902。仕様の全文は再送しない)
+dx12_scene_spec_export {owned:true}              # 現在のシーン → 仕様(往復で同じシーン)。長尾(dx12_call)
+```
+
+- 単位はメートル。`place`(右 2m・上に載せる・地面に足元を合わせる)は **AABB の実測で決定論に解く**。`pattern`(grid / ring / line / 壁に沿って / seed 付き散布)。`collider:"static"` で当たり判定。`verify` で埋まり・重なり・命名・到達性を検査(落ちたら全体をロールバック)。
+- 同じ仕様を 2 回撃っても何も変わらない(冪等)。`name`(または `id`)をキーに差分適用。`prune:true`(この仕様が作った物のうち仕様から消えたものを削除)は guarded。
+- 書き方・例 5 本(FPS のアリーナ・部屋・散歩できる庭・ショーケース・ホラー廊下)・よくある失敗は `dx12_guide {topic:"scene_spec"}`。詳細は [docs/MCP.md §0-10](https://github.com/ryuto-alt/dx12/blob/main/docs/MCP.md)。
+- 実装は `sceneSpec/`(純ロジック: `schema.ts` 検証・`expand.ts` 相対配置・`plan.ts` 差分計画・`apply.ts` 適用・`verify.ts` 検証と specPatch・`export.ts` 書き出し・`index.ts` 全体)。テストは偽エンジン `sceneSim.ts` で `npm test`、実エンジンは `node scripts/sceneSpecReal.ts --port <専用インスタンス>`(使い捨てプロジェクトで)。
 
 ## 構成
 - `index.ts` … MCP サーバの入口(stdio)。`toolset/all.ts` を読み込んで接続するだけ(220 ツールの定義は下記へ機械分割済み)

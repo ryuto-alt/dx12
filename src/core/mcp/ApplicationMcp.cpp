@@ -6,6 +6,10 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/FleetGuard.h"   // ping / manifest 以外の method を「活動」に数える（--idle-exit）
+#include "core/mcp/McpSafety.h"    // M5: guarded ゲート / 冪等ストア / dryRun プレビュー / ファイルジャーナル
+#include "renderer/PhotometricMath.h"   // Q2: 露出(EV100)とトーンマップの純関数（screenshot の CPU ミラーが共有）
+#include "renderer/LinearCapturePass.h"  // Q2: 線形 HDR スクリーンショットの読み出し
+#include "renderer/pt/PtImageIO.h"      // Q2: PFM / EXR の書き出し（パストレーサーの出力と同じ規約・同じ実装を共有）
 
 #include <algorithm>
 #include <unordered_set>
@@ -55,6 +59,16 @@ bool IsMcpReadOnlyMethod(const std::string& method)
         "reload_scripts", "reload_assets",
         // 仮想入力（imgui_*）は UI を触るだけでシーンのデータは変えない（編集は UI 経由で Undo に積まれる）。
         "imgui_virtual_input", "imgui_pointer", "imgui_key", "imgui_find", "imgui_screenshot",
+        // M7: エディタ操作。実際の編集は UI と同じ経路（Undo に積まれ、EditSeq が進む）で起きるので、ここで一律に汚さない。
+        //     editor_command_run が window.* を開いただけで「未保存」にしない。
+        "editor_command_list", "editor_command_run", "editor_command_run_guarded", "editor_state", "editor_notify", "editor_select", "editor_modal",
+        // M5: 安全性の method はシーンのメモリを変えない。★journal_restore を入れないと、戻したシーンファイルを
+        //     自動保存がメモリ上のシーンで上書きしてしまう（復元が無かったことになる）。
+        "guard_token", "journal_list", "journal_restore", "cancel",
+        // シーケンサー: 文書(.dxseq)・エディタのスクラブ・Play の再生はシーンの保存されるデータを変えない
+        // （スクラブは PreAnimatedState が保存の直前に必ず戻す）。sequence_autoplay だけはシーンを変えるので入れない（ハンドラ内で MarkEdited）。
+        "sequence_list", "sequence_load", "sequence_save", "sequence_get", "sequence_eval",
+        "sequence_scrub", "sequence_play", "sequence_stop", "sequence_apply_op",
     };
     return kReadOnly.find(method) != kReadOnly.end();
 }
@@ -132,9 +146,26 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpUndoMethods();
     RegisterMcpAudioMethods();
     RegisterMcpAiMethods();
+    RegisterMcpPathTracerMethods();
+    RegisterMcpWaterMethods();      // 水面 W1: water_apply_preset
+    RegisterMcpFoliageMethods();    // 植生 F1: foliage_scatter / paint / clear / save / stats / get_wind / set_wind
     RegisterMcpImGuiMethods();      // 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作）
+    RegisterMcpSequenceMethods();   // シーケンサー(.dxseq): sequence_list / load / save / get / eval / scrub / play / stop / apply_op / autoplay
+    RegisterMcpMatGraphMethods();   // マテリアルグラフ(G2b): material_graph_get / edit / validate / compile / status / graphize / set_param / apply / nodes
+    RegisterMcpEditorUiMethods();   // M7: editor_command_list / run / run_guarded / editor_state / editor_notify / editor_select
     RegisterMcpManifestMethods();   // describe_mcp_manifest（meta を直接渡す最初の method）
-    ApplyMcpManifest();             // 全 method へ meta を流し込み、manifestHash を 1 度だけ計算する
+    ApplyMcpManifest();            // 全 method へ meta を流し込み、manifestHash を 1 度だけ計算する
+
+    // M5: 遅延応答（フレーム境界で返る method）の完了を冪等ストアへ伝える観測点。
+    // CompleteMcp / FailMcp を触らず、McpBridge::SendToClient に出ていく行を見る（結び付けは dispatcher が積む）。
+    mcpsafety::SendObserver() = [](uint64_t client, const std::string& line)
+    {
+        auto& st = mcpsafety::Idempotency();
+        if (st.PendingRequests() == 0) return;
+        const nlohmann::json j = nlohmann::json::parse(line, nullptr, /*allow_exceptions=*/false);
+        if (!j.is_object() || !j.contains("id") || !j["id"].is_number_integer()) return;
+        st.ResolveRequest(client, j["id"].get<long long>(), j.value("ok", false), line);
+    };
 }
 
 namespace
@@ -189,7 +220,14 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
 
     // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
     // 該当ハンドラで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
-    McpDeferred deferred{ client, req.value("id", 0LL), params.value("idempotency_key", std::string()) };
+    // M5: idempotency_key の別名 idempotencyKey も同義（文字列以外は無視）。
+    std::string idemKeyIn;
+    for (const char* kn : {"idempotency_key", "idempotencyKey"})
+    {
+        const auto ik = params.find(kn);
+        if (idemKeyIn.empty() && ik != params.end() && ik->is_string()) idemKeyIn = ik->get<std::string>();
+    }
+    McpDeferred deferred{ client, req.value("id", 0LL), idemKeyIn };
     deferred.method = method;   // 遅延系が Undo に「AI: <method>」を付けるため
     bool isDeferred = false;
 
@@ -200,6 +238,15 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     const bool undoRec = m_editorCtx && m_scene && m_scriptEngine && !m_isGameMode
                       && m_engineMode == EngineMode::Editor && !IsMcpUndoControlMethod(method);
     bool undoEnded = false;
+    // M5: 冪等キーの状態（dispatch 後に Complete / Bind / Abort する）と dryRun / 再送の印。
+    std::string idemKey;
+    bool        isDryRun = false, idemReplayed = false;
+    {
+        // ファイルジャーナルの置き場はいまのプロジェクト。トランザクションが人の操作などで閉じていたら確定扱いで閉じる。
+        auto& jr = mcpjournal::Instance();
+        jr.SetBaseDir(std::filesystem::path(PathResolver::BaseDir()));
+        if (jr.TxActive() && (!m_editorCtx || !m_editorCtx->mcpUndo.TxOpen())) jr.CommitTx();
+    }
     auto endUndo = [&]() -> bool
     {
         if (!undoRec || undoEnded) return false;
@@ -274,13 +321,152 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             // ---- 中央検査: meta を直接渡した method だけ（enforce=true の引数の必須 / 型 / 列挙 / 範囲）----
             if (it->second.hasMeta) McpValidateMeta(it->second.meta, params, method);
 
-            if (undoRec)
+            // ================= M5: 副作用の安全性（docs/MCP.md §13）=================
+            //   1) dryRun:true → 実行せずプレビュー（Read は無視して通常実行）
+            //   2) 冪等キー → 前回の結果を返す / 衝突 / 処理中
+            //   3) guarded → 有効な confirm_token が無ければ拒否（TS 側の E_GUARDED に加えたエンジン側の最終関門）
+            const McpMeta& mmeta = it->second.meta;
+            const bool isReadMethod = mmeta.effect == McpEffect::Read;
+            // ハンドラへ渡す params: 共通キー（confirm_token / dryRun / idempotencyKey）を除く。無ければ元をそのまま。
+            const nlohmann::json* hp = &params;
+            json stripped;
+            if (params.contains("confirm_token") || params.contains("dryRun") || params.contains("idempotencyKey"))
             {
-                m_editorCtx->mcpUndo.BeginCall(method);
-                m_mcpUndoTrack.Begin(m_scene.get(), PathResolver::AssetsDir());
+                stripped = params;
+                stripped.erase("confirm_token"); stripped.erase("dryRun"); stripped.erase("idempotencyKey");
+                hp = &stripped;
             }
-            it->second.fn(params, resp, method, deferred, isDeferred, busyPlaying);
-            const bool undoRecorded = endUndo();
+            const auto dryIt = params.find("dryRun");
+            const bool wantDryRun = dryIt != params.end() && dryIt->is_boolean() && dryIt->get<bool>();
+            bool skipRun = false;
+            if (wantDryRun && !isReadMethod)
+            {
+                const auto& tbl = mcpsafety::PreviewTable();
+                const auto pit = tbl.find(method);
+                if (pit == tbl.end())
+                {
+                    std::vector<std::string> supported;
+                    for (const auto& kv : tbl) supported.push_back(kv.first);
+                    McpError err(McpErr::Unsupported, method + ": dryRun is not supported",
+                                 "dryRun のプレビューがあるのは error_values の method だけ。他は実行前に dx12_tool_describe で影響を確かめる",
+                                 supported);
+                    err.name  = "E_UNSUPPORTED";
+                    err.cause = "この method は dryRun のプレビューを持たない";
+                    err.details = {{"method", method}, {"effect", McpEffectName(mmeta.effect)}};
+                    throw err;
+                }
+                json preview = json::parse(pit->second(hp->dump()), nullptr, /*allow_exceptions=*/false);
+                if (preview.is_discarded()) preview = json::object();
+                resp["ok"] = true;
+                resp["result"] = {{"dryRun", true}, {"executed", false}, {"method", method},
+                                  {"effect", McpEffectName(mmeta.effect)}, {"preview", std::move(preview)}};
+                isDryRun = true;
+                skipRun = true;
+                undoEnded = true;   // 何も積んでいない
+            }
+            std::string idemNewKey;
+            uint64_t    idemNewHash = 0;
+            if (!skipRun && !isReadMethod && !deferred.idempotencyKey.empty()
+                && method != "create_entity" && method != "spawn_model" && method != "spawn_prefab"   // 既存の m_mcpIdempotency 実装を維持
+                && method != "guard_token" && method != "cancel")
+            {
+                json h = params;
+                for (const char* k : {"confirm_token", "dryRun", "idempotency_key", "idempotencyKey"}) h.erase(k);
+                const uint64_t hash = McpFnv1a64(h.dump(-1, ' ', false, json::error_handler_t::replace));
+                const auto f = mcpsafety::Idempotency().Find(deferred.idempotencyKey, method, hash);
+                using K = mcpsafety::IdempotencyStore::Kind;
+                if (f.kind == K::Conflict)
+                {
+                    McpError err(McpErr::InvalidParam,
+                        "idempotency_key '" + deferred.idempotencyKey + "' was already used by a different request (" + f.existingMethod + ")",
+                        "同じキーで別の操作・別の引数は送れない。別の操作ならキーを変える(前回の結果が欲しいなら前回と同じ method・引数で送る)");
+                    err.name  = "E_IDEMPOTENCY_CONFLICT";
+                    err.cause = "同じ idempotency_key が別の method か別の引数で使われている";
+                    err.details = {{"key", deferred.idempotencyKey}, {"firstMethod", f.existingMethod}, {"method", method}, {"firstAtMs", f.firstAtMs}};
+                    throw err;
+                }
+                if (f.kind == K::InFlight)
+                {
+                    McpError err(McpErr::Busy, "idempotency_key '" + deferred.idempotencyKey + "' is still being processed",
+                                 "同じキーの処理中。少し待ってから同じ内容で再送する(完了していれば前回の結果が返る)");
+                    err.name  = "E_IDEMPOTENCY_IN_FLIGHT";
+                    err.cause = "同じキーの前回の要求がまだ完了していない";
+                    err.details = {{"key", deferred.idempotencyKey}, {"method", method}, {"firstAtMs", f.firstAtMs}};
+                    throw err;
+                }
+                if (f.kind == K::Replay)
+                {
+                    json cached = json::parse(f.resp, nullptr, /*allow_exceptions=*/false);
+                    if (cached.is_object())
+                    {
+                        const json myId = resp["id"];
+                        resp = std::move(cached);
+                        resp["id"] = myId;
+                        if (!resp.contains("result") || !resp["result"].is_object())
+                            resp["result"] = json{{"value", resp.contains("result") ? resp["result"] : json(nullptr)}};
+                        resp["result"]["idempotentReplay"] = true;
+                        resp["result"]["idempotency"] = {{"key", deferred.idempotencyKey}, {"firstAtMs", f.firstAtMs}};
+                        idemReplayed = true;
+                        skipRun = true;
+                        undoEnded = true;
+                    }
+                }
+                if (!skipRun)
+                {
+                    // 状態遷移の method は実行前にストアを空にする（自分の Done は完了後に積まれる）
+                    if (method == "open_scene" || method == "new_scene" || method == "open_project" || method == "play" || method == "stop")
+                        mcpsafety::Idempotency().Clear();
+                    idemNewKey  = deferred.idempotencyKey;
+                    idemNewHash = hash;
+                }
+            }
+            if (!skipRun && mmeta.effect == McpEffect::Guarded)
+            {
+                using R = mcpsafety::GuardTokens::Result;
+                const auto tk = params.find("confirm_token");
+                const std::string token = (tk != params.end() && tk->is_string()) ? tk->get<std::string>() : std::string();
+                const R r = token.empty() ? R::Unknown : mcpsafety::Guard().Consume(token, method);
+                if (r != R::Ok)
+                {
+                    McpError err(McpErr::Guarded, method + " is a guarded method: a valid confirm_token is required",
+                        "取り返しの付かない/外部へ出る操作。guard_token {method} で 1 回限りのトークンを得て confirm_token に入れる"
+                        "(TS の dx12_call_guarded / confirm 経路は自動で行う)。実行せず影響だけ見るなら dryRun:true");
+                    err.name  = "E_GUARDED";
+                    err.cause = token.empty() ? "confirm_token が無い"
+                              : r == R::Expired ? "confirm_token の有効期限(既定 60 秒)が切れている"
+                              : r == R::WrongMethod ? "confirm_token は別の method 用(トークンは method 束縛)"
+                              : "confirm_token が未知か使用済み(1 回限り)";
+                    err.fix.push_back(MakeMcpFix("guard_token", json{{"method", method}},
+                        "1 回限りの確認トークンを得る(TS の dx12_call_guarded / confirm 経路が自動で行う)"));
+                    err.details = {{"method", method}, {"gate", "engine"}};
+                    throw err;
+                }
+            }
+            if (!skipRun && !idemNewKey.empty())
+            {
+                mcpsafety::Idempotency().BeginInFlight(idemNewKey, method, idemNewHash);
+                idemKey = idemNewKey;
+            }
+
+            bool undoRecorded = false;
+            if (!skipRun)
+            {
+                // ファイルジャーナル: journal 対応 method は 1 呼び出し = 1 エントリ（トランザクション中は tx のエントリへ入る）。
+                struct JournalScope
+                {
+                    bool own = false;
+                    ~JournalScope() { if (own) mcpjournal::Instance().EndCall(); }
+                } jscope;
+                if (mmeta.journal) jscope.own = mcpjournal::Instance().BeginCall(method);
+
+                if (undoRec)
+                {
+                    m_editorCtx->mcpUndo.BeginCall(method);
+                    m_mcpUndoTrack.Begin(m_scene.get(), PathResolver::AssetsDir());
+                }
+                it->second.fn(*hp, resp, method, deferred, isDeferred, busyPlaying);
+                undoRecorded = endUndo();
+            }
 
             // ★ハンドラが resp["result"] を作らず、resp へ直接キーを書く流儀のものを救う。
             //
@@ -367,6 +553,14 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         resp["error_code"] = McpErr::InvalidParam;   // 大半は引数検証エラー
         isDeferred = false;
     }
+    // M5: 冪等ストアへ確定。非遅延は成功なら Done・失敗なら InFlight を消す。遅延は応答が出るとき（SendToClient の観測点）に確定する。
+    if (!idemKey.empty())
+    {
+        auto& st = mcpsafety::Idempotency();
+        if (isDeferred)                 st.BindRequest(client, deferred.requestId, idemKey);
+        else if (resp.value("ok", false)) st.Complete(idemKey, resp.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+        else                            st.Abort(idemKey);
+    }
     // パネル(MCP / AI Bridge)用にコマンド結果を記録（メインスレッドからのみ）。
     if (m_mcpBridge)
         m_mcpBridge->RecordCommand(method, resp.value("ok", false), resp.value("error", std::string()));
@@ -376,7 +570,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     // ここ 1 箇所で名前から判定する。★読み取り専用リストの方を持つ（新しい書き込み系
     // メソッドが増えたときに黙って漏れる側にしない）。誤検出しても「保存しますか」と
     // 余計に聞くだけで済むが、取りこぼすと黙って作業が消える。
-    if (m_editorCtx && resp.value("ok", false) && !method.empty())
+    if (m_editorCtx && resp.value("ok", false) && !method.empty() && !isDryRun && !idemReplayed)
     {
         // eval_lua と render_debug は「シーンを変えうる」が、変えないことの方が多い。
         // 変えた場合は設定フィンガープリント（Run ループの定期比較）か、
@@ -487,8 +681,12 @@ bool Application::ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& ou
 
     static const PostProcessSettings kDefaultPost{};
     const PostProcessSettings& pp = m_scene ? m_scene->GetPostSettings() : kDefaultPost;
-    const int   tonemapper = (pp.tonemapper >= 0 && pp.tonemapper <= 2) ? pp.tonemapper : 0;
-    const float exposure   = pp.exposureOn ? pp.exposure : 1.0f;
+    const int   tonemapper = (pp.tonemapper >= 0 && pp.tonemapper < photo::kTmCount) ? pp.tonemapper : 0;
+    // Q2: 露出モード 1（手動 EV100）は係数を掛ける。2（自動）は GPU の適応値なので CPU からは分からない（掛けない）。
+    const float exposure   = (pp.exposureMode == 1)
+        ? ((pp.enabled && pp.exposureOn ? pp.exposure : 1.0f) * photo::ManualExposureScale(pp.ev100, pp.evComp))
+        : (pp.exposureOn ? pp.exposure : 1.0f);
+    const photo::FilmParams film{pp.filmSlope, pp.filmToe, pp.filmShoulder, pp.filmBlackClip, pp.filmWhiteClip};
 
     auto sat = [](float x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
 
@@ -507,6 +705,12 @@ bool Application::ReadbackSceneBgra(std::vector<u8>& outBgra, u32& outW, u32& ou
     };
     auto toneMapGamma = [&](float rgb[3])
     {
+        if (photo::IsNewToneMapper(tonemapper))   // Q2: UE Filmic / 線形 / PBR Neutral（PhotometricMath.h。GPU と同じ式）
+        {
+            const photo::Rgb o = photo::ToneMapNewDisplay(tonemapper, {rgb[0], rgb[1], rgb[2]}, film);
+            rgb[0] = o.r; rgb[1] = o.g; rgb[2] = o.b;
+            return;
+        }
         if (tonemapper == 2)   // トーンマップなし（ガンマのみ）
         {
             for (int i = 0; i < 3; ++i) rgb[i] = std::pow((std::max)(rgb[i], 0.0f), 1.0f / 2.2f);
@@ -770,17 +974,64 @@ void Application::FinishFinalScreenshot()
 
     std::string err;
     std::filesystem::path outPath;
-    try { outPath = McpScreenshotPath(m_mcpFinalShot.path,
+    // ★Q2: path の拡張子は .png / .pfm / .exr のどれでも受け、形式ごとに同じ基準名で書く（例: a/b.png + pfm → a/b.pfm）。
+    std::string pathArg = m_mcpFinalShot.path;
+    {
+        const std::filesystem::path pp(pathArg);
+        std::string ext = pp.extension().string();
+        for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext == ".pfm" || ext == ".exr") pathArg = (pp.parent_path() / pp.stem()).string();
+    }
+    try { outPath = McpScreenshotPath(pathArg,
         m_mcpFinalShot.withImGui ? "mcp_imgui_screenshot.png" : "mcp_screenshot_final.png"); }
     catch (const std::exception& e)
     {
         FailMcp(m_mcpBridge.get(), reply, McpErr::InvalidParam, e.what());
         return;
     }
-    if (!WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err))
+    const bool q2Png = m_mcpFinalShot.withImGui || m_mcpFinalShot.wantPng;
+    if (q2Png && !WriteBgraPng(outPath.wstring(), bgra.data(), w, h, err))
     {
         FailMcp(m_mcpBridge.get(), reply, McpErr::Internal, err.empty() ? "png write failed" : err);
         return;
+    }
+    // ---- Q2: 線形 HDR（トーンマップ前・露出前の float）----
+    nlohmann::json q2Files = nlohmann::json::object();
+    nlohmann::json q2Linear = nullptr;
+    std::string primaryPath = outPath.string();
+    if (q2Png) q2Files["png"] = outPath.string();
+    if (!m_mcpFinalShot.withImGui && m_mcpFinalShot.WantLinear())
+    {
+        std::vector<float> lin;
+        u32 lw = 0, lh = 0;
+        std::string lerr = m_mcpFinalShot.linearErr;
+        if (!m_mcpFinalShot.linearRecorded || !m_linearCapture || !m_linearCapture->Fetch(lin, lw, lh, lerr))
+        {
+            FailMcp(m_mcpBridge.get(), reply, McpErr::Internal,
+                    "linear HDR capture failed: " + (lerr.empty() ? std::string("not recorded (the main view's post chain did not run)") : lerr));
+            return;
+        }
+        std::filesystem::path linBase = outPath; linBase.replace_extension("");
+        auto writeLin = [&](const char* ext, bool exr) -> bool
+        {
+            const std::filesystem::path p = linBase.string() + ext;
+            const bool ok = exr ? pt::io::WriteExr(p, lw, lh, lin.data()) : pt::io::WritePfm(p, lw, lh, lin.data());
+            if (ok) q2Files[exr ? "exr" : "pfm"] = p.string();
+            return ok;
+        };
+        if ((m_mcpFinalShot.wantPfm && !writeLin(".pfm", false)) || (m_mcpFinalShot.wantExr && !writeLin(".exr", true)))
+        {
+            FailMcp(m_mcpBridge.get(), reply, McpErr::Internal, "linear HDR write failed (disk full or path not writable)");
+            return;
+        }
+        if (!q2Png) primaryPath = q2Files.contains("pfm") ? q2Files["pfm"].get<std::string>() : q2Files["exr"].get<std::string>();
+        // 値の意味（比較ツール tools/parity が読む規約）: シーン参照の線形 Rec.709 RGB / トーンマップ前 / 露出前
+        const PostProcessSettings& lpp = m_scene->GetPostSettings();
+        q2Linear = {{"width", lw}, {"height", lh},
+                    {"space", "scene-linear Rec.709 RGB"}, {"tonemapped", false}, {"exposureApplied", false},
+                    {"units", lpp.lightingUnits == 1 ? "nit (1.0 = 1 cd/m^2)" : "engine units (legacy lighting)"},
+                    {"rowOrder", "top-to-bottom in memory; PFM is written bottom-up as the format requires"},
+                    {"sameAsPathTracer", "same PFM/EXR writer as render_reference"}};
     }
     if (m_mcpFinalShot.withImGui)
     {
@@ -799,9 +1050,11 @@ void Application::FinishFinalScreenshot()
     }
     const PostProcessSettings& pp = m_scene->GetPostSettings();
     CompleteMcp(m_mcpBridge.get(), reply,
-        nlohmann::json{{"path", outPath.string()},
+        nlohmann::json{{"path", primaryPath},
+                       {"files", q2Files}, {"linear", q2Linear},
+                       {"offscreen", m_mcpFinalShot.offW > 0},
                        {"width", w}, {"height", h},
-                       {"source", "backbuffer"},
+                       {"source", m_mcpFinalShot.offW > 0 ? "offscreen" : "backbuffer"},
                        {"postApplied", pp.enabled},
                        {"deterministic", wasDeterministic},
                        {"gizmos", !hidGizmos},

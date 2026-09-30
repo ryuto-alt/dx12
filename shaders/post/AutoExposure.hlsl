@@ -10,6 +10,8 @@ cbuffer AECB : register(b0)
     float4 p0;   // x=minLog2, y=1/(maxLog2-minLog2), z=dt, w=適応速度
     float4 p1;   // x=EV補正, y=矩形の総ピクセル数, zw=未使用
     int4   rect; // x=left, y=top, z=width, w=height（シーンRT内の測光サブ矩形 px）
+    // ▼ Q2: 測光の詳細（既定 (0,1,0,0) では従来と同じ計算）
+    float4 p2;   // x=下側の除外割合 y=上側の上限割合（ヒストグラムの窓。0..1 = 全体の平均）z=明るくなる方向の速度 w=暗くなる方向の速度（0=p0.w）
 };
 
 Texture2D<float4>        gScene    : register(t0);
@@ -17,6 +19,7 @@ RWStructuredBuffer<uint> gHist     : register(u0);  // 256 bins
 RWStructuredBuffer<float> gExposure : register(u1); // [0]=露出倍率, [1]=適応済み平均輝度
 
 groupshared uint hs[256];
+groupshared uint hc[256];   // Q2: 個数の控え（gHist は同じディスパッチの後段でクリアされるので、窓の集計は控えを読む）
 
 static uint BinForLum(float lum)
 {
@@ -46,6 +49,7 @@ void CSHistogram(uint gi : SV_GroupIndex, uint3 id : SV_DispatchThreadID)
 void CSAdapt(uint gi : SV_GroupIndex)
 {
     uint count = gHist[gi];
+    hc[gi] = count;
     hs[gi] = count * gi;   // bin0 は gi=0 なので分子に寄与しない＝黒を自動除外
     GroupMemoryBarrierWithGroupSync();
 
@@ -60,12 +64,32 @@ void CSAdapt(uint gi : SV_GroupIndex)
     {
         float numPix   = max(p1.y - (float)gHist[0], 1.0);       // 黒ピクセルを分母から除外
         float meanBin  = (float)hs[0] / numPix;
+        if (p2.x > 0.0 || p2.y < 1.0)
+        {
+            // ヒストグラムの窓 [p2.x, p2.y]（低輝度側から数えた割合）に入る個数だけで平均する（UE のヒストグラム測光）。
+            // 黒(bin0)は分母に入れない。窓の端をまたぐ bin は重なった分だけ数える。
+            const float lo = p2.x * numPix;
+            const float hi = p2.y * numPix;
+            float acc = 0.0, sumW = 0.0, sumBin = 0.0;
+            for (uint b = 1u; b < 256u; ++b)
+            {
+                const float c  = (float)hc[b];
+                const float w  = max(min(acc + c, hi) - max(acc, lo), 0.0);
+                sumW   += w;
+                sumBin += w * (float)b;
+                acc    += c;
+            }
+            if (sumW > 0.0) meanBin = sumBin / sumW;
+        }
         float logLum   = ((meanBin - 1.0) / 254.0) / p0.y + p0.x;
         float targetLum = exp2(logLum);
 
         float prev = gExposure[1];
         if (!(prev > 0.0)) prev = targetLum;                      // 初回/NaN ガード
-        float a = saturate(1.0 - exp(-p0.z * p0.w));
+        float speed = p0.w;
+        if (targetLum > prev && p2.z > 0.0) speed = p2.z;        // シーンが明るくなった（露出は絞る方向）
+        else if (targetLum < prev && p2.w > 0.0) speed = p2.w;   // シーンが暗くなった（露出は開ける方向）
+        float a = saturate(1.0 - exp(-p0.z * speed));
         float adapted = lerp(prev, targetLum, a);
         if (a >= 0.999) adapted = targetLum;                      // 初回は即適応（dt 大で強制）
 

@@ -3,6 +3,7 @@
 // 多くは godotshaders.com のスクリーンシェーダーを解析して移植したもの。
 
 #include "FullscreenTri.hlsli"
+#include "Tonemap.hlsli"   // Q2: UE Filmic / 線形 / PBR Neutral（masks.w >= 3 のときだけ使う）
 
 static const float PI = 3.14159265;
 
@@ -43,7 +44,7 @@ cbuffer PostCB : register(b0)
 {
     float4 uvOffsetScale;   // xy=UVオフセット, zw=UVスケール（ビューポート矩形対応）
     float4 texelTime;       // xy=テクセル(1/W,1/H), z=time
-    int4   masks;           // x=enableMask, y=posterizeLevels, z=ditherLevels, w=tonemapper(0=ACES,1=AgX,2=なし)
+    int4   masks;           // x=enableMask, y=posterizeLevels, z=ditherLevels, w=tonemapper(0=ACES,1=AgX,2=なし,3=UE Filmic,4=線形,5=PBR Neutral)
     float4 cg0;             // exposure, contrast, brightness, saturation
     float4 cg1;             // warmth, hueShift(度), bloom, bloomThreshold
     float4 tintVig;         // tint.rgb, vignette
@@ -61,6 +62,8 @@ cbuffer PostCB : register(b0)
     float4 misc0;           // glitchColor, grainSize, grainColored, radialSamples
     float4 misc1;           // radialCenterX, radialCenterY, outlineThickness, outlineThreshold
     float4 outl2;           // outlineBg.rgb, outlineOnly
+    float4 film0;           // Q2: UE Filmic (slope, toe, shoulder, blackClip)
+    float4 film1;           // Q2: (whiteClip, _, _, _)
 };
 
 Texture2D    gScene : register(t0);
@@ -140,6 +143,7 @@ static float3 TonemapAgX(float3 val)
 static float3 ToneMapGamma(float3 c)
 {
     int tm = masks.w;
+    if (tm >= 3) return UnoToneMapNew(tm, c, film0, film1.x);   // Q2: sRGB OETF で符号化する新モード
     if (tm == 1) return TonemapAgX(c);
     if (tm == 2) return pow(max(c, 0.0), 1.0 / 2.2);  // トーンマップなし（ガンマのみ）
     return pow(ACESFilm(c), 1.0 / 2.2);

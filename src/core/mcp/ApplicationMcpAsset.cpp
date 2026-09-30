@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 
 namespace dx12e
 {
@@ -409,6 +410,12 @@ void Application::RegisterMcpAssetMethods()
                     throw McpError(McpErr::InvalidParam,
                         "destination exists (overwrite:true で上書き): " + destRel,
                         "上書きしてよければ overwrite:true、残すなら destPath を別名にする（dx12_list_assets で空きを確認）");
+                // M5: 上書きされる / 新規に作られるファイルを個別に記録する（元の内容は退避、新規は戻すとき削除）
+                {
+                    std::error_code jec;
+                    for (fs::recursive_directory_iterator jit(srcPath, fs::directory_options::skip_permission_denied, jec), jend; !jec && jit != jend; jit.increment(jec))
+                        if (jit->is_regular_file(jec)) mcpsafety::JournalBackup(dest / fs::relative(jit->path(), srcPath, jec));
+                }
                 fs::create_directories(dest);
                 fs::copy(srcPath, dest,
                          fs::copy_options::recursive | fs::copy_options::overwrite_existing);
@@ -427,6 +434,7 @@ void Application::RegisterMcpAssetMethods()
                         + fs::relative(dest, assetsRoot).generic_string(),
                         "上書きしてよければ overwrite:true、残すなら destPath を別名にする（dx12_list_assets で空きを確認）");
                 fs::create_directories(dest.parent_path());
+                mcpsafety::JournalBackup(dest);   // M5
                 fs::copy_file(srcPath, dest, fs::copy_options::overwrite_existing);
                 imported.push_back(fs::relative(dest, assetsRoot).generic_string());
             }
@@ -585,7 +593,23 @@ void Application::RegisterMcpAssetMethods()
                 if (fs::is_directory(toP))
                     throw McpError(McpErr::InvalidParam, "cannot overwrite a directory: " + toRel,
                         "to にフォルダ名を渡すなら、その中のファイル名まで含めたパスにする（例: models/props/crate.glb）");
+                mcpsafety::JournalBackup(toP);   // M5: 上書きされる移動先の元の内容
                 fs::remove(toP);
+            }
+            // M5: 移動元（消える）と移動先（新規に作られる）を記録する。フォルダは配下のファイルを 1 つずつ。
+            {
+                std::error_code jec;
+                if (fs::is_directory(fromP, jec))
+                {
+                    mcpsafety::JournalBackupTree(fromP);
+                    for (fs::recursive_directory_iterator jit(fromP, fs::directory_options::skip_permission_denied, jec), jend; !jec && jit != jend; jit.increment(jec))
+                        if (jit->is_regular_file(jec)) mcpsafety::JournalBackup(toP / fs::relative(jit->path(), fromP, jec));
+                }
+                else
+                {
+                    mcpsafety::JournalBackup(fromP);
+                    mcpsafety::JournalBackup(toP);
+                }
             }
             fs::create_directories(toP.parent_path());
             fs::rename(fromP, toP);
@@ -608,6 +632,9 @@ void Application::RegisterMcpAssetMethods()
                     PathResolver::AssetsDir(), fromRel, toRel,
                     m_editorCtx ? m_editorCtx->currentScenePath : std::string());
 
+            // M5: 参照の書き換えで触った他のファイル（他シーン / .prefab など）は退避していない。ジャーナルは不完全と記録する。
+            if (files.filesChanged > 0)
+                mcpsafety::JournalMarkIncomplete("move_asset の参照書き換えで " + std::to_string(files.filesChanged) + " ファイルを変更した(それらは退避していない)");
             json changedFiles = json::array();
             for (const auto& f : files.files) changedFiles.push_back(f);
             json failedFiles = json::array();
@@ -642,6 +669,8 @@ void Application::RegisterMcpAssetMethods()
 
             uintmax_t removed = 0;
             bool wasDirectory = false;
+            // M5: 消す前に中身を退避（ディレクトリは配下のファイルを 1 つずつ。上限超過は不完全と記録）。recursive の確認より後でよいが、退避は副作用が無いので先に行う。
+            if (fs::is_directory(full) ? params.value("recursive", false) : true) mcpsafety::JournalBackupTree(full);
             if (fs::is_directory(full))
             {
                 wasDirectory = true;

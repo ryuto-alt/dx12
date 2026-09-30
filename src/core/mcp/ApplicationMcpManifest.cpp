@@ -17,6 +17,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpManifestBuild.h"
+#include "core/mcp/McpSafety.h"   // M5: ガードトークン / 冪等ストア / プレビュー表 / ジャーナル
 
 #include <algorithm>
 #include <chrono>
@@ -213,6 +214,7 @@ nlohmann::json MetaToJson(const std::string& name, const McpMeta& m, bool derive
     if (!m.target.empty()) j["target"] = m.target;
     j["aliases"] = m.aliases;
     if (!m.expose.empty()) j["expose"] = m.expose;
+    if (m.journal) j["journal"] = true;   // M5: ファイル書き込みジャーナル対応
     if (!brief)
     {
         json params = json::array();
@@ -234,6 +236,16 @@ nlohmann::json MetaToJson(const std::string& name, const McpMeta& m, bool derive
 }
 } // namespace
 } // namespace appdetail
+
+// ping.safety（M5）: guarded ゲート / 冪等ストア / ファイルジャーナルの状態。
+nlohmann::json McpSafetyInfoJson()
+{
+    auto& idem = mcpsafety::Idempotency();
+    auto& jr   = mcpjournal::Instance();
+    return {{"guardedGate", true},
+            {"idempotency", {{"entries", idem.Size()}, {"capacity", idem.Capacity()}, {"ttlSec", idem.TtlSec()}}},
+            {"journal", {{"dir", mcpjournal::Utf8FromPath(jr.Root())}, {"entries", jr.EntryCount()}}}};
+}
 
 // ---------------------------------------------------------------------------
 // ApplyMcpManifest — 表を組んだ直後に 1 度だけ呼ぶ
@@ -257,6 +269,7 @@ void Application::ApplyMcpManifest()
         if (it != byName.end())
         {
             entry.meta    = rows[it->second].meta;
+            McpApplySafetyFlags(name, entry.meta);   // M5: dryRun="preview" / journal=true
             entry.hasMeta = true;
             entry.derived = false;
             ++fromTable;
@@ -404,6 +417,80 @@ void Application::RegisterMcpManifestMethods()
         });
 
     // -----------------------------------------------------------------------
+    // 仮想ジオメトリ（Nanite 風）P2: GPU カリングの統計と設定。meta を直接渡す（中央検査・describe_mcp_manifest に載る）。
+    // ★P2 は描かない。ON にしても VirtualGeometry を持つエンティティのプロキシが従来経路で描かれ、カリングの統計だけが出る。
+    // -----------------------------------------------------------------------
+    {
+        McpMeta vs;
+        vs.summary    = "仮想ジオメトリ(Nanite 風)の GPU カリング + ラスタ統計。{enabled, active, instances, sourceTrisInFrustum, nodesVisited, "
+                        "clustersSelected, visibleClusters, phase2Clusters, trianglesDrawn, cullGpuMs, executeGpuMs, vramMB, overflow, levelHistogram, "
+                        "raster{active, gpuMs, trianglesDrawn, trianglesHw/Sw, overdraw(measure 時), edgePxHistogram(measure 時)}, "
+                        "resolve{active, gpuMs, gbufferGpuMs, …}(P4 材質 resolve), stableOrder{…}, vgGpuTotalMs, ineligible{count, entities[]}, assets[]}";
+        vs.keywords   = "vg virtual geometry nanite 仮想ジオメトリ クラスタ カリング 統計 stats cull lod hzb vgeo";
+        vs.category   = "render";
+        vs.group      = "render_setting";
+        vs.target     = "virtual_geometry";
+        vs.effect     = McpEffect::Read;
+        vs.timeoutMs  = 8000;
+        vs.idempotent = true;
+        vs.aliases    = {"dx12_vg_stats"};
+        vs.next       = {{"set_virtual_geometry", "ON/OFF・τ(lodPixelError)・HZB・コーン棄却を切り替える"},
+                         {"perf_stats", "gpuPassMs.vgCull が VG カリングの GPU 時間"}};
+        vs.examples   = {{"{}", "現在の統計（1〜2 フレーム遅れ）"}};
+        McpDefine("vg_stats", vs, DX12E_MCP_HANDLER
+            {
+                resp["ok"] = true;
+                resp["result"] = VirtualGeometryStatsJson();
+            });
+
+        McpMeta vset;
+        vset.summary    = "仮想ジオメトリ(Nanite 風)の設定。enabled で GPU カリング + メッシュシェーダ描画を ON/OFF（既定 OFF。P3: 対応 GPU では VG 本体が可視性バッファへ描かれ、プロキシは主ビューから外れる）。"
+                          "lodPixelError=τ(レンダー px)。VirtualGeometry を持つエンティティ(.vgeo)が対象";
+        vset.keywords   = "vg virtual geometry nanite 仮想ジオメトリ 設定 enabled lodPixelError hzb cone set";
+        vset.category   = "render";
+        vset.group      = "render_setting";
+        vset.target     = "virtual_geometry";
+        vset.effect     = McpEffect::WriteSetting;
+        vset.timeoutMs  = 8000;
+        vset.idempotent = true;
+        vset.aliases    = {"dx12_set_virtual_geometry"};
+        vset.params     = {P("enabled", "bool", false, nullptr, nullptr, nullptr, nullptr, "GPU カリングを ON/OFF（既定 OFF）"),
+                           P("lodPixelError", "number", false, nullptr, "0.25", "8", nullptr, "LOD の画面空間誤差しきい値 τ（レンダー px。既定 1）"),
+                           P("hzbCulling", "bool", false, nullptr, nullptr, nullptr, nullptr, "二段 HZB オクルージョン（既定 true）"),
+                           P("coneCulling", "bool", false, nullptr, nullptr, nullptr, nullptr, "法線コーンの背面棄却（既定 true。両面材質は P4 で対応）"),
+                           P("instanceMinPx", "number", false, nullptr, "0", "64", nullptr, "画面上の半径がこれ未満のインスタンスを棄却（0 で無効。既定 0.5）"),
+                           P("vramBudgetMB", "int", false, nullptr, "64", "65536", nullptr, "アセット（ページ + BVH）の VRAM 予算。超える読込は構造化エラーで拒否（既定 3072）"),
+                           P("raster", "bool", false, nullptr, nullptr, nullptr, nullptr, "P3: メッシュシェーダで VG 本体を描く（既定 true。false = 統計だけ・プロキシを描く。GPU 非対応なら自動で無効。シーンには保存されない）"),
+                           P("rasterAs", "bool", false, nullptr, nullptr, nullptr, nullptr, "P3: 増幅シェーダ（32 クラスタ / グループ + 追加カリング）経由で描く（既定 false = MS のみ）"),
+                           P("smallPrimCull", "bool", false, nullptr, nullptr, nullptr, nullptr, "P3: 画素中心を 1 つも覆わない三角形 / クラスタをメッシュシェーダ / 増幅シェーダで落とす（既定 false。5060 の実測では速くならない）"),
+                           P("measure", "bool", false, nullptr, nullptr, nullptr, nullptr, "P3: 計測（断片数 / オーバードロー / 被覆画素 / 辺長ヒストグラムを vg_stats.raster へ）。少し遅い（既定 false）"),
+                           P("forceLod0", "bool", false, nullptr, nullptr, nullptr, nullptr, "P3: 検証 / 計測用。LOD0 の葉クラスタだけを選ぶ（全 LOD0 の素朴な参照。三角形が桁違いに増える）"),
+                           P("resolve", "bool", false, nullptr, nullptr, nullptr, nullptr, "P4: 材質 resolve（フォワードと同じライティングで VG 画素を塗る。既定 true）。false = P3 の暫定シェーディング（A/B 用。シーンには保存されない）"),
+                           P("stableOrder", "bool", false, nullptr, nullptr, nullptr, nullptr, "P4: 決定論（可視リストをフェーズごとに安定ソート。同じ深さの面の先着が起動ごとに変わらない）。決定論キャプチャ中は自動で ON（既定 false）")};
+        vset.next       = {{"vg_stats", "結果の統計を読む"}};
+        vset.examples   = {{"{\"enabled\":true,\"lodPixelError\":1.0}", "VG カリングを ON にして統計を出す"}};
+        McpDefine("set_virtual_geometry", vset, DX12E_MCP_HANDLER
+            {
+                auto& s = m_scene->GetVirtualGeometrySettings();
+                s.enabled       = params.value("enabled",       s.enabled);
+                s.lodPixelError = params.value("lodPixelError", s.lodPixelError);
+                s.hzbCulling    = params.value("hzbCulling",    s.hzbCulling);
+                s.coneCulling   = params.value("coneCulling",   s.coneCulling);
+                s.instanceMinPx = params.value("instanceMinPx", s.instanceMinPx);
+                s.vramBudgetMB  = params.value("vramBudgetMB",  s.vramBudgetMB);
+                s.raster        = params.value("raster",        s.raster);
+                s.rasterAs      = params.value("rasterAs",      s.rasterAs);
+                s.smallPrimCull = params.value("smallPrimCull", s.smallPrimCull);
+                s.measure       = params.value("measure",       s.measure);
+                s.forceLod0     = params.value("forceLod0",     s.forceLod0);
+                s.resolve       = params.value("resolve",       s.resolve);
+                s.stableOrder   = params.value("stableOrder",   s.stableOrder);
+                resp["ok"] = true;
+                resp["result"] = VirtualGeometryStatsJson();
+            });
+    }
+
+    // -----------------------------------------------------------------------
     // 動的登録の実機確認用のダミー method（環境変数 DX12_MCP_DEV_PROBE=1 のときだけ登録される）。
     // 通常起動では存在しない。エンジンを「method が増えた版」として起動し直したときに、MCP サーバ(TS)が
     // 再起動なしで dx12_tool_search / dx12_call / (expose:"core" なので) tools/list へ反映するかを確かめる。
@@ -433,6 +520,10 @@ void Application::RegisterMcpManifestMethods()
                 });
         }
     }
+
+    // M5: 副作用の安全性の method（guard_token / journal_* / cancel）と dryRun プレビュー表。
+    // 本体は Application のメンバを使うので、この関数の中に取り込む（Application.h を触らない）。
+#include "core/mcp/ApplicationMcpSafety.inc"
 }
 
 } // namespace dx12e

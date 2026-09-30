@@ -34,7 +34,8 @@ export type ManifestMethod = {
   timeoutMs?: number;
   idempotent?: boolean;
   deferred?: boolean;
-  dryRun?: string;                   // none | native
+  dryRun?: string;                   // none | native | preview(エンジンが dryRun:true で実際に何が起こるかを返す。M5)
+  journal?: boolean;                 // ファイルを書く前に元の内容を退避する(.dx12/journal/。journal_restore で戻せる。M5)
   group?: string;
   target?: string;
   aliases?: string[];                // 旧 TS ツール名(dx12_xxx)

@@ -147,6 +147,84 @@ console.log("[5] フリート(専用エンジンの管理)ツールの発見性(
   check("既存の 30 タスクの選択率は下がっていない(フリートのツールが割り込まない)", main.r3 >= 0.9 && hold.r3 >= 0.85);
 }
 
+console.log("[6] ジョブ API(dx12_job_*)の発見性(eval/job_tasks.json)");
+{
+  const jt: { id: string; expect: string[]; core: boolean; queries: string[]; holdout: string }[] = JSON.parse(fs.readFileSync(path.join(here, "eval", "job_tasks.json"), "utf8")).tasks;
+  check("ジョブのタスクの許容ツールがすべて実在する", jt.every((t) => t.expect.every((n) => shell.catalog.resolve(n))));
+  let n = 0, all3 = 0, core3 = 0, cn = 0;
+  const miss: string[] = [];
+  for (const t of jt) for (const q of [...t.queries, t.holdout]) {
+    n++;
+    const r = rankOf(q, t.expect);
+    if (r >= 0 && r < 3) all3++; else miss.push(`${t.id} "${q}" rank=${r}`);
+    if (t.core) {
+      cn++;
+      const rc = shell.index.search(q, { limit: 10, tier: "core" }).hits.map((h) => h.name).findIndex((h) => t.expect.includes(h));
+      if (rc >= 0 && rc < 3) core3++; else miss.push(`(core 面) ${t.id} "${q}" rank=${rc}`);
+    }
+  }
+  console.log(`      ジョブ ${jt.length} タスク / ${n} クエリ: 全ツール検索 recall@3=${(all3 / n * 100).toFixed(1)}% / Core 面のみ recall@3=${(core3 / cn * 100).toFixed(1)}%`);
+  check(`ジョブのツールは全ツール検索で recall@3 >= 90%(${(all3 / n * 100).toFixed(1)}%)`, all3 / n >= 0.9, miss);
+  check(`Core 面のみの検索でも recall@3 >= 90%(${(core3 / cn * 100).toFixed(1)}%)`, core3 / cn >= 0.9, miss);
+  const tail = ["dx12_job_list", "dx12_job_result", "dx12_job_logs"];
+  const qs = ["ジョブの一覧と履歴を見たい", "終わったジョブの結果の全文を読みたい", "失敗したジョブのログの末尾を見たい"];
+  check("dx12_job_list / result / logs は Core 面の検索に出ない(長尾)が、全ツール検索では出る", qs.every((q, i) => !shell.index.search(q, { limit: 20, tier: "core" }).hits.some((h) => h.name === tail[i]) && shell.index.search(q, { limit: 5 }).hits.some((h) => h.name === tail[i])));
+  check("既存の 30 タスクの選択率は下がっていない(ジョブのツールが割り込まない)", main.r3 >= 0.9 && hold.r3 >= 0.85);
+}
+
+console.log("[7] エディタ操作(dx12_editor_*)の発見性(eval/editor_tasks.json)");
+{
+  const et: { id: string; expect: string[]; core: boolean; queries: string[]; holdout: string }[] = JSON.parse(fs.readFileSync(path.join(here, "eval", "editor_tasks.json"), "utf8")).tasks;
+  check("エディタ操作のタスクの許容ツールがすべて実在する", et.every((t) => t.expect.every((n) => shell.catalog.resolve(n))));
+  check("エディタ操作は 6 タスク以上 × (言い換え 2 + holdout 1)", et.length >= 6 && et.every((t) => t.queries.length === 2 && !!t.holdout));
+  let n = 0, all3 = 0, core3 = 0, cn = 0;
+  const miss: string[] = [];
+  for (const t of et) for (const q of [...t.queries, t.holdout]) {
+    n++;
+    const r = rankOf(q, t.expect);
+    if (r >= 0 && r < 3) all3++; else miss.push(`${t.id} "${q}" rank=${r}`);
+    if (t.core) {
+      cn++;
+      const rc = shell.index.search(q, { limit: 10, tier: "core" }).hits.map((h) => h.name).findIndex((h) => t.expect.includes(h));
+      if (rc >= 0 && rc < 3) core3++; else miss.push(`(core 面) ${t.id} "${q}" rank=${rc}`);
+    }
+  }
+  console.log(`      エディタ操作 ${et.length} タスク / ${n} クエリ: 全ツール検索 recall@3=${(all3 / n * 100).toFixed(1)}% / Core 面のみ recall@3=${(core3 / cn * 100).toFixed(1)}%`);
+  check(`エディタ操作は全ツール検索で recall@3 >= 90%(${(all3 / n * 100).toFixed(1)}%)`, all3 / n >= 0.9, miss);
+  check(`Core 面のみの検索でも recall@3 >= 90%(${(core3 / cn * 100).toFixed(1)}%)`, core3 / cn >= 0.9, miss);
+  const tail = [["dx12_editor_notify", "作業が終わったことをエディタの画面に通知したい"], ["dx12_editor_select", "名前が Wall で始まるものをまとめて選択したい"], ["dx12_editor_modal", "開いているダイアログを閉じたい"], ["dx12_engine_list", "起動中のエンジンの一覧と空き VRAM を見たい"], ["dx12_play_script", "入力の台本でゴールまで行けるか確かめる"]];
+  check("dx12_editor_notify / select / modal と、M7 で長尾へ移した dx12_engine_list / dx12_play_script は Core 面の検索に出ない(長尾)が、全ツール検索では出る",
+    tail.every(([name, q]) => !shell.index.search(q, { limit: 20, tier: "core" }).hits.some((h) => h.name === name) && shell.index.search(q, { limit: 5 }).hits.some((h) => h.name === name)));
+  check("dx12_editor_command / dx12_editor_state は Core(tools/list に載る面)にある", ["dx12_editor_command", "dx12_editor_state"].every((n) => shell.catalog.resolve(n)?.core === true));
+  check("旧 dx12_select_entity は残り、複数選択・クエリは dx12_editor_select へ案内する(検索で dx12_editor_select が上位)", !!shell.catalog.resolve("dx12_select_entity") && shell.index.search("複数のエンティティを選択したい", { limit: 3 }).hits.some((h) => h.name === "dx12_editor_select"));
+  check("既存の 30 タスクの選択率は下がっていない(エディタ操作のツールが割り込まない)", main.r3 >= 0.9 && hold.r3 >= 0.85);
+}
+
+console.log("[8] 宣言的シーン生成(dx12_apply_scene_spec / dx12_scene_spec_export)の発見性(eval/scene_spec_tasks.json)");
+{
+  const st: { id: string; expect: string[]; core: boolean; queries: string[]; holdout: string }[] = JSON.parse(fs.readFileSync(path.join(here, "eval", "scene_spec_tasks.json"), "utf8")).tasks;
+  check("シーン仕様のタスクの許容ツールがすべて実在する", st.every((t) => t.expect.every((n) => shell.catalog.resolve(n))));
+  check("シーン仕様は 8 タスク × (言い換え 2 + holdout 1)", st.length >= 8 && st.every((t) => t.queries.length === 2 && !!t.holdout));
+  let n = 0, all3 = 0, core3 = 0, cn = 0;
+  const miss: string[] = [];
+  for (const t of st) for (const q of [...t.queries, t.holdout]) {
+    n++;
+    const r = rankOf(q, t.expect);
+    if (r >= 0 && r < 3) all3++; else miss.push(`${t.id} "${q}" rank=${r}`);
+    if (t.core) {
+      cn++;
+      const rc = shell.index.search(q, { limit: 10, tier: "core" }).hits.map((h) => h.name).findIndex((h) => t.expect.includes(h));
+      if (rc >= 0 && rc < 3) core3++; else miss.push(`(core 面) ${t.id} "${q}" rank=${rc}`);
+    }
+  }
+  console.log(`      シーン仕様 ${st.length} タスク / ${n} クエリ: 全ツール検索 recall@3=${(all3 / n * 100).toFixed(1)}% / Core 面のみ recall@3=${(core3 / cn * 100).toFixed(1)}%`);
+  check(`シーン仕様は全ツール検索で recall@3 >= 90%(${(all3 / n * 100).toFixed(1)}%)`, all3 / n >= 0.9, miss);
+  check(`Core 面のみの検索でも recall@3 >= 90%(${(core3 / cn * 100).toFixed(1)}%)`, core3 / cn >= 0.9, miss);
+  check("dx12_apply_scene_spec は Core(tools/list に載る面)・dx12_scene_write と dx12_scene_spec_export は長尾", shell.catalog.resolve("dx12_apply_scene_spec")?.core === true && shell.catalog.resolve("dx12_scene_write")?.core !== true && shell.catalog.resolve("dx12_scene_spec_export")?.core !== true);
+  check("dx12_scene_write は「シーン JSON を直接書く」で全ツール検索の上位 3 件に残る(長尾でも見つかる)", shell.index.search("シーン JSON をファイルへ直接書き出す", { limit: 3 }).hits.some((h) => h.name === "dx12_scene_write"));
+  check("既存の 30 タスクの選択率は下がっていない(シーン仕様のツールが割り込まない)", main.r3 >= 0.9 && hold.r3 >= 0.85);
+}
+
 if (failed) { console.log(`\nNG: ${failed}/${total} 件失敗`); process.exit(1); }
 console.log(`\nOK: 発見性テスト ${total} 項目すべて通過`);
 process.exit(0);

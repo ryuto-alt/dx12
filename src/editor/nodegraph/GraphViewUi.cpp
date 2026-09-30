@@ -319,6 +319,11 @@ void GraphView::DrawContextMenus()
         {
         case CtxKind::Node:
         case CtxKind::Selection:
+            if (m_nodeMenu && m_ctxKind == CtxKind::Node)   // モデル固有の項目（マテリアルグラフ: プロパティ・パラメータ化 など）
+            {
+                m_nodeMenu(m_ctxHit.node, m_sel);
+                ImGui::Separator();
+            }
             item(ICON_T_LAYERS, "複製", "edit.duplicate");
             item(ICON_COPY, "コピー", "edit.copy");
             item(ICON_PASTE, "貼り付け", "edit.paste");

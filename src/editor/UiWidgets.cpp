@@ -48,17 +48,10 @@ struct FrameRect
 };
 
 // 直前の項目の枠を、状態に応じた色でなぞる。ホバー = 明るい枠 / アクティブ = アクセント枠。
-// Default 以外の案では deco:: の遷移（イージング）+ グロー + 面のうっすらした色味で「案らしさ」を出す。
+// deco:: の遷移（イージング）+ グロー + 面のうっすらした色味で「ネオン・エッジ」らしさを出す。
 // id = 遷移状態のキー（0 なら直前の項目の ID）。BeginCombo のようにポップアップを開くと直前の項目が変わる部品は明示する。
 void OutlineRect(ImVec2 mn, ImVec2 mx, bool hovered, bool active, float rounding, ImGuiID id = 0)
 {
-    if (!deco::Active())
-    {
-        if (!hovered && !active) return;
-        ImGui::GetWindowDrawList()->AddRect(
-            mn, mx, Col(active ? th::Accent : th::InputBorderHover), rounding, 0, Px(1.0f));
-        return;
-    }
     if (id == 0) id = ImGui::GetItemID();
     const th::Deco& d = th::CurrentDeco();
     const float h = deco::Ease(id, 0, hovered ? 1.0f : 0.0f);
@@ -72,7 +65,7 @@ void OutlineRect(ImVec2 mn, ImVec2 mx, bool hovered, bool active, float rounding
                           ColA(th::Accent, d.hoverTint * std::max(h * 0.7f, a * 1.3f)), std::max(0.0f, rounding - b1));
     // 枠: ホバー（案ごとの色）→ アクティブ（アクセント）
     ImVec4 hoverEdge = th::InputBorderHover;
-    if (th::CurrentVariant() == th::Variant::A) hoverEdge = th::WithAlpha(th::Accent, 0.50f);
+    if (th::CurrentVariant() == th::Variant::Default) hoverEdge = th::WithAlpha(th::Accent, 0.50f);
     if (th::CurrentVariant() == th::Variant::B) hoverEdge = th::WithAlpha(th::Hex(0xC8D2FF), 0.32f);
     if (h > 0.004f && a < 0.999f)
         dl->AddRect(mn, mx, ColA(hoverEdge, h * (1.0f - a * 0.5f)), rounding, 0, b1);
@@ -130,27 +123,15 @@ struct FillSlider
         const float b1px = Px(1.0f);
         const float x0 = mn.x + b1px, x1 = mx.x - b1px;
         const float fx = x0 + (x1 - x0) * t;
-        const bool special = deco::Active();
-        if (!special)
+        if (fx - x0 >= b1px)
         {
-            // 塗りバー（アクセント 40%）
-            if (fx - x0 >= b1px)
-            {
-                dl->AddRectFilled(ImVec2(x0, mn.y + b1px), ImVec2(fx, mx.y - b1px),
-                                  Col(th::WithAlpha(th::Accent, act ? 0.55f : 0.40f)),
-                                  std::max(0.0f, r - b1px),
-                                  t >= 0.999f ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft);
-            }
-        }
-        else if (fx - x0 >= b1px)
-        {
-            // 案ごとの塗り: A = 先端に向かって濃くなるグラデ（ネオンの尾を引く）/ B = 上が明るいガラスの帯 / C = 無彩色の淡い帯 + 先端のシグナル
+            // 案ごとの塗り: 既定（ネオン）= 先端に向かって濃くなるグラデ（ネオンの尾を引く）/ B = 上が明るいガラスの帯 / C = 無彩色の淡い帯 + 先端のシグナル
             const ImVec2 f0(x0, mn.y + b1px), f1(fx, mx.y - b1px);
             const float rr = std::max(0.0f, r - b1px);
             const ImDrawFlags fl = t >= 0.999f ? ImDrawFlags_RoundCornersAll : ImDrawFlags_RoundCornersLeft;
             const th::Variant v = th::CurrentVariant();
             const float boost = act ? 1.35f : 1.0f;
-            if (v == th::Variant::A)
+            if (v == th::Variant::Default)
             {
                 // 丸みを保つため、まず薄い面（角丸）→ 先端寄りをグラデで重ねる（右端は角を丸めない矩形）
                 dl->AddRectFilled(f0, f1, ColA(th::Accent, 0.13f * boost), rr, fl);
@@ -177,11 +158,10 @@ struct FillSlider
             const bool overText = std::fabs(gx - cx) < textW * 0.5f + Px(4.0f);
             if (!overText || act)
             {
-                const ImVec4& tip = special ? th::Accent : (act ? th::Text : th::AccentHover);
-                const ImVec4& tipCol = (special && act) ? th::AccentHover : tip;
+                const ImVec4& tipCol = act ? th::AccentHover : th::Accent;
                 dl->AddRectFilled(ImVec2(gx - b1px, mn.y + Px(3.0f)), ImVec2(gx + b1px, mx.y - Px(3.0f)),
-                                  special ? Col(tipCol) : Col(act ? th::Text : th::AccentHover), Px(1.0f));
-                if (special && (fx - x0) >= b1px)
+                                  Col(tipCol), Px(1.0f));
+                if ((fx - x0) >= b1px)
                     deco::Glow(dl, ImVec2(gx - b1px, mn.y + Px(3.0f)), ImVec2(gx + b1px, mx.y - Px(3.0f)), Px(1.0f), th::Accent,
                                act ? 0.9f : 0.45f);
             }
@@ -252,23 +232,11 @@ void DrawIconCentered(ImDrawList* dl, const char* glyph, ImVec2 center, ImU32 co
 
 namespace
 {
-// ツールバー等のフラットなアイコンボタンの面。Default は従来どおり。
-//   A = ホバーでアクセントがにじむ / アクティブは面 + 下辺のネオンライン（にじみ付き）
+// ツールバー等のフラットなアイコンボタンの面。
+//   既定（ネオン）= ホバーでアクセントがにじむ / アクティブは面 + 下辺のネオンライン（にじみ付き）
 //   B = ガラスの丸い面（上が明るい）+ 光の縁 / C = 面を塗らず、下辺のシグナルラインだけ（ホバーは平たい Bg3）
 void ToolButtonFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool active, bool hov, bool held, const ImVec4& face, ImGuiID id)
 {
-    if (!deco::Active())
-    {
-        if (active)
-            dl->AddRectFilled(mn, mx, Col(th::WithAlpha(face, held ? 0.32f : hov ? 0.28f : 0.22f)), Px(3.0f));
-        else if (held)
-            dl->AddRectFilled(mn, mx, Col(th::Bg4), Px(3.0f));
-        else if (hov)
-            dl->AddRectFilled(mn, mx, Col(th::Bg3), Px(3.0f));
-        if (active)
-            dl->AddRectFilled(ImVec2(mn.x + Px(5.0f), mx.y - Px(2.0f)), ImVec2(mx.x - Px(5.0f), mx.y), Col(face), Px(1.0f));
-        return;
-    }
     const th::Deco& d = th::CurrentDeco();
     const th::Variant v = th::CurrentVariant();
     const float h = deco::Ease(id, 0, hov ? 1.0f : 0.0f);
@@ -301,7 +269,7 @@ void ToolButtonFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool active, bool hov,
         }
         return;
     }
-    // A: ネオン・エッジ
+    // 既定: ネオン・エッジ
     if (held) dl->AddRectFilled(mn, mx, Col(th::Bg4), rr);
     else if (h > 0.004f)
     {
@@ -359,24 +327,88 @@ bool IconDropdownButton(const char* id, const char* glyph, const char* tooltip, 
     const ImVec2 mn = ImGui::GetItemRectMin();
     const ImVec2 mx = ImGui::GetItemRectMax();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (!deco::Active())
-    {
-        // 現行: 下辺のアクセントラインは付けない（IconButton と違い、面だけ）
-        if (active)
-            dl->AddRectFilled(mn, mx, Col(th::WithAlpha(th::Accent, held ? 0.32f : hov ? 0.28f : 0.22f)), Px(3.0f));
-        else if (held)
-            dl->AddRectFilled(mn, mx, Col(th::Bg4), Px(3.0f));
-        else if (hov)
-            dl->AddRectFilled(mn, mx, Col(th::Bg3), Px(3.0f));
-    }
-    else
-        ToolButtonFace(dl, mn, mx, active, hov, held, th::Accent, bid);
+    ToolButtonFace(dl, mn, mx, active, hov, held, th::Accent, bid);
     const ImVec4& ic = active ? th::AccentHover : (hov ? th::Text : th::TextDim);
     const float cy = (mn.y + mx.y) * 0.5f;
     DrawIconCentered(dl, glyph, ImVec2(mn.x + sizePx * 0.5f, cy), Col(ic), Px(th::size::kIconPx + 2.0f));
     DrawIconCentered(dl, ICON_CHEVRON_DOWN, ImVec2(mx.x - Px(9.0f), cy), Col(ic), Px(13.0f));
     if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("%s", tooltip);
+    ImGui::PopID();
+    return clicked;
+}
+
+bool LabelDropdownButton(const char* id, const char* glyph, const char* label, const char* tooltip, bool active,
+                         float sizePx, const char* value)
+{
+    if (sizePx <= 0.0f) sizePx = Px(th::size::kToolbarBtn);
+    const bool hasLabel = label && *label;
+    const bool hasValue = value && *value;
+    const float pad = Px(8.0f);
+    float textW = hasLabel ? ImGui::CalcTextSize(label).x : 0.0f;
+    float valueW = 0.0f;
+    if (hasValue) { PushMono(); valueW = ImGui::CalcTextSize(value).x; PopMono(); }
+    const float iconW = sizePx * 0.5f + Px(6.0f);
+    const float w = pad + iconW + (hasLabel ? Px(4.0f) + textW : 0.0f) + (hasValue ? Px(6.0f) + valueW : 0.0f) + Px(3.0f) + Px(13.0f) + Px(3.0f);
+    ImGui::PushID(id);
+    const bool clicked = ImGui::InvisibleButton("##ldb", ImVec2(w, sizePx));
+    const bool hov  = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    const ImGuiID bid = ImGui::GetItemID();
+    const ImVec2 mn = ImGui::GetItemRectMin();
+    const ImVec2 mx = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ToolButtonFace(dl, mn, mx, active, hov, held, th::Accent, bid);
+    const ImVec4& ic = active ? th::AccentHover : (hov ? th::Text : th::TextDim);
+    const float cy = (mn.y + mx.y) * 0.5f;
+    float x = mn.x + pad;
+    DrawIconCentered(dl, glyph, ImVec2(x + iconW * 0.5f - Px(3.0f), cy), Col(ic), Px(th::size::kIconPx + 1.0f));
+    x += iconW;
+    if (hasLabel)
+    {
+        x += Px(4.0f) - Px(6.0f);
+        dl->AddText(ImVec2(x, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)), Col(active ? th::Text : th::TextMid), label);
+        x += textW;
+    }
+    if (hasValue)
+    {
+        x += Px(6.0f);
+        PushMono();
+        dl->AddText(ImVec2(x, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f)), Col(active ? th::AccentHover : th::TextDim), value);
+        PopMono();
+    }
+    DrawIconCentered(dl, ICON_CHEVRON_DOWN, ImVec2(mx.x - Px(9.5f), cy), Col(ic), Px(13.0f));
+    if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("%s", tooltip);
+    ImGui::PopID();
+    return clicked;
+}
+
+bool Chip(const char* id, const char* label, bool selected, float widthPx)
+{
+    const float h = Px(22.0f);
+    const float w = widthPx > 0.0f ? widthPx : ImGui::CalcTextSize(label).x + Px(14.0f);
+    ImGui::PushID(id);
+    const bool clicked = ImGui::InvisibleButton("##chip", ImVec2(w, h));
+    const bool hov  = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float hv = deco::Ease(ImGui::GetItemID(), 0, hov ? 1.0f : 0.0f);
+    const float r = Px(3.0f);
+    if (selected)
+    {
+        dl->AddRectFilled(mn, mx, Col(th::WithAlpha(th::Accent, held ? 0.34f : 0.24f)), r);
+        dl->AddRect(mn, mx, Col(th::WithAlpha(th::AccentHover, 0.75f)), r, 0, Px(1.0f));
+    }
+    else
+    {
+        dl->AddRectFilled(mn, mx, Col(held ? th::Bg4 : Lerp4(th::Bg3, th::Bg4, hv)), r);
+        if (hv > 0.004f) dl->AddRect(mn, mx, ColA(th::InputBorderHover, hv), r, 0, Px(1.0f));
+    }
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    dl->AddText(ImVec2(std::floor((mn.x + mx.x - ts.x) * 0.5f + 0.5f), std::floor((mn.y + mx.y - ts.y) * 0.5f + 0.5f)),
+                Col(selected ? th::Text : (hov ? th::Text : th::TextMid)), label);
     ImGui::PopID();
     return clicked;
 }
@@ -393,15 +425,14 @@ bool PrimaryButton(const char* label, const ImVec2& size)
     ImGui::PushStyleColor(ImGuiCol_Border,        ImVec4(0, 0, 0, 0));
     const bool r = ImGui::Button(label, size);
     ImGui::PopStyleColor(5);
-    if (deco::Active())
     {
-        // A = ホバー/押下でネオンのにじみ / B = 上が明るいガラスの艶 + 光の縁 / C = 平たいシグナル塗り（装飾なし）
+        // 既定 = ホバー/押下でネオンのにじみ / B = 上が明るいガラスの艶 + 光の縁 / C = 平たいシグナル塗り（装飾なし）
         const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const float rr = ImGui::GetStyle().FrameRounding;
         const ImGuiID bid = ImGui::GetItemID();
         const float hov = deco::Ease(bid, 0, ImGui::IsItemHovered() ? 1.0f : 0.0f);
-        if (th::CurrentVariant() == th::Variant::A)
+        if (th::CurrentVariant() == th::Variant::Default)
             deco::Glow(dl, mn, mx, rr, th::Accent, 0.35f + 0.65f * hov);
         else if (th::CurrentVariant() == th::Variant::B)
         {
@@ -504,16 +535,15 @@ bool Checkbox(const char* label, bool* v)
     {
         const ImVec4& fill = held ? th::AccentPressed : hov ? th::AccentHover : th::Accent;
         dl->AddRectFilled(b0, b1, Col(fill), r);
-        if (deco::Active())
         {
-            // B = 上が明るいガラスの艶 + 光の縁 / A = ホバー・フォーカスでネオンのにじみ / C = 装飾なし（平たいシグナル塗り）
+            // B = 上が明るいガラスの艶 + 光の縁 / 既定 = ホバー・フォーカスでネオンのにじみ / C = 装飾なし（平たいシグナル塗り）
             if (th::CurrentVariant() == th::Variant::B)
             {
                 dl->AddRectFilledMultiColor(ImVec2(b0.x + Px(1.5f), b0.y + Px(1.0f)), ImVec2(b1.x - Px(1.5f), b0.y + box * 0.5f),
                                             ColA(kWhite, 0.24f), ColA(kWhite, 0.24f), ColA(kWhite, 0.0f), ColA(kWhite, 0.0f));
                 dl->AddRect(b0, b1, ColA(kWhite, 0.20f), r, 0, Px(1.0f));
             }
-            else if (th::CurrentVariant() == th::Variant::A)
+            else if (th::CurrentVariant() == th::Variant::Default)
                 deco::Glow(dl, b0, b1, r, th::Accent, 0.30f + 0.70f * deco::Ease(ImGui::GetItemID(), 0, hov ? 1.0f : 0.0f));
         }
         // ✓（太さ 2px の折れ線。フォントに頼らないので大きさが常に箱に対して一定。既定は白 / C は暗色）
@@ -527,11 +557,11 @@ bool Checkbox(const char* label, bool* v)
     {
         dl->AddRectFilled(b0, b1, Col(held ? th::InputBgActive : hov ? th::InputBgHover : th::InputBg), r);
         dl->AddRect(b0, b1, Col(hov ? th::InputBorderHover : th::InputBorder), r, 0, Px(1.0f));
-        if (deco::Active() && hov)
+        if (hov)
         {
             const th::Deco& dd = th::CurrentDeco();
             if (dd.hoverTint > 0.0f) dl->AddRectFilled(b0, b1, ColA(th::Accent, dd.hoverTint), r);
-            if (th::CurrentVariant() == th::Variant::A) dl->AddRect(b0, b1, ColA(th::Accent, 0.5f), r, 0, Px(1.0f));
+            if (th::CurrentVariant() == th::Variant::Default) dl->AddRect(b0, b1, ColA(th::Accent, 0.5f), r, 0, Px(1.0f));
             if (th::CurrentVariant() == th::Variant::B) dl->AddRect(b0, b1, ColA(th::Hex(0xC8D2FF), 0.32f), r, 0, Px(1.0f));
         }
     }
@@ -702,9 +732,8 @@ bool SectionHeader(const char* label, const char* glyph, const ImVec4* tint, ImG
     const float ty = std::floor(cy - ImGui::GetTextLineHeight() * 0.5f + 0.5f);
     dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(x, ty), Col(th::Text), label, end);
     PopBold();
-    if (deco::Active())
     {
-        // 見出しの「光のアクセント」: A = 左端の小さなネオン片（開いている時だけ点灯）/ B = 上端の光のヘアライン /
+        // 見出しの「光のアクセント」: 既定 = 左端の小さなネオン片（開いている時だけ点灯）/ B = 上端の光のヘアライン /
         // C = 左端のシグナル片（開いている時）
         const th::HeaderStyle hs = th::CurrentDeco().headerStyle;
         if (hs == th::HeaderStyle::GlowTick)
@@ -794,8 +823,6 @@ void PopMenuStyle()
 namespace deco
 {
 
-bool Active() { return !th::IsDefaultVariant(); }
-
 namespace
 {
 // (id, slot) → 0..1。ImGui のウィンドウ単位のストレージではなくグローバルに持つ（ポップアップの開閉で窓が変わっても続く）。
@@ -838,18 +865,6 @@ void Glow(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, const ImVec4& co
 
 void RowFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool selected, bool hovered, bool held)
 {
-    if (!Active())
-    {
-        // 現行（ヒエラルキーの PaintRowBg そのまま）
-        const ImVec4* col = nullptr;
-        if (held)          col = &th::SelectionActive;
-        else if (selected) col = hovered ? &th::SelectionActive : &th::Selection;
-        else if (hovered)  col = &th::Bg3;
-        if (col) dl->AddRectFilled(mn, mx, ImGui::GetColorU32(*col));
-        if (selected)
-            dl->AddRectFilled(mn, ImVec2(mn.x + Px(2.0f), mx.y), ImGui::GetColorU32(th::Accent));
-        return;
-    }
     const th::RowStyle rs = th::CurrentDeco().rowStyle;
     const float b1 = Px(1.0f);
     if (rs == th::RowStyle::NeonBar)
@@ -903,13 +918,8 @@ void RowFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool selected, bool hovered, 
 
 void CardSelected(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding)
 {
-    if (!Active())
-    {
-        dl->AddRect(mn, mx, ImGui::GetColorU32(th::Accent), rounding, 0, Px(2.0f));
-        return;
-    }
     const th::Variant v = th::CurrentVariant();
-    if (v == th::Variant::A)
+    if (v == th::Variant::Default)
     {
         dl->AddRect(mn, mx, ImGui::GetColorU32(th::AccentHover), rounding, 0, Px(1.0f));
         Glow(dl, mn, mx, rounding, th::Accent, 1.0f);
@@ -927,12 +937,12 @@ void CardSelected(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding)
 
 void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx)
 {
-    if (!Active() || th::CurrentVariant() == th::Variant::B)
+    if (th::CurrentVariant() == th::Variant::B)
     {
         dl->AddRectFilled(mn, ImVec2(mn.x + Px(2.0f), mx.y), ImGui::GetColorU32(th::Accent));
         return;
     }
-    if (th::CurrentVariant() == th::Variant::A)
+    if (th::CurrentVariant() == th::Variant::Default)
     {
         dl->AddRectFilledMultiColor(ImVec2(mn.x + Px(2.0f), mn.y), ImVec2(mn.x + Px(14.0f), mx.y),
                                     ColA(th::AccentHover, 0.30f), ColA(th::AccentHover, 0.0f),
@@ -976,20 +986,43 @@ void TopHairline(ImDrawList* dl, float x0, float x1, float y, const ImVec4& col,
 bool StartsWith(const char* s, const char* prefix) { return std::strncmp(s, prefix, std::strlen(prefix)) == 0; }
 } // namespace
 
+void EdgeLine(ImDrawList* dl, ImVec2 a, ImVec2 b, const ImVec4& col, float alpha)
+{
+    if (!dl || alpha <= 0.004f) return;
+    const float px = PxF(1.0f);
+    const ImVec2 mid((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+    if (std::fabs(b.x - a.x) >= std::fabs(b.y - a.y))
+    {
+        const float y = a.y;
+        dl->AddRectFilledMultiColor(ImVec2(a.x, y), ImVec2(mid.x, y + px), ColA(col, 0.0f), ColA(col, alpha), ColA(col, alpha), ColA(col, 0.0f));
+        dl->AddRectFilledMultiColor(ImVec2(mid.x, y), ImVec2(b.x, y + px), ColA(col, alpha), ColA(col, 0.0f), ColA(col, 0.0f), ColA(col, alpha));
+    }
+    else
+    {
+        const float x = a.x;
+        dl->AddRectFilledMultiColor(ImVec2(x, a.y), ImVec2(x + px, mid.y), ColA(col, 0.0f), ColA(col, 0.0f), ColA(col, alpha), ColA(col, alpha));
+        dl->AddRectFilledMultiColor(ImVec2(x, mid.y), ImVec2(x + px, b.y), ColA(col, alpha), ColA(col, alpha), ColA(col, 0.0f), ColA(col, 0.0f));
+    }
+}
+
+void Halo(ImDrawList* dl, ImVec2 center, float radius, const ImVec4& col, float strength)
+{
+    const float s = strength * th::CurrentDeco().glow;
+    if (!dl || s <= 0.01f || radius <= 0.5f) return;
+    const int steps = 6;
+    for (int i = steps; i >= 1; --i)
+    {
+        const float t = static_cast<float>(i) / static_cast<float>(steps);   // 外側ほど大きい
+        const float a = s * 0.22f * (1.0f - t) * (1.0f - t) + s * 0.03f;
+        dl->AddCircleFilled(center, radius * t, ColA(col, a), 24);
+    }
+}
+
 void FloatingCard(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, const ImVec4& face, float alpha)
 {
     auto colAlpha = [&](const ImVec4& c, float a) { return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * a)); };
-    if (!Active())
-    {
-        // 現行のトースト（影 1 枚 + 面 + 強い枠）
-        dl->AddRectFilled(ImVec2(mn.x + Px(1.0f), mn.y + Px(2.0f)), ImVec2(mx.x + Px(1.0f), mx.y + Px(3.0f)),
-                          IM_COL32(0, 0, 0, static_cast<int>(70 * alpha)), rounding);
-        dl->AddRectFilled(mn, mx, colAlpha(face, alpha), rounding);
-        dl->AddRect(mn, mx, colAlpha(th::BorderStrong, alpha), rounding, 0, Px(1.0f));
-        return;
-    }
     const th::Deco& d = th::CurrentDeco();
-    const float r = std::max(rounding, Px(th::CurrentVariant() == th::Variant::B ? 8.0f : th::CurrentVariant() == th::Variant::A ? 5.0f : 3.0f));
+    const float r = std::max(rounding, Px(th::CurrentVariant() == th::Variant::B ? 8.0f : th::CurrentVariant() == th::Variant::Default ? 5.0f : 3.0f));
     if (d.layeredShadow)
     {
         const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -1009,7 +1042,6 @@ void FloatingCard(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, const Im
 
 void PaintChrome()
 {
-    if (!Active()) return;
     ImGuiContext* gp = ImGui::GetCurrentContext();
     if (!gp) return;
     ImGuiContext& g = *gp;
@@ -1049,12 +1081,15 @@ void PaintChrome()
                                             ColA(kWhite, 0.045f), ColA(kWhite, 0.045f), ColA(kWhite, 0.0f), ColA(kWhite, 0.0f));
                 TopHairline(dl, mn.x + g.Style.PopupRounding, mx.x - g.Style.PopupRounding, mn.y, kWhite, 0.34f);
             }
-            else if (v == th::Variant::A)
+            else if (v == th::Variant::Default)
             {
-                // 縁に沿ってごく淡いネオンの内側線
+                // 縁に沿ってごく淡いネオンの内側線 + 案 B から借りた白い光の縁（浮遊物だけ）
                 const float b1 = PxF(1.0f);
                 dl->AddRect(ImVec2(mn.x + b1, mn.y + b1), ImVec2(mx.x - b1, mx.y - b1), ColA(th::Accent, 0.10f),
                             std::max(0.0f, g.Style.PopupRounding - b1), 0, b1);
+                if (d.popupRim > 0.0f)
+                    dl->AddRect(ImVec2(mn.x + b1 * 2.0f, mn.y + b1 * 2.0f), ImVec2(mx.x - b1 * 2.0f, mx.y - b1 * 2.0f), ColA(kWhite, d.popupRim * 0.5f),
+                                std::max(0.0f, g.Style.PopupRounding - b1 * 2.0f), 0, b1);
                 TopHairline(dl, mn.x + g.Style.PopupRounding, mx.x - g.Style.PopupRounding, mn.y, th::AccentHover, 0.55f);
             }
             dl->PopClipRect();
@@ -1134,7 +1169,7 @@ void PaintChrome()
 
         // --- 選択タブの光（タブ帯はドックのホスト窓が描く。そこへ足す）---
         if (w->DockNode && w->DockNode->TabBar && w->DockNode->HostWindow && w->DockIsActive && w->DockTabIsVisible
-            && (v == th::Variant::A || v == th::Variant::B))
+            && (v == th::Variant::Default || v == th::Variant::B))
         {
             ImGuiTabBar* tb = w->DockNode->TabBar;
             if (tb->SelectedTabId == w->TabId)
@@ -1147,8 +1182,8 @@ void PaintChrome()
                     const float tx1 = tx0 + tab->Width;
                     const float ty = tb->BarRect.Min.y;
                     hdl->PushClipRect(tb->BarRect.Min, tb->BarRect.Max, true);
-                    const ImVec4& lc = (v == th::Variant::A) ? th::Accent : kWhite;
-                    const float a = (v == th::Variant::A) ? 0.24f : 0.07f;
+                    const ImVec4& lc = (v == th::Variant::Default) ? th::Accent : kWhite;
+                    const float a = (v == th::Variant::Default) ? 0.24f : 0.07f;
                     const float ov = std::max(px, g.Style.TabBarOverlineSize);
                     hdl->AddRectFilledMultiColor(ImVec2(tx0, ty + ov), ImVec2(tx1, ty + ov + Px(10.0f)),
                                                  ColA(lc, a), ColA(lc, a), ColA(lc, 0.0f), ColA(lc, 0.0f));

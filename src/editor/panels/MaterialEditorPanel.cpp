@@ -353,6 +353,14 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     if (ImGui::Button("\xe7\x94\xbb\xe5\x83\x8f\xe3\x81\x8b\xe3\x82\x89\xe4\xbd\x9c\xe6\x88\x90... Import Image"))  // 画像から作成...
         ImportFromImage(assetsDir);
     ImGui::SameLine();
+    // ノードで組むマテリアル（マテリアルグラフ窓。G3）への導線。既存の .dxmat の編集は従来どおりこの窓で行う。
+    if (ImGui::Button("マテリアルグラフ... Node Graph"))
+    {
+        ctx.showMaterialGraph = true;
+        ctx.pendingNewMatGraph = true;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("ノードを繋いでマテリアルを組む窓を開く（.dxmg）");
+    ImGui::SameLine();
     ImGui::TextDisabled("%s", m_currentPath.empty() ? "(unsaved)" : m_currentPath.c_str());
 
     ImGui::Separator();

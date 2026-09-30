@@ -262,7 +262,7 @@ reg(
 reg(
   "dx12_get_scene_settings",
   "シーン設定取得",
-  "シーンのスカイボックス/IBL 設定を返す。{skybox:{envMapPath,iblIntensity,skyboxIntensity,drawSkybox}, note}。dx12_set_scene_settings で変える前の確認に使う。",
+  "シーンのスカイボックス/IBL・物理大気の設定を返す。{skybox:{envMapPath,iblIntensity,skyboxIntensity,drawSkybox}, atmosphere:{enabled,timeOfDay,…全項目}, atmosphereState:{太陽の高度/方位・IBL 再ベイク回数・GPU 時間}, note}。dx12_set_scene_settings で変える前の確認に使う。",
   {},
   { readOnlyHint: true },
   () => run(() => engine.call("get_scene_settings", {})),

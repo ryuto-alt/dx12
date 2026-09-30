@@ -11,7 +11,8 @@ from . import heatmap as H
 from . import metrics as M
 from . import regions as R
 from .imgio import Img, ensure_same_size, save_png, to_u8
-from .tonemap import align_pair
+from .tonemap import align_pair, apply_ev, apply_tonemap, parse_exposure
+from . import color as _color
 
 
 def sha256_u8(display: np.ndarray) -> str:
@@ -26,6 +27,25 @@ def diff_bbox(a_display: np.ndarray, b_display: np.ndarray, tol_lsb: int = 2) ->
     ys, xs = np.where(d)
     return {"x": int(xs.min()), "y": int(ys.min()), "w": int(xs.max() - xs.min() + 1), "h": int(ys.max() - ys.min() + 1),
             "pixels": int(d.sum()), "ratio": float(d.mean())}
+
+
+def display_check(lin: Img, disp: Img, tonemap: str, exposure) -> dict:
+    """Q2: エンジンの線形 float(PFM)にハーネスの numpy 実装で露出 + トーンマップを掛けた期待値と、エンジン自身の表示 PNG
+    (GPU のトーンマップ + 露出)を 8bit で比べる。両者が同じ式なら差は量子化の丸め(1 LSB 以内)だけ。
+    exposure は alignment.exposure と同じ書式(ev100:15 など。エンジン側の適用 EV は test 側の値を使う)。"""
+    ex = parse_exposure(exposure)
+    expected, eotf = apply_tonemap(tonemap, apply_ev(lin.rgb, ex["ev_test"]))
+    disp_rgb = disp.rgb
+    if disp.eotf != eotf:                        # PNG のエンコードが違うなら、リニアを経由して合わせる(差が出るのは仕様どおり)
+        disp_rgb = _color.encode(disp.to_linear(), eotf)
+    h = min(expected.shape[0], disp_rgb.shape[0])
+    w = min(expected.shape[1], disp_rgb.shape[1])
+    d = np.abs(to_u8(expected[:h, :w]).astype(np.int16) - to_u8(disp_rgb[:h, :w]).astype(np.int16)).max(axis=2).astype(np.float32)
+    return {
+        "mean_lsb": float(d.mean()), "p99_lsb": float(np.percentile(d, 99.0)), "max_lsb": float(d.max()),
+        "frac_gt2": float((d > 2).mean()), "eotf_expected": eotf, "eotf_png": disp.eotf, "tonemap": tonemap,
+        "ev_applied": ex["ev_test"],
+    }
 
 
 def evaluate_pair(ref: Img, test: Img, out_dir: Path, *, tonemap: str = "engine_aces", exposure=None,

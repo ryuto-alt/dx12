@@ -8,7 +8,7 @@ import type { EngineClient } from "./engineClient.ts";
 import { methodTimeoutMs } from "./engineClient.ts";
 import type { Manifest } from "./manifest.ts";
 import { ManifestStore } from "./manifest.ts";
-import { Catalog, CONDITIONAL_WRITE, buildCatalog, type ParamDoc, type ToolDoc, type ToolEntry } from "./catalog.ts";
+import { Catalog, CONDITIONAL_GUARDED, CONDITIONAL_WRITE, buildCatalog, type ParamDoc, type ToolDoc, type ToolEntry } from "./catalog.ts";
 import { CONSOLIDATED, CORE_GUARDED_TOOL, RENDER_SETTING_TARGETS, rewriteFixToCore, routeConsolidated, toCoreCall } from "./coreSpec.ts";
 import { SearchIndex } from "./search.ts";
 import { envelope, nearest, type ErrorBody, type Fix } from "./errors.ts";
@@ -16,6 +16,7 @@ import { structureError } from "./structure.ts";
 import { validateAgainstParams, validateAgainstShape } from "./validate.ts";
 import { runDoctor } from "./doctor.ts";
 import { ERROR_BODY, ERROR_SOURCE, callContext, recentErrors, recordError } from "./toolRuntime.ts";
+import { autoKey, guardApproval, idemCtx, newIdemCtx } from "./guardCtx.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const GUIDES_DIR = path.join(here, "guides");
@@ -40,6 +41,8 @@ export type ShellDeps = {
   doctorHooks?: Record<string, unknown>;
   /** フリートの状態(台数・資源・古い exe コピー・孤児)。dx12_doctor に統合する。無ければ出さない。 */
   fleetStatus?: () => Promise<Record<string, unknown>>;
+  /** ジョブ API の状態(動いているジョブ・件数・上限)。dx12_doctor に統合する。無ければ出さない。 */
+  jobsStatus?: () => Record<string, unknown> | null;
 };
 
 /** EngineRouter(または、それと同じ withEngine を持つクライアント)。dx12_call の engine 引数で 1 回だけ向き先を切り替える。 */
@@ -172,6 +175,7 @@ export class ShellRuntime {
     let shown: unknown = params;
     let note: string | undefined;
     let routed: { key: string; legacy: string } | null = null;
+    let opRouted: { key: string; method: string } | null = null;
     // 統合ツール(dx12_set_render_settings など)の target には、振り分け先の旧ツールの引数を返す。
     if (t && doc.consolidated) {
       const key = Object.keys(doc.consolidated.routes).find((k) => k.toLowerCase() === t || doc!.consolidated!.routes[k].toLowerCase() === t || doc!.consolidated!.routes[k].toLowerCase() === "dx12_" + t);
@@ -189,6 +193,19 @@ export class ShellRuntime {
       } else {
         note = `${doc.consolidated.param} の候補: ${Object.keys(doc.consolidated.routes).join(", ")}`;
       }
+    } else if (t && doc.opTable && (doc.opTable.normalize?.(t) ?? (t in doc.opTable.ops ? t : null)) && doc.opTable.ops[doc.opTable.normalize?.(t) ?? t]) {
+      // op でエンジンの method 群を束ねたツール(dx12_sequence)の target = op 名: その op の引数だけを返す(必須つき)。
+      const key = (doc.opTable.normalize?.(t) ?? t) as string;
+      const o = doc.opTable.ops[key];
+      const allowed = new Set([...o.required, ...o.optional]);
+      params = [
+        { name: doc.opTable.param, type: "enum", required: true, enum: Object.keys(doc.opTable.ops), default: key, desc: `操作。ここでは '${key}'` },
+        ...doc.params.filter((p) => allowed.has(p.name)).map((p) => ({ ...p, required: o.required.includes(p.name) })),
+        ...(o.dryRun === "read" ? [] : doc.params.filter((p) => p.name === "dryRun")),
+      ];
+      shown = params;
+      opRouted = { key, method: o.method };
+      note = `${doc.id} の ${doc.opTable.param}='${key}' の引数(エンジン method ${o.method}。${o.summary})`;
     } else if (t) {
       const f = params.filter((p) => p.name.toLowerCase().includes(t) || (p.desc ?? "").toLowerCase().includes(t));
       shown = f; note = `target='${input.target}' を含む引数 ${f.length}/${params.length} 件`;
@@ -207,7 +224,8 @@ export class ShellRuntime {
       timeoutMs: doc.timeoutMs ?? (doc.method ? methodTimeoutMs(doc.method) : undefined),
       deferred: doc.deferred ?? null,
       cancellable: false,
-      dryRun: doc.dryRun === "native" || entry?.shape?.dryRun ? "native" : doc.effectClass === "read" ? "none(読み取りのみ)" : "static(実行せず影響を予測。dx12_call {dryRun:true})",
+      dryRun: doc.dryRun === "native" || entry?.shape?.dryRun ? "native" : doc.dryRun === "preview" ? "preview(エンジンが実行せずに、対象・件数・破壊性・書くファイルを返す。dx12_call {dryRun:true})" : doc.effectClass === "read" ? "none(読み取りのみ)" : "static(実行せず影響を予測。dx12_call {dryRun:true})",
+      journal: doc.journal === true ? "あり(ファイルを書く前に元の内容を退避。dx12_call {name:'journal_list'} / {name:'journal_restore', args:{id}} で戻せる)" : undefined,
       params: shown,
       examples: doc.examples,
       next: [...doc.next, ...(NEXT_BY_CATEGORY[doc.category] ?? [])],
@@ -219,6 +237,10 @@ export class ShellRuntime {
     // Core(tools/list に直接載る面)。旧ツールのまま入る Core は、説明テンプレを別に持つ(description は旧文のまま)。
     if (doc.core) out.core = true;
     if (doc.coreDescription && doc.coreDescription !== doc.description) out.coreDescription = doc.coreDescription;
+    if (doc.opTable) {
+      out.ops = Object.fromEntries(Object.entries(doc.opTable.ops).map(([k, o]) => [k, { method: o.method, effect: o.effect, required: o.required, optional: o.optional, dryRun: o.dryRun, summary: o.summary }]));
+      out.note = out.note ?? `${doc.opTable.param} でエンジンの method を選ぶ(ops に一覧)。引数は op ごと: dx12_tool_describe {name:'${doc.id}', target:'<op>'}。effect は op ごとに違う(${doc.id} 全体の effect は最も重い値)`;
+    }
     if (doc.consolidated) out.consolidated = { param: doc.consolidated.param, values: Object.keys(doc.consolidated.routes), nested: doc.consolidated.nested ?? null, replaces: Object.values(doc.consolidated.routes) };
     if (doc.replacedBy) {
       const c = toCoreCall(doc.id, (out.callTemplate as any).args);
@@ -228,6 +250,11 @@ export class ShellRuntime {
       const tpl = templateArgs(params);
       (out.callTemplate as any).args = doc.consolidated.nested ? { [doc.consolidated.param]: routed.key, [doc.consolidated.nested]: tpl } : { [doc.consolidated.param]: routed.key, ...tpl };
       out.routedTo = routed.legacy;
+    }
+    if (opRouted && doc.opTable) {
+      (out.callTemplate as any).args = { [doc.opTable.param]: opRouted.key, ...templateArgs(params.filter((p) => p.name !== doc.opTable!.param)) };
+      out.routedTo = opRouted.method;
+      out.effect = doc.opTable.ops[opRouted.key].effect;
     }
     if (note) out.note = note;
     if (doc.tier === "shell") out.note = "shell ツール。MCP から直接呼ぶ(dx12_call 経由では呼べない)";
@@ -253,7 +280,7 @@ export class ShellRuntime {
   }
 
   // ── dx12_call ───────────────────────────────────────────────────────
-  async call(input: { name?: unknown; args?: unknown; dryRun?: boolean; confirm?: boolean; timeoutMs?: number; idempotency_key?: string; viaGuardedTool?: boolean; engine?: unknown }): Promise<ShellResult> {
+  async call(input: { name?: unknown; args?: unknown; dryRun?: boolean; confirm?: boolean; timeoutMs?: number; idempotency_key?: string; idempotencyKey?: string; viaGuardedTool?: boolean; engine?: unknown }): Promise<ShellResult> {
     // engine 引数: この 1 回だけ、別のエンジン(id / name / port)へ向ける。束縛は変えない。
     if (input.engine !== undefined && input.engine !== null && String(input.engine) !== "") {
       const r = this.deps.engine as unknown as Routed;
@@ -302,8 +329,15 @@ export class ShellRuntime {
 
     // 事前検証(往復なし)
     let callArgs: Record<string, unknown> = args;
-    // 冪等キー: method 直撃、または旧ツールが idempotency_key を宣言しているとき(create_entity / spawn_model / spawn_prefab)だけ渡す。
-    if (input.idempotency_key && (!entry || "idempotency_key" in entry.shape) && !("idempotency_key" in callArgs)) callArgs = { ...callArgs, idempotency_key: input.idempotency_key };
+    // 冪等キー(M5)。指定(idempotency_key / idempotencyKey)が最優先。無ければ、エンジン method に 1:1 の write 系だけ自動採番する
+    // (E_ENGINE_TIMEOUT / E_IDEMPOTENCY_IN_FLIGHT のとき、同じキーで再送しても二重実行にならない)。
+    //   ・method 直撃、または旧ツールが idempotency_key を宣言しているもの(create_entity など)は、引数としてそのまま渡す(エンジンの冪等層が扱う)
+    //   ・それ以外の旧ツール / 合成ツールは、呼び出しの文脈(idemCtx)にキーを置き、中でエンジンへ撃つ write 系にサブキーを付ける(EngineClient)
+    const userKey = (input.idempotency_key ?? input.idempotencyKey) || undefined;
+    const writeOneToOne = !!doc.method && (doc.effect === "write_scene" || doc.effect === "write_setting" || doc.effect === "write_file");
+    const idemKey: string | undefined = userKey ?? (writeOneToOne && !input.dryRun ? autoKey() : undefined);
+    const declaresKey = !entry || "idempotency_key" in entry.shape;
+    if (idemKey && declaresKey && !("idempotency_key" in callArgs)) callArgs = { ...callArgs, idempotency_key: idemKey };
     const v = entry ? validateAgainstShape(entry.name, entry.shape, callArgs)
       : validateAgainstParams(doc.method ?? doc.id, mf?.params ?? [], callArgs, { checkUnknown: mf?.source !== "fallback" });
     if (!v.ok) {
@@ -315,10 +349,11 @@ export class ShellRuntime {
     // 副作用ゲート。core 面では guarded の実行口を dx12_call_guarded に分ける(名前ベースの許可で dx12_call を許可しても guarded が通らないように)。
     // dx12_call では confirm:true を付けても通さない。それ以外の面(full / shell)は従来どおり confirm:true で通す。
     const splitGuard = this.deps.surface === "core";
-    if (doc.effectClass === "guarded" && !(splitGuard ? input.viaGuardedTool : input.confirm)) {
+    const guardedNow = doc.effectClass === "guarded" || !!CONDITIONAL_GUARDED[doc.id]?.(callArgs);   // 引数しだいで guarded(dx12_job_start {kind:"external"})
+    if (guardedNow && !(splitGuard ? input.viaGuardedTool : input.confirm)) {
       const via = splitGuard ? CORE_GUARDED_TOOL : "dx12_call";
       const b: ErrorBody = {
-        code: "E_GUARDED", message: `${doc.id} は取り返しの付かない/外部に影響する操作(effect=${doc.effect})。ユーザーの承認が要る`,
+        code: "E_GUARDED", message: `${doc.id} は取り返しの付かない/外部に影響する操作(effect=${guardedNow && doc.effectClass !== "guarded" ? "guarded" : doc.effect})。ユーザーの承認が要る`,
         cause: splitGuard
           ? `guarded な操作は dx12_call では実行しない(confirm:true でも通らない)。${CORE_GUARDED_TOOL} から実行する(ユーザーが毎回承認する)`
           : "guarded な操作は confirm:true を付けないと dx12_call では実行しない",
@@ -348,19 +383,29 @@ export class ShellRuntime {
     const ctxTool = doc.id;
     let result: ShellResult | null = null;
     let thrown: unknown = null;
-    try {
+    // ゲートを通った guarded な呼び出しの中だけ「承認済み」にする(guardCtx.ts。dx12_batch や合成ツールの内部呼び出しは承認済みにならない)
+    const approval = guardedNow ? { approved: true as const, via: splitGuard ? CORE_GUARDED_TOOL : "dx12_call" } : null;
+    const exec = async () => {
       if (entry) {
         result = await callContext.run({ tool: entry.name, args: callArgs, mode: "call" }, () => entry.invoke(callArgs));
       } else {
-        const timeout = input.timeoutMs ?? mf?.timeoutMs ?? methodTimeoutMs(doc.method ?? doc.id);
-        const raw = await this.deps.engine.call(doc.method ?? doc.id, callArgs, { timeout });
+        const timeout = input.timeoutMs ?? mf?.timeoutMs ?? methodTimeoutMs(doc!.method ?? doc!.id);
+        const raw = await this.deps.engine.call(doc!.method ?? doc!.id, callArgs, { timeout });
         result = { content: [{ type: "text", text: JSON.stringify({ ok: true, result: raw ?? null, meta: {} }) }] };
         (result as any)._raw = raw ?? null;
       }
-    } catch (e) { thrown = e; }
-
-    const tookMs = Date.now() - t0;
-    if (thrown || result?.isError) {
+    };
+    const runOnce = async () => {
+      result = null; thrown = null;
+      try {
+        const inner = () => (approval ? guardApproval.run(approval, exec) : exec());
+        if (idemKey && entry && !declaresKey) await idemCtx.run(newIdemCtx(idemKey), inner); else await inner();
+      } catch (e) { thrown = e; }
+    };
+    await runOnce();
+    let attempts = 0;
+    let tookMs = Date.now() - t0;
+    while (thrown || result?.isError) {
       const src = thrown ?? (result ? ERROR_SOURCE.get(result) : undefined);
       let body: ErrorBody;
       const prebuilt = result ? (ERROR_BODY.get(result) as ErrorBody | undefined) : undefined;   // dx12_engine_* など、最初から構造化して返すツール
@@ -371,6 +416,14 @@ export class ShellRuntime {
         body = { code: "E_INVALID_PARAM", message: msg || `${doc.id} が失敗した`, retryable: false, fix: [{ tool: "dx12_tool_describe", args: { name: doc.id }, why: "引数と注意点を確認する" }] };
       }
       if (this.reconnectNotice) { body.details = { ...(body.details ?? {}), note: "エンジンへ再接続した(再起動の可能性)。entityId は失効している" }; }
+      // タイムアウト / 処理中は、同じ冪等キーで再送する(エンジンは完了済みなら前回の結果を返す = 二重実行にならない)。最大 3 回。
+      if (idemKey && attempts < 3 && (body.code === "E_ENGINE_TIMEOUT" || body.code === "E_IDEMPOTENCY_IN_FLIGHT")) {
+        attempts++;
+        await this.waitEngineResponsive(attempts);
+        await runOnce();
+        continue;
+      }
+      if (attempts > 0) body.details = { ...(body.details ?? {}), idempotencyKey: idemKey, autoRetried: attempts, note: "同じ冪等キーで再送したが完了しなかった。エンジンがまだ処理中の可能性がある。dx12_ping で応答を確認し、dx12_list_entities 等で実際の状態を見てから、同じ idempotency_key で撃ち直す" };
       recordError({ at: Date.now(), tool: doc.id, code: body.code, message: body.message });
       // 未知の method(エンジンに無い)なら、マニフェストが古い可能性があるので取り直しておく
       if (body.code === "E_UNKNOWN_TOOL") {
@@ -391,6 +444,7 @@ export class ShellRuntime {
       return textResult(env, true);
     }
 
+    tookMs = Date.now() - t0;
     // 成功: 旧ツールの返り値の形(JSON 文字列 / 文字列 / 画像+text)を result に入れ、meta を足す
     const images = (result!.content as any[]).filter((c) => c.type === "image");
     const texts = (result!.content as any[]).filter((c) => c.type === "text").map((c) => c.text as string);
@@ -400,15 +454,29 @@ export class ShellRuntime {
       const last = texts[texts.length - 1] ?? "";
       try { payload = JSON.parse(last); } catch { payload = last; }
     }
-    const meta: Record<string, unknown> = { tool: doc.id, method: doc.method ?? null, effect: doc.effect, tookMs };
+    // op でエンジンの method 群を束ねたツール(dx12_sequence)は、呼んだ op の副作用を meta に出す(ツール全体の effect は最も重い値)。
+    const opKeyNow = doc.opTable ? (doc.opTable.normalize?.(callArgs[doc.opTable.param]) ?? null) : null;
+    const meta: Record<string, unknown> = { tool: doc.id, method: doc.method ?? null, effect: (opKeyNow && doc.opTable?.ops[opKeyNow]?.effect) || doc.effect, tookMs, ...(opKeyNow && doc.opTable ? { op: opKeyNow, engineMethod: doc.opTable.ops[opKeyNow]?.method } : {}) };
     if (this.deps.manifest.current?.manifestHash) meta.manifestHash = this.deps.manifest.current.manifestHash;
     if (payload && typeof payload === "object" && !Array.isArray(payload) && typeof (payload as any).undoEntry === "string") meta.undoEntry = (payload as any).undoEntry;
+    if (userKey) meta.idempotencyKey = userKey;
+    if (attempts > 0) { meta.autoRetried = attempts; meta.idempotencyKey = idemKey; }
+    if (payload && typeof payload === "object" && (payload as any).idempotentReplay === true) meta.idempotentReplay = true;
     if (this.reconnectNotice) { warnings.push("エンジンへ再接続した(再起動の可能性)。前の entityId は失効している。dx12_list_entities で引き直すこと"); this.reconnectNotice = false; }
     if (warnings.length) meta.warnings = warnings;
     const late = this.deps.engine.drainLateResults();
     if (late.length) meta.lateResults = late.map((l) => ({ method: l.method, elapsedMs: l.elapsedMs, ok: l.ok, result: l.result, error: l.error }));
     const env = { ok: true, result: payload ?? null, meta };
     return { content: [...images, { type: "text", text: JSON.stringify(env) }] };
+  }
+
+  /** タイムアウト / 処理中のあと、エンジンが応答するのを待つ(冪等キーつきの再送の前)。 */
+  private async waitEngineResponsive(attempt: number) {
+    await new Promise((r) => setTimeout(r, Math.min(3000, 600 * attempt)));
+    for (let i = 0; i < 8; i++) {
+      try { await this.deps.engine.call("ping", {}, { timeout: 2500, retry: false }); return; }
+      catch { await new Promise((r) => setTimeout(r, 1000)); }
+    }
   }
 
   /** 統合ツールの dx12_call。振り分け先の旧ツールを dx12_call と同じ経路で呼び、meta.via / fix を統合ツールの形に直す。 */
@@ -466,13 +534,14 @@ export class ShellRuntime {
   }
 
   /** dx12_call_guarded: guarded な操作だけを実行する(ユーザーの毎回の承認はクライアント側の requiresUserInteraction が取る)。 */
-  async callGuarded(input: { name?: unknown; args?: unknown; dryRun?: boolean; timeoutMs?: number; idempotency_key?: string }): Promise<ShellResult> {
+  async callGuarded(input: { name?: unknown; args?: unknown; dryRun?: boolean; timeoutMs?: number; idempotency_key?: string; idempotencyKey?: string }): Promise<ShellResult> {
     const name = typeof input.name === "string" ? input.name.trim() : "";
     if (!name) return errorResult({ code: "E_MISSING_PARAM", message: `${CORE_GUARDED_TOOL}: name が空(呼ぶツール名)`, fix: [{ tool: "dx12_tool_search", args: { query: "git push", effect: "guarded" }, why: "guarded な操作を探す" }] });
     await this.refresh();
     let doc = this.catalog.resolve(name);
     if (!doc) { await this.refresh(true); doc = this.catalog.resolve(name); }
-    if (doc && doc.effectClass !== "guarded") {
+    const gArgs = input.args && typeof input.args === "object" && !Array.isArray(input.args) ? (input.args as Record<string, unknown>) : {};
+    if (doc && doc.effectClass !== "guarded" && !CONDITIONAL_GUARDED[doc.id]?.(gArgs)) {
       return errorResult({
         code: "E_INVALID_PARAM", message: `${doc.id} は guarded ではない(effect=${doc.effect})。${CORE_GUARDED_TOOL} は guarded な操作専用`,
         cause: "通常の操作は dx12_call で実行する(承認の要る口を通常操作に使わない)",
@@ -496,6 +565,8 @@ export class ShellRuntime {
       } catch { /* そのまま返す */ }
       return r;
     }
+    // dx12_batch: 各 op をエンジンのプレビューに通して、まとめて返す(実行しない)
+    if (doc.id === "dx12_batch") return this.dryRunBatch(args, warnings, t0);
     // ネイティブの dryRun を持つツール(look_apply / vfx_apply / decal_apply / sequence_author / organize_scene など)
     if (entry?.shape && "dryRun" in entry.shape) {
       const r = await this.call({ name: doc.id, args: { ...args, dryRun: true }, dryRun: false, confirm: true });
@@ -509,6 +580,18 @@ export class ShellRuntime {
         }
       } catch { /* そのまま返す */ }
       return r;
+    }
+    // エンジンのプレビュー(M5。マニフェストの dryRun:"preview")。エンジンが実行せずに「実際に何が起こるか」(対象・件数・破壊性・書くファイル)を返す。副作用ゼロ。
+    if (doc.dryRun === "preview" && doc.method) {
+      try {
+        const raw = await this.deps.engine.call(doc.method, { ...args, dryRun: true }, { timeout: 8000, retry: false });
+        meta.tookMs = Date.now() - t0;
+        if (warnings.length) meta.warnings = warnings;
+        return textResult({ ...base, executed: false, dryRunMode: "engine", preview: { tool: doc.id, method: doc.method, effect: doc.effect, ...(raw?.preview ?? raw ?? {}) }, meta });
+      } catch (e: any) {
+        // エンジンが古い/引数が合わない等でプレビューが取れなければ、下の静的な予測へ落とす(理由を warnings に残す)
+        warnings.push(`エンジンのプレビューを取れなかったので静的な予測にした: ${String(e?.message ?? e).slice(0, 160)}`);
+      }
     }
     // 静的な影響予測 + 対象の存在確認(読み取りのみ)
     const targets: Record<string, unknown>[] = [];
@@ -546,6 +629,43 @@ export class ShellRuntime {
     return textResult({ ...base, executed: false, preview, meta });
   }
 
+  /** dx12_call {name:"dx12_batch", dryRun:true}: 各 op の method をエンジンのプレビュー(マニフェストの dryRun:"preview")へ通す。実行しない。 */
+  private async dryRunBatch(args: Record<string, unknown>, warnings: string[], t0: number): Promise<ShellResult> {
+    const ops: any[] = Array.isArray(args.ops) ? (args.ops as any[]) : [];
+    const items: Record<string, unknown>[] = [];
+    for (let i = 0; i < ops.length; i++) {
+      const m = String(ops[i]?.method ?? "");
+      const mf = this.deps.manifest.get(m);
+      if (!mf) { items.push({ index: i, method: m, supported: false, note: "エンジンのマニフェストに無い method(古いエンジン/打ち間違い)" }); continue; }
+      if (mf.effect === "read") { items.push({ index: i, method: m, effect: "read", supported: true, note: "読み取り: 実行時にそのまま実行される(dryRun では撃たない)" }); continue; }
+      if (mf.effect === "guarded") { items.push({ index: i, method: m, effect: "guarded", blocked: true, note: "guarded な method は dx12_batch では実行できない(E_GUARDED)" }); continue; }
+      if (mf.dryRun === "preview") {
+        try {
+          const raw = await this.deps.engine.call(m, { ...(ops[i]?.params ?? {}), dryRun: true }, { timeout: 8000, retry: false });
+          items.push({ index: i, method: m, effect: mf.effect, supported: true, preview: raw?.preview ?? raw });
+        } catch (e: any) { items.push({ index: i, method: m, effect: mf.effect, supported: true, error: String(e?.message ?? e).slice(0, 200) }); }
+      } else items.push({ index: i, method: m, effect: mf.effect, supported: false, note: "この method は dryRun のプレビューを持たない(実行するまで結果は分からない)" });
+    }
+    const unsupported = items.filter((x) => x.supported === false).length;
+    const blocked = items.filter((x) => x.blocked === true).length;
+    const meta = { tool: "dx12_batch", method: null, effect: "write_scene", tookMs: Date.now() - t0, ...(warnings.length ? { warnings } : {}) };
+    return textResult({
+      ok: true, dryRun: true, executed: false, dryRunMode: "engine-per-op",
+      preview: {
+        tool: "dx12_batch", count: ops.length, unsupportedOps: unsupported, blockedOps: blocked,
+        destructive: items.some((x: any) => x.preview?.destructive === true),
+        willFail: items.some((x: any) => x.preview?.willFail === true || x.blocked === true || x.error),
+        ops: items,
+        notes: [
+          "実行はしていない。各 op を『いまのシーンに対して』プレビューした(前の op が作るものを参照する op は、この時点では存在しないので willFail になりうる)",
+          ...(blocked ? ["guarded な op を含むので、実行するとバッチ全体が E_GUARDED で拒否される(1 つも実行されない)"] : []),
+          ...(unsupported ? [`${unsupported} 個の op はプレビューを持たない`] : []),
+        ],
+      },
+      meta,
+    });
+  }
+
   // ── dx12_doctor ─────────────────────────────────────────────────────
   async doctor(input: { deep?: boolean }): Promise<ShellResult> {
     const docs = this.catalog.docs;
@@ -564,6 +684,7 @@ export class ShellRuntime {
       refresh: async () => { const r = await this.deps.manifest.refresh({ force: true }); return { ping: r.ping, engineTooOld: r.engineTooOld, changed: r.changed }; },
       recentErrors: () => recentErrors(),
       ...(this.deps.fleetStatus ? { fleet: this.deps.fleetStatus } : {}),
+      ...(this.deps.jobsStatus ? { jobs: this.deps.jobsStatus } : {}),
       lateResults: () => this.deps.engine.getLateResults().map((l) => ({ method: l.method, elapsedMs: l.elapsedMs, ok: l.ok, at: l.at })),
       ...(this.deps.doctorHooks as object ?? {}),
     }, { deep: input.deep });

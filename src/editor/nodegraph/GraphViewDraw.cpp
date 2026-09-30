@@ -518,6 +518,13 @@ void GraphView::DrawPreview(ImDrawList* dl, const NodeData& n, const Rect& rg, f
     const ImVec2 mn(rs.min.x, rs.min.y), mx(rs.max.x, rs.max.y);
     const float R = std::max(2.0f, 4.0f * scale);
     dl->AddRectFilled(mn, mx, m_tok.nodeInner, R);
+    if (m_nodePreview)
+    {
+        dl->PushClipRect(mn, mx, true);
+        const bool drew = m_nodePreview(n.id, dl, mn, mx);
+        dl->PopClipRect();
+        if (drew) { dl->AddRect(mn, mx, m_tok.nodeBorder, R, 0, std::max(1.0f, ui::PxF(1.0f))); return; }
+    }
     // 予約領域のプレースホルダー: ノード ID から決まる決定的な模様（チェッカー + 斜めグラデ）
     const float h = Hash01(n.id * 7919u);
     const ImU32 c0 = Mix(m_tok.nodeInner, base, 0.20f + 0.25f * h), c1 = Mix(m_tok.nodeInner, base, 0.55f);
@@ -689,6 +696,20 @@ void GraphView::DrawNodes(ImDrawList* dl)
                 dl->AddText(FontBold(), px, ImVec2(tx, std::floor(mn.y + (hh - m_lhTitle) * 0.5f + 0.5f)), AlphaMul(m_tok.text, dim), t.title.c_str(), nullptr, 0.0f, &clip);
             }
         }
+        // ---- 名前欄（ヘッダ直下。パラメータ名・テクスチャ名など。NodeTypeDesc::hasLabel）----
+        if (L.labelH > 0.0f && !lodNoLabels)
+        {
+            const float ly0 = mn.y + hh, ly1 = mn.y + (L.headerH + L.labelH) * scale;
+            const float px = std::floor(cfg.textUnits * scale + 0.5f);
+            if (px >= 5.0f && !n->label.empty())
+            {
+                const float lh = FontBody()->CalcTextSizeA(px, FLT_MAX, 0.0f, "Ag").y;
+                const ImVec4 clip(mn.x, ly0, mx.x - cfg.padX * 0.5f * scale, ly1);
+                dl->AddText(FontBody(), px, ImVec2(std::floor(mn.x + cfg.padX * scale + 0.5f), std::floor((ly0 + ly1 - lh) * 0.5f + 0.5f)),
+                            AlphaMul(m_tok.textMid, dim), n->label.c_str(), nullptr, 0.0f, &clip);
+            }
+            dl->AddLine(ImVec2(mn.x + cfg.padX * scale * 0.5f, ly1), ImVec2(mx.x - cfg.padX * scale * 0.5f, ly1), AlphaMul(m_tok.nodeBorder, 0.55f * dim), 1.0f);
+        }
         // エラーバッジ
         if (state == NodeState::Error || state == NodeState::Warning)
         {
@@ -854,6 +875,25 @@ void GraphView::DrawOverlays(ImDrawList* dl)
         for (size_t i = 0; i + 1 < pts.size(); ++i) if (i % 3 != 2) dl->AddLine(pts[i], pts[i + 1], AlphaMul(m_tok.bad, 0.95f), b1 * 1.6f);
     }
 
+    // ワンキー握り中（hotkeyHoldClick）: カーソルの横に「何を置くか」を出す
+    if (m_hkType && m_hovered)
+    {
+        const std::string label = m_hkType->title + "  ・  クリックで配置";
+        const char key[2] = {m_hkType->hotkey, 0};
+        const float pad = ui::PxF(8.0f), kw = ui::PxF(20.0f);
+        const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+        const ImVec2 p(m_mouse.x + ui::PxF(18.0f), m_mouse.y + ui::PxF(20.0f));
+        const ImVec2 q(p.x + kw + pad * 2.0f + ts.x, p.y + ts.y + pad);
+        dl->AddRectFilled(ImVec2(p.x, p.y + 2.0f), ImVec2(q.x, q.y + 3.0f), AlphaMul(m_tok.nodeShadow, 0.8f), ui::PxF(6.0f));
+        dl->AddRectFilled(p, q, AlphaMul(m_tok.popupBg, 0.96f), ui::PxF(6.0f));
+        dl->AddRect(p, q, AlphaMul(m_tok.accentHover, 0.9f), ui::PxF(6.0f), 0, b1);
+        const ImVec2 kp(p.x + pad * 0.5f, p.y + pad * 0.5f);
+        dl->AddRectFilled(kp, ImVec2(kp.x + kw, q.y - pad * 0.5f), m_tok.accent, ui::PxF(4.0f));
+        const ImVec2 ks = ImGui::CalcTextSize(key);
+        dl->AddText(ImVec2(kp.x + (kw - ks.x) * 0.5f, p.y + pad * 0.5f + (ts.y - ks.y) * 0.5f), IM_COL32(6, 16, 31, 255), key);
+        dl->AddText(ImVec2(kp.x + kw + pad, p.y + pad * 0.5f), m_tok.text, label.c_str());
+    }
+
     // ツールチップ（ピン: 名前と型 / ノードの状態メッセージ）
     if (m_hovered && m_stationary && m_mode == Mode::Idle && !m_paletteOpen && !m_ctxOpen)
     {
@@ -867,7 +907,8 @@ void GraphView::DrawOverlays(ImDrawList* dl)
                 {
                     const PinDesc& pd = pins[m_hover.pin.index];
                     const PinType rt = model.ResolvedPinType(m_hover.pin);
-                    ImGui::SetTooltip("%s  (%s)%s", pd.name.empty() ? "(pin)" : pd.name.c_str(), model.PinTypeInfo(rt).name.c_str(),
+                    ImGui::SetTooltip("%s  (%s)%s%s%s", pd.name.empty() ? "(pin)" : pd.name.c_str(), model.PinTypeInfo(rt).name.c_str(),
+                                      pd.desc.empty() ? "" : "\n", pd.desc.c_str(),
                                       (!m_hover.pin.output && model.FindEdgeTo(m_hover.pin)) ? "\nAlt+クリック: 切断" : "");
                 }
             }

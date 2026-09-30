@@ -6,16 +6,22 @@
 
 どれも get(camera) -> RefResult を返す。基準が用意できないときは img=None + skip_reason(合格扱いにしない)。
 
-render_reference の呼び出し規約(PT 担当との取り決め。合わなければ仕様の reference.pt.method / params で調整):
-    request : {spp:int, seed:int, path:"<絶対パス .pfm|.exr>", ...reference.pt.params}
-              reference.pt.sizeParams = ["width","height"] を書くと、エンジン画像と同じ大きさをその名前で渡す
-              カメラは呼ぶ直前に set_editor_camera 済み(今のエディタカメラ)。
-    result  : {path:"<書いたファイル>", width, height, spp?}   (path が無ければ request の path を使う)
-    出力は線形 RGB(Rec.709 原色・露出 1.0 ・トーンマップ前)の float。PFM 推奨。
+render_reference の呼び出し規約は 2 通り(reference.pt.api で選ぶ):
+  "engine"(既定。実エンジンの MCP `render_reference` = 非同期 API。Q2 で実結合した):
+    request : {spp, seed, output:"<基準パス。拡張子なし>", formats:["pfm"], size:[w,h], ...reference.pt.params}
+              size は撮影解像度(engine.size か、エンジン画像の大きさ)。frameBudgetMs の既定は無人実行向けに 40。
+              カメラは呼ぶ直前に set_editor_camera 済み(今のエディタカメラ。垂直 FOV は 45°)。
+    result  : {accepted:true, state:"requested"} を即座に返す → render_reference_status を state:"done" までポーリング
+              → output.files から .pfm / .exr を読む。
+  "legacy"(Q1 が仮定した同期 API。偽エンジンと旧仕様のため残してある):
+    request : {spp, seed, path:"<絶対パス .pfm/.exr>", ...reference.pt.params}(sizeParams = ["width","height"] で大きさを渡す)
+    result  : {path, width, height, spp?}
+出力は線形 RGB(Rec.709 原色・露出 1.0 ・トーンマップ前)の float。PFM 推奨。
 """
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,29 +71,75 @@ class PtAdapter:
         pt = self.spec.reference.get("pt") or {}
         method = pt.get("method", "render_reference")
         fmt = pt.get("format", "pfm")
+        api = pt.get("api", "engine")
         seeds = pt.get("seeds") or [1]
         imgs: list[Img] = []
         metas = []
         use = seeds if self.want_noise else seeds[:1]
         for seed in use:
-            out = (self.workdir / f"pt_{camera['name']}_s{seed}.{fmt}").resolve()
+            base = (self.workdir / f"pt_{camera['name']}_s{seed}").resolve()
+            out = base.with_suffix("." + fmt)
             out.parent.mkdir(parents=True, exist_ok=True)
-            params = {"seed": int(seed), "path": str(out)}
-            if pt.get("spp"):
-                params["spp"] = int(pt["spp"])
-            sp = pt.get("sizeParams")                       # 例 ["width","height"]: エンジン画像と同じ大きさで撮らせる
-            if sp and test_size:
-                params[sp[0]], params[sp[1]] = int(test_size[0]), int(test_size[1])
-            params.update(pt.get("params") or {})
             try:
-                r = self.engine.call(method, params, timeout=float(pt.get("timeoutSec", 1800)))
+                if api == "legacy":
+                    params = {"seed": int(seed), "path": str(out)}
+                    if pt.get("spp"):
+                        params["spp"] = int(pt["spp"])
+                    sp = pt.get("sizeParams")               # 例 ["width","height"]: エンジン画像と同じ大きさで撮らせる
+                    if sp and test_size:
+                        params[sp[0]], params[sp[1]] = int(test_size[0]), int(test_size[1])
+                    params.update(pt.get("params") or {})
+                    r = self.engine.call(method, params, timeout=float(pt.get("timeoutSec", 1800)))
+                    p = Path(r.get("path") or r.get("file") or out)
+                    spp_done = r.get("spp", pt.get("spp"))
+                else:
+                    p, spp_done, r = self._render_engine_api(method, pt, seed, base, fmt, test_size)
             except EngineError as e:
                 return RefResult(None, "pt", skip_reason=f"{method} が失敗: {e}")
-            p = Path(r.get("path") or r.get("file") or out)
+            except RuntimeError as e:
+                return RefResult(None, "pt", skip_reason=str(e))
             img = load_image(p, "auto" if fmt != "png" else "srgb")
             imgs.append(img)
-            metas.append({"seed": seed, "spp": r.get("spp", pt.get("spp")), "file": str(p)})
-        return RefResult(imgs[0], "pt", meta={"renders": metas, "method": method}, noise_imgs=imgs[1:])
+            metas.append({"seed": seed, "spp": spp_done, "file": str(p)})
+        return RefResult(imgs[0], "pt", meta={"renders": metas, "method": method, "api": api}, noise_imgs=imgs[1:])
+
+    def _render_engine_api(self, method: str, pt: dict, seed: int, base: Path, fmt: str, test_size):
+        """実エンジンの render_reference(非同期)を呼んで state:"done" まで待ち、書かれたファイルを返す。"""
+        params: dict = {"seed": int(seed), "output": str(base), "formats": [fmt], "frameBudgetMs": 40}
+        if pt.get("spp"):
+            params["spp"] = int(pt["spp"])
+        size = self.spec.engine.get("size") or (list(test_size) if test_size else None)
+        if size:
+            params["size"] = [int(size[0]), int(size[1])]
+        params.update(pt.get("params") or {})
+        timeout = float(pt.get("timeoutSec", 1800))
+        r = self.engine.call(method, params, timeout=120)
+        if r.get("accepted") is False:
+            raise RuntimeError(f"{method} が受理されなかった: {r}")
+        t0 = time.time()
+        poll = float(pt.get("pollSec", 1.0))
+        last: dict = {}
+        while True:
+            last = self.engine.call("render_reference_status", {}, timeout=60)
+            st = last.get("state")
+            if st == "done":
+                break
+            if st in ("failed", "cancelled"):
+                raise RuntimeError(f"{method} が {st}: {last.get('error') or last.get('progress')}")
+            if time.time() - t0 > timeout:
+                try:
+                    self.engine.call("render_reference_cancel", {}, timeout=30)
+                except EngineError:
+                    pass
+                raise RuntimeError(f"{method} が {timeout:g} 秒で終わらない(state={st}, samples={last.get('samples')})")
+            time.sleep(poll)
+        files = (last.get("output") or {}).get("files") or []
+        want = "." + fmt
+        for f in files:
+            if str(f).lower().endswith(want):
+                spp_done = (last.get("samples") or {}).get("done", (last.get("output") or {}).get("sppDone"))
+                return Path(f), spp_done, last
+        raise RuntimeError(f"{method} の出力に {want} が無い: {files}")
 
 
 class ExternalAdapter:

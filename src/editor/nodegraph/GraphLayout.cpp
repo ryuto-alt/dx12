@@ -88,7 +88,8 @@ const TypeLayout& GraphLayout::For(const NodeTypeDesc& t)
     float w = std::max(c.minW, std::max(bodyW, titleW));
     w = std::ceil(w / 8.0f) * 8.0f;   // 8 単位に丸める（見た目が揃い、グリッドスナップと相性が良い）
 
-    float y = c.headerH;
+    L.labelH = t.hasLabel ? c.labelH : 0.0f;
+    float y = c.headerH + L.labelH;
     for (size_t i = 0; i < rows; ++i)
     {
         const float cy = y + c.rowH * (static_cast<float>(i) + 0.5f);
@@ -106,8 +107,8 @@ const TypeLayout& GraphLayout::For(const NodeTypeDesc& t)
         const float x0 = L.slotColX;   // 値欄はラベル列の右に揃える（プロパティ行も同じ列）
         L.inSlot.push_back(Rect({x0, L.inY[i] - c.slotH * 0.5f}, {x0 + sw, L.inY[i] + c.slotH * 0.5f}));
     }
-    float h = c.headerH + c.rowH * static_cast<float>(rows) + c.padBottom;
-    if (rows == 0) h = c.headerH + c.padBottom + 6.0f;
+    float h = c.headerH + L.labelH + c.rowH * static_cast<float>(rows) + c.padBottom;
+    if (rows == 0) h = c.headerH + L.labelH + c.padBottom + 6.0f;
     if (t.hasPreview)
     {
         L.preview = Rect({c.padX, h - c.padBottom + 2.0f}, {w - c.padX, h - c.padBottom + 2.0f + c.previewH});

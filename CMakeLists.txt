@@ -66,6 +66,7 @@ add_subdirectory(src/gui)
 add_subdirectory(src/ui)
 add_subdirectory(src/editor)
 add_subdirectory(src/project)
+add_subdirectory(src/sequencer)  # シーケンサー(.dxseq)の純ロジック(S0。GPU/ECS/ImGui 非依存。統合は S1b 以降)
 
 # Unit tests (GPU 非依存。ctest で実行可能)
 if(DX12_BUILD_TESTS)
@@ -295,6 +296,9 @@ if(DXC_EXECUTABLE)
         "${CMAKE_SOURCE_DIR}/shaders/forward/DecalCommon.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/DecalApply.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/ShadowPcss.hlsli"
+        # ★シェーディング尾部（マテリアルグラフ G2a で Forward/Skinned/Terrain から外出し）と契約構造体。
+        "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardShade.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/UnoSurface.hlsli"
         # ★DdgiCommon.hlsli も Lighting.hlsli が include している（DDGI 段階1）。
         #   入れ忘れると DDGI のサンプル式を直してもフォワード系の .cso が古いまま残る。
         "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiCommon.hlsli"
@@ -416,6 +420,11 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/ShadowPass_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowPassSkinned_VS.cso"
         "${SHADER_OUTPUT_DIR}/ForwardMask_PS.cso"
+        # Q2: 物理ライティング単位バリアント（-D UNO_PHYSICAL_LIGHTS=1。シーン設定「ライティング単位: 物理」のときだけ使う）
+        "${SHADER_OUTPUT_DIR}/LinearCapture_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardPhys_PS.cso"
+        "${SHADER_OUTPUT_DIR}/ForwardMaskPhys_PS.cso"
+        "${SHADER_OUTPUT_DIR}/TerrainPhys_PS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowMask_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowMaskInstanced_VS.cso"
         "${SHADER_OUTPUT_DIR}/ShadowMaskSkinned_VS.cso"
@@ -771,6 +780,35 @@ if(DXC_EXECUTABLE)
         COMMENT "Compiling Forward.hlsl -> ForwardMask_PS.cso (ps_6_0, ALPHA_TEST)"
     )
 
+    # Q2: 線形 HDR スクリーンショットの読み出し compute（要求のあるフレームだけ走る）
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/LinearCapture_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/LinearCapture_CS.cso" "${CMAKE_SOURCE_DIR}/shaders/post/LinearCapture.hlsl"
+        DEPENDS "${CMAKE_SOURCE_DIR}/shaders/post/LinearCapture.hlsl"
+        COMMENT "Compiling LinearCapture.hlsl -> LinearCapture_CS.cso (cs_6_0)"
+    )
+
+    # Q2: 物理ライティング単位バリアント。既定の Forward_PS / ForwardMask_PS / Terrain_PS は 1 命令も変えない
+    #   （-D UNO_PHYSICAL_LIGHTS=1 のときだけ Lighting.hlsli の点/スポットが逆二乗になる）。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardPhys_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -D UNO_PHYSICAL_LIGHTS=1 -Fo "${SHADER_OUTPUT_DIR}/ForwardPhys_PS.cso" "${SHADER_FORWARD}"
+        DEPENDS "${SHADER_FORWARD}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Forward.hlsl -> ForwardPhys_PS.cso (ps_6_0, UNO_PHYSICAL_LIGHTS)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ForwardMaskPhys_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -D ALPHA_TEST=1 -D UNO_PHYSICAL_LIGHTS=1 -Fo "${SHADER_OUTPUT_DIR}/ForwardMaskPhys_PS.cso" "${SHADER_FORWARD}"
+        DEPENDS "${SHADER_FORWARD}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Forward.hlsl -> ForwardMaskPhys_PS.cso (ps_6_0, ALPHA_TEST + UNO_PHYSICAL_LIGHTS)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/TerrainPhys_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PSMain -D UNO_PHYSICAL_LIGHTS=1 -Fo "${SHADER_OUTPUT_DIR}/TerrainPhys_PS.cso" "${SHADER_TERRAIN}"
+        DEPENDS "${SHADER_TERRAIN}" ${SHADER_FWD_INC}
+        COMMENT "Compiling Terrain.hlsl -> TerrainPhys_PS.cso (ps_6_0, UNO_PHYSICAL_LIGHTS)"
+    )
+
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/ShadowMask_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E VSMain -Fo "${SHADER_OUTPUT_DIR}/ShadowMask_VS.cso" "${SHADER_SHADOW_MASK}"
@@ -823,14 +861,14 @@ if(DXC_EXECUTABLE)
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/PostProcess_VS.cso"
         COMMAND ${DXC_EXECUTABLE} -T vs_6_0 -E FSTriVS -Fo "${SHADER_OUTPUT_DIR}/PostProcess_VS.cso" "${SHADER_POST}"
-        DEPENDS "${SHADER_POST}" "${SHADER_POST_INC}"
+        DEPENDS "${SHADER_POST}" "${SHADER_POST_INC}" "${CMAKE_SOURCE_DIR}/shaders/post/Tonemap.hlsli"
         COMMENT "Compiling PostProcess.hlsl -> PostProcess_VS.cso (vs_6_0)"
     )
 
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/PostProcess_PS.cso"
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E PostPS -Fo "${SHADER_OUTPUT_DIR}/PostProcess_PS.cso" "${SHADER_POST}"
-        DEPENDS "${SHADER_POST}" "${SHADER_POST_INC}"
+        DEPENDS "${SHADER_POST}" "${SHADER_POST_INC}" "${CMAKE_SOURCE_DIR}/shaders/post/Tonemap.hlsli"
         COMMENT "Compiling PostProcess.hlsl -> PostProcess_PS.cso (ps_6_0)"
     )
 
@@ -1280,6 +1318,250 @@ if(DXC_EXECUTABLE)
         DEPENDS "${SHADER_DDGI_UPDATE}" ${SHADER_DDGI_INC}
         COMMENT "Compiling DdgiProbeUpdate.hlsl -> DdgiBlendDist_CS.cso (cs_6_6)"
     )
+
+    # 仮想ジオメトリ(Nanite 風) P2: GPU カリングの compute（インスタンス / BVH 走査 / クラスタ / 作業バッファ初期化・引数生成）。
+    # ★cs_6_6（ResourceDescriptorHeap[] のバインドレス）。専用ルートシグネチャで動く（メインの RS には触れない）。
+    # ★VgShared.h は C++ と HLSL が共有する定数（カウンタ・統計の番号など）。変えたら全部再コンパイルさせる。
+    set(SHADER_VG_INC "${CMAKE_SOURCE_DIR}/shaders/vg/VgCommon.hlsli"
+                      "${CMAKE_SOURCE_DIR}/shaders/vg/VgTypes.hlsli"
+                      "${CMAKE_SOURCE_DIR}/src/renderer/vg/VgShared.h")
+    foreach(_vg IN ITEMS "VgReset_CS|VgUtil|CSReset" "VgArgs_CS|VgUtil|CSArgs"
+                         "VgInstanceCull_CS|VgInstanceCull|CSInstanceCull"
+                         "VgNodeTraverse_CS|VgNodeTraverse|CSTraverse"
+                         "VgClusterCull_CS|VgClusterCull|CSClusterCull"
+                         "VgRasterArgs_CS|VgUtil|CSRasterArgs" "VgCoverage_CS|VgUtil|CSCoverage"
+                         "VgSortStep_CS|VgUtil|CSSortStep")
+        string(REPLACE "|" ";" _vgp "${_vg}")
+        list(GET _vgp 0 _vgOut)
+        list(GET _vgp 1 _vgSrc)
+        list(GET _vgp 2 _vgEntry)
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_vgOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E ${_vgEntry} -Fo "${SHADER_OUTPUT_DIR}/${_vgOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/vg/${_vgSrc}.hlsl"
+            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/vg/${_vgSrc}.hlsl" ${SHADER_VG_INC}
+            COMMENT "Compiling ${_vgSrc}.hlsl -> ${_vgOut}.cso (cs_6_6)"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_vgOut}.cso")
+    endforeach()
+
+    # 仮想ジオメトリ P3: メッシュシェーダ描画（MS = ms_6_5 / AS = as_6_5 / PS = ps_6_6）+ デバッグ全画面表示。
+    #   VgRaster_MS      … 1 グループ = 1 クラスタ（AS なし）/ VgRasterAs_MS … 増幅シェーダの payload を受ける版
+    #   VgRasterCount_PS … 計測版（[earlydepthstencil] + 断片数 / オーバードロー画像）
+    set(_vgR "${CMAKE_SOURCE_DIR}/shaders/vg/VgRaster.hlsl")
+    set(_vgD "${CMAKE_SOURCE_DIR}/shaders/vg/VgDebug.hlsl")
+    set(SHADER_VG_INC2 ${SHADER_VG_INC} "${CMAKE_SOURCE_DIR}/shaders/vg/VgeoDecode.hlsli"
+                       "${CMAKE_SOURCE_DIR}/shaders/vg/VgVisShade.hlsli")
+    # P4: G-Buffer + 速度（VG の RS）/ 材質 resolve（メイン RS。フォワードの尾部 ForwardShade.hlsli ほかを include する）
+    set(_vgG "${CMAKE_SOURCE_DIR}/shaders/vg/VgGBuffer.hlsl")
+    set(_vgV "${CMAKE_SOURCE_DIR}/shaders/vg/VgResolve.hlsl")
+    list(APPEND SHADER_VG_INC2 ${SHADER_FWD_INC} "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceCommon.hlsli")
+    foreach(_vg IN ITEMS "VgRaster_MS|${_vgR}|ms_6_6|MSMain|"
+                         "VgRasterAs_MS|${_vgR}|ms_6_6|MSMain|VG_USE_AS"
+                         "VgRaster_AS|${_vgR}|as_6_6|ASMain|VG_AS"
+                         "VgRaster_PS|${_vgR}|ps_6_6|PSMain|"
+                         "VgRasterCount_PS|${_vgR}|ps_6_6|PSMain|VG_PS_COUNT"
+                         "VgDebug_VS|${_vgD}|vs_6_6|VSMain|"
+                         "VgDebug_PS|${_vgD}|ps_6_6|PSMain|"
+                         "VgGBuffer_VS|${_vgG}|vs_6_6|VSMain|"
+                         "VgGBuffer_PS|${_vgG}|ps_6_6|PSMain|"
+                         "VgResolve_VS|${_vgV}|vs_6_6|VSMain|"
+                         "VgResolve_PS|${_vgV}|ps_6_6|PSMain|")
+        string(REPLACE "|" ";" _vgp "${_vg}")
+        list(GET _vgp 0 _vgOut)
+        list(GET _vgp 1 _vgSrc)
+        list(GET _vgp 2 _vgProf)
+        list(GET _vgp 3 _vgEntry)
+        list(LENGTH _vgp _vgLen)
+        set(_vgDef "")
+        if(_vgLen GREATER 4)
+            list(GET _vgp 4 _vgDefName)
+            if(NOT "${_vgDefName}" STREQUAL "")
+                set(_vgDef -D ${_vgDefName})
+            endif()
+        endif()
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_vgOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T ${_vgProf} -E ${_vgEntry} ${_vgDef} -Fo "${SHADER_OUTPUT_DIR}/${_vgOut}.cso" "${_vgSrc}"
+            DEPENDS "${_vgSrc}" ${SHADER_VG_INC2}
+            COMMENT "Compiling ${_vgOut} (${_vgProf})"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_vgOut}.cso")
+    endforeach()
+
+    # DXR パストレーサー(地上真値レンダラ。パリティ基盤 Q1a)。inline RayQuery の compute 1 本（cs_6_6 / バインドレス）。
+    # ★PtShared.h は C++ と HLSL が共有するレイアウト。変えたら再コンパイルさせる。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PathTrace_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E PathTraceCS -Fo "${SHADER_OUTPUT_DIR}/PathTrace_CS.cso" "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl"
+        DEPENDS "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl" "${CMAKE_SOURCE_DIR}/shaders/pt/PtCommon.hlsli"
+                "${CMAKE_SOURCE_DIR}/src/renderer/pt/PtShared.h"
+                "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereCommon.hlsli" "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereSkyRadiance.hlsli"
+        COMMENT "Compiling PathTrace.hlsl -> PathTrace_CS.cso (cs_6_6)"
+    )
+    list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/PathTrace_CS.cso")
+    # 物理大気(A1)の空を引く版(-D PT_ATMOSPHERE=1)。従来の PathTrace_CS.cso は DXIL を 1 ビットも変えないため別ファイルにする。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PathTraceAtmos_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E PathTraceCS -D PT_ATMOSPHERE=1 -Fo "${SHADER_OUTPUT_DIR}/PathTraceAtmos_CS.cso" "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl"
+        DEPENDS "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl" "${CMAKE_SOURCE_DIR}/shaders/pt/PtCommon.hlsli"
+                "${CMAKE_SOURCE_DIR}/src/renderer/pt/PtShared.h"
+                "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereCommon.hlsli" "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereSkyRadiance.hlsli"
+        COMMENT "Compiling PathTrace.hlsl -> PathTraceAtmos_CS.cso (cs_6_6, PT_ATMOSPHERE)"
+    )
+    list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/PathTraceAtmos_CS.cso")
+    # パストレーサーがスキンドの変形後頂点をジョブ専用バッファへ写す小さなコピー compute。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/PtCopy_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CopyCS -Fo "${SHADER_OUTPUT_DIR}/PtCopy_CS.cso" "${CMAKE_SOURCE_DIR}/shaders/pt/PtCopy.hlsl"
+        DEPENDS "${CMAKE_SOURCE_DIR}/shaders/pt/PtCopy.hlsl"
+        COMMENT "Compiling PtCopy.hlsl -> PtCopy_CS.cso (cs_6_0)"
+    )
+    list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/PtCopy_CS.cso")
+
+    # エディタ専用: 選択 / ホバーの輪郭（マスク描画 + 縁の合成。ゲーム・Play では使わない）。
+    # shaders/editor/SelectionOutline.hlsl 1 本から 7 つのエントリを切り出す（ワイヤ表示モードも同じ土台）。
+    foreach(_so IN ITEMS "SelectionMask_VS|vs_6_0|VSMask" "SelectionMaskSkinned_VS|vs_6_0|VSMaskSkinned"
+                         "SelectionMask_PS|ps_6_0|PSMask" "SelectionComposite_VS|vs_6_0|VSFull"
+                         "SelectionComposite_PS|ps_6_0|PSComposite"
+                         "SelectionWire_PS|ps_6_0|PSWire" "SelectionFill_PS|ps_6_0|PSFill")
+        string(REPLACE "|" ";" _sop "${_so}")
+        list(GET _sop 0 _soOut)
+        list(GET _sop 1 _soProf)
+        list(GET _sop 2 _soEntry)
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_soOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T ${_soProf} -E ${_soEntry} -Fo "${SHADER_OUTPUT_DIR}/${_soOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/editor/SelectionOutline.hlsl"
+            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/editor/SelectionOutline.hlsl"
+            COMMENT "Compiling SelectionOutline.hlsl -> ${_soOut}.cso (${_soProf})"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_soOut}.cso")
+    endforeach()
+
+    # 植生 F1（FoliageLayer + GPU カリング + ExecuteIndirect + 風）。shaders/foliage/。
+    #   compute: Reset / Count / Scan / Emit / Finalize（FoliageCull.hlsl。専用ルートシグネチャ。決定論的な compact）+ テスト専用の風評価
+    #   graphics: 本体 VS/PS（PS は Forward.hlsl の PSMain をディザで包む。Phys = Q2 の物理ライティング単位版）/ 深度・影 / 速度
+    # ★DEPENDS に Forward の共有ヘッダ（SHADER_FWD_INC）と FoliageCommon/Wind/VS を必ず入れる（入れ忘れると古い .cso が残る）。
+    set(SHADER_FOLIAGE_INC
+        "${CMAKE_SOURCE_DIR}/shaders/foliage/FoliageCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/foliage/FoliageWind.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/foliage/FoliageVS.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceCommon.hlsli"
+        ${SHADER_FWD_INC})
+    foreach(_fo IN ITEMS
+            "FoliageReset_CS|FoliageCull|cs_6_0|CSReset|"
+            "FoliageCount_CS|FoliageCull|cs_6_0|CSCount|"
+            "FoliageScan_CS|FoliageCull|cs_6_0|CSScan|"
+            "FoliageEmit_CS|FoliageCull|cs_6_0|CSEmit|"
+            "FoliageFinalize_CS|FoliageCull|cs_6_0|CSFinalize|"
+            "FoliageWindTest_CS|FoliageWindTest|cs_6_0|CSWindTest|"
+            "ForwardFoliage_VS|ForwardFoliage_VS|vs_6_0|VSMain|"
+            "ForwardFoliage_PS|ForwardFoliage_PS|ps_6_0|FoliagePS|"
+            "ForwardFoliageMask_PS|ForwardFoliage_PS|ps_6_0|FoliagePS|FOLIAGE_MASK=1"
+            "ForwardFoliagePhys_PS|ForwardFoliage_PS|ps_6_0|FoliagePS|UNO_PHYSICAL_LIGHTS=1"
+            "ForwardFoliageMaskPhys_PS|ForwardFoliage_PS|ps_6_0|FoliagePS|FOLIAGE_MASK=1+UNO_PHYSICAL_LIGHTS=1"
+            "FoliageDepth_VS|FoliageDepth|vs_6_0|VSMain|"
+            "FoliageDepth_PS|FoliageDepth|ps_6_0|PSMain|"
+            "FoliageDepthMask_PS|FoliageDepth|ps_6_0|PSMain|ALPHA_TEST=1"
+            "FoliageVelocity_VS|FoliageVelocity|vs_6_0|VSMain|"
+            "FoliageVelocity_PS|FoliageVelocity|ps_6_0|PSMain|"
+            "FoliageVelocityMask_PS|FoliageVelocity|ps_6_0|PSMain|ALPHA_TEST=1")
+        string(REPLACE "|" ";" _fop "${_fo}")
+        list(GET _fop 0 _foOut)
+        list(GET _fop 1 _foSrc)
+        list(GET _fop 2 _foProf)
+        list(GET _fop 3 _foEntry)
+        set(_foDef "")
+        list(LENGTH _fop _foLen)
+        if(_foLen GREATER 4)
+            list(GET _fop 4 _foDefs)
+            string(REPLACE "+" ";" _foDefs "${_foDefs}")
+            foreach(_d IN LISTS _foDefs)
+                list(APPEND _foDef -D ${_d})
+            endforeach()
+        endif()
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_foOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T ${_foProf} -E ${_foEntry} ${_foDef} -Fo "${SHADER_OUTPUT_DIR}/${_foOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/foliage/${_foSrc}.hlsl"
+            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/foliage/${_foSrc}.hlsl" ${SHADER_FOLIAGE_INC}
+            COMMENT "Compiling ${_foSrc}.hlsl -> ${_foOut}.cso (${_foProf})"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_foOut}.cso")
+    endforeach()
+
+    # 物理ベース大気 A1（Hillaire 2020 の 4 LUT + 環境キューブ + 空パス + AP 合成）。shaders/atmosphere/。
+    #   compute: Transmittance / MultiScattering / SkyView / AerialPerspective / SkyCube（AtmosphereLuts.hlsl。専用ルートシグネチャ）
+    #   graphics: 全画面 VS / 空 PS / AP 合成 PS（デュアルソースブレンド。AtmosphereSky.hlsl）
+    # ★AtmosphereShared.h は C++ と HLSL が共有する定数レイアウト。変えたら再コンパイルさせる。
+    set(SHADER_ATMOS_INC
+        "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereSkyRadiance.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/ibl/IBLCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/src/renderer/atmosphere/AtmosphereShared.h")
+    foreach(_at IN ITEMS
+            "AtmosphereT_CS|AtmosphereLuts|cs_6_0|TransmittanceCS"
+            "AtmosphereMs_CS|AtmosphereLuts|cs_6_0|MultiScatteringCS"
+            "AtmosphereSv_CS|AtmosphereLuts|cs_6_0|SkyViewCS"
+            "AtmosphereAp_CS|AtmosphereLuts|cs_6_0|ApCS"
+            "AtmosphereCube_CS|AtmosphereLuts|cs_6_0|SkyCubeCS"
+            "AtmosphereCubeMip_CS|AtmosphereLuts|cs_6_0|SkyCubeMipCS"
+            "AtmosphereIrradiance_CS|AtmosphereIrradiance|cs_6_0|CSMain"
+            "AtmosphereSky_VS|AtmosphereSky|vs_6_0|VSFull"
+            "AtmosphereSky_PS|AtmosphereSky|ps_6_0|PSSky"
+            "AtmosphereAp_PS|AtmosphereSky|ps_6_0|PSAp")
+        string(REPLACE "|" ";" _atp "${_at}")
+        list(GET _atp 0 _atOut)
+        list(GET _atp 1 _atSrc)
+        list(GET _atp 2 _atProf)
+        list(GET _atp 3 _atEntry)
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_atOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T ${_atProf} -E ${_atEntry} -Fo "${SHADER_OUTPUT_DIR}/${_atOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/atmosphere/${_atSrc}.hlsl"
+            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/atmosphere/${_atSrc}.hlsl" ${SHADER_ATMOS_INC}
+            COMMENT "Compiling ${_atSrc}.hlsl -> ${_atOut}.cso (${_atProf})"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_atOut}.cso")
+    endforeach()
+
+    # 水面 W1（WaterBody + 専用パス）。shaders/water/。専用ルートシグネチャ（メイン RS を汚さない）で描く。
+    #   WaterSurface: リングの頂点（ゲルストナー変位）+ ピクセル（屈折 / Beer 吸収 / 反射 / 泡 / 岸）。Phys = Q2 の物理ライティング単位版
+    #   WaterUnder  : 水中の全画面（Beer 減衰 + 内部散乱）  WaterTest: テスト専用 compute（CPU 参照との一致確認）
+    # ★DEPENDS に Forward の共有ヘッダ（SHADER_FWD_INC = Lighting / PBR / ShadowPcss ...）と WaterCommon / WaterMath を必ず入れる。
+    set(SHADER_WATER_INC
+        "${CMAKE_SOURCE_DIR}/shaders/water/WaterCommon.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/water/WaterMath.hlsli"
+        ${SHADER_FWD_INC})
+    foreach(_wa IN ITEMS
+            "WaterSurface_VS|WaterSurface|vs_6_0|VSMain|"
+            "WaterSurface_PS|WaterSurface|ps_6_0|PSMain|"
+            "WaterSurfacePhys_PS|WaterSurface|ps_6_0|PSMain|UNO_PHYSICAL_LIGHTS=1"
+            "WaterUnder_VS|WaterUnder|vs_6_0|VSFullscreen|"
+            "WaterUnder_PS|WaterUnder|ps_6_0|PSUnder|"
+            "WaterUnderPhys_PS|WaterUnder|ps_6_0|PSUnder|UNO_PHYSICAL_LIGHTS=1"
+            "WaterWaveTest_CS|WaterTest|cs_6_0|CSWave|"
+            "WaterOpticsTest_CS|WaterTest|cs_6_0|CSOptics|")
+        string(REPLACE "|" ";" _wap "${_wa}")
+        list(GET _wap 0 _waOut)
+        list(GET _wap 1 _waSrc)
+        list(GET _wap 2 _waProf)
+        list(GET _wap 3 _waEntry)
+        set(_waDef "")
+        list(LENGTH _wap _waLen)
+        if(_waLen GREATER 4)
+            list(GET _wap 4 _waDefs)
+            string(REPLACE "+" ";" _waDefs "${_waDefs}")
+            foreach(_d IN LISTS _waDefs)
+                list(APPEND _waDef -D ${_d})
+            endforeach()
+        endif()
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_waOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T ${_waProf} -E ${_waEntry} ${_waDef} -Fo "${SHADER_OUTPUT_DIR}/${_waOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/water/${_waSrc}.hlsl"
+            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/water/${_waSrc}.hlsl" ${SHADER_WATER_INC}
+            COMMENT "Compiling ${_waSrc}.hlsl -> ${_waOut}.cso (${_waProf})"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_waOut}.cso")
+    endforeach()
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})
     add_dependencies(DX12Engine Shaders)

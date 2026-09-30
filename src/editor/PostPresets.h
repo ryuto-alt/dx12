@@ -43,6 +43,15 @@ inline PostProcessSettings PostPresetBaseline(const PostProcessSettings& base)
     // ── シーン/カメラ側の設定は引き継ぐ（プリセットは「絵の味付け」だけを担当する）──
     out.enabled        = base.enabled;
     out.tonemapper     = base.tonemapper;
+    // Q2: UE Filmic のパラメータと露出モード（EV100 / 自動露出の上下限）もシーン側の設定＝プリセットで消さない
+    out.filmSlope      = base.filmSlope;      out.filmToe      = base.filmToe;
+    out.filmShoulder   = base.filmShoulder;   out.filmBlackClip = base.filmBlackClip;
+    out.filmWhiteClip  = base.filmWhiteClip;   out.lightingUnits = base.lightingUnits;
+    out.exposureMode   = base.exposureMode;   out.ev100        = base.ev100;
+    out.evComp         = base.evComp;         out.aeMinEv100   = base.aeMinEv100;
+    out.aeMaxEv100     = base.aeMaxEv100;     out.aeSpeedUp    = base.aeSpeedUp;
+    out.aeSpeedDown    = base.aeSpeedDown;    out.aeLowPercent = base.aeLowPercent;
+    out.aeHighPercent  = base.aeHighPercent;
     out.exposureOn     = base.exposureOn;     out.exposure     = base.exposure;
     out.autoExposureOn = base.autoExposureOn; out.aeSpeed      = base.aeSpeed;
     out.aeEvComp       = base.aeEvComp;       out.aeLogMin     = base.aeLogMin;

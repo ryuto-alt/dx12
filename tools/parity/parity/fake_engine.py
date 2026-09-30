@@ -8,6 +8,10 @@ describe_mcp_manifest / render_reference(任意)に答え、画像は合成す�
   ref_gain      パストレ基準の倍率
   ref_noise     パストレ基準に乗せるノイズの σ(seed ごとに違う)
   has_render_reference   False なら render_reference は「unknown method」
+  pt_api        "legacy"(既定。Q1 が仮定した同期 render_reference)/ "engine"(実エンジン相当: 即座に accepted を返し
+                render_reference_status を数回ポーリングさせて done + output.files を返す。size / output / formats を受ける)
+  post          set_post_process で受けた値(tonemapper / exposureMode / ev100 / evComp)。screenshot_final の表示 PNG に反映する
+  screenshot_final は width / height(任意解像度)と formats(png / pfm)を受ける(実エンジン Q2 と同じ規約)
 """
 from __future__ import annotations
 
@@ -20,7 +24,7 @@ import numpy as np
 
 from . import color
 from .imgio import save_png, write_pfm
-from .tonemap import apply_tonemap
+from .tonemap import apply_ev, apply_tonemap, ev100_to_ev
 
 
 def synth_scene(w: int, h: int, cam_pos, cam_target) -> np.ndarray:
@@ -50,6 +54,10 @@ class FakeEngine:
         self.calls: list[tuple[str, dict]] = []
         self.gpu_ms, self.frame_ms, self.vram = 6.0, 9.0, 2048.0
         self.mutate = None               # callable(linear)->linear: テスト側で画像を壊す
+        self.pt_api = "legacy"
+        self.post: dict = {}
+        self._pt_job: dict | None = None
+        self.display_offset = 0.0        # 表示 PNG に加える定数(displayCheck を落とすテスト用。0..1)
         self._srv = socket.socket()
         self._srv.bind(("127.0.0.1", 0))
         self._srv.listen(1)
@@ -110,7 +118,8 @@ class FakeEngine:
         if method == "describe_mcp_manifest":
             name = p.get("method")
             known = {"ping", "open_scene", "set_editor_camera", "step_frames", "screenshot_final", "benchmark", "perf_stats",
-                     "describe_mcp_manifest"} | ({"render_reference"} if self.has_render_reference else set())
+                     "describe_mcp_manifest", "set_post_process"} | (
+                         {"render_reference", "render_reference_status", "render_reference_cancel"} if self.has_render_reference else set())
             if name and name not in known:
                 raise FakeError(f"unknown method: {name}", 8)
             return {"count": 1}
@@ -125,14 +134,31 @@ class FakeEngine:
             return {"position": self.cam[0]}
         if method == "step_frames":
             return {"frames": p.get("frames", 1)}
+        if method == "set_post_process":
+            self.post.update(p)
+            return {"applied": True}
         if method == "screenshot_final":
-            lin = synth_scene(self.w, self.h, *self.cam) * self.test_gain
+            w, h = int(p.get("width", self.w)), int(p.get("height", self.h))
+            lin = synth_scene(w, h, *self.cam) * self.test_gain
             if self.mutate:
                 lin = self.mutate(lin)
-            d, _ = apply_tonemap("engine_aces", lin)
+            tm = {0: "engine_aces", 1: "engine_agx", 3: "ue_filmic", 4: "linear_clip", 5: "pbr_neutral"}.get(int(self.post.get("tonemapper", 0)), "engine_aces")
+            ev = ev100_to_ev(float(self.post.get("ev100", 15.0)), float(self.post.get("evComp", 0.0))) if int(self.post.get("exposureMode", 0)) == 1 else 0.0
+            d, _ = apply_tonemap(tm, apply_ev(lin, ev))
+            if self.display_offset:
+                d = np.clip(d + self.display_offset, 0.0, 1.0).astype(np.float32)
             path = p.get("path") or "shot.png"
-            save_png(path, d)
-            return {"path": path, "width": self.w, "height": self.h}
+            fmts = set(p.get("formats") or ([p["format"]] if p.get("format") else ["png"]))
+            files = {}
+            if "png" in fmts:
+                save_png(path, d)
+                files["png"] = str(path)
+            if "pfm" in fmts:
+                pp = str(Path(path).with_suffix(".pfm"))
+                write_pfm(pp, lin.astype(np.float32))
+                files["pfm"] = pp
+            return {"path": files.get("png") or files.get("pfm"), "files": files, "width": w, "height": h,
+                    "offscreen": "width" in p, "source": "offscreen" if "width" in p else "backbuffer"}
         if method == "render_reference":
             if not self.has_render_reference:
                 raise FakeError("unknown method: render_reference", 8)
@@ -140,9 +166,35 @@ class FakeEngine:
             if self.ref_noise > 0:
                 rng = np.random.default_rng(int(p.get("seed", 0)) + 1234)
                 lin = np.clip(lin + rng.normal(0, self.ref_noise, lin.shape).astype(np.float32) * np.maximum(lin, 0.02) ** 0.5, 0, None)
+            if self.pt_api == "engine":
+                w, h = (p["size"] if p.get("size") else (self.w, self.h))
+                lin = synth_scene(int(w), int(h), *self.cam) * self.ref_gain
+                if self.ref_noise > 0:
+                    rng = np.random.default_rng(int(p.get("seed", 0)) + 1234)
+                    lin = np.clip(lin + rng.normal(0, self.ref_noise, lin.shape).astype(np.float32) * np.maximum(lin, 0.02) ** 0.5, 0, None)
+                base = p["output"]
+                files = []
+                for f in p.get("formats") or ["pfm", "png"]:
+                    if f == "pfm":
+                        write_pfm(base + ".pfm", lin.astype(np.float32))
+                        files.append(base + ".pfm")
+                self._pt_job = {"polls": 0, "files": files, "spp": p.get("spp"), "size": [int(w), int(h)]}
+                return {"accepted": True, "state": "requested", "size": [int(w), int(h)], "output": base}
             path = p["path"]
             write_pfm(path, lin)
             return {"path": path, "width": self.w, "height": self.h, "spp": p.get("spp")}
+        if method == "render_reference_status":
+            j = self._pt_job
+            if j is None:
+                return {"state": "idle"}
+            j["polls"] += 1
+            if j["polls"] < 2:
+                return {"state": "running", "progress": {"pct": 50}, "samples": {"done": 1, "target": j["spp"]}}
+            return {"state": "done", "samples": {"done": j["spp"], "target": j["spp"]},
+                    "output": {"files": j["files"], "sppDone": j["spp"]}}
+        if method == "render_reference_cancel":
+            self._pt_job = None
+            return {"cancelled": True}
         if method in ("benchmark", "perf_stats"):
             return {"fps": 1000.0 / self.frame_ms, "frameMs": {"avg": self.frame_ms, "p95": self.frame_ms * 1.1},
                     "cpu": {"workMs": 4.0, "fenceWaitMs": 1.0, "presentMs": 0.5}, "gpuPassMs": {"total": self.gpu_ms, "mainScene": 3.0},

@@ -74,7 +74,9 @@ inline bool McpParamTypeValid(const std::string& t)
 }
 
 inline bool McpModeValid(const std::string& m) { return m == "any" || m == "editor" || m == "playing"; }
-inline bool McpDryRunValid(const std::string& d) { return d == "none" || d == "native"; }
+// dryRun: "none"=非対応 / "native"=method 自身が dryRun 引数を持つ(TS 合成ツールなど) /
+//         "preview"=エンジンのディスパッチャが dryRun:true を受けて「何が起こるか」を実行せず返す(M5。McpSafety.h のプレビュー表)。
+inline bool McpDryRunValid(const std::string& d) { return d == "none" || d == "native" || d == "preview"; }
 // expose: MCP サーバ(TS)が tools/list に直接載せるか。"" = 載せない(dx12_tool_search / dx12_call で使う)、"core" = Core に昇格
 // (TS 側は manifestHash の変化を検知して notifications/tools/list_changed を送り、再起動なしで tools/list に出す)。
 inline bool McpExposeValid(const std::string& e) { return e.empty() || e == "core"; }
@@ -118,6 +120,7 @@ struct McpMeta
     std::vector<McpNext>     next;
     std::vector<McpExample>  examples;
     std::string              expose;                      // "" | "core"（末尾に足した。位置指定の初期化を壊さない）
+    bool                     journal = false;             // true=ファイル書き込みジャーナル対応（M5。上書き前の内容を .dx12/journal/ へ退避し journal_restore で戻せる）
 };
 
 // ---------------------------------------------------------------------------
@@ -287,6 +290,8 @@ inline std::string McpMetaCanonical(const std::string& name, const McpMeta& m, c
     o += "]";
     // expose は空のときは何も足さない（既存 method のハッシュを変えない。フィールドを足したら末尾へ）
     if (!m.expose.empty()) o += ",\"expose\":" + McpJsonQuote(m.expose);
+    // journal も true のときだけ（既存 method のハッシュを変えない）
+    if (m.journal) o += ",\"journal\":true";
     o += "}";
     return o;
 }
@@ -429,6 +434,39 @@ inline std::vector<std::string> McpSuggest(const std::string& target,
         out.push_back(candidates[h.idx]);
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// M5（副作用の安全性）の対象 method 名。ApplyMcpManifest が meta へ dryRun="preview" / journal=true を流し込む。
+//   ・kMcpPreviewMethods … dryRun:true を受けて実行せずにプレビューを返す method（実体は ApplicationMcpSafety.inc の表）
+//   ・kMcpJournalMethods … 書き込む前に上書きされるファイルを .dx12/journal/ へ退避する method
+// ctest（McpManifestTests / McpSafetyTests）はエンジンをリンクせずこの一覧と表の整合を検査する。
+// ---------------------------------------------------------------------------
+inline const std::vector<std::string>& McpPreviewMethods()
+{
+    static const std::vector<std::string> k = {
+        "create_entity", "spawn_model", "spawn_prefab", "delete_entity", "duplicate_entity",
+        "set_transform", "set_component", "remove_component", "set_parent", "rename_entity",
+        "save_scene", "open_scene", "create_lua_component", "create_shader",
+        "move_asset", "delete_asset", "import_asset", "journal_restore"};
+    return k;
+}
+inline const std::vector<std::string>& McpJournalMethods()
+{
+    static const std::vector<std::string> k = {
+        "save_scene", "create_lua_component", "create_shader", "move_asset", "delete_asset",
+        "import_asset", "create_prefab", "journal_restore"};
+    return k;
+}
+inline bool McpNameIn(const std::vector<std::string>& v, const std::string& n)
+{
+    return std::find(v.begin(), v.end(), n) != v.end();
+}
+// データ表由来の meta へ M5 の印を付ける（表の行は直接編集しない＝一覧はここ 1 か所）。
+inline void McpApplySafetyFlags(const std::string& name, McpMeta& m)
+{
+    if (McpNameIn(McpPreviewMethods(), name) && m.effect != McpEffect::Read) m.dryRun = "preview";
+    if (McpNameIn(McpJournalMethods(), name)) m.journal = true;
 }
 
 } // namespace dx12e

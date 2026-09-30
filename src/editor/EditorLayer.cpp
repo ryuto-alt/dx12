@@ -6,12 +6,18 @@
 #include "editor/CommandPalette.h"   // Ctrl+K / Ctrl+P
 #include "editor/ToolWindows.h"      // ツール窓レジストリ（既定のドック先・すべて閉じる）
 #include "editor/Toast.h"            // 右下トースト
+#include "core/Window.h"            // OS ファイルドロップのハンドラ設定（アセットの取り込み）
+#include "editor/WorkspaceManager.h"   // ドックの構築・レイアウト保存・ワークスペース・下部ドックのスロット
+#include "editor/BottomDock.h"
+#include "editor/EditorPrefs.h"
 #include "gui/FloatingGuard.h"   // フローティング窓の収容領域
 #include "ecs/Components.h"
 #include "editor/panels/ToolbarPanel.h"
 #include "editor/panels/HierarchyPanel.h"
 #include "editor/panels/InspectorPanel.h"
 #include "editor/panels/SceneViewPanel.h"
+#include "editor/panels/ViewportToolbar.h"   // ビューポート上端の専用ツールバー + ビューキューブ
+#include "editor/ViewportLogic.h"
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/panels/ConsolePanel.h"
 #include "editor/ModelThumbnailRenderer.h"
@@ -90,7 +96,7 @@ static DirectX::XMFLOAT3 ScreenToWorldOnGroundPlane(
 }
 
 EditorLayer::EditorLayer() = default;
-EditorLayer::~EditorLayer() = default;
+EditorLayer::~EditorLayer() { prefs::FlushNow(); }   // 保留中の設定（レイアウトなど）を確実に書く
 
 void EditorLayer::Initialize(EditorContext* ctx,
                              const std::string& assetsDir,
@@ -107,6 +113,18 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_assetBrowser = std::make_unique<AssetBrowserPanel>();
     m_console      = std::make_unique<ConsolePanel>();
     m_palette      = std::make_unique<CommandPalette>();
+    m_viewportBar  = std::make_unique<ViewportToolbar>();
+    m_viewportBar->SetAssetsDir(assetsDir);
+
+    // 下部ドックの登録タブ（ダミー）。シーケンサーは同じ id "timeline" で Register し直せば、そのまま本物に入れ替わる（BottomDock.h）。
+    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM,
+        [](EditorContext&) {
+            ImGui::Spacing();
+            ImGui::TextDisabled("ここにシーケンサーのタイムラインが入ります（下部ドックのスロット。動作確認用のダミー）。");
+            ImGui::TextDisabled("タブ帯をダブルクリックすると下部ドックが広がります（もう一度で元に戻ります）。");
+        }});
+    m_workspace = std::make_unique<WorkspaceManager>();
+    m_workspace->Initialize(*ctx);
 
     m_hierarchy->SetAssetsDir(assetsDir);
     m_assetBrowser->Initialize(assetsDir, scriptsDir, resourceManager, srvHeap);
@@ -130,41 +148,9 @@ f32 EditorLayer::StatusBarHeight() { return theme::Px(kStatusBarHeight); }
 // （未表示の窓は Begin されないだけでタブも出ない）。
 void EditorLayer::BuildDefaultLayout(ImGuiID dockspaceId, f32 /*toolbarHeight*/)
 {
-    ImGui::DockBuilderRemoveNode(dockspaceId);
-    ImGui::DockBuilderAddNode(dockspaceId, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockspaceId, ImGui::GetMainViewport()->Size);
-
-    // 左(18%): ヒエラルキー | 残り
-    ImGuiID dockLeft = 0, dockRemaining = 0;
-    ImGui::DockBuilderSplitNode(dockspaceId, ImGuiDir_Left, kRatioLeft, &dockLeft, &dockRemaining);
-
-    // 残り → 右(24%): 右カラム | センター
-    ImGuiID dockRightCol = 0, dockCenter = 0;
-    ImGui::DockBuilderSplitNode(dockRemaining, ImGuiDir_Right, kRatioRight, &dockRightCol, &dockCenter);
-
-    // センター → 下(33%): アセットブラウザ | ビューポート(中央)
-    ImGuiID dockBottom = 0, dockViewport = 0;
-    ImGui::DockBuilderSplitNode(dockCenter, ImGuiDir_Down, kRatioBottom, &dockBottom, &dockViewport);
-
-    // 左: ヒエラルキー
-    ImGui::DockBuilderDockWindow(
-        "\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc", dockLeft);
-    // 中央下: コンソールを先にドック → アセットブラウザを後にドック
-    // （同ノードのタブ。アセットブラウザが既定のアクティブタブになる）
-    ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xb3\xe3\x83\xb3\xe3\x82\xbd\xe3\x83\xbc\xe3\x83\xab", dockBottom);  // コンソール
-    ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6", dockBottom);
-
-    // 右: ツール窓（レジストリの RightTab 全部）→ 最後にインスペクター。
-    // 後からドックした窓が既定のアクティブタブになるので、インスペクターを最後にして初期表示にする。
-    for (const tools::Desc& t : tools::kAll)
-        if (t.slot == tools::DockSlot::RightTab && t.imguiName && t.imguiName[0])
-            ImGui::DockBuilderDockWindow(t.imguiName, dockRightCol);
-    ImGui::DockBuilderDockWindow(
-        "\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc", dockRightCol);  // インスペクター
-
-    ImGui::DockBuilderFinish(dockspaceId);
+    // 実体は WorkspaceManager（分割比 / ツール窓の配置先 / 下部ドックの登録タブを Layout から作る。既定の比は WorkspaceLogic.h の ws::Ratios）。
+    // 既定の見た目（左 18% / 右 24% / 下 33%・ヒエラルキー | ビューポート+アセット・コンソール | インスペクター）は 1a までと同じ。
+    m_workspace->BuildLayout(dockspaceId);
 }
 
 void EditorLayer::Render(bool isPlaying,
@@ -193,6 +179,23 @@ void EditorLayer::Render(bool isPlaying,
                          ID3D12GraphicsCommandList* cmdList)
 {
     m_ctx->isPlaying = isPlaying;   // 各パネルが「Play 中は押せない」を判定するのに使う
+
+    // OS（エクスプローラー）からのファイルドロップをアセットブラウザ（取り込み）へ流す。窓ごとに 1 回だけ設定する。
+    {
+        static Window* s_dropInstalledFor = nullptr;
+        if (window && window != s_dropInstalledFor)
+        {
+            s_dropInstalledFor = window;
+            EditorContext* dropCtx = m_ctx;
+            window->SetFileDropHandler([dropCtx](std::vector<std::wstring> paths, int x, int y) {
+                EditorContext::OsFileDrop d;
+                d.paths = std::move(paths);
+                d.x = static_cast<float>(x);
+                d.y = static_cast<float>(y);
+                dropCtx->pendingOsDrops.push_back(std::move(d));
+            });
+        }
+    }
     theme::g_paintChromeFn = &ui::deco::PaintChrome;   // テーマ・バリアントの窓外装飾（Gui は Editor に依存できないので口を渡す）
     toolbarHeight = ui::Px(toolbarHeight);   // Application::kToolbarHeight は論理 px（100% 表示）。以降は物理 px
 
@@ -213,7 +216,7 @@ void EditorLayer::Render(bool isPlaying,
             else if (is("\xe3\x82\xa4\xe3\x83\xb3\xe3\x82\xb9\xe3\x83\x9a\xe3\x82\xaf\xe3\x82\xbf\xe3\x83\xbc")) p = P::Inspector; // インスペクター
             else if (is("\xe3\x82\xa2\xe3\x82\xbb\xe3\x83\x83\xe3\x83\x88\xe3\x83\x96\xe3\x83\xa9\xe3\x82\xa6\xe3\x82\xb6")) p = P::AssetBrowser; // アセットブラウザ
             else if (is("\xe3\x82\xb3\xe3\x83\xb3\xe3\x82\xbd\xe3\x83\xbc\xe3\x83\xab"))                 p = P::Console;       // コンソール
-            else if (starts("##DockHost") || starts("##StatusBar") || starts("##Toolbar") || starts("##Toast")
+            else if (starts("##DockHost") || starts("##StatusBar") || starts("##Toolbar") || starts("##Toast") || starts("##ViewportBar")
                      || starts("##SceneDropTarget") || is("gizmo") || is("Camera Preview"))
                 p = P::None;
             else
@@ -287,13 +290,10 @@ void EditorLayer::Render(bool isPlaying,
 
         // メニュー「表示 > レイアウトをリセット」要求でデフォルト配置を作り直す。
         // ドックを作り直すのはここと起動時だけ（ツール窓の開閉では作り直さない＝ビューポートが縮まない）。
-        if (m_ctx->resetLayout)
-        {
-            // ツール窓を全部閉じてスッキリ中核 4 窓へ戻す（レジストリの全窓。取りこぼしなし）。
-            tools::CloseAll(*m_ctx);
+        // ワークスペース / レイアウトの要求（リセット・ワークスペース切替・名前つきレイアウトの復元・下部ドックの最大化）は WorkspaceManager が消化する。
+        // リセットは全ツール窓を閉じて既定へ戻す（レジストリの全窓。取りこぼしなし）。true = ドックの作り直しが要る。
+        if (m_workspace->BeginFrame(*m_ctx))
             m_dockspaceBuilt = false;
-            m_ctx->resetLayout = false;
-        }
 
         if (!m_dockspaceBuilt)
         {
@@ -320,6 +320,7 @@ void EditorLayer::Render(bool isPlaying,
     }
 
     // ===== 各パネル（ドッキング対応ウィンドウ） =====
+    m_hierarchy->SetScene(scene);   // [H] コピー / 貼り付けのシリアライズに使う
     m_hierarchy->Render(reg, *m_ctx);
 
     m_inspector->SetScriptEngine(scriptEngine);
@@ -341,6 +342,9 @@ void EditorLayer::Render(bool isPlaying,
     RenderAudioMixerPanel(audioSystem, *m_ctx);
 
     m_assetBrowser->Render(*m_ctx, clock->GetDeltaTime());
+
+    // 下部ドックの登録タブ（タイムラインなど。BottomDock.h）
+    m_workspace->RenderBottomTabs(*m_ctx);
 
     // コンソール（アセットブラウザの隣タブに常設。全ログ + Lua 即時実行）
     // ctx を渡すのは、シェーダーのエラー行クリックで Inspector へ飛ばすため
@@ -366,18 +370,24 @@ void EditorLayer::Render(bool isPlaying,
         if (nodeSize.x < 1.0f) nodeSize.x = 1.0f;
         if (nodeSize.y < 1.0f) nodeSize.y = 1.0f;
 
-        // 16:9 固定。中央ノードに収まる最大の 16:9 矩形を中央寄せにする。
-        // 余白部分はバックバッファのクリア色（暗色）がそのまま見えてレターボックスになる。
-        const float kTargetAspect = 16.0f / 9.0f;
-        ImVec2 vpSize = nodeSize;
-        if (nodeSize.x / nodeSize.y > kTargetAspect)
-            vpSize.x = nodeSize.y * kTargetAspect;   // 横が余る → 左右に帯
-        else
-            vpSize.y = nodeSize.x / kTargetAspect;   // 縦が余る → 上下に帯
+        // ★ビューポート専用ツールバー（フェーズ 1a）は 3D の「上端の別帯」。帯の高さぶんだけ 3D の矩形を縮める
+        //   （ゲームの絵に何も重ねない）。帯を隠せば従来とまったく同じ矩形（決定論スクショの前提）。
+        //   Play 中も帯は同じ高さで出す（Editor ⇄ Play で 3D の矩形を揺らさない）。
+        const float barH = (std::min)(ViewportToolbar::HeightPx(*m_ctx), nodeSize.y * 0.5f);
+        m_viewportBar->Update(*m_ctx, camera, scene, isPlaying, ImGui::GetIO().DeltaTime);
 
-        m_viewportPos  = ImVec2(nodePos.x + (nodeSize.x - vpSize.x) * 0.5f,
-                                nodePos.y + (nodeSize.y - vpSize.y) * 0.5f);
+        // アスペクト: 既定は 16:9 固定（中央ノードに収まる最大の矩形を中央寄せ。余白はバックバッファのクリア色の帯）。
+        // エディタ中は帯のメニューで 16:10 / 21:9 / 4:3 / 1:1 / 縦 / フィット を選べる。Play 中は常に 16:9（ゲームの絵と揃える）。
+        const int aspIdx = std::clamp(m_ctx->vpPrefs.aspectIndex, 0, vp::kAspectCount - 1);
+        const float aspect = isPlaying ? vp::kAspects[vp::kAspectDefault].ratio : vp::kAspects[aspIdx].ratio;
+        const vp::Rect fit = vp::FitAspect(nodePos.x, nodePos.y + barH, nodeSize.x, nodeSize.y - barH, aspect);
+        const ImVec2 vpSize(fit.w, fit.h);
+
+        m_viewportPos  = ImVec2(fit.x, fit.y);
         m_viewportSize = vpSize;
+        m_viewportBarPos = nodePos;
+        m_viewportBarW   = nodeSize.x;
+        m_viewportBarH   = barH;
 
         // Application のフライカメラ発動判定で使うため EditorContext に矩形を共有
         m_ctx->viewportX = m_viewportPos.x;
@@ -385,6 +395,21 @@ void EditorLayer::Render(bool isPlaying,
         m_ctx->viewportW = m_viewportSize.x;
         m_ctx->viewportH = m_viewportSize.y;
     }
+
+    // ===== レイアウトの後処理（分割比の吸い上げ / 下部ドックの最大化 / 整列 / 永続化）と、レイアウト管理の窓 =====
+    {
+        const float minVp = m_viewportBarH + ui::Px(160.0f);   // 下部ドック最大化でもビューポートに残す高さ（帯 + ゲーム絵の最低限）
+        // 整列の領域 = ツールバーの下〜ステータスバーの上のメインウィンドウ全体（大きな独立窓が右へはみ出さないように）
+        const ImGuiViewport* mvp = ImGui::GetMainViewport();
+        const float ay = m_viewportBarPos.y;
+        const float ah = (std::max)(mvp->Pos.y + mvp->Size.y - StatusBarHeight() - ay, 1.0f);
+        m_workspace->EndDockFrame(*m_ctx, mvp->Pos.x, ay, mvp->Size.x, ah, minVp);
+    }
+    prefs::Tick();   // 保留中の設定を（変化があって 1.5 秒経っていれば）書く
+
+    // ===== ビューポート専用ツールバー + ビューキューブ（3D の上端の別帯。ゲームの絵には重ならない）=====
+    theme::RestoreMainScale();
+    m_viewportBar->Render(*m_ctx, camera, scene, physicsDebugDraw, isPlaying, m_viewportBarPos, m_viewportBarW, m_viewportBarH);
 
     // ※ ビューポートに重ねていた HUD（FPS/objects/draws/culled のピルと選択名ラベル）は
     //    下部ステータスバーへ移設した。3D ビューの上には何も置かない
@@ -587,14 +612,16 @@ void EditorLayer::Render(bool isPlaying,
         //   止まっている(ステイル)。回転ギズモは輪が細いので、このズレでクリックがピッキングに
         //   横取りされ「見えてる輪とズレた所で反応する」状態になる。先に Manipulate を回せば
         //   現在フレームのマウスで掴み判定が確定し、IsUsing() が立つので HandlePicking が正しく弾く。
-        m_sceneView->RenderGizmo(reg, *m_ctx, camera,
-                                 m_viewportPos.x, m_viewportPos.y,
-                                 m_viewportSize.x, m_viewportSize.y);
+        if (m_ctx->vpPrefs.showGizmo)   // 表示フラグ（帯 > 表示 > 変形ギズモ）。既定 ON
+            m_sceneView->RenderGizmo(reg, *m_ctx, camera,
+                                     m_viewportPos.x, m_viewportPos.y,
+                                     m_viewportSize.x, m_viewportSize.y);
         // ライトの直接操作（L+マウスで太陽を回す / コーン角・range・向きのハンドル）と
         // 影響範囲ワイヤの描画。RunViewportTools より前に呼ぶこと：当たり判定とドラッグ処理を
         // 「今フレームのマウス位置」で先に済ませ、その結果を viewportToolHandlers 経由で
         // 「このクリックは食った」として伝えるため（ギズモを先に回すのと同じ理由）。
-        LightHandlesFrame(reg, *m_ctx, camera);
+        if (m_ctx->vpPrefs.showLightHandles)
+            LightHandlesFrame(reg, *m_ctx, camera);
         // ビューポートツール（地形ブラシ / ライトのハンドル操作など）の受け口。
         // ギズモの次・UI 編集/3D ピッキングの前に回し、消費されたら以降の編集操作をしない。
         m_sceneView->RunViewportTools(*m_ctx, camera,
@@ -608,12 +635,21 @@ void EditorLayer::Render(bool isPlaying,
         m_sceneView->HandlePicking(reg, *m_ctx, camera,
                                    m_viewportPos.x, m_viewportPos.y,
                                    m_viewportSize.x, m_viewportSize.y);
+        // ホバー強調用のレイ（ピッキングの後。クリックで選択が変わったフレームは古い結果を使わない）
+        m_sceneView->UpdateHover(reg, *m_ctx, camera,
+                                 m_viewportPos.x, m_viewportPos.y,
+                                 m_viewportSize.x, m_viewportSize.y);
         m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
                                      m_viewportPos.x, m_viewportPos.y,
                                      m_viewportSize.x, m_viewportSize.y);
         m_sceneView->HandleTextureContextMenu(reg, *m_ctx, camera,
                                               m_viewportPos.x, m_viewportPos.y,
                                               m_viewportSize.x, m_viewportSize.y);
+    }
+    else
+    {
+        m_ctx->hoveredEntity = entt::null;   // Play 中は輪郭を出さない
+        m_ctx->marqueeActive = false;
     }
 
     // 選択中の Brain の知覚・行動（Play 中・一時停止中。エディタの編集操作には関わらない表示だけ）
@@ -627,6 +663,7 @@ void EditorLayer::Render(bool isPlaying,
     // どちらも最後に描く＝他のパネルより手前。トーストはステータスバーの上に積む。
     theme::RestoreMainScale();
     m_palette->Render(*m_ctx, cmdEnv, reg, m_assetBrowser.get());
+    m_workspace->DrawWindows(*m_ctx);   // レイアウトを保存 / ツール窓の配置先（要求が立った時だけ出る独立窓）
     ui::RenderToasts(ImGui::GetIO().DeltaTime, StatusBarHeight());
 
     // ===== フローティング窓をメインウィンドウ内へ収める領域を渡す =====

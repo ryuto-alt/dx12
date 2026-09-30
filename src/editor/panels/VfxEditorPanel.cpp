@@ -1,4 +1,5 @@
 #include "editor/UiWidgets.h"
+#include "editor/PropertyGrid.h"   // pg:: 2 カラム（フェーズ 1b: 生の ImGui フォームをインスペクタと同じ見た目へ）
 #include "editor/panels/VfxEditorPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/UndoSystem.h"
@@ -395,8 +396,7 @@ std::string VfxEditorPanel::BuildLuaSnippet() const
 
 void VfxEditorPanel::DrawColorGradient()
 {
-    ImGui::TextUnformatted("色の変化 Color Over Life");
-    ui::Checkbox("中間色を使う HasColorMid", &m_current.hasColorMid);
+    ImGui::SeparatorText("色の変化 Color Over Life");
 
     const float barW = ImGui::GetContentRegionAvail().x;
     const float barH = ui::Px(26.0f);
@@ -423,37 +423,39 @@ void VfxEditorPanel::DrawColorGradient()
             toU32(m_current.color), toU32(m_current.colorEnd),
             toU32(m_current.colorEnd), toU32(m_current.color));
     }
-    dl->AddRect(p0, ImVec2(p0.x + barW, p0.y + barH), IM_COL32(90, 90, 100, 255));
+    dl->AddRect(p0, ImVec2(p0.x + barW, p0.y + barH), ImGui::GetColorU32(theme::BorderStrong));
     ImGui::Dummy(ImVec2(barW, barH + ui::Px(4.0f)));
 
-    ImGui::SetNextItemWidth(ui::Px(120.0f));
-    ImGui::ColorEdit3("開始 Start##col", &m_current.color.x);
-    if (m_current.hasColorMid)
+    if (pg::Begin("##vfxColor"))
     {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ui::Px(120.0f));
-        ImGui::ColorEdit3("中間 Mid##col", &m_current.colorMid.x);
+        pg::Checkbox("中間色を使う HasColorMid", &m_current.hasColorMid);
+        pg::Color3("開始 Start", &m_current.color.x);
+        if (m_current.hasColorMid)
+            pg::Color3("中間 Mid", &m_current.colorMid.x);
+        pg::Color3("終了 End", &m_current.colorEnd.x);
+        pg::End();
     }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ui::Px(120.0f));
-    ImGui::ColorEdit3("終了 End##col", &m_current.colorEnd.x);
 }
 
 void VfxEditorPanel::DrawSizeCurve()
 {
-    ImGui::TextUnformatted("サイズの変化 Size Over Life");
+    ImGui::SeparatorText("サイズの変化 Size Over Life");
 
     bool useMid = (m_current.sizeMid >= 0.0f);
-    if (ui::Checkbox("中間サイズを使う HasSizeMid", &useMid))
-        m_current.sizeMid = useMid ? (m_current.size + m_current.sizeEnd) * 0.5f : -1.0f;
+    if (pg::Begin("##vfxSizeMid"))
+    {
+        if (pg::Checkbox("中間サイズを使う HasSizeMid", &useMid))
+            m_current.sizeMid = useMid ? (m_current.size + m_current.sizeEnd) * 0.5f : -1.0f;
+        pg::End();
+    }
 
     const float graphW = ImGui::GetContentRegionAvail().x;
     const float graphH = ui::Px(84.0f);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const ImVec2 p1 = ImVec2(p0.x + graphW, p0.y + graphH);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p0, p1, IM_COL32(22, 22, 28, 255));
-    dl->AddRect(p0, p1, IM_COL32(90, 90, 100, 255));
+    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(theme::InputBg));
+    dl->AddRect(p0, p1, ImGui::GetColorU32(theme::BorderStrong));
 
     const float maxV = (std::max)({m_current.size, m_current.sizeEnd,
                                     useMid ? m_current.sizeMid : 0.0f, 0.05f}) * 1.35f;
@@ -463,15 +465,16 @@ void VfxEditorPanel::DrawSizeCurve()
 
     const ImVec2 ptStart = toPt(0.0f, m_current.size);
     const ImVec2 ptEnd   = toPt(1.0f, m_current.sizeEnd);
+    const ImU32 curveCol = ImGui::GetColorU32(theme::AccentHover);
     if (useMid)
     {
         const ImVec2 ptMid = toPt(0.5f, m_current.sizeMid);
-        dl->AddLine(ptStart, ptMid, IM_COL32(130, 200, 255, 255), ui::PxF(2.0f));
-        dl->AddLine(ptMid, ptEnd,   IM_COL32(130, 200, 255, 255), ui::PxF(2.0f));
+        dl->AddLine(ptStart, ptMid, curveCol, ui::PxF(2.0f));
+        dl->AddLine(ptMid, ptEnd,   curveCol, ui::PxF(2.0f));
     }
     else
     {
-        dl->AddLine(ptStart, ptEnd, IM_COL32(130, 200, 255, 255), ui::PxF(2.0f));
+        dl->AddLine(ptStart, ptEnd, curveCol, ui::PxF(2.0f));
     }
 
     ImGui::PushID("SizeCurve");
@@ -486,7 +489,7 @@ void VfxEditorPanel::DrawSizeCurve()
             if (value < 0.0f) value = 0.0f;
         }
         dl->AddCircleFilled(pos, (hovered || active) ? ui::PxF(6.0f) : ui::PxF(4.5f),
-            active ? IM_COL32(255, 220, 120, 255) : IM_COL32(220, 220, 230, 255));
+            ImGui::GetColorU32(active ? theme::Warn : theme::Text));
     };
     handle("start", ptStart, m_current.size);
     if (useMid) handle("mid", toPt(0.5f, m_current.sizeMid), m_current.sizeMid);
@@ -495,17 +498,14 @@ void VfxEditorPanel::DrawSizeCurve()
 
     ImGui::SetCursorScreenPos(ImVec2(p0.x, p1.y + ui::Px(6.0f)));
 
-    ImGui::SetNextItemWidth(ui::Px(100.0f));
-    ui::DragFloat("開始 Start##sz", &m_current.size, 0.01f, 0.0f, 20.0f);
-    if (useMid)
+    if (pg::Begin("##vfxSize"))
     {
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(ui::Px(100.0f));
-        ui::DragFloat("中間 Mid##sz", &m_current.sizeMid, 0.01f, 0.0f, 20.0f);
+        pg::Float("開始 Start", &m_current.size, 0.01f, 0.0f, 20.0f);
+        if (useMid)
+            pg::Float("中間 Mid", &m_current.sizeMid, 0.01f, 0.0f, 20.0f);
+        pg::Float("終了 End", &m_current.sizeEnd, 0.01f, 0.0f, 20.0f);
+        pg::End();
     }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ui::Px(100.0f));
-    ui::DragFloat("終了 End##sz", &m_current.sizeEnd, 0.01f, 0.0f, 20.0f);
 }
 
 void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const std::string& assetsDir,
@@ -665,50 +665,47 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
 
     ImGui::SameLine();
     ImGui::BeginChild("##VfxEmission", ImVec2(0.0f, ui::Px(256.0f)), false);
-    ui::Combo("見た目 Kind", &m_current.kind, kKindNames, IM_ARRAYSIZE(kKindNames));
-    const char* blends[] = { "加算 Additive", "アルファ Alpha" };
-    ui::Combo("合成 Blend", &m_current.blend, blends, IM_ARRAYSIZE(blends));
+    if (pg::Begin("##vfxEmission"))
     {
-        const char* orients[] = { "ビルボード(カメラ正対)", "水平(地面向き)", "垂直(+Z正対)" };
-        ui::Combo("向き Orient", &m_current.orient, orients, IM_ARRAYSIZE(orients));
-        ImGui::SameLine(); ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("粒子クアッドの向き。水平=リング/衝撃波/魔法陣向け。\n"
-                              "stretch>0 の速度ストレッチ時と GPUパーティクルでは無効");
-    }
+        pg::Combo("見た目 Kind", &m_current.kind, kKindNames, IM_ARRAYSIZE(kKindNames));
+        const char* blends[] = { "加算 Additive", "アルファ Alpha" };
+        pg::Combo("合成 Blend", &m_current.blend, blends, IM_ARRAYSIZE(blends));
+        {
+            const char* orients[] = { "ビルボード(カメラ正対)", "水平(地面向き)", "垂直(+Z正対)" };
+            pg::Combo("向き Orient", &m_current.orient, orients, IM_ARRAYSIZE(orients),
+                      "粒子クアッドの向き。水平=リング/衝撃波/魔法陣向け。\n"
+                      "stretch>0 の速度ストレッチ時と GPUパーティクルでは無効");
+        }
 
-    {
-        static char texBuf[260] = "";
-        ImGui::SetNextItemWidth(-1.0f);
-        ui::InputTextWithHint("##vfxtex", "テクスチャ(assetsからの相対パス。空=プロシージャル質感)",
-                                 texBuf, sizeof(texBuf));
-        if (ImGui::IsItemDeactivatedAfterEdit()) m_current.texturePath = texBuf;
-        if (!ImGui::IsItemActive() && m_current.texturePath != texBuf)
         {
-            size_t n = m_current.texturePath.size();
-            if (n >= sizeof(texBuf)) n = sizeof(texBuf) - 1;
-            std::memcpy(texBuf, m_current.texturePath.c_str(), n);
-            texBuf[n] = '\0';
+            static char texBuf[260] = "";
+            pg::Label("テクスチャ Texture",
+                      "指定すると Kind の数式模様の代わりに画像をビルボード貼り付け表示する。\n"
+                      "色は寿命カーブの頂点色で乗算、アルファは画像のアルファをそのまま使用。\n"
+                      "assets からの相対パス。空=プロシージャル質感");
+            ImGui::PushID("vfxtex");
+            ui::InputTextWithHint("##vfxtex", "assets からの相対パス（空=プロシージャル）",
+                                     texBuf, sizeof(texBuf));
+            if (ImGui::IsItemDeactivatedAfterEdit()) m_current.texturePath = texBuf;
+            if (!ImGui::IsItemActive() && m_current.texturePath != texBuf)
+            {
+                size_t n = m_current.texturePath.size();
+                if (n >= sizeof(texBuf)) n = sizeof(texBuf) - 1;
+                std::memcpy(texBuf, m_current.texturePath.c_str(), n);
+                texBuf[n] = '\0';
+            }
+            ImGui::PopID();
         }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if (ImGui::BeginItemTooltip())
-        {
-            ImGui::TextUnformatted("指定すると Kind の数式模様の代わりに画像をビルボード貼り付け表示する。\n"
-                                    "色は寿命カーブの頂点色で乗算、アルファは画像のアルファをそのまま使用。");
-            ImGui::EndTooltip();
-        }
+        pg::Group("放出（配置エンティティ用）");
+        pg::Float("放出レート Rate(/s)", &m_current.rate, 0.5f, 0.0f, 500.0f);
+        pg::Checkbox("Play開始で放出 PlayOnStart", &m_current.playOnStart);
+        pg::Checkbox("ループ Looping", &m_current.looping);
+        if (!m_current.looping)
+            pg::Float("継続秒 Duration", &m_current.duration, 0.05f, 0.0f, 60.0f);
+        pg::Int("Luaバースト数 BurstCount", &m_current.burstCount, 1, 1, 2000, nullptr,
+                "「Luaコードをコピー」で生成する fx:burst{} が一度に出す粒子数");
+        pg::End();
     }
-    ImGui::SeparatorText("放出（配置エンティティ用）");
-    ui::DragFloat("放出レート Rate(/s)", &m_current.rate, 0.5f, 0.0f, 500.0f);
-    ui::Checkbox("Play開始で放出 PlayOnStart", &m_current.playOnStart);
-    ui::Checkbox("ループ Looping", &m_current.looping);
-    if (!m_current.looping)
-        ui::DragFloat("継続秒 Duration", &m_current.duration, 0.05f, 0.0f, 60.0f);
-    ui::DragInt("Luaバースト数 BurstCount", &m_current.burstCount, 1, 1, 2000);
-    ImGui::SameLine(); ImGui::TextDisabled("(?)");
-    if (ImGui::BeginItemTooltip())
-    { ImGui::TextUnformatted("「Luaコードをコピー」で生成する fx:burst{} が一度に出す粒子数"); ImGui::EndTooltip(); }
     ImGui::EndChild();
 
     ImGui::Separator();
@@ -717,30 +714,34 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     DrawColorGradient();
     ImGui::Spacing();
     DrawSizeCurve();
-    ImGui::SeparatorText("寿命・輝度");
-    ui::DragFloat("寿命 Life(s)", &m_current.life, 0.01f, 0.01f, 30.0f);
-    ui::SliderFloat("寿命ばらつき LifeVar", &m_current.lifeVar, 0.0f, 1.0f);
-    ui::DragFloat("輝度 Intensity", &m_current.intensity, 0.05f, 0.0f, 30.0f);
-    ImGui::SeparatorText("動き");
-    ImGui::DragFloat3("方向 Dir", &m_current.dir.x, 0.01f);
-    ui::SliderFloat("拡がり Spread", &m_current.spread, 0.0f, 1.0f);
-    ui::DragFloat("速度 Speed", &m_current.speed, 0.02f, 0.0f, 50.0f);
-    ui::SliderFloat("速度ばらつき SpeedVar", &m_current.speedVar, 0.0f, 1.0f);
-    ui::DragFloat("重力 Gravity", &m_current.gravity, 0.02f, -50.0f, 50.0f);
-    ui::DragFloat("抵抗 Drag", &m_current.drag, 0.02f, 0.0f, 10.0f);
-    ui::DragFloat("上向き Up", &m_current.up, 0.02f, 0.0f, 10.0f);
-    ui::DragFloat("ストレッチ Stretch", &m_current.stretch, 0.02f, 0.0f, 10.0f);
-    ui::DragFloat("乱流 TurbStrength", &m_current.turbStrength, 0.01f, 0.0f, 10.0f);
-    if (m_current.turbStrength > 0.0f)
-        ui::DragFloat("乱流の細かさ TurbFreq", &m_current.turbFreq, 0.01f, 0.01f, 10.0f);
-    ImGui::SeparatorText("特殊効果");
-    ui::SliderFloat("画面歪み Distort", &m_current.distort, 0.0f, 3.0f);
-    ui::Checkbox("ライト放出 Light", &m_current.light);
-    if (m_current.light)
-        ui::DragFloat("光の距離 LightRange", &m_current.lightRange, 0.05f, 0.1f, 50.0f);
-    ui::SliderFloat("明滅 Flicker", &m_current.flicker, 0.0f, 1.0f);
-    if (m_current.flicker > 0.0f)
-        ui::DragFloat("明滅の速さ FlickerFreq", &m_current.flickerFreq, 0.2f, 0.1f, 60.0f);
+    if (pg::Begin("##vfxParams"))
+    {
+        pg::Group("寿命・輝度");
+        pg::Float("寿命 Life(s)", &m_current.life, 0.01f, 0.01f, 30.0f);
+        pg::SliderFloat("寿命ばらつき LifeVar", &m_current.lifeVar, 0.0f, 1.0f);
+        pg::Float("輝度 Intensity", &m_current.intensity, 0.05f, 0.0f, 30.0f);
+        pg::Group("動き");
+        pg::Float3("方向 Dir", &m_current.dir.x, 0.01f);
+        pg::SliderFloat("拡がり Spread", &m_current.spread, 0.0f, 1.0f);
+        pg::Float("速度 Speed", &m_current.speed, 0.02f, 0.0f, 50.0f);
+        pg::SliderFloat("速度ばらつき SpeedVar", &m_current.speedVar, 0.0f, 1.0f);
+        pg::Float("重力 Gravity", &m_current.gravity, 0.02f, -50.0f, 50.0f);
+        pg::Float("抵抗 Drag", &m_current.drag, 0.02f, 0.0f, 10.0f);
+        pg::Float("上向き Up", &m_current.up, 0.02f, 0.0f, 10.0f);
+        pg::Float("ストレッチ Stretch", &m_current.stretch, 0.02f, 0.0f, 10.0f);
+        pg::Float("乱流 TurbStrength", &m_current.turbStrength, 0.01f, 0.0f, 10.0f);
+        if (m_current.turbStrength > 0.0f)
+            pg::Float("乱流の細かさ TurbFreq", &m_current.turbFreq, 0.01f, 0.01f, 10.0f);
+        pg::Group("特殊効果");
+        pg::SliderFloat("画面歪み Distort", &m_current.distort, 0.0f, 3.0f);
+        pg::Checkbox("ライト放出 Light", &m_current.light);
+        if (m_current.light)
+            pg::Float("光の距離 LightRange", &m_current.lightRange, 0.05f, 0.1f, 50.0f);
+        pg::SliderFloat("明滅 Flicker", &m_current.flicker, 0.0f, 1.0f);
+        if (m_current.flicker > 0.0f)
+            pg::Float("明滅の速さ FlickerFreq", &m_current.flickerFreq, 0.2f, 0.1f, 60.0f);
+        pg::End();
+    }
     ImGui::EndChild();
 
     ImGui::Separator();
@@ -766,7 +767,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     if (m_statusFlash > 0.0f)
     {
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f), "%s", m_statusMsg.c_str());
+        ImGui::TextColored(theme::Good, "%s", m_statusMsg.c_str());
         m_statusFlash -= ImGui::GetIO().DeltaTime;
     }
 

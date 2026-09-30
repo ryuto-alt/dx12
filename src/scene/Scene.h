@@ -17,6 +17,9 @@
 #include "renderer/ShadowPcssSettings.h"
 #include "renderer/RtSettings.h"
 #include "renderer/DdgiVolume.h"   // DdgiSettings
+#include "renderer/vg/VgSettings.h"   // 仮想ジオメトリ（既定 OFF）
+#include "renderer/foliage/SceneWind.h"   // 植生 F1 の風（シーン設定。FoliageLayer が無ければ誰も読まない）
+#include "renderer/atmosphere/AtmosphereSettings.h"   // 物理ベース大気 A1（既定 OFF＝従来の空）
 #include "renderer/SsrSettings.h"
 #include "renderer/SsgiSettings.h"
 #include "renderer/TaaSettings.h"
@@ -48,6 +51,17 @@ struct SkyboxSettings
     float       iblIntensity   = 1.0f;
     float       skyboxIntensity = 1.0f;
     bool        drawSkybox     = true; // false=IBL のみ（背景は塗らない）
+};
+
+// シーケンサー(.dxseq)の自動再生設定（シーン単位）。Play 開始時に、ここに並べたシーケンスを順に再生する。
+// 実体は assets/sequences/<sequence>.dxseq。既定の時計は実時間（タイムスケール非適用。設計書 §3.5）。
+struct SequenceAutoPlay
+{
+    std::string sequence;         // assets/sequences/ の名前（または assets 相対の .dxseq パス）
+    bool        loop = false;
+    float       rate = 1.0f;
+    float       startDelay = 0.0f;   // Play 開始からの待ち（秒）
+    bool        clockGame = false;   // true = ゲーム時間（タイムスケール適用）。既定は実時間
 };
 
 // .animfsm のクリップイベント（足音等）が発火したときの通知。
@@ -197,6 +211,19 @@ public:
     DdgiSettings&       GetDdgiSettings()       { return m_ddgi; }
     const DdgiSettings& GetDdgiSettings() const { return m_ddgi; }
 
+    // 仮想ジオメトリ（Nanite 風）。既定 OFF。P2 時点は GPU カリングの統計だけで描かない
+    // （.vgeo のプロキシは従来経路で描かれる）。
+    vg::VirtualGeometrySettings&       GetVirtualGeometrySettings()       { return m_vg; }
+    const vg::VirtualGeometrySettings& GetVirtualGeometrySettings() const { return m_vg; }
+
+    // シーンの風（植生 F1）。FoliageLayer の頂点アニメだけに効く。シーン JSON の "wind" に保存（既定と同じなら書かない）。
+    foliage::SceneWind&       GetWind()       { return m_wind; }
+    const foliage::SceneWind& GetWind() const { return m_wind; }
+
+    // 物理ベース大気 A1（Hillaire 2020）。既定 OFF＝従来の空・従来の時刻曲線・従来の IBL でビット一致。シーン JSON の "atmosphere" に保存（既定と同じなら書かない）。
+    AtmosphereSettings&       GetAtmosphereSettings()       { return m_atmosphere; }
+    const AtmosphereSettings& GetAtmosphereSettings() const { return m_atmosphere; }
+
     TaaSettings&       GetTaaSettings()       { return m_taa; }
     const TaaSettings& GetTaaSettings() const { return m_taa; }
 
@@ -222,6 +249,10 @@ public:
     nav::NavMesh&              GetNavMesh()         { return m_navMesh; }
     const nav::NavMesh&        GetNavMesh()   const { return m_navMesh; }
     bool HasNavMesh() const { return !m_navMesh.Empty(); }
+    // ===== シーケンサーの自動再生（シーン JSON の "sequencePlayers"。既定は空 = 何もしない）=====
+    std::vector<SequenceAutoPlay>&       GetSequenceAutoPlay()       { return m_sequenceAutoPlay; }
+    const std::vector<SequenceAutoPlay>& GetSequenceAutoPlay() const { return m_sequenceAutoPlay; }
+
     // シーンビューにナビメッシュのワイヤを重ねるか（デバッグ表示。シーンには保存しない）
     bool GetNavDebugDraw() const { return m_navDebugDraw; }
     void SetNavDebugDraw(bool v) { m_navDebugDraw = v; }
@@ -275,6 +306,9 @@ private:
     SsgiSettings        m_ssgi;
     RtSettings          m_rt;
     DdgiSettings        m_ddgi;
+    vg::VirtualGeometrySettings m_vg;
+    foliage::SceneWind          m_wind;
+    AtmosphereSettings          m_atmosphere;
     TaaSettings         m_taa;
     VolumetricFogSettings m_volFog;
     std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効
@@ -282,6 +316,7 @@ private:
     nav::NavBuildConfig m_navConfig;               // シーン JSON に保存する生成パラメータ
     nav::NavMesh        m_navMesh;                 // 焼いた実体（.nav から読む / エディタで焼く）
     bool                m_navDebugDraw = false;    // ワイヤ表示（保存しない）
+    std::vector<SequenceAutoPlay> m_sequenceAutoPlay;   // Play 開始時に再生するシーケンス（シーン JSON に保存）
     std::vector<SceneAnimEvent> m_pendingAnimEvents;
 
     ResourceManager*  m_resourceManager = nullptr;

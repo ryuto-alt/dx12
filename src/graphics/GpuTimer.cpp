@@ -23,6 +23,7 @@ const char* GpuTimer::Name(u32 s)
     case Particles:   return "particles";
     case PostFX:      return "postFx";
     case UI:          return "ui";
+    case VgCull:      return "vgCull";
     default:          return "?";
     }
 }

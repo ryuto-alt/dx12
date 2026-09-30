@@ -70,6 +70,15 @@ struct Comment
     float x = 0, y = 0, w = 200, h = 120;
 };
 
+// エディタのキャンバスの見え方（パン・ズーム）。UI 状態なので Version() を進めない（.dxmg の "view" キー。無ければ valid=false）。
+struct ViewInfo
+{
+    bool  valid = false;
+    float panX = 0.0f, panY = 0.0f;
+    float zoom = 1.0f;
+    bool operator==(const ViewInfo& o) const { return valid == o.valid && panX == o.panX && panY == o.panY && zoom == o.zoom; }
+};
+
 struct GraphSettings
 {
     std::string blendMode    = "Opaque";      // Opaque / Masked / Translucent / Additive
@@ -152,6 +161,8 @@ public:
     void SetName(const std::string& n);
     const GraphSettings& Settings() const { return m_settings; }
     void SetSettings(const GraphSettings& s);
+    const ViewInfo& View() const { return m_view; }
+    void SetView(const ViewInfo& v) { m_view = v; }   // 通知もバージョン更新もしない（UI 状態）
 
     // ---- バージョン -------------------------------------------------------------
     // Version()          : どんな変更でも +1
@@ -239,6 +250,7 @@ private:
     std::map<NodeId, Node>          m_nodes;
     std::map<std::string, Comment>  m_comments;
     GraphSettings                   m_settings;
+    ViewInfo                        m_view;
     std::string                     m_guid;
     std::string                     m_name;
     uint64_t                        m_version = 1;

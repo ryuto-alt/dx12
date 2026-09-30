@@ -24,11 +24,16 @@ const std::vector<ShaderSource>& BuildRegistry()
 {
     static const std::vector<ShaderSource> registry = {
         {
+            // ★シェーディング尾部は ForwardShade.hlsli（+ 契約構造体 UnoSurface.hlsli）へ外出しした
+            //   （マテリアルグラフ G2a）。Forward / ForwardSkinned / Terrain の 3 本が共有するので、
+            //   どれを直しても 3 本とも再コンパイルされるようにここへ入れる（ShaderIncludeDepsTests が見張る）。
             "forward/Forward.hlsl",
             {
                 { L"Forward_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"Forward_PS.cso", L"PSMain", L"ps_6_0" },
                 { L"ForwardLdr_PS.cso", L"PSMain", L"ps_6_0", L"LDR_OUTPUT=1" },
+                // Q2: 物理ライティング単位バリアント（点/スポットが逆二乗。既定の .cso は無変更）
+                { L"ForwardPhys_PS.cso", L"PSMain", L"ps_6_0", L"UNO_PHYSICAL_LIGHTS=1" },
             },
             // ★DecalApply/DecalCommon を落としていた。Forward.hlsl も ForwardSkinned.hlsl も
             //   実際に #include しているのに、この手書き表に無いせいで DecalApply.hlsli を
@@ -36,7 +41,8 @@ const std::vector<ShaderSource>& BuildRegistry()
             //   「シェーダーホットリロード成功: forward/Terrain.hlsl」だけがログに出る。
             //   ズレは ShaderIncludeDepsTests が見張る。
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
-              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli" },
+              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
+              "forward/ForwardShade.hlsli", "forward/UnoSurface.hlsli" },
         },
         {
             "forward/ForwardSkinned.hlsl",
@@ -50,7 +56,8 @@ const std::vector<ShaderSource>& BuildRegistry()
             //   「シェーダーホットリロード成功: forward/Terrain.hlsl」だけがログに出る。
             //   ズレは ShaderIncludeDepsTests が見張る。
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
-              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli" },
+              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
+              "forward/ForwardShade.hlsli", "forward/UnoSurface.hlsli" },
         },
         {
             // クラスタードライティング（Forward+）のライトカリング compute。
@@ -117,7 +124,8 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Terrain_PS.cso", L"PSMain", L"ps_6_0" },
             },
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
-              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli" },
+              "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
+              "forward/ForwardShade.hlsli", "forward/UnoSurface.hlsli" },
         },
         {
             "shadow/ShadowPass.hlsl",
@@ -148,7 +156,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"PostProcess_VS.cso", L"FSTriVS", L"vs_6_0" },
                 { L"PostProcess_PS.cso", L"PostPS", L"ps_6_0" },
             },
-            { "post/FullscreenTri.hlsli" },
+            { "post/FullscreenTri.hlsli", "post/Tonemap.hlsli" },
         },
         {
             "post/Bloom.hlsl",
@@ -165,6 +173,12 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ExposureHistogram_CS.cso", L"CSHistogram", L"cs_6_0" },
                 { L"ExposureAdapt_CS.cso", L"CSAdapt", L"cs_6_0" },
             },
+            {},
+        },
+        {
+            // Q2: 線形 HDR スクリーンショットの読み出し（要求のあるフレームだけ走る compute）
+            "post/LinearCapture.hlsl",
+            { { L"LinearCapture_CS.cso", L"CSMain", L"cs_6_0" } },
             {},
         },
         {

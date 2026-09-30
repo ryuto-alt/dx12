@@ -151,6 +151,16 @@
 #define ICON_WAND           "\xee\x8d\x97"   // U+E357 lucide:wand-sparkles
 #define ICON_HISTORY        "\xee\x87\xb5"   // U+E1F5 lucide:history
 #define ICON_FOLDER_GIT     "\xee\x90\x8a"   // U+E40A lucide:folder-git-2
+// ---- ビューポート専用ツールバー用（フェーズ 1a）----
+#define ICON_BOOKMARK       "\xee\x81\xa0"   // U+E060 lucide:bookmark
+#define ICON_MAGNET         "\xee\x8a\xb5"   // U+E2B5 lucide:magnet
+#define ICON_RULER          "\xee\x85\x8b"   // U+E14B lucide:ruler
+#define ICON_RECT           "\xee\x8d\xb6"   // U+E376 lucide:rectangle-horizontal
+#define ICON_AXIS3D         "\xee\x8b\xbe"   // U+E2FE lucide:axis-3d
+#define ICON_CAMERA         "\xee\x81\xa4"   // U+E064 lucide:camera
+#define ICON_FOCUS          "\xee\x8a\x9e"   // U+E29E lucide:focus
+#define ICON_SCAN_EYE       "\xee\x94\xb6"   // U+E536 lucide:scan-eye
+#define ICON_RATIO          ""   // U+E4E8 lucide:ratio
 
 namespace dx12e
 {

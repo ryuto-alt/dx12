@@ -69,6 +69,14 @@ public:
                        Camera* camera,
                        f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
+    // ホバー強調用: マウスの下のエンティティを ctx.hoveredEntity へ（精密ピッキングの結果。CPU のレイ 1 本）。
+    // マウスが動いたときと数フレームに 1 回だけ引き直す。ドラッグ中・ギズモ操作中・パネル上は null。
+    // 描画は SelectionOutline（エディタ専用の後処理）が ctx.hoveredEntity を読んで弱い輪郭を出す。
+    void UpdateHover(entt::registry& reg,
+                     EditorContext& ctx,
+                     Camera* camera,
+                     f32 vpX, f32 vpY, f32 vpW, f32 vpH);
+
     // 現在のマウス位置でレイキャストし、ヒットしたエンティティ+サブメッシュ番号を返す
     // (選択状態は変更しない、副作用なしの問い合わせ)。ヒット無しは entity=entt::null。
     // 中身は HandlePicking と同じ RaycastScene（メッシュ限定モード）。
@@ -127,6 +135,17 @@ private:
 
     // 右クリックのコンテキストメニュー対象(押下時にピッキングして確定、Popup描画まで保持)
     SubmeshPickResult m_textureCtxTarget{};
+
+    // ---- ホバーの引き直しキャッシュ ----
+    DirectX::XMFLOAT2 m_hoverMouse{-1e9f, -1e9f};
+    int               m_hoverAge = 0;
+
+    // ---- 矩形選択（何も無い所から左ドラッグ）----
+    bool              m_mqDown   = false;   // 空所でクリックした（ドラッグになるかの見張り中）
+    bool              m_mqActive = false;   // しきい値を超えて矩形選択中
+    bool              m_mqAdd    = false;   // Ctrl / Shift で開始 = 今の選択に足す
+    DirectX::XMFLOAT2 m_mqStart{0.0f, 0.0f};
+    void UpdateMarquee(entt::registry& reg, EditorContext& ctx, Camera* camera, f32 vpX, f32 vpY, f32 vpW, f32 vpH);
 
     // ---- UI 編集モード（ctx.uiEditMode）のドラッグ状態 ----
     // m_uiDragEdges: -1=非ドラッグ, 0=移動, 正=リサイズ中エッジの bit 組み合わせ

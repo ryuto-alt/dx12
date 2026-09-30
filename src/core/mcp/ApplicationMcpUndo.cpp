@@ -24,6 +24,7 @@
 //   ・commit / rollback の応答が返る前に届いた書き込みは MODE_CONFLICT（内外どちらか決められない）
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpSafety.h"   // M5: トランザクションとファイルジャーナルの紐付け
 
 #include <chrono>
 
@@ -46,8 +47,11 @@ void Application::McpUndoAutoClose(const char* reason)
     const std::string label = router.TxLabel();
     const size_t      calls = router.TxCalls();
     if (router.AutoClose(reason, McpNowSec()))
+    {
+        mcpjournal::Instance().CommitTx();   // M5: ファイルの退避も確定扱い（journal_restore で戻せる）
         Logger::Warn("MCP トランザクション『{}』（{} 件）を確定扱いで閉じました（理由: {}）。"
                      "Undo 1 回で丸ごと戻せます", label, calls, reason);
+    }
 }
 
 namespace
@@ -125,6 +129,9 @@ void Application::RegisterMcpUndoMethods()
                     "transaction '" + router.TxLabel() + "' is already open (nesting is not allowed)",
                     "入れ子は不可。transaction_status で中身を確かめ、transaction_commit か "
                     "transaction_rollback で閉じてから begin すること");
+            // M5: トランザクション中のファイル書き込み（save_scene / create_lua_component / …）を 1 つのジャーナルエントリへまとめる。
+            //     rollback で戻り、commit で確定（journal_restore で後からも戻せる）。
+            mcpjournal::Instance().BeginTx(label);
             resp["ok"] = true;
             resp["result"] = {
                 {"open", true}, {"label", label},
@@ -329,10 +336,13 @@ void Application::ProcessMcpUndoRequests(ID3D12GraphicsCommandList* cmdList)
                         "no open transaction (it was closed before commit was processed)", LastClosedHint(router));
                 break;
             }
+            const std::string journalId = mcpjournal::Instance().CommitTx();   // M5
             json out{{"committed", true}, {"label", res.label}, {"calls", res.calls},
                      {"pushed", res.pushed}, {"entryName", res.pushed ? json(res.entryName) : json(nullptr)},
                      {"humanEditsDuringTransaction", res.humanPushes},
                      {"top", UndoTopsJson(undo)}};
+            if (!journalId.empty())
+                out["journal"] = {{"id", journalId}, {"note", "このトランザクション中に書いたファイルの元の内容を退避した。journal_restore {id} で戻せる"}};
             if (!res.pushed)
                 out["note"] = "中身が空だったので何も積んでいない（読み取りだけ / 値が変わらない設定だけだった）";
             else if (res.humanPushes > 0)
@@ -358,15 +368,21 @@ void Application::ProcessMcpUndoRequests(ID3D12GraphicsCommandList* cmdList)
                 break;
             }
             touchedScene = true;
-            CompleteMcp(m_mcpBridge.get(), r.reply,
-                json{{"rolledBack", true}, {"label", res.label}, {"calls", res.calls},
+            // M5: begin 以降に書いたファイルも元の内容へ戻す（新規作成は削除・上書きは復元）。
+            mcpjournal::RestoreResult jres;
+            const std::string journalId = mcpjournal::Instance().RollbackTx(&jres);
+            json rbOut{{"rolledBack", true}, {"label", res.label}, {"calls", res.calls},
                      {"humanEditsDuringTransaction", res.humanPushes},
                      {"top", UndoTopsJson(undo)},
                      {"sceneGeneration", m_sceneGeneration},
                      {"note", res.humanPushes > 0
                          ? "begin 以降の AI の編集を逆順に戻した。開いている間の人の編集は戻していない"
                            "（同じ物を人も触っていた場合は、人の値が AI の begin 前の値で上書きされうる）"
-                         : "begin 以降の AI の編集を逆順に戻した（スタックにも redo にも残さない）"}});
+                         : "begin 以降の AI の編集を逆順に戻した（スタックにも redo にも残さない）"}};
+            if (!journalId.empty())
+                rbOut["journal"] = {{"id", journalId}, {"restored", jres.restored}, {"unchanged", jres.unchanged},
+                                    {"missing", jres.missing}, {"warnings", jres.warnings}, {"complete", jres.complete}};
+            CompleteMcp(m_mcpBridge.get(), r.reply, std::move(rbOut));
             break;
         }
         }

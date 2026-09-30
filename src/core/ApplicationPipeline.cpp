@@ -87,10 +87,26 @@ shaderdiag::Contract MakeSpriteContract(ID3DBlob* rsBlob)
 // 既存 unique_ptr が非 null ならオブジェクトを作り直さず Initialize() し直す(ComPtr 再代入のみ)。
 // ModelThumbnailRenderer 等が PipelineState* の生ポインタを保持しているため、住所を変えないことが必須。
 // ---------------------------------------------------------------------------
+// Q2: ライティング単位が「物理」のときはフォワード系の PS を *Phys_PS.cso（-D UNO_PHYSICAL_LIGHTS=1）へ差し替える。
+// .cso が無ければ従来のものへ縮退する（警告つき）。従来モードでは名前をそのまま返す＝既定の経路は 1 バイトも変わらない。
+static std::wstring FwdPsName(bool physical, const wchar_t* normal, const wchar_t* phys)
+{
+    if (!physical) return normal;
+    auto probe = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + phys);
+    if (probe.GetSize() == 0)
+    {
+        Logger::Warn("{} が無い: 物理ライティング単位を使えないので従来の {} で描画します（ビルドし直してください）", 
+                     PathResolver::WideToUtf8(phys), PathResolver::WideToUtf8(normal));
+        return normal;
+    }
+    return phys;
+}
+
 void Application::RecreateForwardPsos()
 {
+    const bool physUnits = (m_lightingUnitsApplied == 1);
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_VS.cso");
-    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"Forward_PS.cso", L"ForwardPhys_PS.cso"));
 
     // 通常 forward は DepthFunc=LESS（既定）。毎フレーム深度を 1.0 へクリアして描くため、
     // 同深度フラグメントは先勝ち（従来の z-fight 解決を維持）。
@@ -141,7 +157,7 @@ void Application::RecreateForwardPsos()
     // PS だけ ForwardMask_PS（-D ALPHA_TEST）に差し替える。頂点処理も PSO の他の状態も同じ。
     // ★clip を含む PS は early-Z が効かないので不透明とは別 PSO にしてある（性能の分離）。
     {
-        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardMask_PS.cso");
+        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"ForwardMask_PS.cso", L"ForwardMaskPhys_PS.cso"));
         if (psMask.GetSize() > 0)
         {
             PipelineStateBuilder mb;
@@ -217,8 +233,9 @@ void Application::RecreateForwardPsos()
 
 void Application::RecreateSkinnedPsos()
 {
+    const bool physUnits = (m_lightingUnitsApplied == 1);
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardSkinned_VS.cso");
-    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_PS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"Forward_PS.cso", L"ForwardPhys_PS.cso"));
 
     // 通常 forward(skinned) は DepthFunc=LESS（既定）。SSAO 無効時の z-fight 解決を維持。
     PipelineStateBuilder builder;
@@ -241,7 +258,7 @@ void Application::RecreateSkinnedPsos()
 
     // MASK（髪・まつ毛・葉を持つキャラ）。PS だけ差し替える。
     {
-        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardMask_PS.cso");
+        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"ForwardMask_PS.cso", L"ForwardMaskPhys_PS.cso"));
         if (psMask.GetSize() > 0)
         {
             PipelineStateBuilder mb;
@@ -306,7 +323,8 @@ void Application::RecreateTerrainPsos()
     // 通常 forward とまったく同じで、VS/PS だけ差し替える。
     // ★t0/t1 に Texture2DArray を張るのはここではなく EnsureTerrainSrv（PSO には関係しない）。
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Terrain_VS.cso");
-    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Terrain_PS.cso");
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW()
+        + FwdPsName(m_lightingUnitsApplied == 1, L"Terrain_PS.cso", L"TerrainPhys_PS.cso"));
     if (vs.GetSize() == 0 || ps.GetSize() == 0)
     {
         // .cso が無い＝ビルドし忘れ。地形は layerSetPath 空なら従来経路で描けるので致命ではない。
@@ -628,6 +646,9 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
     if (m_ssaoPass)         m_ssaoPass->Resize(*m_graphicsDevice, w, h);
     // ★Hi-Z を作り直し忘れると、古い寸法のピラミッドを引いて画面全体が壊れる。
     if (m_hiZPass)          m_hiZPass->Resize(*m_graphicsDevice, w, h);
+    m_foliageHzbValid = false;   // 植生: 作り直した Hi-Z はまだ一度も構築されていない（UAV 状態の空のテクスチャ）＝読まない
+    // 仮想ジオメトリ P2 の二相 HZB（履歴も捨てる）。ここは WaitIdle 済みなので古いピラミッドを解放してよい。
+    if (m_vgHiZ)            { m_vgHiZ->Resize(*m_graphicsDevice, w, h); m_vgHiZHistory = false; }
     if (m_contactShadowPass)m_contactShadowPass->Resize(*m_graphicsDevice, w, h);
     if (m_bloomPass)        m_bloomPass->Resize(*m_graphicsDevice, w, h);
     if (m_godRaysPass)      m_godRaysPass->Resize(*m_graphicsDevice, w, h);
@@ -661,6 +682,25 @@ void Application::UpdateRenderResolution()
     // ★アスペクトは表示側の値を使い続ける（Render() の renderAspect）。ここは丸めるだけ。
     const u32 want = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));
     const u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dh) * s)));
+
+    // ★Q2: screenshot_final {width,height} / --size のオフスクリーン撮影中は、表示矩形と無関係にその解像度へ即時に切り替える。
+    //   終わったら（m_mcpFinalShot.reply の消去で OffscreenActive() が false）次のフレームで表示矩形 × renderScale へ即時に戻す。
+    if (m_mcpFinalShot.OffscreenActive())
+    {
+        m_offscreenWasActive = true;
+        if (m_renderW != m_mcpFinalShot.offW || m_renderH != m_mcpFinalShot.offH)
+        {
+            try { ApplyRenderResolution(m_mcpFinalShot.offW, m_mcpFinalShot.offH); }
+            catch (const std::exception& e)
+            {
+                AbortOffscreenShot(std::string("render target allocation failed at ")
+                                   + std::to_string(m_mcpFinalShot.offW) + "x" + std::to_string(m_mcpFinalShot.offH)
+                                   + ": " + e.what());
+            }
+        }
+        return;
+    }
+    if (m_offscreenWasActive) { m_offscreenWasActive = false; m_renderResFlush = true; }
 
     if (want == m_renderW && wantH == m_renderH)
     {
@@ -783,16 +823,16 @@ void Application::RegisterShaderReloadHandlers()
 
     m_shaderManager->RegisterReloadHandler(
         { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso", L"ForwardInstanced_VS.cso",
-          L"ForwardMask_PS.cso" },
+          L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso" },
         [this]() { RecreateForwardPsos(); });
     m_shaderManager->RegisterReloadHandler(
-        { L"ForwardSkinned_VS.cso", L"Forward_PS.cso", L"ForwardMask_PS.cso" },
+        { L"ForwardSkinned_VS.cso", L"Forward_PS.cso", L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso" },
         [this]() { RecreateSkinnedPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"ForwardGrid_VS.cso", L"ForwardGrid_PS.cso" },
         [this]() { RecreateGridPso(); });
     m_shaderManager->RegisterReloadHandler(
-        { L"Terrain_VS.cso", L"Terrain_PS.cso" },
+        { L"Terrain_VS.cso", L"Terrain_PS.cso", L"TerrainPhys_PS.cso" },
         [this]() { RecreateTerrainPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"Emissive_VS.cso", L"Emissive_PS.cso" },

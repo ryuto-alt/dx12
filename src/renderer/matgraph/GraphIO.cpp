@@ -106,8 +106,9 @@ std::string FormatJsonDouble(double d)
 // ---------------------------------------------------------------------------
 // Save
 // ---------------------------------------------------------------------------
-std::string SaveDxmg(const MaterialGraph& g)
+std::string SaveDxmg(const MaterialGraph& g, bool includeView)
 {
+    const bool wantView = includeView && g.View().valid;
     std::string o;
     o += "{\n";
     o += "  \"version\": " + std::to_string(kDxmgVersion) + ",\n";
@@ -183,7 +184,7 @@ std::string SaveDxmg(const MaterialGraph& g)
 
     // layout
     if (g.Nodes().empty())
-        o += "  \"layout\": {}\n";
+        o += wantView ? "  \"layout\": {},\n" : "  \"layout\": {}\n";
     else
     {
         o += "  \"layout\": {\n";
@@ -193,7 +194,13 @@ std::string SaveDxmg(const MaterialGraph& g)
             o += "    " + JsonStr(kv.first) + ": " + JsonStr(ShortPair(kv.second.x, kv.second.y));
             o += (++idx < g.Nodes().size()) ? ",\n" : "\n";
         }
-        o += "  }\n";
+        o += wantView ? "  },\n" : "  }\n";
+    }
+    // view（エディタのパン・ズーム。UI 状態。無ければ書かない = 既存ファイルのバイト列は変わらない）
+    if (wantView)
+    {
+        const ViewInfo& v = g.View();
+        o += "  \"view\": " + JsonStr(FormatFloatShort(v.panX) + " " + FormatFloatShort(v.panY) + " " + FormatFloatShort(v.zoom)) + "\n";
     }
     o += "}\n";
     return o;
@@ -326,6 +333,18 @@ bool LoadDxmg(const std::string& text, MaterialGraph& out, std::string* error)
             if (ParseFloats(it.value().get<std::string>(), xy, 2)) { nn->second.x = xy[0]; nn->second.y = xy[1]; }
         }
     for (auto& kv : nodes) out.LoadNode(std::move(kv.second));
+
+    // view（UI 状態。無くてもよい）
+    if (j.contains("view") && j["view"].is_string())
+    {
+        float p[3];
+        if (ParseFloats(j["view"].get<std::string>(), p, 3))
+        {
+            ViewInfo v;
+            v.valid = true; v.panX = p[0]; v.panY = p[1]; v.zoom = p[2];
+            out.SetView(v);
+        }
+    }
 
     if (j.contains("comments") && j["comments"].is_object())
         for (auto it = j["comments"].begin(); it != j["comments"].end(); ++it)

@@ -41,6 +41,7 @@ MaterialGraph MaterialGraph::Clone() const
     g.m_nodes = m_nodes;
     g.m_comments = m_comments;
     g.m_settings = m_settings;
+    g.m_view = m_view;
     g.m_guid = m_guid;
     g.m_name = m_name;
     g.m_version = m_version;
@@ -570,6 +571,7 @@ void MaterialGraph::Clear()
     m_nodes.clear();
     m_comments.clear();
     m_settings = GraphSettings{};
+    m_view = ViewInfo{};
     Bump(true);
     Notify({ChangeKind::Reset, {}, {}, true});
 }

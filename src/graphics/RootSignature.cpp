@@ -3,6 +3,8 @@
 #include "core/Assert.h"
 #include "core/Logger.h"
 
+#include <cstdlib>
+
 namespace dx12e
 {
 
@@ -251,8 +253,9 @@ void RootSignature::Initialize(GraphicsDevice& device)
 
     // Static Samplers (s0=albedo wrap, s1=shadow PCF, s2=IBL linear-clamp mip有,
     //                  s3=BRDF linear-clamp mipなし, s4=AO point-clamp スクリーンサンプル,
-    //                  s5=DDGI irradiance linear-clamp mipなし)
-    D3D12_STATIC_SAMPLER_DESC staticSamplers[6]{};
+    //                  s5=DDGI irradiance linear-clamp mipなし,
+    //                  s6..s8=マテリアルグラフ用: s6=LINEAR WRAP / s7=ANISO(8) CLAMP / s8=POINT WRAP)
+    D3D12_STATIC_SAMPLER_DESC staticSamplers[9]{};
 
     // s0 - Anisotropic Wrap (albedo, normal, metalRoughness)
     // ★等方トリリニアだと LOD が「フットプリントの長軸」で決まるため、床や壁を
@@ -319,6 +322,33 @@ void RootSignature::Initialize(GraphicsDevice& device)
     staticSamplers[5].MaxLOD           = 0.0f;
     staticSamplers[5].ShaderRegister   = 5;  // s5
 
+    // s6..s8 - マテリアルグラフ（G2b 以降の ForwardGraph.hlsl）が引くサンプラ。マクロ名との対応（G1 の契約）:
+    //   UNO_SAMP_ANISO_WRAP = s0（既存） / UNO_SAMP_LINEAR_CLAMP = s2（既存 g_iblSampler）/ UNO_SAMP_POINT_CLAMP = s4（既存 g_ssaoSampler）
+    //   UNO_SAMP_LINEAR_WRAP = s6 / UNO_SAMP_ANISO_CLAMP = s7 / UNO_SAMP_POINT_WRAP = s8
+    //   ★静的サンプラは DWORD を 1 つも消費しない。既存シェーダーは s6..s8 を宣言しないので絵は変わらない。
+    //   ★s2 / s4 を別名で宣言し直せない（同じ register の二重宣言は DXC が弾く）ので、グラフ側はマクロを既存の変数へ
+    //     向ける（docs/MATGRAPH_G2A.md）。
+    // s6 - LINEAR WRAP（mip 有）
+    staticSamplers[6]                  = staticSamplers[2];
+    staticSamplers[6].AddressU         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[6].AddressV         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[6].AddressW         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[6].ShaderRegister   = 6;  // s6
+
+    // s7 - ANISOTROPIC(8) CLAMP（mip 有）
+    staticSamplers[7]                  = staticSamplers[0];
+    staticSamplers[7].AddressU         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[7].AddressV         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[7].AddressW         = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    staticSamplers[7].ShaderRegister   = 7;  // s7
+
+    // s8 - POINT WRAP
+    staticSamplers[8]                  = staticSamplers[4];
+    staticSamplers[8].AddressU         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[8].AddressV         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[8].AddressW         = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    staticSamplers[8].ShaderRegister   = 8;  // s8
+
     // Root Signature (Version 1.1)
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC versionedDesc{};
     versionedDesc.Version                     = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -326,13 +356,42 @@ void RootSignature::Initialize(GraphicsDevice& device)
     versionedDesc.Desc_1_1.pParameters        = rootParams;
     versionedDesc.Desc_1_1.NumStaticSamplers  = _countof(staticSamplers);
     versionedDesc.Desc_1_1.pStaticSamplers    = staticSamplers;
-    versionedDesc.Desc_1_1.Flags              = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    D3D12_ROOT_SIGNATURE_FLAGS flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    // ★SM 6.6 のバインドレス（ResourceDescriptorHeap[]）を使うシェーダのためのフラグ（マテリアルグラフ G2a）。
+    //   ルート定数の DWORD は増えない（フラグは DWORD を消費しない）。非対応 GPU では立てない。
+    //   DX12_DISABLE_MAIN_BINDLESS=1 で強制的に立てない（フラグの副作用の A/B 計測・縮退経路のテスト用）。
+    bool wantBindless = device.SupportsDynamicResources();
+    if (!wantBindless)
+        Logger::Warn("この GPU は SM 6.6 + Resource Binding Tier 3 に対応していないため、メイン RS のバインドレスを無効にします"
+                     "（マテリアルグラフ G2b 以降の「バインドレスでテクスチャを引く機能」は使えません。既存の描画は従来どおり）");
+    {
+        char buf[8]{}; size_t len = 0;
+        if (::getenv_s(&len, buf, sizeof(buf), "DX12_DISABLE_MAIN_BINDLESS") == 0 && len > 0 && buf[0] == '1')
+        {
+            if (wantBindless) Logger::Info("DX12_DISABLE_MAIN_BINDLESS=1: メイン RS のバインドレスを立てません（A/B 計測・縮退経路のテスト用）");
+            wantBindless = false;
+        }
+    }
+    if (wantBindless)
+        flags |= D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+    versionedDesc.Desc_1_1.Flags              = flags;
 
     Microsoft::WRL::ComPtr<ID3DBlob> errorBlob;
 
     // ★直列化結果はメンバへ残す。カスタムシェーダーの PSO 生成が失敗したとき、
     //   ここから「実際に使えるレジスタ」を読み出してユーザーへ提示する。
     HRESULT hr = D3D12SerializeVersionedRootSignature(&versionedDesc, &m_serialized, &errorBlob);
+    if (FAILED(hr) && wantBindless)
+    {
+        // フラグ付きが通らない環境（理論上ありえないが保険）。従来の RS へ縮退する。
+        Logger::Warn("メイン RS のバインドレスフラグ付きシリアライズに失敗したため、従来の RS へ縮退します");
+        wantBindless = false;
+        versionedDesc.Desc_1_1.Flags = flags & ~D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+        m_serialized.Reset();
+        errorBlob.Reset();
+        hr = D3D12SerializeVersionedRootSignature(&versionedDesc, &m_serialized, &errorBlob);
+    }
 
     if (FAILED(hr))
     {
@@ -350,7 +409,8 @@ void RootSignature::Initialize(GraphicsDevice& device)
         m_serialized->GetBufferSize(),
         IID_PPV_ARGS(&m_rootSignature)));
 
-    Logger::Info("RootSignature created (PBR: 14 slots, 62/64 DWORD)");
+    m_bindless = wantBindless;
+    Logger::Info("RootSignature created (PBR: 14 slots, 62/64 DWORD, bindless={})", m_bindless ? "on" : "off");
 }
 
 } // namespace dx12e

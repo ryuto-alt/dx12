@@ -118,6 +118,13 @@ public:
     // 未設定なら従来通り常に閉じる。
     void         SetCloseHandler(std::function<bool()> handler) { m_closeHandler = std::move(handler); }
 
+    // ===== ファイルのドロップ（エクスプローラー → この窓。アセットの取り込み用）=====
+    // ハンドラを渡すと DragAcceptFiles が有効になる（空を渡すと無効）。ハンドラはメインスレッド（メッセージループ）から呼ばれる。
+    // paths はドロップされたファイル / フォルダの絶対パス、(clientX, clientY) はクライアント座標（物理 px）。
+    // ※ 仮想入力モード（--background / --virtual-input）でも WM_DROPFILES 自体は届く（実際にドロップした時だけ）。
+    using FileDropHandler = std::function<void(std::vector<std::wstring> paths, int clientX, int clientY)>;
+    void         SetFileDropHandler(FileDropHandler handler);
+
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     // DPI 対応のフレーム計算（AdjustWindowRectEx の DPI 版。窓のスタイルは Initialize / SetMode と同じ）
@@ -139,6 +146,7 @@ private:
     RECT         m_windowedRect = {};
     InputSystem* m_inputSystem = nullptr;
     std::function<bool()> m_closeHandler;
+    FileDropHandler m_fileDropHandler;
     BackgroundOptions m_bg;   // --background（既定 None = 従来どおり）
 
     // カスタムタイトルバー状態(EnableCustomTitleBar / SetCaptionInfo)

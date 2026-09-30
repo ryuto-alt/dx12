@@ -113,7 +113,7 @@ export const SYNONYM_GROUPS: string[][] = [
   ["シェーダー", "shader", "hlsl", "カスタムシェーダ"],
   ["エフェクト", "vfx", "パーティクル", "particle", "particles", "炎", "火", "松明", "たいまつ", "煙", "火花", "爆発", "fire", "torch", "smoke", "魔法"],
   ["デカール", "decal", "汚れ", "傷", "弾痕", "焦げ", "血", "苔", "水たまり"],
-  ["演出", "シーケンス", "sequence", "カットシーン", "cutscene", "台本から", "ムービー"],
+  ["演出", "シーケンス", "sequence", "カットシーン", "cutscene", "台本から", "ムービー", "タイムライン", "timeline", "キーフレーム", "keyframe", "カメラワーク", "dxseq"],
   ["地形", "terrain", "山", "丘", "峡谷", "ハイトフィールド", "heightfield", "雪", "岩", "草", "レイヤー"],
   ["スカルプト", "sculpt", "彫る", "洞窟", "アーチ"],
   ["ナビメッシュ", "navmesh", "ナビゲーション", "経路", "パス", "path", "pathfinding", "焼く", "ベイク", "bake", "到達", "ゴールへ", "追いかけ"],
@@ -137,6 +137,11 @@ export const SYNONYM_GROUPS: string[][] = [
   ["配置検査", "レイアウト", "layout", "埋まって", "浮いて", "めり込み", "重なり", "z-fighting", "z_fight"],
   ["命名", "naming", "ネーミング", "整理", "organize", "グループ分け", "スキャフォールド", "scaffold", "骨格"],
   ["シーン一括", "scene_write", "まとめて作", "一式", "一括生成", "json", "部屋", "ステージ一式", "レベル一式"],
+  // 宣言的シーン生成(M11)
+  ["仕様", "spec", "宣言的", "declarative", "scene spec", "シーン仕様"],
+  ["ステージ", "アリーナ", "stage", "arena", "level", "レベル", "マップ", "map", "街", "town", "庭", "garden", "廊下", "corridor", "ショーケース", "showcase"],
+  ["円形", "円状", "ring", "circle", "circular", "まわり", "around"],
+  ["等間隔", "evenly", "equally spaced", "均等"],
   ["バッチ", "batch", "まとめて実行", "一括", "複数の操作"],
   ["ルック比較", "参照画像", "reference", "比較", "compare", "差分", "diff"],
   ["知覚", "perceive", "見える", "視認", "気づく", "読める", "可視"],
@@ -145,6 +150,12 @@ export const SYNONYM_GROUPS: string[][] = [
   ["設定", "settings", "setting", "config", "パラメータ"],
   ["調整", "変える", "変更", "強さ", "強度", "上げる", "下げる", "調節", "書き換え", "set"],
   ["見たい", "見る", "見せて", "読む", "確認", "調べ", "知りたい", "get", "read", "inspect", "取得"],
+  // エディタ操作(M7): dx12_editor_command / state / notify / select。
+  ["モーダル", "modal", "ダイアログ", "dialog", "ポップアップ", "popup", "詰まった", "固まった"],
+  ["トースト", "toast", "通知", "notify", "notification", "お知らせ"],
+  ["未保存", "dirty", "unsaved", "scenedirty"],
+  ["選択", "select", "selection", "selected", "複数選択"],
+  ["コマンド", "command", "commands", "コマンドパレット", "palette", "ショートカット", "shortcut"],
 ];
 
 // 問い合わせに発火判定するときの正規化済み語 → グループ番号。

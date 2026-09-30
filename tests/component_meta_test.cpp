@@ -67,9 +67,9 @@ int main()
     Expect<DirectX::XMFLOAT3>({ "x", "y", "z" });
     Expect<Transform>({ "position", "rotation", "scale" });
     Expect<NameTag>({ "name" });
-    Expect<PointLight>({ "color", "intensity", "range" });
+    Expect<PointLight>({ "color", "intensity", "range", "sourceRadius" });   // sourceRadius = Q2（物理ライティング単位の光源半径）
     Expect<DirectionalLight>({ "direction", "color", "intensity", "ambient" });
-    Expect<SpotLight>({ "color", "intensity", "range", "direction", "innerConeDeg", "outerConeDeg" });
+    Expect<SpotLight>({ "color", "intensity", "range", "direction", "innerConeDeg", "outerConeDeg", "sourceRadius" });
     Expect<CameraComponent>({ "fovDegrees", "nearClip", "farClip", "isActive", "projection", "orthoSize" });
     Expect<RigidBody>({ "motionType", "mass", "restitution", "friction", "linearDamping", "angularDamping", "useGravity" });
     Expect<BoxCollider>({ "halfExtents", "offset" });
@@ -106,7 +106,7 @@ int main()
 
     // 反映は冪等（2回呼んでも壊れない）
     RegisterCoreComponentMeta();
-    CHECK(FieldNames<PointLight>().size() == 4);
+    CHECK(FieldNames<PointLight>().size() == 5);   // color / intensity / range / castShadows / sourceRadius
 
     std::printf("component_meta: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -29,6 +29,7 @@ struct LayoutConfig
     float slotH     = 17.0f;
     float textUnits  = 12.5f;   // ピン名・値
     float titleUnits = 13.5f;   // タイトル
+    float labelH    = 20.0f;   // NodeTypeDesc::hasLabel のときの名前欄の高さ
 };
 
 // 文字列の幅（グラフ単位。textUnits / titleUnits のサイズで測った値）。
@@ -38,6 +39,7 @@ struct TypeLayout
 {
     Vec2  size;
     float headerH = 0.0f;
+    float labelH  = 0.0f;          // 名前欄（ヘッダ直下）の高さ。0 = 無し
     std::vector<float> inY;        // 入力行の中心 Y（ノード上端から）
     std::vector<float> outY;
     std::vector<Rect>  inSlot;     // 値欄（ノード左上基準）。無ければ幅 0

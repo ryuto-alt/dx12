@@ -1,6 +1,6 @@
 #pragma once
 
-// ===== エディタ UI テーマ（Unreal Editor 5 風・ダーク）=====
+// ===== エディタ UI テーマ（Uno 独自「ネオン・エッジ」・ダーク。第 1 波は Unreal Editor 5 風）=====
 // エディタ全体（ImGui スタイル + 各パネルのアイコン tint / アクセント / 面の階調）で
 // 共有する単一ソース。色・寸法・フォントのハンドルはここだけから引く。
 // ヘッダオンリー（リンク依存なし）。ImGuiManager.cpp が ApplyStyle() で ImGuiStyle へ流し込む。

@@ -131,10 +131,10 @@ std::string GraphView::StatusLine() const
     char buf[320];
     const size_t undo = m_doc ? m_doc->History().UndoDepth() : 0;
     const size_t redo = m_doc ? m_doc->History().RedoDepth() : 0;
-    std::snprintf(buf, sizeof(buf), "nodes=%d edges=%d selN=%d selC=%d undo=%zu redo=%zu zoom=%.2f mode=%s hover=%d pal=%d ctx=%d drawn=%d/%d ms=%.2f",
+    std::snprintf(buf, sizeof(buf), "nodes=%d edges=%d selN=%d selC=%d undo=%zu redo=%zu zoom=%.2f mode=%s hover=%d pal=%d ctx=%d drawn=%d/%d ms=%.2f armed=%s",
                   m_stats.nodes, m_stats.edges, static_cast<int>(m_sel.nodes.size()), static_cast<int>(m_sel.comments.size()),
                   undo, redo, m_zoom, ModeName(), static_cast<int>(m_hover.kind), m_paletteOpen ? 1 : 0, m_ctxOpen ? 1 : 0,
-                  m_stats.drawnNodes, m_stats.drawnEdges, m_stats.cpuMs);
+                  m_stats.drawnNodes, m_stats.drawnEdges, m_stats.cpuMs, m_hkType ? m_hkType->id.c_str() : "-");
     return buf;
 }
 
@@ -199,6 +199,25 @@ void GraphView::CenterOn(Vec2 g, bool animate)
     const float s = m_zoomTarget * m_dpi;
     const float w = (m_canvasMax.x - m_canvasMin.x), h = (m_canvasMax.y - m_canvasMin.y);
     SetViewState(ViewState{Vec2(g.x - w * 0.5f / s, g.y - h * 0.5f / s), m_zoomTarget}, animate);
+}
+
+bool GraphView::FocusNode(NodeId id, bool animate)
+{
+    if (!m_doc || !m_doc->Model().FindNode(id)) return false;
+    m_sel.Clear();
+    m_sel.nodes.insert(id);
+    ++m_selRev;
+    ShowBringToFront(m_sel);
+    const Rect r = m_doc->NodeRect(id);
+    if (IsEmptyRect(r)) return true;
+    // 十分読める大きさ（70% 以上）で、ノードが窓の中に収まっているときは動かさない。そうでなければ中央へ寄せる
+    const Viewport v = m_vp;
+    const Rect vis = v.VisibleGraphRect();
+    const bool inView = vis.Expanded(-24.0f).Contains(r);
+    if (inView && m_zoomTarget >= 0.7f) return true;
+    m_zoomTarget = std::max(m_zoomTarget, 0.7f);
+    CenterOn(r.Center(), animate);
+    return true;
 }
 
 void GraphView::SettleAnimations()
@@ -635,6 +654,12 @@ void GraphView::HandleInput(bool hovered, bool active)
             m_mode = Mode::Panning; m_pressButton = 1; m_pressPos = m_mouse; m_rmbMoved = false; m_pressHit = m_hover;
             m_pressG = m_mouseG;
         }
+        else if (m_hkType && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        {
+            // ワンキー握り中のクリック = その位置へ置く（クリックは配置に使い切る）
+            PlaceHotkeyNode(*m_hkType, m_mouseG);
+            m_hkPlaced = true;
+        }
         else if (dbl && ((m_hover.kind == Hit::Edge && m_doc->Model().RerouteTypeId()) || m_hover.kind == Hit::CommentTitle || m_hover.kind == Hit::Slot
                          || m_hover.kind == Hit::None || m_hover.kind == Hit::CommentBody))
         {
@@ -703,6 +728,7 @@ void GraphView::HandleInput(bool hovered, bool active)
                 }
                 case Hit::Node:
                 {
+                    if (dbl && m_onNodeActivate) m_onNodeActivate(h.node);
                     const bool wasSel = m_sel.Has(h.node);
                     if (shift || ctrl) SelectClick(h.node, shift, ctrl);
                     else if (!wasSel) SelectClick(h.node, false, false);
@@ -1143,7 +1169,9 @@ bool GraphView::Execute(const std::string& id)
 
 void GraphView::ProcessKeys()
 {
-    if (!m_doc || !m_windowFocused) return;
+    if (!m_doc) return;
+    if (m_set.hotkeyHoldClick) UpdateHotkeyHold();   // キーの離し（フォーカスを失っていても握りっぱなしにしない）
+    if (!m_windowFocused) return;
     const ImGuiIO& io = ImGui::GetIO();
     if (io.WantTextInput) return;
     if (m_paletteOpen || m_editKind != EditKind::None || m_renameComment != 0) return;   // ポップアップ側が処理する
@@ -1169,22 +1197,52 @@ void GraphView::ProcessKeys()
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true))  d.y += step;
         if (d != Vec2(0, 0)) { m_doc->MoveItems(m_sel, d); return; }
     }
-    // UE 風ワンキー: ノード型の hotkey を押すと、マウス位置（キャンバス外なら中央）に置く
-    if (!io.KeyCtrl && !io.KeyAlt && !io.KeyShift && m_mode == Mode::Idle)
+    // UE 風ワンキー: ノード型の hotkey。
+    //   既定: 押した瞬間にマウス位置（キャンバス外なら中央）へ置く。
+    //   hotkeyHoldClick: 押している間その型を握り、左クリックした位置へ置く（HandleInput）。
+    //                    クリックせずに短く押して離したらマウス位置へ置く（UpdateHotkeyHold）。
+    if (!io.KeyCtrl && !io.KeyAlt && !io.KeyShift && m_mode == Mode::Idle && !m_hkType)
     {
         for (const NodeTypeDesc& t : m_doc->Model().NodeTypes())
         {
             if (!t.hotkey) continue;
             const ImGuiKey k = KeyFromName(std::string(1, t.hotkey));
             if (k == ImGuiKey_None || !ImGui::IsKeyPressed(k, false)) continue;
+            if (m_set.hotkeyHoldClick)
+            {
+                m_hkType = &t; m_hkStart = m_time; m_hkPlaced = false;
+                return;
+            }
             const bool inside = m_mouse.x >= m_canvasMin.x && m_mouse.x <= m_canvasMax.x && m_mouse.y >= m_canvasMin.y && m_mouse.y <= m_canvasMax.y;
-            Vec2 p = inside ? m_mouseG : m_vp.ToGraph(Vec2((m_canvasMin.x + m_canvasMax.x) * 0.5f, (m_canvasMin.y + m_canvasMax.y) * 0.5f));
-            p = SnapPos(p);
-            const NodeId n = m_doc->AddNode(t.id, p);
-            if (n) { m_sel.Clear(); m_sel.nodes.insert(n); ++m_selRev; ShowBringToFront(m_sel); }
+            const Vec2 p = inside ? m_mouseG : m_vp.ToGraph(Vec2((m_canvasMin.x + m_canvasMax.x) * 0.5f, (m_canvasMin.y + m_canvasMax.y) * 0.5f));
+            PlaceHotkeyNode(t, p);
             return;
         }
     }
+}
+
+void GraphView::PlaceHotkeyNode(const NodeTypeDesc& t, Vec2 graphPos)
+{
+    Vec2 p = graphPos;
+    const TypeLayout& L = m_doc->Layout().For(t);
+    if (L.reroute) p = p - L.size * 0.5f;   // リルートは点なので中心をカーソルへ。それ以外は左上をカーソルへ
+    p = SnapPos(p);
+    const NodeId n = m_doc->AddNode(t.id, p);
+    if (n) { m_sel.Clear(); m_sel.nodes.insert(n); ++m_selRev; ShowBringToFront(m_sel); }
+}
+
+void GraphView::UpdateHotkeyHold()
+{
+    if (!m_hkType) return;
+    const ImGuiKey k = KeyFromName(std::string(1, m_hkType->hotkey));
+    const ImGuiIO& io = ImGui::GetIO();
+    if (k != ImGuiKey_None && ImGui::IsKeyDown(k) && m_windowFocused && !io.WantTextInput) return;   // まだ握っている
+    // 離した（またはフォーカスを失った）: クリック配置をしていない短押しなら、マウス位置へ置く
+    const bool inside = m_mouse.x >= m_canvasMin.x && m_mouse.x <= m_canvasMax.x && m_mouse.y >= m_canvasMin.y && m_mouse.y <= m_canvasMax.y;
+    const bool tap = m_time - m_hkStart < 0.45;
+    const NodeTypeDesc* t = m_hkType;
+    m_hkType = nullptr;
+    if (!m_hkPlaced && tap && inside && m_windowFocused && !io.WantTextInput && m_mode == Mode::Idle) PlaceHotkeyNode(*t, m_mouseG);
 }
 
 // ---------------------------------------------------------------------------

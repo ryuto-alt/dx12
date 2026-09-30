@@ -81,6 +81,7 @@
 | `nodes` | ノード ID → ノード（§2.3） |
 | `comments` | コメント ID → `{ "color", "rect": "x y w h", "text" }`。IR に影響しない |
 | `layout` | ノード ID → `"x y"`（エディタ上の位置）。**全ノードを書く**。ノード移動の差分をこの 1 行に閉じ込めるため |
+| `view` | （任意。**最後のキー**）エディタのキャンバスの見え方 `"panX panY zoom"`。UI 状態なので `MaterialGraph::Version()` を進めない。無ければ書かない（= 既存ファイルのバイト列は変わらない）。`SaveDxmg(g, includeView=false)` で除ける（未保存判定用）。G3 のマテリアルグラフ窓が保存 / 復元する |
 
 未知のトップレベルキーは読み捨てる（前方互換のための保持はしない。ノード / プロパティ / ピンは保持する。§2.7）。
 
@@ -131,7 +132,7 @@
 
 ---
 
-## 3. `.dxmat` への `graph` キー拡張（仕様案・G2b で実装）
+## 3. `.dxmat` への `graph` キー拡張（G2b で実装済み。実装の詳細と規則は `docs/MATGRAPH_G2B.md` §3）
 
 `.dxmat` は既存のマテリアルアセット（`resource/MaterialAssetIO`）。グラフ材質は **`.dxmat` を「グラフのインスタンス」として使う**。互換の原則は「**`graph` キーが無ければ従来と 1 バイトも変わらない**」。
 
@@ -150,7 +151,7 @@
 | 分岐 | `graph` キーがある → グラフ経路（`version` は 2 以上）。無い → 従来経路（`version:1`、`albedo` / `normal` / `metalRoughness` / `emissive` の 4 枚 + スカラー） |
 | `graph` | `.dxmg` の assets 相対パス。読み込みは `LoadDxmgFile` |
 | `params` | パラメータ名（`SlotInfo::name`）→ 値。数値 = Scalar、長さ 3〜4 の配列 = Vector（3 のときは A = 1）、文字列 = Texture のパス。`ParamOverrides`（`Compiler.h`）へそのまま写り、`PackParamRecord` がスロットへ書く。**グラフに無い名前は無効な上書きとして警告**（黙って捨てない） |
-| 旧キーとの共存 | `graph` があるとき `albedo` 等の 4 枚のパスは**無視**する（あれば警告）。`uvTiling` の扱い（標準テンプレートの `TexCoord.tiling` へ 1 回だけ適用）は G2b で確定 |
+| 旧キーとの共存 | `graph` があるとき `albedo` 等の 4 枚のパスと `metallic` / `roughness` / `emissive*` は**無視**する（読み捨て。書き出しもしない）。**G2b で確定**: 標準テンプレートは `TexCoord.tiling` に `uvTiling` を掛けない（従来の描画は頂点へ焼き込み済みの UV をそのまま使うため二重掛けになる）。`uvTiling` は「これから割り当てるときの初期値」として `.dxmat` に残す。`graph` 材質の `metallic` / `roughness` は影・深度・パストレ用の代理値で、既定 0 / 0.5 |
 | 検証（M2） | 従来の「テクスチャを 1 枚も参照しないと無効」は **`graph` があれば免除**（旧ファイルの判定は不変） |
 | 書き出し | 使っているキーだけ書く（旧ファイルの読み → 書き戻しでキーが増えない現行方針と同じ）。`graph` / `params` は書く必要があるときだけ |
 | 多段インスタンス | 親がインスタンス（`graph` が `.dxmat` を指す）を許すかは G4。G1 のスロット表は「グラフ 1 個 = レコード形式 1 個」で、多段は上書きのマージだけで実現できる |
@@ -539,5 +540,5 @@ UI / MCP 向けの主な API（`MaterialGraph`）:
 - `Bool` は実行時の値。コンパイル時定数の `StaticSwitch`（HLSL の分岐でパーミュテーションを作る）は G4。
 - `Custom` は CPU 評価できない（`E_CPU_UNSUPPORTED`）。テクスチャ系は `EvalEnv::sampleTexture` を渡したときだけ CPU 評価できる。
 - マテリアル関数（`.dxmf`・`FunctionCall`）、`ObjectParameter`（b0 自由枠）、画面微分を使うノード（`NormalFromHeight` / `DDX` / `DDY`。`NodeDef::needsPixelDerivatives` を予約済み）は未対応。
-- 生成コードは `UnoSurface` を埋めるだけ。シェーディング尾部の外出し（`ForwardShade.hlsli`）・`ForwardGraph.hlsl`・パラメータプール・b2 の読み替え・`// @sm` の解釈は G2a / G2b。
+- 生成コードは `UnoSurface` を埋めるだけ。シェーディング尾部の外出し（`ForwardShade.hlsli`）は G2a、`ForwardGraph.hlsl`・パラメータプール・b2 の読み替え・非同期コンパイルは **G2b で実装済み**（`docs/MATGRAPH_G2B.md`）。`// @sm 6_6` はグラフ専用のコンパイル経路が固定で `ps_6_6` / `vs_6_6` を使うので解釈していない（`ShaderManager` の手書きカスタムシェーダーには効かない）。
 - `Analysis()` / `CompileGraph` は再帰でグラフを辿る（深さ数千ノードまで想定。それ以上の直列チェーンは想定していない）。

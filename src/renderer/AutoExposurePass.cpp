@@ -4,20 +4,23 @@
 #include "core/Assert.h"
 #include "core/Logger.h"
 
+#include "renderer/PhotometricMath.h"
+
 #include <algorithm>
 #include <cstring>
 
 namespace dx12e
 {
-// HLSL の AECB と一致（2 x float4 + int4 = 12 DWORD、ルート定数）
+// HLSL の AECB と一致（3 x float4 + int4 = 16 DWORD、ルート定数）
 struct AECB
 {
     float p0[4];   // minLog2, 1/(maxLog2-minLog2), dt, 適応速度
     float p1[4];   // EV補正, 総ピクセル数, _, _
     int   rect[4]; // left, top, width, height
+    float p2[4];   // Q2: 窓の下側割合, 窓の上側割合, 明るくなる方向の速度, 暗くなる方向の速度（0=p0[3]）
 };
-static_assert(sizeof(AECB) == 12 * sizeof(float), "AECB must be 12 DWORDs");
-static constexpr UINT kAECBNum32 = 12;
+static_assert(sizeof(AECB) == 16 * sizeof(float), "AECB must be 16 DWORDs");
+static constexpr UINT kAECBNum32 = 16;
 
 static constexpr u32 kHistBins = 256;
 
@@ -176,18 +179,32 @@ void AutoExposurePass::Generate(ID3D12GraphicsCommandList* cmd,
         m_exposureState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     }
 
-    const float logMin = (std::min)(s.aeLogMin, s.aeLogMax - 0.1f);
+    // Q2: 物理露出(exposureMode=2)は測光レンジと補正を EV100 で指定する（上下限 = ヒストグラムの範囲）。
+    //     従来(0)は aeLogMin/Max(log2 輝度)と aeEvComp のまま。
+    float aeLogMin = s.aeLogMin, aeLogMax = s.aeLogMax, aeComp = s.aeEvComp;
+    if (s.exposureMode == 2)
+    {
+        const float evLo = (std::min)(s.aeMinEv100, s.aeMaxEv100 - 0.1f);
+        aeLogMin = photo::Log2LuminanceFromEv100(evLo);
+        aeLogMax = photo::Log2LuminanceFromEv100((std::max)(s.aeMaxEv100, evLo + 0.1f));
+        aeComp   = s.evComp;
+    }
+    const float logMin = (std::min)(aeLogMin, aeLogMax - 0.1f);
     AECB cb{};
     cb.p0[0] = logMin;
-    cb.p0[1] = 1.0f / (std::max)(s.aeLogMax - logMin, 0.1f);
+    cb.p0[1] = 1.0f / (std::max)(aeLogMax - logMin, 0.1f);
     cb.p0[2] = dt;
     cb.p0[3] = (std::max)(s.aeSpeed, 0.01f);
-    cb.p1[0] = s.aeEvComp;
+    cb.p1[0] = aeComp;
     cb.p1[1] = static_cast<float>(rectW) * static_cast<float>(rectH);
     cb.rect[0] = static_cast<int>(rectLeft);
     cb.rect[1] = static_cast<int>(rectTop);
     cb.rect[2] = static_cast<int>(rectW);
     cb.rect[3] = static_cast<int>(rectH);
+    cb.p2[0] = std::clamp(s.aeLowPercent, 0.0f, 0.99f);
+    cb.p2[1] = std::clamp(s.aeHighPercent, cb.p2[0] + 0.005f, 1.0f);
+    cb.p2[2] = (std::max)(s.aeSpeedUp, 0.0f);
+    cb.p2[3] = (std::max)(s.aeSpeedDown, 0.0f);
 
     cmd->SetComputeRootSignature(m_rootSig.Get());
     cmd->SetComputeRoot32BitConstants(0, kAECBNum32, &cb, 0);

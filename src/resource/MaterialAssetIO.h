@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,29 @@ struct MaterialAssetData
 
     std::string source;   // 例 "Poly Haven"（未指定可）
     std::string license;  // 例 "CC0"（未指定可）
+
+    // ---- マテリアルグラフのインスタンス（"graph" キー。docs/MATGRAPH_FORMAT.md §3）-------------------------
+    // ★graphPath が空 = 従来の .dxmat（このブロックは一切読み書きしない＝既存ファイルは 1 バイトも変わらない）。
+    // graphPath がある（.dxmg の assets 相対パス）= グラフ材質。albedo / normal / metalRoughness / emissive の 4 枚と
+    //   metallic / roughness / emissive* は無視され（書き出しもしない）、値は params が持つ。
+    //   このとき metallic / roughness は「影・深度・パストレの近似に使う代理値」で、既定は 0 / 0.5（従来の 1 / 1 ではない）。
+    std::string graphPath;
+    struct GraphParam
+    {
+        enum class Kind : uint8_t { Scalar, Vector, Texture };
+        Kind        kind = Kind::Scalar;
+        f32         v[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        int         n    = 1;      // Scalar = 1 / Vector = 2..4（書き戻しで長さを保つ）
+        std::string texture;       // Texture: assets 相対パス
+        bool operator==(const GraphParam& o) const
+        {
+            return kind == o.kind && n == o.n && texture == o.texture
+                && v[0] == o.v[0] && v[1] == o.v[1] && v[2] == o.v[2] && v[3] == o.v[3];
+        }
+    };
+    std::map<std::string, GraphParam> graphParams;   // パラメータ名 → 上書き値（数値 = Scalar / 配列 = Vector / 文字列 = Texture）
+
+    bool IsGraph() const { return !graphPath.empty(); }
 };
 
 // JSON バイト列から MaterialAssetData を読む。パース失敗/必須フィールド欠落なら false。

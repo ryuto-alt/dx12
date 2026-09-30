@@ -256,6 +256,56 @@ Texture* ResourceManager::GetOrLoadTexture(
     return rawPtr;
 }
 
+u32 ResourceManager::GetOrLoadTextureSrvIndex(const std::wstring& filePath,
+                                               ID3D12GraphicsCommandList* cmdList,
+                                               bool srgb, TextureUsage usage, u32 maxDimension)
+{
+    Texture* t = GetOrLoadTexture(filePath, cmdList, srgb, usage, maxDimension);
+    if (!t || t->GetArraySize() > 1) return kInvalidSrvIndex;   // 失敗 / cube・配列は Texture2D として引けない
+    return t->GetSrvIndex();
+}
+
+u32 ResourceManager::FindTextureSrvIndex(const std::wstring& filePath, bool srgb, TextureUsage usage,
+                                         u32 maxDimension) const
+{
+    const auto it = m_textureCache.find(MakeTextureCacheKey(filePath, srgb, usage, maxDimension));
+    if (it == m_textureCache.end() || !it->second.texture || !it->second.plain2d) return kInvalidSrvIndex;
+    return it->second.texture->GetSrvIndex();
+}
+
+ResourceManager::SrvIndexAudit ResourceManager::AuditTextureSrvIndices() const
+{
+    SrvIndexAudit a;
+    a.capacity = m_srvHeap ? m_srvHeap->GetCapacity() : 0;
+    std::unordered_map<u32, u32> seen;   // 添字 → 何枚が使っているか
+    const auto visit = [&](const Texture* t, bool plain2d)
+    {
+        if (!t) return;
+        ++a.textures;
+        const u32 idx = t->GetSrvIndex();
+        if (idx == kInvalidSrvIndex) { ++a.invalid; return; }
+        if (idx >= a.capacity) { ++a.outOfRange; return; }
+        if (++seen[idx] > 1) ++a.duplicates;
+        if (!plain2d) ++a.notPlain2d;
+    };
+    for (const auto& [key, entry] : m_textureCache) visit(entry.texture.get(), entry.plain2d);
+    visit(m_defaultWhite.get(), true);
+    visit(m_defaultNormal.get(), true);
+    visit(m_defaultMetalRoughness.get(), true);
+    visit(m_defaultBlack.get(), true);
+    return a;
+}
+
+std::vector<std::pair<std::wstring, u32>> ResourceManager::SnapshotTextureSrvIndices() const
+{
+    std::vector<std::pair<std::wstring, u32>> out;
+    out.reserve(m_textureCache.size());
+    for (const auto& [key, entry] : m_textureCache)
+        if (entry.texture) out.emplace_back(key, entry.texture->GetSrvIndex());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 const CachedModel* ResourceManager::GetOrLoadModel(
     const std::string& filePath,
     ID3D12GraphicsCommandList* cmdList)

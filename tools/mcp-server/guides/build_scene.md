@@ -15,7 +15,8 @@ dx12_scene_scaffold {}                       # LVL/ENV/LGT/GP/FX/UI/CAM のグ�
 ## 2. 配置する(まとまった量は 1 回で)
 | やりたいこと | 使う |
 |---|---|
-| 数十〜数百個を一気に(床・壁・柱・ライト) | `dx12_scene_write`(シーン JSON を書いて 1 回で開く) |
+| **部屋・ステージ・街を一括で(第一候補)** | **`dx12_apply_scene_spec`(仕様 JSON。差分適用・自動検証・失敗は specPatch。`dx12_guide {topic:"scene_spec"}`)** |
+| 生のシーン JSON を書く(低レベル。長尾) | `dx12_call {name:"dx12_scene_write"}` |
 | 同じものを散らす(木・岩・草) | `dx12_scatter` |
 | 少数を個別に | `dx12_create_entity` / `dx12_spawn_model` / `dx12_spawn_box` |
 | 複数操作をまとめて(失敗したら丸ごと戻す) | `dx12_batch`(既定 atomic) |

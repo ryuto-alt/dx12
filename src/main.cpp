@@ -7,8 +7,10 @@
 #include "core/Version.h"
 #include "core/vfs/Vfs.h"
 #include "core/DpiScale.h"
+#include "gui/UiTestHarness.h"   // --ui-tests-skip（UI テストの除外指定）
 #include "editor/EditorTheme.h"   // --theme-variant（エディタのアイデンティティ案。開発用）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
+#include "core/OffscreenShot.h"     // --size WxH（screenshot_final の既定の撮影解像度。純ロジック）
 #include "project/Project.h"
 
 #include <Windows.h>
@@ -503,6 +505,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         { uiTests = true; uiTestsRunAll = true; uiTestsDeep = true; }
                     else if (wcsncmp(argv[i], L"--ui-tests-speed=", 17) == 0)
                         { uiTests = true; uiTestsSpeed = _wtoi(argv[i] + 17); }
+                    else if (wcscmp(argv[i], L"--ui-tests-skip") == 0 && i + 1 < argc)
+                        dx12e::UiTestHarness::SetSkipList(toUtf8(argv[++i]));   // 例: build_game,launcher_screen（名前はカンマ区切り）
+                    else if (wcsncmp(argv[i], L"--ui-tests-skip=", 16) == 0)
+                        dx12e::UiTestHarness::SetSkipList(toUtf8(argv[i] + 16));
+                    else if (wcscmp(argv[i], L"--ui-tests-only") == 0 && i + 1 < argc)
+                        dx12e::UiTestHarness::SetOnlyList(toUtf8(argv[++i]));   // 例: hierarchy_reparent,asset_browser（指定したテストだけ走らせる）
+                    else if (wcsncmp(argv[i], L"--ui-tests-only=", 16) == 0)
+                        dx12e::UiTestHarness::SetOnlyList(toUtf8(argv[i] + 16));
                     else if (wcscmp(argv[i], L"--headless") == 0)
                         headless = true;
                     else if (wcscmp(argv[i], L"--no-splash-sound") == 0)
@@ -554,6 +564,21 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         fleetInstanceId = toUtf8(argv[++i]);
                     else if (wcscmp(argv[i], L"--scene") == 0 && i + 1 < argc)
                         startupScene = toUtf8(argv[++i]);
+                    else if (wcscmp(argv[i], L"--size") == 0 || wcsncmp(argv[i], L"--size=", 7) == 0)
+                    {
+                        // Q2: screenshot_final の既定の撮影解像度（ビューポート / ウィンドウに依存しないオフスクリーン出力）。例: --size 1920x1080
+                        std::string value;
+                        if (argv[i][6] == L'=') value = toUtf8(argv[i] + 7);
+                        else if (i + 1 < argc)  value = toUtf8(argv[++i]);
+                        uint32_t sw = 0, sh = 0;
+                        if (dx12e::offshot::ParseSize(value, sw, sh)
+                            && dx12e::offshot::Validate(sw, sh, false) == dx12e::offshot::Verdict::Ok)
+                        {
+                            dx12e::offshot::Cli().w = sw;
+                            dx12e::offshot::Cli().h = sh;
+                        }
+                        else OutputDebugStringA(("--size の値が不正です（例 1920x1080。1 辺 16〜8192・総画素 8192x4096 まで）: " + value + "\n").c_str());
+                    }
                 }
                 LocalFree(argv);
             }
@@ -661,6 +686,35 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         if (mcpPort > 0)  app.SetMcpPort(mcpPort);
         dx12e::fleet::Instance().Configure(static_cast<uint32_t>(fleetOwnerPid), fleetIdleExitMin, fleetInstanceId);
         if (!startupScene.empty()) app.SetStartupScene(startupScene);
+#endif
+#ifdef DX12_GAME_RUNTIME
+        // 配布ゲームが受け付ける唯一の引数: --background[=offscreen|minimized|noactivate|hidden][,tool|notool]
+        // （UI 自動テストが配布ゲームの起動確認をする時に、人の画面へ窓を出さず前面も取らないため。
+        //   引数なしの起動は従来どおり）。
+        {
+            int gargc = 0;
+            if (LPWSTR* gargv = CommandLineToArgvW(GetCommandLineW(), &gargc))
+            {
+                for (int i = 1; i < gargc; ++i)
+                {
+                    if (wcscmp(gargv[i], L"--background") != 0 && wcsncmp(gargv[i], L"--background=", 13) != 0)
+                        continue;
+                    std::string value;
+                    if (gargv[i][12] == L'=')
+                        for (const wchar_t* p = gargv[i] + 13; *p; ++p) value += static_cast<char>(*p < 128 ? *p : '?');
+                    dx12e::BackgroundOptions gbg;
+                    std::string gerr;
+                    if (!dx12e::ParseBackgroundOption(value, gbg, gerr))
+                    {
+                        gbg = dx12e::BackgroundOptions{};
+                        gbg.mode = dx12e::BackgroundMode::Offscreen;
+                        gbg.toolWindow = true;
+                    }
+                    app.SetBackground(gbg);
+                }
+                LocalFree(gargv);
+            }
+        }
 #endif
         app.Initialize(hInstance, nCmdShow, gameMode, nullptr, buildMode);
 

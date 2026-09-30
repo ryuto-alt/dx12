@@ -247,9 +247,12 @@ class Builder
 public:
     Builder(const MaterialGraph& g, const GraphAnalysis& an, CompileResult& out) : m_g(g), m_an(an), m_out(out) {}
 
-    void Run()
+    void Run() { RunOrder(m_an.order); }
+
+    // 指定した順（後順 = トポロジカル順）でノードを IR にする。部分グラフ出力（previewNode）は上流だけの順を渡す
+    void RunOrder(const std::vector<NodeId>& order)
     {
-        for (const NodeId& id : m_an.order)
+        for (const NodeId& id : order)
         {
             const Node* node = m_g.FindNode(id);
             const NodeTypeInfo* info = m_an.Find(id);
@@ -262,6 +265,16 @@ public:
             }
             BuildOp(*node, *info);
         }
+    }
+
+    // 部分グラフ出力: node の出力ピン outIndex を指すオペランド（RunOrder の後に呼ぶ）
+    IrOperand PreviewOperand(const NodeId& node, int outIndex)
+    {
+        PinSource s;
+        s.kind = PinSource::Kind::Link;
+        s.node = node;
+        s.outIndex = outIndex;
+        return LinkBase(s);
     }
 
 private:
@@ -382,34 +395,38 @@ private:
             return b;
         }
         case PinSource::Kind::Link:
-        {
-            const NodeTypeInfo* sinfo = m_an.Find(s.node);
-            IrOperand b;
-            auto al = m_alias.find(s.node);
-            if (al != m_alias.end())
-                b = al->second;
-            else
-            {
-                b.kind = IrOperand::Kind::Op;
-                b.op = m_nodeOp.at(s.node);
-                const std::string& swz = sinfo->def->outputs[static_cast<size_t>(s.outIndex)].swizzle;
-                if (swz.empty())
-                {
-                    b.srcType = ir().ops[static_cast<size_t>(b.op)].type;
-                    b.ncomps = 0;
-                }
-                else
-                {
-                    b.ncomps = static_cast<int>(swz.size());
-                    for (int k = 0; k < b.ncomps; ++k) b.comps[k] = static_cast<uint8_t>(swz[static_cast<size_t>(k)] == 'x' ? 0 : swz[static_cast<size_t>(k)] == 'y' ? 1 : swz[static_cast<size_t>(k)] == 'z' ? 2 : 3);
-                    b.srcType = FloatType(b.ncomps);
-                }
-            }
-            b.srcType = (al != m_alias.end()) ? b.type : b.srcType;   // Reroute は経由先の（キャスト後の）型がそのまま出力型
-            return ApplyCast(b, T);
-        }
+            return ApplyCast(LinkBase(s), T);
         default: return o;
         }
+    }
+
+    // 接続元ノードの出力ピンを指すオペランド（キャスト前。srcType = 接続元の型）
+    IrOperand LinkBase(const PinSource& s)
+    {
+        const NodeTypeInfo* sinfo = m_an.Find(s.node);
+        IrOperand b;
+        auto al = m_alias.find(s.node);
+        if (al != m_alias.end())
+            b = al->second;
+        else
+        {
+            b.kind = IrOperand::Kind::Op;
+            b.op = m_nodeOp.at(s.node);
+            const std::string& swz = sinfo->def->outputs[static_cast<size_t>(s.outIndex)].swizzle;
+            if (swz.empty())
+            {
+                b.srcType = ir().ops[static_cast<size_t>(b.op)].type;
+                b.ncomps = 0;
+            }
+            else
+            {
+                b.ncomps = static_cast<int>(swz.size());
+                for (int k = 0; k < b.ncomps; ++k) b.comps[k] = static_cast<uint8_t>(swz[static_cast<size_t>(k)] == 'x' ? 0 : swz[static_cast<size_t>(k)] == 'y' ? 1 : swz[static_cast<size_t>(k)] == 'z' ? 2 : 3);
+                b.srcType = FloatType(b.ncomps);
+            }
+        }
+        b.srcType = (al != m_alias.end()) ? b.type : b.srcType;   // Reroute は経由先の（キャスト後の）型がそのまま出力型
+        return b;
     }
 
     void BuildOp(const Node& node, const NodeTypeInfo& info)
@@ -516,6 +533,62 @@ private:
     }
 };
 
+// ---------------------------------------------------------------------------
+// 部分グラフ出力（previewNode）: 対象ノードの上流だけを後順に並べ、上流のエラーを診断へ集める。
+// ---------------------------------------------------------------------------
+bool PreparePartial(const MaterialGraph& g, const GraphAnalysis& an, const CompileOptions& opt, CompileResult& r,
+                    std::vector<NodeId>& order, int& outIndex)
+{
+    r.diagnostics.clear();
+    auto fail = [&](const std::string& msg, const std::string& hint) {
+        Diagnostic d;
+        d.severity = Severity::Error;
+        d.code = code::kPreviewTarget;
+        d.nodeId = opt.previewNode;
+        d.message = msg;
+        d.hint = hint;
+        r.diagnostics.push_back(std::move(d));
+        return false;
+    };
+    const NodeTypeInfo* ti = an.Find(opt.previewNode);
+    if (!ti || !ti->def) return fail("プレビューの対象ノード \"" + opt.previewNode + "\" が見つかりません", "");
+    if (ti->def->isOutput) return fail("出力ノードはプレビューできません", "");
+    if (ti->def->outputs.empty()) return fail(ti->def->type + ": 出力ピンが無いのでプレビューできません", "");
+    outIndex = opt.previewPin.empty() ? 0 : ti->def->OutputIndex(opt.previewPin);
+    if (outIndex < 0) return fail(ti->def->type + ": 出力ピン \"" + opt.previewPin + "\" がありません", "");
+
+    // 対象の上流を後順 DFS（GraphAnalysis の出力からの順と同じ規則。上流のエラーでも辿る）
+    std::set<NodeId> seen;
+    std::function<void(const NodeId&)> dfs = [&](const NodeId& id) {
+        if (!seen.insert(id).second) return;
+        const NodeTypeInfo* ni = an.Find(id);
+        if (!ni || !ni->def) return;
+        for (size_t i = 0; i < ni->def->inputs.size() && i < ni->inSource.size(); ++i)
+        {
+            const PinSource& s = ni->inSource[i];
+            if (s.kind == PinSource::Kind::Link && g.FindNode(s.node)) dfs(s.node);
+        }
+        order.push_back(id);
+    };
+    dfs(opt.previewNode);
+
+    bool bad = false;
+    for (const Diagnostic& d : an.diags)
+    {
+        if (d.nodeId.empty() || !seen.count(d.nodeId)) continue;
+        if (d.severity == Severity::Info) continue;
+        Diagnostic c = d;
+        c.reachable = true;
+        if (c.severity == Severity::Error) bad = true;
+        r.diagnostics.push_back(std::move(c));
+    }
+    if (bad) return false;
+    const ValueType ot = ti->outTypes.size() > static_cast<size_t>(outIndex) ? ti->outTypes[static_cast<size_t>(outIndex)] : ValueType::Invalid;
+    if (ot == ValueType::Invalid) return fail(ti->def->type + ": 出力の型が決まらないのでプレビューできません", "上流の接続を確かめてください");
+    if (ot != ValueType::Tex2D && !IsFloatVec(ot)) return fail(ti->def->type + ": この型（" + TypeName(ot) + "）はプレビューできません", "");
+    return true;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -525,13 +598,41 @@ CompileResult CompileGraph(const MaterialGraph& g, const CompileOptions& opt)
 {
     CompileResult r;
     const GraphAnalysis& an = g.Analysis();
-    r.diagnostics = an.diags;
     r.settings = g.Settings();
     r.stats.nodesTotal = static_cast<int>(g.Nodes().size());
-    r.stats.nodesReachable = static_cast<int>(an.order.size());
-    if (an.hasErrors || an.outputNode.empty()) return r;
 
-    Builder(g, an, r).Run();
+    const bool partial = !opt.previewNode.empty();
+    std::vector<NodeId> partialOrder;
+    int previewOut = 0;
+    if (partial)
+    {
+        if (!PreparePartial(g, an, opt, r, partialOrder, previewOut)) return r;
+        r.stats.nodesReachable = static_cast<int>(partialOrder.size());
+    }
+    else
+    {
+        r.diagnostics = an.diags;
+        r.stats.nodesReachable = static_cast<int>(an.order.size());
+        if (an.hasErrors || an.outputNode.empty()) return r;
+    }
+
+    Builder builder(g, an, r);
+    if (partial)
+    {
+        builder.RunOrder(partialOrder);
+        IrOperand pv = builder.PreviewOperand(opt.previewNode, previewOut);
+        if (pv.kind != IrOperand::Kind::None)
+        {
+            IrOutput out;
+            out.field = "preview";
+            out.pin = opt.previewPin;
+            out.value = pv;
+            r.previewType = pv.srcType;
+            r.ir.outputs.push_back(std::move(out));
+        }
+    }
+    else
+        builder.Run();
     r.slotCount = static_cast<int>(r.slots.size());
     r.stats.ops = static_cast<int>(r.ir.ops.size());
     r.stats.slots = r.slotCount;
@@ -646,13 +747,31 @@ CompileResult CompileGraph(const MaterialGraph& g, const CompileOptions& opt)
     if (!r.ir.outputs.empty())
     {
         const int start = static_cast<int>(B.size());
-        lineDirective(an.outputNode);
+        lineDirective(partial ? opt.previewNode : an.outputNode);
         for (const IrOutput& o : r.ir.outputs)
         {
+            if (o.field == "preview")
+            {
+                // 表示色（Compiler.h の CompileOptions::previewNode と CpuEval の "preview" が同じ写像）
+                const std::string e = OperandExpr(o.value, r.ir);
+                switch (r.previewType)
+                {
+                case ValueType::F1: add("    s.baseColor = float3(" + e + ", " + e + ", " + e + ");"); break;
+                case ValueType::F2: add("    s.baseColor = float3(" + e + ", 0.0);"); break;
+                case ValueType::F3: add("    s.baseColor = " + e + ";"); break;
+                case ValueType::F4:
+                    add("    s.baseColor = (" + e + ").rgb;");
+                    add("    s.opacity = (" + e + ").a;");
+                    break;
+                case ValueType::Tex2D: add("    s.baseColor = UnoSample(" + e + ", UNO_SAMP_LINEAR_CLAMP, mi.uv).rgb;"); break;
+                default: break;
+                }
+                continue;
+            }
             add("    s." + o.field + " = " + OperandExpr(o.value, r.ir) + ";");
             if (o.field == "normalTS") add("    s.hasNormal = true;");
         }
-        spans.push_back({{start, static_cast<int>(B.size()) - 1}, an.outputNode});
+        spans.push_back({{start, static_cast<int>(B.size()) - 1}, partial ? opt.previewNode : an.outputNode});
     }
     add("}");
 

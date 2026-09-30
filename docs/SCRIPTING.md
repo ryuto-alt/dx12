@@ -119,6 +119,18 @@ local c = charge.new("E", { max = 2.0 })
 ```
 詳細は API_REFERENCE.md の time セクションを参照。
 
+### シーケンス（Sequence）— 時間軸の演出を流す
+カメラワーク・カット・イベントなどをタイムライン（`assets/sequences/<名前>.dxseq`）で作り込んで、Play 中に流す。台本は実時間で進む（`time.setScale` の影響を受けない）。
+```lua
+local id = Sequence.play("Intro")                       -- 頭から再生（失敗は nil, エラー文）
+Sequence.play("Ambient", { loop = true, rate = 0.5 })   -- ループ・半速
+events:on("Intro:done", function() goToScene("scenes/level1.json") end)   -- 終わると <名前>:done が飛ぶ
+Sequence.stop("Ambient")                                -- 止める（"*" で全部）
+if Sequence.isPlaying("Intro") then print(Sequence.time("Intro")) end
+```
+シーケンスの中のイベント（`emit` / `lua` / `log`）はここで受ける（`events:on("boom", fn)` / グローバル関数 `OnBoom(...)`）。
+一発の反応（被弾で揺れる等）は `Tween` / `Trigger`、**時間軸で作り込んで残す演出は Sequence**。詳細は API_REFERENCE.md の Sequence セクションと `docs/DXSEQ_FORMAT.md`。
+
 ### ライティング演出（Lighting / Tween / Flicker）
 ライトは**プロパティを素直に読み書き**する。時間変化は**汎用 `Tween` 1 本**、明滅は **lightstyle 文字列**。
 この 3 つだけ覚えれば、ロウソクも時間帯変化も雷も書ける（Play 開始で全部自動クリアされる）。

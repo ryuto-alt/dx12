@@ -155,6 +155,7 @@ constexpr const char* kCustomEmpty     = "E_CUSTOM_EMPTY";      // Custom の本
 constexpr const char* kCpuUnsupported  = "E_CPU_UNSUPPORTED";   // CPU 評価できないノード
 constexpr const char* kDeadNode        = "I_DEAD_NODE";         // 出力に繋がっていない（情報）
 constexpr const char* kDxc             = "E_DXC";               // DXC のコンパイルエラー（nodeId 逆引き済み）
+constexpr const char* kPreviewTarget   = "E_PREVIEW_TARGET";    // 部分グラフ出力（ノード内サムネイル）の対象が使えない（出力ノード / 型が決まらない / 上流にエラー）
 } // namespace code
 
 } // namespace dx12e::matgraph

@@ -14,6 +14,7 @@
 #include "editor/EditorIcons.h"
 #include "editor/Toast.h"          // ctx.Notify(): 右下トースト通知
 #include "renderer/DrawItem.h"   // ピッキングのブロードフェーズ候補（Application が毎フレーム構築）
+#include "renderer/pt/PtUiState.h" // リファレンスレンダー（パストレーサー）の UI ⇔ Application の受け渡し（POD）
 
 namespace dx12e
 {
@@ -229,10 +230,48 @@ public:
     // MCP の dx12_perf_stats の cpuScopeMs に出る。null なら計測しない。
     f32* cpuScopeMs = nullptr;
 
+    // ---- リファレンスレンダー（DXR パストレーサー。ツール窓 PathTracerPanel ⇔ Application::PathTracerTick）----
+    pt::UiState ptUi;
+
     // 2D ビューモード（Unity の 2D ボタン相当）。ON 中はエディタカメラを正射＋XY平面正対に固定し、
     // 回転/ドリーを禁止（中ドラッグでパン、ホイールでズーム）。ギズモも正射モードで表示する。
     bool  view2D     = false;
     float view2DZoom = 6.0f;   // 正射の縦半分（世界単位）。小さいほどズームイン。
+
+    // ---- ビューポート専用ツールバー（フェーズ 1a）の状態 ----
+    // ★ゲーム画面の中には何も重ねない。ツールバーとビューキューブはビューポート上端の「別帯」に置く
+    //   （EditorLayer が帯の高さぶん 3D の矩形を縮める）。輪郭・ホバーは後処理でバックバッファへ
+    //   ImGui の直前に足す（screenshot_final の撮影より後＝決定論の絵には写らない）。
+    struct ViewportPrefs
+    {
+        bool  barVisible      = true;    // 上端の帯（表示 > ビューポートの帯）。false なら従来と同じ矩形
+        int   aspectIndex     = 0;       // vp::kAspects の番号（既定 16:9。Play 中は常に 16:9）
+        float fovDeg          = 45.0f;   // エディタカメラの視野角（縦・度）。既定は従来の固定値と同じ
+        // 表示フラグ（既定は全部従来どおり）
+        bool  showGizmo       = true;    // 変形ギズモ
+        bool  showIcons       = true;    // ライト / カメラ等のアイコンと選択時の補助線
+        bool  showLightHandles = true;   // ライトのハンドル（コーン角 / range）
+        bool  showBounds      = false;   // 選択メッシュの AABB 橙ワイヤ（旧既定 ON。輪郭に置き換えたので既定 OFF）
+        bool  showViewCube    = true;    // 帯の右端のビューキューブ
+        // 選択のフィードバック（エディタ専用の後処理）
+        bool  outline         = true;    // 選択アウトライン
+        bool  hoverHighlight  = true;    // ホバーの弱いアウトライン
+        // ビューモード（0=ライティングあり 1=デプス 2=法線 3=ラフネス 4=メタリック 5=AO 6=ワイヤ）
+        int   viewMode        = 0;
+    };
+    ViewportPrefs vpPrefs;
+    int pendingBookmarkJump = 0;   // 1..9（コマンド表 / 帯のボタンが立て、ViewportToolbar が消化する）
+    int pendingBookmarkSet  = 0;
+
+    // ビューポート上の一時状態（毎フレーム SceneViewPanel / ViewportToolbar が更新）
+    entt::entity hoveredEntity = entt::null;       // マウスの下のエンティティ（精密ピッキングの結果。ホバー強調用）
+    bool  marqueeActive = false;                   // 矩形選択のドラッグ中
+    float marqueeX0 = 0, marqueeY0 = 0, marqueeX1 = 0, marqueeY1 = 0;   // 矩形（スクリーン座標）
+    std::string vpHudText;                         // スナップ量・カメラ速度の一時表示（帯に出る。空なら出さない）
+    float       vpHudTimer = 0.0f;                 // vpHudText の残り秒数
+
+    // 選択アウトラインの GPU リソース（Application が最初の描画フレームに作る。型は不完全でよい）。
+    std::shared_ptr<class SelectionOutlinePass> outlinePass;
 
     // クラスタードライティング（Forward+）のデバッグ表示。
     // 0=off / 1=ライト複雑度ヒートマップ（青→緑→赤。上限 128 灯に張り付いた所は白）/
@@ -261,6 +300,25 @@ public:
     // メニュー「表示 > レイアウトをリセット」で立てるフラグ。
     // EditorLayer が検知してデフォルトドックレイアウトを再構築する。
     bool resetLayout = false;
+
+    // ---- ワークスペース / レイアウト（フェーズ 1b W。実処理は editor/WorkspaceManager。ここは要求フラグと表示用の読み取り値）----
+    // メニュー / ツールバー / コマンドパレットがフラグを立て、EditorLayer（WorkspaceManager）がフレーム境界で消化する。
+    std::string pendingWorkspace;             // "level" "material" "lighting" "animation" "vfx" "ui"（editor/WorkspaceLogic.h のプリセット id）
+    std::string currentWorkspace = "level";   // （読み取り）今のワークスペース id
+    bool        layoutSaveWindowRequest = false;   // 「レイアウトに名前を付けて保存」窓を開く
+    bool        layoutSlotsWindowRequest = false;  // 「ツール窓の配置先」窓を開く
+    std::string pendingLayoutRestore;         // 名前つきレイアウトを復元する（名前）
+    std::string pendingLayoutDelete;          // 名前つきレイアウトを削除する（名前）
+    std::string pendingLayoutSaveName;        // 名前つきレイアウトを保存する（保存窓の「保存」/ テスト用）
+    bool        bottomDockMaximizeToggle = false;  // 下部ドックの最大化 / 元に戻す（タブ帯のダブルクリック / コマンド）
+    bool        bottomDockMaximized = false;       // （読み取り）下部ドックが最大化中か
+    std::vector<std::string> savedLayoutNames;     // （読み取り）名前つきレイアウトの一覧（メニュー用。WorkspaceManager が更新）
+    // ツール窓の配置先の変更要求（id, ws::Slot の値 0=右タブ 1=右分割 2=下部 3=フローティング）。窓の配置先ウィンドウ / テストが積む。
+    std::vector<std::pair<std::string, int>> pendingToolSlots;
+    // （読み取り・UI テスト用）今のドックの分割比（Layout の論理値）と、下部 / 右分割のドックノード ID（0 = 無い）
+    float    dockRatioLeft = 0.0f, dockRatioRight = 0.0f, dockRatioBottom = 0.0f, dockRatioRightSplit = 0.0f;
+    unsigned dockNodeBottom = 0, dockNodeRightSplit = 0;
+    float    dockMeasLeft = 0.0f, dockMeasRight = 0.0f, dockMeasBottom = 0.0f;   // 実ノードから測った分割比（ImGui の丸め込み。Layout の論理値とは 1% 程度ずれる）
 
     // 編集用の照らし込み（Shift+F2 でトグル。F2 は名前変更に譲った）。シーンの環境光に「下限」として被せるだけで、
     // シーンには保存されず Play 中は無効＝ゲームの絵は暗いまま。暗い屋内シーンを
@@ -305,6 +363,19 @@ public:
     // 独立フローティング窓として開く(AnyToolWindowOpen には含めない)。
     bool showMaterialEditor  = false;
     bool showMaterialLibrary = false;
+    // ノードグラフ サンドボックス窓（マテリアルグラフ G0 の開発用。汎用ノードグラフ UI を仮想入力で確認する）。
+    bool showNodeGraphSandbox = false;
+    // サンドボックス窓がキーボードを使っている間 true（EditorCommands の Typing 系ショートカットを止める。窓が毎フレーム書く）。
+    bool nodeGraphKeyFocus = false;
+    // マテリアルグラフ窓（G3。G1 のグラフを G0 のノードエディタで編集する）。ノードグラフ サンドボックスとは別の窓。
+    bool showMaterialGraph = false;
+    // マテリアルグラフ窓がフォーカスされている間 true（窓が毎フレーム書く）。Ctrl+S / Ctrl+O / Ctrl+N / Ctrl+Shift+S をグラフの保存 / 開く / 新規 /
+    // 名前を付けて保存へ振り向ける（シーンの保存と取り違えない）。Typing 系（Ctrl+Z / W E R T / F / Esc …）は nodeGraphKeyFocus と同じく窓へ渡す。
+    bool materialGraphKeyFocus = false;
+    // アセットブラウザで .dxmg をダブルクリック / マテリアルエディタの「グラフ」ボタンから開くときに立つ。MaterialGraphPanel が消費して開く。
+    // 空文字で「新規」を頼むときは matGraphOpenNew を立てる。
+    std::string pendingOpenMatGraphPath;
+    bool pendingNewMatGraph = false;
     // UIエディタ(ゲーム内UIの2Dキャンバス編集。UMGデザイナー相当)。広い面積が要るので
     // VfxEditor 同様の独立フローティング窓(AnyToolWindowOpen には含めない)。
     bool showUiEditor        = false;
@@ -555,8 +626,24 @@ public:
     // クリップボード（Ctrl+C/V 用。エンティティの JSON スナップショット）
     std::vector<std::string> clipboard;
 
+    // ---- [I] インスペクタ（フェーズ 1b）----
+    // 固定（ロック）中のエンティティ。null = 選択に追従。InspectorPanel が毎フレーム書く鏡（UI 自動テスト / 他パネルが読む）。
+    entt::entity inspectorPinned = entt::null;
+
     // エディタ UI アイコン（Application が所有・populate。null/0 ならテキスト表示にフォールバック）
     const EditorUiIcons* icons = nullptr;
+
+    // ===== [A] アセットブラウザ（フェーズ 1b）=====
+    // アセットブラウザ本体（EditorLayer::Initialize が設定。UI 自動テスト / 計測が窓を介さず状態を読むための口）。
+    class AssetBrowserPanel* assetBrowser = nullptr;
+    // OS（エクスプローラー）からメイン窓へドロップされたファイル（Window の WM_DROPFILES が積み、アセットブラウザが消費する）。
+    // x / y はクライアント座標（物理 px）。ビューポート矩形の中ならシーンへ配置、それ以外は現在のフォルダへ取り込む。
+    struct OsFileDrop
+    {
+        std::vector<std::wstring> paths;   // ドロップされたファイル / フォルダの絶対パス（UTF-16。パスの欠落を避けるため wstring のまま持つ）
+        float x = 0.0f, y = 0.0f;
+    };
+    std::vector<OsFileDrop> pendingOsDrops;
 
     // Inspector のモデル差し替え（フレーム境界で SwapEntityModel が処理）。
     // 【2026-07-20 追記・解決済み】かつてここに「メンバを中間に挿入するとヒープ域外書き込みが
@@ -575,6 +662,10 @@ public:
     // VfxEditor 等と同じ独立フローティング窓なので AnyToolWindowOpen には含めない。
     // ヒエラルキー「＋エンティティ追加 → 地形」で開き、Terrain 付きエンティティを選ぶと自動で開く。
     bool showTerrainEditor = false;
+
+    // 植生ツール窓（F1: FoliageLayer への散布 / 円ブラシ / シーンの風）。TerrainEditor と同じ独立フローティング窓。
+    // 「ツール → 植生ツール」または FoliageLayer の Inspector の「植生ツールを開く」で開く。
+    bool showFoliageTool = false;
 
     // ===== ライティング編集（editor/LightHandles.* / editor/panels/LightingPanel.*）=====
     // ライティング・パネル（シーンの光を1画面で詰める）。VfxEditor 等と同じ独立フローティング窓
@@ -597,6 +688,9 @@ public:
     // メニュー「ツール > ナビメッシュ」で開く。
     bool showNavMesh = false;
 
+    // リファレンスレンダー窓（DXR パストレーサー。独立フローティング窓。メニュー「ツール > リファレンスレンダー」）。
+    bool showPathTracer = false;
+
     // ===== ショートカット / コマンドの要求フラグ（editor/EditorCommands.cpp が立て、下記の担当が消費）=====
     // Application / ToolbarPanel / EditorLayer は消費側。フレーム境界で処理する pendingUndo 等と同じ流儀。
     bool pendingSaveScene        = false;   // 保存（Ctrl+S）。Application が Editor モードで処理し、通知も出す
@@ -616,6 +710,12 @@ public:
     // ビューポート / ツールバー / ステータスバー / トーストは None、フローティングのツール窓は Other。
     enum class Panel : unsigned char { None, Hierarchy, Inspector, AssetBrowser, Console, Other };
     Panel focusedPanel     = Panel::None;   // None = ビューポート（どのパネルにもフォーカスが無い）
+
+    // ---- [H] ヒエラルキー（フェーズ 1b）----
+    // HierarchyPanel::Render の CPU 時間（ms。直近フレーム。UI テスト hier_perf_100k と診断用）
+    float hierRenderMs = 0.0f;
+    // ヒエラルキーの型フィルタ（HierarchyLogic.h の TypeMask ビット。0 = 絞らない）。W の prefs へ永続化する
+    unsigned int hierTypeFilter = 0;
 
     // エディタカメラ（EditorLayer が毎フレーム写す）。「カメラの前に作る」の位置決めに使う。
     DirectX::XMFLOAT3 camPos{0.0f, 1.7f, -5.0f};

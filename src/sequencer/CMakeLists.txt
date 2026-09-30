@@ -12,6 +12,7 @@ add_library(SequencerCore STATIC
     SeqSerialize.cpp
     SeqBinding.cpp
     SeqConvert.cpp
+    SeqOpJson.cpp      # SeqOp の JSON 表現(MCP / AI の宣言的な編集。S1b)
 )
 # "sequencer/Seq*.h" で include できるよう src/ を公開する
 target_include_directories(SequencerCore PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

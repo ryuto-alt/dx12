@@ -111,7 +111,7 @@ try {
   for (const n of legacyNames) { const d = await core.call("dx12_tool_describe", { name: n }); if (d.name === n && d.callTemplate?.name === n && d.tier === "legacy") described++; else undescribed.push(n); }
   check(`旧 220 名すべてが core 面の dx12_tool_describe で引け、callTemplate が同名(${described}/220)`, described === 220, undescribed.slice(0, 10));
   const hidden = legacyNames.filter((n) => !byName.has(n));
-  check("core 面の tools/list に出ない旧名は 197 本(それでも上の通り解決できる)", hidden.length === 220 - 23, hidden.length);
+  check("core 面の tools/list に出ない旧名は 201 本(それでも上の通り解決できる。Core に同名で入る旧ツールは 19 本。dx12_play_script は M7 で、dx12_scene_write は M11 で長尾へ)", hidden.length === 220 - 19, hidden.length);
 
   console.log("[4] guarded");
   const g1 = await core.call("dx12_call", { name: "dx12_git_push", args: {}, confirm: true });

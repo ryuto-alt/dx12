@@ -5,6 +5,9 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
+
+namespace dx12e { nlohmann::json McpSafetyInfoJson(); }   // ApplicationMcpManifest.cpp
 #include "core/mcp/FleetGuard.h"   // ping の pid / uptime / idle / VRAM
 #include "resource/ShaderDiagnostics.h"
 #include "resource/ShaderTemplates.h"
@@ -68,6 +71,7 @@ void Application::RegisterMcpEntityMethods()
             const std::string rel = "components/" + name + ".lua";
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
             fs::create_directories(full.parent_path());
+            mcpsafety::JournalBackup(full);   // M5: 上書き前の内容を退避（無ければ「新規作成」を記録）
             std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
             if (!ofs) throw std::runtime_error("cannot write " + full.string());
             ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
@@ -134,6 +138,7 @@ void Application::RegisterMcpEntityMethods()
             const std::string rel = name + ".hlsl";
             const fs::path full = fs::path(PathResolver::ProjectShaderDir()) / rel;
             fs::create_directories(full.parent_path());
+            mcpsafety::JournalBackup(full);   // M5
             {
                 std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
                 if (!ofs) throw McpError(McpErr::Internal, "cannot write " + full.string(),
@@ -439,6 +444,7 @@ void Application::RegisterMcpEntityMethods()
             else if (type == "particle_emitter")  marker = "__particle_emitter__";
             else if (type == "trigger")           marker = "__trigger__";
             else if (type == "decal")             marker = "__decal__";
+            else if (type == "water")             marker = "__water__";
             else if (type == "ui_canvas")     marker = "__ui_canvas__";
             else if (type == "ui_image")      marker = "__ui_image__";
             else if (type == "ui_text")       marker = "__ui_text__";
@@ -448,7 +454,7 @@ void Application::RegisterMcpEntityMethods()
             else if (type == "ui_scrollview") marker = "__ui_scrollview__";
             else throw McpError(McpErr::InvalidParam,
                 "type must be one of: box, sphere, plane, empty, camera, light_directional, "
-                "light_point, light_spot, particle_emitter, trigger, decal, ui_canvas, ui_image, "
+                "light_point, light_spot, particle_emitter, trigger, decal, water, ui_canvas, ui_image, "
                 "ui_text, ui_button, ui_slider, ui_toggle, ui_scrollview",
                 "3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"。モデルは dx12_spawn_model、プレハブは dx12_spawn_prefab");
 
@@ -650,6 +656,7 @@ void Application::RegisterMcpEntityMethods()
                 full = PathResolver::AssetsDir() + rel;        // 末尾 '/' 付き
                 fs::create_directories(fs::path(full).parent_path());
             }
+            mcpsafety::JournalBackup(fs::path(full));   // M5
             if (!SceneSerializer::Save(*m_scene, full, PathResolver::AssetsDir()))
                 throw std::runtime_error("save failed");
             // path 省略＝現在シーンへの保存のときだけ未保存フラグを落とす
@@ -795,7 +802,7 @@ void Application::RegisterMcpEntityMethods()
             if (!fs::exists(PathResolver::AssetsDir() + path))
                 throw McpNotFoundAsset("model not found: " + path,
                     "dx12_list_assets で実在と綴り（拡張子・大文字小文字）を確かめる。外部のファイルなら dx12_import_asset",
-                    path, "", {".glb", ".gltf", ".fbx", ".obj"}, "E_NOT_FOUND_ASSET", "list_assets",
+                    path, "", {".glb", ".gltf", ".fbx", ".obj", ".vgeo"}, "E_NOT_FOUND_ASSET", "list_assets",
                     json{{"type", "model"}});
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
             if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
@@ -860,7 +867,9 @@ void Application::RegisterMcpEntityMethods()
             json data;
             if (params.contains("data"))        data = params["data"];
             else if (params.contains("values")) data = params["values"];
-            if (!data.is_object() || data.empty())
+            // tags だけは文字列の配列(describe_components の記述どおり)。M11: 以前は object 必須のせいで配列を渡すと必ず断られていた。
+            const bool tagsArray = (comp == "tags" && data.is_array());
+            if (!tagsArray && (!data.is_object() || data.empty()))
                 throw McpError(McpErr::InvalidParam,
                     "missing component fields: pass a non-empty 'data' object",
                     "例: data:{\"intensity\": 2.5}（変えたいフィールドだけでよい。名前と型は dx12_describe_components）");
@@ -868,7 +877,7 @@ void Application::RegisterMcpEntityMethods()
             // params 直下に書けるほうが自然。実処理側は data の中しか見ないため、ここで移し替える。
             // ★これをやらないと layer 指定が黙って無視され、常に 1 枚目が書き換わる
             //   （実際に踏んだ: 3 枚のレイヤーを作ったのに全部 1 枚目へ上書きされた）。
-            if (params.contains("layer") && !data.contains("layer"))
+            if (data.is_object() && params.contains("layer") && !data.contains("layer"))
                 data["layer"] = params["layer"];
             McpUndo().TrackByJsonKey(e, comp);   // 未知のキーは下で UNKNOWN_COMPONENT になる
             if (comp == "transform")
@@ -907,6 +916,19 @@ void Application::RegisterMcpEntityMethods()
                         "例: data:{\"scale\":[1, 1, 1]}（3 要素）");
                     t.scale = { s[0], s[1], s[2] };
                 }
+            }
+            else if (tagsArray)
+            {
+                // M11: タグは置換(空配列で全部外す)。文字列以外の要素は断る。
+                Tag tg;
+                for (const auto& s : data)
+                {
+                    if (!s.is_string()) throw McpError(McpErr::InvalidParam, "tags must be an array of strings",
+                        "例: data:[\"enemy\",\"boss\"]（文字列だけの配列）");
+                    tg.tags.push_back(s.get<std::string>());
+                }
+                if (tg.tags.empty()) reg.remove<Tag>(e);
+                else                 reg.emplace_or_replace<Tag>(e, std::move(tg));
             }
             // orphan(レジストリ未登録)コンポーネントは専用適用(save/load 経路に触れない)。
             else if (ApplyOrphanComponent(reg, e, comp, data))
@@ -1417,7 +1439,8 @@ void Application::RegisterMcpEntityMethods()
                 {"idleExitMin", fleetGuard.IdleExitMin()},  // 0 = 自動終了なし
                 {"ownerPid", static_cast<unsigned>(fleetGuard.OwnerPid())},   // 0 = 親の監視なし
                 {"vramUsedMB", vramUsedMB},
-                {"vramBudgetMB", vramBudgetMB}
+                {"vramBudgetMB", vramBudgetMB},
+                {"safety", McpSafetyInfoJson()}   // M5: guarded ゲート / 冪等ストア / ジャーナル（ApplicationMcpManifest.cpp）
             };
         });
 

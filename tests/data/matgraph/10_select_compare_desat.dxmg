@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000010",
+  "name": "select_compare_desat",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "c4": { "type": "Float4", "props": { "srgb": true, "value": [0.3, 0.6, 0.9, 1.0] } },
+    "cmp": { "type": "Compare", "in": { "A": "h.G", "B": 0.0 }, "props": { "mode": "Greater" } },
+    "cold": { "type": "Float3", "props": { "value": [0.2, 0.4, 1.0] } },
+    "ds": { "type": "Desaturation", "in": { "Color": "sel.Out", "Fraction": 0.35 } },
+    "flag": { "type": "Bool", "props": { "value": true } },
+    "h": { "type": "Split", "in": { "X": "wp.Out" } },
+    "mixv": { "type": "Add", "in": { "A": "n.Out", "B": "flag.Out" } },
+    "n": { "type": "Int", "props": { "value": 3 } },
+    "out": { "type": "MaterialOutput", "in": { "BaseColor": "ds.Out", "Emissive": "c4.Out", "Roughness": "scaled.Out" } },
+    "scaled": { "type": "Divide", "in": { "A": "mixv.Out", "B": 8.0 }, "props": { "safe": true } },
+    "sel": { "type": "Select", "in": { "A": "warm.Out", "B": "cold.Out", "Cond": "cmp.Out" } },
+    "warm": { "type": "Float3", "props": { "value": [1.0, 0.5, 0.2] } },
+    "wp": { "type": "WorldPosition" }
+  },
+  "comments": {},
+  "layout": {
+    "c4": "0 0",
+    "cmp": "0 0",
+    "cold": "0 0",
+    "ds": "0 0",
+    "flag": "0 0",
+    "h": "0 0",
+    "mixv": "0 0",
+    "n": "0 0",
+    "out": "0 0",
+    "scaled": "0 0",
+    "sel": "0 0",
+    "warm": "0 0",
+    "wp": "0 0"
+  }
+}

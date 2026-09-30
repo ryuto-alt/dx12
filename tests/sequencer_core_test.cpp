@@ -26,6 +26,7 @@
 #include "sequencer/SeqCurve.h"
 #include "sequencer/SeqEval.h"
 #include "sequencer/SeqModel.h"
+#include "sequencer/SeqOpJson.h"
 #include "sequencer/SeqOps.h"
 #include "sequencer/SeqSerialize.h"
 #include "sequencer/SeqTypes.h"
@@ -2606,8 +2607,8 @@ void TestPurity()
     std::printf("TestPurity\n");
     namespace fs = std::filesystem;
     const fs::path dir = DX12E_SEQUENCER_SRC_DIR;
-    static const std::set<std::string> allowed = { "algorithm", "array", "charconv", "cmath", "cstdint", "cstdio", "cstring", "filesystem",
-                                                   "fstream", "initializer_list", "iterator", "map", "optional", "random", "sstream", "string",
+    static const std::set<std::string> allowed = { "algorithm", "array", "cctype", "charconv", "cmath", "cstdint", "cstdio", "cstring", "filesystem",
+                                                   "fstream", "functional", "initializer_list", "iterator", "map", "optional", "random", "sstream", "string",
                                                    "string_view", "unordered_map", "unordered_set", "utility", "variant", "vector",
                                                    "nlohmann/json.hpp" };
     int files = 0, includes = 0;
@@ -2726,6 +2727,87 @@ void TestPerformance()
 
 } // namespace
 
+
+// ---------------------------------------------------------------------------
+// S1b: SeqOp の JSON 表現(SeqOpJson.h)
+// ---------------------------------------------------------------------------
+void TestOpJson()
+{
+    std::printf("TestOpJson\n");
+    using namespace dx12e::seq;
+    Sequence s;
+    s.name = "J";
+    IdAllocator alloc(7);
+    const IdIssuer ids = [&](char p) { return alloc.New(p); };
+
+    // 全 35 種の名前が受理される(名前は大文字小文字・_ 無視)
+    CHECK(OpJsonNames().size() == 35);
+    for (const std::string& n : OpJsonNames())
+    {
+        SeqOp op;
+        const OpParseResult r = ParseOpJson("{\"op\":\"" + n + "\"}", s, ids, op);
+        // フィールド不足で失敗するのは正しいが、「知らない op」ではないこと
+        CHECK(r.ok || r.error.find("知らない op") == std::string::npos);
+    }
+    SeqOp op;
+    CHECK(!ParseOpJson("{\"op\":\"noSuch\"}", s, ids, op).ok);
+    CHECK(!ParseOpJson("not json", s, ids, op).ok);
+    CHECK(ParseOpJson("{\"op\":\"add_key\",\"trackId\":\"t\",\"channel\":\"c\",\"key\":[0,1,\"a\"]}", s, ids, op).ok);
+    CHECK(std::holds_alternative<OpAddKey>(op));
+
+    // 1 つの txn で構築 → 全 Undo で空に戻る(バイト一致)。ID 省略・秒指定・キーのオブジェクト形式
+    const std::string empty = SerializeSequence(s);
+    const char* text = R"JSON({"label":"build","ops":[
+      {"op":"setFrameRate","fps":24},
+      {"op":"addBinding","binding":{"id":"b_x","name":"X","hint":{"name":"X"},"tracks":[
+        {"id":"t_x","type":"transform","channels":{"position.x":{"keys":[{"sec":0,"v":0,"ip":"l"},{"sec":1,"v":10,"ip":"e:outQuad"},[12000,5,"a"]]}}},
+        {"type":"event","events":[{"tSec":0.5,"kind":"emit","name":"hit","data":{"value":1}}]}]}},
+      {"op":"addMarker","marker":{"tSec":0.25,"name":"m"}},
+      {"op":"addCut","cut":{"startSec":0,"endSec":1,"camera":"b_x"}},
+      {"op":"setTrackHeader","trackId":"t_x","header":{"name":"Move"}},
+      {"op":"setKeyValue","trackId":"t_x","channel":"position.x","index":1,"v":9}]})JSON";
+    SeqTxn txn;
+    const OpParseResult pr = ParseTxnJson(text, s, ids, txn);
+    CHECK(pr.ok);
+    if (pr.ok)
+    {
+        CHECK(txn.label == "build" && txn.ops.size() == 6);
+        SeqHistory h;
+        CHECK(h.Execute(s, txn).ok);
+        CHECK(s.frameRate == 24 && s.bindings.size() == 1 && s.bindings[0].tracks.size() == 2);
+        const Track& t = s.bindings[0].tracks[0];
+        CHECK(t.name == "Move" && t.channels[0].keys.size() == 3);
+        CHECK(t.channels[0].keys[1].t == 6000 && t.channels[0].keys[1].v == 9 && t.channels[0].keys[1].ip == Interp::Ease);
+        CHECK(s.bindings[0].tracks[1].id.size() > 2 && s.bindings[0].tracks[1].events[0].t == 3000);   // ID が発行され、秒がティックになる
+        CHECK(s.markers.size() == 1 && s.markers[0].t == 1500 && s.cuts.size() == 1 && s.cuts[0].end == 6000);
+        // 書き出し → 読み直しで一致(正準形)
+        Sequence back;
+        CHECK(ParseSequence(SerializeSequence(s), back).ok && SerializeSequence(back) == SerializeSequence(s));
+        CHECK(h.Undo(s).ok);
+        CHECK(SerializeSequence(s) == empty);
+        CHECK(h.Redo(s).ok && s.bindings.size() == 1);
+    }
+
+    // 失敗した txn(存在しないトラックへのキー)は何も変えず、位置つきのエラー
+    const std::string before = SerializeSequence(s);
+    SeqTxn bad;
+    const OpParseResult br = ParseTxnJson(R"JSON([{"op":"deleteMarker","id":"nope"}])JSON", s, ids, bad);
+    CHECK(br.ok);
+    CHECK(!ApplyTxn(s, bad).ok && SerializeSequence(s) == before);
+    SeqTxn bad2;
+    const OpParseResult br2 = ParseTxnJson(R"JSON([{"op":"addKey","trackId":"t_x"}])JSON", s, ids, bad2);
+    CHECK(!br2.ok && br2.error.find("ops[0]") != std::string::npos);
+
+    // ヘッダはマージ(書いたフィールドだけ変わる)
+    SeqOp hop;
+    CHECK(ParseOpJson(R"JSON({"op":"setTrackHeader","trackId":"t_x","header":{"mute":true}})JSON", s, ids, hop).ok);
+    const auto* th = std::get_if<OpSetTrackHeader>(&hop);
+    CHECK(th && th->header.mute && th->header.name == "Move");
+    // ID の発行は決定論(同じ seed = 同じ ID)
+    IdAllocator a1(99), a2(99);
+    CHECK(a1.New('t') == a2.New('t'));
+}
+
 int main()
 {
     TestTime();
@@ -2750,6 +2832,7 @@ int main()
     TestSerializeFile();
     TestConvert();
     TestBinding();
+    TestOpJson();
     TestPurity();
     TestPerformance();
 

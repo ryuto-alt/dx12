@@ -17,13 +17,16 @@ import { editDistance } from "./paramGuard.ts";
 export type ErrorCodeName =
   | "E_ENGINE_UNREACHABLE" | "E_ENGINE_BUSY" | "E_ENGINE_TIMEOUT" | "E_ENGINE_TOO_OLD"
   | "E_UNKNOWN_TOOL" | "E_UNKNOWN_PARAM" | "E_MISSING_PARAM" | "E_BAD_TYPE" | "E_BAD_ENUM" | "E_OUT_OF_RANGE"
-  | "E_NOT_FOUND_ENTITY" | "E_NOT_FOUND_ASSET" | "E_NOT_FOUND_SCENE" | "E_NOT_FOUND_COMPONENT"
+  | "E_NOT_FOUND_ENTITY" | "E_NOT_FOUND_ASSET" | "E_NOT_FOUND_SCENE" | "E_NOT_FOUND_COMPONENT" | "E_NOT_FOUND_COMMAND"
   | "E_STALE_SCENE" | "E_MODE_CONFLICT" | "E_MODAL_OPEN" | "E_VIRTUAL_INPUT_OFF"
   | "E_UNSUPPORTED" | "E_GUARDED" | "E_VALIDATION_FAILED" | "E_FILE_IO" | "E_CANCELLED"
   | "E_SAFETY_VIOLATION" | "E_INTERNAL"
   // フリート(複数エンジンの管理。docs/MCP_FLEET_DESIGN.md)
   | "E_FLEET_LIMIT" | "E_FLEET_RESOURCE" | "E_FLEET_VISIBLE_DENIED" | "E_FLEET_READONLY" | "E_FLEET_NOT_FOUND" | "E_FLEET_NOT_OWNER"
   | "E_FLEET_PROJECT_IN_USE" | "E_FLEET_BUILD_IN_PROGRESS" | "E_FLEET_LAUNCH_FAILED" | "E_FLEET_EXE_MISSING" | "E_FLEET_DISABLED"
+  // ジョブ API(M6)と冪等キー(M5)
+  | "E_JOB_NOT_FOUND" | "E_JOB_NOT_FINISHED" | "E_JOB_NOT_OWNER" | "E_JOB_TOOL_MISSING" | "E_JOB_DISABLED" | "E_JOB_FAILED" | "E_JOB_TIMEOUT" | "E_JOB_INTERRUPTED" | "E_JOB_RUNNER_LOST"
+  | "E_IDEMPOTENCY_CONFLICT" | "E_IDEMPOTENCY_IN_FLIGHT"
   // 旧数値コード 1 / 2 を細分化できなかったときの受け皿(エンジンが具体名を付けなかった古い経路)。
   | "E_NOT_FOUND" | "E_INVALID_PARAM";
 
@@ -69,6 +72,7 @@ export const ERROR_CODES: Record<ErrorCodeName, { legacy: number | null; retryab
   E_NOT_FOUND_ASSET: { legacy: 1, retryable: false, meaning: "アセットが無い(近いパスを添える)" },
   E_NOT_FOUND_SCENE: { legacy: 1, retryable: false, meaning: "シーンが無い(近いシーンを添える)" },
   E_NOT_FOUND_COMPONENT: { legacy: 6, retryable: false, meaning: "コンポーネントの jsonKey が無い" },
+  E_NOT_FOUND_COMMAND: { legacy: 1, retryable: false, meaning: "エディタのコマンド id が表に無い(近い id を添える。dx12_editor_command {op:'list'} で探す)" },
   E_STALE_SCENE: { legacy: 4, retryable: true, meaning: "expectGeneration が現在の sceneGeneration と違う(古い entityId)" },
   E_MODE_CONFLICT: { legacy: 3, retryable: true, meaning: "Editor/Playing が要件と合わない、トランザクション中に禁止された method など" },
   E_MODAL_OPEN: { legacy: 13, retryable: true, meaning: "ImGui のモーダルが開いていて UI 操作できない" },
@@ -91,6 +95,17 @@ export const ERROR_CODES: Record<ErrorCodeName, { legacy: number | null; retryab
   E_FLEET_LAUNCH_FAILED: { legacy: null, retryable: true, meaning: "エンジンが起動しない/期限内に ping に応答しない" },
   E_FLEET_EXE_MISSING: { legacy: null, retryable: false, meaning: "コピー元の DX12Engine.exe が見つからない" },
   E_FLEET_DISABLED: { legacy: null, retryable: false, meaning: "フリートが無効(DX12_FLEET_DISABLE=1)" },
+  E_JOB_NOT_FOUND: { legacy: null, retryable: false, meaning: "ジョブ id が無い(または保存期間を過ぎて消えた)" },
+  E_JOB_NOT_FINISHED: { legacy: null, retryable: true, meaning: "まだ終わっていないジョブの結果を求めた" },
+  E_JOB_NOT_OWNER: { legacy: null, retryable: false, meaning: "他のセッションが起動した(生きている)ジョブは止められない(force と承認が要る)" },
+  E_JOB_TOOL_MISSING: { legacy: null, retryable: false, meaning: "ジョブが使う道具(build.ps1・vgeo_cook・ctest・exe など)が見つからない/起動できない" },
+  E_JOB_DISABLED: { legacy: null, retryable: false, meaning: "ジョブ API が無効(DX12_JOBS_DISABLE=1)" },
+  E_JOB_FAILED: { legacy: null, retryable: false, meaning: "ジョブの処理が失敗した(終了コード・失敗したテスト・ビルドエラーは summary と details)" },
+  E_JOB_TIMEOUT: { legacy: null, retryable: true, meaning: "ジョブが timeoutSec を超えたのでプロセスツリーを終了した" },
+  E_JOB_INTERRUPTED: { legacy: null, retryable: true, meaning: "ジョブを起動した MCP サーバが終了したため、実行中(または開始前)に中断された" },
+  E_JOB_RUNNER_LOST: { legacy: null, retryable: true, meaning: "ジョブの runner が終了結果を残さずに消えた(強制終了・異常終了)" },
+  E_IDEMPOTENCY_CONFLICT: { legacy: 2, retryable: false, meaning: "同じ冪等キーで別の要求(method / 引数 / kind が違う)を送った" },
+  E_IDEMPOTENCY_IN_FLIGHT: { legacy: 9, retryable: true, meaning: "同じ冪等キーの処理がまだ進行中(少し待って再送する。完了していれば前回の結果が返る)" },
   E_NOT_FOUND: { legacy: 1, retryable: false, meaning: "対象が無い(種類を特定できなかった旧経路)" },
   E_INVALID_PARAM: { legacy: 2, retryable: false, meaning: "引数不正(種類を特定できなかった旧経路)" },
 };

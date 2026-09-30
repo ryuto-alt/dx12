@@ -56,7 +56,7 @@ def spec_data(**over):
         "cameras": [{"name": "a", "position": [0, 1, 0], "target": [0, 1, 5]},
                     {"name": "b", "position": [3, 1, 0], "target": [0, 1, 5]}],
         "engine": {"warmupFrames": 1, "settleFrames": 1},
-        "reference": {"kind": "pt", "pt": {"spp": 8, "seeds": [1, 2]}},
+        "reference": {"kind": "pt", "pt": {"spp": 8, "seeds": [1, 2], "api": "legacy"}},
         "alignment": {"tonemap": "engine_aces", "sizePolicy": "resize"},
         "gates": {"G1": {"flip_ldr_mean_max": 0.15, "ssim_min": 0.75, "lum_mean_ev_abs_max": 0.5},
                   "G2": {"flip_ldr_mean_max": 0.08, "ssim_min": 0.9, "lum_mean_ev_abs_max": 0.25}},

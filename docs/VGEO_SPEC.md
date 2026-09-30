@@ -514,6 +514,69 @@ int SignExtend8(uint x) { return int(x << 24) >> 24; }                    // con
 - **`ByteAddressBuffer` のバイトアドレスは 32bit**: スロット数は 4 GiB / 131072 = 32768 が上限。プールが 4 GiB を超えるなら複数バッファに分ける（5000 万 tri 全常駐は約 1.3〜1.5 GB なので v1 は 1 本でよい）。
 - 位置ストリームの全頂点読みはウェーブ内でコアレスしやすい（頂点 i の bit 位置は `i * bpp`）。`bpp` は実測で平均 50〜56 bit（岩、1M〜10M tri。1 軸 17〜19 bit）。
 
+### 14.1 P2 で実装した GPU 写像（`src/renderer/vg/VirtualGeometrySystem.{h,cpp}` / `shaders/vg/*.hlsl`）
+
+§14 の方針（ファイルの形のままコピー・SoA 化しない）で実装済み。**食い違ったらここと `VgGpuTypes.h`（`static_assert` でサイズ固定）が正**。C++ と HLSL が共有する定数（カウンタ / 統計の番号・スレッド構成）は `src/renderer/vg/VgShared.h`（マクロだけ。HLSL が相対パスで `#include`）。
+
+| 対象 | GPU での形 | 備考 |
+|---|---|---|
+| PAGES | **アセットごとに** `ByteAddressBuffer` のチャンク列。1 チャンク = **4096 ページ = 512 MiB**（`kVgChunkPagesLog2 = 12`）。ページ `p` はチャンク `p >> 12` のバイト `(p & 4095) * 131072` | 1 リソースの上限（実装依存。仕様の保証は `max(128 MB, VRAM/4)` を 2 GB で頭打ち）に余裕を持って収める。最後のチャンクは実サイズ（無駄な確保なし）。ページはチャンクを跨がない。1 アセット最大 65535 ページ（8.6 GB）= 16 チャンク。DEFAULT ヒープ・初期状態 `COMMON`（COPY キューの書き込み → DIRECT キューは暗黙の昇格で SRV 読み） |
+| NODES | アセットごとに `StructuredBuffer<HierNode>`（192 B）**AoS** そのまま | アセットを跨いだ連結はしない（再確保が要らない）。子ノード番号 / `groupPacked.page` はアセット相対のまま |
+| ヘッダ | `StructuredBuffer<VgAssetGpu>`（96 B）。`boundingSphere` / `aabb` / `posOrigin` / `posStep` / `rootNode` / `sourceTriangles`（u32 に飽和）/ `nodesSrv`・`poolSrvBase`（専用ヒープの添字）ほか | フレームスロットごとの UPLOAD リング（毎フレーム詰め直す。数 KB） |
+| インスタンス | `StructuredBuffer<VgInstance>`（128 B。`world` / `prevWorld` は **3x4 = 行 i が 4x4 行列の列 i**、`maxScale`、フラグ `mirrored` / `hasPrev`）| UPLOAD リング × フレームスロット。上限 65536 |
+| 作業バッファ `VgWork` | `RWByteAddressBuffer` 1 本: カウンタ 64 x u32（0）+ 統計 64 x u32（256）+ キュー 6 本（NodeQ0 / NodeQ1 / Deferred / GroupQ0 / GroupQ1 / Visible。各 `{u32, u32}` x 容量、既定 2^20）| カウンタ / 統計の番号は `VgShared.h`。キューは容量を超えたら捨てて `overflow*` 統計を立てる |
+| `VgInstExtra` | `RWStructuredBuffer<float4>`: オブジェクト空間へ戻したカメラ位置（w = 1 で有効。特異行列は 0）| 法線コーンの背面棄却用（アフィン変換で保たれる = 非一様スケール・ミラーでもオブジェクト空間で判定すれば正しい） |
+| `VgArgs` | `RWByteAddressBuffer` 4 スロット x 16 B（`uint3` の Dispatch 引数）+ `INDIRECT_ARGUMENT` | スレッド列は幅 `VG_GRID_X = 32768` の 2 次元へ畳む（1 次元は 65535 グループまで） |
+
+**ルートシグネチャ（専用。メインには触れない）**: `b0` = ルート CBV（`VgCullConstants` 384 B）/ `b1` = 32bit 定数 8 個（パスごと）。`CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED`。専用のシェーダ可視ディスクリプタヒープ（16384 個）を持ち、アプリの SRV ヒープ（65536 個）は使わない（HZB だけは SRV を専用ヒープへ作り直す）。`SetDescriptorHeaps` は `SetRootSignature` より前。Execute の最後にアプリのヒープを張り直す。
+
+**カーネル（cs_6_6、`numthreads(64,1,1)`）**: `VgReset`（カウンタ + 統計を 0）/ `VgInstanceCull`（K0）/ `VgNodeTraverse`（K1。1 スレッド = キュー要素 x 子スロット。段ごとに `ExecuteIndirect`）/ `VgClusterCull`（K2。1 スレッド = グループ x メンバー、16 スレッド / グループ）/ `VgArgs`（要素数 → Dispatch 引数、次の出力キューのカウンタを 0 に）。一相目 = 前フレーム HZB（`prevViewProj` / `prevWorld` で投影）、HZB でだけ落ちたノード → `Deferred`、葉 / クラスタ → `GroupQ1`。二相目 = `Deferred` から走査を再開 → `GroupQ1` 全部を K2（今フレームの HZB。呼び出し側が二相の間に HZB を作り直す `buildBetweenPhases`）。LOD 枝刈り（部分木）: 親側 `ProjectedErrorPx(maxParentError, lodSphere の最近点) > τ`、自分側 `ProjectedErrorPx(minOwnError, lodSphere の最遠点) <= τ`（設計書 §2.3.2。`VgLodMath.h`）。
+
+**CPU 参照**: `VgCullReference.h`（同じアルゴリズム。式は `VgLodMath.h` と `HiZMath.h` を直接呼ぶ）。`tests/vg_cull_gpu_test.cpp` が GPU の可視クラスタ集合 = CPU 参照を確かめる（窓なしの D3D12 デバイス。GPU が無ければ SKIP）。
+
+
+### 14.2 P3 で実装した GPU ラスタ（`VirtualGeometrySystem::Execute` の `raster` / `shaders/vg/VgRaster.hlsl` / `VgDebug.hlsl`）
+
+**入力** = P2 の `Visible` キュー（`{instance, clusterRef}`）。**出力** = 可視性バッファ + 呼び出し側の深度。形式のバイト列は変えていない。
+
+| 対象 | 仕様 |
+|---|---|
+| 可視性バッファ | `R32_UINT`（レンダー解像度。RTV + SRV + UAV）。値 = `(可視スロット << 7) \| クラスタ内の三角形番号`。**可視スロット = `Visible` キューの添字**（25bit。上限 3355 万。実際の上限はキュー容量 `visibleCap`）、三角形番号 = 0..127。空 = `0xFFFFFFFF`（`ClearUnorderedAccessViewUint` で埋める。UINT 形式に `ClearRenderTargetView` は使えない）。スロット → `{instance, clusterRef}` は `VgWork` の `Visible` キュー（`gOffs1.y + slot * 8`）、クラスタヘッダ → 3 頂点（`VgeoDecode.hlsli`）で属性が全部復元できる |
+| 深度 | 呼び出し側の `D32_FLOAT`（`DEPTH = LESS`、標準 Z）をそのまま使う。非 VG のプリパスが先に書いてあるので、VG は非 VG より手前のときだけ勝つ。VG 本体の深度はプリパスと同じジッタ付き VP（`viewProjJittered`）で書く |
+| 二相 | 一相目のカリング → ラスタ（`Visible[0, n1)`）→ HZB を今フレームの深度から作り直す → 二相目のカリング → ラスタ（`Visible[n1, total)`）→ HZB を最終深度から作り直す（次フレームの一相目の入力）。範囲は `VgRasterArgs`（`VgUtil.hlsl`）が `VG_CNT_RASTER_START / COUNT / DONE` に書く |
+| メッシュシェーダ（MS） | `ms_6_6`（`ResourceDescriptorHeap[]` が SM 6.6）。`numthreads(128)`、1 グループ = 1 クラスタ、スレッド `i` = 頂点 `i` と三角形 `i`。頂点 = `posOrigin + q * posStep`（`DequantizeCoord` と同じ式）→ インスタンス行列（3x4）→ ジッタ付き VP。`SetMeshOutputCounts` は 1 箇所だけ（範囲外グループは (0, 0)）。プリミティブ属性 `nointerpolation uint vis`（`SV_CullPrimitive` は `VG_RF_SMALLPRIM_CULL` のとき「画素中心を 1 つも覆わない三角形」を落とす）。カリング NONE（両面）|
+| 増幅シェーダ（AS。任意） | `as_6_6`、32 クラスタ / グループ。`VG_RF_SMALLPRIM_CULL` のとき、球の外接立方体 8 隅の投影矩形が画素中心を 1 つも含まないクラスタを落とし、残りを payload（スロット 32 個）で MS へ。**球の投影半径を `r * f / (w - r)` で見積もる近似は画面端で過小になる**ので使わない（8 隅の投影を使う）。DispatchMesh の引数は `ceil(count / 32)` |
+| PS | `R32_UINT` へ `vis` を返すだけ。`-DVG_PS_COUNT` 版（`[earlydepthstencil]` + 断片数 / オーバードロー画像）は計測時だけ |
+| PSO | `MeshPipelineStateBuilder`（`src/graphics/MeshPipelineState.h`。ヘッダオンリー）。`D3D12_PIPELINE_STATE_STREAM_DESC`（d3dx12 の `CD3DX12_PIPELINE_MESH_STATE_STREAM`）を `ID3D12Device2::CreatePipelineState` へ。既存の `PipelineStateBuilder` は不変 |
+| ルートシグネチャ | P2 の専用ルートシグネチャ（`b0` ルート CBV + `b1` ルート定数 8 個 / `CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED`）をグラフィックスでもそのまま使う。メインの RS は不変（62/64 DWORD のまま）。`b0`（`VgCullConstants`）は 384 → 432 B（`heap2` / `rast` / `dbg` を末尾へ追加） |
+| 専用ヒープ | 固定領域 64 → 128 個（フレームスロットごとに 8 個: assets / instances / hzbPrev / hzbCur / depthSrv / visSrv / overdrawUav / visUav）。深度の SRV（R32_FLOAT）と可視性バッファの SRV / UAV はフレームスロットごとに毎フレーム張り直す |
+| 引数 | `VgArgs` のスロット 2 = `D3D12_DISPATCH_MESH_ARGUMENTS`（12 B を 16 B 刻みに置く）。コマンドシグネチャ = `D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH` 1 本（RS 変更なし）。グループ数は `VG_GRID_X`（32768）幅の 2 次元へ畳む（1 次元は 65535 まで） |
+| 統計 | `VG_STAT_COUNT` 64 → 128。`VG_STAT_RASTER_CLUSTERS`（64）/ `AS_CULLED` / `MS_PRIM_CULLED` / `MS_TRIS_OUT` / `PS_INVOC` / `COVERED_PIXELS`（計測時のみ）/ 辺長ヒストグラム（`EDGE_CL_BASE` 72 + `EDGE_TRI_BASE` 80: 可視クラスタの最長辺（画面 px）の 8 段。SW ラスタ判断用）|
+| タイムスタンプ | 1 フレームスロットにつき 6 個（開始 / 一相目ラスタの前後 / 二相目ラスタの前後 / 終了）。`cullGpuMs` = Execute 全体 − ラスタ、`rasterGpuMs` = 一相目 + 二相目 |
+| デバッグ表示 | `DrawDebug`（全画面 VS + PS。`VG_DBG_SHADE / CLUSTER / LOD / TRI / DEPTH / OVERDRAW / COVERAGE`）。`SHADE` は面法線ランバートの暫定シェーディング（P4 の resolve まで）。クラスタ / 三角形の色は `instance + clusterRef` のハッシュ（スロットの並びに依らない）|
+| 検証 | `tests/vg_raster_gpu_test.cpp`: GPU の可視性バッファ / 深度 = CPU の三角形ラスタ（固定小数点 1/256 px + トップレフト規則）、全 LOD0 の素朴な参照との穴 / はみ出し比較、計測モード、デバッグレイヤ警告 0 |
+
+**罠**: (1) `SetMeshOutputCounts` を 2 箇所（早期 return と本流）に書くと DXC の検証が落ちる（"cannot be called multiple times" / "Non-Dominating"）。`vc = tc = 0` にして 1 箇所で呼ぶ。(2) `ResourceDescriptorHeap[]` は `ms_6_5` では使えない（`ms_6_6` / `as_6_6`）。(3) 可視スロットは `InterlockedAdd` の順で決まるので、同じ深度（共有辺 / 重なった面）の先着は起動ごとに入れ替わりうる（クラスタ色分けの画像で 5〜30 画素 / 2M 画素の差）。深度画像は一致する。→ P4 で安定コンパクション（§14.3 の「決定論」）を実装した。
+
+### 14.3 P4 で実装した材質 resolve / G-Buffer / 決定論（`VirtualGeometrySystem::{SetAssetMaterials, DrawGBuffer, DrawResolve}` / `shaders/vg/VgVisShade.hlsli` / `VgGBuffer.hlsl` / `VgResolve.hlsl`）
+
+**形式のバイト列は変えていない**（金型ハッシュ不変）。`MaterialRecord` の係数・パス・flags を実行時に写すだけ。設計判断の全文は設計書 §2.4.8。
+
+| 対象 | 仕様 |
+|---|---|
+| ディスクリプタ | `SystemDesc::externalHeap`（アプリの SRV ヒープ + `AllocateBlock` / `FreeBlock`）を渡すと、固定領域（128 個）とアセットごとのブロックを**アプリのヒープ**から取る。添字 = `m_fixedBase + k`（専用ヒープでは `m_fixedBase = 0` で従来と同じ）。固定領域の 3 番 = 材質表の SRV（`VgCullConstants.heap1.w`） |
+| 材質表 | `StructuredBuffer<VgMaterialGpu>`（64 B。UPLOAD。容量 `maxMaterials` 既定 16384）。`{albedoSrv, normalSrv, metalRoughSrv, emissiveSrv, flags, metallic, roughness, _, uvScaleOffset[4], emissiveColor[3], emissiveIntensity}`。SRV はアプリのヒープの添字（`ResourceDescriptorHeap[]`、無し = `0xFFFFFFFF`）。`flags` = `VG_MAT_NORMAL_TEX(1) / MR_TEX(2) / EMISSIVE_TEX(8) / DOUBLE_SIDED(16)`（テクスチャ系はフォワードと同じく「実際に読めたか」で立てる）。アセットの区間は `VgAssetGpu.materialBase`（88。旧 reserved[0]。未登録 = `0xFFFFFFFF` = 既定材質）、個数 = `materialCount`。材質番号 = `ClusterHeader.packedCounts >> 16` |
+| インスタンス | `VgInstance` の旧 `reserved[2]`（120 / 124）= `overrideMetallic` / `overrideRoughness`（f32、< 0 = 材質の値）。`packedTint`（104）= RGB888 ティント、`packedEmissive`（108）= 自己発光の上書き（RGB888 = 色、上位 8bit = 強度の二乗曲線 8bit）。どちらが有効かは `flags` の `VG_INST_EMIS_COLOR_OV(4)` / `VG_INST_EMIS_INT_OV(8)`。合成は `Material.h` の `ResolveEmissiveParams` → `PackEmissive` と同じ（8bit 量子化まで同じ値） |
+| 属性の復元 | `VgReconstruct`（`VgVisShade.hlsli`）: 可視性バッファ → `{instance, clusterRef}` → 3 頂点（位置 = `posOrigin + q * posStep`、法線 = oct16、UV = `uvBase + u16 / 65535 * uvScale`）。重心座標 = 2D 同次座標 `(x, y, w)` の逆行列の行（`e_i = cross(v_j, v_k)`、`λ = L / ΣL`。頂点の `w ≤ 0` でも割り算無し）。1 画素差分 = `L + e.x * 2/W`（y は `−2/H`）で正規化し直した差（HW の `ddx_fine` 相当）。UV / 位置 / 法線の勾配はその線形結合 |
+| G-Buffer + 速度（H2） | 全画面 PS（VG の RS）。速度 `R16G16_FLOAT` = `(今の NDC − 前の NDC) * (0.5, −0.5)`（ジッタ無しの `viewProjNJ` / `prevViewProjNJ` = `VgCullConstants` の 432 / 496。`VgCullConstants` は 432 → 560 B、CB スロット 512 → 768 B）。G-Buffer `R16G16B16A16_FLOAT` = `SS_PackGBuffer(補間頂点法線（裏面は反転）, roughness, metallic)`（8bit 量子化 = 深度プリパスと同じ）。非 VG 画素は discard |
+| 材質 resolve（H3） | 全画面 PS（**メイン RS**。b0 = `VgResolveConstants` 28 DWORD = ジッタ付き VP + `{visSrv, workUav, instancesSrv, assetsSrv}` + `{materialsSrv, 可視リストの位置, デバッグ, フラグ}` + ビューポート）。材質評価は Forward.hlsl と同じ手順、テクスチャは `SampleGrad`（解析 UV 勾配）、接線は三角形の UV 勾配（assimp の CalcTangentSpace と同じ式・符号）、シェーディングは `ForwardShade.hlsli` の `UnoShadeLighting` → 自己発光 → `UnoShadeFinish`。`PBR.hlsli` / `DecalApply.hlsli` の `ddx/ddy` はマクロ（`UNO_SHADE_DDX_N` / `UNO_DECAL_DDX_W` ほか）で解析値へ差し替える |
+| K2（両面材質） | 材質が `VG_MAT_DOUBLE_SIDED` のクラスタは法線コーンで落とさない（材質表が未登録なら従来どおり） |
+| 決定論 | `CullSettings::stableOrder`: 各フェーズのラスタ直前に可視範囲を `{instance, clusterRef}` の昇順へビトニックソート（`VgUtil.hlsl` の `CSSortStep`。全比較が昇順の反転 + 半クリーナー版、仮想パディングへは書かない。長さ 2^K は前回の可視数から。上限 2^17、超えたら並べ替えずに `VG_STAT_SORT_SKIPPED(70)`）。AS 経由は子グループの順序が仕様上不定なので安定モードでは MS のみ。統計 `VG_STAT_SORTED(71)` |
+| タイムスタンプ | 1 フレームスロットにつき 6 → 10 個（+ G-Buffer の前後 / resolve の前後）|
+| デバッグ表示 | `VG_DBG_MATERIAL(7) / MIP(8) / TILE_MATERIALS(9) / NORMAL(10)`、テスト用の生データ `VG_DBG_RAW_BARY(16) / RAW_UVGRAD(17) / RAW_UV(18)`（`R32G32B32A32_FLOAT` の RT ではブレンド無しの PSO）|
+| 検証 | `tests/vg_resolve_gpu_test.cpp`（`VgResolveGpuTests`）: 重心座標 / UV / UV の 1 画素差分 = CPU の独立参照（画素中心のレイと三角形平面の交点）、G-Buffer / 速度 = CPU 参照、決定論（2 回の可視性バッファがビット一致・可視リストが昇順）、両面材質のコーン棄却 0、デバッグレイヤ警告 0 |
+
+
 ---
 
 ## 15. 実装ガイド（P1 / P6 の担当向け）
@@ -640,3 +703,6 @@ LOD0 の前処理（`meshopt_optimizeVertexCache` / `+ OverdrawOptimize`）は�
 |---|---|
 | 2026-09-30 | v1.0 確定（P0）。設計書 §3 / §3.8 を精査して §1 の 28 点を確定。実装: `VgeoFormat.h` / `VgeoBvh.h` / `VgsrcFormat.h` / `tools/vgeo_stub`。金型ハッシュ（手書き 3 レベル DAG、全 421,888 B の FNV-1a 64）= `0x10295F14C2901A31`。**バイト列を意図して変えるときは、この表と `kGoldenHandDag` を同時に更新する** |
 | 2026-09-30 | **P1 完了（オフライン cooker `tools/vgeo_cook`）**。§1 に C29〜C31 を追加（消えるグループは最低 1 三角形を残す / ルートグループは複数可 / ページ順 = ルート → レベル降順 → Morton と pinned の方針）。**形式のバイト列は変えていない**（金型ハッシュ不変）。`VgsrcFormat.h` の `WriteVgsrc` をストリーム書きにし（出力バイトは同一・巨大入力で本体ぶんのメモリを確保しない）、`ReadVgsrc` のハッシュ検証を 64 MiB ずつの連鎖ハッシュにした。実測と設計判断の根拠 = §16.2 |
+| 2026-09-30 | **P2 完了（ランタイム読込 + GPU カリング）**。§14.1 に実装した GPU 写像を追記（アセットごとのチャンク列・専用 RS / ヒープ・K0〜K2・二相 HZB）。**形式のバイト列は変えていない**（金型ハッシュ不変）|
+| 2026-09-30 | **P3 完了（メッシュシェーダ描画 + 可視性バッファ）**。§14.2 に実装した GPU ラスタを追記（可視性バッファ `R32_UINT` = スロット 25bit + 三角形 7bit・二相ラスタ・MS / AS・PSO ストリーム・デバッグ表示）。**形式のバイト列は変えていない**（金型ハッシュ不変）|
+| 2026-09-30 | **P4（材質 resolve + 既存統合）**。§14.3 を追記（VG のディスクリプタをアプリの SRV ヒープへ一本化・材質表 `VgMaterialGpu`・`VgAssetGpu.materialBase` / `VgInstance` の上書き欄（旧 reserved）・G-Buffer + 速度・resolve・安定ソート）。**形式のバイト列は変えていない**（金型ハッシュ不変）|

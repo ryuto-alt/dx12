@@ -224,7 +224,8 @@
       "design": "dx12_apply_scene_spec",
       "expect": [
         "dx12_scatter",
-        "dx12_scene_write"
+        "dx12_scene_write",
+        "dx12_apply_scene_spec"
       ],
       "queries": [
         "木を 100 本散らして置く",
@@ -232,13 +233,14 @@
       ],
       "holdout": "scatter a hundred trees around the map",
       "core": [
-        "dx12_scene_write"
+        "dx12_apply_scene_spec"
       ]
     },
     {
       "id": 16,
       "design": "dx12_apply_scene_spec",
       "expect": [
+        "dx12_apply_scene_spec",
         "dx12_scene_write",
         "dx12_scene_scaffold"
       ],
@@ -248,7 +250,7 @@
       ],
       "holdout": "generate a whole room with floor walls and lights in one go",
       "core": [
-        "dx12_scene_write"
+        "dx12_apply_scene_spec"
       ]
     },
     {
@@ -337,7 +339,7 @@
     },
     {
       "id": 22,
-      "design": "dx12_play_script",
+      "design": "dx12_play_script(M7 で長尾へ。エディタ操作の 2 本を Core に入れるため)",
       "expect": [
         "dx12_play_script"
       ],
@@ -346,15 +348,14 @@
         "キー入力を台本にして自動でプレイし断言で検証する"
       ],
       "holdout": "drive the player with an input script and assert it reaches the goal",
-      "core": [
-        "dx12_play_script"
-      ]
+      "core": []
     },
     {
       "id": 23,
-      "design": "dx12_run_playtests",
+      "design": "dx12_run_playtests(M6 で長尾へ。Core では dx12_job_start {kind:playtest})",
       "expect": [
-        "dx12_run_playtests"
+        "dx12_run_playtests",
+        "dx12_job_start"
       ],
       "queries": [
         "保存済みのプレイテストを全部回す",
@@ -362,7 +363,7 @@
       ],
       "holdout": "run every saved playtest",
       "core": [
-        "dx12_run_playtests"
+        "dx12_job_start"
       ]
     },
     {

@@ -61,6 +61,11 @@ public:
             && m_resourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_3;
     }
     D3D12_RESOURCE_BINDING_TIER GetResourceBindingTier() const { return m_resourceBindingTier; }
+    // メッシュシェーダ（D3D12_OPTIONS7.MeshShaderTier >= 1）。仮想ジオメトリ P3 のラスタが使う。
+    //   ★SM 6.5 以上も要る（ms_6_5 / as_6_5）。環境変数 DX12_DISABLE_MESHSHADER=1 で「非対応」に落とせる（縮退検証用。DX12_DISABLE_DXR と同じ流儀）。
+    //   非対応のとき VG はラスタせず、プロキシ（従来経路）が描かれる。Agility SDK は不要（in-box ランタイム）。
+    bool SupportsMeshShaders() const { return m_meshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED && m_highestShaderModel >= D3D_SHADER_MODEL_6_5; }
+    D3D12_MESH_SHADER_TIER GetMeshShaderTier() const { return m_meshShaderTier; }
     // DXR 1.2（SER / OMM）。v1 のスコープ外。将来の判断材料としてログに出すだけ。
     bool SupportsDxr12()      const { return m_raytracingTier >= D3D12_RAYTRACING_TIER_1_2; }
     bool SupportsReordering() const { return m_serActuallyReorders; }
@@ -80,6 +85,7 @@ private:
     D3D12_RAYTRACING_TIER                  m_raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
     D3D_SHADER_MODEL                       m_highestShaderModel = D3D_SHADER_MODEL_6_0;
     D3D12_RESOURCE_BINDING_TIER            m_resourceBindingTier = D3D12_RESOURCE_BINDING_TIER_1;
+    D3D12_MESH_SHADER_TIER                 m_meshShaderTier = D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
     bool                                   m_serActuallyReorders = false;
 };
 

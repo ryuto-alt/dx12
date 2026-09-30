@@ -53,6 +53,7 @@ namespace dx12e
     class PostProcess;
     class BloomPass;
     class AutoExposurePass;
+    class LinearCapturePass;   // Q2: 線形 HDR スクリーンショットの読み出し
     class GodRaysPass;
     class LensFlarePass;
     class DofPass;
@@ -61,6 +62,9 @@ namespace dx12e
     class ContactShadowPass;
     class HiZPass;
     class OcclusionCullPass;
+    namespace vg { class VirtualGeometrySystem; }   // renderer/vg/VirtualGeometrySystem.h（仮想ジオメトリ P2）
+    namespace foliage { class FoliageSystem; }      // renderer/foliage/FoliageSystem.h（植生 F1）
+    namespace water { class WaterRenderer; struct WaterStats; }   // renderer/water/WaterRenderer.h（水面 W1）
     class TaaPass;
     class RenderDebugPass;
     enum class RenderDebugMode : u32;   // renderer/RenderDebugPass.h（前方宣言可能な scoped enum）
@@ -69,6 +73,10 @@ namespace dx12e
     class RtScreenPass;
     class SkinningCompute;
     class DdgiVolume;
+    struct PtHost;   // DXR パストレーサー(リファレンスレンダー)の糊(core/PathTracerHost.h)
+    struct AtmoHost; // 物理ベース大気 A1 の Application 側の状態(core/AtmosphereHost.h)
+    struct TrackedState;   // renderer/RenderPass.h
+    struct RenderPassContext;   // renderer/RenderPass.h
     class VolumetricFogPass;
     class DecalSystem;
     class ParticleSystem;
@@ -109,6 +117,7 @@ namespace dx12e
     class ShaderManager;
     class AssetPrewarmer;
     class MaterialAssetManager;
+    class GraphMaterialSystem;
     class TerrainLayerSetManager;
     class MaterialEditorPanel;
     class MaterialLibraryPanel;
@@ -116,6 +125,7 @@ namespace dx12e
     class PerceptionPass;      // renderer/PerceptionPass.h（知覚層の ID パス。dx12_perceive の要求時だけ作る）
     struct ViewDesc;           // renderer/ViewDesc.h（1 ビューの記述。Application::RenderView が受け取る）
     struct McpPerceiveJob;     // core/mcp/McpPerceive.h（dx12_perceive 1 回ぶんの状態）
+    namespace seqhost { class SequencerHost; }   // core/SequencerHost.h（シーケンサー S1b: .dxseq の再生・エディタの非破壊スクラブ）
 }
 
 namespace dx12e
@@ -144,6 +154,7 @@ struct SceneAssetRef
 
 class Application
 {
+    friend struct PtHost;   // パストレーサーのスナップショットが描画リスト / SRV / カメラを読む
 public:
     Application();
     ~Application();
@@ -351,6 +362,10 @@ private:
     void Update();
     void Render();
 
+    // [1b/P] 設定窓（ポストプロセス / Skybox / SSAO / SSR・SSGI / ボリュメトリックフォグ）。実装は ApplicationPostWindows.cpp。
+    void RenderPostProcessWindows();
+    void RenderSceneSettingsWindows();
+
     // ---- Render() の分割（実装はすべて ApplicationRender.cpp）----------------------
     // Render() は 1 フレームを次の順に並べるだけ。段の間で受け渡す値（コマンドリスト /
     // frameIndex / 表示矩形 / レンダー解像度 / ジッタ / ライト / TLAS 等）は RenderFrameContext に
@@ -465,6 +480,11 @@ private:
     McpUndoTracker& McpUndo() { return m_mcpUndoTrack; }
     void RegisterMcpAudioMethods();       // 音の観測（audio_state: バス・メーター・ボイス・リバーブ）
     void RegisterMcpAiMethods();          // ゲーム AI の観測（brain_state: 黒板 / 知覚 / 得点の内訳 / 移動）
+    void RegisterMcpPathTracerMethods();  // DXR パストレーサー（render_reference / _status / _cancel）
+    void RegisterMcpSequenceMethods();    // シーケンサー（sequence_list / load / save / get / eval / scrub / play / stop / apply_op）
+    void RegisterMcpMatGraphMethods();    // マテリアルグラフ G2b（material_graph_get / edit / validate / compile / graphize / set_param）
+    void RegisterMcpEditorUiMethods();    // M7: エディタ操作の全面公開（editor_command_list / run / editor_state / editor_notify / editor_select。mcp/ApplicationMcpEditorUi.cpp）
+    void ServiceMcpEditorUi();            // M7: editor_command_run の遅延応答（毎フレーム。ServiceMcpVirtualInput と同じ位置から呼ぶ）
 
     // ---- 配置検査（dx12_validate_layout / play・save の要約）----------------
     // AI が置いた物の「見れば分かるが AI は見ない」たぐいの破綻を数値で拾う。
@@ -525,6 +545,21 @@ private:
                                         // pitch*h ではない＝最終行はパディングされないので超えると E_INVALIDARG）
         u32         format   = 0;       // DXGI_FORMAT（RGBA/BGRA の入れ替え判定用）
         Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+        // ---- Q2（校正）: 出力形式と任意解像度のオフスクリーン出力 ----
+        // 既定（従来どおり）= PNG のみ・ビューポート矩形。撮影が終われば m_mcpFinalShot ごと {} に戻る
+        // ＝オフスクリーン解像度も自動で元へ戻る（戻し忘れが構造的に起きない）。
+        bool        wantPng = true;     // 表示色の 8bit PNG（従来の出力）
+        bool        wantPfm = false;    // ポスト前の線形 float（PFM）
+        bool        wantExr = false;    // 同（EXR。無圧縮 float32）
+        u32         offW = 0, offH = 0; // 0 でなければ、この解像度のオフスクリーンへ描いて出す（ビューポートに依存しない）
+        bool        offApplied = false; // シーン系 RT がその解像度へ切り替わった
+        u32         offFramesLeft = 0;  // 非決定論モードで切替後に回すフレーム数
+        int         offSettle = 8;      // 決定論モードの収束フレーム数
+        std::string offFormats;         // 応答用
+        bool        linearRecorded = false;   // 線形 float を記録できた（RenderPostChain が立てる）
+        std::string linearErr;                // 記録できなかった理由
+        bool OffscreenActive() const { return offW > 0 && reply.client != 0; }
+        bool WantLinear() const { return wantPfm || wantExr; }
     };
     // 今このフレームは「ギズモ抜きの 1 枚」を撮っている最中か。
     // 非決定論モード = pending が立っている今フレームで撮る。決定論モード = 収束させる
@@ -820,6 +855,17 @@ private:
     // render_debug が一時的に ON にした設定を元へ戻す（何も退避していなければ何もしない）。
     // 正常終了と「固着していたので強制解除」の両方から呼ぶので関数にしてある。
     void RestoreRenderDebugSettings();
+    // ---- Q2（校正: 物理単位・露出・線形スクショ・任意解像度）。実装は ApplicationOffscreenShot.cpp ----
+    void UpdateLightingUnits();          // シーン設定「ライティング単位」に合わせてフォワード系 PSO を差し替える（Run ループ先頭）
+    void ServiceOffscreenShot();         // オフスクリーン撮影の進行（解像度の切替待ち → 収束フレーム → 撮影要求）
+    bool SetupFinalShotOptions(const nlohmann::json& params, std::string& err);   // screenshot_final の format / width / height を解釈
+    // オフスクリーン撮影のフレームか（解像度の切替と出力先 RT の用意が済んでいる）。描画側の差し込み点が共通で見る。
+    bool OffscreenCaptureFrame() const
+    {
+        return m_mcpFinalShot.OffscreenActive() && m_mcpFinalShot.offApplied && m_offscreenOutRT != nullptr;
+    }
+    bool RecordLinearCapture(ID3D12GraphicsCommandList* cmd, D3D12_GPU_DESCRIPTOR_HANDLE srcSrv, u32 w, u32 h);   // RenderPostChain から（要求のあるフレームだけ）
+    void AbortOffscreenShot(const std::string& why);   // メモリ不足などで撮影を中止（応答はエラー。解像度は次フレームに元へ戻る）
     // シェーダーホットリロード用 PSO 再生成。初回(Initialize)と再生成(hot-reload)の両方から呼ぶ。
     // 既存 unique_ptr が非 null ならその場で Initialize() し直す(オブジェクトの住所は変えない=
     // ModelThumbnailRenderer 等が生ポインタを保持しているケースでのダングリングを避けるため)。
@@ -940,6 +986,10 @@ private:
     // MeshRenderer::materialAsset が割当てられているサブメッシュはこちらが overrideXxxTexture より優先される。
     std::unique_ptr<MaterialAssetManager> m_materialAssetManager;
 
+    // マテリアルグラフ G2b: .dxmat の "graph" キーを持つ材質のランタイム（パラメータプール・非同期 DXC + PSO・ホットリロード）。
+    // 描画は ApplicationRender.cpp の drawEntity が Resolve() で PSO とレコードを引く。使えない / 準備中は従来の代理材質で描く。
+    std::unique_ptr<GraphMaterialSystem> m_graphMaterials;
+
     // 地形レイヤーセット(.terrainlayers)のロード/Texture2DArray ビルド/ホットリロード管理。
     std::unique_ptr<TerrainLayerSetManager> m_terrainLayerSets;
 
@@ -1048,6 +1098,11 @@ private:
     void WireScriptCallbacks();
     // アクティブな CameraComponent をグローバル Camera に同期（Play 開始 / loadScene 後）
     void SyncActiveCameraToGlobal();
+    // シーケンサー S1b（core/ApplicationSequencer.cpp）。カットのカメラを優先して「いまのアクティブカメラ」を返す
+    // （カットが無ければ isActive の先頭。isActive は書き換えない）。無ければ entt::null。
+    entt::entity FindActiveCameraEntity();
+    void InitSequencer();                                   // ホストを作ってコールバックと保存フックを結ぶ（Initialize の最後）
+    void UpdateSequencers(f32 dt, bool paused);   // フレーム更新から 1 回（Editor 分岐 / Play 分岐のどちらか一方から）
     // カメラエンティティの「親階層込みワールド変換」をグローバル Camera の
     // 位置・yaw・pitch に反映する（親オブジェクトにアタッチしたカメラを追従させる）。
     void ApplyCameraTransformToGlobal(entt::entity camEntity);
@@ -1414,6 +1469,11 @@ private:
     //   撮影ごと失敗する。呼び出し側が path を指定できるようにするための受け皿。
     std::string m_mcpGameViewPath;
     McpFinalShot m_mcpFinalShot;         // screenshot_final の状態（バックバッファ読み戻し）。
+    // Q2: ライティング単位（0=従来 / 1=物理）のうち、今 PSO に反映済みの値。切替は UpdateLightingUnits が GPU 待ち 1 回で行う。
+    int  m_lightingUnitsApplied = 0;
+    bool m_offscreenWasActive   = false;          // 直前のフレームでオフスクリーン撮影中だった（終了時に即時で元の解像度へ戻す）
+    std::unique_ptr<LinearCapturePass> m_linearCapture;   // 線形 HDR スクリーンショット（初回の要求で作る）
+    std::unique_ptr<RenderTarget>      m_offscreenOutRT;  // オフスクリーン撮影の出力先（LDR。バックバッファと同じ形式）
     // dx12_perceive の状態（null = 受け付けていない）と GPU 側（最初の要求で作る）。
     std::unique_ptr<McpPerceiveJob> m_mcpPerceive;
     std::unique_ptr<PerceptionPass> m_perceptionPass;
@@ -1516,6 +1576,114 @@ private:
     //   カメラ」の遮蔽情報になる。前フレーム深度の再投影も 2 フェーズ方式も要らない。
     std::unique_ptr<HiZPass>       m_hiZPass;
     std::unique_ptr<OcclusionCullPass> m_occlusionCull;
+
+    // ---- DXR パストレーサー(地上真値レンダラ。パリティ基盤 Q1a)。既定 OFF・遅延確保（要求が来るまで 1 バイトも確保しない）----
+    // 実装は ApplicationPathTracer.cpp / mcp/ApplicationMcpPathTracer.cpp。専用ルートシグネチャ・専用 TLAS。通常の描画経路には触れない。
+    std::shared_ptr<PtHost> m_ptHost;
+    PtHost& EnsurePathTracerHost();
+    void PathTracerTick(ID3D12GraphicsCommandList* cmd);   // PrepareFrame の末尾（TLAS 構築の後）から。PtHost が無ければ即 return
+    void PathTracerShutdown();
+
+    // ---- 物理ベース大気 A1（Hillaire 2020）。既定 OFF（Scene の AtmosphereSettings::enabled）。実装は ApplicationAtmosphere.cpp ----
+    // enabled になるまで AtmosphereRenderer も確保しない（遅延確保）。OFF の間は描画コマンドが 1 命令も変わらない（決定論スクショ差分 0）。
+    std::shared_ptr<AtmoHost> m_atmo;
+    bool  AtmosphereEnsure();                          // 初回だけ AtmosphereRenderer を作る。失敗したら false（従来の空のまま）
+    bool  AtmosphereActive() const;                    // 今フレーム物理大気を使うか（enabled && 初期化済み）
+    bool  AtmosphereWantsEnvironment() const;          // 環境（IBL / DDGI の空）を大気から作るか（enabled && driveIBL）
+    void  UpdateAtmosphereTime(f32 dt);                // Application::Update から: 時刻を進め、太陽の向き・色・強度を決める（OFF なら遷移の検出だけ）
+    void  AtmosphereRecordFrame(const ViewDesc& view, u32 frameIndex, ID3D12GraphicsCommandList* cmd);   // 主ビューの先頭: LUT 更新 + IBL 増分再ベイク
+    bool  AtmosphereSkyUsable(const ViewDesc& view) const;   // このビューの空を大気パスで描くか
+    void  AtmosphereDrawSky(const ViewDesc& view, const RenderPassContext& ctx);
+    void  AtmosphereDrawAerialPerspective(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);
+    bool  LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd);   // LoadSkyboxIfNeeded の先頭から: 大気が環境の元なら焼いて true
+    void  AtmosphereShutdown();
+
+    // ---- 仮想ジオメトリ（Nanite 風）P2: .vgeo の読込 + GPU カリング（統計のみ。**描かない**）----
+    // 既定 OFF（Scene の VirtualGeometrySettings::enabled）。OFF の間は 1 バイトも確保せず、描画パスにも一切触れない。
+    // ON にすると深度プリパスが走り（HZB の入力）、VirtualGeometry コンポーネントを持つエンティティを GPU でカリングして
+    // 統計だけを出す（MCP vg_stats / perf_stats.gpuPassMs.vgCull）。プロキシ（MeshRenderer）は従来経路で描かれる。
+    // 実装は ApplicationVg.cpp。専用ルートシグネチャ・専用ディスクリプタヒープ（メインの RS / SRV ヒープには触れない）。
+    std::unique_ptr<vg::VirtualGeometrySystem> m_vg;
+    std::unique_ptr<HiZPass>                   m_vgHiZ;             // 二相 HZB（前フレームの深度 → 二相目で今フレームの深度から作り直す）
+    bool                                       m_vgUnavailable = false;   // 初期化に失敗した（GPU 非対応など）。以後は試さない
+    bool                                       m_vgHiZHistory  = false;   // m_vgHiZ に前フレームの深度が入っている
+    DirectX::XMFLOAT4X4                        m_vgPrevViewProj{};        // 前フレームの（ジッタ付き）VP
+    std::unordered_map<u32, DirectX::XMFLOAT4X4> m_vgPrevWorld;         // entity → 前フレームの world（HZB 一相目の再投影用）
+    bool VirtualGeometryCullWanted(bool primary) const;   // 設定が ON かつ初期化に失敗していない
+    // P3: ラスタの入力（RenderView が深度まわりを渡す）。active でなければ P2 と同じ（カリングだけ）。
+    struct VgRasterIn
+    {
+        bool active = false;
+        ID3D12Resource*             depth = nullptr;
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+        std::function<void(ID3D12GraphicsCommandList*)> toRaster, toSample;   // 深度の状態遷移（RenderView の追跡に任せる）
+    };
+    void RunVirtualGeometryCull(ID3D12GraphicsCommandList* cmd, const ViewDesc& view, u32 frameIndex,
+                                D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu, bool depthReady, const VgRasterIn* raster = nullptr);
+    // P3: このフレーム、VG のラスタを回すか（設定 ON + raster + メッシュシェーダ対応 + 初期化済み）。BuildDrawList / RenderView が使う
+    bool VirtualGeometryRasterWanted(bool primary) const;
+    // P3: VG が描くエンティティ（アセット準備済み）の集合を作る。BuildDrawList が DrawItem::vg を立てるのに使う（ラスタ OFF なら空）
+    void VirtualGeometryCollectProxyHide();
+    bool VirtualGeometryHidesProxy(entt::entity e) const;
+    std::unordered_set<u32> m_vgHiddenEntities;
+    bool m_vgSkipProxies = false;    // 主ビューの深度プリパス〜フォワードの間だけ true（影 / TLAS / ピッキングは常にプロキシを見る）
+    // 暫定シェーディング / デバッグ可視化（P4 の resolve まで）。描いたら true
+    bool DrawVirtualGeometryDebug(ID3D12GraphicsCommandList* cmd, u32 frameIndex, u32 mode, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
+                                  u32 w, u32 h, f32 zFar);
+    void ShutdownVirtualGeometry();
+    nlohmann::json VirtualGeometryStatsJson() const;      // MCP vg_stats / perf_stats の virtualGeometry ブロック
+    // ---- 仮想ジオメトリ P4（実装は ApplicationVg.cpp。★データメンバは足さない＝状態は m_vg の中）----
+    // (H2) VG 画素の速度 + G-Buffer を書く（速度プリパスが走ったフレームだけ。RenderView が VG の Execute の直後に呼ぶ）
+    bool RunVirtualGeometryGBuffer(u32 frameIndex);
+    // (H3) 材質 resolve の入力。影 / IBL / クラスタのテーブルは ForwardScenePass と同じ物を中で張る。
+    struct VgResolveIn
+    {
+        u32 frameIndex = 0;
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+        u32 width = 0, height = 0;
+        D3D12_GPU_VIRTUAL_ADDRESS perFrameCB = 0;
+        DirectX::XMFLOAT4X4 viewProjJ{};                  // ラスタと同じジッタ付き VP
+        u32 aoSrv = 0xFFFFFFFFu, csSrv = 0xFFFFFFFFu, ssrSrv = 0xFFFFFFFFu, ssgiSrv = 0xFFFFFFFFu;   // RenderSceneMeshes と同じ
+    };
+    // スカイの後・フォワードの前に呼ぶ。描いたら true（false なら呼び出し側が暫定シェーディングへ縮退する）
+    bool DrawVirtualGeometryResolve(ID3D12GraphicsCommandList* cmd, const VgResolveIn& in);
+    void VirtualGeometryBindMaterials(ID3D12GraphicsCommandList* cmd);   // 準備済みアセットの材質（テクスチャ）を材質表へ登録
+
+    // ---- 植生 F1（FoliageLayer + GPU カリング + ExecuteIndirect + 風）。実装は ApplicationFoliage.cpp / mcp/ApplicationMcpFoliage.cpp ----
+    // ★FoliageLayer が 1 つも無いシーンでは m_foliage を作らず、描画パスの呼び出し点は FoliageActive() で弾く（未使用シーンは 1 命令も変わらない）。
+    std::unique_ptr<foliage::FoliageSystem> m_foliage;
+    bool m_foliageUnavailable = false;                 // 初期化に失敗した（.cso が無い等）。以後は試さない
+    f32  m_foliageTimeCur = 0.0f, m_foliageTimePrev = 0.0f;   // 風の時間（総時間 / 前フレームの総時間）
+    bool m_foliageTimeValid = false;
+    u64  m_foliageTimeFrame = ~0ull;
+    bool m_foliageHzbValid = false;                    // m_hiZPass に前フレームの深度ピラミッドが入っている
+    DirectX::XMFLOAT4X4 m_foliageHzbVP{};              // そのピラミッドを作った時のジッタ付き VP
+    bool FoliageActive() const;                        // FoliageLayer が 1 つ以上ある
+    bool EnsureFoliageSystem();
+    void FoliageBeginAndCull(ID3D12GraphicsCommandList* cmd, const ViewDesc& view, u32 frameIndex, f32 totalTime, bool shadowsOn);
+    void FoliageDrawMain(ID3D12GraphicsCommandList* cmd, const DirectX::XMMATRIX& viewProj, bool depthLEqual);
+    void FoliageDrawDepth(ID3D12GraphicsCommandList* cmd, const DirectX::XMMATRIX& viewProjJ, bool velocity,
+                          const DirectX::XMFLOAT4X4& prevVP, const DirectX::XMFLOAT2& jitterNdc);
+    void FoliageDrawShadow(ID3D12GraphicsCommandList* cmd, u32 cascade, const DirectX::XMFLOAT4X4& viewProj);
+    void FoliageFillFrameConstants(DirectX::XMFLOAT4* reservedFirst2);   // PerFrame の _clusterReserved[0..1] へ風のフレーム値
+    void ShutdownFoliage();
+    nlohmann::json FoliageStatsJson() const;           // MCP foliage_stats / perf_stats の foliage ブロック
+    void RegisterMcpFoliageMethods();                  // mcp/ApplicationMcpFoliage.cpp
+
+    // ---- 水面 W1（WaterBody + 専用パス。不透明の後・半透明の前）。実装は ApplicationWater.cpp / mcp/ApplicationMcpWater.cpp ----
+    // ★WaterBody が 1 つも無いシーンでは m_water を作らず、呼び出し点は WaterActive() で弾く（未使用シーンは描画コマンドが 1 命令も変わらない）。
+    std::unique_ptr<water::WaterRenderer> m_water;
+    bool m_waterUnavailable = false;                   // 初期化に失敗した（.cso が無い等）。以後は試さない
+    bool m_waterPhysApplied = false;                   // 今の PSO が物理ライティング単位版か
+    u64  m_waterFrameCounter = 0;                      // BeginFrame の呼び出し通し番号（レンダラのフレーム ID）
+    u32  m_meshPhase = 0;                              // RenderSceneMeshes の範囲: 0=全部 / 1=不透明（+植生）/ 2=半透明 + グリッド + Pfx（水パスの前後で分ける）
+    bool WaterActive() const;                          // WaterBody が 1 つ以上ある
+    bool EnsureWaterRenderer();
+    // 主ビューの Forward+ の前: 収集 + カリング + パラメータ詰め。戻り値 = 描く水域があるか
+    bool WaterBeginFrame(ID3D12GraphicsCommandList* cmd, const ViewDesc& view, u32 frameIndex, f32 totalTime);
+    void ShutdownWater();
+    nlohmann::json WaterStatsJson() const;             // MCP water_stats / perf_stats の water ブロック
+    void RegisterMcpWaterMethods();                    // mcp/ApplicationMcpWater.cpp
 
     // ---- コンタクトシャドウ（同じ深度プリパスを使うスクリーン空間レイマーチ）----
     // 白ダミーは SSAO と共用（どちらも 1x1 R8_UNORM の 1.0）。
@@ -1730,6 +1898,9 @@ private:
     // UISystem と別なのは、SpriteAnimator が UI ではない Sprite2D にも効くため
     // （##GameUI 描画時にしか回らない UISystem に置くと 2D スプライトへ届かない）。
     std::unique_ptr<UiAnimRuntime> m_uiAnimRuntime;
+
+    // シーケンサー（.dxseq）。文書・エディタの非破壊スクラブ・Play 中の再生・描画側への出力。core/SequencerHost.h
+    std::unique_ptr<seqhost::SequencerHost> m_sequencer;
 
     // シーントランジション（WP9）
     std::unique_ptr<SceneTransition> m_sceneTransition;

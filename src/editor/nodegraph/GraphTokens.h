@@ -93,7 +93,8 @@ inline GraphTokens MakeGraphTokens()
         theme::TypeScene,     // 4 Texture
         theme::TypeScript,    // 5 Bool
         theme::TypeMesh,      // 6 Any（多相）
-        theme::TextDim};      // 7 Wildcard
+        theme::TextDim,       // 7 Wildcard
+        theme::TypeCamera};   // 8 Int（マテリアルグラフの整数）
     for (int i = 0; i < kPinTypeSlots; ++i) t.pinType[i] = U(pinBase[i]);
 
     // コメント色 6 種

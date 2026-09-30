@@ -242,6 +242,24 @@ void GraphicsDevice::QueryCapabilities()
             m_resourceBindingTier = opts.ResourceBindingTier;
     }
 
+    // --- ③.6 メッシュシェーダ Tier（仮想ジオメトリ P3）。DX12_DISABLE_MESHSHADER=1 で非対応として扱う ---
+    {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS7 o7{};
+        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &o7, sizeof(o7))))
+            m_meshShaderTier = o7.MeshShaderTier;
+        char buf[8]{};
+        size_t len = 0;
+        if (::getenv_s(&len, buf, sizeof(buf), "DX12_DISABLE_MESHSHADER") == 0 && len > 0 && buf[0] == '1')
+        {
+            m_meshShaderTier = D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+            Logger::Warn("DX12_DISABLE_MESHSHADER=1 のためメッシュシェーダを非対応として扱います（縮退検証用。VG はプロキシ描画になる）");
+        }
+        Logger::Info("VG: MeshShaderTier={} / ShaderModel>=6.5={} → メッシュシェーダ {}",
+                     m_meshShaderTier >= D3D12_MESH_SHADER_TIER_1 ? "1" : "none",
+                     m_highestShaderModel >= D3D_SHADER_MODEL_6_5 ? "yes" : "no",
+                     SupportsMeshShaders() ? "使用可" : "使用不可");
+    }
+
     // --- ④ 起動ログ 1 行（dx12_get_log / DeepDiagnostics `dxr` の一次情報）---
     const int tierMajor = (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_0)
                         ? static_cast<int>(m_raytracingTier) / 10 : 0;

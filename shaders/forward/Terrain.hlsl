@@ -135,40 +135,6 @@ PSInput VSMain(VSInput input)
     return output;
 }
 
-// ---- CSM（Forward.hlsl と同一。地形は面積が広いので影の見た目を変えないこと）----
-int SelectCascade(float viewDepth)
-{
-    int c = NUM_CASCADES - 1;
-    [unroll]
-    for (int i = 0; i < NUM_CASCADES; ++i)
-    {
-        if (viewDepth <= cascadeSplitsView[i]) { c = i; break; }
-    }
-    return c;
-}
-
-float SampleCascade(int cascade, float3 worldPos, float2 svPos)
-{
-    // ★実体は ShadowPcss.hlsli（PCSS / 3x3 PCF の切替込み。4 つの PS で共有）
-    return SampleShadowCascadeCommon(g_shadowMap, cascade, worldPos, svPos, shadowParams.y);
-}
-
-float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
-{
-    if (cascadeSplitsView.x > 1.0e8) return 1.0f;
-    int c = SelectCascade(viewDepth);
-    float shadow = SampleCascade(c, worldPos, svPos);
-    float band = shadowParams.z;
-    if (band > 0.0f && c < NUM_CASCADES - 1)
-    {
-        float edge = cascadeSplitsView[c];
-        float t = saturate((edge - viewDepth) / max(band, 1e-4));
-        if (t < 1.0f)
-            shadow = lerp(SampleCascade(c + 1, worldPos, svPos), shadow, t);
-    }
-    return shadow;
-}
-
 // HDR ソース（SSR / SSGI）の Inf 除去。fp16 上限を超えた値をそのまま ACES に通すと
 // NaN 化して全ジオメトリが真っ黒になる事故がある（先行実装が実機で踏んだ）。
 // 規約は shaders/screenspace/ScreenSpaceCommon.hlsli の SS_Sanitize と同じ（60000 = fp16 上限手前）。
@@ -177,6 +143,19 @@ float3 TerrSanitize(float3 c)
     c = min(c, 60000.0);
     return (isfinite(c.x) && isfinite(c.y) && isfinite(c.z)) ? max(c, 0.0) : float3(0, 0, 0);
 }
+
+// ---------------------------------------------------------------------------
+//  シェーディング尾部（デカール → 影 → ライティング → IBL → デバッグ）は ForwardShade.hlsli。
+//  Forward.hlsl と同一の実装を共有する（CSM の SelectCascade / CalcShadow もそこにある）。
+//  地形との差は差し替え点で表す:
+//    ・SSR / SSGI / DDGI の放射輝度は TerrSanitize を通す（Inf → NaN の全面黒化事故対策）
+//    ・ラフネスは [0.04, 1] に clamp（Forward は下限 0.04 のみ）
+//    ・自己発光は持たない（UnoShadeLighting だけ呼び、emissive を足さない）
+// ---------------------------------------------------------------------------
+#define UNO_SHADE_SANITIZE(x)  TerrSanitize(x)
+#define UNO_SHADE_ROUGHNESS(r) clamp((r), 0.04, 1.0)
+#define UNO_SHADE_ROUGHNESS_BEFORE_NORMAL   // 局所変数の宣言順を旧 PSMain に合わせる（DXIL 同値のため）
+#include "ForwardShade.hlsli"
 
 // ---------------------------------------------------------------------------
 //  レイヤーのサンプル
@@ -512,89 +491,18 @@ float4 PSMain(PSInput input) : SV_TARGET
     }
 
     float metallic = 0.0;                    // 地形は非金属
-    roughness = clamp(roughness, 0.04, 1.0);
+    // ★ラフネスの clamp(0.04, 1.0) は UnoShadeLighting の中（UNO_SHADE_ROUGHNESS）。
 
-    // ===== デカール（Forward.hlsl と同じ位置・同じ引数）=====
-    float3 decalEmissive = 0.0;
-    ApplyDecals(input.worldPos, input.positionSV.xy, input.viewDepth,
-                albedo, N, metallic, roughness, decalEmissive);
+    UnoSurface us = UnoSurfaceDefault();
+    us.baseColor = albedo;
+    us.metallic  = metallic;
+    us.roughness = roughness;
+    us.ao        = matAO;   // レイヤーのマテリアル AO（岩の隙間など）。SSAO に掛かる
+    const UnoShadeInput si = UnoMakeShadeInput(input.worldPos, input.worldNormal,
+                                               input.positionSV, input.viewDepth);
 
-    // ===== 法線マップフィルタリング（Forward.hlsl と同一。分散 → ラフネス / 平均法線の復元）=====
-    FilterShadingNormal(N, roughness, normalize(input.worldNormal), normalFilterParams);
+    // デカール（Forward.hlsl と同じ位置・同じ引数）→ 法線フィルタ → ライティング（Forward.hlsl と同一）
+    const float3 color = UnoShadeLighting(us, N, si);
 
-    // ===== ライティング（ここから先は Forward.hlsl と同一）=====
-    float3 V = normalize(cameraPos - input.worldPos);
-    float3 Ldir = normalize(-lightDir);
-    float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
-
-    float shadow = CalcShadow(input.worldPos, input.viewDepth, input.positionSV.xy);
-    if (contactShadowEnabled > 0.5)
-        shadow = min(shadow, g_contactShadow.Load(int3(input.positionSV.xy, 0)));
-
-    float3 Lo = ShadePunctual(N, V, Ldir, lightColor * shadow, albedo, F0, metallic, roughness);
-    Lo += AccumulatePunctualLights(N, V, input.worldPos, albedo, F0, metallic, roughness,
-                                   input.positionSV.xy);
-
-    float ao = (aoEnabled > 0.5) ? g_ssao.Load(int3(input.positionSV.xy, 0)) : 1.0;
-    ao *= matAO;   // レイヤーのマテリアル AO（岩の隙間など）を掛ける
-
-    float4 ssrRaw  = g_ssr.Load(int3(input.positionSV.xy, 0));
-    float4 ssgiRaw = g_ssgi.Load(int3(input.positionSV.xy, 0));
-    float3 ssrRgb  = TerrSanitize(ssrRaw.rgb);
-    float3 ssgiRgb = TerrSanitize(ssgiRaw.rgb);
-    float  ssrConf  = saturate(ssrRaw.a);
-    float  ssgiConf = saturate(ssgiRaw.a);
-
-    // DDGI（Forward.hlsl と同じ扱い。OFF なら ddgiConf=0 で以降の lerp が恒等）
-    float  ddgiConf = 0.0;
-    float3 ddgiIrr  = TerrSanitize(SampleDdgi(input.worldPos, N, ddgiConf));
-
-    float3 ambient;
-    if (hasIBL != 0u)
-    {
-        float3 R   = reflect(-V, N);
-        float  NoV = max(dot(N, V), 0.0);
-        float3 F   = FresnelSchlickRoughness(NoV, F0, roughness);
-        float3 kD  = (1.0 - F) * (1.0 - metallic);
-
-        float3 irradiance = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb;
-        irradiance = lerp(irradiance, ddgiIrr, ddgiConf);
-        irradiance = lerp(irradiance, ssgiRgb, ssgiConf);
-        float3 diffuseIBL = irradiance * albedo;
-
-        float  mip = roughness * maxPrefilterMip;
-        float3 prefiltered = g_prefilteredMap.SampleLevel(g_iblSampler, R, mip).rgb;
-        prefiltered = lerp(prefiltered, ssrRgb, ssrConf);
-        float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
-        float3 specularIBL = prefiltered * (F * envBRDF.x + envBRDF.y);
-
-        float aoDiff = lerp(ao, 1.0, ssgiConf);
-        float aoSpec = lerp(ao, 1.0, ssrConf);
-        ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * iblIntensity;
-    }
-    else
-    {
-        float3 ambientDiffuse  = albedo * (1.0 - metallic);
-        float3 ambientSpecular = lerp(F0, ssrRgb, ssrConf);
-        ambient = ambientStrength * (ambientDiffuse + ambientSpecular) * ao;
-        ambient = lerp(ambient,
-                       (ddgiIrr * ambientDiffuse + ambientStrength * ambientSpecular) * ao,
-                       ddgiConf);
-        ambient = lerp(ambient,
-                       ssgiRgb * ambientDiffuse + ambientStrength * ambientSpecular * ao,
-                       ssgiConf);
-    }
-
-    float3 color = ambient + Lo + decalEmissive;
-
-    if (shadowParams.w > 0.5f)
-    {
-        float3 tint[4] = { float3(1,0.4,0.4), float3(0.4,1,0.4), float3(0.4,0.4,1), float3(1,1,0.4) };
-        color *= tint[SelectCascade(input.viewDepth)];
-    }
-    color = ApplyClusterDebug(color, input.positionSV.xy, input.worldPos);
-    // デカール枚数ヒートマップ（clusterExtra.z == 3。dx12_render_debug decalCount）
-    color = ApplyDecalDebug(color, input.positionSV.xy, input.worldPos);
-
-    return float4(color, 1.0);
+    return float4(UnoShadeFinish(color, si), 1.0);
 }

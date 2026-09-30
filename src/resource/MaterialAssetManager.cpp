@@ -41,6 +41,7 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
     entry.hasNormalTex = false;
     entry.hasMRTex = false;
     entry.hasEmissiveTex = false;
+    ++entry.loadSerial;
 
     // mtime は成否に関わらずここで先に刻む(失敗時も含めて)。こうすることで
     // PollHotReload は「ファイルが変化したときだけ」再試行し、壊れたままの .dxmat を毎回叩かない。
@@ -64,7 +65,7 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
     // albedo=sRGB、normal・metalRoughness(ARM)=linear。欠落分はデフォルトへフォールバックする。
     auto resolve = [&](const std::string& texRelPath, Texture* fallback, bool srgb,
                        TextureUsage usage) -> Texture* {
-        if (texRelPath.empty())
+        if (texRelPath.empty() || data.IsGraph())   // グラフ材質は 4 枚を読まない（代理ブロック = 既定テクスチャ）
             return fallback;
         if (!vfs::Exists(texRelPath))
         {
@@ -90,11 +91,21 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
     if (entry.srvBlockStart == 0xFFFFFFFF)
         entry.srvBlockStart = m_srvHeap->AllocateBlock(kMaterialSrvBlockSize);
 
-    albedo->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart));
-    normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 1));
-    mr->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 2));
-    emis->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 3));
+    // ★グラフ材質の代理ブロックは中身が変わらない（既定の白 / 法線 / MR / 黒）。すでに代理で埋めてあるなら SRV を作り直さない
+    //   （.dxmat の params を書き換えるたびにホットリロードが走るが、描画中のフレームが使っている静的ディスクリプタを
+    //   上書きしない = GPU ベース検証の id=1001「実行中のコマンドリストが使う静的ディスクリプタの変更」を出さない）。
+    //   従来 → グラフ / グラフ → 従来 への切り替えでは srvIsProxy が変わるので通常どおり作り直す。
+    const bool keepProxy = data.IsGraph() && entry.srvIsProxy;
+    if (!keepProxy)
+    {
+        albedo->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart));
+        normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 1));
+        mr->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 2));
+        emis->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 3));
+    }
+    entry.srvIsProxy = data.IsGraph();
 
+    // 従来経路では data.*Path が空 = false になる（グラフ材質は 4 枚のパスを持たないので全部 false のまま）。
     entry.hasNormalTex   = !data.normalPath.empty();
     entry.hasMRTex       = !data.metalRoughnessPath.empty();
     entry.hasEmissiveTex = !data.emissivePath.empty();
@@ -140,6 +151,24 @@ void MaterialAssetManager::UpdateScalarsOnly(const std::string& relPath, f32 met
     it->second.data.roughness = roughness;
     it->second.data.uvTilingU = uvTilingU;
     it->second.data.uvTilingV = uvTilingV;
+}
+
+bool MaterialAssetManager::SetGraphParam(const std::string& relPath, const std::string& name,
+                                         const MaterialAssetData::GraphParam& value, bool remove)
+{
+    auto it = m_cache.find(NormalizeKey(relPath));
+    if (it == m_cache.end() || !it->second.valid || !it->second.data.IsGraph())
+        return false;
+    if (remove) it->second.data.graphParams.erase(name);
+    else        it->second.data.graphParams[name] = value;
+    ++it->second.loadSerial;
+    return true;
+}
+
+const MaterialAssetManager::Entry* MaterialAssetManager::FindLoaded(const std::string& relPath) const
+{
+    const auto it = m_cache.find(NormalizeKey(relPath));
+    return (it != m_cache.end() && it->second.valid) ? &it->second : nullptr;
 }
 
 void MaterialAssetManager::PollHotReload(f32 dt, ID3D12GraphicsCommandList* cmdList)

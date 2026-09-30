@@ -59,6 +59,14 @@ struct Tag
     std::vector<std::string> tags;
 };
 
+// ---- エディタ専用フラグ（フェーズ 1b。中身の無いタグ型。ヘルパは ecs/EditorFlags.h）----
+// ★キーが無い＝従来どおり。シーン JSON には立っている時だけ書く（後方互換）。
+// 子孫へは「祖先のどれかが立っていれば有効」で伝播する（ヘルパが親を辿る）。
+struct EditorHidden {};     // エディタのビューポートでだけ非表示。Play / ビルドしたゲームでは無視（ゲームに影響しない）
+struct EditorLocked {};     // ビューポートで選択 / ギズモ不可（ヒエラルキーからは選べる）
+struct EditorFolder {};     // 整理用のフォルダ（ヒエラルキーでフォルダとして表示。実体は空の親と同じで Play にも影響しない）
+struct EntityDisabled {};   // エンティティ無効（インスペクタの「有効」チェック）。描画などから外れる。Play にも効く
+
 // 汎用データ値。数値/真偽/文字列/Vec3 を1つ持つ（Lua定義のゲーム状態の単位）。
 struct DataValue
 {
@@ -87,6 +95,10 @@ struct Transform
 
     // 親子階層
     entt::entity parent = entt::null;
+
+    // 兄弟内の並び順（ヒエラルキーの表示順。フェーズ 1b）。小さいほど上。既定 0 = 全員同じ = 従来どおり生成順（id 昇順）。
+    // ★描画には使わない（純粋にエディタの並びのデータ）。シーン JSON には 0 以外のときだけ "siblingOrder" で書く（後方互換）。
+    int siblingOrder = 0;
 
     DirectX::XMMATRIX GetWorldMatrix() const;  // ローカル行列（親は考慮しない）
 };
@@ -604,6 +616,9 @@ struct PointLight
     f32 intensity = 1.0f;
     f32 range     = 10.0f;
     bool castShadows = false;  // true でこのライトが影を落とす（同時上限あり、カメラ近い順で優先）
+    // 光源の半径[m]（球光源）。★物理ライティング単位（シーン設定「ライティング単位: 物理」）のときだけ効く:
+    //   近距離の 1/d² が発散しないよう 1/max(d², r²) で頭打ちにする。0 = 点光源（内部で 1 cm の下限）。従来モードでは無視。
+    f32 sourceRadius = 0.0f;
 };
 
 struct DirectionalLight
@@ -629,6 +644,7 @@ struct SpotLight
     f32               innerConeDeg = 18.0f;  // この角度内は最大輝度
     f32               outerConeDeg = 28.0f;  // この角度でゼロまで減衰
     bool              castShadows  = false;  // true でこのライトが影を落とす（同時上限あり、カメラ近い順で優先）
+    f32               sourceRadius = 0.0f;   // 光源の半径[m]。物理ライティング単位のときだけ効く（PointLight と同じ）
 
     // Transform 回転の変化分を direction に反映するための前フレーム回転（非シリアライズ）
     DirectX::XMFLOAT3 _prevRot{0.0f, 0.0f, 0.0f};
@@ -1174,6 +1190,140 @@ struct AudioReverbZone
     f32         wet          = 0.5f;                  // 響きの量 0..1
     i32         priority     = 0;                     // 重なったら大きい方が内側
     bool        enabled      = true;
+};
+
+// 仮想ジオメトリ（Nanite 風・.vgeo）。同じエンティティの MeshRenderer が .vgeo の「プロキシ」
+// （数万〜25 万 tri の通常メッシュ）を持ち、TLAS・影・ピッキング・物理は無改造でそれを見る。
+// シーン設定 virtualGeometry.enabled が ON のとき GPU カリングが走る（P2 時点は統計のみで描かない）。
+// vgeoPath: assets 相対 or 絶対。空なら同じエンティティの MeshRenderer.modelPath を使う。
+struct VirtualGeometry
+{
+    std::string vgeoPath;
+    bool        enabled = true;   // false でこのインスタンスだけ VG から外す（プロキシのまま）
+};
+
+// 植生（F1）。1 コンポーネント = N 個（最大 数百万）のインスタンス。エンティティにしない（10 万個をエンティティで持つと
+// 描画リスト・ヒエラルキー・シーン JSON・物理が破綻する）。GPU カリング + ExecuteIndirect で描く（renderer/foliage/）。
+//   ・インスタンスの実体は .dxfoliage（32B/個のバイナリ。シーン JSON には直書きしない）。instancePath が空 = 未保存（メモリ上のみ）。
+//   ・種別（variant 0..3）ごとに LOD0..3 のモデルを持つ。書き方は「;」区切り: "tree_lod0.glb;tree_lod1.glb;tree_lod2.glb"（assets 相対）。
+//   ・座標はこのエンティティのローカル空間（Transform でワールドへ。回転 / スケールも効く）。
+//   ・風はシーンの SceneWind（Scene::GetWind）+ ここの windBend / windFlutter。頂点色の規約は shaders/foliage/FoliageWind.hlsli。
+//   ・影は近距離の LOD だけ（castShadow / shadowDistance / shadowMaxLod）。遠距離は影を落とさない。
+// ★このコンポーネントを 1 つも持たないシーンは、描画も確保も 1 バイトも変わらない（既定 OFF と同じ契約）。
+namespace foliage { struct FoliageInstanceSet; }   // renderer/foliage/FoliageTypes.h（実体。コピーオンライトで共有する）
+struct FoliageLayer
+{
+    // ---- インスタンス ----
+    std::string instancePath;                 // assets 相対の .dxfoliage。空 = 未保存
+    // ---- モデル（種別ごとの LOD チェーン。「;」区切り、LOD0 が最も詳細）----
+    std::string variant0;
+    std::string variant1;
+    std::string variant2;
+    std::string variant3;
+    // ---- 距離（m）----
+    f32  lodDist0     = 25.0f;                // LOD0 → LOD1 の切替距離
+    f32  lodDist1     = 60.0f;                // LOD1 → LOD2
+    f32  lodDist2     = 120.0f;               // LOD2 → LOD3
+    f32  cullDistance = 250.0f;               // これより遠くは描かない
+    f32  thinStart    = 0.6f;                 // cullDistance のこの割合から密度を落とし始める（0..1）
+    f32  lodFade      = 0.10f;                // 切替距離 ±この割合の帯でスクリーンドアのクロスフェード（0 でオフ）
+    // ---- 影 ----
+    bool castShadow     = true;
+    f32  shadowDistance = 60.0f;              // 影を落とす最大距離（カメラから）
+    i32  shadowMaxLod   = 1;                  // この LOD まで影を落とす（遠い LOD は落とさない）
+    // ---- 見た目 ----
+    DirectX::XMFLOAT3 tint{1.0f, 1.0f, 1.0f}; // レイヤー全体の色（インスタンスごとの色ばらつきに掛かる）
+    f32  aoStrength   = 1.0f;                 // 頂点色 A（焼き込み AO）の効き 0..1
+    // ---- 風 ----
+    bool windEnabled  = true;
+    f32  windBend     = 1.0f;                 // 幹の曲げの強さ（1 = 標準）
+    f32  windFlutter  = 0.0f;                 // 葉のはばたきの振幅 m（頂点色 R の重みで効く。0 でオフ）
+    f32  windBendExp  = 2.0f;                 // 高さに対する曲がり方の指数（大きいほど先端だけ曲がる）
+    // ---- カリング ----
+    bool hzbCulling   = true;                 // 前フレームの HZB による遮蔽カリング（Hi-Z が使える時だけ）
+    u32  maxVisible   = 131072;               // list（LOD ごと）の容量。超えた分は描かれない（統計に overflow が出る）
+    bool enabled      = true;
+
+    // ---- ランタイム専有（非シリアライズ・meta 未登録）----
+    // インスタンスの実体。コピーオンライト: 編集は新しい FoliageInstanceSet を作って差し替える
+    // （エンティティ複製で同じ実体を共有していても、片方の編集がもう片方へ漏れない。undo は古いポインタへ戻すだけ）。
+    std::shared_ptr<foliage::FoliageInstanceSet> _set;
+    bool _loadTried  = false;                 // instancePath の読込を試したか（毎フレームの再読込を防ぐ）
+    bool _needsSave  = false;                 // .dxfoliage を書き出す必要がある（シーン保存 / MCP が消化）
+    const void* _diskSet = nullptr;           // ディスク（.dxfoliage）と一致している実体のポインタ。_set と違えば書き出しが要る（Undo / Redo が古い実体へ戻したとき）
+
+    // 永続フィールド + 実体のポインタが同じなら true（Inspector の Undo が「変わっていない」を正しく判定するため。std::string を含むので memcmp は使えない）
+    bool operator==(const FoliageLayer& o) const
+    {
+        return instancePath == o.instancePath && variant0 == o.variant0 && variant1 == o.variant1 && variant2 == o.variant2 && variant3 == o.variant3
+            && lodDist0 == o.lodDist0 && lodDist1 == o.lodDist1 && lodDist2 == o.lodDist2 && cullDistance == o.cullDistance
+            && thinStart == o.thinStart && lodFade == o.lodFade && castShadow == o.castShadow && shadowDistance == o.shadowDistance
+            && shadowMaxLod == o.shadowMaxLod && tint.x == o.tint.x && tint.y == o.tint.y && tint.z == o.tint.z && aoStrength == o.aoStrength
+            && windEnabled == o.windEnabled && windBend == o.windBend && windFlutter == o.windFlutter && windBendExp == o.windBendExp
+            && hzbCulling == o.hzbCulling && maxVisible == o.maxVisible && enabled == o.enabled && _set.get() == o._set.get();
+    }
+};
+
+// 水面（W1）。Transform の y が水面の高さ（+ heightOffset）、回転は Y 軸まわり（yaw）だけを使う。
+// 専用パス（不透明の後・半透明の前）で描く: ゲルストナー波 + 2 スケールのディテール法線 + 屈折 + Beer-Lambert 吸収 + 反射（画面空間 → 環境）+ 泡 + 岸のフェード。
+//   ・形は shape: 0=無限平面 / 1=矩形（size = ローカル全幅 x,z）/ 2=楕円（size = 直径）/ 3=多角形（polygon = "x z x z ..." ローカル座標・最大 16 点）。
+//   ・波は「主波の波長 / 振幅 / 風向 / 広がり / 急峻さ / 本数 / 種」から決定論的に合成する（renderer/water/WaterMath.h）。振幅 0 = 平水面。
+//   ・時間はフレームの総時間（決定論キャプチャでは固定値）。撮り分けるときは timeOffset を変える。
+// ★このコンポーネントを 1 つも持たないシーンは、描画も確保も 1 バイトも変わらない（既定 OFF と同じ契約）。
+struct WaterBody
+{
+    // ---- 形 ----
+    i32  shape = 1;                              // 0=無限平面 / 1=矩形 / 2=楕円 / 3=多角形
+    DirectX::XMFLOAT2 size{200.0f, 200.0f};      // shape 1/2 のローカル全幅（x, z）。Transform のスケールも掛かる
+    std::string polygon;                         // shape 3: "x z x z ..."（ローカル座標）
+    f32  heightOffset = 0.0f;                    // Transform の y からの水面高さのオフセット（m）
+    // ---- 波（ゲルストナー）----
+    i32  waveCount = 8;                          // 合成する波の本数 1..12
+    f32  waveAmplitude = 0.35f;                  // 主波の振幅（m）。0 = 平水面
+    f32  wavelength = 14.0f;                     // 主波の波長（m）
+    f32  windDirection = 30.0f;                  // 主波の進行方向（度。0=+X, 90=+Z）
+    f32  directionSpread = 30.0f;                // 波の向きの広がり（度）
+    f32  choppiness = 0.5f;                      // 急峻さ 0..1（波頭の尖り）
+    f32  waveSpeed = 1.0f;                       // 波の位相速度の倍率（1 = 深水波の分散関係どおり）
+    i32  waveSeed = 1;                           // 波の合成の種（同じ値なら同じ波）
+    f32  timeScale = 1.0f;                       // 時間の倍率（0 で凍結）
+    f32  timeOffset = 0.0f;                      // 時間のオフセット（秒。決定論キャプチャで位相を撮り分ける）
+    // ---- ディテール法線（手続き生成・2 スケール）----
+    f32  detailStrength = 0.5f;                  // 0..2。0 で無効
+    f32  detailTile = 3.0f;                      // 大スケールのタイル長（m）。小スケールはこの約 1/5
+    f32  detailSpeed = 0.06f;                    // ディテールの流れる速さ（m/s。flow が無いときの既定の揺らぎ）
+    // ---- 光学 ----
+    DirectX::XMFLOAT3 absorption{0.45f, 0.075f, 0.03f};       // 吸収係数 σa（1/m）RGB。Beer-Lambert: T = exp(-σ·厚み)
+    DirectX::XMFLOAT3 scatterColor{0.03f, 0.11f, 0.14f};      // 水柱の内部散乱色（単位放射照度あたりの水の色。深い所の色を決める）
+    f32  turbidity = 0.0f;                       // 濁り 0..1（消散と散乱を増やす）
+    f32  ior = 1.333f;                           // 屈折率
+    f32  roughness = 0.02f;                      // 反射の基本ラフネス（波の細かい傾きの分散が更に足される）
+    f32  refractionStrength = 1.0f;              // 屈折の歪みの倍率（1 = 物理どおり）
+    bool ssr = true;                             // 反射に画面空間トレースを使う（false = 環境マップのみ）
+    // ---- 泡・岸 ----
+    f32  foamCrest = 0.5f;                       // 波頭の泡の量 0..1
+    f32  foamShore = 0.6f;                       // 岸（深度差が小さい所）の泡の量 0..1
+    f32  foamWidth = 0.8f;                       // 岸の泡の幅（m）
+    f32  shoreFade = 0.35f;                      // 岸のフェード幅（m。水深がこれ未満で透明になっていく）
+    f32  causticIntensity = 0.4f;                // 水面下へのコースティクス（0 で無効）
+    // ---- 流れ ----
+    DirectX::XMFLOAT2 flow{0.0f, 0.0f};          // 流れ（m/s、ワールド XZ）。波の位相とディテールが流れる
+    bool enabled = true;
+
+    bool operator==(const WaterBody& o) const
+    {
+        return shape == o.shape && size.x == o.size.x && size.y == o.size.y && polygon == o.polygon && heightOffset == o.heightOffset
+            && waveCount == o.waveCount && waveAmplitude == o.waveAmplitude && wavelength == o.wavelength
+            && windDirection == o.windDirection && directionSpread == o.directionSpread && choppiness == o.choppiness
+            && waveSpeed == o.waveSpeed && waveSeed == o.waveSeed && timeScale == o.timeScale && timeOffset == o.timeOffset
+            && detailStrength == o.detailStrength && detailTile == o.detailTile && detailSpeed == o.detailSpeed
+            && absorption.x == o.absorption.x && absorption.y == o.absorption.y && absorption.z == o.absorption.z
+            && scatterColor.x == o.scatterColor.x && scatterColor.y == o.scatterColor.y && scatterColor.z == o.scatterColor.z
+            && turbidity == o.turbidity && ior == o.ior && roughness == o.roughness && refractionStrength == o.refractionStrength
+            && ssr == o.ssr && foamCrest == o.foamCrest && foamShore == o.foamShore && foamWidth == o.foamWidth
+            && shoreFade == o.shoreFade && causticIntensity == o.causticIntensity && flow.x == o.flow.x && flow.y == o.flow.y
+            && enabled == o.enabled;
+    }
 };
 
 // ステージギミック。Transform を基準位置として、時間で動く/塞ぐ「ステージ部品」を表す。

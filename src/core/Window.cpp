@@ -6,6 +6,7 @@
 #include "DpiScale.h"
 
 #include <windowsx.h>   // GET_X_LPARAM / GET_Y_LPARAM
+#include <shellapi.h>   // WM_DROPFILES（DragQueryFileW / DragFinish）
 #include <algorithm>
 #include <numeric>      // std::gcd
 
@@ -775,6 +776,29 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
             break;
 
+        case WM_DROPFILES:
+        {
+            // エクスプローラーからのファイル / フォルダのドロップ。ハンドラ（EditorLayer が設定）へ絶対パスを渡すだけ。
+            HDROP hd = reinterpret_cast<HDROP>(wParam);
+            if (window->m_fileDropHandler)
+            {
+                std::vector<std::wstring> paths;
+                const UINT n = ::DragQueryFileW(hd, 0xFFFFFFFFu, nullptr, 0);
+                for (UINT i = 0; i < n; ++i)
+                {
+                    const UINT len = ::DragQueryFileW(hd, i, nullptr, 0);
+                    std::wstring w(len, L'\0');
+                    ::DragQueryFileW(hd, i, w.data(), len + 1);
+                    paths.push_back(std::move(w));
+                }
+                POINT pt{};
+                ::DragQueryPoint(hd, &pt);
+                window->m_fileDropHandler(std::move(paths), pt.x, pt.y);
+            }
+            ::DragFinish(hd);
+            return 0;
+        }
+
         case WM_DESTROY:
             PostQuitMessage(0);
             return 0;
@@ -789,6 +813,12 @@ LRESULT CALLBACK Window::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void Window::SetFileDropHandler(FileDropHandler handler)
+{
+    m_fileDropHandler = std::move(handler);
+    if (m_hwnd) ::DragAcceptFiles(m_hwnd, m_fileDropHandler ? TRUE : FALSE);
 }
 
 } // namespace dx12e

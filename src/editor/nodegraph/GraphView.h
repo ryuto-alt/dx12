@@ -47,6 +47,9 @@ struct GraphViewSettings
     bool  animate     = true;                // false: スプリングを使わず即時（テスト・決定論スクショ）
     float fixedTime   = -1.0f;               // >= 0 なら演出の時間をこの値に固定（決定論スクショ）
     bool  showPreview = true;                // プレビュー領域（ズーム 0.6 以上）
+    // UE 風ワンキー: false = キーを押した瞬間にマウス位置へ置く（G0 の既定）。true = 押している間「置く型」を握り、
+    // 左クリックしたその位置へ置く（UE と同じ）。クリックせずに短く押して離したときはマウス位置へ置く。
+    bool  hotkeyHoldClick = false;
 };
 
 struct GraphViewStats
@@ -72,6 +75,18 @@ public:
     GraphViewSettings& Settings() { return m_set; }
     const GraphViewSettings& Settings() const { return m_set; }
     void SetAnchorSink(AnchorFn fn, int maxNodesWithPins) { m_anchor = std::move(fn); m_anchorMaxNodes = maxNodesWithPins; }
+    // ノードの右クリックメニューへ項目を足す差し込み口（ImGui のメニュー項目を積む。primary = 右クリックしたノード）。
+    using NodeMenuFn = std::function<void(NodeId primary, const Selection& sel)>;
+    void SetNodeMenuExtender(NodeMenuFn fn) { m_nodeMenu = std::move(fn); }
+    // ノードのダブルクリック（プロパティ編集などを開く）。
+    using NodeActivateFn = std::function<void(NodeId)>;
+    void SetNodeActivateHandler(NodeActivateFn fn) { m_onNodeActivate = std::move(fn); }
+    // ノードのプレビュー領域（NodeTypeDesc::hasPreview）を描く差し込み口。true を返したらプレースホルダーを描かない。
+    // 画面座標の矩形 [mn, mx]（クリップ済みの ImDrawList）。プレビュー（G2c）が画像を描くのに使う。
+    using NodePreviewFn = std::function<bool(NodeId id, ImDrawList* dl, ImVec2 mn, ImVec2 mx)>;
+    void SetNodePreviewDrawer(NodePreviewFn fn) { m_nodePreview = std::move(fn); }
+    // ワンキー配置の「握っている型」（テスト・画面表示用。無ければ nullptr）
+    const NodeTypeDesc* ArmedHotkeyType() const { return m_hkType; }
 
     // キャンバスを描いて入力を処理する。size <= 0 の軸は残り全部。窓の中（Begin/End の間）で呼ぶ。
     void Draw(const char* strId, ImVec2 size);
@@ -80,6 +95,9 @@ public:
     // コマンド実行（EditorCommandTable の edit.* / graph.* の id）。実行できれば true。
     bool Execute(const std::string& id);
     bool WantsKeyboard() const { return m_keyboardActive; }   // グラフがキーを使うか（キャンバス or ポップアップにフォーカス）
+    bool CanvasHovered() const { return m_hovered; }
+    // ノードへフォーカス（診断リストのクリックなど）: 選択してビューをそこへ寄せる。ノードが無ければ false。
+    bool FocusNode(NodeId id, bool animate = true);
 
     // ---- 選択 ----
     const Selection& GetSelection() const { return m_sel; }
@@ -164,6 +182,8 @@ private:
     Vec2 SnapPos(Vec2 p) const;
     void PruneSelection();
     void PasteFromClipboard(bool atMouse);
+    void UpdateHotkeyHold();   // hotkeyHoldClick: キーの離しを見て、短押しならその場へ置く
+    void PlaceHotkeyNode(const NodeTypeDesc& t, Vec2 graphPos);
     void CopyToClipboard();
     void ShowBringToFront(const Selection& s);
 
@@ -184,6 +204,12 @@ private:
     Selection         m_sel;
     uint64_t          m_selRev = 1;
     AnchorFn          m_anchor;
+    NodeMenuFn        m_nodeMenu;
+    NodePreviewFn     m_nodePreview;
+    NodeActivateFn    m_onNodeActivate;
+    const NodeTypeDesc* m_hkType = nullptr;   // hotkeyHoldClick: 押している間の型
+    double            m_hkStart = 0.0;
+    bool              m_hkPlaced = false;
     int               m_anchorMaxNodes = 0;
 
     // ---- ビュー ----

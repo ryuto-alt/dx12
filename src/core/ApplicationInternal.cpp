@@ -250,6 +250,63 @@ nlohmann::json McpComponentSchema()
         "+ 0.35s temporal smoothing). Sounds send to the reverb by bus (sfx/ambience 1, voice 0.6, "
         "music/ui 0) x play{reverb=} x sqrt(distance gain). Check the result with dx12 audio_state "
         "(reverb.dominant / currentWet)."));
+    comps.push_back(C("virtualGeometry", true, true, json::array({
+        F("vgeoPath", "string (assets-relative or absolute .vgeo; empty = the entity's meshRenderer.modelPath)", ""),
+        F("enabled", "bool (false = this instance stays a plain proxy mesh)", true),
+    }), "Virtual geometry (Nanite-style .vgeo). The entity's meshRenderer holds the .vgeo PROXY (plain mesh: "
+        "TLAS/shadows/picking/physics use it unchanged). Scene setting virtualGeometry.enabled (default OFF) turns on the "
+        "GPU cluster culling; P2 only gathers statistics and does NOT draw (the proxy is drawn the normal way). "
+        "Spawning a .vgeo with dx12_spawn_model attaches this component automatically."));
+    comps.push_back(C("foliageLayer", true, true, json::array({
+        F("instancePath", "string (assets-relative .dxfoliage; empty = not saved yet). The instance table (32 B each, up to millions) lives in this "
+                          "sidecar, NEVER in the scene JSON. Create/fill with dx12_foliage_scatter / dx12_foliage_paint.", ""),
+        F("variant0", "string (';'-separated LOD models LOD0..3, assets-relative; e.g. \"foliage/tree_lod0.glb;foliage/tree_lod1.glb;foliage/tree_lod2.glb\")", ""),
+        F("variant1", "string (variant 1's LOD chain; instances pick a variant by their type byte)", ""),
+        F("variant2", "string (variant 2)", ""), F("variant3", "string (variant 3)", ""),
+        F("lodDist0", "float m (LOD0->1 switch distance)", 25.0), F("lodDist1", "float m (LOD1->2)", 60.0),
+        F("lodDist2", "float m (LOD2->3)", 120.0), F("cullDistance", "float m (nothing is drawn beyond this)", 250.0),
+        F("thinStart", "float 0..1 (fraction of cullDistance where density starts to fall)", 0.6),
+        F("lodFade", "float 0..0.45 (screen-door crossfade band = +/- this fraction of each switch distance; 0 = off)", 0.1),
+        F("castShadow", "bool (near LODs only)", true), F("shadowDistance", "float m", 60.0),
+        F("shadowMaxLod", "int 0..3 (farthest LOD that still casts a shadow)", 1),
+        F("tint", "float3 (layer colour multiplied onto each instance's colour variation)", json::array({1, 1, 1})),
+        F("aoStrength", "float 0..1 (how much the baked vertex-colour AO in alpha darkens)", 1.0),
+        F("windEnabled", "bool", true), F("windBend", "float (trunk bend strength, 1 = standard)", 1.0),
+        F("windFlutter", "float m (leaf flutter amplitude; weighted by vertex colour R. 0 = off)", 0.0),
+        F("windBendExp", "float (height exponent of the bend)", 2.0),
+        F("hzbCulling", "bool (occlusion culling with the previous frame's HZB; needs Hi-Z)", true),
+        F("maxVisible", "int (capacity per LOD list; overflow is not drawn and is reported in foliage_stats)", 131072),
+        F("enabled", "bool", true),
+    }), "Foliage (F1): ONE component = N instances (GPU culling + ExecuteIndirect + wind), not N entities. "
+        "Instance data is filled with dx12_foliage_scatter (Poisson-disk + slope/height/splat rules, seed = deterministic) or the brush "
+        "(dx12_foliage_paint). Scene-wide wind = dx12_set_wind. Vertex colour convention for wind: R=flutter G=phase B=bend A=baked AO. "
+        "Scenes without this component are unaffected."));
+    comps.push_back(C("waterBody", true, true, json::array({
+        F("shape", "int (0=infinite plane, 1=rectangle, 2=ellipse, 3=polygon)", 1),
+        F("size", "float2 m (shape 1/2: local full width x,z; the entity scale also applies)", json::array({200, 200})),
+        F("polygon", "string (shape 3: \"x z x z ...\" local coordinates, up to 16 points)", ""),
+        F("heightOffset", "float m (added to the entity transform y = water level)", 0.0),
+        F("waveCount", "int 1..12 (Gerstner waves summed)", 8), F("waveAmplitude", "float m (dominant wave amplitude; 0 = flat water)", 0.35),
+        F("wavelength", "float m (dominant wavelength)", 14.0), F("windDirection", "float deg (0=+X, 90=+Z)", 30.0),
+        F("directionSpread", "float deg", 30.0), F("choppiness", "float 0..1 (crest sharpness)", 0.5),
+        F("waveSpeed", "float (multiplier on the deep-water dispersion speed)", 1.0), F("waveSeed", "int (same seed = same waves)", 1),
+        F("timeScale", "float (0 freezes the waves)", 1.0), F("timeOffset", "float s (shift the wave phase; use it to vary deterministic captures)", 0.0),
+        F("detailStrength", "float 0..2 (procedural detail normal, 2 scales; 0 = off)", 0.5), F("detailTile", "float m (large-scale tile length; small scale is ~1/5)", 3.0),
+        F("detailSpeed", "float m/s (drift of the detail normal)", 0.06),
+        F("absorption", "float3 1/m RGB (Beer-Lambert sigma_a; T = exp(-sigma * thickness))", json::array({0.45, 0.075, 0.03})),
+        F("scatterColor", "float3 (in-scattered colour of the water column per unit irradiance; sets the deep-water colour)", json::array({0.03, 0.11, 0.14})),
+        F("turbidity", "float 0..1 (raises extinction and scattering)", 0.0), F("ior", "float (index of refraction)", 1.333),
+        F("roughness", "float 0..1 (base reflection roughness; the wave slope variance adds to it)", 0.02),
+        F("refractionStrength", "float (1 = physical)", 1.0), F("ssr", "bool (screen-space reflection, falls back to the environment)", true),
+        F("foamCrest", "float 0..1 (foam on wave crests)", 0.5), F("foamShore", "float 0..1 (foam where the water meets geometry)", 0.6),
+        F("foamWidth", "float m (shore foam width)", 0.8), F("shoreFade", "float m (water becomes transparent below this depth)", 0.35),
+        F("causticIntensity", "float 0..2 (caustics on things under the water; 0 = off)", 0.4),
+        F("flow", "float2 m/s (world XZ; the waves and the detail normal drift with it)", json::array({0, 0})),
+        F("enabled", "bool", true),
+    }), "Water surface (W1): dedicated pass between opaque and transparent. Gerstner waves (deterministic from seed) + refraction of the "
+        "opaque scene + Beer-Lambert absorption from the depth difference + reflection (SSR then environment map) + foam + shore fade. "
+        "Entity transform y = water level, yaw rotates a rectangle/ellipse/polygon. Apply presets (lake/ocean/river/pool/swamp) with dx12_water_apply_preset. "
+        "Scenes without this component are unaffected. The old custom-shader water templates keep working."));
     comps.push_back(C("particleEmitter", true, true, json::array({
         F("kind", "int (0=Glow,1=Fire,2=Smoke,3=Spark,4=Magic,5=Electric,6=Ring,7=Star)", 0),
         F("blend", "int (0=Additive,1=Alpha)", 0), F("rate", "float (per sec)", 30.0),
@@ -938,6 +995,16 @@ nlohmann::json McpLuaApi()
         "time.video.localTime(entOrName) -> t / setOffset/getOffset  — 動画時間+個別オフセット。キーは self テーブル/名前文字列/数値id(名前優先、同名は同一時計)",
         "time.localTime(e)/skipEntity(e,±sec)/scaleEntity(e,s)/getEntityScale(e)/resetEntity(e)  — ビデオ時計と独立したエンティティ個別時計(0=停止、負=逆再生)",
         "charge.new(key, {max=2,rate=1,realtime=false}?) -> c  — 押しっぱなしチャージ計測(弓を引く等)。OnUpdate で c:update()、c:charging()/c:ratio()/c:value()、離した瞬間 c:released() がチャージ量を返す(他は nil)",
+    })));
+    objects.push_back(O("Sequence", "global ('.' で呼ぶ)", json::array({
+        "★シーケンサー(.dxseq)を Play 中に再生する。assets/sequences/<名前>.dxseq を読む。編集は MCP dx12_sequence か エディタのタイムライン。既定の時計は【実時間】(time.setScale で止まらない)",
+        "Sequence.play(name, {rate=1, loop=false|true|\"pingpong\", from=0, clock=\"real\"|\"game\", restoreOnEnd=true, delay=0}?) -> id | nil, エラー文  — 再生開始。同じ名前が再生中なら頭から入れ替える。イベントトラックの emit / lua / log / loadScene は前進で 1 回だけ発火する(シークでは発火しない)",
+        "Sequence.stop(name?)  — 止める(省略 or \"*\" で全部)。書いた timeScale は元に戻す。エンティティの値は戻さない(演出の結果を残す。Stop でシーンごと復元される)",
+        "Sequence.pause(name) / Sequence.resume(name)  — 一時停止 / 再開",
+        "Sequence.seek(name, sec)  — 再生位置を秒で移す(イベントは発火しない)",
+        "Sequence.isPlaying(name) -> bool / Sequence.duration(name) -> 秒|nil / Sequence.time(name) -> 秒|nil",
+        "終わると events に \"<name>:done\"(data.value=1)が飛ぶ。events:emit(\"<name>:play\") / (\"<name>:stop\") でも操作できる(旧 dx12_sequence_author と同じ名前)",
+        "対象は動的な剛体 / CharacterController の Transform を書かない(物理が上書きするため)。キネマティックにするか、物理を持たないエンティティをバインドする",
     })));
     // ★メソッドではなくプロパティ。sol2 はメンバ変数ポインタ(&RaycastHit::hit 等)を
     //   プロパティとして束縛するので、h:hit() は "attempt to call a boolean value" で落ちる。

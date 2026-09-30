@@ -3,9 +3,12 @@
 #include "editor/EditorTheme.h"
 #include "editor/EditorIcons.h"
 #include "editor/ToolWindows.h"
+#include "editor/panels/NodeGraphSandboxPanel.h"   // graph.* コマンドをサンドボックス窓へ渡す（マテリアルグラフ G0）
+#include "editor/panels/MaterialGraphPanel.h"       // matgraph.* / graph.* をマテリアルグラフ窓へ渡す（マテリアルグラフ G3）
 #include "editor/UiWidgets.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
+#include "editor/HierarchyActions.h"   // 非表示 / ロック / フォルダ（ヒエラルキー。Undo つき）
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -117,14 +120,18 @@ const char* IconFor(std::string_view id)
         {"file.closeProject", ICON_POWER},
         {"edit.undo", ICON_UNDO}, {"edit.redo", ICON_REDO}, {"edit.copy", ICON_COPY}, {"edit.paste", ICON_PASTE},
         {"edit.duplicate", ICON_T_LAYERS}, {"edit.delete", ICON_TRASH}, {"edit.rename", ICON_FILE_TEXT},
-        {"edit.group", ICON_T_GROUP}, {"edit.selectNone", ICON_POINTER}, {"edit.focus", ICON_EYE},
+        {"edit.group", ICON_T_GROUP}, {"edit.toggleHidden", ICON_EYE_OFF}, {"edit.isolate", ICON_EYE}, {"edit.showAll", ICON_EYE},
+        {"edit.toggleLocked", ICON_LOCK}, {"edit.newFolder", ICON_FOLDER_PLUS}, {"edit.selectNone", ICON_POINTER}, {"edit.focus", ICON_EYE},
         {"view.gizmoMove", ICON_MOVE}, {"view.gizmoRotate", ICON_ROTATE}, {"view.gizmoScale", ICON_SCALE},
         {"view.gizmoSpace", ICON_SPACE_WORLD}, {"view.fill", ICON_T_SUN}, {"view.flyMode", ICON_KEYBOARD},
         {"view.toggle2D", ICON_VIEW_2D}, {"view.resetLayout", ICON_REFRESH}, {"view.closeTools", ICON_CLOSE},
-        {"view.fullscreen", ICON_T_MONITOR},
-        {"view.theme.default", ICON_T_SUN}, {"view.theme.a", ICON_T_SUN}, {"view.theme.b", ICON_T_SUN}, {"view.theme.c", ICON_T_SUN},
+        {"view.fullscreen", ICON_T_MONITOR}, {"view.viewportBar", ICON_AXIS3D}, {"view.outline", ICON_SCAN_EYE},
+        {"view.theme.default", ICON_T_SUN}, {"view.theme.b", ICON_T_SUN}, {"view.theme.c", ICON_T_SUN},
         {"play.toggle", ICON_PLAY}, {"play.stop", ICON_STOP}, {"play.pause", ICON_PAUSE},
         {"palette.commands", ICON_SEARCH}, {"palette.quickOpen", ICON_SEARCH},
+        {"matgraph.new", ICON_FILE_PLUS}, {"matgraph.newPbr", ICON_FILE_PLUS}, {"matgraph.open", ICON_FOLDER_OPEN}, {"matgraph.save", ICON_SAVE},
+        {"matgraph.saveAs", ICON_SAVE}, {"matgraph.recompile", ICON_REFRESH}, {"matgraph.nextDiag", ICON_ERROR}, {"matgraph.copyHlsl", ICON_COPY},
+        {"matgraph.promote", ICON_T_MATERIAL}, {"matgraph.sample", ICON_T_SPLINE},
     };
     for (const P& p : kIcons)
         if (id == p.id) return p.icon;
@@ -134,6 +141,10 @@ const char* IconFor(std::string_view id)
         if (const tools::Desc* d = tools::Find(tid.c_str())) return d->icon;
     }
     if (id.rfind("create.", 0) == 0) return ICON_PLUS;
+    if (id.rfind("view.bookmark.", 0) == 0) return ICON_BOOKMARK;
+    if (id.rfind("workspace.", 0) == 0) return ICON_WINDOWS;
+    if (id == "layout.save") return ICON_SAVE;
+    if (id.rfind("layout.", 0) == 0) return ICON_WINDOWS;
     return ICON_BLANK;
 }
 
@@ -154,8 +165,11 @@ bool IsChecked(const EditorContext& ctx, std::string_view id)
     if (id == "view.fill")    return ctx.viewportFill > 0.0f;
     if (id == "view.flyMode") return ctx.flyMode;
     if (id == "view.toggle2D") return ctx.view2D;
+    if (id == "view.viewportBar") return ctx.vpPrefs.barVisible;
+    if (id.rfind("workspace.", 0) == 0) return ctx.currentWorkspace == id.substr(10);
+    if (id == "layout.bottomMaximize") return ctx.bottomDockMaximized;
+    if (id == "view.outline") return ctx.vpPrefs.outline;
     if (id == "view.theme.default") return theme::CurrentVariant() == theme::Variant::Default;
-    if (id == "view.theme.a") return theme::CurrentVariant() == theme::Variant::A;
     if (id == "view.theme.b") return theme::CurrentVariant() == theme::Variant::B;
     if (id == "view.theme.c") return theme::CurrentVariant() == theme::Variant::C;
     return false;
@@ -163,6 +177,11 @@ bool IsChecked(const EditorContext& ctx, std::string_view id)
 
 bool IsEnabled(const EditorContext& ctx, std::string_view id)
 {
+    // ノードグラフ（サンドボックス窓 / マテリアルグラフ窓）のコマンドは窓が開いているときだけ
+    if (id.rfind("graph.", 0) == 0) return ctx.showNodeGraphSandbox || ctx.showMaterialGraph;
+    if (id.rfind("matgraph.", 0) == 0)
+        // 窓が閉じていても「新規 / 開く / 見本」は使える（窓を開いて実行する）。それ以外は窓が開いているときだけ
+        return ctx.showMaterialGraph || id == "matgraph.new" || id == "matgraph.newPbr" || id == "matgraph.open" || id == "matgraph.sample";
     if (id.rfind("window.", 0) == 0 || id.rfind("create.", 0) == 0)
         return id.rfind("create.", 0) == 0 ? !ctx.isPlaying : true;
 
@@ -174,7 +193,8 @@ bool IsEnabled(const EditorContext& ctx, std::string_view id)
     if (id == "edit.redo")      return ctx.undoSystem.CanRedo();
     if (id == "edit.paste")     return !ctx.clipboard.empty();
     if (id == "edit.copy" || id == "edit.duplicate" || id == "edit.delete" || id == "edit.rename"
-        || id == "edit.group" || id == "edit.focus")
+        || id == "edit.group" || id == "edit.focus" || id == "edit.toggleHidden" || id == "edit.isolate"
+        || id == "edit.toggleLocked")
         return ctx.HasSelection();
     if (id == "view.gizmoMove" || id == "view.gizmoRotate" || id == "view.gizmoScale" || id == "view.gizmoSpace")
         return !ctx.flyMode && !ctx.view2D;   // 2D / フライ中は W/E/R/T をカメラ移動に使う
@@ -207,6 +227,25 @@ bool Execute(EditorContext& ctx, const Env& env, std::string_view id)
 
     if (!FindCommand(id)) return false;
     if (!IsEnabled(ctx, id)) return false;
+    // マテリアルグラフ窓にフォーカスがあるとき、Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S はシーンではなくグラフへ（キーはシーンと同じ。取り違えない）
+    if (ctx.showMaterialGraph && ctx.materialGraphKeyFocus)
+    {
+        if (id == "file.new")    return MaterialGraphPanel::ExecuteCommand(ctx, "matgraph.new");
+        if (id == "file.open")   return MaterialGraphPanel::ExecuteCommand(ctx, "matgraph.open");
+        if (id == "file.save")   return MaterialGraphPanel::ExecuteCommand(ctx, "matgraph.save");
+        if (id == "file.saveAs") return MaterialGraphPanel::ExecuteCommand(ctx, "matgraph.saveAs");
+    }
+    if (id.rfind("matgraph.", 0) == 0)   // マテリアルグラフ窓が次のフレームで実行する
+    {
+        if (!ctx.showMaterialGraph) ctx.showMaterialGraph = true;   // 閉じていれば開く（IsEnabled が通るのは 新規 / 開く / 見本 だけ）
+        return MaterialGraphPanel::ExecuteCommand(ctx, std::string(id).c_str());
+    }
+    if (id.rfind("graph.", 0) == 0)   // ノードグラフ: フォーカスのある窓（無ければ開いている方）が次のフレームで実行する
+    {
+        const bool toMat = ctx.showMaterialGraph && (ctx.materialGraphKeyFocus || !ctx.showNodeGraphSandbox || !ctx.nodeGraphKeyFocus);
+        if (toMat) return MaterialGraphPanel::ExecuteCommand(ctx, std::string(id).c_str());
+        return NodeGraphSandboxPanel::ExecuteCommand(ctx, std::string(id).c_str());
+    }
 
     // ---- ファイル ----
     if (id == "file.new")        { OpenNewSceneDialog(ctx, true, "NewScene"); return true; }
@@ -264,6 +303,8 @@ bool Execute(EditorContext& ctx, const Env& env, std::string_view id)
     }
     if (id == "edit.rename")
     {
+        // アセットブラウザにフォーカスがあるときの F2 はアセットの名前変更（パネルが自分で処理する）。エンティティは動かさない。
+        if (ctx.focusedPanel == EditorContext::Panel::AssetBrowser) return true;
         ctx.requestRenameEntity = ctx.selectedEntity;   // ヒエラルキーがインライン編集を開く
         return true;
     }
@@ -278,6 +319,33 @@ bool Execute(EditorContext& ctx, const Env& env, std::string_view id)
         return true;
     }
     if (id == "edit.focus")  { ctx.pendingFocusSelection = true; return true; }
+    // ---- ヒエラルキー: 表示 / ロック / フォルダ（エディタ専用）----
+    if (id == "edit.toggleHidden" || id == "edit.isolate" || id == "edit.showAll" || id == "edit.toggleLocked" || id == "edit.newFolder")
+    {
+        if (!env.scene) return false;
+        auto& reg = env.scene->GetRegistry();
+        const entt::entity prim = ctx.selectedEntity;
+        if (id == "edit.showAll")
+            hier::ToggleFlag<EditorHidden>(reg, ctx, hier::PlanClearAll<EditorHidden>(reg), false, "Visibility");
+        else if (id == "edit.newFolder")
+        {
+            const entt::entity f = hier::CreateFolder(reg, ctx, ctx.selectedEntities);
+            if (f != entt::null) { ctx.Select(f); ctx.requestRenameEntity = f; }
+        }
+        else if (prim != entt::null && reg.valid(prim))
+        {
+            if (id == "edit.toggleHidden")
+                hier::ToggleFlag<EditorHidden>(reg, ctx, ctx.selectedEntities, !eflags::Self<EditorHidden>(reg, prim), "Visibility");
+            else if (id == "edit.toggleLocked")
+                hier::ToggleFlag<EditorLocked>(reg, ctx, ctx.selectedEntities, !eflags::Self<EditorLocked>(reg, prim), "Lock");
+            else
+            {
+                hier::Index idx; idx.Build(reg);
+                hier::ApplyIsolate<EditorHidden>(reg, ctx, idx, prim, "Isolate");
+            }
+        }
+        return true;
+    }
 
     // ---- 表示 ----
     if (id == "view.gizmoMove")   { ctx.gizmoMode = GizmoMode::Translate; return true; }
@@ -287,11 +355,20 @@ bool Execute(EditorContext& ctx, const Env& env, std::string_view id)
     if (id == "view.fill")        { ctx.viewportFill = (ctx.viewportFill > 0.0f) ? 0.0f : 0.35f; return true; }
     if (id == "view.flyMode")     { ctx.flyMode = !ctx.flyMode; return true; }
     if (id == "view.toggle2D")    { ctx.view2D = !ctx.view2D; return true; }
+    if (id == "view.viewportBar") { ctx.vpPrefs.barVisible = !ctx.vpPrefs.barVisible; return true; }
+    if (id == "view.outline")     { ctx.vpPrefs.outline = !ctx.vpPrefs.outline; return true; }
+    // カメラブックマーク（実処理はビューポートの帯 ViewportToolbar::Update が次フレームの頭で消化する）
+    if (id.rfind("view.bookmark.jump.", 0) == 0) { ctx.pendingBookmarkJump = id.back() - '0'; return true; }
+    if (id.rfind("view.bookmark.set.", 0) == 0)  { ctx.pendingBookmarkSet  = id.back() - '0'; return true; }
     if (id == "view.resetLayout") { ctx.resetLayout = true; return true; }
+    // ワークスペース / レイアウト（実処理は WorkspaceManager がフレーム境界で消化する）
+    if (id.rfind("workspace.", 0) == 0) { ctx.pendingWorkspace = std::string(id.substr(10)); return true; }
+    if (id == "layout.save")           { ctx.layoutSaveWindowRequest = true; return true; }
+    if (id == "layout.slots")          { ctx.layoutSlotsWindowRequest = true; return true; }
+    if (id == "layout.bottomMaximize") { ctx.bottomDockMaximizeToggle = true; return true; }
     if (id == "view.closeTools")  { tools::CloseAll(ctx); return true; }
     if (id == "view.fullscreen")  { ctx.pendingToggleFullscreen = true; return true; }
     if (id == "view.theme.default") { theme::RequestVariant(theme::Variant::Default); return true; }
-    if (id == "view.theme.a")       { theme::RequestVariant(theme::Variant::A);       return true; }
     if (id == "view.theme.b")       { theme::RequestVariant(theme::Variant::B);       return true; }
     if (id == "view.theme.c")       { theme::RequestVariant(theme::Variant::C);       return true; }
 
@@ -328,6 +405,8 @@ void ProcessShortcuts(EditorContext& ctx, const Env& env)
     {
         const Def& d = *b.def;
         if (d.mode == KeyMode::Panel || d.mode == KeyMode::External) continue;
+        // ノードグラフ窓がキーボードを使っている間は、シーン向けの Typing 系（Ctrl+Z / W E R T / F / Esc …）を止める（窓が同じ表のキーを自前で処理する）
+        if (ctx.nodeGraphKeyFocus && d.mode == KeyMode::Typing) continue;
         if (d.scope == Scope::Editor && ctx.isPlaying) continue;
         // ★Typing のコマンドは「文字を打っている最中」と「マウスを掴んでいる最中」だけ止める。
         //   io.WantCaptureKeyboard で止めてはいけない: NavEnableKeyboard が有効な ImGui では、どこかの窓に

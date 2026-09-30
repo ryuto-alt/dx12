@@ -20,13 +20,14 @@ from pathlib import Path
 import numpy as np
 
 from . import adapters as A
+from . import analytic as AN
 from . import baseline as B
 from . import gate as G
 from . import noisefloor as NF
 from . import paths
 from . import perf as P
 from .engine import DEFAULT_NAME, DEFAULT_PORT, EngineClient, EngineError, PwshLauncher, engine_session
-from .evaluate import evaluate_pair
+from .evaluate import display_check, evaluate_pair
 from .imgio import Img, load_image
 from .spec import Spec, resolve_project
 
@@ -50,6 +51,7 @@ class RunOptions:
     project_override: str | None = None
     test_images_dir: Path | None = None     # 撮影済みのエンジン画像(エンジンを起動しない)
     external_dir: Path | None = None
+    build_dir: str | None = None            # engine_instance.ps1 -BuildDir(ビルド出力のスナップショット)
     baseline_root: Path | None = None
     capture_only: bool = False              # 撮るだけ(baseline update)
     progress: bool = False                  # @progress 行を出す(MCP ジョブ用)
@@ -156,7 +158,8 @@ def _engine_image(path: Path, spec: Spec) -> Img:
 
 
 def _offline_image(dir_: Path, camera: str, spec: Spec) -> Path | None:
-    for ext in (".png", ".pfm", ".exr"):
+    order = (".pfm", ".exr", ".png") if spec.engine.get("linear") else (".png", ".pfm", ".exr")
+    for ext in order:
         p = Path(dir_) / f"{camera}{ext}"
         if p.exists():
             return p
@@ -234,7 +237,7 @@ def run_scene(spec: Spec, opts: RunOptions | None = None) -> dict:
             if proj is not None and not Path(proj).exists():
                 raise RuntimeError(f"プロジェクトが無い: {proj}")
             mode = opts.mode or spec.engine.get("mode", "headless")
-            launcher = opts.launcher or PwshLauncher(opts.name, opts.port, mode)
+            launcher = opts.launcher or PwshLauncher(opts.name, opts.port, mode, build_dir=opts.build_dir or os.environ.get("PARITY_BUILD_DIR") or None)
             port = opts.attach_port or opts.port
             engine_cm = engine_session(port, launcher, str(proj) if proj else None, spec.engine.get("launchArgs"),
                                        attach=opts.attach_port is not None, ping_timeout=opts.ping_timeout, log=log)
@@ -279,21 +282,46 @@ def run_scene(spec: Spec, opts: RunOptions | None = None) -> dict:
                     item: dict = {"camera": cam}
                     try:
                         if client is not None:
+                            # Q2: カメラごとの設定(露出ブラケットなど)。エンジン側の変更は次のカメラへ持ち越される
+                            for j, s in enumerate(cam.get("setup") or []):
+                                try:
+                                    client.call(s["method"], s.get("params") or {}, timeout=120)
+                                except EngineError as e:
+                                    if s.get("optional"):
+                                        run["warnings"].append(f"cameras[{cam['name']}].setup[{j}] {s['method']} が失敗(optional なので続行): {e}")
+                                    else:
+                                        raise
                             client.call("set_editor_camera", {"position": cam["position"], "target": cam["target"]}, timeout=60)
                             if warm > 0:
                                 client.call("step_frames", {"frames": warm}, timeout=300)
                             png = cdir / "engine.png"
-                            client.call("screenshot_final", {"deterministic": True, "gizmos": False, "settleFrames": settle,
-                                                             "path": str(png)}, timeout=300)
+                            shot = {"deterministic": True, "gizmos": False, "settleFrames": settle, "path": str(png)}
+                            if spec.engine.get("size"):            # Q2: 任意解像度のオフスクリーン出力(ウィンドウ・ビューポートに依存しない)
+                                shot["width"], shot["height"] = int(spec.engine["size"][0]), int(spec.engine["size"][1])
+                            if spec.engine.get("linear"):           # Q2: ポスト前の線形 float も同じフレームで撮る
+                                shot["formats"] = ["png", "pfm"]
+                            client.call("screenshot_final", shot, timeout=300)
                             if not png.exists():
                                 raise RuntimeError(f"screenshot_final がファイルを作らなかった: {png}")
                             item["test_path"] = png
+                            if spec.engine.get("linear"):
+                                lin = png.with_suffix(".pfm")
+                                if not lin.exists():
+                                    raise RuntimeError(f"screenshot_final が線形 PFM を作らなかった: {lin}")
+                                item["linear_path"] = lin
                         else:
                             p = _offline_image(opts.test_images_dir, cam["name"], spec)
                             if p is None:
                                 raise RuntimeError(f"--test-images に {cam['name']}.png が無い: {opts.test_images_dir}")
                             item["test_path"] = p
-                        item["test"] = _engine_image(item["test_path"], spec)
+                            if p.suffix.lower() in (".pfm", ".exr"):                       # --test-images の線形画像
+                                item["linear_path"] = p
+                        if item.get("linear_path"):
+                            if item["test_path"].suffix.lower() == ".png":
+                                item["display"] = _engine_image(item["test_path"], spec)   # エンジン自身の表示 PNG(displayCheck 用)
+                            item["test"] = load_image(item["linear_path"], "auto")         # 比較は線形 float で行う
+                        else:
+                            item["test"] = _engine_image(item["test_path"], spec)
                         if not opts.capture_only:
                             item["ref"] = adapter.get(cam, item["test"].size)
                     except (EngineError, RuntimeError, OSError) as e:
@@ -374,7 +402,7 @@ def run_scene(spec: Spec, opts: RunOptions | None = None) -> dict:
                 NF.save(nfp, nf, {"scene": spec.id, "camera": cam["name"], "specHash": spec.hash()})
                 floors = nf["floors"]
                 entry["noiseFloorFile"] = str(nfp)
-            al = spec.alignment
+            al = {**spec.alignment, **(cam.get("alignment") or {})}     # Q2: カメラごとの整列の上書き(露出ブラケット)
             reg_names = cam.get("regions")
             regs = [r for r in spec.data.get("regions") or [] if (reg_names is None or r["name"] in reg_names)]
             g_full = dict(gate_full)
@@ -397,8 +425,34 @@ def run_scene(spec: Spec, opts: RunOptions | None = None) -> dict:
             entry["floors"] = floors
             entry["floorK"] = k
             entry["status"] = res["verdict"]["status"]
-            entry["reasons"] = res["verdict"]["reasons"]
+            entry["reasons"] = list(res["verdict"]["reasons"])
             entry["engineImage"] = str(item["test_path"])
+            # Q2: エンジン内(GPU)のトーンマップ + 露出と numpy 実装の一致(engine.linear のとき。PNG と線形 PFM は同じフレーム)
+            if item.get("display") is not None and item["test"].kind == "linear":
+                try:
+                    dc = display_check(item["test"], item["display"], ref_res.align.get("tonemap") or al.get("tonemap", "engine_aces"),
+                                       al.get("exposure"))
+                    entry["displayCheck"] = dc
+                    thr = spec.data.get("displayCheck") or {}
+                    bad = [f"displayCheck: {k2[:-4]} = {dc[k2[:-4]]:.3g} LSB が上限 {v:g} を超えた(エンジン内のトーンマップ/露出と numpy 実装が食い違っている)"
+                           for k2, v in thr.items() if k2.endswith("_max") and dc.get(k2[:-4], 0.0) > float(v)]
+                    if bad:
+                        entry["reasons"] += bad
+                        entry["status"] = "fail"
+                except Exception as e:                                # 期待値の作成に失敗しても判定は続ける
+                    entry["displayCheck"] = {"error": str(e)}
+            # Q2: 閉形式(逆二乗 + cosθ + ランバート)との照合。パストレーサーを介さない物理の検算
+            if spec.data.get("analytic") and item["test"].kind == "linear":
+                try:
+                    an = AN.check(spec.data["analytic"], {c["name"]: c for c in spec.data["cameras"]}, cam["name"], item["test"].rgb)
+                    if an:
+                        entry["analytic"] = an
+                        if an["reasons"]:
+                            entry["reasons"] += an["reasons"]
+                            entry["status"] = "fail"
+                except Exception as e:
+                    entry["analytic"] = {"error": str(e)}
+            entry["linearImage"] = str(item["linear_path"]) if item.get("linear_path") else None
             if ref_res.warnings:
                 entry["verdict_warnings"] = ref_res.warnings
             for w in ref_res.warnings:

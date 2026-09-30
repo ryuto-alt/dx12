@@ -90,6 +90,44 @@ public:
     GraphicsDevice* GetDevice() const { return m_device; }
     DescriptorHeap* GetSrvHeap() const { return m_srvHeap; }
 
+    // ---- バインドレス（SM 6.6 の ResourceDescriptorHeap[]）向け: テクスチャの永続 SRV 添字 --------------
+    // ★マテリアルグラフ G2b: パラメータプールのテクスチャスロットへ書く値（設計書 §3.6）。
+    //   ここでの「添字」は m_srvHeap（シェーダ可視の CBV/SRV/UAV ヒープ）の先頭からの番号で、
+    //   HLSL の ResourceDescriptorHeap[添字] の添字そのもの（Texture::GetSrvIndex() と同じ値）。
+    //   ★永続性の保証（G2a で確認済み。tests/resource_srv_index_test.cpp が機械的に見張る）:
+    //     ・読み込んだテクスチャは AllocateIndex した添字を【プロセスの終わりまで】持つ
+    //       （キャッシュから追い出さない・Free しない。読み込み失敗の nullptr だけは添字が無い）。
+    //     ・ホットリロード（ReloadChangedAssets）は同じ Texture オブジェクトの中身を差し替えるだけで
+    //       添字を変えない（Texture::AdoptFrom）。
+    //     ・ヒープは起動時に 1 度作るだけで拡張も再作成もしない（GetCapacity() は不変）。
+    //   ★シェーダは Texture2D<float4> として引く＝2D 単枚だけが対象。cube / 配列は kInvalidSrvIndex を返す。
+    //   ★キャッシュキーは GetOrLoadTexture と同じ（パス文字列 + sRGB + usage + 最大寸法）。パスの表記
+    //     （区切り文字・大小）は正規化しない＝呼び出し側（グラフのテクスチャパラメータ）が一貫した表記で渡すこと。
+    static constexpr u32 kInvalidSrvIndex = UINT32_MAX;
+    // GetOrLoadTexture して添字を返す（読めなければ kInvalidSrvIndex）。
+    u32 GetOrLoadTextureSrvIndex(const std::wstring& filePath, ID3D12GraphicsCommandList* cmdList,
+                                 bool srgb = true, TextureUsage usage = TextureUsage::Unknown,
+                                 u32 maxDimension = 0);
+    // 読み込み済みのときだけ添字を返す（ロードしない。未ロード / 失敗 / 2D 単枚でない = kInvalidSrvIndex）。
+    u32 FindTextureSrvIndex(const std::wstring& filePath, bool srgb = true,
+                            TextureUsage usage = TextureUsage::Unknown, u32 maxDimension = 0) const;
+
+    // キャッシュ済みテクスチャ（+ 既定の 4 枚）の SRV 添字の点検。バインドレスが前提とする不変条件:
+    //   ・添字が有効（UINT32_MAX でない）・ヒープ容量未満・互いに一意（同じ添字を 2 枚が共有していない）
+    struct SrvIndexAudit
+    {
+        u32 textures   = 0;   // 点検した枚数（キャッシュの成功エントリ + 既定 4 枚）
+        u32 invalid    = 0;   // 添字が未設定
+        u32 outOfRange = 0;   // ヒープ容量以上
+        u32 duplicates = 0;   // 他の 1 枚と添字が同じ
+        u32 notPlain2d = 0;   // cube / 配列（Texture2D として引けない。エラーではなく情報）
+        u32 capacity   = 0;   // ヒープ容量
+        bool Ok() const { return invalid == 0 && outOfRange == 0 && duplicates == 0; }
+    };
+    SrvIndexAudit AuditTextureSrvIndices() const;
+    // （キャッシュキー, 添字）の一覧。ホットリロードやシーン切替の前後で取って比べると、添字が動かないことを言える。
+    std::vector<std::pair<std::wstring, u32>> SnapshotTextureSrvIndices() const;
+
     // ---- ホットリロード（dx12_reload_assets の実体）----------------------
     // ディスクの更新時刻が読み込み時より新しいキャッシュだけを読み直す（force で全件）。
     // prefixUtf8 が空でなければ、その前方一致のパスだけを対象にする（正規化済み generic 形式）。

@@ -7,8 +7,11 @@
 #include "editor/UiWidgets.h"
 #include "editor/EditorCommands.h"
 #include "editor/UndoSystem.h"
+#include "editor/ViewportLogic.h"   // 矩形選択のしきい値・判定
+#include "editor/EditorTheme.h"
 #include "core/CpuScope.h"
 #include "ecs/Components.h"
+#include "ecs/EditorFlags.h"   // [H] ロック / 非表示（ビューポートで選択・ギズモの対象外）
 #include "renderer/Camera.h"
 #include "renderer/Mesh.h"
 #include "scene/Scene.h"
@@ -115,6 +118,16 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
     if (ctx.uiEditMode && reg.all_of<UIRect>(ctx.selectedEntity))
         return;
 
+    // [H] ロック中（祖先のロック含む）のエンティティにはギズモを出さない＝ビューポートで誤って動かさない。
+    //     ヒエラルキー / インスペクタからは選べる・編集できる。複数選択ではロックされた物だけを変形の対象から外す（下の isMovable）。
+    if (eflags::IsLocked(reg, ctx.selectedEntity))
+    {
+        m_gizmoWasUsing = false;
+        m_gizmoStartGroup.clear();
+        return;
+    }
+    auto isMovable = [&reg](entt::entity e) { return !eflags::IsLocked(reg, e); };
+
     // 計測（perf_stats の cpuScopeMs "gizmo"）。editorUi にも同じ時間が入る二重計上だが、
     // 「エディタUIが重い」の内訳としてギズモを名指しするのが目的。
     CpuScopeTimer _tGizmo(ctx.cpuScopeMs ? &ctx.cpuScopeMs[CpuGizmo] : nullptr);
@@ -170,12 +183,15 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         gz.TranslationLineArrowSize   = ui::PxF(6.0f);   // DPI: 矢じり
         gz.ScaleLineCircleSize        = ui::PxF(6.0f);
         ImGuizmo::SetScreenScale(ui::Scale());           // DPI: 当たり判定の許容距離・小円の半径など
-        gz.Colors[ImGuizmo::DIRECTION_X] = ImVec4(0.95f, 0.22f, 0.22f, 1.0f); // 鮮やかな赤=X
-        gz.Colors[ImGuizmo::DIRECTION_Y] = ImVec4(0.30f, 0.90f, 0.30f, 1.0f); // 鮮やかな緑=Y
-        gz.Colors[ImGuizmo::DIRECTION_Z] = ImVec4(0.25f, 0.55f, 1.00f, 1.0f); // 鮮やかな青=Z
-        gz.Colors[ImGuizmo::SELECTION]   = gizmoHovered
-            ? ImVec4(1.00f, 0.92f, 0.35f, 1.00f)    // ホバー中はさらに明るい黄
-            : ImVec4(1.00f, 0.80f, 0.10f, 0.90f);
+        // 軸の色は XYZ の慣習（赤 / 緑 / 青）を保ちつつ、エディタの XYZ 色帯（PropertyGrid）と同系統の少し落ち着いた彩度へ。
+        // 掴める / 掴んでいる強調（SELECTION）はテーマのアクセント（ネオンの青）に揃える＝選択の輪郭・パネルのフォーカスと同じ「光る色」。
+        gz.Colors[ImGuizmo::DIRECTION_X] = ImVec4(0.93f, 0.29f, 0.30f, 1.0f); // X 赤
+        gz.Colors[ImGuizmo::DIRECTION_Y] = ImVec4(0.38f, 0.83f, 0.42f, 1.0f); // Y 緑
+        gz.Colors[ImGuizmo::DIRECTION_Z] = ImVec4(0.27f, 0.52f, 0.98f, 1.0f); // Z 青（アクセントの青と見分けが付く濃さ）
+        {
+            const ImVec4& acc = gizmoHovered ? theme::AccentHover : theme::Accent;
+            gz.Colors[ImGuizmo::SELECTION] = ImVec4(acc.x, acc.y, acc.z, gizmoHovered ? 1.0f : 0.92f);
+        }
     }
     ImGuizmo::SetGizmoSizeClipSpace(0.15f);   // 既定0.1より大きく＝掴みやすく・見やすく
 
@@ -206,7 +222,7 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
         m_gizmoStartGroup.clear();
         for (auto e : ctx.selectedEntities)
         {
-            if (reg.valid(e) && reg.all_of<Transform>(e))
+            if (reg.valid(e) && reg.all_of<Transform>(e) && isMovable(e))
                 m_gizmoStartGroup.push_back({e, reg.get<Transform>(e)});
         }
     }
@@ -230,7 +246,7 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
             int count = 0;
             for (auto e : ctx.selectedEntities)
             {
-                if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
+                if (!reg.valid(e) || !reg.all_of<Transform>(e) || !isMovable(e)) continue;
                 const auto& t = reg.get<Transform>(e);
                 const XMMATRIX w = (t.parent != entt::null && reg.valid(t.parent))
                     ? ComputeWorldMatrix(reg, e) : t.GetWorldMatrix();
@@ -293,7 +309,7 @@ void SceneViewPanel::RenderGizmo(entt::registry& reg,
                 for (auto e : sel)
                 {
                     if (ancestorAlsoSelected(e)) continue;
-                    if (!reg.valid(e) || !reg.all_of<Transform>(e)) continue;
+                    if (!reg.valid(e) || !reg.all_of<Transform>(e) || !isMovable(e)) continue;
                     auto& t = reg.get<Transform>(e);
                     const bool childHasParent =
                         (t.parent != entt::null && reg.valid(t.parent));
@@ -645,9 +661,15 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     // IsOver()==true で弾かれて再選択できない不具合になる（選択→解除→同じ物を再選択できない）。
     // UI 編集モードで UIRect 持ちを選択中も同じ理屈（RenderGizmo がギズモを抑制して
     // Manipulate が呼ばれない）で IsOver() がステイルになるため、ブロック判定から除外する。
+    // 矩形選択の進行（空所クリックから始まったドラッグを追う。クリックの分岐より前に毎フレーム回す）
+    UpdateMarquee(reg, ctx, camera, vpX, vpY, vpW, vpH);
+
     bool uiRectSelected = ctx.uiEditMode && ctx.selectedEntity != entt::null
         && reg.valid(ctx.selectedEntity) && reg.all_of<UIRect>(ctx.selectedEntity);
-    bool gizmoBlocking = ctx.HasSelection() && !uiRectSelected
+    // ★ギズモを隠している間は Manipulate が呼ばれず IsOver() がステイルになる（uiRectSelected と同じ理屈）ので見ない。
+    // [H] 主選択がロック中ならギズモを出さない（Manipulate が呼ばれず IsOver() がステイルになる）ので同様に見ない。
+    const bool primaryLocked = ctx.selectedEntity != entt::null && eflags::IsLocked(reg, ctx.selectedEntity);
+    bool gizmoBlocking = ctx.HasSelection() && !uiRectSelected && !primaryLocked && ctx.vpPrefs.showGizmo
         && (ImGuizmo::IsUsing() || ImGuizmo::IsOver());
     if (ImGui::GetIO().KeyAlt                 // Alt+左ドラッグはオービット操作なのでピッキングしない
         || gizmoBlocking
@@ -678,11 +700,17 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
 
     // ヒットをエンティティ単位に畳む（同一エンティティの複数サブメッシュは 1 件扱い）。
     // 順序は距離（アイコン優先）そのままなので「手前 → 奥」の並びになる。
+    // [H] ロックされた物（祖先のロック含む）と非表示の物は素通り（奥の物を選べる）。1 個も立っていないシーンでは判定ごと省く。
+    const bool anyLock = eflags::AnyOf<EditorLocked>(reg), anyHide = eflags::AnyOf<EditorHidden>(reg);
     std::vector<entt::entity> chain;
     chain.reserve(hits.size());
     for (const ScenePickHit& h : hits)
+    {
+        if (anyLock && eflags::IsLocked(reg, h.entity)) continue;
+        if (anyHide && eflags::IsHidden(reg, h.entity)) continue;
         if (std::find(chain.begin(), chain.end(), h.entity) == chain.end())
             chain.push_back(h.entity);
+    }
 
     const bool ctrl = ImGui::GetIO().KeyCtrl;
 
@@ -723,6 +751,149 @@ void SceneViewPanel::HandlePicking(entt::registry& reg,
     else
     {
         ctx.Select(picked);
+    }
+
+    // 何も無い所を押した → ドラッグになれば矩形選択（離した時に確定）。クリックだけなら従来どおり選択解除で終わり。
+    if (picked == entt::null && !ctx.uiEditMode)
+    {
+        m_mqDown   = true;
+        m_mqActive = false;
+        m_mqAdd    = ctrl || ImGui::GetIO().KeyShift;
+        m_mqStart  = {mousePos.x, mousePos.y};
+    }
+}
+
+// 矩形選択: 空所で押して 4px 以上ドラッグすると矩形を描き、離した時に矩形へ完全に収まる物を選ぶ。
+//   ・メッシュ = 投影した AABB が矩形に収まる（巨大な床は矩形が全部を覆わない限り選ばれない）
+//   ・ライト / カメラ等アイコン = Transform の投影位置が矩形の中
+//   ・Ctrl / Shift で開始したら今の選択に足す（無ければ置き換え）
+// 矩形の見た目は背景 DrawList のうっすらしたアクセント（ギズモと同じ層。ゲームの絵には写らない）。
+void SceneViewPanel::UpdateMarquee(entt::registry& reg, EditorContext& ctx, Camera* camera,
+                                   f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    ctx.marqueeActive = false;
+    if (!m_mqDown) return;
+    ImGuiIO& io = ImGui::GetIO();
+    const bool cancel = io.KeyAlt || m_toolConsumed || !camera || ctx.floatingToolWindowHovered || ctx.uiEditMode;
+    const ImVec2 mp = io.MousePos;
+    if (cancel || (!io.MouseDown[ImGuiMouseButton_Left] && !ImGui::IsMouseReleased(ImGuiMouseButton_Left)))
+    {
+        m_mqDown = m_mqActive = false;
+        return;
+    }
+    const f32 dx = mp.x - m_mqStart.x, dy = mp.y - m_mqStart.y;
+    if (!m_mqActive && std::sqrt(dx * dx + dy * dy) > ui::Px(vp::kMarqueeThresholdPx))
+        m_mqActive = true;
+
+    const vp::MarqueeRect m = vp::MakeMarquee(m_mqStart.x, m_mqStart.y,
+        std::clamp(mp.x, vpX, vpX + vpW), std::clamp(mp.y, vpY, vpY + vpH));
+
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+    {
+        if (m_mqActive)
+        {
+            // 投影して矩形に収まるものを集める
+            const XMMATRIX viewProj = camera->GetViewProjMatrix();
+            auto project = [&](const XMVECTOR& p, float& sx, float& sy) -> bool
+            {
+                const XMVECTOR h = XMVector4Transform(XMVectorSetW(p, 1.0f), viewProj);
+                const float w = XMVectorGetW(h);
+                if (w <= 1e-4f) return false;
+                sx = vpX + (XMVectorGetX(h) / w * 0.5f + 0.5f) * vpW;
+                sy = vpY + (1.0f - (XMVectorGetY(h) / w * 0.5f + 0.5f)) * vpH;
+                return true;
+            };
+            std::vector<entt::entity> hits;
+            const bool anyLock = eflags::AnyOf<EditorLocked>(reg), anyHide = eflags::AnyOf<EditorHidden>(reg);
+            auto consider = [&](entt::entity e)
+            {
+                if (anyLock && eflags::IsLocked(reg, e)) return;   // [H] ロックは矩形選択の対象外
+                if (anyHide && eflags::IsHidden(reg, e)) return;
+                if (std::find(hits.begin(), hits.end(), e) == hits.end()) hits.push_back(e);
+            };
+            if (ctx.drawItems)
+            {
+                for (const DrawItem& it : *ctx.drawItems)
+                {
+                    if (!it.renderer || !reg.valid(it.e) || reg.all_of<GridPlane>(it.e)) continue;
+                    float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f;
+                    bool ok = true;
+                    for (int i = 0; i < 8 && ok; ++i)
+                    {
+                        const XMVECTOR c = XMVectorSet((i & 1) ? it.aabbMax.x : it.aabbMin.x, (i & 2) ? it.aabbMax.y : it.aabbMin.y,
+                                                       (i & 4) ? it.aabbMax.z : it.aabbMin.z, 1.0f);
+                        float sx, sy;
+                        if (!project(c, sx, sy)) { ok = false; break; }
+                        minX = std::min(minX, sx); maxX = std::max(maxX, sx);
+                        minY = std::min(minY, sy); maxY = std::max(maxY, sy);
+                    }
+                    if (!ok) continue;
+                    if (minX >= m.x0 && maxX <= m.x1 && minY >= m.y0 && maxY <= m.y1) consider(it.e);
+                }
+            }
+            for (auto [e, tf] : reg.view<Transform>().each())
+            {
+                (void)tf;
+                if (reg.all_of<MeshRenderer>(e)) continue;
+                if (!(reg.all_of<DirectionalLight>(e) || reg.all_of<PointLight>(e) || reg.all_of<SpotLight>(e) || reg.all_of<CameraComponent>(e))) continue;
+                const XMVECTOR wp = ComputeWorldMatrix(reg, e).r[3];
+                float sx, sy;
+                if (project(wp, sx, sy) && sx >= m.x0 && sx <= m.x1 && sy >= m.y0 && sy <= m.y1) consider(e);
+            }
+            if (!m_mqAdd) ctx.ClearSelection();
+            for (entt::entity e : hits) ctx.AddToSelection(e);
+        }
+        m_mqDown = m_mqActive = false;
+        return;
+    }
+
+    if (m_mqActive)
+    {
+        ctx.marqueeActive = true;
+        ctx.marqueeX0 = m.x0; ctx.marqueeY0 = m.y0; ctx.marqueeX1 = m.x1; ctx.marqueeY1 = m.y1;
+        ImDrawList* dl = ImGui::GetBackgroundDrawList(ImGui::GetMainViewport());
+        const ImVec2 a(m.x0, m.y0), b(m.x1, m.y1);
+        dl->AddRectFilled(a, b, ImGui::GetColorU32(theme::WithAlpha(theme::Accent, 0.10f)));
+        dl->AddRect(a, b, ImGui::GetColorU32(theme::WithAlpha(theme::AccentHover, 0.85f)), 0.0f, 0, ui::PxF(1.0f));
+    }
+}
+
+void SceneViewPanel::UpdateHover(entt::registry& reg, EditorContext& ctx, Camera* camera,
+                                 f32 vpX, f32 vpY, f32 vpW, f32 vpH)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mp = io.MousePos;
+    const bool anyDown = io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2];
+    const bool blocked = !ctx.vpPrefs.hoverHighlight || !camera || anyDown || io.KeyAlt || ctx.marqueeActive
+        || ctx.floatingToolWindowHovered || ctx.uiEditMode || ctx.flyMode
+        || (ctx.vpPrefs.showGizmo && ctx.HasSelection() && !(ctx.selectedEntity != entt::null && eflags::IsLocked(reg, ctx.selectedEntity))
+            && (ImGuizmo::IsUsing() || ImGuizmo::IsOver()))
+        || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)
+        || !ctx.IsCursorInViewport(mp.x, mp.y)
+        || mp.x < vpX || mp.x >= vpX + vpW || mp.y < vpY || mp.y >= vpY + vpH;
+    if (blocked)
+    {
+        ctx.hoveredEntity = entt::null;
+        m_hoverAge = 0;
+        m_hoverMouse = {-1e9f, -1e9f};
+        return;
+    }
+    // マウスが 1px 以上動いたか、8 フレームに 1 回（動かないカメラ / 動くオブジェクトの追従）だけ引き直す
+    const f32 dx = mp.x - m_hoverMouse.x, dy = mp.y - m_hoverMouse.y;
+    if (dx * dx + dy * dy < 1.0f && ++m_hoverAge < 8) return;
+    m_hoverAge = 0;
+    m_hoverMouse = {mp.x, mp.y};
+    CpuScopeTimer _tHover(ctx.cpuScopeMs ? &ctx.cpuScopeMs[CpuPicking] : nullptr);
+    ScenePickOptions opt;
+    opt.includeNonMesh = false;   // 輪郭はメッシュだけ（アイコンには出さない）
+    opt.maxCandidates = 32;
+    const std::vector<ScenePickHit> hits = RaycastScene(reg, ctx.drawItems, *camera, vpX, vpY, vpW, vpH, mp.x, mp.y, opt);
+    ctx.hoveredEntity = entt::null;
+    for (const ScenePickHit& h : hits)   // [H] ロックされた物は強調しない（クリックでも選べないので）
+    {
+        if (eflags::IsLocked(reg, h.entity) || eflags::IsHidden(reg, h.entity)) continue;
+        ctx.hoveredEntity = h.entity;
+        break;
     }
 }
 

@@ -26,6 +26,9 @@ public:
         std::wstring profile;                    // L"vs_6_0" / L"ps_6_0" / L"cs_6_0"
         std::vector<std::wstring> defines;        // L"LDR_OUTPUT=1" 等（空可）
         std::vector<std::wstring> includeDirs;    // -I 検索パス。優先順(先頭が最優先)
+        // ★マテリアルグラフ G2b が追加（既定は空 = 従来の呼び出しは 1 バイトも変わらない）
+        std::vector<std::wstring> extraArgs;      // 追加の DXC 引数（例 L"-HV", L"2021"）
+        std::string sourceText;                   // 非空ならファイルを読まずこの UTF-8 テキストをコンパイルする（hlslPath は表示名）
     };
 
     struct CompileResult
@@ -46,6 +49,9 @@ public:
     bool Initialize();
 
     CompileResult Compile(const CompileRequest& req);
+
+    // DXC のバージョン文字列（例 "1.8.2502.8"）。ディスクキャッシュのキーに混ぜる。取れなければ "unknown"。
+    std::string GetVersionString() const;
 
 private:
     Microsoft::WRL::ComPtr<IDxcUtils>            m_utils;

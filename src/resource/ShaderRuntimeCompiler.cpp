@@ -89,7 +89,11 @@ ShaderRuntimeCompiler::CompileResult ShaderRuntimeCompiler::Compile(const Compil
     }
 
     ComPtr<IDxcBlobEncoding> source;
-    HRESULT hr = m_utils->LoadFile(req.hlslPath.c_str(), nullptr, &source);
+    HRESULT hr = S_OK;
+    if (!req.sourceText.empty())
+        hr = m_utils->CreateBlob(req.sourceText.data(), static_cast<UINT32>(req.sourceText.size()), DXC_CP_UTF8, &source);
+    else
+        hr = m_utils->LoadFile(req.hlslPath.c_str(), nullptr, &source);
     if (FAILED(hr) || !source)
     {
         out.errorLog = "ソースファイルを開けません";
@@ -118,6 +122,8 @@ ShaderRuntimeCompiler::CompileResult ShaderRuntimeCompiler::Compile(const Compil
         argStorage.push_back(L"-I");
         argStorage.push_back(dir);
     }
+    for (const auto& a : req.extraArgs)
+        argStorage.push_back(a);
 
     std::vector<LPCWSTR> args;
     args.reserve(argStorage.size());
@@ -166,6 +172,28 @@ ShaderRuntimeCompiler::CompileResult ShaderRuntimeCompiler::Compile(const Compil
     out.dxil.assign(bytes, bytes + objBlob->GetBufferSize());
     out.success = true;
     return out;
+}
+
+std::string ShaderRuntimeCompiler::GetVersionString() const
+{
+    if (!m_initialized || !m_compiler) return "unknown";
+    ComPtr<IDxcVersionInfo> info;
+    if (FAILED(m_compiler.As(&info)) || !info) return "unknown";
+    UINT32 major = 0, minor = 0;
+    if (FAILED(info->GetVersion(&major, &minor))) return "unknown";
+    std::string s = std::to_string(major) + "." + std::to_string(minor);
+    ComPtr<IDxcVersionInfo2> info2;
+    if (SUCCEEDED(m_compiler.As(&info2)) && info2)
+    {
+        UINT32 commitCount = 0;
+        char* commitHash = nullptr;
+        if (SUCCEEDED(info2->GetCommitInfo(&commitCount, &commitHash)))
+        {
+            s += "." + std::to_string(commitCount);
+            if (commitHash) CoTaskMemFree(commitHash);
+        }
+    }
+    return s;
 }
 
 } // namespace dx12e

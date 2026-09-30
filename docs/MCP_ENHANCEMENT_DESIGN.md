@@ -814,6 +814,7 @@ M0 ─> M1 ─┬─> M2 ─┬─> M3 ─> M4
 - **(b)** M2, M5（M9 の errors チェックは任意）。
 - **(c)** 8 日。
 - **(d)** ① fixture 10 本が validate → plan → apply → verify で pass（`layout.errors == 0`）。② **冪等**: 同じ仕様を再 apply → `create:0, unchanged:N` かつシーン JSON ハッシュ不変。③ 失敗系 20 種（未知アセット・参照切れ・`id` 重複・cm/m 疑い…）が正しい `issues[].path` を返し、**`specPatch` を機械適用すると ≥ 80% が pass に転じる**。④ 途中失敗で**変更ゼロ**（ハッシュ）。⑤ 200 体の仕様の apply が「`create_entity` を 200 回」より **≥ 5 倍速い**（実測）。
+- **実装メモ(2026-09-30。実装済み。詳細は `docs/MCP.md` §0-10 と `MCP_M11_REPORT.md`)**: 設計からの変更点。① キーは `name`(冪等)+ 任意の安定 `id`(name を変えても `rename_entity` で同じ実体に追従。所有者の印は `data.__spec` / `__id` / `__o` で、設計書の `specId` を `data` コンポーネントに載せた形)。② 生成は `scene_write` 経路に切り替えず、**波ごとの並列 `create_entity`**(エンジンは 1 フレームで溜まった要求を全部処理する)で足りた(実エンジン実測 200 体 + 床 ≈ 0.4 秒 = 逐次の約 20 倍)。③ 設定系(ポスト・スカイボックスなど)は `transaction_rollback` で戻らない(実測)ので、**検証が通ってから撃つ**(ナビメッシュだけ到達性の検証に要るので tx の中で焼き、ロールバックしたら焼き直す)。④ 相対配置は生成前に解析の AABB で解く(モデルは `asset_info`)ので plan と apply が同じ座標になる。⑤ `dx12_validate_layout` の実機での誤検出(接触面の float 丸めによる Z_FIGHT・天井を地面と誤認する BURIED)は仕様の側で測り直して除く。⑥ エンジン C++ の変更は `set_component {component:"tags", data:[…]}` の配列対応だけ。⑦ `dx12_scene_write` を長尾へ移して `dx12_apply_scene_spec` を Core に入れた(Core は 40 本のまま)。
 
 #### M12 レシピ + Brief/監査の拡充（5 日）
 - **(a)** `recipes/*.json` を 8 種（room / corridor / arena / platformer_stage / fps_player / hud_minimal / outdoor_terrain / horror_hall）、`dx12_list_recipes`、Brief 拡張（genre/mood/palette/budget/mustHave）とバリデータ、`quality_gate` の新チェック配線（`errors` `visual` `perf` `reachable` `assetGap`）、`dx12_guide{build_scene}`。

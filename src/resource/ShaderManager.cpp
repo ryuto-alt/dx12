@@ -209,6 +209,10 @@ void ShaderManager::ScanCustomShaders(std::vector<std::wstring>* changedOut)
 
         if (FindShaderSourceByRelPath(relPath) != nullptr)
             continue;  // レジストリ一致 = オーバーライド(通常経路で処理済み)
+        // マテリアルグラフが吐く生成 HLSL の置き場（_graph/）。ここのファイルは vs_6_0 / ps_6_0 のカスタムシェーダーではなく
+        // GraphMaterialSystem が専用の経路（SM 6.6・非同期）で扱うので、この走査は見ない（失敗ログを出さない）。
+        if (LowerRelPath(relPath).rfind("_graph/", 0) == 0)
+            continue;
 
         auto mtime = fs::last_write_time(entry.path(), fec);
         if (fec)
@@ -379,6 +383,8 @@ bool ShaderManager::RecompileAllForBuild(std::vector<std::string>* errorsOut)
                 std::string relPath = Utf8FromPath(rel);
                 if (FindShaderSourceByRelPath(relPath) != nullptr)
                     continue;  // Registry一致 = オーバーライド(上で処理済み)
+                if (LowerRelPath(relPath).rfind("_graph/", 0) == 0)
+                    continue;  // マテリアルグラフの生成物は GraphMaterialSystem の管轄（ScanCustomShaders と同じ）
                 if (!CompileCustomShader(relPath))
                 {
                     ok = false;

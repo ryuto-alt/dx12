@@ -10,6 +10,9 @@
 #include "engine/ecs/ComponentRegistry.h"  // Phase 1: コア部品の直列化をレジストリ走査へ
 #include "terrain/TerrainIO.h"             // 複製時に .hf のパスを振り直す
 #include "terrain/SculptIO.h"              // 複製時に .smsh のパスを振り直す
+#include "renderer/foliage/FoliageIO.h"
+#include "renderer/foliage/FoliageLayerOps.h"   // 植生: .dxfoliage の書き出し / 複製時のパス振り直し
+#include "renderer/foliage/SceneWind.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4189 4456 4458 4267 4996)
@@ -311,6 +314,30 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<Brain>("Brain", "brain", true));
     // リバーブ域（音の担当）。純フィールドなので反射で直列化する
     R.Register(MakeReflectedInfo<AudioReverbZone>("AudioReverbZone", "audioReverbZone", true));
+    // 仮想ジオメトリ（.vgeo）。パスと有効フラグだけなので反射で直列化する
+    R.Register(MakeReflectedInfo<VirtualGeometry>("VirtualGeometry", "virtualGeometry", true));
+    // 植生（F1）。パラメータは反射で直列化する。インスタンスの実体は .dxfoliage（シーン JSON へ直書きしない）。
+    //   ★保存のたびに、編集済み（_needsSave）または未保存（instancePath 空）の実体をここで書き出してからパスを JSON へ出す。
+    {
+        auto info = MakeReflectedInfo<FoliageLayer>("FoliageLayer", "foliageLayer", true);
+        auto generic = info.serialize;
+        info.serialize = [generic](const entt::registry& reg, entt::entity e, json& ej)
+        {
+            if (!reg.all_of<FoliageLayer>(e)) return;
+            FoliageLayer& l = const_cast<entt::registry&>(reg).get<FoliageLayer>(e);
+            if (l._set && (l._needsSave || l.instancePath.empty() || l._set.get() != l._diskSet))
+            {
+                const NameTag* nt = reg.try_get<NameTag>(e);
+                std::string err;
+                if (!foliage::FlushSidecar(l, nt ? nt->name : std::string("Foliage"), PathResolver::AssetsDir(), &err))
+                    Logger::Warn("植生: .dxfoliage を書き出せませんでした（{}）", err);
+            }
+            generic(reg, e, ej);
+        };
+        R.Register(std::move(info));
+    }
+    // 水面（W1）。純フィールドなので反射で直列化する（波は種 + パラメータから決定論的に合成するので配列は持たない）。
+    R.Register(MakeReflectedInfo<WaterBody>("WaterBody", "waterBody", true));
     // プレハブインスタンスの紐付け。.prefab 側へ書き出す時だけ StripPrefabLinks で落とす
     R.Register(MakeReflectedInfo<PrefabLink>("PrefabLink", "prefabLink", true));
 
@@ -356,6 +383,37 @@ static void RegisterCoreComponentSerializers()
                 if (!t.tags.empty())
                     reg.emplace_or_replace<Tag>(e, std::move(t));
             }
+        }, {}, {} });
+
+    // ---- [H] エディタ専用フラグ（フェーズ 1b）と兄弟順 ----
+    // ★立っている（0 以外の）時だけキーを書く＝キーが無い旧シーンは従来どおり、フラグの無いシーンの JSON は 1 バイトも変わらない。
+    //   editorHidden / editorLocked はエディタだけが見る（ゲームランタイムは読んでも描画に使わない）。
+    R.Register({ "EditorFlags", ComponentSource::Core,
+        [](const entt::registry& reg, entt::entity entity, json& ej) {
+            if (reg.all_of<EditorHidden>(entity)) ej["editorHidden"] = true;
+            if (reg.all_of<EditorLocked>(entity)) ej["editorLocked"] = true;
+            if (reg.all_of<EditorFolder>(entity)) ej["editorFolder"] = true;
+            if (const auto* t = reg.try_get<Transform>(entity); t && t->siblingOrder != 0)
+                ej["siblingOrder"] = t->siblingOrder;
+        },
+        [](entt::registry& reg, entt::entity e, const json& ej) {
+            auto flag = [&](const char* key) { return ej.contains(key) && ej[key].is_boolean() && ej[key].get<bool>(); };
+            if (flag("editorHidden")) reg.emplace_or_replace<EditorHidden>(e);
+            if (flag("editorLocked")) reg.emplace_or_replace<EditorLocked>(e);
+            if (flag("editorFolder")) reg.emplace_or_replace<EditorFolder>(e);
+            if (ej.contains("siblingOrder") && ej["siblingOrder"].is_number_integer())
+                if (auto* t = reg.try_get<Transform>(e)) t->siblingOrder = ej["siblingOrder"].get<int>();
+        }, {}, {} });
+
+    // ---- [I] エンティティの有効 / 無効（インスペクタの「有効」チェック。EntityDisabled）----
+    // 無効の時だけ "disabled": true を書く（キーが無い旧シーンは従来どおり有効）。描画 / ライト / Lua / 物理から外れる（Play にも効く）。
+    R.Register({ "EntityDisabled", ComponentSource::Core,
+        [](const entt::registry& reg, entt::entity entity, json& ej) {
+            if (reg.all_of<EntityDisabled>(entity)) ej["disabled"] = true;
+        },
+        [](entt::registry& reg, entt::entity e, const json& ej) {
+            if (ej.contains("disabled") && ej["disabled"].is_boolean() && ej["disabled"].get<bool>())
+                reg.emplace_or_replace<EntityDisabled>(e);
         }, {}, {} });
 
     R.Register({ "DataComponent", ComponentSource::Core,
@@ -425,9 +483,23 @@ uint64_t GuidFromJson(const json& j, const char* key)
 
 } // namespace
 
+// シーケンサー(エディタのスクラブ)が書き換えた値を、直列化の直前に元へ戻すためのフック。
+// SerializeEntityJson は Save / SaveToString(Play のスナップショット・オートセーブ・ビルド)/ SerializeEntity / SerializeSubtree
+// (Undo・複製・プレハブ)の全部が通る唯一の入口なので、ここに 1 つ置けば保存の経路の網羅漏れが構造的に起きない。
+// フックが無い(nullptr)ときは何もしない。フックは registry を見て「自分の担当のシーンか」を判断する。
+static SceneSerializer::PreSerializeHook g_preSerializeHook = nullptr;
+static void* g_preSerializeCtx = nullptr;
+
+void SceneSerializer::SetPreSerializeHook(PreSerializeHook fn, void* ctx)
+{
+    g_preSerializeHook = fn;
+    g_preSerializeCtx = ctx;
+}
+
 static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                                 const std::string& assetsDir)
 {
+    if (g_preSerializeHook) g_preSerializeHook(g_preSerializeCtx, reg);
     // エンティティ参照の名前を guid から引き直す。★参照の正は guid で、名前は
     // 人間と git diff のための派生値。ここで引き直すことで「guid は A を指すのに
     // 名前は B」というドリフト状態が原理的に作れない。guid が 0（旧データ）か
@@ -898,6 +970,36 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
 
 // シーン全エンティティを JSON ノードに直列化（共通処理）
 
+// ---- 物理ベース大気 A1（"atmosphere"）。既定と同じ値も含めて全項目を書く（読み戻しで欠けが出ないように）----
+static json Rgb3ToJson(const float* v) { return json::array({v[0], v[1], v[2]}); }
+static void JsonToRgb3(const json& j, const char* key, float* v)
+{
+    if (!j.contains(key) || !j[key].is_array() || j[key].size() < 3) return;
+    for (int i = 0; i < 3; ++i) if (j[key][i].is_number()) v[i] = j[key][i].get<float>();
+}
+static json SerializeAtmosphere(const AtmosphereSettings& a)
+{
+    return {
+        {"enabled", a.enabled}, {"timeOfDay", a.timeOfDay}, {"timeSpeed", a.timeSpeed},
+        {"latitudeDeg", a.latitudeDeg}, {"dayOfYear", a.dayOfYear}, {"northYawDeg", a.northYawDeg},
+        {"sunMode", a.sunMode}, {"driveSun", a.driveSun}, {"driveIBL", a.driveIBL},
+        {"drawStars", a.drawStars}, {"drawMoon", a.drawMoon},
+        {"planetRadiusKm", a.planetRadiusKm}, {"atmosphereHeightKm", a.atmosphereHeightKm},
+        {"rayleighScattering", Rgb3ToJson(a.rayleighScattering)}, {"rayleighScaleHeightKm", a.rayleighScaleHeightKm},
+        {"mieScattering", Rgb3ToJson(a.mieScattering)}, {"mieAbsorption", Rgb3ToJson(a.mieAbsorption)},
+        {"mieScaleHeightKm", a.mieScaleHeightKm}, {"mieG", a.mieG},
+        {"ozoneAbsorption", Rgb3ToJson(a.ozoneAbsorption)}, {"ozoneCenterKm", a.ozoneCenterKm}, {"ozoneWidthKm", a.ozoneWidthKm},
+        {"groundAlbedo", Rgb3ToJson(a.groundAlbedo)}, {"sunAngularRadius", a.sunAngularRadius},
+        {"sunIlluminance", a.sunIlluminance}, {"sunTint", Rgb3ToJson(a.sunTint)},
+        {"moonIlluminance", a.moonIlluminance}, {"moonTint", Rgb3ToJson(a.moonTint)},
+        {"multiScatteringFactor", a.multiScatteringFactor}, {"seaLevelY", a.seaLevelY},
+        {"nightSkyNits", a.nightSkyNits}, {"skyLuminanceScale", a.skyLuminanceScale},
+        {"aerialPerspective", a.aerialPerspective}, {"apStartDepth", a.apStartDepth},
+        {"apMaxDistanceKm", a.apMaxDistanceKm}, {"apStrength", a.apStrength},
+        {"iblRebakeThresholdDeg", a.iblRebakeThresholdDeg}, {"iblRebakeMaxHz", a.iblRebakeMaxHz},
+    };
+}
+
 static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 {
     json root;
@@ -1025,6 +1127,20 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"boundsMin",            {nc.boundsMin[0], nc.boundsMin[1], nc.boundsMin[2]}},
             {"boundsMax",            {nc.boundsMax[0], nc.boundsMax[1], nc.boundsMax[2]}},
         };
+    }
+
+    // シーケンサーの自動再生（空なら書かない = 既存シーンの JSON は 1 バイトも変わらない）
+    if (!scene.GetSequenceAutoPlay().empty())
+    {
+        json arr = json::array();
+        for (const auto& sp : scene.GetSequenceAutoPlay())
+        {
+            json o = { {"sequence", sp.sequence}, {"loop", sp.loop}, {"rate", sp.rate} };
+            if (sp.startDelay != 0.0f) o["startDelay"] = sp.startDelay;
+            if (sp.clockGame) o["clock"] = "game";
+            arr.push_back(std::move(o));
+        }
+        root["sequencePlayers"] = std::move(arr);
     }
 
     // リアルタイム影 ON/OFF（シーン単位）
@@ -1188,6 +1304,39 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
     // デカールアトラス（assets 相対の 1 枚）。空のときは書かない＝旧シーンと差分ゼロ。
     if (!scene.GetDecalAtlasPath().empty())
         root["decalAtlas"] = scene.GetDecalAtlasPath();
+
+    // 仮想ジオメトリ（Nanite 風）。既定値のときは書かない＝旧シーンと差分ゼロ。
+    if (scene.GetVirtualGeometrySettings() != vg::VirtualGeometrySettings{})
+    {
+        const auto& vgs = scene.GetVirtualGeometrySettings();
+        root["virtualGeometry"] = {
+            {"enabled",       vgs.enabled},
+            {"lodPixelError", vgs.lodPixelError},
+            {"hzbCulling",    vgs.hzbCulling},
+            {"coneCulling",   vgs.coneCulling},
+            {"instanceMinPx", vgs.instanceMinPx},
+            {"vramBudgetMB",  vgs.vramBudgetMB},
+        };
+    }
+
+    // シーンの風（植生 F1）。既定値のときは書かない＝旧シーンと差分ゼロ。
+    if (scene.GetWind() != foliage::SceneWind{})
+    {
+        const auto& w = scene.GetWind();
+        root["wind"] = {
+            {"enabled",       w.enabled},
+            {"directionDeg",  w.directionDeg},
+            {"speed",         w.speed},
+            {"gustStrength",  w.gustStrength},
+            {"gustFrequency", w.gustFrequency},
+            {"turbulence",    w.turbulence},
+            {"phaseOffset",   w.phaseOffset},
+        };
+    }
+
+    // 物理ベース大気 A1。既定（OFF・全項目が既定値）のときは書かない＝旧シーンと差分ゼロ。
+    if (scene.GetAtmosphereSettings() != AtmosphereSettings{})
+        root["atmosphere"] = SerializeAtmosphere(scene.GetAtmosphereSettings());
 
     return root;
 }
@@ -1444,6 +1593,103 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.bounceIntensity = std::clamp(dg.bounceIntensity, 0.0f, 1.0f);
     }
     scene.GetDdgiSettings() = dg;
+}
+
+// JSON から仮想ジオメトリ設定を復元（virtualGeometry が無ければ既定 OFF = 後方互換）
+static void LoadVirtualGeometrySettings(Scene& scene, const json& root)
+{
+    vg::VirtualGeometrySettings v;
+    if (root.contains("virtualGeometry") && root["virtualGeometry"].is_object())
+    {
+        const auto& j = root["virtualGeometry"];
+        v.enabled       = j.value("enabled",       v.enabled);
+        v.lodPixelError = j.value("lodPixelError", v.lodPixelError);
+        v.hzbCulling    = j.value("hzbCulling",    v.hzbCulling);
+        v.coneCulling   = j.value("coneCulling",   v.coneCulling);
+        v.instanceMinPx = j.value("instanceMinPx", v.instanceMinPx);
+        v.vramBudgetMB  = j.value("vramBudgetMB",  v.vramBudgetMB);
+        // 手書き JSON でも範囲外を持ち込まない（実行時の使用範囲と同じ）。
+        v.lodPixelError = std::clamp(v.lodPixelError, 0.25f, 8.0f);
+        v.instanceMinPx = std::clamp(v.instanceMinPx, 0.0f, 64.0f);
+        v.vramBudgetMB  = std::clamp(v.vramBudgetMB, 64, 65536);
+    }
+    scene.GetVirtualGeometrySettings() = v;
+}
+
+// JSON からシーンの風を復元（wind が無ければ既定 = 後方互換）
+static void LoadWindSettings(Scene& scene, const json& root)
+{
+    foliage::SceneWind w;
+    if (root.contains("wind") && root["wind"].is_object())
+    {
+        const auto& j = root["wind"];
+        w.enabled       = j.value("enabled",       w.enabled);
+        w.directionDeg  = j.value("directionDeg",  w.directionDeg);
+        w.speed         = j.value("speed",         w.speed);
+        w.gustStrength  = j.value("gustStrength",  w.gustStrength);
+        w.gustFrequency = j.value("gustFrequency", w.gustFrequency);
+        w.turbulence    = j.value("turbulence",    w.turbulence);
+        w.phaseOffset   = j.value("phaseOffset",   w.phaseOffset);
+        // 手書き JSON でも範囲外を持ち込まない（NaN / 巨大値で GPU の位置が壊れないように）
+        auto fin = [](f32 v, f32 lo, f32 hi, f32 dflt) { return std::isfinite(v) ? std::clamp(v, lo, hi) : dflt; };
+        w.directionDeg  = fin(w.directionDeg, -100000.0f, 100000.0f, 45.0f);
+        w.speed         = fin(w.speed, 0.0f, 200.0f, 3.0f);
+        w.gustStrength  = fin(w.gustStrength, 0.0f, 1.0f, 0.5f);
+        w.gustFrequency = fin(w.gustFrequency, 0.0f, 20.0f, 0.35f);
+        w.turbulence    = fin(w.turbulence, 0.0f, 1.0f, 0.25f);
+        w.phaseOffset   = fin(w.phaseOffset, -1.0e6f, 1.0e6f, 0.0f);
+    }
+    scene.GetWind() = w;
+}
+
+// JSON から物理ベース大気を復元（atmosphere が無ければ既定 = OFF・後方互換）。手書き JSON の範囲外・NaN は既定へ丸める。
+static void LoadAtmosphereSettings(Scene& scene, const json& root)
+{
+    AtmosphereSettings a;
+    if (root.contains("atmosphere") && root["atmosphere"].is_object())
+    {
+        const auto& j = root["atmosphere"];
+        auto fin = [](float v, float lo, float hi, float d) { return std::isfinite(v) ? std::clamp(v, lo, hi) : d; };
+        a.enabled     = j.value("enabled", a.enabled);
+        a.timeOfDay   = fin(j.value("timeOfDay", a.timeOfDay), 0.0f, 24.0f, 12.0f);
+        a.timeSpeed   = fin(j.value("timeSpeed", a.timeSpeed), -240.0f, 240.0f, 0.0f);
+        a.latitudeDeg = fin(j.value("latitudeDeg", a.latitudeDeg), -90.0f, 90.0f, 35.0f);
+        a.dayOfYear   = std::clamp(j.value("dayOfYear", a.dayOfYear), 1, 366);
+        a.northYawDeg = fin(j.value("northYawDeg", a.northYawDeg), -360.0f, 360.0f, 0.0f);
+        a.sunMode     = std::clamp(j.value("sunMode", a.sunMode), 0, 1);
+        a.driveSun    = j.value("driveSun", a.driveSun);
+        a.driveIBL    = j.value("driveIBL", a.driveIBL);
+        a.drawStars   = j.value("drawStars", a.drawStars);
+        a.drawMoon    = j.value("drawMoon", a.drawMoon);
+        a.planetRadiusKm     = fin(j.value("planetRadiusKm", a.planetRadiusKm), 100.0f, 100000.0f, 6360.0f);
+        a.atmosphereHeightKm = fin(j.value("atmosphereHeightKm", a.atmosphereHeightKm), 1.0f, 2000.0f, 100.0f);
+        JsonToRgb3(j, "rayleighScattering", a.rayleighScattering);
+        a.rayleighScaleHeightKm = fin(j.value("rayleighScaleHeightKm", a.rayleighScaleHeightKm), 0.1f, 500.0f, 8.0f);
+        JsonToRgb3(j, "mieScattering", a.mieScattering);
+        JsonToRgb3(j, "mieAbsorption", a.mieAbsorption);
+        a.mieScaleHeightKm = fin(j.value("mieScaleHeightKm", a.mieScaleHeightKm), 0.1f, 500.0f, 1.2f);
+        a.mieG             = fin(j.value("mieG", a.mieG), -0.99f, 0.99f, 0.8f);
+        JsonToRgb3(j, "ozoneAbsorption", a.ozoneAbsorption);
+        a.ozoneCenterKm = fin(j.value("ozoneCenterKm", a.ozoneCenterKm), 0.0f, 1000.0f, 25.0f);
+        a.ozoneWidthKm  = fin(j.value("ozoneWidthKm", a.ozoneWidthKm), 0.0f, 500.0f, 15.0f);
+        JsonToRgb3(j, "groundAlbedo", a.groundAlbedo);
+        a.sunAngularRadius = fin(j.value("sunAngularRadius", a.sunAngularRadius), 0.0005f, 0.2f, 0.004675f);
+        a.sunIlluminance   = fin(j.value("sunIlluminance", a.sunIlluminance), 0.0f, 1.0e7f, 128000.0f);
+        JsonToRgb3(j, "sunTint", a.sunTint);
+        a.moonIlluminance  = fin(j.value("moonIlluminance", a.moonIlluminance), 0.0f, 1.0e5f, 0.25f);
+        JsonToRgb3(j, "moonTint", a.moonTint);
+        a.multiScatteringFactor = fin(j.value("multiScatteringFactor", a.multiScatteringFactor), 0.0f, 4.0f, 1.0f);
+        a.seaLevelY        = fin(j.value("seaLevelY", a.seaLevelY), -1.0e5f, 1.0e5f, 0.0f);
+        a.nightSkyNits     = fin(j.value("nightSkyNits", a.nightSkyNits), 0.0f, 1000.0f, 0.0015f);
+        a.skyLuminanceScale = fin(j.value("skyLuminanceScale", a.skyLuminanceScale), 0.0f, 100.0f, 1.0f);
+        a.aerialPerspective = j.value("aerialPerspective", a.aerialPerspective);
+        a.apStartDepth      = fin(j.value("apStartDepth", a.apStartDepth), 0.0f, 1.0e6f, 100.0f);
+        a.apMaxDistanceKm   = fin(j.value("apMaxDistanceKm", a.apMaxDistanceKm), 1.0f, 2000.0f, 64.0f);
+        a.apStrength        = fin(j.value("apStrength", a.apStrength), 0.0f, 20.0f, 1.0f);
+        a.iblRebakeThresholdDeg = fin(j.value("iblRebakeThresholdDeg", a.iblRebakeThresholdDeg), 0.0f, 90.0f, 0.25f);
+        a.iblRebakeMaxHz        = fin(j.value("iblRebakeMaxHz", a.iblRebakeMaxHz), 0.1f, 60.0f, 2.0f);
+    }
+    scene.GetAtmosphereSettings() = a;
 }
 
 // JSON から ボリュメトリックフォグ設定を復元（volumetricFog が無ければデフォルト OFF = 後方互換）
@@ -1978,6 +2224,32 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadRtSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("raytracing 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadVirtualGeometrySettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("virtualGeometry 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadWindSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("wind 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadAtmosphereSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("atmosphere 設定をスキップしました（型不正）: {}", e.what()); }
+
+    // シーケンサーの自動再生（キーが無ければ空 = 後方互換）
+    try
+    {
+        if (root.contains("sequencePlayers") && root["sequencePlayers"].is_array())
+        {
+            for (const auto& o : root["sequencePlayers"])
+            {
+                if (!o.is_object() || !o.contains("sequence") || !o["sequence"].is_string()) continue;
+                SequenceAutoPlay sp;
+                sp.sequence   = o["sequence"].get<std::string>();
+                sp.loop       = o.value("loop", false);
+                sp.rate       = o.value("rate", 1.0f);
+                sp.startDelay = o.value("startDelay", 0.0f);
+                sp.clockGame  = o.value("clock", std::string("real")) == "game";
+                scene.GetSequenceAutoPlay().push_back(std::move(sp));
+            }
+        }
+    }
+    catch (const json::exception& e) { Logger::Warn("sequencePlayers をスキップしました（型不正）: {}", e.what()); }
 
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));
@@ -2431,6 +2703,12 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
     }
     if (ej.contains("sculpt") && ej["sculpt"].is_object())
         ej["sculpt"]["meshPath"] = sculpt::MakeSculptMeshRelPath(uniqueName);
+    // 植生(.dxfoliage)も同じ理由で複製先に固有のパスを振る（実体は下でコピーオンライトのまま共有し、書き出しを予約する）。
+    if (ej.contains("foliageLayer") && ej["foliageLayer"].is_object())
+        ej["foliageLayer"]["instancePath"] = foliage::MakeFoliageRelPath(uniqueName);
+
+    // 複製元の植生の実体は、複製の前に必ず読み込んでおく（遅延読込のまま新パスを指すと、実体の無い複製になる）。
+    if (auto* srcF0 = reg.try_get<FoliageLayer>(src)) foliage::EnsureLoaded(*srcF0);
 
     entt::entity copy = InstantiateEntityJson(scene, ej, assetsDir);
     if (copy == entt::null) return entt::null;
@@ -2469,6 +2747,17 @@ entt::entity SceneSerializer::DuplicateEntity(Scene& scene, entt::entity src,
             dstS->_meshDirty     = true;
             dstS->_colliderDirty = true;
             dstS->_needsSave     = true;     // 新しい .smsh を書き出させる
+        }
+    }
+
+    if (auto* dstF = reg.try_get<FoliageLayer>(copy))
+    {
+        const auto* srcF = reg.try_get<FoliageLayer>(src);
+        if (srcF && srcF->_set)
+        {
+            dstF->_set = srcF->_set;         // コピーオンライト: 編集すると新しい実体へ差し替わるので共有して安全
+            dstF->_loadTried = true;
+            dstF->_needsSave = true;         // 新しい .dxfoliage を書き出させる
         }
     }
 
@@ -2541,7 +2830,7 @@ static void RepointGeneratedAssets(json& ej, const std::string& oldName,
                                    const std::string& newName, const std::string& assetsDir)
 {
     if (newName.empty() || oldName == newName) return;
-    if (!ej.contains("terrain") && !ej.contains("sculpt")) return;
+    if (!ej.contains("terrain") && !ej.contains("sculpt") && !ej.contains("foliageLayer")) return;
 
     namespace fs = std::filesystem;
     const std::string base = assetsDir.empty() ? PathResolver::AssetsDir() : assetsDir;
@@ -2574,6 +2863,8 @@ static void RepointGeneratedAssets(json& ej, const std::string& oldName,
     }
     if (ej.contains("sculpt") && ej["sculpt"].is_object())
         repoint(ej["sculpt"], "meshPath", sculpt::MakeSculptMeshRelPath(newName));
+    if (ej.contains("foliageLayer") && ej["foliageLayer"].is_object())
+        repoint(ej["foliageLayer"], "instancePath", foliage::MakeFoliageRelPath(newName));
 }
 
 // ---- プレハブが持つ「生成アセット」（.smsh / .hf / .splat）の面倒を見る ------------
@@ -2736,6 +3027,7 @@ void ForEachAssetPathField(Scene& scene, Fn&& fn)
         fn(t.splatPath,     who, "splat");
     }
     for (auto [e, sm] : reg.view<SculptMesh>().each()) fn(sm.meshPath, nameOf(e), "sculpt");
+    for (auto [e, fl] : reg.view<FoliageLayer>().each()) fn(fl.instancePath, nameOf(e), "foliage");
     for (auto [e, a]  : reg.view<AudioSource>().each()) fn(a.clipPath, nameOf(e), "audio");
     for (auto [e, sp] : reg.view<Sprite2D>().each())
     {
@@ -3109,7 +3401,12 @@ void StripPrefabLinks(json& prefabJson)
 {
     if (!prefabJson.contains("entities") || !prefabJson["entities"].is_array()) return;
     for (auto& ej : prefabJson["entities"])
-        if (ej.is_object()) ej.erase("prefabLink");
+        if (ej.is_object())
+        {
+            ej.erase("prefabLink");
+            // [H] エディタ専用フラグはプレハブ（配布物にもなる）へ持ち込まない
+            ej.erase("editorHidden"); ej.erase("editorLocked"); ej.erase("editorFolder");
+        }
 }
 
 // assets ルートからの相対パスへ正規化（区切りは '/' に統一）。
@@ -3152,7 +3449,8 @@ void DiffEntityJson(const json& mine, const json& base, int index, const std::st
     //   .prefab 側の値と必ず食い違う。除外しないと全インスタンスに「guid が違う」という
     //   偽の差分が出続け、本当の上書きが埋もれる。
     //   name / prefabLink も同じ理由（展開時の連番リネームで毎回全差分になる）。
-    static const char* const kIgnored[] = {"name", "prefabLink", "guid", "parentGuid"};
+    static const char* const kIgnored[] = {"name", "prefabLink", "guid", "parentGuid",
+                                            "editorHidden", "editorLocked", "editorFolder", "siblingOrder"};   // [H] エディタ専用（プレハブの差分ではない）
     auto ignored = [&](const std::string& key)
     {
         for (const char* k : kIgnored) if (key == k) return true;
@@ -3203,7 +3501,8 @@ json Merge3WayEntity(const json& mine, const json& oldBase, const json& newBase)
     //   name       : 名前ベースの参照（Lua の entity プロパティ / Trigger）が切れる
     //   guid       : 安定 ID が変わると parentGuid などの参照が切れる
     //   prefabLink : .prefab 側は Strip 済みなので、こちらから持ち込まないと紐付けが外れる
-    static const char* const kInstanceOwned[] = {"name", "guid", "parentGuid", "prefabLink"};
+    static const char* const kInstanceOwned[] = {"name", "guid", "parentGuid", "prefabLink",
+                                                   "editorHidden", "editorLocked", "editorFolder", "siblingOrder"};   // [H] エディタ専用
     auto instanceOwned = [](const std::string& key)
     {
         for (const char* k : kInstanceOwned) if (key == k) return true;

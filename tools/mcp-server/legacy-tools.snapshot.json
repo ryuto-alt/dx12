@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 408638,
+ "totalBytes": 416146,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -300,8 +300,8 @@
   },
   {
    "name": "dx12_get_scene_settings",
-   "sha256": "b814ac24bb889e76bb6f2897873555124339be1a0ebe481088c2c2301debebea",
-   "semSha256": "f691c64632decd7d6d27c7547cc0f09d016d9c5faaea14a1d2ccad045cda8739",
+   "sha256": "ccaa3ac22ab4ad78c09a001491d4eada1be2d159e15a0b62d56cc848fed1c4a7",
+   "semSha256": "f5ecce3be726fbb4cbd6456c86385df2b67115c03fa7b5a483380ea9b236ef3f",
    "outputSchemaBytes": 303,
    "argKeys": [],
    "annotations": {
@@ -533,12 +533,13 @@
   },
   {
    "name": "dx12_set_scene_settings",
-   "sha256": "07537ea52bd7f386ffe9228974baadb9af06c38b460cda338066d250716ee906",
-   "semSha256": "39b37e364585b086a56744d42ae2a0264a7d66abce19d1704a363a858efe5e49",
+   "sha256": "83a3a2d2ef7f217b909c14508f3ecbff1f61719dea11a372cb5225a47da5825a",
+   "semSha256": "afe05f364efcc320ecf338c63b8aaf8578f285ab6675ceada3179ea514f46ec0",
    "outputSchemaBytes": 303,
    "argKeys": [
     "decalAtlasPath",
-    "skybox"
+    "skybox",
+    "atmosphere"
    ],
    "annotations": {
     "title": "シーン設定変更",
@@ -1085,8 +1086,8 @@
   },
   {
    "name": "dx12_perf_stats",
-   "sha256": "5d55c578859f9b2bc0d85ea3ca4416c50bdbf1744be5780124aaba0e44dd4759",
-   "semSha256": "c837dc8b6371ab50570a203d33f12e794fc200c56680b19253274079502a5cc9",
+   "sha256": "b1a88ca82483b5a091317ec7edc067ac78ea0987d95de45fba5f8ef1cdbf52e4",
+   "semSha256": "b6eb6720e416375227a79c30134dd9898d89e1fea7ed22498d13092831539c93",
    "outputSchemaBytes": 303,
    "argKeys": [
     "window"
@@ -1245,12 +1246,27 @@
   },
   {
    "name": "dx12_set_post_process",
-   "sha256": "03964feb1fa6c3f469f4b5bc1b4a116d827848255fb58a91e9a43a3e75b04e43",
-   "semSha256": "bf411b35ad73b321e73be6030175a8e4a4ac02bfa5b0364cf995a732fd3c08d4",
+   "sha256": "2ffac83edd179e86a09b979068bf7dadd29c07c59d1b07438a905698fe082f83",
+   "semSha256": "d65c357076ebdc6dda5a999ac793d77047d8374bc72a13084bc63fe87fdae9aa",
    "outputSchemaBytes": 303,
    "argKeys": [
     "enabled",
     "tonemapper",
+    "filmSlope",
+    "filmToe",
+    "filmShoulder",
+    "filmBlackClip",
+    "filmWhiteClip",
+    "exposureMode",
+    "ev100",
+    "evComp",
+    "aeMinEv100",
+    "aeMaxEv100",
+    "aeSpeedUp",
+    "aeSpeedDown",
+    "aeLowPercent",
+    "aeHighPercent",
+    "lightingUnits",
     "exposureOn",
     "exposure",
     "contrastOn",
@@ -2498,14 +2514,18 @@
   },
   {
    "name": "dx12_screenshot_final",
-   "sha256": "aaf441da2423fa10a3014964f85bf1fded7fed4ec4cdf02fd5e940640e12a6b2",
-   "semSha256": "aaf441da2423fa10a3014964f85bf1fded7fed4ec4cdf02fd5e940640e12a6b2",
+   "sha256": "8c27a2e0511bebc3f7355135e6472e06a568e2870a2a835a0526a01d8b74ab0e",
+   "semSha256": "8c27a2e0511bebc3f7355135e6472e06a568e2870a2a835a0526a01d8b74ab0e",
    "outputSchemaBytes": 0,
    "argKeys": [
     "path",
     "deterministic",
     "settleFrames",
-    "gizmos"
+    "gizmos",
+    "format",
+    "formats",
+    "width",
+    "height"
    ],
    "annotations": {
     "title": "最終画スクリーンショット(ポスト後)",
@@ -2527,8 +2547,8 @@
   },
   {
    "name": "dx12_render_debug",
-   "sha256": "700bd9cfc605a2f10322de12281c0fb2589fa67f3e0b8983e829df98039aa9cb",
-   "semSha256": "700bd9cfc605a2f10322de12281c0fb2589fa67f3e0b8983e829df98039aa9cb",
+   "sha256": "3ace6456e4f0ddb72bf39cffd8c1453c0334a2f12635701195f1c984b9e3a8f6",
+   "semSha256": "3ace6456e4f0ddb72bf39cffd8c1453c0334a2f12635701195f1c984b9e3a8f6",
    "outputSchemaBytes": 0,
    "argKeys": [
     "mode",
@@ -3081,8 +3101,8 @@
   },
   {
    "name": "dx12_set_sun",
-   "sha256": "03cc1c3de82528626ebd84ee2db16a136b40923dc985c4b6f9b97981b9f690aa",
-   "semSha256": "8b1cb912540a6d5bea689d38dbd862521c267c1baeeb71d6f43bfdbbdb026e4d",
+   "sha256": "11391dc5d1dcfae519b10eb667664353d1156f232f6269632a8155b5af3f17f9",
+   "semSha256": "db0abcc59ba8d128a9d6491b0465fb0d43971f84dfd3b9c1baa8229d367f06f4",
    "outputSchemaBytes": 303,
    "argKeys": [
     "timeOfDay",

@@ -10,6 +10,7 @@
 #include <imgui_internal.h>   // BringWindowToDisplayFront（トーストを常に最前面に）
 #pragma warning(pop)
 
+#include <chrono>
 #include <cstdio>
 #include <mutex>
 
@@ -45,10 +46,49 @@ const char* KindIcon(ToastKind k)
 ImU32 Col(const ImVec4& c, float a) { return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * a)); }
 } // namespace
 
+// ---- 履歴（dx12_editor_state {scope:"toasts"}）。表示が消えた後も 50 件ぶん残す ----
+namespace
+{
+struct HistoryEntry { uint32_t seq; uint32_t id; ToastKind kind; std::string text; int count; std::chrono::steady_clock::time_point last; };
+std::vector<HistoryEntry>& History() { static std::vector<HistoryEntry> h; return h; }
+uint32_t g_historySeq = 0;
+constexpr size_t kHistoryMax = 50;
+} // namespace
+
 uint32_t Toast(ToastKind kind, std::string message, float seconds)
 {
     std::lock_guard<std::mutex> lk(Mu());
-    return Q().Push(kind, std::move(message), seconds);
+    const std::string text = message;   // 履歴用のコピー（Push が message を動かす）
+    const uint32_t id = Q().Push(kind, std::move(message), seconds);
+    auto& h = History();
+    const auto now = std::chrono::steady_clock::now();
+    // 表示キューが畳み込んだ（同じ id が返った）ものは履歴でも 1 件に畳む
+    for (size_t i = h.size(); i-- > 0;)
+    {
+        if (h[i].id == id && h[i].kind == kind && h[i].text == text) { ++h[i].count; h[i].last = now; return id; }
+        if (h.size() - i > 8) break;
+    }
+    h.push_back({++g_historySeq, id, kind, text, 1, now});
+    if (h.size() > kHistoryMax) h.erase(h.begin());
+    return id;
+}
+
+std::vector<ToastRecord> ToastHistory(size_t limit)
+{
+    std::lock_guard<std::mutex> lk(Mu());
+    std::vector<ToastRecord> out;
+    const auto now = std::chrono::steady_clock::now();
+    const auto& h = History();
+    for (size_t i = h.size(); i-- > 0 && out.size() < limit;)
+    {
+        ToastRecord r;
+        r.seq = h[i].seq; r.id = h[i].id; r.kind = h[i].kind; r.text = h[i].text; r.count = h[i].count;
+        r.ageSec = std::chrono::duration<double>(now - h[i].last).count();
+        for (const ToastItem& t : Q().Items())
+            if (t.id == h[i].id && !t.dismissed && t.age < t.life) { r.live = true; break; }
+        out.push_back(std::move(r));
+    }
+    return out;
 }
 
 size_t ToastLiveCount()

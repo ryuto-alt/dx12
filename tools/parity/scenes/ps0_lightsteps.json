@@ -1,0 +1,215 @@
+{
+  "$schema": "./schema.json",
+  "specVersion": 1,
+  "id": "ps0_lightsteps",
+  "parityScene": "PS-0",
+  "title": "PS-0 光源強度の段階(点光源 4 灯 = 光度 x1 / x4 / x16 / x64。物理ライティング単位)",
+  "description": "点光源の光度(cd)の段階と逆二乗の効き。直接光だけ(太陽・空なし)。フォワード(物理モード + 線形出力)対 パストレーサー。x1〜x64 で 3 桁の明るさが一度に写る。",
+  "status": "ready",
+  "notes": [
+    "光度 100 cd を基準に 4 倍ずつ(x1 / x4 / x16 / x64)。EV100=8。光源の影響半径 range=200 m(窓は事実上 1)= 純粋な逆二乗",
+    "壁までの距離は約 1.35 m。床と壁の相互反射(間接光)はパストレーサーにだけある",
+    "パストレーサーは bounces=1(直接光 + 環境の可視性つき NEE のみ)。PS-0 は光の単位・露出・トーンマップ・BRDF の校正で、間接光(GI)は別段階(DDGI / SSGI / Lumen 風 GI)の担当。bounces=8 の全光輸送との差は既知の差として PARITY_Q2_REPORT.md に数値を載せる"
+  ],
+  "scene": {
+    "source": "generator",
+    "script": "gen/ps0_calibration.py",
+    "args": {
+      "variant": "lightsteps",
+      "units": "physical",
+      "base_cd": 100,
+      "ev100": 8
+    },
+    "scene": "scenes/ps0_lightsteps.json"
+  },
+  "cameras": [
+    {
+      "name": "steps",
+      "position": [
+        0.0,
+        1.5,
+        -2.0
+      ],
+      "target": [
+        0.0,
+        1.5,
+        4.0
+      ],
+      "note": "4 灯の光だまりを正面から。明るさが 4 倍ずつ上がる"
+    },
+    {
+      "name": "steps_low",
+      "position": [
+        0.0,
+        0.6,
+        -2.0
+      ],
+      "target": [
+        0.0,
+        0.8,
+        4.0
+      ],
+      "note": "床も含む低めのアングル。壁と床の照度の割合"
+    }
+  ],
+  "engine": {
+    "resolution": [
+      1920,
+      1080
+    ],
+    "size": [
+      1920,
+      1080
+    ],
+    "linear": true,
+    "mode": "headless",
+    "warmupFrames": 60,
+    "settleFrames": 8,
+    "png": "srgb",
+    "features": {
+      "ddgi": false,
+      "ssgi": false,
+      "ssr": false,
+      "ssao": false,
+      "taa": false,
+      "lightingUnits": "physical",
+      "ev100": 8,
+      "tonemapper": "ue_filmic"
+    },
+    "requiresMethods": [
+      "render_reference"
+    ]
+  },
+  "reference": {
+    "kind": "pt",
+    "pt": {
+      "spp": 1024,
+      "seeds": [
+        1,
+        2
+      ],
+      "format": "pfm",
+      "api": "engine",
+      "timeoutSec": 1800,
+      "params": {
+        "bounces": 1,
+        "lightFalloff": "physical"
+      }
+    },
+    "external": {
+      "colorspace": "auto",
+      "provenance": "手動撮影の UE / 別エンジンの画像を references/ps0_calibration/<camera>.png に置く"
+    }
+  },
+  "alignment": {
+    "tonemap": "ue_filmic",
+    "exposure": "ev100:8",
+    "sizePolicy": "error",
+    "ppd": 67
+  },
+  "displayCheck": {
+    "mean_lsb_max": 0.6,
+    "p99_lsb_max": 2.0,
+    "max_lsb_max": 4.0
+  },
+  "gates": {
+    "G0": {
+      "lum_mean_ev_abs_max": 1.0
+    },
+    "G1": {
+      "flip_ldr_mean_max": 0.15,
+      "lum_mean_ev_abs_max": 0.5,
+      "ssim_min": 0.75,
+      "de2000_median_max": 6.0
+    },
+    "G2": {
+      "flip_ldr_mean_max": 0.08,
+      "flip_ldr_p95_max": 0.3,
+      "flip_hdr_mean_max": 0.1,
+      "lum_mean_ev_abs_max": 0.25,
+      "ssim_min": 0.9,
+      "de2000_median_max": 3.0,
+      "hue_abs_median_deg_max": 8.0
+    }
+  },
+  "milestones": {
+    "Q2": "G2",
+    "Q1": "G1"
+  },
+  "noiseFloor": {
+    "k": 1.5
+  },
+  "perf": {
+    "enabled": false
+  },
+  "analytic": [
+    {
+      "kind": "lambert_plane_point_lights",
+      "name": "壁(反射率 0.5)の逆二乗 + cosθ",
+      "camera": "steps",
+      "plane": {
+        "point": [
+          0,
+          1.5,
+          3.95
+        ],
+        "normal": [
+          0,
+          0,
+          -1
+        ],
+        "albedo": 0.5,
+        "bounds": {
+          "x": [
+            -5,
+            5
+          ],
+          "y": [
+            0.15,
+            3.4
+          ]
+        }
+      },
+      "lights": [
+        {
+          "pos": [
+            -3.0,
+            1.5,
+            2.6
+          ],
+          "cd": 100
+        },
+        {
+          "pos": [
+            -1.0,
+            1.5,
+            2.6
+          ],
+          "cd": 400
+        },
+        {
+          "pos": [
+            1.0,
+            1.5,
+            2.6
+          ],
+          "cd": 1600
+        },
+        {
+          "pos": [
+            3.0,
+            1.5,
+            2.6
+          ],
+          "cd": 6400
+        }
+      ],
+      "minLuminanceNit": 2.0,
+      "tolerance": {
+        "median_rel": 0.07,
+        "p95_rel": 0.2,
+        "bias_abs": 0.07
+      }
+    }
+  ]
+}

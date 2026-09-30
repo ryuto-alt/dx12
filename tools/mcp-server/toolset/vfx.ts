@@ -6,6 +6,7 @@ import { argError, v3 } from "../sceneTools.ts";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
+import { guardApproval } from "../guardCtx.ts";
 import { buildContactSheet } from "../contactSheet.ts";
 import { engine, entityId, entityRef, errResult, reg, regRaw, run } from "./core.ts";
 
@@ -336,9 +337,10 @@ regRaw(
           preNotes.push("fire:true だが名前が引けなかったので鳴らせなかった(name 指定で呼ぶこと)。");
         } else {
           for (const l of layers) if (l.looping === false) firedLayers.push(layers.indexOf(l));
-          const r = await engine.call("eval_lua", {
+          // 固定の 1 行(名前は JSON.stringify で埋める)。ユーザーのコードではないので、この内部呼び出しだけ eval_lua のゲートを承認済みにする。
+          const r = await guardApproval.run({ approved: true, via: "internal:vfx_preview" }, () => engine.call("eval_lua", {
             code: `return tostring(fx:play(${JSON.stringify(nm)}))`,
-          }).catch(() => null) as any;
+          })).catch(() => null) as any;
           const okFire = typeof r?.result === "string" ? r.result.includes("true") : false;
           if (!okFire) {
             preNotes.push(

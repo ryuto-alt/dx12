@@ -1,4 +1,5 @@
 #include "editor/UiWidgets.h"
+#include "editor/PropertyGrid.h"   // フェーズ 1b: シーケンスのプロパティを pg:: 2 カラムへ
 #include "editor/panels/SpriteSheetEditorPanel.h"
 
 #include <algorithm>
@@ -245,7 +246,7 @@ void SpriteSheetEditorPanel::DrawToolbar(EditorContext& /*ctx*/, const std::stri
     if (m_statusFlash > 0.0f)
     {
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1.0f), "%s", m_statusMsg.c_str());
+        ImGui::TextColored(theme::Good, "%s", m_statusMsg.c_str());
     }
 }
 
@@ -374,8 +375,8 @@ void SpriteSheetEditorPanel::DrawSheetGrid(const std::string& assetsDir, Resourc
 
             if (useCount > 0)
             {
-                dl->AddRectFilled(a, b, IM_COL32(80, 170, 255, 60));
-                dl->AddRect(a, b, IM_COL32(110, 190, 255, 255), 0.0f, 0, ui::PxF(2.0f));
+                dl->AddRectFilled(a, b, ImGui::GetColorU32(theme::WithAlpha(theme::Accent, 0.25f)));
+                dl->AddRect(a, b, ImGui::GetColorU32(theme::AccentHover), 0.0f, 0, ui::PxF(2.0f));
             }
             else
             {
@@ -436,21 +437,22 @@ void SpriteSheetEditorPanel::DrawSeqEditor(entt::registry& reg, EditorContext& c
     }
     auto& seq = m_sheet.seqs[static_cast<size_t>(m_selSeq)];
 
-    char nameBuf[64];
-    std::snprintf(nameBuf, sizeof(nameBuf), "%s", seq.name.c_str());
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ui::InputText("##SeqName", nameBuf, sizeof(nameBuf))) seq.name = nameBuf;
+    // ★フェーズ 1b: シーケンスのプロパティはインスペクタと同じ pg:: の 2 カラム
+    if (pg::Begin("##SprSeqProps"))
+    {
+        char nameBuf[64];
+        std::snprintf(nameBuf, sizeof(nameBuf), "%s", seq.name.c_str());
+        if (pg::InputText("名前", nameBuf, sizeof(nameBuf))) seq.name = nameBuf;
 
-    ImGui::SetNextItemWidth(ui::Px(90.0f));
-    ui::DragFloat("fps", &seq.fps, 0.5f, 1.0f, 120.0f, "%.1f");
-    ImGui::SetNextItemWidth(ui::Px(120.0f));
-    ui::Combo("再生", &seq.mode, kModeNames, IM_ARRAYSIZE(kModeNames));
+        pg::Float("fps", &seq.fps, 0.5f, 1.0f, 120.0f, "%.1f");
+        pg::Combo("再生", &seq.mode, kModeNames, IM_ARRAYSIZE(kModeNames));
 
-    char evBuf[96];
-    std::snprintf(evBuf, sizeof(evBuf), "%s", seq.finishEvent.c_str());
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ui::InputTextWithHint("##FinEv", "完了イベント名（単発時、空=なし）", evBuf, sizeof(evBuf)))
-        seq.finishEvent = evBuf;
+        char evBuf[96];
+        std::snprintf(evBuf, sizeof(evBuf), "%s", seq.finishEvent.c_str());
+        if (pg::InputText("完了イベント", evBuf, sizeof(evBuf), 0, nullptr, "単発再生の完了時に送るイベント名。空=なし"))
+            seq.finishEvent = evBuf;
+        pg::End();
+    }
 
     ImGui::Separator();
     ImGui::Text("フレーム列 (%d)", static_cast<int>(seq.frames.size()));

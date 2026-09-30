@@ -43,7 +43,8 @@ void RegisterCoreComponentMeta()
         .data<&PointLight::color>("color")
         .data<&PointLight::intensity>("intensity")
         .data<&PointLight::range>("range")
-        .data<&PointLight::castShadows>("castShadows");
+        .data<&PointLight::castShadows>("castShadows")
+        .data<&PointLight::sourceRadius>("sourceRadius");
 
     entt::meta_factory<DirectionalLight>{}
         .type("DirectionalLight")
@@ -60,7 +61,8 @@ void RegisterCoreComponentMeta()
         .data<&SpotLight::direction>("direction")
         .data<&SpotLight::innerConeDeg>("innerConeDeg")
         .data<&SpotLight::outerConeDeg>("outerConeDeg")
-        .data<&SpotLight::castShadows>("castShadows");
+        .data<&SpotLight::castShadows>("castShadows")
+        .data<&SpotLight::sourceRadius>("sourceRadius");
 
     entt::meta_factory<CameraComponent>{}
         .type("CameraComponent")
@@ -161,6 +163,73 @@ void RegisterCoreComponentMeta()
         .data<&AudioReverbZone::wet>("wet")
         .data<&AudioReverbZone::priority>("priority")
         .data<&AudioReverbZone::enabled>("enabled");
+
+    entt::meta_factory<VirtualGeometry>{}
+        .type("VirtualGeometry")
+        .data<&VirtualGeometry::vgeoPath>("vgeoPath")
+        .data<&VirtualGeometry::enabled>("enabled");
+
+    // 植生（F1）。インスタンスの実体（_set）は .dxfoliage 側が正なので登録しない＝JSON にはパラメータだけが出る。
+    entt::meta_factory<FoliageLayer>{}
+        .type("FoliageLayer")
+        .data<&FoliageLayer::instancePath>("instancePath")
+        .data<&FoliageLayer::variant0>("variant0")
+        .data<&FoliageLayer::variant1>("variant1")
+        .data<&FoliageLayer::variant2>("variant2")
+        .data<&FoliageLayer::variant3>("variant3")
+        .data<&FoliageLayer::lodDist0>("lodDist0")
+        .data<&FoliageLayer::lodDist1>("lodDist1")
+        .data<&FoliageLayer::lodDist2>("lodDist2")
+        .data<&FoliageLayer::cullDistance>("cullDistance")
+        .data<&FoliageLayer::thinStart>("thinStart")
+        .data<&FoliageLayer::lodFade>("lodFade")
+        .data<&FoliageLayer::castShadow>("castShadow")
+        .data<&FoliageLayer::shadowDistance>("shadowDistance")
+        .data<&FoliageLayer::shadowMaxLod>("shadowMaxLod")
+        .data<&FoliageLayer::tint>("tint")
+        .data<&FoliageLayer::aoStrength>("aoStrength")
+        .data<&FoliageLayer::windEnabled>("windEnabled")
+        .data<&FoliageLayer::windBend>("windBend")
+        .data<&FoliageLayer::windFlutter>("windFlutter")
+        .data<&FoliageLayer::windBendExp>("windBendExp")
+        .data<&FoliageLayer::hzbCulling>("hzbCulling")
+        .data<&FoliageLayer::maxVisible>("maxVisible")
+        .data<&FoliageLayer::enabled>("enabled");
+
+    // 水面（W1）。全フィールドがスカラー / ベクトル / 文字列（多角形）なので反射でそのまま直列化できる。
+    entt::meta_factory<WaterBody>{}
+        .type("WaterBody")
+        .data<&WaterBody::shape>("shape")
+        .data<&WaterBody::size>("size")
+        .data<&WaterBody::polygon>("polygon")
+        .data<&WaterBody::heightOffset>("heightOffset")
+        .data<&WaterBody::waveCount>("waveCount")
+        .data<&WaterBody::waveAmplitude>("waveAmplitude")
+        .data<&WaterBody::wavelength>("wavelength")
+        .data<&WaterBody::windDirection>("windDirection")
+        .data<&WaterBody::directionSpread>("directionSpread")
+        .data<&WaterBody::choppiness>("choppiness")
+        .data<&WaterBody::waveSpeed>("waveSpeed")
+        .data<&WaterBody::waveSeed>("waveSeed")
+        .data<&WaterBody::timeScale>("timeScale")
+        .data<&WaterBody::timeOffset>("timeOffset")
+        .data<&WaterBody::detailStrength>("detailStrength")
+        .data<&WaterBody::detailTile>("detailTile")
+        .data<&WaterBody::detailSpeed>("detailSpeed")
+        .data<&WaterBody::absorption>("absorption")
+        .data<&WaterBody::scatterColor>("scatterColor")
+        .data<&WaterBody::turbidity>("turbidity")
+        .data<&WaterBody::ior>("ior")
+        .data<&WaterBody::roughness>("roughness")
+        .data<&WaterBody::refractionStrength>("refractionStrength")
+        .data<&WaterBody::ssr>("ssr")
+        .data<&WaterBody::foamCrest>("foamCrest")
+        .data<&WaterBody::foamShore>("foamShore")
+        .data<&WaterBody::foamWidth>("foamWidth")
+        .data<&WaterBody::shoreFade>("shoreFade")
+        .data<&WaterBody::causticIntensity>("causticIntensity")
+        .data<&WaterBody::flow>("flow")
+        .data<&WaterBody::enabled>("enabled");
 
     entt::meta_factory<AudioSource>{}
         .type("AudioSource")

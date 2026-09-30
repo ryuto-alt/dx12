@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000006",
+  "name": "fresnel_rim",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "base": { "type": "Float3", "props": { "value": [0.05, 0.05, 0.08] } },
+    "cam": { "type": "CameraPosition" },
+    "cv": { "type": "CameraVector" },
+    "dist": { "type": "Subtract", "in": { "A": "cam.Out", "B": "wp.Out" } },
+    "distLen": { "type": "Length", "in": { "X": "dist.Out" } },
+    "facing": { "type": "Dot", "in": { "A": "cv.Out", "B": "vn.Out" } },
+    "facingSat": { "type": "Saturate", "in": { "X": "facing.Out" } },
+    "fade": { "type": "Divide", "in": { "A": 1.0, "B": "distLen.Out" }, "props": { "safe": true } },
+    "fr": { "type": "Fresnel", "in": { "BaseReflect": 0.05, "Exponent": 3.0 } },
+    "out": { "type": "MaterialOutput", "in": { "BaseColor": "shade.Out", "Emissive": "rim.Out", "Roughness": "fade.Out" } },
+    "rim": { "type": "Multiply", "in": { "A": "rimColor.Out", "B": "fr.Out" } },
+    "rimColor": { "type": "Float3", "props": { "value": [0.2, 0.6, 1.0] } },
+    "shade": { "type": "Multiply", "in": { "A": "base.Out", "B": "facingSat.Out" } },
+    "vn": { "type": "VertexNormalWS" },
+    "wp": { "type": "WorldPosition" }
+  },
+  "comments": {},
+  "layout": {
+    "base": "0 0",
+    "cam": "0 0",
+    "cv": "0 0",
+    "dist": "0 0",
+    "distLen": "0 0",
+    "facing": "0 0",
+    "facingSat": "0 0",
+    "fade": "0 0",
+    "fr": "0 0",
+    "out": "0 0",
+    "rim": "0 0",
+    "rimColor": "0 0",
+    "shade": "0 0",
+    "vn": "0 0",
+    "wp": "0 0"
+  }
+}

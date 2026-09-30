@@ -124,6 +124,13 @@ struct CompileOptions
     std::string shaderModel = "6_6";        // 先頭の "// @sm 6_6"
     std::string sourceName;                 // ヘッダのコメントに書くだけ（例 "materials/rock_wet.dxmg"）
     bool        emitLineDirectives = true;  // #line "node:<id>" を出す
+    // ★部分グラフ出力（G2c。ノード内サムネイル / ノード単位プレビュー）。空でなければ MaterialOutput の代わりにこのノードの出力ピンを
+    //   「表示色」として書き出す: F1 = (v,v,v) / F2 = (x,y,0) / F3 = そのまま / F4 = rgb（alpha は s.opacity）/ Tex2D = そのテクスチャを
+    //   mi.uv でサンプルした rgb。s.baseColor / s.opacity にだけ書く（他の UnoSurface のフィールドは既定のまま）。
+    //   到達可能性 / エラー判定はこのノードの上流だけで行う（MaterialOutput が無い / 別の枝が壊れていても評価できる）。
+    //   既定（空）は従来と 1 バイトも変わらない（G1 のゴールデンは不変）。
+    NodeId      previewNode;
+    std::string previewPin;                 // 空 = 最初の出力ピン
 };
 
 constexpr int kCodegenVersion = 1;
@@ -140,6 +147,7 @@ struct CompileResult
     CompileStats             stats;
     Ir                       ir;
     GraphSettings            settings;
+    ValueType                previewType = ValueType::Invalid;   // 部分グラフ出力（previewNode 指定）のとき、出力ピンの型（F1..F4 / Tex2D）
 
     bool HasErrors() const;
     const SlotInfo* FindSlotByName(const std::string& name) const;

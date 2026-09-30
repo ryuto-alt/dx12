@@ -1,4 +1,5 @@
 #include "editor/UiWidgets.h"
+#include "editor/PropertyGrid.h"   // フェーズ 1b: キーの数値編集を pg:: 2 カラムへ
 #include "editor/panels/AnimationEditorPanel.h"
 
 #include <algorithm>
@@ -328,7 +329,7 @@ void AnimationEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx,
     if (m_statusFlash > 0.0f)
     {
         m_statusFlash -= dt;
-        ImGui::TextColored(ImVec4(0.5f, 0.9f, 0.6f, 1.0f), "%s", m_statusMsg.c_str());
+        ImGui::TextColored(theme::Good, "%s", m_statusMsg.c_str());
     }
 
     // ---- パネル内ショートカット ----
@@ -427,7 +428,7 @@ void AnimationEditorPanel::DrawToolbar(entt::registry& reg, EditorContext& ctx,
     // ---- 2段目: 対象ルート / 再生 / 録画 ----
     ImGui::Text("対象ルート:");
     ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "%s", EntityLabel(reg, m_root));
+    ImGui::TextColored(theme::AccentHover, "%s", EntityLabel(reg, m_root));
     ImGui::SameLine();
     const bool hasSel = ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity);
     if (!hasSel) ImGui::BeginDisabled();
@@ -862,32 +863,37 @@ void AnimationEditorPanel::DrawKeyInspector()
     }
 
     auto& key = track.keys[static_cast<size_t>(m_selKey)];
-    ImGui::SetNextItemWidth(ui::Px(120.0f));
-    if (ui::DragFloat("時刻", &key.time, 0.01f, 0.0f, m_clip.duration, "%.3fs"))
+    // ★フェーズ 1b: 時刻 / 値 / イージングはインスペクタと同じ pg:: の 2 カラム
+    bool resorted = false;
+    if (pg::Begin("##animKey"))
     {
-        std::stable_sort(track.keys.begin(), track.keys.end(),
-                         [](const UiAnimKey& a, const UiAnimKey& b) { return a.time < b.time; });
-        m_selKey = -1;   // 並び替えで index が変わるので選択を落とす（誤編集を防ぐ）
-        return;
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ui::Px(140.0f));
-    ui::DragFloat("値", &key.value, 0.5f);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ui::Px(180.0f));
-    if (UiAnimPropIsStep(track.prop))
-    {
-        ImGui::TextDisabled("(step プロパティ = 補間しない)");
-    }
-    else
-    {
-        int easing = key.easing;
-        if (ui::Combo("イージング", &easing, UiEaseNames(), kUiEaseCount))
+        if (pg::Float("時刻", &key.time, 0.01f, 0.0f, m_clip.duration, "%.3fs"))
         {
-            PushUndo();
-            key.easing = easing;
+            std::stable_sort(track.keys.begin(), track.keys.end(),
+                             [](const UiAnimKey& a, const UiAnimKey& b) { return a.time < b.time; });
+            m_selKey = -1;   // 並び替えで index が変わるので選択を落とす（誤編集を防ぐ）
+            resorted = true;
         }
+        if (!resorted)   // 並び替え後は key が別のキーを指すので、このフレームはここで止める
+        {
+            pg::Float("値", &key.value, 0.5f);
+            if (UiAnimPropIsStep(track.prop))
+            {
+                pg::Text("イージング", "(step プロパティ = 補間しない)");
+            }
+            else
+            {
+                int easing = key.easing;
+                if (pg::Combo("イージング", &easing, UiEaseNames(), kUiEaseCount))
+                {
+                    PushUndo();
+                    key.easing = easing;
+                }
+            }
+        }
+        pg::End();
     }
+    if (resorted) return;
 
     // 区間カーブのプレビュー（次のキーがある時だけ）
     if (!UiAnimPropIsStep(track.prop) && m_selKey + 1 < static_cast<int>(track.keys.size()))
@@ -895,13 +901,13 @@ void AnimationEditorPanel::DrawKeyInspector()
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const ImVec2 sz = ui::Px(160.0f, 42.0f);
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), IM_COL32(24, 24, 28, 255));
+        dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), ImGui::GetColorU32(theme::InputBg));
         ImVec2 prev(p.x, p.y + sz.y);
         for (int s = 1; s <= 32; ++s)
         {
             const f32 u = static_cast<f32>(s) / 32.0f;
             const ImVec2 cur(p.x + sz.x * u, p.y + sz.y * (1.0f - UiEase(key.easing, u)));
-            dl->AddLine(prev, cur, IM_COL32(120, 200, 255, 255), ui::PxF(1.5f));
+            dl->AddLine(prev, cur, ImGui::GetColorU32(theme::AccentHover), ui::PxF(1.5f));
             prev = cur;
         }
         ImGui::Dummy(sz);

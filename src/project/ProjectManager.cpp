@@ -429,4 +429,23 @@ void ProjectManager::SetEditorString(const char* key, const std::string& value)
     WriteJsonFile(launcher::PathFromUtf8(file), j);
 }
 
+std::string ProjectManager::LoadEditorSection(const char* key)
+{
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const nlohmann::json j = ReadEditorStateLocked(GetEditorStatePath());
+    if (j.contains(key) && j[key].is_object()) return j[key].dump();
+    return {};
+}
+
+void ProjectManager::SaveEditorSection(const char* key, const std::string& jsonText)
+{
+    nlohmann::json section = nlohmann::json::parse(jsonText, nullptr, /*allow_exceptions*/ false);
+    if (section.is_discarded() || !section.is_object()) return;
+    std::lock_guard<std::mutex> lk(StoreMutex());
+    const std::string file = GetEditorStatePath();
+    nlohmann::json j = ReadEditorStateLocked(file);   // 既存のキーは保つ（lastOpenedScene など）
+    j[key] = std::move(section);
+    WriteJsonFile(launcher::PathFromUtf8(file), j);
+}
+
 } // namespace dx12e

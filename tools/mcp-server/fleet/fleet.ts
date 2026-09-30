@@ -38,6 +38,8 @@ export type LaunchInput = {
   args?: string[];
   waitReadyMs?: number;
   confirm?: boolean;
+  /** true=起動しても既定エンジンに束縛しない(ジョブ API が専用エンジンを一時的に使うとき。ツールの引数ではない)。 */
+  noBind?: boolean;
 };
 
 /** args で渡してはいけない(フリートが管理する)起動引数。 */
@@ -576,13 +578,13 @@ export class Fleet {
       const cur = this.registry.read().engines[id];
       const slot = this.router.get(id) ?? this.router.addManaged(id, cur?.name ?? id, port);
       slot.lastCallAt = this.now();
-      this.router.setBound(id);
+      if (!o.input.noBind) this.router.setBound(id);
       this.startMonitor();
       this.log(o.isRefresh ? "refresh" : "launch", `port ${port} pid ${pid} mode ${o.mode}`, id);
       const entry = this.registry.read().engines[id]!;
       const view = this.view(entry);
       return {
-        engineId: id, name: entry.name, port, pid, mode: o.mode, bound: true,
+        engineId: id, name: entry.name, port, pid, mode: o.mode, bound: !o.input.noBind,
         dir: { instance: this.instanceDir(id), bin, data: this.dataDir(id), project: entry.project.dir, log: path.join(bin, "dx12_engine.log"), launchLog: this.launchLog(id) },
         project: { dir: entry.project.dir, disposable: entry.project.disposable, note: entry.project.disposable ? "使い捨てプロジェクト。エンジン停止後も 24 時間は残る" : "指定されたプロジェクト。MCP 接続中は 2 秒アイドルで自動保存され、実ファイルに書き込まれる" },
         exe: { path: entry.exe.path, sourcePath: entry.exe.sourcePath, sizeMB: +(entry.exe.sizeBytes / 1048576).toFixed(1), stale: view.exe.stale, linked: mat.linked, copiedMB: +(mat.copiedBytes / 1048576).toFixed(1), copyMs },

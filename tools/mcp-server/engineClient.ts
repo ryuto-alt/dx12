@@ -2,6 +2,7 @@ import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { GUARDED_METHODS, idemCtx, isGuardApproved, subKeyFor, takesIdempotencyKey } from "./guardCtx.ts";
 
 // エディタ(C++)の TCP ブリッジへ改行区切り JSON を送り、id で応答を相関させる薄いクライアント。
 // 遅延接続＋切断時は次回呼び出しで再接続(接続失敗は 0.3/0.6/1.2 秒で再試行)。単一接続で十分(engine は単一クライアントしか捌けない)。
@@ -346,7 +347,41 @@ export class EngineClient {
   // method を呼んで result を返す。engine が ok:false なら error を throw(error_code は .code に載せる)。
   // opts.timeout で method 別タイムアウトを上書きできる。
   // opts.retry:false は接続失敗時の再試行(0.3/0.6/1.2 秒)を省く(診断用。すぐ結果が欲しいとき)。
+  /**
+   * method を呼んで result を返す(公開の入口)。M5 の 2 つの仕掛けをここに置く:
+   *  ・冪等キー: dx12_call {idempotency_key} の文脈(idemCtx)の中で write 系を撃つときは、サブキーを付ける(再送しても二重実行しない)
+   *  ・guarded ゲート: 承認済みの文脈(guardApproval)で guarded な method を撃つときは、エンジンから 1 回限りの確認トークンを取って confirm_token を付ける
+   *    (エンジン側の最終ゲート。承認されていない呼び出し = dx12_batch の op など は、トークンが無いのでエンジンが拒否する)
+   */
   async call(method: string, params: Record<string, unknown>, opts?: { timeout?: number; retry?: boolean }): Promise<any> {
+    let p = params ?? {};
+    const idem = idemCtx.getStore();
+    if (idem && takesIdempotencyKey(method) && p.idempotency_key === undefined && p.idempotencyKey === undefined) p = { ...p, idempotency_key: subKeyFor(idem, method, p) };
+    const approved = isGuardApproved();
+    if (approved && GUARDED_METHODS.has(method) && p.confirm_token === undefined) p = await this.withToken(method, p);
+    try {
+      return await this.callRaw(method, p, opts);
+    } catch (e: any) {
+      // 一覧に無い guarded な method(エンジンに後から増えたもの)は、承認済みのときだけ、拒否された理由がトークン不足なら 1 回だけ取り直して再送する。
+      if (approved && e?.errName === "E_GUARDED" && e?.errDetails?.gate === "engine" && p.confirm_token === undefined && method !== "guard_token") {
+        return this.callRaw(method, await this.withToken(method, p), opts);
+      }
+      throw e;
+    }
+  }
+
+  private async withToken(method: string, p: Record<string, unknown>): Promise<Record<string, unknown>> {
+    try {
+      const r = await this.callRaw("guard_token", { method }, { timeout: 8000 });
+      return typeof r?.token === "string" ? { ...p, confirm_token: r.token } : p;
+    } catch (e: any) {
+      // guard_token を持たない古いエンジン(M5 より前)はゲートも無い。トークン無しでそのまま撃つ。
+      if (e?.errName === "E_UNKNOWN_TOOL" || e?.code === 8) return p;
+      throw e;
+    }
+  }
+
+  private async callRaw(method: string, params: Record<string, unknown>, opts?: { timeout?: number; retry?: boolean }): Promise<any> {
     if (this.releaseTimer) { clearTimeout(this.releaseTimer); this.releaseTimer = null; }
     const s = await this.connect(opts?.retry !== false);
     const id = this.nextId++;

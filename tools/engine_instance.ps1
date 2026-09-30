@@ -19,6 +19,8 @@ param(
     [string]$Project = '',
     [ValidateSet('background', 'headless')][string]$Mode = 'background',
     [string[]]$ExtraArgs = @(),
+    # 既定は build\release。ビルド出力のスナップショット（exe + DLL + shaders）を指すと、他人のビルドに影響されずに撮れる（A/B 検証用）。
+    [string]$BuildDir = '',
     [int]$IdleExitMin = 45,
     [switch]$Stop,
     [switch]$Refresh,
@@ -59,7 +61,7 @@ if (Test-Path (Join-Path $dir 'engine.pid')) {
 }
 if ($Port -le 0) { Write-Error '-Port が必要です'; exit 2 }
 
-$src = Join-Path $root 'build\release'
+$src = if ($BuildDir) { $BuildDir } else { Join-Path $root 'build\release' }
 if (-not (Test-Path (Join-Path $src 'DX12Engine.exe'))) { Write-Error "ビルド出力がありません: $src"; exit 4 }
 New-Item -ItemType Directory -Force $dir, (Join-Path $dir 'data') | Out-Null
 
@@ -67,6 +69,9 @@ New-Item -ItemType Directory -Force $dir, (Join-Path $dir 'data') | Out-Null
 robocopy $src $dir DX12Engine.exe GameRuntime.exe gh.exe *.dll /NFL /NDL /NJH /NJS /NP | Out-Null
 robocopy (Join-Path $src 'shaders') (Join-Path $dir 'shaders') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
 robocopy (Join-Path $root 'assets') (Join-Path $dir 'assets') /MIR /XF 'splash_d.*' /NFL /NDL /NJH /NJS /NP | Out-Null
+# HLSL ソース（配布版の shaders-src/ と同じ置き場）。マテリアルグラフ（GraphMaterialSystem）が ForwardGraph.hlsl などを実行時に DXC でコンパイルする。
+# exe 隣に assets/ があると「配布レイアウト」とみなされ、ソースの場所は exe 隣の shaders-src/ になる。
+robocopy (Join-Path $root 'shaders') (Join-Path $dir 'shaders-src') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
 
 $env:DX12E_DATA_DIR = Join-Path $dir 'data'
 $args2 = @("--$Mode", '--mcp-port', "$Port", '--idle-exit', "$IdleExitMin")

@@ -4,6 +4,7 @@
 #include "resource/ShaderCompiler.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "renderer/PhotometricMath.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -114,8 +115,11 @@ struct PostCB
     float outlineThreshold;
     float outlineBg[3];      // row18: outl2.xyz
     float outlineOnly;       //        outl2.w
+    // ── Q2: UE Filmic のパラメータ（tonemapper=3 のときだけ読まれる）──
+    float film0[4];          // row19: film0 = (slope, toe, shoulder, blackClip)
+    float film1[4];          // row20: film1 = (whiteClip, _, _, _)
 };
-static_assert(sizeof(PostCB) == 76 * sizeof(float), "PostCB must be 76 DWORDs (19 float4)");
+static_assert(sizeof(PostCB) == 84 * sizeof(float), "PostCB must be 84 DWORDs (21 float4)");
 
 PostProcess::PostProcess()  = default;
 PostProcess::~PostProcess() = default;
@@ -373,6 +377,32 @@ void PostProcess::Apply(ID3D12GraphicsCommandList* cmd,
     cb.outlineBg[1]      = s.outlineBg.y;
     cb.outlineBg[2]      = s.outlineBg.z;
     cb.outlineOnly       = s.outlineOnly ? 1.0f : 0.0f;
+
+    // ---- Q2: UE Filmic のパラメータ ----
+    cb.film0[0] = s.filmSlope;  cb.film0[1] = s.filmToe;
+    cb.film0[2] = s.filmShoulder; cb.film0[3] = s.filmBlackClip;
+    cb.film1[0] = s.filmWhiteClip;
+
+    // ---- Q2: 露出モード（0=従来のまま。1=手動 EV100 / 2=自動）----
+    // ★1/2 は「露出はカメラの性質」なのでマスター(enabled)が OFF でも効かせる。従来の exposureOn / autoExposureOn は
+    //   置き換える（二重に掛けない）。従来の exposure の乗算（exposureOn のとき）は美術用の上乗せとして残す。
+    if (s.exposureMode == 1 || s.exposureMode == 2)
+    {
+        mask &= ~(PE_EXPOSURE | PE_AUTOEXP);
+        const float legacyGain = (s.enabled && s.exposureOn) ? s.exposure : 1.0f;
+        if (s.exposureMode == 1)
+        {
+            cb.exposure = legacyGain * photo::ManualExposureScale(s.ev100, s.evComp);
+            mask |= PE_EXPOSURE;
+        }
+        else
+        {
+            if (in.exposureVA != 0) mask |= PE_AUTOEXP;
+            cb.exposure = legacyGain;
+            if (legacyGain != 1.0f) mask |= PE_EXPOSURE;
+        }
+        cb.enableMask = static_cast<int>(mask);
+    }
 
     // 同一フレーム内の複数 Apply（メイン + カメラプレビュー等）で CB スロットを分ける。
     // コマンドリスト実行はフレーム末尾なので、同じスロットを使い回すと後勝ちで上書きされる。

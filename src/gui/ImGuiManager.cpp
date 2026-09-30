@@ -666,6 +666,24 @@ void ImGuiManager::Initialize(
     Logger::Info("ImGui initialized (SRV index={})", m_srvIndex);
 }
 
+void ImGuiManager::SetIniPath(const std::string& utf8Path)
+{
+    if (utf8Path.empty() || !ImGui::GetCurrentContext()) return;
+    // 旧: カレントディレクトリの imgui.ini。新しい場所が空なら一度だけ引き継ぐ（フローティング窓の位置を失わない）。
+    std::error_code ec;
+    std::wstring wide(static_cast<size_t>(MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, nullptr, 0)), wchar_t(0));
+    MultiByteToWideChar(CP_UTF8, 0, utf8Path.c_str(), -1, wide.data(), static_cast<int>(wide.size()));
+    if (!wide.empty() && wide.back() == wchar_t(0)) wide.pop_back();
+    const std::filesystem::path np(wide);
+    if (!std::filesystem::exists(np, ec) && std::filesystem::exists("imgui.ini", ec))
+    {
+        std::filesystem::create_directories(np.parent_path(), ec);
+        std::filesystem::copy_file("imgui.ini", np, ec);
+    }
+    m_iniPath = utf8Path;
+    ImGui::GetIO().IniFilename = m_iniPath.c_str();
+}
+
 void ImGuiManager::SetIniSavingDisabled(bool on)
 {
     m_iniSavingDisabled = on;

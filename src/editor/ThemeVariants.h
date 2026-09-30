@@ -5,15 +5,17 @@
 // トークン表として並べたもの。実際の適用は EditorTheme.h（theme::SetVariant → ApplyStyle）と
 // UiWidgets.cpp の deco::*（グロー / ヘアライン / シグナルバー等の共通装飾ヘルパ）が行う。
 //
-//   Default … 現行（第 1〜3 波のまま。見た目は 1px も変わらない）
-//   A       … ネオン・エッジ    : 藍寄りの暗い面 + 細いネオンのエッジライト（フォーカス / 選択 / アクティブ）
+// ★フェーズ 1a（2026-09-30）で案 A「ネオン・エッジ」＋案 C の色の節度を Default（＝エディタの既定）に採用した。
+//   旧 Default（第 1〜3 波の UE5 風）と案 A は無くなり、b / c は「別テーマ」として残す（将来のテーマ切替の下地）。
+//
+//   Default … ネオン・エッジ    : 藍寄りの暗い面 + 細いネオンのエッジライト（フォーカス / 選択 / アクティブだけ光る）
 //   B       … グラス・レイヤー  : 階調を強めた半透明ガラス風の面 + 淡い光の縁 + 大きめの角丸 + 浮遊するポップアップ
 //   C       … インク・アンド・シグナル : ほぼモノトーン + シグナルカラー 1 色（ライム）だけを状態表示に使う編集ツール風
 //
 // ★ここは純データ（imgui.h の ImVec4 だけに依存）。描画ロジックは持たない。
 //   案を 1 つに決めたら、その案の表を Default へ移して他を消すだけで済む（呼び出し側は Variant を意識しない）。
-// ★色の値を増やす時は Palette に足し、4 つの表（Default / A / B / C）と theme::SetVariant に配線する。
-//   単体テスト（tests/theme_variant_test.cpp）が「Default が旧値と一致」「各案の文字コントラストが AA」を検査する。
+// ★色の値を増やす時は Palette に足し、3 つの表（Default / B / C）と theme::SetVariant に配線する。
+//   単体テスト（tests/theme_variant_test.cpp）が「Default の採用値の固定」「各案の文字コントラストが AA」を検査する。
 
 #pragma warning(push)
 #pragma warning(disable: 4201)
@@ -37,32 +39,30 @@ inline ImVec4 Hex(unsigned int rgb, float a = 1.0f)
 
 enum class Variant : int
 {
-    Default = 0,   // 現行
-    A       = 1,   // ネオン・エッジ
-    B       = 2,   // グラス・レイヤー
-    C       = 3,   // インク・アンド・シグナル
+    Default = 0,   // ネオン・エッジ（エディタの既定）
+    B       = 2,   // グラス・レイヤー（別テーマ）
+    C       = 3,   // インク・アンド・シグナル（別テーマ）
 };
-inline constexpr int kVariantCount = 4;
+inline constexpr int kVariantCount = 4;   // 番号 1 は旧案 A（Default に統合済み）で欠番
 
 inline const char* VariantName(Variant v)
 {
     switch (v)
     {
-    case Variant::A: return "A: ネオン・エッジ";
     case Variant::B: return "B: グラス・レイヤー";
     case Variant::C: return "C: インク・アンド・シグナル";
-    default:         return "現行";
+    default:         return "既定: ネオン・エッジ";
     }
 }
 
-// "a" / "A" / "b" / "c" / "default" / "0".."3"。解釈できなければ false（out は変えない）。
+// "a" / "A" / "b" / "c" / "default" / "0".."3"（a・1 は旧案 A ＝ 現在の既定と同一）。解釈できなければ false（out は変えない）。
 inline bool ParseVariant(const std::string& s, Variant& out)
 {
     if (s.size() == 1)
     {
         switch (s[0])
         {
-        case 'a': case 'A': case '1': out = Variant::A;       return true;
+        case 'a': case 'A': case '1': out = Variant::Default; return true;
         case 'b': case 'B': case '2': out = Variant::B;       return true;
         case 'c': case 'C': case '3': out = Variant::C;       return true;
         case '0':                     out = Variant::Default; return true;
@@ -123,7 +123,8 @@ struct Deco
     bool  panelSheen;      // パネル面にごく淡いグラデ（B）
     bool  layeredShadow;   // ポップアップ/メニュー/パレットを多重半透明の影で浮かせる（A は軽く / B は厚く）
     float shadowStrength;  // 0..1
-    float rimAlpha;        // 浮遊物の淡い光の縁（白の alpha。0 = 無し）
+    float rimAlpha;        // パネル / 浮遊物の淡い光の縁（白の alpha。0 = 無し。B のガラス）
+    float popupRim;        // ポップアップ / メニュー / パレットの内側の細い白縁（alpha。0 = 無し。rimAlpha が 0 の案用）
     RowStyle    rowStyle;
     HeaderStyle headerStyle;
     bool  monoIcons;       // アイコンを無彩色にする（C）。アクティブだけシグナル色
@@ -143,9 +144,10 @@ struct Spec
 namespace detail
 {
 
-inline Spec MakeDefault()
+// 案の土台（旧 Default ＝ 第 1 波の UE5 風・装飾なし）。Default / B / C はこの土台からの差分だけを書く。
+// ★これ自体はどこからも直接使わない（SpecOf は Default / B / C だけ返す）。
+inline Spec MakeBase()
 {
-    // ★現行値そのもの（第 1 波の EditorTheme.h のトークン表 / ApplyStyle の直書き値）。ここを変えると既定の見た目が変わる。
     Spec s{};
     Palette& p = s.pal;
     p.bg0 = Hex(0x0E0E10);  p.bg1 = Hex(0x171719);  p.bg2 = Hex(0x1F1F23);  p.bg3 = Hex(0x2A2A2F);  p.bg4 = Hex(0x34343B);
@@ -178,7 +180,7 @@ inline Spec MakeDefault()
     Deco& d = s.deco;
     d.glow = 0.0f; d.hoverTint = 0.0f; d.easeSec = 0.0f;
     d.panelFocusEdge = false; d.panelTopLine = false; d.panelSheen = false;
-    d.layeredShadow = false;  d.shadowStrength = 0.0f; d.rimAlpha = 0.0f;
+    d.layeredShadow = false;  d.shadowStrength = 0.0f; d.rimAlpha = 0.0f; d.popupRim = 0.0f;
     d.rowStyle = RowStyle::Plain; d.headerStyle = HeaderStyle::Plain;
     d.monoIcons = false; d.statusTopLine = false; d.toolbarLine = false;
     d.backdropTop = ImVec4(0, 0, 0, 0); d.backdropBottom = ImVec4(0, 0, 0, 0);
@@ -186,12 +188,15 @@ inline Spec MakeDefault()
 }
 
 // ------------------------------------------------------------------
-// 案 A「ネオン・エッジ」: 現行の延長。藍寄りの暗い面（青みのあるニュートラル）に、
-// フォーカス / 選択 / アクティブだけ細いネオンのエッジライトを走らせる。ホバーは微発光。
+// 既定「ネオン・エッジ」（旧案 A + 案 C の色の節度）: 藍寄りの暗い面（青みのあるニュートラル）に、
+// フォーカス / 選択 / アクティブ / ドラッグ中「だけ」細いネオンのエッジライトを走らせる。
+// 節度（案 C から）: 光るのは状態があるところだけ・グローは小さく・種別色は彩度を控えめに・状態色（緑/橙/赤）は
+// 意味のある通知だけ・数値は等幅。浮遊物（ポップアップ / メニュー / パレット / トースト）だけ案 B から
+// 「影と光の縁」を借りる。
 // ------------------------------------------------------------------
-inline Spec MakeA()
+inline Spec MakeDefault()
 {
-    Spec s = MakeDefault();
+    Spec s = MakeBase();
     Palette& p = s.pal;
     p.bg0 = Hex(0x090A10);  p.bg1 = Hex(0x11131B);  p.bg2 = Hex(0x181B26);  p.bg3 = Hex(0x232736);  p.bg4 = Hex(0x2D3247);
     p.windowBg = p.bg1;     p.popupBg = Hex(0x141721);
@@ -204,10 +209,11 @@ inline Spec MakeA()
     p.tabOverline = p.accentHover;  p.tabOverlineDim = Hex(0x2F96FF, 0.45f);
     p.text = Hex(0xDCDFEC);  p.textMid = Hex(0xC1C6D8);  p.textDim = Hex(0xA0A6BC);  p.textFaint = Hex(0x9299B2);
     p.good = Hex(0x4FD08A);  p.warn = Hex(0xF0B04A);  p.bad = Hex(0xFF7570);
-    p.typeMesh = Hex(0xAEB6CC);   p.typeLight = Hex(0xFFC15E);  p.typeCamera = Hex(0x5CB0FF);
-    p.typeAudio = Hex(0x50D8D2);  p.typeScript = Hex(0xB39CFF); p.typePhysics = Hex(0x70D48D);
-    p.typeUi = Hex(0xF283CB);     p.typePrefab = Hex(0x70B3FF); p.typeEmpty = Hex(0x8F96AE);
-    p.typeFolder = Hex(0xB9BFD4); p.typeScene = Hex(0xFF9C5E);
+    // 種別色は控えめに（案 C の規律: 色は状態のためにとっておく。彩度は旧案 A より一段落とし、形（アイコン）で見分けられるようにする）
+    p.typeMesh = Hex(0xAEB6CC);   p.typeLight = Hex(0xEDBB6A);  p.typeCamera = Hex(0x68AEF5);
+    p.typeAudio = Hex(0x62C9C6);  p.typeScript = Hex(0xAE9CF0); p.typePhysics = Hex(0x78C48C);
+    p.typeUi = Hex(0xDD8DC0);     p.typePrefab = Hex(0x7BAFF5); p.typeEmpty = Hex(0x8F96AE);
+    p.typeFolder = Hex(0xB9BFD4); p.typeScene = Hex(0xEE9C6C);
     p.btnActive = Hex(0x383E56);
     p.scrollGrab = Hex(0x2E3449);  p.scrollGrabHover = Hex(0x444C68);  p.scrollGrabActive = Hex(0x596382);
     p.tableBorderLight = Hex(0x1B1F2C);  p.tableRowAlt = Hex(0xB4C8FF, 0.022f);  p.treeLines = Hex(0xB4C8FF, 0.15f);
@@ -219,9 +225,9 @@ inline Spec MakeA()
     m.popupRounding = 6.0f; m.tabRounding = 4.0f;
 
     Deco& d = s.deco;
-    d.glow = 1.0f;  d.hoverTint = 0.07f;  d.easeSec = 0.11f;
+    d.glow = 0.8f;  d.hoverTint = 0.05f;  d.easeSec = 0.11f;   // グローは旧案 A の 8 割（光り物にならない）
     d.panelFocusEdge = true;
-    d.layeredShadow = true;  d.shadowStrength = 0.55f;  d.rimAlpha = 0.0f;
+    d.layeredShadow = true;  d.shadowStrength = 0.70f;  d.rimAlpha = 0.0f;  d.popupRim = 0.10f;   // 浮遊物の影 / 縁は案 B から
     d.rowStyle = RowStyle::NeonBar;  d.headerStyle = HeaderStyle::GlowTick;
     d.statusTopLine = true;  d.toolbarLine = true;
     return s;
@@ -233,7 +239,7 @@ inline Spec MakeA()
 // ------------------------------------------------------------------
 inline Spec MakeB()
 {
-    Spec s = MakeDefault();
+    Spec s = MakeBase();
     Palette& p = s.pal;
     p.bg0 = Hex(0x06070B);  p.bg1 = Hex(0x14161E);  p.bg2 = Hex(0x1D202B);  p.bg3 = Hex(0x292D3D);  p.bg4 = Hex(0x363B50);
     p.windowBg = Hex(0x14161E, 0.93f);  p.popupBg = Hex(0x1A1D29, 0.95f);
@@ -276,7 +282,7 @@ inline Spec MakeB()
 // ------------------------------------------------------------------
 inline Spec MakeC()
 {
-    Spec s = MakeDefault();
+    Spec s = MakeBase();
     Palette& p = s.pal;
     p.bg0 = Hex(0x0A0A0A);  p.bg1 = Hex(0x131313);  p.bg2 = Hex(0x1B1B1B);  p.bg3 = Hex(0x252525);  p.bg4 = Hex(0x303030);
     p.windowBg = p.bg1;     p.popupBg = Hex(0x191919);
@@ -317,12 +323,10 @@ inline Spec MakeC()
 inline const Spec& SpecOf(Variant v)
 {
     static const Spec kDefault = detail::MakeDefault();
-    static const Spec kA = detail::MakeA();
     static const Spec kB = detail::MakeB();
     static const Spec kC = detail::MakeC();
     switch (v)
     {
-    case Variant::A: return kA;
     case Variant::B: return kB;
     case Variant::C: return kC;
     default:         return kDefault;

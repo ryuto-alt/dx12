@@ -6,6 +6,7 @@
   calibrate     リニア画像を外部基準(UE のスクショ等)へ合わせるトーンマップと EV の候補を出す
   run           シーン仕様を自動で回す(エンジン起動 -> 撮影 -> 基準 -> 比較 -> 性能 -> レポート -> 合否)
   baseline      視覚回帰: update(候補を撮る)/ approve(理由つきで承認)/ check(差分検出)/ list
+  compare-batch 複数ペアをまとめて評価(視覚回帰 MCP 用。判定なし・指標とレポートだけ)
   scenes        シーン仕様の一覧・検証
   doctor        依存と環境の確認(--selftest で偽エンジンによる通し確認)
 
@@ -196,7 +197,8 @@ def _opts_from(a: argparse.Namespace, **kw) -> RunOptions:
                    external_dir=Path(a.external_dir) if getattr(a, "external_dir", None) else None,
                    progress=getattr(a, "progress", False), want_noise=getattr(a, "want_noise", False),
                    no_perf_history=getattr(a, "no_perf_history", False),
-                   baseline_root=Path(a.baseline_root) if getattr(a, "baseline_root", None) else None)
+                   baseline_root=Path(a.baseline_root) if getattr(a, "baseline_root", None) else None,
+                   build_dir=getattr(a, "build_dir", None))
     for k, v in kw.items():
         setattr(o, k, v)
     return o
@@ -390,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--attach", type=int, metavar="PORT", help="起動済みのエンジンへ接続だけする(起動も停止もしない)")
         p.add_argument("--port", type=int, default=8820)
         p.add_argument("--name", default="par")
+        p.add_argument("--build-dir", help="engine_instance.ps1 の -BuildDir(ビルド出力 = exe + DLL + shaders のスナップショット。他のビルドに影響されずに撮る)。環境変数 PARITY_BUILD_DIR でも指定できる")
         p.add_argument("--mode", choices=["headless", "background"])
         p.add_argument("--camera", action="append", help="このカメラだけ(複数可)")
         p.add_argument("--project", help="scene.project を上書き(使い捨てのコピー推奨)")
@@ -417,6 +420,12 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--approver", default="")
     b.add_argument("--json", action="store_true")
     b.set_defaults(fn=cmd_baseline)
+
+    cb = sub.add_parser("compare-batch", help="複数ペアの指標・ヒートマップ・レポート(判定なし。dx12_visual_regression 用)")
+    cb.add_argument("job", help="ペア一覧の JSON(batch.py の docstring 参照)")
+    cb.add_argument("--out", required=True)
+    cb.add_argument("--embed", action="store_true")
+    cb.set_defaults(fn=lambda a: __import__("parity.batch", fromlist=["main_batch"]).main_batch(a))
 
     s = sub.add_parser("scenes", help="シーン仕様の一覧・検証")
     s.add_argument("files", nargs="*")

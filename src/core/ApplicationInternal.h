@@ -49,6 +49,7 @@
 #include "renderer/ScreenShaderPass.h"
 #include "renderer/BloomPass.h"
 #include "renderer/AutoExposurePass.h"
+#include "renderer/LinearCapturePass.h"   // Q2: 線形 HDR スクリーンショット（unique_ptr のデストラクタに完全型が要る）
 #include "renderer/GodRaysPass.h"
 #include "renderer/LensFlarePass.h"
 #include "renderer/DofPass.h"
@@ -65,6 +66,9 @@
 #include "renderer/RtScreenPass.h"
 #include "renderer/SkinningCompute.h"
 #include "renderer/DdgiVolume.h"
+#include "renderer/vg/VirtualGeometrySystem.h"   // 仮想ジオメトリ P2（unique_ptr のデストラクタに完全型が要る）
+#include "renderer/foliage/FoliageSystem.h"      // 植生 F1（unique_ptr のデストラクタに完全型が要る）
+#include "renderer/water/WaterRenderer.h"        // 水面 W1（unique_ptr のデストラクタに完全型が要る）
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DecalSystem.h"
 #include "renderer/PrevWorldComponent.h"
@@ -82,6 +86,7 @@
 #include "resource/ResourceManager.h"
 #include "resource/TextureLoader.h"
 #include "resource/MaterialAssetManager.h"
+#include "renderer/GraphMaterialSystem.h"   // マテリアルグラフ G2b（.dxmat の graph キーを持つ材質のランタイム）
 #include "resource/TerrainLayerSet.h"
 #include "graphics/Texture.h"
 #include "animation/Skeleton.h"
@@ -134,6 +139,7 @@
 #include "editor/ModelThumbnailRenderer.h"
 #include "editor/panels/McpBridgePanel.h"
 #include "editor/panels/NetworkPanel.h"
+#include "editor/panels/PathTracerPanel.h"   // リファレンスレンダー窓（DXR パストレーサー）
 #include "editor/panels/VfxEditorPanel.h"
 #include "editor/panels/TransitionPreviewPanel.h"
 #include "editor/panels/UiEditorPanel.h"
@@ -142,6 +148,7 @@
 #include "editor/panels/MaterialEditorPanel.h"
 #include "editor/panels/MaterialLibraryPanel.h"
 #include "editor/panels/TerrainPanel.h"   // 地形ツール（状態は関数ローカル static なので所有しない）
+#include "editor/panels/FoliagePanel.h"   // 植生ツール窓（F1。状態は関数ローカル static）
 #include "editor/panels/NavMeshPanel.h"   // ナビメッシュ窓（同上。MCP からも BuildForScene を呼ぶ）
 #include "editor/panels/SculptPanel.h"    // スカルプト窓（同上。ハイトフィールドで作れん異形の担当）
 #include "editor/ScenePick.h"             // MCP dx12_pick / raycast_precise / snap_to_ground（エディタと同じ実装）
@@ -298,6 +305,9 @@ inline bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const
     else if (key == "footIK")              reg.remove<FootIK>(e);
     else if (key == "brain")               reg.remove<Brain>(e);
     else if (key == "audioReverbZone")     reg.remove<AudioReverbZone>(e);
+    else if (key == "virtualGeometry")     reg.remove<VirtualGeometry>(e);
+    else if (key == "foliageLayer")        reg.remove<FoliageLayer>(e);
+    else if (key == "waterBody")           reg.remove<WaterBody>(e);
     else return false;
     return true;
 }
@@ -1032,6 +1042,9 @@ inline nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entit
     if (reg.all_of<FootIK>(e))              a.push_back("footIK");
     if (reg.all_of<Brain>(e))               a.push_back("brain");
     if (reg.all_of<AudioReverbZone>(e))     a.push_back("audioReverbZone");
+    if (reg.all_of<VirtualGeometry>(e))     a.push_back("virtualGeometry");
+    if (reg.all_of<FoliageLayer>(e))        a.push_back("foliageLayer");
+    if (reg.all_of<WaterBody>(e))           a.push_back("waterBody");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     // ★ゲーム内 UI と編集用グリッド。長らくここから漏れていて、
     //   dx12_list_entities(verbose) では UI 要素が「transform だけの空エンティティ」に見えていた

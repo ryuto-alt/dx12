@@ -100,11 +100,22 @@ float3 PerturbNormal(float3 worldNormal, float3 worldTangent, float tangentW,
 //   平均法線の長さ（＝分散）がテクスチャに残らない（常に単位長に戻る）。
 //
 // params: .x=強さ(0 で恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
+//
+// ★画面空間微分のフック（仮想ジオメトリ P4 の resolve 用）: 可視性バッファ方式では隣の画素が別の三角形なので
+//   ddx/ddy が壊れる。resolve（shaders/vg/VgResolve.hlsl）は include の前に UNO_SHADE_DDX_N / UNO_SHADE_DDY_N を
+//   「解析的に作った 1 画素差分」へ差し替える。既定は ddx / ddy そのもの＝既存シェーダはプリプロセス後の
+//   テキストが 1 文字も変わらない（DXIL 同値。tools/shader_dxil_equiv.ps1）。
+#ifndef UNO_SHADE_DDX_N
+#define UNO_SHADE_DDX_N(v) ddx(v)
+#endif
+#ifndef UNO_SHADE_DDY_N
+#define UNO_SHADE_DDY_N(v) ddy(v)
+#endif
 void FilterShadingNormal(inout float3 N, inout float roughness, float3 Ng, float3 params)
 {
     // ★ddx/ddy は分岐の外で取る（勾配命令を非一様な制御フローに入れない）。
-    float3 dNx = ddx(N);
-    float3 dNy = ddy(N);
+    float3 dNx = UNO_SHADE_DDX_N(N);
+    float3 dNy = UNO_SHADE_DDY_N(N);
     if (params.x <= 0.0) return;
 
     // 画素内の法線分散（スクリーン空間の 1 画素分の広がり）

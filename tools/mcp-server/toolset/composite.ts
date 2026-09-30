@@ -8,6 +8,7 @@ import { argError } from "../sceneTools.ts";
 import { TOOL_PARAM_KEYS, engine, entityId, entityRef, errResult, imageResult, reg, regRaw, run } from "./core.ts";
 import { GUARDED_NAMES } from "../catalog.ts";
 import { SURFACE } from "../toolRuntime.ts";
+import { idemCtx, newIdemCtx } from "../guardCtx.ts";
 import { manifestStore } from "./shell.ts";
 
 // ════════════════════════════════════════════════════════════════
@@ -113,6 +114,12 @@ function batchDeclaredKeys(method: string): string[] | null {
   return [...declared, ...(METHOD_KEY_ALIASES[method] ?? [])];
 }
 
+/** 冪等キー(idempotency_key)が渡されたら、その文脈の中で実行する(op ごとにサブキーが付き、再送しても完了済みの op は二重実行されない)。 */
+const withIdem = (h: (a: any) => Promise<any>) => (args: any) => {
+  const key = args?.idempotency_key ?? args?.idempotencyKey;
+  return key && !idemCtx.getStore() ? idemCtx.run(newIdemCtx(String(key)), () => h(args)) : h(args);
+};
+
 reg(
   "dx12_batch",
   "一括実行",
@@ -133,19 +140,20 @@ reg(
     label: z.string().optional().describe("atomic のときの Undo 履歴の名前(「AI: <label>」)。省略で batch(<件数>)。"),
   },
   {},
-  ({ ops, stopOnError, atomic, label }) => run(async () => {
+  withIdem(({ ops, stopOnError, atomic, label }) => run(async () => {
     // ★atomic の既定を true にした理由: batch は「部屋を 1 つ組む」のようなまとまった編集に使われるが、
     //   途中で 1 つ失敗すると半端な状態(床だけある・壁が 3 枚)がシーンに残り、AI は何を消せば元に戻るか
     //   分からなかった。トランザクションで包めば失敗時は begin 前へ丸ごと戻り、成功時も Undo 1 回で戻せる。
     // ★guarded な method(git push / eval_lua / delete_asset / build_game …)を batch 経由で撃たせない。
     //   batch の op はエンジン method 直叩きなので、ここで見ないと dx12_call_guarded / confirm のゲートを素通りできてしまう。
-    //   core / shell 面だけの挙動(full / legacy は旧ツールが個別に直接呼べる面なので従来どおり)。M5 でエンジン側のゲートに移す。
-    if (SURFACE === "core" || SURFACE === "shell") {
+    //   M5: 全ての面で拒否する(旧: core / shell 面だけ)。さらにエンジン側の最終ゲート(confirm_token)が二重に止める:
+    //   batch の op は承認済みの文脈(guardCtx)で撃たれないのでトークンが付かず、エンジンが E_GUARDED で拒否する。
+    {
       const guardedOps = [...new Set(ops.map((o) => o.method).filter((m) => GUARDED_NAMES.has("dx12_" + m) || manifestStore.get(m)?.effect === "guarded"))];
       if (guardedOps.length) {
         const e: any = argError(
           `dx12_batch に guarded な method が入っている: ${guardedOps.join(", ")}(取り返しが付かない/外部に影響する操作は batch では実行しない)`,
-          SURFACE === "core" ? "guarded な操作は dx12_call_guarded から 1 つずつ実行する(先に dryRun:true)" : "guarded な操作は dx12_call {confirm:true} から 1 つずつ実行する(ユーザーの承認を得てから)",
+          SURFACE === "core" ? "guarded な操作は dx12_call_guarded から 1 つずつ実行する(先に dryRun:true)" : "guarded な操作は dx12_call {confirm:true} から 1 つずつ実行する(ユーザーの承認を得てから)。dx12_batch には入れられない",
         );
         e.errName = "E_GUARDED";
         e.errFix = guardedOps.map((m) => ({ tool: SURFACE === "core" ? "dx12_call_guarded" : "dx12_call", args: { name: "dx12_" + m, args: {}, dryRun: true }, why: `${m} を単独で dryRun してから、承認を得て実行する` }));
@@ -161,6 +169,12 @@ reg(
         const b = await engine.call("transaction_begin", { label: label ?? `batch(${ops.length})` });
         ownTx = true;
         tx = { label: b?.label ?? label, entryName: b?.entryName };
+        // ファイルを書く op: journal 対応(save_scene / create_lua_component / create_shader / move_asset / delete_asset / import_asset / create_prefab)は
+        // rollback でファイルも戻る。対応していない write_file(地形の保存など)は、失敗して rollback してもファイルが戻らない。
+        const fileOps = [...new Set(ops.map((o) => o.method).filter((m) => manifestStore.get(m)?.effect === "write_file"))];
+        const notRestorable = fileOps.filter((m) => !manifestStore.get(m)?.journal);
+        if (fileOps.length) tx = { ...tx, fileWrites: { restorableOnRollback: fileOps.filter((m) => manifestStore.get(m)?.journal), notRestorable } };
+        if (notRestorable.length) tx = { ...tx, warning: `${notRestorable.join(", ")} が書くファイルは、失敗して rollback しても元に戻らない(journal 未対応)。シーンのメモリだけが戻る` };
       } catch (e: any) {
         // 既に開いている(呼んだ側が begin 済み)ならその中で実行する。閉じるのは呼んだ側。
         if (/already open/i.test(String(e?.message ?? ""))) tx = { label: null, note: "既に開いているトランザクションの中で実行した(commit / rollback は呼んだ側で)" };
@@ -198,11 +212,11 @@ reg(
       try {
         if (failed) {
           const rb = await engine.call("transaction_rollback", {});
-          tx = { ...tx, rolledBack: true, calls: rb?.calls, humanEditsDuringTransaction: rb?.humanEditsDuringTransaction,
-                 note: "失敗したので begin 前へ丸ごと戻した(成功した op の変更も残っていない)" };
+          tx = { ...tx, rolledBack: true, calls: rb?.calls, humanEditsDuringTransaction: rb?.humanEditsDuringTransaction, ...(rb?.journal ? { journal: rb.journal } : {}),
+                 note: "失敗したので begin 前へ丸ごと戻した(成功した op の変更も残っていない。journal 対応のファイルも元の内容へ戻した)" };
         } else {
           const cm = await engine.call("transaction_commit", {});
-          tx = { ...tx, committed: true, calls: cm?.calls, entryName: cm?.entryName ?? tx?.entryName,
+          tx = { ...tx, committed: true, calls: cm?.calls, entryName: cm?.entryName ?? tx?.entryName, ...(cm?.journal ? { journal: cm.journal } : {}),
                  note: "1 エントリとして Undo に積んだ(dx12_undo 1 回で丸ごと戻せる)" };
         }
       } catch (e: any) {
@@ -211,7 +225,7 @@ reg(
       }
     }
     return { results, ...(tx ? { transaction: tx } : {}) };
-  }),
+  })),
 );
 
 

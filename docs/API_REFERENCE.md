@@ -74,6 +74,7 @@ end
 | `physics` | PhysicsSystem | 剛体・コライダー・レイキャスト・キャラ移動 |
 | `events` | table | 疎結合イベントバス（C++ EventBus の薄バインド） |
 | `time` | table | 経過時間・タイムスケール（ポーズ/スローモ）・タイマー |
+| `Sequence` | table | シーケンサー(`.dxseq`)の再生（カメラワーク・カット・イベントを時間軸で。`Sequence.play/stop/pause/resume/seek/isPlaying/duration/time`）。既定は実時間 |
 | `ui` | table | 即時モード ゲーム内 UI |
 | `fx` | table | 即時パーティクル放出（burst/ring/beam/pulse） |
 | `vfx` | table | 統一 VFX 窓口（コード or Effekseer） |
@@ -589,6 +590,33 @@ function OnUpdate(self, dt)
   if c:charging() then ui:rect(20, 60, 200 * c:ratio(), 12, 1, 0.8, 0.2, 1) end
   local v = c:released()
   if v then shootArrow(self, v * self.skipPerCharge) end  -- 引いた量でスキップ量が変わる
+end
+```
+
+### Sequence（`Sequence`）— シーケンサー（`.dxseq`）の再生（v1.21+）
+時間軸で作り込んだ演出（カメラワーク・カメラカット・Transform / プロパティのキー・ポスト・イベント）を Play 中に流す。**`.` で呼ぶ**。
+シーケンスは `assets/sequences/<名前>.dxseq`。作る・編集するのはエディタのタイムライン、または AI の MCP `dx12_sequence`（`edit` / `eval` / `scrub`）。
+**既定の時計は実時間**（`time.setScale` でスローモにしても台本は止まらない。`clock="game"` でゲーム時間にできる）。
+
+| API | 説明 |
+|---|---|
+| `Sequence.play(name, opts?)` → `id` \| `nil, エラー文` | 再生開始。`opts`: `rate`（速度。負=逆再生）/ `loop`（`true` / `"loop"` / `"pingpong"`。省略=シーケンスの `meta.loop`、無ければ 1 回）/ `from`（開始位置・秒）/ `clock`（`"real"`=既定・`"game"`）/ `restoreOnEnd`（既定 true。終了時にタイムスケールとカットの選択を戻す）/ `delay`（開始までの待ち・秒）。同じシーケンスが再生中なら頭から入れ替える |
+| `Sequence.stop(name?)` | 止める（省略か `"*"` で全部）。書いた `timeScale` は元へ戻す。**エンティティの値は戻さない**（演出の結果を残す。Stop でシーンごと復元される） |
+| `Sequence.pause(name)` / `Sequence.resume(name)` | 一時停止 / 再開 |
+| `Sequence.seek(name, sec)` | 再生位置を秒で移す（**イベントは発火しない**） |
+| `Sequence.isPlaying(name)` / `Sequence.duration(name)` / `Sequence.time(name)` | 再生中か / 長さ(秒。無ければ nil) / 再生位置(秒。再生中でなければ nil) |
+
+- イベントトラック（`emit` / `lua` / `log` / `loadScene`）は**前進で 1 回だけ**発火する。`emit` は `events` バスへ（`events:on("boom", fn)` で受ける）、`lua` は名前のグローバル関数（`"Mod.fn"` も可）を引数つきで呼ぶ。
+- 終わると `events` に `"<name>:done"`（`data.value = 1`）が飛ぶ。`events:emit("<name>:play")` / `("<name>:stop")` でも操作できる（旧 `dx12_sequence_author` が生成した Lua と同じ名前）。
+- **物理との競合**: 動的な剛体（`RigidBody.motionType = Dynamic`）と `CharacterController` の `Transform` は書かない（物理が上書きするため。警告がログに出る）。動かしたいならキネマティックにするか、物理を持たないエンティティをバインドする。静的な剛体は見た目だけ動く（当たり判定は動かない）。
+- ポスト / DoF / カメラの揺れ / アクティブカメラの選択（カット）は**シーンを書き換えず描画時にだけ上書き**する（`isActive` も変わらない）。
+- シーンの自動再生: シーン JSON の `sequencePlayers`（MCP `dx12_sequence {op:"autoplay"}`）に並べたシーケンスは Play 開始時に再生される。
+
+```lua
+function OnStart()
+  events:on("boom", function(d) fx:burst{ x=0, y=1, z=0, count=60 } end)   -- シーケンスのイベントトラックから飛んでくる
+  Sequence.play("Intro", { loop = false })
+  events:on("Intro:done", function() goToScene("scenes/level1.json") end)
 end
 ```
 
@@ -1123,6 +1151,7 @@ end)
 | `Sprite2D` | `texturePath`, `layer=0`, `size=(1,1)`, `uvMin`,`uvMax`, `color=(1,1,1,1)`, `worldSpace=true`, `billboard=false`, `animFrames=0`(フリップブック総フレーム。>0でuvMin/Max自動), `animFps=8`, `animCols=0`(0=animFrames), `animRow=0`, `animRows=0`(0=自動), `animMode=0`(0=ループ 1=単発 2=往復), `scrollU/scrollV=0`(UVスクロール 単位/秒。animFrames>0中は無視) |
 | `AudioSource` | `clipPath`, `volume=1`, `loop=false`, `spatial=true`, `playOnStart=true`, `minDistance=1`, `maxDistance=30`, `bus=""`（空 = sfx）, `priority=128`（0..255） |
 | `AudioReverbZone` | `preset="room"`（none/generic/closet/room/smallroom/largeroom/bathroom/stoneroom/hallway/stonecorridor/hall/cave/sewer/hangar/forest/city/outdoor/underwater）, `shape=0`（0=箱 1=球）, `halfExtents=(4,2.5,4)`, `radius=5`, `fadeDistance=2`, `wet=0.5`, `priority=0`（重なったら大きい方が内側）, `enabled=true`。形は Transform のローカル空間（回転・スケール込み）。リスナーが入ると響きが補間で切り替わる |
+| `VirtualGeometry` | `vgeoPath=""`（assets 相対 or 絶対の `.vgeo`。空なら同エンティティの MeshRenderer.modelPath）, `enabled=true`。仮想ジオメトリ（Nanite 風）。`MeshRenderer.modelPath` に `.vgeo` を指定するとプロキシ（通常メッシュ）が従来経路で描かれ、TLAS・影・ピッキング・物理はプロキシを見る。P2 時点では GPU カリングの統計だけで描画はしない（ON/OFF はシーン設定 `virtualGeometry.enabled`、既定 OFF） |
 
 **連番アニメ（UIImage / Sprite2D / MeshRenderer 共通）**: UV 計算は `renderer/SpriteAnim.h` の純関数を3者で共有する
 （テクスチャを `animCols` x `animRows` グリッドとみなし `frame = floor(t*animFps)` のセルを写す。`animCols=0`=横1行ストリップ、

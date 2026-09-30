@@ -15,6 +15,7 @@
 #include "scene/Scene.h"
 #include "scene/Entity.h"
 #include "ecs/Components.h"
+#include "ecs/EditorFlags.h"   // EntityDisabled（無効なエンティティは OnUpdate を回さない）
 #include "ui/UiRichText.h"   // isUiTypewriterDone: rich=true のタグ除去後文字数
 #include "renderer/Mesh.h"
 #include "renderer/TransitionPresets.h"   // transitionToScene がプリセット ID を受ける
@@ -27,6 +28,7 @@
 #include "audio/AudioSystem.h"
 #include "scripting/ScriptAudioBindings.h"
 #include "scripting/ScriptSaveBindings.h"
+#include "core/SequenceLuaApi.h"   // Lua の Sequence.*（シーケンサー S1b）
 #include "core/save/SaveService.h"
 #include "physics/PhysicsSystem.h"
 #include "ai/AiSystem.h"
@@ -2127,6 +2129,69 @@ void ScriptEngine::RegisterBindings()
         tm.set_function("setScale", [this](float s) { m_timeScale = (s < 0.0f) ? 0.0f : s; });
     }
 
+    // --- Sequence: シーケンサー(.dxseq)の再生 API（'.' で呼ぶ。Play 中のゲームから）---
+    // assets/sequences/<name>.dxseq を読んで再生する。既定の時計は【実時間】（time.setScale の影響を受けない）。
+    // 実体は core/SequencerHost（Application が SetSequenceApi で注入）。注入が無ければ何もしない。
+    //   Sequence.play(name, {rate, loop, from, clock, restoreOnEnd, delay}) -> id | nil, エラー文
+    //   Sequence.stop(name|"*") / pause(name) / resume(name) / seek(name, 秒) / isPlaying(name) / duration(name) / time(name)
+    {
+        sol::table sq = lua.create_named_table("Sequence");
+        sq.set_function("play", [this](sol::this_state ts, const std::string& name, sol::optional<sol::table> opts) -> sol::variadic_results {
+            sol::state_view sv(ts);
+            sol::variadic_results r;
+            if (!m_sequenceApi)
+            {
+                r.push_back(sol::make_object(sv, sol::lua_nil));
+                r.push_back(sol::make_object(sv, std::string("シーケンサーが使えない")));
+                return r;
+            }
+            SequencePlayOptions o;
+            if (opts)
+            {
+                sol::table t = *opts;
+                o.rate         = t.get_or("rate", 1.0);
+                o.from         = t.get_or("from", 0.0);
+                o.startDelay   = t.get_or("delay", 0.0);
+                o.restoreOnEnd = t.get_or("restoreOnEnd", true);
+                const std::string clock = t.get_or("clock", std::string("real"));
+                o.clockGame = (clock == "game");
+                sol::object lp = t["loop"];
+                if (lp.is<bool>()) o.loop = lp.as<bool>() ? 1 : 0;
+                else if (lp.is<std::string>())
+                {
+                    const std::string m = lp.as<std::string>();
+                    o.loop = (m == "pingpong") ? 2 : (m == "loop" ? 1 : 0);
+                }
+            }
+            std::string err;
+            const int id = m_sequenceApi->LuaPlay(name, o, err);
+            if (id <= 0)
+            {
+                Logger::Warn("Sequence.play(\"{}\"): {}", name, err);
+                r.push_back(sol::make_object(sv, sol::lua_nil));
+                r.push_back(sol::make_object(sv, err));
+                return r;
+            }
+            r.push_back(sol::make_object(sv, id));
+            return r;
+        });
+        sq.set_function("stop",      [this](sol::optional<std::string> name) { return m_sequenceApi && m_sequenceApi->LuaStop(name ? *name : std::string("*")); });
+        sq.set_function("pause",     [this](const std::string& name) { return m_sequenceApi && m_sequenceApi->LuaPause(name, true); });
+        sq.set_function("resume",    [this](const std::string& name) { return m_sequenceApi && m_sequenceApi->LuaPause(name, false); });
+        sq.set_function("seek",      [this](const std::string& name, double sec) { return m_sequenceApi && m_sequenceApi->LuaSeek(name, sec); });
+        sq.set_function("isPlaying", [this](const std::string& name) { return m_sequenceApi && m_sequenceApi->LuaIsPlaying(name); });
+        sq.set_function("duration",  [this](sol::this_state ts, const std::string& name) -> sol::object {
+            sol::state_view sv(ts);
+            const double d = m_sequenceApi ? m_sequenceApi->LuaDuration(name) : -1.0;
+            return d < 0.0 ? sol::make_object(sv, sol::lua_nil) : sol::make_object(sv, d);
+        });
+        sq.set_function("time",      [this](sol::this_state ts, const std::string& name) -> sol::object {
+            sol::state_view sv(ts);
+            const double d = m_sequenceApi ? m_sequenceApi->LuaTime(name) : -1.0;
+            return d < 0.0 ? sol::make_object(sv, sol::lua_nil) : sol::make_object(sv, d);
+        });
+    }
+
     // --- post / ssao: ポストプロセス・SSAO を文字列キーで読み書き（'.' で呼ぶ）---
     // 項目名は MCP の get_post_process / set_post_process と同一（名前表は
     // renderer/PostProcessSettings.h に 1 つだけ）。post.names() で一覧できる。
@@ -3997,6 +4062,47 @@ void ScriptEngine::CallOnStart()
     }
 }
 
+bool ScriptEngine::CallGlobalFunction(const std::string& fn, const std::vector<EngineEvent::Value>& args, std::string& err)
+{
+    if (!m_lua) { err = "Lua が初期化されていない"; return false; }
+    sol::state& lua = *m_lua;
+    // "A.b.c" は入れ子のテーブルをたどる
+    std::vector<std::string> parts;
+    for (std::size_t b = 0; b <= fn.size();)
+    {
+        const std::size_t e = fn.find('.', b);
+        parts.push_back(fn.substr(b, e == std::string::npos ? std::string::npos : e - b));
+        if (e == std::string::npos) break;
+        b = e + 1;
+    }
+    if (parts.empty() || parts.back().empty()) { err = "関数名が空"; return false; }
+    sol::table cur = lua.globals();
+    for (std::size_t i = 0; i + 1 < parts.size(); ++i)
+    {
+        sol::object o = cur[parts[i]];
+        if (!o.is<sol::table>()) { err = "グローバルの \"" + parts[i] + "\" がテーブルではない(" + fn + ")"; return false; }
+        cur = o.as<sol::table>();
+    }
+    sol::protected_function f = cur[parts.back()];
+    if (!f.valid()) { err = "Lua の関数 \"" + fn + "\" が無い"; return false; }
+    std::vector<sol::object> luaArgs;
+    for (const EngineEvent::Value& v : args)
+    {
+        if (const double* d = std::get_if<double>(&v)) luaArgs.push_back(sol::make_object(lua, *d));
+        else if (const bool* b = std::get_if<bool>(&v)) luaArgs.push_back(sol::make_object(lua, *b));
+        else if (const std::string* s = std::get_if<std::string>(&v)) luaArgs.push_back(sol::make_object(lua, *s));
+    }
+    sol::protected_function_result r = f(sol::as_args(luaArgs));
+    if (!r.valid())
+    {
+        sol::error e = r;
+        err = e.what();
+        Logger::Error("Luaエラー（Sequence イベント {}）: {}", fn, err);
+        return false;
+    }
+    return true;
+}
+
 void ScriptEngine::CallOnUpdate(f32 dt)
 {
     // time API を進める(Play ループで毎フレーム1回、UpdateAttachedScripts より先に呼ばれる)。
@@ -4578,6 +4684,7 @@ void ScriptEngine::UpdateAttachedScripts(f32 dt)
         if (!ls.enabled) continue;
         if (ls.loadError) continue;
         if (ls.scriptPath.empty()) continue;
+        if (eflags::IsDisabled(reg, e)) continue;   // 無効（インスペクタの「有効」OFF）: OnUpdate を回さない
 
         // env 未構築（Play 中に Attach された or Reload された） → 初期化
         if (!ls.env || !ls.started)

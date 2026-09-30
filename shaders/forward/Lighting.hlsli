@@ -218,8 +218,23 @@ float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
         if (dist >= L.range) continue;              // 減衰 0。影サンプルを丸ごと省く
         float3 Ldir = d / max(dist, 0.0001);
 
+#ifdef UNO_PHYSICAL_LIGHTS
+        // ★物理ライティング単位（Q2。-D UNO_PHYSICAL_LIGHTS=1 の別 .cso だけ。既定の .cso はこの #else 側のまま = DXIL 不変）。
+        //   逆二乗 1/max(d², r²) に、影響半径 range の滑らかな窓 saturate(1-(d/range)^4)^2 を掛ける（UE と同じ形）。
+        //   r = 光源の半径[m]（ClusterLight の旧 _pad。CPU が PointLight/SpotLight::sourceRadius を入れる）。
+        //   L.color = 光度[cd]（color × intensity）なので、面の照度 = I·cosθ/d²[lux]。式は renderer/PhotometricMath.h PhysicalFalloff と同じ。
+        float att;
+        {
+            const float srcR = max(L._pad, 0.01);
+            const float d2   = max(dist * dist, srcR * srcR);
+            const float xr   = dist / max(L.range, 1.0e-4);
+            const float win  = saturate(1.0 - xr * xr * xr * xr);
+            att = win * win / d2;
+        }
+#else
         float att = saturate(1.0 - dist / L.range);
         att *= att;
+#endif
 
         float3 radiance = L.color * att;
 

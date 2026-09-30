@@ -11,6 +11,7 @@
 // Logger に依存しない（OutputDebugString のみ）ので、どのライブラリからでも使える。
 // ===========================================================================
 
+#include <atomic>
 #include <Windows.h>
 #include <shellapi.h>
 
@@ -19,10 +20,18 @@
 namespace dx12e::guard
 {
 
+// UI 自動テストの実行中は、仮想入力モードでなくても OS への副作用（エクスプローラー / ブラウザ / ダイアログ）を止める。
+// テストが人の画面に窓を出してフォーカスを奪わないための保険（UiTestHarness が立てる）。
+inline std::atomic<bool>& TestRunActive()
+{
+    static std::atomic<bool> s_active{false};
+    return s_active;
+}
+
 // 仮想入力モードなら true（呼び出し側は何もせず戻る）。what は人が読む説明。
 inline bool Blocked(const char* what)
 {
-    if (!vinput::Enabled()) return false;
+    if (!vinput::Enabled() && !TestRunActive().load()) return false;
     OutputDebugStringA("[vinput] blocked (would touch the desktop): ");
     OutputDebugStringA(what ? what : "");
     OutputDebugStringA("\n");

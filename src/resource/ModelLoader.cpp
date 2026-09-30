@@ -7,6 +7,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
 #include "resource/VfsIOSystem.h"
+#include "resource/VgeoProxyLoader.h"
 #include "core/vfs/Vfs.h"
 
 #include <cstdlib>
@@ -652,6 +653,10 @@ ModelData ModelLoader::LoadFromFile(
     const std::filesystem::path& filePath,
     ResourceManager& resourceManager)
 {
+    // .vgeo（仮想ジオメトリ）はプロキシを通常のモデルとして読む（assimp は通らない）。
+    if (IsVgeoPath(filePath))
+        return LoadVgeoProxy(device, cmdList, filePath, resourceManager);
+
     Assimp::Importer importer;
     importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
     // スキンメッシュ用の「単位正規化なし再読み」(下記)。Assimp::Importer は

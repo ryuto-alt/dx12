@@ -10,6 +10,7 @@
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
+#include "renderer/atmosphere/AtmosphereMath.h"   // 大気の読み取り表示（太陽の高度・方位・照度）
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -672,6 +673,19 @@ void RenderLightingPanel(Scene* scene,
     if (SectionHeader(nullptr, 0, "スカイ / IBL"))
     {
         auto& sky = scene->GetSkyboxSettings();
+        // Q2: ライティング単位（従来 / 物理）。露出（EV100）は Post Process 窓の「露出モード」。既定は従来（絵は変わらない）。
+        if (pg::Begin("LightUnits"))
+        {
+            static const char* const kUnits[] = {"従来", "物理 (lux / cd / nit)"};
+            auto& ppUnits = scene->GetPostSettings();
+            int unitsIdx = (ppUnits.lightingUnits == 1) ? 1 : 0;
+            if (pg::Combo("ライティング単位", &unitsIdx, kUnits, 2,
+                          "従来: 強度は任意単位（点/スポットは saturate(1-d/range)^2）。\n"
+                          "物理: 太陽 = lux / 点・スポット = cd の逆二乗 / 空・IBL・自己発光 = nit（シーン RT の 1.0 = 1 nit）。"
+                          "露出は Post Process 窓の「露出モード」で EV100 を選ぶ"))
+                ppUnits.lightingUnits = unitsIdx;
+            pg::End();
+        }
         if (pg::Begin("LightSky"))
         {
             pg::InputTextStr("環境マップ", sky.envMapPath, nullptr,
@@ -687,6 +701,114 @@ void RenderLightingPanel(Scene* scene,
             ctx.pendingSkyboxRebake = true;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("パスを変えた時だけ必要です（強度と背景 ON/OFF は即反映）");
+    }
+
+    // =====================================================================
+    // 大気（物理ベース。Hillaire 2020）。既定 OFF ＝ 従来の空・従来の時刻曲線のまま。
+    // 値はシーン設定（AtmosphereSettings）を直接触る（スカイ / IBL の節と同じ流儀。変更はシーンの指紋が検知する）。
+    // =====================================================================
+    if (SectionHeader(nullptr, 0, "大気 (物理ベース)"))
+    {
+        auto& at = scene->GetAtmosphereSettings();
+        if (pg::Begin("LightAtmosphere"))
+        {
+            pg::Checkbox("物理大気を使う", &at.enabled,
+                         "ON: 空・遠景の霞・太陽の色と強さを物理ベースの大気（レイリー/ミー/オゾン）から決めます。\n"
+                         "OFF（既定）: 従来の空と従来の時刻カーブのまま（絵は変わりません）。\n"
+                         "ON にしても「スカイ / IBL」の環境マップ設定は残り、OFF に戻すとそのまま使われます");
+            if (at.enabled)
+            {
+                static const char* const kPresets[] = {"（選んで適用）", "地球（晴天）", "火星風", "霞", "薄明"};
+                int presetPick = 0;
+                if (pg::Combo("プリセット", &presetPick, kPresets, 5,
+                              "大気の物理パラメータをまとめて切り替えます。\n"
+                              "地球: 既定 / 火星風: 薄い大気+赤い塵（夕焼けが青い）/ 霞: 遠景が白く煙る / 薄明: 日没直後の時刻+少し霞\n"
+                              "有効・時刻の進め方・太陽ライトの駆動などの使い方の設定は変わりません（薄明は時刻だけ 18.35 時にします）")
+                    && presetPick > 0)
+                    ApplyAtmospherePreset(at, static_cast<AtmospherePreset>(presetPick - 1));
+
+                pg::Group("時刻");
+                pg::SliderFloat("時刻", &at.timeOfDay, 0.0f, 24.0f, "%.2f 時", nullptr,
+                                "現地太陽時（0〜24）。春分・秋分は 6 時が日の出・18 時が日の入り。\n"
+                                "太陽の向き・色・強さ・空・環境光（IBL）・影が 1 つの時刻でつながって動きます");
+                {
+                    const int totalMin = static_cast<int>(std::lround(at.timeOfDay * 60.0f)) % (24 * 60);
+                    pg::Text("現在時刻", "%02d:%02d", totalMin / 60, totalMin % 60);
+                }
+                pg::SliderFloat("時間経過 (時間/秒)", &at.timeSpeed, -2.0f, 2.0f, "%.3f", nullptr,
+                                "Play 中に時刻を自動で進める速さ。0 = 止める。例: 0.1 なら 240 秒で 1 日。\n"
+                                "エディタ編集中は進みません（Stop で元の時刻へ戻ります）");
+                pg::SliderFloat("緯度", &at.latitudeDeg, -90.0f, 90.0f, "%.1f°", nullptr,
+                                "北緯が正。太陽の南中高度と日の長さが変わります");
+                pg::SliderInt("日付 (年内通日)", &at.dayOfYear, 1, 366, nullptr,
+                              "1〜366。81 が春分（日の出 6 時・日の入り 18 時）、172 が夏至、355 が冬至");
+                pg::SliderFloat("北の向き", &at.northYawDeg, -180.0f, 180.0f, "%.0f°", nullptr,
+                                "ワールドの +Z が北から時計回りに何度ずれているか。太陽が昇る方角を回します");
+
+                pg::Group("太陽");
+                static const char* const kSunModes[] = {"時刻から決める", "太陽ライトの向きを直接指定"};
+                pg::Combo("太陽の向き", &at.sunMode, kSunModes, 2,
+                          "時刻から: 時刻・緯度・日付から太陽の位置を計算します。\n"
+                          "直接指定: 太陽ライト（DirectionalLight）の向きをそのまま使います（月は使いません）。手で向きを決めたいときに");
+                pg::Checkbox("太陽ライトを大気で駆動", &at.driveSun,
+                             "ON: 太陽ライトの向き（時刻から決めるとき）・色・強さを、大気の透過率から毎フレーム決めます（夕方は赤く、夜は月光）。\n"
+                             "OFF: ライトは手動のままで、空だけが大気になります");
+                pg::Checkbox("空を環境光へ反映", &at.driveIBL,
+                             "ON: 空を環境マップ（IBL / DDGI の空の項）へ反映します。時刻が動くと数フレームに分けて焼き直します。\n"
+                             "OFF: 環境光は従来の環境マップのまま");
+                pg::SliderFloat("太陽照度 (lux)", &at.sunIlluminance, 0.0f, 200000.0f, "%.0f", nullptr,
+                                "大気の上端での太陽の照度。地表では約 8〜10 万 lux になります（既定 128000）");
+                pg::Checkbox("星", &at.drawStars, "夜に星を描きます");
+                pg::Checkbox("月", &at.drawMoon, "夜に月を描き、月光を光源にします（太陽が地平線の -12° を下回ると切り替わり）");
+
+                pg::Group("地表と遠景の霞");
+                pg::Color3("地表アルベド", at.groundAlbedo, ImGuiColorEditFlags_NoInputs);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("地面の反射率。地平線の下の色と、空の多重散乱の地面反射に効きます");
+                pg::Checkbox("遠景の霞 (AP)", &at.aerialPerspective,
+                             "エアリアルパースペクティブ。遠くの物が大気で青白く霞みます（不透明な物の描画後に合成）");
+                pg::SliderFloat("霞の開始距離 (m)", &at.apStartDepth, 0.0f, 2000.0f, "%.0f", nullptr,
+                                "これより手前には霞を掛けません（既定 100 m）");
+                pg::SliderFloat("霞の最大距離 (km)", &at.apMaxDistanceKm, 1.0f, 200.0f, "%.0f", nullptr,
+                                "霞の計算が届く最大距離。それより遠くは端の値を使います");
+                pg::SliderFloat("霞の濃さ", &at.apStrength, 0.0f, 4.0f, "%.2f", nullptr,
+                                "1 = 物理どおり。演出で濃くしたり薄くしたりできます");
+
+                // ---- 読み取り専用: いまの太陽 ----
+                {
+                    using namespace atmosphere;
+                    Vec3d sd;
+                    if (at.sunMode == 1 && sun != entt::null)
+                    {
+                        const XMFLOAT3 d = reg.get<DirectionalLight>(sun).direction;
+                        sd = Norm({-static_cast<double>(d.x), -static_cast<double>(d.y), -static_cast<double>(d.z)});
+                    }
+                    else
+                        sd = SunDirectionFromTime(at);
+                    const double el = std::asin(std::clamp(sd.y, -1.0, 1.0)) * 180.0 / kPi;
+                    double az = std::atan2(sd.x, sd.z) * 180.0 / kPi - static_cast<double>(at.northYawDeg);
+                    while (az < 0.0) az += 360.0;
+                    while (az >= 360.0) az -= 360.0;
+                    AtmosphereSettings sl = at;
+                    if (sl.sunMode == 1) sl.drawMoon = false;
+                    const SkyLight L = ComputeSkyLight(sl, sd, 0.002);   // 標高 2 m（0 ちょうどだと地面に接して透過率が 0 になる）
+                    pg::Group("いまの太陽（地表・読み取り）");
+                    pg::Text("高度 / 方位", "%.1f° / %.0f°%s", el, az, L.isMoon ? "  （月が光源）" : "");
+                    pg::Text("地表の照度", "%.0f lux", RgbLuminance(L.illuminanceGround));
+                    pg::Text("光の色 (RGB)", "%.2f  %.2f  %.2f",
+                             L.illuminanceGround.r / std::max(std::max(L.illuminanceGround.r, L.illuminanceGround.g), std::max(L.illuminanceGround.b, 1e-9)),
+                             L.illuminanceGround.g / std::max(std::max(L.illuminanceGround.r, L.illuminanceGround.g), std::max(L.illuminanceGround.b, 1e-9)),
+                             L.illuminanceGround.b / std::max(std::max(L.illuminanceGround.r, L.illuminanceGround.g), std::max(L.illuminanceGround.b, 1e-9)));
+                }
+            }
+            pg::End();
+        }
+        if (at.enabled)
+        {
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("物理パラメータの詳細（散乱係数・惑星半径など）は MCP の set_scene_settings で変えられます");
+            ImGui::PopTextWrapPos();
+        }
     }
 
     // =====================================================================

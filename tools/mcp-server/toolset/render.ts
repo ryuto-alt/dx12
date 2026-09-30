@@ -27,7 +27,25 @@ reg(
     // エンジンは以前から tonemapper を受けていたのに、このスキーマに無いせいで MCP から渡せなかった。
     // exposure と並んで dx12_screenshot(シーン RT の CPU トーンマップ)に反映される数少ないノブなので、
     // dx12_look_compare の示唆から実際に触れるようにここへ追加する。
-    tonemapper: z.number().int().optional().describe("トーンマッパー: 0=ACES / 1=AgX / 2=なし(ガンマのみ)。★exposure と共に dx12_screenshot にも反映される(他のグレーディングは反映されない)。"),
+    tonemapper: z.number().int().optional().describe("トーンマッパー: 0=ACES / 1=AgX / 2=なし(ガンマのみ) / 3=UE Filmic(UE 5 の既定の ACES 系。film* で調整) / 4=線形(トーンマップ無し。1 でクリップ) / 5=Khronos PBR Neutral。3〜5 の出力は sRGB OETF(0〜2 は従来どおり pow(1/2.2))。★exposure と共に dx12_screenshot にも反映される(他のグレーディングは反映されない)。"),
+    // ── UE Filmic(tonemapper=3)のパラメータ ──
+    filmSlope: z.number().optional().describe("UE Filmic の Slope(既定 0.88)。tonemapper=3 のときだけ効く。"),
+    filmToe: z.number().optional().describe("UE Filmic の Toe(既定 0.55)。"),
+    filmShoulder: z.number().optional().describe("UE Filmic の Shoulder(既定 0.26)。"),
+    filmBlackClip: z.number().optional().describe("UE Filmic の Black Clip(既定 0)。"),
+    filmWhiteClip: z.number().optional().describe("UE Filmic の White Clip(既定 0.04)。"),
+    // ── 露出モード(Q2 校正): 物理単位と組にして使う ──
+    exposureMode: z.number().int().optional().describe("露出モード: 0=従来(exposureOn/exposure の乗算と autoExposureOn。絵は従来と不変) / 1=手動 EV100(係数 = 1/(1.2·2^(ev100−evComp))。マスター enabled が OFF でも効く) / 2=自動(ヒストグラム測光。平均輝度を 18% グレー×2^evComp へ適応。上下限は aeMinEv100/aeMaxEv100)。"),
+    ev100: z.number().optional().describe("手動露出の EV100(既定 15 = 晴天 Sunny 16。EV100=15 + 補正 0 が露出 0 の基準)。exposureMode=1 のとき。1 上げると 1 段暗い。"),
+    evComp: z.number().optional().describe("露出補正 [EV](+ で明るく)。exposureMode 1/2 の両方に効く。"),
+    aeMinEv100: z.number().optional().describe("自動露出(exposureMode=2)の EV100 下限(既定 -10)。"),
+    aeMaxEv100: z.number().optional().describe("自動露出(exposureMode=2)の EV100 上限(既定 20)。"),
+    aeSpeedUp: z.number().optional().describe("シーンが明るくなる方向の適応速度[1/秒]。0 = aeSpeed と同じ。"),
+    aeSpeedDown: z.number().optional().describe("シーンが暗くなる方向の適応速度[1/秒]。0 = aeSpeed と同じ。"),
+    aeLowPercent: z.number().optional().describe("測光ヒストグラムの下側の除外割合 0..0.99(既定 0)。0..1 = 全画素の対数平均(平均輝度)、0.8..0.983 = UE のヒストグラム測光の既定。"),
+    aeHighPercent: z.number().optional().describe("測光ヒストグラムの上側の上限割合(既定 1)。"),
+    // ── ライティング単位(シーン設定) ──
+    lightingUnits: z.number().int().optional().describe("ライティング単位: 0=従来(点/スポットは saturate(1−d/range)^2。強度は任意単位。絵は従来と不変) / 1=物理(太陽=lux・点/スポット=cd の逆二乗[sourceRadius と range の窓つき]・空/IBL/自己発光=nit。シーン RT の 1.0 = 1 nit。露出は exposureMode=1/2 の EV100 で表示へ変換)。切替はフォワード系 PSO の差し替えで GPU 待ちが 1 回入る。"),
     exposureOn: z.boolean().optional(), exposure: z.number().optional(),
     contrastOn: z.boolean().optional(), contrast: z.number().optional(),
     brightnessOn: z.boolean().optional(), brightness: z.number().optional(),

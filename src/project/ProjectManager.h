@@ -60,6 +60,9 @@ public:
     static void        SetEditorBool(const char* key, bool value);
     static std::string GetEditorString(const char* key, const std::string& def);
     static void        SetEditorString(const char* key, const std::string& value);
+    // 任意のトップレベルキー(オブジェクト)を JSON 文字列で読み書きする（他のキーは保つ。editor/EditorPrefs が "prefs" に使う）。
+    static std::string LoadEditorSection(const char* key);                          // 無い/オブジェクトでなければ空文字
+    static void        SaveEditorSection(const char* key, const std::string& jsonText);   // jsonText が壊れていれば何もしない
 
     // 現在時刻（epoch 秒）。
     static int64_t NowEpoch();

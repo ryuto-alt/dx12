@@ -47,6 +47,8 @@ export type ToolDoc = {
   coreDescription?: string;
   /** 統合ツールなら、振り分けの引数名と旧ツールへの対応。 */
   consolidated?: { param: string; routes: Record<string, string>; nested?: string };
+  /** op でエンジンの method 群を束ねたツール(dx12_sequence)の op 表。op ごとの method・副作用・引数。 */
+  opTable?: OpTable;
   /** この旧ツールを置き換える統合ツール(key はその統合ツールでの target/op/view/mode)。旧名の呼び方は変わらない。 */
   replacedBy?: { tool: string; key: string };
   /** 別名。dx12_ を外した名前 / マニフェストの aliases。 */
@@ -56,13 +58,24 @@ export type ToolDoc = {
   timeoutMs?: number;
   idempotent?: boolean;
   deferred?: boolean;
-  dryRun: "native" | "static" | "none";
+  dryRun: "native" | "preview" | "static" | "none";
+  /** ファイルを書く前に元の内容を退避する(エンジンの journal。rollback / journal_restore で戻せる)。 */
+  journal?: boolean;
   next: { tool: string; when?: string }[];
   examples: { args: Record<string, unknown>; note?: string }[];
   /** TS だけで動く合成ツール(エンジンに同名 method が無い)。 */
   composite: boolean;
   destructive?: boolean;
   source: string;
+};
+
+/** op でエンジンの method 群を束ねたツールの op 表(旧ツールを持たない Core ツール。中身は sequenceOps.ts)。 */
+export type OpTable = {
+  /** 振り分けの引数名(op)。 */
+  param: string;
+  /** 別名を正準の op 名へ(dx12_call の meta.effect / dx12_tool_describe の target で使う)。 */
+  normalize?: (raw: unknown) => string | null;
+  ops: Record<string, { method: string; effect: EffectName; required: string[]; optional: string[]; dryRun: string; summary: string }>;
 };
 
 /** dx12_tool_describe / dx12_call が使う、登録済み TS ツールの実体。 */
@@ -79,6 +92,10 @@ export type ToolEntry = {
   coreDescription?: string;
   /** 統合ツールの振り分け表。 */
   consolidated?: Consolidated;
+  /** op でエンジンの method 群を束ねたツールの op 表。 */
+  opTable?: OpTable;
+  /** 使い方の例(検索結果・dx12_tool_describe に出る)。エンジンのマニフェストに例があればそちらが優先。 */
+  examples?: { args: Record<string, unknown>; note?: string }[];
   /** 検索語(統合ツールなど、searchHints.ts に無い新ツール用)。 */
   extraKeywords?: string;
   /** マニフェストの expose:"core" から実行中に登録した動的ツール(エンジンから method が消えたら外す)。 */
@@ -104,6 +121,8 @@ const RUNTIME_NAMES = new Set([
   "dx12_vfx_preview", "dx12_sequence_preview",
   // フリート: プロセスの起動・停止・束縛の切替(シーンのデータは変えない。dx12_engine_list は readOnlyHint で read)。
   "dx12_engine_launch", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh", "dx12_engine_use",
+  // ジョブ: プロセス・エンジンを動かす / 止める(status・list・result・logs は readOnlyHint で read)。
+  "dx12_job_start", "dx12_job_cancel",
 ]);
 const WRITE_FILE_NAMES = new Set([
   "dx12_create_lua_component", "dx12_create_shader", "dx12_import_asset", "dx12_move_asset",
@@ -123,6 +142,16 @@ export const CONDITIONAL_WRITE: Record<string, (args: Record<string, unknown>) =
   dx12_validate_layout: (a) => a.fix === "safe" || a.fix === "all",
 };
 
+/**
+ * 「普段は guarded ではないが、引数によっては guarded として扱うツール」。ゲート(dx12_call の confirm / dx12_call_guarded)の判定に引数つきで使う。
+ * dx12_job_start {kind:"external"} は任意の外部プロセスを走らせる = eval_lua / build_game と同じ扱い。
+ */
+export const CONDITIONAL_GUARDED: Record<string, (args: Record<string, unknown>) => boolean> = {
+  dx12_job_start: (a) => a.kind === "external",
+  // 仕様に無いエンティティを消す適用(prune)は削除 = guarded。plan(mode:"plan" / dryRun)は誰でも撃てる。
+  dx12_apply_scene_spec: (a) => a.prune === true && a.mode !== "plan" && a.dryRun !== true,
+};
+
 export function effectClassOf(effect: EffectName): EffectClass {
   if (effect === "read") return "read";
   if (effect === "runtime") return "runtime";
@@ -130,10 +159,24 @@ export function effectClassOf(effect: EffectName): EffectClass {
   return "write";
 }
 
+/**
+ * 旧ツールの「次に使うと良いツール」の補足(旧ツールの名前・引数・説明は変えず、dx12_tool_describe の next に足すだけ)。
+ * dx12_select_entity は 1 体だけ選ぶ旧ツール。複数選択・名前パターン・追加/解除・全解除は M7 の dx12_editor_select(長尾)。
+ */
+const EXTRA_NEXT: Record<string, { tool: string; when?: string }[]> = {
+  dx12_select_entity: [{ tool: "dx12_editor_select", when: "複数選択・名前のパターン(Wall*)・タグ・追加/解除・全解除・フォーカス(1 体だけならこのツールで足りる)" }],
+};
+
 /** 統合ツールの代表の副作用(実際の呼び出しは、振り分け先の旧ツールの副作用で判定する)。 */
 const CONSOLIDATED_EFFECT: Record<string, EffectName> = {
   dx12_get_render_settings: "read", dx12_set_render_settings: "write_setting", dx12_get_perf: "read",
   dx12_capture: "read", dx12_edit_terrain: "write_file", dx12_imgui: "runtime",
+  // op で変わる(list/get/eval=read、load/scrub/play/stop=runtime、save/edit=write_file、autoplay=write_scene)。最も重い write_scene を代表にする。op ごとの値は opTable。
+  dx12_sequence: "write_scene",
+  // エディタ操作(M7)。command は op で変わる(list / describe = read、run = write_setting)ので代表は write_setting。op ごとの値は opTable。
+  dx12_editor_command: "write_setting", dx12_editor_notify: "write_setting", dx12_editor_select: "write_setting", dx12_editor_modal: "write_setting",
+  // 宣言的シーン生成(M11)。plan / 失敗時は何も書かない(または全体をロールバック)が、代表は write_scene。設定(lighting / look / scene / navmesh)も含む。
+  dx12_apply_scene_spec: "write_scene", dx12_scene_spec_export: "read",
 };
 
 /** マニフェストに無い TS ツールの副作用を、名前と annotations から決める。 */
@@ -152,7 +195,7 @@ const CATEGORY_RULES: [RegExp, string][] = [
   [/^(engine_)/, "fleet"], [/^(git_)/, "git"], [/^(net_)/, "net"], [/^(imgui_)/, "editor_ui"],
   [/^(terrain_|sculpt_)/, "terrain"], [/^(navmesh_|check_reachable|brain_state)/, "navmesh"],
   [/^(vfx_|.*particle_layer)/, "vfx"], [/^(look_|apply_lighting_preset|list_lights|set_sun)/, "lighting"],
-  [/^(decal_)/, "decal"], [/^(sequence_)/, "sequence"], [/^(blender_|model_brief|asset_gap)/, "blender"],
+  [/^(decal_)/, "decal"], [/^(sequence(_|$))/, "sequence"], [/^(blender_|model_brief|asset_gap)/, "blender"],
   [/^(jev_|brief$)/, "jev"], [/^(quality_gate|validate_|polish_audit|perceive)/, "quality"],
   [/^(screenshot|focus_and_screenshot|ui_screenshot|render_debug|camera_path|look_compare|view_texture|preview_model|pick|raycast_precise|project_world_to_screen|get_editor_camera|set_editor_camera)/, "capture"],
   [/^(ui_|install_font)/, "ui"], [/^(play|stop|step_frames|key_|mouse_move|get_play_session|record_playtest|run_playtests|autoplay|measure_player)/, "play"],
@@ -304,6 +347,7 @@ export function buildCatalog(
       core: isCore,
       ...(coreDescription ? { coreDescription } : {}),
       ...(t.consolidated ? { consolidated: { param: t.consolidated.param, routes: t.consolidated.routes, nested: t.consolidated.nested } } : {}),
+      ...(t.opTable ? { opTable: t.opTable } : {}),
       ...(replaced.get(t.name) ? { replacedBy: replaced.get(t.name) } : {}),
       category: isShell ? "meta" : (mf?.category && mf.category !== "uncategorized" ? mf.category : categoryOf(t.name)),
       effect,
@@ -316,9 +360,10 @@ export function buildCatalog(
       timeoutMs: mf?.timeoutMs,
       idempotent: mf?.idempotent ?? (t.annotations?.idempotentHint === true ? true : undefined),
       deferred: mf?.deferred,
-      dryRun: mf?.dryRun === "native" ? "native" : "static",
-      next: mf?.next ?? [],
-      examples: mf?.examples ?? [],
+      dryRun: mf?.dryRun === "native" ? "native" : mf?.dryRun === "preview" ? "preview" : "static",
+      ...(mf?.journal ? { journal: true } : {}),
+      next: [...(mf?.next ?? []), ...(EXTRA_NEXT[t.name] ?? [])],
+      examples: mf?.examples ?? t.examples ?? [],
       composite: !isShell && !mf,
       destructive: t.annotations?.destructiveHint === true,
       source: mf ? `ts+${mf.source ?? "manifest"}` : "ts",
@@ -349,7 +394,8 @@ export function buildCatalog(
         timeoutMs: mf.timeoutMs,
         idempotent: mf.idempotent,
         deferred: mf.deferred,
-        dryRun: mf.dryRun === "native" ? "native" : "static",
+        dryRun: mf.dryRun === "native" ? "native" : mf.dryRun === "preview" ? "preview" : "static",
+        ...(mf.journal ? { journal: true } : {}),
         next: mf.next ?? [],
         examples: mf.examples ?? [],
         composite: false,

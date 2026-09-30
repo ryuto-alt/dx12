@@ -28,6 +28,9 @@ enum class DockSlot : unsigned char
 {
     RightTab,   // 右カラム（インスペクターのタブ群）へ。開くとタブが増えるだけで分割は変えない
     Floating,   // ビューポートの上に浮かぶ独立窓
+    // ---- 以下はレジストリの既定にはしない。ユーザーが「ツール窓の配置先」で選ぶ配置先（editor/WorkspaceLogic.h の ws::Slot と同じ 4 択）----
+    RightSplit, // 右カラムを縦に割った下側（インスペクターと並べて見る）
+    BottomTab,  // 中央下のドック（アセットブラウザ / コンソールのタブ群）
 };
 
 // メニューのどちらに置くか（「窓▾」には全部出る）。
@@ -63,8 +66,10 @@ inline constexpr Desc kAll[] = {
     {"git",            "Git 変更",                 "Git 変更###Version Control (Git)", ICON_GIT_BRANCH, "プロジェクト", &EditorContext::showVersionControl, DockSlot::RightTab, MenuHome::View, "git version control コミット"},
     // ---- 制作ツール ----
     {"terrain",        "地形ツール",               "",                        ICON_T_TERRAIN, "制作ツール",   &EditorContext::showTerrainEditor,     DockSlot::Floating, MenuHome::Tools, "terrain heightfield 山 地面"},
+    {"foliage",        "植生ツール",               "",                        ICON_T_TERRAIN, "制作ツール",   &EditorContext::showFoliageTool,       DockSlot::Floating, MenuHome::Tools, "foliage vegetation grass tree 植生 草 木 散布 ブラシ 風"},
     {"sculpt",         "スカルプト",               "",                        ICON_T_MESH,    "制作ツール",   &EditorContext::showSculptEditor,      DockSlot::Floating, MenuHome::Tools, "sculpt 彫刻 異形"},
     {"navmesh",        "ナビメッシュ",             "",                        ICON_T_NAV,     "制作ツール",   &EditorContext::showNavMesh,           DockSlot::Floating, MenuHome::Tools, "navmesh ai 経路"},
+    {"pathTracer",     "リファレンスレンダー",     "",                        ICON_CAMERA,    "レンダリング", &EditorContext::showPathTracer,        DockSlot::Floating, MenuHome::Tools, "path tracer reference ground truth パストレーサー 地上真値 基準画像 レイトレ"},
     {"particle",       "パーティクルエディタ",     "",                        ICON_T_PARTICLE,"制作ツール",   &EditorContext::showVfxEditor,         DockSlot::Floating, MenuHome::Tools, "particle vfx effect エフェクト"},
     {"uiEditor",       "UIエディタ",               "",                        ICON_T_UI,      "制作ツール",   &EditorContext::showUiEditor,          DockSlot::Floating, MenuHome::Tools, "ui editor canvas"},
     {"uiAnim",         "UIアニメーション",         "",                        ICON_T_ANIM,    "制作ツール",   &EditorContext::showAnimEditor,        DockSlot::Floating, MenuHome::Tools, "ui animation timeline"},
@@ -72,6 +77,8 @@ inline constexpr Desc kAll[] = {
     {"transition",     "トランジション",           "トランジション",          ICON_FILM,      "制作ツール",   &EditorContext::showTransitionPreview, DockSlot::Floating, MenuHome::Tools, "transition シーン切り替え"},
     {"material",       "マテリアルエディタ",       "",                        ICON_T_MATERIAL,"制作ツール",   &EditorContext::showMaterialEditor,    DockSlot::Floating, MenuHome::Tools, "material editor"},
     {"materialLib",    "マテリアルライブラリ (Poly Haven)", "",               ICON_PACKAGE,   "制作ツール",   &EditorContext::showMaterialLibrary,   DockSlot::Floating, MenuHome::Tools, "material library polyhaven"},
+    {"materialGraph",  "マテリアルグラフ",         "マテリアルグラフ###MaterialGraph", ICON_T_SPLINE, "制作ツール", &EditorContext::showMaterialGraph,  DockSlot::Floating, MenuHome::Tools, "material graph node shader dxmg マテリアル グラフ ノード シェーダー"},
+    {"nodeGraphSandbox", "ノードグラフ サンドボックス", "ノードグラフ サンドボックス###NodeGraphSandbox", ICON_T_SPLINE, "制作ツール", &EditorContext::showNodeGraphSandbox, DockSlot::Floating, MenuHome::Tools, "node graph sandbox ノード ワイヤ material graph 開発用"},
     {"audioMixer",     "オーディオミキサー",       "",                        ICON_T_AUDIO,   "制作ツール",   &EditorContext::showAudioMixer,        DockSlot::Floating, MenuHome::Tools, "audio mixer 音"},
     // ---- 接続・診断 ----
     {"mcp",            "MCP / AI Bridge",          "MCP / AI Bridge",         ICON_CLOUD,     "接続・診断",   &EditorContext::showMcpBridge,         DockSlot::RightTab, MenuHome::Tools, "mcp ai bridge"},

@@ -7,6 +7,8 @@
 #include "editor/EditorCommands.h"   // メニュー/ショートカットはコマンド表から描く
 #include "editor/ToolWindows.h"      // ツール窓レジストリ（表示 / ツール / 窓▾ の共通の表）
 #include "editor/Toast.h"
+#include "editor/WorkspaceLogic.h"   // ワークスペースのプリセット（ツールバーの「ワークスペース ▾」）
+#include "editor/BottomDock.h"        // 下部ドックの登録タブの開閉
 #include "scripting/ScriptEngine.h"
 #include "core/GameClock.h"
 #include "scene/Scene.h"
@@ -98,6 +100,46 @@ static void DrawToolWindowItems(EditorContext& ctx, tools::MenuHome home, bool a
         }
         ui::MenuItem(d.icon, d.title, nullptr, &(ctx.*(d.flag)));
     }
+}
+
+// ワークスペースのプリセット一覧（チェック = 今のワークスペース）。実処理は WorkspaceManager（コマンド workspace.<id>）。
+static void DrawWorkspaceItems(EditorContext& ctx, const cmd::Env& env)
+{
+    (void)env;
+    for (const ws::Preset& p : ws::Presets())
+        if (ui::MenuItem(ICON_WINDOWS, p.title, nullptr, ctx.currentWorkspace == p.id))
+            ctx.pendingWorkspace = p.id;   // コマンド workspace.<id> と同じ要求（表のラベルは「ワークスペース: …」でパレット向け）
+}
+
+// レイアウトの保存 / 復元 / 削除 / ツール窓の配置先 / 下部ドック。表示メニューの「レイアウト」とツールバーの「ワークスペース ▾」が共用。
+static void DrawLayoutItems(EditorContext& ctx, const cmd::Env& env)
+{
+    cmd::MenuItem(ctx, env, "layout.save");
+    {
+        const bool any = !ctx.savedLayoutNames.empty();
+        if (ImGui::BeginMenu("保存済みレイアウトを復元", any))
+        {
+            for (const std::string& n : ctx.savedLayoutNames)
+                if (ui::MenuItem(ICON_BLANK, n.c_str())) ctx.pendingLayoutRestore = n;
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("保存済みレイアウトを削除", any))
+        {
+            for (const std::string& n : ctx.savedLayoutNames)
+                if (ui::MenuItem(ICON_BLANK, n.c_str())) ctx.pendingLayoutDelete = n;
+            ImGui::EndMenu();
+        }
+    }
+    cmd::MenuItem(ctx, env, "layout.slots");
+    ImGui::Separator();
+    // 下部ドックの登録タブ（BottomDock.h。タイムラインなど）
+    for (bottomdock::Tab& t : bottomdock::Tabs())
+    {
+        bool open = t.open;
+        if (ui::MenuItem(t.icon.empty() ? ICON_BLANK : t.icon.c_str(), t.title.c_str(), nullptr, &open))
+            t.open = open;
+    }
+    cmd::MenuItem(ctx, env, "layout.bottomMaximize");
 }
 
 void ToolbarPanel::Render(bool isPlaying,
@@ -247,8 +289,21 @@ void ToolbarPanel::Render(bool isPlaying,
         dx12e::vinput_gui::AnchorLastItem("menu", "表示");   // dx12_imgui_find 用（メニューバーの項目）
         if (menuOpen3)
         {
+            if (ImGui::BeginMenu("ワークスペース"))
+            {
+                DrawWorkspaceItems(ctx, cmdEnv);
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("レイアウト"))
+            {
+                DrawLayoutItems(ctx, cmdEnv);
+                ImGui::EndMenu();
+            }
             cmd::MenuItem(ctx, cmdEnv, "view.resetLayout");
             cmd::MenuItem(ctx, cmdEnv, "view.closeTools");
+            ImGui::Separator();
+            cmd::MenuItem(ctx, cmdEnv, "view.viewportBar");   // ビューポート上端の帯（隠すと従来と同じ 3D の矩形）
+            cmd::MenuItem(ctx, cmdEnv, "view.outline");       // 選択 / ホバーの輪郭（エディタ専用）
             ImGui::Separator();
             {
                 bool fill = ctx.viewportFill > 0.0f;
@@ -423,20 +478,24 @@ void ToolbarPanel::Render(bool isPlaying,
         x += ui::Px(8.0f);
     };
 
-    // ===== ギズモ（移動 / 回転 / 拡縮 / 空間）=====
-    if (iconBtn("gizmoMove", ICON_MOVE, "移動ギズモ  (W)", ctx.gizmoMode == GizmoMode::Translate, "移動"))
-        ctx.gizmoMode = GizmoMode::Translate;
-    if (iconBtn("gizmoRotate", ICON_ROTATE, "回転ギズモ  (E)", ctx.gizmoMode == GizmoMode::Rotate, "回転"))
-        ctx.gizmoMode = GizmoMode::Rotate;
-    if (iconBtn("gizmoScale", ICON_SCALE, "拡大縮小ギズモ  (R)", ctx.gizmoMode == GizmoMode::Scale, "拡縮"))
-        ctx.gizmoMode = GizmoMode::Scale;
-    if (iconBtn("gizmoSpace", ctx.gizmoLocalSpace ? ICON_SPACE_LOCAL : ICON_SPACE_WORLD,
-                ctx.gizmoLocalSpace ? "ローカル空間  (T で切替)" : "ワールド空間  (T で切替)", false,
-                ctx.gizmoLocalSpace ? "ローカル" : "ワールド"))
-        ctx.gizmoLocalSpace = !ctx.gizmoLocalSpace;
+    // ※ ギズモ（移動 / 回転 / 拡縮 / 空間）のボタンはビューポート上端の帯（ViewportToolbar）へ一本化した（かつては上段と二重表示）。
+    //   キー W/E/R/T は従来どおり。帯を隠している時だけ、操作の入口が無くならないよう上段に出す（帯が正・上段は代替）。
+    if (!ctx.vpPrefs.barVisible)
+    {
+        if (iconBtn("gizmoMove", ICON_MOVE, "移動ギズモ  (W)", ctx.gizmoMode == GizmoMode::Translate, "移動"))
+            ctx.gizmoMode = GizmoMode::Translate;
+        if (iconBtn("gizmoRotate", ICON_ROTATE, "回転ギズモ  (E)", ctx.gizmoMode == GizmoMode::Rotate, "回転"))
+            ctx.gizmoMode = GizmoMode::Rotate;
+        if (iconBtn("gizmoScale", ICON_SCALE, "拡大縮小ギズモ  (R)", ctx.gizmoMode == GizmoMode::Scale, "拡縮"))
+            ctx.gizmoMode = GizmoMode::Scale;
+        if (iconBtn("gizmoSpace", ctx.gizmoLocalSpace ? ICON_SPACE_LOCAL : ICON_SPACE_WORLD,
+                    ctx.gizmoLocalSpace ? "ローカル空間  (T で切替)" : "ワールド空間  (T で切替)", false,
+                    ctx.gizmoLocalSpace ? "ローカル" : "ワールド"))
+            ctx.gizmoLocalSpace = !ctx.gizmoLocalSpace;
+        sep();
+    }
 
     // ===== 2D / 3D ビュー切替（Unity の 2D ボタン相当）+ UI 編集モード =====
-    sep();
     if (iconBtn("view2D", ctx.view2D ? ICON_VIEW_2D : ICON_VIEW_3D,
                 ctx.view2D
                     ? "2Dビュー（クリックで3D）: 正射・正面固定。WASD/矢印=パン, ホイール=ズーム, 中ドラッグ=パン"
@@ -468,6 +527,33 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::EndPopup();
     }
     ui::PopMenuStyle();
+
+    // ===== ワークスペース ▾（レベル編集 / マテリアル / ライティング / アニメ・シーケンサー / VFX / UI）=====
+    // 切替は「今の状態を記憶 → 選んだワークスペースの最後の状態（初回はプリセット）を適用」。ビューポートの矩形は揺らさない。
+    x += ui::Px(6.0f);
+    {
+        const ws::Preset* curWs = ws::FindPreset(ctx.currentWorkspace);
+        put(0.0f, kBtn);
+        if (ui::LabelDropdownButton("workspace", ICON_WINDOWS, curWs ? curWs->title : "ワークスペース",
+                                    "ワークスペースの切替とレイアウトの保存 / 復元", false, kBtn))
+            ImGui::OpenPopup("##WorkspaceMenu");
+        dx12e::vinput_gui::AnchorLastItem("button", "ワークスペース");
+        const ImVec2 wsBtnMin = ImGui::GetItemRectMin(), wsBtnMax = ImGui::GetItemRectMax();
+        x = wsBtnMax.x + ui::Px(4.0f);
+        ui::PushMenuStyle();
+        ImGui::SetNextWindowPos(ImVec2(wsBtnMin.x, wsBtnMax.y + ui::Px(2.0f)), ImGuiCond_Appearing);   // ボタンの真下に開く（カーソル位置ではなく）
+        if (ImGui::BeginPopup("##WorkspaceMenu"))
+        {
+            ImGui::TextDisabled("ワークスペース");
+            DrawWorkspaceItems(ctx, cmdEnv);
+            ImGui::Separator();
+            DrawLayoutItems(ctx, cmdEnv);
+            ImGui::Separator();
+            cmd::MenuItem(ctx, cmdEnv, "view.resetLayout");
+            ImGui::EndPopup();
+        }
+        ui::PopMenuStyle();
+    }
 
     // ===== Play コントロール（画面中央。UE5 と同じ配置）=====
     // Play ボタンが常に画面中央へ来るよう配置（左のツール群と重なる狭い窓では右へ退避）。

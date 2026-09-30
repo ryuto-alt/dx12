@@ -1,0 +1,201 @@
+{
+  "$schema": "./schema.json",
+  "specVersion": 1,
+  "id": "ps0_exposure",
+  "parityScene": "PS-0",
+  "title": "PS-0 露出ブラケット(EV100 = 13 / 15 / 17。同じ視点)",
+  "description": "手動露出 EV100 を 2 段ずつ変えて、同じ視点を撮る。表示は 1 段上げるごとに半分の明るさ(係数 1/(1.2·2^EV100))になるはずで、基準(パストレーサーの線形 x 同じ露出 x UE Filmic)と一致するか、エンジン内(GPU)のトーンマップが numpy 実装と一致するかを見る。",
+  "status": "ready",
+  "notes": [
+    "カメラごとの setup で set_post_process {ev100} を切り替え、alignment.exposure も同じ EV100 にする",
+    "線形 PFM は露出前なので 3 枚とも同じ(パストレーサーも 3 回同じ絵を描く)",
+    "パストレーサーは bounces=1(直接光 + 環境の可視性つき NEE のみ)。PS-0 は光の単位・露出・トーンマップ・BRDF の校正で、間接光(GI)は別段階(DDGI / SSGI / Lumen 風 GI)の担当。bounces=8 の全光輸送との差は既知の差として PARITY_Q2_REPORT.md に数値を載せる"
+  ],
+  "scene": {
+    "source": "generator",
+    "script": "gen/ps0_calibration.py",
+    "args": {
+      "variant": "calibration",
+      "units": "physical",
+      "sun_intensity": 80000,
+      "sky_nits": 8000,
+      "ev100": 15
+    },
+    "scene": "scenes/ps0_exposure.json"
+  },
+  "cameras": [
+    {
+      "name": "ev_m2",
+      "position": [
+        0.0,
+        1.6,
+        -3.5
+      ],
+      "target": [
+        0.0,
+        0.7,
+        3.0
+      ],
+      "note": "EV100=13(+2 段。明るい) / 既知の差(空の可視性): EV100=13(+2 段)は接触影の縁が明るく出て p95 が伸びる。実測 0.319 に対する許容(平均・SSIM・ΔE は全体の G2 のまま)",
+      "setup": [
+        {
+          "method": "set_post_process",
+          "params": {
+            "ev100": 13.0
+          }
+        }
+      ],
+      "alignment": {
+        "exposure": "ev100:13"
+      },
+      "gates": {
+        "G2": {
+          "flip_ldr_p95_max": 0.35
+        }
+      }
+    },
+    {
+      "name": "ev_0",
+      "position": [
+        0.0,
+        1.6,
+        -3.5
+      ],
+      "target": [
+        0.0,
+        0.7,
+        3.0
+      ],
+      "note": "EV100=15(基準)",
+      "setup": [
+        {
+          "method": "set_post_process",
+          "params": {
+            "ev100": 15.0
+          }
+        }
+      ],
+      "alignment": {
+        "exposure": "ev100:15"
+      }
+    },
+    {
+      "name": "ev_p2",
+      "position": [
+        0.0,
+        1.6,
+        -3.5
+      ],
+      "target": [
+        0.0,
+        0.7,
+        3.0
+      ],
+      "note": "EV100=17(-2 段。暗い)",
+      "setup": [
+        {
+          "method": "set_post_process",
+          "params": {
+            "ev100": 17.0
+          }
+        }
+      ],
+      "alignment": {
+        "exposure": "ev100:17"
+      }
+    }
+  ],
+  "engine": {
+    "resolution": [
+      1920,
+      1080
+    ],
+    "size": [
+      1920,
+      1080
+    ],
+    "linear": true,
+    "mode": "headless",
+    "warmupFrames": 60,
+    "settleFrames": 8,
+    "png": "srgb",
+    "features": {
+      "ddgi": false,
+      "ssgi": false,
+      "ssr": false,
+      "ssao": false,
+      "taa": false,
+      "bloom": false,
+      "vignette": false,
+      "autoExposure": false,
+      "lightingUnits": "physical",
+      "ev100": 15,
+      "tonemapper": "ue_filmic"
+    },
+    "requiresMethods": [
+      "render_reference"
+    ]
+  },
+  "reference": {
+    "kind": "pt",
+    "pt": {
+      "spp": 512,
+      "seeds": [
+        1,
+        2
+      ],
+      "format": "pfm",
+      "api": "engine",
+      "timeoutSec": 1800,
+      "params": {
+        "bounces": 1,
+        "lightFalloff": "physical"
+      }
+    },
+    "external": {
+      "colorspace": "auto",
+      "provenance": "手動撮影の UE / 別エンジンの画像を references/ps0_calibration/<camera>.png に置く"
+    }
+  },
+  "alignment": {
+    "tonemap": "ue_filmic",
+    "exposure": "ev100:15",
+    "sizePolicy": "error",
+    "ppd": 67
+  },
+  "displayCheck": {
+    "mean_lsb_max": 0.6,
+    "p99_lsb_max": 2.0,
+    "max_lsb_max": 4.0
+  },
+  "gates": {
+    "G0": {
+      "lum_mean_ev_abs_max": 1.0
+    },
+    "G1": {
+      "flip_ldr_mean_max": 0.15,
+      "lum_mean_ev_abs_max": 0.5,
+      "ssim_min": 0.75,
+      "de2000_median_max": 6.0
+    },
+    "G2": {
+      "flip_ldr_mean_max": 0.08,
+      "flip_ldr_p95_max": 0.3,
+      "flip_hdr_mean_max": 0.1,
+      "lum_mean_ev_abs_max": 0.25,
+      "ssim_min": 0.9,
+      "de2000_median_max": 3.0,
+      "hue_abs_median_deg_max": 8.0
+    }
+  },
+  "milestones": {
+    "Q2": "G2",
+    "Q1": "G1"
+  },
+  "noiseFloor": {
+    "k": 1.5
+  },
+  "perf": {
+    "enabled": false
+  }
+}

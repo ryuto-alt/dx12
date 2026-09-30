@@ -1,4 +1,5 @@
 #include "editor/UiWidgets.h"
+#include "editor/PropertyGrid.h"   // フェーズ 1b: 再生設定を pg:: 2 カラムへ
 #include "editor/panels/TransitionPreviewPanel.h"
 #include "editor/EditorContext.h"
 #include "graphics/GraphicsDevice.h"
@@ -319,14 +320,6 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
         m_t       = 0.0f;
         m_playing = true;
     }
-    ImGui::SameLine();
-    ui::Checkbox("ループ", &m_loop);
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(ui::Px(140.0f));
-    ui::SliderFloat("再生速度", &m_speed, 0.15f, 2.0f, "x%.2f");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("形をじっくり見たいときは 0.25 くらいまで落とす。\n"
-                          "実機の速さは下の「長さ（秒）」で決まる（ここは見るためだけの倍率）。");
 
     // スクラブ（手で遷移の途中を掴む）
     {
@@ -341,15 +334,21 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
         ImGui::TextDisabled("%.2f / %.2f 秒", static_cast<double>(m_t), static_cast<double>(m_dur));
     }
 
-    // 長さ（＝実機の遷移秒。settings.json へ入る）
-    ImGui::SetNextItemWidth(ui::Px(260.0f));
-    ui::SliderFloat("長さ（秒）", &defaultDur, 0.2f, 3.0f, "%.2f");
-    // スライダーは掴んでいる間ずっと値が変わる。ディスクへ書くのは離した時だけ。
-    if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("「閉じる → （シーンをロード） → 開く」の合計秒。\n"
-                          "1.0 秒あたりが下限の目安。0.6 秒台だと演出の形を読み取る前に終わる。");
-    ImGui::SameLine();
+    // ★フェーズ 1b: ループ / 再生速度 / 長さは pg:: の 2 カラム（インスペクタと同じ見た目）
+    if (pg::Begin("##transProps"))
+    {
+        pg::Checkbox("ループ", &m_loop);
+        pg::SliderFloat("再生速度", &m_speed, 0.15f, 2.0f, "x%.2f", nullptr,
+                        "形をじっくり見たいときは 0.25 くらいまで落とす。\n"
+                        "実機の速さは下の「長さ（秒）」で決まる（ここは見るためだけの倍率）。");
+        // 長さ（＝実機の遷移秒。settings.json へ入る）
+        pg::SliderFloat("長さ（秒）", &defaultDur, 0.2f, 3.0f, "%.2f", nullptr,
+                        "「閉じる → （シーンをロード） → 開く」の合計秒。\n"
+                        "1.0 秒あたりが下限の目安。0.6 秒台だと演出の形を読み取る前に終わる。");
+        // スライダーは掴んでいる間ずっと値が変わる。ディスクへ書くのは離した時だけ。
+        if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
+        pg::End();
+    }
     if (ImGui::SmallButton("プリセットの既定秒に戻す") && selPreset >= 0)
     {
         defaultDur = kTransitionPresets[selPreset].duration;
@@ -359,13 +358,13 @@ bool TransitionPreviewPanel::RenderWindow(EditorContext& ctx, int& defaultType, 
     if (selPreset >= 0)
     {
         const TransitionPreset& pr = kTransitionPresets[selPreset];
-        ImGui::TextColored(ImVec4(0.47f, 0.75f, 1.0f, 1.0f),
+        ImGui::TextColored(theme::AccentHover,
                            "選択中: %s（%.2f 秒） / Lua: transitionToScene(rel, \"%s\")",
                            pr.label, static_cast<double>(defaultDur), pr.id);
     }
     else
     {
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+        ImGui::TextColored(theme::Warn,
                            "選択中: (不明な型 %d)。下から選び直してください", m_type);
     }
 

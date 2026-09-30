@@ -139,9 +139,9 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
     // ---- 接続インジケータ ----
     const uint16_t port = bridge.Port();
     if (bridge.IsConnected())
-        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.35f, 1.0f), "● 接続中");
+        ImGui::TextColored(theme::Good, "● 接続中");
     else
-        ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "○ 未接続");
+        ImGui::TextColored(theme::TextDim, "○ 未接続");
     ImGui::SameLine(0, ui::Px(12.0f));
     if (port != 0)
         ImGui::Text("待受 127.0.0.1:%u", static_cast<unsigned>(port));
@@ -161,7 +161,7 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
     if (!serverFound)
     {
         // 未インストール。別リポジトリからのインストールを案内する。
-        ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.5f, 1.0f), "MCP サーバが未インストールです。");
+        ImGui::TextColored(theme::Warn, "MCP サーバが未インストールです。");
         ImGui::TextWrapped("MCP サーバは別リポジトリで配布しています。下のコマンドを"
                            "ターミナル(PowerShell 等)に貼って実行すると %%USERPROFILE%%\\dx12-mcp に"
                            "インストールされ、Claude Code と Codex へ自動登録されます"
@@ -241,16 +241,16 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             if (it->ok)
-                ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.35f, 1.0f), "✓");
+                ImGui::TextColored(theme::Good, "✓");
             else
-                ImGui::TextColored(ImVec4(0.90f, 0.35f, 0.35f, 1.0f), "✗");
+                ImGui::TextColored(theme::Bad, "✗");
 
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(it->method.empty() ? "(?)" : it->method.c_str());
 
             ImGui::TableSetColumnIndex(2);
             if (!it->ok && !it->error.empty())
-                ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.5f, 1.0f), "%s", it->error.c_str());
+                ImGui::TextColored(theme::Warn, "%s", it->error.c_str());
             else
                 ImGui::TextDisabled("-");
         }

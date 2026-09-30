@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "kind": "material",
+  "guid": "g0000001",
+  "name": "flat_color",
+  "settings": { "blendMode": "Opaque", "maskClip": 0.5, "shadingModel": "DefaultLit", "twoSided": false },
+  "nodes": {
+    "col": { "type": "Float3", "props": { "value": [0.8, 0.35, 0.2] } },
+    "out": { "type": "MaterialOutput", "in": { "BaseColor": "col.Out", "Metallic": 0.0, "Roughness": 0.4 } }
+  },
+  "comments": {},
+  "layout": {
+    "col": "0 0",
+    "out": "0 0"
+  }
+}

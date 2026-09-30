@@ -1,6 +1,8 @@
 #include "scene/Scene.h"
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <unordered_set>
 
 #include <Windows.h>
@@ -109,6 +111,14 @@ Entity Scene::Spawn(const std::string& name,
     for (const auto& mat : cached->materials)
     {
         renderer.materials.push_back(mat.get());
+    }
+
+    // .vgeo（仮想ジオメトリ）: プロキシ（通常メッシュ）を上の MeshRenderer に持たせたうえで、
+    // VG の対象であることを示す VirtualGeometry を付ける（パスは MeshRenderer.modelPath を使うので空でよい）。
+    {
+        std::string ext = std::filesystem::path(modelPath).extension().string();
+        for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext == ".vgeo") entity.AddComponent<VirtualGeometry>();
     }
 
     // スケルタルメッシュの場合
@@ -486,12 +496,15 @@ void Scene::Clear()
     m_ssgi           = SsgiSettings{};
     m_rt             = RtSettings{};
     m_ddgi           = DdgiSettings{};
+    m_vg             = vg::VirtualGeometrySettings{};
+    m_wind           = foliage::SceneWind{};
     m_taa            = TaaSettings{};
     m_volFog         = VolumetricFogSettings{};
     m_decalAtlasPath.clear();
     m_shadowsEnabled = true;
     m_navConfig      = nav::NavBuildConfig{};
     m_navMesh.Clear();   // 前のシーンのナビメッシュを持ち越さない（.nav が無いシーンで残る）
+    m_sequenceAutoPlay.clear();
     m_pendingAnimEvents.clear();
 }
 

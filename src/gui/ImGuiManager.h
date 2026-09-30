@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <directx/d3d12.h>
 #include <functional>
+#include <string>
 #include <utility>
 #include "core/Types.h"
 
@@ -64,6 +65,10 @@ public:
     void  SetUiScaleOverride(float scale);
     // ゲームモード（配布ランタイム）は倍率を持たない（常に 1.0）。
 
+    // imgui.ini の保存先をユーザーデータ領域の絶対パスにする（既定はカレントディレクトリ依存で、起動の仕方で別のファイルを読んでいた）。
+    // 初回 NewFrame より前に呼ぶこと。新しい場所に無く、カレントディレクトリに旧 imgui.ini があれば一度だけ引き継ぐ。
+    void SetIniPath(const std::string& utf8Path);
+
     static LRESULT WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 private:
@@ -71,6 +76,7 @@ private:
     HWND m_hwnd = nullptr;
     std::function<void(int, bool)> m_virtualKeySink;
     u32  m_logicalW = 0, m_logicalH = 0;
+    std::string m_iniPath;   // imgui.ini の絶対パス（IniFilename が指す。空 = ImGui の既定＝カレントディレクトリの imgui.ini）
     bool m_iniSavingDisabled = false;
     bool m_iniSavingDisabledApplied = false;
 };

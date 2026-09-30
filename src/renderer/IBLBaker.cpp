@@ -105,6 +105,7 @@ void IBLBaker::RecreatePipelines(GraphicsDevice& device)
         ThrowIfFailed(dev->CreateComputePipelineState(&pso, IID_PPV_ARGS(&out)));
     };
     makeCS(L"IrradianceConvolution_CS.cso", m_psoIrradiance);
+    makeCS(L"AtmosphereIrradiance_CS.cso",  m_psoIrradianceMip);
     makeCS(L"PrefilterEnv_CS.cso",          m_psoPrefilter);
     makeCS(L"IntegrateBRDF_CS.cso",         m_psoBrdf);
 }
@@ -282,6 +283,7 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
 
     // src env cube の 1 面サイズ(mip0)。PrefilterEnv の PDF ベース mip 選択に渡す。
     const u32 envFaceSize = static_cast<u32>(envCube->GetDesc().Width);
+    m_bakedEnvSize = envFaceSize;
 
     // constants
     u8* cbBase = nullptr;
@@ -363,9 +365,88 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
     Logger::Info("IBL baked (irradiance/prefiltered/BRDF LUT)");
 }
 
+void IBLBaker::FreeRebakeDescriptors(DescriptorHeap& srvHeap)
+{
+    if (m_rebakeBlock != DescriptorHeap::kInvalidIndex)
+        srvHeap.FreeBlock(m_rebakeBlock, 3 * 7);
+    m_rebakeBlock = DescriptorHeap::kInvalidIndex;
+}
+
+bool IBLBaker::RebakeStage(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList, DescriptorHeap& srvHeap,
+                           ID3D12Resource* envCube, u32 stage, u32 frameSlot)
+{
+    if (!m_initialized || !m_valid || !m_hasEnv || !envCube || stage >= kRebakeStageCount) return false;
+    if (static_cast<u32>(envCube->GetDesc().Width) != m_bakedEnvSize) return false;   // 定数(envSize)が合わない → Bake し直し
+    if (m_derivedState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return false;
+
+    auto* dev = device.GetDevice();
+    if (m_rebakeBlock == DescriptorHeap::kInvalidIndex)
+    {
+        m_rebakeBlock = srvHeap.AllocateBlock(3 * 7);
+        if (m_rebakeBlock == DescriptorHeap::kInvalidIndex) return false;
+    }
+    const u32 base = m_rebakeBlock + (frameSlot % 3u) * 7u;   // [0]=env SRV / [1]=irradiance UAV / [2..6]=prefilter mip0..4 UAV
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+        sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sd.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        sd.Format                  = envCube->GetDesc().Format;
+        sd.TextureCube.MipLevels   = static_cast<UINT>(-1);
+        dev->CreateShaderResourceView(envCube, &sd, srvHeap.GetCpuHandle(base));
+    }
+    auto makeArrayUAV = [&](ID3D12Resource* res, u32 mip, u32 dst)
+    {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC u{};
+        u.Format                         = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        u.ViewDimension                  = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        u.Texture2DArray.MipSlice        = mip;
+        u.Texture2DArray.FirstArraySlice = 0;
+        u.Texture2DArray.ArraySize       = 6;
+        dev->CreateUnorderedAccessView(res, nullptr, &u, srvHeap.GetCpuHandle(dst));
+    };
+    const bool irr = (stage == 0);
+    const u32 mip = irr ? 0u : stage - 1u;
+    ID3D12Resource* target = irr ? m_irradianceCube.Get() : m_prefilteredCube.Get();
+    const u32 uavIdx = irr ? base + 1 : base + 2 + mip;
+    makeArrayUAV(target, mip, uavIdx);
+
+    auto barrier = [&](ID3D12Resource* res, D3D12_RESOURCE_STATES a, D3D12_RESOURCE_STATES b)
+    {
+        D3D12_RESOURCE_BARRIER br{};
+        br.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        br.Transition.pResource   = res;
+        br.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        br.Transition.StateBefore = a;
+        br.Transition.StateAfter  = b;
+        cmdList->ResourceBarrier(1, &br);
+    };
+    barrier(envCube, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    barrier(target, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+    ID3D12DescriptorHeap* heaps[] = { srvHeap.GetHeap() };
+    cmdList->SetDescriptorHeaps(1, heaps);
+    cmdList->SetComputeRootSignature(m_computeRS.Get());
+    // 定数は Bake が m_cbUpload に書いた物をそのまま使う（slot 0 = irradiance / slot 1+m = prefilter mip m。envSize は一致確認済み）。
+    const D3D12_GPU_VIRTUAL_ADDRESS cb = m_cbUpload->GetGPUVirtualAddress() + static_cast<UINT64>(irr ? 0u : 1u + mip) * kCBSlotStride;
+    // 拡散は、環境キューブに mip があるとき（大気の空）だけ軽い版（mip を引いてサンプル数 1/8）。無ければ従来の畳み込み。
+    const bool envHasMips = envCube->GetDesc().MipLevels > 1;
+    cmdList->SetPipelineState(irr ? (envHasMips ? m_psoIrradianceMip.Get() : m_psoIrradiance.Get()) : m_psoPrefilter.Get());
+    cmdList->SetComputeRootConstantBufferView(0, cb);
+    cmdList->SetComputeRootDescriptorTable(1, srvHeap.GetGpuHandle(base));
+    cmdList->SetComputeRootDescriptorTable(2, srvHeap.GetGpuHandle(uavIdx));
+    const u32 sz = irr ? kIrradianceSize : (kPrefilterSize >> mip);
+    const u32 g = (sz + 7) / 8;
+    cmdList->Dispatch(g, g, 6);
+
+    barrier(target, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    barrier(envCube, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    return true;
+}
+
 void IBLBaker::Reset()
 {
     m_psoIrradiance.Reset();
+    m_psoIrradianceMip.Reset();
     m_psoPrefilter.Reset();
     m_psoBrdf.Reset();
     m_computeRS.Reset();
@@ -374,6 +455,8 @@ void IBLBaker::Reset()
     m_brdfLut.Reset();
     m_cbUpload.Reset();
     m_derivedState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;  // 作り直したら UAV から
+    m_rebakeBlock = 0xFFFFFFFFu;
+    m_bakedEnvSize = 0;
     m_valid = false;
     m_hasEnv = false;
     m_initialized = false;

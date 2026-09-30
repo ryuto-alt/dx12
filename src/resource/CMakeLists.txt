@@ -27,10 +27,12 @@ add_library(Resource STATIC
     AssetPrewarmer.cpp
     ShaderTemplates.cpp
     ModelLoader.cpp
+    VgeoProxyLoader.cpp     # .vgeo（仮想ジオメトリ）のプロキシ読込（ModelLoader::LoadFromFile から分岐）
     ResourceManager.cpp
     VfsIOSystem.cpp
     MaterialAssetIO.cpp
     MaterialAssetManager.cpp
+    MaterialGraphize.cpp    # マテリアルグラフ G2b: 従来 PBR 材質 → 等価グラフのインスタンスへ（グラフ化。手動だけ）
     TerrainLayerSet.cpp
 )
 target_include_directories(Resource PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
@@ -42,6 +44,7 @@ target_link_libraries(Resource PUBLIC
     Microsoft::DirectXTex
     Microsoft::DirectXShaderCompiler
     nlohmann_json::nlohmann_json
+    MatGraph    # マテリアルグラフ G2b: MaterialGraphize（グラフ化）が使う（純ロジック。src/renderer/CMakeLists.txt で定義）
 )
 
 target_compile_options(Resource PRIVATE ${DX12_COMPILE_OPTIONS})

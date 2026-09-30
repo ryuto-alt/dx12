@@ -154,6 +154,9 @@ public:
     bool PeekRedoIsAi() const { return !m_redoStack.empty() && m_redoStack.back()->IsAi(); }
     size_t UndoDepth() const { return m_undoStack.size(); }
     size_t RedoDepth() const { return m_redoStack.size(); }
+    // 履歴の名前（新しい順・最大 maxN 件。dx12_editor_state の undo セクション用。読むだけ）。
+    std::vector<std::string> RecentUndoNames(size_t maxN) const { return NamesNewestFirst(m_undoStack, maxN); }
+    std::vector<std::string> RecentRedoNames(size_t maxN) const { return NamesNewestFirst(m_redoStack, maxN); }
 
     void Undo()
     {
@@ -178,6 +181,16 @@ public:
     void Clear() { m_undoStack.clear(); m_redoStack.clear(); }
 
 private:
+    static std::vector<std::string> NamesNewestFirst(const std::vector<std::unique_ptr<IUndoCommand>>& stack, size_t maxN)
+    {
+        std::vector<std::string> out;
+        for (size_t i = stack.size(); i > 0 && out.size() < maxN; --i)
+        {
+            const char* n = stack[i - 1]->GetName();
+            out.emplace_back(n ? n : "");
+        }
+        return out;
+    }
     static constexpr size_t kMaxHistory = 100;
     u64 m_editSeq = 0;
     u64 m_pushSeq = 0;

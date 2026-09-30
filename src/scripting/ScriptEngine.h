@@ -29,6 +29,7 @@ class NetworkSystem;
 class UISystem;
 class ActionMap;
 namespace ai { class AiSystem; }
+class ISequenceLuaApi;   // core/SequenceLuaApi.h（Lua の Sequence.* の窓口。シーケンサーのホストが実装する）
 
 // スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
 // 型 / 既定値 / 範囲 / 表示名を持ち、Inspector の自動 UI 生成と Play 時の注入に使う。
@@ -81,6 +82,15 @@ public:
     ai::AiSystem* GetAiSystem() const { return m_aiSystem; }
     // Lua に渡している時間の倍率（time.setScale）。AI もスクリプトと同じ時間で動かすために読む
     f32 GetTimeScale() const { return m_timeScale; }
+    // タイムスケールを C++ から書く（シーケンサーの timeScale トラック用。Lua の time.setScale と同じ効果）。0 未満は 0。
+    void SetTimeScale(f32 s) { m_timeScale = (s < 0.0f) ? 0.0f : s; }
+
+    // シーケンサー（.dxseq）の再生窓口を Lua の Sequence.* へ注入する（Application が一度だけ注入。null 許容）。
+    void SetSequenceApi(ISequenceLuaApi* a) { m_sequenceApi = a; }
+
+    // グローバル関数（"fn" または入れ子 "Mod.fn"）を呼ぶ。シーケンサーのイベント kind:"lua" 用。
+    // 引数は number / bool / string。失敗（関数が無い・Lua の実行時エラー）は false で err に理由。
+    bool CallGlobalFunction(const std::string& fn, const std::vector<EngineEvent::Value>& args, std::string& err);
 
     // EventBus 注入（WireScriptCallbacks から Application が呼ぶ）。
     // events:on/emit/clear バインドはこのポインタを実行時に参照する（null 許容）。
@@ -265,6 +275,7 @@ private:
     // ★sol の参照を持つので lua_State より先に捨てる（Shutdown / OnPlayStop が ClearAiLua を呼ぶ）
     std::shared_ptr<void> m_aiLua;
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
+    ISequenceLuaApi* m_sequenceApi = nullptr;   // Application が所有、null 許容（Lua の Sequence.*）
     ActionMap*   m_actionMap = nullptr;  // Application が所有、null 許容
     // Trigger の SetShaderParam / AnimShaderParam の実体。Play 停止で捨てる
     // （進行中の値を残したままシーンを作り直すと、止めた瞬間の絵が焼き付く）。

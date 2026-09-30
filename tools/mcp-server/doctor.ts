@@ -61,6 +61,8 @@ export type DoctorDeps = {
   manifest: { source: string; hash: string | null; snapshotHash: string | null; count: number; lastError: string | null };
   /** フリートの状態(台数・資源・古い exe コピー・孤児)。無ければ出さない。null を返したら無効。 */
   fleet?: () => Promise<Record<string, unknown> | null>;
+  /** ジョブ API の状態(動いているジョブ・件数・上限・直近の終了)。無ければ出さない。 */
+  jobs?: () => Record<string, unknown> | null;
   /** マニフェストを取り直す(ping の結果を返す)。 */
   refresh: () => Promise<{ ping?: any; engineTooOld?: boolean; changed?: boolean }>;
   recentErrors: () => { at: number; tool: string; code: string; message: string }[];
@@ -170,6 +172,37 @@ export function fleetIssues(f: Record<string, any>): DoctorIssue[] {
   }
   if (f.resources && f.resources.vramSource === "unknown") {
     issues.push({ code: "FLEET_VRAM_UNKNOWN", severity: "info", message: "空き VRAM を観測できない(nvidia-smi も GPU カウンタも使えない)。VRAM の下限判定は行われない" });
+  }
+  return issues;
+}
+
+/** ジョブの状態から診断項目を作る。純関数(jobs.test / shell.test から使う)。 */
+export function jobsIssues(j: Record<string, any>): DoctorIssue[] {
+  const issues: DoctorIssue[] = [];
+  const active: any[] = Array.isArray(j.active) ? j.active : [];
+  const orphaned = active.filter((a) => a.orphaned);
+  const mine = active.filter((a) => !a.orphaned);
+  if (mine.length) {
+    issues.push({
+      code: "JOBS_ACTIVE", severity: "info",
+      message: `ジョブが ${mine.length} 件動いている(${mine.slice(0, 4).map((a) => `${a.kind} ${a.id.slice(-11)} ${a.state === "queued" ? `順番待ち${a.queuePosition ?? ""}` : `${a.phase}${a.pct != null ? ` ${a.pct}%` : ""}`}`).join(" / ")})`,
+      fix: mine.slice(0, 3).map((a) => ({ tool: "dx12_job_status", args: { id: a.id, waitSec: 30 }, why: `${a.kind} の進捗を待つ` })),
+    });
+  }
+  if (orphaned.length) {
+    issues.push({
+      code: "JOBS_ORPHANED", severity: "warn",
+      message: `起動したセッション(MCP サーバ)が消えたのに動いているジョブがある(${orphaned.map((a) => a.id.slice(-11)).join(", ")})。process 型は runner が走り続ける`,
+      fix: orphaned.slice(0, 3).flatMap((a) => [{ tool: "dx12_job_status", args: { id: a.id }, why: "状態を見る" }, { tool: "dx12_job_cancel", args: { id: a.id }, why: "不要なら止める(孤児は止められる)" }]),
+    });
+  }
+  const failed = (Array.isArray(j.recentFinished) ? j.recentFinished : []).filter((r: any) => r.state === "failed" || r.state === "timeout");
+  if (failed.length) {
+    issues.push({
+      code: "JOBS_RECENT_FAILED", severity: "info",
+      message: `直近のジョブが失敗している(${failed.map((r: any) => `${r.kind} ${r.id.slice(-11)} ${r.error ?? r.state}`).join(" / ")})`,
+      fix: failed.slice(0, 2).map((r: any) => ({ tool: "dx12_job_logs", args: { id: r.id, tail: 60 }, why: "失敗の出力を読む" })),
+    });
   }
   return issues;
 }
@@ -300,6 +333,14 @@ export async function runDoctor(d: DoctorDeps, opts: { deep?: boolean } = {}): P
     if (fleetReport) issues.push(...fleetIssues(fleetReport));
   }
 
+  // ── ジョブ(長い処理の非同期実行) ───────────────────────────────────────
+  let jobsReport: Record<string, unknown> | null = null;
+  if (d.jobs) {
+    try { jobsReport = d.jobs(); }
+    catch (e: any) { issues.push({ code: "JOBS_STATUS_FAILED", severity: "warn", message: `ジョブの状態を取得できなかった: ${e?.message ?? e}` }); }
+    if (jobsReport) issues.push(...jobsIssues(jobsReport));
+  }
+
   const errors = issues.filter((i) => i.severity === "error").length;
   const report: Record<string, unknown> = {
     ok: errors === 0,
@@ -328,6 +369,7 @@ export async function runDoctor(d: DoctorDeps, opts: { deep?: boolean } = {}): P
     issues,
   };
   if (fleetReport) report.fleet = fleetReport;
+  if (jobsReport) report.jobs = jobsReport;
   if (logRes) report.log = logRes;
   if (late.length) report.lateResults = late;
   if (!pong && pingError) report.connectError = String(pingError.message ?? pingError);

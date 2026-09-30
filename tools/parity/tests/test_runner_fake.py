@@ -331,7 +331,7 @@ def test_doctor_selftest_and_scenes():
 
 
 def test_pt_size_params_pass_the_engine_image_size(fake, launcher, tmp_path):
-    d = spec_data(reference={"kind": "pt", "pt": {"spp": 8, "sizeParams": ["width", "height"], "params": {"bounces": 4}}})
+    d = spec_data(reference={"kind": "pt", "pt": {"spp": 8, "api": "legacy", "sizeParams": ["width", "height"], "params": {"bounces": 4}}})
     run = run_scene(S.from_data(d), opts(fake, launcher, tmp_path))
     assert run["verdict"] == "pass"
     req = [p for m, p in fake.calls if m == "render_reference"][0]

@@ -17,6 +17,15 @@ public:
 
     ID3D12RootSignature* Get() const { return m_rootSignature.Get(); }
 
+    // ★メイン RS が CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED（SM 6.6 のバインドレス =
+    //   ResourceDescriptorHeap[]）を許すか。GraphicsDevice::SupportsDynamicResources()（SM 6.6 以上 + Resource
+    //   Binding Tier 3）が真のとき立てる。偽の GPU（または環境変数 DX12_DISABLE_MAIN_BINDLESS=1）では従来の
+    //   RS のまま＝マテリアルグラフ G2b 以降の「バインドレスでテクスチャを引く機能」だけが無効になる。
+    //   ★立てたときの規約: このメイン RS を Set する【前】に SetDescriptorHeaps を呼ぶこと
+    //     （CommandList::SetDescriptorHeap → SetRootSignature の順。逆だとデバッグレイヤが叫ぶ）。
+    //   ルート定数の DWORD には影響しない（テーブル・定数の数は 62/64 のまま）。
+    bool IsBindless() const { return m_bindless; }
+
     // 直列化済みの本体。カスタムシェーダーの PSO 生成が失敗したとき、シェーダーの
     // リフレクションと突き合わせて「どの register が余計なのか」を名指しするのに使う
     // （デバッグレイヤーの無い Release ビルドでも同じ説明を出すため）。
@@ -46,6 +55,7 @@ public:
     static constexpr u32 kSlotSsgiSRV           = 13;
 
 private:
+    bool m_bindless = false;
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
     Microsoft::WRL::ComPtr<ID3DBlob>            m_serialized;
 };

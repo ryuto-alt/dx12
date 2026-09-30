@@ -73,7 +73,7 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | `E_ENGINE_TOO_OLD` | — | 旧ツールが呼ぶ method をエンジンが持たない / マニフェスト無しの古いエンジン | エンジンを更新して再起動 |
 | `E_UNKNOWN_TOOL` | 8 | ツール/method 名が無い | `didYouMean`(編集距離+別名+検索)、`dx12_tool_search` |
 | `E_UNKNOWN_PARAM` `E_MISSING_PARAM` `E_BAD_TYPE` `E_BAD_ENUM` `E_OUT_OF_RANGE` | 2 | 引数不正 | `fix[0].args`(機械的に直した引数)/ `validValues` |
-| `E_NOT_FOUND_ENTITY` `E_NOT_FOUND_ASSET` `E_NOT_FOUND_SCENE` `E_NOT_FOUND_COMPONENT` | 1 / 6 | 対象が無い(近い名前を最大 5 件) | `didYouMean` を入れた撃ち直し |
+| `E_NOT_FOUND_ENTITY` `E_NOT_FOUND_ASSET` `E_NOT_FOUND_SCENE` `E_NOT_FOUND_COMPONENT` `E_NOT_FOUND_COMMAND` | 1 / 6 | 対象が無い(近い名前を最大 5 件。`E_NOT_FOUND_COMMAND` はエディタのコマンド id) | `didYouMean` を入れた撃ち直し |
 | `E_STALE_SCENE` | 4 | `expectGeneration` が古い | `dx12_list_entities` |
 | `E_MODE_CONFLICT` | 3 | Editor/Playing の不一致・トランザクション中の禁止 method | `dx12_stop` など(`thenRetry:true` は撃ってから元の呼び出しを再送) |
 | `E_VIRTUAL_INPUT_OFF` `E_MODAL_OPEN` | 3 / 13 | 仮想入力が OFF / モーダルが開いている | `dx12_imgui_virtual_input {enable:true}` |
@@ -85,17 +85,22 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | `E_FLEET_VISIBLE_DENIED` `E_FLEET_READONLY` | — | `visible` は既定で拒否 / 読み取り専用で繋いだエンジンへ書き込み系を送った | `mode:"background"` / `dx12_engine_launch`(自分専用) |
 | `E_FLEET_NOT_FOUND` `E_FLEET_NOT_OWNER` `E_FLEET_PROJECT_IN_USE` | — | engine が無い / 他人のエンジン / 同じプロジェクトを別のエンジンが使用中 | `didYouMean`・`dx12_engine_list` |
 | `E_FLEET_BUILD_IN_PROGRESS` `E_FLEET_LAUNCH_FAILED` `E_FLEET_EXE_MISSING` `E_FLEET_DISABLED` | — | exe の元がビルド中 / 起動失敗・無応答 / exe が無い / フリート無効 | ビルド完了を待つ・`details.logTail`・`tools\build.ps1` |
+| `E_JOB_NOT_FOUND` `E_JOB_NOT_FINISHED` `E_JOB_NOT_OWNER` | — | ジョブ id が無い(または GC 済み)/ まだ終わっていない / 他のセッションの生きたジョブ | `dx12_job_list` / `dx12_job_status {id, waitSec:30}` / `force:true`(承認を得て) |
+| `E_JOB_TOOL_MISSING` `E_JOB_FAILED` `E_JOB_TIMEOUT` `E_JOB_INTERRUPTED` `E_JOB_RUNNER_LOST` `E_JOB_DISABLED` | — | build.ps1・vgeo_cook・ctest・exe が無い / 処理の失敗(`summary` に errors・failedTests)/ `timeoutSec` 超過 / 起動したサーバの終了で中断 / runner が結果を残さず消えた / ジョブ API 無効 | `fix`・`dx12_job_logs`・`timeoutSec` を延ばす・同じ引数で再起動 |
+| `E_IDEMPOTENCY_CONFLICT` `E_IDEMPOTENCY_IN_FLIGHT` | 2 / 9 | 同じ冪等キーで別の要求 / 前回の要求がまだ処理中 | 別のキーにする / 少し待って同じ要求を再送(`dx12_call` は自動で再送する) |
 
 エンジン側の加算フィールド(`error_name` など)は §12-3。`docs` の語調は標準語・簡潔に統一(方言・命令口調は `errors.test.ts` の lint が見張る)。
 
 ### 0-3. dryRun / guarded / 警告(`dx12_call`)
 
 - `dryRun:true`: 読み取り系はそのまま実行(`dryRun:"ignored(read-only)"`)。`look_apply` / `vfx_apply` / `decal_apply` / `sequence_author` / `organize_scene` は各ツールの native dryRun(計算結果を返す)。
-  それ以外の書き込み系は**実行せず**、対象の存在(`get_entity` で確認)・破壊性・Undo 可否・ファイルを書くか、を `preview` に返す(非対応の範囲は `supported` に明示)。
+  **エンジンが対応する method(マニフェストの `dryRun:"preview"`。18 件。§13-4)は、エンジンが「実際に何が起こるか」(対象と件数・破壊性・書くファイルと上書きか・`willFail`)を返す**(`dryRunMode:"engine"`。副作用ゼロ)。
+  それ以外の書き込み系は**実行せず**、対象の存在(`get_entity` で確認)・破壊性・Undo 可否・ファイルを書くか、を `preview` に返す(非対応の範囲は `supported` に明示)。`dx12_batch` の dryRun は op ごとにエンジンのプレビューを引く(`dryRunMode:"engine-per-op"`)。
 - **guarded**(`git_*` の書き込み系 7 種 / `eval_lua` / `delete_asset` / `build_game` / `net_launch_test_client`。`git_status` / `git_branches` は read): `full` / `shell` 面では `confirm:true` が無いと `E_GUARDED`。
   **`core` 面では `dx12_call` に `confirm:true` を付けても通らず**、`dx12_call_guarded`(`_meta["anthropic/requiresUserInteraction"]:true` = 毎回ユーザーが承認)から実行する。
-  `dx12_batch` の op に guarded な method が混じっていたら、`core` / `shell` 面では 1 つも実行せず `E_GUARDED`(batch はエンジン method 直叩きでゲートを素通りできるため)。
-  **未対応(M5)**: エンジン側ディスパッチャの guarded ゲート(生 TCP で撃てば通る)、`full` 面の batch。旧ツールを直接呼ぶ場合はクライアントの権限設定(名前ベース)が効く。
+  `dx12_batch` の op に guarded な method が混じっていたら、**全ての面で**(M5 で full / legacy にも拡張)1 つも実行せず `E_GUARDED`(batch はエンジン method 直叩きでゲートを素通りできるため)。
+  **エンジン側にも最終関門がある(M5。§13-2)**: guarded な method は有効な `confirm_token`(`guard_token` で得る 1 回限りのトークン)が無いと**エンジンが拒否する**(生 TCP・`dx12_batch` の素通りも塞がる)。TS 側の `E_GUARDED` はその前段。旧ツールを直接呼ぶ場合はクライアントの権限設定(名前ベース)が効く。
+- **冪等キー(M5)**: `dx12_call {idempotency_key}`(別名 `idempotencyKey`)は write 系の全 method / ツールで、同じキーの再送に前回の結果(`idempotentReplay:true`)を返して再実行しない(§6・§13-3)。ラッパの無い method と、`idempotency_key` を宣言した旧ツール(create_entity など)はキーをそのままエンジンへ渡す。それ以外の旧ツール / 合成ツール(`dx12_batch` など)は、呼び出しの文脈にキーを置き、中でエンジンへ撃つ write 系に**サブキー `<key>:<method>:<引数の sha1 先頭 8 桁>:<出現順>`** を付ける(同じ引数の繰り返しでも衝突せず、再送しても完了済みの部分は二重実行されない)。**キーを省略しても**、エンジン method に 1:1 の write 系は `auto-…` を自動採番し、`E_ENGINE_TIMEOUT` / `E_IDEMPOTENCY_IN_FLIGHT` のときは**同じキーで最大 3 回自動再送**する(エンジンが応答するまで待つ。`meta.autoRetried`)。合成ツールは自動採番しない。
 - 未保存の変更を消す操作(`open_scene` / `new_scene` / `open_project`)は、`sceneDirty:true` のとき `meta.warnings` で事前に警告する。
 - タイムアウト後に届いた応答は捨てずに保持し、次の `dx12_call` の `meta.lateResults` に載せる。切断後の次の呼び出しで自動再接続(接続失敗は 0.3 / 0.6 / 1.2 秒で再試行)し、再接続した事実(entityId の失効)を `meta.warnings` に載せる。
 
@@ -103,7 +108,7 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 
 | 変数 | 内容 |
 |---|---|
-| `DX12_MCP_SURFACE` | ツール面(§0-5)。`full`(既定: shell 5 本 + 旧 220 本。現状互換)/ `core`(shell 5 + Core 28 + `dx12_batch` + `dx12_call_guarded` = 35 本)/ `shell`(shell 5 本だけ)/ `legacy`(旧 220 本だけ・instructions 無し・outputSchema 有り。M0 と同一の回帰基準) |
+| `DX12_MCP_SURFACE` | ツール面(§0-5)。`full`(既定: shell 5 本 + 旧 220 本 + パストレーサー 3 + 仮想ジオメトリ 2 + フリート 6 + ジョブ 6 + エディタ操作 5。現状互換)/ `core`(shell 5 + フリート 2 + ジョブ 3 + Core 28 + `dx12_batch` + `dx12_call_guarded` = 40 本)/ `shell`(shell 5 本だけ)/ `legacy`(旧 220 本だけ・instructions 無し・outputSchema 有り。M0 と同一の回帰基準) |
 | `DX12_MCP_TOOLSET` | `DX12_MCP_SURFACE` の旧名(互換)。`SURFACE` が有効ならそちらが優先。`full` / `legacy` / `shell`(設計書どおり `core` も可) |
 | `DX12_MCP_LIST_CHANGED` | `0` / `false` / `off` で、マニフェストの `expose:"core"` による動的登録(`tools/list` の差し替えと `list_changed` 送出)を止める。既定は有効。止めても `dx12_tool_describe` / `dx12_call` では新 method が使える |
 | `DX12_MCP_PORT` / `DX12_MCP_HOST` | 接続先(従来どおり) |
@@ -122,11 +127,11 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | 面 | `tools/list` | 本数 / サイズ(実測) | 使いどころ |
 |---|---|---:|---|
 | `full`(既定) | shell 5 + 旧 220(情報の無い共通 `outputSchema` を削っただけ) | 225 本 / 350,762 B(M0 408,638 B 比 85.8%) | 従来どおり。許可リストに旧名を書いている人 |
-| `core` | shell 5 + **フリート 5** + Core 28 + `dx12_batch` + `dx12_call_guarded` | **40 本(上限ちょうど)**。フリート追加前は 35 本 / 約 56 KB | 通常の AI 作業。長尾は `dx12_tool_search` → `dx12_call` |
+| `core` | shell 5 + **フリート 2** + **ジョブ 3** + Core 28(**エディタ操作 2 を含む**)+ `dx12_batch` + `dx12_call_guarded` | **40 本(上限ちょうど)** | 通常の AI 作業。長尾は `dx12_tool_search` → `dx12_call` |
 | `shell` | shell 5 | 5 本 / 6,708 B | 最小(全部 `dx12_call` 経由) |
 | `legacy` | 旧 220 のみ | 220 本 / 408,638 B | 回帰基準(M0 と同一) |
 
-**Core 28 本(選定は設計書 §4.1.5 と付録 A の使用頻度。M3 時点で存在する機能だけ)**
+**Core 28 本 + フリート 2 + ジョブ 3(選定は設計書 §4.1.5 と付録 A の使用頻度。M6 で `dx12_run_playtests` を、M7 で `dx12_play_script` と `dx12_engine_list` を、M11 で `dx12_scene_write` を長尾へ)**
 
 | # | Core ツール | 中身 |
 |---|---|---|
@@ -135,22 +140,24 @@ Core にも載せたい method だけ `McpMeta.expose = "core"` を付けると�
 | 5-6 | `dx12_get_log` `dx12_get_script_errors` | 旧ツールのまま |
 | 7 | `dx12_get_perf` | **統合(2 → 1)**: `mode` = snapshot(`perf_stats`)/ benchmark(`benchmark`)。`frames` / `uncap` があれば benchmark |
 | 8 | `dx12_capture` | **統合(8 → 1)**: `view` = final(既定)/ scene / game / ui / debug / texture / from / focus |
-| 9 | `dx12_scene_write` | 旧ツールのまま(設計書の `apply_scene_spec` は M11 まで無いので、その代役) |
+| 9 | `dx12_apply_scene_spec` | **宣言的シーン生成(M11。§0-10)**: 仕様 JSON を差分適用 → 自動検証 → 失敗は specPatch。`dx12_scene_write`(M3 ではその代役として Core に居た)は M11 で長尾へ。`dx12_scene_spec_export` は長尾 |
 | 10-14 | `dx12_create_entity` `dx12_spawn_model` `dx12_set_transform` `dx12_set_component` `dx12_delete_entity` | 旧ツールのまま |
 | 15-17 | `dx12_look_apply` `dx12_material_apply` `dx12_vfx_apply` | 旧ツールのまま |
 | 18 | `dx12_edit_terrain` | **統合(10 → 1)**: `op` = create / generate / sculpt / erode / paint / autopaint / set_layers / sculpt_create / sculpt_make_editable / sculpt_brush |
 | 19-20 | `dx12_create_lua_component` `dx12_ui_compose` | 旧ツールのまま |
-| 21-25 | `dx12_play` `dx12_stop` `dx12_play_script` `dx12_run_playtests` `dx12_quality_gate` | 旧ツールのまま |
-| 26 | `dx12_imgui` | **統合(5 → 1)**: `op` = virtual_input / find / pointer / key / screenshot(仮想入力のみ。実マウス・実キーボードには触れない) |
+| 21-23 | `dx12_play` `dx12_stop` `dx12_quality_gate` | 旧ツールのまま(`dx12_run_playtests` は M6 で長尾へ。同じ回帰確認を進捗つきで `dx12_job_start {kind:"playtest"}` が担う。**`dx12_play_script` は M7 で長尾へ**: 入力の台本つき検証は Core の `dx12_play` / `dx12_stop` + `dx12_get_log` で足りる場面が大半で頻度が低く、M10 で `dx12_playtest` へ統合する予定の枠。`dx12_call {name:"dx12_play_script"}` で名前・引数・返り値そのまま使える) |
+| 26 | `dx12_imgui` | **統合(5 → 1)**: `op` = virtual_input / find / pointer / key / screenshot(仮想入力のみ。実マウス・実キーボードには触れない)。コマンド表で足りる操作は下の `dx12_editor_command` を先に |
+| +2 | `dx12_editor_command` `dx12_editor_state` | **エディタ操作(M7。§0-9)**。`dx12_editor_command {op:list\|run\|describe}` = コマンド表(メニュー・ショートカット・パレットと同じ)を id で実行 / `dx12_editor_state {scope}` = 選択・窓・レイアウト・モーダル・モード・Undo・通知・性能(読み取り専用)。`dx12_editor_notify` / `dx12_editor_select` / `dx12_editor_modal` は長尾 |
 | 27-28 | `dx12_open_scene` `dx12_save_scene` | 旧ツールのまま |
-| +5 | `dx12_engine_launch` `dx12_engine_list` `dx12_engine_stop` `dx12_engine_attach` `dx12_engine_refresh` | **専用エンジン(フリート。§0-7)**。shell の直後に並ぶ。`dx12_engine_use` は Core に入れず長尾(`dx12_call`)。**40 本の上限を守るため 6 本目を外した**(`use` は launch/attach が束縛を自動で切り替えるので頻度が最も低く、1 回だけの切替は `dx12_call {engine}` で足りる) |
+| +2 | `dx12_engine_launch` `dx12_engine_stop` | **専用エンジン(フリート。§0-7)**。shell の直後に並ぶ。**M6 でジョブ 3 本を入れるため `attach` / `refresh` / `use` を、M7 でエディタ操作 2 本を入れるため `list` を長尾(`dx12_call`)へ移した**(`attach` は頻度が最も低い / `refresh` は build ジョブの `refreshEngines:true` が「ビルド → 更新」を担う / `use` は M3 から長尾 / `list` は `launch` の返り値と `dx12_doctor` の fleet 欄で代替できる) |
+| +3 | `dx12_job_start` `dx12_job_status` `dx12_job_cancel` | **ジョブ API(§0-8)**。`dx12_job_list` / `dx12_job_result` / `dx12_job_logs` は長尾(`dx12_call`) |
 | +1 | `dx12_batch` | 旧ツールのまま(core / shell 面では guarded な op を拒否) |
 | +2 | `dx12_call_guarded`(core 面のみ) | guarded 専用の実行口。毎回ユーザー承認(`requiresUserInteraction`) |
 
 - 「旧ツールのまま」の Core は、**名前・inputSchema・annotations が旧ツールと同一**で、説明文だけ Core テンプレ(1 文の要約 / 使う / 使わない / 副作用 / 注意 / 次。600 字以内)に差し替わる(core 面のみ。旧文は `dx12_tool_describe` の `description` に残る)。
 - 統合ツールは旧ツールの登録済みハンドラをそのまま呼ぶ**薄いルーター**で、返り値の形は旧ツールのまま。他のキーは `target` / `op` / `view` ごとの旧引数(`dx12_tool_describe {name:"dx12_set_render_settings", target:"ssao"}` で引ける)。
   `values` を省略して旧引数をフラットに渡しても通る。`fix` は統合ツールの形(`dx12_edit_terrain {op, …}`)で返る。
-- **alias 表(220 名)**: Core に同名で入る **23**(Core 22 + `dx12_batch`)/ 統合ツールが置換 **53**(描画設定 28 + perf 2 + capture 8 + terrain 10 + imgui 5)/ 長尾 **144**(`dx12_call` で使う: undo・アニメ・ナビ・Blender・アセット・git・decal・sequence・jev …)。
+- **alias 表(220 名)**: Core に同名で入る **19**(Core 18 + `dx12_batch`)/ 統合ツールが置換 **53**(描画設定 28 + perf 2 + capture 8 + terrain 10 + imgui 5)/ 長尾 **148**(`dx12_call` で使う: undo・アニメ・ナビ・Blender・アセット・git・decal・sequence・jev …)。
   置換された旧名は旧名のまま呼べ、`dx12_tool_describe` が `replacedBy`(統合ツールでの呼び方)を案内する。
 - **命名規約**(lint = `toolSurface.test.ts`): `dx12_<動詞>_<対象>`。動詞が副作用を決める — `get/list/find/describe/check/validate/query` = read(`readOnlyHint:true`)/ `capture` = read + ファイル出力 /
   `set/create/add/remove/apply/edit/spawn/delete/open/save/write/attach` = write / `play/stop/run/record/step` = runtime / `git/eval/build/launch` = guarded。読み取り専用の一括許可は `mcp__dx12-engine__dx12_get_*` の 1 行で書ける。
@@ -227,6 +234,109 @@ claude mcp add dx12-engine -s user -e DX12_MCP_SURFACE=core -- node <REPO>/tools
 ```
 
 `DX12_MCP_PORT` は書かない(専用エンジンは束縛で向き先が決まる。書くと束縛が無いときの従来の探索先だけが固定される)。最初に `dx12_engine_launch` を撃つ。
+
+### 0-8. ジョブ API(長い処理を裏で走らせ、id と進捗で扱う。M6)
+
+Claude Code の「2 分を超える MCP 呼び出しの自動背景化」は**メイン会話だけ**で、サブエージェントや `claude -p` には効かない。長い処理(ビルド・テスト・撮影バッチ・cook)は自前の非同期 API にした(設計: `docs/MCP_FLEET_DESIGN.md` §10)。
+
+| ツール | 内容 |
+|---|---|
+| `dx12_job_start {kind, args?, engine?, idempotencyKey?, timeoutSec?, waitSec?}`(**core**) | 即座に `{id, state, progress, hint, next}` を返す(10〜20 ms)。`waitSec` を付けるとその秒数まで終了を待つ |
+| `dx12_job_status {id?, waitSec?, until?}`(**core**・read) | `{state, progress{phase, pct, message, etaSec, estimated?, sinceChangeSec}, queuePosition, elapsedSec, summary, error, artifacts, ownedByMe, orphaned?}`。`waitSec`(最大 300)= **long-poll**(終了まで、`until:"change"` なら次の変化まで)。`id` 省略は動いているジョブの一覧 |
+| `dx12_job_cancel {id, force?}`(**core**) | process 型はプロセスツリーごと `taskkill /T /F`、待ち行列の中は開始せず cancelled、エンジン系は AbortSignal + エンジンの `cancel`。他セッションの生きたジョブは `force` が要る |
+| `dx12_job_list {state?, kind?, mine?, limit?}`(長尾) | 履歴(MCP サーバ再起動前のジョブも出る) |
+| `dx12_job_result {id}`(長尾) | 終了後の全文(summary・失敗したテスト・ビルドエラー・マニフェスト)。未完了は `E_JOB_NOT_FINISHED`。200 KB 超は要約 + ファイルのパス |
+| `dx12_job_logs {id, tail?}`(長尾) | 出力の末尾(最大 500 行。実行中でも読める。20 MB を超えた分は記録しない) |
+
+**状態**: `queued → running → succeeded | failed | cancelled | timeout`。**進捗の主経路はポーリング**(全クライアントで動く)。`progressToken` 付きの呼び出し(`dx12_job_status {waitSec}` / `dx12_job_start {waitSec}`)が待っている間だけ `notifications/progress`(`progress` は厳密に増加・`total:100`・`message` に `[kind] 進捗 (残り約 N 秒)`)も送る(ベストエフォート。**Claude Code / Codex が受け取るか・表示するかは未確認**)。
+
+**種類(kind)**
+
+| kind | executor | 内容・進捗 | 主な args |
+|---|---|---|---|
+| `build` | process | `tools\build.ps1`。**全セッションで直列**(同一サーバ内は `queuePosition`、他のセッションのビルド待ちは `phase:"waiting_lock"`)。進捗 = ninja の `[n/m]`(`compile` / `link` / `generate`)。エラーは `summary.errors[{file, line, code, message}]`(cp932 の MSVC 診断も文字化けしない)。ninja は工程が終わるまで行を出さないので、長い 1 工程の間は pct が止まる(`sinceChangeSec` が目安) | `target`(1 つ)/ `tests` / `jobs` / `dir` / `refreshEngines` |
+| `ctest` | process | ヘッドレス単体テスト。`n/N`・ETA・失敗したテスト名・JUnit | `filter` / `exclude` / `jobs` / `testTimeoutSec` / `rerunFailed` |
+| `ui_tests` | process | UI 自動テスト。**exe をインスタンス専用フォルダへコピーし、使い捨てデータ領域・背景起動・ポートは 8880〜8899 の空き**(元の exe は起動しない)。**既定で `build_game` を除外**(`--ui-tests-skip`。Game.exe が前面に出て人の操作を奪うため)。exe が `--ui-tests-skip` を持たなければ `E_UNSUPPORTED`(exe に UTF-16 のフラグ名があるかで判定)。途中経過が出ないので pct は経過時間からの見積もり(`estimated:true`)。終了後に JUnit(`summary.junit.failed`)。コピーは終了時に消す | `skip` / `project`(複製して使う。原本には触れない)/ `deep` / `speed` / `dpiScale` / `includeBuildGame` |
+| `screenshot_batch` | inproc | カメラ × DPI 倍率 × バリアントを撮影 → 画像 + `manifest.json` + `contact_sheet.png`。`--dpi-scale` は起動引数なので、**いまのエンジンと違う倍率(や `launchArgs`)は専用エンジンを 1 台ずつ起動 → 撮影 → 停止**(束縛は変えない。起動直後は UI が崩れるので `step_frames 40` + `settleMs` 待つ)。バリアントの `calls` はトランザクションで巻き戻す | `cameras` / `dpiScales` / `variants` / `view`(final・imgui・scene)/ `deterministic` / `project` / `scene` / `contactSheet` |
+| `bench` | inproc | `benchmark` を `runs` 回。fps・frameMs(avg / p95)・1% low の中央値と min/max。キャンセルでエンジンの `cancel {target:"benchmark"}` | `frames` / `runs` / `scene` / `camera` |
+| `playtest` | inproc | 保存済み `.playtest` を 1 本ずつ再生(進捗 = 本数)。`dx12_run_playtests` と同じ判定 | `name` / `judge` |
+| `vg_cook` | process | `vgeo_cook`。未ビルドなら `E_JOB_TOOL_MISSING` + `build {target:"vgeo_cook"}` | `input` か `genBench` / `output` / `threads` |
+| `ue_import` | process | `tools/ue_cook`(ファイルを読むだけ)。`out` はリポジトリの外(PUBLIC のため) | `command` / `paks` / `usmap` / `package` / `out` |
+| `external` | process | 任意の外部プロセス。**guarded**(`dx12_call_guarded` / `dx12_call {confirm:true}` 経由でだけ) | `command`(配列)/ `cwd` / `env` / `progress` |
+
+**外部プロセスの進捗プロトコル**: 標準出力に 1 行ずつ `@progress {"pct":42,"phase":"cook","msg":"…","eta":30}` / `@progress {"done":3,"total":7}` / `@result {…}`(要約に載る)。`progress:"percent"` は「NN%」の行も拾う。壊れた JSON は無視。将来の `vg_cook` / `ue_cook` はこれを出せばそのまま進捗になる。
+
+**永続化と復元**: `%LOCALAPPDATA%\UnoEngine\jobs\<id>\`(`DX12_JOBS_DIR`)に `state.json`(書き手は manager)・`spec.json`・`live.json`(書き手は runner。5 秒の心拍つき)・`log.txt`・`result.json`・`artifacts\`。**process 型は切り離した runner プロセス(`jobs/runner.ts`)が子を走らせる**ので、MCP サーバを再起動しても走り続け、再起動後の `dx12_job_status` で進捗・結果が引ける(持ち主が消えていれば `orphaned:true`。孤児は別セッションから cancel できる)。inproc 型(エンジンを呼ぶもの)はサーバが終わると `E_JOB_INTERRUPTED` になる。終わったジョブは 7 日・200 件で GC。runner の生死は pid(安価)で見て、心拍が 45 秒止まったときだけイメージ名(node)を確認する(pid の使い回し対策)。
+
+**同時実行**: 総数 3(`DX12_JOBS_MAX_RUNNING`)・build 1・ctest 1・ui_tests 1・external 2・エンジン系は 1 エンジンにつき 1 本。**キャンセル・タイムアウトは、自分が記録した runner の pid(イメージ名が node のときだけ)のプロセスツリーを落とす**(無関係なプロセスは触らない)。エンジンを使うジョブの間は、そのエンジンのフリートのアイドル自動終了を防ぐ。
+
+**冪等キー**: `idempotencyKey` は 24 時間、同じ kind・args の再送に前回のジョブを返す(`idempotentReplay:true`)。別の kind / args なら `E_IDEMPOTENCY_CONFLICT`。
+
+**doctor 統合**: `dx12_doctor` に `jobs`(件数・上限・動いているジョブ・直近の終了)と `JOBS_ACTIVE` / `JOBS_ORPHANED` / `JOBS_RECENT_FAILED`。`dx12_guide {topic:"jobs"}` に手順。
+
+環境変数: `DX12_JOBS_DIR` / `DX12_REPO_DIR`(build.ps1 の場所。配布リポジトリには無い)/ `DX12_JOBS_MAX_RUNNING` / `DX12_JOBS_KEEP_DAYS` / `DX12_JOBS_KEEP_MAX` / `DX12_JOBS_POLL_MS` / `DX12_JOBS_KILL_ON_EXIT=1`(サーバ終了時に process 型も止める)/ `DX12_JOBS_FALLBACK_ENCODING`(既定 shift_jis。UTF-8 として不正な行の復号)/ `DX12_JOBS_DISABLE=1` / テスト用 `DX12_JOBS_BUILD_CMD`・`DX12_JOBS_CTEST_CMD`(JSON 配列)。エラー: `E_JOB_NOT_FOUND` / `E_JOB_NOT_FINISHED` / `E_JOB_NOT_OWNER` / `E_JOB_TOOL_MISSING` / `E_JOB_FAILED` / `E_JOB_TIMEOUT` / `E_JOB_INTERRUPTED` / `E_JOB_RUNNER_LOST` / `E_JOB_DISABLED`(§8)。
+
+### 0-9. エディタ操作(コマンド表・状態・通知・選択。M7)
+
+「窓を開く」「元に戻す」「エンティティを作る」のようなエディタ操作を、**座標を探してクリックする前に、名前で実行する**口。エディタの**コマンド表**(`src/editor/EditorCommandTable.h` の `kCommands`・`ToolWindows.h` のツール窓 = `window.*`・`EditorCreateTable.h` の作成 = `create.*`。メニュー・ショートカット・コマンドパレットが使う**唯一の源**)からエンジンが生成する。**TS 側にコマンドを 1 件も書かない**(表にコマンドが増えれば自動で出る)。実行はメニューやキーと**同じ経路**(`cmd::Execute`)。梯子の順は「① `dx12_editor_command` → ② 専用ツール(`dx12_set_component` など)→ ③ `dx12_imgui`(仮想入力。値欄・ツリー・スライダなどのウィジェットだけ)」。
+
+| ツール | 内容 |
+|---|---|
+| `dx12_editor_command {op, id?, args?, query?, category?, kind?, enabledOnly?, guardedOnly?, detail?, dryRun?, idempotency_key?}`(**core**) | `op:"list"` = コマンド一覧(`id` / 表示名 / カテゴリ / `kind`(command・window・create)/ キー / **`enabled` と `disabledReason`(いま実行できるか・理由)** / `guarded` / `osDialog` / `opensModal` / `blockedNow` / `hasArgs`)。`query` は id・日本語ラベル・英名・キー表記の曖昧検索。`detail:true` で英名・説明・効果・引数・例まで。`op:"describe"` = 1 件の詳細(引数と例)。`op:"run"` = 実行。結果の `effects` に開閉した窓・トースト・Play / 一時停止の変化・選択・エンティティ数・未保存・Undo・**開いたモーダル**・作成したエンティティ(`created`)。`dryRun:true` は実行せず影響(対象・件数・戻せるか・いま実行できるか)を返す(guarded でも通る) |
+| `dx12_editor_state {scope?, limit?}`(**core**・read) | エディタの今の状態(下の「state の仕様」)。`scope` = all(既定)/ selection / windows / layout / modal / mode / undo / toasts / perf |
+| `dx12_editor_modal {action?}`(長尾) | `action` = get(既定。`editor_state` の modal と同じ)/ dismiss(いちばん上の**安全に閉じられる**モーダルをキャンセルと同じに閉じる)。安全なのは new_scene / save_as / new_script / new_shader / shortcuts / about のみ。結果 `{dismissed:true, id, title, modal}`。閉じられないもの(unsaved_confirm / autosave_recovery / matgraph_* / コマンドパレット)は `E_UNSUPPORTED`、閉じるものが無いときは `E_NOT_FOUND`。M8 で `respond`(ボタン名指定)を足す予定 |
+| `dx12_editor_notify {message, level?, seconds?}`(長尾) | 人のエディタ画面の右下にトースト通知(`info` / `success` / `warn` / `error`)。AI から人へ「生成完了」「要確認」を静かに伝える(OS 通知は使わない)。`--background` の窓は画面外なので**人の画面には出ない**(`dx12_editor_state {scope:"toasts"}` で出たことは読める) |
+| `dx12_editor_select {mode?, entities?, names?, query?, tag?, guids?, limit?, focus?}`(長尾) | 選択の変更。`mode` = set(既定)/ add / remove / toggle / clear。名前(完全一致)・id・名前の部分一致(`Wall*`)・タグ・guid、複数選択、`focus:true` でカメラを寄せる。選択は `edit.*` コマンド(複製・グループ化・フォーカス・削除)の対象になる。旧 `dx12_select_entity`(1 体だけ)は無傷で残る |
+
+エンジン method(`describe_mcp_manifest` に載る。`dx12_call` でそのまま撃てる): `editor_command_list`(read)・`editor_command_run`(write_setting・遅延応答・dryRun preview)・**`editor_command_run_guarded`(guarded)**・`editor_state`(read)・`editor_notify`(write_setting)・`editor_select`(write_setting)・`editor_modal`(write_setting。get / dismiss)。
+
+**コマンドごとの `args`**(`describe` で引ける): `window.*` = `{state:"open"|"close"|"toggle"}`(**既定 open**。表の Execute はトグルだが、AI が 2 回撃って閉じてしまわないよう、既に目的の状態なら `changed:false` で何もしない)/ トグル系(`view.fill` `view.flyMode` `view.toggle2D` `view.viewportBar` `view.outline` `layout.bottomMaximize`)= `{state:"on"|"off"|"toggle"}` / `create.*` = `{position:[x,y,z], name}`(既定はカメラ前・床との交点。`create.ui*` は位置を無視。`create.terrain` / `create.sculpt` は専用窓が開くだけ)/ それ以外は引数なし。
+
+**guarded な(確認が要る)コマンド**: `edit.delete`(選択を丸ごと削除。何が消えるか見えない)・`file.save` / `file.saveAs`(シーンファイルを上書き)・`file.closeProject`(ランチャーへ戻る)・`file.open`(OS のファイルダイアログ)。**接頭辞 `build.` / `git.` / `shell.` のコマンドが将来増えれば自動で guarded**。`opensModal` = アプリ内のダイアログ / モーダルを開くもの(`file.new` `file.saveAs` `file.newScript` `file.newShader` `palette.commands` `palette.quickOpen` `layout.save` `layout.slots`)。`osDialog` = OS のダイアログを開く経路があるもの(`file.open` のみ)。分類はエンジン側の分類表で、新コマンドは何もしなければ normal(明示した id だけ guarded)。
+- `editor_command_run` は guarded なコマンドを **`E_GUARDED` で断る**(`fix` に承認つきの実行口)。実行は `editor_command_run_guarded`: **core 面は `dx12_call_guarded {name:"editor_command_run_guarded", args:{id}}`(毎回ユーザー承認)、full / shell 面は `dx12_call {name:"editor_command_run_guarded", args:{id}, confirm:true}`**。エンジン側の確認トークンは M5 の仕組みで付く(§13)。先に `dryRun:true` で影響を確認する。
+- **OS ダイアログを開くコマンド(`file.open`)は、仮想入力 / 背景モードでは承認しても実行拒否**(`E_UNSUPPORTED` + `details.reason:"os-dialog"`、`fix` は `dx12_open_scene {path}`)。人の画面にダイアログを出さないため。
+- **モーダル / ダイアログ / コマンドパレットが開いている間は、コマンドは `E_MODAL_OPEN`**(キー操作が効かないのと同じ。`details.modals` に種類)。`dx12_editor_state {scope:"modal"}` で確認し、**`dx12_editor_modal {action:"dismiss"}` で閉じて撃ち直す(★ImGui のモーダルは Esc では閉じない。実測)**。閉じられないもの(未保存の確認・自動保存の復旧・マテリアルグラフのダイアログ)は `E_UNSUPPORTED`(`details.id`)で、`dx12_imgui {op:"find"}` + `pointer` でボタンを押す。コマンドパレット(`kind:"palette"`)だけは自前で Esc を処理するので `dx12_imgui {op:"key", key:"Esc"}`。`file.new` などモーダルを開くコマンドの結果は `effects.modalsOpened` と `next`(state → `dx12_editor_modal`)で案内する。エンジンの `E_MODAL_OPEN` の `fix` も `editor_modal {action:"dismiss"}` と `editor_state {scope:"modal"}`。
+- いま実行できない(Play 中の Editor 専用コマンド・選択なし・Undo 履歴なし・AI のトランザクションが開いている)は `E_MODE_CONFLICT` + `details.reason`。未知の id は `E_NOT_FOUND_COMMAND` + `didYouMean`(近い id)+ 撃ち直し。引数違いは `E_INVALID_PARAM` + `details.args`。
+
+**state の仕様**(`dx12_editor_state`): `{scope, frame, ...}` + 選ばれたセクション。
+
+| セクション | 中身 |
+|---|---|
+| `selection` | `{count, primary:{entityId,name,guid?}\|null, entities[](最大 50), truncated?, hovered?}` |
+| `windows` | `{open[], openCount, tools[{id,title,open,slot,menu,category,imguiName?,visible?,docked?,focused?,collapsed?,rect?}], focusedWindow, hoveredWindow}`(ツール窓は `ToolWindows.h` の表から) |
+| `layout` | `{workspace, savedLayouts[], bottomDockMaximized, dockRatios{left,right,bottom,rightSplit}, display{width,height,dpiScale}, dockNodes[{id,parent,axis,tabs[],central?,size}], structureHash}` |
+| `modal` | `{blocking, count, modals[{kind:"imgui-modal"\|"editor-dialog"\|"palette"\|"popup", id, title, source, canDismiss, dismissHint}], popupOpen, note}`。editor-dialog の `id` = new_scene / save_as / new_script / new_shader / unsaved_confirm / autosave_recovery。`canDismiss:true` = `editor_modal dismiss` で閉じられる(palette は Esc)/ `false` = ボタンで選ぶ。**blocking のとき TS 側が `advice` と `next`(`dx12_editor_modal dismiss` / ボタンなら `find` / palette なら Esc)を足す** |
+| `mode` | `{engineMode, playing, paused, headless, background{mode,toolWindow}, virtualInput, dpiScale, scene{path,dirty,generation,entityCount}, aiTransaction{open,label?}, viewport{camera{position,forward}, viewMode, view2D, flyMode, gizmo{mode,space}, fill, workspace}}` |
+| `undo` | `{canUndo, canRedo, undoDepth, redoDepth, nextUndo?, nextRedo?, nextUndoIsAi?, recentUndo[], recentRedo[], dirty, editSeq, savedSeq}` |
+| `toasts` | `{live, recent[{seq,kind,text,count,ageSec}](新しい順。`limit` で件数)}` |
+| `perf` | `{fps, frameMs, cpuMs?, drawCalls?, entityCount}` |
+
+**安全**: 実マウス・実キーボード・OS のカーソル・前面化には一切触れない(コマンド表の実行関数を呼ぶだけ)。`dx12_editor_command` を「座標を探してクリックする」代わりに使うのが最短で最も安全。禁止事項(computer-use / 前面化 / `SendInput` など)は `dx12_guide {topic:"editor"}` に固定文で載っている。
+
+**Core の入れ替え(M7)**: `dx12_editor_command` / `dx12_editor_state` を Core に入れるため、`dx12_play_script` と `dx12_engine_list` を長尾へ移した(頻度が低く、`dx12_call` で名前・引数そのまま代替できる。オフラインの選択率: Core 面のみ recall@3 97.5%(M6 は 97.6%)・総合 97.8%(不変)。`eval/editor_tasks.json` = エディタ操作 9 タスクは全ツール検索 96.3% / Core 面のみ 100%。検索語は eval を見ながら調整した数字)。
+
+### 0-10. 宣言的シーン生成(`dx12_apply_scene_spec`。M11)
+
+「何を置きたいか」を **SceneSpec(JSON)** で 1 回渡す。**差分だけを 1 トランザクションで作り、自動検証して、失敗は AI が撃ち直せる形(specPatch)で返す**。1 体ずつ `create_entity` を並べる代わりの口(実エンジン実測: 200 体 + 床の適用が約 0.4 秒。`create_entity` + `set_transform` を 1 体ずつ 200 回は約 7.6 秒 = **約 20 倍**)。書き方・例 5 本・よくある失敗は `dx12_guide {topic:"scene_spec"}`(`guides/scene_spec.md`)。
+
+| ツール | 内容 |
+|---|---|
+| `dx12_apply_scene_spec {spec \| specRef+patch, mode?, verify?, prune?, detail?, async?}`(**core**) | `mode:"plan"` = 差分計画だけ(何も書かない)/ `"apply"`(既定)= 適用 + 検証。`dryRun:true`(`dx12_call` の native dryRun)は plan と同じ。`prune:true` は削除なので **guarded**(core 面 `dx12_call_guarded`、full 面 `dx12_call {confirm:true}`。plan は承認なしで撃てる)。`async:true` は大規模な仕様をジョブ(`dx12_job_start {kind:"scene_spec"}`)で実行 |
+| `dx12_scene_spec_export {owned?, name?, only?, prefix?}`(長尾・read) | 現在のシーン → SceneSpec。往復(シーン → 仕様 → 適用)で同じシーンになる(ダイジェスト一致をテスト) |
+
+**SceneSpec v1**(`sceneSpec/types.ts`): `{version:1, name?, entities:[…], lighting?, look?, sun?, scene?, navmesh?, verify?}`。エンティティの主なキー: `name`(差分のキー)・`id`(省略で name。**name を変えても rename_entity で同じ実体に追従**)・`kind`(box / sphere / plane / model / prefab / empty / camera / light(`light`)/ trigger / particle_emitter / decal / ui_* / **fps_player**(本体 + カメラ))・`group`・`parent`・`at`(m。`null` の軸は place が決める)・`rotation`(度・YXZ)・`scale` か `size`(実寸 m。併用不可)・`color`(`"#rrggbb"` は見たままの色になるよう sRGB→リニア変換。`[r,g,b]` はエンジンの値そのまま)・`material`・`texture`・**`collider:"static"|"dynamic"`**(rigidBody + 形に合うコライダーの略記)・`components`・`script`・`tags`・`data`・`place`・`pattern`・`lookAt`。単位はメートル、モデルは読み込み時に実寸 m(`scale` は倍率。M4 の読み込みサイズ規約どおり)。**指定した項目だけを管理する**(書かなかった rotation / scale / 軸は既存の物では手で変えた値を尊重)。
+
+**相対配置の規則**(`sceneSpec/expand.ts`。決定論): 軸はワールド right=+X / left=-X / front=+Z / back=-Z / above=+Y / below=-Y。AABB は解析(box ±0.5・sphere 半径 0.5・plane 50m 四方 × scale)+ モデルは `asset_info` の実寸 + 仕様の外の物は `get_bounds` の実測。回転・スケール・親子は `get_bounds` と同じ式(ローカル AABB の 8 頂点を変換。**実エンジンの `get_bounds` と 2mm 以内で一致することを実機で確認**)。`place:{relativeTo,side,gap,align}`(面と面のすき間。他の軸は中心揃え・y は底揃え)/ `{on}`(上に載せる)/ `{ground}`(足元を地面へ)/ `{snap:true}`(置いた後にエンジンの `snap_to_ground`)/ `offset` / `lookAt`(yaw = atan2(dx,dz)、pitch = -atan2(dy, 水平距離)。実エンジンの `look_at` と一致)。`at` の非 null の軸が優先。親があれば解はワールドで出してから親のローカルへ戻す。**パターン**: `grid` / `ring` / `line` / `along`(壁に沿って等間隔)/ `scatter`(seed 付き・`minSpacing`・`exclude`。**位置と向き/大きさは別の乱数列**なので、同じ seed の 2 つのパターンは必ず同じ位置に並ぶ = 木の幹と葉を重ねられる)。名前は `<name>_<NN>`。
+
+**処理の流れ**(`sceneSpec/index.ts`): ① `validateSpec`(スキーマ + 意味検査。error があればエンジンに 1 つも書かない)→ ② 展開 + 相対配置の解決 → ③ 現在のシーンを読む(`list_entities` + `get_hierarchy` + `get_entity`)→ ④ **差分計画**(`{create, update, replace, delete, unchanged}` と各行の理由・変更前後・影響・`cost{engineCalls, waves, estimatedMs}`。所有者の印 = `data.__spec`(仕様名)/ `__id` / `__o`(読み戻せない部分)。**prune はこの印が自分の仕様名で、いまの仕様に無い物だけ**を消す)→ ⑤ **1 トランザクションで適用**(波ごとに並列: グループ根 → 削除 → 改名 → 生成 → 親子 → Transform → 色・部品・タグ・data・スクリプト → snap → スクリプト値。エンジンは 1 フレームで溜まった要求を全部処理するので往復が消える)→ ⑥ ナビメッシュ(要求時)→ ⑦ **自動検証**(`verify`: layout = `validate_layout`(この仕様が作った物の error はロールバック)/ naming = 命名規約(既定 warn)/ reachable = `dx12_check_reachable` / scene = `validate_scene`)→ ⑧ commit(失敗はロールバック)→ ⑨ 設定(lighting / look / sun / scene。エンジンの rollback で戻らない設定なので**検証が通った後**に撃つ。仕様の太陽の明示値が設定より優先)。
+
+**失敗の返し方(自己修正)**: 検証・配置・適用・自動検証のどの段階の失敗も `E_VALIDATION_FAILED`(上限超過は `E_OUT_OF_RANGE`)+ `issues[{path(JSON Pointer), code, severity, message, cause, didYouMean, validValues, specPatch, entity}]` + `details{stage, specRef, specPatch(全部まとめた RFC 6902)}` + **`fix[0] = {tool:"dx12_apply_scene_spec", args:{specRef, patch}}`(そのまま撃ち直せる。仕様の全文は再送しない)**。`specRef` はサーバが直近 16 件の仕様を持つ。同じエンティティに複数の issue が付いたら、優先順位(DUPLICATE > 接地 > コライダー > 重なり > ちらつき)で直し方を 1 つにする。エンジンは、検証エラーでは書かず、適用中・適用後の失敗ではロールバック済み(部分適用を残さない)。code: `E_UNKNOWN_PARAM` `E_MISSING_PARAM` `E_BAD_TYPE` `E_BAD_ENUM` `E_OUT_OF_RANGE` `E_NOT_FOUND_ENTITY` `E_NOT_FOUND_ASSET` `E_NOT_FOUND_COMPONENT` / `E_SPEC_DUPLICATE_NAME` `E_SPEC_CYCLE` `E_SPEC_CONFLICT` `E_SPEC_LIMIT`(5,000 体)`E_SPEC_BOUNDS_UNKNOWN` `E_SPEC_KIND_CHANGE` `E_SPEC_RENAME_CONFLICT` / `E_LAYOUT_*` `E_NAMING_*` `E_UNREACHABLE` / warn `W_UNIT_SUSPECT`(cm と m の取り違えの疑い)`W_SCATTER_SHORT` `W_ASSETS_UNCHECKED`。
+
+**エンジン側の変更(最小)**: `set_component {component:"tags", data:["a","b"]}` を受け付けるようにした(以前は data がオブジェクト必須で、`describe_components` の記述どおりの文字列配列を渡すと必ず断られていた。空配列で全部外す)。ほかは既存 method(`create_entity` / `spawn_model` / `set_transform` / `set_parent` / `set_component` / `snap_to_ground` / `rename_entity` / `transaction_*` / `validate_layout` / `navmesh_build` ほか)だけで動く。
+
+**Core の入れ替え(M11)**: `dx12_apply_scene_spec` を Core に入れるため `dx12_scene_write` を長尾(`dx12_call`)へ移した(M3 で「`apply_scene_spec` が来るまでの代役」として入れた本人。名前・引数・返り値はそのまま使える。「シーン JSON を直接書く」の検索では引き続き上位に出る)。Core 面は 40 本のまま。
+
+**実測(実エンジン専用インスタンス `m11`・使い捨てプロジェクト)**: 冪等(再適用は created 0 / updated 0・シーンのダイジェスト不変)・往復(ダイジェスト一致)・ロールバック(壊れたモデルの `spawn_model` が同じ波の途中で失敗 → 変更ゼロ)・prune(承認・Undo 1 回で戻る)・自己修正(壊した仕様 16 件で 93.8%)は `scripts/sceneSpecReal.ts`。例 5 本のコンタクトシートは `scripts/sceneSpecShots.ts`。
 
 ## ★ 最重要: 遅延同期の仕組み(旧 `queued:true` は廃止)
 
@@ -374,7 +484,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_get_mode` | `{}` | `{mode:"Editor"\|"Playing"}` |
 | `dx12_get_log` | `{lines?:int=50}` | `["ログ行", ...]`(末尾N行) |
 | `dx12_describe_components` | `{component?:string}` | `{components:[{jsonKey, settable, removable, fields:[{name,type,default}], note?}]}` |
-| `dx12_get_scene_settings` | `{}` | `{skybox:{envMapPath, iblIntensity, skyboxIntensity, drawSkybox}, note}` |
+| `dx12_get_scene_settings` | `{}` | `{skybox:{envMapPath, iblIntensity, skyboxIntensity, drawSkybox}, decalAtlasPath, atmosphere:{全項目}, atmosphereState:{太陽の高度/方位・IBL 再ベイク回数・GPU 時間}, note}` ※物理大気は [docs/ATMOSPHERE.md](ATMOSPHERE.md) |
 | `dx12_get_post_process` | `{}` | ポストプロセス全フィールド(約25エフェクトの `<name>On`/パラメータ) |
 | `dx12_get_ssao` | `{}` | `{enabled, radius, bias, intensity, power, sampleCount, blur}` |
 | `dx12_get_contact_shadow` | `{}` | `{enabled, rayLength, thickness, bias, intensity, steps, maxDistance, fadeDistance}` |
@@ -403,7 +513,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_describe_anim_graph` | `{entity:int}` または `{path:string}` | `{source, graph:{version,parameters,clipEvents,extraClips,layers:[{name,weight,blend,mask,defaultState,states,transitions}]}}` ※`.animfsm` の構造を返す。ステート名/パラメータ名の確認に。**TS 側未定義**（B12 と同様） |
 | `dx12_net_status` | `{}` | `{available, role:"Offline"\|"Host"\|"Client", isConnected, localClientId, tick, syncedEntityCount, players:[{id,rttMs,bytesSent,bytesReceived}], config:{tickRate,snapshotRate,maxPlayers,defaultPort}, testRole, testJoinAddress}` |
 | `dx12_screenshot` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240), gizmos?:bool=true}` | PNG 画像ブロック + text(`{path(絶対パス), width, height, source:"sceneRT(pre-post)", note}`) ※**ポストプロセス前の `m_sceneRT`**。グレーディング / ブルーム / ゴッドレイ / ビネット / LUT / FXAA / デバンド / **TAA の解決結果が一切写らない**。見た目を判断するなら `dx12_screenshot_final` を使うこと。★`gizmos:false` はこの経路では `deterministic:true` のときだけ効く（既定は直前フレームの読み戻しで撮り直さないため） |
-| `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240), gizmos?:bool=true}` | **遅延同期**。`{path, width, height, source:"backbuffer", postApplied, deterministic, gizmos, taa, mode, note}` ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形**。★`gizmos:false` で**この 1 枚だけ**エディタのデバッグ描画（カメラの視錐台の水色の線 / 選択枠 / ライト・カメラのアイコン / 物理・ナビのワイヤ / 床グリッド）を止めて撮る。選択を外しても消えない「アクティブなカメラの視錐台」もこれで消える。**戻す呼び出しは不要 ── 撮影状態と一緒に破棄されるので次の 1 枚では必ず元どおり**（`dx12_render_debug` と同じ作法） |
+| `dx12_screenshot_final` | `{path?:string, deterministic?:bool=false, settleFrames?:int=8(1..240), gizmos?:bool=true, format?:"png"\|"pfm"\|"exr"="png", formats?:string[], width?:int, height?:int}` | **遅延同期**。`{path, files, linear, offscreen, width, height, source:"backbuffer"\|"offscreen", postApplied, deterministic, gizmos, taa, mode, note}` ※**Q2（校正）で追加した引数は全部省略可で、省略すると従来と 1 ビットも変わらない**。`format:"pfm"`/`"exr"` = **ポスト前の線形 float**（トーンマップ前・露出前のシーン参照 Rec.709 RGB。TAA / DoF / モーションブラー後・ブルーム前。パストレーサー `render_reference` と同じ PFM/EXR writer なので `tools/parity` がそのまま読める。物理ライティング単位ならシーン値は nit）。`formats:["png","pfm"]` で同じフレームから複数形式。`path` の拡張子は無視され形式ごとに同じ基準名（`a.png` → `a.pfm`）。pfm/exr のときは画像ブロックではなく JSON（`files` に形式ごとのパス、`linear` に規約）で返る。`width`+`height` = **任意解像度のオフスクリーン出力**（エディタ / ウィンドウ / 16:9 レターボックスに依存せず、シーン系 RT をその大きさで作って描き出し、撮影後に元へ戻る。1 辺 16〜8192・総画素 8192x4096 まで・pfm/exr は 4096x4096 まで。GPU メモリの見積が空きの 60% を超えたら撮影前にエラー。エディタのアイコン・ゲーム内 UI 画像・画面全体のカスタムシェーダーは写らない。`deterministic:true` と併用でき、同じ設定ならビット一致）。起動引数 `--size WxH` が `width`/`height` の既定 ※**バックバッファ（＝ポスト適用後の最終画）のビューポート矩形**。ImGui を描く前にコピーするので**エディタのパネル / ギズモは写らない**＝ゲームと同じ絵。サイズはウィンドウ全体ではなく**シーンビューの矩形**。★`gizmos:false` で**この 1 枚だけ**エディタのデバッグ描画（カメラの視錐台の水色の線 / 選択枠 / ライト・カメラのアイコン / 物理・ナビのワイヤ / 床グリッド）を止めて撮る。選択を外しても消えない「アクティブなカメラの視錐台」もこれで消える。**戻す呼び出しは不要 ── 撮影状態と一緒に破棄されるので次の 1 枚では必ず元どおり**（`dx12_render_debug` と同じ作法） |
 | `dx12_screenshot_game_view` | `{}` | PNG 画像ブロック ※**アクティブな `CameraComponent`（ゲームカメラ）視点**で 1 フレーム描いて返す。Editor 中でも Play せずに画角・構図を確認できる。アクティブなカメラが無いとエラー |
 | `dx12_ui_screenshot` | `{}` | PNG 画像ブロック ※エディタウィンドウ全体(ImGuiパネル込み)。ゲーム内UI/UIエディタの見た目確認用(scene RT には UI が写らない)。★仮想入力モード(§4-18)中は PrintWindow ではなく dx12_imgui_screenshot と同じバックバッファ読み戻しになる(最小化/画面外/背面でも撮れる。遅延同期) |
 | `dx12_render_debug` | `{mode:string, frames?:int=3(1..120), gain?:number=1, depthRange?:number=100, exposure?:number=1}` | `{path(絶対パス), mode, width, height, toneMapped:bool, warnings:[string], mode_engine:"Editor"\|"Playing"}` ※**中間バッファの可視化**（「なぜ変に見えるか」の切り分け用）。`frames` フレーム描いてからスクショを撮り、**必ず元の設定へ戻す**。必要な機能（TAA/SSAO/コンタクトシャドウ/SSR/SSGI）は一時的に自動で ON にし、その旨を `warnings` に返す。返り値の `path` を画像として読むこと |
@@ -434,14 +544,15 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_parent` | `{entity:int, parent?:int}` | `ok` ※parent 省略で親解除 |
 | `dx12_group_entities` | `{entities?:int[], names?:string[], name?:string}` | `{groupId, name, count}` ※空の親にまとめる（原点・単位スケール＝見た目は不変）。入れ子の子は自動除外、Undo 可 |
 | `dx12_rename_entity` | `{entity:int, name:string}` | `{name}` ※重複は連番付与 |
-| `dx12_select_entity` | `{entity:int}` | `{selected}` |
+| `dx12_select_entity` | `{entity:int}` | `{selected}` | ※1 体だけ選ぶ旧ツール(無傷で残る)。**複数選択・名前パターン・追加/解除・全解除・フォーカスは `dx12_editor_select`(§0-9)** |
 | `dx12_focus_camera` | `{entity:int}` | `{cameraPos:[x,y,z], target, distance}` |
 | `dx12_set_pbr` | `{entity:int, metallic?:f, roughness?:f, uvScaleU?:f, uvScaleV?:f, alphaMode?:"auto"|"opaque"|"mask"|"blend", alphaCutoff?:f, opacity?:f, emissiveIntensity?:f, emissiveColor?:[r,g,b]}` | `{entityId, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity, emissiveIntensity, emissiveColor}` ※**自己発光**は `emissiveIntensity`（0..64、0 で消灯、負でマテリアルに従う）。色を省くと白。ライティングも影も通さず最終色へ加算するので 1 を超えるとブルームが乗る（看板 2..5 / 天井照明 4..10 / 非常口サイン 3..6 が目安）。発光の形をテクスチャで指定するなら `dx12_set_texture` の `slot:"emissive"` と併用。 ※**透明**は `alphaMode`。既定の `auto` はモデル側（glTF の `alphaMode`）に従う。`mask` は `baseColor.a < alphaCutoff` を discard（葉・フェンス・角膜。**影も同じ形に抜ける**）、`blend` は半透明（不透明の後にカメラから遠い順で描く。深度を書かず影も落とさない）。`opacity` は 1 未満なら `alphaMode` を省いても半透明になる（ガラス・水面）。詳しくは docs/AUTHORING.md §7.5 |
 | `dx12_set_mesh_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, skinnedFallbackWarning}` ※shaderPath省略/空文字で既定Forwardに戻す。alphaBlend省略時は既存値を維持、既定false(不透明固定でPSのalpha出力は無視される)。true でSrcAlpha/InvSrcAlphaブレンド(DepthWrite OFF) |
 | `dx12_set_mesh_shader_params` | `{entity?/name?, effect?:f, params?:f[](最大4), paramsB?:f[](最大3)}` | 適用後の現在値一式 ※カスタムシェーダーの自由枠(b0 の `effectValue`/`shaderParams`/`shaderParamsB`)へ値を書く。★これが無いとシェーダーは【貼れるが動かない】(割当直後は全パラメータ 0)。各値の意味はシェーダー自身のヘッダコメント(`dx12_read_shader` で読める)。ルート定数なので毎フレーム撃っても安い。時間で動かす(徐々に溶ける等)なら Trigger の AnimShaderParam を使うこと(Lua からの口はまだ無い) |
 | `dx12_set_sprite_shader` | `{entity:int, shaderPath?:string(assets/shaders相対), alphaBlend?:bool}` | `{entityId, shaderPath, alphaBlend, worldSpaceWarning}` ※Sprite2D専用・world-spaceのみ対応。MeshRendererのシェーダーとは頂点/ルートシグネチャの契約が異なる(docs/AUTHORING.md §6.1)。shaderPath省略/空文字で既定Spriteシェーダーに戻す |
-| `dx12_set_scene_settings` | `{skybox:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}}` | `{applied, envMapRebake}` |
+| `dx12_set_scene_settings` | `{skybox?:{envMapPath?, iblIntensity?, skyboxIntensity?, drawSkybox?}, atmosphere?:{preset?:earth\|mars\|haze\|twilight, enabled?, timeOfDay?, timeSpeed?, latitudeDeg?, dayOfYear?, sunMode?, driveSun?, driveIBL?, sunIlluminance?, aerialPerspective?, …}}` | `{applied, envMapRebake, atmosphere?}` ※`atmosphere` は物理大気(既定 OFF=従来の空)。指定分だけ適用・Undo 1 エントリ。[docs/ATMOSPHERE.md](ATMOSPHERE.md) |
 | `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
+| `dx12_set_post_process`（Q2 校正: 露出 / トーンマップ / ライティング単位） | `{lightingUnits?:0\|1, exposureMode?:0\|1\|2, ev100?, evComp?, aeMinEv100?, aeMaxEv100?, aeSpeedUp?, aeSpeedDown?, aeLowPercent?, aeHighPercent?, tonemapper?:0..5, filmSlope?, filmToe?, filmShoulder?, filmBlackClip?, filmWhiteClip?}` | `{applied}` ※既定値では従来と絵が 1 ビットも変わらない。`lightingUnits:1` = 物理単位（太陽 lux・点/スポット cd の逆二乗・空/IBL/自己発光 nit。シーン RT の 1.0 = 1 nit）。`exposureMode:1` = 手動 EV100（係数 `1/(1.2·2^(ev100−evComp))`。既定 EV100=15 が「露出 0」の基準。マスター `enabled` が OFF でも効く）/ `2` = 自動（ヒストグラム。平均輝度を 18% グレー×2^evComp へ。`aeMin/MaxEv100` が上下限）。`tonemapper` = 0 ACES / 1 AgX / 2 なし(ガンマのみ) / **3 UE Filmic / 4 線形(クリップのみ) / 5 Khronos PBR Neutral**（3〜5 は sRGB OETF）。詳細・根拠・不確実性は `docs/PARITY_HARNESS.md` の Q2 節 |
 | `dx12_set_post_process`（被写界深度） | `{dofOn?, dofFocusDist?, dofFocusName?, dofAperture?, dofFocalLength?, dofBlurSize?, dofFocusRange?}` | `{applied}` ※**DoF は絞り基準（物理モード）が既定**。`dofAperture`＝F 値（既定 2.8）と `dofFocalLength`（mm。**0 でカメラの画角から導出**）から薄レンズの錯乱円 `CoC = |z-zf|/z * f²/(N*(zf-f))` を出し、35mm 判のセンサ高 24mm で px 化する。＝**画面解像度に依存する `dofBlurSize` は「暴走防止の上限」へ後退**し、絵作りは F 値だけで決まる。`dofAperture:0` で旧来の `dofFocusRange` 方式（範囲基準）へ戻る。`dofFocusName` にエンティティ名を入れると**毎フレームそのエンティティまでのビュー距離を合焦距離に使う**（＝被写体に合焦したまま寄る/回るカメラワークが Lua 無しで書ける。空なら `dofFocusDist`）|
 | `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?}` | `{applied}` |
 | `dx12_set_contact_shadow` | `{enabled?, rayLength?, thickness?, bias?, intensity?, steps?, maxDistance?, fadeDistance?}` | `{applied}` ※太陽(平行光)専用のスクリーン空間近接遮蔽。正射/2Dビューでは自動無効 |
@@ -454,10 +565,15 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_shadow_pcss` | `{enabled?:bool, lightTanAngle?:0.001..0.5, maxPenumbraTexels?:1..64, blockerSearchTexels?:1..64, temporalDither?:bool}` | `{...get と同じ..., applied:true}` ※**PCSS（ソフトシャドウ）**。CSM の固定幅 PCF を「ブロッカー探索 → 可変ペナンブラ」へ置き換え、接地部は鋭く・離れるほど柔らかい影にする。**OFF で従来の 3x3 PCF に戻る（絵はビット一致）**。`lightTanAngle` は太陽の角半径の tan（実際の太陽は 0.0044＝ほぼ硬い影。既定 0.05 は誇張値）。`temporalDither` は **TAA 有効時のみ**効く（無効時に回してもチラつくだけなのでエンジンが自動で切る）。シーン JSON の `shadowPcss` に保存される |
 | `dx12_get_dxr` | `{}` | `{supported, raytracingTier:"1.2" or "none", highestShaderModel:"6.8", shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, maxInstances, forceBuildTlas, shadowActive, tlasReady, stats:{instances, blasCount, blasBytes, blasTriangles, tlasBytes, scratchBytes, instanceDescBytes, skippedSkinned, skippedTransparent, droppedOverLimit, tlasReuseFrames, bytesPerTriangle}, applied:false, note}` ※`shadowActive` は「ON でも実際に走ったか」。`stats` は直近フレームの加速構造の実測値 |
 | `dx12_set_dxr` | `{shadowEnabled?:bool, shadowSunAngle?:0..20(度), shadowNormalBias?:0..1(m), shadowMaxDistance?:0..100000(m, 0=無限), shadowIntensity?:0..1, aoEnabled?:bool, aoRadius?:0.01..100(m), aoRayCount?:1..8, aoIntensity?:0..1, aoPower?:0.01..8, aoCombineWithSsao?:bool, maxInstances?:0..32768, forceBuildTlas?:bool}` | `{...get と同じ..., applied:true}` ※**DXR 1.1 inline raytracing（RayQuery）**。RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書くので**ルートシグネチャは 1 DWORD も増えない**。**非対応 GPU では `error_code` を返す**（要 DXR Tier 1.1 かつ SM 6.5）。★スキンドと半透明は加速構造に入らないので従来どおり CSM が担当し、フォワードの `min()` で合成される（RT 影が有効なフレームは CSM が「RT の担当ぶん」を描かなくなる＝排他）。シーン JSON の `raytracing` に保存される |
+| `dx12_render_reference` | `{spp?:1..1048576(既定 256), bounces?:1..64(既定 8), size?:[w,h](既定 [1920,1080]), camera?:{position:[x,y,z], target:[x,y,z], fovDeg?, lensRadius?, focusDist?}, output?:string(拡張子なし), seed?:int, maxRadiance?:number(0=クランプ無し), frameBudgetMs?:0.5..200(既定 12), maxSeconds?:number, formats?:["pfm"|"exr"|"png"], exposure?, lightFalloff?:"engine"|"physical", sunAngularRadiusDeg?, russianRoulette?, forceLambert?, normalMaps?, quantizeLikeForward?, background?, tileSize?, samplesPerDispatch?, note?, waitSec?:0..3600}` | `{accepted:true, jobId, state:"requested", size, spp, bounces, seed, frameBudgetMs, output, hint}`（`waitSec` 指定時は完了まで待って最終状態を返す） | ※**DXR パストレーサー（地上真値レンダラ。パリティ基盤 Q1a）**。inline RayQuery の compute（専用ルートシグネチャ・専用 TLAS のスナップショット）で、NEE（太陽 / 点・スポット / エミッシブ面 / 環境）+ MIS + 多重バウンス + ロシアンルーレット。**BSDF はフォワードと同じ PBR**（GGX + Lambert）なので、フォワード + DDGI/SSGI/SSR との差は光輸送のアルゴリズム差だけ。出力は線形 HDR（`.pfm` / `.exr`）+ 簡易プレビュー `.png` + メタ `.json`。**即座に返り**、1 フレームに使う GPU 時間は `frameBudgetMs` まで（エンジンを固めない）。同じシード + 同じ設定 = 同じ結果（決定論）。**既定 OFF**（要求が来るまで何も確保せず、通常の描画経路には触れない）。制約: 仮想ジオメトリはプロキシ（低ポリ）でトレース / スプラット地形・カスタムシェーダは標準 PBR で近似 / スキンドは法線マップ無し。詳細は `docs/PATH_TRACER.md` |
+| `dx12_render_reference_status` | `{preview?:bool, waitSec?:0..3600}` | `{state:"idle"|"requested"|"preparing"|"running"|"finalizing"|"done"|"failed"|"cancelled", jobId, busy, progress:{phase,pct,message,etaSec}, samples:{done,target}, gpu:{msPerUnit,msPerSpp}, scene:{instances,materials,lights,triangles,emissiveTriangles,skippedSkinned,vgProxyInstances,customShaderInstances,splatTerrainInstances,snapshotMs}, output:{base,files[],truncated,sppDone,nanSamples,renderSeconds}, preview?, error?}` | ※`progress` は M6 のジョブ API の Progress と同じ形。`preview:true` は今までの累積を `<output>.preview.png` へ書く（running のときだけ。GPU の完了待ちで数十 ms 止まる） |
+| `dx12_render_reference_cancel` | `{save?:bool}` | `{cancelled, state, hint}` | ※実行中のリファレンスレンダーを止める。`save:true` でそこまでの累積（spp は目標未満）を保存する（既定は捨てる） |
 | `dx12_set_ssr` | `{enabled?, intensity?, maxDistance?, thickness?, maxSteps?, stride?, roughnessCutoff?, edgeFade?, bias?}` | `{applied}` ※スクリーン空間反射。深度プリパスのG-Bufferと前フレームカラーをレイマーチして IBL の鏡面を置き換える。反射は1フレーム遅れる。ONの間は深度+速度プリパスが常時走る。正射/2Dビューでは自動無効 |
 | `dx12_set_ssgi` | `{enabled?, intensity?, radius?, thickness?, rayCount?, stepCount?, clampValue?, feedback?, iblFallback?}` | `{applied}` ※スクリーン空間GI。前フレームカラーを間接光源にして IBL の拡散(irradiance)を置き換える。`iblFallback` を切るとカメラ回転で明るさが変動する。正射/2Dビューでは自動無効 |
 | `dx12_set_volumetric_fog` | `{enabled?, density?, albedo?, anisotropy?, heightFalloff?, heightRef?, distance?, depthDistribution?, ambient?, sunIntensity?, lightScattering?, temporal?, temporalBlend?, extendBeyondRange?, debugMode?}` | `{applied}` ※froxel ボリュメトリックフォグ。視錐台に沿った 3D テクスチャ(160x90x64)へ散乱を焼いて合成する＝光の筋が立体的に見える。有効にすると VRAM を 28MB 確保する。GodRays と同時に有効にすると太陽の散乱が二重計上される。正射/2Dビューでは自動無効 |
 | `dx12_get_occlusion` / `dx12_set_occlusion` | `{enabled:bool}` | `{enabled, active, ready, pyramid{width,height,mips}}` ※**Hi-Z オクルージョンカリング**。深度プリパスの深度から階層 Z ピラミッド（max 縮約）を作り、壁の裏に完全に隠れた描画を GPU 側で落とす。判定結果は D3D12 の**プレディケーション**へ直接渡すので読み戻しゼロ・遅延ゼロ（前フレームの結果を使う方式で起きる「速く振り向くと物が数フレーム消える」は構造的に起きない）。★**ON にすると深度プリパスも強制的に走る**。TAA/SSAO/SSR/DXR のどれかが有効なシーンではプリパスは元々走っているので追加コストは `gpuPassMs.hiZ`（実測 0.04ms）だけだが、**どれも無効なシーンで ON にするとプリパスぶんの描画コールが増えて遅くなることがある**。GPU 律速のときに効く機能で、CPU 律速のシーンでは fps は改善しない。既定 OFF、`settings.json` の `"render_occlusion_culling"` に保存。実際に何体隠れたかは `dx12_perf_stats` の `occlusion` ブロック（`occluded`/`tested`/`ratio`/`predicatedDraws`/`batches`）を見ること。正射/2Dビューでは自動無効 |
+| `dx12_vg_stats` | `{}` | `{enabled, active, valid, instances, instancesInFrustum, sourceTrisInFrustum, nodesVisited, clustersSelected, visibleClusters, phase2Clusters, trianglesDrawn, cullGpuMs, vramMB, overflow, levelHistogram[], culled{…}, hzb{…}, assets[{path,ready,pages,clusters,bvhDepth,sourceTriangles,vramMB}]}` ※**仮想ジオメトリ（Nanite 風）P2 の GPU カリング統計**。`VirtualGeometry` コンポーネント（`.vgeo` を置くと自動で付く）を持つエンティティを、GPU（compute・専用ルートシグネチャ）で インスタンス → BVH 走査 → クラスタ（画面空間誤差による LOD 選択 / 錐台 / 法線コーン / **HZB 二段**）とカリングした結果。`clustersSelected` = LOD 選択で選ばれた数、`visibleClusters` = 全部のカリングを通った数（一相目 + 二相目）、`phase2Clusters` = 二相目（今フレームの HZB）で救われた数、`trianglesDrawn` = 見かけの三角形数、`sourceTrisInFrustum` = 錐台内の LOD0 換算三角形数、`cullGpuMs` = Execute からラスタを除いた GPU 時間（カリング + HZB 再構築）、`executeGpuMs` = Execute 全体（`gpuPassMs.vgCull` と同じ区間）、`raster{active, usedAs, gpuMs, gpuMsPhase1/2, clusters, trianglesDrawn, trianglesHw/Sw, clustersHw/Sw}`（P3。Sw は未実装で 0）。`set_virtual_geometry {measure:true}` のとき `raster` に `overdraw` / `psInvocations` / `coveredPixels` / `msTrianglesOut` / `msSmallPrimCulled` / `asCulledClusters` / `edgePxHistogram{bins,clusters,triangles}`（可視クラスタの最長辺の画面長分布 = SW ラスタ判断用）が加わる。統計は約 3 フレーム遅れ。★**P3: メッシュシェーダ対応 GPU では VG 本体が可視性バッファ + 深度へ描かれ、プロキシは主ビューの深度プリパス / フォワードから外れる**（影・TLAS・ピッキング・物理はプロキシのまま）。最終シェーディング（材質）は P4 で、暫定は面法線ランバート。HZB は VG 自身の深度から作るので、プロキシ由来の自己遮蔽は解消する。`meshShaders` / `rasterWanted` / `hiddenProxies` も出る。★**P4（材質 resolve）**: VG 画素はフォワードと同じライティング（`ForwardShade.hlsli`）で塗られる。`resolve{supported, active, gpuMs, gbufferActive, gbufferGpuMs, mainRsBindless, assetsWithMaterials, assetsReady, appHeapDescriptors, sharedAppHeap}`（`gpuMs` = 材質 resolve の GPU 時間、`gbufferGpuMs` = VG 画素の速度 + G-Buffer パスの GPU 時間、`appHeapDescriptors` = VG がアプリの SRV ヒープに持つディスクリプタ数）/ `stableOrder{active, sortedClusters, skippedPhases}`（決定論の安定ソート）/ `vgGpuTotalMs`（カリング + ラスタ + HZB + G-Buffer + resolve）/ `ineligible{count, entities[{entity,name,reason}]}`（VG の対象外 = プロキシで描くエンティティと理由: スキンド / ノードアニメ / 地形 / カスタムシェーダー / 材質アセット・グラフ材質 / テクスチャ上書き / アルファクリップ・半透明 / UV アニメ）。`settings` に `resolve` / `stableOrder` が加わる |
+| `dx12_set_virtual_geometry` | `{enabled?:bool, lodPixelError?:0.25..8, hzbCulling?:bool, coneCulling?:bool, instanceMinPx?:0..64, vramBudgetMB?:64..65536}` | `dx12_vg_stats` と同じ | ※仮想ジオメトリ（`Scene` の設定。シーン JSON の `virtualGeometry` に保存。既定値のときは何も出力しない）。**既定 OFF**。ON にすると深度プリパスが走り（HZB の入力）、カリングの統計だけが出る（**描かない**）。`lodPixelError` = LOD の画面空間誤差しきい値 τ（レンダー px。既定 1）。キューが溢れたら次フレームの τ を自動で 1.25 倍する（`tauUsed`）。`vramBudgetMB` を超える `.vgeo` は構造化エラー（`assets[].error`）で読み込みを拒否する。SM 6.6 + Resource Binding Tier 3 が無い GPU では無効（`gpuSupported:false`）。**P3 の追加（実行時のみ・シーンには保存しない）**: `raster`（既定 true。false = 統計だけ・プロキシを描く）/ `rasterAs`（増幅シェーダ経由。既定 false）/ `smallPrimCull`（画素中心を覆わない三角形 / クラスタを落とす。既定 false: 5060 の実測では速くならない）/ `measure`（断片数・オーバードロー・辺長ヒストグラムの計測。少し遅い）/ `forceLod0`（LOD0 の葉だけを選ぶ検証用。全 LOD0 の素朴な参照）。メッシュシェーダ非対応 GPU（`DX12_DISABLE_MESHSHADER=1` でも再現）では `raster` は自動で無効になりプロキシが描かれる。**P4 の追加（実行時のみ）**: `resolve`（既定 true = 材質 resolve。false = P3 の暫定シェーディング。A/B 用）/ `stableOrder`（決定論: 可視リストをフェーズごとに `{instance, clusterRef}` 順へ安定ソートしてからラスタ。既定 false。`screenshot_final {deterministic:true}` の間は自動で ON）。メイン RS にバインドレスが無い環境（`DX12_DISABLE_MAIN_BINDLESS=1` / SM 6.6 未満）では resolve が使えないので VG は描かずプロキシが描かれる |
 | `dx12_set_occlusion` | `{enabled:bool}` | `{enabled, active, ready, pyramid{width,height,mips}}` ※Hi-Z オクルージョンカリングの ON/OFF。★ON にすると深度プリパスも強制的に走る。TAA/SSAO/SSR/DXR のどれかが有効なシーンでは追加コストは Hi-Z ぶん(実測 0.04ms)だけだが、どれも無効なシーンで ON にするとプリパスぶんの描画コールが増えて逆に遅くなることがある。GPU 律速のときに効く機能で、CPU 律速のシーンでは fps は改善しない。既定 OFF、`settings.json` の `render_occlusion_culling` に保存される |
 
 > **TAA の効果確認は `dx12_ui_screenshot` を使うこと。** `dx12_screenshot` はポスト前の `m_sceneRT` を読むので、TAA の解決結果も `debugVelocity` の可視化も写らない（どちらもその後段で出力される）。
@@ -486,6 +602,15 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `clusterGrid` | クラスタ境界の市松 | 既存 `clusterExtra.z=2` | |
 | `decalCount` | クラスタごとのデカール枚数ヒートマップ（**白 = 16 枚で切り捨て中**） | 既存 `clusterExtra.z=3` | デカール 0 枚のクラスタはほぼ黒 |
 | `fogScattering` / `fogTransmittance` / `fogSlice` | ボリュメトリックフォグの散乱 / 透過率 / froxel スライス | 既存 `FogParams.gMisc.z` | フォグが無効なら何も出ない（`warnings` で通知） |
+| `vgCluster` / `vgTri` | **仮想ジオメトリ（P3）の可視性バッファ**: クラスタごと / 三角形ごとの色（`instance + clusterRef` のハッシュ。描画順に依らない）。VG でない画素は 80% 暗くする | `VirtualGeometrySystem::DrawDebug` | VG が ON かつ `raster:true` かつメッシュシェーダ対応 GPU のときだけ絵が出る（それ以外は `warnings`）。`toneMapped:false` |
+| `vgLod` | VG の LOD レベル（青 = 0 … 赤 = 最粗） | 同上 | LOD の切り替わり（ポップ / 遷移帯）の目視確認 |
+| `vgDepth` | VG 込みの深度（白 = 近、`depthRange`(m) で黒） | 同上 | 非 VG の深度（プリパス）と VG の深度が同じバッファに載る |
+| `vgOverdraw` | 断片数（深度テストを通った数）のヒートマップ（青 = 1 … 赤 = 8+） | 同上（計測モードが自動で ON） | 描画順に依存して毎フレーム少し揺れる。`vg_stats.raster.overdraw` に平均が出る |
+| `vgCoverage` | 被覆: 緑 = VG / 灰 = 非 VG のジオメトリ / 黒 = 空 | 同上 | 穴（物が消える）の検出用。VG の輪郭内に黒（空）が出たら穴 |
+| `vgMaterial` | 材質（アセット + 材質番号のハッシュ色） | 同上 | P4。1 クラスタ = 1 材質の確認。材質境界がクラスタ境界に沿う |
+| `vgMip` | resolve がアルベドに使うミップ段（解析 UV 勾配。青 = 0 … 赤 = 10 以上 / 灰 = テクスチャ無し） | 同上 | P4。遠く / 斜めほど赤くなれば勾配が正しい（可視性バッファ方式は ddx が壊れるので解析的に作っている） |
+| `vgTileMaterials` | 8x8 タイル内の異なる材質の数（1 = 緑 … 4 以上 = 赤） | 同上 | P4。赤いほど resolve の波面が分岐（材質のタイル分類の要否の判断材料） |
+| `vgNormal` | resolve が使う頂点法線（補間・ワールド。0.5 + 0.5n） | 同上 | P4。法線の復元（oct16 の復号 + 補間）の確認 |
 | `off` | 何もせず全部を戻すだけ（スクショも撮らない） | — | 途中で失敗したときのリセット用 |
 
 **非対応（作っていない。理由つき）**
@@ -532,7 +657,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_terrain_set_layers` | `{entity?/name?, layerSetPath:string(assets 相対 .terrainlayers。**空文字で割当解除**), splatResolution?:int=512(32..2048), autopaint?:bool=true, uvScale?, heightBlendDepth?:0.01..1, triplanarSharpness?:1..16, normalStrength?:0..2, macroScale?:10..400, macroStrength?:0..1, distTilingStart?:5..200, distTilingFarScale?:2..16, pomHeightScale?:0..0.3, pomFadeStart?:0..40, pomFadeEnd?:1..120, triplanar?:bool, pom?:bool, macro?:bool, distTiling?:bool}` | `{entityId, layerSetPath, previousLayerSetPath, layerCount, layerNames:[...], splatPath, splatSize, splatCreated, uvScale, terrainMatFlags, sceneGeneration, note}` ※**地形にテクスチャレイヤーを割り当てる唯一の MCP 経路**（#27）。初回割当時にスプラットを作り、`autopaint:true`（既定）なら傾斜/標高から自動で塗る。省略したパラメータは触らない（冪等）。`layerSetPath:""` で外すと従来の頂点色描画へ戻る。★Editor 限定 |
 | `dx12_terrain_splat_info` | `{entity?/name?, gridSize?:int=8(0..32。0 で grid を返さない), point?:[x,z] \| points?:[[x,z]...](最大256)}` | `{entityId, layerSetPath, splatPath, hasSplat, unsavedSplat, splatSize, coverage:[4](層ごとの平均重み 0..1), dominantRatio:[4](その層が最大だったテクセルの割合), gridSize, grid:[gridSize 本の文字列。`grid[z][x]` が `'0'..'3'` でそのセルの支配レイヤー。z が増えると +Z、x が増えると +X], samples:[{world:[x,z], texel:[tx,tz], weights:[4], dominant:int}], note}` ※**読み取り専用**。`terrain_paint` / `autopaint` の結果を絵を見ずに検証する。スプラット未作成なら `hasSplat:false` と案内だけ返す。Playing 中も可 |
 | `dx12_sculpt_brush` | `{entity?/name?, brush?:"draw"\|"pull"\|"push"\|"smooth"\|"flatten"\|"pinch"\|"noise"\|"grab", position?:[x,y,z](ワールド) \| localPosition?, radius?=0.5, strength?=0.2, falloff?=0.5, direction?, grabDelta?, symmetryX/Y/Z?, noise*?, seed?}` | `{entityId, brush, movedVertices, localCenter, radius, strength, vertexCount, triangleCount, localBounds}` ※radius/strength は**メッシュのローカル単位**(Transform の scale が掛かる前)。相対操作。★Editor 限定 |
-| `dx12_set_sun` | `{timeOfDay?:0..24, azimuth?:deg, elevation?:deg, color?:[r,g,b], kelvin?:1000..40000, intensity?, ambient?}` | `{entityId, name, direction, azimuthDeg, elevationDeg, color, intensity, ambient, timeOfDay}` ※最初の DirectionalLight を**絶対指定**で更新(冪等)。方位/高度は「太陽が見える方向」(+Z=0°, +X=90° / 高度 0=地平線) |
+| `dx12_set_sun` | `{timeOfDay?:0..24, azimuth?:deg, elevation?:deg, color?:[r,g,b], kelvin?:1000..40000, intensity?, ambient?}` | `{entityId, name, direction, azimuthDeg, elevationDeg, color, intensity, ambient, timeOfDay}` ※最初の DirectionalLight を**絶対指定**で更新(冪等)。方位/高度は「太陽が見える方向」(+Z=0°, +X=90° / 高度 0=地平線)。物理大気が ON のとき `timeOfDay` は大気の時刻を設定し(応答に `atmosphere`)、`azimuth`/`elevation` は `sunMode=1`(向きを直接指定)へ切り替える |
 | `dx12_navmesh_build` | `{cellSize?, cellHeight?, agentHeight?, agentRadius?, agentMaxClimb?, agentMaxSlope?, minRegionArea?, mergeRegionArea?, maxEdgeLen?, maxSimplificationErr?, maxVertsPerPoly?:int, monotonePartition?:bool, filterLedgeSpans?:bool, filterLowHanging?:bool, useBounds?:bool, boundsMin?:[x,y,z], boundsMax?:[x,y,z]}` | `{ok, settingsChanged, stats:{...}, config:{...}, stageLog}` ※シーンのメッシュを**実際の三角形のまま**ボクセル化して歩ける面を取り出す。引数はシーンの生成設定を上書きしてから焼く。★Editor 限定。焼いた実体は隣の `.nav`（`dx12_save_scene` で書かれる） |
 | `dx12_navmesh_settings` | build と同じキー | `{applied, config, note}` ※焼き直さずに設定だけ変える。引数なしで現在値を読める |
 | `dx12_navmesh_info` | `{}` | `{config, stats:{built, polyCount, vertCount, sampleCount, gridW, gridH, walkableArea, buildMs, memoryBytes, boundsMin, boundsMax}, debugDraw}` |
@@ -595,7 +720,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_key_press` | `{key}` | `{key}` ※1 フレームだけ押して離す（`isKeyPressed` / `keyPressed()` が 1 回立つ）|
 | `dx12_mouse_move` | `{dx?:f, dy?:f}` | `{dx, dy, mode, note}` ※合成マウス移動を次の 1 フレームぶんだけ注入する。一人称の視点操作はこれが唯一の口(★`camera:setYaw()` では向きを変えられない。エンジン標準の FpsController が yaw を Lua のローカル変数で持ち毎フレーム上書きするため)。押しっぱなしの概念は無いので、回し続けるには `dx12_step_frames` と交互に撃つこと。目標角度へ向けたいなら `dx12_play_script` の yaw や `dx12_autoplay` を使う方が確実(実測して比例で詰める閉ループになっている) |
 | `dx12_step_frames` | `{frames?:int=1(1..600)}` | `{frames}` ※**N フレーム進んでから応答する同期バリア**。入力がシミュレーションに効いてから観測するために挟む。※決定論ステッパではない（各フレームの dt は実時間）|
-| `dx12_perf_stats` | `{window?:int=60(..240)}` | `fps` / `frameMs{avg,min,max,p95}` / `cpu{workMs,fenceWaitMs,presentMs}` / `gpuPassMs{total,shadows,depthPrepass,prepassSsao,clusterCull,raytracing,rtScreen,ddgi,screenSpaceGi,volFog,hiZ,mainScene,particles,postFx,ui}` / `drawCalls` / `culled` / `triangles` / `occlusion{...}` / `analysis{verdict:"gpu-bound"\|"cpu-bound"\|"fps-limit-capped"…, notes}` ※**FPS が出ないときはまずこれで犯人を特定する** |
+| `dx12_perf_stats` | `{window?:int=60(..240)}` | `fps` / `frameMs{avg,min,max,p95}` / `cpu{workMs,fenceWaitMs,presentMs}` / `gpuPassMs{total,shadows,depthPrepass,prepassSsao,clusterCull,raytracing,rtScreen,ddgi,screenSpaceGi,volFog,hiZ,mainScene,particles,postFx,ui,vgCull}` / `drawCalls` / `culled` / `triangles` / `occlusion{...}` / `analysis{verdict:"gpu-bound"\|"cpu-bound"\|"fps-limit-capped"…, notes}` ※**FPS が出ないときはまずこれで犯人を特定する** |
 | `dx12_benchmark` | `{...}` | 規模の梯子を測るベンチハーネス（同一シーンを条件を変えて回し、どこで折れるかを出す）|
 
 **入力テストの型**:
@@ -696,6 +821,52 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 |--------|--------|--------|
 | `dx12_sequence_author` | `{name:string, tracks:object[], camera?:string, loop?:bool, attachTo?:string, doneEvent?:string, activateCamera?:bool, dryRun?:bool}` | `{applied, name, path, camera, attachedTo, createdEntity, duration, trackCount, playEvent, stopEvent, doneEvent, referenced, vfx, warnings, next}` ※時間軸の台本(JSON)から Lua コンポーネントを生成して貼る。track の type: camera(位置移動+注視) / fade / post / timeScale(スローモ) / shake / vfx / sound / move・rotate / light / event / scene / log。★時計は実時間(タイムスケール非適用)で進むので、スローモを掛けても台本は実時間で流れる。終了時にタイムスケールを 1.0 へ戻す。★カメラを動かすには `camera` に CameraComponent 持ちのエンティティ名が要る(グローバルカメラは毎フレーム上書きされるため)。他スクリプトから `events:emit('<name>:play'/'stop')` で操作できる |
 | `dx12_sequence_preview` | `{seconds?:f=5, frames?:int=6(2..12), startDelay?:f=0, columns?:int=3, name?:string}` | PNG 画像ブロック + text(`{path, name, frames, secondsTotal, secondsPerFrame, frameDiffs, moved, recentLog, hint}`) ※Play して演出を実際に流し、ゲーム画面を時間で連写した格子画像を返す。撮影後は必ず Stop する。★撮る前に `dx12_set_editor_camera` の固定を自動解除する(残っていると演出が動いても絵が変わらない事故になる) |
+
+### 4-11b. シーケンサー(`.dxseq`。時間軸で演出を編集 / 評価 / 再生する)
+
+`dx12_sequence_author`(台本 → Lua 生成)とは別に、エンジンが**シーケンスそのもの**(`assets/sequences/<名前>.dxseq`)を持つ。カメラワーク・カメラカット・Transform / 任意プロパティのキー・ポスト / DoF・シェイク・イベントを 1 本の時間軸で扱い、AI は **SeqOp の JSON**(`sequence_apply_op`)で宣言的に編集する。形式・適用規則・PreAnimatedState の仕様は `docs/DXSEQ_FORMAT.md`(§18〜§20)、Lua は `Sequence.*`(`docs/API_REFERENCE.md`)。**既存の `dx12_sequence_author` / `dx12_sequence_preview` / `dx12_camera_path` は名前も挙動も返り値も残す**(移行は S6)。
+
+エンジン method(McpMeta 直渡し。`dx12_call {name:"sequence_list"}` で再起動なしに使える。Core の `dx12_sequence {op}` が 1 本に束ねる)。時刻は **秒 `t` / ティック `tick`(既定 6000/秒)/ フレーム `frame`** のどれか(優先 tick > frame > t)。
+
+| method(= `dx12_sequence` の op) | 効果 | params | 返り値(要点) |
+|---|---|---|---|
+| `sequence_list`(list) | read | なし | `{sequences:[{name,rel,loaded,dirty,durationSec,fps,bindings,tracks,cuts,…}], editor:{active,doc,tick,playing,preAnimated}, players:[…]}`(assets のファイルと開いている文書) |
+| `sequence_load`(load) | runtime | `{name, create?:bool, fps?:int(30), reload?:bool}` | 文書の要約 + `bindingStatus`(バインディングごとの解決の経路 `via`(guid / path / name)・エンティティ・警告)+ `issues` + `unresolved` 数。`create:true` で無ければ空の文書を作る(ファイルは save で) |
+| `sequence_save`(save) | write_file | `{name, path?}` | `{saved, rel, bytes}`。アトミック・正準形。`path` で別名保存。**dryRun:true** で書く先と大きさだけ |
+| `sequence_get`(get) | read | `{name, detail?:"summary"\|"full"}` | 要約(`bindingTable` / `cutTable` / `markerTable` / `bindingStatus`)。`full` は `dxseq`(正準形の全文)と `sequence`(JSON) |
+| `sequence_eval`(eval) | read | `{name, t\|tick\|frame}` | **【非破壊】** 何も書かない・guid も確定しない。`{tick, seconds, frame, cut:{index,id,camera,cameraName}, values:[{binding,track,type,path?,channel,value}], state:{<bindingId>:{position:[x,y,z], rotation, scale, "PointLight.intensity":…}}, clips, bindingStatus, unresolved}` |
+| `sequence_scrub`(scrub) | runtime(Editor 限定) | `{name, t\|tick\|frame}` または `{end:true}` | エディタ上に適用。eval と同じ形 + `applied:{transformsWritten,fieldsWritten,skippedPhysics,userDrift,postOverrides,shakes,warnings}` + `editor:{active,preAnimated}` + `cutCamera`。**値は PreAnimatedState が退避し、`end:true` / Play / あらゆる保存の直前に必ず元へ戻る(保存にスクラブの値は混ざらない)**。見た目は `screenshot_game_view`(カットのカメラ視点)。**dryRun:true** = 適用せず eval の結果だけ |
+| `sequence_play`(play) | runtime | `{name, loop?:"once"\|"loop"\|"pingpong", rate?, from?, clock?:"real"\|"game", restoreOnEnd?, delay?}` | Play 中 = 実時間(既定。タイムスケール非適用)で再生、イベントは前進で 1 回発火。Editor 中 = プレビュー再生(値は非破壊・イベントは発火しない)。**dryRun:true** = 何が再生されるかだけ |
+| `sequence_stop`(stop) | runtime | `{name?, restore?:bool(true)}` | Play 中 = 名前(省略で全部)の再生を止める(値は戻さない)/ Editor 中 = プレビューを止めて元の値へ戻す |
+| `sequence_apply_op`(edit) | write_file | `{name, ops:[…], label?, undo?:bool, redo?:bool}` | SeqOp の JSON(`docs/DXSEQ_FORMAT.md` §18)。**1 回の呼び出し = Undo 1 ステップ**。途中で 1 つでも失敗したら全部巻き戻し(`error_name: E_INVALID_OP`。エラー文に `ops[i] <op>:` の位置)。ID は省略可。`addBinding` は `entity:"名前"` で対象を指せる(guid を自動確定)。`undo:true` / `redo:true` で取り消し / やり直し。**dryRun:true** で検査だけ(`{ok, wouldApply, ops}`) |
+| `sequence_autoplay`(autoplay) | write_scene | `{op?:"list"\|"set"\|"add"\|"remove"\|"clear", sequence?, loop?, rate?, startDelay?, clock?, players?:[…]}` | シーンの自動再生設定(シーン JSON の `sequencePlayers`)。Play 開始時に再生される |
+
+- **Core の `dx12_sequence {op}`**(TS。`toolset/sequenceCore.ts`)は上表の method を 1 本に束ねる。`op` = list / load / save / get / eval / scrub / play / stop / edit(= `sequence_apply_op`)/ autoplay(下位操作は `action`。エンジンへは `op` として渡す)。他の引数はそのままエンジンへ。`dryRun:true` は save / scrub / play / edit でエンジンのプレビュー、list / get / eval は読み取りなので無視して実行、load / stop / autoplay は実行せず予測を返す。エラーは M2 の封筒(`fix` は `dx12_sequence` の撃ち直し)。Core は 40 本のまま(代わりに `dx12_get_script_errors` を長尾へ。理由は `MCP_FLEET_DESIGN.md` §9)。
+- **`get_entity` / `SerializeEntity` はスクラブ中でも元の値を返す**(直列化の直前フックが元へ戻すため。表示は次のフレームで再適用される)。スクラブした値の確認は `sequence_eval` か `screenshot_game_view`。
+- `sequence_*` は**シーンの保存されるデータを変えない**(スクラブは保存の直前に戻す)ので、未保存フラグを立てない(`sequence_autoplay` だけは立てる)。`sequence_apply_op` / `sequence_save` が変えるのは文書(`.dxseq`)だけ。
+- 時間軸の撮影: `sequence_scrub {t}` → `screenshot_game_view`(カットのカメラ視点。ポスト / DoF / シェイクも掛かる)を時刻ぶん繰り返す。Play 中の再生は `dx12_play` → `sequence_play` → `step_frames {deterministic}` → `screenshot_final`。
+- 既定の時計は実時間: Lua の `time.setScale` でスローモにしても台本は止まらない。`timeScale` トラックを持つシーケンスは実時間に強制される。
+- 物理: 動的な剛体 / キャラコントローラの Transform は Play 中は書かれない(警告 `skippedPhysics`)。`docs/DXSEQ_FORMAT.md` §19.2。
+
+### 4-11c. マテリアルグラフ(`.dxmg` / `.dxmat` の `graph` キー)
+
+ノードのグラフから HLSL を生成してフォワード描画に載せる(G2b。設計 `docs/MATERIAL_GRAPH_DESIGN.md`、仕様 `docs/MATGRAPH_FORMAT.md` / `docs/MATGRAPH_G2B.md`)。エンジン method(McpMeta 直渡し。**長尾** = core 面 40 本には入れない。`dx12_call {name:"material_graph_get"}` / `dx12_tool_search` で使う。別名 `dx12_material_graph_*`)。エディタ UI(ノード編集)は別担当で、ここは AI / スクリプト向けの入口。
+
+| method | effect | params | 返り値(要点) |
+|---|---|---|---|
+| `material_graph_nodes` | read | `{query?, detail?:"summary"\|"full"}` | `{count, nodes:[{type, category, description, inputs?, outputs?, props?}]}`(置けるノード型。`edit` の `add` の型名) |
+| `material_graph_get` | read | `{path(.dxmg\|.dxmat), detail?:"summary"\|"full", hlsl?, text?}` | `{name, guid, settings, nodes:{id:{type, pos, in:{pin:"id.pin"\|literal}, props}}, comments, parameters, validation:{ok, errors, warnings, hash, slots, stats, diagnostics}, instance?, engine?}`。`.dxmat` を渡すと親グラフ + params + エンジン側のビルド状況 |
+| `material_graph_validate` | read | `{path, hlsl?}` | 検証 + コンパイル。診断は `{severity, code, nodeId, pin?, message, hint?}`(未接続の必須入力・型・循環・予約ピン・未対応の設定 `W_G2B_BLEND` など)。何も書かず、エンジンの状態も変えない |
+| `material_graph_edit` | write_file(journal) | `{path, ops:[…], create?:bool, save?:bool}` | ops = `{op:"add",type,id?,pos?,props?,in?}` / `{op:"remove",id}` / `{op:"connect",from:"id.pin",to:"id.pin"}` / `{op:"disconnect",to:"id.pin"}` / `{op:"set",id,prop\|pin,value}`(pin は入力ピンのリテラル。null で消す)/ `{op:"move",id,pos}` / `{op:"settings",values:{…}}`。**全 op を複製へ当てて検証し、1 個でも失敗したら 1 バイトも書かない**(`error_name: E_INVALID_OP`、エラー文に `ops[i] <op>:`)。返り値 `{applied, results, changed, structureChanged, recompileRequired, validation, newHash, oldHash, wrote}`。**dryRun:true** で書かずに同じ結果 |
+| `material_graph_compile` | runtime | `{path?, force?:bool, rebuild?:bool}` | 再ビルドを要求してエンジンの状況を返す: `{known, instances:[{hasActive, compiling, failed, activeHash, pendingHash, generation, valueUpdates, errorLog, diagnostics(DXC エラーは nodeId 逆引き済み), codegenMs, dxcMs, psoMs, cacheHit}], counters}`。**非ブロッキング**(HLSL が変わるビルドはワーカーで非同期、完了までは旧版で描画)。`step_frames` で進めてから `material_graph_status` で読む。未描画の材質は `known:false` |
+| `material_graph_status` | read | `{path?}` | インスタンスごとの状況 + カウンタ(`dxcCompiles` `cacheHits` `psoCreates` `valueUpdates` `poolUsed` `fallbackDraws` …) |
+| `material_graph_graphize` | write_file(journal) | `{path(.dxmat)}` | 従来の PBR 材質 → 標準テンプレートのインスタンス(`graph` + `params`)。**手動のみ**。元ファイルは `<name>.dxmat.bak`(最初の 1 回だけ。既にあれば守る)。返り値 `{template, params, wroteTemplate, wroteBackup, wroteInstance}`。**dryRun:true** で変換後の中身(`instanceText`)だけ |
+| `material_graph_set_param` | write_file(journal) | `{path(.dxmat), name, value, save?:bool}` | params の書き換え(数値 / 配列 / テクスチャのパス / null で上書きを消す)。**再コンパイルしない**(プールのレコードを書き直すだけ)。`save:false` でメモリ上だけ。グラフに無い名前は `warnings`。**dryRun:true** 対応 |
+| `material_graph_apply` | write_scene | `{entity\|name, path, submesh?:int(0)}` | エンティティのサブメッシュへ `.dxmat`(グラフ材質 / 従来材質)を割り当てる。`path:""` で解除。Undo 可 |
+
+- 典型: `material_graph_graphize {path}` → `material_graph_apply {name, path}` → `step_frames {frames:60}` → `material_graph_status`(`hasActive:true`)→ `screenshot_final`。値の調整は `material_graph_set_param`、構造の編集は `material_graph_edit`。
+- 編集した `.dxmg` はエンジンが次のフレームに読み直す(HLSL が変わらない編集は再コンパイルなし)。HLSL が変わる編集は `compiling:true` の間、旧版で描画される。失敗しても描画は止まらず、エラーは `material_graph_status` の `errorLog` / `diagnostics`(nodeId つき)に残る。
+- v1 の範囲: Opaque / DefaultLit のみ(他は警告して不透明で描く)。影・深度・DXR・パストレは単色プロキシ、VG 対象外(`docs/MATGRAPH_G2B.md` §5)。
 
 ### 4-12. シーンの整理 / 命名規約
 
@@ -844,6 +1015,7 @@ Jev(TypeSafe System One)は文章を生成せず型付きの判断(noul / choice
 | `--dpi-scale <0.75〜3.0>` | **表示倍率(DPI)の検証用オーバーライド**(エディタ専用。`1.5` / `150%` / `150` のどれでも可)。OS の表示倍率を無視してその倍率で全体を描く(Windows の設定は一切触らない)。`--background` の窓は論理 1920×1080 × 倍率 の物理サイズになる(例: `--dpi-scale 1.5` → 2880×1620)。指定が無ければ OS の倍率(窓のいるモニターの DPI)に従う |
 | `--splash-preview <出力dir> [--dpi-scale N] [--splash-mode startup\|project] [--splash-backdrop mid\|light\|dark]` | **起動画面の見た目の検証**(エディタ専用)。窓を一切表示せず、実窓と同じ描画コードをオフスクリーンで決定論的な時刻/進捗で走らせ、PNG 連番と `frames.csv` を書いて即終了する(音は出さない・D3D12/エンジン本体は初期化しない)。人の画面に起動画面を出さずに確認できる。コンタクトシートは `tools/splash_contact_sheet.py` |
 | `--splash-selftest <出力dir>` | 起動画面の実窓コード(専用スレッド・60fps・D2D・UpdateLayeredWindow・Finish の連携)を**窓を表示せずに**通し、フレーム数/描画時間/CPU 使用率を `<dir>/selftest.txt` に書く。終了コード 0 = 合格 |
+| `--size <幅>x<高さ>` | **`dx12_screenshot_final` の既定の撮影解像度**(Q2 校正。例 `--size 1920x1080`)。`width`/`height` を省いた撮影が、ビューポート / ウィンドウ / 16:9 レターボックスに依存しないオフスクリーン出力(シーン系 RT をその大きさで作って描き出し、撮影後に元へ戻る)になる。1 辺 16〜8192・総画素 8192x4096 まで(不正な値は無視してログに理由)。詳細は `docs/PARITY_HARNESS.md` §11.6 |
 | `--no-splash-sound` | 起動画面の起動音を鳴らさない(環境変数 `UNO_NO_SPLASH_SOUND=1` と、エンジン設定 > 設定 の「起動音」チェック(`%APPDATA%\DX12Engine\editor_state.json` の `startupSound`)でも切れる)。`--background` / `--headless` では元から鳴らさない |
 
 `--background` の共通の挙動: `WS_EX_NOACTIVATE`(クリックされてもアクティブ化しない)/ `SetForegroundWindow` を一切呼ばない / スプラッシュ窓を出さない(起動・プロジェクト読込とも。起動音も鳴らさない)/
@@ -993,6 +1165,8 @@ dx12_set_component({entity: 42, component: "pointLight", data: {color:[1,0.8,0.6
 ---
 
 ## 6. idempotency_key
+
+**M5 で write 系の全 method に一般化**(エンジンの冪等ストア = 容量 256・TTL 600 秒。§13-3。別名 `idempotencyKey`)。TS の `dx12_call` の使い方は §0-3。以下は従来からある `create_entity` / `spawn_model` / `spawn_prefab` の固有の挙動(記録した entity が有効ならそれを返す)。
 
 `create_entity` / `spawn_model` / `spawn_prefab` は `idempotency_key` を受け付ける。
 同じキーで2回送った場合、2回目は処理をスキップして1回目の `entityId` を
@@ -1275,7 +1449,98 @@ TS サーバはこれを引いて、エンジンを再ビルドしても**再起
 | `E_STALE_SCENE` | 4 | 全 method 共通の任意キー **`expectGeneration`**（int）が現在の `sceneGeneration` と違う。ハンドラの前に断る（読み取り専用でも）。`error_fix` は `list_entities`。これで初めて `4` が送出される |
 | `E_MISSING_PARAM` / `E_BAD_TYPE` / `E_BAD_ENUM` / `E_OUT_OF_RANGE` | 2 | **meta を直接渡した method だけ**の中央検査。`E_BAD_ENUM` は `error_values`（有効値）と `error_did_you_mean`（最も近い値）付き。未知キーは検出しない（互換のため） |
 
-`describe_mcp_params` の `globalKeys` は `["idempotency_key","expectGeneration"]`（全 method 共通で渡せるキー）。
+`describe_mcp_params` の `globalKeys` は `["idempotency_key","idempotencyKey","expectGeneration","dryRun","confirm_token"]`（全 method 共通で渡せるキー。M5 で後ろ 3 つを追加）。
+
+---
+
+## 13. 副作用の安全性(M5): guarded ゲート・冪等キー・dryRun プレビュー・ファイルジャーナル
+
+設計は `docs/MCP_ENHANCEMENT_DESIGN.md` §4.3.4。実装は `src/core/mcp/McpSafety.h`(冪等ストア・確認トークン・プレビュー表。ヘッダオンリー)/ `McpJournal.h`・`.cpp`(ファイルジャーナル)/ `ApplicationMcp.cpp`(ディスパッチャ)/ `ApplicationMcpSafety.inc`(guard_token・journal_*・cancel とプレビュー表の本体)。
+単体テストは ctest `McpSafetyTests`(エンジン非リンク。時計を注入)。TS 側(`dx12_call` / `dx12_batch`)の使い方は `tools/mcp-server/README.md`。
+
+**ディスパッチャの順序**(`HandleMcpCommand`。meta の `effect` が判定の元):
+1. 未知 method / `expectGeneration` / 引数の中央検査(従来どおり)
+2. **dryRun**(§13-4): `dryRun:true` で effect が read 以外 → プレビューを返して終わり(ゲート・冪等・実行・未保存フラグ・自動保存カウントダウンのどれも触らない)
+3. **冪等キー**(§13-3): キー付き・read 以外 → 前回の結果(Replay)/ 衝突 / 処理中
+4. **guarded ゲート**(§13-2): effect が guarded → 有効な `confirm_token` が無ければ拒否
+5. ジャーナルのスコープを開く(`meta.journal` が true の method)→ ハンドラ → 閉じる
+
+### 13-1. 共通キー
+全 method が次の 3 つを受け付ける(`describe_mcp_params.globalKeys` にも載る)。ハンドラには渡らない(`idempotency_key` は create_entity / spawn_model / spawn_prefab の既存実装のため残る)。
+
+| キー | 型 | 内容 |
+|---|---|---|
+| `dryRun` | bool | true で実行せず「何が起こるか」を返す(§13-4)。read は無視して通常実行 |
+| `confirm_token` | string | guarded な method の確認トークン(§13-2) |
+| `idempotency_key` | string | 冪等キー(§13-3)。別名 `idempotencyKey` も同義(両方あれば `idempotency_key` が優先) |
+
+### 13-2. guarded ゲート(エンジン側の最終関門)
+- 対象 = `meta.effect == guarded` の 11 件: `git_checkout` `git_commit` `git_fetch` `git_merge` `git_merge_abort` `git_pull` `git_push` `eval_lua` `delete_asset` `build_game` `net_launch_test_client`(`git_status` / `git_branches` は read)。
+- **`guard_token {method}`**(effect=runtime)→ `{token, method, ttlSec}`。トークンは **1 回限り・method 束縛・TTL 60 秒(環境変数 `DX12_MCP_GUARD_TTL_SEC` で縮められる。テスト用)・保持は最大 32 個**(古い順に捨てる)。128bit の乱数(hex 32 文字)。guarded でない method を渡すと `E_INVALID_PARAM`(2)+`error_values`(guarded の一覧)+`error_did_you_mean`。
+- トークン無し / 未知 / 使用済み / 期限切れ / 別 method 用 → `error_code:11`・`error_name:"E_GUARDED"`・`error_cause`(理由)・`error_fix:[{tool:"guard_token"}]`・`error_details:{method, gate:"engine"}`。ハンドラは呼ばれない。検査に通った(または見つかった)トークンはその場で消費される。
+- **dryRun:true はゲートより先**に処理する(トークン不要・実行しない)。guarded でプレビューを持つのは `delete_asset` だけ。他の guarded は `E_UNSUPPORTED`。
+- **冪等の Replay はゲートより先**(前回の結果を返すだけなのでトークン不要。再実行しない)。
+- TS の `dx12_call_guarded` / `dx12_call {confirm:true}`(full / shell 面)は、ユーザーの承認を通った後に `guard_token` → `confirm_token` 付きの呼び出しを自動で行う。`dx12_batch` の op はトークンを持たないので guarded を実行できない(エンジンが拒否する)。
+- ⚠ 認証ではない(127.0.0.1 限定・認証なしのまま。`§10`)。「確認を通っていない呼び出しを機械的に止める」ためのゲートで、悪意のあるローカルプロセスを止めるものではない。
+
+### 13-3. 冪等キー(write 系全般・有限サイズ・TTL)
+- 対象 = effect が read 以外の全 method(`create_entity` / `spawn_model` / `spawn_prefab` は既存の `m_mcpIdempotency` 実装のまま。`guard_token` と `cancel` は対象外)。
+- ストア = **容量 256(LRU)・TTL 600 秒**。エントリ = `{key, method, paramsHash, state:InFlight|Done, 応答}`。`paramsHash` は `dryRun` / `confirm_token` / `idempotency_key` / `idempotencyKey` を除いた params の canonical dump の FNV-1a64(キーの順序に依らない)。
+- 同じキー:
+  - Done で method・引数が同じ → **ハンドラを実行せず前回の応答を返す**(`result.idempotentReplay:true`・`result.idempotency:{key, firstAtMs}`。`id` は今回のもの)。Undo エントリも未保存フラグも増えない。
+  - method か引数が違う → `error_code:2`・`error_name:"E_IDEMPOTENCY_CONFLICT"`(`error_details.firstMethod`)。
+  - 処理中(InFlight。遅延 method の完了前・120 秒で期限切れ)→ `error_code:9`・`error_name:"E_IDEMPOTENCY_IN_FLIGHT"`。少し待って同じ内容で再送すれば Replay になる。
+- 実行する場合は先に InFlight を積み、成功(`ok:true`)で Done・失敗なら削除(再送で再実行できる)。**遅延 method**(`delete_entity` / `open_scene` / `play` など、フレーム境界で応答が出るもの)は、`McpBridge::SendToClient` の観測点(`mcpsafety::SendObserver`)で「(client, requestId) の応答が出た」ことを拾って Done / 削除にする(`CompleteMcp` / `FailMcp` は触っていない)。
+- `open_scene` / `new_scene` / `open_project` / `play` / `stop` を**実行するとき**はストアを空にする(シーンが入れ替わるため。自分の Done は完了後に積まれる)。Replay になる場合は空にしない。
+
+### 13-4. dryRun(実際に何が起こるかを実行せず返す)
+`dryRun:true` + effect が read 以外の method:
+- プレビュー表にある method(`meta.dryRun == "preview"`。マニフェストの `dryRun` に出る)→ `{ok:true, result:{dryRun:true, executed:false, method, effect, preview}}`。
+  `preview = {summary, targets[], count, destructive, undoable, files[], notes[], willFail?}`。`targets` は `{kind:"entity"|"file"|"scene"|"journal", exists, id?, name?, …}`、`files` は `{path, exists, action:"create|overwrite|delete|move|read", bytes?}`。`willFail:true` は「実行すると失敗する」(対象が無い・構文エラー・上書き不可など。`reason` / `didYouMean` 付き。dryRun 自体は ok:true)。
+- 無い method → `error_code:10`・`error_name:"E_UNSUPPORTED"`・`error_values`=対応 method の一覧。
+- read は `dryRun` を無視して通常実行する。
+- **副作用ゼロ**: シーン・ファイル・Undo・冪等ストア・未保存フラグ・自動保存カウントダウンのどれも変えない(実機で前後のシーン全状態とアセットツリーのハッシュ一致を確認)。
+
+| method | プレビューの内容 |
+|---|---|
+| `create_entity` | 生成される type・名前(省略時は自動)・位置・親。type が不正なら willFail |
+| `spawn_model` / `spawn_prefab` | path の実在・生成名。無ければ willFail(プレハブは階層ぶん増える旨) |
+| `delete_entity` | 対象+子孫の件数と名前(先頭 20)。destructive |
+| `duplicate_entity` | 対象+子孫の件数(増える数) |
+| `set_transform` | 各フィールドの現在値 → 新しい値(`targets[0].changes`) |
+| `set_component` | 既存コンポーネントへのマージか新規追加か・上書きされるフィールドの現在値 → 新しい値 |
+| `remove_component` | 付いているか・destructive |
+| `set_parent` / `rename_entity` | 親の前後 / 名前の前後(連番が付くか・名前参照が追従して書き換わる旨) |
+| `save_scene` | path・既存の上書きか新規か・現在のバイト数・エンティティ数・sceneDirty |
+| `open_scene` | path の実在・現在のシーンを閉じる・未保存の警告 |
+| `create_lua_component` / `create_shader` | 書き込み先・上書きか新規か・(Lua は)構文検査の結果 |
+| `move_asset` / `delete_asset` / `import_asset` | 件数・総バイト・移動先/取り込み先が既にあるか・(delete)まだ参照されているか・破壊性 |
+| `journal_restore` | 戻る / 消えるファイルの一覧・エントリが不完全か |
+
+### 13-5. ファイル書き込みジャーナル(`<project>/.dx12/journal/`)
+- **何のため**: ファイルを書く操作は Undo の対象外で、トランザクションを rollback してもファイルは戻らなかった。書く直前に「上書き・削除・移動される(または新規作成される)ファイル」の元の内容を退避し、rollback / `journal_restore` で書き戻す。
+- **対象**(`meta.journal:true`): `save_scene` `create_lua_component` `create_shader` `move_asset` `delete_asset`(フォルダは配下を 1 ファイルずつ) `import_asset` `create_prefab` `journal_restore`。TS の `dx12_scene_write` は Node が書くので TS 側が同じ形式のエントリを書く。
+- **形式**: `<root>/<seq 6 桁>-<method>/manifest.json` + `files/<n>.bin`。`manifest.json` = `{version:1, id, method, label, createdAt(ms), state:"open|committed|rolledBack|restored", txLabel|null, complete, note?, files:[{path(project 相対・外は絶対・区切りは '/'), existed, backup("files/0.bin"|null), bytes, skipped(null|"too_large"|…)}]}`。seq は既存フォルダの最大 + 1。
+- **適用単位**: トランザクション中は 1 つの tx エントリにまとめる(`transaction_begin` で開く → `transaction_commit` で state:committed のまま保持 / `transaction_rollback` で**シーンの巻き戻しと一緒にファイルも戻して** state:rolledBack。人の Play などによる確定扱いの自動 close は committed)。tx 外は journal 対応 method の 1 呼び出し = 1 エントリ(1 つも退避しなければフォルダを作らない)。commit / rollback の応答に `journal:{id, restored, unchanged, missing, warnings, complete}` が付く。
+- **上限**: 1 ファイル 64MB 超は退避しない(`skipped:"too_large"`・`complete:false`)。フォルダの退避は 1 エントリ 2000 ファイル / 256MB まで(超えたら `complete:false`+note)。保持は閉じたエントリ 50 件(古い順に刈る。open は刈らない。別プロセスが残した 24 時間より古い open は刈る)。`move_asset` が参照書き換えで触った他ファイル(他シーン・.prefab 等)は退避しないので `complete:false` とその旨を note に残す。
+- **`journal_list {limit?}`**(read)→ `{entries:[{id,method,label,state,createdAt,fileCount,complete,txLabel,note}], dir, total}`(新しい順)。
+- **`journal_restore {id}`**(write_file・dryRun=preview・journal)→ `{restored[], unchanged[], missing[], warnings[], complete}`。existed:false のファイルは削除、existed:true は書き戻す。現在の内容が既に同じなら何もしない(unchanged)。**復元自体も 1 エントリとして残る**(復元の復元ができる)。開いているシーンのメモリには反映されない(シーンを戻したなら `open_scene` で開き直す)。`..` を含む相対 path は戻さない(警告)。TS が書いたエントリも同じ形式で復元できる。
+- **未保存フラグ**: `guard_token` / `journal_list` / `journal_restore` / `cancel` はシーンのメモリを変えないので sceneDirty を立てない(`IsMcpReadOnlyMethod`)。`journal_restore` を入れないと、戻した現在シーンのファイルを自動保存がメモリ上のシーンで上書きして復元が無かったことになる(実機で検証)。
+- **自動保存**: AI のトランザクションが開いている間は本保存(2 秒アイドル)を保留する(rollback で戻す途中の状態をディスクへ書かない)。閉じた後に通常どおり保存される。
+
+### 13-6. `cancel`(M6 のジョブ API の口)
+`cancel {target?:"benchmark"|"step_frames"|"all"(既定 all)}`(effect=runtime・冪等キー対象外)。実行中の `benchmark`(`m_benchFramesLeft`)/ `step_frames`(`m_mcpStepFramesLeft`)の残りを 1 フレームに切り詰め、**次のフレームで保留中の遅延応答が正常な完了として返る**(benchmark は途中までの統計・step_frames は `simulatedSec` が要求より短い)。応答 `{cancelled:[…], framesLeft:{benchmark?, step_frames?}(切り詰める前の残り), note}`。何も走っていなければ `cancelled:[]`。
+
+### 13-7. `ping.safety`(加算)
+`{guardedGate:true, idempotency:{entries, capacity, ttlSec}, journal:{dir, entries}}`。
+
+### 13-8. エラー名(エンジンが `error_name` で送る。TS の `errors.ts` が受ける)
+| `error_name` | `error_code` | 意味 |
+|---|---:|---|
+| `E_GUARDED` | 11 | guarded の method を有効な確認トークン無しで要求した |
+| `E_IDEMPOTENCY_CONFLICT` | 2 | 同じ冪等キーが別の method / 別の引数で使われた |
+| `E_IDEMPOTENCY_IN_FLIGHT` | 9 | 同じ冪等キーの前回の要求がまだ完了していない(少し待って再送) |
+| `E_UNSUPPORTED` | 10 | dryRun のプレビューを持たない method |
 
 ---
 

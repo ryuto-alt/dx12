@@ -188,7 +188,7 @@ def test_sample_scenes_validate_and_have_expected_structure():
         sp = S.load_spec(f)
         assert sp.hash()
     ps0 = S.load_spec(TOOL_DIR / "scenes" / "ps0_calibration.json")
-    assert ps0.data["parityScene"] == "PS-0" and len(ps0.cameras) == 4     # furnace は skip
+    assert ps0.data["parityScene"] == "PS-0" and len(ps0.cameras) == 5     # furnace は skip(Q2 で bsdf_grid を追加)
     assert G.resolve_gate(ps0.data, "Q2")[0] == "G2"
 
 

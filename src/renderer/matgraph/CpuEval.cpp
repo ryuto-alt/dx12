@@ -179,6 +179,27 @@ CpuEvalResult EvaluateCpu(const CompileResult& r, const EvalEnv& env, const Para
         else if (f == "clearCoat") s.clearCoat = v.v[0];
         else if (f == "clearCoatRoughness") s.clearCoatRoughness = v.v[0];
         else if (f == "anisotropy") s.anisotropy = v.v[0];
+        else if (f == "preview")
+        {
+            // 部分グラフ出力（CompileOptions::previewNode）。HLSL の写像と同じ: F1 = (v,v,v) / F2 = (x,y,0) / F3 = そのまま / F4 = rgb + alpha
+            switch (r.previewType)
+            {
+            case ValueType::F1: for (int k = 0; k < 3; ++k) s.baseColor[k] = v.v[0]; break;
+            case ValueType::F2: s.baseColor[0] = v.v[0]; s.baseColor[1] = v.v[1]; s.baseColor[2] = 0.0f; break;
+            case ValueType::F3: for (int k = 0; k < 3; ++k) s.baseColor[k] = v.v[k]; break;
+            case ValueType::F4: for (int k = 0; k < 3; ++k) s.baseColor[k] = v.v[k]; s.opacity = v.v[3]; break;
+            case ValueType::Tex2D:
+                // そのテクスチャを env.uv でサンプルした rgb（値 = スロット番号。sampleTexture があるときだけ）
+                if (env.sampleTexture)
+                {
+                    float rgba[4] = {0, 0, 0, 1};
+                    env.sampleTexture(static_cast<int>(v.v[0] + 0.5f), env.uv, 0.0f, rgba);
+                    for (int k = 0; k < 3; ++k) s.baseColor[k] = rgba[k];
+                }
+                break;
+            default: break;
+            }
+        }
     }
     res.ok = allOk;
     return res;

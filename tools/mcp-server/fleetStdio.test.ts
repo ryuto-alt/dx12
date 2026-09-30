@@ -31,6 +31,8 @@ function server(fleetDir: string, extra: Record<string, string> = {}, surface: "
   return c;
 }
 const launch = async (c: McpClient, args: any = {}) => c.call("dx12_engine_launch", args);
+// M7: dx12_engine_list は Core から長尾へ移した(dx12_call で使う)。core 面の直接呼び出しはできないので dx12_call 経由で読む。
+const engineList = async (c: McpClient) => (await c.call("dx12_call", { name: "dx12_engine_list", args: {} })).result;
 const engineOf = (r: any) => ({ id: r.engineId as string, pid: r.pid as number, port: r.port as number, dir: r.dir as any });
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -42,12 +44,13 @@ console.log("[1] 1 つのセッション(core 面)");
   check("instructions にフリートの使い方(dx12_engine_launch)が載る", /dx12_engine_launch/.test(init.instructions) && init.instructions.length <= 2048, init.instructions.length);
   const list = (await s.rpc("tools/list")).result.tools;
   const names: string[] = list.map((t: any) => t.name);
-  check("core 面は 40 本(shell 5 + フリート 5 + Core 28 + batch + call_guarded)", list.length === 40, list.length);
-  check("フリートの 5 本が shell の直後に並ぶ(launch / list / stop / attach / refresh)", JSON.stringify(names.slice(5, 10)) === JSON.stringify(["dx12_engine_launch", "dx12_engine_list", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh"]), names.slice(5, 10));
+  check("core 面は 40 本(shell 5 + フリート 2 + ジョブ 3 + Core 28(エディタ操作 2 を含む)+ batch + call_guarded)", list.length === 40, list.length);
+  check("フリートの 2 本とジョブの 3 本が shell の直後に並ぶ(launch / stop / job_start / job_status / job_cancel。list / attach / refresh / use は長尾)", JSON.stringify(names.slice(5, 10)) === JSON.stringify(["dx12_engine_launch", "dx12_engine_stop", "dx12_job_start", "dx12_job_status", "dx12_job_cancel"]), names.slice(5, 10));
   check("dx12_engine_use は core 面に出ない(長尾: dx12_call で使う)", !names.includes("dx12_engine_use"));
   const desc = Object.fromEntries(list.map((t: any) => [t.name, t]));
-  check("フリートの説明は Core テンプレ(使う / 使わない / 副作用)・600 字以内・標準語", ["dx12_engine_launch", "dx12_engine_list", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh"].every((n) => /使う/.test(desc[n].description) && /使わない/.test(desc[n].description) && /副作用/.test(desc[n].description) && desc[n].description.length <= 600));
-  check("annotations: list は読み取り専用・stop は destructive・launch は書き込み(guarded ではない)", desc.dx12_engine_list.annotations.readOnlyHint === true && desc.dx12_engine_stop.annotations.destructiveHint === true && desc.dx12_engine_launch.annotations.readOnlyHint === false && !desc.dx12_engine_launch._meta?.["anthropic/requiresUserInteraction"]);
+  check("フリートの説明は Core テンプレ(使う / 使わない / 副作用)・600 字以内・標準語", ["dx12_engine_launch", "dx12_engine_stop", "dx12_job_start", "dx12_job_status", "dx12_job_cancel"].every((n) => /使う/.test(desc[n].description) && /使わない/.test(desc[n].description) && /副作用/.test(desc[n].description) && desc[n].description.length <= 600));
+  check("dx12_engine_list は core 面に出ない(M7 で長尾へ。dx12_call {name:'dx12_engine_list'} で使える)", !names.includes("dx12_engine_list"));
+  check("annotations: stop は destructive・launch は書き込み(guarded ではない)", desc.dx12_engine_stop.annotations.destructiveHint === true && desc.dx12_engine_launch.annotations.readOnlyHint === false && !desc.dx12_engine_launch._meta?.["anthropic/requiresUserInteraction"]);
 
   // 束縛前: 従来の探索(閉じたポート)→ 繋がらない。fix に dx12_engine_launch が出る
   const before = await s.call("dx12_list_entities", {});
@@ -63,7 +66,7 @@ console.log("[1] 1 つのセッション(core 面)");
   check("束縛後は従来のツールがそのエンジンへ向く(list_entities が通る)", Array.isArray(ents.entities) && ents.count === 5, ents);
   const ping = await s.call("dx12_call", { name: "dx12_ping", args: {} });
   check("dx12_call {dx12_ping} の結果が専用エンジンのもの(instanceId・ownerPid・cwd が bin)", ping.ok && ping.result.instanceId === L.engineId && ping.result.ownerPid === s.proc.pid && path.resolve(ping.result.cwd) === path.resolve(L.dir.bin), ping);
-  const lst = await s.call("dx12_engine_list", {});
+  const lst = await engineList(s);
   check("dx12_engine_list: 自分のエンジン 1 台・束縛中・上限 3・資源つき", lst.engines.length === 1 && lst.engines[0].ownedByMe && lst.engines[0].bound && lst.fleet.max === 3 && lst.bound === L.engineId, lst);
   const doc = await s.call("dx12_doctor", {});
   check("dx12_doctor にフリート状態(台数/上限/資源/エンジン)が入る", doc.fleet?.count === 1 && doc.fleet.max === 3 && doc.fleet.resources.vramFreeMB === 6000 && doc.fleet.engines.length === 1 && doc.engine.connected === true && doc.engine.port === L.port, doc.fleet);
@@ -97,7 +100,7 @@ console.log("[1] 1 つのセッション(core 面)");
 
   const st = await s.call("dx12_engine_stop", { all: true });
   check("dx12_engine_stop {all}: 全部止まり、プロセスが残らない", st.stopped.length === 2 && !pidAlive(L.pid) && !pidAlive(L2.pid) && st.remaining === 0 && st.bound === null, st);
-  const lst2 = await s.call("dx12_engine_list", {});
+  const lst2 = await engineList(s);
   check("停止後の一覧は空・インスタンスフォルダも無い", lst2.engines.length === 0 && !fs.existsSync(L.dir.instance) && !fs.existsSync(L2.dir.instance));
   s.proc.stdin!.end();
 }
@@ -130,7 +133,7 @@ const E: ReturnType<typeof engineOf>[] = [];
   check("理由・対処: cause に上限、details.others に他人の 3 台(owner・project・idleSec)、fix は list と『ユーザーに確認』", /DX12_FLEET_MAX=3/.test(r4.cause) && r4.details.others.length === 3 && r4.details.others.every((o: any) => o.ownerPid && o.project !== undefined) && r4.fix.some((f: any) => f.tool === "dx12_engine_list") && /ユーザーに確認/.test(r4.details.note), r4);
   console.log(`      4 台目を断るまで ${Date.now() - t1} ms`);
   // 一覧は全セッションが同じものを見る
-  const l3 = await S[2].call("dx12_engine_list", {});
+  const l3 = await engineList(S[2]);
   check("dx12_engine_list は他のセッションのエンジンも見せる(ownedByMe は自分だけ)", l3.engines.length === 3 && l3.engines.filter((e: any) => e.ownedByMe).length === 1 && l3.engines.find((e: any) => e.ownedByMe).id === E[2].id, l3.engines.map((e: any) => [e.id, e.ownedByMe]));
   // 他人のエンジンは止められない
   const ns = await S[1].call("dx12_engine_stop", { engine: E[0].id });
@@ -149,7 +152,7 @@ const E: ReturnType<typeof engineOf>[] = [];
   check("attach の貸し出し接続が閉じた後、持ち主のセッションは普通に使える", own0.ok && own0.result.instanceId === E[0].id, own0);
   // full 面の tools/list: 末尾にフリート 6 本
   const fullTools = (await S[3].rpc("tools/list")).result.tools.map((t: any) => t.name);
-  check("full 面の tools/list は shell 5 + 旧 220 + フリート 6 本(末尾)", fullTools.length === 231 && JSON.stringify(fullTools.slice(-6)) === JSON.stringify(["dx12_engine_launch", "dx12_engine_list", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh", "dx12_engine_use"]), fullTools.length);
+  check("full 面の tools/list は shell 5 + 旧 220 + パストレーサー 3 + 仮想ジオメトリ 2 + フリート 6 + ジョブ 6 + エディタ操作 5 + シーン仕様 2 本(末尾)", fullTools.length === 249 && JSON.stringify(fullTools.slice(-19, -13)) === JSON.stringify(["dx12_engine_launch", "dx12_engine_list", "dx12_engine_stop", "dx12_engine_attach", "dx12_engine_refresh", "dx12_engine_use"]) && JSON.stringify(fullTools.slice(-13, -7)) === JSON.stringify(["dx12_job_start", "dx12_job_status", "dx12_job_cancel", "dx12_job_list", "dx12_job_result", "dx12_job_logs"]) && JSON.stringify(fullTools.slice(-2)) === JSON.stringify(["dx12_apply_scene_spec", "dx12_scene_spec_export"]) && JSON.stringify(fullTools.slice(-7, -2)) === JSON.stringify(["dx12_editor_command", "dx12_editor_state", "dx12_editor_notify", "dx12_editor_select", "dx12_editor_modal"]), fullTools.length);
   await S[3].call("dx12_engine_stop", { engine: `x-${E[0].port}` });
 }
 
@@ -172,7 +175,7 @@ console.log("[3] 終了処理");
   const dead1 = await waitDead(E[1].pid, 8000);
   check("MCP サーバが強制終了されても、エンジンが --owner-pid で自分で終了する", dead1 && Date.now() - t1 < 8000, Date.now() - t1);
   console.log(`      強制終了 → エンジン自殺まで ${Date.now() - t1} ms`);
-  const l = await S[2].call("dx12_engine_list", {});
+  const l = await engineList(S[2]);
   check("次にどのセッションかが list すると孤児のエントリ・インスタンスが掃除される", l.engines.length === 1 && l.engines[0].id === E[2].id && !fs.existsSync(E[1].dir.instance), l.engines.map((e: any) => e.id));
   S[2].proc.stdin!.end();
   await waitDead(E[2].pid, 6000);
@@ -223,7 +226,7 @@ console.log("[5] リソースガード・アイドル自動終了・自動起動
   check("操作が続く間は止まらない", pidAlive(L.pid));
   const gone = await waitDead(L.pid, 8000);
   check("アイドルが閾値(1.8 秒に短縮した 10 分)を超えると自動で止まる", gone);
-  const l = await s.call("dx12_engine_list", {});
+  const l = await engineList(s);
   check("止まったエンジンは一覧から消え、束縛も外れる", l.engines.length === 0 && l.bound === null, l);
   const after = await s.call("dx12_list_entities", {});
   check("止まった後の呼び出しは E_ENGINE_UNREACHABLE + fix に dx12_engine_launch(撃ち直して復帰できる)", after.error_code === "E_ENGINE_UNREACHABLE" && after.fix?.some((f: any) => f.tool === "dx12_engine_launch"), after);
@@ -233,7 +236,7 @@ console.log("[5] リソースガード・アイドル自動終了・自動起動
   const s = server(mk("auto"), { DX12_FLEET_AUTOLAUNCH: "1" });
   await s.initialize();
   const ents = await s.call("dx12_list_entities", {});
-  const l = await s.call("dx12_engine_list", {});
+  const l = await engineList(s);
   check("DX12_FLEET_AUTOLAUNCH=1: エンジンが無ければ最初の呼び出しで専用エンジンを起動して成功する", Array.isArray(ents.entities) && l.engines.length === 1 && l.engines[0].bound, { ents, l: l.engines.length });
   if (l.engines[0]) track(l.engines[0].pid);
   s.proc.stdin!.end();
@@ -251,7 +254,7 @@ console.log("[5] リソースガード・アイドル自動終了・自動起動
   const s = server(mk("dis"), { DX12_FLEET_DISABLE: "1" }, "full");
   await s.initialize();
   const names = (await s.rpc("tools/list")).result.tools.map((t: any) => t.name);
-  check("DX12_FLEET_DISABLE=1 ならフリートのツールは出ない(full 面は shell 5 + 旧 220 のまま)", names.length === 225 && !names.some((n: string) => n.startsWith("dx12_engine_")), names.length);
+  check("DX12_FLEET_DISABLE=1 ならフリートのツールは出ない(full 面は shell 5 + 旧 220 + パストレーサー 3 + 仮想ジオメトリ 2 + ジョブ 6 + エディタ操作 5 + シーン仕様 2 のまま)", names.length === 243 && !names.some((n: string) => n.startsWith("dx12_engine_")), names.length);
   s.proc.stdin!.end();
 }
 

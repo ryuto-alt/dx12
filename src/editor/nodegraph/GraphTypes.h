@@ -150,6 +150,7 @@ struct PinDesc
     float       dragSpeed = 0.01f;
     // ★true のとき「ピンのない値欄（プロパティ行）」。接続できない（定数ノードの値など）。
     bool        propertyOnly = false;
+    std::string desc;   // ツールチップの説明（任意。マテリアルグラフのピンの説明など）
 };
 
 struct NodeTypeDesc
@@ -166,6 +167,7 @@ struct NodeTypeDesc
     std::vector<PinDesc> outputs;
     bool        hasPreview = false;   // 本体下部にプレビュー領域を予約する（テクスチャサムネ等）
     bool        isReroute  = false;   // 小さな丸いリルート点として描く
+    bool        hasLabel   = false;   // ヘッダの下に 1 行の名前欄（NodeData::label。パラメータ名など）を予約する
 };
 
 // ノードのデータ（1 個ぶんの丸ごとのスナップショット）。Undo・コピペ・保存が使う。
@@ -176,6 +178,10 @@ struct NodeData
     std::string type;
     Vec2        pos;
     std::vector<PinValue> values;
+    // モデルが持つ「値欄に載らない状態」の丸ごとスナップショット（不透明な文字列。Undo・コピペ・履歴が運ぶ。空 = 無し）。
+    // マテリアルグラフでは文字列プロパティ（パラメータ名・Custom の HLSL・テクスチャパス）を入れる。UI は中身を解釈しない。
+    std::string extra;
+    std::string label;   // 表示用の名前欄（NodeTypeDesc::hasLabel のときだけ描く。モデルが返す。保存の対象外）
     const NodeTypeDesc* desc = nullptr;   // モデルが返す参照（比較・保存の対象外）
 };
 
@@ -187,7 +193,7 @@ struct ConnectCheck
 };
 
 // 見た目のスロット数
-inline constexpr int kPinTypeSlots  = 8;
+inline constexpr int kPinTypeSlots  = 9;
 inline constexpr int kCategorySlots = 10;
 inline constexpr int kCommentColors = 6;
 

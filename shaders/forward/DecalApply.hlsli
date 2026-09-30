@@ -28,6 +28,15 @@ Texture2D               g_decalAtlas : register(t21);
 //   分岐条件が cbuffer 由来＝ドローの中で完全に一様なので、quad 内のレーンが割れることはない
 //   （＝微分は常に有効）。呼び出し側で先に計算して渡すと、デカール 0 個のシーンでも
 //   6 命令ぶんとレジスタを常に払うことになる。
+// ★画面空間微分のフック（仮想ジオメトリ P4 の resolve 用。PBR.hlsli の UNO_SHADE_DDX_N と同じ流儀）:
+//   resolve は include の前に UNO_DECAL_DDX_W / UNO_DECAL_DDY_W を解析的な 1 画素差分へ差し替える。
+//   既定は ddx / ddy そのもの＝既存シェーダの DXIL は同一。
+#ifndef UNO_DECAL_DDX_W
+#define UNO_DECAL_DDX_W(v) ddx(v)
+#endif
+#ifndef UNO_DECAL_DDY_W
+#define UNO_DECAL_DDY_W(v) ddy(v)
+#endif
 void ApplyDecals(float3 worldPos, float2 svPosXY, float viewZ,
                  inout float3 albedo, inout float3 N,
                  inout float metallic, inout float roughness,
@@ -39,8 +48,8 @@ void ApplyDecals(float3 worldPos, float2 svPosXY, float viewZ,
     [branch]
     if (clusterExtra.w < 0.5 || clusterGrid.w <= 0.5) return;
 
-    float3 dWdx = ddx(worldPos);
-    float3 dWdy = ddy(worldPos);
+    float3 dWdx = UNO_DECAL_DDX_W(worldPos);
+    float3 dWdy = UNO_DECAL_DDY_W(worldPos);
 
     uint ci    = ClusterIndexFromPixel(svPosXY, viewZ);
     uint first = ci * (uint)DECAL_MAX_PER_CLUSTER;

@@ -204,6 +204,32 @@ int main()
         Check(cx.find("\"expose\":\"core\"") != std::string::npos && cx.back() == '}', "canonical JSON carries expose:core at the end");
         Check(McpFnv1a64(cx) != McpFnv1a64(c1), "hash changes when expose is set");
         Check(McpExposeValid("") && McpExposeValid("core") && !McpExposeValid("all") && !McpExposeValid("Core"), "expose vocabulary");
+        // M5: journal は false のとき canonical に出ない（既存 method のハッシュ不変）／true のとき末尾に出てハッシュが変わる
+        Check(c1.find("journal") == std::string::npos, "canonical JSON omits journal when false (existing hashes stay the same)");
+        McpMeta jm = a;
+        jm.journal = true;
+        const std::string cj = McpMetaCanonical("m", jm, "x:int");
+        Check(cj.find(",\"journal\":true}") != std::string::npos && cj.back() == '}', "canonical JSON carries journal:true at the end");
+        Check(McpFnv1a64(cj) != McpFnv1a64(c1), "hash changes when journal is set");
+        // expose と journal の両方: expose が先（フィールドは足した順に末尾へ）
+        jm.expose = "core";
+        const std::string cej = McpMetaCanonical("m", jm, "x:int");
+        Check(cej.find("\"expose\":\"core\",\"journal\":true}") != std::string::npos, "canonical JSON order: expose then journal");
+        // dryRun の語彙: preview を追加した（none / native は不変）
+        Check(McpDryRunValid("none") && McpDryRunValid("native") && McpDryRunValid("preview") && !McpDryRunValid("static") && !McpDryRunValid(""), "dryRun vocabulary includes preview");
+        McpMeta pm = a;
+        pm.dryRun = "preview";
+        Check(McpFnv1a64(McpMetaCanonical("m", pm, "x:int")) != McpFnv1a64(c1), "hash changes when dryRun becomes preview");
+        // McpApplySafetyFlags: 名前一覧だけが印を受ける。Read の method は preview にならない
+        McpMeta sf; sf.effect = McpEffect::WriteFile;
+        McpApplySafetyFlags("save_scene", sf);
+        Check(sf.dryRun == "preview" && sf.journal, "safety flags: save_scene -> preview + journal");
+        McpMeta so; so.effect = McpEffect::WriteScene;
+        McpApplySafetyFlags("set_ssao", so);
+        Check(so.dryRun == "none" && !so.journal, "safety flags: 名前が一覧に無い method は変わらない");
+        McpMeta sr; sr.effect = McpEffect::Read;
+        McpApplySafetyFlags("set_transform", sr);
+        Check(sr.dryRun == "none", "safety flags: Read の method は preview にならない");
     }
 
     // 近い名前の提案
@@ -333,6 +359,33 @@ int main()
             Check(!p.enforce, n + "." + p.name + ": データ表由来の引数は enforce=false（既存クライアントを壊さない）");
             Check(p.desc.size() <= 400, n + "." + p.name + ": desc が長すぎる");
         }
+    }
+    // M5: dryRun プレビュー / ジャーナルの対象一覧とデータ表の整合。
+    //   一覧の method は（エンジンに直接登録する journal_restore を除いて）データ表に実在し、Read ではない。
+    //   guarded の method は表の effect から取れる（エンジン側ゲートの対象＝TS 側 catalog の GUARDED と同じ 11 件）。
+    {
+        std::set<std::string> directSafety = {"journal_restore"};
+        for (const std::string& n : McpPreviewMethods())
+        {
+            if (directSafety.count(n)) continue;
+            Check(metaOf.count(n) == 1, "M5: プレビュー対象 " + n + " がデータ表に無い");
+            if (metaOf.count(n)) Check(metaOf[n]->effect != McpEffect::Read, "M5: プレビュー対象 " + n + " が read（read は dryRun を無視して実行する）");
+        }
+        for (const std::string& n : McpJournalMethods())
+        {
+            if (directSafety.count(n)) continue;
+            Check(metaOf.count(n) == 1, "M5: journal 対象 " + n + " がデータ表に無い");
+            if (metaOf.count(n))
+                Check(metaOf[n]->effect == McpEffect::WriteFile || metaOf[n]->effect == McpEffect::Guarded || n == "save_scene",
+                      "M5: journal 対象 " + n + " はファイルを書く method（write_file / guarded）");
+        }
+        Check(McpNameIn(McpPreviewMethods(), "delete_asset") && McpNameIn(McpJournalMethods(), "delete_asset"), "M5: delete_asset は preview + journal");
+        std::set<std::string> guarded;
+        for (const ManifestRow& r : rows) if (r.meta.effect == McpEffect::Guarded) guarded.insert(r.name);
+        const std::set<std::string> expectGuarded = {"build_game", "delete_asset", "eval_lua", "git_checkout", "git_commit", "git_fetch",
+                                                     "git_merge", "git_merge_abort", "git_pull", "git_push", "net_launch_test_client"};
+        Check(guarded == expectGuarded, "M5: guarded の method 一覧が想定の 11 件（エンジン側ゲートの対象）");
+        std::printf("  --  M5: preview %zu / journal %zu / guarded %zu\n", McpPreviewMethods().size(), McpJournalMethods().size(), guarded.size());
     }
     // 規則の下限（判定の規則が壊れていないことの粗い確認）
     auto effectOf = [&](const char* n) -> std::string { return metaOf.count(n) ? McpEffectName(metaOf[n]->effect) : "?"; };

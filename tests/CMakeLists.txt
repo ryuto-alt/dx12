@@ -706,6 +706,72 @@ if(TARGET Renderer AND TARGET VgeoCookLib)
     endif()
 endif()
 
+# 仮想ジオメトリ P2: GPU カリング。
+#   VgLodMathTests … LOD 数式 / 錐台 / コーン / 変換の純関数（GPU 不要。親の射影誤差 >= 子 の単調性を実 DAG で確かめる）
+#   VgCullGpuTests … 窓なしの D3D12 デバイスで compute を実行し、GPU の可視クラスタ集合 = CPU 参照（VgCullReference.h）を確かめる。
+#                    GPU が無い / SM 6.6・Tier 3 が無い環境では「SKIP」を出して 0 で終わる。シェーダ（.cso）は Shaders ターゲットが作る。
+if(TARGET Renderer AND TARGET VgeoCookLib)
+    add_executable(VgLodMathTests vg_lod_math_test.cpp)
+    target_include_directories(VgLodMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_cook)
+    target_link_libraries(VgLodMathTests PRIVATE VgeoCookLib meshoptimizer::meshoptimizer Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(VgLodMathTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgLodMathTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET VgLodMathTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgLodMathTests>")
+    add_test(NAME VgLodMathTests COMMAND VgLodMathTests)
+
+    add_executable(VgCullGpuTests vg_cull_gpu_test.cpp)
+    target_include_directories(VgCullGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_cook)
+    target_link_libraries(VgCullGpuTests PRIVATE Renderer VgeoCookLib meshoptimizer::meshoptimizer Microsoft::DirectXMath)
+    target_compile_definitions(VgCullGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(VgCullGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(VgCullGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgCullGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET VgCullGpuTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgCullGpuTests>")
+    add_test(NAME VgCullGpuTests COMMAND VgCullGpuTests)
+
+    # 仮想ジオメトリ P3: メッシュシェーダのラスタ。GPU の可視性バッファ + 深度 = CPU の三角形ラスタ / 全 LOD0 の素朴な参照（穴・はみ出しの検出）。
+    #   GPU が無い / メッシュシェーダ Tier 1 が無い環境では「SKIP」を出して 0 で終わる。
+    add_executable(VgRasterGpuTests vg_raster_gpu_test.cpp)
+    target_include_directories(VgRasterGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_cook)
+    target_link_libraries(VgRasterGpuTests PRIVATE Renderer VgeoCookLib meshoptimizer::meshoptimizer Microsoft::DirectXMath)
+    target_compile_definitions(VgRasterGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(VgRasterGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(VgRasterGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgRasterGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET VgRasterGpuTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgRasterGpuTests>")
+    add_test(NAME VgRasterGpuTests COMMAND VgRasterGpuTests)
+
+    # 仮想ジオメトリ P4: 可視性バッファからの属性復元（重心座標・1 画素差分・UV 勾配 = resolve の SampleGrad の入力）/ G-Buffer + 速度 /
+    #   決定論（stableOrder で 2 回の可視性バッファがビット一致）/ 両面材質のコーン棄却。CPU の独立参照（レイと三角形の交点）と比較。
+    add_executable(VgResolveGpuTests vg_resolve_gpu_test.cpp)
+    target_include_directories(VgResolveGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vgeo_cook)
+    target_link_libraries(VgResolveGpuTests PRIVATE Renderer VgeoCookLib meshoptimizer::meshoptimizer Microsoft::DirectXMath)
+    target_compile_definitions(VgResolveGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(VgResolveGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(VgResolveGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgResolveGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET VgResolveGpuTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgResolveGpuTests>")
+    add_test(NAME VgResolveGpuTests COMMAND VgResolveGpuTests)
+endif()
+
 # モデルのインポートサイズ回帰テスト（FBX の cm→m 正規化）。ModelLoader::Probe は GPU を
 # 触らないが Resource ライブラリ(assimp)が要るので統合ビルドでのみ有効。
 if(TARGET Resource AND TARGET Renderer)
@@ -762,6 +828,17 @@ else()
 endif()
 add_test(NAME McpManifestTests COMMAND McpManifestTests)
 
+# MCP の副作用の安全性（M5）: 冪等ストア / guarded 確認トークン（core/mcp/McpSafety.h）と、ファイル書き込みジャーナル（core/mcp/McpJournal.cpp）。
+# ヘッダオンリー + std::filesystem だけなのでエンジンをリンクしない。時計を注入して決定論。
+add_executable(McpSafetyTests mcp_safety_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/McpJournal.cpp)
+target_include_directories(McpSafetyTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(McpSafetyTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(McpSafetyTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME McpSafetyTests COMMAND McpSafetyTests)
+
 # MCP（AI）の編集を Undo に積む規則（editor/McpUndoRouter.h + editor/UndoCore.h）。
 # 呼び出し 1 回 = 「AI: <method>」1 エントリ / onlyAi は人の編集を戻さない /
 # トランザクションは 1 エントリ・rollback は逆順。ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く。
@@ -815,6 +892,82 @@ if(MSVC)
     target_compile_definitions(ShaderIncludeDepsTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME ShaderIncludeDepsTests COMMAND ShaderIncludeDepsTests)
+
+# マテリアルグラフ G2a: フォワードのシェーディング尾部（shaders/forward/ForwardShade.hlsli）の検査。GPU 不要。
+#   ・UnoSurface.hlsli の契約構造体 = G1 の参照実装（UnoMatContractRef.hlsli）
+#   ・Forward / ForwardSkinned / Terrain に尾部の複製が復活していない
+#   ・ShaderRegistry の全バリアント + ALPHA_TEST 派生 + G2b 予行 probe（ps_6_6 + ResourceDescriptorHeap[]）が DXC を通る
+#   dxcompiler.dll は実行時ロード（無い環境では DXC の検査だけスキップして 0）。ctest ラベル: dxc
+#   DXIL が外出し前後で同値かは tools/shader_dxil_equiv.ps1（変更前ツリーが要るので ctest 外。手順: docs/MATGRAPH_G2A.md）。
+if(TARGET Microsoft::DirectXShaderCompiler)
+    get_target_property(FORWARD_SHADE_DXC_INC Microsoft::DirectXShaderCompiler INTERFACE_INCLUDE_DIRECTORIES)
+    add_executable(ForwardShadeTests forward_shade_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/resource/ShaderRegistry.cpp)
+    target_include_directories(ForwardShadeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_include_directories(ForwardShadeTests SYSTEM PRIVATE ${FORWARD_SHADE_DXC_INC})
+    target_compile_definitions(ForwardShadeTests PRIVATE
+        DX12E_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../shaders"
+        DX12E_MATGRAPH_HLSL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../src/renderer/matgraph/hlsl"
+        DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(ForwardShadeTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(ForwardShadeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    if(DIRECTX_DXC_TOOL)
+        get_filename_component(FORWARD_SHADE_DXC_DIR "${DIRECTX_DXC_TOOL}" DIRECTORY)
+        add_custom_command(TARGET ForwardShadeTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${FORWARD_SHADE_DXC_DIR}/dxcompiler.dll" "${FORWARD_SHADE_DXC_DIR}/dxil.dll" "$<TARGET_FILE_DIR:ForwardShadeTests>"
+            COMMENT "Bundling dxcompiler.dll / dxil.dll next to ForwardShadeTests.exe")
+    endif()
+    add_test(NAME ForwardShadeTests COMMAND ForwardShadeTests)
+    set_tests_properties(ForwardShadeTests PROPERTIES LABELS dxc TIMEOUT 300)
+endif()
+
+# マテリアルグラフ G2a: メイン RS のバインドレスフラグの実機検証（フラグ / DWORD / 既存 PSO / probe PSO / SRV 添字の永続性 + 実 GPU で
+# ResourceDescriptorHeap[添字] を引く）。ハードウェアアダプタが要る。GPU が無い / SM 6.6 + Tier 3 が無い環境では SKIP して 0 で終わる。
+# dxcompiler.dll は Resource が delay-load でリンクしているのを同じフォルダへ置く。ctest ラベル: gpu
+if(TARGET Renderer AND TARGET Resource AND TARGET Microsoft::DirectXShaderCompiler)
+    get_target_property(MAIN_RS_DXC_INC Microsoft::DirectXShaderCompiler INTERFACE_INCLUDE_DIRECTORIES)
+    add_executable(MainRsBindlessTests main_rs_bindless_test.cpp)
+    # Core の Window.cpp が InputSystem を参照する（GraphicsDevice::Initialize が Window& を取るため Window を作る）
+    target_link_libraries(MainRsBindlessTests PRIVATE Renderer Resource Input)
+    target_include_directories(MainRsBindlessTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_include_directories(MainRsBindlessTests SYSTEM PRIVATE ${MAIN_RS_DXC_INC})
+    target_compile_definitions(MainRsBindlessTests PRIVATE
+        DX12E_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../shaders"
+        DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(MainRsBindlessTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(MainRsBindlessTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    if(DIRECTX_DXC_TOOL)
+        get_filename_component(MAIN_RS_DXC_DIR "${DIRECTX_DXC_TOOL}" DIRECTORY)
+        add_custom_command(TARGET MainRsBindlessTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MAIN_RS_DXC_DIR}/dxcompiler.dll" "${MAIN_RS_DXC_DIR}/dxil.dll" "$<TARGET_FILE_DIR:MainRsBindlessTests>"
+            COMMENT "Bundling dxcompiler.dll / dxil.dll next to MainRsBindlessTests.exe")
+    endif()
+    add_test(NAME MainRsBindlessTests COMMAND MainRsBindlessTests)
+    set_tests_properties(MainRsBindlessTests PROPERTIES LABELS gpu TIMEOUT 300)
+
+    # マテリアルグラフ G2b: GraphMaterialSystem の実機検証（初回ビルドの非同期 / パラメータプールのオフセット / 値の編集は再コンパイルしない /
+    # 構造の編集は旧版のまま新版へ / コンパイルエラーで描画が止まらない + nodeId 逆引き / 変種の共有 / DXIL ディスクキャッシュ）。
+    add_executable(GraphMaterialTests graph_material_test.cpp)
+    target_link_libraries(GraphMaterialTests PRIVATE Renderer Resource Input MatGraph)
+    target_include_directories(GraphMaterialTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(GraphMaterialTests PRIVATE DX12E_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../shaders")
+    if(MSVC)
+        target_compile_options(GraphMaterialTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(GraphMaterialTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    if(DIRECTX_DXC_TOOL)
+        get_filename_component(GRAPH_MAT_DXC_DIR "${DIRECTX_DXC_TOOL}" DIRECTORY)
+        add_custom_command(TARGET GraphMaterialTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GRAPH_MAT_DXC_DIR}/dxcompiler.dll" "${GRAPH_MAT_DXC_DIR}/dxil.dll" "$<TARGET_FILE_DIR:GraphMaterialTests>"
+            COMMENT "Bundling dxcompiler.dll / dxil.dll next to GraphMaterialTests.exe")
+    endif()
+    add_test(NAME GraphMaterialTests COMMAND GraphMaterialTests)
+    set_tests_properties(GraphMaterialTests PROPERTIES LABELS gpu TIMEOUT 300)
+endif()
 
 # オートセーブ退避スロット（core/AutosaveSlot.h）のテスト。ヘッダオンリーだが
 # meta.json の読み取りに nlohmann を使うので、統合ビルドでのみ有効（Core をリンク）。
@@ -1021,3 +1174,474 @@ else()
     target_compile_options(LauncherTests PRIVATE -Wall -Wextra -Werror)
 endif()
 add_test(NAME LauncherTests COMMAND LauncherTests)
+
+# ビューポート周りの純ロジック（editor/ViewportLogic.h。フェーズ 1a）:
+#   スナップ量 / アスペクト比のはめ込み / ビューキューブ（向き・投影・クリック判定）/ カメラ姿勢の補間 /
+#   ブックマークの往復 / 選択アウトラインの CPU 版（マスク → 縁）/ 矩形選択。依存は標準ライブラリだけ。
+add_executable(ViewportLogicTests viewport_logic_test.cpp)
+target_include_directories(ViewportLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(ViewportLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(ViewportLogicTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME ViewportLogicTests COMMAND ViewportLogicTests)
+
+# ============================================================================
+# マテリアルグラフ G0: 汎用ノードグラフ UI（src/editor/nodegraph/）。
+#   NodeGraphTests      … ImGui 非依存の純ロジック（座標変換・空間分割・モデルの不変条件・Undo/Redo ファズ・
+#                          JSON 往復・クリップボード・パレット検索）。JSON に nlohmann を使うので統合ビルドでのみ有効。
+#   NodeGraphImGuiTests … 窓も GPU も無しの ImGui コンテキストで GraphView を実際に描く（性能・描画・入力の統合テスト）。
+# ============================================================================
+if(TARGET Editor)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    set(NODEGRAPH_CORE_SRC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphLayout.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphDocument.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphIO.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphPalette.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/SandboxGraphModel.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/SandboxSamples.cpp)
+    add_executable(NodeGraphTests nodegraph_test.cpp ${NODEGRAPH_CORE_SRC})
+    target_include_directories(NodeGraphTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(NodeGraphTests PRIVATE nlohmann_json::nlohmann_json)
+    if(MSVC)
+        target_compile_options(NodeGraphTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(NodeGraphTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME NodeGraphTests COMMAND NodeGraphTests)
+endif()
+
+# マテリアルグラフ G1（src/renderer/matgraph/）。型システム・モデル API・診断・HLSL コード生成（決定論・CSE・スロット）・
+# CPU 参照実装・.dxmg 往復・ゴールデン（tests/data/matgraph/*.dxmg ↔ *.hlsl.expected）。GPU / DXC 不要の純ロジック。
+# ゴールデンの更新: MATGRAPH_UPDATE_GOLDEN=1 で実行 → git diff を目視。
+if(TARGET MatGraph)
+    add_executable(MatGraphTests matgraph_test.cpp)
+    target_link_libraries(MatGraphTests PRIVATE MatGraph)
+    target_compile_definitions(MatGraphTests PRIVATE
+        DX12E_MATGRAPH_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/matgraph" _CRT_SECURE_NO_WARNINGS)
+    if(MSVC)
+        target_compile_options(MatGraphTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(MatGraphTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME MatGraphTests COMMAND MatGraphTests)
+
+    # 生成 HLSL を DXC で ps_6_6 / cs_6_6 へコンパイルし、WARP（ソフトウェア D3D12）で CPU 参照実装と数値比較する。
+    # dxcompiler.dll は実行時ロード（無い環境ではスキップして終了コード 0）。ctest ラベル: dxc
+    if(TARGET Microsoft::DirectXShaderCompiler)
+        get_target_property(MATGRAPH_DXC_INC Microsoft::DirectXShaderCompiler INTERFACE_INCLUDE_DIRECTORIES)
+        add_executable(MatGraphDxcTests matgraph_dxc_test.cpp)
+        target_link_libraries(MatGraphDxcTests PRIVATE MatGraph d3d12 dxgi)
+        target_include_directories(MatGraphDxcTests SYSTEM PRIVATE ${MATGRAPH_DXC_INC})
+        target_compile_definitions(MatGraphDxcTests PRIVATE
+            DX12E_MATGRAPH_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/matgraph"
+            DX12E_MATGRAPH_HLSL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../src/renderer/matgraph/hlsl")
+        if(MSVC)
+            target_compile_options(MatGraphDxcTests PRIVATE ${DX12_COMPILE_OPTIONS})
+            target_compile_definitions(MatGraphDxcTests PRIVATE ${DX12_COMPILE_DEFS})
+        endif()
+        if(DIRECTX_DXC_TOOL)
+            get_filename_component(MATGRAPH_DXC_DIR "${DIRECTX_DXC_TOOL}" DIRECTORY)
+            add_custom_command(TARGET MatGraphDxcTests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MATGRAPH_DXC_DIR}/dxcompiler.dll" "${MATGRAPH_DXC_DIR}/dxil.dll" "$<TARGET_FILE_DIR:MatGraphDxcTests>"
+                COMMENT "Bundling dxcompiler.dll / dxil.dll next to MatGraphDxcTests.exe")
+        endif()
+        add_test(NAME MatGraphDxcTests COMMAND MatGraphDxcTests)
+        set_tests_properties(MatGraphDxcTests PROPERTIES LABELS dxc TIMEOUT 300)
+    endif()
+endif()
+
+# マテリアルグラフ G2b の純ロジック: .dxmat の graph キー（旧ファイルのバイト一致往復）/ パラメータプールのオフセット /
+# DXIL ディスクキャッシュ / グラフ化（従来 PBR → 標準テンプレート + インスタンス。12 構造・旧経路の式との CPU 評価一致・.bak）。
+# Resource（MaterialAssetIO / MaterialGraphize）と MatGraph だけ。GPU / DXC 不要。
+if(TARGET Resource AND TARGET MatGraph)
+    add_executable(MatGraphRuntimeTests matgraph_runtime_test.cpp)
+    target_link_libraries(MatGraphRuntimeTests PRIVATE Resource MatGraph)
+    if(MSVC)
+        target_compile_options(MatGraphRuntimeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(MatGraphRuntimeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME MatGraphRuntimeTests COMMAND MatGraphRuntimeTests)
+endif()
+
+# NodeGraphImGuiTests: 窓も GPU も無しの ImGui コンテキストで GraphView を描き、入力（ImGui の IO へ注入）・DPI・性能（500 ノード / 800 ワイヤ）を検証する。
+# Editor（GraphView / UiWidgets）をリンクするだけで、Application も D3D12 デバイスも作らない。
+if(TARGET Editor)
+    add_executable(NodeGraphImGuiTests nodegraph_imgui_test.cpp)
+    target_include_directories(NodeGraphImGuiTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(NodeGraphImGuiTests PRIVATE Editor)
+    if(MSVC)
+        target_compile_options(NodeGraphImGuiTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(NodeGraphImGuiTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME NodeGraphImGuiTests COMMAND NodeGraphImGuiTests)
+endif()
+
+# シーケンサー(.dxseq)の純ロジック(src/sequencer/ = SequencerCore)。S0: データモデル・カーブ/クォータニオン補間・評価・イベント発火・
+# SeqOp(Undo/Redo ファズ)・シリアライズ往復・旧 sequence_author 台本の変換・バインディング解決・評価性能。
+# 設計は docs/SEQUENCER_DESIGN.md、仕様は docs/DXSEQ_FORMAT.md。GPU / ECS / ImGui 非依存(標準ライブラリ + nlohmann のみ)。
+# ゴールデンの更新: SEQUENCER_UPDATE_GOLDEN=1 で実行 → git diff を目視。統合ビルドでのみ有効(nlohmann を使うため)。
+if(TARGET SequencerCore)
+    # ★SequencerCore のリンク先は nlohmann_json だけであること(ECS / GPU / ImGui / Core を引き込んだら構成時に落とす)
+    get_target_property(SEQUENCER_CORE_LIBS SequencerCore LINK_LIBRARIES)
+    foreach(_lib ${SEQUENCER_CORE_LIBS})
+        if(NOT _lib STREQUAL "nlohmann_json::nlohmann_json")
+            message(FATAL_ERROR "SequencerCore must stay pure (std + nlohmann_json only), but links: ${_lib}")
+        endif()
+    endforeach()
+
+    add_executable(SequencerCoreTests sequencer_core_test.cpp)
+    target_link_libraries(SequencerCoreTests PRIVATE SequencerCore)
+    target_include_directories(SequencerCoreTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(SequencerCoreTests PRIVATE
+        DX12E_SEQUENCER_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/sequencer"
+        DX12E_SEQUENCER_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../src/sequencer"
+        _CRT_SECURE_NO_WARNINGS)
+    if(MSVC)
+        target_compile_options(SequencerCoreTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SequencerCoreTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SequencerCoreTests COMMAND SequencerCoreTests)
+endif()
+
+# ============================================================================
+# マテリアルグラフ G3（UI 接続）: アダプタ（G1 → G0）・エディタ文書・保存 / 読込・診断・パレット絞り込み・Undo ファズ（実グラフ）の純ロジック。
+# ImGui / GPU 不要。G0 の文書層と G1 の MaterialGraph をそのままビルドしてリンクする。
+# ============================================================================
+if(TARGET Editor AND TARGET MatGraph)
+    set(MATGRAPH_EDITOR_SRC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/matgraph/MatGraphModel.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/matgraph/MatGraphEditor.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/matgraph/HlslColorize.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphLayout.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphDocument.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphIO.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/nodegraph/GraphPalette.cpp)
+    add_executable(MatGraphEditorTests matgraph_editor_test.cpp ${MATGRAPH_EDITOR_SRC})
+    target_include_directories(MatGraphEditorTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(MatGraphEditorTests PRIVATE MatGraph nlohmann_json::nlohmann_json)
+    target_compile_definitions(MatGraphEditorTests PRIVATE
+        DX12E_MATGRAPH_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data/matgraph" _CRT_SECURE_NO_WARNINGS)
+    if(MSVC)
+        target_compile_options(MatGraphEditorTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(MatGraphEditorTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME MatGraphEditorTests COMMAND MatGraphEditorTests)
+    set_tests_properties(MatGraphEditorTests PROPERTIES TIMEOUT 300)
+
+    # マテリアルグラフ G2c の純ロジック: 部分グラフ出力（ノード内サムネイル）/ デバウンス / 段階の順序保証 / ジョブキュー / プレビュー設定 /
+    # ノード内サムネイルの管理（可視のみ・上限・変更ノードとその下流だけ更新）。GPU / DXC / ImGui 不要。
+    add_executable(MatGraphG2cTests matgraph_g2c_test.cpp ${MATGRAPH_EDITOR_SRC}
+        ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/matgraph/NodeThumbs.cpp)
+    target_include_directories(MatGraphG2cTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(MatGraphG2cTests PRIVATE MatGraph nlohmann_json::nlohmann_json)
+    target_compile_definitions(MatGraphG2cTests PRIVATE _CRT_SECURE_NO_WARNINGS)
+    if(MSVC)
+        target_compile_options(MatGraphG2cTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(MatGraphG2cTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME MatGraphG2cTests COMMAND MatGraphG2cTests)
+    set_tests_properties(MatGraphG2cTests PROPERTIES TIMEOUT 300)
+
+    # マテリアルグラフ G2c の実機検証（実 GPU + DXC。無ければ SKIP）: ノード内サムネイルの GPU == CPU 評価 / プレビュー（4 形状 x 3 環境・決定論・値の変更）/
+    # PreviewLite == 通常経路 / 段階コンパイルの順序保証 / 実測ゲート（編集 → 見た目更新のレイテンシ・値のみの変更・ワーカー稼働中のメインスレッド）。
+    if(TARGET Renderer AND TARGET Resource)
+        add_executable(MatGraphG2cGpuTests matgraph_g2c_gpu_test.cpp ${MATGRAPH_EDITOR_SRC}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/matgraph/NodeThumbs.cpp)
+        target_link_libraries(MatGraphG2cGpuTests PRIVATE Renderer Resource Input MatGraph nlohmann_json::nlohmann_json)
+        target_include_directories(MatGraphG2cGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+        target_compile_definitions(MatGraphG2cGpuTests PRIVATE
+            DX12E_SHADER_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../shaders"
+            DX12E_SHADER_BIN_DIR="${CMAKE_BINARY_DIR}/shaders/"
+            _CRT_SECURE_NO_WARNINGS)
+        if(TARGET Shaders)
+            add_dependencies(MatGraphG2cGpuTests Shaders)
+        endif()
+        if(MSVC)
+            target_compile_options(MatGraphG2cGpuTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+            target_compile_definitions(MatGraphG2cGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+        endif()
+        if(DIRECTX_DXC_TOOL)
+            get_filename_component(G2C_DXC_DIR "${DIRECTX_DXC_TOOL}" DIRECTORY)
+            add_custom_command(TARGET MatGraphG2cGpuTests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${G2C_DXC_DIR}/dxcompiler.dll" "${G2C_DXC_DIR}/dxil.dll" "$<TARGET_FILE_DIR:MatGraphG2cGpuTests>"
+                COMMENT "Bundling dxcompiler.dll / dxil.dll next to MatGraphG2cGpuTests.exe")
+        endif()
+        add_test(NAME MatGraphG2cGpuTests COMMAND MatGraphG2cGpuTests)
+        set_tests_properties(MatGraphG2cGpuTests PROPERTIES LABELS gpu TIMEOUT 600 SKIP_RETURN_CODE 77)
+    endif()
+endif()
+
+# ============================================================================
+# DXR パストレーサー(地上真値レンダラ。パリティ基盤 Q1a)の検証。
+#   PathTracerGpuTests … 窓なしの D3D12 デバイスで shaders/pt/PathTrace.hlsl を実行し、
+#     (1) 解析解(白い炉 / GGX の方向アルベド / 点光源・太陽 + ランバート平面 / 閉じた発光箱 / 半透明・アルファテスト)
+#     (2) 独立した CPU リファレンス(tests/pt/PtRef.h。倍精度・BVH・別のサンプリング戦略)との一致
+#     (3) 収束(1/√N)/ 決定論 / 時間予算つき Record / 性能(1080p の ms/spp)
+#     を確かめる。GPU が無い / DXR 1.1・SM 6.6・Tier 3 が無い環境では「SKIP」を出して 0 で終わる。
+#     シェーダ(.cso)は Shaders ターゲットが作る。環境変数 DX12E_PT_TEST_QUICK=1 で重い比較を縮小 / DX12E_PT_TEST_DUMP=<dir> で画像を書き出す。
+# ============================================================================
+if(TARGET Renderer)
+    add_executable(PathTracerGpuTests pt_reference_test.cpp)
+    target_include_directories(PathTracerGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(PathTracerGpuTests PRIVATE Renderer Microsoft::DirectXMath)
+    target_compile_definitions(PathTracerGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(PathTracerGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(PathTracerGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(PathTracerGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET PathTracerGpuTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:PathTracerGpuTests>")
+    add_test(NAME PathTracerGpuTests COMMAND PathTracerGpuTests)
+    set_tests_properties(PathTracerGpuTests PROPERTIES TIMEOUT 900)
+endif()
+
+# ============================================================================
+# 物理ベース大気 A1(Hillaire 2020)の検証。tests/atmosphere_test.cpp 1 本から 2 つの実行ファイルを作る。
+#   AtmosphereMathTests … CPU のみ(ヘッダオンリー)。太陽位置・時刻→光の色と照度・透過率・位相関数・プリセット・GPU 定数。
+#   AtmosphereGpuTests  … 窓なしの D3D12 デバイスで実 .cso(Shaders ターゲットが作る)を動かし、LUT を読み戻して CPU 参照と突き合わせる。
+#                         GPU が無ければ SKIP(0 で終わる)。DX12_D3D_DEBUG=1 でデバッグレイヤ。
+# ============================================================================
+add_executable(AtmosphereMathTests atmosphere_test.cpp)
+target_include_directories(AtmosphereMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AtmosphereMathTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(AtmosphereMathTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME AtmosphereMathTests COMMAND AtmosphereMathTests)
+set_tests_properties(AtmosphereMathTests PROPERTIES TIMEOUT 120)
+
+if(TARGET Renderer AND TARGET Resource)
+    add_executable(AtmosphereGpuTests atmosphere_test.cpp)
+    target_compile_definitions(AtmosphereGpuTests PRIVATE ATMOS_GPU_TESTS=1
+        DX12E_SHADER_DIR_W=L\"${CMAKE_BINARY_DIR}/shaders/\")
+    # Core の Window.cpp が InputSystem を参照する（GraphicsDevice::Initialize が Window& を取るため Window を作る）
+    target_link_libraries(AtmosphereGpuTests PRIVATE Renderer Resource Input)
+    target_include_directories(AtmosphereGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(TARGET Shaders)
+        add_dependencies(AtmosphereGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(AtmosphereGpuTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(AtmosphereGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AtmosphereGpuTests COMMAND AtmosphereGpuTests)
+    set_tests_properties(AtmosphereGpuTests PROPERTIES LABELS gpu TIMEOUT 300)
+endif()
+
+# パリティ基盤(tools/parity)の Python テスト(pytest。指標・ノイズ床・ゲート・シーン仕様・偽エンジンでのランナー統合)。
+# Python か依存(numpy / scikit-image / flip-evaluator など。pwsh tools/parity/setup.ps1)が無い環境ではスキップ扱い。
+add_test(NAME ParityHarnessPyTests
+    COMMAND ${CMAKE_COMMAND} -DPARITY_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../tools/parity -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/parity/run_pytests.cmake)
+set_tests_properties(ParityHarnessPyTests PROPERTIES
+    SKIP_REGULAR_EXPRESSION "PARITY_SKIP"
+    ENVIRONMENT "PYTHONUTF8=1"
+    TIMEOUT 900)
+
+# マテリアルグラフ G3: MatGraphModel を実際の GraphView で描き、ImGui の IO へ注入した入力で操作する統合テスト（UE 風ワンキー・値欄ドラッグ・
+# ピンからのドロップ = 型で絞ったパレット・FocusNode・DPI）。窓も GPU も無し。Editor をリンクするだけ。
+if(TARGET Editor)
+    add_executable(MatGraphEditorImGuiTests matgraph_editor_imgui_test.cpp)
+    target_include_directories(MatGraphEditorImGuiTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(MatGraphEditorImGuiTests PRIVATE Editor)
+    if(MSVC)
+        target_compile_options(MatGraphEditorImGuiTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(MatGraphEditorImGuiTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME MatGraphEditorImGuiTests COMMAND MatGraphEditorImGuiTests)
+    set_tests_properties(MatGraphEditorImGuiTests PROPERTIES TIMEOUT 300)
+endif()
+
+# ============================================================================
+# フェーズ 1b W: エディタ設定ストア（editor/EditorPrefsStore.h）とワークスペース / レイアウトの純ロジック（editor/WorkspaceLogic.h）。
+# どちらも nlohmann と標準ライブラリだけ（ImGui も GPU も窓も要らない）。
+# ============================================================================
+if(TARGET Editor)
+    find_package(nlohmann_json CONFIG REQUIRED)
+    add_executable(EditorPrefsTests editor_prefs_test.cpp)
+    target_include_directories(EditorPrefsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(EditorPrefsTests PRIVATE nlohmann_json::nlohmann_json)
+    if(MSVC)
+        target_compile_options(EditorPrefsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(EditorPrefsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME EditorPrefsTests COMMAND EditorPrefsTests)
+
+    add_executable(WorkspaceLogicTests workspace_logic_test.cpp)
+    target_include_directories(WorkspaceLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(WorkspaceLogicTests PRIVATE nlohmann_json::nlohmann_json)
+    if(MSVC)
+        target_compile_options(WorkspaceLogicTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(WorkspaceLogicTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME WorkspaceLogicTests COMMAND WorkspaceLogicTests)
+endif()
+
+# ============================================================================
+# インスペクタの純ロジック（editor/InspectorLogic.h。フェーズ 1b・担当 I）:
+#   Add Component の目録と検索ランキング / 最近使った / 折りたたみ状態 / タグ集合 / 複数選択のバイト比較(Mixed・既定値との差) /
+#   Transform の一括編集(触った軸だけ) / プロパティ検索 / 値のコピー・ペースト文字列。依存は標準ライブラリだけ。
+# ============================================================================
+add_executable(InspectorLogicTests inspector_logic_test.cpp)
+target_include_directories(InspectorLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(InspectorLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(InspectorLogicTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME InspectorLogicTests COMMAND InspectorLogicTests)
+
+# ============================================================================
+# ヒエラルキーの純ロジック（editor/HierarchyLogic.h・HierarchyCommands.h。フェーズ 1b・担当 H）:
+#   型の分類 / 検索クエリ(名前+コンポーネント名+タグ) / 親→子の索引(兄弟順) / 範囲選択 / ドロップ位置→親替え+兄弟順 /
+#   hidden・locked の祖先伝播と Alt+クリック(これだけ表示) / EditorFlagCommand の Undo /
+#   シーン JSON の互換(フラグ無しは 1 キーも増えない・旧 JSON・往復)。Scene(GPU 不要)をリンクする。
+# ============================================================================
+if(TARGET Scene)
+    add_executable(HierarchyLogicTests hierarchy_logic_test.cpp)
+    target_link_libraries(HierarchyLogicTests PRIVATE Scene)
+    target_include_directories(HierarchyLogicTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(HierarchyLogicTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(HierarchyLogicTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME HierarchyLogicTests COMMAND HierarchyLogicTests)
+endif()
+
+# ============================================================================
+# シーケンサー S1b: バインディング解決 + 適用層 + PreAnimatedState(非破壊スクラブ)+ Play 統合(core/SequencerHost.* ほか)。
+#   Scene(registry だけ・GPU 不要)と SequencerHost を直接叩く: guid → 階層パス → 名前の解決 / 適用の決定論 / カットの選択 /
+#   ポスト・DoF の描画時上書き / スクラブ中の保存にスクラブの値が混ざらない / Play 直前・文書を閉じる・シーン変更での復元 /
+#   イベント(前進で 1 回・スクラブでは発火しない)/ 実時間の時計 / 物理との競合規則 / ops JSON・undo・保存・自動再生。
+# ============================================================================
+if(TARGET Scene AND TARGET SequencerCore)
+    add_executable(SequencerBindTests sequencer_bind_test.cpp)
+    target_link_libraries(SequencerBindTests PRIVATE Scene)
+    target_include_directories(SequencerBindTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(SequencerBindTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SequencerBindTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SequencerBindTests COMMAND SequencerBindTests)
+endif()
+
+# アセットブラウザの純ロジック + 非同期インデックス（editor/AssetBrowserLogic.h / AssetIndex.cpp。フェーズ 1b A）:
+#   拡張子の分類 / 自然順ソート / 走査と差分 / グリッドの可視範囲 / 複数選択 / パンくず・移動・取り込みの計画 /
+#   参照の検索 / サムネイルのキャッシュキーと .utb / ワーカーの走査・変更監視。依存は標準ライブラリ + Win32 のみ（GPU / ImGui 不要）。
+add_executable(AssetBrowserLogicTests asset_browser_logic_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/editor/AssetIndex.cpp)
+target_include_directories(AssetBrowserLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AssetBrowserLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AssetBrowserLogicTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AssetBrowserLogicTests COMMAND AssetBrowserLogicTests)
+set_tests_properties(AssetBrowserLogicTests PROPERTIES TIMEOUT 120)
+
+# ============================================================================
+# パリティ Q2(校正): 光の物理単位・露出(EV100)・トーンマップ(UE Filmic / PBR Neutral / 線形)の純関数
+#   renderer/PhotometricMath.h（ヘッダオンリー・標準ライブラリのみ）。EV100 ↔ 露出係数 / lm ↔ cd / 逆二乗と窓 /
+#   トーンマップの参照値(tools/parity の numpy 実装と突き合わせ)と不変条件。HLSL 側(Tonemap.hlsli / Lighting.hlsli)はこの式の写し。
+# ============================================================================
+add_executable(PhotometricMathTests photometric_test.cpp)
+target_include_directories(PhotometricMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(PhotometricMathTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(PhotometricMathTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME PhotometricMathTests COMMAND PhotometricMathTests)
+
+# ============================================================================
+# パリティ Q2(校正): 任意解像度のオフスクリーン出力(core/OffscreenShot.h。純ロジック)と線形 HDR 出力(PFM / EXR)の書式。
+#   サイズの解釈 / 上限と VRAM の見積 / PFM・EXR の往復と決定論。パストレーサーと同じ writer(renderer/pt/PtImageIO.h)を使う。
+# ============================================================================
+add_executable(OffscreenShotTests offscreen_shot_test.cpp)
+target_include_directories(OffscreenShotTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(OffscreenShotTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(OffscreenShotTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME OffscreenShotTests COMMAND OffscreenShotTests)
+
+# ============================================================================
+# M7 エディタ操作の全面公開（dx12_editor_command / dx12_editor_state）の土台:
+#   editor/EditorCommandMcp（コマンド表 → 公開用の一覧・分類・可否・引数・実行）/ EditorStateMcp（選択・窓・レイアウト・モーダル・undo・トーストの JSON）。
+#   表の全 id（kCommands / window.* / create.*）が一覧に出て実行できる・guarded の分類が黙って外れない・無効には必ず理由が付く・
+#   ImGui のモーダル / ダイアログ / パレットを検知できる。窓も GPU も無し（Editor をリンクするだけ）。
+# ============================================================================
+if(TARGET Editor)
+    add_executable(McpEditorCommandTests mcp_editor_command_test.cpp)
+    target_include_directories(McpEditorCommandTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(McpEditorCommandTests PRIVATE Editor)
+    if(MSVC)
+        target_compile_options(McpEditorCommandTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(McpEditorCommandTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME McpEditorCommandTests COMMAND McpEditorCommandTests)
+endif()
+
+# ============================================================================
+# 植生 F1（FoliageLayer + GPU カリング + ExecuteIndirect + 風）
+#   FoliageTests    … 純ロジック: 32B パック / チャンク / .dxfoliage 往復と破損の拒否 / ポアソンディスク散布 / カリングの CPU 参照 /
+#                     風の決定論 / 100 万インスタンスの構築時間。GPU 不要。
+#   FoliageGpuTests … 窓なしの D3D12 デバイスで compute を実行し、GPU のカリング結果 = CPU 参照 / 風 GPU = CPU / 間接引数の個数を確かめる。
+#                     GPU が無い環境では「SKIP」を出して 0 で終わる。シェーダ（.cso）は Shaders ターゲットが作る。
+# ============================================================================
+if(TARGET Renderer)
+    add_executable(FoliageTests foliage_test.cpp)
+    target_include_directories(FoliageTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(FoliageTests PRIVATE Renderer Microsoft::DirectXMath)
+    target_compile_definitions(FoliageTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(MSVC)
+        target_compile_options(FoliageTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(FoliageTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET FoliageTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:FoliageTests>")
+    add_test(NAME FoliageTests COMMAND FoliageTests)
+
+    add_executable(FoliageGpuTests foliage_gpu_test.cpp)
+    target_include_directories(FoliageGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(FoliageGpuTests PRIVATE Renderer Microsoft::DirectXMath)
+    target_compile_definitions(FoliageGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(FoliageGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(FoliageGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(FoliageGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET FoliageGpuTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:FoliageGpuTests>")
+    add_test(NAME FoliageGpuTests COMMAND FoliageGpuTests)
+endif()
+
+# パリティ Q2: 新しいトーンマップ(shaders/post/Tonemap.hlsli)の HLSL を実際に動かして C++ 参照(PhotometricMath.h)と突き合わせる。
+#   ハードウェア GPU を優先し、無ければ WARP。dxcompiler.dll / dxil.dll(exe の隣へ同梱)が無ければ SKIP。ラベル: gpu
+if(TARGET Graphics AND TARGET Microsoft::DirectXShaderCompiler)
+    get_target_property(TONEMAP_DXC_INC Microsoft::DirectXShaderCompiler INTERFACE_INCLUDE_DIRECTORIES)
+    add_executable(TonemapGpuTests tonemap_gpu_test.cpp)
+    target_link_libraries(TonemapGpuTests PRIVATE Graphics)
+    target_include_directories(TonemapGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_include_directories(TonemapGpuTests SYSTEM PRIVATE ${TONEMAP_DXC_INC})
+    target_compile_definitions(TonemapGpuTests PRIVATE
+        DX12E_SHADER_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../shaders"
+        DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(TonemapGpuTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(TonemapGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    if(DIRECTX_DXC_TOOL)
+        get_filename_component(TONEMAP_DXC_DIR "${DIRECTX_DXC_TOOL}" DIRECTORY)
+        add_custom_command(TARGET TonemapGpuTests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${TONEMAP_DXC_DIR}/dxcompiler.dll" "${TONEMAP_DXC_DIR}/dxil.dll" "$<TARGET_FILE_DIR:TonemapGpuTests>"
+            COMMENT "Bundling dxcompiler.dll / dxil.dll next to TonemapGpuTests.exe")
+    endif()
+    add_test(NAME TonemapGpuTests COMMAND TonemapGpuTests)
+    set_tests_properties(TonemapGpuTests PROPERTIES LABELS gpu TIMEOUT 300)
+endif()

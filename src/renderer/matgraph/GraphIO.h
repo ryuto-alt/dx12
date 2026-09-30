@@ -23,8 +23,8 @@ constexpr int kDxmgVersion = 1;
 // text を読んで out を置き換える（out の NodeLibrary はそのまま使う）。失敗したら false、error に日本語の理由。
 bool LoadDxmg(const std::string& text, MaterialGraph& out, std::string* error = nullptr);
 
-// 正準形の .dxmg テキスト（末尾に改行 1 個）
-std::string SaveDxmg(const MaterialGraph& g);
+// 正準形の .dxmg テキスト（末尾に改行 1 個）。includeView = false で "view"（エディタのパン・ズーム）を書かない（未保存判定用）
+std::string SaveDxmg(const MaterialGraph& g, bool includeView = true);
 
 // ファイル入出力（バイナリ。改行は常に LF）
 bool LoadDxmgFile(const std::string& path, MaterialGraph& out, std::string* error = nullptr);

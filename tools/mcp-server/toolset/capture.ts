@@ -8,6 +8,7 @@ import fs from "node:fs";
 import { compareUiImages } from "../uiCompare.ts";
 import os from "node:os";
 import { engine, errResult, imageResult, regRaw } from "./core.ts";
+import type { ToolResult } from "./core.ts";
 
 // ── スクショ 2 種の共通引数 ────────────────────────────────────────
 // ★zod の同一インスタンスを 2 つのツールで共有すると JSON Schema が $ref に畳まれ、
@@ -30,6 +31,24 @@ const captureParams = () => ({
     + "物理・ナビメッシュのワイヤ / 床のグリッド】。選択を外しても消えない『アクティブなカメラの視錐台』もこれで消える。"
     + "★戻すための呼び出しは不要。撮影状態と一緒に破棄されるので【次の 1 枚では必ず元どおり】。"
     + "★dx12_screenshot(ポスト前)では deterministic:true のときだけ効く(既定経路は直前フレームの読み戻しなので撮り直さないため)。"),
+});
+
+// ── dx12_screenshot_final 専用の引数(Q2 校正): 出力形式と任意解像度 ─────────────────────
+// ★線形 HDR(pfm/exr)と任意解像度は最終画(ポスト後のバックバッファ)側の機能。dx12_screenshot(ポスト前)には付けない。
+//   都度作る(captureParams と同じ理由: zod インスタンスの共有で JSON Schema が $ref に畳まれるのを避ける)。
+const finalOnlyParams = () => ({
+  format: z.enum(["png", "pfm", "exr"]).optional().describe(
+    "出力形式。png(既定。表示色の 8bit。従来どおり画像で返る) / pfm / exr(★ポスト前の線形 float。トーンマップ前・露出前のシーン参照 Rec.709 RGB。"
+    + "パストレーサー dx12_render_reference の PFM/EXR と同じ規約で、tools/parity(FLIP-HDR)がそのまま読める。"
+    + "物理ライティング単位(lightingUnits:1)ならシーン値は nit)。pfm/exr のときは画像ブロックではなく JSON(files に形式ごとのパス)で返る。"
+    + "path の拡張子は無視され、形式ごとに同じ基準名で書く(a.png → a.pfm)。"),
+  formats: z.array(z.enum(["png", "pfm", "exr"])).optional().describe(
+    "複数形式を同じフレームで撮る(例 [\"png\",\"pfm\"])。png を含めれば画像ブロックも返る。format と併用可。"),
+  width: z.number().int().optional().describe(
+    "任意解像度のオフスクリーン出力の幅(height と両方指定)。エディタ/ウィンドウ/16:9 レターボックスと無関係に、シーン系 RT をこのサイズで作って描き出す(撮影後に元へ戻る)。"
+    + "1 辺 16〜8192・総画素 8192x4096 まで(pfm/exr は 4096x4096 まで)。GPU メモリ不足は撮影前にエラー。"
+    + "エディタのアイコン・ゲーム内 UI 画像・画面全体のカスタムシェーダーは写らない。deterministic:true と併用でき、同じ設定なら同じ画素になる。起動引数 --size WxH が既定。"),
+  height: z.number().int().optional().describe("任意解像度のオフスクリーン出力の高さ(width と両方指定)。"),
 });
 
 // スクショ単体も画像ブロックで返す。
@@ -74,14 +93,14 @@ regRaw(
       + "★遅延同期(1 フレーム描いてから返る。deterministic:true なら settleFrames ぶん回してから返る)。"
       + "★エディタのパネル込みが欲しいなら dx12_ui_screenshot、中間バッファの可視化は dx12_render_debug。"
       + "★Playing 中はアクティブなゲームカメラの絵になる(= 実際のゲーム画面のポスト後)。",
-    inputSchema: { ...captureParams() },
+    inputSchema: { ...captureParams(), ...finalOnlyParams() },
     annotations: { title: "最終画スクリーンショット(ポスト後)", openWorldHint: false, readOnlyHint: true },
   },
-  async ({ path: outPath, deterministic, settleFrames, gizmos }) => {
+  async ({ path: outPath, deterministic, settleFrames, gizmos, format, formats, width, height }) => {
     try {
-      const shot = await engine.call("screenshot_final", { path: outPath, deterministic, settleFrames, gizmos });
+      const shot = await engine.call("screenshot_final", { path: outPath, deterministic, settleFrames, gizmos, format, formats, width, height });
       if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
-      return imageResult(shot.path, {
+      const meta = {
         width: shot.width, height: shot.height,
         source: shot.source ?? "backbuffer",
         postApplied: shot.postApplied,
@@ -90,7 +109,15 @@ regRaw(
         taa: shot.taa,
         mode: shot.mode,
         note: shot.note,
-      });
+        ...(shot.files && Object.keys(shot.files).length > 0 ? { files: shot.files } : {}),
+        ...(shot.linear ? { linear: shot.linear } : {}),
+        ...(shot.offscreen ? { offscreen: true } : {}),
+      };
+      // png を撮ったときは従来どおり画像ブロック付き。pfm/exr だけのときは JSON(パスと線形 HDR の規約)だけ返す。
+      const png: string | undefined = shot.files?.png ?? (String(shot.path).toLowerCase().endsWith(".png") ? shot.path : undefined);
+      if (png) return imageResult(png, { path: shot.path, ...meta });
+      const linearOnly: ToolResult = { content: [{ type: "text", text: JSON.stringify({ path: shot.path, ...meta }) }] };
+      return linearOnly;
     } catch (e: any) {
       return errResult(e);
     }

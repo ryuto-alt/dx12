@@ -1,4 +1,5 @@
 #include "editor/ModelThumbnailRenderer.h"
+#include "editor/AssetBrowserLogic.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/RootSignature.h"
@@ -15,8 +16,6 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
-#include <functional>
 
 using namespace DirectX;
 using Microsoft::WRL::ComPtr;
@@ -111,129 +110,161 @@ void ModelThumbnailRenderer::CreateSharedResources()
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&m_perFrameUpload)));
     }
-
-    // ===== Readback バッファ（キャッシュ保存用） =====
-    {
-        D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
-        D3D12_RESOURCE_DESC desc{};
-        desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width            = kThumbDataSize;
-        desc.Height           = 1;
-        desc.DepthOrArraySize = 1;
-        desc.MipLevels        = 1;
-        desc.Format           = DXGI_FORMAT_UNKNOWN;
-        desc.SampleDesc.Count = 1;
-        desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-        ThrowIfFailed(dev->CreateCommittedResource(
-            &heap, D3D12_HEAP_FLAG_NONE, &desc,
-            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-            IID_PPV_ARGS(&m_readbackBuffer)));
-    }
 }
 
-void ModelThumbnailRenderer::Request(const std::string& modelPath)
+void ModelThumbnailRenderer::SetCacheRoot(const std::string& assetsDir)
 {
-    if (m_cache.count(modelPath)) return;
-    // 重複チェック
-    for (const auto& p : m_pendingQueue)
-        if (p == modelPath) return;
-    m_pendingQueue.push_back(modelPath);
+    std::string dir = assetsDir;
+    if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir.push_back('/');
+    dir += ".thumbcache/";
+    if (dir == m_cacheDir) return;
+    m_cacheDir = dir;
+    // 別プロジェクトへ切り替えた: 常駐は全部墓場へ（GPU が使い終わるまで遅延解放）、未処理の要求は捨てる。
+    for (auto& kv : m_cache)
+        if (kv.second.gpu.Valid()) m_graveyard.push_back({std::move(kv.second.gpu), m_frame});
+    m_cache.clear();
+    m_queue.clear();
+    m_queued.clear();
+    m_diskMiss.clear();
+    m_resident = 0;
+}
+
+void ModelThumbnailRenderer::BeginFrameRequests()
+{
+    m_queue.clear();
+    m_queued.clear();
+}
+
+void ModelThumbnailRenderer::Request(const std::string& modelPath, int64_t mtime, uint64_t size)
+{
+    auto it = m_cache.find(modelPath);
+    if (it != m_cache.end() && it->second.mtime == mtime && it->second.size == size) return;   // 描画済み（または読めなかった）
+    if (!m_queued.insert(modelPath).second) return;
+    m_queue.push_back(Req{modelPath, mtime, size});
 }
 
 u64 ModelThumbnailRenderer::GetCachedHandle(const std::string& modelPath) const
 {
     auto it = m_cache.find(modelPath);
-    if (it != m_cache.end()) return it->second.gpuHandle;
-    return 0;
+    if (it == m_cache.end()) return 0;
+    it->second.lastUsed = m_frame;
+    return it->second.gpu.Valid() ? it->second.gpu.handle : 0;
 }
 
-std::string ModelThumbnailRenderer::GetCacheFilePath(const std::string& modelPath) const
+std::string ModelThumbnailRenderer::CacheFilePath(const std::string& modelPath) const
 {
-    size_t h = std::hash<std::string>{}(modelPath);
-    char filename[32];
-    snprintf(filename, sizeof(filename), "%016zx.raw", h);
-    return m_cacheDir + filename;
-}
-
-size_t ModelThumbnailRenderer::ScanAllModels(const std::string& assetsDir)
-{
-    namespace fs = std::filesystem;
-    m_pendingQueue.clear();
-    m_cachedPaths.clear();
-
-    // キャッシュディレクトリ設定
-    m_cacheDir = assetsDir + ".thumbcache/";
-    fs::create_directories(m_cacheDir);
-
-    std::error_code ec;
-    for (const auto& entry : fs::recursive_directory_iterator(assetsDir, ec))
-    {
-        if (ec) break;
-        if (!entry.is_regular_file(ec)) continue;
-        auto ext = entry.path().extension().string();
-        if (ext != ".gltf" && ext != ".glb" && ext != ".fbx" && ext != ".obj")
-            continue;
-
-        std::string modelPath = entry.path().string();
-        std::string cachePath = GetCacheFilePath(modelPath);
-
-        // キャッシュが存在し、モデルファイルより新しければスキップ
-        if (fs::exists(cachePath))
-        {
-            auto cacheTime = fs::last_write_time(cachePath);
-            auto modelTime = fs::last_write_time(entry.path());
-            if (cacheTime >= modelTime)
-            {
-                m_cachedPaths.push_back(modelPath);
-                continue;
-            }
-        }
-
-        m_pendingQueue.push_back(modelPath);
-    }
-
-    m_totalScanned = m_pendingQueue.size() + m_cachedPaths.size();
-    Logger::Info("[Thumbnail] {} models: {} cached, {} to render",
-        m_totalScanned, m_cachedPaths.size(), m_pendingQueue.size());
-    return m_pendingQueue.size(); // レンダリングが必要な数を返す
-}
-
-size_t ModelThumbnailRenderer::RenderNext(ID3D12GraphicsCommandList* cmdList)
-{
-    if (m_pendingQueue.empty()) return 0;
-    std::string path = std::move(m_pendingQueue.back());
-    m_pendingQueue.pop_back();
-    RenderOne(path, cmdList);
-    return m_pendingQueue.size();
+    return m_cacheDir + abl::ThumbFileName(modelPath);
 }
 
 void ModelThumbnailRenderer::RenderPending(ID3D12GraphicsCommandList* cmdList, u32 /*frameIndex*/)
 {
-    if (m_pendingQueue.empty()) return;
+    ++m_frame;
+    if (!m_device || !cmdList) return;
 
-    std::string modelPath = std::move(m_pendingQueue.back());
-    m_pendingQueue.pop_back();
-    RenderOne(modelPath, cmdList);
+    // ---- 遅延解放（GPU が使い終わった物）----
+    constexpr u64 kGraveFrames = 8;
+    while (!m_graveyard.empty() && m_frame - m_graveyard.front().frame >= kGraveFrames)
+    {
+        if (m_graveyard.front().gpu.srv != 0xFFFFFFFFu) m_srvHeap->Free(m_graveyard.front().gpu.srv);
+        m_graveyard.pop_front();
+    }
+    while (!m_uploadKeep.empty() && m_frame - m_uploadKeep.front().first >= kGraveFrames)
+        m_uploadKeep.pop_front();
+
+    // ---- 描画したサムネイルのリードバック → ディスク（GPU が終わった数フレーム後。WaitIdle しない）----
+    for (size_t i = 0; i < m_saves.size();)
+    {
+        PendingSave& s = m_saves[i];
+        if (m_frame - s.frame < 6) { ++i; continue; }
+        void* mapped = nullptr;
+        D3D12_RANGE readRange = {0, kThumbDataSize};
+        if (SUCCEEDED(s.readback->Map(0, &readRange, &mapped)))
+        {
+            abl::WriteThumbFile(std::filesystem::path(CacheFilePath(s.path)), kThumbSize, kThumbSize, s.mtime, s.size,
+                                static_cast<const uint8_t*>(mapped));
+            D3D12_RANGE writeRange = {0, 0};
+            s.readback->Unmap(0, &writeRange);
+        }
+        m_saves.erase(m_saves.begin() + static_cast<ptrdiff_t>(i));
+    }
+
+    // ---- 今フレームの要求を処理（ディスクキャッシュは数枚、描画は 1 枚まで。残りは次フレームに再要求される）----
+    int diskLoads = 0, renders = 0;
+    for (const Req& req : m_queue)
+    {
+        if (diskLoads >= kDiskLoadsPerFrame && renders >= kRendersPerFrame) break;
+        // 先にディスクキャッシュ（安い）。無かった物は覚えて、毎フレーム開き直さない。
+        if (diskLoads < kDiskLoadsPerFrame)
+        {
+            auto miss = m_diskMiss.find(req.path);
+            const bool knownMiss = miss != m_diskMiss.end() && miss->second.first == req.mtime && miss->second.second == req.size;
+            uint32_t w = 0, h = 0;
+            std::vector<uint8_t> rgba;
+            if (!knownMiss)
+            {
+                if (abl::ReadThumbFile(std::filesystem::path(CacheFilePath(req.path)), req.mtime, req.size, w, h, rgba)
+                    && w == kThumbSize && h == kThumbSize)
+                {
+                    ThumbGpu g;
+                    if (CreateThumbTexture(*m_device, *m_srvHeap, cmdList, rgba.data(), w, h, g))
+                    {
+                        ThumbEntry& e = m_cache[req.path];
+                        if (e.gpu.Valid()) m_graveyard.push_back({std::move(e.gpu), m_frame}); else ++m_resident;
+                        m_uploadKeep.emplace_back(m_frame, g.upload);
+                        e.gpu = std::move(g);
+                        e.gpu.upload.Reset();
+                        e.mtime = req.mtime; e.size = req.size; e.failed = false; e.lastUsed = m_frame;
+                        ++diskLoads;
+                        ++m_diskLoadedTotal;
+                        continue;
+                    }
+                }
+                m_diskMiss[req.path] = {req.mtime, req.size};
+            }
+        }
+        if (renders < kRendersPerFrame)
+        {
+            RenderOne(req, cmdList);
+            ++renders;
+        }
+    }
+    m_queue.clear();
+    m_queued.clear();
+
+    // ---- 常駐数の上限 ----
+    if (m_resident > kMaxResident)
+    {
+        std::vector<std::pair<u64, std::string>> order;
+        for (auto& kv : m_cache)
+            if (kv.second.gpu.Valid() && m_frame - kv.second.lastUsed > 120) order.emplace_back(kv.second.lastUsed, kv.first);
+        std::sort(order.begin(), order.end());
+        const size_t excess = m_resident - kMaxResident + kMaxResident / 8;
+        for (size_t i = 0; i < order.size() && i < excess; ++i)
+        {
+            ThumbEntry& e = m_cache[order[i].second];
+            m_graveyard.push_back({std::move(e.gpu), m_frame});
+            m_cache.erase(order[i].second);
+            --m_resident;
+        }
+    }
 }
 
-void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
-                                        ID3D12GraphicsCommandList* cmdList)
+bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList* cmdList)
 {
-    if (m_cache.count(modelPath)) return;
-
+    const std::string& modelPath = req.path;
     const CachedModel* model = m_resourceMgr->GetOrLoadModel(modelPath, cmdList);
     if (!model || model->meshes.empty())
     {
-        // ロード失敗 → 空のキャッシュエントリ
-        m_cache[modelPath] = ThumbEntry{};
-        return;
+        // ロード失敗 → 空のキャッシュエントリ（元ファイルが変わるまで再試行しない）
+        ThumbEntry& e = m_cache[modelPath];
+        e.mtime = req.mtime; e.size = req.size; e.failed = true;
+        return false;
     }
 
     auto* dev = m_device->GetDevice();
 
     // ===== サムネイルテクスチャ作成 =====
-    ThumbEntry entry;
+    ThumbGpu gpu;
     {
         D3D12_RESOURCE_DESC texDesc{};
         texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -256,11 +287,11 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         ThrowIfFailed(dev->CreateCommittedResource(
             &heap, D3D12_HEAP_FLAG_NONE, &texDesc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clearVal,
-            IID_PPV_ARGS(&entry.texture)));
+            IID_PPV_ARGS(&gpu.tex)));
     }
 
     // RTV 作成（共有ヒープの1つ目を再利用）
-    dev->CreateRenderTargetView(entry.texture.Get(), nullptr, m_rtvHandle);
+    dev->CreateRenderTargetView(gpu.tex.Get(), nullptr, m_rtvHandle);
 
     // ===== AABB 計算 → カメラ配置 =====
     XMFLOAT3 aabbMin = { FLT_MAX, FLT_MAX, FLT_MAX };
@@ -352,7 +383,9 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         XMStoreFloat3(&fc.lightDir, ld);
         fc.time = 0;
         fc.lightColor = {1.0f, 0.95f, 0.9f};
-        fc.ambientStrength = 0.35f;
+        // ★環境光を強めに。サムネイルには IBL も影もライトも無く、ambient だけが陰の側を持ち上げる。
+        //   0.35 だと金属寄りのマテリアルや暗い albedo が「真っ黒なシルエット」になり、何のモデルか読めなかった。
+        fc.ambientStrength = 0.55f;
 
         // CSM 無影化: cascade0=identity(残りも identity)。cascadeSplitsView は全成分を
         // 巨大正値にして SelectCascade が必ず cascade0 を返すようにする。identity 変換だと
@@ -400,13 +433,16 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
     cmdList->RSSetViewports(1, &vp);
     cmdList->RSSetScissorRects(1, &scissor);
 
+    // SRV ヒープ
+    // ★メイン RS は CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED（バインドレス）を立てていることがある
+    //   （RootSignature::IsBindless。マテリアルグラフ G2a）。その RS を Set する【前】に
+    //   SetDescriptorHeaps を呼ぶ規約。逆順だとデバッグレイヤが id=1419 を出す。
+    ID3D12DescriptorHeap* heaps[] = { m_srvHeap->GetHeap() };
+    cmdList->SetDescriptorHeaps(1, heaps);
+
     // パイプライン設定
     cmdList->SetGraphicsRootSignature(m_rootSig->Get());
     cmdList->SetPipelineState(m_pso->Get());
-
-    // SRV ヒープ
-    ID3D12DescriptorHeap* heaps[] = { m_srvHeap->GetHeap() };
-    cmdList->SetDescriptorHeaps(1, heaps);
 
     // PerFrame CBV
     cmdList->SetGraphicsRootConstantBufferView(
@@ -490,12 +526,17 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         }
 
         // PBR
-        struct { float metallic; float roughness; u32 flags; float pad;
+        struct { float metallic; float roughness; u32 flags; u32 packedTint;
                  float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; u32 packedEmissive; } pbr;
-        pbr.metallic  = mat ? mat->defaultMetallic  : 0.0f;
-        pbr.roughness = mat ? mat->defaultRoughness : 0.5f;
+        // ★金属度は上限を掛ける。glTF は metallicFactor 既定 1.0 なので、環境（IBL）の無いサムネイルでは
+        //   拡散反射が 0 になって「真っ黒」に見えた（金属は環境の映り込みでしか見えない）。
+        pbr.metallic  = mat ? (std::min)(mat->defaultMetallic, 0.3f) : 0.0f;
+        pbr.roughness = mat ? (std::max)(mat->defaultRoughness, 0.35f) : 0.5f;
         pbr.flags     = 0;
-        pbr.pad       = 0;
+        // ★4 番目は packedTint（RGB888 の一律ティント + 上位 8bit が不透明度。Forward.hlsl の b2）。
+        //   以前ここを 0 で埋めていた＝ティントが「黒」・不透明度 0 になり、**全モデルのサムネイルが真っ黒の透けたシルエット**になっていた
+        //   （ImGui は alpha 0 の画素を透過して描くので、パネルの地色が見えるだけ）。0xFFFFFFFF = 白・不透明 = 影響なし。
+        pbr.packedTint = 0xFFFFFFFFu;
         // サムネイルは UV スクロール/連番を適用しない（恒等変換）
         pbr.uvScaleX = 1.0f; pbr.uvScaleY = 1.0f;
         pbr.uvOffsetX = 0.0f; pbr.uvOffsetY = 0.0f;
@@ -523,39 +564,55 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
     {
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource   = entry.texture.Get();
+        barrier.Transition.pResource   = gpu.tex.Get();
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         cmdList->ResourceBarrier(1, &barrier);
     }
 
-    // リードバックバッファへコピー（キャッシュ保存用）
+    // リードバックバッファへコピー（ディスクキャッシュ保存用。数フレーム後に PendingSave が書き出す）
     {
-        D3D12_TEXTURE_COPY_LOCATION src{};
-        src.pResource        = entry.texture.Get();
-        src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        src.SubresourceIndex = 0;
+        PendingSave ps;
+        ps.path = modelPath; ps.mtime = req.mtime; ps.size = req.size; ps.frame = m_frame;
+        D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width            = kThumbDataSize;
+        desc.Height           = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = 1;
+        desc.Format           = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        if (SUCCEEDED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                   D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&ps.readback))))
+        {
+            D3D12_TEXTURE_COPY_LOCATION src{};
+            src.pResource        = gpu.tex.Get();
+            src.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            src.SubresourceIndex = 0;
 
-        D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource = m_readbackBuffer.Get();
-        dst.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        dst.PlacedFootprint.Offset             = 0;
-        dst.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
-        dst.PlacedFootprint.Footprint.Width    = kThumbSize;
-        dst.PlacedFootprint.Footprint.Height   = kThumbSize;
-        dst.PlacedFootprint.Footprint.Depth    = 1;
-        dst.PlacedFootprint.Footprint.RowPitch = kThumbRowPitch;
+            D3D12_TEXTURE_COPY_LOCATION dst{};
+            dst.pResource = ps.readback.Get();
+            dst.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            dst.PlacedFootprint.Offset             = 0;
+            dst.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
+            dst.PlacedFootprint.Footprint.Width    = kThumbSize;
+            dst.PlacedFootprint.Footprint.Height   = kThumbSize;
+            dst.PlacedFootprint.Footprint.Depth    = 1;
+            dst.PlacedFootprint.Footprint.RowPitch = kThumbRowPitch;
 
-        cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            m_saves.push_back(std::move(ps));
+        }
     }
-    m_lastRenderedPath = modelPath;
 
     // ===== COPY_SOURCE → SRV =====
     {
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource   = entry.texture.Get();
+        barrier.Transition.pResource   = gpu.tex.Get();
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
         barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
@@ -563,7 +620,7 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
     }
 
     // SRV 作成
-    entry.srvIndex = m_srvHeap->AllocateIndex();
+    gpu.srv = m_srvHeap->AllocateIndex();
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
         srvDesc.Format                  = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -571,153 +628,19 @@ void ModelThumbnailRenderer::RenderOne(const std::string& modelPath,
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.Texture2D.MipLevels     = 1;
         dev->CreateShaderResourceView(
-            entry.texture.Get(), &srvDesc,
-            m_srvHeap->GetCpuHandle(entry.srvIndex));
+            gpu.tex.Get(), &srvDesc,
+            m_srvHeap->GetCpuHandle(gpu.srv));
     }
-    entry.gpuHandle = m_srvHeap->GetGpuHandle(entry.srvIndex).ptr;
+    gpu.handle = m_srvHeap->GetGpuHandle(gpu.srv).ptr;
+    gpu.width = kThumbSize; gpu.height = kThumbSize;
 
-    m_cache[modelPath] = std::move(entry);
+    ThumbEntry& e = m_cache[modelPath];
+    if (e.gpu.Valid()) m_graveyard.push_back({std::move(e.gpu), m_frame}); else ++m_resident;
+    e.gpu = std::move(gpu);
+    e.mtime = req.mtime; e.size = req.size; e.failed = false; e.lastUsed = m_frame;
+    ++m_renderedTotal;
     Logger::Info("[Thumbnail] Rendered: {}", modelPath);
-}
-
-void ModelThumbnailRenderer::SavePendingCache()
-{
-    if (m_lastRenderedPath.empty()) return;
-
-    std::string cachePath = GetCacheFilePath(m_lastRenderedPath);
-
-    void* mapped = nullptr;
-    D3D12_RANGE readRange = {0, kThumbDataSize};
-    if (SUCCEEDED(m_readbackBuffer->Map(0, &readRange, &mapped)))
-    {
-        std::ofstream ofs(cachePath, std::ios::binary);
-        if (ofs.is_open())
-            ofs.write(static_cast<const char*>(mapped), kThumbDataSize);
-        D3D12_RANGE writeRange = {0, 0};
-        m_readbackBuffer->Unmap(0, &writeRange);
-    }
-
-    m_lastRenderedPath.clear();
-}
-
-void ModelThumbnailRenderer::LoadCachedThumbnails(ID3D12GraphicsCommandList* cmdList)
-{
-    if (m_cachedPaths.empty()) return;
-
-    auto* dev = m_device->GetDevice();
-    m_uploadBuffers.clear();
-
-    for (const auto& modelPath : m_cachedPaths)
-    {
-        if (m_cache.count(modelPath)) continue;
-
-        std::string cachePath = GetCacheFilePath(modelPath);
-        std::ifstream ifs(cachePath, std::ios::binary);
-        if (!ifs.is_open()) continue;
-
-        std::vector<char> data(kThumbDataSize);
-        ifs.read(data.data(), kThumbDataSize);
-        if (ifs.gcount() != kThumbDataSize) continue;
-
-        // GPU テクスチャ作成
-        ThumbEntry entry;
-        {
-            D3D12_RESOURCE_DESC texDesc{};
-            texDesc.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            texDesc.Width            = kThumbSize;
-            texDesc.Height           = kThumbSize;
-            texDesc.DepthOrArraySize = 1;
-            texDesc.MipLevels        = 1;
-            texDesc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
-            texDesc.SampleDesc.Count = 1;
-            texDesc.Flags            = D3D12_RESOURCE_FLAG_NONE;
-
-            D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_DEFAULT};
-            ThrowIfFailed(dev->CreateCommittedResource(
-                &heap, D3D12_HEAP_FLAG_NONE, &texDesc,
-                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                IID_PPV_ARGS(&entry.texture)));
-        }
-
-        // アップロードバッファ
-        ComPtr<ID3D12Resource> uploadBuf;
-        {
-            D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
-            D3D12_RESOURCE_DESC desc{};
-            desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-            desc.Width            = kThumbDataSize;
-            desc.Height           = 1;
-            desc.DepthOrArraySize = 1;
-            desc.MipLevels        = 1;
-            desc.Format           = DXGI_FORMAT_UNKNOWN;
-            desc.SampleDesc.Count = 1;
-            desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-            ThrowIfFailed(dev->CreateCommittedResource(
-                &heap, D3D12_HEAP_FLAG_NONE, &desc,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&uploadBuf)));
-        }
-
-        // アップロードバッファにデータ書き込み
-        {
-            void* mapped = nullptr;
-            ThrowIfFailed(uploadBuf->Map(0, nullptr, &mapped));
-            std::memcpy(mapped, data.data(), kThumbDataSize);
-            uploadBuf->Unmap(0, nullptr);
-        }
-
-        // コピーコマンド: upload → texture
-        {
-            D3D12_TEXTURE_COPY_LOCATION src{};
-            src.pResource = uploadBuf.Get();
-            src.Type      = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-            src.PlacedFootprint.Offset             = 0;
-            src.PlacedFootprint.Footprint.Format   = DXGI_FORMAT_R8G8B8A8_UNORM;
-            src.PlacedFootprint.Footprint.Width    = kThumbSize;
-            src.PlacedFootprint.Footprint.Height   = kThumbSize;
-            src.PlacedFootprint.Footprint.Depth    = 1;
-            src.PlacedFootprint.Footprint.RowPitch = kThumbRowPitch;
-
-            D3D12_TEXTURE_COPY_LOCATION dst{};
-            dst.pResource        = entry.texture.Get();
-            dst.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-            dst.SubresourceIndex = 0;
-
-            cmdList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-        }
-
-        // COPY_DEST → SRV
-        {
-            D3D12_RESOURCE_BARRIER barrier{};
-            barrier.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-            barrier.Transition.pResource   = entry.texture.Get();
-            barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-            barrier.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-            barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-            cmdList->ResourceBarrier(1, &barrier);
-        }
-
-        // SRV 作成
-        entry.srvIndex = m_srvHeap->AllocateIndex();
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-            srvDesc.Format                  = DXGI_FORMAT_R8G8B8A8_UNORM;
-            srvDesc.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Texture2D.MipLevels     = 1;
-            dev->CreateShaderResourceView(
-                entry.texture.Get(), &srvDesc,
-                m_srvHeap->GetCpuHandle(entry.srvIndex));
-        }
-        entry.gpuHandle = m_srvHeap->GetGpuHandle(entry.srvIndex).ptr;
-
-        m_cache[modelPath] = std::move(entry);
-        m_uploadBuffers.push_back(std::move(uploadBuf));
-    }
-
-    Logger::Info("[Thumbnail] Loaded {} cached thumbnails from disk", m_cachedPaths.size());
-    m_cachedPaths.clear();
+    return true;
 }
 
 } // namespace dx12e

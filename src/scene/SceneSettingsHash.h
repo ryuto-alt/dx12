@@ -58,6 +58,28 @@ inline u64 SceneSettingsFingerprint(const Scene& scene)
     pod(scene.GetSsgiSettings());
     pod(scene.GetRtSettings());
     pod(scene.GetDdgiSettings());
+    {
+        // パディングを含めないようフィールドごとに混ぜる（VirtualGeometrySettings は bool と float の混在）。
+        const auto& vgs = scene.GetVirtualGeometrySettings();
+        mix(&vgs.enabled, sizeof(vgs.enabled));
+        mix(&vgs.lodPixelError, sizeof(vgs.lodPixelError));
+        mix(&vgs.hzbCulling, sizeof(vgs.hzbCulling));
+        mix(&vgs.coneCulling, sizeof(vgs.coneCulling));
+        mix(&vgs.instanceMinPx, sizeof(vgs.instanceMinPx));
+        mix(&vgs.vramBudgetMB, sizeof(vgs.vramBudgetMB));
+    }
+    {
+        // シーンの風（植生 F1）。既定値のままなら混ぜても値は決まった定数になる。
+        const auto& w = scene.GetWind();
+        mix(&w.enabled, sizeof(w.enabled));
+        mix(&w.directionDeg, sizeof(w.directionDeg));
+        mix(&w.speed, sizeof(w.speed));
+        mix(&w.gustStrength, sizeof(w.gustStrength));
+        mix(&w.gustFrequency, sizeof(w.gustFrequency));
+        mix(&w.turbulence, sizeof(w.turbulence));
+        mix(&w.phaseOffset, sizeof(w.phaseOffset));
+    }
+    pod(scene.GetAtmosphereSettings());   // 物理ベース大気 A1（float / bool / int だけ）
     pod(scene.GetTaaSettings());
     pod(scene.GetVolumetricFogSettings());
 

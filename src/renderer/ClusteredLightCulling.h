@@ -52,7 +52,7 @@ public:
         DirectX::XMFLOAT3 color;       float type;        // 0=point / 1=spot
         DirectX::XMFLOAT3 direction;   float cosOuter;
         float             cosInner;    float sinOuter;
-        float             shadowIndex; float _pad;
+        float             shadowIndex; float sourceRadius;   // sourceRadius: 光源の半径[m]（物理ライティング単位の .cso だけが読む。HLSL 側の名前は _pad）
     };
     static_assert(sizeof(LightGPU) == 64, "ClusterLight must be 64 bytes (ClusterCommon.hlsli)");
 

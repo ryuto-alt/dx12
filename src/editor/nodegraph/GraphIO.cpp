@@ -44,6 +44,7 @@ json NodeJson(const NodeData& n)
         }
     }
     if (!vals.empty()) j["values"] = std::move(vals);
+    if (!n.extra.empty()) j["extra"] = n.extra;   // モデル固有の状態（不透明な文字列）
     return j;
 }
 
@@ -105,6 +106,12 @@ void ApplyValues(NodeData& d, const NodeTypeDesc& t, const json& jn)
         for (int c = 0; c < n && static_cast<size_t>(c) < kv.value().size(); ++c)
             if (kv.value()[static_cast<size_t>(c)].is_number()) v.f[c] = kv.value()[static_cast<size_t>(c)].get<float>();
     }
+}
+
+std::string ExtraOf(const json& jn)
+{
+    auto it = jn.find("extra");
+    return (it != jn.end() && it->is_string()) ? it->get<std::string>() : std::string();
 }
 
 bool ReadVec2(const json& j, const char* key, Vec2& out)
@@ -198,6 +205,7 @@ bool LoadGraphJson(GraphDocument& doc, const std::string& text, ViewState* outVi
             if (!t || d.id == 0) { ++skipNodes; continue; }
             ReadVec2(jn, "pos", d.pos);
             ApplyValues(d, *t, jn);
+            d.extra = ExtraOf(jn);
             if (!m.AddNode(d)) ++skipNodes;
         }
     }
@@ -305,6 +313,7 @@ bool PasteJson(GraphDocument& doc, const std::string& text, Vec2 offset, PasteRe
             ReadVec2(jn, "pos", d.pos);
             d.pos = d.pos + offset;
             ApplyValues(d, *t, jn);
+            d.extra = ExtraOf(jn);
             const NodeId nid = doc.AddNodeData(std::move(d));
             if (!nid) continue;
             remap[oldId] = nid;

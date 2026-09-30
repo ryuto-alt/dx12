@@ -1,4 +1,5 @@
 #include "editor/UiWidgets.h"
+#include "editor/PropertyGrid.h"   // フェーズ 1b: 設定窓を pg:: 2 カラムへ
 #include "editor/panels/NetworkPanel.h"
 #include "network/NetworkSystem.h"
 #include "editor/EditorContext.h"
@@ -46,9 +47,9 @@ void NetworkPanel::RenderStatus(NetworkSystem& net, entt::registry& reg, EditorC
 
     const bool connected = net.IsConnected();
     if (connected)
-        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.35f, 1.0f), "● %s", RoleLabel(net.Role()));
+        ImGui::TextColored(theme::Good, "● %s", RoleLabel(net.Role()));
     else
-        ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1.0f), "○ %s", RoleLabel(net.Role()));
+        ImGui::TextColored(theme::TextDim, "○ %s", RoleLabel(net.Role()));
 
     ImGui::SameLine(0, ui::Px(12.0f));
     ImGui::Text("tick %u", static_cast<unsigned>(net.CurrentTick()));
@@ -112,40 +113,36 @@ void NetworkPanel::RenderSettings(NetworkSystem& net, EditorContext& ctx, const 
     //   読み手が 1 つも無い。シム更新は PhysicsSystem.h の kFixedTimeStep = 1/60 で
     //   ハードコード固定。動かせるつまみに見えるのが害なので、serverAuthority と同じく
     //   disabled + 理由のツールチップにする（値そのものは network.json に残す）。
-    ImGui::BeginDisabled(true);
-    int tickRate = static_cast<int>(m_staging.tickRate);
-    ui::DragInt("シム更新Hz TickRate", &tickRate, 1.0f, 1, 240);
-    ImGui::EndDisabled();
-    ImGui::SameLine(); ImGui::TextDisabled("(?)");
-    if (ImGui::BeginItemTooltip())
+    // ★フェーズ 1b: インスペクタと同じ pg:: の 2 カラム（値の範囲・書き込みの規則は従来どおり）
+    if (pg::Begin("##netSettings"))
     {
-        ImGui::TextUnformatted("未実装。シム更新は 60Hz 固定（PhysicsSystem の kFixedTimeStep）。\n"
-                               "ここを変えても何も起きないので触れないようにしてある。\n"
-                               "帯域を変えたいなら下の SnapshotRate。");
-        ImGui::EndTooltip();
+        ImGui::BeginDisabled(true);
+        int tickRate = static_cast<int>(m_staging.tickRate);
+        pg::Int("シム更新Hz TickRate", &tickRate, 1.0f, 1, 240, nullptr,
+                "未実装。シム更新は 60Hz 固定（PhysicsSystem の kFixedTimeStep）。\n"
+                "ここを変えても何も起きないので触れないようにしてある。\n"
+                "帯域を変えたいなら下の SnapshotRate。");
+        ImGui::EndDisabled();
+
+        int snapshotRate = static_cast<int>(m_staging.snapshotRate);
+        if (pg::Int("送信Hz SnapshotRate", &snapshotRate, 1.0f, 1, 120, nullptr,
+                    "サーバーが複製Transformを送信する頻度。高いほど滑らかだが帯域を食う"))
+            m_staging.snapshotRate = static_cast<u32>(std::max(1, snapshotRate));
+
+        int maxPlayers = static_cast<int>(m_staging.maxPlayers);
+        if (pg::Int("最大接続数 MaxPlayers", &maxPlayers, 1.0f, 1, 64))
+            m_staging.maxPlayers = static_cast<u32>(std::max(1, maxPlayers));
+
+        int port = static_cast<int>(m_staging.defaultPort);
+        if (pg::Int("既定ポート DefaultPort", &port, 1.0f, 1024, 65535, nullptr,
+                    "net:host()/net:join() で省略した時に使われるポート番号(MCPの8787番台とは別)"))
+            m_staging.defaultPort = static_cast<u16>(std::clamp(port, 1, 65535));
+        pg::End();
     }
-
-    int snapshotRate = static_cast<int>(m_staging.snapshotRate);
-    if (ui::DragInt("スナップショット送信Hz SnapshotRate", &snapshotRate, 1.0f, 1, 120))
-        m_staging.snapshotRate = static_cast<u32>(std::max(1, snapshotRate));
-    ImGui::SameLine(); ImGui::TextDisabled("(?)");
-    if (ImGui::BeginItemTooltip())
-    { ImGui::TextUnformatted("サーバーが複製Transformを送信する頻度。高いほど滑らかだが帯域を食う"); ImGui::EndTooltip(); }
-
-    int maxPlayers = static_cast<int>(m_staging.maxPlayers);
-    if (ui::DragInt("最大接続数 MaxPlayers", &maxPlayers, 1.0f, 1, 64))
-        m_staging.maxPlayers = static_cast<u32>(std::max(1, maxPlayers));
-
-    int port = static_cast<int>(m_staging.defaultPort);
-    if (ui::DragInt("既定ポート DefaultPort", &port, 1.0f, 1024, 65535))
-        m_staging.defaultPort = static_cast<u16>(std::clamp(port, 1, 65535));
-    ImGui::SameLine(); ImGui::TextDisabled("(?)");
-    if (ImGui::BeginItemTooltip())
-    { ImGui::TextUnformatted("net:host()/net:join() で省略した時に使われるポート番号(MCPの8787番台とは別)"); ImGui::EndTooltip(); }
 
     ImGui::Separator();
     if (net.IsConnected())
-        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.35f, 1.0f),
+        ImGui::TextColored(theme::Warn,
                            "接続中: 変更は保存しても現在のセッションには反映されません(次回接続から有効)。");
 
     if (ImGui::Button("保存", ui::Px(120.0f, 0.0f)))

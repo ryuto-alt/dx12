@@ -7,6 +7,8 @@
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
+#include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
+#include "editor/panels/MaterialGraphPanel.h"   // マテリアルグラフ G2c: ライブプレビュー / サムネイルの GPU 側（InitializeGpu / ShutdownGpu）
 
 namespace dx12e
 {
@@ -66,14 +68,16 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // ★仮想入力モード / --background は窓を作る【前】に立てる。窓の生成中に届く実入力メッセージも
     //   最初から遮断でき、起動の最初の 1 フレームからフォアグラウンドを取らない。
-    if (!gameMode && m_virtualInputRequested)
+    // ★ゲーム(GameRuntime)も --background を受け付ける（UI 自動テストの build_game が配布ゲームを
+    //   起動して落ちないか見る時に、人の画面へ窓を出さないため）。引数なしの配布物は従来どおり。
+    if ((!gameMode || m_bgOptions.Active()) && m_virtualInputRequested)
     {
         vinput::SetEnabled(true);
         Logger::Info("仮想入力モード: ON（実マウス/実キーボードを ImGui に渡さず、OS のカーソルに触れない）");
     }
-    if (!gameMode && m_bgOptions.Active())
+    if (m_bgOptions.Active())
     {
-        SplashScreen::SetSuppressed(true);           // プロジェクト読込のスプラッシュも出さない
+        SplashScreen::SetSuppressed(true);          // プロジェクト読込のスプラッシュも出さない
         Window::DisablePowerThrottling();             // 裏の窓でも EcoQoS / タイマ粗化で間引かれない
         Logger::Info("--background={}{}: 手前に出さない起動",
                      BackgroundModeName(m_bgOptions.mode), m_bgOptions.toolWindow ? ",tool" : "");
@@ -81,7 +85,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // ウィンドウ作成（タイトルにエンジンのバージョンを表記＝更新の確認にも使える）
     m_window = std::make_unique<Window>();
-    if (!gameMode) m_window->SetBackground(m_bgOptions);
+    if (!gameMode || m_bgOptions.Active()) m_window->SetBackground(m_bgOptions);
     std::wstring windowTitle = std::wstring(kEngineNameW) + L" v";
     for (const char* vp = kEngineVersion; *vp; ++vp)
         windowTitle += static_cast<wchar_t>(*vp);  // kEngineVersion は ASCII
@@ -169,7 +173,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         const int mode = static_cast<int>(PersistGet("video_mode", 0));
         const u32 w = static_cast<u32>(PersistGet("video_w", 0));
         const u32 h = static_cast<u32>(PersistGet("video_h", 0));
-        if (mode == static_cast<int>(WindowMode::Borderless))
+        if (m_bgOptions.Active())
+        {
+            // --background: 窓の形は変えない（全画面化・サイズ変更は人の画面に触れる）
+        }
+        else if (mode == static_cast<int>(WindowMode::Borderless))
             m_window->SetMode(WindowMode::Borderless);
         else if (mode == static_cast<int>(WindowMode::Fullscreen))
             m_window->SetMode(WindowMode::Fullscreen, w, h);
@@ -352,6 +360,36 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_materialAssetManager = std::make_unique<MaterialAssetManager>();
         m_materialAssetManager->Initialize(m_resourceManager.get(), m_graphicsDevice.get(), m_srvHeap.get());
 
+        // マテリアルグラフ（G2b）: .dxmat の graph キーを持つ材質のランタイム。メイン RS がバインドレス（G2a のフラグ）のときだけ有効。
+        //   無効（非対応 GPU / DX12_DISABLE_MAIN_BINDLESS=1）でも Resolve が false を返すだけ＝従来の代理材質で描く（壊れない）。
+        //   環境変数 DX12_DISABLE_GRAPH_MATERIALS=1 でランタイムごと作らない（グラフ材質は代理材質で描く。A/B 検証・切り分け用）。
+        bool disableGraphMaterials = false;
+        {
+            char* dis = nullptr;
+            size_t disLen = 0;
+            if (_dupenv_s(&dis, &disLen, "DX12_DISABLE_GRAPH_MATERIALS") == 0 && dis)
+            {
+                disableGraphMaterials = dis[0] == '1';
+                std::free(dis);
+            }
+        }
+        if (!disableGraphMaterials)
+        {
+            m_graphMaterials = std::make_unique<GraphMaterialSystem>();
+            GraphMaterialSystem::InitDesc gd;
+            gd.device        = m_graphicsDevice.get();
+            gd.rootSignature = m_rootSignature.get();
+            gd.resources     = m_resourceManager.get();
+            gd.srvHeap       = m_srvHeap.get();
+            gd.colorFormat   = kSceneColorFormat;
+            gd.depthFormat   = DXGI_FORMAT_D32_FLOAT;
+            gd.allowCompile  = !m_isGameMode;      // ゲームモードは DXC を使わない（ディスクキャッシュ / pak だけ）
+            gd.pollFiles     = !m_isGameMode;
+            gd.stagedCompile = !m_isGameMode;      // G2c: 構造の編集は -Od の高速版を先に出し、最適化版は裏で差し替える（エディタのみ）
+            gd.engineVersion = kEngineVersion;
+            m_graphMaterials->Initialize(gd);
+        }
+
         // 地形レイヤーセット（.terrainlayers → Texture2DArray ×2）。
         // SRV ディスクリプタは地形ごとに違う（t2 = スプラット）ので、ここでは確保しない。
         m_terrainLayerSets = std::make_unique<TerrainLayerSetManager>();
@@ -414,6 +452,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                    m_camera.get(), m_audioSystem.get(),
                                    m_physicsSystem.get(), PathResolver::AssetsDir());
         WireScriptCallbacks();
+        InitSequencer();   // シーケンサー(.dxseq)のホスト。保存フック・Lua の Sequence API もここで結ぶ
 
         // ゲームスクリプト読み込み（グローバル game.lua）
         // 配布ゲームは起動＝ゲームプレイ開始なので OnStart を呼ぶ。
@@ -831,6 +870,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     {
         if (down && m_inputSystem) m_inputSystem->InjectKeyPress(vk);
     });
+    if (!gameMode)   // フェーズ 1b: imgui.ini の場所をユーザーデータ領域へ（カレントディレクトリ依存をやめる。DX12E_DATA_DIR で分離される）
+        m_imguiManager->SetIniPath(ProjectManager::DataDir() + "/imgui.ini");
     if (m_bgOptions.Active() && !gameMode)
         m_imguiManager->SetIniSavingDisabled(true);   // 画面外/最小化の位置を普段のレイアウトへ焼き付けない
     if (vinput::Enabled())
@@ -1186,6 +1227,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             // アセットブラウザの .dxmat 球体サムネイルはこのパネルのプレビューレンダラーを共用する
             m_editorLayer->SetMaterialPreviewRenderer(&m_materialEditorPanel->GetPreviewRenderer());
 
+            // マテリアルグラフ窓（G2c）: ライブプレビュー / ノード内サムネイルの GPU 側（専用の RT / 定数 / 環境。メインシーンには触らない）。
+            //   グラフ材質のランタイムが使えない環境（非対応 GPU / DX12_DISABLE_GRAPH_MATERIALS）では作らない = 窓は従来の空き枠のまま。
+            if (m_graphMaterials && m_graphMaterials->IsAvailable())
+            {
+                MaterialGraphPanel::GpuInit gi;
+                gi.device = m_graphicsDevice.get();
+                gi.rootSignature = m_rootSignature.get();
+                gi.resources = m_resourceManager.get();
+                gi.srvHeap = m_srvHeap.get();
+                gi.graphs = m_graphMaterials.get();
+                gi.shaderDirW = PathResolver::ShaderDirW();
+                MaterialGraphPanel::InitializeGpu(gi);
+            }
+
             m_materialLibraryPanel = std::make_unique<MaterialLibraryPanel>();
             m_materialLibraryPanel->Initialize(m_resourceManager.get(), m_srvHeap.get(), m_materialAssetManager.get());
         }
@@ -1266,112 +1321,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
     // 通常起動(引数なし): 前回プロジェクトは復元せず、ランチャー(m_showLauncher=true のまま)を表示する。
 
-    // 全モデルのサムネイルを起動時にロード/レンダリング（エディタ専用機能）。
-    // ゲーム(封印ランタイム)では実行しない＝起動時に exe 隣へ assets/.thumbcache/ を作らない。
-    if (!m_isGameMode)
-    {
-        size_t uncachedCount = m_thumbRenderer->ScanAllModels(PathResolver::AssetsDir());
-        size_t cachedCount   = m_thumbRenderer->GetCachedCount();
-        size_t totalModels   = uncachedCount + cachedCount;
-
-        if (totalModels > 0)
-        {
-            // Phase 1: ディスクキャッシュから一括ロード（高速）
-            if (cachedCount > 0)
-            {
-                auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
-                m_thumbRenderer->LoadCachedThumbnails(cmdList);
-                ThrowIfFailed(cmdList->Close());
-                m_commandQueue->ExecuteCommandList(cmdList);
-                m_commandQueue->WaitIdle();
-                m_frameResources->EndFrame(*m_commandQueue);
-                Logger::Info("[Thumbnail] Cache loaded: {} models", cachedCount);
-            }
-
-            // Phase 2: 未キャッシュのみレンダリング（進捗表示付き）
-            if (uncachedCount > 0)
-            {
-                size_t completed = 0;
-
-                while (m_thumbRenderer->GetPendingCount() > 0)
-                {
-                    auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
-                    m_commandList->Wrap(cmdList);
-
-                    m_thumbRenderer->RenderNext(cmdList);
-                    ++completed;
-
-                    // ★この時点ではメインウィンドウはまだ非表示(m_deferredFirstShow)なので、
-                    //   下の ImGui 進捗は画面に出ない。実際にユーザーが見るのはスプラッシュ。
-                    {
-                        char st[96];
-                        snprintf(st, sizeof(st), "サムネイルを生成中... (%zu / %zu)",
-                                 completed, uncachedCount);
-                        SplashScreen::SetStage(splash::Stage::Thumbnails, st);
-                        SplashScreen::SetStageProgress(static_cast<float>(completed) / static_cast<float>(uncachedCount));
-                    }
-
-                    // ローディング画面をバックバッファに描画
-                    auto* backBuffer = m_swapChain->GetCurrentBackBuffer();
-                    auto rtvHandle = m_descriptorHeap->GetCpuHandle(
-                        m_swapChain->GetCurrentBackBufferIndex());
-
-                    m_commandList->TransitionResource(backBuffer,
-                        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-
-                    float clearColor[4] = {0.08f, 0.08f, 0.10f, 1.0f};
-                    cmdList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-                    cmdList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-
-                    D3D12_VIEWPORT vp = {0, 0,
-                        static_cast<f32>(m_window->GetWidth()),
-                        static_cast<f32>(m_window->GetHeight()), 0, 1};
-                    D3D12_RECT scissor = {0, 0,
-                        static_cast<LONG>(m_window->GetWidth()),
-                        static_cast<LONG>(m_window->GetHeight())};
-                    cmdList->RSSetViewports(1, &vp);
-                    cmdList->RSSetScissorRects(1, &scissor);
-
-                    float progress = static_cast<float>(completed) / static_cast<float>(uncachedCount);
-                    m_imguiManager->BeginFrame();
-                    // multi-viewport有効時、ImGui座標はスクリーン座標になるためメインビューポート中心へ置く
-                    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(),
-                        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-                    ImGui::SetNextWindowSize(theme::Px(420.0f, 0.0f), ImGuiCond_Always);
-                    ImGui::Begin("##Loading", nullptr,
-                        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize);
-                    ImGui::Text("%s", kEngineName);
-                    ImGui::Separator();
-                    ImGui::Text("Rendering thumbnails... (%zu / %zu)", completed, uncachedCount);
-                    ImGui::ProgressBar(progress, ImVec2(-1, theme::Px(24.0f)));
-                    ImGui::End();
-                    m_imguiManager->EndFrame(cmdList);
-
-                    m_commandList->TransitionResource(backBuffer,
-                        D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-                    m_commandList->Close();
-                    m_commandQueue->ExecuteCommandList(cmdList);
-                    m_swapChain->Present(false);
-                    m_frameResources->EndFrame(*m_commandQueue);
-
-                    m_commandQueue->WaitIdle();
-
-                    // レンダリング結果をディスクキャッシュに保存
-                    m_thumbRenderer->SavePendingCache();
-
-                    MSG msg;
-                    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-                    {
-                        TranslateMessage(&msg);
-                        DispatchMessageW(&msg);
-                    }
-                }
-            }
-
-            m_resourceManager->FinishUploads();
-        }
-    }
+    // 3D モデルのサムネイル: 起動時の一括生成（1 枚ごとに WaitIdle する同期ループ）はフェーズ 1b で廃止した。
+    // アセットブラウザが「見えているセルだけ」を 1 フレーム数枚の予算で作り（ModelThumbnailRenderer::RenderPending）、
+    // 結果はプロジェクトの assets/.thumbcache/ にヘッダ付きで保存する（次回はアップロードだけ）。
+    // ゲーム(封印ランタイム)は元から何もしない＝exe 隣へ .thumbcache を作らない。
 
     // IBL: シーンの skybox 設定に応じて環境キューブを読み込み派生をベイク（専用 cmdList）。
     SplashScreen::SetStage(splash::Stage::EnvMap);
@@ -1661,6 +1614,9 @@ void Application::Run()
         // 表示矩形 × renderScale へシーン系 RT を追従させる（#16）。
         // ★必ず Render() より前・フレーム外で呼ぶこと（内部で WaitIdle する）。
         UpdateRenderResolution();
+        // Q2（校正）: ライティング単位の PSO 差し替え / オフスクリーン撮影の進行。どちらも既定では何もしない。
+        UpdateLightingUnits();
+        ServiceOffscreenShot();
 
         m_gameClock.Tick();
 
@@ -1799,6 +1755,7 @@ void Application::Run()
 
         // 仮想入力（dx12_imgui_pointer / key）の遅延応答。キューが流れ切って ImGui が反応した後に返す。
         ServiceMcpVirtualInput();
+        ServiceMcpEditorUi();   // M7: editor_command_run の遅延応答
 
         // 遅延初回表示: 隠れたまま数フレーム描画して絵（ランチャー）が確定してから
         // ウィンドウを出し、スプラッシュを閉じる。表示された瞬間には既に描画済み＝
@@ -1974,7 +1931,12 @@ void Application::Run()
         // ★--background は VSync を使わない。見えていない窓（画面外/最小化/最背面）への Present は
         //   DWM がフレームを消費せず即座に返る＝リミッターが無いと CPU/GPU を回し続ける。
         //   なので裏の窓は常に「VSync 無し + 60fps 上限」（設定は書き換えない。既存の上限がもっと低ければそちら）。
-        const bool  bgPace     = m_bgOptions.Active();
+        // ★例外: dx12_benchmark {uncap:true} の計測中だけは裏の窓でも歩調を取らない（VG P4）。
+        //   uncap は「FPS 上限 / VSync を外して真のスループットを測る」ための引数なのに、裏の窓の 60fps 上限が
+        //   残っていて、--background のエンジンでは何を測っても fps ≈ 59 になっていた（GPU 2 ms のシーンでも）。
+        //   計測は最大 3600 フレームで終わり、終了時に m_benchRestore が戻る＝回しっぱなしにはならない。
+        const bool  benchUncapped = m_benchRestore && m_benchFramesLeft > 0;
+        const bool  bgPace     = m_bgOptions.Active() && !benchUncapped;
         const f32   paceLimit  = bgPace ? (m_fpsLimit > 0.0f ? (std::min)(m_fpsLimit, 60.0f) : 60.0f)
                                         : m_fpsLimit;
         if ((!m_useVsync || bgPace) && paceLimit > 0.0f)
@@ -2099,6 +2061,8 @@ void Application::Shutdown()
     // MaterialPreviewRenderer → DeferredRelease::Defer 落ち）。
     m_materialEditorPanel.reset();
     m_materialLibraryPanel.reset();
+    MaterialGraphPanel::ShutdownGpu();   // マテリアルグラフ窓のプレビュー / サムネイル（GraphMaterialSystem のインスタンスを返してから）
+    m_graphMaterials.reset();   // ワーカーを止めて PSO / プールを解放（デバイス解放より前）
     m_materialAssetManager.reset();
     // 地形レイヤー配列とスプラットテクスチャ（GPU リソース）もデバイス解放より前に明示破棄する。
     m_terrainSrvCache.clear();
@@ -2129,6 +2093,10 @@ void Application::Shutdown()
     m_hiZPass.reset();
     if (m_occlusionCull) m_occlusionCull->Shutdown();
     m_occlusionCull.reset();
+    PathTracerShutdown();        // DXR パストレーサー（累積バッファ / 専用 TLAS。実行中のジョブがあればここで GPU 完了を待って落とす）
+    ShutdownVirtualGeometry();   // 仮想ジオメトリ P2（専用ヒープ / COPY キュー / m_vgHiZ のディスクリプタ）。ヒープより先に返す
+    ShutdownFoliage();           // 植生 F1（compute / 間接描画バッファ。デバイス解放より前に）
+    ShutdownWater();             // 水面 W1（コピー用テクスチャ / ディスクリプタ。デバイス解放より前に）
     m_perceptionPass.reset();   // 知覚層（RT / 読み戻し / 専用ヒープ）。要求が無ければ最初から null
     m_contactShadowPass.reset();
     m_taaPass.reset();
@@ -2147,10 +2115,12 @@ void Application::Shutdown()
     m_velocityPSOSkinned.reset();
     // IBL / Skybox（GPU リソース）をデバイス解放より前に明示破棄。SRV index も srvHeap 生存中に返却。
     m_skyboxRenderer.reset();
+    AtmosphereShutdown();   // 物理ベース大気 A1（LUT・ディスクリプタを srvHeap 生存中に返す。確保していなければ何もしない）
     if (m_iblBaker)
     {
         if (m_iblReady && m_srvHeap)
             m_srvHeap->FreeBlock(m_iblBaker->GetSrvBlockStart(), m_iblBaker->GetSrvBlockCount());
+        if (m_srvHeap) m_iblBaker->FreeRebakeDescriptors(*m_srvHeap);
         m_iblBaker->Reset();
         m_iblBaker.reset();
     }
@@ -2497,6 +2467,8 @@ void Application::Update()
         //   「Ctrl+O / Ctrl+L と書いてあるのに効かない」を生んでいた。
         //   実行結果は EditorContext の pending* フラグで受け取り、上の共通ブロックが消化する。
 
+        // シーケンサー: エディタのスクラブ / プレビュー再生（Play 中の一時停止も此処を通る）。m_scene->Update の前
+        UpdateSequencers(dt, paused);
     }
     else
     {
@@ -2535,27 +2507,31 @@ void Application::Update()
             m_aiSystem->Update(*m_scene, m_physicsSystem.get(), &m_eventBus, dt * m_scriptEngine->GetTimeScale());
         }
 
+        // シーケンサー: Play 中の再生（Sequence.play / sequence_play / シーンの自動再生）。
+        // ★Lua / Trigger / AI の【後】・カメラ同期の【前】: スクリプトが同じフレームに書いた値をシーケンサーが上書きし、
+        //   その結果（カットのカメラ・シェイク）を下のカメラ同期が拾う。Scene::Update（Animator）はその後。
+        UpdateSequencers(dt, /*paused=*/false);
+
         // アクティブカメラの Transform をグローバル Camera に同期。
         // 親階層込みのワールド変換で反映するので、親オブジェクトにアタッチした
         // カメラが親の移動・回転に追従する。
         // ★MCP が dx12_set_editor_camera で視点を固定している間は同期しない（#20-6）。
         //   Play 中の絵で look_compare / camera_path を回すための一時上書き。
+        // ★シーケンサーのカット（FindActiveCameraEntity）があれば isActive よりカットのカメラを優先する。
         if (!m_mcpCameraOverride)
         {
-            auto& reg = m_scene->GetRegistry();
-            auto camSyncView = reg.view<const CameraComponent>();
-            for (auto [e, cam] : camSyncView.each())
-            {
-                if (!cam.isActive) continue;
-                ApplyCameraTransformToGlobal(e);
-                break;
-            }
+            const entt::entity activeCam = FindActiveCameraEntity();
+            if (activeCam != entt::null) ApplyCameraTransformToGlobal(activeCam);
         }
     }
 
     // シーン更新（Animator等）— エディタモードは時間を止める（ボーン行列は維持）
     { DX12_PROFILE_ZONE_N("Scene/Animators");
       m_scene->Update(simRunning ? dt : 0.0f); }
+
+    // 物理ベース大気 A1: 時刻 → 太陽の向き・色・強度（enabled=false なら遷移の後始末だけで何も起きない）。
+    // 時間経過は Play 中だけ・決定論撮影では止める。平行光の書き込みは描画（PrepareFrame）より前に済ませる。
+    UpdateAtmosphereTime((simRunning && !m_deterministicCapture) ? dt : 0.0f);
 
     // 配置パーティクル放出器（ParticleEmitter）を駆動。
     // エディタでも常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
@@ -3129,6 +3105,10 @@ void Application::UpdateMcpAutoSave(f32 dt)
         m_editorCtx->mcpSaveCountdown = kMcpAutoSaveDelay;
 
     if (m_editorCtx->mcpSaveCountdown < 0.0f) return;
+
+    // M5: AI のトランザクションが開いている間は本保存しない（rollback で戻す途中の状態をディスクへ書かない）。
+    //     カウントダウンは進めず、閉じた後の最初の Update で通常どおり書く。
+    if (m_editorCtx->mcpUndo.TxOpen()) return;
 
     m_editorCtx->mcpSaveCountdown -= dt;
     if (m_editorCtx->mcpSaveCountdown > 0.0f) return;

@@ -65,6 +65,8 @@
           "regions": { "type": "array", "items": { "type": "string" }, "description": "このカメラで領域別集計する領域名(既定 = 全部)" },
           "reference": { "type": "string", "description": "外部基準のファイル名の上書き(references/ 内の相対)" },
           "gates": { "type": "object", "description": "このカメラだけしきい値を上書き({G1: {...}})。緩める変更はレビュー対象", "additionalProperties": { "$ref": "#/$defs/thresholds" } },
+          "setup": { "type": "array", "description": "Q2: このカメラを撮る直前に投げる MCP 呼び出し(露出ブラケットなど、カメラごとに設定を変えるとき)。エンジン側の変更は次のカメラへ持ち越される(各カメラで必要な値を全部書くこと)", "items": { "$ref": "#/$defs/setupCall" } },
+          "alignment": { "type": "object", "description": "Q2: このカメラだけ整列(tonemap / exposure / sizePolicy / metrics / ppd)を上書き", "additionalProperties": false, "properties": { "tonemap": { "type": "string" }, "exposure": { "$ref": "#/$defs/exposure" }, "sizePolicy": { "enum": ["error", "resize", "crop"] }, "metrics": { "type": "array", "items": { "type": "string" } }, "ppd": { "type": "number" } } },
           "skip": { "type": "boolean" },
           "note": { "type": "string" }
         }
@@ -79,16 +81,13 @@
         "mode": { "enum": ["background", "headless"], "description": "engine_instance.ps1 の -Mode(既定 headless)" },
         "launchArgs": { "type": "array", "items": { "type": "string" } },
         "settleFrames": { "type": "integer", "minimum": 1, "maximum": 240, "description": "screenshot_final deterministic の settleFrames(既定 8)" },
+        "size": { "type": "array", "items": { "type": "integer", "minimum": 16, "maximum": 8192 }, "minItems": 2, "maxItems": 2, "description": "Q2: 撮影解像度 [w,h]。screenshot_final の width/height(任意解像度のオフスクリーン出力。ウィンドウ・ビューポートに依存しない)と、パストレーサーの size に渡す" },
+        "linear": { "type": "boolean", "description": "Q2: screenshot_final の formats に pfm も足して、ポスト前の線形 float を撮る。比較はこの線形画像で行う(HDR-FLIP と、両者に同じトーンマップを掛けた LDR-FLIP の 2 系統)。エンジンの PNG は displayCheck(エンジン内トーンマップと numpy 実装の一致)に使う" },
         "warmupFrames": { "type": "integer", "minimum": 0, "maximum": 3600, "description": "撮影前に step_frames で回すフレーム数(既定 60)" },
         "setup": {
           "type": "array",
           "description": "シーンを開いた後に投げる MCP 呼び出し(レンダー設定・機能フラグ・時刻など)",
-          "items": {
-            "type": "object",
-            "required": ["method"],
-            "additionalProperties": false,
-            "properties": { "method": { "type": "string" }, "params": { "type": "object" }, "optional": { "type": "boolean", "description": "true なら失敗しても続行(その機能が未実装の段階で使う)" } }
-          }
+          "items": { "$ref": "#/$defs/setupCall" }
         },
         "features": { "type": "object", "description": "記録用の機能フラグ(レポートに載る。実際に効かせるのは setup)", "additionalProperties": { "type": ["boolean", "number", "string"] } },
         "png": { "enum": ["gamma22", "srgb"], "description": "エンジンの PNG のエンコード。Uno は ACES の後に pow(1/2.2) なので既定 gamma22" },
@@ -112,6 +111,8 @@
             "params": { "type": "object", "description": "そのまま render_reference へ渡す追加引数(maxBounces など)" },
             "timeoutSec": { "type": "number" },
             "format": { "enum": ["pfm", "exr", "png"], "description": "出力形式(既定 pfm)" },
+            "api": { "enum": ["engine", "legacy"], "description": "engine(既定)= 実エンジンの非同期 render_reference(output / formats / size を渡し render_reference_status を待つ)/ legacy = Q1 が仮定した同期 API(偽エンジン用)" },
+            "pollSec": { "type": "number", "description": "render_reference_status のポーリング間隔(秒。既定 1)" },
             "sizeParams": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2, "description": "['width','height'] のように書くと、エンジン画像と同じ大きさをその引数名で render_reference へ渡す" }
           }
         },
@@ -143,6 +144,42 @@
         "sizePolicy": { "enum": ["error", "resize", "crop"], "description": "解像度が違うときの扱い(既定 resize。縦横比が違えばエラー)" },
         "metrics": { "type": "array", "items": { "type": "string" }, "description": "計算する指標(既定 全部)" },
         "ppd": { "type": "number", "description": "FLIP の pixels per degree(既定 67 = 公式既定)" }
+      }
+    },
+
+    "analytic": {
+      "type": "array",
+      "description": "Q2: 閉形式(解析解)との照合。パストレーサーを介さず、逆二乗・cosθ・光度の単位が式どおりに効いているかを線形画像で検算する(engine.linear のとき)",
+      "items": {
+        "type": "object",
+        "required": ["kind", "camera", "plane", "lights"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "const": "lambert_plane_point_lights", "description": "ランバート平面 + 点光源。L = albedo/π · Σ I·cosθ/d² [nit]" },
+          "name": { "type": "string" },
+          "camera": { "type": "string", "description": "cameras[].name" },
+          "plane": {
+            "type": "object", "required": ["point", "normal", "albedo"], "additionalProperties": false,
+            "properties": {
+              "point": { "$ref": "#/$defs/vec3" }, "normal": { "$ref": "#/$defs/vec3" }, "albedo": { "type": "number" },
+              "bounds": { "type": "object", "description": "平面上の有効範囲(世界座標の軸ごと [min,max])", "additionalProperties": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 } }
+            }
+          },
+          "lights": { "type": "array", "minItems": 1, "items": { "type": "object", "required": ["pos", "cd"], "additionalProperties": false, "properties": { "pos": { "$ref": "#/$defs/vec3" }, "cd": { "type": "number" } } } },
+          "minLuminanceNit": { "type": "number", "description": "この輝度[nit]未満の画素は除く(暗部の量子化・環境光)" },
+          "tolerance": { "type": "object", "additionalProperties": false, "properties": { "median_rel": { "type": "number" }, "p95_rel": { "type": "number" }, "mean_rel": { "type": "number" }, "bias_abs": { "type": "number" } } }
+        }
+      }
+    },
+
+    "displayCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Q2: エンジン内のトーンマップ + 露出(GPU)と、ハーネスの numpy 実装が同じ表示画像を出すか(engine.linear のとき、線形 PFM から作った期待値とエンジンの PNG を比べる)。8bit の差(LSB)で判定",
+      "properties": {
+        "mean_lsb_max": { "type": "number" },
+        "p99_lsb_max": { "type": "number" },
+        "max_lsb_max": { "type": "number" }
       }
     },
 
@@ -215,10 +252,17 @@
       "propertyNames": { "pattern": "^([a-z0-9_]+_(max|min|abs_max)|\\$comment)$" },
       "additionalProperties": { "type": ["number", "string"] }
     },
+    "setupCall": {
+      "type": "object",
+      "required": ["method"],
+      "additionalProperties": false,
+      "properties": { "method": { "type": "string" }, "params": { "type": "object" }, "optional": { "type": "boolean", "description": "true なら失敗しても続行(その機能が未実装の段階で使う)" } }
+    },
     "exposure": {
       "oneOf": [
         { "enum": ["none", "auto", "auto_median"] },
         { "type": "string", "pattern": "^fixed:[+-]?[0-9.]+$" },
+        { "type": "string", "pattern": "^ev100:[+-]?[0-9.]+(,[+-]?[0-9.]+)?$", "description": "Q2: 物理露出。ev100:15 または ev100:15,+1(EV100 と補正)。線形の両者に F = 1/(1.2·2^(EV100-補正)) を掛ける" },
         { "type": "number" },
         {
           "type": "object",

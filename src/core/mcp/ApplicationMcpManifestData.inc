@@ -297,7 +297,7 @@ void FillManifestChunk3(ManifestRows& o)
         "render", "render_setting", "render_scale", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_render_scale", {
         })});
-    o.push_back({"get_scene_settings", M("シーンのスカイボックス/IBL 設定を返す。{skybox:{envMapPath,iblIntensity,skyboxIntensity,drawSkybox}, note}。",
+    o.push_back({"get_scene_settings", M("シーンのスカイボックス/IBL・物理大気の設定を返す。{skybox:{envMapPath,iblIntensity,skyboxIntensity,drawSkybox}, decalAtlasPath, atmosphere:{全項目}, atmosphereState:{太陽の高度/方位・IBL 再ベイク回数・GPU 時間}, note}。",
         "get scene settings シーン設定取得",
         "scene", "", "", McpEffect::Read, "any", 8000, true, false,
         "none", "dx12_get_scene_settings", {
@@ -848,7 +848,7 @@ void FillManifestChunk9(ManifestRows& o)
         "render debug 中間バッファ可視化",
         "render", "", "", McpEffect::Read, "any", 60000, true, true,
         "none", "dx12_render_debug", {
-            P("mode", "enum", true, "normal|roughness|metallic|depth|ao|contactShadow|velocity|ssr|ssgi|rt|rtDiff|rtAlbedo|shadowCascade|lightComplexity|clusterGrid|decalCount|fogScattering|fogTransmittance|fogSlice|off", nullptr, nullptr, nullptr, "可視化する中間バッファ。off は『何も撮らず設定を戻すだけ』。albedo / overdraw は非対応。"),
+            P("mode", "enum", true, "normal|roughness|metallic|depth|ao|contactShadow|velocity|ssr|ssgi|rt|rtDiff|rtAlbedo|vgCluster|vgLod|vgTri|vgDepth|vgOverdraw|vgCoverage|vgMaterial|vgMip|vgTileMaterials|vgNormal|shadowCascade|lightComplexity|clusterGrid|decalCount|fogScattering|fogTransmittance|fogSlice|off", nullptr, nullptr, nullptr, "可視化する中間バッファ。off は『何も撮らず設定を戻すだけ』。albedo / overdraw は非対応。vg* は仮想ジオメトリ（可視性バッファ / 材質 resolve）の検証用で、VG のラスタが動いているときだけ絵が出る。"),
             P("frames", "int", false, nullptr, "1", "120", nullptr, "撮影までに描くフレーム数(1..120、既定 3)。ssr / ssgi は時間蓄積があるので 8〜16 にすると安定する。"),
             P("gain", "number", false, nullptr, nullptr, nullptr, nullptr, "可視化の倍率(既定 1)。velocity は値が小さいので 20 くらいにすると見やすい。"),
             P("depthRange", "number", false, nullptr, nullptr, nullptr, nullptr, "mode:\"depth\" のヒートマップを正規化する距離(m。既定 100)。屋内なら 20、遠景なら 500 等。"),
@@ -878,6 +878,10 @@ void FillManifestChunk9(ManifestRows& o)
             P("deterministic", "bool", false, nullptr, nullptr, nullptr, nullptr, "true でピクセル完全再現モード。既定 false。time を固定(deband ディザ/グレイン/wave/glitch/パーティクルが止まる)し、…"),
             P("settleFrames", "int", false, nullptr, nullptr, nullptr, nullptr, "deterministic:true のとき履歴を捨ててから回すフレーム数(1..240)。既定 8。増やすと TAA / SSGI の収束が進む(決定性そのものは 8 で得られる)。"),
             P("gizmos", "bool", false, nullptr, nullptr, nullptr, nullptr, "false でこの 1 枚だけエディタのデバッグ描画を止めて撮る。既定 true(従来どおり)。"),
+            P("format", "string", false, nullptr, nullptr, nullptr, nullptr, "出力形式: png(既定・8bit) / pfm / exr(ポスト前・露出前の線形 float。物理単位なら nit。tools/parity が読める)。path の拡張子は無視され形式ごとに同じ基準名で書く。"),
+            P("formats", "any", false, nullptr, nullptr, nullptr, nullptr, "複数形式を同じフレームで撮る: [\"png\",\"pfm\"] など。応答の files に形式ごとのパスが入る。"),
+            P("width", "int", false, nullptr, nullptr, nullptr, nullptr, "オフスクリーン出力の幅(height と両方指定。1 辺 16〜8192・総画素 8192x4096 まで・pfm/exr は 4096x4096 まで)。ウィンドウ/レターボックスと無関係。--size WxH が既定。"),
+            P("height", "int", false, nullptr, nullptr, nullptr, nullptr, "任意解像度のオフスクリーン出力の高さ(width と両方指定)。"),
         })});
     o.push_back({"screenshot_game_view", M("アクティブな CameraComponent(ゲームカメラ)視点でシーンを1フレーム描画して PNG で返す。★Editor 中でも Play せずにゲームカメラの見え方(画角・構図)を確認できる。",
         "screenshot game view ゲーム画面スクショ",
@@ -1105,7 +1109,22 @@ void FillManifestChunk11(ManifestRows& o)
         "render", "render_setting", "post_process", McpEffect::WriteSetting, "any", 10000, true, false,
         "none", "dx12_set_post_process", {
             P("enabled", "bool", false, nullptr, nullptr, nullptr, nullptr, "マスタースイッチ(false で全エフェクト素通し)。"),
-            P("tonemapper", "int", false, nullptr, nullptr, nullptr, nullptr, "トーンマッパー: 0=ACES / 1=AgX / 2=なし(ガンマのみ)。★exposure と共に dx12_screenshot にも反映される(他のグレーディングは反映されない)。"),
+            P("tonemapper", "int", false, nullptr, nullptr, nullptr, nullptr, "トーンマッパー: 0=ACES / 1=AgX / 2=なし(ガンマのみ) / 3=UE Filmic(UE 5 の既定の ACES 系。film* で調整) / 4=線形(トーンマップ無し。1 でクリップ) / 5=Khronos PBR Neutral。3〜5 の出力は sRGB OETF(0〜2 は従来どおり pow(1/2.2))。★exposure と共に dx12_screenshot にも反映される(他のグレーディングは反映されない)。"),
+            P("filmSlope", "number", false, nullptr, nullptr, nullptr, nullptr, "UE Filmic の Slope(既定 0.88)。tonemapper=3 のときだけ効く。"),
+            P("filmToe", "number", false, nullptr, nullptr, nullptr, nullptr, "UE Filmic の Toe(既定 0.55)。"),
+            P("filmShoulder", "number", false, nullptr, nullptr, nullptr, nullptr, "UE Filmic の Shoulder(既定 0.26)。"),
+            P("filmBlackClip", "number", false, nullptr, nullptr, nullptr, nullptr, "UE Filmic の Black Clip(既定 0)。"),
+            P("filmWhiteClip", "number", false, nullptr, nullptr, nullptr, nullptr, "UE Filmic の White Clip(既定 0.04)。"),
+            P("exposureMode", "int", false, nullptr, nullptr, nullptr, nullptr, "露出モード: 0=従来(exposureOn/exposure の乗算と autoExposureOn。絵は従来と不変) / 1=手動 EV100(係数 = 1/(1.2·2^(ev100−evComp))。マスター enabled が OFF でも効く) / 2=自動(ヒストグラム測光。平均輝度を 18% グレー×2^evComp へ適応。上下限は aeMinEv100/aeMaxEv100)。"),
+            P("ev100", "number", false, nullptr, nullptr, nullptr, nullptr, "手動露出の EV100(既定 15 = 晴天 Sunny 16。EV100=15 + 補正 0 が露出 0 の基準)。exposureMode=1 のとき。1 上げると 1 段暗い。"),
+            P("evComp", "number", false, nullptr, nullptr, nullptr, nullptr, "露出補正 [EV](+ で明るく)。exposureMode 1/2 の両方に効く。"),
+            P("aeMinEv100", "number", false, nullptr, nullptr, nullptr, nullptr, "自動露出(exposureMode=2)の EV100 下限(既定 -10)。ヒストグラムの測光レンジの下端。"),
+            P("aeMaxEv100", "number", false, nullptr, nullptr, nullptr, nullptr, "自動露出(exposureMode=2)の EV100 上限(既定 20)。"),
+            P("aeSpeedUp", "number", false, nullptr, nullptr, nullptr, nullptr, "シーンが明るくなる方向の適応速度[1/秒]。0 = aeSpeed と同じ。"),
+            P("aeSpeedDown", "number", false, nullptr, nullptr, nullptr, nullptr, "シーンが暗くなる方向の適応速度[1/秒]。0 = aeSpeed と同じ。"),
+            P("aeLowPercent", "number", false, nullptr, nullptr, nullptr, nullptr, "測光ヒストグラムの下側の除外割合 0..0.99(既定 0)。0..1 = 全画素の対数平均(平均輝度)、0.8..0.983 = UE のヒストグラム測光の既定。"),
+            P("aeHighPercent", "number", false, nullptr, nullptr, nullptr, nullptr, "測光ヒストグラムの上側の上限割合(既定 1)。"),
+            P("lightingUnits", "int", false, nullptr, nullptr, nullptr, nullptr, "ライティング単位: 0=従来(既定・絵は不変) / 1=物理(太陽=lux・点/スポット=cd の逆二乗・空/IBL/自己発光=nit。1.0=1 nit)。切替で GPU 待ちが 1 回。"),
             P("exposureOn", "bool", false, nullptr, nullptr, nullptr, nullptr, nullptr),
             P("exposure", "number", false, nullptr, nullptr, nullptr, nullptr, nullptr),
             P("contrastOn", "bool", false, nullptr, nullptr, nullptr, nullptr, nullptr),
@@ -1222,12 +1241,13 @@ void FillManifestChunk11(ManifestRows& o)
         "none", "dx12_set_render_scale", {
             P("scale", "number", true, nullptr, nullptr, nullptr, nullptr, "0.25..1.0。1.0 で等倍(既定)。0.7 くらいから効きが分かる"),
         })});
-    o.push_back({"set_scene_settings", M("シーンのスカイボックス/IBL とデカールアトラスを設定する。skybox 内の指定フィールドだけ適用。★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。",
+    o.push_back({"set_scene_settings", M("シーンのスカイボックス/IBL・物理大気・デカールアトラスを設定する。skybox / atmosphere 内の指定フィールドだけ適用。★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。",
         "set scene settings シーン設定変更",
         "scene", "", "", McpEffect::WriteSetting, "any", 8000, true, false,
         "none", "dx12_set_scene_settings", {
             P("decalAtlasPath", "assetPath", false, nullptr, nullptr, nullptr, nullptr, "デカールアトラス画像の assets 相対パス(RGBA。alpha=覆う度合い)。空文字でデカールを無効化。"),
-            P("skybox", "object", true, nullptr, nullptr, nullptr, nullptr, "スカイボックス設定。指定したフィールドのみ適用。"),
+            P("atmosphere", "object", false, nullptr, nullptr, nullptr, nullptr, "物理大気(既定 OFF)。指定分だけ適用。enabled / preset(earth|mars|haze|twilight)/ timeOfDay / sunMode / driveSun / sunIlluminance ほか。キーは get_scene_settings の atmosphere と同じ。"),
+            P("skybox", "object", false, nullptr, nullptr, nullptr, nullptr, "スカイボックス設定。指定したフィールドのみ適用。"),
             P("skybox.drawSkybox", "any", false, nullptr, nullptr, nullptr, nullptr, nullptr),
             P("skybox.envMapPath", "any", false, nullptr, nullptr, nullptr, nullptr, nullptr),
             P("skybox.iblIntensity", "any", false, nullptr, nullptr, nullptr, nullptr, nullptr),
@@ -1300,8 +1320,8 @@ void FillManifestChunk12(ManifestRows& o)
         "set sun 太陽(平行光)を設定",
         "lighting", "", "", McpEffect::WriteSetting, "any", 8000, true, false,
         "none", "dx12_set_sun", {
-            P("timeOfDay", "number", false, nullptr, nullptr, nullptr, nullptr, "0..24 の時刻。向き/色/強度/環境光をまとめて決める。"),
-            P("azimuth", "number", false, nullptr, nullptr, nullptr, nullptr, "方位角(度)。+Z が 0°、+X が 90°。"),
+            P("timeOfDay", "number", false, nullptr, nullptr, nullptr, nullptr, "0..24 の時刻。向き/色/強度/環境光をまとめて決める。物理大気が ON のときは従来の曲線ではなく大気の時刻(atmosphere.timeOfDay)を設定する。"),
+            P("azimuth", "number", false, nullptr, nullptr, nullptr, nullptr, "方位角(度)。+Z が 0°、+X が 90°。物理大気が ON のときは atmosphere.sunMode=1(太陽の向きを直接指定)へ切り替わる。"),
             P("elevation", "number", false, nullptr, nullptr, nullptr, nullptr, "高度角(度)。0=地平線、90=真上(-89..89)。"),
             P("color", "vec3", false, nullptr, nullptr, nullptr, nullptr, "[r,g,b] 0..1。kelvin より優先。"),
             P("kelvin", "number", false, nullptr, nullptr, nullptr, nullptr, "色温度 K(1000..40000)。2900=電球色 / 5600=昼白色 / 7800=曇天。"),

@@ -58,6 +58,19 @@ enum class RenderDebugMode : u32
     //   DDGI のヒットシェーディングは絶対に正しくならない。
     //   比較は近距離で（BLAS は LOD0 固定なので遠景はラスタと LOD が食い違う）。
     RtAlbedo      = 12,
+    // 仮想ジオメトリ P3: 可視性バッファの可視化（RenderDebugPass ではなく VirtualGeometrySystem::DrawDebug が描く。
+    //   ここに値だけ置くのは render_debug の後始末・生読み戻し・安全網を既存の枠に乗せるため）。値 = 20 + VG_DBG_*（shaders/vg の VG_DBG_*）。
+    VgCluster     = 21,   // クラスタ ID 色分け
+    VgLod         = 22,   // LOD レベル（青 = 0 … 赤 = 最粗）
+    VgTri         = 23,   // 三角形 ID 色分け
+    VgDepth       = 24,   // VG 込みの深度
+    VgOverdraw    = 25,   // 断片数（深度テストを通った数）
+    VgCoverage    = 26,   // 被覆（緑 = VG / 灰 = 非 VG / 黒 = 空）
+    // 仮想ジオメトリ P4（材質 resolve の検証）
+    VgMaterial    = 27,   // 材質（アセット + 材質番号の色分け）
+    VgMip         = 28,   // 解析 UV 勾配から求めたアルベドのミップ段（青 = 0 … 赤 = 10+）
+    VgTileMaterials = 29, // 8x8 タイル内の異なる材質の数（resolve の波面の分岐。1 = 緑 … 4+ = 赤）
+    VgNormal      = 30,   // resolve が使う頂点法線（補間・ワールド）
 };
 
 class RenderDebugPass
