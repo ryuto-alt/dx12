@@ -62,6 +62,30 @@ try {
     }
     if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = 'C:\Users\ryuto\vcpkg' }
 
+    # cl.exe の /showIncludes を英語で出させる。日本語ロケールのままだと ninja が既定の英語接頭辞
+    # ("Note: including file:")を見つけられず、ヘッダ依存が記録されない(.ninja_deps に `#deps 0` が残る)。
+    # → ヘッダを変えても再コンパイルされず、古い obj が混ざって SEGFAULT や嘘のテスト失敗になる。
+    $env:VSLANG = '1033'
+
+    # `#deps 0` の obj を検出し、あれば一度だけ clean して再コンパイルさせる(次回以降は依存が正しく記録される)。
+    $cache = Join-Path (Join-Path $root $Dir) 'CMakeCache.txt'
+    $ninja = $null
+    if (Test-Path $cache) {
+        $m = Select-String -Path $cache -Pattern '^CMAKE_MAKE_PROGRAM:[A-Z]+=(.+)$' | Select-Object -First 1
+        if ($m) { $ninja = $m.Matches[0].Groups[1].Value.Trim() }
+    }
+    if ($ninja -and (Test-Path $ninja)) {
+        $bad = & $ninja -C $Dir -t deps 2>$null | Where-Object { $_ -match '^(.+\.obj): #deps 0,' } |   # .ddi(C++20 モジュール走査)の #deps 0 は正常なので .obj だけ
+               ForEach-Object { $Matches[1] }
+        if ($bad -and $bad.Count -gt 0) {
+            Write-Host "[build] WARNING: $($bad.Count) objects have no header deps (#deps 0). cleaning them once so they rebuild with correct deps."
+            $bad | ForEach-Object -Begin { $batch = @() } -Process {
+                $batch += $_
+                if ($batch.Count -ge 50) { & $ninja -C $Dir -t clean @batch 2>$null | Out-Null; $batch = @() }
+            } -End { if ($batch.Count -gt 0) { & $ninja -C $Dir -t clean @batch 2>$null | Out-Null } }
+        }
+    }
+
     # --- 3. ビルド
     $args2 = @('--build', $Dir, '-j', $Jobs)
     if (-not $Tests) { foreach ($t in $Target) { $args2 += @('--target', $t) } }
