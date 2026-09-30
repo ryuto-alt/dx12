@@ -105,3 +105,9 @@ tools/ue_cook/out/
 tools/ue_cook/**/__pycache__/
 *.usmap
 *.vgsrc
+
+# パリティ基盤(tools/parity): 専用 venv とテストのキャッシュ。基準画像・実行結果はリポジトリの外(%LOCALAPPDATA%\UnoEngine\parity)に置く
+tools/parity/.venv/
+tools/parity/**/__pycache__/
+tools/parity/.pytest_cache/
+tools/parity/**/*.whl

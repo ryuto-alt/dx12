@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "uno-parity-scene-spec-v1",
+  "title": "Uno Engine パリティシーン仕様 v1",
+  "description": "1 ファイル = 1 パリティシーン。シーン参照 + 名前つきカメラ + エンジン設定 + 基準の種別 + 段階別しきい値 + 領域マスク。docs/PARITY_HARNESS.md 参照。",
+  "type": "object",
+  "required": ["specVersion", "id", "scene", "cameras", "reference", "gates"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "specVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$", "description": "英小文字・数字・_。baseline / 実行結果のフォルダ名になる" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "parityScene": { "type": "string", "pattern": "^PS-[0-9]$", "description": "設計書 §3.8 の ID(PS-0 校正 / PS-1 屋内 / PS-2 屋外昼 / PS-3 キャラ / PS-4 重量 / PS-5 ガラス・反射)" },
+    "status": { "enum": ["stub", "draft", "ready"], "description": "stub = 枠だけ(中身は各機能の段階で作る)。stub のシーンはランナーが skipped で返す" },
+    "notes": { "type": "array", "items": { "type": "string" } },
+
+    "scene": {
+      "description": "どのシーンを開くか",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["source", "project", "scene"],
+          "additionalProperties": false,
+          "properties": {
+            "source": { "const": "project" },
+            "project": { "type": "string", "description": "プロジェクトのフォルダ。${環境変数} を展開する。実プロジェクトは読み取り専用で使うこと" },
+            "scene": { "type": "string", "description": "プロジェクトの assets からの相対パス(例 scenes/ps1.json)" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["source", "script"],
+          "additionalProperties": false,
+          "properties": {
+            "source": { "const": "generator" },
+            "script": { "type": "string", "description": "シーンを生成する Python(このファイルからの相対 or tools/parity/ からの相対)。`script --out <dir> [--args-json ...]` で使い捨てプロジェクトを作る" },
+            "args": { "type": "object" },
+            "scene": { "type": "string", "description": "生成物の中のシーン(既定 scenes/<id>.json)" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["source"],
+          "additionalProperties": false,
+          "properties": { "source": { "const": "current" } },
+          "description": "接続先のエンジンが今開いているシーンをそのまま使う(--attach 専用)"
+        }
+      ]
+    },
+
+    "cameras": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "position", "target"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" },
+          "position": { "$ref": "#/$defs/vec3" },
+          "target": { "$ref": "#/$defs/vec3" },
+          "fovDeg": { "type": "number", "exclusiveMinimum": 1, "maximum": 170, "description": "垂直 FOV。set_editor_camera は FOV を変えられない(エディタ既定 45)ので、違う値はランナーが警告する" },
+          "regions": { "type": "array", "items": { "type": "string" }, "description": "このカメラで領域別集計する領域名(既定 = 全部)" },
+          "reference": { "type": "string", "description": "外部基準のファイル名の上書き(references/ 内の相対)" },
+          "gates": { "type": "object", "description": "このカメラだけしきい値を上書き({G1: {...}})。緩める変更はレビュー対象", "additionalProperties": { "$ref": "#/$defs/thresholds" } },
+          "skip": { "type": "boolean" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "resolution": { "type": "array", "items": { "type": "integer", "minimum": 16 }, "minItems": 2, "maxItems": 2, "description": "期待する撮影解像度 [w,h]。今のエンジンは --size を持たないので、違えば sizePolicy で合わせる" },
+        "mode": { "enum": ["background", "headless"], "description": "engine_instance.ps1 の -Mode(既定 headless)" },
+        "launchArgs": { "type": "array", "items": { "type": "string" } },
+        "settleFrames": { "type": "integer", "minimum": 1, "maximum": 240, "description": "screenshot_final deterministic の settleFrames(既定 8)" },
+        "warmupFrames": { "type": "integer", "minimum": 0, "maximum": 3600, "description": "撮影前に step_frames で回すフレーム数(既定 60)" },
+        "setup": {
+          "type": "array",
+          "description": "シーンを開いた後に投げる MCP 呼び出し(レンダー設定・機能フラグ・時刻など)",
+          "items": {
+            "type": "object",
+            "required": ["method"],
+            "additionalProperties": false,
+            "properties": { "method": { "type": "string" }, "params": { "type": "object" }, "optional": { "type": "boolean", "description": "true なら失敗しても続行(その機能が未実装の段階で使う)" } }
+          }
+        },
+        "features": { "type": "object", "description": "記録用の機能フラグ(レポートに載る。実際に効かせるのは setup)", "additionalProperties": { "type": ["boolean", "number", "string"] } },
+        "png": { "enum": ["gamma22", "srgb"], "description": "エンジンの PNG のエンコード。Uno は ACES の後に pow(1/2.2) なので既定 gamma22" },
+        "requiresMethods": { "type": "array", "items": { "type": "string" }, "description": "無いと判定できない MCP method。無ければ skipped(理由つき)" }
+      }
+    },
+
+    "reference": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["pt", "external", "previous-run"], "description": "pt = エンジン内 DXR パストレーサー(render_reference) / external = 人が撮った UE 等の画像 / previous-run = 承認済み baseline(視覚回帰)" },
+        "pt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "spp": { "type": "integer", "minimum": 1 },
+            "seeds": { "type": "array", "items": { "type": "integer" }, "minItems": 1, "description": "先頭が基準。2 個以上あるとノイズ床の測定に使える" },
+            "method": { "type": "string", "description": "MCP method 名(既定 render_reference)" },
+            "params": { "type": "object", "description": "そのまま render_reference へ渡す追加引数(maxBounces など)" },
+            "timeoutSec": { "type": "number" },
+            "format": { "enum": ["pfm", "exr", "png"], "description": "出力形式(既定 pfm)" },
+            "sizeParams": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2, "description": "['width','height'] のように書くと、エンジン画像と同じ大きさをその引数名で render_reference へ渡す" }
+          }
+        },
+        "external": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dir": { "type": "string", "description": "基準画像の置き場(このファイルからの相対 or 絶対。既定 %LOCALAPPDATA%\\UnoEngine\\parity\\references\\<id>)" },
+            "colorspace": { "enum": ["auto", "srgb", "gamma22", "linear"] },
+            "tonemap": { "type": "string", "description": "基準がリニア HDR のときに掛けるトーンマップ" },
+            "exposure": { "$ref": "#/$defs/exposure" },
+            "provenance": { "type": "string", "description": "出どころ(UE のバージョン・撮り方など。レポートに載る)" }
+          }
+        },
+        "previousRun": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "source": { "enum": ["baseline", "latest-run"], "description": "baseline = 承認済み(既定) / latest-run = 直前の実行" } }
+        }
+      }
+    },
+
+    "alignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tonemap": { "type": "string", "description": "リニア画像に掛けるトーンマップ(既定 engine_aces)" },
+        "exposure": { "$ref": "#/$defs/exposure" },
+        "sizePolicy": { "enum": ["error", "resize", "crop"], "description": "解像度が違うときの扱い(既定 resize。縦横比が違えばエラー)" },
+        "metrics": { "type": "array", "items": { "type": "string" }, "description": "計算する指標(既定 全部)" },
+        "ppd": { "type": "number", "description": "FLIP の pixels per degree(既定 67 = 公式既定)" }
+      }
+    },
+
+    "regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "mask"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_]*$" },
+          "mask": { "type": "string", "description": "マスク PNG(このファイルからの相対 or 絶対)。2 値 or color 指定のラベルマップ" },
+          "color": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 3, "maxItems": 3 },
+          "gates": { "type": "object", "description": "領域ごとのしきい値({G1: {...}, G2: {...}})", "additionalProperties": { "$ref": "#/$defs/thresholds" } }
+        }
+      }
+    },
+
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "G0": { "$ref": "#/$defs/thresholds" },
+        "G1": { "$ref": "#/$defs/thresholds" },
+        "G2": { "$ref": "#/$defs/thresholds" }
+      }
+    },
+    "regression": { "$ref": "#/$defs/thresholds", "description": "視覚回帰(--stage regression / parity baseline check)のしきい値。既定は gate.DEFAULT_REGRESSION" },
+    "milestones": { "type": "object", "description": "開発段階名 -> ゲート。例 {\"Q2\": \"G2\", \"A1\": \"G1\"}。--stage に段階名を渡せる", "additionalProperties": { "enum": ["G0", "G1", "G2"] } },
+
+    "noiseFloor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "k": { "type": "number", "minimum": 1, "description": "しきい値 = max(固定値, ノイズ床 x k)。既定 1.5" },
+        "file": { "type": "string", "description": "parity noise-floor が書いた JSON" },
+        "inline": { "type": "object", "additionalProperties": { "type": "number" } }
+      }
+    },
+
+    "perf": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "benchFrames": { "type": "integer", "minimum": 30, "maximum": 3600 },
+        "cameras": { "type": "array", "items": { "type": "string" }, "description": "性能を測るカメラ(既定 先頭 1 つ)" },
+        "budgets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "gpu_ms_max": { "type": "number" },
+            "frame_ms_avg_max": { "type": "number" },
+            "frame_ms_p95_max": { "type": "number" },
+            "cpu_ms_max": { "type": "number" },
+            "vram_mb_max": { "type": "number" },
+            "load_sec_max": { "type": "number" }
+          }
+        },
+        "regression_pct_max": { "type": "number", "description": "履歴(直近 5 回の中央値)より何 % 悪化したら fail か(既定 12)" }
+      }
+    }
+  },
+
+  "$defs": {
+    "vec3": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3 },
+    "thresholds": {
+      "type": "object",
+      "description": "キー = <指標>_max / <指標>_min / <指標>_abs_max。例 flip_ldr_mean_max, ssim_min, lum_mean_ev_abs_max",
+      "propertyNames": { "pattern": "^([a-z0-9_]+_(max|min|abs_max)|\\$comment)$" },
+      "additionalProperties": { "type": ["number", "string"] }
+    },
+    "exposure": {
+      "oneOf": [
+        { "enum": ["none", "auto", "auto_median"] },
+        { "type": "string", "pattern": "^fixed:[+-]?[0-9.]+$" },
+        { "type": "number" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["none", "fixed_ev", "auto_median"] },
+            "ev": { "type": "number" },
+            "ev_ref": { "type": "number" },
+            "ev_test": { "type": "number" }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "$schema": "./schema.json",
+  "specVersion": 1,
+  "id": "ps0_calibration",
+  "parityScene": "PS-0",
+  "title": "PS-0 校正シーン(グレーカード + 24 パッチ + BSDF 格子 + 白い炉)",
+  "description": "光の単位・露出・トーンマップ・カメラ・座標・BRDF を切り分ける土台。以後の全比較の前提なので、Q2 完了時に G2 を通す。",
+  "status": "draft",
+  "notes": [
+    "生成器 tools/parity/gen/ps0_calibration.py が使い捨てプロジェクトを作る(実アセット無し・プリミティブだけ)",
+    "furnace カメラは一様な白い環境が要る。環境を設定できる機能が入ったら engine.setup に足して skip を外す",
+    "HDR-FLIP(G2 の flip_hdr_mean_max)はリニア float のスクリーンショット(Q2 の screenshot_linear)が入るまで計算できない。それまでは警告(--strict なら不合格)"
+  ],
+
+  "scene": { "source": "generator", "script": "gen/ps0_calibration.py", "args": { "sun_intensity": 3.0 }, "scene": "scenes/ps0_calibration.json" },
+
+  "cameras": [
+    { "name": "overview", "position": [0.0, 1.6, -3.5], "target": [0.0, 0.7, 3.0], "note": "全体。床のチェッカーで座標系・FOV を目視検証" },
+    { "name": "graycard", "position": [-2.6, 0.6, -0.5], "target": [-2.6, 0.5, 2.0], "note": "18% グレーカードのアップ。露出・光の単位の校正に使う" },
+    { "name": "patches", "position": [-0.4, 1.0, -0.6], "target": [-0.4, 0.9, 2.0], "note": "24 色パッチ。色相・彩度・トーンマップの差" },
+    { "name": "bsdf_grid", "position": [2.3, 1.2, -1.0], "target": [2.3, 1.0, 2.0], "note": "ローネス x メタルネス 5x5 の球。BRDF・IBL の差" },
+    { "name": "furnace", "position": [0.0, 0.8, 3.0], "target": [0.0, 0.8, 6.0], "skip": true, "note": "白い炉(白い拡散球が環境に溶けて見えなくなるはず)。環境の設定が入るまで skip" }
+  ],
+
+  "engine": {
+    "resolution": [1920, 1080],
+    "mode": "headless",
+    "warmupFrames": 60,
+    "settleFrames": 8,
+    "png": "gamma22",
+    "features": { "ddgi": false, "ssgi": false, "ssr": false, "taa": false, "bloom": false, "vignette": false, "autoExposure": false },
+    "requiresMethods": []
+  },
+
+  "reference": {
+    "kind": "pt",
+    "pt": { "spp": 2048, "seeds": [1, 2], "format": "pfm", "timeoutSec": 1800 },
+    "external": { "colorspace": "auto", "provenance": "手動撮影の UE / 別エンジンの画像を references/ps0_calibration/<camera>.png に置く" }
+  },
+
+  "alignment": { "tonemap": "engine_aces", "exposure": "none", "sizePolicy": "resize", "ppd": 67 },
+
+  "gates": {
+    "G0": { "lum_mean_ev_abs_max": 1.0 },
+    "G1": { "flip_ldr_mean_max": 0.15, "lum_mean_ev_abs_max": 0.5, "ssim_min": 0.75, "de2000_median_max": 6.0 },
+    "G2": {
+      "flip_ldr_mean_max": 0.08, "flip_ldr_p95_max": 0.30, "flip_hdr_mean_max": 0.10,
+      "lum_mean_ev_abs_max": 0.25, "ssim_min": 0.90, "de2000_median_max": 3.0, "hue_abs_median_deg_max": 8.0
+    }
+  },
+  "milestones": { "Q2": "G2", "Q1": "G1" },
+
+  "noiseFloor": { "k": 1.5 },
+
+  "perf": { "enabled": false }
+}

@@ -1,0 +1,13 @@
+# パリティ基盤(tools/parity)の依存。専用 venv に入れる(グローバル Python を汚さない):
+#   pwsh tools/parity/setup.ps1        # .venv を作って本ファイルを入れる
+# Python 3.12 で確認。CPU のみ・GPU 不要。
+numpy>=2.0
+scipy>=1.11
+pillow>=10.0
+imageio>=2.30
+scikit-image>=0.22        # SSIM / CIELAB / ΔE2000
+flip-evaluator>=1.7       # NVIDIA FLIP 公式 Python 版(BSD-3)。LDR-FLIP / HDR-FLIP の主指標
+opencv-python-headless>=4.8   # 16bit PNG と Radiance .hdr の読み込み(無くても PNG 8bit と PFM は動く)
+OpenEXR>=3.3              # EXR の読み書き(pip 版 OpenCV 5 は EXR 非対応)
+jsonschema>=4.0           # シーン仕様の検証
+pytest>=8.0

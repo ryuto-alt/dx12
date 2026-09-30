@@ -1,0 +1,76 @@
+{
+  "$schema": "./schema.json",
+  "specVersion": 1,
+  "id": "ps1_indoor_corridor",
+  "parityScene": "PS-1",
+  "title": "PS-1 屋内(暗い廊下 + 動的ライト + エミッシブ看板 + 濡れ床)",
+  "description": "影・GI(DDGI/SSGI)・エミッシブ・光の単位・反射(SSR/RT)・仮想ジオメトリの見た目を確かめる。Q2 後に G1、VG P4 と RT1 で G1 維持、P8 + RT3 で G2 を狙う。",
+  "status": "draft",
+  "notes": [
+    "scene.project は環境変数 PARITY_PS1_PROJECT で渡す(実プロジェクトのパスを仕様に書かない。使い捨てのコピーを指すこと)",
+    "regions の mask は tools/parity/scenes/masks/ps1_*.png に置く(2 値の PNG。画像はリポジトリに入れず、ローカルで作る)",
+    "外部基準(手動撮影の UE / 原作のスクリーンショット)を使うときは reference.kind を external にして references/ps1_indoor_corridor/<camera>.png に置く。カメラ位置が厳密に合わないので、G0/G1 の目視参考として扱う"
+  ],
+
+  "scene": { "source": "project", "project": "${PARITY_PS1_PROJECT}", "scene": "scenes/parity_ps1.json" },
+
+  "cameras": [
+    { "name": "corridor_a", "position": [0.0, 1.6, -8.0], "target": [0.0, 1.5, 0.0], "regions": ["floor", "signs"], "note": "廊下の奥を見る。濡れ床の反射とエミッシブ看板が入る" },
+    { "name": "corridor_b", "position": [3.0, 1.6, 4.0], "target": [-2.0, 1.4, -4.0], "regions": ["floor", "signs"], "note": "斜めから。動的ライトの影と減衰" },
+    { "name": "junction", "position": [0.0, 1.7, 12.0], "target": [4.0, 1.5, 18.0], "note": "交差部。GI の色にじみ" }
+  ],
+
+  "engine": {
+    "resolution": [1920, 1080],
+    "mode": "headless",
+    "warmupFrames": 120,
+    "settleFrames": 16,
+    "png": "gamma22",
+    "setup": [
+      { "method": "set_sun", "params": { "intensity": 0.0 }, "optional": true }
+    ],
+    "features": { "ddgi": true, "ssgi": true, "ssr": true, "rtShadow": true, "taa": false },
+    "requiresMethods": []
+  },
+
+  "reference": {
+    "kind": "pt",
+    "pt": { "spp": 4096, "seeds": [1, 2], "format": "pfm", "params": { "maxBounces": 8 }, "timeoutSec": 3600 },
+    "external": { "colorspace": "srgb", "provenance": "手動撮影の UE スクリーンショット(TAA 切り・HUD 無し・固定露出)" }
+  },
+
+  "alignment": { "tonemap": "engine_aces", "exposure": "auto_median", "sizePolicy": "resize", "ppd": 67 },
+
+  "regions": [
+    {
+      "name": "floor", "mask": "masks/ps1_floor.png",
+      "gates": {
+        "G1": { "flip_ldr_mean_max": 0.20, "lum_mean_ev_abs_max": 0.75 },
+        "G2": { "flip_ldr_mean_max": 0.10, "lum_mean_ev_abs_max": 0.35 }
+      }
+    },
+    {
+      "name": "signs", "mask": "masks/ps1_signs.png",
+      "gates": {
+        "G1": { "lum_mean_ev_abs_max": 1.0, "hue_abs_median_deg_max": 15.0 },
+        "G2": { "lum_mean_ev_abs_max": 0.5, "hue_abs_median_deg_max": 8.0 }
+      }
+    }
+  ],
+
+  "gates": {
+    "G0": { "lum_mean_ev_abs_max": 1.0 },
+    "G1": { "flip_ldr_mean_max": 0.15, "lum_mean_ev_abs_max": 0.5, "ssim_min": 0.75, "de2000_median_max": 6.0, "exposure_ev_applied_abs_max": 1.0 },
+    "G2": { "flip_ldr_mean_max": 0.08, "flip_ldr_p95_max": 0.30, "lum_mean_ev_abs_max": 0.25, "ssim_min": 0.90, "de2000_median_max": 3.0, "exposure_ev_applied_abs_max": 0.5 }
+  },
+  "milestones": { "Q2": "G1", "VG-P4": "G1", "RT1": "G1", "RT3": "G2" },
+
+  "noiseFloor": { "k": 1.5 },
+
+  "perf": {
+    "enabled": true,
+    "benchFrames": 300,
+    "budgets": { "gpu_ms_max": 12.0, "frame_ms_p95_max": 16.7, "vram_mb_max": 6000, "load_sec_max": 20 },
+    "regression_pct_max": 12
+  }
+}
