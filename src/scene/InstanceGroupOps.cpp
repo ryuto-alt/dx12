@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
@@ -119,6 +120,41 @@ ConvertResult ConvertToGroups(Scene& scene, const std::string& assetsDir, const 
         CollectStrings(ej, refStrings);
     }
 
+    // シーケンサー（assets/sequences/*.dxseq）のバインディングは guid / 名前 / 階層パスでエンティティを引く。
+    // 群にすると名前と guid が変わって再生時に解決できなくなるので、シーケンスのどこかに出てくる文字列
+    // （パスは "/" で分けた各要素も）と一致するエンティティは変換しない（安全側。他の文字列との偶然の一致でも見送るだけ）。
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path seqDir = fs::path(assetsDir) / "sequences";
+        if (fs::is_directory(seqDir, ec))
+        {
+            for (fs::recursive_directory_iterator it(seqDir, ec), end; !ec && it != end; it.increment(ec))
+            {
+                if (!it->is_regular_file(ec) || it->path().extension() != ".dxseq") continue;
+                std::ifstream f(it->path(), std::ios::binary);
+                if (!f) continue;
+                json sj = json::parse(f, nullptr, /*allow_exceptions=*/false);
+                if (sj.is_discarded()) continue;
+                std::unordered_set<std::string> strs;
+                CollectStrings(sj, strs);
+                for (const std::string& s : strs)
+                {
+                    refStrings.insert(s);
+                    size_t b = 0;
+                    while (b <= s.size())
+                    {
+                        const size_t e2 = s.find('/', b);
+                        const std::string part = s.substr(b, e2 == std::string::npos ? std::string::npos : e2 - b);
+                        if (!part.empty()) refStrings.insert(part);
+                        if (e2 == std::string::npos) break;
+                        b = e2 + 1;
+                    }
+                }
+            }
+        }
+    }
+
     std::unordered_set<entt::entity> targetSet(opt.targets.begin(), opt.targets.end());
     const bool explicitMode = !opt.targets.empty();
 
@@ -150,8 +186,8 @@ ConvertResult ConvertToGroups(Scene& scene, const std::string& assetsDir, const 
         else if (reg.all_of<MeshCollider>(e)) { skip("メッシュコライダーに剛体が無い"); continue; }
 
         const auto* g = reg.try_get<EntityGuid>(e);
-        if (g && g->value != 0 && refStrings.count(FormatEntityGuidHex(g->value))) { skip("guid で参照されている（Trigger / Lua）"); continue; }
-        if (refStrings.count(nt.name)) { skip("名前で参照されている（Trigger / Lua）"); continue; }
+        if (g && g->value != 0 && refStrings.count(FormatEntityGuidHex(g->value))) { skip("guid で参照されている（Trigger / Lua / シーケンサー）"); continue; }
+        if (refStrings.count(nt.name)) { skip("名前で参照されている（Trigger / Lua / シーケンサー）"); continue; }
 
         json ej = json::parse(SceneSerializer::SerializeEntity(scene, e, assetsDir), nullptr, false);
         if (!ej.is_object()) { skip("直列化できない"); continue; }

@@ -150,7 +150,7 @@
 **4-1 実装メモ（2026-10-02。実測は dx12-ui-audit\INSTANCE_GROUP_REPORT.md）**
 - 群 = 普通のエンティティ（MeshRenderer / 静的 RigidBody / MeshCollider をそのまま持つ）＋ `InstanceGroup`（実体 `_set` だけ）。材質・モデルは既存の部品を再利用。
 - サイドカーは `<シーン名>.inst/<guid>.jsonl`。ファイル保存以外の直列化（Play スナップショット・複製・Undo）は `{"count":N,"mem":id}` で台帳（強い参照）の実体を共有する。
-  `.prefab` に群を入れると `mem` になり、エンジン再起動後は空になる（既知の限界）。
+  `.prefab` に群を入れるときは `<名前>.prefab.inst/<キー>.jsonl`（シーンと同じ 1 行 1 インスタンス）へ書き、`.prefab` 本体には `{"count":N,"sidecar":"<キー>"}` を残す（guid は .prefab に残さないので、キーは保存時の群の guid）。`mem` は Undo・複製・Play 用で、.prefab には書かない。Apply / オーバーライド表示は、群の内容を台帳の実体へそろえて（同じ内容なら同じ実体）比べる（2026-10-02）。
 - 変換は最初のメンバー（guid 昇順）をその場で群にし、インスタンスを元の guid 昇順に並べる（同点の描画順が変換前と同じ＝決定論スクショ一致）。
 - 物理の複合形状は回転を xyz の 3 float で持つため ≈180° 回転で精度が落ちる。w<0.5 は軸まわり 180° を `RotatedTranslatedShape` へ移して回避。
 - MCP の `dryRun` は共通の予約名なので、`instance_group` の予行は `preview:true`。

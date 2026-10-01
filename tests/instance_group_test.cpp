@@ -396,6 +396,143 @@ static void Test_SnapshotAndDuplicateShareSet()
     }
 }
 
+// ---- プレハブ（.prefab）へ群を入れる: サイドカーが <名前>.prefab.inst/ へ書かれ、再起動後（台帳が空）でも群が戻る ----
+static u32 GroupCountOf(Scene& s, entt::entity e)
+{
+    const auto* g = s.GetRegistry().try_get<InstanceGroup>(e);
+    return (g && g->_set) ? g->_set->Count() : 0u;
+}
+
+static fs::path OnlySidecar(const std::string& prefabPath)
+{
+    fs::path found;
+    std::error_code ec;
+    for (const auto& e : fs::directory_iterator(fs::path(prefabPath + ".inst"), ec))
+        if (e.path().extension() == ".jsonl") found = e.path();
+    return found;
+}
+
+static void Test_PrefabWithGroup()
+{
+    const fs::path dir = fs::temp_directory_path() / "dx12_instgroup_prefab_test";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir);
+    const std::string assets = dir.string() + "/";
+    const std::string prefabPath = assets + "town.prefab";
+
+    StoreClearForTests();
+    Scene a;
+    auto set = NewSet(SampleItems(40, 5));
+    const entt::entity src = AddGroup(a, "Town", set, 0x00000000000000c3ull);
+    CHECK(SceneSerializer::SavePrefab(a, src, prefabPath, assets));
+
+    // サイドカーは town.prefab.inst/（同名のシーン town.json の town.inst と衝突しない）
+    const fs::path side = fs::path(SidecarPathFor(prefabPath, "00000000000000c3"));
+    CHECK(fs::exists(side));
+    CHECK(side.parent_path().filename() == "town.prefab.inst");
+    CHECK(ReadAll(side) == FormatSidecar(*set));
+    const std::string pj = ReadAll(prefabPath);
+    CHECK(pj.find("\"mem\"") == std::string::npos);          // メモリ台帳の番号は書かない（再起動で空になる原因）
+    CHECK(pj.find("\"sidecar\"") != std::string::npos);
+    CHECK(pj.find("00000000000000c3") != std::string::npos); // sidecar のキーとして
+    CHECK(pj.find("\"guid\"") == std::string::npos);         // guid は従来どおり .prefab に残さない
+
+    // エンジン再起動を模す: 台帳を空にして、別の Scene に展開しても群が戻る
+    StoreClearForTests();
+    set.reset();
+    Scene b;
+    const entt::entity inst = SceneSerializer::InstantiatePrefab(b, prefabPath, assets);
+    CHECK(inst != entt::null);
+    if (inst == entt::null) { fs::remove_all(dir, ec); return; }
+    CHECK(GroupCountOf(b, inst) == 40);
+    {
+        const auto want = SampleItems(40, 5);
+        const auto* g = b.GetRegistry().try_get<InstanceGroup>(inst);
+        bool same = g && g->_set && g->_set->items.size() == want.size();
+        for (size_t i = 0; same && i < want.size(); ++i) same = SameBits(g->_set->items[i], want[i]);
+        CHECK(same);
+    }
+
+    // 二つ目の配置・オーバーライド表示（触っていなければ差分なし）
+    const entt::entity inst2 = SceneSerializer::InstantiatePrefab(b, prefabPath, assets);
+    CHECK(inst2 != entt::null && GroupCountOf(b, inst2) == 40);
+    std::vector<SceneSerializer::PrefabOverride> ov;
+    CHECK(SceneSerializer::ComputePrefabOverrides(b, inst, assets, ov));
+    CHECK(ov.empty());
+
+    // 群を編集（コピーオンライト）→ 差分に instanceGroup が出る。他インスタンスは触っていないので差分なし
+    {
+        auto& g = b.GetRegistry().get<InstanceGroup>(inst);
+        auto n = CloneSet(*g._set);
+        n->items.push_back(Make(1, 2, 3));
+        g._set = n;
+    }
+    CHECK(SceneSerializer::ComputePrefabOverrides(b, inst, assets, ov));
+    bool hasGroup = false;
+    for (const auto& o : ov) hasGroup = hasGroup || o.component == "instanceGroup";
+    CHECK(hasGroup);
+    CHECK(SceneSerializer::ComputePrefabOverrides(b, inst2, assets, ov));
+    CHECK(ov.empty());
+
+    // Apply: .prefab とサイドカーが更新され、もう片方のインスタンスへ配られる（3-way マージ。群は触っていないので新しい群になる）
+    int propagated = 0;
+    CHECK(SceneSerializer::ApplyPrefabInstance(b, inst, assets, &propagated));
+    CHECK(propagated == 1);
+    {
+        const std::string text = ReadAll(OnlySidecar(prefabPath));
+        size_t lines = 0;
+        for (char c : text) if (c == '\n') ++lines;
+        CHECK(lines == 41);
+    }
+    {
+        // 配られたインスタンスは群が 41 個（名前 "Town" で引く。Apply は作り直しなので entity ID は変わる）
+        u32 n41 = 0;
+        for (auto [e, g] : b.GetRegistry().view<InstanceGroup>().each()) if (g._set && g._set->Count() == 41) ++n41;
+        CHECK(n41 == 2);
+    }
+
+    // Revert: 編集済みの群を .prefab の状態へ戻す（今の .prefab は 41 個なので 41 のまま）。失敗しないこと
+    {
+        entt::entity r = entt::null;
+        for (auto [e, link] : b.GetRegistry().view<PrefabLink>().each()) { r = e; break; }
+        CHECK(r != entt::null);
+        if (r != entt::null)
+        {
+            const entt::entity nr = SceneSerializer::RevertPrefabInstance(b, r, assets);
+            CHECK(nr != entt::null && GroupCountOf(b, nr) == 41);
+        }
+    }
+
+    // 台帳を空にしてから、Apply 後のプレハブをもう一度読む（再起動後でも 41）
+    StoreClearForTests();
+    Scene c;
+    const entt::entity inst3 = SceneSerializer::InstantiatePrefab(c, prefabPath, assets);
+    CHECK(inst3 != entt::null && GroupCountOf(c, inst3) == 41);
+
+    // 同名のシーン（town.json）を保存しても、プレハブのサイドカーは孤児として消されない
+    {
+        const fs::path liveSide = OnlySidecar(prefabPath);
+        CHECK(!liveSide.empty());
+        Scene sc;
+        AddGroup(sc, "Other", NewSet(SampleItems(3, 6)), 0x00000000000000d4ull);
+        CHECK(SceneSerializer::Save(sc, assets + "town.json", assets));
+        CHECK(fs::exists(liveSide));
+        CHECK(fs::exists(fs::path(SidecarPathFor(assets + "town.json", "00000000000000d4"))));
+    }
+
+    // 群の無いプレハブで保存し直すと、古い .prefab.inst は残らない
+    {
+        Scene e0;
+        const entt::entity plain = e0.GetRegistry().create();
+        e0.GetRegistry().emplace<NameTag>(plain, NameTag{ "Plain" });
+        e0.GetRegistry().emplace<Transform>(plain);
+        CHECK(SceneSerializer::SavePrefab(e0, plain, prefabPath, assets));
+        CHECK(!fs::exists(fs::path(prefabPath + ".inst")));
+    }
+    fs::remove_all(dir, ec);
+}
+
 int main()
 {
     Test_LineForms();
@@ -407,6 +544,7 @@ int main()
     Test_SceneSaveLoad();
     Test_BrokenSidecarOnLoad();
     Test_SnapshotAndDuplicateShareSet();
+    Test_PrefabWithGroup();
 
     std::printf("InstanceGroupTests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

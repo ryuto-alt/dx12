@@ -401,9 +401,16 @@ static void RegisterCoreComponentSerializers()
             if (!set)
             {
                 const std::string& scenePath = instgroup::CurrentLoadScenePath();
-                const uint64_t g = (ej.contains("guid") && ej["guid"].is_string()) ? ParseEntityGuidHex(ej["guid"].get<std::string>()) : 0ull;
-                if (!scenePath.empty() && g != 0)
-                    set = instgroup::LoadSidecar(scenePath, FormatEntityGuidHex(g));
+                // .prefab は guid を落として保存するので、サイドカー名は "sidecar" に残す（SavePrefab が書く）。
+                std::string key;
+                if (cj.contains("sidecar") && cj["sidecar"].is_string()) key = cj["sidecar"].get<std::string>();
+                else
+                {
+                    const uint64_t g = (ej.contains("guid") && ej["guid"].is_string()) ? ParseEntityGuidHex(ej["guid"].get<std::string>()) : 0ull;
+                    if (g != 0) key = FormatEntityGuidHex(g);
+                }
+                if (!scenePath.empty() && !key.empty() && key.find_first_of("/\\.:") == std::string::npos)
+                    set = instgroup::LoadSidecar(scenePath, key);
             }
             if (!set)
             {
@@ -3755,6 +3762,56 @@ bool ReadPrefabJson(const std::string& absPath, json& out)
         && out["entities"].is_array();
 }
 
+// インスタンス群の「正規形」。比較（差分表示）と 3-way マージのために、3 者（インスタンスの今の姿 = "mem"、
+// .prefab = "sidecar"）を同じ形 {"count":N,"mem":id} へそろえる。内容が同じ実体は 1 つの実体へ寄せるので、
+// 触っていない群は JSON として一致し、群を編集したインスタンスだけが差分になる。
+// 台帳（強い参照）が実体を預かるので、この JSON から InstantiateSubtree しても群が戻る。
+struct GroupCanon
+{
+    std::unordered_map<uint64_t, std::vector<instgroup::InstanceSetPtr>> buckets;
+};
+
+instgroup::InstanceSetPtr CanonSet(GroupCanon& canon, const instgroup::InstanceSetPtr& s)
+{
+    uint64_t h = 1469598103934665603ull;
+    const auto* p = reinterpret_cast<const unsigned char*>(s->items.data());
+    const size_t n = s->items.size() * sizeof(instgroup::InstanceTRS);
+    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    h ^= s->items.size();
+    auto& vec = canon.buckets[h];
+    for (const auto& c : vec)
+        if (c.get() == s.get()
+            || (c->items.size() == s->items.size()
+                && (n == 0 || std::memcmp(c->items.data(), s->items.data(), n) == 0)))
+            return c;
+    vec.push_back(s);
+    return s;
+}
+
+// entities 配列の群を正規形へ。prefabAbs が空でない場合は "sidecar" をそのプレハブの隣から読む。
+void CanonicalizeGroups(json& entities, const std::string& prefabAbs, GroupCanon& canon)
+{
+    if (!entities.is_array()) return;
+    for (auto& ej : entities)
+    {
+        if (!ej.is_object() || !ej.contains("instanceGroup") || !ej["instanceGroup"].is_object()) continue;
+        json& cj = ej["instanceGroup"];
+        instgroup::InstanceSetPtr set;
+        if (cj.contains("mem") && cj["mem"].is_number_unsigned())
+            set = instgroup::StoreFind(cj["mem"].get<uint64_t>());
+        if (!set && !prefabAbs.empty() && cj.contains("sidecar") && cj["sidecar"].is_string())
+        {
+            const std::string key = cj["sidecar"].get<std::string>();
+            if (key.find_first_of("/\\.:") == std::string::npos)
+                set = instgroup::LoadSidecar(prefabAbs, key);
+        }
+        if (!set) continue;   // 読めない（欠損）。そのまま残す
+        set = CanonSet(canon, set);
+        instgroup::StoreRegister(set);
+        cj = json{{"count", set->Count()}, {"mem", set->id}};
+    }
+}
+
 // エンティティ 1 個ぶんの JSON を比較して差分を積む。
 // name は展開時に連番が付くので比較しない（毎回全インスタンスが差分だらけになる）。
 // parent はローカル index なので構造が同じなら一致する = 比較対象に残してよい。
@@ -3905,7 +3962,7 @@ json Merge3WaySubtree(const json& mine, const json& oldBase, const json& newBase
 int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json& oldBase,
                          const json& newBase, const std::string& assetsDir, entt::entity except,
                          const std::unordered_map<std::string, std::string>& oldGeoBytes,
-                         int* outGeoPropagated, int* outGeoKept)
+                         int* outGeoPropagated, int* outGeoKept, GroupCanon& canon)
 {
     auto& reg = scene.GetRegistry();
     // 作り直すのでビューを回しながらだと壊れる。先に対象を集める
@@ -3922,6 +3979,7 @@ int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json
                                 nullptr, /*allow_exceptions=*/false);
         if (mine.is_discarded() || !mine.contains("entities") || !mine["entities"].is_array())
             continue;
+        CanonicalizeGroups(mine["entities"], std::string{}, canon);   // 群は "mem" の正規形で 3 者を比べる
 
         json merged = mine;
         merged["entities"] = Merge3WaySubtree(mine["entities"], oldBase, newBase);
@@ -4004,6 +4062,11 @@ bool SceneSerializer::ComputePrefabOverrides(const Scene& scene, entt::entity ro
 
     json mine = json::parse(SerializeSubtree(scene, root, assetsDir), nullptr, false);
     if (mine.is_discarded() || !mine.contains("entities")) return false;
+    {
+        GroupCanon canon;   // 群の内容が同じなら一致扱い（"mem" と "sidecar" の表記差を差分にしない）
+        CanonicalizeGroups(base["entities"], abs, canon);
+        CanonicalizeGroups(mine["entities"], std::string{}, canon);
+    }
 
     const auto& mineArr = mine["entities"];
     const auto& baseArr = base["entities"];
@@ -4035,6 +4098,9 @@ bool SceneSerializer::ApplyPrefabInstance(Scene& scene, entt::entity root,
     // 読めない（新規プレハブ）ときは配る相手もいないので、そのまま書くだけ。
     json oldBase;
     const bool haveOld = ReadPrefabJson(assetsDir + rel, oldBase);
+    // 群のサイドカーは SavePrefab が上書きするので、配る前の群もここで読んで台帳へ預ける（正規形へ）。
+    GroupCanon groupCanon;
+    if (haveOld) CanonicalizeGroups(oldBase["entities"], assetsDir + rel, groupCanon);
 
     // ★SavePrefab は生成アセットをプレハブ専用パスへ上書きコピーするので、
     //   「配る前の中身」はここで先に読んでおく必要がある。
@@ -4056,10 +4122,11 @@ bool SceneSerializer::ApplyPrefabInstance(Scene& scene, entt::entity root,
         json newBase;
         if (ReadPrefabJson(assetsDir + rel, newBase))
         {
+            CanonicalizeGroups(newBase["entities"], assetsDir + rel, groupCanon);
             int geoProp = 0, geoKept = 0;
             const int n = MergePrefabInstances(scene, rel, oldBase["entities"],
                                                newBase["entities"], assetsDir, root,
-                                               oldGeoBytes, &geoProp, &geoKept);
+                                               oldGeoBytes, &geoProp, &geoKept, groupCanon);
             if (outPropagated) *outPropagated = n;
             if (geoProp > 0 || geoKept > 0)
                 Logger::Info("プレハブの形状(.smsh/.hf/.splat): {} 件へ反映 / {} 件は"
@@ -4125,7 +4192,24 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
                                  const std::string& filePath, const std::string& assetsDir)
 {
     namespace fs = std::filesystem;
-    std::string s = SerializeSubtree(scene, root, assetsDir);
+    // インスタンス群の実体は <プレハブ名>.prefab.inst/<キー>.jsonl へ書く（シーンと同じ方式。docs/SCENE_FORMAT_DESIGN.md §4.1）。
+    // ★以前は Undo と同じ "mem"（メモリ台帳の番号）を書いていたので、エンジンを再起動すると群が空になった。
+    //   .prefab 本体には個数と "sidecar":"<キー>" だけが残る（1 行 1 インスタンスのテキストで grep・git の差分が効く）。
+    instgroup::SerializeCollector instCollected;
+    std::string s;
+    {
+        // サイドカー名は guid。展開したばかりのインスタンスなどまだ guid が無い群へここで振る
+        // （BuildSceneJson と同じ理由の const_cast。シーン保存時にどうせ全員へ振られる値を前倒しするだけ）。
+        auto& mutableReg = const_cast<entt::registry&>(scene.GetRegistry());
+        for (const entt::entity ge : mutableReg.view<InstanceGroup>())
+        {
+            auto* g = mutableReg.try_get<EntityGuid>(ge);
+            if (!g)                 mutableReg.emplace<EntityGuid>(ge, EntityGuid{ NewEntityGuid() });
+            else if (g->value == 0) g->value = NewEntityGuid();
+        }
+        instgroup::ScopedFileSerialize instScope(instCollected);
+        s = SerializeSubtree(scene, root, assetsDir);
+    }
     if (s.empty()) return false;
 
     // 自己参照リンクを落としてから書く（下の StripPrefabLinks のコメント参照）。
@@ -4139,7 +4223,14 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
         {
             StripPrefabLinks(j);
             if (j.contains("entities") && j["entities"].is_array())
-                for (auto& ej : j["entities"]) { ej.erase("guid"); ej.erase("parentGuid"); }
+                for (auto& ej : j["entities"])
+                {
+                    // 群のサイドカー名は guid（収集器のキー）。guid を落とす前にここへ写す。
+                    if (ej.contains("instanceGroup") && ej["instanceGroup"].is_object()
+                        && ej.contains("guid") && ej["guid"].is_string())
+                        ej["instanceGroup"]["sidecar"] = ej["guid"];
+                    ej.erase("guid"); ej.erase("parentGuid");
+                }
 
             // ★生成アセット（.smsh / .hf / .splat）は .prefab 専用のコピーへ向け直す。
             //   向け直さないと .prefab が「作った元インスタンスのファイル」を指したままになり、
@@ -4187,6 +4278,10 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
     fs::path dir = fs::path(filePath).parent_path();
     if (!dir.empty()) fs::create_directories(dir);
 
+    // サイドカーを先に書く（.prefab が「無いデータ」を指す瞬間を作らない）。群が無くなったら古い .inst も消える。
+    if (!instgroup::SaveSidecars(filePath, instCollected).ok)
+        Logger::Warn("プレハブのインスタンス群のサイドカーを書ききれませんでした: {}", filePath);
+
     std::ofstream ofs(filePath);
     if (!ofs.is_open())
     {
@@ -4222,7 +4317,12 @@ entt::entity SceneSerializer::InstantiatePrefab(Scene& scene, const std::string&
         jsonStr = ss.str();
     }
 
-    const entt::entity root = InstantiateSubtree(scene, jsonStr, assetsDir, outAll);
+    // 群のサイドカー（<プレハブ>.prefab.inst/）を読む先をこのプレハブにする（pak ではゲームモードの VFS から読む）。
+    entt::entity root = entt::null;
+    {
+        instgroup::ScopedLoadScene instLoad(filePath);
+        root = InstantiateSubtree(scene, jsonStr, assetsDir, outAll);
+    }
     // 元 .prefab への紐付けをルートへ張る（Apply/Revert/差分表示はこれが起点）。
     // ここで一括して付けるので、エディタ D&D / MCP / ネットワーク spawn のどの経路でも効く。
     if (root != entt::null)

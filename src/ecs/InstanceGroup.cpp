@@ -330,7 +330,11 @@ const std::string& CurrentLoadScenePath() { return t_loadScenePath; }
 std::string SidecarDirFor(const std::string& scenePath)
 {
     namespace fs = std::filesystem;
-    return fs::path(scenePath).replace_extension(".inst").string();
+    // .prefab は <名前>.prefab.inst（同じフォルダの <名前>.json のシーンが <名前>.inst を使うので、
+    // 拡張子を替えるだけだと同名のシーンとプレハブでサイドカーの孤児掃除が互いのファイルを消してしまう）。
+    fs::path p(scenePath);
+    if (p.extension() == ".prefab") return p.string() + ".inst";
+    return p.replace_extension(".inst").string();
 }
 
 std::string SidecarPathFor(const std::string& scenePath, const std::string& guidHex)
