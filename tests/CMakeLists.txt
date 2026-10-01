@@ -48,6 +48,15 @@ if(MSVC)
 endif()
 add_test(NAME ColliderShapeTests COMMAND ColliderShapeTests)
 
+# 物理の判断だけの純粋関数（補間・テレポート判定・キャラと動的剛体の押し合い規約）。
+# ヘッダオンリー・Jolt/entt 不要。
+add_executable(PhysicsLogicTests physics_logic_test.cpp)
+target_include_directories(PhysicsLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(PhysicsLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME PhysicsLogicTests COMMAND PhysicsLogicTests)
+
 add_executable(NetBufferTests net_buffer_test.cpp)
 target_include_directories(NetBufferTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 if(MSVC)

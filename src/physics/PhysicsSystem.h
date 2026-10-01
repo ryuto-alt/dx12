@@ -130,6 +130,11 @@ public:
 private:
     void SyncTransformsToPhysics(entt::registry& registry, f32 dt);
     void SyncPhysicsToTransforms(entt::registry& registry);
+    // 動的剛体の「1 固定ステップ前」の姿勢を控える（描画補間の起点）。物理ステップの直前に呼ぶ。
+    void CapturePrevBodyPoses();
+    // キャラ 1 体ぶんの 1 固定ステップ（StepCharacters と StepSingleCharacter の共通本体）。
+    // recordPrev=true なら描画補間用に踏む前の位置を控える。
+    void StepOneCharacter(entt::entity entity, f32 fixedDt, entt::registry& registry, bool recordPrev);
     // ContactListener の pending をメインスレッドで EventBus へ流す。
     void FlushPendingContacts();
 

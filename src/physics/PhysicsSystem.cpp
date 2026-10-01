@@ -1,5 +1,6 @@
 #include "physics/PhysicsSystem.h"
 #include "physics/ColliderShape.h"   // 当たり判定の実効サイズの唯一の規約
+#include "physics/PhysicsLogic.h"    // 補間・キャラと動的剛体の押し合いの規約（純粋関数。ctest で固定）
 #include "ecs/Components.h"
 #include "ecs/EditorFlags.h"   // EntityDisabled（無効なエンティティは剛体 / キャラを作らない）
 #include "core/Logger.h"
@@ -41,6 +42,7 @@
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
 #include <Jolt/Physics/Body/BodyLock.h>       // Raycast: 真の面法線を取るための BodyLockRead
+#include <Jolt/Physics/Body/MotionProperties.h> // 動的剛体の質量（逆質量）を読む
 #include <Jolt/Physics/Body/BodyFilter.h>     // Raycast: セルフヒット除外
 #pragma warning(pop)
 
@@ -195,6 +197,74 @@ private:
     std::vector<PendingContact> m_pending;
 };
 
+
+// ---- CharacterVirtual ⇔ 動的剛体の押し合いの規約 ----
+//
+// 既定のままだと、質量 70kg のキャラが既定質量 1kg の箱に載った瞬間、Jolt が体重ぶんの
+// インパルスを箱へ与え（反発係数 0.4 で跳ね返って）箱が十数 m/s で飛ぶ。さらに箱の速度を
+// 接地面速度としてキャラが拾うので、キャラまで吹き飛ぶ（実測: 箱 17m/s・キャラ数百 m/s）。
+// 数値は PhysicsLogic.h（tests/physics_logic_test.cpp が固定）。
+//
+//   ・足元（接触法線がキャラの下向き）の動的剛体: Jolt はキャラの mMass×重力 のインパルスを毎ステップ
+//     その剛体へ与える。この mMass を、剛体の質量に見合う実効質量へ頭打ちにする（StandingMass。
+//     軽い箱は 70kg → 約 1kg 相当、約 65kg 以上の剛体は体重そのまま）。StepOneCharacter が毎ステップ頭で元へ戻す。
+//   ・横の接触（歩いて押す）: 従来どおりキャラが剛体を押せる（強さは mMaxStrength）。
+//   ・キャラの半分未満の軽い剛体は、キャラを押し返せない(mCanPushCharacter=false)。
+//     足元の軽い箱が揺れても、キャラは静止した面に立っているものとして扱われる。
+//   ・接地面速度の継承も質量で絞る（StepOneCharacter / GroundVelocityScale）。
+// 静的/キネマティックには何もしない（動く床・エレベーターは従来どおり運ぶ）。
+class EngineCharacterListener final : public JPH::CharacterContactListener
+{
+public:
+    explicit EngineCharacterListener(JPH::PhysicsSystem* sys) : m_sys(sys) {}
+
+    void OnContactAdded(const JPH::CharacterVirtual* ch, const JPH::BodyID& body, const JPH::SubShapeID&,
+                        JPH::RVec3Arg, JPH::Vec3Arg normal, JPH::CharacterContactSettings& io) override
+    { Classify(ch, body, normal, io); }
+
+    void OnContactPersisted(const JPH::CharacterVirtual* ch, const JPH::BodyID& body, const JPH::SubShapeID&,
+                            JPH::RVec3Arg, JPH::Vec3Arg normal, JPH::CharacterContactSettings& io) override
+    { Classify(ch, body, normal, io); }
+
+    // 動的剛体の質量(kg)。動的でなければ負（= 静的/キネマティックは触らない）。
+    // メインスレッド(物理ステップの外)からだけ呼ぶので NoLock で読む。
+    static f32 DynamicBodyMass(const JPH::PhysicsSystem* sys, const JPH::BodyID& id)
+    {
+        if (id.IsInvalid()) return -1.0f;
+        const JPH::BodyLockRead lock(sys->GetBodyLockInterfaceNoLock(), id);
+        if (!lock.Succeeded()) return -1.0f;
+        const JPH::Body& b = lock.GetBody();
+        if (!b.IsDynamic()) return -1.0f;
+        const f32 inv = b.GetMotionProperties()->GetInverseMass();
+        return inv > 1.0e-9f ? 1.0f / inv : 1.0e9f;
+    }
+
+private:
+    void Classify(const JPH::CharacterVirtual* ch, const JPH::BodyID& body, JPH::Vec3Arg normal,
+                  JPH::CharacterContactSettings& io) const
+    {
+        const f32 bodyMass = DynamicBodyMass(m_sys, body);
+        if (bodyMass < 0.0f) return;   // 静的/キネマティック: 既定のまま
+        const f32 charMass = ch->GetMass();
+        if (!physlogic::CanBodyPushCharacter(bodyMass, charMass))
+            io.mCanPushCharacter = false;
+        // 足元（法線がキャラの下方向と 45 度以内）の動的剛体へ掛かる体重を、剛体の質量に見合う実効質量へ
+        // 頭打ちにする（Jolt はこの mMass で毎ステップ体重インパルスを与える）。
+        // StepOneCharacter が毎ステップ頭で mMass を元へ戻すので、ここでは min で下げるだけ。
+        // ★contact normal は「キャラから接触面へ」向く（足元の面は下向き＝ -up。実測 ny=-1）。
+        // ★mCanReceiveImpulses=false で体重を止める案は【不可】: 実測で箱が 27m/s で飛んだ
+        //   （足元以外の接触点にだけ押し出しが残るため）。質量を下げる方が安定する。
+        if (normal.Dot(ch->GetUp()) < -0.7f)
+        {
+            const f32 cap = physlogic::StandingMass(charMass, m_sys->GetGravity().Length(), bodyMass);
+            if (cap < ch->GetMass())
+                const_cast<JPH::CharacterVirtual*>(ch)->SetMass(cap);
+        }
+    }
+
+    JPH::PhysicsSystem* m_sys;
+};
+
 } // anonymous namespace
 
 // ========== JoltImpl ==========
@@ -208,6 +278,8 @@ struct PhysicsSystem::JoltImpl
     ObjLayerPairFilter                         objLayerPairFilter;
     std::unique_ptr<JPH::PhysicsSystem>        physicsSystem;
     std::unique_ptr<JPH::ContactListener>      contactListener; // EngineContactListener
+    // 全キャラ共通。characters より前に宣言＝キャラより後に破棄される（キャラが生きている間は有効）。
+    std::unique_ptr<EngineCharacterListener>   charListener;
 
     // entity → CharacterVirtual（Play 中のみ）。Ref で寿命管理。
     // メンバ宣言順では characters が physicsSystem の後ろ＝デストラクト時に先に破棄される
@@ -217,6 +289,19 @@ struct PhysicsSystem::JoltImpl
     // 端数で補間する（→ SyncCharactersToTransforms）。ここに置いてあるのは
     // CharacterController のレイアウトを変えずに済ませるため。
     std::unordered_map<entt::entity, JPH::RVec3> prevCharPos;
+
+    // 動的剛体の「1 固定ステップ前」の姿勢（描画補間の起点。キャラの prevCharPos の剛体版）。
+    // stamp = 控えたときのステップ番号。最後のステップで控えていないもの（そのステップ中に
+    // 起きた/寝ていた）は古い姿勢なので補間に使わず、現在の姿勢をそのまま書く。
+    struct BodyPrev
+    {
+        JPH::RVec3 pos = JPH::RVec3::sZero();
+        JPH::Quat  rot = JPH::Quat::sIdentity();
+        u32        stamp = 0;
+        bool       interpolated = false;   // 補間値(alpha<1)を Transform に書いたまま。寝る時に最終姿勢で上書きする
+    };
+    std::unordered_map<uint32_t, BodyPrev> prevBody;
+    u32 stepStamp = 0;   // 実行した固定ステップの通し番号
 
     // MeshCollider の三角形形状キャッシュ。キー = modelPath + "|" + scale。
     // 同じモデルを何千個置く「レベル丸ごと取り込み」で BVH を毎回組むと数十秒かかるので、
@@ -378,6 +463,7 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
     int steppedCount = 0;
     while (m_accumulator >= kFixedTimeStep)
     {
+        CapturePrevBodyPoses();   // 描画補間の起点（動的剛体の「このステップを踏む前」の姿勢）
         m_impl->physicsSystem->Update(
             kFixedTimeStep, kCollisionSteps,
             m_impl->tempAllocator.get(), m_impl->jobSystem.get());
@@ -570,9 +656,47 @@ void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry, f32 dt)
     }
 }
 
+// 動的剛体の「このステップを踏む前」の姿勢を控える。物理ステップの直前に毎回呼ぶ。
+// 起きている剛体だけが対象（寝ている物は動かないので控える必要が無い）。
+void PhysicsSystem::CapturePrevBodyPoses()
+{
+    auto& physics = *m_impl->physicsSystem;
+    auto& bodyInterface = physics.GetBodyInterfaceNoLock();
+    ++m_impl->stepStamp;
+
+    const JPH::BodyID* active = physics.GetActiveBodiesUnsafe(JPH::EBodyType::RigidBody);
+    const JPH::uint    count  = physics.GetNumActiveBodies(JPH::EBodyType::RigidBody);
+    for (JPH::uint i = 0; i < count; ++i)
+    {
+        const JPH::BodyID id = active[i];
+        if (bodyInterface.GetMotionType(id) != JPH::EMotionType::Dynamic) continue;
+        auto& prev = m_impl->prevBody[id.GetIndexAndSequenceNumber()];
+        prev.pos   = bodyInterface.GetPosition(id);
+        prev.rot   = bodyInterface.GetRotation(id);
+        prev.stamp = m_impl->stepStamp;
+    }
+}
+
 void PhysicsSystem::SyncPhysicsToTransforms(entt::registry& registry)
 {
     auto& bodyInterface = m_impl->physicsSystem->GetBodyInterfaceNoLock();
+
+    // ★描画用の姿勢は「1 固定ステップ前」と現在の間を accumulator の端数で補間して書く
+    //   （キャラの SyncCharactersToTransforms と同じ流儀）。
+    //   物理は 60Hz 固定、描画は 144fps 等なので、素の姿勢を書くと「同じ姿勢のフレーム」と
+    //   「2 ステップぶん飛ぶフレーム」が混ざって、転がる・落ちる剛体ががくがく動いて見える
+    //   （実測: 144fps で落下中の箱の 58% のフレームが移動 0）。しかもキャラ（カメラ）だけが
+    //   補間されていたので、相対的にもガタついて見えていた。
+    //
+    //   【影響】Transform は最大 1 固定ステップ(16.7ms)遅れた姿勢になる。ゲームロジックが
+    //   Transform から読む剛体の位置は、その分だけ過去（60Hz 換算で数 cm）。
+    //   物理クエリ（raycast / overlap / ground チェック）は Jolt 上の素の姿勢を使うので、
+    //   見た目だけが遅れ、当たり判定は遅れない。
+    //   キネマティックは対象外（ゲームが Transform を動かす側で、ここは書き戻さない）。
+    //   寝ている剛体は従来どおり書かない（寝る直前に補間値が残っていたら最終姿勢で 1 回だけ上書きする）。
+    //   テレポート（physics:setPosition/warp・1 ステップで 5m を超える移動・寝ていた物が起きた直後）は
+    //   補間せず現在の姿勢をそのまま出す。
+    const f32 alpha = physlogic::InterpAlpha(m_accumulator, kFixedTimeStep);
 
     auto view = registry.view<Transform, RigidBody>();
     for (auto [entity, transform, rb] : view.each())
@@ -582,10 +706,48 @@ void PhysicsSystem::SyncPhysicsToTransforms(entt::registry& registry)
 
         JPH::BodyID joltId(rb.bodyId);
 
-        if (!bodyInterface.IsActive(joltId)) continue;
+        auto prevIt = m_impl->prevBody.find(rb.bodyId);
+        const bool active = bodyInterface.IsActive(joltId);
+        if (!active)
+        {
+            // 寝た。補間値のまま止まっていたら、最終姿勢（Jolt 上の素の姿勢）で 1 回だけ確定させる。
+            if (prevIt == m_impl->prevBody.end() || !prevIt->second.interpolated) continue;
+            prevIt->second.interpolated = false;
+        }
 
         JPH::RVec3 pos = bodyInterface.GetPosition(joltId);
         JPH::Quat  rot = bodyInterface.GetRotation(joltId);
+
+        if (active && prevIt != m_impl->prevBody.end() && prevIt->second.stamp == m_impl->stepStamp)
+        {
+            auto& prev = prevIt->second;
+            const JPH::RVec3 d = pos - prev.pos;
+            if (!physlogic::IsTeleport(static_cast<f32>(d.GetX()), static_cast<f32>(d.GetY()),
+                                       static_cast<f32>(d.GetZ())))
+            {
+                const f32 a3[3] = { static_cast<f32>(prev.pos.GetX()), static_cast<f32>(prev.pos.GetY()),
+                                    static_cast<f32>(prev.pos.GetZ()) };
+                const f32 b3[3] = { static_cast<f32>(pos.GetX()), static_cast<f32>(pos.GetY()),
+                                    static_cast<f32>(pos.GetZ()) };
+                f32 p3[3];
+                physlogic::LerpVec3(a3, b3, alpha, p3);
+                const f32 a4[4] = { prev.rot.GetX(), prev.rot.GetY(), prev.rot.GetZ(), prev.rot.GetW() };
+                const f32 b4[4] = { rot.GetX(), rot.GetY(), rot.GetZ(), rot.GetW() };
+                f32 q4[4];
+                physlogic::NlerpQuat(a4, b4, alpha, q4);
+                pos = JPH::RVec3(p3[0], p3[1], p3[2]);
+                rot = JPH::Quat(q4[0], q4[1], q4[2], q4[3]);
+                prev.interpolated = alpha < 1.0f;
+            }
+            else
+            {
+                prev.interpolated = false;
+            }
+        }
+        else if (prevIt != m_impl->prevBody.end())
+        {
+            prevIt->second.interpolated = false;
+        }
 
         // コライダーのオフセットを引いてTransform位置に戻す
         f32 offsetX = 0.0f, offsetY = 0.0f, offsetZ = 0.0f;
@@ -626,6 +788,7 @@ void PhysicsSystem::ReleaseOrphanedPhysicsBodies(entt::registry& registry)
             JPH::BodyID joltId(it->first);
             bodyInterface.RemoveBody(joltId);
             bodyInterface.DestroyBody(joltId);
+            m_impl->prevBody.erase(it->first);
             it = m_bodyToEntity.erase(it);
         }
     }
@@ -1090,6 +1253,7 @@ void PhysicsSystem::UnregisterBody(entt::registry& registry, entt::entity entity
     bodyInterface.RemoveBody(joltId);
     bodyInterface.DestroyBody(joltId);
     m_bodyToEntity.erase(rb->bodyId);
+    m_impl->prevBody.erase(rb->bodyId);
     rb->bodyId = kInvalidBodyId;
 }
 
@@ -1110,6 +1274,7 @@ void PhysicsSystem::UnregisterAllBodies(entt::registry& registry)
         rb.bodyId = kInvalidBodyId;
     }
     m_bodyToEntity.clear();   // 念のため全消去
+    m_impl->prevBody.clear();
     m_impl->meshShapeCache.clear();   // メッシュ形状キャッシュも捨てる（次のシーンの Mesh* とは無関係）
 }
 
@@ -1134,6 +1299,9 @@ void PhysicsSystem::RegisterCharacter(entt::registry& registry, entt::entity ent
     JPH::Ref<JPH::CharacterVirtualSettings> settings = new JPH::CharacterVirtualSettings();
     settings->mShape         = shape;                 // base CharacterBaseSettings::mShape
     settings->mMass          = cc->mass;
+    // キャラが剛体を押せる最大の力。Jolt 既定の 100N は質量 70kg のキャラには弱く、軽い物には
+    // 過剰なので、質量に比例させる（70kg → 350N）。軽い箱は相対速度ぶんしか押されないので飛ばない。
+    settings->mMaxStrength   = (std::max)(100.0f, cc->mass * 5.0f);
     settings->mMaxSlopeAngle = DirectX::XMConvertToRadians(cc->maxSlopeDeg); // 度→ラジアン必須
     settings->mShapeOffset   = JPH::Vec3(cc->offset.x, cc->offset.y, cc->offset.z);
     settings->mUp            = JPH::Vec3(0, 1, 0);    // base
@@ -1152,6 +1320,11 @@ void PhysicsSystem::RegisterCharacter(entt::registry& registry, entt::entity ent
     JPH::Ref<JPH::CharacterVirtual> ch = new JPH::CharacterVirtual(
         settings, pos, rot, static_cast<JPH::uint64>(entt::to_integral(entity)),
         m_impl->physicsSystem.get());
+
+    // 動的剛体との押し合いの規約（足元の軽い箱を跳ね飛ばさない・軽い箱にキャラを押させない）。
+    if (!m_impl->charListener)
+        m_impl->charListener = std::make_unique<EngineCharacterListener>(m_impl->physicsSystem.get());
+    ch->SetListener(m_impl->charListener.get());
 
     m_impl->characters[entity] = ch;
     cc->_registered  = true;
@@ -1186,6 +1359,21 @@ void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
 {
     if (!m_initialized || m_impl->characters.empty()) return;
 
+    // ★ここではゼロ化しない。1 フレームに複数ステップ回ると 2 本目以降が
+    //   入力ゼロで進んでしまうため、Update() のループを抜けた所で 1 回だけ消す。
+    for (auto& [entity, ch] : m_impl->characters)
+        StepOneCharacter(entity, fixedDt, registry, /*recordPrev=*/true);
+}
+
+void PhysicsSystem::StepOneCharacter(entt::entity entity, f32 fixedDt, entt::registry& registry, bool recordPrev)
+{
+    auto it = m_impl->characters.find(entity);
+    if (it == m_impl->characters.end()) return;
+    auto* cc = registry.try_get<CharacterController>(entity);
+    if (!cc) return;
+    auto& ch = it->second;
+
+    const JPH::PhysicsSystem* sys = m_impl->physicsSystem.get();
     const JPH::Vec3 baseGravity = m_impl->physicsSystem->GetGravity(); // (0,-14,0)
 
     JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings; // 既定 + stepHeight 反映
@@ -1193,83 +1381,44 @@ void PhysicsSystem::StepCharacters(f32 fixedDt, entt::registry& registry)
     JPH::DefaultBroadPhaseLayerFilter bpFilter(m_impl->objVsBpFilter, Layers::MOVING);
     JPH::DefaultObjectLayerFilter     objFilter(m_impl->objLayerPairFilter, Layers::MOVING);
 
-    for (auto& [entity, ch] : m_impl->characters)
-    {
-        auto* cc = registry.try_get<CharacterController>(entity);
-        if (!cc) continue;
+    // 描画補間用に、このステップを踏む前の位置を控える
+    if (recordPrev) m_impl->prevCharPos[entity] = ch->GetPosition();
 
-        // 描画補間用に、このステップを踏む前の位置を控える
-        m_impl->prevCharPos[entity] = ch->GetPosition();
+    // 体重の頭打ち（contact listener が足元の動的剛体ごとに掛ける）は毎ステップ掛け直すので、まず元の質量へ戻す。
+    ch->SetMass(cc->mass);
 
-        // 接地状態更新（前ステップ結果）
-        bool grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+    // 接地状態更新（前ステップ結果）
+    const bool grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
 
-        // 鉛直速度: 接地中はリセット、空中は重力積分
-        if (grounded && cc->_verticalVel < 0.0f) cc->_verticalVel = 0.0f;
-        cc->_verticalVel += baseGravity.GetY() * cc->gravityScale * fixedDt;
-
-        // ジャンプ要求（接地中のみ受け付け）
-        if (cc->_jumpQueued && grounded)
-            cc->_verticalVel = (cc->_jumpOverride > 0.0f) ? cc->_jumpOverride : cc->jumpSpeed;
-        cc->_jumpQueued   = false;
-        cc->_jumpOverride = -1.0f;   // 今回ぶんだけ
-
-        // 目標速度合成: 水平=move()入力 + 接地面速度、鉛直=積分結果
-        JPH::Vec3 ground = ch->GetGroundVelocity();
-        JPH::Vec3 vel(cc->_desiredVel.x + (grounded ? ground.GetX() : 0.0f),
-                      cc->_verticalVel,
-                      cc->_desiredVel.z + (grounded ? ground.GetZ() : 0.0f));
-        ch->SetLinearVelocity(vel);
-
-        // step height（段差登り）
-        updateSettings.mWalkStairsStepUp = JPH::Vec3(0, cc->stepHeight, 0);
-
-        ch->ExtendedUpdate(
-            fixedDt,
-            baseGravity * cc->gravityScale,
-            updateSettings,
-            bpFilter, objFilter,
-            JPH::BodyFilter{}, JPH::ShapeFilter{},
-            *m_impl->tempAllocator);
-
-        cc->_grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
-
-        // ★ここではゼロ化しない。1 フレームに複数ステップ回ると 2 本目以降が
-        //   入力ゼロで進んでしまうため、Update() のループを抜けた所で 1 回だけ消す。
-    }
-}
-
-void PhysicsSystem::StepSingleCharacter(entt::entity entity, f32 fixedDt, entt::registry& registry)
-{
-    // マルチプレイ予測リコンシリエーションのリプレイ専用。StepCharacters と同一ロジックだが
-    // 指定した1体のみを進める(他キャラ/剛体のワールド状態は現在のまま=一般的な近似)。
-    if (!m_initialized) return;
-    auto it = m_impl->characters.find(entity);
-    if (it == m_impl->characters.end()) return;
-    auto* cc = registry.try_get<CharacterController>(entity);
-    if (!cc) return;
-
-    auto& ch = it->second;
-    const JPH::Vec3 baseGravity = m_impl->physicsSystem->GetGravity();
-
-    JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;
-    JPH::DefaultBroadPhaseLayerFilter bpFilter(m_impl->objVsBpFilter, Layers::MOVING);
-    JPH::DefaultObjectLayerFilter     objFilter(m_impl->objLayerPairFilter, Layers::MOVING);
-
-    bool grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+    // 鉛直速度: 接地中はリセット、空中は重力積分
     if (grounded && cc->_verticalVel < 0.0f) cc->_verticalVel = 0.0f;
     cc->_verticalVel += baseGravity.GetY() * cc->gravityScale * fixedDt;
+
+    // ジャンプ要求（接地中のみ受け付け）
     if (cc->_jumpQueued && grounded)
         cc->_verticalVel = (cc->_jumpOverride > 0.0f) ? cc->_jumpOverride : cc->jumpSpeed;
     cc->_jumpQueued   = false;
-    cc->_jumpOverride = -1.0f;
+    cc->_jumpOverride = -1.0f;   // 今回ぶんだけ
 
-    JPH::Vec3 ground = ch->GetGroundVelocity();
-    JPH::Vec3 vel(cc->_desiredVel.x + (grounded ? ground.GetX() : 0.0f),
+    // 目標速度合成: 水平=move()入力 + 接地面速度、鉛直=積分結果
+    // ★接地面速度の継承は、静的/キネマティック（動く床・エレベーター）は従来どおり全部、
+    //   動的剛体は質量で絞る（PhysicsLogic.h GroundVelocityScale）。
+    //   以前は箱の速度をそのまま拾っていたので、キャラが箱を押す→箱が揺れる→その速度を
+    //   キャラが拾う、のフィードバックで、軽い箱に載ると両方が吹き飛んだ。
+    JPH::Vec3 ground = JPH::Vec3::sZero();
+    if (grounded)
+    {
+        ground = ch->GetGroundVelocity();
+        const f32 bodyMass = EngineCharacterListener::DynamicBodyMass(sys, ch->GetGroundBodyID());
+        if (bodyMass >= 0.0f)
+            ground *= physlogic::GroundVelocityScale(bodyMass, ch->GetMass());
+    }
+    JPH::Vec3 vel(cc->_desiredVel.x + ground.GetX(),
                   cc->_verticalVel,
-                  cc->_desiredVel.z + (grounded ? ground.GetZ() : 0.0f));
+                  cc->_desiredVel.z + ground.GetZ());
     ch->SetLinearVelocity(vel);
 
+    // step height（段差登り）
     updateSettings.mWalkStairsStepUp = JPH::Vec3(0, cc->stepHeight, 0);
 
     ch->ExtendedUpdate(
@@ -1281,7 +1430,17 @@ void PhysicsSystem::StepSingleCharacter(entt::entity entity, f32 fixedDt, entt::
         *m_impl->tempAllocator);
 
     cc->_grounded = ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
-    cc->_desiredVel = { 0.0f, 0.0f, 0.0f };
+}
+
+void PhysicsSystem::StepSingleCharacter(entt::entity entity, f32 fixedDt, entt::registry& registry)
+{
+    // マルチプレイ予測リコンシリエーションのリプレイ専用。StepCharacters と同一ロジック
+    // (StepOneCharacter 共通)で指定した1体のみを進める(他キャラ/剛体のワールド状態は現在のまま=一般的な近似)。
+    // リプレイは補間の起点(prevCharPos)を触らない。
+    if (!m_initialized || m_impl->characters.find(entity) == m_impl->characters.end()) return;
+    StepOneCharacter(entity, fixedDt, registry, /*recordPrev=*/false);
+    if (auto* cc = registry.try_get<CharacterController>(entity))
+        cc->_desiredVel = { 0.0f, 0.0f, 0.0f };
 }
 
 void PhysicsSystem::SetCharacterPosition(entt::entity entity, DirectX::XMFLOAT3 pos)
@@ -1366,6 +1525,9 @@ void PhysicsSystem::SetPosition(uint32_t bodyId, XMFLOAT3 pos)
     bi.SetPosition(JPH::BodyID(bodyId),
                    JPH::RVec3(pos.x, pos.y, pos.z),
                    JPH::EActivation::Activate);
+    // テレポートなので描画補間の起点も捨てる（さもないと旧位置から新位置を 1 ステップかけて舐める）。
+    // 次の固定ステップで控え直すまでは現在の姿勢をそのまま出す。
+    m_impl->prevBody.erase(bodyId);
 }
 
 // ========== Raycast ==========
