@@ -54,6 +54,8 @@ VelocityVSOut VSMain(VSInput input)
     // ＝ ForwardInstanced / Forward.hlsl の mul(normal, (float3x3)model) と同値。
     o.worldNormal = mul(modelT, float4(input.normal, 0.0f)).xyz;
 
+    o.mirror = (dot(cross(input.ir0.xyz, input.ir1.xyz), input.ir2.xyz) < 0.0f) ? 1.0f : 0.0f;
+
     float rough, metal;
     SS_UnpackMaterial(gMatPacked, rough, metal);
     o.material = float2(rough, metal);

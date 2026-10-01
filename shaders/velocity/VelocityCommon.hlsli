@@ -31,6 +31,7 @@ struct VelocityVSOut
     float4 prevClip    : TEXCOORD1;    // 前フレーム(非ジッタ)クリップ座標
     float3 worldNormal : NORMAL;       // ワールド空間法線（正規化前）
     float2 material    : TEXCOORD2;    // x=roughness y=metallic（VS で b0 から展開済み）
+    nointerpolation float mirror : TEXCOORD4;  // world 3x3 の行列式が負(ミラー)なら 1。巻き順が反転するので表裏判定を戻す
 #ifdef ALPHA_TEST
     float2 uv          : TEXCOORD3;    // アルファクリップ(MASK)バリアントだけが持つ
 #endif
@@ -87,7 +88,10 @@ PrepassOut VelocityPS(VelocityVSOut i, bool isFront : SV_IsFrontFace)
     // プリパスにはビュー空間位置が無いので SV_IsFrontFace で判定する（計画04 §6.4 の未確認 #3）。
     // 深度プリパスの PSO は CULL_NONE なので、この分岐は実際に使われる。
     float3 n = normalize(i.worldNormal);
-    if (!isFront) n = -n;
+    // ミラー(負スケール)のインスタンスは変換で巻き順が反転し、外向きの面が !isFront になる。
+    // VS が出した mirror で表裏を戻す（戻さないと球/箱が内向き法線になり RT-AO で真っ黒）。
+    const bool front = (i.mirror > 0.5) ? !isFront : isFront;
+    if (!front) n = -n;
 
     o.gbuffer = SS_PackGBuffer(n, i.material.x, i.material.y);
     return o;

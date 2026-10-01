@@ -404,7 +404,10 @@ void Mesh::InitializeAsSphere(GraphicsDevice& device, f32 radius, u32 slices, u3
             u32 i1 = i0 + 1;
             u32 i2 = i0 + (slices + 1);
             u32 i3 = i2 + 1;
-            indices.insert(indices.end(), {i0, i2, i1, i1, i2, i3});
+            // Box / Plane と同じ「cross(v1-v0, v2-v0) が外向き」の並び（SV_IsFrontFace=表）。
+            // 以前の (i0,i2,i1) は面法線が内向きで、深度プリパスの G-Buffer が裏面扱いで
+            // 法線を反転し、RT-AO / SSR / SSGI が球の内側を見ていた。
+            indices.insert(indices.end(), {i0, i1, i2, i1, i3, i2});
         }
     }
 

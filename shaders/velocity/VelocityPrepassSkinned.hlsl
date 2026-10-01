@@ -71,6 +71,7 @@ VelocityVSOut VSMain(VSInput input)
     float rough, metal;
     SS_UnpackMaterial(gMatPacked, rough, metal);
     o.material = float2(rough, metal);
+    o.mirror   = 0.0f;   // スキンドは骨が巻き順を決める（モデル行列の符号は使わない）
 #ifdef ALPHA_TEST
     o.uv = input.texCoord;   // MASK バリアントだけ UV を流す（PS で clip する）
 #endif

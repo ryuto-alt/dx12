@@ -62,6 +62,8 @@ VelocityVSOut VSMain(VSInput input)
                           dot(input.normal, gNrm1),
                           dot(input.normal, gNrm2));
 
+    o.mirror = (dot(cross(gNrm0, gNrm1), gNrm2) < 0.0f) ? 1.0f : 0.0f;
+
     float rough, metal;
     SS_UnpackMaterial(gMatPacked, rough, metal);
     o.material = float2(rough, metal);
