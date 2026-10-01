@@ -273,7 +273,7 @@ void FillManifestChunk3(ManifestRows& o)
         "render", "render_setting", "occlusion", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_occlusion", {
         })});
-    o.push_back({"get_physics_state", M("エンティティの物理ランタイム状態(速度・接地判定)を読む。{entityId, hasRigidBody, velocity:[x,y,z], hasCharacterController, isGrounded}。",
+    o.push_back({"get_physics_state", M("エンティティの物理ランタイム状態(速度・接地判定)を読む。{entityId, hasRigidBody, velocity:[x,y,z], hasCharacterController, isGrounded, world}。entity / name を省くと物理世界の診断 {world:{bodies, max*, updateErrorFlags(上限超過: 1=接触キャッシュ 2=ボディ対 4=接触拘束。超えた分の接触は無視される), failedBodies(作れなかったボディ数), droppedSteps}} だけを返す。床を抜ける / 一部に判定が無い原因はここ。",
         "get physics state 物理ランタイム状態取得",
         "physics", "", "", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_physics_state", {
@@ -665,7 +665,7 @@ void FillManifestChunk7(ManifestRows& o)
         "none", "dx12_open_scene", {
             P("path", "assetPath", true, nullptr, nullptr, nullptr, nullptr, "assets 相対パス。例: scenes/title.json"),
         })});
-    o.push_back({"overlap_box", M("center を中心とする AABB(半幅 halfExtents)と重なっている物理ボディのエンティティを列挙する。★Playing 中のみ意味のある結果。",
+    o.push_back({"overlap_box", M("center を中心とする箱(半幅 halfExtents・軸平行)と重なっている物理ボディのエンティティを列挙する。★判定は相手の実形状(回した壁・メッシュの凹みも見る。以前の AABB のみ判定ではない)。CharacterController のキャラもカプセルとして含む。同じエンティティは 1 回だけ。★Playing 中のみ意味のある結果。",
         "overlap box ボックス範囲の物理クエリ",
         "physics", "", "", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_overlap_box", {
@@ -673,7 +673,7 @@ void FillManifestChunk7(ManifestRows& o)
             P("halfExtents", "vec3", true, nullptr, nullptr, nullptr, nullptr, "[x,y,z] AABB の半幅。"),
             P("maxResults", "int", false, nullptr, nullptr, nullptr, nullptr, "最大取得数(既定 32、上限 256)。"),
         })});
-    o.push_back({"overlap_sphere", M("center を中心とする半径 radius の球と重なっている物理ボディのエンティティを列挙する。★Playing 中のみ意味のある結果。",
+    o.push_back({"overlap_sphere", M("center を中心とする半径 radius の球と重なっている物理ボディのエンティティを列挙する。★判定は相手の実形状(回した壁・メッシュの凹みも見る。以前の AABB のみ判定ではない)。CharacterController のキャラもカプセルとして含む。同じエンティティは 1 回だけ。★Playing 中のみ意味のある結果。",
         "overlap sphere 球範囲の物理クエリ",
         "physics", "", "", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_overlap_sphere", {
@@ -759,7 +759,7 @@ void FillManifestChunk8(ManifestRows& o)
             P("tag", "string", false, nullptr, nullptr, nullptr, nullptr, "このタグを持つエンティティを列挙。"),
             P("box", "vec4", false, nullptr, nullptr, nullptr, nullptr, "[minX,minZ,maxX,maxZ]。この XZ 矩形に入るエンティティを列挙。"),
         })});
-    o.push_back({"raycast", M("origin から direction 方向へ物理レイを飛ばし、最初にヒットしたボディを調べる。★Playing 中のみ意味のある結果(Editor 中は body 未登録なので hit=false)。",
+    o.push_back({"raycast", M("origin から direction 方向へ物理レイを飛ばし、最初にヒットしたボディを調べる。CharacterController のキャラ(ボディを持たない)もカプセルとして当たり、結果は {entityId, name, character:true}。始点がキャラのカプセルの中にあるときは、そのキャラは無視される。★Playing 中のみ意味のある結果(Editor 中は body 未登録なので hit=false)。",
         "raycast レイキャスト",
         "physics", "", "", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_raycast", {

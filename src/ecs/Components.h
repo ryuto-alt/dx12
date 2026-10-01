@@ -1398,6 +1398,21 @@ struct RigidBody
     uint32_t   bodyId = kInvalidBodyId;
 };
 
+// ★新規に RigidBody を足す経路（エディタの Add Component / Physics・MCP の set_component（無いものを作る時）・
+//   Lua の addRigidBody）用の既定。RigidBody{} の既定値（上）は**変えない**: シーン JSON が省略したキーの意味が
+//   変わり、既存シーンの挙動が変わってしまうため（v1 の読み込みは従来どおり RigidBody{}・v2 の凍結表も不変）。
+//   新規作成だけ「落ち着く」値にする:
+//     摩擦 0.6 / 反発 0.1 … 既定の 0.3 / 0.4 では 10 段の塔が 15 秒経っても寝ない（実測）。0.6 / 0.1 は落ち着く
+//     CCD ON … 動的な箱 / 球は 20〜45 m/s で厚さ 0.2m の壁も抜ける（実測）。ON は全条件で阻止
+inline RigidBody NewRigidBody()
+{
+    RigidBody rb;
+    rb.friction            = 0.6f;
+    rb.restitution         = 0.1f;
+    rb.continuousCollision = true;
+    return rb;
+}
+
 struct BoxCollider
 {
     DirectX::XMFLOAT3 halfExtents = {0.5f, 0.5f, 0.5f};

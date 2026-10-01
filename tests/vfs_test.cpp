@@ -357,6 +357,62 @@ static void Test_NormalizeCanonical()
     CHECK(vfs::FnvHash(Normalize("assets/models/a.glb")) == vfs::FnvHash("models/a.glb"));
 }
 
+// ビルド時に pak へテクスチャキャッシュを足す（PakWriter::OpenAppend）。既存エントリは壊さず、追記分も読めること。
+static void Test_PakAppend()
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path dir = fs::temp_directory_path() / "dx12_pak_append_test";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+
+    std::vector<uint8_t> a(5000), b(70000), c(33333);
+    for (size_t i = 0; i < a.size(); ++i) a[i] = static_cast<uint8_t>(i * 7);
+    for (size_t i = 0; i < b.size(); ++i) b[i] = static_cast<uint8_t>((i * 131) ^ (i >> 5));   // 圧縮が効きにくい
+    for (size_t i = 0; i < c.size(); ++i) c[i] = static_cast<uint8_t>(i % 11);               // 圧縮が効く
+    auto wr = [&](const char* n, const std::vector<uint8_t>& v) {
+        std::ofstream o(dir / n, std::ios::binary);
+        o.write(reinterpret_cast<const char*>(v.data()), static_cast<std::streamsize>(v.size()));
+        return (dir / n).string();
+    };
+    const std::string pakPath = (dir / "g.pak").string();
+    {
+        vfs::PakWriter w;
+        CHECK(w.Open(pakPath));
+        CHECK(w.AddFile(wr("a.bin", a), "scenes/a.json"));
+        CHECK(w.AddFile(wr("b.bin", b), "models/b.bin"));
+        CHECK(w.Finish(/*stripStrings=*/true));
+    }
+    {
+        vfs::PakWriter w;
+        CHECK(w.OpenAppend(pakPath));
+        CHECK(w.AddFile(wr("c.bin", c), "texcache/t0123456789abcdef.dds"));
+        CHECK(!w.AddFile(wr("a2.bin", a), "scenes/a.json"));   // 既存と同じキーは拒否（衝突）
+        CHECK(w.Finish(/*stripStrings=*/true));
+    }
+    {
+        vfs::PakArchive pk;
+        CHECK(pk.Mount(pakPath));
+        std::vector<uint8_t> g;
+        CHECK(pk.Read("scenes/a.json", g)); CHECK(g == a);
+        CHECK(pk.Read("models/b.bin", g));  CHECK(g == b);
+        CHECK(pk.Read("texcache/t0123456789abcdef.dds", g)); CHECK(g == c);
+    }
+    // 追記をもう一度（2 回目の追記でも壊れない）
+    {
+        vfs::PakWriter w;
+        CHECK(w.OpenAppend(pakPath));
+        CHECK(w.AddFile(wr("c.bin", c), "texcache/t1111111111111111.dds"));
+        CHECK(w.Finish(true));
+        vfs::PakArchive pk;
+        CHECK(pk.Mount(pakPath));
+        std::vector<uint8_t> g;
+        CHECK(pk.Read("models/b.bin", g)); CHECK(g == b);
+        CHECK(pk.Read("texcache/t1111111111111111.dds", g)); CHECK(g == c);
+    }
+    fs::remove_all(dir, ec);
+}
+
 int main()
 {
     Test_AesRoundTrip();
@@ -366,6 +422,7 @@ int main()
     Test_ReadAssetAbs_GameMode();
     Test_MountPak_NonAsciiPath();
     Test_NormalizeCanonical();
+    Test_PakAppend();
 
     std::printf("Vfs: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

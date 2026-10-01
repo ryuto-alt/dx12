@@ -21,6 +21,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 using namespace dx12e;
 
@@ -99,6 +100,47 @@ int main()
         const XMFLOAT3 he = collider::BoxHalfExtents({1.0f, 1.0f, 1.0f}, zero);
         CHECK_F(he.x, 0.0f);
         CHECK_F(collider::SphereRadius(1.0f, zero), 0.0f);
+    }
+
+    // ---- 凸包の頂点の間引き: 極値（外形）を残す ----
+    {
+        std::vector<XMFLOAT3> pts;
+        for (int i = 0; i < 5000; ++i)
+        {
+            const float y = 1.0f - 2.0f * (static_cast<float>(i) + 0.5f) / 5000.0f;
+            const float r = std::sqrt(1.0f - y * y), phi = static_cast<float>(i) * 2.3999632f;
+            pts.push_back({ std::cos(phi) * r * 1.5f, y * 1.5f, std::sin(phi) * r * 1.5f });
+        }
+        pts.push_back({ 0.1f, 3.0f, 0.2f });     // 末尾の 1 点だけが遠い（step おきの間引きだと落ちる）
+        const std::vector<XMFLOAT3> red = collider::ReduceHullPoints(pts, 256);
+        CHECK(red.size() <= 256 && red.size() >= 128);
+        float maxY = -1e9f, minY = 1e9f, maxX = -1e9f;
+        for (const auto& p : red) { maxY = (std::max)(maxY, p.y); minY = (std::min)(minY, p.y); maxX = (std::max)(maxX, p.x); }
+        CHECK_F(maxY, 3.0f);                     // 遠い 1 点は残る
+        CHECK(minY < -1.45f);                    // 反対側の極値も外形を保つ（球の底）
+        CHECK(maxX > 1.4f);
+        // 決定論・256 以下はそのまま
+        CHECK(collider::ReduceHullPoints(pts, 256).size() == red.size());
+        std::vector<XMFLOAT3> small(pts.begin(), pts.begin() + 100);
+        CHECK(collider::ReduceHullPoints(small, 256).size() == 100);
+    }
+
+    // ---- 物理が使う「安全な」サイズ（負・0・NaN）----
+    {
+        const float nan = std::nanf("");
+        CHECK_F(collider::SafeSize(-2.0f), 2.0f);
+        CHECK_F(collider::SafeSize(0.0f), collider::kMinColliderSize);
+        CHECK_F(collider::SafeSize(nan), collider::kMinColliderSize);
+        CHECK_F(collider::EffectiveCapsuleHalfHeight(1.0f, XMFLOAT3{1.0f, -3.0f, 1.0f}), 3.0f);
+        CHECK_F(collider::EffectiveCapsuleRadius(0.5f, XMFLOAT3{-4.0f, 1.0f, 2.0f}), 2.0f);
+        // BoxShape の丸め半径は最小ハーフサイズ以下（薄い板で Jolt の前提 half >= radius を守る）
+        CHECK_F(collider::BoxConvexRadius(XMFLOAT3{0.5f, 0.01f, 0.5f}), 0.01f);
+        CHECK_F(collider::BoxConvexRadius(XMFLOAT3{0.5f, 0.5f, 0.5f}), 0.05f);
+        // offset はスケールを掛ける（符号つき）
+        const XMFLOAT3 so = collider::ScaledOffset({2.0f, 1.0f, 0.0f}, {-2.0f, 3.0f, 5.0f});
+        CHECK_F(so.x, -4.0f); CHECK_F(so.y, 3.0f); CHECK_F(so.z, 0.0f);
+        const XMFLOAT3 ms = collider::SafeMeshScale({0.0f, -1.0f, nan});
+        CHECK_F(ms.x, collider::kMinColliderSize); CHECK_F(ms.y, -1.0f); CHECK_F(ms.z, collider::kMinColliderSize);
     }
 
     std::printf("%s: %d checks, %d failures\n",

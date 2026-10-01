@@ -2,6 +2,7 @@
 #include "scene/SceneFormatV2.h"
 #include "scene/Scene.h"
 #include "ecs/Components.h"
+#include "physics/ColliderShape.h"         // ConvexHullCollider の頂点の間引き（collider::ReduceHullPoints。ヘッダのみ）
 #include "ecs/ComponentMeta.h"             // entt::meta フィールド反映（シリアライズの単一ソース）
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
@@ -16,6 +17,7 @@
 #include "renderer/foliage/SceneWind.h"
 #include "ecs/InstanceGroup.h"
 #include "scene/InstanceGroupIO.h"   // インスタンス群のサイドカー
+#include "scene/MissingModel.h"      // モデルが読めなかったエンティティの描画データを保持して書き戻す
 
 #pragma warning(push)
 #pragma warning(disable: 4189 4456 4458 4267 4996)
@@ -215,6 +217,15 @@ static bool JsonToMetaField(entt::meta_any& obj, const entt::meta_data& data, co
 // 反射登録（MakeReflectedInfo）と同じ場所で積むので、コンポーネントを足しても一覧の更新漏れが起きない。
 // 表そのものは凍結データ（src/scene/scene_defaults_v2.json）で、これは生成ツール（SceneSerializer::BuildDefaultsTableV2Json）専用。
 static json SerializeEntityJson(const entt::registry& reg, entt::entity entity, const std::string& assetsDir);
+
+// MeshRenderer があるときだけ書かれる描画まわりのキー（SerializeEntityJson の MeshRenderer 節）。
+// モデルが読めなかったエンティティはこれを MissingModel に取っておき、保存時に書き戻す。
+static const char* const kRendererKeys[] = {
+    "meshRenderer", "material", "color", "uvTiling", "uvScroll", "flipbook",
+    "shader", "shaderAlphaBlend", "shaderEffectValue", "shaderParams", "shaderParamsB",
+    "materialTextureOverrides", "materialAssets",
+};
+
 struct DefaultsProbe { std::string key; std::function<json()> run; };
 static std::vector<DefaultsProbe>& DefaultsProbes()
 {
@@ -1050,6 +1061,16 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 }
             }
         }
+    }
+
+    // モデルが読めなかったエンティティ: 読み込み時に取っておいた描画まわりのキーを書き戻す
+    // （MeshRenderer が無いので上では何も書かれない。scene/MissingModel.h）。
+    if (const auto* mm = reg.try_get<MissingModel>(entity); mm && !reg.all_of<MeshRenderer>(entity))
+    {
+        const json keep = json::parse(mm->rendererJson, nullptr, /*allow_exceptions=*/false);
+        if (keep.is_object())
+            for (auto it = keep.begin(); it != keep.end(); ++it)
+                if (!ej.contains(it.key())) ej[it.key()] = it.value();
     }
 
     return ej;
@@ -1959,11 +1980,23 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
         if (g_loadTimings) g_loadTimings->modelMs += LoadMsSince(tSpawn);
         if (!entity.IsValid())
         {
+            // ★エンティティごと捨てない（scene/MissingModel.h）。捨てると次の保存でシーンから消える。
+            //   本体は作り、描画まわりのキーだけ元の JSON のまま持って保存時に書き戻す。
             OutputDebugStringA(("[Load] FAILED Spawn: " + name + " path=" + absPath + "\n").c_str());
-            return entt::null;
+            auto& reg = scene.GetRegistry();
+            e = reg.create();
+            reg.emplace<NameTag>(e, NameTag{name});
+            json keep = json::object();
+            for (const char* k : kRendererKeys)
+                if (ej.contains(k)) keep[k] = ej[k];
+            reg.emplace<MissingModel>(e, MissingModel{relPath, keep.dump()});
+            Logger::Warn("モデルが見つからないため、描画せずに残します（保存しても消えません）: {} ({})", name, relPath);
         }
-        e = entity.GetHandle();
-        if (IsDebuggerPresent()) OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
+        else
+        {
+            e = entity.GetHandle();
+            if (IsDebuggerPresent()) OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
+        }
     }
     else if (ej.contains("primitive"))
     {
@@ -2130,15 +2163,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                                 p.y * tf.scale.y,
                                 p.z * tf.scale.z });
                     }
-                    constexpr size_t kMax = 256;
-                    if (allPoints.size() > kMax)
-                    {
-                        size_t step = allPoints.size() / kMax;
-                        std::vector<XMFLOAT3> sampled;
-                        for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
-                            sampled.push_back(allPoints[i]);
-                        allPoints = std::move(sampled);
-                    }
+                    allPoints = collider::ReduceHullPoints(allPoints, 256);   // 方向ごとの極値を残す（外形を保つ）
                     if (!allPoints.empty())
                     {
                         ConvexHullCollider col;

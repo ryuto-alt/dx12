@@ -498,7 +498,9 @@ input:isKeyPressed(KEY_SPACE)
 input:isPadButtonDown(0, PAD_A)           -- pad=0(1台目), PAD_A / PAD_RB ... 定数
 input:getPadLeftStickX(0)                 -- スティックXY・トリガー・振動も input: 経由
 
-local hit = physics:raycast(origin, dir, maxDist)  -- RaycastHit{hit,distance,point,normal}
+local hit = physics:raycast(origin, dir, maxDist)  -- RaycastHit{hit,distance,point,normal,entity}。4つ目に除外する Entity も渡せる
+-- hit.entity は当たった相手（キャラ CharacterController も当たる。始点が自分のカプセルの中なら自分は無視される）
+local near = physics:overlapSphere(pos, 2.0, 16, self.entity)  -- 形状で判定（回した壁も正しく）。4つ目は結果から除く Entity
 physics:applyImpulse(e, Vec3.new(0, 5, 0))
 
 -- warp(e,x,y,z) は任意座標へ即テレポート。CharacterController は

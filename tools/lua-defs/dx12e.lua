@@ -997,6 +997,7 @@ display = nil
 ---@field distance number 距離
 ---@field point Vec3 衝突点
 ---@field normal Vec3 法線
+---@field entity Entity? 当たった相手（剛体・インスタンス群・キャラ）。無ければ nil
 
 ---@class PhysicsSystem
 local PhysicsSystem = {}
@@ -1061,31 +1062,35 @@ function PhysicsSystem:setPosition(e, pos) end
 ---local hit = physics:raycast(origin, dir, 100)
 ---if hit.hit then log("距離:", hit.distance) end
 ---```
+---キャラ（CharacterController）にも当たる。始点が自分のカプセルの中なら自分は無視される。
 ---@param origin Vec3
 ---@param dir Vec3
 ---@param maxDist number
+---@param ignoreEntity? Entity そのエンティティの剛体 / キャラを無視する
 ---@return RaycastHit
-function PhysicsSystem:raycast(origin, dir, maxDist) end
+function PhysicsSystem:raycast(origin, dir, maxDist, ignoreEntity) end
 
----ボックス範囲内のエンティティを列挙
+---ボックスと重なっているエンティティを列挙（相手の実形状で判定。キャラも含む）
 ---@param center Vec3
 ---@param half Vec3 half extents
 ---@param maxResults? integer 既定 32
+---@param ignoreEntity? Entity 結果から除く
 ---@return Entity[]
-function PhysicsSystem:overlapBox(center, half, maxResults) end
+function PhysicsSystem:overlapBox(center, half, maxResults, ignoreEntity) end
 
----球範囲内のエンティティを列挙
+---球と重なっているエンティティを列挙（相手の実形状で判定。キャラも含む）
 ---@param center Vec3
 ---@param radius number
 ---@param maxResults? integer 既定 32
+---@param ignoreEntity? Entity 結果から除く
 ---@return Entity[]
-function PhysicsSystem:overlapSphere(center, radius, maxResults) end
+function PhysicsSystem:overlapSphere(center, radius, maxResults, ignoreEntity) end
 
 ---物理タイムステップを止める / 再開する
 ---@param p boolean
 function PhysicsSystem:setPaused(p) end
 
----手動で 1 ステップ進める（pause 中の駒送り用）
+---手動で 1 ステップ進める（pause 中の駒送り用）。Transform へも書き戻す（キネマティック・キャラも 1 ステップ進む）
 ---@param dt number
 function PhysicsSystem:step(dt) end
 

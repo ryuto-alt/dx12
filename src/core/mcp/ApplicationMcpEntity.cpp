@@ -944,6 +944,12 @@ void Application::RegisterMcpEntityMethods()
                     if (info.serialize) info.serialize(reg, e, cur);
                 });
                 json merged = (cur.contains(comp) && cur[comp].is_object()) ? cur[comp] : json::object();
+                // ★rigidBody を【新しく作る】ときだけ、新規作成の既定（摩擦 0.6 / 反発 0.1 / CCD ON）を下敷きにする
+                //   （既存の rigidBody の部分更新と、シーン JSON の読み込みは従来どおり。gi.mode と同じ「新規だけ」の方針）。
+                if (comp == "rigidBody" && !(cur.contains(comp) && cur[comp].is_object()))
+                {
+                    merged = json{{"friction", 0.6}, {"restitution", 0.1}, {"continuousCollision", true}};
+                }
                 merged.update(data);
                 // deserialize に emplace-only の型があるため、"上書き(set)" 実現には
                 // 既存を remove してから登録済みデシリアライザで再生成する。

@@ -1091,6 +1091,7 @@ private:
     // ゲームモードでは何もしない。Scene に有効な cmdList が設定済みの状態で呼ぶこと。
     void EnsureEditorGrid();
     bool BuildGame();  // 成否を返す（早期 return = 失敗）
+    void BakeTexturesIntoPak(const std::filesystem::path& outputDir, const std::string& exeName);   // BuildGame 3b: BC 圧縮済みテクスチャを pak へ
     // グローバル game.lua をロード（ScriptEngine 再初期化のたびに呼ぶ）。
     // ゲームモードは pak から読むのでディスク存在チェックを迂回する。
     // グローバル game.lua を（再）読み込む。

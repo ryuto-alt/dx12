@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
+#include "core/vfs/PakFormat.h" // Normalize（キャッシュキーのパス正規化）
 #include "core/vfs/Crypto.h"   // 配布ゲームの .texcache を暗号化して書く（平文の BC 画像を exe の隣に残さない）
 #include "graphics/Texture.h"
 #include "graphics/GraphicsDevice.h"
@@ -21,6 +22,7 @@
 #include <cwctype>     // 拡張子の小文字化
 #include <filesystem>  // .texcache の作成/存在確認
 #include <fstream>     // HashFileContents（中身を読んでハッシュする）
+#include <set>         // bake で使ったキャッシュの一覧
 #include <mutex>       // 同上（プリウォームのワーカースレッドと共有するメモ）
 #include <string>
 #include <unordered_map>
@@ -289,12 +291,45 @@ uint64_t HashFileContents(const std::wstring& filePath)
     return h;
 }
 
+// ビルド時の事前生成（bake）。環境変数 DX12E_TEXBAKE_DIR を付けて起動した配布ゲームは、
+//   そのフォルダ（= エディタ側の assets/.texcache/）を平文 .dds のキャッシュとして読み書きし、
+//   使ったキャッシュのファイル名を覚えておく（TextureLoader::WriteBakeList で書き出す）。
+//   エディタは BuildGame で pak を作った後にこのゲームを隠し窓で 1 回走らせ、使われた .dds を
+//   pak の "texcache/" へ暗号化して追記する。プレイヤーの PC では初回から pak の中の BC 画像が当たる。
+//   環境変数が無ければ何も変わらない（通常の配布ゲーム / エディタには影響しない）。
+const std::string& BakeDir()
+{
+    static const std::string dir = [] {
+        char buf[1024] = {};
+        std::string d;
+        if (GetEnvironmentVariableA("DX12E_TEXBAKE_DIR", buf, sizeof(buf)) > 0) d = buf;
+        for (char& c : d) if (c == '\\') c = '/';
+        if (!d.empty() && d.back() != '/') d += '/';
+        return d;
+    }();
+    return dir;
+}
+bool BakeActive() { return vfs::InGameMode() && !BakeDir().empty(); }
+
+// キャッシュが平文 .dds か（エディタ / bake）、暗号化 .txc か（プレイヤーの PC 上のゲーム）。
+bool PlainCache() { return !vfs::InGameMode() || BakeActive(); }
+
+std::mutex                  g_bakeMutex;
+std::set<std::string>       g_bakeUsed;   // 使われたキャッシュのファイル名（"t….dds"）
+void RecordBakeUse(const std::string& stem)
+{
+    if (!BakeActive()) return;
+    std::lock_guard<std::mutex> lock(g_bakeMutex);
+    g_bakeUsed.insert(stem + ".dds");
+}
+
 // キャッシュ置き場（末尾 "/" 付き）。作成に失敗したら空文字を返す＝キャッシュ無しで動く。
 std::string CacheDir()
 {
     namespace fs = std::filesystem;
     // pak 配布では assets/ がディスクに存在しないので exe 隣へ。エディタは .thumbcache と同じ場所。
-    const std::string dir = vfs::InGameMode()
+    const std::string dir = BakeActive() ? BakeDir()
+        : vfs::InGameMode()
         ? (PathResolver::BaseDir() + ".texcache/")
         : (PathResolver::AssetsDir() + ".texcache/");
 
@@ -401,32 +436,61 @@ bool ConvertForCompression(DirectX::ScratchImage& scratch, DXGI_FORMAT dstFormat
     return true;
 }
 
-// 圧縮キャッシュのファイルパスを組む（空文字 = キャッシュ不使用）。
+// キャッシュキーの「パス」部分を、プロジェクト(assets/)からの相対へ揃える。
+// ★以前は絶対パスをそのままキーに混ぜていたので、プロジェクトを別の場所へ移す / ビルドして
+//   別の PC で動かすだけで全キャッシュがミスし、全テクスチャを BC 圧縮し直していた
+//   （配布ゲームの初回起動が 60〜90 秒掛かる原因）。元データのハッシュが中身を、このパスが
+//   名前空間（同じ中身の別用途の衝突回避）を受け持つ。大文字小文字と区切りも畳む。
+//   assets/ の外のパス（エンジン内蔵など）は絶対のまま。
+std::string NormalizeCacheKey(const std::string& key)
+{
+    std::string k = key;
+    for (char& c : k) if (c == '\\') c = '/';
+    std::string root = PathResolver::AssetsDir();
+    for (char& c : root) if (c == '\\') c = '/';
+    if (!root.empty() && root.back() != '/') root += '/';
+    auto lower = [](std::string v) {
+        for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return v;
+    };
+    if (!root.empty() && k.size() > root.size() && lower(k.substr(0, root.size())) == lower(root))
+        k.erase(0, root.size());
+    // "a/../b" のような相対表記も畳む（pak と同じ正規化を使う）
+    return vfs::Normalize(k);
+}
+
+// 圧縮キャッシュのファイル名の幹（拡張子なし）。空文字 = キャッシュ不使用。
 // ★キーの材料は「デコードしなくても分かるもの」だけで構成すること。
 //   （元バイトのハッシュ / 用途 / 出力形式 / 配列数 / 品質）
 //   ここにデコード後にしか分からない値を混ぜると、下の事前ヒット判定が成立しなくなり
 //   「キャッシュがあるのに PNG を毎回デコードしてから捨てる」に逆戻りする。
 // ★ 品質をキーに含める（含めないと texture_compression を 1↔2 で切り替えても
 //   古い品質のキャッシュを読み続けて設定が効かない）。
-std::string CompressedCachePath(DXGI_FORMAT dst, size_t arraySize, TextureUsage usage,
-                                uint64_t contentHash, const std::string& cacheKey)
+std::string CacheStem(DXGI_FORMAT dst, size_t arraySize, TextureUsage usage,
+                      uint64_t contentHash, const std::string& cacheKey)
 {
     if (cacheKey.empty())
+        return {};
+    const std::string key = NormalizeCacheKey(cacheKey) + "|" + std::to_string(contentHash)
+                          + "|u" + std::to_string(static_cast<int>(usage))
+                          + "|f" + std::to_string(static_cast<int>(dst))
+                          + "|a" + std::to_string(static_cast<unsigned>(arraySize))
+                          + "|q" + std::to_string(g_compressionMode.load()) + "|v3";
+    char name[32];
+    snprintf(name, sizeof(name), "t%016llx", static_cast<unsigned long long>(HashString(key)));
+    return name;
+}
+
+// 圧縮キャッシュのファイルパスを組む（空文字 = キャッシュ不使用）。
+// 配布ゲームの暗号化キャッシュは .dds ではない（DDS ビューアで開けるものと取り違えない）。
+std::string CompressedCachePath(const std::string& stem)
+{
+    if (stem.empty())
         return {};
     const std::string dir = CacheDir();
     if (dir.empty())
         return {};
-
-    const std::string key = cacheKey + "|" + std::to_string(contentHash)
-                          + "|u" + std::to_string(static_cast<int>(usage))
-                          + "|f" + std::to_string(static_cast<int>(dst))
-                          + "|a" + std::to_string(static_cast<unsigned>(arraySize))
-                          + "|q" + std::to_string(g_compressionMode.load()) + "|v2";
-    char name[40];
-    // 配布ゲームの暗号化キャッシュは .dds ではない（DDS ビューアで開けるものと取り違えない）。
-    snprintf(name, sizeof(name), vfs::InGameMode() ? "t%016llx.txc" : "t%016llx.dds",
-             static_cast<unsigned long long>(HashString(key)));
-    return dir + name;
+    return dir + stem + (PlainCache() ? ".dds" : ".txc");
 }
 
 // 圧縮キャッシュを引く。ヒットしたら outScratch に BC 済み画像が入って true。
@@ -454,30 +518,43 @@ bool TryLoadCachedCompressed(const DirectX::TexMetadata& srcMeta, TextureUsage u
     if (dst == DXGI_FORMAT_UNKNOWN)
         return false;
 
-    const std::string cachePath =
-        CompressedCachePath(dst, srcMeta.arraySize, usage, contentHash, cacheKey);
-    if (cachePath.empty())
-        return false;
-
-    std::error_code ec;
-    if (!std::filesystem::exists(cachePath, ec))
+    const std::string stem = CacheStem(dst, srcMeta.arraySize, usage, contentHash, cacheKey);
+    if (stem.empty())
         return false;
 
     ScratchImage cached;
+    bool loaded = false;
     if (vfs::InGameMode())
     {
-        if (!LoadEncryptedCache(cachePath, cached))
-            return false;   // 壊れた/改竄されたキャッシュは無視して作り直す
+        // 1) ビルド時に pak へ焼いた BC 画像（暗号化は pak のエントリごとに掛かっている）
+        const std::vector<uint8_t> baked = vfs::ReadAsset("texcache/" + stem + ".dds");
+        if (!baked.empty())
+            loaded = SUCCEEDED(LoadFromDDSMemory(baked.data(), baked.size(), DDS_FLAGS_NONE, nullptr, cached));
     }
-    else if (FAILED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
-                                    DDS_FLAGS_NONE, nullptr, cached)))
-        return false;   // 壊れたキャッシュは無視して作り直す
+    if (!loaded)
+    {
+        const std::string cachePath = CompressedCachePath(stem);
+        if (cachePath.empty())
+            return false;
+        std::error_code ec;
+        if (!std::filesystem::exists(cachePath, ec))
+            return false;
+        if (!PlainCache())
+        {
+            if (!LoadEncryptedCache(cachePath, cached))
+                return false;   // 壊れた/改竄されたキャッシュは無視して作り直す
+        }
+        else if (FAILED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
+                                        DDS_FLAGS_NONE, nullptr, cached)))
+            return false;   // 壊れたキャッシュは無視して作り直す
+    }
 
     const TexMetadata& cm = cached.GetMetadata();
     if (cm.format != dst || cm.width != srcMeta.width ||
         cm.height != srcMeta.height || cm.arraySize != srcMeta.arraySize)
         return false;   // 古い/食い違うキャッシュ
 
+    RecordBakeUse(stem);
     outScratch = std::move(cached);
     return true;
 }
@@ -522,8 +599,8 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
             return;
         }
     }
-    const std::string cachePath =
-        CompressedCachePath(dst, meta.arraySize, usage, contentHash, cacheKey);
+    const std::string stem      = CacheStem(dst, meta.arraySize, usage, contentHash, cacheKey);
+    const std::string cachePath = CompressedCachePath(stem);
 
     // ---- 圧縮（BC7/BC6H は重いので TEX_COMPRESS_PARALLEL 必須）----
     if (!ConvertForCompression(scratch, dst))
@@ -564,19 +641,35 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
 
     if (!cachePath.empty())
     {
-        const bool saved = vfs::InGameMode()
+        const bool saved = !PlainCache()
             ? SaveEncryptedCache(cachePath, compressed)
             : SUCCEEDED(SaveToDDSFile(compressed.GetImages(), compressed.GetImageCount(),
                                       compressed.GetMetadata(), DDS_FLAGS_NONE,
                                       PathResolver::Utf8ToWide(cachePath).c_str()));
         if (!saved)
             Logger::Warn("BC 圧縮キャッシュの保存に失敗しました: {}", cachePath);
+        else
+            RecordBakeUse(stem);
     }
 
     scratch = std::move(compressed);
 }
 
 } // namespace
+
+std::string TextureLoader::NormalizeCacheKeyPath(const std::string& key)
+{
+    return NormalizeCacheKey(key);
+}
+
+bool TextureLoader::WriteBakeList(const std::string& listPath)
+{
+    std::lock_guard<std::mutex> lock(g_bakeMutex);
+    std::ofstream f(PathResolver::Utf8ToWide(listPath), std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    for (const std::string& n : g_bakeUsed) f << n << "\n";
+    return static_cast<bool>(f);
+}
 
 uint64_t TextureLoader::ContentHashForCacheKey(const std::wstring& filePath)
 {

@@ -276,6 +276,19 @@ if(TARGET Scene)
     add_test(NAME SceneFormatV2Tests COMMAND SceneFormatV2Tests)
 endif()
 
+# 物理（PhysicsSystem / Jolt）のヘッドレス回帰テスト。箱・球・カプセルだけ（Mesh は GPU が要るので使わない）。
+# 質量 0 でも落ちない・offset・負スケール・静的の追従・上限・キャラ・接触イベント・時間の扱い…（PHYSICS_FIX2_REPORT.md）。
+if(TARGET Physics)
+    add_executable(PhysicsSystemTests physics_system_test.cpp)
+    target_link_libraries(PhysicsSystemTests PRIVATE Physics)
+    target_include_directories(PhysicsSystemTests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(PhysicsSystemTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(PhysicsSystemTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME PhysicsSystemTests COMMAND PhysicsSystemTests)
+endif()
+
 # インスタンス群（InstanceGroup。docs/SCENE_FORMAT_DESIGN.md §4.1 の 4-1）。サイドカーの往復・壊れた行・コピーオンライト・保存/読み込み。GPU 不要。
 if(TARGET Scene)
     add_executable(InstanceGroupTests instance_group_test.cpp)

@@ -7284,7 +7284,9 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
     }
     else if (!m_isGameMode)
     {
-        bool pendingPlayMode = false;
+        // 持ち越し中の要求（読み込み中に来た Play は Run() が読み終えるまで保留する）を初期値にする。
+        // false 固定だと、ボタンを押していないフレームの下の上書きで保留中の Play が Stop に化ける。
+        bool pendingPlayMode = m_modeChangeRequested && m_pendingMode == EngineMode::Playing;
         CpuScopeTimer _tUi(&m_cpuMs[CpuEditorUi]); DX12_PROFILE_ZONE_N("EditorUI");
         m_editorLayer->Render(
             m_engineMode == EngineMode::Playing,

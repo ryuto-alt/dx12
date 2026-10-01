@@ -322,22 +322,18 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry,
                     XMConvertToRadians(t.rotation.z)));
             return;
         }
-        XMVECTOR s, q, p;
-        if (!XMMatrixDecompose(&s, &q, &p, ComputeWorldMatrix(registry, e)))
-        {
-            pos = t.position; scale = t.scale; quat = XMFLOAT4(0, 0, 0, 1);
-            return;
-        }
-        XMStoreFloat3(&pos, p);
-        XMStoreFloat3(&scale, s);
-        XMStoreFloat4(&quat, q);
+        // 物理（ResolveWorldTRS）と同じ分解。せん断（非一様スケールの親 + 回転した子）でも近似で必ず値を返す。
+        const collider::WorldDecomposed d = collider::DecomposeWorld(ComputeWorldMatrix(registry, e));
+        pos = d.pos; scale = d.scale; quat = d.rot;
     };
 
-    // コライダーのオフセットはローカル。回転を掛けてからワールド位置へ足す
-    // （物理側も「回した後の位置」に置いている）。
-    auto applyOffset = [](const XMFLOAT3& pos, const XMFLOAT3& offset, const XMFLOAT4& quat)
+    // コライダーのオフセットはエンティティのローカル。スケールを掛け、回転してからワールド位置へ足す
+    // （物理側はボディの原点 = エンティティの原点に固定し、offset * scale を形状の内側に入れている。
+    //   collider::ScaledOffset が両者共通の規約）。
+    auto applyOffset = [](const XMFLOAT3& pos, const XMFLOAT3& offset, const XMFLOAT3& scale, const XMFLOAT4& quat)
     {
-        XMVECTOR o = XMVector3Rotate(XMVectorSet(offset.x, offset.y, offset.z, 0.0f),
+        const XMFLOAT3 so = collider::ScaledOffset(offset, scale);
+        XMVECTOR o = XMVector3Rotate(XMVectorSet(so.x, so.y, so.z, 0.0f),
                                      XMLoadFloat4(&quat));
         XMFLOAT3 out;
         XMStoreFloat3(&out, XMLoadFloat3(&pos) + o);
@@ -358,7 +354,7 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry,
 
         if (convex && !convex->points.empty())
         {
-            const XMFLOAT3 center = applyOffset(wpos, convex->offset, wquat);
+            const XMFLOAT3 center = applyOffset(wpos, convex->offset, wscale, wquat);
             XMMATRIX rot = XMMatrixRotationQuaternion(XMLoadFloat4(&wquat));
             XMVECTOR c   = XMLoadFloat3(&center);
 
@@ -366,8 +362,9 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry,
             worldPts.reserve(convex->points.size());
             for (const auto& p : convex->points)
             {
-                // 凸包の頂点もスケールが乗る（Jolt へ渡す点群と同じ扱い）。
-                XMVECTOR local = XMVectorSet(p.x * wscale.x, p.y * wscale.y, p.z * wscale.z, 0.0f);
+                // 凸包の頂点は「スケール適用済み」で保持される（ConvexHullCollider::points の規約。読み込み時 / autoCollider が
+                // 焼く）ので、ここで scale を掛けない（Jolt へもそのまま渡している。掛けると scale != 1 で二重になる）。
+                XMVECTOR local = XMVectorSet(p.x, p.y, p.z, 0.0f);
                 XMFLOAT3 wp;
                 XMStoreFloat3(&wp, XMVector3TransformNormal(local, rot) + c);
                 worldPts.push_back(wp);
@@ -379,23 +376,23 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry,
         }
         else if (box)
         {
-            AddBox(applyOffset(wpos, box->offset, wquat),
-                   collider::BoxHalfExtents(box->halfExtents, wscale), wquat, color);
+            AddBox(applyOffset(wpos, box->offset, wscale, wquat),
+                   collider::EffectiveBoxHalfExtents(box->halfExtents, wscale), wquat, color);
         }
         else if (sphere)
         {
-            AddSphere(applyOffset(wpos, sphere->offset, wquat),
-                      collider::SphereRadius(sphere->radius, wscale), 16, color);
+            AddSphere(applyOffset(wpos, sphere->offset, wscale, wquat),
+                      collider::EffectiveSphereRadius(sphere->radius, wscale), 16, color);
         }
         else if (capsule)
         {
-            AddCapsule(applyOffset(wpos, capsule->offset, wquat),
-                       collider::CapsuleRadius(capsule->radius, wscale),
-                       collider::CapsuleHalfHeight(capsule->halfHeight, wscale), wquat, color);
+            AddCapsule(applyOffset(wpos, capsule->offset, wscale, wquat),
+                       collider::EffectiveCapsuleRadius(capsule->radius, wscale),
+                       collider::EffectiveCapsuleHalfHeight(capsule->halfHeight, wscale), wquat, color);
         }
         else
         {
-            AddBox(wpos, collider::FallbackHalfExtents(wscale), wquat, color);
+            AddBox(wpos, collider::EffectiveFallbackHalfExtents(wscale), wquat, color);
         }
     };
 
@@ -475,18 +472,16 @@ void PhysicsDebugRenderer::CollectFromRegistry(entt::registry& registry,
             XMFLOAT3 wpos, wscale;
             XMFLOAT4 wquat;
             worldTRS(entity, transform, wpos, wquat, wscale);
-            const XMFLOAT3 center = { wpos.x + tr.offset.x,
-                                      wpos.y + tr.offset.y,
-                                      wpos.z + tr.offset.z };
+            // ★Trigger の内外判定（ScriptEngine::UpdateTriggers → collider::TriggerBoxContains）は
+            //   「点を逆行列でローカルへ引いて半幅と比べる」ので、回転・親のスケール・負スケールが全部効く。
+            //   線も同じ規約（offset はローカル + スケール、箱は回して描く）。
+            const XMFLOAT3 center = applyOffset(wpos, tr.offset, wscale, wquat);
             const XMFLOAT3 color = tr._wasInside ? triggerHitColor : triggerColor;
 
             if (tr.shape == static_cast<int>(TriggerShape::Sphere))
-                AddSphere(center, collider::TriggerSphereRadius(tr.radius, wscale), 16, color);
+                AddSphere(center, collider::SafeSize(tr.radius * (std::max)({ std::fabs(wscale.x), std::fabs(wscale.y), std::fabs(wscale.z) })), 16, color);
             else
-                // ★内外判定は軸平行（回転を見ない）ので、線も回さない。
-                //   回して描くと「線の中に居るのに発火しない」になる。
-                AddBox(center, collider::TriggerBoxHalfExtents(tr.halfExtents, wscale),
-                       XMFLOAT4(0, 0, 0, 1), color);
+                AddBox(center, collider::EffectiveBoxHalfExtents(tr.halfExtents, wscale), wquat, color);
         }
     }
 }

@@ -84,7 +84,9 @@ Entity Scene::Spawn(const std::string& name,
                     DirectX::XMFLOAT3 scale)
 {
     // モデル読み込み（キャッシュ付き）
-    const CachedModel* cached = m_resourceManager->GetOrLoadModel(modelPath, m_cmdList);
+    // リソース管理が無い Scene（GPU 無しの単体テスト）は「読めなかった」扱いにする。
+    const CachedModel* cached = m_resourceManager
+        ? m_resourceManager->GetOrLoadModel(modelPath, m_cmdList) : nullptr;
     if (!cached)
     {
         Logger::Warn("モデルの読み込みに失敗しました: {}", modelPath);

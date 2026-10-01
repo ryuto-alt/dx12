@@ -22,6 +22,7 @@
 #include "renderer/vg/VgEligibility.h"   // 仮想ジオメトリ P4: 対象外の警告
 #include "audio/AudioSystem.h"
 #include "physics/PhysicsDebugRenderer.h"
+#include "physics/ColliderShape.h"   // collider::kDefaultBodyMass（Static→Dynamic 切替時の質量補正）
 #include "core/GameClock.h"
 #include "scene/Scene.h"
 #include "animation/Skeleton.h"
@@ -1293,15 +1294,7 @@ void AddPhysicsAuto(entt::registry& reg, entt::entity e, CompositeCommand& out)
             for (const auto& p : mesh->GetPositions())
                 allPoints.push_back({ p.x * tf->scale.x, p.y * tf->scale.y, p.z * tf->scale.z });
         }
-        constexpr size_t kMax = 256;
-        if (allPoints.size() > kMax)
-        {
-            size_t step = allPoints.size() / kMax;
-            std::vector<DirectX::XMFLOAT3> sampled;
-            for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
-                sampled.push_back(allPoints[i]);
-            allPoints = std::move(sampled);
-        }
+        allPoints = collider::ReduceHullPoints(allPoints, 256);   // 方向ごとの極値を残す（外形を保つ）
         if (!allPoints.empty())
         {
             ConvexHullCollider col;
@@ -1312,7 +1305,7 @@ void AddPhysicsAuto(entt::registry& reg, entt::entity e, CompositeCommand& out)
     }
     if (!reg.all_of<RigidBody>(e))
     {
-        reg.emplace<RigidBody>(e);
+        reg.emplace<RigidBody>(e, NewRigidBody());   // 新規は落ち着く既定（摩擦 0.6 / 反発 0.1 / CCD ON）
         out.Add(std::make_unique<AddComponentCommand<RigidBody>>(&reg, e, reg.get<RigidBody>(e), "RigidBody"));
     }
 }
@@ -1356,7 +1349,13 @@ const AddOp* FindAddOp(std::string_view id)
         AddOp{"Physics",
               [](const entt::registry& reg, entt::entity e) { return reg.all_of<RigidBody>(e); },
               [](entt::registry& reg, entt::entity e, CompositeCommand& out, const char*) { AddPhysicsAuto(reg, e, out); }},
-        MakeAddOp<RigidBody>("RigidBody"),
+        AddOp{"RigidBody",
+              [](const entt::registry& reg, entt::entity e) { return reg.all_of<RigidBody>(e); },
+              [](entt::registry& reg, entt::entity e, CompositeCommand& out, const char* label)
+              {
+                  reg.emplace<RigidBody>(e, NewRigidBody());   // 新規は落ち着く既定（摩擦 0.6 / 反発 0.1 / CCD ON）
+                  out.Add(std::make_unique<AddComponentCommand<RigidBody>>(&reg, e, reg.get<RigidBody>(e), label));
+              }},
         MakeAddOp<BoxCollider>("BoxCollider"),
         MakeAddOp<SphereCollider>("SphereCollider"),
         MakeAddOp<CapsuleCollider>("CapsuleCollider"),
@@ -4245,15 +4244,7 @@ void InspectorPanel::Render(entt::registry& reg,
                                     p.y * tf->scale.y,
                                     p.z * tf->scale.z });
                         }
-                        constexpr size_t kMax = 256;
-                        if (allPoints.size() > kMax)
-                        {
-                            size_t step = allPoints.size() / kMax;
-                            std::vector<DirectX::XMFLOAT3> sampled;
-                            for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
-                                sampled.push_back(allPoints[i]);
-                            allPoints = std::move(sampled);
-                        }
+                        allPoints = collider::ReduceHullPoints(allPoints, 256);   // 方向ごとの極値を残す（外形を保つ）
                         if (!allPoints.empty())
                         {
                             ConvexHullCollider col;
@@ -4263,7 +4254,7 @@ void InspectorPanel::Render(entt::registry& reg,
                                 &reg, ctx.selectedEntity, std::move(col), "Convex Hull Collider"));
                         }
                     }
-                    reg.emplace_or_replace<RigidBody>(ctx.selectedEntity);
+                    reg.emplace_or_replace<RigidBody>(ctx.selectedEntity, NewRigidBody());   // 新規は落ち着く既定
                     ctx.undoSystem.PushCommand(std::make_unique<AddComponentCommand<RigidBody>>(
                         &reg, ctx.selectedEntity, reg.get<RigidBody>(ctx.selectedEntity), "RigidBody"));
                 }
@@ -4300,9 +4291,14 @@ void InspectorPanel::Render(entt::registry& reg,
                     if (pg::Combo("挙動 Motion", &motionIdx, motionTypes, 3))
                     {
                         rb.motionType = static_cast<MotionType>(motionIdx);
+                        // ★静的で作った剛体（v2 の既定は mass:0 の静的）を動的へ切り替えると、質量 0 のまま Play で
+                        //   Jolt の質量計算が落ちていた。動的にするとき質量が 0 以下なら既定質量へ補正する。
+                        if (rb.motionType == MotionType::Dynamic && !(rb.mass > 0.0f))
+                            rb.mass = collider::kDefaultBodyMass;
                         changed = true;
                     }
-                    changed |= pg::Float("質量 Mass", &rb.mass, 0.5f, 0.0f, 10000.0f, "%.1f", &active);
+                    // 質量の下限は 0.001（0 は Jolt を落とす。物理側も入口で 1 へ読み替えるが、入力の時点で防ぐ）
+                    changed |= pg::Float("質量 Mass", &rb.mass, 0.5f, 0.001f, 10000.0f, "%.1f", &active);
                     changed |= pg::Float("摩擦 Friction", &rb.friction, 0.01f, 0.0f, 2.0f, "%.2f", &active);
                     changed |= pg::Float("反発 Bounce", &rb.restitution, 0.01f, 0.0f, 1.0f, "%.2f", &active);
                     changed |= pg::Checkbox("重力 Gravity", &rb.useGravity);

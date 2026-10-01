@@ -6,6 +6,9 @@
 #include "core/ApplicationInternal.h"
 #include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
+#include "resource/TextureLoader.h"   // TEXBAKE: 使ったキャッシュ一覧の書き出し
+#include <fstream>
+#include <algorithm>
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
@@ -1565,16 +1568,27 @@ void Application::Run()
             m_modeChangeRequested = true;
         }
 
+        // ★プロジェクト/シーンの読み込み中は Play に入らない（要求は持ち越し、読み終えた次のフレームで入る）。
+        //   open_project は即応答するので、直後の play が「前のプロジェクトのシーンがまだ載っている」間に
+        //   通ってしまい、前のシーンを新しい assets 基準でスナップショットしていた。そのまま新しいシーンが
+        //   Play 中に読み込まれ、Stop で前のシーン（モデルの解決に失敗した欠けた状態）と前の保存先が戻り、
+        //   自動保存が前のプロジェクトのシーンを上書きしていた（2026-10-02 に実際に 8→6 体）。
+        const bool sceneLoadBusy = m_loading || m_sceneLoadJob
+            || (m_editorCtx && !m_editorCtx->pendingLoadPath.empty());
+        const bool holdPlay = m_modeChangeRequested && m_pendingMode == EngineMode::Playing
+            && m_engineMode != EngineMode::Playing && sceneLoadBusy;
+
         // モード切替（前フレームのImGuiボタンから遅延実行）
-        if (m_modeChangeRequested)
+        if (m_modeChangeRequested && !holdPlay)
         {
             m_modeChangeRequested = false;
             try
             {
                 if (m_pendingMode == EngineMode::Playing)
                     EnterPlayMode();
-                else
+                else if (m_engineMode == EngineMode::Playing || !m_playSceneJson.empty())
                     EnterEditorMode();
+                // else: 既に Editor（プロジェクト切替前の停止で消化済み）。何もしない。
             }
             catch (const std::exception& ex)
             {
@@ -1793,6 +1807,51 @@ void Application::Run()
                         std::string serr;
                         const std::string wrote = CaptureSceneScreenshot(serr, shotPath);
                         Logger::Info("GAME_SHOT: {} {}", wrote.empty() ? "FAILED" : wrote, serr);
+                        m_window->RequestClose();
+                    }
+                }
+            }
+            // ビルド時のテクスチャ事前生成（BuildGame が隠し窓で 1 回だけ走らせる）。
+            //   DX12E_TEXBAKE_LIST=<出力リスト> が付いているときだけ動く。開始シーンは起動時に読み込み済みなので、
+            //   DX12E_TEXBAKE_FILES=<相対パスを 1 行 1 件で並べたファイル> のシーン/プレハブ/マテリアルを
+            //   順に先読みして（= 配布ゲームが後から使うテクスチャを全部 BC 圧縮させて）、
+            //   使われたキャッシュの一覧を書いて終了する。キャッシュの置き場は DX12E_TEXBAKE_DIR（TextureLoader 側）。
+            if (m_isGameMode)
+            {
+                static const std::string bakeList = [] {
+                    char buf[1024] = {};
+                    return GetEnvironmentVariableA("DX12E_TEXBAKE_LIST", buf, sizeof(buf)) > 0 ? std::string(buf) : std::string();
+                }();
+                if (!bakeList.empty())
+                {
+                    static std::vector<std::string> queue = [] {
+                        std::vector<std::string> q;
+                        char buf[1024] = {};
+                        if (GetEnvironmentVariableA("DX12E_TEXBAKE_FILES", buf, sizeof(buf)) > 0)
+                        {
+                            std::ifstream f(buf);
+                            std::string line;
+                            while (std::getline(f, line))
+                            {
+                                while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+                                if (!line.empty()) q.push_back(line);
+                            }
+                            std::reverse(q.begin(), q.end());   // 後ろから取り出す
+                        }
+                        return q;
+                    }();
+                    static int bakeFrames = 0;
+                    ++bakeFrames;
+                    const bool idle = !m_scenePreloadJob && m_pendingScenePreloadAsync.empty() && !m_sceneLoadJob;
+                    if (idle && !queue.empty() && bakeFrames >= 3)
+                    {
+                        m_pendingScenePreloadAsync = queue.back();
+                        queue.pop_back();
+                    }
+                    else if (idle && queue.empty() && bakeFrames >= 120)   // 開始シーンの Lua が後から読むものも拾う
+                    {
+                        const bool ok = TextureLoader::WriteBakeList(bakeList);
+                        Logger::Info("TEXBAKE: {} ({} フレーム)", ok ? "done" : "FAILED", bakeFrames);
                         m_window->RequestClose();
                     }
                 }
@@ -2778,7 +2837,7 @@ void Application::Update()
                     // ★終端を少し削る。削らないとリスナーを包んでいる
                     //   プレイヤーのコライダーに当たって常時こもる
                     if (len > 1.0f &&
-                        m_physicsSystem->Raycast({wx, wy, wz}, dir, len - 0.6f).hit)
+                        m_physicsSystem->Raycast({wx, wy, wz}, dir, len - 0.6f, 0xFFFFFFFFu, entt::null, /*includeCharacters=*/false).hit)
                         occ = 1.0f;
                 }
                 m_audioSystem->SetOcclusion(src.runtimeSlot, occ);
@@ -3457,7 +3516,7 @@ void Application::ApplyFootIkPass()
         [this](const DirectX::XMFLOAT3& origin, const DirectX::XMFLOAT3& dir, f32 maxDist,
                DirectX::XMFLOAT3& outPoint, DirectX::XMFLOAT3& outNormal) -> bool
     {
-        const RaycastHit hit = m_physicsSystem->Raycast(origin, dir, maxDist);
+        const RaycastHit hit = m_physicsSystem->Raycast(origin, dir, maxDist, 0xFFFFFFFFu, entt::null, /*includeCharacters=*/false);
         if (!hit.hit) return false;
         outPoint  = hit.point;
         outNormal = hit.normal;

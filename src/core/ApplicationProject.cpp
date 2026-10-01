@@ -9,6 +9,9 @@
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
 #include "core/CrashHandler.h"
+#include "core/vfs/PakWriter.h"   // BakeTexturesIntoPak: 既存 pak への追記
+#include <fstream>
+#include <chrono>
 #include "project/LauncherLogic.h"
 #include "editor/WhatsNewScreen.h"   // 更新内容モーダルの描画
 
@@ -142,6 +145,20 @@ void Application::UpdateProjectLoad(f32 dt)
     // フェーズ2: LoadProject を一度だけ発火（次フレームの Render で実シーンロード）
     if (!m_loadProjectStarted)
     {
+        // ★Play 中のままプロジェクトを切り替えない。Play 開始時のスナップショット（m_playSceneJson）と
+        //   保存先（m_playScenePathSnapshot）が前のプロジェクトのまま残り、次の Stop で
+        //   **前のシーンが新しいプロジェクトの assets 基準で復元**される（モデルのパスが解決できず
+        //   モデル付きエンティティが落ちる）うえ、保存先も前のシーンに戻るので、直後の自動保存で
+        //   前のプロジェクトのシーンが欠けた状態で上書きされていた（2026-10-02 に実際に 8→6 体）。
+        //   assets がまだ前のプロジェクトを指しているここで Stop する。保留中の Stop 要求は
+        //   Run() 側が「既に Editor なら何もしない」で消化し、保留中の Play は読み込み完了まで持ち越される
+        //   （どちらも MCP の遅延応答はそこで返る）。
+        if (m_engineMode == EngineMode::Playing && !m_playSceneJson.empty())
+        {
+            Logger::Info("プロジェクトを切り替える前に Play を停止します");
+            EnterEditorMode();
+        }
+
         m_loadStatus = "シーンを読み込み中...";
         SplashScreen::SetStage(splash::Stage::ProjectScene);
         LoadProject(m_loadInfo);
@@ -1627,6 +1644,147 @@ bool Application::BuildGameStandalone(const std::string& projectRoot)
     return BuildGame();
 }
 
+// BuildGame の「テクスチャを BC 圧縮済みで pak へ焼く」段（上の 3b）。失敗しても false を返すだけで
+// ビルドは続ける（呼び出し側は結果を見ない）。
+void Application::BakeTexturesIntoPak(const std::filesystem::path& outputDir, const std::string& exeName)
+{
+    namespace fs = std::filesystem;
+    const auto t0 = std::chrono::steady_clock::now();
+
+    // 先読みスレッドが同じ .texcache を書いている最中に読ませない。
+    if (m_assetPrewarmer) m_assetPrewarmer->Stop();
+
+    std::error_code ec;
+    const fs::path assetsDir(PathResolver::AssetsDir());
+    const fs::path texDir = assetsDir / ".texcache";
+    fs::create_directories(texDir, ec);
+
+    // 作業フォルダ（リスト・ゲームのユーザーデータ置き場）。出力フォルダを汚さない。
+    const fs::path work = fs::temp_directory_path(ec) / ("dx12e_texbake_" + std::to_string(GetCurrentProcessId()));
+    fs::remove_all(work, ec);
+    fs::create_directories(work / "data", ec);
+    const fs::path filesTxt = work / "files.txt";
+    const fs::path listTxt  = work / "list.txt";
+
+    // 先読みさせる JSON（シーン / プレハブ / マテリアル）。開始シーンは起動時に読まれるのでそれ以外も含めて全部。
+    {
+        std::ofstream f(filesTxt, std::ios::binary);
+        for (fs::recursive_directory_iterator it(assetsDir, ec), end; it != end && !ec; it.increment(ec))
+        {
+            if (it->is_directory(ec))
+            {
+                const std::string dn = it->path().filename().string();
+                if (!dn.empty() && dn[0] == '.') it.disable_recursion_pending();
+                continue;
+            }
+            if (!it->is_regular_file(ec)) continue;
+            std::string ext = it->path().extension().string();
+            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (ext != ".json" && ext != ".dxmat" && ext != ".dxprefab" && ext != ".prefab") continue;
+            f << it->path().lexically_relative(assetsDir).generic_string() << "\n";
+        }
+    }
+
+    // 出力フォルダの「走らせる前」の状態を覚えて、ゲームが書いた物を後で消す（settings.json 等は元へ戻す）。
+    std::unordered_set<std::string> before;
+    std::unordered_map<std::string, std::string> keep;
+    for (auto& e : fs::directory_iterator(outputDir, ec))
+    {
+        const std::string n = e.path().filename().string();
+        before.insert(n);
+        if (n == "settings.json" || n == "input_bindings.json")
+        {
+            std::ifstream in(e.path(), std::ios::binary);
+            keep[n].assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+    }
+
+    // 子プロセスは環境変数で動かす（このプロセスの環境を一時的に足して、終わったら外す）。
+    const std::wstring wTexDir = texDir.wstring(), wList = listTxt.wstring(),
+                       wFiles = filesTxt.wstring(), wData = (work / "data").wstring();
+    SetEnvironmentVariableW(L"DX12E_TEXBAKE_DIR",   wTexDir.c_str());
+    SetEnvironmentVariableW(L"DX12E_TEXBAKE_LIST",  wList.c_str());
+    SetEnvironmentVariableW(L"DX12E_TEXBAKE_FILES", wFiles.c_str());
+    SetEnvironmentVariableW(L"DX12E_DATA_DIR",      wData.c_str());
+
+    const std::wstring exePath = (outputDir / exeName).wstring();
+    // 前面に出さない（--background=offscreen,notool）。ユーザーの操作を奪わない。
+    std::wstring cmd = L"\"" + exePath + L"\" --background=offscreen,notool";
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+    const bool started = CreateProcessW(exePath.c_str(), cmd.data(), nullptr, nullptr, FALSE,
+                                        BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW, nullptr,
+                                        outputDir.wstring().c_str(), &si, &pi) != FALSE;
+    SetEnvironmentVariableW(L"DX12E_TEXBAKE_DIR",   nullptr);
+    SetEnvironmentVariableW(L"DX12E_TEXBAKE_LIST",  nullptr);
+    SetEnvironmentVariableW(L"DX12E_TEXBAKE_FILES", nullptr);
+    SetEnvironmentVariableW(L"DX12E_DATA_DIR",      nullptr);
+
+    bool finished = false;
+    if (!started)
+    {
+        Logger::Warn("テクスチャの事前生成を開始できません（初回起動時に圧縮されます）");
+    }
+    else
+    {
+        Logger::Info("テクスチャの事前生成: ゲームを非表示で実行します（初回のみ数十秒〜数分）");
+        // 30 分で打ち切る（固まったゲームでビルドを止めない）。
+        const DWORD r = WaitForSingleObject(pi.hProcess, 30 * 60 * 1000);
+        finished = (r == WAIT_OBJECT_0);
+        if (!finished) TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+
+    // ゲームが出力フォルダに書いた物を片付ける
+    for (auto& e : fs::directory_iterator(outputDir, ec))
+    {
+        const std::string n = e.path().filename().string();
+        if (before.count(n)) continue;
+        std::error_code rec;
+        fs::remove_all(e.path(), rec);
+    }
+    for (auto& [n, bytes] : keep)
+    {
+        std::ofstream out(outputDir / n, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    // 使われたキャッシュを pak へ追記
+    size_t added = 0, totalBytes = 0;
+    if (finished && fs::exists(listTxt, ec))
+    {
+        vfs::PakWriter pak;
+        if (pak.OpenAppend((outputDir / "game.pak").string()))
+        {
+            std::ifstream lf(listTxt);
+            std::string name;
+            while (std::getline(lf, name))
+            {
+                while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+                if (name.empty()) continue;
+                const fs::path src = texDir / name;
+                std::error_code fec;
+                const auto sz = fs::file_size(src, fec);
+                if (fec) continue;
+                if (pak.AddFile(src.string(), "texcache/" + name)) { ++added; totalBytes += static_cast<size_t>(sz); }
+            }
+            if (!pak.Finish(/*stripStrings=*/true))
+                Logger::Error("テクスチャキャッシュの pak への追記に失敗しました。ビルドをやり直してください");
+        }
+    }
+    else if (started)
+    {
+        Logger::Warn("テクスチャの事前生成が完了しませんでした（初回起動時に圧縮されます）");
+    }
+
+    fs::remove_all(work, ec);
+    const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    Logger::Info("テクスチャの事前生成: {} 枚 ({:.0f} MB) を pak へ追記 ({:.1f} 秒)", added,
+                 totalBytes / (1024.0 * 1024.0), sec);
+}
+
 bool Application::BuildGame()
 {
     namespace fs = std::filesystem;
@@ -2028,6 +2186,17 @@ bool Application::BuildGame()
         }
         Logger::Info("Packed game.pak (startScene = {})", startSceneRel);
     }
+
+    // 3b. テクスチャを BC 圧縮済みの形で game.pak へ焼く。
+    //   BC7 の CPU 圧縮は 1 枚数秒で、プレイヤーの PC の初回起動で全テクスチャ分を払うと
+    //   60〜90 秒掛かっていた（2 回目は圧縮キャッシュが効いて 15〜20 秒）。キャッシュのキーから
+    //   絶対パスを外したので（TextureLoader::NormalizeCacheKey）、ここで同じキャッシュを作って
+    //   pak の "texcache/" に入れておけば、初回から当たる。
+    //   やり方: 出来上がった Game を隠し窓で 1 回だけ走らせ（DX12E_TEXBAKE_*）、実際に読み込まれた
+    //   テクスチャの圧縮結果（エディタ側の assets/.texcache の .dds）を使われたものだけ pak へ追記する。
+    //   どの経路で何の用途で読まれるかを予測せず、実ロードそのものを記録するので取りこぼしにくい。
+    //   失敗しても配布物は正しく動く（プレイヤーの PC で従来どおり初回に圧縮されるだけ）。
+    BakeTexturesIntoPak(outputDir, exeName);
 
     // 4. （shaders は手順 2+3 の game.pak に暗号化封入済み＝プレーンな shaders/ は出力しない）
 
