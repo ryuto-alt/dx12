@@ -1,0 +1,435 @@
+{
+ "id": "gr1",
+ "title": "GR-1 小窓の部屋",
+ "description": "8.4x3.2x6.4m・西壁に 2x1.4m の窓・太陽 方位 270°/高度 33°・赤い敷物・金/クロム/白/青の球。空の遮蔽・色の照り返し・金属球の環境反射を見る。",
+ "spec": {
+  "version": 1,
+  "name": "gr1_small_window",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#8a6a4c",
+    "material": {
+     "roughness": 0.35
+    }
+   },
+   {
+    "name": "LVL_Ceiling",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.3,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_N",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     3.1
+    ],
+    "size": [
+     8.4,
+     3.2,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     -3.1
+    ],
+    "size": [
+     8.4,
+     3.2,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_E",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4.1,
+     1.6,
+     0
+    ],
+    "size": [
+     0.2,
+     3.2,
+     6.4
+    ],
+    "color": "#3f8a4a",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_Lo",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     0.5,
+     0
+    ],
+    "size": [
+     0.2,
+     1.0,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_Hi",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     2.8,
+     0
+    ],
+    "size": [
+     0.2,
+     0.8,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     1.7,
+     -2.1
+    ],
+    "size": [
+     0.2,
+     1.4,
+     2.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     1.7,
+     2.1
+    ],
+    "size": [
+     0.2,
+     1.4,
+     2.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.45,
+     0
+    ],
+    "size": [
+     80,
+     0.2,
+     80
+    ],
+    "color": "#6e6a5e",
+    "material": {
+     "roughness": 0.95
+    }
+   },
+   {
+    "name": "ENV_Rug",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.7,
+     0.015,
+     0
+    ],
+    "size": [
+     2.2,
+     0.03,
+     2.2
+    ],
+    "color": "#c02a22",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_SphereGold",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     1.0,
+     0.4,
+     1.4
+    ],
+    "size": 0.8,
+    "color": "#e8b048",
+    "material": {
+     "roughness": 0.2,
+     "metallic": 1.0
+    }
+   },
+   {
+    "name": "ENV_SphereChrome",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     2.2,
+     0.35,
+     0.0
+    ],
+    "size": 0.7,
+    "color": "#ffffff",
+    "material": {
+     "roughness": 0.03,
+     "metallic": 1.0
+    }
+   },
+   {
+    "name": "ENV_SphereWhite",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     0.6,
+     0.35,
+     -1.0
+    ],
+    "size": 0.7,
+    "color": "#ffffff",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_SphereBlue",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     -0.6,
+     0.3,
+     2.1
+    ],
+    "size": 0.6,
+    "color": "#2a5ad0",
+    "material": {
+     "roughness": 0.15
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     90,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 270,
+  "elevation": 33,
+  "intensity": 3,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -4.0,
+   0.0,
+   -3.0
+  ],
+  "max": [
+   4.0,
+   3.2,
+   3.0
+  ],
+  "spacing": 0.8
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    3.3,
+    1.7,
+    -2.7
+   ],
+   "target": [
+    -2,
+    0.9,
+    1
+   ]
+  },
+  {
+   "name": "ceiling",
+   "position": [
+    3.3,
+    1.2,
+    -2.7
+   ],
+   "target": [
+    -1.5,
+    2.2,
+    1.5
+   ],
+   "note": "天井の R/G 比(A3)用の補助カメラ。主カメラは天井が画面の端にしか写らない"
+  }
+ ],
+ "regions": {
+  "walls": {
+   "entities": [
+    "LVL_Wall_N",
+    "LVL_Wall_S",
+    "LVL_Wall_E",
+    "LVL_Wall_W_Lo",
+    "LVL_Wall_W_Hi",
+    "LVL_Wall_W_L",
+    "LVL_Wall_W_R"
+   ]
+  },
+  "ceiling": {
+   "entities": [
+    "LVL_Ceiling"
+   ]
+  },
+  "floor": {
+   "entities": [
+    "LVL_Floor"
+   ]
+  },
+  "floor_near_rug": {
+   "entities": [
+    "LVL_Floor"
+   ],
+   "nearEntity": "ENV_Rug",
+   "maxDist": 0.9
+  },
+  "rug": {
+   "entities": [
+    "ENV_Rug"
+   ]
+  },
+  "sphere_gold": {
+   "entities": [
+    "ENV_SphereGold"
+   ]
+  },
+  "sphere_chrome": {
+   "entities": [
+    "ENV_SphereChrome"
+   ]
+  },
+  "sphere_white": {
+   "entities": [
+    "ENV_SphereWhite"
+   ]
+  },
+  "sphere_blue": {
+   "entities": [
+    "ENV_SphereBlue"
+   ]
+  },
+  "outside": {
+   "entities": [
+    "LVL_Ground"
+   ]
+  }
+ },
+ "criteria": {
+  "A1": {
+   "regions": [
+    "walls",
+    "ceiling",
+    "floor"
+   ],
+   "cameras": [
+    "main",
+    "ceiling"
+   ]
+  },
+  "A3": {
+   "region": "ceiling",
+   "camera": "ceiling"
+  },
+  "A4": {
+   "region": "sphere_chrome",
+   "camera": "main"
+  }
+ }
+}

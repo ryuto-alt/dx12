@@ -1,0 +1,360 @@
+{
+ "id": "gr3",
+ "title": "GR-3 薄い仕切り壁を挟んだ明暗 2 部屋",
+ "description": "x<0 の部屋だけ西の窓から太陽が入り、x>0 の部屋は密閉(厚さ 0.1m の仕切り)。暗い側に光が漏れてはいけない(ddgi_leak 相当)。",
+ "spec": {
+  "version": 1,
+  "name": "gr3_partition",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#8a6a4c",
+    "material": {
+     "roughness": 0.35
+    }
+   },
+   {
+    "name": "LVL_Ceiling",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.1,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_N",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.5,
+     3.1
+    ],
+    "size": [
+     8.4,
+     3.0,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.5,
+     -3.1
+    ],
+    "size": [
+     8.4,
+     3.0,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_E",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4.1,
+     1.5,
+     0
+    ],
+    "size": [
+     0.2,
+     3.0,
+     6.0
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_Lo",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     0.5,
+     0
+    ],
+    "size": [
+     0.2,
+     1.0,
+     6.0
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_Hi",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     2.7,
+     0
+    ],
+    "size": [
+     0.2,
+     0.6,
+     6.0
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     1.7,
+     -2.1
+    ],
+    "size": [
+     0.2,
+     1.4,
+     1.8
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     1.7,
+     2.1
+    ],
+    "size": [
+     0.2,
+     1.4,
+     1.8
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Partition",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.5,
+     0
+    ],
+    "size": [
+     0.1,
+     3.0,
+     6.0
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.45,
+     0
+    ],
+    "size": [
+     80,
+     0.2,
+     80
+    ],
+    "color": "#6e6a5e",
+    "material": {
+     "roughness": 0.95
+    }
+   },
+   {
+    "name": "ENV_RugA",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.5,
+     0.015,
+     0
+    ],
+    "size": [
+     2.2,
+     0.03,
+     2.2
+    ],
+    "color": "#c02a22",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_CrateB",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     2.4,
+     0.4,
+     0.6
+    ],
+    "size": [
+     0.8,
+     0.8,
+     0.8
+    ],
+    "color": "#f0f0f0",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     90,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 270,
+  "elevation": 33,
+  "intensity": 3,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -4.0,
+   0.0,
+   -3.0
+  ],
+  "max": [
+   4.0,
+   3.0,
+   3.0
+  ],
+  "spacing": 0.8
+ },
+ "cameras": [
+  {
+   "name": "dark",
+   "position": [
+    3.5,
+    1.6,
+    -2.5
+   ],
+   "target": [
+    0.0,
+    1.0,
+    0.8
+   ],
+   "displayEv": 3.0,
+   "note": "暗い側(x>0)から仕切り壁と床を見る。PT はほぼ真っ黒なので表示用に +3EV"
+  }
+ ],
+ "regions": {
+  "dark_walls": {
+   "entities": [
+    "LVL_Wall_N",
+    "LVL_Wall_S",
+    "LVL_Wall_E",
+    "LVL_Partition"
+   ]
+  },
+  "dark_floor": {
+   "entities": [
+    "LVL_Floor"
+   ]
+  },
+  "dark_ceiling": {
+   "entities": [
+    "LVL_Ceiling"
+   ]
+  },
+  "dark_crate": {
+   "entities": [
+    "ENV_CrateB"
+   ]
+  },
+  "dark_all": {
+   "entities": [
+    "LVL_Wall_N",
+    "LVL_Wall_S",
+    "LVL_Wall_E",
+    "LVL_Partition",
+    "LVL_Floor",
+    "LVL_Ceiling",
+    "ENV_CrateB"
+   ]
+  }
+ },
+ "criteria": {
+  "A2": {
+   "region": "dark_all",
+   "camera": "dark"
+  }
+ }
+}

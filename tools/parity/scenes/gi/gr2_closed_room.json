@@ -1,0 +1,331 @@
+{
+ "id": "gr2",
+ "title": "GR-2 窓の無い部屋 + 天井の点光源",
+ "description": "6x3x6m の密閉した部屋。天井中央に点光源 1 灯だけ。空(IBL・太陽)の寄与は 0 であるべき(太陽は強度 0)。",
+ "spec": {
+  "version": 1,
+  "name": "gr2_closed_room",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     0
+    ],
+    "size": [
+     6.4,
+     0.2,
+     6.4
+    ],
+    "color": "#8a6a4c",
+    "material": {
+     "roughness": 0.35
+    }
+   },
+   {
+    "name": "LVL_Ceiling",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.1,
+     0
+    ],
+    "size": [
+     6.4,
+     0.2,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_N",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.5,
+     3.1
+    ],
+    "size": [
+     6.4,
+     3.0,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.5,
+     -3.1
+    ],
+    "size": [
+     6.4,
+     3.0,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_E",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     3.1,
+     1.5,
+     0
+    ],
+    "size": [
+     0.2,
+     3.0,
+     6.0
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -3.1,
+     1.5,
+     0
+    ],
+    "size": [
+     0.2,
+     3.0,
+     6.0
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_BoxRed",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.5,
+     0.5,
+     0.8
+    ],
+    "size": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "color": "#c02a22",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_BoxWhite",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     1.4,
+     0.4,
+     -1.0
+    ],
+    "size": [
+     0.8,
+     0.8,
+     0.8
+    ],
+    "color": "#f0f0f0",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_SphereChrome",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     1.0,
+     0.35,
+     1.6
+    ],
+    "size": 0.7,
+    "color": "#ffffff",
+    "material": {
+     "roughness": 0.03,
+     "metallic": 1.0
+    }
+   },
+   {
+    "name": "ENV_SphereGold",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     -0.2,
+     0.4,
+     -1.8
+    ],
+    "size": 0.8,
+    "color": "#e8b048",
+    "material": {
+     "roughness": 0.2,
+     "metallic": 1.0
+    }
+   },
+   {
+    "name": "LGT_Bulb",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0,
+     2.7,
+     0
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 8.0,
+      "range": 8.0,
+      "color": [
+       1.0,
+       0.9,
+       0.75
+      ],
+      "castShadows": true
+     }
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     90,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 270,
+  "elevation": 33,
+  "intensity": 0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -3.0,
+   0.0,
+   -3.0
+  ],
+  "max": [
+   3.0,
+   3.0,
+   3.0
+  ],
+  "spacing": 0.8
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    -2.7,
+    1.6,
+    -2.7
+   ],
+   "target": [
+    1.0,
+    1.0,
+    1.5
+   ]
+  }
+ ],
+ "regions": {
+  "walls": {
+   "entities": [
+    "LVL_Wall_N",
+    "LVL_Wall_S",
+    "LVL_Wall_E",
+    "LVL_Wall_W"
+   ]
+  },
+  "ceiling": {
+   "entities": [
+    "LVL_Ceiling"
+   ]
+  },
+  "floor": {
+   "entities": [
+    "LVL_Floor"
+   ]
+  },
+  "box_red": {
+   "entities": [
+    "ENV_BoxRed"
+   ]
+  },
+  "box_white": {
+   "entities": [
+    "ENV_BoxWhite"
+   ]
+  },
+  "sphere_chrome": {
+   "entities": [
+    "ENV_SphereChrome"
+   ]
+  },
+  "sphere_gold": {
+   "entities": [
+    "ENV_SphereGold"
+   ]
+  }
+ },
+ "criteria": {
+  "information": {
+   "regions": [
+    "walls",
+    "ceiling",
+    "floor",
+    "box_red",
+    "box_white"
+   ],
+   "cameras": [
+    "main"
+   ],
+   "note": "空の寄与が 0 の密閉室。全領域 ±0.5EV が目安(情報のみ。A1〜A4 には数えない)"
+  }
+ }
+}

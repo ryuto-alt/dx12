@@ -111,3 +111,6 @@ tools/parity/.venv/
 tools/parity/**/__pycache__/
 tools/parity/.pytest_cache/
 tools/parity/**/*.whl
+
+# パリティ / GI 評価の出力(画像が巨大なので git 管理外)
+.dx12/
