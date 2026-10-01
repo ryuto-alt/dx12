@@ -5,6 +5,7 @@
 #include "core/UpdateWindow.h"
 #include "core/ReleaseNotes.h"
 #include "core/PathResolver.h"
+#include "core/SplashScreen.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -620,6 +621,8 @@ bool Updater::RunStartupCheck()
     }
 
     // 3) 案内（起動画面と同じ Direct2D の窓。作れなければ旧来の MessageBox に縮退）
+    //    更新の案内・ダウンロード中は起動音を鳴らさない（起動音は起動の演出。待ちの間ループし続けていた）
+    SplashScreen::StopSound();
     const std::wstring logoPath = (installDir / "assets" / "editor" / "icons" / "logo.png").wstring();
     updateui::UpdateWindow win;
     const bool haveUi = win.Create(logoPath);
@@ -755,6 +758,7 @@ bool Updater::RunDemo(bool fail)
     if (const relnotes::Release* r = relnotes::Find(all, kEngineVersion))
         bodyMd = relnotes::ToMarkdown(*r, kEngineName);
 
+    SplashScreen::StopSound();   // 本物と同じく、案内からは無音
     const std::wstring logoPath = Widen(PathResolver::AssetsDir() + "editor/icons/logo.png");
     updateui::UpdateWindow win;
     if (!win.Create(logoPath))

@@ -55,26 +55,40 @@ bool ReadFileBytes(const std::wstring& path, std::vector<uint8_t>& out)
     return !out.empty();
 }
 
-// 音源を探して読む。splash_d.wav（+json）→ 埋め込みの案 A の順。
-std::shared_ptr<sp::SoundAsset> LoadAsset(const std::wstring& dir, std::string& what)
+// splash_d は出どころ未確認で配布物に入れない（リポジトリは PUBLIC）。配布版・自動更新後でもこの PC では
+// 同じ起動音が鳴るよう、利用者ごとのフォルダ %LOCALAPPDATA%\DX12Engine\sounds\ にも置ける（更新では触らない）。
+std::wstring UserSoundDir()
+{
+    wchar_t buf[MAX_PATH] = {};
+    const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    return std::wstring(buf) + L"\\DX12Engine\\sounds\\";
+}
+
+// 音源を探して読む。<assets>/editor/sounds/splash_d.wav（+json）→ 利用者フォルダの splash_d → 埋め込みの案 A の順。
+std::shared_ptr<sp::SoundAsset> LoadAsset(const std::wstring& assetsDir, std::string& what)
 {
     auto a = std::make_shared<sp::SoundAsset>();
-    std::vector<uint8_t> wav, meta;
-    if (ReadFileBytes(dir + L"splash_d.wav", wav) && ReadFileBytes(dir + L"splash_d.json", meta))
+    for (const std::wstring& dir : { assetsDir, UserSoundDir() })
     {
-        sp::WavData w;
-        int64_t onset = 0, pop = 0;
-        if (sp::ParseWavPcm16(wav.data(), wav.size(), w) && w.sampleRate == kSampleRate
-            && sp::ParseJsonInt(reinterpret_cast<const char*>(meta.data()), meta.size(), "onsetFrame", onset))
+        if (dir.empty()) continue;
+        std::vector<uint8_t> wav, meta;
+        if (ReadFileBytes(dir + L"splash_d.wav", wav) && ReadFileBytes(dir + L"splash_d.json", meta))
         {
-            sp::ParseJsonInt(reinterpret_cast<const char*>(meta.data()), meta.size(), "popOffsetFrames", pop);
-            if (sp::MakeAssetFromWav(std::move(w), onset, pop, *a))
+            sp::WavData w;
+            int64_t onset = 0, pop = 0;
+            if (sp::ParseWavPcm16(wav.data(), wav.size(), w) && w.sampleRate == kSampleRate
+                && sp::ParseJsonInt(reinterpret_cast<const char*>(meta.data()), meta.size(), "onsetFrame", onset))
             {
-                what = "splash_d.wav";
-                return a;
+                sp::ParseJsonInt(reinterpret_cast<const char*>(meta.data()), meta.size(), "popOffsetFrames", pop);
+                if (sp::MakeAssetFromWav(std::move(w), onset, pop, *a))
+                {
+                    what = "splash_d.wav";
+                    return a;
+                }
             }
+            SplashDiag("splash_d.wav を読めませんでした（形式が想定外）。次の候補を探します");
         }
-        SplashDiag("splash_d.wav を読めませんでした（形式が想定外）。埋め込みの起動音を使います");
     }
     sp::WavData w;
     if (!sp::ParseWavPcm16(kSplashSoundWav, sizeof(kSplashSoundWav), w) || w.sampleRate != kSampleRate) return nullptr;
