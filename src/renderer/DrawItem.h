@@ -18,6 +18,8 @@ namespace dx12e
 struct MeshRenderer;
 class SkinningBuffer;
 
+inline constexpr u32 kNoInstance = 0xFFFFFFFFu;   // DrawItem::instanceIndex の「群ではない」
+
 struct DrawItem
 {
     entt::entity        e;
@@ -70,6 +72,11 @@ struct DrawItem
     // グラフ材質でない / まだビルドされていない = 0）。並べ替えの鍵に入れて、同じシェーダーの物を連続させる（PSO 切替の最小化）。
     // ★内容（HLSL 本文）のハッシュなので起動をまたいで同じ値。グラフ材質を使わないシーンは全部 0 = 従来の並びのまま。
     u64                 graphHash = 0;
+    // インスタンス群（InstanceGroup）の何番目か。kNoInstance = 普通のエンティティ。
+    // ★群の全インスタンスは同じ e（群のエンティティ）・同じ renderer を指す。e だけで引く物（材質 SRV のキャッシュ等）は群で共通でよいが、
+    //   「1 つの e = 1 つの姿勢」を前提にする処理（PrevWorldMatrix・entity 単位のキー）は instanceIndex も見ること。
+    // 並べ替えの最後の決め手は guid → instanceIndex → entity（決定論）。
+    u32                 instanceIndex = 0xFFFFFFFFu;
 };
 
 // 自動インスタンシングで 1 ドローに畳まれる連続区間（ソート済み描画リスト上の [first, first+count)）。

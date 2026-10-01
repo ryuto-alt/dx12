@@ -258,6 +258,23 @@ static void Test_ReadAssetAbs_GameMode()
     // pak に無いものは空（ゲームモードでディスクへフォールバックして漏れない）。
     CHECK(vfs::ReadAssetAbs(base + "scripts/missing.lua").empty());
 
+    // ".." / "." / "//" を含む絶対パス（assimp が gltf 隣の "../tex/x.png" をそのまま開いてくる形）。
+    CHECK(vfs::ReadAssetAbs(assets + "models/arch/../../textures/foo.png") == items[2].bytes);
+    CHECK(vfs::ReadAssetAbs(assets + "./textures/./foo.png")               == items[2].bytes);
+    CHECK(vfs::ReadAssetAbs(assets + "textures//foo.png")                  == items[2].bytes);
+    CHECK(vfs::ExistsAbs(assets + "models/../textures/foo.png"));
+    // assets/ の外へ出て BaseDir 側へ戻る参照（"assets/../scripts/game.lua"）。
+    CHECK(vfs::ReadAssetAbs(assets + "../scripts/game.lua") == items[0].bytes);
+    // 区切りと大文字小文字の揺れ。
+    {
+        std::string mixed = assets + "TEXTURES\\Foo.PNG";
+        CHECK(vfs::ReadAssetAbs(mixed) == items[2].bytes);
+    }
+    // 相対キー側の ".." も同じ結果になる。
+    CHECK(vfs::ReadAsset("models/x/../../textures/foo.png") == items[2].bytes);
+    // 範囲外へ出る ".." は畳めずミスになる（pak の外を覗かない）。
+    CHECK(vfs::ReadAsset("../textures/foo.png").empty());
+
     vfs::Unmount();
     CHECK(!vfs::InGameMode());
 
@@ -317,6 +334,85 @@ static void Test_MountPak_NonAsciiPath()
     fs::remove(src, ec);
 }
 
+// Normalize の正準性（ビルド側 PakWriter と実行側 PakArchive が同じキーを作ること）。
+static void Test_NormalizeCanonical()
+{
+    using vfs::Normalize;
+    CHECK(Normalize("assets/Textures/Foo.PNG") == "textures/foo.png");
+    CHECK(Normalize("\\assets\\textures\\foo.png") == "textures/foo.png");
+    CHECK(Normalize("/assets/textures/foo.png") == "textures/foo.png");
+    CHECK(Normalize("textures//foo.png") == "textures/foo.png");
+    CHECK(Normalize("textures/./foo.png") == "textures/foo.png");
+    CHECK(Normalize("models/arch/../tex/a.png") == "models/tex/a.png");
+    CHECK(Normalize("assets/models/arch/../../textures/a.png") == "textures/a.png");
+    CHECK(Normalize("scripts/game.lua") == "scripts/game.lua");     // scripts/ は残す
+    CHECK(Normalize("a/b/../../../c") == "../c");                   // 先頭を越える ".." は畳まない
+    CHECK(Normalize("../a") == "../a");
+    CHECK(Normalize("a/..") == "");
+    CHECK(Normalize("textures/foo.png/") == "textures/foo.png");
+    // 日本語（UTF-8 バイト）を壊さない。
+    CHECK(Normalize("textures/" "\xE6\x97\xA5" "\xE6\x9C\xAC/a/../a.png") == "textures/" "\xE6\x97\xA5" "\xE6\x9C\xAC/a.png");
+    // 既存の pak のキー（lexically_relative 由来: ".." も "." も含まない）は変わらない。
+    CHECK(Normalize("models/a.glb") == "models/a.glb");
+    CHECK(vfs::FnvHash(Normalize("assets/models/a.glb")) == vfs::FnvHash("models/a.glb"));
+}
+
+// ビルド時に pak へテクスチャキャッシュを足す（PakWriter::OpenAppend）。既存エントリは壊さず、追記分も読めること。
+static void Test_PakAppend()
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path dir = fs::temp_directory_path() / "dx12_pak_append_test";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+
+    std::vector<uint8_t> a(5000), b(70000), c(33333);
+    for (size_t i = 0; i < a.size(); ++i) a[i] = static_cast<uint8_t>(i * 7);
+    for (size_t i = 0; i < b.size(); ++i) b[i] = static_cast<uint8_t>((i * 131) ^ (i >> 5));   // 圧縮が効きにくい
+    for (size_t i = 0; i < c.size(); ++i) c[i] = static_cast<uint8_t>(i % 11);               // 圧縮が効く
+    auto wr = [&](const char* n, const std::vector<uint8_t>& v) {
+        std::ofstream o(dir / n, std::ios::binary);
+        o.write(reinterpret_cast<const char*>(v.data()), static_cast<std::streamsize>(v.size()));
+        return (dir / n).string();
+    };
+    const std::string pakPath = (dir / "g.pak").string();
+    {
+        vfs::PakWriter w;
+        CHECK(w.Open(pakPath));
+        CHECK(w.AddFile(wr("a.bin", a), "scenes/a.json"));
+        CHECK(w.AddFile(wr("b.bin", b), "models/b.bin"));
+        CHECK(w.Finish(/*stripStrings=*/true));
+    }
+    {
+        vfs::PakWriter w;
+        CHECK(w.OpenAppend(pakPath));
+        CHECK(w.AddFile(wr("c.bin", c), "texcache/t0123456789abcdef.dds"));
+        CHECK(!w.AddFile(wr("a2.bin", a), "scenes/a.json"));   // 既存と同じキーは拒否（衝突）
+        CHECK(w.Finish(/*stripStrings=*/true));
+    }
+    {
+        vfs::PakArchive pk;
+        CHECK(pk.Mount(pakPath));
+        std::vector<uint8_t> g;
+        CHECK(pk.Read("scenes/a.json", g)); CHECK(g == a);
+        CHECK(pk.Read("models/b.bin", g));  CHECK(g == b);
+        CHECK(pk.Read("texcache/t0123456789abcdef.dds", g)); CHECK(g == c);
+    }
+    // 追記をもう一度（2 回目の追記でも壊れない）
+    {
+        vfs::PakWriter w;
+        CHECK(w.OpenAppend(pakPath));
+        CHECK(w.AddFile(wr("c.bin", c), "texcache/t1111111111111111.dds"));
+        CHECK(w.Finish(true));
+        vfs::PakArchive pk;
+        CHECK(pk.Mount(pakPath));
+        std::vector<uint8_t> g;
+        CHECK(pk.Read("models/b.bin", g)); CHECK(g == b);
+        CHECK(pk.Read("texcache/t1111111111111111.dds", g)); CHECK(g == c);
+    }
+    fs::remove_all(dir, ec);
+}
+
 int main()
 {
     Test_AesRoundTrip();
@@ -325,6 +421,8 @@ int main()
     Test_PakRoundTrip();
     Test_ReadAssetAbs_GameMode();
     Test_MountPak_NonAsciiPath();
+    Test_NormalizeCanonical();
+    Test_PakAppend();
 
     std::printf("Vfs: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -28,6 +28,9 @@ public:
     // outPath を開き、32 バイトのプレースホルダヘッダを書く。キーを組み立てる。
     bool Open(const std::string& outPath);
 
+    // 既存の pak へ追記する（Finish で TOC を書き直す）。文字列テーブルが strip 済みの pak 専用。
+    bool OpenAppend(const std::string& pakPath);
+
     // 1 ファイル追加: srcAbs を読み、（必要なら）圧縮、暗号化、16 境界へパディングして追記、
     // Normalize(relPath) をキーに TOC エントリを記録する。0 バイトファイルは警告して skip。
     bool AddFile(const std::string& srcAbs, const std::string& relPath);
@@ -51,6 +54,7 @@ private:
     std::array<uint8_t, kKeyLen> m_key{};
     bool                         m_open      = false;
     bool                         m_anyXpress = false;
+    bool                         m_append    = false;
 };
 
 } // namespace dx12e::vfs

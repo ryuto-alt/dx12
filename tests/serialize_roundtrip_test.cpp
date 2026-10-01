@@ -540,6 +540,33 @@ static void Test_Trigger()
         });
 }
 
+// モデルが読めないエンティティを捨てない（scene/MissingModel.h）。
+// 以前は InstantiateEntity が null を返し、次の保存でエンティティがシーンから消えていた。
+static void Test_MissingModelIsKept()
+{
+    Scene dst;
+    const std::string js = R"({"name":"Studio","guid":"91a59ba5a7c707fb",
+        "meshRenderer":{"modelPath":"models/not_there/studio.gltf"},
+        "material":{"metallic":1.0,"roughness":0.25},"uvTiling":[2.0,3.0],
+        "rigidBody":{"mass":0.0,"motionType":0},
+        "transform":{"position":[1.0,2.0,3.0],"rotation":[0.0,90.0,0.0],"scale":[1.0,1.0,1.0]}})";
+    const entt::entity e = SceneSerializer::InstantiateEntity(dst, js, "", /*keepGuid=*/true);
+    CHECK(e != entt::null);
+    if (e == entt::null) return;
+    auto& r = dst.GetRegistry();
+    CHECK(r.all_of<RigidBody>(e));
+    CHECK(r.all_of<Transform>(e));
+    if (r.all_of<Transform>(e)) CHECK_V3(r.get<Transform>(e).position, 1.0f, 2.0f, 3.0f);
+
+    const auto out = nlohmann::json::parse(SceneSerializer::SerializeEntity(dst, e, ""));
+    CHECK(out.value("name", "") == "Studio");
+    CHECK(out.contains("meshRenderer") && out["meshRenderer"].value("modelPath", "") == "models/not_there/studio.gltf");
+    CHECK(out.contains("material") && out["material"].value("roughness", 0.0) == 0.25);
+    CHECK(out.contains("uvTiling"));
+    CHECK(out.contains("rigidBody"));
+    CHECK(!out.contains("primitive"));   // 箱に化けない
+}
+
 static void Test_RigidBody()
 {
     Case<RigidBody>(
@@ -2336,6 +2363,7 @@ int main()
     Test_ParticleEmitterLayers();
     Test_Trigger();
     Test_RigidBody();
+    Test_MissingModelIsKept();
     Test_NetworkIdentity();
     Test_NetworkTransform();
     Test_Decal();

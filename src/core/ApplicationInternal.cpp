@@ -185,8 +185,11 @@ nlohmann::json McpComponentSchema()
         F("motionType", "int (0=Static,1=Kinematic,2=Dynamic)", 2), F("mass", "float", 1.0),
         F("restitution", "float", 0.4), F("friction", "float", 0.3),
         F("linearDamping", "float", 0.02), F("angularDamping", "float", 0.01), F("useGravity", "bool", true),
-        F("continuousCollision", "bool (CCD。弾丸/投擲物など1フレームで自分の厚みより長く動く物だけ true。既定 false は薄い壁をすり抜ける)", false),
-    })));
+        F("continuousCollision", "bool (CCD。弾丸/投擲物など1フレームで自分の厚みより長く動く物だけ true。false は薄い壁をすり抜ける)", false),
+    }), "★ここに書いた既定値は JSON で省略したときの意味（従来のシーン互換）。set_component / Add Component / Lua addRigidBody で【新しく作る】ときだけ "
+        "friction 0.6・restitution 0.1・continuousCollision true が入る（積み重ねが落ち着き、薄い壁を抜けにくい）。既存の rigidBody の部分更新は変わらない。"
+        "mass が 0 以下の動的剛体は mass 1 として扱う（Jolt が質量 0 で落ちるため）。"
+        "コライダーの offset はエンティティのローカル（回転・スケールを通る。Unity の center と同じ）。"));
     comps.push_back(C("boxCollider", true, true, json::array({
         F("halfExtents", "float3", json::array({0.5, 0.5, 0.5})), F("offset", "float3", json::array({0, 0, 0})),
     })));
@@ -835,9 +838,10 @@ nlohmann::json McpLuaApi()
         "addCapsuleCollider(e,radius,halfHeight)", "addRigidBody(e,motionType,mass)", "removeRigidBody(e)",
         "applyForce(e,vec3)", "applyImpulse(e,vec3)", "setVelocity(e,vec3)", "getVelocity(e) -> vec3",
         "setPosition(e,vec3)  ※DYNAMIC ボディ向け。KINEMATIC/STATIC は Transform 駆動なので entity.transform.position を直接書く",
-        "raycast(origin,dir,maxDist) -> RaycastHit  ※戻り値は h.hit / h.distance / h.point / h.normal（() を付けない）",
-        "overlapBox(center,half,maxN?) -> {entity..}", "overlapSphere(center,radius,maxN?) -> {entity..}",
-        "setGravity(vec3)", "setPaused(b)", "step(dt)",
+        "raycast(origin,dir,maxDist,ignoreEntity?) -> RaycastHit  ※戻り値は h.hit / h.distance / h.point / h.normal / h.entity（() を付けない。h.entity は当たった相手の Entity、無ければ nil）。"
+        "CharacterController のキャラもカプセルとして当たる（始点が自分のカプセルの中なら自分は無視）。ignoreEntity を渡すとそのエンティティの剛体 / キャラを無視",
+        "overlapBox(center,half,maxN?,ignoreEntity?) -> {entity..}", "overlapSphere(center,radius,maxN?,ignoreEntity?) -> {entity..}  ※判定は相手の実形状（回した壁・メッシュの凹みも見る。AABB だけではない）。キャラも含む。同じ Entity は 1 回だけ。ignoreEntity は結果から除く",
+        "setGravity(vec3)", "setPaused(b)", "step(dt)  ※pause 中の駒送り。Transform へも書き戻す（キネマティック・キャラも 1 ステップ進む）",
         "addCharacterController(e,radius,halfHeight)", "move(e,vx,vz)", "jump(e,amount?)", "isGrounded(e) -> bool",
         "warp(e,x,y,z)  ※任意座標へ即テレポート。CharacterController>RigidBody>Transformの優先で処理先を切替、CC は縦速度もリセット",
     })));

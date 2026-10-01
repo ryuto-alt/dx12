@@ -1,6 +1,8 @@
 #include "scene/SceneSerializer.h"
+#include "scene/SceneFormatV2.h"
 #include "scene/Scene.h"
 #include "ecs/Components.h"
+#include "physics/ColliderShape.h"         // ConvexHullCollider の頂点の間引き（collider::ReduceHullPoints。ヘッダのみ）
 #include "ecs/ComponentMeta.h"             // entt::meta フィールド反映（シリアライズの単一ソース）
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
@@ -13,6 +15,9 @@
 #include "renderer/foliage/FoliageIO.h"
 #include "renderer/foliage/FoliageLayerOps.h"   // 植生: .dxfoliage の書き出し / 複製時のパス振り直し
 #include "renderer/foliage/SceneWind.h"
+#include "ecs/InstanceGroup.h"
+#include "scene/InstanceGroupIO.h"   // インスタンス群のサイドカー
+#include "scene/MissingModel.h"      // モデルが読めなかったエンティティの描画データを保持して書き戻す
 
 #pragma warning(push)
 #pragma warning(disable: 4189 4456 4458 4267 4996)
@@ -31,6 +36,8 @@
 #include <cctype>
 #include <random>    // エンティティ GUID の生成
 #include <cstdio>     // GUID の hex 整形
+#include <chrono>      // 読み込み時間の内訳ログ
+#include <functional>
 
 using json = nlohmann::json;
 using namespace DirectX;
@@ -205,11 +212,41 @@ static bool JsonToMetaField(entt::meta_any& obj, const entt::meta_data& data, co
 // T の RuntimeComponentInfo を反射から生成する。
 // replaceExisting: true = emplace_or_replace / false = 既に持っていたら何もしない
 // （ライト/カメラは従来 emplace-if-absent だったので false、それ以外は true で挙動を維持）。
+
+// ---- シーン形式 v2 の既定値表の初期値を作るための「既定構築 → 実際の保存処理」プローブ ----
+// 反射登録（MakeReflectedInfo）と同じ場所で積むので、コンポーネントを足しても一覧の更新漏れが起きない。
+// 表そのものは凍結データ（src/scene/scene_defaults_v2.json）で、これは生成ツール（SceneSerializer::BuildDefaultsTableV2Json）専用。
+static json SerializeEntityJson(const entt::registry& reg, entt::entity entity, const std::string& assetsDir);
+
+// MeshRenderer があるときだけ書かれる描画まわりのキー（SerializeEntityJson の MeshRenderer 節）。
+// モデルが読めなかったエンティティはこれを MissingModel に取っておき、保存時に書き戻す。
+static const char* const kRendererKeys[] = {
+    "meshRenderer", "material", "color", "uvTiling", "uvScroll", "flipbook",
+    "shader", "shaderAlphaBlend", "shaderEffectValue", "shaderParams", "shaderParamsB",
+    "materialTextureOverrides", "materialAssets",
+};
+
+struct DefaultsProbe { std::string key; std::function<json()> run; };
+static std::vector<DefaultsProbe>& DefaultsProbes()
+{
+    static std::vector<DefaultsProbe> v;
+    return v;
+}
+
 template <typename T>
 static RuntimeComponentInfo MakeReflectedInfo(const char* typeName, const char* jsonKey,
                                               bool replaceExisting)
 {
     const std::string key = jsonKey;
+    DefaultsProbes().push_back({ key, [key]() -> json {
+        entt::registry reg;
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{ "probe" });
+        reg.emplace<Transform>(e);
+        reg.emplace<T>(e);
+        json ej = SerializeEntityJson(reg, e, std::string{});
+        return ej.contains(key) ? ej[key] : json();
+    } });
     RuntimeComponentInfo info;
     info.typeName = typeName;
     info.source   = ComponentSource::Core;
@@ -333,6 +370,67 @@ static void RegisterCoreComponentSerializers()
                     Logger::Warn("植生: .dxfoliage を書き出せませんでした（{}）", err);
             }
             generic(reg, e, ej);
+        };
+        R.Register(std::move(info));
+    }
+    // インスタンス群（docs/SCENE_FORMAT_DESIGN.md §4.1 の 4-1）。JSON には個数だけを書く。実体（InstanceSet）は:
+    //   ・ファイル保存（Save）の直列化中 … 収集器へ (guid, 実体) を積む。Save が <シーン>.inst/<guid>.jsonl へ書く。
+    //   ・それ以外（Play のスナップショット / 複製 / Undo の JSON）… 台帳へ預けて "mem":id を書く（配列の再直列化をしない）。
+    //   読み込みは "mem" があれば台帳から、無ければ読み込み中のシーンの隣のサイドカーから。
+    {
+        RuntimeComponentInfo info;
+        info.typeName = "InstanceGroup";
+        info.source   = ComponentSource::Core;
+        info.serialize = [](const entt::registry& reg, entt::entity e, json& ej)
+        {
+            const auto* g = reg.try_get<InstanceGroup>(e);
+            if (!g) return;
+            json out = json::object();
+            out["count"] = g->_set ? g->_set->Count() : 0u;
+            if (g->_set)
+            {
+                if (auto* col = instgroup::CurrentCollector())
+                {
+                    const auto* gu = reg.try_get<EntityGuid>(e);
+                    if (gu && gu->value != 0) col->sets.emplace_back(FormatEntityGuidHex(gu->value), g->_set);
+                }
+                else
+                {
+                    instgroup::StoreRegister(g->_set);
+                    out["mem"] = g->_set->id;
+                }
+            }
+            ej["instanceGroup"] = std::move(out);
+        };
+        info.deserialize = [](entt::registry& reg, entt::entity e, const json& ej)
+        {
+            if (!ej.contains("instanceGroup") || !ej["instanceGroup"].is_object()) return;
+            const json& cj = ej["instanceGroup"];
+            instgroup::InstanceSetPtr set;
+            if (cj.contains("mem") && cj["mem"].is_number_unsigned())
+                set = instgroup::StoreFind(cj["mem"].get<u64>());
+            if (!set)
+            {
+                const std::string& scenePath = instgroup::CurrentLoadScenePath();
+                // .prefab は guid を落として保存するので、サイドカー名は "sidecar" に残す（SavePrefab が書く）。
+                std::string key;
+                if (cj.contains("sidecar") && cj["sidecar"].is_string()) key = cj["sidecar"].get<std::string>();
+                else
+                {
+                    const uint64_t g = (ej.contains("guid") && ej["guid"].is_string()) ? ParseEntityGuidHex(ej["guid"].get<std::string>()) : 0ull;
+                    if (g != 0) key = FormatEntityGuidHex(g);
+                }
+                if (!scenePath.empty() && !key.empty() && key.find_first_of("/\\.:") == std::string::npos)
+                    set = instgroup::LoadSidecar(scenePath, key);
+            }
+            if (!set)
+            {
+                const u64 want = cj.value("count", 0ull);
+                if (want > 0)
+                    Logger::Warn("インスタンス群のデータが見つかりません（{} 個の想定）: {}", want, ej.value("name", std::string("?")));
+                set = instgroup::NewSet(std::vector<instgroup::InstanceTRS>{});
+            }
+            reg.emplace_or_replace<InstanceGroup>(e, InstanceGroup{ set });
         };
         R.Register(std::move(info));
     }
@@ -963,6 +1061,16 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 }
             }
         }
+    }
+
+    // モデルが読めなかったエンティティ: 読み込み時に取っておいた描画まわりのキーを書き戻す
+    // （MeshRenderer が無いので上では何も書かれない。scene/MissingModel.h）。
+    if (const auto* mm = reg.try_get<MissingModel>(entity); mm && !reg.all_of<MeshRenderer>(entity))
+    {
+        const json keep = json::parse(mm->rendererJson, nullptr, /*allow_exceptions=*/false);
+        if (keep.is_object())
+            for (auto it = keep.begin(); it != keep.end(); ++it)
+                if (!ej.contains(it.key())) ej[it.key()] = it.value();
     }
 
     return ej;
@@ -1759,6 +1867,28 @@ static void LoadVolumetricFogSettings(Scene& scene, const json& root)
                             ? root["decalAtlas"].get<std::string>() : std::string());
 }
 
+// ---- 読み込み時間の内訳（SceneSerializer::Load が 1 行のログに出す。段階 3 の判断材料）----
+namespace {
+using LoadClock = std::chrono::steady_clock;
+struct LoadTimings
+{
+    double readMs = 0, parseMs = 0, inflateMs = 0, entitiesMs = 0, modelMs = 0, parentMs = 0;
+    int    version = 1;
+    size_t entities = 0;
+};
+thread_local LoadTimings* g_loadTimings = nullptr;   // Load の間だけ非 null（Play 復元など他経路では計らない）
+double LoadMsSince(LoadClock::time_point t0)
+{
+    return std::chrono::duration<double, std::milli>(LoadClock::now() - t0).count();
+}
+struct LoadTimingsScope
+{
+    LoadTimings* prev;
+    explicit LoadTimingsScope(LoadTimings* t) : prev(g_loadTimings) { g_loadTimings = t; }
+    ~LoadTimingsScope() { g_loadTimings = prev; }
+};
+} // namespace
+
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
 // 失敗時は entt::null
 static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
@@ -1845,14 +1975,28 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
     {
         std::string relPath = ej["meshRenderer"].value("modelPath", "");
         std::string absPath = assetsDir + relPath;
+        const auto tSpawn = g_loadTimings ? LoadClock::now() : LoadClock::time_point{};
         auto entity = scene.Spawn(name, absPath, pos, rot, scale);
+        if (g_loadTimings) g_loadTimings->modelMs += LoadMsSince(tSpawn);
         if (!entity.IsValid())
         {
+            // ★エンティティごと捨てない（scene/MissingModel.h）。捨てると次の保存でシーンから消える。
+            //   本体は作り、描画まわりのキーだけ元の JSON のまま持って保存時に書き戻す。
             OutputDebugStringA(("[Load] FAILED Spawn: " + name + " path=" + absPath + "\n").c_str());
-            return entt::null;
+            auto& reg = scene.GetRegistry();
+            e = reg.create();
+            reg.emplace<NameTag>(e, NameTag{name});
+            json keep = json::object();
+            for (const char* k : kRendererKeys)
+                if (ej.contains(k)) keep[k] = ej[k];
+            reg.emplace<MissingModel>(e, MissingModel{relPath, keep.dump()});
+            Logger::Warn("モデルが見つからないため、描画せずに残します（保存しても消えません）: {} ({})", name, relPath);
         }
-        e = entity.GetHandle();
-        OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
+        else
+        {
+            e = entity.GetHandle();
+            if (IsDebuggerPresent()) OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
+        }
     }
     else if (ej.contains("primitive"))
     {
@@ -2019,15 +2163,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                                 p.y * tf.scale.y,
                                 p.z * tf.scale.z });
                     }
-                    constexpr size_t kMax = 256;
-                    if (allPoints.size() > kMax)
-                    {
-                        size_t step = allPoints.size() / kMax;
-                        std::vector<XMFLOAT3> sampled;
-                        for (size_t i = 0; i < allPoints.size() && sampled.size() < kMax; i += step)
-                            sampled.push_back(allPoints[i]);
-                        allPoints = std::move(sampled);
-                    }
+                    allPoints = collider::ReduceHullPoints(allPoints, 256);   // 方向ごとの極値を残す（外形を保つ）
                     if (!allPoints.empty())
                     {
                         ConvexHullCollider col;
@@ -2222,9 +2358,21 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
 }
 
 // JSON ノードを既存シーンに展開（共通処理）
-static bool ApplySceneJson(Scene& scene, const json& root, const std::string& assetsDir)
+// root は非 const: version >= 2 のとき入口で既定値表から補完する（補完後は v1 保存と同じ JSON になるので、
+// 下流の InstantiateEntityJson は v1/v2 を区別しない）。
+static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDir)
 {
     scene.Clear();
+
+    {
+        const auto tInflate = LoadClock::now();
+        scenefmt::InflateScene(root);
+        if (g_loadTimings)
+        {
+            g_loadTimings->inflateMs += LoadMsSince(tInflate);
+            g_loadTimings->version = scenefmt::IsV2(root) ? root.value("version", 2) : 1;
+        }
+    }
 
     // JSON として valid でも「型」が想定と違う値（例: intensity が文字列）は
     // json::type_error を投げる。1 箇所のミスでシーン全体・アプリ全体を巻き込まず、
@@ -2292,8 +2440,10 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     }
 
     // 1パス目: 生成（配列インデックス → entity の対応を保持）
+    const auto tEntities = LoadClock::now();
     std::vector<entt::entity> created;
     created.reserve(root["entities"].size());
+    scene.BeginBulkSpawn();   // Spawn の 1 体ごとのログは出さず、最後に「N 体配置」の 1 行へ
     for (const auto& ej : root["entities"])
     {
         entt::entity e = entt::null;
@@ -2309,8 +2459,15 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
         }
         created.push_back(e);
     }
+    scene.EndBulkSpawn();
+    if (g_loadTimings)
+    {
+        g_loadTimings->entitiesMs += LoadMsSince(tEntities);
+        g_loadTimings->entities = created.size();
+    }
 
     // 2パス目: 親子関係の復元
+    const auto tParents = LoadClock::now();
     auto& reg = scene.GetRegistry();
 
     // guid → entity。JSON に guid があるものだけ載る（旧シーンは空のまま）。
@@ -2404,6 +2561,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     // これで旧シーンも「開いて保存」で自動的に guid 参照へ移行する。
     PromoteEntityRefsToGuid(reg);
 
+    if (g_loadTimings) g_loadTimings->parentMs += LoadMsSince(tParents);
     return true;
 }
 
@@ -2427,17 +2585,52 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         }
     }
 
-    json root = BuildSceneJson(scene, assetsDir);
+    // ★シーンファイルは常に v2（既定値の省略・最短 float・parent index 廃止・1 行 1 体）。
+    //   Play のスナップショット（SaveToString）は v1 の完全形のまま。
+    const auto tSave0 = LoadClock::now();
+    // インスタンス群の実体はここで集めて、シーンの隣の <シーン名>.inst/ へ書く（シーン JSON には個数だけが出る）。
+    instgroup::SerializeCollector instCollected;
+    json root;
+    {
+        instgroup::ScopedFileSerialize instScope(instCollected);
+        root = BuildSceneJson(scene, assetsDir);
+    }
+    const size_t entityCount = root["entities"].size();
+    const double buildMs = LoadMsSince(tSave0);
 
-    std::ofstream ofs(filePath);
+    // 文字列化で例外（不正な UTF-8 など）が出ても、ファイルを開いて空にする前なので既存の保存は無傷で残る。
+    const auto tSave1 = LoadClock::now();
+    double convertMs = 0, dumpMs = 0;
+    std::string text;
+    try
+    {
+        scenefmt::ConvertToV2(root);
+        convertMs = LoadMsSince(tSave1);
+        const auto tSave2 = LoadClock::now();
+        text = scenefmt::DumpSceneV2(root);
+        dumpMs = LoadMsSince(tSave2);
+    }
+    catch (const std::exception& e)
+    {
+        Logger::Error("シーンを JSON にできません（名前やパスに不正な文字が含まれていないか確認してください）: {}", e.what());
+        return false;
+    }
+
+    // サイドカーを先に書く（シーンが「無いデータ」を指す瞬間を作らない）。内容が同じファイルには触らない。
+    const instgroup::SaveStats instStats = instgroup::SaveSidecars(filePath, instCollected);
+    if (!instStats.ok) Logger::Warn("インスタンス群のサイドカーを書ききれませんでした: {}", filePath);
+
+    const auto tSave3 = LoadClock::now();
+    // ★バイナリで書く。テキストモードだと Windows で LF が CRLF になり、v2 の「改行は LF」が崩れる。
+    std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open())
     {
         Logger::Error("ファイルを書き込み用に開けません: {}", filePath);
         return false;
     }
-
-    ofs << root.dump(2);
+    ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
     ofs.close();
+    const double writeMs = LoadMsSince(tSave3);
 
     // ---- ナビメッシュのサイドカー（<シーン>.nav）----
     // シーン JSON にはパラメータだけを書き、焼いた実体はバイナリで隣に置く。
@@ -2457,8 +2650,8 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         }
     }
 
-    Logger::Info("Scene saved ({} entities): {}",
-                 root["entities"].size(), filePath);
+    Logger::Info("Scene saved ({} entities, format v2, {} bytes): {} | build {:.0f} ms, convert {:.0f}, dump {:.0f}, write {:.0f}, total {:.0f} ms",
+                 entityCount, text.size(), filePath, buildMs, convertMs, dumpMs, writeMs, LoadMsSince(tSave0));
     return true;
 }
 
@@ -2490,37 +2683,23 @@ static void LoadNavMeshSidecar(Scene& scene, const std::string& scenePath)
                  scene.GetNavMesh().GetStats().sampleCount, navPath);
 }
 
-bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
-                           const std::string& assetsDir)
+// JSON テキスト → シーン（Load / LoadFromString 共通）。fromFile は失敗時のメッセージの出し分けだけに使う。
+static bool LoadSceneText(Scene& scene, const std::string& text, const std::string& assetsDir,
+                          bool fromFile, size_t* outEntityCount)
 {
-    // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
-    auto b = vfs::ReadAssetAbs(filePath);
-    if (!b.empty())
-    {
-        const bool ok = LoadFromString(scene, std::string(b.begin(), b.end()), assetsDir);
-        if (ok) LoadNavMeshSidecar(scene, filePath);
-        return ok;
-    }
-
-    // ディスクフォールバック
-    std::ifstream ifs(filePath);
-    if (!ifs.is_open())
-    {
-        Logger::Error("シーンファイルを開けません: {}", filePath);
-        return false;
-    }
-
     json root;
+    const auto tParse = LoadClock::now();
     try
     {
-        ifs >> root;
+        root = json::parse(text);
     }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON の解析に失敗しました: {}", e.what());
+        if (fromFile) Logger::Error("JSON の解析に失敗しました: {}", e.what());
+        else          Logger::Error("JSON の解析に失敗しました（スナップショット）: {}", e.what());
         return false;
     }
-    ifs.close();
+    if (g_loadTimings) g_loadTimings->parseMs += LoadMsSince(tParse);
 
     bool ok = false;
     try
@@ -2530,14 +2709,113 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     catch (const json::exception& e)
     {
         // ApplySceneJson 内でセクション/エンティティ単位に捕捉しているが、最後の保険
-        Logger::Error("シーン読み込みを中断しました（JSON の値が不正）: {}", e.what());
+        if (fromFile) Logger::Error("シーン読み込みを中断しました（JSON の値が不正）: {}", e.what());
+        else          Logger::Error("シーン復元を中断しました（JSON の値が不正）: {}", e.what());
         return false;
+    }
+    if (outEntityCount)
+        *outEntityCount = root.contains("entities") && root["entities"].is_array() ? root["entities"].size() : 0;
+    return ok;
+}
+
+bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
+                           const std::string& assetsDir)
+{
+    LoadTimings tm;
+    const auto tTotal = LoadClock::now();
+
+    // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
+    const auto tRead = LoadClock::now();
+    std::string text;
+    {
+        auto b = vfs::ReadAssetAbs(filePath);
+        if (!b.empty())
+        {
+            text.assign(b.begin(), b.end());
+        }
+        else
+        {
+            // ディスクフォールバック
+            std::ifstream ifs(filePath, std::ios::binary);
+            if (!ifs.is_open())
+            {
+                Logger::Error("シーンファイルを開けません: {}", filePath);
+                return false;
+            }
+            ifs.seekg(0, std::ios::end);
+            const std::streamoff sz = ifs.tellg();
+            ifs.seekg(0, std::ios::beg);
+            if (sz > 0)
+            {
+                text.resize(static_cast<size_t>(sz));
+                ifs.read(text.data(), sz);
+            }
+        }
+    }
+    tm.readMs = LoadMsSince(tRead);
+
+    size_t entityCount = 0;
+    bool ok = false;
+    {
+        LoadTimingsScope scope(&tm);
+        instgroup::ScopedLoadScene instLoadScene(filePath);   // インスタンス群のサイドカーを読む先
+        ok = LoadSceneText(scene, text, assetsDir, /*fromFile=*/true, &entityCount);
     }
     if (ok)
     {
         LoadNavMeshSidecar(scene, filePath);
-        Logger::Info("Scene loaded ({} entities): {}",
-                     root.contains("entities") ? root["entities"].size() : 0, filePath);
+        const double loadTotalMs = LoadMsSince(tTotal);   // 検証フックの時間を含めない
+
+        // ★検証用の隠しフック（通常は何も起きない）。環境変数 DX12E_SCENE_FORMAT_CHECK_DIR があるとき、
+        //   読み込み直後のシーンから <stem>.v1full.json（SaveToString = v1 完全形。F1 等価性の基準）と
+        //   <stem>.v2.json（Save が書く v2 本体）をそのフォルダへ書き、v1(dump(2)) と v2 の保存時間を 1 行ログに出す。
+        //   別ファイルを開き直して v1full を突き合わせる使い方は docs/SCENE_FORMAT_DESIGN.md §3.6 の F1 / F4。
+        {
+            char dirBuf[MAX_PATH] = {};
+            const DWORD n = GetEnvironmentVariableA("DX12E_SCENE_FORMAT_CHECK_DIR", dirBuf, MAX_PATH);
+            if (n > 0 && n < MAX_PATH)
+            {
+                namespace fs = std::filesystem;
+                const std::string stem = fs::path(filePath).stem().string();
+                std::error_code ec;
+                fs::create_directories(dirBuf, ec);
+                auto writeBin = [&](const std::string& name, const std::string& body) {
+                    std::ofstream o((fs::path(dirBuf) / name).string(), std::ios::binary | std::ios::trunc);
+                    o.write(body.data(), static_cast<std::streamsize>(body.size()));
+                };
+                const auto t1 = LoadClock::now();
+                const std::string v1full = SaveToString(scene, assetsDir);
+                const double v1fullMs = LoadMsSince(t1);
+                writeBin(stem + ".v1full.json", v1full);
+                // 旧 Save 相当（BuildSceneJson + dump(2)）の時間と大きさ。
+                const auto t2 = LoadClock::now();
+                const std::string v1pretty = BuildSceneJson(scene, assetsDir).dump(2);
+                const double v1prettyMs = LoadMsSince(t2);
+                // 新 Save 相当（BuildSceneJson + v2 変換 + 整形）。
+                const auto t3 = LoadClock::now();
+                const std::string v2 = SaveToStringV2(scene, assetsDir);
+                const double v2Ms = LoadMsSince(t3);
+                writeBin(stem + ".v2.json", v2);
+                writeBin(stem + ".v1save.json", v1pretty);   // 旧 Save が書いていたもの（F4: v1 と v2 の読み込み時間の比較用）
+                Logger::Info("SceneFormatCheck {}: v1full {} bytes ({:.0f} ms) | v1 save (dump(2)) {} bytes {:.0f} ms | v2 save {} bytes {:.0f} ms",
+                             stem, v1full.size(), v1fullMs, v1pretty.size(), v1prettyMs, v2.size(), v2Ms);
+            }
+        }
+
+        // 読み込み時間の内訳（段階 3「実行用バイナリ」の判断材料）。entities は生成全体で、models はそのうち Spawn（モデル読み込み）の合計。
+        {
+            // インスタンス群（InstanceGroup）があれば 1 行で個数を残す（G6: pak から読めたことの確認にも使う）
+            size_t groups = 0, instances = 0;
+            for (auto [ge, gg] : scene.GetRegistry().view<const InstanceGroup>().each())
+            {
+                ++groups;
+                if (gg._set) instances += gg._set->items.size();
+            }
+            if (groups > 0) Logger::Info("Instance groups loaded: {} groups, {} instances ({})", groups, instances, filePath);
+        }
+        Logger::Info("Scene loaded ({} entities, format v{}): {} | read {:.0f} ms, parse {:.0f}, inflate {:.0f}, entities {:.0f} (models {:.0f}), parents {:.0f}, total {:.0f} ms",
+                     entityCount, tm.version, filePath, tm.readMs, tm.parseMs, tm.inflateMs,
+                     tm.entitiesMs, tm.modelMs, tm.parentMs, loadTotalMs);
     }
     return ok;
 }
@@ -2548,34 +2826,64 @@ std::string SceneSerializer::SaveToString(const Scene& scene, const std::string&
     return root.dump();
 }
 
+std::string SceneSerializer::SaveToStringV2(const Scene& scene, const std::string& assetsDir)
+{
+    json root = BuildSceneJson(scene, assetsDir);
+    scenefmt::ConvertToV2(root);
+    return scenefmt::DumpSceneV2(root);
+}
+
 bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
                                      const std::string& assetsDir)
 {
-    json root;
-    try
-    {
-        root = json::parse(jsonStr);
-    }
-    catch (const json::parse_error& e)
-    {
-        Logger::Error("JSON の解析に失敗しました（スナップショット）: {}", e.what());
-        return false;
-    }
-
-    bool ok = false;
-    try
-    {
-        ok = ApplySceneJson(scene, root, assetsDir);
-    }
-    catch (const json::exception& e)
-    {
-        Logger::Error("シーン復元を中断しました（JSON の値が不正）: {}", e.what());
-        return false;
-    }
+    size_t entityCount = 0;
+    const bool ok = LoadSceneText(scene, jsonStr, assetsDir, /*fromFile=*/false, &entityCount);
     if (ok)
-        Logger::Info("Scene restored from snapshot ({} entities)",
-                     root.contains("entities") ? root["entities"].size() : 0);
+        Logger::Info("Scene restored from snapshot ({} entities)", entityCount);
     return ok;
+}
+
+std::string SceneSerializer::BuildDefaultsTableV2Json()
+{
+    RegisterCoreComponentSerializers();   // プローブはここで積まれる
+    json table = json::object();
+    {
+        // transform: 位置は表に入れない（書く側が常に position を持つ）。回転 / スケールだけが対象。
+        entt::registry reg;
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{ "probe" });
+        reg.emplace<Transform>(e);
+        json ej = SerializeEntityJson(reg, e, std::string{});
+        json tj = ej.value("transform", json::object());
+        tj.erase("position");
+        table["transform"] = std::move(tj);
+    }
+    for (const auto& pr : DefaultsProbes())
+    {
+        json j = pr.run();
+        if (j.is_object()) table[pr.key] = std::move(j);
+    }
+    {
+        // ★rigidBody だけは「既定構築」ではなく「静的コライダー」の姿を表にする（設計書 §3.1 の `"rigidBody":{}` = 静的）。
+        //   実シーンの剛体はほぼ全部が静的コライダー（Dead Mall は 13522 体が同一設定）で、既定構築の動的剛体を表にすると
+        //   静的の設定 5 項目が全員に残り、Dead Mall が 5MB（F3）に収まらない。表は凍結データで v2 のファイルにだけ効く
+        //   （v1 の読み込みは従来どおり RigidBody{} = 動的）。人間 / AI が省略形 `rigidBody:{}` を書くと静的になる点に注意。
+        entt::registry reg;
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{ "probe" });
+        reg.emplace<Transform>(e);
+        RigidBody rb;
+        rb.motionType  = MotionType::Static;
+        rb.mass        = 0.0f;
+        rb.friction    = 0.8f;
+        rb.restitution = 0.0f;
+        rb.useGravity  = false;
+        reg.emplace<RigidBody>(e, rb);
+        json ej = SerializeEntityJson(reg, e, std::string{});
+        if (ej.contains("rigidBody")) table["rigidBody"] = ej["rigidBody"];
+    }
+    scenefmt::NormalizeFloats(table);
+    return table.dump(2) + "\n";
 }
 
 bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
@@ -2588,6 +2896,9 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
     try { root = json::parse(ifs); }
     catch (...) { return false; }
     ifs.close();
+
+    // v2 は既定値を省略している。補完してから読む（補完後は v1 保存と同じ形）。
+    scenefmt::InflateScene(root);
 
     if (!root.contains("entities") || !root["entities"].is_array())
         return false;
@@ -2609,9 +2920,10 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
         {
             auto& t = reg.get<Transform>(e);
             const auto& tj = ej["transform"];
-            t.position = DeserializeFloat3(tj["position"], t.position);
-            t.rotation = DeserializeFloat3(tj["rotation"], t.rotation);
-            t.scale    = DeserializeFloat3(tj["scale"],    t.scale);
+            // ★v2 は position が無いこともあり得る（const operator[] の欠損キーは未定義動作なので contains で守る）。
+            if (tj.contains("position")) t.position = DeserializeFloat3(tj["position"], t.position);
+            if (tj.contains("rotation")) t.rotation = DeserializeFloat3(tj["rotation"], t.rotation);
+            if (tj.contains("scale"))    t.scale    = DeserializeFloat3(tj["scale"],    t.scale);
         }
 
         // Material PBR オーバーライド
@@ -3192,7 +3504,12 @@ SceneSerializer::RewriteAssetPathRefsInFiles(const std::string& assetsDir,
             out.failed.push_back(MakeRelative(p.string(), assetsDir));
             continue;
         }
-        ofs << doc.dump(2);
+        // v2 のシーンは v2 の整形で書き戻す（dump(2) だと 1 体 45 行に崩れて差分が全体に広がる）。
+        // 値は strip 済みのまま触らない（文字列の付け替えしかしていない）。
+        if (scenefmt::IsV2(doc) && doc.contains("entities") && doc["entities"].is_array())
+            ofs << scenefmt::DumpSceneV2(doc);
+        else
+            ofs << doc.dump(2);
         ++out.filesChanged;
         out.refsChanged += changed;
         if (static_cast<int>(out.files.size()) < kMaxReportedFiles)
@@ -3470,6 +3787,56 @@ bool ReadPrefabJson(const std::string& absPath, json& out)
         && out["entities"].is_array();
 }
 
+// インスタンス群の「正規形」。比較（差分表示）と 3-way マージのために、3 者（インスタンスの今の姿 = "mem"、
+// .prefab = "sidecar"）を同じ形 {"count":N,"mem":id} へそろえる。内容が同じ実体は 1 つの実体へ寄せるので、
+// 触っていない群は JSON として一致し、群を編集したインスタンスだけが差分になる。
+// 台帳（強い参照）が実体を預かるので、この JSON から InstantiateSubtree しても群が戻る。
+struct GroupCanon
+{
+    std::unordered_map<uint64_t, std::vector<instgroup::InstanceSetPtr>> buckets;
+};
+
+instgroup::InstanceSetPtr CanonSet(GroupCanon& canon, const instgroup::InstanceSetPtr& s)
+{
+    uint64_t h = 1469598103934665603ull;
+    const auto* p = reinterpret_cast<const unsigned char*>(s->items.data());
+    const size_t n = s->items.size() * sizeof(instgroup::InstanceTRS);
+    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    h ^= s->items.size();
+    auto& vec = canon.buckets[h];
+    for (const auto& c : vec)
+        if (c.get() == s.get()
+            || (c->items.size() == s->items.size()
+                && (n == 0 || std::memcmp(c->items.data(), s->items.data(), n) == 0)))
+            return c;
+    vec.push_back(s);
+    return s;
+}
+
+// entities 配列の群を正規形へ。prefabAbs が空でない場合は "sidecar" をそのプレハブの隣から読む。
+void CanonicalizeGroups(json& entities, const std::string& prefabAbs, GroupCanon& canon)
+{
+    if (!entities.is_array()) return;
+    for (auto& ej : entities)
+    {
+        if (!ej.is_object() || !ej.contains("instanceGroup") || !ej["instanceGroup"].is_object()) continue;
+        json& cj = ej["instanceGroup"];
+        instgroup::InstanceSetPtr set;
+        if (cj.contains("mem") && cj["mem"].is_number_unsigned())
+            set = instgroup::StoreFind(cj["mem"].get<uint64_t>());
+        if (!set && !prefabAbs.empty() && cj.contains("sidecar") && cj["sidecar"].is_string())
+        {
+            const std::string key = cj["sidecar"].get<std::string>();
+            if (key.find_first_of("/\\.:") == std::string::npos)
+                set = instgroup::LoadSidecar(prefabAbs, key);
+        }
+        if (!set) continue;   // 読めない（欠損）。そのまま残す
+        set = CanonSet(canon, set);
+        instgroup::StoreRegister(set);
+        cj = json{{"count", set->Count()}, {"mem", set->id}};
+    }
+}
+
 // エンティティ 1 個ぶんの JSON を比較して差分を積む。
 // name は展開時に連番が付くので比較しない（毎回全インスタンスが差分だらけになる）。
 // parent はローカル index なので構造が同じなら一致する = 比較対象に残してよい。
@@ -3620,7 +3987,7 @@ json Merge3WaySubtree(const json& mine, const json& oldBase, const json& newBase
 int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json& oldBase,
                          const json& newBase, const std::string& assetsDir, entt::entity except,
                          const std::unordered_map<std::string, std::string>& oldGeoBytes,
-                         int* outGeoPropagated, int* outGeoKept)
+                         int* outGeoPropagated, int* outGeoKept, GroupCanon& canon)
 {
     auto& reg = scene.GetRegistry();
     // 作り直すのでビューを回しながらだと壊れる。先に対象を集める
@@ -3637,6 +4004,7 @@ int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json
                                 nullptr, /*allow_exceptions=*/false);
         if (mine.is_discarded() || !mine.contains("entities") || !mine["entities"].is_array())
             continue;
+        CanonicalizeGroups(mine["entities"], std::string{}, canon);   // 群は "mem" の正規形で 3 者を比べる
 
         json merged = mine;
         merged["entities"] = Merge3WaySubtree(mine["entities"], oldBase, newBase);
@@ -3719,6 +4087,11 @@ bool SceneSerializer::ComputePrefabOverrides(const Scene& scene, entt::entity ro
 
     json mine = json::parse(SerializeSubtree(scene, root, assetsDir), nullptr, false);
     if (mine.is_discarded() || !mine.contains("entities")) return false;
+    {
+        GroupCanon canon;   // 群の内容が同じなら一致扱い（"mem" と "sidecar" の表記差を差分にしない）
+        CanonicalizeGroups(base["entities"], abs, canon);
+        CanonicalizeGroups(mine["entities"], std::string{}, canon);
+    }
 
     const auto& mineArr = mine["entities"];
     const auto& baseArr = base["entities"];
@@ -3750,6 +4123,9 @@ bool SceneSerializer::ApplyPrefabInstance(Scene& scene, entt::entity root,
     // 読めない（新規プレハブ）ときは配る相手もいないので、そのまま書くだけ。
     json oldBase;
     const bool haveOld = ReadPrefabJson(assetsDir + rel, oldBase);
+    // 群のサイドカーは SavePrefab が上書きするので、配る前の群もここで読んで台帳へ預ける（正規形へ）。
+    GroupCanon groupCanon;
+    if (haveOld) CanonicalizeGroups(oldBase["entities"], assetsDir + rel, groupCanon);
 
     // ★SavePrefab は生成アセットをプレハブ専用パスへ上書きコピーするので、
     //   「配る前の中身」はここで先に読んでおく必要がある。
@@ -3771,10 +4147,11 @@ bool SceneSerializer::ApplyPrefabInstance(Scene& scene, entt::entity root,
         json newBase;
         if (ReadPrefabJson(assetsDir + rel, newBase))
         {
+            CanonicalizeGroups(newBase["entities"], assetsDir + rel, groupCanon);
             int geoProp = 0, geoKept = 0;
             const int n = MergePrefabInstances(scene, rel, oldBase["entities"],
                                                newBase["entities"], assetsDir, root,
-                                               oldGeoBytes, &geoProp, &geoKept);
+                                               oldGeoBytes, &geoProp, &geoKept, groupCanon);
             if (outPropagated) *outPropagated = n;
             if (geoProp > 0 || geoKept > 0)
                 Logger::Info("プレハブの形状(.smsh/.hf/.splat): {} 件へ反映 / {} 件は"
@@ -3840,7 +4217,24 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
                                  const std::string& filePath, const std::string& assetsDir)
 {
     namespace fs = std::filesystem;
-    std::string s = SerializeSubtree(scene, root, assetsDir);
+    // インスタンス群の実体は <プレハブ名>.prefab.inst/<キー>.jsonl へ書く（シーンと同じ方式。docs/SCENE_FORMAT_DESIGN.md §4.1）。
+    // ★以前は Undo と同じ "mem"（メモリ台帳の番号）を書いていたので、エンジンを再起動すると群が空になった。
+    //   .prefab 本体には個数と "sidecar":"<キー>" だけが残る（1 行 1 インスタンスのテキストで grep・git の差分が効く）。
+    instgroup::SerializeCollector instCollected;
+    std::string s;
+    {
+        // サイドカー名は guid。展開したばかりのインスタンスなどまだ guid が無い群へここで振る
+        // （BuildSceneJson と同じ理由の const_cast。シーン保存時にどうせ全員へ振られる値を前倒しするだけ）。
+        auto& mutableReg = const_cast<entt::registry&>(scene.GetRegistry());
+        for (const entt::entity ge : mutableReg.view<InstanceGroup>())
+        {
+            auto* g = mutableReg.try_get<EntityGuid>(ge);
+            if (!g)                 mutableReg.emplace<EntityGuid>(ge, EntityGuid{ NewEntityGuid() });
+            else if (g->value == 0) g->value = NewEntityGuid();
+        }
+        instgroup::ScopedFileSerialize instScope(instCollected);
+        s = SerializeSubtree(scene, root, assetsDir);
+    }
     if (s.empty()) return false;
 
     // 自己参照リンクを落としてから書く（下の StripPrefabLinks のコメント参照）。
@@ -3854,7 +4248,14 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
         {
             StripPrefabLinks(j);
             if (j.contains("entities") && j["entities"].is_array())
-                for (auto& ej : j["entities"]) { ej.erase("guid"); ej.erase("parentGuid"); }
+                for (auto& ej : j["entities"])
+                {
+                    // 群のサイドカー名は guid（収集器のキー）。guid を落とす前にここへ写す。
+                    if (ej.contains("instanceGroup") && ej["instanceGroup"].is_object()
+                        && ej.contains("guid") && ej["guid"].is_string())
+                        ej["instanceGroup"]["sidecar"] = ej["guid"];
+                    ej.erase("guid"); ej.erase("parentGuid");
+                }
 
             // ★生成アセット（.smsh / .hf / .splat）は .prefab 専用のコピーへ向け直す。
             //   向け直さないと .prefab が「作った元インスタンスのファイル」を指したままになり、
@@ -3902,6 +4303,10 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
     fs::path dir = fs::path(filePath).parent_path();
     if (!dir.empty()) fs::create_directories(dir);
 
+    // サイドカーを先に書く（.prefab が「無いデータ」を指す瞬間を作らない）。群が無くなったら古い .inst も消える。
+    if (!instgroup::SaveSidecars(filePath, instCollected).ok)
+        Logger::Warn("プレハブのインスタンス群のサイドカーを書ききれませんでした: {}", filePath);
+
     std::ofstream ofs(filePath);
     if (!ofs.is_open())
     {
@@ -3937,7 +4342,12 @@ entt::entity SceneSerializer::InstantiatePrefab(Scene& scene, const std::string&
         jsonStr = ss.str();
     }
 
-    const entt::entity root = InstantiateSubtree(scene, jsonStr, assetsDir, outAll);
+    // 群のサイドカー（<プレハブ>.prefab.inst/）を読む先をこのプレハブにする（pak ではゲームモードの VFS から読む）。
+    entt::entity root = entt::null;
+    {
+        instgroup::ScopedLoadScene instLoad(filePath);
+        root = InstantiateSubtree(scene, jsonStr, assetsDir, outAll);
+    }
     // 元 .prefab への紐付けをルートへ張る（Apply/Revert/差分表示はこれが起点）。
     // ここで一括して付けるので、エディタ D&D / MCP / ネットワーク spawn のどの経路でも効く。
     if (root != entt::null)

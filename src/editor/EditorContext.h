@@ -498,6 +498,10 @@ public:
     // ヒエラルキーの「グループ化」(Ctrl+G)。選択をまとめる空の親を作る要求。
     // 空の親は原点・無回転・スケール1で作るので、子のワールド位置は一切動かない。
     bool pendingGroupSelection = false;
+    // インスタンス群（InstanceGroup）: 選択中の静的メッシュ（2 つ以上）を 1 つの群へまとめる / 選択中の群を個別エンティティへ展開する要求。
+    // 実処理は Application のフレーム境界（ApplicationRender.cpp）。MCP の instance_group と同じ関数（scene/InstanceGroupOps）を使う。
+    bool pendingMakeInstanceGroup    = false;
+    bool pendingExplodeInstanceGroup = false;
     // 生成直後のエンティティ名をその場で入力させたいときに Application が入れる。
     // HierarchyPanel が拾ってインライン編集を開始し、null に戻す。
     entt::entity requestRenameEntity = entt::null;

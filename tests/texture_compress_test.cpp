@@ -11,9 +11,11 @@
 // 実行: ctest --output-on-failure （失敗があれば終了コード 1）
 
 #include "resource/TextureLoader.h"
+#include "core/PathResolver.h"   // Test_CacheKeyIsRootIndependent
 
 #include <DirectXTex.h>
 
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -408,6 +410,35 @@ void Test_FileHashMatchesMemoryHash()
     fs::remove_all(dir, ec);
 }
 
+// ---------------------------------------------------------------
+// 9. 圧縮キャッシュのキーはプロジェクトの置き場所に依存しない
+//
+//    以前はキーに絶対パスが入っていたため、ビルドして別の PC で動かす / プロジェクトを移動する
+//    だけで全テクスチャが BC 圧縮し直しになった（配布ゲームの初回起動 60〜90 秒の原因）。
+//    assets/ 配下のパスは「assets/ からの相対・小文字・'/' 区切り」へ畳まれ、
+//    絶対でも相対でも、区切りや大文字小文字が違っても同じキーになること。
+// ---------------------------------------------------------------
+void Test_CacheKeyIsRootIndependent()
+{
+    using dx12e::TextureLoader;
+    const std::string rel = "models/Hall/wall_col.png";
+    const std::string want = TextureLoader::NormalizeCacheKeyPath(rel);
+    CHECK(want == "models/hall/wall_col.png");
+    CHECK(TextureLoader::NormalizeCacheKeyPath("models\\Hall\\wall_col.png") == want);
+    CHECK(TextureLoader::NormalizeCacheKeyPath("models/Hall/../Hall/wall_col.png") == want);
+    // 埋め込みテクスチャのキー（モデル絶対パス + "_emb_*N"）も相対へ
+    CHECK(TextureLoader::NormalizeCacheKeyPath("models/a.glb_emb_*0") == "models/a.glb_emb_*0");
+
+    const std::string root = dx12e::PathResolver::AssetsDir();
+    if (!root.empty())
+    {
+        CHECK(TextureLoader::NormalizeCacheKeyPath(root + rel) == want);
+        std::string upper = root + rel;
+        for (char& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        CHECK(TextureLoader::NormalizeCacheKeyPath(upper) == want);
+    }
+}
+
 int main()
 {
     Test_FormatSelection();
@@ -418,6 +449,7 @@ int main()
     Test_ComputeDownscale();
     Test_CacheKeyIgnoresMtime();
     Test_FileHashMatchesMemoryHash();
+    Test_CacheKeyIsRootIndependent();
 
     std::printf("texture_compress: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

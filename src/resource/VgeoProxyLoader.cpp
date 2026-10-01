@@ -136,12 +136,27 @@ ModelData LoadVgeoProxy(GraphicsDevice& device,
 {
     ModelData result;
 
-    vg::FileSource src;
-    if (!src.Open(filePath.string()))
+    // 配布ゲーム(pak)ではディスクに無いので VFS から読む（プロキシは小さいので丸ごとメモリで良い）。
+    std::vector<u8> vgeoBytes;
+    vg::FileSource fileSrc;
+    bool opened = false;
+    if (vfs::InGameMode())
+    {
+        vgeoBytes = vfs::ReadAssetAbs(filePath.wstring());
+        opened = !vgeoBytes.empty();
+    }
+    else
+    {
+        opened = fileSrc.Open(filePath.string());
+    }
+    if (!opened)
     {
         Logger::Error(".vgeo を開けません: {}", filePath.string());
         return {};
     }
+    const vg::MemorySource memSrc(vgeoBytes);
+    const vg::ByteSource& src = vfs::InGameMode() ? static_cast<const vg::ByteSource&>(memSrc)
+                                                  : static_cast<const vg::ByteSource&>(fileSrc);
 
     // 目次だけ読む（ページ本体は読まない）。CRC は検証する（プロキシは小さいので安い）。
     vg::ReadOptions opt;

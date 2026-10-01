@@ -46,6 +46,53 @@ bool PakWriter::Open(const std::string& outPath)
     return static_cast<bool>(m_out);
 }
 
+bool PakWriter::OpenAppend(const std::string& pakPath)
+{
+    // 既存の pak（Finish 済み・文字列テーブル strip 済み）の TOC を読み込み、旧 TOC の位置から
+    // 続けてエントリを追記できる状態にする。ビルド時に「pak を作る → ゲームを走らせて使われた
+    // テクスチャ圧縮結果を得る → 同じ pak へ足す」ために使う（全アセットを暗号化し直さずに済む）。
+    m_finalPath = pakPath;
+    m_tmpPath.clear();
+    m_entries.clear();
+    m_strtab.clear();
+    m_seenHashes.clear();
+    m_anyXpress = false;
+    m_append    = true;
+
+    PakHeader h{};
+    {
+        std::ifstream in(pakPath, std::ios::binary);
+        if (!in) { Logger::Error("PakWriter: {} を開けません", pakPath); return false; }
+        in.read(reinterpret_cast<char*>(&h), sizeof(h));
+        if (!in || h.magic != kPakMagic || h.version != kPakVersion
+            || (h.flags & kHeaderStringsStripped) == 0 || h.strtabSize != 0)
+        {
+            Logger::Error("PakWriter: 追記できる形式の pak ではありません: {}", pakPath);
+            return false;
+        }
+        m_entries.resize(h.entryCount);
+        in.seekg(static_cast<std::streamoff>(h.tocOffset));
+        if (h.entryCount > 0)
+            in.read(reinterpret_cast<char*>(m_entries.data()),
+                    static_cast<std::streamsize>(sizeof(PakEntry) * h.entryCount));
+        if (!in) { Logger::Error("PakWriter: TOC を読めません: {}", pakPath); return false; }
+    }
+    for (const PakEntry& e : m_entries) m_seenHashes.insert(e.pathHash);
+    m_anyXpress  = (h.flags & kHeaderAnyXpress) != 0;
+    m_dataOffset = h.tocOffset;
+
+    m_out.open(pakPath, std::ios::binary | std::ios::in | std::ios::out);
+    if (!m_out.is_open())
+    {
+        Logger::Error("PakWriter: {} を追記用に開けません", pakPath);
+        return false;
+    }
+    m_out.seekp(static_cast<std::streamoff>(m_dataOffset));
+    AssembleKey(m_key);
+    m_open = true;
+    return static_cast<bool>(m_out);
+}
+
 bool PakWriter::AddFile(const std::string& srcAbs, const std::string& relPath)
 {
     std::ifstream in(srcAbs, std::ios::binary | std::ios::ate);
@@ -92,7 +139,10 @@ bool PakWriter::addEntry(const std::string& relPath, const uint8_t* data, std::s
 
     // 1) compress（縮んだ時のみ）
     std::vector<uint8_t> compressed;
-    const bool   didCompress = XpressCompress(data, len, compressed);
+    // ビルド時に焼いた BC 圧縮テクスチャ("texcache/")は圧縮しない。BC7 は XPRESS で 2〜4 割しか縮まない一方、
+    // 起動時に数百枚を展開するコストの方が大きい（読み込みの支配項になる）。暗号化だけ掛ける。
+    const bool   noCompress  = norm.compare(0, 9, "texcache/") == 0;
+    const bool   didCompress = !noCompress && XpressCompress(data, len, compressed);
     const uint8_t* payload   = didCompress ? compressed.data() : data;
     const std::size_t payLen = didCompress ? compressed.size() : len;
 
@@ -194,6 +244,8 @@ bool PakWriter::Finish(bool stripStrings)
 
     if (!streamOk)
         return false;
+    if (m_append)
+        return true;   // 追記は同じファイルの中で完結（TOC の位置が変わるだけ）
 
     // アトミックに置き換え
     std::error_code ec;

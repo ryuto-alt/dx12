@@ -1059,12 +1059,12 @@ properties = {
           <table>
             <thead><tr><th>API</th><th>説明</th></tr></thead>
             <tbody>
-              <tr><td><code>physics:raycast(origin, dir, maxDist)</code></td><td>レイ判定 → <code>RaycastHit{ hit, distance, point, normal }</code></td></tr>
-              <tr><td><code>physics:overlapBox(center, half[, n])</code></td><td>範囲内の <code>Entity</code> 配列。<code>overlapSphere(center, r[, n])</code> も</td></tr>
+              <tr><td><code>physics:raycast(origin, dir, maxDist[, ignoreEntity])</code></td><td>レイ判定 → <code>RaycastHit{ hit, distance, point, normal, entity }</code>。キャラ（CharacterController）にも当たる。<code>entity</code> は当たった相手</td></tr>
+              <tr><td><code>physics:overlapBox(center, half[, n[, ignoreEntity]])</code></td><td>重なっている <code>Entity</code> 配列（相手の実形状で判定・キャラ含む）。<code>overlapSphere(center, r[, n[, ignoreEntity]])</code> も</td></tr>
               <tr><td><code>physics:addRigidBody(e, type, mass)</code></td><td><code>type</code> = <code>MOTION_STATIC / MOTION_KINEMATIC / MOTION_DYNAMIC</code></td></tr>
               <tr><td><code>physics:addBoxCollider(e, hx,hy,hz)</code></td><td><code>addSphereCollider(e, r)</code> / <code>addCapsuleCollider(e, r, halfH)</code> / <code>autoCollider(e)</code></td></tr>
               <tr><td><code>physics:applyImpulse(e, vec)</code></td><td><code>applyForce</code> / <code>setVelocity</code> / <code>getVelocity</code> / <code>setPosition</code></td></tr>
-              <tr><td><code>physics:setGravity(vec)</code> / <code>setPaused(b)</code> / <code>step(dt)</code></td><td>重力変更 / 物理停止 / 手動1ステップ</td></tr>
+              <tr><td><code>physics:setGravity(vec)</code> / <code>setPaused(b)</code> / <code>step(dt)</code></td><td>重力変更 / 物理停止 / 手動1ステップ（Transform へも書き戻す）</td></tr>
               <tr><td><code>physics:addCharacterController(e, r, halfH)</code></td><td>キャラ操作。毎フレーム <code>move(e, vx, vz)</code>、<code>jump(e[, amt])</code>、<code>isGrounded(e)</code></td></tr>
               <tr><td><code>physics:warp(e, x, y, z)</code></td><td>任意座標へ即テレポート。CharacterController なら縦速度もリセット、無ければ RigidBody→Transform の順にフォールバック</td></tr>
             </tbody>

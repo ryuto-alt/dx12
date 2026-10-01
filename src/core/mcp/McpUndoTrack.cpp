@@ -290,6 +290,7 @@ bool McpUndoTracker::TrackByJsonKey(entt::entity e, const std::string& key)
     else if (key == "luaScript")           Track<LuaScript>(e);
     else if (key == "trailRenderer")       Track<TrailRenderer>(e);
     else if (key == "foliageLayer")        Track<FoliageLayer>(e);   // _set はコピーオンライトの shared_ptr（Undo は古い実体へポインタを戻す）
+    else if (key == "instanceGroup")       Track<InstanceGroup>(e);   // _set はコピーオンライトの shared_ptr（Undo は古い実体へポインタを戻す）
     else if (key == "waterBody")           Track<WaterBody>(e);
     else if (key == "decal")               Track<DecalComponent>(e);
     else if (key == "networkIdentity")     Track<NetworkIdentity>(e);

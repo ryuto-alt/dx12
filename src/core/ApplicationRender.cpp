@@ -8,6 +8,9 @@
 #include "editor/SelectionOutline.h"   // エディタ専用: 選択 / ホバーの輪郭・ワイヤ表示モード（最終画の撮影より後）
 #include "editor/ViewportLogic.h"       // ビューモード → RenderDebugMode
 #include "ecs/EditorFlags.h"            // [H] エディタ専用の非表示（BuildDrawList）
+#include "ecs/InstanceGroup.h"         // インスタンス群の展開（BuildDrawList）
+#include "editor/InstanceGroupCommand.h"   // インスタンス群: 変換 / 展開の Undo（エディタの「まとめる」「展開」）
+#include "editor/Toast.h"
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
@@ -126,7 +129,10 @@ void Application::BuildDrawList()
     auto& reg = m_scene->GetRegistry();
     // GridPlane は view の exclude で弾く（1体ごとの all_of プローブぶんの
     // スパースセット参照が丸ごと消える。10万体規模では効く）。
-    auto renderView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane>);
+    auto renderView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane, InstanceGroup>);
+    // インスタンス群（群のエンティティは renderView から除外し、下で DrawItem へ展開する）
+    auto instGroupView = reg.view<const Transform, const MeshRenderer, const InstanceGroup>(entt::exclude<GridPlane>);
+    m_statInstGroupItems = 0;
     // [H] エディタ専用の非表示（EditorHidden）。編集モードのときだけ、1 個でも立っていれば祖先まで辿って除外する。
     //     Play / ゲームモードでは無視（ゲームの絵に影響しない）。何も立っていなければ hideActive=false でコスト 0。
     const bool hideActive = m_engineMode == EngineMode::Editor && !m_isGameMode && eflags::AnyOf<EditorHidden>(reg);
@@ -148,43 +154,43 @@ void Application::BuildDrawList()
     m_rtSkinnedItems     = 0;
     {
     CpuScopeTimer _scan(&m_cpuMs[CpuBuildList]); DX12_PROFILE_ZONE_N("BuildDrawList");   // 走査部（ソートは listSort で別計上）
-    for (auto [e, transform, renderer] : renderView.each())
+    // 描画リストの対象にしてよいエンティティか（普通のエンティティも、インスタンス群のエンティティもここを通す）。
+    auto passesEntityFilters = [&](entt::entity e, const Transform& transform, const MeshRenderer& renderer) -> bool
     {
-        if (renderer.meshes.empty()) continue;
+        if (renderer.meshes.empty()) return false;
         // park 済み（scale≈0 で退避したプール要素）は全パスで不可視＝リストから除外。
         const auto& sc = transform.scale;
-        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) continue;
-        if (hideActive && eflags::IsHidden(reg, e)) continue;   // [H] エディタ専用の非表示
-        if (disabledActive && eflags::IsDisabled(reg, e)) continue;   // [I] 無効（インスペクタの「有効」OFF。Play にも効く）
+        if (sc.x * sc.x + sc.y * sc.y + sc.z * sc.z < 1e-8f) return false;
+        if (hideActive && eflags::IsHidden(reg, e)) return false;   // [H] エディタ専用の非表示
+        if (disabledActive && eflags::IsDisabled(reg, e)) return false;   // [I] 無効（インスペクタの「有効」OFF。Play にも効く）
         // 発光弾(Pfx*) はメインのパス3で instancing 描画・影/深度は落とさない（従来挙動）。
         // rfind より先頭3文字の直接比較の方が速い（10万体×毎フレームなので効く）。
         if (const auto* nt = reg.try_get<NameTag>(e))
         {
             const std::string& nm = nt->name;
-            if (nm.size() >= 3 && nm[0] == 'P' && nm[1] == 'f' && nm[2] == 'x') continue;
+            if (nm.size() >= 3 && nm[0] == 'P' && nm[1] == 'f' && nm[2] == 'x') return false;
         }
+        return true;
+    };
 
-        XMMATRIX world = (transform.parent != entt::null)
-            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
-
+    // DrawItem を 1 つ作って積む本体。普通のエンティティと、インスタンス群の各インスタンスの両方がここを通る
+    // （＝群のインスタンスは普通のエンティティと完全に同じ規則で分類・ソート・バッチされる）。
+    //   prevWorldIn: 前フレームのワールド行列（無ければ nullptr＝world と同値）。guid: 並べ替え用。
+    auto emitItem = [&](entt::entity e, const MeshRenderer& renderer, const XMMATRIX& world,
+                        const XMFLOAT4X4* prevWorldIn, u32 instanceIndex, u64 guid)
+    {
         DrawItem item{};
         item.e        = e;
         item.renderer = &renderer;
+        item.instanceIndex = instanceIndex;
         // 並べ替え専用の安定キー（DrawItem.h の meshKey / guid の説明を参照）
         item.meshKey  = renderer.meshes[0] ? renderer.meshes[0]->GetStableKey() : 0ull;
-        if (const auto* g = reg.try_get<EntityGuid>(e)) item.guid = g->value;
+        item.guid     = guid;
         XMStoreFloat4x4(&item.world, world);
         // 速度バッファ用の前フレームワールド行列。TAA 無効時は追跡しない＝world と同値（速度0）。
         // 新規スポーン直後も PrevWorldMatrix が無いので world と同値になり、初回のゴーストを防ぐ。
-        if (m_trackPrevWorld)
-        {
-            if (const auto* pw = reg.try_get<PrevWorldMatrix>(e)) item.prevWorld = pw->m;
-            else                                                  item.prevWorld = item.world;
-        }
-        else
-        {
-            item.prevWorld = item.world;
-        }
+        if (m_trackPrevWorld && prevWorldIn) item.prevWorld = *prevWorldIn;
+        else                                 item.prevWorld = item.world;
 
         auto* skel = reg.try_get<SkeletalAnimation>(e);
         item.skin        = skel ? skel->skinningBuffer.get() : nullptr;
@@ -434,6 +440,7 @@ void Application::BuildDrawList()
             if (item.skin) ++m_rtSkinnedItems;   // >0 なら再利用しない（ポーズが毎フレーム変わる）
             RtHashMix(m_rtContentHash, rtItemHash);
             RtHashMix(m_rtContentHash, static_cast<u64>(entt::to_integral(e)));
+            RtHashMix(m_rtContentHash, static_cast<u64>(instanceIndex));
             RtHashMixBytes(m_rtContentHash, &item.world, sizeof(item.world));
             if (item.hasNodeAnim)
             {
@@ -451,6 +458,66 @@ void Application::BuildDrawList()
             item.batchOrder = 0;
         }
         m_drawItems.push_back(item);
+    };
+
+    for (auto [e, transform, renderer] : renderView.each())
+    {
+        if (!passesEntityFilters(e, transform, renderer)) continue;
+        XMMATRIX world = (transform.parent != entt::null)
+            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+        u64 guid = 0;
+        if (const auto* g = reg.try_get<EntityGuid>(e)) guid = g->value;
+        const XMFLOAT4X4* pwIn = nullptr;
+        if (m_trackPrevWorld)
+            if (const auto* pw = reg.try_get<PrevWorldMatrix>(e)) pwIn = &pw->m;
+        emitItem(e, renderer, world, pwIn, kNoInstance, guid);
+    }
+
+    // ---- インスタンス群（InstanceGroup）の展開 ----
+    // 群のエンティティ自身は描かず、インスタンスごとに 1 つの DrawItem を積む。world は
+    //   ((local * 群) * 祖先1) * 祖先2 ...（普通のエンティティの ComputeWorldMatrix と同じ掛け順＝ビット一致）
+    // を、群側の行列列が変わらない間は InstanceSet にキャッシュして使い回す（静的なら毎フレームはコピーだけ）。
+    m_instGroupPrev.clear();
+    for (auto [e, transform, renderer, grp] : instGroupView.each())
+    {
+        if (!grp._set || grp._set->items.empty()) continue;
+        if (!passesEntityFilters(e, transform, renderer)) continue;
+        const instgroup::InstanceSet& set = *grp._set;
+
+        // ワールド行列（群側の行列列が変わらない間は InstanceSet のキャッシュ。掛け順は ComputeWorldMatrix と同じ）
+        // と、群自身のワールド（PrevWorldMatrix は群のエンティティに 1 つだけ持つ）。
+        XMFLOAT4X4 groupWorld;
+        const auto& instWorlds = instgroup::WorldMatrices(reg, e, set, &groupWorld);
+        const XMMATRIX gw = XMLoadFloat4x4(&groupWorld);
+        // 前フレームの群ワールドが今と同じなら速度 0（world をそのまま使う＝丸め誤差の速度を作らない）。違えば local * prevGroup。
+        bool groupMoved = false;
+        XMMATRIX prevGw = gw;
+        if (m_trackPrevWorld)
+        {
+            if (const auto* pw = reg.try_get<PrevWorldMatrix>(e))
+            {
+                if (std::memcmp(&pw->m, &groupWorld, sizeof(XMFLOAT4X4)) != 0) { groupMoved = true; prevGw = XMLoadFloat4x4(&pw->m); }
+            }
+            m_instGroupPrev.push_back({e, groupWorld});
+        }
+
+        u64 guid = 0;
+        if (const auto* g = reg.try_get<EntityGuid>(e)) guid = g->value;
+        const u32 n = static_cast<u32>(set.items.size());
+        m_drawItems.reserve(m_drawItems.size() + n);
+        for (u32 i = 0; i < n; ++i)
+        {
+            const XMMATRIX w = XMLoadFloat4x4(&instWorlds[i]);
+            if (groupMoved)
+            {
+                XMFLOAT4X4 pwi;
+                XMStoreFloat4x4(&pwi, instgroup::LocalMatrix(set.items[i]) * prevGw);
+                emitItem(e, renderer, w, &pwi, i, guid);
+            }
+            else
+                emitItem(e, renderer, w, nullptr, i, guid);
+        }
+        m_statInstGroupItems += n;
     }
     }   // _scan
 
@@ -460,7 +527,10 @@ void Application::BuildDrawList()
     if (m_trackPrevWorld)
     {
         for (const auto& it : m_drawItems)
-            reg.emplace_or_replace<PrevWorldMatrix>(it.e, PrevWorldMatrix{it.world});
+            if (it.instanceIndex == kNoInstance)
+                reg.emplace_or_replace<PrevWorldMatrix>(it.e, PrevWorldMatrix{it.world});
+        for (const auto& gp : m_instGroupPrev)   // インスタンス群は群のエンティティに 1 つだけ（群自身のワールド）
+            reg.emplace_or_replace<PrevWorldMatrix>(gp.first, PrevWorldMatrix{gp.second});
     }
 
     CpuScopeTimer _sort(&m_cpuMs[CpuListSort]); DX12_PROFILE_ZONE_N("SortDrawList");
@@ -491,6 +561,7 @@ void Application::BuildDrawList()
             if (a.lod != b.lod) return a.lod < b.lod;
             if (a.batchOrder != b.batchOrder) return a.batchOrder < b.batchOrder;
             if (a.guid != b.guid) return a.guid < b.guid;
+            if (a.instanceIndex != b.instanceIndex) return a.instanceIndex < b.instanceIndex;   // インスタンス群（普通のエンティティは全部同値）
             return entt::to_integral(a.e) < entt::to_integral(b.e);
         });
 
@@ -3485,6 +3556,64 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             m_editorCtx->Select(group);
             m_editorCtx->requestRenameEntity = group;   // その場で名前を入力させる
             Logger::Info("グループ化: {} 件をまとめました", members.size());
+        }
+    }
+
+    // インスタンス群: 選択（2 つ以上）を 1 つの群へまとめる。条件を満たさないものは変換せず、理由をトーストで返す。
+    if (m_editorCtx->pendingMakeInstanceGroup && m_engineMode == EngineMode::Editor)
+    {
+        m_editorCtx->pendingMakeInstanceGroup = false;
+        instgroup::ConvertOptions opt;
+        for (entt::entity e : m_editorCtx->selectedEntities)
+            if (m_scene->GetRegistry().valid(e)) opt.targets.push_back(e);
+        if (opt.targets.size() < 2)
+        {
+            ui::ToastWarn("インスタンス群にまとめるには 2 つ以上のエンティティを選んでください");
+        }
+        else
+        {
+            instgroup::ConvertResult r = instgroup::ConvertToGroups(*m_scene, PathResolver::AssetsDir(), opt);
+            if (!r.undo.empty())
+            {
+                m_editorCtx->undoSystem.PushCommand(std::make_unique<InstanceGroupCommand>(
+                    m_scene.get(), PathResolver::AssetsDir(), std::move(r.undo), /*exploded=*/false));
+                m_editorCtx->selectedEntities.clear();
+                if (r.groups.front().entity != entt::null) m_editorCtx->Select(r.groups.front().entity);
+                ui::ToastSuccess("インスタンス群にまとめました: " + std::to_string(r.converted) + " 個 → " + std::to_string(r.groupsCreated) + " 群");
+            }
+            else
+            {
+                std::string why;
+                for (const auto& [reason, n] : r.skipped) { if (!why.empty()) why += " / "; why += reason + " ×" + std::to_string(n); }
+                ui::ToastWarn("まとめられませんでした" + (why.empty() ? std::string() : "（" + why + "）"));
+            }
+            if (!r.skipped.empty())
+                for (const auto& [reason, n] : r.skipped) Logger::Info("インスタンス群: 変換しなかった理由: {} ×{}", reason, n);
+        }
+    }
+    // インスタンス群: 選択中の群を個別エンティティへ展開する。
+    if (m_editorCtx->pendingExplodeInstanceGroup && m_engineMode == EngineMode::Editor)
+    {
+        m_editorCtx->pendingExplodeInstanceGroup = false;
+        auto& reg = m_scene->GetRegistry();
+        std::vector<entt::entity> groups;
+        for (entt::entity e : m_editorCtx->selectedEntities)
+            if (reg.valid(e) && reg.all_of<InstanceGroup>(e)) groups.push_back(e);
+        std::vector<instgroup::GroupUndoRecord> recs;
+        u32 created = 0;
+        for (entt::entity ge : groups)
+        {
+            instgroup::ExplodeResult r = instgroup::ExplodeGroup(*m_scene, ge, PathResolver::AssetsDir());
+            if (!r.ok) { ui::ToastError("展開できませんでした: " + r.error); continue; }
+            created += r.created;
+            recs.push_back(std::move(r.undo));
+        }
+        if (!recs.empty())
+        {
+            m_editorCtx->undoSystem.PushCommand(std::make_unique<InstanceGroupCommand>(
+                m_scene.get(), PathResolver::AssetsDir(), std::move(recs), /*exploded=*/true));
+            m_editorCtx->selectedEntities.clear();
+            ui::ToastSuccess("個別エンティティへ展開しました: " + std::to_string(created) + " 個");
         }
     }
 
@@ -7155,7 +7284,9 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
     }
     else if (!m_isGameMode)
     {
-        bool pendingPlayMode = false;
+        // 持ち越し中の要求（読み込み中に来た Play は Run() が読み終えるまで保留する）を初期値にする。
+        // false 固定だと、ボタンを押していないフレームの下の上書きで保留中の Play が Stop に化ける。
+        bool pendingPlayMode = m_modeChangeRequested && m_pendingMode == EngineMode::Playing;
         CpuScopeTimer _tUi(&m_cpuMs[CpuEditorUi]); DX12_PROFILE_ZONE_N("EditorUI");
         m_editorLayer->Render(
             m_engineMode == EngineMode::Playing,

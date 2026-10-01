@@ -314,11 +314,22 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     // 絶対パス)と Play→Stop のシーン復元(AssetsDir + 相対 = スラッシュ区切り)で
     // 文字列が異なりキャッシュミスし、Stop のたびにディスクから再ロードして編集中と
     // 別ジオメトリ(外部ツールで書き換わった後の内容等)を拾うバグがあった。
-    const std::string key = NormalizeModelKey(filePath);
+    std::string key;
+    {
+        std::lock_guard<std::mutex> lk(m_normKeyMutex);
+        auto nk = m_normKeyCache.find(filePath);
+        if (nk != m_normKeyCache.end()) key = nk->second;
+    }
+    if (key.empty()) key = NormalizeModelKey(filePath);
 
     auto it = m_modelCache.find(key);
     if (it != m_modelCache.end())
     {
+        if (it->second.model)
+        {
+            std::lock_guard<std::mutex> lk(m_normKeyMutex);
+            m_normKeyCache.emplace(filePath, key);   // 読み込み済み＝ファイルは実在するので結果は安定
+        }
         return it->second.model.get();
     }
 
@@ -351,6 +362,10 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     entry.path  = filePath;
     entry.stamp = FileStamp(filePath);
     m_modelCache[key] = std::move(entry);
+    {
+        std::lock_guard<std::mutex> lk(m_normKeyMutex);
+        m_normKeyCache.emplace(filePath, key);
+    }
     // メッシュの VB/IB ステージングをフレーム末尾に遅延解放（テクスチャと同じ経路）
     for (auto& mesh : rawPtr->meshes)
         m_pendingMeshUploads.push_back(mesh.get());

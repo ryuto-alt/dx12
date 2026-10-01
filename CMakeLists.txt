@@ -3,6 +3,10 @@ project(DX12Engine VERSION 0.1.0 LANGUAGES CXX RC)  # RC = .rc リソース（�
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# C++20 モジュールは使っていないので、CMake が全 TU に足すモジュール走査（CXX.dd の dyndep）を切る。
+# ★これがあると ninja 1.13 が「Assertion failed: edge && !edge->outputs_ready()」で落ち、
+#   「中止/再試行/無視」のダイアログが出てビルドが止まる（2026-10-01 に多発）。走査ぶん速くもなる。
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 option(DX12_BUILD_TESTS "Build unit tests" ON)
 # Tracy Profiler。既定 OFF ＝ 配布ビルドには 1 バイトも入らない。

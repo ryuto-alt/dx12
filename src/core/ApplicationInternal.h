@@ -101,6 +101,7 @@
 #include "scene/SceneSettingsHash.h"
 #include "scene/Entity.h"
 #include "ecs/Components.h"
+#include "ecs/InstanceGroup.h"   // インスタンス群（McpWorldAabb 等）
 #include "scripting/ScriptEngine.h"
 #include "ui/UISystem.h"
 #include "ui/UiAnimRuntime.h"
@@ -307,6 +308,7 @@ inline bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const
     else if (key == "audioReverbZone")     reg.remove<AudioReverbZone>(e);
     else if (key == "virtualGeometry")     reg.remove<VirtualGeometry>(e);
     else if (key == "foliageLayer")        reg.remove<FoliageLayer>(e);
+    else if (key == "instanceGroup")       reg.remove<InstanceGroup>(e);
     else if (key == "waterBody")           reg.remove<WaterBody>(e);
     else return false;
     return true;
@@ -688,6 +690,29 @@ inline bool McpWorldAabb(const entt::registry& reg, entt::entity e,
     outHasMesh = false;
     if (reg.all_of<MeshRenderer>(e))
     {
+        const auto* igrp = reg.try_get<InstanceGroup>(e);
+        if (igrp && igrp->_set && !igrp->_set->items.empty())
+        {
+            // インスタンス群: 全インスタンスの合成 AABB（メッシュのローカル AABB を各インスタンスのワールドへ）
+            XMFLOAT3 lmn{3.402823466e+38f, 3.402823466e+38f, 3.402823466e+38f}, lmx{-3.402823466e+38f, -3.402823466e+38f, -3.402823466e+38f};
+            bool anyMesh = false;
+            for (const auto* mesh : reg.get<MeshRenderer>(e).meshes)
+            {
+                if (!mesh) continue;
+                const XMFLOAT3 amn = mesh->GetAABBMin(), amx = mesh->GetAABBMax();
+                lmn = {std::min(lmn.x, amn.x), std::min(lmn.y, amn.y), std::min(lmn.z, amn.z)};
+                lmx = {std::max(lmx.x, amx.x), std::max(lmx.y, amx.y), std::max(lmx.z, amx.z)};
+                anyMesh = true;
+            }
+            XMFLOAT3 wmn, wmx;
+            if (anyMesh && instgroup::ComputeWorldAabb(reg, e, *igrp->_set, lmn, lmx, wmn, wmx))
+            {
+                mn = XMLoadFloat3(&wmn);
+                mx = XMLoadFloat3(&wmx);
+                outHasMesh = true;
+            }
+        }
+        else
         for (const auto* mesh : reg.get<MeshRenderer>(e).meshes)
         {
             if (!mesh) continue;
@@ -864,6 +889,7 @@ inline nlohmann::json McpPickHitJson(const entt::registry& reg, const ScenePickH
         {"worldNormal",  {h.worldNormal.x, h.worldNormal.y, h.worldNormal.z}},
         {"isIcon",       h.isIcon},
     };
+    if (h.instanceIndex != kNoInstance) j["instanceIndex"] = h.instanceIndex;   // インスタンス群のどのインスタンスか（entityId は群のエンティティ）
     if (reg.valid(h.entity) && reg.all_of<NameTag>(h.entity))
         j["name"] = reg.get<NameTag>(h.entity).name;
     return j;
@@ -1044,6 +1070,7 @@ inline nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entit
     if (reg.all_of<AudioReverbZone>(e))     a.push_back("audioReverbZone");
     if (reg.all_of<VirtualGeometry>(e))     a.push_back("virtualGeometry");
     if (reg.all_of<FoliageLayer>(e))        a.push_back("foliageLayer");
+    if (reg.all_of<InstanceGroup>(e))       a.push_back("instanceGroup");
     if (reg.all_of<WaterBody>(e))           a.push_back("waterBody");
     if (reg.all_of<PrefabLink>(e))          a.push_back("prefabLink");
     // ★ゲーム内 UI と編集用グリッド。長らくここから漏れていて、

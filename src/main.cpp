@@ -14,6 +14,7 @@
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
 #include "core/OffscreenShot.h"     // --size WxH（screenshot_final の既定の撮影解像度。純ロジック）
 #include "project/Project.h"
+#include "scene/SceneFormatV2.h"   // --validate: version 2 のシーンは既定値の省略を補ってから検証する
 
 #include <Windows.h>
 #include <shellapi.h>   // CommandLineToArgvW（--net-client / --project の解析用）
@@ -70,6 +71,7 @@ int RunValidate(const std::string& scenePathStr)
 
     if (errors.empty())
     {
+        dx12e::scenefmt::InflateScene(root);   // v1 は素通し。v2 は省略された既定値を足す（読み込み経路と同じ形で見る）
         const json* entities = nullptr;
         if (root.contains("entities") && root["entities"].is_array()) entities = &root["entities"];
         else if (root.is_array()) entities = &root;

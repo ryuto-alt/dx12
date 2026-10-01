@@ -944,6 +944,12 @@ void Application::RegisterMcpEntityMethods()
                     if (info.serialize) info.serialize(reg, e, cur);
                 });
                 json merged = (cur.contains(comp) && cur[comp].is_object()) ? cur[comp] : json::object();
+                // ★rigidBody を【新しく作る】ときだけ、新規作成の既定（摩擦 0.6 / 反発 0.1 / CCD ON）を下敷きにする
+                //   （既存の rigidBody の部分更新と、シーン JSON の読み込みは従来どおり。gi.mode と同じ「新規だけ」の方針）。
+                if (comp == "rigidBody" && !(cur.contains(comp) && cur[comp].is_object()))
+                {
+                    merged = json{{"friction", 0.6}, {"restitution", 0.1}, {"continuousCollision", true}};
+                }
                 merged.update(data);
                 // deserialize に emplace-only の型があるため、"上書き(set)" 実現には
                 // 既存を remove してから登録済みデシリアライザで再生成する。
@@ -1524,6 +1530,17 @@ void Application::RegisterMcpEntityMethods()
                 DirectX::XMFLOAT4X4 wf;
                 DirectX::XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, e));
                 wpos = { wf._41, wf._42, wf._43 };
+            }
+            // インスタンス群は全インスタンスの合成 AABB の中心へ寄り、広がりで距離を決める
+            if (const auto* igrp = reg.try_get<InstanceGroup>(e); igrp && igrp->_set && !igrp->_set->items.empty())
+            {
+                DirectX::XMFLOAT3 gmn, gmx; bool ghas = false;
+                if (McpWorldAabb(reg, e, gmn, gmx, ghas) && ghas)
+                {
+                    wpos = { (gmn.x + gmx.x) * 0.5f, (gmn.y + gmx.y) * 0.5f, (gmn.z + gmx.z) * 0.5f };
+                    const float ext = std::max({gmx.x - gmn.x, gmx.y - gmn.y, gmx.z - gmn.z});
+                    if (ext > 0.0f) dist = std::clamp(ext * 1.2f, 2.0f, 2000.0f);
+                }
             }
             auto fwd = m_camera->GetForward();
             DirectX::XMFLOAT3 camPos{ wpos.x - fwd.x * dist, wpos.y - fwd.y * dist, wpos.z - fwd.z * dist };

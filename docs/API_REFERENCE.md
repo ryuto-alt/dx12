@@ -337,11 +337,11 @@ BGM とストリームは上限に数えず、奪わず、仮想化しない。�
 | `:applyImpulse(e, vec3)` | — | 撃力を加える |
 | `:setVelocity(e, vec3)` / `:getVelocity(e)` | — / Vec3 | 速度 |
 | `:setPosition(e, vec3)` | — | 物理位置を設定 |
-| `:raycast(origin, dir, maxDist)` | RaycastHit | レイキャスト |
-| `:overlapBox(center, half, maxN?=32)` | table | 範囲内エンティティ配列 |
-| `:overlapSphere(center, radius, maxN?=32)` | table | 範囲内エンティティ配列 |
+| `:raycast(origin, dir, maxDist, ignoreEntity?)` | RaycastHit | レイキャスト。キャラ（CharacterController）もカプセルとして当たる。始点が自分のカプセルの中なら自分は無視される。`ignoreEntity` を渡すとそのエンティティの剛体 / キャラを無視する |
+| `:overlapBox(center, half, maxN?=32, ignoreEntity?)` | table | 重なっているエンティティ配列。判定は**相手の実形状**（回した壁・メッシュの凹みも見る。以前は AABB のみ）。キャラも含む。同じ Entity は 1 回だけ。`ignoreEntity` は結果から除く |
+| `:overlapSphere(center, radius, maxN?=32, ignoreEntity?)` | table | 同上（球） |
 | `:setPaused(b)` | — | 物理ステップ停止/再開 |
-| `:step(dt)` | — | 手動 1 ステップ（駒送り） |
+| `:step(dt)` | — | 手動 1 ステップ（駒送り）。Transform へも書き戻す（キネマティックへの送り・キャラ 1 ステップも含む） |
 | `:setGravity(vec3)` | — | 重力ベクトル設定 |
 | `:addCharacterController(e, radius, halfHeight)` | — | キャラコン追加（RigidBody と排他） |
 | `:move(e, vx, vz)` | — | 水平移動入力（world XZ 目標速度・毎フレーム呼ぶ） |
@@ -355,7 +355,17 @@ hit.hit       -- bool
 hit.distance  -- float
 hit.point     -- Vec3
 hit.normal    -- Vec3
+hit.entity    -- 当たった相手の Entity（剛体・インスタンス群・キャラ）。無ければ nil
 ```
+
+#### 物理の規約（当たり判定の大きさ・位置）
+- コライダーの `offset` は**エンティティのローカル**（回転とスケールを通る。Unity の `Collider.center` と同じ）。ボディの原点は Transform の位置で、`physics:setPosition` もその位置を指す。
+- 負のスケールは符号を捨てて大きさにする（球・カプセル・箱）。0 は 1mm。`meshCollider` は符号（鏡像）を残す。
+- 質量が 0 以下の動的剛体は質量 1 として扱う（Jolt が質量 0 で落ちるため）。摩擦・反発・減衰の負値は 0 に切る。
+- Play 中に静的 / キネマティックの Transform・スケール・コライダー部品を変えると、判定が追従する（大きなシーンでは最大数フレーム遅れる）。
+- 動的剛体の `transform.rotation`（Euler）も物理が更新する。
+- 厚さ 0 の平面メッシュ（`meshCollider`）は裏からも当たる（両面）。
+- **新規に作る** RigidBody（Add Component・`set_component` で無いものを作る・`physics:addRigidBody`）の既定は 摩擦 0.6 / 反発 0.1 / `continuousCollision` ON。シーン JSON で省略した値と、既存の剛体は従来どおり（0.3 / 0.4 / OFF）。
 
 ### events（`events`）— イベントバス
 | メソッド | 戻り値 | 説明 |
@@ -1571,13 +1581,14 @@ Lua の `physics:*`（§3）の C++ 実体。加えて以下を持つ:
 | `RegisterCharacter / UnregisterCharacter / UnregisterAllCharacters` | CharacterVirtual の登録/解除 |
 | `StepCharacters(fixedDt, registry)` / `SyncCharactersToTransforms(registry)` | キャラ更新 |
 | `ApplyForce / ApplyImpulse / SetLinearVelocity / GetLinearVelocity / SetPosition(bodyId, ...)` | 物理操作（bodyId 指定） |
-| `Raycast(origin, dir, maxDist=1000)` → RaycastHit | レイキャスト |
-| `OverlapBox / OverlapSphere(center, ..., out, cap)` → size_t | 空間クエリ（バッファ書き込み） |
+| `Raycast(origin, dir, maxDist=1000, ignoreBody, ignoreEntity, includeCharacters=true)` → RaycastHit | レイキャスト（キャラはカプセルとして判定） |
+| `OverlapBox / OverlapSphere(center, ..., out, cap, ignoreEntity)` → size_t | 空間クエリ（バッファ書き込み。形状判定・キャラ含む） |
 | `SetEventBus(bus)` | 接触イベントの配信先（`engine.contact.enter/exit`） |
-| `SetPaused(b)` / `Step(dt)` / `SetGravity(g)` | 時間モデル |
+| `SetPaused(b)` / `Step(dt)` / `Step(dt, registry)` / `SetGravity(g)` | 時間モデル（`Step(dt, registry)` は Transform へ書き戻す手動ステップ） |
+| `GetStats()` → PhysicsStats | 診断値（上限・使用量・上限超過 `updateErrorFlags`・作れなかったボディ数・捨てたステップ数。MCP `get_physics_state`） |
 | `IsInitialized()` / `ResetAccumulator()` | 状態 |
 
-`RaycastHit`(C++): `hit` / `distance` / `bodyId` / `point` / `normal`
+`RaycastHit`(C++): `hit` / `distance` / `bodyId` / `point` / `normal` / `instanceIndex` / `entity`
 
 ### AudioSystem（`audio/AudioSystem.h`）— XAudio2 / X3DAudio
 Lua の `audio:*`（§3）の C++ 実体。構成は `mastering ← master ← music/sfx/ambience/voice/ui/(ユーザー定義)`

@@ -79,6 +79,14 @@ public:
     // (パス, サイズ, 更新時刻) をキーにメモ化してある。スレッドセーフ。
     static uint64_t ContentHashForCacheKey(const std::wstring& filePath);
 
+    // ビルド時の事前生成（DX12E_TEXBAKE_DIR 付きで起動した配布ゲーム）が使った BC キャッシュ
+    // （"t<hex>.dds"）の一覧を 1 行 1 件で書き出す。BuildGame が pak の "texcache/" へ追記する元。
+    static bool WriteBakeList(const std::string& listPath);
+
+    // テクスチャ圧縮キャッシュのキーに使う「パス」の正規化（assets/ 相対・小文字・"/" 区切り・".." 畳み込み）。
+    // プロジェクトの置き場所が違っても同じ値になることを回帰テストが見張る。
+    static std::string NormalizeCacheKeyPath(const std::string& key);
+
     // BC 圧縮ディスクキャッシュだけを先に作る（GPU リソースは作らない）。
     //
     // 「デコード → 縮小 → ミップ生成 → BC 圧縮 → assets/.texcache へ .dds を書く」までを

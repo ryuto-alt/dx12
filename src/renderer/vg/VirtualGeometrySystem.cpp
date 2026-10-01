@@ -1,6 +1,7 @@
 #include "renderer/vg/VirtualGeometrySystem.h"
 
 #include "core/Logger.h"
+#include "core/vfs/Vfs.h"
 #include "graphics/MeshPipelineState.h"
 #include "renderer/vg/VgeoFormat.h"
 #include "resource/ShaderCompiler.h"
@@ -719,6 +720,40 @@ uint32_t VirtualGeometrySystem::AllocAssetSlot(const std::string& path, LoadErro
     return slot;
 }
 
+namespace
+{
+// 配布ゲーム(pak)では .vgeo はディスクに無い。VFS で丸ごと復号してメモリから読む
+// （LoadImpl は 1 回の読込でページを VRAM へ移すので、読み終われば解放できる）。
+class OwnedMemorySource final : public ByteSource
+{
+public:
+    explicit OwnedMemorySource(std::vector<uint8_t>&& v) : m_v(std::move(v)) {}
+    u64 Size() const override { return m_v.size(); }
+    bool Read(u64 off, void* dst, u64 n) const override
+    {
+        if (off > m_v.size() || n > m_v.size() - off) return false;
+        if (n) std::memcpy(dst, m_v.data() + off, static_cast<size_t>(n));
+        return true;
+    }
+private:
+    std::vector<uint8_t> m_v;
+};
+
+// ゲームモードは pak から、エディタ/ディスクモードは従来どおりファイルから開く。開けなければ nullptr。
+std::unique_ptr<ByteSource> OpenVgeoSource(const std::string& path)
+{
+    if (dx12e::vfs::InGameMode())
+    {
+        std::vector<uint8_t> bytes = dx12e::vfs::ReadAssetAbs(path);
+        if (bytes.empty()) return nullptr;
+        return std::make_unique<OwnedMemorySource>(std::move(bytes));
+    }
+    auto fs = std::make_unique<FileSource>();
+    if (!fs->Open(path)) return nullptr;
+    return fs;
+}
+} // namespace
+
 LoadError VirtualGeometrySystem::LoadImpl(const ByteSource& src, Asset& a)
 {
     LoadError le;
@@ -894,14 +929,14 @@ bool VirtualGeometrySystem::LoadAssetFromSource(const ByteSource& src, const std
 
 bool VirtualGeometrySystem::LoadAssetSync(const std::string& path, uint32_t* outId, LoadError* err)
 {
-    FileSource fs;
-    if (!fs.Open(path))
+    const std::unique_ptr<ByteSource> fs = OpenVgeoSource(path);
+    if (!fs)
     {
         LoadError le{LoadCode::OpenFailed, "ファイルを開けない: " + path};
         if (err) *err = le;
         return false;
     }
-    return LoadAssetFromSource(fs, path, outId, err);
+    return LoadAssetFromSource(*fs, path, outId, err);
 }
 
 uint32_t VirtualGeometrySystem::RequestAsset(const std::string& path)
@@ -950,10 +985,10 @@ void VirtualGeometrySystem::WorkerMain()
         { std::lock_guard<std::mutex> lk(m_assetsMutex); a = m_assets[id].get(); }
         a->state.store(6);
         const auto t0 = std::chrono::steady_clock::now();
-        FileSource fs;
+        const std::unique_ptr<ByteSource> fs = OpenVgeoSource(a->path);
         LoadError le;
-        if (!fs.Open(a->path)) { le.code = LoadCode::OpenFailed; le.message = "ファイルを開けない: " + a->path; }
-        else le = LoadImpl(fs, *a);
+        if (!fs) { le.code = LoadCode::OpenFailed; le.message = "ファイルを開けない: " + a->path; }
+        else le = LoadImpl(*fs, *a);
         if (le.ok())
         {
             a->state.store(1, std::memory_order_release);

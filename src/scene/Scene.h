@@ -86,6 +86,11 @@ public:
                     DescriptorHeap* srvHeap,
                     ID3D12GraphicsCommandList* cmdList);
 
+    // 大量配置（シーン読み込み）の間は Spawn の「1 体ごとのログ」を出さず、End で「N 体配置」の 1 行にまとめる。
+    // 1 体ごとの Logger::Info はファイルへ即フラッシュされ、数万体で読み込み時間の 1 割を占めていた。入れ子可。
+    void BeginBulkSpawn() { ++m_bulkSpawnDepth; }
+    void EndBulkSpawn();
+
     Entity Spawn(const std::string& name,
                  const std::string& modelPath,
                  DirectX::XMFLOAT3 position,
@@ -330,6 +335,8 @@ private:
     GraphicsDevice*   m_device          = nullptr;
     DescriptorHeap*   m_srvHeap         = nullptr;
     ID3D12GraphicsCommandList* m_cmdList = nullptr;
+    int    m_bulkSpawnDepth = 0;   // >0 の間は Spawn が個別ログを出さず数だけ数える
+    size_t m_bulkSpawnCount = 0;
 };
 
 } // namespace dx12e

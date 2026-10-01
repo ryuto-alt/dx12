@@ -939,6 +939,8 @@ void Application::RegisterMcpEditorMethods()
                 {"entities", ents},
                 {"meshRenderers", meshEnts},
                 {"drawItems", static_cast<int>(m_drawItems.size())},
+                {"instanceGroups", static_cast<int>(reg.view<const InstanceGroup>().size())},   // インスタンス群のエンティティ数
+                {"instanceGroupItems", static_cast<int>(m_statInstGroupItems)},                // 群から展開した DrawItem の数（drawItems の内数）
                 {"skinned", skinned},
                 {"pointLights", ptL},
                 {"spotLights", spL},
@@ -1052,8 +1054,11 @@ void Application::RegisterMcpEditorMethods()
                 result["distance"] = hit.distance;
                 result["point"]    = {hit.point.x, hit.point.y, hit.point.z};
                 result["normal"]   = {hit.normal.x, hit.normal.y, hit.normal.z};
+                if (hit.instanceIndex != 0xFFFFFFFFu) result["instanceIndex"] = hit.instanceIndex;   // インスタンス群のどのインスタンスか
                 auto& reg = m_scene->GetRegistry();
-                entt::entity ent = m_physicsSystem->EntityForBody(hit.bodyId);
+                // 当たった相手: 剛体 / 群はボディから、キャラ（CharacterVirtual。ボディを持たない）は hit.entity から。
+                entt::entity ent = hit.entity != entt::null ? hit.entity : m_physicsSystem->EntityForBody(hit.bodyId);
+                if (hit.entity != entt::null && hit.bodyId == 0xFFFFFFFFu) result["character"] = true;
                 if (ent != entt::null && reg.valid(ent))
                 {
                     result["entityId"] = static_cast<u32>(ent);
@@ -1105,6 +1110,28 @@ void Application::RegisterMcpEditorMethods()
 
     McpDefine("get_physics_state", "entity:int,name:string", DX12E_MCP_HANDLER
         {
+            // entity / name を省くと物理世界の診断値だけを返す（上限・使用量・上限超過・作れなかったボディ・捨てたステップ）。
+            // 密に積んだ剛体で床を抜ける / 一部のボディに判定が無い、の原因はここの updateErrorFlags / failedBodies に出る。
+            auto physWorld = [&]() {
+                const PhysicsStats st = m_physicsSystem->GetStats();
+                return json{{"initialized", st.initialized},
+                            {"bodies", st.bodies}, {"activeBodies", st.activeBodies},
+                            {"maxBodies", st.maxBodies}, {"maxBodyPairs", st.maxBodyPairs},
+                            {"maxContactConstraints", st.maxContactConstraints},
+                            {"tempAllocatorBytes", st.tempAllocatorBytes},
+                            {"updateErrorFlags", st.updateErrorFlags},
+                            {"updateErrorSteps", st.updateErrorSteps},
+                            {"failedBodies", st.failedBodies},
+                            {"droppedSteps", st.droppedSteps},
+                            {"lastFrameSteps", st.lastFrameSteps},
+                            {"note", "updateErrorFlags: 1=接触キャッシュ上限 2=ボディ対上限 4=接触拘束上限（超過した接触は無視される）"}};
+            };
+            if (!params.contains("entity") && !params.contains("name"))
+            {
+                resp["ok"] = true;
+                resp["result"] = {{"world", physWorld()}};
+                return;
+            }
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
             json result{{"entityId", static_cast<u32>(e)},
@@ -1125,6 +1152,7 @@ void Application::RegisterMcpEditorMethods()
                 result["hasCharacterController"] = true;
                 result["isGrounded"] = reg.get<CharacterController>(e)._grounded;
             }
+            result["world"] = physWorld();
             resp["ok"] = true;
             resp["result"] = std::move(result);
         });

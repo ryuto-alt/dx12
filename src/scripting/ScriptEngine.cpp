@@ -31,6 +31,7 @@
 #include "core/SequenceLuaApi.h"   // Lua の Sequence.*（シーケンサー S1b）
 #include "core/save/SaveService.h"
 #include "physics/PhysicsSystem.h"
+#include "physics/ColliderShape.h"   // Trigger の内外判定（collider::TriggerBoxContains / TriggerSphereContains）
 #include "ai/AiSystem.h"
 #include "network/NetworkSystem.h"
 #include "animation/Skeleton.h"
@@ -2355,11 +2356,19 @@ void ScriptEngine::RegisterPhysicsBindings()
     auto& lua = *m_lua;
 
     // --- RaycastHit ---
+    // entity: 当たった相手（剛体・インスタンス群・キャラ）。無ければ nil。
     lua.new_usertype<RaycastHit>("RaycastHit",
         "hit",      &RaycastHit::hit,
         "distance", &RaycastHit::distance,
         "point",    &RaycastHit::point,
-        "normal",   &RaycastHit::normal
+        "normal",   &RaycastHit::normal,
+        "entity",   sol::property([this](const RaycastHit& h) -> sol::object {
+            sol::state_view sv(*m_lua);
+            if (!h.hit || h.entity == entt::null || !m_scene) return sol::make_object(sv, sol::lua_nil);
+            auto& reg = m_scene->GetRegistry();
+            if (!reg.valid(h.entity)) return sol::make_object(sv, sol::lua_nil);
+            return sol::make_object(sv, Entity(h.entity, &reg));
+        })
     );
 
     // --- MotionType constants ---
@@ -2395,17 +2404,8 @@ void ScriptEngine::RegisterPhysicsBindings()
                 }
             }
 
-            // 頂点数を最大256に間引き（Jolt Convex Hull の上限）
-            constexpr size_t kMaxPoints = 256;
-            if (allPoints.size() > kMaxPoints)
-            {
-                size_t step = allPoints.size() / kMaxPoints;
-                std::vector<XMFLOAT3> sampled;
-                sampled.reserve(kMaxPoints);
-                for (size_t i = 0; i < allPoints.size() && sampled.size() < kMaxPoints; i += step)
-                    sampled.push_back(allPoints[i]);
-                allPoints = std::move(sampled);
-            }
+            // 頂点数を最大256に間引き。方向ごとの極値の頂点を残す（外形を保つ。以前は step おきで 1〜2cm 小さくなった）
+            allPoints = collider::ReduceHullPoints(allPoints, 256);
 
             if (allPoints.empty()) return;
 
@@ -2451,9 +2451,11 @@ void ScriptEngine::RegisterPhysicsBindings()
             auto& reg = m_scene->GetRegistry();
             // 既に RigidBody があればスキップ（保存データ/エディタの設定を優先）
             if (reg.all_of<RigidBody>(e.GetHandle())) return;
-            RigidBody rb;
+            // 新規作成の既定（摩擦 0.6 / 反発 0.1 / CCD ON）。RigidBody{} の既定は既存シーンのために変えない。
+            RigidBody rb = NewRigidBody();
             rb.motionType = static_cast<MotionType>(motionTypeInt);
-            rb.mass = mass;
+            // 質量 0 以下（静的用の 0 を動的へ流用する書き方）は既定質量へ。Jolt は質量 0 の動的剛体で落ちる。
+            rb.mass = mass > 0.0f ? mass : collider::kDefaultBodyMass;
             reg.emplace_or_replace<RigidBody>(e.GetHandle(), rb);
         },
         "removeRigidBody", [this](PhysicsSystem& ps, Entity& e) {
@@ -2496,20 +2498,26 @@ void ScriptEngine::RegisterPhysicsBindings()
                 ps.SetCharacterPosition(e.GetHandle(), pos);
             }
         },
+        // raycast(origin, dir, maxDist, ignoreEntity=nil) -> RaycastHit（hit / distance / point / normal / entity）。
+        // normal は本物の面法線。entity は当たった相手（キャラも含む。始点が自分のカプセルの中なら自分は無視される）。
+        // ignoreEntity を渡すとそのエンティティの剛体 / キャラを無視する（自分の剛体の中心から撃つとき）。
         "raycast", [](PhysicsSystem& ps, XMFLOAT3 origin, XMFLOAT3 dir,
-                       float maxDist) -> RaycastHit {
-            // normal は本物の面法線（旧実装は (0,1,0) 固定のフェイクだった）。
-            return ps.Raycast(origin, dir, maxDist);
+                       float maxDist, sol::optional<Entity> ignore) -> RaycastHit {
+            return ps.Raycast(origin, dir, maxDist, 0xFFFFFFFFu,
+                              ignore ? ignore->GetHandle() : entt::entity{ entt::null });
         },
 
         // overlapBox(center, halfExtents, maxResults=32) -> { Entity, ... }
+        // 判定は形状（回した壁・メッシュの凹みも見る。以前は AABB のみ）。キャラも含む。
+        // 4 つ目の ignoreEntity で、そのエンティティを結果から除く（自分自身を除きたいとき）。
         "overlapBox", [this](PhysicsSystem& ps, XMFLOAT3 center, XMFLOAT3 half,
-                             sol::optional<int> maxN) -> sol::table {
+                             sol::optional<int> maxN, sol::optional<Entity> ignore) -> sol::table {
             // 負値/0 を size_t にキャストすると SIZE_MAX になり vector 確保でクラッシュするのでクランプ。
             const int rawCap = maxN.value_or(32);
             const size_t cap = rawCap > 0 ? static_cast<size_t>(rawCap) : 32;
             std::vector<entt::entity> buf(cap);
-            size_t n = ps.OverlapBox(center, half, buf.data(), cap);
+            size_t n = ps.OverlapBox(center, half, buf.data(), cap,
+                                     ignore ? ignore->GetHandle() : entt::entity{ entt::null });
             sol::table t = m_lua->create_table();
             auto& reg = m_scene->GetRegistry();
             for (size_t i = 0; i < n; ++i)
@@ -2518,12 +2526,13 @@ void ScriptEngine::RegisterPhysicsBindings()
         },
         // overlapSphere(center, radius, maxResults=32) -> { Entity, ... }
         "overlapSphere", [this](PhysicsSystem& ps, XMFLOAT3 center, float radius,
-                                sol::optional<int> maxN) -> sol::table {
+                                sol::optional<int> maxN, sol::optional<Entity> ignore) -> sol::table {
             // 負値/0 を size_t にキャストすると SIZE_MAX になり vector 確保でクラッシュするのでクランプ。
             const int rawCap = maxN.value_or(32);
             const size_t cap = rawCap > 0 ? static_cast<size_t>(rawCap) : 32;
             std::vector<entt::entity> buf(cap);
-            size_t n = ps.OverlapSphere(center, radius, buf.data(), cap);
+            size_t n = ps.OverlapSphere(center, radius, buf.data(), cap,
+                                        ignore ? ignore->GetHandle() : entt::entity{ entt::null });
             sol::table t = m_lua->create_table();
             auto& reg = m_scene->GetRegistry();
             for (size_t i = 0; i < n; ++i)
@@ -2532,8 +2541,8 @@ void ScriptEngine::RegisterPhysicsBindings()
         },
         // setPaused(bool) — 物理タイムステップを止める/再開する
         "setPaused", [](PhysicsSystem& ps, bool p) { ps.SetPaused(p); },
-        // step(dt) — 手動で 1 ステップ進める（pause 中の駒送り用）
-        "step", [](PhysicsSystem& ps, float dt) { ps.Step(dt); },
+        // step(dt) — 手動で 1 ステップ進める（pause 中の駒送り用）。Transform へも書き戻す（キネマティック・キャラも 1 ステップ進む）。
+        "step", [this](PhysicsSystem& ps, float dt) { ps.Step(dt, m_scene->GetRegistry()); },
         // setGravity(vec3)
         "setGravity", [](PhysicsSystem& ps, XMFLOAT3 g) { ps.SetGravity(g); },
 
@@ -4888,11 +4897,7 @@ void ScriptEngine::UpdateTriggers(f32 dt)
         auto& tr = view.get<Trigger>(e);
         if (tr._firedOnce) continue;
 
-        const auto& tf = view.get<Transform>(e);
-        DirectX::XMMATRIX w = ComputeWorldMatrix(reg, e);
-        DirectX::XMFLOAT3 center;
-        DirectX::XMStoreFloat3(&center, w.r[3]);
-        center.x += tr.offset.x; center.y += tr.offset.y; center.z += tr.offset.z;
+        const DirectX::XMMATRIX w = ComputeWorldMatrix(reg, e);
 
         // 反応対象。guid が正、名前はフォールバック、どちらも空なら "Player" の暗黙指定。
         const std::string targetName = tr.filter.empty() ? std::string("Player") : tr.filter;
@@ -4904,24 +4909,14 @@ void ScriptEngine::UpdateTriggers(f32 dt)
             DirectX::XMMATRIX tw = ComputeWorldMatrix(reg, te);
             DirectX::XMFLOAT3 tp;
             DirectX::XMStoreFloat3(&tp, tw.r[3]);
+            // ★判定は collider::TriggerBoxContains / TriggerSphereContains（物理と同じ「ローカル + スケール」の規約）。
+            //   対象の点を Trigger のワールド行列の逆でローカルへ引いて半幅と比べるので、Trigger の回転・
+            //   親のスケール・負スケールが全部効く（以前は「ワールド位置 + offset を軸平行の箱」で比べていて、
+            //   回した箱は回らず、負スケールは常に外、親のスケールは無視だった）。
             if (tr.shape == static_cast<int>(TriggerShape::Sphere))
-            {
-                float sc = tf.scale.x;
-                if (tf.scale.y > sc) sc = tf.scale.y;
-                if (tf.scale.z > sc) sc = tf.scale.z;
-                float r  = tr.radius * sc;
-                float dx = tp.x - center.x, dy = tp.y - center.y, dz = tp.z - center.z;
-                inside = (dx*dx + dy*dy + dz*dz) <= r*r;
-            }
+                inside = collider::TriggerSphereContains(tr.radius, tr.offset, w, tp);
             else
-            {
-                float hx = tr.halfExtents.x * tf.scale.x;
-                float hy = tr.halfExtents.y * tf.scale.y;
-                float hz = tr.halfExtents.z * tf.scale.z;
-                inside = std::fabs(tp.x - center.x) <= hx
-                      && std::fabs(tp.y - center.y) <= hy
-                      && std::fabs(tp.z - center.z) <= hz;
-            }
+                inside = collider::TriggerBoxContains(tr.halfExtents, tr.offset, w, tp);
         }
 
         const bool enter = inside && !tr._wasInside;

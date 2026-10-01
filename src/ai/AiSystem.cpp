@@ -111,10 +111,11 @@ bool LineOfSight(PhysicsSystem* physics, entt::registry& reg, const f32 from[3],
     f32 remaining = len;
     for (int it = 0; it < 4 && remaining > 0.05f; ++it)
     {
-        const RaycastHit h = physics->Raycast({ o[0], o[1], o[2] }, { d[0], d[1], d[2] }, remaining, ignore);
+        const RaycastHit h = physics->Raycast({ o[0], o[1], o[2] }, { d[0], d[1], d[2] }, remaining, ignore, entt::null, /*includeCharacters=*/false);
         if (!h.hit) return true;
         if (h.distance >= remaining - 0.3f) return true;   // 対象のすぐ手前（床や対象の持ち物）
-        const entt::entity he = physics->EntityForBody(h.bodyId);
+        // キャラ（CharacterVirtual）はボディを持たないので h.entity で見る（剛体 / 群は h.entity にも入る）
+        const entt::entity he = h.entity != entt::null ? h.entity : physics->EntityForBody(h.bodyId);
         if (he == self || he == target)
         {
             const f32 adv = h.distance + 0.05f;

@@ -47,6 +47,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpAi.cpp         # ゲーム AI の観測（brain_state）
     mcp/ApplicationMcpPathTracer.cpp # DXR パストレーサー（render_reference / render_reference_status / render_reference_cancel）
     mcp/ApplicationMcpWater.cpp      # 水面 W1（water_apply_preset）
+    mcp/ApplicationMcpInstanceGroup.cpp   # インスタンス群（instance_group）
     mcp/ApplicationMcpFoliage.cpp    # 植生 F1（foliage_scatter / foliage_paint / foliage_stats / set_wind ほか）
     mcp/ApplicationMcpImGui.cpp      # 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作: dx12_imgui_*）
     mcp/ApplicationMcpEditorUi.cpp   # M7: エディタ操作の全面公開（editor_command_list / run / editor_state / editor_notify / editor_select）
