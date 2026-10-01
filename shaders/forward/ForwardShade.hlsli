@@ -255,13 +255,13 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         if (giNew)
         {
             // ★鏡面遮蔽（GI モード New）: 空の反射に「反射方向の空の可視率」を掛ける。遮られた分は反射方向の
-            //   DDGI irradiance（その方向を向いた面の明るさ）で粗く近似する。重みはラフネスで 0→1
-            //   （滑らかな面は室内の像を映せないので、遮られた分は暗いまま＝やや暗くなるのが正しい。
-            //   正式な室内反射は反射プローブ＝山 2）。DDGI の範囲外（conf=0）は vis=1 で従来どおり。
+            //   DDGI irradiance（その方向の半球の平均放射輝度＝ぼやけた部屋の色）で埋める。ラフネスに関係なく入れる
+            //   （滑らかな面を黒にしない）。正式な室内反射は反射プローブ＝山 2。DDGI の範囲外（conf=0）は vis=1 で従来どおり。
             prefiltered *= iblIntensity;
             const float vis = lerp(1.0, gn.skyVisR, saturate(gn.conf * giParams.w));
-            const float rw  = smoothstep(0.1, 0.6, roughness);
-            prefiltered = prefiltered * vis + UNO_SHADE_SANITIZE(gn.irrR) * ((1.0 - vis) * rw);
+            // 金属は常に満額（滑らかでも黒にしない）。誘電体はラフネスで 0.. 1（光沢のある床が斜めから見て明るくなりすぎない）。
+            const float fillW = lerp(smoothstep(0.1, 0.6, roughness), 1.0, metallic);
+            prefiltered = prefiltered * vis + UNO_SHADE_SANITIZE(gn.irrR) * ((1.0 - vis) * fillW);
         }
         prefiltered = lerp(prefiltered, ssrRgb, ssrConf);
         float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;

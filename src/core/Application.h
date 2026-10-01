@@ -881,7 +881,7 @@ private:
     // false で bias なし(カメラの深度プリパス)。RecreateShadowPsos / RecreateDepthPrepassPsos が呼ぶ。
     void RecreateDepthMaskPsos(bool forShadow);
     void RecreateVelocityPsos();         // m_velocityPSO / Inst / Skinned（深度+速度プリパス）
-    void InvalidateTemporalHistory();    // TAA 履歴 + 前フレーム行列を捨てる（シーン切替/Play遷移/リサイズ）
+    void InvalidateTemporalHistory(bool includeDdgi = true);    // TAA 履歴 + 前フレーム行列を捨てる（シーン切替/Play遷移/リサイズ）
 
     // ---- レンダー解像度と表示解像度の分離（#16）----
     // 表示側（バックバッファ上の矩形）。エディタは ImGui のシーンビュー矩形、

@@ -538,7 +538,7 @@ bool Application::ScreenSpaceViewSupported() const
     return !(m_editorCtx && m_editorCtx->view2D) && m_camera && !m_camera->IsOrthographic();
 }
 
-void Application::InvalidateTemporalHistory()
+void Application::InvalidateTemporalHistory(bool includeDdgi)
 {
     if (m_taaPass) m_taaPass->InvalidateHistory();
     // SSR/SSGI も「前フレームカラー」と時間蓄積の履歴を持っている。捨てないと
@@ -551,7 +551,10 @@ void Application::InvalidateTemporalHistory()
     //   （プローブ格子はワールド固定なので、暗い洞窟に明るい部屋の照り返しが 1〜2 秒残る）。
     //   DdgiVolume::InvalidateHistory はまさにこの用途だと書いてあるのに、
     //   呼んでいたのは MCP の set_dxr だけだった。
-    if (m_ddgi) m_ddgi->InvalidateHistory();
+    // ★DDGI はワールド空間（画面解像度に依らない）。リサイズでは捨てない。以前はここで捨てていたため、
+    //   オフスクリーン撮影（解像度の切替）のたびに DDGI が 1 フレーム目から埋め直され、多重バウンスが効かない絵になっていた
+    //   （screenshot_final の非決定論撮影で実測。GI S2/S3 仕上げで原因確定）。
+    if (m_ddgi && includeDdgi) m_ddgi->InvalidateHistory();
     m_prevViewProjNJValid = false;
     m_prevFrameIndexValid = false;
     m_prevViewProjValid   = false;   // モーションブラーの速度スパイクも同時に防ぐ
@@ -663,7 +666,7 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
 
     // ★時間履歴は必ず捨てる。座標系が変わった履歴を持ち越すと TAA / SSR / SSGI /
     //   ボリュメトリックフォグが揃ってゴーストする（引き伸ばされた前フレームが尾を引く）。
-    InvalidateTemporalHistory();
+    InvalidateTemporalHistory(/*includeDdgi*/ false);   // 画面解像度の変更。DDGI はワールド空間なので残す
 
     m_renderW = w;
     m_renderH = h;

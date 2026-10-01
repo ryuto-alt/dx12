@@ -127,6 +127,24 @@ CONFIGS: dict[str, dict] = {
                        ("set_gi_mode", {"mode": "new", "debugStage": 8})],
         "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
     },
+    "gi_new_sp06": {
+        "title": "新 GI 検証: 格子間隔 0.6m",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": 0.6}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 0})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    "gi_new_sp10": {
+        "title": "新 GI 検証: 格子間隔 1.0m",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": 1.0}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 0})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
     "gi_new_ssgi": {
         "title": "新 GI モード + SSGI ON(SSGI のミスは DDGI。SSGI の ON/OFF で全体の明るさが跳ねないことの確認用)",
         "requires": "set_gi_mode",
@@ -154,8 +172,11 @@ def apply_config(cli: EngineClient, name: str, scene: GS.GiScene) -> None:
     for method, args in cfg["set"]:
         a = dict(args)
         if "{grid}" in a:
-            del a["{grid}"]
-            a.update(_grid_params(scene.data["ddgi"]))
+            g = a.pop("{grid}")
+            dd = dict(scene.data["ddgi"])
+            if not isinstance(g, bool):          # 数値 = その間隔(m)で格子を作り直す(間隔の感度試験用)
+                dd["spacing"] = float(g)
+            a.update(_grid_params(dd))
         cli.call(method, a, timeout=60)
 
 
@@ -532,7 +553,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frame-budget-ms", type=float, default=None, help="PT の 1 フレーム GPU 予算(既定 = エンジン既定の 12)")
     ap.add_argument("--pt-timeout", type=float, default=1800.0)
     ap.add_argument("--no-pt", dest="pt", action="store_false", help="PT を撮り直さない(--out の既存 pt.pfm を使う)")
-    ap.add_argument("--capture-mode", choices=("free", "det"), default="det")
+    ap.add_argument("--capture-mode", choices=("free", "det"), default="free")
     ap.add_argument("--settle", type=int, default=600, help="free: 撮る前に回すフレーム数")
     ap.add_argument("--det-settle", type=int, default=240, help="det: settleFrames(最大 240)")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
