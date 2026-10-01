@@ -52,6 +52,11 @@ target_sources(Editor PRIVATE
     AiDebugOverlay.cpp
 )
 
+# 「更新内容」画面（更新後の初回起動 / コマンド「更新内容を表示」）。データは core/ReleaseNotes.h。
+target_sources(Editor PRIVATE
+    WhatsNewScreen.cpp
+)
+
 # 任意メッシュの頂点スカルプト窓（洞窟・アーチ・岩などの異形。地形ツールの相棒）。
 # 上と同じ理由で target_sources の末尾追記にしている。
 target_sources(Editor PRIVATE

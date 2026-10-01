@@ -31,9 +31,7 @@ extern const char* const kEngineVersion;
 extern const char* const kUpdateRepoOwner;
 extern const char* const kUpdateRepoName;
 
-// 起動時に一度だけ表示する「更新内容」ポップアップ（この版で直したこと）。
-// 表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt（版が変わった初回だけ出す）。
-// 新しい版を出すときは kEngineVersion を上げ、ここも書き換えること。
-extern const char* const kWhatsNewTitle;
-extern const char* const kWhatsNewBody;
+// 更新内容（リリースノート）は core/ReleaseNotes.h + ReleaseNotesData.inc が唯一の正。
+// 新しい版を出すときは kEngineVersion を上げ、ReleaseNotesData.inc の先頭にその版を足すこと
+// （「更新内容」画面の表示済み判定は %LOCALAPPDATA%\DX12Engine\shown_version.txt。tests の UpdateUxTests が両者の一致を検査する）。
 } // namespace dx12e

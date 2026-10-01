@@ -160,6 +160,21 @@ endforeach()
 add_test(NAME SplashMotionTests COMMAND SplashMotionTests)
 add_test(NAME SplashMixerTests COMMAND SplashMixerTests)
 
+# 自動更新の体験（更新内容データ・GitHub 本文の整形・この版を飛ばす・進捗の表示）の純ロジック。標準ライブラリだけ。
+#   データの整合（版の並び・必須項目・先頭 == kEngineVersion）/ 前回→今の版の範囲 / Markdown 書き出し /
+#   GitHub 本文の簡易整形 / 「この版を飛ばす」の判定 / 速度と残り時間（core/ReleaseNotes.*, UpdateLogic.*, Version.cpp）。
+add_executable(UpdateUxTests update_ux_test.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/ReleaseNotes.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/UpdateLogic.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/Version.cpp)
+target_include_directories(UpdateUxTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(UpdateUxTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(UpdateUxTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME UpdateUxTests COMMAND UpdateUxTests)
+
 # UIText リッチテキスト(インラインタグ)パーサのテスト(ヘッダオンリー・依存ゼロなのでスタンドアロンでも動く)。
 add_executable(UiRichTextTests ui_rich_text_test.cpp)
 target_include_directories(UiRichTextTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

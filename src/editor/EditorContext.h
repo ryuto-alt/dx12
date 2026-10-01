@@ -699,6 +699,7 @@ public:
     bool pendingFocusSelection   = false;   // 選択へカメラを寄せる（F / パレットのジャンプ）。Application が処理
     int  paletteRequest          = 0;       // 0=なし / 1=コマンドパレット(Ctrl+K) / 2=クイックオープン(Ctrl+P)
     bool paletteOpen             = false;   // パレット表示中（ショートカットを止める）
+    bool whatsNewRequest         = false;   // 「更新内容を表示」（help.whatsNew）。Application::RenderWhatsNewPopup が消化する
     bool pendingToggleFullscreen = false;   // ボーダレスフルスクリーン切り替え（F11 は Window が直接処理。パレット用）
 
     // Application が毎フレーム書く（ショートカット判定に使う）。

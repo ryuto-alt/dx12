@@ -128,7 +128,7 @@ const char* IconFor(std::string_view id)
         {"view.fullscreen", ICON_T_MONITOR}, {"view.viewportBar", ICON_AXIS3D}, {"view.outline", ICON_SCAN_EYE},
         {"view.theme.default", ICON_T_SUN}, {"view.theme.b", ICON_T_SUN}, {"view.theme.c", ICON_T_SUN},
         {"play.toggle", ICON_PLAY}, {"play.stop", ICON_STOP}, {"play.pause", ICON_PAUSE},
-        {"palette.commands", ICON_SEARCH}, {"palette.quickOpen", ICON_SEARCH},
+        {"palette.commands", ICON_SEARCH}, {"palette.quickOpen", ICON_SEARCH}, {"help.whatsNew", ICON_MEGAPHONE},
         {"matgraph.new", ICON_FILE_PLUS}, {"matgraph.newPbr", ICON_FILE_PLUS}, {"matgraph.open", ICON_FOLDER_OPEN}, {"matgraph.save", ICON_SAVE},
         {"matgraph.saveAs", ICON_SAVE}, {"matgraph.recompile", ICON_REFRESH}, {"matgraph.nextDiag", ICON_ERROR}, {"matgraph.copyHlsl", ICON_COPY},
         {"matgraph.promote", ICON_T_MATERIAL}, {"matgraph.sample", ICON_T_SPLINE},
@@ -380,6 +380,9 @@ bool Execute(EditorContext& ctx, const Env& env, std::string_view id)
     // ---- パレット ----
     if (id == "palette.commands")  { ctx.paletteRequest = 1; return true; }
     if (id == "palette.quickOpen") { ctx.paletteRequest = 2; return true; }
+
+    // ---- ヘルプ ----
+    if (id == "help.whatsNew")     { ctx.whatsNewRequest = true; return true; }   // 実処理は Application::RenderWhatsNewPopup が消化する
 
     return false;
 }

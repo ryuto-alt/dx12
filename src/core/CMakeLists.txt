@@ -70,6 +70,9 @@ add_library(Core STATIC
     PlaySession.cpp                 # Play 1 回ぶんの記録（人間の操作を後から読む）
     PathResolver.cpp
     Updater.cpp
+    UpdateWindow.cpp                # 更新の案内・進捗窓（起動画面と同じ Direct2D。MessageBox を使わない）と --preview-update-ui
+    UpdateLogic.cpp                 # 案内窓の純ロジック（GitHub 本文の整形 / この版を飛ばす / 速度と残り時間）
+    ReleaseNotes.cpp                # 更新内容の唯一の正（データは ReleaseNotesData.inc。画面・ランチャー・GitHub 本文）
     Http.cpp
     vfs/Crypto.cpp
     vfs/Compression.cpp

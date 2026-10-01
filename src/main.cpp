@@ -2,6 +2,8 @@
 #include "core/CrashHandler.h"
 #include "core/PathResolver.h"
 #include "core/Updater.h"
+#include "core/UpdateWindow.h"   // --preview-update-ui（更新案内窓を窓なしで PNG に描く検証入口）
+#include "core/ReleaseNotes.h"   // --write-release-notes（GitHub リリース本文を書き出す）
 #include "core/SplashScreen.h"
 #include "core/SplashPreview.h"
 #include "core/Version.h"
@@ -329,7 +331,8 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             if (LPWSTR* pargv = CommandLineToArgvW(GetCommandLineW(), &pargc))
             {
                 int previewExit = 0;
-                const bool handled = dx12e::RunSplashPreviewIfRequested(pargc, pargv, previewExit);
+                bool handled = dx12e::RunSplashPreviewIfRequested(pargc, pargv, previewExit);
+                if (!handled) handled = dx12e::RunUpdateUiPreviewIfRequested(pargc, pargv, previewExit);
                 LocalFree(pargv);
                 if (handled) return previewExit;
             }
@@ -357,6 +360,10 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // --background[=offscreen|minimized|noactivate|hidden][,tool|notool]: 手前に出てこない静かな起動
         //   （仮想入力モードを含意。core/BackgroundMode.h）。
         bool virtualInput = false;
+        // --show-whats-new[=<前回の版>]: 「更新内容」画面を（--background / --headless でも）出す検証用。
+        //   前回の版を省くと直前のリリースから。表示済みの記録は書かない（fleet のエンジンは毎回「初回」扱いなので既定では出さない）。
+        bool whatsNewForce = false;
+        std::string whatsNewFrom;
         dx12e::BackgroundOptions bgOpt;
         std::string bgError;
         int  mcpPort  = 0;
@@ -391,6 +398,33 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                 if (!f) return 1;
                 f << dx12e::kEngineVersion;
                 return 0;
+            }
+
+            // --write-release-notes <file>: 今の版（kEngineVersion）の GitHub リリース本文（Markdown）を UTF-8 で書いて終了。
+            // 更新内容は core/ReleaseNotesData.inc が唯一の正（画面・ランチャー・GitHub 本文が同じデータから出る）。
+            // 終了コード: 0=成功 / 1=書き込み失敗 / 2=データ不整合（先頭の版が kEngineVersion と違う・必須項目の欠け）。
+            size_t wrn = args.find("--write-release-notes");
+            if (wrn != std::string::npos)
+            {
+                std::string rest = args.substr(wrn + 21);
+                size_t b = rest.find_first_not_of(" \t\"");
+                std::string path;
+                if (b != std::string::npos)
+                {
+                    size_t e = rest.find_last_not_of(" \t\"");
+                    path = rest.substr(b, e - b + 1);
+                }
+                if (path.empty()) return 1;
+                const auto& all = dx12e::relnotes::All();
+                if (!dx12e::relnotes::Validate(all).empty()) return 2;
+                const dx12e::relnotes::Release* cur = dx12e::relnotes::Find(all, dx12e::kEngineVersion);
+                if (!cur || dx12e::relnotes::CompareVersions(all.front().version, dx12e::kEngineVersion) != 0) return 2;
+                std::ofstream f(path, std::ios::binary | std::ios::trunc);
+                if (!f) return 1;
+                const std::string md = dx12e::relnotes::ToMarkdown(*cur, dx12e::kEngineName);
+                f.write(md.data(), static_cast<std::streamsize>(md.size()));
+                f.flush();
+                return f ? 0 : 1;
             }
 
             // --validate <scene.json>: ヘッドレスでシーンの参照グラフを検証して終了（GUI 起動しない）。
@@ -521,6 +555,11 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         headlessAllowSave = true;
                     else if (wcscmp(argv[i], L"--virtual-input") == 0)
                         virtualInput = true;
+                    else if (wcscmp(argv[i], L"--show-whats-new") == 0 || wcsncmp(argv[i], L"--show-whats-new=", 17) == 0)
+                    {
+                        whatsNewForce = true;
+                        if (argv[i][16] == L'=') whatsNewFrom = toUtf8(argv[i] + 17);
+                    }
                     else if (wcscmp(argv[i], L"--background") == 0
                              || wcsncmp(argv[i], L"--background=", 13) == 0)
                     {
@@ -659,7 +698,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // 要求のため、更新直後の再起動を含め全ての起動で必ずチェックする（スプラッシュ画面が
         // チェック中もアニメし続けるので、数秒の同期待ちでも固まって見えない）。
         // ★--background / --virtual-input では自動更新を確認しない（更新ダイアログや MessageBox が前面に出るため）。
-        if (!buildMode && !bgOpt.Active() && !virtualInput && dx12e::Updater::RunStartupCheck())
+        if (!buildMode && !bgOpt.Active() && !virtualInput && !headless && dx12e::Updater::RunStartupCheck())
         {
             dx12e::SplashScreen::Close();   // 更新適用へ（更新バッチが上書き→再起動する）
             return EXIT_SUCCESS;
@@ -689,6 +728,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
             app.SetHeadlessAllowSave(headlessAllowSave);
         }
         if (virtualInput) app.SetVirtualInput(true);
+        if (whatsNewForce) app.SetWhatsNewForce(whatsNewFrom);
         if (bgOpt.Active()) app.SetBackground(bgOpt);   // 仮想入力モードも含意する
         if (mcpPort > 0)  app.SetMcpPort(mcpPort);
         dx12e::fleet::Instance().Configure(static_cast<uint32_t>(fleetOwnerPid), fleetIdleExitMin, fleetInstanceId);

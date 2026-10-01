@@ -746,7 +746,7 @@ inline bool ThumbnailLooksBlank(const std::vector<uint8_t>& bgra, int w, int h)
 
 // ---------------------------------------------------------------- ニュース（更新内容）の整形
 
-// Version.cpp の kWhatsNewBody（手で折り返した平文）を、画面で組める塊へ分ける。
+// 手で折り返した平文のお知らせ本文を、画面で組める塊へ分ける（互換のため残す。今のお知らせ欄は core/ReleaseNotes の構造化データから塊を作る）。
 //   1 行目の見出し / 「■」で始まる節 / 字下げの続き行（折り返しなので 1 段落へ結合）/ 「・」の箇条書き。
 struct NewsBlock
 {

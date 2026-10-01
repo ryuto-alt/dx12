@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
@@ -54,7 +55,32 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     m_isGameMode = gameMode;
     m_showLauncher = !gameMode;  // ゲームモードではランチャーを表示しない
     // エディタで、前回表示した版と違う＝更新された/初回 のときだけ「更新内容」を出す。
-    m_showWhatsNew = !gameMode && (ReadShownVersion() != std::string(kEngineVersion));
+    // ★自動化（--background / --headless / --virtual-input）では出さない: モーダルがエンジンの操作を塞ぐうえ、
+    //   DX12E_DATA_DIR で分離した fleet のエンジンは毎回「初回」扱いになるため。--show-whats-new で検証用に出せる。
+    {
+        const std::string shown = ReadShownVersion();
+        const bool automation = m_headless || m_bgOptions.Active() || m_virtualInputRequested;
+        m_whatsNewFrom = shown;
+        m_whatsNewForced = false;
+        if (m_whatsNewForceReq && !gameMode)
+        {
+            // 前回の版が無指定なら「今の版の 1 つ前のリリース」から（直前の版からの更新を再現する）。
+            std::string from = m_whatsNewForceFrom;
+            if (from.empty())
+            {
+                const auto& all = relnotes::All();
+                for (const auto& r : all)
+                    if (relnotes::CompareVersions(r.version, kEngineVersion) < 0) { from = r.version; break; }
+            }
+            m_whatsNewFrom = from;
+            m_whatsNewForced = true;
+            m_showWhatsNew = true;
+        }
+        else
+        {
+            m_showWhatsNew = !gameMode && !automation && (shown != std::string(kEngineVersion));
+        }
+    }
     Logger::Info("Application initializing... (mode: {})", gameMode ? "game" : "editor");
 
     // エディタコンテキスト初期化

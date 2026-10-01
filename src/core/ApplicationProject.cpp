@@ -10,6 +10,7 @@
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
 #include "core/CrashHandler.h"
 #include "project/LauncherLogic.h"
+#include "editor/WhatsNewScreen.h"   // 更新内容モーダルの描画
 
 namespace dx12e
 {
@@ -480,47 +481,64 @@ void Application::RenderLoadingOverlay()
 
 void Application::RenderWhatsNewPopup()
 {
+    // コマンド「更新内容を表示」（help.whatsNew）: 全履歴を開く。表示済みの記録は書かない。
+    if (m_editorCtx && m_editorCtx->whatsNewRequest)
+    {
+        m_editorCtx->whatsNewRequest = false;
+        if (!m_showWhatsNew)
+        {
+            m_showWhatsNew = true;
+            m_whatsNewOpened = false;
+            m_whatsNewManual = true;
+            m_whatsNewFrom.clear();
+        }
+    }
     if (!m_showWhatsNew) return;
-    namespace th = dx12e::theme;
 
+    static whatsnew::State s_state;
     const char* kId = "更新内容###whatsnew";
-    if (!m_whatsNewOpened) { ImGui::OpenPopup(kId); m_whatsNewOpened = true; }
+    if (!m_whatsNewOpened)
+    {
+        whatsnew::Setup(s_state, m_whatsNewFrom, kEngineVersion, m_whatsNewManual);
+        ImGui::OpenPopup(kId);
+        m_whatsNewOpened = true;
+    }
 
     // マルチビューポート有効なので、明示しないとこのモーダルが独立OSウィンドウ化し、
     // 「画面に出ていないのに入力だけ塞ぐ」状態になる（ギズモ消失バグと同じ罠）。
-    // 併せて AlwaysAutoResize は使わない: 本文が画面より縦に長いと「閉じる」が画面外に出て詰む。
+    // 併せて AlwaysAutoResize は使わない: 本文が画面より縦に長いと「閉じる」が画面外に出て詰む
+    // （本文は画面側でスクロール領域に入れ、フッタは固定。高さは作業領域の 88% まで）。
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowViewport(vp->ID);
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    const float wnH = (vp->WorkSize.y * 0.8f < ui::Px(720.0f)) ? vp->WorkSize.y * 0.8f : ui::Px(720.0f);
-    ImGui::SetNextWindowSize(ImVec2(ui::Px(760.0f), wnH), ImGuiCond_Appearing);
-    bool open = true;  // ESC で閉じられるように p_open を渡す（保険）
-    if (ImGui::BeginPopupModal(kId, &open, ImGuiWindowFlags_NoSavedSettings))
+    const float wnW = (std::min)(ui::Px(820.0f), vp->WorkSize.x * 0.94f);
+    const float wnH = (std::min)(ui::Px(800.0f), vp->WorkSize.y * 0.88f);
+    ImGui::SetNextWindowSize(ImVec2(wnW, wnH), ImGuiCond_Appearing);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Px(8.0f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, theme::Bg1);
+    const bool begun = ImGui::BeginPopupModal(kId, nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    if (begun)
     {
-        // 見づらい要望対応: 専用フォントは追加せず、既存フォントを SetWindowFontScale で拡大
-        // （ToolbarPanel.cpp のエラーモーダルと同じやり方）。
-        ImGui::SetWindowFontScale(1.35f);
-        ImGui::PushStyleColor(ImGuiCol_Text, th::Accent);
-        ImGui::TextUnformatted(kWhatsNewTitle);
-        ImGui::PopStyleColor();
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::Separator();
-        ImGui::Spacing();
-        // 本文はスクロール領域に入れる。ボタン1行分を残しておけば「閉じる」は必ず見える。
-        const float footer = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y * 2.0f;
-        if (ImGui::BeginChild("##whatsnew_body", ImVec2(0.0f, -footer), false))
+        const whatsnew::Action act = whatsnew::Draw(s_state);
+        if (act == whatsnew::Action::OpenGithub)
         {
-            ImGui::SetWindowFontScale(1.18f);
-            ImGui::TextWrapped("%s", kWhatsNewBody);
-            ImGui::SetWindowFontScale(1.0f);
+            // ユーザーが押したときだけ既定のブラウザで開く（仮想入力モード中は guard が止める）。
+            const std::string url = std::string("https://github.com/") + kUpdateRepoOwner + "/" + kUpdateRepoName
+                                    + "/releases/tag/v" + kEngineVersion;
+            dx12e::guard::ShellExecuteGuarded(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
-        ImGui::EndChild();
-        ImGui::Separator();
-        if (ImGui::Button("閉じる", ui::Px(160.0f, 0.0f)) || !open)
+        if (act == whatsnew::Action::Close)
         {
             // この版は表示済みとして記録 → 次回以降は版が変わるまで出さない。
-            WriteShownVersion(kEngineVersion);
+            // 手動表示・--show-whats-new（検証）では書かない（自動化の fleet が共有ファイルを書き換えないため）。
+            if (!m_whatsNewManual && !m_whatsNewForced) WriteShownVersion(kEngineVersion);
             m_showWhatsNew = false;
+            m_whatsNewManual = false;
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

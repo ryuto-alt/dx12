@@ -184,7 +184,7 @@ void Application::RegisterMcpEditorUiMethods()
             && !m_modeChangeRequested && !c.resetLayout && c.pendingWorkspace.empty()
             && c.pendingBookmarkJump == 0 && c.pendingBookmarkSet == 0 && !c.pendingGroupSelection
             && !c.pendingFocusSelection && c.pendingLoadPath.empty() && !c.pendingCloseProject
-            && c.paletteRequest == 0 && !c.pendingToggleFullscreen && !c.bottomDockMaximizeToggle
+            && c.paletteRequest == 0 && !c.whatsNewRequest && !c.pendingToggleFullscreen && !c.bottomDockMaximizeToggle
             && !c.layoutSaveWindowRequest && !c.layoutSlotsWindowRequest && c.pendingLayoutSaveName.empty()
             && c.pendingLayoutRestore.empty() && c.pendingToolSlots.empty();
     };

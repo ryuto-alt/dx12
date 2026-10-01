@@ -1,10 +1,12 @@
 #include "core/Updater.h"
 #include "core/Version.h"
 #include "core/Logger.h"
+#include "core/UpdateLogic.h"
+#include "core/UpdateWindow.h"
+#include "core/ReleaseNotes.h"
 
 #include <windows.h>
 #include <winhttp.h>
-#include <commctrl.h>
 
 #include <string>
 #include <vector>
@@ -15,9 +17,10 @@
 #include <cstdlib>
 #include <cwchar>
 
-// MSVC のみ運用（VS2022）。WinHTTP / コモンコントロール(プログレスバー)を自動リンク（CMake 変更不要）。
+#include <nlohmann/json.hpp>
+
+// MSVC のみ運用（VS2022）。WinHTTP を自動リンク（CMake 変更不要）。進捗の窓は core/UpdateWindow（Direct2D）。
 #pragma comment(lib, "winhttp.lib")
-#pragma comment(lib, "comctl32.lib")
 
 namespace fs = std::filesystem;
 
@@ -212,158 +215,6 @@ bool IsNewer(const std::string& latest, const std::string& current)
     return false;
 }
 
-// 進捗メーター窓（Win32 ネイティブ）。エンジンのウィンドウ/ImGui 生成より前に動くため、
-// ImGui ではなく comctl32 のプログレスバーで「ダウンロード/展開/適用」の進捗を表示する。
-struct ProgressUI
-{
-    HWND hwnd = nullptr, bar = nullptr, label = nullptr, pct = nullptr;
-    HFONT uiFont = nullptr;   // DPI に合わせて作ったメッセージフォント（DEFAULT_GUI_FONT は倍率に追従しない）
-
-    // プロセスは Per-Monitor V2。窓はプライマリモニタの DPI（=システム DPI）で物理 px 寸法にする。
-    static UINT SystemDpi()
-    {
-        using Fn = UINT(WINAPI*)();
-        if (HMODULE u = GetModuleHandleW(L"user32.dll"))
-            if (auto fn = reinterpret_cast<Fn>(GetProcAddress(u, "GetDpiForSystem")))
-                if (UINT d = fn()) return d;
-        return 96;
-    }
-    static HFONT MakeMessageFont(UINT dpi)
-    {
-        using Fn = BOOL(WINAPI*)(UINT, UINT, PVOID, UINT, UINT);
-        if (HMODULE u = GetModuleHandleW(L"user32.dll"))
-            if (auto fn = reinterpret_cast<Fn>(GetProcAddress(u, "SystemParametersInfoForDpi")))
-            {
-                NONCLIENTMETRICSW ncm{};
-                ncm.cbSize = sizeof(ncm);
-                if (fn(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi))
-                    return CreateFontIndirectW(&ncm.lfMessageFont);
-            }
-        return nullptr;
-    }
-
-    static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l)
-    {
-        return DefWindowProcW(h, m, w, l);
-    }
-
-    bool Create()
-    {
-        INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_PROGRESS_CLASS };
-        InitCommonControlsEx(&icc);
-
-        const wchar_t* cls = L"DX12EngineUpdaterProgress";
-        static bool registered = false;
-        if (!registered)
-        {
-            WNDCLASSW wc{};
-            wc.lpfnWndProc   = Proc;
-            wc.hInstance     = GetModuleHandleW(nullptr);
-            wc.lpszClassName = cls;
-            wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
-            wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-            RegisterClassW(&wc);
-            registered = true;
-        }
-
-        const UINT dpi = SystemDpi();
-        auto S = [dpi](int v) { return MulDiv(v, static_cast<int>(dpi), 96); };
-        const int w = S(460), h = S(168);
-        const int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
-        const int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
-        // WS_SYSMENU を付けない＝閉じる×無し（ダウンロード中の誤操作防止）
-        // ※ 文字列は生の日本語ワイド文字リテラル。CMake で Core ターゲットに /utf-8 を渡しているので
-        //   ソース(UTF-8)が正しく UTF-16 に変換される。以前は UTF-8 バイト列を \x で
-        //   ワイド文字リテラルに直書きしていて 1 バイト＝1 wchar になり文字化けしていた。
-        hwnd = CreateWindowExW(WS_EX_TOPMOST, cls, L"Uno Engine アップデート",
-            WS_POPUP | WS_CAPTION | WS_BORDER, x, y, w, h,
-            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
-        if (!hwnd) return false;
-
-        uiFont = MakeMessageFont(dpi);
-        HFONT font = uiFont ? uiFont : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        label = CreateWindowExW(0, L"STATIC",
-            L"アップデートを準備しています...",
-            WS_CHILD | WS_VISIBLE, S(20), S(18), S(410), S(22), hwnd, nullptr, nullptr, nullptr);
-        bar = CreateWindowExW(0, PROGRESS_CLASSW, nullptr,
-            WS_CHILD | WS_VISIBLE, S(20), S(52), S(418), S(26), hwnd, nullptr, nullptr, nullptr);
-        pct = CreateWindowExW(0, L"STATIC", L"",
-            WS_CHILD | WS_VISIBLE, S(20), S(88), S(410), S(22), hwnd, nullptr, nullptr, nullptr);
-        SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(pct,   WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        SendMessageW(bar, PBM_SETRANGE32, 0, 100);
-
-        ShowWindow(hwnd, SW_SHOW);
-        SetForegroundWindow(hwnd);
-        Pump();
-        return true;
-    }
-
-    void SetLabel(const wchar_t* s) { if (label) SetWindowTextW(label, s); }
-
-    // percent<0 で不確定（マーキー）。done/total はバイト数（pct テキスト表示用）。
-    void SetProgress(int percent, uint64_t done, uint64_t total)
-    {
-        if (bar)
-        {
-            LONG style = GetWindowLongW(bar, GWL_STYLE);
-            if (percent < 0)
-            {
-                if (!(style & PBS_MARQUEE))
-                {
-                    SetWindowLongW(bar, GWL_STYLE, style | PBS_MARQUEE);
-                    SendMessageW(bar, PBM_SETMARQUEE, TRUE, 30);
-                }
-            }
-            else
-            {
-                if (style & PBS_MARQUEE)
-                {
-                    SendMessageW(bar, PBM_SETMARQUEE, FALSE, 0);
-                    SetWindowLongW(bar, GWL_STYLE, style & ~PBS_MARQUEE);
-                }
-                SendMessageW(bar, PBM_SETPOS, static_cast<WPARAM>(percent), 0);
-            }
-        }
-        if (pct)
-        {
-            wchar_t buf[160];
-            if (percent < 0)
-            {
-                if (done > 0) swprintf(buf, 160, L"%.1f MB", done / 1048576.0);
-                else          buf[0] = L'\0';
-            }
-            else if (total > 0)
-            {
-                swprintf(buf, 160, L"%d%%   ( %.1f / %.1f MB )",
-                         percent, done / 1048576.0, total / 1048576.0);
-            }
-            else
-            {
-                swprintf(buf, 160, L"%d%%", percent);
-            }
-            SetWindowTextW(pct, buf);
-        }
-    }
-
-    void Pump()
-    {
-        MSG msg;
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-        {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    void Destroy()
-    {
-        if (hwnd) { DestroyWindow(hwnd); hwnd = nullptr; }
-        Pump();
-        if (uiFont) { DeleteObject(uiFont); uiFont = nullptr; }
-    }
-};
-
 // HTTPS GET（リダイレクト追従）。outFile 指定時はファイルへ、未指定時は outBytes へ。status 200 のみ成功。
 // progress 指定時は受信バイト数/総バイト数を逐次コールバック（ダウンロードメーター用）。
 bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std::wstring* outFile,
@@ -455,7 +306,7 @@ bool HttpsFetch(const std::wstring& url, std::vector<char>* outBytes, const std:
 // 隠しコンソールでコマンドを実行し、終了まで「UI のメッセージをポンプしながら」待つ。
 // WaitForSingleObject(INFINITE) で待つと展開中に進捗窓が固まって「(応答なし)」になるため、
 // MsgWaitForMultipleObjects + Pump で待受窓を生かしたまま待つ。code に終了コードを返す。
-bool RunHiddenPumped(const std::wstring& cmdLine, ProgressUI* ui, DWORD& code)
+bool RunHiddenPumped(const std::wstring& cmdLine, const std::function<void()>& pump, DWORD& code)
 {
     code = 1;
     std::vector<wchar_t> buf(cmdLine.begin(), cmdLine.end());
@@ -469,9 +320,9 @@ bool RunHiddenPumped(const std::wstring& cmdLine, ProgressUI* ui, DWORD& code)
 
     for (;;)
     {
-        // 100ms ごとに起きて進捗窓のメッセージを処理（マーキー animation と応答性を維持）。
-        DWORD w = MsgWaitForMultipleObjects(1, &pi.hProcess, FALSE, 100, QS_ALLINPUT);
-        if (ui) ui->Pump();
+        // 33ms ごとに起きて進捗窓のメッセージを処理・描き直す（回る弧の動きと応答性を維持）。
+        DWORD w = MsgWaitForMultipleObjects(1, &pi.hProcess, FALSE, 33, QS_ALLINPUT);
+        if (pump) pump();
         if (w == WAIT_OBJECT_0) break;   // 子プロセス終了
     }
 
@@ -484,7 +335,7 @@ bool RunHiddenPumped(const std::wstring& cmdLine, ProgressUI* ui, DWORD& code)
 // zip を展開する。tar.exe(bsdtar, Windows 10 1803+ 標準) を最優先＝大量の小ファイル
 // (assets 数千個)でも数秒で済む。Expand-Archive は同条件で分単位かつ
 // UI を固めるため、tar が無い/失敗した時だけのフォールバックに降格。
-bool ExtractZip(const fs::path& zip, const fs::path& dest, ProgressUI* ui = nullptr)
+bool ExtractZip(const fs::path& zip, const fs::path& dest, const std::function<void()>& pump = nullptr)
 {
     // 1) tar.exe（フルパス指定。PATH 上の別 tar=MSYS 等を避ける）
     wchar_t sysDir[MAX_PATH] = {};
@@ -497,7 +348,7 @@ bool ExtractZip(const fs::path& zip, const fs::path& dest, ProgressUI* ui = null
             std::wstring cmd = L"\"" + tarExe.wstring() + L"\" -xf \"" + zip.wstring() +
                                L"\" -C \"" + dest.wstring() + L"\"";
             DWORD code = 1;
-            if (RunHiddenPumped(cmd, ui, code) && code == 0)
+            if (RunHiddenPumped(cmd, pump, code) && code == 0)
                 return true;
         }
     }
@@ -507,7 +358,7 @@ bool ExtractZip(const fs::path& zip, const fs::path& dest, ProgressUI* ui = null
         L"\"Expand-Archive -Force -LiteralPath '" + zip.wstring() +
         L"' -DestinationPath '" + dest.wstring() + L"'\"";
     DWORD code = 1;
-    return RunHiddenPumped(cmd, ui, code) && code == 0;
+    return RunHiddenPumped(cmd, pump, code) && code == 0;
 }
 
 // 展開先から DX12Engine.exe があるディレクトリを探す（ルート → 直下サブフォルダ）。
@@ -535,6 +386,50 @@ fs::path UpdateStatePath()
     std::error_code ec;
     fs::create_directories(dir, ec);
     return dir / "last_update.txt";
+}
+
+// 「この版を飛ばす」で記録した版。もっと新しい版が出るまで案内しない（判定は updatelogic::ShouldPromptUpdate）。
+fs::path SkippedStatePath()
+{
+    fs::path p = UpdateStatePath();
+    if (p.empty()) return {};
+    return p.parent_path() / "skipped_update.txt";
+}
+
+std::string ReadSkippedTag()
+{
+    fs::path p = SkippedStatePath();
+    if (p.empty()) return {};
+    std::ifstream f(p);
+    if (!f) return {};
+    std::string s;
+    std::getline(f, s);
+    while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ')) s.pop_back();
+    return s;
+}
+
+void WriteSkippedTag(const std::string& tag)
+{
+    fs::path p = SkippedStatePath();
+    if (p.empty()) return;
+    std::ofstream f(p, std::ios::trunc);
+    if (f) f << tag;
+}
+
+// "v2.1.0" → "2.1.0"
+std::string StripV(const std::string& tag)
+{
+    return (!tag.empty() && (tag[0] == 'v' || tag[0] == 'V')) ? tag.substr(1) : tag;
+}
+
+// リリース JSON（GitHub API）から本文（Markdown）を取り出す。無ければ空。
+std::string BodyFromReleaseJson(const std::string& json)
+{
+    if (json.empty()) return {};
+    const nlohmann::json j = nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
+    if (j.is_discarded() || !j.is_object()) return {};
+    const auto it = j.find("body");
+    return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string();
 }
 
 std::string ReadLastUpdateTag()
@@ -702,94 +597,141 @@ bool Updater::RunStartupCheck()
         return false;
     }
 
-    // 2) ユーザーに確認
-    std::wstring msg =
-        L"新しいバージョン " + Widen(tag) + L" が公開されています（現在 " +
-        Widen(kEngineVersion) + L"）。\n\n";
-    if (retryingStuckUpdate)
+    // この版は「飛ばす」と記録済みなら、もっと新しい版が出るまで案内しない。
+    if (!updatelogic::ShouldPromptUpdate(tag, ReadSkippedTag()))
     {
-        msg += L"※前回この更新の適用を試みましたが反映されていませんでした"
-               L"（ファイルが使用中で上書きに失敗した可能性があります）。\n\n";
-    }
-    msg +=
-        L"今すぐダウンロードして更新しますか？\n"
-        L"（更新後にエンジンが自動で再起動します）";
-    int r = MessageBoxW(nullptr, msg.c_str(), L"Uno Engine アップデート",
-        MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST);
-    if (r != IDYES)
-    {
-        Logger::Info("Updater: user skipped update to {}.", tag);
+        Logger::Info("Updater: {} は「この版を飛ばす」で記録済みのため案内しません。", tag);
         return false;
     }
 
-    // 3) ダウンロード
+    // 2) リリース本文（Markdown）を取得して、案内の窓に出す。取れなくても案内は出す（本文なしで）。
+    //    api.github.com はレート制限があるので、ここだけの任意の取得（失敗しても更新自体は続ける）。
+    std::string bodyMd = BodyFromReleaseJson(latestJson);
+    if (bodyMd.empty())
+    {
+        std::wstring tagApiUrl = L"https://api.github.com/repos/" +
+            Widen(kUpdateRepoOwner) + L"/" + Widen(kUpdateRepoName) + L"/releases/tags/" + Widen(tag);
+        std::vector<char> body;
+        if (HttpsFetch(tagApiUrl, &body, nullptr) && !body.empty())
+            bodyMd = BodyFromReleaseJson(std::string(body.begin(), body.end()));
+    }
+
+    // 3) 案内（起動画面と同じ Direct2D の窓。作れなければ旧来の MessageBox に縮退）
+    const std::wstring logoPath = (installDir / "assets" / "editor" / "icons" / "logo.png").wstring();
+    updateui::UpdateWindow win;
+    const bool haveUi = win.Create(logoPath);
+    updateui::Choice choice = updateui::Choice::Later;
+    if (haveUi)
+    {
+        choice = win.Prompt(kEngineVersion, StripV(tag), bodyMd, !bodyMd.empty(), retryingStuckUpdate);
+    }
+    else
+    {
+        std::wstring msg =
+            L"新しいバージョン " + Widen(tag) + L" が公開されています（現在 " + Widen(kEngineVersion) + L"）。\n\n";
+        if (retryingStuckUpdate)
+            msg += L"※前回この更新の適用を試みましたが反映されていませんでした（ファイルが使用中で上書きに失敗した可能性があります）。\n\n";
+        msg += L"今すぐダウンロードして更新しますか？\n（更新後にエンジンが自動で再起動します）";
+        choice = MessageBoxW(nullptr, msg.c_str(), L"Uno Engine アップデート", MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST) == IDYES
+                     ? updateui::Choice::UpdateNow : updateui::Choice::Later;
+    }
+    if (choice == updateui::Choice::SkipVersion)
+    {
+        WriteSkippedTag(tag);
+        Logger::Info("Updater: user skipped version {} (will ask again only for a newer version).", tag);
+        win.Destroy();
+        return false;
+    }
+    if (choice != updateui::Choice::UpdateNow)
+    {
+        Logger::Info("Updater: user postponed update to {}.", tag);
+        win.Destroy();
+        return false;
+    }
+
+    // 4) ダウンロード → 展開 → 適用。失敗は窓の中で理由を出し、「もう一度」「このまま起動」を選ばせる。
     wchar_t tmpW[MAX_PATH] = {};
     GetTempPathW(MAX_PATH, tmpW);
-    fs::path tmpRoot = fs::path(tmpW) / "dx12_update";
-    fs::remove_all(tmpRoot, ec);
-    fs::create_directories(tmpRoot, ec);
-    fs::path zip     = tmpRoot / "update.zip";
-    fs::path extract = tmpRoot / "extract";
-    fs::create_directories(extract, ec);
+    const fs::path tmpRoot = fs::path(tmpW) / "dx12_update";
 
-    // 進捗メーター窓を表示（ダウンロード→展開→適用の各段階を可視化）
-    ProgressUI ui;
-    ui.Create();
-    ui.SetLabel(L"アップデートをダウンロードしています...");
+    // 失敗の通知。戻り値 true = もう一度やる。
+    auto askRetry = [&](const char* detail) -> bool
+    {
+        Logger::Warn("Updater: {}", detail);
+        if (haveUi) return win.ShowError("更新できませんでした", detail) == updateui::Choice::Retry;
+        MessageBoxW(nullptr, (Widen(detail) + L"\n通常起動します。").c_str(), L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+        return false;
+    };
 
-    std::wstring zipW = zip.wstring();
-    Logger::Info("Updater: downloading {} ...", assetUrl);
-    std::function<void(uint64_t, uint64_t)> onProgress =
-        [&ui](uint64_t done, uint64_t total)
+    for (;;)
+    {
+        fs::remove_all(tmpRoot, ec);
+        fs::create_directories(tmpRoot, ec);
+        const fs::path zip     = tmpRoot / "update.zip";
+        const fs::path extract = tmpRoot / "extract";
+        fs::create_directories(extract, ec);
+
+        // ダウンロード（速度と残り時間は直近 3 秒の受信量から見積もる）
+        std::wstring zipW = zip.wstring();
+        Logger::Info("Updater: downloading {} ...", assetUrl);
+        updatelogic::RateTracker rate(3.0);
+        LARGE_INTEGER qf, q0;
+        QueryPerformanceFrequency(&qf);
+        QueryPerformanceCounter(&q0);
+        std::function<void(uint64_t, uint64_t)> onProgress =
+            [&](uint64_t done, uint64_t total)
+            {
+                LARGE_INTEGER q;
+                QueryPerformanceCounter(&q);
+                rate.Add(static_cast<double>(q.QuadPart - q0.QuadPart) / static_cast<double>(qf.QuadPart), done);
+                if (haveUi) win.SetDownloading(done, total, rate.BytesPerSec(), rate.EtaSeconds(done, total));
+            };
+        if (haveUi) win.SetDownloading(0, 0, 0.0, -1.0);
+        if (!HttpsFetch(Widen(assetUrl), nullptr, &zipW, &onProgress) || !fs::exists(zip, ec))
         {
-            int pct = (total > 0) ? static_cast<int>((done * 100) / total) : -1;
-            ui.SetProgress(pct, done, total);
-            ui.Pump();
-        };
-    if (!HttpsFetch(Widen(assetUrl), nullptr, &zipW, &onProgress) || !fs::exists(zip, ec))
-    {
-        ui.Destroy();
-        MessageBoxW(nullptr, L"アップデートのダウンロードに失敗しました。\n通常起動します。",
-            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-        return false;
+            if (askRetry("ダウンロードに失敗しました。ネットワークの接続を確認して、もう一度お試しください。"
+                         "プロキシやセキュリティソフトが GitHub への接続を止めている場合もあります。")) continue;
+            win.Destroy();
+            return false;
+        }
+
+        // 展開（時間が読めないので回る弧）
+        if (haveUi) win.SetExtracting();
+        if (!ExtractZip(zip, extract, [&] { if (haveUi) win.Pump(); }))
+        {
+            if (askRetry("ダウンロードしたファイルの展開に失敗しました。ディスクの空き容量を確認して、もう一度お試しください。")) continue;
+            win.Destroy();
+            return false;
+        }
+        const fs::path srcDir = FindEngineDir(extract);
+        if (srcDir.empty())
+        {
+            if (askRetry("ダウンロードした更新の中に DX12Engine.exe が見つかりませんでした。しばらくしてから、もう一度お試しください。")) continue;
+            win.Destroy();
+            return false;
+        }
+
+        // 適用: 更新バッチを起動して本体を終了（バッチが上書き→再起動する）。
+        // 適用を試みる前にタグを記録 → もし更新後も版が上がらなければ、次回起動時に
+        // 上の ReadLastUpdateTag ガードが働き、案内に「前回反映されなかった」旨が付く。
+        WriteLastUpdateTag(tag);
+        if (haveUi)
+        {
+            win.SetApplying();
+            // 「適用して再起動します」を一瞬でも見せる（0.5 秒。窓は動き続ける）
+            const ULONGLONG until = GetTickCount64() + 500;
+            while (GetTickCount64() < until) { win.Pump(); Sleep(16); }
+        }
+        if (!LaunchUpdaterBatch(srcDir, installDir, tmpRoot))
+        {
+            if (askRetry("更新を適用するプログラムを起動できませんでした。もう一度お試しください。")) continue;
+            win.Destroy();
+            return false;
+        }
+        break;
     }
 
-    // 4) 展開（時間が読めないのでマーキー表示）
-    ui.SetLabel(L"ファイルを展開しています...");
-    ui.SetProgress(-1, 0, 0);
-    ui.Pump();
-    if (!ExtractZip(zip, extract, &ui))
-    {
-        ui.Destroy();
-        MessageBoxW(nullptr, L"アップデートの展開に失敗しました。\n通常起動します。",
-            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-        return false;
-    }
-    fs::path srcDir = FindEngineDir(extract);
-    if (srcDir.empty())
-    {
-        ui.Destroy();
-        MessageBoxW(nullptr, L"ダウンロードした更新に DX12Engine.exe が見つかりません。\n通常起動します。",
-            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-        return false;
-    }
-
-    // 5) 更新バッチを起動して本体を終了（バッチが上書き→再起動する）
-    // 適用を試みる前にタグを記録 → もし更新後も版が上がらなければ、次回起動時に
-    // 上の ReadLastUpdateTag ガードで再プロンプトを止めて無限ループを断つ。
-    WriteLastUpdateTag(tag);
-    ui.SetLabel(L"更新を適用して再起動します...");
-    ui.SetProgress(100, 0, 0);
-    ui.Pump();
-    if (!LaunchUpdaterBatch(srcDir, installDir, tmpRoot))
-    {
-        ui.Destroy();
-        MessageBoxW(nullptr, L"アップデータの起動に失敗しました。\n通常起動します。",
-            L"Uno Engine アップデート", MB_OK | MB_ICONWARNING | MB_TOPMOST);
-        return false;
-    }
-
-    ui.Destroy();
+    win.Destroy();
     Logger::Info("Updater: applying update to {}. exiting for restart.", tag);
     return true;  // 呼び出し側（main）は即終了する
 }

@@ -74,6 +74,8 @@ const Override kOverrides[] = {
     // ---- コマンド ----
     {"palette.commands",  "",             false, "",  false, true,  false, false},
     {"palette.quickOpen", "",             false, "",  false, true,  false, false},
+    // ---- ヘルプ ----
+    {"help.whatsNew",     "",             false, "",  false, true,  false, false},   // 「更新内容」モーダルを開く
     // ---- マテリアルグラフ ----
     {"matgraph.save",     "write_file",   true,  "マテリアルグラフのファイル(.dxmg)を上書き保存する", false, false, false, false},
     {"matgraph.saveAs",   "write_file",   true,  "名前を付けてマテリアルグラフを書く（アプリ内のダイアログが開く）", false, true, false, false},

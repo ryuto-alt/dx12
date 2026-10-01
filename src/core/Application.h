@@ -207,6 +207,8 @@ public:
     //   SetBackground(opt)     … --background[=offscreen|minimized|noactivate|hidden]。窓を前面に出さない静かな起動。
     //                            仮想入力モードを含意する。
     void SetVirtualInput(bool on) { m_virtualInputRequested = on; }
+    // --show-whats-new[=<前回の版>]: 「更新内容」画面を自動化モード（--background 等）でも出す検証用。from 空 = 直前のリリースから。
+    void SetWhatsNewForce(const std::string& from) { m_whatsNewForceReq = true; m_whatsNewForceFrom = from; }
     void SetBackground(const BackgroundOptions& opt)
     {
         m_bgOptions = opt;
@@ -1262,6 +1264,11 @@ private:
     // ---- 「更新内容」ポップアップ（版が変わった初回起動だけ表示）----
     bool m_showWhatsNew   = false;  // この起動で出すべきか（Initialize で版マーカーと比較して決定）
     bool m_whatsNewOpened = false;  // OpenPopup を1回だけ呼ぶためのラッチ
+    std::string m_whatsNewFrom;     // 前回表示した版（shown_version.txt。空 = 初回 / 手動表示）。→ 今の版までをまとめて見せる
+    bool m_whatsNewManual = false;  // コマンド「更新内容を表示」で開いた（全履歴・表示済みの記録は書かない）
+    bool m_whatsNewForced = false;  // --show-whats-new で開いた（記録は書かない）
+    bool m_whatsNewForceReq = false;
+    std::string m_whatsNewForceFrom;
 
     // ---- プロジェクト管理 / バージョン管理(Git) ----
     ProjectInfo m_projectInfo;            // 現在開いているプロジェクト（rootDir 空 = 組み込みパス）

@@ -346,6 +346,7 @@ void ToolbarPanel::Render(bool isPlaying,
         {
             if (ui::MenuItem(ICON_KEYBOARD, "ショートカット一覧"))
                 openShortcutsPopup = true;
+            cmd::MenuItem(ctx, cmdEnv, "help.whatsNew");
             if (ui::MenuItem(ICON_INFO, "バージョン情報"))
                 openAboutPopup = true;
             ImGui::EndMenu();

@@ -136,6 +136,8 @@ inline constexpr Def kCommands[] = {
     // ---- コマンド ----
     {"palette.commands", "コマンドパレット",                 "Command Palette",   "コマンド", "Ctrl+K",       "", "コマンドを検索して実行",               Scope::Editor, KeyMode::Global},
     {"palette.quickOpen","クイックオープン（エンティティ / アセット）", "Quick Open Go To", "コマンド", "Ctrl+P", "", "エンティティ / アセットへジャンプ", Scope::Editor, KeyMode::Global},
+    // ---- ヘルプ ----
+    {"help.whatsNew",    "更新内容を表示",                   "What's New Release Notes Changelog 更新履歴 アップデート", "ヘルプ", "", "", "この版（と過去の版）の更新内容を表示する", Scope::Always, KeyMode::Global},
 
     // ---- ノードグラフ（サンドボックス窓 = マテリアルグラフ G0 が開いているとき。edit.* の Ctrl+Z/C/V/D/Del/F は同じ表を窓が使う）----
     // Panel = 窓がフォーカスされているときに窓自身が処理する（ProcessShortcuts は見ない）。パレット(Ctrl+K)からは常に実行できる。

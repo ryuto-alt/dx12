@@ -13,6 +13,7 @@
 #include "project/LauncherLogic.h"
 #include "project/LauncherMotion.h"
 #include "core/Version.h"
+#include "core/ReleaseNotes.h"   // お知らせ欄の「更新内容」（唯一の正: core/ReleaseNotesData.inc）
 #include "core/Logger.h"
 #include "core/VirtualGuard.h"
 #include "core/CrashHandler.h"
@@ -757,13 +758,40 @@ void StartClone(State& s, const std::string& url, const std::string& parent)
 // ===========================================================================
 // 初期化
 // ===========================================================================
+// 最新リリースの構造化データ（core/ReleaseNotes）を、お知らせ欄が組む塊（見出し / 節 / 箇条書き）へ。
+std::vector<L::NewsBlock> NewsFromReleases()
+{
+    using K = L::NewsBlock::Kind;
+    std::vector<L::NewsBlock> out;
+    const auto& all = relnotes::All();
+    const relnotes::Release* r = relnotes::Find(all, kEngineVersion);
+    if (!r && !all.empty()) r = &all.front();
+    if (!r) return out;
+    out.push_back({ K::Headline, "v" + r->version + "（" + r->date + "）  " + r->headline });
+    if (!r->highlights.empty())
+    {
+        out.push_back({ K::Section, "注目" });
+        for (const auto& h : r->highlights) out.push_back({ K::Bullet, h.title + " — " + h.body });
+    }
+    const relnotes::Kind kinds[] = { relnotes::Kind::Feature, relnotes::Kind::Improvement, relnotes::Kind::Fix };
+    for (relnotes::Kind k : kinds)
+    {
+        const int n = relnotes::CountKind(*r, k);
+        if (n == 0) continue;
+        out.push_back({ K::Section, std::string(relnotes::KindLabel(k)) + "（" + std::to_string(n) + " 件）" });
+        for (const auto& it : r->items)
+            if (it.kind == k) out.push_back({ K::Bullet, it.body.empty() ? it.title : it.title + " — " + it.body });
+    }
+    return out;
+}
+
 void EnsureInit(State& s, const LauncherHost& host)
 {
     (void)host;
     if (s.inited) return;
     s.inited = true;
     s.anim = ProjectManager::GetEditorBool("launcherAnimations", SystemAnimationsEnabled());
-    s.news = L::ParseNewsBody(kWhatsNewBody);
+    s.news = NewsFromReleases();
     const std::string lastTmpl = ProjectManager::GetEditorString("launcherLastTemplate", "fps");
     for (size_t i = 0; i < L::Templates().size(); ++i) if (lastTmpl == L::Templates()[i].id) s.tmpl = static_cast<int>(i);
     KickEnvProbe(s);
