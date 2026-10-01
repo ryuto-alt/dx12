@@ -4,6 +4,7 @@
 #include "core/UpdateLogic.h"
 #include "core/UpdateWindow.h"
 #include "core/ReleaseNotes.h"
+#include "core/PathResolver.h"
 
 #include <windows.h>
 #include <winhttp.h>
@@ -16,6 +17,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cwchar>
+#include <cmath>
+#include <algorithm>
 
 #include <nlohmann/json.hpp>
 
@@ -734,5 +737,81 @@ bool Updater::RunStartupCheck()
     win.Destroy();
     Logger::Info("Updater: applying update to {}. exiting for restart.", tag);
     return true;  // 呼び出し側（main）は即終了する
+}
+
+// ---------------------------------------------------------------------------
+// 更新の流れの見本（--demo-update[=error]）。ネットワーク・ファイルには一切触れない。
+// ---------------------------------------------------------------------------
+bool Updater::RunDemo(bool fail)
+{
+    namespace fs = std::filesystem;
+    // 見本の「次の版」= 今の版のパッチを 1 つ上げたもの。本文は今の版のリリースノートを使う
+    // （本物の案内も GitHub の本文 = 同じデータから書き出した Markdown を出すので、見え方が同じになる）。
+    int v[3] = {0, 0, 0};
+    relnotes::ParseVersion(kEngineVersion, v);
+    const std::string nextVer = std::to_string(v[0]) + "." + std::to_string(v[1]) + "." + std::to_string(v[2] + 1);
+    std::string bodyMd;
+    const auto& all = relnotes::All();
+    if (const relnotes::Release* r = relnotes::Find(all, kEngineVersion))
+        bodyMd = relnotes::ToMarkdown(*r, kEngineName);
+
+    const std::wstring logoPath = Widen(PathResolver::AssetsDir() + "editor/icons/logo.png");
+    updateui::UpdateWindow win;
+    if (!win.Create(logoPath))
+    {
+        Logger::Warn("Updater(demo): 更新の窓を作れませんでした。");
+        return false;
+    }
+    Logger::Info("Updater(demo): 更新の流れの見本を表示します（実際の更新は行いません）。");
+
+    const updateui::Choice choice = win.Prompt(kEngineVersion, nextVer, bodyMd, !bodyMd.empty(), false);
+    if (choice != updateui::Choice::UpdateNow)
+    {
+        Logger::Info("Updater(demo): 「{}」が選ばれました。通常どおり起動します。",
+                     choice == updateui::Choice::SkipVersion ? "この版を飛ばす" : "後で");
+        win.Destroy();
+        return false;
+    }
+
+    // 見本のダウンロード: 実際の配布 zip と同じくらいの大きさを、回線速度が少し揺れる体で約 7 秒かけて進める。
+    const uint64_t total = 49397031ull;
+    bool failedOnce = false;
+    for (;;)
+    {
+        updatelogic::RateTracker rate(3.0);
+        win.SetDownloading(0, 0, 0.0, -1.0);
+        const ULONGLONG t0 = GetTickCount64();
+        uint64_t done = 0;
+        bool aborted = false;
+        while (done < total)
+        {
+            const double t = static_cast<double>(GetTickCount64() - t0) / 1000.0;
+            const double bps = 6.5e6 * (1.0 + 0.25 * std::sin(t * 2.3));   // 約 6.5 MB/s を中心に揺らす
+            done = (std::min)(total, done + static_cast<uint64_t>(bps * 0.016));
+            rate.Add(t, done);
+            win.SetDownloading(done, total, rate.BytesPerSec(), rate.EtaSeconds(done, total));
+            if (fail && !failedOnce && done > total * 6 / 10) { aborted = true; break; }
+            Sleep(16);
+        }
+        if (aborted)
+        {
+            failedOnce = true;
+            const updateui::Choice c = win.ShowError("更新できませんでした",
+                "ダウンロードに失敗しました。ネットワークの接続を確認して、もう一度お試しください。"
+                "（これは見本の失敗です。「もう一度」で続きを見られます）");
+            if (c == updateui::Choice::Retry) continue;
+            win.Destroy();
+            return false;
+        }
+        break;
+    }
+
+    win.SetExtracting();
+    for (ULONGLONG until = GetTickCount64() + 1600; GetTickCount64() < until; ) { win.Pump(); Sleep(16); }
+    win.SetApplying();
+    for (ULONGLONG until = GetTickCount64() + 1200; GetTickCount64() < until; ) { win.Pump(); Sleep(16); }
+    win.Destroy();
+    Logger::Info("Updater(demo): 見本の更新が終わりました（ファイルは変えていません）。");
+    return true;
 }
 } // namespace dx12e
