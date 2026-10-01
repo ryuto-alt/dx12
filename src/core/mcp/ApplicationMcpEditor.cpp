@@ -939,6 +939,8 @@ void Application::RegisterMcpEditorMethods()
                 {"entities", ents},
                 {"meshRenderers", meshEnts},
                 {"drawItems", static_cast<int>(m_drawItems.size())},
+                {"instanceGroups", static_cast<int>(reg.view<const InstanceGroup>().size())},   // インスタンス群のエンティティ数
+                {"instanceGroupItems", static_cast<int>(m_statInstGroupItems)},                // 群から展開した DrawItem の数（drawItems の内数）
                 {"skinned", skinned},
                 {"pointLights", ptL},
                 {"spotLights", spL},
@@ -1052,6 +1054,7 @@ void Application::RegisterMcpEditorMethods()
                 result["distance"] = hit.distance;
                 result["point"]    = {hit.point.x, hit.point.y, hit.point.z};
                 result["normal"]   = {hit.normal.x, hit.normal.y, hit.normal.z};
+                if (hit.instanceIndex != 0xFFFFFFFFu) result["instanceIndex"] = hit.instanceIndex;   // インスタンス群のどのインスタンスか
                 auto& reg = m_scene->GetRegistry();
                 entt::entity ent = m_physicsSystem->EntityForBody(hit.bodyId);
                 if (ent != entt::null && reg.valid(ent))

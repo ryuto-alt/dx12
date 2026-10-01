@@ -1,6 +1,7 @@
 #include "scene/NavSceneGather.h"
 
 #include "ecs/Components.h"
+#include "ecs/InstanceGroup.h"   // インスタンス群: インスタンスごとに展開して集める
 #include "renderer/Mesh.h"
 // SkeletalAnimation は unique_ptr メンバを持つので、entt がストレージを実体化するとき
 // 完全型が要る（try_get/all_of だけでもデストラクタが必要）。
@@ -24,7 +25,8 @@ bool GatherNavGeometry(entt::registry& reg, nav::NavInputGeometry& out, NavGathe
 
     // 事前に総三角形数を数えて 1 回で確保する（大きなシーンだと再確保が効いてくる）。
     size_t vertGuess = 0, triGuess = 0;
-    auto view = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane>);
+    auto view = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane, InstanceGroup>);
+    auto groupView = reg.view<const Transform, const MeshRenderer, const InstanceGroup>(entt::exclude<GridPlane>);
     for (auto [e, transform, renderer] : view.each())
     {
         for (const Mesh* m : renderer.meshes)
@@ -34,26 +36,22 @@ bool GatherNavGeometry(entt::registry& reg, nav::NavInputGeometry& out, NavGathe
             triGuess  += m->GetIndices().size() / 3;
         }
     }
+    for (auto [e, transform, renderer, grp] : groupView.each())
+    {
+        const size_t n = grp._set ? grp._set->items.size() : 0;
+        for (const Mesh* m : renderer.meshes)
+        {
+            if (!m) continue;
+            vertGuess += m->GetPositions().size() * n;
+            triGuess  += m->GetIndices().size() / 3 * n;
+        }
+    }
     out.verts.reserve(vertGuess * 3);
     out.tris.reserve(triGuess * 3);
 
-    for (auto [e, transform, renderer] : view.each())
+    // 1 つのワールド行列ぶんのメッシュを積む（普通のエンティティも、インスタンス群の各インスタンスも同じ式）。
+    auto appendEntity = [&](const MeshRenderer& renderer, const XMMATRIX& world) -> bool
     {
-        if (renderer.meshes.empty()) continue;
-
-        // スキンメッシュは CPU 側がバインドポーズのままで、実際に見えている形と一致しない。
-        // 動くキャラを地形として焼いても意味が無いので丸ごと外す。
-        if (reg.all_of<SkeletalAnimation>(e)) { ++stats.skippedSkinned; continue; }
-
-        if (const Tag* tag = reg.try_get<Tag>(e))
-        {
-            if (std::find(tag->tags.begin(), tag->tags.end(), kNavIgnoreTag) != tag->tags.end())
-            { ++stats.skippedTagged; continue; }
-        }
-
-        const XMMATRIX world = (transform.parent != entt::null)
-            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
-
         bool used = false;
         for (u32 mi = 0; mi < static_cast<u32>(renderer.meshes.size()); ++mi)
         {
@@ -90,6 +88,44 @@ bool GatherNavGeometry(entt::registry& reg, nav::NavInputGeometry& out, NavGathe
             ++stats.meshCount;
             used = true;
         }
+        return used;
+    };
+
+    // ---- インスタンス群: インスタンスごとに展開（スキン・nav 無視タグは群のエンティティで判定）----
+    for (auto [e, transform, renderer, grp] : groupView.each())
+    {
+        if (renderer.meshes.empty() || !grp._set) continue;
+        if (reg.all_of<SkeletalAnimation>(e)) { ++stats.skippedSkinned; continue; }
+        if (const Tag* tag = reg.try_get<Tag>(e))
+        {
+            if (std::find(tag->tags.begin(), tag->tags.end(), kNavIgnoreTag) != tag->tags.end())
+            { ++stats.skippedTagged; continue; }
+        }
+        const auto& worlds = instgroup::WorldMatrices(reg, e, *grp._set);
+        bool any = false;
+        for (const auto& wf : worlds)
+            any = appendEntity(renderer, XMLoadFloat4x4(&wf)) || any;
+        if (any) ++stats.entityCount;
+    }
+
+    for (auto [e, transform, renderer] : view.each())
+    {
+        if (renderer.meshes.empty()) continue;
+
+        // スキンメッシュは CPU 側がバインドポーズのままで、実際に見えている形と一致しない。
+        // 動くキャラを地形として焼いても意味が無いので丸ごと外す。
+        if (reg.all_of<SkeletalAnimation>(e)) { ++stats.skippedSkinned; continue; }
+
+        if (const Tag* tag = reg.try_get<Tag>(e))
+        {
+            if (std::find(tag->tags.begin(), tag->tags.end(), kNavIgnoreTag) != tag->tags.end())
+            { ++stats.skippedTagged; continue; }
+        }
+
+        const XMMATRIX world = (transform.parent != entt::null)
+            ? ComputeWorldMatrix(reg, e) : transform.GetWorldMatrix();
+
+        const bool used = appendEntity(renderer, world);
         if (used) ++stats.entityCount;
     }
 

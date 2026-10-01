@@ -148,6 +148,7 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
     for (auto e : reg.view<const Transform, const MeshRenderer>())
     {
         if (Excluded(reg, e)) continue;
+        if (reg.all_of<InstanceGroup>(e)) continue;   // インスタンス群は配置検査の対象外（群の AABB は全インスタンスの合成で、個別の埋まり / 二重を判定できない）
         if (ancestorHasMesh(e)) continue;
         Box b; bool hasMesh = false;
         if (!WorldAabbDeep(reg, e, b, hasMesh) || !hasMesh) continue;

@@ -694,6 +694,9 @@ private:
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE で今もクリップされる範囲しか落ちない）。
     // ※ DrawItem 本体は renderer/DrawItem.h（エディタのピッキングからも読むため独立ヘッダ）。
     std::vector<DrawItem> m_drawItems;
+    // インスタンス群の展開（InstanceGroup）。群のエンティティごとの「今フレームのワールド」（次フレームの PrevWorldMatrix 用）と、展開した DrawItem 数（統計）。
+    std::vector<std::pair<entt::entity, DirectX::XMFLOAT4X4>> m_instGroupPrev;
+    u32 m_statInstGroupItems = 0;
     // 自動インスタンシングで 1 ドローに畳まれる連続区間。BuildDrawList のソート直後に確定する。
     // ★区間の切れ目は batchKey だけで決まる＝視錐台カリングより前に分かるので、描画を
     //   記録し始める前に「バッチ全体が隠れているか」を GPU へ問い合わせられる。
@@ -1676,6 +1679,7 @@ private:
     void ShutdownFoliage();
     nlohmann::json FoliageStatsJson() const;           // MCP foliage_stats / perf_stats の foliage ブロック
     void RegisterMcpFoliageMethods();                  // mcp/ApplicationMcpFoliage.cpp
+    void RegisterMcpInstanceGroupMethods();            // mcp/ApplicationMcpInstanceGroup.cpp（instance_group）
 
     // ---- 水面 W1（WaterBody + 専用パス。不透明の後・半透明の前）。実装は ApplicationWater.cpp / mcp/ApplicationMcpWater.cpp ----
     // ★WaterBody が 1 つも無いシーンでは m_water を作らず、呼び出し点は WaterActive() で弾く（未使用シーンは描画コマンドが 1 命令も変わらない）。

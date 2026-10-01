@@ -2,6 +2,7 @@
 #include "physics/ColliderShape.h"   // 当たり判定の実効サイズの唯一の規約
 #include "physics/PhysicsLogic.h"    // 補間・キャラと動的剛体の押し合いの規約（純粋関数。ctest で固定）
 #include "ecs/Components.h"
+#include "ecs/InstanceGroup.h"   // インスタンス群のコライダー
 #include "ecs/EditorFlags.h"   // EntityDisabled（無効なエンティティは剛体 / キャラを作らない）
 #include "core/Logger.h"
 #include "terrain/HeightField.h"   // 地形コライダー（Terrain::_hf の高さ配列を Jolt へ渡す）
@@ -9,6 +10,7 @@
 #include "renderer/Mesh.h"      // meshCollider（MeshRenderer のメッシュを Jolt へ渡す）
 
 #include <algorithm>
+#include <cfloat>
 #include <cstdarg>
 #include <mutex>
 #include <vector>
@@ -30,7 +32,9 @@
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>   // スカルプトメッシュ（彫った異形）のコライダー
-#include <Jolt/Physics/Collision/Shape/ScaledShape.h>  // meshCollider（形状はモデル単位で共有し、拡縮だけ被せる）
+#include <Jolt/Physics/Collision/Shape/ScaledShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>   // 複合形状の回転精度（w≈0 の回避）   // インスタンス群（≤128 個ごとに 1 ボディ）  // meshCollider（形状はモデル単位で共有し、拡縮だけ被せる）
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
@@ -441,6 +445,8 @@ void PhysicsSystem::Update(f32 dt, entt::registry& registry)
     RefreshTerrainColliders(registry);
     // 彫ったスカルプトメッシュも同じ理屈でコライダーを作り直す（ストローク終了時にだけ立つ）。
     RefreshSculptColliders(registry);
+    // インスタンス群のコライダー（InstanceSet の差し替え / 群の移動で作り直す）。
+    RefreshInstanceGroupColliders(registry);
 
     // dt をクランプ（モード切替時の大きな dt で一気に何ステップも走るのを防ぐ）。
     // ★SyncTransformsToPhysics より前へ移した。キネマティック体を MoveKinematic で
@@ -530,6 +536,56 @@ namespace {
 //   実測: 親を (10,0,0)、子をローカル (0,6,0) に置いて落とすと、箱は world x=10 に描かれるのに
 //   overlapSphere が拾うのは x=0（親なしの対照は一致する）。
 //   スケールも同じで、親を 2 倍にしても当たり判定は等倍のままだった。
+// MeshRenderer のメッシュから Jolt の三角形メッシュ形状（スケール抜き・静的専用）を作る。
+// 作れなければ nullptr。MeshCollider（1 エンティティ 1 ボディ）とインスタンス群が共有する。
+JPH::RefConst<JPH::Shape> BuildStaticMeshShape(const MeshRenderer& mr)
+{
+    JPH::RefConst<JPH::Shape> base;
+    JPH::VertexList          verts;
+    JPH::IndexedTriangleList tris;
+    uint32_t                 vbase = 0;
+    for (size_t mi = 0; mi < mr.meshes.size(); ++mi)
+    {
+        const Mesh* mesh = mr.meshes[mi];
+        if (mesh == nullptr) continue;
+        const auto& positions = mesh->GetPositions();
+        const auto& indices   = mesh->GetIndices();
+        if (positions.empty() || indices.size() < 3) continue;
+
+        // 静的モデルはノード変換を頂点へ焼き込み済み（＝単位行列）だが、
+        // 焼いていない経路のために持っていれば掛ける。
+        DirectX::XMMATRIX node = DirectX::XMMatrixIdentity();
+        if (mi < mr.meshNodeTransforms.size())
+            node = DirectX::XMLoadFloat4x4(&mr.meshNodeTransforms[mi]);
+
+        verts.reserve(verts.size() + positions.size());
+        for (const auto& lp : positions)
+        {
+            DirectX::XMFLOAT3 wp{};
+            DirectX::XMStoreFloat3(&wp,
+                DirectX::XMVector3Transform(DirectX::XMLoadFloat3(&lp), node));
+            verts.push_back(JPH::Float3(wp.x, wp.y, wp.z));
+        }
+
+        tris.reserve(tris.size() + indices.size() / 3);
+        for (size_t t = 0; t + 2 < indices.size(); t += 3)
+            tris.push_back(JPH::IndexedTriangle(vbase + indices[t],
+                                                vbase + indices[t + 1],
+                                                vbase + indices[t + 2], 0));
+        vbase += static_cast<uint32_t>(positions.size());
+    }
+
+    if (!verts.empty() && !tris.empty())
+    {
+        JPH::MeshShapeSettings settings(std::move(verts), std::move(tris));
+        auto result = settings.Create();
+        if (result.IsValid()) base = result.Get();
+        else Logger::Error("meshCollider の三角形形状を作れませんでした（{}）: {}",
+                           mr.modelPath, result.GetError().c_str());
+    }
+    return base;
+}
+
 struct WorldTRS
 {
     DirectX::XMFLOAT3 pos{0.0f, 0.0f, 0.0f};
@@ -810,7 +866,7 @@ void PhysicsSystem::RegisterPendingPhysicsBodies(entt::registry& registry)
     // 反復中に registry を触らないよう、対象を集めてから登録する。
     std::vector<entt::entity> pendingBodies;
     for (auto [e, rb] : registry.view<RigidBody>().each())
-        if (rb.bodyId == kInvalidBodyId) pendingBodies.push_back(e);
+        if (rb.bodyId == kInvalidBodyId && !m_groupBodies.count(e)) pendingBodies.push_back(e);   // 群は登録済み（空でも）なら再試行しない
     for (auto e : pendingBodies)
         RegisterBody(registry, e);
 
@@ -869,6 +925,196 @@ void PhysicsSystem::RefreshSculptColliders(entt::registry& registry)
     }
 }
 
+// ========== インスタンス群（InstanceGroup）==========
+
+size_t PhysicsSystem::InstanceGroupBodyCount(entt::entity e) const
+{
+    auto it = m_groupBodies.find(e);
+    return it == m_groupBodies.end() ? 0 : it->second.bodyIds.size();
+}
+
+void PhysicsSystem::UnregisterGroupBodies(entt::registry& registry, entt::entity entity, bool removeFromJolt)
+{
+    auto it = m_groupBodies.find(entity);
+    if (it == m_groupBodies.end()) return;
+    if (removeFromJolt && m_initialized)
+    {
+        auto& bodyInterface = m_impl->physicsSystem->GetBodyInterface();
+        for (uint32_t id : it->second.bodyIds)
+        {
+            JPH::BodyID joltId(id);
+            bodyInterface.RemoveBody(joltId);
+            bodyInterface.DestroyBody(joltId);
+            m_impl->prevBody.erase(id);
+        }
+    }
+    for (uint32_t id : it->second.bodyIds) m_bodyToEntity.erase(id);
+    m_groupBodies.erase(it);
+    if (registry.valid(entity))
+        if (auto* rb = registry.try_get<RigidBody>(entity)) rb->bodyId = kInvalidBodyId;
+}
+
+void PhysicsSystem::RegisterGroupBodies(entt::registry& registry, entt::entity entity)
+{
+    auto* rb  = registry.try_get<RigidBody>(entity);
+    auto* grp = registry.try_get<InstanceGroup>(entity);
+    auto* mr  = registry.try_get<MeshRenderer>(entity);
+    if (!rb || !grp) return;
+
+    GroupBodies gb;
+    const std::string nm = registry.all_of<NameTag>(entity) ? registry.get<NameTag>(entity).name : std::string("InstanceGroup");
+    const auto* meshCol = registry.try_get<MeshCollider>(entity);
+    if (!grp->_set || grp->_set->items.empty()) { m_groupBodies[entity] = gb; return; }
+    if (!meshCol)
+    {
+        Logger::Warn("インスタンス群 '{}' に剛体がありますが MeshCollider がありません（群は MeshCollider の静的コライダーだけ対応）", nm);
+        m_groupBodies[entity] = gb;
+        return;
+    }
+    if (rb->motionType != MotionType::Static)
+    {
+        Logger::Warn("インスタンス群 '{}' の剛体は Static のみ対応です（動く剛体にするには「展開」してください）", nm);
+        m_groupBodies[entity] = gb;
+        return;
+    }
+    if (!mr || mr->meshes.empty())
+    {
+        Logger::Warn("インスタンス群 '{}' の MeshRenderer のメッシュが空です", nm);
+        m_groupBodies[entity] = gb;
+        return;
+    }
+
+    const std::string key = mr->modelPath + "|tri";
+    JPH::RefConst<JPH::Shape> base;
+    if (auto it = m_impl->meshShapeCache.find(key); it != m_impl->meshShapeCache.end()) base = it->second;
+    else { base = BuildStaticMeshShape(*mr); m_impl->meshShapeCache[key] = base; }
+    if (base.GetPtr() == nullptr) { m_groupBodies[entity] = gb; return; }   // 形が作れなかったら箱で代用しない
+
+    const instgroup::InstanceSet& set = *grp->_set;
+    const auto& worlds = instgroup::WorldMatrices(registry, entity, set);
+    gb.setId    = set.id;
+    gb.worldKey = set.worldKey;
+    const u32 n = set.Count();
+
+    // 空間的にまとまったチャンクにする（Morton 順）。順番はインスタンス番号とは無関係（userData が番号）。
+    DirectX::XMFLOAT3 mn{FLT_MAX, FLT_MAX, FLT_MAX}, mx{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    for (u32 i = 0; i < n; ++i)
+    {
+        mn = {(std::min)(mn.x, worlds[i]._41), (std::min)(mn.y, worlds[i]._42), (std::min)(mn.z, worlds[i]._43)};
+        mx = {(std::max)(mx.x, worlds[i]._41), (std::max)(mx.y, worlds[i]._42), (std::max)(mx.z, worlds[i]._43)};
+    }
+    auto spread = [](uint32_t v) {   // 10 bit → 30 bit（2 bit おき）
+        v &= 0x3FFu;
+        v = (v | (v << 16)) & 0x030000FFu;
+        v = (v | (v << 8))  & 0x0300F00Fu;
+        v = (v | (v << 4))  & 0x030C30C3u;
+        v = (v | (v << 2))  & 0x09249249u;
+        return v;
+    };
+    auto q = [](f32 v, f32 lo, f32 hi) -> uint32_t {
+        const f32 span = hi - lo;
+        return span > 1e-6f ? static_cast<uint32_t>((std::min)(1023.0f, (std::max)(0.0f, (v - lo) / span * 1023.0f))) : 0u;
+    };
+    std::vector<std::pair<uint32_t, u32>> order(n);
+    for (u32 i = 0; i < n; ++i)
+        order[i] = {spread(q(worlds[i]._41, mn.x, mx.x)) | (spread(q(worlds[i]._42, mn.y, mx.y)) << 1) | (spread(q(worlds[i]._43, mn.z, mx.z)) << 2), i};
+    std::sort(order.begin(), order.end());
+
+    const JPH::Vec3 off(meshCol->offset.x, meshCol->offset.y, meshCol->offset.z);
+    auto& bodyInterface = m_impl->physicsSystem->GetBodyInterface();
+    constexpr u32 kChunk = 128;
+    for (u32 c0 = 0; c0 < n; c0 += kChunk)
+    {
+        JPH::StaticCompoundShapeSettings cs;
+        u32 added = 0;
+        for (u32 k = c0; k < (std::min)(n, c0 + kChunk); ++k)
+        {
+            const u32 idx = order[k].second;
+            DirectX::XMVECTOR s, qv, p;
+            if (!DirectX::XMMatrixDecompose(&s, &qv, &p, DirectX::XMLoadFloat4x4(&worlds[idx]))) { ++gb.skipped; continue; }
+            DirectX::XMFLOAT3 sf, pf; DirectX::XMFLOAT4 qf;
+            DirectX::XMStoreFloat3(&sf, s); DirectX::XMStoreFloat3(&pf, p); DirectX::XMStoreFloat4(&qf, qv);
+            const JPH::Vec3 scl(sf.x, sf.y, sf.z);
+            JPH::RefConst<JPH::Shape> sub;
+            if (scl != JPH::Vec3::sOne())
+            {
+                if (!base->IsValidScale(scl)) { ++gb.skipped; continue; }
+                sub = new JPH::ScaledShape(base, scl);
+            }
+            else sub = base;
+            // ★Jolt の複合形状はサブシェイプの回転を xyz の 3 float で持ち、w を sqrt(1 - |xyz|^2) で復元する。
+            //   w が 0 に近い（≈180° 回転）と精度が sqrt(eps) ≈ 3e-4 まで落ちて、遠くのレイが数 cm ずれる（実測）。
+            //   そこで「軸まわり 180°」（xyz が厳密に表せる）を形状側へ移す: q = p * R。p は w が大きく（≒0°）なるよう R を選ぶ。
+            JPH::Quat rot(qf.x, qf.y, qf.z, qf.w);
+            rot = rot.Normalized();
+            if (std::abs(rot.GetW()) < 0.5f)
+            {
+                const f32 ax = std::abs(rot.GetX()), ay = std::abs(rot.GetY()), az = std::abs(rot.GetZ());
+                const JPH::Quat R = (ax >= ay && ax >= az) ? JPH::Quat(1, 0, 0, 0) : (ay >= az ? JPH::Quat(0, 1, 0, 0) : JPH::Quat(0, 0, 1, 0));
+                JPH::RotatedTranslatedShapeSettings rts(JPH::Vec3::sZero(), R, sub);
+                auto rr = rts.Create();
+                if (rr.IsValid())
+                {
+                    sub = rr.Get();
+                    rot = (rot * R.Conjugated()).Normalized();
+                }
+            }
+            cs.AddShape(JPH::Vec3(pf.x, pf.y, pf.z) + off, rot, sub, idx);
+            ++added;
+        }
+        if (added == 0) continue;
+        auto res = cs.Create();
+        if (!res.IsValid())
+        {
+            Logger::Error("インスタンス群 '{}' の複合形状を作れませんでした: {}", nm, res.GetError().c_str());
+            continue;
+        }
+        JPH::BodyCreationSettings bs(res.Get(), JPH::RVec3::sZero(), JPH::Quat::sIdentity(), JPH::EMotionType::Static, Layers::NON_MOVING);
+        bs.mRestitution = rb->restitution;
+        bs.mFriction    = rb->friction;
+        const JPH::BodyID id = bodyInterface.CreateAndAddBody(bs, JPH::EActivation::DontActivate);
+        if (id.IsInvalid())
+        {
+            static bool warned = false;
+            if (!warned)
+            {
+                warned = true;
+                Logger::Error("Jolt の body を作れませんでした（上限に到達した可能性）。PhysicsSystem の maxBodies を上げてください");
+            }
+            break;
+        }
+        gb.bodyIds.push_back(id.GetIndexAndSequenceNumber());
+        m_bodyToEntity[id.GetIndexAndSequenceNumber()] = entity;
+    }
+    if (gb.skipped > 0)
+        Logger::Warn("インスタンス群 '{}': {} 個のインスタンスは形状を作れず当たり判定がありません（スケール 0 など）", nm, gb.skipped);
+    if (!gb.bodyIds.empty()) rb->bodyId = gb.bodyIds.front();
+    m_groupBodies[entity] = std::move(gb);
+}
+
+void PhysicsSystem::RefreshInstanceGroupColliders(entt::registry& registry)
+{
+    if (!m_initialized || m_groupBodies.empty()) return;
+    std::vector<entt::entity> redo, drop, gone;
+    for (auto& kv : m_groupBodies)
+    {
+        const entt::entity e = kv.first;
+        if (!registry.valid(e)) { gone.push_back(e); continue; }
+        const auto* g = registry.try_get<InstanceGroup>(e);
+        if (!g || !registry.all_of<RigidBody>(e)) { drop.push_back(e); continue; }
+        if (!g->_set) { if (kv.second.setId != 0) redo.push_back(e); continue; }
+        instgroup::WorldMatrices(registry, e, *g->_set);   // worldKey を最新にする
+        if (g->_set->id != kv.second.setId || g->_set->worldKey != kv.second.worldKey) redo.push_back(e);
+    }
+    for (entt::entity e : gone) m_groupBodies.erase(e);   // ボディは ReleaseOrphanedPhysicsBodies が外し済み
+    for (entt::entity e : drop) UnregisterGroupBodies(registry, e, true);
+    for (entt::entity e : redo)
+    {
+        UnregisterGroupBodies(registry, e, true);
+        RegisterBody(registry, e);
+    }
+}
+
 // ========== Body Registration ==========
 
 void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
@@ -879,6 +1125,13 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
     if (!rb) return;
     if (rb->bodyId != kInvalidBodyId) return; // already registered
     if (eflags::IsDisabled(registry, entity)) return;   // 無効（インスペクタの「有効」OFF）: 剛体を作らない
+
+    // インスタンス群: 群のエンティティ自身の剛体は作らず、インスタンスのコライダーをチャンクごとの複合形状で張る。
+    if (registry.all_of<InstanceGroup>(entity))
+    {
+        RegisterGroupBodies(registry, entity);
+        return;
+    }
 
     auto* transform = registry.try_get<Transform>(entity);
     if (!transform) return;
@@ -1040,48 +1293,7 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
         }
         else if (isStatic)
         {
-            JPH::VertexList          verts;
-            JPH::IndexedTriangleList tris;
-            uint32_t                 vbase = 0;
-            for (size_t mi = 0; mi < mr->meshes.size(); ++mi)
-            {
-                const Mesh* mesh = mr->meshes[mi];
-                if (mesh == nullptr) continue;
-                const auto& positions = mesh->GetPositions();
-                const auto& indices   = mesh->GetIndices();
-                if (positions.empty() || indices.size() < 3) continue;
-
-                // 静的モデルはノード変換を頂点へ焼き込み済み（＝単位行列）だが、
-                // 焼いていない経路のために持っていれば掛ける。
-                DirectX::XMMATRIX node = DirectX::XMMatrixIdentity();
-                if (mi < mr->meshNodeTransforms.size())
-                    node = DirectX::XMLoadFloat4x4(&mr->meshNodeTransforms[mi]);
-
-                verts.reserve(verts.size() + positions.size());
-                for (const auto& lp : positions)
-                {
-                    DirectX::XMFLOAT3 wp{};
-                    DirectX::XMStoreFloat3(&wp,
-                        DirectX::XMVector3Transform(DirectX::XMLoadFloat3(&lp), node));
-                    verts.push_back(JPH::Float3(wp.x, wp.y, wp.z));
-                }
-
-                tris.reserve(tris.size() + indices.size() / 3);
-                for (size_t t = 0; t + 2 < indices.size(); t += 3)
-                    tris.push_back(JPH::IndexedTriangle(vbase + indices[t],
-                                                        vbase + indices[t + 1],
-                                                        vbase + indices[t + 2], 0));
-                vbase += static_cast<uint32_t>(positions.size());
-            }
-
-            if (!verts.empty() && !tris.empty())
-            {
-                JPH::MeshShapeSettings settings(std::move(verts), std::move(tris));
-                auto result = settings.Create();
-                if (result.IsValid()) base = result.Get();
-                else Logger::Error("meshCollider の三角形形状を作れませんでした（{}）: {}",
-                                   mr->modelPath, result.GetError().c_str());
-            }
+            base = BuildStaticMeshShape(*mr);
             m_impl->meshShapeCache[key] = base;
         }
         else
@@ -1246,6 +1458,7 @@ void PhysicsSystem::UnregisterBody(entt::registry& registry, entt::entity entity
     if (!m_initialized) return;
 
     auto* rb = registry.try_get<RigidBody>(entity);
+    if (m_groupBodies.count(entity)) { UnregisterGroupBodies(registry, entity, true); return; }
     if (!rb || rb->bodyId == kInvalidBodyId) return;
 
     auto& bodyInterface = m_impl->physicsSystem->GetBodyInterface();
@@ -1261,6 +1474,12 @@ void PhysicsSystem::UnregisterAllBodies(entt::registry& registry)
 {
     if (!m_initialized) return;
 
+    {
+        // インスタンス群のボディ（先に外す。RigidBody::bodyId に入っている先頭のボディの二重解放を避ける）
+        std::vector<entt::entity> groups;
+        for (const auto& kv : m_groupBodies) groups.push_back(kv.first);
+        for (entt::entity ge : groups) UnregisterGroupBodies(registry, ge, true);
+    }
     auto view = registry.view<RigidBody>();
     for (auto [entity, rb] : view.each())
     {
@@ -1582,6 +1801,16 @@ RaycastHit PhysicsSystem::Raycast(XMFLOAT3 origin, XMFLOAT3 direction,
             const JPH::Vec3 n = lock.GetBody().GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, hitPoint);
             if (n.LengthSq() > 1.0e-6f)
                 result.normal = { n.GetX(), n.GetY(), n.GetZ() };
+            // インスタンス群のボディ（複合形状）なら、当たったサブシェイプの userData = インスタンス番号
+            const JPH::Shape* shp = lock.GetBody().GetShape();
+            if (shp && shp->GetSubType() == JPH::EShapeSubType::StaticCompound)
+            {
+                const auto* cs = static_cast<const JPH::CompoundShape*>(shp);
+                JPH::SubShapeID rem;
+                const JPH::uint idx = cs->GetSubShapeIndexFromID(hit.mSubShapeID2, rem);
+                if (idx < cs->GetNumSubShapes())
+                    result.instanceIndex = cs->GetSubShape(idx).mUserData;
+            }
         }
     }
 

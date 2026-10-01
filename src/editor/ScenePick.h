@@ -33,6 +33,9 @@ struct ScenePickHit
     // MeshRenderer を持たない Light/Camera/Empty のアイコンヒット
     // （三角形ではなくスクリーン上のピクセル半径で判定したもの）。
     bool              isIcon       = false;
+    // インスタンス群（InstanceGroup）のどのインスタンスに当たったか。kNoInstance = 普通のエンティティ。
+    // entity は群のエンティティ。world はそのインスタンスのワールド行列で判定済み。
+    u32               instanceIndex = kNoInstance;
 };
 
 struct ScenePickOptions

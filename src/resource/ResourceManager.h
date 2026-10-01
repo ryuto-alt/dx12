@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -184,6 +185,13 @@ private:
         int64_t     stamp = 0;
     };
     std::unordered_map<std::string, ModelCacheEntry> m_modelCache;
+
+    // 入力文字列 → NormalizeModelKey の結果（weakly_canonical がファイルシステムを叩いて 1 回 ~30µs かかるため、
+    // 同じモデルを何千体も置くシーン読み込みで支配的だった）。★読み込みに成功したパスだけ入れる
+    //（存在しなかった綴りの正規化結果は、ファイルができたあと変わりうる＝キャッシュしない）。
+    // m_modelCache は削除されない（再読込は同じキーの実体を差し替えるだけ）ので無効化は要らない。
+    std::unordered_map<std::string, std::string> m_normKeyCache;
+    std::mutex m_normKeyMutex;
 
     // マテリアルの 3 連続 SRV ブロックを今のテクスチャ実体で張り直す（テクスチャ再読込後）
     void RefreshMaterialSrvBlocks();

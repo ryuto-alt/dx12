@@ -60,7 +60,7 @@ struct PakEntry
 static_assert(sizeof(PakEntry) == 64, "PakEntry must be exactly 64 bytes");
 
 // 正規化（唯一の正準関数）:
-//   小文字化、'\\' -> '/'、先頭 '/' を除去、先頭 "assets/" のみ除去。
+//   小文字化、'\\' -> '/'、"//" "/./" "x/../" を畳む、先頭 '/' を除去、先頭 "assets/" のみ除去。
 //   "scripts/" はそのまま残す（スクリプトは assets/ の外に居るため）。
 inline std::string Normalize(std::string_view path)
 {
@@ -72,12 +72,41 @@ inline std::string Normalize(std::string_view path)
         else
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
-    // 先頭スラッシュ群を除去
-    std::size_t i = 0;
-    while (i < s.size() && s[i] == '/')
-        ++i;
-    if (i != 0)
-        s.erase(0, i);
+    // "a//b" / "a/./b" / "a/b/../c" を畳む（glTF の "../textures/x.png" や fbx のテクスチャ参照が
+    // モデルのフォルダ基準で "models/arch/../tex/x.png" のまま来ても、pak のキー "models/tex/x.png" に当たるように）。
+    // 先頭を越える ".." は畳めないのでそのまま残す（pak に無いキー＝ミスになる。パックの外へ出る参照を通さない）。
+    // 書き込み側のキーは lexically_relative の結果で ".." も "." も含まないため、既存の pak のキーは変わらない。
+    {
+        std::string out;
+        out.reserve(s.size());
+        std::size_t pos = 0;
+        std::size_t depth = 0;                  // 畳める（"..", 以外の）セグメントの数
+        while (pos <= s.size())
+        {
+            std::size_t end = s.find('/', pos);
+            if (end == std::string::npos) end = s.size();
+            const std::string_view seg(s.data() + pos, end - pos);
+            if (seg.empty() || seg == ".")
+            {
+                // 空セグメント / カレント: 捨てる
+            }
+            else if (seg == ".." && depth > 0)
+            {
+                // 直前のセグメントを消す
+                const std::size_t cut = out.find_last_of('/');
+                out.erase(cut == std::string::npos ? 0 : cut);
+                --depth;
+            }
+            else
+            {
+                if (!out.empty()) out += '/';
+                out.append(seg);
+                if (seg != "..") ++depth;
+            }
+            pos = end + 1;
+        }
+        s = std::move(out);
+    }
     // 先頭 "assets/" のみ除去（"scripts/" は残す）
     static constexpr char kAssetsPfx[] = "assets/";
     constexpr std::size_t kAssetsPfxLen = sizeof(kAssetsPfx) - 1;

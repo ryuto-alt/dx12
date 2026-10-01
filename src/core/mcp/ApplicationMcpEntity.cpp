@@ -1525,6 +1525,17 @@ void Application::RegisterMcpEntityMethods()
                 DirectX::XMStoreFloat4x4(&wf, ComputeWorldMatrix(reg, e));
                 wpos = { wf._41, wf._42, wf._43 };
             }
+            // インスタンス群は全インスタンスの合成 AABB の中心へ寄り、広がりで距離を決める
+            if (const auto* igrp = reg.try_get<InstanceGroup>(e); igrp && igrp->_set && !igrp->_set->items.empty())
+            {
+                DirectX::XMFLOAT3 gmn, gmx; bool ghas = false;
+                if (McpWorldAabb(reg, e, gmn, gmx, ghas) && ghas)
+                {
+                    wpos = { (gmn.x + gmx.x) * 0.5f, (gmn.y + gmx.y) * 0.5f, (gmn.z + gmx.z) * 0.5f };
+                    const float ext = std::max({gmx.x - gmn.x, gmx.y - gmn.y, gmx.z - gmn.z});
+                    if (ext > 0.0f) dist = std::clamp(ext * 1.2f, 2.0f, 2000.0f);
+                }
+            }
             auto fwd = m_camera->GetForward();
             DirectX::XMFLOAT3 camPos{ wpos.x - fwd.x * dist, wpos.y - fwd.y * dist, wpos.z - fwd.z * dist };
             m_camera->SetPosition(camPos);

@@ -68,6 +68,15 @@ Entity Scene::CreateEntityWithTransform(const std::string& name,
     return entity;
 }
 
+void Scene::EndBulkSpawn()
+{
+    if (m_bulkSpawnDepth > 0 && --m_bulkSpawnDepth == 0 && m_bulkSpawnCount > 0)
+    {
+        Logger::Info("Spawned {} entities (bulk)", m_bulkSpawnCount);
+        m_bulkSpawnCount = 0;
+    }
+}
+
 Entity Scene::Spawn(const std::string& name,
                     const std::string& modelPath,
                     DirectX::XMFLOAT3 position,
@@ -82,6 +91,8 @@ Entity Scene::Spawn(const std::string& name,
         OutputDebugStringA(("[Spawn FAILED] " + modelPath + "\n").c_str());
         return Entity();
     }
+    // OutputDebugStringA はデバッガが無くても 1 回数 µs かかる（例外経由）。見る人がいるときだけ出す。
+    if (IsDebuggerPresent())
     {
         char buf[512];
         snprintf(buf, sizeof(buf), "[Spawn OK] %s -> %s (meshes=%zu, mats=%zu)\n",
@@ -224,8 +235,11 @@ Entity Scene::Spawn(const std::string& name,
         }
     }
 
-    Logger::Info("Spawned entity '{}' at ({:.1f}, {:.1f}, {:.1f})",
-                 name, position.x, position.y, position.z);
+    if (m_bulkSpawnDepth > 0)
+        ++m_bulkSpawnCount;
+    else
+        Logger::Info("Spawned entity '{}' at ({:.1f}, {:.1f}, {:.1f})",
+                     name, position.x, position.y, position.z);
     return entity;
 }
 

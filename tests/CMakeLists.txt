@@ -276,6 +276,18 @@ if(TARGET Scene)
     add_test(NAME SceneFormatV2Tests COMMAND SceneFormatV2Tests)
 endif()
 
+# インスタンス群（InstanceGroup。docs/SCENE_FORMAT_DESIGN.md §4.1 の 4-1）。サイドカーの往復・壊れた行・コピーオンライト・保存/読み込み。GPU 不要。
+if(TARGET Scene)
+    add_executable(InstanceGroupTests instance_group_test.cpp)
+    target_link_libraries(InstanceGroupTests PRIVATE Scene)
+    target_include_directories(InstanceGroupTests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(InstanceGroupTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(InstanceGroupTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME InstanceGroupTests COMMAND InstanceGroupTests)
+endif()
+
 # 名前付きシェーダーパラメーターの解決とトゥイーン（Trigger の SetShaderParam /
 # AnimShaderParam の土台）。「オフセット → 添字」を 1 つ間違えると静かに隣のスロットを
 # 壊し、症状は Play 中の見た目にしか出ないので機械で押さえる。

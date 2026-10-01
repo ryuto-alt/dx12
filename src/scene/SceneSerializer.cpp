@@ -14,6 +14,8 @@
 #include "renderer/foliage/FoliageIO.h"
 #include "renderer/foliage/FoliageLayerOps.h"   // 植生: .dxfoliage の書き出し / 複製時のパス振り直し
 #include "renderer/foliage/SceneWind.h"
+#include "ecs/InstanceGroup.h"
+#include "scene/InstanceGroupIO.h"   // インスタンス群のサイドカー
 
 #pragma warning(push)
 #pragma warning(disable: 4189 4456 4458 4267 4996)
@@ -357,6 +359,60 @@ static void RegisterCoreComponentSerializers()
                     Logger::Warn("植生: .dxfoliage を書き出せませんでした（{}）", err);
             }
             generic(reg, e, ej);
+        };
+        R.Register(std::move(info));
+    }
+    // インスタンス群（docs/SCENE_FORMAT_DESIGN.md §4.1 の 4-1）。JSON には個数だけを書く。実体（InstanceSet）は:
+    //   ・ファイル保存（Save）の直列化中 … 収集器へ (guid, 実体) を積む。Save が <シーン>.inst/<guid>.jsonl へ書く。
+    //   ・それ以外（Play のスナップショット / 複製 / Undo の JSON）… 台帳へ預けて "mem":id を書く（配列の再直列化をしない）。
+    //   読み込みは "mem" があれば台帳から、無ければ読み込み中のシーンの隣のサイドカーから。
+    {
+        RuntimeComponentInfo info;
+        info.typeName = "InstanceGroup";
+        info.source   = ComponentSource::Core;
+        info.serialize = [](const entt::registry& reg, entt::entity e, json& ej)
+        {
+            const auto* g = reg.try_get<InstanceGroup>(e);
+            if (!g) return;
+            json out = json::object();
+            out["count"] = g->_set ? g->_set->Count() : 0u;
+            if (g->_set)
+            {
+                if (auto* col = instgroup::CurrentCollector())
+                {
+                    const auto* gu = reg.try_get<EntityGuid>(e);
+                    if (gu && gu->value != 0) col->sets.emplace_back(FormatEntityGuidHex(gu->value), g->_set);
+                }
+                else
+                {
+                    instgroup::StoreRegister(g->_set);
+                    out["mem"] = g->_set->id;
+                }
+            }
+            ej["instanceGroup"] = std::move(out);
+        };
+        info.deserialize = [](entt::registry& reg, entt::entity e, const json& ej)
+        {
+            if (!ej.contains("instanceGroup") || !ej["instanceGroup"].is_object()) return;
+            const json& cj = ej["instanceGroup"];
+            instgroup::InstanceSetPtr set;
+            if (cj.contains("mem") && cj["mem"].is_number_unsigned())
+                set = instgroup::StoreFind(cj["mem"].get<u64>());
+            if (!set)
+            {
+                const std::string& scenePath = instgroup::CurrentLoadScenePath();
+                const uint64_t g = (ej.contains("guid") && ej["guid"].is_string()) ? ParseEntityGuidHex(ej["guid"].get<std::string>()) : 0ull;
+                if (!scenePath.empty() && g != 0)
+                    set = instgroup::LoadSidecar(scenePath, FormatEntityGuidHex(g));
+            }
+            if (!set)
+            {
+                const u64 want = cj.value("count", 0ull);
+                if (want > 0)
+                    Logger::Warn("インスタンス群のデータが見つかりません（{} 個の想定）: {}", want, ej.value("name", std::string("?")));
+                set = instgroup::NewSet(std::vector<instgroup::InstanceTRS>{});
+            }
+            reg.emplace_or_replace<InstanceGroup>(e, InstanceGroup{ set });
         };
         R.Register(std::move(info));
     }
@@ -1900,7 +1956,7 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
             return entt::null;
         }
         e = entity.GetHandle();
-        OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
+        if (IsDebuggerPresent()) OutputDebugStringA(("[Load] Spawn: " + name + "\n").c_str());
     }
     else if (ej.contains("primitive"))
     {
@@ -2355,6 +2411,7 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     const auto tEntities = LoadClock::now();
     std::vector<entt::entity> created;
     created.reserve(root["entities"].size());
+    scene.BeginBulkSpawn();   // Spawn の 1 体ごとのログは出さず、最後に「N 体配置」の 1 行へ
     for (const auto& ej : root["entities"])
     {
         entt::entity e = entt::null;
@@ -2370,6 +2427,7 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
         }
         created.push_back(e);
     }
+    scene.EndBulkSpawn();
     if (g_loadTimings)
     {
         g_loadTimings->entitiesMs += LoadMsSince(tEntities);
@@ -2498,7 +2556,13 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
     // ★シーンファイルは常に v2（既定値の省略・最短 float・parent index 廃止・1 行 1 体）。
     //   Play のスナップショット（SaveToString）は v1 の完全形のまま。
     const auto tSave0 = LoadClock::now();
-    json root = BuildSceneJson(scene, assetsDir);
+    // インスタンス群の実体はここで集めて、シーンの隣の <シーン名>.inst/ へ書く（シーン JSON には個数だけが出る）。
+    instgroup::SerializeCollector instCollected;
+    json root;
+    {
+        instgroup::ScopedFileSerialize instScope(instCollected);
+        root = BuildSceneJson(scene, assetsDir);
+    }
     const size_t entityCount = root["entities"].size();
     const double buildMs = LoadMsSince(tSave0);
 
@@ -2519,6 +2583,10 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         Logger::Error("シーンを JSON にできません（名前やパスに不正な文字が含まれていないか確認してください）: {}", e.what());
         return false;
     }
+
+    // サイドカーを先に書く（シーンが「無いデータ」を指す瞬間を作らない）。内容が同じファイルには触らない。
+    const instgroup::SaveStats instStats = instgroup::SaveSidecars(filePath, instCollected);
+    if (!instStats.ok) Logger::Warn("インスタンス群のサイドカーを書ききれませんでした: {}", filePath);
 
     const auto tSave3 = LoadClock::now();
     // ★バイナリで書く。テキストモードだと Windows で LF が CRLF になり、v2 の「改行は LF」が崩れる。
@@ -2658,6 +2726,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     bool ok = false;
     {
         LoadTimingsScope scope(&tm);
+        instgroup::ScopedLoadScene instLoadScene(filePath);   // インスタンス群のサイドカーを読む先
         ok = LoadSceneText(scene, text, assetsDir, /*fromFile=*/true, &entityCount);
     }
     if (ok)
@@ -2702,6 +2771,16 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
         }
 
         // 読み込み時間の内訳（段階 3「実行用バイナリ」の判断材料）。entities は生成全体で、models はそのうち Spawn（モデル読み込み）の合計。
+        {
+            // インスタンス群（InstanceGroup）があれば 1 行で個数を残す（G6: pak から読めたことの確認にも使う）
+            size_t groups = 0, instances = 0;
+            for (auto [ge, gg] : scene.GetRegistry().view<const InstanceGroup>().each())
+            {
+                ++groups;
+                if (gg._set) instances += gg._set->items.size();
+            }
+            if (groups > 0) Logger::Info("Instance groups loaded: {} groups, {} instances ({})", groups, instances, filePath);
+        }
         Logger::Info("Scene loaded ({} entities, format v{}): {} | read {:.0f} ms, parse {:.0f}, inflate {:.0f}, entities {:.0f} (models {:.0f}), parents {:.0f}, total {:.0f} ms",
                      entityCount, tm.version, filePath, tm.readMs, tm.parseMs, tm.inflateMs,
                      tm.entitiesMs, tm.modelMs, tm.parentMs, loadTotalMs);

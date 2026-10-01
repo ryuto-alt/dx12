@@ -692,6 +692,19 @@ void HierarchyPanel::DrawEntityContextMenu(entt::registry& reg, EditorContext& c
         ensureSelected();   // 右クリックした行だけの場合
         ctx.pendingGroupSelection = true;
     }
+    // インスタンス群: 同じモデル・同じ材質の静的配置を 1 エンティティへ圧縮する（描画・当たりは同じ。読み込みが速くシーンが小さくなる）。
+    if (ImGui::MenuItem("選択をインスタンス群にまとめる", nullptr, false, ctx.selectedEntities.size() >= 2))
+    {
+        ensureSelected();
+        ctx.pendingMakeInstanceGroup = true;
+    }
+    {
+        bool anyGroup = false;
+        for (entt::entity se : ctx.selectedEntities)
+            if (reg.valid(se) && reg.all_of<InstanceGroup>(se)) { anyGroup = true; break; }
+        if (ImGui::MenuItem("インスタンス群を展開（個別エンティティへ戻す）", nullptr, false, anyGroup))
+            ctx.pendingExplodeInstanceGroup = true;
+    }
     ImGui::Separator();
 
     // ---- 表示 / ロック（エディタ専用。ゲームには影響しない）----

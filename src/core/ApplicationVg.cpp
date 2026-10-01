@@ -40,9 +40,14 @@ std::string ResolveVgPath(const std::string& p)
     if (auto it = cache.find(p); it != cache.end()) return it->second;
     std::error_code ec;
     const fs::path fp = fs::path(std::u8string(p.begin(), p.end()));
-    if (fp.is_absolute() && fs::exists(fp, ec)) { cache.emplace(p, p); return p; }
+    // ★配布ゲームは assets/ がディスクに無い（pak の中）ので fs::exists だけだと常に偽になり、
+    //   相対パスのまま VG に渡って .vgeo を開けず、仮想ジオメトリが丸ごと描かれない。pak の TOC も見る。
+    const auto existsAny = [&](const std::string& s, const fs::path& fpath) {
+        return vfs::ExistsAbs(s) || fs::exists(fpath, ec);
+    };
+    if (fp.is_absolute() && existsAny(p, fp)) { cache.emplace(p, p); return p; }
     const std::string underAssets = PathResolver::AssetsDir() + p;
-    if (fs::exists(fs::path(std::u8string(underAssets.begin(), underAssets.end())), ec)) { cache.emplace(p, underAssets); return underAssets; }
+    if (existsAny(underAssets, fs::path(std::u8string(underAssets.begin(), underAssets.end())))) { cache.emplace(p, underAssets); return underAssets; }
     return p;
 }
 

@@ -492,7 +492,11 @@ void Application::FinishPerception()
         json one = StatsJson(s);
         one["transparent"] = s.transparentMembers > 0;
         if (s.id >= 1 && s.id <= m_drawItems.size())
+        {
             one["entityId"] = static_cast<u32>(m_drawItems[s.id - 1].e);
+            if (m_drawItems[s.id - 1].instanceIndex != kNoInstance)
+                one["instanceIndex"] = m_drawItems[s.id - 1].instanceIndex;   // インスタンス群の何番目か
+        }
         topArr.push_back(std::move(one));
     }
     const auto& sc = res.scene;

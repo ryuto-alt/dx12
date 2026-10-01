@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "ecs/Components.h"
+#include "ecs/InstanceGroup.h"   // インスタンス群の箱
 #include "renderer/Mesh.h"
 #include "scene/Scene.h"
 
@@ -152,7 +153,7 @@ DdgiSettings FollowCameraDefaults(const DdgiSettings& base)
 std::vector<Box> CollectStaticBoxes(const entt::registry& reg)
 {
     std::vector<Box> out;
-    for (auto [e, mr, tf] : reg.view<const MeshRenderer, const Transform>().each())
+    for (auto [e, mr, tf] : reg.view<const MeshRenderer, const Transform>(entt::exclude<InstanceGroup>).each())
     {
         (void)tf;
         if (reg.all_of<GridPlane>(e)) continue;   // エディタ用の巨大グリッド床
@@ -182,6 +183,42 @@ std::vector<Box> CollectStaticBoxes(const entt::registry& reg)
         if (const RigidBody* rb = reg.try_get<RigidBody>(e))
             b.isDynamic = (rb->motionType == MotionType::Dynamic);
         out.push_back(b);
+    }
+    // インスタンス群: インスタンスごとの箱（静的のみ。DDGI のグリッドを合わせる材料なので個別の箱で足りる）。
+    for (auto [e, mr, tf, grp] : reg.view<const MeshRenderer, const Transform, const InstanceGroup>().each())
+    {
+        (void)tf;
+        if (!grp._set || reg.all_of<GridPlane>(e)) continue;
+        XMFLOAT3 lmn{3.402823466e+38f, 3.402823466e+38f, 3.402823466e+38f}, lmx{-3.402823466e+38f, -3.402823466e+38f, -3.402823466e+38f};
+        bool any = false;
+        for (const Mesh* mesh : mr.meshes)
+        {
+            if (!mesh) continue;
+            const XMFLOAT3 amn = mesh->GetAABBMin(), amx = mesh->GetAABBMax();
+            lmn = {(std::min)(lmn.x, amn.x), (std::min)(lmn.y, amn.y), (std::min)(lmn.z, amn.z)};
+            lmx = {(std::max)(lmx.x, amx.x), (std::max)(lmx.y, amx.y), (std::max)(lmx.z, amx.z)};
+            any = true;
+        }
+        if (!any) continue;
+        const bool dyn = reg.try_get<RigidBody>(e) && reg.get<RigidBody>(e).motionType == MotionType::Dynamic;
+        const auto& worlds = instgroup::WorldMatrices(reg, e, *grp._set);
+        for (const auto& wf : worlds)
+        {
+            const XMMATRIX world = XMLoadFloat4x4(&wf);
+            XMVECTOR mn = XMVectorReplicate(3.402823466e+38f), mx = XMVectorReplicate(-3.402823466e+38f);
+            for (int c = 0; c < 8; ++c)
+            {
+                XMVECTOR p = XMVectorSet((c & 1) ? lmx.x : lmn.x, (c & 2) ? lmx.y : lmn.y, (c & 4) ? lmx.z : lmn.z, 1.0f);
+                p = XMVector3Transform(p, world);
+                mn = XMVectorMin(mn, p);
+                mx = XMVectorMax(mx, p);
+            }
+            Box b;
+            XMStoreFloat3(&b.mn, mn);
+            XMStoreFloat3(&b.mx, mx);
+            b.isDynamic = dyn;
+            out.push_back(b);
+        }
     }
     return out;
 }

@@ -13,6 +13,7 @@
 #include "editor/UndoSystem.h"
 #include "editor/AssetDrop.h"
 #include "ecs/Components.h"
+#include "ecs/InstanceGroup.h"   // インスタンス群（Inspector）
 #include "renderer/foliage/FoliageLayerOps.h"   // 植生 F1（Inspector の統計）
 #include "ai/AiSystem.h"   // Brain の実行中の状態（得点の内訳）
 #include "renderer/Camera.h"
@@ -3520,6 +3521,48 @@ void InspectorPanel::Render(entt::registry& reg,
                 else if (fn == 0 && l.instancePath.empty()) WarnText("インスタンスがありません（植生ツールで散布するか MCP foliage_scatter）");
                 if (ImGui::SmallButton("植生ツール（散布・ブラシ・風）を開く")) ctx.showFoliageTool = true;
                 EndEdit(reg, ctx, ctx.selectedEntity, m_foliageLayerEdit, changed, active, "FoliageLayer");
+            }
+        }
+        }});
+
+        // InstanceGroup（同じモデル・同じ材質の静的配置 N 個を 1 エンティティにまとめた圧縮表現）
+        blocks.push_back({"InstanceGroup", [&]() {
+        if (Common<InstanceGroup>(reg, ctx))
+        {
+            bool open = IconHeader(ic, ic ? ic->entMesh : 0, "Instance Group");
+            bool removed = ComponentRemoveMenu<InstanceGroup>(reg, ctx, ctx.selectedEntity, "InstanceGroup");
+            if (open && !removed)
+            {
+                const auto& g = reg.get<InstanceGroup>(ctx.selectedEntity);
+                const u32 n = g._set ? g._set->Count() : 0u;
+                const auto* mr = reg.try_get<MeshRenderer>(ctx.selectedEntity);
+                if (pg::Begin("InstanceGroup"))
+                {
+                    pg::Group("内容");
+                    ImGui::TextDisabled("モデル"); ImGui::SameLine();
+                    {
+                        // 長い絶対パスは見切れるので、ファイル名だけを出してツールチップに全体を置く
+                        const std::string full = mr ? mr->modelPath : std::string();
+                        const std::string leaf = full.empty() ? std::string("（なし）") : std::filesystem::path(full).filename().string();
+                        ImGui::TextUnformatted(leaf.c_str());
+                        if (!full.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", full.c_str());
+                    }
+                    ImGui::TextDisabled("個数"); ImGui::SameLine();
+                    ImGui::Text("%u 個（%.1f KB）", n, static_cast<double>(n) * sizeof(instgroup::InstanceTRS) / 1024.0);
+                    if (mr) { ImGui::TextDisabled("サブメッシュ"); ImGui::SameLine(); ImGui::Text("%d", static_cast<int>(mr->meshes.size())); }
+                    ImGui::TextDisabled("当たり判定"); ImGui::SameLine();
+                    ImGui::TextUnformatted(reg.all_of<MeshCollider>(ctx.selectedEntity) ? "メッシュ（静的）" : "なし");
+                    pg::End();
+                }
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("材質・シェーダ・コライダーは全インスタンスで共通です（このエンティティの MeshRenderer などで編集）。");
+                ImGui::TextWrapped("インスタンスの座標は <シーン名>.inst/<guid>.jsonl（1 行 1 個）。個別の移動は MCP の instance_group（set / add / remove）。");
+                ImGui::PopStyleColor();
+                if (mr && (mr->uvScaleU != 1.0f || mr->uvScaleV != 1.0f))
+                    WarnText("UV タイリングは頂点を書き換えるため、群（共有メッシュ）では使えません");
+                if (ImGui::Button("展開（個別エンティティへ戻す）"))
+                    ctx.pendingExplodeInstanceGroup = true;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%u 個のエンティティに戻します（Undo できます）", n);
             }
         }
         }});

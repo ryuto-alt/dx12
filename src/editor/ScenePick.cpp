@@ -27,6 +27,7 @@ namespace
         // アニメーションのヘッダを丸ごと引きずるので、描画リストの情報で済ませる）。
         bool                skinned  = false;
         f32                 tSphere  = 0.0f;
+        u32                 instanceIndex = kNoInstance;   // インスタンス群のインスタンス番号
     };
 
     // ワールドスプライト(worldSpace=true)のクアッド 2 三角形でレイ判定。
@@ -129,6 +130,7 @@ void RaycastSceneMeshes(entt::registry& reg,
             c.world    = it.world;
             c.skinned  = (it.skin != nullptr);
             c.tSphere  = ts;
+            c.instanceIndex = it.instanceIndex;
             cands.push_back(c);
         }
     }
@@ -137,7 +139,8 @@ void RaycastSceneMeshes(entt::registry& reg,
         // フォールバック: 描画リストがまだ無い（起動直後のフレーム / ヘッドレス）。
         // 従来どおり entt を走査する。結果は同じで、ワールド行列を都度作るぶん遅いだけ。
         // 球は BuildDrawList と同じ作り方（メッシュAABB中心をワールドへ + スケール込み半径）。
-        auto meshView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane>);
+        // インスタンス群は除外（群の展開は描画リストにしか無い。この経路は起動直後の 1 フレームだけ）
+        auto meshView = reg.view<const Transform, const MeshRenderer>(entt::exclude<GridPlane, InstanceGroup>);
         for (auto [e, transform, renderer] : meshView.each())
         {
             if (renderer.meshes.empty()) continue;
@@ -234,6 +237,7 @@ void RaycastSceneMeshes(entt::registry& reg,
             ScenePickHit hit;
             hit.entity       = c.e;
             hit.submeshIndex = mi;
+            hit.instanceIndex = c.instanceIndex;
 
             if (skinned || !opt.trianglePrecise || idx.size() < 3 || pos.empty())
             {

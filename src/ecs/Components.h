@@ -1264,6 +1264,25 @@ struct FoliageLayer
     }
 };
 
+// インスタンス群（静的メッシュ配置の圧縮表現。docs/SCENE_FORMAT_DESIGN.md §4.1 の 4-1）。
+// 同じモデル・同じ材質の静的配置 N 個を 1 エンティティにまとめる。
+//   ・このエンティティの MeshRenderer（モデル・材質・シェーダなど）と RigidBody / MeshCollider 等のテンプレートを、
+//     N 個のインスタンス（グループ Transform からの相対 TRS）で共有する。エンティティ自身は描画も物理も 1 回ぶんは出ない。
+//   ・描画は BuildDrawList がインスタンスごとの DrawItem（instanceIndex 付き）へ展開する＝本体 / 影 / TLAS / ピッキングは既存のまま。
+//   ・インスタンスの実体は <シーン名>.inst/<guid>.jsonl（1 行 1 インスタンス）。シーン JSON には "instanceGroup":{"count":N} だけが出る。
+//   ・実体はコピーオンライト（_set）。編集は新しい実体を作って差し替える（複製・Undo・Play スナップショットはポインタを共有）。
+// ★このコンポーネントを 1 つも持たないシーンは、描画も確保も 1 バイトも変わらない。
+// ★メッシュの頂点を書き換える機能（uvTiling の焼き込み・頂点色の焼き込み）は共有メッシュなのでグループでは使えない。
+namespace instgroup { struct InstanceSet; }   // ecs/InstanceGroup.h
+struct InstanceGroup
+{
+    // ---- ランタイム専有（非シリアライズ・meta 未登録）----
+    std::shared_ptr<instgroup::InstanceSet> _set;
+
+    // 実体のポインタが同じなら true（Inspector の Undo が「変わっていない」を正しく判定するため）
+    bool operator==(const InstanceGroup& o) const { return _set.get() == o._set.get(); }
+};
+
 // 水面（W1）。Transform の y が水面の高さ（+ heightOffset）、回転は Y 軸まわり（yaw）だけを使う。
 // 専用パス（不透明の後・半透明の前）で描く: ゲルストナー波 + 2 スケールのディテール法線 + 屈折 + Beer-Lambert 吸収 + 反射（画面空間 → 環境）+ 泡 + 岸のフェード。
 //   ・形は shape: 0=無限平面 / 1=矩形（size = ローカル全幅 x,z）/ 2=楕円（size = 直径）/ 3=多角形（polygon = "x z x z ..." ローカル座標・最大 16 点）。

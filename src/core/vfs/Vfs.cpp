@@ -49,6 +49,44 @@ std::string ToLowerSlash(const std::string& s)
     return r;
 }
 
+// 絶対パス中の "/./" "//" "x/../" を畳む（文字列だけで処理。非 ASCII を含む UTF-8 も壊さない）。
+// assimp が "…/assets/models/arch/../tex/a.png" のようなパスで開いてくる場合や、
+// "…/assets/../scripts/x.lua" のように AssetsDir の外へ出て BaseDir 側へ戻る参照を、
+// プレフィックス判定の前に正規化しておく。先頭の "//"（UNC）と "c:" は保つ。
+std::string CollapseDots(const std::string& s)
+{
+    std::size_t lead = 0;
+    while (lead < s.size() && s[lead] == '/') ++lead;
+    std::string out(lead > 2 ? 2 : lead, '/');   // 先頭スラッシュ: UNC("//") までは保つ
+    const std::size_t floor = out.size();        // これより前は畳まない
+    std::size_t depth = 0;                       // 畳める（".." 以外の）セグメント数
+    std::size_t pos = lead;
+    while (pos <= s.size())
+    {
+        std::size_t end = s.find('/', pos);
+        if (end == std::string::npos) end = s.size();
+        const std::string_view seg(s.data() + pos, end - pos);
+        if (seg.empty() || seg == ".")
+        {
+            // 捨てる
+        }
+        else if (seg == ".." && depth > 0)
+        {
+            const std::size_t cut = out.find_last_of('/');
+            out.erase((cut == std::string::npos || cut < floor) ? floor : cut);
+            --depth;
+        }
+        else
+        {
+            if (!out.empty() && out.back() != '/') out += '/';
+            out.append(seg);
+            if (seg != "..") ++depth;
+        }
+        pos = end + 1;
+    }
+    return out;
+}
+
 std::string WideToUtf8(const std::wstring& w)
 {
     if (w.empty())
@@ -159,7 +197,7 @@ std::vector<uint8_t> ReadAsset(const std::string& relPath)
 
 std::vector<uint8_t> ReadAssetAbs(const std::string& absPath)
 {
-    const std::string a    = ToLowerSlash(absPath);
+    const std::string a    = CollapseDots(ToLowerSlash(absPath));
     const std::string base = ToLowerSlash(PathResolver::AssetsDir());
 
     if (!base.empty() && a.size() >= base.size() && a.compare(0, base.size(), base) == 0)
@@ -197,7 +235,7 @@ bool Exists(const std::string& relPath)
 
 bool ExistsAbs(const std::string& absPath)
 {
-    const std::string a    = ToLowerSlash(absPath);
+    const std::string a    = CollapseDots(ToLowerSlash(absPath));
     const std::string base = ToLowerSlash(PathResolver::AssetsDir());
 
     if (!base.empty() && a.size() >= base.size() && a.compare(0, base.size(), base) == 0)

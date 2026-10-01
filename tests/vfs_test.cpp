@@ -258,6 +258,23 @@ static void Test_ReadAssetAbs_GameMode()
     // pak に無いものは空（ゲームモードでディスクへフォールバックして漏れない）。
     CHECK(vfs::ReadAssetAbs(base + "scripts/missing.lua").empty());
 
+    // ".." / "." / "//" を含む絶対パス（assimp が gltf 隣の "../tex/x.png" をそのまま開いてくる形）。
+    CHECK(vfs::ReadAssetAbs(assets + "models/arch/../../textures/foo.png") == items[2].bytes);
+    CHECK(vfs::ReadAssetAbs(assets + "./textures/./foo.png")               == items[2].bytes);
+    CHECK(vfs::ReadAssetAbs(assets + "textures//foo.png")                  == items[2].bytes);
+    CHECK(vfs::ExistsAbs(assets + "models/../textures/foo.png"));
+    // assets/ の外へ出て BaseDir 側へ戻る参照（"assets/../scripts/game.lua"）。
+    CHECK(vfs::ReadAssetAbs(assets + "../scripts/game.lua") == items[0].bytes);
+    // 区切りと大文字小文字の揺れ。
+    {
+        std::string mixed = assets + "TEXTURES\\Foo.PNG";
+        CHECK(vfs::ReadAssetAbs(mixed) == items[2].bytes);
+    }
+    // 相対キー側の ".." も同じ結果になる。
+    CHECK(vfs::ReadAsset("models/x/../../textures/foo.png") == items[2].bytes);
+    // 範囲外へ出る ".." は畳めずミスになる（pak の外を覗かない）。
+    CHECK(vfs::ReadAsset("../textures/foo.png").empty());
+
     vfs::Unmount();
     CHECK(!vfs::InGameMode());
 
@@ -317,6 +334,29 @@ static void Test_MountPak_NonAsciiPath()
     fs::remove(src, ec);
 }
 
+// Normalize の正準性（ビルド側 PakWriter と実行側 PakArchive が同じキーを作ること）。
+static void Test_NormalizeCanonical()
+{
+    using vfs::Normalize;
+    CHECK(Normalize("assets/Textures/Foo.PNG") == "textures/foo.png");
+    CHECK(Normalize("\\assets\\textures\\foo.png") == "textures/foo.png");
+    CHECK(Normalize("/assets/textures/foo.png") == "textures/foo.png");
+    CHECK(Normalize("textures//foo.png") == "textures/foo.png");
+    CHECK(Normalize("textures/./foo.png") == "textures/foo.png");
+    CHECK(Normalize("models/arch/../tex/a.png") == "models/tex/a.png");
+    CHECK(Normalize("assets/models/arch/../../textures/a.png") == "textures/a.png");
+    CHECK(Normalize("scripts/game.lua") == "scripts/game.lua");     // scripts/ は残す
+    CHECK(Normalize("a/b/../../../c") == "../c");                   // 先頭を越える ".." は畳まない
+    CHECK(Normalize("../a") == "../a");
+    CHECK(Normalize("a/..") == "");
+    CHECK(Normalize("textures/foo.png/") == "textures/foo.png");
+    // 日本語（UTF-8 バイト）を壊さない。
+    CHECK(Normalize("textures/" "\xE6\x97\xA5" "\xE6\x9C\xAC/a/../a.png") == "textures/" "\xE6\x97\xA5" "\xE6\x9C\xAC/a.png");
+    // 既存の pak のキー（lexically_relative 由来: ".." も "." も含まない）は変わらない。
+    CHECK(Normalize("models/a.glb") == "models/a.glb");
+    CHECK(vfs::FnvHash(Normalize("assets/models/a.glb")) == vfs::FnvHash("models/a.glb"));
+}
+
 int main()
 {
     Test_AesRoundTrip();
@@ -325,6 +365,7 @@ int main()
     Test_PakRoundTrip();
     Test_ReadAssetAbs_GameMode();
     Test_MountPak_NonAsciiPath();
+    Test_NormalizeCanonical();
 
     std::printf("Vfs: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

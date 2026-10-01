@@ -162,6 +162,7 @@ inline const CompEntry* CompTable(int& count)
         DX12E_HIER_COMP("PrefabLink", PrefabLink),
         DX12E_HIER_COMP("VirtualGeometry", VirtualGeometry),
         DX12E_HIER_COMP("FoliageLayer", FoliageLayer),
+        DX12E_HIER_COMP("InstanceGroup", InstanceGroup),
         DX12E_HIER_COMP("NetworkIdentity", NetworkIdentity),
     };
     count = static_cast<int>(sizeof(kTable) / sizeof(kTable[0]));

@@ -66,6 +66,8 @@ export const REFLECTED_COMPONENT_KEYS = [
   //   meshCollider は Dead Mall の全エンティティが持つのに「未知キー」と警告されていた。
   //   エンジンは 3 つとも SceneSerializer.cpp で反射登録している（scene_defaults_v2.json にもキーがある）。
   "meshCollider", "waterBody", "foliageLayer",
+  // インスタンス群（個数だけ書く。実体は <シーン名>.inst/<guid>.jsonl。手書きするならサイドカーも書くこと。docs/SCENE_FORMAT_DESIGN.md §4.1）。
+  "instanceGroup",
 ] as const;
 
 /** SerializeEntityJson が直接書くキー。 */

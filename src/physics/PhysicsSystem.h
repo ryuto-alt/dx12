@@ -18,6 +18,9 @@ struct RaycastHit
     uint32_t           bodyId   = 0xFFFFFFFF;
     DirectX::XMFLOAT3  point    = {};
     DirectX::XMFLOAT3  normal   = {};
+    // インスタンス群（InstanceGroup）のどのインスタンスに当たったか（サブシェイプ ID の userData）。0xFFFFFFFF = 群ではない。
+    // bodyId→entity は群のエンティティを返す。
+    uint32_t           instanceIndex = 0xFFFFFFFF;
 };
 
 class PhysicsSystem
@@ -43,6 +46,13 @@ public:
     // Jolt の MeshShape を作り直す。MeshShape の構築は重いので、エディタ側は
     // ストローク終了時にだけ _colliderDirty を立てること（ドラッグ中に毎フレームやると詰まる）。
     void RefreshSculptColliders(entt::registry& registry);
+
+    // インスタンス群（InstanceGroup + 静的 RigidBody + MeshCollider）のコライダー。インスタンス ≤128 個ごとに
+    // StaticCompoundShape の静的ボディ 1 つ（形状はモデル単位の meshShapeCache を共有し、拡縮だけ ScaledShape）。
+    // 群の InstanceSet が差し替わった / 群や祖先の Transform が動いた（Play 中）ときに作り直す。
+    void RefreshInstanceGroupColliders(entt::registry& registry);
+    // 群が張っているボディの数（診断・テスト用）。群でなければ 0。
+    size_t InstanceGroupBodyCount(entt::entity e) const;
 
     // Entity の物理体を登録/解除
     // Play 中に足された RigidBody / CharacterController を拾って登録する（Update の頭で毎フレーム）。
@@ -143,6 +153,18 @@ private:
 
     // bodyId → entt::entity の逆引き（RegisterBody 時に追加、Unregister 時に削除）。
     std::unordered_map<uint32_t, entt::entity> m_bodyToEntity;
+
+    // インスタンス群のボディ（群のエンティティごと）。RigidBody::bodyId には先頭のボディを入れる（「登録済み」の印）。
+    struct GroupBodies
+    {
+        std::vector<uint32_t> bodyIds;
+        uint64_t setId    = 0;    // 作った時の InstanceSet の id
+        uint64_t worldKey = 0;    // 作った時のワールド行列列のハッシュ（InstanceSet::worldKey）
+        uint32_t skipped  = 0;    // 形状を作れずに飛ばしたインスタンス数
+    };
+    std::unordered_map<entt::entity, GroupBodies> m_groupBodies;
+    void RegisterGroupBodies(entt::registry& registry, entt::entity entity);
+    void UnregisterGroupBodies(entt::registry& registry, entt::entity entity, bool removeFromJolt);
 
     EventBus* m_eventBus = nullptr;   // 外部所有。PhysicsSystem は解放しない。
     bool      m_paused   = false;

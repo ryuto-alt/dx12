@@ -485,6 +485,13 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // エディタは「プロジェクトを開いただけ」なので呼ばない（Play を押したときに呼ばれる）。
         LoadGameScript(/*callOnStart=*/m_isGameMode);
 
+        // ★開始シーンを読む前に遅延解放を有効にする。以前は Initialize の末尾で有効にしていたため、
+        //   シーン読込中（地形の頂点バッファの作り直しなど、同じコマンドリストが GPU 参照を持ったまま
+        //   旧バッファを差し替える処理）の解放が「即時」になり、**Terrain を含むシーンで配布ゲームが
+        //   起動直後に DEVICE_HUNG で落ちた**（「Close: リソースが解放済み」。エディタは読込の合間に
+        //   フラッシュされるので出なかった）。有効中は Stamp/Collect がフェンス完了まで解放を遅らせる。
+        DeferredRelease::Enable();
+
         // 初期シーン: (配布) game.json の startScene → (エディタ) 最後に開いたシーン → default.json → クリーン状態
         {
             bool loaded = false;
@@ -1764,6 +1771,32 @@ void Application::Run()
             if (gvOverride) SyncActiveCameraToGlobal();   // Update の後に上書き(編集カメラ操作に勝つ)
             ApplyPerceptionCamera();                      // dx12_perceive の視点（要求中だけ。同じ理由で Update の後）
             Render();
+            // 検証用フック: 環境変数 DX12E_GAME_SHOT=<png> を付けて起動した配布ゲームが、
+            //   DX12E_GAME_SHOT_SEC（既定 20）秒後に最初のシーン画像を書いて終了する。
+            //   MCP を持たない配布ゲームを「前面に出さず・OS の入力に触れず」にエディタと見比べるための入口
+            //   （pak 経由で全アセットが描けているかの検証用。未設定なら何もしない）。
+            if (m_isGameMode)
+            {
+                static const std::string shotPath = [] {
+                    char buf[1024] = {};
+                    return GetEnvironmentVariableA("DX12E_GAME_SHOT", buf, sizeof(buf)) > 0 ? std::string(buf) : std::string();
+                }();
+                if (!shotPath.empty())
+                {
+                    static const auto t0 = std::chrono::steady_clock::now();
+                    static const double waitSec = [] {
+                        char buf[32] = {};
+                        return GetEnvironmentVariableA("DX12E_GAME_SHOT_SEC", buf, sizeof(buf)) > 0 ? std::atof(buf) : 20.0;
+                    }();
+                    if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >= waitSec)
+                    {
+                        std::string serr;
+                        const std::string wrote = CaptureSceneScreenshot(serr, shotPath);
+                        Logger::Info("GAME_SHOT: {} {}", wrote.empty() ? "FAILED" : wrote, serr);
+                        m_window->RequestClose();
+                    }
+                }
+            }
             m_consecFrameErrors = 0;   // 1 枚描けたら「復帰した」＝連続失敗を数え直す
         }
         catch (const std::exception& ex)

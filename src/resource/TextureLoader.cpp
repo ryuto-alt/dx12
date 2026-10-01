@@ -4,11 +4,13 @@
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
+#include "core/vfs/Crypto.h"   // 配布ゲームの .texcache を暗号化して書く（平文の BC 画像を exe の隣に残さない）
 #include "graphics/Texture.h"
 #include "graphics/GraphicsDevice.h"
 
 #include <DirectXTex.h>
 
+#include <array>
 #include <vector>
 #include <algorithm>   // ConvertToPng の縮小サイズ計算
 #include <atomic>      // 圧縮モードのスイッチ
@@ -308,6 +310,78 @@ std::string CacheDir()
     return dir;
 }
 
+// ★配布ゲーム(pak モード)の BC 圧縮キャッシュは**暗号化して**書く。
+//   以前は平文の .dds（BC7 の画像そのもの）を exe の隣の .texcache/ に書いていたので、
+//   pak で守っているはずのテクスチャが実行するだけで 1 枚ずつ平文で出てきた（DDS ビューアで開ける）。
+//   形式: "TXC1"(4) + nonce(12) + tag(16) + AES-256-GCM(DDS バイト列)。鍵は pak と同じ。
+//   エディタ(ディスクモード)は従来どおり平文 .dds（開発者が自分のアセットを見られて構わない）。
+constexpr char kEncCacheMagic[4] = { 'T', 'X', 'C', '1' };
+
+bool SaveEncryptedCache(const std::string& path, const DirectX::ScratchImage& img)
+{
+    DirectX::Blob blob;
+    if (FAILED(DirectX::SaveToDDSMemory(img.GetImages(), img.GetImageCount(), img.GetMetadata(),
+                                        DirectX::DDS_FLAGS_NONE, blob)))
+        return false;
+
+    std::array<uint8_t, vfs::kKeyLen> key{};
+    vfs::AssembleKey(key);
+    uint8_t nonce[vfs::kNonceLen] = {};
+    uint8_t tag[vfs::kTagLen]     = {};
+    std::vector<uint8_t> cipher;
+    const bool ok = vfs::AesGcmEncrypt(key.data(), static_cast<const uint8_t*>(blob.GetBufferPointer()),
+                                       blob.GetBufferSize(), nonce, tag, cipher);
+    SecureZeroMemory(key.data(), key.size());
+    if (!ok) return false;
+
+    // 書きかけを読まれないよう一時名へ書いてから差し替える（先読みスレッドと本読みが同じキーを触り得る）。
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream f(PathResolver::Utf8ToWide(tmp), std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f.write(kEncCacheMagic, sizeof(kEncCacheMagic));
+        f.write(reinterpret_cast<const char*>(nonce), sizeof(nonce));
+        f.write(reinterpret_cast<const char*>(tag), sizeof(tag));
+        f.write(reinterpret_cast<const char*>(cipher.data()), static_cast<std::streamsize>(cipher.size()));
+        if (!f) return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(PathResolver::Utf8ToWide(tmp), PathResolver::Utf8ToWide(path), ec);
+    if (ec)
+    {
+        std::filesystem::remove(PathResolver::Utf8ToWide(tmp), ec);
+        return false;
+    }
+    return true;
+}
+
+bool LoadEncryptedCache(const std::string& path, DirectX::ScratchImage& out)
+{
+    std::ifstream f(PathResolver::Utf8ToWide(path), std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    const std::streamoff size = f.tellg();
+    constexpr std::streamoff kHead = sizeof(kEncCacheMagic) + vfs::kNonceLen + vfs::kTagLen;
+    if (size <= kHead) return false;
+    f.seekg(0);
+    char magic[4] = {};
+    uint8_t nonce[vfs::kNonceLen] = {};
+    uint8_t tag[vfs::kTagLen]     = {};
+    f.read(magic, sizeof(magic));
+    f.read(reinterpret_cast<char*>(nonce), sizeof(nonce));
+    f.read(reinterpret_cast<char*>(tag), sizeof(tag));
+    std::vector<uint8_t> cipher(static_cast<size_t>(size - kHead));
+    f.read(reinterpret_cast<char*>(cipher.data()), static_cast<std::streamsize>(cipher.size()));
+    if (!f || std::memcmp(magic, kEncCacheMagic, sizeof(magic)) != 0) return false;
+
+    std::array<uint8_t, vfs::kKeyLen> key{};
+    vfs::AssembleKey(key);
+    std::vector<uint8_t> plain;
+    const bool ok = vfs::AesGcmDecrypt(key.data(), cipher.data(), cipher.size(), nonce, tag, plain);
+    SecureZeroMemory(key.data(), key.size());
+    if (!ok) return false;   // 改竄・壊れ・鍵違いは「キャッシュ無し」として作り直す
+    return SUCCEEDED(DirectX::LoadFromDDSMemory(plain.data(), plain.size(), DirectX::DDS_FLAGS_NONE, nullptr, out));
+}
+
 // 圧縮前にソース形式を BC コーデックが素直に食える形へ揃える（BC6H=float16, それ以外=RGBA8）。
 bool ConvertForCompression(DirectX::ScratchImage& scratch, DXGI_FORMAT dstFormat)
 {
@@ -349,7 +423,8 @@ std::string CompressedCachePath(DXGI_FORMAT dst, size_t arraySize, TextureUsage 
                           + "|a" + std::to_string(static_cast<unsigned>(arraySize))
                           + "|q" + std::to_string(g_compressionMode.load()) + "|v2";
     char name[40];
-    snprintf(name, sizeof(name), "t%016llx.dds",
+    // 配布ゲームの暗号化キャッシュは .dds ではない（DDS ビューアで開けるものと取り違えない）。
+    snprintf(name, sizeof(name), vfs::InGameMode() ? "t%016llx.txc" : "t%016llx.dds",
              static_cast<unsigned long long>(HashString(key)));
     return dir + name;
 }
@@ -389,8 +464,13 @@ bool TryLoadCachedCompressed(const DirectX::TexMetadata& srcMeta, TextureUsage u
         return false;
 
     ScratchImage cached;
-    if (FAILED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
-                               DDS_FLAGS_NONE, nullptr, cached)))
+    if (vfs::InGameMode())
+    {
+        if (!LoadEncryptedCache(cachePath, cached))
+            return false;   // 壊れた/改竄されたキャッシュは無視して作り直す
+    }
+    else if (FAILED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
+                                    DDS_FLAGS_NONE, nullptr, cached)))
         return false;   // 壊れたキャッシュは無視して作り直す
 
     const TexMetadata& cm = cached.GetMetadata();
@@ -484,10 +564,12 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
 
     if (!cachePath.empty())
     {
-        const HRESULT sh = SaveToDDSFile(compressed.GetImages(), compressed.GetImageCount(),
-                                         compressed.GetMetadata(), DDS_FLAGS_NONE,
-                                         PathResolver::Utf8ToWide(cachePath).c_str());
-        if (FAILED(sh))
+        const bool saved = vfs::InGameMode()
+            ? SaveEncryptedCache(cachePath, compressed)
+            : SUCCEEDED(SaveToDDSFile(compressed.GetImages(), compressed.GetImageCount(),
+                                      compressed.GetMetadata(), DDS_FLAGS_NONE,
+                                      PathResolver::Utf8ToWide(cachePath).c_str()));
+        if (!saved)
             Logger::Warn("BC 圧縮キャッシュの保存に失敗しました: {}", cachePath);
     }
 
