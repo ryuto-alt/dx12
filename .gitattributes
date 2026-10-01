@@ -1,0 +1,2 @@
+# シーケンサーの .dxseq はバイト一致のゴールデン比較をするので、autocrlf で CRLF に変えない
+*.dxseq text eol=lf
