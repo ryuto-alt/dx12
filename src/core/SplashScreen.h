@@ -77,6 +77,9 @@ public:
     // 即時に閉じてスレッドを合流する（アップデート適用・例外時など。演出なし）。未表示なら no-op。
     static void Close();
 
+    // 起動音を止め、この表示ではもう鳴らさない（更新の案内・ダウンロードの間は無音にする）。未表示なら no-op。
+    static void StopSound();
+
     // ---- 設定 ----
     // true の間 Show / ShowProjectLoad は何もしない（--background / --headless: 人の画面に窓を出さない）。
     static void SetSuppressed(bool on);

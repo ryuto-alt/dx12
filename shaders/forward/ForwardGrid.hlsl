@@ -82,8 +82,23 @@ float AxisCoverage(float coord, float deriv, float widthPx)
     return 1.0f - smoothstep(widthPx - 0.5f, widthPx + 0.5f, px);
 }
 
-float4 PSMain(PSInput input) : SV_TARGET
+struct PSOutput
 {
+    float4 color : SV_TARGET;
+    // ★深度も補間器を使わず、下の交差点から自前で出す。ラスタライザの深度(=巨大三角形の補間)は
+    //   色と同じく数 m 単位で狂う。実害は 2 つあった:
+    //     ・見る向きによっては手前の床が「グリッドより手前」と判定され、画面下に水平な境目ができて
+    //       そこから先の線が消える
+    //     ・補うための SlopeScaledDepthBias が浅い角度で巨大になり、床から数 cm 浮いた物の上にまで
+    //       線が乗る。カメラを動かすとずれ量が変わるのでチラつく
+    float  depth : SV_Depth;
+};
+
+PSOutput PSMain(PSInput input)
+{
+    PSOutput o;
+    o.color = 0.0f;
+    o.depth = 1.0f;
     // ---- ピクセルの視線と床平面の交差 ----
     // ビューポート UV → NDC。clusterViewport.zw = (CLUSTER_GRID_X/vpW, CLUSTER_GRID_Y/vpH)
     // で、SV_Position.xy は RT 座標かつビューポート原点は常に 0（Lighting.hlsli 参照）。
@@ -91,20 +106,42 @@ float4 PSMain(PSInput input) : SV_TARGET
     float2 uv01 = input.positionSV.xy * clusterViewport.zw
                 / float2(CLUSTER_GRID_X, CLUSTER_GRID_Y);
     float2 ndc  = float2(uv01.x * 2.0f - 1.0f, 1.0f - uv01.y * 2.0f);
-    // NDC → view 空間の方向 → ワールド方向。proj._31/_32 は TAA ジッタぶんの平行移動
-    // （現状 0 だが引いておけばジッタを入れても線が半ピクセルずれない）。
-    float3 dirView = float3((ndc.x - proj._31) / proj._11,
-                            (ndc.y - proj._32) / proj._22,
-                            1.0f);
+    // NDC → view 空間の視線（原点 + 方向）。行ベクトル規約なので clip = view * proj。
+    //   透視: 原点はカメラ。proj._31/_32 は TAA ジッタぶんの平行移動（引いておけば線が半ピクセルずれない）。
+    //   正射(proj._34 == 0): 視線はすべて +Z で平行、原点がピクセルごとに横へずれる（2D 表示・正射カメラ）。
+    const bool ortho = abs(proj._34) < 1e-6f;
+    float3 originView = ortho ? float3((ndc.x - proj._41) / proj._11, (ndc.y - proj._42) / proj._22, 0.0f)
+                              : float3(0.0f, 0.0f, 0.0f);
+    float3 dirView    = ortho ? float3(0.0f, 0.0f, 1.0f)
+                              : float3((ndc.x - proj._31) / proj._11, (ndc.y - proj._32) / proj._22, 1.0f);
     // view は行ベクトル規約(world→view)。3x3 は直交なので mul(M, v) が逆回転になる。
     // ponytail: 板は常に軸平行(GridPlane はエディタ内部生成で回転しない)前提。
     //           回転させたいときはここを平面法線での交差に置き換える。
-    float3 dir = mul((float3x3)view, dirView);
-    if (abs(dir.y) < 1e-8f) return 0.0f;                 // 地平線と平行＝床に当たらない
-    float t = (model._42 - cameraPos.y) / dir.y;
-    if (t <= 0.0f) return 0.0f;                          // カメラの後ろ側
+    float3 originRel = mul((float3x3)view, originView);  // カメラ位置からの相対（透視なら 0）
+    float3 dir       = mul((float3x3)view, dirView);
+    if (abs(dir.y) < 1e-8f) return o;                    // 地平線と平行＝床に当たらない
+    float t = (model._42 - cameraPos.y - originRel.y) / dir.y;
+    if (t <= 0.0f) return o;                             // カメラの後ろ側
 
-    float2 local = dir.xz * t;   // カメラからの相対 XZ。小さい値なので ddx/ddy が無誤差
+    // 交差点の深度。床（同一平面の不透明物）に負けないよう手前へ寄せる。寄せ方は 2 つのうち大きい方:
+    //   (a) 高さ方向に kLiftM 浮かせた面との交差。浅い角度の近くでは視線方向に大きく寄る＝床に確実に勝つ。
+    //       浮いた物に線が乗るのは高さ kLiftM の帯だけ（距離にも角度にもよらない）。
+    //   (b) 深度値の最小単位(ULP)で kBiasUlp 個。遠くは非線形深度の精度が粗く (a) だけでは床と区別できない。
+    // ★距離に比例させない: 0.1% にしたら 47m 先で 4.7cm 寄り、3cm 浮いた板の上に線が乗った。
+    // ★(b) だけも駄目: カメラの近くを浅い角度で見ると足りず、手前の線が消えた。
+    const float kLiftM   = 0.002f;
+    const uint  kBiasUlp = 8u;
+    float  side  = (cameraPos.y + originRel.y >= model._42) ? 1.0f : -1.0f;   // 下から見上げたら下へ浮かせる
+    float  tLift = max((model._42 + side * kLiftM - cameraPos.y - originRel.y) / dir.y, 0.0f);
+    float4 clip  = mul(float4(originView + dirView * t, 1.0f), proj);
+    float4 clipL = mul(float4(originView + dirView * tLift, 1.0f), proj);
+    if (clip.z >= clip.w) return o;                      // 遠クリップより奥
+    uint   zu = asuint(max(clip.z / clip.w, 0.0f));
+    float  zUlp  = asfloat(zu > kBiasUlp ? zu - kBiasUlp : 0u);
+    float  zLift = max(clipL.z / clipL.w, 0.0f);
+    o.depth = min(zUlp, zLift);
+
+    float2 local = originRel.xz + dir.xz * t;   // カメラからの相対 XZ。小さい値なので ddx/ddy が無誤差
 
     // ワールド 1 単位あたりの画面変化量。ddx/ddy をベクトルとして長さを取る。
     // fwidth(=|ddx|+|ddy|) より斜め視点で正確＝カメラを回しても線幅がぶれない。
@@ -188,12 +225,13 @@ float4 PSMain(PSInput input) : SV_TARGET
     // フェード半径はカメラ高度に比例させる: 地面に近いほど手元だけ、上へ引くほど広く出す。
     // ★下限は 400m ではなく 20m。400m だとカメラ高 1.7m の一人称でも fadeStart=220m に
     //   なり、30m 程度の屋内シーンではフェードが一切効かず、床全面にグリッドの膜が
-    //   乗ったままになる（グリッド板は y=0 で床の上面と同一平面、かつ DepthBias が
-    //   負なので必ず床に勝つ）。20m なら fadeEnd≈24m / fadeStart≈13m で足元だけに出る。
+    //   乗ったままになる（グリッド板は y=0 で床の上面と同一平面、かつ深度を手前へ寄せている
+    //   ので必ず床に勝つ）。20m なら fadeEnd≈24m / fadeStart≈13m で足元だけに出る。
     float fadeEnd   = clamp(abs(cameraPos.y - model._42) * 14.0f, 20.0f, 9000.0f);
     float fadeStart = fadeEnd * 0.55f;
     float dist      = length(local);
     outAlpha *= 1.0f - saturate((dist - fadeStart) / max(fadeEnd - fadeStart, 1e-3f));
 
-    return float4(outColor, outAlpha);
+    o.color = float4(outColor, outAlpha);
+    return o;
 }

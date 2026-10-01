@@ -364,6 +364,9 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         //   前回の版を省くと直前のリリースから。表示済みの記録は書かない（fleet のエンジンは毎回「初回」扱いなので既定では出さない）。
         bool whatsNewForce = false;
         std::string whatsNewFrom;
+        // --demo-update[=error]: 更新の流れの見本（本物の案内窓で 案内→ダウンロード→展開→適用 を模擬。何も書き換えない）。
+        //   最後まで進むと、続けて「更新内容」画面を直前の版からの更新として出す。
+        bool demoUpdate = false, demoUpdateFail = false;
         dx12e::BackgroundOptions bgOpt;
         std::string bgError;
         int  mcpPort  = 0;
@@ -555,6 +558,11 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         headlessAllowSave = true;
                     else if (wcscmp(argv[i], L"--virtual-input") == 0)
                         virtualInput = true;
+                    else if (wcscmp(argv[i], L"--demo-update") == 0 || wcscmp(argv[i], L"--demo-update=error") == 0)
+                    {
+                        demoUpdate = true;
+                        demoUpdateFail = (argv[i][13] == L'=');
+                    }
                     else if (wcscmp(argv[i], L"--show-whats-new") == 0 || wcsncmp(argv[i], L"--show-whats-new=", 17) == 0)
                     {
                         whatsNewForce = true;
@@ -698,7 +706,17 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         // 要求のため、更新直後の再起動を含め全ての起動で必ずチェックする（スプラッシュ画面が
         // チェック中もアニメし続けるので、数秒の同期待ちでも固まって見えない）。
         // ★--background / --virtual-input では自動更新を確認しない（更新ダイアログや MessageBox が前面に出るため）。
-        if (!buildMode && !bgOpt.Active() && !virtualInput && !headless && dx12e::Updater::RunStartupCheck())
+        if (demoUpdate && !buildMode && !bgOpt.Active() && !headless)
+        {
+            if (dx12e::Updater::RunDemo(demoUpdateFail) && !whatsNewForce)
+            {
+                // 見本の更新が終わった体で、直前のリリースからの「更新内容」画面を出す
+                const auto& rels = dx12e::relnotes::All();
+                whatsNewForce = true;
+                whatsNewFrom  = rels.size() >= 2 ? rels[1].version : std::string();
+            }
+        }
+        else if (!buildMode && !bgOpt.Active() && !virtualInput && !headless && dx12e::Updater::RunStartupCheck())
         {
             dx12e::SplashScreen::Close();   // 更新適用へ（更新バッチが上書き→再起動する）
             return EXIT_SUCCESS;

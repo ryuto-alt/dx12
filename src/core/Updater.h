@@ -18,5 +18,10 @@ class Updater
 public:
     // 起動時アップデートチェック。更新を開始して本体を終了すべきなら true。
     static bool RunStartupCheck();
+
+    // 更新の流れの見本（--demo-update[=error]）。本物の案内窓で 案内 → ダウンロード → 展開 → 適用 を
+    // 模擬的に動かすだけで、ネットワークにもファイルにも一切触れない。fail=true なら途中で失敗させて
+    // 「もう一度 / このまま起動」も見せる。「今すぐ更新」で最後まで進んだら true（呼び出し側が更新内容の画面を出す）。
+    static bool RunDemo(bool fail);
 };
 } // namespace dx12e

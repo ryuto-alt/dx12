@@ -60,6 +60,7 @@ struct G
     std::atomic<bool> done{true};             // スレッドが終わった（or 未開始）
     std::atomic<bool> suppressed{false};
     std::atomic<bool> soundOn{true};
+    std::atomic<bool> soundStopped{false};    // StopSound 済み（この表示ではもう鳴らさない）
     std::atomic<bool> expectProject{false};
     std::atomic<bool> wantMain{false};
     std::atomic<double> finishAt{-1.0};
@@ -361,7 +362,7 @@ DWORD WINAPI SplashThread(LPVOID)
     bool soundStarted = false, hitFired = false;
     double hitAt = 0.0;    // ready 開始からの秒
     auto startSound = [&]() {
-        if (!g.playSound) return;
+        if (!g.playSound || g.soundStopped.load()) return;
         const double raw = ReadStartupMsRaw();
         const double predicted = sp::ClampStartupMs(raw > 0.0 ? raw : sp::kStartupDefaultMs) / 1000.0;
         g.predictedFinishSec = predicted;
@@ -547,6 +548,7 @@ void ShowCommon(bool projectMode, const std::string& titleUtf8, const std::strin
         }
         if (on && !ReadStartupSoundSetting()) on = false;
         g.playSound = on;
+        g.soundStopped.store(false);
     }
     StartThread(g);
 }
@@ -570,6 +572,12 @@ void SplashScreen::ExpectProjectLoad(bool on) { S().expectProject.store(on); }
 
 void SplashScreen::SetSuppressed(bool on) { S().suppressed.store(on); }
 void SplashScreen::SetSoundEnabled(bool on) { S().soundOn.store(on); }
+
+void SplashScreen::StopSound()
+{
+    S().soundStopped.store(true);
+    SplashSound::Abort();
+}
 
 void SplashScreen::SetTestNoShow(bool on) { S().testNoShow.store(on); }
 
