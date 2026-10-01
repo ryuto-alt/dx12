@@ -310,8 +310,9 @@ void Application::RecreateGridPso()
            .SetDepthEnabled(true)
            .SetDepthWrite(false)        // 深度を書かない＝床など同一平面の不透明物を隠さない
            .SetAlphaBlendEnabled(true)
-           .SetCullMode(D3D12_CULL_MODE_NONE)
-           .SetDepthBias(-100, -1.0f);  // 深度テストではカメラ側に寄せて床の上に線を乗せる
+           .SetCullMode(D3D12_CULL_MODE_NONE);
+    // 深度バイアスは掛けない。PS が交差点から正確な深度(SV_Depth)を出し、床に勝つ分の寄せも PS 側で行う
+    // （旧 SetDepthBias(-100,-1) は浅い角度で巨大になり、浮いた物の上に線が乗ってチラついていた）。
 
     if (!m_gridPipelineState) m_gridPipelineState = std::make_unique<PipelineState>();
     m_gridPipelineState->Initialize(*m_graphicsDevice, builder);
