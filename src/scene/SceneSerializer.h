@@ -32,6 +32,14 @@ public:
     static bool LoadFromString(Scene& scene, const std::string& jsonStr,
                                const std::string& assetsDir);
 
+    // シーンファイル形式 v2（docs/SCENE_FORMAT_DESIGN.md）。Save が書くファイル本体と同じ文字列を返す
+    // （既定値の省略・最短 float・1 行 1 体。version 2）。検証・テスト用。Play のスナップショットには使わない。
+    static std::string SaveToStringV2(const Scene& scene, const std::string& assetsDir);
+
+    // 凍結の既定値表（src/scene/scene_defaults_v2.json）の初期値を、既定構築したコンポーネントを実際の保存処理で
+    // 直列化して作る。生成ツール専用（表は凍結データなので、普段は呼ばない・結果で表を自動更新しない）。
+    static std::string BuildDefaultsTableV2Json();
+
     // 単一エンティティの JSON 化（クリップボード/複製用。parent は含まない）
     static std::string SerializeEntity(const Scene& scene, entt::entity e,
                                        const std::string& assetsDir);

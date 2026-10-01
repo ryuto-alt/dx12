@@ -263,6 +263,19 @@ if(TARGET Scene)
     add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
 endif()
 
+# シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
+# 生成モード: SceneFormatV2Tests --emit-defaults <out.json> で src/scene/scene_defaults_v2.json の初期値を作る。
+if(TARGET Scene)
+    add_executable(SceneFormatV2Tests scene_format_v2_test.cpp)
+    target_link_libraries(SceneFormatV2Tests PRIVATE Scene)
+    target_include_directories(SceneFormatV2Tests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(SceneFormatV2Tests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SceneFormatV2Tests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SceneFormatV2Tests COMMAND SceneFormatV2Tests)
+endif()
+
 # 名前付きシェーダーパラメーターの解決とトゥイーン（Trigger の SetShaderParam /
 # AnimShaderParam の土台）。「オフセット → 添字」を 1 つ間違えると静かに隣のスロットを
 # 壊し、症状は Play 中の見た目にしか出ないので機械で押さえる。

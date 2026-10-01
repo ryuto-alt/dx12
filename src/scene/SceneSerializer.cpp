@@ -1,4 +1,5 @@
 #include "scene/SceneSerializer.h"
+#include "scene/SceneFormatV2.h"
 #include "scene/Scene.h"
 #include "ecs/Components.h"
 #include "ecs/ComponentMeta.h"             // entt::meta フィールド反映（シリアライズの単一ソース）
@@ -31,6 +32,8 @@
 #include <cctype>
 #include <random>    // エンティティ GUID の生成
 #include <cstdio>     // GUID の hex 整形
+#include <chrono>      // 読み込み時間の内訳ログ
+#include <functional>
 
 using json = nlohmann::json;
 using namespace DirectX;
@@ -205,11 +208,32 @@ static bool JsonToMetaField(entt::meta_any& obj, const entt::meta_data& data, co
 // T の RuntimeComponentInfo を反射から生成する。
 // replaceExisting: true = emplace_or_replace / false = 既に持っていたら何もしない
 // （ライト/カメラは従来 emplace-if-absent だったので false、それ以外は true で挙動を維持）。
+
+// ---- シーン形式 v2 の既定値表の初期値を作るための「既定構築 → 実際の保存処理」プローブ ----
+// 反射登録（MakeReflectedInfo）と同じ場所で積むので、コンポーネントを足しても一覧の更新漏れが起きない。
+// 表そのものは凍結データ（src/scene/scene_defaults_v2.json）で、これは生成ツール（SceneSerializer::BuildDefaultsTableV2Json）専用。
+static json SerializeEntityJson(const entt::registry& reg, entt::entity entity, const std::string& assetsDir);
+struct DefaultsProbe { std::string key; std::function<json()> run; };
+static std::vector<DefaultsProbe>& DefaultsProbes()
+{
+    static std::vector<DefaultsProbe> v;
+    return v;
+}
+
 template <typename T>
 static RuntimeComponentInfo MakeReflectedInfo(const char* typeName, const char* jsonKey,
                                               bool replaceExisting)
 {
     const std::string key = jsonKey;
+    DefaultsProbes().push_back({ key, [key]() -> json {
+        entt::registry reg;
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{ "probe" });
+        reg.emplace<Transform>(e);
+        reg.emplace<T>(e);
+        json ej = SerializeEntityJson(reg, e, std::string{});
+        return ej.contains(key) ? ej[key] : json();
+    } });
     RuntimeComponentInfo info;
     info.typeName = typeName;
     info.source   = ComponentSource::Core;
@@ -1759,6 +1783,28 @@ static void LoadVolumetricFogSettings(Scene& scene, const json& root)
                             ? root["decalAtlas"].get<std::string>() : std::string());
 }
 
+// ---- 読み込み時間の内訳（SceneSerializer::Load が 1 行のログに出す。段階 3 の判断材料）----
+namespace {
+using LoadClock = std::chrono::steady_clock;
+struct LoadTimings
+{
+    double readMs = 0, parseMs = 0, inflateMs = 0, entitiesMs = 0, modelMs = 0, parentMs = 0;
+    int    version = 1;
+    size_t entities = 0;
+};
+thread_local LoadTimings* g_loadTimings = nullptr;   // Load の間だけ非 null（Play 復元など他経路では計らない）
+double LoadMsSince(LoadClock::time_point t0)
+{
+    return std::chrono::duration<double, std::milli>(LoadClock::now() - t0).count();
+}
+struct LoadTimingsScope
+{
+    LoadTimings* prev;
+    explicit LoadTimingsScope(LoadTimings* t) : prev(g_loadTimings) { g_loadTimings = t; }
+    ~LoadTimingsScope() { g_loadTimings = prev; }
+};
+} // namespace
+
 // JSON ノードから 1 エンティティを既存シーンに追加生成（Clear しない）
 // 失敗時は entt::null
 static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
@@ -1845,7 +1891,9 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
     {
         std::string relPath = ej["meshRenderer"].value("modelPath", "");
         std::string absPath = assetsDir + relPath;
+        const auto tSpawn = g_loadTimings ? LoadClock::now() : LoadClock::time_point{};
         auto entity = scene.Spawn(name, absPath, pos, rot, scale);
+        if (g_loadTimings) g_loadTimings->modelMs += LoadMsSince(tSpawn);
         if (!entity.IsValid())
         {
             OutputDebugStringA(("[Load] FAILED Spawn: " + name + " path=" + absPath + "\n").c_str());
@@ -2222,9 +2270,21 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
 }
 
 // JSON ノードを既存シーンに展開（共通処理）
-static bool ApplySceneJson(Scene& scene, const json& root, const std::string& assetsDir)
+// root は非 const: version >= 2 のとき入口で既定値表から補完する（補完後は v1 保存と同じ JSON になるので、
+// 下流の InstantiateEntityJson は v1/v2 を区別しない）。
+static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDir)
 {
     scene.Clear();
+
+    {
+        const auto tInflate = LoadClock::now();
+        scenefmt::InflateScene(root);
+        if (g_loadTimings)
+        {
+            g_loadTimings->inflateMs += LoadMsSince(tInflate);
+            g_loadTimings->version = scenefmt::IsV2(root) ? root.value("version", 2) : 1;
+        }
+    }
 
     // JSON として valid でも「型」が想定と違う値（例: intensity が文字列）は
     // json::type_error を投げる。1 箇所のミスでシーン全体・アプリ全体を巻き込まず、
@@ -2292,6 +2352,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     }
 
     // 1パス目: 生成（配列インデックス → entity の対応を保持）
+    const auto tEntities = LoadClock::now();
     std::vector<entt::entity> created;
     created.reserve(root["entities"].size());
     for (const auto& ej : root["entities"])
@@ -2309,8 +2370,14 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
         }
         created.push_back(e);
     }
+    if (g_loadTimings)
+    {
+        g_loadTimings->entitiesMs += LoadMsSince(tEntities);
+        g_loadTimings->entities = created.size();
+    }
 
     // 2パス目: 親子関係の復元
+    const auto tParents = LoadClock::now();
     auto& reg = scene.GetRegistry();
 
     // guid → entity。JSON に guid があるものだけ載る（旧シーンは空のまま）。
@@ -2404,6 +2471,7 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     // これで旧シーンも「開いて保存」で自動的に guid 参照へ移行する。
     PromoteEntityRefsToGuid(reg);
 
+    if (g_loadTimings) g_loadTimings->parentMs += LoadMsSince(tParents);
     return true;
 }
 
@@ -2427,17 +2495,42 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         }
     }
 
+    // ★シーンファイルは常に v2（既定値の省略・最短 float・parent index 廃止・1 行 1 体）。
+    //   Play のスナップショット（SaveToString）は v1 の完全形のまま。
+    const auto tSave0 = LoadClock::now();
     json root = BuildSceneJson(scene, assetsDir);
+    const size_t entityCount = root["entities"].size();
+    const double buildMs = LoadMsSince(tSave0);
 
-    std::ofstream ofs(filePath);
+    // 文字列化で例外（不正な UTF-8 など）が出ても、ファイルを開いて空にする前なので既存の保存は無傷で残る。
+    const auto tSave1 = LoadClock::now();
+    double convertMs = 0, dumpMs = 0;
+    std::string text;
+    try
+    {
+        scenefmt::ConvertToV2(root);
+        convertMs = LoadMsSince(tSave1);
+        const auto tSave2 = LoadClock::now();
+        text = scenefmt::DumpSceneV2(root);
+        dumpMs = LoadMsSince(tSave2);
+    }
+    catch (const std::exception& e)
+    {
+        Logger::Error("シーンを JSON にできません（名前やパスに不正な文字が含まれていないか確認してください）: {}", e.what());
+        return false;
+    }
+
+    const auto tSave3 = LoadClock::now();
+    // ★バイナリで書く。テキストモードだと Windows で LF が CRLF になり、v2 の「改行は LF」が崩れる。
+    std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
     if (!ofs.is_open())
     {
         Logger::Error("ファイルを書き込み用に開けません: {}", filePath);
         return false;
     }
-
-    ofs << root.dump(2);
+    ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
     ofs.close();
+    const double writeMs = LoadMsSince(tSave3);
 
     // ---- ナビメッシュのサイドカー（<シーン>.nav）----
     // シーン JSON にはパラメータだけを書き、焼いた実体はバイナリで隣に置く。
@@ -2457,8 +2550,8 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         }
     }
 
-    Logger::Info("Scene saved ({} entities): {}",
-                 root["entities"].size(), filePath);
+    Logger::Info("Scene saved ({} entities, format v2, {} bytes): {} | build {:.0f} ms, convert {:.0f}, dump {:.0f}, write {:.0f}, total {:.0f} ms",
+                 entityCount, text.size(), filePath, buildMs, convertMs, dumpMs, writeMs, LoadMsSince(tSave0));
     return true;
 }
 
@@ -2490,37 +2583,23 @@ static void LoadNavMeshSidecar(Scene& scene, const std::string& scenePath)
                  scene.GetNavMesh().GetStats().sampleCount, navPath);
 }
 
-bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
-                           const std::string& assetsDir)
+// JSON テキスト → シーン（Load / LoadFromString 共通）。fromFile は失敗時のメッセージの出し分けだけに使う。
+static bool LoadSceneText(Scene& scene, const std::string& text, const std::string& assetsDir,
+                          bool fromFile, size_t* outEntityCount)
 {
-    // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
-    auto b = vfs::ReadAssetAbs(filePath);
-    if (!b.empty())
-    {
-        const bool ok = LoadFromString(scene, std::string(b.begin(), b.end()), assetsDir);
-        if (ok) LoadNavMeshSidecar(scene, filePath);
-        return ok;
-    }
-
-    // ディスクフォールバック
-    std::ifstream ifs(filePath);
-    if (!ifs.is_open())
-    {
-        Logger::Error("シーンファイルを開けません: {}", filePath);
-        return false;
-    }
-
     json root;
+    const auto tParse = LoadClock::now();
     try
     {
-        ifs >> root;
+        root = json::parse(text);
     }
     catch (const json::parse_error& e)
     {
-        Logger::Error("JSON の解析に失敗しました: {}", e.what());
+        if (fromFile) Logger::Error("JSON の解析に失敗しました: {}", e.what());
+        else          Logger::Error("JSON の解析に失敗しました（スナップショット）: {}", e.what());
         return false;
     }
-    ifs.close();
+    if (g_loadTimings) g_loadTimings->parseMs += LoadMsSince(tParse);
 
     bool ok = false;
     try
@@ -2530,14 +2609,102 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     catch (const json::exception& e)
     {
         // ApplySceneJson 内でセクション/エンティティ単位に捕捉しているが、最後の保険
-        Logger::Error("シーン読み込みを中断しました（JSON の値が不正）: {}", e.what());
+        if (fromFile) Logger::Error("シーン読み込みを中断しました（JSON の値が不正）: {}", e.what());
+        else          Logger::Error("シーン復元を中断しました（JSON の値が不正）: {}", e.what());
         return false;
+    }
+    if (outEntityCount)
+        *outEntityCount = root.contains("entities") && root["entities"].is_array() ? root["entities"].size() : 0;
+    return ok;
+}
+
+bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
+                           const std::string& assetsDir)
+{
+    LoadTimings tm;
+    const auto tTotal = LoadClock::now();
+
+    // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
+    const auto tRead = LoadClock::now();
+    std::string text;
+    {
+        auto b = vfs::ReadAssetAbs(filePath);
+        if (!b.empty())
+        {
+            text.assign(b.begin(), b.end());
+        }
+        else
+        {
+            // ディスクフォールバック
+            std::ifstream ifs(filePath, std::ios::binary);
+            if (!ifs.is_open())
+            {
+                Logger::Error("シーンファイルを開けません: {}", filePath);
+                return false;
+            }
+            ifs.seekg(0, std::ios::end);
+            const std::streamoff sz = ifs.tellg();
+            ifs.seekg(0, std::ios::beg);
+            if (sz > 0)
+            {
+                text.resize(static_cast<size_t>(sz));
+                ifs.read(text.data(), sz);
+            }
+        }
+    }
+    tm.readMs = LoadMsSince(tRead);
+
+    size_t entityCount = 0;
+    bool ok = false;
+    {
+        LoadTimingsScope scope(&tm);
+        ok = LoadSceneText(scene, text, assetsDir, /*fromFile=*/true, &entityCount);
     }
     if (ok)
     {
         LoadNavMeshSidecar(scene, filePath);
-        Logger::Info("Scene loaded ({} entities): {}",
-                     root.contains("entities") ? root["entities"].size() : 0, filePath);
+        const double loadTotalMs = LoadMsSince(tTotal);   // 検証フックの時間を含めない
+
+        // ★検証用の隠しフック（通常は何も起きない）。環境変数 DX12E_SCENE_FORMAT_CHECK_DIR があるとき、
+        //   読み込み直後のシーンから <stem>.v1full.json（SaveToString = v1 完全形。F1 等価性の基準）と
+        //   <stem>.v2.json（Save が書く v2 本体）をそのフォルダへ書き、v1(dump(2)) と v2 の保存時間を 1 行ログに出す。
+        //   別ファイルを開き直して v1full を突き合わせる使い方は docs/SCENE_FORMAT_DESIGN.md §3.6 の F1 / F4。
+        {
+            char dirBuf[MAX_PATH] = {};
+            const DWORD n = GetEnvironmentVariableA("DX12E_SCENE_FORMAT_CHECK_DIR", dirBuf, MAX_PATH);
+            if (n > 0 && n < MAX_PATH)
+            {
+                namespace fs = std::filesystem;
+                const std::string stem = fs::path(filePath).stem().string();
+                std::error_code ec;
+                fs::create_directories(dirBuf, ec);
+                auto writeBin = [&](const std::string& name, const std::string& body) {
+                    std::ofstream o((fs::path(dirBuf) / name).string(), std::ios::binary | std::ios::trunc);
+                    o.write(body.data(), static_cast<std::streamsize>(body.size()));
+                };
+                const auto t1 = LoadClock::now();
+                const std::string v1full = SaveToString(scene, assetsDir);
+                const double v1fullMs = LoadMsSince(t1);
+                writeBin(stem + ".v1full.json", v1full);
+                // 旧 Save 相当（BuildSceneJson + dump(2)）の時間と大きさ。
+                const auto t2 = LoadClock::now();
+                const std::string v1pretty = BuildSceneJson(scene, assetsDir).dump(2);
+                const double v1prettyMs = LoadMsSince(t2);
+                // 新 Save 相当（BuildSceneJson + v2 変換 + 整形）。
+                const auto t3 = LoadClock::now();
+                const std::string v2 = SaveToStringV2(scene, assetsDir);
+                const double v2Ms = LoadMsSince(t3);
+                writeBin(stem + ".v2.json", v2);
+                writeBin(stem + ".v1save.json", v1pretty);   // 旧 Save が書いていたもの（F4: v1 と v2 の読み込み時間の比較用）
+                Logger::Info("SceneFormatCheck {}: v1full {} bytes ({:.0f} ms) | v1 save (dump(2)) {} bytes {:.0f} ms | v2 save {} bytes {:.0f} ms",
+                             stem, v1full.size(), v1fullMs, v1pretty.size(), v1prettyMs, v2.size(), v2Ms);
+            }
+        }
+
+        // 読み込み時間の内訳（段階 3「実行用バイナリ」の判断材料）。entities は生成全体で、models はそのうち Spawn（モデル読み込み）の合計。
+        Logger::Info("Scene loaded ({} entities, format v{}): {} | read {:.0f} ms, parse {:.0f}, inflate {:.0f}, entities {:.0f} (models {:.0f}), parents {:.0f}, total {:.0f} ms",
+                     entityCount, tm.version, filePath, tm.readMs, tm.parseMs, tm.inflateMs,
+                     tm.entitiesMs, tm.modelMs, tm.parentMs, loadTotalMs);
     }
     return ok;
 }
@@ -2548,34 +2715,64 @@ std::string SceneSerializer::SaveToString(const Scene& scene, const std::string&
     return root.dump();
 }
 
+std::string SceneSerializer::SaveToStringV2(const Scene& scene, const std::string& assetsDir)
+{
+    json root = BuildSceneJson(scene, assetsDir);
+    scenefmt::ConvertToV2(root);
+    return scenefmt::DumpSceneV2(root);
+}
+
 bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
                                      const std::string& assetsDir)
 {
-    json root;
-    try
-    {
-        root = json::parse(jsonStr);
-    }
-    catch (const json::parse_error& e)
-    {
-        Logger::Error("JSON の解析に失敗しました（スナップショット）: {}", e.what());
-        return false;
-    }
-
-    bool ok = false;
-    try
-    {
-        ok = ApplySceneJson(scene, root, assetsDir);
-    }
-    catch (const json::exception& e)
-    {
-        Logger::Error("シーン復元を中断しました（JSON の値が不正）: {}", e.what());
-        return false;
-    }
+    size_t entityCount = 0;
+    const bool ok = LoadSceneText(scene, jsonStr, assetsDir, /*fromFile=*/false, &entityCount);
     if (ok)
-        Logger::Info("Scene restored from snapshot ({} entities)",
-                     root.contains("entities") ? root["entities"].size() : 0);
+        Logger::Info("Scene restored from snapshot ({} entities)", entityCount);
     return ok;
+}
+
+std::string SceneSerializer::BuildDefaultsTableV2Json()
+{
+    RegisterCoreComponentSerializers();   // プローブはここで積まれる
+    json table = json::object();
+    {
+        // transform: 位置は表に入れない（書く側が常に position を持つ）。回転 / スケールだけが対象。
+        entt::registry reg;
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{ "probe" });
+        reg.emplace<Transform>(e);
+        json ej = SerializeEntityJson(reg, e, std::string{});
+        json tj = ej.value("transform", json::object());
+        tj.erase("position");
+        table["transform"] = std::move(tj);
+    }
+    for (const auto& pr : DefaultsProbes())
+    {
+        json j = pr.run();
+        if (j.is_object()) table[pr.key] = std::move(j);
+    }
+    {
+        // ★rigidBody だけは「既定構築」ではなく「静的コライダー」の姿を表にする（設計書 §3.1 の `"rigidBody":{}` = 静的）。
+        //   実シーンの剛体はほぼ全部が静的コライダー（Dead Mall は 13522 体が同一設定）で、既定構築の動的剛体を表にすると
+        //   静的の設定 5 項目が全員に残り、Dead Mall が 5MB（F3）に収まらない。表は凍結データで v2 のファイルにだけ効く
+        //   （v1 の読み込みは従来どおり RigidBody{} = 動的）。人間 / AI が省略形 `rigidBody:{}` を書くと静的になる点に注意。
+        entt::registry reg;
+        const entt::entity e = reg.create();
+        reg.emplace<NameTag>(e, NameTag{ "probe" });
+        reg.emplace<Transform>(e);
+        RigidBody rb;
+        rb.motionType  = MotionType::Static;
+        rb.mass        = 0.0f;
+        rb.friction    = 0.8f;
+        rb.restitution = 0.0f;
+        rb.useGravity  = false;
+        reg.emplace<RigidBody>(e, rb);
+        json ej = SerializeEntityJson(reg, e, std::string{});
+        if (ej.contains("rigidBody")) table["rigidBody"] = ej["rigidBody"];
+    }
+    scenefmt::NormalizeFloats(table);
+    return table.dump(2) + "\n";
 }
 
 bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
@@ -2588,6 +2785,9 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
     try { root = json::parse(ifs); }
     catch (...) { return false; }
     ifs.close();
+
+    // v2 は既定値を省略している。補完してから読む（補完後は v1 保存と同じ形）。
+    scenefmt::InflateScene(root);
 
     if (!root.contains("entities") || !root["entities"].is_array())
         return false;
@@ -2609,9 +2809,10 @@ bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
         {
             auto& t = reg.get<Transform>(e);
             const auto& tj = ej["transform"];
-            t.position = DeserializeFloat3(tj["position"], t.position);
-            t.rotation = DeserializeFloat3(tj["rotation"], t.rotation);
-            t.scale    = DeserializeFloat3(tj["scale"],    t.scale);
+            // ★v2 は position が無いこともあり得る（const operator[] の欠損キーは未定義動作なので contains で守る）。
+            if (tj.contains("position")) t.position = DeserializeFloat3(tj["position"], t.position);
+            if (tj.contains("rotation")) t.rotation = DeserializeFloat3(tj["rotation"], t.rotation);
+            if (tj.contains("scale"))    t.scale    = DeserializeFloat3(tj["scale"],    t.scale);
         }
 
         // Material PBR オーバーライド
@@ -3192,7 +3393,12 @@ SceneSerializer::RewriteAssetPathRefsInFiles(const std::string& assetsDir,
             out.failed.push_back(MakeRelative(p.string(), assetsDir));
             continue;
         }
-        ofs << doc.dump(2);
+        // v2 のシーンは v2 の整形で書き戻す（dump(2) だと 1 体 45 行に崩れて差分が全体に広がる）。
+        // 値は strip 済みのまま触らない（文字列の付け替えしかしていない）。
+        if (scenefmt::IsV2(doc) && doc.contains("entities") && doc["entities"].is_array())
+            ofs << scenefmt::DumpSceneV2(doc);
+        else
+            ofs << doc.dump(2);
         ++out.filesChanged;
         out.refsChanged += changed;
         if (static_cast<int>(out.files.size()) < kMaxReportedFiles)

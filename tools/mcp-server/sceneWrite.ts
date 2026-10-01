@@ -62,6 +62,10 @@ export const REFLECTED_COMPONENT_KEYS = [
   "brain", "audioReverbZone",
   // 仮想ジオメトリ（.vgeo）。
   "virtualGeometry",
+  // ★v2 形式（既定値を省略するのでキーだけのエンティティが増えた）で顕在化した取りこぼし。
+  //   meshCollider は Dead Mall の全エンティティが持つのに「未知キー」と警告されていた。
+  //   エンジンは 3 つとも SceneSerializer.cpp で反射登録している（scene_defaults_v2.json にもキーがある）。
+  "meshCollider", "waterBody", "foliageLayer",
 ] as const;
 
 /** SerializeEntityJson が直接書くキー。 */
@@ -174,7 +178,7 @@ export function summarizeScene(root: unknown): SceneSummary {
     if (!isPlainObject(e)) continue;
     const kind = entityKind(e);
     summary.byKind[kind] = (summary.byKind[kind] ?? 0) + 1;
-    if (typeof e.parent === "number") summary.parentedCount++;
+    if (typeof e.parent === "number" || typeof e.parentGuid === "string") summary.parentedCount++;   // v2 は parentGuid だけ
     for (const k of Object.keys(e)) {
       if (k === "name" || k === "transform" || k === "parent") continue;
       summary.byComponent[k] = (summary.byComponent[k] ?? 0) + 1;
@@ -216,8 +220,8 @@ export function validateSceneJson(root: unknown, opts: ValidateOptions = {}): Sc
   }
   if (root.version === undefined) {
     warnings.push('ルートに "version" が無い。SceneSerializer は version:1 を書く。付けておくこと');
-  } else if (root.version !== 1) {
-    warnings.push(`version が ${JSON.stringify(root.version)}。エンジンが書くのは 1`);
+  } else if (root.version !== 1 && root.version !== 2) {
+    warnings.push(`version が ${JSON.stringify(root.version)}。エンジンが読めるのは 1(完全形)と 2(既定値を省略した形。docs/SCENE_FORMAT_DESIGN.md)`);
   }
   if (root.shadows !== undefined && typeof root.shadows !== "boolean") {
     errors.push('"shadows" は bool。数値や文字列だと LoadFromString が既定(true)に落ちる');
@@ -240,6 +244,7 @@ export function validateSceneJson(root: unknown, opts: ValidateOptions = {}): Sc
   const entities = Array.isArray(root.entities) ? root.entities : [];
   const assets = opts.knownAssets ? new Set(opts.knownAssets) : null;
   const nameSeen = new Map<string, number>();
+  const guidIndex = guidIndexOf(entities);
 
   entities.forEach((raw, i) => {
     const at = `entities[${i}]`;
@@ -290,6 +295,15 @@ export function validateSceneJson(root: unknown, opts: ValidateOptions = {}): Sc
         errors.push(`${at}.parent = ${e.parent} が範囲外(0..${entities.length - 1})`);
       } else if (e.parent === i) {
         errors.push(`${at}.parent が自分自身を指している`);
+      }
+    }
+
+    // parentGuid(v2 では親参照の正。parent index は書かれない)
+    if (e.parentGuid !== undefined) {
+      if (typeof e.parentGuid !== "string" || !/^[0-9a-fA-F]{1,16}$/.test(e.parentGuid)) {
+        errors.push(`${at}.parentGuid は 16 桁以下の hex 文字列。数値で書くと JS が下位ビットを丸める`);
+      } else if (!guidIndex.has(e.parentGuid.toLowerCase().padStart(16, "0"))) {
+        warnings.push(`${at}.parentGuid "${e.parentGuid}" を guid に持つエンティティが無い。エンジンは parent(index) へフォールバックし、無ければルートのままにする`);
       }
     }
 
@@ -400,7 +414,7 @@ export function validateSceneJson(root: unknown, opts: ValidateOptions = {}): Sc
   });
 
   // 親子の循環(自己参照は上で弾いたので、ここは 2 段以上の輪)
-  const cycle = findParentCycle(entities);
+  const cycle = findParentCycle(entities, guidIndex);
   if (cycle) {
     errors.push(`親子関係が循環している: ${cycle.map((i) => `entities[${i}]`).join(" → ")}`);
   }
@@ -415,10 +429,27 @@ export function validateSceneJson(root: unknown, opts: ValidateOptions = {}): Sc
   return { ok: errors.length === 0, errors, warnings, summary: summarizeScene(root) };
 }
 
+/** guid(16 桁 hex・小文字) → entities の添字。 */
+function guidIndexOf(entities: unknown[]): Map<string, number> {
+  const m = new Map<string, number>();
+  entities.forEach((e, i) => {
+    if (isPlainObject(e) && typeof e.guid === "string") {
+      const g = e.guid.toLowerCase().padStart(16, "0");
+      if (!m.has(g)) m.set(g, i);   // 重複は先勝ち（エンジンと同じ）
+    }
+  });
+  return m;
+}
+
 /** parent チェーンの循環を 1 つ見つける(見つからなければ null)。 */
-function findParentCycle(entities: unknown[]): number[] | null {
+function findParentCycle(entities: unknown[], guidIndex: Map<string, number> = guidIndexOf(entities)): number[] | null {
   const parentOf = entities.map((e) => {
     if (!isPlainObject(e)) return -1;
+    // エンジンと同じ優先順: parentGuid → parent(index)
+    if (typeof e.parentGuid === "string") {
+      const gi = guidIndex.get(e.parentGuid.toLowerCase().padStart(16, "0"));
+      if (gi !== undefined) return gi;
+    }
     const p = e.parent;
     return typeof p === "number" && Number.isInteger(p) && p >= 0 && p < entities.length ? p : -1;
   });

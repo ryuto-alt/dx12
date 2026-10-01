@@ -8,6 +8,7 @@ import { compareLook, roundDelta, roundStats } from "../lookCompare.ts";
 import os from "node:os";
 import { buildContactSheet, type PathMode, planCameraPath } from "../contactSheet.ts";
 import { assetsDirFromScenePath, checkScenePath, summarizeScene, validateSceneJson } from "../sceneWrite.ts";
+import { convertToV2, dumpSceneV2, inflateScene, isV2 } from "../sceneFormat.ts";
 import { engine, errResult, imageResult, jevProjectBaseDir, regRaw, run } from "./core.ts";
 import { writeJournalEntry } from "../journalTs.ts";
 
@@ -398,7 +399,8 @@ regRaw(
         fs.writeFileSync(backupPath, prevText);
         let prevSummary: unknown = null;
         let parseError: string | null = null;
-        try { prevSummary = summarizeScene(JSON.parse(prevText)); }
+        // v2 は既定値を省略している。補完してから数える（コンポーネントの有無はキーで分かるが、他の読み手と流儀を揃える）
+        try { prevSummary = summarizeScene(inflateScene(JSON.parse(prevText))); }
         catch (e: any) { parseError = e.message; }
         replaced = {
           bytes: Buffer.byteLength(prevText),
@@ -420,9 +422,11 @@ regRaw(
         } else journal = { skipped: "エンジンに繋がらずプロジェクトが分からない" };
       }
 
-      // 5) 書き出し(SceneSerializer と同じ 2 スペースインデント)
+      // 5) 書き出し。version >= 2 で渡されたものは v2 の整形（ルート設定は 2 スペース・entities は 1 行 1 体・最短 float）で書く。
+      //    v1（version 無し / 1）は従来どおり 2 スペースインデント。★v1 を勝手に v2 へ変換しない:
+      //    v1 の欠けたフィールドは構造体の既定、v2 では表の既定（rigidBody は静的）になり意味が変わるため。
       fs.mkdirSync(path.dirname(absPath), { recursive: true });
-      const text = JSON.stringify(root, null, 2);
+      const text = isV2(root) ? dumpSceneV2(convertToV2(root as Record<string, any>)) : JSON.stringify(root, null, 2);
       fs.writeFileSync(absPath, text, "utf8");
 
       // 6) 任意で開く
