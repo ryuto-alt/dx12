@@ -304,7 +304,8 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         const uint3 cnt = uint3(ddgiCounts.xyz);
         const float3 g  = (si.worldPos - ddgiOrigin.xyz) / max(ddgiSpacing.xyz, 1e-4);
         const int3 c = clamp(int3(round(g)), int3(0, 0, 0), int3(cnt) - 1);
-        const float4 pd = DdgiLoadProbeData(DdgiProbeIndex(uint3(c), cnt), cnt);
+        const uint3 sc = (uint3(c) + uint3(ddgiScroll0.xyz)) % cnt;   // 記憶領域の座標（カスケード 0 のみ）
+        const float4 pd = DdgiLoadProbeData(DdgiProbeIndex(sc, cnt), cnt);
         const float off = saturate(length(pd.xyz) / max(ddgiSpacing.x, 1e-4) / 0.45);
         return float3(pd.w < 0.5 ? 1.0 : 0.0, pd.w >= 0.5 ? 0.6 : 0.0, off);
     }

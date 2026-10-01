@@ -54,6 +54,11 @@ constexpr float kFitMinHeight    = 4.0f;    // 平らな床だけのシーンで
 constexpr float kFitMinWidth     = 8.0f;    // 水平の最小の広さ(m)。小さな物 1 個だけでもこの幅は覆う
 constexpr float kFitHugeExtent  = 100.0f;  // 水平にこれを超える箱は「背景（巨大な床・地形）」とみなす(m)
 constexpr float kFitHugeClamp    = 100.0f;   // 巨大な箱しか無いとき、中心のまわりに切り取る一辺(m)
+// GI S4: 新しい既定 = カメラ追従のスクロール格子 + 2 カスケード（1 カスケード 22x8x22。近 0.8m = 17.6m 四方で部屋 1 つが入る広さ、遠 2.0m = 44m 四方）。
+//   数値は GI_S4_REPORT.md の測定で決めた（GR-1 で 0.6m / 1.5〜3.2m 各種を比べ、A1 の余裕と GPU 時間の釣り合い）。
+constexpr int   kFollowCountX = 22, kFollowCountY = 8, kFollowCountZ = 22;
+constexpr float kFollowSpacing  = 0.8f;
+constexpr float kFollowSpacing1 = 2.0f;
 constexpr f32   kUndoAmbientBack = 0.25f;   // 旧へ戻すとき、ambient が 0 の太陽へ入れる値（DirectionalLight の既定）
 
 // 箱の集合から格子の対象範囲を決める（純関数）。
@@ -66,6 +71,9 @@ Bounds ChooseBounds(const std::vector<Box>& boxes);
 //   範囲の外へ 0.5 間隔ぶん張り出し、縦は kFitMinHeight 以上を確保する。格子は範囲の中心に揃える。
 //   enabled は true にして返す。bounds が無効なら部屋 1 つぶんの既定の範囲（±8m・高さ 4m）を使う。
 DdgiSettings FitDdgiToBounds(const DdgiSettings& base, const Bounds& bounds);
+
+// GI S4: カメラ追従のスクロール格子 + 2 カスケードの既定（純関数）。base の格子以外の項目は引き継ぎ、enabled は true にして返す。
+DdgiSettings FollowCameraDefaults(const DdgiSettings& base);
 
 // シーンの動かない MeshRenderer の AABB を集める（エディタ用グリッド・動く剛体は除く）。
 std::vector<Box> CollectStaticBoxes(const entt::registry& reg);
@@ -87,7 +95,8 @@ struct Options
 {
     bool dxrSupported = true;   // false なら「新」へは切り替えない（理由を返す）
     const char* whyNot = nullptr;   // dxrSupported=false のときの理由（標準語。nullptr なら DXR 非対応の定型文）
-    bool refitGrid    = true;   // true: 格子を毎回フィットし直す / false: DDGI が既に ON なら今の格子（手置き）を残す
+    bool refitGrid    = true;   // true: 格子を毎回置き直す / false: DDGI が既に ON なら今の格子（手置き）を残す
+    bool fitToScene   = false;  // refitGrid のとき: false（既定）= カメラ追従 2 カスケード / true = シーンの AABB へ合わせた固定ボリューム
 };
 
 struct Result
@@ -109,9 +118,13 @@ Result ApplyNew(Scene& scene, const Options& opt);
 //   直前の状態へ正確に戻したいときは Undo を使う（こちらは「旧の既定へ戻す」操作）。
 Result ApplyLegacy(Scene& scene);
 
-// DDGI の格子だけをシーンのジオメトリへ合わせ直す（ジオメトリを足した後の「範囲を合わせ直す」）。
+// 固定ボリュームにして、動かない物のバウンディングボックスへ合わせる（FitDdgiToBounds）。followCamera は false になる。
+// 下の説明は従来のもの。DDGI の格子だけをシーンのジオメトリへ合わせ直す（ジオメトリを足した後の「範囲を合わせ直す」）。
 //   モード・ambient・SSGI・RT 影は触らない。DDGI は ON にして返す。
 Result RefitGrid(Scene& scene);
+
+// DDGI をカメラ追従のスクロール格子 + 2 カスケードにする（固定ボリュームから戻す。モード・ambient・SSGI・RT 影は触らない）。
+Result UseFollowCamera(Scene& scene);
 
 // 画面表示用の 1 行（"旧" / "新" + DDGI の状態）。
 const char* ModeLabel(GiMode m);

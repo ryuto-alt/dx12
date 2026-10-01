@@ -112,8 +112,8 @@ end
 constexpr const char* kEmptyMainScene = R"JSON({
   "gi": { "mode": "new" },
   "raytracing": { "shadowEnabled": true,
-    "ddgi": { "enabled": true, "probeCountX": 10, "probeCountY": 6, "probeCountZ": 10, "spacing": 1.0,
-              "originX": -4.5, "originY": -0.5, "originZ": -4.5, "bounceIntensity": 1.0 } },
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
@@ -324,8 +324,8 @@ end
 constexpr const char* kFpsMainScene = R"JSON({
   "gi": { "mode": "new" },
   "raytracing": { "shadowEnabled": true,
-    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
-              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
@@ -479,8 +479,8 @@ constexpr const char* kFpsMainScene = R"JSON({
 constexpr const char* kFpsTitleScene = R"JSON({
   "gi": { "mode": "new" },
   "raytracing": { "shadowEnabled": true,
-    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
-              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
@@ -585,8 +585,8 @@ constexpr const char* kFpsTitleScene = R"JSON({
 constexpr const char* kFpsClearScene = R"JSON({
   "gi": { "mode": "new" },
   "raytracing": { "shadowEnabled": true,
-    "ddgi": { "enabled": true, "probeCountX": 18, "probeCountY": 6, "probeCountZ": 18, "spacing": 1.0,
-              "originX": -8.5, "originY": -0.5, "originZ": -8.5, "bounceIntensity": 1.0 } },
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
@@ -855,8 +855,8 @@ end
 constexpr const char* kTpsMainScene = R"JSON({
   "gi": { "mode": "new" },
   "raytracing": { "shadowEnabled": true,
-    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
-              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
@@ -1015,8 +1015,8 @@ constexpr const char* kTpsMainScene = R"JSON({
 constexpr const char* kTpsTitleScene = R"JSON({
   "gi": { "mode": "new" },
   "raytracing": { "shadowEnabled": true,
-    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
-              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
@@ -1114,8 +1114,8 @@ constexpr const char* kTpsTitleScene = R"JSON({
 constexpr const char* kTpsClearScene = R"JSON({
   "gi": { "mode": "new" },
   "raytracing": { "shadowEnabled": true,
-    "ddgi": { "enabled": true, "probeCountX": 18, "probeCountY": 6, "probeCountZ": 18, "spacing": 1.0,
-              "originX": -8.5, "originY": -0.5, "originZ": -8.5, "bounceIntensity": 1.0 } },
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",

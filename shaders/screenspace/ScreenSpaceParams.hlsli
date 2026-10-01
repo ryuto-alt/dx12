@@ -47,7 +47,10 @@ cbuffer SsParams : register(b0)
 
     float4 gDdgi0;         // xyz=DDGI 格子の原点 w=GI モード New で DDGI が使える(1/0)
     float4 gDdgi1;         // xyz=プローブ間隔 w=視線バイアス(m)
-    float4 gDdgi2;         // xyz=プローブ数 w=法線バイアス(m)
+    float4 gDdgi2;         // xyz=プローブ数（1 カスケードぶん）w=法線バイアス(m)
+    float4 gDdgi3;         // xyz=カスケード 1 の窓の原点 w=カスケード 1 のプローブ間隔（GI S4）
+    float4 gDdgi4;         // xyz=カスケード 0 の記憶領域のずらし w=カスケード数（0/1 = 固定ボリューム）
+    float4 gDdgi5;         // xyz=カスケード 1 の記憶領域のずらし w=予約
 };
 
 #define SS_INV_RT   (gRT.xy)

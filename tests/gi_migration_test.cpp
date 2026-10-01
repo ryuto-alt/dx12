@@ -203,6 +203,14 @@ void TestApply()
     CHECK(s.GetGiSettings().mode == GiMode::New);
     CHECK(s.GetDdgiSettings().enabled && s.GetDdgiSettings().bounceIntensity == 1.0f);
     CHECK(Total(s.GetDdgiSettings()) <= 4096);
+    // GI S4: 新しい既定は「カメラ追従のスクロール格子 + 2 カスケード」（シーンの AABB に依らない）
+    {
+        const DdgiSettings& d = s.GetDdgiSettings();
+        CHECK(d.followCamera);
+        CHECK(d.probeCountX == gi::kFollowCountX && d.probeCountY == gi::kFollowCountY && d.probeCountZ == gi::kFollowCountZ);
+        CHECK(d.spacing == gi::kFollowSpacing && d.spacing1 == gi::kFollowSpacing1 && d.spacing1 > d.spacing);
+        CHECK(Total(d) <= static_cast<int>(DdgiVolume::kMaxProbes));   // 1 カスケードぶんが上限内（全体は 2 倍）
+    }
     CHECK(s.GetSsgiSettings().enabled && s.GetRtSettings().shadowEnabled);
     CHECK(r.ambientChanged == 2);
     for (auto [e, dl] : s.GetRegistry().view<DirectionalLight>().each()) { (void)e; CHECK(dl.ambient == 0.0f); }
@@ -230,7 +238,11 @@ void TestApply()
         CHECK(k.applied && !k.fitted && s.GetDdgiSettings().probeCountX == 5 && s.GetDdgiSettings().spacing == 3.0f);
         gi::Options refit; refit.refitGrid = true;
         const gi::Result f = gi::ApplyNew(s, refit);
-        CHECK(f.fitted && s.GetDdgiSettings().spacing == 1.0f);
+        CHECK(f.fitted && s.GetDdgiSettings().followCamera && s.GetDdgiSettings().spacing == gi::kFollowSpacing);
+        // シーンへ合わせた固定ボリュームを選ぶ（従来の自動フィット）
+        gi::Options fit; fit.refitGrid = true; fit.fitToScene = true;
+        const gi::Result fs = gi::ApplyNew(s, fit);
+        CHECK(fs.fitted && !s.GetDdgiSettings().followCamera && s.GetDdgiSettings().spacing == 1.0f);
         // DDGI が OFF なら refitGrid=false でも置く
         s.GetDdgiSettings().enabled = false;
         const gi::Result z = gi::ApplyNew(s, keep);
@@ -297,6 +309,10 @@ void TestSerialization()
         CHECK(SceneSerializer::Load(d, path, ""));
         CHECK(d.GetGiSettings().mode == GiMode::New);
         CHECK(d.GetDdgiSettings().enabled && d.GetDdgiSettings().probeCountX == s.GetDdgiSettings().probeCountX);
+        // GI S4: カメラ追従 / 遠景の間隔が往復する。既定のままの項目は書かない（旧シーンの JSON は変わらない）
+        CHECK(j["raytracing"]["ddgi"].value("followCamera", false));
+        CHECK(d.GetDdgiSettings().followCamera && d.GetDdgiSettings().spacing1 == s.GetDdgiSettings().spacing1);
+        CHECK(!j["raytracing"]["ddgi"].contains("budgetMs"));
         CHECK(d.GetSsgiSettings().enabled && d.GetRtSettings().shadowEnabled);
         for (auto [e, dl] : d.GetRegistry().view<DirectionalLight>().each()) { (void)e; CHECK(dl.ambient == 0.0f); }
         // 旧へ戻して保存 → gi キーが消える
@@ -334,7 +350,8 @@ void TestTemplates()
             const int nx = dd.value("probeCountX", 0), ny = dd.value("probeCountY", 0), nz = dd.value("probeCountZ", 0);
             CHECK(nx >= 2 && ny >= 2 && nz >= 2 && nx <= 32 && ny <= 32 && nz <= 32);
             CHECK(nx * ny * nz <= static_cast<int>(DdgiVolume::kMaxProbes));
-            CHECK(dd.value("spacing", 0.0f) >= 1.0f);
+            CHECK(dd.value("followCamera", false));   // GI S4: 新規シーンの既定はカメラ追従（1 カスケードの格子数・近景の間隔）
+            CHECK(dd.value("spacing", 0.0f) >= 0.5f && dd.value("spacing1", 0.0f) > dd.value("spacing", 0.0f));
             CHECK(dd.value("bounceIntensity", 0.0f) == 1.0f);
             for (const auto& e : j["entities"])
                 if (e.contains("directionalLight"))

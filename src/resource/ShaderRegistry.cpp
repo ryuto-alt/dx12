@@ -445,6 +445,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"DdgiBlend_CS.cso", L"BlendCS", L"cs_6_6" },
                 { L"DdgiBlendDist_CS.cso", L"BlendDistanceCS", L"cs_6_6" },
                 { L"DdgiProbeData_CS.cso", L"ProbeDataCS", L"cs_6_6" },
+                { L"DdgiLightGrid_CS.cso", L"LightGridCS", L"cs_6_6" },
             },
             { "ddgi/DdgiCommon.hlsli", "raytracing/RtBindless.hlsli", "forward/ClusterCommon.hlsli" },
         },

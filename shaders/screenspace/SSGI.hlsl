@@ -92,13 +92,16 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
         const float3 posW = mul(float4(P, 1.0), gInvView).xyz;
         const float3 camW = mul(float4(0.0, 0.0, 0.0, 1.0), gInvView).xyz;
         const float3 camDir = normalize(posW - camW);
-        const DdgiTaps taps = DdgiComputeTaps(g_ddgiDistance, g_linearClamp, posW, surf.N, camDir,
-                                              gDdgi0.xyz, gDdgi1.xyz, uint3(gDdgi2.xyz),
-                                              gDdgi1.w, gDdgi2.w);
-        // taps.conf = 0（範囲外 / 周囲 8 個とも壁の中）なら DDGI は答えられない → IBL へ戻す
-        if (taps.conf > 0.0)
-            ddgiMissIrr = DdgiFetchTaps(g_ddgiIrradiance, g_linearClamp, taps, uint3(gDdgi2.xyz), surf.N).rgb
-                        * (taps.conf * gMisc2.y);
+        const uint3 gc    = uint3(gDdgi2.xyz);
+        const uint  nCasc = max(uint(gDdgi4.w), 1u);
+        const DdgiVol v0 = DdgiMakeVol(gDdgi0.xyz, gDdgi1.xyz, gc, int3(gDdgi4.xyz), 0u);
+        const DdgiVol v1 = DdgiMakeVol(gDdgi3.xyz, gDdgi3.www, gc, int3(gDdgi5.xyz), gc.x * gc.y * gc.z);
+        const DdgiNewResult dr = DdgiSampleNew(g_ddgiIrradiance, g_ddgiDistance, g_linearClamp, posW, surf.N, camDir,
+                                               surf.N, false, v0, v1, nCasc, uint3(gc.x, gc.y, gc.z * nCasc),
+                                               gDdgi1.w, gDdgi2.w);
+        // dr.conf = 0（範囲外 / 周囲 8 個とも壁の中）なら DDGI は答えられない → IBL へ戻す
+        if (dr.conf > 0.0)
+            ddgiMissIrr = dr.irrN * (dr.conf * gMisc2.y);
     }
 
     [loop]

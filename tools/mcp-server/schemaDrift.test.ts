@@ -91,7 +91,7 @@ const SHARED_BLOCK_KEYS: Record<string, string[]> = {
     "aoDenoise", "aoDenoiseRadius", "maxInstances", "forceBuildTlas",
     "ddgiEnabled", "ddgiSpacing", "ddgiProbeCountX", "ddgiProbeCountY", "ddgiProbeCountZ",
     "ddgiOriginX", "ddgiOriginY", "ddgiOriginZ", "ddgiRayLength", "ddgiHysteresis",
-    "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity",
+    "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity", "ddgiFollowCamera", "ddgiSpacing1", "ddgiBudgetMs",
   ],
   // ApplicationMcp*.cpp(連結):6358 `terrain_paint || terrain_autopaint`
   terrain_paint: [
@@ -441,7 +441,7 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
       "aoDenoise", "aoDenoiseRadius", "maxInstances", "forceBuildTlas",
       "ddgiEnabled", "ddgiSpacing", "ddgiProbeCountX", "ddgiProbeCountY", "ddgiProbeCountZ",
       "ddgiOriginX", "ddgiOriginY", "ddgiOriginZ", "ddgiRayLength", "ddgiHysteresis",
-      "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity",
+      "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity", "ddgiFollowCamera", "ddgiSpacing1", "ddgiBudgetMs",
     ],
     dx12_get_dxr: [],
   };

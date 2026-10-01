@@ -1278,6 +1278,14 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"normalBias",  dg.normalBias},
             {"bounceIntensity", dg.bounceIntensity},
         };
+        // GI S4: カメラ追従 / カスケード 1 の間隔 / 予算。既定のままなら書かない（旧シーンの JSON は 1 バイトも変わらない）。
+        {
+            auto& jd = root["raytracing"]["ddgi"];
+            const DdgiSettings def{};
+            if (dg.followCamera)              jd["followCamera"] = true;
+            if (dg.spacing1 != def.spacing1)  jd["spacing1"]     = dg.spacing1;
+            if (dg.budgetMs != def.budgetMs)  jd["budgetMs"]     = dg.budgetMs;
+        }
     }
 
     // GI モード（シーン単位）。Legacy（既定）は書かない＝既存シーンの JSON は 1 バイトも変わらない。
@@ -1584,6 +1592,9 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.intensity   = j.value("intensity",   dg.intensity);
         dg.normalBias  = j.value("normalBias",  dg.normalBias);
         dg.bounceIntensity = j.value("bounceIntensity", dg.bounceIntensity);
+        dg.followCamera = j.value("followCamera", dg.followCamera);
+        dg.spacing1     = j.value("spacing1",     dg.spacing1);
+        dg.budgetMs     = j.value("budgetMs",     dg.budgetMs);
         // ★MCP の set_dxr と同じ範囲へ丸める（手書き JSON でプローブ数 999 を書かれても落ちない）
         dg.probeCountX = std::clamp(dg.probeCountX, 1, 32);
         dg.probeCountY = std::clamp(dg.probeCountY, 1, 32);
@@ -1593,6 +1604,8 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.hysteresis  = std::clamp(dg.hysteresis, 0.0f, 0.995f);
         dg.intensity   = std::clamp(dg.intensity,  0.0f, 10.0f);
         dg.normalBias  = std::clamp(dg.normalBias, 0.0f, 1.0f);
+        dg.spacing1    = std::clamp(dg.spacing1,   0.1f, 100.0f);
+        dg.budgetMs    = std::clamp(dg.budgetMs,   0.05f, 20.0f);
         // 1 を超えさせない。E/(1-ρ·b) の幾何級数が発散する。
         dg.bounceIntensity = std::clamp(dg.bounceIntensity, 0.0f, 1.0f);
     }

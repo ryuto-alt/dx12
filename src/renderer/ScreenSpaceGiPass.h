@@ -89,6 +89,12 @@ public:
         DirectX::XMFLOAT3 ddgiCounts{1, 1, 1};
         float  ddgiViewBias = 0.0f, ddgiNormalBias = 0.0f;
         float  ddgiInvUnitScale = 1.0f;                  // 物理ライティング単位: DDGI の内部単位 → シーンの単位
+        // GI S4: カメラ追従のスクロール格子 + 2 カスケード。固定ボリュームは scroll=0・cascades=1。
+        DirectX::XMFLOAT3 ddgiC1Origin{0, 0, 0};         // カスケード 1 の窓の原点
+        float  ddgiC1Spacing = 1.0f;                     // カスケード 1 のプローブ間隔
+        DirectX::XMFLOAT3 ddgiScroll0{0, 0, 0};          // カスケード 0 の記憶領域のずらし
+        DirectX::XMFLOAT3 ddgiScroll1{0, 0, 0};
+        float  ddgiCascades = 1.0f;
     };
 
     // SSR / SSGI を生成し、それぞれの SRV index を返す（生成しなかった側は kInvalidIndex）。

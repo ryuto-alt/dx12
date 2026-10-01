@@ -300,25 +300,56 @@ float4 DdgiLoadProbeData(uint probeIndex, uint3 counts)
     return DDGI_PROBEDATA_LOAD(DdgiProbeDataTexel(probeIndex, counts));
 }
 
+/// カスケード 1 本ぶんの格子（GI S4: カメラ追従のスクロール格子 + 2 カスケード）。
+//   origin  : 窓の最小コーナー（ワールド）。ローカル座標 c のプローブ = origin + c * spacing（+ 再配置オフセット）
+//   scroll  : プローブの記憶領域のずらし。ローカル座標 c の記憶領域 = (c + scroll) mod counts（固定格子は 0）
+//   baseIdx : このカスケードの先頭プローブの通し番号（カスケード番号 * 1 カスケードのプローブ数）
+// ★アトラスの行はカスケードごとに積む（atlasCounts = (cx, cy, cz * カスケード数)）。両カスケードの counts は同じ。
+struct DdgiVol
+{
+    float3 origin;
+    float3 spacing;
+    uint3  counts;
+    int3   scroll;
+    uint   baseIdx;
+};
+
+DdgiVol DdgiMakeVol(float3 origin, float3 spacing, uint3 counts, int3 scroll, uint baseIdx)
+{
+    DdgiVol v;
+    v.origin = origin; v.spacing = spacing; v.counts = counts; v.scroll = scroll; v.baseIdx = baseIdx;
+    return v;
+}
+
+// 近いカスケードの外縁で遠いカスケードへ混ぜる幅（セル数）。DdgiSchedule.h の kCascadeBlendCells と同じ値にすること。
+#define DDGI_CASCADE_BLEND_CELLS 1.0
+
 // 補間の結果（8 個の重みと添字）。同じ重みで複数の方向のアトラスを引くために分けてある。
 struct DdgiTaps
 {
-    uint  idx[8];
+    uint  idx[8];     // プローブの通し番号（baseIdx 込み）
     float w[8];
     float wsum;
-    float conf;   // 格子の境界フェード。重みが全部 0（8 個とも壁の中）なら 0
+    float conf;       // 窓の外側のフェード。重みが全部 0（8 個とも壁の中）なら 0
+    float cover;      // 窓の内側のフェード（外縁 coverBand セルで 0 へ。カスケードの切り替え用。coverBand=0 なら 1）
 };
 
 // camDir: カメラ → 点の向き（プローブ更新の中では「レイの進行方向」）。
+// coverBand: 窓の外縁から内側へ何セルかけて cover を 0→1 にするか（0 で cover=1）。
 DdgiTaps DdgiComputeTaps(Texture2D<float2> distAtlas, SamplerState samp,
                          float3 worldPos, float3 N, float3 camDir,
-                         float3 originWS, float3 spacing, uint3 counts,
-                         float viewBias, float normalBias)
+                         DdgiVol vol, uint3 atlasCounts,
+                         float viewBias, float normalBias, float coverBand)
 {
+    const float3 originWS = vol.origin;
+    const float3 spacing  = vol.spacing;
+    const uint3  counts   = vol.counts;
+
     DdgiTaps t;
     [unroll] for (uint z = 0; z < 8; ++z) { t.idx[z] = 0; t.w[z] = 0.0; }
     t.wsum = 0.0;
     t.conf = 0.0;
+    t.cover = 1.0;
 
     const float3 gridMax = originWS + float3(counts - 1) * spacing;
     const float3 outside  = max(originWS - worldPos, worldPos - gridMax);
@@ -330,6 +361,13 @@ DdgiTaps DdgiComputeTaps(Texture2D<float2> distAtlas, SamplerState samp,
     const float  cell     = max(max(spacing.x, max(spacing.y, spacing.z)), 1e-4);
     const float  fade     = saturate(1.0 - max(worstOut - 0.75 * cell, 0.0) / (0.5 * cell));
     if (fade <= 0.0) return t;
+    if (coverBand > 0.0)
+    {
+        // 窓の内側へ向かう距離（最外プローブの面からの深さ）。外側は負 → 0。
+        const float3 inner = min(worldPos - originWS, gridMax - worldPos);
+        t.cover = saturate(min(inner.x, min(inner.y, inner.z)) / (coverBand * cell));
+        if (t.cover <= 0.0) return t;
+    }
 
     // surface bias。法線方向は壁際で裏側のプローブを引くのを減らし、視線方向は
     // 「カメラ側へ寄せる」ことで、壁に張り付いた画素が壁の向こうのプローブを拾うのを減らす。
@@ -342,11 +380,12 @@ DdgiTaps DdgiComputeTaps(Texture2D<float2> distAtlas, SamplerState samp,
     for (uint i = 0; i < 8; ++i)
     {
         const int3   off = int3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
-        const int3   c   = clamp(lo + off, int3(0, 0, 0), int3(counts) - 1);
-        const uint   pIdx = DdgiProbeIndex(uint3(c), counts);
+        const int3   c   = clamp(lo + off, int3(0, 0, 0), int3(counts) - 1);   // ローカル座標
+        const uint3  sc  = (uint3(c) + uint3(vol.scroll)) % counts;             // 記憶領域の座標（リングバッファ）
+        const uint   pIdx = vol.baseIdx + DdgiProbeIndex(sc, counts);
         t.idx[i] = pIdx;
 
-        const float4 pd = DdgiLoadProbeData(pIdx, counts);
+        const float4 pd = DdgiLoadProbeData(pIdx, atlasCounts);
         if (pd.w < 0.5) continue;   // 壁の中（無効）= 重み 0
 
         const float3 tri = lerp(1.0 - f, f, float3(off));
@@ -365,7 +404,7 @@ DdgiTaps DdgiComputeTaps(Texture2D<float2> distAtlas, SamplerState samp,
 
         // Chebyshev 可視性（押し出した位置で）。方向は「プローブ → 点」。
         {
-            const float2 m = DdgiFetchProbeDistance(distAtlas, samp, pIdx, counts,
+            const float2 m = DdgiFetchProbeDistance(distAtlas, samp, pIdx, atlasCounts,
                                                     -toProbeB / max(distB, 1e-6));
             if (distB > m.x)
             {
@@ -391,7 +430,7 @@ DdgiTaps DdgiComputeTaps(Texture2D<float2> distAtlas, SamplerState samp,
 }
 
 // 重み t でアトラスを dir 方向に引いた平均。rgb = irradiance / a = 空の可視率（BlendCS が書く）。
-float4 DdgiFetchTaps(Texture2D<float4> atlas, SamplerState samp, DdgiTaps t, uint3 counts, float3 dir)
+float4 DdgiFetchTaps(Texture2D<float4> atlas, SamplerState samp, DdgiTaps t, uint3 atlasCounts, float3 dir)
 {
     float4 sum = 0.0;
     [unroll]
@@ -399,9 +438,73 @@ float4 DdgiFetchTaps(Texture2D<float4> atlas, SamplerState samp, DdgiTaps t, uin
     {
         if (t.w[i] <= 0.0) continue;
         sum += atlas.SampleLevel(
-            samp, DdgiProbeUv(t.idx[i], counts, dir, DDGI_IRRADIANCE_TEXELS, DDGI_PROBE_TILE), 0) * t.w[i];
+            samp, DdgiProbeUv(t.idx[i], atlasCounts, dir, DDGI_IRRADIANCE_TEXELS, DDGI_PROBE_TILE), 0) * t.w[i];
     }
     return (t.wsum > 0.0) ? (sum / t.wsum) : float4(0.0, 0.0, 0.0, 0.0);
+}
+
+// ---- GI モード New のサンプル（フォワード / SSGI / プローブ更新のバウンス共通）。カスケード 1〜2 本 ----
+//   カスケード 0（近景）の外縁 kCascadeBlendCells セルの幅で、カスケード 1（遠景）へ滑らかに切り替える。
+//   カスケード 0 の外縁のプローブ（窓がずれて入ってきた直後＝まだ収束していない）は重みが 0 に近いので見えない。
+//   cascadeCount=1（固定ボリューム）なら従来と同じ（cover=1・遠景は引かない）。
+//   irrN : 法線 N 方向の irradiance / irrR : 反射方向 R の irradiance（wantR のときだけ）/ skyVisR : R 方向の空の可視率
+//   conf : 範囲外 0（呼び出し側がこの割合で IBL へ戻す）
+struct DdgiNewResult
+{
+    float3 irrN;
+    float3 irrR;
+    float  skyVisR;
+    float  conf;
+};
+
+DdgiNewResult DdgiSampleNew(Texture2D<float4> atlas, Texture2D<float2> distAtlas, SamplerState samp,
+                            float3 worldPos, float3 N, float3 camDir, float3 R, bool wantR,
+                            DdgiVol v0, DdgiVol v1, uint cascadeCount, uint3 atlasCounts,
+                            float viewBias, float normalBias)
+{
+    DdgiNewResult o;
+    o.irrN = 0.0.xxx; o.irrR = 0.0.xxx; o.skyVisR = 1.0; o.conf = 0.0;
+
+    const bool two = cascadeCount > 1;
+    const DdgiTaps t0 = DdgiComputeTaps(distAtlas, samp, worldPos, N, camDir, v0, atlasCounts,
+                                        viewBias, normalBias, two ? DDGI_CASCADE_BLEND_CELLS : 0.0);
+    const float a0 = t0.conf * t0.cover;
+    float3 n0 = 0.0.xxx, r0 = 0.0.xxx; float s0 = 1.0;
+    if (a0 > 0.0)
+    {
+        n0 = DdgiFetchTaps(atlas, samp, t0, atlasCounts, N).rgb;
+        if (wantR) { const float4 r = DdgiFetchTaps(atlas, samp, t0, atlasCounts, R); r0 = r.rgb; s0 = r.a; }
+    }
+    float a1 = 0.0;
+    float3 n1 = 0.0.xxx, r1 = 0.0.xxx; float s1 = 1.0;
+    if (two && a0 < 1.0)
+    {
+        const float ratio = v1.spacing.x / max(v0.spacing.x, 1e-4);
+        const DdgiTaps t1 = DdgiComputeTaps(distAtlas, samp, worldPos, N, camDir, v1, atlasCounts,
+                                            viewBias * ratio, normalBias * ratio, 0.0);
+        a1 = (1.0 - a0) * t1.conf;
+        if (a1 > 0.0)
+        {
+            n1 = DdgiFetchTaps(atlas, samp, t1, atlasCounts, N).rgb;
+            if (wantR) { const float4 r = DdgiFetchTaps(atlas, samp, t1, atlasCounts, R); r1 = r.rgb; s1 = r.a; }
+        }
+    }
+    const float tot = a0 + a1;
+    if (tot <= 0.0) return o;
+    if (a1 <= 0.0)   // 近景だけ（固定ボリュームもここ。従来の式と同じ値）
+    {
+        o.irrN = n0; o.irrR = r0; o.skyVisR = saturate(s0);
+    }
+    else
+    {
+        const float inv = 1.0 / tot;
+        o.irrN = (a0 * n0 + a1 * n1) * inv;
+        o.irrR = (a0 * r0 + a1 * r1) * inv;
+        o.skyVisR = saturate((a0 * s0 + a1 * s1) * inv);
+    }
+    if (!wantR) o.skyVisR = 1.0;
+    o.conf = tot;
+    return o;
 }
 
 #endif // DDGI_PROBEDATA_LOAD

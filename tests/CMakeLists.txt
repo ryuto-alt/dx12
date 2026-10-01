@@ -1653,6 +1653,18 @@ endif()
 #   移行の Undo/Redo が 1 操作・保存互換（旧は gi キーを書かない / 新は往復 / キー無しは旧）・テンプレートの GI 既定（2d は旧のまま）。
 #   Scene（GPU 不要）をリンクし、ProjectTemplates.cpp は直接コンパイルする（LauncherTests と同じ）。
 # ============================================================================
+# ============================================================================
+# DDGI のカメラ追従スクロール格子 + 更新スケジュール + ライトグリッド（GI S4。renderer/DdgiSchedule.h。ヘッダだけ・GPU 不要）:
+#   窓の追従とヒステリシス・リングバッファ（残るプローブの記憶領域は不変・入ってきた列だけリセット）・ラウンドロビン・予算の制御・ライトグリッドの割り当て。
+# ============================================================================
+add_executable(DdgiScheduleTests ddgi_schedule_test.cpp)
+target_include_directories(DdgiScheduleTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(DdgiScheduleTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(DdgiScheduleTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME DdgiScheduleTests COMMAND DdgiScheduleTests)
+
 if(TARGET Scene)
     add_executable(GiMigrationTests gi_migration_test.cpp
                    ${CMAKE_CURRENT_SOURCE_DIR}/../src/project/ProjectTemplates.cpp)

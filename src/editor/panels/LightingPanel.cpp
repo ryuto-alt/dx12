@@ -219,7 +219,7 @@ entt::entity FindSun(entt::registry& reg)
 
 // ── GI モードの切り替え（旧 ⇄ 新）。構成は scene/GiMigration.h（MCP の migrate_gi / 新規シーンと同じ）。
 //   gi・DDGI・SSGI・RT 影・太陽の ambient をまとめて書き換え、Undo は 1 エントリ。
-enum class GiAction { ToNew, ToLegacy, RefitGrid };
+enum class GiAction { ToNew, ToLegacy, RefitGrid, FollowCamera };
 
 void RunGiAction(Scene* scene, EditorContext& ctx, GiAction act)
 {
@@ -245,6 +245,10 @@ void RunGiAction(Scene* scene, EditorContext& ctx, GiAction act)
         r = gi::RefitGrid(*scene);
         undoName = "DDGI の範囲をシーンに合わせる";
         break;
+    case GiAction::FollowCamera:
+        r = gi::UseFollowCamera(*scene);
+        undoName = "DDGI をカメラ追従にする";
+        break;
     }
     if (!r.applied)
     {
@@ -257,8 +261,10 @@ void RunGiAction(Scene* scene, EditorContext& ctx, GiAction act)
         ctx.Notify(ui::ToastKind::Success, "新しい GI に切り替えました（Ctrl+Z で戻せます）");
     else if (act == GiAction::ToLegacy)
         ctx.Notify(ui::ToastKind::Success, "GI を旧に戻しました（Ctrl+Z でやり直せます）");
+    else if (act == GiAction::FollowCamera)
+        ctx.Notify(ui::ToastKind::Success, "DDGI をカメラ追従にしました");
     else
-        ctx.Notify(ui::ToastKind::Success, "DDGI の範囲をシーンに合わせました");
+        ctx.Notify(ui::ToastKind::Success, "DDGI の範囲をシーンに合わせました（固定ボリューム）");
 }
 
 ImVec4 SwatchColor(const XMFLOAT3& col, f32 intensity)
@@ -747,16 +753,28 @@ void RenderLightingPanel(Scene* scene,
             if (!dd.enabled)
                 ImGui::TextColored(theme::Warn,
                                    "DDGI が OFF のため、環境光は従来の IBL のままです。");
+            else if (dd.followCamera)
+                ImGui::TextDisabled("DDGI カメラ追従 2 カスケード（各 %d × %d × %d）/ 近 %.2f m・遠 %.2f m",
+                                    dd.probeCountX, dd.probeCountY, dd.probeCountZ, dd.spacing, dd.spacing1);
             else
-                ImGui::TextDisabled("DDGI 格子 %d × %d × %d（%d 個）/ 間隔 %.2f m",
+                ImGui::TextDisabled("DDGI 固定ボリューム %d × %d × %d（%d 個）/ 間隔 %.2f m",
                                     dd.probeCountX, dd.probeCountY, dd.probeCountZ,
                                     dd.probeCountX * dd.probeCountY * dd.probeCountZ, dd.spacing);
             ImGui::Spacing();
-            if (ImGui::Button("DDGI の範囲をシーンに合わせ直す##GiRefit", ImVec2(-1.0f, ui::Px(26.0f))))
+            if (!dd.followCamera)
+            {
+                if (ImGui::Button("カメラ追従に戻す##GiFollow", ImVec2(-1.0f, ui::Px(26.0f))))
+                    RunGiAction(scene, ctx, GiAction::FollowCamera);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("プローブの格子をカメラの周りに置き、動くたびに間隔単位でずらします（近景と遠景の 2 段）。\n"
+                                      "広いシーンでも範囲を気にしなくて済みます。");
+            }
+            if (ImGui::Button(dd.followCamera ? "固定ボリュームにしてシーンに合わせる##GiRefit"
+                                              : "固定ボリュームをシーンに合わせ直す##GiRefit", ImVec2(-1.0f, ui::Px(26.0f))))
                 RunGiAction(scene, ctx, GiAction::RefitGrid);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("動かない物のバウンディングボックスを覆うようにプローブの格子を置き直します。\n"
-                                  "物を足したり動かしたりした後に押してください（1 m 間隔・4096 個以内）。");
+                ImGui::SetTooltip("動かない物のバウンディングボックスを覆う固定の格子に置き直します（1 m 間隔・4096 個以内）。\n"
+                                  "狭い 1 部屋だけのシーンで、カメラによらず光を一定にしたいときに使います。");
             if (ImGui::Button("旧に戻す##GiToLegacy", ImVec2(-1.0f, ui::Px(26.0f))))
                 RunGiAction(scene, ctx, GiAction::ToLegacy);
         }

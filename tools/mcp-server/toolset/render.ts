@@ -479,7 +479,7 @@ reg(
   + "aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, aoDenoise, aoDenoiseRadius, "
   + "maxInstances, forceBuildTlas。"
   + "\n■ DDGI: ddgiEnabled, ddgiSpacing, ddgiProbeCountX/Y/Z, ddgiOriginX/Y/Z, ddgiRayLength, "
-  + "ddgiHysteresis, ddgiIntensity, ddgiNormalBias, ddgiBounceIntensity。"
+  + "ddgiHysteresis, ddgiIntensity, ddgiNormalBias, ddgiBounceIntensity, ddgiFollowCamera, ddgiSpacing1, ddgiBudgetMs。"
   + "実測は stats.ddgiReady(PSO が建ったか) / ddgiEnabled / ddgiProbes / ddgiRaysCast / ddgiBytes。"
   + "★ddgiEnabled:true なのに ddgiProbes:0 なら TLAS が無い(tlasReady を見ること)。"
   + "\n■ 実際に走ったか: shadowActive(ON でも本当に RT 影パスが走ったフレームか) / tlasReady(TLAS が建っているか)。"
@@ -580,6 +580,13 @@ reg(
       + "プローブレイのヒット点で【前フレームのプローブ】を引いて足す量。1 フレームに 1 段ずつ"
       + "積み上がるので、変更は ddgiHysteresis ぶんの時間をかけて絵に出る(120 フレームは見ること)。"
       + "★1 を超えられないのは、収束値が E/(1-アルベド×これ) の幾何級数だから。"),
+    ddgiFollowCamera: z.boolean().optional().describe(
+      "GI モード new のときだけ有効。true = カメラ追従のスクロール格子 + 2 カスケード(近景 ddgiSpacing / 遠景 ddgiSpacing1。"
+      + "ddgiProbeCountX/Y/Z は 1 カスケードの格子数・ddgiOrigin は無視)。false(既定)= 従来の固定ボリューム。"),
+    ddgiSpacing1: z.number().optional().describe(
+      "遠景カスケードのプローブ間隔(m)。0.1..100 にクランプ。既定 2.0。ddgiFollowCamera:true のときだけ使う。"),
+    ddgiBudgetMs: z.number().optional().describe(
+      "1 フレームの DDGI の GPU 予算(ms)。0.05..20 にクランプ。既定 1。実測の GPU 時間から更新するプローブ数を決める(超えそうなら間引く)。"),
   },
   { idempotentHint: true },
   (a) => run(async () => {

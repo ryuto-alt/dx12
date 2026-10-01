@@ -80,8 +80,13 @@ cbuffer PerFrameConstants : register(b1)
     //     SSR/SSGI と違いワールド座標からの Sample なので、範囲外 Load の自動ゼロが効かない。
     float4   ddgiOrigin;                          // 16B  (offset 560) .xyz=格子の原点 .w=有効(1/0)
     float4   ddgiSpacing;                         // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
-    float4   ddgiCounts;                          // 16B  (offset 592) .xyz=各軸のプローブ数 .w=予約
-    float4   _clusterReserved[38];                // 608B (offset 608..1215) 予約（[0..1] = 植生の風）
+    float4   ddgiCounts;                          // 16B  (offset 592) .xyz=各軸のプローブ数（1 カスケードぶん）.w=カスケード数（GI モード New。0/1 = 固定ボリューム）
+    float4   _clusterReserved[35];                // 560B (offset 608..1167) 予約（[0..1] = 植生の風）
+    // ▼ DDGI のカスケード（GI S4。GI モード New のカメラ追従スクロール格子 + 2 カスケード）48B (offset 1168)。_clusterReserved の末尾 3 本を削って作った。
+    //   Legacy / 固定ボリュームでは scroll=0・ddgiCounts.w=0/1 ＝従来の値（ビット一致）。
+    float4   ddgiC1;                              // 16B  (offset 1168) .xyz=カスケード 1 の窓の原点 .w=カスケード 1 のプローブ間隔
+    float4   ddgiScroll0;                         // 16B  (offset 1184) .xyz=カスケード 0 の記憶領域のずらし（整数）
+    float4   ddgiScroll1;                         // 16B  (offset 1200) .xyz=カスケード 1 の記憶領域のずらし（整数）
     // ▼ GI モード（シーン単位。GI_FOUNDATION_DESIGN）32B (offset 1216)。_clusterReserved の末尾 2 本を削って作った。
     //   ★giParams.x が 0（Legacy）なら下の New 用の経路は一切走らず、絵はビット一致。
     float4   giParams;                            // 16B  (offset 1216) .x=GI モード New(1/0) .y=視線バイアス(m) .z=法線バイアス(m) .w=鏡面の空遮蔽の強さ
@@ -136,17 +141,20 @@ DdgiNewSample SampleDdgiNew(float3 worldPos, float3 N, float3 V, float3 R)
     o.conf = 0.0;
     if (ddgiOrigin.w <= 0.0 || giParams.x <= 0.5) return o;
     const uint3 counts = uint3(ddgiCounts.xyz);
+    const uint  nCasc  = max(uint(ddgiCounts.w), 1u);                 // カスケード数（固定ボリュームは 1）
+    const uint3 atlasCounts = uint3(counts.x, counts.y, counts.z * nCasc);
+    const uint  perCasc = counts.x * counts.y * counts.z;
+    const DdgiVol v0 = DdgiMakeVol(ddgiOrigin.xyz, ddgiSpacing.xyz, counts, int3(ddgiScroll0.xyz), 0u);
+    const DdgiVol v1 = DdgiMakeVol(ddgiC1.xyz, ddgiC1.www, counts, int3(ddgiScroll1.xyz), perCasc);
     // camDir は「カメラ → 点」＝ -V
-    const DdgiTaps taps = DdgiComputeTaps(g_ddgiDistance, g_ddgiSampler, worldPos, N, -V,
-                                          ddgiOrigin.xyz, ddgiSpacing.xyz, counts,
-                                          giParams.y, giParams.z);
-    o.conf = taps.conf;
-    if (taps.conf <= 0.0) return o;
+    const DdgiNewResult r = DdgiSampleNew(g_ddgiIrradiance, g_ddgiDistance, g_ddgiSampler, worldPos, N, -V, R, true,
+                                          v0, v1, nCasc, atlasCounts, giParams.y, giParams.z);
+    o.conf = r.conf;
+    if (r.conf <= 0.0) return o;
     // giParams2.w = DDGI の内部単位 → シーンの単位への倍率（従来単位は 1。物理ライティング単位は 1/kClassicUnitScale）
-    o.irrN = DdgiFetchTaps(g_ddgiIrradiance, g_ddgiSampler, taps, counts, N).rgb * giParams2.w;
-    const float4 r = DdgiFetchTaps(g_ddgiIrradiance, g_ddgiSampler, taps, counts, R);
-    o.irrR = r.rgb * giParams2.w;
-    o.skyVisR = saturate(r.a);
+    o.irrN = r.irrN * giParams2.w;
+    o.irrR = r.irrR * giParams2.w;
+    o.skyVisR = r.skyVisR;
     return o;
 }
 

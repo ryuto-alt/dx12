@@ -63,6 +63,28 @@ CONFIGS: dict[str, dict] = {
                        ("set_gi_mode", {"mode": "new", "debugStage": 0})],
         "reset": [("set_gi_mode", {"mode": "legacy"})],
     },
+    # GI S4: ヒット点の点光源をライトグリッドで絞る / 総当たり(debugStage bit4 = 16)。数値比較用(格子は固定)。
+    "gi_new_brute": {
+        "title": "新 GI + ヒット点の点光源を総当たり(検証用 debugStage 16)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 16})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    # GI S4: カメラ追従のスクロール格子 + 2 カスケード(新しい既定の構成)。格子はシーンに依らずカメラの周り。
+    "gi_new_follow": {
+        "title": "新 GI + カメラ追従 2 カスケード(近 0.8m / 遠 2.0m・各 22x8x22 = GiMigration の既定)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "ddgiFollowCamera": True,
+                                    "ddgiSpacing": 0.8, "ddgiSpacing1": 2.0, "ddgiProbeCountX": 22, "ddgiProbeCountY": 8,
+                                    "ddgiProbeCountZ": 22, "ddgiBudgetMs": 1.0}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 0})],
+        "reset": [("set_gi_mode", {"mode": "legacy"}), ("set_dxr", {"ddgiFollowCamera": False})],
+    },
     # S2 の段階ごとの数値を取るための構成(set_gi_mode の debugStage。保存されない検証用)
     "gi_new_s1": {
         "title": "新 GI 検証 stage 1: プローブ分類のみ(再配置なし)+ 旧の空の項",
@@ -159,9 +181,30 @@ CONFIGS: dict[str, dict] = {
 }
 
 
+def _follow_config(sp0: float, sp1: float, nx: int, ny: int, nz: int, title: str) -> dict:
+    return {
+        "title": title,
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "ddgiFollowCamera": True,
+                                    "ddgiSpacing": sp0, "ddgiSpacing1": sp1, "ddgiProbeCountX": nx, "ddgiProbeCountY": ny,
+                                    "ddgiProbeCountZ": nz, "ddgiBudgetMs": 1.0}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 0})],
+        "reset": [("set_gi_mode", {"mode": "legacy"}), ("set_dxr", {"ddgiFollowCamera": False})],
+    }
+
+
+# GI S4 のカスケード間隔・格子数の探索用(名前 = fol_<近間隔*100>_<遠間隔*100>_<x>x<y>x<z>)
+for _sp0, _sp1, _n in ((0.8, 2.0, (20, 10, 20)), (0.6, 1.5, (16, 12, 16)), (0.7, 1.8, (20, 10, 20)), (0.8, 1.6, (20, 10, 20)),
+                       (0.5, 2.0, (20, 10, 20)), (0.6, 2.4, (20, 10, 20)), (0.8, 3.2, (20, 10, 20)), (1.0, 3.0, (20, 8, 20)), (0.8, 2.0, (18, 12, 18)), (0.9, 2.2, (18, 10, 18)), (0.8, 2.4, (20, 10, 20)), (0.7, 2.0, (20, 12, 20)), (0.8, 2.0, (22, 8, 22)), (0.9, 2.2, (22, 8, 22)), (0.8, 2.4, (22, 8, 22)), (0.9, 2.0, (20, 10, 20))):
+    CONFIGS[f"fol_{int(_sp0*100)}_{int(_sp1*100)}_{_n[0]}x{_n[1]}x{_n[2]}"] = _follow_config(
+        _sp0, _sp1, _n[0], _n[1], _n[2], f"追従 近 {_sp0}m / 遠 {_sp1}m 各 {_n[0]}x{_n[1]}x{_n[2]}")
+
+
 def _grid_params(ddgi: dict) -> dict:
     g = GS.ddgi_grid(ddgi)
-    return {"ddgiSpacing": g["spacing"], "ddgiProbeCountX": g["probeCountX"], "ddgiProbeCountY": g["probeCountY"],
+    return {"ddgiFollowCamera": False, "ddgiSpacing": g["spacing"], "ddgiProbeCountX": g["probeCountX"], "ddgiProbeCountY": g["probeCountY"],
             "ddgiProbeCountZ": g["probeCountZ"], "ddgiOriginX": g["originX"], "ddgiOriginY": g["originY"], "ddgiOriginZ": g["originZ"]}
 
 

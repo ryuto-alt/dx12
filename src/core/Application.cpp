@@ -834,7 +834,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT4    ddgiOrigin;                       // 16B  (offset 560) .xyz=原点 .w=強さ
         DirectX::XMFLOAT4    ddgiSpacing;                      // 16B  (offset 576) .xyz=間隔 .w=法線バイアス
         DirectX::XMFLOAT4    ddgiCounts;                       // 16B  (offset 592) .xyz=プローブ数
-        DirectX::XMFLOAT4    _clusterReserved[38];             // 608B (offset 608..1215)
+        DirectX::XMFLOAT4    _clusterReserved[35];             // 560B (offset 608..1167)
+        DirectX::XMFLOAT4    ddgiC1;                           // 16B  (offset 1168) GI S4: カスケード 1（.xyz=原点 .w=間隔）
+        DirectX::XMFLOAT4    ddgiScroll0;                      // 16B  (offset 1184) カスケード 0 の記憶領域のずらし
+        DirectX::XMFLOAT4    ddgiScroll1;                      // 16B  (offset 1200)
         DirectX::XMFLOAT4    giParams;                         // 16B  (offset 1216) GI モード（GI_FOUNDATION_DESIGN）
         DirectX::XMFLOAT4    giParams2;                        // 16B  (offset 1232)
         DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)

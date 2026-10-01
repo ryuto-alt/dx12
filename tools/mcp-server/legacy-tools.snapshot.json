@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 416146,
+ "totalBytes": 416939,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -1672,8 +1672,8 @@
   },
   {
    "name": "dx12_get_dxr",
-   "sha256": "0a5a99ed2542f8bd8506477191a3f06948517cfe7cfcf989dbf37047dac39d2f",
-   "semSha256": "f4f10a34750f6be01d1eac086af4a5e4990c1223606d1032dde703a172a12fae",
+   "sha256": "77ac45e9dfa278738d727c0c0c316486f7862b6f5474eaf6661bff1a7e40a958",
+   "semSha256": "6cfd79c2b7545da82872b6c8e55f48fb8d1fc478d3a0f274e5773d94688b209c",
    "outputSchemaBytes": 303,
    "argKeys": [],
    "annotations": {
@@ -1684,8 +1684,8 @@
   },
   {
    "name": "dx12_set_dxr",
-   "sha256": "bfa210dc8af8df1682dc16981b0787818083bb3f904d86ebe9fce71b5095b40e",
-   "semSha256": "941ec4c0e70b200de21974123dfb16b98c10efdba700c38bf58e1dd24cef2ca1",
+   "sha256": "8057e462743a19469ebd481d046529f91b03ea570810eb0a17a1bf0f671c456c",
+   "semSha256": "c3d4489f2ae169015ab268de7f56b8c9f441d8ac513c20723377b4842b662a9a",
    "outputSchemaBytes": 303,
    "argKeys": [
     "shadowEnabled",
@@ -1715,7 +1715,10 @@
     "ddgiHysteresis",
     "ddgiIntensity",
     "ddgiNormalBias",
-    "ddgiBounceIntensity"
+    "ddgiBounceIntensity",
+    "ddgiFollowCamera",
+    "ddgiSpacing1",
+    "ddgiBudgetMs"
    ],
    "annotations": {
     "title": "DXR設定変更",

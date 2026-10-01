@@ -121,6 +121,7 @@ DdgiSettings FitDdgiToBounds(const DdgiSettings& base, const Bounds& boundsIn)
 
     DdgiSettings out = base;
     out.enabled     = true;
+    out.followCamera = false;   // シーンへ合わせた固定ボリューム
     out.probeCountX = n[0];
     out.probeCountY = n[1];
     out.probeCountZ = n[2];
@@ -132,6 +133,19 @@ DdgiSettings FitDdgiToBounds(const DdgiSettings& base, const Bounds& boundsIn)
         const float c = Lo(b, a) + 0.5f * Ext(b, a);
         *org[a] = c - 0.5f * static_cast<float>(n[a] - 1) * s;
     }
+    return out;
+}
+
+DdgiSettings FollowCameraDefaults(const DdgiSettings& base)
+{
+    DdgiSettings out = base;
+    out.enabled      = true;
+    out.followCamera = true;
+    out.probeCountX  = kFollowCountX;
+    out.probeCountY  = kFollowCountY;
+    out.probeCountZ  = kFollowCountZ;
+    out.spacing      = kFollowSpacing;
+    out.spacing1     = kFollowSpacing1;
     return out;
 }
 
@@ -213,9 +227,16 @@ Result ApplyNew(Scene& scene, const Options& opt)
     const bool keepGrid = !opt.refitGrid && dd.enabled;
     if (!keepGrid)
     {
-        const Bounds b = ChooseBounds(CollectStaticBoxes(reg));
-        r.fromGeometry = b.valid;
-        dd = FitDdgiToBounds(dd, b);
+        if (opt.fitToScene)
+        {
+            const Bounds b = ChooseBounds(CollectStaticBoxes(reg));
+            r.fromGeometry = b.valid;
+            dd = FitDdgiToBounds(dd, b);
+        }
+        else
+        {
+            dd = FollowCameraDefaults(dd);   // 既定: カメラ追従（シーンの AABB に依らない）
+        }
         r.fitted = true;
     }
     dd.enabled         = true;
@@ -263,6 +284,17 @@ Result RefitGrid(Scene& scene)
     dd.enabled = true;
     scene.GetDdgiSettings() = dd;
     r.applied = true;
+    r.ddgi    = dd;
+    return r;
+}
+
+Result UseFollowCamera(Scene& scene)
+{
+    Result r;
+    DdgiSettings dd = FollowCameraDefaults(scene.GetDdgiSettings());
+    scene.GetDdgiSettings() = dd;
+    r.applied = true;
+    r.fitted  = true;
     r.ddgi    = dd;
     return r;
 }

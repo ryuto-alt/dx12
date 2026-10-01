@@ -2283,7 +2283,10 @@ struct Application::FrameConstants
     DirectX::XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
     DirectX::XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
     DirectX::XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
-    DirectX::XMFLOAT4   _clusterReserved[38];             // 608B (offset 608..1215)
+    DirectX::XMFLOAT4   _clusterReserved[35];             // 560B (offset 608..1167)
+    DirectX::XMFLOAT4   ddgiC1;                           // 16B  (offset 1168) GI S4: カスケード 1（.xyz=原点 .w=間隔）
+    DirectX::XMFLOAT4   ddgiScroll0;                      // 16B  (offset 1184) カスケード 0 の記憶領域のずらし
+    DirectX::XMFLOAT4   ddgiScroll1;                      // 16B  (offset 1200)
     // ▼ GI モード 32B (offset 1216)。HLSL の giParams / giParams2（Legacy は全部 0 ＝従来経路）
     DirectX::XMFLOAT4   giParams;                         // 16B  .x=New(1/0) .y=視線バイアス(m) .z=法線バイアス(m) .w=鏡面の空遮蔽の強さ
     DirectX::XMFLOAT4   giParams2;                        // 16B  予約
@@ -4664,6 +4667,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ★atmosphere.enabled=false（既定）なら即 return ＝ コマンドは 1 命令も増えない。IBL の派生（t5..t7）は影・フォワード・SSGI・DDGI より前に更新される。
     if (primary) AtmosphereRecordFrame(view, frameIndex, nativeCmdList);
 
+    // ===== GI S4: DDGI のカメラ追従（スクロール格子 + 2 カスケード）と更新の間引きの計画（主ビューだけ。b1 を書く前）=====
+    // GI モード New のときだけ窓を動かす。Legacy は何もしない（従来の固定格子）。
+    if (primary && m_ddgi)
+        m_ddgi->PlanFrame(m_scene->GetDdgiSettings(), m_scene->GetGiSettings().mode == GiMode::New, viewPos,
+                          m_gpuTimer ? m_gpuTimer->GetMs(GpuTimer::Ddgi) : 0.0f);
+
     // ===== 植生 F1: レイヤー収集 + GPU カリング（主ビュー + 影カスケード 0/1）。影パスより前 =====
     // ★FoliageLayer が 1 つも無いシーンでは foliageOn が false ＝ 以降の植生の呼び出しは全部スキップされ、コマンドは 1 命令も増えない。
     const bool foliageOn = FoliageActive();
@@ -5227,12 +5236,18 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                                   && m_ddgi->SupportsGiNew()
                                   && m_ddgi->GetIrradianceSrvIndex() != DescriptorHeap::kInvalidIndex
                                   && m_ddgi->MatchesGrid(dgc);
-                        gd.ddgiOrigin  = {dgc.originX, dgc.originY, dgc.originZ};
-                        gd.ddgiSpacing = {dgc.spacing, dgc.spacing, dgc.spacing};
-                        gd.ddgiCounts  = {static_cast<f32>(dgc.probeCountX), static_cast<f32>(dgc.probeCountY),
-                                          static_cast<f32>(dgc.probeCountZ)};
-                        gd.ddgiViewBias   = DdgiVolume::kViewBiasRatio   * dgc.spacing;
-                        gd.ddgiNormalBias = DdgiVolume::kNormalBiasRatio * dgc.spacing;
+                        // GI モード New: 窓はカメラに追従する（PlanFrame の結果）。カスケード 1・scroll 0 なら固定ボリュームと同じ。
+                        const DdgiVolume::SampleParams sp = m_ddgi->GetSampleParams(dgc);
+                        gd.ddgiOrigin  = {sp.origin0.x, sp.origin0.y, sp.origin0.z};
+                        gd.ddgiSpacing = {sp.spacing0.x, sp.spacing0.y, sp.spacing0.z};
+                        gd.ddgiCounts  = {sp.counts.x, sp.counts.y, sp.counts.z};
+                        gd.ddgiC1Origin = {sp.c1.x, sp.c1.y, sp.c1.z};
+                        gd.ddgiC1Spacing = sp.c1.w;
+                        gd.ddgiScroll0 = {sp.scroll0.x, sp.scroll0.y, sp.scroll0.z};
+                        gd.ddgiScroll1 = {sp.scroll1.x, sp.scroll1.y, sp.scroll1.z};
+                        gd.ddgiCascades = sp.counts.w;
+                        gd.ddgiViewBias   = DdgiVolume::kViewBiasRatio   * sp.spacing0.x;
+                        gd.ddgiNormalBias = DdgiVolume::kNormalBiasRatio * sp.spacing0.x;
                         gd.ddgiInvUnitScale = (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f;
                     }
                 }
@@ -5447,6 +5462,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             dd.giStage  = m_giDebugStage;
             dd.physicalUnits = (m_lightingUnitsApplied == 1);
             dd.unitScale     = dd.physicalUnits ? atmosphere::kClassicUnitScale : 1.0f;
+            dd.ringIndex    = frameIndex;
             dd.frameIndex   = m_deterministicCapture
                             ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
             DdgiUpdatePass(di).Execute(passCtx);
@@ -6476,12 +6492,22 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
             // .w は「読むか」の 1/0 だけ。★intensity は BlendCS がアトラスへ書く時点で
             //   既に掛かっているので、ここで渡すと 2 乗になる（実機で踏んだ）。
             //   その代わり intensity の変更は hysteresis ぶんかけて絵に効く。
-            fc.ddgiOrigin  = {ddgiCfg.originX, ddgiCfg.originY, ddgiCfg.originZ, 1.0f};
-            fc.ddgiSpacing = {ddgiCfg.spacing, ddgiCfg.spacing, ddgiCfg.spacing,
-                              (std::max)(ddgiCfg.normalBias, 0.0f)};
-            fc.ddgiCounts  = {static_cast<f32>(ddgiCfg.probeCountX),
-                              static_cast<f32>(ddgiCfg.probeCountY),
-                              static_cast<f32>(ddgiCfg.probeCountZ), 0.0f};
+            if (giNewActive)
+            {
+                // GI モード New: 窓はカメラに追従する（PlanFrame の結果）。固定ボリュームはカスケード 1・scroll 0。
+                const DdgiVolume::SampleParams sp = m_ddgi->GetSampleParams(ddgiCfg);
+                fc.ddgiOrigin = sp.origin0; fc.ddgiSpacing = sp.spacing0; fc.ddgiCounts = sp.counts;
+                fc.ddgiC1 = sp.c1; fc.ddgiScroll0 = sp.scroll0; fc.ddgiScroll1 = sp.scroll1;
+            }
+            else
+            {
+                fc.ddgiOrigin  = {ddgiCfg.originX, ddgiCfg.originY, ddgiCfg.originZ, 1.0f};
+                fc.ddgiSpacing = {ddgiCfg.spacing, ddgiCfg.spacing, ddgiCfg.spacing,
+                                  (std::max)(ddgiCfg.normalBias, 0.0f)};
+                fc.ddgiCounts  = {static_cast<f32>(ddgiCfg.probeCountX),
+                                  static_cast<f32>(ddgiCfg.probeCountY),
+                                  static_cast<f32>(ddgiCfg.probeCountZ), 0.0f};
+            }
         }
         else
         {
@@ -6496,8 +6522,8 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
                             (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f};   // 検証用: プローブ状態の可視化
         if (giNewActive)
             fc.giParams = {1.0f,
-                           DdgiVolume::kViewBiasRatio   * ddgiCfg.spacing,
-                           DdgiVolume::kNormalBiasRatio * ddgiCfg.spacing,
+                           DdgiVolume::kViewBiasRatio   * fc.ddgiSpacing.x,
+                           DdgiVolume::kNormalBiasRatio * fc.ddgiSpacing.x,
                            1.0f};
         m_ddgiActiveThisFrame = ddgiActive;
     }

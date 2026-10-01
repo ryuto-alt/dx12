@@ -386,7 +386,7 @@ void Application::RegisterMcpRenderMethods()
               "ddgiEnabled:any,ddgiSpacing:number,ddgiRayLength:number,ddgiHysteresis:number,"
               "ddgiIntensity:number,ddgiProbeCountX:any,ddgiProbeCountY:any,ddgiProbeCountZ:any,"
               "ddgiOriginX:number,ddgiOriginY:number,ddgiOriginZ:number,ddgiNormalBias:number,"
-              "ddgiBounceIntensity:number,"
+              "ddgiBounceIntensity:number,ddgiFollowCamera:any,ddgiSpacing1:number,ddgiBudgetMs:number,"
               "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
@@ -443,6 +443,10 @@ void Application::RegisterMcpRenderMethods()
                 g.probeCountX = std::clamp(params.value("ddgiProbeCountX", g.probeCountX), 1, 32);
                 g.probeCountY = std::clamp(params.value("ddgiProbeCountY", g.probeCountY), 1, 32);
                 g.probeCountZ = std::clamp(params.value("ddgiProbeCountZ", g.probeCountZ), 1, 32);
+                // GI S4: カメラ追従（GI モード New のみ有効）/ カスケード 1 の間隔 / 1 フレームの GPU 予算(ms)
+                g.followCamera = params.value("ddgiFollowCamera", g.followCamera);
+                g.spacing1     = std::clamp(params.value("ddgiSpacing1", g.spacing1), 0.1f, 100.0f);
+                g.budgetMs     = std::clamp(params.value("ddgiBudgetMs", g.budgetMs), 0.05f, 20.0f);
                 g.originX     = params.value("ddgiOriginX", g.originX);
                 g.originY     = params.value("ddgiOriginY", g.originY);
                 g.originZ     = params.value("ddgiOriginZ", g.originZ);
@@ -452,7 +456,8 @@ void Application::RegisterMcpRenderMethods()
                     || g.probeCountY != before.probeCountY || g.probeCountZ != before.probeCountZ
                     || g.spacing != before.spacing || g.originX != before.originX
                     || g.originY != before.originY || g.originZ != before.originZ
-                    || g.rayLength != before.rayLength;
+                    || g.rayLength != before.rayLength
+                    || g.followCamera != before.followCamera || g.spacing1 != before.spacing1;
                 if (m_ddgi && ((!before.enabled && g.enabled) || gridMoved))
                     m_ddgi->InvalidateHistory();
             }
@@ -499,6 +504,15 @@ void Application::RegisterMcpRenderMethods()
                          {"ddgiProbes", m_ddgi ? m_ddgi->GetStats().probes : 0u},
                          {"ddgiRaysCast", m_ddgi ? m_ddgi->GetStats().raysCast : 0u},
                          {"ddgiBytes", m_ddgi ? m_ddgi->GetStats().bytes : 0ull},
+                         // GI S4: カスケード / 更新の間引き / ライトグリッド
+                         {"ddgiCascades", m_ddgi ? m_ddgi->GetStats().cascades : 1u},
+                         {"ddgiUpdatedProbes", m_ddgi ? m_ddgi->GetStats().updatedProbes : 0u},
+                         {"ddgiResetProbes", m_ddgi ? m_ddgi->GetStats().resetProbes : 0u},
+                         {"ddgiBudgetProbes", m_ddgi ? m_ddgi->GetStats().budgetProbes : 0u},
+                         {"ddgiCostUsPerProbe", m_ddgi ? m_ddgi->GetStats().costUsPerProbe : 0.0f},
+                         {"ddgiLightGridCells", m_ddgi ? m_ddgi->GetStats().lightGridCells : 0u},
+                         {"ddgiHysteresisNear", m_ddgi ? m_ddgi->GetStats().hysteresis0 : 0.0f},
+                         {"ddgiHysteresisFar", m_ddgi ? m_ddgi->GetStats().hysteresis1 : 0.0f},
                          {"bytesPerTriangle", s.blasTriangles
                               ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
                 if (m_skinningCompute)
@@ -541,6 +555,9 @@ void Application::RegisterMcpRenderMethods()
                               {"ddgiProbeCountX", dg.probeCountX},
                               {"ddgiProbeCountY", dg.probeCountY},
                               {"ddgiProbeCountZ", dg.probeCountZ},
+                              {"ddgiFollowCamera", dg.followCamera},
+                              {"ddgiSpacing1", dg.spacing1},
+                              {"ddgiBudgetMs", dg.budgetMs},
                               {"ddgiOriginX", dg.originX},
                               {"ddgiOriginY", dg.originY},
                               {"ddgiOriginZ", dg.originZ},

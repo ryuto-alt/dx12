@@ -1022,6 +1022,9 @@ void FillManifestChunk10(ManifestRows& o)
             P("ddgiIntensity", "number", false, nullptr, nullptr, nullptr, nullptr, "DDGI の強さ。0..10 にクランプ。既定 1。★アトラスへ書き込む時点で掛かるので、変更は ddgiHysteresis ぶんの時間をかけて絵に効く(即時ではない)。0 なら実質 OFF。"),
             P("ddgiNormalBias", "number", false, nullptr, nullptr, nullptr, nullptr, "サンプル位置を法線方向へ押し出す量(m)。0..1 にクランプ。既定 0.02。壁際で裏側のプローブを引いてしまう(ライトリーク)なら上げる。"),
             P("ddgiBounceIntensity", "number", false, nullptr, nullptr, nullptr, nullptr, "多重バウンスの強さ。0..1 にクランプ。既定 0 = 1 バウンスのみ(段階2 までと同じ絵)。プローブレイのヒット点で【前フレームのプローブ】を引いて足す量。"),
+            P("ddgiFollowCamera", "bool", false, nullptr, nullptr, nullptr, nullptr, "GI モード new のときだけ有効。true = カメラ追従のスクロール格子 + 2 カスケード(近景 ddgiSpacing / 遠景 ddgiSpacing1。ddgiProbeCountX/Y/Z は 1 カスケードの格子数・ddgiOrigin は無視)。false(既定)= 従来の固定ボリューム。"),
+            P("ddgiSpacing1", "number", false, nullptr, nullptr, nullptr, nullptr, "遠景カスケードのプローブ間隔(m)。0.1..100 にクランプ。既定 2.0。ddgiFollowCamera:true のときだけ使う。"),
+            P("ddgiBudgetMs", "number", false, nullptr, nullptr, nullptr, nullptr, "1 フレームの DDGI の GPU 予算(ms)。0.05..20 にクランプ。既定 1。実測の GPU 時間から更新するプローブ数を決める(超えそうなら間引く)。"),
         })});
     o.push_back({"set_editor_camera", M("シーンビューのカメラを任意視点に置く(focus_camera より自由。俯瞰・引き構図・特定アングルの確認用)。position で位置、target で注視点(yaw/pitch を自動逆算)、または yawDeg/pitchDeg を直接指定。",
         "set editor camera エディタカメラ設定",
