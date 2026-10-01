@@ -49,7 +49,9 @@ struct FrameConstants
     XMFLOAT4   ddgiOrigin;
     XMFLOAT4   ddgiSpacing;
     XMFLOAT4   ddgiCounts;
-    XMFLOAT4   _clusterReserved[40];
+    XMFLOAT4   _clusterReserved[38];
+    XMFLOAT4   giParams;
+    XMFLOAT4   giParams2;
     XMFLOAT4X4 spotShadowMatrix[4];
     float      iblIntensity;
     float      maxPrefilterMip;

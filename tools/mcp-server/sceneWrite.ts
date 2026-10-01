@@ -42,6 +42,8 @@ export const SCENE_ROOT_KEYS = [
   "sequencePlayers",
   // 風(グローバルな風場。BuildSceneJson が root["wind"] を書く)。schemaDrift.test.ts [12] が SceneSerializer.cpp と突き合わせる。
   "wind",
+  // GI モード(シーン単位)。{"gi":{"mode":"new"}}。キーが無い = legacy。BuildSceneJson は new のときだけ書く。
+  "gi",
 ] as const;
 
 /** 反射登録されたコア部品の JSON キー(RegisterCoreComponentSerializers の登録順)。 */

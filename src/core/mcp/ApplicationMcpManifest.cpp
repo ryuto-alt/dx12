@@ -491,6 +491,81 @@ void Application::RegisterMcpManifestMethods()
     }
 
     // -----------------------------------------------------------------------
+    // GI モード（シーン単位）。legacy = 従来（キーが無い既存シーン。絵は 1 ビットも変わらない）/
+    // new = 空の遮蔽つき GI。JSON は root["gi"]["mode"]。Undo は McpUndo のシーン設定スロットで戻る。
+    // -----------------------------------------------------------------------
+    {
+        McpMeta gget;
+        gget.summary    = "シーンの GI モードを返す。{mode:\"legacy\"|\"new\", ddgiEnabled, ddgiActive}。"
+                          "legacy = 従来の見た目（既存シーン。DDGI も環境光も変わらない）/ new = 空の遮蔽つき GI"
+                          "（DDGI のプローブ分類・再配置・空の可視率・フォワードの環境光置換・鏡面遮蔽・SSGI のミスは DDGI）";
+        gget.keywords   = "gi mode モード グローバルイルミネーション legacy new 空の遮蔽 ddgi 環境光";
+        gget.category   = "render";
+        gget.group      = "render_setting";
+        gget.target     = "gi_mode";
+        gget.effect     = McpEffect::Read;
+        gget.timeoutMs  = 5000;
+        gget.idempotent = true;
+        gget.aliases    = {"dx12_get_gi_mode"};
+        gget.next       = {{"set_gi_mode", "モードを切り替える"},
+                           {"get_dxr", "new は DDGI ON（set_dxr ddgiEnabled）と TLAS が前提"}};
+        gget.examples   = {{"{}", "現在のモード"}};
+        McpDefine("get_gi_mode", gget, DX12E_MCP_HANDLER
+            {
+                const auto& g = m_scene->GetGiSettings();
+                resp["ok"] = true;
+                resp["result"] = {{"mode", g.mode == GiMode::New ? "new" : "legacy"},
+                                  {"debugStage", m_giDebugStage},
+                                  {"ddgiEnabled", m_scene->GetDdgiSettings().enabled},
+                                  {"ddgiActive", m_ddgiActiveThisFrame}};
+            });
+
+        McpMeta gset;
+        gset.summary    = "シーンの GI モードを切り替える。legacy = 従来どおり（絵は 1 ビットも変わらない）/ new = 空の遮蔽つき GI。"
+                          "new でも DDGI の ON（set_dxr ddgiEnabled）と格子の配置は別に要る（定数 ambient 0・多重バウンス ON が前提の設計）。"
+                          "シーン JSON の gi.mode に保存され Undo で戻る";
+        gset.keywords   = "gi mode モード 切り替え legacy new 新しいGI 空の遮蔽 ddgi 環境光 set";
+        gset.category   = "render";
+        gset.group      = "render_setting";
+        gset.target     = "gi_mode";
+        gset.effect     = McpEffect::WriteSetting;
+        gset.timeoutMs  = 8000;
+        gset.idempotent = true;
+        gset.aliases    = {"dx12_set_gi_mode"};
+        gset.params     = {P("mode", "string", true, "legacy|new", nullptr, nullptr, nullptr,
+                             "legacy = 従来 / new = 空の遮蔽つき GI（DDGI 分類・再配置・空の可視率・フォワードの環境光置換）"),
+                           P("debugStage", "int", false, nullptr, "0", "15", "0",
+                             "検証用ビット（保存しない）。bit0 = 旧の空の項 / bit1 = 再配置なし / bit2 = 全プローブ有効（分類なし）/ bit3 = 最寄りプローブの状態を色で表示（赤 = 無効 / 緑 = 有効 / 青 = オフセット）。S2 の段階ごとの数値と切り分けのため")};
+        gset.next       = {{"get_gi_mode", "読み返す"}, {"set_dxr", "DDGI の ON と格子（ddgiEnabled / ddgiProbeCount* / ddgiOrigin* / ddgiSpacing）"}};
+        gset.examples   = {{"{\"mode\":\"new\"}", "新しい GI へ"}, {"{\"mode\":\"legacy\"}", "従来へ戻す"}};
+        McpDefine("set_gi_mode", gset, DX12E_MCP_HANDLER
+            {
+                const std::string mode = params.value("mode", std::string());
+                if (mode != "legacy" && mode != "new")
+                    throw McpError(McpErr::InvalidParam, "mode must be \"legacy\" or \"new\"",
+                                   "mode は \"legacy\"（従来）か \"new\"（空の遮蔽つき GI）");
+                if (params.contains("debugStage"))
+                {
+                    const u32 st = static_cast<u32>(std::clamp(params.value("debugStage", 0), 0, 15));
+                    if (st != m_giDebugStage && m_ddgi) m_ddgi->InvalidateHistory();
+                    m_giDebugStage = st;
+                }
+                auto& g = m_scene->GetGiSettings();
+                const GiMode want = (mode == "new") ? GiMode::New : GiMode::Legacy;
+                if (g.mode != want)
+                {
+                    McpUndo().TrackSceneValue(g);
+                    g.mode = want;
+                    // モードが変わるとプローブが持つ値の意味が変わる（空の項 / 可視率）。履歴は捨てる。
+                    if (m_ddgi) m_ddgi->InvalidateHistory();
+                }
+                resp["ok"] = true;
+                resp["result"] = {{"mode", mode}, {"applied", true}, {"debugStage", m_giDebugStage},
+                                  {"ddgiEnabled", m_scene->GetDdgiSettings().enabled}};
+            });
+    }
+
+    // -----------------------------------------------------------------------
     // 動的登録の実機確認用のダミー method（環境変数 DX12_MCP_DEV_PROBE=1 のときだけ登録される）。
     // 通常起動では存在しない。エンジンを「method が増えた版」として起動し直したときに、MCP サーバ(TS)が
     // 再起動なしで dx12_tool_search / dx12_call / (expose:"core" なので) tools/list へ反映するかを確かめる。

@@ -275,4 +275,135 @@ float3 DdgiSampleIrradiance(Texture2D<float4> atlas, Texture2D<float2> distAtlas
     return sum / wsum;
 }
 
+// ============================================================================
+// GI モード New（GiMode::New）の補間。RTXGI の GetDDGIVolumeIrradiance と同じ考え方:
+//   - プローブの位置 = 格子点 + 再配置オフセット（probeData.xyz）。状態 0（壁の中）は重み 0
+//   - surface bias（法線 + 視線方向。プローブ間隔に比例）で補間位置をずらしてから重みを作る
+//   - wrap 重み（wrap*wrap + 0.2）は【押し出す前の位置】から見た方向で作る（RTXGI と同じ）。
+//     Chebyshev は押し出した位置で。★旧実装は両方とも押し出し後の位置を使っていた。
+//   - 重みが crush 閾値（0.2）未満なら 3 乗でさらに潰す（RTXGI の crushThreshold）
+//   - trilinear は最後に掛ける
+// 呼び出し側は【include より前に】DDGI_PROBEDATA_LOAD(uint2 texel) を定義すること
+// （フォワード PS は t30 の SRV の Load、プローブ更新は u3 の UAV 読み）。未定義なら何も宣言しない。
+// ============================================================================
+#ifdef DDGI_PROBEDATA_LOAD
+
+// プローブデータの 1 テクセル = 1 プローブ。xyz = 再配置オフセット(m) / w = 状態（0 無効・1 有効・2 有効になった直後）
+uint2 DdgiProbeDataTexel(uint probeIndex, uint3 counts)
+{
+    const uint perRow = counts.x * counts.y;
+    return uint2(probeIndex % perRow, probeIndex / perRow);
+}
+
+float4 DdgiLoadProbeData(uint probeIndex, uint3 counts)
+{
+    return DDGI_PROBEDATA_LOAD(DdgiProbeDataTexel(probeIndex, counts));
+}
+
+// 補間の結果（8 個の重みと添字）。同じ重みで複数の方向のアトラスを引くために分けてある。
+struct DdgiTaps
+{
+    uint  idx[8];
+    float w[8];
+    float wsum;
+    float conf;   // 格子の境界フェード。重みが全部 0（8 個とも壁の中）なら 0
+};
+
+// camDir: カメラ → 点の向き（プローブ更新の中では「レイの進行方向」）。
+DdgiTaps DdgiComputeTaps(Texture2D<float2> distAtlas, SamplerState samp,
+                         float3 worldPos, float3 N, float3 camDir,
+                         float3 originWS, float3 spacing, uint3 counts,
+                         float viewBias, float normalBias)
+{
+    DdgiTaps t;
+    [unroll] for (uint z = 0; z < 8; ++z) { t.idx[z] = 0; t.w[z] = 0.0; }
+    t.wsum = 0.0;
+    t.conf = 0.0;
+
+    const float3 gridMax = originWS + float3(counts - 1) * spacing;
+    const float3 outside  = max(originWS - worldPos, worldPos - gridMax);
+    const float  worstOut = max(outside.x, max(outside.y, outside.z));
+    // ★旧実装は最外プローブから半セルで 0 まで落としていたが、部屋の内寸に格子を合わせると
+    //   壁・床・天井（最外プローブの外側 0.5〜1 セル）が全部 conf=0 になり、IBL（空）が戻ってきた。
+    //   RTXGI は最外プローブへ clamp して外挿する。ここも「最外プローブから 0.75 セルまでは満額、
+    //   そこから 0.5 セルかけて IBL へ戻す」にする（自動ボリューム S4 は壁の外まで覆うので、この外挿はほぼ使われない）。
+    const float  cell     = max(max(spacing.x, max(spacing.y, spacing.z)), 1e-4);
+    const float  fade     = saturate(1.0 - max(worstOut - 0.75 * cell, 0.0) / (0.5 * cell));
+    if (fade <= 0.0) return t;
+
+    // surface bias。法線方向は壁際で裏側のプローブを引くのを減らし、視線方向は
+    // 「カメラ側へ寄せる」ことで、壁に張り付いた画素が壁の向こうのプローブを拾うのを減らす。
+    const float3 pb = worldPos + N * normalBias - camDir * viewBias;
+    const float3 g  = (pb - originWS) / max(spacing, 1e-4);
+    const int3   lo = clamp(int3(floor(g)), int3(0, 0, 0), int3(counts) - 1);
+    const float3 f  = saturate(g - float3(lo));
+
+    [unroll]
+    for (uint i = 0; i < 8; ++i)
+    {
+        const int3   off = int3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        const int3   c   = clamp(lo + off, int3(0, 0, 0), int3(counts) - 1);
+        const uint   pIdx = DdgiProbeIndex(uint3(c), counts);
+        t.idx[i] = pIdx;
+
+        const float4 pd = DdgiLoadProbeData(pIdx, counts);
+        if (pd.w < 0.5) continue;   // 壁の中（無効）= 重み 0
+
+        const float3 tri = lerp(1.0 - f, f, float3(off));
+        const float  triW = tri.x * tri.y * tri.z;
+        const float3 probePos = originWS + float3(c) * spacing + pd.xyz;
+
+        const float3 toProbe  = probePos - worldPos;     // 押し出す前
+        const float3 toProbeB = probePos - pb;           // 押し出した後
+        const float  distB    = length(toProbeB);
+        const float3 dirW = toProbe / max(length(toProbe), 1e-6);
+
+        float w = 1.0;
+        // wrap（RTXGI: weight *= (wrap*wrap) + 0.2。0.2 は 8 個すべてが背面でも真っ黒にならないための下駄）
+        const float wrap = (dot(dirW, N) + 1.0) * 0.5;
+        w *= wrap * wrap + 0.2;
+
+        // Chebyshev 可視性（押し出した位置で）。方向は「プローブ → 点」。
+        {
+            const float2 m = DdgiFetchProbeDistance(distAtlas, samp, pIdx, counts,
+                                                    -toProbeB / max(distB, 1e-6));
+            if (distB > m.x)
+            {
+                const float variance = abs(m.x * m.x - m.y);
+                const float diff = distB - m.x;
+                float cheb = variance / (variance + diff * diff);
+                cheb = max(cheb * cheb * cheb, 0.0);
+                w *= cheb;
+            }
+        }
+
+        w = max(w, 1e-6);
+        // 小さい重みをさらに潰す（RTXGI の crushThreshold。中途半端に残った漏れを消す）
+        const float crush = 0.2;
+        if (w < crush) w *= w * w * (1.0 / (crush * crush));
+        w *= triW;
+
+        t.w[i] = w;
+        t.wsum += w;
+    }
+    t.conf = (t.wsum > 0.0) ? fade : 0.0;
+    return t;
+}
+
+// 重み t でアトラスを dir 方向に引いた平均。rgb = irradiance / a = 空の可視率（BlendCS が書く）。
+float4 DdgiFetchTaps(Texture2D<float4> atlas, SamplerState samp, DdgiTaps t, uint3 counts, float3 dir)
+{
+    float4 sum = 0.0;
+    [unroll]
+    for (uint i = 0; i < 8; ++i)
+    {
+        if (t.w[i] <= 0.0) continue;
+        sum += atlas.SampleLevel(
+            samp, DdgiProbeUv(t.idx[i], counts, dir, DDGI_IRRADIANCE_TEXELS, DDGI_PROBE_TILE), 0) * t.w[i];
+    }
+    return (t.wsum > 0.0) ? (sum / t.wsum) : float4(0.0, 0.0, 0.0, 0.0);
+}
+
+#endif // DDGI_PROBEDATA_LOAD
+
 #endif // DDGI_COMMON_HLSLI

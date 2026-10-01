@@ -1863,6 +1863,7 @@ private:
     std::unique_ptr<IBLBaker>       m_iblBaker;
     std::unique_ptr<SkyboxRenderer> m_skyboxRenderer;
     std::unique_ptr<Texture>        m_envCubeTex;      // 環境キューブ本体（リソース保持）
+    u32   m_giDebugStage      = 0;                     // set_gi_mode の debugStage（0 = 全部。保存しない）
     u32   m_envCubeSrvIndex   = 0xFFFFFFFFu;           // 環境キューブの TextureCube SRV index
     bool  m_iblReady          = false;                 // baking 完了し SRV 有効
     float m_iblIntensity      = 1.0f;

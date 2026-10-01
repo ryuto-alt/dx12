@@ -79,6 +79,16 @@ public:
         D3D12_GPU_DESCRIPTOR_HANDLE gbufferSrv{};
         D3D12_GPU_DESCRIPTOR_HANDLE velocitySrv{};
         D3D12_GPU_DESCRIPTOR_HANDLE irradianceSrv{};     // TextureCube（SSGI のミス時フォールバック）
+        // GI モード New: DDGI の 3 本（irradiance / 距離 / プローブデータ）が連続したテーブルの先頭。
+        // フォワードのクラスタテーブル [kDdgiSrvOffset..+2] をそのまま渡す。常に有効なディスクリプタが並んでいること
+        // （無効時は黒ダミー）。ptr==0 のときは SSGI のミス → DDGI は使わない。
+        D3D12_GPU_DESCRIPTOR_HANDLE ddgiSrv{};
+        bool   ddgiNew = false;                          // true なら SSGI のミスは DDGI の irradiance
+        DirectX::XMFLOAT3 ddgiOrigin{0, 0, 0};
+        DirectX::XMFLOAT3 ddgiSpacing{1, 1, 1};
+        DirectX::XMFLOAT3 ddgiCounts{1, 1, 1};
+        float  ddgiViewBias = 0.0f, ddgiNormalBias = 0.0f;
+        float  ddgiInvUnitScale = 1.0f;                  // 物理ライティング単位: DDGI の内部単位 → シーンの単位
     };
 
     // SSR / SSGI を生成し、それぞれの SRV index を返す（生成しなかった側は kInvalidIndex）。

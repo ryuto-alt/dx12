@@ -411,7 +411,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"SsrUpsample_PS.cso",  L"UpsamplePS", L"ps_6_0" },
             },
             { "screenspace/ScreenSpaceCommon.hlsli", "screenspace/ScreenSpaceParams.hlsli",
-              "post/FullscreenTri.hlsli" },
+              "post/FullscreenTri.hlsli", "ddgi/DdgiCommon.hlsli" },
         },
         {
             // SSGI（スクリーン空間GI）+ 前フレームカラーのハーフ縮小。
@@ -423,7 +423,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ColorDownsample_PS.cso",L"DownsamplePS",  L"ps_6_0" },
             },
             { "screenspace/ScreenSpaceCommon.hlsli", "screenspace/ScreenSpaceParams.hlsli",
-              "post/FullscreenTri.hlsli" },
+              "post/FullscreenTri.hlsli", "ddgi/DdgiCommon.hlsli" },
         },
         {
             // デカールのクラスタカリング compute（計画06 D2）。
@@ -444,6 +444,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"DdgiTrace_CS.cso", L"TraceCS", L"cs_6_6" },
                 { L"DdgiBlend_CS.cso", L"BlendCS", L"cs_6_6" },
                 { L"DdgiBlendDist_CS.cso", L"BlendDistanceCS", L"cs_6_6" },
+                { L"DdgiProbeData_CS.cso", L"ProbeDataCS", L"cs_6_6" },
             },
             { "ddgi/DdgiCommon.hlsli", "raytracing/RtBindless.hlsli", "forward/ClusterCommon.hlsli" },
         },

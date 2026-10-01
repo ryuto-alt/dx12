@@ -82,6 +82,25 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
     float3 origin = P + N * 0.02;
     float3 sum    = 0.0;
 
+    // GI モード New: ミスしたレイは IBL ではなく「この画素の DDGI irradiance」を積む（DDGI が使えるときだけ。
+    //   使えなければ従来どおり IBL）。DDGI は空の遮蔽を持っているので、室内の画素が空色に戻らない。
+    //   ミスの方向は使わない（DDGI の irradiance は法線方向のコサイン積分済み）。
+    const bool ddgiMiss = (gDdgi0.w > 0.5) && iblFall;
+    float3 ddgiMissIrr = 0.0;
+    if (ddgiMiss)
+    {
+        const float3 posW = mul(float4(P, 1.0), gInvView).xyz;
+        const float3 camW = mul(float4(0.0, 0.0, 0.0, 1.0), gInvView).xyz;
+        const float3 camDir = normalize(posW - camW);
+        const DdgiTaps taps = DdgiComputeTaps(g_ddgiDistance, g_linearClamp, posW, surf.N, camDir,
+                                              gDdgi0.xyz, gDdgi1.xyz, uint3(gDdgi2.xyz),
+                                              gDdgi1.w, gDdgi2.w);
+        // taps.conf = 0（範囲外 / 周囲 8 個とも壁の中）なら DDGI は答えられない → IBL へ戻す
+        if (taps.conf > 0.0)
+            ddgiMissIrr = DdgiFetchTaps(g_ddgiIrradiance, g_linearClamp, taps, uint3(gDdgi2.xyz), surf.N).rgb
+                        * (taps.conf * gMisc2.y);
+    }
+
     [loop]
     for (int k = 0; k < n; ++k)
     {
@@ -112,6 +131,10 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
                 float3 c      = SS_Sanitize(g_colorB.SampleLevel(g_linearClamp, srcUV, 0).rgb);
                 sum += min(c, clampValue.xxx);
             }
+        }
+        else if (ddgiMiss)
+        {
+            sum += min(SS_Sanitize(ddgiMissIrr), clampValue.xxx);
         }
         else if (iblFall)
         {

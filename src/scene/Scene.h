@@ -211,6 +211,12 @@ public:
     DdgiSettings&       GetDdgiSettings()       { return m_ddgi; }
     const DdgiSettings& GetDdgiSettings() const { return m_ddgi; }
 
+    // GI モード（シーン単位）。Legacy = 従来どおり（キーが無い既存シーン。絵は 1 ビットも変わらない）/
+    // New = 空の遮蔽つき GI（DDGI の分類・再配置・空の可視率・フォワードの環境光置換）。
+    // JSON: root["gi"]["mode"] = "legacy" | "new"。MCP: set_gi_mode / get_gi_mode。
+    GiSettings&         GetGiSettings()         { return m_gi; }
+    const GiSettings&   GetGiSettings() const   { return m_gi; }
+
     // 仮想ジオメトリ（Nanite 風）。既定 OFF。P2 時点は GPU カリングの統計だけで描かない
     // （.vgeo のプロキシは従来経路で描かれる）。
     vg::VirtualGeometrySettings&       GetVirtualGeometrySettings()       { return m_vg; }
@@ -306,6 +312,7 @@ private:
     SsgiSettings        m_ssgi;
     RtSettings          m_rt;
     DdgiSettings        m_ddgi;
+    GiSettings          m_gi;
     vg::VirtualGeometrySettings m_vg;
     foliage::SceneWind          m_wind;
     AtmosphereSettings          m_atmosphere;

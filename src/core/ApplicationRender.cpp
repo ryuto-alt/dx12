@@ -2282,7 +2282,10 @@ struct Application::FrameConstants
     DirectX::XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
     DirectX::XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
     DirectX::XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
-    DirectX::XMFLOAT4   _clusterReserved[40];             // 640B (offset 608..1247)
+    DirectX::XMFLOAT4   _clusterReserved[38];             // 608B (offset 608..1215)
+    // ▼ GI モード 32B (offset 1216)。HLSL の giParams / giParams2（Legacy は全部 0 ＝従来経路）
+    DirectX::XMFLOAT4   giParams;                         // 16B  .x=New(1/0) .y=視線バイアス(m) .z=法線バイアス(m) .w=鏡面の空遮蔽の強さ
+    DirectX::XMFLOAT4   giParams2;                        // 16B  予約
     DirectX::XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
     // ▼ IBL 制御 16B
     float iblIntensity;
@@ -5191,6 +5194,30 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
                 // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
                 gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+                // GI モード New: ミスしたレイは IBL ではなくその画素の DDGI irradiance。条件はフォワード
+                // （FillSceneFrameConstants の giNewActive）と同じ。ディスクリプタはクラスタテーブルの DDGI 3 本
+                // （t22/t23/t30。DDGI が使えないフレームは黒ダミー）をそのまま指す。
+                if (m_clusteredLighting && m_clusteredLighting->IsReady() && m_ddgi)
+                {
+                    const DdgiSettings& dgc = m_scene->GetDdgiSettings();
+                    const u32 block = m_clusteredLighting->GetSrvTableIndex(frameIndex);
+                    if (block != DescriptorHeap::kInvalidIndex)
+                    {
+                        gd.ddgiSrv = m_srvHeap->GetGpuHandle(block + ClusteredLightCulling::kDdgiSrvOffset);
+                        gd.ddgiNew = dgc.enabled && dgc.intensity > 0.0f
+                                  && m_scene->GetGiSettings().mode == GiMode::New
+                                  && m_ddgi->SupportsGiNew()
+                                  && m_ddgi->GetIrradianceSrvIndex() != DescriptorHeap::kInvalidIndex
+                                  && m_ddgi->MatchesGrid(dgc);
+                        gd.ddgiOrigin  = {dgc.originX, dgc.originY, dgc.originZ};
+                        gd.ddgiSpacing = {dgc.spacing, dgc.spacing, dgc.spacing};
+                        gd.ddgiCounts  = {static_cast<f32>(dgc.probeCountX), static_cast<f32>(dgc.probeCountY),
+                                          static_cast<f32>(dgc.probeCountZ)};
+                        gd.ddgiViewBias   = DdgiVolume::kViewBiasRatio   * dgc.spacing;
+                        gd.ddgiNormalBias = DdgiVolume::kNormalBiasRatio * dgc.spacing;
+                        gd.ddgiInvUnitScale = (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f;
+                    }
+                }
             }
             ScreenSpaceGiGeneratePass::Inputs gi{};
             gi.gi   = m_screenSpaceGi.get();
@@ -5391,6 +5418,17 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             // 点光源/スポット（t13 のライト配列を bindless で引く）。屋内はこれが本体。
             dd.lightSrvIndex = ddgiLightSrvIndex;
             dd.lightCount    = ddgiLightCount;
+            // GI モード New（シーン単位）。Legacy では下の 3 つは使われない。
+            dd.giNew = m_scene->GetGiSettings().mode == GiMode::New;
+            // ミスしたレイが引く空の【放射輝度】キューブ（パストレーサーと同じ envCube）と、その強さ（iblIntensity）。
+            dd.envCubeSrvIndex =
+                (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()
+                 && m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
+                    ? m_envCubeSrvIndex : 0xFFFFFFFFu;
+            dd.skyScale = m_iblReady ? m_iblIntensity : 0.0f;
+            dd.giStage  = m_giDebugStage;
+            dd.physicalUnits = (m_lightingUnitsApplied == 1);
+            dd.unitScale     = dd.physicalUnits ? atmosphere::kClassicUnitScale : 1.0f;
             dd.frameIndex   = m_deterministicCapture
                             ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
             DdgiUpdatePass(di).Execute(passCtx);
@@ -6372,8 +6410,15 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
     //   ＝ PS は 1 テクセルも読まず、絵は DDGI 導入前とビット一致する。
     {
         const DdgiSettings& ddgiCfg = m_scene->GetDdgiSettings();
+        // ★MatchesGrid: 格子の大きさが変わった最初のフレームは、旧アトラスを指したまま b1 / t22 を書いてしまい、
+        //   直後の DdgiVolume::Update が旧アトラスを作り直す＝同じフレームの PS が解放済みを読む（TDR の原因 3）。
+        //   対応していない間は読まない（1 フレームだけ DDGI 無し）。
         const bool ddgiActive = m_ddgi && ddgiCfg.enabled && ddgiCfg.intensity > 0.0f
-                             && m_ddgi->GetIrradianceSrvIndex() != DescriptorHeap::kInvalidIndex;
+                             && m_ddgi->GetIrradianceSrvIndex() != DescriptorHeap::kInvalidIndex
+                             && m_ddgi->MatchesGrid(ddgiCfg);
+        // GI モード New は DDGI が実際に使える間だけ（DDGI が無いときは IBL のまま）。
+        const bool giNewActive = ddgiActive && m_ddgi->SupportsGiNew()
+                              && m_scene->GetGiSettings().mode == GiMode::New;
 
         // t22 は slot11 テーブルの中（＝専用 SRV index では届かない）。毎フレーム書き直す。
         // ディスクリプタ 1 本の CreateSRV は数百 ns なので、変化検出を持つより安い。
@@ -6397,6 +6442,14 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
                                     && m_ddgi->WriteDistanceSrv(*m_graphicsDevice, dstDist);
                 if (!wroteDist && m_ssBlackTex)
                     m_ssBlackTex->CreateSRV(*m_graphicsDevice, dstDist);
+
+                // t30: プローブデータ（GI モード New の再配置オフセット + 状態）。同じ扱い。
+                const auto dstPd = m_srvHeap->GetCpuHandle(
+                    block + ClusteredLightCulling::kDdgiProbeSrvOffset);
+                const bool wrotePd = ddgiActive
+                                  && m_ddgi->WriteProbeDataSrv(*m_graphicsDevice, dstPd);
+                if (!wrotePd && m_ssBlackTex)
+                    m_ssBlackTex->CreateSRV(*m_graphicsDevice, dstPd);
             }
         }
 
@@ -6416,6 +6469,18 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
         {
             fc.ddgiOrigin = fc.ddgiSpacing = fc.ddgiCounts = {0.0f, 0.0f, 0.0f, 0.0f};
         }
+        // GI モード（giParams.x=0 なら Legacy＝シェーダは従来経路。バイアスはプローブ更新と同じ式）。
+        fc.giParams  = {0.0f, 0.0f, 0.0f, 0.0f};
+        fc.giParams2 = {0.0f, 0.0f, 0.0f, 0.0f};
+        if (giNewActive)
+            fc.giParams2 = {(m_giDebugStage & 8u) ? 1.0f : 0.0f, 0.0f, 0.0f,
+                            // 物理ライティング単位: DDGI の内部単位 → シーンの単位へ戻す倍率（従来単位は 1）
+                            (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f};   // 検証用: プローブ状態の可視化
+        if (giNewActive)
+            fc.giParams = {1.0f,
+                           DdgiVolume::kViewBiasRatio   * ddgiCfg.spacing,
+                           DdgiVolume::kNormalBiasRatio * ddgiCfg.spacing,
+                           1.0f};
         m_ddgiActiveThisFrame = ddgiActive;
     }
 

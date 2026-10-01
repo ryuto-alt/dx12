@@ -195,7 +195,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     //   ヒープを消費しない）。DATA_VOLATILE でも「ディスクリプタ自体」は静的扱いなので、
     //   予約枠 4 本も有効なディスクリプタで埋めてから SetGraphicsRootDescriptorTable すること
     //   （ClusteredLightCulling::Initialize がカウントバッファの SRV で埋めている）。
-    D3D12_DESCRIPTOR_RANGE1 clusterRanges[3]{};
+    D3D12_DESCRIPTOR_RANGE1 clusterRanges[4]{};
     clusterRanges[0].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     clusterRanges[0].NumDescriptors                    = 3;   // t13,t14,t15
     clusterRanges[0].BaseShaderRegister                = 13;
@@ -219,6 +219,15 @@ void RootSignature::Initialize(GraphicsDevice& device)
     clusterRanges[2].RegisterSpace                     = 0;
     clusterRanges[2].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     clusterRanges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    // t30 = DDGI のプローブデータ（GI モード New の再配置オフセット + 状態）。t25..t29 は VG / 材質拡張 / 雲影 /
+    // 布 DFG の予約番号（GRAPHICS_PARITY_DESIGN §2.0）なので避けて t30。ここも 1x1 黒ダミーで必ず埋めること。
+    clusterRanges[3].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    clusterRanges[3].NumDescriptors                    = 1;   // t30
+    clusterRanges[3].BaseShaderRegister                = 30;
+    clusterRanges[3].RegisterSpace                     = 0;
+    clusterRanges[3].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    clusterRanges[3].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     rootParams[11].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[11].DescriptorTable.NumDescriptorRanges = _countof(clusterRanges);

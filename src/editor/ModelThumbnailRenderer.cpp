@@ -363,7 +363,9 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
         XMFLOAT4   ddgiOrigin;                            // 16B  (offset 560)
         XMFLOAT4   ddgiSpacing;                           // 16B  (offset 576)
         XMFLOAT4   ddgiCounts;                            // 16B  (offset 592)
-        XMFLOAT4   _clusterReserved[40];                  // 640B (offset 608..1247)
+        XMFLOAT4   _clusterReserved[38];                  // 608B (offset 608..1215)
+        XMFLOAT4   giParams;                              // 16B  (offset 1216) GI モード。サムネでは 0＝Legacy
+        XMFLOAT4   giParams2;                             // 16B  (offset 1232)
         XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpotThumb]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float iblIntensity;

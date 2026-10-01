@@ -128,6 +128,8 @@ export const SEARCH_HINTS: Record<string, string> = {
   get_ssr: "SSR 反射 読む",
   set_ssr: "SSR 反射 映り込み 床の反射 screen space reflection",
   get_ssgi: "SSGI 間接光 読む",
+  get_gi_mode: "GI モード 読む legacy new 空の遮蔽 グローバルイルミネーション",
+  set_gi_mode: "GI モード 切り替え 新しいGI legacy new 空の遮蔽 DDGI 環境光 室内",
   set_ssgi: "SSGI 間接光 グローバルイルミネーション GI 色の回り込み",
   get_contact_shadow: "コンタクトシャドウ 読む",
   set_contact_shadow: "コンタクトシャドウ 接地影 細かい影",

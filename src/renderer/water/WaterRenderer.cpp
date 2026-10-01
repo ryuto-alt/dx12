@@ -121,7 +121,7 @@ WaterRenderer::~WaterRenderer() { Shutdown(); }
 // ---------------------------------------------------------------------------
 bool WaterRenderer::Impl::CreateRootSignature()
 {
-    D3D12_DESCRIPTOR_RANGE water{}, csm{}, punct{}, ibl{}, cl[2]{};
+    D3D12_DESCRIPTOR_RANGE water{}, csm{}, punct{}, ibl{}, cl[3]{};
     water.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; water.NumDescriptors = 4; water.BaseShaderRegister = 0;
     water.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     csm.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; csm.NumDescriptors = 1; csm.BaseShaderRegister = 4;
@@ -135,6 +135,10 @@ bool WaterRenderer::Impl::CreateRootSignature()
     cl[0].OffsetInDescriptorsFromTableStart = 0;
     cl[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; cl[1].NumDescriptors = 2; cl[1].BaseShaderRegister = 22;
     cl[1].OffsetInDescriptorsFromTableStart = 7;
+    // t30 = DDGI のプローブデータ（GI モード New。メイン RS と同じ 10 本目 = 先頭から 9 個目）。
+    //   水のシェーダは Lighting.hlsli を include するので宣言だけは見える（使わなければ DXC が落とす）。
+    cl[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; cl[2].NumDescriptors = 1; cl[2].BaseShaderRegister = 30;
+    cl[2].OffsetInDescriptorsFromTableStart = 9;
 
     D3D12_ROOT_PARAMETER p[7]{};
     p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
@@ -154,7 +158,7 @@ bool WaterRenderer::Impl::CreateRootSignature()
     table(3, &csm, 1, D3D12_SHADER_VISIBILITY_PIXEL);
     table(4, &punct, 1, D3D12_SHADER_VISIBILITY_PIXEL);
     table(5, &ibl, 1, D3D12_SHADER_VISIBILITY_PIXEL);
-    table(6, cl, 2, D3D12_SHADER_VISIBILITY_PIXEL);
+    table(6, cl, 3, D3D12_SHADER_VISIBILITY_PIXEL);
 
     // 静的サンプラ（メイン RS の s0..s3 / s5 と同じ意味）
     D3D12_STATIC_SAMPLER_DESC s[5]{};

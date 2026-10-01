@@ -834,7 +834,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         DirectX::XMFLOAT4    ddgiOrigin;                       // 16B  (offset 560) .xyz=原点 .w=強さ
         DirectX::XMFLOAT4    ddgiSpacing;                      // 16B  (offset 576) .xyz=間隔 .w=法線バイアス
         DirectX::XMFLOAT4    ddgiCounts;                       // 16B  (offset 592) .xyz=プローブ数
-        DirectX::XMFLOAT4    _clusterReserved[40];             // 640B (offset 608..1247)
+        DirectX::XMFLOAT4    _clusterReserved[38];             // 608B (offset 608..1215)
+        DirectX::XMFLOAT4    giParams;                         // 16B  (offset 1216) GI モード（GI_FOUNDATION_DESIGN）
+        DirectX::XMFLOAT4    giParams2;                        // 16B  (offset 1232)
         DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
         // ▼ IBL 制御 16B (offset 1504)
         float                iblIntensity;

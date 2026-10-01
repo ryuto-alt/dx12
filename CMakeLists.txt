@@ -372,7 +372,9 @@ if(DXC_EXECUTABLE)
     set(SHADER_SSGI          "${CMAKE_SOURCE_DIR}/shaders/screenspace/SSGI.hlsl")
     set(SHADER_SSGI_INC      "${SHADER_SS_INC}"
                              "${CMAKE_SOURCE_DIR}/shaders/screenspace/ScreenSpaceParams.hlsli"
-                             "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
+                             "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli"
+                             # ScreenSpaceParams.hlsli が DDGI の補間（GI モード New の SSGI ミス）を include する
+                             "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiCommon.hlsli")
     set(SHADER_VELOCITY_INC  "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityCommon.hlsli"
                              "${SHADER_SS_INC}")
     # ボリュメトリックフォグ（froxel）。compute 3 本 + 合成 VS/PS。
@@ -520,6 +522,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/DdgiTrace_CS.cso"
         "${SHADER_OUTPUT_DIR}/DdgiBlend_CS.cso"
         "${SHADER_OUTPUT_DIR}/DdgiBlendDist_CS.cso"
+        "${SHADER_OUTPUT_DIR}/DdgiProbeData_CS.cso"
         "${SHADER_OUTPUT_DIR}/SkinCompute_CS.cso"
     )
 
@@ -1317,6 +1320,13 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E BlendDistanceCS -Fo "${SHADER_OUTPUT_DIR}/DdgiBlendDist_CS.cso" "${SHADER_DDGI_UPDATE}"
         DEPENDS "${SHADER_DDGI_UPDATE}" ${SHADER_DDGI_INC}
         COMMENT "Compiling DdgiProbeUpdate.hlsl -> DdgiBlendDist_CS.cso (cs_6_6)"
+    )
+    # GI モード New: プローブの分類 + 再配置（1 スレッド = 1 プローブ）。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/DdgiProbeData_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E ProbeDataCS -Fo "${SHADER_OUTPUT_DIR}/DdgiProbeData_CS.cso" "${SHADER_DDGI_UPDATE}"
+        DEPENDS "${SHADER_DDGI_UPDATE}" ${SHADER_DDGI_INC}
+        COMMENT "Compiling DdgiProbeUpdate.hlsl -> DdgiProbeData_CS.cso (cs_6_6)"
     )
 
     # 仮想ジオメトリ(Nanite 風) P2: GPU カリングの compute（インスタンス / BVH 走査 / クラスタ / 作業バッファ初期化・引数生成）。

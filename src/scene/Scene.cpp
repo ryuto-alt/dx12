@@ -496,6 +496,7 @@ void Scene::Clear()
     m_ssgi           = SsgiSettings{};
     m_rt             = RtSettings{};
     m_ddgi           = DdgiSettings{};
+    m_gi             = GiSettings{};
     m_vg             = vg::VirtualGeometrySettings{};
     m_wind           = foliage::SceneWind{};
     m_taa            = TaaSettings{};

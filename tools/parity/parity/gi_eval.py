@@ -55,9 +55,87 @@ CONFIGS: dict[str, dict] = {
                                     "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True})],
     },
     "gi_new": {
-        "title": "新 GI モード(S3 以降。エンジンに set_gi_mode が入ったら有効になる)",
+        "title": "新 GI モード(set_gi_mode new。DDGI ON・多重バウンス 1.0・RT 影 ON・定数 ambient 0・SSGI/SSR OFF。格子は部屋を覆う)",
         "requires": "set_gi_mode",
-        "set": _OFF + [("set_gi_mode", {"mode": "new"})],
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 0})],
+        "reset": [("set_gi_mode", {"mode": "legacy"})],
+    },
+    # S2 の段階ごとの数値を取るための構成(set_gi_mode の debugStage。保存されない検証用)
+    "gi_new_s1": {
+        "title": "新 GI 検証 stage 1: プローブ分類のみ(再配置なし)+ 旧の空の項",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 3})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    "gi_new_s2": {
+        "title": "新 GI 検証 stage 2: 分類 + 再配置 + 旧の空の項(S2 手順 3 の GR-3 の漏れの測定)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 1})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    "gi_new_nb": {
+        "title": "新 GI 検証: 多重バウンスなし(bounceIntensity 0)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 0.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 0})],
+        "reset": [("set_gi_mode", {"mode": "legacy"})],
+    },
+    "gi_new_s3": {
+        "title": "新 GI 診断 stage 3: 全プローブ有効・再配置なし(分類の影響を見る)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 6})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    "gi_new_cls": {
+        "title": "新 GI 切り分け: 分類あり・再配置なし(新しい空の項)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 2})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    "gi_new_reloc": {
+        "title": "新 GI 切り分け: 再配置あり・分類なし(全プローブ有効)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 4})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    "gi_new_probes": {
+        "title": "新 GI 診断: プローブ状態の可視化(赤=無効 緑=有効 青=オフセット)",
+        "requires": "set_gi_mode",
+        "set": _OFF + [("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                                    "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                                    "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                       ("set_gi_mode", {"mode": "new", "debugStage": 8})],
+        "reset": [("set_gi_mode", {"mode": "legacy", "debugStage": 0})],
+    },
+    "gi_new_ssgi": {
+        "title": "新 GI モード + SSGI ON(SSGI のミスは DDGI。SSGI の ON/OFF で全体の明るさが跳ねないことの確認用)",
+        "requires": "set_gi_mode",
+        "set": [("set_ssao", {"enabled": False}), ("set_ssgi", {"enabled": True}), ("set_ssr", {"enabled": False}),
+                ("set_contact_shadow", {"enabled": False}), ("set_taa", {"enabled": False}),
+                ("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True,
+                             "ddgiBounceIntensity": 1.0, "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97,
+                             "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True}),
+                ("set_gi_mode", {"mode": "new", "debugStage": 0})],
         "reset": [("set_gi_mode", {"mode": "legacy"})],
     },
 }
@@ -162,7 +240,7 @@ def capture_all(a, scenes: list[GS.GiScene], out: Path, log) -> dict:
             port = a.attach
         else:
             port = a.port
-            state["launcher"] = PwshLauncher(name=DEFAULT_NAME, port=port, mode="headless")
+            state["launcher"] = PwshLauncher(name=DEFAULT_NAME, port=port, mode="headless", build_dir=getattr(a, "build_dir", None))
             log(f"エンジンを起動: name={DEFAULT_NAME} port={port}")
             state["launcher"].start(str(proj))
         state["client"] = EngineClient(port, connect_timeout=(30 if a.attach else 120))
@@ -454,11 +532,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frame-budget-ms", type=float, default=None, help="PT の 1 フレーム GPU 予算(既定 = エンジン既定の 12)")
     ap.add_argument("--pt-timeout", type=float, default=1800.0)
     ap.add_argument("--no-pt", dest="pt", action="store_false", help="PT を撮り直さない(--out の既存 pt.pfm を使う)")
-    ap.add_argument("--capture-mode", choices=("free", "det"), default="free")
+    ap.add_argument("--capture-mode", choices=("free", "det"), default="det")
     ap.add_argument("--settle", type=int, default=600, help="free: 撮る前に回すフレーム数")
     ap.add_argument("--det-settle", type=int, default=240, help="det: settleFrames(最大 240)")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--attach", type=int, help="起動済みエンジンへ接続だけ(起動も停止もしない)")
+    ap.add_argument("--build-dir", help="engine_instance.ps1 -BuildDir(exe + DLL + shaders のスナップショット。A/B 比較用)")
     ap.add_argument("--no-flip", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)

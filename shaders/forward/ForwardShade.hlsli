@@ -191,6 +191,8 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     float  ssgiConf = 0.0;
     float  ddgiConf = 0.0;
     float3 ddgiIrr  = 0.0;
+    const bool giNew = false;
+    DdgiNewSample gn = (DdgiNewSample)0;
 #else
     float4 ssr  = g_ssr.Load(int3(si.svPos, 0));
     float4 ssgi = g_ssgi.Load(int3(si.svPos, 0));
@@ -200,8 +202,23 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     float  ssgiConf = saturate(ssgi.a);
 
     // DDGI（world-space の拡散間接光）。OFF なら ddgiConf=0 で以降の lerp が全部恒等になる。
+    //   ★GI モード New（giParams.x）: RTXGI 流の補間（再配置オフセット・無効プローブ・surface bias・crush）と
+    //     空の可視率・反射方向の irradiance も一緒に引く。Legacy は従来の SampleDdgi のまま（ビット一致）。
     float  ddgiConf = 0.0;
-    float3 ddgiIrr  = UNO_SHADE_SANITIZE(SampleDdgi(si.worldPos, N, ddgiConf));
+    float3 ddgiIrr;
+    const bool giNew = (giParams.x > 0.5);
+    DdgiNewSample gn = (DdgiNewSample)0;
+    gn.skyVisR = 1.0;
+    [branch] if (giNew)
+    {
+        gn = SampleDdgiNew(si.worldPos, N, V, reflect(-V, N));
+        ddgiIrr  = UNO_SHADE_SANITIZE(gn.irrN);
+        ddgiConf = gn.conf;
+    }
+    else
+    {
+        ddgiIrr = UNO_SHADE_SANITIZE(SampleDdgi(si.worldPos, N, ddgiConf));
+    }
 #endif
 
     // ===== Ambient / IBL =====
@@ -212,12 +229,19 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         float  NoV = max(dot(N, V), 0.0);
         float3 F   = FresnelSchlickRoughness(NoV, F0, roughness);
         float3 kD  = (1.0 - F) * (1.0 - metallic);
+        // ★GI モード New: 拡散の環境光は視線ごとの Fresnel（NoV が小さい壁・天井で F が 0.3 を超える）で減らさない。
+        //   パストレーサーの拡散は半球全体で平均した Fresnel（ほぼ F0）で減るだけなので、
+        //   斜めから見た壁が 30〜40% 暗くなる分だけ食い違っていた。Fresnel の分はスペキュラ側が持つ。
+        if (giNew) kD = (1.0 - F0) * (1.0 - metallic);
 
         // 拡散 IBL（irradiance）
         // ★SSGI は irradiance を「置き換える」（足さない）。SSGI はミスしたレイに
         //   IBL の irradiance を積んでいるので、足すと同じ光を二重に数えて全体が倍明るくなる。
         //   SSGI が無効/無効ピクセルでは ssgiConf=0 で完全に従来どおり。
         float3 irradiance = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb;
+        // ★GI モード New: DDGI の値はミスしたレイに iblIntensity を掛けて作ってある（パストレーサーと同じ）。
+        //   なので IBL 側だけを先にスケールし、末尾の「ambient 全体 × iblIntensity」は外す。
+        if (giNew) irradiance *= iblIntensity;
         // ★役割分担は Lumen と同じ「スクリーントレース優先 → 外したら world-space プローブ」。
         //   DDGI が envMap を置き換え、そのうえで SSGI が当てたピクセルは SSGI が勝つ。
         irradiance = lerp(irradiance, ddgiIrr, ddgiConf);
@@ -228,6 +252,17 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         // ★SSR がヒットしていれば prefiltered をその放射輝度で置き換える（confidence で連続に）。
         float  mip = roughness * maxPrefilterMip;
         float3 prefiltered = g_prefilteredMap.SampleLevel(g_iblSampler, R, mip).rgb;
+        if (giNew)
+        {
+            // ★鏡面遮蔽（GI モード New）: 空の反射に「反射方向の空の可視率」を掛ける。遮られた分は反射方向の
+            //   DDGI irradiance（その方向を向いた面の明るさ）で粗く近似する。重みはラフネスで 0→1
+            //   （滑らかな面は室内の像を映せないので、遮られた分は暗いまま＝やや暗くなるのが正しい。
+            //   正式な室内反射は反射プローブ＝山 2）。DDGI の範囲外（conf=0）は vis=1 で従来どおり。
+            prefiltered *= iblIntensity;
+            const float vis = lerp(1.0, gn.skyVisR, saturate(gn.conf * giParams.w));
+            const float rw  = smoothstep(0.1, 0.6, roughness);
+            prefiltered = prefiltered * vis + UNO_SHADE_SANITIZE(gn.irrR) * ((1.0 - vis) * rw);
+        }
         prefiltered = lerp(prefiltered, ssrRgb, ssrConf);
         float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
         float3 specularIBL = prefiltered * (F * envBRDF.x + envBRDF.y);
@@ -238,7 +273,7 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         //   窪みが二重に暗くなる。
         float aoDiff = lerp(ao, 1.0, ssgiConf);
         float aoSpec = lerp(ao, 1.0, ssrConf);
-        ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * iblIntensity;
+        ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * (giNew ? 1.0 : iblIntensity);
     }
     else
     {
@@ -261,6 +296,19 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
                        ssgiConf);
     }
 
+#ifndef UNO_SHADE_LITE
+    // 検証用（set_gi_mode の debugStage bit3）: 最寄りのプローブの状態を色で見る。赤 = 無効（壁の中）/ 緑 = 有効 /
+    // 青 = 再配置オフセットの大きさ（間隔比 0..0.45 を 0..1 に）。ふだんは giParams2.x = 0 で何も読まない。
+    if (giNew && giParams2.x > 0.5)
+    {
+        const uint3 cnt = uint3(ddgiCounts.xyz);
+        const float3 g  = (si.worldPos - ddgiOrigin.xyz) / max(ddgiSpacing.xyz, 1e-4);
+        const int3 c = clamp(int3(round(g)), int3(0, 0, 0), int3(cnt) - 1);
+        const float4 pd = DdgiLoadProbeData(DdgiProbeIndex(uint3(c), cnt), cnt);
+        const float off = saturate(length(pd.xyz) / max(ddgiSpacing.x, 1e-4) / 0.45);
+        return float3(pd.w < 0.5 ? 1.0 : 0.0, pd.w >= 0.5 ? 0.6 : 0.0, off);
+    }
+#endif
     return ambient + Lo + decalEmissive;
 }
 

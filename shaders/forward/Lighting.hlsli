@@ -41,6 +41,10 @@ Texture2D<float4> g_ddgiIrradiance : register(t22);
 // 距離モーメント（.r=平均距離 / .g=二乗平均）。Chebyshev 可視性テスト用（段階2）。
 Texture2D<float2> g_ddgiDistance   : register(t23);
 SamplerState      g_ddgiSampler    : register(s5);
+// プローブデータ（GI モード New: xyz = 再配置オフセット / w = 状態）。slot11 テーブルの 10 本目。
+// ★Legacy / DDGI 無効のときは 1x1 黒ダミー。読むかどうかは giParams.x（GI モード New）で決める。
+Texture2D<float4> g_ddgiProbeData  : register(t30);
+#define DDGI_PROBEDATA_LOAD(t) g_ddgiProbeData.Load(int3(int2(t), 0))
 #include "../ddgi/DdgiCommon.hlsli"
 
 // PerFrame constants (b1)
@@ -77,7 +81,11 @@ cbuffer PerFrameConstants : register(b1)
     float4   ddgiOrigin;                          // 16B  (offset 560) .xyz=格子の原点 .w=有効(1/0)
     float4   ddgiSpacing;                         // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
     float4   ddgiCounts;                          // 16B  (offset 592) .xyz=各軸のプローブ数 .w=予約
-    float4   _clusterReserved[40];                // 640B (offset 608..1247) 予約（総サイズ 1536B 維持のため）
+    float4   _clusterReserved[38];                // 608B (offset 608..1215) 予約（[0..1] = 植生の風）
+    // ▼ GI モード（シーン単位。GI_FOUNDATION_DESIGN）32B (offset 1216)。_clusterReserved の末尾 2 本を削って作った。
+    //   ★giParams.x が 0（Legacy）なら下の New 用の経路は一切走らず、絵はビット一致。
+    float4   giParams;                            // 16B  (offset 1216) .x=GI モード New(1/0) .y=視線バイアス(m) .z=法線バイアス(m) .w=鏡面の空遮蔽の強さ
+    float4   giParams2;                           // 16B  (offset 1232) 予約（SSGI のミス → DDGI は giParams.x を見る）
     float4x4 spotShadowMatrix[MAX_SHADOW_SPOT];   // 256B (offset 1248)
     // ▼ IBL 制御 16B (offset 1504)
     float  iblIntensity;     // IBL 拡散/反射の全体スケール
@@ -104,6 +112,42 @@ float3 SampleDdgi(float3 worldPos, float3 N, out float confidence)
     return DdgiSampleIrradiance(g_ddgiIrradiance, g_ddgiDistance, g_ddgiSampler, worldPos, N,
                                 ddgiOrigin.xyz, ddgiSpacing.xyz,
                                 uint3(ddgiCounts.xyz), ddgiSpacing.w, confidence);
+}
+
+// GI モード New の DDGI サンプル（フォワード用）。
+//   irrN  : 法線方向の irradiance（拡散。IBL と同じ単位）
+//   irrR  : 反射方向の irradiance（遮蔽された空の反射を粗く近似する）
+//   skyVisR: 反射方向の空の可視率（0 = 空が見えない / 1 = 丸見え）
+//   conf  : 格子の境界フェード（範囲外 0。壁の中の 8 個とも無効なら 0）
+struct DdgiNewSample
+{
+    float3 irrN;
+    float3 irrR;
+    float  skyVisR;
+    float  conf;
+};
+
+DdgiNewSample SampleDdgiNew(float3 worldPos, float3 N, float3 V, float3 R)
+{
+    DdgiNewSample o;
+    o.irrN = float3(0.0, 0.0, 0.0);
+    o.irrR = float3(0.0, 0.0, 0.0);
+    o.skyVisR = 1.0;
+    o.conf = 0.0;
+    if (ddgiOrigin.w <= 0.0 || giParams.x <= 0.5) return o;
+    const uint3 counts = uint3(ddgiCounts.xyz);
+    // camDir は「カメラ → 点」＝ -V
+    const DdgiTaps taps = DdgiComputeTaps(g_ddgiDistance, g_ddgiSampler, worldPos, N, -V,
+                                          ddgiOrigin.xyz, ddgiSpacing.xyz, counts,
+                                          giParams.y, giParams.z);
+    o.conf = taps.conf;
+    if (taps.conf <= 0.0) return o;
+    // giParams2.w = DDGI の内部単位 → シーンの単位への倍率（従来単位は 1。物理ライティング単位は 1/kClassicUnitScale）
+    o.irrN = DdgiFetchTaps(g_ddgiIrradiance, g_ddgiSampler, taps, counts, N).rgb * giParams2.w;
+    const float4 r = DdgiFetchTaps(g_ddgiIrradiance, g_ddgiSampler, taps, counts, R);
+    o.irrR = r.rgb * giParams2.w;
+    o.skyVisR = saturate(r.a);
+    return o;
 }
 
 // スポットライト影: spotShadowMatrix[idx] で射影し 3x3 PCF（CSM の SampleCascade と同じ流儀）。

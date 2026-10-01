@@ -23,6 +23,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "core/Types.h"
 
@@ -52,6 +53,21 @@ struct DdgiSettings
     float bounceIntensity = 0.0f;
 };
 
+// シーン単位の GI モード。Scene が保持し、保存 / 読込 / Undo を通る。
+//   Legacy: 既存シーンの挙動。DDGI もフォワードも 1 ビットも変わらない（A5）。
+//   New   : プローブ分類・再配置・空の可視率・ヒット面の多重バウンス（空の項の置き換え）と、
+//           フォワードの環境光の DDGI 置換・鏡面遮蔽・SSGI のミス → DDGI。
+enum class GiMode : u8
+{
+    Legacy = 0,
+    New    = 1,
+};
+
+struct GiSettings
+{
+    GiMode mode = GiMode::Legacy;   // ★既定 Legacy（キーが無い = Legacy）
+};
+
 class DdgiVolume
 {
 public:
@@ -65,13 +81,22 @@ public:
     static constexpr u32 kDistanceTexels   = 14;
     static constexpr u32 kDistanceTile     = kDistanceTexels + 2;
     static constexpr u32 kMaxProbes        = 4096;
+    // GiMode::New のバイアス類（プローブ間隔に対する比）。フォワードの b1 へも同じ式で渡す（Application）。
+    static constexpr float kViewBiasRatio   = 0.3f;   // 補間の surface bias: 視線方向
+    static constexpr float kNormalBiasRatio = 0.3f;   // 補間の surface bias: 法線方向
+    static constexpr float kMinFrontRatio   = 0.15f;   // 再配置: 面からの最小距離
+    static constexpr float kRelocLimit      = 0.45f;   // 再配置: オフセット上限（間隔比。RTXGI と同じ）
 
     bool Initialize(GraphicsDevice& device, DescriptorHeap* srvHeap, const std::wstring& shaderDir);
     void Shutdown();
     void RecreatePipelines(GraphicsDevice& device);   // シェーダーホットリロード用
 
+    // GI モード New に要る分類 + 再配置の PSO が建っているか（無ければ Update は Legacy で動く）。
+    bool SupportsGiNew() const { return m_psoProbeData != nullptr; }
+
     bool IsReady() const
     {
+        // m_psoProbeData は GiMode::New だけが使う（無くても Legacy は動く）。
         return m_psoTrace != nullptr && m_psoBlend != nullptr && m_psoBlendDist != nullptr;
     }
 
@@ -93,6 +118,20 @@ public:
         u32               lightSrvIndex = 0xFFFFFFFFu;
         u32               lightCount    = 0;
         u32               frameIndex = 0;
+        // ---- GI モード New（GiMode::New）だけが読む。Legacy では全部無視される ----
+        bool              giNew = false;
+        // 空の【放射輝度】キューブ（パストレーサーと同じ envCube）の bindless index。ミスしたレイはこれを引く
+        // （Legacy の skyCubeSrvIndex は irradiance キューブで、ミスの値としては二重にぼかしてある）。
+        // 0xFFFFFFFF なら skyCubeSrvIndex → skyColor の順にフォールバック。
+        u32               envCubeSrvIndex = 0xFFFFFFFFu;
+        float             skyScale = 1.0f;   // ミスの放射輝度に掛ける（iblIntensity）。フォワード側は DDGI 項へ iblIntensity を掛けない
+        // 検証用のビット（set_gi_mode の debugStage。保存しない）。0 = 全部（既定）/ bit0 = 旧の空の項 / bit1 = 再配置なし /
+        // bit2 = 全プローブ有効（分類なし）。S2 の段階ごとの数値と切り分けのために残してある。
+        u32               giStage = 0;
+        // 物理ライティング単位（lightingUnits:1）。DDGI の内部は従来単位（太陽 ≈ 3）で持つ（half の溢れ防止）。
+        // unitScale = 外部 → 内部の倍率（物理なら kClassicUnitScale、従来なら 1）。physicalUnits は点光源の減衰式の切替。
+        float             unitScale = 1.0f;
+        bool              physicalUnits = false;
     };
 
     // プローブを 1 フレームぶん更新する。TLAS / GeometryInfo が無ければ何もしない。
@@ -109,6 +148,12 @@ public:
     bool WriteIrradianceSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const;
     // 距離モーメントアトラス（t23）。フォーマットが違うだけで扱いは irradiance と同じ。
     bool WriteDistanceSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const;
+    // プローブごとのデータ（xyz = 再配置オフセット(m) / w = 状態 0 無効・1 有効・2 有効になった直後）。
+    // フォワードの t30。GiMode::New だけが読む。
+    bool WriteProbeDataSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const;
+    // いまのリソースが settings の格子に対応しているか。フォワードは「対応していない間は DDGI を読まない」
+    // （リソースの作り直しはプローブ更新の中＝フォワードの b1 / ディスクリプタ書き込みより後ろだから）。
+    bool MatchesGrid(const DdgiSettings& s) const;
     // 履歴を捨てる（シーン切替 / 設定変更）。次の更新で hysteresis 無しで埋め直す。
     void InvalidateHistory() { m_historyValid = false; }
 
@@ -122,12 +167,16 @@ public:
 
 private:
     bool EnsureResources(GraphicsDevice& device, const DdgiSettings& s);
+    // 古いリソース / ディスクリプタを GPU が使い終わるまで預かる（TDR 対策。作り直しの直前フレームがまだ走っている）。
+    void RetireOldResources();
+    void TickRetired();
     void CreateRootSignature(GraphicsDevice& device);
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoTrace;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoBlend;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoBlendDist;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoProbeData;   // GiMode::New: 分類 + 再配置
 
     // レイの結果（x = レイ番号 / y = プローブ番号）。rgb = 放射輝度 / a = ヒット距離。
     Microsoft::WRL::ComPtr<ID3D12Resource> m_rayData;
@@ -140,6 +189,22 @@ private:
     u32 m_distanceUav   = 0xFFFFFFFFu;   // = m_rayDataUav + 2
     u32 m_irradianceSrv = 0xFFFFFFFFu;
     u32 m_distanceSrv   = 0xFFFFFFFFu;
+    // プローブデータ（再配置オフセット + 状態）。u3 = m_rayDataUav + 3（UAV テーブルは 4 連続）。
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_probeData;
+    u32 m_probeDataUav  = 0xFFFFFFFFu;
+    u32 m_probeDataSrv  = 0xFFFFFFFFu;
+    D3D12_RESOURCE_STATES m_probeDataState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    GiMode m_lastGiMode = GiMode::Legacy;   // モードが変わったら履歴を捨てる（プローブの値の意味が変わる）
+
+    // 作り直しで退役させたディスクリプタ。GPU（最大 3 フレーム先行）が使い終わる数フレーム先まで保持してから返す
+    // （リソース本体は DeferredRelease へ渡す）。
+    struct Retired
+    {
+        u32 uavBlock = 0xFFFFFFFFu;     // FreeBlock(…, 4)
+        u32 srv[3]   = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+        u32 age      = 0;
+    };
+    std::vector<Retired> m_retired;
 
     DescriptorHeap* m_srvHeap = nullptr;
     std::wstring    m_shaderDir;

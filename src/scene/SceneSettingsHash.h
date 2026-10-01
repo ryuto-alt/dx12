@@ -58,6 +58,7 @@ inline u64 SceneSettingsFingerprint(const Scene& scene)
     pod(scene.GetSsgiSettings());
     pod(scene.GetRtSettings());
     pod(scene.GetDdgiSettings());
+    pod(scene.GetGiSettings());
     {
         // パディングを含めないようフィールドごとに混ぜる（VirtualGeometrySettings は bool と float の混在）。
         const auto& vgs = scene.GetVirtualGeometrySettings();

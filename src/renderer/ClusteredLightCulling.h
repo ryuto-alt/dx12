@@ -35,13 +35,15 @@ public:
     static constexpr u32 kMaxLightsPerCluster = cluster::kMaxLightsPerCluster;
     static constexpr u32 kMaxSceneLights      = cluster::kMaxSceneLights;
 
-    // ディスクリプタテーブルの本数（t13,t14,t15 + デカール 4 本 + DDGI 2 本）。
+    // ディスクリプタテーブルの本数（t13,t14,t15 + デカール 4 本 + DDGI 3 本）。
     // ★slot11 のテーブルは「新機能の SRV が相乗りする場所」。増やすときはここと
     //   RootSignature.cpp の clusterRanges を必ず一緒に直すこと。
-    static constexpr u32 kSrvTableSize = 9;
+    static constexpr u32 kSrvTableSize = 10;
     // DDGI の irradiance アトラス（t22）/ 距離モーメント（t23）のテーブル内オフセット。
     static constexpr u32 kDdgiSrvOffset     = 7;
     static constexpr u32 kDdgiDistSrvOffset = 8;
+    // DDGI のプローブデータ（t30。GI モード New の再配置オフセット + 状態）。
+    static constexpr u32 kDdgiProbeSrvOffset = 9;
     // フレーム多重化数（FrameResources::kFrameCount と一致させること）。
     static constexpr u32 kFrameCount = 3;
 

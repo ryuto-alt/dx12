@@ -1280,6 +1280,10 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // GI モード（シーン単位）。Legacy（既定）は書かない＝既存シーンの JSON は 1 バイトも変わらない。
+    if (scene.GetGiSettings().mode != GiMode::Legacy)
+        root["gi"] = {{"mode", "new"}};
+
     // ボリュメトリックフォグ（シーン単位）。debugMode は目視検証用の一時トグルなので保存しない。
     {
         const auto& vf = scene.GetVolumetricFogSettings();
@@ -1593,6 +1597,18 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.bounceIntensity = std::clamp(dg.bounceIntensity, 0.0f, 1.0f);
     }
     scene.GetDdgiSettings() = dg;
+}
+
+// JSON から GI モードを復元（キーが無い / 不明な値 = legacy）
+static void LoadGiSettings(Scene& scene, const json& root)
+{
+    GiSettings g;
+    if (root.contains("gi") && root["gi"].is_object())
+    {
+        const std::string m = root["gi"].value("mode", std::string("legacy"));
+        g.mode = (m == "new") ? GiMode::New : GiMode::Legacy;
+    }
+    scene.GetGiSettings() = g;
 }
 
 // JSON から仮想ジオメトリ設定を復元（virtualGeometry が無ければ既定 OFF = 後方互換）
@@ -2224,6 +2240,8 @@ static bool ApplySceneJson(Scene& scene, const json& root, const std::string& as
     catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadRtSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("raytracing 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadGiSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("gi 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadVirtualGeometrySettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("virtualGeometry 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadWindSettings(scene, root); }

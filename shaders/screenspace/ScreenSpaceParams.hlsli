@@ -14,6 +14,15 @@ Texture2D<float4>   g_colorB    : register(t3);   // 前フレームカラー(�
 Texture2D<float2>   g_velocity  : register(t4);   // R16G16_FLOAT（ビューポートローカル UV 単位）
 TextureCube<float4> g_irradiance: register(t5);   // SSGI のミス時フォールバック
 
+// GI モード New の SSGI ミス → DDGI 用（RS の 7 本目のテーブル = t6..t8。フォワードのクラスタテーブルの
+// DDGI 3 本 [t22 irradiance / t23 距離 / t30 プローブデータ] をそのまま指す）。
+// Legacy / DDGI が無いときは gDdgi0.w = 0 で一切読まない（黒ダミーが貼られている）。
+Texture2D<float4>   g_ddgiIrradiance : register(t6);
+Texture2D<float2>   g_ddgiDistance   : register(t7);
+Texture2D<float4>   g_ddgiProbeData  : register(t8);
+#define DDGI_PROBEDATA_LOAD(t) g_ddgiProbeData.Load(int3(int2(t), 0))
+#include "../ddgi/DdgiCommon.hlsli"
+
 SamplerState g_pointClamp  : register(s0);
 SamplerState g_linearClamp : register(s1);
 
@@ -34,7 +43,11 @@ cbuffer SsParams : register(b0)
     float4 gSsgi1;         // x=intensity y=clampValue z=feedback w=iblFallback
 
     float4 gMisc;          // x=zNear y=zFar z=historyValid w=hasIBL
-    float4 gMisc2;         // x=フレーム連番(時間ジッタ用) yzw=予約
+    float4 gMisc2;         // x=フレーム連番(時間ジッタ用) y=DDGI の内部単位 → シーン単位の倍率(GI モード New) zw=予約
+
+    float4 gDdgi0;         // xyz=DDGI 格子の原点 w=GI モード New で DDGI が使える(1/0)
+    float4 gDdgi1;         // xyz=プローブ間隔 w=視線バイアス(m)
+    float4 gDdgi2;         // xyz=プローブ数 w=法線バイアス(m)
 };
 
 #define SS_INV_RT   (gRT.xy)

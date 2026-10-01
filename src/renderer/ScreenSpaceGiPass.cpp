@@ -34,14 +34,18 @@ struct SsParamsCB
 
     XMFLOAT4 misc;        // x=zNear y=zFar z=historyValid w=hasIBL
     XMFLOAT4 misc2;       // x=フレーム連番（SSGI の時間ジッタ用） yzw=予約
+
+    XMFLOAT4 ddgi0;       // xyz=DDGI 格子の原点 w=GI モード New で DDGI が使える(1/0)
+    XMFLOAT4 ddgi1;       // xyz=プローブ間隔 w=視線バイアス(m)
+    XMFLOAT4 ddgi2;       // xyz=プローブ数 w=法線バイアス(m)
 };
-static_assert(sizeof(SsParamsCB) == 64 * 4 + 16 * 8, "SsParamsCB layout mismatch with ScreenSpaceParams.hlsli");
+static_assert(sizeof(SsParamsCB) == 64 * 4 + 16 * 11, "SsParamsCB layout mismatch with ScreenSpaceParams.hlsli");
 
 // ルートパラメータ。全パスが同じ 6 テーブル + CBV を使い、そのパスが読まないレジスタにも
 // 有効なディスクリプタを必ず貼る（未初期化のテーブルをバインドするとデバッグレイヤが落とす）。
 enum : u32
 {
-    kRpDepth = 0, kRpGBuffer, kRpColorA, kRpColorB, kRpVelocity, kRpIrradiance, kRpCB, kRpCount
+    kRpDepth = 0, kRpGBuffer, kRpColorA, kRpColorB, kRpVelocity, kRpIrradiance, kRpCB, kRpDdgi, kRpCount
 };
 
 void ScreenSpaceGiPass::CreateRootSignature(GraphicsDevice& device)
@@ -65,6 +69,16 @@ void ScreenSpaceGiPass::CreateRootSignature(GraphicsDevice& device)
     params[kRpCB].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_CBV;
     params[kRpCB].Descriptor.ShaderRegister = 0;   // b0
     params[kRpCB].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // t6..t8 = DDGI の irradiance / 距離 / プローブデータ（GI モード New。ルート DWORD は +1）
+    D3D12_DESCRIPTOR_RANGE ddgiRange{};
+    ddgiRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ddgiRange.NumDescriptors     = 3;
+    ddgiRange.BaseShaderRegister = 6;
+    params[kRpDdgi].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    params[kRpDdgi].DescriptorTable.NumDescriptorRanges = 1;
+    params[kRpDdgi].DescriptorTable.pDescriptorRanges   = &ddgiRange;
+    params[kRpDdgi].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_STATIC_SAMPLER_DESC samp[2]{};
     samp[0].Filter           = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -273,7 +287,12 @@ void ScreenSpaceGiPass::Generate(CommandList& cmd, const GenerateDesc& d,
     cb.misc = { d.zNear, d.zFar, m_ssgiHistValid ? 1.0f : 0.0f, d.hasIbl ? 1.0f : 0.0f };
     // フレーム連番。SSGI のディザを時間方向にも回すため（固定だと時間蓄積が収束しない）。
     // 64 で折り返すのは fp32 の精度と frac() の分解能を保つため。
-    cb.misc2 = { static_cast<float>(m_frameCounter % 64u), 0.0f, 0.0f, 0.0f };
+    cb.misc2 = { static_cast<float>(m_frameCounter % 64u), d.ddgiInvUnitScale, 0.0f, 0.0f };
+    // GI モード New: SSGI のミスは DDGI。ddgiSrv が無ければ使わない（Legacy は 0 埋め＝従来経路）。
+    const bool ddgiNew = d.ddgiNew && d.ddgiSrv.ptr != 0;
+    cb.ddgi0 = { d.ddgiOrigin.x,  d.ddgiOrigin.y,  d.ddgiOrigin.z,  ddgiNew ? 1.0f : 0.0f };
+    cb.ddgi1 = { d.ddgiSpacing.x, d.ddgiSpacing.y, d.ddgiSpacing.z, d.ddgiViewBias };
+    cb.ddgi2 = { d.ddgiCounts.x,  d.ddgiCounts.y,  d.ddgiCounts.z,  d.ddgiNormalBias };
     ++m_frameCounter;
     m_paramCB->Update(&cb, sizeof(cb), d.frameIndex);
 
@@ -289,6 +308,9 @@ void ScreenSpaceGiPass::Generate(CommandList& cmd, const GenerateDesc& d,
     nat->SetGraphicsRootDescriptorTable(kRpGBuffer,    d.gbufferSrv);
     nat->SetGraphicsRootDescriptorTable(kRpVelocity,   d.velocitySrv);
     nat->SetGraphicsRootDescriptorTable(kRpIrradiance, d.irradianceSrv);
+    // DDGI の 3 本。ptr==0（呼び出し側が渡せない）ときは読まないので、有効なディスクリプタ（深度）で埋めておく
+    // （3 本ぶんの範囲は読まれないが、デバッグレイヤが未設定のテーブルを嫌うため）。
+    nat->SetGraphicsRootDescriptorTable(kRpDdgi, d.ddgiSrv.ptr != 0 ? d.ddgiSrv : d.depthSrv);
 
     auto srv = [&](const RenderTarget* rt) { return m_srvHeap->GetGpuHandle(rt->GetSrvIndex()); };
 
