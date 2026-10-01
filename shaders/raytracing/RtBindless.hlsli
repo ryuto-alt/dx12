@@ -35,9 +35,15 @@ struct GeometryInfo
     uint emissiveSrvIndex;   // 発光テクスチャの SRV（flags bit1 が立つときだけ有効）
     float3 emissive;         // 放射輝度 = 色 × 強度（テクスチャ前）
     uint pad;
+    // ★A3 修正: 64B。PT と共有の金属度 / 粗さ（PtHost::ResolveHitMaterial）
+    uint  mrSrvIndex;        // MR テクスチャの SRV（flags bit2 が立つときだけ有効。G=粗さ / B=金属度）
+    float metallic;
+    float roughness;
+    uint  pad2;
 };
 #define RT_GEOM_FLAG_SKINNED     1u
 #define RT_GEOM_FLAG_EMISSIVETEX 2u
+#define RT_GEOM_FLAG_MRTEX       4u
 
 // Mesh.h の Vertex（96B インターリーブ）のバイトオフセット。
 // ★ここがズレると全部が静かに壊れる。SkinCompute.hlsl と同じ表。
@@ -61,6 +67,9 @@ struct RtHitInfo
     float3 tint;
     float3 emissive;
     uint   emissiveSrvIndex;   // 0xFFFFFFFF = 発光テクスチャ無し
+    uint   mrSrvIndex;         // 0xFFFFFFFF = MR テクスチャ無し
+    float  metallic;
+    float  roughness;
 };
 
 // ヒット点の属性を読む。RayQuery は CLOSEST_HIT で確定済みであること。
@@ -116,6 +125,9 @@ RtHitInfo RtLoadHit(RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL
     h.tint              = g.tint;
     h.emissive          = g.emissive;
     h.emissiveSrvIndex  = ((g.flags & RT_GEOM_FLAG_EMISSIVETEX) != 0u) ? g.emissiveSrvIndex : 0xFFFFFFFFu;
+    h.mrSrvIndex        = ((g.flags & RT_GEOM_FLAG_MRTEX) != 0u) ? g.mrSrvIndex : 0xFFFFFFFFu;
+    h.metallic          = g.metallic;
+    h.roughness         = g.roughness;
     h.valid             = true;
     return h;
 }
@@ -145,6 +157,21 @@ float3 RtHitEmissive(RtHitInfo h, SamplerState samp)
         em *= tex.SampleLevel(samp, h.uv, 0).rgb;
     }
     return em;
+}
+
+// ヒット点の金属度 / 粗さ（PtEvalMaterial と同じ式: MR テクスチャの G × roughness / B × metallic。粗さの下限 0.04）。
+void RtHitMetalRough(RtHitInfo h, SamplerState samp, out float metallic, out float roughness)
+{
+    metallic  = h.metallic;
+    roughness = h.roughness;
+    if (h.mrSrvIndex != 0xFFFFFFFFu)
+    {
+        Texture2D<float4> tex = ResourceDescriptorHeap[NonUniformResourceIndex(h.mrSrvIndex)];
+        const float4 mr = tex.SampleLevel(samp, h.uv, 0);
+        roughness = mr.g * h.roughness;
+        metallic  = mr.b * h.metallic;
+    }
+    roughness = max(roughness, 0.04);
 }
 
 #endif // RT_BINDLESS_HLSLI

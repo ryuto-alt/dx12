@@ -320,6 +320,8 @@ void Application::BuildDrawList()
             {
                 auto bitsOf = [](f32 f) { u32 u; std::memcpy(&u, &f, 4); return static_cast<u64>(u); };
                 RtHashMix(rtItemHash, renderer.hasColorTint ? 1ull : 0ull);
+                // A3 修正: 金属度 / 粗さ（GeometryInfo へ入る）。変えた瞬間を拾う
+                RtHashMix(rtItemHash, bitsOf(renderer.overrideMetallic) | (bitsOf(renderer.overrideRoughness) << 32));
                 RtHashMix(rtItemHash, bitsOf(renderer.colorTint.x) | (bitsOf(renderer.colorTint.y) << 32));
                 RtHashMix(rtItemHash, bitsOf(renderer.colorTint.z));
                 RtHashMix(rtItemHash, bitsOf(renderer.overrideEmissiveColor.x) | (bitsOf(renderer.overrideEmissiveColor.y) << 32));
@@ -329,6 +331,7 @@ void Application::BuildDrawList()
                     const Material* hm = renderer.meshes[hmi] ? renderer.meshes[hmi]->GetMaterial() : nullptr;
                     if (hm)
                     {
+                        RtHashMix(rtItemHash, bitsOf(hm->defaultMetallic) | (bitsOf(hm->defaultRoughness) << 32));
                         RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.x) | (bitsOf(hm->emissiveColor.y) << 32));
                         RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.z) | (bitsOf(hm->emissiveIntensity) << 32));
                     }
@@ -340,6 +343,7 @@ void Application::BuildDrawList()
                             if (const auto* ent = m_materialAssetManager->FindLoaded(matPath))
                             {
                                 RtHashMix(rtItemHash, (static_cast<u64>(ent->loadSerial) << 32) | ent->srvBlockStart);
+                                RtHashMix(rtItemHash, bitsOf(ent->data.metallic) | (bitsOf(ent->data.roughness) << 32));
                                 RtHashMix(rtItemHash, bitsOf(ent->data.emissiveColor[0]) | (bitsOf(ent->data.emissiveColor[1]) << 32));
                                 RtHashMix(rtItemHash, bitsOf(ent->data.emissiveColor[2]) | (bitsOf(ent->data.emissiveIntensity) << 32));
                             }
@@ -4423,6 +4427,14 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                 {
                     g.flags |= RaytracingScene::kGeomFlagEmissiveTex;
                     g.emissiveSrvIndex = pm.emissiveSrv;
+                }
+                // A3 修正: PT と同じ金属度 / 粗さ（DDGI ヒットの方向平均反射率の入力）
+                g.metallic = pm.metallic;
+                g.roughness = pm.roughness;
+                if ((pm.flags & pt::kMatMrTex) != 0u && pm.mrSrv != pt::kNoIndex)
+                {
+                    g.flags |= RaytracingScene::kGeomFlagMrTex;
+                    g.mrSrvIndex = pm.mrSrv;
                 }
                 return g;
             };

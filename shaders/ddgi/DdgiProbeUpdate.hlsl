@@ -311,6 +311,19 @@ void LightGridCS(uint3 dtid : SV_DispatchThreadID)
     gLightGrid[baseI] = n;
 }
 
+// 鏡面の方向アルベド（Karis, "Physically Based Shading on Mobile" の EnvBRDFApprox）。GGX + Schlick の半球積分の近似で、
+// PT の PtEvalBrdf（GGX NDF / Smith G / Schlick F）の「入射方向で平均した鏡面反射率」に対応する。
+// 戻り値 = F0 * A + B（F0 は色つきでよい）。
+float3 DdgiEnvBrdfApprox(float3 F0, float roughness, float NdotV)
+{
+    const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+    const float4 c1 = float4(1.0, 0.0425, 1.04, -0.04);
+    const float4 r  = roughness * c0 + c1;
+    const float  a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+    const float2 AB = float2(-1.04, 1.04) * a004 + r.zw;
+    return F0 * AB.x + AB.y.xxx;
+}
+
 // ---------------------------------------------------------------------------
 //  Trace: 1 スレッド = 1 レイ
 // ---------------------------------------------------------------------------
@@ -460,10 +473,25 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
             // ★外部の光（太陽・点光源・自己発光・空）だけ gUnitScale を掛ける。bounceNew は前フレームのアトラス＝
             //   すでに内部の単位。物理単位（lux / nit）の値を half の RayData へそのまま入れると溢れるので、
             //   従来単位（太陽 ≈ 3）へ写して持つ。フォワードが読む側で 1/gUnitScale を掛けて戻す。
-            radiance = albedo * ((gSunColor * (gSunIntensity * ndotl * shadow)
-                                  + DdgiPunctualIrradiance(h.worldPos, h.worldNormal)) * (kInvPi * gUnitScale)
-                                 + skyTerm)
-                     + min(albedo, 0.9.xxx) * bounceNew
+            // ★A3 修正: PT と同じ材質モデル（PtEvalMaterial / PtEvalBrdf = GGX + Schlick, kD = (1-F)(1-metallic)）の
+            //   「方向平均した反射率」で返す。プローブは拡散しか持てないので、鏡面ぶんは「その面が受けた光 × 鏡面の方向アルベド」を
+            //   等方に返す近似（サーフェスキャッシュと同じ考え方）。
+            //     鏡面の方向アルベド Es = Karis の EnvBRDFApprox(F0, roughness, NdotV)（V = プローブレイの逆向き）
+            //     拡散の係数   kD = (1 - F0) × (1 - metallic)  ← PT の kD = (1-F(V·H))(1-metallic) の半球平均。数値積分（GR の材質）で 0.951〜0.960 = 1-F0 に一致（粗さに依らない）。フォワードの拡散と同じ式
+            //     反射率 R = kD × albedo + Es（金属は F0 = albedo の色つき反射になる）
+            float hitMetal, hitRough;
+            RtHitMetalRough(h, gLinearWrap, hitMetal, hitRough);
+            const float3 hitF0 = lerp(0.04.xxx, albedo, hitMetal);
+            // ★視線方向は平均する（コサイン重みの 4 点: NdotV = sqrt(u), u = 1/8, 3/8, 5/8, 7/8）。V ごとの Es をそのまま使うと、
+            //   斜めのプローブレイほど Fresnel で白が増えるが、等方に返す近似では「その方向へ反射する光」は実際には少なく過大になる。
+            //   半球平均の F0=0.04 では (1-F) ≈ 0.91 / 鏡面 ≈ 0.03〜0.06 で、A3 の実測フィット（拡散 0.90 + 白 0.03）と一致する。
+            const float3 hitEs = 0.25 * (DdgiEnvBrdfApprox(hitF0, hitRough, 0.3536) + DdgiEnvBrdfApprox(hitF0, hitRough, 0.6124)
+                                       + DdgiEnvBrdfApprox(hitF0, hitRough, 0.7906) + DdgiEnvBrdfApprox(hitF0, hitRough, 0.9354));
+            const float3 albedoE = albedo * ((1.0.xxx - hitF0) * (1.0 - hitMetal)) + hitEs;
+            radiance = albedoE * ((gSunColor * (gSunIntensity * ndotl * shadow)
+                                   + DdgiPunctualIrradiance(h.worldPos, h.worldNormal)) * (kInvPi * gUnitScale)
+                                  + skyTerm)
+                     + min(albedoE, 0.9.xxx) * bounceNew
                      + RtHitEmissive(h, gLinearWrap) * gUnitScale;
         }
         else

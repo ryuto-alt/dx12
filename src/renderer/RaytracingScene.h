@@ -53,6 +53,7 @@ public:
     // ★S0b: 16B → 48B に広げた。tint（packedTint の rgb = scene_spec の color）と自己発光を持つ。
     //   値は PtHost::ResolveHitMaterial（パストレーサーのスナップショットと共有）が解決したもの＝
     //   DDGI のヒットとパストレーサーのヒットは色 / 発光が同じ値になる（8bit 量子化込み）。
+    //   A3 修正で 64B（metallic / roughness / MR SRV を追加）。
     //   RT 影 / RT-AO は GeometryInfo を読まない（TLAS だけ）ので影響しない。
     struct GeometryInfo
     {
@@ -64,10 +65,17 @@ public:
         u32 emissiveSrvIndex  = 0xFFFFFFFFu; // 発光テクスチャの SRV（flags bit1 が立つときだけ有効）
         f32 emissive[3]       = {0.0f, 0.0f, 0.0f}; // 放射輝度 = 色 × 強度（テクスチャ前。フォワードの packedEmissive と同じ量子化）
         u32 pad               = 0;
+        // ★A3 修正: 48B → 64B。DDGI のヒット（GI New）が PT と同じ材質（金属度 / 粗さ / MR テクスチャ）で
+        //   「方向平均した反射率」を作るために PtHost::ResolveHitMaterial の metallic / roughness を持つ。
+        u32 mrSrvIndex        = 0xFFFFFFFFu; // MR テクスチャの SRV（flags bit2 が立つときだけ有効。G=粗さ / B=金属度）
+        f32 metallic          = 0.0f;        // 材質の金属度（MR テクスチャが有れば乗算前）
+        f32 roughness         = 0.5f;        // 材質の粗さ（MR テクスチャが有れば乗算前。下限 0.04 は読む側）
+        u32 pad2              = 0;
     };
-    static_assert(sizeof(GeometryInfo) == 48, "RtBindless.hlsli の GeometryInfo と一致させること");
+    static_assert(sizeof(GeometryInfo) == 64, "RtBindless.hlsli の GeometryInfo と一致させること");
     static constexpr u32 kGeomFlagSkinned     = 1u;
     static constexpr u32 kGeomFlagEmissiveTex = 2u;
+    static constexpr u32 kGeomFlagMrTex       = 4u;
 
     struct Stats
     {
