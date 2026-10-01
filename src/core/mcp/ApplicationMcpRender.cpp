@@ -484,6 +484,9 @@ void Application::RegisterMcpRenderMethods()
                          // バインドレス（計画09 Step 5）
                          {"geoInfoWritten", s.geoInfoWritten},
                          {"geoInfoWithAlbedo", s.geoInfoWithAlbedo},
+                         {"geoInfoWithTexture", s.geoInfoWithTexture},
+                         {"geoInfoWithTint", s.geoInfoWithTint},
+                         {"geoInfoWithEmissive", s.geoInfoWithEmissive},
                          {"bindlessSupported", m_graphicsDevice
                               && m_graphicsDevice->SupportsDynamicResources()},
                          {"bindlessReady", m_rtScreenPass && m_rtScreenPass->SupportsBindlessHit()},

@@ -49,15 +49,25 @@ public:
     // ★マテリアル用の別テーブルは作らない。このエンジンは 1 Mesh = 1 Material なので
     //   分けても重複排除の利得が無く、ヒット点での依存ロードが 1 段増えるだけになる
     //   （NVIDIA: "Avoid indirections in accessing index, vertex, and material data"）。
+    //
+    // ★S0b: 16B → 48B に広げた。tint（packedTint の rgb = scene_spec の color）と自己発光を持つ。
+    //   値は PtHost::ResolveHitMaterial（パストレーサーのスナップショットと共有）が解決したもの＝
+    //   DDGI のヒットとパストレーサーのヒットは色 / 発光が同じ値になる（8bit 量子化込み）。
+    //   RT 影 / RT-AO は GeometryInfo を読まない（TLAS だけ）ので影響しない。
     struct GeometryInfo
     {
-        u32 vbSrvIndex;        // 属性用 VB（96B インターリーブ）の raw SRV。0xFFFFFFFF = 無効
-        u32 ibSrvIndex;        // u32 インデックスバッファの raw SRV
-        u32 baseColorSrvIndex; // アルベドテクスチャの SRV。0xFFFFFFFF = テクスチャ無し
-        u32 flags;             // bit0 = スキンド（位置は変形後バッファ / 属性は元 VB）
+        u32 vbSrvIndex        = 0xFFFFFFFFu; // 属性用 VB（96B インターリーブ）の raw SRV。0xFFFFFFFF = 無効
+        u32 ibSrvIndex        = 0xFFFFFFFFu; // u32 インデックスバッファの raw SRV
+        u32 baseColorSrvIndex = 0xFFFFFFFFu; // アルベドテクスチャの SRV。0xFFFFFFFF = テクスチャ無し
+        u32 flags             = 0;           // bit0 = スキンド（位置は変形後バッファ / 属性は元 VB）/ bit1 = 発光テクスチャあり
+        f32 tint[3]           = {1.0f, 1.0f, 1.0f}; // 色 tint（リニア。アルベドに乗る）
+        u32 emissiveSrvIndex  = 0xFFFFFFFFu; // 発光テクスチャの SRV（flags bit1 が立つときだけ有効）
+        f32 emissive[3]       = {0.0f, 0.0f, 0.0f}; // 放射輝度 = 色 × 強度（テクスチャ前。フォワードの packedEmissive と同じ量子化）
+        u32 pad               = 0;
     };
-    static_assert(sizeof(GeometryInfo) == 16, "RtBindless.hlsli の GeometryInfo と一致させること");
-    static constexpr u32 kGeomFlagSkinned = 1u;
+    static_assert(sizeof(GeometryInfo) == 48, "RtBindless.hlsli の GeometryInfo と一致させること");
+    static constexpr u32 kGeomFlagSkinned     = 1u;
+    static constexpr u32 kGeomFlagEmissiveTex = 2u;
 
     struct Stats
     {
@@ -76,7 +86,12 @@ public:
         u64 skinnedTriangles   = 0;   // 同 三角形数
         // バインドレス（計画09 Step 5）
         u32 geoInfoWritten     = 0;   // GeometryInfo を書いたインスタンス数
-        u32 geoInfoWithAlbedo  = 0;   // うちアルベドテクスチャの SRV が有効だった数
+        // うちアルベドが白ではない（テクスチャあり or tint ≠ 白）数。S0b 以前は「テクスチャあり」だけで、
+        // 単色プリミティブ（テクスチャ無し）が全部 0 になっていた。
+        u32 geoInfoWithAlbedo  = 0;
+        u32 geoInfoWithTexture = 0;   // うちアルベドテクスチャの SRV が有効だった数
+        u32 geoInfoWithTint    = 0;   // うち tint が白ではない数
+        u32 geoInfoWithEmissive = 0;  // うち自己発光（放射輝度 > 0）がある数
         u32 droppedOverLimit   = 0;   // 上限超過で切った数
         // 前フレームの TLAS をそのまま使ったフレームが何連続しているか（ReuseLastFrame）。
         // 0 = このフレームは組み直した。静止シーンで 0 のままなら再利用が効いていない。
@@ -113,7 +128,7 @@ public:
                     u32 skippedAlphaTest = 0);
     void AddInstance(const Mesh* mesh, const DirectX::XMMATRIX& world,
                      const DirectX::XMFLOAT3& center,
-                     const GeometryInfo& geo = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u});
+                     const GeometryInfo& geo = GeometryInfo{});
 
     // スキンド用（計画09 Step 4）。compute スキニングが書いた変形後頂点バッファを指定する。
     // key は「エンティティ × サブメッシュ」で一意な値を呼び出し側が作って渡すこと。
@@ -125,7 +140,7 @@ public:
     void AddSkinnedInstance(u64 key, const Mesh* mesh,
                             D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount, u64 poseHash,
                             const DirectX::XMMATRIX& world, const DirectX::XMFLOAT3& center,
-                            const GeometryInfo& geo = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u});
+                            const GeometryInfo& geo = GeometryInfo{});
 
     struct BuildDesc
     {
@@ -217,7 +232,7 @@ private:
         u64                       poseHash = 0;
         // ★ここに持たせるのが必須。m_pending は Build 中に 2 回並べ替えられ、
         //   予算切れで要素も落ちるので、呼び出し順から添字を復元できない。
-        GeometryInfo              geo{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u};
+        GeometryInfo              geo{};
     };
     std::vector<PendingInstance> m_pending;
     DirectX::XMFLOAT3 m_cameraPos{0, 0, 0};

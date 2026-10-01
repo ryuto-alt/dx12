@@ -313,6 +313,43 @@ void Application::BuildDrawList()
                     RtHashMix(rtItemHash, mat ? ((static_cast<u64>(mat->srvBlockIndex) << 32)
                                                  ^ reinterpret_cast<u64>(mat->albedoTexture)) : 0ull);
             }
+            // S0b: GeometryInfo の tint / 自己発光（PtHost::ResolveHitMaterial の入力）。TLAS を使い回すと
+            // GeometryInfo は書き直されないので、色 / 発光を変えた瞬間を拾わないと DDGI の色が古いまま固定される。
+            if (wantRtHash)
+            {
+                auto bitsOf = [](f32 f) { u32 u; std::memcpy(&u, &f, 4); return static_cast<u64>(u); };
+                RtHashMix(rtItemHash, renderer.hasColorTint ? 1ull : 0ull);
+                RtHashMix(rtItemHash, bitsOf(renderer.colorTint.x) | (bitsOf(renderer.colorTint.y) << 32));
+                RtHashMix(rtItemHash, bitsOf(renderer.colorTint.z));
+                RtHashMix(rtItemHash, bitsOf(renderer.overrideEmissiveColor.x) | (bitsOf(renderer.overrideEmissiveColor.y) << 32));
+                RtHashMix(rtItemHash, bitsOf(renderer.overrideEmissiveColor.z) | (bitsOf(renderer.overrideEmissiveIntensity) << 32));
+                for (u32 hmi = 0; hmi < static_cast<u32>(renderer.meshes.size()); ++hmi)
+                {
+                    const Material* hm = renderer.meshes[hmi] ? renderer.meshes[hmi]->GetMaterial() : nullptr;
+                    if (hm)
+                    {
+                        RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.x) | (bitsOf(hm->emissiveColor.y) << 32));
+                        RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.z) | (bitsOf(hm->emissiveIntensity) << 32));
+                    }
+                    const std::string& matPath = MeshRenderer::SafeGetOverride(renderer.materialAsset, hmi);
+                    if (!matPath.empty())
+                    {
+                        RtHashMix(rtItemHash, std::hash<std::string>{}(matPath));
+                        if (m_materialAssetManager)
+                            if (const auto* ent = m_materialAssetManager->FindLoaded(matPath))
+                            {
+                                RtHashMix(rtItemHash, (static_cast<u64>(ent->loadSerial) << 32) | ent->srvBlockStart);
+                                RtHashMix(rtItemHash, bitsOf(ent->data.emissiveColor[0]) | (bitsOf(ent->data.emissiveColor[1]) << 32));
+                                RtHashMix(rtItemHash, bitsOf(ent->data.emissiveColor[2]) | (bitsOf(ent->data.emissiveIntensity) << 32));
+                            }
+                    }
+                    if (renderer.HasAnyTextureOverride(hmi))
+                    {
+                        RtHashMix(rtItemHash, std::hash<std::string>{}(MeshRenderer::SafeGetOverride(renderer.overrideAlbedoTexture, hmi)));
+                        RtHashMix(rtItemHash, std::hash<std::string>{}(MeshRenderer::SafeGetOverride(renderer.overrideEmissiveTexture, hmi)));
+                    }
+                }
+            }
             // エンティティ側で opacity を下げただけ（マテリアルは OPAQUE）でも半透明にする。
             // ★マテリアル焼き込みの baseColorAlpha ではこの昇格をしない（glTF の意味論では
             //   alphaMode=OPAQUE のとき baseColorFactor.a は無視されるため）。
@@ -4341,21 +4378,27 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             // ★スキンドでも「属性用 VB」は元メッシュのものを渡す。変形後バッファには
             //   位置しか入っていない（UV も法線も無い）が、インデックスは共有なので
             //   PrimitiveIndex と バリセントリック はそのまま使える。
-            auto makeGeoInfo = [&](Mesh* mesh) -> RaytracingScene::GeometryInfo
+            // ★S0b: 材質（tint / 自己発光 / テクスチャ SRV）はパストレーサーと【共有】の解決関数から取る
+            //   （PtHost::ResolveHitMaterial。フォワードと同じ優先順・8bit 量子化込み）。
+            //   ＝ DDGI のヒットとパストレーサーのヒットで色 / 発光が同じ値になる。
+            auto makeGeoInfo = [&](const DrawItem& dit, u32 mi) -> RaytracingScene::GeometryInfo
             {
-                RaytracingScene::GeometryInfo g{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0u};
+                RaytracingScene::GeometryInfo g{};
+                Mesh* mesh = dit.renderer->meshes[mi];
                 if (!wantGeoInfo || !mesh) return g;
                 mesh->EnsureRaytracingSrvs(*m_graphicsDevice, *m_srvHeap);
                 g.vbSrvIndex = mesh->GetVbSrvIndex();
                 g.ibSrvIndex = mesh->GetIbSrvIndex();
-                // アルベド: srvBlockIndex は albedo/normal/metalRoughness の 3 連続ブロックの
-                // 先頭＝そのまま albedo。ブロックが無いモデルはテクスチャ単体の SRV を使う。
-                if (const Material* mat = mesh->GetMaterial())
+                pt::MaterialGpu pm{};
+                float emLuma = 0.0f;
+                PtHost::ResolveHitMaterial(*this, dit, mi, nativeCmdList, true, pm, emLuma);
+                g.baseColorSrvIndex = pm.albedoSrv;                // pt::kNoIndex == 0xFFFFFFFF
+                g.tint[0] = pm.tint[0]; g.tint[1] = pm.tint[1]; g.tint[2] = pm.tint[2];
+                g.emissive[0] = pm.emissive[0]; g.emissive[1] = pm.emissive[1]; g.emissive[2] = pm.emissive[2];
+                if ((pm.flags & pt::kMatEmissiveTex) != 0u && pm.emissiveSrv != pt::kNoIndex)
                 {
-                    if (mat->srvBlockIndex != 0xFFFFFFFFu)
-                        g.baseColorSrvIndex = mat->srvBlockIndex;
-                    else if (mat->albedoTexture)
-                        g.baseColorSrvIndex = mat->albedoTexture->GetSrvIndex();
+                    g.flags |= RaytracingScene::kGeomFlagEmissiveTex;
+                    g.emissiveSrvIndex = pm.emissiveSrv;
                 }
                 return g;
             };
@@ -4393,7 +4436,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                             meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
                         m_rtScene->AddSkinnedInstance(key, r.meshes[mi], va, vcount, poseHash,
                                                       meshWorld, it.center,
-                                                      makeGeoInfo(r.meshes[mi]));
+                                                      makeGeoInfo(it, mi));
                     }
                     continue;
                 }
@@ -4408,7 +4451,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                     if (it.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
                         meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
                     m_rtScene->AddInstance(r.meshes[mi], meshWorld, it.center,
-                                           makeGeoInfo(r.meshes[mi]));
+                                           makeGeoInfo(it, mi));
                 }
             }
 

@@ -237,7 +237,8 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
         radiance = albedo * (gSunColor * (gSunIntensity * ndotl * shadow)
                              + DdgiSkyRadiance(h.worldNormal)
                              + DdgiPunctualIrradiance(h.worldPos, h.worldNormal))
-                 + min(albedo, 0.9.xxx) * bounce;
+                 + min(albedo, 0.9.xxx) * bounce
+                 + RtHitEmissive(h, gLinearWrap);   // S0b: 自己発光（色 × 強度 × 発光テクスチャ）。表面が出す光なので albedo は掛けない
     }
 
     // ★gRayData は RGBA16F ＝ half（最大 65504）。多重バウンスで値が育つので、

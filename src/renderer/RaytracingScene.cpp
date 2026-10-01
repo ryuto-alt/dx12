@@ -99,6 +99,9 @@ void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, 
     m_stats.skinnedStale       = 0;
     m_stats.geoInfoWritten     = 0;
     m_stats.geoInfoWithAlbedo  = 0;
+    m_stats.geoInfoWithTexture = 0;
+    m_stats.geoInfoWithTint    = 0;
+    m_stats.geoInfoWithEmissive = 0;
     m_stats.tlasReuseFrames    = 0;   // BeginFrame まで来た＝このフレームは組み直す
     m_blasDeferred             = 0;
 }
@@ -459,7 +462,13 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
         {
             geos[count] = p.geo;
             if (p.geo.vbSrvIndex != 0xFFFFFFFFu) ++m_stats.geoInfoWritten;
-            if (p.geo.baseColorSrvIndex != 0xFFFFFFFFu) ++m_stats.geoInfoWithAlbedo;
+            const bool tex  = (p.geo.baseColorSrvIndex != 0xFFFFFFFFu);
+            const bool tint = (p.geo.tint[0] != 1.0f || p.geo.tint[1] != 1.0f || p.geo.tint[2] != 1.0f);
+            if (tex)  ++m_stats.geoInfoWithTexture;
+            if (tint) ++m_stats.geoInfoWithTint;
+            if (tex || tint) ++m_stats.geoInfoWithAlbedo;
+            if (p.geo.emissive[0] > 0.0f || p.geo.emissive[1] > 0.0f || p.geo.emissive[2] > 0.0f)
+                ++m_stats.geoInfoWithEmissive;
         }
         dst.InstanceMask                        = 0xFF;
         dst.InstanceContributionToHitGroupIndex = 0;

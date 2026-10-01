@@ -29,9 +29,15 @@ struct GeometryInfo
     uint vbSrvIndex;         // 属性用 VB（96B インターリーブ）の raw SRV
     uint ibSrvIndex;         // u32 インデックスバッファの raw SRV
     uint baseColorSrvIndex;  // アルベドテクスチャの SRV。0xFFFFFFFF = 無し
-    uint flags;              // bit0 = スキンド
+    uint flags;              // bit0 = スキンド / bit1 = 発光テクスチャあり
+    // ★S0b: パストレーサーと共有の材質（PtHost::ResolveHitMaterial が解決。8bit 量子化込み）
+    float3 tint;             // 色 tint（packedTint の rgb。アルベドに乗る）
+    uint emissiveSrvIndex;   // 発光テクスチャの SRV（flags bit1 が立つときだけ有効）
+    float3 emissive;         // 放射輝度 = 色 × 強度（テクスチャ前）
+    uint pad;
 };
-#define RT_GEOM_FLAG_SKINNED 1u
+#define RT_GEOM_FLAG_SKINNED     1u
+#define RT_GEOM_FLAG_EMISSIVETEX 2u
 
 // Mesh.h の Vertex（96B インターリーブ）のバイトオフセット。
 // ★ここがズレると全部が静かに壊れる。SkinCompute.hlsl と同じ表。
@@ -52,6 +58,9 @@ struct RtHitInfo
     float2 uv;
     float4 vertexColor;
     uint   baseColorSrvIndex;
+    float3 tint;
+    float3 emissive;
+    uint   emissiveSrvIndex;   // 0xFFFFFFFF = 発光テクスチャ無し
 };
 
 // ヒット点の属性を読む。RayQuery は CLOSEST_HIT で確定済みであること。
@@ -104,23 +113,38 @@ RtHitInfo RtLoadHit(RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL
 
     h.worldPos          = q.WorldRayOrigin() + q.WorldRayDirection() * q.CommittedRayT();
     h.baseColorSrvIndex = g.baseColorSrvIndex;
+    h.tint              = g.tint;
+    h.emissive          = g.emissive;
+    h.emissiveSrvIndex  = ((g.flags & RT_GEOM_FLAG_EMISSIVETEX) != 0u) ? g.emissiveSrvIndex : 0xFFFFFFFFu;
     h.valid             = true;
     return h;
 }
 
-// ヒット点のアルベド。テクスチャが無ければ頂点カラーだけを返す。
+// ヒット点のアルベド = 頂点カラー × tint × アルベドテクスチャ（パストレーサーの PtEvalMaterial と同じ式）。
 // ★Sample() は使えない。quad 内でディスクリプタ添字が発散すると LOD が未定義になる
 //   （Learn: "If index diverges across a quad, the hardware-computed derivative and
 //     derived quantities such as LOD may be undefined"）。必ず SampleLevel。
 float3 RtHitAlbedo(RtHitInfo h, SamplerState samp)
 {
-    float3 albedo = h.vertexColor.rgb;
+    float3 albedo = h.vertexColor.rgb * h.tint;
     if (h.baseColorSrvIndex != 0xFFFFFFFFu)
     {
         Texture2D<float4> tex = ResourceDescriptorHeap[NonUniformResourceIndex(h.baseColorSrvIndex)];
         albedo *= tex.SampleLevel(samp, h.uv, 0).rgb;
     }
     return albedo;
+}
+
+// ヒット点の自己発光（放射輝度）= 色 × 強度 × 発光テクスチャ。無発光なら 0。
+float3 RtHitEmissive(RtHitInfo h, SamplerState samp)
+{
+    float3 em = h.emissive;
+    if (any(em > 0.0) && h.emissiveSrvIndex != 0xFFFFFFFFu)
+    {
+        Texture2D<float4> tex = ResourceDescriptorHeap[NonUniformResourceIndex(h.emissiveSrvIndex)];
+        em *= tex.SampleLevel(samp, h.uv, 0).rgb;
+    }
+    return em;
 }
 
 #endif // RT_BINDLESS_HLSLI

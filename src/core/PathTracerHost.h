@@ -27,6 +27,7 @@ namespace dx12e
 
 class Application;
 class DescriptorHeap;
+struct DrawItem;
 
 struct PtRequest
 {
@@ -134,6 +135,12 @@ struct PtHost
     // メッシュの解放 / シーンの切り替えなど、スナップショットが指すリソースが無効になる出来事。
     void Invalidate(const char* reason);
     void Shutdown();
+
+    // 描画項目 1 つ・サブメッシュ 1 つの材質(色 tint / 自己発光 / テクスチャ SRV / PBR 値)を、フォワードと同じ優先順で解決する。
+    // ★パストレーサーのスナップショットと RT(DDGI のヒット = RaytracingScene の GeometryInfo)の【共有実装】。
+    //   quantizeLikeForward = true で色 / 発光をフォワードと同じ 8bit 量子化にする(RT は常に true)。
+    static void ResolveHitMaterial(Application& app, const DrawItem& it, uint32_t mi, ID3D12GraphicsCommandList* cmd,
+                                   bool quantizeLikeForward, pt::MaterialGpu& m, float& emLuma);
 
 private:
     bool EnsureTracer(Application& app);

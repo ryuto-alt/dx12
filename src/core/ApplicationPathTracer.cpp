@@ -179,6 +179,132 @@ std::string PtHost::ResolveOutputBase(Application& app) const
 // ---------------------------------------------------------------------------
 //  スナップショット(描画リスト → pt::SceneBuilder)
 // ---------------------------------------------------------------------------
+// 描画項目 1 つ・サブメッシュ 1 つの材質を、フォワード(RenderSceneMeshes)と同じ優先順で解決する。
+// パストレーサーのスナップショットと RT(DDGI のヒットシェーディング)の【共有】実装:
+//   両者のヒットの色 / 自己発光が同じ値になることをここで保証する。
+void PtHost::ResolveHitMaterial(Application& app, const DrawItem& it, u32 mi, ID3D12GraphicsCommandList* cmd,
+                                bool quantizeLikeForward, pt::MaterialGpu& m, float& emLuma)
+{
+    const MeshRenderer& r = *it.renderer;
+    Mesh* mesh = r.meshes[mi];
+    emLuma = 0.0f;
+    m = pt::MaterialGpu{};
+    // ---- 材質(Forward の RenderSceneMeshes と同じ優先順で解決)----
+    const Material* mat = mesh->GetMaterial();
+    const AlphaParams alphaP = ResolveAlphaParams(mat, r.alphaModeOverride, r.alphaCutoffOverride, r.opacity);
+    const bool wantBlend = (alphaP.mode == AlphaMode::Blend)
+                        || (alphaP.mode == AlphaMode::Opaque && r.opacity < 0.999f);
+    const bool wantMask = (alphaP.mode == AlphaMode::Mask);
+
+    const MaterialAssetManager::Entry* matAsset = nullptr;
+    if (r.HasMaterialAsset(mi) && app.m_materialAssetManager)
+    {
+        const auto* loaded = app.m_materialAssetManager->GetOrLoad(MeshRenderer::SafeGetOverride(r.materialAsset, mi), cmd);
+        if (loaded && loaded->valid) matAsset = loaded;
+    }
+    const u32 overrideBlock = app.EnsureMaterialOverrideSrv(it.e, mi, r, mat, cmd);
+    u32 block = 0xFFFFFFFFu;
+    if (matAsset)                                        block = matAsset->srvBlockStart;
+    else if (overrideBlock != 0xFFFFFFFFu)               block = overrideBlock;
+    else if (mat && mat->srvBlockIndex != 0xFFFFFFFFu)   block = mat->srvBlockIndex;
+
+    m.albedoSrv = m.normalSrv = m.mrSrv = m.emissiveSrv = pt::kNoIndex;
+    u32 pbrFlags = 0;
+    float metallic, roughness;
+    if (matAsset)
+    {
+        metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : matAsset->data.metallic;
+        roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness : matAsset->data.roughness;
+        if (matAsset->hasNormalTex)   pbrFlags |= 1u;
+        if (matAsset->hasMRTex)       pbrFlags |= 2u;
+        if (matAsset->hasEmissiveTex) pbrFlags |= kPbrFlagEmissiveTex;
+    }
+    else
+    {
+        metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : (mat ? mat->defaultMetallic : 0.0f);
+        roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness : (mat ? mat->defaultRoughness : 0.5f);
+        const bool ovBlockOk = (overrideBlock != 0xFFFFFFFFu);
+        const bool ovNormal = ovBlockOk && !MeshRenderer::SafeGetOverride(r.overrideNormalTexture, mi).empty();
+        const bool ovMR     = ovBlockOk && !MeshRenderer::SafeGetOverride(r.overrideMetalRoughnessTexture, mi).empty();
+        const bool ovEmis   = ovBlockOk && !MeshRenderer::SafeGetOverride(r.overrideEmissiveTexture, mi).empty();
+        if (ovNormal || (mat && mat->normalMapTexture))      pbrFlags |= 1u;
+        if (ovMR || (mat && mat->metalRoughnessTexture))     pbrFlags |= 2u;
+        if (ovEmis || (mat && mat->emissiveTexture))         pbrFlags |= kPbrFlagEmissiveTex;
+    }
+    if (block != 0xFFFFFFFFu)
+    {
+        m.albedoSrv = block;
+        m.normalSrv = block + 1;
+        m.mrSrv = block + 2;
+        m.emissiveSrv = block + 3;
+    }
+    else
+    {
+        if (mat && mat->albedoTexture && mat->albedoTexture->GetSrvIndex() != 0xFFFFFFFFu)
+            m.albedoSrv = mat->albedoTexture->GetSrvIndex();
+        pbrFlags &= ~(1u | 2u | kPbrFlagEmissiveTex);   // ブロックが無ければ 2〜4 枚目は存在しない
+    }
+    m.metallic = metallic;
+    m.roughness = roughness;
+    m.flags = ((pbrFlags & 1u) ? pt::kMatNormalMap : 0u)
+            | ((pbrFlags & 2u) ? pt::kMatMrTex : 0u)
+            | ((pbrFlags & kPbrFlagEmissiveTex) ? pt::kMatEmissiveTex : 0u);
+
+    // 色ティント + 不透明度 + アルファテストの閾値
+    {
+        const XMFLOAT4 tc = r.hasColorTint ? r.colorTint : XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
+        if (quantizeLikeForward)
+        {
+            auto q = [](f32 v) { return static_cast<u32>(static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f)); };
+            const u32 rgb = (q(tc.x) << 16) | (q(tc.y) << 8) | q(tc.z);
+            const u32 packed = PackTintWithOpacity(rgb, alphaP.opacity);
+            UnpackTint(packed, m.tint, m.opacity);
+            const u32 fl = PackAlphaTestFlags(0u, alphaP);
+            m.alphaCutoff = static_cast<float>((fl >> 8) & 0xFFu) / 255.0f;
+        }
+        else
+        {
+            m.tint[0] = tc.x; m.tint[1] = tc.y; m.tint[2] = tc.z;
+            m.opacity = alphaP.opacity;
+            m.alphaCutoff = alphaP.cutoff;
+        }
+    }
+    m.alphaMode = wantBlend ? 2u : (wantMask ? 1u : 0u);
+
+    // 自己発光
+    {
+        XMFLOAT3 baseColor = mat ? mat->emissiveColor : XMFLOAT3{0.0f, 0.0f, 0.0f};
+        f32 baseIntensity = mat ? mat->emissiveIntensity : 0.0f;
+        if (matAsset)
+        {
+            baseColor = {matAsset->data.emissiveColor[0], matAsset->data.emissiveColor[1], matAsset->data.emissiveColor[2]};
+            baseIntensity = matAsset->data.emissiveIntensity;
+        }
+        const EmissiveParams ep = ResolveEmissiveParams(baseColor, baseIntensity, r.overrideEmissiveColor, r.overrideEmissiveIntensity);
+        if (ep.intensity > 0.0f)
+        {
+            if (quantizeLikeForward) UnpackEmissiveColor(PackEmissive(ep), m.emissive);
+            else { m.emissive[0] = ep.color.x * ep.intensity; m.emissive[1] = ep.color.y * ep.intensity; m.emissive[2] = ep.color.z * ep.intensity; }
+            emLuma = Luma3(m.emissive);
+        }
+    }
+
+    // UV 変換(連番アニメ > スクロール > 恒等)
+    m.uvScaleOffset[0] = 1.0f; m.uvScaleOffset[1] = 1.0f;
+    if (r.animFrames > 0)
+    {
+        const SpriteUvRect ur = ComputeFlipbookUvEx(r.animFrames, r.animFps, r.animCols, r.animRow, r.animRows, r.animMode, r._animT);
+        m.uvScaleOffset[0] = ur.u1 - ur.u0; m.uvScaleOffset[1] = ur.v1 - ur.v0;
+        m.uvScaleOffset[2] = ur.u0;         m.uvScaleOffset[3] = ur.v0;
+    }
+    else if (r.uvScrollU != 0.0f || r.uvScrollV != 0.0f)
+    {
+        const float du = r.uvScrollU * r._animT, dv = r.uvScrollV * r._animT;
+        m.uvScaleOffset[2] = du - std::floor(du);
+        m.uvScaleOffset[3] = dv - std::floor(dv);
+    }
+}
+
 bool PtHost::Snapshot(Application& app, ID3D12GraphicsCommandList* cmd, std::string* err)
 {
     const auto t0 = std::chrono::steady_clock::now();
@@ -432,123 +558,11 @@ bool PtHost::Snapshot(Application& app, ID3D12GraphicsCommandList* cmd, std::str
                 if (deformedVa == 0) { ++snap.skippedSkinned; continue; }
             }
 
-            // ---- 材質(Forward の RenderSceneMeshes と同じ優先順で解決)----
-            const Material* mat = mesh->GetMaterial();
-            const AlphaParams alphaP = ResolveAlphaParams(mat, r.alphaModeOverride, r.alphaCutoffOverride, r.opacity);
-            const bool wantBlend = (alphaP.mode == AlphaMode::Blend)
-                                || (alphaP.mode == AlphaMode::Opaque && r.opacity < 0.999f);
-            const bool wantMask = (alphaP.mode == AlphaMode::Mask);
-
-            const MaterialAssetManager::Entry* matAsset = nullptr;
-            if (r.HasMaterialAsset(mi) && app.m_materialAssetManager)
-            {
-                const auto* loaded = app.m_materialAssetManager->GetOrLoad(MeshRenderer::SafeGetOverride(r.materialAsset, mi), cmd);
-                if (loaded && loaded->valid) matAsset = loaded;
-            }
-            const u32 overrideBlock = app.EnsureMaterialOverrideSrv(it.e, mi, r, mat, cmd);
-            u32 block = 0xFFFFFFFFu;
-            if (matAsset)                                        block = matAsset->srvBlockStart;
-            else if (overrideBlock != 0xFFFFFFFFu)               block = overrideBlock;
-            else if (mat && mat->srvBlockIndex != 0xFFFFFFFFu)   block = mat->srvBlockIndex;
-
+            // 材質の解決は RT(DDGI のヒット)と共有する(PtHost::ResolveHitMaterial)
             pt::MaterialGpu m{};
-            m.albedoSrv = m.normalSrv = m.mrSrv = m.emissiveSrv = pt::kNoIndex;
-            u32 pbrFlags = 0;
-            float metallic, roughness;
-            if (matAsset)
-            {
-                metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : matAsset->data.metallic;
-                roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness : matAsset->data.roughness;
-                if (matAsset->hasNormalTex)   pbrFlags |= 1u;
-                if (matAsset->hasMRTex)       pbrFlags |= 2u;
-                if (matAsset->hasEmissiveTex) pbrFlags |= kPbrFlagEmissiveTex;
-            }
-            else
-            {
-                metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : (mat ? mat->defaultMetallic : 0.0f);
-                roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness : (mat ? mat->defaultRoughness : 0.5f);
-                const bool ovBlockOk = (overrideBlock != 0xFFFFFFFFu);
-                const bool ovNormal = ovBlockOk && !MeshRenderer::SafeGetOverride(r.overrideNormalTexture, mi).empty();
-                const bool ovMR     = ovBlockOk && !MeshRenderer::SafeGetOverride(r.overrideMetalRoughnessTexture, mi).empty();
-                const bool ovEmis   = ovBlockOk && !MeshRenderer::SafeGetOverride(r.overrideEmissiveTexture, mi).empty();
-                if (ovNormal || (mat && mat->normalMapTexture))      pbrFlags |= 1u;
-                if (ovMR || (mat && mat->metalRoughnessTexture))     pbrFlags |= 2u;
-                if (ovEmis || (mat && mat->emissiveTexture))         pbrFlags |= kPbrFlagEmissiveTex;
-            }
-            if (block != 0xFFFFFFFFu)
-            {
-                m.albedoSrv = block;
-                m.normalSrv = block + 1;
-                m.mrSrv = block + 2;
-                m.emissiveSrv = block + 3;
-            }
-            else
-            {
-                if (mat && mat->albedoTexture && mat->albedoTexture->GetSrvIndex() != 0xFFFFFFFFu)
-                    m.albedoSrv = mat->albedoTexture->GetSrvIndex();
-                pbrFlags &= ~(1u | 2u | kPbrFlagEmissiveTex);   // ブロックが無ければ 2〜4 枚目は存在しない
-            }
-            if (m.albedoSrv != pt::kNoIndex) ++snap.textured;
-            m.metallic = metallic;
-            m.roughness = roughness;
-            m.flags = ((pbrFlags & 1u) ? pt::kMatNormalMap : 0u)
-                    | ((pbrFlags & 2u) ? pt::kMatMrTex : 0u)
-                    | ((pbrFlags & kPbrFlagEmissiveTex) ? pt::kMatEmissiveTex : 0u);
-
-            // 色ティント + 不透明度 + アルファテストの閾値
-            {
-                const XMFLOAT4 tc = r.hasColorTint ? r.colorTint : XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
-                if (req.quantizeLikeForward)
-                {
-                    auto q = [](f32 v) { return static_cast<u32>(static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f)); };
-                    const u32 rgb = (q(tc.x) << 16) | (q(tc.y) << 8) | q(tc.z);
-                    const u32 packed = PackTintWithOpacity(rgb, alphaP.opacity);
-                    UnpackTint(packed, m.tint, m.opacity);
-                    const u32 fl = PackAlphaTestFlags(0u, alphaP);
-                    m.alphaCutoff = static_cast<float>((fl >> 8) & 0xFFu) / 255.0f;
-                }
-                else
-                {
-                    m.tint[0] = tc.x; m.tint[1] = tc.y; m.tint[2] = tc.z;
-                    m.opacity = alphaP.opacity;
-                    m.alphaCutoff = alphaP.cutoff;
-                }
-            }
-            m.alphaMode = wantBlend ? 2u : (wantMask ? 1u : 0u);
-
-            // 自己発光
             float emLuma = 0.0f;
-            {
-                XMFLOAT3 baseColor = mat ? mat->emissiveColor : XMFLOAT3{0.0f, 0.0f, 0.0f};
-                f32 baseIntensity = mat ? mat->emissiveIntensity : 0.0f;
-                if (matAsset)
-                {
-                    baseColor = {matAsset->data.emissiveColor[0], matAsset->data.emissiveColor[1], matAsset->data.emissiveColor[2]};
-                    baseIntensity = matAsset->data.emissiveIntensity;
-                }
-                const EmissiveParams ep = ResolveEmissiveParams(baseColor, baseIntensity, r.overrideEmissiveColor, r.overrideEmissiveIntensity);
-                if (ep.intensity > 0.0f)
-                {
-                    if (req.quantizeLikeForward) UnpackEmissiveColor(PackEmissive(ep), m.emissive);
-                    else { m.emissive[0] = ep.color.x * ep.intensity; m.emissive[1] = ep.color.y * ep.intensity; m.emissive[2] = ep.color.z * ep.intensity; }
-                    emLuma = Luma3(m.emissive);
-                }
-            }
-
-            // UV 変換(連番アニメ > スクロール > 恒等)
-            m.uvScaleOffset[0] = 1.0f; m.uvScaleOffset[1] = 1.0f;
-            if (r.animFrames > 0)
-            {
-                const SpriteUvRect ur = ComputeFlipbookUvEx(r.animFrames, r.animFps, r.animCols, r.animRow, r.animRows, r.animMode, r._animT);
-                m.uvScaleOffset[0] = ur.u1 - ur.u0; m.uvScaleOffset[1] = ur.v1 - ur.v0;
-                m.uvScaleOffset[2] = ur.u0;         m.uvScaleOffset[3] = ur.v0;
-            }
-            else if (r.uvScrollU != 0.0f || r.uvScrollV != 0.0f)
-            {
-                const float du = r.uvScrollU * r._animT, dv = r.uvScrollV * r._animT;
-                m.uvScaleOffset[2] = du - std::floor(du);
-                m.uvScaleOffset[3] = dv - std::floor(dv);
-            }
+            ResolveHitMaterial(app, it, mi, cmd, req.quantizeLikeForward, m, emLuma);
+            if (m.albedoSrv != pt::kNoIndex) ++snap.textured;
 
             pt::InstanceDesc id;
             id.geometry = geo;
