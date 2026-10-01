@@ -52,7 +52,8 @@ export async function launchEngine({ exe = DEFAULT_EXE, project, scene, port, ti
   const usePort = port ?? (await findFreePort());
   const args = ["--headless", "--project", project, "--mcp-port", String(usePort)];
   if (scene) args.push("--scene", scene);
-  const child = spawn(exe, args, { cwd: path.dirname(exe), detached: false, stdio: "ignore" });
+  // DX12E_NO_SPLASH=1: 起動画面(スプラッシュ)を人の画面の前面へ出さない(--headless でも出ていた)
+  const child = spawn(exe, args, { cwd: path.dirname(exe), detached: false, stdio: "ignore", windowsHide: true, env: { ...process.env, DX12E_NO_SPLASH: "1" } });
   let exited = false;
   child.on("exit", () => { exited = true; });
 

@@ -516,7 +516,7 @@ export class Fleet {
         try {
           child = spawn(cmd[0], cmd.slice(1), {
             cwd: bin, windowsHide: true, stdio: ["ignore", logFd, logFd],
-            env: { ...process.env, DX12E_DATA_DIR: this.dataDir(id) },
+            env: { ...process.env, DX12E_DATA_DIR: this.dataDir(id), DX12E_NO_SPLASH: "1" },   // 起動画面を前面へ出さない
           });
         } finally { fs.closeSync(logFd); }
         child.on("exit", (code, signal) => { exited = { code, signal }; });

@@ -221,7 +221,7 @@ export function uiTestsKind(env: KindEnv): KindDef {
       if (a.includeBuildGame === true) notes.push("build_game を含む: Game.exe が約 6 秒、前面に出る");
       return {
         cmd: path.join(bin, "DX12Engine.exe"), args, cwd: bin,
-        env: { DX12E_DATA_DIR: data },
+        env: { DX12E_DATA_DIR: data, DX12E_NO_SPLASH: "1" },
         parser: { type: "uitests", expectedSec: ctx.typicalSec && ctx.typicalSec > 20 ? Math.round(ctx.typicalSec * 0.85) : 120 },
         tailFile: path.join(bin, "dx12_engine.log"),
         junit: path.join(bin, "ui_test_results.xml"),

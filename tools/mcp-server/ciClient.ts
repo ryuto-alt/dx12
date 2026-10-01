@@ -403,6 +403,8 @@ export async function launchHeadless(opts: {
     cwd: path.dirname(exe),      // ★CWD がここでないとスクショが WIC で開けない（既知の罠）
     detached: false,
     stdio: "ignore",
+    windowsHide: true,
+    env: { ...process.env, DX12E_NO_SPLASH: "1" },   // 起動画面(スプラッシュ)を人の画面の前面へ出さない
   });
   // ★Windows の GUI プロセス（隠し窓でも GUI サブシステム）は SIGTERM で死なない。
   //   child.kill() だけだと CI が終わってもエンジンが残り続ける（実測で残った）。

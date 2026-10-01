@@ -635,9 +635,16 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         //   起動のたびにロゴが前面へ出てきては意味が無い。
         // ★--background も出さない（人の画面に窓を出さないための機能）。読込時のスプラッシュも
         //   SetSuppressed で止める。
-        if (bgOpt.Active())
+        // ★--headless / --build も止める。以前は --background しか SetSuppressed していなかったので、
+        //   --headless --project で起動するツール（tools/bench/golden.mjs・engine.mjs など）が
+        //   プロジェクト読込のスプラッシュ（ApplicationProject の ShowProjectLoad）を**人の画面の前面へ**出していた。
+        //   環境変数 DX12E_NO_SPLASH=1 でも止められる（自動化から起動する道具の保険）。
+        wchar_t noSplashEnv[8] = {};
+        const bool noSplashByEnv = GetEnvironmentVariableW(L"DX12E_NO_SPLASH", noSplashEnv, 8) > 0
+                                   && noSplashEnv[0] != L'0';
+        if (bgOpt.Active() || headless || buildMode || noSplashByEnv)
             dx12e::SplashScreen::SetSuppressed(true);
-        if (!gameMode && !buildMode && !headless && !bgOpt.Active())
+        if (!gameMode && !buildMode && !headless && !bgOpt.Active() && !noSplashByEnv)
         {
             // --project 直開きは起動の直後にプロジェクトを開くので、進捗の計画にその段階を含める。
             dx12e::SplashScreen::ExpectProjectLoad(!netClientProject.empty());

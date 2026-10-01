@@ -74,6 +74,7 @@ robocopy (Join-Path $root 'assets') (Join-Path $dir 'assets') /MIR /XF 'splash_d
 robocopy (Join-Path $root 'shaders') (Join-Path $dir 'shaders-src') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
 
 $env:DX12E_DATA_DIR = Join-Path $dir 'data'
+$env:DX12E_NO_SPLASH = '1'   # 起動画面(スプラッシュ)を前面へ出さない
 $args2 = @("--$Mode", '--mcp-port', "$Port", '--idle-exit', "$IdleExitMin")
 if ($Project) { $args2 += @('--project', $Project) }
 $args2 += $ExtraArgs
