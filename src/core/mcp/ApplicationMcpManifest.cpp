@@ -17,6 +17,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpManifestBuild.h"
+#include "scene/GiMigration.h"   // S5: migrate_gi
 #include "core/mcp/McpSafety.h"   // M5: ガードトークン / 冪等ストア / プレビュー表 / ジャーナル
 
 #include <algorithm>
@@ -562,6 +563,77 @@ void Application::RegisterMcpManifestMethods()
                 resp["ok"] = true;
                 resp["result"] = {{"mode", mode}, {"applied", true}, {"debugStage", m_giDebugStage},
                                   {"ddgiEnabled", m_scene->GetDdgiSettings().enabled}};
+            });
+
+        // S5: 旧 ⇄ 新の「まとめて切り替え」。エディタの「新しい GI に切り替える / 旧に戻す」ボタン・新規シーンと同じ関数
+        // （scene/GiMigration.h）を通る。set_gi_mode は「モードだけ」の低レベル口のまま（GI 評価ハーネスが構成を自前で組むので、既定を変えない）。
+        McpMeta gmig;
+        gmig.summary    = "GI を旧 ⇄ 新へまとめて切り替える（エディタの「新しい GI に切り替える」と同じ）。"
+                          "to:\"new\" = gi.mode=new + DDGI ON（格子を動かない物のバウンディングボックスへ自動フィット・間隔 1.0m・4096 個以内・多重バウンス 1.0）"
+                          " + 太陽の ambient=0 + SSGI ON + RT 影 ON。to:\"legacy\" = gi.mode=legacy + DDGI OFF + ambient が 0 の太陽は 0.25。"
+                          "Undo 1 回で全部戻る。DXR 非対応 GPU の new は何も変えず applied:false と理由を返す";
+        gmig.keywords   = "gi migrate 移行 切り替え 新しいGI 旧 legacy new ddgi 自動フィット 格子 ambient ssgi rt影 新規シーン";
+        gmig.category   = "render";
+        gmig.group      = "render_setting";
+        gmig.target     = "gi_mode";
+        gmig.effect     = McpEffect::WriteSetting;
+        gmig.timeoutMs  = 8000;
+        gmig.idempotent = true;
+        gmig.aliases    = {"dx12_migrate_gi"};
+        gmig.params     = {P("to", "string", true, "new|legacy", nullptr, nullptr, nullptr,
+                             "new = 新しい GI の既定構成へ / legacy = 旧へ戻す"),
+                           P("autoFit", "bool", false, nullptr, nullptr, nullptr, "true",
+                             "to:new のとき DDGI の格子をシーンへ合わせるか。true（既定）= 毎回フィット / false = DDGI が既に ON なら今の格子（手置き）を残す"
+                             "（DDGI が OFF なら false でもフィットする）")};
+        gmig.next       = {{"get_gi_mode", "結果を読み返す"}, {"get_dxr", "DDGI の格子（ddgiProbeCount* / ddgiOrigin* / ddgiSpacing）"},
+                           {"undo", "切り替えを 1 回で戻す"}};
+        gmig.examples   = {{"{\"to\":\"new\"}", "新しい GI へ（格子は自動）"}, {"{\"to\":\"new\",\"autoFit\":false}", "手置きの格子を残して新へ"},
+                           {"{\"to\":\"legacy\"}", "旧へ戻す"}};
+        McpDefine("migrate_gi", gmig, DX12E_MCP_HANDLER
+            {
+                const std::string to = params.value("to", std::string());
+                if (to != "legacy" && to != "new")
+                    throw McpError(McpErr::InvalidParam, "to must be \"legacy\" or \"new\"",
+                                   "to は \"new\"（新しい GI へ）か \"legacy\"（旧へ戻す）");
+                // Undo: 触る値を書き換える前に全部申告する（呼び出し 1 回 = Undo 1 エントリ）
+                McpUndo().TrackSceneValue(m_scene->GetGiSettings());
+                McpUndo().TrackSceneValue(m_scene->GetDdgiSettings());
+                McpUndo().TrackSceneValue(m_scene->GetSsgiSettings());
+                McpUndo().TrackSceneValue(m_scene->GetRtSettings());
+                for (auto e : m_scene->GetRegistry().view<DirectionalLight>())
+                    McpUndo().Track<DirectionalLight>(e);
+
+                gi::Result r;
+                if (to == "new")
+                {
+                    gi::Options o;
+                    o.dxrSupported = m_dxrEnabled && m_ddgi && m_ddgi->SupportsGiNew();
+                    o.whyNot = m_dxrEnabled ? "DDGI（新モード）を初期化できなかったため、旧のままです"
+                                            : "この GPU はレイトレーシング（DXR 1.1）に対応していないため、旧のままです";
+                    o.refitGrid = params.value("autoFit", true);
+                    r = gi::ApplyNew(*m_scene, o);
+                }
+                else
+                {
+                    r = gi::ApplyLegacy(*m_scene);
+                }
+                if (r.applied && m_ddgi) m_ddgi->InvalidateHistory();
+                const auto& d = m_scene->GetDdgiSettings();
+                resp["ok"] = true;
+                resp["result"] = {
+                    {"to", to}, {"applied", r.applied}, {"reason", r.reason},
+                    {"mode", m_scene->GetGiSettings().mode == GiMode::New ? "new" : "legacy"},
+                    {"gridFitted", r.fitted}, {"gridFromGeometry", r.fromGeometry},
+                    {"ambientChanged", r.ambientChanged},
+                    {"ddgi", {{"enabled", d.enabled},
+                              {"probeCount", {d.probeCountX, d.probeCountY, d.probeCountZ}},
+                              {"probeTotal", d.probeCountX * d.probeCountY * d.probeCountZ},
+                              {"spacing", d.spacing},
+                              {"origin", {d.originX, d.originY, d.originZ}},
+                              {"bounceIntensity", d.bounceIntensity}}},
+                    {"ssgiEnabled", m_scene->GetSsgiSettings().enabled},
+                    {"rtShadowEnabled", m_scene->GetRtSettings().shadowEnabled},
+                };
             });
     }
 

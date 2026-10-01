@@ -5,6 +5,7 @@ add_library(Scene STATIC
     SceneFlow.cpp
     ComponentRegistry.cpp
     NavSceneGather.cpp
+    GiMigration.cpp
     ShaderParamTween.cpp
 )
 

@@ -4,6 +4,7 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorIcons.h"
 #include "editor/EditorTheme.h"
+#include "editor/GiMigrationCommand.h"
 #include "editor/LightMath.h"
 #include "editor/LightingPresets.h"
 #include "editor/PropertyGrid.h"
@@ -214,6 +215,50 @@ entt::entity FindSun(entt::registry& reg)
     for (auto e : reg.view<DirectionalLight>())
         return e;
     return entt::null;
+}
+
+// ── GI モードの切り替え（旧 ⇄ 新）。構成は scene/GiMigration.h（MCP の migrate_gi / 新規シーンと同じ）。
+//   gi・DDGI・SSGI・RT 影・太陽の ambient をまとめて書き換え、Undo は 1 エントリ。
+enum class GiAction { ToNew, ToLegacy, RefitGrid };
+
+void RunGiAction(Scene* scene, EditorContext& ctx, GiAction act)
+{
+    const gi::State before = gi::Capture(*scene);
+    gi::Result r;
+    const char* undoName = "GI";
+    switch (act)
+    {
+    case GiAction::ToNew:
+    {
+        gi::Options o;
+        o.dxrSupported = ctx.dxrSupported;
+        o.refitGrid    = !before.ddgi.enabled;   // 手で置いた DDGI の格子が ON ならそのまま使う
+        r = gi::ApplyNew(*scene, o);
+        undoName = "GI を新しい方式へ切り替え";
+        break;
+    }
+    case GiAction::ToLegacy:
+        r = gi::ApplyLegacy(*scene);
+        undoName = "GI を旧へ戻す";
+        break;
+    case GiAction::RefitGrid:
+        r = gi::RefitGrid(*scene);
+        undoName = "DDGI の範囲をシーンに合わせる";
+        break;
+    }
+    if (!r.applied)
+    {
+        ctx.Notify(ui::ToastKind::Warn, r.reason.empty() ? "GI を切り替えられませんでした" : r.reason);
+        return;
+    }
+    ctx.undoSystem.PushCommand(
+        std::make_unique<GiMigrationCommand>(scene, before, gi::Capture(*scene), undoName));
+    if (act == GiAction::ToNew)
+        ctx.Notify(ui::ToastKind::Success, "新しい GI に切り替えました（Ctrl+Z で戻せます）");
+    else if (act == GiAction::ToLegacy)
+        ctx.Notify(ui::ToastKind::Success, "GI を旧に戻しました（Ctrl+Z でやり直せます）");
+    else
+        ctx.Notify(ui::ToastKind::Success, "DDGI の範囲をシーンに合わせました");
 }
 
 ImVec4 SwatchColor(const XMFLOAT3& col, f32 intensity)
@@ -664,6 +709,66 @@ void RenderLightingPanel(Scene* scene,
                     ImGui::TextDisabled("スキンド %u 体は CSM が担当（仕様）", ctx.dxrSkippedSkinned);
             }
             pg::End();
+        }
+    }
+
+    // =====================================================================
+    // GI（間接光）: 旧 / 新の表示と切り替え。新 = DDGI の光輸送 + 環境光の置換 + SSGI + RT 影（GI_FOUNDATION_DESIGN）。
+    // 既存シーンは旧のまま開く（勝手に移行しない）。切り替えは 1 操作 = Undo 1 回。
+    // =====================================================================
+    if (SectionHeader(nullptr, 0, "GI（間接光）", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const bool isNew = scene->GetGiSettings().mode == GiMode::New;
+        const DdgiSettings& dd = scene->GetDdgiSettings();
+
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("GI モード");
+        ImGui::SameLine(0.0f, ui::Px(10.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, isNew ? theme::Good : theme::TextMid);
+        ui::PushBold();
+        ImGui::TextUnformatted(gi::ModeLabel(scene->GetGiSettings().mode));
+        ui::PopBold();
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, ui::Px(10.0f));
+        ImGui::TextDisabled("%s", isNew ? "光の回り込みをプローブで計算" : "従来の環境光（定数 ambient + IBL）");
+
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::TextDim);
+        if (isNew)
+            ImGui::TextWrapped("室内の暗がりや色のにじみを DDGI（プローブ）が受け持ちます。"
+                               "旧に戻すと DDGI を切り、環境光が 0 の太陽は 0.25 に戻します。");
+        else
+            ImGui::TextWrapped("既存シーンの見た目のままです。新しい GI に切り替えると、DDGI の自動配置・環境光 0・"
+                               "SSGI・RT 影をまとめて有効にします。Ctrl+Z で元に戻せます。");
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+
+        if (isNew)
+        {
+            if (!dd.enabled)
+                ImGui::TextColored(theme::Warn,
+                                   "DDGI が OFF のため、環境光は従来の IBL のままです。");
+            else
+                ImGui::TextDisabled("DDGI 格子 %d × %d × %d（%d 個）/ 間隔 %.2f m",
+                                    dd.probeCountX, dd.probeCountY, dd.probeCountZ,
+                                    dd.probeCountX * dd.probeCountY * dd.probeCountZ, dd.spacing);
+            ImGui::Spacing();
+            if (ImGui::Button("DDGI の範囲をシーンに合わせ直す##GiRefit", ImVec2(-1.0f, ui::Px(26.0f))))
+                RunGiAction(scene, ctx, GiAction::RefitGrid);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("動かない物のバウンディングボックスを覆うようにプローブの格子を置き直します。\n"
+                                  "物を足したり動かしたりした後に押してください（1 m 間隔・4096 個以内）。");
+            if (ImGui::Button("旧に戻す##GiToLegacy", ImVec2(-1.0f, ui::Px(26.0f))))
+                RunGiAction(scene, ctx, GiAction::ToLegacy);
+        }
+        else
+        {
+            ImGui::BeginDisabled(!ctx.dxrSupported);
+            if (ui::PrimaryButton("新しい GI に切り替える##GiToNew", ImVec2(-1.0f, ui::Px(30.0f))))
+                RunGiAction(scene, ctx, GiAction::ToNew);
+            ImGui::EndDisabled();
+            if (!ctx.dxrSupported)
+                ImGui::TextColored(theme::Warn,
+                                   "この GPU はレイトレーシング（DXR 1.1）に対応していないため使えません。");
         }
     }
 

@@ -110,9 +110,14 @@ end
 )LUA";
 
 constexpr const char* kEmptyMainScene = R"JSON({
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "probeCountX": 10, "probeCountY": 6, "probeCountZ": 10, "spacing": 1.0,
+              "originX": -4.5, "originY": -0.5, "originZ": -4.5, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
-      "directionalLight": { "direction": [-0.4, -1.0, -0.35], "color": [1.0, 0.97, 0.9], "intensity": 1.1, "ambient": 0.4 },
+      "directionalLight": { "direction": [-0.4, -1.0, -0.35], "color": [1.0, 0.97, 0.9], "intensity": 1.1, "ambient": 0.0 },
       "transform": { "position": [0.0, 12.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
     { "name": "MainCamera",
       "camera": { "fovDegrees": 60.0, "nearClip": 0.1, "farClip": 1000.0, "isActive": true },
@@ -317,9 +322,14 @@ end
 )LUA";
 
 constexpr const char* kFpsMainScene = R"JSON({
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
+              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
-      "directionalLight": { "direction": [-0.45, -1.0, -0.3], "color": [1.0, 0.96, 0.88], "intensity": 1.15, "ambient": 0.38 },
+      "directionalLight": { "direction": [-0.45, -1.0, -0.3], "color": [1.0, 0.96, 0.88], "intensity": 1.15, "ambient": 0.0 },
       "transform": { "position": [0.0, 14.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
     { "name": "MainCamera",
       "camera": { "fovDegrees": 74.0, "nearClip": 0.05, "farClip": 500.0, "isActive": true },
@@ -467,9 +477,14 @@ constexpr const char* kFpsMainScene = R"JSON({
 })JSON";
 
 constexpr const char* kFpsTitleScene = R"JSON({
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
+              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
-      "directionalLight": { "direction": [-0.4, -1.0, -0.3], "color": [0.75, 0.85, 1.0], "intensity": 0.7, "ambient": 0.3 },
+      "directionalLight": { "direction": [-0.4, -1.0, -0.3], "color": [0.75, 0.85, 1.0], "intensity": 0.7, "ambient": 0.0 },
       "transform": { "position": [0.0, 14.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
     { "name": "TitleCamera",
       "camera": { "fovDegrees": 58.0, "nearClip": 0.1, "farClip": 500.0, "isActive": true },
@@ -568,9 +583,14 @@ constexpr const char* kFpsTitleScene = R"JSON({
 })JSON";
 
 constexpr const char* kFpsClearScene = R"JSON({
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "probeCountX": 18, "probeCountY": 6, "probeCountZ": 18, "spacing": 1.0,
+              "originX": -8.5, "originY": -0.5, "originZ": -8.5, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
-      "directionalLight": { "direction": [-0.4, -1.0, -0.3], "color": [0.75, 0.85, 1.0], "intensity": 0.6, "ambient": 0.35 },
+      "directionalLight": { "direction": [-0.4, -1.0, -0.3], "color": [0.75, 0.85, 1.0], "intensity": 0.6, "ambient": 0.0 },
       "transform": { "position": [0.0, 10.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
     { "name": "Camera",
       "camera": { "fovDegrees": 60.0, "nearClip": 0.1, "farClip": 200.0, "isActive": true },
@@ -833,9 +853,14 @@ end
 )LUA";
 
 constexpr const char* kTpsMainScene = R"JSON({
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
+              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
-      "directionalLight": { "direction": [-0.35, -1.0, -0.4], "color": [1.0, 0.95, 0.82], "intensity": 1.2, "ambient": 0.42 },
+      "directionalLight": { "direction": [-0.35, -1.0, -0.4], "color": [1.0, 0.95, 0.82], "intensity": 1.2, "ambient": 0.0 },
       "transform": { "position": [0.0, 14.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
     { "name": "MainCamera",
       "camera": { "fovDegrees": 60.0, "nearClip": 0.1, "farClip": 500.0, "isActive": true },
@@ -988,9 +1013,14 @@ constexpr const char* kTpsMainScene = R"JSON({
 })JSON";
 
 constexpr const char* kTpsTitleScene = R"JSON({
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "probeCountX": 27, "probeCountY": 4, "probeCountZ": 27, "spacing": 2.0,
+              "originX": -26.0, "originY": -1.0, "originZ": -26.0, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
-      "directionalLight": { "direction": [-0.35, -1.0, -0.4], "color": [1.0, 0.93, 0.78], "intensity": 1.1, "ambient": 0.45 },
+      "directionalLight": { "direction": [-0.35, -1.0, -0.4], "color": [1.0, 0.93, 0.78], "intensity": 1.1, "ambient": 0.0 },
       "transform": { "position": [0.0, 14.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
     { "name": "TitleCamera",
       "camera": { "fovDegrees": 55.0, "nearClip": 0.1, "farClip": 500.0, "isActive": true },
@@ -1082,9 +1112,14 @@ constexpr const char* kTpsTitleScene = R"JSON({
 })JSON";
 
 constexpr const char* kTpsClearScene = R"JSON({
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "probeCountX": 18, "probeCountY": 6, "probeCountZ": 18, "spacing": 1.0,
+              "originX": -8.5, "originY": -0.5, "originZ": -8.5, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
   "entities": [
     { "name": "Sun",
-      "directionalLight": { "direction": [-0.35, -1.0, -0.4], "color": [1.0, 0.93, 0.78], "intensity": 0.9, "ambient": 0.4 },
+      "directionalLight": { "direction": [-0.35, -1.0, -0.4], "color": [1.0, 0.93, 0.78], "intensity": 0.9, "ambient": 0.0 },
       "transform": { "position": [0.0, 10.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
     { "name": "Camera",
       "camera": { "fovDegrees": 60.0, "nearClip": 0.1, "farClip": 200.0, "isActive": true },

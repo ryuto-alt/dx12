@@ -130,6 +130,7 @@ export const SEARCH_HINTS: Record<string, string> = {
   get_ssgi: "SSGI 間接光 読む",
   get_gi_mode: "GI モード 読む legacy new 空の遮蔽 グローバルイルミネーション",
   set_gi_mode: "GI モード 切り替え 新しいGI legacy new 空の遮蔽 DDGI 環境光 室内",
+  migrate_gi: "GI 移行 新しいGIに切り替える 旧に戻す 自動フィット DDGI 格子 環境光 ambient 0 SSGI RT影 新規シーン既定",
   set_ssgi: "SSGI 間接光 グローバルイルミネーション GI 色の回り込み",
   get_contact_shadow: "コンタクトシャドウ 読む",
   set_contact_shadow: "コンタクトシャドウ 接地影 細かい影",

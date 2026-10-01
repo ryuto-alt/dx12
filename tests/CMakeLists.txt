@@ -1646,3 +1646,21 @@ if(TARGET Graphics AND TARGET Microsoft::DirectXShaderCompiler)
     add_test(NAME TonemapGpuTests COMMAND TonemapGpuTests)
     set_tests_properties(TonemapGpuTests PROPERTIES LABELS gpu TIMEOUT 300)
 endif()
+
+# ============================================================================
+# GI モード「新」の既定と移行（S5。scene/GiMigration.* ・ editor/GiMigrationCommand.h ・ テンプレート）:
+#   DDGI 格子の自動フィット（1.0m 間隔 / 4096 個以下 / 軸 32 以下 / 被覆）・新の既定構成・DXR 非対応で不変・旧へ戻す・
+#   移行の Undo/Redo が 1 操作・保存互換（旧は gi キーを書かない / 新は往復 / キー無しは旧）・テンプレートの GI 既定（2d は旧のまま）。
+#   Scene（GPU 不要）をリンクし、ProjectTemplates.cpp は直接コンパイルする（LauncherTests と同じ）。
+# ============================================================================
+if(TARGET Scene)
+    add_executable(GiMigrationTests gi_migration_test.cpp
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../src/project/ProjectTemplates.cpp)
+    target_link_libraries(GiMigrationTests PRIVATE Scene)
+    target_include_directories(GiMigrationTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(GiMigrationTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GiMigrationTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GiMigrationTests COMMAND GiMigrationTests)
+endif()

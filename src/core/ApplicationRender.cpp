@@ -13,6 +13,7 @@
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/PathTracerHost.h"   // DXR パストレーサー(リファレンスレンダー)。PtHost が無ければ何もしない
 #include "core/SequencerHost.h"   // シーケンサー S1b: ポスト / DoF の描画時上書き
+#include "scene/GiMigration.h"   // S5: 新規シーンの既定を GI モード「新」にする
 
 #include <unordered_set>
 #include "core/Profiler.h"
@@ -2505,6 +2506,23 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             CameraComponent cam;
             cam.isActive = true;
             reg.emplace<CameraComponent>(camE, cam);
+        }
+        // 新規シーンの既定は GI モード「新」（S5）: DDGI 自動配置 + 環境光 0 + SSGI + RT 影。
+        // 使えない環境（DXR 非対応 / DDGI 初期化失敗）は従来のまま作る（理由は起動時のログにも出している）。
+        {
+            gi::Options go;
+            go.dxrSupported = m_dxrEnabled && m_ddgi && m_ddgi->SupportsGiNew();
+            if (!m_dxrEnabled)
+                go.whyNot = "この GPU はレイトレーシング（DXR 1.1）に対応していないため、従来の GI で作りました";
+            else
+                go.whyNot = "DDGI（新モード）を初期化できなかったため、従来の GI で作りました";
+            go.refitGrid = true;
+            const gi::Result gr = gi::ApplyNew(*m_scene, go);
+            if (gr.applied)
+                Logger::Info("新規シーン: GI モード「新」（DDGI {}x{}x{} 間隔 {:.2f}m）",
+                             gr.ddgi.probeCountX, gr.ddgi.probeCountY, gr.ddgi.probeCountZ, gr.ddgi.spacing);
+            else
+                Logger::Info("新規シーン: GI モードは旧のまま（{}）", gr.reason);
         }
         if (!starterPath.empty())
             m_currentSceneRel = ToAssetRel(starterPath);

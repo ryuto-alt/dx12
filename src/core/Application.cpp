@@ -1115,6 +1115,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             }
         }
 
+        // GI モード「新」が使えるか（S5）。新規シーンの既定は「新」だが、使えない環境では従来（legacy）で作る。
+        // 判定はここで 1 回。新規シーン作成（ApplicationRender）も同じ条件で見る。
+        if (!m_dxrEnabled)
+            Logger::Info("GI: この GPU はレイトレーシング（DXR 1.1 / SM 6.5）を使えないため、新規シーンは従来の GI（旧）で作ります");
+        else if (!m_ddgi || !m_ddgi->SupportsGiNew())
+            Logger::Info("GI: DDGI（新モード）を初期化できなかったため、新規シーンは従来の GI（旧）で作ります");
+        else
+            Logger::Info("GI: 新規シーンは GI モード「新」（DDGI 自動配置・環境光 0・SSGI・RT 影）で作ります");
+
         // クラスタードライティング（Forward+）。ライトカリング compute 2 パス + SRV テーブル。
         // 旧「点光源 8 / スポット 8」の cbuffer 固定配列を置き換える本体。
         m_clusteredLighting = std::make_unique<ClusteredLightCulling>();
