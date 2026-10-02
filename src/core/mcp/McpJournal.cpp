@@ -1,6 +1,7 @@
 // MCP ファイル書き込みジャーナル（設計と形式は McpJournal.h の冒頭）。標準ライブラリだけ。
 #include "core/mcp/McpJournal.h"
 #include "core/AtomicFile.h"   // 原子的な保存（tests/McpSafetyTests は AtomicFile.cpp も一緒にビルドする）
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 
 #include <algorithm>
 #include <chrono>
@@ -532,7 +533,7 @@ std::string Journal::Finish(std::unique_ptr<Entry>& slot, const char* state)
     if (e->info.files.empty() && e->info.complete && e->info.note.empty())
     {
         std::error_code ec;
-        fs::remove_all(e->dir, ec);
+        saferm::RemoveAll(e->dir, ec, m_root);
         return {};
     }
     e->info.state = state;
@@ -701,7 +702,7 @@ void Journal::Prune()
         // open は基本刈らない。ただし別プロセスが残した 24 時間より古い open（クラッシュの残骸）は刈る
         if (ok && e.state == "open" && now - e.createdAt < 24ll * 3600 * 1000) { ++kept; continue; }
         if (kept < m_keep) { ++kept; continue; }
-        fs::remove_all(m_root / PathFromUtf8(n), ec);
+        saferm::RemoveAll(m_root / PathFromUtf8(n), ec, m_root);
     }
 }
 

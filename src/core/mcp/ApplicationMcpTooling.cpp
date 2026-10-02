@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 
 namespace dx12e
 {
@@ -59,7 +60,7 @@ void Application::RegisterMcpToolingMethods()
             std::string report;
             std::ifstream rf(workDir / "validate_report.txt", std::ios::binary);
             if (rf) { std::ostringstream ss; ss << rf.rdbuf(); report = ss.str(); }
-            fs::remove_all(workDir, ec);
+            saferm::RemoveAll(workDir, ec);
 
             resp["ok"] = true;
             resp["result"] = {{"pass", code == 0}, {"exitCode", code}, {"report", report},

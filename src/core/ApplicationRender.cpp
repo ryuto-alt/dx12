@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/GameUiFont.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/UiWidgets.h"
 #include "editor/SelectionOutline.h"   // エディタ専用: 選択 / ホバーの輪郭・ワイヤ表示モード（最終画の撮影より後）
 #include "editor/ViewportLogic.h"       // ビューモード → RenderDebugMode
@@ -2722,7 +2723,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             std::filesystem::remove(autosave::ScenePath(dir), ec);
             std::filesystem::remove(autosave::MetaPath(dir),  ec);
             std::filesystem::remove(autosave::NavPath(dir),   ec);
-            std::filesystem::remove_all(autosave::PartsPath(dir), ec);
+            saferm::RemoveAll(autosave::PartsPath(dir), ec);
             Logger::Info("自動保存を破棄しました");
         }
     }

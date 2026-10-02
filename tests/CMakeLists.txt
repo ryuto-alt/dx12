@@ -1823,3 +1823,16 @@ if(DX12_CTEST_UI)
     add_test(NAME UiTests COMMAND pwsh -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/run_ui_tests.ps1)
     set_tests_properties(UiTests PROPERTIES TIMEOUT 1800 LABELS ui RUN_SERIAL TRUE)
 endif()
+
+# 再帰削除の最後の砦（core/SafeRemove.h）: ルート・ルート直下・ホームとその直下・システムのフォルダ・exe のフォルダは消さない。
+# base の中だけに限る指定。危ないパスは判定だけを見る（RemoveAll は一時フォルダの中にしか呼ばない）。
+# あわせて src/ 全体を走査し、SafeRemove.h 以外に std::filesystem の再帰削除を直接書いた箇所があれば落とす。
+add_executable(SafeRemoveTests safe_remove_test.cpp)
+target_include_directories(SafeRemoveTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(SafeRemoveTests PRIVATE DX12E_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../src")
+if(MSVC)
+    target_compile_options(SafeRemoveTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(SafeRemoveTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME SafeRemoveTests COMMAND SafeRemoveTests)

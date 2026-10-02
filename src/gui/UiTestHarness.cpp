@@ -1,6 +1,7 @@
 #include "gui/UiTestHarness.h"
 #include "core/Application.h"
 #include "core/CrashHandler.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/Version.h"
@@ -1199,7 +1200,7 @@ void T_AssetBrowserOps(ImGuiTestContext* ctx)
     const fs::path assets = fs::path(PathResolver::AssetsDir()).lexically_normal();
     const fs::path work = assets / "__ab_ops_test";
     std::error_code ec;
-    fs::remove_all(work, ec);
+    saferm::RemoveAll(work, ec, assets);
     fs::create_directories(work);
     auto put = [&](const char* name, const char* body) { std::ofstream(work / name, std::ios::binary) << body; };
     put("wall.png", "not a real png");
@@ -1290,7 +1291,7 @@ void T_AssetBrowserOps(ImGuiTestContext* ctx)
 
     ab->SetKindMask(0);
     ab->SetListView(false);
-    fs::remove_all(work, ec);
+    saferm::RemoveAll(work, ec, assets);
     ctx->Yield(5);
 }
 
@@ -1340,8 +1341,8 @@ void T_AssetOsDrop(ImGuiTestContext* ctx)
     const fs::path dest = assets / "__ab_drop_test";
     const fs::path src = fs::temp_directory_path() / "dx12e_ab_drop_src";
     std::error_code ec;
-    fs::remove_all(dest, ec);
-    fs::remove_all(src, ec);
+    saferm::RemoveAll(dest, ec, assets);
+    saferm::RemoveAll(src, ec);
     fs::create_directories(dest);
     fs::create_directories(src / "pack" / "inner");
     auto put = [&](const fs::path& p, const char* body) { std::ofstream(p, std::ios::binary) << body; };
@@ -1379,8 +1380,8 @@ void T_AssetOsDrop(ImGuiTestContext* ctx)
     IM_CHECK(AbWaitEntries(ctx, ab, 4));   // ok.png / ok_1.png / tex2.jpg / pack
 
     ab->NavigateTo(assets);
-    fs::remove_all(dest, ec);
-    fs::remove_all(src, ec);
+    saferm::RemoveAll(dest, ec, assets);
+    saferm::RemoveAll(src, ec);
     ctx->Yield(5);
 }
 
@@ -2357,7 +2358,7 @@ void T_BuildGame(ImGuiTestContext* ctx)
         }
     }
 
-    fs::remove_all(outDir, ec);   // 一時フォルダを掃除（失敗しても無視）
+    saferm::RemoveAll(outDir, ec);   // 一時フォルダを掃除（失敗しても無視）
 }
 
 // ---- ストレス ----

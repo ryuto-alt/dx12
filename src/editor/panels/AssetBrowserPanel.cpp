@@ -1,6 +1,7 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/UiWidgets.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/EditorPrefs.h"
@@ -27,6 +28,8 @@ namespace
 // 失敗時は false を返し、呼び出し側がログに出す。
 bool MoveToRecycleBin(const std::filesystem::path& path)
 {
+    // フォルダごと送るときも、ルート・ホームなど消してはいけない場所は断る（ごみ箱に入らない場合は完全削除になるため）
+    if (std::error_code dec; std::filesystem::is_directory(path, dec) && !saferm::WhyUnsafe(path).empty()) return false;
     // pFrom は二重 NUL 終端が要る（複数パスを NUL 区切りで並べる仕様のため）。
     std::wstring from = path.wstring();
     from.push_back(L'\0');
@@ -1897,7 +1900,7 @@ bool AssetBrowserPanel::TestMove(const std::filesystem::path& src, const std::fi
 bool AssetBrowserPanel::TestDelete(const std::filesystem::path& path)
 {
     std::error_code ec;
-    std::filesystem::remove_all(path, ec);
+    saferm::RemoveAll(path, ec);
     m_index.ForceRescan();
     return !ec;
 }

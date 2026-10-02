@@ -9,6 +9,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/BuildJob.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "core/BundledFont.h"        // プロジェクトにフォントが無いとき同梱する日本語フォント
 #include "core/VirtualGuard.h"       // 仮想入力モード中は ShellExecute を実行しない
 #include "core/vfs/PakWriter.h"
@@ -318,7 +319,7 @@ void Pipeline::BakeTextures()
 
     // 作業フォルダ（リスト・ゲームのユーザーデータ置き場）。出力フォルダを汚さない。
     const fs::path work = fs::temp_directory_path(ec) / ("dx12e_texbake_" + std::to_string(GetCurrentProcessId()));
-    fs::remove_all(work, ec);
+    saferm::RemoveAll(work, ec);
     fs::create_directories(work / "data", ec);
     const fs::path filesTxt = work / "files.txt";
     const fs::path listTxt  = work / "list.txt";
@@ -420,7 +421,7 @@ void Pipeline::BakeTextures()
         const std::string n = e.path().filename().string();
         if (before.count(n)) continue;
         std::error_code rec;
-        fs::remove_all(e.path(), rec);
+        saferm::RemoveAll(e.path(), rec, in.outputDir);
     }
     for (auto& [n, bytes] : keep)
     {
@@ -457,7 +458,7 @@ void Pipeline::BakeTextures()
         Logger::Warn("テクスチャの事前生成が完了しませんでした（初回起動時に圧縮されます）");
     }
 
-    fs::remove_all(work, ec);
+    saferm::RemoveAll(work, ec);
     const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     Logger::Info("テクスチャの事前生成: {} 枚 ({:.0f} MB) を pak へ追記 ({:.1f} 秒)", added,
                  totalBytes / (1024.0 * 1024.0), sec);
@@ -467,6 +468,11 @@ bool Pipeline::Run()
 {
     // 出力フォルダの準備。クリーンアップ（安全策: 既存が「前回ビルド or 空」でなければ消さずに中止＝ユーザーデータ保護）。
     prog.SetStage(1);
+    if (const std::string why = saferm::WhyUnsafe(in.outputDir); !why.empty())
+    {
+        Logger::Error("ビルドを中止しました: 出力先を作り直せない場所です（{}）: {}", why, in.outputDir.string());
+        return Fail("出力先を作り直せない場所です（" + why + "）:\n" + in.outputDir.string());
+    }
     if (fs::exists(in.outputDir))
     {
         std::error_code ec;
@@ -480,7 +486,7 @@ bool Pipeline::Run()
                           in.outputDir.string());
             return Fail("出力先に過去のビルド以外のデータが存在します（保護のため中断しました）:\n" + in.outputDir.string());
         }
-        fs::remove_all(in.outputDir, ec);
+        saferm::RemoveAll(in.outputDir, ec);
     }
     {
         std::error_code ec;
@@ -524,7 +530,7 @@ void RunBuildJob(const BuildInput& in, BuildProgress& prog)
     {
         // 中途半端な出力を残さない（この出力フォルダは開始時に作り直した自分のもの）
         std::error_code ec;
-        fs::remove_all(in.outputDir, ec);
+        saferm::RemoveAll(in.outputDir, ec);
         Logger::Info("ビルドをキャンセルしました");
         prog.Finish(BuildProgress::Cancelled);
         return;

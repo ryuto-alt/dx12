@@ -6,6 +6,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/AtomicFileJson.h"
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（断った理由をログへ出す）
 #include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
 #include "resource/TextureLoader.h"   // TEXBAKE: 使ったキャッシュ一覧の書き出し
@@ -57,6 +58,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 {
     // ロガー初期化
     Logger::Init();
+    // 再帰削除を断ったら必ずログに残す（2026-10-02 の C ドライブ再帰削除の再発防止。src/core/SafeRemove.h）
+    saferm::SetRefusalHook([](const std::string& msg) { Logger::Error("{}", msg); });
     m_isGameMode = gameMode;
     m_showLauncher = !gameMode;  // ゲームモードではランチャーを表示しない
     // エディタで、前回表示した版と違う＝更新された/初回 のときだけ「更新内容」を出す。

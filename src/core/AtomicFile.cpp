@@ -1,4 +1,5 @@
 #include "core/AtomicFile.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -340,13 +341,13 @@ Result CopyTree(const fs::path& src, const fs::path& dst, bool overwrite)
             if (it->is_directory(ec)) { fs::create_directories(tmp / rel, ec); continue; }
             if (!it->is_regular_file(ec)) continue;
             const Result cr = CopyFileAtomic(it->path(), tmp / rel, true);
-            if (!cr.ok) { fs::remove_all(tmp, ec); return cr; }
+            if (!cr.ok) { saferm::RemoveAll(tmp, ec); return cr; }
         }
         if (!dst.parent_path().empty()) fs::create_directories(dst.parent_path(), ec);
         if (!MoveFileExW(tmp.c_str(), dst.c_str(), 0))
         {
             r.error = "フォルダを置けません: " + Utf8FromPath(dst) + " " + Win32Msg(GetLastError());
-            fs::remove_all(tmp, ec);
+            saferm::RemoveAll(tmp, ec);
             return r;
         }
         r.ok = true;
@@ -378,7 +379,7 @@ Result MovePath(const fs::path& src, const fs::path& dst)
     // 別のボリューム: 先にコピーを完成させ、成功してから元を消す（途中で失敗したら元のまま）
     r = CopyTree(src, dst, false);
     if (!r.ok) return r;
-    fs::remove_all(src, ec);
+    saferm::RemoveAll(src, ec);
     return r;
 }
 
@@ -703,7 +704,7 @@ int SweepStaleTmp(const std::filesystem::path& dir)
                 }
             }
         }
-        if (it->is_directory(ec) ? fs::remove_all(p, ec) > 0 : fs::remove(p, ec)) ++n;
+        if (it->is_directory(ec) ? saferm::RemoveAll(p, ec, dir) > 0 : fs::remove(p, ec)) ++n;
     }
     return n;
 }

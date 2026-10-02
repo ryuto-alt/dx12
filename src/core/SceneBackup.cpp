@@ -1,4 +1,5 @@
 #include "core/SceneBackup.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -294,8 +295,8 @@ void RemoveGenFiles(const fs::path& dir, const std::string& id)
     std::error_code ec;
     fs::remove(dir / (id + ".gen"), ec);
     fs::remove(dir / (id + ".json"), ec);
-    fs::remove_all(PartsOf(dir, id), ec);
-    fs::remove_all(InstOf(dir, id), ec);
+    saferm::RemoveAll(PartsOf(dir, id), ec, dir);
+    saferm::RemoveAll(InstOf(dir, id), ec, dir);
     fs::remove(NavOf(dir, id), ec);
 }
 
@@ -608,7 +609,7 @@ int Prune(const fs::path& projectRoot, const Policy& policy)
             if (ext == ".parts" || ext == ".inst")
             {
                 const std::string id = e.path().stem().string();
-                if (!fs::exists(dir / (id + ".json"), ec) && !fs::exists(dir / (id + ".gen"), ec)) { fs::remove_all(e.path(), ec); ++removed; }
+                if (!fs::exists(dir / (id + ".json"), ec) && !fs::exists(dir / (id + ".gen"), ec)) { saferm::RemoveAll(e.path(), ec, dir); ++removed; }
             }
         }
         else if (e.path().extension() == ".nav")

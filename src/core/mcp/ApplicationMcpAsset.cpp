@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 
 #include <algorithm>
 #include <limits>
@@ -762,7 +763,10 @@ void Application::RegisterMcpAssetMethods()
                     throw McpError(McpErr::InvalidParam,
                         "'" + rel + "' is a directory (recursive:true で丸ごと削除)",
                         "フォルダごと消すなら recursive:true を付ける（中身も全部消える）。1 ファイルだけならそのファイルのパスを渡す");
-                removed = fs::remove_all(full);
+                if (const std::string why = saferm::WhyUnsafe(full, fs::path(PathResolver::AssetsDir())); !why.empty())
+                    throw McpError(McpErr::InvalidParam, "'" + rel + "' は消せません: " + why,
+                        "assets の中のフォルダを assets 相対で指定する（assets 自体・assets の外は消せない）");
+                removed = saferm::RemoveAll(full);
             }
             else
             {
