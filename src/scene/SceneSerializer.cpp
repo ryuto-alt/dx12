@@ -1,5 +1,6 @@
 #include "scene/SceneSerializer.h"
 #include "scene/SceneFormatV2.h"
+#include "scene/ScenePartition.h"   // シーンの分割保存（§4.3）
 #include "scene/Scene.h"
 #include "ecs/Components.h"
 #include "physics/ColliderShape.h"         // ConvexHullCollider の頂点の間引き（collider::ReduceHullPoints。ヘッダのみ）
@@ -491,6 +492,7 @@ static void RegisterCoreComponentSerializers()
             if (reg.all_of<EditorHidden>(entity)) ej["editorHidden"] = true;
             if (reg.all_of<EditorLocked>(entity)) ej["editorLocked"] = true;
             if (reg.all_of<EditorFolder>(entity)) ej["editorFolder"] = true;
+            if (reg.all_of<PartitionRoot>(entity)) ej["partition"] = "root";   // 分割保存でも foo.json 側に置く印（§4.3）
             if (const auto* t = reg.try_get<Transform>(entity); t && t->siblingOrder != 0)
                 ej["siblingOrder"] = t->siblingOrder;
         },
@@ -499,6 +501,8 @@ static void RegisterCoreComponentSerializers()
             if (flag("editorHidden")) reg.emplace_or_replace<EditorHidden>(e);
             if (flag("editorLocked")) reg.emplace_or_replace<EditorLocked>(e);
             if (flag("editorFolder")) reg.emplace_or_replace<EditorFolder>(e);
+            if (ej.contains("partition") && ej["partition"].is_string() && ej["partition"].get<std::string>() == "root")
+                reg.emplace_or_replace<PartitionRoot>(e);
             if (ej.contains("siblingOrder") && ej["siblingOrder"].is_number_integer())
                 if (auto* t = reg.try_get<Transform>(e)) t->siblingOrder = ej["siblingOrder"].get<int>();
         }, {}, {} });
@@ -1458,6 +1462,13 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
     if (scene.GetAtmosphereSettings() != AtmosphereSettings{})
         root["atmosphere"] = SerializeAtmosphere(scene.GetAtmosphereSettings());
 
+    // シーンファイルの分割保存（§4.3）。0（既定）のときは書かない＝既存シーンの JSON は 1 バイトも変わらない。
+    if (scene.GetPartitionCellSize() > 0.0f)
+    {
+        const double cs = static_cast<double>(scene.GetPartitionCellSize());
+        root["partition"] = {{"cellSize", (cs == std::floor(cs) && cs < 1.0e9) ? json(static_cast<long long>(cs)) : json(cs)}};
+    }
+
     return root;
 }
 
@@ -1875,6 +1886,10 @@ struct LoadTimings
     double readMs = 0, parseMs = 0, inflateMs = 0, entitiesMs = 0, modelMs = 0, parentMs = 0;
     int    version = 1;
     size_t entities = 0;
+    // 分割保存（§4.3）: セルファイルの読み込み（read はファイル読み・parse は並列パース・merge は並び順どおりの統合）
+    size_t   partFiles = 0;
+    unsigned partThreads = 0;
+    double   partReadMs = 0, partParseMs = 0, partMergeMs = 0;
 };
 thread_local LoadTimings* g_loadTimings = nullptr;   // Load の間だけ非 null（Play 復元など他経路では計らない）
 double LoadMsSince(LoadClock::time_point t0)
@@ -2433,6 +2448,16 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     // リアルタイム影 ON/OFF（キーが無ければ既定 ON ＝後方互換）
     scene.SetShadowsEnabled(root.value("shadows", true));
 
+    // 分割保存のセルの大きさ（キーが無ければ 0 = 分割しない）
+    scene.SetPartitionCellSize(0.0f);
+    try
+    {
+        if (root.contains("partition") && root["partition"].is_object() && root["partition"].contains("cellSize")
+            && root["partition"]["cellSize"].is_number())
+            scene.SetPartitionCellSize(root["partition"]["cellSize"].get<float>());
+    }
+    catch (const json::exception& e) { Logger::Warn("partition 設定をスキップしました（型不正）: {}", e.what()); }
+
     if (!root.contains("entities") || !root["entities"].is_array())
     {
         Logger::Warn("シーン JSON に entities 配列がありません");
@@ -2565,6 +2590,18 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     return true;
 }
 
+static SceneSerializer::SaveReport g_lastSaveReport;
+static SceneSerializer::SplitAdviceHook g_splitAdviceHook = nullptr;
+static void* g_splitAdviceCtx = nullptr;
+
+const SceneSerializer::SaveReport& SceneSerializer::LastSaveReport() { return g_lastSaveReport; }
+
+void SceneSerializer::SetSplitAdviceHook(SplitAdviceHook fn, void* ctx)
+{
+    g_splitAdviceHook = fn;
+    g_splitAdviceCtx = ctx;
+}
+
 bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
                            const std::string& assetsDir)
 {
@@ -2602,12 +2639,23 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
     const auto tSave1 = LoadClock::now();
     double convertMs = 0, dumpMs = 0;
     std::string text;
+    // 分割保存（§4.3）: セルの大きさが設定されているシーンは foo.json（ルート設定＋割り当てなし）＋ foo.parts/cell_*.json へ。
+    const float cellSize = scene.GetPartitionCellSize();
+    scenepart::SplitOutput split;
     try
     {
         scenefmt::ConvertToV2(root);
         convertMs = LoadMsSince(tSave1);
         const auto tSave2 = LoadClock::now();
-        text = scenefmt::DumpSceneV2(root);
+        if (cellSize > 0.0f)
+        {
+            scenepart::SplitAndDump(std::move(root), static_cast<double>(cellSize), split);
+            text = split.rootText;
+        }
+        else
+        {
+            text = scenefmt::DumpSceneV2(root);
+        }
         dumpMs = LoadMsSince(tSave2);
     }
     catch (const std::exception& e)
@@ -2621,15 +2669,43 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
     if (!instStats.ok) Logger::Warn("インスタンス群のサイドカーを書ききれませんでした: {}", filePath);
 
     const auto tSave3 = LoadClock::now();
-    // ★バイナリで書く。テキストモードだと Windows で LF が CRLF になり、v2 の「改行は LF」が崩れる。
-    std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
-    if (!ofs.is_open())
+    SaveReport report;
+    report.path = filePath;
+    report.entities = entityCount;
+    report.cellSize = cellSize;
+    if (cellSize > 0.0f)
     {
-        Logger::Error("ファイルを書き込み用に開けません: {}", filePath);
-        return false;
+        // 分割保存: セルを先に・foo.json を最後に。内容が同じファイルには触らない（更新時刻・git の差分を動かさない）。
+        const scenepart::WriteStats ws = scenepart::WriteSplit(filePath, split);
+        if (!ws.ok)
+        {
+            Logger::Error("シーンの分割ファイルを書き込めません: {}", filePath);
+            return false;
+        }
+        report.partitioned = !split.parts.empty();
+        report.files = ws.files;
+        report.written = ws.written;
+        report.unchanged = ws.unchanged;
+        report.removed = ws.removed;
+        report.maxFileBytes = ws.maxBytes;
+        report.totalBytes = ws.totalBytes;
     }
-    ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
-    ofs.close();
+    else
+    {
+        // ★バイナリで書く。テキストモードだと Windows で LF が CRLF になり、v2 の「改行は LF」が崩れる。
+        std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
+        if (!ofs.is_open())
+        {
+            Logger::Error("ファイルを書き込み用に開けません: {}", filePath);
+            return false;
+        }
+        ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
+        ofs.close();
+        // 分割をやめたシーン: 古いセルファイルを消す（foo.json はもう parts を指していないので、先に書いてから消す）
+        report.removed = scenepart::RemoveParts(filePath);
+        report.written = 1;
+        report.maxFileBytes = report.totalBytes = text.size();
+    }
     const double writeMs = LoadMsSince(tSave3);
 
     // ---- ナビメッシュのサイドカー（<シーン>.nav）----
@@ -2650,8 +2726,30 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         }
     }
 
+    report.ms = LoadMsSince(tSave0);
     Logger::Info("Scene saved ({} entities, format v2, {} bytes): {} | build {:.0f} ms, convert {:.0f}, dump {:.0f}, write {:.0f}, total {:.0f} ms",
-                 entityCount, text.size(), filePath, buildMs, convertMs, dumpMs, writeMs, LoadMsSince(tSave0));
+                 entityCount, text.size(), filePath, buildMs, convertMs, dumpMs, writeMs, report.ms);
+    if (report.partitioned)
+        Logger::Info("Scene split saved: {} cell files (cell {:.0f} m), written {}, unchanged {}, removed {}, max file {} bytes",
+                     report.files, static_cast<double>(cellSize), report.written, report.unchanged, report.removed, report.maxFileBytes);
+    g_lastSaveReport = report;
+
+    // 大きいシーンを分割しないまま保存したときは、分割を勧める通知を（シーンごとに 1 回）出す。
+    // "." で始まるフォルダ/ファイル（.autosave・.diagnostics_snapshot など生成物）では出さない。
+    if (cellSize <= 0.0f && entityCount >= scenepart::kAdviceEntityThreshold && g_splitAdviceHook)
+    {
+        bool hidden = false;
+        for (const auto& comp : fs::path(filePath))
+        {
+            const std::string c = comp.string();
+            if (c.size() > 1 && c[0] == '.' && c != "..") { hidden = true; break; }
+        }
+        static std::unordered_set<std::string> advised;
+        if (!hidden && advised.insert(filePath).second)
+            g_splitAdviceHook(g_splitAdviceCtx,
+                "このシーンは " + std::to_string(entityCount) + " 体あります。分割保存を有効にすると、変更した部分のファイルだけが書き換わり、"
+                "git の差分も小さくなります（ライティング > シーンファイル）。");
+    }
     return true;
 }
 
@@ -2685,7 +2783,7 @@ static void LoadNavMeshSidecar(Scene& scene, const std::string& scenePath)
 
 // JSON テキスト → シーン（Load / LoadFromString 共通）。fromFile は失敗時のメッセージの出し分けだけに使う。
 static bool LoadSceneText(Scene& scene, const std::string& text, const std::string& assetsDir,
-                          bool fromFile, size_t* outEntityCount)
+                          bool fromFile, size_t* outEntityCount, const std::string* scenePath = nullptr)
 {
     json root;
     const auto tParse = LoadClock::now();
@@ -2701,10 +2799,48 @@ static bool LoadSceneText(Scene& scene, const std::string& text, const std::stri
     }
     if (g_loadTimings) g_loadTimings->parseMs += LoadMsSince(tParse);
 
+    // 分割保存のシーン（foo.json の "parts"）: セルファイルを全部読んで 1 つの entities へ統合する（パースは並列）。
+    // 以降は 1 ファイルのシーンと同じ処理。読めないセルがあれば開かない（黙って欠けたまま保存して消すのを避ける）。
+    bool hadParts = false;
+    if (scenePath && root.is_object() && root.contains("parts"))
+    {
+        hadParts = true;
+        const std::string partsDir = scenepart::PartsDirFor(*scenePath);
+        scenepart::MergeStats ms;
+        std::string err;
+        const bool merged = scenepart::MergeParts(root, [&](const std::string& name, std::string& bytes) {
+            const std::string p = (std::filesystem::path(partsDir) / name).string();
+            auto b = vfs::ReadAssetAbs(p);   // ゲームモード: pak から復号。エディタ: ディスク
+            if (!b.empty()) { bytes.assign(b.begin(), b.end()); return true; }
+            std::ifstream f(p, std::ios::binary);
+            if (!f) return false;
+            bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+            return true;
+        }, ms, err);
+        if (!merged)
+        {
+            Logger::Error("シーンの分割ファイルを読み込めません（{}）: {}", *scenePath, err);
+            return false;
+        }
+        if (g_loadTimings)
+        {
+            g_loadTimings->partFiles = ms.files;
+            g_loadTimings->partThreads = ms.threads;
+            g_loadTimings->partReadMs = ms.readMs;
+            g_loadTimings->partParseMs = ms.parseMs;
+            g_loadTimings->partMergeMs = ms.mergeMs;
+        }
+        if (!ms.seqUsed && ms.files > 0)
+            Logger::Warn("シーンの分割ファイルに並び順（seq）が無いか壊れています。foo.json → セルの順につなぎました: {}", *scenePath);
+    }
+
     bool ok = false;
     try
     {
         ok = ApplySceneJson(scene, root, assetsDir);
+        // parts があるのに partition の設定が無い手書きのシーン: 既定のセルの大きさで分割保存を続ける
+        if (ok && hadParts && scene.GetPartitionCellSize() <= 0.0f)
+            scene.SetPartitionCellSize(static_cast<float>(scenepart::kDefaultCellSize));
     }
     catch (const json::exception& e)
     {
@@ -2723,6 +2859,14 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
 {
     LoadTimings tm;
     const auto tTotal = LoadClock::now();
+
+    // 分割保存のセルファイル（foo.parts/cell_*.json）は単独では開かない（一部だけ読むと、保存で他が消えるため）。
+    if (std::filesystem::path(filePath).parent_path().extension() == ".parts")
+    {
+        Logger::Error("分割保存のセルファイルは直接開けません。本体のシーン（{}.json）を開いてください: {}",
+                      std::filesystem::path(filePath).parent_path().stem().string(), filePath);
+        return false;
+    }
 
     // VFS 経由で読む（ゲームモード: pak 復号。エディタ: ディスク）。
     const auto tRead = LoadClock::now();
@@ -2759,7 +2903,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     {
         LoadTimingsScope scope(&tm);
         instgroup::ScopedLoadScene instLoadScene(filePath);   // インスタンス群のサイドカーを読む先
-        ok = LoadSceneText(scene, text, assetsDir, /*fromFile=*/true, &entityCount);
+        ok = LoadSceneText(scene, text, assetsDir, /*fromFile=*/true, &entityCount, &filePath);
     }
     if (ok)
     {
@@ -2816,6 +2960,10 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
         Logger::Info("Scene loaded ({} entities, format v{}): {} | read {:.0f} ms, parse {:.0f}, inflate {:.0f}, entities {:.0f} (models {:.0f}), parents {:.0f}, total {:.0f} ms",
                      entityCount, tm.version, filePath, tm.readMs, tm.parseMs, tm.inflateMs,
                      tm.entitiesMs, tm.modelMs, tm.parentMs, loadTotalMs);
+        if (tm.partFiles > 0)
+            Logger::Info("Scene parts: {} files (cell {:.0f} m) | read {:.0f} ms, parse {:.0f} ms ({} threads), merge {:.0f} ms",
+                         tm.partFiles, static_cast<double>(scene.GetPartitionCellSize()), tm.partReadMs, tm.partParseMs,
+                         tm.partThreads, tm.partMergeMs);
     }
     return ok;
 }
@@ -2889,13 +3037,12 @@ std::string SceneSerializer::BuildDefaultsTableV2Json()
 bool SceneSerializer::ApplyOverrides(Scene& scene, const std::string& filePath,
                                      const std::string& /*assetsDir*/)
 {
-    std::ifstream ifs(filePath);
-    if (!ifs.is_open()) return false;
-
+    // 分割保存のシーンはセルファイルもつなげて読む（§4.3）。
     json root;
-    try { root = json::parse(ifs); }
-    catch (...) { return false; }
-    ifs.close();
+    {
+        std::string perr;
+        if (!scenepart::ReadSceneFileMerged(filePath, root, perr)) return false;
+    }
 
     // v2 は既定値を省略している。補完してから読む（補完後は v1 保存と同じ形）。
     scenefmt::InflateScene(root);
@@ -3464,6 +3611,9 @@ SceneSerializer::RewriteAssetPathRefsInFiles(const std::string& assetsDir,
 
     const fs::path skip = skipAbsPath.empty() ? fs::path()
                                               : fs::weakly_canonical(fs::path(skipAbsPath), ec);
+    // 開いているシーンが分割保存なら、そのセルファイル（<stem>.parts/）もメモリ側で処理済みなので飛ばす。
+    const fs::path skipParts = skipAbsPath.empty() ? fs::path()
+                                                   : fs::weakly_canonical(fs::path(scenepart::PartsDirFor(skipAbsPath)), ec);
 
     for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end;
          it != end; it.increment(ec))
@@ -3480,6 +3630,7 @@ SceneSerializer::RewriteAssetPathRefsInFiles(const std::string& assetsDir,
         const fs::path& p = it->path();
         if (!IsRewritableAssetFile(p)) continue;
         if (!skip.empty() && fs::weakly_canonical(p, ec) == skip) continue;
+        if (!skipParts.empty() && fs::weakly_canonical(p.parent_path(), ec) == skipParts) continue;
 
         json doc;
         try
@@ -3753,7 +3904,7 @@ void StripPrefabLinks(json& prefabJson)
         {
             ej.erase("prefabLink");
             // [H] エディタ専用フラグはプレハブ（配布物にもなる）へ持ち込まない
-            ej.erase("editorHidden"); ej.erase("editorLocked"); ej.erase("editorFolder");
+            ej.erase("editorHidden"); ej.erase("editorLocked"); ej.erase("editorFolder"); ej.erase("partition");
         }
 }
 
@@ -3848,7 +3999,7 @@ void DiffEntityJson(const json& mine, const json& base, int index, const std::st
     //   偽の差分が出続け、本当の上書きが埋もれる。
     //   name / prefabLink も同じ理由（展開時の連番リネームで毎回全差分になる）。
     static const char* const kIgnored[] = {"name", "prefabLink", "guid", "parentGuid",
-                                            "editorHidden", "editorLocked", "editorFolder", "siblingOrder"};   // [H] エディタ専用（プレハブの差分ではない）
+                                            "editorHidden", "editorLocked", "editorFolder", "siblingOrder", "partition"};   // [H] エディタ専用（プレハブの差分ではない）
     auto ignored = [&](const std::string& key)
     {
         for (const char* k : kIgnored) if (key == k) return true;
@@ -3900,7 +4051,7 @@ json Merge3WayEntity(const json& mine, const json& oldBase, const json& newBase)
     //   guid       : 安定 ID が変わると parentGuid などの参照が切れる
     //   prefabLink : .prefab 側は Strip 済みなので、こちらから持ち込まないと紐付けが外れる
     static const char* const kInstanceOwned[] = {"name", "guid", "parentGuid", "prefabLink",
-                                                   "editorHidden", "editorLocked", "editorFolder", "siblingOrder"};   // [H] エディタ専用
+                                                   "editorHidden", "editorLocked", "editorFolder", "siblingOrder", "partition"};   // [H] エディタ専用
     auto instanceOwned = [](const std::string& key)
     {
         for (const char* k : kInstanceOwned) if (key == k) return true;

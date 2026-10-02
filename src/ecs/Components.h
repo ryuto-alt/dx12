@@ -64,6 +64,7 @@ struct Tag
 // 子孫へは「祖先のどれかが立っていれば有効」で伝播する（ヘルパが親を辿る）。
 struct EditorHidden {};     // エディタのビューポートでだけ非表示。Play / ビルドしたゲームでは無視（ゲームに影響しない）
 struct EditorLocked {};     // ビューポートで選択 / ギズモ不可（ヒエラルキーからは選べる）
+struct PartitionRoot {};    // 分割保存でもシーンのルートファイル（foo.json）側に置く印（JSON は "partition":"root"。docs/SCENE_FORMAT_DESIGN.md §4.3）
 struct EditorFolder {};     // 整理用のフォルダ（ヒエラルキーでフォルダとして表示。実体は空の親と同じで Play にも影響しない）
 struct EntityDisabled {};   // エンティティ無効（インスペクタの「有効」チェック）。描画などから外れる。Play にも効く
 

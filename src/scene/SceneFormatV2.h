@@ -50,6 +50,8 @@ void ConvertToV2(nlohmann::json& root);
 
 // v2 の整形で文字列化する。version → 他のルート設定（辞書順・dump(2) 相当）→ entities（1 行 1 体）の順。
 // 末尾改行あり・改行は \n。root["entities"] が配列でなければ全体を dump(2) で返す。
-std::string DumpSceneV2(const nlohmann::json& root);
+// root["parts"]（分割保存の一覧。§4.3）が配列なら 1 要素 1 行で書く。
+// allowThreads=false は呼び出し側が既に並列に回しているとき用（スレッドを重ねない）。
+std::string DumpSceneV2(const nlohmann::json& root, bool allowThreads = true);
 
 } // namespace dx12e::scenefmt

@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
+#include "scene/ScenePartition.h"   // 分割保存のシーン（セルファイルの扱い）
 
 namespace dx12e { nlohmann::json McpSafetyInfoJson(); }   // ApplicationMcpManifest.cpp
 #include "core/mcp/FleetGuard.h"   // ping の pid / uptime / idle / VRAM
@@ -657,6 +658,8 @@ void Application::RegisterMcpEntityMethods()
                 fs::create_directories(fs::path(full).parent_path());
             }
             mcpsafety::JournalBackup(fs::path(full));   // M5
+            // ★分割保存のセルファイル（foo.parts/）は退避しない: 1 回の保存で数百ファイル・数十 MB の複製になり、
+            //   10 万体で保存が数秒伸びるため（変わるのは変えたセルだけで、git の差分で戻せる）。
             if (!SceneSerializer::Save(*m_scene, full, PathResolver::AssetsDir()))
                 throw std::runtime_error("save failed");
             // path 省略＝現在シーンへの保存のときだけ未保存フラグを落とす
@@ -664,6 +667,12 @@ void Application::RegisterMcpEntityMethods()
             if (rel.empty() && m_editorCtx) MarkSceneClean();
             resp["ok"] = true;
             resp["result"] = {{"path", rel.empty() ? m_editorCtx->currentScenePath : rel}};
+            // 分割保存（シーン設定 partition.cellSize > 0）のときは、書いたファイルの内訳を返す（§4.3）
+            if (const auto& sr = SceneSerializer::LastSaveReport(); sr.cellSize > 0.0f)
+                resp["result"]["partition"] = {{"cellSize", sr.cellSize}, {"partitioned", sr.partitioned},
+                                               {"cellFiles", sr.files}, {"filesWritten", sr.written},
+                                               {"filesUnchanged", sr.unchanged}, {"filesRemoved", sr.removed},
+                                               {"maxFileBytes", sr.maxFileBytes}, {"totalBytes", sr.totalBytes}};
             // 保存のたびに配置検査の要約を返す。「置いて保存して終わり」を許さないための仕掛け
             // （Editor 中だけ。Playing 中の位置を測っても物理が動かした後の値で意味が無い）。
             if (m_engineMode != EngineMode::Playing)
@@ -744,6 +753,8 @@ void Application::RegisterMcpEntityMethods()
                 for (const auto& de : fs::recursive_directory_iterator(scenesDir))
                 {
                     if (!de.is_regular_file() || de.path().extension() != ".json") continue;
+                    // 分割保存のセルファイル（foo.parts/cell_*.json）はシーンではない（foo.json が本体）
+                    if (de.path().parent_path().extension() == ".parts") continue;
                     std::string relPath = fs::relative(de.path(), fs::path(root)).generic_string();
                     arr.push_back({{"path", relPath}, {"name", de.path().stem().string()}});
                 }
@@ -767,7 +778,7 @@ void Application::RegisterMcpEntityMethods()
                 if (ext == ".hlsl") return "shader";
                 if (ext == ".wav" || ext == ".mp3" || ext == ".ogg") return "audio";
                 if (ext == ".json")
-                    return (relPath.rfind("scenes/", 0) == 0) ? "scene" : std::string();
+                    return (relPath.rfind("scenes/", 0) == 0 && relPath.find(".parts/") == std::string::npos) ? "scene" : std::string();
                 if (ext == ".prefab") return "prefab";
                 return std::string();
             };

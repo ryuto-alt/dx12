@@ -92,6 +92,10 @@ target_sources(Renderer PRIVATE
     foliage/FoliageCuller.cpp      # GPU カリング compute（専用 RS。D3D12 デバイスだけで動く）
     foliage/FoliageSystem.cpp      # レイヤー管理 + ExecuteIndirect 描画（本体 / 深度 / 影 / 速度）
 )
+# GPU 駆動のインスタンス群（設計 docs/SCENE_FORMAT_DESIGN.md §4.2 = 4-3）。永続バッファ + チャンク → インスタンスの GPU カリング + LOD + 間接引数（専用 RS）。
+target_sources(Renderer PRIVATE
+    instancegpu/InstanceGpuCuller.cpp
+)
 # FoliageSystem::StatsJson が nlohmann::json を返す
 target_link_libraries(Renderer PUBLIC nlohmann_json::nlohmann_json)
 

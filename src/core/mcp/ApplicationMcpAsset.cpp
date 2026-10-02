@@ -614,6 +614,19 @@ void Application::RegisterMcpAssetMethods()
             fs::create_directories(toP.parent_path());
             fs::rename(fromP, toP);
 
+            // 分割保存のシーン（foo.json）を動かしたら、セルファイルのフォルダ（foo.parts/）も一緒に動かす（§4.3）。
+            if (toP.extension() == ".json" && !fs::is_directory(toP))
+            {
+                std::error_code pec;
+                const fs::path partsFrom = fromP.parent_path() / (fromP.stem().string() + ".parts");
+                const fs::path partsTo   = toP.parent_path()   / (toP.stem().string()   + ".parts");
+                if (fs::is_directory(partsFrom, pec) && !fs::exists(partsTo, pec))
+                {
+                    mcpsafety::JournalBackupTree(partsFrom);
+                    fs::rename(partsFrom, partsTo, pec);
+                }
+            }
+
             // 開いているシーンの参照を追従させる。切れても実行時にエラーが出ない
             // （音が鳴らない / UI が真っ白 になるだけ）ので、放置すると気付けない。
             // ★書き換えるのは「いま開いているシーン」のメモリ上の値だけ。

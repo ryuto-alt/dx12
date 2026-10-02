@@ -629,7 +629,7 @@ void Application::RenderSceneSettingsWindows()
         if (pg::Begin("##skybox"))
         {
             // env map パス入力（assets 相対）
-            pg::InputTextStr("Env Map", sk.envMapPath, nullptr, "環境キューブ (.dds, assets 相対パス)。空欄なら従来の ambient");
+            pg::InputTextStr("Env Map", sk.envMapPath, nullptr, "環境キューブ (.dds) または equirect の .hdr / .exr (assets 相対パス)。空欄なら従来の ambient");
             pg::SliderFloat("IBL Intensity", &sk.iblIntensity, 0.0f, 3.0f, "%.2f");
             pg::SliderFloat("Skybox Intensity", &sk.skyboxIntensity, 0.0f, 3.0f, "%.2f");
             pg::Checkbox("Draw Skybox", &sk.drawSkybox, "背景に空を描く");

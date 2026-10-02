@@ -88,6 +88,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // エディタコンテキスト初期化
     m_editorCtx = std::make_unique<EditorContext>();
+    // 大きいシーンを分割しないまま保存したときの通知（シーンごとに 1 回。docs/SCENE_FORMAT_DESIGN.md §4.3）
+    if (!gameMode)
+        SceneSerializer::SetSplitAdviceHook([](void* ctx, const std::string& msg) {
+            auto* app = static_cast<Application*>(ctx);
+            if (app->m_editorCtx) app->m_editorCtx->Notify(ui::ToastKind::Info, msg, 10.0f);
+        }, this);
     // エディタ（別ライブラリ）へ Application 側のフレームデータを読み取り専用で貸す。
     // どちらも Application の寿命いっぱい生きるメンバなのでアドレスは不変＝ここで一度だけ渡す。
     //   drawItems  … 精密ピッキングのブロードフェーズ候補（ワールド行列/球が計算済み）
@@ -178,6 +184,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     {
         m_fpsLimit = static_cast<f32>(PersistGet("video_fps", m_fpsLimit));
         m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
+        m_gpuInst.threshold = static_cast<u32>(std::max(0.0, PersistGet("instance_gpu_threshold", 1024.0)));   // GPU 駆動のインスタンス群（4-3）
         // クラスタードライティング（Forward+）。0 にすると「先頭 64 灯を総当たり」
         // フォールバックへ倒す（A/B 検証用。旧 8 灯経路そのものは残していない）。
         m_clusteredEnabled  = PersistGet("render_clustered", 1.0) != 0.0;
@@ -2146,6 +2153,9 @@ void Application::Shutdown()
     // ネットワーク接続を明示的に切る（ENetのソケット/ホストをデバイス解放より前に片付ける）。
     if (m_networkSystem) { m_networkSystem->Disconnect(); m_networkSystem.reset(); }
 
+    // ゲームビルドの裏ジョブ（走っていれば止めて回収。join 前に破棄すると std::terminate）。
+    JoinBuildJob();
+
     // バックグラウンドの BC 圧縮先読みを止める（ResourceManager/Logger より先に）。
     if (m_assetPrewarmer) m_assetPrewarmer.reset();
 
@@ -2199,6 +2209,7 @@ void Application::Shutdown()
     // 地形レイヤー配列とスプラットテクスチャ（GPU リソース）もデバイス解放より前に明示破棄する。
     m_terrainSrvCache.clear();
     m_terrainLayerSets.reset();
+    SceneSerializer::SetSplitAdviceHook(nullptr, nullptr);   // m_editorCtx を指しているので先に外す
     m_editorCtx.reset();
     m_physicsDebugRenderer.reset();
     // 新規レンダラ群（GPU リソース）をデバイス解放より前に明示破棄
@@ -2228,6 +2239,7 @@ void Application::Shutdown()
     PathTracerShutdown();        // DXR パストレーサー（累積バッファ / 専用 TLAS。実行中のジョブがあればここで GPU 完了を待って落とす）
     ShutdownVirtualGeometry();   // 仮想ジオメトリ P2（専用ヒープ / COPY キュー / m_vgHiZ のディスクリプタ）。ヒープより先に返す
     ShutdownFoliage();           // 植生 F1（compute / 間接描画バッファ。デバイス解放より前に）
+    ShutdownGpuInst();           // GPU 駆動のインスタンス群（4-3。compute / 永続バッファ。デバイス解放より前に）
     ShutdownWater();             // 水面 W1（コピー用テクスチャ / ディスクリプタ。デバイス解放より前に）
     m_perceptionPass.reset();   // 知覚層（RT / 読み戻し / 専用ヒープ）。要求が無ければ最初から null
     m_contactShadowPass.reset();
@@ -3287,7 +3299,9 @@ void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
     // ★更新時刻だけを信じない。中身が同じなら復旧するものは無い。
     //   時刻の比較はコピー・展開・同期・時計のずれで簡単に逆転するので、これが最後の砦。
     //   ここが無いと「保存して終えたのに毎回聞かれる」が時刻のいたずらだけで再発する。
-    if (autosave::SameBytes(auto_, sceneFullPath))
+    // 分割保存のシーンは scene.json（目次）が同じでもセルファイルの中身が違いうるので、この近道は使わない。
+    std::error_code partsEc;
+    if (!fs::exists(autosave::PartsPath(dir), partsEc) && autosave::SameBytes(auto_, sceneFullPath))
     {
         DiscardAutosaveFor(sceneFullPath);
         return;

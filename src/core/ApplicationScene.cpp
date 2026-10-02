@@ -5,8 +5,10 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm（バックグラウンドの BC 圧縮先読み）
+#include "resource/EnvironmentConvert.h" // .hdr / .exr の判別（スカイボックス）
 #include "core/save/SaveService.h"      // save.write の scene（WireScriptCallbacks）
 #include "core/SequencerHost.h"       // シーケンサー S1b（Play 直前の復元 / カメラのシェイク）
+#include "scene/ScenePartition.h"     // 分割保存のシーンの参照アセット収集（CollectSceneAssetRefs）
 
 namespace dx12e
 {
@@ -231,10 +233,17 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
     else
     {
         auto envBytes = vfs::ReadAsset(sky.envMapPath);
+        // .hdr / .exr(equirect)はキューブへ変換して読む(結果は texcache に残り、次回以降は変換しない)。
+        std::string envExt = std::filesystem::path(sky.envMapPath).extension().string();
+        for (char& ch : envExt) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        const bool envIsEquirect = envconv::IsEquirectExtension(envExt);
         if (!envBytes.empty())
         {
-            m_envCubeTex = TextureLoader::LoadCubeFromMemory(*m_graphicsDevice, cmd,
-                               envBytes.data(), envBytes.size(), /*srgb=*/false);
+            m_envCubeTex = envIsEquirect
+                ? TextureLoader::LoadCubeFromEquirectMemory(*m_graphicsDevice, cmd, envBytes.data(),
+                                                            envBytes.size(), envExt, sky.envMapPath)
+                : TextureLoader::LoadCubeFromMemory(*m_graphicsDevice, cmd,
+                                                    envBytes.data(), envBytes.size(), /*srgb=*/false);
         }
         else
         {
@@ -250,12 +259,21 @@ void Application::LoadSkyboxIfNeeded(ID3D12GraphicsCommandList* cmd)
                 return;
             }
             std::wstring wpath = PathResolver::Utf8ToWide(fullPath);
-            m_envCubeTex = TextureLoader::LoadCubeFromFile(*m_graphicsDevice, cmd, wpath, /*srgb=*/false);
+            if (envIsEquirect)
+            {
+                std::ifstream envFile(std::filesystem::path(wpath), std::ios::binary);
+                std::vector<uint8_t> raw((std::istreambuf_iterator<char>(envFile)), std::istreambuf_iterator<char>());
+                if (!raw.empty())
+                    m_envCubeTex = TextureLoader::LoadCubeFromEquirectMemory(*m_graphicsDevice, cmd, raw.data(),
+                                                                             raw.size(), envExt, sky.envMapPath);
+            }
+            else
+                m_envCubeTex = TextureLoader::LoadCubeFromFile(*m_graphicsDevice, cmd, wpath, /*srgb=*/false);
         }
     }
     if (!m_envCubeTex)
     {
-        Logger::Warn("スカイボックス（キューブマップ）の読み込みに失敗: {}", sky.envMapPath);
+        Logger::Warn("スカイボックス（キューブマップ / .hdr / .exr）の読み込みに失敗: {}", sky.envMapPath);
         m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, nullptr);
         m_iblReady = m_iblBaker->IsValid();
         m_loadedSkyboxPath = sky.envMapPath;
@@ -792,6 +810,19 @@ std::vector<SceneAssetRef> CollectSceneAssetRefs(const std::string& rel)
         }
     };
     walk(j, std::string());
+    // 分割保存のシーン（§4.3）: セルファイルの参照も集める（<シーン名>.parts/<file>）
+    if (j.is_object() && j.contains("parts"))
+    {
+        const size_t dot = rel.rfind('.');
+        const std::string partsRel = (dot == std::string::npos ? rel : rel.substr(0, dot)) + ".parts/";
+        for (const std::string& name : dx12e::scenepart::PartNames(j))
+        {
+            auto pb = dx12e::vfs::ReadAsset(partsRel + name);
+            if (pb.empty()) continue;
+            nlohmann::json pj = nlohmann::json::parse(pb.begin(), pb.end(), nullptr, false);
+            if (!pj.is_discarded()) walk(pj, std::string());
+        }
+    }
     return out;
 }
 } // namespace

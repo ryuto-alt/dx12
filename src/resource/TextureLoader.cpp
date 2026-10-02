@@ -6,6 +6,7 @@
 #include "core/vfs/Vfs.h"
 #include "core/vfs/PakFormat.h" // Normalize（キャッシュキーのパス正規化）
 #include "core/vfs/Crypto.h"   // 配布ゲームの .texcache を暗号化して書く（平文の BC 画像を exe の隣に残さない）
+#include "resource/EnvironmentConvert.h"
 #include "graphics/Texture.h"
 #include "graphics/GraphicsDevice.h"
 
@@ -1252,25 +1253,17 @@ std::unique_ptr<Texture> TextureLoader::CreateArrayFromRGBA(
     return texture;
 }
 
-std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
-    GraphicsDevice& device,
-    ID3D12GraphicsCommandList* cmdList,
-    const uint8_t* data, size_t dataSize,
-    bool srgb)
+namespace
 {
-    DirectX::ScratchImage scratchImage;
-    HRESULT hr = DirectX::LoadFromDDSMemory(data, dataSize,
-        DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
-    if (FAILED(hr))
-    {
-        Logger::Error("LoadCubeFromMemory: DDS バッファのデコードに失敗しました");
-        return nullptr;
-    }
-
-    DirectX::TexMetadata meta = scratchImage.GetMetadata();
+// ScratchImage(キューブ・全ミップ)を GPU へ上げる。LoadCubeFromMemory と equirect 変換で共用。
+std::unique_ptr<Texture> UploadCubeScratch(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
+                                           const DirectX::ScratchImage& scratchImage, bool srgb,
+                                           const char* label)
+{
+    const DirectX::TexMetadata& meta = scratchImage.GetMetadata();
     if (!meta.IsCubemap() || meta.arraySize != 6)
     {
-        Logger::Error("LoadCubeFromMemory: 6面キューブマップではありません（arraySize={}）",
+        Logger::Error("UploadCubeScratch: 6面キューブマップではありません（arraySize={}）",
                       static_cast<u32>(meta.arraySize));
         return nullptr;
     }
@@ -1302,7 +1295,7 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
             const DirectX::Image* img = scratchImage.GetImage(mip, face, 0);
             if (!img)
             {
-                Logger::Error("LoadCubeFromMemory: 画像がありません（face={}, mip={}）",
+                Logger::Error("UploadCubeScratch: 画像がありません（face={}, mip={}）",
                               static_cast<u32>(face), static_cast<u32>(mip));
                 return nullptr;
             }
@@ -1316,11 +1309,117 @@ std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
     auto texture = std::make_unique<Texture>();
     texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
 
-    Logger::Info("Cube texture (memory) loaded: {}x{}, mips={}, format={}",
-                 static_cast<u32>(meta.width), static_cast<u32>(meta.height),
+    Logger::Info("Cube texture loaded ({}): {}x{}, mips={}, format={}",
+                 label, static_cast<u32>(meta.width), static_cast<u32>(meta.height),
                  static_cast<u32>(meta.mipLevels), static_cast<u32>(format));
 
     return texture;
+}
+
+} // namespace
+
+std::unique_ptr<Texture> TextureLoader::LoadCubeFromMemory(
+    GraphicsDevice& device,
+    ID3D12GraphicsCommandList* cmdList,
+    const uint8_t* data, size_t dataSize,
+    bool srgb)
+{
+    DirectX::ScratchImage scratchImage;
+    HRESULT hr = DirectX::LoadFromDDSMemory(data, dataSize,
+        DirectX::DDS_FLAGS_NONE, nullptr, scratchImage);
+    if (FAILED(hr))
+    {
+        Logger::Error("LoadCubeFromMemory: DDS バッファのデコードに失敗しました");
+        return nullptr;
+    }
+
+    return UploadCubeScratch(device, cmdList, scratchImage, srgb, "memory");
+}
+
+std::unique_ptr<Texture> TextureLoader::LoadCubeFromEquirectMemory(
+    GraphicsDevice& device,
+    ID3D12GraphicsCommandList* cmdList,
+    const uint8_t* data, size_t dataSize,
+    const std::string& ext,
+    const std::string& cacheKey)
+{
+    using namespace DirectX;
+    if (!data || dataSize == 0) return nullptr;
+    std::string lext = ext;
+    for (auto& c : lext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    // キャッシュ名: 元の中身のハッシュ + 変換規則の版。中身が変われば自然に別名になる。
+    const uint64_t contentHash = HashBytes(data, dataSize);
+    const std::string key = "env|" + NormalizeCacheKey(cacheKey) + "|" + std::to_string(contentHash)
+                          + "|" + lext + "|m" + std::to_string(envconv::kMaxFace) + "|v1";
+    char nameBuf[32];
+    snprintf(nameBuf, sizeof(nameBuf), "t%016llx", static_cast<unsigned long long>(HashString(key)));
+    const std::string stem = nameBuf;
+
+    // 1) キャッシュ(ビルド時に pak へ焼いた物 → ローカルキャッシュ)
+    ScratchImage cube;
+    bool loaded = false;
+    if (vfs::InGameMode())
+    {
+        const std::vector<uint8_t> baked = vfs::ReadAsset("texcache/" + stem + ".dds");
+        if (!baked.empty())
+            loaded = SUCCEEDED(LoadFromDDSMemory(baked.data(), baked.size(), DDS_FLAGS_NONE, nullptr, cube));
+    }
+    const std::string cachePath = CompressedCachePath(stem);
+    if (!loaded && !cachePath.empty())
+    {
+        std::error_code ec;
+        if (std::filesystem::exists(cachePath, ec))
+        {
+            if (!PlainCache())
+                loaded = LoadEncryptedCache(cachePath, cube);
+            else
+                loaded = SUCCEEDED(LoadFromDDSFile(PathResolver::Utf8ToWide(cachePath).c_str(),
+                                                   DDS_FLAGS_NONE, nullptr, cube));
+        }
+    }
+    if (loaded)
+    {
+        const TexMetadata& m = cube.GetMetadata();
+        loaded = m.IsCubemap() && m.arraySize == 6 && m.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    }
+    if (loaded)
+    {
+        RecordBakeUse(stem);
+        return UploadCubeScratch(device, cmdList, cube, /*srgb=*/false, "equirect cache");
+    }
+
+    // 2) 変換(equirect → キューブ fp16)
+    const auto t0 = std::chrono::steady_clock::now();
+    ScratchImage equirect;
+    std::string err;
+    if (!envconv::DecodeEquirect(data, dataSize, lext, equirect, err))
+    {
+        Logger::Error("環境マップ({})を読めません: {}", cacheKey, err);
+        return nullptr;
+    }
+    const uint32_t srcW = static_cast<uint32_t>(equirect.GetMetadata().width);
+    const uint32_t face = envconv::ChooseFaceSize(srcW);
+    if (!envconv::EquirectToCube(equirect, face, cube, err))
+    {
+        Logger::Error("環境マップ({})のキューブ変換に失敗しました: {}", cacheKey, err);
+        return nullptr;
+    }
+    Logger::Info("環境マップを変換: {} {}x{} → キューブ {}x{} fp16 ({:.2f}s)", cacheKey, srcW,
+                 static_cast<uint32_t>(equirect.GetMetadata().height), face, face,
+                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+
+    // 3) キャッシュへ保存(失敗しても描画には影響しない)
+    if (!cachePath.empty())
+    {
+        const bool saved = !PlainCache()
+            ? SaveEncryptedCache(cachePath, cube)
+            : SUCCEEDED(SaveToDDSFile(cube.GetImages(), cube.GetImageCount(), cube.GetMetadata(),
+                                      DDS_FLAGS_NONE, PathResolver::Utf8ToWide(cachePath).c_str()));
+        if (!saved) Logger::Warn("環境マップのキャッシュを保存できません: {}", cachePath);
+        else        RecordBakeUse(stem);
+    }
+    return UploadCubeScratch(device, cmdList, cube, /*srgb=*/false, "equirect");
 }
 
 } // namespace dx12e

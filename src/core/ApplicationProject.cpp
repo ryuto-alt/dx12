@@ -9,6 +9,7 @@
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
 #include "core/CrashHandler.h"
+#include "core/BuildJob.h"   // ビルド設定窓の進捗表示（BuildProgress）
 #include "core/vfs/PakWriter.h"   // BakeTexturesIntoPak: 既存 pak への追記
 #include <fstream>
 #include <chrono>
@@ -64,6 +65,14 @@ static void SaveProjectBuildConfig(const EditorContext& ctx, const std::string& 
 void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
 {
     namespace fs = std::filesystem;
+    // ゲームのビルド（裏ジョブ）はプロジェクトの assets / scripts を読んでいる最中なので、開き直しは拒否する（安全側）。
+    if (IsBuildRunning())
+    {
+        Logger::Warn("ゲームのビルド中はプロジェクトを開き直せません。ビルドの完了かキャンセルを待ってください");
+        if (m_editorCtx)
+            m_editorCtx->Notify(ui::ToastKind::Warn, "ゲームのビルド中はプロジェクトを開けません。完了かキャンセルを待ってください");
+        return;
+    }
     // 直前のスレッドが残っていれば回収
     if (m_loadThread.joinable())
         m_loadThread.join();
@@ -623,6 +632,9 @@ void Application::LoadProject(const ProjectInfo& info)
 
     m_instancingEnabled = PersistGet("render_instancing", 1.0) != 0.0;
     Logger::Info("自動インスタンシング: {}", m_instancingEnabled ? "ON" : "OFF");
+    // GPU 駆動のインスタンス群（4-3）: このしきい値以上の不透明な群を GPU カリング + ExecuteIndirect で描く。0 = 無効（従来の DrawItem 展開）。
+    m_gpuInst.threshold = static_cast<u32>(std::max(0.0, PersistGet("instance_gpu_threshold", 1024.0)));
+    Logger::Info("GPU 駆動のインスタンス群: しきい値 {}（0 = 無効。settings.json instance_gpu_threshold）", m_gpuInst.threshold);
 
     // クラスタードライティング（Forward+）。0 で「先頭 64 灯を総当たり」フォールバックへ倒す。
     m_clusteredEnabled = PersistGet("render_clustered", 1.0) != 0.0;
@@ -1644,573 +1656,7 @@ bool Application::BuildGameStandalone(const std::string& projectRoot)
     return BuildGame();
 }
 
-// BuildGame の「テクスチャを BC 圧縮済みで pak へ焼く」段（上の 3b）。失敗しても false を返すだけで
-// ビルドは続ける（呼び出し側は結果を見ない）。
-void Application::BakeTexturesIntoPak(const std::filesystem::path& outputDir, const std::string& exeName)
-{
-    namespace fs = std::filesystem;
-    const auto t0 = std::chrono::steady_clock::now();
-
-    // 先読みスレッドが同じ .texcache を書いている最中に読ませない。
-    if (m_assetPrewarmer) m_assetPrewarmer->Stop();
-
-    std::error_code ec;
-    const fs::path assetsDir(PathResolver::AssetsDir());
-    const fs::path texDir = assetsDir / ".texcache";
-    fs::create_directories(texDir, ec);
-
-    // 作業フォルダ（リスト・ゲームのユーザーデータ置き場）。出力フォルダを汚さない。
-    const fs::path work = fs::temp_directory_path(ec) / ("dx12e_texbake_" + std::to_string(GetCurrentProcessId()));
-    fs::remove_all(work, ec);
-    fs::create_directories(work / "data", ec);
-    const fs::path filesTxt = work / "files.txt";
-    const fs::path listTxt  = work / "list.txt";
-
-    // 先読みさせる JSON（シーン / プレハブ / マテリアル）。開始シーンは起動時に読まれるのでそれ以外も含めて全部。
-    {
-        std::ofstream f(filesTxt, std::ios::binary);
-        for (fs::recursive_directory_iterator it(assetsDir, ec), end; it != end && !ec; it.increment(ec))
-        {
-            if (it->is_directory(ec))
-            {
-                const std::string dn = it->path().filename().string();
-                if (!dn.empty() && dn[0] == '.') it.disable_recursion_pending();
-                continue;
-            }
-            if (!it->is_regular_file(ec)) continue;
-            std::string ext = it->path().extension().string();
-            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (ext != ".json" && ext != ".dxmat" && ext != ".dxprefab" && ext != ".prefab") continue;
-            f << it->path().lexically_relative(assetsDir).generic_string() << "\n";
-        }
-    }
-
-    // 出力フォルダの「走らせる前」の状態を覚えて、ゲームが書いた物を後で消す（settings.json 等は元へ戻す）。
-    std::unordered_set<std::string> before;
-    std::unordered_map<std::string, std::string> keep;
-    for (auto& e : fs::directory_iterator(outputDir, ec))
-    {
-        const std::string n = e.path().filename().string();
-        before.insert(n);
-        if (n == "settings.json" || n == "input_bindings.json")
-        {
-            std::ifstream in(e.path(), std::ios::binary);
-            keep[n].assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-    }
-
-    // 子プロセスは環境変数で動かす（このプロセスの環境を一時的に足して、終わったら外す）。
-    const std::wstring wTexDir = texDir.wstring(), wList = listTxt.wstring(),
-                       wFiles = filesTxt.wstring(), wData = (work / "data").wstring();
-    SetEnvironmentVariableW(L"DX12E_TEXBAKE_DIR",   wTexDir.c_str());
-    SetEnvironmentVariableW(L"DX12E_TEXBAKE_LIST",  wList.c_str());
-    SetEnvironmentVariableW(L"DX12E_TEXBAKE_FILES", wFiles.c_str());
-    SetEnvironmentVariableW(L"DX12E_DATA_DIR",      wData.c_str());
-
-    const std::wstring exePath = (outputDir / exeName).wstring();
-    // 前面に出さない（--background=offscreen,notool）。ユーザーの操作を奪わない。
-    std::wstring cmd = L"\"" + exePath + L"\" --background=offscreen,notool";
-    STARTUPINFOW si{}; si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW; si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi{};
-    const bool started = CreateProcessW(exePath.c_str(), cmd.data(), nullptr, nullptr, FALSE,
-                                        BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW, nullptr,
-                                        outputDir.wstring().c_str(), &si, &pi) != FALSE;
-    SetEnvironmentVariableW(L"DX12E_TEXBAKE_DIR",   nullptr);
-    SetEnvironmentVariableW(L"DX12E_TEXBAKE_LIST",  nullptr);
-    SetEnvironmentVariableW(L"DX12E_TEXBAKE_FILES", nullptr);
-    SetEnvironmentVariableW(L"DX12E_DATA_DIR",      nullptr);
-
-    bool finished = false;
-    if (!started)
-    {
-        Logger::Warn("テクスチャの事前生成を開始できません（初回起動時に圧縮されます）");
-    }
-    else
-    {
-        Logger::Info("テクスチャの事前生成: ゲームを非表示で実行します（初回のみ数十秒〜数分）");
-        // 30 分で打ち切る（固まったゲームでビルドを止めない）。
-        const DWORD r = WaitForSingleObject(pi.hProcess, 30 * 60 * 1000);
-        finished = (r == WAIT_OBJECT_0);
-        if (!finished) TerminateProcess(pi.hProcess, 1);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-    }
-
-    // ゲームが出力フォルダに書いた物を片付ける
-    for (auto& e : fs::directory_iterator(outputDir, ec))
-    {
-        const std::string n = e.path().filename().string();
-        if (before.count(n)) continue;
-        std::error_code rec;
-        fs::remove_all(e.path(), rec);
-    }
-    for (auto& [n, bytes] : keep)
-    {
-        std::ofstream out(outputDir / n, std::ios::binary | std::ios::trunc);
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    }
-
-    // 使われたキャッシュを pak へ追記
-    size_t added = 0, totalBytes = 0;
-    if (finished && fs::exists(listTxt, ec))
-    {
-        vfs::PakWriter pak;
-        if (pak.OpenAppend((outputDir / "game.pak").string()))
-        {
-            std::ifstream lf(listTxt);
-            std::string name;
-            while (std::getline(lf, name))
-            {
-                while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
-                if (name.empty()) continue;
-                const fs::path src = texDir / name;
-                std::error_code fec;
-                const auto sz = fs::file_size(src, fec);
-                if (fec) continue;
-                if (pak.AddFile(src.string(), "texcache/" + name)) { ++added; totalBytes += static_cast<size_t>(sz); }
-            }
-            if (!pak.Finish(/*stripStrings=*/true))
-                Logger::Error("テクスチャキャッシュの pak への追記に失敗しました。ビルドをやり直してください");
-        }
-    }
-    else if (started)
-    {
-        Logger::Warn("テクスチャの事前生成が完了しませんでした（初回起動時に圧縮されます）");
-    }
-
-    fs::remove_all(work, ec);
-    const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    Logger::Info("テクスチャの事前生成: {} 枚 ({:.0f} MB) を pak へ追記 ({:.1f} 秒)", added,
-                 totalBytes / (1024.0 * 1024.0), sec);
-}
-
-bool Application::BuildGame()
-{
-    namespace fs = std::filesystem;
-
-    // --- 出力パスの非ASCII（日本語フォルダ名等）検出ガード（最優先）---
-    // 出力先に非ASCII文字が含まれると、配布した Game.exe が起動時に std::filesystem の
-    // UTF-8↔ANSI 誤変換で即クラッシュする（Windows error 1113 "No mapping for the Unicode
-    // character..."）。原因不明の「ビルド成功 → 実行時クラッシュ」を防ぐため、ここで明示的に
-    // 失敗させる。chosen は生の std::string（UTF-8でもACPでも日本語は >=0x80 を含む）なので
-    // fs::path を経由せず（=ここで例外を出さず）バイト走査で判定する。
-    {
-        const std::string chosen =
-            (m_editorCtx && !m_editorCtx->buildConfig.outputDir.empty())
-                ? m_editorCtx->buildConfig.outputDir
-                : PathResolver::BaseDir();
-        bool nonAscii = false;
-        for (unsigned char c : chosen) if (c >= 0x80) { nonAscii = true; break; }
-        if (nonAscii)
-        {
-            Logger::Error("ビルドを中止しました: 出力先パスに非ASCII文字（日本語フォルダ名など）が"
-                          "含まれています。このままビルドすると起動時にパスエラーで落ちるため、"
-                          "半角英数のみのフォルダを指定してください。パス: {}", chosen);
-            if (m_editorCtx)
-                m_editorCtx->buildErrorMsg =
-                    "出力フォルダのパスに日本語など非ASCII文字が含まれています。\n"
-                    "このまま配布すると Game.exe が起動時にクラッシュします。\n"
-                    "出力先を半角英数字のみのパスにしてください。\n\n" + chosen;
-            return false;
-        }
-    }
-
-    // ビルド出力先。ユーザーがビルド設定で選んだフォルダの中に「製品名_build」サブフォルダを作る。
-    // 選んだフォルダ自体を出力先にして remove_all するとユーザーのデータを消す恐れがあるので必ずサブフォルダ化する。
-    // 製品名 = ゲーム名をサニタイズ（英数・空白・_- のみ残す）。空なら "Game"。
-    // 出力フォルダ名と exe 名の両方に使う（タイトルバーはマニフェスト title=入力値そのまま）。
-    std::string productName;
-    if (m_editorCtx)
-        for (char c : std::string(m_editorCtx->buildConfig.title))
-            if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || c == ' ')
-                productName += c;
-    while (!productName.empty() && productName.back()  == ' ') productName.pop_back();
-    while (!productName.empty() && productName.front() == ' ') productName.erase(productName.begin());
-    if (productName.empty()) productName = "Game";
-    const std::string exeName = productName + ".exe";
-
-    fs::path outputDir;
-    if (m_editorCtx && !m_editorCtx->buildConfig.outputDir.empty())
-        outputDir = fs::path(m_editorCtx->buildConfig.outputDir) / (productName + "_build");
-    else
-        outputDir = fs::path(PathResolver::BaseDir()) / "build" / "game";
-
-    // クリーンアップ（安全策: 既存が「前回ビルド or 空」でなければ消さずに中止＝ユーザーデータ保護）
-    if (fs::exists(outputDir))
-    {
-        std::error_code ec;
-        bool looksLikeBuild = fs::exists(outputDir / "Game.exe")
-                           || fs::exists(outputDir / exeName)
-                           || fs::exists(outputDir / "game.pak")
-                           || fs::is_empty(outputDir, ec);
-        if (!looksLikeBuild)
-        {
-            Logger::Error("ビルドを中止しました: 出力先に過去のビルド以外のデータが存在します（保護のため中断）: {}",
-                          outputDir.string());
-            return false;
-        }
-        fs::remove_all(outputDir, ec);
-    }
-    fs::create_directories(outputDir);
-
-    // 完了後に Explorer で開くため、最終的な出力先を控える
-    if (m_editorCtx)
-        m_editorCtx->lastBuildDir = outputDir.string();
-
-    // 1. GameRuntime.exe を Game.exe としてコピー（+ exe 隣の DLL も全部コピー）
-    {
-        wchar_t exePath[MAX_PATH];
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        fs::path exeDir = fs::path(exePath).parent_path();
-        fs::path runtimeSrc = exeDir / "GameRuntime.exe";
-
-        if (!fs::exists(runtimeSrc))
-        {
-            Logger::Error("GameRuntime.exe が見つかりません（{}）。先にエンジンをビルドしてください", runtimeSrc.string());
-            return false;
-        }
-
-        fs::copy_file(runtimeSrc, outputDir / exeName, fs::copy_options::overwrite_existing);
-        Logger::Info("Copied GameRuntime.exe -> {}", exeName);
-
-        // 同じフォルダの .dll をすべて配布フォルダへ。
-        // dxcompiler.dll(実行時シェーダーコンパイル専用、エディタのみ必要)だけ除外する。
-        // ゲームは ShaderCompiler::LoadFromFile が game.pak から .cso を読むだけで実行時コンパイルは
-        // 不要なため、同梱すると無駄に容量が増えるだけ(~25MB)。GameRuntime は dxcompiler.dll を
-        // delay-load にしてある(ルート CMakeLists.txt)ので、同梱しなくても exe は正常起動する。
-        // ※ dxil.dll は除外しない: これは D3D12 ランタイムが CreatePipelineState 時に
-        // (Developer Mode OFF の環境で)DXIL署名検証のため内部で LoadLibrary するもので、
-        // 我々のコードがリンクしているわけではない delay-load できない実行時依存。
-        // 除外するとユーザー環境次第で PSO 生成が失敗するため、常に同梱する。
-        // ★tracyclient.dll: 計測ビルド(cmake --preset windows-tracy)のツリーからゲームを
-    //   ビルドしたときに、プロファイラのクライアントが配布物へ紛れ込むのを防ぐ。
-    //   BuildGame は exe と同じフォルダの .dll をここに載っていないもの全部コピーする。
-    static const std::unordered_set<std::string> kDllExcludeList = { "dxcompiler.dll", "tracyclient.dll" };
-        std::error_code ec;
-        for (auto& entry : fs::directory_iterator(exeDir, ec))
-        {
-            if (!entry.is_regular_file()) continue;
-            auto ext = entry.path().extension().string();
-            if (ext != ".dll" && ext != ".DLL") continue;
-            std::string lowerName = entry.path().filename().string();
-            for (char& c : lowerName) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (kDllExcludeList.count(lowerName)) continue;
-            fs::copy_file(entry.path(), outputDir / entry.path().filename(),
-                          fs::copy_options::overwrite_existing, ec);
-            Logger::Info("Copied dll -> {}", entry.path().filename().string());
-        }
-
-        // ★エディタで作ったキー割り当てを配布物へ持っていく。
-        //   input_bindings.json はプロジェクトルート直下にあり、pak に入るのは
-        //   assets / scripts / shaders の 3 本だけなので、これまで **一度も同梱されていなかった**。
-        //   ゲーム側の LoadActionBindings は exe の隣を見る（プレイヤーが後から書き換える
-        //   ファイルなので pak ではなく生ファイルで正しい）。ここへ既定値として置いてやる。
-        //   ビルド時に警告も出ていなかったので、「エディタで割り当てて actions.save() したのに
-        //   配布ゲームではスクリプトの既定しか効かない」に気づけなかった。
-        {
-            const fs::path bindingsSrc(ActionBindingsPath());
-            std::error_code bec;
-            if (fs::exists(bindingsSrc, bec))
-            {
-                fs::copy_file(bindingsSrc, outputDir / bindingsSrc.filename(),
-                              fs::copy_options::overwrite_existing, bec);
-                if (bec) Logger::Warn("キー割り当ての同梱に失敗しました: {}", bec.message());
-                else     Logger::Info("Copied input_bindings.json");
-            }
-        }
-
-        // ★settings.json も同じ理由で同梱する。ゲームは起動時に PersistGet で
-        //   render_instancing / render_clustered / 影の解像度 / CSM / テクスチャ圧縮 /
-        //   video_* を読むのに、このファイルが配布物に無いので**全部エンジンの既定値**で
-        //   動いていた（エディタで詰めた描画品質が一切届かない）。
-        //   置き先は exe の隣＝プレイヤーが後から書き換える場所そのものなので、
-        //   「作者が選んだ既定値」として置き、以後はプレイヤーの変更が上書きしていく。
-        {
-            const fs::path settingsSrc(PersistPath());
-            std::error_code sec;
-            if (fs::exists(settingsSrc, sec))
-            {
-                fs::copy_file(settingsSrc, outputDir / "settings.json",
-                              fs::copy_options::overwrite_existing, sec);
-                if (sec) Logger::Warn("設定の同梱に失敗しました: {}", sec.message());
-                else     Logger::Info("Copied settings.json");
-            }
-        }
-    }
-
-    // 2+3. assets/ と scripts/ を game.pak にパック（コピーではなく暗号化アーカイブ化）
-    {
-        // 開始シーンの相対パスを計算。
-        // ビルド設定で明示指定があればそれを最優先。無ければ現在開いているシーンから求める。
-        std::string startSceneRel = "scenes/default.json";
-        if (m_editorCtx && !m_editorCtx->buildConfig.startScene.empty())
-        {
-            startSceneRel = m_editorCtx->buildConfig.startScene;
-        }
-        else if (!m_editorCtx->currentScenePath.empty())
-        {
-            auto norm = [](std::string s) { for (auto& c : s) if (c == '\\') c = '/'; return s; };
-            std::string full = norm(m_editorCtx->currentScenePath);
-            std::string base = norm(PathResolver::AssetsDir());
-            if (!base.empty() && full.rfind(base, 0) == 0)
-                startSceneRel = full.substr(base.size());
-            else
-                startSceneRel = fs::path(full).lexically_relative(fs::path(base)).generic_string();
-
-            if (startSceneRel.empty() || startSceneRel.rfind("..", 0) == 0)
-            {
-                Logger::Warn("現在のシーンが assets/ の外にあるため、既定の開始シーンを使用します: {}",
-                             m_editorCtx->currentScenePath);
-                startSceneRel = "scenes/default.json";
-            }
-        }
-
-        vfs::PakWriter pak;
-        if (!pak.Open((outputDir / "game.pak").string()))
-        {
-            Logger::Error("game.pak を書き込み用に開けません");
-            return false;
-        }
-
-        // ★以前は AddFile の戻り値を全部捨て、走査の error_code でも黙って break していた。
-        //   読めないファイルが 1 つあるだけで**そのアセットが欠けた pak が「ビルド完了」として
-        //   出荷される**（実行すると該当のテクスチャ/モデルだけが無言で消える）。
-        //   拾って最後に失敗させる。
-        std::vector<std::string> packFailures;
-        auto addFile = [&](const std::string& srcAbs, const std::string& relPath)
-        {
-            if (!pak.AddFile(srcAbs, relPath))
-                packFailures.push_back(relPath + "  <- " + srcAbs);
-        };
-
-        // assets/ 配下を全パック（Normalize が "assets/" プレフィックスを剥がす）
-        {
-            fs::path assetsDir = fs::path(PathResolver::AssetsDir());
-            std::error_code ec;
-            for (fs::recursive_directory_iterator it(assetsDir, ec), end; it != end; it.increment(ec))
-            {
-                // ★ここで break すると assets/ の**残り全部**を諦めたまま成功扱いになる。
-                //   読めないサブフォルダは記録して先へ進む。
-                if (ec)
-                {
-                    packFailures.push_back("assets の走査に失敗: " + ec.message());
-                    break;
-                }
-                // "." 始まりのフォルダ（.thumbcache / .texcache）はエディタ専用のキャッシュ。
-                // 出荷 pak に入れても実行時には参照されず容量を食うだけなので丸ごと除外する。
-                if (it->is_directory(ec))
-                {
-                    const std::string dirName = it->path().filename().string();
-                    if (!dirName.empty() && dirName[0] == '.')
-                        it.disable_recursion_pending();
-                    continue;
-                }
-                if (!it->is_regular_file(ec)) continue;
-                std::string relPath = it->path().lexically_relative(assetsDir).generic_string();
-                addFile(it->path().string(), relPath);
-            }
-        }
-
-        // scripts/ 配下を全パック（"scripts/" プレフィックスを付けて格納）
-        {
-            fs::path scriptsDir = fs::path(PathResolver::ScriptsDir());
-            if (fs::exists(scriptsDir))
-            {
-                std::error_code ec;
-                for (auto& entry : fs::recursive_directory_iterator(scriptsDir, ec))
-                {
-                    if (!entry.is_regular_file()) continue;
-                    std::string relPath = "scripts/" +
-                        entry.path().lexically_relative(scriptsDir).generic_string();
-                    addFile(entry.path().string(), relPath);
-                }
-            }
-        }
-
-        // shaders/ 配下の .cso を全パック（"shaders/" プレフィックス付き）。
-        // → 出荷フォルダにプレーンな shaders/ を置かず、暗号化して pak に封入する。
-        //   実行時は ShaderCompiler::LoadFromFile が VFS 経由で pak から復号する。
-        // プロジェクト独自シェーダー(上書き/自作)がある場合は実行時再コンパイルして反映する。
-        // コンパイル失敗があれば古い .cso を出荷せずビルド自体を中止する。
-        {
-            std::vector<std::string> shaderErrors;
-            if (m_shaderManager && !m_shaderManager->RecompileAllForBuild(&shaderErrors))
-            {
-                std::string msg = "プロジェクトのシェーダーのコンパイルに失敗しました。ビルドを中止しました:\n";
-                for (const auto& e : shaderErrors) msg += "  - " + e + "\n";
-                Logger::Error("{}", msg);
-                if (m_editorCtx) m_editorCtx->buildErrorMsg = msg;
-                return false;
-            }
-
-            fs::path shadersDir = fs::path(PathResolver::ShaderDirW());
-            if (fs::exists(shadersDir))
-            {
-                std::error_code ec;
-                for (auto& entry : fs::recursive_directory_iterator(shadersDir, ec))
-                {
-                    if (!entry.is_regular_file()) continue;
-                    std::string relPath = "shaders/" +
-                        entry.path().lexically_relative(shadersDir).generic_string();
-                    // プロジェクトオーバーライドで再コンパイル済みなら baked .cso より優先する。
-                    const std::vector<u8>* overrideBytes = m_shaderManager
-                        ? m_shaderManager->TryGetOverride(entry.path().filename().wstring())
-                        : nullptr;
-                    if (overrideBytes)
-                        pak.AddBlob(relPath, overrideBytes->data(), overrideBytes->size());
-                    else
-                        addFile(entry.path().string(), relPath);
-                }
-            }
-
-            // カスタムシェーダー(Registry外、MeshRenderer::shaderPath 割当用)。
-            // キー規約は Application::EnsureCustomPso のゲームモード分岐と一致させること。
-            if (m_shaderManager)
-            {
-                for (const std::string& relPath : m_shaderManager->AllValidCustomRelPaths())
-                {
-                    const std::vector<u8>* vs = m_shaderManager->GetCustomVsBytecode(relPath);
-                    const std::vector<u8>* ps = m_shaderManager->GetCustomPsBytecode(relPath);
-                    if (!vs || !ps) continue;
-                    pak.AddBlob("shaders/custom/" + relPath + "_VS.cso", vs->data(), vs->size());
-                    pak.AddBlob("shaders/custom/" + relPath + "_PS.cso", ps->data(), ps->size());
-                }
-            }
-
-            // マテリアルグラフ（G2b）: assets 内の全グラフ材質（.dxmat の graph キー）の HLSL を DXC で DXIL にして pak へ焼く。
-            //   ゲームモードは DXC を使わない（GraphMaterialSystem は pak の shaders/graph/*.cso から PSO を作る）。
-            //   1 つでもコンパイルできなければビルドを止める（壊れたグラフを出荷しない。従来のカスタムシェーダーと同じ方針）。
-            if (m_graphMaterials && m_graphMaterials->IsAvailable())
-            {
-                std::vector<GraphMaterialSystem::BakedBlob> graphBlobs;
-                std::vector<std::string> graphErrors;
-                if (!m_graphMaterials->BakeForBuild(graphBlobs, graphErrors))
-                {
-                    std::string msg = "マテリアルグラフのシェーダーのコンパイルに失敗しました。ビルドを中止しました:\n";
-                    for (const auto& e : graphErrors) msg += "  - " + e.substr(0, 400) + "\n";
-                    Logger::Error("{}", msg);
-                    if (m_editorCtx) m_editorCtx->buildErrorMsg = msg;
-                    return false;
-                }
-                for (const auto& b : graphBlobs)
-                    pak.AddBlob(b.relPath, b.bytes.data(), b.bytes.size());
-                if (!graphBlobs.empty())
-                    Logger::Info("マテリアルグラフ: {} 個のシェーダーを pak へ焼きました", graphBlobs.size());
-            }
-        }
-
-        // 1 件でも詰め損ねていたら「完了」と言わない（欠けた配布物を出さない）。
-        if (!packFailures.empty())
-        {
-            std::string msg = "game.pak に入れられなかったファイルがあります。ビルドを中止しました:\n";
-            for (std::size_t i = 0; i < packFailures.size() && i < 20; ++i)
-                msg += "  - " + packFailures[i] + "\n";
-            if (packFailures.size() > 20)
-                msg += "  ...ほか " + std::to_string(packFailures.size() - 20) + " 件\n";
-            Logger::Error("{}", msg);
-            if (m_editorCtx) m_editorCtx->buildErrorMsg = msg;
-            return false;
-        }
-
-        // ブートマニフェスト（game.json の代替。GameRuntime は pak からこれを読む）。
-        // ビルド設定のタイトル/解像度を反映する。
-        {
-            std::string title = "Game";
-            int winW = 1280, winH = 720;
-            if (m_editorCtx)
-            {
-                if (m_editorCtx->buildConfig.title[0] != '\0')
-                    title = m_editorCtx->buildConfig.title;
-                winW = m_editorCtx->buildConfig.width;
-                winH = m_editorCtx->buildConfig.height;
-            }
-            // JSON 文字列エスケープ（" と \ のみ。タイトルは UTF-8 のまま格納）
-            std::string titleEsc;
-            for (char c : title)
-            {
-                if (c == '\\' || c == '"') titleEsc += '\\';
-                titleEsc += c;
-            }
-
-            // ★UI の既定フォントを決めて manifest に書く。
-            //   配布ゲームは今まで C:\Windows\Fonts の Yu Gothic / Meiryo を直読みしていて、
-            //   その 2 つが入っていない環境（日本語 SKU 以外の素の Windows）では
-            //   ImGui が ProggyClean（ASCII のみ）へ落ち、**日本語 UI が全部消える**。
-            //   開発機では絶対に出ないので気づけない。
-            //   assets/fonts/ のフォント（dx12_install_font が置く Noto Sans JP 等。
-            //   pak には既に入っている）を指すようにする。
-            std::string uiFontRel;
-            {
-                std::error_code fec;
-                const fs::path fontsDir(PathResolver::AssetsDir() + "fonts");
-                if (fs::is_directory(fontsDir, fec))
-                {
-                    std::vector<std::string> found;
-                    for (auto& de : fs::directory_iterator(fontsDir, fec))
-                    {
-                        if (!de.is_regular_file()) continue;
-                        std::string ext = de.path().extension().string();
-                        for (char& c : ext)
-                            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                        if (ext == ".ttf" || ext == ".otf" || ext == ".ttc")
-                            found.push_back(de.path().filename().string());
-                    }
-                    std::sort(found.begin(), found.end());   // 選択を再現可能にする
-                    if (!found.empty()) uiFontRel = "fonts/" + found.front();
-                }
-                if (uiFontRel.empty())
-                    Logger::Warn("assets/fonts/ にフォントがありません。配布ゲームは OS の "
-                                 "Yu Gothic / Meiryo に頼るため、それらが無い環境では日本語 UI が "
-                                 "表示されません（dx12_install_font で日本語対応フォントを入れてください）");
-                else
-                    Logger::Info("UI 既定フォント: {}", uiFontRel);
-            }
-
-            std::string manifest =
-                std::string("{\n") +
-                "  \"title\": \"" + titleEsc + "\",\n" +
-                "  \"startScene\": \"" + startSceneRel + "\",\n" +
-                "  \"uiFont\": \"" + uiFontRel + "\",\n" +
-                "  \"windowWidth\": " + std::to_string(winW) + ",\n" +
-                "  \"windowHeight\": " + std::to_string(winH) + "\n" +
-                "}\n";
-            pak.AddBlob("__manifest__",
-                reinterpret_cast<const uint8_t*>(manifest.data()), manifest.size());
-        }
-
-        if (!pak.Finish(/*stripStrings=*/true))
-        {
-            Logger::Error("game.pak の書き出しに失敗しました");
-            return false;
-        }
-        Logger::Info("Packed game.pak (startScene = {})", startSceneRel);
-    }
-
-    // 3b. テクスチャを BC 圧縮済みの形で game.pak へ焼く。
-    //   BC7 の CPU 圧縮は 1 枚数秒で、プレイヤーの PC の初回起動で全テクスチャ分を払うと
-    //   60〜90 秒掛かっていた（2 回目は圧縮キャッシュが効いて 15〜20 秒）。キャッシュのキーから
-    //   絶対パスを外したので（TextureLoader::NormalizeCacheKey）、ここで同じキャッシュを作って
-    //   pak の "texcache/" に入れておけば、初回から当たる。
-    //   やり方: 出来上がった Game を隠し窓で 1 回だけ走らせ（DX12E_TEXBAKE_*）、実際に読み込まれた
-    //   テクスチャの圧縮結果（エディタ側の assets/.texcache の .dds）を使われたものだけ pak へ追記する。
-    //   どの経路で何の用途で読まれるかを予測せず、実ロードそのものを記録するので取りこぼしにくい。
-    //   失敗しても配布物は正しく動く（プレイヤーの PC で従来どおり初回に圧縮されるだけ）。
-    BakeTexturesIntoPak(outputDir, exeName);
-
-    // 4. （shaders は手順 2+3 の game.pak に暗号化封入済み＝プレーンな shaders/ は出力しない）
-
-    // 5. 起動用バッチ（GameRuntime は --game 不要: 常にゲームモード）
-    {
-        std::ofstream bat(outputDir / (productName + ".bat"));
-        bat << "@echo off\n";
-        bat << "\"" << exeName << "\"\n";
-        bat << "pause\n";
-    }
-
-    Logger::Info("Game build complete: {}", outputDir.string());
-    return true;
-}
+// BuildGame / BakeTexturesIntoPak（ゲームのビルド本体と裏ジョブ化）は ApplicationBuild.cpp へ移した。
 
 // 「ビルド設定」ウィンドウ（Unity の Build Settings / Unreal の Packaging 相当）。
 // 構成・開始シーン・出力先を決めてから「ビルド」で BuildGame を実行する。
@@ -2328,6 +1774,29 @@ void Application::RenderBuildSettingsWindow()
     ImGui::Spacing();
 
     // ===== ビルド実行 =====
+    // ビルドは裏ジョブ（エディタは操作できるまま）。走っている間は進捗とキャンセルを出す。
+    if (m_editorCtx->buildRunning && m_buildJob)
+    {
+        const BuildProgress& bp = m_buildJob->progress;
+        const int stage = bp.stage.load();
+        ImGui::TextUnformatted("ビルド中...");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d/%d %s", stage, BuildProgress::kStageCount, BuildProgress::StageName(stage));
+        const bool indeterminate = (stage >= 4 && bp.total.load() == 0);
+        char overlay[64];
+        snprintf(overlay, sizeof(overlay), "%.0f%%  (%.0f 秒)", m_editorCtx->buildFraction * 100.0f, bp.ElapsedSec());
+        // 進みが読めない段（テクスチャの事前生成）は流れるバー。それ以外は割合。
+        ImGui::ProgressBar(indeterminate ? -1.0f * static_cast<float>(ImGui::GetTime()) : m_editorCtx->buildFraction,
+                           ImVec2(-1.0f, ui::Px(20.0f)), indeterminate ? "" : overlay);
+        std::string detail;
+        { std::lock_guard<std::mutex> lk(bp.mu); detail = bp.detail; }
+        if (!detail.empty()) ImGui::TextDisabled("%s", detail.c_str());
+        ImGui::TextDisabled("ビルド中も編集できますが、配布物には保存済みの内容が入ります。");
+        if (ImGui::Button("キャンセル", ImVec2(-1.0f, ui::Px(30.0f))))
+            CancelBuildGame();
+    }
+    else
+    {
     const bool doBuild = ui::PrimaryButton("ビルド", ImVec2(-1.0f, ui::Px(38.0f)));
     if (doBuild)
     {
@@ -2341,7 +1810,8 @@ void Application::RenderBuildSettingsWindow()
                 proceed = false;
         }
         if (proceed)
-            m_editorCtx->pendingBuildGame = true;   // フレーム境界で BuildGame 実行
+            m_editorCtx->pendingBuildGame = true;   // フレーム境界で裏ジョブとして開始
+    }
     }
 
     if (m_editorCtx->buildCompleteFlash > 0.0f)

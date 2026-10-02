@@ -71,15 +71,35 @@ void Application::RegisterMcpEditorMethods()
                               // ★デカールのアトラス。空 = デカールは描かれない(コンポーネントを
                               //   付けても無言で何も出ない)ので、読める/書けるようにしてある。
                               {"decalAtlasPath", m_scene->GetDecalAtlasPath()},
+                              // シーンファイルの分割保存（§4.3）。cellSize=0 は 1 ファイル。>0 は foo.json + foo.parts/cell_*.json
+                              {"partition", {{"cellSize", m_scene->GetPartitionCellSize()},
+                                             {"enabled", m_scene->GetPartitionCellSize() > 0.0f}}},
                               // 物理ベース大気 A1。enabled=false(既定)なら従来の空。atmosphereState は enabled のときだけ意味を持つ(実行時の太陽・IBL 再ベイク・GPU 時間)。
                               {"atmosphere", mcpatmo::ToJson(m_scene->GetAtmosphereSettings())},
                               {"atmosphereState", mcpatmo::StateJson(m_scene->GetAtmosphereSettings(), m_atmo.get())},
                               {"note", "post-process は dx12_get_post_process、SSAO は dx12_get_ssao、SSR は dx12_get_ssr、SSGI は dx12_get_ssgi、ボリュメトリックフォグは dx12_get_volumetric_fog を使う。大気は atmosphere(設定)と atmosphereState(実行時の値)"}};
         });
 
-    McpDefine("set_scene_settings", "atmosphere:object,decalAtlasPath:string,skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,"
+    McpDefine("set_scene_settings", "atmosphere:object,decalAtlasPath:string,partition:object,partition.cellSize:any,skybox:object,skybox.drawSkybox:any,skybox.envMapPath:any,"
               "skybox.iblIntensity:any,skybox.skyboxIntensity:any", DX12E_MCP_HANDLER
         {
+            // シーンファイルの分割保存（§4.3）。cellSize [m] > 0 で有効、0 で無効（次の保存で 1 ファイルへ戻る）。保存したときに効く。
+            if (params.contains("partition") && !params["partition"].is_null())
+            {
+                const json& pj = params["partition"];
+                if (!pj.is_object() || (pj.contains("cellSize") && !pj["cellSize"].is_number()))
+                    throw McpError(McpErr::InvalidParam, "partition は {cellSize:数値} の形で指定してください",
+                        "例: partition:{cellSize:64}（メートル。0 で分割しない）");
+                if (pj.contains("cellSize"))
+                {
+                    const double cs = pj["cellSize"].get<double>();
+                    if (!(cs == 0.0 || (cs >= 4.0 && cs <= 100000.0)))
+                        throw McpError(McpErr::InvalidParam, "partition.cellSize は 0（分割しない）か 4〜100000 [m] で指定してください",
+                            "セルが小さすぎるとファイルが増えすぎる。目安は 64（街・屋内モール）〜 256（広い屋外）");
+                    McpUndo().TrackSceneValue(m_scene->PartitionCellSizeRef());
+                    m_scene->SetPartitionCellSize(static_cast<float>(cs));
+                }
+            }
             // 物理ベース大気 A1: 先に複製へ適用して検査し、通ったものだけ本体へ入れる(失敗しても半端に変わらない)。
             bool atmoApplied = false;
             if (params.contains("atmosphere") && !params["atmosphere"].is_null())
@@ -124,7 +144,8 @@ void Application::RegisterMcpEditorMethods()
 
             resp["ok"] = true;
             resp["result"] = {{"applied", true}, {"envMapRebake", envChanged},
-                              {"decalAtlasPath", m_scene->GetDecalAtlasPath()}};
+                              {"decalAtlasPath", m_scene->GetDecalAtlasPath()},
+                              {"partition", {{"cellSize", m_scene->GetPartitionCellSize()}}}};
             if (atmoApplied)
             {
                 resp["result"]["atmosphere"] = mcpatmo::ToJson(m_scene->GetAtmosphereSettings());
@@ -906,6 +927,7 @@ void Application::RegisterMcpEditorMethods()
             rep["occlusion"]  = OcclusionReportJson();
             if (m_vg) rep["virtualGeometry"] = VirtualGeometryStatsJson();   // 仮想ジオメトリ P2（有効化した後だけ出る）
             if (m_foliage) rep["foliage"] = FoliageStatsJson();               // 植生 F1（FoliageLayer があるときだけ出る）
+            rep["instanceGpu"] = GpuInstStatsJson();                         // GPU 駆動のインスタンス群（4-3。しきい値 / 今フレームの群数・カリング数・ExecuteIndirect 数）
             if (m_water) rep["water"] = WaterStatsJson();                    // 水面 W1（WaterBody があるときだけ出る）
             // 内部解像度スケール（#16）。GPU 時間を読むときは必ずこれも見ること
             // （renderScale=0.5 なら画素数が 1/4 になっているので単純比較できない）。

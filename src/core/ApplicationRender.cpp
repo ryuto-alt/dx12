@@ -115,6 +115,7 @@ void Application::BuildDrawList()
     m_passBucket = &m_passOther;
 
     m_drawItems.clear();
+    GpuInstBeginFrame(m_camera ? m_camera->GetPosition() : DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f});   // GPU 駆動のインスタンス群（4-3）: 今フレームの GPU 経路の群をリセット
     if (!m_scene) return;
     VirtualGeometryCollectProxyHide();   // 仮想ジオメトリ P3: VG 本体が描くエンティティ（既定 OFF では空）
 
@@ -504,8 +505,7 @@ void Application::BuildDrawList()
         u64 guid = 0;
         if (const auto* g = reg.try_get<EntityGuid>(e)) guid = g->value;
         const u32 n = static_cast<u32>(set.items.size());
-        m_drawItems.reserve(m_drawItems.size() + n);
-        for (u32 i = 0; i < n; ++i)
+        auto emitInstance = [&](u32 i)
         {
             const XMMATRIX w = XMLoadFloat4x4(&instWorlds[i]);
             if (groupMoved)
@@ -516,7 +516,32 @@ void Application::BuildDrawList()
             }
             else
                 emitItem(e, renderer, w, nullptr, i, guid);
+        };
+        u32 firstInstance = 0;
+        // GPU 駆動（4-3）: しきい値以上の不透明な群は DrawItem へ展開せず、描画パスが GPU でカリング → ExecuteIndirect する。
+        // インスタンス 0 を普通に emitItem して（分類 = sortKey / alphaClass / スキン等 と TLAS ハッシュはここで確定する）、
+        // 乗れるなら取り除く。乗れないなら 0 番はそのまま残して 1 番から展開を続ける（従来と完全に同じ並び）。
+        if (m_gpuInst.threshold > 0 && n >= m_gpuInst.threshold && GpuInstUsable())
+        {
+            emitInstance(0);
+            XMFLOAT4X4 prevGroupWorldF;
+            XMStoreFloat4x4(&prevGroupWorldF, prevGw);
+            if (GpuInstTakeGroup(e, renderer, m_drawItems.back(), grp._set, groupWorld, groupMoved, prevGroupWorldF, guid))
+            {
+                m_drawItems.pop_back();
+                // TLAS 再利用の内容ハッシュ: 0 番ぶんは emitItem が混ぜた。他のインスタンスの変化は群の実体の番号 / 個数 / 群のワールドで拾う。
+                if (wantRtHash)
+                {
+                    RtHashMix(m_rtContentHash, set.id);
+                    RtHashMix(m_rtContentHash, static_cast<u64>(n));
+                    RtHashMixBytes(m_rtContentHash, &groupWorld, sizeof(groupWorld));
+                }
+                continue;
+            }
+            firstInstance = 1;
         }
+        m_drawItems.reserve(m_drawItems.size() + n);
+        for (u32 i = firstInstance; i < n; ++i) emitInstance(i);
         m_statInstGroupItems += n;
     }
     }   // _scan
@@ -1447,6 +1472,14 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
     //   張りっぱなしにすると「エディタ UI が丸ごと消える」という分かりにくい壊れ方をする。
     clearPredication();
 
+    // GPU 駆動のインスタンス群（4-3）: DrawItem へ展開しなかった群を GPU カリング → ExecuteIndirect で描く。水パスの後（phase 2）は不透明を描かない。
+    // ★上のループの「直前と同じなら張り直さない」キャッシュ（lastPso など）は、群の描画が PSO / VB を替えるので無効化する。
+    if (m_meshPhase != 2 && !m_gpuInst.frame.empty())
+    {
+        GpuInstDrawMain(nativeCmdList, frameIndex, viewProj, depthPrepassActive);
+        lastPso = nullptr; lastMatSrv = ~0ull; lastVbMesh = nullptr; lastLod = ~0u;
+    }
+
     // 植生 F1: 不透明の植生を ExecuteIndirect で描く（グリッド / パーティクルより前）。FoliageLayer が無ければ何もしない。
     // ★上のループの「直前と同じなら張り直さない」キャッシュ（lastPso など）は、植生が PSO / VB を替えるので無効化する。
     if (m_meshPhase != 2 && m_foliage && FoliageActive())   // 水パスの後（phase 2）は描かない: 植生は水の前（phase 1）に描き終えている
@@ -1630,6 +1663,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                                                : XMMatrixIdentity();
     const XMFLOAT2 jitterNdc = prepass ? prepass->jitterNdc : XMFLOAT2{0.0f, 0.0f};
     const bool skipTransparent = prepass && prepass->skipTransparent;
+    PipelineState* const instPsoForGpu = instPSO;   // GPU 駆動のインスタンス群（4-3）は専用の前フレームストリームを持つので、前ワールド VB の有無に依らない
     if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 前ワールドVBが無ければ従来経路
 
     // 速度+G-Buffer パスの b0。静的/スキンドは 40 DWORD（ルート定数の上限ぴったり）、
@@ -2038,6 +2072,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
             m_passBucket->tris += mesh->GetIndexCountLod(lod) / 3;
         }
     }
+
+    // GPU 駆動のインスタンス群（4-3）: DrawItem へ展開しなかった群をこのパスの視錐台で GPU カリング → ExecuteIndirect。
+    // ★RT が担当するぶん（静的な不透明 = IsRaytracedItem）は CSM から外す規則を、群にも同じに適用する（skipRtCovered）。
+    if (!m_gpuInst.frame.empty() && instPsoForGpu && !skipRtCovered)
+        GpuInstDrawDepth(viewProj, instPsoForGpu, frameIndex, lodBias, cascadeTexelWorld, velocityMode, prevViewProj, jitterNdc);
 }
 
 // ---------------------------------------------------------------------------
@@ -2658,6 +2697,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             std::filesystem::remove(autosave::ScenePath(dir), ec);
             std::filesystem::remove(autosave::MetaPath(dir),  ec);
             std::filesystem::remove(autosave::NavPath(dir),   ec);
+            std::filesystem::remove_all(autosave::PartsPath(dir), ec);
             Logger::Info("自動保存を破棄しました");
         }
     }
@@ -4617,6 +4657,40 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                         meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
                     m_rtScene->AddInstance(r.meshes[mi], meshWorld, it.center,
                                            makeGeoInfo(it, mi));
+                }
+            }
+
+            // GPU 駆動のインスタンス群（4-3）: DrawItem へ展開していない群のインスタンスを、群の実体（CPU 側のデータ）から TLAS へ入れる。
+            // 不透明の静的メッシュだけが GPU 経路に乗る条件なので IsRaytracedItem は常に true。材質（GeometryInfo）は群で共通＝サブメッシュごとに 1 回だけ解決する。
+            // 組み直す（TLAS の内容ハッシュが変わった）フレームだけここへ来る。
+            for (const GpuInstFrameGroup& fg : m_gpuInst.frame)
+            {
+                const MeshRenderer& r = *fg.renderer;
+                DrawItem rep{};
+                rep.e = fg.e;
+                rep.renderer = &r;
+                std::vector<RaytracingScene::GeometryInfo> gi(r.meshes.size());
+                instgpu::LocalBounds lb;
+                {
+                    XMVECTOR lmn = XMVectorReplicate(FLT_MAX), lmx = XMVectorReplicate(-FLT_MAX);
+                    for (u32 mi = 0; mi < static_cast<u32>(r.meshes.size()); ++mi)
+                    {
+                        if (!r.meshes[mi]) continue;
+                        gi[mi] = makeGeoInfo(rep, mi);
+                        const XMFLOAT3 a = r.meshes[mi]->GetAABBMin(), b = r.meshes[mi]->GetAABBMax();
+                        lmn = XMVectorMin(lmn, XMLoadFloat3(&a)); lmx = XMVectorMax(lmx, XMLoadFloat3(&b));
+                        lb.valid = true;
+                    }
+                    XMStoreFloat3(&lb.mn, lmn); XMStoreFloat3(&lb.mx, lmx);
+                }
+                const auto& worlds = instgroup::WorldMatrices(m_scene->GetRegistry(), fg.e, *fg.set);
+                for (u32 i = 0; i < fg.count; ++i)
+                {
+                    const instgpu::InstanceRecord rec = instgpu::MakeRecord(worlds[i], lb);   // 中心（上限超過時の距離ソート用）は DrawItem::center と同じ式
+                    const XMMATRIX world = XMLoadFloat4x4(&worlds[i]);
+                    const XMFLOAT3 center{rec.center[0], rec.center[1], rec.center[2]};
+                    for (u32 mi = 0; mi < static_cast<u32>(r.meshes.size()); ++mi)
+                        if (r.meshes[mi]) m_rtScene->AddInstance(r.meshes[mi], world, center, gi[mi]);
                 }
             }
 
@@ -7128,7 +7202,7 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
         ev.frameIndex = frameIndex;
         ev.whiteSrv = m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultWhiteTexture()->GetSrvIndex());
         ev.reg = &m_scene->GetRegistry();
-        ev.items = &m_drawItems;
+        ev.items = GpuInstOverlayItems();   // GPU 駆動のインスタンス群（4-3）: 選択 / ホバー中の群は輪郭用に展開（普通は m_drawItems のまま）
         ev.uiScale = theme::Scale();
         if (RecordEditorViewOverlays(*m_editorCtx, ev))
         {
@@ -7459,29 +7533,21 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
 
         // Deferred: game build
         // ビルド設定パネルの「ビルド」で pendingBuildGame が立つ。配置先などは buildConfig から読む。
-        // 完了したら（設定で有効なら）成果物フォルダを Explorer で開く。
+        // ビルド本体は裏ジョブ（ApplicationBuild.cpp。エディタは操作できるまま、進捗はビルド設定窓とステータスバー）。
+        // 完了の通知（成功トースト / 失敗モーダル / 成果物フォルダを開く）は PollBuildGame が出す。
         if (m_editorCtx->pendingBuildGame)
         {
             m_editorCtx->pendingBuildGame = false;
-            const bool ok = BuildGame();
-            if (ok)
-            {
-                m_editorCtx->buildCompleteFlash = 3.0f;
-                m_editorCtx->Notify(ui::ToastKind::Success, "ゲームをビルドしました: " + m_editorCtx->lastBuildDir);
-                if (m_editorCtx->buildConfig.openFolderAfterBuild && !m_editorCtx->lastBuildDir.empty())
-                    dx12e::guard::ShellExecuteGuarded(nullptr, "open", m_editorCtx->lastBuildDir.c_str(),
-                                  nullptr, nullptr, SW_SHOWNORMAL);
-            }
-            else
+            std::string buildErr;
+            if (!StartBuildGame(/*fromUi=*/true, buildErr))
             {
                 m_editorCtx->buildErrorFlash = 6.0f;
-                m_editorCtx->errorMessage = m_editorCtx->buildErrorMsg.empty()
-                    ? "ビルドに失敗しました。\n詳細は dx12_engine.log を確認してください。"
-                    : m_editorCtx->buildErrorMsg;
-                m_editorCtx->buildErrorMsg.clear();  // 次回ビルドへ持ち越さない
-                m_editorCtx->errorFlash = 1.0f;   // トーストで通知（ビルド失敗の理由は長いので 8 秒出す）
+                m_editorCtx->errorMessage = buildErr.empty() ? std::string("ビルドを開始できません") : buildErr;
+                m_editorCtx->buildErrorMsg.clear();
+                m_editorCtx->errorFlash = 1.0f;
             }
         }
+        PollBuildGame();
 
         // Deferred: entity deletion
         if (!m_editorCtx->pendingDeletions.empty())

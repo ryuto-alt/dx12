@@ -8,7 +8,7 @@ import { compareLook, roundDelta, roundStats } from "../lookCompare.ts";
 import os from "node:os";
 import { buildContactSheet, type PathMode, planCameraPath } from "../contactSheet.ts";
 import { assetsDirFromScenePath, checkScenePath, summarizeScene, validateSceneJson } from "../sceneWrite.ts";
-import { convertToV2, dumpSceneV2, inflateScene, isV2 } from "../sceneFormat.ts";
+import { convertToV2, dumpSceneV2, inflateScene, isV2, parseSceneTextWithParts, partsDirOf } from "../sceneFormat.ts";
 import { engine, errResult, imageResult, jevProjectBaseDir, regRaw, run } from "./core.ts";
 import { writeJournalEntry } from "../journalTs.ts";
 
@@ -400,7 +400,8 @@ regRaw(
         let prevSummary: unknown = null;
         let parseError: string | null = null;
         // v2 は既定値を省略している。補完してから数える（コンポーネントの有無はキーで分かるが、他の読み手と流儀を揃える）
-        try { prevSummary = summarizeScene(inflateScene(JSON.parse(prevText))); }
+        // 分割保存のシーン（foo.json + foo.parts/）はセルファイルもつなげて数える（§4.3）
+        try { prevSummary = summarizeScene(inflateScene(parseSceneTextWithParts(prevText, absPath))); }
         catch (e: any) { parseError = e.message; }
         replaced = {
           bytes: Buffer.byteLength(prevText),
@@ -429,6 +430,17 @@ regRaw(
       const text = isV2(root) ? dumpSceneV2(convertToV2(root as Record<string, any>)) : JSON.stringify(root, null, 2);
       fs.writeFileSync(absPath, text, "utf8");
 
+      // 5.5) 分割保存だったシーンを 1 ファイルで書き直した場合: 古い foo.parts/ のセルファイルは読まれない残骸になる
+      //      （エンジンは foo.json に "parts" が無ければセルを読まない。次にエンジンが保存すると片付く）。
+      let orphanParts: { dir: string; files: number; note: string } | null = null;
+      if (!(root && typeof root === "object" && !Array.isArray(root) && "parts" in (root as object))) {
+        const pdir = partsDirOf(absPath);
+        if (fs.existsSync(pdir)) {
+          const n = fs.readdirSync(pdir).filter((f) => /^cell_.*\.json$/.test(f)).length;
+          if (n > 0) orphanParts = { dir: pdir.replace(/\\/g, "/"), files: n, note: "このシーンは分割保存だった。今回は 1 ファイルで書いたので、古いセルファイルは読まれない(エンジンで開いて保存し直すと消える)。分割で保つなら partition:{cellSize} を付けてエンジンで保存する" };
+        }
+      }
+
       // 6) 任意で開く
       let opened: unknown = null;
       if (open && relPath) opened = await engine.call("open_scene", { path: relPath });
@@ -439,6 +451,7 @@ regRaw(
         wrote: validation.summary,
         replaced,
         journal,
+        ...(orphanParts ? { orphanParts } : {}),
         validation: { ok: validation.ok, errors: validation.errors, warnings: validation.warnings },
         opened,
         nextStep: open

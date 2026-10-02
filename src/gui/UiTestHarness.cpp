@@ -2247,9 +2247,10 @@ void T_BuildGame(ImGuiTestContext* ctx)
         ed->pendingBuildGame = true;
     }
 
-    // 実行はフレーム境界。BuildGame() 自体は同期実行なので pendingBuildGame が降りたら完了。
+    // 実行はフレーム境界。ビルドは裏ジョブなので、開始要求（pendingBuildGame）が降り、ジョブが終わる（buildRunning が降りる）まで待つ。
+    // 完了の通知（buildErrorFlash / lastBuildDir）は PollBuildGame が出す。
     int frames = 0;
-    while (ed->pendingBuildGame && frames < 600)
+    while ((ed->pendingBuildGame || ed->buildRunning) && frames < 60000)
     {
         ctx->Yield();
         ++frames;

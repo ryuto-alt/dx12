@@ -24,6 +24,7 @@ add_library(Resource STATIC
     ShaderRegistry.cpp
     ShaderManager.cpp
     TextureLoader.cpp
+    EnvironmentConvert.cpp  # .hdr / .exr(equirect) → キューブ変換(スカイボックス/IBL)
     AssetPrewarmer.cpp
     ShaderTemplates.cpp
     ModelLoader.cpp

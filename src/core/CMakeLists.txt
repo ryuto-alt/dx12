@@ -21,10 +21,12 @@ add_library(Core STATIC
     ApplicationPostWindows.cpp      # ポストプロセス / Skybox / SSAO / SSR / Fog の設定窓（pg:: 2 カラム。フェーズ 1b）
     ApplicationScene.cpp            # シーンロード / Play⇔Editor 遷移 / 永続化
     ApplicationProject.cpp          # プロジェクト / バージョン管理 / ゲームビルド
+    ApplicationBuild.cpp            # ゲームビルド本体と裏ジョブ（進捗・キャンセル。ワーカーは BuildInput だけ読む）
     ApplicationVg.cpp               # 仮想ジオメトリ P2: インスタンス収集 + GPU カリング呼び出し + 統計（既定 OFF）
     ApplicationAtmosphere.cpp       # 物理ベース大気 A1: 時刻系 / AtmosphereRenderer の遅延確保 / IBL 増分再ベイク / 空・AP の呼び出し（enabled=false なら何もしない）
     ApplicationWater.cpp            # 水面 W1: WaterRenderer の遅延確保 / フレーム開始 / 統計（WaterBody が無ければ何もしない）
     ApplicationFoliage.cpp          # 植生 F1: FoliageSystem の遅延確保 / GPU カリング呼び出し / 描画呼び出し / 統計（FoliageLayer が無ければ何もしない）
+    ApplicationInstanceGpu.cpp      # GPU 駆動のインスタンス群（4-3）: 群の GPU 経路 / 描画パスの呼び出し / 統計（しきい値 0 なら何もしない）
     ApplicationOffscreenShot.cpp    # Q2(校正): ライティング単位の切替 / 任意解像度のオフスクリーン撮影 / 線形 HDR スクショの進行
     ApplicationPathTracer.cpp       # DXR パストレーサー(リファレンスレンダー): スナップショット + ジョブ + 出力（既定 OFF・遅延確保）
     ApplicationSequencer.cpp        # シーケンサー S1b: ホストの生成・フレーム更新・アクティブカメラ(カット)の選択

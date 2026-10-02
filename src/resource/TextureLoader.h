@@ -171,6 +171,17 @@ public:
         ID3D12GraphicsCommandList* cmdList,
         const uint8_t* data, size_t dataSize,
         bool srgb = false);
+
+    // equirect(正距円筒)の .hdr / .exr をキューブマップ(fp16・全ミップ)へ変換して読み込む。
+    // ext は ".hdr" / ".exr"。変換結果は BC 圧縮キャッシュと同じ置き場(pak の texcache/・.texcache/)に
+    // キューブの .dds として保存し、次回以降は変換せずに読む(ビルド時の bake にも乗る)。
+    // fp16 の上限(65504)を超える画素(太陽)は 60000 に丸める。失敗は nullptr(ログに理由)。
+    static std::unique_ptr<Texture> LoadCubeFromEquirectMemory(
+        GraphicsDevice& device,
+        ID3D12GraphicsCommandList* cmdList,
+        const uint8_t* data, size_t dataSize,
+        const std::string& ext,
+        const std::string& cacheKey);
 };
 
 } // namespace dx12e

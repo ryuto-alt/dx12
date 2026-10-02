@@ -44,6 +44,9 @@ export const SCENE_ROOT_KEYS = [
   "wind",
   // GI モード(シーン単位)。{"gi":{"mode":"new"}}。キーが無い = legacy。BuildSceneJson は new のときだけ書く。
   "gi",
+  // 分割保存（docs/SCENE_FORMAT_DESIGN.md §4.3）。partition = {cellSize}（BuildSceneJson が書く。0/無し = 1 ファイル）。
+  // parts = foo.parts/ のセルファイルの目次（保存時にエンジンが書く。手書きするなら seq を付けたセルファイルも要る）。
+  "partition", "parts",
 ] as const;
 
 /** 反射登録されたコア部品の JSON キー(RegisterCoreComponentSerializers の登録順)。 */
@@ -86,6 +89,8 @@ export const ENTITY_OWN_KEYS = [
   "terrain", "sculpt", "gridPlane",
   "gimmick", "audioSource", "particleEmitter", "trigger",
   "convexHullCollider", "luaScript", "tags", "data",
+  // "partition":"root" = 分割保存でも foo.json 側に置く印（§4.3）。
+  "partition",
 ] as const;
 
 export const ENTITY_KEYS: readonly string[] = [...ENTITY_OWN_KEYS, ...REFLECTED_COMPONENT_KEYS];
@@ -224,6 +229,20 @@ export function validateSceneJson(root: unknown, opts: ValidateOptions = {}): Sc
     warnings.push('ルートに "version" が無い。SceneSerializer は version:1 を書く。付けておくこと');
   } else if (root.version !== 1 && root.version !== 2) {
     warnings.push(`version が ${JSON.stringify(root.version)}。エンジンが読めるのは 1(完全形)と 2(既定値を省略した形。docs/SCENE_FORMAT_DESIGN.md)`);
+  }
+  // 分割保存（§4.3）
+  if (root.partition !== undefined) {
+    const pt = root.partition;
+    if (!isPlainObject(pt) || (pt.cellSize !== undefined && (typeof pt.cellSize !== "number" || !Number.isFinite(pt.cellSize) || pt.cellSize < 0))) {
+      errors.push('"partition" は {cellSize: メートル(0 以上の数値。0 = 分割しない)}');
+    } else if (typeof pt.cellSize === "number" && pt.cellSize > 0 && pt.cellSize < 4) {
+      warnings.push(`partition.cellSize が ${pt.cellSize}。小さすぎるとセルファイルが増えすぎる(目安 64〜256)`);
+    }
+  }
+  if (root.parts !== undefined) {
+    if (!Array.isArray(root.parts)) errors.push('"parts" は配列(foo.parts/ のセルファイルの目次)');
+    else if (root.parts.some((p) => !isPlainObject(p) || typeof p.file !== "string")) errors.push('"parts" の各要素は {file:"cell_0_0.json", ...}');
+    else warnings.push('"parts" はエンジンが保存時に書く目次。手で書くなら foo.parts/ にセルファイル({version,seq,entities})も要る。通常は "parts" を付けず partition:{cellSize} だけにする');
   }
   if (root.shadows !== undefined && typeof root.shadows !== "boolean") {
     errors.push('"shadows" は bool。数値や文字列だと LoadFromString が既定(true)に落ちる');

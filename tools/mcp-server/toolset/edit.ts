@@ -250,7 +250,10 @@ reg(
   + "★物理大気は atmosphere:{enabled:true, preset?, timeOfDay?} で ON(既定 OFF=従来の空)。太陽は driveSun=true の間、大気が向き・色・強度を毎フレーム決める。"
   + "★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。"
   + "★decalAtlasPath は【デカールの絵】。空だとデカールを置いても【無言で何も出ない】"
-  + "(dx12_decal_apply が自動で用意するので、普通は直接触らなくてよい)。",
+  + "(dx12_decal_apply が自動で用意するので、普通は直接触らなくてよい)。"
+  + "★partition:{cellSize} はシーンファイルの【分割保存】(メートル。0=分割しない=既定)。>0 にして dx12_save_scene すると foo.json(ルート設定+置き場所の無い物)"
+  + "+ foo.parts/cell_<x>_<z>.json(位置のセルごと)に分けて書き、変えたセルのファイルだけ書き換える(大規模シーンの git 差分・部分読みに効く)。"
+  + "エンティティ 5,000 体以上は有効化を勧める。目安 64(街・屋内)〜256(広い屋外)。保存結果は dx12_save_scene の partition に出る。",
   {
     // ★入れ子も passthrough。素の z.object は skybox 内の未知キーを黙って捨てるため、
     //   skybox:{envMapPath:...} の打ち間違いが無言で無視されていた(下のハンドラで弾く)。
@@ -262,6 +265,9 @@ reg(
       skyboxIntensity: z.number().optional().describe("スカイボックス描画の明るさ。"),
       drawSkybox: z.boolean().optional().describe("スカイボックスを描画するか。"),
     }).passthrough().optional().describe("スカイボックス設定。指定したフィールドのみ適用。"),
+    partition: z.object({
+      cellSize: z.number().min(0).max(100000).optional().describe("分割保存のセルの大きさ [m](XZ の格子の 1 辺)。0 = 分割しない(1 ファイル)。0 より大きいときは 4 以上。目安 64〜256。"),
+    }).optional().describe("シーンファイルの分割保存の設定(保存時に効く)。"),
     atmosphere: z.object({
       preset: z.enum(["earth", "mars", "haze", "twilight"]).optional().describe("大気パラメータのプリセット(地球 / 火星風 / 霞 / 薄明)。先に適用され、同時に指定した個別項目で上書きできる。"),
       enabled: z.boolean().optional().describe("物理大気を使うか。false(既定)= 従来の空。"),
@@ -284,7 +290,7 @@ reg(
     }).passthrough().optional().describe("物理ベース大気(Hillaire 2020)。指定したフィールドのみ適用。上記以外の物理パラメータ(planetRadiusKm / rayleighScattering / mieG など)も get_scene_settings の atmosphere と同じ名前で渡せる。"),
   },
   { idempotentHint: true },
-  ({ skybox, atmosphere, decalAtlasPath }) => run(async () => {
+  ({ skybox, atmosphere, decalAtlasPath, partition }) => run(async () => {
     const known = ["envMapPath", "iblIntensity", "skyboxIntensity", "drawSkybox"];
     const bad = unknownParamKeys(skybox, known);
     if (bad.length > 0) throw unknownKeyError("dx12_set_scene_settings skybox", bad, known);
@@ -292,11 +298,13 @@ reg(
     const atmoClean = definedOnly(atmosphere ?? {});
     const r = await engine.call("set_scene_settings",
       definedOnly({ skybox: skybox === undefined ? undefined : clean,
-                    atmosphere: atmosphere === undefined ? undefined : atmoClean, decalAtlasPath })) as Record<string, unknown>;
+                    atmosphere: atmosphere === undefined ? undefined : atmoClean, decalAtlasPath,
+                    partition: partition === undefined ? undefined : definedOnly(partition) })) as Record<string, unknown>;
     const current = await engine.call("get_scene_settings", {}).catch(() => null);
     // preset は値ではなく操作なので突き合わせから外す(適用後の個別項目は atmosphere に入っている)
     const { preset: _preset, ...atmoCheck } = atmoClean as Record<string, unknown>;
-    const mismatched = verifyApplied({ skybox: clean, ...(atmosphere === undefined ? {} : { atmosphere: atmoCheck }) }, current);
+    const mismatched = verifyApplied({ skybox: clean, ...(atmosphere === undefined ? {} : { atmosphere: atmoCheck }),
+                                      ...(partition === undefined ? {} : { partition: definedOnly(partition) }) }, current);
     return {
       applied: mismatched.length === 0,
       envMapRebake: r?.envMapRebake ?? false,

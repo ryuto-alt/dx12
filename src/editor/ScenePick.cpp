@@ -65,6 +65,9 @@ namespace
     }
 } // namespace
 
+namespace { PickExtraSource g_pickExtra; }   // GPU 駆動のインスタンス群（4-3）のフック
+void SetPickExtraSource(PickExtraSource src) { g_pickExtra = std::move(src); }
+
 void ScreenRay(const Camera& camera,
                f32 vpX, f32 vpY, f32 vpW, f32 vpH,
                f32 screenX, f32 screenY,
@@ -184,6 +187,26 @@ void RaycastSceneMeshes(entt::registry& reg,
             c.tSphere  = ts;
             cands.push_back(c);
         }
+    }
+
+    // GPU 駆動のインスタンス群（4-3）: DrawItem に無い群のインスタンス（DrawItem と同じ world / 球 / instanceIndex）
+    if (g_pickExtra)
+    {
+        g_pickExtra([&](entt::entity e, const XMFLOAT4X4& world, const XMFLOAT3& center, f32 radius, u32 instanceIndex)
+        {
+            const f32 ts = raygeo::RaySphere(orig, dir, center, radius);
+            if (ts < 0.0f || !reg.valid(e)) return;
+            const MeshRenderer* mr = reg.try_get<MeshRenderer>(e);
+            if (!mr || mr->meshes.empty()) return;
+            PickCandidate c;
+            c.e = e;
+            c.renderer = mr;
+            c.world = world;
+            c.skinned = false;
+            c.tSphere = ts;
+            c.instanceIndex = instanceIndex;
+            cands.push_back(c);
+        });
     }
 
     // 近い順。以降のナローフェーズは「AABB の t 順 ≠ 実際の三角形ヒット順」なので

@@ -1512,6 +1512,22 @@ if(DXC_EXECUTABLE)
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_foOut}.cso")
     endforeach()
 
+    # GPU 駆動のインスタンス群（設計 docs/SCENE_FORMAT_DESIGN.md §4.2 = 4-3）。shaders/instancegpu/InstanceCull.hlsl から compute 5 本を切り出す。
+    #   Reset / Count / Scan / Finalize / Emit（専用ルートシグネチャ。決定論的な compact）。描画は既存の ForwardInstanced / ShadowPassInstanced / VelocityPrepassInstanced を共用。
+    foreach(_ig IN ITEMS "InstanceCullReset_CS|CSReset" "InstanceCullCount_CS|CSCount" "InstanceCullScan_CS|CSScan"
+                         "InstanceCullFinalize_CS|CSFinalize" "InstanceCullEmit_CS|CSEmit")
+        string(REPLACE "|" ";" _igp "${_ig}")
+        list(GET _igp 0 _igOut)
+        list(GET _igp 1 _igEntry)
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_igOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E ${_igEntry} -Fo "${SHADER_OUTPUT_DIR}/${_igOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/instancegpu/InstanceCull.hlsl"
+            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/instancegpu/InstanceCull.hlsl"
+            COMMENT "Compiling InstanceCull.hlsl -> ${_igOut}.cso (cs_6_0)"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_igOut}.cso")
+    endforeach()
+
     # 物理ベース大気 A1（Hillaire 2020 の 4 LUT + 環境キューブ + 空パス + AP 合成）。shaders/atmosphere/。
     #   compute: Transmittance / MultiScattering / SkyView / AerialPerspective / SkyCube（AtmosphereLuts.hlsl。専用ルートシグネチャ）
     #   graphics: 全画面 VS / 空 PS / AP 合成 PS（デュアルソースブレンド。AtmosphereSky.hlsl）
