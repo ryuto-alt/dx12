@@ -23,15 +23,22 @@ void BuildONB(float3 n, out float3 t, out float3 b)
 
 // 短距離のビュー空間等間隔マーチ（ContactShadow.hlsl と同形）。
 // レイ長が radius(既定 6m) に限定されるので DDA の複雑さは不要。
+// ★サンプル位置は t = L*(k+jitter)/steps（k = 0..steps-1）。k を 1 から始めると原点から
+//   1 歩ぶん（既定 0.5m）を一度も調べず、近くの遮蔽物を取りこぼす。
+// ★jitter は方向の乱数と独立した値を渡すこと（TracePS 参照）。同じ値を使うと、ある方向の
+//   レイが毎フレーム同じ刻みでしか表面を調べず、刻みの縞が時間蓄積で消えない。
 bool SS_TraceLinear(float3 originVS, float3 dirVS, float rayLength, float thickness,
                     int steps, float jitter, out float2 hitUV)
 {
     hitUV = 0.0;
     float invSteps = 1.0 / (float)steps;
     [loop]
-    for (int k = 1; k <= steps; ++k)
+    for (int k = 0; k < steps; ++k)
     {
         float  t  = rayLength * ((float)k + jitter) * invSteps;
+        // 原点のごく近く（5cm 未満）は自分の面を拾うだけなので調べない。
+        // 自分の面に当たると TracePS の向き判定で捨てられ、レイが何も積まずに終わって暗くなる。
+        if (t < 0.05) continue;
         float3 sp = originVS + dirVS * t;
 
         float4 clip = mul(float4(sp, 1.0), gProj);
@@ -117,8 +124,15 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
         float3 dirT = float3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u1)));
         float3 dir  = normalize(dirT.x * T + dirT.y * B + dirT.z * N);
 
+        // マーチの刻みのずらしは方向（u1/u2）と独立に取る。★以前は ign をそのまま渡していて、
+        //   方向が決まると刻みの位置も決まる＝その方向のレイは毎フレーム同じ深さでしか表面を
+        //   調べなかった。明るい小物（電球など）の周りに刻み間隔ぶんの同心円の縞が出て、
+        //   時間蓄積でも消えなかった。画素をずらした IGN + レイ番号 + フレームで散らす。
+        float stepJitter = frac(SS_IGN(fullPx + float2(47.0, 17.0)) + gMisc2.x * 0.7548776662
+                                + (float)k * 0.5698402910);
+
         float2 hitUV;
-        if (SS_TraceLinear(origin, dir, radius, thickness, stepCount, ign, hitUV))
+        if (SS_TraceLinear(origin, dir, radius, thickness, stepCount, stepJitter, hitUV))
         {
             // ヒット面がこちらを向いていないなら光は来ない（面の裏を見ている）
             float3 hitN = SS_ToViewNormal(SS_UnpackGBuffer(
@@ -164,6 +178,24 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
 float4 TemporalPS(FSQuadVSOut i) : SV_TARGET
 {
     float4 cur = g_colorA.SampleLevel(g_pointClamp, i.uv, 0);
+
+    // ホタル（firefly）除去: 周囲 8 画素の最大値で頭打ちにする。
+    // 小さく明るい物（電球など）にたまたま 1 本だけ当たった画素は周囲より桁違いに明るく、
+    // 履歴の指数移動平均（feedback 0.92）では数十フレーム残って「ちらつく点」になる。
+    // 隣の画素はトレースの方向が違う（IGN）ので、本物の間接光はまとまって明るく、ここでは削れない。
+    {
+        float3 nmax = 0.0;
+        [unroll]
+        for (int y = -1; y <= 1; ++y)
+        [unroll]
+        for (int x = -1; x <= 1; ++x)
+        {
+            if (x == 0 && y == 0) continue;
+            nmax = max(nmax, g_colorA.SampleLevel(g_pointClamp, i.uv + float2(x, y) * SS_INV_HALF, 0).rgb);
+        }
+        cur.rgb = min(cur.rgb, nmax);
+    }
+
     if (gMisc.z < 0.5) return cur;                  // 履歴無効（初回 / リサイズ直後）
 
     float2 vel    = g_velocity.SampleLevel(g_pointClamp, i.uv, 0);
