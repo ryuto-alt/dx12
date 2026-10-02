@@ -3,6 +3,7 @@ add_library(Scene STATIC
     Scene.cpp
     SceneSerializer.cpp
     SceneFormatV2.cpp
+    ScenePartition.cpp
     InstanceGroupIO.cpp
     InstanceGroupOps.cpp
     SceneFlow.cpp

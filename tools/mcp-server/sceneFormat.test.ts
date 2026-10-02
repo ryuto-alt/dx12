@@ -9,14 +9,18 @@
  *   [5] 変換: convertToV2 → inflateScene が完全形に戻る（parent index は parentGuid があれば消える）
  *   [6] sceneWrite の検証が v2 の省略形を受け付ける（rigidBody:{} / transform は position だけ / parentGuid のみ / meshCollider）
  *   [7] v1 は触らない（inflateScene は複製せずそのまま返す）
+ *   [8] 分割保存（§4.3）: seq の復号・セルの統合（並び順・seq 無し/壊れ・欠け）・"parts" の 1 行整形・ファイルから読む・検証
  *
  * 実行: node sceneFormat.test.ts
  */
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
-  convertToV2, defaultsV2, dumpSceneV2, f32Shortest, inflateDefaults, inflateScene, isV2, normalizeFloats, stripDefaults,
+  convertToV2, decodeSeq, defaultsV2, dumpSceneV2, f32Shortest, inflateDefaults, inflateScene, isSafePartName, isV2,
+  mergeParts, normalizeFloats, partNames, readSceneFile, stripDefaults,
 } from "./sceneFormat.ts";
 import { summarizeScene, validateSceneJson } from "./sceneWrite.ts";
 
@@ -232,6 +236,80 @@ console.log("\n[7] v1 互換");
   const sum = summarizeScene({ version: 2, entities: [{ name: "A", parentGuid: "0000000000000001" }] });
   assert.equal(sum.parentedCount, 1);
   pass("summarizeScene は parentGuid も親ありと数える");
+}
+
+// ─── [8] 分割保存 ─────────────────────────────────────────────────────────
+console.log("\n[8] 分割保存（foo.json + foo.parts/）");
+{
+  // seq
+  assert.deepEqual(decodeSeq("0-2,10,15-16", 6, 20), [0, 1, 2, 10, 15, 16]);
+  assert.deepEqual(decodeSeq("", 0, 5), []);
+  for (const [s, n, t] of [["0-2", 4, 20], ["0-2,", 3, 20], ["a", 1, 20], ["5-3", 3, 20], ["25", 1, 20], [3, 1, 20]] as const) {
+    assert.equal(decodeSeq(s, n, t), null, `壊れた seq ${JSON.stringify(s)} を弾く`);
+  }
+  assert.ok(isSafePartName("cell_-1_2.json") && !isSafePartName("a/b.json") && !isSafePartName("..") && !isSafePartName("c:x") && !isSafePartName("a\\b"));
+  pass("seq の復号と壊れた入力・パーツ名の検査");
+
+  // 統合: 並び順どおりに（foo.json のエンティティは空いた位置を埋める）
+  const mk = (n: string) => ({ guid: n, name: n });
+  const cells: Record<string, string> = {
+    "cell_0_0.json": JSON.stringify({ version: 2, seq: "1,4", entities: [mk("b"), mk("e")] }),
+    "cell_1_0.json": JSON.stringify({ version: 2, seq: "2-3", entities: [mk("c"), mk("d")] }),
+  };
+  const root: any = { version: 2, partition: { cellSize: 64 }, parts: [{ file: "cell_0_0.json", count: 2 }, { file: "cell_1_0.json", count: 2 }], entities: [mk("a"), mk("f")] };
+  assert.deepEqual(partNames(root), ["cell_0_0.json", "cell_1_0.json"]);
+  const r = mergeParts(root, (n) => cells[n]);
+  assert.deepEqual(root.entities.map((e: any) => e.name), ["a", "b", "c", "d", "e", "f"]);
+  assert.equal(r.seqUsed, true);
+  assert.ok(!("parts" in root));
+  pass("mergeParts: seq どおりに元の並びへ戻る");
+
+  // seq が無い → foo.json → セルの順 / 重複 → 同じ / 読めない・壊れ・不正名 → throw
+  const noSeq: any = { version: 2, parts: [{ file: "cell_0_0.json" }], entities: [mk("a")] };
+  const r2 = mergeParts(noSeq, () => JSON.stringify({ version: 2, entities: [mk("x")] }));
+  assert.equal(r2.seqUsed, false);
+  assert.deepEqual(noSeq.entities.map((e: any) => e.name), ["a", "x"]);
+  assert.throws(() => mergeParts({ version: 2, parts: [{ file: "cell_0_0.json" }], entities: [] } as any, () => { throw new Error("ENOENT"); }), /読めない/);
+  assert.throws(() => mergeParts({ version: 2, parts: [{ file: "cell_0_0.json" }], entities: [] } as any, () => "{oops"), /読めない/);
+  assert.throws(() => mergeParts({ version: 2, parts: [{ file: "../x.json" }], entities: [] } as any, () => "{}"), /不正/);
+  assert.throws(() => mergeParts({ version: 2, parts: [{ file: "c.json" }], entities: [] } as any, () => "{\"version\":2}"), /entities/);
+  pass("mergeParts: seq 無し/壊れは つなぎ順・読めないセルや不正な名前は失敗（部分読みしない）");
+
+  // 整形: "parts" は 1 要素 1 行・C++ の DumpSceneV2 と同じ形
+  const dumped = dumpSceneV2({ version: 2, partition: { cellSize: 64 }, parts: [{ file: "cell_0_0.json", count: 1, cell: [0, 0], bounds: [0, 0, 64, 64] }, { file: "cell_1_0.json", count: 2, cell: [1, 0], bounds: [64, 0, 128, 64] }], entities: [{ guid: "a", name: "A" }] });
+  assert.ok(dumped.includes('  "parts": [\n    {"bounds":[0,0,64,64],"cell":[0,0],"count":1,"file":"cell_0_0.json"},\n    {"bounds":[64,0,128,64],"cell":[1,0],"count":2,"file":"cell_1_0.json"}\n  ],\n'), dumped);
+  assert.ok(dumpSceneV2({ version: 2, parts: [], entities: [] }).includes('  "parts": [],\n'));
+  JSON.parse(dumped);
+  pass("dumpSceneV2: parts の目次は 1 要素 1 行・正しい JSON");
+
+  // ファイルから: foo.json + foo.parts/ をつなげて読む（エンジンが書く形）
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dx12_split_"));
+  try {
+    fs.mkdirSync(path.join(dir, "foo.parts"));
+    fs.writeFileSync(path.join(dir, "foo.json"), dumpSceneV2({ version: 2, parts: [{ file: "cell_0_0.json", count: 1 }], entities: [mk("a")] }));
+    fs.writeFileSync(path.join(dir, "foo.parts", "cell_0_0.json"), dumpSceneV2({ version: 2, seq: "0", entities: [mk("z")] }));
+    const merged = readSceneFile(path.join(dir, "foo.json"));
+    assert.deepEqual((merged.entities as any[]).map((e) => e.name), ["z", "a"]);
+    assert.ok(!("parts" in merged));
+    // 分割していないシーンはそのまま
+    fs.writeFileSync(path.join(dir, "bar.json"), dumpSceneV2({ version: 2, entities: [mk("q")] }));
+    assert.equal(((readSceneFile(path.join(dir, "bar.json")).entities as any[])[0]).name, "q");
+    // セルが欠けていれば throw
+    fs.rmSync(path.join(dir, "foo.parts", "cell_0_0.json"));
+    assert.throws(() => readSceneFile(path.join(dir, "foo.json")));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  pass("readSceneFile: foo.json + foo.parts/ をつなげて読む（欠けは失敗）");
+
+  // 検証: partition / parts のキーと値
+  const ok = validateSceneJson({ version: 2, partition: { cellSize: 64 }, entities: [{ name: "A", partition: "root" }] }, { knownAssets: [] });
+  assert.ok(ok.ok && !has(ok.warnings, /未知キー/), JSON.stringify(ok));
+  assert.ok(has(validateSceneJson({ version: 2, partition: { cellSize: "x" }, entities: [] }, { knownAssets: [] }).errors, /partition/));
+  assert.ok(has(validateSceneJson({ version: 2, partition: { cellSize: 1 }, entities: [] }, { knownAssets: [] }).warnings, /小さすぎる/));
+  assert.ok(has(validateSceneJson({ version: 2, parts: [{ file: "cell_0_0.json" }], entities: [] }, { knownAssets: [] }).warnings, /目次/));
+  assert.ok(has(validateSceneJson({ version: 2, parts: "x", entities: [] }, { knownAssets: [] }).errors, /parts/));
+  pass("sceneWrite の検証が partition / parts / エンティティの partition 印を扱う");
 }
 
 console.log(`\nOK: sceneFormat テスト ${passed} 項目すべて通過`);

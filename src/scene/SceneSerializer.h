@@ -40,6 +40,27 @@ public:
     // 直列化して作る。生成ツール専用（表は凍結データなので、普段は呼ばない・結果で表を自動更新しない）。
     static std::string BuildDefaultsTableV2Json();
 
+    // ── シーンの分割保存（docs/SCENE_FORMAT_DESIGN.md §4.3）──
+    // 直近の Save の概要（MCP の save_scene 応答・エディタの表示用）。
+    struct SaveReport
+    {
+        std::string path;
+        size_t entities = 0;
+        bool   partitioned = false;   // 実際に cell ファイルへ分けて書いた
+        float  cellSize = 0.0f;       // 設定値（0 = 分割しない）
+        int    files = 0;             // セルファイルの数
+        int    written = 0;           // 内容が変わって書いたファイル（foo.json 含む）
+        int    unchanged = 0;         // 内容が同じなので触らなかったファイル
+        int    removed = 0;           // 消したセルファイル
+        size_t maxFileBytes = 0;
+        size_t totalBytes = 0;
+        double ms = 0;
+    };
+    static const SaveReport& LastSaveReport();
+    // 5,000 体以上のシーンを分割しないまま保存したとき（シーンごとに 1 回）呼ばれる。message は標準語。
+    using SplitAdviceHook = void (*)(void* ctx, const std::string& message);
+    static void SetSplitAdviceHook(SplitAdviceHook fn, void* ctx);
+
     // 単一エンティティの JSON 化（クリップボード/複製用。parent は含まない）
     static std::string SerializeEntity(const Scene& scene, entt::entity e,
                                        const std::string& assetsDir);

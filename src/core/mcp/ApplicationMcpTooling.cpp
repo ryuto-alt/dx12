@@ -66,19 +66,81 @@ void Application::RegisterMcpToolingMethods()
                               {"scenePath", scenePath.string()}};
         });
 
-    McpDefine("build_game", "", DX12E_MCP_HANDLER
+    // ゲームのビルドは裏ジョブ（ApplicationBuild.cpp）。既定は開始して即応答し、進捗は get_build_status、
+    // 止めるのは cancel_build。wait:true だけは従来どおり完了まで同期（エディタは固まる。大きなプロジェクトでは
+    // MCP のタイムアウトを超えるので使わないこと）。
+    McpDefine("build_game", "wait:bool", DX12E_MCP_HANDLER
         {
-            const bool ok = BuildGame();
-            json result{{"success", ok}};
-            if (m_editorCtx)
+            const bool wait = params.value("wait", false);
+            json result;
+            if (wait)
             {
-                result["outputDir"] = m_editorCtx->buildConfig.outputDir.empty()
-                    ? (PathResolver::BaseDir() + "build/game") : m_editorCtx->buildConfig.outputDir;
-                if (!ok) result["error"] = m_editorCtx->buildErrorMsg;
+                const bool ok = BuildGame();
+                result = {{"success", ok}};
+                if (m_editorCtx)
+                {
+                    result["outputDir"] = m_editorCtx->lastBuildDir.empty()
+                        ? (m_editorCtx->buildConfig.outputDir.empty()
+                               ? (PathResolver::BaseDir() + "build/game") : m_editorCtx->buildConfig.outputDir)
+                        : m_editorCtx->lastBuildDir;
+                    if (!ok) { result["error"] = m_editorCtx->buildErrorMsg; m_editorCtx->buildErrorMsg.clear(); }
+                }
+            }
+            else
+            {
+                std::string err;
+                const bool started = StartBuildGame(/*fromUi=*/false, err);
+                result = BuildStatusJson();
+                result["started"] = started;
+                if (started)
+                    result["next"] = "get_build_status で進捗を読む(state: running → succeeded|failed|cancelled)。止めるのは cancel_build。";
+                else
+                {
+                    result["error"] = err;
+                    if (IsBuildRunning()) result["next"] = "既に実行中。get_build_status で進捗を読むか cancel_build で止める。";
+                }
             }
             resp["ok"] = true;
             resp["result"] = std::move(result);
         });
+
+    // ---- get_build_status / cancel_build -------------------------------------
+    {
+        McpMeta m;
+        m.summary    = "ゲームのビルド(build_game の裏ジョブ)の状態。{state: idle|running|succeeded|failed|cancelled, stage(1..stageCount), stageName, "
+                       "pct(0..100。テクスチャの事前生成の段は読めないので段の始まりの値で indeterminate:true), done/total, elapsedSec, detail, outputDir, error?}。"
+                       "まだ一度も走らせていなければ {state:'idle'}。";
+        m.keywords   = "build game status progress ビルド 進捗 状態 配布 パック 完了 待つ get_build_status";
+        m.category   = "project";
+        m.effect     = McpEffect::Read;
+        m.mode       = "any";
+        m.timeoutMs  = 10000;
+        m.idempotent = true;
+        m.next       = {{"cancel_build", "実行中のビルドを止める"}};
+        McpDefine("get_build_status", McpMeta(m), DX12E_MCP_HANDLER
+            {
+                PollBuildGame();   // 終わっていれば後始末（スレッドの回収・通知）
+                resp["ok"] = true;
+                resp["result"] = BuildStatusJson();
+            });
+    }
+    {
+        McpMeta m;
+        m.summary    = "実行中のゲームのビルド(build_game)を止める。段の切れ目とファイルごとに止まり、テクスチャの事前生成の子プロセスは即終了。"
+                       "途中の出力フォルダは消す。{requested:bool}。止まったかは get_build_status(state:'cancelled')で確かめる。";
+        m.keywords   = "build game cancel stop ビルド キャンセル 中止 止める cancel_build";
+        m.category   = "project";
+        m.effect     = McpEffect::Runtime;
+        m.mode       = "any";
+        m.timeoutMs  = 10000;
+        m.idempotent = true;
+        m.next       = {{"get_build_status", "止まったか確かめる"}};
+        McpDefine("cancel_build", McpMeta(m), DX12E_MCP_HANDLER
+            {
+                resp["ok"] = true;
+                resp["result"] = {{"requested", CancelBuildGame()}};
+            });
+    }
 
     // ════════════════════════════════════════════════════════════
     //  Lua 即時実行(eval) — デバッグ用。globals フォールバック環境で実行するため

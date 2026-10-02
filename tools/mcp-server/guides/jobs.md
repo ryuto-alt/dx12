@@ -38,3 +38,4 @@
 - ビルド → 更新: `dx12_job_start {kind:"build", args:{refreshEngines:true}, waitSec:60}`。
 - テストの前: `build {tests:true}` → `ctest`。失敗は `summary.failedTests`、UI テストは `summary.junit.failed`。
 - 止まって見える: `dx12_job_logs {id}` で末尾を読む。`phase:"waiting_lock"` は他のビルド待ちで正常。
+- ゲームのビルド(配布物の書き出し)はエンジン側が裏ジョブ: `dx12_build_game {waitSec:60}`(即応答・二重起動は拒否)→ 続きは `dx12_call {name:"get_build_status"}`(`state` / `stage` / `pct`。テクスチャの事前生成の段は `indeterminate`)、止めるのは `cancel_build`。エディタは操作できるまま。

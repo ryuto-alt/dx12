@@ -9,6 +9,7 @@
 // スロットの中身:
 //   scene.json … 退避したシーン本体
 //   scene.nav  … ナビメッシュのサイドカー（焼いてあるときだけ）
+//   scene.parts/ … 分割保存のシーンのセルファイル（シーン設定で分割が ON のときだけ。docs/SCENE_FORMAT_DESIGN.md §4.3）
 //   meta.json  … { originPath, engineVersion, savedAtUnix }
 
 #include <nlohmann/json.hpp>
@@ -26,6 +27,7 @@ namespace dx12e::autosave
 inline std::string ScenePath(const std::string& dir) { return dir + "scene.json"; }
 inline std::string MetaPath (const std::string& dir) { return dir + "meta.json";  }
 inline std::string NavPath  (const std::string& dir) { return dir + "scene.nav";  }
+inline std::string PartsPath(const std::string& dir) { return dir + "scene.parts"; }
 
 // meta.json の originPath。読めない/無い/壊れているときは空文字。
 inline std::string OriginPath(const std::string& dir)
@@ -66,6 +68,7 @@ inline bool DiscardIfFor(const std::string& dir, const std::string& scenePath)
     fs::remove(ScenePath(dir), ec);
     fs::remove(MetaPath(dir),  ec);
     fs::remove(NavPath(dir),   ec);
+    fs::remove_all(PartsPath(dir), ec);   // 分割保存のセルファイル（このスロットの中だけ）
     return true;
 }
 

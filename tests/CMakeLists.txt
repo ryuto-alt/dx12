@@ -276,6 +276,18 @@ if(TARGET Scene)
     add_test(NAME SceneFormatV2Tests COMMAND SceneFormatV2Tests)
 endif()
 
+# シーンの分割保存（docs/SCENE_FORMAT_DESIGN.md §4.3）: セル割り当て・並び順（seq）・往復・変更したファイルだけ書く・空セルの掃除・参照の書き換え。GPU 不要。
+if(TARGET Scene)
+    add_executable(ScenePartitionTests scene_partition_test.cpp)
+    target_link_libraries(ScenePartitionTests PRIVATE Scene)
+    target_include_directories(ScenePartitionTests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(ScenePartitionTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ScenePartitionTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ScenePartitionTests COMMAND ScenePartitionTests)
+endif()
+
 # 物理（PhysicsSystem / Jolt）のヘッドレス回帰テスト。箱・球・カプセルだけ（Mesh は GPU が要るので使わない）。
 # 質量 0 でも落ちない・offset・負スケール・静的の追従・上限・キャラ・接触イベント・時間の扱い…（PHYSICS_FIX2_REPORT.md）。
 if(TARGET Physics)
@@ -338,6 +350,17 @@ if(TARGET Resource)
         target_compile_definitions(TextureCompressTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME TextureCompressTests COMMAND TextureCompressTests)
+endif()
+
+# ゲームビルドの裏ジョブの進捗モデル（core/BuildJob.h・ヘッダのみ）。
+if(TARGET Resource)
+    add_executable(BuildJobTests build_job_test.cpp)
+    target_link_libraries(BuildJobTests PRIVATE Resource)
+    if(MSVC)
+        target_compile_options(BuildJobTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(BuildJobTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME BuildJobTests COMMAND BuildJobTests)
 endif()
 
 # entt::meta コア部品フィールド反映テスト（Phase 2 土台）。ECS（+ entt/DirectXMath）をリンク。
@@ -1682,6 +1705,23 @@ if(TARGET Renderer)
     add_custom_command(TARGET FoliageGpuTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:FoliageGpuTests>")
     add_test(NAME FoliageGpuTests COMMAND FoliageGpuTests)
+
+    # GPU 駆動のインスタンス群（設計 §4.2 = 4-3）。純ロジック（チャンク / LOD の CPU 参照）+ 窓なしの D3D12 で compute を実行して GPU = CPU を確かめる。
+    #   GPU が無い環境では GPU 部分だけ「SKIP」。
+    add_executable(InstanceGpuTests instance_gpu_test.cpp)
+    target_include_directories(InstanceGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(InstanceGpuTests PRIVATE Renderer Microsoft::DirectXMath)
+    target_compile_definitions(InstanceGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(InstanceGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(InstanceGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(InstanceGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET InstanceGpuTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:InstanceGpuTests>")
+    add_test(NAME InstanceGpuTests COMMAND InstanceGpuTests)
 endif()
 
 # パリティ Q2: 新しいトーンマップ(shaders/post/Tonemap.hlsli)の HLSL を実際に動かして C++ 参照(PhotometricMath.h)と突き合わせる。

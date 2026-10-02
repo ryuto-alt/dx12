@@ -508,6 +508,9 @@ public:
     std::string pendingLoadPath;
     std::string pendingGameLoadPath;  // Play 中の loadScene()（assets 相対）。フレーム境界で安全にロード
     bool pendingBuildGame = false;     // ビルド設定パネルの「ビルド」で立つ＝実行要求
+    bool buildRunning = false;         // ビルドの裏ジョブが走っている（Application::StartBuildGame が立て、PollBuildGame が降ろす）
+    f32  buildFraction = 0.0f;         // ビルドの進み 0..1（PollBuildGame が毎フレーム更新。ステータスバー / ビルド設定窓が読む）
+    std::string buildStatusText;       // 「3/5 アセットのパック（123 / 456 ファイル）」など
     // ファイルメニュー「プロジェクトを閉じる」で立つ。Application がフレーム境界で
     // ランチャーへ戻す（削除等のファイル操作は一切不要＝現在の状態はそのままメモリに残す）。
     bool pendingCloseProject = false;

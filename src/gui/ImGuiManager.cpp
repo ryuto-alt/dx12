@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/GameUiFont.h"
+#include "core/BundledFont.h"   // 同梱の日本語フォント（Noto Sans JP サブセット）
 #include "core/DpiScale.h"
 #include "gui/ImGuizmo.h"
 #include <vector>
@@ -265,9 +266,11 @@ bool LoadEditorFonts(ImGuiIO& io)
     // 日本語（UI 用の字形。ttc の番号は fontTools で確認: YuGothM#1 = Yu Gothic UI Regular / YuGothB#1 = Bold）
     const FontSrc jp     = FirstExisting({ {WinFontPath("YuGothM.ttc"), 1}, {WinFontPath("YuGothR.ttc"), 1},
                                            {WinFontPath("meiryo.ttc"), 2}, {WinFontPath("meiryo.ttc"), 0},
-                                           {WinFontPath("msgothic.ttc"), 0} });
+                                           {WinFontPath("msgothic.ttc"), 0},
+                                           {bundled_font::JapaneseFontPath()} });   // OS に日本語フォントが無い環境の最後の砦
     const FontSrc jpBold = FirstExisting({ {WinFontPath("YuGothB.ttc"), 1}, {WinFontPath("meiryob.ttc"), 2},
-                                           {WinFontPath("meiryob.ttc"), 0}, {WinFontPath("YuGothM.ttc"), 1} });
+                                           {WinFontPath("meiryob.ttc"), 0}, {WinFontPath("YuGothM.ttc"), 1},
+                                           {bundled_font::JapaneseFontPath()} });
     const FontSrc symbol = FirstExisting({ {WinFontPath("seguisym.ttf")} });
     // 等幅: 字の大きさを本文と揃えるため 0.875 倍（フォントサイズ = 行高は本文と同じにして frame 高を変えない）
     FontSrc mono = FirstExisting({ {WinFontPath("CascadiaMono.ttf")}, {WinFontPath("consola.ttf")} });
@@ -299,11 +302,15 @@ bool LoadEditorFonts(ImGuiIO& io)
                                              jpBold.path.empty() ? jp : jpBold, 1.0f));
     ImFont* mon  = BuildFont(io, base, stack(mono.path.empty() ? latin : mono, jp, mono.path.empty() ? 1.0f : mono.sizeScale));
 
-    // ゲーム UI 用の既定フォント = 旧来の Yu Gothic Medium 17px（出荷したゲームと文字の幅・行高を揃える。core/GameUiFont.h）。
+    // ゲーム UI 用の既定フォント。出荷したゲームと文字の幅・行高を揃える（core/GameUiFont.h）。
+    //   配布ゲームはプロジェクトにフォントが無いとき同梱の Noto Sans JP（pak に入る）を使うので、
+    //   エディタのプレビューも同じものを使う。同梱ファイルが無い開発環境だけ従来どおり OS の Yu Gothic / Meiryo。
     {
-        const FontSrc legacy = FirstExisting({ {WinFontPath("YuGothM.ttc"), 0}, {WinFontPath("meiryo.ttc"), 0} });
-        if (!legacy.path.empty())
-            GameUiDefaultFont() = BuildFont(io, 17.0f, { legacy });
+        FontSrc game = FirstExisting({ {bundled_font::JapaneseFontPath()} });
+        if (game.path.empty())
+            game = FirstExisting({ {WinFontPath("YuGothM.ttc"), 0}, {WinFontPath("meiryo.ttc"), 0} });
+        if (!game.path.empty())
+            GameUiDefaultFont() = BuildFont(io, 17.0f, { game });
     }
 
     theme::g_fonts.body  = body;

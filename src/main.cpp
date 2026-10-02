@@ -14,6 +14,7 @@
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
 #include "core/OffscreenShot.h"     // --size WxH（screenshot_final の既定の撮影解像度。純ロジック）
 #include "project/Project.h"
+#include "scene/ScenePartition.h"   // --validate: 分割保存のセルもつなげて検証する
 #include "scene/SceneFormatV2.h"   // --validate: version 2 のシーンは既定値の省略を補ってから検証する
 
 #include <Windows.h>
@@ -66,6 +67,12 @@ int RunValidate(const std::string& scenePathStr)
         {
             try { ifs >> root; }
             catch (const std::exception& e) { errors.push_back(std::string("JSON parse error: ") + e.what()); }
+        }
+        // 分割保存のシーン（"parts"）はセルファイルもつなげて検証する
+        if (errors.empty())
+        {
+            std::string perr;
+            if (!dx12e::scenepart::MergePartsFromDisk(root, scenePath.string(), perr)) errors.push_back(perr);
         }
     }
 

@@ -94,6 +94,10 @@ inline u64 SceneSettingsFingerprint(const Scene& scene)
     const std::string& decal = scene.GetDecalAtlasPath();
     mix(decal.data(), decal.size());
 
+    // 分割保存のセルの大きさ（これを変えただけでも「未保存」にする。保存し直すとファイルの形が変わる）
+    const float partitionCell = scene.GetPartitionCellSize();
+    mix(&partitionCell, sizeof(partitionCell));
+
     // ナビメッシュ: 生成パラメータと「焼けているか/ポリゴン数」。
     // パラメータを触っただけ / 焼き直しただけでも「未保存」になる
     //（.nav はシーン保存と同時に書かれるので、ここを混ぜないと焼いた結果が黙って消える）。

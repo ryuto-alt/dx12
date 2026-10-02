@@ -12,6 +12,7 @@
 //
 // 戻り値は距離(t)の昇順。単一選択は先頭を使い、重なりの循環選択は 2 番目以降へ進む。
 
+#include <functional>
 #include <vector>
 #include <entt/entt.hpp>
 #include <DirectXMath.h>
@@ -81,5 +82,13 @@ std::vector<ScenePickHit> RaycastSceneRay(entt::registry& reg,
                                           const DirectX::XMFLOAT3& direction,
                                           f32 maxDistance = 0.0f,
                                           const ScenePickOptions& opt = ScenePickOptions{});
+
+
+// GPU 駆動のインスタンス群（4-3）: DrawItem へ展開していない群のインスタンスをブロードフェーズへ足すフック。
+// fn(entity, world, 球の中心, 半径, インスタンス番号) を群の全インスタンスぶん呼ぶ関数を登録する（nullptr で解除）。
+// ★全ピッキング経路（エディタのクリック / ホバー / MCP の pick・raycast_precise）が RaycastSceneMeshes を通るので、ここ 1 箇所で全部に効く。
+using PickInstanceVisitor = std::function<void(entt::entity, const DirectX::XMFLOAT4X4&, const DirectX::XMFLOAT3&, f32, u32)>;
+using PickExtraSource = std::function<void(const PickInstanceVisitor&)>;
+void SetPickExtraSource(PickExtraSource src);
 
 } // namespace dx12e

@@ -2227,6 +2227,31 @@ void PhysicsSystem::StepOneCharacter(entt::entity entity, f32 fixedDt, entt::reg
         const f32 bodyMass = EngineCharacterListener::DynamicBodyMass(sys, ch->GetGroundBodyID());
         if (bodyMass >= 0.0f)
             ground *= physlogic::GroundVelocityScale(bodyMass, ch->GetMass());
+
+        // ★上面が同じ高さの床が 2 枚以上ある（静的の床と、面一のキネマティックの床など）と、Jolt の GetGroundVelocity は
+        //   足を支えている接触の速度を**平均**してしまう（床 3m/s + 静的 0m/s → 1.5m/s。実測: 接地面は動く床の 1 枚だけを
+        //   指しているのに、接触の速度は 3.0、GetGroundVelocity は 1.5）。乗り移り速度が半分になる原因。
+        //   接地点と同じ高さで足を支えている接触を自分で見て、動いている床の速度を優先する
+        //   （「動くボディ優先」。静的は速度 0 なので、動く床があれば必ずそちらが勝つ）。
+        //   動的剛体は従来どおり質量で絞る。上面をずらした床（数 cm 以上）は従来どおり接地面の 1 枚だけで決まる。
+        const JPH::RVec3 groundPos = ch->GetGroundPosition();
+        const float kCoplanarTol = 0.05f;   // 接地点の高さの許容差（m）。足の丸みと 1 ステップの追従量ぶん
+        JPH::Vec3 best = ground;
+        float bestSq = ground.GetX() * ground.GetX() + ground.GetZ() * ground.GetZ();
+        for (const JPH::CharacterVirtual::Contact& c : ch->GetActiveContacts())
+        {
+            if (!c.mHadCollision || c.mWasDiscarded || c.mIsSensorB) continue;
+            if (c.mBodyB.IsInvalid()) continue;
+            if (c.mMotionTypeB == JPH::EMotionType::Static) continue;
+            if (ch->IsSlopeTooSteep(c.mSurfaceNormal)) continue;                       // 足を支える向きの面だけ
+            if (std::abs(static_cast<float>(c.mPosition.GetY()) - static_cast<float>(groundPos.GetY())) > kCoplanarTol) continue;
+            JPH::Vec3 v = c.mLinearVelocity;
+            const f32 m = EngineCharacterListener::DynamicBodyMass(sys, c.mBodyB);
+            if (m >= 0.0f) v *= physlogic::GroundVelocityScale(m, ch->GetMass());
+            const float sq = v.GetX() * v.GetX() + v.GetZ() * v.GetZ();
+            if (sq > bestSq) { best = v; bestSq = sq; }
+        }
+        ground = best;
     }
     JPH::Vec3 vel(cc->_desiredVel.x + ground.GetX(),
                   cc->_verticalVel,

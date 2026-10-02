@@ -35,6 +35,7 @@
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
 #include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
 #include "renderer/DecalSystem.h"            // DecalGPU を値で持つので同上
+#include "core/ApplicationGpuInstance.h"     // GPU 駆動のインスタンス群の状態（GpuInstState を値で持つので完全型が要る）
 
 // Forward declarations for graphics module
 namespace dx12e
@@ -1090,8 +1091,17 @@ private:
     // 旧シーンや Grid 未配置のテンプレ(platformer 等)を開いてもグリッドが必ず出るようにする。
     // ゲームモードでは何もしない。Scene に有効な cmdList が設定済みの状態で呼ぶこと。
     void EnsureEditorGrid();
-    bool BuildGame();  // 成否を返す（早期 return = 失敗）
-    void BakeTexturesIntoPak(const std::filesystem::path& outputDir, const std::string& exeName);   // BuildGame 3b: BC 圧縮済みテクスチャを pak へ
+    bool BuildGame();  // 同期版（CLI --build / UI テスト用）。成否を返す（早期 return = 失敗）
+    // ---- ゲームビルドの裏ジョブ（ApplicationBuild.cpp。エディタの UI / MCP build_game はこちら）----
+    //   入力の取り込みはメインスレッド、書き出しはワーカー。ビルド中は保存済みのディスクの内容が対象。二重起動は拒否。
+    bool StartBuildGame(bool fromUi, std::string& errOut);   // 即戻り。実行中なら false
+    void PollBuildGame();                                    // 毎フレーム（エディタ）: 完了の通知と後始末
+    bool IsBuildRunning() const;
+    bool CancelBuildGame();                                  // 実行中なら中止を要求（true）
+    nlohmann::json BuildStatusJson() const;                  // MCP get_build_status
+    void JoinBuildJob();                                     // Shutdown / 終了前に回収
+    bool PrepareBuildInput(struct BuildInput& in, std::string& err);   // メインスレッドだけ（DXC・設定の取り込み）
+    std::shared_ptr<struct BuildJob>   m_buildJob;
     // グローバル game.lua をロード（ScriptEngine 再初期化のたびに呼ぶ）。
     // ゲームモードは pak から読むのでディスク存在チェックを迂回する。
     // グローバル game.lua を（再）読み込む。
@@ -1681,6 +1691,27 @@ private:
     nlohmann::json FoliageStatsJson() const;           // MCP foliage_stats / perf_stats の foliage ブロック
     void RegisterMcpFoliageMethods();                  // mcp/ApplicationMcpFoliage.cpp
     void RegisterMcpInstanceGroupMethods();            // mcp/ApplicationMcpInstanceGroup.cpp（instance_group）
+
+    // ---- GPU 駆動のインスタンス群（設計 docs/SCENE_FORMAT_DESIGN.md §4.2 = 4-3）。実装は ApplicationInstanceGpu.cpp ----
+    // ★しきい値（settings.json "instance_gpu_threshold"。0 = 無効）以上の不透明な群だけが GPU 経路に乗る。BuildDrawList は乗った群を DrawItem へ展開せず
+    //   m_gpuInst.frame へ積み、描画パスが群ごとに GPU カリング → ExecuteIndirect する。無効 / 乗れない群 / 知覚・パストレーサーの要求フレームは従来の展開。
+    GpuInstState m_gpuInst;
+    bool GpuInstUsable() const;
+    bool GpuInstEnsureSystem();
+    void GpuInstBeginFrame(const DirectX::XMFLOAT3& camPos);
+    bool GpuInstTakeGroup(entt::entity e, const MeshRenderer& r, const DrawItem& probe, const std::shared_ptr<instgroup::InstanceSet>& set,
+                          const DirectX::XMFLOAT4X4& groupWorld, bool moved, const DirectX::XMFLOAT4X4& prevGroupWorld, u64 guid);
+    GpuInstGroupRt* GpuInstPrepare(ID3D12GraphicsCommandList* cmd, const GpuInstFrameGroup& fg);
+    bool GpuInstCull(ID3D12GraphicsCommandList* cmd, GpuInstGroupRt& rt, const DirectX::XMMATRIX& viewProj, u32 lodBias, f32 texelWorld,
+                     const float color[4], bool writePrev, u32 frameIndex, bool mainView);
+    void GpuInstExecute(ID3D12GraphicsCommandList* cmd, const GpuInstFrameGroup& fg, GpuInstGroupRt& rt, u32 sub, bool prevStream);
+    void GpuInstDrawDepth(const DirectX::XMMATRIX& viewProj, PipelineState* instPSO, u32 frameIndex, u32 lodBias, f32 texelWorld,
+                          bool velocityMode, const DirectX::XMMATRIX& prevViewProj, const DirectX::XMFLOAT2& jitterNdc);
+    void GpuInstDrawMain(ID3D12GraphicsCommandList* cmd, u32 frameIndex, const DirectX::XMMATRIX& viewProj, bool depthPrepassActive);
+    void GpuInstVisitPick(const std::function<void(entt::entity, const DirectX::XMFLOAT4X4&, const DirectX::XMFLOAT3&, f32, u32)>& fn);   // ScenePick のフック
+    const std::vector<DrawItem>* GpuInstOverlayItems();   // 輪郭用: 描画リスト + 選択 / ホバー中の GPU 経路の群の展開
+    void ShutdownGpuInst();
+    nlohmann::json GpuInstStatsJson() const;           // perf_stats の instanceGpu ブロック
 
     // ---- 水面 W1（WaterBody + 専用パス。不透明の後・半透明の前）。実装は ApplicationWater.cpp / mcp/ApplicationMcpWater.cpp ----
     // ★WaterBody が 1 つも無いシーンでは m_water を作らず、呼び出し点は WaterActive() で弾く（未使用シーンは描画コマンドが 1 命令も変わらない）。

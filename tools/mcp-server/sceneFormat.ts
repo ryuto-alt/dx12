@@ -3,7 +3,8 @@
 //
 //   inflateScene … version >= 2 のシーンを読むときに、既定値表で省略されたフィールドを足す（補完後は v1 保存と同じ形）
 //   convertToV2  … 完全形（または補完済み）のシーンを v2 へ（最短 float・既定値の省略・parent index 廃止）
-//   dumpSceneV2  … ルート設定は整形・entities は 1 行 1 体
+//   dumpSceneV2  … ルート設定は整形・entities は 1 行 1 体（"parts" の目次は 1 要素 1 行）
+//   readSceneFile / mergeParts … 分割保存（§4.3）のシーン（foo.json + foo.parts/cell_*.json）を 1 つの JSON につなげて読む
 //
 // ★既定値表は src/scene/scene_defaults_v2.json が唯一の正本。配布（publish.ps1）はこのフォルダだけを写すので、
 //   同じ内容のコピーを ./scene_defaults_v2.json に置く。sceneFormat.test.ts がバイト一致を見張る（食い違えば赤）。
@@ -16,6 +17,7 @@
 //   エンジンは同じ値に読む）。キー順は C++（nlohmann の辞書順）に合わせて再帰的にソートする。
 
 import fs from "node:fs";
+import path from "node:path";
 
 export const SCENE_VERSION_V2 = 2;
 
@@ -137,6 +139,12 @@ export function dumpSceneV2(root: JsonObject): string {
   const sorted = normalizeFloats(root) as JsonObject;   // キーを辞書順に揃える（数値は変えない: 既に正規化済みなら不変）
   const parts: string[] = [];
   const emit = (k: string) => {
+    // 分割保存の目次（"parts"）は 1 要素 1 行（C++ の DumpSceneV2 と同じ）
+    if (k === "parts" && Array.isArray(sorted[k])) {
+      const list = sorted[k] as Json[];
+      parts.push(`  "parts": [${list.length === 0 ? "" : "\n" + list.map((p) => "    " + stringify(p)).join(",\n") + "\n  "}]`);
+      return;
+    }
     const body = stringify(sorted[k], 2).replace(/\n/g, "\n  ");
     parts.push(`  ${JSON.stringify(k)}: ${body}`);
   };
@@ -145,4 +153,101 @@ export function dumpSceneV2(root: JsonObject): string {
   const lines = (sorted.entities as Json[]).map((e) => stringify(e));
   const entities = lines.length === 0 ? "[]" : `[\n${lines.join(",\n")}\n  ]`;
   return `{\n${parts.length ? parts.join(",\n") + ",\n" : ""}  "entities": ${entities}\n}\n`;
+}
+
+// ── 分割保存（docs/SCENE_FORMAT_DESIGN.md §4.3）────────────────────────────
+// foo.json（ルート設定 + "partition" + "parts" の目次 + どのセルにも属さないエンティティ）
+//   + foo.parts/cell_<x>_<z>.json（{version, seq, entities}。entities は 1 行 1 体）
+// seq は "0-2,10,15-16" の形で、そのセルの各エンティティの【全体での位置】。foo.json のエンティティは、どのセルも使っていない位置を順に埋める。
+
+/** パーツ名はフォルダ内のフラットなファイル名だけ（".." / 区切り / ドライブ指定は不可）。 */
+export function isSafePartName(name: unknown): name is string {
+  return typeof name === "string" && name.length > 0 && name.length <= 200 && name !== "." && name !== ".."
+    && !/[\\/:\0]/.test(name) && !name.includes("..");
+}
+
+/** "0-2,10,15-16" → [0,1,2,10,15,16]。壊れている（個数違い・範囲外・形式違い）なら null。 */
+export function decodeSeq(s: unknown, expectedCount: number, total: number): number[] | null {
+  if (typeof s !== "string") return null;
+  const out: number[] = [];
+  if (s === "") return expectedCount === 0 ? out : null;
+  for (const tok of s.split(",")) {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(tok);
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = m[2] === undefined ? a : Number(m[2]);
+    if (b < a || b >= total || out.length + (b - a + 1) > expectedCount) return null;
+    for (let k = a; k <= b; k++) out.push(k);
+  }
+  return out.length === expectedCount ? out : null;
+}
+
+/** root["parts"] が指すセルのファイル名一覧（不正な項目は含めない）。 */
+export function partNames(root: unknown): string[] {
+  if (!isObj(root) || !Array.isArray(root.parts)) return [];
+  const names: string[] = [];
+  for (const p of root.parts) if (isObj(p) && isSafePartName(p.file)) names.push(p.file);
+  return names;
+}
+
+/**
+ * root に "parts" があれば、セルを読んで root.entities へ並び順（seq）どおりに統合し "parts" を消す（root を書き換える）。
+ * seq が無い / 壊れている / 重複しているときは foo.json → セル（parts の並び）の順につなぐ（エンジンと同じ）。
+ * 読めない・壊れたセル・不正な名前は throw（部分的に読むと、書き戻しで残りが消える）。補完（inflateScene）はしない。
+ */
+export function mergeParts(root: JsonObject, readPart: (name: string) => string): { files: number; seqUsed: boolean } {
+  if (!Array.isArray(root.parts)) return { files: 0, seqUsed: true };
+  const names: string[] = [];
+  for (const p of root.parts) {
+    if (!isObj(p) || !isSafePartName(p.file)) throw new Error("parts に不正な項目がある（file は分割フォルダ内のファイル名だけ）");
+    names.push(p.file);
+  }
+  const rootEnts: Json[] = Array.isArray(root.entities) ? (root.entities as Json[]) : [];
+  const docs = names.map((n) => {
+    let d: unknown;
+    try { d = JSON.parse(readPart(n)); } catch (e: any) { throw new Error(`分割ファイル ${n} を読めない: ${e.message}`); }
+    if (!isObj(d) || !Array.isArray(d.entities)) throw new Error(`分割ファイル ${n}: entities 配列が無い`);
+    return d as { entities: Json[]; seq?: unknown };
+  });
+  const total = rootEnts.length + docs.reduce((a, d) => a + d.entities.length, 0);
+  const seqs = docs.map((d) => decodeSeq(d.seq, d.entities.length, total));
+  const used = new Uint8Array(total);
+  let seqOk = seqs.every((s) => s !== null);
+  if (seqOk) {
+    outer: for (const s of seqs as number[][]) for (const v of s) { if (used[v]) { seqOk = false; break outer; } used[v] = 1; }
+  }
+  let merged: Json[];
+  if (seqOk) {
+    merged = new Array<Json>(total);
+    docs.forEach((d, i) => d.entities.forEach((e, k) => { merged[(seqs[i] as number[])[k]] = e; }));
+    let r = 0;
+    for (let slot = 0; slot < total && r < rootEnts.length; slot++) if (!used[slot]) merged[slot] = rootEnts[r++];
+  } else {
+    merged = [...rootEnts];
+    for (const d of docs) merged.push(...d.entities);
+  }
+  root.entities = merged;
+  delete root.parts;
+  return { files: names.length, seqUsed: seqOk };
+}
+
+/** <シーン>.parts フォルダの絶対パス（foo.json → foo.parts）。 */
+export function partsDirOf(scenePath: string): string {
+  const p = path.parse(scenePath);
+  return path.join(p.dir, p.name + ".parts");
+}
+
+/** シーンの本文（パース前の文字列）を、同じ場所のセルファイルもつなげて返す（補完はしない）。 */
+export function parseSceneTextWithParts(text: string, scenePath: string): JsonObject {
+  const root = JSON.parse(text) as JsonObject;
+  if (isObj(root) && Array.isArray(root.parts)) {
+    const dir = partsDirOf(scenePath);
+    mergeParts(root, (n) => fs.readFileSync(path.join(dir, n), "utf8"));
+  }
+  return root;
+}
+
+/** シーンファイル（絶対パス）を読み、分割保存ならセルもつなげた JSON を返す。補完（inflateScene）は呼び出し側。 */
+export function readSceneFile(scenePath: string): JsonObject {
+  return parseSceneTextWithParts(fs.readFileSync(scenePath, "utf8"), scenePath);
 }

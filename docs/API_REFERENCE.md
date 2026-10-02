@@ -1392,7 +1392,7 @@ Trigger の `PlayEffect` / `StopEffect` で発火・停止できる。
 | `dx12_open_scene` / `dx12_new_scene` | シーンを開く / 新規（★`sceneDirty=true` のまま撃つと未保存の変更が消える）|
 | `dx12_open_project` | プロジェクトを開く（ランチャーのクリック相当。ロードは数フレーム非同期）|
 | `dx12_validate_scene` | `--validate` をヘッドレス子プロセスで実行し、参照切れ / スクリプト不在を報告 |
-| `dx12_build_game` | ヘッドレスでゲームをビルド（暗号化パック + ゲーム専用 exe）|
+| `dx12_build_game` | ゲームをビルド（暗号化パック + ゲーム専用 exe）。裏ジョブで即応答し、進捗は engine method `get_build_status`、中止は `cancel_build`。プロジェクトに `assets/fonts/` のフォントが無いとき、エンジン同梱の Noto Sans JP(SIL OFL)を pak へ入れ、出力の `licenses/` にライセンス文を置く |
 
 ### 10-8. 再生・入力シミュレーション・計測
 | ツール | 説明 |

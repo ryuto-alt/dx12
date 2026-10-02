@@ -54,10 +54,12 @@ void FillManifestChunk0(ManifestRows& o)
             P("entity", "entityRef", false, nullptr, nullptr, nullptr, nullptr, "エンティティ id(int)。name と排他。"),
             P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。id の代わりに使える。Stop 後など id が変わる場面で安定。"),
         })});
-    o.push_back({"build_game", M("現在のプロジェクトをヘッドレスでビルドする(ツールバーの「ビルド」ボタンと同じ処理: exe+DLL+assets+shaders を出力フォルダへコピー)。",
+    o.push_back({"build_game", M("プロジェクトをビルドして配布物(exe+暗号化 pak)を出力フォルダへ書く。★裏ジョブで始めて即応答する(エディタは固まらない)。"
+        "進捗は get_build_status、止めるのは cancel_build。保存していない編集は入らない(ディスクの内容が対象)。二重起動は started:false。wait:true は従来の同期。",
         "build game ゲームビルド",
         "project", "", "", McpEffect::Guarded, "any", 10000, false, false,
         "none", "dx12_build_game", {
+            P("wait", "bool", false, nullptr, nullptr, nullptr, "false", "true=完了まで同期で待つ(従来の挙動。エディタが固まり、大きなプロジェクトは MCP のタイムアウトを超える)。既定は裏ジョブで即応答。"),
         })});
     o.push_back({"create_entity", M("エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返りません)。",
         "create entity エンティティ生成",
@@ -1250,6 +1252,8 @@ void FillManifestChunk11(ManifestRows& o)
         "none", "dx12_set_scene_settings", {
             P("decalAtlasPath", "assetPath", false, nullptr, nullptr, nullptr, nullptr, "デカールアトラス画像の assets 相対パス(RGBA。alpha=覆う度合い)。空文字でデカールを無効化。"),
             P("atmosphere", "object", false, nullptr, nullptr, nullptr, nullptr, "物理大気(既定 OFF)。指定分だけ適用。enabled / preset(earth|mars|haze|twilight)/ timeOfDay / sunMode / driveSun / sunIlluminance ほか。キーは get_scene_settings の atmosphere と同じ。"),
+            P("partition", "object", false, nullptr, nullptr, nullptr, nullptr, "シーンファイルの分割保存(保存時に効く)。{cellSize:メートル}。0=分割しない(既定)。>0(4 以上)で foo.json + foo.parts/cell_<x>_<z>.json に分けて書き、変えたセルのファイルだけ書き換える。目安 64〜256。"),
+            P("partition.cellSize", "any", false, nullptr, nullptr, nullptr, nullptr, nullptr),
             P("skybox", "object", false, nullptr, nullptr, nullptr, nullptr, "スカイボックス設定。指定したフィールドのみ適用。"),
             P("skybox.drawSkybox", "any", false, nullptr, nullptr, nullptr, nullptr, nullptr),
             P("skybox.envMapPath", "any", false, nullptr, nullptr, nullptr, nullptr, nullptr),

@@ -11,6 +11,7 @@
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
+#include "scene/SceneSerializer.h"   // 分割保存の直近の保存の概要（LastSaveReport）
 #include "renderer/atmosphere/AtmosphereMath.h"   // 大気の読み取り表示（太陽の高度・方位・照度）
 
 #pragma warning(push)
@@ -1009,6 +1010,55 @@ void RenderLightingPanel(Scene* scene,
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("選択物（無ければ原点）の周りにキー/フィル/リムのポイントライトを 3 灯置きます。");
+    }
+
+    // =====================================================================
+    // シーンファイル（分割保存。docs/SCENE_FORMAT_DESIGN.md §4.3）
+    // =====================================================================
+    if (SectionHeader(nullptr, 0, "シーンファイル"))
+    {
+        const size_t entityCount = reg.view<NameTag>().size();
+        bool split = scene->GetPartitionCellSize() > 0.0f;
+        if (pg::Begin("ScenePartition"))
+        {
+            if (pg::Checkbox("分割して保存", &split,
+                             "ON にすると、保存のとき foo.json（設定と置き場所の無い物）と foo.parts/ の小さなファイル群（位置ごとのセル）に分けます。"
+                             "変えた部分のファイルだけが書き換わるので、git の差分が小さく、AI や人が部分だけ開けます。"
+                             "OFF にすると次の保存で 1 ファイルに戻ります。"))
+            {
+                scene->SetPartitionCellSize(split ? 64.0f : 0.0f);
+                ctx.undoSystem.MarkEdited();
+            }
+            if (split)
+            {
+                float cell = scene->GetPartitionCellSize();
+                if (pg::SliderFloat("セルの大きさ (m)", &cell, 16.0f, 512.0f, "%.0f", nullptr,
+                                    "XZ 平面の格子の 1 辺。小さいほどファイルが増えて 1 つが小さくなります。"
+                                    "目安は屋内・街で 64、広い屋外で 256。ルートエンティティ（親なし）のサブツリー単位で、ルートの位置が入るセルへ入ります。"))
+                    scene->SetPartitionCellSize(std::round(cell));
+            }
+            pg::Text("エンティティ数", "%zu", entityCount);
+            pg::End();
+        }
+        if (!split && entityCount >= 5000)
+            ImGui::TextDisabled("体数の多いシーンです。分割保存を有効にすると git の差分と保存が軽くなります");
+        const auto& sr = SceneSerializer::LastSaveReport();
+        if (split && sr.partitioned)
+            ImGui::TextDisabled("直近の保存: セル %d 個・書き換え %d 個・変更なし %d 個・最大 %.1f MB",
+                                sr.files, sr.written, sr.unchanged, static_cast<double>(sr.maxFileBytes) / (1024.0 * 1024.0));
+        // 選択中のエンティティを foo.json 側へ固定する（分割しても位置で移動させない。ゲーム管理用など）
+        if (split && ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity))
+        {
+            bool pinned = reg.all_of<PartitionRoot>(ctx.selectedEntity);
+            if (ImGui::Checkbox("選択中をルートファイルに置く", &pinned))
+            {
+                if (pinned) reg.emplace_or_replace<PartitionRoot>(ctx.selectedEntity);
+                else        reg.remove<PartitionRoot>(ctx.selectedEntity);
+                ctx.undoSystem.MarkEdited();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("ON にすると、このエンティティ（と子）は位置に関係なく foo.json に保存されます");
+        }
     }
 
     // =====================================================================

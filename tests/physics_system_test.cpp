@@ -411,6 +411,31 @@ void TestCharacters()
     }
 }
 
+// ---- #22 上面が同じ高さの静的の床とキネマティックの床（接地面の速度が平均されて半分になっていた）----
+void TestCoplanarKinematicFloor()
+{
+    // topOffset: キネマティック床の上面を静的の床（上面 y=0）からどれだけ上へずらすか
+    auto carried = [](float topOffset) {
+        Env w;
+        w.Floor();
+        const auto k = w.MakeBox({0, -0.25f + topOffset, 0}, MotionType::Kinematic, {10, 0.5f, 10});
+        const auto c = w.reg.create();
+        Transform t; t.position = {0, 1.05f + topOffset, 0};
+        w.reg.emplace<Transform>(c, t);
+        w.reg.emplace<CharacterController>(c);
+        w.Run(30);
+        const float x0 = w.T(c).position.x;
+        for (int i = 0; i < 120; ++i)                              // 床を +X へ 3m/s で 2 秒
+        {
+            w.T(k).position.x += 3.0f * kDt;
+            w.Run(1);
+        }
+        return w.T(c).position.x - x0;                             // 床の移動量は 6m
+    };
+    CHECK_NEAR(carried(0.0f), 6.0, 0.4);     // 修正前: 約 3m（床 3m/s → キャラ 1.5m/s）
+    CHECK_NEAR(carried(0.2f), 6.0, 0.4);     // 面一でない床は従来どおり（回帰）
+}
+
 // ---- #14 接触イベント ----
 void TestContactEvents()
 {
@@ -641,6 +666,7 @@ int main()
     TestStaticFollowsChanges();
     TestOverlapIsShapeBased();
     TestCharacters();
+    TestCoplanarKinematicFloor();
     TestContactEvents();
     TestFrameTime();
     TestEulerAndManualStep();

@@ -151,10 +151,10 @@ bool InflateScene(json& root)
 // [begin, end) の分割を数スレッドで回す。エンティティは互いに独立（共有するのは読み取り専用の表だけ）なので安全。
 // 小さいシーンはスレッドを起こさない。10 万体のシーンの保存でメインスレッドを塞ぐ時間を縮めるためのもの。
 template <typename Fn>
-static void ParallelRanges(size_t n, Fn&& fn)
+static void ParallelRanges(size_t n, Fn&& fn, bool allowThreads = true)
 {
     const unsigned hw = (std::max)(1u, std::thread::hardware_concurrency());
-    const size_t workers = n < 4096 ? 1 : (std::min)(static_cast<size_t>((std::max)(1u, hw / 2)), static_cast<size_t>(6));
+    const size_t workers = (n < 4096 || !allowThreads) ? 1 : (std::min)(static_cast<size_t>((std::max)(1u, hw / 2)), static_cast<size_t>(6));
     if (workers <= 1) { fn(static_cast<size_t>(0), n); return; }
     const size_t chunk = (n + workers - 1) / workers;
     // ★スレッドの中で例外が抜けると std::terminate でプロセスごと落ちる（dump は不正な UTF-8 で type_error を投げる）。
@@ -199,7 +199,7 @@ void ConvertToV2(json& root)
     });
 }
 
-std::string DumpSceneV2(const json& root)
+std::string DumpSceneV2(const json& root, bool allowThreads)
 {
     const auto eit = root.is_object() ? root.find("entities") : root.end();
     if (!root.is_object() || eit == root.end() || !eit->is_array())
@@ -225,6 +225,18 @@ std::string DumpSceneV2(const json& root)
     for (auto it = root.begin(); it != root.end(); ++it)
     {
         if (it.key() == "version" || it.key() == "entities") continue;
+        if (it.key() == "parts" && it.value().is_array())
+        {
+            // 分割保存の一覧は 1 要素 1 行（AI が開く前に中身の当たりを付けるための目次）。
+            out += "  \"parts\": [";
+            for (size_t i = 0; i < it.value().size(); ++i)
+            {
+                out += i ? ",\n    " : "\n    ";
+                out += it.value()[i].dump();
+            }
+            out += it.value().empty() ? "],\n" : "\n  ],\n";
+            continue;
+        }
         emitSetting(it.key(), it.value());
     }
     if (eit->empty())
@@ -237,7 +249,7 @@ std::string DumpSceneV2(const json& root)
     std::vector<std::string> lines(eit->size());
     ParallelRanges(eit->size(), [&](size_t b, size_t e) {
         for (size_t i = b; i < e; ++i) lines[i] = (*eit)[i].dump();
-    });
+    }, allowThreads);
     out += "  \"entities\": [\n";
     for (size_t i = 0; i < lines.size(); ++i)
     {

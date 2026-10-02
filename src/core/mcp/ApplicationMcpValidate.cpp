@@ -16,6 +16,9 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <set>   // 二重配置ペアの記録（ApplicationInternal.h は unordered_set しか引いていない）
 
 namespace dx12e
@@ -122,11 +125,77 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
     LayoutReport rep;
     if (!m_scene) return rep;
     auto& reg = m_scene->GetRegistry();
+    // 段階ごとの所要時間（ログに 1 行。体数に対して伸びる段階を見つけるため）
+    const auto tStart = std::chrono::steady_clock::now();
+    auto lastLap = tStart;
+    double lapMs[8] = {};
+    auto lap = [&](int i) {
+        const auto now = std::chrono::steady_clock::now();
+        lapMs[i] += std::chrono::duration<double, std::milli>(now - lastLap).count();
+        lastLap = now;
+    };
 
     // ---- ① 全メッシュのワールド AABB を 1 巡で集める ----
     struct Item { entt::entity e; Box box; bool hasMesh; };
     std::vector<Item> items;
     items.reserve(256);
+
+    // ★体数に対して 2 乗にならないための前処理（2026-10-02。10 万体で save_scene / play が数分固まっていた）。
+    //   WorldAabbDeep は「全エンティティを走査して子孫かどうか」を毎回やるので、子の一覧を 1 回だけ作って辿る。
+    //   結果は同じ（子孫の定義は McpIsDescendantOf と同じ: 親チェーン 63 段まで）。同じエンティティの再計算はキャッシュする。
+    std::unordered_map<entt::entity, std::vector<entt::entity>> childrenOf;
+    for (auto [c, ct] : reg.view<const Transform>().each())
+        if (ct.parent != entt::null && reg.valid(ct.parent)) childrenOf[ct.parent].push_back(c);
+    struct DeepEntry { Box box; bool hasMesh = false; bool ok = false; };
+    std::unordered_map<entt::entity, DeepEntry> deepCache;
+    auto deepBox = [&](entt::entity e, Box& out, bool& outHasMesh) -> bool {
+        if (const auto f = deepCache.find(e); f != deepCache.end())
+        {
+            out = f->second.box; outHasMesh = f->second.hasMesh; return f->second.ok;
+        }
+        DeepEntry de;
+        XMFLOAT3 mn, mx;
+        bool hasMesh = false;
+        if (McpWorldAabb(reg, e, mn, mx, hasMesh))
+        {
+            std::vector<std::pair<entt::entity, int>> stack;
+            if (const auto k = childrenOf.find(e); k != childrenOf.end())
+                for (entt::entity c : k->second) stack.push_back({c, 1});
+            while (!stack.empty())
+            {
+                const auto [c, depth] = stack.back();
+                stack.pop_back();
+                if (depth > 63) continue;   // McpIsDescendantOf の段数上限（循環の保険を兼ねる）
+                if (c != e)
+                {
+                    XMFLOAT3 cmn, cmx;
+                    bool chm = false;
+                    if (McpWorldAabb(reg, c, cmn, cmx, chm) && chm)
+                    {
+                        if (!hasMesh) { mn = cmn; mx = cmx; hasMesh = true; }
+                        else
+                        {
+                            mn = { (std::min)(mn.x, cmn.x), (std::min)(mn.y, cmn.y), (std::min)(mn.z, cmn.z) };
+                            mx = { (std::max)(mx.x, cmx.x), (std::max)(mx.y, cmx.y), (std::max)(mx.z, cmx.z) };
+                        }
+                    }
+                }
+                if (const auto k = childrenOf.find(c); k != childrenOf.end())
+                    for (entt::entity gc : k->second) stack.push_back({gc, depth + 1});
+            }
+            de.box.mn = mn; de.box.mx = mx; de.hasMesh = hasMesh; de.ok = true;
+        }
+        deepCache[e] = de;
+        out = de.box; outHasMesh = de.hasMesh;
+        return de.ok;
+    };
+    // 「地面として使ってよい面か」（IsGroundLike と同じ判定をキャッシュ経由で）
+    auto groundLike = [&](entt::entity e) {
+        if (reg.all_of<Terrain>(e)) return true;
+        Box b; bool hm = false;
+        if (!deepBox(e, b, hm) || !hm) return false;
+        return !IsProp(b);
+    };
     // 「1 個のオブジェクト」の定義: **自分がメッシュを持ち、先祖にメッシュ持ちが居ない**もの。
     //
     //  ★「親が居たら飛ばす」ではいけない（2026-09-10 に実際に踏んだ）。
@@ -151,10 +220,11 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         if (reg.all_of<InstanceGroup>(e)) continue;   // インスタンス群は配置検査の対象外（群の AABB は全インスタンスの合成で、個別の埋まり / 二重を判定できない）
         if (ancestorHasMesh(e)) continue;
         Box b; bool hasMesh = false;
-        if (!WorldAabbDeep(reg, e, b, hasMesh) || !hasMesh) continue;
+        if (!deepBox(e, b, hasMesh) || !hasMesh) continue;
         items.push_back({e, b, hasMesh});
     }
     rep.checked = static_cast<int>(items.size());
+    lap(0);
 
     auto add = [&](const char* kind, int level, entt::entity e, const std::string& text,
                    entt::entity other = entt::null)
@@ -245,27 +315,76 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         }
     }
 
+    lap(1);
     // ---- ④ 二重配置（リトライで同じ物を 2 回置いた）----
     //  同じモデルがほぼ同じ場所に 2 つ = Z ファイティングと当たり判定の二重掛けを同時に起こす。
     //  ★「位置が同じ」だけでは足りない。原点に置いた床（板）と床（箱）のように、
     //    別物でも中心が一致することはいくらでもある。3 軸とも大きさが揃って初めて同じ物。
     std::set<std::pair<size_t, size_t>> dupPairs;
     std::set<entt::entity>              dupEntities;   // 接地検査から外す（相方を「地面」と誤認するため）
-    for (size_t i = 0; i < items.size(); ++i)
+    // ★全ペア総当たりをやめて、近いものだけ比べる（結果と並びは同じ: 候補を (i, j) 昇順に整列してから従来の判定を通す）。
+    //   二重配置: 位置が 0.01m 以内 → 0.02m の格子に入れて隣の 27 セルだけ見る。
+    //   NaN/Inf を持つもの（比較が常に false になり従来は全員と二重扱いになる）は従来どおり全員と比べる。
+    auto dupPredicate = [&](size_t i, size_t j) {
+        const Transform& a = reg.get<Transform>(items[i].e);
+        const Transform& b = reg.get<Transform>(items[j].e);
+        const float d = std::sqrt(
+            (a.position.x - b.position.x) * (a.position.x - b.position.x) +
+            (a.position.y - b.position.y) * (a.position.y - b.position.y) +
+            (a.position.z - b.position.z) * (a.position.z - b.position.z));
+        if (d > 0.01f) return false;
+        const Box& ba = items[i].box; const Box& bb = items[j].box;
+        if (std::fabs(ba.SizeX() - bb.SizeX()) > 0.01f) return false;
+        if (std::fabs(ba.SizeY() - bb.SizeY()) > 0.01f) return false;
+        if (std::fabs(ba.SizeZ() - bb.SizeZ()) > 0.01f) return false;
+        return true;
+    };
     {
-        for (size_t j = i + 1; j < items.size(); ++j)
+        std::vector<std::pair<size_t, size_t>> dupCand;
+        std::vector<size_t> odd;   // 位置か大きさが有限でないもの
+        std::unordered_map<unsigned long long, std::vector<uint32_t>> posGrid;
+        posGrid.reserve(items.size() * 2);
+        auto cellOf = [](float v) { return static_cast<long long>(std::floor(v / 0.02f)); };
+        auto cellKey = [](long long x, long long y, long long z) {
+            return static_cast<unsigned long long>(x * 73856093LL) ^ static_cast<unsigned long long>(y * 19349663LL)
+                 ^ static_cast<unsigned long long>(z * 83492791LL);
+        };
+        for (size_t i = 0; i < items.size(); ++i)
         {
-            const Transform& a = reg.get<Transform>(items[i].e);
-            const Transform& b = reg.get<Transform>(items[j].e);
-            const float d = std::sqrt(
-                (a.position.x - b.position.x) * (a.position.x - b.position.x) +
-                (a.position.y - b.position.y) * (a.position.y - b.position.y) +
-                (a.position.z - b.position.z) * (a.position.z - b.position.z));
-            if (d > 0.01f) continue;
-            const Box& ba = items[i].box; const Box& bb = items[j].box;
-            if (std::fabs(ba.SizeX() - bb.SizeX()) > 0.01f) continue;
-            if (std::fabs(ba.SizeY() - bb.SizeY()) > 0.01f) continue;
-            if (std::fabs(ba.SizeZ() - bb.SizeZ()) > 0.01f) continue;
+            const Transform& t = reg.get<Transform>(items[i].e);
+            const Box& bx = items[i].box;
+            const bool finite = std::isfinite(t.position.x) && std::isfinite(t.position.y) && std::isfinite(t.position.z)
+                             && std::isfinite(bx.SizeX()) && std::isfinite(bx.SizeY()) && std::isfinite(bx.SizeZ())
+                             && std::fabs(t.position.x) < 1.0e8f && std::fabs(t.position.y) < 1.0e8f && std::fabs(t.position.z) < 1.0e8f;
+            if (!finite) { odd.push_back(i); continue; }
+            posGrid[cellKey(cellOf(t.position.x), cellOf(t.position.y), cellOf(t.position.z))].push_back(static_cast<uint32_t>(i));
+        }
+        for (size_t i = 0; i < items.size(); ++i)
+        {
+            const Transform& t = reg.get<Transform>(items[i].e);
+            if (std::binary_search(odd.begin(), odd.end(), i)) continue;
+            const long long cx = cellOf(t.position.x), cy = cellOf(t.position.y), cz = cellOf(t.position.z);
+            for (long long dx = -1; dx <= 1; ++dx)
+                for (long long dy = -1; dy <= 1; ++dy)
+                    for (long long dz = -1; dz <= 1; ++dz)
+                    {
+                        const auto f = posGrid.find(cellKey(cx + dx, cy + dy, cz + dz));
+                        if (f == posGrid.end()) continue;
+                        for (uint32_t j : f->second)
+                            if (j > i && dupPredicate(i, j)) dupCand.push_back({i, j});
+                    }
+        }
+        for (size_t i : odd)
+            for (size_t j = 0; j < items.size(); ++j)
+            {
+                if (j == i) continue;
+                const size_t lo = (std::min)(i, j), hi = (std::max)(i, j);
+                if (dupPredicate(lo, hi)) dupCand.push_back({lo, hi});
+            }
+        std::sort(dupCand.begin(), dupCand.end());
+        dupCand.erase(std::unique(dupCand.begin(), dupCand.end()), dupCand.end());
+        for (const auto& [i, j] : dupCand)
+        {
             dupPairs.insert({i, j});
             dupEntities.insert(items[i].e);
             dupEntities.insert(items[j].e);
@@ -275,15 +394,43 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
                 "片方を dx12_delete_entity で消すこと", items[i].e);
         }
     }
+    lap(2);
+
+    // ---- 面同士の重なり / めり込みの候補ペア（AABB が重なる (i, j) だけ）----
+    //  X 軸の掃引（mn.x 昇順に並べ、mn.x が相手の mx.x 未満の間だけ見る）。重なり判定は Intersect そのもの。
+    std::vector<std::pair<size_t, size_t>> ovPairs;
+    {
+        std::vector<uint32_t> order;
+        order.reserve(items.size());
+        for (size_t i = 0; i < items.size(); ++i)
+            if (!std::isnan(items[i].box.mn.x) && !std::isnan(items[i].box.mx.x)) order.push_back(static_cast<uint32_t>(i));
+        std::sort(order.begin(), order.end(), [&](uint32_t l, uint32_t r) {
+            const float a = items[l].box.mn.x, b = items[r].box.mn.x;
+            return a != b ? a < b : l < r;
+        });
+        for (size_t p = 0; p < order.size(); ++p)
+        {
+            const uint32_t i = order[p];
+            const Box& bi = items[i].box;
+            for (size_t q = p + 1; q < order.size(); ++q)
+            {
+                const uint32_t j = order[q];
+                const Box& bj = items[j].box;
+                if (!(bj.mn.x < bi.mx.x)) break;
+                Box ov;
+                if (Intersect(bi, bj, ov)) ovPairs.push_back({(std::min)(i, j), (std::max)(i, j)});
+            }
+        }
+        std::sort(ovPairs.begin(), ovPairs.end());
+    }
 
     // ---- ⑤ 面同士の重なり（Z ファイティング＝ちらつきの正体）----
     //  判定: 2 つの AABB の重なりが「薄い板」= 1 辺だけ極端に薄く、他 2 辺は広い。
     //  床の上に絨毯を y=0 で置いた、壁と壁紙が同一平面、といった典型をこれで拾える。
     //  ★三角形単位で見なくても、実害が出る形は必ずこの形になる。
     const float kThin = (std::max)(0.001f, tolerance);   // 既定 1mm
-    for (size_t i = 0; i < items.size(); ++i)
+    for (const auto& [i, j] : ovPairs)
     {
-        for (size_t j = i + 1; j < items.size(); ++j)
         {
             if (dupPairs.count({i, j})) continue;   // ④で言った。同じ事故を 2 度書かない
             Box ov;
@@ -309,12 +456,12 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         }
     }
 
+    lap(3);
     // ---- ⑥ 深い貫通（めり込み）----
     //  重なった体積が小さい方の体積の一定割合を超えたら「めり込み」。
     //  壁が床に少し刺さっているのは正常なので、割合で足切りする。
-    for (size_t i = 0; i < items.size(); ++i)
+    for (const auto& [i, j] : ovPairs)
     {
-        for (size_t j = i + 1; j < items.size(); ++j)
         {
             if (dupPairs.count({i, j})) continue;   // ④で言った
             Box ov;
@@ -331,7 +478,112 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         }
     }
 
+    lap(4);
     // ---- ⑦ 浮き / 地面へのめり込み（三角形精密レイキャストで真下を見る）----
+    //  RaycastSceneRay は描画項目を総なめにする（1 本 O(N)・置き物の数だけ撃つので全体 O(N²)）。
+    //  縦のレイは XZ の格子セルだけで当たる球を絞れる。球テスト自体は RaycastSceneRay の中で従来どおり
+    //  同じ関数・同じ並び（描画項目の元の順）で行うので、候補も結果も変わらない。
+    const std::vector<DrawItem>& allDraw = GetDrawItems();
+    float rayCell = 8.0f;
+    {
+        double sum = 0; size_t cnt = 0;
+        for (const DrawItem& d : allDraw) if (std::isfinite(d.radius) && d.radius < 1000.0f) { sum += d.radius; ++cnt; }
+        if (cnt > 0) rayCell = static_cast<float>((std::min)(64.0, (std::max)(2.0, 2.0 * sum / static_cast<double>(cnt))));
+    }
+    std::unordered_map<unsigned long long, std::vector<uint32_t>> rayGrid;
+    std::vector<uint32_t> rayBig;   // 大きな球・有限でない球は全レイで試す
+    auto rayKey = [](long long x, long long z) {
+        return static_cast<unsigned long long>(x * 73856093LL) ^ static_cast<unsigned long long>(z * 83492791LL);
+    };
+    for (size_t k = 0; k < allDraw.size(); ++k)
+    {
+        const DrawItem& d = allDraw[k];
+        if (!std::isfinite(d.radius) || !std::isfinite(d.center.x) || !std::isfinite(d.center.z) || d.radius > rayCell * 8.0f)
+        {
+            rayBig.push_back(static_cast<uint32_t>(k));
+            continue;
+        }
+        const long long x0 = static_cast<long long>(std::floor((d.center.x - d.radius) / rayCell));
+        const long long x1 = static_cast<long long>(std::floor((d.center.x + d.radius) / rayCell));
+        const long long z0 = static_cast<long long>(std::floor((d.center.z - d.radius) / rayCell));
+        const long long z1 = static_cast<long long>(std::floor((d.center.z + d.radius) / rayCell));
+        for (long long gx = x0; gx <= x1; ++gx)
+            for (long long gz = z0; gz <= z1; ++gz)
+                rayGrid[rayKey(gx, gz)].push_back(static_cast<uint32_t>(k));
+    }
+    struct RayScratch { std::vector<DrawItem> subset; std::vector<uint32_t> ids; };
+    // self を撃つ物とする。self・その子孫・祖先は、撃った後の判定ループが必ず読み飛ばすヒットなので、
+    // 候補（球に当たる描画項目）が maxCandidates=128 を超えない範囲では先に外しても結果は同じ
+    // （自分自身のメッシュは三角形を全部なめるので、これが 1 本あたりの時間の大半だった）。
+    auto downRay = [&](RayScratch& sc, const XMFLOAT3& o, const ScenePickOptions& opt, entt::entity self) {
+        if (allDraw.empty()) return RaycastSceneRay(reg, &allDraw, o, XMFLOAT3{0.0f, -1.0f, 0.0f}, 0.0f, opt);
+        sc.ids.assign(rayBig.begin(), rayBig.end());
+        if (const auto f = rayGrid.find(rayKey(static_cast<long long>(std::floor(o.x / rayCell)),
+                                               static_cast<long long>(std::floor(o.z / rayCell)))); f != rayGrid.end())
+            sc.ids.insert(sc.ids.end(), f->second.begin(), f->second.end());
+        std::sort(sc.ids.begin(), sc.ids.end());   // 描画項目の元の並びを保つ
+        const bool canDropSelf = sc.ids.size() <= static_cast<size_t>(opt.maxCandidates);
+        sc.subset.clear();
+        for (uint32_t k : sc.ids)
+        {
+            const DrawItem& di = allDraw[k];
+            if (canDropSelf && (di.e == self || McpIsDescendantOf(reg, di.e, self) || McpIsDescendantOf(reg, self, di.e))) continue;
+            sc.subset.push_back(di);
+        }
+        if (sc.subset.empty()) return std::vector<ScenePickHit>{};
+        return RaycastSceneRay(reg, &sc.subset, o, XMFLOAT3{0.0f, -1.0f, 0.0f}, 0.0f, opt);
+    };
+
+    // 置き物ごとに真下を撃った結果（支え・地面）を先に求める。撃つ相手は互いに独立なので並列（論理コアの 1/4）。
+    // 並列にするのは GPU 駆動のインスタンス群が無いときだけ（群があるとピック用のキャッシュを書き換えるため直列）。
+    struct RayRes { bool hasGround = false, hasSupport = false; float groundY = 0.0f, supportY = 0.0f; bool done = false; };
+    std::vector<RayRes> rayRes(items.size());
+    {
+        std::vector<size_t> props;
+        for (size_t k = 0; k < items.size(); ++k)
+            if (IsProp(items[k].box) && !dupEntities.count(items[k].e)) props.push_back(k);
+        // 地面判定の深い AABB は先に温めておく（並列中の書き込みを減らす。残りはロックで守る）
+        for (const DrawItem& di : allDraw) { Box wb; bool wh = false; if (reg.valid(di.e)) deepBox(di.e, wb, wh); }
+        std::mutex groundMutex;
+        auto groundLockedLike = [&](entt::entity e) { std::lock_guard<std::mutex> lk(groundMutex); return groundLike(e); };
+        auto castOne = [&](RayScratch& sc, size_t k) {
+            const Item& it = items[k];
+            const Box& b = it.box;
+            const XMFLOAT3 o{ (b.mn.x + b.mx.x) * 0.5f, b.mx.y + 0.05f, (b.mn.z + b.mx.z) * 0.5f };
+            ScenePickOptions popt;
+            popt.includeNonMesh  = false;
+            popt.trianglePrecise = true;
+            popt.maxCandidates   = 128;
+            RayRes& r = rayRes[k];
+            for (const ScenePickHit& h : downRay(sc, o, popt, it.e))
+            {
+                if (h.entity == it.e || McpIsDescendantOf(reg, h.entity, it.e)
+                    || McpIsDescendantOf(reg, it.e, h.entity)) continue;
+                if (!r.hasSupport) { r.supportY = h.worldPos.y; r.hasSupport = true; }
+                if (groundLockedLike(h.entity)) { r.groundY = h.worldPos.y; r.hasGround = true; break; }
+            }
+            r.done = true;
+        };
+        const bool canParallel = m_gpuInst.frame.empty() && props.size() >= 256;
+        const unsigned workers = canParallel
+            ? (std::max)(1u, (std::min)(8u, std::thread::hardware_concurrency() / 4)) : 1u;
+        if (workers <= 1)
+        {
+            RayScratch sc;
+            for (size_t k : props) castOne(sc, k);
+        }
+        else
+        {
+            std::atomic<size_t> next{0};
+            std::vector<std::thread> pool;
+            for (unsigned w = 0; w < workers; ++w)
+                pool.emplace_back([&]() {
+                    RayScratch sc;
+                    for (size_t n; (n = next.fetch_add(1)) < props.size();) castOne(sc, props[n]);
+                });
+            for (auto& t : pool) t.join();
+        }
+    }
     //  ここだけレイを飛ばすので、対象は「置き物っぽいもの」に絞る（床/壁そのものは対象外）。
     for (const auto& it : items)
     {
@@ -352,21 +604,9 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         //   道具と自動修正が真逆のことをしていたことになる。
         //   浮きは「支えがあるか」の話なので supportY で見る。
         //   埋まりは従来どおり床に対してだけ言う（IsGroundLike のコメント参照）。
-        const XMFLOAT3 o{ (b.mn.x + b.mx.x) * 0.5f, b.mx.y + 0.05f, (b.mn.z + b.mx.z) * 0.5f };
-        const XMFLOAT3 d{ 0.0f, -1.0f, 0.0f };
-        ScenePickOptions popt;
-        popt.includeNonMesh  = false;
-        popt.trianglePrecise = true;
-        popt.maxCandidates   = 128;
-        float groundY = 0.0f, supportY = 0.0f;
-        bool  hasGround = false, hasSupport = false;
-        for (const ScenePickHit& h : RaycastSceneRay(reg, &GetDrawItems(), o, d, 0.0f, popt))
-        {
-            if (h.entity == it.e || McpIsDescendantOf(reg, h.entity, it.e)
-                || McpIsDescendantOf(reg, it.e, h.entity)) continue;
-            if (!hasSupport) { supportY = h.worldPos.y; hasSupport = true; }
-            if (IsGroundLike(reg, h.entity)) { groundY = h.worldPos.y; hasGround = true; break; }
-        }
+        const RayRes& rr = rayRes[static_cast<size_t>(&it - items.data())];
+        const float groundY = rr.groundY, supportY = rr.supportY;
+        const bool  hasGround = rr.hasGround, hasSupport = rr.hasSupport;
 
         // 真下に何も無いなら、埋まりも浮きも判定材料が無い。黙る（0.0f を地面と称さない）。
         if (!hasSupport) continue;
@@ -402,6 +642,7 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         }
     }
 
+    lap(5);
     // ---- ⑧ 自動修正 ----
     //  安全な修正だけ既定で許す。「安全」= 元に戻せる or 見た目が壊れない、の 2 条件。
     if (fixMode > 0)
@@ -486,11 +727,15 @@ Application::LayoutReport Application::RunLayoutValidation(int fixMode, float to
         }
     }
 
+    lap(6);
     for (const LayoutIssue& is : rep.issues)
     {
         if (is.fixed) continue;
         if (is.level >= 2) ++rep.errors; else ++rep.warnings;
     }
+    Logger::Info("配置検査の所要: {} 件 / 合計 {:.0f} ms（集計 {:.0f} / NaN・当たり {:.0f} / 二重 {:.0f} / 面重なり {:.0f} / 貫通 {:.0f} / 浮き埋まり {:.0f} / 修正 {:.0f}）",
+                 rep.checked, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tStart).count(),
+                 lapMs[0], lapMs[1], lapMs[2], lapMs[3], lapMs[4], lapMs[5], lapMs[6]);
 
     // 何を検出したかはログにも残す。返り値は次の 1 手で流れて消えるが、ログは残る＝
     // 共同開発者が「AI が何を見て何を直したか」を後から追える（先頭 30 本で足切り）。

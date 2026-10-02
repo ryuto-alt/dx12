@@ -12,6 +12,11 @@
 
 #include "resource/TextureLoader.h"
 #include "core/PathResolver.h"   // Test_CacheKeyIsRootIndependent
+#include "resource/EnvironmentConvert.h"   // Test_Equirect*
+#include <DirectXPackedVector.h>
+#include <limits>
+#include <cstdlib>
+#include <algorithm>
 
 #include <DirectXTex.h>
 
@@ -439,8 +444,220 @@ void Test_CacheKeyIsRootIndependent()
     }
 }
 
+// ---- equirect(.hdr / .exr) → キューブ ---------------------------------------------------
+static std::vector<uint8_t> MakeExr(int w, int h, int compression, const std::vector<float>& rgb /*w*h*3*/)
+{
+    // HALF の R/G/B(アルファ無し)。ZIP 系は「無圧縮の deflate ブロック」で包む(predictor/並べ替えは正規の手順)。
+    std::vector<uint8_t> f = {0x76, 0x2f, 0x31, 0x01, 2, 0, 0, 0};
+    auto putStr = [&](const char* s) { while (*s) f.push_back(static_cast<uint8_t>(*s++)); f.push_back(0); };
+    auto putI32 = [&](int32_t v) { for (int i = 0; i < 4; ++i) f.push_back(static_cast<uint8_t>((v >> (8 * i)) & 255)); };
+    putStr("channels"); putStr("chlist");
+    putI32(3 * (2 + 16) + 1);
+    for (const char* nm : {"B", "G", "R"})
+    {
+        putStr(nm); putI32(1); putI32(0); putI32(1); putI32(1);   // HALF, pLinear/reserved, xs, ys
+    }
+    f.push_back(0);
+    putStr("compression"); putStr("compression"); putI32(1); f.push_back(static_cast<uint8_t>(compression));
+    putStr("dataWindow"); putStr("box2i"); putI32(16); putI32(0); putI32(0); putI32(w - 1); putI32(h - 1);
+    f.push_back(0);   // ヘッダ終端
+
+    const int lpb = compression == 3 ? 16 : 1;
+    const int nBlocks = (h + lpb - 1) / lpb;
+    const size_t tablePos = f.size();
+    f.resize(f.size() + static_cast<size_t>(nBlocks) * 8);
+    for (int b = 0; b < nBlocks; ++b)
+    {
+        const uint64_t off = f.size();
+        for (int i = 0; i < 8; ++i) f[tablePos + b * 8 + i] = static_cast<uint8_t>((off >> (8 * i)) & 255);
+        const int y0 = b * lpb, lines = std::min(lpb, h - y0);
+        std::vector<uint8_t> raw;
+        for (int y = y0; y < y0 + lines; ++y)
+            for (int c : {2, 1, 0})   // B, G, R(名前順)
+                for (int x = 0; x < w; ++x)
+                {
+                    const uint16_t half = DirectX::PackedVector::XMConvertFloatToHalf(rgb[(static_cast<size_t>(y) * w + x) * 3 + c]);
+                    raw.push_back(static_cast<uint8_t>(half & 255));
+                    raw.push_back(static_cast<uint8_t>(half >> 8));
+                }
+        std::vector<uint8_t> payload = raw;
+        if (compression == 2 || compression == 3)
+        {
+            // 圧縮側の前処理: 偶奇に分け、差分(+128)を取る → stored deflate(zlib 包み)
+            const size_t n = raw.size(), half = (n + 1) / 2;
+            std::vector<uint8_t> t(n);
+            size_t a = 0, bb = half;
+            for (size_t i = 0; i < n; ++i) { if (i % 2 == 0) t[a++] = raw[i]; else t[bb++] = raw[i]; }
+            for (size_t i = n - 1; i > 0; --i) t[i] = static_cast<uint8_t>(t[i] - t[i - 1] + 128);
+            payload = {0x78, 0x01, 0x01, static_cast<uint8_t>(n & 255), static_cast<uint8_t>(n >> 8),
+                       static_cast<uint8_t>(~n & 255), static_cast<uint8_t>((~n >> 8) & 255)};
+            payload.insert(payload.end(), t.begin(), t.end());
+            payload.insert(payload.end(), {0, 0, 0, 0});   // adler32(読み飛ばされる)
+        }
+        putI32(y0); putI32(static_cast<int32_t>(payload.size()));
+        f.insert(f.end(), payload.begin(), payload.end());
+    }
+    return f;
+}
+
+static void Test_ExrDecode()
+{
+    namespace envconv = dx12e::envconv;
+    const int w = 16, h = 20;   // 16 行ブロックを割る高さ(端数ブロックも見る)
+    std::vector<float> rgb(static_cast<size_t>(w) * h * 3);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+        {
+            rgb[(static_cast<size_t>(y) * w + x) * 3 + 0] = static_cast<float>(x) / 16.0f;
+            rgb[(static_cast<size_t>(y) * w + x) * 3 + 1] = static_cast<float>(y) / 20.0f;
+            rgb[(static_cast<size_t>(y) * w + x) * 3 + 2] = (x == 3 && y == 5) ? 40000.0f : 0.5f;
+        }
+    for (int comp : {0, 2, 3})
+    {
+        const auto file = MakeExr(w, h, comp, rgb);
+        DirectX::ScratchImage out;
+        std::string err;
+        const bool ok = envconv::DecodeExr(file.data(), file.size(), out, err);
+        CHECK(ok);
+        if (!ok) { std::printf("  exr comp=%d: %s\n", comp, err.c_str()); continue; }
+        const DirectX::Image* img = out.GetImage(0, 0, 0);
+        CHECK(out.GetMetadata().width == static_cast<size_t>(w) && out.GetMetadata().height == static_cast<size_t>(h));
+        double maxErr = 0;
+        for (int y = 0; y < h; ++y)
+        {
+            const float* p = reinterpret_cast<const float*>(img->pixels + static_cast<size_t>(y) * img->rowPitch);
+            for (int x = 0; x < w; ++x)
+                for (int c = 0; c < 3; ++c)
+                {
+                    const float want = DirectX::PackedVector::XMConvertHalfToFloat(
+                        DirectX::PackedVector::XMConvertFloatToHalf(rgb[(static_cast<size_t>(y) * w + x) * 3 + c]));
+                    maxErr = std::max(maxErr, static_cast<double>(std::fabs(p[x * 4 + c] - want)));
+                }
+        }
+        CHECK(maxErr == 0.0);
+    }
+    // 壊れた入力は落ちずに false
+    std::vector<uint8_t> junk = {0x76, 0x2f, 0x31, 0x01, 2, 0, 0, 0, 'x'};
+    DirectX::ScratchImage o2; std::string e2;
+    CHECK(!envconv::DecodeExr(junk.data(), junk.size(), o2, e2));
+}
+
+// 環境変数 DX12E_EXR_DIR に実ファイル(Blender 出力など)のフォルダを渡したときだけ走る。
+// 規約: bl_NONE_<深度>.exr が基準。同じ深度の ZIP / ZIPS / RLE / PIZ は基準とビット一致するはず。
+static void Test_ExrRealFiles()
+{
+    namespace envconv = dx12e::envconv;
+    char envBuf[1024] = {};
+    size_t envLen = 0;
+    if (getenv_s(&envLen, envBuf, sizeof(envBuf), "DX12E_EXR_DIR") != 0 || envLen <= 1) return;
+    const std::filesystem::path dir = envBuf;
+    auto load = [&](const std::string& name, DirectX::ScratchImage& out) {
+        std::ifstream f(dir / name, std::ios::binary);
+        std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        std::string err;
+        const bool ok = envconv::DecodeExr(b.data(), b.size(), out, err);
+        std::printf("  %s: %s %s\n", name.c_str(), ok ? "ok" : "FAIL", ok ? "" : err.c_str());
+        return ok;
+    };
+    for (const char* depth : {"16", "32"})
+    {
+        DirectX::ScratchImage ref;
+        if (!load(std::string("bl_NONE_") + depth + ".exr", ref)) { CHECK(false); continue; }
+        const DirectX::Image* ri = ref.GetImage(0, 0, 0);
+        for (const char* codec : {"ZIP", "ZIPS", "RLE", "PIZ"})
+        {
+            DirectX::ScratchImage got;
+            const bool ok = load(std::string("bl_") + codec + "_" + depth + ".exr", got);
+            CHECK(ok);
+            if (!ok) continue;
+            const DirectX::Image* gi = got.GetImage(0, 0, 0);
+            CHECK(gi->width == ri->width && gi->height == ri->height);
+            size_t diff = 0;
+            for (size_t y = 0; y < ri->height; ++y)
+                diff += std::memcmp(ri->pixels + y * ri->rowPitch, gi->pixels + y * gi->rowPitch, ri->width * 16) != 0;
+            std::printf("    %s %s: differing rows = %zu\n", codec, depth, diff);
+            CHECK(diff == 0);
+        }
+    }
+    // 非対応の圧縮は落ちずに false(理由つき)
+    DirectX::ScratchImage tmp;
+    std::ifstream f(dir / "bl_PXR24_16.exr", std::ios::binary);
+    std::vector<uint8_t> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    std::string err;
+    if (!b.empty()) { CHECK(!envconv::DecodeExr(b.data(), b.size(), tmp, err)); CHECK(!err.empty()); }
+}
+
+static void Test_EquirectToCube()
+{
+    namespace envconv = dx12e::envconv;
+    using namespace DirectX;
+    const int w = 128, h = 64;
+    ScratchImage eq;
+    CHECK(SUCCEEDED(eq.Initialize2D(DXGI_FORMAT_R32G32B32A32_FLOAT, w, h, 1, 1)));
+    const Image* img = eq.GetImage(0, 0, 0);
+    for (int y = 0; y < h; ++y)
+    {
+        float* p = reinterpret_cast<float*>(img->pixels + static_cast<size_t>(y) * img->rowPitch);
+        for (int x = 0; x < w; ++x)
+        {
+            // 経度で色分け(左端 = 赤 / 中央〜左寄り = 緑 / 右寄り = 青)。上端は白、太陽は +Z 付近の 1 画素
+            float r = x < w / 8 ? 1.f : 0.f, g = (x >= w / 8 && x < 5 * w / 8) ? 1.f : 0.f, b = x >= 5 * w / 8 ? 1.f : 0.f;
+            if (y == 0) r = g = b = 1.f;
+            if (x == w / 2 && y == h / 2) r = g = b = 1.0e7f;   // fp16 を溢れる太陽
+            if (x == 5 && y == 40) r = std::numeric_limits<float>::infinity();   // 非有限は 0 に
+            p[x * 4 + 0] = r; p[x * 4 + 1] = g; p[x * 4 + 2] = b; p[x * 4 + 3] = 1.f;
+        }
+    }
+    CHECK(envconv::ChooseFaceSize(4096) == 1024);
+    CHECK(envconv::ChooseFaceSize(8192) == 1024);
+    CHECK(envconv::ChooseFaceSize(2048) == 512);
+    CHECK(envconv::ChooseFaceSize(100) == 256);
+
+    ScratchImage cube; std::string err;
+    CHECK(envconv::EquirectToCube(eq, 64, cube, err));
+    const TexMetadata& m = cube.GetMetadata();
+    CHECK(m.IsCubemap() && m.arraySize == 6 && m.format == DXGI_FORMAT_R16G16B16A16_FLOAT);
+    CHECK(m.mipLevels == 7);   // 64 → 1 のフルチェーン
+
+    auto texel = [&](size_t face, size_t mip, size_t x, size_t y, float* rgb) {
+        const Image* im = cube.GetImage(mip, face, 0);
+        const auto* p = reinterpret_cast<const PackedVector::HALF*>(im->pixels + y * im->rowPitch) + x * 4;
+        for (int i = 0; i < 3; ++i) rgb[i] = PackedVector::XMConvertHalfToFloat(p[i]);
+    };
+    float c[3];
+    // +Z 面(4)の中央 = 画像中央(緑 + 太陽は 60000 以下に丸められる)
+    texel(4, 0, 32, 32, c);
+    CHECK(std::isfinite(c[0]) && c[0] <= envconv::kMaxHalf && c[0] > 1000.0f);
+    // +X 面(0)の中央 = 経度 +90° = u 0.75 = 青
+    texel(0, 0, 32, 40, c);
+    CHECK(c[2] > 0.9f && c[0] < 0.1f && c[1] < 0.1f);
+    // -X 面(1)の中央 = 経度 -90° = u 0.25 = 緑
+    texel(1, 0, 32, 40, c);
+    CHECK(c[2] < 0.1f);
+    // +Y 面(2)の中央 = 真上 = 白
+    texel(2, 0, 32, 32, c);
+    CHECK(c[0] > 0.9f && c[1] > 0.9f && c[2] > 0.9f);
+    // 全面・全ミップで inf / NaN が無い
+    bool allFinite = true;
+    for (size_t f = 0; f < 6; ++f)
+        for (size_t mip = 0; mip < m.mipLevels; ++mip)
+        {
+            const Image* im = cube.GetImage(mip, f, 0);
+            for (size_t y = 0; y < im->height; ++y)
+            {
+                const auto* p = reinterpret_cast<const PackedVector::HALF*>(im->pixels + y * im->rowPitch);
+                for (size_t i = 0; i < im->width * 4; ++i)
+                    if (!std::isfinite(PackedVector::XMConvertHalfToFloat(p[i]))) allFinite = false;
+            }
+        }
+    CHECK(allFinite);
+}
+
 int main()
 {
+    Test_ExrDecode();
+    Test_ExrRealFiles();
+    Test_EquirectToCube();
     Test_FormatSelection();
     Test_ViewFormatStripsSrgb();
     Test_CompressibleSize();

@@ -34,6 +34,8 @@ bool IsMcpReadOnlyMethod(const std::string& method)
         "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
         "audio_state",
         "brain_state",
+        // ビルドは出力フォルダへ書くだけでシーンのデータは変えない（未保存扱いにしない）。
+        "build_game", "get_build_status", "cancel_build",
         "get_anim_state", "get_lua_component_state", "get_script_errors",
         "get_play_session", "read_lua_component", "read_shader", "describe_components",
         "describe_lua_api", "describe_anim_graph", "describe_mcp_params", "describe_mcp_manifest",

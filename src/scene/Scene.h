@@ -247,6 +247,12 @@ public:
     const std::string& GetDecalAtlasPath() const { return m_decalAtlasPath; }
     void SetDecalAtlasPath(const std::string& p) { m_decalAtlasPath = p; }
 
+    // シーンファイルの分割保存（docs/SCENE_FORMAT_DESIGN.md §4.3）。セルの大きさ [m]。0 = 分割しない（1 ファイル）。
+    // シーン JSON のルート "partition":{"cellSize":N} に保存される。
+    float GetPartitionCellSize() const { return m_partitionCellSize; }
+    void  SetPartitionCellSize(float s) { m_partitionCellSize = (s > 0.0f && s < 1.0e6f) ? s : 0.0f; }
+    float& PartitionCellSizeRef() { return m_partitionCellSize; }   // MCP の Undo 追跡用（McpUndo().TrackSceneValue）
+
     // リアルタイム影(CSM)をこのシーンで描くか。false なら影パスを丸ごとスキップ
     // （トップダウン等で影が要らないシーンの FPS 向上用。シェーダは無影センチネルで全面ライト）。
     bool GetShadowsEnabled() const { return m_shadowsEnabled; }
@@ -324,6 +330,7 @@ private:
     TaaSettings         m_taa;
     VolumetricFogSettings m_volFog;
     std::string         m_decalAtlasPath;         // assets 相対。空 = デカール無効
+    float               m_partitionCellSize = 0.0f;   // 分割保存のセルの大きさ [m]。0 = 分割しない
     bool                m_shadowsEnabled = true;  // 既定 ON（エディタ/従来シーン互換）
     nav::NavBuildConfig m_navConfig;               // シーン JSON に保存する生成パラメータ
     nav::NavMesh        m_navMesh;                 // 焼いた実体（.nav から読む / エディタで焼く）

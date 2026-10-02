@@ -712,7 +712,14 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
     ImGui::SetCursorPosY(std::floor(midY - lineH * 0.5f));
 
     // ---- 左: 選択中の名前（複数選択なら件数）/ シーンのロード進捗 ----
-    if (m_ctx->sceneLoadProgress >= 0.0f)
+    if (m_ctx->buildRunning)
+    {
+        // ゲームのビルド（裏ジョブ）。エディタは操作できるまま。詳細とキャンセルは「ビルド設定」窓。
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentHover);
+        ImGui::Text("ビルド中 %.0f%%  %s", m_ctx->buildFraction * 100.0f, m_ctx->buildStatusText.c_str());
+        ImGui::PopStyleColor();
+    }
+    else if (m_ctx->sceneLoadProgress >= 0.0f)
     {
         ImGui::PushStyleColor(ImGuiCol_Text, theme::AccentHover);
         ImGui::Text("シーン読み込み中 %.0f%%", m_ctx->sceneLoadProgress * 100.0f);

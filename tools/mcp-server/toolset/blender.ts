@@ -397,8 +397,23 @@ regRaw(
 reg(
   "dx12_build_game",
   "ゲームビルド",
-  "現在のプロジェクトをヘッドレスでビルドする(ツールバーの「ビルド」ボタンと同じ処理: exe+DLL+assets+shaders を出力フォルダへコピー)。{success, outputDir, error?}。出力先はビルド設定(エンジン設定窓)で指定した場所、未設定なら build/game。数十秒〜かかることがある(同期呼び出し)。",
-  {},
+  "現在のプロジェクトをビルドする(ツールバーの「ビルド」ボタンと同じ処理: exe+DLL+assets+shaders を暗号化 pak にして出力フォルダへ)。★エンジン側は裏ジョブで始めて即応答する({started, state:'running', stage, pct…})ので、エディタは固まらず、大きなプロジェクトの初回ビルド(1〜2 分)でもタイムアウトしない。待つなら waitSec(最大 110)を付ける: 終わる(succeeded|failed|cancelled)か時間切れまで状態を読んで返す。時間切れなら state:'running' のまま返るので、続きは dx12_call {name:'get_build_status'} で読む(止めるのは cancel_build)。二重起動は拒否される(started:false)。ビルド中に保存していない編集は配布物に入らない(ディスクの内容が対象)。出力先はビルド設定(エンジン設定窓)で指定した場所、未設定なら build/game。wait:true は従来どおり完了まで同期({success, outputDir, error?}。エディタが固まるので小さなプロジェクト以外では使わない)。",
+  {
+    waitSec: z.number().min(0).max(110).optional().describe("終わるまで最大この秒数だけ状態を待つ(既定 0 = 待たず即応答)。"),
+    wait: z.boolean().optional().describe("true=従来の同期ビルド(エンジンが完了まで応答しない)。通常は使わず waitSec を使う。"),
+  },
   { destructiveHint: true },
-  () => run(() => engine.call("build_game", {})),
+  ({ waitSec, wait }) => run(async () => {
+    if (wait === true) return engine.call("build_game", { wait: true });
+    const started = await engine.call("build_game", {});
+    if (!waitSec || started?.started === false) return started;
+    const deadline = Date.now() + waitSec * 1000;
+    let st: any = started;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 1000));
+      st = await engine.call("get_build_status", {});
+      if (st?.state === "succeeded" || st?.state === "failed" || st?.state === "cancelled") break;
+    }
+    return { ...st, started: true };
+  }),
 );
