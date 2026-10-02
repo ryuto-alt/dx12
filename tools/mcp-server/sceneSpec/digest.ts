@@ -20,8 +20,8 @@ export type Digest = { hash: string; entities: number; text: string; byName: Map
 
 /** name → 正規化した JSON(親の名前を含む)と全体のハッシュ。internal(gridPlane)は除く。 */
 export async function digestScene(engine: EngineLike, opts: { ignoreData?: string[] } = {}): Promise<Digest> {
-  const list = await engine.call("list_entities", { verbose: true });
-  const hier = await engine.call("get_hierarchy", {});
+  const list = await engine.call("list_entities", { verbose: true, limit: 0 });
+  const hier = await engine.call("get_hierarchy", { limit: 0 });
   const parentOf = new Map<string, string>();
   const walk = (n: any, p?: string) => { if (p !== undefined) parentOf.set(n.name, p); for (const c of n.children ?? []) walk(c, n.name); };
   for (const r of hier?.roots ?? []) walk(r);

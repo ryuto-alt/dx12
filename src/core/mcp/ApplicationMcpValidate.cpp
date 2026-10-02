@@ -16,7 +16,9 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 
+#include <algorithm>
 #include <atomic>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <set>   // 二重配置ペアの記録（ApplicationInternal.h は unordered_set しか引いていない）
@@ -776,7 +778,7 @@ nlohmann::json Application::McpLayoutSummary()
 
 void Application::RegisterMcpValidateMethods()
 {
-    McpDefine("validate_layout", "fix:string,tolerance:number", DX12E_MCP_HANDLER
+    McpDefine("validate_layout", "fix:string,limit:int,offset:int,tolerance:number", DX12E_MCP_HANDLER
         {
             // Editor 限定。Play 中は物理が物を動かしているので、そこで測った「浮き」は嘘になる。
             if (m_engineMode == EngineMode::Playing)
@@ -795,10 +797,22 @@ void Application::RegisterMcpValidateMethods()
             const float tol = params.value("tolerance", 0.001f);
             LayoutReport rep = RunLayoutValidation(fixMode, tol);
 
+            // issues が万単位になる（Dead Mall で 9,800 件 = 5 MB）ので、返す件数を打ち切る。
+            //   limit 省略 = 既定 1000 件（並びは従来のまま。error が先）・limit:0 で無制限・offset で続き。
+            //   集計（errors / warnings / byKind / total）は打ち切りに関係なく全件ぶん。
+            constexpr size_t kDefaultLimit = 1000;
+            const long long limitIn = params.value("limit", -1LL);
+            const size_t offset = static_cast<size_t>((std::max)(0LL, params.value("offset", 0LL)));
+            const size_t limit  = limitIn < 0 ? kDefaultLimit : (limitIn == 0 ? (std::numeric_limits<size_t>::max)() : static_cast<size_t>(limitIn));
             nlohmann::json issues = nlohmann::json::array();
+            nlohmann::json byKind = nlohmann::json::object();
             auto& reg = m_scene->GetRegistry();
+            size_t issueIndex = 0;
             for (const LayoutIssue& is : rep.issues)
             {
+                byKind[is.kind] = byKind.value(is.kind, 0) + 1;
+                const size_t myIndex = issueIndex++;
+                if (myIndex < offset || issues.size() >= limit) continue;
                 nlohmann::json j{
                     {"kind",  is.kind},
                     {"level", is.level >= 2 ? "error" : "warning"},
@@ -826,8 +840,17 @@ void Application::RegisterMcpValidateMethods()
                 {"warnings", rep.warnings},
                 {"fixed",    rep.fixed},
                 {"issues",   std::move(issues)},
+                {"total",    rep.issues.size()},
+                {"offset",   offset},
+                {"byKind",   std::move(byKind)},
                 {"sceneGeneration", m_sceneGeneration},
             };
+            if (offset + resp["result"]["issues"].size() < rep.issues.size())
+            {
+                resp["result"]["truncated"] = true;
+                resp["result"]["nextOffset"] = offset + resp["result"]["issues"].size();
+                resp["result"]["hint"] = "件数が多いので issues を途中で打ち切った。続きは offset=nextOffset、全件は limit:0。集計（errors / warnings / byKind）は全件ぶん";
+            }
             if (fixMode == 0 && rep.errors > 0)
                 resp["result"]["next"] =
                     "fix:\"safe\" で BURIED/FLOATING/Z_FIGHT/COLLIDER_WITHOUT_BODY は自動で直せる";

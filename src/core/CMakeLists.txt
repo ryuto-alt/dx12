@@ -10,6 +10,8 @@ endif()
 
 add_library(Core STATIC
     Version.cpp
+    SceneBackup.cpp                  # シーンの世代つきバックアップ（.dx12/backups/）。tests/scene_backup_test.cpp
+    AtomicFile.cpp                   # 原子的な書き込み（一時ファイル→flush→検証→置き換え）。ユーザーデータを書く全経路が使う。tests/atomic_file_test.cpp
     # Application の実装は 1 ファイル 18k 行のゴッドファイルだったので、クラス定義
     # (Application.h) を一切変えずにテーマ別 TU へ分割してある。担当を分けて同時に
     # 触れるようにするのが目的なので、新しい実装は該当テーマのファイルへ足すこと。
@@ -49,6 +51,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpAi.cpp         # ゲーム AI の観測（brain_state）
     mcp/ApplicationMcpPathTracer.cpp # DXR パストレーサー（render_reference / render_reference_status / render_reference_cancel）
     mcp/ApplicationMcpWater.cpp      # 水面 W1（water_apply_preset）
+    mcp/ApplicationMcpSceneBackup.cpp   # シーンの世代つきバックアップ（scene_backups）
     mcp/ApplicationMcpInstanceGroup.cpp   # インスタンス群（instance_group）
     mcp/ApplicationMcpFoliage.cpp    # 植生 F1（foliage_scatter / foliage_paint / foliage_stats / set_wind ほか）
     mcp/ApplicationMcpImGui.cpp      # 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作: dx12_imgui_*）

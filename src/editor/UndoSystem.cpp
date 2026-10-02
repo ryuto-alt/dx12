@@ -5,6 +5,8 @@
 #include "scene/SceneSerializer.h"
 #include "core/Logger.h"
 
+#include <optional>
+
 namespace dx12e
 {
 
@@ -71,6 +73,9 @@ void DeleteEntityCommand::Undo()
     // 親→子の順でスナップショットから復元し、親子関係を張り直す
     std::vector<entt::entity> restored(m_records.size(),
                                        static_cast<entt::entity>(entt::null));
+    // 大量の復元（巨大なグループの削除の Undo）で、名前の重複検査が体数の 2 乗にならないようにする
+    std::optional<SceneSerializer::NameIndexScope> nameScope;
+    if (m_records.size() > 32) nameScope.emplace(*m_scene);
     for (size_t i = 0; i < m_records.size(); ++i)
     {
         // ★同じエンティティの復元なので guid を引き継ぐ。落とすと、このエンティティを

@@ -10,6 +10,7 @@
 #include "core/Http.h"
 #include "core/PathResolver.h"
 #include "core/Logger.h"
+#include "core/AtomicFileJson.h"
 
 #include <nlohmann/json.hpp>
 #include <imgui.h>
@@ -21,7 +22,9 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -131,9 +134,16 @@ void AppendManifest(const std::string& assetsDir, const std::vector<std::string>
     std::scoped_lock lk(s_manifestMutex);
 
     fs::path mf = fs::path(assetsDir) / "ASSET_MANIFEST.md";
-    if (!fs::exists(mf))
+    // 追記は「既存内容 + 追記分」を 1 回で原子的に書く（途中で落ちても既存の記録は無傷）
+    std::string text;
+    if (fs::exists(mf))
     {
-        std::ofstream init(mf, std::ios::binary | std::ios::trunc);
+        std::ifstream in(mf, std::ios::binary);
+        if (in) text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    else
+    {
+        std::ostringstream init;
         init << "# Asset Manifest\n\n"
              << "asset コマンド/マテリアルライブラリで取得・生成したアセットの出所とライセンス記録。\n"
              << "CC-BY 等の帰属が必要なものは配布時にクレジットへ転記すること。\n\n"
@@ -141,12 +151,13 @@ void AppendManifest(const std::string& assetsDir, const std::vector<std::string>
                 "\xe5\x86\x85\xe5\xae\xb9 | \xe5\x87\xba\xe6\x89\x80 | \xe3\x83\xa9\xe3\x82\xa4\xe3\x82\xbb\xe3\x83\xb3\xe3\x82\xb9 | "
                 "\xe5\xb8\xb0\xe5\xb1\x9e |\n"   // 日付 | ファイル | 内容 | 出所 | ライセンス | 帰属 |
              << "|---|---|---|---|---|---|\n";
+        text = init.str();
     }
-    std::ofstream ofs(mf, std::ios::binary | std::ios::app);
-    if (!ofs) return;
     const std::string date = TodayDate();
     for (const auto& rel : relFiles)
-        ofs << "| " << date << " | " << rel << " | " << desc << " | Poly Haven | CC0 | \xe4\xb8\x8d\xe8\xa6\x81 |\n";  // 不要
+        text += "| " + date + " | " + rel + " | " + desc + " | Poly Haven | CC0 | \xe4\xb8\x8d\xe8\xa6\x81 |\n";  // 不要
+    const auto wr = atomicfile::WriteFile(mf, text);
+    if (!wr) Logger::Warn("ASSET_MANIFEST.md の更新に失敗しました: {}", wr.error);
 }
 
 // http::Get はワイド文字列URLを取る。Poly HavenのURL/idはASCIIのみなのでUTF8変換で十分。
@@ -348,15 +359,8 @@ void MaterialLibraryPanel::StartDownload(const std::string& id, const std::strin
             if (!HttpGetUtf8(url, bytes, &raw->cancel) || bytes.empty()) return false;
             std::string fname = id + "_" + ext;
             fs::path finalPath = outDir / fname;
-            fs::path partPath  = outDir / (fname + ".part");
-            {
-                std::ofstream ofs(partPath, std::ios::binary | std::ios::trunc);
-                if (!ofs) return false;
-                ofs.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-            }
-            std::error_code renEc;
-            fs::rename(partPath, finalPath, renEc);
-            if (renEc) { fs::remove(partPath, ec); return false; }
+            // 一時ファイル→flush→検証→置き換え（ダウンロード途中や保存途中の中途半端なファイルを残さない）
+            if (!atomicfile::WriteFile(finalPath, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()))) return false;
             outRelPath = "textures/" + id + "/" + fname;
             return true;
         };
@@ -379,10 +383,9 @@ void MaterialLibraryPanel::StartDownload(const std::string& id, const std::strin
         fs::create_directories(matDir, ec);
         fs::path matPath = matDir / (id + ".dxmat");
         {
-            std::ofstream ofs(matPath, std::ios::binary | std::ios::trunc);
-            if (!ofs) { fail("マテリアルアセットの書き込みに失敗"); return; }
-            std::string json = SerializeMaterialAsset(data);
-            ofs.write(json.data(), static_cast<std::streamsize>(json.size()));
+            const std::string json = SerializeMaterialAsset(data);
+            const auto wr = atomicfile::WriteFile(matPath, json, atomicfile::JsonVerifier());
+            if (!wr) { fail("マテリアルアセットの書き込みに失敗: " + wr.error); return; }
         }
         savedRel.push_back("materials/" + id + ".dxmat");
 

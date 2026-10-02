@@ -26,8 +26,8 @@ reg(
 
 /** list_entities + get_hierarchy から親付きのフラット一覧を作る。 */
 async function collectEntities(): Promise<EntityInfo[]> {
-  const list = await engine.call("list_entities", { verbose: true });
-  const hier = await engine.call("get_hierarchy", {});
+  const list = await engine.call("list_entities", { verbose: true, limit: 0 });
+  const hier = await engine.call("get_hierarchy", { limit: 0 });
   const parentOf = new Map<number, number>();
   const walk = (node: any, parent?: number) => {
     if (parent != null) parentOf.set(node.entityId, parent);

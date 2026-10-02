@@ -18,6 +18,8 @@
 #include <vector>
 #include <functional>
 
+#include "core/AtomicFile.h"
+
 #pragma warning(push)
 #pragma warning(disable: 4189 4456 4458 4267 4996)
 #include <nlohmann/json.hpp>
@@ -89,6 +91,12 @@ struct WriteStats
 // セルファイルを先に、最後に foo.json を書く（foo.json が「無いファイル」を指す瞬間を作らない）。内容が同じものには触らない。
 // 今回のセルに無い cell_*.json は消す（フォルダが空になれば消す）。
 WriteStats WriteSplit(const std::string& scenePath, const SplitOutput& out);
+
+// WriteSplit の分解版（複数ファイルの保存を 1 回のコミットにまとめるため）。
+//   StageSplit: 変わったセル（と stageRoot なら foo.json）を batch の一時ファイルへ書く。置き換えはしない。
+//   FinishSplit: コミットの後に、今回のセルに無い cell_*.json を消す（消した数を返す）。
+WriteStats StageSplit(const std::string& scenePath, const SplitOutput& out, atomicfile::Batch& batch, bool stageRoot);
+int FinishSplit(const std::string& scenePath, const SplitOutput& out);
 
 // 分割していないシーンの保存後の掃除: <stem>.parts/ の cell_*.json を消す（フォルダが空なら消す）。戻り値 = 消した数。
 int RemoveParts(const std::string& scenePath);

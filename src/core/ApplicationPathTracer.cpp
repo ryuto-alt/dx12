@@ -9,6 +9,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/PathTracerHost.h"
+#include "core/AtomicFileJson.h"
 #include "core/AtmosphereHost.h"   // 物理大気(A1): m_atmo(SRV ブロック先頭を PT の環境へ渡す)
 #include "renderer/pt/PtImageIO.h"
 
@@ -752,8 +753,9 @@ void PtHost::Finalize(Application& app)
         {"userNote", req.note},
     };
     {
-        std::ofstream jf(outputBase + ".json");
-        if (jf) { jf << meta.dump(2); files.push_back(outputBase + ".json"); }
+        const auto wr = atomicfile::WriteFile(std::filesystem::path(outputBase + ".json"), meta.dump(2), atomicfile::JsonVerifier());
+        if (wr) files.push_back(outputBase + ".json");
+        else Logger::Warn("リファレンスレンダーのメタ JSON の保存に失敗しました: {}", wr.error);
     }
     phase = cancelRequested ? Phase::Cancelled : Phase::Done;
     message = cancelRequested ? "中止(そこまでの結果を保存した)" : (truncated ? "時間制限で打ち切り(そこまでの結果を保存した)" : "完了");

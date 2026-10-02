@@ -905,11 +905,22 @@ DeepDiagReport DeepDiag::SceneAssets(Application& app)
         return "entity#" + std::to_string(static_cast<uint32_t>(e));
     };
 
-    auto checkFile = [&r](const std::string& rel, const std::string& who, const char* kind) {
-        fs::path abs;
-        if (!ResolveAssetPath(rel, abs)) return;
-        std::error_code ec;
-        if (!fs::exists(abs, ec))
+    // 同じパスを何万体が共有していても存在確認（ファイルシステムへの問い合わせ）は 1 回だけ（10 万体で 2 秒かかっていた）
+    std::unordered_map<std::string, bool> existsCache;
+    auto checkFile = [&r, &existsCache](const std::string& rel, const std::string& who, const char* kind) {
+        auto it = existsCache.find(rel);
+        if (it == existsCache.end())
+        {
+            fs::path abs;
+            bool ok = true;   // 解決できないパスは従来どおり報告しない
+            if (ResolveAssetPath(rel, abs))
+            {
+                std::error_code ec;
+                ok = fs::exists(abs, ec);
+            }
+            it = existsCache.emplace(rel, ok).first;
+        }
+        if (!it->second)
             r.Add(2, who + " の" + kind + " が見つからない: " + rel);
     };
 

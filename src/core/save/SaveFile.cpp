@@ -1,4 +1,5 @@
 #include "core/save/SaveFile.h"
+#include "core/AtomicFile.h"
 
 #include <windows.h>
 
@@ -45,17 +46,9 @@ public:
 
     bool WriteAll(const std::filesystem::path& p, std::string_view bytes) override
     {
-        HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                               FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (h == INVALID_HANDLE_VALUE) return false;
-        DWORD wrote = 0;
-        bool ok = bytes.empty()
-                  || (::WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr) != 0
-                      && wrote == bytes.size());
-        // ★flush してから閉じる。閉じただけではキャッシュに残り、直後の電源断で中身が 0 になる
-        ok = ok && FlushFileBuffers(h) != 0;
-        CloseHandle(h);
-        return ok;
+        // ★元のセーブへ直接上書きすると、書き込み中のクラッシュ・電源断・ディスク満杯でセーブが壊れる。
+        //   同じフォルダの一時ファイルへ書く → flush → 読み戻し検証 → 置き換え（失敗しても元のセーブは無傷）。
+        return atomicfile::WriteFile(p, bytes).ok;
     }
 
     bool Exists(const std::filesystem::path& p) override

@@ -31,8 +31,8 @@ export type ExportOpts = {
 export type ExportResult = { spec: SceneSpec; entityCount: number; skipped: { name: string; reason: string }[]; notes: string[] };
 
 export async function exportScene(engine: EngineLike, opts: ExportOpts = {}): Promise<ExportResult> {
-  const list = await engine.call("list_entities", { verbose: true });
-  const hier = await engine.call("get_hierarchy", {});
+  const list = await engine.call("list_entities", { verbose: true, limit: 0 });
+  const hier = await engine.call("get_hierarchy", { limit: 0 });
   const ents: { id: number; name: string; types: string[] }[] = ((list?.entities ?? []) as any[]).map((e) => ({ id: e.entityId ?? e.id, name: e.name, types: e.componentTypes ?? [] }));
   const idName = new Map(ents.map((e) => [e.id, e.name]));
   const parentOf = new Map<string, string>();

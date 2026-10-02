@@ -1,0 +1,19 @@
+{
+  "asset_info": {"path": "models/DamagedHelmet.glb"},
+  "describe_anim_graph": {"entity": "@ID"},
+  "find_entity": [{"name": "Statue_500"}, {"name": "Stat"}],
+  "get_anim_state": {"entity": "@ID"},
+  "get_bounds": {"entity": "@ID"},
+  "get_entity": {"entity": "@ID"},
+  "get_lua_component_state": {"entity": "@ID"},
+  "list_particle_layers": {"entity": "@ID"},
+  "project_world_to_screen": {"entity": "@ID"},
+  "list_entities": [{}, {"verbose": true}, {"name_prefix": "Statue_99"}, {"component_type": "meshRenderer"}],
+  "overlap_box": [{"center": [0,0,0], "halfExtents": [20,20,20]}, {"center": [0,0,0], "halfExtents": [100000,100000,100000]}],
+  "overlap_sphere": [{"center": [0,0,0], "radius": 20}, {"center": [0,0,0], "radius": 100000}],
+  "pick": {"x": 500, "y": 300},
+  "query_entities": [{"box": [-100,-100,100,100]}, {"box": [-100000,-100000,100000,100000]}, {"tag": "x"}],
+  "raycast": {"origin": [0,100,0], "direction": [0,-1,0]},
+  "raycast_precise": {"origin": [0,100,0], "direction": [0,-1,0]},
+  "validate_scene": [{}]
+}

@@ -324,7 +324,8 @@ public:
                         i32 maxSegs) const;
 
     // ---- シリアライズ ----
-    bool Save(const std::string& absPath, std::string& err) const;
+    bool Save(const std::string& absPath, std::string& err) const;   // 原子的に書く（core/AtomicFile）
+    void SerializeToBytes(std::vector<u8>& out) const;               // Save と同じ中身をメモリへ（シーン保存のコミットにまとめるため）
     bool Load(const std::string& absPath, std::string& err);   // 実ファイル
     bool LoadFromMemory(const u8* data, size_t size, std::string& err);
 

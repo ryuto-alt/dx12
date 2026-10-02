@@ -1,6 +1,7 @@
 #include "terrain/TerrainIO.h"
 
 #include "core/Logger.h"
+#include "core/AtomicFile.h"
 #include "core/vfs/Vfs.h"
 
 #include <cctype>
@@ -48,17 +49,10 @@ bool SaveHeightFieldFile(const std::string& absPath, const HeightField& hf)
     const std::vector<u8> bytes = hf.Encode();
     if (bytes.empty()) return false;
 
-    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-    if (!ofs)
+    const auto wr = atomicfile::WriteFile(p, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    if (!wr)
     {
-        Logger::Error("地形ハイトマップを書き込めません: {}", absPath);
-        return false;
-    }
-    ofs.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    if (!ofs)
-    {
-        Logger::Error("地形ハイトマップの書き込みに失敗: {}", absPath);
+        Logger::Error("地形ハイトマップの書き込みに失敗: {} ({})", absPath, wr.error);
         return false;
     }
     return true;
@@ -126,17 +120,10 @@ bool SaveSplatMapFile(const std::string& absPath, const TerrainSplatMap& splat)
     const std::vector<u8> bytes = splat.Encode();
     if (bytes.empty()) return false;
 
-    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-    if (!ofs)
+    const auto wr = atomicfile::WriteFile(p, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    if (!wr)
     {
-        Logger::Error("地形スプラットマップを書き込めません: {}", absPath);
-        return false;
-    }
-    ofs.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    if (!ofs)
-    {
-        Logger::Error("地形スプラットマップの書き込みに失敗: {}", absPath);
+        Logger::Error("地形スプラットマップの書き込みに失敗: {} ({})", absPath, wr.error);
         return false;
     }
     return true;

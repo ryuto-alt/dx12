@@ -240,6 +240,11 @@ void HierarchyPanel::DrawFlagButtons(entt::registry& reg, EditorContext& ctx, en
     const float h = rowMax.y - rowMin.y;
     const ImVec2 next = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    // ★ボタンは「見えている右端」（スクリーン座標の InnerRect.Max）に置く。横スクロール中はコンテンツ座標だと右端より
+    //   スクロール量だけ先になり、窓のコンテンツ幅（CursorMaxPos）を押し広げる → さらにスクロール可能 → …と無限に伸びる
+    //   （UI テストの ItemExists("**/…") が窓を横に走査して永久に終わらなかった）。幅には数えない。
+    ImGuiWindow* const flagWin = ImGui::GetCurrentWindow();
+    const ImVec2 savedMaxPos = flagWin->DC.CursorMaxPos;
 
     auto button = [&](const char* id, float x, const char* glyph, bool self, bool inherited, bool visible,
                       const char* tip, const char* tipInherited) -> bool
@@ -272,6 +277,7 @@ void HierarchyPanel::DrawFlagButtons(entt::registry& reg, EditorContext& ctx, en
                                     "ロック（ビューポートでの選択とギズモを無効にします）\nAlt+クリック: これ以外をロック（もう一度で全部解除）",
                                     "親がロックされているため選べません");
     vinput_gui::AnchorLastItem("row-flag", "flags");
+    flagWin->DC.CursorMaxPos = savedMaxPos;   // 上のコメント参照
     ImGui::SetCursorScreenPos(next);
 
     if (!eyePressed && !lockPressed) return;
@@ -1004,13 +1010,7 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
         ~ScopeMs() { LARGE_INTEGER t1; QueryPerformanceCounter(&t1); out = static_cast<float>(static_cast<double>(t1.QuadPart - t0.QuadPart) * 1000.0 / static_cast<double>(freq.QuadPart)); }
     } scopeMs(ctx.hierRenderMs);
 
-    const bool dbgBegin = ImGui::Begin("\xe3\x83\x92\xe3\x82\xa8\xe3\x83\xa9\xe3\x83\xab\xe3\x82\xad\xe3\x83\xbc");  // Hierarchy
-    {
-        static int lastState = -1;
-        ImGuiWindow* dw = ImGui::GetCurrentWindow();
-        const int st = (dbgBegin ? 1 : 0) | (dw->SkipItems ? 2 : 0) | (dw->Collapsed ? 4 : 0) | (dw->Hidden ? 8 : 0) | (ImGui::IsWindowFocused() ? 16 : 0);
-        if (st != lastState) { lastState = st; Logger::Info("[hier-dbg] Begin={} skip={} collapsed={} hidden={} focused={} size=({:.0f},{:.0f}) clip=({:.0f},{:.0f},{:.0f},{:.0f}) frame={}", dbgBegin, dw->SkipItems, dw->Collapsed, dw->Hidden, ImGui::IsWindowFocused(), dw->Size.x, dw->Size.y, dw->ClipRect.Min.x, dw->ClipRect.Min.y, dw->ClipRect.Max.x, dw->ClipRect.Max.y, ImGui::GetFrameCount()); }
-    }
+    ImGui::Begin("ヒエラルキー");  // Hierarchy
 
     // 生成直後の名前入力要求（グループ化など）。作った親は開いた状態にして中身を見せる。
     if (ctx.requestRenameEntity != entt::null)

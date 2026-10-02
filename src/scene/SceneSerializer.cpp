@@ -1,4 +1,6 @@
 #include "scene/SceneSerializer.h"
+#include "core/AtomicFileJson.h"
+#include "core/SceneBackup.h"
 #include "scene/SceneFormatV2.h"
 #include "scene/ScenePartition.h"   // シーンの分割保存（§4.3）
 #include "scene/Scene.h"
@@ -31,6 +33,7 @@
 #include <sstream>
 #include <filesystem>
 #include <unordered_map>
+#include <optional>
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
@@ -2596,6 +2599,9 @@ static void* g_splitAdviceCtx = nullptr;
 
 const SceneSerializer::SaveReport& SceneSerializer::LastSaveReport() { return g_lastSaveReport; }
 
+static std::string g_lastLoadError;
+const std::string& SceneSerializer::LastLoadError() { return g_lastLoadError; }
+
 void SceneSerializer::SetSplitAdviceHook(SplitAdviceHook fn, void* ctx)
 {
     g_splitAdviceHook = fn;
@@ -2664,24 +2670,199 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
         return false;
     }
 
-    // サイドカーを先に書く（シーンが「無いデータ」を指す瞬間を作らない）。内容が同じファイルには触らない。
-    const instgroup::SaveStats instStats = instgroup::SaveSidecars(filePath, instCollected);
-    if (!instStats.ok) Logger::Warn("インスタンス群のサイドカーを書ききれませんでした: {}", filePath);
+    // ---- ここから書き込み。シーン本体・セル・サイドカー・.nav を 1 回のコミットにまとめる ----
+    //   ・全部を一時ファイルへ書いて検証し終えてから置き換える（1 つでも失敗したら何も置き換えない）
+    //   ・ルート（foo.json）を最後に置き換える（「新しいルート＋古いセル」の食い違いを作らない）
+    //   ・置き換えの途中でプロセスが死んでも、次回の読み込み・保存が RecoverPending で最後まで置き換える
+    const fs::path txnPath = fs::path(filePath).concat(".dx12txn");
+    if (atomicfile::RecoverPending(txnPath))
+        Logger::Warn("前回の保存が途中で止まっていたので、最後まで置き換えて復旧しました: {}", filePath);
+    // 残骸（前回死んだプロセスの一時ファイル・世代へ移し損ねた元の版）は、プロセスが死んだときにしか生じない。
+    // このプロセスでそのシーンを最初に保存するときだけ掃除する（毎回ディレクトリを走査しない）。
+    static std::unordered_set<std::string> s_sweptFor;
+    if (s_sweptFor.insert(filePath).second)
+    {
+        // 前回死んだプロセスの一時ファイルの残骸を掃除（動いている別プロセスのものは触らない）
+        int swept = atomicfile::SweepStaleTmp(dir.empty() ? fs::path(".") : dir);
+        swept += atomicfile::SweepStaleTmp(scenepart::PartsDirFor(filePath));
+        swept += atomicfile::SweepStaleTmp(instgroup::SidecarDirFor(filePath));
+        // コミット後に取っておいた元の版（世代へ移し損ねたもの）の残り。RecoverPending の後なので進行中のコミットは無い。
+        swept += atomicfile::SweepStaleOld(dir.empty() ? fs::path(".") : dir);
+        swept += atomicfile::SweepStaleOld(scenepart::PartsDirFor(filePath));
+        swept += atomicfile::SweepStaleOld(instgroup::SidecarDirFor(filePath));
+        if (swept > 0) Logger::Info("書き込み途中で残った一時ファイルを {} 個消しました", swept);
+    }
+    atomicfile::TakeStats();   // この保存の内訳だけを数える
+
+    // 直前の版を世代として残す（既定 10 世代・60 秒間隔。.dx12/backups/）。ここではコピーしない: 保存で置き換わる元のファイルを
+    // コミットの後に「移動」して世代にする（置き換わらないファイルはハードリンク）。失敗しても保存は続ける。
+    const auto tBackup0 = LoadClock::now();
+    scenebackup::Pending backup;
+    try { backup = scenebackup::Begin(PathResolver::BaseDir(), fs::path(filePath)); }
+    catch (const std::exception& e) { Logger::Warn("バックアップの世代を作れませんでした: {}", e.what()); }
+    double backupMs = LoadMsSince(tBackup0);
+
+    atomicfile::Batch batch(txnPath);
+    batch.RetainOld(backup.active);
+    auto failSave = [&](const char* what) {
+        Logger::Error("{}（元のファイルは変更していません）: {} ({})", what, filePath, batch.Error());
+        return false;
+    };
 
     const auto tSave3 = LoadClock::now();
     SaveReport report;
     report.path = filePath;
     report.entities = entityCount;
     report.cellSize = cellSize;
+
+    // サイドカー（インスタンス群）→ セル → .nav → ルートの順にステージ（置き換えもこの順）。内容が同じファイルには触らない。
+    const instgroup::SaveStats instStats = instgroup::StageSidecars(filePath, instCollected, batch);
+    if (!instStats.ok) return failSave("インスタンス群のサイドカーを書けません");
+
+    scenepart::WriteStats ws;
     if (cellSize > 0.0f)
     {
-        // 分割保存: セルを先に・foo.json を最後に。内容が同じファイルには触らない（更新時刻・git の差分を動かさない）。
-        const scenepart::WriteStats ws = scenepart::WriteSplit(filePath, split);
-        if (!ws.ok)
+        ws = scenepart::StageSplit(filePath, split, batch, /*stageRoot=*/false);
+        if (!ws.ok) return failSave("シーンの分割ファイルを書き込めません");
+    }
+
+    // ---- ナビメッシュのサイドカー（<シーン>.nav）----
+    // シーン JSON にはパラメータだけを書き、焼いた実体はバイナリで隣に置く。
+    // 焼いていない/消したシーンでは古い .nav を残さない（開き直すと蘇るため。コミットの後に消す）。
+    const std::string navPath = fs::path(filePath).replace_extension(".nav").string();
+    if (scene.HasNavMesh())
+    {
+        std::vector<u8> navBytes;
+        scene.GetNavMesh().SerializeToBytes(navBytes);
+        if (!batch.Add(fs::path(navPath), std::string_view(reinterpret_cast<const char*>(navBytes.data()), navBytes.size())))
+            return failSave("ナビメッシュを書けません");
+    }
+
+    // ルート。中身が同じなら触らない（更新時刻・git の差分を動かさない。変わっていない保存し直しで世代も増えない）。
+    bool rootSame = false;
+    // 前回このプロセスが書いた版の指紋（ハッシュ・大きさ・更新時刻）。ファイルが前回のままなら、読まずに「同じか」を判断できる
+    // （25MB でも 1 回の読みを省ける）。指紋が無い / ファイルが変わっていた場合だけ従来どおり読んで比べる。
+    struct LastSaved { uint64_t hash = 0; uintmax_t size = 0; fs::file_time_type mtime{}; };
+    static std::unordered_map<std::string, LastSaved> s_lastSaved;
+    uint64_t textHash = 0;
+    {
+        // 8 バイトずつの高速ハッシュ（暗号用ではない。内容が違えば違う値になれば十分）
+        uint64_t h1 = 0x9E3779B97F4A7C15ULL, h2 = 0xC2B2AE3D27D4EB4FULL;
+        const char* p = text.data();
+        size_t n = text.size();
+        for (; n >= 16; n -= 16, p += 16)
         {
-            Logger::Error("シーンの分割ファイルを書き込めません: {}", filePath);
-            return false;
+            uint64_t a, b;
+            std::memcpy(&a, p, 8); std::memcpy(&b, p + 8, 8);
+            h1 = (h1 ^ a) * 0xFF51AFD7ED558CCDULL; h1 ^= h1 >> 32;
+            h2 = (h2 ^ b) * 0xC4CEB9FE1A85EC53ULL; h2 ^= h2 >> 29;
         }
+        uint64_t tail = 0;
+        for (size_t i = 0; i < n; ++i) tail = tail * 131 + static_cast<unsigned char>(p[i]);
+        textHash = (h1 ^ (h2 * 31) ^ tail ^ text.size()) * 0x9E3779B97F4A7C15ULL;
+    }
+    {
+        bool same = false;
+        const auto last = s_lastSaved.find(filePath);
+        bool known = false;   // 指紋で決着がついたか
+        if (last != s_lastSaved.end())
+        {
+            std::error_code ec;
+            if (last->second.hash != textHash || last->second.size != text.size()) { known = true; same = false; }   // 内容が違う（読まなくてよい）
+            else if (fs::exists(filePath, ec) && fs::file_size(filePath, ec) == last->second.size
+                     && fs::last_write_time(filePath, ec) == last->second.mtime) { known = true; same = true; }    // 前回書いたままのファイル
+        }
+        if (!known)
+        {
+            std::error_code ec;
+            if (fs::exists(filePath, ec) && fs::file_size(filePath, ec) == text.size())
+            {
+                // 一括で読む（istreambuf_iterator の 1 文字ずつは 25MB で 0.15 秒かかる）
+                std::ifstream in(filePath, std::ios::binary);
+                std::string cur(text.size(), '\0');
+                in.read(cur.data(), static_cast<std::streamsize>(cur.size()));
+                same = in.gcount() == static_cast<std::streamsize>(cur.size()) && cur == text;
+            }
+        }
+        rootSame = same;
+        if (cellSize > 0.0f) { ws.maxBytes = (std::max)(ws.maxBytes, text.size()); ws.totalBytes += text.size(); }
+        if (same) ++ws.unchanged;
+        else
+        {
+            if (cellSize > 0.0f) ++ws.written;
+            // ★書いた中身を再パースして確認する。通常のシーンは体数の一致まで確認する（分割のルートは一部の体だけ）。
+            //   大きいシーン（4MB 超）は再パースしない（25MB で 0.2 秒以上かかり保存が目に見えて遅くなる）。書いた後に読み戻して
+            //   送ったバイト列と 1 バイトずつ比較しているので、壊れていないことはそちらで確かめてあり、JSON は直前に dump した
+            //   正しいものそのもの。末尾の形だけ確認する。
+            atomicfile::Verifier rootVerify;
+            if (text.size() > (4u << 20))
+                rootVerify = [](std::string_view b, std::string& err) {
+                    if (b.size() < 2 || b.front() != '{' || b.back() != '\n') { err = "シーンの末尾が不正です"; return false; }
+                    return true;
+                };
+            else
+                rootVerify = atomicfile::JsonVerifier(cellSize > 0.0f ? -1 : static_cast<long long>(entityCount));
+            if (!batch.Add(fs::path(filePath), text, rootVerify))
+                return failSave("シーンを書き込めません");
+        }
+    }
+
+    const double stageMs = LoadMsSince(tSave3);   // ここまで = ステージ（一時ファイルへ書く・検証）
+    const auto tCommit0 = LoadClock::now();
+    const atomicfile::Result commit = batch.Commit();
+    if (!commit.ok) return failSave("シーンを置き換えられません");
+    const double commitMs = LoadMsSince(tCommit0);
+
+    {
+        // コミットが成功したときだけ、次の保存のための指紋（この版のハッシュ・大きさ・更新時刻）を控える
+        std::error_code ec;
+        LastSaved& ls = s_lastSaved[filePath];
+        ls.hash = textHash;
+        ls.size = text.size();
+        ls.mtime = fs::last_write_time(filePath, ec);
+    }
+
+    // 保存前の版を世代にする（置き換わった元のファイルを移動・残りをリンク）。
+    // 孤児の掃除（空になったセル・削除した群・.nav）が控えているときは、消えるファイルも世代に入れる必要があるので、掃除より前に
+    // 同期で行う。控えていなければ別スレッドで行う（数百のセルのリンクで約 0.5 秒かかるため。保存の待ち時間に載せない。
+    // 次の保存・読み込み・一覧は完了を待つ）。
+    {
+        const auto tB1 = LoadClock::now();
+        try
+        {
+            bool stalePending = false;
+            if (backup.active)
+            {
+                auto key = [](const fs::path& x) { return x.lexically_normal().generic_string(); };
+                std::unordered_set<std::string> keep;
+                keep.insert(key(fs::path(filePath)));
+                if (cellSize > 0.0f)
+                    for (const auto& pt : split.parts) keep.insert(key(fs::path(scenepart::PartsDirFor(filePath)) / pt.name));
+                for (const auto& [guidHex, set] : instCollected.sets)
+                    if (set) keep.insert(key(fs::path(instgroup::SidecarDirFor(filePath)) / (guidHex + ".jsonl")));
+                if (scene.HasNavMesh()) keep.insert(key(fs::path(navPath)));
+                for (const fs::path& L : backup.live)
+                    if (!keep.count(key(L))) { stalePending = true; break; }
+            }
+            if (stalePending)
+            {
+                const std::string gen = scenebackup::Finish(backup, batch);
+                if (!gen.empty()) Logger::Info("保存の前の版を世代として残しました: {}", gen);
+            }
+            else
+            {
+                scenebackup::FinishAsync(std::move(backup), batch);
+            }
+        }
+        catch (const std::exception& e) { Logger::Warn("バックアップの世代を作れませんでした: {}", e.what()); batch.ReleaseRetained(); }
+        backupMs += LoadMsSince(tB1);
+    }
+
+    // コミットの後の掃除（失敗しても保存は成功している）
+    instgroup::CleanupSidecars(filePath, instCollected);
+    if (cellSize > 0.0f)
+    {
+        ws.removed = scenepart::FinishSplit(filePath, split);
         report.partitioned = !split.parts.empty();
         report.files = ws.files;
         report.written = ws.written;
@@ -2692,41 +2873,26 @@ bool SceneSerializer::Save(const Scene& scene, const std::string& filePath,
     }
     else
     {
-        // ★バイナリで書く。テキストモードだと Windows で LF が CRLF になり、v2 の「改行は LF」が崩れる。
-        std::ofstream ofs(filePath, std::ios::binary | std::ios::trunc);
-        if (!ofs.is_open())
-        {
-            Logger::Error("ファイルを書き込み用に開けません: {}", filePath);
-            return false;
-        }
-        ofs.write(text.data(), static_cast<std::streamsize>(text.size()));
-        ofs.close();
-        // 分割をやめたシーン: 古いセルファイルを消す（foo.json はもう parts を指していないので、先に書いてから消す）
+        // 分割をやめたシーン: 古いセルファイルを消す（foo.json はもう parts を指していないので、置き換えた後に消す）
         report.removed = scenepart::RemoveParts(filePath);
-        report.written = 1;
+        report.written = rootSame ? 0 : 1;
+        report.unchanged = rootSame ? 1 : 0;
         report.maxFileBytes = report.totalBytes = text.size();
+    }
+    if (!scene.HasNavMesh())
+    {
+        std::error_code ec;
+        fs::remove(navPath, ec);
     }
     const double writeMs = LoadMsSince(tSave3);
 
-    // ---- ナビメッシュのサイドカー（<シーン>.nav）----
-    // シーン JSON にはパラメータだけを書き、焼いた実体はバイナリで隣に置く。
-    // 焼いていない/消したシーンでは古い .nav を残さない（開き直すと蘇るため）。
-    {
-        const std::string navPath = fs::path(filePath).replace_extension(".nav").string();
-        if (scene.HasNavMesh())
-        {
-            std::string err;
-            if (!scene.GetNavMesh().Save(navPath, err))
-                Logger::Warn("ナビメッシュの保存に失敗しました: {}", err);
-        }
-        else
-        {
-            std::error_code ec;
-            fs::remove(navPath, ec);
-        }
-    }
-
     report.ms = LoadMsSince(tSave0);
+    {
+        // 書き込みの内訳（原子的な書き込みの追加分: flush / 読み戻し / 検証 / 置き換え / 世代）。保存の遅さの調査用。
+        const atomicfile::Stats st = atomicfile::TakeStats();
+        Logger::Info("Scene save write stages: {} files {:.1f} MB | stage {:.0f} ms, commit {:.0f} ms | write {:.0f} ms, flush {:.0f}, readback {:.0f}, verify {:.0f}, replace {:.0f}, backup {:.0f} ms",
+                     st.files, static_cast<double>(st.bytes) / (1024.0 * 1024.0), stageMs, commitMs, st.writeMs, st.flushMs, st.readbackMs, st.verifyMs, st.replaceMs, backupMs);
+    }
     Logger::Info("Scene saved ({} entities, format v2, {} bytes): {} | build {:.0f} ms, convert {:.0f}, dump {:.0f}, write {:.0f}, total {:.0f} ms",
                  entityCount, text.size(), filePath, buildMs, convertMs, dumpMs, writeMs, report.ms);
     if (report.partitioned)
@@ -2795,6 +2961,8 @@ static bool LoadSceneText(Scene& scene, const std::string& text, const std::stri
     {
         if (fromFile) Logger::Error("JSON の解析に失敗しました: {}", e.what());
         else          Logger::Error("JSON の解析に失敗しました（スナップショット）: {}", e.what());
+        g_lastLoadError = text.empty() ? "ファイルが空です（保存の途中で止まった可能性があります）"
+                                       : std::string("ファイルの内容が壊れています（保存の途中で切れた可能性があります）: ") + e.what();
         return false;
     }
     if (g_loadTimings) g_loadTimings->parseMs += LoadMsSince(tParse);
@@ -2820,6 +2988,7 @@ static bool LoadSceneText(Scene& scene, const std::string& text, const std::stri
         if (!merged)
         {
             Logger::Error("シーンの分割ファイルを読み込めません（{}）: {}", *scenePath, err);
+            g_lastLoadError = "分割ファイル（.parts）を読み込めません: " + err;
             return false;
         }
         if (g_loadTimings)
@@ -2847,6 +3016,7 @@ static bool LoadSceneText(Scene& scene, const std::string& text, const std::stri
         // ApplySceneJson 内でセクション/エンティティ単位に捕捉しているが、最後の保険
         if (fromFile) Logger::Error("シーン読み込みを中断しました（JSON の値が不正）: {}", e.what());
         else          Logger::Error("シーン復元を中断しました（JSON の値が不正）: {}", e.what());
+        g_lastLoadError = std::string("シーンの値が不正です: ") + e.what();
         return false;
     }
     if (outEntityCount)
@@ -2859,6 +3029,10 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
 {
     LoadTimings tm;
     const auto tTotal = LoadClock::now();
+    g_lastLoadError.clear();
+    // 前回の保存が置き換えの途中で止まっていたら、読む前に最後まで置き換える（新旧が食い違った状態で開かない）
+    if (atomicfile::RecoverPending(std::filesystem::path(filePath).concat(".dx12txn")))
+        Logger::Warn("前回の保存が途中で止まっていたので、最後まで置き換えて復旧しました: {}", filePath);
 
     // 分割保存のセルファイル（foo.parts/cell_*.json）は単独では開かない（一部だけ読むと、保存で他が消えるため）。
     if (std::filesystem::path(filePath).parent_path().extension() == ".parts")
@@ -2884,6 +3058,7 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
             if (!ifs.is_open())
             {
                 Logger::Error("シーンファイルを開けません: {}", filePath);
+                g_lastLoadError = "シーンファイルを開けません（ファイルが無いか、他のプログラムが使用中です）";
                 return false;
             }
             ifs.seekg(0, std::ios::end);
@@ -3121,6 +3296,34 @@ std::string SceneSerializer::SerializeEntity(const Scene& scene, entt::entity e,
 
 static std::string MakeUniqueName(const Scene& scene, const std::string& base);
 
+// NameIndexScope の状態（スレッドごと）。active の間 MakeUniqueName は全走査せず names を引く。
+namespace
+{
+struct NameIndexState
+{
+    const Scene* scene = nullptr;
+    std::unordered_set<std::string> names;
+};
+thread_local NameIndexState g_nameIndex;
+} // namespace
+
+SceneSerializer::NameIndexScope::NameIndexScope(const Scene& scene)
+{
+    if (g_nameIndex.scene != nullptr) return;   // 入れ子は外側が持つ
+    g_nameIndex.scene = &scene;
+    g_nameIndex.names.clear();
+    for (auto [e, tag] : scene.GetRegistry().view<const NameTag>().each())
+        g_nameIndex.names.insert(tag.name);
+    m_owner = true;
+}
+
+SceneSerializer::NameIndexScope::~NameIndexScope()
+{
+    if (!m_owner) return;
+    g_nameIndex.scene = nullptr;
+    g_nameIndex.names.clear();
+}
+
 entt::entity SceneSerializer::InstantiateEntity(Scene& scene, const std::string& jsonStr,
                                                 const std::string& assetsDir,
                                                 bool keepGuid)
@@ -3145,14 +3348,16 @@ entt::entity SceneSerializer::InstantiateEntity(Scene& scene, const std::string&
 static std::string MakeUniqueName(const Scene& scene, const std::string& base)
 {
     const auto& reg = scene.GetRegistry();
+    const bool indexed = g_nameIndex.scene == &scene;   // NameIndexScope の間は索引（全走査しない）
     auto exists = [&](const std::string& n)
     {
+        if (indexed) return g_nameIndex.names.count(n) != 0;
         for (auto [e, tag] : reg.view<const NameTag>().each())
             if (tag.name == n) return true;
         return false;
     };
 
-    if (!exists(base)) return base;
+    if (!exists(base)) { if (indexed) g_nameIndex.names.insert(base); return base; }
 
     // 末尾の " (N)" を除去してベース名にする
     std::string stem = base;
@@ -3163,7 +3368,7 @@ static std::string MakeUniqueName(const Scene& scene, const std::string& base)
     for (int i = 1; i < 1000; ++i)
     {
         std::string candidate = stem + " (" + std::to_string(i) + ")";
-        if (!exists(candidate)) return candidate;
+        if (!exists(candidate)) { if (indexed) g_nameIndex.names.insert(candidate); return candidate; }
     }
     return base;
 }
@@ -3336,7 +3541,10 @@ static void RepointGeneratedAssets(json& ej, const std::string& oldName,
         const fs::path dst(base + newRel);
         if (!fs::exists(src, ec)) return;
         fs::create_directories(dst.parent_path(), ec);
-        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+        {
+            const atomicfile::Result cr = atomicfile::CopyFileAtomic(src, dst, /*overwrite=*/true);
+            if (!cr.ok) { ec = std::make_error_code(std::errc::io_error); Logger::Warn("複製時のコピー失敗: {}", cr.error); }
+        }
         if (ec)
         {
             Logger::Warn("複製時に {} を {} へコピーできませんでした（元と共有します）: {}",
@@ -3649,18 +3857,25 @@ SceneSerializer::RewriteAssetPathRefsInFiles(const std::string& assetsDir,
         const int changed = RewriteJsonStrings(doc, oldRel, newRel);
         if (changed == 0) continue;
 
-        std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-        if (!ofs)
+        // v2 のシーンは v2 の整形で書き戻す（dump(2) だと 1 体 45 行に崩れて差分が全体に広がる）。
+        // 値は strip 済みのまま触らない（文字列の付け替えしかしていない）。
+        // 原子的に置き換える（途中で落ちても元のファイルは無傷）。
+        std::string rewritten;
+        try
+        {
+            rewritten = (scenefmt::IsV2(doc) && doc.contains("entities") && doc["entities"].is_array())
+                            ? scenefmt::DumpSceneV2(doc) : doc.dump(2);
+        }
+        catch (const std::exception&)
         {
             out.failed.push_back(MakeRelative(p.string(), assetsDir));
             continue;
         }
-        // v2 のシーンは v2 の整形で書き戻す（dump(2) だと 1 体 45 行に崩れて差分が全体に広がる）。
-        // 値は strip 済みのまま触らない（文字列の付け替えしかしていない）。
-        if (scenefmt::IsV2(doc) && doc.contains("entities") && doc["entities"].is_array())
-            ofs << scenefmt::DumpSceneV2(doc);
-        else
-            ofs << doc.dump(2);
+        if (!atomicfile::WriteFile(p, rewritten, atomicfile::JsonVerifier()).ok)
+        {
+            out.failed.push_back(MakeRelative(p.string(), assetsDir));
+            continue;
+        }
         ++out.filesChanged;
         out.refsChanged += changed;
         if (static_cast<int>(out.files.size()) < kMaxReportedFiles)
@@ -3753,6 +3968,9 @@ entt::entity SceneSerializer::InstantiateSubtree(Scene& scene, const std::string
             if (const uint64_t g = GuidFromJson(ej, "guid"); g != 0) srcGuids.insert(g);
 
     // 1パス目: 生成（名前は重複しないよう連番付与）
+    // 件数が多いとき（体数 × 件数の 2 乗になる）だけ名前の索引を使う。少数なら全走査のほうが速い。
+    std::optional<SceneSerializer::NameIndexScope> nameScope;
+    if (root["entities"].size() > 32) nameScope.emplace(scene);
     std::vector<entt::entity> created;
     created.reserve(root["entities"].size());
     for (const auto& ej : root["entities"])
@@ -4185,9 +4403,9 @@ int MergePrefabInstances(Scene& scene, const std::string& sourcePath, const json
                     continue;
                 }
                 std::error_code ec;
-                fs::copy_file(fs::path(base + np->second), fs::path(base + mineRel),
-                              fs::copy_options::overwrite_existing, ec);
-                if (!ec && outGeoPropagated) ++*outGeoPropagated;
+                const bool propagated = atomicfile::CopyFileAtomic(fs::path(base + np->second), fs::path(base + mineRel), /*overwrite=*/true).ok;
+                (void)ec;
+                if (propagated && outGeoPropagated) ++*outGeoPropagated;
             }
         }
 
@@ -4435,12 +4653,20 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
                         const fs::path src(base + srcRel), dst(base + dstRel);
                         if (!fs::exists(src, ec)) continue;
                         fs::create_directories(dst.parent_path(), ec);
-                        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
-                        if (ec)
+                        // 原子的にコピーする（上書きの途中で落ちても、いまの .prefab が指している古いコピーを壊さない）
+                        std::string geoBytes;
+                        {
+                            std::ifstream gin(src, std::ios::binary);
+                            geoBytes.assign(std::istreambuf_iterator<char>(gin), std::istreambuf_iterator<char>());
+                            if (!gin.eof() && gin.fail()) geoBytes.clear();
+                        }
+                        const atomicfile::Result gr = geoBytes.empty() ? atomicfile::Result{false, "元ファイルを読めません"}
+                                                                       : atomicfile::WriteFile(dst, geoBytes);
+                        if (!gr.ok)
                         {
                             Logger::Warn("プレハブ用に {} を {} へコピーできませんでした"
                                          "（元インスタンスのファイルを共有します）: {}",
-                                         srcRel, dstRel, ec.message());
+                                         srcRel, dstRel, gr.error);
                             continue;
                         }
                         *k = dstRel;
@@ -4454,17 +4680,17 @@ bool SceneSerializer::SavePrefab(const Scene& scene, entt::entity root,
     fs::path dir = fs::path(filePath).parent_path();
     if (!dir.empty()) fs::create_directories(dir);
 
-    // サイドカーを先に書く（.prefab が「無いデータ」を指す瞬間を作らない）。群が無くなったら古い .inst も消える。
-    if (!instgroup::SaveSidecars(filePath, instCollected).ok)
-        Logger::Warn("プレハブのインスタンス群のサイドカーを書ききれませんでした: {}", filePath);
-
-    std::ofstream ofs(filePath);
-    if (!ofs.is_open())
+    // サイドカーと .prefab を 1 回のコミットで置き換える（.prefab が「無いデータ」を指す瞬間・古いサイドカーと新しい .prefab の
+    // 食い違いを作らない）。群が無くなったら古い .inst はコミットの後に消える。
+    atomicfile::Batch batch(fs::path(filePath).concat(".dx12txn"));
+    atomicfile::RecoverPending(fs::path(filePath).concat(".dx12txn"));
+    const instgroup::SaveStats instStats = instgroup::StageSidecars(filePath, instCollected, batch);
+    if (!instStats.ok || !batch.Add(fs::path(filePath), s, atomicfile::JsonVerifier()) || !batch.Commit().ok)
     {
-        Logger::Error("プレハブの書き込みに失敗しました: {}", filePath);
+        Logger::Error("プレハブの書き込みに失敗しました: {} ({})", filePath, batch.Error());
         return false;
     }
-    ofs << s;
+    instgroup::CleanupSidecars(filePath, instCollected);
     Logger::Info("Prefab saved: {}", filePath);
     return true;
 }

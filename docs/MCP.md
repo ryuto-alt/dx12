@@ -1533,6 +1533,16 @@ TS サーバはこれを引いて、エンジンを再ビルドしても**再起
 - **未保存フラグ**: `guard_token` / `journal_list` / `journal_restore` / `cancel` はシーンのメモリを変えないので sceneDirty を立てない(`IsMcpReadOnlyMethod`)。`journal_restore` を入れないと、戻した現在シーンのファイルを自動保存がメモリ上のシーンで上書きして復元が無かったことになる(実機で検証)。
 - **自動保存**: AI のトランザクションが開いている間は本保存(2 秒アイドル)を保留する(rollback で戻す途中の状態をディスクへ書かない)。閉じた後に通常どおり保存される。
 
+### シーンの世代つきバックアップ(`scene_backups`)
+
+保存のたびに直前のシーン一式を `<project>/.dx12/backups/` へ世代として残す。実体は `objects/<内容ハッシュ>-<大きさ>`（同じ内容は 1 回だけ。置き換えで退いた古いファイルは改名で移すのでコピーが要らない）、世代は `<シーン名>_<YYYYmmdd_HHMMSS>.gen`（相対名→ハッシュの目録。最後に原子的に書く＝一覧に出る世代は完全）。現行ファイルを外部がその場で上書きしても世代は変わらない。世代を消すと参照されなくなった実体だけ消える。既定 10 世代・合計 1024MB・60 秒間隔（プロジェクトの `settings.json` の `backup_enabled` / `backup_generations` / `backup_max_mb` / `backup_interval_sec`）。.autosave など「.」で始まるフォルダは対象外。
+
+| method | 引数 | 返り値 |
+|---|---|---|
+| `scene_backups` | `{op:"list"|"restore"|"snapshot"|"settings", path?, id?, enabled?, generations?, maxMb?, intervalSec?}` | list: `{scene, dir, policy, count, generations:[{id, time, bytes, hasParts, hasInst, hasNav, file}], loadFailed}` / restore: `{restored, scene, note}`（戻すシーンは次のフレームで読み直す。戻す前の版も 1 世代残る）/ snapshot: `{created, id, why}` / settings: `{policy, changed, dir}` |
+
+シーンが壊れて開けないとき（`open_scene` が `scene load failed`）は、空のシーンで本体を上書きしないよう保存・自動保存を止めてある。`scene_backups list` → `restore` で戻す。エディタはファイル メニュー「以前の版に戻す…」。
+
 ### 13-6. `cancel`(M6 のジョブ API の口)
 `cancel {target?:"benchmark"|"step_frames"|"all"(既定 all)}`(effect=runtime・冪等キー対象外)。実行中の `benchmark`(`m_benchFramesLeft`)/ `step_frames`(`m_mcpStepFramesLeft`)の残りを 1 フレームに切り詰め、**次のフレームで保留中の遅延応答が正常な完了として返る**(benchmark は途中までの統計・step_frames は `simulatedSec` が要求より短い)。応答 `{cancelled:[…], framesLeft:{benchmark?, step_frames?}(切り詰める前の残り), note}`。何も走っていなければ `cancelled:[]`。
 

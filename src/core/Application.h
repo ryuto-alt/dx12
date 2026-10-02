@@ -839,6 +839,14 @@ private:
     // 取れた/取る必要が無かったら true、書けなかったら false。
     bool WriteMcpBackup();
     static std::string McpBackupDir();
+    // 世代つきバックアップ（core/SceneBackup.h）の方針をプロジェクトの settings.json から読む
+    // （backup_enabled / backup_generations（既定 10）/ backup_max_mb（既定 1024）/ backup_interval_sec（既定 60））。
+    void ApplyBackupPolicyFromSettings();
+    // 世代 id の内容でシーンを戻す（今の版も先に 1 世代残す）。現在開いているシーンなら読み直す。
+    bool RestoreSceneBackup(const std::string& id, const std::string& scenePath, std::string& err);
+    // シーンを開けなかったとき（壊れている・空・途中で切れている）: 空のシーンで本体を上書きしないよう保存を止め、
+    // 「以前の版に戻す」窓で復元を案内する。
+    void OnSceneLoadFailed(const std::string& fullPath);
     // 最後の MCP 書き込みから何秒待ってディスクへ書くか（デバウンス）。
     static constexpr f32 kMcpAutoSaveDelay = 2.0f;
     // .dx12/backups に残す世代数。古いものから消す。
@@ -1691,6 +1699,7 @@ private:
     nlohmann::json FoliageStatsJson() const;           // MCP foliage_stats / perf_stats の foliage ブロック
     void RegisterMcpFoliageMethods();                  // mcp/ApplicationMcpFoliage.cpp
     void RegisterMcpInstanceGroupMethods();            // mcp/ApplicationMcpInstanceGroup.cpp（instance_group）
+    void RegisterMcpSceneBackupMethods();              // mcp/ApplicationMcpSceneBackup.cpp（scene_backups: 世代の一覧・復元・設定）
 
     // ---- GPU 駆動のインスタンス群（設計 docs/SCENE_FORMAT_DESIGN.md §4.2 = 4-3）。実装は ApplicationInstanceGpu.cpp ----
     // ★しきい値（settings.json "instance_gpu_threshold"。0 = 無効）以上の不透明な群だけが GPU 経路に乗る。BuildDrawList は乗った群を DrawItem へ展開せず

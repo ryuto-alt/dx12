@@ -1,6 +1,7 @@
 #include "terrain/SculptIO.h"
 
 #include "core/Logger.h"
+#include "core/AtomicFile.h"
 #include "core/vfs/Vfs.h"
 
 #include <cctype>
@@ -48,17 +49,10 @@ bool SaveSculptMeshFile(const std::string& absPath, const SculptMeshData& mesh)
     const std::vector<u8> bytes = mesh.Encode();
     if (bytes.empty()) return false;
 
-    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-    if (!ofs)
+    const auto wr = atomicfile::WriteFile(p, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    if (!wr)
     {
-        Logger::Error("スカルプトメッシュを書き込めません: {}", absPath);
-        return false;
-    }
-    ofs.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
-    if (!ofs)
-    {
-        Logger::Error("スカルプトメッシュの書き込みに失敗: {}", absPath);
+        Logger::Error("スカルプトメッシュの書き込みに失敗: {} ({})", absPath, wr.error);
         return false;
     }
     return true;

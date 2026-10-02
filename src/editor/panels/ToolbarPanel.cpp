@@ -16,6 +16,9 @@
 #include "scene/SceneSettingsHash.h"   // 未保存判定に使う設定の指紋
 #include "core/Window.h"
 #include "core/Logger.h"
+#include "core/AtomicFile.h"
+#include "core/SceneBackup.h"      // 「以前の版に戻す」窓（世代の一覧）
+#include "core/PathResolver.h"
 #include "core/Version.h"          // ツールバーの版バッジ（文字列を直書きしない）
 #include "project/ProjectManager.h"
 #include "editor/panels/ShaderTemplates.h"
@@ -231,6 +234,13 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::Separator();
             cmd::MenuItem(ctx, cmdEnv, "file.save");
             cmd::MenuItem(ctx, cmdEnv, "file.saveAs");
+            // 保存のたびに直前の版が世代として残る（.dx12/backups/）。そこから戻す。
+            if (ui::MenuItem(ICON_HISTORY, "以前の版に戻す…", nullptr, false, !ctx.currentScenePath.empty()))
+            {
+                ctx.sceneBackupTarget = ctx.currentScenePath;
+                ctx.sceneBackupNotice.clear();
+                ctx.showSceneBackups  = true;
+            }
             ImGui::Separator();
             cmd::MenuItem(ctx, cmdEnv, "file.newScript");
             cmd::MenuItem(ctx, cmdEnv, "file.newShader");
@@ -875,18 +885,25 @@ void ToolbarPanel::Render(bool isPlaying,
 
             if (!std::filesystem::exists(scriptPath))
             {
-                std::ofstream ofs(scriptPath);
-                ofs << "-- " << ctx.newScriptNameBuf << ".lua\n\n";
-                ofs << "function OnStart()\n";
-                ofs << "    -- Called once when play mode starts\n";
-                ofs << "end\n\n";
-                ofs << "function OnUpdate(dt)\n";
-                ofs << "    -- Called every frame\n";
-                ofs << "end\n";
-                ofs.close();
-
-                Logger::Info("Created script: {}", scriptPath);
-                ctx.Notify(ui::ToastKind::Success, "スクリプトを作成しました: " + std::string(ctx.newScriptNameBuf) + ".lua");
+                std::string body;
+                body += std::string("-- ") + ctx.newScriptNameBuf + ".lua\n\n";
+                body += "function OnStart()\n";
+                body += "    -- Called once when play mode starts\n";
+                body += "end\n\n";
+                body += "function OnUpdate(dt)\n";
+                body += "    -- Called every frame\n";
+                body += "end\n";
+                const auto wr = dx12e::atomicfile::WriteFile(std::filesystem::path(scriptPath), body);
+                if (wr)
+                {
+                    Logger::Info("Created script: {}", scriptPath);
+                    ctx.Notify(ui::ToastKind::Success, "スクリプトを作成しました: " + std::string(ctx.newScriptNameBuf) + ".lua");
+                }
+                else
+                {
+                    Logger::Error("スクリプトの作成に失敗しました: {} ({})", scriptPath, wr.error);
+                    ctx.Notify(ui::ToastKind::Error, "スクリプトを作成できませんでした: " + wr.error);
+                }
             }
             else
             {
@@ -960,12 +977,18 @@ void ToolbarPanel::Render(bool isPlaying,
 
             if (!std::filesystem::exists(shaderPath))
             {
-                std::ofstream ofs(shaderPath);
-                ofs << (shaderKind == 1 ? kNewScreenShaderTemplate : kNewShaderTemplate);
-                ofs.close();
-
-                Logger::Info("Created shader: {}", shaderPath);
-                ctx.Notify(ui::ToastKind::Success, "シェーダーを作成しました: " + std::string(ctx.newShaderNameBuf) + ".hlsl");
+                const auto wr = dx12e::atomicfile::WriteFile(std::filesystem::path(shaderPath),
+                                                             std::string_view(shaderKind == 1 ? kNewScreenShaderTemplate : kNewShaderTemplate));
+                if (wr)
+                {
+                    Logger::Info("Created shader: {}", shaderPath);
+                    ctx.Notify(ui::ToastKind::Success, "シェーダーを作成しました: " + std::string(ctx.newShaderNameBuf) + ".hlsl");
+                }
+                else
+                {
+                    Logger::Error("シェーダーの作成に失敗しました: {} ({})", shaderPath, wr.error);
+                    ctx.Notify(ui::ToastKind::Error, "シェーダーを作成できませんでした: " + wr.error);
+                }
             }
             else
             {
@@ -1051,6 +1074,84 @@ void ToolbarPanel::Render(bool isPlaying,
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
+    }
+
+    // ===== 以前の版に戻す（シーンの世代つきバックアップ。.dx12/backups/）=====
+    // ファイル メニューから開く。壊れた・空のシーンを開けなかったときは自動で開き、復元を案内する。
+    // 実際の復元は Application が sceneBackupRestoreId を消化して行う（今の版も先に 1 世代残す）。
+    if (ctx.showSceneBackups && !ImGui::IsPopupOpen("##SceneBackups"))
+        ImGui::OpenPopup("##SceneBackups");
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ui::Px(640.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("##SceneBackups", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        const std::filesystem::path target(ctx.sceneBackupTarget);
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f), "以前の版に戻す");
+        ImGui::TextDisabled("%s", target.filename().string().c_str());
+        if (!ctx.sceneBackupNotice.empty())
+        {
+            ImGui::Spacing();
+            ImGui::PushTextWrapPos(ui::Px(620.0f));
+            ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.45f, 1.0f), "%s", ctx.sceneBackupNotice.c_str());
+            ImGui::PopTextWrapPos();
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const std::filesystem::path projectRoot(PathResolver::BaseDir());
+        const auto gens = scenebackup::List(projectRoot, target);
+        if (gens.empty())
+        {
+            ImGui::TextWrapped("このシーンの以前の版はまだありません。保存するたびに、直前の版がここへ残ります。");
+        }
+        else
+        {
+            ImGui::BeginChild("##SceneBackupList", ui::Px(0.0f, (std::min)(260.0f, 34.0f * static_cast<float>(gens.size()) + 8.0f)), false);
+            for (size_t i = 0; i < gens.size(); ++i)
+            {
+                const auto& g = gens[i];
+                ImGui::PushID(static_cast<int>(i));
+                const std::time_t t = static_cast<std::time_t>(g.unixTime);
+                std::tm tmv{};
+                char when[48] = {};
+                if (localtime_s(&tmv, &t) == 0) std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tmv);
+                ImGui::AlignTextToFramePadding();
+                ImGui::Text("%s", when);
+                ImGui::SameLine(ui::Px(190.0f));
+                ImGui::TextDisabled("%.1f MB%s%s%s", static_cast<double>(g.bytes) / (1024.0 * 1024.0),
+                                    g.hasParts ? "  分割" : "", g.hasInst ? "  インスタンス群" : "", g.hasNav ? "  ナビ" : "");
+                ImGui::SameLine(ui::Px(500.0f));
+                if (ImGui::Button("この版に戻す", ui::Px(110.0f, 0.0f)))
+                {
+                    ctx.sceneBackupRestoreId = g.id;
+                    ImGui::CloseCurrentPopup();
+                    ctx.showSceneBackups = false;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::TextDisabled("戻す前の今の版も 1 世代として残します（戻した操作も取り消せます）。");
+        }
+        ImGui::Spacing();
+        if (ImGui::Button("バックアップのフォルダを開く", ui::Px(220.0f, 0.0f)))
+        {
+            std::error_code ec;
+            const auto dir = scenebackup::BackupDir(projectRoot);
+            std::filesystem::create_directories(dir, ec);
+            dx12e::guard::ShellExecuteGuarded(nullptr, "open", dir.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("閉じる", ui::Px(110.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            ctx.showSceneBackups = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    else if (!ImGui::IsPopupOpen("##SceneBackups"))
+    {
+        // 別のモーダルに割り込まれて開けなかったときは次のフレームでもう一度開く（ctx.showSceneBackups は立てたまま）
     }
 
     // ===== 自動保存からの復旧 =====

@@ -1,6 +1,7 @@
 #include "project/ProjectManager.h"
 #include "project/GitIntegration.h"
 #include "core/Logger.h"
+#include "core/AtomicFileJson.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中はネイティブダイアログを出さない
 
 #include <Windows.h>
@@ -51,24 +52,10 @@ bool WriteJsonFile(const fs::path& p, const nlohmann::json& j)
 {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
-    // 途中で落ちても壊れた JSON を残さないよう、一時ファイルへ書いてから置き換える。
-    const fs::path tmp = p.wstring() + L".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) return false;
-        f << j.dump(2);
-        if (!f) return false;
-    }
-    fs::rename(tmp, p, ec);
-    if (ec)
-    {
-        // 置き換えに失敗（別プロセスが握っている等）したら直接書く。
-        fs::remove(tmp, ec);
-        std::ofstream f(p, std::ios::binary | std::ios::trunc);
-        if (!f) return false;
-        f << j.dump(2);
-    }
-    return true;
+    // 途中で落ちても壊れた JSON を残さないよう、一時ファイル→flush→検証→置き換えで書く（core/AtomicFile.h）。
+    const auto wr = atomicfile::WriteJson(p, j, 2);
+    if (!wr) Logger::Warn("プロジェクト一覧の保存に失敗しました: {}", wr.error);
+    return static_cast<bool>(wr);
 }
 }  // namespace
 

@@ -238,10 +238,15 @@ void FillManifestChunk2(ManifestRows& o)
             P("entity", "entityRef", false, nullptr, nullptr, nullptr, nullptr, "エンティティ id(int)。name と排他。"),
             P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。id の代わりに使える。Stop 後など id が変わる場面で安定。"),
         })});
-    o.push_back({"get_hierarchy", M("シーン全体の親子ツリーを返す。{roots:[{entityId, name, children:[...]}], count, sceneGeneration}。",
+    o.push_back({"get_hierarchy", M("シーン全体の親子ツリーを返す。{roots:[{entityId, name, children:[...]}], count, sceneGeneration}。"
+        "ノードが多いと既定 20000 個で打ち切り、truncated:true と nextRootOffset を付ける（rootOffset で続き・limit:0 で無制限・root で部分木だけ）。",
         "get hierarchy シーン階層ツリー取得",
         "entity", "", "", McpEffect::Read, "any", 8000, true, false,
         "none", "dx12_get_hierarchy", {
+            P("limit", "int", false, nullptr, nullptr, nullptr, nullptr, "返すノード数の上限（既定 20000・0 で無制限）。超えたら truncated:true と nextRootOffset。"),
+            P("rootOffset", "int", false, nullptr, nullptr, nullptr, nullptr, "ルートの何番目から返すか（既定 0。truncated 時の nextRootOffset を渡して続きを取る）。"),
+            P("root", "entityRef", false, nullptr, nullptr, nullptr, nullptr, "このエンティティ（id か名前）の部分木だけを返す。"),
+            P("maxDepth", "int", false, nullptr, nullptr, nullptr, nullptr, "辿る深さの上限（既定 64）。深さで切った節は childCount と collapsed:true を持つ。"),
         })});
     o.push_back({"get_log", M("エンジンログの末尾 N 行を配列で返す。エラーや print() の確認に使う。",
         "get log ログ取得",
@@ -482,6 +487,8 @@ void FillManifestChunk5(ManifestRows& o)
         "list entities エンティティ一覧",
         "entity", "", "", McpEffect::Read, "any", 8000, true, false,
         "none", "dx12_list_entities", {
+            P("limit", "int", false, nullptr, nullptr, nullptr, nullptr, "返す件数の上限（既定 10000・verbose のときは 5000・0 で無制限）。超えたら truncated:true と nextOffset を返す。total は常に一致件数。"),
+            P("offset", "int", false, nullptr, nullptr, nullptr, nullptr, "何件目から返すか（既定 0。truncated 時の nextOffset を渡して続きを取る）。"),
             P("verbose", "bool", false, nullptr, nullptr, nullptr, nullptr, "true で各エンティティの componentTypes も含める。"),
             P("name_prefix", "string", false, nullptr, nullptr, nullptr, nullptr, "名前の前方一致フィルタ。"),
             P("component_type", "string", false, nullptr, nullptr, nullptr, nullptr, "指定 jsonKey を持つものだけに絞る(例 pointLight)。"),
@@ -758,6 +765,8 @@ void FillManifestChunk8(ManifestRows& o)
         "query entities タグ/領域でエンティティ検索",
         "entity", "", "", McpEffect::Read, "any", 8000, true, false,
         "none", "dx12_query_entities", {
+            P("limit", "int", false, nullptr, nullptr, nullptr, nullptr, "返す件数の上限（既定 10000・0 で無制限）。超えたら truncated:true と nextOffset。"),
+            P("offset", "int", false, nullptr, nullptr, nullptr, nullptr, "何件目から返すか（既定 0）。"),
             P("tag", "string", false, nullptr, nullptr, nullptr, nullptr, "このタグを持つエンティティを列挙。"),
             P("box", "vec4", false, nullptr, nullptr, nullptr, nullptr, "[minX,minZ,maxX,maxZ]。この XZ 矩形に入るエンティティを列挙。"),
         })});
@@ -1633,6 +1642,8 @@ void FillManifestChunk14(ManifestRows& o)
         "none", "dx12_validate_layout", {
             P("fix", "enum", false, "none|safe|all", nullptr, nullptr, nullptr, "none(既定)=検査のみ / safe=安全な修正だけ / all=全部。"),
             P("tolerance", "number", false, nullptr, nullptr, nullptr, nullptr, "同一平面とみなす距離(m)。既定 0.001(1mm)。"),
+            P("limit", "int", false, nullptr, nullptr, nullptr, nullptr, "返す issues の件数上限（既定 1000・0 で無制限）。超えたら truncated:true と nextOffset。errors/warnings/byKind は全件ぶん。"),
+            P("offset", "int", false, nullptr, nullptr, nullptr, nullptr, "issues の何件目から返すか（既定 0）。"),
         })});
     o.push_back({"validate_scene", M("シーン JSON の参照グラフをヘッドレスで検証する(CLI `--validate` と同じロジックをエンジン自身の子プロセスとして実行)。",
         "validate scene シーン検証",

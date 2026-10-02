@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 418931,
+ "totalBytes": 420946,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -18,13 +18,15 @@
   },
   {
    "name": "dx12_list_entities",
-   "sha256": "9a6d858f8fb63c0cc77595c03562360228e67cd7585e0a44bd603e4333aaff36",
-   "semSha256": "1456db27a549c5d3f233668b8c4cafb02c6b237d81d02d241aa68b83d9ae8f14",
+   "sha256": "191e0bb43151712e394e1bd79f90d409442a52e28b0465917fd88d3f8c21f2c4",
+   "semSha256": "9f4d1689dd8bcdaf7be9716ebe98ec7b7d75492dc52b7cfce48beec88f895b25",
    "outputSchemaBytes": 303,
    "argKeys": [
     "verbose",
     "name_prefix",
-    "component_type"
+    "component_type",
+    "limit",
+    "offset"
    ],
    "annotations": {
     "title": "エンティティ一覧",
@@ -63,12 +65,14 @@
   },
   {
    "name": "dx12_query_entities",
-   "sha256": "c2015926a95ad60b476476d2223aaa349d9afe894a97801e90f0b8ba6a1271cf",
-   "semSha256": "4ad9f080f4b437f80bcbb4c2d298593a8da08f6871ddf70d53bacdda19cd7ded",
+   "sha256": "772a368513ff128113417c3998d9b3127d2aff10302958348a666d8c1c7ce289",
+   "semSha256": "16898ba8ee6c5ce267d58d8335354a225e70d6a0948a4033c7a49e434cac6abd",
    "outputSchemaBytes": 303,
    "argKeys": [
     "tag",
-    "box"
+    "box",
+    "limit",
+    "offset"
    ],
    "annotations": {
     "title": "タグ/領域でエンティティ検索",
@@ -2080,12 +2084,14 @@
   },
   {
    "name": "dx12_validate_layout",
-   "sha256": "3b785edb2700b80a4940a02d94524b73e80497dd738232f7d13eb99215df6384",
-   "semSha256": "2683c8f58719c59448bd1b8b54cbe4b2200ba517a8a9098d7de605139a94289c",
+   "sha256": "cb25aae0326996fee94a1e224be7908b4b9d8839fe9c410a26ffa744685fe4ba",
+   "semSha256": "e98bb6b3e95eb3a2e82c7a6113415bff28247b290f18146e687ddaa1af49e6c3",
    "outputSchemaBytes": 303,
    "argKeys": [
     "fix",
     "tolerance",
+    "limit",
+    "offset",
     "judge"
    ],
    "annotations": {
@@ -2362,10 +2368,15 @@
   },
   {
    "name": "dx12_get_hierarchy",
-   "sha256": "ecb58746a5340a3bf5d49e4cbb107bc2a9119a221197c42c65d2af5a917b877f",
-   "semSha256": "5064370ef3010dfd95dc5c122b3298222ca495504c79dd49bd1b96d2b62af436",
+   "sha256": "8fc6ee1148c78585ed863a975dd75a3bf69c0dcd930d405ef20f80fc886207f8",
+   "semSha256": "47a3e6eda322341f63d219fa3b519a8e472c88bb86c765100caf21cf8dbb4d53",
    "outputSchemaBytes": 303,
-   "argKeys": [],
+   "argKeys": [
+    "limit",
+    "rootOffset",
+    "root",
+    "maxDepth"
+   ],
    "annotations": {
     "title": "シーン階層ツリー取得",
     "openWorldHint": false,

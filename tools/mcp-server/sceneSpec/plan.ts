@@ -44,8 +44,8 @@ export type SceneSnapshot = {
  * 仕様に出てくる名前と data を持つもの(所有者の印の候補)だけ get_entity で全文を読む。
  */
 export async function readScene(engine: EngineLike, wantNames: Iterable<string>, opts: { readOwners?: boolean } = {}): Promise<SceneSnapshot> {
-  const list = await engine.call("list_entities", { verbose: true });
-  const hier = await engine.call("get_hierarchy", {});
+  const list = await engine.call("list_entities", { verbose: true, limit: 0 });
+  const hier = await engine.call("get_hierarchy", { limit: 0 });
   const byName = new Map<string, ActualEntity>();
   const dups: string[] = [];
   const idToName = new Map<number, string>();

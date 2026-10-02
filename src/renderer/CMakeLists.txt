@@ -80,6 +80,9 @@ add_library(MatGraph STATIC
 )
 target_include_directories(MatGraph PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(MatGraph PUBLIC nlohmann_json::nlohmann_json)
+# GraphIO.cpp の保存が原子的書き込み（core/AtomicFile.h）を使う。MatGraph は純ロジックで Core をリンクできないので、標準ライブラリ + Win32 だけの
+# AtomicFile.cpp を自前のソースとして足す（Core にも同じ .cpp があるが、静的ライブラリなので同じシンボルは最初の 1 個だけ取り込まれる）。
+target_sources(MatGraph PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../core/AtomicFile.cpp)
 target_compile_options(MatGraph PRIVATE ${DX12_COMPILE_OPTIONS})
 target_compile_definitions(MatGraph PRIVATE ${DX12_COMPILE_DEFS})
 

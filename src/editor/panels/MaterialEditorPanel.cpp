@@ -4,6 +4,7 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "resource/MaterialAssetManager.h"
 #include "core/Logger.h"
+#include "core/AtomicFileJson.h"
 #include "core/PathResolver.h"
 #include "input/VirtualInput.h"   // 仮想入力モード中は OS のカーソルに触らない
 #include "core/VirtualGuard.h"    // 同 ネイティブダイアログを出さない
@@ -115,15 +116,13 @@ bool MaterialEditorPanel::SaveAsset(const std::string& assetsDir)
     fs::path fullPath(assetsDir + m_currentPath);
     fs::create_directories(fullPath.parent_path(), ec);
 
-    std::ofstream ofs(fullPath, std::ios::binary | std::ios::trunc);
-    if (!ofs)
+    const std::string json = SerializeMaterialAsset(m_current);
+    const auto wr = dx12e::atomicfile::WriteFile(fullPath, json, dx12e::atomicfile::JsonVerifier());
+    if (!wr)
     {
-        Logger::Warn("マテリアルアセットの保存に失敗しました: {}", fullPath.string());
+        Logger::Warn("マテリアルアセットの保存に失敗しました: {} ({})", fullPath.string(), wr.error);
         return false;
     }
-    std::string json = SerializeMaterialAsset(m_current);
-    ofs.write(json.data(), static_cast<std::streamsize>(json.size()));
-    ofs.close();
 
     if (m_materialAssetManager)
         m_materialAssetManager->Invalidate(m_currentPath);
@@ -295,7 +294,10 @@ void MaterialEditorPanel::ImportFromImage(const std::string& assetsDir)
             destPath = destDir / destName;
         }
         ec.clear();
-        fs::copy_file(picked, destPath, ec);
+        {
+            const atomicfile::Result cr = atomicfile::CopyFileAtomic(picked, destPath, /*overwrite=*/false);
+            if (!cr.ok) ec = std::make_error_code(std::errc::io_error);
+        }
         if (ec)
         {
             Logger::Warn("画像のコピーに失敗しました: {}", ec.message());

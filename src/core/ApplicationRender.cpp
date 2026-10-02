@@ -569,26 +569,50 @@ void Application::BuildDrawList()
     //   std::sort の不安定さにも依存しない。
     // ★batchKey（ポインタ入り）が同じ物は meshKey / lod / batchOrder も必ず同じなので連続する。
     //   逆は成り立たない（鍵なしの別メッシュ同士）が、それはラン検出が別バッチに割るだけで正しい。
-    std::sort(m_drawItems.begin(), m_drawItems.end(),
-        [](const DrawItem& a, const DrawItem& b) {
-            if (a.sortKey != b.sortKey) return a.sortKey < b.sortKey;
-            // ★半透明は「カメラから遠い順」＝後ろから前へ。アルファブレンドは
-            //   非可換なので順番が絵そのもの（近い方を先に描くと後ろの物が消える）。
-            //   エンティティ単位。サブメッシュ単位が要る形（コップの中にコップ）は
-            //   モデルを分けること（今回の割り切り。docs/AUTHORING.md の「透明」節を参照）。
-            if (a.sortKey == 3u && a.camDist != b.camDist) return a.camDist > b.camDist;
-            if (a.sortKey == 1u || a.sortKey == 3u) {
-                const int c = a.renderer->shaderPath.compare(b.renderer->shaderPath);
-                if (c != 0) return c < 0;
-            }
-            if (a.graphHash != b.graphHash) return a.graphHash < b.graphHash;   // マテリアルグラフ（G2b）。全部 0 なら従来どおり
-            if (a.meshKey != b.meshKey) return a.meshKey < b.meshKey;
-            if (a.lod != b.lod) return a.lod < b.lod;
-            if (a.batchOrder != b.batchOrder) return a.batchOrder < b.batchOrder;
-            if (a.guid != b.guid) return a.guid < b.guid;
-            if (a.instanceIndex != b.instanceIndex) return a.instanceIndex < b.instanceIndex;   // インスタンス群（普通のエンティティは全部同値）
-            return entt::to_integral(a.e) < entt::to_integral(b.e);
-        });
+    // ★DrawItem は約 250 B。10 万体を本体ごと std::sort すると移動コピーだけで 30 ms 級になる（実測 listSort 31 ms）。
+    //   比較に使う鍵だけを詰めた小さい配列（56 B）を同じ比較順で整列し、結果の順に DrawItem を 1 回だけ並べ直す。
+    //   比較は元と同一で全順序（末尾が entity 番号）なので、並びは本体を直接 sort した結果とビット単位で同じ。
+    {
+        struct SortRec
+        {
+            u64 meshKey, batchOrder, guid, graphHash;
+            u32 sortKey, lod, instanceIndex, entity, idx;
+            f32 camDist;
+        };
+        const size_t n = m_drawItems.size();
+        static std::vector<SortRec> recs; recs.resize(n);   // 毎フレーム確保し直さない（メインスレッド専用）
+        for (size_t i = 0; i < n; ++i)
+        {
+            const DrawItem& d = m_drawItems[i];
+            recs[i] = { d.meshKey, d.batchOrder, d.guid, d.graphHash, d.sortKey, d.lod, d.instanceIndex,
+                        static_cast<u32>(entt::to_integral(d.e)), static_cast<u32>(i), d.camDist };
+        }
+        const DrawItem* items = m_drawItems.data();
+        std::sort(recs.begin(), recs.end(),
+            [items](const SortRec& a, const SortRec& b) {
+                if (a.sortKey != b.sortKey) return a.sortKey < b.sortKey;
+                // ★半透明は「カメラから遠い順」＝後ろから前へ。アルファブレンドは
+                //   非可換なので順番が絵そのもの（近い方を先に描くと後ろの物が消える）。
+                //   エンティティ単位。サブメッシュ単位が要る形（コップの中にコップ）は
+                //   モデルを分けること（今回の割り切り。docs/AUTHORING.md の「透明」節を参照）。
+                if (a.sortKey == 3u && a.camDist != b.camDist) return a.camDist > b.camDist;
+                if (a.sortKey == 1u || a.sortKey == 3u) {
+                    const int c = items[a.idx].renderer->shaderPath.compare(items[b.idx].renderer->shaderPath);
+                    if (c != 0) return c < 0;
+                }
+                if (a.graphHash != b.graphHash) return a.graphHash < b.graphHash;   // マテリアルグラフ（G2b）。全部 0 なら従来どおり
+                if (a.meshKey != b.meshKey) return a.meshKey < b.meshKey;
+                if (a.lod != b.lod) return a.lod < b.lod;
+                if (a.batchOrder != b.batchOrder) return a.batchOrder < b.batchOrder;
+                if (a.guid != b.guid) return a.guid < b.guid;
+                if (a.instanceIndex != b.instanceIndex) return a.instanceIndex < b.instanceIndex;   // インスタンス群（普通のエンティティは全部同値）
+                return a.entity < b.entity;
+            });
+        static std::vector<DrawItem> sorted; sorted.clear();   // m_drawItems と交互に使い回す（25 MB 級の確保を毎フレームしない）
+        sorted.reserve(n);
+        for (const SortRec& r : recs) sorted.push_back(items[r.idx]);
+        m_drawItems.swap(sorted);
+    }
 
     // ---- インスタンシングのバッチ区間を確定する（オクルージョンカリング用）----
     // ソート済みなので同一 batchKey は必ず連続している。ここで区間と合成 AABB を出しておくと、
@@ -2668,6 +2692,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         m_skyboxDirty = true;
         ++m_sceneGeneration;   // 古い entity id を無効化(MCP の STALE_SCENE 検出用)
         m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
+        m_editorCtx->sceneLoadFailedPath.clear();   // 新しく作った＝開けなかったシーンの保存停止は解除
         Logger::Info("New scene created");
     }
 
@@ -2700,6 +2725,20 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             std::filesystem::remove_all(autosave::PartsPath(dir), ec);
             Logger::Info("自動保存を破棄しました");
         }
+    }
+
+    // 「以前の版に戻す」窓で選ばれた世代の復元（窓は ToolbarPanel が描く）。
+    if (!m_editorCtx->sceneBackupRestoreId.empty())
+    {
+        const std::string id = std::move(m_editorCtx->sceneBackupRestoreId);
+        m_editorCtx->sceneBackupRestoreId.clear();
+        std::string err;
+        if (!RestoreSceneBackup(id, m_editorCtx->sceneBackupTarget, err))
+        {
+            Logger::Error("以前の版へ戻せませんでした: {}", err);
+            m_editorCtx->Notify(ui::ToastKind::Error, "以前の版へ戻せませんでした: " + err);
+        }
+        else m_editorCtx->showSceneBackups = false;
     }
 
     // 未保存なら先に確認する（別シーンを開くと今の変更は完全に消える）。

@@ -617,6 +617,16 @@ public:
     bool           showAutosaveRecovery = false;
     AutosaveChoice autosaveChoice       = AutosaveChoice::None;
     std::string    autosaveInfo;            // モーダルに出す説明（保存時刻など）
+
+    // ── シーンの世代つきバックアップ（.dx12/backups/）と、読み込み失敗の案内 ──
+    // 「以前の版に戻す」窓（ファイル メニュー、または壊れたシーンを開けなかったとき自動で）。
+    bool        showSceneBackups = false;
+    std::string sceneBackupTarget;       // 窓の対象シーンのフルパス
+    std::string sceneBackupNotice;       // 窓の上に出す説明（読み込み失敗の理由など。空なら通常）
+    std::string sceneBackupRestoreId;    // 窓で「この版に戻す」を押された世代 id（Application が消化する）
+    // 開けなかった（壊れている・空・途中で切れている）シーン。空でない間は、空のシーンで本体を上書きしないよう
+    // 自動保存・MCP の自動保存を止める。シーンを開き直せた / 新規作成したら空へ戻る。
+    std::string sceneLoadFailedPath;
     bool          showUnsavedConfirm = false;
     UnsavedChoice unsavedChoice      = UnsavedChoice::None;
 

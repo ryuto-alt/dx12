@@ -53,13 +53,12 @@ InstanceSetPtr LoadSidecar(const std::string& scenePath, const std::string& guid
     return s;
 }
 
-SaveStats SaveSidecars(const std::string& scenePath, const SerializeCollector& collected)
+SaveStats StageSidecars(const std::string& scenePath, const SerializeCollector& collected, atomicfile::Batch& batch)
 {
     SaveStats st;
     const fs::path dir = SidecarDirFor(scenePath);
     std::error_code ec;
 
-    std::unordered_set<std::string> keep;
     if (!collected.sets.empty())
     {
         fs::create_directories(dir, ec);
@@ -73,31 +72,32 @@ SaveStats SaveSidecars(const std::string& scenePath, const SerializeCollector& c
     for (const auto& [guidHex, set] : collected.sets)
     {
         if (!set) continue;
-        keep.insert(guidHex + ".jsonl");
         const fs::path p = dir / (guidHex + ".jsonl");
         const std::string text = FormatSidecar(*set);
         std::string cur;
         if (ReadFileBytes(p.string(), cur) && cur == text) { ++st.unchanged; continue; }
-        // 一時ファイル経由（途中で落ちても既存ファイルを壊さない）
-        const fs::path tmp = dir / (guidHex + ".jsonl.tmp");
+        // 一時ファイルへ書いて検証する（置き換えはコミットでまとめて。途中で落ちても既存ファイルは無傷）
+        if (!batch.Add(p, text))
         {
-            std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
-            if (!o) { Logger::Error("インスタンス群のファイルを書けません: {}", tmp.string()); st.ok = false; continue; }
-            o.write(text.data(), static_cast<std::streamsize>(text.size()));
-            if (!o) { Logger::Error("インスタンス群のファイルを書けません: {}", tmp.string()); st.ok = false; continue; }
-        }
-        fs::rename(tmp, p, ec);
-        if (ec)
-        {
-            fs::remove(p, ec);
-            ec.clear();
-            fs::rename(tmp, p, ec);
-            if (ec) { Logger::Error("インスタンス群のファイルを置き換えられません: {} ({})", p.string(), ec.message()); st.ok = false; continue; }
+            Logger::Error("インスタンス群のファイルを書けません: {} ({})", p.string(), batch.Error());
+            st.ok = false;
+            return st;
         }
         ++st.written;
     }
+    return st;
+}
+
+int CleanupSidecars(const std::string& scenePath, const SerializeCollector& collected)
+{
+    const fs::path dir = SidecarDirFor(scenePath);
+    std::error_code ec;
+    std::unordered_set<std::string> keep;
+    for (const auto& [guidHex, set] : collected.sets)
+        if (set) keep.insert(guidHex + ".jsonl");
 
     // 孤児の掃除（削除したグループの残骸）。このフォルダの *.jsonl だけを対象にし、他のファイルには触らない。
+    int removed = 0;
     if (fs::is_directory(dir, ec))
     {
         std::vector<fs::path> stale;
@@ -108,9 +108,19 @@ SaveStats SaveSidecars(const std::string& scenePath, const SerializeCollector& c
             if (name.size() > 6 && name.compare(name.size() - 6, 6, ".jsonl") == 0 && !keep.count(name))
                 stale.push_back(ent.path());
         }
-        for (const auto& p : stale) { fs::remove(p, ec); ++st.removed; }
+        for (const auto& p : stale) { fs::remove(p, ec); ++removed; }
         if (collected.sets.empty() && fs::is_empty(dir, ec)) fs::remove(dir, ec);
     }
+    return removed;
+}
+
+SaveStats SaveSidecars(const std::string& scenePath, const SerializeCollector& collected)
+{
+    atomicfile::Batch batch(fs::path(scenePath).concat(".dx12txn"));
+    SaveStats st = StageSidecars(scenePath, collected, batch);
+    if (!st.ok) return st;
+    if (!batch.Commit().ok) { st.ok = false; return st; }
+    st.removed = CleanupSidecars(scenePath, collected);
     return st;
 }
 

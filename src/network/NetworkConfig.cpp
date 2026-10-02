@@ -1,5 +1,6 @@
 #include "network/NetworkConfig.h"
 #include "core/Logger.h"
+#include "core/AtomicFileJson.h"
 #include "core/vfs/Vfs.h"
 
 #include <fstream>
@@ -47,13 +48,12 @@ bool NetworkConfig::Save(const std::string& path) const
     j["maxPlayers"]   = maxPlayers;
     j["defaultPort"]  = defaultPort;
 
-    std::ofstream ofs(path);
-    if (!ofs.is_open())
+    const auto wr = atomicfile::WriteFile(std::filesystem::path(path), j.dump(2), atomicfile::JsonVerifier());
+    if (!wr)
     {
-        Logger::Error("network.json の保存に失敗しました: {}", path);
+        Logger::Error("network.json の保存に失敗しました: {} ({})", path, wr.error);
         return false;
     }
-    ofs << j.dump(2);
     Logger::Info("NetworkConfig saved: {}", path);
     return true;
 }

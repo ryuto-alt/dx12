@@ -130,8 +130,13 @@ reg(
 reg(
   "dx12_get_hierarchy",
   "シーン階層ツリー取得",
-  "シーン全体の親子ツリーを返す。{roots:[{entityId, name, children:[...]}], count, sceneGeneration}。dx12_list_entities のフラット一覧と違い構造(どれが誰の子か)が分かる。プレハブ/モデルの内部構造確認やシーン整理に。",
-  {},
+  "シーン全体の親子ツリーを返す。{roots:[{entityId, name, children:[...]}], count, sceneGeneration}。dx12_list_entities のフラット一覧と違い構造(どれが誰の子か)が分かる。プレハブ/モデルの内部構造確認やシーン整理に。ノードが既定 20000 個を超えると打ち切り、truncated:true と nextRootOffset を付ける(rootOffset で続き・limit:0 で無制限・root で部分木だけ)。",
+  {
+    limit: z.number().int().min(0).optional().describe("返すノード数の上限(既定 20000・0 で無制限)。超えたら truncated:true と nextRootOffset。"),
+    rootOffset: z.number().int().min(0).optional().describe("ルートの何番目から返すか(既定 0。truncated 時の nextRootOffset を渡して続きを取る)。"),
+    root: z.union([z.number().int(), z.string()]).optional().describe("このエンティティ(id か名前)の部分木だけを返す。"),
+    maxDepth: z.number().int().min(0).max(64).optional().describe("辿る深さの上限(既定 64)。深さで切った節は childCount と collapsed:true を持つ。"),
+  },
   { readOnlyHint: true },
-  () => run(() => engine.call("get_hierarchy", {})),
+  ({ limit, rootOffset, root, maxDepth }) => run(() => engine.call("get_hierarchy", { limit, rootOffset, root, maxDepth })),
 );

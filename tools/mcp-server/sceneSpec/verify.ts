@@ -244,8 +244,8 @@ export async function runVerify(deps: VerifyDeps, ctx: { spec: SceneSpec; resolv
 
   if (cfg.naming !== "off") {
     try {
-      const list = await deps.engine.call("list_entities", { verbose: true });
-      const hier = await deps.engine.call("get_hierarchy", {});
+      const list = await deps.engine.call("list_entities", { verbose: true, limit: 0 });
+      const hier = await deps.engine.call("get_hierarchy", { limit: 0 });
       const parentOf = new Map<number, number>();
       const walk = (n: any, p?: number) => { if (p != null) parentOf.set(n.entityId, p); for (const c of n.children ?? []) walk(c, n.entityId); };
       for (const r of hier?.roots ?? []) walk(r);

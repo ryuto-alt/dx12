@@ -13,6 +13,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <cstring>
 
 namespace dx12e
@@ -282,6 +283,24 @@ void NavMesh::BuildFromPolyMesh(const NavPolyMeshRaw& pm, const NavCompactHeight
         regionPolys[pm.regs[static_cast<size_t>(p)]].push_back(static_cast<u32>(polyRemap[static_cast<size_t>(p)]));
     }
 
+    // ポリゴンごとの XZ 外接矩形（ボクセル座標）。内外判定の前の足切りに使う（矩形の外の点は必ずポリゴンの外＝結果は同じ）。
+    // 無いと、歩行 span 1 千万個 × 領域内の全ポリゴンに毎回「全辺の交差判定」をして 4 秒以上かかっていた。
+    std::vector<f32> polyBox(m_polys.size() * 4);
+    for (size_t pi = 0; pi < m_polys.size(); ++pi)
+    {
+        const NavPoly& poly = m_polys[pi];
+        f32 mnx = 1e30f, mxx = -1e30f, mnz = 1e30f, mxz = -1e30f;
+        for (u32 k = 0; k < poly.vertCount; ++k)
+        {
+            const u32 vi = m_polyVerts[poly.firstVert + k];
+            const f32 vx = static_cast<f32>(pm.verts[static_cast<size_t>(vi) * 3 + 0]);
+            const f32 vz = static_cast<f32>(pm.verts[static_cast<size_t>(vi) * 3 + 2]);
+            mnx = (std::min)(mnx, vx); mxx = (std::max)(mxx, vx);
+            mnz = (std::min)(mnz, vz); mxz = (std::max)(mxz, vz);
+        }
+        polyBox[pi * 4 + 0] = mnx; polyBox[pi * 4 + 1] = mxx; polyBox[pi * 4 + 2] = mnz; polyBox[pi * 4 + 3] = mxz;
+    }
+
     std::vector<NavHeightSample> samples;
     samples.reserve(static_cast<size_t>(chf.spanCount));
     for (i32 z = 0; z < chf.h; ++z)
@@ -302,6 +321,8 @@ void NavMesh::BuildFromPolyMesh(const NavPolyMeshRaw& pm, const NavCompactHeight
                 const f32 pz = static_cast<f32>(z) + 0.5f;
                 for (u32 pi : regionPolys[reg])
                 {
+                    const f32* bb = &polyBox[static_cast<size_t>(pi) * 4];
+                    if (px < bb[0] || px > bb[1] || pz < bb[2] || pz > bb[3]) continue;
                     const NavPoly& poly = m_polys[pi];
                     if (PointInPolyVox(px, pz, pm.verts.data(),
                                        &m_polyVerts[poly.firstVert], poly.vertCount))
@@ -368,9 +389,9 @@ bool ReadPod(const u8*& p, const u8* end, T& v)
 }
 } // namespace
 
-bool NavMesh::Save(const std::string& absPath, std::string& err) const
+void NavMesh::SerializeToBytes(std::vector<u8>& buf) const
 {
-    std::vector<u8> buf;
+    buf.clear();
     buf.reserve(1 << 16);
     WritePod(buf, kNavMagic);
     WritePod(buf, kNavVersion);
@@ -386,15 +407,28 @@ bool NavMesh::Save(const std::string& absPath, std::string& err) const
     WriteVec(buf, m_grid);
     WriteVec(buf, m_samples);
 
+}
+
+bool NavMesh::Save(const std::string& absPath, std::string& err) const
+{
+    std::vector<u8> buf;
+    SerializeToBytes(buf);
+    // 単体の保存（テスト・ツール用。nav/ は依存ゼロなので core/AtomicFile は使わず、一時ファイル → 置き換えだけを自前で行う）。
+    // シーンの保存は SerializeToBytes を取って、他のファイルと 1 回のコミットにまとめる（SceneSerializer::Save）。
+    const std::string tmp = absPath + ".tmp";
     FILE* f = nullptr;
-    if (fopen_s(&f, absPath.c_str(), "wb") != 0 || !f)
+    if (fopen_s(&f, tmp.c_str(), "wb") != 0 || !f)
     {
         err = "ナビメッシュの書き出しに失敗: " + absPath;
         return false;
     }
     const size_t wrote = std::fwrite(buf.data(), 1, buf.size(), f);
+    const bool flushed = std::fflush(f) == 0;
     std::fclose(f);
-    if (wrote != buf.size()) { err = "ナビメッシュの書き込みが途中で切れた"; return false; }
+    std::error_code ec;
+    if (wrote != buf.size() || !flushed) { std::filesystem::remove(tmp, ec); err = "ナビメッシュの書き込みが途中で切れた"; return false; }
+    std::filesystem::rename(tmp, absPath, ec);
+    if (ec) { std::filesystem::remove(tmp, ec); err = "ナビメッシュを置き換えられません: " + absPath; return false; }
     return true;
 }
 

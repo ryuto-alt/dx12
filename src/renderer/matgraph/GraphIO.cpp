@@ -1,8 +1,10 @@
 #include "renderer/matgraph/GraphIO.h"
+#include "core/AtomicFile.h"   // 原子的な保存（標準ライブラリ + Win32 だけ。MatGraph は AtomicFile.cpp を自前で持つ）
 
 #include <charconv>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
@@ -397,14 +399,14 @@ bool SaveDxmgFileIfChanged(const std::string& path, const MaterialGraph& g, std:
     const std::string text = SaveDxmg(g);
     std::string old;
     if (ReadAll(path, old) && old == text) return false;
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f)
+    // 一時ファイル→flush→検証→置き換え（途中で落ちても元の .dxmg は無傷）
+    const auto wr = atomicfile::WriteFile(std::filesystem::path(path), text);
+    if (!wr)
     {
-        if (error) *error = "ファイルを書けません: " + path;
+        if (error) *error = "ファイルを書けません: " + path + " (" + wr.error + ")";
         return false;
     }
-    f.write(text.data(), static_cast<std::streamsize>(text.size()));
-    return static_cast<bool>(f);
+    return true;
 }
 
 } // namespace dx12e::matgraph

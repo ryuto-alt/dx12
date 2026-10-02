@@ -288,6 +288,30 @@ if(TARGET Scene)
     add_test(NAME ScenePartitionTests COMMAND ScenePartitionTests)
 endif()
 
+# シーンの安全な保存: 保存の途中の失敗（置き換え・ディスク満杯・検証）で一式が前の版のまま / 途中で死んでも次に開くと新しい版で揃う /
+# 壊れた・空のシーンは開けない / 世代つきバックアップ（世代数の上限・復元・生成物の除外）。GPU 不要。
+if(TARGET Scene)
+    add_executable(SceneSafeSaveTests scene_safe_save_test.cpp)
+    target_link_libraries(SceneSafeSaveTests PRIVATE Scene)
+    target_include_directories(SceneSafeSaveTests PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(SceneSafeSaveTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SceneSafeSaveTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SceneSafeSaveTests COMMAND SceneSafeSaveTests)
+endif()
+
+# 保存中の強制終了テストの補助ツール（ctest には登録しない。gen: 分割シーンを作る / verify: 止められたシーンが完全に開けるか確かめる）。
+if(TARGET Scene)
+    add_executable(SceneSafeSaveTool scene_safe_save_tool.cpp)
+    target_link_libraries(SceneSafeSaveTool PRIVATE Scene)
+    target_include_directories(SceneSafeSaveTool PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    if(MSVC)
+        target_compile_options(SceneSafeSaveTool PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SceneSafeSaveTool PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+endif()
+
 # 物理（PhysicsSystem / Jolt）のヘッドレス回帰テスト。箱・球・カプセルだけ（Mesh は GPU が要るので使わない）。
 # 質量 0 でも落ちない・offset・負スケール・静的の追従・上限・キャラ・接触イベント・時間の扱い…（PHYSICS_FIX2_REPORT.md）。
 if(TARGET Physics)
@@ -915,7 +939,8 @@ add_test(NAME McpManifestTests COMMAND McpManifestTests)
 
 # MCP の副作用の安全性（M5）: 冪等ストア / guarded 確認トークン（core/mcp/McpSafety.h）と、ファイル書き込みジャーナル（core/mcp/McpJournal.cpp）。
 # ヘッダオンリー + std::filesystem だけなのでエンジンをリンクしない。時計を注入して決定論。
-add_executable(McpSafetyTests mcp_safety_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/McpJournal.cpp)
+add_executable(McpSafetyTests mcp_safety_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/mcp/McpJournal.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/AtomicFile.cpp)   # McpJournal の保存が原子的書き込みを使う
 target_include_directories(McpSafetyTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 if(MSVC)
     target_compile_options(McpSafetyTests PRIVATE /W4 /WX /permissive- /utf-8)
@@ -923,6 +948,17 @@ else()
     target_compile_options(McpSafetyTests PRIVATE -Wall -Wextra -Werror)
 endif()
 add_test(NAME McpSafetyTests COMMAND McpSafetyTests)
+
+# 原子的な書き込み（core/AtomicFile.cpp）: ディスク満杯・フラッシュ/検証/置き換えの失敗・読み取り専用・ロック・
+# 複数ファイルのコミット途中の失敗と死（ロールバック / RecoverPending）。元のファイルが無傷で一時ファイルが残らないこと。
+add_executable(AtomicFileTests atomic_file_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/AtomicFile.cpp)
+target_include_directories(AtomicFileTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AtomicFileTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AtomicFileTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AtomicFileTests COMMAND AtomicFileTests)
 
 # MCP（AI）の編集を Undo に積む規則（editor/McpUndoRouter.h + editor/UndoCore.h）。
 # 呼び出し 1 回 = 「AI: <method>」1 エントリ / onlyAi は人の編集を戻さない /
@@ -1777,4 +1813,13 @@ if(TARGET Scene)
         target_compile_definitions(GiMigrationTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME GiMigrationTests COMMAND GiMigrationTests)
+endif()
+
+# UI 自動テスト(ImGuiTestEngine)を窓なし・背景・仮想入力で全件流す（約 3.5 分）。既定では ctest に含めない。
+#   cmake -DDX12_CTEST_UI=ON で有効化 → ctest -R UiTests。DX12Engine を事前にビルドしておくこと。
+#   ユーザーの PC 操作を奪わない（前面ウィンドウが変わったら失敗にする）。詳細は tools/run_ui_tests.ps1。
+option(DX12_CTEST_UI "ctest に UI 自動テスト(UiTests)を含める" OFF)
+if(DX12_CTEST_UI)
+    add_test(NAME UiTests COMMAND pwsh -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/run_ui_tests.ps1)
+    set_tests_properties(UiTests PROPERTIES TIMEOUT 1800 LABELS ui RUN_SERIAL TRUE)
 endif()

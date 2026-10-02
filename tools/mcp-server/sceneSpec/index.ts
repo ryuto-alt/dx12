@@ -180,7 +180,7 @@ export async function runSceneSpec(deps: SpecDeps, input: SpecInput): Promise<Sp
   progress("読み取り", 2, "アセットとシーンの一覧を読む");
   const [assetsRaw, listRaw, compsRaw] = await Promise.all([
     engine.call("list_assets", {}).catch(() => null),
-    engine.call("list_entities", { verbose: true }).catch(() => null),
+    engine.call("list_entities", { verbose: true, limit: 0 }).catch(() => null),
     engine.call("describe_components", {}).catch(() => null),
   ]);
   const assets = classifyAssets(assetsRaw);

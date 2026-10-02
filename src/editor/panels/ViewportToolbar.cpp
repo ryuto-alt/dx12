@@ -1,5 +1,7 @@
 #include "editor/panels/ViewportToolbar.h"
 
+#include "core/AtomicFile.h"
+#include "core/Logger.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UiWidgets.h"
@@ -125,8 +127,8 @@ void ViewportToolbar::PersistBookmarks() const
     {
         std::error_code ec;
         std::filesystem::create_directories(std::filesystem::path(m_bookmarkPath).parent_path(), ec);
-        std::ofstream f(m_bookmarkPath, std::ios::trunc);
-        if (f) f << m_bookmarks.Serialize();
+        const auto wr = dx12e::atomicfile::WriteFile(std::filesystem::path(m_bookmarkPath), m_bookmarks.Serialize());
+        if (!wr) Logger::Warn("ビューポートのブックマークの保存に失敗しました: {}", wr.error);
     }
     catch (...) {}
 }
