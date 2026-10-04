@@ -1338,6 +1338,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         //   一度も通らない。結果「ゲーム内のオプションでキーを変えて保存はされるのに、
         //   次の起動で必ず既定へ戻る」状態だった。BaseDir はここで確定しているので読む。
         LoadActionBindings();
+        // 物理ハードウェア（assets/hardware.json は pak の中でも vfs で読める。無ければ空設定で起動）。
+        // LoadActionBindings の後（actions の擬似キーを付け直すため）。
+        InitHardware();
 
         m_pendingMode = EngineMode::Playing;
         m_modeChangeRequested = true;
@@ -1643,6 +1646,10 @@ void Application::Run()
 
         // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存 + XInputポーリング）
         m_inputSystem->Update(m_gameClock.GetDeltaTime());
+
+        // 物理ハードウェア（Arduino / ESP32）: 出力の確定と最新値のスナップショット。エディタ / Play / ゲームのどれでも回す。
+        // ★フレーム途中で値が変わらないよう、スクリプトが読む前（ここ）で 1 回だけ確定する。
+        if (m_hardware) { m_hardware->BeginFrame(); ServiceHardwareReads(); }
 
         // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();
@@ -2156,6 +2163,10 @@ void Application::Shutdown()
     // MCP ブリッジを最優先で停止(worker を join)。これより後で Logger/scene/scriptengine を
     // 破棄するので、ここで止めないと worker がそれらを破棄後に触って data race/UAF になる。
     if (m_mcpBridge) m_mcpBridge.reset();
+
+    // 物理ハードウェア: arduino-cli のフラッシュを止め、全出力を安全値へ戻して IO スレッドを止める
+    // （Lua が動いている間に落とさないよう ScriptEngine より前）。
+    ShutdownHardware();
 
     // ネットワーク接続を明示的に切る（ENetのソケット/ホストをデバイス解放より前に片付ける）。
     if (m_networkSystem) { m_networkSystem->Disconnect(); m_networkSystem.reset(); }
@@ -2930,8 +2941,14 @@ void Application::SaveActionBindings()
     {
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& b : list)
+        {
+            // ★ハードウェアの擬似キー（kHwKeyBase 以上）は hardware.json の actions が正。ここへ書くと
+            //   次回の読み込みで「範囲外のキー」警告になり、そもそも割当番号が変わると別のチャンネルを指す。
+            if (b.key >= kHwKeyBase) continue;
             arr.push_back({{"key", b.key},
                            {"c", nlohmann::json::array({b.c.x, b.c.y, b.c.z})}});
+        }
+        if (arr.empty() && !list.empty()) continue;   // ハードウェアの割当しか無いアクションは書かない
         root[action] = std::move(arr);
     }
     const std::string path = ActionBindingsPath();

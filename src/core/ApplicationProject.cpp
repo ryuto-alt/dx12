@@ -256,6 +256,9 @@ void Application::UpdateProjectLoad(f32 dt)
         // キー割り当てはプロジェクト単位（保存先が PathResolver::BaseDir() 基準なので、
         // プロジェクトルートが確定したここで読む）。無ければ既定のまま。
         LoadActionBindings();
+        // 物理ハードウェア（assets/hardware.json。無ければ空設定）。プロジェクトを切り替えたら Shutdown→Initialize になる。
+        // ★ゲームモードは BeginProjectLoad を通らないので Application::Initialize 側にも同じ呼び出しがある。
+        InitHardware();
 
         // ロード完了: 隠していたメインウィンドウを出してからスプラッシュを閉じる
         // (順序を逆にすると一瞬何も表示されない空白ができる)。

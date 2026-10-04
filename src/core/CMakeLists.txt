@@ -60,6 +60,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpAudio.cpp      # 音の観測（audio_state）
     mcp/ApplicationMcpSequence.cpp   # シーケンサー(sequence_list / load / save / get / eval / scrub / play / stop / apply_op)
     mcp/ApplicationMcpMatGraph.cpp   # マテリアルグラフ G2b(material_graph_get / edit / validate / compile / status / graphize / set_param / apply / nodes)
+    mcp/ApplicationMcpHardware.cpp   # 物理ハードウェア連携（hw_list_ports / hw_status / hw_connect / hw_read / hw_write / hw_simulate / hw_calibrate / hw_flash ほか。docs/HARDWARE.md）
     mcp/ApplicationMcpManifest.cpp   # マニフェスト（method ごとのメタ情報）と引数の中央検査（データ表は ApplicationMcpManifestData.inc）
     Window.cpp
     SplashScreen.cpp                # 起動画面の窓 + スレッド + API（D2D 描画 / GDI+ 縮退）

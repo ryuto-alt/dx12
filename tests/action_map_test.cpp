@@ -155,6 +155,28 @@ int main()
         CHECK(!m.HasAction("move"));
     }
 
+    // ハードウェアの擬似キー（kHwKeyBase 以上）: 述語が分岐できることと、RemoveKeysFrom で実キーを残して外せること。
+    {
+        ActionMap m;
+        m.Bind("jump", K_SPACE);
+        m.Bind("jump", kHwKeyBase + 0);          // ハードのチャンネル 0
+        m.Bind("fire", kHwKeyBase + 1);          // ハードだけのアクション
+        CHECK(m.BindingCount("jump") == 2);
+
+        std::set<int> hwDown = {kHwKeyBase + 0};
+        const ActionMap::KeyDownFn pred = [&](int k) { return k >= kHwKeyBase ? hwDown.count(k) > 0 : false; };
+        CHECK(m.Active("jump", pred));           // ハードが押されているだけで jump が立つ
+        CHECK(!m.Active("fire", pred));
+        CHECK(feq(m.Evaluate("jump", pred).x, 1.0f));   // 押下は寄与 1
+
+        m.RemoveKeysFrom(kHwKeyBase);
+        CHECK(m.BindingCount("jump") == 1);      // 実キーは残る
+        CHECK(!m.HasAction("fire"));             // 空になったアクションは消える
+        CHECK(!m.Active("jump", pred));
+        m.RemoveKeysFrom(kHwKeyBase);            // 2 回目は何も起きない
+        CHECK(m.BindingCount("jump") == 1);
+    }
+
     std::printf("action_map: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

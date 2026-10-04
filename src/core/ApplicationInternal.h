@@ -104,6 +104,7 @@
 #include "ecs/Components.h"
 #include "ecs/InstanceGroup.h"   // インスタンス群（McpWorldAabb 等）
 #include "scripting/ScriptEngine.h"
+#include "hardware/HardwareSystem.h"   // 物理ハードウェア連携（unique_ptr のデストラクタ / hw_* MCP / BeginFrame）
 #include "ui/UISystem.h"
 #include "ui/UiAnimRuntime.h"
 #include "animation/AnimGraphRuntime.h"

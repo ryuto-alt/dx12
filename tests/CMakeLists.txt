@@ -1836,3 +1836,29 @@ else()
     target_compile_options(SafeRemoveTests PRIVATE -Wall -Wextra -Werror)
 endif()
 add_test(NAME SafeRemoveTests COMMAND SafeRemoveTests)
+
+# ハードウェア連携プロトコル v1 の純ロジック（hardware/HwProtocol.cpp）: 行の組み立て（\r 無視・128 バイト超の破棄）・
+# 各行種のパース・不正行・エンジン → デバイスの行の生成。Win32 にも Logger にも依存しないのでスタンドアロンでも動く。
+add_executable(HardwareProtocolTests hardware_protocol_test.cpp
+               ${CMAKE_CURRENT_SOURCE_DIR}/../src/hardware/HwProtocol.cpp)
+target_include_directories(HardwareProtocolTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(HardwareProtocolTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(HardwareProtocolTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME HardwareProtocolTests COMMAND HardwareProtocolTests)
+
+# HardwareSystem の結合テスト（Loopback の仮想デバイスと台本トランスポートだけ。実 COM ポートは開かない）。
+# 接続・値の正規化・Pressed・出力の合流・dangerous・心拍・再接続・校正・サンプリング・hardware.json の往復。
+if(TARGET Hardware)
+    add_executable(HardwareSystemTests hardware_system_test.cpp)
+    target_link_libraries(HardwareSystemTests PRIVATE Hardware)
+    target_include_directories(HardwareSystemTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(HardwareSystemTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(HardwareSystemTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME HardwareSystemTests COMMAND HardwareSystemTests)
+    set_tests_properties(HardwareSystemTests PROPERTIES TIMEOUT 60)
+endif()

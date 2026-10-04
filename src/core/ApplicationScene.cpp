@@ -399,6 +399,7 @@ void Application::WireScriptCallbacks()
     // アクションマップ（キーリバインド）。Play/Stop で ScriptEngine は作り直されるが
     // 割り当ては設定なので Application 側で持ち続ける＝ここで借り直すだけ。
     m_scriptEngine->SetActionMap(&m_actionMap);
+    m_scriptEngine->SetHardware(m_hardware.get());   // Lua の hw.* と actions の擬似キー表（Play のたびに ScriptEngine は作り直される）
     m_scriptEngine->SetActionSaveCallback([this]() { SaveActionBindings(); });
 
     m_scriptEngine->SetLoadSceneCallback(
@@ -1857,6 +1858,10 @@ void Application::EnterEditorMode()
     if (m_editorCtx) m_editorCtx->paused = false;   // 一時停止(F1)もモード遷移で必ず解除する
 
     m_commandQueue->WaitIdle();
+
+    // Play 中に Lua が書いた物理ハードウェアの出力（LED・振動・ペルチェ）を安全値へ戻す。
+    // ★Play を止めた後も光りっぱなし / 熱いままにならないように（ファーム側の心拍切れだけに頼らない）。
+    if (m_hardware) m_hardware->ResetOutputs();
 
     // Play 中に鳴っていた SE（空間含む）と BGM を停止（Stop で鳴り続けるのを防ぐ）
     if (m_audioSystem)

@@ -88,6 +88,7 @@ end
 | `net` | table | マルチプレイ（host/join/RPC/スポーン）。詳細は §7 |
 | `nav` | table | ナビメッシュ経路探索（`findPath` / `sample` / `raycast` / `moveAlong` / `ready`、polyRef・4 状態のレイ・通路 `corridor`・群衆 `agent*`）|
 | `ai` | table | ゲーム AI（`ai.brain(self)` で Brain のハンドル、`ai.emitSound` / `ai.soundOnEvent` / `ai.brains` / `ai.curve`）|
+| `hw` | table | 物理ハードウェア（Arduino / ESP32）。`hw.device(name)` でハンドル（`connected` / `get` / `raw` / `down` / `pressed` / `released` / `set`）、`hw.list()` で一覧。`actions` へのチャンネル割当は hardware.json |
 | `ASSETS` | string | assets ディレクトリの絶対パス |
 | `SCREEN_W` / `SCREEN_H` | int | 画面解像度（`SetScreenSize` で更新） |
 
@@ -517,6 +518,42 @@ Brain の黒板 `director.beat` / `director.calm` / `director.intensity` へ書�
 > エディタの「ツール > Network」窓(Play中)でロール/tick/複製数と接続一覧(clientId・RTT・送受信バイト概算)を確認できる。
 > 現状はフェーズ⑧(興味管理+統計窓)まで実装済み。**エディタ設定UI も実装済み**
 > （`ツール > ネットワーク` の NetworkPanel。保存/既定値復帰つき）。セッション抽象は今後。
+
+### hw（`hw`）— 物理ハードウェア（Arduino / ESP32）
+USB シリアルでつないだ Arduino / ESP32 のボタン・ダイヤル・センサーを入力に、LED・振動などを出力に使う。エディタでも Play でも**配布ゲームでも**動く
+（設定は `assets/hardware.json`、無くても動く。仕様と配線は [`HARDWARE.md`](HARDWARE.md)、MCP は [`MCP.md`](MCP.md) §4-19）。`:` ではなく `.` で呼ぶのは `hw.device` / `hw.list` の 2 つだけ。
+
+| API | 戻り値 | 説明 |
+|---|---|---|
+| `hw.device(name)` | HwDevice | hardware.json の `name`（または MCP `hw_simulate` で作った仮想デバイス）のハンドル。**無い名前でも返る**（`connected` が false・値は 0） |
+| `hw.list()` | `{ {name=, connected=, port=}, ... }` | 全デバイス |
+
+**HwDevice**（`hw.device(name)` の戻り値）
+
+| メンバ | 戻り値 | 説明 |
+|---|---|---|
+| `h.connected` | bool | Ready（`@ready` を受けて使える）のとき true。★**プロパティなので `h.connected`**（`h:connected()` と書かない） |
+| `h.name` | string | デバイス名（プロパティ） |
+| `h:get(ch)` | number | 正規化値 0..1（校正・平滑済み）。宣言に min/max が無ければ生値。無い / 未接続なら 0 |
+| `h:raw(ch)` | number | 生値（ダイヤルなら 0..4095 など） |
+| `h:down(ch)` / `h:pressed(ch)` / `h:released(ch)` | bool | bool チャンネルは raw≠0（`invert` で反転）、数値は value≥0.5。`pressed` / `released` はこのフレームの 0→1 / 1→0 |
+| `h:set(ch, v)` | bool | 出力チャンネルへ 0..1 の正規化値。`dangerous` は `maxValue` で切られる。未接続・未宣言の ch は false。Play を止めると安全値へ戻る |
+
+```lua
+local radio = hw.device("radio")
+if radio.connected then
+  local f = radio:get("dial")          -- 0..1
+  if radio:pressed("btn") then fx.burst(...) end
+  radio:set("led", f)                  -- ダイヤルの位置で LED の明るさ
+end
+for _, d in ipairs(hw.list()) do print(d.name, d.connected, d.port) end
+```
+
+- 値はフレームの頭（`BeginFrame`）で確定するので、同じフレーム内では変わらない。切断・再接続はエンジンが自動で行う。
+- **アクションへの割当**: hardware.json の `"actions": { "btn": "Jump" }` と書くと、そのチャンネルが `actions.get/down/pressed("Jump")` に効く
+  （キーボードと同じアクションで遊べる＝実機なしで開発でき、展示中の故障時の代替にもなる。`get` の数値は押している間 1）。
+  内部ではチャンネルに擬似キーコード（`0x10000` 以上）を割り当てて `ActionMap` へ束ねている。`actions.save()` は擬似キーを `input_bindings.json` へ書かない。
+- 配布ゲームでも `assets/hardware.json` が pak に入る（`BuildGame` が assets をそのまま詰める）。DLL の追加は無い（setupapi はシステム DLL）。
 
 ### time（`time`）— 時間 API（v0.9.3+）
 `:` ではなく `.` で呼ぶ。状態は Play 開始でリセットされる。

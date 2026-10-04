@@ -58,6 +58,7 @@ add_subdirectory(src/resource)
 add_subdirectory(src/animation)
 add_subdirectory(src/ecs)
 add_subdirectory(src/input)
+add_subdirectory(src/hardware)  # Arduino / ESP32 の USB シリアル連携（docs/HARDWARE.md）。Core だけに依存
 add_subdirectory(src/audio)
 add_subdirectory(src/terrain)   # ハイトフィールド地形（Scene / Physics / Editor が使う）
 add_subdirectory(src/nav)       # 自作ナビメッシュ（Scene が保持し、Editor / MCP / Lua が叩く）
@@ -96,6 +97,7 @@ target_link_libraries(DX12Engine
         ECS
         Audio
         Input
+        Hardware
         Terrain
         Nav
         AI
@@ -163,6 +165,7 @@ target_link_libraries(GameRuntime
         ECS
         Audio
         Input
+        Hardware
         Terrain
         Nav
         AI

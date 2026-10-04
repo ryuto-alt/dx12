@@ -1077,6 +1077,35 @@ dx12_imgui_screenshot {path:"C:/tmp/shot.png"}      → 仮想カーソル込み
 - 起動時のプロジェクトランチャー等、ImGui 上のダイアログは普通に操作できる。ネイティブのファイル選択ダイアログは開かない(ブロックしてログに残す)。
 - 別プロセスの子エディタ(テストクライアント起動)は同じ `--background` / `--virtual-input` を引き継いで起動する。
 
+### 4-19. 物理ハードウェア（Arduino / ESP32。`hw_*`）
+
+USB シリアルでつないだ Arduino / ESP32 を扱う（仕様の正は [`docs/HARDWARE.md`](HARDWARE.md)。実装は `src/hardware/` と `src/core/mcp/ApplicationMcpHardware.cpp`）。
+全部 `dx12_call {name:"hw_..."}` で撃つ（`dx12_tool_search {query:"hardware"}` で引ける。Core 面は 40 本が上限なので昇格はしていない）。
+エディタでも配布ゲームでも `assets/hardware.json` から読んだ設定で動く（ファイルが無ければ空設定。`hw_connect` / `hw_simulate` は設定なしで使える）。
+
+| method | params | 返り値 / 内容 | effect |
+|---|---|---|---|
+| `hw_list_ports` | `{}` | `{ports:[{port, friendlyName, vid, pid, guessedBoard, usedBy?}]}` COM 一覧。`usedBy` はそのポートを使っているデバイス名 | read |
+| `hw_status` | `{device?}` | `{devices:[{name, status, connected, virtual, port, hello:{name,board,fw,proto}, channels:[{name,dir,type,min,max,raw,value,…}], stats:{rxLines,rxRateHz,rttMs,errors,badLines,overflow,…}, lastRxAgeMs}]}` | read |
+| `hw_connect` | `{device, port?}` | 非同期で接続。設定に無い名前なら、その名前でデバイスを足して接続（port 指定 or `@hello` の名前で照合）。ファイルには書かない | runtime |
+| `hw_disconnect` | `{device}` | 全出力を安全値へ戻してポートを放す。`hw_connect` するまで自動再接続しない | runtime |
+| `hw_read` | `{device, durationMs?:100..10000=1000}` | `{channels:{ch:{count,min,max,mean,stddev}}}`。**遅延応答**（メインスレッドは止めない。応答は時間が来たフレームで返る） | read |
+| `hw_monitor` | `{device, lines?:1..500=50}` | `{lines:[{t, dir:"rx"\|"tx", text}]}` 生の送受信ログの末尾 | read |
+| `hw_write` | `{device, values:{ch:0..1}}` | 出力を書いて即確定。`dangerous:true` のチャンネルを含むと拒否（`E_HW_DANGEROUS`、fix に `hw_write_dangerous`） | runtime |
+| `hw_write_dangerous` | `{device, values}` | `dangerous` 出力（ペルチェ等）へ書く。値は `maxValue` で切られる | guarded |
+| `hw_simulate` | `{device, values?:{ch:raw}, channels?:[{name,dir,type,min,max}], clear?}` | 入力に仮想の生値を流す。`channels` があり device が無ければ**仮想デバイスを作る**。`clear:true` で解除 | runtime |
+| `hw_calibrate` | `{device, mode:"start"\|"finish"\|"cancel"}` | `start` で min/max 追跡 → `finish` で範囲を確定して `assets/hardware.json` へ保存（返り値に `ranges`） | write_file |
+| `hw_config_get` | `{}` | `{config, fileFound, path}` いまの設定（校正値の反映済み） | read |
+| `hw_config_set` | `{config}` | hardware.json を丸ごと書いて Shutdown→Initialize。パースエラーは**書かずに**エラー（`E_HW_BAD_CONFIG`） | write_file |
+| `hw_flash` | `{sketch, device?\|port?, fqbn?, libraries?}` | arduino-cli で compile + upload（**非同期**。対象のポートを放し、終わったら自動で再接続。同時に 1 本）。確認が要る | guarded |
+| `hw_flash_status` | `{lines?:0..200=30}` | `{state:"idle\|compiling\|uploading\|reconnecting\|done\|failed", elapsedSec, exitCode, logTail, reconnected, error?}` | read |
+
+- `sketch` は `.ino` かそのフォルダ。相対パスは**プロジェクト → `<repo>/hardware/firmware/`** の順で探す。`libraries` の既定は `<repo>/hardware/firmware/UnoLink`（配布物にはリポジトリが無いので、その場合は絶対パスを渡す）。
+- `fqbn` 省略時は `@hello` の board / VID・PID の推定から決める（ESP32 系 → `esp32:esp32:esp32`、Arduino → `arduino:avr:uno`）。決められなければ `E_HW_FQBN_REQUIRED`。
+- arduino-cli の場所: `hardware.json` の `arduinoCli` → PATH → `C:\Program Files\Arduino CLIrduino-cli.exe`。窓は出さず（`CREATE_NO_WINDOW`）、優先度は BELOW_NORMAL。エンジン終了時は子プロセスごと止める。
+- Lua からは `hw.device("名前")`（[`docs/API_REFERENCE.md`](API_REFERENCE.md) の hw 節）。MCP の `hw_simulate` で作った仮想デバイスも同じ名前で読める。
+- 典型: `hw_list_ports` → `hw_config_set`（match に VID/PID・hello、pins、actions）→ `hw_status`（Ready とチャンネル）→ `hw_read` で値の揺れを確認 → `hw_calibrate` で範囲を保存。
+
 ### 4-5. 精密ピック / 地形 / スカルプトの約束事
 
 **2 種類のレイキャストを取り違えないこと。**
@@ -1432,6 +1461,14 @@ TS サーバはこれを引いて、エンジンを再ビルドしても**再起
   `describe_mcp_manifest` 自身がその最初の例（`brief` に文字列を渡すと `E_BAD_TYPE`）。
 - ctest `McpManifestTests` が「McpDefine の全 method = データ表の全名」「全 meta が有効」「申告表と表の引数名が一致」を見張る。
   表に行を足し忘れると落ちる（`describe_mcp_manifest` が `source:"derived"` を返す状態を作らない）。
+
+### 12-2b. ハードウェア method（`hw_*`）の非同期の作法
+
+`hw_read` は `deferred:true`（遅延応答）: 受信時に `Application::m_hwReads` へ積み、`HardwareSystem::BeginSampling` で集計を始め、
+毎フレーム `ServiceHardwareReads()`（`BeginFrame` の直後）が時間の来たものを `EndSampling` して `CompleteMcp` で返す。メインスレッドは止まらない
+（`timeoutMs` は 10 秒の上限 + 余裕で 20000）。ハードウェア設定が作り直されたら保留中の応答は `E_CANCELLED` で返る。
+`hw_flash` は遅延応答ではなく**ワーカースレッド**（受信時に `started:true` を返し、進み具合は `hw_flash_status`）。同時に 1 本。
+子プロセスは Job オブジェクトに入れてあり、エンジンが落ちても arduino-cli / esptool が残らない。
 
 ### 12-3. 構造化エラー（加算フィールド）
 

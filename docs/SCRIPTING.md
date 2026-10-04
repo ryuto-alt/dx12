@@ -352,6 +352,19 @@ ui:text(x, y, "HUD text", size, r, g, b, a)   -- 画面に文字（再生中の�
 下部の入力欄からは Lua を1行その場で実行できる（`scene`/`fx`/`camera` などそのまま使える簡易コンソール）。
 入力中は**予測変換**が出る: `time.` や `scene:fi` まで打つと候補がポップアップし、Tab で確定・↑↓ で選択・クリックで挿入できる（候補は実際の Lua 環境から動的に列挙されるので自作のグローバルも出る）。
 
+### 物理ハードウェア（hw）— Arduino / ESP32 を入力・出力に
+USB でつないだボードのボタン・ダイヤル・センサーを読み、LED・振動を動かす。設定は `assets/hardware.json`（`docs/HARDWARE.md`）。配布ゲームでも動く。
+```lua
+local radio = hw.device("radio")
+if radio.connected then                 -- ★プロパティ（radio:connected() ではない）
+  local f = radio:get("dial")           -- 正規化値 0..1
+  if radio:pressed("btn") then log("押した") end
+  radio:set("led", f)                   -- 出力 0..1
+end
+for _, d in ipairs(hw.list()) do print(d.name, d.connected) end
+```
+hardware.json の `"actions": { "btn": "Jump" }` と書けば、`actions.pressed("Jump")` がボタンでもキーボードでも立つ（実機が無くても開発できる）。
+
 ### 敵の頭脳（ai / Brain）とナビ
 敵やNPCの「見る・聞く・覚える・選ぶ・歩く」はエンジンが持つ。スクリプトは**行動の中身**だけ書く。
 ```lua

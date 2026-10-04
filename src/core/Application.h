@@ -32,6 +32,7 @@
 #include "core/CpuScope.h"          // CpuScope / CpuScopeTimer（エディタとも共有するので独立ヘッダ）
 #include "core/PlaySession.h"       // Play 1 回ぶんの記録（値メンバで持つので完全型が要る）
 #include "engine/input/ActionMap.h"  // キーリバインド（値メンバで持つので完全型が要る）
+#include "hardware/HwConfig.h"       // ReinitHardware の引数（nlohmann を出さない軽いヘッダ）
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
 #include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
 #include "renderer/DecalSystem.h"            // DecalGPU を値で持つので同上
@@ -104,6 +105,7 @@ namespace dx12e
     class PhysicsSystem;
     class NetworkSystem;
     namespace ai { class AiSystem; }
+    namespace hw { class HardwareSystem; }   // hardware/HardwareSystem.h（Arduino / ESP32 連携。docs/HARDWARE.md）
     class PhysicsDebugRenderer;
     class EditorIconRenderer;
     class EditorContext;
@@ -486,6 +488,7 @@ private:
     void RegisterMcpPathTracerMethods();  // DXR パストレーサー（render_reference / _status / _cancel）
     void RegisterMcpSequenceMethods();    // シーケンサー（sequence_list / load / save / get / eval / scrub / play / stop / apply_op）
     void RegisterMcpMatGraphMethods();    // マテリアルグラフ G2b（material_graph_get / edit / validate / compile / graphize / set_param）
+    void RegisterMcpHardwareMethods();    // 物理ハードウェア（hw_list_ports / hw_status / hw_connect / hw_read / hw_write / hw_simulate / hw_calibrate / hw_flash ほか。mcp/ApplicationMcpHardware.cpp）
     void RegisterMcpEditorUiMethods();    // M7: エディタ操作の全面公開（editor_command_list / run / editor_state / editor_notify / editor_select。mcp/ApplicationMcpEditorUi.cpp）
     void ServiceMcpEditorUi();            // M7: editor_command_run の遅延応答（毎フレーム。ServiceMcpVirtualInput と同じ位置から呼ぶ）
 
@@ -798,6 +801,20 @@ private:
     std::string ActionBindingsPath() const;
     void SaveActionBindings();
     void LoadActionBindings();
+
+    // ── 物理ハードウェア（Arduino / ESP32。docs/HARDWARE.md。実装は mcp/ApplicationMcpHardware.cpp）──
+    // assets/hardware.json を vfs 経由で読み（無ければ空設定）、HardwareSystem を Shutdown→Initialize する。
+    // エディタのプロジェクトロード完了時と配布ゲームの起動時の両方から呼ぶ（pak の中でも動く）。
+    void InitHardware();
+    // hw_config_set / hw_connect（未設定のデバイス）用: 設定を渡して作り直す。作り直したら actions の割当も付け直す。
+    void ReinitHardware(const hw::HwConfig& cfg);
+    // hardware.json の actions（チャンネル → アクション名）を ActionMap の擬似キー（kHwKeyBase+番号）として付け直し、
+    // ScriptEngine にも表を渡す。LoadActionBindings の後・ハードウェアの再初期化の後・ScriptEngine の作り直しの後に呼ぶ。
+    void ApplyHardwareActionBindings();
+    // hw_read の遅延応答を毎フレーム見る（BeginFrame の直後）
+    void ServiceHardwareReads();
+    // アプリ終了時: フラッシュ中の arduino-cli を止めてスレッドを回収し、HardwareSystem を Shutdown する
+    void ShutdownHardware();
 
     // 「いまの状態＝保存済み」に揃える（保存成功時・シーンを開いた直後・新規作成直後）。
     // 実体は EditorContext::MarkSceneSaved + 設定指紋の取り直し。
@@ -1462,6 +1479,17 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_previewDepthBuffer;
     D3D12_CPU_DESCRIPTOR_HANDLE        m_previewDsvHandle{};
     std::unique_ptr<InputSystem>       m_inputSystem;
+    // 物理ハードウェア連携（Arduino / ESP32）。★宣言順注意: m_scriptEngine より前に置く
+    // （Lua の hw ハンドルが生ポインタ経由で触るので、ScriptEngine が先に消えるように）。
+    std::unique_ptr<hw::HardwareSystem> m_hardware;
+    std::shared_ptr<void>              m_hwFlash;     // hw_flash の状態（実体は mcp/ApplicationMcpHardware.cpp）
+    struct HwReadPending
+    {
+        McpDeferred reply;
+        std::string device;
+        double      endSec = 0.0;      // steady_clock 基準の秒
+    };
+    std::vector<HwReadPending>         m_hwReads;     // hw_read の遅延応答（メインスレッドのみ）
     std::unique_ptr<Scene>             m_scene;
     // ゲームプレイ中のエンジン汎用イベントバス。Play 開始時 Clear、Update 末尾 Flush。
     // 宣言順注意: m_scriptEngine / m_physicsSystem より前に置く。

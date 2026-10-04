@@ -29,6 +29,7 @@ class NetworkSystem;
 class UISystem;
 class ActionMap;
 namespace ai { class AiSystem; }
+namespace hw { class HardwareSystem; }   // hardware/HardwareSystem.h（Lua の hw.*）
 class ISequenceLuaApi;   // core/SequenceLuaApi.h（Lua の Sequence.* の窓口。シーケンサーのホストが実装する）
 
 // スクリプトコンポーネントのプロパティ宣言（.lua の properties から解析）。
@@ -218,6 +219,12 @@ public:
     // actions.save() から呼ばれる。バインドの永続化は Application 側の仕事。
     void SetActionSaveCallback(VoidCb cb) { m_actionSaveCb = std::move(cb); }
 
+    // ── 物理ハードウェア（Arduino / ESP32。docs/HARDWARE.md）──
+    // Application が所有する。null 許容（未設定なら hw.device は「未接続のデバイス」を返す）。
+    // 同時に hardware.json の actions 割当（チャンネル → アクション名）の擬似キー表を取り直す。
+    // 設定を作り直したら（Application::ApplyHardwareActionBindings が）もう一度呼ぶ。
+    void SetHardware(hw::HardwareSystem* hardware);
+
     // 映像設定（Application が注入）。Lua の display.* から呼ばれる（'.' 呼び、time と同様）。
     struct DisplayCallbacks
     {
@@ -241,6 +248,10 @@ public:
 
 private:
     void RegisterBindings();
+    void RegisterHardwareBindings();   // hw グローバル（hw.device / hw.list）
+    // actions の述語: 実キーは InputSystem、擬似キー（kHwKeyBase 以上）はハードウェアへ回す
+    bool ActionKeyDown(int key) const;
+    bool ActionKeyPressed(int key) const;
     // 高レベルヘルパー(actor/keyDown/cameraFollow 等)をグローバルへ定義する
     // Lua prelude を実行する。全アタッチスクリプトから参照可能になる。
     void LoadPrelude();
@@ -277,6 +288,9 @@ private:
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     ISequenceLuaApi* m_sequenceApi = nullptr;   // Application が所有、null 許容（Lua の Sequence.*）
     ActionMap*   m_actionMap = nullptr;  // Application が所有、null 許容
+    hw::HardwareSystem* m_hardware = nullptr;   // Application が所有、null 許容
+    // 擬似キー（kHwKeyBase + 添字）→ {デバイス名, チャンネル名}。Application が ActionMap へ付けたバインドと同じ順
+    std::vector<std::pair<std::string, std::string>> m_hwKeys;
     // Trigger の SetShaderParam / AnimShaderParam の実体。Play 停止で捨てる
     // （進行中の値を残したままシーンを作り直すと、止めた瞬間の絵が焼き付く）。
     ShaderParamTweens m_shaderTweens;
