@@ -939,6 +939,21 @@ dx12_lua_step(before:"P=scene:findEntity('Player')", keys:["D"], frames:30, dete
 
 `eval_lua` と同じく任意の Lua を走らせるので guarded(承認が要る)。core / shell 面では `dx12_call_guarded` から呼ぶ。
 
+**手順が多いならコードモード(`scripts/dx12run.ts`)で 1 回に流す。** 入力・待ち・計測・分岐・繰り返しをスクリプトに書き、
+戻り値(要約)だけを受け取る。途中の結果はコンテキストに入らない。Bash で実行する(エンジンのブリッジは複数クライアント対応なので、
+MCP サーバが繋いだままでも並んで動く)。
+
+```
+node tools/mcp-server/scripts/dx12run.ts -e "await dx.call('play'); await dx.lua('P=scene:findEntity(\"Player\")');
+  const xs=[]; for (let i=0;i<6;i++){ await dx.step(10,{deterministic:true}); xs.push(+await dx.lua('return P.transform.position.x')); }
+  await dx.call('stop'); return xs;"
+# → {"ok":true,"result":[…],"calls":15,"elapsedMs":…}   長いものは .mjs に書いて渡す(export default async (dx) => {...})
+```
+
+`dx = {call(method, params), lua(code), step(frames, opts), log(...)}`。`call` はエンジンの method を直接撃つ(ツール名ではない)。
+eval_lua 以外の guarded(git push・delete_asset・build_game など)は `--allow-guarded` を人が付けたときだけ。
+フリートの専用エンジンは `--port` で指す。出力は既定 20000 文字で切り詰めるので、スクリプト側で要約して返すこと。
+
 ---
 
 ## ★ ゲームの挙動デバッグは「自分で操作せず、人間のプレイを読む」
@@ -2077,3 +2092,15 @@ issue は日本語 1 行で「次の一手」まで書いてある。`instancing
   `dx12_autoplay` で実際に走破させてから言うこと。
 - **Blender から手で `export_scene.gltf` を呼ぶ** → 全シーン書き出し・tmp 画像名・真っ白マテリアルの
   どれかを必ず踏む。`dx12_blender_export` を使うこと。
+
+---
+
+## 正解の封印(dx12_oracle)
+
+AI が「作る側」のとき、テストや採点器を書き換えて通すことがある。それを防ぐため、**書き換えられない正解**(固定カメラの金画像・性能予算・封印したプレイテスト)を作り、`dx12_quality_gate` の `oracles` 検査が毎回照合する。
+
+- 置き場所: `<project>/.dx12/oracles/`(`oracles.json` と `views/<name>.png`)。封印台帳は**プロジェクトの外**(`%LOCALAPPDATA%/UnoEngine/oracles/`)にハッシュで残り、封印したファイルは読み取り専用になる。
+- 流れ: `dx12_oracle {op:"add_view", name, camera}` / `{op:"add_perf", name, max:{frameMsP95:16.6}}` → **人が金画像と予算を確認** → 人が封印(`dx12_call {name:"dx12_oracle", args:{op:"seal"}, confirm:true}`、または `node tools/mcp-server/scripts/oracle-seal.ts <projectDir>`)→ 以後 `dx12_quality_gate` が照合。`op:"status"` は封印の状態(エンジン不要)、`op:"check"` は照合だけ。
+- 封印後に金画像・`oracles.json`・封印したプレイテストが変わると `ORACLE_TAMPERED`(blocking)。金画像との差は `ORACLE_VIEW_DIFF`(差分画像 `out/<name>.diff.png`)、予算超過は `ORACLE_PERF_OVER`。未封印は警告(`ORACLE_UNSEALED`)。
+- **AI は `seal` を自分で実行しない・ゲートを通すために金画像(`capture`)や予算を書き換えない。** 差が出たら絵・性能の側を直す。意図した更新だと思うなら、差分画像を人に見せて、人が確認して封印し直す。`seal` は承認が無いと `E_GUARDED` になる。
+- 封印したプレイテスト(`oracles.json` の `playtests`)は、`playtests` を渡さなくてもゲートが再生する。`checks` を絞っても `oracles` は走る。
