@@ -650,6 +650,9 @@ void Application::RegisterMcpEntityMethods()
                         {"albedo",         mat && mat->albedoTexture         != nullptr},
                         {"normal",         mat && mat->normalMapTexture      != nullptr},
                         {"metalRoughness", mat && mat->metalRoughnessTexture != nullptr},
+                        // hasAO = ORM の R をマテリアル AO として読んでいる / aoStrength = 実効の強さ（上書き込み。AO なしは 0）
+                        {"hasAO",          mat && mat->occlusionInMR},
+                        {"aoStrength",     ResolveAoStrength(mat, mr->overrideAoStrength)},
                     });
                 }
                 if (!baked.empty()) result["bakedTextures"] = std::move(baked);
@@ -1606,7 +1609,7 @@ void Application::RegisterMcpEntityMethods()
                               {"target", {wpos.x, wpos.y, wpos.z}}, {"distance", dist}};
         });
 
-    McpDefine("set_pbr", "alphaCutoff:any,alphaMode:string,emissiveColor:any,emissiveIntensity:any,"
+    McpDefine("set_pbr", "alphaCutoff:any,alphaMode:string,aoStrength:any,emissiveColor:any,emissiveIntensity:any,"
               "entity:int,metallic:any,name:string,opacity:any,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
@@ -1618,6 +1621,14 @@ void Application::RegisterMcpEntityMethods()
             auto& mr = reg.get<MeshRenderer>(e);
             if (params.contains("metallic"))  mr.overrideMetallic  = params["metallic"].get<float>();
             if (params.contains("roughness")) mr.overrideRoughness = params["roughness"].get<float>();
+            // ---- マテリアル AO ----
+            // aoStrength: 0..1 でその強さ（0 = AO オフ）、負で「モデルの値（glTF occlusionTexture.strength）に従う」へ戻す。
+            //             モデルが AO を持たないときは保存されるだけで絵は変わらない（get_entity の bakedTextures[].hasAO）。
+            if (params.contains("aoStrength"))
+            {
+                const float v = params["aoStrength"].get<float>();
+                mr.overrideAoStrength = (v < 0.0f) ? -1.0f : std::clamp(v, 0.0f, 1.0f);
+            }
             // ---- 自己発光（emissive）----
             // emissiveIntensity: 発光の強さ 0..64（0 で消灯、負で「マテリアルに従う」へ戻す）
             // emissiveColor: [r,g,b] 0..1（リニア）。省略して強度だけ指定すると白として扱う
@@ -1681,6 +1692,7 @@ void Application::RegisterMcpEntityMethods()
                               {"alphaCutoff", mr.alphaCutoffOverride},
                               {"opacity", mr.opacity},
                               {"emissiveIntensity", mr.overrideEmissiveIntensity},
+                              {"aoStrength", mr.overrideAoStrength},
                               {"emissiveColor", {mr.overrideEmissiveColor.x,
                                                  mr.overrideEmissiveColor.y,
                                                  mr.overrideEmissiveColor.z}}};

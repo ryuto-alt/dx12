@@ -28,6 +28,11 @@ struct MaterialAssetData
     f32 emissiveColor[3] = {0.0f, 0.0f, 0.0f};
     f32 emissiveIntensity = 0.0f;
 
+    // マテリアル AO。> 0 のとき metalRoughnessPath（ORM / PolyHaven ARM）の R を AO として読む（強さ 0..1）。
+    // 既定 0 = 読まない＝既存の .dxmat は ARM を指していても 1 ピクセルも変わらない。
+    // 間接光（IBL・アンビエント・GI）だけに掛かり、直接光には掛からない。
+    f32 aoStrength = 0.0f;
+
     f32 uvTilingU = 1.0f;
     f32 uvTilingV = 1.0f;
 

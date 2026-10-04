@@ -416,6 +416,7 @@ void Application::BuildDrawList()
             // ★自己発光も混ぜる。混ぜないと「同じメッシュで emissive だけ違う N 体」が
             //   1 バッチに畳まれ、先頭の 1 体の発光で全部が描かれる（看板が全部同じ色に光る）。
             mix(bits(renderer.overrideEmissiveIntensity));
+            mix(bits(renderer.overrideAoStrength));   // AO 強度の上書きが違う個体を 1 バッチに畳まない
             mix(bits(renderer.overrideEmissiveColor.x));
             mix(bits(renderer.overrideEmissiveColor.y));
             mix(bits(renderer.overrideEmissiveColor.z));
@@ -1129,6 +1130,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 if (matAsset->hasNormalTex) pbrParams.flags |= 1u;
                 if (matAsset->hasMRTex)     pbrParams.flags |= 2u;
                 if (matAsset->hasEmissiveTex) pbrParams.flags |= kPbrFlagEmissiveTex;
+                // .dxmat の aoStrength > 0 = MR(ORM) の R を AO として読む（既定 0 = 読まない）。
+                // エンティティ上書き(>=0)はモデル側と同じく強度だけを差し替える。
+                pbrParams.flags = PackAoFlags(pbrParams.flags,
+                    (matAsset->data.aoStrength > 0.0f)
+                        ? ((renderer.overrideAoStrength >= 0.0f) ? renderer.overrideAoStrength : matAsset->data.aoStrength)
+                        : 0.0f);
             }
             else
             {
@@ -1160,6 +1167,10 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 const bool ovEmis = ovBlockOk &&
                     !MeshRenderer::SafeGetOverride(renderer.overrideEmissiveTexture, mi).empty();
                 if (ovEmis || (mat && mat->emissiveTexture)) pbrParams.flags |= kPbrFlagEmissiveTex;
+                // マテリアル AO（ORM の R）。モデルが AO を持つときだけ。flags の bit1（MR 有り）が前提。
+                // ★MR テクスチャを set_texture で差し替えたときは R の中身が分からない（未使用=0 の素材が普通）ので読まない。
+                pbrParams.flags = PackAoFlags(pbrParams.flags,
+                    ovMR ? 0.0f : ResolveAoStrength(mat, renderer.overrideAoStrength));
             }
             // 一律色ティント（未指定は白＝従来と同じ絵）
             {
@@ -1454,6 +1465,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
         //   （非インスタンス経路 / matAsset 経路と同じ規則。#26 で揃えた）
         if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
         if (mat && mat->emissiveTexture)       pbrParams.flags |= kPbrFlagEmissiveTex;
+        pbrParams.flags = PackAoFlags(pbrParams.flags, ResolveAoStrength(mat, r.overrideAoStrength));
         // ★インスタンス経路の色は per-instance 頂点ストリーム（inst.color）で掛かるのでここは白。
         //   b0 も同様に 16 DWORD しか書かないので、この経路では b0 の 16 番以降を読んではいけない。
         pbrParams.packedTint = 0x00FFFFFFu;

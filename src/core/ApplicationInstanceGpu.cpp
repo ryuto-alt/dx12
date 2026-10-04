@@ -457,6 +457,7 @@ void Application::GpuInstDrawMain(ID3D12GraphicsCommandList* cmd, u32 frameIndex
             if (mat && mat->normalMapTexture)      pbr.flags |= 1u;
             if (mat && mat->metalRoughnessTexture) pbr.flags |= 2u;
             if (mat && mat->emissiveTexture)       pbr.flags |= kPbrFlagEmissiveTex;
+            pbr.flags = PackAoFlags(pbr.flags, ResolveAoStrength(mat, r.overrideAoStrength));
             pbr.packedTint = 0x00FFFFFFu;   // 色は per-instance 頂点ストリームで掛かる
             pbr.flags      = PackAlphaTestFlags(pbr.flags, alphaP);
             pbr.packedTint = PackTintWithOpacity(pbr.packedTint, alphaP.opacity);

@@ -149,6 +149,17 @@ public:
         const std::string& cacheKey = std::string(),
         uint32_t maxDimension = 0);
 
+    // glTF の occlusionTexture が metallicRoughness と別画像のとき、読み込み時に ORM（R=AO / G=roughness /
+    // B=metallic）を 1 枚へ詰める。入力はエンコード済みバイト列（PNG/JPG 等の WIC 形式）。
+    //   ao  : AO 画像（R を AO として使う。グレースケールも R に入る）
+    //   mr  : metallicRoughness 画像（G/B を使う）。mrData == nullptr なら G=B=255（＝係数がそのまま効く）
+    //   解像度が違えば大きい方へ DirectXTex でリサイズして揃える。色空間は解釈しない（リニアの生バイト）。
+    // 結果は PNG（RGBA8, A=255）。呼び出し側は NonColor でそのまま GetOrLoadEmbeddedTexture へ渡せる。
+    // GPU に触れない純関数（単体テスト可）。要 CoInitializeEx（WIC）。
+    static bool ComposeOrmPng(const uint8_t* mrData, size_t mrSize,
+                              const uint8_t* aoData, size_t aoSize,
+                              std::vector<uint8_t>& outPng, std::string& outError);
+
     // 地形レイヤー配列用：CPU 側で組み上げた RGBA8 スライス列から Texture2DArray を作る。
     //   ミップ生成 → BC 圧縮（.texcache にキャッシュ）→ GPU アップロードまで一括で行う。
     // slices の各要素は width*height*4 バイトの RGBA8（先頭 = スライス 0）。

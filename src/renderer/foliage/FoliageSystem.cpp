@@ -481,6 +481,7 @@ bool FoliageSystem::BeginFrame(const FrameIn& in)
                         if (g.mat && g.mat->normalMapTexture) g.flags |= 1u;
                         if (g.mat && g.mat->metalRoughnessTexture) g.flags |= 2u;
                         if (g.mat && g.mat->emissiveTexture) g.flags |= kPbrFlagEmissiveTex;
+                        g.flags = PackAoFlags(g.flags, ResolveAoStrength(g.mat, -1.0f));
                         g.flags = PackAlphaTestFlags(g.flags, eff);
                         g.packedTint = PackTintWithOpacity(0x00FFFFFFu, 1.0f);
                         g.packedEmissive = PackEmissive(ResolveEmissiveParams(

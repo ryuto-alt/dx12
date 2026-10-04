@@ -1117,6 +1117,7 @@ void FillManifestChunk11(ManifestRows& o)
             P("opacity", "number", false, nullptr, nullptr, nullptr, nullptr, "不透明度 0..1。1 未満なら alphaMode を省いても半透明になる(ガラス・水面)"),
             P("emissiveIntensity", "number", false, nullptr, nullptr, nullptr, nullptr, "自己発光の強さ 0..64(0=消灯、負=マテリアルに従う)。1 を超えるとブルームが乗る。目安: 看板 2..5 / 天井照明パネル 4..10 / 非常口サイン 3..6"),
             P("emissiveColor", "vec3", false, nullptr, nullptr, nullptr, nullptr, "自己発光の色 [r,g,b](0..1、リニア)。省略して強度だけ指定すると白になる"),
+            P("aoStrength", "number", false, nullptr, nullptr, nullptr, nullptr, "マテリアル AO(ORM の R / glTF occlusionTexture)の強さ 0..1(0=AO オフ、負=モデルの値に従う)。間接光だけに掛かる。AO を持たないモデルには効かない(get_entity の bakedTextures[].hasAO で確認)"),
         })});
     o.push_back({"set_post_process", M("ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。",
         "set post process ポストプロセス設定変更",

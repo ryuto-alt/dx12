@@ -45,9 +45,22 @@ struct ModelProbeInfo
     float aabbMin[3] = {0, 0, 0}, aabbMax[3] = {0, 0, 0};
 };
 
+// glTF の occlusionTexture の読み取り結果（マテリアル 1 つ分。GPU 不要。テスト・診断用）。
+struct OcclusionProbe
+{
+    std::string material;
+    bool  hasOcclusion      = false;   // 使える occlusionTexture がある（glTF/GLB・UV0）
+    bool  hasMetalRoughness = false;
+    bool  sharedWithMR      = false;   // metallicRoughness と同じ画像（ORM 1 枚）。false なら読み込み時に ORM を作る
+    float strength          = 1.0f;
+};
+
 class ModelLoader
 {
 public:
+    // glTF の occlusionTexture をマテリアルごとに調べる（LoadFromFile と同じ判定）。読めなければ空。
+    static std::vector<OcclusionProbe> ProbeOcclusion(const std::filesystem::path& filePath);
+
     static ModelProbeInfo Probe(const std::filesystem::path& filePath);
 
     static ModelData LoadFromFile(

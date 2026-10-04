@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <charconv>
 #include <cstdlib>
 
@@ -85,6 +86,7 @@ bool ParseMaterialAsset(const std::vector<uint8_t>& jsonBytes, MaterialAssetData
     data.metallic            = j.value("metallic", 1.0f);
     data.roughness           = j.value("roughness", 1.0f);
     data.emissiveIntensity   = j.value("emissiveIntensity", 0.0f);
+    data.aoStrength          = std::clamp(j.value("aoStrength", 0.0f), 0.0f, 1.0f);
     data.source              = j.value("source", "");
     data.license             = j.value("license", "");
 
@@ -189,6 +191,9 @@ std::string SerializeMaterialAsset(const MaterialAssetData& data)
         j["emissiveColor"]     = { data.emissiveColor[0], data.emissiveColor[1], data.emissiveColor[2] };
         j["emissiveIntensity"] = data.emissiveIntensity;
     }
+    // AO も「使っている .dxmat にだけ」書く（既存ファイルの書き戻しでキーが増えない）。
+    if (data.aoStrength > 0.0f && !data.metalRoughnessPath.empty())
+        j["aoStrength"] = data.aoStrength;
     if (!data.source.empty())  j["source"]  = data.source;
     if (!data.license.empty()) j["license"] = data.license;
     return j.dump(2);

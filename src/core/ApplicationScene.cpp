@@ -1670,6 +1670,7 @@ void Application::EnterPlayMode()
                 snap.alphaOpacity        = mr.opacity;
                 snap.emissiveColorOverride     = mr.overrideEmissiveColor;
                 snap.emissiveIntensityOverride = mr.overrideEmissiveIntensity;
+                snap.aoStrengthOverride        = mr.overrideAoStrength;
             }
 
             m_editorSnapshots[name.name] = snap;
@@ -1807,6 +1808,7 @@ void Application::EnterPlayMode()
                 mr.opacity             = snap.alphaOpacity;
                 mr.overrideEmissiveColor     = snap.emissiveColorOverride;
                 mr.overrideEmissiveIntensity = snap.emissiveIntensityOverride;
+                mr.overrideAoStrength        = snap.aoStrengthOverride;
                 mr.overrideRoughness = snap.materialRoughnessOverride;
             }
         }
