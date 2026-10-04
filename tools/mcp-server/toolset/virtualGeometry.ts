@@ -66,7 +66,7 @@ if (ENHANCED && SURFACE !== "legacy") {
       }
       try {
         const data = await engine.call(def.method, args ?? {});
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { result: (data ?? null) as any } };
+        return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: { result: (data ?? null) as any } };
       } catch (e: any) {
         return errResult(e);
       }

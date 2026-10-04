@@ -31,7 +31,7 @@ function errorResult(body: ErrorBody): ToolResult {
   return res;
 }
 function okResult(data: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { result: (data ?? null) as any } };
+  return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: { result: (data ?? null) as any } };
 }
 
 const patchOp = z.object({

@@ -240,7 +240,7 @@ regRaw(
                   + "①スクリプトが貼れているか(dx12_get_lua_component_state) "
                   + "②autoPlay が true か ③camera に指定した名前のエンティティが居るか "
                   + "④recentLog に『が見つからない』が出ていないか",
-            }, null, 2),
+            }),
           },
         ],
       };
@@ -318,7 +318,7 @@ regRaw(
         next: findings.length === 0
           ? "必須要素は揃っている。dx12_look_compare で参照写真と比べるか、構図を詰める段階"
           : "findings の上から順に fix をそのまま撃つ(効く順に並んでいる)",
-      }, null, 2);
+      });
 
       if (shotPath) {
         return {

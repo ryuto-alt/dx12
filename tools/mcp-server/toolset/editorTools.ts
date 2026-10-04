@@ -28,7 +28,7 @@ function errorResult(body: ErrorBody): ToolResult {
   return res;
 }
 function okResult(data: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { result: (data ?? null) as any } };
+  return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: { result: (data ?? null) as any } };
 }
 
 // ── zod の shape(単体テスト editor.test.ts が EDITOR_COMMAND_KEYS と突き合わせる) ──────────────

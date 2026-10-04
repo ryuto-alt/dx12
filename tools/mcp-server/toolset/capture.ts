@@ -228,7 +228,7 @@ regRaw(
       // mode:"off" は撮影しない(エンジンが path:"(no capture)" を返す)。画像が無いので JSON だけ返す。
       const p: unknown = r?.path;
       if (typeof p !== "string" || !fs.existsSync(p)) {
-        return { content: [{ type: "text", text: JSON.stringify({ path: p ?? null, ...meta }, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ path: p ?? null, ...meta }) }] };
       }
       return imageResult(p, meta);
     } catch (e: any) {

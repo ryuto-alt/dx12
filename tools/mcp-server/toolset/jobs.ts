@@ -160,7 +160,7 @@ const DEFS: Record<string, Def> = {
 async function jobToolRun(tool: string, fn: () => Promise<unknown> | unknown): Promise<ToolResult> {
   try {
     const data = await fn();
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { result: data as any } };
+    return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: { result: data as any } };
   } catch (e: any) {
     const body: ErrorBody = e instanceof JobFailure ? e.body : {
       code: "E_INTERNAL", message: `${tool}: ${e?.message ?? e}`, retryable: false,
