@@ -19,13 +19,25 @@
  * `{"status":"success","result":{...}}` を 1 回返して待ち受けに戻る。
  * execute_code は **stdout をそのまま result.result に入れて返す**ので、
  * スクリプト側は print(json.dumps(...)) で結果を戻す。
+ *
+ * ★2026-10-05: 公式(Blender Lab)の MCP アドオンにも対応した。公式は「JSON + NUL(0x00)」で {type:"execute", code, strict_json}
+ *   を受け、{status:ok|error, result, stdout, stderr} を返す(旧版とは別方言。旧形式の要求には無応答)。
+ *   blenderCall がポートごとに方言を判定(公式を先に試す)し、応答は常に旧形式へ写す。DX12_BLENDER_PROTOCOL / DX12_BLENDER_PORT で固定・変更できる。
+ *   ★Blender に送るスクリプトに SystemExit / sys.exit を入れない(公式は except Exception でしか受けず、サーバーまで抜ける)。
  */
 
 import net from "node:net";
 
-export const BLENDER_PORT = 9876;
+/**
+ * ポートは環境変数 DX12_BLENDER_PORT で変えられる(別ポートの Blender で検証するため)。既定 9876。
+ * ★定数のまま import されている箇所があるので、読み込み時に 1 回だけ決める。
+ */
+export const BLENDER_PORT = Number(process.env.DX12_BLENDER_PORT) > 0 ? Number(process.env.DX12_BLENDER_PORT) : 9876;
 
 // ─── ソケットクライアント ────────────────────────────────────────────────
+
+/** Blender アドオンの方言。official = Blender Lab 公式 MCP アドオン(NUL 終端) / legacy = 旧コミュニティ版(1 リクエスト = 1 JSON)。 */
+export type BlenderProtocol = "official" | "legacy";
 
 export interface BlenderResponse {
   status?: string;
@@ -48,17 +60,18 @@ export function isPortOpen(port: number, host = "127.0.0.1", timeoutMs = 700): P
 }
 
 /**
- * 1 コマンド送って 1 レスポンスを受ける。
- * ★アドオンは長さ枠を付けないので、受信を JSON として parse できるまで貯める。
- *   途中で切れた JSON を parse しようとして毎回落ちる実装にしないこと。
+ * 1 コマンド送って 1 レスポンスを受ける(生の送受信。方言の判定は blenderCall 側)。
+ * ★旧版: アドオンは長さ枠を付けないので、受信を JSON として parse できるまで貯める。
+ * ★公式: 要求も応答も「JSON + NUL」。NUL が来たらそこまでが 1 通。
+ *   旧形式の要求(NUL 無し)を送ると、公式は NUL を待ち続けて 10 秒後に切る＝無応答に見える(実測)。
  */
-export function blenderCall(
-  type: string,
-  params: Record<string, unknown> = {},
-  opts: { port?: number; timeoutMs?: number } = {},
-): Promise<BlenderResponse> {
-  const port = opts.port ?? BLENDER_PORT;
-  const timeoutMs = opts.timeoutMs ?? 120_000;   // モデリングは普通に数十秒かかる
+function rawCall(
+  proto: BlenderProtocol,
+  payload: Record<string, unknown>,
+  port: number,
+  timeoutMs: number,
+): Promise<any> {
+  const NUL = String.fromCharCode(0);
   return new Promise((resolve, reject) => {
     const sock = new net.Socket();
     let buf = "";
@@ -67,11 +80,17 @@ export function blenderCall(
     sock.setTimeout(timeoutMs);
     sock.once("timeout", () => fail(new Error(`Blender が ${timeoutMs}ms 応答しない`)));
     sock.once("error", (e) => fail(e));
-    sock.once("connect", () => sock.write(JSON.stringify({ type, params })));
+    sock.once("connect", () => sock.write(JSON.stringify(payload) + (proto === "official" ? NUL : "")));
     sock.on("data", (chunk) => {
       buf += chunk.toString("utf8");
       try {
-        const parsed = JSON.parse(buf) as BlenderResponse;
+        let text: string = buf;
+        if (proto === "official") {
+          const i = buf.indexOf(NUL);
+          if (i < 0) return;
+          text = buf.slice(0, i);
+        }
+        const parsed = JSON.parse(text);
         settled = true;
         sock.destroy();
         resolve(parsed);
@@ -81,11 +100,80 @@ export function blenderCall(
     });
     sock.once("close", () => {
       if (settled) return;
-      try { resolve(JSON.parse(buf) as BlenderResponse); }
+      try { resolve(JSON.parse(proto === "official" ? buf.split(NUL)[0] : buf)); }
       catch { fail(new Error("Blender が応答を返さずに切断した")); }
     });
     sock.connect(port, "127.0.0.1");
   });
+}
+
+/**
+ * 公式の応答 {status:"ok"|"error", result?, message?, stdout?, stderr?} を旧形式
+ * {status:"success"|"error", result:{executed, result: stdout}, message} へ写す(純関数)。
+ * ★既存の呼び出し側(parseCodeResult など)は「stdout が result.result」を前提にしているので、形を揃える。
+ */
+export function officialToLegacy(r: any): BlenderResponse {
+  const stdout = typeof r?.stdout === "string" ? r.stdout : "";
+  if (r?.status === "ok") return { status: "success", result: { executed: true, result: stdout } };
+  const message = [r?.message, r?.stderr].filter((x) => typeof x === "string" && x).join("\n") || "Blender 側で失敗";
+  return { status: "error", message, result: { executed: false, result: stdout } };
+}
+
+/**
+ * 公式へ渡す前にコードを包む。★公式は exec(code) を `except Exception` でしか受けないので、
+ * `raise SystemExit`(buildMaterialScript が「該当なし」で使う)がそのまま抜けてサーバーを巻き込む。
+ * 1 つの dict で exec すればトップレベルの関数・import の名前解決は元のまま。
+ */
+export function wrapForOfficial(code: string): string {
+  return `_g = {"__name__": "__dx12__"}\ntry:\n    exec(compile(${JSON.stringify(code)}, "<dx12>", "exec"), _g)\nexcept SystemExit:\n    pass\n`;
+}
+
+const protocolCache = new Map<number, BlenderProtocol>();
+/** テスト用 */
+export function resetBlenderProtocolCache(): void { protocolCache.clear(); }
+
+/** 環境変数 DX12_BLENDER_PROTOCOL=official|legacy で固定。それ以外はポートごとに判定してキャッシュ。 */
+export async function detectBlenderProtocol(port: number): Promise<BlenderProtocol> {
+  const forced = process.env.DX12_BLENDER_PROTOCOL;
+  if (forced === "official" || forced === "legacy") return forced;
+  const hit = protocolCache.get(port);
+  if (hit) return hit;
+  // 公式を先に(短いタイムアウト)。旧アドオンは NUL 付きの JSON でも parse できず待つだけなので誤判定しない。
+  try {
+    const r = await rawCall("official", { type: "execute", code: "result = {'p': 1}", strict_json: false }, port, 3000);
+    if (r?.status === "ok") { protocolCache.set(port, "official"); return "official"; }
+  } catch { /* 次へ */ }
+  try {
+    const r = await rawCall("legacy", { type: "execute_code", params: { code: "print('p')" } }, port, 3000);
+    if (r?.status) { protocolCache.set(port, "legacy"); return "legacy"; }
+  } catch { /* 下で失敗にする */ }
+  throw new Error(`Blender(ポート ${port})が公式・旧どちらのプロトコルにも応答しない。アドオンが有効か、Blender が重い処理中でないか確認すること(DX12_BLENDER_PROTOCOL=official|legacy で固定もできる)`);
+}
+
+/**
+ * 1 コマンド送って 1 レスポンスを受ける。公式 / 旧アドオンの両対応(戻りは常に旧形式)。
+ * 公式は execute_code だけ対応(このモジュールが使うのはそれだけ)。
+ */
+export async function blenderCall(
+  type: string,
+  params: Record<string, unknown> = {},
+  opts: { port?: number; timeoutMs?: number } = {},
+): Promise<BlenderResponse> {
+  const port = opts.port ?? BLENDER_PORT;
+  const timeoutMs = opts.timeoutMs ?? 120_000;   // モデリングは普通に数十秒かかる
+  const proto = await detectBlenderProtocol(port);
+  if (proto === "legacy") return rawCall("legacy", { type, params }, port, timeoutMs);
+  if (type !== "execute_code") throw new Error(`公式 Blender アドオンは ${type} に未対応(execute_code のみ)`);
+  const r = await rawCall("official", { type: "execute", code: wrapForOfficial(String(params.code ?? "")), strict_json: false }, port, timeoutMs);
+  return officialToLegacy(r);
+}
+
+/** コードを実行して {stdout, json} を返す。Blender 側の失敗は例外にする(blenderPlace / ツールから使う)。 */
+export async function blenderRunCode(code: string, opts: { port?: number; timeoutMs?: number } = {}): Promise<{ stdout: string; json?: unknown }> {
+  const resp = await blenderCall("execute_code", { code }, opts);
+  if (resp?.status && resp.status !== "success")
+    throw new Error(`Blender 側で失敗: ${resp.message ?? JSON.stringify(resp)}`);
+  return parseCodeResult(resp);
 }
 
 /** execute_code の戻りは stdout 文字列。JSON を print していれば取り出す。 */
@@ -514,145 +602,151 @@ UV_METERS = ${uvm}
 HDR = {"User-Agent": "blender-mcp"}
 report = {"warnings": []}
 
-# ① アセットを決める（ID 指定が無ければキーワードで探す）
-if not ASSET:
-    if not KEYWORD:
-        print(json.dumps({"error": "assetId か keyword のどちらかが要る"}))
-        raise SystemExit
-    lst = requests.get("https://api.polyhaven.com/assets", params={"t": "textures"},
-                       headers=HDR, timeout=60).json()
-    hits = [k for k in lst if KEYWORD.lower() in k.lower()]
-    if not hits:
-        kw = KEYWORD.lower()
-        hits = [k for k, v in lst.items()
-                if any(kw in t.lower() for t in (v.get("tags") or []) + (v.get("categories") or []))]
-    if not hits:
-        print(json.dumps({"error": "PolyHaven に該当なし: " + KEYWORD}))
-        raise SystemExit
-    ASSET = sorted(hits)[0]
-report["asset"] = ASSET
+# ★公式アドオンは exec を except Exception でしか受けない。途中終了は例外を投げず関数の return にする
+def _main():
+    global ASSET
 
-files = requests.get("https://api.polyhaven.com/files/" + ASSET, headers=HDR, timeout=60).json()
-report["maps"] = sorted(files.keys())
+    # ① アセットを決める（ID 指定が無ければキーワードで探す）
+    if not ASSET:
+        if not KEYWORD:
+            print(json.dumps({"error": "assetId か keyword のどちらかが要る"}))
+            return
+        lst = requests.get("https://api.polyhaven.com/assets", params={"t": "textures"},
+                           headers=HDR, timeout=60).json()
+        hits = [k for k in lst if KEYWORD.lower() in k.lower()]
+        if not hits:
+            kw = KEYWORD.lower()
+            hits = [k for k, v in lst.items()
+                    if any(kw in t.lower() for t in (v.get("tags") or []) + (v.get("categories") or []))]
+        if not hits:
+            print(json.dumps({"error": "PolyHaven に該当なし: " + KEYWORD}))
+            return
+        ASSET = sorted(hits)[0]
+    report["asset"] = ASSET
 
-texdir = os.path.join(tempfile.gettempdir(), "dx12_polyhaven", ASSET)
-os.makedirs(texdir, exist_ok=True)
+    files = requests.get("https://api.polyhaven.com/files/" + ASSET, headers=HDR, timeout=60).json()
+    report["maps"] = sorted(files.keys())
 
-def grab(kind, prefer=("jpg", "png", "exr")):
-    node = files.get(kind)
-    if not node:
-        return None
-    e = node.get(RES) or list(node.values())[0]
-    fmt = next((f for f in prefer if f in e), None) or list(e.keys())[0]
-    url = e[fmt]["url"]
-    path = os.path.join(texdir, kind + "." + url.rsplit(".", 1)[-1])
-    if not os.path.exists(path):
-        open(path, "wb").write(requests.get(url, headers=HDR, timeout=300).content)
-    return path
+    texdir = os.path.join(tempfile.gettempdir(), "dx12_polyhaven", ASSET)
+    os.makedirs(texdir, exist_ok=True)
 
-p_col = grab("Diffuse") or grab("diff") or grab("albedo")
-p_nor = grab("nor_gl")
-p_arm = grab("arm")
-p_rough = grab("Rough") or grab("rough")
-p_ao = grab("AO") or grab("ao")
+    def grab(kind, prefer=("jpg", "png", "exr")):
+        node = files.get(kind)
+        if not node:
+            return None
+        e = node.get(RES) or list(node.values())[0]
+        fmt = next((f for f in prefer if f in e), None) or list(e.keys())[0]
+        url = e[fmt]["url"]
+        path = os.path.join(texdir, kind + "." + url.rsplit(".", 1)[-1])
+        if not os.path.exists(path):
+            open(path, "wb").write(requests.get(url, headers=HDR, timeout=300).content)
+        return path
 
-# ② ORM を用意する。arm があればそのまま（R=AO/G=rough/B=metal）。
-p_orm = p_arm
-if not p_orm and p_rough:
-    SZ = 1024
-    p_orm = os.path.join(texdir, "orm_composed.png")
-    if not os.path.exists(p_orm):
-        def gray(path):
-            im = bpy.data.images.load(path, check_existing=True)
-            im.colorspace_settings.name = 'Non-Color'
-            if tuple(im.size) != (SZ, SZ):
-                im.scale(SZ, SZ)
-            return list(im.pixels)
-        rg = gray(p_rough)
-        ao = gray(p_ao) if p_ao else None
-        buf = bytearray()
-        for y in range(SZ - 1, -1, -1):
-            buf.append(0)
-            row = y * SZ * 4
-            for x in range(SZ):
-                i = row + x * 4
-                r = int(max(0.0, min(1.0, ao[i])) * 255) if ao else 255
-                g = int(max(0.0, min(1.0, rg[i])) * 255)
-                buf += bytes((r, g, 0))
-        def chunk(tag, data):
-            return (struct.pack(">I", len(data)) + tag + data +
-                    struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
-        png = b"\\x89PNG\\r\\n\\x1a\\n"
-        png += chunk(b"IHDR", struct.pack(">IIBBBBB", SZ, SZ, 8, 2, 0, 0, 0))
-        png += chunk(b"IDAT", zlib.compress(bytes(buf), 6))
-        png += chunk(b"IEND", b"")
-        open(p_orm, "wb").write(png)
-        report["warnings"].append("arm が無いので Rough から ORM を合成した（B=0）")
+    p_col = grab("Diffuse") or grab("diff") or grab("albedo")
+    p_nor = grab("nor_gl")
+    p_arm = grab("arm")
+    p_rough = grab("Rough") or grab("rough")
+    p_ao = grab("AO") or grab("ao")
 
-# ③ マテリアルを組む
-mat = bpy.data.materials.new("PH_" + ASSET)
-mat.use_nodes = True
-nt = mat.node_tree
-bsdf = next(n for n in nt.nodes if n.type == 'BSDF_PRINCIPLED')
+    # ② ORM を用意する。arm があればそのまま（R=AO/G=rough/B=metal）。
+    p_orm = p_arm
+    if not p_orm and p_rough:
+        SZ = 1024
+        p_orm = os.path.join(texdir, "orm_composed.png")
+        if not os.path.exists(p_orm):
+            def gray(path):
+                im = bpy.data.images.load(path, check_existing=True)
+                im.colorspace_settings.name = 'Non-Color'
+                if tuple(im.size) != (SZ, SZ):
+                    im.scale(SZ, SZ)
+                return list(im.pixels)
+            rg = gray(p_rough)
+            ao = gray(p_ao) if p_ao else None
+            buf = bytearray()
+            for y in range(SZ - 1, -1, -1):
+                buf.append(0)
+                row = y * SZ * 4
+                for x in range(SZ):
+                    i = row + x * 4
+                    r = int(max(0.0, min(1.0, ao[i])) * 255) if ao else 255
+                    g = int(max(0.0, min(1.0, rg[i])) * 255)
+                    buf += bytes((r, g, 0))
+            def chunk(tag, data):
+                return (struct.pack(">I", len(data)) + tag + data +
+                        struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+            png = b"\\x89PNG\\r\\n\\x1a\\n"
+            png += chunk(b"IHDR", struct.pack(">IIBBBBB", SZ, SZ, 8, 2, 0, 0, 0))
+            png += chunk(b"IDAT", zlib.compress(bytes(buf), 6))
+            png += chunk(b"IEND", b"")
+            open(p_orm, "wb").write(png)
+            report["warnings"].append("arm が無いので Rough から ORM を合成した（B=0）")
 
-def tex(path, non_color, y):
-    n = nt.nodes.new("ShaderNodeTexImage")
-    n.image = bpy.data.images.load(path, check_existing=True)
-    if non_color:
-        n.image.colorspace_settings.name = 'Non-Color'
-    n.location = (-800, y)
-    return n
+    # ③ マテリアルを組む
+    mat = bpy.data.materials.new("PH_" + ASSET)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    bsdf = next(n for n in nt.nodes if n.type == 'BSDF_PRINCIPLED')
 
-if p_col:
-    nt.links.new(tex(p_col, False, 300).outputs["Color"], bsdf.inputs["Base Color"])
-if p_nor:
-    nm = nt.nodes.new("ShaderNodeNormalMap")
-    nm.location = (-450, 0)
-    nt.links.new(tex(p_nor, True, 0).outputs["Color"], nm.inputs["Color"])
-    nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
-if p_orm:
-    sep = nt.nodes.new("ShaderNodeSeparateColor")
-    sep.location = (-450, -300)
-    nt.links.new(tex(p_orm, True, -300).outputs["Color"], sep.inputs["Color"])
-    # ★glTF エクスポータはこの形（G→Roughness / B→Metallic）を metallicRoughness として書く
-    nt.links.new(sep.outputs["Green"], bsdf.inputs["Roughness"])
-    nt.links.new(sep.outputs["Blue"], bsdf.inputs["Metallic"])
+    def tex(path, non_color, y):
+        n = nt.nodes.new("ShaderNodeTexImage")
+        n.image = bpy.data.images.load(path, check_existing=True)
+        if non_color:
+            n.image.colorspace_settings.name = 'Non-Color'
+        n.location = (-800, y)
+        return n
 
-report["slots"] = {"baseColor": bool(p_col), "normal": bool(p_nor),
-                   "orm": bool(p_orm), "ormSource": "arm" if p_arm else "composed"}
+    if p_col:
+        nt.links.new(tex(p_col, False, 300).outputs["Color"], bsdf.inputs["Base Color"])
+    if p_nor:
+        nm = nt.nodes.new("ShaderNodeNormalMap")
+        nm.location = (-450, 0)
+        nt.links.new(tex(p_nor, True, 0).outputs["Color"], nm.inputs["Color"])
+        nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+    if p_orm:
+        sep = nt.nodes.new("ShaderNodeSeparateColor")
+        sep.location = (-450, -300)
+        nt.links.new(tex(p_orm, True, -300).outputs["Color"], sep.inputs["Color"])
+        # ★glTF エクスポータはこの形（G→Roughness / B→Metallic）を metallicRoughness として書く
+        nt.links.new(sep.outputs["Green"], bsdf.inputs["Roughness"])
+        nt.links.new(sep.outputs["Blue"], bsdf.inputs["Metallic"])
 
-# ④ 貼る（UV も実寸で切り直す）
-targets = []
-if want:
-    for n in want:
-        ob = bpy.data.objects.get(n)
-        if ob is None:
-            report["warnings"].append("見つからない: " + n)
-        elif ob.type == 'MESH':
-            targets.append(ob)
-else:
-    targets = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+    report["slots"] = {"baseColor": bool(p_col), "normal": bool(p_nor),
+                       "orm": bool(p_orm), "ormSource": "arm" if p_arm else "composed"}
 
-for ob in targets:
-    ob.data.materials.clear()
-    ob.data.materials.append(mat)
-    if UV_METERS > 0:
-        bpy.ops.object.select_all(action='DESELECT')
-        ob.select_set(True)
-        bpy.context.view_layer.objects.active = ob
-        try:
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.select_all(action='SELECT')
-            bpy.ops.uv.cube_project(cube_size=UV_METERS)
-            bpy.ops.object.mode_set(mode='OBJECT')
-        except Exception as e:
+    # ④ 貼る（UV も実寸で切り直す）
+    targets = []
+    if want:
+        for n in want:
+            ob = bpy.data.objects.get(n)
+            if ob is None:
+                report["warnings"].append("見つからない: " + n)
+            elif ob.type == 'MESH':
+                targets.append(ob)
+    else:
+        targets = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+
+    for ob in targets:
+        ob.data.materials.clear()
+        ob.data.materials.append(mat)
+        if UV_METERS > 0:
+            bpy.ops.object.select_all(action='DESELECT')
+            ob.select_set(True)
+            bpy.context.view_layer.objects.active = ob
             try:
+                bpy.ops.object.mode_set(mode='EDIT')
+                bpy.ops.mesh.select_all(action='SELECT')
+                bpy.ops.uv.cube_project(cube_size=UV_METERS)
                 bpy.ops.object.mode_set(mode='OBJECT')
-            except Exception:
-                pass
-            report["warnings"].append(ob.name + ": UV 展開に失敗 " + str(e))
+            except Exception as e:
+                try:
+                    bpy.ops.object.mode_set(mode='OBJECT')
+                except Exception:
+                    pass
+                report["warnings"].append(ob.name + ": UV 展開に失敗 " + str(e))
 
-report["applied"] = [o.name for o in targets]
-print(json.dumps(report, ensure_ascii=False))
+    report["applied"] = [o.name for o in targets]
+    print(json.dumps(report, ensure_ascii=False))
+
+_main()
 `.trim();
 }

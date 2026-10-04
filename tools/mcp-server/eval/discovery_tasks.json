@@ -475,6 +475,19 @@
       ],
       "holdout": "undo my last edit",
       "core": []
+    },
+    {
+      "id": 31,
+      "design": "dx12_blender_place",
+      "expect": [
+        "dx12_blender_place"
+      ],
+      "queries": [
+        "Blender で並べた配置をそのままエンジンに持ってきたい",
+        "Blender のレイアウトを dx12 のシーンへ反映して"
+      ],
+      "holdout": "place my blender layout into the engine scene",
+      "core": []
     }
   ],
   "_doc2": "holdout は言い換えの検証用(辞書・ヒントの調整に使っていない英語/口語の 1 通り)。discovery.test.ts は queries と holdout の両方を数える。",

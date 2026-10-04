@@ -243,6 +243,7 @@ export const SEARCH_HINTS: Record<string, string> = {
   blender_export: "Blender 書き出し 取り込み glb 実寸検証",
   blender_polish: "Blender 仕上げ ベベル 法線 スムーズ",
   blender_material: "Blender マテリアル 素材を貼る",
+  blender_place: "Blender 配置 レイアウト 並べた通りに置く 持ってくる 差分更新 リンク複製 インスタンス 並べ直し group モデルを一括で置く",
   // Git / マルチ
   git_status: "Git 状態 変更 差分 未コミット",
   git_branches: "Git ブランチ 一覧",

@@ -463,6 +463,24 @@ dx12_spawn_model(path:"models/barrel/barrel.gltf", group:"ENV")
 dx12_validate_layout(fix:"safe")
 ```
 
+### Blender で並べた配置をそのまま置く — `dx12_blender_place`
+
+`dx12_blender_export` は 1 つのモデルを出すだけ。**複数のオブジェクトを Blender で配置したなら、こちら 1 回**で同じ配置がエンジンに載る。
+
+```
+dx12_blender_place(dryRun:true)                    # まず計画だけ(spawn / update / 書き出すアセット)
+dx12_blender_place()                               # 選択中(無ければ表示中の全 MESH)を assets/models/blender/<.blend 名>/ へ書き出して group の下に置く
+dx12_blender_place(meshes:false)                   # Blender で動かしただけなら Transform だけ更新(速い)
+dx12_blender_place(prune:true)                     # Blender 側で消したものをエンジンからも消す
+```
+
+- 座標は Blender (x,y,z) → エンジン (x,z,-y)(実機で確認済み)。**group を動かせば全体が動く**。親子は平らにしてワールド変換で置く。
+- モディファイア無しのオブジェクトは mesh データ名で 1 回だけ書き出す(リンク複製 = 1 アセットを複数エンティティで共有)。モディファイア付きはオブジェクト固有。
+- ライト・カメラ・空は `skipped`(理由付き)。画像テクスチャの無いマテリアルは warnings(エンジンで真っ白になる)。
+- Blender のユーザーのオブジェクトは触らない(代表の一時コピーで書き出し、必ず消して選択も戻す)。エンジン側は 1 トランザクション = `dx12_undo` 1 回で戻る。
+- Blender は**公式アドオン(Blender Lab)・旧コミュニティ版のどちらでも**動く(自動判定。`DX12_BLENDER_PROTOCOL` / `DX12_BLENDER_PORT` で固定・変更)。
+- 置いた後は `dx12_validate_layout` と `dx12_screenshot_from`。
+
 ### なぜ「うすぺらい」「安っぽい」のか（2026-09-11 に実物で確かめた）
 
 | 症状 | 原因 | 直し方 |
