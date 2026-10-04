@@ -22,7 +22,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { planImageRenames } from "./blenderBridge.ts";
+import { planImageRenames, BAKED_SWAP_PY } from "./blenderBridge.ts";
 
 export type Vec3 = [number, number, number];
 export type Quat = [number, number, number, number];
@@ -148,7 +148,7 @@ export function buildPlaceScript(p: PlaceScriptParams): string {
   return `
 import bpy, json, os, re
 from mathutils import Matrix
-
+${BAKED_SWAP_PY}
 P = json.loads(${params})
 report = {"objects": [], "skipped": [], "warnings": [], "assets": []}
 
@@ -204,7 +204,9 @@ for ob in targets:
 
 # ③ メッシュキー: モディファイア無し=メッシュデータ名(リンク複製は 1 アセットを共有) / 有り=オブジェクト固有
 def raw_key(ob):
-    return ("o:" + ob.name) if len(ob.modifiers) > 0 else ("m:" + ob.data.name)
+    # ★焼いたマテリアル(dx12_baked_material)があれば、同じメッシュでも別アセット(見た目が違う)
+    suffix = ("." + ob["dx12_baked_material"]) if ob.get("dx12_baked_material") else ""
+    return (("o:" + ob.name) if len(ob.modifiers) > 0 else ("m:" + ob.data.name)) + suffix
 
 file_keys = {}
 used = set()
@@ -233,7 +235,7 @@ for ob in meshes:
         report["warnings"].append(ob.name + ": せん断(非一様スケールの親の下で回転している等)があり、位置・回転・スケールに分解すると形が合わない(誤差 %.4f)" % err)
     if min(scl) < 0:
         report["warnings"].append(ob.name + ": 負のスケール(ミラー)。エンジン側で面が裏返る可能性がある")
-    for slot in ob.material_slots:
+    for slot in (ob.material_slots if not ob.get("dx12_baked_material") else []):
         mat = slot.material
         if mat is None or not mat.use_nodes:
             k = (ob.data.name, None if mat is None else mat.name)
@@ -280,6 +282,7 @@ try:
         a = {"key": fk, "meshKey": rk, "path": asset_dir + "/" + fk + "/" + fk + ".gltf", "objects": [o.name for o in objs], "exported": False}
         if P["exportMeshes"]:
             tmp = None
+            swap = None
             try:
                 os.makedirs(d, exist_ok=True)
                 rep = objs[0]
@@ -293,6 +296,10 @@ try:
                 tmp.hide_viewport = False
                 tmp.hide_render = False
                 tmp_col.objects.link(tmp)
+                # ★焼いた物は、一時コピーのメッシュを複製して焼いたマテリアル + 先頭 UV に差し替える(元のオブジェクト・メッシュは触らない)
+                swap = dx12_swap_in(tmp)
+                if swap is not None:
+                    a["bakedMaterial"] = tmp["dx12_baked_material"]
                 bpy.context.view_layer.update()
                 deselect_all()
                 tmp.hide_set(False)
@@ -325,6 +332,7 @@ try:
             finally:
                 if tmp is not None:
                     try:
+                        dx12_swap_out(tmp, swap)
                         bpy.data.objects.remove(tmp, do_unlink=True)
                     except Exception as e:
                         report["warnings"].append("一時コピーの削除に失敗: " + str(e))
@@ -376,7 +384,7 @@ interface BlenderReport {
   objects: { name: string; key: string; parent: string | null; loc: number[]; quat: number[]; scale: number[] }[];
   skipped: { name: string; type: string; reason: string }[];
   warnings: string[];
-  assets: { key: string; meshKey: string; path: string; objects: string[]; exported: boolean; size?: number; error?: string }[];
+  assets: { key: string; meshKey: string; path: string; objects: string[]; exported: boolean; size?: number; error?: string; bakedMaterial?: string }[];
   error?: string;
 }
 
@@ -474,7 +482,7 @@ export async function placeFromBlender(opts: PlaceOptions, deps: PlaceDeps): Pro
     }
   }
   const plan = planPlacement(objs, existing, { prune: opts.prune === true });
-  const assetsOut = rep.assets.filter((a) => !unusable.has(a.key)).map((a) => ({ key: a.key, path: a.path, objects: a.objects, ...(a.size !== undefined ? { size: a.size } : {}) }));
+  const assetsOut = rep.assets.filter((a) => !unusable.has(a.key)).map((a) => ({ key: a.key, path: a.path, objects: a.objects, ...(a.size !== undefined ? { size: a.size } : {}), ...(a.bakedMaterial ? { bakedMaterial: a.bakedMaterial } : {}) }));
   for (const d of plan.duplicates) warnings.push(`group 配下に同名の子が重複: ${d.name}(entityId ${d.entityId})。prune:true で消せる`);
 
   const base = { group, assetDir: rep.assetDir, assets: assetsOut, skipped, warnings };

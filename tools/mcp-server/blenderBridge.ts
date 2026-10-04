@@ -234,9 +234,13 @@ export function modelBrief(kind: string): ModelBrief {
       "★単色マテリアルは禁止。エンジンは glTF の baseColorFactor を読まないので、" +
         "テクスチャ無しのマテリアルは【真っ白】になる（茶色に設定した木箱が白い箱として出る）。" +
         "真鍮・革・蝋のような単色で済ませたい物にも必ず col テクスチャを作る",
-      "★素材は PolyHaven から取る（CC0・API キー不要・859 種類）。" +
-        "手続きノードで作るより速く、質も比べものにならない。dx12_blender_material が面倒を見る",
-      "★ORM は R=AO / G=roughness / B=metallic。PolyHaven の arm マップがそのまま使える。" +
+      "★素材は PolyHaven / ambientCG から取る（どちらも CC0・API キー不要）。" +
+        "手続きノードで作るより速く、質も比べものにならない。" +
+        "dx12_material_search で探し → dx12_blender_material_apply で貼る（実寸の UV・AO 入り ORM を自動で作る。" +
+        "繰り返しの目立つ面は antiTile、汚れ・角の擦れは weathering）。" +
+        "needsBake:true が返ったら dx12_material_bake で焼いてから dx12_blender_place で置く（旧 dx12_blender_material は PolyHaven 1 素材を貼るだけ）",
+      "★ORM は R=AO / G=roughness / B=metallic。PolyHaven の arm マップがそのまま使える（新ツールはどの素材源でも orm.png に詰める。" +
+        "AO は『glTF Material Output』の Occlusion 経由で MR と同じ 1 枚になる）。" +
         "rough 単体（グレースケール）を metallicRoughness として出すと B に粗さの値が入り、" +
         "木や布が金属として描かれる",
       "法線は OpenGL 規約（nor_gl）。DirectX 規約（nor_dx）は使わない",
@@ -274,6 +278,71 @@ export function modelBrief(kind: string): ModelBrief {
 }
 
 /**
+ * 書き出し専用の Python 部品(dx12_material_bake / dx12_blender_material_apply / dx12_blender_place / dx12_blender_export が共有)。
+ *
+ * ★glTF エクスポータは、マテリアルが参照する UV マップの【メッシュ内の並び順の番号】を texCoord にし、全 UV マップを TEXCOORD_n で出す。
+ *   エンジンは TEXCOORD_0 しか読まない(texCoord を見ない)ので、実寸 UV(dx12_uv / dx12_bake)は【先頭の UV マップ】になっていないと
+ *   模様がずれる。dx12_uv_to_front は名前と中身を保ったまま並びだけ入れ替える。
+ *
+ * ★焼いた物の差し替え(dx12_swap_in/out): オブジェクトのカスタムプロパティ dx12_baked_material があれば、書き出しの間だけ
+ *   メッシュデータの【複製】を作って焼いたマテリアル(全面)+ dx12_bake を先頭 UV にして差し替える。元のメッシュ・マテリアル割り当て・UV は触らない。
+ */
+export const BAKED_SWAP_PY = `
+import numpy as np
+
+def dx12_uv_to_front(me, name):
+    """名前 name の UV マップを先頭にする(全 UV マップの名前と中身は保つ)。並びが既に先頭なら何もしない"""
+    if me.uv_layers.get(name) is None or me.uv_layers[0].name == name:
+        return False
+    snap = []
+    for l in me.uv_layers:
+        arr = np.empty(len(l.data) * 2, dtype=np.float32)
+        l.data.foreach_get("uv", arr)
+        snap.append((l.name, arr, l.active_render))
+    active = me.uv_layers.active.name if me.uv_layers.active else name
+    for l in list(me.uv_layers):
+        me.uv_layers.remove(l)
+    for n, arr, ar in [x for x in snap if x[0] == name] + [x for x in snap if x[0] != name]:
+        l = me.uv_layers.new(name=n)
+        l.data.foreach_set("uv", arr)
+        l.active_render = ar
+    if me.uv_layers.get(active) is not None:
+        me.uv_layers.active = me.uv_layers[active]
+    me.update()
+    return True
+
+def dx12_baked_of(ob):
+    nm = ob.get("dx12_baked_material")
+    return bpy.data.materials.get(nm) if nm else None
+
+def dx12_swap_in(ob):
+    """焼いたマテリアルがあれば、ob.data を一時複製に差し替えて返す(無ければ None)。必ず dx12_swap_out で戻す"""
+    baked = dx12_baked_of(ob)
+    if baked is None or ob.type != 'MESH':
+        return None
+    orig = ob.data
+    me2 = orig.copy()
+    me2.materials.clear()
+    me2.materials.append(baked)
+    me2.polygons.foreach_set("material_index", [0] * len(me2.polygons))
+    uvn = "dx12_bake"
+    if baked.node_tree:
+        for n in baked.node_tree.nodes:
+            if n.type == 'UVMAP' and n.uv_map:
+                uvn = n.uv_map
+                break
+    dx12_uv_to_front(me2, uvn)
+    ob.data = me2
+    return {"orig": orig, "tmp": me2}
+
+def dx12_swap_out(ob, st):
+    if st is None:
+        return
+    ob.data = st["orig"]
+    bpy.data.meshes.remove(st["tmp"])
+`;
+
+/**
  * 規約どおりに書き出す Blender Python を組み立てる。
  * objectNames が空なら選択中のオブジェクトを使う。
  *
@@ -296,7 +365,7 @@ export function buildExportScript(opts: {
   // Python 側のインデントを壊さないよう、テンプレートリテラルは素のまま埋める
   return `
 import bpy, json, os
-
+${BAKED_SWAP_PY}
 want = ${names}
 out_path = ${out}
 clear_shape_keys = ${clearSk}
@@ -346,7 +415,7 @@ else:
                 report["warnings"].append(ob.name + ": シェイプキー " + str(n_keys) + " 個を削除した（容量削減）")
 
             # 単色マテリアル（画像テクスチャ無し）はエンジンで真っ白になる。必ず言う。
-            for slot in ob.material_slots:
+            for slot in (ob.material_slots if not ob.get("dx12_baked_material") else []):
                 mat = slot.material
                 if mat is None or not mat.use_nodes:
                     report["warnings"].append(ob.name + ": マテリアルが無い/ノード無効 → エンジンでは真っ白になる")
@@ -369,12 +438,24 @@ else:
     )
     if EXPORT_FORMAT == 'GLTF_SEPARATE':
         kwargs["export_texture_dir"] = "textures"
+    # ★dx12_material_bake で焼いた物は、書き出しの間だけ焼いたマテリアルに差し替える(メッシュの複製に。元は触らない)
+    swaps = []
+    for ob in targets:
+        if ob.type == 'MESH':
+            st = dx12_swap_in(ob)
+            if st is not None:
+                swaps.append((ob, st))
+                report["warnings"].append(ob.name + ": 焼いたマテリアル " + ob["dx12_baked_material"] + " で書き出す(元のマテリアル割り当ては変えない)")
     try:
-        bpy.ops.export_scene.gltf(**kwargs)
-    except TypeError:
-        # 版によって引数名が違う。落ちるくらいなら最小構成で出す。
-        kwargs.pop("export_apply", None)
-        bpy.ops.export_scene.gltf(**kwargs)
+        try:
+            bpy.ops.export_scene.gltf(**kwargs)
+        except TypeError:
+            # 版によって引数名が違う。落ちるくらいなら最小構成で出す。
+            kwargs.pop("export_apply", None)
+            bpy.ops.export_scene.gltf(**kwargs)
+    finally:
+        for ob, st in swaps:
+            dx12_swap_out(ob, st)
 
     # ★頼んだパスに本当にできたかを確かめる。形式と拡張子が食い違うと
     #   別名のファイルができて、呼び出し側は成功したと思い込む。

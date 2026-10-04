@@ -46,6 +46,8 @@ import "./luaStep.ts";
 import "./oracles.ts";
 // Blender の配置をそのまま置く(dx12_blender_place)。legacy 面には出さない。full 面では oracle の次。
 import "./blenderPlace.ts";
+// 高品質 PBR 素材(Blender 経由): dx12_material_search / dx12_blender_material_apply / dx12_material_bake。legacy 面には出さない。full 面では blender_place の次。
+import "./material.ts";
 // フリート(専用エンジンの管理)。full 面では旧 220 本の後ろ(tools/list の末尾)。
 import "./fleet.ts";
 // ジョブ API(長い処理の非同期実行。docs/MCP_FLEET_DESIGN.md「ジョブ API」)。
