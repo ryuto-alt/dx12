@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
+#include "core/AtomicFile.h"      // 原子的な保存（Lua / シェーダの書き出し）
 #include "scene/ScenePartition.h"   // 分割保存のシーン（セルファイルの扱い）
 
 namespace dx12e { nlohmann::json McpSafetyInfoJson(); }   // ApplicationMcpManifest.cpp
@@ -15,6 +16,9 @@ namespace dx12e { nlohmann::json McpSafetyInfoJson(); }   // ApplicationMcpManif
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace dx12e
 {
@@ -27,33 +31,50 @@ void Application::RegisterMcpEntityMethods()
     using json = nlohmann::json;
     namespace fs = std::filesystem;
 
-    McpDefine("list_entities", "component_type:string,name_prefix:string,verbose:bool", DX12E_MCP_HANDLER
+    McpDefine("list_entities", "component_type:string,limit:int,name_prefix:string,offset:int,verbose:bool", DX12E_MCP_HANDLER
         {
             const bool verbose = params.value("verbose", false);
             const std::string namePrefix = params.value("name_prefix", std::string());
             std::string typeFilter = params.value("component_type", std::string());
+            // ページング: limit 省略 = 既定 10000 件（verbose は 1 件が大きいので 5000 件）で打ち切る（10 万体で 5〜10 MB の応答になるのを防ぐ）。limit:0 は無制限。
+            // 一致した件数は total に常に入る。打ち切ったときだけ truncated:true と nextOffset を付ける（続きは offset=nextOffset）。
+            const size_t kDefaultLimit = verbose ? 5000 : 10000;
+            const long long limitIn  = params.value("limit", -1LL);
+            const size_t offset      = static_cast<size_t>((std::max)(0LL, params.value("offset", 0LL)));
+            const size_t limit       = limitIn < 0 ? kDefaultLimit : (limitIn == 0 ? (std::numeric_limits<size_t>::max)() : static_cast<size_t>(limitIn));
             json arr = json::array();
             auto& reg = m_scene->GetRegistry();
             auto view = reg.view<const NameTag>();
+            size_t matched = 0;
             for (auto e : view)
             {
                 const std::string& nm = view.get<const NameTag>(e).name;
                 if (!namePrefix.empty() && nm.rfind(namePrefix, 0) != 0) continue;
-                json types;   // verbose か component_type 指定時のみ計算
-                if (verbose || !typeFilter.empty()) types = McpComponentTypesOf(reg, e);
+                json types;   // verbose か component_type 指定時のみ計算（verbose だけなら返す範囲の分だけ）
+                const bool inPage = matched >= offset && arr.size() < limit;
+                if (!typeFilter.empty() || (verbose && inPage)) types = McpComponentTypesOf(reg, e);
                 if (!typeFilter.empty())
                 {
                     bool has = false;
                     for (auto& t : types) if (t.get<std::string>() == typeFilter) { has = true; break; }
                     if (!has) continue;
                 }
+                ++matched;
+                if (!inPage) continue;
                 json item{{"entityId", static_cast<u32>(e)}, {"id", static_cast<u32>(e)}, {"name", nm}};
-                if (verbose) item["componentTypes"] = types;
+                if (verbose) item["componentTypes"] = std::move(types);
                 arr.push_back(std::move(item));
             }
             resp["ok"] = true;
             resp["result"] = {{"entities", arr}, {"count", arr.size()},
-                              {"sceneGeneration", m_sceneGeneration}};
+                              {"sceneGeneration", m_sceneGeneration},
+                              {"total", matched}, {"offset", offset}};
+            if (offset + arr.size() < matched)
+            {
+                resp["result"]["truncated"] = true;
+                resp["result"]["nextOffset"] = offset + arr.size();
+                resp["result"]["hint"] = "件数が多いので途中で打ち切った。続きは offset=nextOffset、全件が要るなら limit:0（応答が大きくなる）。絞るなら name_prefix / component_type";
+            }
         });
 
     McpDefine("create_lua_component", "code:string,name:string", DX12E_MCP_HANDLER
@@ -73,9 +94,8 @@ void Application::RegisterMcpEntityMethods()
             const fs::path full = fs::path(PathResolver::AssetsDir()) / rel;
             fs::create_directories(full.parent_path());
             mcpsafety::JournalBackup(full);   // M5: 上書き前の内容を退避（無ければ「新規作成」を記録）
-            std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
-            if (!ofs) throw std::runtime_error("cannot write " + full.string());
-            ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
+            const auto wr = atomicfile::WriteFile(full, code);   // 一時ファイル→flush→検証→置き換え（失敗しても元は無傷）
+            if (!wr) throw std::runtime_error("cannot write " + full.string() + ": " + wr.error);
             resp["ok"] = true;
             resp["result"] = {{"path", rel}};
         });
@@ -141,10 +161,9 @@ void Application::RegisterMcpEntityMethods()
             fs::create_directories(full.parent_path());
             mcpsafety::JournalBackup(full);   // M5
             {
-                std::ofstream ofs(full, std::ios::binary | std::ios::trunc);
-                if (!ofs) throw McpError(McpErr::Internal, "cannot write " + full.string(),
+                const auto wr = atomicfile::WriteFile(full, code);   // 一時ファイル→flush→検証→置き換え（失敗しても元は無傷）
+                if (!wr) throw McpError(McpErr::Internal, "cannot write " + full.string() + ": " + wr.error,
                     "assets/shaders が書き込み可能か、同名ファイルがエディタ等で開かれていないか確かめる（dx12_get_log に OS のエラー）");
-                ofs.write(code.data(), static_cast<std::streamsize>(code.size()));
             }
 
             bool compiled = false;
@@ -1291,22 +1310,37 @@ void Application::RegisterMcpEntityMethods()
                     targets.push_back(e);
                 }
             if (params.contains("names"))
+            {
+                // 名前 → 最初に見つかる 1 体（従来の線形走査と同じ解決）。件数が多いとき（M×N の 2 乗）は索引を 1 回だけ作る
+                std::unordered_map<std::string, entt::entity> nameIndex;
+                const bool useIndex = params["names"].size() > 8;
+                if (useIndex)
+                    for (auto [oe, tag] : reg.view<NameTag>().each())
+                        nameIndex.emplace(tag.name, oe);   // emplace は既存キーを上書きしない＝最初の 1 体
                 for (const auto& v : params["names"])
                 {
                     const std::string want = v.get<std::string>();
                     entt::entity found = entt::null;
-                    for (auto [oe, tag] : reg.view<NameTag>().each())
-                        if (tag.name == want) { found = oe; break; }
+                    if (useIndex)
+                    {
+                        const auto it = nameIndex.find(want);
+                        if (it != nameIndex.end()) found = it->second;
+                    }
+                    else
+                        for (auto [oe, tag] : reg.view<NameTag>().each())
+                            if (tag.name == want) { found = oe; break; }
                     if (found == entt::null) throw McpError(McpErr::NotFound, "entity not found: " + want,
                         "names は完全一致の名前。dx12_find_entity で確かめるか、entities に id で渡す");
                     targets.push_back(found);
                 }
+            }
             if (targets.empty()) throw std::runtime_error("missing 'entities' or 'names'");
 
-            // 祖先も対象に含まれている子は除く(親ごと動くので二重に付け替えない)
-            auto inTargets = [&](entt::entity e) {
-                return std::find(targets.begin(), targets.end(), e) != targets.end();
-            };
+            // 祖先も対象に含まれている子は除く(親ごと動くので二重に付け替えない)。
+            // 対象が多いとき線形探索だと M の 2 乗になるので集合で引く
+            const std::unordered_set<entt::entity> targetSet(targets.begin(), targets.end());
+            auto inTargets = [&](entt::entity e) { return targetSet.count(e) != 0; };
+            std::unordered_set<entt::entity> memberSet;
             std::vector<std::pair<entt::entity, entt::entity>> members;   // (子, 元の親)
             for (entt::entity e : targets)
             {
@@ -1321,8 +1355,7 @@ void Application::RegisterMcpEntityMethods()
                     cur = pt ? pt->parent : entt::null;
                 }
                 if (ancestorIncluded) continue;
-                if (std::find_if(members.begin(), members.end(),
-                        [&](const auto& m) { return m.first == e; }) != members.end()) continue;  // 重複指定
+                if (!memberSet.insert(e).second) continue;  // 重複指定
                 members.emplace_back(e, reg.get<Transform>(e).parent);
             }
             if (members.empty()) throw std::runtime_error("no groupable entities (all nested under each other?)");
@@ -1403,8 +1436,7 @@ void Application::RegisterMcpEntityMethods()
 
     McpDefine("ping", "", DX12E_MCP_HANDLER
         {
-            int entityCount = 0;
-            for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
+            const int entityCount = static_cast<int>(m_scene->GetRegistry().view<NameTag>().size());   // 単一型の view は size() が正確（全走査しない）
             // フリート運用の観測値（加算キー）。VRAM は「このプロセス」の使用量と OS の予算。取れなければ -1。
             double vramUsedMB = -1.0, vramBudgetMB = -1.0;
             if (m_graphicsDevice)
@@ -1474,7 +1506,7 @@ void Application::RegisterMcpEntityMethods()
                 resp["result"] = nullptr;
         });
 
-    McpDefine("query_entities", "box:any,tag:string", DX12E_MCP_HANDLER
+    McpDefine("query_entities", "box:any,limit:int,offset:int,tag:string", DX12E_MCP_HANDLER
         {
             auto& reg = m_scene->GetRegistry();
             const std::string tag = params.value("tag", std::string());
@@ -1493,15 +1525,28 @@ void Application::RegisterMcpEntityMethods()
                 throw McpError(McpErr::InvalidParam, "provide 'tag' and/or 'box':[minX,minZ,maxX,maxZ]",
                     "タグで絞るなら tag:\"enemy\"、範囲で絞るなら box:[minX, minZ, maxX, maxZ]（両方でも可）");
             }
+            // ページング（list_entities と同じ規則）: limit 省略 = 既定 10000 件で打ち切り・limit:0 は無制限
+            constexpr size_t kDefaultLimit = 10000;
+            const long long limitIn = params.value("limit", -1LL);
+            const size_t offset     = static_cast<size_t>((std::max)(0LL, params.value("offset", 0LL)));
+            const size_t limit      = limitIn < 0 ? kDefaultLimit : (limitIn == 0 ? (std::numeric_limits<size_t>::max)() : static_cast<size_t>(limitIn));
             json arr = json::array();
+            size_t matched = 0;
             for (auto e : hits)
             {
                 if (!reg.valid(e)) continue;
+                ++matched;
+                if (matched <= offset || arr.size() >= limit) continue;
                 std::string nm = reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string();
                 arr.push_back({{"entityId", static_cast<u32>(e)}, {"name", nm}});
             }
             resp["ok"] = true;
-            resp["result"] = {{"entities", arr}, {"count", arr.size()}};
+            resp["result"] = {{"entities", arr}, {"count", arr.size()}, {"total", matched}, {"offset", offset}};
+            if (offset + arr.size() < matched)
+            {
+                resp["result"]["truncated"] = true;
+                resp["result"]["nextOffset"] = offset + arr.size();
+            }
         });
 
     McpDefine("select_entity", "entity:int,name:string", DX12E_MCP_HANDLER

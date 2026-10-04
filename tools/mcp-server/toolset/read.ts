@@ -26,15 +26,17 @@ reg(
 reg(
   "dx12_list_entities",
   "エンティティ一覧",
-  "今開いてるシーンのエンティティ一覧(entityId, name)を返す。verbose で componentTypes も付く。name_prefix / component_type で絞り込み可。{entities, count, sceneGeneration} が返る。",
+  "今開いてるシーンのエンティティ一覧(entityId, name)を返す。verbose で componentTypes も付く。name_prefix / component_type で絞り込み可。{entities, count, total, sceneGeneration} が返る。件数が既定 10000(verbose は 5000)を超えると打ち切り、truncated:true と nextOffset を付ける(続きは offset、全件は limit:0)。",
   {
     verbose: z.boolean().optional().describe("true で各エンティティの componentTypes も含める。"),
     name_prefix: z.string().optional().describe("名前の前方一致フィルタ。"),
     component_type: z.string().optional().describe("指定 jsonKey を持つものだけに絞る(例 pointLight)。"),
+    limit: z.number().int().min(0).optional().describe("返す件数の上限(既定 10000・verbose は 5000・0 で無制限)。超えたら truncated:true と nextOffset を返す。total は常に一致件数。"),
+    offset: z.number().int().min(0).optional().describe("何件目から返すか(既定 0。truncated 時の nextOffset を渡して続きを取る)。"),
   },
   { readOnlyHint: true },
-  ({ verbose, name_prefix, component_type }) =>
-    run(() => engine.call("list_entities", { verbose, name_prefix, component_type })),
+  ({ verbose, name_prefix, component_type, limit, offset }) =>
+    run(() => engine.call("list_entities", { verbose, name_prefix, component_type, limit, offset })),
 );
 
 reg(
@@ -58,13 +60,15 @@ reg(
 reg(
   "dx12_query_entities",
   "タグ/領域でエンティティ検索",
-  "tag か box のどちらかで複数エンティティを探す(どちらか必須)。box は XZ 平面の矩形 [minX,minZ,maxX,maxZ]。{entities:[{entityId,name}], count} を返す。",
+  "tag か box のどちらかで複数エンティティを探す(どちらか必須)。box は XZ 平面の矩形 [minX,minZ,maxX,maxZ]。{entities:[{entityId,name}], count, total} を返す。既定 10000 件で打ち切り、truncated:true と nextOffset を付ける。",
   {
     tag: z.string().optional().describe("このタグを持つエンティティを列挙。"),
     box: z.array(z.number()).length(4).optional().describe("[minX,minZ,maxX,maxZ]。この XZ 矩形に入るエンティティを列挙。"),
+    limit: z.number().int().min(0).optional().describe("返す件数の上限(既定 10000・0 で無制限)。超えたら truncated:true と nextOffset。"),
+    offset: z.number().int().min(0).optional().describe("何件目から返すか(既定 0)。"),
   },
   { readOnlyHint: true },
-  ({ tag, box }) => run(() => engine.call("query_entities", { tag, box })),
+  ({ tag, box, limit, offset }) => run(() => engine.call("query_entities", { tag, box, limit, offset })),
 );
 
 reg(

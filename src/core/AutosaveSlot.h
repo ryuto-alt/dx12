@@ -16,6 +16,7 @@
 
 #include <cstring>
 #include <filesystem>
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include <fstream>
 #include <string>
 #include <vector>
@@ -68,7 +69,7 @@ inline bool DiscardIfFor(const std::string& dir, const std::string& scenePath)
     fs::remove(ScenePath(dir), ec);
     fs::remove(MetaPath(dir),  ec);
     fs::remove(NavPath(dir),   ec);
-    fs::remove_all(PartsPath(dir), ec);   // 分割保存のセルファイル（このスロットの中だけ）
+    saferm::RemoveAll(PartsPath(dir), ec);   // 分割保存のセルファイル（このスロットの中だけ）
     return true;
 }
 

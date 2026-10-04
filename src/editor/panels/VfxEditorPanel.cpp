@@ -1,6 +1,7 @@
 #include "editor/UiWidgets.h"
 #include "editor/PropertyGrid.h"   // pg:: 2 カラム（フェーズ 1b: 生の ImGui フォームをインスペクタと同じ見た目へ）
 #include "editor/panels/VfxEditorPanel.h"
+#include "core/AtomicFileJson.h"
 #include "editor/EditorContext.h"
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
@@ -252,10 +253,8 @@ bool VfxEditorPanel::SaveAsset(const std::string& path)
 
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
-    std::ofstream f(path, std::ios::trunc);
-    if (!f.is_open()) return false;
-    f << j.dump(2);
-    return true;
+    // 一時ファイル→flush→検証→置き換え（途中で落ちても元の VFX アセットは無傷）
+    return static_cast<bool>(dx12e::atomicfile::WriteJson(fs::path(path), j, 2));
 }
 
 void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer)

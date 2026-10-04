@@ -24,6 +24,7 @@
 #include "Assert.h"
 #include "PathResolver.h"
 #include "Version.h"
+#include "core/AtomicFile.h"   // 原子的な保存（shown_version.txt ほか）
 
 // Graphics module headers
 #include "graphics/GraphicsDevice.h"
@@ -103,6 +104,7 @@
 #include "ecs/Components.h"
 #include "ecs/InstanceGroup.h"   // インスタンス群（McpWorldAabb 等）
 #include "scripting/ScriptEngine.h"
+#include "hardware/HardwareSystem.h"   // 物理ハードウェア連携（unique_ptr のデストラクタ / hw_* MCP / BeginFrame）
 #include "ui/UISystem.h"
 #include "ui/UiAnimRuntime.h"
 #include "animation/AnimGraphRuntime.h"
@@ -257,8 +259,7 @@ inline void WriteShownVersion(const std::string& v)
 {
     std::filesystem::path p = WhatsNewStatePath();
     if (p.empty()) return;
-    std::ofstream f(p, std::ios::trunc);
-    if (f) f << v;
+    atomicfile::WriteFile(p, v);   // 失敗しても致命的でない（次回起動時にもう一度更新内容を表示するだけ）
 }
 
 // MCP set_component / remove_component 共有の小スイッチ。

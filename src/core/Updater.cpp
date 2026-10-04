@@ -1,6 +1,7 @@
 #include "core/Updater.h"
 #include "core/Version.h"
 #include "core/Logger.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "core/UpdateLogic.h"
 #include "core/UpdateWindow.h"
 #include "core/ReleaseNotes.h"
@@ -671,7 +672,7 @@ bool Updater::RunStartupCheck()
 
     for (;;)
     {
-        fs::remove_all(tmpRoot, ec);
+        saferm::RemoveAll(tmpRoot, ec);
         fs::create_directories(tmpRoot, ec);
         const fs::path zip     = tmpRoot / "update.zip";
         const fs::path extract = tmpRoot / "extract";

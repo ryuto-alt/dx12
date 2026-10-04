@@ -273,6 +273,10 @@ Application::Render()
 - Logger は `char*` ベース（`wchar_t` リテラル `L"..."` は使えない）
 - D3D12MA でGPUリソース確保
 - D3D12 Debug Layer + GPU-Based Validation をデバッグビルドで有効化
+- **フォルダの再帰削除は必ず `saferm::RemoveAll`**（`src/core/SafeRemove.h`）。`std::filesystem` の再帰削除を直接書かない
+  （`SafeRemoveTests` が src/ を走査して落とす）。空・相対パス・ドライブのルートとその直下・ホームとその直下・
+  システムのフォルダ・exe のフォルダは断る。消す範囲が決まっているなら第 3 引数 `base` を渡して「base の中だけ」に絞る。
+  2026-10-02 に C ドライブのルートからの再帰削除が走り、ホームなどが消えた（実行元は記録ごと消えて未特定）
 
 ---
 

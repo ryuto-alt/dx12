@@ -6,8 +6,10 @@
 // 機種非依存入力の土台。キー状態の取得は呼び出し側の述語(predicate)へ委ねるので
 // InputSystem に非依存で、ヘッドレスにテストできる。ジャンル語彙を含まない中立ヘッダ。
 //
+#include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +18,12 @@
 
 namespace dx12e
 {
+
+// ハードウェア（Arduino / ESP32）のチャンネルを actions へ割り当てるための擬似キーコードの下限。
+// 実キー（0..255）や PAD_*（4096 台）とぶつからない値で、kHwKeyBase + バインド番号 を使う。
+// 述語（KeyDownFn）がこの値以上を受けたら InputSystem でなくハードウェアへ回す。
+// ★input_bindings.json へは書かない（Application::SaveActionBindings が除く）。
+inline constexpr int kHwKeyBase = 0x10000;
 
 class ActionMap
 {
@@ -46,6 +54,20 @@ public:
     void Bind(const std::string& action, int key)
     {
         Bind(action, key, DirectX::XMFLOAT3{1.0f, 0.0f, 0.0f});
+    }
+
+    // key >= minKey の割り当てを全アクションから外す（ハードウェアの擬似キーの付け直し用）。
+    // 空になったアクションは消す。
+    void RemoveKeysFrom(int minKey)
+    {
+        for (auto it = m_actions.begin(); it != m_actions.end();)
+        {
+            auto& list = it->second;
+            list.erase(std::remove_if(list.begin(), list.end(),
+                                      [minKey](const Binding& b) { return b.key >= minKey; }),
+                       list.end());
+            it = list.empty() ? m_actions.erase(it) : std::next(it);
+        }
     }
 
     void ClearAction(const std::string& action) { m_actions.erase(action); }

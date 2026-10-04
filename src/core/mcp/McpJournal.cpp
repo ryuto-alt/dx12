@@ -1,5 +1,7 @@
 // MCP ファイル書き込みジャーナル（設計と形式は McpJournal.h の冒頭）。標準ライブラリだけ。
 #include "core/mcp/McpJournal.h"
+#include "core/AtomicFile.h"   // 原子的な保存（tests/McpSafetyTests は AtomicFile.cpp も一緒にビルドする）
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 
 #include <algorithm>
 #include <chrono>
@@ -235,10 +237,7 @@ bool ReadAll(const fs::path& p, std::string& out)
 
 bool WriteAll(const fs::path& p, const std::string& data)
 {
-    std::ofstream ofs(p, std::ios::binary | std::ios::trunc);
-    if (!ofs) return false;
-    ofs.write(data.data(), static_cast<std::streamsize>(data.size()));
-    return static_cast<bool>(ofs);
+    return atomicfile::WriteFile(p, data).ok;   // 一時ファイル→flush→検証→置き換え
 }
 
 bool SameContent(const fs::path& a, const fs::path& b)
@@ -438,13 +437,7 @@ void Journal::WriteManifest(const Entry& e) const
         o += ",\"skipped\":" + (f.skipped.empty() ? std::string("null") : Quote(f.skipped)) + "}";
     }
     o += "]}\n";
-    const fs::path tmp = e.dir / "manifest.json.tmp";
-    if (WriteAll(tmp, o))
-    {
-        std::error_code ec;
-        fs::rename(tmp, e.dir / "manifest.json", ec);
-        if (ec) WriteAll(e.dir / "manifest.json", o);
-    }
+    WriteAll(e.dir / "manifest.json", o);   // 原子的に置き換える（WriteAll が AtomicFile を使う）
 }
 
 bool Journal::BackupInto(Entry& e, const fs::path& absPath)
@@ -468,8 +461,8 @@ bool Journal::BackupInto(Entry& e, const fs::path& absPath)
         else
         {
             const std::string name = "files/" + std::to_string(e.nextBackup++) + ".bin";
-            fs::copy_file(absPath, e.dir / PathFromUtf8(name), fs::copy_options::overwrite_existing, ec);
-            if (ec) { rec.skipped = "copy_failed"; e.info.complete = false; }
+            const atomicfile::Result cr = atomicfile::CopyFileAtomic(absPath, e.dir / PathFromUtf8(name), /*overwrite=*/true);
+            if (!cr.ok) { rec.skipped = "copy_failed"; e.info.complete = false; }
             else rec.backup = name;
         }
     }
@@ -540,7 +533,7 @@ std::string Journal::Finish(std::unique_ptr<Entry>& slot, const char* state)
     if (e->info.files.empty() && e->info.complete && e->info.note.empty())
     {
         std::error_code ec;
-        fs::remove_all(e->dir, ec);
+        saferm::RemoveAll(e->dir, ec, m_root);
         return {};
     }
     e->info.state = state;
@@ -649,8 +642,18 @@ RestoreResult Journal::RestoreEntry(const EntryInfo& info, bool backupFirst)
             if (backupFirst) Backup(target);
             fs::create_directories(target.parent_path(), ec);
             ec.clear();
-            fs::copy_file(src, target, fs::copy_options::overwrite_existing, ec);
-            if (ec) { r.warnings.push_back("書き戻しに失敗: " + f.path + " (" + ec.message() + ")"); r.missing.push_back(f.path); }
+            // 戻す途中で落ちても対象を壊さないよう、原子的に置き換える（退避は kMaxFileBytes 以下なのでメモリに載る）
+            std::string backupBytes;
+            std::string wrErr;
+            bool wrote = false;
+            if (!ReadAll(src, backupBytes)) wrErr = "バックアップを読めない";
+            else
+            {
+                const auto wr = atomicfile::WriteFile(target, backupBytes);
+                wrote = wr.ok;
+                wrErr = wr.error;
+            }
+            if (!wrote) { r.warnings.push_back("書き戻しに失敗: " + f.path + " (" + wrErr + ")"); r.missing.push_back(f.path); }
             else r.restored.push_back(f.path);
         }
     }
@@ -699,7 +702,7 @@ void Journal::Prune()
         // open は基本刈らない。ただし別プロセスが残した 24 時間より古い open（クラッシュの残骸）は刈る
         if (ok && e.state == "open" && now - e.createdAt < 24ll * 3600 * 1000) { ++kept; continue; }
         if (kept < m_keep) { ++kept; continue; }
-        fs::remove_all(m_root / PathFromUtf8(n), ec);
+        saferm::RemoveAll(m_root / PathFromUtf8(n), ec, m_root);
     }
 }
 

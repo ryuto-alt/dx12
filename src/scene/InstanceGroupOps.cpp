@@ -327,6 +327,7 @@ ExplodeResult ExplodeGroup(Scene& scene, entt::entity group, const std::string& 
         && gt.scale.x == 1 && gt.scale.y == 1 && gt.scale.z == 1 && !gt.useQuaternion;
     const XMMATRIX gm = gt.GetWorldMatrix();
 
+    SceneSerializer::NameIndexScope nameScope(scene);   // 1 体ずつの名前重複検査が全走査（体数の 2 乗）にならないように
     const u32 n = set->Count();
     res.entities.reserve(n);
     res.undo.memberJson.reserve(n);
@@ -385,6 +386,7 @@ void ApplyUndoRecord(Scene& scene, const std::string& assetsDir, const GroupUndo
     else
     {
         if (const entt::entity e = FindEntityByGuid(reg, rec.groupGuid); e != entt::null) DestroyQuiet(reg, e);
+        SceneSerializer::NameIndexScope nameScope(scene);
         for (const std::string& mj : rec.memberJson)
         {
             const entt::entity e = Instantiate(scene, mj, assetsDir, /*keepGuid=*/true);

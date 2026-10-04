@@ -152,9 +152,11 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpWaterMethods();      // 水面 W1: water_apply_preset
     RegisterMcpFoliageMethods();    // 植生 F1: foliage_scatter / paint / clear / save / stats / get_wind / set_wind
     RegisterMcpInstanceGroupMethods();   // インスタンス群: instance_group（convert / explode / info / add / remove / set）
+    RegisterMcpSceneBackupMethods();     // シーンの世代つきバックアップ: scene_backups（list / restore / settings）
     RegisterMcpImGuiMethods();      // 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作）
     RegisterMcpSequenceMethods();   // シーケンサー(.dxseq): sequence_list / load / save / get / eval / scrub / play / stop / apply_op / autoplay
     RegisterMcpMatGraphMethods();   // マテリアルグラフ(G2b): material_graph_get / edit / validate / compile / status / graphize / set_param / apply / nodes
+    RegisterMcpHardwareMethods();   // 物理ハードウェア: hw_list_ports / hw_status / hw_connect / hw_read / hw_write / hw_simulate / hw_calibrate / hw_flash ほか
     RegisterMcpEditorUiMethods();   // M7: editor_command_list / run / run_guarded / editor_state / editor_notify / editor_select
     RegisterMcpManifestMethods();   // describe_mcp_manifest（meta を直接渡す最初の method）
     ApplyMcpManifest();            // 全 method へ meta を流し込み、manifestHash を 1 度だけ計算する

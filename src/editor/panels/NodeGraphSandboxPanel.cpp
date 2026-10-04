@@ -2,6 +2,7 @@
 
 #include "editor/panels/MaterialGraphPanel.h"   // 下の Render がマテリアルグラフ窓の描画も呼ぶ（ApplicationRender.cpp を触らずに窓を足すための経路）
 
+#include "core/AtomicFileJson.h"
 #include "editor/EditorContext.h"
 #include "editor/UiWidgets.h"
 #include "editor/nodegraph/GraphView.h"
@@ -208,9 +209,9 @@ static void RenderSandbox(EditorContext& ctx)
         if (button("JSON 保存", "ng:btn:save", "ノード位置・コメント・ズーム・パンを JSON に保存（一時フォルダ）"))
         {
             const ng::ViewState vs = v.GetViewState();
-            std::ofstream f(SavePath(), std::ios::binary);
-            f << ng::SaveGraphJson(doc, &vs);
-            Say(s, "保存しました: " + SavePath());
+            const auto wr = dx12e::atomicfile::WriteFile(std::filesystem::path(SavePath()), ng::SaveGraphJson(doc, &vs),
+                                                         dx12e::atomicfile::JsonVerifier());
+            Say(s, wr ? "保存しました: " + SavePath() : "保存に失敗しました: " + wr.error);
         }
         if (button("JSON 読込", "ng:btn:load"))
         {

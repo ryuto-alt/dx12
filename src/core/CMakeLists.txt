@@ -10,6 +10,8 @@ endif()
 
 add_library(Core STATIC
     Version.cpp
+    SceneBackup.cpp                  # シーンの世代つきバックアップ（.dx12/backups/）。tests/scene_backup_test.cpp
+    AtomicFile.cpp                   # 原子的な書き込み（一時ファイル→flush→検証→置き換え）。ユーザーデータを書く全経路が使う。tests/atomic_file_test.cpp
     # Application の実装は 1 ファイル 18k 行のゴッドファイルだったので、クラス定義
     # (Application.h) を一切変えずにテーマ別 TU へ分割してある。担当を分けて同時に
     # 触れるようにするのが目的なので、新しい実装は該当テーマのファイルへ足すこと。
@@ -49,6 +51,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpAi.cpp         # ゲーム AI の観測（brain_state）
     mcp/ApplicationMcpPathTracer.cpp # DXR パストレーサー（render_reference / render_reference_status / render_reference_cancel）
     mcp/ApplicationMcpWater.cpp      # 水面 W1（water_apply_preset）
+    mcp/ApplicationMcpSceneBackup.cpp   # シーンの世代つきバックアップ（scene_backups）
     mcp/ApplicationMcpInstanceGroup.cpp   # インスタンス群（instance_group）
     mcp/ApplicationMcpFoliage.cpp    # 植生 F1（foliage_scatter / foliage_paint / foliage_stats / set_wind ほか）
     mcp/ApplicationMcpImGui.cpp      # 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作: dx12_imgui_*）
@@ -57,6 +60,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpAudio.cpp      # 音の観測（audio_state）
     mcp/ApplicationMcpSequence.cpp   # シーケンサー(sequence_list / load / save / get / eval / scrub / play / stop / apply_op)
     mcp/ApplicationMcpMatGraph.cpp   # マテリアルグラフ G2b(material_graph_get / edit / validate / compile / status / graphize / set_param / apply / nodes)
+    mcp/ApplicationMcpHardware.cpp   # 物理ハードウェア連携（hw_list_ports / hw_status / hw_connect / hw_read / hw_write / hw_simulate / hw_calibrate / hw_flash ほか。docs/HARDWARE.md）
     mcp/ApplicationMcpManifest.cpp   # マニフェスト（method ごとのメタ情報）と引数の中央検査（データ表は ApplicationMcpManifestData.inc）
     Window.cpp
     SplashScreen.cpp                # 起動画面の窓 + スレッド + API（D2D 描画 / GDI+ 縮退）

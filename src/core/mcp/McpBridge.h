@@ -9,7 +9,7 @@ namespace dx12e {
 
 // エディタ専用の薄い TCP ブリッジ。127.0.0.1:<port> で改行区切りの JSON 行を受け取り、
 // メインスレッドの Poll() でハンドラに渡して応答行を返す。ゲーム(封印ランタイム)では起動しない。
-// ponytail: 単一クライアント・JSON 非依存(行を運ぶだけ)。同時接続が要るまで複数化しない。
+// 複数クライアント(最大 8)。MCP サーバと、AI が書いたスクリプト(コードモード)が同時に繋げる。JSON 非依存(行を運ぶだけ)。
 class McpBridge
 {
 public:
@@ -31,7 +31,7 @@ public:
     // 溜まったリクエストを順に handler へ渡し、戻り値を同じクライアントへ送り返す。
     // handler が空文字列を返したリクエストは「遅延応答」とみなし、ここでは送らない
     // (フレーム境界で結果が確定した後に SendToClient で送り返す)。
-    // client は SendToClient へ渡すためのクライアントトークン(= SOCKET の値)。
+    // client は SendToClient へ渡すためのクライアントトークン(接続ごとに 1 から増える番号。使い回さない)。
     void Poll(const std::function<std::string(uint64_t client, const std::string&)>& handler);
 
     // 遅延応答を送る。client は Poll の handler が受け取ったトークン。
@@ -50,7 +50,8 @@ public:
     };
 
     uint16_t Port() const;            // 待受ポート（未起動時は 0）
-    bool     IsConnected() const;     // クライアント接続中か（accept/切断は別スレッド＝atomic）
+    bool     IsConnected() const;     // クライアントが 1 本でも繋がっているか（accept/切断は別スレッド＝atomic）
+    int      ClientCount() const;     // 繋がっているクライアントの数
     // HandleMcpCommand 末尾で 1 件記録する。履歴はメインスレッド限定アクセス＝ロック不要。
     void     RecordCommand(const std::string& method, bool ok, const std::string& error = {});
     std::vector<CommandLogEntry> RecentCommands() const;   // 直近リング（古い順）のコピー

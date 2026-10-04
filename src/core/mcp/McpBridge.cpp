@@ -12,75 +12,121 @@
 #include <deque>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include <windows.h>   // GetTempPathA（ポートファイルの出力先）
+#include <windows.h>   // GetTempPathA（ポートファイルの出力先）/ Sleep
 
 namespace dx12e {
+
+namespace {
+// 同時に繋げるクライアントの上限。MCP サーバ 1 本 + AI が書いたスクリプト(コードモード)+ 診断で数本あれば足りる。
+// ★旧実装は「1 本だけ」で、2 本目は TCP の接続には成功するのに一切返事が来ず、呼び出し側がタイムアウト(8〜10 秒)まで
+//   固まっていた(2026-10-04 に実測)。上限を超えたら黙らせずに 1 行のエラーを返して閉じる。
+constexpr size_t kMaxClients = 8;
+} // namespace
 
 struct McpBridge::Impl
 {
     SOCKET listenSock = INVALID_SOCKET;
-    std::atomic<SOCKET> clientSock{ INVALID_SOCKET };
-    std::thread worker;
+    std::thread acceptThread;
     std::atomic<bool> running{ false };
     bool wsaUp = false;
 
+    // ---- 接続中のクライアント ----
+    // トークン(uint64)は接続ごとに 1 から増える番号。SOCKET の値をそのまま使うと、閉じたソケットの値を OS が
+    // 次の接続へ再利用したとき、前のクライアント宛ての遅延応答が新しいクライアントへ誤配される。
+    // 0 は「MCP 由来でない」の意味で使われている(McpDeferred.h)ので発行しない。
+    std::mutex clientsMtx;                              // clients と、ソケットへの send / close を守る
+    std::unordered_map<uint64_t, SOCKET> clients;
+    std::atomic<uint64_t> nextClientId{ 1 };
+    std::atomic<int> clientCount{ 0 };
+    std::atomic<int> activeReaders{ 0 };                // Stop が読み取りスレッドの終わりを待つため
+
     std::mutex mtx;
-    std::vector<std::pair<SOCKET, std::string>> pending;  // (client, requestLine)
+    std::vector<std::pair<uint64_t, std::string>> pending;  // (client, requestLine)
 
     // ---- 状態の見える化（MCP / AI Bridge パネル用）----
     uint16_t port = 0;                       // Start で一度だけ書く（以後は読み取り専用）
-    std::atomic<bool> connected{ false };    // accept/切断は worker スレッド＝atomic
     std::deque<CommandLogEntry> history;     // 直近 64 件（メインスレッド限定＝ロック不要）
+
+    // 登録を外してソケットを閉じる。先に外した側だけが閉じる(Stop と読み取りスレッドの二重 close を防ぐ)。
+    void DropClient(uint64_t id)
+    {
+        std::lock_guard<std::mutex> lock(clientsMtx);
+        auto it = clients.find(id);
+        if (it == clients.end()) return;
+        ::closesocket(it->second);
+        clients.erase(it);
+        clientCount.store(static_cast<int>(clients.size()));
+    }
+
+    void ReadLoop(uint64_t id, SOCKET sock)
+    {
+        std::string buf;
+        char tmp[4096];
+        bool firstLine = true;
+        bool drop = false;
+        while (running.load() && !drop)
+        {
+            int n = ::recv(sock, tmp, static_cast<int>(sizeof(tmp)), 0);
+            if (n <= 0) break;   // 切断/エラー/Stop による close
+            buf.append(tmp, static_cast<size_t>(n));
+
+            size_t pos;
+            while ((pos = buf.find('\n')) != std::string::npos)
+            {
+                std::string line = buf.substr(0, pos);
+                buf.erase(0, pos + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.empty()) continue;
+                // 正規クライアントの行は必ず JSON オブジェクト。最初の行が '{' で始まらなければ
+                // ブラウザの HTTP/WebSocket ドライブバイ等とみなし接続を切る(無認証ポートの最低防御)。
+                if (firstLine) { firstLine = false; if (line[0] != '{') { drop = true; break; } }
+                std::lock_guard<std::mutex> lock(mtx);
+                pending.emplace_back(id, std::move(line));
+            }
+        }
+        DropClient(id);
+        Logger::Info("MCP bridge: client #{} disconnected ({} connected)", id, clientCount.load());
+    }
 
     void AcceptLoop()
     {
         while (running.load())
         {
-            SOCKET client = ::accept(listenSock, nullptr, nullptr);
-            if (client == INVALID_SOCKET)
+            SOCKET sock = ::accept(listenSock, nullptr, nullptr);
+            if (sock == INVALID_SOCKET)
             {
                 if (!running.load()) break;   // Stop() が listenSock を閉じた
                 continue;
             }
-            clientSock.store(client);
-            connected.store(true);
-            Logger::Info("MCP bridge: client connected");
-
-            std::string buf;
-            char tmp[4096];
-            bool firstLine = true;
-            bool drop = false;
-            while (running.load() && !drop)
+            const uint64_t id = nextClientId.fetch_add(1);
             {
-                int n = ::recv(client, tmp, static_cast<int>(sizeof(tmp)), 0);
-                if (n <= 0) break;   // 切断/エラー
-                buf.append(tmp, static_cast<size_t>(n));
-
-                size_t pos;
-                while ((pos = buf.find('\n')) != std::string::npos)
+                std::lock_guard<std::mutex> lock(clientsMtx);
+                if (clients.size() >= kMaxClients)
                 {
-                    std::string line = buf.substr(0, pos);
-                    buf.erase(0, pos + 1);
-                    if (!line.empty() && line.back() == '\r') line.pop_back();
-                    if (line.empty()) continue;
-                    // 正規クライアントの行は必ず JSON オブジェクト。最初の行が '{' で始まらなければ
-                    // ブラウザの HTTP/WebSocket ドライブバイ等とみなし接続を切る(無認証ポートの最低防御)。
-                    if (firstLine) { firstLine = false; if (line[0] != '{') { drop = true; break; } }
-                    std::lock_guard<std::mutex> lock(mtx);
-                    pending.emplace_back(client, std::move(line));
+                    static const char kBusy[] =
+                        "{\"ok\":false,\"error_code\":9,\"error_name\":\"E_ENGINE_BUSY\","
+                        "\"error\":\"too many MCP clients connected\","
+                        "\"error_hint\":\"使っていない接続(古い MCP サーバ・止め忘れたスクリプト)を閉じてから繋ぎ直す\"}\n";
+                    ::send(sock, kBusy, static_cast<int>(sizeof(kBusy) - 1), 0);
+                    ::closesocket(sock);
+                    Logger::Warn("MCP bridge: refused a client (limit {} reached)", kMaxClients);
+                    continue;
                 }
+                clients.emplace(id, sock);
+                clientCount.store(static_cast<int>(clients.size()));
             }
-
-            // close 所有を一本化(Stop() も同じ exchange を使う)。先に valid を取った側だけが閉じる。
-            {
-                SOCKET c = clientSock.exchange(INVALID_SOCKET);
-                if (c != INVALID_SOCKET) ::closesocket(c);
-            }
-            connected.store(false);
-            Logger::Info("MCP bridge: client disconnected");
+            Logger::Info("MCP bridge: client #{} connected ({} connected)", id, clientCount.load());
+            activeReaders.fetch_add(1);
+            // 読み取りは接続ごとのスレッド。終わったら自分で抜ける(detach)。Stop は activeReaders が 0 になるのを待つ。
+            std::thread([this, id, sock] {
+                CrashHandler::PrepareThread();
+                ReadLoop(id, sock);
+                activeReaders.fetch_sub(1);
+            }).detach();
         }
     }
 };
@@ -147,7 +193,8 @@ bool McpBridge::Start(uint16_t preferredPort, bool writePortFile)
         }
     }
 
-    if (chosen == 0 || ::listen(s.listenSock, 1) == SOCKET_ERROR)
+    // backlog は上限と同じだけ取る(旧実装の 1 だと、短時間の連続接続が ECONNREFUSED になっていた)。
+    if (chosen == 0 || ::listen(s.listenSock, static_cast<int>(kMaxClients)) == SOCKET_ERROR)
     {
         Logger::Error("MCPブリッジ: ポート {}..{} で bind/listen に失敗しました（すべて使用中？）",
                       preferredPort, static_cast<int>(preferredPort) + 10);
@@ -161,8 +208,8 @@ bool McpBridge::Start(uint16_t preferredPort, bool writePortFile)
     //   明示した側は自分でポートを知っているので、書く必要が無い。
     if (writePortFile) WritePortFile(chosen);   // Node 側の自動検出用
     s.running.store(true);
-    s.worker = std::thread([&s] { CrashHandler::PrepareThread(); s.AcceptLoop(); });
-    Logger::Info("MCP bridge listening on 127.0.0.1:{}", chosen);
+    s.acceptThread = std::thread([&s] { CrashHandler::PrepareThread(); s.AcceptLoop(); });
+    Logger::Info("MCP bridge listening on 127.0.0.1:{} (up to {} clients)", chosen, kMaxClients);
     return true;
 }
 
@@ -172,59 +219,70 @@ void McpBridge::Stop()
     if (!s.running.exchange(false))
     {
         // 起動失敗の後始末でも WSA だけは畳む。
-        if (s.wsaUp) { ::WSACleanup(); s.wsaUp = false; }
         if (s.listenSock != INVALID_SOCKET) { ::closesocket(s.listenSock); s.listenSock = INVALID_SOCKET; }
+        if (s.wsaUp) { ::WSACleanup(); s.wsaUp = false; }
         return;
     }
 
-    // accept/recv を叩き起こすためソケットを閉じる。
-    SOCKET client = s.clientSock.exchange(INVALID_SOCKET);
-    if (client != INVALID_SOCKET) ::closesocket(client);
+    // accept を叩き起こすため待受ソケットを閉じ、各クライアントのソケットも閉じて recv を起こす。
     if (s.listenSock != INVALID_SOCKET) { ::closesocket(s.listenSock); s.listenSock = INVALID_SOCKET; }
-
-    if (s.worker.joinable()) s.worker.join();
-    s.connected.store(false);
+    if (s.acceptThread.joinable()) s.acceptThread.join();
+    {
+        std::lock_guard<std::mutex> lock(s.clientsMtx);
+        for (auto& [id, sock] : s.clients) ::closesocket(sock);
+        s.clients.clear();
+        s.clientCount.store(0);
+    }
+    // 読み取りスレッドは detach 済み。Impl を参照しているので、抜けきるまで待つ(recv は close で即座に戻る)。
+    for (int i = 0; i < 2000 && s.activeReaders.load() > 0; ++i) ::Sleep(1);
+    if (s.activeReaders.load() > 0)
+        Logger::Warn("MCP bridge: {} reader thread(s) did not stop in time", s.activeReaders.load());
     if (s.wsaUp) { ::WSACleanup(); s.wsaUp = false; }
 }
 
 void McpBridge::Poll(const std::function<std::string(uint64_t, const std::string&)>& handler)
 {
     auto& s = *m_impl;
-    std::vector<std::pair<SOCKET, std::string>> work;
+    std::vector<std::pair<uint64_t, std::string>> work;
     {
         std::lock_guard<std::mutex> lock(s.mtx);
         work.swap(s.pending);
     }
-    for (auto& [sock, line] : work)
+    for (auto& [client, line] : work)
     {
         std::string resp;
         // ハンドラ例外がここを抜けると Run→main まで伝播してエディタが落ちるので握り潰す。
-        try { resp = handler(static_cast<uint64_t>(sock), line); }
+        try { resp = handler(client, line); }
         catch (...) { resp = "{\"ok\":false,\"error\":\"internal error\"}"; }
         if (resp.empty()) continue;   // 遅延応答: フレーム境界で結果確定後に SendToClient が送る
         resp.push_back('\n');
-        // メインスレッドからの send と worker の recv は同一ソケットで並行可(Winsock)。
-        ::send(sock, resp.data(), static_cast<int>(resp.size()), 0);
+        std::lock_guard<std::mutex> lock(s.clientsMtx);
+        auto it = s.clients.find(client);
+        if (it != s.clients.end())
+            ::send(it->second, resp.data(), static_cast<int>(resp.size()), 0);
     }
 }
 
 void McpBridge::SendToClient(uint64_t client, const std::string& jsonLine)
 {
     auto& s = *m_impl;
-    const SOCKET sock = static_cast<SOCKET>(client);
     // M5: 遅延応答の完了を冪等ストアへ伝える観測点（接続が切れていても完了は記録する）。
     mcpsafety::NotifySend(client, jsonLine);
-    if (sock == INVALID_SOCKET) return;
-    // 受信時のクライアントが既に切断/別クライアントに置き換わっていたら捨てる。
-    if (s.clientSock.load() != sock) return;
+    if (client == 0) return;
     std::string out = jsonLine;
     out.push_back('\n');
-    ::send(sock, out.data(), static_cast<int>(out.size()), 0);
+    // 受信したクライアントが既に切断していたら捨てる(番号は使い回さないので別クライアントへ誤配しない)。
+    std::lock_guard<std::mutex> lock(s.clientsMtx);
+    auto it = s.clients.find(client);
+    if (it == s.clients.end()) return;
+    ::send(it->second, out.data(), static_cast<int>(out.size()), 0);
 }
 
 uint16_t McpBridge::Port() const { return m_impl->port; }
 
-bool McpBridge::IsConnected() const { return m_impl->connected.load(); }
+bool McpBridge::IsConnected() const { return m_impl->clientCount.load() > 0; }
+
+int McpBridge::ClientCount() const { return m_impl->clientCount.load(); }
 
 void McpBridge::RecordCommand(const std::string& method, bool ok, const std::string& error)
 {

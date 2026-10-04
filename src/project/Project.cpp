@@ -3,6 +3,7 @@
 #include "project/LauncherLogic.h"   // PathFromUtf8（日本語パスを ANSI 解釈させない）
 #include "project/GitIntegration.h"
 #include "core/Logger.h"
+#include "core/AtomicFileJson.h"
 
 #include <fstream>
 #include <filesystem>
@@ -23,13 +24,12 @@ bool Project::Save(const ProjectInfo& info, const std::string& path)
     j["assetsDir"]        = "assets";
     j["scriptsDir"]       = "scripts";
 
-    std::ofstream ofs(launcher::PathFromUtf8(path));
-    if (!ofs.is_open())
+    const auto wr = atomicfile::WriteFile(launcher::PathFromUtf8(path), j.dump(2), atomicfile::JsonVerifier());
+    if (!wr)
     {
-        Logger::Error("プロジェクトの保存に失敗しました: {}", path);
+        Logger::Error("プロジェクトの保存に失敗しました: {} ({})", path, wr.error);
         return false;
     }
-    ofs << j.dump(2);
     Logger::Info("Project saved: {}", path);
     return true;
 }
@@ -93,15 +93,16 @@ void Project::CreateDefaultStructure(const ProjectInfo& info)
     {
         fs::path outPath = root / f.relPath;
         fs::create_directories(outPath.parent_path(), ec);
-        std::ofstream ofs(outPath);
-        if (!ofs.is_open())
+        std::string body;
+        if (std::string_view(f.relPath) == "scripts/game.lua")
+            body += "-- " + info.name + "  (template: " + tmpl + ")\n\n";
+        body += f.content;
+        const auto wr = atomicfile::WriteFile(outPath, body);
+        if (!wr)
         {
-            Logger::Error("テンプレートファイルの書き出しに失敗しました: {}", launcher::PathToUtf8(outPath));
+            Logger::Error("テンプレートファイルの書き出しに失敗しました: {} ({})", launcher::PathToUtf8(outPath), wr.error);
             continue;
         }
-        if (std::string_view(f.relPath) == "scripts/game.lua")
-            ofs << "-- " << info.name << "  (template: " << tmpl << ")\n\n";
-        ofs << f.content;
         if (std::string_view(f.relPath) == "assets/scenes/main.json")
             mainSceneContent = f.content;
     }
@@ -112,9 +113,8 @@ void Project::CreateDefaultStructure(const ProjectInfo& info)
     {
         fs::path scenePath = assets / PathFromUtf8(info.defaultScene);
         fs::create_directories(scenePath.parent_path(), ec);
-        std::ofstream ofs(scenePath);
-        if (ofs.is_open())
-            ofs << mainSceneContent;
+        const auto wr = atomicfile::WriteFile(scenePath, mainSceneContent);
+        if (!wr) Logger::Warn("開始シーンの書き出しに失敗しました: {}", wr.error);
     }
 
     // 新規作成フォームで選んだ描画設定。エンジンが読む settings.json（プロジェクトルート直下。数値だけの JSON）へ書く。
@@ -125,8 +125,8 @@ void Project::CreateDefaultStructure(const ProjectInfo& info)
         if (info.newVsync >= 0)         st["video_vsync"]    = info.newVsync != 0 ? 1 : 0;
         if (!st.empty())
         {
-            std::ofstream ofs(root / "settings.json");
-            if (ofs.is_open()) ofs << st.dump(2);
+            const auto wr = atomicfile::WriteFile(root / "settings.json", st.dump(2), atomicfile::JsonVerifier());
+            if (!wr) Logger::Warn("settings.json の書き出しに失敗しました: {}", wr.error);
         }
     }
 

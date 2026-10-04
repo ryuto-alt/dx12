@@ -7,6 +7,7 @@
 #include <fstream>
 
 #include "core/Logger.h"
+#include "core/AtomicFile.h"
 #include "core/vfs/Vfs.h"
 
 namespace dx12e::foliage
@@ -131,23 +132,9 @@ bool SaveFoliageFile(const std::string& absPath, const FoliageInstanceSet& set, 
         if (ec) { SetErr(err, "保存先ディレクトリを作れない"); return false; }
     }
     const std::vector<u8> bytes = EncodeFoliage(set);
-    // 一時ファイルへ書いてから置き換える（書き込み途中の電源断で古いファイルまで壊さない）
-    const fs::path tmp = p.string() + ".tmp";
-    {
-        std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
-        if (!ofs) { SetErr(err, "書き込めない"); return false; }
-        ofs.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!ofs) { SetErr(err, "書き込みに失敗"); return false; }
-    }
-    fs::rename(tmp, p, ec);
-    if (ec)
-    {
-        // 既存ファイルがあると rename が失敗する環境向け
-        fs::remove(p, ec);
-        std::error_code ec2;
-        fs::rename(tmp, p, ec2);
-        if (ec2) { SetErr(err, "置き換えに失敗"); return false; }
-    }
+    // 一時ファイル→flush→読み戻し検証→置き換え（書き込み途中の電源断・ディスク満杯で古いファイルまで壊さない）
+    const auto wr = atomicfile::WriteFile(p, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    if (!wr) { SetErr(err, wr.error.c_str()); return false; }
     return true;
 }
 

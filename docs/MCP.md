@@ -725,6 +725,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_key_press` | `{key}` | `{key}` ※1 フレームだけ押して離す（`isKeyPressed` / `keyPressed()` が 1 回立つ）|
 | `dx12_mouse_move` | `{dx?:f, dy?:f}` | `{dx, dy, mode, note}` ※合成マウス移動を次の 1 フレームぶんだけ注入する。一人称の視点操作はこれが唯一の口(★`camera:setYaw()` では向きを変えられない。エンジン標準の FpsController が yaw を Lua のローカル変数で持ち毎フレーム上書きするため)。押しっぱなしの概念は無いので、回し続けるには `dx12_step_frames` と交互に撃つこと。目標角度へ向けたいなら `dx12_play_script` の yaw や `dx12_autoplay` を使う方が確実(実測して比例で詰める閉ループになっている) |
 | `dx12_step_frames` | `{frames?:int=1(1..600)}` | `{frames}` ※**N フレーム進んでから応答する同期バリア**。入力がシミュレーションに効いてから観測するために挟む。※決定論ステッパではない（各フレームの dt は実時間）|
+| `dx12_lua_step` | `{before?:lua, frames?:int=1(1..600), after?:lua, every?:int, keys?:[key], deterministic?, dt?, hold?}` | `{frames, before?, after? | samples:[{frame,result}], step}` ※**`eval_lua` → `step_frames` → `eval_lua` を 1 回に束ねた合成ツール**（往復ごとにターンを使わない）。`keys` は進めている間押し続け、失敗しても必ず離す。`every` で途中も読む（最大 60 回）。Lua の失敗は `stage`（before / after(frame N)）付き。任意の Lua を走らせるので **guarded**（`eval_lua` と同じ扱い） |
 | `dx12_perf_stats` | `{window?:int=60(..240)}` | `fps` / `frameMs{avg,min,max,p95}` / `cpu{workMs,fenceWaitMs,presentMs}` / `gpuPassMs{total,shadows,depthPrepass,prepassSsao,clusterCull,raytracing,rtScreen,ddgi,screenSpaceGi,volFog,hiZ,mainScene,particles,postFx,ui,vgCull}` / `drawCalls` / `culled` / `triangles` / `occlusion{...}` / `analysis{verdict:"gpu-bound"\|"cpu-bound"\|"fps-limit-capped"…, notes}` ※**FPS が出ないときはまずこれで犯人を特定する** |
 | `dx12_benchmark` | `{...}` | 規模の梯子を測るベンチハーネス（同一シーンを条件を変えて回し、どこで折れるかを出す）|
 
@@ -890,6 +891,7 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 | `dx12_polish_audit` | `{screenshot?:bool=true, only?:("light"\|"air"\|"grade"\|"motion"\|"material"\|"contact"\|"image")[], sampleMeshes?:int=24, judge?:bool=true}` | `{score, verdict, findings:[{code, category, severity, what, why, fix}], facts, judge?:{source, briefFit, findings:[{code, intended, keep}], nextFix:{id, tool, args, confidence}, uncertain[], scoreExcludingKept, briefMissing?}}` ※高品質な絵に必ず入っている要素が揃っているかを測り、足りないものを効く順(光→空気→階調→動き→素材→接地)で返す。各指摘に「なぜ安っぽく見えるか」と「次に撃つコマンド」が付く。★`dx12_diagnose` は壊れているか、`dx12_look_compare` は参照画像との差を見る道具で、これは参照画像なしに「作りかけに見える理由」を言うためのもの。★`judge` は判断段(§4-16): 同じ指摘を作品の意図(Brief)に照らして仕分け、意図どおりのもの(`keep:true`)は直さない。`judge:false` で止まる |
 | `dx12_perceive` | `{camera?:"editor"\|"game"\|{position:[x,y,z], target:[x,y,z], fovDeg?:f}, targets?:string\|string[], top?:int=8, width?:int, height?:int, settleFrames?:int=8, path?:string, includeTransparent?:bool=true}` | `{facts:{viewpoint, scene:{brightness, upper_half, lower_half, left_half, right_half, sky_or_void, black_crush, blown_out, farthest_surface, dominant}, targets:[{name, facts:{visibility, screen_share, position, brightness, contrast, texture, lit_side, main_light?, occluded, fits_in_view, distance, saturation, material?}}], top[]}, raw}` ※知覚層。指定の視点から見た画面を ID パスで集計し、対象が【プレイヤーの目にどう見えるか】を数値(raw)と数値を含まない言葉(facts。言葉の境界は `perceive.ts` の `PERCEIVE_BINS`)で返す(遅延応答。普段 0.1〜0.4 秒)。遮蔽率は targets で名指しした対象だけ。スプライト/パーティクル/UI は数えない。★`lit_side`(litFacing)はカスタムシェーダの照明を見ていないので、「照らされている」でも brightness / contrast が暗ければ暗い(必ず一緒に読む)。品質ゲートの読みやすさの検査(`readability`)が使う |
 | `dx12_quality_gate` | `{checks?:("scene"\|"layout"\|"polish"\|"ui"\|"readability"\|"playtests")[], heavy?:bool=false, screenshot?:bool=true, strictness?:"balanced"\|"strict", screen?:string, playtests?:bool\|string[], readability?:[{label?, camera?:"editor"\|"game"\|{position, target, fovDeg?}, targets:(string\|{name, role?})[]}](最大 4), judge?:bool=true, bundle?:"perDomain"\|"one"(既定 perDomain)}` | `{pass, blocking[], keep[{…item, judge:{question, value, threshold, confidence, source}, why}], suggestions[{check, text, tool?, args?}], uncertain[{check, id, why, look:{tool, args}}], counts:{blocking, keep, uncertain, suggestions}, blockingByCode:{"検査:コード":件数}, truncated, cost:{requests, tokens, usd, ms}, checks[{id, title, ran, skipped?, ms, summary, judge?}], judge:{used, source, briefMissing?, bundle, bundles}, elapsedMs, next}` ※作業の区切りで 1 回撃つ品質ゲート(§4-17)。シーンの検証・配置・仕上がり・UI・(指定すれば)読みやすさとプレイテストのルールの結論を 1 つの合否にまとめ、Jev が Brief に照らして意図どおり(keep)と判断したものは blocking から外す。uncertain は合否に入れず、見るためのツール呼び出し付きで返す |
+| `dx12_oracle` | `{op:"status"|"add_view"|"capture"|"add_perf"|"check"|"seal", name?, camera?:{position,target}, width?, height?, tolerance?:{lsb?=8, maxDiffPct?=0.5}, frames?, max?:{frameMsP95?, frameMsAvg?, drawCalls?, gpuMsTotal?}, scene?}` | status: `{manifest, views[], perf[], playtests[], ledger:{sealed, changed[], missing[], extra[]}}` / add_view・capture: `{added|captured, golden, note}` / check: `{pass, summary, items[]}` / seal: `{sealedAt, files}` ※**書き換えられない正解(Q2)**。固定カメラの金画像(`.dx12/oracles/views/*.png`)・性能予算・封印したプレイテストを `dx12_quality_gate` の `oracles` 検査が照合する。台帳は `%LOCALAPPDATA%/UnoEngine/oracles/`(`DX12_ORACLE_LEDGER_DIR` で上書き)。封印後の改ざんは `ORACLE_TAMPERED`(blocking)。**`seal` だけ guarded**(`dx12_call` の `confirm:true` が要る。直接呼ぶと `E_GUARDED`)。人用 CLI: `node tools/mcp-server/scripts/oracle-seal.ts <projectDir> [--status]`。legacy 面には出ない(長尾) |
 
 ### 4-14. Blender 連携(自動起動 → PBR素材/仕上げ → 規約どおり書き出し → 実寸検証)
 
@@ -1074,6 +1076,35 @@ dx12_imgui_screenshot {path:"C:/tmp/shot.png"}      → 仮想カーソル込み
 - `dx12_imgui_find` の `items` は主要パネルだけ(プロパティ行 / コンポーネント見出し / ツールバー / メニュー / Hierarchy 行)。
 - 起動時のプロジェクトランチャー等、ImGui 上のダイアログは普通に操作できる。ネイティブのファイル選択ダイアログは開かない(ブロックしてログに残す)。
 - 別プロセスの子エディタ(テストクライアント起動)は同じ `--background` / `--virtual-input` を引き継いで起動する。
+
+### 4-19. 物理ハードウェア（Arduino / ESP32。`hw_*`）
+
+USB シリアルでつないだ Arduino / ESP32 を扱う（仕様の正は [`docs/HARDWARE.md`](HARDWARE.md)。実装は `src/hardware/` と `src/core/mcp/ApplicationMcpHardware.cpp`）。
+全部 `dx12_call {name:"hw_..."}` で撃つ（`dx12_tool_search {query:"hardware"}` で引ける。Core 面は 40 本が上限なので昇格はしていない）。
+エディタでも配布ゲームでも `assets/hardware.json` から読んだ設定で動く（ファイルが無ければ空設定。`hw_connect` / `hw_simulate` は設定なしで使える）。
+
+| method | params | 返り値 / 内容 | effect |
+|---|---|---|---|
+| `hw_list_ports` | `{}` | `{ports:[{port, friendlyName, vid, pid, guessedBoard, usedBy?}]}` COM 一覧。`usedBy` はそのポートを使っているデバイス名 | read |
+| `hw_status` | `{device?}` | `{devices:[{name, status, connected, virtual, port, hello:{name,board,fw,proto}, channels:[{name,dir,type,min,max,raw,value,…}], stats:{rxLines,rxRateHz,rttMs,errors,badLines,overflow,…}, lastRxAgeMs}]}` | read |
+| `hw_connect` | `{device, port?}` | 非同期で接続。設定に無い名前なら、その名前でデバイスを足して接続（port 指定 or `@hello` の名前で照合）。ファイルには書かない | runtime |
+| `hw_disconnect` | `{device}` | 全出力を安全値へ戻してポートを放す。`hw_connect` するまで自動再接続しない | runtime |
+| `hw_read` | `{device, durationMs?:100..10000=1000}` | `{channels:{ch:{count,min,max,mean,stddev}}}`。**遅延応答**（メインスレッドは止めない。応答は時間が来たフレームで返る） | read |
+| `hw_monitor` | `{device, lines?:1..500=50}` | `{lines:[{t, dir:"rx"\|"tx", text}]}` 生の送受信ログの末尾 | read |
+| `hw_write` | `{device, values:{ch:0..1}}` | 出力を書いて即確定。`dangerous:true` のチャンネルを含むと拒否（`E_HW_DANGEROUS`、fix に `hw_write_dangerous`） | runtime |
+| `hw_write_dangerous` | `{device, values}` | `dangerous` 出力（ペルチェ等）へ書く。値は `maxValue` で切られる | guarded |
+| `hw_simulate` | `{device, values?:{ch:raw}, channels?:[{name,dir,type,min,max}], clear?}` | 入力に仮想の生値を流す。`channels` があり device が無ければ**仮想デバイスを作る**。`clear:true` で解除 | runtime |
+| `hw_calibrate` | `{device, mode:"start"\|"finish"\|"cancel"}` | `start` で min/max 追跡 → `finish` で範囲を確定して `assets/hardware.json` へ保存（返り値に `ranges`） | write_file |
+| `hw_config_get` | `{}` | `{config, fileFound, path}` いまの設定（校正値の反映済み） | read |
+| `hw_config_set` | `{config}` | hardware.json を丸ごと書いて Shutdown→Initialize。パースエラーは**書かずに**エラー（`E_HW_BAD_CONFIG`） | write_file |
+| `hw_flash` | `{sketch, device?\|port?, fqbn?, libraries?}` | arduino-cli で compile + upload（**非同期**。対象のポートを放し、終わったら自動で再接続。同時に 1 本）。確認が要る | guarded |
+| `hw_flash_status` | `{lines?:0..200=30}` | `{state:"idle\|compiling\|uploading\|reconnecting\|done\|failed", elapsedSec, exitCode, logTail, reconnected, error?}` | read |
+
+- `sketch` は `.ino` かそのフォルダ。相対パスは**プロジェクト → `<repo>/hardware/firmware/`** の順で探す。`libraries` の既定は `<repo>/hardware/firmware/UnoLink`（配布物にはリポジトリが無いので、その場合は絶対パスを渡す）。
+- `fqbn` 省略時は `@hello` の board / VID・PID の推定から決める（ESP32 系 → `esp32:esp32:esp32`、Arduino → `arduino:avr:uno`）。決められなければ `E_HW_FQBN_REQUIRED`。
+- arduino-cli の場所: `hardware.json` の `arduinoCli` → PATH → `C:\Program Files\Arduino CLIrduino-cli.exe`。窓は出さず（`CREATE_NO_WINDOW`）、優先度は BELOW_NORMAL。エンジン終了時は子プロセスごと止める。
+- Lua からは `hw.device("名前")`（[`docs/API_REFERENCE.md`](API_REFERENCE.md) の hw 節）。MCP の `hw_simulate` で作った仮想デバイスも同じ名前で読める。
+- 典型: `hw_list_ports` → `hw_config_set`（match に VID/PID・hello、pins、actions）→ `hw_status`（Ready とチャンネル）→ `hw_read` で値の揺れを確認 → `hw_calibrate` で範囲を保存。
 
 ### 4-5. 精密ピック / 地形 / スカルプトの約束事
 
@@ -1431,6 +1462,14 @@ TS サーバはこれを引いて、エンジンを再ビルドしても**再起
 - ctest `McpManifestTests` が「McpDefine の全 method = データ表の全名」「全 meta が有効」「申告表と表の引数名が一致」を見張る。
   表に行を足し忘れると落ちる（`describe_mcp_manifest` が `source:"derived"` を返す状態を作らない）。
 
+### 12-2b. ハードウェア method（`hw_*`）の非同期の作法
+
+`hw_read` は `deferred:true`（遅延応答）: 受信時に `Application::m_hwReads` へ積み、`HardwareSystem::BeginSampling` で集計を始め、
+毎フレーム `ServiceHardwareReads()`（`BeginFrame` の直後）が時間の来たものを `EndSampling` して `CompleteMcp` で返す。メインスレッドは止まらない
+（`timeoutMs` は 10 秒の上限 + 余裕で 20000）。ハードウェア設定が作り直されたら保留中の応答は `E_CANCELLED` で返る。
+`hw_flash` は遅延応答ではなく**ワーカースレッド**（受信時に `started:true` を返し、進み具合は `hw_flash_status`）。同時に 1 本。
+子プロセスは Job オブジェクトに入れてあり、エンジンが落ちても arduino-cli / esptool が残らない。
+
 ### 12-3. 構造化エラー（加算フィールド）
 
 既存の `error` / `error_code` / `error_hint` / `error_values` は変えない。次のフィールドが**付くものだけ**加算で乗る（旧クライアントは無視できる）。
@@ -1532,6 +1571,16 @@ TS サーバはこれを引いて、エンジンを再ビルドしても**再起
 - **`journal_restore {id}`**(write_file・dryRun=preview・journal)→ `{restored[], unchanged[], missing[], warnings[], complete}`。existed:false のファイルは削除、existed:true は書き戻す。現在の内容が既に同じなら何もしない(unchanged)。**復元自体も 1 エントリとして残る**(復元の復元ができる)。開いているシーンのメモリには反映されない(シーンを戻したなら `open_scene` で開き直す)。`..` を含む相対 path は戻さない(警告)。TS が書いたエントリも同じ形式で復元できる。
 - **未保存フラグ**: `guard_token` / `journal_list` / `journal_restore` / `cancel` はシーンのメモリを変えないので sceneDirty を立てない(`IsMcpReadOnlyMethod`)。`journal_restore` を入れないと、戻した現在シーンのファイルを自動保存がメモリ上のシーンで上書きして復元が無かったことになる(実機で検証)。
 - **自動保存**: AI のトランザクションが開いている間は本保存(2 秒アイドル)を保留する(rollback で戻す途中の状態をディスクへ書かない)。閉じた後に通常どおり保存される。
+
+### シーンの世代つきバックアップ(`scene_backups`)
+
+保存のたびに直前のシーン一式を `<project>/.dx12/backups/` へ世代として残す。実体は `objects/<内容ハッシュ>-<大きさ>`（同じ内容は 1 回だけ。置き換えで退いた古いファイルは改名で移すのでコピーが要らない）、世代は `<シーン名>_<YYYYmmdd_HHMMSS>.gen`（相対名→ハッシュの目録。最後に原子的に書く＝一覧に出る世代は完全）。現行ファイルを外部がその場で上書きしても世代は変わらない。世代を消すと参照されなくなった実体だけ消える。既定 10 世代・合計 1024MB・60 秒間隔（プロジェクトの `settings.json` の `backup_enabled` / `backup_generations` / `backup_max_mb` / `backup_interval_sec`）。.autosave など「.」で始まるフォルダは対象外。
+
+| method | 引数 | 返り値 |
+|---|---|---|
+| `scene_backups` | `{op:"list"|"restore"|"snapshot"|"settings", path?, id?, enabled?, generations?, maxMb?, intervalSec?}` | list: `{scene, dir, policy, count, generations:[{id, time, bytes, hasParts, hasInst, hasNav, file}], loadFailed}` / restore: `{restored, scene, note}`（戻すシーンは次のフレームで読み直す。戻す前の版も 1 世代残る）/ snapshot: `{created, id, why}` / settings: `{policy, changed, dir}` |
+
+シーンが壊れて開けないとき（`open_scene` が `scene load failed`）は、空のシーンで本体を上書きしないよう保存・自動保存を止めてある。`scene_backups list` → `restore` で戻す。エディタはファイル メニュー「以前の版に戻す…」。
 
 ### 13-6. `cancel`(M6 のジョブ API の口)
 `cancel {target?:"benchmark"|"step_frames"|"all"(既定 all)}`(effect=runtime・冪等キー対象外)。実行中の `benchmark`(`m_benchFramesLeft`)/ `step_frames`(`m_mcpStepFramesLeft`)の残りを 1 フレームに切り詰め、**次のフレームで保留中の遅延応答が正常な完了として返る**(benchmark は途中までの統計・step_frames は `simulatedSec` が要求より短い)。応答 `{cancelled:[…], framesLeft:{benchmark?, step_frames?}(切り詰める前の残り), note}`。何も走っていなければ `cancelled:[]`。

@@ -76,7 +76,7 @@ async function withStructuredBlock(res: ToolResult, e: any): Promise<ToolResult>
 export async function run(fn: () => Promise<unknown>): Promise<ToolResult> {
   try {
     const data = await fn();
-    const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    const text = typeof data === "string" ? data : JSON.stringify(data);
     return {
       content: [{ type: "text", text }],
       structuredContent: { result: data ?? null },

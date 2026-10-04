@@ -1,6 +1,7 @@
 #include "project/GitIntegration.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/Logger.h"
+#include "core/AtomicFile.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -675,10 +676,10 @@ void GitIntegration::WriteGitignore(const std::string& workDir)
 
     if (!fs::exists(path, ec))
     {
-        std::ofstream ofs(path);
-        if (!ofs.is_open()) return;
-        ofs << "# Uno Engine project\n";
-        for (const char* e : kEntries) ofs << e << "\n";
+        std::string text = "# Uno Engine project\n";
+        for (const char* e : kEntries) text += std::string(e) + "\n";
+        const auto wr = atomicfile::WriteFile(path, text);
+        if (!wr) { Logger::Warn(".gitignore の書き出しに失敗しました: {}", wr.error); return; }
         Logger::Info("Wrote .gitignore to {}", workDir);
         return;
     }
@@ -710,10 +711,12 @@ void GitIntegration::WriteGitignore(const std::string& workDir)
         if (!hasLine(e)) { add += std::string(e) + "\n"; ++added; }
     if (added == 0) return;
 
-    std::ofstream ofs(path, std::ios::app | std::ios::binary);
-    if (!ofs.is_open()) return;
-    if (!existing.empty() && existing.back() != '\n') ofs << "\n";
-    ofs << "\n# Uno Engine (追記)\n" << add;
+    // 追記は「既存内容 + 追記分」を 1 回で原子的に書く（途中で落ちても元の .gitignore は無傷）
+    std::string merged = existing;
+    if (!merged.empty() && merged.back() != '\n') merged += "\n";
+    merged += "\n# Uno Engine (追記)\n" + add;
+    const auto wr = atomicfile::WriteFile(path, merged);
+    if (!wr) { Logger::Warn(".gitignore への追記に失敗しました: {}", wr.error); return; }
     Logger::Info("Appended {} entries to .gitignore in {}", added, workDir);
 }
 

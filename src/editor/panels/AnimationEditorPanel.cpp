@@ -11,6 +11,7 @@
 #include <imgui.h>
 
 #include "ecs/Components.h"
+#include "core/AtomicFileJson.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "ui/UiAnimRuntime.h"
@@ -131,12 +132,10 @@ bool AnimationEditorPanel::SaveAsset(const std::string& path, UiAnimRuntime* run
 {
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
-    std::ofstream f(path, std::ios::binary);
-    if (!f.is_open()) return false;
-
     SortUiAnimClip(m_clip);
-    f << SerializeUiAnimClip(m_clip);
-    f.close();
+    // 一時ファイル→flush→検証→置き換え（途中で落ちても元のクリップは無傷）
+    if (!dx12e::atomicfile::WriteFile(fs::path(path), SerializeUiAnimClip(m_clip), dx12e::atomicfile::JsonVerifier()))
+        return false;
 
     // 保存したクリップを再生中のエンティティへ即反映（ホットリロード）。
     // ランタイムのキャッシュキーは assets 相対なので、絶対パスから "uianim/名前.uianim" を作る。

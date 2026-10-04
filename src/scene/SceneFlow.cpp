@@ -1,5 +1,6 @@
 #include "scene/SceneFlow.h"
 #include "core/Logger.h"
+#include "core/AtomicFileJson.h"
 #include "core/vfs/Vfs.h"
 
 #include <fstream>
@@ -64,13 +65,12 @@ bool SceneFlow::Save(const std::string& path) const
         flow[scene] = { {"next", node.next}, {"onFail", node.onFail} };
     j["flow"] = flow;
 
-    std::ofstream ofs(path);
-    if (!ofs.is_open())
+    const auto wr = atomicfile::WriteFile(std::filesystem::path(path), j.dump(2), atomicfile::JsonVerifier());
+    if (!wr)
     {
-        Logger::Error("sceneflow の保存に失敗しました: {}", path);
+        Logger::Error("sceneflow の保存に失敗しました: {} ({})", path, wr.error);
         return false;
     }
-    ofs << j.dump(2);
     Logger::Info("SceneFlow saved: {}", path);
     return true;
 }

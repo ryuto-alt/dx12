@@ -21,7 +21,10 @@
 `open_scene` / `new_scene` / `open_project` は現在のシーンを閉じる。`sceneDirty:true` のときは meta.warnings に出る。MCP 接続中は自動保存されるが、外部でシーン JSON を書き換えた直後は上書きの競合に注意(書いたら即 open、事前に `sceneDirty:false`)。
 
 ## Undo
-MCP 呼び出し 1 回 = Undo 1 エントリ「AI: <method>」(Editor モードのみ)。まとまった編集は `dx12_batch`(atomic)か `dx12_transaction_begin` 〜 `commit`。`undo` は既定で AI の分だけ戻す。ファイルを書く操作(`create_lua_component` / `scene_write` / `import_asset` など)は Undo で戻らない(`<project>/.dx12/backups/` に 20 世代)。
+## シーンの世代(scene_backups)
+保存のたびに直前のシーン一式が `.dx12/backups/` へ世代として残る(既定 10 世代)。実体は `objects/<内容ハッシュ>` に 1 回だけ置く方式で、現行ファイルをその場で上書きしても世代は変わらない。`dx12_call {name:"scene_backups", args:{op:"list"}}` → `{op:"restore", id}` で戻す(`snapshot` / `settings` もある)。`open_scene` が壊れたシーンで失敗したら、保存を止めてあるのでまずこれで戻す。
+
+MCP 呼び出し 1 回 = Undo 1 エントリ「AI: <method>」(Editor モードのみ)。まとまった編集は `dx12_batch`(atomic)か `dx12_transaction_begin` 〜 `commit`。`undo` は既定で AI の分だけ戻す。ファイルを書く操作(`create_lua_component` / `scene_write` / `import_asset` など)は Undo で戻らない(シーンは保存のたびに直前の版が世代として残る。下の「シーンの世代」)。
 
 ## 人の作業を守る
 - エンジンは `--background` で起動する(editor ガイド参照)。実マウス/実キーボード/前面化は使わない。

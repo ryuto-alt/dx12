@@ -1,6 +1,7 @@
 #include "resource/MaterialGraphize.h"
 
 #include "renderer/matgraph/GraphIO.h"
+#include "core/AtomicFile.h"
 #include "renderer/matgraph/PbrTemplate.h"
 
 #include <filesystem>
@@ -28,10 +29,7 @@ bool WriteFileBytes(const fs::path& p, const std::string& bytes)
 {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
-    std::ofstream f(p, std::ios::binary | std::ios::trunc);
-    if (!f) return false;
-    f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-    return static_cast<bool>(f);
+    return static_cast<bool>(dx12e::atomicfile::WriteFile(p, bytes));
 }
 
 matgraph::LegacyPbr ToLegacy(const MaterialAssetData& d)

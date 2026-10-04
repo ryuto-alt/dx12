@@ -152,7 +152,7 @@ if (ENHANCED && SURFACE !== "legacy") {
       if (issues.length > 0) return errorResult(bodyFromIssues(name, args ?? {}, issues, declared));
       try {
         const data = await def.run(args ?? {}, extra);
-        return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { result: data as any } };
+        return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: { result: data as any } };
       } catch (e: any) {
         return errResult(e);
       }

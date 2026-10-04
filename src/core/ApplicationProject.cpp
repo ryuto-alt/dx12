@@ -11,6 +11,7 @@
 #include "core/CrashHandler.h"
 #include "core/BuildJob.h"   // ビルド設定窓の進捗表示（BuildProgress）
 #include "core/vfs/PakWriter.h"   // BakeTexturesIntoPak: 既存 pak への追記
+#include "core/AtomicFileJson.h"   // 原子的な保存
 #include <fstream>
 #include <chrono>
 #include "project/LauncherLogic.h"
@@ -58,8 +59,10 @@ static void SaveProjectBuildConfig(const EditorContext& ctx, const std::string& 
         {"outputDir",  ctx.buildConfig.outputDir},
         {"openFolderAfterBuild", ctx.buildConfig.openFolderAfterBuild},
     };
-    std::ofstream ofs(std::filesystem::path(projectRoot) / "build_settings.json");
-    if (ofs.is_open()) ofs << j.dump(2) << '\n';
+    // 原子的に書く（途中で落ちても元の build_settings.json は無傷）
+    const auto wr = atomicfile::WriteFile(std::filesystem::path(projectRoot) / "build_settings.json",
+                                          j.dump(2) + "\n", atomicfile::JsonVerifier());
+    if (!wr) Logger::Warn("build_settings.json の保存に失敗しました: {}", wr.error);
 }
 
 void Application::BeginProjectLoad(const ProjectInfo& info, bool isNew)
@@ -253,6 +256,9 @@ void Application::UpdateProjectLoad(f32 dt)
         // キー割り当てはプロジェクト単位（保存先が PathResolver::BaseDir() 基準なので、
         // プロジェクトルートが確定したここで読む）。無ければ既定のまま。
         LoadActionBindings();
+        // 物理ハードウェア（assets/hardware.json。無ければ空設定）。プロジェクトを切り替えたら Shutdown→Initialize になる。
+        // ★ゲームモードは BeginProjectLoad を通らないので Application::Initialize 側にも同じ呼び出しがある。
+        InitHardware();
 
         // ロード完了: 隠していたメインウィンドウを出してからスプラッシュを閉じる
         // (順序を逆にすると一瞬何も表示されない空白ができる)。

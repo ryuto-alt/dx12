@@ -2,6 +2,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 #include "core/CrashReport.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 
 #include <algorithm>
 #include <chrono>
@@ -215,7 +216,7 @@ bool CrashReport::CaptureIfPresent(const fs::path& cwd, const fs::path& destRoot
         std::vector<fs::path> dirs;
         for (const auto& e : fs::directory_iterator(destRoot, ec)) if (e.is_directory()) dirs.push_back(e.path());
         std::sort(dirs.begin(), dirs.end());
-        while (dirs.size() > 20) { fs::remove_all(dirs.front(), ec); dirs.erase(dirs.begin()); }
+        while (dirs.size() > 20) { saferm::RemoveAll(dirs.front(), ec, destRoot); dirs.erase(dirs.begin()); }
 
         g_lastCaptured = id;
         if (capturedId) *capturedId = id;

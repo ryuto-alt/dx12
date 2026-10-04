@@ -1,6 +1,7 @@
 #include "editor/matgraph/MatGraphEditor.h"
 
 #include "renderer/matgraph/GraphIO.h"
+#include "core/AtomicFile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -276,16 +277,11 @@ bool MatGraphEditor::WriteTo(const std::string& path, std::string* error)
     std::error_code ec;
     const std::filesystem::path p(path);
     if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f)
+    // 一時ファイル→flush→検証→置き換え（途中で落ちても元の .dxmg は無傷）
+    const auto wr = dx12e::atomicfile::WriteFile(p, text);
+    if (!wr)
     {
-        if (error) *error = "ファイルを書けません: " + path;
-        return false;
-    }
-    f.write(text.data(), static_cast<std::streamsize>(text.size()));
-    if (!f)
-    {
-        if (error) *error = "書き込みに失敗しました: " + path;
+        if (error) *error = "書き込みに失敗しました: " + path + " (" + wr.error + ")";
         return false;
     }
     return true;

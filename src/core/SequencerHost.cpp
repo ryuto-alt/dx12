@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/AtomicFileJson.h"
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/SequencerBinding.h"
@@ -217,8 +218,12 @@ bool SequencerHost::SaveDoc(const DocPtr& doc, std::string& err, const std::stri
     const std::string full = AssetsDir() + rel;
     std::error_code ec;
     fs::create_directories(fs::path(full).parent_path(), ec);
-    std::string e2;
-    if (!seq::SaveSequenceFile(full, doc->seq, &e2)) { err = e2; return false; }
+    // 一時ファイル → flush → 読み戻し検証 → 置き換え（途中で落ちても元の .dxseq は無傷）。
+    // seq::SaveSequenceFile（src/sequencer は純ロジックで core/ を include できない）は使わず、同じ中身をここで原子的に書く。
+    {
+        const atomicfile::Result wr = atomicfile::WriteFile(fs::path(full), seq::SerializeSequence(doc->seq), atomicfile::JsonVerifier());
+        if (!wr.ok) { err = "書き込みに失敗: " + full + " (" + wr.error + ")"; return false; }
+    }
     if (rel != doc->rel)
     {
         doc->rel = rel;

@@ -369,7 +369,7 @@ regRaw(
   {
     title: "配置検査",
     description:
-      "置いた物の【見れば分かるが AI は見ない】破綻を数値で拾う。埋まり(BURIED)/浮き(FLOATING)/同一平面の重なり=ちらつき(Z_FIGHT)/深いめり込み(OVERLAP)/二重配置(DUPLICATE)/当たり判定の欠落(NO_COLLIDER・COLLIDER_WITHOUT_BODY)/スケール異常(SCALE_ANOMALY・NAN_TRANSFORM)。ワールド AABB と三角形精密レイキャストだけで判定するので Editor で動く(Playing 中は MODE_CONFLICT。物理が動かした後の位置を測っても意味が無いため)。★COLLIDER_WITHOUT_BODY はこのエンジン固有の罠: boxCollider だけでは Jolt に載らず、プレイヤーは床をすり抜けて落ち続ける。fix:'safe' で BURIED/FLOATING(接地)・Z_FIGHT(5mm 逃がす)・COLLIDER_WITHOUT_BODY(静的 rigidBody 付与)を自動修正する。DUPLICATE は消す判断が取り返しつかないので報告のみ(dx12_delete_entity で片方を消すこと)。返り値 {pass, checked, errors, warnings, fixed, issues[{kind, level, entityId, name, otherEntityId?, text, fixed}], judge?}。★この検査の要約は dx12_play / dx12_save_scene の返り値にも layout として必ず載る。"
+      "置いた物の【見れば分かるが AI は見ない】破綻を数値で拾う。埋まり(BURIED)/浮き(FLOATING)/同一平面の重なり=ちらつき(Z_FIGHT)/深いめり込み(OVERLAP)/二重配置(DUPLICATE)/当たり判定の欠落(NO_COLLIDER・COLLIDER_WITHOUT_BODY)/スケール異常(SCALE_ANOMALY・NAN_TRANSFORM)。ワールド AABB と三角形精密レイキャストだけで判定するので Editor で動く(Playing 中は MODE_CONFLICT。物理が動かした後の位置を測っても意味が無いため)。★COLLIDER_WITHOUT_BODY はこのエンジン固有の罠: boxCollider だけでは Jolt に載らず、プレイヤーは床をすり抜けて落ち続ける。fix:'safe' で BURIED/FLOATING(接地)・Z_FIGHT(5mm 逃がす)・COLLIDER_WITHOUT_BODY(静的 rigidBody 付与)を自動修正する。DUPLICATE は消す判断が取り返しつかないので報告のみ(dx12_delete_entity で片方を消すこと)。返り値 {pass, checked, errors, warnings, fixed, total, byKind, issues[{kind, level, entityId, name, otherEntityId?, text, fixed}], judge?}。★この検査の要約は dx12_play / dx12_save_scene の返り値にも layout として必ず載る。"
       + "★judge は判断段: 設計判断で意図的でありうる指摘(OVERLAP / FLOATING / BURIED / NO_COLLIDER)だけを、名前・グループ・大きさ・程度の言葉と"
       + "作品の意図(dx12_brief)と一緒に Jev へ 1 往復で聞く(本棚の中の本・吊りランプ・半分埋めた岩・すり抜けてよい草は keep:true)。"
       + "Z_FIGHT / DUPLICATE / COLLIDER_WITHOUT_BODY / NAN_TRANSFORM / SCALE_ANOMALY は明らかな欠陥なので聞かない(notAsked)。"
@@ -378,14 +378,16 @@ regRaw(
     inputSchema: {
       fix: z.enum(["none", "safe", "all"]).optional().describe("none(既定)=検査のみ / safe=安全な修正だけ / all=全部。"),
       tolerance: z.number().optional().describe("同一平面とみなす距離(m)。既定 0.001(1mm)。"),
+      limit: z.number().int().min(0).optional().describe("返す issues の件数上限(既定 1000・0 で無制限)。超えたら truncated:true と nextOffset。errors/warnings/byKind は全件ぶん。"),
+      offset: z.number().int().min(0).optional().describe("issues の何件目から返すか(既定 0)。"),
       judge: z.boolean().optional().describe("false で判断段(Jev に Brief と照らして聞く段)を止め、エンジンの結果だけ返す。既定 true。"),
     },
     outputSchema: OUT,
     // 判断段は外部の Jev へ出る(鍵があるときだけ)ので openWorldHint は true。
     annotations: { title: "配置検査", destructiveHint: false, openWorldHint: true },
   },
-  ({ fix, tolerance, judge }) => run(async () => {
-    const report = await engine.call("validate_layout", { fix, tolerance });
+  ({ fix, tolerance, limit, offset, judge }) => run(async () => {
+    const report = await engine.call("validate_layout", { fix, tolerance, limit, offset });
     if (judge === false) return report;
     // ★エンジンの pass / errors / issues は一切変えない(後方互換)。判断は judge にだけ足す。
     const judged = await judgeLayoutReport(report)

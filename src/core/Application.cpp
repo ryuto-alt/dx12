@@ -4,6 +4,9 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AtomicFileJson.h"
+#include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（断った理由をログへ出す）
 #include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
 #include "resource/TextureLoader.h"   // TEXBAKE: 使ったキャッシュ一覧の書き出し
@@ -55,6 +58,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 {
     // ロガー初期化
     Logger::Init();
+    // 再帰削除を断ったら必ずログに残す（2026-10-02 の C ドライブ再帰削除の再発防止。src/core/SafeRemove.h）
+    saferm::SetRefusalHook([](const std::string& msg) { Logger::Error("{}", msg); });
     m_isGameMode = gameMode;
     m_showLauncher = !gameMode;  // ゲームモードではランチャーを表示しない
     // エディタで、前回表示した版と違う＝更新された/初回 のときだけ「更新内容」を出す。
@@ -573,6 +578,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                 loaded = SceneSerializer::Load(*m_scene, defaultScene, PathResolver::AssetsDir());
                 if (loaded)
                     m_editorCtx->currentScenePath = defaultScene;
+                else if (!m_isGameMode)
+                    OnSceneLoadFailed(defaultScene);   // 壊れた default.json を黙って空にしない（以前の版からの復元を案内し、保存を止める）
             }
             if (!loaded)
             {
@@ -1331,6 +1338,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         //   一度も通らない。結果「ゲーム内のオプションでキーを変えて保存はされるのに、
         //   次の起動で必ず既定へ戻る」状態だった。BaseDir はここで確定しているので読む。
         LoadActionBindings();
+        // 物理ハードウェア（assets/hardware.json は pak の中でも vfs で読める。無ければ空設定で起動）。
+        // LoadActionBindings の後（actions の擬似キーを付け直すため）。
+        InitHardware();
 
         m_pendingMode = EngineMode::Playing;
         m_modeChangeRequested = true;
@@ -1636,6 +1646,10 @@ void Application::Run()
 
         // 入力状態リセット（前フレームのdeltaクリア + prevKeys保存 + XInputポーリング）
         m_inputSystem->Update(m_gameClock.GetDeltaTime());
+
+        // 物理ハードウェア（Arduino / ESP32）: 出力の確定と最新値のスナップショット。エディタ / Play / ゲームのどれでも回す。
+        // ★フレーム途中で値が変わらないよう、スクリプトが読む前（ここ）で 1 回だけ確定する。
+        if (m_hardware) { m_hardware->BeginFrame(); ServiceHardwareReads(); }
 
         // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();
@@ -2149,6 +2163,10 @@ void Application::Shutdown()
     // MCP ブリッジを最優先で停止(worker を join)。これより後で Logger/scene/scriptengine を
     // 破棄するので、ここで止めないと worker がそれらを破棄後に触って data race/UAF になる。
     if (m_mcpBridge) m_mcpBridge.reset();
+
+    // 物理ハードウェア: arduino-cli のフラッシュを止め、全出力を安全値へ戻して IO スレッドを止める
+    // （Lua が動いている間に落とさないよう ScriptEngine より前）。
+    ShutdownHardware();
 
     // ネットワーク接続を明示的に切る（ENetのソケット/ホストをデバイス解放より前に片付ける）。
     if (m_networkSystem) { m_networkSystem->Disconnect(); m_networkSystem.reset(); }
@@ -2923,14 +2941,20 @@ void Application::SaveActionBindings()
     {
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& b : list)
+        {
+            // ★ハードウェアの擬似キー（kHwKeyBase 以上）は hardware.json の actions が正。ここへ書くと
+            //   次回の読み込みで「範囲外のキー」警告になり、そもそも割当番号が変わると別のチャンネルを指す。
+            if (b.key >= kHwKeyBase) continue;
             arr.push_back({{"key", b.key},
                            {"c", nlohmann::json::array({b.c.x, b.c.y, b.c.z})}});
+        }
+        if (arr.empty() && !list.empty()) continue;   // ハードウェアの割当しか無いアクションは書かない
         root[action] = std::move(arr);
     }
     const std::string path = ActionBindingsPath();
-    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
-    if (!ofs) { Logger::Warn("キー割り当てを保存できませんでした: {}", path); return; }
-    ofs << root.dump(2);
+    // 原子的に書く（途中で落ちても元のキー割り当てを壊さない）
+    const atomicfile::Result wr = atomicfile::WriteJson(atomicfile::PathFromUtf8(path), root, 2);
+    if (!wr.ok) { Logger::Warn("キー割り当てを保存できませんでした: {} ({})", path, wr.error); return; }
     Logger::Info("キー割り当てを保存しました: {}", path);
 }
 
@@ -3085,6 +3109,8 @@ bool Application::HandleDeviceLoss()
 bool Application::WriteAutosave()
 {
     if (!m_editorCtx || !m_scene || m_editorCtx->currentScenePath.empty()) return false;
+    // 開けなかったシーンの後ろの「空のシーン」を退避しない（復旧候補が空のもので上書きされるのを防ぐ）
+    if (!m_editorCtx->sceneLoadFailedPath.empty()) return false;
 
     namespace fs = std::filesystem;
     std::error_code ec;
@@ -3110,8 +3136,8 @@ bool Application::WriteAutosave()
             std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count())},
     };
-    std::ofstream mf(autosave::MetaPath(dir), std::ios::binary | std::ios::trunc);
-    if (mf) mf << meta.dump(2);
+    if (!atomicfile::WriteJson(atomicfile::PathFromUtf8(autosave::MetaPath(dir)), meta, 2).ok)
+        Logger::Warn("オートセーブの記録（meta.json）を書けませんでした: {}", autosave::MetaPath(dir));
     Logger::Info("オートセーブしました: {}", autosave::ScenePath(dir));
     return true;
 }
@@ -3155,49 +3181,77 @@ bool Application::WriteMcpBackup()
         return true;
     }
 
-    const std::string dir = McpBackupDir();
-    fs::create_directories(dir, ec);
-    if (ec) { Logger::Warn("退避フォルダを作れませんでした: {}", dir); return false; }
-
-    const std::string stem = fs::path(scenePath).stem().string();
-    char stamp[32] = {};
-    {
-        const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        std::tm tmv{};
-        if (localtime_s(&tmv, &t) == 0) std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
-    }
-    const std::string dst = dir + stem + "_" + stamp + ".json";
-    fs::copy_file(scenePath, dst, fs::copy_options::overwrite_existing, ec);
-    if (ec)
-    {
-        Logger::Warn("シーンの退避に失敗しました: {} -> {}", scenePath, dst);
-        return false;
-    }
+    // 世代つきバックアップ（core/SceneBackup）と同じ置き場・同じ仕組み。分割シーンの .parts / .inst / .nav も一緒に残る。
+    // 世代は保存（SceneSerializer::Save）が作る（置き換わる元のファイルを移動するのでコピーが要らない）。ここは「この保存では
+    // 間隔の制限を無視して必ず世代を残す」と予約するだけ＝セッション最初の 1 本が確実に残り、世代が二重にもならない。
+    scenebackup::ForceNext(scenePath);
     m_editorCtx->mcpBackupTakenFor = scenePath;
-    Logger::Info("AI が編集する前のシーンを退避しました: {}", dst);
-
-    // 世代を間引く。名前に時刻が入っているので辞書順＝古い順。
-    // ★同じフォルダを複数シーンで共有するので、同じ stem のものだけ数えること。
-    std::vector<std::string> mine;
-    for (const auto& de : fs::directory_iterator(dir, ec))
-    {
-        if (ec) break;
-        if (!de.is_regular_file(ec)) continue;
-        const std::string fn = de.path().filename().string();
-        if (fn.rfind(stem + "_", 0) == 0) mine.push_back(de.path().string());
-    }
-    if (static_cast<int>(mine.size()) > kMcpBackupKeep)
-    {
-        std::sort(mine.begin(), mine.end());
-        const size_t drop = mine.size() - static_cast<size_t>(kMcpBackupKeep);
-        for (size_t i = 0; i < drop; ++i) fs::remove(mine[i], ec);
-    }
+    Logger::Info("AI が編集する前のシーンを、次の保存で世代として退避します: {}", scenePath);
     return true;
+}
+
+void Application::ApplyBackupPolicyFromSettings()
+{
+    scenebackup::Policy p;   // 既定: 有効・10 世代・1024MB・60 秒
+    p.enabled        = PersistGet("backup_enabled", 1.0) != 0.0;
+    p.generations    = std::clamp(static_cast<int>(PersistGet("backup_generations", static_cast<double>(p.generations))), 1, 200);
+    p.maxTotalBytes  = static_cast<uint64_t>(std::clamp(PersistGet("backup_max_mb", 1024.0), 16.0, 1048576.0)) * 1024ull * 1024ull;
+    p.minIntervalSec = std::clamp(static_cast<int>(PersistGet("backup_interval_sec", static_cast<double>(p.minIntervalSec))), 0, 86400);
+    scenebackup::GlobalPolicy() = p;
+}
+
+bool Application::RestoreSceneBackup(const std::string& id, const std::string& scenePath, std::string& err)
+{
+    namespace fs = std::filesystem;
+    if (!m_editorCtx) { err = "エディタが使えません"; return false; }
+    if (m_engineMode != EngineMode::Editor) { err = "Play 中は戻せません。停止してから戻してください"; return false; }
+    const std::string target = !scenePath.empty() ? scenePath
+                             : !m_editorCtx->currentScenePath.empty() ? m_editorCtx->currentScenePath
+                             : m_editorCtx->sceneBackupTarget;
+    if (target.empty()) { err = "対象のシーンがありません"; return false; }
+    std::string pre;
+    const atomicfile::Result r = scenebackup::Restore(PathResolver::BaseDir(), fs::path(target), id, &pre);
+    if (!r.ok) { err = r.error; return false; }
+    Logger::Info("シーンを以前の版へ戻しました: {} <- {}（戻す前の版: {}）", target, id, pre.empty() ? "同じ内容のため作らず" : pre);
+    // いま開いているシーン（または開けなかったシーン）を戻したなら開き直す（メモリ上の版を捨てる。本人が選んだ操作なので確認しない）。
+    // 別のシーンのファイルだけを戻したときは、開いているシーンを切り替えない。
+    const bool isCurrent = m_editorCtx->currentScenePath.empty()
+                        || autosave::SamePath(target, m_editorCtx->currentScenePath)
+                        || autosave::SamePath(target, m_editorCtx->sceneLoadFailedPath);
+    if (isCurrent)
+    {
+        m_editorCtx->pendingLoadPath        = target;
+        m_editorCtx->pendingLoadSkipConfirm = true;
+    }
+    m_editorCtx->Notify(ui::ToastKind::Success, "以前の版へ戻しました: " + id);
+    return true;
+}
+
+void Application::OnSceneLoadFailed(const std::string& fullPath)
+{
+    if (!m_editorCtx) return;
+    const std::string reason = SceneSerializer::LastLoadError();
+    const std::string name = std::filesystem::path(fullPath).filename().string();
+    Logger::Error("シーンを開けませんでした: {}（{}）。空のシーンで上書きしないよう、保存と自動保存を止めます", fullPath, reason);
+    m_editorCtx->sceneLoadFailedPath = fullPath;
+    // 空のシーンの後ろに古いパスが残っていると、Ctrl+S が「空のシーン」で本体を上書きする。保存先を外す。
+    m_editorCtx->currentScenePath.clear();
+    m_currentSceneRel.clear();
+    m_editorCtx->sceneBackupTarget = fullPath;
+    m_editorCtx->sceneBackupNotice = "「" + name + "」を開けませんでした。" + (reason.empty() ? std::string() : reason)
+        + "\n空のシーンで上書きしてしまわないよう、保存と自動保存を止めています。下の一覧から以前の版を選ぶと元に戻せます。";
+    // AI（MCP）が繋がっているときはモーダルを出さない（AI は押せずに固まる）。AI には open_scene の失敗に
+    // scene_backups の案内が付いて返る。窓はファイル メニュー「以前の版に戻す…」から開ける。
+    m_editorCtx->showSceneBackups = !m_editorCtx->aiSessionEver;
+    m_editorCtx->Notify(ui::ToastKind::Error, "シーンを開けませんでした: " + name + "（以前の版から戻せます）", 12.0f);
+    MarkSceneClean(/*dropAutosave=*/false);   // 空のシーンの「未保存」で閉じる時に聞かれないように
 }
 
 bool Application::SaveSceneForMcp()
 {
     if (!m_editorCtx || !m_scene) return false;
+    // 開けなかったシーンの後ろの「空のシーン」を自動で保存しない（本体や仮の名前のファイルを作らない）
+    if (!m_editorCtx->sceneLoadFailedPath.empty()) return false;
 
     if (m_editorCtx->currentScenePath.empty())
     {

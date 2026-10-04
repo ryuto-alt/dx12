@@ -57,6 +57,8 @@ public:
         double ms = 0;
     };
     static const SaveReport& LastSaveReport();
+    // 直近の Load が失敗した理由（標準語。成功したら空）。壊れた・空・途中で切れたシーンを開いたときの案内に使う。
+    static const std::string& LastLoadError();
     // 5,000 体以上のシーンを分割しないまま保存したとき（シーンごとに 1 回）呼ばれる。message は標準語。
     using SplitAdviceHook = void (*)(void* ctx, const std::string& message);
     static void SetSplitAdviceHook(SplitAdviceHook fn, void* ctx);
@@ -74,6 +76,20 @@ public:
     static entt::entity InstantiateEntity(Scene& scene, const std::string& jsonStr,
                                           const std::string& assetsDir,
                                           bool keepGuid = false);
+    // 大量に作る間（群の展開・Undo の復元・サブツリーの貼り付け）だけ、名前の重複検査（"Box (1)" の連番付け）を
+    // ハッシュ索引で O(1) にする。無いと 1 体作るたびにシーンの全名前を走査する＝作る数 × 体数の 2 乗
+    // （10 万体の群を展開して 17 秒）。生きている間、この Scene へ作られた名前は索引へ足される
+    // （同じスレッドだけ・入れ子は外側が持つ）。この間に別の経路で名前を変えない・作らない前提の道具。
+    class NameIndexScope
+    {
+    public:
+        explicit NameIndexScope(const Scene& scene);
+        ~NameIndexScope();
+        NameIndexScope(const NameIndexScope&) = delete;
+        NameIndexScope& operator=(const NameIndexScope&) = delete;
+    private:
+        bool m_owner = false;
+    };
     // ── アセット参照（assets 相対パス）の付け替え / 数え上げ ──
     //
     // アセットを移動・削除しても参照は追従しない、というのが長らくの状態だった。

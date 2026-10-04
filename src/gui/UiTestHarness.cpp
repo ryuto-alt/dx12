@@ -1,9 +1,12 @@
 #include "gui/UiTestHarness.h"
 #include "core/Application.h"
 #include "core/CrashHandler.h"
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/Version.h"
+#include <chrono>
+#include <unordered_set>
 #include "core/VirtualGuard.h"   // テスト中は ShellExecute / ダイアログを止める（guard::TestRunActive）
 #include "ecs/Components.h"
 #include "editor/EditorContext.h"
@@ -131,6 +134,7 @@ void Step(ImGuiTestContext* ctx, const char* fmt, ...)
     va_end(args);
 
     CrashHandler::Breadcrumb(buf);
+    Logger::Info("[uitest]   手順: {}", buf);   // ハング時にどの手順で止まったかを dx12_engine.log から追う
     if (ctx) ctx->LogInfo("%s", buf);
 }
 
@@ -360,16 +364,29 @@ void T_InspectorOpenAll(ImGuiTestContext* ctx)
 {
     // 行は毎回集め直す。ヒエラルキーは ImGuiListClipper で可視行しか作らないので、
     // 選択やスクロールで前に拾った ID が消え、"Unable to locate item" で落ちていた。
-    for (int i = 0; i < 12; ++i)
+    // ★上部の型チップ / 検索欄 / ✚ ボタンは行ではない（"##ib" などの icon button）。以前は先頭の項目から順に
+    //   クリックしていたため、行ではなくチップを 12 回押して型フィルタを残し、Inspector を 1 度も開けていなかった
+    //   （後続の hierarchy_filter / inspector_* が「行が見えない」で全滅した）。
+    int opened = 0;
+    for (int rowIdx = 0; rowIdx < 12; ++rowIdx)
     {
         ctx->SetRef(kWinHierarchy);
         ImGuiTestItemList items;
         ctx->GatherItems(&items, "", 3);
-        if (i >= items.GetSize()) break;
-        const ImGuiTestItemInfo* item = items[i];
-        if (item == nullptr || item->ID == 0) continue;
+        const ImGuiTestItemInfo* item = nullptr;
+        int seen = 0;
+        for (int k = 0; k < items.GetSize(); ++k)
+        {
+            const ImGuiTestItemInfo* it = items[k];
+            if (it == nullptr || it->ID == 0 || it->Window == nullptr) continue;
+            if (std::strstr(it->DebugLabel, ICON_PLUS) != nullptr) continue;
+            if (std::strstr(it->DebugLabel, "HierBg") != nullptr || it->RectFull.GetHeight() > 60.0f) continue;
+            if (std::strncmp(it->DebugLabel, "##", 2) == 0) continue;   // チップ / 検索欄 / 目と鍵
+            if (seen++ == rowIdx) { item = it; break; }
+        }
+        if (item == nullptr) break;
         if (!ctx->ItemExists(item->ID)) continue;
-        Step(ctx, "インスペクターの全セクションを開く (%d件目)", i + 1);
+        Step(ctx, "インスペクターの全セクションを開く (%d件目)", rowIdx + 1);
         ctx->MouseMove(item->ID);
         ctx->MouseClick(0);
         ctx->Yield(3);
@@ -377,7 +394,9 @@ void T_InspectorOpenAll(ImGuiTestContext* ctx)
         ctx->ItemOpenAll("", 2);   // 折りたたみを全部開く＝全編集 UI を描かせる
         ctx->Yield(3);
         ctx->SetRef(kWinHierarchy);
+        ++opened;
     }
+    IM_CHECK(opened > 0);
 }
 
 void T_UndoRedoStress(ImGuiTestContext* ctx)
@@ -980,13 +999,16 @@ void T_InspectorMultiEdit(ImGuiTestContext* ctx)
     ctx->Yield(8);
     for (int i = 0; i < 3; ++i)
     {
+        // Range の編集が積まれていないと Undo は「ライトの生成」を戻してエンティティが消える（以前は get で落ちた）
+        if (!reg.valid(lights[i]) || !reg.all_of<PointLight>(lights[i]))
+        { IM_ERRORF("Undo でライト%d が消えた（Range の編集が Undo に積まれていない）", i); continue; }
         const f32 r = reg.get<PointLight>(lights[i]).range;
         if (std::fabs(r - 10.0f) > 0.05f)
         { IM_ERRORF("Undo 1 回でライト%d が戻っていない（%.2f、期待 10.0）", i, r); }
     }
 
     // 後片付け
-    for (auto e : lights) ed->pendingDeletions.push_back(e);
+    for (auto e : lights) if (reg.valid(e)) ed->pendingDeletions.push_back(e);
     ed->selectedEntities.clear();
     ed->selectedEntity = entt::null;
     ctx->Yield(6);
@@ -1178,7 +1200,7 @@ void T_AssetBrowserOps(ImGuiTestContext* ctx)
     const fs::path assets = fs::path(PathResolver::AssetsDir()).lexically_normal();
     const fs::path work = assets / "__ab_ops_test";
     std::error_code ec;
-    fs::remove_all(work, ec);
+    saferm::RemoveAll(work, ec, assets);
     fs::create_directories(work);
     auto put = [&](const char* name, const char* body) { std::ofstream(work / name, std::ios::binary) << body; };
     put("wall.png", "not a real png");
@@ -1269,7 +1291,7 @@ void T_AssetBrowserOps(ImGuiTestContext* ctx)
 
     ab->SetKindMask(0);
     ab->SetListView(false);
-    fs::remove_all(work, ec);
+    saferm::RemoveAll(work, ec, assets);
     ctx->Yield(5);
 }
 
@@ -1319,8 +1341,8 @@ void T_AssetOsDrop(ImGuiTestContext* ctx)
     const fs::path dest = assets / "__ab_drop_test";
     const fs::path src = fs::temp_directory_path() / "dx12e_ab_drop_src";
     std::error_code ec;
-    fs::remove_all(dest, ec);
-    fs::remove_all(src, ec);
+    saferm::RemoveAll(dest, ec, assets);
+    saferm::RemoveAll(src, ec);
     fs::create_directories(dest);
     fs::create_directories(src / "pack" / "inner");
     auto put = [&](const fs::path& p, const char* body) { std::ofstream(p, std::ios::binary) << body; };
@@ -1358,8 +1380,8 @@ void T_AssetOsDrop(ImGuiTestContext* ctx)
     IM_CHECK(AbWaitEntries(ctx, ab, 4));   // ok.png / ok_1.png / tex2.jpg / pack
 
     ab->NavigateTo(assets);
-    fs::remove_all(dest, ec);
-    fs::remove_all(src, ec);
+    saferm::RemoveAll(dest, ec, assets);
+    saferm::RemoveAll(src, ec);
     ctx->Yield(5);
 }
 
@@ -2336,7 +2358,7 @@ void T_BuildGame(ImGuiTestContext* ctx)
         }
     }
 
-    fs::remove_all(outDir, ec);   // 一時フォルダを掃除（失敗しても無視）
+    saferm::RemoveAll(outDir, ec);   // 一時フォルダを掃除（失敗しても無視）
 }
 
 // ---- ストレス ----
@@ -4653,6 +4675,8 @@ void T_InspectorMultiTransform(ImGuiTestContext* ctx)
     ctx->Yield(8);
     for (int i = 0; i < 3; ++i)
     {
+        if (!reg.valid(e[i]) || !reg.all_of<Transform>(e[i]))
+        { IM_ERRORF("Undo で Box%d が消えた（位置の編集が Undo に積まれていない）", i); continue; }
         const auto& p = reg.get<Transform>(e[i]).position;
         if (std::fabs(p.y - (2.0f + 3.0f * i)) > 0.01f)
         { IM_ERRORF("Undo 1 回で Transform%d が戻っていない（Y=%.2f）", i, p.y); }
@@ -5173,7 +5197,22 @@ void UiTestHarness::PostRender()
         ImGuiTestEngine_GetResultSummary(m_engine, &summary);
         Logger::Info("UI テスト完了: {}/{} 成功", summary.CountSuccess, summary.CountTested);
 
-        // 詳細(失敗テスト名と理由)は ExportResultsFilename の JUnit XML に出力される
+        // 詳細(失敗テスト名と理由)。JUnit XML は実行状況が "Unknown/Skipped" で出てしまい当てにならないので、
+        // 作業フォルダの ui_test_report.txt（BuildReport と同じ内容）と、失敗の 1 行ログを残す（tools/run_ui_tests.ps1 が読む）。
+        RefreshSummary();
+        {
+            ImVector<ImGuiTest*> tests;
+            ImGuiTestEngine_GetTestList(m_engine, &tests);
+            for (int i = 0; i < tests.Size; ++i)
+            {
+                ImGuiTest* t = tests[i];
+                if (t == nullptr || t->Output.Status != ImGuiTestStatus_Error) continue;
+                ImGuiTextBuffer buf;
+                t->Output.Log.ExtractLinesForVerboseLevels(ImGuiTestVerboseLevel_Error, ImGuiTestVerboseLevel_Error, &buf);
+                Logger::Error("[uitest] 失敗: {}: {}", t->Name, buf.c_str());
+            }
+            std::ofstream("ui_test_report.txt", std::ios::binary | std::ios::trunc) << BuildReport();
+        }
         m_exitCode = (summary.CountSuccess == summary.CountTested) ? 0 : 1;
         m_wantsExit = true;
     }
@@ -5505,8 +5544,74 @@ void UiTestHarness::RegisterTests()
             std::snprintf(head, sizeof(head), "診断開始: %s / %s", r->group, r->display);
             CrashHandler::Breadcrumb(head);
             LogWatchBegin();
+            // 進捗ログ（ハングしたテストの特定と所要時間の把握用。dx12_engine.log に残る）
+            Logger::Info("[uitest] 開始: {}", r->name);
+            const auto uitT0 = std::chrono::steady_clock::now();
 
+            auto entCount = []() -> int {
+                Scene* sc = g_app ? g_app->GetScene() : nullptr;
+                return sc ? static_cast<int>(sc->GetRegistry().storage<NameTag>().size()) : -1;
+            };
+            // テスト間の隔離: 各テストが作ったエンティティの後片付け漏れが次のテストの前提（ヒエラルキーの可視行数・選択・
+            // Inspector の対象）を崩す（実際 spawn_all_types の 8 体などが残り、後続の hierarchy_filter / inspector_* が
+            // 全滅した）。テスト前に居たものを控え、終わったときに増えていた分を消す。
+            // 識別は guid（Play 停止のスナップショット復元でエンティティ ID は振り直されるため）。guid が無い物は ID で。
+            auto uitKey = [](entt::registry& rg, entt::entity e) -> uint64_t {
+                const auto* g = rg.try_get<EntityGuid>(e);
+                return (g && g->value != 0) ? g->value : ((1ull << 63) | static_cast<uint64_t>(entt::to_integral(e)));
+            };
+            std::unordered_set<uint64_t> uitBefore;
+            if (Scene* sc = g_app ? g_app->GetScene() : nullptr)
+                for (auto e : sc->GetRegistry().view<NameTag>()) uitBefore.insert(uitKey(sc->GetRegistry(), e));
+            // 前のテストが右タブ群に別の窓（ライティングなど）を開くと Inspector のタブが裏に回り、"Unable to locate" に
+            // なる。テスト前に、前提の 2 窓（Inspector / ヒエラルキー）を手前のタブへ戻す。型チップの絞り込みも解除。
+            for (const char* wn : {"インスペクター", kWinHierarchyName})
+                if (ImGuiWindow* w = ImGui::FindWindowByName(wn))
+                    if (w->DockNode != nullptr) ImGui::SetWindowFocus(wn);
+            if (EditorContext* edc0 = Ed())
+            {
+                edc0->hierTypeFilter = 0;
+                // 前のテストがワークスペースを切り替えた（shortcuts の Ctrl+K「lighting」は「ライティング」ワークスペースへ
+                // 切り替え、右カラムが Post Process / SSAO などのタブに替わって Inspector が裏へ回る）。
+                // 何か窓が開いていれば、既定の「レベル編集」へ戻してから次のテストを始める。
+                bool anyOpen = false;
+                for (const tools::Desc& d : tools::kAll)
+                    if (d.flag != &EditorContext::showEngineDiagnostics && (edc0->*(d.flag))) { anyOpen = true; break; }
+                if (anyOpen && g_app)
+                {
+                    const cmd::Env envW{g_app->GetScene(), PathResolver::AssetsDir()};
+                    cmd::Execute(*edc0, envW, "workspace.level");
+                    ctx->Yield(10);
+                }
+            }
+            ctx->Yield(2);
+            const int uitEnt0 = entCount();
             r->body(ctx);
+            if (entCount() != uitEnt0)
+            {
+                Logger::Info("[uitest] {}: エンティティ数 {} -> {}（後片付け漏れ。自動で消す）", r->name, uitEnt0, entCount());
+                Scene* sc = g_app ? g_app->GetScene() : nullptr;
+                EditorContext* edc = Ed();
+                if (sc && edc)
+                {
+                    for (auto e : sc->GetRegistry().view<NameTag>())
+                        if (uitBefore.count(uitKey(sc->GetRegistry(), e)) == 0) edc->pendingDeletions.push_back(e);
+                    edc->ClearSelection();
+                    ctx->Yield(6);
+                }
+            }
+
+            {
+                const bool ng = (ctx->TestOutput->Status == ImGuiTestStatus_Error);
+                Logger::Info("[uitest] 終了: {} ({:.1f} 秒){}", r->name,
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() - uitT0).count(), ng ? " NG" : "");
+                if (ng)
+                {
+                    ImGuiTextBuffer buf;
+                    ctx->TestOutput->Log.ExtractLinesForVerboseLevels(ImGuiTestVerboseLevel_Error, ImGuiTestVerboseLevel_Error, &buf);
+                    Logger::Error("[uitest] 失敗の理由({}): {}", r->name, buf.c_str());
+                }
+            }
 
             // クラッシュしなくてもエラーログが出ていれば残す（パネルに黄色で出る）
             const std::string errors = LogWatchEnd();

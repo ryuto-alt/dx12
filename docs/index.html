@@ -1166,6 +1166,24 @@ Post.exposure = <span class="tok-n">1.4</span>                     <span class="
           </table>
         </div>
 
+        <h3><code class="inl">hw</code>：物理ハードウェア（Arduino / ESP32）</h3>
+        <p>USB でつないだボードのボタン・ダイヤル・センサーを入力に、LED・振動を出力に使う。設定は <code class="inl">assets/hardware.json</code>（無くても動く）。<b>配布ゲームでも動く</b>。
+        <code class="inl">hw.device(name)</code> のハンドルは<b>プロパティ</b>の <code class="inl">h.connected</code>（<code class="inl">h:connected()</code> ではない）と、メソッドの <code class="inl">:get</code> / <code class="inl">:raw</code> / <code class="inl">:down</code> / <code class="inl">:pressed</code> / <code class="inl">:released</code> / <code class="inl">:set</code> を持つ。</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>API</th><th>説明</th></tr></thead>
+            <tbody>
+              <tr><td><code>hw.device(name)</code></td><td>デバイスのハンドル（無い名前でも返る。<code>connected</code> は false・値は 0）</td></tr>
+              <tr><td><code>hw.list()</code></td><td><code>{ {name=, connected=, port=}, ... }</code></td></tr>
+              <tr><td><code>h.connected</code> / <code>h.name</code></td><td>接続済みか（プロパティ） / デバイス名</td></tr>
+              <tr><td><code>h:get(ch)</code> / <code>h:raw(ch)</code></td><td>正規化値 0..1（校正・平滑済み） / 生値</td></tr>
+              <tr><td><code>h:down(ch)</code> / <code>h:pressed(ch)</code> / <code>h:released(ch)</code></td><td>押している / このフレームで押した / 離した</td></tr>
+              <tr><td><code>h:set(ch, v)</code></td><td>出力チャンネルへ 0..1。未接続・未宣言なら false。Play 停止で安全値へ戻る</td></tr>
+              <tr><td><code>"actions": {"btn":"Jump"}</code>（hardware.json）</td><td>チャンネルを <code>actions.get/down/pressed</code> に割り当てる（キーボードと同じアクションで遊べる）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
         <h3><code class="inl">ui</code>：ゲーム内 HUD（即時モード・簡易/デバッグ用）</h3>
         <p><code class="inl">OnUpdate</code> 内で毎フレーム呼ぶと描画される（Play 中のみ）。位置は <code class="inl">SCREEN_W</code> / <code class="inl">SCREEN_H</code> で調整。
         座標指定で毎フレーム呼ぶだけの<b>簡易 API</b>。動作確認用のデバッグ表示や、ワンオフの表示に向く。

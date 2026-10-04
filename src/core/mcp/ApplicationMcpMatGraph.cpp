@@ -14,6 +14,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpManifestBuild.h"
 #include "core/mcp/McpSafety.h"
+#include "core/AtomicFile.h"
 #include "renderer/matgraph/Compiler.h"
 #include "renderer/matgraph/GraphIO.h"
 #include "resource/MaterialGraphize.h"
@@ -467,15 +468,9 @@ bool WriteBytesAtomic(const fs::path& p, const std::string& bytes, std::string& 
 {
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
-    const fs::path tmp = p.string() + ".tmp";
-    {
-        std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
-        if (!f) { err = "書き込めない: " + p.string(); return false; }
-        f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        if (!f) { err = "書き込みに失敗: " + p.string(); return false; }
-    }
-    fs::rename(tmp, p, ec);
-    if (ec) { err = "rename に失敗: " + ec.message(); fs::remove(tmp, ec); return false; }
+    // 一時ファイル→flush→読み戻し検証→置き換え（core/AtomicFile.h）。失敗しても元のファイルは無傷
+    const auto wr = dx12e::atomicfile::WriteFile(p, bytes);
+    if (!wr) { err = "書き込みに失敗: " + p.string() + " (" + wr.error + ")"; return false; }
     return true;
 }
 

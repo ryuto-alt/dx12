@@ -394,7 +394,7 @@ regRaw(
               stats: measure.frames,
               frameDiffs: sheet.frameDiffs,
               suggestions: measure.suggestions,
-            }, null, 2),
+            }),
           },
         ],
       };

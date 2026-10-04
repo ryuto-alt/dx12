@@ -2,6 +2,7 @@
 #include "editor/EditorPrefsStore.h"
 #include "project/ProjectManager.h"
 #include "project/LauncherLogic.h"   // launcher::PathFromUtf8
+#include "core/AtomicFileJson.h"
 
 #include <filesystem>
 #include <fstream>
@@ -43,8 +44,7 @@ void SaveFile(const std::string& text)
         }
     }
     j["prefs"] = std::move(section);
-    std::ofstream o(launcher::PathFromUtf8(g_testPath), std::ios::binary | std::ios::trunc);
-    o << j.dump(2);
+    atomicfile::WriteJson(launcher::PathFromUtf8(g_testPath), j, 2);
 }
 
 Store& S()

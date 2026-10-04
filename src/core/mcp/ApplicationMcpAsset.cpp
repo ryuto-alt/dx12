@@ -6,6 +6,10 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
+
+#include <algorithm>
+#include <limits>
 
 namespace dx12e
 {
@@ -349,9 +353,12 @@ void Application::RegisterMcpAssetMethods()
                 resp["result"]["note"] = "no ground mesh found; snapped to y=0 plane";
         });
 
-    McpDefine("get_hierarchy", "", DX12E_MCP_HANDLER
+    McpDefine("get_hierarchy", "limit:int,maxDepth:int,root:any,rootOffset:int", DX12E_MCP_HANDLER
         {
             // シーン全体の親子ツリー。list_entities のフラット一覧と違い構造が分かる。
+            // 10 万体のフラットなシーンで 4 MB になるので、ノード数の上限（limit・既定 20000・0 で無制限）で打ち切る。
+            // 打ち切るとき: truncated:true / nextRootOffset（次の rootOffset）/ rootsTotal。
+            //   root（id か名前）を渡すとその部分木だけ。maxDepth（既定 64）で切った節は childCount と collapsed:true を持つ。
             auto& reg = m_scene->GetRegistry();
             std::unordered_map<entt::entity, std::vector<entt::entity>> children;
             std::vector<entt::entity> roots;
@@ -365,27 +372,78 @@ void Application::RegisterMcpAssetMethods()
                 if (parent != entt::null && reg.valid(parent)) children[parent].push_back(e);
                 else roots.push_back(e);
             }
+            constexpr size_t kDefaultLimit = 20000;
+            const long long limitIn = params.value("limit", -1LL);
+            size_t budget = limitIn < 0 ? kDefaultLimit : (limitIn == 0 ? (std::numeric_limits<size_t>::max)() : static_cast<size_t>(limitIn));
+            const size_t rootOffset = static_cast<size_t>((std::max)(0LL, params.value("rootOffset", 0LL)));
+            const int maxDepth = static_cast<int>((std::clamp)(params.value("maxDepth", 64LL), 0LL, 64LL));
+            bool truncated = false;
             std::function<json(entt::entity, int)> build = [&](entt::entity e, int depth) -> json
             {
+                if (budget > 0) --budget;
                 json n{{"entityId", static_cast<u32>(e)},
                        {"name", reg.all_of<NameTag>(e) ? reg.get<NameTag>(e).name : std::string()}};
-                if (depth < 64)
+                auto it = children.find(e);
+                if (it == children.end()) return n;
+                if (depth >= maxDepth)
                 {
-                    auto it = children.find(e);
-                    if (it != children.end())
-                    {
-                        json kids = json::array();
-                        for (auto c : it->second) kids.push_back(build(c, depth + 1));
-                        n["children"] = std::move(kids);
-                    }
+                    n["childCount"] = it->second.size();   // 深さで畳んだ（従来は depth 64 より下を黙って捨てていた）
+                    n["collapsed"] = true;
+                    return n;
                 }
+                json kids = json::array();
+                for (auto c : it->second)
+                {
+                    if (budget == 0) { truncated = true; n["childCount"] = it->second.size(); n["collapsed"] = true; break; }
+                    kids.push_back(build(c, depth + 1));
+                }
+                if (!kids.empty()) n["children"] = std::move(kids);
                 return n;
             };
             json rootsJson = json::array();
-            for (auto r : roots) rootsJson.push_back(build(r, 0));
+            size_t nextRoot = 0, rootsTotal = roots.size();
+            if (params.contains("root") && !params["root"].is_null())
+            {
+                // root は id（数値）か名前（文字列）
+                entt::entity r0 = entt::null;
+                const json& rj = params["root"];
+                if (rj.is_string())
+                {
+                    auto found = m_scene->FindEntity(rj.get<std::string>());
+                    if (found.IsValid()) r0 = found.GetHandle();
+                }
+                else if (rj.is_number_integer())
+                {
+                    const auto cand = static_cast<entt::entity>(rj.get<u32>());
+                    if (reg.valid(cand)) r0 = cand;
+                }
+                if (r0 == entt::null)
+                    throw McpError(McpErr::NotFound, "root: no such entity",
+                        "root には今のシーンの entityId か名前（完全一致）を渡す。dx12_list_entities で確かめる");
+                rootsJson.push_back(build(r0, 0));
+                rootsTotal = 1;
+                nextRoot = 1;
+            }
+            else
+            {
+                for (size_t i = rootOffset; i < roots.size(); ++i)
+                {
+                    if (budget == 0) { truncated = true; break; }
+                    rootsJson.push_back(build(roots[i], 0));
+                    nextRoot = i + 1;
+                }
+                if (!truncated && nextRoot < roots.size()) truncated = true;
+            }
             resp["ok"] = true;
             resp["result"] = {{"roots", std::move(rootsJson)}, {"count", total},
                               {"sceneGeneration", m_sceneGeneration}};
+            if (truncated)
+            {
+                resp["result"]["truncated"] = true;
+                resp["result"]["nextRootOffset"] = nextRoot;
+                resp["result"]["rootsTotal"] = rootsTotal;
+                resp["result"]["hint"] = "ノードが多いので途中で打ち切った。続きは rootOffset=nextRootOffset、部分木だけなら root、全部なら limit:0（応答が大きくなる）";
+            }
         });
 
     McpDefine("import_asset", "destPath:string,overwrite:bool,sourcePath:string", DX12E_MCP_HANDLER
@@ -417,8 +475,11 @@ void Application::RegisterMcpAssetMethods()
                         if (jit->is_regular_file(jec)) mcpsafety::JournalBackup(dest / fs::relative(jit->path(), srcPath, jec));
                 }
                 fs::create_directories(dest);
-                fs::copy(srcPath, dest,
-                         fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+                {
+                    // 原子的に取り込む（途中で失敗したら元のまま・半端なファイルを残さない）
+                    const atomicfile::Result cr = atomicfile::CopyTree(srcPath, dest, /*overwrite=*/true);
+                    if (!cr.ok) throw McpError(McpErr::Internal, "取り込みに失敗しました: " + cr.error, "コピー元・コピー先の権限と空き容量を確かめる（元のファイルは変わっていません）");
+                }
                 for (const auto& de : fs::recursive_directory_iterator(dest))
                     if (de.is_regular_file())
                         imported.push_back(fs::relative(de.path(), assetsRoot).generic_string());
@@ -435,7 +496,10 @@ void Application::RegisterMcpAssetMethods()
                         "上書きしてよければ overwrite:true、残すなら destPath を別名にする（dx12_list_assets で空きを確認）");
                 fs::create_directories(dest.parent_path());
                 mcpsafety::JournalBackup(dest);   // M5
-                fs::copy_file(srcPath, dest, fs::copy_options::overwrite_existing);
+                {
+                    const atomicfile::Result cr = atomicfile::CopyFileAtomic(srcPath, dest, /*overwrite=*/true);
+                    if (!cr.ok) throw McpError(McpErr::Internal, "取り込みに失敗しました: " + cr.error, "コピー元・コピー先の権限と空き容量を確かめる（元のファイルは変わっていません）");
+                }
                 imported.push_back(fs::relative(dest, assetsRoot).generic_string());
             }
             resp["ok"] = true;
@@ -611,8 +675,11 @@ void Application::RegisterMcpAssetMethods()
                     mcpsafety::JournalBackup(toP);
                 }
             }
-            fs::create_directories(toP.parent_path());
-            fs::rename(fromP, toP);
+            {
+                // 改名（別ボリュームならコピーを完成させてから元を消す）。失敗したら元のまま
+                const atomicfile::Result mr = atomicfile::MovePath(fromP, toP);
+                if (!mr.ok) throw McpError(McpErr::Internal, "移動に失敗しました: " + mr.error, "移動先に同名が無いか・他のプログラムが使っていないか確かめる（元のファイルは変わっていません）");
+            }
 
             // 分割保存のシーン（foo.json）を動かしたら、セルファイルのフォルダ（foo.parts/）も一緒に動かす（§4.3）。
             if (toP.extension() == ".json" && !fs::is_directory(toP))
@@ -623,7 +690,12 @@ void Application::RegisterMcpAssetMethods()
                 if (fs::is_directory(partsFrom, pec) && !fs::exists(partsTo, pec))
                 {
                     mcpsafety::JournalBackupTree(partsFrom);
-                    fs::rename(partsFrom, partsTo, pec);
+                    if (!atomicfile::MovePath(partsFrom, partsTo).ok)
+                    {
+                        // セルのフォルダだけ動かせなかった: 本体も元へ戻して、食い違いを残さない
+                        atomicfile::MovePath(toP, fromP);
+                        throw McpError(McpErr::Internal, "分割シーンのセルのフォルダを移動できませんでした（元の場所へ戻しました）", "他のプログラムがセルのファイルを使っていないか確かめる");
+                    }
                 }
             }
 
@@ -691,7 +763,10 @@ void Application::RegisterMcpAssetMethods()
                     throw McpError(McpErr::InvalidParam,
                         "'" + rel + "' is a directory (recursive:true で丸ごと削除)",
                         "フォルダごと消すなら recursive:true を付ける（中身も全部消える）。1 ファイルだけならそのファイルのパスを渡す");
-                removed = fs::remove_all(full);
+                if (const std::string why = saferm::WhyUnsafe(full, fs::path(PathResolver::AssetsDir())); !why.empty())
+                    throw McpError(McpErr::InvalidParam, "'" + rel + "' は消せません: " + why,
+                        "assets の中のフォルダを assets 相対で指定する（assets 自体・assets の外は消せない）");
+                removed = saferm::RemoveAll(full);
             }
             else
             {

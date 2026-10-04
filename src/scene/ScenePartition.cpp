@@ -1,5 +1,6 @@
 #include "scene/ScenePartition.h"
 #include "scene/SceneFormatV2.h"
+#include "core/AtomicFileJson.h"
 
 #include <algorithm>
 #include <atomic>
@@ -403,9 +404,9 @@ static bool ReadWhole(const fs::path& p, std::string& out)
     return static_cast<bool>(f) || sz == 0;
 }
 
-// 内容が同じなら触らない。違うなら一時ファイル経由で置き換える（途中で落ちても既存ファイルを壊さない）。
-// 戻り値: 0 = 変更なし / 1 = 書いた / -1 = 失敗
-static int WriteIfChanged(const fs::path& p, const std::string& text)
+// 内容が同じなら触らない。違うなら Batch へ（一時ファイルに書いて検証。置き換えは Commit でまとめて）。
+// 戻り値: 0 = 変更なし / 1 = 書いた（ステージした） / -1 = 失敗
+static int StageIfChanged(atomicfile::Batch& batch, const fs::path& p, const std::string& text)
 {
     std::error_code ec;
     if (fs::exists(p, ec))
@@ -417,22 +418,7 @@ static int WriteIfChanged(const fs::path& p, const std::string& text)
             if (ReadWhole(p, cur) && cur == text) return 0;
         }
     }
-    const fs::path tmp = fs::path(p).concat(".tmp");
-    {
-        std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
-        if (!o) return -1;
-        o.write(text.data(), static_cast<std::streamsize>(text.size()));
-        if (!o) return -1;
-    }
-    fs::rename(tmp, p, ec);
-    if (ec)
-    {
-        fs::remove(p, ec);
-        ec.clear();
-        fs::rename(tmp, p, ec);
-        if (ec) { std::error_code ec2; fs::remove(tmp, ec2); return -1; }
-    }
-    return 1;
+    return batch.Add(p, text, atomicfile::JsonVerifier()) ? 1 : -1;
 }
 
 static bool IsCellFileName(const std::string& n)
@@ -440,37 +426,51 @@ static bool IsCellFileName(const std::string& n)
     return n.size() > 10 && n.compare(0, 5, "cell_") == 0 && n.compare(n.size() - 5, 5, ".json") == 0;
 }
 
-WriteStats WriteSplit(const std::string& scenePath, const SplitOutput& out)
+WriteStats StageSplit(const std::string& scenePath, const SplitOutput& out, atomicfile::Batch& batch, bool stageRoot)
 {
     WriteStats st;
     st.files = static_cast<int>(out.parts.size());
     const fs::path dir = PartsDirFor(scenePath);
     std::error_code ec;
 
-    std::unordered_set<std::string> keep;
     if (!out.parts.empty())
     {
         fs::create_directories(dir, ec);
         if (ec && !fs::exists(dir, ec)) { st.ok = false; return st; }
     }
-    for (const PartText& pt : out.parts)
+    // セルは並列に比べて・書く（数百のセルを 1 つずつ flush・検証すると待ちが積み重なる）。内容が同じものは触らない。
     {
-        keep.insert(pt.name);
-        st.maxBytes = (std::max)(st.maxBytes, pt.text.size());
-        st.totalBytes += pt.text.size();
-        const int r = WriteIfChanged(dir / pt.name, pt.text);
-        if (r < 0) st.ok = false; else if (r == 0) ++st.unchanged; else ++st.written;
+        std::vector<atomicfile::Batch::Entry> es;
+        es.reserve(out.parts.size());
+        const atomicfile::Verifier verify = atomicfile::JsonVerifier();
+        for (const PartText& pt : out.parts)
+        {
+            st.maxBytes = (std::max)(st.maxBytes, pt.text.size());
+            st.totalBytes += pt.text.size();
+            es.push_back({dir / pt.name, std::string_view(pt.text), verify});
+        }
+        std::vector<char> wrote;
+        if (!batch.AddMany(es, ThreadBudget(), /*skipIdentical=*/true, &wrote)) { st.ok = false; return st; }
+        for (char w : wrote) { if (w) ++st.written; else ++st.unchanged; }
     }
-    // foo.json は最後（セルが全部書けた後。途中で落ちても「無いファイルを指す」foo.json は残らない）
-    if (st.ok)
+    // foo.json は最後（セルが全部書けた後。コミットも追加順に置き換えるので、途中で落ちても「新しいルート＋古いセル」にならない）
+    if (st.ok && stageRoot)
     {
         st.maxBytes = (std::max)(st.maxBytes, out.rootText.size());
         st.totalBytes += out.rootText.size();
-        const int r = WriteIfChanged(scenePath, out.rootText);
+        const int r = StageIfChanged(batch, scenePath, out.rootText);
         if (r < 0) st.ok = false; else if (r == 0) ++st.unchanged; else ++st.written;
     }
-    if (!st.ok) return st;
+    return st;
+}
 
+int FinishSplit(const std::string& scenePath, const SplitOutput& out)
+{
+    const fs::path dir = PartsDirFor(scenePath);
+    std::error_code ec;
+    std::unordered_set<std::string> keep;
+    for (const PartText& pt : out.parts) keep.insert(pt.name);
+    int removed = 0;
     // 空になったセルの掃除（このフォルダの cell_*.json だけを対象にする）
     if (fs::is_directory(dir, ec))
     {
@@ -481,9 +481,19 @@ WriteStats WriteSplit(const std::string& scenePath, const SplitOutput& out)
             const std::string n = ent.path().filename().string();
             if (IsCellFileName(n) && !keep.count(n)) stale.push_back(ent.path());
         }
-        for (const auto& p : stale) { fs::remove(p, ec); ++st.removed; }
+        for (const auto& p : stale) { fs::remove(p, ec); ++removed; }
         if (out.parts.empty() && fs::is_empty(dir, ec)) fs::remove(dir, ec);
     }
+    return removed;
+}
+
+WriteStats WriteSplit(const std::string& scenePath, const SplitOutput& out)
+{
+    atomicfile::Batch batch(fs::path(scenePath).concat(".dx12txn"));
+    WriteStats st = StageSplit(scenePath, out, batch, /*stageRoot=*/true);
+    if (!st.ok) return st;   // Batch のデストラクタが一時ファイルを消す（何も置き換えていない）
+    if (!batch.Commit().ok) { st.ok = false; return st; }
+    st.removed = FinishSplit(scenePath, out);
     return st;
 }
 

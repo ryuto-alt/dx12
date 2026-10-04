@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AtomicFileJson.h"
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm（バックグラウンドの BC 圧縮先読み）
 #include "resource/EnvironmentConvert.h" // .hdr / .exr の判別（スカイボックス）
 #include "core/save/SaveService.h"      // save.write の scene（WireScriptCallbacks）
@@ -349,17 +350,17 @@ void Application::SavePersistStore()
     nlohmann::json j = nlohmann::json::object();
     for (auto& [k, v] : m_persistStore) j[k] = v;
     const auto path = PersistPath();
-    std::ofstream f(path);
     // ★失敗を黙って捨てない。配布ゲームの PersistPath は exe の隣なので、
     //   Program Files 配下へインストールされると設定・進行度の保存が**全部無言で消える**
     //   （Lua の savePersist は void で、成功したように見える）。
     //   兄弟の SaveActionBindings は同じ失敗を警告しているので、片方だけ抜けていた。
-    if (!f)
+    // 原子的に書く（途中で落ちても settings.json を壊さない）。
+    const atomicfile::Result wr = atomicfile::WriteJson(path, j, 2);
+    if (!wr.ok)
     {
-        Logger::Warn("設定の保存に失敗しました（書き込み権限？）: {}", path.string());
+        Logger::Warn("設定の保存に失敗しました（書き込み権限？）: {} ({})", path.string(), wr.error);
         return;
     }
-    f << j.dump(2);
 }
 
 double Application::PersistGet(const std::string& key, double def)
@@ -381,6 +382,7 @@ void Application::PersistSet(const std::string& key, double v)
 // ゲームは Initialize から呼ぶ。書き込みは「トランジション」窓のタイル/スライダーと Scene Flow 窓の長さスライダー。
 void Application::LoadTransitionPrefs()
 {
+    ApplyBackupPolicyFromSettings();   // バックアップの方針も settings.json から（プロジェクトを開くたび / ゲーム起動時に同じ場所で読む）
     const int t = static_cast<int>(PersistGet("scene_transition_type",
                                               static_cast<double>(m_defaultTransitionType)));
     // 保存値が壊れていても（型を減らした・手で書き換えた）落とさない。範囲外は暗転へ倒す。
@@ -397,6 +399,7 @@ void Application::WireScriptCallbacks()
     // アクションマップ（キーリバインド）。Play/Stop で ScriptEngine は作り直されるが
     // 割り当ては設定なので Application 側で持ち続ける＝ここで借り直すだけ。
     m_scriptEngine->SetActionMap(&m_actionMap);
+    m_scriptEngine->SetHardware(m_hardware.get());   // Lua の hw.* と actions の擬似キー表（Play のたびに ScriptEngine は作り直される）
     m_scriptEngine->SetActionSaveCallback([this]() { SaveActionBindings(); });
 
     m_scriptEngine->SetLoadSceneCallback(
@@ -1262,6 +1265,8 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
     const bool loaded = SceneSerializer::Load(*m_scene, fullPath, PathResolver::AssetsDir());
     if (loaded)
     {
+        m_editorCtx->sceneLoadFailedPath.clear();   // 開けた＝保存を止める理由は無くなった
+        m_editorCtx->showSceneBackups = false;
         // 開いた直後はディスクの内容と一致している＝未保存ではない。
         // ★オートセーブは消さない（この後 CheckAutosaveRecovery で復旧を聞くため）。
         MarkSceneClean(/*dropAutosave=*/false);
@@ -1299,6 +1304,14 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
             CheckAutosaveRecovery(fullPath);
         }
     }
+    else
+    {
+        // 壊れた・空・途中で切れたシーン。黙って空のシーンにして、後の保存で本体を上書きしてしまわない。
+        // （オートセーブからの復旧で開けなかったときは、本来のシーンを対象に案内する）
+        const std::string failedFor = m_autosaveRestoreTarget.empty() ? fullPath : m_autosaveRestoreTarget;
+        m_autosaveRestoreTarget.clear();
+        OnSceneLoadFailed(failedFor);
+    }
 
     // MCP open_scene の遅延応答。
     if (m_mcpLoadReply.client != 0)
@@ -1317,7 +1330,8 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
         else
         {
             FailMcp(m_mcpBridge.get(), m_mcpLoadReply, McpErr::Internal,
-                    "scene load failed: " + fullPath);
+                    "scene load failed: " + fullPath + " (" + SceneSerializer::LastLoadError() + ")",
+                    "壊れた・空のシーンです。空のシーンで上書きしないよう保存を止めました。dx12_call {name:\"scene_backups\", args:{op:\"list\"}} で以前の版を探し、op:\"restore\" で戻せます");
         }
         m_mcpLoadReply = {};
     }
@@ -1844,6 +1858,10 @@ void Application::EnterEditorMode()
     if (m_editorCtx) m_editorCtx->paused = false;   // 一時停止(F1)もモード遷移で必ず解除する
 
     m_commandQueue->WaitIdle();
+
+    // Play 中に Lua が書いた物理ハードウェアの出力（LED・振動・ペルチェ）を安全値へ戻す。
+    // ★Play を止めた後も光りっぱなし / 熱いままにならないように（ファーム側の心拍切れだけに頼らない）。
+    if (m_hardware) m_hardware->ResetOutputs();
 
     // Play 中に鳴っていた SE（空間含む）と BGM を停止（Stop で鳴り続けるのを防ぐ）
     if (m_audioSystem)

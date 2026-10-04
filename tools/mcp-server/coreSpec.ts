@@ -284,7 +284,7 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
     "開いているシーンのエンティティ一覧(entityId・name)を返す。verbose:true で componentTypes 付き、name_prefix / component_type で絞り込める。\n"
     + "使う: シーンの中身・名前・id の把握。使わない: 親子構造(→ dx12_tool_search「階層」)、1 体の詳細(→ dx12_get_entity)。\n"
     + "副作用: なし(読み取りのみ)。注意: Stop / open_scene の後は entityId が変わる(sceneGeneration で判別)。\n"
-    + "返り値: {entities, count, sceneGeneration}。次: dx12_get_entity。",
+    + "返り値: {entities, count, total, sceneGeneration}。件数が既定 10000(verbose は 5000)を超えると truncated:true と nextOffset(続きは offset、全件は limit:0)。次: dx12_get_entity。",
 
   dx12_get_entity:
     "エンティティの全コンポーネントと値を JSON で読む(entity=id か name=完全一致)。\n"

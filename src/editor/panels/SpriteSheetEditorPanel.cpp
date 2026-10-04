@@ -11,6 +11,7 @@
 #include <imgui.h>
 
 #include "core/PathResolver.h"
+#include "core/AtomicFileJson.h"
 #include "ecs/Components.h"
 #include "editor/EditorContext.h"
 #include "graphics/DescriptorHeap.h"
@@ -95,10 +96,9 @@ bool SpriteSheetEditorPanel::SaveAsset(const std::string& path, UiAnimRuntime* r
 {
     std::error_code ec;
     fs::create_directories(fs::path(path).parent_path(), ec);
-    std::ofstream f(path, std::ios::binary);
-    if (!f.is_open()) return false;
-    f << SerializeSpriteAnimSheet(m_sheet);
-    f.close();
+    // 一時ファイル→flush→検証→置き換え（途中で落ちても元のシートは無傷）
+    if (!dx12e::atomicfile::WriteFile(fs::path(path), SerializeSpriteAnimSheet(m_sheet), dx12e::atomicfile::JsonVerifier()))
+        return false;
 
     if (runtime) runtime->Invalidate("spriteanim/" + fs::path(path).filename().string());
     return true;

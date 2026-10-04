@@ -24,6 +24,7 @@
 #include "renderer/GpuParticleSystem.h"
 #include "input/InputSystem.h"
 #include "engine/input/ActionMap.h"
+#include "hardware/HardwareSystem.h"   // Lua の hw.*
 #include "renderer/Camera.h"
 #include "audio/AudioSystem.h"
 #include "scripting/ScriptAudioBindings.h"
@@ -448,6 +449,97 @@ void ScriptEngine::Initialize(Scene* scene, InputSystem* input, Camera* camera,
     LoadPrelude();
 
     Logger::Info("ScriptEngine initialized");
+}
+
+// ---------------------------------------------------------------------------
+// 物理ハードウェア（docs/HARDWARE.md）
+// ---------------------------------------------------------------------------
+void ScriptEngine::SetHardware(hw::HardwareSystem* hardware)
+{
+    m_hardware = hardware;
+    m_hwKeys.clear();
+    if (!hardware) return;
+    // Application::ApplyHardwareActionBindings が ActionMap へ付けたバインドと同じ並び（GetActionBindings の順）。
+    for (const hw::HwActionBinding& b : hardware->GetActionBindings())
+        m_hwKeys.emplace_back(b.device, b.channel);
+}
+
+bool ScriptEngine::ActionKeyDown(int key) const
+{
+    if (key < kHwKeyBase) return m_input && m_input->IsKeyDown(key);   // IsKeyDown は 256 未満だけ受ける
+    const size_t i = static_cast<size_t>(key - kHwKeyBase);
+    return m_hardware && i < m_hwKeys.size() && m_hardware->Down(m_hwKeys[i].first, m_hwKeys[i].second);
+}
+
+bool ScriptEngine::ActionKeyPressed(int key) const
+{
+    if (key < kHwKeyBase) return m_input && m_input->IsKeyPressed(key);
+    const size_t i = static_cast<size_t>(key - kHwKeyBase);
+    return m_hardware && i < m_hwKeys.size() && m_hardware->Pressed(m_hwKeys[i].first, m_hwKeys[i].second);
+}
+
+namespace
+{
+// Lua の hw.device(name) が返すハンドル。名前だけ持ち、値は呼ぶたびに HardwareSystem へ聞く
+// （Application が設定を作り直しても、ハンドルを握ったスクリプトが古い状態を見ない）。
+struct LuaHwDevice
+{
+    std::string                name;
+    hw::HardwareSystem* const* sys = nullptr;   // ScriptEngine::m_hardware を指す（エンジンの寿命内）
+    hw::HardwareSystem* S() const { return sys ? *sys : nullptr; }
+};
+} // namespace
+
+void ScriptEngine::RegisterHardwareBindings()
+{
+    auto& lua = *m_lua;
+
+    // ★メンバ変数でなく sol::property で露出するので、Lua からは h.connected（h:connected() ではない）。
+    lua.new_usertype<LuaHwDevice>("HwDevice",
+        sol::no_constructor,
+        "name", sol::readonly(&LuaHwDevice::name),
+        "connected", sol::property([](const LuaHwDevice& h) {
+            return h.S() && h.S()->IsConnected(h.name);
+        }),
+        "get", [](const LuaHwDevice& h, const std::string& ch) -> double {
+            return h.S() ? h.S()->Get(h.name, ch) : 0.0;
+        },
+        "raw", [](const LuaHwDevice& h, const std::string& ch) -> double {
+            return h.S() ? h.S()->GetRaw(h.name, ch) : 0.0;
+        },
+        "down", [](const LuaHwDevice& h, const std::string& ch) -> bool {
+            return h.S() && h.S()->Down(h.name, ch);
+        },
+        "pressed", [](const LuaHwDevice& h, const std::string& ch) -> bool {
+            return h.S() && h.S()->Pressed(h.name, ch);
+        },
+        "released", [](const LuaHwDevice& h, const std::string& ch) -> bool {
+            return h.S() && h.S()->Released(h.name, ch);
+        },
+        "set", [](const LuaHwDevice& h, const std::string& ch, double v) -> bool {
+            return h.S() && h.S()->Set(h.name, ch, v);
+        }
+    );
+
+    sol::table hwt = lua.create_named_table("hw");
+    hwt.set_function("device", [this](const std::string& name) {
+        return LuaHwDevice{name, &m_hardware};
+    });
+    hwt.set_function("list", [this](sol::this_state ts) {
+        sol::state_view sv(ts);
+        sol::table out = sv.create_table();
+        if (!m_hardware) return out;
+        int i = 1;
+        for (const hw::HwDeviceInfo& d : m_hardware->ListDevices())
+        {
+            sol::table t = sv.create_table();
+            t["name"]      = d.name;
+            t["connected"] = d.connected;
+            t["port"]      = d.port;
+            out[i++] = t;
+        }
+        return out;
+    });
 }
 
 void ScriptEngine::RegisterBindings()
@@ -1524,20 +1616,20 @@ void ScriptEngine::RegisterBindings()
         act.set_function("get", [this](const std::string& name) {
             if (!m_actionMap || !m_input) return std::make_tuple(0.0f, 0.0f, 0.0f);
             const auto v = m_actionMap->Evaluate(name,
-                [this](int k) { return m_input->IsKeyDown(k); });
+                [this](int k) { return ActionKeyDown(k); });
             return std::make_tuple(v.x, v.y, v.z);
         });
 
         // down(name) -> bool（いずれかのキーが押されている）
         act.set_function("down", [this](const std::string& name) {
             if (!m_actionMap || !m_input) return false;
-            return m_actionMap->Active(name, [this](int k) { return m_input->IsKeyDown(k); });
+            return m_actionMap->Active(name, [this](int k) { return ActionKeyDown(k); });
         });
 
         // pressed(name) -> bool（このフレームで押された。連打の判定用）
         act.set_function("pressed", [this](const std::string& name) {
             if (!m_actionMap || !m_input) return false;
-            return m_actionMap->Active(name, [this](int k) { return m_input->IsKeyPressed(k); });
+            return m_actionMap->Active(name, [this](int k) { return ActionKeyPressed(k); });
         });
 
         act.set_function("clear", [this](const std::string& name) {
@@ -1550,6 +1642,9 @@ void ScriptEngine::RegisterBindings()
         // 設定画面から呼ぶ。プロジェクト直下の input_bindings.json へ書く。
         act.set_function("save", [this]() { if (m_actionSaveCb) m_actionSaveCb(); });
     }
+
+    // --- hw（物理ハードウェア: Arduino / ESP32）---
+    RegisterHardwareBindings();
 
     // --- Camera ---
     lua.new_usertype<Camera>("Camera",

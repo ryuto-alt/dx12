@@ -1,6 +1,7 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/UiWidgets.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
+#include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/EditorPrefs.h"
@@ -9,6 +10,7 @@
 #include "resource/ResourceManager.h"
 #include "resource/MaterialAssetIO.h"
 #include "core/Logger.h"
+#include "core/AtomicFileJson.h"
 
 #include <algorithm>
 #include <cctype>
@@ -26,6 +28,8 @@ namespace
 // 失敗時は false を返し、呼び出し側がログに出す。
 bool MoveToRecycleBin(const std::filesystem::path& path)
 {
+    // フォルダごと送るときも、ルート・ホームなど消してはいけない場所は断る（ごみ箱に入らない場合は完全削除になるため）
+    if (std::error_code dec; std::filesystem::is_directory(path, dec) && !saferm::WhyUnsafe(path).empty()) return false;
     // pFrom は二重 NUL 終端が要る（複数パスを NUL 区切りで並べる仕様のため）。
     std::wstring from = path.wstring();
     from.push_back(L'\0');
@@ -1720,10 +1724,13 @@ bool AssetBrowserPanel::CreateMaterialHere(std::filesystem::path* out)
     d.name = file.stem().string();
     d.metallic = 0.0f;
     d.roughness = 0.5f;
-    std::ofstream ofs(file, std::ios::binary);
-    if (!ofs) { if (m_dropCtx) m_dropCtx->Notify(ui::ToastKind::Error, "マテリアルを作れませんでした"); return false; }
-    ofs << SerializeMaterialAsset(d);
-    ofs.close();
+    const auto wr = dx12e::atomicfile::WriteFile(file, SerializeMaterialAsset(d), dx12e::atomicfile::JsonVerifier());
+    if (!wr)
+    {
+        Logger::Warn("マテリアルの作成に失敗しました: {} ({})", file.string(), wr.error);
+        if (m_dropCtx) m_dropCtx->Notify(ui::ToastKind::Error, "マテリアルを作れませんでした: " + wr.error);
+        return false;
+    }
     if (out) *out = file;
     m_index.ForceRescan();
     m_scrollToPath = file.string();
@@ -1739,11 +1746,11 @@ bool AssetBrowserPanel::DuplicateEntry(EditorContext* ctx, const std::filesystem
     const fs::path dir = src.parent_path();
     const std::string name = abl::UniqueName(src.filename().string(), [&](const std::string& n) { return fs::exists(dir / n, ec); }, "_copy");
     const fs::path dst = dir / name;
-    if (fs::is_directory(src, ec)) fs::copy(src, dst, fs::copy_options::recursive, ec);
-    else fs::copy_file(src, dst, ec);
-    if (ec)
+    // 原子的に複製する（途中で失敗したら複製先に半端なものを残さない）
+    const atomicfile::Result copyRes = atomicfile::CopyTree(src, dst, /*overwrite=*/false);
+    if (!copyRes.ok)
     {
-        if (ctx) ctx->Notify(ui::ToastKind::Error, "複製できませんでした: " + ec.message());
+        if (ctx) ctx->Notify(ui::ToastKind::Error, "複製できませんでした: " + copyRes.error);
         return false;
     }
     if (out) *out = dst;
@@ -1825,17 +1832,9 @@ bool AssetBrowserPanel::ExecuteRelocate(EditorContext* ctx, const std::vector<Re
         std::error_code ec;
         // ★上書きしない。fs::rename は Windows では既存のファイルを黙って置き換える（BeginRelocate の確認をすり抜けた場合の最後の砦）。
         if (fs::exists(op.dst, ec)) { lastError = "同じ名前があります"; continue; }
-        fs::create_directories(op.dst.parent_path(), ec);
-        fs::rename(op.src, op.dst, ec);
-        if (ec)
-        {
-            // 別ボリュームなどで rename できない時は コピー → 削除
-            ec.clear();
-            if (fs::is_directory(op.src, ec)) fs::copy(op.src, op.dst, fs::copy_options::recursive, ec);
-            else fs::copy_file(op.src, op.dst, ec);
-            if (!ec) fs::remove_all(op.src, ec);
-        }
-        if (ec) { lastError = ec.message(); continue; }
+        // 改名。別ボリュームなどのときはコピーを完成させてから元を消す。失敗したら元のまま（移動先に半端なものを残さない）
+        const atomicfile::Result moveRes = atomicfile::MovePath(op.src, op.dst);
+        if (!moveRes.ok) { lastError = moveRes.error; continue; }
         ++moved;
         lastName = op.dst.filename().string();
         // 開いているシーン / 選択 / 現在のフォルダが動いた分を追従させる
@@ -1901,7 +1900,7 @@ bool AssetBrowserPanel::TestMove(const std::filesystem::path& src, const std::fi
 bool AssetBrowserPanel::TestDelete(const std::filesystem::path& path)
 {
     std::error_code ec;
-    std::filesystem::remove_all(path, ec);
+    saferm::RemoveAll(path, ec);
     m_index.ForceRescan();
     return !ec;
 }
@@ -1973,7 +1972,10 @@ void AssetBrowserPanel::StartImport(EditorContext& ctx, std::vector<std::filesys
             if (op.skipped) { ++r.skipped; continue; }
             std::error_code ec;
             fs::create_directories(op.dst.parent_path(), ec);
-            if (fs::copy_file(op.src, op.dst, fs::copy_options::skip_existing, ec) && !ec)
+            // 既にあれば上書きしない（スキップ）。原子的にコピーする
+            const bool dstExists = fs::exists(op.dst, ec);
+            const atomicfile::Result cr = dstExists ? atomicfile::Result{false, "同じ名前があります"} : atomicfile::CopyFileAtomic(op.src, op.dst, /*overwrite=*/false);
+            if (cr.ok)
             {
                 ++r.ok;
                 r.created.push_back(op.dst);
@@ -1981,7 +1983,7 @@ void AssetBrowserPanel::StartImport(EditorContext& ctx, std::vector<std::filesys
             else
             {
                 ++r.failed;
-                if (r.firstError.empty()) r.firstError = ec.message();
+                if (r.firstError.empty()) r.firstError = cr.error;
             }
         }
         return r;

@@ -28,7 +28,7 @@ function errorResult(body: ErrorBody): ToolResult {
 }
 
 function okResult(data: unknown): ToolResult {
-  return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }], structuredContent: { result: (data ?? null) as any } };
+  return { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: { result: (data ?? null) as any } };
 }
 
 // [op] を先頭に付けて、どの op の引数かを説明文から分かるようにする(dx12_tool_describe {target:'<op>'} はその op の引数だけを返す)。

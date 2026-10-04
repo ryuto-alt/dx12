@@ -1,0 +1,45 @@
+// write 系の代表引数を作る(使い捨てコピーのシーン専用)。node gen_write_args.mjs > write_args.json
+// シーンは stress_100000 想定(エンティティ名 Statue_N)。名前の無いシーンでは "@NAME" だけで足りるものに絞る。
+const names = (a, b) => Array.from({ length: b - a + 1 }, (_, i) => "Statue_" + String(a + i).padStart(5, "0"));
+const A = {
+  apply_lighting_preset: { preset: "day" },
+  create_entity: [{ type: "box", name: "PerfBox" }, { type: "empty", name: "PerfEmpty" }],
+  duplicate_entity: { name: "@NAME" },
+  editor_command_run: { id: "window.postProcess" },
+  editor_select: [{ mode: "set", names: ["@NAME"] }, { mode: "set", query: "Statue_1*" }, { mode: "set", query: "Statue_*" }, { mode: "clear" }],
+  focus_camera: { name: "@NAME" },
+  group_entities: [{ names: names(10, 60), name: "G_small" }, { names: names(100, 3100), name: "G_3000" }],
+  instance_group: [{ op: "info" }, { op: "convert", preview: true }, { op: "convert" }, { op: "info" }, { op: "explode", all: true }],
+  look_at: { name: "@NAME", target: [0, 0, 0] },
+  navmesh_build: {},
+  navmesh_settings: {},
+  navmesh_clear: {},
+  rename_entity: { entity: "@ID", name: "Renamed_X" },
+  select_entity: { name: "@NAME" },
+  set_color: { name: "@NAME", color: [1, 0, 0] },
+  set_pbr: { name: "@NAME", metallic: 0.5 },
+  set_transform: [{ name: "@NAME", position: [1, 2, 3] }, { name: "Grid", position: [0, 0, 0] }],
+  set_parent: { name: "@NAME", parent: 1 },
+  set_component: { name: "@NAME", component: "pointLight", data: { intensity: 2 } },
+  snap_to_ground: { name: "@NAME" },
+  spawn_model: { path: "models/hp_knot.glb", position: [0, 0, 0] },
+  step_frames: { frames: 3 },
+  transaction_begin: {}, transaction_commit: {},
+  set_scene_settings: {},
+  set_ssao: { enabled: true }, set_ssgi: { enabled: false }, set_ssr: { enabled: false }, set_taa: { enabled: false },
+  set_occlusion: { enabled: false }, set_depth_prepass: { enabled: false }, set_render_scale: { scale: 1 },
+  set_sun: { elevation: 40 },
+  set_wind: {}, set_post_process: {}, set_volumetric_fog: {}, set_contact_shadow: {}, set_normal_filter: {}, set_shadow_pcss: {},
+  open_scene: { path: "scenes/stress_100000.json" },
+  save_scene: {},
+  play: {}, stop: {},
+  delete_entity: [{ name: "Grid" }, { name: "PerfBox" }],
+  undo: {}, redo: {},
+};
+// 実行順（シーンを開き直してから、軽い順 → 重い順 → 戻す）
+A._order = ["open_scene", "apply_lighting_preset", "set_transform", "set_color", "set_pbr", "set_component", "select_entity", "focus_camera", "look_at",
+  "snap_to_ground", "create_entity", "duplicate_entity", "spawn_model", "set_parent", "editor_select", "editor_command_run", "set_sun", "set_ssao", "set_ssgi", "set_ssr", "set_taa",
+  "set_occlusion", "set_depth_prepass", "set_render_scale", "set_wind", "set_post_process", "set_volumetric_fog", "set_contact_shadow", "set_normal_filter", "set_shadow_pcss",
+  "set_scene_settings", "step_frames", "transaction_begin", "transaction_commit", "group_entities", "rename_entity", "delete_entity", "undo", "redo", "navmesh_settings", "navmesh_build", "navmesh_clear",
+  "instance_group", "save_scene", "play", "stop", "open_scene"];
+console.log(JSON.stringify(A, null, 1));

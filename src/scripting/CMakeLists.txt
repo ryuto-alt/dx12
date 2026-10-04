@@ -17,6 +17,7 @@ target_link_libraries(Scripting PUBLIC
     Scene
     ECS
     Input
+    Hardware    # Lua の hw.*（物理ハードウェア連携。docs/HARDWARE.md）
     Renderer
     Animation
     Audio

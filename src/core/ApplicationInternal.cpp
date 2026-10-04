@@ -977,6 +977,20 @@ nlohmann::json McpLuaApi()
         "★部屋ごとの響きは AudioReverbZone コンポーネント（箱/球 + fadeDistance + priority）で置く。"
         "送り量 = バスの reverbSend × play{reverb} × √(距離減衰)（遠い音ほど響きの割合が増える）",
     })));
+    objects.push_back(O("hw", "global ('.' で呼ぶ)", json::array({
+        "★物理ハードウェア（Arduino / ESP32 を USB シリアルでつなぐ。設定は assets/hardware.json、docs/HARDWARE.md）。エディタでも Play でも配布ゲームでも動く",
+        "hw.device(name) -> HwDevice  — hardware.json の name（または hw_simulate で作った仮想デバイス名）のハンドル。無い名前でも返る（connected=false・値は 0）",
+        "hw.list() -> { {name=, connected=, port=}, ... }  — 全デバイス",
+        "HwDevice（hw.device(name) の戻り値）:",
+        "  connected  (bool, read-only property。★h.connected と書く。h:connected() ではない。Ready のとき true)",
+        "  name  (string, read-only property)",
+        "  get(ch) -> number  — 正規化値 0..1（校正・平滑済み。宣言に min/max が無ければ生値）。無い/未接続なら 0",
+        "  raw(ch) -> number  — 生値（ダイヤルなら 0..4095 など）",
+        "  down(ch) -> bool / pressed(ch) -> bool / released(ch) -> bool  — bool チャンネルは raw!=0（invert で反転）、数値は value>=0.5。pressed/released はこのフレームの 0→1 / 1→0",
+        "  set(ch, v) -> bool  — 出力チャンネルへ 0..1 の正規化値（dangerous は maxValue で切られる）。未接続・未宣言の ch なら false。値は 1 フレーム 1 行にまとまって送られる。Play を止めると安全値へ戻る",
+        "★値はフレームの頭（BeginFrame）で確定するので、同じフレーム内では変わらない。切断・再接続はエンジンが自動で行う（hw_status / hw_connect は MCP）",
+        "★hardware.json の actions（チャンネル → アクション名）を書くと、そのチャンネルが actions.get/down/pressed に効く（キーボードと同じアクションで遊べる＝実機なしでも開発でき、展示中の故障時の代替にもなる）。actions.save() は擬似キーを input_bindings.json へ書かない",
+    })));
     objects.push_back(O("time", "global ('.' で呼ぶ)", json::array({
         "time.now() -> float  — Play開始からの経過秒(タイムスケール適用済み)",
         "time.realtime() -> float  — 実時間の経過秒(スケール非適用)",
