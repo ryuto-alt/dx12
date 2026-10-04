@@ -913,6 +913,17 @@ dx12_project_world_to_screen(name:"Player")
 key は VK 整数か名前(`"W"`,`"D"`,`"SPACE"`,`"UP"`,`"F1"` 等)。
 `dx12_step_frames` は決定論ステッパではない(各フレーム dt は実時間)。frames は 1..600。
 
+**Lua で確かめるなら `dx12_lua_step` で 1 回にまとめる。** `eval_lua` → `step_frames` → `eval_lua` を別々に撃つと、
+往復のたびにターンを 1 つ使う(エンジンの応答は 1 回 17ms なのに、ターンは 1 回数秒かかる)。
+
+```
+dx12_lua_step(before:"P=scene:findEntity('Player')", keys:["D"], frames:30, deterministic:true,
+              every:10, after:"return P.transform.position.x")
+# → samples:[{frame:10,result:…},{frame:20,…},{frame:30,…}]。キーは終わったら必ず離される
+```
+
+`eval_lua` と同じく任意の Lua を走らせるので guarded(承認が要る)。core / shell 面では `dx12_call_guarded` から呼ぶ。
+
 ---
 
 ## ★ ゲームの挙動デバッグは「自分で操作せず、人間のプレイを読む」

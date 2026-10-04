@@ -112,6 +112,12 @@ export const GUARDED_NAMES = new Set([
   "dx12_git_checkout", "dx12_git_merge", "dx12_git_merge_abort", "dx12_git_commit",
   "dx12_git_push", "dx12_git_pull", "dx12_git_fetch",
 ]);
+/**
+ * エンジンの method ではないが、任意の Lua を走らせるので guarded と同じ扱いにする合成ツール(toolset/luaStep.ts)。
+ * GUARDED_NAMES は「dx12_ + guarded な method」と 1 対 1(safety.test.ts / dx12_batch の判定が使う)なので、そこへは混ぜない。
+ */
+export const GUARDED_COMPOSITE_NAMES = new Set(["dx12_lua_step"]);
+export function isGuardedToolName(name: string): boolean { return GUARDED_NAMES.has(name) || GUARDED_COMPOSITE_NAMES.has(name); }
 const RUNTIME_NAMES = new Set([
   "dx12_play", "dx12_stop", "dx12_step_frames", "dx12_key_down", "dx12_key_up", "dx12_key_press",
   "dx12_mouse_move", "dx12_play_script", "dx12_autoplay", "dx12_record_playtest", "dx12_run_playtests",
@@ -182,7 +188,7 @@ const CONSOLIDATED_EFFECT: Record<string, EffectName> = {
 /** マニフェストに無い TS ツールの副作用を、名前と annotations から決める。 */
 export function inferEffect(name: string, annotations: Record<string, unknown> | undefined): EffectName {
   if (CONSOLIDATED_EFFECT[name]) return CONSOLIDATED_EFFECT[name];
-  if (GUARDED_NAMES.has(name)) return "guarded";
+  if (isGuardedToolName(name)) return "guarded";
   if (RUNTIME_NAMES.has(name)) return "runtime";
   if (WRITE_FILE_NAMES.has(name)) return "write_file";
   if (WRITE_SETTING_RE.test(name)) return "write_setting";
@@ -333,7 +339,7 @@ export function buildCatalog(
     const tsParams = paramsFromShape(t.shape);
     const effect: EffectName = isShell
       ? (t.name === "dx12_call" ? "write_scene" : t.name === "dx12_call_guarded" ? "guarded" : "read")
-      : GUARDED_NAMES.has(t.name) ? "guarded" : (mf?.effect ?? inferEffect(t.name, t.annotations));   // guarded は TS 側の表でも守る(多層防御)
+      : isGuardedToolName(t.name) ? "guarded" : (mf?.effect ?? inferEffect(t.name, t.annotations));   // guarded は TS 側の表でも守る(多層防御)
     const isCore = !isShell && (t.core === true || CORE_SET.has(t.name));
     const coreDescription = t.coreDescription ?? (isCore ? CORE_DESCRIPTIONS[t.name] : undefined);
     docs.push({

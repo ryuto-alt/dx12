@@ -725,6 +725,7 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_key_press` | `{key}` | `{key}` ※1 フレームだけ押して離す（`isKeyPressed` / `keyPressed()` が 1 回立つ）|
 | `dx12_mouse_move` | `{dx?:f, dy?:f}` | `{dx, dy, mode, note}` ※合成マウス移動を次の 1 フレームぶんだけ注入する。一人称の視点操作はこれが唯一の口(★`camera:setYaw()` では向きを変えられない。エンジン標準の FpsController が yaw を Lua のローカル変数で持ち毎フレーム上書きするため)。押しっぱなしの概念は無いので、回し続けるには `dx12_step_frames` と交互に撃つこと。目標角度へ向けたいなら `dx12_play_script` の yaw や `dx12_autoplay` を使う方が確実(実測して比例で詰める閉ループになっている) |
 | `dx12_step_frames` | `{frames?:int=1(1..600)}` | `{frames}` ※**N フレーム進んでから応答する同期バリア**。入力がシミュレーションに効いてから観測するために挟む。※決定論ステッパではない（各フレームの dt は実時間）|
+| `dx12_lua_step` | `{before?:lua, frames?:int=1(1..600), after?:lua, every?:int, keys?:[key], deterministic?, dt?, hold?}` | `{frames, before?, after? | samples:[{frame,result}], step}` ※**`eval_lua` → `step_frames` → `eval_lua` を 1 回に束ねた合成ツール**（往復ごとにターンを使わない）。`keys` は進めている間押し続け、失敗しても必ず離す。`every` で途中も読む（最大 60 回）。Lua の失敗は `stage`（before / after(frame N)）付き。任意の Lua を走らせるので **guarded**（`eval_lua` と同じ扱い） |
 | `dx12_perf_stats` | `{window?:int=60(..240)}` | `fps` / `frameMs{avg,min,max,p95}` / `cpu{workMs,fenceWaitMs,presentMs}` / `gpuPassMs{total,shadows,depthPrepass,prepassSsao,clusterCull,raytracing,rtScreen,ddgi,screenSpaceGi,volFog,hiZ,mainScene,particles,postFx,ui,vgCull}` / `drawCalls` / `culled` / `triangles` / `occlusion{...}` / `analysis{verdict:"gpu-bound"\|"cpu-bound"\|"fps-limit-capped"…, notes}` ※**FPS が出ないときはまずこれで犯人を特定する** |
 | `dx12_benchmark` | `{...}` | 規模の梯子を測るベンチハーネス（同一シーンを条件を変えて回し、どこで折れるかを出す）|
 
