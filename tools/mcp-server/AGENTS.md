@@ -218,6 +218,21 @@ dx12_quality_gate(playtests:true)                     # 保存済みの .playtes
 
 ---
 
+## ★ 評価役の分離(作る役と採点する役) — 自分の仕事を自分で採点しない
+
+作った本人の採点は甘くなる。**新しい文脈の別役が、作る前に合意した合格基準を、証拠だけで採点する**(sprint contract)。
+
+1. **作る前**: 合格基準を `dx12_brief`(`action:"patch"`)で brief.json の `acceptance` に書く。
+   `[{id, what, how?: gate|oracle|playtest|look|metric, target?, threshold?}]`。`what` は数字で測れる形に(「60fps 以上」「光だまり 3 か所」)。12 件まで。
+2. **作る**: 制作役が作る。
+3. **採点**: サブエージェント `dx12-evaluator`(`agents/dx12-evaluator.md`、`install.ps1`/`install.sh` が `~/.claude/agents/` へ入れる)を起動し、
+   **渡すのはマイルストーン名だけ**。制作役の理由・自己評価は渡さない。評価役は読み取り系ツールだけを持ち、何も編集しない。
+4. **直す**: 制作役は **fail / unclear の基準だけ**を直す。基準そのものは変えない。**最大 3 ラウンド**で打ち切り、
+   評価役の表(`{overall, criteria:[{id, verdict, evidence, fix_hint}]}`)を添えて人へ報告する。
+
+- 評価役の最強の証拠は `dx12_oracle`(封印した golden / perf 予算)。**制作役は oracle を編集しない**(改ざんは `ORACLE_TAMPERED` で overall が fail)。
+- Codex の場合も同じ手順: 別の Codex セッションを評価役にして、マイルストーン名だけ伝え、同じ出力形式で採点させる。
+
 ## ★ グループ分けと命名規則 — 共同開発者が読めるシーンにする
 
 ルート直下は **7 つの空グループだけ**。全エンティティはそのどれかにぶら下げる。
