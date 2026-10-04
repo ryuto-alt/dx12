@@ -139,7 +139,10 @@ void McpBridgePanel::Render(McpBridge& bridge, EditorContext& ctx)
     // ---- 接続インジケータ ----
     const uint16_t port = bridge.Port();
     if (bridge.IsConnected())
-        ImGui::TextColored(theme::Good, "● 接続中");
+    {
+        if (bridge.ClientCount() > 1) ImGui::TextColored(theme::Good, "● 接続中（%d 本）", bridge.ClientCount());
+        else                          ImGui::TextColored(theme::Good, "● 接続中");
+    }
     else
         ImGui::TextColored(theme::TextDim, "○ 未接続");
     ImGui::SameLine(0, ui::Px(12.0f));

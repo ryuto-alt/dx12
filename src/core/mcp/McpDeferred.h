@@ -12,7 +12,7 @@ namespace dx12e {
 // client == 0 は「MCP 由来でない(=エディタ UI からの操作)」を意味し、応答は送らない。
 struct McpDeferred
 {
-    uint64_t    client = 0;       // McpBridge のクライアントトークン(= SOCKET の値)
+    uint64_t    client = 0;       // McpBridge のクライアントトークン(接続ごとの番号)
     long long   requestId = 0;    // リクエストの id。Node クライアントからは常に正整数
     std::string idempotencyKey;   // 任意。create/spawn の再試行重複防止に使う
     // 受けた method 名。フレーム境界で実処理する遅延系（生成・削除・複製）が Undo に
