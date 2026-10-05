@@ -184,6 +184,12 @@ struct MeshRenderer
     DirectX::XMFLOAT3 overrideEmissiveColor{-1.0f, -1.0f, -1.0f};  // x<0 = Material に従う
     float             overrideEmissiveIntensity = -1.0f;           // <0  = Material に従う
 
+    // ---- マテリアル AO（ORM の R / glTF occlusionTexture）の強さの上書き ----
+    // <0 = モデルの値（glTF occlusionTexture.strength）に従う / 0..1 = その強さ（0 で AO オフ）。
+    // ★モデルが AO を持たない（Material::occlusionInMR=false）ときは何を入れても効かない＝絵は変わらない。
+    // 間接光（IBL・アンビエント・GI）だけに掛かり、直接光には掛からない。MCP は dx12_set_pbr の aoStrength。
+    float overrideAoStrength = -1.0f;
+
     // UV タイリング（頂点バッファへ焼き込む方式。値を変えると Mesh::ApplyUVScale で VB を作り直す）
     float uvScaleU = 1.0f;
     float uvScaleV = 1.0f;

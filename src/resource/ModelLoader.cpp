@@ -6,6 +6,7 @@
 #include "graphics/Texture.h"
 #include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
+#include "resource/TextureLoader.h"
 #include "resource/VfsIOSystem.h"
 #include "resource/VgeoProxyLoader.h"
 #include "core/vfs/Vfs.h"
@@ -19,6 +20,8 @@
 #include <assimp/config.h>
 #include <assimp/GltfMaterial.h>
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <functional>      // Probe のノード再帰(ワールド AABB)用
 #include <unordered_set>   // Probe のボーン名ユニーク数え上げ用
 
@@ -567,6 +570,62 @@ std::vector<std::unique_ptr<NodeAnimationClip>> BuildAllNodeAnimClips(
 }
 
 } // anonymous namespace
+
+namespace
+{
+// glTF の occlusionTexture の読み取り結果（LoadFromFile と ProbeOcclusion が同じ判定を共有する）。
+struct OcclusionInfo
+{
+    bool      has          = false;   // 使える occlusionTexture がある（glTF/GLB・UV0）
+    bool      hasMr        = false;   // metallicRoughness テクスチャもある
+    bool      sharedWithMR = false;   // 同じ画像（ORM 1 枚）
+    float     strength     = 1.0f;
+    aiString  occPath, mrPath;
+};
+
+// Assimp は glTF の occlusionTexture を aiTextureType_LIGHTMAP の 0 番に入れ、強度を "$tex.file.strength" に置く。
+// FBX/OBJ の LIGHTMAP は別物なので glTF/GLB に限る。UV0 以外を指すものは使えない（頂点は UV 1 組だけ）。
+OcclusionInfo ReadOcclusionInfo(const aiMaterial* aiMat, const std::filesystem::path& filePath, bool* badUv = nullptr)
+{
+    OcclusionInfo o;
+    if (!aiMat || aiMat->GetTextureCount(aiTextureType_LIGHTMAP) == 0) return o;
+    std::string ext = filePath.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ext != ".gltf" && ext != ".glb") return o;
+    int uv = 0;
+    aiMat->Get(AI_MATKEY_UVWSRC(aiTextureType_LIGHTMAP, 0), uv);
+    if (aiMat->GetTexture(aiTextureType_LIGHTMAP, 0, &o.occPath) != AI_SUCCESS) return o;
+    if (uv != 0) { if (badUv) *badUv = true; return o; }
+    o.has = true;
+    aiMat->Get("$tex.file.strength", aiTextureType_LIGHTMAP, 0, o.strength);
+    o.strength = std::clamp(o.strength, 0.0f, 1.0f);
+    o.hasMr = aiMat->GetTexture(aiTextureType_METALNESS, 0, &o.mrPath) == AI_SUCCESS;
+    o.sharedWithMR = o.hasMr && o.occPath == o.mrPath;
+    return o;
+}
+} // namespace
+
+std::vector<OcclusionProbe> ModelLoader::ProbeOcclusion(const std::filesystem::path& filePath)
+{
+    std::vector<OcclusionProbe> out;
+    Assimp::Importer importer;
+    importer.SetIOHandler(new VfsIOSystem());
+    const aiScene* scene = importer.ReadFile(filePath.string(), 0);
+    if (!scene) return out;
+    for (unsigned i = 0; i < scene->mNumMaterials; ++i)
+    {
+        const aiMaterial* m = scene->mMaterials[i];
+        const OcclusionInfo o = ReadOcclusionInfo(m, filePath);
+        OcclusionProbe pr;
+        pr.material          = m->GetName().C_Str();
+        pr.hasOcclusion      = o.has;
+        pr.hasMetalRoughness = o.hasMr;
+        pr.sharedWithMR      = o.sharedWithMR;
+        pr.strength          = o.strength;
+        out.push_back(std::move(pr));
+    }
+    return out;
+}
 
 ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
 {
@@ -1191,6 +1250,74 @@ ModelData ModelLoader::LoadFromFile(
             material->metalRoughnessTexture = loadPBRTexture(aiTextureType_METALNESS, false, TextureUsage::NonColor);
             if (!material->metalRoughnessTexture)
                 material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false, TextureUsage::NonColor);
+
+            // ---- マテリアル AO（glTF occlusionTexture）----
+            // Assimp は glTF の occlusionTexture を aiTextureType_LIGHTMAP の 0 番に入れ、強度を
+            // "$tex.file.strength" に置く。FBX/OBJ の LIGHTMAP は別物なので glTF/GLB に限る。
+            //   (a) metallicRoughness と同じ画像（ORM 1 枚）→ MR の R をそのまま AO として読む（フラグだけ）
+            //   (b) 別画像 → R へ詰めた ORM を読み込み時に作って metalRoughnessTexture へ差し替える
+            // ★AO を持たないモデルはここを通らない＝occlusionInMR=false のまま＝従来と同じ絵。
+            if (aiMat->GetTextureCount(aiTextureType_LIGHTMAP) > 0)
+            {
+                bool badUv = false;
+                const OcclusionInfo oi = ReadOcclusionInfo(aiMat, filePath, &badUv);
+                if (badUv)
+                    Logger::Warn("occlusionTexture は UV0 以外を指しているため無視します ({})", aiMat->GetName().C_Str());
+                if (oi.has && oi.sharedWithMR && material->metalRoughnessTexture)
+                {
+                    material->occlusionInMR = true;                       // (a) ORM 1 枚: MR の R をそのまま AO にする
+                    material->aoStrength    = oi.strength;
+                }
+                else if (oi.has)
+                {
+                    // (b) 別画像 / MR 無し。エンコード済みバイト列を取り出して R へ詰めた ORM を作る。
+                    const bool hasMr = oi.hasMr && material->metalRoughnessTexture;
+                    auto readBytes = [&](const aiString& tp, std::vector<uint8_t>& bytes) -> bool {
+                        const aiTexture* emb = scene->GetEmbeddedTexture(tp.C_Str());
+                        if (emb)
+                        {
+                            if (emb->mHeight != 0) return false;
+                            bytes.assign(reinterpret_cast<const uint8_t*>(emb->pcData),
+                                         reinterpret_cast<const uint8_t*>(emb->pcData) + emb->mWidth);
+                            return true;
+                        }
+                        auto resolved = ResolveTexturePath(tp.C_Str(), parentDir);
+                        if (resolved.empty()) return false;
+                        bytes = vfs::ReadAssetAbs(resolved.wstring());
+                        if (bytes.empty())
+                        {
+                            std::ifstream f(resolved, std::ios::binary);
+                            bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+                        }
+                        return !bytes.empty();
+                    };
+                    std::vector<uint8_t> aoBytes, mrBytes, ormPng;
+                    std::string err;
+                    const bool aoOk = readBytes(oi.occPath, aoBytes);
+                    const bool mrOk = hasMr && readBytes(oi.mrPath, mrBytes);
+                    if (aoOk && (!hasMr || mrOk)
+                        && TextureLoader::ComposeOrmPng(mrOk ? mrBytes.data() : nullptr, mrBytes.size(),
+                                                        aoBytes.data(), aoBytes.size(), ormPng, err))
+                    {
+                        const std::string key = filePath.string() + "_orm_" + (hasMr ? oi.mrPath.C_Str() : "-")
+                                              + "+" + oi.occPath.C_Str();
+                        Texture* orm = resourceManager.GetOrLoadEmbeddedTexture(
+                            key, ormPng.data(), ormPng.size(), "png", cmdList, /*srgb=*/false, TextureUsage::NonColor);
+                        if (orm)
+                        {
+                            material->metalRoughnessTexture = orm;        // G/B は元の MR（無ければ 1＝係数がそのまま効く）
+                            material->occlusionInMR = true;
+                            material->aoStrength    = oi.strength;
+                        }
+                    }
+                    else
+                        Logger::Warn("occlusionTexture を ORM に詰められませんでした（AO なしで描画）: {} ({}) {}",
+                                     oi.occPath.C_Str(), aiMat->GetName().C_Str(), err);
+                }
+                if (material->occlusionInMR)
+                    Logger::Info("マテリアル AO: strength={:.2f} ({}) ({})", material->aoStrength,
+                                 oi.sharedWithMR ? "ORM 共有" : "ORM を生成", aiMat->GetName().C_Str());
+            }
 
             // ---- 自己発光（emissive）----
             // ★屋内の絵は天井照明パネル・看板・非常口サインの emissive が作る。ここを読まないと

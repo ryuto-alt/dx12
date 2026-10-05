@@ -1180,6 +1180,64 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     return texture;
 }
 
+bool TextureLoader::ComposeOrmPng(const uint8_t* mrData, size_t mrSize,
+                                  const uint8_t* aoData, size_t aoSize,
+                                  std::vector<uint8_t>& outPng, std::string& outError)
+{
+    using namespace DirectX;
+    // 生バイトのまま RGBA8 へ。sRGB 指定の画像も変換（ガンマ解除）はしない（通常の NonColor 読み込みと同じ扱い）。
+    auto decode = [&](const uint8_t* d, size_t n, ScratchImage& out) -> bool {
+        ScratchImage raw;
+        if (!d || n == 0 || FAILED(LoadFromWICMemory(d, n, WIC_FLAGS_NONE, nullptr, raw))) return false;
+        raw.OverrideFormat(MakeLinear(raw.GetMetadata().format));
+        if (raw.GetMetadata().format == DXGI_FORMAT_R8G8B8A8_UNORM) { out = std::move(raw); return true; }
+        return SUCCEEDED(Convert(raw.GetImages(), raw.GetImageCount(), raw.GetMetadata(),
+                                 DXGI_FORMAT_R8G8B8A8_UNORM, TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, out));
+    };
+
+    ScratchImage ao, mr;
+    if (!decode(aoData, aoSize, ao)) { outError = "AO 画像をデコードできません"; return false; }
+    const bool hasMr = (mrData != nullptr);
+    if (hasMr && !decode(mrData, mrSize, mr)) { outError = "metallicRoughness 画像をデコードできません"; return false; }
+
+    const size_t w = hasMr ? std::max(ao.GetMetadata().width,  mr.GetMetadata().width)  : ao.GetMetadata().width;
+    const size_t h = hasMr ? std::max(ao.GetMetadata().height, mr.GetMetadata().height) : ao.GetMetadata().height;
+    auto fit = [&](ScratchImage& img) -> bool {
+        if (img.GetMetadata().width == w && img.GetMetadata().height == h) return true;
+        ScratchImage resized;
+        if (FAILED(Resize(*img.GetImage(0, 0, 0), w, h, TEX_FILTER_LINEAR, resized))) return false;
+        img = std::move(resized);
+        return true;
+    };
+    if (!fit(ao) || (hasMr && !fit(mr))) { outError = "画像のリサイズに失敗"; return false; }
+
+    ScratchImage orm;
+    if (FAILED(orm.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, w, h, 1, 1))) { outError = "ORM 画像の確保に失敗"; return false; }
+    const Image* o = orm.GetImage(0, 0, 0);
+    const Image* a = ao.GetImage(0, 0, 0);
+    const Image* m = hasMr ? mr.GetImage(0, 0, 0) : nullptr;
+    for (size_t y = 0; y < h; ++y)
+    {
+        uint8_t*       dst = o->pixels + y * o->rowPitch;
+        const uint8_t* pa  = a->pixels + y * a->rowPitch;
+        const uint8_t* pm  = m ? m->pixels + y * m->rowPitch : nullptr;
+        for (size_t x = 0; x < w; ++x)
+        {
+            dst[x * 4 + 0] = pa[x * 4 + 0];               // R = AO
+            dst[x * 4 + 1] = pm ? pm[x * 4 + 1] : 255;    // G = roughness
+            dst[x * 4 + 2] = pm ? pm[x * 4 + 2] : 255;    // B = metallic
+            dst[x * 4 + 3] = 255;
+        }
+    }
+
+    Blob blob;
+    if (FAILED(SaveToWICMemory(*o, WIC_FLAGS_NONE, GetWICCodec(WIC_CODEC_PNG), blob)))
+    { outError = "ORM の PNG 書き出しに失敗"; return false; }
+    outPng.assign(static_cast<const uint8_t*>(blob.GetBufferPointer()),
+                  static_cast<const uint8_t*>(blob.GetBufferPointer()) + blob.GetBufferSize());
+    return true;
+}
+
 std::unique_ptr<Texture> TextureLoader::CreateArrayFromRGBA(
     GraphicsDevice& device,
     ID3D12GraphicsCommandList* cmdList,

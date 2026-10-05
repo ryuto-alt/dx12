@@ -895,6 +895,19 @@ if(TARGET Resource AND TARGET Renderer)
     add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
 endif()
 
+# マテリアル AO（ORM の R / glTF occlusionTexture）。ModelLoader::ProbeOcclusion / TextureLoader::ComposeOrmPng / Material.h の詰め方。GPU 不要。
+if(TARGET Resource AND TARGET Renderer)
+    add_executable(AoMaterialTests ao_material_test.cpp)
+    target_link_libraries(AoMaterialTests PRIVATE Resource Renderer)
+    target_compile_definitions(AoMaterialTests PRIVATE
+        DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(AoMaterialTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(AoMaterialTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AoMaterialTests COMMAND AoMaterialTests)
+endif()
+
 # MCP ディスパッチ表（mcp/ApplicationMcp*.cpp の McpDefine）の「申告キー表 ⊇ 本文が読むキー」を
 # 機械的に見張るテスト。dx12_describe_mcp_params が嘘をつかないことの保証（#20-7 / #30）。
 # エンジンをリンクせずソースをテキストとして読むだけ。依存ゼロ。

@@ -2055,6 +2055,7 @@ private:
         // 自己発光のオーバーライド（透明と同じ理由。Play 中に光らせても Stop で編集時へ戻す）
         DirectX::XMFLOAT3 emissiveColorOverride{-1.0f, -1.0f, -1.0f};
         float emissiveIntensityOverride = -1.0f;
+        float aoStrengthOverride = -1.0f;   // マテリアル AO の強さの上書き（Play 中に変えても Stop で編集時へ戻す）
         float materialRoughnessOverride = -1.0f;
     };
     std::unordered_map<std::string, EntitySnapshot> m_editorSnapshots;

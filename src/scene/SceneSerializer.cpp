@@ -110,6 +110,9 @@ static void ReadEmissiveOverrides(const nlohmann::json& mj, MeshRenderer& mr)
         mr.overrideEmissiveColor = DeserializeFloat3(mj["emissiveColor"], mr.overrideEmissiveColor);
     if (mj.contains("emissiveIntensity"))
         mr.overrideEmissiveIntensity = mj["emissiveIntensity"].get<f32>();
+    // マテリアル AO の強さの上書き（無ければ <0 = モデルに従う）
+    if (mj.contains("aoStrength"))
+        mr.overrideAoStrength = std::clamp(mj["aoStrength"].get<f32>(), 0.0f, 1.0f);
 }
 
 // --- スクリプトプロパティ型 ↔ 文字列（自己記述的に保存するため）---
@@ -789,6 +792,7 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             // キーが 1 つも増えない＝既存シーンを開いて保存し直しても JSON は変わらない。
             const bool  hasEmissive = (mr.overrideEmissiveIntensity >= 0.0f)
                                    || (mr.overrideEmissiveColor.x >= 0.0f);
+            const bool  hasAoOverride = (mr.overrideAoStrength >= 0.0f);
             if (mat || hasPbrOverride)
             {
                 // 既定値は描画側（ApplicationRender.cpp:553-556）と同じものを使う。
@@ -810,6 +814,13 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                                                                     mr.overrideEmissiveColor.z });
                 if (mr.overrideEmissiveIntensity >= 0.0f)
                     ej["material"]["emissiveIntensity"] = mr.overrideEmissiveIntensity;
+            }
+
+            // マテリアル AO の強さ（上書きが入っているときだけ書く＝既存シーンの JSON は増えない）
+            if (hasAoOverride)
+            {
+                if (!ej.contains("material")) ej["material"] = nlohmann::json::object();
+                ej["material"]["aoStrength"] = mr.overrideAoStrength;
             }
 
             // ---- 透明（アルファクリップ / アルファブレンド）----

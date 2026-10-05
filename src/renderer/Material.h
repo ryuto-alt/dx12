@@ -30,11 +30,20 @@ struct Material
 {
     Texture* albedoTexture         = nullptr;
     Texture* normalMapTexture      = nullptr;  // PBR: 法線マップ
-    Texture* metalRoughnessTexture = nullptr;  // PBR: R=unused, G=roughness, B=metallic
+    Texture* metalRoughnessTexture = nullptr;  // PBR: R=AO（occlusionInMR のときだけ）, G=roughness, B=metallic
     Texture* emissiveTexture       = nullptr;  // 自己発光（sRGB。glTF emissiveTexture 相当）
 
     float defaultMetallic  = 1.0f;   // スケーリングファクター（1.0=テクスチャ値そのまま）
     float defaultRoughness = 1.0f;
+
+    // ---- マテリアル AO（ORM の R チャンネル。glTF occlusionTexture / PolyHaven ARM）----
+    // occlusionInMR = true のとき metalRoughnessTexture の R を AO として読む（間接光だけに掛かる）。
+    // ModelLoader が glTF の occlusionTexture から立てる（metallicRoughness と同じ画像ならそのまま、
+    // 別画像なら読み込み時に R へ詰めた ORM を作って metalRoughnessTexture に差し替える）。
+    // aoStrength は glTF の occlusionTexture.strength（ao = 1 + strength*(tex.r - 1)）。
+    // ★既定 false / 1.0 ＝ AO を持たないモデルは 1 ピクセルも変わらない。
+    bool  occlusionInMR = false;
+    float aoStrength    = 1.0f;
 
     // ---- 自己発光（emissive）------------------------------------------------
     // 実効の放射輝度 = emissiveColor * emissiveIntensity * (emissiveTexture があればその値)。
@@ -89,6 +98,10 @@ inline AlphaParams ResolveAlphaParams(const Material* mat, int modeOverride,
 //   b0/b2 のバイトオフセットに依存しているカスタムシェーダも地形も一切影響を受けない。
 //     pbrFlags   bit2      = アルファテスト有効
 //     pbrFlags   bit8..15  = alphaCutoff を 8bit 量子化（0..255 → 0..1）
+//     pbrFlags   bit4      = MR テクスチャの R をマテリアル AO として読む（kPbrFlagAoInMR）
+//     pbrFlags   bit16..23 = AO 強度を 8bit 量子化（255 = 1.0）
+//   （使用済み: bit0 法線 / bit1 MR / bit2 アルファテスト / bit3 emissive / bit4 AO / bit8..15 cutoff / bit16..23 AO 強度。
+//     空き: bit5..7 / bit24..31）
 //     packedTint bit24..31 = opacity を 8bit 量子化（255 = 不透明 = 従来と同じ）
 // ★packedTint の上位バイトは従来 0 が入っていた。opacity として読むようになったので
 //   **不透明でも必ず 255 を書くこと**（0 のままだと全部消える）。
@@ -97,6 +110,11 @@ constexpr u32 kPbrFlagAlphaTest = 4u;
 // ★材質ブロックを持たない描画（フォールバックで白 1 枚だけを貼る経路）では t24 が
 //   別物のディスクリプタになる。このビットが立っていないときは絶対にサンプルさせない。
 constexpr u32 kPbrFlagEmissiveTex = 8u;
+// bit4 = metalRoughness テクスチャ(t2)の R をマテリアル AO として読む（ORM）。bit1（MR 有り）が前提。
+// bit16..23 = AO 強度 8bit 量子化（255 = 1.0）。0 / 未設定なら AO は読まない＝従来と同じ絵。
+// ★既定の MR ダミー(0,128,0) は R=0。bit1 が立っていないとき・実テクスチャが無いときに
+//   このビットを立てると全面が真っ黒になる＝必ず PackAoFlags 経由で立てること。
+constexpr u32 kPbrFlagAoInMR = 16u;
 
 inline u32 QuantizeUnorm8(f32 v)
 {
@@ -108,6 +126,21 @@ inline u32 PackAlphaTestFlags(u32 flags, const AlphaParams& a)
 {
     if (a.mode == AlphaMode::Mask) flags |= kPbrFlagAlphaTest;
     return (flags & ~0x0000FF00u) | (QuantizeUnorm8(a.cutoff) << 8);
+}
+
+// マテリアル AO の実効強度（0 = AO なし）。エンティティ側の上書き(<0 で従う)があっても、
+// モデルが AO を持たない（occlusionInMR=false）なら 0＝勝手に R を読まない。
+inline f32 ResolveAoStrength(const Material* mat, f32 overrideStrength)
+{
+    if (!mat || !mat->occlusionInMR) return 0.0f;
+    return std::clamp((overrideStrength >= 0.0f) ? overrideStrength : mat->aoStrength, 0.0f, 1.0f);
+}
+
+// pbrFlags へ AO 情報を焼く（bit1=MR 有りを立ててから呼ぶこと。strength<=0 なら何もしない）
+inline u32 PackAoFlags(u32 flags, f32 strength)
+{
+    if (strength <= 0.0f || !(flags & 2u)) return flags;
+    return flags | kPbrFlagAoInMR | (QuantizeUnorm8(strength) << 16);
 }
 
 // packedTint（RGB888）へ opacity を足す

@@ -61,7 +61,8 @@ cbuffer PBRMaterial : register(b2)
 {
     float defaultMetallic;
     float defaultRoughness;
-    // bit0=hasNormalMap, bit1=hasMetalRoughness, bit2=アルファテスト有効,
+    // bit0=hasNormalMap, bit1=hasMetalRoughness, bit2=アルファテスト有効, bit3=emissive テクスチャ有り,
+    // bit4=MR の R をマテリアル AO として読む, bit16..23=AO 強度(8bit),
     // bit8..15=alphaCutoff(8bit 量子化)。詳細は renderer/Material.h。
     uint  pbrFlags;
     // ★エンティティ毎の一律色ティント（RGB888。0xFFFFFF = 白 = 影響なし）。
@@ -186,11 +187,15 @@ float4 PSMain(PSInput input) : SV_TARGET
     // Metallic / Roughness（テクスチャ × スライダー値でスケーリング）
     // ★ラフネスの下限 0.04 は UnoShadeLighting の中で掛かる。
     float metallic, roughness;
+    // マテリアル AO（bit4 = MR の R が AO。bit16..23 = 強度）。1.0 = 遮蔽なし＝AO を持たないモデルは従来と同じ。
+    float materialAo = 1.0;
     if (pbrFlags & 2u)
     {
         float4 mr = g_metalRoughness.Sample(g_sampler, uv);
         roughness = mr.g * defaultRoughness;
         metallic  = mr.b * defaultMetallic;
+        if (pbrFlags & 16u)
+            materialAo = 1.0 + (float((pbrFlags >> 16) & 0xFF) / 255.0) * (mr.r - 1.0);
     }
     else
     {
@@ -202,6 +207,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     s.baseColor = albedo;
     s.metallic  = metallic;
     s.roughness = roughness;
+    s.ao        = materialAo;   // 間接光だけに掛かる（ForwardShade.hlsli: ao *= s.ao）
 
     const UnoShadeInput si = UnoMakeShadeInput(input.worldPos, input.worldNormal,
                                                input.positionSV, input.viewDepth);

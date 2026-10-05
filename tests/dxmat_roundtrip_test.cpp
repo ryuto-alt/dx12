@@ -51,6 +51,7 @@ static void Test_Roundtrip()
     src.roughness = 0.75f;
     src.uvTilingU = 2.0f;
     src.uvTilingV = 3.5f;
+    src.aoStrength = 0.6f;
     src.source = "Poly Haven";
     src.license = "CC0";
 
@@ -70,6 +71,7 @@ static void Test_Roundtrip()
         CHECK_F(out.roughness, 0.75f);
         CHECK_F(out.uvTilingU, 2.0f);
         CHECK_F(out.uvTilingV, 3.5f);
+        CHECK_F(out.aoStrength, 0.6f);
         CHECK(out.source == "Poly Haven");
         CHECK(out.license == "CC0");
     }
@@ -92,6 +94,7 @@ static void Test_MissingFieldsUseDefaults()
         CHECK_F(out.roughness, 1.0f);
         CHECK_F(out.uvTilingU, 1.0f);
         CHECK_F(out.uvTilingV, 1.0f);
+        CHECK_F(out.aoStrength, 0.0f);   // 既定 = AO を読まない（既存 .dxmat は不変）
         CHECK(out.source.empty());
         CHECK(out.license.empty());
     }

@@ -601,6 +601,19 @@ Metallic/Roughness の数値上書き(`overrideMetallic`/`overrideRoughness`)と
 - `opacity` を下げただけ（`alphaMode` は継承のまま）でも半透明として描かれる。
   手早くガラスにしたいときはこれが最短。
 
+## 7.6 マテリアル AO（アンビエントオクルージョン）
+
+AO は **ORM テクスチャの R チャンネル**（R=AO / G=Roughness / B=Metallic）で持つ。**間接光（IBL・アンビエント・GI）にだけ**
+掛かり、直接光（太陽・ポイント・スポット）は暗くしない。画面空間の SSAO とは掛け算で重なる。AO を持たないモデルは絵が 1 ピクセルも変わらない。
+
+- **glTF / GLB**: `occlusionTexture`（と `strength`）を自動で読む。`metallicRoughnessTexture` と同じ画像（Blender の ORM 書き出し・
+  Poly Haven の ARM）ならそのまま R を使い、別画像なら読み込み時に R へ詰めた ORM を作る（解像度が違えば大きい方へリサイズ）。
+  UV0 以外を指す occlusionTexture は無視して警告を出す。FBX / OBJ は対象外。
+- **`.dxmat`**: `"aoStrength": 1.0`（0..1）を足すと `metalRoughness` の R を AO として読む（既定 0 = 読まない）。
+- **エンティティ単位の強さ**: `dx12_set_pbr` の `aoStrength`（0 でオフ、負でモデルの値に戻す）。シーン JSON は `"material": {"aoStrength": 0.5}`。
+  モデルが AO を持たないときは効かない（`dx12_get_entity` の `bakedTextures[].hasAO` で確認）。
+- テクスチャは**リニア（sRGB にしない）**。`TextureUsage::NonColor` で読まれるので BC7 圧縮・pak 焼き込みもそのまま通る。
+
 ## 8. マテリアルアセット（`.dxmat`、Unreal のマテリアルインスタンス相当）
 
 上記7節のテクスチャ上書きは「エンティティ1体に対してその場でテクスチャを差し替える」その場限りの
@@ -624,7 +637,7 @@ Metallic/Roughness の数値上書き(`overrideMetallic`/`overrideRoughness`)と
 ```
 `metallic`/`roughness` はテクスチャ値に掛かる**係数**（glTF 意味論。テクスチャが無ければそのまま
 定数値として使われる）。`metalRoughness` は glTF の ORM 規約と同じ **G=Roughness / B=Metallic**
-（Poly Haven の ARM パックテクスチャがそのまま使える。R=AO は現状未使用）。法線マップは
+（Poly Haven の ARM パックテクスチャがそのまま使える。R=AO は **`aoStrength`（0..1）を書いたときだけ**読む。下の「マテリアル AO」参照）。法線マップは
 **OpenGL 規約**（`PBR.hlsli` の `PerturbNormal` が G 反転しない）。Poly Haven からは `nor_gl` を選ぶこと
 （`nor_dx` は使わない）。
 
