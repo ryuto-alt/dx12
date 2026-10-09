@@ -67,6 +67,10 @@ float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
     // 比較してゴミ影を落とすため、明示的に無影(1.0)を返す。
     if (cascadeSplitsView.x > 1.0e8) return 1.0f;
     int c = SelectCascade(viewDepth);
+    // 画面分割の副ビュー: カスケードは主ビューの視錐台に合わせてあるので、選んだカスケードの箱の外なら
+    //   この点を含む次のカスケードを使う（主ビューでは選んだものに必ず入るので何も変わらない）
+    [loop]
+    while (c < NUM_CASCADES - 1 && !ShadowCascadeContains(c, worldPos)) ++c;
     float shadow = SampleCascade(c, worldPos, svPos);
     // カスケード境界ブレンド(任意): 次カスケードと線形混合
     float band = shadowParams.z;
