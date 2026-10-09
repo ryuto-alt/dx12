@@ -19,40 +19,45 @@
 - ESP32 DevKit（または Arduino Uno / Nano）と、**データ通信できる** USB ケーブル（充電専用ケーブルは不可）
 - （あれば）可変抵抗 10kΩ・ジャンパー線
 
-## 手順（3 ステップ）
+## 手順（Uno Engine を入れるだけ）
 
-### 0. このブランチを取ってくる
+### 1. Uno Engine v2.5.0 以降を入れる
 
-```powershell
-git clone -b arduino-test https://github.com/ryuto-alt/dx12.git
-cd dx12\hardware\lab
-```
+- まだ入っていない: [Releases](https://github.com/ryuto-alt/dx12/releases/latest) から `dx12-engine-v*.zip` を落として好きな場所に展開し、`DX12Engine.exe` を起動
+- もう入っている: 起動すれば自動で更新されます
 
-git が無ければ GitHub のブランチのページで **Code → Download ZIP** でも構いません（展開して `hardware\lab` を開く）。
+更新後に最初に起動すると、ランチャーのプロジェクト一覧に **ArduinoLab** が出ます
+（実体は `ドキュメント\UnoProjects\ArduinoLab`。最初の 1 回だけ置き、消しても置き直しません）。
 
-### 1. `setup.bat` をダブルクリック（初回だけ・10 分くらい）
+### 2. ArduinoLab を開く → ボードを USB でつなぐ
 
-- エンジン（Uno Engine v2.4.0、約 50MB）を `engine\` にダウンロード
-  （ソースから自分でビルドした `build\release\DX12Engine.exe` があればそちらを使います）
-- arduino-cli を `tools\` にダウンロード（管理者権限は不要）
-- ESP32 / Arduino のボード定義を入れる
-- つながっているボードの COM ポートを表示
+開くと、書き込みに使う道具（arduino-cli と ESP32 / Arduino のボード定義）を**裏で自動で入れます**
+（初回だけ数分。右下に「準備しています」→「準備できました」と出ます。管理者権限は要りません）。
 
-ボードが表示されないときは USB ドライバーを入れてください（ボードの裏の小さいチップの型番で選ぶ）:
+まだ書き込んでいないボードを挿すと **「ハードウェア」窓が自動で開きます**（メニュー「ツール > ハードウェア」でもいつでも開けます）。
+
+### 3. 「ボードに書き込む」を押す
+
+ポートとボードの種類は自動で選ばれます（違っていたら選び直す）。エンジンを開いたままで書き込めます。
+
+- ESP32 で書き込みが始まらない / `Failed to connect` → `Connecting....` の間 **基板の BOOT ボタンを押しっぱなし**にしてもう一度
+- 書き込みが終わると自動でつなぎ直し、デバイス `lab` が「接続中」になります
+
+### 4. ▶ Play（または F5）
+
+左上の表示が **「● lab に接続中」** になれば成功。BOOT ボタンを押すと青い球が跳ね、基板の青い LED も光ります。
+
+ボードが「ハードウェア」窓のポート一覧に出ないときは USB ドライバーを入れてください（ボードの裏の小さいチップの型番で選ぶ）:
 CH340 → https://www.wch-ic.com/downloads/CH341SER_EXE.html / CP2102 → https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers
+充電専用の USB ケーブルでは通信できません。
 
-### 2. `flash.bat` をダブルクリック（ボードに書き込む）
+### （別の方法）bat でやる
 
-`firmware\ArduinoLab\ArduinoLab.ino` をコンパイルして書き込みます。ポートは自動で探します。
+このフォルダの bat でも同じことができます（エンジンのソースを clone して試す人向け）。
 
-- Arduino Uno なら、コマンドプロンプトで `flash.bat uno`（Nano なら `flash.bat nano`）
-- ESP32 で `Failed to connect` / `Wrong boot mode` が出たら、`Connecting....` の間 **基板の BOOT ボタンを押しっぱなし**にしてもう一度
-- **エンジンを起動したままだと書き込めません**（ポートの取り合いになる）。先にエンジンを閉じる
-
-### 3. `start.bat` をダブルクリック → ▶ Play（または F5）
-
-エンジンが ArduinoLab プロジェクトを開いた状態で起動します。▶ Play を押すと、左上の表示が
-**「● lab に接続中」** になれば成功。BOOT ボタンを押すと青い球が跳ね、基板の青い LED も光ります。
+1. `setup.bat` … エンジン（リリース版）と arduino-cli を `engine\` `tools\` に落とし、ボード定義を入れる
+2. `flash.bat`（Uno なら `flash.bat uno`）… `ArduinoLab\firmware\ArduinoLab` を書き込む。エンジンを閉じてから
+3. `start.bat` … ArduinoLab を開いた状態でエンジンを起動
 
 ## 実験
 
@@ -77,7 +82,7 @@ Arduino Uno のとき: ボタン D2（D2 と GND の間）、可変抵抗 A0（�
 
 | 変えたいもの | ファイル |
 |---|---|
-| ボードの動き・つなぐセンサー | `firmware\ArduinoLab\ArduinoLab.ino`（書き換えたら `flash.bat`） |
+| ボードの動き・つなぐセンサー | `ArduinoLab\firmware\ArduinoLab\ArduinoLab.ino`（書き換えたら「ハードウェア」窓で書き込み） |
 | 画面の中の反応 | `ArduinoLab\assets\components\Hw*.lua`（保存すると Play 中でも差し替わる） |
 | 値の範囲・反転・なめらかさ | `ArduinoLab\assets\hardware.json` の `channels` |
 | ボタンをゲームの操作に割り当てる | `hardware.json` の `actions`（例 `"btn": "Jump"`） |

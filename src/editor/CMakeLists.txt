@@ -17,6 +17,7 @@ add_library(Editor STATIC
     panels/AnimationEditorPanel.cpp
     panels/SpriteSheetEditorPanel.cpp
     panels/NetworkPanel.cpp
+    panels/HardwarePanel.cpp     # ハードウェア窓（Arduino / ESP32 の接続状態と一発書き込み）
     panels/PathTracerPanel.cpp   # リファレンスレンダー窓（DXR パストレーサー。パリティ基盤 Q1a）
     panels/MaterialEditorPanel.cpp
     panels/MaterialLibraryPanel.cpp

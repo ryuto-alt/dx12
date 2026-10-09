@@ -84,6 +84,7 @@ inline constexpr Desc kAll[] = {
     {"mcp",            "MCP / AI Bridge",          "MCP / AI Bridge",         ICON_CLOUD,     "接続・診断",   &EditorContext::showMcpBridge,         DockSlot::RightTab, MenuHome::Tools, "mcp ai bridge"},
     {"network",        "Network",                  "Network",                 ICON_T_NET,     "接続・診断",   &EditorContext::showNetworkStatus,     DockSlot::RightTab, MenuHome::Tools, "multiplayer マルチプレイ"},
     {"networkSettings","Network 設定",             "Network 設定",            ICON_SETTINGS,  "接続・診断",   &EditorContext::showNetworkSettings,   DockSlot::RightTab, MenuHome::Tools, "network settings"},
+    {"hardware",       "ハードウェア",             "ハードウェア###HardwareFloating", ICON_CPU, "接続・診断", &EditorContext::showHardware,       DockSlot::Floating, MenuHome::Tools, "hardware arduino esp32 シリアル 書き込み flash ボード"},
     {"diagnostics",    "エンジン診断 (UI 自動テスト)", "",                    ICON_BUG,       "接続・診断",   &EditorContext::showEngineDiagnostics, DockSlot::Floating, MenuHome::Tools, "diagnostics ui test"},
 };
 inline constexpr size_t kCount = sizeof(kAll) / sizeof(kAll[0]);

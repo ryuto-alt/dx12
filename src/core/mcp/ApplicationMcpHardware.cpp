@@ -7,7 +7,7 @@
 //   後半: MCP method
 //     hw_list_ports / hw_status / hw_connect / hw_disconnect / hw_read / hw_monitor /
 //     hw_write / hw_write_dangerous / hw_simulate / hw_calibrate / hw_config_get / hw_config_set /
-//     hw_flash / hw_flash_status
+//     hw_flash / hw_flash_status / hw_setup
 //
 // ★hw_read は応答をメインスレッドを止めずに遅らせる（m_hwReads を毎フレーム見て、時間が来たら返す）。
 // ★hw_flash は arduino-cli をワーカースレッドで走らせる（CREATE_NO_WINDOW + BELOW_NORMAL）。
@@ -18,6 +18,9 @@
 #include "core/mcp/McpManifestBuild.h"
 #include "core/AtomicFile.h"
 #include "hardware/HwPortEnum.h"
+#include "hardware/HwToolchain.h"
+#include "editor/EditorContext.h"
+#include "project/ProjectManager.h"
 
 #include <algorithm>
 #include <atomic>
@@ -27,6 +30,7 @@
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 
 namespace dx12e
@@ -103,6 +107,35 @@ HwAppState& St(std::shared_ptr<void>& p)
     return *static_cast<HwAppState*>(p.get());
 }
 
+// ハードウェア窓まわりの実行時状態（Application::m_hwUiRt。メインスレッドだけが触る）
+struct HwUiRt
+{
+    double lastTick = -100.0, lastPorts = -100.0, lastSketches = -100.0;
+    bool   hasSerial = false;
+    std::string autoStartBase;                  // 自動導入を試したプロジェクト（同じプロジェクトで繰り返さない）
+    bool   notifyOnDone = false;                // 導入が終わったらトーストで知らせる
+    std::vector<hwui::PortRow> ports;
+    std::vector<std::string>   sketches;
+    std::string                sketchesBase;
+    std::map<std::string, double> portSeen;     // 既知 VID のポートを初めて見た時刻（連続して見えている間だけ残す）
+    std::set<std::string>         prompted;     // 案内を出したポート（セッションで 1 回）
+};
+
+HwUiRt& Rt(std::shared_ptr<void>& p)
+{
+    if (!p) p = std::make_shared<HwUiRt>();
+    return *static_cast<HwUiRt*>(p.get());
+}
+
+bool KnownBoardVid(const std::string& vid)
+{
+    static const char* const kVids[] = {"1A86", "10C4", "0403", "2341", "2A03", "303A"};
+    std::string v = vid;
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    for (const char* k : kVids) if (v == k) return true;
+    return false;
+}
+
 void PushLogText(HwAppState& st, const char* data, size_t n)
 {
     std::lock_guard<std::mutex> lk(st.m);
@@ -152,29 +185,7 @@ void StopFlash(HwAppState& st)
 
 std::wstring ToWide(const std::string& s) { return PathResolver::Utf8ToWide(s); }
 
-// arduino-cli.exe の場所: hardware.json の arduinoCli → PATH → 既定のインストール先
-std::string FindArduinoCli(const std::string& fromConfig, std::vector<std::string>& tried)
-{
-    auto exists = [](const std::string& p) {
-        std::error_code ec;
-        return !p.empty() && fs::is_regular_file(PathResolver::Utf8ToWide(p), ec);
-    };
-    if (!fromConfig.empty())
-    {
-        tried.push_back(fromConfig + "（hardware.json の arduinoCli）");
-        if (exists(fromConfig)) return fromConfig;
-    }
-    {
-        wchar_t buf[MAX_PATH * 2] = {};
-        const DWORD n = ::SearchPathW(nullptr, L"arduino-cli.exe", nullptr, static_cast<DWORD>(std::size(buf)), buf, nullptr);
-        tried.push_back("PATH 上の arduino-cli.exe");
-        if (n > 0 && n < std::size(buf)) return PathResolver::WideToUtf8(buf);
-    }
-    const std::string def = "C:\\Program Files\\Arduino CLI\\arduino-cli.exe";
-    tried.push_back(def);
-    if (exists(def)) return def;
-    return {};
-}
+// arduino-cli.exe の場所は hw::FindArduinoCli（hardware/HwToolchain.h。hardware.json → 管理下 → PATH → 既定の場所）
 
 // エンジンのリポジトリ（hardware/firmware がある所）。開発ビルドだけ。見つからなければ空。
 fs::path FindRepoRoot()
@@ -425,7 +436,78 @@ struct FlashJob
     std::vector<std::string> pausedOthers;   // 書き込み中だけ止める他のデバイス（未接続で、hello 探しにポートを開きに来るもの）
     std::string           cmdLine;       // 引数込みのコマンドライン（UTF-8）
     std::string           workDir;
+    std::string           cli;           // arduino-cli のパス（コアの目印に書く用）
+    std::string           preCmdLine;    // コンパイルの前に走らせる core install（空 = 要らない）
+    std::string           preCore;       // その core（"esp32:esp32"）
 };
+
+// 1 本のコマンドを隠しプロセスで走らせて出力を st.log に積む。終了コードを返す。起動できなければ -1 と error。
+// st.process / st.job にキャンセル用のハンドルを預ける（StopFlash が止める）。
+int RunLoggedProc(HwAppState& st, const std::string& cmdLine, const std::string& workDir, std::string& error)
+{
+    int exitCode = -1;
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE rd = nullptr, wr = nullptr;
+    if (!::CreatePipe(&rd, &wr, &sa, 0)) { error = "パイプを作れませんでした"; return -1; }
+    ::SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdOutput = wr;
+    si.hStdError = wr;
+    si.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = ToWide(cmdLine);
+    const std::wstring wd = ToWide(workDir);
+    // ★窓を出さず（CREATE_NO_WINDOW）、操作に響かないよう優先度を下げる（BELOW_NORMAL。子の esptool も継承する）。
+    //   CREATE_SUSPENDED で Job に入れてから走らせる（子プロセスを取りこぼさない）。
+    const BOOL ok = ::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
+                                     CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                                     nullptr, wd.empty() ? nullptr : wd.c_str(), &si, &pi);
+    ::CloseHandle(wr);
+    if (!ok)
+    {
+        error = "arduino-cli を起動できませんでした（Win32 エラー " + std::to_string(::GetLastError()) + "）";
+        ::CloseHandle(rd);
+        return -1;
+    }
+    HANDLE job2 = ::CreateJobObjectW(nullptr, nullptr);
+    if (job2)
+    {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        ::SetInformationJobObject(job2, JobObjectExtendedLimitInformation, &li, sizeof(li));
+        ::AssignProcessToJobObject(job2, pi.hProcess);
+    }
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        st.process = pi.hProcess;
+        st.job = job2;
+    }
+    ::ResumeThread(pi.hThread);
+    ::CloseHandle(pi.hThread);
+
+    char buf[2048];
+    DWORD got = 0;
+    while (::ReadFile(rd, buf, sizeof(buf), &got, nullptr) && got > 0)
+        PushLogText(st, buf, got);
+    PushLogText(st, "\n", 1);
+    ::CloseHandle(rd);
+
+    DWORD ec = 1;
+    ::WaitForSingleObject(pi.hProcess, 10000);
+    ::GetExitCodeProcess(pi.hProcess, &ec);
+    exitCode = static_cast<int>(ec);
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        st.process = nullptr;
+        st.job = nullptr;
+    }
+    if (job2) ::CloseHandle(job2);   // KILL_ON_JOB_CLOSE: 残った子があれば終わらせる
+    ::CloseHandle(pi.hProcess);
+    return exitCode;
+}
 
 void RunFlash(FlashJob job)
 {
@@ -456,74 +538,25 @@ void RunFlash(FlashJob job)
         std::this_thread::sleep_for(std::chrono::milliseconds(300));   // ドライバがポートを手放す余裕
     }
 
-    // 2) arduino-cli を起動して出力を取り込む
-    if (!st.cancel.load())
+    // 2) arduino-cli を起動して出力を取り込む（必要ならコンパイルの前にコアを入れる）
+    if (!st.cancel.load() && !job.preCmdLine.empty())
     {
-        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-        HANDLE rd = nullptr, wr = nullptr;
-        if (!::CreatePipe(&rd, &wr, &sa, 0)) error = "パイプを作れませんでした";
-        else
-        {
-            ::SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-            STARTUPINFOW si{};
-            si.cb = sizeof(si);
-            si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-            si.wShowWindow = SW_HIDE;
-            si.hStdOutput = wr;
-            si.hStdError = wr;
-            si.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
-            PROCESS_INFORMATION pi{};
-            std::wstring cmd = ToWide(job.cmdLine);
-            const std::wstring wd = ToWide(job.workDir);
-            // ★窓を出さず（CREATE_NO_WINDOW）、操作に響かないよう優先度を下げる（BELOW_NORMAL。子の esptool も継承する）。
-            //   CREATE_SUSPENDED で Job に入れてから走らせる（子プロセスを取りこぼさない）。
-            const BOOL ok = ::CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
-                                             CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
-                                             nullptr, wd.empty() ? nullptr : wd.c_str(), &si, &pi);
-            ::CloseHandle(wr);
-            if (!ok)
-            {
-                error = "arduino-cli を起動できませんでした（Win32 エラー " + std::to_string(::GetLastError()) + "）";
-                ::CloseHandle(rd);
-            }
-            else
-            {
-                HANDLE job2 = ::CreateJobObjectW(nullptr, nullptr);
-                if (job2)
-                {
-                    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li{};
-                    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                    ::SetInformationJobObject(job2, JobObjectExtendedLimitInformation, &li, sizeof(li));
-                    ::AssignProcessToJobObject(job2, pi.hProcess);
-                }
-                {
-                    std::lock_guard<std::mutex> lk(st.m);
-                    st.process = pi.hProcess;
-                    st.job = job2;
-                }
-                ::ResumeThread(pi.hThread);
-                ::CloseHandle(pi.hThread);
-
-                char buf[2048];
-                DWORD got = 0;
-                while (::ReadFile(rd, buf, sizeof(buf), &got, nullptr) && got > 0)
-                    PushLogText(st, buf, got);
-                PushLogText(st, "\n", 1);
-                ::CloseHandle(rd);
-
-                DWORD ec = 1;
-                ::WaitForSingleObject(pi.hProcess, 10000);
-                ::GetExitCodeProcess(pi.hProcess, &ec);
-                exitCode = static_cast<int>(ec);
-                {
-                    std::lock_guard<std::mutex> lk(st.m);
-                    st.process = nullptr;
-                    st.job = nullptr;
-                }
-                if (job2) ::CloseHandle(job2);   // KILL_ON_JOB_CLOSE: 残った子があれば終わらせる
-                ::CloseHandle(pi.hProcess);
-            }
-        }
+        SetState(st, "installing_core");   // ★"compiling" のままだと core install の esptool の文字で "uploading" に化ける
+        const std::string msg = "ボードのコア " + job.preCore + " を入れます（初回だけ数分）\n";
+        PushLogText(st, msg.data(), msg.size());
+        std::string perr;
+        const int pec = RunLoggedProc(st, job.preCmdLine, "", perr);
+        if (!perr.empty()) error = perr;
+        else if (pec != 0 && !st.cancel.load()) error = "ボードのコア " + job.preCore + " を入れられませんでした（ログ末尾を参照）";
+        else if (pec == 0) hw::AddCoreToMarker(job.preCore, job.cli);
+        if (error.empty()) SetState(st, "compiling");
+    }
+    if (!st.cancel.load() && error.empty())
+    {
+        std::string perr;
+        const int ec = RunLoggedProc(st, job.cmdLine, job.workDir, perr);
+        if (!perr.empty()) error = perr;
+        else exitCode = ec;
     }
     if (st.cancel.load() && error.empty()) error = "中断されました";
 
@@ -654,10 +687,377 @@ void Application::ServiceHardwareReads()
 void Application::ShutdownHardware()
 {
     if (m_hwFlash) StopFlash(St(m_hwFlash));
+    if (m_hwToolchain) m_hwToolchain->Shutdown();   // 導入中の arduino-cli / ダウンロードを止めて回収
     for (const HwReadPending& r : m_hwReads)
         FailMcp(m_mcpBridge.get(), r.reply, McpErr::Cancelled, "エンジンの終了で hw_read を中断しました");
     m_hwReads.clear();
     if (m_hardware) m_hardware->Shutdown();   // 全出力を !safe してから閉じる
+}
+
+hw::HwToolchain& Application::HwToolchainRef()
+{
+    if (!m_hwToolchain) m_hwToolchain = std::make_shared<hw::HwToolchain>();
+    return *m_hwToolchain;
+}
+
+void Application::ServiceHardwareUi()
+{
+    if (!m_editorCtx || m_isGameMode) return;
+    // 起動時に積んだ知らせ（サンプルを置いた）は、エディタが出てから 1 回だけ
+    if (!m_startupToast.empty() && !m_showLauncher)
+    {
+        m_editorCtx->Notify(ui::ToastKind::Success, m_startupToast, 7.0f);
+        m_startupToast.clear();
+    }
+    if (m_showLauncher || !m_hardware) return;
+
+    HwUiRt& rt = Rt(m_hwUiRt);
+    HwAppState& st = St(m_hwFlash);
+    hwui::UiState& hu = m_editorCtx->hwUi;
+    hw::HwToolchain& tc = HwToolchainRef();
+    const bool automation = m_headless || m_bgOptions.Active() || m_virtualInputRequested;
+    const double now = SteadySec();
+    const std::string base = PathResolver::BaseDir();
+
+    // ---- 窓からの要求 ----
+    if (hu.requestToolchainInstall)
+    {
+        hu.requestToolchainInstall = false;
+        if (tc.Start(st.arduinoCli) && !automation) rt.notifyOnDone = true;
+    }
+    if (hu.requestFlash)
+    {
+        hu.requestFlash = false;
+        HwFlashRequest rq;
+        rq.sketch = hu.reqSketch;
+        rq.device = hu.reqDevice;
+        rq.port = hu.reqPort;
+        rq.fqbn = hu.reqFqbn;
+        std::string err;
+        if (StartHwFlash(rq, err, nullptr))
+        {
+            hu.requestError.clear();
+            hu.promptMessage.clear();
+        }
+        else
+        {
+            hu.requestError = err;
+            m_editorCtx->Notify(ui::ToastKind::Error, "書き込みを始められませんでした: " + err, 8.0f);
+        }
+    }
+
+    const bool open = m_editorCtx->showHardware;
+    const bool tick = now - rt.lastTick >= 1.0;
+    if (!open && !tick) return;
+    if (tick)
+    {
+        rt.lastTick = now;
+        rt.hasSerial = false;
+        for (const hw::HwDeviceConfig& d : m_hardware->Config().devices)
+            if (d.transport == "serial") { rt.hasSerial = true; break; }
+    }
+
+    const hw::HwToolchain::Snapshot tcs = tc.Get(st.arduinoCli);
+
+    // ---- 書き込み道具の自動導入（プロジェクトを開いたら 1 回。自動化中は勝手に落とさない）----
+    if (tick && !automation && rt.hasSerial && !tcs.ready && !tcs.running && rt.autoStartBase != base)
+    {
+        rt.autoStartBase = base;
+        if (tc.Start(st.arduinoCli))
+        {
+            rt.notifyOnDone = true;
+            m_editorCtx->Notify(ui::ToastKind::Info, "Arduino の書き込み道具を準備しています（初回だけ数分）", 6.0f);
+        }
+    }
+    if (rt.notifyOnDone && !tcs.running && (tcs.state == hw::HwToolchain::State::Ready || tcs.state == hw::HwToolchain::State::Failed))
+    {
+        rt.notifyOnDone = false;
+        if (tcs.state == hw::HwToolchain::State::Ready)
+            m_editorCtx->Notify(ui::ToastKind::Success, "Arduino の書き込み道具の準備ができました", 5.0f);
+        else
+            m_editorCtx->Notify(ui::ToastKind::Error, "Arduino の書き込み道具を準備できませんでした: " + tcs.error + "（ハードウェア窓の「やり直す」から再試行できます）", 10.0f);
+    }
+
+    // ---- デバイス一覧 ----
+    const std::vector<hw::HwDeviceInfo> devs = m_hardware->ListDevices();
+
+    // ---- ボード検出の案内（エディタのみ。書き込みは自動でしない）----
+    bool anyReady = false;
+    for (const hw::HwDeviceInfo& d : devs) if (!d.isVirtual && d.status == hw::HwStatus::Ready) { anyReady = true; break; }
+    const bool wantPrompt = tick && !automation && rt.hasSerial && tcs.ready && !anyReady;
+
+    // ---- COM ポート・スケッチ（1Hz。窓が開いているか、案内の判定に要るときだけ）----
+    if ((open || wantPrompt) && now - rt.lastPorts >= 1.0)
+    {
+        rt.lastPorts = now;
+        rt.ports.clear();
+        for (const hw::HwPortInfo& p : hw::EnumerateComPorts())
+        {
+            hwui::PortRow r;
+            r.port = p.portName; r.friendlyName = p.friendlyName; r.vid = p.vid; r.pid = p.pid; r.guessedBoard = p.guessedBoard;
+            r.knownVid = KnownBoardVid(p.vid);
+            for (const hw::HwDeviceInfo& d : devs)
+                if (!d.port.empty() && d.port == p.portName && d.status != hw::HwStatus::Disconnected) { r.usedBy = d.name; break; }
+            rt.ports.push_back(std::move(r));
+        }
+    }
+    if (open && (now - rt.lastSketches >= 1.0 || rt.sketchesBase != base))
+    {
+        rt.lastSketches = now;
+        rt.sketchesBase = base;
+        rt.sketches.clear();
+        std::error_code ec;
+        const fs::path fw = fs::path(PathResolver::Utf8ToWide(base)) / L"firmware";
+        if (fs::is_directory(fw, ec))
+            for (const fs::directory_entry& e : fs::directory_iterator(fw, ec))
+            {
+                if (!e.is_directory(ec)) continue;
+                const fs::path name = e.path().filename();
+                if (fs::is_regular_file(e.path() / (name.wstring() + L".ino"), ec)) rt.sketches.push_back(PathResolver::WideToUtf8(name.wstring()));
+            }
+        std::sort(rt.sketches.begin(), rt.sketches.end());
+    }
+
+    if (wantPrompt)
+    {
+        std::set<std::string> present;
+        for (const hwui::PortRow& p : rt.ports)
+        {
+            if (!p.knownVid) continue;
+            present.insert(p.port);
+            const auto it = rt.portSeen.try_emplace(p.port, now).first;
+            if (now - it->second >= 5.0 && rt.prompted.insert(p.port).second)
+            {
+                m_editorCtx->showHardware = true;
+                hu.promptMessage = "ボードが見つかりました。まだ書き込まれていないようです。";
+                hu.promptPort = p.port;
+                hu.selPort = p.port;
+                hu.boardTouched = false;
+                Logger::Info("[hw] ボード {} を検出（hello なし）。ハードウェア窓で書き込みを案内します", p.port);
+            }
+        }
+        for (auto it = rt.portSeen.begin(); it != rt.portSeen.end();)
+            it = present.count(it->first) ? std::next(it) : rt.portSeen.erase(it);
+    }
+    else if (tick)
+    {
+        rt.portSeen.clear();
+        if (anyReady) { hu.promptMessage.clear(); hu.promptPort.clear(); }
+    }
+
+    if (!m_editorCtx->showHardware) return;
+
+    // ---- スナップショットを窓へ ----
+    hu.projectOpen = !base.empty();
+    hu.devices.clear();
+    const hw::HwConfig cfgNow = m_hardware->Config();
+    for (const hw::HwDeviceInfo& d : devs)
+    {
+        hwui::DeviceRow r;
+        r.name = d.name; r.status = hw::HwStatusName(d.status); r.port = d.port;
+        r.board = !d.board.empty() ? d.board : d.describe;
+        r.lastError = d.lastError;
+        r.isVirtual = d.isVirtual;
+        const hw::HwDeviceConfig* dc = cfgNow.FindDevice(d.name);
+        r.serial = !d.isVirtual && (!dc || dc->transport == "serial");
+        hu.devices.push_back(std::move(r));
+    }
+    hu.ports = rt.ports;
+    hu.sketches = rt.sketches;
+    hu.tcState = hw::HwToolchain::StateName(tcs.state);
+    hu.tcProgress = tcs.progress;
+    hu.tcReady = tcs.ready;
+    hu.tcRunning = tcs.running;
+    hu.tcCli = tcs.cli;
+    hu.tcError = tcs.error;
+    hu.tcLog = tcs.log;
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        hu.flashState = st.state;
+        hu.flashRunning = st.running;
+        const double el = st.running ? now - st.startedSec : (st.endedSec > 0.0 ? st.endedSec - st.startedSec : 0.0);
+        hu.flashElapsedSec = static_cast<float>(el);
+        hu.flashError = st.error;
+        hu.flashDevice = st.device;
+        hu.flashPort = st.port;
+        hu.flashLog.clear();
+        const size_t from = st.log.size() > 60 ? st.log.size() - 60 : 0;
+        for (size_t i = from; i < st.log.size(); ++i) hu.flashLog.push_back(st.log[i]);
+    }
+}
+
+// ===========================================================================
+// hw_flash の本体（MCP とエディタのハードウェア窓の両方から呼ぶ）
+// ===========================================================================
+void Application::StartHwFlashImpl(const HwFlashRequest& rq, nlohmann::json* outInfo)
+{
+    if (!m_hardware) throw McpError(McpErr::Internal, "ハードウェア層が未初期化", "プロジェクトを開いてから呼ぶ");
+    HwAppState& st = St(m_hwFlash);
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        if (st.running)
+            throw McpError(McpErr::Busy, "別の hw_flash が実行中です（同時に 1 本だけ）", "hw_flash_status で終わるのを待つ");
+    }
+    if (st.worker.joinable()) st.worker.join();   // 前回の終了済みスレッドを回収
+
+    const std::string sketchIn = rq.sketch;
+    std::string dev = rq.device;
+    std::string port = rq.port;
+    std::string fqbn = rq.fqbn;
+    if (sketchIn.empty()) throw McpError(McpErr::InvalidParam, "sketch が空です", ".ino かそのフォルダを渡す");
+    if (dev.empty() && port.empty()) throw McpError(McpErr::InvalidParam, "device か port のどちらかが要ります", "device:\"generic\" か port:\"COM8\"");
+
+    // 対象（デバイス / ポート）
+    hw::HwDeviceInfo info;
+    bool haveInfo = false;
+    if (!dev.empty())
+    {
+        info = RequireDevice(*m_hardware, dev);
+        haveInfo = true;
+        if (info.isVirtual) throw McpError(McpErr::InvalidParam, "仮想デバイスには書き込めません", "実機のデバイスを指定する");
+        if (port.empty()) port = info.port;
+        if (port.empty())
+            throw McpError(McpErr::InvalidParam, "デバイス '" + dev + "' のポートが分かりません（未接続）",
+                           "port:\"COM8\" を渡す（hw_list_ports で確認）");
+    }
+    else
+    {
+        for (const hw::HwDeviceInfo& d : m_hardware->ListDevices())
+            if (d.port == port && d.status != hw::HwStatus::Disconnected) { dev = d.name; info = d; haveInfo = true; break; }
+    }
+
+    // 書き込み道具（arduino-cli + コア）の自動導入中は待たせる
+    hw::HwToolchain& tc = HwToolchainRef();
+    if (tc.Running())
+    {
+        McpError e(McpErr::Busy, "書き込み道具を準備中です", "hw_setup {action:\"status\"} で終わるのを待つ（初回だけ数分）");
+        e.name = "E_HW_TOOLCHAIN_BUSY";
+        throw e;
+    }
+
+    // arduino-cli / スケッチ / ライブラリ
+    std::vector<std::string> triedCli;
+    const std::string cli = hw::FindArduinoCli(st.arduinoCli, triedCli);
+    if (cli.empty())
+    {
+        // エディタ / 配布物では自動で入れる。待ってから撃ち直してもらう
+        const bool started = !m_isGameMode && tc.Start(st.arduinoCli);
+        McpError e(McpErr::NotFound, started ? "arduino-cli が見つかりません。書き込み道具の自動準備を始めました（初回だけ数分）" : "arduino-cli が見つかりません",
+                   started ? "hw_setup {action:\"status\"} で ready になるのを待ってから撃ち直す"
+                           : "hw_setup {action:\"install_toolchain\"} で入れるか、hardware.json の arduinoCli に絶対パスを書く（hw_config_set）");
+        e.name = "E_HW_NO_ARDUINO_CLI";
+        e.details = {{"tried", triedCli}};
+        throw e;
+    }
+    const fs::path repo = FindRepoRoot();
+    std::vector<std::string> triedSk;
+    const fs::path sketch = ResolveSketch(sketchIn, repo, triedSk);
+    if (sketch.empty())
+    {
+        McpError e(McpErr::NotFound, "スケッチ '" + sketchIn + "' が見つかりません", "絶対パスで渡すか、プロジェクト / <repo>/hardware/firmware/ の下に置く");
+        e.name = "E_HW_NO_SKETCH";
+        e.details = {{"tried", triedSk}};
+        throw e;
+    }
+    std::vector<std::string> libs = rq.libraries;
+    if (libs.empty())
+    {
+        if (repo.empty())
+            throw McpError(McpErr::InvalidParam, "UnoLink ライブラリの場所が分かりません（配布物にはリポジトリが無い）",
+                           "libraries に UnoLink フォルダの絶対パスを渡す");
+        libs.push_back(PathResolver::WideToUtf8((repo / "hardware" / "firmware" / "UnoLink").wstring()));
+    }
+
+    // fqbn
+    if (fqbn.empty())
+    {
+        if (haveInfo) fqbn = FqbnFromBoard(info.board);
+        if (fqbn.empty())
+            for (const hw::HwPortInfo& p : hw::EnumerateComPorts())
+                if (p.portName == port) { fqbn = FqbnFromBoard(p.guessedBoard); break; }
+        if (fqbn.empty())
+        {
+            McpError e(McpErr::InvalidParam, "ボードを推定できませんでした", "fqbn を渡す（例 esp32:esp32:esp32 / arduino:avr:uno）");
+            e.name = "E_HW_FQBN_REQUIRED";
+            e.validValues = {"esp32:esp32:esp32", "arduino:avr:uno", "arduino:avr:nano"};
+            throw e;
+        }
+    }
+
+    const std::string* const quoted[] = {&cli, &port, &fqbn};
+    for (const std::string* s : quoted)
+        if (s->find('"') != std::string::npos)
+            throw McpError(McpErr::InvalidParam, "引数に引用符は使えません", "パス・ポート・fqbn から \" を除く");
+
+    FlashJob job;
+    job.stateHolder = m_hwFlash;
+    job.sys = m_hardware.get();
+    job.device = dev;
+    job.port = port;
+    for (const hw::HwDeviceInfo& d : m_hardware->ListDevices())
+        if (d.name != dev && !d.isVirtual && !d.userDisabled && d.status != hw::HwStatus::Ready)
+            job.pausedOthers.push_back(d.name);
+    // 設定の match で探せるデバイスは Connect にポートを渡さない（挿し直しで COM 番号が変わっても追従する）
+    {
+        const hw::HwConfig cfg = m_hardware->Config();
+        const hw::HwDeviceConfig* dc = cfg.FindDevice(dev);
+        job.reconnectPort = (dc && !dc->match.Empty()) ? std::string() : port;
+    }
+    std::string cmd = "\"" + cli + "\" compile --upload -p " + port + " --fqbn " + fqbn;
+    for (const std::string& l : libs) cmd += " --library \"" + l + "\"";
+    cmd += " \"" + PathResolver::WideToUtf8(sketch.wstring()) + "\"";
+    job.cmdLine = cmd;
+    job.cli = cli;
+    {
+        // コアが目印に無ければ、コンパイルの前に入れる（esp32:esp32 / arduino:avr だけ。入っていれば一瞬で終わる）
+        const std::string core = hw::CoreOfFqbn(fqbn);
+        for (const char* req : hw::kRequiredCores)
+            if (core == req && !hw::CoreInMarker(core))
+            {
+                job.preCore = core;
+                job.preCmdLine = "\"" + cli + "\" core install " + core + " --additional-urls " + hw::kEspressifIndexUrl;
+            }
+    }
+    job.workDir = PathResolver::WideToUtf8(sketch.parent_path().wstring());
+
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        st.running = true;
+        st.state = "compiling";
+        st.device = dev; st.port = port; st.fqbn = fqbn;
+        st.sketch = PathResolver::WideToUtf8(sketch.wstring());
+        st.command = cmd;
+        st.error.clear();
+        st.exitCode = -1;
+        st.reconnected = false;
+        st.startedSec = SteadySec();
+        st.endedSec = 0.0;
+        st.log.clear();
+        st.partial.clear();
+    }
+    st.cancel.store(false);
+    Logger::Info("[hw] hw_flash 開始: {}", cmd);
+    st.worker = std::thread([job = std::move(job)]() mutable { RunFlash(std::move(job)); });
+
+    if (outInfo)
+        *outInfo = {{"started", true}, {"device", dev}, {"port", port}, {"fqbn", fqbn},
+                    {"sketch", PathResolver::WideToUtf8(sketch.wstring())}, {"libraries", libs}, {"command", cmd},
+                    {"note", "非同期。hw_flash_status で compiling → uploading → reconnecting → done を見る（ESP32 は 30〜60 秒。コアが未導入なら先に installing_core）"}};
+}
+
+bool Application::StartHwFlash(const HwFlashRequest& rq, std::string& err, nlohmann::json* outInfo)
+{
+    try
+    {
+        StartHwFlashImpl(rq, outInfo);
+        return true;
+    }
+    catch (const McpError& e)
+    {
+        err = e.what();
+        if (!e.hint.empty()) err += "（" + e.hint + "）";
+        return false;
+    }
 }
 
 // ===========================================================================
@@ -1088,141 +1488,22 @@ void Application::RegisterMcpHardwareMethods()
         m.examples = {{"{\"sketch\":\"UnoLinkGeneric\",\"device\":\"generic\"}", "汎用スケッチを書き直す"}};
         McpDefine("hw_flash", McpMeta(m), DX12E_MCP_HANDLER
             {
-                if (!m_hardware) throw McpError(McpErr::Internal, "ハードウェア層が未初期化", "プロジェクトを開いてから呼ぶ");
-                HwAppState& st = St(m_hwFlash);
-                {
-                    std::lock_guard<std::mutex> lk(st.m);
-                    if (st.running)
-                        throw McpError(McpErr::Busy, "別の hw_flash が実行中です（同時に 1 本だけ）", "hw_flash_status で終わるのを待つ");
-                }
-                if (st.worker.joinable()) st.worker.join();   // 前回の終了済みスレッドを回収
-
-                const std::string sketchIn = StrParam(params, "sketch");
-                std::string dev = StrParam(params, "device");
-                std::string port = StrParam(params, "port");
-                std::string fqbn = StrParam(params, "fqbn");
-                if (sketchIn.empty()) throw McpError(McpErr::InvalidParam, "sketch が空です", ".ino かそのフォルダを渡す");
-                if (dev.empty() && port.empty()) throw McpError(McpErr::InvalidParam, "device か port のどちらかが要ります", "device:\"generic\" か port:\"COM8\"");
-
-                // 対象（デバイス / ポート）
-                hw::HwDeviceInfo info;
-                bool haveInfo = false;
-                if (!dev.empty())
-                {
-                    info = RequireDevice(*m_hardware, dev);
-                    haveInfo = true;
-                    if (info.isVirtual) throw McpError(McpErr::InvalidParam, "仮想デバイスには書き込めません", "実機のデバイスを指定する");
-                    if (port.empty()) port = info.port;
-                    if (port.empty())
-                        throw McpError(McpErr::InvalidParam, "デバイス '" + dev + "' のポートが分かりません（未接続）",
-                                       "port:\"COM8\" を渡す（hw_list_ports で確認）");
-                }
-                else
-                {
-                    for (const hw::HwDeviceInfo& d : m_hardware->ListDevices())
-                        if (d.port == port && d.status != hw::HwStatus::Disconnected) { dev = d.name; info = d; haveInfo = true; break; }
-                }
-
-                // arduino-cli / スケッチ / ライブラリ
-                std::vector<std::string> triedCli;
-                const std::string cli = FindArduinoCli(st.arduinoCli, triedCli);
-                if (cli.empty())
-                {
-                    McpError e(McpErr::NotFound, "arduino-cli が見つかりません", "インストールするか、hardware.json の arduinoCli に絶対パスを書く（hw_config_set）");
-                    e.name = "E_HW_NO_ARDUINO_CLI";
-                    e.details = {{"tried", triedCli}};
-                    throw e;
-                }
-                const fs::path repo = FindRepoRoot();
-                std::vector<std::string> triedSk;
-                const fs::path sketch = ResolveSketch(sketchIn, repo, triedSk);
-                if (sketch.empty())
-                {
-                    McpError e(McpErr::NotFound, "スケッチ '" + sketchIn + "' が見つかりません", "絶対パスで渡すか、プロジェクト / <repo>/hardware/firmware/ の下に置く");
-                    e.name = "E_HW_NO_SKETCH";
-                    e.details = {{"tried", triedSk}};
-                    throw e;
-                }
-                std::vector<std::string> libs;
-                if (params.contains("libraries") && params["libraries"].is_string()) libs.push_back(params["libraries"].get<std::string>());
+                HwFlashRequest rq;
+                rq.sketch = StrParam(params, "sketch");
+                rq.device = StrParam(params, "device");
+                rq.port = StrParam(params, "port");
+                rq.fqbn = StrParam(params, "fqbn");
+                if (params.contains("libraries") && params["libraries"].is_string()) rq.libraries.push_back(params["libraries"].get<std::string>());
                 else if (params.contains("libraries") && params["libraries"].is_array())
-                    for (const json& l : params["libraries"]) if (l.is_string()) libs.push_back(l.get<std::string>());
-                if (libs.empty())
-                {
-                    if (repo.empty())
-                        throw McpError(McpErr::InvalidParam, "UnoLink ライブラリの場所が分かりません（配布物にはリポジトリが無い）",
-                                       "libraries に UnoLink フォルダの絶対パスを渡す");
-                    libs.push_back(PathResolver::WideToUtf8((repo / "hardware" / "firmware" / "UnoLink").wstring()));
-                }
-
-                // fqbn
-                if (fqbn.empty())
-                {
-                    if (haveInfo) fqbn = FqbnFromBoard(info.board);
-                    if (fqbn.empty())
-                        for (const hw::HwPortInfo& p : hw::EnumerateComPorts())
-                            if (p.portName == port) { fqbn = FqbnFromBoard(p.guessedBoard); break; }
-                    if (fqbn.empty())
-                    {
-                        McpError e(McpErr::InvalidParam, "ボードを推定できませんでした", "fqbn を渡す（例 esp32:esp32:esp32 / arduino:avr:uno）");
-                        e.name = "E_HW_FQBN_REQUIRED";
-                        e.validValues = {"esp32:esp32:esp32", "arduino:avr:uno", "arduino:avr:nano"};
-                        throw e;
-                    }
-                }
-
-                const std::string* const quoted[] = {&cli, &port, &fqbn};
-                for (const std::string* s : quoted)
-                    if (s->find('"') != std::string::npos)
-                        throw McpError(McpErr::InvalidParam, "引数に引用符は使えません", "パス・ポート・fqbn から \" を除く");
-
-                FlashJob job;
-                job.stateHolder = m_hwFlash;
-                job.sys = m_hardware.get();
-                job.device = dev;
-                job.port = port;
-                for (const hw::HwDeviceInfo& d : m_hardware->ListDevices())
-                    if (d.name != dev && !d.isVirtual && !d.userDisabled && d.status != hw::HwStatus::Ready)
-                        job.pausedOthers.push_back(d.name);
-                // 設定の match で探せるデバイスは Connect にポートを渡さない（挿し直しで COM 番号が変わっても追従する）
-                {
-                    const hw::HwConfig cfg = m_hardware->Config();
-                    const hw::HwDeviceConfig* dc = cfg.FindDevice(dev);
-                    job.reconnectPort = (dc && !dc->match.Empty()) ? std::string() : port;
-                }
-                std::string cmd = "\"" + cli + "\" compile --upload -p " + port + " --fqbn " + fqbn;
-                for (const std::string& l : libs) cmd += " --library \"" + l + "\"";
-                cmd += " \"" + PathResolver::WideToUtf8(sketch.wstring()) + "\"";
-                job.cmdLine = cmd;
-                job.workDir = PathResolver::WideToUtf8(sketch.parent_path().wstring());
-
-                {
-                    std::lock_guard<std::mutex> lk(st.m);
-                    st.running = true;
-                    st.state = "compiling";
-                    st.device = dev; st.port = port; st.fqbn = fqbn;
-                    st.sketch = PathResolver::WideToUtf8(sketch.wstring());
-                    st.command = cmd;
-                    st.error.clear();
-                    st.exitCode = -1;
-                    st.reconnected = false;
-                    st.startedSec = SteadySec();
-                    st.endedSec = 0.0;
-                    st.log.clear();
-                    st.partial.clear();
-                }
-                st.cancel.store(false);
-                Logger::Info("[hw] hw_flash 開始: {}", cmd);
-                st.worker = std::thread([job = std::move(job)]() mutable { RunFlash(std::move(job)); });
-
+                    for (const json& l : params["libraries"]) if (l.is_string()) rq.libraries.push_back(l.get<std::string>());
+                json info;
+                StartHwFlashImpl(rq, &info);   // エラーは McpError のまま上へ（error_code は従来どおり）
                 resp["ok"] = true;
-                resp["result"] = {{"started", true}, {"device", dev}, {"port", port}, {"fqbn", fqbn},
-                                  {"sketch", PathResolver::WideToUtf8(sketch.wstring())}, {"libraries", libs}, {"command", cmd},
-                                  {"note", "非同期。hw_flash_status で compiling → uploading → reconnecting → done を見る（ESP32 は 30〜60 秒）"}};
+                resp["result"] = std::move(info);
             });
 
         McpMeta s;
-        s.summary  = "hw_flash の進み具合: 状態（idle / compiling / uploading / reconnecting / done / failed）・経過秒・終了コード・ログ末尾・再接続できたか。";
+        s.summary  = "hw_flash の進み具合: 状態（idle / installing_core / compiling / uploading / reconnecting / done / failed）・経過秒・終了コード・ログ末尾・再接続できたか。";
         s.keywords = "hardware ハードウェア arduino esp32 書き込み flash status 進捗 progress ログ log arduino-cli 状態";
         s.category = "hardware"; s.group = "hardware"; s.target = "flash_status";
         s.effect = McpEffect::Read; s.mode = "any"; s.timeoutMs = 10000; s.idempotent = true;
@@ -1252,6 +1533,62 @@ void Application::RegisterMcpHardwareMethods()
                     if (m_hardware->GetDeviceInfo(r["device"].get<std::string>(), info))
                         r["deviceStatus"] = hw::HwStatusName(info.status);
                 }
+                resp["ok"] = true;
+                resp["result"] = std::move(r);
+            });
+    }
+
+    // ---- hw_setup ----
+    {
+        McpMeta m;
+        m.summary  = "Arduino の書き込み道具と同梱サンプルの状態を見る / 動かす。action: status（既定。道具箱 = arduino-cli + コア esp32:esp32・arduino:avr の状態・進み具合・ログ、"
+                     "同梱サンプルの有無と配置済み）/ install_toolchain（道具箱の自動導入を背景で始める。冪等）/ install_samples（<exe>/samples の ArduinoLab などを "
+                     "ドキュメント\\UnoProjects へ置く。dest で置き場を変えられる。force で「置いた」目印を無視）。道具箱はプロジェクトを開くと自動でも入る。";
+        m.keywords = "hardware ハードウェア arduino esp32 セットアップ setup 道具 書き込み道具 toolchain arduino-cli core サンプル sample ArduinoLab 導入 インストール install 準備";
+        m.category = "hardware"; m.group = "hardware"; m.target = "setup";
+        m.effect = McpEffect::Runtime; m.mode = "any"; m.timeoutMs = 10000;
+        m.params = {P("action", "string", false, "status|install_toolchain|install_samples", nullptr, nullptr, "status", "status / install_toolchain / install_samples"),
+                    P("dest", "string", false, nullptr, nullptr, nullptr, nullptr, "install_samples の置き場（既定 ドキュメント\\UnoProjects）。指定時は目印・最近のプロジェクトに触らない（検証用）"),
+                    P("forceDownload", "bool", false, nullptr, nullptr, nullptr, "false", "install_toolchain: arduino-cli がすでにあっても管理下（LocalAppData/UnoEngine/arduino-cli）へ落とし直して使う（検証用）"),
+                    P("force", "bool", false, nullptr, nullptr, nullptr, "false", "install_samples: 「置いた」目印を無視して置く（コピー先が空でなければやはり上書きしない）")};
+        m.next = {{"hw_flash", "道具箱が ready になったらスケッチを書き込む"}, {"hw_status", "デバイスの状態"}};
+        m.examples = {{"{}", "道具箱とサンプルの状態"}, {"{\"action\":\"install_toolchain\"}", "arduino-cli とコアを入れ始める"}};
+        McpDefine("hw_setup", McpMeta(m), DX12E_MCP_HANDLER
+            {
+                const std::string action = params.contains("action") ? StrParam(params, "action") : std::string("status");
+                HwAppState& st = St(m_hwFlash);
+                hw::HwToolchain& tc = HwToolchainRef();
+                json extra = json::object();
+                if (action == "install_toolchain")
+                {
+                    if (m_isGameMode)
+                        throw McpError(McpErr::ModeConflict, "配布ゲームでは書き込み道具を入れられません", "エディタで行う");
+                    const bool started = tc.Start(st.arduinoCli, params.value("forceDownload", false));
+                    extra["started"] = started;
+                    if (!started) extra["note"] = "すでに導入中です（status で進み具合を見る）";
+                }
+                else if (action == "install_samples")
+                {
+                    if (m_isGameMode)
+                        throw McpError(McpErr::ModeConflict, "配布ゲームではサンプルを置けません", "エディタで行う");
+                    extra["samplesResult"] = InstallBundledSamples(StrParam(params, "dest"), params.value("force", false), false);
+                }
+                else if (action != "status")
+                {
+                    McpError e(McpErr::InvalidParam, "action '" + action + "' は不明です", "status / install_toolchain / install_samples のどれか",
+                               {"status", "install_toolchain", "install_samples"});
+                    throw e;
+                }
+                const hw::HwToolchain::Snapshot s = tc.Get(st.arduinoCli);
+                json tail = json::array();
+                const size_t from = s.log.size() > 30 ? s.log.size() - 30 : 0;
+                for (size_t i = from; i < s.log.size(); ++i) tail.push_back(s.log[i]);
+                json tcj{{"state", hw::HwToolchain::StateName(s.state)}, {"ready", s.ready}, {"running", s.running}, {"progress", s.progress},
+                         {"cli", s.cli}, {"managedCli", hw::ManagedCliPath()}, {"cores", s.cores}, {"logTail", tail}};
+                if (!s.error.empty()) tcj["error"] = s.error;
+                json r = std::move(extra);
+                r["toolchain"] = std::move(tcj);
+                r["samples"] = HwSamplesStatus();
                 resp["ok"] = true;
                 resp["result"] = std::move(r);
             });

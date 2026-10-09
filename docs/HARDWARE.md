@@ -146,3 +146,20 @@ for _, d in ipairs(hw.list()) do print(d.name, d.connected) end
 1. 第1段: USB シリアル・プロトコル・UnoLink・Lua・MCP・hardware.json・アクション割当・仮想デバイス・ctest
 2. 第2段: hw_flash・校正・PlaySession への記録・Game.exe での確認
 3. 第3段: ESP32 の Wi-Fi UDP（同じ行を UDP で）・複数台・ノーコード割当コンポーネント
+
+## 8. ArduinoLab と自動セットアップ（v2.5.0〜）
+
+配布物（zip / インストーラ）には実験キットとファームウェアが入っている。
+
+| 配布物の中 | 使い道 |
+|---|---|
+| `samples/ArduinoLab/` | 初回起動時に `ドキュメント\UnoProjects\ArduinoLab` へ 1 回だけ置き、最近のプロジェクトに足す（記録は `%LOCALAPPDATA%\UnoEngine\samples_installed.json`。消しても置き直さない） |
+| `hardware/firmware/UnoLink` ほか | 書き込み時の UnoLink ライブラリ（`FindRepoRoot` が exe の隣で見つける） |
+
+- **書き込み道具**: シリアルのデバイスを持つプロジェクトを開くと、arduino-cli（無ければ `%LOCALAPPDATA%\UnoEngine\arduino-cli\` へダウンロード）と
+  `esp32:esp32` / `arduino:avr` のボード定義を裏で入れる。記録は同じフォルダの `cores.json`
+- **ハードウェア窓**（ツール > ハードウェア）: デバイスの状態、書き込み道具の状態、ボードへの書き込み（スケッチはプロジェクトの `firmware/<名前>/<名前>.ino`）。
+  書き込みのボタンは `hw_flash` と同じ処理（ポートを放す → arduino-cli → つなぎ直す）
+- まだ名乗らないボード（既知の USB 変換チップ）が挿さったままなら、ハードウェア窓を 1 回だけ開いて書き込みを勧める。**勝手には書き込まない**
+- MCP `hw_setup {action: status | install_toolchain | install_samples}`
+- ソースは `hardware/lab/`（`ArduinoLab/` がそのまま `samples/ArduinoLab/` になる。bat での手順は `hardware/lab/README.md`）

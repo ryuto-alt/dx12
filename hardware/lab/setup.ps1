@@ -5,12 +5,12 @@
     3. ESP32 / Arduino のボード定義を入れる
     4. つながっているボードを表示する
   使い方: setup.bat をダブルクリック（または powershell -ExecutionPolicy Bypass -File setup.ps1）
-    -EngineVersion v2.4.0 … 落とすエンジンの版（既定 v2.4.0 = Arduino 連携が入っている版）
+    -EngineVersion v2.5.0 … 落とすエンジンの版（既定 v2.5.0 = ArduinoLab が入っている版）
     -SkipEngine           … エンジンは用意しない（自分でビルドする人向け）
     -NoUno                … Arduino Uno / Nano のボード定義を入れない（ESP32 だけ）
 #>
 param(
-  [string]$EngineVersion = 'v2.4.0',
+  [string]$EngineVersion = 'v2.5.0',
   [switch]$SkipEngine,
   [switch]$NoUno
 )

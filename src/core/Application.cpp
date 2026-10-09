@@ -91,6 +91,14 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     }
     Logger::Info("Application initializing... (mode: {})", gameMode ? "game" : "editor");
 
+    // 同梱サンプル（exe の samples/ArduinoLab など）をドキュメントの UnoProjects へ初回だけコピーして最近のプロジェクトに足す。
+    // 自動化（--background / --headless / --virtual-input）では勝手に人のドキュメントへ置かない（MCP hw_setup install_samples で明示的に）。
+    if (!gameMode && !(m_headless || m_bgOptions.Active() || m_virtualInputRequested))
+    {
+        try { InstallBundledSamples({}, false, true); }
+        catch (const std::exception& e) { Logger::Warn("[samples] 同梱サンプルの配置に失敗: {}", e.what()); }
+    }
+
     // エディタコンテキスト初期化
     m_editorCtx = std::make_unique<EditorContext>();
     // 大きいシーンを分割しないまま保存したときの通知（シーンごとに 1 回。docs/SCENE_FORMAT_DESIGN.md §4.3）
@@ -1650,6 +1658,7 @@ void Application::Run()
         // 物理ハードウェア（Arduino / ESP32）: 出力の確定と最新値のスナップショット。エディタ / Play / ゲームのどれでも回す。
         // ★フレーム途中で値が変わらないよう、スクリプトが読む前（ここ）で 1 回だけ確定する。
         if (m_hardware) { m_hardware->BeginFrame(); ServiceHardwareReads(); }
+        ServiceHardwareUi();   // ハードウェア窓の要求・書き込み道具の自動導入・ボード検出の案内（エディタのみ。重い処理は 1Hz）
 
         // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();

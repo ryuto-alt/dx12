@@ -14,6 +14,7 @@
 #include "editor/Toast.h"
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
+#include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/PathTracerHost.h"   // DXR パストレーサー(リファレンスレンダー)。PtHost が無ければ何もしない
 #include "core/SequencerHost.h"   // シーケンサー S1b: ポスト / DoF の描画時上書き
@@ -7740,6 +7741,8 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
         NavMeshPanel::Render(*m_scene, *m_editorCtx);
         // リファレンスレンダー窓（DXR パストレーサー。入力と進捗は m_editorCtx->ptUi 越し）。中で showPathTracer を見て早期 return する。
         PathTracerPanel::Render(*m_editorCtx);
+        // ハードウェア窓（Arduino / ESP32 の接続状態と一発書き込み。入力と状態は m_editorCtx->hwUi 越し）。中で showHardware を見て早期 return する。
+        HardwarePanel::Render(*m_editorCtx);
         // ノードグラフ サンドボックス窓（開発用。マテリアルグラフ G0 の汎用ノードグラフ UI）。中で showNodeGraphSandbox を見て早期 return する。
         NodeGraphSandboxPanel::Render(*m_editorCtx);
         // マテリアルグラフ窓の GPU 側（G2c）: プレビューの RT とノード内サムネイルのアトラスを描く（窓が閉じていれば何もしない。UI の直後 = 同フレームの ImGui 描画より前）。

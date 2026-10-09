@@ -3,7 +3,7 @@
   使い方: flash.bat（ESP32）/ flash.bat uno（Arduino Uno）/ flash.bat nano
     -Board esp32|uno|nano|<FQBN>  … 既定 esp32
     -Port COM5                    … 省略すると自動で探す（候補が複数なら聞く）
-    -Sketch <フォルダ>            … 既定 firmware\ArduinoLab。自作のスケッチも書ける（UnoLink ライブラリ付きでコンパイル）
+    -Sketch <フォルダ>            … 既定 ArduinoLab\firmware\ArduinoLab。自作のスケッチも書ける（UnoLink ライブラリ付きでコンパイル）
   ★エンジン（start.bat）が起動中だとポートを掴んでいて書き込めない。先にエンジンを閉じる
 #>
 param(
@@ -19,7 +19,7 @@ $fqbn = switch ($Board.ToLower()) {
   'nano'  { 'arduino:avr:nano:cpu=atmega328old' }   # 互換 Nano は旧ブートローダーが多い。だめなら -Board arduino:avr:nano
   default { $Board }
 }
-if (-not $Sketch) { $Sketch = Join-Path $LabDir 'firmware\ArduinoLab' }
+if (-not $Sketch) { $Sketch = Join-Path $LabDir 'ArduinoLab\firmware\ArduinoLab' }
 $lib = Join-Path $RepoDir 'hardware\firmware\UnoLink'
 
 $cli = Find-ArduinoCli

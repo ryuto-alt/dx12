@@ -157,6 +157,26 @@ $luaDefs = Join-Path $repoRoot "tools\lua-defs"
 if (Test-Path $luaDefs) {
   Copy-Item $luaDefs -Destination (Join-Path $stage "tools\lua-defs") -Recurse
 }
+# ArduinoLab（Arduino / ESP32 の実験キット）とファームウェア。
+#   samples\<名前>\ はエディタが初回起動時に Documents\UnoProjects へ 1 回だけ置く（InstallBundledSamples）。
+#   hardware\firmware\ は hw_flash / ハードウェア窓が UnoLink ライブラリを探す場所（FindRepoRoot が exe の隣で見つける）。
+#   ★git が管理しているファイルだけを入れる（エディタが作る .dx12/ や .autosave/ など手元の残りを配布しない）。
+$bundle = @(
+  @{ Src = "hardware/lab/ArduinoLab/"; Dst = "samples\ArduinoLab" },
+  @{ Src = "hardware/firmware/UnoLink/"; Dst = "hardware\firmware\UnoLink" },
+  @{ Src = "hardware/firmware/UnoLinkGeneric/"; Dst = "hardware\firmware\UnoLinkGeneric" },
+  @{ Src = "hardware/firmware/README.md"; Dst = "hardware\firmware\README.md" }
+)
+foreach ($b in $bundle) {
+  $files = @(& git -C $repoRoot -c core.quotepath=off ls-files -- $b.Src)
+  if ($files.Count -eq 0) { Write-Error "配布に入れるファイルが git にありません: $($b.Src)" }
+  foreach ($f in $files) {
+    $rel = $f.Substring($b.Src.TrimEnd('/').Length).TrimStart('/')
+    $dst = if ($rel) { Join-Path (Join-Path $stage $b.Dst) ($rel -replace '/', '\') } else { Join-Path $stage $b.Dst }
+    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+    Copy-Item (Join-Path $repoRoot ($f -replace '/', '\')) -Destination $dst
+  }
+}
 # version.txt（更新後の確認用）
 Set-Content -Path (Join-Path $stage "version.txt") -Value $version -NoNewline
 # README
