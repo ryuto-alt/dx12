@@ -331,13 +331,17 @@ function stepHuman(self, i, steer, gas, press, dt)
   K.steer = steer
   -- 遠くまで飛び出したら引き戻す
   idx, s, lat = nearest(self, K.x, K.z, idx)
-  local lim = self.width / 2 + 12
+  -- 道の端から 3.5m に見えない壁（観客席・タイヤの壁・木は 4m より外にあるので、突き抜けて中に入らない）
+  local lim = self.width / 2 + 3.5
   if math.abs(lat) > lim then
     local p = self.pts[idx]
     local push = (math.abs(lat) - lim) * (lat > 0 and 1 or -1)
     K.x = K.x - p.tz * push; K.z = K.z + p.tx * push
     K.v = K.v * 0.9
+    if main and (K.bumpT or 0) <= 0 and not self.snd then play(self, "bump") end
+    K.bumpT = 0.3
   end
+  if K.bumpT then K.bumpT = K.bumpT - dt end
   -- 周回: s が L から 0 へ戻ったら 1 周
   local ds = s - K.s0
   if ds < -self.L / 2 then K.prog = K.prog + (self.L - K.s0) + s

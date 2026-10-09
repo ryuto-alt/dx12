@@ -147,12 +147,17 @@ v2.5.1 から、ArduinoLab と並んでプロジェクト一覧に **GroveLab** 
   CPU 3 台と 3 周。スタート画面で J を押すとつまみの人（赤）を外せます（設定は覚えておく。インスペクタの knobPlayer でも同じ）。信号が緑になる直前にスイッチでロケットスタート（早すぎるとフライング）。
   サーボはスピードメーター、LED は信号・アイテムのルーレット・ダッシュ、スピーカーはエンジン音と効果音。
   インスペクタの `KART_Game` で周回数・CPU の速さ・ハンドルの効きと左右、アクセルをセンサにする（autoGas OFF）を変えられます。
-  コースは `python hardware\lab\tools\make_grove_kart.py` で作り直せます（scenes/kart.json と kart/track.txt）
+  コースは全長 850m: スタート直線（観客席）→ 右の大回り → 森の S 字 → トンネルのバックストレート → ヘアピン（タイヤの壁）→ 湖の橋 → 最終コーナー。
+  道の端から 3.5m より外へは出られません（見えない壁）。
+  コースの形は `python hardware\lab\tools\make_grove_kart.py` で作り直せます（scenes/kart.json・kart/track.txt・kart/layout.json）。
+  見た目（道・地面・湖・木・小物・カート・アイテム箱）は Blender 製の glb（`assets\models\kart\`）。形を変えたら
+  `hardware\lab\art\grove_kart\build_grove_kart.py` を Blender で実行して layout.json から作り直し、MCP の `dx12_blender_export` で書き出します
 - **スマホで参加（最大 4 人）**: `GroveLab\phone\スマホでつなぐ.bat` を起動すると、レースのスタート画面に QR と 4 桁の部屋番号が出ます。
   スマホで読み取って名前を入れると、青・緑・黄の CPU の代わりに走れます（つまみの人が赤）。スマホを横にして**傾けてハンドル**、
   大きなボタンでアイテム（スタート前はスタート、カウントダウン中はロケット）。傾きが使えない機種は左側を指で左右にドラッグ。
-  2 人以上で走ると**画面分割**（2 人は上下、3〜4 人は 4 つ。3 人のときの 4 つ目はコース全体）で、区画ごとに順位・周回・速さ・アイテムが出ます（エンジン v2.5.5 以降）。中継は Cloudflare Workers（`hardware\lab\tools\grove-kart-relay`、
-  `npx wrangler deploy`）で、PC 側の `phone-relay.ps1` が `assets\kart\phones.txt`（入力）と `state.txt`（状況）を受け渡します
+  2 人以上で走ると**画面分割**（2 人は左右、3〜4 人は 4 つ。3 人のときの 4 つ目はコース全体）で、区画ごとに順位・周回・速さ・アイテムが出ます（エンジン v2.5.6 以降）。中継は Cloudflare Workers（`hardware\lab\tools\grove-kart-relay`、
+  `npx wrangler deploy`）で、PC 側の `phone-relay.ps1` とゲームは PC の中だけの UDP（127.0.0.1 の 47811 / 47812）でやり取りします
+  （以前はファイルを 1 秒 30 回書き換えていて、OneDrive の中だと同期と Defender が休まず動いて重くなっていた）。Play し直すたびにスマホの参加はリセットされます
 - ボードが無ければキーボードで代用: ← →=ボリューム、↑ ↓=距離、Space=スイッチ、M=サーボ自動
 - **スピーカーの音量**: Play 中に Z（小さく）/ X（大きく）。既定は 35%。インスペクタの `GP_Speaker` の「音量」でも変えられます
   （爆発までの秒数・ピッの高さも同じ所）。v2.5.4 より前に書き込んだボードは音量が効かないので、スケッチを書き込み直してください

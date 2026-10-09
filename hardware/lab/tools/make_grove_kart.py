@@ -1,10 +1,15 @@
-"""GroveLab のカートレース（scenes/kart.json と kart/track.txt）を作る。
+"""GroveLab のカートレース（scenes/kart.json と kart/track.txt / kart/layout.json）を作る。
 
     python hardware/lab/tools/make_grove_kart.py
 
-コースは制御点を Catmull-Rom でなめらかにつないだ閉じた曲線。道路・縁石は箱を並べて作る。
+コースは制御点を Catmull-Rom でなめらかにつないだ閉じた曲線（全長およそ 850m）。
+  スタート直線（観客席）→ 右の大回り → 森の S 字 → トンネルのバックストレート → ヘアピン（タイヤの壁）
+  → 湖の橋 → 大回りの最終コーナー
+見た目（道・地面・湖・木・小物・カート・アイテム箱）は Blender で作った glb（assets/models/kart/）を置くだけ。
+  Blender 側は kart/layout.json（1m ごとの中心線と見どころの区間）を読んで同じ座標で作る。
+  道や木はまとめた少数のメッシュにしてある（画面分割で 4 回描いても描画回数が増えすぎないように）。
 kart/track.txt は 2m ごとの中心線（GroveKart.lua が周回・順位・コースアウトの判定に読む）。
-全体の設定（ポスト・影など）は grove.json から引き継ぐ。
+GroveKart.lua が名前で探すもの（KART_Player / KART_Cpu1..3 / KART_Cam / KART_Signal1..3 / KART_Item<row><col>）は残す。
 """
 import json
 import math
@@ -14,38 +19,64 @@ import random
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "..", "GroveLab", "assets")
 WIDTH = 12.0            # 道幅
+SCALE = 1.1
 random.seed(7)
 
-# 制御点 (x, z)。スタートは (0, -30) 付近から +Z へ
-CTRL = [(0, -60), (0, 20), (6, 70), (30, 100), (62, 104), (84, 82), (84, 52), (62, 30),
-        (58, 4), (78, -20), (96, -48), (90, -84), (60, -104), (24, -100)]
+# 制御点 (x, z)。スタート直線は x≈-22 を +Z へ
+CTRL = [(x * SCALE, z * SCALE) for x, z in [
+    (-20, -60), (-20, 20), (-12, 66), (14, 96), (52, 104), (84, 90), (90, 62), (86, 40), (100, 18), (126, 6),
+    (140, -24), (138, -72), (126, -112), (100, -130), (78, -116), (80, -86), (64, -62), (38, -66),
+    (24, -96), (4, -120), (-22, -116), (-30, -92)]]
+
+KART_MODELS = {"KART_Player": "kart_red", "KART_Cpu1": "kart_blue", "KART_Cpu2": "kart_green", "KART_Cpu3": "kart_yellow"}
+ITEM_FRACS = (0.235, 0.523, 0.77)   # アイテムボックスの列（1 周のうちの位置。ヘアピンや最終コーナーの途中を避ける）
+COURSE_MODELS = ["course_ground", "course_road", "course_props", "course_trees_0", "course_trees_1", "course_trees_2", "course_trees_3"]
 
 
 def catmull(p0, p1, p2, p3, t):
     t2, t3 = t * t, t * t * t
-    return tuple(0.5 * ((2 * p1[i]) + (-p0[i] + p2[i]) * t + (2 * p0[i] - 5 * p1[i] + 4 * p2[i] - p3[i]) * t2
-                        + (-p0[i] + 3 * p1[i] - 3 * p2[i] + p3[i]) * t3) for i in range(2))
+    return tuple(0.5 * ((2 * p1[k]) + (-p0[k] + p2[k]) * t + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2
+                        + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * t3) for k in range(2))
 
 
 def dense_curve(step):
+    """閉曲線を step m ごとの点列にする"""
     raw = []
     n = len(CTRL)
     for i in range(n):
         p0, p1, p2, p3 = CTRL[i - 1], CTRL[i], CTRL[(i + 1) % n], CTRL[(i + 2) % n]
-        for k in range(200):
-            raw.append(catmull(p0, p1, p2, p3, k / 200))
-    # 等間隔に取り直す
+        for s in range(200):
+            raw.append(catmull(p0, p1, p2, p3, s / 200))
     out = [raw[0]]
     acc = 0.0
     for a, b in zip(raw, raw[1:] + raw[:1]):
-        d = math.dist(a, b)
-        while acc + d >= step:
-            t = (step - acc) / d
-            a = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-            d = math.dist(a, b)
-            out.append(a)
+        acc += math.dist(a, b)
+        if acc >= step:
+            out.append(b)
             acc = 0.0
-        acc += d
+    return out
+
+
+def resample_exact(step, start):
+    """閉曲線を、start に最も近い点から始めて弧長ちょうど step m ごとに取り直す（index = 距離 m）"""
+    raw = []
+    n = len(CTRL)
+    for i in range(n):
+        p0, p1, p2, p3 = CTRL[i - 1], CTRL[i], CTRL[(i + 1) % n], CTRL[(i + 2) % n]
+        for s in range(400):
+            raw.append(catmull(p0, p1, p2, p3, s / 400))
+    k0 = min(range(len(raw)), key=lambda i: math.dist(raw[i], start))
+    raw = raw[k0:] + raw[:k0] + [raw[k0]]
+    out = [raw[0]]
+    want = step
+    acc = 0.0
+    for a, b in zip(raw, raw[1:]):
+        seg = math.dist(a, b)
+        while seg > 0 and acc + seg >= want:
+            t = (want - acc) / seg
+            out.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
+            want += step
+        acc += seg
     if math.dist(out[-1], out[0]) < step * 0.5:
         out.pop()
     return out
@@ -71,6 +102,8 @@ def ent(name, parent=None, **kw):
     e["transform"] = tr
     if "prim" in kw:
         e["primitive"] = kw.pop("prim")
+    if "model" in kw:
+        e["meshRenderer"] = {"modelPath": kw.pop("model")}
     if "color" in kw:
         e["color"] = [round(v, 4) for v in kw.pop("color")]
         e["material"] = {"metallic": kw.pop("metal", 0.0), "roughness": kw.pop("rough", 0.7)}
@@ -82,6 +115,14 @@ def ent(name, parent=None, **kw):
     return e
 
 
+def frame_at(pts, i):
+    """i 番目の点の (位置, 進む向き, 右向き)"""
+    L = len(pts)
+    p, q = pts[i % L], pts[(i + 1) % L]
+    yaw = math.atan2(q[0] - p[0], q[1] - p[1])
+    return p, (math.sin(yaw), math.cos(yaw)), (math.cos(yaw), -math.sin(yaw)), yaw
+
+
 def main():
     os.makedirs(os.path.join(ASSETS, "kart"), exist_ok=True)
     base = json.load(open(os.path.join(ASSETS, "scenes", "grove.json"), encoding="utf-8"))
@@ -89,107 +130,97 @@ def main():
     scene["skybox"] = {"drawSkybox": True, "envMapPath": "__procedural_sky__", "iblIntensity": 0.9, "skyboxIntensity": 1.0}
     scene["ssgi"]["enabled"] = False
     scene["raytracing"]["ddgi"]["enabled"] = False
-    scene["postProcess"]["vignetteOn"] = True
-    scene["postProcess"]["vignette"] = 0.25
+    # 見た目: 明るいトイ調。色の調整（彩度・コントラスト・色温度・周辺減光・FXAA）は画面分割の全区画に掛かる。
+    #   ブルームと SSAO は区画 1（と 1 画面のとき）だけ。TAA は画面分割で区画ごとに履歴が無いので使わず FXAA にする
+    pp = scene["postProcess"]
+    pp.update({"vignetteOn": True, "vignette": 0.22, "vignetteSoftness": 0.55,
+               "saturationOn": True, "saturation": 1.18, "contrastOn": True, "contrast": 1.08,
+               "warmthOn": True, "warmth": 0.06, "fxaaOn": True, "debandOn": True,
+               "bloomOn": True, "bloom": 0.22, "bloomThreshold": 1.25, "bloomRadius": 0.6})
+    scene["taa"]["enabled"] = False
+    scene["ssao"].update({"enabled": True, "intensity": 0.8, "radius": 0.6})
+    scene["shadowPcss"]["enabled"] = True
+    # 影は CSM（+PCSS）にする。RT 影は区画 1 にしか描かれず、しかも有効にすると CSM が RT の担当分を描かなくなるので、
+    #   画面分割の区画 2..N の影が消える
+    scene["raytracing"]["shadowEnabled"] = False
+    scene["contactShadow"]["enabled"] = False
     es = []
 
-    es.append(ent("DirectionalLight", pos=(0, 30, 0), rot=(-50, -35, 0),
-                  directionalLight={"ambient": 0.55, "color": [1.0, 0.96, 0.9], "direction": [-0.45, -0.77, -0.45], "intensity": 3.0}))
-    grp_env = ent("ENV"); grp_track = ent("TRACK"); grp_karts = ent("KARTS"); grp_items = ent("ITEMS")
-    es += [grp_env, grp_track, grp_karts, grp_items]
-
-    # 地面（芝生）
-    es.append(ent("ENV_Grass", grp_env, prim="box", pos=(40, -0.15, 0), scale=(420, 0.3, 420), color=(0.16, 0.42, 0.14), rough=0.95))
-
-    # コースの中心線（判定用、2m ごと）
+    # 中心線: スタートを直線の途中にする（グリッドがカーブに掛からない）
     fine = dense_curve(2.0)
-    fine = fine[20:] + fine[:20]       # スタートを 40m 先の直線の途中にする（グリッドがカーブの出口に掛からない）
+    fine = fine[20:] + fine[:20]
+    L = len(fine)
     with open(os.path.join(ASSETS, "kart", "track.txt"), "w", encoding="utf-8") as f:
         f.write(f"# GroveKart のコース中心線（2m ごと、x z）。make_grove_kart.py が書く\nwidth {WIDTH}\n")
         for x, z in fine:
             f.write(f"{x:.2f} {z:.2f}\n")
+    total = sum(math.dist(fine[i], fine[(i + 1) % L]) for i in range(L))
 
-    # 道路と縁石（6m ごとに 8m の板を置いて、カーブの外側のすき間を埋める）
-    road = dense_curve(6.0)
-    n = len(road)
-    for i in range(n):
-        a, b = road[i], road[(i + 1) % n]
-        mx, mz = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
-        yaw = math.degrees(math.atan2(b[0] - a[0], b[1] - a[1]))
-        y = 0.02 if i % 2 == 0 else 0.03          # 重なりのちらつき防止
-        es.append(ent(f"TRK_Road{i:03d}", grp_track, prim="box", pos=(mx, y, mz), rot=(0, yaw, 0), scale=(WIDTH, 0.06, 8.2),
-                      color=(0.17, 0.17, 0.19), rough=0.85))
-        nx, nz = math.cos(math.radians(yaw)), -math.sin(math.radians(yaw))   # 右向きの法線
-        red = i % 2 == 0
-        for side in (-1, 1):
-            off = side * (WIDTH / 2 + 0.5)
-            es.append(ent(f"TRK_Curb{i:03d}{'L' if side < 0 else 'R'}", grp_track, prim="box",
-                          pos=(mx + nx * off, 0.07, mz + nz * off), rot=(0, yaw, 0), scale=(1.0, 0.14, 6.2),
-                          color=(0.85, 0.1, 0.08) if red else (0.92, 0.92, 0.92), rough=0.6))
+    # Blender 用のレイアウト: 1m ごとの中心線（track.txt と同じ始点・向き）と、見どころの区間（中心線の距離 s [m]）
+    one = resample_exact(1.0, fine[0])
 
-    # スタートライン（市松）とゲート
-    s0, s1 = fine[0], fine[1]
-    yaw0 = math.degrees(math.atan2(s1[0] - s0[0], s1[1] - s0[1]))
-    nx, nz = math.cos(math.radians(yaw0)), -math.sin(math.radians(yaw0))
-    fx, fz = math.sin(math.radians(yaw0)), math.cos(math.radians(yaw0))
-    for r in range(2):
-        for c in range(12):
-            off = -WIDTH / 2 + 0.5 + c
-            es.append(ent(f"TRK_Check{r}{c:02d}", grp_track, prim="box",
-                          pos=(s0[0] + nx * off + fx * (r - 0.5), 0.05, s0[1] + nz * off + fz * (r - 0.5)),
-                          rot=(0, yaw0, 0), scale=(1, 0.04, 1), color=(0.95, 0.95, 0.95) if (r + c) % 2 else (0.05, 0.05, 0.05)))
-    for side in (-1, 1):
-        off = side * (WIDTH / 2 + 1.5)
-        es.append(ent(f"ENV_GatePole{'L' if side < 0 else 'R'}", grp_env, prim="box", pos=(s0[0] + nx * off, 3.5, s0[1] + nz * off),
-                      rot=(0, yaw0, 0), scale=(0.8, 7, 0.8), color=(0.25, 0.25, 0.3), metal=0.6, rough=0.4))
-    es.append(ent("ENV_GateBar", grp_env, prim="box", pos=(s0[0], 7.2, s0[1]), rot=(0, yaw0, 0), scale=(WIDTH + 4, 1.4, 0.8),
-                  color=(0.12, 0.12, 0.14), metal=0.5, rough=0.4))
+    def s_near(x, z):
+        i = min(range(len(one)), key=lambda j: math.dist(one[j], (x * SCALE, z * SCALE)))
+        return float(i)
+
+    def span(a, b):
+        return [s_near(*a), s_near(*b)]
+
+    items = [round(total * f, 1) for f in ITEM_FRACS]
+    layout = {
+        "about": "GroveLab カートのコース。座標はエンジンのワールド（x 右, y 上, z 奥）・単位 m。"
+                 "centerline は 1m ごとの中心線（閉じている。index = スタートからの距離 s [m]）。zones の s は [始, 終]（始 > 終 はスタートをまたぐ）。"
+                 "道は centerline の左右 width/2。start は s=0（ゴール線。+s の向きへ走る）",
+        "width": WIDTH,
+        "length": round(total, 1),
+        "centerline": [[round(x, 3), round(z, 3)] for x, z in one],
+        "start": {"s": 0.0, "gridBehind": 16.0, "gate": {"poleOffset": WIDTH / 2 + 1.5, "barHeight": 7.2, "barThick": 1.4,
+                                                          "signalLights": "KART_Signal1..3 は球（エンジン側で置く）。バーの手前 0.5m・高さ 7.2・横 -2.2/0/+2.2"}},
+        "zones": {
+            "grandstand":  {"side": "left", "s": span((-20, -56), (-20, 16)), "note": "スタート直線の左（コースの外側）に観客席・ピットの壁"},
+            "turn1":       {"s": span((-12, 66), (52, 104)), "note": "右の大回り。外側に看板・縁石を大きく"},
+            "forest":      {"s": span((84, 90), (126, 6)), "note": "森の S 字。木を密に"},
+            "tunnel":      {"s": span((140, -30), (138, -64)), "note": "バックストレートのトンネル（道の上をまたぐアーチ。床は y=0 のまま）"},
+            "hairpin":     {"s": span((126, -112), (78, -116)), "note": "ヘアピン。外側にタイヤの壁と砂地（グラベル）"},
+            "lakeBridge":  {"s": span((80, -86), (40, -66)), "note": "湖をまたぐ橋。道の高さは y=0 のまま、水面を y=-0.6 に下げて欄干を付ける"},
+            "finalCorner": {"s": span((24, -96), (-30, -92)), "note": "最終コーナー。外側にタイヤの壁"},
+        },
+        "itemRows": items,
+        "itemBox": {"size": 1.3, "note": "KART_Item<row><col> はエンジン側で itembox.glb を置く（各列 4 個、道の横方向に 2.6m 間隔）"},
+    }
+    with open(os.path.join(ASSETS, "kart", "layout.json"), "w", encoding="utf-8") as f:
+        json.dump(layout, f, ensure_ascii=False)
+
+    es.append(ent("DirectionalLight", pos=(0, 30, 0), rot=(-50, -35, 0),
+                  directionalLight={"ambient": 0.5, "color": [1.0, 0.94, 0.84], "direction": [-0.5, -0.7, -0.5], "intensity": 3.3}))
+    grp_env = ent("ENV"); grp_karts = ent("KARTS"); grp_items = ent("ITEMS")
+    es += [grp_env, grp_karts, grp_items]
+
+    # コースの見た目（Blender の glb をワールドの原点に置くだけ）
+    for m in COURSE_MODELS:
+        es.append(ent("ENV_" + m, grp_env, model=f"models/kart/{m}.glb"))
+
+    # 信号（GroveKart.lua が色を変える球）
+    p, fwd, right, yaw0 = frame_at(fine, 0)
     for k in range(3):
         off = (k - 1) * 2.2
-        es.append(ent(f"KART_Signal{k + 1}", grp_env, prim="sphere", pos=(s0[0] + nx * off - fx * 0.5, 7.2, s0[1] + nz * off - fz * 0.5),
+        es.append(ent(f"KART_Signal{k + 1}", grp_env, prim="sphere",
+                      pos=(p[0] + right[0] * off - fwd[0] * 0.5, 7.2, p[1] + right[1] * off - fwd[1] * 0.5),
                       scale=(1.0, 1.0, 1.0), color=(0.15, 0.03, 0.03), rough=0.3))
 
-    # まわりの木（コースから 10m 以上離す）
-    trees = 0
-    while trees < 46:
-        x, z = random.uniform(-60, 140), random.uniform(-150, 150)
-        if min(math.dist((x, z), p) for p in fine) < WIDTH / 2 + 10:
-            continue
-        h = random.uniform(3, 6)
-        es.append(ent(f"ENV_TreeTrunk{trees:02d}", grp_env, prim="box", pos=(x, h / 2, z), scale=(0.7, h, 0.7), color=(0.35, 0.22, 0.12)))
-        r = random.uniform(2.5, 4.2)
-        es.append(ent(f"ENV_TreeLeaf{trees:02d}", grp_env, prim="sphere", pos=(x, h + r * 0.6, z), scale=(r * 2, r * 1.8, r * 2),
-                      color=(0.12 + random.uniform(0, 0.08), 0.38 + random.uniform(0, 0.12), 0.12), rough=0.9))
-        trees += 1
-
     # アイテムボックス（3 か所 × 4 個）
-    L = len(fine)
-    for row, frac in enumerate((0.22, 0.52, 0.8)):
-        i = int(L * frac)
-        p, q = fine[i], fine[(i + 1) % L]
-        yaw = math.atan2(q[0] - p[0], q[1] - p[1])
-        nx, nz = math.cos(yaw), -math.sin(yaw)
+    for row, frac in enumerate(ITEM_FRACS):
+        p, fwd, right, _ = frame_at(fine, int(L * frac))
         for c in range(4):
             off = (c - 1.5) * 2.6
-            es.append(ent(f"KART_Item{row}{c}", grp_items, prim="box", pos=(p[0] + nx * off, 1.2, p[1] + nz * off), scale=(1.3, 1.3, 1.3),
-                          color=(0.9, 0.75, 0.2), emit=(1.0, 0.8, 0.3), emitI=0.6, rough=0.2, metal=0.3))
+            es.append(ent(f"KART_Item{row}{c}", grp_items, model="models/kart/itembox.glb",
+                          pos=(p[0] + right[0] * off, 1.2, p[1] + right[1] * off), scale=(1.0, 1.0, 1.0)))
 
-    # カート（親 = 動かす単位、子 = 見た目）
-    def kart(name, color):
+    # カート（親 = GroveKart.lua が動かす単位、子 = 見た目の glb）
+    for name, model in KART_MODELS.items():
         root = ent(name, grp_karts, pos=(0, 0, 0))
         es.append(root)
-        es.append(ent(name + "_Body", root, prim="box", pos=(0, 0.55, 0), scale=(1.6, 0.5, 2.6), color=color, metal=0.3, rough=0.35))
-        es.append(ent(name + "_Nose", root, prim="box", pos=(0, 0.45, 1.5), scale=(1.2, 0.3, 0.6), color=color, metal=0.3, rough=0.35))
-        es.append(ent(name + "_Seat", root, prim="box", pos=(0, 0.95, -0.5), scale=(0.9, 0.5, 0.6), color=(0.1, 0.1, 0.12)))
-        es.append(ent(name + "_Head", root, prim="sphere", pos=(0, 1.55, -0.35), scale=(0.75, 0.75, 0.75), color=(0.95, 0.95, 0.95), rough=0.3))
-        for wx in (-0.95, 0.95):
-            for wz in (-0.9, 0.95):
-                es.append(ent(f"{name}_Wheel{'L' if wx < 0 else 'R'}{'B' if wz < 0 else 'F'}", root, prim="box",
-                              pos=(wx, 0.35, wz), scale=(0.4, 0.7, 0.7), color=(0.06, 0.06, 0.06), rough=0.9))
-    kart("KART_Player", (0.9, 0.12, 0.1))
-    kart("KART_Cpu1", (0.15, 0.35, 0.95))
-    kart("KART_Cpu2", (0.15, 0.75, 0.25))
-    kart("KART_Cpu3", (0.95, 0.8, 0.1))
+        es.append(ent(name + "_Model", root, model=f"models/kart/{model}.glb"))
 
     es.append(ent("KART_Cam", None, pos=(0, 4, -38), camera={"fovDegrees": 62.0, "isActive": True}))
     es.append(ent("KART_Game", None, pos=(0, 0, 0), luaScript={"enabled": True, "scriptPath": "components/GroveKart.lua"}))
@@ -198,8 +229,7 @@ def main():
     path = os.path.join(ASSETS, "scenes", "kart.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(scene, f, ensure_ascii=False, indent=None)
-    total = sum(math.dist(fine[i], fine[(i + 1) % L]) for i in range(L))
-    print(f"kart.json: {len(es)} エンティティ / コース 1 周 {total:.0f} m / 中心線 {L} 点")
+    print(f"kart.json: {len(es)} エンティティ / コース 1 周 {total:.0f} m / 中心線 {L} 点 / layout.json {len(one)} 点")
 
 
 if __name__ == "__main__":
