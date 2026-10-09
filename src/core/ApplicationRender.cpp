@@ -7030,7 +7030,7 @@ void Application::RenderSplitViews(RenderFrameContext& frame)
         SplitAreaGpu& g = m_split->areas[i - 1];
         if (!pose.set || !g.rt || !g.depth || !g.frameCB) continue;
 
-        const SplitRect r = ComputeSplitRect(SplitRect{fx, fy, fw, fh}, n, i);
+        const SplitRect r = ComputeSplitRect(SplitRect{fx, fy, fw, fh}, n, i, m_split->req.layout);
         const XMVECTOR eye    = XMVectorSet(pose.pos[0], pose.pos[1], pose.pos[2], 1.0f);
         const XMVECTOR target = XMVectorSet(pose.target[0], pose.target[1], pose.target[2], 1.0f);
         const XMVECTOR dir    = XMVectorSubtract(target, eye);

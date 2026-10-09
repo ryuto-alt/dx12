@@ -613,7 +613,7 @@ void Application::GetMainViewRect(u32& x, u32& y, u32& w, u32& h) const
     const u32 n = SplitScreenCount();
     if (n >= 2)
     {
-        const SplitRect r = ComputeSplitRect(SplitRect{x, y, w, h}, n, 0);
+        const SplitRect r = ComputeSplitRect(SplitRect{x, y, w, h}, n, 0, m_split->req.layout);
         x = r.x; y = r.y; w = r.w; h = r.h;
     }
 }
@@ -659,7 +659,7 @@ void Application::EnsureSplitResources()
     for (u32 i = 1; i < n; ++i)
     {
         SplitAreaGpu& a = m_split->areas[i - 1];
-        const SplitRect r = ComputeSplitRect(SplitRect{fx, fy, fw, fh}, n, i);
+        const SplitRect r = ComputeSplitRect(SplitRect{fx, fy, fw, fh}, n, i, m_split->req.layout);
         const u32 wantW = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(r.w) * sc)));
         const u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(r.h) * sc)));
 

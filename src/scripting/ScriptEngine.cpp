@@ -1,4 +1,5 @@
 #include "scripting/ScriptEngine.h"
+#include "scripting/ScriptUdp.h"
 
 #include "ui/UISystem.h"   // input:isUiCapturing* が WantsMouse/WantsNav を読む
 #include "core/Logger.h"
@@ -1559,7 +1560,11 @@ void ScriptEngine::RegisterBindings()
         },
         // ---- 画面分割 ----
         // setSplitScreen(n): 0/1 = 解除、2..4 = 分割（区画 1 はメインカメラ）。
-        "setSplitScreen", [this](Scene&, int n) { if (m_splitReq) m_splitReq->SetCount(n); },
+        "setSplitScreen", [this](Scene&, int n, sol::optional<std::string> layout) {
+            if (!m_splitReq) return;
+            m_splitReq->SetCount(n);
+            m_splitReq->SetLayout(layout.value_or("cols"));   // n=2 のみ効く: "cols"=左右(既定) / "rows"=上下
+        },
         "getSplitScreen", [this](Scene&) -> int { return m_splitReq ? static_cast<int>(m_splitReq->n) : 0; },
         // setSplitView(i, px,py,pz, tx,ty,tz, [fovDeg=60]): 区画 i（2..4）のカメラ。上は +Y。毎フレーム呼ぶ。
         "setSplitView", [this](Scene&, int i, float px, float py, float pz,
@@ -1585,7 +1590,7 @@ void ScriptEngine::RegisterBindings()
             const u32 n = m_splitReq ? m_splitReq->n : 0;
             SplitRect r{0, 0, w, h};
             if (n >= 2 && i >= 1 && i <= static_cast<int>(n))
-                r = ComputeSplitRect(r, n, static_cast<u32>(i - 1));
+                r = ComputeSplitRect(r, n, static_cast<u32>(i - 1), m_splitReq->layout);
             return std::make_tuple(static_cast<int>(r.x), static_cast<int>(r.y),
                                    static_cast<int>(r.w), static_cast<int>(r.h));
         }
@@ -2833,6 +2838,32 @@ void ScriptEngine::RegisterNetworkBindings()
     sol::table net = lua.create_named_table("net");
 
     // port/ip 省略時は NetworkConfig の既定値を使う。net が未注入(エディタ等)ならエラー文字列を返す。
+    // ---- net.udpOpen(port): 127.0.0.1 専用 UDP（ファイル IPC の代わり）。Shutdown / GC で必ず閉じる ----
+    lua.new_usertype<ScriptUdpSocket>("UdpSocket", sol::no_constructor,
+        "recv", [](ScriptUdpSocket& u, sol::this_state ts) -> sol::object {
+            std::string s;
+            if (!u.Recv(s)) return sol::make_object(ts, sol::lua_nil);
+            return sol::make_object(ts, s);
+        },
+        "recvLatest", [](ScriptUdpSocket& u, sol::this_state ts) -> sol::object {
+            std::string s;
+            if (!u.RecvLatest(s)) return sol::make_object(ts, sol::lua_nil);
+            return sol::make_object(ts, s);
+        },
+        "send",  [](ScriptUdpSocket& u, int port, const std::string& text) { return u.Send(port, text); },
+        "close", [](ScriptUdpSocket& u) { u.Close(); });
+    // net.udpOpen(port) でも net:udpOpen(port) でも呼べる（先頭が数値ならそれが port）
+    net.set_function("udpOpen", [this](sol::object a, sol::optional<int> b, sol::this_state ts)
+        -> std::tuple<sol::object, sol::object> {
+        const int port = b ? *b : (a.is<int>() ? a.as<int>() : 0);
+        std::string err;
+        auto sock = ScriptUdpSocket::Open(port, err);
+        if (!sock) return { sol::make_object(ts, sol::lua_nil), sol::make_object(ts, err) };
+        std::erase_if(m_udpSockets, [](const std::weak_ptr<ScriptUdpSocket>& w) { return w.expired(); });
+        m_udpSockets.push_back(sock);
+        return { sol::make_object(ts, sock), sol::make_object(ts, sol::lua_nil) };
+    });
+
     net.set_function("host", [this](sol::object /*self*/, sol::optional<int> port) -> std::string {
         if (!m_network) return "network system unavailable";
         u16 p = port.has_value() ? static_cast<u16>(*port) : m_network->Config().defaultPort;
@@ -4485,6 +4516,8 @@ void ScriptEngine::ReloadScript(entt::entity e)
     ls.loadError = false;
     ls.errorMessage.clear();
     InvalidatePropertySchema(ls.scriptPath);   // ファイルが書き換わった可能性 → 再解析
+    // 旧 self が握っていた UDP ソケットを今すぐ手放させる（作り直しの OnStart で同じ port を bind し直せるように）
+    if (m_lua) m_lua->collect_garbage();
     Logger::Info("LuaScript reload queued: entity={}", static_cast<u32>(e));
     // 実際の再構築は UpdateAttachedScripts のループで行う
 }
@@ -4768,6 +4801,13 @@ void ScriptEngine::OnPlayStart()
     Logger::Info("ScriptEngine: OnPlayStart done");
 }
 
+void ScriptEngine::CloseAllUdpSockets()
+{
+    for (auto& w : m_udpSockets)
+        if (auto sk = w.lock()) sk->Close();
+    m_udpSockets.clear();
+}
+
 void ScriptEngine::OnPlayStop()
 {
     auto& reg = m_scene->GetRegistry();
@@ -4786,6 +4826,7 @@ void ScriptEngine::OnPlayStop()
     // Play 中に登録された Lua ハンドラ（sol::function を保持）を EventBus から除去する。
     // Lua state がここで無効化されるため、残留ハンドラが後続 Flush/Emit で呼ばれると UAF になる。
     // Application::EnterEditorMode でも Clear を呼ぶが、OnPlayStop 経路を一本化して確実に除去する。
+    CloseAllUdpSockets();   // Lua state は Play をまたいで生きるので GC を待たずに閉じる（次の Play で同じ port を bind できる）
     if (m_splitReq) m_splitReq->Reset();   // 画面分割は Play 1 回ごとに解除
     if (m_eventBus) m_eventBus->Clear();
     if (m_aiSystem) m_aiSystem->Clear();
@@ -5110,6 +5151,7 @@ void ScriptEngine::Shutdown()
     // ここで空にする（行動の番号が、もう無い Lua 関数を指さないように）。
     if (m_aiSystem) m_aiSystem->Clear();
     ClearAiLua();
+    CloseAllUdpSockets();   // Lua の GC を待たず閉じる
     if (m_lua)
     {
         m_lua.reset();
