@@ -147,7 +147,7 @@ v2.5.1 から、ArduinoLab と並んでプロジェクト一覧に **GroveLab** 
   CPU 3 台と 3 周。信号が緑になる直前にスイッチでロケットスタート（早すぎるとフライング）。
   サーボはスピードメーター、LED は信号・アイテムのルーレット・ダッシュ、スピーカーはエンジン音と効果音。
   インスペクタの `KART_Game` で周回数・CPU の速さ・ハンドルの効きと左右、アクセルをセンサにする（autoGas OFF）を変えられます。
-  コースは `python hardware\lab	ools\make_grove_kart.py` で作り直せます（scenes/kart.json と kart/track.txt）
+  コースは `python hardware\lab\tools\make_grove_kart.py` で作り直せます（scenes/kart.json と kart/track.txt）
 - ボードが無ければキーボードで代用: ← →=ボリューム、↑ ↓=距離、Space=スイッチ、M=サーボ自動
 - **スピーカーの音量**: Play 中に Z（小さく）/ X（大きく）。既定は 35%。インスペクタの `GP_Speaker` の「音量」でも変えられます
   （爆発までの秒数・ピッの高さも同じ所）。v2.5.4 より前に書き込んだボードは音量が効かないので、スケッチを書き込み直してください
