@@ -38,7 +38,7 @@ local SND = {
 }
 
 -- 関数は先に名前だけ宣言（下でまとめて定義）
-local readTrack, nearest, pointAt, reset, play, drawHud, tapped, readPhones, readRoom, writeState, stepHuman, stepCpu, kartName
+local readTrack, nearest, pointAt, reset, play, drawHud, tapped, readPhones, readRoom, writeState, stepHuman, stepCpu, kartName, splitPlan, chase, mapView, drawSplitHud
 
 ---------------------------------------------------------------------------
 function OnStart(self)
@@ -52,6 +52,8 @@ function OnStart(self)
   self.ents = {}
   for i, n in ipairs(KARTS) do self.ents[i] = scene:findEntity(n) end
   self.cam = scene:findEntity("KART_Cam")
+  -- 画面分割はエンジン v2.5.5 から。古いエンジンでは 1 画面のまま動く
+  self.splitOk = pcall(function() return scene:getSplitScreen() end)
   self.signals = { scene:findEntity("KART_Signal1"), scene:findEntity("KART_Signal2"), scene:findEntity("KART_Signal3") }
   self.items = {}
   for row = 0, 2 do
@@ -354,9 +356,49 @@ function stepHuman(self, i, steer, gas, press, dt)
         self.msg = "ゴール！"; self.msgT = 2
         play(self, (K.rank or 4) == 1 and "win" or "lose")
       end
-    elseif main and lap == self.laps then play(self, "final"); self.msg = "ファイナルラップ！"; self.msgT = 1.6
-    elseif main then play(self, "lap"); self.msg = "LAP " .. lap; self.msgT = 1.2 end
+      K.msg, K.msgT = string.format("ゴール！ %d位", K.rank or 4), 3
+    elseif lap == self.laps then
+      if main then play(self, "final"); self.msg = "ファイナルラップ！"; self.msgT = 1.6 end
+      K.msg, K.msgT = "ファイナルラップ！", 1.6
+    else
+      if main then play(self, "lap"); self.msg = "LAP " .. lap; self.msgT = 1.2 end
+      K.msg, K.msgT = "LAP " .. lap, 1.2
+    end
   end
+end
+
+-- 画面分割の割り当て: 人が 2 人以上いてスタートしたら、人ごとに区画を持つ（3 人なら 4 つ目はコース全体）
+function splitPlan(self)
+  if not self.splitOk or self.state == READY then return nil end
+  local hs = {}
+  for i = 1, 4 do if self.k[i].human then hs[#hs + 1] = i end end
+  if #hs < 2 then return nil end
+  if #hs == 3 then hs[4] = "map" end
+  return hs
+end
+
+-- カートの後ろから追うカメラ（カートごとになめらかに追う）。
+--   上下 2 分割の横長の区画でも、横の見え方が 16:9 の 1 画面と同じになるように縦の画角を決める
+function chase(K, dt, aspect)
+  local fx, fz = math.sin(K.yaw), math.cos(K.yaw)
+  local wide = math.max(0, aspect - 1.8)   -- 横長の区画（上下 2 分割）は少し引いて高くする
+  local back, up = 7.5 + wide * 2.2, 3.4 + wide * 0.9
+  local tx, ty, tz = K.x - fx * back, up, K.z - fz * back
+  if not K.cx then K.cx, K.cy, K.cz = tx, ty, tz end
+  local k = math.min(1, dt * 6)
+  K.cx = lerp(K.cx, tx, k); K.cy = lerp(K.cy, ty, k); K.cz = lerp(K.cz, tz, k)
+  local hTan = math.tan(math.rad(30)) * 16 / 9 * (1 + K.v * 0.0075)
+  local fov = clamp(math.deg(2 * math.atan(hTan / aspect)), 20, 75)
+  return K.cx, K.cy, K.cz, K.x + fx * 5, 1.0, K.z + fz * 5, fov
+end
+
+-- コース全体を上から見るカメラ（3 人のときの 4 つ目の区画）
+function mapView(self, aspect)
+  local b = self.mapB
+  local cx, cz = (b[1] + b[2]) / 2, (b[3] + b[4]) / 2
+  local ext = math.max((b[2] - b[1]) / aspect, b[4] - b[3]) * 0.5 + 8
+  local h = ext / math.tan(math.rad(25))
+  return cx, h, cz - h * 0.2, cx, 0, cz, 50
 end
 
 -- CPU（中心線に沿って走る。カーブでは落とし、人より遅れると少し速くなる）
@@ -386,6 +428,7 @@ function OnUpdate(self, dt)
   self.stateT = self.stateT + dt
   if tapped(self, "R") then
     self.dev:set("tone", 0)
+    if self.splitOk then scene:setSplitScreen(0) end
     loadScene("scenes/grove.json")
     return
   end
@@ -445,8 +488,13 @@ function OnUpdate(self, dt)
       self.msg = "GO!"; self.msgT = 1.2
       for i = 1, 4 do
         local K = self.k[i]
-        if K.human and K.rocket and not K.burnt then K.boostT = 1.2; K.v = 18; if i == 1 then self.msg = "ロケットスタート！" end
-        elseif K.human and K.burnt then K.slowT = 1.0; if i == 1 then self.msg = "フライング……" end end
+        if K.human and K.rocket and not K.burnt then
+          K.boostT = 1.2; K.v = 18; K.msg, K.msgT = "ロケットスタート！", 1.2
+          if i == 1 then self.msg = "ロケットスタート！" end
+        elseif K.human and K.burnt then
+          K.slowT = 1.0; K.msg, K.msgT = "フライング……", 1.2
+          if i == 1 then self.msg = "フライング……" end
+        end
         K.rocket, K.burnt = false, false
       end
     end
@@ -526,6 +574,7 @@ function OnUpdate(self, dt)
     end
   end
   self.msgT = (self.msgT or 0) - dt
+  for i = 1, 4 do local K = self.k[i]; if K.msgT then K.msgT = K.msgT - dt end end
 
   -- カートとアイテムボックスを動かす
   for i = 1, 4 do
@@ -543,8 +592,28 @@ function OnUpdate(self, dt)
     it.e.transform.rotation = Vec3.new(25, self.t * 90, 25)
   end
 
-  -- カメラ: 人が 1 人ならその後ろ、2 人以上なら全員が入るように引く
-  if self.cam and self.cam:isValid() then
+  -- カメラ: 人が 2 人以上でレースが始まったら画面分割（人ごとに後ろから追う）。
+  --   それ以外は、人が 1 人ならその後ろ、2 人以上（スタート前）なら全員が入るように引く
+  self.plan = splitPlan(self)
+  if self.splitOk then scene:setSplitScreen(self.plan and #self.plan or 0) end
+  if self.plan and self.cam and self.cam:isValid() then
+    for a, who in ipairs(self.plan) do
+      local _, _, w, h = scene:getSplitRect(a)
+      local aspect = (h and h > 0) and w / h or 16 / 9
+      local px, py, pz, lx, ly, lz, fov
+      if who == "map" then px, py, pz, lx, ly, lz, fov = mapView(self, aspect)
+      else px, py, pz, lx, ly, lz, fov = chase(self.k[who], dt, aspect) end
+      if a == 1 then
+        local dx, dy, dz = lx - px, ly - py, lz - pz
+        self.cam.transform.position = Vec3.new(px, py, pz)
+        self.cam.transform.rotation = Vec3.new(math.deg(math.atan(-dy, math.sqrt(dx * dx + dz * dz))), math.deg(math.atan(dx, dz)), 0)
+        self.cam:setFov(fov)
+      else
+        scene:setSplitView(a, px, py, pz, lx, ly, lz, fov)
+      end
+    end
+    self.camX = nil   -- 分割をやめたら 1 画面のカメラはその場から追い直す
+  elseif self.cam and self.cam:isValid() then
     local hs = {}
     for i = 1, 4 do if self.k[i].human then hs[#hs + 1] = self.k[i] end end
     if #hs == 0 then hs = { self.k[1] } end
@@ -631,52 +700,9 @@ local function fmtTime(t)
   return string.format("%d:%05.2f", math.floor(t / 60), t % 60)
 end
 
-function drawHud(self)
-  local P = self.k[1]
-  -- 順位表
-  ui:rect(16, 16, 300, 40 + 4 * 26, 0.04, 0.05, 0.08, 0.75, 10)
-  ui:text(30, 22, fmtTime(self.raceT), 22, 0.9, 0.93, 1, 1)
-  if self.best > 0 then ui:text(150, 26, "ベスト " .. fmtTime(self.best), 14, 0.65, 0.7, 0.8, 1) end
-  local order = self.order or { 1, 2, 3, 4 }
-  for r, i in ipairs(order) do
-    local K = self.k[i]
-    local y = 52 + (r - 1) * 26
-    local c = COLOR[i]
-    ui:rect(30, y + 4, 14, 14, c[1], c[2], c[3], 1, 7)
-    local lap = K.done and "ゴール" or string.format("LAP %d/%d", clamp(math.floor(math.max(K.prog, 0) / self.L) + 1, 1, self.laps), self.laps)
-    local nm = kartName(self, i)
-    local bright = K.human and 1 or 0.6
-    ui:text(52, y, string.format("%d位 %s %s", r, CNAME[i], nm), 18, bright, bright, bright, 1)
-    ui:text(232, y + 2, lap, 15, 0.7 * bright, 0.75 * bright, 0.85 * bright, 1)
-  end
-
-  -- 赤のアイテム枠と速さ
-  if P.human then
-    ui:rect(470, 16, 120, 100, 0.04, 0.05, 0.08, 0.75, 12)
-    ui:rect(478, 24, 104, 84, 0.12, 0.13, 0.17, 1, 10)
-    if P.roulT > 0 then
-      local names = { "キノコ", "？？？", "金のキノコ", "★" }
-      ui:text(494, 52, names[math.floor(self.t * 14) % 4 + 1], 20, 1, 1, 1, 1)
-    elseif P.item then
-      ui:text(490, 44, P.item, 20, 1, 0.75, 0.2, 1)
-      ui:text(500, 74, "×" .. P.itemN .. "  スイッチ", 16, 0.9, 0.9, 0.9, 1)
-    else
-      ui:text(504, 54, "アイテム", 16, 0.45, 0.48, 0.55, 1)
-    end
-    ui:rect(16, 440, 330, 110, 0.04, 0.05, 0.08, 0.75, 10)
-    ui:text(32, 448, string.format("赤 %3d km/h", math.floor(P.v * 3.6 + 0.5)), 30, 1, 1, 1, 1)
-    ui:text(32, 490, "アクセル", 14, 0.7, 0.75, 0.85, 1)
-    ui:rect(100, 492, 230, 12, 0.15, 0.17, 0.22, 1, 4)
-    ui:rect(100, 492, 230 * (self.gas or 0), 12, 0.3, 0.9, 0.4, 1, 4)
-    ui:text(32, 516, "ハンドル", 14, 0.7, 0.75, 0.85, 1)
-    ui:rect(100, 518, 230, 12, 0.15, 0.17, 0.22, 1, 4)
-    ui:rect(214, 514, 2, 20, 0.6, 0.6, 0.7, 1, 0)
-    ui:rect(214 + 110 * (self.steer or 0) - 6, 515, 12, 18, 1, 0.75, 0.2, 1, 4)
-  end
-
-  -- ミニマップ
-  local mx, my, mw = 820, 360, 170
-  ui:rect(mx - 10, my - 10, mw + 20, mw + 20, 0.04, 0.05, 0.08, 0.65, 10)
+-- コースの点とカートの点を (mx,my) から mw 四方に描く
+local function drawMinimap(self, mx, my, mw, alpha)
+  ui:rect(mx - 10, my - 10, mw + 20, mw + 20, 0.04, 0.05, 0.08, alpha, 10)
   local b = self.mapB
   local sc = mw / math.max(b[2] - b[1], b[4] - b[3])
   local function mp(x, z) return mx + (x - b[1]) * sc, my + mw - (z - b[3]) * sc end
@@ -691,25 +717,165 @@ function drawHud(self)
     local s = K.human and 11 or 7
     ui:rect(px - s / 2, py - s / 2, s, s, c[1], c[2], c[3], 1, s / 2)
   end
+end
+
+local function lapText(self, K)
+  if K.done then return "ゴール" end
+  return string.format("LAP %d/%d", clamp(math.floor(math.max(K.prog, 0) / self.L) + 1, 1, self.laps), self.laps)
+end
+
+-- 順位表（x,y から。sc は文字の倍率）
+local function drawStandings(self, x, y, sc)
+  local rowH = 26 * sc
+  ui:rect(x, y, 300 * sc, 40 * sc + 4 * rowH, 0.04, 0.05, 0.08, 0.75, 10)
+  ui:text(x + 14 * sc, y + 6 * sc, fmtTime(self.raceT), 22 * sc, 0.9, 0.93, 1, 1)
+  if self.best > 0 then ui:text(x + 134 * sc, y + 10 * sc, "ベスト " .. fmtTime(self.best), 14 * sc, 0.65, 0.7, 0.8, 1) end
+  for r, i in ipairs(self.order or { 1, 2, 3, 4 }) do
+    local K = self.k[i]
+    local ry = y + 36 * sc + (r - 1) * rowH
+    local c = COLOR[i]
+    ui:rect(x + 14 * sc, ry + 4 * sc, 14 * sc, 14 * sc, c[1], c[2], c[3], 1, 7 * sc)
+    local bright = K.human and 1 or 0.6
+    ui:text(x + 36 * sc, ry, string.format("%d位 %s %s", r, CNAME[i], kartName(self, i)), 18 * sc, bright, bright, bright, 1)
+    ui:text(x + 216 * sc, ry + 2 * sc, lapText(self, K), 15 * sc, 0.7 * bright, 0.75 * bright, 0.85 * bright, 1)
+  end
+end
+
+-- 結果の表（W,H の真ん中）
+local function drawResults(self, W, H)
+  local px, py = W / 2 - 210, H / 2 - 120
+  ui:rect(px, py, 420, 60 + 4 * 32, 0.04, 0.05, 0.08, 0.88, 14)
+  ui:text(px + 30, py + 12, "結果", 28, 1, 0.85, 0.3, 1)
+  for r, i in ipairs(self.order or { 1, 2, 3, 4 }) do
+    local K = self.k[i]
+    local c = COLOR[i]
+    ui:rect(px + 30, py + 60 + (r - 1) * 32, 16, 16, c[1], c[2], c[3], 1, 8)
+    ui:text(px + 56, py + 56 + (r - 1) * 32, string.format("%d位  %s %s  %s", r, CNAME[i], kartName(self, i),
+      K.done and fmtTime(K.finishT) or "--"), 20, 1, 1, 1, 1)
+  end
+  if self.stateT > 3 then ui:text(px + 30, py + 190, "だれかのボタンでもう一回", 16, 1, 0.85, 0.35, 1) end
+end
+
+-- 画面分割のときの HUD: 区画ごとに、その人の順位・周回・速さ・アイテム・お知らせ
+function drawSplitHud(self, W, H)
+  for a, who in ipairs(self.plan) do
+    local x, y, w, h = scene:getSplitRect(a)
+    local sc = clamp(h / 360, 0.6, 1.3)
+    if who == "map" then
+      ui:text(x + 14, y + 10, "コース全体", 18 * sc, 0.85, 0.88, 1, 1)
+      drawStandings(self, x + 12, y + 40 * sc, sc * 0.85)
+    else
+      local K = self.k[who]
+      local c = COLOR[who]
+      -- 左上: 色・順位・名前・周回（空の明るさに負けないよう暗い下地を敷く）
+      ui:rect(x + 8, y + 8, 250 * sc, 72 * sc, 0.04, 0.05, 0.08, 0.7, 10)
+      ui:rect(x + 12, y + 12, 8 * sc, 64 * sc, c[1], c[2], c[3], 1, 3)
+      ui:text(x + 28 * sc, y + 8, string.format("%d位", K.rank or who), 44 * sc, 1, 1, 1, 1)
+      ui:text(x + 126 * sc, y + 14, CNAME[who] .. " " .. kartName(self, who), 18 * sc, c[1] * 0.5 + 0.5, c[2] * 0.5 + 0.5, c[3] * 0.5 + 0.5, 1)
+      ui:text(x + 126 * sc, y + 14 + 24 * sc, lapText(self, K), 16 * sc, 0.8, 0.84, 0.95, 1)
+      -- 左下: 速さ
+      ui:rect(x + 8, y + h - 50 * sc, 150 * sc, 42 * sc, 0.04, 0.05, 0.08, 0.6, 8)
+      ui:text(x + 16, y + h - 44 * sc, string.format("%3d km/h", math.floor(K.v * 3.6 + 0.5)), 28 * sc, 1, 1, 1, 1)
+      -- 右上: アイテム
+      local bw, bh = 104 * sc, 70 * sc
+      local bx, by = x + w - bw - 14, y + 12
+      if #self.plan == 2 and a == 2 then by = y + h - bh - 12 end   -- 上下 2 分割の下は右下（右端の真ん中はコース図）
+      ui:rect(bx, by, bw, bh, 0.04, 0.05, 0.08, 0.7, 10)
+      if K.roulT > 0 then
+        local names = { "キノコ", "？？？", "金のキノコ", "★" }
+        ui:text(bx + 10 * sc, by + 22 * sc, names[math.floor(self.t * 14) % 4 + 1], 18 * sc, 1, 1, 1, 1)
+      elseif K.item then
+        ui:text(bx + 8 * sc, by + 12 * sc, K.item, 18 * sc, 1, 0.75, 0.2, 1)
+        ui:text(bx + 8 * sc, by + 40 * sc, "×" .. K.itemN, 16 * sc, 0.9, 0.9, 0.9, 1)
+      else
+        ui:text(bx + 14 * sc, by + 24 * sc, "アイテム", 15 * sc, 0.45, 0.48, 0.55, 1)
+      end
+      -- 真ん中: その人へのお知らせ（周回・ゴール・ロケット）
+      if K.msg and (K.msgT or 0) > 0 then
+        ui:text(x + w * 0.5 - 90 * sc, y + h * 0.3, K.msg, 34 * sc, 1, 0.9, 0.3, 1)
+      end
+      -- 赤（つまみ）の区画にはハンドルのバー
+      if who == 1 then
+        local hx, hy = x + w / 2 - 75 * sc, y + h - 30 * sc
+        ui:rect(hx, hy, 150 * sc, 10 * sc, 0.15, 0.17, 0.22, 0.9, 4)
+        ui:rect(hx + 75 * sc + 70 * sc * (self.steer or 0) - 5, hy - 3 * sc, 10, 16 * sc, 1, 0.75, 0.2, 1, 4)
+      end
+    end
+  end
+  -- 真ん中: 小さなコース図（3 人のときは 4 つ目の区画がコース全体なので出さない）
+  if self.plan[4] ~= "map" then
+    local mw = math.floor(math.min(W, H) * 0.18)
+    if #self.plan == 2 then   -- 上下 2 分割は真ん中にカートが来るので右端の境目に置く
+      drawMinimap(self, W - mw - 24, H / 2 - mw / 2, mw, 0.55)
+    else
+      drawMinimap(self, W / 2 - mw / 2, H / 2 - mw / 2, mw, 0.55)
+    end
+  end
+  -- 全員へのお知らせ: カウントダウン・GO・結果
+  if self.state == COUNT then
+    ui:text(W / 2 - 28, H / 2 - 70, tostring(3 - math.floor(self.stateT)), 96, 1, 0.25, 0.2, 1)
+  elseif self.state == RACE and self.stateT < 1.2 then
+    ui:text(W / 2 - 50, H / 2 - 40, "GO!", 64, 0.3, 1, 0.4, 1)
+  end
+  if self.state == FINISH then drawResults(self, W, H) end
+end
+
+function drawHud(self)
+  local W, H = 1024, 576
+  if self.splitOk then W, H = scene:getViewSize() end
+  if self.plan then drawSplitHud(self, W, H); return end
+  -- 1 画面: 真ん中の飾り（スタート前・カウント・お知らせ）は 1024x576 を画面の真ん中に置いた座標
+  local ox, oy = math.max(0, (W - 1024) / 2), math.max(0, (H - 576) / 2)
+  local P = self.k[1]
+  drawStandings(self, 16, 16, 1)
+
+  -- 赤のアイテム枠と速さ
+  if P.human then
+    local ix = W / 2 - 42
+    ui:rect(ix, 16, 120, 100, 0.04, 0.05, 0.08, 0.75, 12)
+    ui:rect(ix + 8, 24, 104, 84, 0.12, 0.13, 0.17, 1, 10)
+    if P.roulT > 0 then
+      local names = { "キノコ", "？？？", "金のキノコ", "★" }
+      ui:text(ix + 24, 52, names[math.floor(self.t * 14) % 4 + 1], 20, 1, 1, 1, 1)
+    elseif P.item then
+      ui:text(ix + 20, 44, P.item, 20, 1, 0.75, 0.2, 1)
+      ui:text(ix + 30, 74, "×" .. P.itemN .. "  スイッチ", 16, 0.9, 0.9, 0.9, 1)
+    else
+      ui:text(ix + 34, 54, "アイテム", 16, 0.45, 0.48, 0.55, 1)
+    end
+    local sy = H - 136
+    ui:rect(16, sy, 330, 110, 0.04, 0.05, 0.08, 0.75, 10)
+    ui:text(32, sy + 8, string.format("赤 %3d km/h", math.floor(P.v * 3.6 + 0.5)), 30, 1, 1, 1, 1)
+    ui:text(32, sy + 50, "アクセル", 14, 0.7, 0.75, 0.85, 1)
+    ui:rect(100, sy + 52, 230, 12, 0.15, 0.17, 0.22, 1, 4)
+    ui:rect(100, sy + 52, 230 * (self.gas or 0), 12, 0.3, 0.9, 0.4, 1, 4)
+    ui:text(32, sy + 76, "ハンドル", 14, 0.7, 0.75, 0.85, 1)
+    ui:rect(100, sy + 78, 230, 12, 0.15, 0.17, 0.22, 1, 4)
+    ui:rect(214, sy + 74, 2, 20, 0.6, 0.6, 0.7, 1, 0)
+    ui:rect(214 + 110 * (self.steer or 0) - 6, sy + 75, 12, 18, 1, 0.75, 0.2, 1, 4)
+  end
+
+  -- ミニマップ（右下）
+  drawMinimap(self, W - 194, H - 206, 170, 0.65)
 
   -- スタート前: 遊び方と、スマホで参加する QR
   if self.state == READY then
-    ui:rect(150, 176, 720, 290, 0.04, 0.05, 0.08, 0.85, 14)
-    ui:text(176, 190, "グローブ・グランプリ", 32, 1, 0.8, 0.2, 1)
-    ui:text(176, 240, "赤: つまみ = ハンドル、スイッチ = アイテム", 17, 0.9, 0.92, 1, 1)
-    ui:text(176, 266, "スマホ: 傾けてハンドル、ボタン = アイテム", 17, 0.9, 0.92, 1, 1)
-    ui:text(176, 292, "アクセルは自動。緑の直前にボタンでロケット", 15, 0.75, 0.8, 0.9, 1)
-    local y = 326
+    ui:rect(ox + 150, oy + 176, 720, 290, 0.04, 0.05, 0.08, 0.85, 14)
+    ui:text(ox + 176, oy + 190, "グローブ・グランプリ", 32, 1, 0.8, 0.2, 1)
+    ui:text(ox + 176, oy + 240, "赤: つまみ = ハンドル、スイッチ = アイテム", 17, 0.9, 0.92, 1, 1)
+    ui:text(ox + 176, oy + 266, "スマホ: 傾けてハンドル、ボタン = アイテム", 17, 0.9, 0.92, 1, 1)
+    ui:text(ox + 176, oy + 292, "アクセルは自動。2 人以上なら画面分割", 15, 0.75, 0.8, 0.9, 1)
+    local y = oy + 326
     for i = 1, 4 do
       local K = self.k[i]
       local c = COLOR[i]
-      ui:rect(176, y + 4, 14, 14, c[1], c[2], c[3], 1, 7)
-      ui:text(198, y, CNAME[i] .. "  " .. (K.human and kartName(self, i) or "CPU"), 17, K.human and 1 or 0.55, K.human and 1 or 0.55, K.human and 1 or 0.6, 1)
+      ui:rect(ox + 176, y + 4, 14, 14, c[1], c[2], c[3], 1, 7)
+      ui:text(ox + 198, y, CNAME[i] .. "  " .. (K.human and kartName(self, i) or "CPU"), 17, K.human and 1 or 0.55, K.human and 1 or 0.55, K.human and 1 or 0.6, 1)
       y = y + 24
     end
-    ui:text(176, 428, "だれかのボタンでスタート   J=赤も走る/走らない  C=まっすぐ合わせ  R=戻る", 14, 1, 0.85, 0.35, 1)
+    ui:text(ox + 176, oy + 428, "だれかのボタンでスタート   J=赤も走る/走らない  C=まっすぐ合わせ  R=戻る", 14, 1, 0.85, 0.35, 1)
     -- QR
-    local qx, qy = 640, 196
+    local qx, qy = ox + 640, oy + 196
     if self.room and #self.room.qr > 0 then
       local n = #self.room.qr
       local m = math.floor(170 / (n + 4))
@@ -735,21 +901,11 @@ function drawHud(self)
       ui:text(qx, qy + 88, "「スマホでつなぐ」を起動", 16, 0.8, 0.82, 0.9, 1)
     end
   elseif self.state == COUNT then
-    local n = 3 - math.floor(self.stateT)
-    ui:text(480, 190, tostring(n), 96, 1, 0.25, 0.2, 1)
+    ui:text(ox + 480, oy + 190, tostring(3 - math.floor(self.stateT)), 96, 1, 0.25, 0.2, 1)
   end
   if self.state == FINISH then
-    ui:rect(300, 150, 420, 60 + 4 * 32, 0.04, 0.05, 0.08, 0.85, 14)
-    ui:text(330, 162, "結果", 28, 1, 0.85, 0.3, 1)
-    for r, i in ipairs(self.order or { 1, 2, 3, 4 }) do
-      local K = self.k[i]
-      local c = COLOR[i]
-      ui:rect(330, 210 + (r - 1) * 32, 16, 16, c[1], c[2], c[3], 1, 8)
-      ui:text(356, 206 + (r - 1) * 32, string.format("%d位  %s %s  %s", r, CNAME[i], kartName(self, i),
-        K.done and fmtTime(K.finishT) or "--"), 20, 1, 1, 1, 1)
-    end
-    if self.stateT > 3 then ui:text(330, 340, "だれかのボタンでもう一回", 16, 1, 0.85, 0.35, 1) end
+    drawResults(self, W, H)
   elseif self.msgT > 0 and self.msg then
-    ui:text(380, 200, self.msg, 44, 1, 0.9, 0.3, 1)
+    ui:text(ox + 380, oy + 200, self.msg, 44, 1, 0.9, 0.3, 1)
   end
 end
