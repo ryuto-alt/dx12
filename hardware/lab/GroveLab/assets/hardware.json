@@ -1,0 +1,15 @@
+{
+  "devices": [
+    {
+      "name": "grove",
+      "transport": "serial",
+      "match": { "hello": "grove" },
+      "baud": 115200,
+      "channels": {
+        "knob": { "deadzone": 0.01, "smooth": 0.2 },
+        "distance": { "smooth": 0.3 }
+      },
+      "actions": { "sw": "Jump" }
+    }
+  ]
+}

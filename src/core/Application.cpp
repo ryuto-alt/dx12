@@ -97,6 +97,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     {
         try { InstallBundledSamples({}, false, true); }
         catch (const std::exception& e) { Logger::Warn("[samples] 同梱サンプルの配置に失敗: {}", e.what()); }
+        catch (...) { Logger::Warn("[samples] 同梱サンプルの配置に失敗（不明な例外）"); }
     }
 
     // エディタコンテキスト初期化
@@ -1658,7 +1659,24 @@ void Application::Run()
         // 物理ハードウェア（Arduino / ESP32）: 出力の確定と最新値のスナップショット。エディタ / Play / ゲームのどれでも回す。
         // ★フレーム途中で値が変わらないよう、スクリプトが読む前（ここ）で 1 回だけ確定する。
         if (m_hardware) { m_hardware->BeginFrame(); ServiceHardwareReads(); }
-        ServiceHardwareUi();   // ハードウェア窓の要求・書き込み道具の自動導入・ボード検出の案内（エディタのみ。重い処理は 1Hz）
+        // ハードウェア窓の要求・書き込み道具の自動導入・ボード検出の案内（エディタのみ。重い処理は 1Hz）
+        // ★フレームループへ例外を漏らさない（実機・COM ポートが絡む処理なので環境差で何が起きるか分からない）。
+        //   同じ文言のエラーは 1 回だけログに出す（毎フレームのスパム防止）。
+        try
+        {
+            ServiceHardwareUi();
+        }
+        catch (const std::exception& e)
+        {
+            static std::string s_lastHwUiErr;
+            const std::string msg = e.what();
+            if (msg != s_lastHwUiErr) { s_lastHwUiErr = msg; Logger::Error("[hw] ハードウェア窓の処理で例外（無視して続行）: {}", msg); }
+        }
+        catch (...)
+        {
+            static bool s_loggedUnknown = false;
+            if (!s_loggedUnknown) { s_loggedUnknown = true; Logger::Error("[hw] ハードウェア窓の処理で不明な例外（無視して続行）"); }
+        }
 
         // メッセージ処理（ここで WM_KEYDOWN/WM_MOUSEMOVE → InputSystem に蓄積）
         m_window->ProcessMessages();

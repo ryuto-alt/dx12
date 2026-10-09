@@ -62,6 +62,7 @@ Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion re
 Source: "{#RepoRoot}\tools\lua-defs\*"; DestDir: "{app}\tools\lua-defs"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; ArduinoLab（Arduino / ESP32 の実験キット。初回起動時に Documents\UnoProjects へ置かれる）とファームウェア
 Source: "{#RepoRoot}\hardware\lab\ArduinoLab\*"; DestDir: "{app}\samples\ArduinoLab"; Excludes: ".dx12,.autosave"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepoRoot}\hardware\lab\GroveLab\*"; DestDir: "{app}\samples\GroveLab"; Excludes: ".dx12,.autosave"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\hardware\firmware\UnoLink\*"; DestDir: "{app}\hardware\firmware\UnoLink"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\hardware\firmware\UnoLinkGeneric\*"; DestDir: "{app}\hardware\firmware\UnoLinkGeneric"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\hardware\firmware\README.md"; DestDir: "{app}\hardware\firmware"; Flags: ignoreversion

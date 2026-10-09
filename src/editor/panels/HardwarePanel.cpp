@@ -25,6 +25,7 @@ constexpr Board kBoards[] = {
     {"ESP32（esp32:esp32:esp32）",            "esp32:esp32:esp32"},
     {"Arduino Uno（arduino:avr:uno）",        "arduino:avr:uno"},
     {"Arduino Nano（旧ブートローダ）",        "arduino:avr:nano:cpu=atmega328old"},
+    {"Arduino Nano Every（arduino:megaavr:nona4809）", "arduino:megaavr:nona4809"},
 };
 constexpr int kBoardCount = static_cast<int>(sizeof(kBoards) / sizeof(kBoards[0]));
 
@@ -41,6 +42,7 @@ bool Contains(const std::vector<std::string>& v, const std::string& s)
 int BoardFromGuess(const std::string& g)
 {
     if (g.find("ESP32") != std::string::npos || g.find("Espressif") != std::string::npos || g.find("CP210") != std::string::npos) return 0;
+    if (g.find("Nano Every") != std::string::npos) return 3;   // 汎用の "Arduino" より先に見る
     if (g.find("Arduino") != std::string::npos) return 1;
     return -1;
 }

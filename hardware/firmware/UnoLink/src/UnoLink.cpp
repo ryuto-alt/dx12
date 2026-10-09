@@ -63,6 +63,13 @@ static const char* boardName() {
   #else
     return "avr";
   #endif
+#elif defined(ARDUINO_ARCH_MEGAAVR)
+  // Nano Every など ATmega4809 系（ARCH_AVR ではない。RAM 6KB なので既定の UL_MAX_CH 16 のままでよい）
+  #if defined(ARDUINO_AVR_NANO_EVERY)
+    return "nano_every";
+  #else
+    return "megaavr";
+  #endif
 #elif defined(ARDUINO_ARCH_RP2040)
   return "rp2040";
 #elif defined(ARDUINO_ARCH_SAMD)

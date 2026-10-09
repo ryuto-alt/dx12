@@ -13,6 +13,8 @@
 
 ボードが無くても動きます（キーボードで代用: Space=ボタン、← →=ダイヤル、T=タッチ）。
 
+> **Arduino Nano Every + Grove のキットなら [GroveLab](#grovelab--arduino-nano-every--grove-のキット)** へ（サーボ・フルカラー LED・スピーカー・超音波センサ）。
+
 ## 用意するもの
 
 - Windows 10 / 11 の PC（DirectX 12 が動く GPU）
@@ -107,6 +109,26 @@ end
 ```
 
 出力は 1 秒エンジンから何も来ないと自動で 0 に戻ります（ゲームが落ちても LED やモーターが動きっぱなしにならない）。
+
+## GroveLab — Arduino Nano Every + Grove のキット
+
+v2.5.1 から、ArduinoLab と並んでプロジェクト一覧に **GroveLab** が出ます（`ドキュメント\UnoProjects\GroveLab`）。
+手順は ArduinoLab と同じです（開く → 道具が自動で入る → ボードを挿す → 「ハードウェア」窓でボード **Arduino Nano Every** を選んで書き込む → ▶ Play）。
+
+| 部品（Grove Shield for Arduino Nano に挿す） | 端子 | 画面 / 動き |
+|---|---|---|
+| GROVE ボリューム | A0 | 画面の針と本物のサーボが同じ角度に動く（実験 1） |
+| サーボ SG90（2 分岐ケーブル） | A2 | ↑（M キーで自動往復に切替） |
+| GROVE 超音波距離センサ | D6 | 手を近づけると画面の球がセンサへ寄る（実験 2） |
+| GROVE フルカラー LED v2.0 | D2（クロック D2・データ D3） | 距離で色が変わる: 遠い=青 → 緑 → 近い=赤（実験 3） |
+| GROVE マイクロスイッチ | A6 | 押すと「ピッ」＋ LED が白く光り、テルミンの ON / OFF（実験 4） |
+| GROVE スピーカー | D4 | テルミン ON の間、手を近づけるほど高い音 |
+
+- ボードが無ければキーボードで代用: ← →=ボリューム、↑ ↓=距離、Space=スイッチ、M=サーボ自動
+- スイッチの押す/離すが逆なら `GroveLab\assets\hardware.json` の `channels` に `"sw": { "invert": true }` を足す
+- 距離は 5〜50cm を「近い〜遠い」として使います（`GP_Hand` の GroveDistance のプロパティで変えられる）
+- スケッチは `GroveLab\firmware\GroveLab\GroveLab.ino`（Servo ライブラリを使う。道具の自動準備で一緒に入ります）
+- Nano Every はポートを開くと再起動するので、つながるまで 2〜3 秒かかります
 
 ## もっと詳しく
 

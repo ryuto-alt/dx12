@@ -265,6 +265,9 @@ std::string FqbnFromBoard(const std::string& board)
 {
     const std::string b = Lower(board);
     if (b.find("esp32") != std::string::npos || b.find("espressif") != std::string::npos) return "esp32:esp32:esp32";
+    // Nano Every（ATmega4809）は megaavr コア。汎用の "nano" / "arduino" → uno の規則より先に見る
+    if (b.find("every") != std::string::npos || b.find("nona4809") != std::string::npos || b.find("megaavr") != std::string::npos)
+        return "arduino:megaavr:nona4809";
     if (b.find("uno") != std::string::npos || b.find("arduino") != std::string::npos || b.find("avr") != std::string::npos ||
         b.find("nano") != std::string::npos)
         return "arduino:avr:uno";
@@ -438,7 +441,10 @@ struct FlashJob
     std::string           workDir;
     std::string           cli;           // arduino-cli のパス（コアの目印に書く用）
     std::string           preCmdLine;    // コンパイルの前に走らせる core install（空 = 要らない）
-    std::string           preCore;       // その core（"esp32:esp32"）
+    std::string           preCore;       // その core（"esp32:esp32" / "arduino:megaavr" など vendor:arch なら何でも）
+    std::string           preIndexCmdLine; // core install の前の core update-index（索引が無いと入らない。失敗しても進む）
+    std::string           preLibCmdLine; // コンパイルの前に走らせる lib install（空 = 要らない。Servo など）
+    std::string           preLib;        // そのライブラリ名
 };
 
 // 1 本のコマンドを隠しプロセスで走らせて出力を st.log に積む。終了コードを返す。起動できなければ -1 と error。
@@ -509,11 +515,19 @@ int RunLoggedProc(HwAppState& st, const std::string& cmdLine, const std::string&
     return exitCode;
 }
 
-void RunFlash(FlashJob job)
+// RunFlash の途中経過（例外で途中終了しても、ここまでの結果と「つなぎ直し済みか」を外で見られるように）
+struct FlashOutcome
 {
-    HwAppState& st = *static_cast<HwAppState*>(job.stateHolder.get());
     std::string error;
-    int exitCode = -1;
+    int         exitCode = -1;
+    bool        reconnected = false;
+    bool        restored = false;   // 3) のつなぎ直し（Connect）まで済んだ
+};
+
+void RunFlashSteps(FlashJob& job, HwAppState& st, FlashOutcome& out)
+{
+    std::string& error = out.error;
+    int& exitCode = out.exitCode;
 
     // 1) ポートを放す（IO スレッドが閉じるまで待つ）。
     //    ★未接続の他デバイス（match に VID が無いものなど）は、hello 探しに全ポートを順に開きに来る。
@@ -538,19 +552,32 @@ void RunFlash(FlashJob job)
         std::this_thread::sleep_for(std::chrono::milliseconds(300));   // ドライバがポートを手放す余裕
     }
 
-    // 2) arduino-cli を起動して出力を取り込む（必要ならコンパイルの前にコアを入れる）
+    // 2) arduino-cli を起動して出力を取り込む（必要ならコンパイルの前にコア・ライブラリを入れる）
     if (!st.cancel.load() && !job.preCmdLine.empty())
     {
         SetState(st, "installing_core");   // ★"compiling" のままだと core install の esptool の文字で "uploading" に化ける
         const std::string msg = "ボードのコア " + job.preCore + " を入れます（初回だけ数分）\n";
         PushLogText(st, msg.data(), msg.size());
         std::string perr;
+        if (!job.preIndexCmdLine.empty() && !st.cancel.load()) RunLoggedProc(st, job.preIndexCmdLine, "", perr);   // 失敗は無視（下の install が答えを出す）
+        perr.clear();
         const int pec = RunLoggedProc(st, job.preCmdLine, "", perr);
         if (!perr.empty()) error = perr;
         else if (pec != 0 && !st.cancel.load()) error = "ボードのコア " + job.preCore + " を入れられませんでした（ログ末尾を参照）";
         else if (pec == 0) hw::AddCoreToMarker(job.preCore, job.cli);
-        if (error.empty()) SetState(st, "compiling");
     }
+    if (!st.cancel.load() && error.empty() && !job.preLibCmdLine.empty())
+    {
+        SetState(st, "installing_core");
+        const std::string msg = "ライブラリ " + job.preLib + " を入れます\n";
+        PushLogText(st, msg.data(), msg.size());
+        std::string perr;
+        const int pec = RunLoggedProc(st, job.preLibCmdLine, "", perr);
+        if (!perr.empty()) error = perr;
+        else if (pec != 0 && !st.cancel.load()) error = "ライブラリ " + job.preLib + " を入れられませんでした（ログ末尾を参照）";
+        else if (pec == 0) hw::AddLibToMarker(job.preLib, job.cli);
+    }
+    if (error.empty() && (!job.preCmdLine.empty() || !job.preLibCmdLine.empty())) SetState(st, "compiling");
     if (!st.cancel.load() && error.empty())
     {
         std::string perr;
@@ -561,7 +588,7 @@ void RunFlash(FlashJob job)
     if (st.cancel.load() && error.empty()) error = "中断されました";
 
     // 3) つなぎ直す（失敗しても必ず Connect を出す＝自動再接続を元に戻す）
-    bool reconnected = false;
+    bool& reconnected = out.reconnected;
     if (!job.device.empty() && job.sys)
     {
         const bool cancelled = st.cancel.load();
@@ -586,17 +613,57 @@ void RunFlash(FlashJob job)
 
     // 止めていた他のデバイスの自動再接続を戻す（match で探す。ポートは渡さない）
     if (job.sys) for (const std::string& n : job.pausedOthers) job.sys->Connect(n);
+    out.restored = true;
+}
 
-    std::lock_guard<std::mutex> lk(st.m);
-    st.exitCode = exitCode;
-    st.reconnected = reconnected;
-    st.endedSec = SteadySec();
-    if (error.empty() && exitCode != 0) error = "arduino-cli が終了コード " + std::to_string(exitCode) + " で終わりました（ログ末尾を参照）";
-    if (error.empty() && !job.device.empty() && !reconnected)
-        error = "書き込みは終わったがデバイスに再接続できませんでした（hw_status を確認）";
-    st.error = error;
-    st.state = error.empty() ? "done" : "failed";
-    st.running = false;
+void RunFlash(FlashJob job)
+{
+    HwAppState& st = *static_cast<HwAppState*>(job.stateHolder.get());
+    FlashOutcome out;
+    // ★背景スレッドの最上位。例外が外へ出ると std::terminate でエンジンごと落ちるので、全部ここで受ける。
+    try
+    {
+        RunFlashSteps(job, st, out);
+    }
+    catch (const std::exception& e)
+    {
+        out.error = "内部エラー: " + SanitizeUtf8(e.what());
+    }
+    catch (...)
+    {
+        out.error = "内部エラー: 不明な例外";
+    }
+    // 途中で例外になってつなぎ直しが済んでいなければ、できる範囲で戻す（止めたままにしない）
+    if (!out.restored && job.sys)
+    {
+        try
+        {
+            if (!job.device.empty()) job.sys->Connect(job.device, job.reconnectPort);
+            for (const std::string& n : job.pausedOthers) job.sys->Connect(n);
+        }
+        catch (...) {}
+    }
+
+    try
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        st.exitCode = out.exitCode;
+        st.reconnected = out.reconnected;
+        st.endedSec = SteadySec();
+        if (out.error.empty() && out.exitCode != 0) out.error = "arduino-cli が終了コード " + std::to_string(out.exitCode) + " で終わりました（ログ末尾を参照）";
+        if (out.error.empty() && !job.device.empty() && !out.reconnected)
+            out.error = "書き込みは終わったがデバイスに再接続できませんでした（hw_status を確認）";
+        st.error = out.error;
+        st.state = out.error.empty() ? "done" : "failed";
+        st.running = false;
+    }
+    catch (...)
+    {
+        // 状態文字列の確保に失敗しても、「実行中」のまま固まらないことだけは守る
+        std::lock_guard<std::mutex> lk(st.m);
+        st.state = "failed";
+        st.running = false;
+    }
 }
 
 } // namespace
@@ -977,9 +1044,9 @@ void Application::StartHwFlashImpl(const HwFlashRequest& rq, nlohmann::json* out
                 if (p.portName == port) { fqbn = FqbnFromBoard(p.guessedBoard); break; }
         if (fqbn.empty())
         {
-            McpError e(McpErr::InvalidParam, "ボードを推定できませんでした", "fqbn を渡す（例 esp32:esp32:esp32 / arduino:avr:uno）");
+            McpError e(McpErr::InvalidParam, "ボードを推定できませんでした", "fqbn を渡す（例 esp32:esp32:esp32 / arduino:avr:uno / arduino:megaavr:nona4809）");
             e.name = "E_HW_FQBN_REQUIRED";
-            e.validValues = {"esp32:esp32:esp32", "arduino:avr:uno", "arduino:avr:nano"};
+            e.validValues = {"esp32:esp32:esp32", "arduino:avr:uno", "arduino:avr:nano", "arduino:megaavr:nona4809"};
             throw e;
         }
     }
@@ -1009,13 +1076,21 @@ void Application::StartHwFlashImpl(const HwFlashRequest& rq, nlohmann::json* out
     job.cmdLine = cmd;
     job.cli = cli;
     {
-        // コアが目印に無ければ、コンパイルの前に入れる（esp32:esp32 / arduino:avr だけ。入っていれば一瞬で終わる）
+        // コアが目印に無ければ、コンパイルの前に入れる（vendor:arch ならどのコアでも。入っていれば一瞬で終わる）
         const std::string core = hw::CoreOfFqbn(fqbn);
-        for (const char* req : hw::kRequiredCores)
-            if (core == req && !hw::CoreInMarker(core))
+        if (!core.empty() && !hw::CoreInMarker(core))
+        {
+            job.preCore = core;
+            job.preIndexCmdLine = "\"" + cli + "\" core update-index --additional-urls " + hw::kEspressifIndexUrl;
+            job.preCmdLine = "\"" + cli + "\" core install " + core + " --additional-urls " + hw::kEspressifIndexUrl;
+        }
+        // Servo ライブラリ（Servo を使うスケッチ用。目印に無ければ入れる。入っていれば一瞬で終わる）
+        for (const char* lib : hw::kRequiredLibs)
+            if (!hw::LibInMarker(lib))
             {
-                job.preCore = core;
-                job.preCmdLine = "\"" + cli + "\" core install " + core + " --additional-urls " + hw::kEspressifIndexUrl;
+                job.preLib = lib;
+                job.preLibCmdLine = "\"" + cli + "\" lib install " + lib;
+                break;
             }
     }
     job.workDir = PathResolver::WideToUtf8(sketch.parent_path().wstring());
@@ -1056,6 +1131,17 @@ bool Application::StartHwFlash(const HwFlashRequest& rq, std::string& err, nlohm
     {
         err = e.what();
         if (!e.hint.empty()) err += "（" + e.hint + "）";
+        return false;
+    }
+    catch (const std::exception& e)
+    {
+        // std::filesystem_error など（日本語 Windows では what() が ANSI なので UTF-8 に整えてから返す）
+        err = "内部エラー: " + SanitizeUtf8(e.what());
+        return false;
+    }
+    catch (...)
+    {
+        err = "内部エラー: 不明な例外";
         return false;
     }
 }
@@ -1475,14 +1561,14 @@ void Application::RegisterMcpHardwareMethods()
         McpMeta m;
         m.summary  = "arduino-cli でスケッチをコンパイルして書き込む（非同期。進み具合は hw_flash_status）。対象デバイスのポートを放し、"
                      "終わったら自動で再接続する。同時に 1 本だけ。sketch は .ino かそのフォルダ（相対はプロジェクト → <repo>/hardware/firmware/）。"
-                     "fqbn 省略時は推定ボード（ESP32 系 → esp32:esp32:esp32 / Arduino → arduino:avr:uno）。ボードの中身を上書きするので確認が要る。";
+                     "fqbn 省略時は推定ボード（ESP32 系 → esp32:esp32:esp32 / Nano Every → arduino:megaavr:nona4809 / Arduino → arduino:avr:uno）。ボードの中身を上書きするので確認が要る。";
         m.keywords = "hardware ハードウェア arduino esp32 書き込み flash upload アップロード コンパイル compile スケッチ sketch ファーム firmware arduino-cli ino";
         m.category = "hardware"; m.group = "hardware"; m.target = "flash";
         m.effect = McpEffect::Guarded; m.mode = "any"; m.timeoutMs = 10000;
         m.params = {P("sketch", "string", true, nullptr, nullptr, nullptr, nullptr, ".ino かそのフォルダ。例 \"UnoLinkGeneric\""),
                     P("device", "string", false, nullptr, nullptr, nullptr, nullptr, "書き込む先のデバイス名（ポートを放して終わったら再接続する）"),
                     P("port", "string", false, nullptr, nullptr, nullptr, nullptr, "COM8 など。device の代わりにポートで指定"),
-                    P("fqbn", "string", false, nullptr, nullptr, nullptr, nullptr, "ボード ID。省略で推定（分からなければ必須）"),
+                    P("fqbn", "string", false, nullptr, nullptr, nullptr, nullptr, "ボード ID。省略で推定（分からなければ必須）。例 esp32:esp32:esp32 / arduino:avr:uno / arduino:avr:nano / arduino:megaavr:nona4809"),
                     P("libraries", "any", false, nullptr, nullptr, nullptr, nullptr, "追加ライブラリのパス（文字列か配列）。既定は <repo>/hardware/firmware/UnoLink")};
         m.next = {{"hw_flash_status", "進み具合・ログ末尾・完了を見る"}};
         m.examples = {{"{\"sketch\":\"UnoLinkGeneric\",\"device\":\"generic\"}", "汎用スケッチを書き直す"}};
@@ -1520,11 +1606,11 @@ void Application::RegisterMcpHardwareMethods()
                     const double el = st.running ? now - st.startedSec : (st.endedSec > 0.0 ? st.endedSec - st.startedSec : 0.0);
                     json tail = json::array();
                     const size_t from = st.log.size() > n ? st.log.size() - n : 0;
-                    for (size_t i = from; i < st.log.size(); ++i) tail.push_back(st.log[i]);
+                    for (size_t i = from; i < st.log.size(); ++i) tail.push_back(SanitizeUtf8(st.log[i]));
                     r = {{"state", st.state}, {"running", st.running}, {"elapsedSec", el}, {"exitCode", st.exitCode},
                          {"device", st.device}, {"port", st.port}, {"fqbn", st.fqbn}, {"sketch", st.sketch},
                          {"reconnected", st.reconnected}, {"logTail", tail}};
-                    if (!st.error.empty()) r["error"] = st.error;
+                    if (!st.error.empty()) r["error"] = SanitizeUtf8(st.error);
                     if (!st.command.empty()) r["command"] = st.command;
                 }
                 if (m_hardware && !r["device"].get<std::string>().empty())
@@ -1541,7 +1627,7 @@ void Application::RegisterMcpHardwareMethods()
     // ---- hw_setup ----
     {
         McpMeta m;
-        m.summary  = "Arduino の書き込み道具と同梱サンプルの状態を見る / 動かす。action: status（既定。道具箱 = arduino-cli + コア esp32:esp32・arduino:avr の状態・進み具合・ログ、"
+        m.summary  = "Arduino の書き込み道具と同梱サンプルの状態を見る / 動かす。action: status（既定。道具箱 = arduino-cli + コア esp32:esp32・arduino:avr・arduino:megaavr（Nano Every）+ ライブラリ Servo の状態・進み具合・ログ、"
                      "同梱サンプルの有無と配置済み）/ install_toolchain（道具箱の自動導入を背景で始める。冪等）/ install_samples（<exe>/samples の ArduinoLab などを "
                      "ドキュメント\\UnoProjects へ置く。dest で置き場を変えられる。force で「置いた」目印を無視）。道具箱はプロジェクトを開くと自動でも入る。";
         m.keywords = "hardware ハードウェア arduino esp32 セットアップ setup 道具 書き込み道具 toolchain arduino-cli core サンプル sample ArduinoLab 導入 インストール install 準備";
@@ -1582,10 +1668,10 @@ void Application::RegisterMcpHardwareMethods()
                 const hw::HwToolchain::Snapshot s = tc.Get(st.arduinoCli);
                 json tail = json::array();
                 const size_t from = s.log.size() > 30 ? s.log.size() - 30 : 0;
-                for (size_t i = from; i < s.log.size(); ++i) tail.push_back(s.log[i]);
+                for (size_t i = from; i < s.log.size(); ++i) tail.push_back(SanitizeUtf8(s.log[i]));   // 不正な UTF-8 が混ざっても dump が投げないように
                 json tcj{{"state", hw::HwToolchain::StateName(s.state)}, {"ready", s.ready}, {"running", s.running}, {"progress", s.progress},
-                         {"cli", s.cli}, {"managedCli", hw::ManagedCliPath()}, {"cores", s.cores}, {"logTail", tail}};
-                if (!s.error.empty()) tcj["error"] = s.error;
+                         {"cli", SanitizeUtf8(s.cli)}, {"managedCli", SanitizeUtf8(hw::ManagedCliPath())}, {"cores", s.cores}, {"libs", s.libs}, {"logTail", tail}};
+                if (!s.error.empty()) tcj["error"] = SanitizeUtf8(s.error);
                 json r = std::move(extra);
                 r["toolchain"] = std::move(tcj);
                 r["samples"] = HwSamplesStatus();

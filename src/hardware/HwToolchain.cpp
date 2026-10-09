@@ -21,7 +21,8 @@ namespace fs = std::filesystem;
 using nlohmann::json;
 
 const char* const kEspressifIndexUrl = "https://espressif.github.io/arduino-esp32/package_esp32_index.json";
-const char* const kRequiredCores[2] = {"esp32:esp32", "arduino:avr"};
+const char* const kRequiredCores[3] = {"esp32:esp32", "arduino:avr", "arduino:megaavr"};
+const char* const kRequiredLibs[1] = {"Servo"};
 
 namespace
 {
@@ -125,17 +126,65 @@ bool CoreInMarker(const std::string& core)
     return std::find(v.begin(), v.end(), core) != v.end();
 }
 
+std::vector<std::string> InstalledLibsInMarker()
+{
+    std::vector<std::string> out;
+    const std::string path = CoresJsonPath();
+    if (path.empty()) return out;
+    std::ifstream f(W(path), std::ios::binary);
+    if (!f) return out;
+    try
+    {
+        const json j = json::parse(f, nullptr, true, true);
+        if (j.contains("libs") && j["libs"].is_array())
+            for (const json& c : j["libs"]) if (c.is_string()) out.push_back(c.get<std::string>());
+    }
+    catch (...) {}
+    return out;
+}
+
+bool LibInMarker(const std::string& lib)
+{
+    const auto v = InstalledLibsInMarker();
+    return std::find(v.begin(), v.end(), lib) != v.end();
+}
+
+namespace
+{
+// cores.json を書く（コアとライブラリの両方を持ち回る）。例外は外へ出さない。
+void WriteMarkerFile(const std::vector<std::string>& cores, const std::vector<std::string>& libs, const std::string& cli)
+{
+    try
+    {
+        const std::string path = CoresJsonPath();
+        if (path.empty()) return;
+        std::error_code ec;
+        fs::create_directories(W(ManagedCliDir()), ec);
+        const json j{{"cores", cores}, {"libs", libs}, {"cli", cli}};
+        // 日本語ユーザー名のパスなど、不正な UTF-8 が混ざっても dump が投げないよう置換モードで出す
+        const atomicfile::Result r = atomicfile::WriteFile(atomicfile::PathFromUtf8(path), j.dump(2, ' ', false, json::error_handler_t::replace));
+        if (!r.ok) Logger::Warn("[hw] cores.json を書けませんでした: {}", r.error);
+    }
+    catch (const std::exception& e)
+    {
+        Logger::Warn("[hw] cores.json を書けませんでした: {}", SanitizeUtf8Lossy(e.what()));
+    }
+    catch (...) {}
+}
+} // namespace
+
 void AddCoreToMarker(const std::string& core, const std::string& cli)
 {
-    const std::string path = CoresJsonPath();
-    if (path.empty()) return;
     auto cores = InstalledCoresInMarker();
     if (std::find(cores.begin(), cores.end(), core) == cores.end()) cores.push_back(core);
-    std::error_code ec;
-    fs::create_directories(W(ManagedCliDir()), ec);
-    const json j{{"cores", cores}, {"cli", cli}};
-    const atomicfile::Result r = atomicfile::WriteFile(atomicfile::PathFromUtf8(path), j.dump(2));
-    if (!r.ok) Logger::Warn("[hw] cores.json を書けませんでした: {}", r.error);
+    WriteMarkerFile(cores, InstalledLibsInMarker(), cli);
+}
+
+void AddLibToMarker(const std::string& lib, const std::string& cli)
+{
+    auto libs = InstalledLibsInMarker();
+    if (std::find(libs.begin(), libs.end(), lib) == libs.end()) libs.push_back(lib);
+    WriteMarkerFile(InstalledCoresInMarker(), libs, cli);
 }
 
 std::string SanitizeUtf8Lossy(const std::string& s)
@@ -313,6 +362,32 @@ void HwToolchain::Shutdown()
 
 void HwToolchain::Run(std::string configCli, bool forceDownload)
 {
+    // ★背景スレッドの最上位。ここから例外が出ると std::terminate でエンジンごと落ちるので、全部ここで受けて Failed にする。
+    try
+    {
+        RunImpl(std::move(configCli), forceDownload);
+    }
+    catch (const std::exception& e)
+    {
+        const std::string msg = "内部エラー: " + SanitizeUtf8Lossy(e.what());
+        Logger::Warn("[hw] 書き込み道具の準備で例外: {}", msg);
+        std::lock_guard<std::mutex> lk(m_mu);
+        m_error = msg;
+        m_state = State::Failed;
+    }
+    catch (...)
+    {
+        Logger::Warn("[hw] 書き込み道具の準備で不明な例外");
+        std::lock_guard<std::mutex> lk(m_mu);
+        m_error = "内部エラー: 不明な例外";
+        m_state = State::Failed;
+    }
+    // どの出口でも必ず「走っていない」に戻す（Start のやり直し・窓の「準備する」ボタンが固まらないように）
+    m_running.store(false);
+}
+
+void HwToolchain::RunImpl(std::string configCli, bool forceDownload)
+{
     auto fail = [this](const std::string& msg) {
         Logger::Warn("[hw] 書き込み道具の準備に失敗: {}", msg);
         std::lock_guard<std::mutex> lk(m_mu);
@@ -360,7 +435,7 @@ void HwToolchain::Run(std::string configCli, bool forceDownload)
         m_progress = 1.0f;
     }
 
-    // 2) コア（索引 → esp32 → avr）。入っていれば一瞬で終わる
+    // 2) コア（索引 → esp32 → avr → megaavr）とライブラリ（Servo）。入っていれば一瞬で終わる
     SetState(State::InstallingCores);
     const std::string extra = std::string(" --additional-urls ") + kEspressifIndexUrl;
     if (RunLogged("\"" + cli + "\" core update-index" + extra, "") != 0)
@@ -377,6 +452,16 @@ void HwToolchain::Run(std::string configCli, bool forceDownload)
             return;
         }
         AddCoreToMarker(core, cli);
+    }
+    for (const char* lib : kRequiredLibs)
+    {
+        if (m_cancel.load()) { fail("中断されました"); return; }
+        if (RunLogged("\"" + cli + "\" lib install " + lib, "") != 0)
+        {
+            fail(m_cancel.load() ? std::string("中断されました") : std::string("ライブラリ ") + lib + " を入れられませんでした（ログを参照）");
+            return;
+        }
+        AddLibToMarker(lib, cli);
     }
     Logger::Info("[hw] 書き込み道具の準備ができました: {}", cli);
     std::lock_guard<std::mutex> lk(m_mu);
@@ -403,9 +488,13 @@ HwToolchain::Snapshot HwToolchain::Get(const std::string& configCli)
         std::vector<std::string> tried;
         m_lastCli = FindArduinoCli(configCli, tried);
         m_lastCores = InstalledCoresInMarker();
+        m_lastLibs = InstalledLibsInMarker();
+        const std::vector<std::string>& libs = m_lastLibs;
         m_lastReady = !m_lastCli.empty();
         for (const char* c : kRequiredCores)
             if (std::find(m_lastCores.begin(), m_lastCores.end(), c) == m_lastCores.end()) m_lastReady = false;
+        for (const char* l : kRequiredLibs)
+            if (std::find(libs.begin(), libs.end(), l) == libs.end()) m_lastReady = false;
     }
     if (!s.running)
     {
@@ -414,6 +503,7 @@ HwToolchain::Snapshot HwToolchain::Get(const std::string& configCli)
     }
     s.cli = m_lastCli;
     s.cores = m_lastCores;
+    s.libs = m_lastLibs;
     s.ready = s.state == State::Ready;
     return s;
 }
