@@ -1,5 +1,7 @@
 #pragma once
-// Win32 シリアル。DTR=off / RTS=off で開く（ESP32 を書き込みモードに落とさない）。
+// Win32 シリアル。既定は DTR=off / RTS=off で開く（ESP32 を書き込みモードに落とさない）。
+// dtr=true は DTR を立てて開く。Arduino Nano Every 用: USB 変換チップ（SAMD11）は書き込みの直後、
+// DTR が立つまで本体のシリアルを流さないことがある。DTR で本体（ATmega4809）はリセットされない。
 #include "hardware/HwTransport.h"
 
 #include <cstdint>
@@ -11,7 +13,7 @@ namespace dx12e::hw
 class HwSerialTransport final : public IHwTransport
 {
 public:
-    HwSerialTransport(std::string portName, int baud);
+    HwSerialTransport(std::string portName, int baud, bool dtr = false);
     ~HwSerialTransport() override;
 
     bool Open() override;
@@ -29,6 +31,7 @@ public:
 private:
     std::string m_port;
     int         m_baud;
+    bool        m_dtr = false;
     void*       m_handle = nullptr;   // HANDLE（windows.h をヘッダに出さない）
     std::string m_lastError;
 };

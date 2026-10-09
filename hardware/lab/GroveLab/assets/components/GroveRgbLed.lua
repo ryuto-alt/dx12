@@ -1,6 +1,7 @@
 -- 実験3: 本物のフルカラー LED（P9813, D2/D3）の色を距離で変える。画面のランプも同じ色
 --   遠い = 青 → 中くらい = 緑 → 近い = 赤。スイッチを押した瞬間は白く光る
 --   brightness はボリュームでも変えられる（useKnob）
+--   時限爆弾が動いている間は、ピッに合わせて赤く点滅・爆発で橙・解除で緑
 --   ※このエンティティにポイントライトが付いていること
 properties = {
   { name = "device",   type = "string", default = "grove", label = "デバイス名" },
@@ -37,6 +38,18 @@ function OnUpdate(self, dt)
   r = lerp(r, 1, self.flash) * bright
   g = lerp(g, 1, self.flash) * bright
   b = lerp(b, 1, self.flash) * bright
+
+  -- 時限爆弾（GroveSpeaker）が動いている間は爆弾の色を優先する
+  local bomb = loadNum("grove.bomb", 0)
+  local bf = loadNum("grove.bombFlash", 0)
+  if bomb == 1 then          -- 作動中: ピッに合わせて赤く点滅
+    r, g, b = 0.08 + 0.92 * bf, 0, 0
+  elseif bomb == 2 then      -- 爆発: 白〜橙がちらつく
+    local k = bf * (0.5 + 0.5 * math.random())
+    r, g, b = k, k * 0.55, k * 0.15
+  elseif bomb == 3 then      -- 解除: 緑
+    r, g, b = 0, 1, 0.2
+  end
 
   self.dev:set("r", r)
   self.dev:set("g", g)

@@ -10,6 +10,7 @@
 //     servo    : A2  SG90（0..1 = 0..180 度）
 //     r, g, b  : D2(クロック) / D3(データ)  GROVE フルカラー LED v2.0（P9813。各 0..1）
 //     tone     : D4  GROVE スピーカー（音の高さ Hz。0 で消音）
+//     vol      : D4  スピーカーの音量（0..100。既定 35）
 //
 // ※UnoLink は 1 秒エンジンから何も来ないと出力を safe に戻す（LED と音は消え、サーボは真ん中へ）
 #include <UnoLink.h>
@@ -61,6 +62,68 @@ static void p9813Send(uint8_t r, uint8_t g, uint8_t b) {
   for (uint8_t i = 0; i < 4; i++) p9813Byte(0x00);            // 終わり
 }
 
+// ---- 音量つきのスピーカー（tone() の代わり）----
+// tone() は常に ON と OFF が半分ずつ（デューティ 50%）で、いちばん大きな音しか出ない。
+// ON の時間を短くすると音の芯（基本波）が sin(π×デューティ) に比例して弱まり、小さく聞こえる。
+// TCB0 の割り込みで ON / OFF の長さを別々に数える（TCB1 は tone、TCB2 は Servo、TCB3 は millis が使う。
+// TCB0 は D6 の PWM 用だが、D6 は超音波センサで PWM を使わないので空いている）。8MHz（CLK_PER/2）で数える
+static PORT_t* spkPort;
+static uint8_t spkMask;
+static volatile uint32_t spkOnTicks = 0, spkOffTicks = 0, spkRemain = 0;
+static volatile bool spkOn = false;
+static bool spkRunning = false;
+static unsigned int spkHz = 0;
+static uint8_t spkVol = 35;
+
+ISR(TCB0_INT_vect) {
+  TCB0.INTFLAGS = TCB_CAPT_bm;
+  uint32_t t;
+  if (spkRemain > 0) {
+    t = spkRemain;                                    // 16 ビットに収まらない長い区間の続き
+  } else {
+    spkOn = !spkOn;
+    if (spkOn) spkPort->OUTSET = spkMask; else spkPort->OUTCLR = spkMask;
+    t = spkOn ? spkOnTicks : spkOffTicks;
+  }
+  const uint32_t n = t > 60000UL ? 60000UL : t;
+  spkRemain = t - n;
+  TCB0.CCMP = (uint16_t)(n - 1);
+}
+
+static void speakerApply() {
+  if (spkHz < 31 || spkVol == 0) {
+    TCB0.INTCTRL = 0;
+    TCB0.CTRLA = 0;
+    spkPort->OUTCLR = spkMask;
+    spkOn = false;
+    spkRunning = false;
+    return;
+  }
+  // 音量は耳の感じ方に合わせて 2 乗（50 で約 -12dB、20 で約 -28dB）
+  const float a = (spkVol / 100.0f) * (spkVol / 100.0f);
+  const float duty = asinf(a) / (float)PI;                           // a=1 で 0.5
+  const uint32_t period = 8000000UL / spkHz;
+  uint32_t on = (uint32_t)(period * duty);
+  if (on < 64) on = 64;                                              // 割り込みが間に合う最短（8µs）
+  uint32_t off = period > on + 64 ? period - on : 64;
+  noInterrupts();
+  spkOnTicks = on;
+  spkOffTicks = off;
+  if (!spkRunning) {
+    spkRemain = 0;
+    spkOn = false;
+    TCB0.CTRLA = 0;
+    TCB0.CTRLB = TCB_CNTMODE_INT_gc;
+    TCB0.CNT = 0;
+    TCB0.CCMP = 1000;
+    TCB0.INTFLAGS = TCB_CAPT_bm;
+    TCB0.INTCTRL = TCB_CAPT_bm;
+    TCB0.CTRLA = TCB_CLKSEL_CLKDIV2_gc | TCB_ENABLE_bm;
+    spkRunning = true;
+  }
+  interrupts();
+}
+
 // ---- 出力を受け取ったとき ----
 static void onOutput(const char* name, float v) {
   if (strcmp(name, "servo") == 0) {
@@ -72,9 +135,11 @@ static void onOutput(const char* name, float v) {
   } else if (strcmp(name, "b") == 0) {
     ledB = (uint8_t)(v * 255.0f + 0.5f); ledDirty = true;
   } else if (strcmp(name, "tone") == 0) {
-    const unsigned int hz = (unsigned int)(v + 0.5f);
-    if (hz >= 31) tone(PIN_SPEAKER, hz);   // tone は 31Hz 未満を出せない
-    else noTone(PIN_SPEAKER);
+    spkHz = (unsigned int)(v + 0.5f);       // 31Hz 未満は消音
+    speakerApply();
+  } else if (strcmp(name, "vol") == 0) {
+    spkVol = (uint8_t)(v + 0.5f);
+    speakerApply();
   }
 }
 
@@ -95,6 +160,8 @@ void setup() {
   pinMode(PIN_LED_CLK, OUTPUT);
   pinMode(PIN_LED_DATA, OUTPUT);
   pinMode(PIN_SPEAKER, OUTPUT);
+  spkPort = digitalPinToPortStruct(PIN_SPEAKER);
+  spkMask = digitalPinToBitMask(PIN_SPEAKER);
   servo.attach(PIN_SERVO);
   servo.write(90);
   p9813Send(0, 0, 0);
@@ -107,6 +174,7 @@ void setup() {
   ulink.addOutput("g", UL_FLOAT, 0, 1, 0);
   ulink.addOutput("b", UL_FLOAT, 0, 1, 0);
   ulink.addOutput("tone", UL_INT, 0, 4000, 0);
+  ulink.addOutput("vol", UL_INT, 0, 100, 35);
   ulink.onOutput(onOutput);              // begin の前に（起動直後の safe 適用も通知される）
   ulink.begin(Serial, 115200);
 }

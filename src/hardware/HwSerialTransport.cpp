@@ -15,8 +15,8 @@ std::string ErrText(const char* what, DWORD code)
 }
 } // namespace
 
-HwSerialTransport::HwSerialTransport(std::string portName, int baud)
-    : m_port(std::move(portName)), m_baud(baud)
+HwSerialTransport::HwSerialTransport(std::string portName, int baud, bool dtr)
+    : m_port(std::move(portName)), m_baud(baud), m_dtr(dtr)
 {
 }
 
@@ -56,7 +56,8 @@ bool HwSerialTransport::Open()
     dcb.fOutxCtsFlow = FALSE;
     dcb.fOutxDsrFlow = FALSE;
     dcb.fDsrSensitivity = FALSE;
-    dcb.fDtrControl = DTR_CONTROL_DISABLE;   // DTR=off（リセット / 書き込みモードに落とさない）
+    dcb.fDtrControl = m_dtr ? DTR_CONTROL_ENABLE    // Nano Every: 書き込み直後でもシリアルを流させる
+                            : DTR_CONTROL_DISABLE;  // DTR=off（リセット / 書き込みモードに落とさない）
     dcb.fRtsControl = RTS_CONTROL_DISABLE;   // RTS=off
     dcb.fOutX = FALSE;
     dcb.fInX  = FALSE;

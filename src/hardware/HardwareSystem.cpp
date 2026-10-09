@@ -612,7 +612,7 @@ std::vector<HwPortInfo> HardwareSystem::ListPorts()
     return ports;
 }
 
-std::unique_ptr<IHwTransport> HardwareSystem::MakeTransport(const std::string& portName, int baud)
+std::unique_ptr<IHwTransport> HardwareSystem::MakeTransport(const std::string& portName, int baud, bool dtr)
 {
     if (m_opts.factory) return m_opts.factory(portName, baud);
     if (IsVirtualPort(portName))
@@ -626,7 +626,7 @@ std::unique_ptr<IHwTransport> HardwareSystem::MakeTransport(const std::string& p
         if (!lb) return nullptr;
         return std::make_unique<HwLoopbackTransport>(std::move(lb));
     }
-    return std::make_unique<HwSerialTransport>(portName, baud);
+    return std::make_unique<HwSerialTransport>(portName, baud, dtr);
 }
 
 void HardwareSystem::IoThreadMain()
@@ -872,7 +872,12 @@ void HardwareSystem::TryOpen(HwDevice& d, double now, const std::vector<HwPortIn
 
     for (const auto& portName : candidates)
     {
-        std::unique_ptr<IHwTransport> t = MakeTransport(portName, d.cfg.baud);
+        // Nano Every（2341:0058）だけ DTR を立てて開く。書き込み直後は DTR が立つまで @hello が届かず、
+        // 「@hello が来ませんでした」を繰り返していた（2026-10-09、友達 PC の実機で確認）
+        bool dtr = false;
+        for (const auto& p : ports)
+            if (IEquals(p.portName, portName)) { dtr = IEquals(p.vid, "2341") && IEquals(p.pid, "0058"); break; }
+        std::unique_ptr<IHwTransport> t = MakeTransport(portName, d.cfg.baud, dtr);
         if (!t) continue;
         { std::lock_guard<std::mutex> lk(m_mutex); d.status = HwStatus::Opening; }
 
