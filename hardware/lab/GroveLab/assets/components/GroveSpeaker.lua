@@ -2,7 +2,8 @@
 --   スイッチを押すと起動。「ピッ…ピッ…」の間隔がだんだん速くなり、最後は「ピーーー」→ ドカーン
 --   超音波センサに手をかざし続けると解除できる（解除すると「ピロリン」）
 --   実機が無ければ Space がスイッチ、↑ で手を近づける代わり
---   音量は Play 中に 9（小さく）/ 0（大きく）、または インスペクタの「音量」で変える
+--   音量は Play 中に Z（小さく）/ X（大きく）、または インスペクタの「音量」で変える
+--   爆弾が待機中のときは、GroveJukebox の BGM（grove.bgmHz）を鳴らす
 --   画面のスピーカーの箱は鳴っている間ふるえる。状態は grove.bomb に置く（LED と HUD が読む）
 properties = {
   { name = "device",   type = "string", default = "grove", label = "デバイス名" },
@@ -30,7 +31,8 @@ function OnStart(self)
   local s0 = self.transform.scale
   self.baseScale = Vec3.new(s0.x, s0.y, s0.z)  -- 値で持つ（参照だと毎フレーム掛け算が積もる）
   self.t = 0
-  -- Play をやり直しても 9 / 0 で変えた音量を覚えておく。インスペクタの「音量」を変えたらそちらを使う
+  saveNum("grove.bgmHz", 0)                      -- 前の Play の BGM の音を鳴らしっぱなしにしない
+  -- Play をやり直しても Z / X で変えた音量を覚えておく。インスペクタの「音量」を変えたらそちらを使う
   self.vol = loadNum("grove.volume", self.volume)
   if loadNum("grove.volumeProp", -1) ~= self.volume then self.vol = self.volume end
   saveNum("grove.volumeProp", self.volume)
@@ -61,8 +63,8 @@ local function interval(self)
 end
 
 function OnUpdate(self, dt)
-  if tapped(self, "9") then self.vol = math.max(0, self.vol - 0.05) end
-  if tapped(self, "0") then self.vol = math.min(1, self.vol + 0.05) end
+  if tapped(self, "Z") then self.vol = math.max(0, self.vol - 0.05) end
+  if tapped(self, "X") then self.vol = math.min(1, self.vol + 0.05) end
   self.vol = math.floor(self.vol * 20 + 0.5) / 20
   self.dev:set("vol", self.vol)                -- 0〜1 → ボードの 0〜100
   saveNum("grove.volume", self.vol)
@@ -74,6 +76,7 @@ function OnUpdate(self, dt)
   local hz, flash = 0, 0
   if self.state == IDLE then
     if pressed then arm(self) end
+    hz = loadNum("grove.bgmHz", 0)               -- 爆弾が待機中なら BGM
 
   elseif self.state == ARMED then
     self.timer = self.timer - dt

@@ -326,6 +326,7 @@
 {"data":{"__id":{"t":"string","v":"UI_Hud"},"__spec":{"t":"string","v":"grove_lab"}},"guid":"2300be2fa0075a7e","luaScript":{"enabled":true,"scriptPath":"components/GroveHud.lua"},"name":"UI_Hud","parentGuid":"603fb281f672d516","transform":{"position":[0.0,3.0,3.0]}},
 {"data":{"__id":{"t":"string","v":"LGT_Key"},"__spec":{"t":"string","v":"grove_lab"}},"guid":"3cef6870558046d3","name":"LGT_Key","parentGuid":"8ab3f1488cc7935c","pointLight":{"color":[1.0,0.95,0.85],"intensity":12.0,"range":16.0},"transform":{"position":[1.5,4.0,-3.5]}},
 {"data":{"__id":{"t":"string","v":"LGT_Fill"},"__spec":{"t":"string","v":"grove_lab"}},"guid":"7638d6552fa16a60","name":"LGT_Fill","parentGuid":"8ab3f1488cc7935c","pointLight":{"color":[0.6,0.75,1.0],"intensity":5.0,"range":12.0},"transform":{"position":[-4.0,3.0,-3.0]}},
-{"camera":{"fovDegrees":50.0,"isActive":true},"data":{"__id":{"t":"string","v":"CAM_Main"},"__o":{"t":"string","v":"{\"lookAt\":[0.6,3,0]}"},"__spec":{"t":"string","v":"grove_lab"}},"guid":"d899816c10983777","name":"CAM_Main","parentGuid":"fa4965ef6a210ce9","transform":{"position":[0.6,4.6,-10.5],"rotation":[8.66414,0.0,0.0]}}
+{"camera":{"fovDegrees":50.0,"isActive":true},"data":{"__id":{"t":"string","v":"CAM_Main"},"__o":{"t":"string","v":"{\"lookAt\":[0.6,3,0]}"},"__spec":{"t":"string","v":"grove_lab"}},"guid":"d899816c10983777","name":"CAM_Main","parentGuid":"fa4965ef6a210ce9","transform":{"position":[0.6,4.6,-10.5],"rotation":[8.66414,0.0,0.0]}},
+{"guid":"ef605075273a8d68","luaScript":{"enabled":true,"scriptPath":"components/GroveJukebox.lua"},"name":"GP_Jukebox","transform":{"position":[0.0,3.0,3.0]}}
   ]
 }
