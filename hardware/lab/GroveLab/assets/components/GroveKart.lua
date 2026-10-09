@@ -10,6 +10,7 @@ properties = {
   { name = "gasFarCm",   type = "float", default = 40,   min = 10, max = 100, label = "アクセル 0 の距離 (cm)" },
   { name = "steerGain",  type = "float", default = 2.2,  min = 0.5, max = 5,  label = "ハンドルの効き" },
   { name = "invertSteer", type = "bool", default = false, label = "ハンドルの左右を逆にする" },
+  { name = "steerCenter", type = "float", default = 0.5, min = 0.1, max = 0.9, label = "まっすぐのつまみの位置 (0〜1)" },
   { name = "cpuSpeed",   type = "float", default = 1.0,  min = 0.5, max = 1.5, label = "CPU の速さ（倍）" },
   { name = "engineSound", type = "bool", default = true, label = "エンジン音を鳴らす" },
 }
@@ -159,7 +160,7 @@ function reset(self)
   self.rocket = false
   self.lapShown = 1
   self.msg = nil; self.msgT = 0
-  self.center = 0.5
+  self.center = self.steerCenter
   self.snd = nil
   self.camX, self.camY, self.camZ = nil, nil, nil
 end
@@ -213,10 +214,9 @@ function OnUpdate(self, dt)
   local led = { 0.05, 0.05, 0.08 }
 
   if self.state == READY then
-    if press then
-      self.state = COUNT; self.stateT = 0
-      if dev.connected then self.center = self.knob or 0.5 end   -- いまの位置をまっすぐにする
-    end
+    -- まっすぐは真ん中（steerCenter）。ずれていたら C でいまの位置をまっすぐにできる
+    if tapped(self, "C") and dev.connected then self.center = self.knob or self.steerCenter; play(self, "got") end
+    if press then self.state = COUNT; self.stateT = 0 end
   elseif self.state == COUNT then
     -- 信号: 赤・赤・赤 → 緑。緑の直前（2.6〜3.0 秒）にスイッチでロケットスタート。早すぎると失敗
     local n = math.floor(self.stateT)
@@ -506,11 +506,12 @@ function drawHud(self, P)
   if self.state == READY then
     ui:rect(250, 150, 520, 230, 0.04, 0.05, 0.08, 0.8, 14)
     ui:text(300, 166, "グローブ・グランプリ", 34, 1, 0.8, 0.2, 1)
-    ui:text(290, 220, "ハンドル: つまみ（いまの位置がまっすぐ）", 18, 0.9, 0.92, 1, 1)
+    ui:text(290, 220, "ハンドル: つまみ（真ん中でまっすぐ。左下のバーで確認）", 18, 0.9, 0.92, 1, 1)
     ui:text(290, 248, self.autoGas and "アクセル: 自動（両手でハンドルに集中）" or "アクセル: センサに手を近づける", 18, 0.9, 0.92, 1, 1)
     ui:text(290, 276, "アイテム: スイッチ（キノコでダッシュ）", 18, 0.9, 0.92, 1, 1)
     ui:text(290, 304, "信号が緑になる直前にスイッチでロケットスタート", 16, 0.75, 0.8, 0.9, 1)
-    ui:text(290, 340, "スイッチでスタート     R で GroveLab に戻る", 20, 1, 0.85, 0.35, 1)
+    ui:text(290, 330, "つまみを真ん中にしてスイッチでスタート", 20, 1, 0.85, 0.35, 1)
+    ui:text(290, 358, "C = いまの位置をまっすぐにする   R = GroveLab に戻る", 16, 0.75, 0.8, 0.9, 1)
   elseif self.state == COUNT then
     local n = 3 - math.floor(self.stateT)
     ui:text(480, 190, tostring(n), 96, 1, 0.25, 0.2, 1)
