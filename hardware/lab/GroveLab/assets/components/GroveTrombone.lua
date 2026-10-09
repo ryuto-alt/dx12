@@ -53,6 +53,7 @@ end
 function OnUpdate(self, dt)
   if tapped(self, "T") then self.on = not self.on; self.pitch = nil end
   if tapped(self, "G") then self.scale = not self.scale end
+  if loadNum("grove.safe", 0) > 0 then self.on = false end   -- 金庫モードに入ったら止める
   self.t = self.t + dt
 
   local hz, target = 0, nil

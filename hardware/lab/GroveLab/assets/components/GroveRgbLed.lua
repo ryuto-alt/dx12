@@ -49,6 +49,8 @@ function OnUpdate(self, dt)
     r, g, b = k, k * 0.55, k * 0.15
   elseif bomb == 3 then      -- 解除: 緑
     r, g, b = 0, 1, 0.2
+  elseif loadNum("grove.safe", 0) > 0 then   -- 金庫: 正解への近さ（GroveSafe が決める）
+    r, g, b = loadNum("grove.safeR", 0), loadNum("grove.safeG", 0), loadNum("grove.safeB", 0)
   end
 
   self.dev:set("r", r)

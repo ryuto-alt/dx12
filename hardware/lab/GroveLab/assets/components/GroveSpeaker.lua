@@ -70,14 +70,15 @@ function OnUpdate(self, dt)
   saveNum("grove.volume", self.vol)
 
   local sw = self.dev:down("sw") or keyDown("SPACE")
-  local pressed = sw and not self.swWas
+  local pressed = sw and not self.swWas and loadNum("grove.safe", 0) == 0   -- 金庫モード中のスイッチはハンドル
   self.swWas = sw
 
   local hz, flash = 0, 0
   if self.state == IDLE then
     if pressed then arm(self) end
     -- 爆弾が待機中なら、トロンボーンが ON ならその音（手が無ければ無音）、OFF なら BGM
-    if loadNum("grove.trombone", 0) > 0 then hz = loadNum("grove.tromboneHz", 0)
+    if loadNum("grove.safe", 0) > 0 then hz = loadNum("grove.safeHz", 0)          -- 金庫の効果音
+    elseif loadNum("grove.trombone", 0) > 0 then hz = loadNum("grove.tromboneHz", 0)
     else hz = loadNum("grove.bgmHz", 0) end
 
   elseif self.state == ARMED then

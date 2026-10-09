@@ -372,7 +372,7 @@ function OnUpdate(self, dt)
   local hz = 0
   local song = self.cur > 0 and self.songs[self.cur] or nil
   -- 時限爆弾が動いている間とトロンボーンが ON の間は止めて待つ
-  local busy = loadNum("grove.bomb", 0) ~= 0 or loadNum("grove.trombone", 0) > 0
+  local busy = loadNum("grove.bomb", 0) ~= 0 or loadNum("grove.trombone", 0) > 0 or loadNum("grove.safe", 0) > 0
   if song and not busy then
     self.t = self.t + dt * self.speed
     if self.t >= song.length then
@@ -406,7 +406,7 @@ function OnUpdate(self, dt)
   saveNum("grove.bgmHz", hz)
   saveNum("grove.bgmSlot", self.cur)
 
-  if self.showList then drawList(self, song) end
+  if self.showList and loadNum("grove.safe", 0) == 0 then drawList(self, song) end
 end
 
 function drawList(self, song)
