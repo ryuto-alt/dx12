@@ -20,7 +20,11 @@ properties = {
   { name = "knobPlayer", type = "bool", default = true, label = "つまみの人（赤）が参加する（スタート画面の J でも切り替え・覚えておく）" },
 }
 
-local VMAX, VBOOST, VGRASS = 26, 34, 11
+local VMAX, VBOOST, VGRASS = 34, 44, 14   -- 最高速 / キノコ / 芝生（m/s。以前の 26/34/11 から約 30% 速く）
+-- 6 速: 各ギアの上限速度 (m/s) と力（低いギアほど強い）。回転数 = 速さ / そのギアの上限 × REDLINE
+local GEAR_TOP = { 10, 16, 21.5, 26.5, 30.5, 34 }
+local GEAR_ACC = { 19, 15, 12, 10, 8.5, 7.5 }
+local IDLE, REDLINE, SHIFT_UP, SHIFT_DOWN, CLUTCH_T = 1500, 9000, 8700, 0.82, 0.22
 local KARTS = { "KART_Player", "KART_Cpu1", "KART_Cpu2", "KART_Cpu3" }
 local COLOR = { { 0.9, 0.15, 0.1 }, { 0.24, 0.43, 1.0 }, { 0.2, 0.85, 0.3 }, { 1.0, 0.82, 0.1 } }
 local CNAME = { "赤", "青", "緑", "黄" }
@@ -194,7 +198,7 @@ function reset(self)
   end
   self.k[1].human = self.knobOn
   for _, p in pairs(self.phones) do if p.slot > 0 then self.k[p.slot].human = true end end
-  self.cpuBase = { 0, 23.0, 24.0, 24.8 }
+  self.cpuBase = { 0, 31.0, 32.4, 33.5 }   -- CPU の巡航速度（m/s）。最高速 +30% に合わせて少し強め
   self.lastBeep = nil
   self.msg = nil; self.msgT = 0
   self.snd = nil
@@ -293,10 +297,10 @@ function writeState(self)
   local ps = {}
   for id, p in pairs(self.phones) do
     local K = p.slot > 0 and self.k[p.slot] or nil
-    ps[#ps + 1] = string.format('{"id":%d,"slot":%d,"name":%s,"rank":%d,"lap":%d,"item":%s,"n":%d,"roul":%s,"kmh":%d,"done":%s}',
+    ps[#ps + 1] = string.format('{"id":%d,"slot":%d,"name":%s,"rank":%d,"lap":%d,"item":%s,"n":%d,"roul":%s,"kmh":%d,"gear":%d,"done":%s}',
       id, p.slot, jsonStr(p.name), K and (K.rank or 4) or 0, K and clamp(math.floor(math.max(K.prog, 0) / self.L) + 1, 1, self.laps + 1) or 0,
       (K and K.item) and jsonStr(K.item) or '""', K and K.itemN or 0, (K and K.roulT > 0) and "true" or "false",
-      K and math.floor(K.v * 3.6 + 0.5) or 0, (K and K.done) and "true" or "false")
+      K and math.floor(K.v * 3.6 + 0.5) or 0, K and (K.gear or 1) or 0, (K and K.done) and "true" or "false")
   end
   local ks = {}
   for i = 1, 4 do ks[i] = string.format("[%.1f,%.1f,%d]", self.k[i].x, self.k[i].z, i) end
@@ -321,7 +325,32 @@ function stepHuman(self, i, steer, gas, press, dt)
   local off = math.abs(lat) > self.width / 2 + 0.6
   local vcap = (K.boostT > 0) and VBOOST or (off and VGRASS or VMAX)
   if K.slowT > 0 then K.slowT = K.slowT - dt; vcap = 4 end    -- フライングは少しエンスト
-  local acc = gas * (K.boostT > 0 and 30 or 14) - 0.35 * K.v - (gas < 0.05 and 4 or 0)
+  -- 6 速とクラッチ: 回転が上限に近づくと自動でシフトアップ。シフトの間（CLUTCH_T 秒）はクラッチを切るので
+  --   加速が抜け、回転は次のギアの回転まで落ちてから、つながった瞬間にまた伸びる
+  K.gear = K.gear or 1
+  K.shiftT = math.max(0, (K.shiftT or 0) - dt)
+  local wantRpm = math.max(IDLE, K.v / GEAR_TOP[K.gear] * REDLINE)
+  if K.shiftT <= 0 then
+    if wantRpm >= SHIFT_UP and K.gear < 6 then
+      K.gear = K.gear + 1; K.shiftT = CLUTCH_T; K.justShifted = true
+    elseif K.gear > 1 and K.v < GEAR_TOP[K.gear - 1] * SHIFT_DOWN then   -- 1 つ下のギアの上限より 18% 遅くなったら落とす
+      K.gear = K.gear - 1; K.shiftT = CLUTCH_T * 0.5   -- シフトダウンは短く（回転が跳ね上がる）
+    end
+  end
+  while K.gear < 6 and K.v > GEAR_TOP[K.gear] do K.gear = K.gear + 1 end   -- ロケットやキノコで一気に速くなったとき
+  local rpmT = math.max(IDLE, K.v / GEAR_TOP[K.gear] * REDLINE)
+  if K.v > GEAR_TOP[6] then rpmT = REDLINE end
+  K.rpm = lerp(K.rpm or rpmT, math.min(rpmT, REDLINE), math.min(1, dt * (K.shiftT > 0 and 12 or 25)))
+  if K.shiftT <= 0 and K.justShifted then K.justShifted = false; K.squatT = 0.28 end   -- つながった: 後ろに沈む
+  K.squatT = math.max(0, (K.squatT or 0) - dt)
+  -- 車体の前後の傾き（度。+ で前のめり）: クラッチを切ると前へ、つながると後ろへ
+  local pitchT = (K.shiftT > 0 and K.gear > 1) and 2.5 or (K.squatT > 0 and -2.2 or 0)
+  K.pitch = lerp(K.pitch or 0, pitchT, math.min(1, dt * 18))
+  local tq = 0.72 + 0.38 * math.sin(math.pi * clamp((K.rpm - IDLE) / (REDLINE - IDLE), 0, 1))   -- 真ん中の回転でいちばん力が出る
+  local power = (K.shiftT > 0) and 0 or gas * GEAR_ACC[K.gear] * tq
+  if K.boostT > 0 then power = 30 end
+  local scrub = math.abs(steer) * K.v * 0.32   -- 曲がるほど速さが落ちる（速くてもカーブを曲がれる）
+  local acc = power - 0.12 * K.v - scrub - (gas < 0.05 and 4 or 0)
   if K.v > vcap then acc = math.min(acc, -(K.v - vcap) * 3) end
   K.v = clamp(K.v + acc * dt, 0, VBOOST + 2)
   local turn = steer * self.steerGain * clamp(K.v / 6, 0, 1) * (1 - 0.35 * K.v / VBOOST)
@@ -427,8 +456,8 @@ end
 function stepCpu(self, i, lead, dt)
   local C = self.k[i]
   local _, _, _, _, a = pointAt(self, C.prog + 14)
-  local want = math.min(self.cpuBase[i] * self.cpuSpeed, a.vmax * (self.cpuBase[i] / 24))
-  want = want * clamp(1 + (lead - C.prog) * 0.003, 0.88, 1.1)
+  local want = math.min(self.cpuBase[i] * self.cpuSpeed, a.vmax * (self.cpuBase[i] / 25))
+  want = want * clamp(1 + (lead - C.prog) * 0.004, 0.9, 1.14)   -- 先頭の人に置いていかれると追い上げる
   if C.done then want = 14 end
   if self.state ~= RACE and self.state ~= FINISH then want = 0 end
   C.v = C.v + clamp(want - C.v, -16 * dt, 10 * dt)
@@ -609,7 +638,7 @@ function OnUpdate(self, dt)
     if e and e:isValid() then
       e.transform.position = Vec3.new(K.x, 0, K.z)
       local roll = K.human and (-(K.steer or 0) * 5 * clamp(K.v / 10, 0, 1)) or 0
-      e.transform.rotation = Vec3.new(0, math.deg(K.yaw), roll)
+      e.transform.rotation = Vec3.new(K.human and (K.pitch or 0) or 0, math.deg(K.yaw), roll)
     end
   end
   for _, it in ipairs(self.items) do
@@ -687,6 +716,9 @@ function OnUpdate(self, dt)
   elseif P.roulT > 0 then
     local h = (self.t * 5) % 1
     led = { clamp(math.abs(h * 6 - 3) - 1, 0, 1), clamp(2 - math.abs(h * 6 - 2), 0, 1), clamp(2 - math.abs(h * 6 - 4), 0, 1) }
+  elseif racing and P.human and (P.rpm or 0) > 8200 and (P.gear or 1) < 6 then   -- シフトランプ（そろそろ上がる）
+    local kk = (math.floor(self.t * 20) % 2 == 0) and 1 or 0.25
+    led = { 0.6 * kk, 0.8 * kk, kk }
   elseif P.boostT > 0 then
     local kk = (math.floor(self.t * 14) % 2 == 0) and 1 or 0.2
     led = { kk, kk * 0.6, 0 }
@@ -696,7 +728,8 @@ function OnUpdate(self, dt)
   elseif racing and P.off then led = { 0.4, 0.25, 0.05 }
   elseif racing then led = (P.rank == 1) and { 0.9, 0.7, 0.05 } or { 0.05, 0.1, 0.3 } end
   dev:set("r", led[1]); dev:set("g", led[2]); dev:set("b", led[3])
-  dev:set("servo", clamp(P.v / VBOOST, 0, 1))      -- サーボ = 赤のスピードメーター
+  -- サーボ = 赤の回転計（シフトで針がストンと落ちる）。赤が CPU のときは速さ
+  dev:set("servo", P.human and clamp(((P.rpm or IDLE) - 1000) / 8500, 0, 1) or clamp(P.v / VBOOST, 0, 1))
 
   -- 音: 効果音が鳴っていなければ赤のエンジン音
   local hz = 0
@@ -709,8 +742,18 @@ function OnUpdate(self, dt)
       if self.sndI > #self.snd then self.snd = nil else self.sndT = self.snd[self.sndI][2] end
     end
   elseif self.engineSound and P.human and (racing or self.state == COUNT) then
-    hz = 80 + P.v * 13 + (P.boostT > 0 and 80 or 0) + gas * 25
-    hz = hz * (1 + 0.03 * math.sin(self.t * 110))
+    -- 回転数から鳴らす: アイドル 1500rpm で約 80Hz の「ブォー」→ 9000rpm で約 300Hz の「ウィーン」
+    local rpm = P.rpm or IDLE
+    if self.state == COUNT then   -- スタート前の空ぶかし
+      rpm = IDLE + 3000 * math.max(0, math.sin(self.t * 7)) ^ 2
+    end
+    hz = 36 + rpm * 0.03
+    -- 爆発の脈: 1 フレームおきに少し下げて、ばらつきも足す（ガラガラしたエンジンらしさ）
+    self.firing = not self.firing
+    hz = hz * (self.firing and 1.0 or 0.9) * (1 + (math.random() - 0.5) * 0.06)
+    if (P.shiftT or 0) > CLUTCH_T - 0.05 and P.justShifted then hz = 55 end   -- クラッチを切った瞬間の「ガコッ」
+    if rpm >= REDLINE - 60 then hz = hz * ((math.floor(self.t * 30) % 2 == 0) and 1 or 0.8) end   -- リミッターに当たる
+    if P.boostT > 0 then hz = hz * (1.08 + 0.05 * math.sin(self.t * 60)) end
     if P.off and racing then hz = hz * (0.85 + 0.15 * math.sin(self.t * 40)) end
   end
   dev:set("vol", loadNum("grove.volume", 0.35))
@@ -725,6 +768,16 @@ end
 ---------------------------------------------------------------------------
 local function fmtTime(t)
   return string.format("%d:%05.2f", math.floor(t / 60), t % 60)
+end
+
+-- 回転計のバー（緑 → 黄 → 赤。シフトランプの回転で点滅）
+local function drawTach(self, K, x, y, w, h)
+  local r = clamp(((K.rpm or IDLE) - 1000) / (REDLINE - 1000), 0, 1)
+  ui:rect(x, y, w, h, 0.15, 0.17, 0.22, 1, 4)
+  local cr, cg, cb = 0.3, 0.9, 0.4
+  if r > 0.85 then cr, cg, cb = 1, 0.25, 0.2 elseif r > 0.65 then cr, cg, cb = 1, 0.8, 0.2 end
+  if (K.rpm or 0) > 8200 and (K.gear or 1) < 6 and math.floor(self.t * 20) % 2 == 0 then cr, cg, cb = 0.7, 0.85, 1 end
+  ui:rect(x, y, w * r, h, cr, cg, cb, 1, 4)
 end
 
 -- コースの点とカートの点を (mx,my) から mw 四方に描く
@@ -801,8 +854,9 @@ function drawSplitHud(self, W, H)
       ui:text(x + 126 * sc, y + 14, CNAME[who] .. " " .. kartName(self, who), 18 * sc, c[1] * 0.5 + 0.5, c[2] * 0.5 + 0.5, c[3] * 0.5 + 0.5, 1)
       ui:text(x + 126 * sc, y + 14 + 24 * sc, lapText(self, K), 16 * sc, 0.8, 0.84, 0.95, 1)
       -- 左下: 速さ
-      ui:rect(x + 8, y + h - 50 * sc, 150 * sc, 42 * sc, 0.04, 0.05, 0.08, 0.6, 8)
-      ui:text(x + 16, y + h - 44 * sc, string.format("%3d km/h", math.floor(K.v * 3.6 + 0.5)), 28 * sc, 1, 1, 1, 1)
+      ui:rect(x + 8, y + h - 52 * sc, 220 * sc, 48 * sc, 0.04, 0.05, 0.08, 0.6, 8)
+      ui:text(x + 16, y + h - 44 * sc, string.format("%3d km/h  %d速", math.floor(K.v * 3.6 + 0.5), K.gear or 1), 28 * sc, 1, 1, 1, 1)
+      drawTach(self, K, x + 16, y + h - 12 * sc, 200 * sc, 6 * sc)
       -- 右上: アイテム
       local bw, bh = 104 * sc, 70 * sc
       local bx, by = x + w - bw - 14, y + 12
@@ -872,9 +926,9 @@ function drawHud(self)
     local sy = H - 136
     ui:rect(16, sy, 330, 110, 0.04, 0.05, 0.08, 0.75, 10)
     ui:text(32, sy + 8, string.format("赤 %3d km/h", math.floor(P.v * 3.6 + 0.5)), 30, 1, 1, 1, 1)
-    ui:text(32, sy + 50, "アクセル", 14, 0.7, 0.75, 0.85, 1)
-    ui:rect(100, sy + 52, 230, 12, 0.15, 0.17, 0.22, 1, 4)
-    ui:rect(100, sy + 52, 230 * (self.gas or 0), 12, 0.3, 0.9, 0.4, 1, 4)
+    ui:text(270, sy + 4, (P.gear or 1) .. "速", 34, 1, 0.85, 0.3, 1)
+    drawTach(self, P, 100, sy + 52, 230, 12)
+    ui:text(32, sy + 50, "回転", 14, 0.7, 0.75, 0.85, 1)
     ui:text(32, sy + 76, "ハンドル", 14, 0.7, 0.75, 0.85, 1)
     ui:rect(100, sy + 78, 230, 12, 0.15, 0.17, 0.22, 1, 4)
     ui:rect(214, sy + 74, 2, 20, 0.6, 0.6, 0.7, 1, 0)

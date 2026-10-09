@@ -205,7 +205,8 @@ function render() {
   const st = state.st;
   if (me && slot) {
     $("rank").textContent = `${me.rank}位`;
-    $("lap").textContent = me.done ? "ゴール！" : `LAP ${Math.min(me.lap, state.laps)}/${state.laps}  ${me.kmh}km/h`;
+    $("lap").textContent = me.done ? "ゴール！"
+      : `LAP ${Math.min(me.lap, state.laps)}/${state.laps}  ${me.kmh}km/h` + (me.gear ? `  ${me.gear}速` : "");
   } else { $("rank").textContent = ""; $("lap").textContent = ""; }
   let label = "スタート", sub = "";
   if (st === 1) { label = "ロケット"; sub = "緑の直前に押す"; }
