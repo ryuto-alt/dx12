@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
+#include "core/SplitScreen.h"
 #include "core/ApplicationInternal.h"
 #include "core/AtomicFileJson.h"
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm（バックグラウンドの BC 圧縮先読み）
@@ -401,6 +402,10 @@ void Application::WireScriptCallbacks()
     m_scriptEngine->SetActionMap(&m_actionMap);
     m_scriptEngine->SetHardware(m_hardware.get());   // Lua の hw.* と actions の擬似キー表（Play のたびに ScriptEngine は作り直される）
     m_scriptEngine->SetActionSaveCallback([this]() { SaveActionBindings(); });
+    // 画面分割（scene:setSplitScreen 等）。要求は m_split->req を共有し、矩形はゲーム矩形（GetDisplayViewport）。
+    if (m_split)
+        m_scriptEngine->SetSplitScreen(&m_split->req,
+            [this](unsigned& x, unsigned& y, unsigned& w, unsigned& h) { GetDisplayViewport(x, y, w, h); });
 
     m_scriptEngine->SetLoadSceneCallback(
         [this](const std::string& rel) { m_editorCtx->pendingGameLoadPath = rel; });

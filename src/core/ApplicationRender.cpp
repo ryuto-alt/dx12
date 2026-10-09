@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
+#include "core/SplitScreen.h"
 #include "core/GameUiFont.h"
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/UiWidgets.h"
@@ -2468,6 +2469,7 @@ struct Application::RenderFrameContext
     u32 frameIndex = 0;
     f32 totalTime  = 0.0f;
     u32 vpLeft = 0, vpTop = 0, vpW = 0, vpH = 0;   // 表示矩形（バックバッファ上。uber 以降だけが使う）
+    u32 mainOutX = 0, mainOutY = 0, mainOutW = 0, mainOutH = 0;   // メインビューの出力矩形（画面分割中は区画 1。分割なしなら vp* と同じ）
     u32 rW = 0, rH = 0;                              // レンダー解像度（シーン系 RT の大きさ）
     DirectX::XMFLOAT3 lightDirF3{};        // 太陽の向き（正規化済み）
     DirectX::XMFLOAT3 lightColorF3{};      // 太陽の色 × 強さ（太陽が無ければ黒）
@@ -2526,6 +2528,7 @@ void Application::Render()
     ProcessFrameBoundaryCommands(frame.cmd);
     PrepareFrame(frame);
     RenderView(MakeMainViewDesc(frame), frame);
+    RenderSplitViews(frame);   // 画面分割: 区画 2..N（無効なら何もしない）
     RenderViewportOverlays(frame);
     RenderImGuiFrame(frame);
     SubmitFrame(frame);
@@ -4287,16 +4290,18 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     //   vpLeft/vpTop/vpW/vpH … バックバッファ上の矩形。uber パス以降だけが使う
     //   rW/rH               … シーン系 RT のサイズ。シーンは必ずその全面 (0,0,rW,rH) に描く
     u32 vpLeft, vpTop, vpW, vpH;
-    GetDisplayViewport(vpLeft, vpTop, vpW, vpH);
-    const u32 rW = (m_renderW > 0) ? m_renderW : vpW;
-    const u32 rH = (m_renderH > 0) ? m_renderH : vpH;
+    GetDisplayViewport(vpLeft, vpTop, vpW, vpH);   // 全体（ゲーム内 UI / オーバーレイ用。画面分割でもこちらは全体のまま）
+    u32 mainX, mainY, mainW, mainH;
+    GetMainViewRect(mainX, mainY, mainW, mainH);   // メインカメラの矩形（画面分割中は区画 1）
+    const u32 rW = (m_renderW > 0) ? m_renderW : mainW;
+    const u32 rH = (m_renderH > 0) ? m_renderH : mainH;
 
     // アスペクトは**表示側**を使う（レンダー解像度は同じアスペクトで縮めるだけ。
     // ここをレンダー側にすると renderScale の丸め誤差で絵が伸びる）。
     // ★Q2: オフスクリーン撮影のフレームだけ、アスペクトは撮影解像度のもの（表示矩形と無関係）。
     const f32 renderAspect = OffscreenCaptureFrame()
         ? static_cast<f32>(m_mcpFinalShot.offW) / static_cast<f32>(m_mcpFinalShot.offH)
-        : static_cast<f32>(vpW) / static_cast<f32>(vpH);
+        : static_cast<f32>(mainW) / static_cast<f32>(mainH);
 
     // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
     // 回転/ドリーは入力側で無効化済み。Play 中は CameraComponent 同期が優先する。
@@ -4804,6 +4809,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     frame.frameIndex = frameIndex;
     frame.totalTime  = totalTime;
     frame.vpLeft = vpLeft;  frame.vpTop = vpTop;  frame.vpW = vpW;  frame.vpH = vpH;
+    frame.mainOutX = mainX;  frame.mainOutY = mainY;  frame.mainOutW = mainW;  frame.mainOutH = mainH;
     frame.rW = rW;  frame.rH = rH;
     frame.lightDirF3   = lightDirF3;
     frame.lightColorF3 = lightColorF3;
@@ -4850,7 +4856,7 @@ ViewDesc Application::MakeMainViewDesc(const RenderFrameContext& frame) const
     v.depthSrvIndex    = m_depthSrvIndex;
     v.perFrameCB       = m_perFrameCB.get();
     v.outputToBackBuffer = true;
-    v.outX = frame.vpLeft;  v.outY = frame.vpTop;  v.outW = frame.vpW;  v.outH = frame.vpH;
+    v.outX = frame.mainOutX;  v.outY = frame.mainOutY;  v.outW = frame.mainOutW;  v.outH = frame.mainOutH;
     if (OffscreenCaptureFrame())   // Q2: 出力はオフスクリーン RT の全面（RenderPostChain が出力先を差し替える）
     { v.outX = 0; v.outY = 0; v.outW = m_mcpFinalShot.offW; v.outH = m_mcpFinalShot.offH; }
     v.features   = kViewAllFeatures;
@@ -6195,12 +6201,25 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // enabled=false → mask=0 = PostProcess はトーンマップ + ガンマのみ適用。
         // 露出は主ビューの自動露出を読む（プレビューと本画面の明るさを揃える）。
         sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        if (view.output && m_postProcess && m_postProcess->IsReady())
+        // 画面分割の区画 2..N（outputToBackBuffer=true の副ビュー）は LDR RT を経由せず、主ビューの
+        // ポストが済んだバックバッファ（RENDER_TARGET のまま SubmitFrame まで続く）の区画へ直接書く。
+        const bool toBackBuffer = !primary && view.outputToBackBuffer && frame.rtv.ptr != 0;
+        if ((toBackBuffer || view.output) && m_postProcess && m_postProcess->IsReady())
         {
-            view.output->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            D3D12_CPU_DESCRIPTOR_HANDLE outRtv = view.output->GetRtv();
-            nativeCmdList->OMSetRenderTargets(1, &outRtv, FALSE, nullptr);  // 深度なし
-            m_commandList->SetViewportAndScissor(vpW, vpH);
+            D3D12_CPU_DESCRIPTOR_HANDLE outRtv{};
+            if (toBackBuffer)
+            {
+                outRtv = frame.rtv;
+                nativeCmdList->OMSetRenderTargets(1, &outRtv, FALSE, nullptr);  // 深度なし
+                m_commandList->SetViewportAndScissor(vpLeft, vpTop, vpW, vpH);
+            }
+            else
+            {
+                view.output->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                outRtv = view.output->GetRtv();
+                nativeCmdList->OMSetRenderTargets(1, &outRtv, FALSE, nullptr);  // 深度なし
+                m_commandList->SetViewportAndScissor(vpW, vpH);
+            }
 
             PostProcessSettings pvPost{};
             pvPost.enabled = false;
@@ -6224,7 +6243,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             m_postProcess->Apply(nativeCmdList, pvIn, pvPost,
                 1.0f / static_cast<f32>(rW), 1.0f / static_cast<f32>(rH), totalTime, frameIndex);
 
-            view.output->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            if (!toBackBuffer)
+                view.output->Transition(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
     }
     else   // ポスト一式（主ビュー → バックバッファ）
@@ -6987,6 +7007,71 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
         m_decalGpu.reserve(m_decalEntries.size());
         for (const auto& en : m_decalEntries) m_decalGpu.push_back(en.gpu);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 画面分割: 区画 2..N（Lua: scene:setSplitView で姿勢を毎フレーム渡す）。
+// 主ビューの後（バックバッファは主ビューのポストで RENDER_TARGET + 全面クリア済み）・オーバーレイの前に呼ぶ。
+// 各区画は専用の HDR RT / 深度 / b1 へ描き、トーンマップだけを通してバックバッファの区画へ直接出す。
+// 影は主ビューが作ったものを読むだけ（kViewShadows なし）。ポスト（ブルーム / TAA 等）とパーティクルは出ない。
+// ---------------------------------------------------------------------------
+void Application::RenderSplitViews(RenderFrameContext& frame)
+{
+    using namespace DirectX;
+    const u32 n = SplitScreenCount();
+    if (n < 2 || !m_split || frame.rtv.ptr == 0) return;
+
+    u32 fx = 0, fy = 0, fw = 0, fh = 0;
+    GetDisplayViewport(fx, fy, fw, fh);
+
+    for (u32 i = 1; i < n; ++i)
+    {
+        const SplitPose& pose = m_split->req.poses[i];
+        SplitAreaGpu& g = m_split->areas[i - 1];
+        if (!pose.set || !g.rt || !g.depth || !g.frameCB) continue;
+
+        const SplitRect r = ComputeSplitRect(SplitRect{fx, fy, fw, fh}, n, i);
+        const XMVECTOR eye    = XMVectorSet(pose.pos[0], pose.pos[1], pose.pos[2], 1.0f);
+        const XMVECTOR target = XMVectorSet(pose.target[0], pose.target[1], pose.target[2], 1.0f);
+        const XMVECTOR dir    = XMVectorSubtract(target, eye);
+        const float dirLen = XMVectorGetX(XMVector3Length(dir));
+        if (!(dirLen > 1e-5f) || !std::isfinite(dirLen)) continue;   // 位置 = 注視点 / NaN は描かない
+        // 真上・真下を向くと up=+Y が縮退するので +Z へ逃がす
+        const bool vertical = std::fabs(XMVectorGetY(dir)) > 0.9999f * dirLen;
+        const XMVECTOR up = vertical ? XMVectorSet(0, 0, 1, 0) : XMVectorSet(0, 1, 0, 0);
+        const XMMATRIX view = XMMatrixLookAtLH(eye, target, up);
+        const f32 aspect = static_cast<f32>(r.w) / static_cast<f32>(r.h);
+        const f32 farZ   = (std::max)(frame.camFar, 1.0f);
+        const XMMATRIX proj = XMMatrixPerspectiveFovLH(XMConvertToRadians(pose.fovDeg), aspect, 0.1f, farZ);
+
+        ViewDesc v{};
+        v.name = "splitView";
+        XMStoreFloat4x4(&v.view, view);
+        XMStoreFloat4x4(&v.proj, proj);
+        XMStoreFloat4x4(&v.viewProj, view * proj);
+        v.viewProjJittered = v.viewProj;   // ジッタなし（TAA は主ビューだけ）
+        v.position = XMFLOAT3(pose.pos[0], pose.pos[1], pose.pos[2]);
+        v.nearZ = 0.1f;
+        v.farZ  = farZ;
+        v.width  = g.w;
+        v.height = g.h;
+        v.sceneColor    = g.rt.get();
+        v.depth         = g.depth.Get();
+        v.depthDsv      = g.dsv;
+        v.depthSrvIndex = DescriptorHeap::kInvalidIndex;   // 深度を読む機能は無い
+        v.perFrameCB    = g.frameCB.get();                 // 区画ごとに専用（共有すると先に記録した区画の描画まで巻き込む）
+        v.outputToBackBuffer = true;
+        v.output = nullptr;
+        v.outX = r.x;  v.outY = r.y;  v.outW = r.w;  v.outH = r.h;
+        v.features   = kViewSkybox | kViewWorldSprites;
+        v.primary    = false;
+        v.isGameView = true;
+        RenderView(v, frame);
+    }
+
+    // 区画の描画で RT / ビューポートを切り替えたので、バックバッファ全体へ戻す（オーバーレイ / ImGui のため）。
+    m_commandList->SetRenderTarget(frame.rtv);
+    m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
 }
 
 // ---------------------------------------------------------------------------

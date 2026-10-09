@@ -1,5 +1,6 @@
 #pragma once
 
+#include "renderer/SplitScreenLayout.h"   // 画面分割の要求（軽量ヘッダ）
 #include <string>
 #include <memory>
 #include <functional>
@@ -240,6 +241,13 @@ public:
     };
     void SetDisplayCallbacks(DisplayCallbacks cb) { m_displayCb = std::move(cb); }
 
+    // 画面分割（Lua: scene:setSplitScreen / setSplitView / getSplitScreen / getViewSize / getSplitRect）。
+    // req は Application が持つ要求（借りるだけ。Play 停止・シーン切替で Reset する）。
+    // viewRect はゲーム矩形（GetDisplayViewport）を返す。軽いので毎フレーム呼んでよい。
+    using ViewRectCb = std::function<void(unsigned& x, unsigned& y, unsigned& w, unsigned& h)>;
+    void SetSplitScreen(SplitScreenRequest* req, ViewRectCb viewRect)
+    { m_splitReq = req; m_viewRectCb = std::move(viewRect); }
+
     // ディスク永続の数値ストア（settings.json）。Lua: savePersist(key,v) / loadPersist(key,def)。
     using PersistSaveCb = std::function<void(const std::string&, double)>;
     using PersistLoadCb = std::function<double(const std::string&, double)>;
@@ -288,6 +296,8 @@ private:
     EventBus*    m_eventBus = nullptr;   // Application が所有、null 許容（エディタ中は非使用）
     ISequenceLuaApi* m_sequenceApi = nullptr;   // Application が所有、null 許容（Lua の Sequence.*）
     ActionMap*   m_actionMap = nullptr;  // Application が所有、null 許容
+    SplitScreenRequest* m_splitReq = nullptr;   // Application が所有、null 許容（画面分割の要求）
+    ViewRectCb          m_viewRectCb;
     hw::HardwareSystem* m_hardware = nullptr;   // Application が所有、null 許容
     // 擬似キー（kHwKeyBase + 添字）→ {デバイス名, チャンネル名}。Application が ActionMap へ付けたバインドと同じ順
     std::vector<std::pair<std::string, std::string>> m_hwKeys;

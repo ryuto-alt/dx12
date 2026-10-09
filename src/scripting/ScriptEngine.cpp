@@ -1556,6 +1556,38 @@ void ScriptEngine::RegisterBindings()
             if (sol::optional<float> v = t["iblIntensity"])    sk.iblIntensity    = *v;
             if (sol::optional<float> v = t["skyboxIntensity"]) sk.skyboxIntensity = *v;
             if (sol::optional<bool>  v = t["drawSkybox"])      sk.drawSkybox      = *v;
+        },
+        // ---- 画面分割 ----
+        // setSplitScreen(n): 0/1 = 解除、2..4 = 分割（区画 1 はメインカメラ）。
+        "setSplitScreen", [this](Scene&, int n) { if (m_splitReq) m_splitReq->SetCount(n); },
+        "getSplitScreen", [this](Scene&) -> int { return m_splitReq ? static_cast<int>(m_splitReq->n) : 0; },
+        // setSplitView(i, px,py,pz, tx,ty,tz, [fovDeg=60]): 区画 i（2..4）のカメラ。上は +Y。毎フレーム呼ぶ。
+        "setSplitView", [this](Scene&, int i, float px, float py, float pz,
+                               float tx, float ty, float tz, sol::optional<float> fov) {
+            if (!m_splitReq || i < 2 || i > static_cast<int>(kSplitMaxAreas)) return;
+            SplitPose& p = m_splitReq->poses[i - 1];
+            p.set = true;
+            p.pos[0] = px; p.pos[1] = py; p.pos[2] = pz;
+            p.target[0] = tx; p.target[1] = ty; p.target[2] = tz;
+            p.fovDeg = std::clamp(fov.value_or(60.0f), 1.0f, 170.0f);
+        },
+        // getViewSize() -> w, h: ゲーム矩形の全体（物理 px）。ui:text / ui:rect の座標系の大きさ。
+        "getViewSize", [this](Scene&) {
+            unsigned x = 0, y = 0, w = 1, h = 1;
+            if (m_viewRectCb) m_viewRectCb(x, y, w, h);
+            return std::make_tuple(static_cast<int>(w), static_cast<int>(h));
+        },
+        // getSplitRect(i) -> x, y, w, h（i=1..4）: ゲーム矩形の原点から見た区画 i（ui 座標系そのまま・2px の隙間込み）。
+        // 分割なし / i が n 超過は i=1 に全体 (0,0,w,h)。
+        "getSplitRect", [this](Scene&, int i) {
+            unsigned x = 0, y = 0, w = 1, h = 1;
+            if (m_viewRectCb) m_viewRectCb(x, y, w, h);
+            const u32 n = m_splitReq ? m_splitReq->n : 0;
+            SplitRect r{0, 0, w, h};
+            if (n >= 2 && i >= 1 && i <= static_cast<int>(n))
+                r = ComputeSplitRect(r, n, static_cast<u32>(i - 1));
+            return std::make_tuple(static_cast<int>(r.x), static_cast<int>(r.y),
+                                   static_cast<int>(r.w), static_cast<int>(r.h));
         }
     );
 
@@ -4754,6 +4786,7 @@ void ScriptEngine::OnPlayStop()
     // Play 中に登録された Lua ハンドラ（sol::function を保持）を EventBus から除去する。
     // Lua state がここで無効化されるため、残留ハンドラが後続 Flush/Emit で呼ばれると UAF になる。
     // Application::EnterEditorMode でも Clear を呼ぶが、OnPlayStop 経路を一本化して確実に除去する。
+    if (m_splitReq) m_splitReq->Reset();   // 画面分割は Play 1 回ごとに解除
     if (m_eventBus) m_eventBus->Clear();
     if (m_aiSystem) m_aiSystem->Clear();
     ClearAiLua();
@@ -5039,6 +5072,7 @@ void ScriptEngine::Shutdown()
     // Lua state リセット前に EventBus を Clear して、Lua ラムダ（sol::function を
     // キャプチャした購読ハンドラ）の dangling 参照を防ぐ。
     if (m_eventBus) m_eventBus->Clear();
+    if (m_splitReq) m_splitReq->Reset();   // シーン切替でも画面分割は解除
 
     // ★★ECS の中に残っている Lua 参照を【lua_State を壊す前に】全部落とす。
     //   これを忘れると、あとで registry が壊れたときに LuaScript のデストラクタが

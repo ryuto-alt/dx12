@@ -12,6 +12,7 @@
 #include "resource/TextureLoader.h"   // TEXBAKE: 使ったキャッシュ一覧の書き出し
 #include <fstream>
 #include <algorithm>
+#include "core/SplitScreen.h"   // 画面分割（unique_ptr<SplitScreenState> の完全型）
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
@@ -324,8 +325,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // DSV ヒープ
     m_dsvHeap = std::make_unique<DescriptorHeap>();
-    // [0] = メイン深度（レンダー解像度に追従して縮む）/ [1] = カメラプレビュー専用（固定 480x270）
-    m_dsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 4, false);
+    // [0] = メイン深度（レンダー解像度に追従して縮む）/ [1] = カメラプレビュー専用（固定 480x270）/ [2..4] = 画面分割の区画 2..4（SplitScreen.h。初回に 1 本ずつ確保）
+    m_dsvHeap->Initialize(*m_graphicsDevice, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 8, false);
 
     // デプスバッファ作成
     {
@@ -499,6 +500,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // ScriptEngine 初期化 + ゲームスクリプト実行
         SplashScreen::SetStage(splash::Stage::Scripts);
+        m_split = std::make_unique<SplitScreenState>();   // 資源は分割が有効になったとき EnsureSplitResources が作る
         m_scriptEngine = std::make_unique<ScriptEngine>();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                    m_camera.get(), m_audioSystem.get(),
@@ -1725,6 +1727,7 @@ void Application::Run()
         // 表示矩形 × renderScale へシーン系 RT を追従させる（#16）。
         // ★必ず Render() より前・フレーム外で呼ぶこと（内部で WaitIdle する）。
         UpdateRenderResolution();
+        EnsureSplitResources();   // 画面分割の区画 2..N（フレーム外・WaitIdle 込み）
         // Q2（校正）: ライティング単位の PSO 差し替え / オフスクリーン撮影の進行。どちらも既定では何もしない。
         UpdateLightingUnits();
         ServiceOffscreenShot();
@@ -2384,6 +2387,7 @@ void Application::Shutdown()
     m_commandList.reset();
     m_perFrameCB.reset();
     m_previewFrameCB.reset();
+    m_split.reset();   // m_scriptEngine（req を借りている）より後・m_srvHeap/デバイスより前
     m_resourceManager.reset();
     ShaderManager::SetInstance(nullptr);
     m_shaderManager.reset();
