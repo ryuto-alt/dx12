@@ -1,0 +1,8 @@
+{
+  "assetsDir": "assets",
+  "defaultScene": "scenes/lab.json",
+  "lastOpenedScene": "",
+  "name": "ArduinoLab",
+  "scriptsDir": "scripts",
+  "version": "0.1.0"
+}

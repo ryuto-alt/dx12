@@ -9,6 +9,7 @@ Uno Engine と Arduino / ESP32 をシリアルでつなぐ側。プロトコル�
 | `UnoLink/examples/UnoLinkBasicUno` | Uno/Nano 用の最小例 |
 | `UnoLinkGeneric/` | 汎用スケッチ。書くだけで、エンジンから `?pin` でピンをチャンネルにできる |
 | `tools/hwprobe.py` | 実機確認ツール（pyserial） |
+| `../lab/` | **ArduinoLab 実験キット**（セットアップ・書き込み・起動の bat と、すぐ遊べるエンジンのプロジェクト） |
 
 ## 配線（UnoLinkDemo / ESP32 DevKit）
 
