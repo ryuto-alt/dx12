@@ -163,6 +163,7 @@ if (Test-Path $luaDefs) {
 #   ★git が管理しているファイルだけを入れる（エディタが作る .dx12/ や .autosave/ など手元の残りを配布しない）。
 $bundle = @(
   @{ Src = "hardware/lab/ArduinoLab/"; Dst = "samples\ArduinoLab" },
+  @{ Src = "hardware/lab/GroveLab/"; Dst = "samples\GroveLab" },
   @{ Src = "hardware/firmware/UnoLink/"; Dst = "hardware\firmware\UnoLink" },
   @{ Src = "hardware/firmware/UnoLinkGeneric/"; Dst = "hardware\firmware\UnoLinkGeneric" },
   @{ Src = "hardware/firmware/README.md"; Dst = "hardware\firmware\README.md" }
