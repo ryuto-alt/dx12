@@ -63,7 +63,7 @@ void WriteMarker(const std::vector<std::string>& names)
     std::error_code ec;
     fs::create_directories(p.parent_path(), ec);
     const json j{{"installed", names}};
-    const atomicfile::Result r = atomicfile::WriteFile(p, j.dump(2));
+    const atomicfile::Result r = atomicfile::WriteFile(p, j.dump(2, ' ', false, json::error_handler_t::replace));
     if (!r.ok) Logger::Warn("[samples] samples_installed.json を書けませんでした: {}", r.error);
 }
 
@@ -100,24 +100,43 @@ bool DirNotEmpty(const fs::path& p)
     return fs::is_directory(p, ec) && fs::directory_iterator(p, ec) != fs::directory_iterator();
 }
 
-// .dx12 を除いて再帰コピー。失敗は例外（呼び側が受ける）
-void CopyTreeSkipDx12(const fs::path& src, const fs::path& dst)
+// .dx12 を除いて再帰コピー。★例外は投げない（error_code 版だけ使う）。コピーできなかったファイルは警告を出して飛ばし、
+//   飛ばした数を返す。日本語ユーザー名のパスでは filesystem_error::what() が ANSI で出て JSON に入れると dump が投げるので、
+//   そもそも例外を作らない。
+int CopyTreeSkipDx12(const fs::path& src, const fs::path& dst)
 {
-    fs::create_directories(dst);
-    for (fs::recursive_directory_iterator it(src), end; it != end; ++it)
+    int failed = 0;
+    std::error_code ec;
+    fs::create_directories(dst, ec);
+    if (ec) { Logger::Warn("[samples] コピー先を作れません: {}", ec.message()); return 1; }
+    fs::recursive_directory_iterator it(src, fs::directory_options::skip_permission_denied, ec);
+    if (ec) { Logger::Warn("[samples] コピー元を読めません: {}", ec.message()); return 1; }
+    const fs::recursive_directory_iterator end;
+    while (it != end)
     {
-        const fs::path rel = fs::relative(it->path(), src);
-        if (it->is_directory())
+        const fs::path cur = it->path();
+        std::error_code e1;
+        const fs::path rel = fs::relative(cur, src, e1);
+        if (e1 || rel.empty()) { ++failed; it.increment(e1); if (e1) break; continue; }
+        if (it->is_directory(e1))
         {
-            if (it->path().filename() == L".dx12") { it.disable_recursion_pending(); continue; }
-            fs::create_directories(dst / rel);
+            if (cur.filename() == L".dx12") it.disable_recursion_pending();
+            else
+            {
+                fs::create_directories(dst / rel, e1);
+                if (e1) { Logger::Warn("[samples] フォルダを作れません: {}", e1.message()); ++failed; }
+            }
         }
-        else if (it->is_regular_file())
+        else if (it->is_regular_file(e1))
         {
-            fs::create_directories((dst / rel).parent_path());
-            fs::copy_file(it->path(), dst / rel, fs::copy_options::skip_existing);
+            fs::create_directories((dst / rel).parent_path(), e1);
+            if (!e1) fs::copy_file(cur, dst / rel, fs::copy_options::skip_existing, e1);
+            if (e1) { Logger::Warn("[samples] ファイルをコピーできません（飛ばします）: {}", e1.message()); ++failed; }
         }
+        it.increment(e1);
+        if (e1) { Logger::Warn("[samples] フォルダの走査を打ち切ります: {}", e1.message()); ++failed; break; }
     }
+    return failed;
 }
 
 } // namespace
@@ -173,16 +192,20 @@ json Application::InstallBundledSamples(const std::string& destOverride, bool fo
             record();
             continue;
         }
+        int copyFailed = 0;
         try
         {
-            CopyTreeSkipDx12(src, dst);
+            copyFailed = CopyTreeSkipDx12(src, dst);
         }
         catch (const std::exception& e)
         {
-            Logger::Warn("[samples] {} のコピーに失敗: {}", name, e.what());
-            rep["skipped"].push_back({{"name", name}, {"reason", std::string("コピーに失敗: ") + e.what()}});
+            // error_code 版だけで書いてあるので通常ここには来ない（bad_alloc など）。what() は ANSI のことがあるので整えて持つ
+            Logger::Warn("[samples] {} のコピーに失敗", name);
+            rep["skipped"].push_back({{"name", name}, {"reason", std::string("コピーに失敗: ") + hw::SanitizeUtf8Lossy(e.what())}});
             continue;
         }
+        if (copyFailed > 0)
+            rep["skipped"].push_back({{"name", name}, {"reason", "一部のファイルをコピーできませんでした（" + std::to_string(copyFailed) + " 件。ログを参照）"}});
         if (!overridden)
         {
             ProjectInfo info;

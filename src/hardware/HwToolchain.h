@@ -2,9 +2,9 @@
 // ===========================================================================
 // Arduino の書き込み道具（arduino-cli + ボードのコア esp32:esp32 / arduino:avr）の自動導入。
 //   場所      : %LOCALAPPDATA%\UnoEngine\arduino-cli\arduino-cli.exe（ManagedCliPath）
-//   目印      : 同フォルダの cores.json {"cores":[...], "cli":"..."}（入れ終えたコア。プロセスを起こさず「準備済み」を判定する）
+//   目印      : 同フォルダの cores.json {"cores":[...], "libs":[...], "cli":"..."}（入れ終えたコア。プロセスを起こさず「準備済み」を判定する）
 //   導入      : 背景ワーカー 1 本（HwToolchain）。CLI が無ければ downloads.arduino.cc から落として展開 →
-//               core update-index → core install esp32:esp32 / arduino:avr → cores.json を書く。
+//               core update-index → core install esp32:esp32 / arduino:avr / arduino:megaavr → lib install Servo → cores.json を書く。
 //   子プロセス: 常に CREATE_NO_WINDOW | BELOW_NORMAL（窓を出さず、操作に響かせない）。
 // ===========================================================================
 #include <atomic>
@@ -39,11 +39,17 @@ std::vector<std::string> InstalledCoresInMarker();
 bool CoreInMarker(const std::string& core);
 // コアを cores.json に足す（cli は最後に使った arduino-cli のパス）。
 void AddCoreToMarker(const std::string& core, const std::string& cli);
+// cores.json の "libs"（arduino-cli lib install 済みのライブラリ。Servo など）
+std::vector<std::string> InstalledLibsInMarker();
+bool LibInMarker(const std::string& lib);
+void AddLibToMarker(const std::string& lib, const std::string& cli);
 
 // core install の追加引数（esp32 は公式の索引に無いので Espressif の索引を足す）
 extern const char* const kEspressifIndexUrl;
 // 要るコア
-extern const char* const kRequiredCores[2];
+extern const char* const kRequiredCores[3];   // esp32:esp32 / arduino:avr / arduino:megaavr（Nano Every）
+// 要るライブラリ（arduino-cli lib install。Servo ライブラリを使うスケッチ用）
+extern const char* const kRequiredLibs[1];
 
 // 不正な UTF-8 を '?' に置き換える
 std::string SanitizeUtf8Lossy(const std::string& s);
@@ -59,6 +65,7 @@ public:
         float       progress = 0.0f;            // Downloading のとき 0..1
         std::string cli;                         // 見つかっている arduino-cli（無ければ空）
         std::vector<std::string> cores;          // cores.json のコア
+        std::vector<std::string> libs;           // cores.json のライブラリ（Servo など）
         std::string error;
         std::vector<std::string> log;            // 末尾（最大 200 行）
         bool        ready = false;
@@ -82,7 +89,8 @@ public:
     static const char* StateName(State s);
 
 private:
-    void Run(std::string configCli, bool forceDownload);
+    void Run(std::string configCli, bool forceDownload);       // スレッドの入口（例外を全部受ける）
+    void RunImpl(std::string configCli, bool forceDownload);   // 本体
     void SetState(State s);
     void Log(const std::string& line);
     void LogText(const char* data, size_t n);
@@ -106,6 +114,7 @@ private:
     bool               m_lastReady = false;
     std::string        m_lastCli;
     std::vector<std::string> m_lastCores;
+    std::vector<std::string> m_lastLibs;
 };
 
 } // namespace dx12e::hw

@@ -634,32 +634,52 @@ void HardwareSystem::IoThreadMain()
     double lastScan = -1e9;
     std::vector<HwPortInfo> ports;
 
+    std::string lastErr;   // 同じ文言の例外はログに 1 回だけ（毎ループのスパム防止）
     while (!m_stop.load())
     {
-        const double now = NowMs();
+        // ★IO スレッドの最上位。例外が漏れると std::terminate でエンジンごと落ちるので、1 周ぶんを丸ごと受けて続行する。
+        try
+        {
+            const double now = NowMs();
+            std::vector<HwDevice*> devs;
+            {
+                std::lock_guard<std::mutex> lk(m_mutex);
+                for (auto& d : m_devices) devs.push_back(d.get());
+            }
+
+            const bool scanTick = now - lastScan >= static_cast<double>(m_opts.scanIntervalMs);
+            if (scanTick) { ports = ListPorts(); lastScan = now; }
+
+            bool activity = false;
+            for (HwDevice* d : devs) activity |= ServiceDevice(*d, now, ports, scanTick);
+
+            if (!activity) std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+        catch (const std::exception& e)
+        {
+            const std::string msg = e.what();
+            if (msg != lastErr) { lastErr = msg; Logger::Error("[hw] IO スレッドで例外（続行します）: {}", msg); }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        catch (...)
+        {
+            if (lastErr != "?") { lastErr = "?"; Logger::Error("[hw] IO スレッドで不明な例外（続行します）"); }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+
+    // 終了: 出力を安全値へ戻してから閉じる
+    try
+    {
         std::vector<HwDevice*> devs;
         {
             std::lock_guard<std::mutex> lk(m_mutex);
             for (auto& d : m_devices) devs.push_back(d.get());
         }
-
-        const bool scanTick = now - lastScan >= static_cast<double>(m_opts.scanIntervalMs);
-        if (scanTick) { ports = ListPorts(); lastScan = now; }
-
-        bool activity = false;
-        for (HwDevice* d : devs) activity |= ServiceDevice(*d, now, ports, scanTick);
-
-        if (!activity) std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        for (HwDevice* d : devs)
+            if (d->transport) CloseDevice(*d, "終了", true, false);
     }
-
-    // 終了: 出力を安全値へ戻してから閉じる
-    std::vector<HwDevice*> devs;
-    {
-        std::lock_guard<std::mutex> lk(m_mutex);
-        for (auto& d : m_devices) devs.push_back(d.get());
-    }
-    for (HwDevice* d : devs)
-        if (d->transport) CloseDevice(*d, "終了", true, false);
+    catch (...) {}
 }
 
 bool HardwareSystem::ServiceDevice(HwDevice& d, double now, const std::vector<HwPortInfo>& ports, bool scanTick)

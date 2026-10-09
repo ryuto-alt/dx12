@@ -52,6 +52,7 @@ std::string GuessBoardFromVidPid(const std::string& vidIn, const std::string& pi
     const std::string vid = Upper(vidIn), pid = Upper(pidIn);
     if (vid == "1A86" && (pid == "7523" || pid == "55D4")) return "CH340 (Arduino 互換 / ESP32 DevKit)";
     if (vid == "10C4" && pid == "EA60") return "CP210x (ESP32 DevKit など)";
+    if (vid == "2341" && pid == "0058") return "Arduino Nano Every";   // ATmega4809（arduino:megaavr:nona4809）
     if (vid == "2341") return "Arduino 純正";
     if (vid == "303A") return "Espressif ネイティブ USB (ESP32-S2/S3/C3)";
     if (vid == "0403" && pid == "6001") return "FTDI";
