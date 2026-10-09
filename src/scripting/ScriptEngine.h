@@ -19,6 +19,8 @@ namespace sol { class state; }
 namespace dx12e
 {
 
+class ScriptUdpSocket;   // scripting/ScriptUdp.h（net.udpOpen）
+
 class Scene;
 class InputSystem;
 class Camera;
@@ -280,6 +282,8 @@ private:
     void ParsePropertySchema(const std::string& scriptPath, std::vector<ScriptPropDef>& out);
 
     std::unique_ptr<sol::state> m_lua;
+    void CloseAllUdpSockets();   // net.udpOpen で開いた全ソケットを閉じる（Play 停止 / Shutdown）
+    std::vector<std::weak_ptr<ScriptUdpSocket>> m_udpSockets;   // net.udpOpen で開いたもの。Shutdown で全部閉じる
     Scene*         m_scene   = nullptr;
     InputSystem*   m_input   = nullptr;
     Camera*        m_camera  = nullptr;

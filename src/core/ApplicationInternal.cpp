@@ -776,7 +776,7 @@ nlohmann::json McpLuaApi()
         "getShadowsEnabled() / setShadowsEnabled(b)  (リアルタイム影(CSM)の ON/OFF。false で影パスごとスキップ)",
         "getSkybox() -> { envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox= }",
         "setSkybox{ iblIntensity=, skyboxIntensity=, drawSkybox= }  (渡したキーだけ上書き。envMapPath の実行時差し替えは非対応)",
-        "setSplitScreen(n)  (画面分割。0/1=解除、2..4=分割(クランプ)。区画1=メインカメラ(フルポスト)、2..4=setSplitViewのカメラ。n=2 は上下、3/4 は 2x2 (左上,右上,左下,右下)。区画の間は 2px。ゲームの絵のときだけ有効、Play停止/シーン切替で解除)",
+        "setSplitScreen(n, [layout=\"cols\"])  (画面分割。0/1=解除、2..4=分割(クランプ)。区画1=メインカメラ(フルポスト)、2..4=setSplitViewのカメラ。n=2 は既定で左右(区画1=左,2=右)、layout=\"rows\" なら上下(layout は n=2 のみ有効)。3/4 は 2x2 (左上,右上,左下,右下)。区画の間は 2px。ゲームの絵のときだけ有効、Play停止/シーン切替で解除)",
         "getSplitScreen() -> n  (分割していなければ 0)",
         "setSplitView(i, px,py,pz, tx,ty,tz, [fovDeg=60])  (区画 i=2..4 のカメラ。位置→注視点、上は +Y、縦FOV度。毎フレーム呼ぶ。区画2..4はトーンマップのみ(ブルーム/TAA/パーティクル無し)、影は区画1のものを読む)",
         "getViewSize() -> w, h  (ゲーム矩形全体の物理px。ui:text / ui:rect の座標系の大きさ)",
@@ -827,6 +827,11 @@ nlohmann::json McpLuaApi()
         "findByNetId(netId) -> Entity  ※見つからなくても nil ではない。e:isValid() で確かめる",
         "rpc(name,...) / rpcAll(name,...) / rpcClient(clientId,name,...) / onRpc(name,fn)",
         "★RPC 引数は number/string/boolean/Vec3 のみ。テーブル/関数は**警告なしで nil になる**",
+        "udpOpen(port) -> sock | nil, err  (127.0.0.1:port だけに bind する非ブロッキング UDP。port 1024..65535。net.udpOpen(p) でも net:udpOpen(p) でも可。使用中などは nil+エラー文字列。Play 停止 / スクリプト再読込 / GC で自動的に閉じる)",
+        "sock:recv() -> string|nil  (次の 1 通。無ければ nil。ブロックしない。最大 64KiB)",
+        "sock:recvLatest() -> string|nil  (溜まった分を捨てて最後の 1 通だけ。毎フレーム最新の入力だけ欲しいとき)",
+        "sock:send(port, text) -> bool  (127.0.0.1:port へ。最大 60KiB、超過は false)",
+        "sock:close()",
     })));
     objects.push_back(O("camera", "global", json::array({
         "getPosition()/setPosition(v)", "getYaw()/setYaw(f)", "getPitch()/setPitch(f)",

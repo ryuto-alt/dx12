@@ -28,9 +28,21 @@ int main()
     // n<=1: 全体そのまま
     { const SplitRect r = ComputeSplitRect(full, 1, 0); CHECK(r.x == 10 && r.y == 20 && r.w == 1280 && r.h == 720); }
 
-    // n=2: 上下
+    // n=2 既定: 左右
     {
         const SplitRect a = ComputeSplitRect(full, 2, 0), b = ComputeSplitRect(full, 2, 1);
+        CHECK(a.y == 20 && a.h == 720 && b.y == 20 && b.h == 720);
+        CHECK(a.x == 10);
+        CHECK(b.x == a.x + a.w + kSplitGap);
+        CHECK(b.x + b.w == full.x + full.w);
+        CHECK(!Overlap(a, b));
+        const SplitRect c = ComputeSplitRect(full, 2, 0, SplitLayout::Cols);
+        CHECK(c.x == a.x && c.w == a.w);
+    }
+
+    // n=2 rows: 上下
+    {
+        const SplitRect a = ComputeSplitRect(full, 2, 0, SplitLayout::Rows), b = ComputeSplitRect(full, 2, 1, SplitLayout::Rows);
         CHECK(a.x == 10 && a.w == 1280 && b.x == 10 && b.w == 1280);
         CHECK(a.y == 20);
         CHECK(b.y == a.y + a.h + kSplitGap);
@@ -61,14 +73,22 @@ int main()
         }
     }
 
+    // n=3/4 は layout の影響を受けない
+    for (u32 i = 0; i < 4; ++i)
+    {
+        const SplitRect a = ComputeSplitRect(full, 4, i), b = ComputeSplitRect(full, 4, i, SplitLayout::Rows);
+        CHECK(a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h);
+    }
+
     // 極小でも w/h >= 1
     for (u32 n = 2; n <= 4; ++n)
         for (u32 i = 0; i < n; ++i)
             for (u32 sz = 0; sz <= 5; ++sz)
-            {
-                const SplitRect r = ComputeSplitRect(SplitRect{0, 0, sz, sz}, n, i);
-                CHECK(r.w >= 1 && r.h >= 1);
-            }
+                for (SplitLayout l : {SplitLayout::Cols, SplitLayout::Rows})
+                {
+                    const SplitRect r = ComputeSplitRect(SplitRect{0, 0, sz, sz}, n, i, l);
+                    CHECK(r.w >= 1 && r.h >= 1);
+                }
 
     // 要求のクランプ
     {
@@ -77,6 +97,11 @@ int main()
         q.SetCount(3); CHECK(q.n == 3);
         q.SetCount(9); CHECK(q.n == 4);
         q.SetCount(-2); CHECK(q.n == 0);
+        CHECK(q.layout == SplitLayout::Cols);
+        q.SetLayout("rows"); CHECK(q.layout == SplitLayout::Rows);
+        q.SetLayout("cols"); CHECK(q.layout == SplitLayout::Cols);
+        q.SetLayout("rows"); q.SetLayout("bogus"); CHECK(q.layout == SplitLayout::Cols);
+        q.SetLayout("rows"); q.Reset(); CHECK(q.layout == SplitLayout::Cols);
     }
 
     std::printf("split_screen_layout: %d checks, %d failures\n", g_checks, g_failures);

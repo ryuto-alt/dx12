@@ -784,6 +784,18 @@ if(TARGET Renderer)
     add_test(NAME SplitScreenLayoutTests COMMAND SplitScreenLayoutTests)
 endif()
 
+# scripting/ScriptUdp（Lua net.udpOpen の 127.0.0.1 専用 UDP）。ループバックで 2 本つないで往復する。
+if(TARGET Scripting)
+    add_executable(ScriptUdpTests script_udp_test.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/ScriptUdp.cpp)
+    target_include_directories(ScriptUdpTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(ScriptUdpTests PRIVATE ws2_32.lib)
+    if(MSVC)
+        target_compile_options(ScriptUdpTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ScriptUdpTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ScriptUdpTests COMMAND ScriptUdpTests)
+endif()
+
 # スタブ .vgeo 生成器（tools/vgeo_stub/VgeoStubGen.h）の出力が VgeoFormat の検証を通ること・往復・決定論。
 # meshoptimizer が要るので統合ビルドでのみ有効（Renderer が meshoptimizer をリンクしている）。
 if(TARGET Renderer)

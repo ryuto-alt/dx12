@@ -3,6 +3,7 @@ add_library(Scripting STATIC
     ScriptEngineAi.cpp      # nav / 群衆 / Brain の Lua API
     ScriptAudioBindings.cpp   # Lua の audio（音の担当。ScriptEngine.cpp から分けて衝突を避ける）
     ScriptSaveBindings.cpp    # Lua の save（セーブの担当。同上）
+    ScriptUdp.cpp             # Lua の net.udpOpen（127.0.0.1 専用 UDP。tests/script_udp_test.cpp）
     LuaJson.cpp               # Lua の値 ⇔ JSON（セーブ本体。tests/lua_json_test.cpp）
 )
 
@@ -28,6 +29,7 @@ target_link_libraries(Scripting PUBLIC
     ${LUA_LIBRARIES}
     sol2::sol2
     Microsoft::DirectXMath
+    ws2_32.lib
 )
 
 target_include_directories(Scripting PRIVATE ${LUA_INCLUDE_DIR})

@@ -2,13 +2,16 @@
 //   GET /            スマホのコントローラー画面（phone.html）
 //   GET /qr?r=1234   参加用 URL の QR コード（0/1 の行。PC の中継が取ってゲーム画面に描く）
 //   GET /ws?room=1234&role=host            友達の PC（phone-relay.ps1）
-//   GET /ws?room=1234&role=phone&name=...  スマホ
+//   GET /ws?room=1234&role=phone&name=...&dev=...  スマホ（dev はスマホごとの目印。開き直しても同じ人として扱う）
+// ゲームが Play を始めるたびに PC から "#reset" が来る → 参加者を全員いったん切る（生きているスマホはすぐつなぎ直す）。
+// 3 秒なにも送ってこないスマホ（スリープ・閉じたのに切れていない）は外す。
 // 部屋ごとに Durable Object を 1 つ使う。スマホの入力は 30 回/秒の「まとめ」にして PC へ送り、
 // PC から来たレースの状況（JSON）はそのまま全スマホへ配る。
 import qrcode from "qrcode-generator";
 import PHONE_HTML from "./phone.html";
 
 const MAX_PHONES = 3;
+const STALE_MS = 3000;
 
 export default {
   async fetch(req, env) {
@@ -43,7 +46,7 @@ export class Room {
   constructor(state, env) {
     this.state = state;
     this.host = null;
-    this.phones = new Map();       // id -> { ws, name, steer, btn }
+    this.phones = new Map();       // id -> { ws, name, dev, steer, btn, seen }
     this.nextId = 1;
     this.timer = null;
   }
@@ -61,7 +64,9 @@ export class Room {
       this.host = ws;
       this.broadcast(JSON.stringify({ t: "host", on: true }));
       ws.addEventListener("message", (e) => {
-        if (typeof e.data === "string" && e.data.startsWith("{")) this.broadcast(e.data);   // レースの状況をそのまま配る
+        if (typeof e.data !== "string") return;
+        if (e.data === "#reset") { this.resetPhones(); return; }
+        if (e.data.startsWith("{")) this.broadcast(e.data);   // レースの状況をそのまま配る
       });
       const bye = () => {
         if (this.host === ws) { this.host = null; this.broadcast(JSON.stringify({ t: "host", on: false })); }
@@ -69,6 +74,13 @@ export class Room {
       ws.addEventListener("close", bye);
       ws.addEventListener("error", bye);
     } else {
+      // 同じスマホ（dev が同じ）が開き直したら、前の接続を切って入れ替える（人数に数えない）
+      const dev = (url.searchParams.get("dev") || "").replace(/[^\w-]/g, "").slice(0, 40);
+      if (dev) {
+        for (const [oid, op] of this.phones) {
+          if (op.dev === dev) { this.phones.delete(oid); try { op.ws.close(4002, "replaced"); } catch {} }
+        }
+      }
       if (this.phones.size >= MAX_PHONES) {
         ws.send(JSON.stringify({ t: "full" }));
         ws.close(4001, "full");
@@ -76,15 +88,16 @@ export class Room {
       }
       const id = this.nextId++;
       const name = (url.searchParams.get("name") || "").replace(/[\r\n\t]/g, " ").trim().slice(0, 8) || `P${id}`;
-      const p = { ws, name, steer: 0, btn: 0 };
+      const p = { ws, name, dev, steer: 0, btn: 0, seen: Date.now() };
       this.phones.set(id, p);
       ws.send(JSON.stringify({ t: "hello", id, host: !!this.host }));
       ws.addEventListener("message", (e) => {
         // "steer,btn"（steer: -1..1、btn: 押した回数の累計）
+        p.seen = Date.now();
         const m = /^(-?[\d.]+),(\d+)$/.exec(String(e.data));
         if (m) { p.steer = Math.max(-1, Math.min(1, parseFloat(m[1]))); p.btn = parseInt(m[2], 10) % 100000; }
       });
-      const bye = () => { this.phones.delete(id); };
+      const bye = () => { if (this.phones.get(id) === p) this.phones.delete(id); };
       ws.addEventListener("close", bye);
       ws.addEventListener("error", bye);
     }
@@ -96,10 +109,20 @@ export class Room {
   // PC へ全スマホの入力を 1 行ずつ: "id steer btn name"
   tick() {
     if (!this.host && this.phones.size === 0) { clearInterval(this.timer); this.timer = null; return; }
+    const now = Date.now();
+    for (const [id, p] of this.phones) {
+      if (now - p.seen > STALE_MS) { this.phones.delete(id); try { p.ws.close(4004, "stale"); } catch {} }
+    }
     if (!this.host) return;
-    let s = "#phones\n";
+    let s ="#phones\n";
     for (const [id, p] of this.phones) s += `${id} ${p.steer.toFixed(3)} ${p.btn} ${p.name}\n`;
     try { this.host.send(s); } catch {}
+  }
+
+  // ゲームが始まり直した: 全員いったん切る（スマホは 4003 を見てすぐつなぎ直す。死んだ接続はそのまま消える）
+  resetPhones() {
+    for (const p of this.phones.values()) { try { p.ws.close(4003, "reset"); } catch {} }
+    this.phones.clear();
   }
 
   broadcast(text) {

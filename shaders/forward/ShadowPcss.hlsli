@@ -117,6 +117,16 @@ float SampleShadowPcf3x3(Texture2DArray shadowMap, int cascade, float2 uv, float
     return s / 9.0f;
 }
 
+// worldPos がカスケード cascade の箱（光から見た xy と奥行き）の中に入っているか。
+// 画面分割の副ビューは主ビューの視錐台に合わせたカスケードを借りるので、view 深度で選んだカスケードの
+// 外に出ることがある。そのときは含む次のカスケードへ回す（ForwardShade.hlsli の CalcShadow）。
+bool ShadowCascadeContains(int cascade, float3 worldPos)
+{
+    float4 lc   = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
+    float3 proj = lc.xyz / lc.w;
+    return abs(proj.x) <= 1.0f && abs(proj.y) <= 1.0f && proj.z <= 1.0f;
+}
+
 // カスケード 1 枚ぶんの影サンプリング（PCSS / 3x3 PCF の切り替え込み）。
 // ★pcssParams.x <= 0 のとき、絵は従来と完全に同じになる。
 // bias は「受光面のシャドウアクネ/ピーターパン調整」。従来 Forward/Skinned/Terrain は
@@ -129,6 +139,9 @@ float SampleShadowCascadeCommon(Texture2DArray shadowMap, int cascade,
     float2 uv   = proj.xy * 0.5f + 0.5f;
     uv.y = 1.0f - uv.y;
     if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
+    // 光の向きの奥行きでカスケードの箱の外（遠い側）なら影なし。ここを見ないと、箱の外の点が
+    //   クリア値 1.0 より奥と判定されて真っ黒になる（画面分割の副ビューで地面に黒いムラが出ていた）
+    if (proj.z > 1.0f) return 1.0f;
 
     float current = proj.z - bias;
 

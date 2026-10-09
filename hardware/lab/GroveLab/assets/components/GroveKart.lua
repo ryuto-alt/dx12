@@ -1,7 +1,9 @@
 -- カートレース「グローブ・グランプリ」（scenes/kart.json）
 --   赤 = つまみの人: つまみ = ハンドル、アクセルは自動、スイッチ = アイテム
 --   青・緑・黄 = スマホの人（最大 3 人）か CPU。スマホは phone\スマホでつなぐ.bat の中継で参加する
---     中継が書く assets/kart/phones.txt を毎フレーム読み、レースの状況を assets/kart/state.txt に書く
+--     中継とは PC の中だけの UDP（127.0.0.1）でやり取りする: スマホの入力を :47811 で受け、レースの状況を :47812 へ送る。
+--     （以前はファイルを 1 秒に 30 回書き換えていて、OneDrive の同期と Defender の検査で PC が重くなっていた）
+--     net.udpOpen が無い古いエンジンでは assets/kart/phones.txt / state.txt でやり取りする
 --   サーボ = 赤のスピードメーター、LED = 信号・アイテム・ダッシュ、スピーカー = エンジン音と効果音
 --   3 周。アイテムボックスでキノコ（ダッシュ）。R で GroveLab に戻る。J でつまみの人が走る / 走らない
 --   実機が無ければ ← → がハンドル、Space がアイテム
@@ -15,6 +17,7 @@ properties = {
   { name = "steerCenter", type = "float", default = 0.5, min = 0.1, max = 0.9, label = "まっすぐのつまみの位置 (0〜1)" },
   { name = "cpuSpeed",   type = "float", default = 1.0,  min = 0.5, max = 1.5, label = "CPU の速さ（倍）" },
   { name = "engineSound", type = "bool", default = true, label = "エンジン音を鳴らす" },
+  { name = "knobPlayer", type = "bool", default = true, label = "つまみの人（赤）が参加する（スタート画面の J でも切り替え・覚えておく）" },
 }
 
 local VMAX, VBOOST, VGRASS = 26, 34, 11
@@ -22,6 +25,7 @@ local KARTS = { "KART_Player", "KART_Cpu1", "KART_Cpu2", "KART_Cpu3" }
 local COLOR = { { 0.9, 0.15, 0.1 }, { 0.24, 0.43, 1.0 }, { 0.2, 0.85, 0.3 }, { 1.0, 0.82, 0.1 } }
 local CNAME = { "赤", "青", "緑", "黄" }
 local READY, COUNT, RACE, FINISH = 0, 1, 2, 3
+local UDP_GAME, UDP_RELAY = 47811, 47812   -- ゲームが受ける口 / 中継が受ける口（どちらも 127.0.0.1）
 
 local SND = {
   beep    = { { 440, 0.22 } },
@@ -54,6 +58,12 @@ function OnStart(self)
   self.cam = scene:findEntity("KART_Cam")
   -- 画面分割はエンジン v2.5.5 から。古いエンジンでは 1 画面のまま動く
   self.splitOk = pcall(function() return scene:getSplitScreen() end)
+  -- 中継とのやり取り（エンジン v2.5.6 から UDP。開けなければファイルに戻す）
+  self.udp = nil
+  if net and net.udpOpen then
+    local ok, sock = pcall(net.udpOpen, UDP_GAME)
+    if ok and sock then self.udp = sock end
+  end
   self.signals = { scene:findEntity("KART_Signal1"), scene:findEntity("KART_Signal2"), scene:findEntity("KART_Signal3") }
   self.items = {}
   for row = 0, 2 do
@@ -71,12 +81,15 @@ function OnStart(self)
   self.trkJson = "[" .. table.concat(tk, ",") .. "]"
   self.best = loadNum("kart.best", 0)
   self.cm = 999
-  self.knobOn = true
+  -- つまみの人が参加するか: スタート画面の J で切り替えた値を覚えておく（無ければインスペクタの値）
+  self.knobOn = loadNum("kart.knob", self.knobPlayer and 1 or 0) == 1
   self.phones = {}
   self.seq, self.seqT = -1, 99
   self.roomT = 0
   self.stateT = 0
   self.writeT = 0
+  -- Play を始めるたびに変わる目印。中継がこれの変化を見て、スマホの参加をいったんリセットする
+  self.runId = string.format("%d-%d", math.random(1, 999999999), math.random(1, 999999999))   -- エンジンの Lua に os は無い
   self.center = self.steerCenter
   reset(self)
   readRoom(self)
@@ -208,8 +221,12 @@ end
 -- 中継（phone-relay.ps1）が書くスマホの入力を読む。"#seq N" が 2 秒変わらなければ中継が止まっている
 function readPhones(self, dt)
   local text = nil
-  local f = io.open(self.base .. "kart/phones.txt", "r")
-  if f then text = f:read("a"); f:close() end
+  if self.udp then
+    text = self.udp:recvLatest()   -- 中継が 127.0.0.1 へ送ってくる最新のまとめ（来ていないフレームは nil）
+  else
+    local f = io.open(self.base .. "kart/phones.txt", "r")
+    if f then text = f:read("a"); f:close() end
+  end
   local seq = text and tonumber(text:match("^#seq (%d+)") or "") or nil
   if seq and seq ~= self.seq then self.seq = seq; self.seqT = 0 else self.seqT = self.seqT + dt end
   self.relayOn = (self.seq or 0) > 0 and self.seqT < 2
@@ -283,8 +300,9 @@ function writeState(self)
   end
   local ks = {}
   for i = 1, 4 do ks[i] = string.format("[%.1f,%.1f,%d]", self.k[i].x, self.k[i].z, i) end
-  local s = string.format('{"t":"state","st":%d,"laps":%d,"p":[%s],"k":[%s],"trk":%s}\n',
-    self.state, self.laps, table.concat(ps, ","), table.concat(ks, ","), self.trkJson)
+  local s = string.format('{"t":"state","run":"%s","st":%d,"laps":%d,"p":[%s],"k":[%s],"trk":%s}\n',
+    self.runId or "", self.state, self.laps, table.concat(ps, ","), table.concat(ks, ","), self.trkJson)
+  if self.udp then self.udp:send(UDP_RELAY, s); return end
   local f = io.open(self.base .. "kart/state.txt", "w")
   if f then f:write(s); f:close() end
 end
@@ -313,13 +331,17 @@ function stepHuman(self, i, steer, gas, press, dt)
   K.steer = steer
   -- 遠くまで飛び出したら引き戻す
   idx, s, lat = nearest(self, K.x, K.z, idx)
-  local lim = self.width / 2 + 12
+  -- 道の端から 3.5m に見えない壁（観客席・タイヤの壁・木は 4m より外にあるので、突き抜けて中に入らない）
+  local lim = self.width / 2 + 3.5
   if math.abs(lat) > lim then
     local p = self.pts[idx]
     local push = (math.abs(lat) - lim) * (lat > 0 and 1 or -1)
     K.x = K.x - p.tz * push; K.z = K.z + p.tx * push
     K.v = K.v * 0.9
+    if main and (K.bumpT or 0) <= 0 and not self.snd then play(self, "bump") end
+    K.bumpT = 0.3
   end
+  if K.bumpT then K.bumpT = K.bumpT - dt end
   -- 周回: s が L から 0 へ戻ったら 1 周
   local ds = s - K.s0
   if ds < -self.L / 2 then K.prog = K.prog + (self.L - K.s0) + s
@@ -429,6 +451,7 @@ function OnUpdate(self, dt)
   if tapped(self, "R") then
     self.dev:set("tone", 0)
     if self.splitOk then scene:setSplitScreen(0) end
+    if self.udp then self.udp:close(); self.udp = nil end
     loadScene("scenes/grove.json")
     return
   end
@@ -470,7 +493,11 @@ function OnUpdate(self, dt)
   local anyPress = press[1] or press[2] or press[3] or press[4]
 
   if self.state == READY then
-    if tapped(self, "J") then self.knobOn = not self.knobOn; self.k[1].human = self.knobOn end
+    if tapped(self, "J") then
+      self.knobOn = not self.knobOn; self.k[1].human = self.knobOn
+      saveNum("kart.knob", self.knobOn and 1 or 0)
+      play(self, self.knobOn and "join" or "bump")
+    end
     if tapped(self, "C") and dev.connected then self.center = self.knob or self.steerCenter; play(self, "got") end
     if anyPress then self.state = COUNT; self.stateT = 0 end
   elseif self.state == COUNT then
@@ -779,7 +806,6 @@ function drawSplitHud(self, W, H)
       -- 右上: アイテム
       local bw, bh = 104 * sc, 70 * sc
       local bx, by = x + w - bw - 14, y + 12
-      if #self.plan == 2 and a == 2 then by = y + h - bh - 12 end   -- 上下 2 分割の下は右下（右端の真ん中はコース図）
       ui:rect(bx, by, bw, bh, 0.04, 0.05, 0.08, 0.7, 10)
       if K.roulT > 0 then
         local names = { "キノコ", "？？？", "金のキノコ", "★" }
@@ -805,8 +831,8 @@ function drawSplitHud(self, W, H)
   -- 真ん中: 小さなコース図（3 人のときは 4 つ目の区画がコース全体なので出さない）
   if self.plan[4] ~= "map" then
     local mw = math.floor(math.min(W, H) * 0.18)
-    if #self.plan == 2 then   -- 上下 2 分割は真ん中にカートが来るので右端の境目に置く
-      drawMinimap(self, W - mw - 24, H / 2 - mw / 2, mw, 0.55)
+    if #self.plan == 2 then   -- 左右 2 分割: 境目の下のほう（カートは各区画の真ん中に映る）
+      drawMinimap(self, W / 2 - mw / 2, H - mw - 30, mw, 0.55)
     else
       drawMinimap(self, W / 2 - mw / 2, H / 2 - mw / 2, mw, 0.55)
     end
@@ -870,10 +896,12 @@ function drawHud(self)
       local K = self.k[i]
       local c = COLOR[i]
       ui:rect(ox + 176, y + 4, 14, 14, c[1], c[2], c[3], 1, 7)
-      ui:text(ox + 198, y, CNAME[i] .. "  " .. (K.human and kartName(self, i) or "CPU"), 17, K.human and 1 or 0.55, K.human and 1 or 0.55, K.human and 1 or 0.6, 1)
+      local label = K.human and kartName(self, i) or "CPU"
+      if i == 1 then label = self.knobOn and "つまみ（J で外す）" or "CPU  ― つまみは参加しない（J で参加）" end
+      ui:text(ox + 198, y, CNAME[i] .. "  " .. label, 17, K.human and 1 or 0.55, K.human and 1 or 0.55, K.human and 1 or 0.6, 1)
       y = y + 24
     end
-    ui:text(ox + 176, oy + 428, "だれかのボタンでスタート   J=赤も走る/走らない  C=まっすぐ合わせ  R=戻る", 14, 1, 0.85, 0.35, 1)
+    ui:text(ox + 176, oy + 428, "だれかのボタンでスタート   J=つまみの人を入れる/外す  C=まっすぐ合わせ  R=戻る", 14, 1, 0.85, 0.35, 1)
     -- QR
     local qx, qy = ox + 640, oy + 196
     if self.room and #self.room.qr > 0 then
