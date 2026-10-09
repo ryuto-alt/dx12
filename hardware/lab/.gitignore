@@ -1,2 +1,5 @@
 engine/
-tools/
+# setup.ps1 がダウンロードする道具（tools\ の中のスクリプトやソースは git に入れる）
+tools/*.zip
+tools/arduino-cli/
+tools/**/node_modules/
