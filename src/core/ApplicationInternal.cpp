@@ -776,6 +776,11 @@ nlohmann::json McpLuaApi()
         "getShadowsEnabled() / setShadowsEnabled(b)  (リアルタイム影(CSM)の ON/OFF。false で影パスごとスキップ)",
         "getSkybox() -> { envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox= }",
         "setSkybox{ iblIntensity=, skyboxIntensity=, drawSkybox= }  (渡したキーだけ上書き。envMapPath の実行時差し替えは非対応)",
+        "setSplitScreen(n)  (画面分割。0/1=解除、2..4=分割(クランプ)。区画1=メインカメラ(フルポスト)、2..4=setSplitViewのカメラ。n=2 は上下、3/4 は 2x2 (左上,右上,左下,右下)。区画の間は 2px。ゲームの絵のときだけ有効、Play停止/シーン切替で解除)",
+        "getSplitScreen() -> n  (分割していなければ 0)",
+        "setSplitView(i, px,py,pz, tx,ty,tz, [fovDeg=60])  (区画 i=2..4 のカメラ。位置→注視点、上は +Y、縦FOV度。毎フレーム呼ぶ。区画2..4はトーンマップのみ(ブルーム/TAA/パーティクル無し)、影は区画1のものを読む)",
+        "getViewSize() -> w, h  (ゲーム矩形全体の物理px。ui:text / ui:rect の座標系の大きさ)",
+        "getSplitRect(i) -> x, y, w, h  (i=1..4。ゲーム矩形の原点から見た区画 i の矩形=ui座標そのまま、2pxの隙間込み。分割なし / i が n 超過は全体 0,0,w,h)",
     })));
     objects.push_back(O("input", "global (':' で呼ぶ)", json::array({
         "isKeyDown(vk) -> bool", "isKeyPressed(vk) -> bool", "isAsyncKeyDown(vk) -> bool",

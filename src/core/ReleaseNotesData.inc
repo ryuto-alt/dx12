@@ -5,6 +5,29 @@
 //   本文は 1〜2 行（カード向け）。数値や移行手順などの補足は detail に書く（GitHub 本文とツールチップに出る）。
 
 v.push_back(Release{
+    "2.5.5", "2026-10-09",
+    "ゲーム画面を 2〜4 つに分けて描く画面分割を足しました。GroveLab のカートは人数で画面が分かれます",
+    {
+        { "画面分割（2〜4 画面）",
+          "Lua から scene:setSplitScreen(n) で、ゲーム画面を上下 2 つ、または 4 つに分けて描けます。",
+          "1 つ目の区画はいつものゲームカメラ、2〜4 つ目は scene:setSplitView(i, 位置, 見る点, 画角) で毎フレーム決めます。"
+          "区画の位置と大きさは scene:getSplitRect(i)、画面全体の大きさは scene:getViewSize() で取れます（UI を区画ごとに置く用）。"
+          "2〜4 つ目の区画はトーンマップだけで描きます（ブルームなどのポスト効果と、遠くの影はかかりません）。",
+          "render" },
+        { "GroveLab: カートの画面分割",
+          "2 人以上で走ると、人ごとに後ろから追う画面に分かれます。3 人のときは 4 つ目がコース全体の画面です。",
+          "区画ごとに順位・周回・速さ・アイテムを出します。すでに GroveLab を持っている場合は、サンプルは置き直されません。",
+          "general" },
+    },
+    {
+        { K::Feature, "Lua に画面分割の API",
+          "scene:setSplitScreen / setSplitView / getSplitScreen / getSplitRect / getViewSize。Play を止めるかシーンを読み直すと 1 画面に戻ります" },
+        { K::Feature, "GroveLab のカートが人数で画面分割",
+          "2 人なら上下、3〜4 人なら 4 つに分かれます" },
+    },
+});
+
+v.push_back(Release{
     "2.5.4", "2026-10-09",
     "Nano Every が書き込み後につながらない不具合を直し、GroveLab に時限爆弾と音量を足しました",
     {

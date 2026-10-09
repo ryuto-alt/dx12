@@ -50,6 +50,7 @@ namespace dx12e
     class PipelineState;
     class CommandList;
     class RenderTarget;
+    struct SplitScreenState;   // core/SplitScreen.h（画面分割の要求 + 区画 2..N の GPU 資源）
     class GpuTimer;
     class ScreenShaderPass;
     class PostProcess;
@@ -391,6 +392,13 @@ private:
     void PrepareFrame(RenderFrameContext& frame);
     ViewDesc MakeMainViewDesc(const RenderFrameContext& frame) const;
     void RenderView(const ViewDesc& view, RenderFrameContext& frame);
+    // ---- 画面分割（Lua: scene:setSplitScreen / setSplitView）。実装は ApplicationPipeline.cpp（資源/矩形）と ApplicationRender.cpp（RenderSplitViews） ----
+    // 区画 1 = メインカメラ（フルポスト）、区画 2..N = 追加ビュー（トーンマップだけ・バックバッファの区画へ直接）。
+    bool SplitScreenActive() const;                       // n>=2 かつゲームの絵 かつ オフスクリーン撮影中でない
+    u32  SplitScreenCount() const;                        // 有効な区画数（無効なら 0）
+    void GetMainViewRect(u32& x, u32& y, u32& w, u32& h) const;   // メインカメラの出力矩形（分割中は区画 1。それ以外は GetDisplayViewport）
+    void EnsureSplitResources();                          // 区画 2..N の RT/深度を表示矩形に合わせる（★Run ループのフレーム外・WaitIdle 込み）
+    void RenderSplitViews(RenderFrameContext& frame);     // 主ビューの後・オーバーレイの前に区画 2..N を描く
     // RenderView の下請け（主ビューだけが呼ぶ「フレームで 1 回」の仕事）
     void FillSceneFrameConstants(FrameConstants& fc, const RenderFrameContext& frame);
     void CollectLightsAndDecals(FrameConstants& fc);
@@ -1978,6 +1986,7 @@ private:
     std::unique_ptr<RenderTarget>   m_cameraPreviewRT;
     std::unique_ptr<RenderTarget>   m_cameraPreviewLdrRT;  // プレビュー表示用(トーンマップ済みLDR)
     std::unique_ptr<ConstantBuffer> m_previewFrameCB;
+    std::unique_ptr<SplitScreenState> m_split;   // 画面分割（ScriptEngine が req を共有。~ScriptEngine の後に壊す＝Shutdown で明示 reset）
 
     // 2D スプライト / ゲーム内 UI 描画（WP4 / WP7）
     std::unique_ptr<SpriteRenderer> m_spriteRenderer;

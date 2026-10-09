@@ -5,6 +5,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "resource/ShaderDiagnostics.h"
+#include "core/SplitScreen.h"
 
 #include <iterator>
 
@@ -591,6 +592,104 @@ void Application::GetDisplayViewport(u32& x, u32& y, u32& w, u32& h) const
     if (h < 1) h = 1;
 }
 
+// ============================================================================
+//  画面分割（Lua: scene:setSplitScreen / setSplitView）。描画側は ApplicationRender.cpp の RenderSplitViews。
+// ============================================================================
+u32 Application::SplitScreenCount() const
+{
+    if (!m_split || m_split->req.n < 2) return 0;
+    if (!(m_isGameMode || m_engineMode == EngineMode::Playing)) return 0;   // ゲームの絵だけ（エディタのシーンビューは分けない）
+    if (OffscreenCaptureFrame()) return 0;                                  // screenshot_final の任意解像度撮影は分割しない
+    return (std::min)(m_split->req.n, kSplitMaxAreas);
+}
+
+bool Application::SplitScreenActive() const { return SplitScreenCount() >= 2; }
+
+// メインカメラの出力矩形。分割中は区画 1（下のレイアウト関数）、それ以外は表示矩形そのまま。
+// ★ゲーム内 UI / オーバーレイは GetDisplayViewport（全体）を使い続ける。
+void Application::GetMainViewRect(u32& x, u32& y, u32& w, u32& h) const
+{
+    GetDisplayViewport(x, y, w, h);
+    const u32 n = SplitScreenCount();
+    if (n >= 2)
+    {
+        const SplitRect r = ComputeSplitRect(SplitRect{x, y, w, h}, n, 0);
+        x = r.x; y = r.y; w = r.w; h = r.h;
+    }
+}
+
+// 区画 2..N の RT / 深度を、その区画の矩形 × renderScale に合わせる。
+// ★Run ループのフレーム外で呼ぶ（作り直しは WaitIdle 込み）。DSV / RTV / SRV のスロットは初回だけ確保し、以後は張り直す。
+void Application::EnsureSplitResources()
+{
+    const u32 n = SplitScreenCount();
+    if (n < 2 || !m_graphicsDevice || !m_commandQueue || !m_dsvHeap || !m_srvHeap || !m_offscreenRtvHeap) return;
+
+    u32 fx = 0, fy = 0, fw = 0, fh = 0;
+    GetDisplayViewport(fx, fy, fw, fh);
+    const f32 sc = std::clamp(m_renderScale, 0.25f, 1.0f);
+    auto* dev = m_graphicsDevice->GetDevice();
+
+    auto makeDepth = [&](SplitAreaGpu& a, u32 w, u32 h)
+    {
+        a.depth.Reset();
+        D3D12_RESOURCE_DESC d{};
+        d.Dimension        = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        d.Width            = w;
+        d.Height           = h;
+        d.DepthOrArraySize = 1;
+        d.MipLevels        = 1;
+        d.Format           = DXGI_FORMAT_D32_FLOAT;
+        d.SampleDesc       = {1, 0};
+        d.Flags            = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+        D3D12_CLEAR_VALUE cv{};
+        cv.Format       = DXGI_FORMAT_D32_FLOAT;
+        cv.DepthStencil = {1.0f, 0};
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        ThrowIfFailed(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE, &cv, IID_PPV_ARGS(&a.depth)));
+        if (a.dsv.ptr == 0) a.dsv = m_dsvHeap->Allocate();
+        D3D12_DEPTH_STENCIL_VIEW_DESC dv{};
+        dv.Format        = DXGI_FORMAT_D32_FLOAT;
+        dv.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dev->CreateDepthStencilView(a.depth.Get(), &dv, a.dsv);
+    };
+
+    for (u32 i = 1; i < n; ++i)
+    {
+        SplitAreaGpu& a = m_split->areas[i - 1];
+        const SplitRect r = ComputeSplitRect(SplitRect{fx, fy, fw, fh}, n, i);
+        const u32 wantW = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(r.w) * sc)));
+        const u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(r.h) * sc)));
+
+        if (!a.rt)
+        {
+            const float clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            a.rt = std::make_unique<RenderTarget>();
+            a.rt->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                             wantW, wantH, kSceneColorFormat, clear);
+            makeDepth(a, wantW, wantH);
+            a.frameCB = std::make_unique<ConstantBuffer>();
+            a.frameCB->Initialize(*m_graphicsDevice, 1536u /*sizeof(FrameConstants)。Application.cpp の static_assert と同値*/, FrameResources::kFrameCount);
+            a.w = a.pendW = wantW;  a.h = a.pendH = wantH;  a.settle = 0;
+            Logger::Info("画面分割: 区画{} のRTを作成 {}x{}", i + 1, wantW, wantH);
+            continue;
+        }
+        if (wantW == a.w && wantH == a.h) { a.pendW = wantW; a.pendH = wantH; a.settle = 0; continue; }
+        if (wantW == a.pendW && wantH == a.pendH)
+        {
+            if (++a.settle < kRenderResizeSettleFrames) continue;
+            m_commandQueue->WaitIdle();
+            a.rt->Resize(*m_graphicsDevice, wantW, wantH);
+            makeDepth(a, wantW, wantH);
+            a.w = wantW;  a.h = wantH;  a.settle = 0;
+            Logger::Info("画面分割: 区画{} のRTを {}x{} へ", i + 1, wantW, wantH);
+        }
+        else { a.pendW = wantW; a.pendH = wantH; a.settle = 0; }
+    }
+}
+
 // シーン系 RT を丸ごと (w,h) へ作り直す。**呼び出し側はフレーム外（Run ループ）であること。**
 // スワップチェイン（表示解像度）はここでは触らない。
 void Application::ApplyRenderResolution(u32 w, u32 h)
@@ -681,7 +780,7 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
 void Application::UpdateRenderResolution()
 {
     u32 dx = 0, dy = 0, dw = 0, dh = 0;
-    GetDisplayViewport(dx, dy, dw, dh);
+    GetMainViewRect(dx, dy, dw, dh);   // 画面分割中はメインカメラの区画（それ以外は表示矩形そのまま）
     const f32 s = std::clamp(m_renderScale, 0.25f, 1.0f);
     // ★アスペクトは表示側の値を使い続ける（Render() の renderAspect）。ここは丸めるだけ。
     const u32 want = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));

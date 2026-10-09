@@ -32,7 +32,10 @@ function OnUpdate(self, dt)
     self.v = clamp(self.v, 0, 1)
   end
 
-  self.dev:set("servo", self.v)                    -- 本物のサーボ（0..1 = 0..180 度）
+  -- 本物のサーボ（0..1 = 0..180 度）。金庫モード中は錠として GroveSafe が決める
+  if loadNum("grove.safe", 0) > 0 then self.dev:set("servo", loadNum("grove.safeServo", 0))
+  elseif loadNum("grove.daruma", 0) > 0 then self.dev:set("servo", loadNum("grove.darumaServo", 0))   -- 鬼の首
+  else self.dev:set("servo", self.v) end
   self.shown = lerp(self.shown, self.v, math.min(1, dt * self.follow))
   local r = self.transform.rotation
   self.transform.rotation = Vec3.new(r.x, r.y, 90 - self.shown * 180)   -- 画面の針（左 0 度 → 右 180 度）

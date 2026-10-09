@@ -773,6 +773,17 @@ if(TARGET Renderer)
     add_test(NAME LightMathTests COMMAND LightMathTests)
 endif()
 
+# renderer/SplitScreenLayout.h（画面分割の矩形計算）のテスト。ヘッダオンリー。
+if(TARGET Renderer)
+    add_executable(SplitScreenLayoutTests split_screen_layout_test.cpp)
+    target_include_directories(SplitScreenLayoutTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(SplitScreenLayoutTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SplitScreenLayoutTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SplitScreenLayoutTests COMMAND SplitScreenLayoutTests)
+endif()
+
 # スタブ .vgeo 生成器（tools/vgeo_stub/VgeoStubGen.h）の出力が VgeoFormat の検証を通ること・往復・決定論。
 # meshoptimizer が要るので統合ビルドでのみ有効（Renderer が meshoptimizer をリンクしている）。
 if(TARGET Renderer)

@@ -237,6 +237,10 @@ lamp.range = 12
 | `:getShadowsEnabled()` / `:setShadowsEnabled(b)` | bool / — | リアルタイム影（CSM）の ON/OFF。false で影パスごとスキップ |
 | `:getSkybox()` | table | `{envMapPath=, iblIntensity=, skyboxIntensity=, drawSkybox=}` |
 | `:setSkybox{...}` | — | 渡したキーだけ上書き（`iblIntensity` / `skyboxIntensity` / `drawSkybox`）。`envMapPath` の実行時差し替えは非対応 |
+| `:setSplitScreen(n)` / `:getSplitScreen()` | — / int | 画面分割。`n`=0/1 で解除、2..4 で分割（範囲外はクランプ）。区画 1=メインカメラ（フルポスト）、2 は上下、3/4 は 2x2（左上・右上・左下・右下）。区画の間は 2px。ゲームの絵のときだけ有効で、Play 停止・シーン切替で解除 |
+| `:setSplitView(i, px,py,pz, tx,ty,tz, fovDeg?)` | — | 区画 `i`（2..4）のカメラ（位置→注視点、上は +Y、縦 FOV 度、既定 60）。毎フレーム呼ぶ。区画 2..4 はトーンマップのみ（ブルーム・TAA・パーティクル無し、影は区画 1 のものを読む） |
+| `:getViewSize()` | w, h | ゲーム矩形全体の大きさ（物理 px）。`ui:text` / `ui:rect` の座標系の大きさ |
+| `:getSplitRect(i)` | x, y, w, h | `i`=1..4。ゲーム矩形の原点から見た区画 `i` の矩形（ui 座標そのまま・隙間込み）。分割なし／`i` が n 超過なら全体 `0,0,w,h` |
 
 ### Input（`input`）
 | メソッド | 戻り値 | 説明 |

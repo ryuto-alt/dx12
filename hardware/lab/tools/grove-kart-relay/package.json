@@ -1,0 +1,8 @@
+{
+  "name": "grove-kart-relay",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "qrcode-generator": "1.4.4"
+  }
+}

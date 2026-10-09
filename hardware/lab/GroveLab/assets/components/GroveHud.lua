@@ -12,11 +12,16 @@ end
 
 function OnStart(self)
   self.dev = hw.device(self.device)
+  self.rWas = keyDown("R")                          -- レースから戻った直後の押しっぱなしは無視
 end
 
 function OnUpdate(self, dt)
+  -- R でカートレース（scenes/kart.json）へ
+  local r = keyDown("R")
+  if r and not self.rWas then loadScene("scenes/kart.json") end
+  self.rWas = r
   local d = self.dev
-  ui:rect(16, 16, 540, 330, 0.05, 0.06, 0.09, 0.78, 10)
+  ui:rect(16, 16, 540, 344, 0.05, 0.06, 0.09, 0.78, 10)
   if d.connected then
     ui:text(32, 26, "● " .. self.device .. " (Nano Every) に接続中", 24, 0.4, 1.0, 0.55, 1)
   else
@@ -53,5 +58,6 @@ function OnUpdate(self, dt)
   else
     ui:text(32, 276, "時限爆弾: 待機中（スイッチで起動）" .. servo, 18, 0.6, 0.65, 0.75, 1)
   end
-  ui:text(32, 304, "代用キー: ←→=ボリューム ↑↓=距離 Space=スイッチ M=サーボ自動 9/0=音量", 18, 0.5, 0.55, 0.65, 1)
+  ui:text(32, 304, "代用キー: ←→=ボリューム  ↑↓=距離  Space=スイッチ  M=サーボ自動", 18, 0.5, 0.55, 0.65, 1)
+  ui:text(32, 328, "Z/X=音量 T=トロンボーン G=ドレミ K=金庫 D=だるま R=レース 1〜9=BGM", 18, 0.5, 0.55, 0.65, 1)
 end
