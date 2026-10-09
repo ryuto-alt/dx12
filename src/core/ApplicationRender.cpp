@@ -6231,6 +6231,14 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 pvPost.filmBlackClip = sp.filmBlackClip; pvPost.filmWhiteClip = sp.filmWhiteClip;
                 pvPost.exposureMode = sp.exposureMode; pvPost.ev100 = sp.ev100; pvPost.evComp = sp.evComp;
             }
+            // 画面分割の区画 2..N は、色の調整（露出・コントラスト・彩度・色温度・色合い・周辺減光など uber の
+            // 画素ごとの処理）も区画 1 と揃える（揃えないと人によって色味が違って見える）。
+            // 別パスの結果が要るもの（ブルーム・ゴッドレイ・レンズフレア・LUT）は区画 2..N には無いので切る。
+            if (toBackBuffer)
+            {
+                pvPost = m_scene->GetPostSettings();
+                pvPost.bloomOn = false; pvPost.godraysOn = false; pvPost.lensflareOn = false; pvPost.lutOn = false;
+            }
             const auto pvDummy = m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
             PostProcess::Inputs pvIn{};
             pvIn.sceneSrv   = m_srvHeap->GetGpuHandle(sceneRT->GetSrvIndex());
