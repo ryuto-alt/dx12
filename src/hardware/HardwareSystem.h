@@ -116,7 +116,7 @@ private:
     void CloseDevice(HwDevice& d, const std::string& reason, bool sendSafe, bool isError, double cooldownMs = 0.0);
     bool SendLine(HwDevice& d, const std::string& text);
     void OnLine(HwDevice& d, const std::string& line, double nowMs);
-    std::unique_ptr<IHwTransport> MakeTransport(const std::string& portName, int baud);
+    std::unique_ptr<IHwTransport> MakeTransport(const std::string& portName, int baud, bool dtr = false);
     void PushLogLocked(HwDevice& d, bool outgoing, const std::string& text);
     HwDeviceInfo MakeInfoLocked(const HwDevice& d, double nowMs) const;
 

@@ -6,7 +6,7 @@ namespace dx12e
 const char* const    kEngineName  = "Uno Engine";
 const wchar_t* const kEngineNameW = L"Uno Engine";
 
-const char* const kEngineVersion = "2.5.3";
+const char* const kEngineVersion = "2.5.4";
 
 const char* const kUpdateRepoOwner = "ryuto-alt";
 const char* const kUpdateRepoName  = "dx12";
