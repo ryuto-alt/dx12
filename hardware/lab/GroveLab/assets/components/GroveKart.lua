@@ -15,6 +15,7 @@ properties = {
   { name = "steerCenter", type = "float", default = 0.5, min = 0.1, max = 0.9, label = "まっすぐのつまみの位置 (0〜1)" },
   { name = "cpuSpeed",   type = "float", default = 1.0,  min = 0.5, max = 1.5, label = "CPU の速さ（倍）" },
   { name = "engineSound", type = "bool", default = true, label = "エンジン音を鳴らす" },
+  { name = "knobPlayer", type = "bool", default = true, label = "つまみの人（赤）が参加する（スタート画面の J でも切り替え・覚えておく）" },
 }
 
 local VMAX, VBOOST, VGRASS = 26, 34, 11
@@ -71,7 +72,8 @@ function OnStart(self)
   self.trkJson = "[" .. table.concat(tk, ",") .. "]"
   self.best = loadNum("kart.best", 0)
   self.cm = 999
-  self.knobOn = true
+  -- つまみの人が参加するか: スタート画面の J で切り替えた値を覚えておく（無ければインスペクタの値）
+  self.knobOn = loadNum("kart.knob", self.knobPlayer and 1 or 0) == 1
   self.phones = {}
   self.seq, self.seqT = -1, 99
   self.roomT = 0
@@ -472,7 +474,11 @@ function OnUpdate(self, dt)
   local anyPress = press[1] or press[2] or press[3] or press[4]
 
   if self.state == READY then
-    if tapped(self, "J") then self.knobOn = not self.knobOn; self.k[1].human = self.knobOn end
+    if tapped(self, "J") then
+      self.knobOn = not self.knobOn; self.k[1].human = self.knobOn
+      saveNum("kart.knob", self.knobOn and 1 or 0)
+      play(self, self.knobOn and "join" or "bump")
+    end
     if tapped(self, "C") and dev.connected then self.center = self.knob or self.steerCenter; play(self, "got") end
     if anyPress then self.state = COUNT; self.stateT = 0 end
   elseif self.state == COUNT then
@@ -872,10 +878,12 @@ function drawHud(self)
       local K = self.k[i]
       local c = COLOR[i]
       ui:rect(ox + 176, y + 4, 14, 14, c[1], c[2], c[3], 1, 7)
-      ui:text(ox + 198, y, CNAME[i] .. "  " .. (K.human and kartName(self, i) or "CPU"), 17, K.human and 1 or 0.55, K.human and 1 or 0.55, K.human and 1 or 0.6, 1)
+      local label = K.human and kartName(self, i) or "CPU"
+      if i == 1 then label = self.knobOn and "つまみ（J で外す）" or "CPU  ― つまみは参加しない（J で参加）" end
+      ui:text(ox + 198, y, CNAME[i] .. "  " .. label, 17, K.human and 1 or 0.55, K.human and 1 or 0.55, K.human and 1 or 0.6, 1)
       y = y + 24
     end
-    ui:text(ox + 176, oy + 428, "だれかのボタンでスタート   J=赤も走る/走らない  C=まっすぐ合わせ  R=戻る", 14, 1, 0.85, 0.35, 1)
+    ui:text(ox + 176, oy + 428, "だれかのボタンでスタート   J=つまみの人を入れる/外す  C=まっすぐ合わせ  R=戻る", 14, 1, 0.85, 0.35, 1)
     -- QR
     local qx, qy = ox + 640, oy + 196
     if self.room and #self.room.qr > 0 then
