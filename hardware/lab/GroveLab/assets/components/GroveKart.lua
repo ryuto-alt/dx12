@@ -77,6 +77,8 @@ function OnStart(self)
   self.roomT = 0
   self.stateT = 0
   self.writeT = 0
+  -- Play を始めるたびに変わる目印。中継がこれの変化を見て、スマホの参加をいったんリセットする
+  self.runId = string.format("%d-%d", math.random(1, 999999999), math.random(1, 999999999))   -- エンジンの Lua に os は無い
   self.center = self.steerCenter
   reset(self)
   readRoom(self)
@@ -283,8 +285,8 @@ function writeState(self)
   end
   local ks = {}
   for i = 1, 4 do ks[i] = string.format("[%.1f,%.1f,%d]", self.k[i].x, self.k[i].z, i) end
-  local s = string.format('{"t":"state","st":%d,"laps":%d,"p":[%s],"k":[%s],"trk":%s}\n',
-    self.state, self.laps, table.concat(ps, ","), table.concat(ks, ","), self.trkJson)
+  local s = string.format('{"t":"state","run":"%s","st":%d,"laps":%d,"p":[%s],"k":[%s],"trk":%s}\n',
+    self.runId or "", self.state, self.laps, table.concat(ps, ","), table.concat(ks, ","), self.trkJson)
   local f = io.open(self.base .. "kart/state.txt", "w")
   if f then f:write(s); f:close() end
 end

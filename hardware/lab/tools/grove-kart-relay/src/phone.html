@@ -160,7 +160,14 @@ $("btn").addEventListener("pointerleave", () => $("btn").classList.remove("down"
 
 function connect(room, name) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${proto}//${location.host}/ws?room=${room}&role=phone&name=${encodeURIComponent(name)}`);
+  // スマホごとの目印（開き直しても同じ人として扱ってもらう）
+  let dev = "";
+  try { dev = localStorage.getItem("gk.dev") || ""; } catch {}
+  if (!dev) {
+    dev = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+    try { localStorage.setItem("gk.dev", dev); } catch {}
+  }
+  ws = new WebSocket(`${proto}//${location.host}/ws?room=${room}&role=phone&name=${encodeURIComponent(name)}&dev=${dev}`);
   ws.onopen = () => { $("status").textContent = "つながりました"; };
   ws.onmessage = (e) => {
     let m; try { m = JSON.parse(e.data); } catch { return; }
@@ -169,7 +176,19 @@ function connect(room, name) {
     else if (m.t === "host") { $("status").textContent = m.on ? "ゲームとつながりました" : "ゲームの PC とつながっていません"; }
     else if (m.t === "state") { state = m; render(); }
   };
-  ws.onclose = () => { $("status").textContent = "切れました。3 秒後につなぎ直します"; setTimeout(() => connect(room, name), 3000); };
+  const me = ws;
+  ws.onclose = (e) => {
+    if (ws !== me) return;   // もう新しい接続に替わっている
+    if (e.code === 4002) { over("別の画面でつながりました（この画面は閉じてください）"); return; }
+    if (e.code === 4001) return;   // 満員（over 済み）
+    if (e.code === 4003) {   // ゲームが始まり直した → すぐ入り直す
+      $("status").textContent = "ゲームが始まり直しました。入り直します";
+      setTimeout(() => connect(room, name), 300);
+      return;
+    }
+    $("status").textContent = "切れました。3 秒後につなぎ直します";
+    setTimeout(() => connect(room, name), 3000);
+  };
   clearInterval(sendTimer);
   sendTimer = setInterval(() => {
     if (ws && ws.readyState === 1) ws.send(`${steer.toFixed(3)},${btn}`);

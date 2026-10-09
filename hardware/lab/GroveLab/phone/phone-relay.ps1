@@ -33,7 +33,8 @@ try { $qr = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 15 "https://$Server/
 Write-Text $roomFile ("$Room`n$url`n" + $qr)
 
 $seq = 0
-$ct = [Threading.CancellationToken]::None
+$lastRun = ""
+$ct =[Threading.CancellationToken]::None
 while ($true) {
   $ws = $null
   try {
@@ -72,6 +73,17 @@ while ($true) {
         try { $s = [IO.File]::ReadAllText($stateFile, $utf8) } catch { }
         if ($s -and $s -ne $lastState -and $s.StartsWith("{") -and $s.TrimEnd().EndsWith("}")) {
           $lastState = $s
+          # ゲームが Play を始め直したら（run が変わったら）参加者をいったん全員切ってもらう。
+          #   生きているスマホはすぐ入り直し、閉じたのに残っていた分（同じ人が何人も見える原因）は消える
+          if ($s -match '"run":"([^"]*)"') {
+            $run = $Matches[1]
+            if ($lastRun -and $run -ne $lastRun) {
+              $rb = [Text.Encoding]::UTF8.GetBytes("#reset")
+              $ws.SendAsync([ArraySegment[byte]]::new($rb), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $ct).Wait()
+              Write-Host ("[{0:HH:mm:ss}] ゲームが始まり直したので、スマホの参加をリセットしました" -f (Get-Date)) -ForegroundColor Cyan
+            }
+            $lastRun = $run
+          }
           $bytes = [Text.Encoding]::UTF8.GetBytes($s.Trim())
           $ws.SendAsync([ArraySegment[byte]]::new($bytes), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, $ct).Wait()
         }
