@@ -371,8 +371,9 @@ function OnUpdate(self, dt)
 
   local hz = 0
   local song = self.cur > 0 and self.songs[self.cur] or nil
-  -- 時限爆弾が動いている間は止めて待つ（爆弾の音が優先）
-  if song and loadNum("grove.bomb", 0) == 0 then
+  -- 時限爆弾が動いている間とトロンボーンが ON の間は止めて待つ
+  local busy = loadNum("grove.bomb", 0) ~= 0 or loadNum("grove.trombone", 0) > 0
+  if song and not busy then
     self.t = self.t + dt * self.speed
     if self.t >= song.length then
       if #self.queue > 0 then
@@ -431,6 +432,8 @@ function drawList(self, song)
     ui:rect(x, yb, 370 * clamp(self.t / song.length, 0, 1), 8, 0.4, 1.0, 0.55, 1, 3)
     if loadNum("grove.bomb", 0) ~= 0 then
       ui:text(x, yb + 12, "爆弾が動いている間は一時停止", 16, 1.0, 0.6, 0.3, 1)
+    elseif loadNum("grove.trombone", 0) > 0 then
+      ui:text(x, yb + 12, "トロンボーン中は一時停止（T で戻る）", 16, 1.0, 0.82, 0.35, 1)
     end
   end
 end

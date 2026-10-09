@@ -16,7 +16,7 @@ end
 
 function OnUpdate(self, dt)
   local d = self.dev
-  ui:rect(16, 16, 540, 330, 0.05, 0.06, 0.09, 0.78, 10)
+  ui:rect(16, 16, 540, 344, 0.05, 0.06, 0.09, 0.78, 10)
   if d.connected then
     ui:text(32, 26, "● " .. self.device .. " (Nano Every) に接続中", 24, 0.4, 1.0, 0.55, 1)
   else
@@ -53,5 +53,6 @@ function OnUpdate(self, dt)
   else
     ui:text(32, 276, "時限爆弾: 待機中（スイッチで起動）" .. servo, 18, 0.6, 0.65, 0.75, 1)
   end
-  ui:text(32, 304, "代用キー: ←→=ボリューム ↑↓=距離 Space=スイッチ M=サーボ自動 Z/X=音量", 18, 0.5, 0.55, 0.65, 1)
+  ui:text(32, 304, "代用キー: ←→=ボリューム  ↑↓=距離  Space=スイッチ  M=サーボ自動", 18, 0.5, 0.55, 0.65, 1)
+  ui:text(32, 328, "Z/X=音量  T=トロンボーン  G=スライド⇄ドレミ  1〜9=BGM", 18, 0.5, 0.55, 0.65, 1)
 end

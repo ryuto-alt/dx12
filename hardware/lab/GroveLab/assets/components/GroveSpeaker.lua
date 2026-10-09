@@ -3,7 +3,7 @@
 --   超音波センサに手をかざし続けると解除できる（解除すると「ピロリン」）
 --   実機が無ければ Space がスイッチ、↑ で手を近づける代わり
 --   音量は Play 中に Z（小さく）/ X（大きく）、または インスペクタの「音量」で変える
---   爆弾が待機中のときは、GroveJukebox の BGM（grove.bgmHz）を鳴らす
+--   爆弾が待機中のときは、トロンボーン（grove.tromboneHz）か BGM（grove.bgmHz）を鳴らす
 --   画面のスピーカーの箱は鳴っている間ふるえる。状態は grove.bomb に置く（LED と HUD が読む）
 properties = {
   { name = "device",   type = "string", default = "grove", label = "デバイス名" },
@@ -76,7 +76,9 @@ function OnUpdate(self, dt)
   local hz, flash = 0, 0
   if self.state == IDLE then
     if pressed then arm(self) end
-    hz = loadNum("grove.bgmHz", 0)               -- 爆弾が待機中なら BGM
+    -- 爆弾が待機中なら、トロンボーンが ON ならその音（手が無ければ無音）、OFF なら BGM
+    if loadNum("grove.trombone", 0) > 0 then hz = loadNum("grove.tromboneHz", 0)
+    else hz = loadNum("grove.bgmHz", 0) end
 
   elseif self.state == ARMED then
     self.timer = self.timer - dt
