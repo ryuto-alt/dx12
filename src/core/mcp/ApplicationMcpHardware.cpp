@@ -600,7 +600,8 @@ void RunFlashSteps(FlashJob& job, HwAppState& st, FlashOutcome& out)
         job.sys->Connect(job.device, job.reconnectPort);
         if (!cancelled)
         {
-            const double until = SteadySec() + 25.0;
+            // ★Nano Every などは書き込み後の再起動 → ポートの再列挙 → 名乗りまで 30 秒以上かかることがある（2026-10-09 友達の PC で実測）
+            const double until = SteadySec() + 60.0;
             while (SteadySec() < until)
             {
                 hw::HwDeviceInfo info;
@@ -651,8 +652,12 @@ void RunFlash(FlashJob job)
         st.reconnected = out.reconnected;
         st.endedSec = SteadySec();
         if (out.error.empty() && out.exitCode != 0) out.error = "arduino-cli が終了コード " + std::to_string(out.exitCode) + " で終わりました（ログ末尾を参照）";
+        // 書き込み自体が成功していれば「成功」。つなぎ直しは IO スレッドが自動で続けるので、待ちきれなかっただけで失敗にしない
+        //（以前は failed にしていて、実際には書き込めて数秒後につながったのに「失敗」と表示されていた）
         if (out.error.empty() && !job.device.empty() && !out.reconnected)
-            out.error = "書き込みは終わったがデバイスに再接続できませんでした（hw_status を確認）";
+        {
+            st.log.push_back("（書き込みは成功。デバイスとの接続はまもなく自動で戻ります）");
+        }
         st.error = out.error;
         st.state = out.error.empty() ? "done" : "failed";
         st.running = false;
