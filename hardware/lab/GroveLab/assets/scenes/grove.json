@@ -329,6 +329,7 @@
 {"camera":{"fovDegrees":50.0,"isActive":true},"data":{"__id":{"t":"string","v":"CAM_Main"},"__o":{"t":"string","v":"{\"lookAt\":[0.6,3,0]}"},"__spec":{"t":"string","v":"grove_lab"}},"guid":"d899816c10983777","name":"CAM_Main","parentGuid":"fa4965ef6a210ce9","transform":{"position":[0.6,4.6,-10.5],"rotation":[8.66414,0.0,0.0]}},
 {"guid":"ef605075273a8d68","luaScript":{"enabled":true,"scriptPath":"components/GroveJukebox.lua"},"name":"GP_Jukebox","transform":{"position":[0.0,3.0,3.0]}},
 {"guid":"087f5828b9ae1dba","luaScript":{"enabled":true,"scriptPath":"components/GroveTrombone.lua"},"name":"GP_Trombone","transform":{"position":[0.0,3.0,3.0]}},
-{"guid":"6bfdf4843d71501f","luaScript":{"enabled":true,"scriptPath":"components/GroveSafe.lua"},"name":"GP_Safe","transform":{"position":[0.0,3.0,3.0]}}
+{"guid":"6bfdf4843d71501f","luaScript":{"enabled":true,"scriptPath":"components/GroveSafe.lua"},"name":"GP_Safe","transform":{"position":[0.0,3.0,3.0]}},
+{"guid":"f2ebd46eeff76355","luaScript":{"enabled":true,"scriptPath":"components/GroveDaruma.lua"},"name":"GP_Daruma","transform":{"position":[0.0,3.0,3.0]}}
   ]
 }

@@ -51,6 +51,8 @@ function OnUpdate(self, dt)
     r, g, b = 0, 1, 0.2
   elseif loadNum("grove.safe", 0) > 0 then   -- 金庫: 正解への近さ（GroveSafe が決める）
     r, g, b = loadNum("grove.safeR", 0), loadNum("grove.safeG", 0), loadNum("grove.safeB", 0)
+  elseif loadNum("grove.daruma", 0) > 0 then -- だるま: 歌の間は緑、振り向いたら赤
+    r, g, b = loadNum("grove.darumaR", 0), loadNum("grove.darumaG", 0), loadNum("grove.darumaB", 0)
   end
 
   self.dev:set("r", r)

@@ -51,9 +51,12 @@ function OnStart(self)
 end
 
 function OnUpdate(self, dt)
-  if tapped(self, "T") then self.on = not self.on; self.pitch = nil end
+  if tapped(self, "T") then
+    self.on = not self.on; self.pitch = nil
+    if self.on then saveNum("grove.mode", 3) end
+  end
   if tapped(self, "G") then self.scale = not self.scale end
-  if loadNum("grove.safe", 0) > 0 then self.on = false end   -- 金庫モードに入ったら止める
+  if self.on and loadNum("grove.mode", 0) ~= 3 then self.on = false end   -- 金庫・だるまが後から ON になった
   self.t = self.t + dt
 
   local hz, target = 0, nil

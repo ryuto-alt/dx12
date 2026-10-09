@@ -84,8 +84,9 @@ function OnUpdate(self, dt)
   self.t = self.t + dt
   if tapped(self, "K") then
     self.on = not self.on
-    if self.on then newCombo(self); play(self, "enter") end
+    if self.on then newCombo(self); play(self, "enter"); saveNum("grove.mode", 1) end
   end
+  if self.on and loadNum("grove.mode", 0) ~= 1 then self.on = false end   -- ほかのモードが後から ON になった
 
   local sw = self.dev:down("sw") or keyDown("SPACE")
   local pull = sw and not self.swWas
