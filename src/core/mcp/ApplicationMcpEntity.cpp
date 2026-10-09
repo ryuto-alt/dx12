@@ -752,7 +752,7 @@ void Application::RegisterMcpEntityMethods()
             const std::string root = params.value("path", std::string());
             if (root.empty()) throw McpError(McpErr::InvalidParam, "missing 'path' (project root absolute path)",
                 "path にプロジェクトのルートフォルダの絶対パス（.dx12proj がある所。例: C:/Users/me/Documents/dev/game/Nocturne）");
-            if (!fs::exists(root) || !fs::is_directory(root))
+            if (std::error_code ec; !fs::exists(fs::path(PathResolver::Utf8ToWide(root)), ec) || !fs::is_directory(fs::path(PathResolver::Utf8ToWide(root)), ec))
                 throw McpError(McpErr::NotFound, "project folder not found: " + root,
                     "path はプロジェクトのルートフォルダの絶対パス。フォルダが実在するか確かめる");
             ProjectInfo info;

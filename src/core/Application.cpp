@@ -90,6 +90,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         }
     }
     Logger::Info("Application initializing... (mode: {})", gameMode ? "game" : "editor");
+    // ANSI コードページ（マニフェストの activeCodePage=UTF-8 が効いていれば 65001。日本語パスで落ちないための前提）
+    Logger::Info("ANSI code page: {}", static_cast<unsigned>(::GetACP()));
 
     // 同梱サンプル（exe の samples/ArduinoLab など）をドキュメントの UnoProjects へ初回だけコピーして最近のプロジェクトに足す。
     // 自動化（--background / --headless / --virtual-input）では勝手に人のドキュメントへ置かない（MCP hw_setup install_samples で明示的に）。
