@@ -105,7 +105,7 @@ namespace dx12e
     class PhysicsSystem;
     class NetworkSystem;
     namespace ai { class AiSystem; }
-    namespace hw { class HardwareSystem; }   // hardware/HardwareSystem.h（Arduino / ESP32 連携。docs/HARDWARE.md）
+    namespace hw { class HardwareSystem; class HwToolchain; }   // hardware/HardwareSystem.h（Arduino / ESP32 連携。docs/HARDWARE.md）
     class PhysicsDebugRenderer;
     class EditorIconRenderer;
     class EditorContext;
@@ -816,6 +816,25 @@ private:
     // アプリ終了時: フラッシュ中の arduino-cli を止めてスレッドを回収し、HardwareSystem を Shutdown する
     void ShutdownHardware();
 
+    // ── ハードウェア窓 / 書き込み道具 / 同梱サンプル（実装は mcp/ApplicationMcpHardware.cpp と ApplicationSamples.cpp）──
+    // 書き込み要求（hw_flash の引数と同じ。MCP とエディタのハードウェア窓の共通入口）
+    struct HwFlashRequest
+    {
+        std::string sketch, device, port, fqbn;
+        std::vector<std::string> libraries;
+    };
+    // 開始できなければ false と理由（標準語）。成功なら outInfo に hw_flash の応答を入れる
+    bool StartHwFlash(const HwFlashRequest& rq, std::string& err, nlohmann::json* outInfo);
+    // hw_flash の本体。失敗は McpError（error_code を保つ）で投げる
+    void StartHwFlashImpl(const HwFlashRequest& rq, nlohmann::json* outInfo);
+    // arduino-cli + コアの自動導入（背景ワーカー 1 本。遅延作成）
+    hw::HwToolchain& HwToolchainRef();
+    // ハードウェア窓の要求処理・スナップショット更新・書き込み道具の自動導入・ボード検出の案内（毎フレーム。重い処理は 1Hz）
+    void ServiceHardwareUi();
+    // 同梱サンプルを ドキュメント/UnoProjects へ初回コピー。destOverride が空でなければそこへ（目印・最近のプロジェクトは触らない）
+    nlohmann::json InstallBundledSamples(const std::string& destOverride, bool force, bool startup);
+    nlohmann::json HwSamplesStatus();
+
     // 「いまの状態＝保存済み」に揃える（保存成功時・シーンを開いた直後・新規作成直後）。
     // 実体は EditorContext::MarkSceneSaved + 設定指紋の取り直し。
     // dropAutosave=true（既定）のとき、このシーンの退避（オートセーブ）も一緒に捨てる。
@@ -1483,6 +1502,9 @@ private:
     // （Lua の hw ハンドルが生ポインタ経由で触るので、ScriptEngine が先に消えるように）。
     std::unique_ptr<hw::HardwareSystem> m_hardware;
     std::shared_ptr<void>              m_hwFlash;     // hw_flash の状態（実体は mcp/ApplicationMcpHardware.cpp）
+    std::shared_ptr<hw::HwToolchain>   m_hwToolchain;  // arduino-cli + コアの自動導入（HwToolchainRef で遅延作成）
+    std::shared_ptr<void>              m_hwUiRt;       // ハードウェア窓まわりの実行時状態（実体は mcp/ApplicationMcpHardware.cpp）
+    std::string                        m_startupToast; // 起動時に積むトースト（サンプル追加の知らせ。エディタが出てから出す）
     struct HwReadPending
     {
         McpDeferred reply;

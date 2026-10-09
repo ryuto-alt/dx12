@@ -30,6 +30,7 @@ add_library(Core STATIC
     ApplicationFoliage.cpp          # 植生 F1: FoliageSystem の遅延確保 / GPU カリング呼び出し / 描画呼び出し / 統計（FoliageLayer が無ければ何もしない）
     ApplicationInstanceGpu.cpp      # GPU 駆動のインスタンス群（4-3）: 群の GPU 経路 / 描画パスの呼び出し / 統計（しきい値 0 なら何もしない）
     ApplicationOffscreenShot.cpp    # Q2(校正): ライティング単位の切替 / 任意解像度のオフスクリーン撮影 / 線形 HDR スクショの進行
+    ApplicationSamples.cpp           # 同梱サンプルプロジェクト（ArduinoLab ほか）の初回コピー
     ApplicationPathTracer.cpp       # DXR パストレーサー(リファレンスレンダー): スナップショット + ジョブ + 出力（既定 OFF・遅延確保）
     ApplicationSequencer.cpp        # シーケンサー S1b: ホストの生成・フレーム更新・アクティブカメラ(カット)の選択
     SequencerBinding.cpp            # シーケンサー S1b: バインディング解決(guid → 階層パス → 名前)

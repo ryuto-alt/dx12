@@ -1,0 +1,27 @@
+{
+  "devices": [
+    {
+      "actions": {
+        "btn": "Jump"
+      },
+      "baud": 115200,
+      "channels": {
+        "pot": {
+          "deadzone": 0.01,
+          "smooth": 0.2
+        },
+        "touch": {
+          "invert": true,
+          "max": 70.0,
+          "min": 15.0,
+          "smooth": 0.3
+        }
+      },
+      "match": {
+        "hello": "lab"
+      },
+      "name": "lab",
+      "transport": "serial"
+    }
+  ]
+}

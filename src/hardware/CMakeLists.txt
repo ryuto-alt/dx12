@@ -6,6 +6,7 @@ add_library(Hardware STATIC
     HwSerialTransport.cpp
     HwLoopbackTransport.cpp
     HwPortEnum.cpp
+    HwToolchain.cpp
     HardwareSystem.cpp
 )
 

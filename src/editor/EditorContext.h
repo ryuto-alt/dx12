@@ -15,6 +15,7 @@
 #include "editor/Toast.h"          // ctx.Notify(): 右下トースト通知
 #include "renderer/DrawItem.h"   // ピッキングのブロードフェーズ候補（Application が毎フレーム構築）
 #include "renderer/pt/PtUiState.h" // リファレンスレンダー（パストレーサー）の UI ⇔ Application の受け渡し（POD）
+#include "editor/HwUiState.h"      // ハードウェア窓（Arduino / ESP32）の UI ⇔ Application の受け渡し（std のみ）
 
 namespace dx12e
 {
@@ -232,6 +233,9 @@ public:
 
     // ---- リファレンスレンダー（DXR パストレーサー。ツール窓 PathTracerPanel ⇔ Application::PathTracerTick）----
     pt::UiState ptUi;
+
+    // ---- ハードウェア窓（Arduino / ESP32。HardwarePanel ⇔ Application::ServiceHardwareUi）----
+    hwui::UiState hwUi;
 
     // 2D ビューモード（Unity の 2D ボタン相当）。ON 中はエディタカメラを正射＋XY平面正対に固定し、
     // 回転/ドリーを禁止（中ドラッグでパン、ホイールでズーム）。ギズモも正射モードで表示する。
@@ -707,6 +711,9 @@ public:
 
     // リファレンスレンダー窓（DXR パストレーサー。独立フローティング窓。メニュー「ツール > リファレンスレンダー」）。
     bool showPathTracer = false;
+
+    // ハードウェア窓（Arduino / ESP32 の接続状態と一発書き込み。メニュー「ツール > ハードウェア」）。
+    bool showHardware = false;
 
     // ===== ショートカット / コマンドの要求フラグ（editor/EditorCommands.cpp が立て、下記の担当が消費）=====
     // Application / ToolbarPanel / EditorLayer は消費側。フレーム境界で処理する pendingUndo 等と同じ流儀。
