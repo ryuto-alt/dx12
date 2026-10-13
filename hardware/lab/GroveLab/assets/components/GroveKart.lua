@@ -12,18 +12,19 @@ properties = {
   { name = "autoGas",    type = "bool",  default = true, label = "赤のアクセルを自動で全開にする（OFF でセンサがアクセル）" },
   { name = "gasNearCm",  type = "float", default = 8,    min = 2,  max = 30,  label = "アクセル全開の距離 (cm)" },
   { name = "gasFarCm",   type = "float", default = 40,   min = 10, max = 100, label = "アクセル 0 の距離 (cm)" },
-  { name = "steerGain",  type = "float", default = 2.2,  min = 0.5, max = 5,  label = "ハンドルの効き" },
+  { name = "steerGain",  type = "float", default = 2.8,  min = 0.5, max = 5,  label = "ハンドルの効き" },
   { name = "invertSteer", type = "bool", default = false, label = "つまみのハンドルの左右を逆にする" },
   { name = "steerCenter", type = "float", default = 0.5, min = 0.1, max = 0.9, label = "まっすぐのつまみの位置 (0〜1)" },
   { name = "cpuSpeed",   type = "float", default = 1.0,  min = 0.5, max = 1.5, label = "CPU の速さ（倍）" },
   { name = "engineSound", type = "bool", default = true, label = "エンジン音を鳴らす" },
+  { name = "volume",     type = "int",   default = 100,  min = 0,  max = 100, label = "スピーカーの音量 (%)" },
   { name = "knobPlayer", type = "bool", default = true, label = "つまみの人（赤）が参加する（スタート画面の J でも切り替え・覚えておく）" },
 }
 
-local VMAX, VBOOST, VGRASS = 34, 44, 14   -- 最高速 / キノコ / 芝生（m/s。以前の 26/34/11 から約 30% 速く）
+local VMAX, VBOOST, VGRASS = 38, 48, 15   -- 人のカートの最高速 / キノコ / 芝生（m/s。137 / 173 / 54 km/h。CPU は cpuBase）
 -- 6 速: 各ギアの上限速度 (m/s) と力（低いギアほど強い）。回転数 = 速さ / そのギアの上限 × REDLINE
-local GEAR_TOP = { 10, 16, 21.5, 26.5, 30.5, 34 }
-local GEAR_ACC = { 19, 15, 12, 10, 8.5, 7.5 }
+local GEAR_TOP = { 11.2, 17.9, 24, 29.6, 34.1, 38 }
+local GEAR_ACC = { 21, 16.5, 13.2, 11, 9.4, 8.3 }
 local IDLE, REDLINE, SHIFT_UP, SHIFT_DOWN, CLUTCH_T = 1500, 9000, 8700, 0.82, 0.22
 local KARTS = { "KART_Player", "KART_Cpu1", "KART_Cpu2", "KART_Cpu3" }
 local COLOR = { { 0.9, 0.15, 0.1 }, { 0.24, 0.43, 1.0 }, { 0.2, 0.85, 0.3 }, { 1.0, 0.82, 0.1 } }
@@ -349,11 +350,11 @@ function stepHuman(self, i, steer, gas, press, dt)
   local tq = 0.72 + 0.38 * math.sin(math.pi * clamp((K.rpm - IDLE) / (REDLINE - IDLE), 0, 1))   -- 真ん中の回転でいちばん力が出る
   local power = (K.shiftT > 0) and 0 or gas * GEAR_ACC[K.gear] * tq
   if K.boostT > 0 then power = 30 end
-  local scrub = math.abs(steer) * K.v * 0.32   -- 曲がるほど速さが落ちる（速くてもカーブを曲がれる）
+  local scrub = math.abs(steer) * K.v * 0.2    -- 曲がるほど速さが落ちる（速くてもカーブを曲がれる）
   local acc = power - 0.12 * K.v - scrub - (gas < 0.05 and 4 or 0)
   if K.v > vcap then acc = math.min(acc, -(K.v - vcap) * 3) end
   K.v = clamp(K.v + acc * dt, 0, VBOOST + 2)
-  local turn = steer * self.steerGain * clamp(K.v / 6, 0, 1) * (1 - 0.35 * K.v / VBOOST)
+  local turn = steer * self.steerGain * clamp(K.v / 6, 0, 1) * (1 - 0.2 * K.v / VBOOST)   -- 速いほど少し鈍く
   K.yaw = K.yaw + turn * dt
   K.x = K.x + math.sin(K.yaw) * K.v * dt
   K.z = K.z + math.cos(K.yaw) * K.v * dt
@@ -479,6 +480,7 @@ function OnUpdate(self, dt)
   self.stateT = self.stateT + dt
   if tapped(self, "R") then
     self.dev:set("tone", 0)
+    self.dev:set("rpm", 0)   -- 戻った先のシーンはエンジン音を知らないので、ここで止める
     if self.splitOk then scene:setSplitScreen(0) end
     if self.udp then self.udp:close(); self.udp = nil end
     loadScene("scenes/grove.json")
@@ -729,10 +731,13 @@ function OnUpdate(self, dt)
   elseif racing then led = (P.rank == 1) and { 0.9, 0.7, 0.05 } or { 0.05, 0.1, 0.3 } end
   dev:set("r", led[1]); dev:set("g", led[2]); dev:set("b", led[3])
   -- サーボ = 赤の回転計（シフトで針がストンと落ちる）。赤が CPU のときは速さ
-  dev:set("servo", P.human and clamp(((P.rpm or IDLE) - 1000) / 8500, 0, 1) or clamp(P.v / VBOOST, 0, 1))
+  -- 1 度刻みに丸める（毎フレーム細かく動く値を送り続けると Nano Every の受信があふれて音が飛ぶ）
+  local needle = P.human and clamp(((P.rpm or IDLE) - 1000) / 8500, 0, 1) or clamp(P.v / VBOOST, 0, 1)
+  dev:set("servo", math.floor(needle * 180 + 0.5) / 180)
 
   -- 音: 効果音が鳴っていなければ赤のエンジン音
   local hz = 0
+  local engRpm, engLoad = 0, 0   -- ボードでエンジン音を作る（GroveLab のスケッチが rpm / load を受けるとき）
   if self.snd then
     local sd = self.snd[self.sndI]
     hz = sd[1]
@@ -741,12 +746,34 @@ function OnUpdate(self, dt)
       self.sndI = self.sndI + 1
       if self.sndI > #self.snd then self.snd = nil else self.sndT = self.snd[self.sndI][2] end
     end
-  elseif self.engineSound and P.human and (racing or self.state == COUNT) then
-    -- 回転数から鳴らす: アイドル 1500rpm で約 80Hz の「ブォー」→ 9000rpm で約 300Hz の「ウィーン」
+  end
+  if self.engineSound and P.human and (racing or self.state == COUNT) then
     local rpm = P.rpm or IDLE
-    if self.state == COUNT then   -- スタート前の空ぶかし
-      rpm = IDLE + 3000 * math.max(0, math.sin(self.t * 7)) ^ 2
+    -- 負荷（アクセル）: 踏んでいる間は太く低くうなり、抜くと細く静かに。高回転で抜くとたまに「パン」
+    local load = racing and (self.gas or 1) or 1
+    if self.state == COUNT then   -- スタート前の空ぶかし（吹け上がる間だけ踏んでいる）
+      local s = math.sin(self.t * 7)
+      rpm = IDLE + 3000 * math.max(0, s) ^ 2
+      load = (s > 0 and math.cos(self.t * 7) > 0) and 1 or 0.1
     end
+    if (P.shiftT or 0) > 0 then load = 0.05 end                  -- クラッチを切っている
+    if P.boostT > 0 then load = 1 end
+    if P.done then load = 0.3 end                                 -- ゴール後は流す
+    if rpm >= REDLINE - 60 then                                   -- リミッター: 点火を切ったりつないだり
+      load = (math.floor(self.t * 24) % 2 == 0) and 1 or 0
+      rpm = rpm - ((load == 0) and 250 or 0)
+    end
+    if P.off and racing then rpm = rpm * (0.94 + 0.06 * math.sin(self.t * 38)) end   -- 芝生でガタガタ
+    engRpm, engLoad = rpm, load
+  end
+  dev:set("vol", self.volume / 100)
+  -- 新しいスケッチは rpm / load を受けてボードの中で爆発の脈を作る。無い（古いスケッチ）ときは tone で近い音を出す
+  local boardEngine = dev:set("rpm", math.floor(engRpm / 20 + 0.5) * 20 / 12000)
+  if boardEngine then
+    dev:set("load", math.floor(engLoad * 20 + 0.5) / 20)
+  elseif not self.snd and engRpm > 0 then
+    -- 回転数から鳴らす: アイドル 1500rpm で約 80Hz の「ブォー」→ 9000rpm で約 300Hz の「ウィーン」
+    local rpm = engRpm
     hz = 36 + rpm * 0.03
     -- 爆発の脈: 1 フレームおきに少し下げて、ばらつきも足す（ガラガラしたエンジンらしさ）
     self.firing = not self.firing
@@ -756,8 +783,7 @@ function OnUpdate(self, dt)
     if P.boostT > 0 then hz = hz * (1.08 + 0.05 * math.sin(self.t * 60)) end
     if P.off and racing then hz = hz * (0.85 + 0.15 * math.sin(self.t * 40)) end
   end
-  dev:set("vol", loadNum("grove.volume", 0.35))
-  dev:set("tone", clamp(hz, 0, 4000) / 4000)
+  dev:set("tone", clamp(hz, 0, 4000) / 4000)   -- 効果音（新しいスケッチではエンジン音より優先される）
 
   self.writeT = self.writeT + dt
   if self.writeT >= 0.1 and self.relayOn then self.writeT = 0; writeState(self) end

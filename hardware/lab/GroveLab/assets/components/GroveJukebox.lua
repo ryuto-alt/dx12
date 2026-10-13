@@ -421,7 +421,7 @@ function OnUpdate(self, dt)
   saveNum("grove.bgmSlot", self.cur)
   saveNum("grove.bgmOn", (song and not busy) and 1 or 0)
   saveNum("grove.bgmNote", litNote)
-  saveNum("grove.bgmOnset", self.onset)
+  saveNum("grove.bgmOnset", self.onset or 0)   -- Play 中の差し替えで OnStart より先に来ることがある
 
   if self.showList and loadNum("grove.safe", 0) == 0 and loadNum("grove.daruma", 0) == 0 then drawList(self, song) end
 end
