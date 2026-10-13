@@ -11,6 +11,8 @@
 //     r, g, b  : D2(クロック) / D3(データ)  GROVE フルカラー LED v2.0（P9813。各 0..1）
 //     tone     : D4  GROVE スピーカー（音の高さ Hz。0 で消音）
 //     vol      : D4  スピーカーの音量（0..100。既定 35）
+//     rpm      : D4  エンジン音（回転数。0 で止まる。tone が鳴っている間は tone が優先）
+//     load     : D4  エンジンの負荷（0..1。アクセル。抜くと細く静かになり、高回転ではたまに「パン」と鳴る）
 //
 // ※UnoLink は 1 秒エンジンから何も来ないと出力を safe に戻す（LED と音は消え、サーボは真ん中へ）
 #include <UnoLink.h>
@@ -31,11 +33,12 @@ Servo servo;
 static uint8_t ledR = 0, ledG = 0, ledB = 0;
 static bool ledDirty = true;
 
+// 1 色送るのに 96 クロック。半周期 20µs だと 3.8ms 止まって受信があふれやすいので 5µs（約 1ms。P9813 は 15MHz まで受ける）
 static void p9813Clock() {
   digitalWrite(PIN_LED_CLK, LOW);
-  delayMicroseconds(20);
+  delayMicroseconds(5);
   digitalWrite(PIN_LED_CLK, HIGH);
-  delayMicroseconds(20);
+  delayMicroseconds(5);
 }
 
 static void p9813Byte(uint8_t b) {
@@ -75,6 +78,36 @@ static bool spkRunning = false;
 static unsigned int spkHz = 0;
 static uint8_t spkVol = 35;
 
+// ---- エンジン音 ----
+// 半分 ON の矩形波だと「ピー」というブザーにしかならない。本物の排気音は爆発ごとの短い圧力の脈の列なので、
+// 爆発 1 回ごとに細いパルスを 1 本出す（4 気筒 4 ストローク: 1 秒の爆発数 = 回転数 / 30）。
+// 気筒ごとに強さを変えると 1/4 の低いうなり（ドロドロ）が出て、間隔と強さに毎回むらを足すとガラガラした粗さになる
+static volatile bool engMode = false;
+static volatile uint32_t engPeriod = 0, engOnBase = 0, engJitter = 0;
+static volatile bool engPop = false;
+static volatile uint16_t engRng = 0xACE1;
+static volatile uint8_t engCyl = 0;
+static unsigned int engRpm = 0;
+static float engLoad = 0;
+static const uint8_t ENG_SHAPE[4] = { 255, 200, 235, 180 };   // 気筒ごとの強さ（/256）
+
+// 爆発 1 回ぶんの ON / OFF の長さを決める（割り込みの中で、パルスを立てる直前に呼ぶ）
+static inline void engNextCycle() {
+  uint16_t r = engRng;
+  r ^= r << 7; r ^= r >> 9; r ^= r << 8;                            // xorshift16
+  engRng = r;
+  uint32_t on = (engOnBase * ENG_SHAPE[engCyl]) >> 8;
+  engCyl = (engCyl + 1) & 3;
+  on = (on * (224 + (r & 31))) >> 8;                                 // 脈ごとの強さのむら（0〜-12%）
+  if (engPop && (r >> 12) == 0) on <<= 1;                            // アクセルを抜いた高回転でたまに「パン」（1/16）
+  if (on < 64) on = 64;
+  const int32_t jit = (((int32_t)((r >> 4) & 0xFF) - 128) * (int32_t)engJitter) >> 7;   // 間隔のむら ±engJitter
+  int32_t off = (int32_t)engPeriod - (int32_t)on + jit;
+  if (off < 64) off = 64;
+  spkOnTicks = on;
+  spkOffTicks = (uint32_t)off;
+}
+
 ISR(TCB0_INT_vect) {
   TCB0.INTFLAGS = TCB_CAPT_bm;
   uint32_t t;
@@ -82,7 +115,12 @@ ISR(TCB0_INT_vect) {
     t = spkRemain;                                    // 16 ビットに収まらない長い区間の続き
   } else {
     spkOn = !spkOn;
-    if (spkOn) spkPort->OUTSET = spkMask; else spkPort->OUTCLR = spkMask;
+    if (spkOn) {
+      if (engMode) engNextCycle();
+      spkPort->OUTSET = spkMask;
+    } else {
+      spkPort->OUTCLR = spkMask;
+    }
     t = spkOn ? spkOnTicks : spkOffTicks;
   }
   const uint32_t n = t > 60000UL ? 60000UL : t;
@@ -91,24 +129,43 @@ ISR(TCB0_INT_vect) {
 }
 
 static void speakerApply() {
-  if (spkHz < 31 || spkVol == 0) {
+  const bool toneOn = spkHz >= 31 && spkVol > 0;
+  const bool engOn = !toneOn && engRpm >= 300 && spkVol > 0;
+  if (!toneOn && !engOn) {
     TCB0.INTCTRL = 0;
     TCB0.CTRLA = 0;
     spkPort->OUTCLR = spkMask;
     spkOn = false;
     spkRunning = false;
+    engMode = false;
     return;
   }
   // 音量は耳の感じ方に合わせて 2 乗（50 で約 -12dB、20 で約 -28dB）
   const float a = (spkVol / 100.0f) * (spkVol / 100.0f);
   const float duty = asinf(a) / (float)PI;                           // a=1 で 0.5
-  const uint32_t period = 8000000UL / spkHz;
-  uint32_t on = (uint32_t)(period * duty);
-  if (on < 64) on = 64;                                              // 割り込みが間に合う最短（8µs）
-  uint32_t off = period > on + 64 ? period - on : 64;
+  uint32_t on = 0, off = 0, ePeriod = 0, eOn = 0;
+  if (toneOn) {
+    const uint32_t period = 8000000UL / spkHz;
+    on = (uint32_t)(period * duty);
+    if (on < 64) on = 64;                                            // 割り込みが間に合う最短（8µs）
+    off = period > on + 64 ? period - on : 64;
+  } else {
+    ePeriod = 240000000UL / engRpm;                                  // 8MHz × 30 / 回転数
+    // パルスの太さ = 強さ。全開で周期の 30%、アクセルを抜くと 8%（音量 100 のとき）
+    eOn = (uint32_t)(ePeriod * (duty * 2.0f) * (0.08f + 0.22f * engLoad));
+  }
   noInterrupts();
-  spkOnTicks = on;
-  spkOffTicks = off;
+  engMode = !toneOn;
+  if (toneOn) {
+    spkOnTicks = on;
+    spkOffTicks = off;
+  } else {
+    engPeriod = ePeriod;
+    engOnBase = eOn;
+    engJitter = ePeriod / 40;                                        // ±2.5%
+    engPop = engLoad < 0.25f && engRpm > 4000;
+    if (!spkRunning) { spkOnTicks = 64; spkOffTicks = ePeriod; }
+  }
   if (!spkRunning) {
     spkRemain = 0;
     spkOn = false;
@@ -140,11 +197,30 @@ static void onOutput(const char* name, float v) {
   } else if (strcmp(name, "vol") == 0) {
     spkVol = (uint8_t)(v + 0.5f);
     speakerApply();
+  } else if (strcmp(name, "rpm") == 0) {
+    engRpm = (unsigned int)(v + 0.5f);       // 300 未満は止める
+    speakerApply();
+  } else if (strcmp(name, "load") == 0) {
+    engLoad = v < 0 ? 0 : (v > 1 ? 1 : v);
+    speakerApply();
   }
 }
 
 // ---- 超音波距離センサ（Grove は 1 本の線で送って受ける）----
-static long measureCm() {
+// pulseIn で待つと跳ね返りの間（最大 25ms）loop が止まり、その間に PC から来た命令が受信バッファ（64 バイト）から
+// あふれて音や LED の命令が欠ける（音が飛ぶ）。打ったら割り込みで返りのパルス幅を測り、loop は止めない
+static volatile unsigned long sonicRiseUs = 0, sonicWidthUs = 0;
+static volatile bool sonicRose = false, sonicDone = false;
+static bool sonicBusy = false;
+static unsigned long sonicStartMs = 0;
+
+static void onSonicEdge() {
+  const unsigned long t = micros();
+  if (digitalRead(PIN_SONIC) == HIGH) { sonicRiseUs = t; sonicRose = true; }
+  else if (sonicRose && !sonicDone) { sonicWidthUs = t - sonicRiseUs; sonicDone = true; }
+}
+
+static void sonicTrigger() {
   pinMode(PIN_SONIC, OUTPUT);
   digitalWrite(PIN_SONIC, LOW);
   delayMicroseconds(2);
@@ -152,8 +228,26 @@ static long measureCm() {
   delayMicroseconds(5);
   digitalWrite(PIN_SONIC, LOW);
   pinMode(PIN_SONIC, INPUT);
-  const unsigned long us = pulseIn(PIN_SONIC, HIGH, 25000UL);   // 約 4m まで。来なければ 0
-  return (long)(us / 29 / 2);
+  sonicRose = false;
+  sonicDone = false;
+  attachInterrupt(digitalPinToInterrupt(PIN_SONIC), onSonicEdge, CHANGE);
+  sonicBusy = true;
+  sonicStartMs = millis();
+}
+
+// 測り終わったら true（cm。測れないときは 0）
+static bool sonicPoll(long& cm) {
+  if (!sonicBusy) return false;
+  if (sonicDone) {
+    cm = (long)(sonicWidthUs / 29 / 2);
+  } else if (millis() - sonicStartMs >= 30) {   // 約 4m を超えた / センサが無い
+    cm = 0;
+  } else {
+    return false;
+  }
+  detachInterrupt(digitalPinToInterrupt(PIN_SONIC));
+  sonicBusy = false;
+  return true;
 }
 
 void setup() {
@@ -175,6 +269,8 @@ void setup() {
   ulink.addOutput("b", UL_FLOAT, 0, 1, 0);
   ulink.addOutput("tone", UL_INT, 0, 4000, 0);
   ulink.addOutput("vol", UL_INT, 0, 100, 35);
+  ulink.addOutput("rpm", UL_INT, 0, 12000, 0);
+  ulink.addOutput("load", UL_FLOAT, 0, 1, 0);
   ulink.onOutput(onOutput);              // begin の前に（起動直後の safe 適用も通知される）
   ulink.begin(Serial, 115200);
 }
@@ -188,10 +284,12 @@ void loop() {
 
   ulink.send("sw", analogRead(PIN_SW) > 512 ? 1 : 0);
 
+  long cm;
+  if (sonicPoll(cm)) ulink.send("distance", cm);
   const unsigned long now = millis();
-  if (now - lastSonicMs >= 60) {          // 超音波は 60ms ごと（前の音の跳ね返りと混ざらないように）
+  if (!sonicBusy && now - lastSonicMs >= 60) {   // 超音波は 60ms ごと（前の音の跳ね返りと混ざらないように）
     lastSonicMs = now;
-    ulink.send("distance", measureCm());
+    sonicTrigger();
   }
 
   if (ledDirty) { ledDirty = false; p9813Send(ledR, ledG, ledB); }
