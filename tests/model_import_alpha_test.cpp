@@ -81,6 +81,20 @@ void Test_ImportOptions()
     CHECK(!ModelImportOptions::Parse("").specularIsORM);
     CHECK(!ModelImportOptions::Parse("[true]").specularIsORM);
     CHECK(!ModelImportOptions::Parse("{\"specularIsORM\":").specularIsORM);
+
+    // 静的メッシュ結合: 既定は OFF / 自動セル
+    CHECK(!ModelImportOptions::Parse("{}").mergeStatic);
+    CHECK(ModelImportOptions::Parse("{}").mergeCellSize == 0.0f);
+    CHECK(ModelImportOptions::Parse("{\"mergeStatic\":true}").mergeStatic);
+    CHECK(!ModelImportOptions::Parse("{\"mergeStatic\":\"yes\"}").mergeStatic);           // 型違い
+    CHECK(!ModelImportOptions::Parse("[true]").mergeStatic);
+    CHECK(ModelImportOptions::Parse("{\"mergeCellSize\":25.5}").mergeCellSize == 25.5f);
+    CHECK(ModelImportOptions::Parse("{\"mergeCellSize\":-3}").mergeCellSize == 0.0f);       // 負は自動
+    CHECK(ModelImportOptions::Parse("{\"mergeCellSize\":\"big\"}").mergeCellSize == 0.0f);
+    {
+        const auto o = ModelImportOptions::Parse("{\"specularIsORM\":true,\"mergeStatic\":true}");
+        CHECK(o.specularIsORM && o.mergeStatic);   // 他キーと共存
+    }
 }
 
 void Test_Alpha()

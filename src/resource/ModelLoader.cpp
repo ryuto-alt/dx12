@@ -23,6 +23,9 @@
 #include <algorithm>
 #include <fstream>
 #include <iterator>
+#include <limits>
+#include <map>
+#include <tuple>
 #include <functional>      // Probe のノード再帰(ワールド AABB)用
 #include <unordered_map>   // マテリアル SRV ブロックの共有
 #include <unordered_set>   // Probe のボーン名ユニーク数え上げ用
@@ -614,6 +617,13 @@ ModelImportOptions ModelImportOptions::Parse(const std::string& jsonText)
     if (!j.is_object()) return o;
     if (auto it = j.find("specularIsORM"); it != j.end() && it->is_boolean())
         o.specularIsORM = it->get<bool>();
+    if (auto it = j.find("mergeStatic"); it != j.end() && it->is_boolean())
+        o.mergeStatic = it->get<bool>();
+    if (auto it = j.find("mergeCellSize"); it != j.end() && it->is_number())
+    {
+        const double v = it->get<double>();
+        if (v > 0.0 && v < 1.0e9) o.mergeCellSize = static_cast<float>(v);   // 0 以下・巨大値は自動
+    }
     return o;
 }
 
@@ -990,194 +1000,26 @@ ModelData ModelLoader::LoadFromFile(
         }
     } srvBlockRollback{resourceManager.GetSrvHeap(), materialSrvBlocks};
 
-    for (const MeshBuildRef& buildRef : buildRefs)
+    // ---- 静的メッシュ結合（import.json の mergeStatic）----
+    //   同じ aiMaterial × XZ 空間セルごとに頂点を連結して Mesh を減らす（ドローコール削減）。
+    //   元の aiMesh ごとの頂点は UV 焼き込みまで済ませてここへ溜め、ループ後に結合する。
+    const bool mergeActive = importOpts.mergeStatic && expandPerNode;
+    struct PendingMesh
     {
-        const unsigned int meshIdx = buildRef.meshIdx;
-        const aiMesh* aiMeshPtr = scene->mMeshes[meshIdx];
-
-        // --- Build vertex data ---
+        MeshBuildRef ref;
         std::vector<Vertex> vertices;
-        vertices.reserve(aiMeshPtr->mNumVertices);
-
-        for (unsigned int v = 0; v < aiMeshPtr->mNumVertices; ++v)
-        {
-            Vertex vertex = {};
-
-            // Position
-            vertex.position.x = aiMeshPtr->mVertices[v].x;
-            vertex.position.y = aiMeshPtr->mVertices[v].y;
-            vertex.position.z = aiMeshPtr->mVertices[v].z;
-
-            // Normal
-            if (aiMeshPtr->mNormals)
-            {
-                vertex.normal.x = aiMeshPtr->mNormals[v].x;
-                vertex.normal.y = aiMeshPtr->mNormals[v].y;
-                vertex.normal.z = aiMeshPtr->mNormals[v].z;
-            }
-
-            // Color (white default)
-            if (aiMeshPtr->mColors[0])
-            {
-                vertex.color.x = aiMeshPtr->mColors[0][v].r;
-                vertex.color.y = aiMeshPtr->mColors[0][v].g;
-                vertex.color.z = aiMeshPtr->mColors[0][v].b;
-                vertex.color.w = aiMeshPtr->mColors[0][v].a;
-            }
-            else
-            {
-                vertex.color = { 1.0f, 1.0f, 1.0f, 1.0f };
-            }
-
-            // TexCoord
-            if (aiMeshPtr->mTextureCoords[0])
-            {
-                vertex.texCoord.x = aiMeshPtr->mTextureCoords[0][v].x;
-                vertex.texCoord.y = aiMeshPtr->mTextureCoords[0][v].y;
-            }
-
-            // Tangent (PBR normal mapping用)
-            if (aiMeshPtr->mTangents)
-            {
-                vertex.tangent.x = aiMeshPtr->mTangents[v].x;
-                vertex.tangent.y = aiMeshPtr->mTangents[v].y;
-                vertex.tangent.z = aiMeshPtr->mTangents[v].z;
-                vertex.tangent.w = 1.0f;
-                if (aiMeshPtr->mBitangents)
-                {
-                    // handedness 判定
-                    XMVECTOR N = XMLoadFloat3(&vertex.normal);
-                    XMVECTOR T = XMVectorSet(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, 0);
-                    XMVECTOR B_expected = XMVectorSet(
-                        aiMeshPtr->mBitangents[v].x,
-                        aiMeshPtr->mBitangents[v].y,
-                        aiMeshPtr->mBitangents[v].z, 0);
-                    XMVECTOR B_computed = XMVector3Cross(N, T);
-                    float dot = XMVectorGetX(XMVector3Dot(B_computed, B_expected));
-                    vertex.tangent.w = (dot < 0.0f) ? -1.0f : 1.0f;
-                }
-            }
-
-            // boneIndices / boneWeights are zero-initialized by default
-            vertices.push_back(vertex);
-        }
-
-        // Write bone weights if skeleton exists
-        if (skeleton && aiMeshPtr->mNumBones > 0)
-        {
-            WriteBoneWeightsToVertices(aiMeshPtr, vertices, *skeleton);
-        }
-
-        // --- Bake vertices with static animation's global matrix ---
-        // Transform mesh vertices into model space using the rest pose (time=0)
-        // so that inv(rest) * current at render time produces correct results
-        if (nodeGraph && !bakeGlobalMatrices.empty())
-        {
-            // 展開したときは「この描画単位が属するノード」が確定している。
-            // していないときだけ従来どおり最初に見つかったノードを使う。
-            i32 nodeIdx = (buildRef.bakeNode >= 0) ? buildRef.bakeNode
-                                                   : nodeGraph->FindNodeForMesh(meshIdx);
-            if (nodeIdx >= 0)
-            {
-                DirectX::XMMATRIX bakeMatrix = bakeGlobalMatrices[static_cast<u32>(nodeIdx)];
-                // ★鏡映（行列式が負）を含むノードでは接空間の利き手が反転する。
-                //   tangent.w は法線マップのビタンジェント符号なので、ここで一緒に返さないと
-                //   凹凸が逆に見える。
-                const float bakeDet =
-                    DirectX::XMVectorGetX(DirectX::XMMatrixDeterminant(bakeMatrix));
-                const float handednessFlip = (bakeDet < 0.0f) ? -1.0f : 1.0f;
-
-                for (auto& vert : vertices)
-                {
-                    // Transform position
-                    DirectX::XMVECTOR pos = DirectX::XMLoadFloat3(&vert.position);
-                    pos = DirectX::XMVector3TransformCoord(pos, bakeMatrix);
-                    DirectX::XMStoreFloat3(&vert.position, pos);
-
-                    // Transform normal
-                    DirectX::XMVECTOR norm = DirectX::XMLoadFloat3(&vert.normal);
-                    norm = DirectX::XMVector3TransformNormal(norm, bakeMatrix);
-                    norm = DirectX::XMVector3Normalize(norm);
-                    DirectX::XMStoreFloat3(&vert.normal, norm);
-
-                    // ★tangent も変換する。position/normal だけ回して tangent を
-                    //   メッシュローカルのまま残していたので、ノードに回転を持つ静的モデル
-                    //   （DamagedHelmet.glb はノードに +90°X を持つ）で**法線マップの向きだけ
-                    //   狂っていた**。凹凸が斜めに寝る形で出るので「ライティングがなんか変」に
-                    //   しか見えず、原因が分かりにくい。
-                    DirectX::XMVECTOR tan = DirectX::XMVectorSet(
-                        vert.tangent.x, vert.tangent.y, vert.tangent.z, 0.0f);
-                    tan = DirectX::XMVector3TransformNormal(tan, bakeMatrix);
-                    // 退化（スケール 0 の軸など）で 0 ベクトルになったら元の値を残す
-                    if (DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(tan)) > 1.0e-12f)
-                    {
-                        tan = DirectX::XMVector3Normalize(tan);
-                        vert.tangent.x = DirectX::XMVectorGetX(tan);
-                        vert.tangent.y = DirectX::XMVectorGetY(tan);
-                        vert.tangent.z = DirectX::XMVectorGetZ(tan);
-                    }
-                    vert.tangent.w *= handednessFlip;
-                }
-            }
-        }
-
-        // --- Build index data ---
-        // ★三角形だけを拾う。SortByPType で線・点は別メッシュへ分かれるが、ここで弾かないと
-        //   そのメッシュが 1〜2 個ずつのインデックスのまま GPU へ行く。面が 1 枚も無いメッシュは
-        //   サイズ 0 のバッファになり CreateResource が E_INVALIDARG で落ち、モデルの生成ごと
-        //   失敗していた（PLATEAU の都市 FBX で発生。線・点・空のメッシュが混じる）。
         std::vector<u32> indices;
-        indices.reserve(static_cast<size_t>(aiMeshPtr->mNumFaces) * 3);
-        for (unsigned int f = 0; f < aiMeshPtr->mNumFaces; ++f)
-        {
-            const aiFace& face = aiMeshPtr->mFaces[f];
-            if (face.mNumIndices != 3) continue;
-            indices.insert(indices.end(), face.mIndices, face.mIndices + 3);
-        }
-        if (indices.empty() || vertices.empty())
-        {
-            ++skippedNonTriMeshes;
-            // 静的モデルは buildRefs がノード展開順＝メッシュ番号に意味が無いので捨ててよい。
-            // ノードアニメ経路は result.meshes の番号が aiMesh の番号と対応しているので、
-            // 捨てずに見えない三角形 1 枚で埋めて並びを保つ。
-            if (expandPerNode) continue;
-            if (vertices.empty()) vertices.push_back(Vertex{});
-            indices.assign({0u, 0u, 0u});
-        }
+        float cx = 0, cz = 0;   // 焼き込み後の頂点 AABB 中心（XZ）
+    };
+    std::vector<PendingMesh> pending;
 
-        // --- UV Transform（タイリング/オフセット）を頂点 UV へ焼く ---
-        //
-        // ★ここは元々 mesh->Initialize() の**後ろ**にあった。Initialize は入口で
-        //   vertices のコピーを取り meshoptimizer で並べ替えてから VRAM へ上げ切るので、
-        //   後からローカルの vertices を書き換えても一切反映されない。
-        //   それでいて「[UV] scale=(4.00,4.00)」というデバッグ出力だけは出るので、
-        //   効いているように見えていた（この関数内で vertices を読む箇所は 979 が最後だった）。
-        //   ※アップロード後に m_verticesCache を書き換える方式は不可（並びが変わっている）。
-        if (aiMeshPtr->mMaterialIndex < scene->mNumMaterials)
-        {
-            const aiMaterial* uvMat = scene->mMaterials[aiMeshPtr->mMaterialIndex];
-            aiUVTransform uvTransform;
-            if (uvMat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE, 0), uvTransform) == AI_SUCCESS)
-            {
-                const float sx = uvTransform.mScaling.x;
-                const float sy = uvTransform.mScaling.y;
-                const float ox = uvTransform.mTranslation.x;
-                const float oy = uvTransform.mTranslation.y;
-                if (sx != 1.0f || sy != 1.0f || ox != 0.0f || oy != 0.0f)
-                {
-                    for (auto& v : vertices)
-                    {
-                        v.texCoord.x = v.texCoord.x * sx + ox;
-                        v.texCoord.y = v.texCoord.y * sy + oy;
-                    }
-                    char dbg[256];
-                    snprintf(dbg, sizeof(dbg), "[UV] scale=(%.2f,%.2f) offset=(%.2f,%.2f)\n",
-                             sx, sy, ox, oy);
-                    OutputDebugStringA(dbg);
-                }
-            }
-        }
-
+    // ★Mesh + Material を 1 個作って result へ積む。通常は元の aiMesh 1 個（のノード展開）ごとに呼ぶ。
+    //   mergeStatic のときだけ、結合済みの頂点・インデックスと代表の aiMesh（マテリアル用）で呼ぶ。
+    //   マテリアルの中身は aiMaterial だけで決まるので、同じ aiMaterial の代表 1 個で足りる。
+    auto emitMesh = [&](const MeshBuildRef& buildRef, const aiMesh* aiMeshPtr,
+                        std::vector<Vertex>& vertices, std::vector<u32>& indices,
+                        const std::string* nameOverride)
+    {
         // --- Create Mesh ---
         auto mesh = std::make_unique<Mesh>();
         mesh->Initialize(device, vertices, indices, cmdList);   // DEFAULT ヒープ(VRAM)常駐
@@ -1533,6 +1375,7 @@ ModelData ModelLoader::LoadFromFile(
             std::string mn = aiMeshPtr->mName.C_Str();
             if (mn.empty() && buildRef.bakeNode >= 0 && nodeGraph)
                 mn = nodeGraph->GetNode(static_cast<u32>(buildRef.bakeNode)).name;
+            if (nameOverride) mn = *nameOverride;
             mesh->SetName(std::move(mn));
             if (aiMeshPtr->mMaterialIndex < scene->mNumMaterials)
                 mesh->SetMaterialName(scene->mMaterials[aiMeshPtr->mMaterialIndex]->GetName().C_Str());
@@ -1540,6 +1383,281 @@ ModelData ModelLoader::LoadFromFile(
 
         result.meshes.push_back(std::move(mesh));
         result.materials.push_back(std::move(material));
+    };
+
+    for (const MeshBuildRef& buildRef : buildRefs)
+    {
+        const unsigned int meshIdx = buildRef.meshIdx;
+        const aiMesh* aiMeshPtr = scene->mMeshes[meshIdx];
+
+        // --- Build vertex data ---
+        std::vector<Vertex> vertices;
+        vertices.reserve(aiMeshPtr->mNumVertices);
+
+        for (unsigned int v = 0; v < aiMeshPtr->mNumVertices; ++v)
+        {
+            Vertex vertex = {};
+
+            // Position
+            vertex.position.x = aiMeshPtr->mVertices[v].x;
+            vertex.position.y = aiMeshPtr->mVertices[v].y;
+            vertex.position.z = aiMeshPtr->mVertices[v].z;
+
+            // Normal
+            if (aiMeshPtr->mNormals)
+            {
+                vertex.normal.x = aiMeshPtr->mNormals[v].x;
+                vertex.normal.y = aiMeshPtr->mNormals[v].y;
+                vertex.normal.z = aiMeshPtr->mNormals[v].z;
+            }
+
+            // Color (white default)
+            if (aiMeshPtr->mColors[0])
+            {
+                vertex.color.x = aiMeshPtr->mColors[0][v].r;
+                vertex.color.y = aiMeshPtr->mColors[0][v].g;
+                vertex.color.z = aiMeshPtr->mColors[0][v].b;
+                vertex.color.w = aiMeshPtr->mColors[0][v].a;
+            }
+            else
+            {
+                vertex.color = { 1.0f, 1.0f, 1.0f, 1.0f };
+            }
+
+            // TexCoord
+            if (aiMeshPtr->mTextureCoords[0])
+            {
+                vertex.texCoord.x = aiMeshPtr->mTextureCoords[0][v].x;
+                vertex.texCoord.y = aiMeshPtr->mTextureCoords[0][v].y;
+            }
+
+            // Tangent (PBR normal mapping用)
+            if (aiMeshPtr->mTangents)
+            {
+                vertex.tangent.x = aiMeshPtr->mTangents[v].x;
+                vertex.tangent.y = aiMeshPtr->mTangents[v].y;
+                vertex.tangent.z = aiMeshPtr->mTangents[v].z;
+                vertex.tangent.w = 1.0f;
+                if (aiMeshPtr->mBitangents)
+                {
+                    // handedness 判定
+                    XMVECTOR N = XMLoadFloat3(&vertex.normal);
+                    XMVECTOR T = XMVectorSet(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, 0);
+                    XMVECTOR B_expected = XMVectorSet(
+                        aiMeshPtr->mBitangents[v].x,
+                        aiMeshPtr->mBitangents[v].y,
+                        aiMeshPtr->mBitangents[v].z, 0);
+                    XMVECTOR B_computed = XMVector3Cross(N, T);
+                    float dot = XMVectorGetX(XMVector3Dot(B_computed, B_expected));
+                    vertex.tangent.w = (dot < 0.0f) ? -1.0f : 1.0f;
+                }
+            }
+
+            // boneIndices / boneWeights are zero-initialized by default
+            vertices.push_back(vertex);
+        }
+
+        // Write bone weights if skeleton exists
+        if (skeleton && aiMeshPtr->mNumBones > 0)
+        {
+            WriteBoneWeightsToVertices(aiMeshPtr, vertices, *skeleton);
+        }
+
+        // --- Bake vertices with static animation's global matrix ---
+        // Transform mesh vertices into model space using the rest pose (time=0)
+        // so that inv(rest) * current at render time produces correct results
+        if (nodeGraph && !bakeGlobalMatrices.empty())
+        {
+            // 展開したときは「この描画単位が属するノード」が確定している。
+            // していないときだけ従来どおり最初に見つかったノードを使う。
+            i32 nodeIdx = (buildRef.bakeNode >= 0) ? buildRef.bakeNode
+                                                   : nodeGraph->FindNodeForMesh(meshIdx);
+            if (nodeIdx >= 0)
+            {
+                DirectX::XMMATRIX bakeMatrix = bakeGlobalMatrices[static_cast<u32>(nodeIdx)];
+                // ★鏡映（行列式が負）を含むノードでは接空間の利き手が反転する。
+                //   tangent.w は法線マップのビタンジェント符号なので、ここで一緒に返さないと
+                //   凹凸が逆に見える。
+                const float bakeDet =
+                    DirectX::XMVectorGetX(DirectX::XMMatrixDeterminant(bakeMatrix));
+                const float handednessFlip = (bakeDet < 0.0f) ? -1.0f : 1.0f;
+
+                for (auto& vert : vertices)
+                {
+                    // Transform position
+                    DirectX::XMVECTOR pos = DirectX::XMLoadFloat3(&vert.position);
+                    pos = DirectX::XMVector3TransformCoord(pos, bakeMatrix);
+                    DirectX::XMStoreFloat3(&vert.position, pos);
+
+                    // Transform normal
+                    DirectX::XMVECTOR norm = DirectX::XMLoadFloat3(&vert.normal);
+                    norm = DirectX::XMVector3TransformNormal(norm, bakeMatrix);
+                    norm = DirectX::XMVector3Normalize(norm);
+                    DirectX::XMStoreFloat3(&vert.normal, norm);
+
+                    // ★tangent も変換する。position/normal だけ回して tangent を
+                    //   メッシュローカルのまま残していたので、ノードに回転を持つ静的モデル
+                    //   （DamagedHelmet.glb はノードに +90°X を持つ）で**法線マップの向きだけ
+                    //   狂っていた**。凹凸が斜めに寝る形で出るので「ライティングがなんか変」に
+                    //   しか見えず、原因が分かりにくい。
+                    DirectX::XMVECTOR tan = DirectX::XMVectorSet(
+                        vert.tangent.x, vert.tangent.y, vert.tangent.z, 0.0f);
+                    tan = DirectX::XMVector3TransformNormal(tan, bakeMatrix);
+                    // 退化（スケール 0 の軸など）で 0 ベクトルになったら元の値を残す
+                    if (DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(tan)) > 1.0e-12f)
+                    {
+                        tan = DirectX::XMVector3Normalize(tan);
+                        vert.tangent.x = DirectX::XMVectorGetX(tan);
+                        vert.tangent.y = DirectX::XMVectorGetY(tan);
+                        vert.tangent.z = DirectX::XMVectorGetZ(tan);
+                    }
+                    vert.tangent.w *= handednessFlip;
+                }
+            }
+        }
+
+        // --- Build index data ---
+        // ★三角形だけを拾う。SortByPType で線・点は別メッシュへ分かれるが、ここで弾かないと
+        //   そのメッシュが 1〜2 個ずつのインデックスのまま GPU へ行く。面が 1 枚も無いメッシュは
+        //   サイズ 0 のバッファになり CreateResource が E_INVALIDARG で落ち、モデルの生成ごと
+        //   失敗していた（PLATEAU の都市 FBX で発生。線・点・空のメッシュが混じる）。
+        std::vector<u32> indices;
+        indices.reserve(static_cast<size_t>(aiMeshPtr->mNumFaces) * 3);
+        for (unsigned int f = 0; f < aiMeshPtr->mNumFaces; ++f)
+        {
+            const aiFace& face = aiMeshPtr->mFaces[f];
+            if (face.mNumIndices != 3) continue;
+            indices.insert(indices.end(), face.mIndices, face.mIndices + 3);
+        }
+        if (indices.empty() || vertices.empty())
+        {
+            ++skippedNonTriMeshes;
+            // 静的モデルは buildRefs がノード展開順＝メッシュ番号に意味が無いので捨ててよい。
+            // ノードアニメ経路は result.meshes の番号が aiMesh の番号と対応しているので、
+            // 捨てずに見えない三角形 1 枚で埋めて並びを保つ。
+            if (expandPerNode) continue;
+            if (vertices.empty()) vertices.push_back(Vertex{});
+            indices.assign({0u, 0u, 0u});
+        }
+
+        // --- UV Transform（タイリング/オフセット）を頂点 UV へ焼く ---
+        //
+        // ★ここは元々 mesh->Initialize() の**後ろ**にあった。Initialize は入口で
+        //   vertices のコピーを取り meshoptimizer で並べ替えてから VRAM へ上げ切るので、
+        //   後からローカルの vertices を書き換えても一切反映されない。
+        //   それでいて「[UV] scale=(4.00,4.00)」というデバッグ出力だけは出るので、
+        //   効いているように見えていた（この関数内で vertices を読む箇所は 979 が最後だった）。
+        //   ※アップロード後に m_verticesCache を書き換える方式は不可（並びが変わっている）。
+        if (aiMeshPtr->mMaterialIndex < scene->mNumMaterials)
+        {
+            const aiMaterial* uvMat = scene->mMaterials[aiMeshPtr->mMaterialIndex];
+            aiUVTransform uvTransform;
+            if (uvMat->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE, 0), uvTransform) == AI_SUCCESS)
+            {
+                const float sx = uvTransform.mScaling.x;
+                const float sy = uvTransform.mScaling.y;
+                const float ox = uvTransform.mTranslation.x;
+                const float oy = uvTransform.mTranslation.y;
+                if (sx != 1.0f || sy != 1.0f || ox != 0.0f || oy != 0.0f)
+                {
+                    for (auto& v : vertices)
+                    {
+                        v.texCoord.x = v.texCoord.x * sx + ox;
+                        v.texCoord.y = v.texCoord.y * sy + oy;
+                    }
+                    char dbg[256];
+                    snprintf(dbg, sizeof(dbg), "[UV] scale=(%.2f,%.2f) offset=(%.2f,%.2f)\n",
+                             sx, sy, ox, oy);
+                    OutputDebugStringA(dbg);
+                }
+            }
+        }
+
+
+        if (mergeActive)
+        {
+            PendingMesh pm;
+            pm.ref = buildRef;
+            float mnx = (std::numeric_limits<float>::max)(), mxx = -mnx, mnz = mnx, mxz = -mnx;
+            for (const auto& v : vertices)
+            {
+                mnx = (std::min)(mnx, v.position.x); mxx = (std::max)(mxx, v.position.x);
+                mnz = (std::min)(mnz, v.position.z); mxz = (std::max)(mxz, v.position.z);
+            }
+            pm.cx = (mnx + mxx) * 0.5f;
+            pm.cz = (mnz + mxz) * 0.5f;
+            pm.vertices = std::move(vertices);
+            pm.indices  = std::move(indices);
+            pending.push_back(std::move(pm));
+            continue;
+        }
+        emitMesh(buildRef, aiMeshPtr, vertices, indices, nullptr);
+    }
+
+    if (mergeActive && !pending.empty())
+    {
+        // セル寸法: 指定が無ければモデル AABB の XZ の最大辺 / 8。
+        // ★大きすぎると錐台・影カスケードのカリングが粗くなり、小さすぎると結合の効果が減る。
+        //   8×8 なら 1 セルが視野・カスケードの 1 枚に対して十分細かく、ドローは (マテリアル数 × 占有セル数) まで落ちる。
+        float mnx = (std::numeric_limits<float>::max)(), mxx = -mnx, mnz = mnx, mxz = -mnx;
+        for (const auto& pm : pending)
+            for (const auto& v : pm.vertices)
+            {
+                mnx = (std::min)(mnx, v.position.x); mxx = (std::max)(mxx, v.position.x);
+                mnz = (std::min)(mnz, v.position.z); mxz = (std::max)(mxz, v.position.z);
+            }
+        float cell = importOpts.mergeCellSize;
+        if (!(cell > 0.0f))
+            cell = (std::max)((std::max)(mxx - mnx, mxz - mnz) / 8.0f, 1.0e-3f);
+
+        // (aiMaterial, セルx, セルz) → pending 番号（元の順序を保つ）
+        std::map<std::tuple<unsigned int, i32, i32>, std::vector<size_t>> groups;
+        for (size_t i = 0; i < pending.size(); ++i)
+        {
+            const auto& pm = pending[i];
+            const i32 gx = static_cast<i32>(std::floor((pm.cx - mnx) / cell));
+            const i32 gz = static_cast<i32>(std::floor((pm.cz - mnz) / cell));
+            groups[{scene->mMeshes[pm.ref.meshIdx]->mMaterialIndex, gx, gz}].push_back(i);
+        }
+
+        constexpr size_t kMaxMergedVertices = 1000000;   // 1 Mesh の頂点数の上限（超えたら分割）
+        const size_t before = pending.size();
+        u32 after = 0;
+        for (auto& [key, members] : groups)
+        {
+            size_t pos = 0;
+            u32 part = 0;
+            while (pos < members.size())
+            {
+                std::vector<Vertex> mv;
+                std::vector<u32> mi;
+                const size_t first = pos;
+                while (pos < members.size())
+                {
+                    auto& pm = pending[members[pos]];
+                    if (pos > first && mv.size() + pm.vertices.size() > kMaxMergedVertices) break;
+                    const u32 base = static_cast<u32>(mv.size());
+                    mv.insert(mv.end(), pm.vertices.begin(), pm.vertices.end());
+                    mi.reserve(mi.size() + pm.indices.size());
+                    for (u32 idx : pm.indices) mi.push_back(idx + base);
+                    std::vector<Vertex>().swap(pm.vertices);
+                    std::vector<u32>().swap(pm.indices);
+                    ++pos;
+                }
+                const PendingMesh& rep = pending[members[first]];
+                const aiMesh* repMesh = scene->mMeshes[rep.ref.meshIdx];
+                std::string matName = (repMesh->mMaterialIndex < scene->mNumMaterials)
+                    ? std::string(scene->mMaterials[repMesh->mMaterialIndex]->GetName().C_Str())
+                    : std::string("material") + std::to_string(repMesh->mMaterialIndex);
+                std::string name = matName + "#" + std::to_string(std::get<1>(key)) + "_" + std::to_string(std::get<2>(key));
+                if (part > 0) name += "." + std::to_string(part);
+                ++part;
+                emitMesh(rep.ref, repMesh, mv, mi, &name);
+                ++after;
+            }
+        }
+        Logger::Info("静的メッシュ結合: {} → {} メッシュ（セル {:.1f}）: {}", before, after, cell,
+                     filePath.filename().string());
     }
 
     srvBlockRollback.committed = true;

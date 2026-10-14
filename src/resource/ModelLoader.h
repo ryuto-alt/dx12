@@ -63,7 +63,13 @@ struct ModelImportOptions
     // 一般の FBX では Specular は本物の鏡面反射色なので既定は false。
     bool specularIsORM = false;
 
-    // JSON 文字列から読む。壊れている / キーが無い / 型違いは既定値（全部 false）。
+    // 静的モデル（スキン無し・アニメ無し）の Mesh を「同じ aiMaterial × XZ 空間セル」ごとに 1 個へ結合する
+    // （都市 FBX のようにメッシュが数万ある時のドローコール削減）。既定 false＝従来と同じ。
+    bool mergeStatic = false;
+    // 結合セルの一辺（モデル空間の単位）。0 以下 / 省略は自動 = モデル AABB の XZ 最大辺 / 8。
+    float mergeCellSize = 0.0f;
+
+    // JSON 文字列から読む。壊れている / キーが無い / 型違いは既定値（全部 false / 0）。
     static ModelImportOptions Parse(const std::string& jsonText);
     // モデルの隣の import.json を vfs 経由で読む（配布ゲームの pak でも読める）。無ければ既定値。
     static ModelImportOptions LoadFor(const std::filesystem::path& modelPath);
