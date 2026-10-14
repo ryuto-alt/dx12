@@ -24,6 +24,7 @@
 #include <fstream>
 #include <iterator>
 #include <functional>      // Probe のノード再帰(ワールド AABB)用
+#include <unordered_map>   // マテリアル SRV ブロックの共有
 #include <unordered_set>   // Probe のボーン名ユニーク数え上げ用
 
 #include <Windows.h>
@@ -972,6 +973,23 @@ ModelData ModelLoader::LoadFromFile(
             buildRefs.push_back({i, -1});
 
     u32 skippedNonTriMeshes = 0;   // 三角形を 1 枚も持たないメッシュ（線・点・空）
+
+    // aiMaterial 番号 → マテリアル SRV ブロックの先頭（同じ aiMaterial のメッシュで共有する）
+    std::unordered_map<unsigned int, u32> materialSrvBlocks;
+    // ★途中で例外が出たら確保済みのブロックを返す。返していなかったので、読み込みに失敗する
+    //   たびにヒープが減り、再送を重ねると無関係なモデルまで読めなくなっていた。
+    struct SrvBlockRollback
+    {
+        DescriptorHeap* heap;
+        std::unordered_map<unsigned int, u32>& blocks;
+        bool committed = false;
+        ~SrvBlockRollback()
+        {
+            if (committed || !heap) return;
+            for (const auto& [mi, start] : blocks) heap->FreeBlock(start, kMaterialSrvBlockSize);
+        }
+    } srvBlockRollback{resourceManager.GetSrvHeap(), materialSrvBlocks};
+
     for (const MeshBuildRef& buildRef : buildRefs)
     {
         const unsigned int meshIdx = buildRef.meshIdx;
@@ -1480,12 +1498,27 @@ ModelData ModelLoader::LoadFromFile(
             // (描画側が srvBlockIndex 起点のテーブルとして1回でバインドするため。
             //  レジスタは t0,t1,t2 と t24 に飛んでいるがヒープ上は詰まっている＝OFFSET_APPEND)。
             // free-list 化後は個別確保だと連続性が保証されないので必ずブロック確保する。
-            u32 blockStart = srvHeap->AllocateBlock(kMaterialSrvBlockSize);
+            // ★同じ aiMaterial のメッシュはブロックを共有する。Material の中身は aiMaterial と
+            //   import.json だけで決まる（メッシュに依存しない）ので、張る SRV も同じになる。
+            //   メッシュごとに確保していた頃は、都市モデル（PLATEAU 渋谷 1 タイル: 17773 メッシュ /
+            //   453 マテリアル）で 17773×4 = 7 万個を要求し、ヒープ（65536）が溢れて読めなかった。
+            //   RefreshMaterialSrvBlocks は同じテクスチャで張り直すだけなので共有しても壊れない。
+            u32 blockStart;
+            const auto shared = materialSrvBlocks.find(aiMeshPtr->mMaterialIndex);
+            if (shared != materialSrvBlocks.end())
+            {
+                blockStart = shared->second;
+            }
+            else
+            {
+                blockStart = srvHeap->AllocateBlock(kMaterialSrvBlockSize);
+                materialSrvBlocks.emplace(aiMeshPtr->mMaterialIndex, blockStart);
 
-            albedo->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart));
-            normal->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 1));
-            mr->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 2));
-            emis->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 3));
+                albedo->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart));
+                normal->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 1));
+                mr->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 2));
+                emis->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 3));
+            }
 
             material->srvBlockIndex = blockStart;
         }
@@ -1508,6 +1541,8 @@ ModelData ModelLoader::LoadFromFile(
         result.meshes.push_back(std::move(mesh));
         result.materials.push_back(std::move(material));
     }
+
+    srvBlockRollback.committed = true;
 
     if (skippedNonTriMeshes > 0)
         Logger::Info("三角形を持たないメッシュ（線・点・空）を {} 個除外しました: {}",
