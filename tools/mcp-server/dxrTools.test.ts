@@ -140,6 +140,7 @@ const DXR_DEFAULTS = {
   ddgiOriginX: -8, ddgiOriginY: 0.5, ddgiOriginZ: -8,
   ddgiRayLength: 30, ddgiHysteresis: 0.97, ddgiIntensity: 1, ddgiNormalBias: 0.02, ddgiBounceIntensity: 0,
   ddgiFollowCamera: false, ddgiSpacing1: 2.0, ddgiBudgetMs: 1,
+  reflectionsEnabled: false, reflectionMaxRoughness: 0.6, reflectionMaxDistance: 100, reflectionHalfRes: true, reflectionIntensity: 1,
 };
 
 /** エンジンと同じクランプ(Application.cpp を写したもの)。 */

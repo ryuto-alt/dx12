@@ -705,6 +705,21 @@ void RenderLightingPanel(Scene* scene,
                          "（SSAO も ON にしておくこと）");
             ImGui::EndDisabled();
 
+            pg::Checkbox("RT 反射", &rt.reflectionsEnabled,
+                         "SSR の後段で、SSR が外れた画素（画面外・遮蔽）だけレイで反射を解きます。"
+                         "光沢のある床・金属・ガラス状の面に、画面外の物まで映ります。\n"
+                         "ヒット点の明るさは DDGI と同じ照明（太陽・灯・間接光）で、外れたレイは空（IBL）に任せます。"
+                         "SSR も ON にしておくと、画面内は SSR・画面外は RT と役割が分かれます");
+            ImGui::BeginDisabled(!rt.reflectionsEnabled);
+            pg::SliderFloat("反射: 最大の粗さ", &rt.reflectionMaxRoughness, 0.1f, 1.0f, "%.2f", nullptr,
+                            "これより粗い面は撃たず IBL に任せます（上限の手前から連続に消えます）");
+            pg::SliderFloat("反射: 最大距離 (m)", &rt.reflectionMaxDistance, 5.0f, 1000.0f, "%.0f", nullptr,
+                            "これを超えて当たらなければ空へ落とします");
+            pg::Checkbox("反射: ハーフ解像度", &rt.reflectionHalfRes,
+                         "ON（既定）= 画素の 1/4 だけ撃って時間・空間フィルタで埋めます。OFF = 全画素（綺麗だが約 4 倍重い）");
+            pg::SliderFloat("反射: 強さ", &rt.reflectionIntensity, 0.0f, 1.0f, "%.2f");
+            ImGui::EndDisabled();
+
             ImGui::EndDisabled();
 
             if (ctx.dxrSupported)

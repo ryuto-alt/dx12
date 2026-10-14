@@ -403,10 +403,13 @@ if(DXC_EXECUTABLE)
     set(SHADER_RT_DEBUG      "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtDebug.hlsl")
     set(SHADER_RT_AODENOISE  "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAoDenoise.hlsl")
     set(SHADER_RT_ALBEDO     "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAlbedo.hlsl")
+    # RT 反射（R2）。ヒット点の shading は DDGI と共通（RtHitShade.hlsli）。
+    set(SHADER_RT_REFLECTION "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtReflection.hlsl")
     # DDGI（計画09 Step 6）。probe 更新の compute 2 本。★ps/cs とも SM 6.6（バインドレス）。
     set(SHADER_DDGI_UPDATE   "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiProbeUpdate.hlsl")
     set(SHADER_DDGI_INC      "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiCommon.hlsli"
                              "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtBindless.hlsli"
+                             "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtHitShade.hlsli"
                              # ★プローブが点光源を拾うようになったので ClusterLight に依存する。
                              #   入れ忘れると構造体を変えても DdgiTrace_CS.cso が古いまま残る。
                              "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli")
@@ -526,6 +529,10 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtAlbedo_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtReflTrace_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtReflTemporal_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtReflSpatial_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtReflComposite_PS.cso"
         "${SHADER_OUTPUT_DIR}/DdgiTrace_CS.cso"
         "${SHADER_OUTPUT_DIR}/DdgiBlend_CS.cso"
         "${SHADER_OUTPUT_DIR}/DdgiBlendDist_CS.cso"
@@ -1309,6 +1316,31 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtAlbedo_PS.cso" "${SHADER_RT_ALBEDO}"
         DEPENDS "${SHADER_RT_ALBEDO}" ${SHADER_RT_INC}
         COMMENT "Compiling RtAlbedo.hlsl -> RtAlbedo_PS.cso (ps_6_6)"
+    )
+    # RT 反射（R2）の 4 パス。ps_6_6（RayQuery + バインドレス）。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtReflTrace_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E TracePS -Fo "${SHADER_OUTPUT_DIR}/RtReflTrace_PS.cso" "${SHADER_RT_REFLECTION}"
+        DEPENDS "${SHADER_RT_REFLECTION}" ${SHADER_DDGI_INC} ${SHADER_RT_INC}
+        COMMENT "Compiling RtReflection.hlsl -> RtReflTrace_PS.cso (ps_6_6)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtReflTemporal_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E TemporalPS -Fo "${SHADER_OUTPUT_DIR}/RtReflTemporal_PS.cso" "${SHADER_RT_REFLECTION}"
+        DEPENDS "${SHADER_RT_REFLECTION}" ${SHADER_DDGI_INC} ${SHADER_RT_INC}
+        COMMENT "Compiling RtReflection.hlsl -> RtReflTemporal_PS.cso (ps_6_6)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtReflSpatial_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E SpatialPS -Fo "${SHADER_OUTPUT_DIR}/RtReflSpatial_PS.cso" "${SHADER_RT_REFLECTION}"
+        DEPENDS "${SHADER_RT_REFLECTION}" ${SHADER_DDGI_INC} ${SHADER_RT_INC}
+        COMMENT "Compiling RtReflection.hlsl -> RtReflSpatial_PS.cso (ps_6_6)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtReflComposite_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E CompositePS -Fo "${SHADER_OUTPUT_DIR}/RtReflComposite_PS.cso" "${SHADER_RT_REFLECTION}"
+        DEPENDS "${SHADER_RT_REFLECTION}" ${SHADER_DDGI_INC} ${SHADER_RT_INC}
+        COMMENT "Compiling RtReflection.hlsl -> RtReflComposite_PS.cso (ps_6_6)"
     )
     # DDGI の probe 更新（trace / blend）。compute で RayQuery を使うので cs_6_6。
     add_custom_command(

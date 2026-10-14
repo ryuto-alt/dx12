@@ -74,6 +74,7 @@ namespace dx12e
     class ScreenSpaceGiPass;
     class RaytracingScene;
     class RtScreenPass;
+    class RtReflectionPass;
     class SkinningCompute;
     class DdgiVolume;
     struct PtHost;   // DXR パストレーサー(リファレンスレンダー)の糊(core/PathTracerHost.h)
@@ -1857,6 +1858,7 @@ private:
     //   ＝フォワード PS は 1 行も変わらない。
     std::unique_ptr<RaytracingScene> m_rtScene;      // BLAS キャッシュ + TLAS
     std::unique_ptr<RtScreenPass>    m_rtScreenPass; // RT影 / RT-AO / RTデバッグ
+    std::unique_ptr<RtReflectionPass> m_rtReflection; // RT 反射（R2）。SSR と合成して t16 へ
     // compute スキニング（計画09 Step 4）。スキンドの変形後頂点を書き出して BLAS の入力にする。
     // これが無いとスキンドは TLAS に入れられず、キャラだけ RT 影 / RT-AO の対象外になる。
     std::unique_ptr<SkinningCompute> m_skinningCompute;

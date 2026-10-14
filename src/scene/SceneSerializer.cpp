@@ -1390,6 +1390,11 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"aoDenoiseRadius",    rt.aoDenoiseRadius},
             {"maxInstances",       rt.maxInstances},
         };
+            {"reflectionsEnabled",      rt.reflectionsEnabled},
+            {"reflectionMaxRoughness",  rt.reflectionMaxRoughness},
+            {"reflectionMaxDistance",   rt.reflectionMaxDistance},
+            {"reflectionHalfRes",       rt.reflectionHalfRes},
+            {"reflectionIntensity",     rt.reflectionIntensity},
         // DDGI（計画09 Step 6）。★ルートキーを新設せず raytracing の入れ子にする:
         //   TLAS が前提で MCP も set_dxr が捌いている＝同じものだから。
         //   （SCENE_ROOT_KEYS / sceneWrite.ts を触らずに済む副次効果もある）
@@ -1710,6 +1715,11 @@ static void LoadRtSettings(Scene& scene, const json& root)
         rt.aoDenoiseRadius   = j.value("aoDenoiseRadius",   rt.aoDenoiseRadius);
         rt.maxInstances      = j.value("maxInstances",      rt.maxInstances);
     }
+        rt.reflectionsEnabled     = j.value("reflectionsEnabled",     rt.reflectionsEnabled);
+        rt.reflectionMaxRoughness = j.value("reflectionMaxRoughness", rt.reflectionMaxRoughness);
+        rt.reflectionMaxDistance  = j.value("reflectionMaxDistance",  rt.reflectionMaxDistance);
+        rt.reflectionHalfRes      = j.value("reflectionHalfRes",      rt.reflectionHalfRes);
+        rt.reflectionIntensity    = j.value("reflectionIntensity",    rt.reflectionIntensity);
     scene.GetRtSettings() = rt;   // forceBuildTlas は常に既定 OFF（保存対象外）
 
     // DDGI（raytracing の入れ子。キーが無ければ既定 OFF＝旧シーンは無変更で開く）

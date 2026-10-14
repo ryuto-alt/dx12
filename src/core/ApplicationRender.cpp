@@ -152,6 +152,7 @@ void Application::BuildDrawList()
                          && (m_scene->GetRtSettings().shadowEnabled
                              || m_scene->GetRtSettings().aoEnabled
                              || m_scene->GetRtSettings().forceBuildTlas
+                             || m_scene->GetRtSettings().reflectionsEnabled
                              || (m_ddgi && m_scene->GetDdgiSettings().enabled));
     m_rtContentHashValid = wantRtHash;
     m_rtContentHash      = 1469598103934665603ull;
@@ -4574,7 +4575,8 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         //   DDGI はワールド空間なので rtViewOk（透視カメラ限定）は課さない。
         const bool ddgiWant = m_ddgi && m_scene->GetDdgiSettings().enabled;
         const bool want = (rtViewOk
-                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug))
+                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug
+                            || rtCfg.reflectionsEnabled))
                         || ddgiWant;
         if (want)
         {
@@ -5237,6 +5239,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                          && viewSupportsScreenSpace && m_iblBaker != nullptr;
     const bool useSsr    = ssrCfg.enabled  && ssGiReady;
     const bool useSsgi   = ssgiCfg.enabled && ssGiReady;
+    // RT 反射（R2）。SSR の後段（DDGI 更新のあと）で、t16 と同じ形式の SSR + RT 合成を作る。主ビューだけ。
+    // G-Buffer・速度が要るので速度プリパスを要求する。TLAS が建っていない / DXR 非対応 / 正射 / 2D ビューでは走らない。
+    const bool useRtRefl = primary && viewSupportsScreenSpace && ddgiTlasOk
+                         && m_scene->GetRtSettings().reflectionsEnabled
+                         && m_rtReflection && m_rtReflection->IsReady() && m_ddgi
+                         && m_rtScene && m_rtScene->IsReady() && m_gbufferRT && m_taaPass;
 
     // ★TAA 有効時は SSAO/コンタクトシャドウが無効でも必ずプリパスを走らせる（速度バッファのため）。
     //   新しく深度を要求するパスを足したら、この行に OR で足すこと（00-COORDINATION §2 H2）。
@@ -5249,7 +5257,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                       && viewSupportsScreenSpace;
     // ★Hi-Z を除いてもプリパスが要るか（診断用。ここが false のときに Hi-Z を ON にすると
     //   オクルージョンのためだけにプリパスが走って描画コールが増える＝損になる）。
-    const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
+    const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi || useRtRefl
                                  || useRtShadow || useRtAo || useRtDebug
                                  || (m_forceDepthPrepass && viewSupportsScreenSpace);
     // 仮想ジオメトリ P2（GPU カリング・統計のみ）。既定 OFF。HZB の入力に深度が要るのでプリパスを走らせる。
@@ -5270,7 +5278,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ★RT-AO も G-Buffer の法線を使う（レイ方向とデノイザの bilateral 重み）。
     //   ここに足さないと G-Buffer が書かれず、AO は ddx/ddy 法線へ落ち、
     //   空間デノイザは丸ごとスキップされる。
-    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo)
+    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo || useRtRefl)
                                && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
@@ -5727,13 +5735,11 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // ★t14/t15（クラスタのインデックス/カウント）は使わない。あれは画面空間のクラスタで、
         //   視錐台の外にあるプローブには対応するクラスタが存在しないため。
         // プローブは画面空間ではないので compute。ヒット点は Step 5 のバインドレスを流用。
-        if (ddgiTlasOk && m_ddgi && m_ddgi->IsReady())
+        // ★RT 反射（R2）もヒット点の shading に同じ記述（太陽・灯・空）を使うので、DDGI が使えないシーンでも作る。
+        DdgiVolume::UpdateDesc dd{};
+        const bool ddgiRuns = ddgiTlasOk && m_ddgi && m_ddgi->IsReady();
+        if (ddgiRuns || (useRtRefl && velocityPrepass))
         {
-            DdgiUpdatePass::Inputs di{};
-            di.ddgi     = m_ddgi.get();
-            di.device   = m_graphicsDevice.get();
-            di.settings = &m_scene->GetDdgiSettings();
-            DdgiVolume::UpdateDesc& dd = di.desc;
             dd.tlas         = ddgiTlas;
             dd.geometryInfo = ddgiGeoInfo;
             dd.sunDir       = lightDirF3;
@@ -5768,7 +5774,66 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             dd.ringIndex    = frameIndex;
             dd.frameIndex   = m_deterministicCapture
                             ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+        }
+        if (ddgiRuns)
+        {
+            DdgiUpdatePass::Inputs di{};
+            di.ddgi     = m_ddgi.get();
+            di.device   = m_graphicsDevice.get();
+            di.settings = &m_scene->GetDdgiSettings();
+            di.desc     = dd;
             DdgiUpdatePass(di).Execute(passCtx);
+        }
+
+        // ===== RT 反射（R2）: SSR の後段で、SSR が外れた画素だけ RayQuery。結果は t16 と同じ形式 =====
+        // ★DDGI 更新の【後】に置く（今フレームのライト・アトラス・更新計画を引く）。フォワードの前ならどこでもよい。
+        //   出力は SSR と合成済みの RGBA16F。ssrSrv をこれに差し替えるだけで、フォワード PS は無改造。
+        if (useRtRefl && velocityPrepass)
+        {
+            alignas(16) u8 hitCb[DdgiVolume::kHitCbBytes]{};
+            bool giNew = false;
+            u32 gridUav = 0xFFFFFFFFu, probeDataSrv = 0xFFFFFFFFu;
+            m_ddgi->FillHitShadeConstants(m_scene->GetDdgiSettings(), dd, m_scene->GetGiSettings().mode == GiMode::New,
+                                          hitCb, giNew, gridUav, probeDataSrv);
+            RtReflectionPass::Desc rf{};
+            rf.depthSrv    = depthSrvIndex;
+            rf.gbufferSrv  = m_gbufferRT->GetSrvIndex();
+            rf.velocitySrv = m_taaPass->GetVelocitySrvIndex();
+            rf.ssrSrv      = (ssrSrv != DescriptorHeap::kInvalidIndex) ? ssrSrv : m_ssBlackSrvIndex;
+            rf.tlas        = ddgiTlas;
+            rf.geometryInfo = ddgiGeoInfo;
+            rf.hitCb       = hitCb;
+            rf.giNew       = giNew;
+            rf.gridUav     = gridUav;
+            rf.probeDataSrv = probeDataSrv;
+            rf.bounceScale = giNew ? (dd.unitScale > 0.0f ? 1.0f / dd.unitScale : 1.0f) : 1.0f;
+            rf.skyScale    = (dd.skyCubeSrvIndex != 0xFFFFFFFFu) ? m_iblIntensity : 1.0f;
+            if (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment())
+            {
+                rf.skyPrefilteredSrv = m_iblBaker->GetIrradianceSrv() + 1;   // t5 の次 = prefiltered（ブロック: irradiance / prefiltered / BRDF LUT）
+                rf.skyMaxMip = static_cast<u32>(m_iblBaker->GetMaxPrefilterMip());
+            }
+            rf.view        = camView;
+            rf.proj        = camProj;   // ★ジッタなし
+            rf.cameraPos   = viewPos;
+            rf.zNear       = viewNear;
+            rf.vpLeft = 0; rf.vpTop = 0; rf.vpW = rW; rf.vpH = rH;
+            rf.frameIndex  = frameIndex;
+            rf.seq         = m_deterministicCapture ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+            rf.gbufferValid = true;
+            if (rf.ssrSrv != DescriptorHeap::kInvalidIndex)
+            {
+                depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                gpuBegin(GpuTimer::RtReflection);
+                const u32 out = m_rtReflection->Run(nativeCmdList, rf, m_scene->GetRtSettings());
+                gpuEnd(GpuTimer::RtReflection);
+                depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                if (out != DescriptorHeap::kInvalidIndex) ssrSrv = out;
+            }
+        }
+        else if (m_rtReflection && primary)
+        {
+            m_rtReflection->InvalidateHistory();   // 走らないフレームを挟んだら、古い履歴で再投影しない
         }
 
         // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====

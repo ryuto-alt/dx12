@@ -447,7 +447,19 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"DdgiProbeData_CS.cso", L"ProbeDataCS", L"cs_6_6" },
                 { L"DdgiLightGrid_CS.cso", L"LightGridCS", L"cs_6_6" },
             },
-            { "ddgi/DdgiCommon.hlsli", "raytracing/RtBindless.hlsli", "forward/ClusterCommon.hlsli" },
+            { "ddgi/DdgiCommon.hlsli", "raytracing/RtBindless.hlsli", "raytracing/RtHitShade.hlsli", "forward/ClusterCommon.hlsli" },
+        },
+        {
+            // RT 反射（R2）。ヒット点の shading は DDGI と共通の RtHitShade.hlsli。
+            "raytracing/RtReflection.hlsl",
+            {
+                { L"RtReflTrace_PS.cso",     L"TracePS",     L"ps_6_6" },
+                { L"RtReflTemporal_PS.cso",  L"TemporalPS",  L"ps_6_6" },
+                { L"RtReflSpatial_PS.cso",   L"SpatialPS",   L"ps_6_6" },
+                { L"RtReflComposite_PS.cso", L"CompositePS", L"ps_6_6" },
+            },
+            { "post/FullscreenTri.hlsli", "raytracing/RtHitShade.hlsli", "raytracing/RtBindless.hlsli",
+              "ddgi/DdgiCommon.hlsli", "forward/ClusterCommon.hlsli" },
         },
         {
             // compute スキニング（計画09 Step 4）。スキンドの変形後頂点 → BLAS 用。

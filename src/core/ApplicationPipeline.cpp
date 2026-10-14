@@ -763,6 +763,7 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
     if (m_gbufferRT)        m_gbufferRT->Resize(*m_graphicsDevice, w, h);
     if (m_screenSpaceGi)    m_screenSpaceGi->Resize(*m_graphicsDevice, w, h);
     if (m_rtScreenPass)     m_rtScreenPass->Resize(*m_graphicsDevice, w, h);
+    if (m_rtReflection)     m_rtReflection->Resize(*m_graphicsDevice, w, h);
 
     // ★時間履歴は必ず捨てる。座標系が変わった履歴を持ち越すと TAA / SSR / SSGI /
     //   ボリュメトリックフォグが揃ってゴーストする（引き伸ばされた前フレームが尾を引く）。
@@ -1021,6 +1022,14 @@ void Application::RegisterShaderReloadHandlers()
             { L"Rt_VS.cso", L"RtShadow_PS.cso", L"RtAo_PS.cso", L"RtDebug_PS.cso",
               L"RtAoDenoise_PS.cso" },
             [this]() { m_rtScreenPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_rtReflection)
+    {
+        // RtHitShade.hlsli / DDGI 側を直したときは DdgiTrace_CS も一緒に再生成される（依存は CMake で張ってある）
+        m_shaderManager->RegisterReloadHandler(
+            { L"Rt_VS.cso", L"RtReflTrace_PS.cso", L"RtReflTemporal_PS.cso", L"RtReflSpatial_PS.cso",
+              L"RtReflComposite_PS.cso" },
+            [this]() { m_rtReflection->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_skinningCompute)
     {

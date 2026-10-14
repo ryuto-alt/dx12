@@ -21,6 +21,7 @@ add_library(Renderer STATIC
     AccelerationStructure.cpp
     RaytracingScene.cpp
     RtScreenPass.cpp
+    RtReflectionPass.cpp
     SkinningCompute.cpp
     DdgiVolume.cpp
     ClusteredLightCulling.cpp

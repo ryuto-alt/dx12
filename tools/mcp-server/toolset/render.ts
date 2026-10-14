@@ -478,6 +478,8 @@ reg(
   + "\n■ 設定: shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, "
   + "aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, aoDenoise, aoDenoiseRadius, "
   + "maxInstances, forceBuildTlas。"
+  + "\n■ RT 反射: reflectionsEnabled, reflectionMaxRoughness, reflectionMaxDistance, reflectionHalfRes, reflectionIntensity。"
+  + "反射パスの GPU 時間は dx12_benchmark の gpuPassMs.rtReflection。"
   + "\n■ DDGI: ddgiEnabled, ddgiSpacing, ddgiProbeCountX/Y/Z, ddgiOriginX/Y/Z, ddgiRayLength, "
   + "ddgiHysteresis, ddgiIntensity, ddgiNormalBias, ddgiBounceIntensity, ddgiFollowCamera, ddgiSpacing1, ddgiBudgetMs。"
   + "実測は stats.ddgiReady(PSO が建ったか) / ddgiEnabled / ddgiProbes / ddgiRaysCast / ddgiBytes。"
@@ -587,6 +589,17 @@ reg(
       "遠景カスケードのプローブ間隔(m)。0.1..100 にクランプ。既定 2.0。ddgiFollowCamera:true のときだけ使う。"),
     ddgiBudgetMs: z.number().optional().describe(
       "1 フレームの DDGI の GPU 予算(ms)。0.05..20 にクランプ。既定 1。実測の GPU 時間から更新するプローブ数を決める(超えそうなら間引く)。"),
+    reflectionsEnabled: z.boolean().optional().describe(
+      "RT 反射(R2)を使うか(既定 false)。SSR の後段で、SSR が外れた画素だけ RayQuery を撃ち、SSR と合成した結果を t16 へ出す(フォワードは無改造)。"
+      + "ヒット点の shading は DDGI と共通、ミスは空(既存の IBL/大気 + DDGI の埋め)。DXR + Dynamic Resources 対応 GPU で透視カメラのときだけ走る。"),
+    reflectionMaxRoughness: z.number().optional().describe(
+      "これより粗い面は撃たない(IBL に任せる)。0.05..1 にクランプ。既定 0.6。上限の手前から連続に消える。"),
+    reflectionMaxDistance: z.number().optional().describe(
+      "反射レイの最大距離(m)。1..100000 にクランプ。既定 100。越えたら空へ落とす。"),
+    reflectionHalfRes: z.boolean().optional().describe(
+      "ハーフ解像度でトレースするか(既定 true)。false でフル解像度(綺麗だが重い)。"),
+    reflectionIntensity: z.number().optional().describe(
+      "RT 反射の合成の強さ。0..1 にクランプ。既定 1。"),
   },
   { idempotentHint: true },
   (a) => run(async () => {

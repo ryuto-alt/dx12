@@ -43,6 +43,20 @@ struct RtSettings
     bool  aoDenoise       = true;
     float aoDenoiseRadius = 8.0f;   // フィルタ半径(px)。0 で無効
 
+    // --- RT 反射（R2）-------------------------------------------------------
+    // SSR の後段で、SSR の confidence が低い画素だけ RayQuery を撃つ。出力は SSR と同じ t16（rgb=反射放射輝度 / a=confidence）。
+    // ヒット点の shading は DDGI と共通（RtHitShade.hlsli）。ミスは空（既存の IBL / 大気 + DDGI の埋め）。
+    // ★既定 OFF。OFF のとき絵は導入前と完全に一致する（パスが走らず、新しいテクスチャも確保しない）。
+    // ★GPU が DXR + Dynamic Resources 対応で、G-Buffer が書かれるフレーム（透視カメラ）だけ走る。
+    bool  reflectionsEnabled = false;
+    // これより粗い面は撃たない（IBL に任せる）。0.6 の少し手前から連続に消える。
+    float reflectionMaxRoughness = 0.6f;
+    // レイの最大距離(m)。越えたら空へ落とす。
+    float reflectionMaxDistance = 100.0f;
+    // true = ハーフ解像度でトレース（既定）/ false = フル解像度（綺麗だが重い）。
+    bool  reflectionHalfRes = true;
+    float reflectionIntensity = 1.0f;   // 合成の強さ（confidence への乗算 0..1）
+
     // --- 共通 ---------------------------------------------------------------
     // TLAS へ入れるインスタンスの上限。0 で既定（RaytracingScene::kMaxRtInstances）。
     int   maxInstances = 0;

@@ -407,7 +407,8 @@ void Application::RegisterMcpRenderMethods()
               "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
-              "shadowSunAngle:number", DX12E_MCP_HANDLER
+              "shadowSunAngle:number,reflectionsEnabled:any,reflectionMaxRoughness:number,"
+              "reflectionMaxDistance:number,reflectionHalfRes:any,reflectionIntensity:number", DX12E_MCP_HANDLER
         {
             // get/set を 1 本のハンドラで捌く（"a|b" 登録）。
             //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書く。
@@ -445,6 +446,15 @@ void Application::RegisterMcpRenderMethods()
                 if (params.contains("maxInstances"))
                     r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
                 r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
+                // RT 反射（R2）。SSR の後段で t16 へ合成。ヒット点の shading は DDGI と共通
+                r.reflectionsEnabled = params.value("reflectionsEnabled", r.reflectionsEnabled);
+                if (params.contains("reflectionMaxRoughness"))
+                    r.reflectionMaxRoughness = McpFloatParam(params, "reflectionMaxRoughness", r.reflectionMaxRoughness, 0.05f, 1.0f);
+                if (params.contains("reflectionMaxDistance"))
+                    r.reflectionMaxDistance = McpFloatParam(params, "reflectionMaxDistance", r.reflectionMaxDistance, 1.0f, 100000.0f);
+                r.reflectionHalfRes = params.value("reflectionHalfRes", r.reflectionHalfRes);
+                if (params.contains("reflectionIntensity"))
+                    r.reflectionIntensity = McpFloatParam(params, "reflectionIntensity", r.reflectionIntensity, 0.0f, 1.0f);
 
                 // DDGI（計画09 Step 6）。RT 設定と同じハンドラで捌く（TLAS が前提なので）。
                 DdgiSettings& g = m_scene->GetDdgiSettings();
@@ -564,6 +574,11 @@ void Application::RegisterMcpRenderMethods()
                               {"aoDenoiseRadius", r.aoDenoiseRadius},
                               {"maxInstances", r.maxInstances},
                               {"forceBuildTlas", r.forceBuildTlas},
+                              {"reflectionsEnabled", r.reflectionsEnabled},
+                              {"reflectionMaxRoughness", r.reflectionMaxRoughness},
+                              {"reflectionMaxDistance", r.reflectionMaxDistance},
+                              {"reflectionHalfRes", r.reflectionHalfRes},
+                              {"reflectionIntensity", r.reflectionIntensity},
                               // DDGI の設定値。set_dxr の読み返し照合(applyAndVerify)はここを見る。
                               {"ddgiEnabled", dg.enabled},
                               {"ddgiSpacing", dg.spacing},

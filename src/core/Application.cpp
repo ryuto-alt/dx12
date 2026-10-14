@@ -1133,12 +1133,26 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                                m_window->GetWidth(), m_window->GetHeight(),
                                                PathResolver::ShaderDirW());
                     m_dxrEnabled = m_rtScreenPass->IsReady();
+                    // RT 反射（R2）。バインドレス（Dynamic Resources）が無い GPU では IsReady が false のまま＝走らない。
+                    try
+                    {
+                        m_rtReflection = std::make_unique<RtReflectionPass>();
+                        m_rtReflection->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                                   m_window->GetWidth(), m_window->GetHeight(),
+                                                   PathResolver::ShaderDirW());
+                    }
+                    catch (const std::exception& e)
+                    {
+                        Logger::Warn("RT 反射のシェーダを読めませんでした: {}", e.what());
+                        m_rtReflection.reset();
+                    }
                 }
                 catch (const std::exception& e)
                 {
                     // .cso が無い / 壊れている（Gate 5）。エラーではなく機能の不在として扱う。
                     Logger::Warn("レイトレーシングのシェーダを読めませんでした: {}", e.what());
                     m_rtScreenPass.reset();
+    m_rtReflection.reset();
                     m_dxrEnabled = false;
                 }
             }
@@ -1146,6 +1160,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             {
                 m_rtScene.reset();
                 m_rtScreenPass.reset();
+    m_rtReflection.reset();
             }
             else
             {
@@ -2300,6 +2315,7 @@ void Application::Shutdown()
     m_screenSpaceGi.reset();
     // DXR（加速構造 + RT パス）。デバイス解放より前に確実に落とす。
     m_rtScreenPass.reset();
+    m_rtReflection.reset();
     if (m_rtScene) m_rtScene->Shutdown();
     m_rtScene.reset();
     m_ssaoWhiteTex.reset();
