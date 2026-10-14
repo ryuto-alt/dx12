@@ -782,6 +782,8 @@ private:
     // benchmark（遅延応答）: N フレームの perf を貯めて統計を返す
     McpDeferred      m_benchReply{};
     std::vector<f32> m_benchSamples;      // frameMs
+    std::vector<PerfFrame> m_benchWorst;  // frameMs の大きい順に上位 kBenchWorstFrames 件（スパイクの内訳）
+    static constexpr size_t kBenchWorstFrames = 5;
     u32              m_benchFramesLeft = 0;
     f64 m_benchDraws = 0, m_benchCulled = 0, m_benchTris = 0;
     f64 m_benchWork = 0, m_benchFence = 0, m_benchPresent = 0;

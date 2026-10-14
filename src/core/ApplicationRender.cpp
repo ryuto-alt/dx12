@@ -758,6 +758,15 @@ void Application::RecordPerfFrame()
     if (m_benchFramesLeft > 0 && f.frameMs > 0.0f)
     {
         m_benchSamples.push_back(f.frameMs);
+        // スパイクの内訳: 平均に畳むと「どの処理が一瞬だけ重くなったか」が消えるので、
+        // 遅いフレームは丸ごと控えておく（frameMs の降順・上位 kBenchWorstFrames 件）。
+        if (m_benchWorst.size() < kBenchWorstFrames || f.frameMs > m_benchWorst.back().frameMs)
+        {
+            auto it = std::upper_bound(m_benchWorst.begin(), m_benchWorst.end(), f,
+                [](const PerfFrame& a, const PerfFrame& b) { return a.frameMs > b.frameMs; });
+            m_benchWorst.insert(it, f);
+            if (m_benchWorst.size() > kBenchWorstFrames) m_benchWorst.pop_back();
+        }
         m_benchDraws += f.draws; m_benchCulled += f.culled; m_benchTris += f.tris;
         m_benchWork += f.workMs; m_benchFence += f.fenceWaitMs; m_benchPresent += f.presentMs;
         for (u32 s = 0; s < GpuTimer::Count; ++s) m_benchGpu[s] += f.gpuMs[s];
@@ -810,10 +819,30 @@ void Application::RecordPerfFrame()
                 const double p99 = PerfPercentile(tmp, 0.99);
                 rep["fps1PercentLow"] = (p99 > 0.0) ? std::round(100000.0 / p99) / 100.0 : 0.0;
             }
+            // 遅いフレームの内訳（0.05ms 未満の項は省く）。gpuPassMs は GpuTimer の読み戻しが
+            // 数フレーム遅れるので、GPU 側のスパイクは前後のフレームにずれて出ることがある。
+            {
+                auto r2 = [](double v) { return std::round(v * 100.0) / 100.0; };
+                nlohmann::json worst = nlohmann::json::array();
+                for (const PerfFrame& w : m_benchWorst)
+                {
+                    nlohmann::json cpu = nlohmann::json::object();
+                    for (u32 s = 0; s < CpuScopeCount; ++s)
+                        if (w.cpuMs[s] >= 0.05f) cpu[appdetail::CpuScopeName(s)] = r2(w.cpuMs[s]);
+                    nlohmann::json gpu = nlohmann::json::object();
+                    for (u32 s = 0; s < GpuTimer::Count; ++s)
+                        if (w.gpuMs[s] >= 0.05f) gpu[GpuTimer::Name(s)] = r2(w.gpuMs[s]);
+                    worst.push_back({{"frameMs", r2(w.frameMs)}, {"workMs", r2(w.workMs)},
+                                     {"fenceWaitMs", r2(w.fenceWaitMs)}, {"presentMs", r2(w.presentMs)},
+                                     {"drawCalls", w.draws}, {"cpuScopeMs", cpu}, {"gpuPassMs", gpu}});
+                }
+                rep["worstFrames"] = std::move(worst);
+            }
             if (m_benchReply.client != 0)
                 CompleteMcp(m_mcpBridge.get(), m_benchReply, std::move(rep));
             m_benchReply = {};
             m_benchSamples.clear();
+            m_benchWorst.clear();
         }
     }
 }

@@ -991,6 +991,7 @@ void Application::RegisterMcpEditorMethods()
                     "走っているベンチマークの応答（frames ぶん）を待ってから次を始める");
             m_benchSamples.clear();
             m_benchSamples.reserve(static_cast<size_t>(n));
+            m_benchWorst.clear();
             m_benchDraws = m_benchCulled = m_benchTris = 0;
             m_benchWork = m_benchFence = m_benchPresent = 0;
             for (auto& g : m_benchGpu) g = 0;
