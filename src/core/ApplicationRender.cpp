@@ -1767,6 +1767,16 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         const Material* mat = m ? m->GetMaterial() : nullptr;
         float baseM = mat ? mat->defaultMetallic  : 0.0f;
         float baseR = mat ? mat->defaultRoughness : 0.5f;
+        // ★MR テクスチャがあるなら、スカラーは「係数」（フォワードは tex × 係数）。係数だけを書くと
+        //   glTF 既定の metallicFactor=1 や Specular→ORM（係数 1）のモデルが G-Buffer 上で全部金属・
+        //   粗さ最大になり、SSR / SSGI / RT 反射が街全体を金属として扱っていた（Bistro、2026-10-14）。
+        //   テクスチャを毎ドロー貼らずに済むよう、読み込み時に求めた G/B の平均を掛ける。
+        if (mat && mat->metalRoughnessTexture
+            && MeshRenderer::SafeGetOverride(r.overrideMetalRoughnessTexture, mi).empty())
+        {
+            baseM *= mat->metalRoughnessTexture->AverageB();
+            baseR *= mat->metalRoughnessTexture->AverageG();
+        }
         if (m_materialAssetManager && r.HasMaterialAsset(mi))
         {
             const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(

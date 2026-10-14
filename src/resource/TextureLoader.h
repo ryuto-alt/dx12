@@ -65,6 +65,10 @@ public:
     // IsAlphaAllOpaque）。アルファの無い形式（BC1 のアルファ無し含む）は false。GPU 不要の純関数。
     static bool HasTransparentAlpha(const DirectX::ScratchImage& image);
 
+    // G / B チャンネルの画像全体の平均（0..1）。BC 圧縮済みでも、長辺 64 以下の小さい mip を展開して求める。
+    // metalRoughness テクスチャの代表値（G=roughness / B=metallic）。求められなければ false。GPU 不要の純関数。
+    static bool AverageGB(const DirectX::ScratchImage& image, float& outG, float& outB);
+
     static bool IsCompressibleSize(size_t width, size_t height, size_t arraySize, size_t depth);
 
     // 長辺を maxDim に収めるサイズを縦横比を保って求める純関数。

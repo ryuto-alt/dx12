@@ -791,6 +791,42 @@ bool TextureLoader::HasTransparentAlpha(const DirectX::ScratchImage& image)
     return !image.IsAlphaAllOpaque();
 }
 
+bool TextureLoader::AverageGB(const DirectX::ScratchImage& image, float& outG, float& outB)
+{
+    if (image.GetImageCount() == 0) return false;
+    const DirectX::TexMetadata& md = image.GetMetadata();
+    // 長辺 64 以下の最初の mip（無ければ最小 mip）。全画素を読むより桁違いに安く、平均はほぼ変わらない。
+    size_t mip = md.mipLevels - 1;
+    for (size_t m = 0; m < md.mipLevels; ++m)
+        if ((std::max)(std::max<size_t>(md.width >> m, 1), std::max<size_t>(md.height >> m, 1)) <= 64) { mip = m; break; }
+    const DirectX::Image* src = image.GetImage(mip, 0, 0);
+    if (!src) return false;
+    DirectX::ScratchImage tmp;
+    const DirectX::Image* img = src;
+    if (DirectX::IsCompressed(src->format))
+    {
+        if (FAILED(DirectX::Decompress(*src, DXGI_FORMAT_R32G32B32A32_FLOAT, tmp))) return false;
+        img = tmp.GetImage(0, 0, 0);
+    }
+    else if (src->format != DXGI_FORMAT_R32G32B32A32_FLOAT)
+    {
+        if (FAILED(DirectX::Convert(*src, DXGI_FORMAT_R32G32B32A32_FLOAT, DirectX::TEX_FILTER_DEFAULT,
+                                    DirectX::TEX_THRESHOLD_DEFAULT, tmp))) return false;
+        img = tmp.GetImage(0, 0, 0);
+    }
+    if (!img || img->width == 0 || img->height == 0) return false;
+    double g = 0.0, b = 0.0;
+    for (size_t y = 0; y < img->height; ++y)
+    {
+        const float* row = reinterpret_cast<const float*>(img->pixels + y * img->rowPitch);
+        for (size_t x = 0; x < img->width; ++x) { g += row[x * 4 + 1]; b += row[x * 4 + 2]; }
+    }
+    const double n = static_cast<double>(img->width * img->height);
+    outG = static_cast<float>(g / n);
+    outB = static_cast<float>(b / n);
+    return true;
+}
+
 bool TextureLoader::IsCompressibleSize(size_t width, size_t height, size_t arraySize, size_t depth)
 {
     // D3D12 はブロック圧縮テクスチャの最上位 mip に 4 の倍数を要求する。
@@ -997,6 +1033,12 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     // アルベドだけ、最終形（キャッシュ読み込み / BC 圧縮後を含む）で 1 回だけ判定する。
     if (usage == TextureUsage::BaseColor)
         texture->SetHasTransparentAlpha(TextureLoader::HasTransparentAlpha(scratchImage));
+    // metalRoughness 等の非カラー: G/B の平均を控える（G-Buffer の代表値。ModelLoader 参照）。
+    if (usage == TextureUsage::NonColor)
+    {
+        float g = 1.0f, b = 1.0f;
+        if (TextureLoader::AverageGB(scratchImage, g, b)) texture->SetChannelAverages(g, b);
+    }
 
     Logger::Info("Texture loaded: {}x{}, mips={}, format={}",
                  static_cast<u32>(meta.width),
@@ -1184,6 +1226,12 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
     if (usage == TextureUsage::BaseColor)
         texture->SetHasTransparentAlpha(TextureLoader::HasTransparentAlpha(scratchImage));
+    // metalRoughness 等の非カラー: G/B の平均を控える（G-Buffer の代表値。ModelLoader 参照）。
+    if (usage == TextureUsage::NonColor)
+    {
+        float g = 1.0f, b = 1.0f;
+        if (TextureLoader::AverageGB(scratchImage, g, b)) texture->SetChannelAverages(g, b);
+    }
 
     Logger::Info("Embedded texture loaded: {}x{}, mips={} (format={})",
                  static_cast<u32>(meta.width), static_cast<u32>(meta.height),
