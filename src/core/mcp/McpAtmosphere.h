@@ -25,7 +25,8 @@ inline json CloudsToJson(const CloudSettings& c)
 {
     return {{"enabled", c.enabled}, {"coverage", c.coverage}, {"cloudType", c.cloudType}, {"density", c.density},
             {"baseAltitudeKm", c.baseAltitudeKm}, {"thicknessKm", c.thicknessKm}, {"windDirDeg", c.windDirDeg},
-            {"windSpeed", c.windSpeed}, {"detailStrength", c.detailStrength}, {"scale", c.scale}, {"steps", c.steps}};
+            {"windSpeed", c.windSpeed}, {"detailStrength", c.detailStrength}, {"scale", c.scale}, {"steps", c.steps},
+            {"shadows", c.shadows}, {"shadowStrength", c.shadowStrength}};
 }
 
 inline json ToJson(const AtmosphereSettings& a)
@@ -123,7 +124,7 @@ inline bool Apply(AtmosphereSettings& a, const json& j, std::string& err)
         const auto& c = j["clouds"];
         if (!c.is_object()) { err = "clouds はオブジェクト"; return false; }
         static const char* const ck[] = {"enabled", "coverage", "cloudType", "density", "baseAltitudeKm", "thicknessKm",
-                                         "windDirDeg", "windSpeed", "detailStrength", "scale", "steps"};
+                                         "windDirDeg", "windSpeed", "detailStrength", "scale", "steps", "shadows", "shadowStrength"};
         for (auto it = c.begin(); it != c.end(); ++it)
         {
             bool known = false;
@@ -152,6 +153,12 @@ inline bool Apply(AtmosphereSettings& a, const json& j, std::string& err)
         cnum("windSpeed", cl.windSpeed, 0.0f, 500.0f);
         cnum("detailStrength", cl.detailStrength, 0.0f, 1.0f);
         cnum("scale", cl.scale, 0.25f, 4.0f);
+        cnum("shadowStrength", cl.shadowStrength, 0.0f, 1.0f);
+        if (ok && c.contains("shadows") && !c["shadows"].is_null())
+        {
+            if (!c["shadows"].is_boolean()) { err = "clouds.shadows は true / false"; return false; }
+            cl.shadows = c["shadows"].get<bool>();
+        }
         if (ok && c.contains("steps") && !c["steps"].is_null())
         {
             if (!c["steps"].is_number()) { err = "clouds.steps は数値"; return false; }

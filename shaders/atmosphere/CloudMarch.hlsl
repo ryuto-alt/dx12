@@ -20,9 +20,11 @@ cbuffer CloudCB : register(b1)
     float  gCloudType;  float gDensity;  float gBaseKm;  float gThickKm;
     float  gDetail;  float gScale;  float gMaxDistKm;  float gHistBlend;
     uint   gSteps;  uint gFrame;  uint gCFlags;  uint gCPad0;
+    float  gShadowStrength;  uint gShadowRes;  uint gAux0;  uint gAux1;   // 雲の影(強さ / 影マップ解像度)・空キューブ焼き込み(面サイズ / mip)
 };
 #define CF_RESET 1u   // 履歴を使わない
 #define CF_BURST 2u   // 16 サブフレームの一括生成中(その回の画素は新しい値をそのまま採用)
+#define CF_PREVMASK 4u   // 影マスクの前段(RT 影 / コンタクトシャドウ)を読む
 
 Texture3D<float4>  gShape   : register(t5);
 Texture3D<float4>  gDetailT : register(t6);
@@ -32,12 +34,17 @@ Texture2D<float>   gTraceD  : register(t9);
 Texture2D<float4>  gHistC   : register(t10);
 Texture2D<float>   gHistD   : register(t11);
 Texture2D<float>   gDepth   : register(t12);
+Texture2D<float>        gPrevMask  : register(t13);   // 影マスクの前段(PSShadowApply のみ)
+Texture2D<float>        gShadowMap : register(t14);   // 雲の影マップ(太陽に垂直な正射の透過率)
+Texture2DArray<float4>  gSkyCopy   : register(t15);   // 空キューブの一時コピー(CubeCloudCS が読む)
 SamplerState       gLinWrap : register(s1);
 
 RWTexture2D<float4> gOutTraceC : register(u0);
 RWTexture2D<float>  gOutTraceD : register(u1);
 RWTexture2D<float4> gOutResC   : register(u2);
 RWTexture2D<float>  gOutResD   : register(u3);
+RWTexture2D<float>  gOutShadow : register(u6);          // 雲の影マップ
+RWTexture2DArray<float4> gOutCubeMip : register(u7);   // 空キューブの mip(1 ディスパッチに 1 つ)
 
 static const float kExtinction = 24.0;       // 密度 1・gDensity 1 のときの消散係数 [1/km](積雲の芯で 30〜100 /km)
 static const float kShapeTileKm   = 12.0;    // 形状ノイズ 128^3 の 1 周期[km](× gScale)
@@ -353,4 +360,140 @@ float4 PSComposite(VSOut i) : SV_TARGET
         if (!CloudRange(O, dir, t0, t1) || geomKm < t0) return float4(0, 0, 0, 1);
     }
     return float4(c.rgb, c.a);
+}
+
+// ===========================================================================
+//  雲の影（地面・建物に落ちる）
+//   ShadowMapCS   : 太陽に垂直な正射のグリッド（カメラ直下の海面高さの点が中心・半径 kShadowHalfKm）の各点から、太陽方向へ雲層を積分した透過率。
+//                   中心は影マップの 1 テクセル単位に丸める（カメラが動いても影が泳がない）。
+//   PSShadowApply : 深度 → ワールド位置 → 影マップ。前段のマスク（RT 影 / コンタクトシャドウ）に掛けて R8 の影マスクへ書く（1 = 遮蔽なし）。
+//   受け手は雲底より下にある前提（直線上の雲層ぜんぶを積分する）。雲層に達する高さの物は雲底から上へ向かって影を薄くする。
+// ===========================================================================
+static const float kShadowHalfKm = 6.0;
+
+void ShadowBasis(float3 L, out float3 right, out float3 up)
+{
+    float3 a = (abs(L.y) < 0.99) ? float3(0, 1, 0) : float3(1, 0, 0);
+    right = normalize(cross(a, L));
+    up = cross(L, right);
+}
+
+[numthreads(8, 8, 1)]
+void ShadowMapCS(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= gShadowRes || id.y >= gShadowRes) return;
+    const float3 L = normalize(gLightDir);
+    float T = 1.0;
+    if (L.y > 0.02)
+    {
+        float3 right, up;
+        ShadowBasis(L, right, up);
+        const float3 A = float3(gCamPos.x, gCamPos.y - gCamAlt * 1000.0, gCamPos.z);   // 海面高さのカメラ直下
+        const float halfM = kShadowHalfKm * 1000.0;
+        const float texelM = 2.0 * halfM / float(gShadowRes);
+        const float cu = floor(dot(A, right) / texelM) * texelM;
+        const float cv = floor(dot(A, up) / texelM) * texelM;
+        const float2 off = ((float2(id.xy) + 0.5) / float(gShadowRes) - 0.5) * (2.0 * halfM);
+        const float3 Qw = right * (cu + off.x) + up * (cv + off.y) + L * dot(A, L);
+        const float3 G = Qw - L * ((Qw.y - A.y) / L.y);   // 直線を海面高さまで戻す（そこから上は必ず雲底より下 = 地面の内側から始めない）
+        const float3 Q = (G - gCamPos) * 0.001 + float3(0, gBottomR + gCamAlt, 0);
+
+        float t0, t1;
+        if (CloudRange(Q, L, t0, t1))
+        {
+            const uint N = 48;
+            const float len = t1 - t0;
+            const float jit = 0.5;   // 画素ごとの乱数は使わない（高周波のノイズになり、深度の量子化と組んで縞になる）。固定の位置なら誤差は空間的に滑らか
+            const float2 camXZ = gCamPos.xz * 0.001;
+            const float rBase = gBottomR + gBaseKm;
+            float od = 0.0;
+            [loop]
+            for (uint i = 0; i < N; ++i)
+            {
+                float t = t0 + len * ((float(i) + jit) / float(N));
+                float3 P = Q + L * t;
+                float h = length(P) - rBase;
+                float hf = h / gThickKm;
+                if (hf < 0.0 || hf > 1.0) continue;
+                od += CloudDensity(P.xz + camXZ, h, hf, 0.0, false) * gDensity * kExtinction * (len / float(N));
+            }
+            T = exp(-od * 0.5);   // 厚い雲でも前方散乱で多少は抜ける。完全な黒にはしない（環境光は別に残る）
+        }
+    }
+    gOutShadow[id.xy] = T;
+}
+
+float PSShadowApply(VSOut i) : SV_TARGET
+{
+    const int2 px = int2(i.pos.xy);
+    const float prev = ((gCFlags & CF_PREVMASK) != 0u) ? gPrevMask.Load(int3(px, 0)) : 1.0;
+    const float d = gDepth.Load(int3(px, 0));
+    const float3 L = normalize(gLightDir);
+    if (d >= 0.9999999 || L.y <= 0.02 || gShadowStrength <= 0.0) return prev;
+
+    const float2 ndc = i.uv * float2(2.0, -2.0) + float2(-1.0, 1.0);
+    const float4 w = mul(float4(ndc, d, 1.0), gInvViewProjJ);
+    const float3 Pw = w.xyz / w.w;
+
+    float3 right, up;
+    ShadowBasis(L, right, up);
+    const float3 A = float3(gCamPos.x, gCamPos.y - gCamAlt * 1000.0, gCamPos.z);
+    const float halfM = kShadowHalfKm * 1000.0;
+    const float texelM = 2.0 * halfM / float(gShadowRes);
+    const float cu = floor(dot(A, right) / texelM) * texelM;
+    const float cv = floor(dot(A, up) / texelM) * texelM;
+    const float2 uv = float2((dot(Pw, right) - cu) / (2.0 * halfM) + 0.5, (dot(Pw, up) - cv) / (2.0 * halfM) + 0.5);
+    const float2 e2 = min(uv, 1.0 - uv);
+    const float edge = saturate(min(e2.x, e2.y) / 0.08);                          // マップの外縁は影を薄めて切れ目を隠す
+    const float hP = gCamAlt + (Pw.y - gCamPos.y) * 0.001;                         // 受け手の標高[km]
+    const float fade = 1.0 - smoothstep(gBaseKm, gBaseKm + 0.6 * gThickKm, hP);   // 雲底より上の物は影を弱める
+    const float s = gShadowStrength * edge * fade;
+    if (s <= 0.0) return prev;
+    // 深度の量子化（D32 の最後の 1 bit）で世界位置は距離²に比例してずれる（2 km で数 m、遠くで数十 m）。そのずれの分だけ影マップをぼかす
+    // ＝ 深度の等高線に沿った縞を出さない。雲の影の縁は太陽の視直径ぶん（雲高 × 0.0093 ≒ 15〜40 m）もともと柔らかい。
+    const float4 w1 = mul(float4(ndc, min(d + 6.0e-8, 1.0), 1.0), gInvViewProjJ);
+    const float posErr = length(w1.xyz / w1.w - Pw);
+    const float radM = clamp(posErr * 1.2, texelM * 0.9, 160.0);
+    const float r = radM / (2.0 * halfM);
+    float T = gShadowMap.SampleLevel(gLinClamp, uv, 0) * 0.2;
+    static const float2 kTap[8] = {float2(1, 0), float2(-1, 0), float2(0, 1), float2(0, -1),
+                                   float2(0.7071, 0.7071), float2(-0.7071, 0.7071), float2(0.7071, -0.7071), float2(-0.7071, -0.7071)};
+    [unroll]
+    for (int k = 0; k < 8; ++k) T += 0.1 * gShadowMap.SampleLevel(gLinClamp, uv + kTap[k] * r, 0);
+    return prev * lerp(1.0, T, s);
+}
+
+// ===========================================================================
+//  環境光（IBL の空キューブ）へ雲を焼き込む: out = sky * T + L（カメラ位置から見た雲。AP は掛けない）
+//   mip ごとに 1 ディスパッチ（gAux0 = 面サイズ / gAux1 = mip）。入力は空キューブの一時コピー（gSkyCopy）。
+// ===========================================================================
+float3 CloudFaceDir(uint face, float2 uv)
+{
+    float2 st = uv * 2.0 - 1.0;
+    float3 dir;
+    switch (face)
+    {
+        case 0: dir = float3( 1.0,  -st.y, -st.x); break;
+        case 1: dir = float3(-1.0,  -st.y,  st.x); break;
+        case 2: dir = float3( st.x,  1.0,   st.y); break;
+        case 3: dir = float3( st.x, -1.0,  -st.y); break;
+        case 4: dir = float3( st.x, -st.y,  1.0);  break;
+        default:dir = float3(-st.x, -st.y, -1.0);  break;
+    }
+    return normalize(dir);
+}
+
+[numthreads(8, 8, 1)]
+void CubeCloudCS(uint3 id : SV_DispatchThreadID)
+{
+    const uint size = gAux0;
+    if (id.x >= size || id.y >= size) return;
+    const float4 sky = gSkyCopy.Load(int4(int(id.x), int(id.y), int(id.z), int(gAux1)));
+    const float3 dir = CloudFaceDir(id.z, (float2(id.xy) + 0.5) / float(size));
+    const float3 O = float3(0, gBottomR + gCamAlt, 0);
+    const float jitter = frac(Ign(float2(id.xy) + float(id.z) * 37.0 + float(gAux1) * 11.0));
+    CloudRay r = MarchCloud(O, dir, jitter);
+    float3 Lc = clamp(r.L, 0.0, 6.0e4);
+    if (any(isnan(Lc)) || isnan(r.T)) { Lc = 0; r.T = 1; }
+    gOutCubeMip[id] = float4(sky.rgb * saturate(r.T) + Lc, 1.0);
 }

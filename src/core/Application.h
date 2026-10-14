@@ -1690,6 +1690,12 @@ private:
     void  AtmosphereDrawAerialPerspective(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);
     bool  LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd);   // LoadSkyboxIfNeeded の先頭から: 大気が環境の元なら焼いて true
     void  AtmosphereDrawClouds(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);   // ボリュメトリッククラウド（AP の直後。ApplicationClouds.cpp）
+    // 雲の影（影マスク t11 に掛ける）と環境光への焼き込み。どちらも clouds.enabled のときだけ（ApplicationClouds.cpp）
+    bool  AtmosphereCloudShadowWanted(const ViewDesc& view) const;
+    u32   AtmosphereCloudShadow(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex, u32 prevMaskSrvIndex);   // 戻り値 = 新しい影マスクの SRV 番号（失敗時は prevMaskSrvIndex）
+    void  AtmosphereCloudsToSkyCube(ID3D12GraphicsCommandList* cmd, u32 frameIndex);   // RecordSkyCube の直後に呼ぶ
+    bool  AtmosphereCloudsEnsure();
+    void  AtmosphereCloudWind(float outKm[3]);
     void  AtmosphereShutdown();
 
     // ---- 仮想ジオメトリ（Nanite 風）P2: .vgeo の読込 + GPU カリング（統計のみ。**描かない**）----

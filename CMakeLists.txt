@@ -1637,7 +1637,10 @@ if(DXC_EXECUTABLE)
             "CloudTrace_CS|CloudMarch|cs_6_0|TraceCS"
             "CloudResolve_CS|CloudMarch|cs_6_0|ResolveCS"
             "CloudComposite_VS|CloudMarch|vs_6_0|VSFull"
-            "CloudComposite_PS|CloudMarch|ps_6_0|PSComposite")
+            "CloudComposite_PS|CloudMarch|ps_6_0|PSComposite"
+            "CloudShadowMap_CS|CloudMarch|cs_6_0|ShadowMapCS"
+            "CloudShadowApply_PS|CloudMarch|ps_6_0|PSShadowApply"
+            "CloudCubeCloud_CS|CloudMarch|cs_6_0|CubeCloudCS")
         string(REPLACE "|" ";" _clp "${_cl}")
         list(GET _clp 0 _clOut)
         list(GET _clp 1 _clSrc)

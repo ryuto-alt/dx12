@@ -25,8 +25,9 @@ const char* GpuTimer::Name(u32 s)
     case PostFX:      return "postFx";
     case UI:          return "ui";
     case VgCull:      return "vgCull";
-    default:          return "?";
     case Clouds:      return "clouds";
+    case CloudShadow: return "cloudShadow";
+    default:          return "?";
     }
 }
 

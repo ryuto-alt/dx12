@@ -2,6 +2,11 @@
 // ボリュメトリッククラウド: Application 側の糊（遅延確保・風の時間・履歴の管理・AP 直後の呼び出し）。
 // 本体は renderer/atmosphere/CloudRenderer.{h,cpp}、シェーダは shaders/atmosphere/Cloud*.hlsl。
 // ★clouds.enabled=false（既定）の間は CloudRenderer を作らず、描画コマンドも 1 命令も変わらない。
+//
+// 雲の影 / 環境光:
+//   ・影   … 深度プリパスの区間（コンタクトシャドウ / RT 影の直後）で影マップ → 影マスク t11 へ掛ける（AtmosphereCloudShadow）。
+//            t11 が白ダミーだったフレームは、このパスが作る R8 を t11 にする（フォワードのシェーダは無改造）。
+//   ・環境光 … 空キューブを作った直後（IBL の再ベイクの前）に、全 mip を sky*T + L に書き換える（AtmosphereCloudsToSkyCube）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/AtmosphereHost.h"
@@ -11,6 +16,39 @@
 namespace dx12e
 {
 using namespace DirectX;
+
+// CloudRenderer の遅延確保。失敗したら二度と試さない（雲なしのまま）。
+bool Application::AtmosphereCloudsEnsure()
+{
+    if (!m_atmo) return false;
+    AtmoHost& h = *m_atmo;
+    if (h.clouds.IsReady()) return true;
+    if (h.cloudsInitFailed || !m_graphicsDevice || !m_srvHeap) return false;
+    bool ok = false;
+    try { ok = h.clouds.Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW()); }
+    catch (const std::exception& e) { Logger::Warn("雲: 初期化に失敗した（{}）。雲なしのまま", e.what()); }
+    if (!ok) { h.cloudsInitFailed = true; return false; }
+    return true;
+}
+
+// 風で流れた距離[km]。時間は 1 フレームに 1 回だけ進める（本体・影・環境光のどれが先に呼んでも同じ値）。
+// 決定論撮影では 0 固定（同じ絵になる）。実時間の大きなヒッチは丸める。
+void Application::AtmosphereCloudWind(float outKm[3])
+{
+    AtmoHost& h = *m_atmo;
+    const CloudSettings& cs = m_scene->GetAtmosphereSettings().clouds;
+    if (h.cloudTimeFrame != m_framesSinceStart)
+    {
+        h.cloudTimeFrame = m_framesSinceStart;
+        if (m_deterministicCapture) h.cloudTime = 0.0;
+        else h.cloudTime += std::min(static_cast<double>(m_gameClock.GetDeltaTime()), 0.25);
+    }
+    const float wind = cs.windSpeed * static_cast<float>(h.cloudTime) * 0.001f;   // km
+    const float yaw = cs.windDirDeg * 3.14159265f / 180.0f;
+    outKm[0] = -std::sin(yaw) * wind;   // 雲は風下へ流れる＝ノイズを引く座標は風上側へずらす
+    outKm[1] = 0.0f;
+    outKm[2] = -std::cos(yaw) * wind;
+}
 
 void Application::AtmosphereDrawClouds(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex)
 {
@@ -23,30 +61,14 @@ void Application::AtmosphereDrawClouds(const ViewDesc& view, const RenderPassCon
         return;
     }
     if (depthSrvIndex == DescriptorHeap::kInvalidIndex || !view.sceneColor) return;
-
-    if (!h.clouds.IsReady())
-    {
-        if (h.cloudsInitFailed) return;
-        bool ok = false;
-        try { ok = h.clouds.Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW()); }
-        catch (const std::exception& e) { Logger::Warn("雲: 初期化に失敗した（{}）。雲なしのまま", e.what()); }
-        if (!ok) { h.cloudsInitFailed = true; return; }
-    }
+    if (!AtmosphereCloudsEnsure()) return;
     // 解像度が変わるときは履歴・粗い RT を作り直すので、使用中でないことを保証する（まれ）
     if (h.clouds.NeedsResize(view.width, view.height)) m_commandQueue->WaitIdle();
-
-    // 風で流れる時間。決定論撮影では 0 固定（同じ絵になる）。実時間の大きなヒッチは丸める。
-    if (m_deterministicCapture) h.cloudTime = 0.0;
-    else h.cloudTime += std::min(static_cast<double>(m_gameClock.GetDeltaTime()), 0.25);
 
     CloudRenderer::FrameInfo fi{};
     fi.width = view.width;
     fi.height = view.height;
-    const float wind = cs.windSpeed * static_cast<float>(h.cloudTime) * 0.001f;   // km
-    const float yaw = cs.windDirDeg * 3.14159265f / 180.0f;
-    fi.windOffsetKm[0] = -std::sin(yaw) * wind;   // 雲は風下へ流れる＝ノイズを引く座標は風上側へずらす
-    fi.windOffsetKm[1] = 0.0f;
-    fi.windOffsetKm[2] = -std::cos(yaw) * wind;
+    AtmosphereCloudWind(fi.windOffsetKm);
     {
         XMFLOAT4X4 f;
         XMStoreFloat4x4(&f, XMMatrixTranspose(XMLoadFloat4x4(&view.viewProj)));
@@ -79,6 +101,57 @@ void Application::AtmosphereDrawClouds(const ViewDesc& view, const RenderPassCon
 
     std::memcpy(h.cloudPrevVP, fi.viewProjT, sizeof(h.cloudPrevVP));
     h.cloudPrevValid = true;
+}
+
+// ---------------------------------------------------------------------------
+// 雲の影（影マスク t11 へ掛ける）。深度プリパスの区間から呼ぶ。
+// ---------------------------------------------------------------------------
+bool Application::AtmosphereCloudShadowWanted(const ViewDesc& view) const
+{
+    if (!view.primary || !m_scene || !AtmosphereSkyUsable(view) || !m_drawSkybox || !(m_skyboxIntensity > 0.0f)) return false;
+    const CloudSettings& cs = m_scene->GetAtmosphereSettings().clouds;
+    return cs.enabled && cs.shadows && cs.shadowStrength > 0.0f;
+}
+
+u32 Application::AtmosphereCloudShadow(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex, u32 prevMaskSrvIndex)
+{
+    if (!AtmosphereCloudShadowWanted(view) || depthSrvIndex == DescriptorHeap::kInvalidIndex) return prevMaskSrvIndex;
+    if (!AtmosphereCloudsEnsure()) return prevMaskSrvIndex;
+    AtmoHost& h = *m_atmo;
+    const CloudSettings& cs = m_scene->GetAtmosphereSettings().clouds;
+    // 影マスクの大きさが変わるときは作り直すので、使用中でないことを保証する（まれ）
+    if (h.clouds.NeedsMaskResize(view.width, view.height)) m_commandQueue->WaitIdle();
+
+    float wind[3];
+    AtmosphereCloudWind(wind);
+    if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);   // RT 影 / コンタクトシャドウと同じ（PS で深度を読む）
+
+    D3D12_GPU_DESCRIPTOR_HANDLE prev{};
+    if (prevMaskSrvIndex != DescriptorHeap::kInvalidIndex && prevMaskSrvIndex != m_ssaoWhiteSrvIndex)
+        prev = m_srvHeap->GetGpuHandle(prevMaskSrvIndex);   // RT 影 / コンタクトシャドウの結果（無ければ白 = 掛けない）
+
+    if (m_gpuTimer) m_gpuTimer->Begin(ctx.native, GpuTimer::CloudShadow);
+    const u32 idx = h.clouds.RecordShadow(ctx.native, ctx.frameIndex, *m_graphicsDevice, cs, wind, h.renderer.CbAddress(ctx.frameIndex),
+                                          h.renderer.LutSrvGpu(), m_srvHeap->GetGpuHandle(depthSrvIndex), prev, view.width, view.height);
+    if (m_gpuTimer) m_gpuTimer->End(ctx.native, GpuTimer::CloudShadow);
+    if (idx == DescriptorHeap::kInvalidIndex) return prevMaskSrvIndex;
+    ++h.cloudShadowFrames;
+    return idx;
+}
+
+// ---------------------------------------------------------------------------
+// 環境光への焼き込み。AtmosphereRenderer::RecordSkyCube の直後（IBL の再ベイクの前）から呼ぶ。
+// ---------------------------------------------------------------------------
+void Application::AtmosphereCloudsToSkyCube(ID3D12GraphicsCommandList* cmd, u32 frameIndex)
+{
+    if (!m_atmo || !m_scene || !cmd) return;
+    const CloudSettings& cs = m_scene->GetAtmosphereSettings().clouds;
+    if (!cs.enabled || !AtmosphereCloudsEnsure()) return;
+    AtmoHost& h = *m_atmo;
+    float wind[3];
+    AtmosphereCloudWind(wind);
+    h.clouds.RecordSkyCubeClouds(cmd, frameIndex, *m_graphicsDevice, cs, wind, h.renderer.CbAddress(frameIndex), h.renderer.LutSrvGpu(),
+                                 h.renderer.SkyCubeResource());
 }
 
 } // namespace dx12e

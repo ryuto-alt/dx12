@@ -947,6 +947,12 @@ void RenderLightingPanel(Scene* scene,
                         pg::SliderFloat("細部の強さ", &cl.detailStrength, 0.0f, 1.0f, "%.2f", nullptr, "高周波ノイズでの削り。輪郭の細かさ");
                         pg::SliderFloat("雲の粒の大きさ", &cl.scale, 0.25f, 4.0f, "%.2f", nullptr, "ノイズの大きさの倍率（大きいほど大きな塊）");
                         pg::SliderInt("品質 (ステップ数)", &cl.steps, 16, 128, nullptr, "視線方向のレイマーチ段数。多いほど綺麗で重い（既定 48）");
+                        pg::Checkbox("雲の影", &cl.shadows,
+                                     "ON: 雲を太陽方向に積分した透過率を、地面・建物の影マスク（RT 影 / コンタクトシャドウと同じ枠）に掛けます。\n"
+                                     "雲が動けば影も動きます。大気が環境光（driveIBL）の元のときは、雲は空キューブにも焼き込まれ、曇りで環境光が灰色く暗くなります（この ON/OFF に関係なく）");
+                        if (cl.shadows)
+                            pg::SliderFloat("雲の影の濃さ", &cl.shadowStrength, 0.0f, 1.0f, "%.2f", nullptr,
+                                            "0 = 影なし / 1 = 雲の透過率どおり");
                     }
                 }
 

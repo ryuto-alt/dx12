@@ -49,6 +49,13 @@ uint64_t MakeIblKey(const AtmosphereGpuParams& g, const AtmosphereSettings& s, d
     h = Fnv(h, &unitScale, sizeof(double));
     const int drawMoon = s.drawMoon ? 1 : 0;
     h = Fnv(h, &drawMoon, sizeof(int));
+    // 雲は空キューブに焼き込む（曇りの環境光）。形を決める項目だけ。風（位置の流れ）・影・品質は含めない。OFF のときは何も足さない（従来と同じ鍵）。
+    if (s.clouds.enabled)
+    {
+        const CloudSettings& c = s.clouds;
+        const float cv[8] = {c.coverage, c.cloudType, c.density, c.baseAltitudeKm, c.thicknessKm, c.detailStrength, c.scale, 1.0f};
+        h = Fnv(h, cv, sizeof(cv));
+    }
     return h;
 }
 
@@ -257,6 +264,7 @@ void Application::AtmosphereRecordFrame(const ViewDesc& view, u32 frameIndex, ID
         if (need && (big || h.iblSinceStart >= minInterval))
         {
             h.renderer.RecordSkyCube(cmd, frameIndex);
+            AtmosphereCloudsToSkyCube(cmd, frameIndex);   // 雲が ON なら空キューブに雲を焼き込む（曇りの環境光）
             h.iblSunDir = h.sunDir;
             h.iblAltKm = h.camAltKm;
             h.iblKey = key;
@@ -380,6 +388,7 @@ bool Application::LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd)
     h.renderer.Update(cmd, slot, h.params, true);
     h.forceLut = false;
     h.renderer.RecordSkyCube(cmd, slot);
+    AtmosphereCloudsToSkyCube(cmd, slot);   // 雲が ON なら空キューブに雲を焼き込む
 
     // 派生（irradiance / prefilter / BRDF LUT）
     m_iblBaker->Bake(*m_graphicsDevice, cmd, *m_srvHeap, h.renderer.SkyCubeResource());

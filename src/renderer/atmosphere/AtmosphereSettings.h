@@ -36,12 +36,15 @@ struct CloudSettings
     float detailStrength = 0.5f;    // 0..1 高周波ノイズでの削り(輪郭の細かさ)
     float scale          = 1.0f;    // 0.25..4 雲の粒の大きさ倍率
     int   steps          = 48;      // 16..128 視線方向のレイマーチ段数(品質。1/4 解像度なので 48 でも軽い)
+    bool  shadows        = true;    // 雲の影を地面・建物へ落とす(雲が ON のときだけ効く。影マスク t11 に掛ける)
+    float shadowStrength = 1.0f;    // 0..1 雲の影の濃さ(0 = 影なし)
 
     bool operator==(const CloudSettings& o) const
     {
         return enabled == o.enabled && coverage == o.coverage && cloudType == o.cloudType && density == o.density
             && baseAltitudeKm == o.baseAltitudeKm && thicknessKm == o.thicknessKm && windDirDeg == o.windDirDeg
-            && windSpeed == o.windSpeed && detailStrength == o.detailStrength && scale == o.scale && steps == o.steps;
+            && windSpeed == o.windSpeed && detailStrength == o.detailStrength && scale == o.scale && steps == o.steps
+            && shadows == o.shadows && shadowStrength == o.shadowStrength;
     }
     bool operator!=(const CloudSettings& o) const { return !(*this == o); }
 };

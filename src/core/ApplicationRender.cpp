@@ -5230,6 +5230,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     const bool useContactShadow = csCfg.enabled && m_contactShadowPass
                                 && m_contactShadowPass->IsReady()
                                 && viewSupportsScreenSpace && !useRtShadow;
+    // 雲の影（atmosphere.clouds.enabled && shadows）。深度から世界位置を出して影マスク(t11)に掛けるので深度プリパスが要る。
+    // RT 影 / コンタクトシャドウが無いフレームでも、このパスが作る R8 を t11 にする（フォワードのシェーダは無改造）。
+    const bool useCloudShadow = primary && viewSupportsScreenSpace && AtmosphereCloudShadowWanted(view);
     // SSR / SSGI（計画04）。G-Buffer と前フレームカラーが要るので、有効なら速度プリパスを走らせる。
     const SsrSettings&  ssrCfg  = m_scene->GetSsrSettings();
     const SsgiSettings& ssgiCfg = m_scene->GetSsgiSettings();
@@ -5258,7 +5261,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ★Hi-Z を除いてもプリパスが要るか（診断用。ここが false のときに Hi-Z を ON にすると
     //   オクルージョンのためだけにプリパスが走って描画コールが増える＝損になる）。
     const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi || useRtRefl
-                                 || useRtShadow || useRtAo || useRtDebug
+                                 || useRtShadow || useRtAo || useRtDebug || useCloudShadow
                                  || (m_forceDepthPrepass && viewSupportsScreenSpace);
     // 仮想ジオメトリ P2（GPU カリング・統計のみ）。既定 OFF。HZB の入力に深度が要るのでプリパスを走らせる。
     const bool useVgCull = viewSupportsScreenSpace && VirtualGeometryCullWanted(primary);
@@ -5507,6 +5510,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             if (rtPass.AoSrv()     != DescriptorHeap::kInvalidIndex) aoSrv = rtPass.AoSrv();
             if (useRtDebug) rtDebugSrv = rtPass.DebugSrv();
         }
+
+        // --- 雲の影: 影マスク(t11)に、雲層を太陽方向に通した透過率を掛ける ---
+        //   RT 影 / コンタクトシャドウの結果(あれば)を読んで掛けた R8 を新しい t11 にする。どちらも無いフレームは白に掛ける。
+        //   t11 の読み出しは contactShadowEnabled(csSrv != 白ダミー)で決まるので、ここで csSrv が差し替わればシェーダは自動で読む。
+        if (useCloudShadow)
+            csSrv = AtmosphereCloudShadow(view, passCtx, depthSrvIndex, csSrv);
 
         // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
         // ★前フレームカラーが無いフレーム（初回 / シーン切替直後 / リサイズ直後）は

@@ -1127,7 +1127,8 @@ static json SerializeAtmosphere(const AtmosphereSettings& a)
             {"enabled", a.clouds.enabled}, {"coverage", a.clouds.coverage}, {"cloudType", a.clouds.cloudType},
             {"density", a.clouds.density}, {"baseAltitudeKm", a.clouds.baseAltitudeKm}, {"thicknessKm", a.clouds.thicknessKm},
             {"windDirDeg", a.clouds.windDirDeg}, {"windSpeed", a.clouds.windSpeed}, {"detailStrength", a.clouds.detailStrength},
-            {"scale", a.clouds.scale}, {"steps", a.clouds.steps}}},
+            {"scale", a.clouds.scale}, {"steps", a.clouds.steps},
+            {"shadows", a.clouds.shadows}, {"shadowStrength", a.clouds.shadowStrength}}},
     };
 }
 
@@ -1890,6 +1891,8 @@ static void LoadVolumetricFogSettings(Scene& scene, const json& root)
             cl.detailStrength = fin(c.value("detailStrength", cl.detailStrength), 0.0f, 1.0f, 0.5f);
             cl.scale          = fin(c.value("scale", cl.scale), 0.25f, 4.0f, 1.0f);
             cl.steps          = std::clamp(c.value("steps", cl.steps), 16, 128);
+            cl.shadows        = c.value("shadows", cl.shadows);
+            cl.shadowStrength = fin(c.value("shadowStrength", cl.shadowStrength), 0.0f, 1.0f, 1.0f);
         }
         const auto& j = root["volumetricFog"];
         auto readVec3 = [&](const char* key, DirectX::XMFLOAT3& dst)

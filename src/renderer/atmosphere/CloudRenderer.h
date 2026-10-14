@@ -10,9 +10,12 @@
 //                           ResolveCS … フル解像度の履歴へ時間再投影(今フレームの画素は新しい値、ほかは再投影 + 近傍クランプ)
 //                           Composite … sceneColor へ dst = src.rgb + dst * src.a(深度で雲より手前の不透明物は除く)
 //   履歴を捨てるとき(初回 / 解像度変更 / 決定論撮影):  16 サブフレームを 1 フレームで回して全画素を作る(=履歴なしでも同じ絵)
+//   雲の影:                 ShadowMapCS(太陽に垂直な正射の透過率マップ)→ PSShadowApply(深度からワールド位置を出して引き、影マスク t11 用の R8 に掛ける)
+//   環境光:                 CubeCloudCS … 大気の空キューブ(全 mip)を sky*T + L に書き換える(IBL の再ベイクの直前)
 //
 // ディスクリプタ(自前ブロック): SRV 9 = [0]形状 [1]詳細 [2]天気 [3]粗い色 [4]粗い距離 [5,6]履歴 0(色,距離) [7,8]履歴 1
 //                               UAV 10 = [0]粗い色 [1]粗い距離 [2,3]履歴 0 [4,5]履歴 1 [6]形状 [7]天気 [8]詳細 [9]天気(重複)
+//                 追加: SRV [9]影マップ [10]影マスク [11]空キューブの一時コピー / UAV [10]影マップ [11..14]空キューブ mip 0..3
 // ===========================================================================
 #include <directx/d3d12.h>
 #include <wrl/client.h>
@@ -44,9 +47,12 @@ public:
         float cloudType, density, baseKm, thickKm;
         float detail, scale, maxDistKm, histBlend;
         u32 steps, frame, flags, pad0;
+        float shadowStrength; u32 shadowRes, aux0, aux1;   // 雲の影(強さ / 影マップの解像度)・空キューブ焼き込み(面サイズ / mip)
     };
-    static_assert(sizeof(Cb) == 144, "CloudCB(CloudMarch.hlsl)と一致させること");
-    static constexpr u32 kFlagReset = 1u, kFlagBurst = 2u;
+    static_assert(sizeof(Cb) == 160, "CloudCB(CloudMarch.hlsl)と一致させること");
+    static constexpr u32 kFlagReset = 1u, kFlagBurst = 2u, kFlagPrevMask = 4u;
+    static constexpr u32 kShadowRes = 512;           // 雲の影マップ(太陽に垂直な正射)の解像度
+    static constexpr float kShadowHalfKm = 6.0f;     // 影マップが覆う半径[km](カメラ直下の海面高さの点が中心)
 
     struct FrameInfo
     {
@@ -75,6 +81,23 @@ public:
     void DrawComposite(ID3D12GraphicsCommandList* cmd, D3D12_GPU_VIRTUAL_ADDRESS atmCb, D3D12_GPU_DESCRIPTOR_HANDLE atmSrv,
                        D3D12_GPU_DESCRIPTOR_HANDLE depthSrv);
 
+    // ---- 雲の影(地面・建物に落ちる)----
+    // 1) 太陽に垂直な正射の影マップ(kShadowRes^2・R16F。太陽方向に雲層を積分した透過率)を compute で作り、
+    // 2) 全画面の PS で深度からワールド位置を出して引き、prevMask(RT 影 / コンタクトシャドウ。無ければ 0)に掛けて R8 のマスクへ書く。
+    // 戻り値は SRV ヒープ内のインデックス(フォワードの影マスク t11 へそのまま渡せる)。失敗時 kInvalidIndex。
+    // マスクの大きさが変わるとき(NeedsMaskResize)は、呼び出し側が GPU を待ってから呼ぶこと。深度は PIXEL_SHADER_RESOURCE で渡す。
+    bool NeedsMaskResize(u32 w, u32 h) const { return w != m_maskW || h != m_maskH; }
+    u32 RecordShadow(ID3D12GraphicsCommandList* cmd, u32 frameIndex, GraphicsDevice& device, const CloudSettings& s, const float windOffsetKm[3],
+                     D3D12_GPU_VIRTUAL_ADDRESS atmCb, D3D12_GPU_DESCRIPTOR_HANDLE atmSrv, D3D12_GPU_DESCRIPTOR_HANDLE depthSrv,
+                     D3D12_GPU_DESCRIPTOR_HANDLE prevMaskSrv, u32 w, u32 h);
+
+    // ---- 環境光(IBL の空キューブ)へ雲を焼き込む ----
+    // AtmosphereRenderer::RecordSkyCube の直後に呼ぶ(cube は PIXEL_SHADER_RESOURCE で渡し、同じ状態で返す)。
+    // 全 mip を sky*T + L に書き換える。カメラ(大気 CB)の位置から見た雲。一時コピーを経由するので typed UAV load は要らない。
+    void RecordSkyCubeClouds(ID3D12GraphicsCommandList* cmd, u32 frameIndex, GraphicsDevice& device, const CloudSettings& s,
+                             const float windOffsetKm[3], D3D12_GPU_VIRTUAL_ADDRESS atmCb, D3D12_GPU_DESCRIPTOR_HANDLE atmSrv,
+                             ID3D12Resource* cube);
+
     u32 FrameCounter() const { return m_frameCounter; }
     bool NoiseReady() const { return m_noiseReady; }
 
@@ -84,7 +107,10 @@ private:
     void Barrier(ID3D12GraphicsCommandList* cmd, Tex* const* t, u32 n, D3D12_RESOURCE_STATES next);
     void GenerateNoise(ID3D12GraphicsCommandList* cmd, u32 frameIndex);
     void BindCommon(ID3D12GraphicsCommandList* cmd, bool compute, D3D12_GPU_VIRTUAL_ADDRESS atmCb, D3D12_GPU_DESCRIPTOR_HANDLE atmSrv,
-                    D3D12_GPU_VIRTUAL_ADDRESS cloudCb, u32 histSrvPair, u32 outUav, u32 volUav, D3D12_GPU_DESCRIPTOR_HANDLE depthSrv);
+                    D3D12_GPU_VIRTUAL_ADDRESS cloudCb, u32 histSrvPair, u32 outUav, u32 volUav, D3D12_GPU_DESCRIPTOR_HANDLE depthSrv,
+                    const D3D12_GPU_DESCRIPTOR_HANDLE* prevMask = nullptr, const D3D12_GPU_DESCRIPTOR_HANDLE* cubeUav = nullptr);
+    bool CreateMask(u32 w, u32 h);
+    void WriteNullExtras();
     D3D12_GPU_DESCRIPTOR_HANDLE Srv(u32 i) const;
     D3D12_GPU_DESCRIPTOR_HANDLE Uav(u32 i) const;
     void WriteSizedDescriptors();
@@ -96,13 +122,22 @@ private:
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rs;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShape, m_psoDetail, m_psoWeather, m_psoTrace, m_psoResolve, m_psoComposite;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadowMap, m_psoShadowApply, m_psoCubeCloud;
 
     Tex m_shape, m_detail, m_weather;
+    Tex m_shadowMap, m_mask, m_cubeCopy;          // 影マップ(R16F)/ 影マスク(R8・RTV)/ 空キューブの一時コピー
+    Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;   // 影マスクの RTV(1 本)
+    u32 m_maskW = 0, m_maskH = 0;
+    ID3D12Resource* m_cubeUavFor = nullptr;        // 空キューブの mip UAV を作った対象(変わったら作り直す)
     Tex m_traceC, m_traceD;
     Tex m_histC[2], m_histD[2];
     u32 m_w = 0, m_h = 0, m_cw = 0, m_ch = 0;
     u32 m_srvBlock = 0xFFFFFFFFu, m_uavBlock = 0xFFFFFFFFu;
-    static constexpr u32 kSrvCount = 9, kUavCount = 10;
+    static constexpr u32 kSrvCount = 12, kUavCount = 15;
+    static constexpr u32 kFramesInFlight = 3;   // FrameResources::kFrameCount と一致(.cpp で static_assert)
+    static constexpr u32 kShadowCbBase = kFramesInFlight * 16 + 2;                      // 影のスロット(フレームごと)
+    static constexpr u32 kCubeCbBase = kShadowCbBase + kFramesInFlight;     // 空キューブ(フレームごと × mip 4)
+    static constexpr u32 kCbSlots = kCubeCbBase + kFramesInFlight * 4;
 
     std::unique_ptr<ConstantBuffer> m_cb;   // 3 フレーム × 16 サブ + ノイズ生成用 1
     bool m_noiseReady = false;
