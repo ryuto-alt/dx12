@@ -169,6 +169,20 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     // Directional Light（影付き）
     float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);
 
+#ifdef UNO_SHADE_FOLIAGE_TRANSMISSION
+    // ===== 薄い葉の透過光（植生専用。定義しない経路の DXIL は不変）=====
+    //   葉・草は薄いので、太陽が葉の向こうにあると光が透けて黄緑に光る。これが無いと逆光の植生が
+    //   影絵のように真っ黒になる（2026-10-15、veg_test）。N は両面処理で視線側へ返してあるので、
+    //   太陽が裏側にある＝dot(N, L) < 0 の分を透過として足す。色は albedo（葉の透過色はほぼ反射色と同じ）。
+    //   視線が太陽を向くほど前方散乱で強める。shadow は同じ点の太陽の遮蔽（他の葉・幹の陰では透けない）。
+    {
+        const float back    = saturate(-dot(N, L));
+        const float forward = pow(saturate(dot(-V, L)), 4.0);
+        const float k       = UNO_SHADE_FOLIAGE_TRANSMISSION * (0.55 + 0.45 * forward);
+        Lo += albedo * (1.0 - metallic) * (k * back / PI) * lightColor * shadow;
+    }
+#endif
+
     // Point Lights + Spot Lights（クラスタードライティング / Forward+。灯数上限なし）
 #ifndef UNO_SHADE_LITE
     Lo += AccumulatePunctualLights(N, V, si.worldPos, albedo, F0, metallic, roughness,

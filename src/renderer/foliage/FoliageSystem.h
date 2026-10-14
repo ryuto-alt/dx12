@@ -110,6 +110,10 @@ public:
     // 戻り値: このフレーム描くレイヤーがあるか。
     bool BeginFrame(const FrameIn& in);
     bool HasDrawableLayers() const { return m_drawable > 0; }
+    // アセットの再読込（dx12_reload_assets）でモデルが作り直されたら呼ぶ。レイヤーは Mesh* / Material* を
+    // 握っているので、放置すると解放済みのバッファを描いて GPU がハングする（2026-10-15）。
+    // 全レイヤーを「描かない」にし、次の BeginFrame でモデルを引き直してグループを組み直させる。
+    void InvalidateModels();
 
     // 風のフレーム共通値（PerFrame の _clusterReserved[0..1] へそのまま書ける）。BeginFrame の後に有効。
     void WindConstants(DirectX::XMFLOAT4& a, DirectX::XMFLOAT4& b) const { a = m_windA; b = m_windB; }
