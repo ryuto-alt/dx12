@@ -741,6 +741,12 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     DdgiCB cb{};
     cb.originWS   = giNew ? XMFLOAT3{m_origin[0][0], m_origin[0][1], m_origin[0][2]} : XMFLOAT3{s.originX, s.originY, s.originZ};
     cb.rayLength  = std::max(s.rayLength, 0.1f);
+    // ★GI モード New は「ミスしたレイ = 空」（ヒット面に空の項を足さない）。rayLength で打ち切ったレイもミス扱いになるので、
+    //   短い rayLength（既定 30m）だと、細長い通りの奥や地平線より下へ抜けたレイが【空・地面の明るい放射輝度】を拾う
+    //   （PT では遠くの日陰の壁・路面に当たる）。Bistro の通りで日陰の壁が PT の 2.7 倍・木が 3.4 倍に浮いていた。
+    //   New では空まで届く長さにする（BVH 走査なので費用はほぼ変わらない。Legacy は設定値のまま＝従来の絵）。
+    constexpr float kGiNewMinRayLength = 10000.0f;   // [m]
+    if (giNew) cb.rayLength = std::max(cb.rayLength, kGiNewMinRayLength);
     const float sp0 = giNew ? m_spacing[0] : s.spacing;
     cb.spacing    = {sp0, sp0, sp0};
     cb.hysteresis = giNew ? m_hyst[0] : (m_historyValid ? std::clamp(s.hysteresis, 0.0f, 0.995f) : 0.0f);

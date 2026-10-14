@@ -17,6 +17,7 @@
 #include "core/ApplicationInternal.h"
 #include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
+#include "core/AtmosphereHost.h"   // 大気の空キューブ（DDGI のミスが引く放射輝度）
 #include "core/PathTracerHost.h"   // DXR パストレーサー(リファレンスレンダー)。PtHost が無ければ何もしない
 #include "core/SequencerHost.h"   // シーケンサー S1b: ポスト / DoF の描画時上書き
 #include "scene/GiMigration.h"   // S5: 新規シーンの既定を GI モード「新」にする
@@ -5541,6 +5542,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
                 // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
                 gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+                // 輝度クランプは従来単位の値 → 物理ライティング単位ではシーンの単位（nit）へ広げる
+                gd.clampScale = (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f;
                 // GI モード New: ミスしたレイは IBL ではなくその画素の DDGI irradiance。条件はフォワード
                 // （FillSceneFrameConstants の giNewActive）と同じ。ディスクリプタはクラスタテーブルの DDGI 3 本
                 // （t22/t23/t30。DDGI が使えないフレームは黒ダミー）をそのまま指す。
@@ -5776,6 +5779,14 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()
                  && m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
                     ? m_envCubeSrvIndex : 0xFFFFFFFFu;
+            // ★物理大気が環境の元（driveIBL）のときは m_envCubeSrvIndex が無い（大気は自前の空キューブから IBL を焼く）。
+            //   放っておくと DdgiMissRadiance が irradiance キューブへ落ち、ミスしたレイの放射輝度として
+            //   「コサインで畳み込み済みの空」を使う＝プローブの中でもう一度畳むので二重にぼける。
+            //   天頂の青・地平の白・地平線より下の地面の向きの差が消え、上向きの面（床・葉・屋根）が灰色に濁って
+            //   赤みが増す（検証シーンの日陰の床: R が PT の 1.7 倍）。パストレーサーと同じ AtEnvRadiance の空キューブを引かせる。
+            if (dd.envCubeSrvIndex == 0xFFFFFFFFu && m_iblReady && m_loadedSkyboxPath == kAtmosphereSkyPath
+                && m_atmo && m_atmo->renderer.SkyCubeResource())
+                dd.envCubeSrvIndex = m_atmo->renderer.SkyCubeSrvIndex();
             dd.skyScale = m_iblReady ? m_iblIntensity : 0.0f;
             dd.giStage  = m_giDebugStage;
             dd.physicalUnits = (m_lightingUnitsApplied == 1);
@@ -5791,7 +5802,26 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             di.device   = m_graphicsDevice.get();
             di.settings = &m_scene->GetDdgiSettings();
             di.desc     = dd;
+            // 大気の空キューブは PIXEL_SHADER_RESOURCE に置く約束（AtmosphereRenderer / IBLBaker::RebakeStage が前提にしている）。
+            //   compute の DDGI が引く間だけ NON_PIXEL を足して、終わったら戻す（IBLBaker と同じ流儀）。
+            ID3D12Resource* atmoCube = (m_atmo && dd.envCubeSrvIndex != 0xFFFFFFFFu
+                                        && dd.envCubeSrvIndex == m_atmo->renderer.SkyCubeSrvIndex())
+                                       ? m_atmo->renderer.SkyCubeResource() : nullptr;
+            const auto cubeBarrier = [&](D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource   = atmoCube;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                b.Transition.StateBefore = from;
+                b.Transition.StateAfter  = to;
+                nativeCmdList->ResourceBarrier(1, &b);
+            };
+            constexpr D3D12_RESOURCE_STATES kCubeRead =
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            if (atmoCube) cubeBarrier(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, kCubeRead);
             DdgiUpdatePass(di).Execute(passCtx);
+            if (atmoCube) cubeBarrier(kCubeRead, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         }
 
         // ===== RT 反射（R2）: SSR の後段で、SSR が外れた画素だけ RayQuery。結果は t16 と同じ形式 =====
@@ -6917,7 +6947,9 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
         fc.giParams  = {0.0f, 0.0f, 0.0f, 0.0f};
         fc.giParams2 = {0.0f, 0.0f, 0.0f, 0.0f};
         if (giNewActive)
-            fc.giParams2 = {(m_giDebugStage & 8u) ? 1.0f : 0.0f, 0.0f, 0.0f,
+            fc.giParams2 = {(m_giDebugStage & 8u) ? 1.0f : 0.0f,
+                            static_cast<f32>((m_giDebugStage >> 5) & 7u),   // 検証用: 項を 1 つだけ出す（ForwardShade.hlsli）
+                            0.0f,
                             // 物理ライティング単位: DDGI の内部単位 → シーンの単位へ戻す倍率（従来単位は 1）
                             (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f};   // 検証用: プローブ状態の可視化
         if (giNewActive)

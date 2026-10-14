@@ -285,7 +285,9 @@ void ScreenSpaceGiPass::Generate(CommandList& cmd, const GenerateDesc& d,
     cb.ssgi0 = { (std::max)(g.radius, 0.1f), (std::max)(g.thickness, 0.01f),
                  static_cast<float>(std::clamp(g.rayCount, 1, 4)),
                  static_cast<float>(std::clamp(g.stepCount, 4, 24)) };
-    cb.ssgi1 = { (std::max)(g.intensity, 0.0f), (std::max)(g.clampValue, 0.01f),
+    // ★clampValue は従来単位の値。物理ライティング単位ではシーンの値が nit（日陰でも数十〜数千）なので、
+    //   そのまま 4.0 で切ると間接光が全部 4 nit に潰れる（Bistro の日陰が PT の 0.2〜0.3 倍になっていた）。
+    cb.ssgi1 = { (std::max)(g.intensity, 0.0f), (std::max)(g.clampValue, 0.01f) * (std::max)(d.clampScale, 1.0e-6f),
                  std::clamp(g.feedback, 0.0f, 0.98f), g.iblFallback ? 1.0f : 0.0f };
     cb.misc = { d.zNear, d.zFar, m_ssgiHistValid ? 1.0f : 0.0f, d.hasIbl ? 1.0f : 0.0f };
     // フレーム連番。SSGI のディザを時間方向にも回すため（固定だと時間蓄積が収束しない）。

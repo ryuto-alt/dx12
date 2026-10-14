@@ -227,6 +227,8 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
 
     // ===== Ambient / IBL =====
     float3 ambient;
+    // 検証用（set_gi_mode の debugStage bit5-7 = giParams2.y）で項ごとに出すための控え。ふだんは読まない。
+    float3 dbgDiff = 0.0, dbgSpec = 0.0, dbgIrr = 0.0, dbgIblIrr = 0.0;
     if (hasIBL != 0u)
     {
         float3 R   = reflect(-V, N);
@@ -269,7 +271,12 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         }
         prefiltered = lerp(prefiltered, ssrRgb, ssrConf);
         float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
-        float3 specularIBL = prefiltered * (F * envBRDF.x + envBRDF.y);
+        // ★GI モード New: split-sum の LUT（IntegrateBRDF.hlsl）は Fresnel を積分済み（A = ∫(1-Fc)G, B = ∫Fc G）なので、
+        //   掛けるのは F0（Karis 2013 / UE と同じ）。視線依存の FresnelSchlickRoughness を掛けると Fresnel を二重に数え、
+        //   斜めから見た誘電体（床・葉・壁）で鏡面の環境光が 2 倍前後になる（空の青白い反射が日陰の色を薄める）。
+        //   パストレーサー（GGX + Schlick）と一致するのは F0 の方。Legacy は従来どおり（既存シーンの絵を変えない）。
+        const float3 specF = giNew ? F0 : F;
+        float3 specularIBL = prefiltered * (specF * envBRDF.x + envBRDF.y);
 
         // ★AO の掛け方（二重計上の解消）:
         //   SSGI/SSR が担当していない分にだけ AO を掛ける。どちらも「実際に届いた光」を
@@ -278,6 +285,10 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         float aoDiff = lerp(ao, 1.0, ssgiConf);
         float aoSpec = lerp(ao, 1.0, ssrConf);
         ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * (giNew ? 1.0 : iblIntensity);
+        dbgDiff = kD * diffuseIBL * aoDiff;
+        dbgSpec = specularIBL * aoSpec;
+        dbgIrr  = irradiance;
+        dbgIblIrr = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb * iblIntensity;
     }
     else
     {
@@ -312,6 +323,21 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         const float4 pd = DdgiLoadProbeData(DdgiProbeIndex(sc, cnt), cnt);
         const float off = saturate(length(pd.xyz) / max(ddgiSpacing.x, 1e-4) / 0.45);
         return float3(pd.w < 0.5 ? 1.0 : 0.0, pd.w >= 0.5 ? 0.6 : 0.0, off);
+    }
+    // 検証用（set_gi_mode の debugStage bit5-7 → giParams2.y = 1..7）: シーンの単位のまま項を 1 つだけ出す
+    //   （パストレーサーの bounces / 光源の ON/OFF と突き合わせて、どの項がずれているかを数値で見る）。
+    //   1 = 直接光 / 2 = 拡散の環境光（kD·albedo·irradiance·AO）/ 3 = 鏡面の環境光 / 4 = 拡散に使った irradiance（albedo 前）/
+    //   5 = DDGI の irradiance（法線方向）/ 6 = IBL の irradiance キューブ（× iblIntensity）/ 7 = (AO, DDGI conf, SSGI conf)
+    if (giNew && giParams2.y > 0.5)
+    {
+        const uint sel = uint(giParams2.y + 0.5);
+        if (sel == 1u) return Lo;
+        if (sel == 2u) return dbgDiff;
+        if (sel == 3u) return dbgSpec;
+        if (sel == 4u) return dbgIrr;
+        if (sel == 5u) return ddgiIrr;
+        if (sel == 6u) return dbgIblIrr;
+        return float3(ao, ddgiConf, ssgiConf);
     }
 #endif
     return ambient + Lo + decalEmissive;
