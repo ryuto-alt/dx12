@@ -162,12 +162,12 @@ float DdgiShadowRay(float3 posWS, float3 nWS, float3 toLight, float maxT)
     sr.Direction = toLight;
     sr.TMin      = 0.0;
     sr.TMax      = maxT;
+    // RT2: MASK(葉・柵)は非不透明の BLAS。候補ごとに α を見る（RAY_FLAG_CULL_NON_OPAQUE は付けない）。
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
            | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-           | RAY_FLAG_CULL_NON_OPAQUE
            | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> sq;
     sq.TraceRayInline(gTlas, 0, 0xFF, sr);
-    sq.Proceed();
+    RT_PROCEED_WITH_ALPHA(sq, gLinearWrap);
     return (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
 }
 
@@ -367,9 +367,9 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
     r.TMin      = 0.0;
     r.TMax      = gDdgi.rayLength;
 
-    RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
     q.TraceRayInline(gTlas, 0, 0xFF, r);
-    q.Proceed();
+    RT_PROCEED_WITH_ALPHA(q, gLinearWrap);   // RT2: MASK は α を見て抜く
 
     // ミス = 空。★envMap があるならその irradiance キューブを引く。
     //   フォワードの拡散 IBL と【同じテクスチャ】なので、空が丸見えの面では

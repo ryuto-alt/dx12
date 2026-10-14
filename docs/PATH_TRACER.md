@@ -87,7 +87,7 @@ render_reference_cancel {save:true}        # そこまでの累積を保存し�
 
 ### 専用 TLAS を持つ理由
 
-`RaytracingScene` の TLAS は RT 影 / RT-AO / DDGI 向けの排他ハイブリッドで、半透明・アルファテストを外し、全ジオメトリを OPAQUE で作り、
+`RaytracingScene` の TLAS は RT 影 / RT-AO / DDGI 向けの排他ハイブリッドで、半透明を外し（アルファテストは RT2 で入った。MASK 材質だけ非不透明の BLAS）、
 材質(metallic / roughness / 法線 / MR / emissive / 不透明度)は `GeometryInfo`(16B)に無い。さらにジョブは数分〜数十分続き、その間に共有 BLAS
 キャッシュは別の用途で作り直される。そこで**ジョブ開始時点のスナップショット**(BLAS はメッシュ単位で重複排除 + TLAS + 材質・光・エミッシブの表)を専用に持つ。
 `RaytracingScene` 本体には触れていない。スキンドは SkinningCompute の変形後頂点をジョブ専用バッファへ写し(`PtCopy.hlsl`)、その写しから BLAS を建てる

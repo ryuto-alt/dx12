@@ -321,8 +321,14 @@ void Application::BuildDrawList()
                 // 終わって SRV ブロックが割り当たった瞬間を拾わないと、TLAS を使い回した
                 // 場合に RT のアルベド（DDGI の色）が古いまま固定される。
                 if (wantRtHash)
+                {
                     RtHashMix(rtItemHash, mat ? ((static_cast<u64>(mat->srvBlockIndex) << 32)
                                                  ^ reinterpret_cast<u64>(mat->albedoTexture)) : 0ull);
+                    // RT2: アルファテストの有無とカットオフは BLAS のフラグ / GeometryInfo.alphaCutoff に入る。
+                    //   モード上書き（MASK⇔不透明）やカットオフを変えた瞬間に TLAS を組み直させる。
+                    u32 cutBits; std::memcpy(&cutBits, &ap.cutoff, 4);
+                    RtHashMix(rtItemHash, (static_cast<u64>(ap.mode) << 32) | cutBits);
+                }
             }
             // S0b: GeometryInfo の tint / 自己発光（PtHost::ResolveHitMaterial の入力）。TLAS を使い回すと
             // GeometryInfo は書き直されないので、色 / 発光を変えた瞬間を拾わないと DDGI の色が古いまま固定される。
@@ -438,9 +444,10 @@ void Application::BuildDrawList()
         }
 
         // ---- TLAS 再利用の内容ハッシュ（TLAS に入る候補だけ混ぜる）----
-        // 条件は IsRaytracedItem() のスキンド以外の部分と揃えること。半透明 / アルファテストは
-        // TLAS に入らないので、それらが動いても組み直す必要は無い。
-        if (wantRtHash && item.sortKey != 3u && item.alphaClass != 1u)
+        // 条件は IsRaytracedItem() のスキンド以外の部分と揃えること。半透明は TLAS に入らないので、
+        // それが動いても組み直す必要は無い。アルファテスト(MASK)は RT2 以降 TLAS に入るので混ぜる
+        // （カットオフ / モード上書きの変更は rtItemHash 側で拾う）。
+        if (wantRtHash && item.sortKey != 3u)
         {
             if (item.skin) ++m_rtSkinnedItems;   // >0 なら再利用しない（ポーズが毎フレーム変わる）
             RtHashMix(m_rtContentHash, rtItemHash);
@@ -4619,12 +4626,12 @@ void Application::PrepareFrame(RenderFrameContext& frame)
 
             // 除外された数は診断（dx12_diagnose の dxr 検査）で「なぜキャラの影が
             // RT に出ないのか」を説明するために数えておく。
+            // アルファテスト(MASK)は RT2 以降 TLAS に入るので除外数は常に 0（互換のため引数は残す）。
             u32 skippedSkin = 0, skippedTransp = 0, skippedMask = 0;
             for (const DrawItem& it : m_drawItems)
             {
                 if (it.skin && !skinnedInTlas)  ++skippedSkin;
                 else if (it.sortKey == 3u)      ++skippedTransp;
-                else if (it.alphaClass == 1u)   ++skippedMask;
             }
             m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp, skippedMask);
 
@@ -4646,6 +4653,16 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                 mesh->EnsureRaytracingSrvs(*m_graphicsDevice, *m_srvHeap);
                 g.vbSrvIndex = mesh->GetVbSrvIndex();
                 g.ibSrvIndex = mesh->GetIbSrvIndex();
+                // RT2: アルファテスト(MASK)。ResolveAlphaParams が描画・影・深度と共通の合成規則
+                // （マテリアル + MeshRenderer の alphaModeOverride / alphaCutoffOverride）。
+                // カットオフは ShadowMask と同じ 8bit 量子化（PackAlphaTestFlags が焼く値）で渡す＝影の残り方が一致する。
+                const AlphaParams ap = ResolveAlphaParams(mesh->GetMaterial(), dit.renderer->alphaModeOverride,
+                                                          dit.renderer->alphaCutoffOverride, dit.renderer->opacity);
+                if (ap.mode == AlphaMode::Mask)
+                {
+                    g.flags |= RaytracingScene::kGeomFlagAlphaTest;
+                    g.alphaCutoff = static_cast<float>(QuantizeUnorm8(ap.cutoff)) / 255.0f;
+                }
                 pt::MaterialGpu pm{};
                 float emLuma = 0.0f;
                 PtHost::ResolveHitMaterial(*this, dit, mi, nativeCmdList, true, pm, emLuma);

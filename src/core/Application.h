@@ -314,7 +314,8 @@ public:
         bool tlasReady      = false;
         u32  instances = 0, blasCount = 0;
         u32  skippedSkinned = 0, skippedTransparent = 0, droppedOverLimit = 0;
-        u32  skippedAlphaTest = 0;   // アルファテスト(MASK)。CSM の ShadowMask が担当する
+        u32  skippedAlphaTest = 0;   // アルファテスト(MASK)で除外した数。RT2 以降は TLAS に入れるので常に 0
+        u32  alphaTestInstances = 0, alphaTestBlasCount = 0;   // RT2: TLAS に入った MASK のインスタンス数 / 非不透明 BLAS の個数
         // スキンド（計画09 Step 4 / compute スキニング）
         u32  skinnedInstances = 0, skinnedRebuilds = 0, skinnedStale = 0;
         u64  skinnedTriangles = 0;

@@ -382,7 +382,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Rt_VS.cso",       L"FSTriVS", L"vs_6_0" },
                 { L"RtShadow_PS.cso", L"PSMain",  L"ps_6_6" },
             },
-            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+            { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
             // バインドレスのヒット点アルベド可視化（計画09 Step 5 の検証用）。
@@ -394,13 +394,13 @@ const std::vector<ShaderSource>& BuildRegistry()
             // RT-AO（計画09 Step 3）
             "raytracing/RtAo.hlsl",
             { { L"RtAo_PS.cso", L"PSMain", L"ps_6_6" } },
-            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+            { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
             // TLAS の目視確認用プライマリレイ（計画09 Step 1）。dx12_render_debug の rt / rtDiff。
             "raytracing/RtDebug.hlsl",
             { { L"RtDebug_PS.cso", L"PSMain", L"ps_6_6" } },
-            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+            { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
             // SSR（スクリーン空間反射）。VS は SSR.hlsl の FSTriVS を SSGI 側とも共有する。
@@ -435,7 +435,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             // RT-AO の空間デノイザ（joint bilateral）+ 最終合成。
             "raytracing/RtAoDenoise.hlsl",
             { { L"RtAoDenoise_PS.cso", L"PSMain", L"ps_6_6" } },
-            { "raytracing/RtCommon.hlsli", "post/FullscreenTri.hlsli" },
+            { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
         },
         {
             // DDGI のプローブ更新（計画09 Step 6）。compute で RayQuery を使うので cs_6_6。
