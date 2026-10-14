@@ -971,6 +971,7 @@ ModelData ModelLoader::LoadFromFile(
         for (unsigned int i = 0; i < scene->mNumMeshes; ++i)
             buildRefs.push_back({i, -1});
 
+    u32 skippedNonTriMeshes = 0;   // 三角形を 1 枚も持たないメッシュ（線・点・空）
     for (const MeshBuildRef& buildRef : buildRefs)
     {
         const unsigned int meshIdx = buildRef.meshIdx;
@@ -1103,14 +1104,27 @@ ModelData ModelLoader::LoadFromFile(
         }
 
         // --- Build index data ---
+        // ★三角形だけを拾う。SortByPType で線・点は別メッシュへ分かれるが、ここで弾かないと
+        //   そのメッシュが 1〜2 個ずつのインデックスのまま GPU へ行く。面が 1 枚も無いメッシュは
+        //   サイズ 0 のバッファになり CreateResource が E_INVALIDARG で落ち、モデルの生成ごと
+        //   失敗していた（PLATEAU の都市 FBX で発生。線・点・空のメッシュが混じる）。
         std::vector<u32> indices;
+        indices.reserve(static_cast<size_t>(aiMeshPtr->mNumFaces) * 3);
         for (unsigned int f = 0; f < aiMeshPtr->mNumFaces; ++f)
         {
             const aiFace& face = aiMeshPtr->mFaces[f];
-            for (unsigned int i = 0; i < face.mNumIndices; ++i)
-            {
-                indices.push_back(face.mIndices[i]);
-            }
+            if (face.mNumIndices != 3) continue;
+            indices.insert(indices.end(), face.mIndices, face.mIndices + 3);
+        }
+        if (indices.empty() || vertices.empty())
+        {
+            ++skippedNonTriMeshes;
+            // 静的モデルは buildRefs がノード展開順＝メッシュ番号に意味が無いので捨ててよい。
+            // ノードアニメ経路は result.meshes の番号が aiMesh の番号と対応しているので、
+            // 捨てずに見えない三角形 1 枚で埋めて並びを保つ。
+            if (expandPerNode) continue;
+            if (vertices.empty()) vertices.push_back(Vertex{});
+            indices.assign({0u, 0u, 0u});
         }
 
         // --- UV Transform（タイリング/オフセット）を頂点 UV へ焼く ---
@@ -1278,17 +1292,16 @@ ModelData ModelLoader::LoadFromFile(
             if (!material->metalRoughnessTexture)
                 material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false, TextureUsage::NonColor);
 
-            // ★import.json で specularIsORM のモデルだけ: Specular スロットが ORM（R=AO/G=roughness/B=metallic、Falcor 規約）。
+            // ★import.json で specularIsORM のモデルだけ: Specular スロットが G=roughness / B=metallic
+            //   （glTF の metallicRoughness と同じ詰め方、Falcor 規約）。
+            //   ★R は AO として読まない。Falcor の R は「未使用」で、Bistro では全テクスチャが R=0。
+            //   AO 扱いにすると環境光が全部消え、日陰が真っ黒に潰れた（2026-10-14 に実測）。
             bool specularAsOrm = false;
             if (importOpts.specularIsORM && !material->metalRoughnessTexture)
             {
                 material->metalRoughnessTexture = loadPBRTexture(aiTextureType_SPECULAR, false, TextureUsage::NonColor);
                 if (material->metalRoughnessTexture)
-                {
                     specularAsOrm = true;
-                    material->occlusionInMR = true;   // R を AO として使う
-                    material->aoStrength    = 1.0f;
-                }
             }
 
             // ---- マテリアル AO（glTF occlusionTexture）----
@@ -1495,6 +1508,10 @@ ModelData ModelLoader::LoadFromFile(
         result.meshes.push_back(std::move(mesh));
         result.materials.push_back(std::move(material));
     }
+
+    if (skippedNonTriMeshes > 0)
+        Logger::Info("三角形を持たないメッシュ（線・点・空）を {} 個除外しました: {}",
+                     skippedNonTriMeshes, filePath.filename().string());
 
     // Build animation clips if skeleton exists
     if (skeleton)

@@ -59,7 +59,7 @@ struct OcclusionProbe
 // （例 BistroExterior.fbx.import.json）から読む。キーを足すときはここへメンバーと Parse の行を足す。
 struct ModelImportOptions
 {
-    // FBX の SpecularColor スロットを ORM（R=AO / G=roughness / B=metallic）として読む（Falcor 規約）。
+    // FBX の SpecularColor スロットを metallicRoughness（G=roughness / B=metallic、R は未使用で AO にしない）として読む（Falcor 規約）。
     // 一般の FBX では Specular は本物の鏡面反射色なので既定は false。
     bool specularIsORM = false;
 
