@@ -4301,7 +4301,9 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     // ★Q2: オフスクリーン撮影のフレームだけ、アスペクトは撮影解像度のもの（表示矩形と無関係）。
     const f32 renderAspect = OffscreenCaptureFrame()
         ? static_cast<f32>(m_mcpFinalShot.offW) / static_cast<f32>(m_mcpFinalShot.offH)
-        : static_cast<f32>(mainW) / static_cast<f32>(mainH);
+        : (m_viewSizeW > 0 && m_viewSizeH > 0)   // --view-size: 固定した描画解像度のアスペクト（パネルが違う比でも伸びない）
+            ? static_cast<f32>(m_viewSizeW) / static_cast<f32>(m_viewSizeH)
+            : static_cast<f32>(mainW) / static_cast<f32>(mainH);
 
     // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
     // 回転/ドリーは入力側で無効化済み。Play 中は CameraComponent 同期が優先する。

@@ -109,7 +109,7 @@ inline std::string Describe(Verdict v, uint32_t w, uint32_t h)
 }
 
 // 起動引数 --size で指定された既定の撮影サイズ（0 = 未指定）。screenshot_final が width/height を省いたときに使う。
-struct CliDefault { uint32_t w = 0, h = 0; };
+struct CliDefault { uint32_t w = 0, h = 0; uint32_t viewW = 0, viewH = 0; /* --view-size: 毎フレームの描画解像度の固定（0 = 固定しない） */ };
 inline CliDefault& Cli() { static CliDefault d; return d; }
 
 } // namespace dx12e::offshot

@@ -951,6 +951,10 @@ private:
     void UpdateRenderResolution();
     void SetRenderScale(f32 s);          // settings.json へ保存し、次フレームで即反映
     f32  GetRenderScale() const { return m_renderScale; }
+    // シーン(とゲームビュー)の内部描画解像度を WxH に固定する（性能測定用）。0,0 で解除。パネル矩形・render_scale には依存しない。
+    // settings.json には保存しない（CLI --view-size / MCP set_view_size のセッション限り）。次フレーム先頭で反映。
+    void SetViewSize(u32 w, u32 h);
+    void GetViewSize(u32& w, u32& h) const { w = m_viewSizeW; h = m_viewSizeH; }
 
     // perf_stats / benchmark の "occlusion" ブロック。
     // occluded は数フレーム遅れの実測値（GPU から読み戻す表示専用の数）。
@@ -1907,6 +1911,8 @@ private:
     //   → DoF / ゴッドレイの「半解像度サブ矩形を vpLeft/2 で作る」オフバイワンも消えた。
     f32  m_renderScale = 1.0f;      // settings.json "render_scale"（0.25〜1.0）。1.0 で従来と同一
     u32  m_renderW = 0;             // 現在確保されているレンダー解像度（0 = 未初期化）
+    u32  m_viewSizeW = 0;           // --view-size / set_view_size。0 でない間、レンダー解像度をこの値に固定（0 = 従来どおり）
+    u32  m_viewSizeH = 0;
     u32  m_renderH = 0;
     // ドッキング分割のドラッグ中に毎フレーム RT を作り直すと WaitIdle でカクつくので、
     // 「同じサイズが数フレーム続いたら」確定させる（renderScale 変更とウィンドウリサイズは即時）。

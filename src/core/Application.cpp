@@ -5,6 +5,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/AtomicFileJson.h"
+#include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（断った理由をログへ出す）
 #include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
@@ -1262,6 +1263,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_renderH = m_window->GetHeight();
         m_renderScale = static_cast<f32>(PersistGet("render_scale", 1.0));
         m_renderScale = std::clamp(m_renderScale, 0.25f, 1.0f);
+        { const auto& cli = offshot::Cli(); if (cli.viewW > 0 && cli.viewH > 0) { m_viewSizeW = cli.viewW; m_viewSizeH = cli.viewH; } }
 
         // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
         m_particleSystem = std::make_unique<ParticleSystem>();

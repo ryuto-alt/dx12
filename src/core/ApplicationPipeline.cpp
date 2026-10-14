@@ -783,8 +783,10 @@ void Application::UpdateRenderResolution()
     GetMainViewRect(dx, dy, dw, dh);   // 画面分割中はメインカメラの区画（それ以外は表示矩形そのまま）
     const f32 s = std::clamp(m_renderScale, 0.25f, 1.0f);
     // ★アスペクトは表示側の値を使い続ける（Render() の renderAspect）。ここは丸めるだけ。
-    const u32 want = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));
-    const u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dh) * s)));
+    u32 want = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));
+    u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dh) * s)));
+    // --view-size / set_view_size: パネルの大きさにも render_scale にも依らず固定する（表示は uber パスが矩形へ縮小/拡大）。
+    if (m_viewSizeW > 0 && m_viewSizeH > 0) { want = m_viewSizeW; wantH = m_viewSizeH; }
 
     // ★Q2: screenshot_final {width,height} / --size のオフスクリーン撮影中は、表示矩形と無関係にその解像度へ即時に切り替える。
     //   終わったら（m_mcpFinalShot.reply の消去で OffscreenActive() が false）次のフレームで表示矩形 × renderScale へ即時に戻す。
@@ -843,6 +845,15 @@ void Application::SetRenderScale(f32 s)
     m_renderScale    = v;
     m_renderResFlush = true;          // 次の Run ループ先頭で即反映（デバウンスしない）
     PersistSet("render_scale", static_cast<double>(v));
+}
+
+void Application::SetViewSize(u32 w, u32 h)
+{
+    if (w == 0 || h == 0) { w = 0; h = 0; }
+    if (w == m_viewSizeW && h == m_viewSizeH) return;
+    m_viewSizeW = w;
+    m_viewSizeH = h;
+    m_renderResFlush = true;          // 次の Run ループ先頭で即反映（デバウンスしない）
 }
 
 void Application::RecreateVelocityPsos()

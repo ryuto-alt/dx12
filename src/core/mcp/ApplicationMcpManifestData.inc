@@ -1256,6 +1256,13 @@ void FillManifestChunk11(ManifestRows& o)
         "none", "dx12_set_render_scale", {
             P("scale", "number", true, nullptr, nullptr, nullptr, nullptr, "0.25..1.0。1.0 で等倍(既定)。0.7 くらいから効きが分かる"),
         })});
+    o.push_back({"set_view_size", M("シーン(とゲームビュー)の内部描画解像度を width x height に固定する(性能測定用。1920x1080 で測る等)。パネル/ウィンドウの大きさと render_scale に依らない。表示はパネルへ縮小される。0,0 で解除。起動引数 --view-size WxH / dx12_engine_launch の viewSize でも指定できる。settings.json には保存しない。",
+        "set view size 描画解像度固定 1920x1080 ベンチ",
+        "render", "render_setting", "render_scale", McpEffect::WriteSetting, "any", 10000, true, false,
+        "none", "", {
+            P("width", "int", true, nullptr, "0", "8192", nullptr, "描画解像度の幅(16〜8192)。0 で解除(height も 0)"),
+            P("height", "int", true, nullptr, "0", "8192", nullptr, "描画解像度の高さ(16〜8192)。0 で解除(width も 0)"),
+        })});
     o.push_back({"set_scene_settings", M("シーンのスカイボックス/IBL・物理大気・デカールアトラスを設定する。skybox / atmosphere 内の指定フィールドだけ適用。★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。",
         "set scene settings シーン設定変更",
         "scene", "", "", McpEffect::WriteSetting, "any", 8000, true, false,
