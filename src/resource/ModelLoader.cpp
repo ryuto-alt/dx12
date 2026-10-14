@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cmath>    // 祖先変換が単位行列かの判定
 #include <cctype>   // ::tolower(拡張子の小文字化)
+#include <nlohmann/json.hpp>
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
@@ -605,6 +606,30 @@ OcclusionInfo ReadOcclusionInfo(const aiMaterial* aiMat, const std::filesystem::
 }
 } // namespace
 
+ModelImportOptions ModelImportOptions::Parse(const std::string& jsonText)
+{
+    ModelImportOptions o;
+    const nlohmann::json j = nlohmann::json::parse(jsonText, nullptr, /*allow_exceptions=*/false);
+    if (!j.is_object()) return o;
+    if (auto it = j.find("specularIsORM"); it != j.end() && it->is_boolean())
+        o.specularIsORM = it->get<bool>();
+    return o;
+}
+
+ModelImportOptions ModelImportOptions::LoadFor(const std::filesystem::path& modelPath)
+{
+    std::filesystem::path p = modelPath;
+    p += L".import.json";
+    std::vector<uint8_t> bytes = vfs::ReadAssetAbs(p.wstring());
+    if (bytes.empty())
+    {
+        std::ifstream f(p, std::ios::binary);
+        if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    if (bytes.empty()) return {};
+    return Parse(std::string(bytes.begin(), bytes.end()));
+}
+
 std::vector<OcclusionProbe> ModelLoader::ProbeOcclusion(const std::filesystem::path& filePath)
 {
     std::vector<OcclusionProbe> out;
@@ -774,6 +799,8 @@ ModelData ModelLoader::LoadFromFile(
     }
 
     const std::filesystem::path parentDir = filePath.parent_path();
+    // 取り込みオプション（<モデル名>.import.json）。無ければ全部既定＝従来どおり。
+    const ModelImportOptions importOpts = ModelImportOptions::LoadFor(filePath);
 
     // Build skeleton first (needed for bone weight assignment)
     auto skeleton = BuildSkeleton(scene);
@@ -1251,6 +1278,19 @@ ModelData ModelLoader::LoadFromFile(
             if (!material->metalRoughnessTexture)
                 material->metalRoughnessTexture = loadPBRTexture(aiTextureType_DIFFUSE_ROUGHNESS, false, TextureUsage::NonColor);
 
+            // ★import.json で specularIsORM のモデルだけ: Specular スロットが ORM（R=AO/G=roughness/B=metallic、Falcor 規約）。
+            bool specularAsOrm = false;
+            if (importOpts.specularIsORM && !material->metalRoughnessTexture)
+            {
+                material->metalRoughnessTexture = loadPBRTexture(aiTextureType_SPECULAR, false, TextureUsage::NonColor);
+                if (material->metalRoughnessTexture)
+                {
+                    specularAsOrm = true;
+                    material->occlusionInMR = true;   // R を AO として使う
+                    material->aoStrength    = 1.0f;
+                }
+            }
+
             // ---- マテリアル AO（glTF occlusionTexture）----
             // Assimp は glTF の occlusionTexture を aiTextureType_LIGHTMAP の 0 番に入れ、強度を
             // "$tex.file.strength" に置く。FBX/OBJ の LIGHTMAP は別物なので glTF/GLB に限る。
@@ -1358,6 +1398,7 @@ ModelData ModelLoader::LoadFromFile(
             float metallic = 0.0f, roughness = 0.5f;
             aiMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
             aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness);
+            if (specularAsOrm) { metallic = 1.0f; roughness = 1.0f; }   // テクスチャの値をそのまま効かせる
             material->defaultMetallic = metallic;
             material->defaultRoughness = roughness;
 
@@ -1394,6 +1435,16 @@ ModelData ModelLoader::LoadFromFile(
                 if (material->alphaMode == AlphaMode::Opaque && material->baseColorAlpha < 0.999f
                     && alphaMode.length == 0)
                     material->alphaMode = AlphaMode::Blend;
+
+                // ★alphaMode を持たない形式（FBX/OBJ）の救済その 2: albedo のアルファに切り抜きがあれば Mask。
+                //   葉カードなど、透明がテクスチャのアルファにだけある素材（opacity 値もテクスチャも無い）向け。
+                //   glTF（alphaMode を持つ）と、不透明なテクスチャは一切触らない。
+                if (material->alphaMode == AlphaMode::Opaque && alphaMode.length == 0
+                    && material->albedoTexture && material->albedoTexture->HasTransparentAlpha())
+                {
+                    material->alphaMode = AlphaMode::Mask;   // alphaCutoff は既定 0.5（上で FBX は設定されない）
+                    Logger::Info("albedo のアルファから Mask と判定: {}", aiMat->GetName().C_Str());
+                }
 
                 if (material->alphaMode != AlphaMode::Opaque)
                     Logger::Info("マテリアル透明: mode={} cutoff={:.2f} alpha={:.2f} ({})",

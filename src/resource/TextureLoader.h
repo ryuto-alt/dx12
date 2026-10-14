@@ -8,6 +8,7 @@
 #include <cstdint>
 
 struct ID3D12GraphicsCommandList;
+namespace DirectX { class ScratchImage; }
 
 namespace dx12e
 {
@@ -60,6 +61,10 @@ public:
     static DXGI_FORMAT SelectCompressedFormat(TextureUsage usage, DXGI_FORMAT srcFormat, bool srgb);
 
     // BC の 4x4 ブロック制約 / 2D 単体かどうかで圧縮可否を判定する純関数。
+    // 画像が「実際に不透明でないピクセルを含む」か。BC 圧縮済みでも判定できる（DirectXTex の
+    // IsAlphaAllOpaque）。アルファの無い形式（BC1 のアルファ無し含む）は false。GPU 不要の純関数。
+    static bool HasTransparentAlpha(const DirectX::ScratchImage& image);
+
     static bool IsCompressibleSize(size_t width, size_t height, size_t arraySize, size_t depth);
 
     // 長辺を maxDim に収めるサイズを縦横比を保って求める純関数。

@@ -46,6 +46,12 @@ public:
     u32         GetSrvIndex()  const { return m_srvIndex; }
     void        SetSrvIndex(u32 index) { m_srvIndex = index; }
 
+    // 実際に不透明でないピクセルを含むか（BaseColor 用途の読み込み時に 1 回だけ判定。BC 圧縮後の画像で判定する）。
+    // FBX/OBJ のように alphaMode を持たない形式で、葉カードなどの切り抜きを自動で Mask にするための目印。
+    // 判定していない（BaseColor 以外）/ アルファ無し形式は false。
+    bool        HasTransparentAlpha() const { return m_hasTransparentAlpha; }
+    void        SetHasTransparentAlpha(bool v) { m_hasTransparentAlpha = v; }
+
 private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_uploadBuffer;
     u32         m_width    = 0;
@@ -54,6 +60,7 @@ private:
     u32         m_arraySize = 1;
     DXGI_FORMAT m_format   = DXGI_FORMAT_UNKNOWN;
     u32         m_srvIndex = UINT32_MAX;
+    bool        m_hasTransparentAlpha = false;
 };
 
 } // namespace dx12e

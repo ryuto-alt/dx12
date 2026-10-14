@@ -918,6 +918,19 @@ if(TARGET Resource AND TARGET Renderer)
     add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
 endif()
 
+# モデル取り込み: import.json（ModelImportOptions）と albedo アルファの透明判定（TextureLoader::HasTransparentAlpha）。GPU 不要。
+if(TARGET Resource AND TARGET Renderer)
+    add_executable(ModelImportAlphaTests model_import_alpha_test.cpp)
+    target_link_libraries(ModelImportAlphaTests PRIVATE Resource Renderer)
+    target_compile_definitions(ModelImportAlphaTests PRIVATE
+        DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(ModelImportAlphaTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ModelImportAlphaTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ModelImportAlphaTests COMMAND ModelImportAlphaTests)
+endif()
+
 # マテリアル AO（ORM の R / glTF occlusionTexture）。ModelLoader::ProbeOcclusion / TextureLoader::ComposeOrmPng / Material.h の詰め方。GPU 不要。
 if(TARGET Resource AND TARGET Renderer)
     add_executable(AoMaterialTests ao_material_test.cpp)

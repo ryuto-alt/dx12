@@ -55,6 +55,20 @@ struct OcclusionProbe
     float strength          = 1.0f;
 };
 
+// モデルごとの取り込みオプション。モデルファイルの隣の `<モデルファイル名>.import.json`
+// （例 BistroExterior.fbx.import.json）から読む。キーを足すときはここへメンバーと Parse の行を足す。
+struct ModelImportOptions
+{
+    // FBX の SpecularColor スロットを ORM（R=AO / G=roughness / B=metallic）として読む（Falcor 規約）。
+    // 一般の FBX では Specular は本物の鏡面反射色なので既定は false。
+    bool specularIsORM = false;
+
+    // JSON 文字列から読む。壊れている / キーが無い / 型違いは既定値（全部 false）。
+    static ModelImportOptions Parse(const std::string& jsonText);
+    // モデルの隣の import.json を vfs 経由で読む（配布ゲームの pak でも読める）。無ければ既定値。
+    static ModelImportOptions LoadFor(const std::filesystem::path& modelPath);
+};
+
 class ModelLoader
 {
 public:

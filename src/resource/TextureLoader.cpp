@@ -784,6 +784,13 @@ DXGI_FORMAT TextureLoader::SelectCompressedFormat(TextureUsage usage, DXGI_FORMA
     }
 }
 
+bool TextureLoader::HasTransparentAlpha(const DirectX::ScratchImage& image)
+{
+    if (image.GetImageCount() == 0) return false;
+    if (!DirectX::HasAlpha(image.GetMetadata().format)) return false;
+    return !image.IsAlphaAllOpaque();
+}
+
 bool TextureLoader::IsCompressibleSize(size_t width, size_t height, size_t arraySize, size_t depth)
 {
     // D3D12 はブロック圧縮テクスチャの最上位 mip に 4 の倍数を要求する。
@@ -987,6 +994,9 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
 
     auto texture = std::make_unique<Texture>();
     texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
+    // アルベドだけ、最終形（キャッシュ読み込み / BC 圧縮後を含む）で 1 回だけ判定する。
+    if (usage == TextureUsage::BaseColor)
+        texture->SetHasTransparentAlpha(TextureLoader::HasTransparentAlpha(scratchImage));
 
     Logger::Info("Texture loaded: {}x{}, mips={}, format={}",
                  static_cast<u32>(meta.width),
@@ -1172,6 +1182,8 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
 
     auto texture = std::make_unique<Texture>();
     texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
+    if (usage == TextureUsage::BaseColor)
+        texture->SetHasTransparentAlpha(TextureLoader::HasTransparentAlpha(scratchImage));
 
     Logger::Info("Embedded texture loaded: {}x{}, mips={} (format={})",
                  static_cast<u32>(meta.width), static_cast<u32>(meta.height),

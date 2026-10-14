@@ -153,6 +153,7 @@ void Texture::AdoptFrom(Texture& src)
     m_mipLevels    = src.m_mipLevels;
     m_arraySize    = src.m_arraySize;
     m_format       = src.m_format;
+    m_hasTransparentAlpha = src.m_hasTransparentAlpha;
     // m_srvIndex は **引き継がない**（自分のスロットを使い続ける）。
 }
 
