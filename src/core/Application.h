@@ -756,7 +756,7 @@ private:
     // >= GpuTimer::Scope::Count（cpp で static_assert）。
     // 12 → 14（計画09 が raytracing / rtScreen の 2 スコープを足して 12 使用。残り 2）。
     // 14 → 16（Hi-Z オクルージョンカリングが hiZ を足して 15 使用。残り 1）。
-    static constexpr u32 kPerfGpuScopes = 16;
+    static constexpr u32 kPerfGpuScopes = 20;
                                                // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {
@@ -1688,6 +1688,7 @@ private:
     void  AtmosphereDrawSky(const ViewDesc& view, const RenderPassContext& ctx);
     void  AtmosphereDrawAerialPerspective(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);
     bool  LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd);   // LoadSkyboxIfNeeded の先頭から: 大気が環境の元なら焼いて true
+    void  AtmosphereDrawClouds(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);   // ボリュメトリッククラウド（AP の直後。ApplicationClouds.cpp）
     void  AtmosphereShutdown();
 
     // ---- 仮想ジオメトリ（Nanite 風）P2: .vgeo の読込 + GPU カリング（統計のみ。**描かない**）----

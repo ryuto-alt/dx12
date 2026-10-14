@@ -6148,6 +6148,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                && static_cast<u32>(RenderDebugMode::Ao) == vp::ViewModeToDebugPass(vp::kViewModeAo),
                   "ViewportLogic.h の ViewModeToDebugPass が RenderDebugMode と食い違っている");
     u32 dbgModeNow = m_renderDebugMode;
+    if (atmoSky) AtmosphereDrawClouds(view, passCtx, depthSrvIndex);   // ボリュメトリッククラウド（clouds.enabled のときだけ。OFF なら即 return）
     if (dbgModeNow == 0 && m_editorCtx && m_engineMode == EngineMode::Editor && !m_isGameMode)
         dbgModeNow = vp::ViewModeToDebugPass(m_editorCtx->vpPrefs.viewMode);
     // 仮想ジオメトリ P3: 可視性バッファの可視化（クラスタ / LOD / 三角形 / 深度 / オーバードロー / 被覆）。VG のラスタが動いているフレームだけ。

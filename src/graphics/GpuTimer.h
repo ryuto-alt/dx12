@@ -35,6 +35,7 @@ public:
         UI,            // エディタアイコン/スプライト/ImGui/トランジション
         VgCull,        // 仮想ジオメトリ: GPU カリング（インスタンス / BVH 走査 / クラスタ / 二相 HZB。P2 は統計のみ）
         Count
+        Clouds,        // ボリュメトリッククラウド: 粗いレイマーチ + 時間再投影(compute 2 パス)+ 合成（Particles の内数になる区間に重なる）
     };
     static const char* Name(u32 s);
 

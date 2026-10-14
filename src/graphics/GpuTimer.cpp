@@ -25,6 +25,7 @@ const char* GpuTimer::Name(u32 s)
     case UI:          return "ui";
     case VgCull:      return "vgCull";
     default:          return "?";
+    case Clouds:      return "clouds";
     }
 }
 

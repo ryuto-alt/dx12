@@ -118,6 +118,7 @@ bool Application::AtmosphereWantsEnvironment() const
 void Application::AtmosphereShutdown()
 {
     if (!m_atmo) return;
+    m_atmo->clouds.Shutdown();
     m_atmo->renderer.Shutdown();
     m_atmo.reset();
 }

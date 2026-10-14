@@ -41,6 +41,7 @@ add_library(Renderer STATIC
     PathTracer.cpp                 # DXR パストレーサー(地上真値レンダラ。専用 RS・専用 TLAS。既定 OFF・遅延確保)
     pt/PtSceneBuilder.cpp          # パストレーサー専用の BLAS / TLAS / テーブルの構築
     atmosphere/AtmosphereRenderer.cpp   # 物理ベース大気 A1（Hillaire 2020 の 4 LUT + 空 + AP 合成。専用 RS）
+    atmosphere/CloudRenderer.cpp        # ボリュメトリッククラウド（粗いレイマーチ + 時間再投影。専用 RS）
 )
 target_include_directories(Renderer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
 

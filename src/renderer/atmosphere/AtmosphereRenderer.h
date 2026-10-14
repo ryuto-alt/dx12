@@ -76,6 +76,10 @@ public:
     // PT が bindless で引く SRV ブロックの先頭(T / MS / SkyView / ApL / ApT / cube / params)
     u32 SrvBlockBase() const { return m_srvBlock; }
 
+    // ---- 雲(CloudRenderer)が大気の定数・LUT を借りるための口 ----
+    D3D12_GPU_VIRTUAL_ADDRESS CbAddress(u32 slot) const;
+    D3D12_GPU_DESCRIPTOR_HANDLE LutSrvGpu() const;   // SRV ブロックの先頭(t0..t4 の 5 本が連続)
+
     // ---- 計測 ----
     // 直近に完了したフレームの各スコープの GPU 時間[ms]。実行しなかったスコープは最後に実行したときの値を保つ(ScopeExecuted で判別)。
     float GetMs(u32 scope) const { return scope < ScopeCount ? m_scopeMs[scope] : 0.0f; }

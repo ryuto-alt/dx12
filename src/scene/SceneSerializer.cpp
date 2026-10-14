@@ -1123,6 +1123,11 @@ static json SerializeAtmosphere(const AtmosphereSettings& a)
         {"aerialPerspective", a.aerialPerspective}, {"apStartDepth", a.apStartDepth},
         {"apMaxDistanceKm", a.apMaxDistanceKm}, {"apStrength", a.apStrength},
         {"iblRebakeThresholdDeg", a.iblRebakeThresholdDeg}, {"iblRebakeMaxHz", a.iblRebakeMaxHz},
+        {"clouds", {
+            {"enabled", a.clouds.enabled}, {"coverage", a.clouds.coverage}, {"cloudType", a.clouds.cloudType},
+            {"density", a.clouds.density}, {"baseAltitudeKm", a.clouds.baseAltitudeKm}, {"thicknessKm", a.clouds.thicknessKm},
+            {"windDirDeg", a.clouds.windDirDeg}, {"windSpeed", a.clouds.windSpeed}, {"detailStrength", a.clouds.detailStrength},
+            {"scale", a.clouds.scale}, {"steps", a.clouds.steps}}},
     };
 }
 
@@ -1860,6 +1865,22 @@ static void LoadVolumetricFogSettings(Scene& scene, const json& root)
     VolumetricFogSettings vf;  // デフォルト（未指定キーは既定値を維持）
     if (root.contains("volumetricFog"))
     {
+        if (j.contains("clouds") && j["clouds"].is_object())
+        {
+            const auto& c = j["clouds"];
+            CloudSettings& cl = a.clouds;
+            cl.enabled        = c.value("enabled", cl.enabled);
+            cl.coverage       = fin(c.value("coverage", cl.coverage), 0.0f, 1.0f, 0.5f);
+            cl.cloudType      = fin(c.value("cloudType", cl.cloudType), 0.0f, 1.0f, 0.5f);
+            cl.density        = fin(c.value("density", cl.density), 0.0f, 4.0f, 1.0f);
+            cl.baseAltitudeKm = fin(c.value("baseAltitudeKm", cl.baseAltitudeKm), 0.0f, 20.0f, 1.5f);
+            cl.thicknessKm    = fin(c.value("thicknessKm", cl.thicknessKm), 0.1f, 15.0f, 3.0f);
+            cl.windDirDeg     = fin(c.value("windDirDeg", cl.windDirDeg), -360.0f, 360.0f, 0.0f);
+            cl.windSpeed      = fin(c.value("windSpeed", cl.windSpeed), 0.0f, 500.0f, 8.0f);
+            cl.detailStrength = fin(c.value("detailStrength", cl.detailStrength), 0.0f, 1.0f, 0.5f);
+            cl.scale          = fin(c.value("scale", cl.scale), 0.25f, 4.0f, 1.0f);
+            cl.steps          = std::clamp(c.value("steps", cl.steps), 16, 128);
+        }
         const auto& j = root["volumetricFog"];
         auto readVec3 = [&](const char* key, DirectX::XMFLOAT3& dst)
         {

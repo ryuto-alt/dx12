@@ -913,6 +913,28 @@ void RenderLightingPanel(Scene* scene,
                     double az = std::atan2(sd.x, sd.z) * 180.0 / kPi - static_cast<double>(at.northYawDeg);
                     while (az < 0.0) az += 360.0;
                     while (az >= 360.0) az -= 360.0;
+                pg::Group("雲 (ボリュメトリック)");
+                {
+                    auto& cl = at.clouds;
+                    pg::Checkbox("雲を描く", &cl.enabled,
+                                 "ON: 層積雲〜積乱雲のボリュメトリッククラウドを空に描きます（1/4 解像度のレイマーチ + 時間再投影）。\n"
+                                 "太陽光は透過率で色づき（夕方は赤く）、地平線近くは大気の霞が掛かります。OFF（既定）なら何も走りません");
+                    if (cl.enabled)
+                    {
+                        pg::SliderFloat("雲量", &cl.coverage, 0.0f, 1.0f, "%.2f", nullptr, "0 = 快晴 / 1 = ほぼ全天");
+                        pg::SliderFloat("雲の型", &cl.cloudType, 0.0f, 1.0f, "%.2f", nullptr,
+                                        "0 = 層雲（薄く平ら）/ 0.5 = 積雲（もこもこ）/ 1 = 積乱雲（高く伸びる）");
+                        pg::SliderFloat("濃さ", &cl.density, 0.0f, 4.0f, "%.2f", nullptr, "消散係数の倍率。大きいほど不透明で暗い雲底になります");
+                        pg::SliderFloat("雲底の高度 (km)", &cl.baseAltitudeKm, 0.0f, 12.0f, "%.2f", nullptr, "海面（atmosphere の seaLevelY）からの高さ");
+                        pg::SliderFloat("雲層の厚さ (km)", &cl.thicknessKm, 0.2f, 10.0f, "%.2f", nullptr, "厚いほど縦に伸びた雲になります");
+                        pg::SliderFloat("風向 (度)", &cl.windDirDeg, -180.0f, 180.0f, "%.0f°", nullptr, "雲が流れていく向き（+Z = 0°、+X = 90°）");
+                        pg::SliderFloat("風速 (m/s)", &cl.windSpeed, 0.0f, 60.0f, "%.1f", nullptr, "雲のパターンが時間で流れる速さ。0 で止まる");
+                        pg::SliderFloat("細部の強さ", &cl.detailStrength, 0.0f, 1.0f, "%.2f", nullptr, "高周波ノイズでの削り。輪郭の細かさ");
+                        pg::SliderFloat("雲の粒の大きさ", &cl.scale, 0.25f, 4.0f, "%.2f", nullptr, "ノイズの大きさの倍率（大きいほど大きな塊）");
+                        pg::SliderInt("品質 (ステップ数)", &cl.steps, 16, 128, nullptr, "視線方向のレイマーチ段数。多いほど綺麗で重い（既定 48）");
+                    }
+                }
+
                     AtmosphereSettings sl = at;
                     if (sl.sunMode == 1) sl.drawMoon = false;
                     const SkyLight L = ComputeSkyLight(sl, sd, 0.002);   // 標高 2 m（0 ちょうどだと地面に接して透過率が 0 になる）
