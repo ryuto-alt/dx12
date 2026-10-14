@@ -6187,6 +6187,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // 二重に霞まない規則: 物理大気の AP は froxel フォグ / 距離フォグとは独立に掛かる（AP は大気の光、froxel フォグはユーザーが置く局所のフォグ）。
     // 遠景まで froxel フォグを伸ばす（extendBeyondRange）と両方が掛かるので、大気モードでは volumetricFog.extendBeyondRange を切るか density を下げること。
     if (atmoSky) AtmosphereDrawAerialPerspective(view, passCtx, depthSrvIndex);
+    if (atmoSky) AtmosphereDrawClouds(view, passCtx, depthSrvIndex);   // ボリュメトリッククラウド（clouds.enabled のときだけ。OFF なら即 return）
     if (view.Has(kViewParticles) && m_particleSystem)
     {
         ParticlesPass::Inputs pi{};
@@ -6252,7 +6253,6 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                && static_cast<u32>(RenderDebugMode::Ao) == vp::ViewModeToDebugPass(vp::kViewModeAo),
                   "ViewportLogic.h の ViewModeToDebugPass が RenderDebugMode と食い違っている");
     u32 dbgModeNow = m_renderDebugMode;
-    if (atmoSky) AtmosphereDrawClouds(view, passCtx, depthSrvIndex);   // ボリュメトリッククラウド（clouds.enabled のときだけ。OFF なら即 return）
     if (dbgModeNow == 0 && m_editorCtx && m_engineMode == EngineMode::Editor && !m_isGameMode)
         dbgModeNow = vp::ViewModeToDebugPass(m_editorCtx->vpPrefs.viewMode);
     // 仮想ジオメトリ P3: 可視性バッファの可視化（クラスタ / LOD / 三角形 / 深度 / オーバードロー / 被覆）。VG のラスタが動いているフレームだけ。

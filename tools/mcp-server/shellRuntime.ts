@@ -298,6 +298,14 @@ export class ShellRuntime {
         });
       }
       const { engine: _e, ...rest } = input;
+      // ★フリートのツール(stop / refresh)はエンジンへ通信せず、自分の args.engine(無ければ既定の束縛先)を見る。
+      //   向き先の切り替えだけでは効かず、別のエージェントのエンジンを止める・再起動する事故が起きた(2026-10-15、並行作業中に 2 回)。
+      //   args.engine が無ければ engine 引数をそこへ入れて渡す。
+      const bare = typeof rest.name === "string" ? rest.name.trim().replace(/^dx12_/, "") : "";
+      if (bare === "engine_stop" || bare === "engine_refresh") {
+        const a = (rest.args && typeof rest.args === "object" && !Array.isArray(rest.args)) ? rest.args as Record<string, unknown> : {};
+        if (a.engine === undefined && a.all === undefined) rest.args = { ...a, engine: ref };
+      }
       return r.withEngine(ref, () => this.call(rest));
     }
     const t0 = Date.now();

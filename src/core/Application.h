@@ -952,11 +952,11 @@ private:
     // 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale と現状がズレていたら追従する。
     void UpdateRenderResolution();
     void SetRenderScale(f32 s);          // settings.json へ保存し、次フレームで即反映
-    f32  GetRenderScale() const { return m_renderScale; }
     // シーン(とゲームビュー)の内部描画解像度を WxH に固定する（性能測定用）。0,0 で解除。パネル矩形・render_scale には依存しない。
     // settings.json には保存しない（CLI --view-size / MCP set_view_size のセッション限り）。次フレーム先頭で反映。
     void SetViewSize(u32 w, u32 h);
     void GetViewSize(u32& w, u32& h) const { w = m_viewSizeW; h = m_viewSizeH; }
+    f32  GetRenderScale() const { return m_renderScale; }
 
     // perf_stats / benchmark の "occlusion" ブロック。
     // occluded は数フレーム遅れの実測値（GPU から読み戻す表示専用の数）。
@@ -1688,7 +1688,6 @@ private:
     bool  AtmosphereSkyUsable(const ViewDesc& view) const;   // このビューの空を大気パスで描くか
     void  AtmosphereDrawSky(const ViewDesc& view, const RenderPassContext& ctx);
     void  AtmosphereDrawAerialPerspective(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);
-    bool  LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd);   // LoadSkyboxIfNeeded の先頭から: 大気が環境の元なら焼いて true
     void  AtmosphereDrawClouds(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);   // ボリュメトリッククラウド（AP の直後。ApplicationClouds.cpp）
     // 雲の影（影マスク t11 に掛ける）と環境光への焼き込み。どちらも clouds.enabled のときだけ（ApplicationClouds.cpp）
     bool  AtmosphereCloudShadowWanted(const ViewDesc& view) const;
@@ -1696,6 +1695,7 @@ private:
     void  AtmosphereCloudsToSkyCube(ID3D12GraphicsCommandList* cmd, u32 frameIndex);   // RecordSkyCube の直後に呼ぶ
     bool  AtmosphereCloudsEnsure();
     void  AtmosphereCloudWind(float outKm[3]);
+    bool  LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd);   // LoadSkyboxIfNeeded の先頭から: 大気が環境の元なら焼いて true
     void  AtmosphereShutdown();
 
     // ---- 仮想ジオメトリ（Nanite 風）P2: .vgeo の読込 + GPU カリング（統計のみ。**描かない**）----
@@ -1920,9 +1920,9 @@ private:
     //   → ポストの uvOfs/uvScl が定数 0,0,1,1 になり、7 パスから引数が消えた。
     //   → DoF / ゴッドレイの「半解像度サブ矩形を vpLeft/2 で作る」オフバイワンも消えた。
     f32  m_renderScale = 1.0f;      // settings.json "render_scale"（0.25〜1.0）。1.0 で従来と同一
-    u32  m_renderW = 0;             // 現在確保されているレンダー解像度（0 = 未初期化）
     u32  m_viewSizeW = 0;           // --view-size / set_view_size。0 でない間、レンダー解像度をこの値に固定（0 = 従来どおり）
     u32  m_viewSizeH = 0;
+    u32  m_renderW = 0;             // 現在確保されているレンダー解像度（0 = 未初期化）
     u32  m_renderH = 0;
     // ドッキング分割のドラッグ中に毎フレーム RT を作り直すと WaitIdle でカクつくので、
     // 「同じサイズが数フレーム続いたら」確定させる（renderScale 変更とウィンドウリサイズは即時）。

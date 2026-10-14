@@ -913,21 +913,6 @@ void RenderLightingPanel(Scene* scene,
                 pg::SliderFloat("霞の濃さ", &at.apStrength, 0.0f, 4.0f, "%.2f", nullptr,
                                 "1 = 物理どおり。演出で濃くしたり薄くしたりできます");
 
-                // ---- 読み取り専用: いまの太陽 ----
-                {
-                    using namespace atmosphere;
-                    Vec3d sd;
-                    if (at.sunMode == 1 && sun != entt::null)
-                    {
-                        const XMFLOAT3 d = reg.get<DirectionalLight>(sun).direction;
-                        sd = Norm({-static_cast<double>(d.x), -static_cast<double>(d.y), -static_cast<double>(d.z)});
-                    }
-                    else
-                        sd = SunDirectionFromTime(at);
-                    const double el = std::asin(std::clamp(sd.y, -1.0, 1.0)) * 180.0 / kPi;
-                    double az = std::atan2(sd.x, sd.z) * 180.0 / kPi - static_cast<double>(at.northYawDeg);
-                    while (az < 0.0) az += 360.0;
-                    while (az >= 360.0) az -= 360.0;
                 pg::Group("雲 (ボリュメトリック)");
                 {
                     auto& cl = at.clouds;
@@ -956,6 +941,21 @@ void RenderLightingPanel(Scene* scene,
                     }
                 }
 
+                // ---- 読み取り専用: いまの太陽 ----
+                {
+                    using namespace atmosphere;
+                    Vec3d sd;
+                    if (at.sunMode == 1 && sun != entt::null)
+                    {
+                        const XMFLOAT3 d = reg.get<DirectionalLight>(sun).direction;
+                        sd = Norm({-static_cast<double>(d.x), -static_cast<double>(d.y), -static_cast<double>(d.z)});
+                    }
+                    else
+                        sd = SunDirectionFromTime(at);
+                    const double el = std::asin(std::clamp(sd.y, -1.0, 1.0)) * 180.0 / kPi;
+                    double az = std::atan2(sd.x, sd.z) * 180.0 / kPi - static_cast<double>(at.northYawDeg);
+                    while (az < 0.0) az += 360.0;
+                    while (az >= 360.0) az -= 360.0;
                     AtmosphereSettings sl = at;
                     if (sl.sunMode == 1) sl.drawMoon = false;
                     const SkyLight L = ComputeSkyLight(sl, sd, 0.002);   // 標高 2 m（0 ちょうどだと地面に接して透過率が 0 になる）

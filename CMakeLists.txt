@@ -1597,6 +1597,32 @@ if(DXC_EXECUTABLE)
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_atOut}.cso")
     endforeach()
 
+    # ボリュメトリッククラウド（A2/A3。CloudNoise = 起動時のノイズ生成、CloudMarch = 粗いレイマーチ + 時間再投影 + 合成）。専用ルートシグネチャ。
+    foreach(_cl IN ITEMS
+            "CloudShape_CS|CloudNoise|cs_6_0|ShapeCS"
+            "CloudDetail_CS|CloudNoise|cs_6_0|DetailCS"
+            "CloudWeather_CS|CloudNoise|cs_6_0|WeatherCS"
+            "CloudTrace_CS|CloudMarch|cs_6_0|TraceCS"
+            "CloudResolve_CS|CloudMarch|cs_6_0|ResolveCS"
+            "CloudComposite_VS|CloudMarch|vs_6_0|VSFull"
+            "CloudComposite_PS|CloudMarch|ps_6_0|PSComposite"
+            "CloudShadowMap_CS|CloudMarch|cs_6_0|ShadowMapCS"
+            "CloudShadowApply_PS|CloudMarch|ps_6_0|PSShadowApply"
+            "CloudCubeCloud_CS|CloudMarch|cs_6_0|CubeCloudCS")
+        string(REPLACE "|" ";" _clp "${_cl}")
+        list(GET _clp 0 _clOut)
+        list(GET _clp 1 _clSrc)
+        list(GET _clp 2 _clProf)
+        list(GET _clp 3 _clEntry)
+        add_custom_command(
+            OUTPUT "${SHADER_OUTPUT_DIR}/${_clOut}.cso"
+            COMMAND ${DXC_EXECUTABLE} -T ${_clProf} -E ${_clEntry} -Fo "${SHADER_OUTPUT_DIR}/${_clOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/atmosphere/${_clSrc}.hlsl"
+            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/atmosphere/${_clSrc}.hlsl" ${SHADER_ATMOS_INC}
+            COMMENT "Compiling ${_clSrc}.hlsl -> ${_clOut}.cso (${_clProf})"
+        )
+        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_clOut}.cso")
+    endforeach()
+
     # 水面 W1（WaterBody + 専用パス）。shaders/water/。専用ルートシグネチャ（メイン RS を汚さない）で描く。
     #   WaterSurface: リングの頂点（ゲルストナー変位）+ ピクセル（屈折 / Beer 吸収 / 反射 / 泡 / 岸）。Phys = Q2 の物理ライティング単位版
     #   WaterUnder  : 水中の全画面（Beer 減衰 + 内部散乱）  WaterTest: テスト専用 compute（CPU 参照との一致確認）
@@ -1629,32 +1655,6 @@ if(DXC_EXECUTABLE)
             endforeach()
         endif()
         add_custom_command(
-    # ボリュメトリッククラウド（A2/A3。CloudNoise = 起動時のノイズ生成、CloudMarch = 粗いレイマーチ + 時間再投影 + 合成）。専用ルートシグネチャ。
-    foreach(_cl IN ITEMS
-            "CloudShape_CS|CloudNoise|cs_6_0|ShapeCS"
-            "CloudDetail_CS|CloudNoise|cs_6_0|DetailCS"
-            "CloudWeather_CS|CloudNoise|cs_6_0|WeatherCS"
-            "CloudTrace_CS|CloudMarch|cs_6_0|TraceCS"
-            "CloudResolve_CS|CloudMarch|cs_6_0|ResolveCS"
-            "CloudComposite_VS|CloudMarch|vs_6_0|VSFull"
-            "CloudComposite_PS|CloudMarch|ps_6_0|PSComposite"
-            "CloudShadowMap_CS|CloudMarch|cs_6_0|ShadowMapCS"
-            "CloudShadowApply_PS|CloudMarch|ps_6_0|PSShadowApply"
-            "CloudCubeCloud_CS|CloudMarch|cs_6_0|CubeCloudCS")
-        string(REPLACE "|" ";" _clp "${_cl}")
-        list(GET _clp 0 _clOut)
-        list(GET _clp 1 _clSrc)
-        list(GET _clp 2 _clProf)
-        list(GET _clp 3 _clEntry)
-        add_custom_command(
-            OUTPUT "${SHADER_OUTPUT_DIR}/${_clOut}.cso"
-            COMMAND ${DXC_EXECUTABLE} -T ${_clProf} -E ${_clEntry} -Fo "${SHADER_OUTPUT_DIR}/${_clOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/atmosphere/${_clSrc}.hlsl"
-            DEPENDS "${CMAKE_SOURCE_DIR}/shaders/atmosphere/${_clSrc}.hlsl" ${SHADER_ATMOS_INC}
-            COMMENT "Compiling ${_clSrc}.hlsl -> ${_clOut}.cso (${_clProf})"
-        )
-        list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_clOut}.cso")
-    endforeach()
-
             OUTPUT "${SHADER_OUTPUT_DIR}/${_waOut}.cso"
             COMMAND ${DXC_EXECUTABLE} -T ${_waProf} -E ${_waEntry} ${_waDef} -Fo "${SHADER_OUTPUT_DIR}/${_waOut}.cso" "${CMAKE_SOURCE_DIR}/shaders/water/${_waSrc}.hlsl"
             DEPENDS "${CMAKE_SOURCE_DIR}/shaders/water/${_waSrc}.hlsl" ${SHADER_WATER_INC}
