@@ -74,6 +74,14 @@ jobs:
           key: vcpkg-${{ runner.os }}-vs2026-${{ hashFiles('vcpkg.json') }}
           restore-keys: vcpkg-${{ runner.os }}-vs2026-
 
+      # ccache: 変わっていない .cpp のコンパイル結果を使い回す。キャッシュは master の実行で温まり、
+      # PR はそれを引き継ぐ（GitHub のキャッシュは別ブランチから読めるのは既定ブランチ分だけ）。
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2.14
+        with:
+          key: engine-vs2026
+          max-size: 2G
+
       # cl / link / rc と WindowsSdkVerBinPath（= SDK の dxc.exe）を PATH に載せる。
       - uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -84,11 +92,30 @@ jobs:
         shell: pwsh
         run: ./tools/gen_asset_key.ps1
 
+      # ★ccache は MSVC のプリコンパイル済みヘッダー(/Yu /Yc)を扱えず、PCH 付きの TU を
+      #   キャッシュしない。エンジンは 19 ターゲットが src/pch.h を使うので、CI では PCH を切る。
+      #   （ccache で 2 回目以降が速くなる代わりに、キャッシュが空の初回だけ少し遅くなる。
+      #   PCH が隠していたインクルード漏れが CI で初めて出ることもある。）
       - name: Configure
-        run: cmake --preset windows-release
+        run: >
+          cmake --preset windows-release
+          -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-      - name: Build
+      # PR は軽く: エンジン本体(/W4 /WX)とシェーダーだけ建てる。テスト 127 本と GameRuntime は
+      # master への push（と手動実行）で全部建てて ctest まで回す。
+      - name: Build (PR - DX12Engine + Shaders)
+        if: github.event_name == 'pull_request'
+        run: cmake --build build/release --target DX12Engine Shaders
+
+      - name: Build (full)
+        if: github.event_name != 'pull_request'
         run: cmake --build build/release
+
+      - name: ccache stats
+        shell: pwsh
+        run: ccache --show-stats
 
       # DXC が見つからないと CMakeLists は黙ってシェーダーを飛ばすので、.cso が出たことを確かめる。
       - name: Check shaders compiled
@@ -100,4 +127,5 @@ jobs:
 
       # エンジンにリンクするテスト（tests/CMakeLists.txt の if(TARGET Core) 側）はここでしか回らない。
       - name: Test (engine-linked)
+        if: github.event_name != 'pull_request'
         run: ctest --preset windows-release
