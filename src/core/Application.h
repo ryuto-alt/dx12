@@ -21,6 +21,7 @@
 #include <atomic>
 #include <mutex>
 #include <functional>
+#include <nlohmann/json.hpp>   // PCH なし(CI)でも m_mcpPlayLayout 等の値メンバが完全型になるように
 #include "ecs/Components.h"
 #include "project/Project.h"
 #include "project/GitIntegration.h"   // GitResult（非同期 git タスクの戻り値）
