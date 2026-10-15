@@ -108,4 +108,5 @@ jobs:
       # エンジンにリンクするテスト（tests/CMakeLists.txt の if(TARGET Core) 側）はここでしか回らない。
       - name: Test (engine-linked)
         if: github.event_name != 'pull_request'
-        run: ctest --preset windows-release
+        # CI のサーバーには GPU が無い。gpu ラベルのテストはソフトウェア描画で遅く、時間基準で落ちるので除外する。
+        run: ctest --preset windows-release -LE gpu
