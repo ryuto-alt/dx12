@@ -488,5 +488,9 @@ MCP `dx12_set_occlusion`。実装は `src/renderer/HiZPass.{h,cpp}`（深度ピ�
 - **AI エージェント運用ガイド**: [`tools/mcp-server/AGENTS.md`](tools/mcp-server/AGENTS.md) — 典型ワークフロー・禁止パターン・よくある間違い
 - **ポート**: 自動採番(8787〜8797)。確定値は `%TEMP%\dx12_mcp.port` に書かれる。`DX12_MCP_PORT` 環境変数で上書き可。
 - **認証**: なし(localhost 専用・開発機前提)。ゲーム(封印ランタイム)ではブリッジは起動しない。
+- **ワンクリック導入**: エディタ「ツール > MCP / AI Bridge」のボタン、または `DX12Engine.exe --install-mcp`。Node v24+（無ければ nodejs.org から
+  `%LOCALAPPDATA%\UnoEngine\node` へ。SHA-256 照合）+ dx12-mcp の zip（`...\UnoEngine\mcp-server`）+ `npm ci` を用意し、Codex
+  (`~/.codex/config.toml`) / Claude Code / Claude Desktop / Cursor へ登録する。既存設定は保持し、変更前を `.bak` に退避。
+  実装は `src/editor/McpInstaller.*`、設定ファイルの書き換えは純関数 `src/editor/McpClientConfig.h`（`tests/mcp_client_config_test.cpp`）。
 - **配布**: MCP サーバはエンジン配布物に**同梱しない**。別リポジトリ [ryuto-alt/dx12-mcp](https://github.com/ryuto-alt/dx12-mcp) で配布する。
   ソース・オブ・トゥルースは本リポジトリの `tools/mcp-server`。**MCP サーバを変更したら `tools/mcp-server/publish.ps1` で dx12-mcp へ同期すること。**

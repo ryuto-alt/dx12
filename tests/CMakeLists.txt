@@ -1898,3 +1898,16 @@ if(TARGET Hardware)
     add_test(NAME HardwareSystemTests COMMAND HardwareSystemTests)
     set_tests_properties(HardwareSystemTests PROPERTIES TIMEOUT 60)
 endif()
+
+# editor/McpClientConfig.h（AI クライアントの設定ファイルへ MCP サーバを足す純ロジック。Codex の TOML / JSON 系の
+# 差し替え・冪等性・壊れたファイルを書かない、Node の版判定と SHASUMS の解釈）のテスト。ヘッダオンリー + nlohmann。
+if(TARGET Core)
+    add_executable(McpClientConfigTests mcp_client_config_test.cpp)
+    target_link_libraries(McpClientConfigTests PRIVATE Core)
+    target_include_directories(McpClientConfigTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(McpClientConfigTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(McpClientConfigTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME McpClientConfigTests COMMAND McpClientConfigTests)
+endif()
