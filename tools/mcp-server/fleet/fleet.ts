@@ -35,6 +35,8 @@ export type LaunchInput = {
   mode?: EngineMode;
   scene?: string;
   dpiScale?: number;
+  /** シーンの内部描画解像度を固定する(例 "1920x1080")。エンジンの --view-size へ渡る。 */
+  viewSize?: string;
   args?: string[];
   waitReadyMs?: number;
   confirm?: boolean;
@@ -337,6 +339,14 @@ export class Fleet {
     }
     if (input.dpiScale !== undefined && !(Number(input.dpiScale) >= 0.75 && Number(input.dpiScale) <= 3)) {
       fail({ code: "E_OUT_OF_RANGE", message: `dx12_engine_launch: dpiScale ${input.dpiScale} は 0.75〜3.0 の範囲外`, fix: [{ tool: "dx12_engine_launch", args: { ...input, dpiScale: 1 }, why: "範囲内にする" }] });
+    }
+    if (input.viewSize !== undefined) {
+      const m = /^(\d+)x(\d+)$/i.exec(String(input.viewSize).trim());
+      const w = m ? Number(m[1]) : 0, h = m ? Number(m[2]) : 0;
+      if (!m || w < 16 || h < 16 || w > 8192 || h > 8192) {
+        fail({ code: "E_OUT_OF_RANGE", message: `dx12_engine_launch: viewSize '${input.viewSize}' は WxH(各辺 16〜8192)で指定する`, fix: [{ tool: "dx12_engine_launch", args: { ...input, viewSize: "1920x1080" }, why: "1920x1080 の形にする" }] });
+      }
+      extra.push(`--view-size=${w}x${h}`);   // extra に入れるので refresh でも引き継がれる
     }
     return { mode, name, extra, warnings };
   }

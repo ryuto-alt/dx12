@@ -87,6 +87,7 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
     //   ミスの方向は使わない（DDGI の irradiance は法線方向のコサイン積分済み）。
     const bool ddgiMiss = (gDdgi0.w > 0.5) && iblFall;
     float3 ddgiMissIrr = 0.0;
+    float  ddgiMissConf = 0.0;   // DDGI が答えた割合。残り (1 - conf) は IBL で埋める
     if (ddgiMiss)
     {
         const float3 posW = mul(float4(P, 1.0), gInvView).xyz;
@@ -100,8 +101,11 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
                                                surf.N, false, v0, v1, nCasc, uint3(gc.x, gc.y, gc.z * nCasc),
                                                gDdgi1.w, gDdgi2.w);
         // dr.conf = 0（範囲外 / 周囲 8 個とも壁の中）なら DDGI は答えられない → IBL へ戻す
-        if (dr.conf > 0.0)
-            ddgiMissIrr = dr.irrN * (dr.conf * gMisc2.y);
+        //   ★旧実装は conf の分だけ DDGI を積み、残りを 0 にしていた。カスケードの外（カメラから
+        //     約 20m 先）でミスしたレイが黒を積み、遠景の環境光が丸ごと消えていた（2026-10-15）。
+        ddgiMissConf = saturate(dr.conf);
+        if (ddgiMissConf > 0.0)
+            ddgiMissIrr = dr.irrN * (ddgiMissConf * gMisc2.y);
     }
 
     [loop]
@@ -137,7 +141,13 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
         }
         else if (ddgiMiss)
         {
-            sum += min(SS_Sanitize(ddgiMissIrr), clampValue.xxx);
+            float3 missIrr = ddgiMissIrr;
+            if (ddgiMissConf < 1.0)
+            {
+                const float3 dirW = normalize(mul(float4(dir, 0.0), gInvView).xyz);
+                missIrr += SS_Sanitize(g_irradiance.SampleLevel(g_linearClamp, dirW, 0).rgb) * (1.0 - ddgiMissConf);
+            }
+            sum += min(SS_Sanitize(missIrr), clampValue.xxx);
         }
         else if (iblFall)
         {

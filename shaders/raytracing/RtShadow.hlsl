@@ -24,7 +24,7 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
     const float3 P  = RtWorldFromDepth(px, d);
 
     // ddx/ddy は分岐の前に評価する（quad 内で分岐すると未定義）。
-    const float3 N = RtNormalFromWorldPos(P);
+    float3 N = RtNormalFromWorldPos(P);
 
     if (!RtInsideViewport(px)) return 1.0;   // エディタのパネル下に潜る領域は素通し
     if (d >= 1.0) return 1.0;                // 空（背景）に影は落ちない
@@ -32,10 +32,13 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
     // 太陽へ向かうベクトル（lightDir は光の進行方向）。
     const float3 L = normalize(-gLightDir);
 
-    // 太陽に背を向けた面はフォワードの NdotL で既に真っ暗。
-    // ここで影を重ねると輪郭に自己遮蔽のシミが出るだけなので抜ける。
-    const float NdotL = dot(N, L);
-    if (NdotL <= 0.0) return 1.0;
+    // 太陽に背を向けた面も**抜けずに撃つ**（法線を太陽側へ返す）。
+    // ★以前は「フォワードの NdotL で既に真っ暗」として 1.0 を返していたが、それが正しいのは片面の面だけ。
+    //   葉カードなどの両面描画はフォワードが法線を裏返して照らすので、裏向きの葉が「影なし・日向」になり、
+    //   建物の陰にある木が点描状に光っていた（Bistro で正解のパストレーサーの 65 倍の明るさ、2026-10-14）。
+    //   片面の不透明物の裏面は画面に出ないので、ここで撃っても絵は変わらない（レイが無駄になるだけ）。
+    float NdotL = dot(N, L);
+    if (NdotL < 0.0) { N = -N; NdotL = -NdotL; }
 
     // ★アクネ対策はワールド空間の実距離オフセットだけ（CSM の depthBias とは別物）。
     //   深度バイアスと違い「影が浮く（peter-panning）」が原理的に起きない。

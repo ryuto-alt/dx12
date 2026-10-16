@@ -2196,10 +2196,13 @@ DeepDiagReport DeepDiag::Dxr(Application& app)
 
     ++r.checked;
     if (d.skippedAlphaTest > 0)
-        r.Add(0, "アルファテスト(葉・柵・金網など) " + std::to_string(d.skippedAlphaTest)
-                 + " 個は TLAS に入りません。加速構造は全ジオメトリを不透明として扱うので、"
-                   "入れると穴の開いた形が矩形の影になります。太陽影は CSM 側の "
-                   "ShadowMask（baseColor.a で discard）が担当するので、影は正しく抜けます（仕様）");
+        r.Add(1, "アルファテスト(葉・柵・金網など) " + std::to_string(d.skippedAlphaTest)
+                 + " 個が TLAS から外れています（想定外。RT2 以降は MASK も TLAS に入るはずです）");
+    if (d.alphaTestInstances > 0)
+        r.Add(0, "アルファテスト(葉・柵・金網など) " + std::to_string(d.alphaTestInstances)
+                 + " インスタンスを TLAS に入れています（非不透明の BLAS " + std::to_string(d.alphaTestBlasCount)
+                 + " 個。RayQuery の候補ごとに baseColor の α を見て抜くので、穴の形どおりの影 / AO になります。"
+                   "不透明より交差判定が重いので、MASK が大量のシーンは RT のコストに注意）");
 
     ++r.checked;
     if (d.droppedOverLimit > 0)

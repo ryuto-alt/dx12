@@ -506,6 +506,9 @@ void AtmosphereRenderer::Update(ID3D12GraphicsCommandList* cmd, u32 frameIndex, 
     }
 }
 
+D3D12_GPU_VIRTUAL_ADDRESS AtmosphereRenderer::CbAddress(u32 slot) const { return m_cb->GetGpuAddress(slot); }
+D3D12_GPU_DESCRIPTOR_HANDLE AtmosphereRenderer::LutSrvGpu() const { return m_srvHeap->GetGpuHandle(m_srvBlock); }
+
 void AtmosphereRenderer::UploadParams(u32 slot, const AtmosphereGpuParams& g)
 {
     if (!m_ready) return;

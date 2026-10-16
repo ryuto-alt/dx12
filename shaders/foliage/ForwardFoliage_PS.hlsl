@@ -3,6 +3,8 @@
 //
 // ★ライティング / 影 / フォグ / IBL / DDGI は Forward.hlsl（ForwardShade.hlsli）をそのまま使う＝既存の見た目と一致。
 // ★ディザの式は全パスで同一（FoliageDitherNoise）。深度プリパス / 速度パスも同じ断片を捨てること。
+// 薄い葉の透過光の強さ（ForwardShade.hlsli。1 = 裏から当たった太陽を表のランバートと同じだけ通す）
+#define UNO_SHADE_FOLIAGE_TRANSMISSION 0.8
 #include "../forward/Forward.hlsl"
 #include "FoliageCommon.hlsli"
 

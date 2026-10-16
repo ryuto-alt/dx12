@@ -17,6 +17,7 @@
 #include "core/ApplicationInternal.h"
 #include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
+#include "core/AtmosphereHost.h"   // 大気の空キューブ（DDGI のミスが引く放射輝度）
 #include "core/PathTracerHost.h"   // DXR パストレーサー(リファレンスレンダー)。PtHost が無ければ何もしない
 #include "core/SequencerHost.h"   // シーケンサー S1b: ポスト / DoF の描画時上書き
 #include "scene/GiMigration.h"   // S5: 新規シーンの既定を GI モード「新」にする
@@ -152,6 +153,7 @@ void Application::BuildDrawList()
                          && (m_scene->GetRtSettings().shadowEnabled
                              || m_scene->GetRtSettings().aoEnabled
                              || m_scene->GetRtSettings().forceBuildTlas
+                             || m_scene->GetRtSettings().reflectionsEnabled
                              || (m_ddgi && m_scene->GetDdgiSettings().enabled));
     m_rtContentHashValid = wantRtHash;
     m_rtContentHash      = 1469598103934665603ull;
@@ -321,8 +323,14 @@ void Application::BuildDrawList()
                 // 終わって SRV ブロックが割り当たった瞬間を拾わないと、TLAS を使い回した
                 // 場合に RT のアルベド（DDGI の色）が古いまま固定される。
                 if (wantRtHash)
+                {
                     RtHashMix(rtItemHash, mat ? ((static_cast<u64>(mat->srvBlockIndex) << 32)
                                                  ^ reinterpret_cast<u64>(mat->albedoTexture)) : 0ull);
+                    // RT2: アルファテストの有無とカットオフは BLAS のフラグ / GeometryInfo.alphaCutoff に入る。
+                    //   モード上書き（MASK⇔不透明）やカットオフを変えた瞬間に TLAS を組み直させる。
+                    u32 cutBits; std::memcpy(&cutBits, &ap.cutoff, 4);
+                    RtHashMix(rtItemHash, (static_cast<u64>(ap.mode) << 32) | cutBits);
+                }
             }
             // S0b: GeometryInfo の tint / 自己発光（PtHost::ResolveHitMaterial の入力）。TLAS を使い回すと
             // GeometryInfo は書き直されないので、色 / 発光を変えた瞬間を拾わないと DDGI の色が古いまま固定される。
@@ -438,9 +446,10 @@ void Application::BuildDrawList()
         }
 
         // ---- TLAS 再利用の内容ハッシュ（TLAS に入る候補だけ混ぜる）----
-        // 条件は IsRaytracedItem() のスキンド以外の部分と揃えること。半透明 / アルファテストは
-        // TLAS に入らないので、それらが動いても組み直す必要は無い。
-        if (wantRtHash && item.sortKey != 3u && item.alphaClass != 1u)
+        // 条件は IsRaytracedItem() のスキンド以外の部分と揃えること。半透明は TLAS に入らないので、
+        // それが動いても組み直す必要は無い。アルファテスト(MASK)は RT2 以降 TLAS に入るので混ぜる
+        // （カットオフ / モード上書きの変更は rtItemHash 側で拾う）。
+        if (wantRtHash && item.sortKey != 3u)
         {
             if (item.skin) ++m_rtSkinnedItems;   // >0 なら再利用しない（ポーズが毎フレーム変わる）
             RtHashMix(m_rtContentHash, rtItemHash);
@@ -749,6 +758,15 @@ void Application::RecordPerfFrame()
     if (m_benchFramesLeft > 0 && f.frameMs > 0.0f)
     {
         m_benchSamples.push_back(f.frameMs);
+        // スパイクの内訳: 平均に畳むと「どの処理が一瞬だけ重くなったか」が消えるので、
+        // 遅いフレームは丸ごと控えておく（frameMs の降順・上位 kBenchWorstFrames 件）。
+        if (m_benchWorst.size() < kBenchWorstFrames || f.frameMs > m_benchWorst.back().frameMs)
+        {
+            auto it = std::upper_bound(m_benchWorst.begin(), m_benchWorst.end(), f,
+                [](const PerfFrame& a, const PerfFrame& b) { return a.frameMs > b.frameMs; });
+            m_benchWorst.insert(it, f);
+            if (m_benchWorst.size() > kBenchWorstFrames) m_benchWorst.pop_back();
+        }
         m_benchDraws += f.draws; m_benchCulled += f.culled; m_benchTris += f.tris;
         m_benchWork += f.workMs; m_benchFence += f.fenceWaitMs; m_benchPresent += f.presentMs;
         for (u32 s = 0; s < GpuTimer::Count; ++s) m_benchGpu[s] += f.gpuMs[s];
@@ -801,10 +819,30 @@ void Application::RecordPerfFrame()
                 const double p99 = PerfPercentile(tmp, 0.99);
                 rep["fps1PercentLow"] = (p99 > 0.0) ? std::round(100000.0 / p99) / 100.0 : 0.0;
             }
+            // 遅いフレームの内訳（0.05ms 未満の項は省く）。gpuPassMs は GpuTimer の読み戻しが
+            // 数フレーム遅れるので、GPU 側のスパイクは前後のフレームにずれて出ることがある。
+            {
+                auto r2 = [](double v) { return std::round(v * 100.0) / 100.0; };
+                nlohmann::json worst = nlohmann::json::array();
+                for (const PerfFrame& w : m_benchWorst)
+                {
+                    nlohmann::json cpu = nlohmann::json::object();
+                    for (u32 s = 0; s < CpuScopeCount; ++s)
+                        if (w.cpuMs[s] >= 0.05f) cpu[appdetail::CpuScopeName(s)] = r2(w.cpuMs[s]);
+                    nlohmann::json gpu = nlohmann::json::object();
+                    for (u32 s = 0; s < GpuTimer::Count; ++s)
+                        if (w.gpuMs[s] >= 0.05f) gpu[GpuTimer::Name(s)] = r2(w.gpuMs[s]);
+                    worst.push_back({{"frameMs", r2(w.frameMs)}, {"workMs", r2(w.workMs)},
+                                     {"fenceWaitMs", r2(w.fenceWaitMs)}, {"presentMs", r2(w.presentMs)},
+                                     {"drawCalls", w.draws}, {"cpuScopeMs", cpu}, {"gpuPassMs", gpu}});
+                }
+                rep["worstFrames"] = std::move(worst);
+            }
             if (m_benchReply.client != 0)
                 CompleteMcp(m_mcpBridge.get(), m_benchReply, std::move(rep));
             m_benchReply = {};
             m_benchSamples.clear();
+            m_benchWorst.clear();
         }
     }
 }
@@ -1760,6 +1798,16 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         const Material* mat = m ? m->GetMaterial() : nullptr;
         float baseM = mat ? mat->defaultMetallic  : 0.0f;
         float baseR = mat ? mat->defaultRoughness : 0.5f;
+        // ★MR テクスチャがあるなら、スカラーは「係数」（フォワードは tex × 係数）。係数だけを書くと
+        //   glTF 既定の metallicFactor=1 や Specular→ORM（係数 1）のモデルが G-Buffer 上で全部金属・
+        //   粗さ最大になり、SSR / SSGI / RT 反射が街全体を金属として扱っていた（Bistro、2026-10-14）。
+        //   テクスチャを毎ドロー貼らずに済むよう、読み込み時に求めた G/B の平均を掛ける。
+        if (mat && mat->metalRoughnessTexture
+            && MeshRenderer::SafeGetOverride(r.overrideMetalRoughnessTexture, mi).empty())
+        {
+            baseM *= mat->metalRoughnessTexture->AverageB();
+            baseR *= mat->metalRoughnessTexture->AverageG();
+        }
         if (m_materialAssetManager && r.HasMaterialAsset(mi))
         {
             const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(
@@ -4301,7 +4349,9 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     // ★Q2: オフスクリーン撮影のフレームだけ、アスペクトは撮影解像度のもの（表示矩形と無関係）。
     const f32 renderAspect = OffscreenCaptureFrame()
         ? static_cast<f32>(m_mcpFinalShot.offW) / static_cast<f32>(m_mcpFinalShot.offH)
-        : static_cast<f32>(mainW) / static_cast<f32>(mainH);
+        : (m_viewSizeW > 0 && m_viewSizeH > 0)   // --view-size: 固定した描画解像度のアスペクト（パネルが違う比でも伸びない）
+            ? static_cast<f32>(m_viewSizeW) / static_cast<f32>(m_viewSizeH)
+            : static_cast<f32>(mainW) / static_cast<f32>(mainH);
 
     // ===== 2D ビューモード: エディタカメラを正射＋XY平面正対(forward +Z)へ固定 =====
     // 回転/ドリーは入力側で無効化済み。Play 中は CameraComponent 同期が優先する。
@@ -4555,7 +4605,8 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         //   DDGI はワールド空間なので rtViewOk（透視カメラ限定）は課さない。
         const bool ddgiWant = m_ddgi && m_scene->GetDdgiSettings().enabled;
         const bool want = (rtViewOk
-                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug))
+                        && (rtCfg.shadowEnabled || rtCfg.aoEnabled || rtCfg.forceBuildTlas || wantDebug
+                            || rtCfg.reflectionsEnabled))
                         || ddgiWant;
         if (want)
         {
@@ -4617,12 +4668,12 @@ void Application::PrepareFrame(RenderFrameContext& frame)
 
             // 除外された数は診断（dx12_diagnose の dxr 検査）で「なぜキャラの影が
             // RT に出ないのか」を説明するために数えておく。
+            // アルファテスト(MASK)は RT2 以降 TLAS に入るので除外数は常に 0（互換のため引数は残す）。
             u32 skippedSkin = 0, skippedTransp = 0, skippedMask = 0;
             for (const DrawItem& it : m_drawItems)
             {
                 if (it.skin && !skinnedInTlas)  ++skippedSkin;
                 else if (it.sortKey == 3u)      ++skippedTransp;
-                else if (it.alphaClass == 1u)   ++skippedMask;
             }
             m_rtScene->BeginFrame(camP, skippedSkin, skippedTransp, skippedMask);
 
@@ -4644,6 +4695,16 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                 mesh->EnsureRaytracingSrvs(*m_graphicsDevice, *m_srvHeap);
                 g.vbSrvIndex = mesh->GetVbSrvIndex();
                 g.ibSrvIndex = mesh->GetIbSrvIndex();
+                // RT2: アルファテスト(MASK)。ResolveAlphaParams が描画・影・深度と共通の合成規則
+                // （マテリアル + MeshRenderer の alphaModeOverride / alphaCutoffOverride）。
+                // カットオフは ShadowMask と同じ 8bit 量子化（PackAlphaTestFlags が焼く値）で渡す＝影の残り方が一致する。
+                const AlphaParams ap = ResolveAlphaParams(mesh->GetMaterial(), dit.renderer->alphaModeOverride,
+                                                          dit.renderer->alphaCutoffOverride, dit.renderer->opacity);
+                if (ap.mode == AlphaMode::Mask)
+                {
+                    g.flags |= RaytracingScene::kGeomFlagAlphaTest;
+                    g.alphaCutoff = static_cast<float>(QuantizeUnorm8(ap.cutoff)) / 255.0f;
+                }
                 pt::MaterialGpu pm{};
                 float emLuma = 0.0f;
                 PtHost::ResolveHitMaterial(*this, dit, mi, nativeCmdList, true, pm, emLuma);
@@ -5199,6 +5260,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     const bool useContactShadow = csCfg.enabled && m_contactShadowPass
                                 && m_contactShadowPass->IsReady()
                                 && viewSupportsScreenSpace && !useRtShadow;
+    // 雲の影（atmosphere.clouds.enabled && shadows）。深度から世界位置を出して影マスク(t11)に掛けるので深度プリパスが要る。
+    // RT 影 / コンタクトシャドウが無いフレームでも、このパスが作る R8 を t11 にする（フォワードのシェーダは無改造）。
+    const bool useCloudShadow = primary && viewSupportsScreenSpace && AtmosphereCloudShadowWanted(view);
     // SSR / SSGI（計画04）。G-Buffer と前フレームカラーが要るので、有効なら速度プリパスを走らせる。
     const SsrSettings&  ssrCfg  = m_scene->GetSsrSettings();
     const SsgiSettings& ssgiCfg = m_scene->GetSsgiSettings();
@@ -5208,6 +5272,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                          && viewSupportsScreenSpace && m_iblBaker != nullptr;
     const bool useSsr    = ssrCfg.enabled  && ssGiReady;
     const bool useSsgi   = ssgiCfg.enabled && ssGiReady;
+    // RT 反射（R2）。SSR の後段（DDGI 更新のあと）で、t16 と同じ形式の SSR + RT 合成を作る。主ビューだけ。
+    // G-Buffer・速度が要るので速度プリパスを要求する。TLAS が建っていない / DXR 非対応 / 正射 / 2D ビューでは走らない。
+    const bool useRtRefl = primary && viewSupportsScreenSpace && ddgiTlasOk
+                         && m_scene->GetRtSettings().reflectionsEnabled
+                         && m_rtReflection && m_rtReflection->IsReady() && m_ddgi
+                         && m_rtScene && m_rtScene->IsReady() && m_gbufferRT && m_taaPass;
 
     // ★TAA 有効時は SSAO/コンタクトシャドウが無効でも必ずプリパスを走らせる（速度バッファのため）。
     //   新しく深度を要求するパスを足したら、この行に OR で足すこと（00-COORDINATION §2 H2）。
@@ -5220,8 +5290,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                       && viewSupportsScreenSpace;
     // ★Hi-Z を除いてもプリパスが要るか（診断用。ここが false のときに Hi-Z を ON にすると
     //   オクルージョンのためだけにプリパスが走って描画コールが増える＝損になる）。
-    const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi
-                                 || useRtShadow || useRtAo || useRtDebug
+    const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi || useRtRefl
+                                 || useRtShadow || useRtAo || useRtDebug || useCloudShadow
                                  || (m_forceDepthPrepass && viewSupportsScreenSpace);
     // 仮想ジオメトリ P2（GPU カリング・統計のみ）。既定 OFF。HZB の入力に深度が要るのでプリパスを走らせる。
     const bool useVgCull = viewSupportsScreenSpace && VirtualGeometryCullWanted(primary);
@@ -5241,7 +5311,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ★RT-AO も G-Buffer の法線を使う（レイ方向とデノイザの bilateral 重み）。
     //   ここに足さないと G-Buffer が書かれず、AO は ddx/ddy 法線へ落ち、
     //   空間デノイザは丸ごとスキップされる。
-    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo)
+    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo || useRtRefl)
                                && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
@@ -5471,6 +5541,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             if (useRtDebug) rtDebugSrv = rtPass.DebugSrv();
         }
 
+        // --- 雲の影: 影マスク(t11)に、雲層を太陽方向に通した透過率を掛ける ---
+        //   RT 影 / コンタクトシャドウの結果(あれば)を読んで掛けた R8 を新しい t11 にする。どちらも無いフレームは白に掛ける。
+        //   t11 の読み出しは contactShadowEnabled(csSrv != 白ダミー)で決まるので、ここで csSrv が差し替わればシェーダは自動で読む。
+        if (useCloudShadow)
+            csSrv = AtmosphereCloudShadow(view, passCtx, depthSrvIndex, csSrv);
+
         // --- SSR / SSGI 生成（深度 + G-Buffer + 速度 + 前フレームカラーをレイマーチ）---
         // ★前フレームカラーが無いフレーム（初回 / シーン切替直後 / リサイズ直後）は
         //   ScreenSpaceGiPass::Generate が何もせず kInvalidIndex を返す＝黒ダミーへフォールバック。
@@ -5495,6 +5571,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 // 未ベイクでも型の合った TextureCube を張れる（中身は hasIbl=0 で読まれない）。
                 // ★ここに Texture2D の黒ダミーを張ってはいけない（TextureCube 宣言と型不一致）。
                 gd.irradianceSrv = m_srvHeap->GetGpuHandle(m_iblBaker->GetIrradianceSrv());
+                // 輝度クランプは従来単位の値 → 物理ライティング単位ではシーンの単位（nit）へ広げる
+                gd.clampScale = (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f;
                 // GI モード New: ミスしたレイは IBL ではなくその画素の DDGI irradiance。条件はフォワード
                 // （FillSceneFrameConstants の giNewActive）と同じ。ディスクリプタはクラスタテーブルの DDGI 3 本
                 // （t22/t23/t30。DDGI が使えないフレームは黒ダミー）をそのまま指す。
@@ -5698,13 +5776,11 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // ★t14/t15（クラスタのインデックス/カウント）は使わない。あれは画面空間のクラスタで、
         //   視錐台の外にあるプローブには対応するクラスタが存在しないため。
         // プローブは画面空間ではないので compute。ヒット点は Step 5 のバインドレスを流用。
-        if (ddgiTlasOk && m_ddgi && m_ddgi->IsReady())
+        // ★RT 反射（R2）もヒット点の shading に同じ記述（太陽・灯・空）を使うので、DDGI が使えないシーンでも作る。
+        DdgiVolume::UpdateDesc dd{};
+        const bool ddgiRuns = ddgiTlasOk && m_ddgi && m_ddgi->IsReady();
+        if (ddgiRuns || (useRtRefl && velocityPrepass))
         {
-            DdgiUpdatePass::Inputs di{};
-            di.ddgi     = m_ddgi.get();
-            di.device   = m_graphicsDevice.get();
-            di.settings = &m_scene->GetDdgiSettings();
-            DdgiVolume::UpdateDesc& dd = di.desc;
             dd.tlas         = ddgiTlas;
             dd.geometryInfo = ddgiGeoInfo;
             dd.sunDir       = lightDirF3;
@@ -5732,6 +5808,14 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment()
                  && m_envCubeSrvIndex != DescriptorHeap::kInvalidIndex)
                     ? m_envCubeSrvIndex : 0xFFFFFFFFu;
+            // ★物理大気が環境の元（driveIBL）のときは m_envCubeSrvIndex が無い（大気は自前の空キューブから IBL を焼く）。
+            //   放っておくと DdgiMissRadiance が irradiance キューブへ落ち、ミスしたレイの放射輝度として
+            //   「コサインで畳み込み済みの空」を使う＝プローブの中でもう一度畳むので二重にぼける。
+            //   天頂の青・地平の白・地平線より下の地面の向きの差が消え、上向きの面（床・葉・屋根）が灰色に濁って
+            //   赤みが増す（検証シーンの日陰の床: R が PT の 1.7 倍）。パストレーサーと同じ AtEnvRadiance の空キューブを引かせる。
+            if (dd.envCubeSrvIndex == 0xFFFFFFFFu && m_iblReady && m_loadedSkyboxPath == kAtmosphereSkyPath
+                && m_atmo && m_atmo->renderer.SkyCubeResource())
+                dd.envCubeSrvIndex = m_atmo->renderer.SkyCubeSrvIndex();
             dd.skyScale = m_iblReady ? m_iblIntensity : 0.0f;
             dd.giStage  = m_giDebugStage;
             dd.physicalUnits = (m_lightingUnitsApplied == 1);
@@ -5739,7 +5823,85 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             dd.ringIndex    = frameIndex;
             dd.frameIndex   = m_deterministicCapture
                             ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+        }
+        if (ddgiRuns)
+        {
+            DdgiUpdatePass::Inputs di{};
+            di.ddgi     = m_ddgi.get();
+            di.device   = m_graphicsDevice.get();
+            di.settings = &m_scene->GetDdgiSettings();
+            di.desc     = dd;
+            // 大気の空キューブは PIXEL_SHADER_RESOURCE に置く約束（AtmosphereRenderer / IBLBaker::RebakeStage が前提にしている）。
+            //   compute の DDGI が引く間だけ NON_PIXEL を足して、終わったら戻す（IBLBaker と同じ流儀）。
+            ID3D12Resource* atmoCube = (m_atmo && dd.envCubeSrvIndex != 0xFFFFFFFFu
+                                        && dd.envCubeSrvIndex == m_atmo->renderer.SkyCubeSrvIndex())
+                                       ? m_atmo->renderer.SkyCubeResource() : nullptr;
+            const auto cubeBarrier = [&](D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+            {
+                D3D12_RESOURCE_BARRIER b{};
+                b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                b.Transition.pResource   = atmoCube;
+                b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                b.Transition.StateBefore = from;
+                b.Transition.StateAfter  = to;
+                nativeCmdList->ResourceBarrier(1, &b);
+            };
+            constexpr D3D12_RESOURCE_STATES kCubeRead =
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            if (atmoCube) cubeBarrier(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, kCubeRead);
             DdgiUpdatePass(di).Execute(passCtx);
+            if (atmoCube) cubeBarrier(kCubeRead, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        }
+
+        // ===== RT 反射（R2）: SSR の後段で、SSR が外れた画素だけ RayQuery。結果は t16 と同じ形式 =====
+        // ★DDGI 更新の【後】に置く（今フレームのライト・アトラス・更新計画を引く）。フォワードの前ならどこでもよい。
+        //   出力は SSR と合成済みの RGBA16F。ssrSrv をこれに差し替えるだけで、フォワード PS は無改造。
+        if (useRtRefl && velocityPrepass)
+        {
+            alignas(16) u8 hitCb[DdgiVolume::kHitCbBytes]{};
+            bool giNew = false;
+            u32 gridUav = 0xFFFFFFFFu, probeDataSrv = 0xFFFFFFFFu;
+            m_ddgi->FillHitShadeConstants(m_scene->GetDdgiSettings(), dd, m_scene->GetGiSettings().mode == GiMode::New,
+                                          hitCb, giNew, gridUav, probeDataSrv);
+            RtReflectionPass::Desc rf{};
+            rf.depthSrv    = depthSrvIndex;
+            rf.gbufferSrv  = m_gbufferRT->GetSrvIndex();
+            rf.velocitySrv = m_taaPass->GetVelocitySrvIndex();
+            rf.ssrSrv      = (ssrSrv != DescriptorHeap::kInvalidIndex) ? ssrSrv : m_ssBlackSrvIndex;
+            rf.tlas        = ddgiTlas;
+            rf.geometryInfo = ddgiGeoInfo;
+            rf.hitCb       = hitCb;
+            rf.giNew       = giNew;
+            rf.gridUav     = gridUav;
+            rf.probeDataSrv = probeDataSrv;
+            rf.bounceScale = giNew ? (dd.unitScale > 0.0f ? 1.0f / dd.unitScale : 1.0f) : 1.0f;
+            rf.skyScale    = (dd.skyCubeSrvIndex != 0xFFFFFFFFu) ? m_iblIntensity : 1.0f;
+            if (m_iblReady && m_iblBaker && m_iblBaker->HasEnvironment())
+            {
+                rf.skyPrefilteredSrv = m_iblBaker->GetIrradianceSrv() + 1;   // t5 の次 = prefiltered（ブロック: irradiance / prefiltered / BRDF LUT）
+                rf.skyMaxMip = static_cast<u32>(m_iblBaker->GetMaxPrefilterMip());
+            }
+            rf.view        = camView;
+            rf.proj        = camProj;   // ★ジッタなし
+            rf.cameraPos   = viewPos;
+            rf.zNear       = viewNear;
+            rf.vpLeft = 0; rf.vpTop = 0; rf.vpW = rW; rf.vpH = rH;
+            rf.frameIndex  = frameIndex;
+            rf.seq         = m_deterministicCapture ? 0u : static_cast<u32>(m_perfTotalFrames & 0xFFFFull);
+            rf.gbufferValid = true;
+            if (rf.ssrSrv != DescriptorHeap::kInvalidIndex)
+            {
+                depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                gpuBegin(GpuTimer::RtReflection);
+                const u32 out = m_rtReflection->Run(nativeCmdList, rf, m_scene->GetRtSettings());
+                gpuEnd(GpuTimer::RtReflection);
+                depthState.Require(*m_commandList, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                if (out != DescriptorHeap::kInvalidIndex) ssrSrv = out;
+            }
+        }
+        else if (m_rtReflection && primary)
+        {
+            m_rtReflection->InvalidateHistory();   // 走らないフレームを挟んだら、古い履歴で再投影しない
         }
 
         // ===== デカール: アトラス解決 → アップロード → クラスタへビニング =====
@@ -6054,6 +6216,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // 二重に霞まない規則: 物理大気の AP は froxel フォグ / 距離フォグとは独立に掛かる（AP は大気の光、froxel フォグはユーザーが置く局所のフォグ）。
     // 遠景まで froxel フォグを伸ばす（extendBeyondRange）と両方が掛かるので、大気モードでは volumetricFog.extendBeyondRange を切るか density を下げること。
     if (atmoSky) AtmosphereDrawAerialPerspective(view, passCtx, depthSrvIndex);
+    if (atmoSky) AtmosphereDrawClouds(view, passCtx, depthSrvIndex);   // ボリュメトリッククラウド（clouds.enabled のときだけ。OFF なら即 return）
     if (view.Has(kViewParticles) && m_particleSystem)
     {
         ParticlesPass::Inputs pi{};
@@ -6813,7 +6976,9 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
         fc.giParams  = {0.0f, 0.0f, 0.0f, 0.0f};
         fc.giParams2 = {0.0f, 0.0f, 0.0f, 0.0f};
         if (giNewActive)
-            fc.giParams2 = {(m_giDebugStage & 8u) ? 1.0f : 0.0f, 0.0f, 0.0f,
+            fc.giParams2 = {(m_giDebugStage & 8u) ? 1.0f : 0.0f,
+                            static_cast<f32>((m_giDebugStage >> 5) & 7u),   // 検証用: 項を 1 つだけ出す（ForwardShade.hlsli）
+                            0.0f,
                             // 物理ライティング単位: DDGI の内部単位 → シーンの単位へ戻す倍率（従来単位は 1）
                             (m_lightingUnitsApplied == 1) ? 1.0f / atmosphere::kClassicUnitScale : 1.0f};   // 検証用: プローブ状態の可視化
         if (giNewActive)

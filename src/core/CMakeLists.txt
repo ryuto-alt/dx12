@@ -25,6 +25,7 @@ add_library(Core STATIC
     ApplicationProject.cpp          # プロジェクト / バージョン管理 / ゲームビルド
     ApplicationBuild.cpp            # ゲームビルド本体と裏ジョブ（進捗・キャンセル。ワーカーは BuildInput だけ読む）
     ApplicationVg.cpp               # 仮想ジオメトリ P2: インスタンス収集 + GPU カリング呼び出し + 統計（既定 OFF）
+    ApplicationClouds.cpp           # ボリュメトリッククラウドの Application 側の糊（enabled=false なら何もしない）
     ApplicationAtmosphere.cpp       # 物理ベース大気 A1: 時刻系 / AtmosphereRenderer の遅延確保 / IBL 増分再ベイク / 空・AP の呼び出し（enabled=false なら何もしない）
     ApplicationWater.cpp            # 水面 W1: WaterRenderer の遅延確保 / フレーム開始 / 統計（WaterBody が無ければ何もしない）
     ApplicationFoliage.cpp          # 植生 F1: FoliageSystem の遅延確保 / GPU カリング呼び出し / 描画呼び出し / 統計（FoliageLayer が無ければ何もしない）

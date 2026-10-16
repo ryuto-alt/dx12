@@ -1123,6 +1123,12 @@ static json SerializeAtmosphere(const AtmosphereSettings& a)
         {"aerialPerspective", a.aerialPerspective}, {"apStartDepth", a.apStartDepth},
         {"apMaxDistanceKm", a.apMaxDistanceKm}, {"apStrength", a.apStrength},
         {"iblRebakeThresholdDeg", a.iblRebakeThresholdDeg}, {"iblRebakeMaxHz", a.iblRebakeMaxHz},
+        {"clouds", {
+            {"enabled", a.clouds.enabled}, {"coverage", a.clouds.coverage}, {"cloudType", a.clouds.cloudType},
+            {"density", a.clouds.density}, {"baseAltitudeKm", a.clouds.baseAltitudeKm}, {"thicknessKm", a.clouds.thicknessKm},
+            {"windDirDeg", a.clouds.windDirDeg}, {"windSpeed", a.clouds.windSpeed}, {"detailStrength", a.clouds.detailStrength},
+            {"scale", a.clouds.scale}, {"steps", a.clouds.steps},
+            {"shadows", a.clouds.shadows}, {"shadowStrength", a.clouds.shadowStrength}}},
     };
 }
 
@@ -1384,6 +1390,11 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"aoDenoise",          rt.aoDenoise},
             {"aoDenoiseRadius",    rt.aoDenoiseRadius},
             {"maxInstances",       rt.maxInstances},
+            {"reflectionsEnabled",      rt.reflectionsEnabled},
+            {"reflectionMaxRoughness",  rt.reflectionMaxRoughness},
+            {"reflectionMaxDistance",   rt.reflectionMaxDistance},
+            {"reflectionHalfRes",       rt.reflectionHalfRes},
+            {"reflectionIntensity",     rt.reflectionIntensity},
         };
         // DDGI（計画09 Step 6）。★ルートキーを新設せず raytracing の入れ子にする:
         //   TLAS が前提で MCP も set_dxr が捌いている＝同じものだから。
@@ -1704,6 +1715,11 @@ static void LoadRtSettings(Scene& scene, const json& root)
         rt.aoDenoise         = j.value("aoDenoise",         rt.aoDenoise);
         rt.aoDenoiseRadius   = j.value("aoDenoiseRadius",   rt.aoDenoiseRadius);
         rt.maxInstances      = j.value("maxInstances",      rt.maxInstances);
+        rt.reflectionsEnabled     = j.value("reflectionsEnabled",     rt.reflectionsEnabled);
+        rt.reflectionMaxRoughness = j.value("reflectionMaxRoughness", rt.reflectionMaxRoughness);
+        rt.reflectionMaxDistance  = j.value("reflectionMaxDistance",  rt.reflectionMaxDistance);
+        rt.reflectionHalfRes      = j.value("reflectionHalfRes",      rt.reflectionHalfRes);
+        rt.reflectionIntensity    = j.value("reflectionIntensity",    rt.reflectionIntensity);
     }
     scene.GetRtSettings() = rt;   // forceBuildTlas は常に既定 OFF（保存対象外）
 
@@ -1850,6 +1866,24 @@ static void LoadAtmosphereSettings(Scene& scene, const json& root)
         a.apStrength        = fin(j.value("apStrength", a.apStrength), 0.0f, 20.0f, 1.0f);
         a.iblRebakeThresholdDeg = fin(j.value("iblRebakeThresholdDeg", a.iblRebakeThresholdDeg), 0.0f, 90.0f, 0.25f);
         a.iblRebakeMaxHz        = fin(j.value("iblRebakeMaxHz", a.iblRebakeMaxHz), 0.1f, 60.0f, 2.0f);
+        if (j.contains("clouds") && j["clouds"].is_object())
+        {
+            const auto& c = j["clouds"];
+            CloudSettings& cl = a.clouds;
+            cl.enabled        = c.value("enabled", cl.enabled);
+            cl.coverage       = fin(c.value("coverage", cl.coverage), 0.0f, 1.0f, 0.5f);
+            cl.cloudType      = fin(c.value("cloudType", cl.cloudType), 0.0f, 1.0f, 0.5f);
+            cl.density        = fin(c.value("density", cl.density), 0.0f, 4.0f, 1.0f);
+            cl.baseAltitudeKm = fin(c.value("baseAltitudeKm", cl.baseAltitudeKm), 0.0f, 20.0f, 1.5f);
+            cl.thicknessKm    = fin(c.value("thicknessKm", cl.thicknessKm), 0.1f, 15.0f, 3.0f);
+            cl.windDirDeg     = fin(c.value("windDirDeg", cl.windDirDeg), -360.0f, 360.0f, 0.0f);
+            cl.windSpeed      = fin(c.value("windSpeed", cl.windSpeed), 0.0f, 500.0f, 8.0f);
+            cl.detailStrength = fin(c.value("detailStrength", cl.detailStrength), 0.0f, 1.0f, 0.5f);
+            cl.scale          = fin(c.value("scale", cl.scale), 0.25f, 4.0f, 1.0f);
+            cl.steps          = std::clamp(c.value("steps", cl.steps), 16, 128);
+            cl.shadows        = c.value("shadows", cl.shadows);
+            cl.shadowStrength = fin(c.value("shadowStrength", cl.shadowStrength), 0.0f, 1.0f, 1.0f);
+        }
     }
     scene.GetAtmosphereSettings() = a;
 }

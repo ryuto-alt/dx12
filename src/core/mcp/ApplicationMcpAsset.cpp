@@ -962,6 +962,8 @@ void Application::ProcessMcpAssetReloads(ID3D12GraphicsCommandList* cmdList)
             // BLAS キャッシュのキーは Mesh*。解放したアドレスへ新しいメッシュが載ると
             // 「ラスタは正しいのにレイトレの影/反射だけ古い形」になるので全部捨てる。
             if (m_rtScene) m_rtScene->Invalidate();
+            // 植生のレイヤーも Mesh* / Material* を握っている（MeshRenderer と同じく張り替えないと GPU がハングする）
+            if (m_foliage) m_foliage->InvalidateModels();
         }
 
         // ---- テクスチャを読み直したなら、マテリアル上書きの SRV ブロックも作り直す ----

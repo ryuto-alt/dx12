@@ -6,8 +6,11 @@
 --   スピーカーは 1 音しか出せないので、和音はいちばん高い音（ふつうはメロディ）を鳴らす。
 --   arpeggio を ON にすると、鳴っている音を高速で切り替えて和音っぽく鳴らす（ファミコン風）
 --   曲を変えたいときは assets/bgm/<番号>.mid を好きな MIDI ファイルに置き換える。
---   曲名や鳴らすトラックは assets/bgm/bgm.txt で指定できる（書き方はそのファイルの先頭）
+--   曲名や鳴らすトラックは assets/bgm/bgm.txt で指定できる（書き方はそのファイルの先頭）。
+--   その曲だけの速さは「; speed=1.2」（プロパティの speed と掛け合わせる）
 --   出す音の高さは grove.bgmHz に置くだけ。実際に鳴らすのは GroveSpeaker（時限爆弾が優先）
+--   LED 用に grove.bgmOn（流れている）/ grove.bgmNote（いまの音・休みは -1）/ grove.bgmOnset（音の頭の通し番号）も置く。
+--   光らせるのは GroveRgbLed
 properties = {
   { name = "speed",    type = "float", default = 1,    min = 0.25, max = 3,    label = "速さ（倍）" },
   { name = "transpose", type = "int",  default = 0,    min = -3,   max = 3,    label = "オクターブ上げ下げ" },
@@ -318,12 +321,14 @@ function loadSong(self, i)
   local c = self.config[i] or {}
   local ok, song, err = pcall(loadMidi, self.base .. i .. ".mid", { track = c.track })
   if ok and song and c.title and validUtf8(c.title) then song.title = c.title end
+  if ok and song then song.speed = clamp(tonumber(c.speed) or 1, 0.25, 4) end
   if not ok then song, err = nil, tostring(song) end
   self.songs[i] = song or false
   self.errors[i] = err
   if song then
-    log(string.format("[bgm] %d.mid: %s（%.1f 秒・%d 区間）トラック %s%s", i, song.title or "曲名なし",
-      song.length, #song.segs, song.tracks, c.track and ("  → track=" .. c.track .. " を鳴らす") or ""))
+    log(string.format("[bgm] %d.mid: %s（%.1f 秒・%d 区間）トラック %s%s%s", i, song.title or "曲名なし",
+      song.length, #song.segs, song.tracks, c.track and ("  → track=" .. c.track .. " を鳴らす") or "",
+      song.speed ~= 1 and string.format("  速さ %.2f 倍", song.speed) or ""))
   elseif err ~= "ファイルがない" then
     log(string.format("[bgm] %d.mid を読めません: %s", i, err))
   end
@@ -333,6 +338,7 @@ end
 function playSong(self, i)
   if not self.songs[i] then self.cur = 0; return end
   self.cur, self.t, self.idx = i, self.songs[i].start, 1
+  self.litIdx = 0
 end
 
 function nextSong(self)
@@ -370,12 +376,13 @@ function OnUpdate(self, dt)
   if tapped(self, "N") then nextSong(self) end
 
   local hz = 0
+  local litNote = -1
   local song = self.cur > 0 and self.songs[self.cur] or nil
   -- 時限爆弾が動いている間とトロンボーンが ON の間は止めて待つ
   local busy = loadNum("grove.bomb", 0) ~= 0 or loadNum("grove.trombone", 0) > 0 or loadNum("grove.safe", 0) > 0
     or loadNum("grove.daruma", 0) > 0
   if song and not busy then
-    self.t = self.t + dt * self.speed
+    self.t = self.t + dt * self.speed * song.speed
     if self.t >= song.length then
       if #self.queue > 0 then
         nextSong(self)
@@ -389,13 +396,19 @@ function OnUpdate(self, dt)
     local sg = segs[self.idx]
     if sg and sg.note >= 0 and self.t >= sg.t0 then
       local n = sg.note
+      local prev = segs[self.idx - 1]
+      -- 音の頭を数える（GroveRgbLed がこれを合図に色を切り替える）。同じ音が伸びているだけの区間は数えない
+      litNote = sg.note
+      if self.idx ~= self.litIdx then
+        self.litIdx = self.idx
+        if sg.attack or not prev or prev.note ~= sg.note then self.onset = self.onset + 1 end
+      end
       if self.arpeggio and #sg.chord > 1 then
         self.arpT = self.arpT + dt
         local step = math.floor(self.arpT * 1000 / self.arpMs)
         n = sg.chord[step % #sg.chord + 1]
       end
       -- 同じ高さの音が続くときは、頭を少し切って打ち直したように聞かせる
-      local prev = segs[self.idx - 1]
       local reattack = sg.attack and prev and prev.note == sg.note and self.t - sg.t0 < 0.025
       if not reattack then
         hz = midiHz(n + 12 * self.transpose)
@@ -406,6 +419,9 @@ function OnUpdate(self, dt)
   end
   saveNum("grove.bgmHz", hz)
   saveNum("grove.bgmSlot", self.cur)
+  saveNum("grove.bgmOn", (song and not busy) and 1 or 0)
+  saveNum("grove.bgmNote", litNote)
+  saveNum("grove.bgmOnset", self.onset or 0)   -- Play 中の差し替えで OnStart より先に来ることがある
 
   if self.showList and loadNum("grove.safe", 0) == 0 and loadNum("grove.daruma", 0) == 0 then drawList(self, song) end
 end
@@ -452,7 +468,10 @@ function OnStart(self)
   self.queue = {}
   self.keys = {}
   self.arpT = 0
+  self.onset = 0        -- 音の頭の通し番号（LED 用）
+  self.litIdx = 0
   saveNum("grove.bgmHz", 0)
+  saveNum("grove.bgmOn", 0)
   -- 一覧に曲名を出すため、9 曲とも先に読んでおく（小さいファイルなので一瞬）
   for i = 1, 9 do loadSong(self, i) end
   if self.autoPlay > 0 then playSong(self, self.autoPlay) end

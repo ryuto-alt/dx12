@@ -184,6 +184,18 @@ public:
     SampleParams GetSampleParams(const DdgiSettings& s) const;
     u32 CascadeCount() const { return m_planCascades; }
 
+    // ---- RT 反射（RtReflectionPass）がヒット点の shading に使う定数 ----
+    // RtHitShade.hlsli の cbuffer DdgiCB（176 バイト）をそのまま作る。DDGI の Update と同じフレーム内で、
+    // Update の【後】に呼ぶこと（アトラスが読み取り状態になり、更新計画バッファが今フレームのものになるため）。
+    //   outGiNew  … true = GI モード New のヒット shading（前フレームでなく【今フレーム更新後】のアトラスを引く）
+    //               false = GI なし（DDGI が無い / Legacy / このフレーム更新されていない）＝空の irradiance で埋める
+    //   outGridUav … ライトグリッド UAV の bindless index（outGiNew のときだけ有効。無ければ 0xFFFFFFFF）
+    //   outProbeDataSrv … プローブデータ SRV の bindless index
+    // ★単位: d.unitScale は DDGI の内部単位への倍率。RT 反射は結果を 1 / unitScale して使う（bounceScale）。
+    static constexpr u32 kHitCbBytes = 176;
+    void FillHitShadeConstants(const DdgiSettings& s, const UpdateDesc& d, bool giNewWanted,
+                               void* dst, bool& outGiNew, u32& outGridUav, u32& outProbeDataSrv) const;
+
     struct Stats
     {
         u32 probes   = 0;          // 確保しているプローブ数（全カスケード）
@@ -251,6 +263,8 @@ private:
     bool m_planGiNew = false;        // 今フレームは GI モード New（かつ PSO あり）
     bool m_planFollow = false;       // カメラ追従（2 カスケード）
     bool m_planReady = false;        // PlanFrame 済み・Update 未消化
+    bool m_hitPlanValid = false;     // 今フレームの Update が更新計画バッファを書いた（RT 反射が DDGI を引いてよい）
+    u32  m_hitPlanRing  = 0;
     bool m_requestResetAll = false;  // InvalidateHistory が呼ばれた
     u32  m_planCascades = 1;
     int  m_counts[3] = {1, 1, 1};    // 1 カスケードの格子数

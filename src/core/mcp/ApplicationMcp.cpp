@@ -1162,6 +1162,8 @@ Application::DiagDxrInfo Application::GetDiagDxrInfo() const
         d.skippedSkinned     = s.skippedSkinned;
         d.skippedTransparent = s.skippedTransparent;
         d.skippedAlphaTest   = s.skippedAlphaTest;
+        d.alphaTestInstances = s.alphaTestInstances;
+        d.alphaTestBlasCount = s.alphaTestBlasCount;
         d.droppedOverLimit   = s.droppedOverLimit;
         d.skinnedInstances   = s.skinnedInstances;
         d.skinnedRebuilds    = s.skinnedRebuilds;

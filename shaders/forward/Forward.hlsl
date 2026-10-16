@@ -183,6 +183,15 @@ float4 PSMain(PSInput input) : SV_TARGET
     {
         N = normalize(input.worldNormal);
     }
+#ifdef ALPHA_TEST
+    // ★両面の薄い面（葉カード・柵・金網）は、裏から見たら法線を視線側へ返す。
+    //   フォワードは全部カリング無しで描くが法線は返していなかった。閉じた形では裏面が隠れるので
+    //   問題にならないが、カードは裏面が見える → N·V < 0 で Fresnel が 1 に張り付き、葉が全部
+    //   空を映して白い霜のように光っていた（Bistro の木。2026-10-14、パストレーサーと比べて確認）。
+    //   判定は SV_IsFrontFace ではなく幾何法線と視線の向きで行う（鏡映 Transform で巻き方向が逆でも正しい。
+    //   アルファテストの面だけなので、滑らかな閉じた形の輪郭でひっくり返る心配は無い）。
+    if (dot(input.worldNormal, cameraPos - input.worldPos) < 0.0) N = -N;
+#endif
 
     // Metallic / Roughness（テクスチャ × スライダー値でスケーリング）
     // ★ラフネスの下限 0.04 は UnoShadeLighting の中で掛かる。

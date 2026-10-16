@@ -89,6 +89,9 @@ public:
         DirectX::XMFLOAT3 ddgiCounts{1, 1, 1};
         float  ddgiViewBias = 0.0f, ddgiNormalBias = 0.0f;
         float  ddgiInvUnitScale = 1.0f;                  // 物理ライティング単位: DDGI の内部単位 → シーンの単位
+        // SSGI の輝度クランプ（clampValue）に掛ける倍率。clampValue は従来単位（太陽 ≈ 3）の値なので、
+        // 物理ライティング単位（1.0 = 1 nit）では 1 / kClassicUnitScale を掛けて同じ相対の強さにする。従来単位は 1。
+        float  clampScale = 1.0f;
         // GI S4: カメラ追従のスクロール格子 + 2 カスケード。固定ボリュームは scroll=0・cascades=1。
         DirectX::XMFLOAT3 ddgiC1Origin{0, 0, 0};         // カスケード 1 の窓の原点
         float  ddgiC1Spacing = 1.0f;                     // カスケード 1 のプローブ間隔

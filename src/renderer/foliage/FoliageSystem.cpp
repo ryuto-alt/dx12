@@ -302,6 +302,20 @@ u64 FoliageSystem::TotalGpuBytes() const
 }
 
 // ---------------------------------------------------------------------------
+void FoliageSystem::InvalidateModels()
+{
+    for (auto& [id, rp] : m_layers)
+    {
+        LayerRt& rt = *rp;
+        rt.sig.clear();          // 次の BeginFrame で structChanged → モデルを引き直してグループを組み直す
+        rt.groups.clear();       // 解放済みの Mesh* / Material* を 1 つも残さない
+        std::memset(rt.models, 0, sizeof(rt.models));
+        rt.drawable = false;
+        rt.culledThisFrame = false;
+    }
+    m_drawable = 0;
+}
+
 bool FoliageSystem::BeginFrame(const FrameIn& in)
 {
     if (!m_ready || !in.reg || !in.cmd) return false;
@@ -790,8 +804,17 @@ void FoliageSystem::DrawDepth(ID3D12GraphicsCommandList* cmd, const DirectX::XMF
             {
                 std::memcpy(vb.layerWind, lw, sizeof(lw));
                 // roughness / metallic を 1 float に詰める（VelocityPrepass の packMaterial と同じ）
-                const f32 r = std::round(std::clamp(std::max(g.roughness, 0.04f), 0.0f, 1.0f) * 255.0f);
-                const f32 m = std::round(std::clamp(g.metallic, 0.0f, 1.0f) * 255.0f);
+                // ★MR テクスチャがあるならスカラーは「係数」。glTF 既定の metallicFactor=1 をそのまま書くと
+                //   G-Buffer 上で植生が全部金属になり、SSR / SSGI / RT 反射が葉を鏡として扱う
+                //   （エンティティ側の ApplicationRender.cpp と同じく、読み込み時の G/B 平均を掛ける）。
+                f32 gbR = g.roughness, gbM = g.metallic;
+                if (g.mat && g.mat->metalRoughnessTexture)
+                {
+                    gbM *= g.mat->metalRoughnessTexture->AverageB();
+                    gbR *= g.mat->metalRoughnessTexture->AverageG();
+                }
+                const f32 r = std::round(std::clamp(std::max(gbR, 0.04f), 0.0f, 1.0f) * 255.0f);
+                const f32 m = std::round(std::clamp(gbM, 0.0f, 1.0f) * 255.0f);
                 vb.matPacked = r + m * 256.0f;
                 cmd->SetGraphicsRoot32BitConstants(RootSignature::kSlotPerObject, 40, &vb, 0);
             }

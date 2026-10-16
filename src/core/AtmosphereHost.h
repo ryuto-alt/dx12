@@ -14,6 +14,7 @@
 #include "renderer/atmosphere/AtmosphereMath.h"
 #include "renderer/atmosphere/AtmosphereRenderer.h"
 #include "renderer/atmosphere/AtmosphereShared.h"
+#include "renderer/atmosphere/CloudRenderer.h"
 
 namespace dx12e
 {
@@ -42,6 +43,18 @@ struct AtmoHost
     bool paramsValid = false;
     uint64_t recordedFrame = ~0ull;           // 主ビューが LUT を作ったフレーム(m_framesSinceStart)。副ビューはこれが今フレームのときだけ使える
     bool forceLut = true;                     // 次の Update で全 LUT を作り直す
+
+    // ---- ボリュメトリッククラウド（clouds.enabled になるまで確保しない）----
+    CloudRenderer clouds;
+    bool     cloudsInitFailed = false;
+    double   cloudTime = 0.0;                 // 風で流れる時間[s]（決定論撮影では 0 固定）
+    uint64_t cloudTimeFrame = ~0ull;          // cloudTime を進めた最後のフレーム（影・本体・環境光のどれが先でも 1 フレームに 1 回だけ進める）
+    uint32_t cloudShadowFrames = 0;           // 雲の影を作ったフレーム数（診断）
+    float    cloudPrevVP[16] = {};            // 前フレームの viewProj（ジッタなし・転置済み）
+    bool     cloudPrevValid = false;
+    uint64_t cloudLastFrame = ~0ull;          // 最後に雲を描いたフレーム（連続していないと履歴を捨てる）
+    CloudSettings cloudLast{};                // 前フレームの設定（変化の検出）
+    float    cloudGpuMs = 0.0f;
 
     // ---- IBL 増分再ベイク ----
     bool     iblValid = false;                // 環境キューブ + IBLBaker がこの大気で焼けている

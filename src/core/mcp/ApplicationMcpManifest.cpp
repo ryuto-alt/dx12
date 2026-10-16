@@ -535,8 +535,8 @@ void Application::RegisterMcpManifestMethods()
         gset.aliases    = {"dx12_set_gi_mode"};
         gset.params     = {P("mode", "string", true, "legacy|new", nullptr, nullptr, nullptr,
                              "legacy = 従来 / new = 空の遮蔽つき GI（DDGI 分類・再配置・空の可視率・フォワードの環境光置換）"),
-                           P("debugStage", "int", false, nullptr, "0", "31", "0",
-                             "検証用ビット（保存しない）。bit0 = 旧の空の項 / bit1 = 再配置なし / bit2 = 全プローブ有効（分類なし）/ bit3 = 最寄りプローブの状態を色で表示（赤 = 無効 / 緑 = 有効 / 青 = オフセット）/ bit4 = ヒット点の点光源をライトグリッドでなく総当たり（S4 の数値比較）。S2 の段階ごとの数値と切り分けのため")};
+                           P("debugStage", "int", false, nullptr, "0", "255", "0",
+                             "検証用ビット（保存しない）。bit0 = 旧の空の項 / bit1 = 再配置なし / bit2 = 全プローブ有効（分類なし）/ bit3 = 最寄りプローブの状態を色で表示（赤 = 無効 / 緑 = 有効 / 青 = オフセット）/ bit4 = ヒット点の点光源をライトグリッドでなく総当たり（S4 の数値比較）/ bit5-7 = フォワードの項を 1 つだけ出す（値 32×k。k: 1 直接光 / 2 拡散の環境光 / 3 鏡面の環境光 / 4 拡散の irradiance / 5 DDGI の irradiance / 6 IBL の irradiance / 7 (AO, DDGI conf, SSGI conf)。シーンの単位のまま）。S2 の段階ごとの数値と切り分けのため")};
         gset.next       = {{"get_gi_mode", "読み返す"}, {"set_dxr", "DDGI の ON と格子（ddgiEnabled / ddgiProbeCount* / ddgiOrigin* / ddgiSpacing）"}};
         gset.examples   = {{"{\"mode\":\"new\"}", "新しい GI へ"}, {"{\"mode\":\"legacy\"}", "従来へ戻す"}};
         McpDefine("set_gi_mode", gset, DX12E_MCP_HANDLER
@@ -547,7 +547,7 @@ void Application::RegisterMcpManifestMethods()
                                    "mode は \"legacy\"（従来）か \"new\"（空の遮蔽つき GI）");
                 if (params.contains("debugStage"))
                 {
-                    const u32 st = static_cast<u32>(std::clamp(params.value("debugStage", 0), 0, 31));
+                    const u32 st = static_cast<u32>(std::clamp(params.value("debugStage", 0), 0, 255));
                     if (st != m_giDebugStage && m_ddgi) m_ddgi->InvalidateHistory();
                     m_giDebugStage = st;
                 }

@@ -65,6 +65,7 @@
 #include "renderer/ScreenSpaceGiPass.h"
 #include "renderer/RaytracingScene.h"
 #include "renderer/RtScreenPass.h"
+#include "renderer/RtReflectionPass.h"
 #include "renderer/SkinningCompute.h"
 #include "renderer/DdgiVolume.h"
 #include "renderer/vg/VirtualGeometrySystem.h"   // 仮想ジオメトリ P2（unique_ptr のデストラクタに完全型が要る）

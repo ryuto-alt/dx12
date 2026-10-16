@@ -33,9 +33,12 @@ function OnUpdate(self, dt)
   end
 
   -- 本物のサーボ（0..1 = 0..180 度）。金庫モード中は錠として GroveSafe が決める
-  if loadNum("grove.safe", 0) > 0 then self.dev:set("servo", loadNum("grove.safeServo", 0))
-  elseif loadNum("grove.daruma", 0) > 0 then self.dev:set("servo", loadNum("grove.darumaServo", 0))   -- 鬼の首
-  else self.dev:set("servo", self.v) end
+  local sv = self.v
+  if loadNum("grove.safe", 0) > 0 then sv = loadNum("grove.safeServo", 0)
+  elseif loadNum("grove.daruma", 0) > 0 then sv = loadNum("grove.darumaServo", 0) end   -- 鬼の首
+  -- 1 度刻みに丸める。ボリュームの平滑化は値が毎フレーム少しずつ動くので、丸めないと 1 秒に百数十行送り続け、
+  -- Nano Every の受信バッファ（64 バイト）があふれて音や LED の命令が欠ける
+  self.dev:set("servo", math.floor(sv * 180 + 0.5) / 180)
   self.shown = lerp(self.shown, self.v, math.min(1, dt * self.follow))
   local r = self.transform.rotation
   self.transform.rotation = Vec3.new(r.x, r.y, 90 - self.shown * 180)   -- 画面の針（左 0 度 → 右 180 度）

@@ -49,6 +49,7 @@ struct DdgiCB
 };
 static_assert(sizeof(DdgiCB) % 16 == 0, "DdgiCB は 16B 境界に揃えること");
 constexpr u32 kDdgiCBNum32 = sizeof(DdgiCB) / sizeof(u32);
+static_assert(sizeof(DdgiCB) == DdgiVolume::kHitCbBytes, "DdgiCB のサイズが RT 反射の定数と食い違っている");
 
 // irradiance アトラスのサイズ。プローブは (X*Y) 列 × Z 行 に並べる。
 void AtlasSize(u32 px, u32 py, u32 pz, u32 tile, u32& w, u32& h)
@@ -524,6 +525,7 @@ void DdgiVolume::BuildList(const DdgiSettings& s)
 void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& cam, float lastGpuMs)
 {
     m_planReady = false;
+    m_hitPlanValid = false;   // RT 反射が DDGI を引いてよいのは、今フレームの Update が済んだあとだけ
     ++m_planSeq;
     m_countHist[m_planSeq & 7u] = 0;
     m_planGiNew = giNew && m_psoProbeData != nullptr && IsReady();
@@ -642,6 +644,55 @@ DdgiVolume::SampleParams DdgiVolume::GetSampleParams(const DdgiSettings& s) cons
     return p;
 }
 
+void DdgiVolume::FillHitShadeConstants(const DdgiSettings& s, const UpdateDesc& d, bool giNewWanted,
+                                       void* dst, bool& outGiNew, u32& outGridUav, u32& outProbeDataSrv) const
+{
+    constexpr u32 kNoSrv = 0xFFFFFFFFu;
+    DdgiCB cb{};
+    cb.normalBias   = std::max(s.normalBias, 0.02f);
+    cb.sunDir       = d.sunDir;
+    cb.sunIntensity = d.sunIntensity;
+    cb.sunColor     = d.sunColor;
+    cb.skyColor     = d.skyColor;
+    cb.skyCubeIndex = d.skyCubeSrvIndex;
+    cb.lightSrvIndex = d.lightSrvIndex;
+    cb.lightCount    = d.lightCount;
+    cb.prevIrradianceSrv = kNoSrv;
+    cb.prevDistanceSrv   = kNoSrv;
+    cb.envCubeIndex = d.envCubeSrvIndex;
+    cb.skyScale     = std::max(d.skyScale, 0.0f);
+    cb.unitScale    = d.unitScale;
+    cb.planSrvIndex = kNoSrv;
+    if (d.physicalUnits) cb.giFlags |= 32u;   // 点光源の減衰: フォワードの UNO_PHYSICAL_LIGHTS と同じ逆二乗
+
+    // GI モード New で、今フレームの Update がアトラスと更新計画を更新済みのときだけ DDGI を引く。
+    const bool giOk = giNewWanted && s.enabled && s.intensity > 0.0f && IsReady() && m_psoProbeData != nullptr
+                   && m_hitPlanValid && m_irradianceSrv != kNoSrv && m_distanceSrv != kNoSrv
+                   && m_probeDataSrv != kNoSrv && MatchesGrid(s);
+    outGiNew = giOk;
+    outGridUav = kNoSrv;
+    outProbeDataSrv = kNoSrv;
+    if (giOk)
+    {
+        const float sp = std::max(m_spacing[0], 0.01f);
+        cb.originWS   = {m_origin[0][0], m_origin[0][1], m_origin[0][2]};
+        cb.spacing    = {m_spacing[0], m_spacing[0], m_spacing[0]};
+        cb.probeCountX = m_probesX; cb.probeCountY = m_probesY; cb.probeCountZ = m_probesZ;
+        cb.intensity   = std::max(s.intensity, 0.0f);
+        // アトラスはフォワードが読むものと同じ。bounceIntensity は DDGI の多重バウンスの強さで、ここでは「引くか引かないか」だけ
+        cb.bounceIntensity = 1.0f;
+        cb.prevIrradianceSrv = m_irradianceSrv;
+        cb.prevDistanceSrv   = m_distanceSrv;
+        cb.giFlags |= 1u | 64u;
+        cb.viewBias      = kViewBiasRatio * sp;
+        cb.normalBiasNew = kNormalBiasRatio * sp;
+        cb.planSrvIndex  = m_planSrv[m_hitPlanRing];
+        outGridUav = (m_rayDataUav != kNoSrv && m_lightGrid) ? m_rayDataUav + 4 : kNoSrv;
+        outProbeDataSrv = m_probeDataSrv;
+    }
+    std::memcpy(dst, &cb, sizeof(cb));
+}
+
 void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
                         const DdgiSettings& s, const UpdateDesc& d)
 {
@@ -690,6 +741,12 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     DdgiCB cb{};
     cb.originWS   = giNew ? XMFLOAT3{m_origin[0][0], m_origin[0][1], m_origin[0][2]} : XMFLOAT3{s.originX, s.originY, s.originZ};
     cb.rayLength  = std::max(s.rayLength, 0.1f);
+    // ★GI モード New は「ミスしたレイ = 空」（ヒット面に空の項を足さない）。rayLength で打ち切ったレイもミス扱いになるので、
+    //   短い rayLength（既定 30m）だと、細長い通りの奥や地平線より下へ抜けたレイが【空・地面の明るい放射輝度】を拾う
+    //   （PT では遠くの日陰の壁・路面に当たる）。Bistro の通りで日陰の壁が PT の 2.7 倍・木が 3.4 倍に浮いていた。
+    //   New では空まで届く長さにする（BVH 走査なので費用はほぼ変わらない。Legacy は設定値のまま＝従来の絵）。
+    constexpr float kGiNewMinRayLength = 10000.0f;   // [m]
+    if (giNew) cb.rayLength = std::max(cb.rayLength, kGiNewMinRayLength);
     const float sp0 = giNew ? m_spacing[0] : s.spacing;
     cb.spacing    = {sp0, sp0, sp0};
     cb.hysteresis = giNew ? m_hyst[0] : (m_historyValid ? std::clamp(s.hysteresis, 0.0f, 0.995f) : 0.0f);
@@ -778,6 +835,7 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
         if (giNew) m_planReady = false;
         return;
     }
+    if (giNew) { m_hitPlanValid = true; m_hitPlanRing = d.ringIndex % kPlanRing; }
 
     // ★段階3: TraceCS が【前フレームの】アトラスを SRV で読むので、Trace の前に
     //   NON_PIXEL_SHADER_RESOURCE へ、Blend の直前に UNORDERED_ACCESS へ、と 2 段に分ける。

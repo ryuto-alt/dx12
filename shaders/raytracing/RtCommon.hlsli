@@ -17,6 +17,19 @@
 #define RT_COMMON_HLSLI
 
 #include "../post/FullscreenTri.hlsli"   // FSTriVS / FSQuadVSOut
+// RT2: アルファテスト(MASK)の候補ループ（RT_PROCEED_WITH_ALPHA）と GeometryInfo（t6。ルート SRV）。
+// ★RtBindless.hlsli 自体は RtCommon を include しない作り（DDGI の compute からも使うため）。
+// ★このファイルは頂点シェーダ（Rt_VS = vs_6_0。RtShadow.hlsl の FSTriVS）からも include される。
+//   ResourceDescriptorHeap は SM 6.6 以上でないと未宣言なので、6.6 未満では中身を読まず
+//   候補ループは Proceed() だけにする（VS では RayQuery 関数を呼ばないので実害は無い）。
+#if defined(__SHADER_TARGET_MAJOR) && (__SHADER_TARGET_MAJOR > 6 || (__SHADER_TARGET_MAJOR == 6 && __SHADER_TARGET_MINOR >= 6))
+#include "RtBindless.hlsli"
+#else
+#define RT_PROCEED_WITH_ALPHA(q, samp) (q).Proceed()
+#endif
+
+// α を引くサンプラ（ルートシグネチャの静的サンプラ s0 = LINEAR / WRAP）。RtAlbedo もこれを使う。
+SamplerState gLinearWrap : register(s0);
 
 Texture2D<float>                gDepth : register(t0);   // カメラ深度（R32_FLOAT・フル RT サイズ）
 RaytracingAccelerationStructure gTlas  : register(t1);   // ルート SRV（VA 直指定）
@@ -154,13 +167,12 @@ float3 RtCosineHemisphere(float3 N, float2 xi)
 
 // 遮蔽判定だけのレイ。1.0 = 遮蔽なし / 0.0 = 遮蔽あり。
 // ACCEPT_FIRST_HIT_AND_END_SEARCH で最初に当たった時点で打ち切る。
-// 全ジオメトリが OPAQUE（RaytracingScene が FLAG_OPAQUE を立てている）なので
-// シェーダ側で処理すべき候補は発生せず、Proceed() は 1 回で完了する。
+// 不透明材質の BLAS は OPAQUE で建っているので候補は発生せず従来と同じ 1 回で完了する。
+// アルファテスト(MASK。葉・柵)は非不透明で建っているので、候補ごとに RtAlphaTestPass で α を見る（RT2）。
 float RtTraceOcclusion(float3 origin, float3 dir, float tMin, float tMax)
 {
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
            | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
-           | RAY_FLAG_CULL_NON_OPAQUE
            | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
     RayDesc r;
     r.Origin = origin;
@@ -168,25 +180,23 @@ float RtTraceOcclusion(float3 origin, float3 dir, float tMin, float tMax)
     r.TMin = tMin;
     r.TMax = tMax;
     q.TraceRayInline(gTlas, 0, 0xFF, r);
-    q.Proceed();
+    RT_PROCEED_WITH_ALPHA(q, gLinearWrap);
     return (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
 }
 
 // 最近傍ヒットまでの距離。ミスなら -1。
 float RtTraceClosestT(float3 origin, float3 dir, float tMin, float tMax)
 {
-    RayQuery<RAY_FLAG_CULL_NON_OPAQUE
-           | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
     RayDesc r;
     r.Origin = origin;
     r.Direction = dir;
     r.TMin = tMin;
     r.TMax = tMax;
     q.TraceRayInline(gTlas, 0, 0xFF, r);
-    // 全ジオメトリが OPAQUE かつ手続き型プリミティブ無しなので Proceed() は必ず 1 回で false を
-    // 返す（シェーダ側で処理すべき候補が発生しない）。それでも上限を切っておく:
-    // 万一 true を返し続けると GPU が無限ループして TDR（画面が固まる）になるため。
-    [loop] for (int guard = 0; guard < 8 && q.Proceed(); ++guard) {}
+    // 不透明材質は OPAQUE の BLAS なので候補が出ない。MASK だけが候補ループを回す（RT2）。
+    // 候補は有限個の三角形しか無いので、Proceed() は必ず false に収束する。
+    RT_PROCEED_WITH_ALPHA(q, gLinearWrap);
     return (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? q.CommittedRayT() : -1.0;
 }
 

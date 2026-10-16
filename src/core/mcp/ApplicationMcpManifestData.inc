@@ -1020,6 +1020,11 @@ void FillManifestChunk10(ManifestRows& o)
             P("aoDenoiseRadius", "number", false, nullptr, nullptr, nullptr, nullptr, "デノイザのフィルタ半径(px)。0..32 にクランプ。既定 8。0 で無効。大きいほど滑らかになるが、細い形状の AO が潰れる。"),
             P("maxInstances", "int", false, nullptr, nullptr, nullptr, nullptr, "TLAS へ入れるインスタンスの上限。0..32768 にクランプ。0 で既定(RaytracingScene::kMaxRtInstances)。"),
             P("forceBuildTlas", "bool", false, nullptr, nullptr, nullptr, nullptr, "RT 影 / RT-AO が両方 OFF でも TLAS を建てる(検証用)。シーン JSON には保存されない。"),
+            P("reflectionsEnabled", "bool", false, nullptr, nullptr, nullptr, nullptr, "RT 反射(R2)を使うか(既定 false)。SSR の後段で、SSR が外れた画素だけ RayQuery を撃ち、SSR と合成した結果を t16 へ出す(フォワードは無改造)。ヒット点の shading は DDGI と共通。ミスは空(既存の IBL/大気 + DDGI の埋め)。DXR + Dynamic Resources 対応 GPU で透視カメラのときだけ走る。"),
+            P("reflectionMaxRoughness", "number", false, nullptr, nullptr, nullptr, nullptr, "これより粗い面は撃たない(IBL に任せる)。0.05..1 にクランプ。既定 0.6。上限の手前から連続に消える。"),
+            P("reflectionMaxDistance", "number", false, nullptr, nullptr, nullptr, nullptr, "反射レイの最大距離(m)。1..100000 にクランプ。既定 100。越えたら空へ落とす。"),
+            P("reflectionHalfRes", "bool", false, nullptr, nullptr, nullptr, nullptr, "ハーフ解像度でトレースするか(既定 true)。false でフル解像度(綺麗だが重い)。"),
+            P("reflectionIntensity", "number", false, nullptr, nullptr, nullptr, nullptr, "RT 反射の合成の強さ。0..1 にクランプ。既定 1。"),
             P("ddgiEnabled", "bool", false, nullptr, nullptr, nullptr, nullptr, "DDGI を使うか(既定 false)。プローブ格子にレイを飛ばして八面体 irradiance アトラスを作り、フォワードの ambient に拡散間接項として【加算】する。"),
             P("ddgiSpacing", "number", false, nullptr, nullptr, nullptr, nullptr, "プローブ間隔(m)。0.1..100 にクランプ。既定 2。格子が動くと履歴は捨てられる。"),
             P("ddgiProbeCountX", "int", false, nullptr, nullptr, nullptr, nullptr, "プローブ数 X。1..32 にクランプ。既定 8。"),
@@ -1255,6 +1260,13 @@ void FillManifestChunk11(ManifestRows& o)
         "render", "render_setting", "render_scale", McpEffect::WriteSetting, "any", 10000, true, false,
         "none", "dx12_set_render_scale", {
             P("scale", "number", true, nullptr, nullptr, nullptr, nullptr, "0.25..1.0。1.0 で等倍(既定)。0.7 くらいから効きが分かる"),
+        })});
+    o.push_back({"set_view_size", M("シーン(とゲームビュー)の内部描画解像度を width x height に固定する(性能測定用。1920x1080 で測る等)。パネル/ウィンドウの大きさと render_scale に依らない。表示はパネルへ縮小される。0,0 で解除。起動引数 --view-size WxH / dx12_engine_launch の viewSize でも指定できる。settings.json には保存しない。",
+        "set view size 描画解像度固定 1920x1080 ベンチ",
+        "render", "render_setting", "render_scale", McpEffect::WriteSetting, "any", 10000, true, false,
+        "none", "", {
+            P("width", "int", true, nullptr, "0", "8192", nullptr, "描画解像度の幅(16〜8192)。0 で解除(height も 0)"),
+            P("height", "int", true, nullptr, "0", "8192", nullptr, "描画解像度の高さ(16〜8192)。0 で解除(width も 0)"),
         })});
     o.push_back({"set_scene_settings", M("シーンのスカイボックス/IBL・物理大気・デカールアトラスを設定する。skybox / atmosphere 内の指定フィールドだけ適用。★適用後にエンジンから読み返した実値を current に返す(envMapPath を変えたときは envMapRebake も)。",
         "set scene settings シーン設定変更",

@@ -7,6 +7,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "renderer/RenderPass.h"
 #include "renderer/atmosphere/AtmosphereRenderer.h"
+#include "renderer/atmosphere/CloudRenderer.h"
 
 namespace dx12e
 {
@@ -73,6 +74,41 @@ public:
         ctx.cmd->SetViewportAndScissor(m_in.width, m_in.height);
         ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
         m_in.atmo->DrawAerialPerspective(ctx.native, m_in.cbSlot, m_in.depthSrv);
+    }
+
+private:
+    Inputs m_in;
+};
+
+// ボリュメトリッククラウドの合成。AP 合成の直後・同じ作法（深度は SRV で読む）。dst = src.rgb + dst * src.a。
+class CloudCompositePass final : public IRenderPass
+{
+public:
+    struct Inputs
+    {
+        CloudRenderer*              clouds = nullptr;
+        D3D12_GPU_VIRTUAL_ADDRESS   atmCb = 0;
+        D3D12_GPU_DESCRIPTOR_HANDLE atmSrv{};
+        D3D12_CPU_DESCRIPTOR_HANDLE sceneRtv{};
+        ID3D12Resource*             sceneColor = nullptr;
+        D3D12_GPU_DESCRIPTOR_HANDLE depthSrv{};
+        u32 width = 0, height = 0;
+    };
+    explicit CloudCompositePass(const Inputs& in) : m_in(in) {}
+    const char* Name() const override { return "CloudComposite"; }
+    void DeclareResources(std::vector<PassResourceUse>& out) const override
+    {
+        out.push_back({"depth",      nullptr,         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, PassAccess::Read});
+        out.push_back({"sceneColor", m_in.sceneColor, D3D12_RESOURCE_STATE_RENDER_TARGET,         PassAccess::Write});
+    }
+    void Execute(const RenderPassContext& ctx) override
+    {
+        if (!m_in.clouds) return;
+        if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        ctx.native->OMSetRenderTargets(1, &m_in.sceneRtv, FALSE, nullptr);
+        ctx.cmd->SetViewportAndScissor(m_in.width, m_in.height);
+        ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
+        m_in.clouds->DrawComposite(ctx.native, m_in.atmCb, m_in.atmSrv, m_in.depthSrv);
     }
 
 private:

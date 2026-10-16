@@ -15,6 +15,7 @@ const char* GpuTimer::Name(u32 s)
     case ClusterCull: return "clusterCull";
     case Raytracing:  return "raytracing";
     case RtScreen:    return "rtScreen";
+    case RtReflection: return "rtReflection";
     case Ddgi:        return "ddgi";
     case ScreenSpaceGI: return "screenSpaceGi";
     case VolumetricFog: return "volFog";
@@ -24,6 +25,8 @@ const char* GpuTimer::Name(u32 s)
     case PostFX:      return "postFx";
     case UI:          return "ui";
     case VgCull:      return "vgCull";
+    case Clouds:      return "clouds";
+    case CloudShadow: return "cloudShadow";
     default:          return "?";
     }
 }
