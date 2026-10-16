@@ -13,6 +13,7 @@
 #include "editor/EditorTheme.h"   // --theme-variant（エディタのアイデンティティ案。開発用）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
 #include "core/OffscreenShot.h"     // --size WxH（screenshot_final の既定の撮影解像度。純ロジック）
+#include "editor/McpInstaller.h"   // --install-mcp（MCP サーバのヘッドレス導入）
 #include "project/Project.h"
 #include "scene/ScenePartition.h"   // --validate: 分割保存のセルもつなげて検証する
 #include "scene/SceneFormatV2.h"   // --validate: version 2 のシーンは既定値の省略を補ってから検証する
@@ -389,6 +390,35 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
         if (lpCmdLine)
         {
             std::string args(lpCmdLine);
+
+            // --install-mcp: エディタのボタンと同じ MCP ワンクリック導入をヘッドレスで実行して終了（GUI 起動しない）。
+            // Node.js・MCP サーバ・依存を用意し、Codex / Claude Code / Claude Desktop / Cursor へ登録する。
+            // 終了コード: 0=成功 / 1=失敗。経過は標準出力（無ければ親コンソール）へ。
+            if (args.find("--install-mcp") != std::string::npos)
+            {
+                dx12e::mcpinst::McpInstaller inst;
+                inst.Start(std::string());
+                inst.Wait();
+                const auto snap = inst.Get();
+                std::string text;
+                for (const auto& l : snap.log) text += l + "\n";
+                for (const auto& c : snap.clients)
+                    text += "[" + c.client + "] " + c.path + (c.note.empty() ? "" : "  " + c.note) + "\n";
+                text += snap.step == dx12e::mcpinst::McpInstaller::Step::Done
+                            ? "RESULT: OK\n" : "RESULT: FAIL " + snap.error + "\n";
+                HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+                if (hOut == nullptr || hOut == INVALID_HANDLE_VALUE)
+                {
+                    if (AttachConsole(ATTACH_PARENT_PROCESS) || AllocConsole())
+                        hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+                }
+                if (hOut != nullptr && hOut != INVALID_HANDLE_VALUE)
+                {
+                    DWORD written = 0;
+                    WriteFile(hOut, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
+                }
+                return snap.step == dx12e::mcpinst::McpInstaller::Step::Done ? 0 : 1;
+            }
 
             // --write-version <file>: 実行バイナリが自認するエンジン版をファイルに書いて終了。
             // installer/build.ps1 がパッケージ前に「exe の版 == Version.cpp の版」を検証するための

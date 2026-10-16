@@ -6,7 +6,7 @@
 #        起動時オートアップデートで配布される。
 #
 # ★ MCP サーバは配布物に同梱しない。別リポジトリ https://github.com/ryuto-alt/dx12-mcp から
-#   インストールする（エディタの「MCP / AI Bridge」パネルが手順を案内する）。
+#   取得する（エディタの「MCP / AI Bridge」パネルのワンクリック導入 / --install-mcp）。
 #
 # 前提: build\release が先にビルド済みであること（build_release.bat 等）。ISCC は任意。
 # 使い方: pwsh -ExecutionPolicy Bypass -File installer\build.ps1
@@ -192,7 +192,7 @@ Write-Host ""
 Write-Host "=== 完了 ===" -ForegroundColor Green
 Write-Host "  zip: $zip"
 Write-Host "  リリース公開: gh release create v$version -R ryuto-alt/dx12 --target <branch> `"$zip`""
-Write-Host "  ※ MCP サーバは同梱しない。https://github.com/ryuto-alt/dx12-mcp からインストール。"
+Write-Host "  ※ MCP サーバは同梱しない。エディタのボタン(または --install-mcp)が dx12-mcp から取得して登録する。"
 Write-Host "  ※ zip はこのファイル名のままアップロードすること（#別名 で rename しない）。"
 Write-Host "     Updater.cpp が api.github.com 不要の直リンク "
 Write-Host "     (releases/download/vX.Y.Z/dx12-engine-vX.Y.Z.zip) をこの名前で決め打ちしている。"
