@@ -368,6 +368,58 @@ std::unique_ptr<FoliageCuller::Layer> FoliageCuller::CreateLayer(const LayerGpuD
     return L;
 }
 
+bool FoliageCuller::UpdateInstances(Layer& L, const LayerGpuDesc& d, ID3D12GraphicsCommandList* cmd,
+                                    std::vector<ComPtr<ID3D12Resource>>& keep, std::string* err)
+{
+    auto fail = [&](const char* m) { if (err) *err = m; return false; };
+    if (!m_ready || !cmd || !L.m_visible) return fail("未初期化");
+    // 構造が違うなら再利用できない（visible / args / counters の大きさと並びが変わる）
+    if (d.numViews != L.m_numViews || d.slotsPerView != L.m_S || d.lodStride != L.m_lodStride
+        || std::max(16u, d.capMain) != L.m_capMain || std::max(16u, d.capShadow) != L.m_capShadow
+        || d.groupSlot.size() != L.m_G || d.groupSlot.size() != d.groupIndexCount.size())
+        return fail("構造が違う");
+    ID3D12Device* dev = m_impl->device.Get();
+    const D3D12_RESOURCE_STATES srvState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    // 先に全部作る（途中で失敗しても layer は元のまま）
+    std::vector<ComPtr<ID3D12Resource>> staging;
+    ComPtr<ID3D12Resource> src = MakeDefaultWithData(dev, cmd, d.instances, static_cast<u64>(d.instanceCount) * sizeof(FoliageInstance),
+                                                     srvState, D3D12_RESOURCE_FLAG_NONE, staging);
+    ComPtr<ID3D12Resource> chunks = MakeDefaultWithData(dev, cmd, d.chunks, static_cast<u64>(d.chunkCount) * sizeof(FoliageChunk),
+                                                        srvState, D3D12_RESOURCE_FLAG_NONE, staging);
+    ComPtr<ID3D12Resource> chunkCounts = MakeBuffer(dev, static_cast<u64>(L.m_numViews) * L.m_S * std::max(1u, d.chunkCount) * 4u,
+                                                    D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (!src || !chunks || !chunkCounts) return fail("バッファの作成に失敗");
+    {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = chunkCounts.Get();
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cmd->ResourceBarrier(1, &b);
+    }
+    // 古いものは GPU が使い終わるまで保持
+    keep.push_back(std::move(L.m_src));
+    keep.push_back(std::move(L.m_chunks));
+    keep.push_back(std::move(L.m_chunkCounts));
+    for (auto& s : staging) keep.push_back(std::move(s));
+    L.m_src = std::move(src);
+    L.m_chunks = std::move(chunks);
+    L.m_chunkCounts = std::move(chunkCounts);
+    const u64 oldInst = static_cast<u64>(L.m_instanceCount) * 32u + static_cast<u64>(L.m_chunkCount) * 32u
+                      + static_cast<u64>(L.m_numViews) * L.m_S * std::max(1u, L.m_chunkCount) * 4u;
+    L.m_instanceCount = d.instanceCount;
+    L.m_chunkCount = d.chunkCount;
+    L.m_maxScale = 1.0f;
+    for (u32 i = 0; i < d.instanceCount; ++i)
+        L.m_maxScale = std::max(L.m_maxScale, std::fabs(UnpackScale(d.instances[i].rotScale)));
+    const u64 newInst = static_cast<u64>(L.m_instanceCount) * 32u + static_cast<u64>(L.m_chunkCount) * 32u
+                      + static_cast<u64>(L.m_numViews) * L.m_S * std::max(1u, L.m_chunkCount) * 4u;
+    L.m_gpuBytes = L.m_gpuBytes - oldInst + newInst;
+    return true;
+}
+
 bool FoliageCuller::Cull(ID3D12GraphicsCommandList* cmd, Layer& L, const Affine34& layerWorld,
                          const std::vector<CullDispatch>& disp, u32 frameSlot, ID3D12DescriptorHeap* restoreHeap)
 {
