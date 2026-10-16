@@ -7,6 +7,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
+#include "core/PathTracerHost.h"   // PtHost::Invalidate（再読込でジョブを中止）
 
 #include <algorithm>
 #include <limits>
@@ -964,6 +965,9 @@ void Application::ProcessMcpAssetReloads(ID3D12GraphicsCommandList* cmdList)
             if (m_rtScene) m_rtScene->Invalidate();
             // 植生のレイヤーも Mesh* / Material* を握っている（MeshRenderer と同じく張り替えないと GPU がハングする）
             if (m_foliage) m_foliage->InvalidateModels();
+            // パストレーサーのジオメトリキーも Mesh* 由来。走行中のジョブは古い形を引くので中止する。
+            if (m_ptHost) m_ptHost->Invalidate("アセットを再読込したため");
+            m_rtBuiltHash = 0;   // 念のため TLAS の使い回しも禁止（Invalidate 済みだが二重に守る）
         }
 
         // ---- テクスチャを読み直したなら、マテリアル上書きの SRV ブロックも作り直す ----

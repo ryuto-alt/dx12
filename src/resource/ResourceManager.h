@@ -149,6 +149,11 @@ public:
     // 読み直したモデルのキー → 新しい CachedModel（ReloadChangedAssets の後だけ有効）
     const CachedModel* FindModel(const std::string& key) const;
 
+    // モデルの世代。ReloadChangedAssets が CachedModel を作り直すたびに +1。
+    // Mesh* / Material* を永続的に握る側（植生・BLAS・PT など）は、自分が記録した世代と比べて
+    // 違えば握っているポインタを捨てて組み直す（呼び出し側の「張り替え漏れ」をここで拾う）。
+    u64 ModelGeneration() const { return m_modelGeneration; }
+
     void FinishUploads();
     // 直近のフレームで新しいアップロード(テクスチャ/モデル)を積んだか。
     // true のフレームだけ WaitIdle+FinishUploads する＝定常時の毎フレーム全同期を撤廃。
@@ -185,6 +190,17 @@ private:
         int64_t     stamp = 0;
     };
     std::unordered_map<std::string, ModelCacheEntry> m_modelCache;
+
+    // 再読込で置き換えられた古い CachedModel / マテリアルの SRV ブロックは、すぐには壊さず
+    // kRetireFrames フレーム保留する（DeferPendingUploads が毎フレーム数える）。
+    // 万一どこかが古い Mesh* / Material* を握っていても、解放済みメモリを読んで GPU がハングする代わりに
+    // 「古い絵が出る」だけで済む。フレーム多重化（最大 3）より十分長い値にしてある。
+    static constexpr u32 kRetireFrames = 8;
+    struct RetiredModel { std::unique_ptr<CachedModel> model; u32 framesLeft = kRetireFrames; };
+    struct RetiredSrvBlock { u32 start = 0; u32 framesLeft = kRetireFrames; };
+    std::vector<RetiredModel>    m_retiredModels;
+    std::vector<RetiredSrvBlock> m_retiredSrvBlocks;
+    u64 m_modelGeneration = 0;
 
     // 入力文字列 → NormalizeModelKey の結果（weakly_canonical がファイルシステムを叩いて 1 回 ~30µs かかるため、
     // 同じモデルを何千体も置くシーン読み込みで支配的だった）。★読み込みに成功したパスだけ入れる

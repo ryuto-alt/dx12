@@ -326,6 +326,13 @@ bool FoliageSystem::BeginFrame(const FrameIn& in)
     const u32 slot = in.frameSlot % I.frameCount;
     I.curSlot = slot;
 
+    // ---- モデルが作り直されていたら、握っている Mesh* / Material* を捨てる（寿命の保険）----
+    if (I.d.resources && I.d.resources->ModelGeneration() != m_modelGenSeen)
+    {
+        m_modelGenSeen = I.d.resources->ModelGeneration();
+        InvalidateModels();
+    }
+
     // ---- 風のフレーム値（PerFrame の予約領域 / 専用 CBV へ）----
     I.wind = in.wind ? *in.wind : SceneWind{};
     {

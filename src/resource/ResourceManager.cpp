@@ -420,6 +420,20 @@ void ResourceManager::DeferPendingUploads()
         m->FinishUpload();
     m_pendingMeshUploads.clear();
     m_uploadsPending = false;
+
+    // 再読込で置き換えられた古いモデル / SRV ブロックの保留を 1 フレーム進め、期限切れを実解放する
+    for (auto& r : m_retiredModels) if (r.framesLeft > 0) --r.framesLeft;
+    m_retiredModels.erase(
+        std::remove_if(m_retiredModels.begin(), m_retiredModels.end(),
+                       [](const RetiredModel& r) { return r.framesLeft == 0; }),
+        m_retiredModels.end());
+    for (auto& b : m_retiredSrvBlocks) if (b.framesLeft > 0) --b.framesLeft;
+    for (const auto& b : m_retiredSrvBlocks)
+        if (b.framesLeft == 0 && m_srvHeap) m_srvHeap->FreeBlock(b.start, kMaterialSrvBlockSize);
+    m_retiredSrvBlocks.erase(
+        std::remove_if(m_retiredSrvBlocks.begin(), m_retiredSrvBlocks.end(),
+                       [](const RetiredSrvBlock& b) { return b.framesLeft == 0; }),
+        m_retiredSrvBlocks.end());
 }
 
 std::string ResourceManager::NormalizeModelKey(const std::string& filePath)
@@ -579,16 +593,21 @@ AssetReloadResult ResourceManager::ReloadChangedAssets(ID3D12GraphicsCommandList
             // ずつ減り続ける(Mesh は自前で VB/IB の SRV を返すので対象外)。
             // ★解放は **新しい実体を作り終えてから**。先に返すと同じブロックが即再確保され、
             //   今フレームの GPU がまだ読んでいる SRV を書き換えることになる。
+            //   さらに返却自体も kRetireFrames フレーム遅らせる（フライト中のフレームが古い SRV を
+            //   読んでいる間に、同じブロックが再確保されて書き換わるのを防ぐ）。
             for (auto& oldMat : entry.model->materials)
                 if (oldMat && oldMat->srvBlockIndex != 0xFFFFFFFFu)
-                    m_srvHeap->FreeBlock(oldMat->srvBlockIndex, kMaterialSrvBlockSize);
+                    m_retiredSrvBlocks.push_back({oldMat->srvBlockIndex, kRetireFrames});
             for (auto& oldMesh : entry.model->meshes)
                 m_pendingMeshUploads.erase(
                     std::remove(m_pendingMeshUploads.begin(), m_pendingMeshUploads.end(),
                                 oldMesh.get()),
                     m_pendingMeshUploads.end());
         }
+        // 古い実体は即破棄せず保留キューへ（上の kRetireFrames のコメント参照）
+        if (entry.model) m_retiredModels.push_back({std::move(entry.model), kRetireFrames});
         entry.model = std::move(rebuilt);
+        ++m_modelGeneration;
         entry.stamp = now;
         out.models.push_back(entry.path);
     }

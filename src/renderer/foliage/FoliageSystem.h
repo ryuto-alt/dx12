@@ -114,6 +114,8 @@ public:
     // 握っているので、放置すると解放済みのバッファを描いて GPU がハングする（2026-10-15）。
     // 全レイヤーを「描かない」にし、次の BeginFrame でモデルを引き直してグループを組み直させる。
     void InvalidateModels();
+    // 呼び忘れの保険: BeginFrame 自身が ResourceManager::ModelGeneration() の変化を見て InvalidateModels を呼ぶ
+    // （dx12_reload_assets 以外の経路でモデルが作り直されても、解放済みの Mesh* を描かない）。
 
     // 風のフレーム共通値（PerFrame の _clusterReserved[0..1] へそのまま書ける）。BeginFrame の後に有効。
     void WindConstants(DirectX::XMFLOAT4& a, DirectX::XMFLOAT4& b) const { a = m_windA; b = m_windB; }
@@ -159,6 +161,7 @@ private:
     std::unique_ptr<Impl> m_impl;
     bool m_ready = false;
     u32 m_drawable = 0;
+    u64 m_modelGenSeen = 0;   // 最後に見た ResourceManager::ModelGeneration()
     DirectX::XMFLOAT4 m_windA{0, 0, 0, 0}, m_windB{0, 0, 0, 0};
     FoliageGpuMs m_gpuMs;
     std::vector<FoliageStatsLayer> m_stats;
