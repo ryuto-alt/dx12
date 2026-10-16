@@ -285,6 +285,14 @@ uint64_t HashFileContents(const std::wstring& filePath)
         return 0;
     }
 
+    // ★「書いた直後」のファイルはメモ化しない（git の racily clean と同じ考え方）。
+    //   更新時刻の分解能（OS の時計の刻み・FAT 系の 2 秒など）より短い間に同じサイズで書き直されると、
+    //   (サイズ, 更新時刻) が前回と同じに見えて、古いハッシュを返してしまう。
+    //   更新時刻が「いま」に近い（未来を含む）ものは毎回読み直す。1MB あたり 1ms 程度なので影響は無視できる。
+    //   tests/texture_compress_test.cpp の Test_CacheKeyIgnoresMtime（末尾 1 バイトの書き換え）が見張る。
+    constexpr auto kRacyWindow = std::chrono::seconds(2);
+    const bool racy = (fs::file_time_type::clock::now() - mtime) < kRacyWindow;
+    if (!racy)
     {
         std::lock_guard<std::mutex> lock(s_memoMutex);
         s_memo[filePath] = Stamp{size, mt, h};
