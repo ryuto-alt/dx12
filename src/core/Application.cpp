@@ -5,6 +5,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/AtomicFileJson.h"
+#include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（断った理由をログへ出す）
 #include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
@@ -1132,12 +1133,26 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                                m_window->GetWidth(), m_window->GetHeight(),
                                                PathResolver::ShaderDirW());
                     m_dxrEnabled = m_rtScreenPass->IsReady();
+                    // RT 反射（R2）。バインドレス（Dynamic Resources）が無い GPU では IsReady が false のまま＝走らない。
+                    try
+                    {
+                        m_rtReflection = std::make_unique<RtReflectionPass>();
+                        m_rtReflection->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                                   m_window->GetWidth(), m_window->GetHeight(),
+                                                   PathResolver::ShaderDirW());
+                    }
+                    catch (const std::exception& e)
+                    {
+                        Logger::Warn("RT 反射のシェーダを読めませんでした: {}", e.what());
+                        m_rtReflection.reset();
+                    }
                 }
                 catch (const std::exception& e)
                 {
                     // .cso が無い / 壊れている（Gate 5）。エラーではなく機能の不在として扱う。
                     Logger::Warn("レイトレーシングのシェーダを読めませんでした: {}", e.what());
                     m_rtScreenPass.reset();
+    m_rtReflection.reset();
                     m_dxrEnabled = false;
                 }
             }
@@ -1145,6 +1160,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             {
                 m_rtScene.reset();
                 m_rtScreenPass.reset();
+    m_rtReflection.reset();
             }
             else
             {
@@ -1262,6 +1278,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_renderH = m_window->GetHeight();
         m_renderScale = static_cast<f32>(PersistGet("render_scale", 1.0));
         m_renderScale = std::clamp(m_renderScale, 0.25f, 1.0f);
+        { const auto& cli = offshot::Cli(); if (cli.viewW > 0 && cli.viewH > 0) { m_viewSizeW = cli.viewW; m_viewSizeH = cli.viewH; } }
 
         // 加算ビルボードパーティクル（HDR scene RT + 深度へ描く / Lua fx API）
         m_particleSystem = std::make_unique<ParticleSystem>();
@@ -2298,6 +2315,7 @@ void Application::Shutdown()
     m_screenSpaceGi.reset();
     // DXR（加速構造 + RT パス）。デバイス解放より前に確実に落とす。
     m_rtScreenPass.reset();
+    m_rtReflection.reset();
     if (m_rtScene) m_rtScene->Shutdown();
     m_rtScene.reset();
     m_ssaoWhiteTex.reset();

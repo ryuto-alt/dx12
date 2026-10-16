@@ -64,3 +64,10 @@
 | R1b | フォワードでの合成（視差補正・ぼかし・段 4 への受け渡し）・エディタ（Inspector・ギズモの箱・古い印）・auto 配置 |
 | R2 | RT 反射（ヒット shading の共通化→トレース→デノイズ→t16 合成）。ミスは R1 |
 | R3 | 親が「前 / 後 / 正解」の比較をユーザーへ見せて OK をもらう（山 1 と同じ） |
+
+## 6. 実装メモ（R2 = 2026-10-15 実装済み。R1 は未着手）
+
+- 実体: `shaders/raytracing/RtReflection.hlsl`（トレース / 時間 / 空間 / 合成の 4 PS）・`src/renderer/RtReflectionPass.{h,cpp}`（専用ルートシグネチャ: b0=DdgiCB・b1=パラメータ・t0=TLAS・t1=GeometryInfo、テクスチャは全部バインドレス）。呼び出しは `ApplicationRender.cpp` の DDGI 更新の直後（今フレームのライト・アトラス・更新計画を引くため）。設定は `RtSettings::reflection*`（シーン JSON の `raytracing` に保存）。
+- ヒット shading の共通化: `shaders/raytracing/RtHitShade.hlsli`（DDGI の `DdgiProbeUpdate.hlsl` から関数を移設）。DDGI は `RtHitShadeGiNew(..., gUnitScale, 1.0, false)` で移設前と同じ式（実測: 同じシーン・決定論キャプチャで旧 TraceCS と新 TraceCS のピクセル差 0）。RT 反射は `(1.0, 1/gUnitScale, true)` ＝シーンの単位で返す。`reflMode` は滑らかな面の直接光の鏡面分（鏡の中の鏡が白く光る近似誤差）を落とす。
+- ミスは「空の prefiltered キューブ（フォワードの t6）× iblIntensity」を返す。設計書の「ミス = 段 4 に任せる」だと、開いた天井の空が DDGI の埋め（ぼやけた部屋の平均色）になり鏡に空が映らなかったため。IBL が無いときだけ conf 0（段 4）。
+- 既知の差: ① GI なし（Legacy / DDGI OFF）のヒットは空の irradiance（IBL）+ 直接光（`RtHitShadeFlat`）。② 滑らかな金属へのヒットは 1 バウンスの近似（鏡の中の鏡は部屋の平均色）。③ 半透明（ガラス自体）は TLAS に無いので対象外。④ フォワードの鏡面項 `F * envBRDF.x + envBRDF.y` は `F` に NoV 依存の Schlick を使っており（標準は F0）、浅い角度の誘電体で反射が PT より約 +0.2〜0.4 EV 強く出る（RT 反射の有無に依らない。未修正）。

@@ -74,6 +74,7 @@ namespace dx12e
     class ScreenSpaceGiPass;
     class RaytracingScene;
     class RtScreenPass;
+    class RtReflectionPass;
     class SkinningCompute;
     class DdgiVolume;
     struct PtHost;   // DXR パストレーサー(リファレンスレンダー)の糊(core/PathTracerHost.h)
@@ -314,7 +315,8 @@ public:
         bool tlasReady      = false;
         u32  instances = 0, blasCount = 0;
         u32  skippedSkinned = 0, skippedTransparent = 0, droppedOverLimit = 0;
-        u32  skippedAlphaTest = 0;   // アルファテスト(MASK)。CSM の ShadowMask が担当する
+        u32  skippedAlphaTest = 0;   // アルファテスト(MASK)で除外した数。RT2 以降は TLAS に入れるので常に 0
+        u32  alphaTestInstances = 0, alphaTestBlasCount = 0;   // RT2: TLAS に入った MASK のインスタンス数 / 非不透明 BLAS の個数
         // スキンド（計画09 Step 4 / compute スキニング）
         u32  skinnedInstances = 0, skinnedRebuilds = 0, skinnedStale = 0;
         u64  skinnedTriangles = 0;
@@ -755,7 +757,7 @@ private:
     // >= GpuTimer::Scope::Count（cpp で static_assert）。
     // 12 → 14（計画09 が raytracing / rtScreen の 2 スコープを足して 12 使用。残り 2）。
     // 14 → 16（Hi-Z オクルージョンカリングが hiZ を足して 15 使用。残り 1）。
-    static constexpr u32 kPerfGpuScopes = 16;
+    static constexpr u32 kPerfGpuScopes = 20;
                                                // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {
@@ -780,6 +782,8 @@ private:
     // benchmark（遅延応答）: N フレームの perf を貯めて統計を返す
     McpDeferred      m_benchReply{};
     std::vector<f32> m_benchSamples;      // frameMs
+    std::vector<PerfFrame> m_benchWorst;  // frameMs の大きい順に上位 kBenchWorstFrames 件（スパイクの内訳）
+    static constexpr size_t kBenchWorstFrames = 5;
     u32              m_benchFramesLeft = 0;
     f64 m_benchDraws = 0, m_benchCulled = 0, m_benchTris = 0;
     f64 m_benchWork = 0, m_benchFence = 0, m_benchPresent = 0;
@@ -950,6 +954,10 @@ private:
     // 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale と現状がズレていたら追従する。
     void UpdateRenderResolution();
     void SetRenderScale(f32 s);          // settings.json へ保存し、次フレームで即反映
+    // シーン(とゲームビュー)の内部描画解像度を WxH に固定する（性能測定用）。0,0 で解除。パネル矩形・render_scale には依存しない。
+    // settings.json には保存しない（CLI --view-size / MCP set_view_size のセッション限り）。次フレーム先頭で反映。
+    void SetViewSize(u32 w, u32 h);
+    void GetViewSize(u32& w, u32& h) const { w = m_viewSizeW; h = m_viewSizeH; }
     f32  GetRenderScale() const { return m_renderScale; }
 
     // perf_stats / benchmark の "occlusion" ブロック。
@@ -1682,6 +1690,13 @@ private:
     bool  AtmosphereSkyUsable(const ViewDesc& view) const;   // このビューの空を大気パスで描くか
     void  AtmosphereDrawSky(const ViewDesc& view, const RenderPassContext& ctx);
     void  AtmosphereDrawAerialPerspective(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);
+    void  AtmosphereDrawClouds(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex);   // ボリュメトリッククラウド（AP の直後。ApplicationClouds.cpp）
+    // 雲の影（影マスク t11 に掛ける）と環境光への焼き込み。どちらも clouds.enabled のときだけ（ApplicationClouds.cpp）
+    bool  AtmosphereCloudShadowWanted(const ViewDesc& view) const;
+    u32   AtmosphereCloudShadow(const ViewDesc& view, const RenderPassContext& ctx, u32 depthSrvIndex, u32 prevMaskSrvIndex);   // 戻り値 = 新しい影マスクの SRV 番号（失敗時は prevMaskSrvIndex）
+    void  AtmosphereCloudsToSkyCube(ID3D12GraphicsCommandList* cmd, u32 frameIndex);   // RecordSkyCube の直後に呼ぶ
+    bool  AtmosphereCloudsEnsure();
+    void  AtmosphereCloudWind(float outKm[3]);
     bool  LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd);   // LoadSkyboxIfNeeded の先頭から: 大気が環境の元なら焼いて true
     void  AtmosphereShutdown();
 
@@ -1851,6 +1866,7 @@ private:
     //   ＝フォワード PS は 1 行も変わらない。
     std::unique_ptr<RaytracingScene> m_rtScene;      // BLAS キャッシュ + TLAS
     std::unique_ptr<RtScreenPass>    m_rtScreenPass; // RT影 / RT-AO / RTデバッグ
+    std::unique_ptr<RtReflectionPass> m_rtReflection; // RT 反射（R2）。SSR と合成して t16 へ
     // compute スキニング（計画09 Step 4）。スキンドの変形後頂点を書き出して BLAS の入力にする。
     // これが無いとスキンドは TLAS に入れられず、キャラだけ RT 影 / RT-AO の対象外になる。
     std::unique_ptr<SkinningCompute> m_skinningCompute;
@@ -1906,6 +1922,8 @@ private:
     //   → ポストの uvOfs/uvScl が定数 0,0,1,1 になり、7 パスから引数が消えた。
     //   → DoF / ゴッドレイの「半解像度サブ矩形を vpLeft/2 で作る」オフバイワンも消えた。
     f32  m_renderScale = 1.0f;      // settings.json "render_scale"（0.25〜1.0）。1.0 で従来と同一
+    u32  m_viewSizeW = 0;           // --view-size / set_view_size。0 でない間、レンダー解像度をこの値に固定（0 = 従来どおり）
+    u32  m_viewSizeH = 0;
     u32  m_renderW = 0;             // 現在確保されているレンダー解像度（0 = 未初期化）
     u32  m_renderH = 0;
     // ドッキング分割のドラッグ中に毎フレーム RT を作り直すと WaitIdle でカクつくので、

@@ -474,7 +474,7 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
   dx12_engine_launch:
     "自分専用のエンジンを背景で起動し、このセッションの既定エンジンに束縛する。専用エンジンは全体で最大 3 台、10 分操作が無いと自動終了する。ポート・exe コピー・データ領域・使い捨てプロジェクトは全部別で、ビルド中でも衝突しない。\n"
     + "使う: 作業の最初(dx12_doctor がエンジン無しと言ったとき)。使わない: 手で起動済みのエンジンを見るだけ(→ dx12_engine_attach)、既存エンジンの更新(→ dx12_engine_refresh)。\n"
-    + "引数: name / project(省略で使い捨て)/ mode(background 既定。headless=画面不要。visible は既定で拒否)/ scene / dpiScale。\n"
+    + "引数: name / project(省略で使い捨て)/ mode(background 既定。headless=画面不要。visible は既定で拒否)/ scene / dpiScale / viewSize(例 1920x1080。シーンの描画解像度を固定する性能測定用)。\n"
     + "副作用: プロセスを起動し約 27 MB をコピーする。窓は画面外でフォーカスを奪わない。返り値: {engineId, port, pid, dir}。次: dx12_list_entities。",
 
   dx12_engine_list:

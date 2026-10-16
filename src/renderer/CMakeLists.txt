@@ -21,6 +21,7 @@ add_library(Renderer STATIC
     AccelerationStructure.cpp
     RaytracingScene.cpp
     RtScreenPass.cpp
+    RtReflectionPass.cpp
     SkinningCompute.cpp
     DdgiVolume.cpp
     ClusteredLightCulling.cpp
@@ -40,6 +41,7 @@ add_library(Renderer STATIC
     vg/VirtualGeometrySystem.cpp   # 仮想ジオメトリ P2: .vgeo の読込（COPY キュー）+ GPU カリング（専用 RS・専用ヒープ。描かない）
     PathTracer.cpp                 # DXR パストレーサー(地上真値レンダラ。専用 RS・専用 TLAS。既定 OFF・遅延確保)
     pt/PtSceneBuilder.cpp          # パストレーサー専用の BLAS / TLAS / テーブルの構築
+    atmosphere/CloudRenderer.cpp        # ボリュメトリッククラウド（粗いレイマーチ + 時間再投影。専用 RS）
     atmosphere/AtmosphereRenderer.cpp   # 物理ベース大気 A1（Hillaire 2020 の 4 LUT + 空 + AP 合成。専用 RS）
 )
 target_include_directories(Renderer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

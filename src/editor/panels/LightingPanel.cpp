@@ -705,6 +705,21 @@ void RenderLightingPanel(Scene* scene,
                          "（SSAO も ON にしておくこと）");
             ImGui::EndDisabled();
 
+            pg::Checkbox("RT 反射", &rt.reflectionsEnabled,
+                         "SSR の後段で、SSR が外れた画素（画面外・遮蔽）だけレイで反射を解きます。"
+                         "光沢のある床・金属・ガラス状の面に、画面外の物まで映ります。\n"
+                         "ヒット点の明るさは DDGI と同じ照明（太陽・灯・間接光）で、外れたレイは空（IBL）に任せます。"
+                         "SSR も ON にしておくと、画面内は SSR・画面外は RT と役割が分かれます");
+            ImGui::BeginDisabled(!rt.reflectionsEnabled);
+            pg::SliderFloat("反射: 最大の粗さ", &rt.reflectionMaxRoughness, 0.1f, 1.0f, "%.2f", nullptr,
+                            "これより粗い面は撃たず IBL に任せます（上限の手前から連続に消えます）");
+            pg::SliderFloat("反射: 最大距離 (m)", &rt.reflectionMaxDistance, 5.0f, 1000.0f, "%.0f", nullptr,
+                            "これを超えて当たらなければ空へ落とします");
+            pg::Checkbox("反射: ハーフ解像度", &rt.reflectionHalfRes,
+                         "ON（既定）= 画素の 1/4 だけ撃って時間・空間フィルタで埋めます。OFF = 全画素（綺麗だが約 4 倍重い）");
+            pg::SliderFloat("反射: 強さ", &rt.reflectionIntensity, 0.0f, 1.0f, "%.2f");
+            ImGui::EndDisabled();
+
             ImGui::EndDisabled();
 
             if (ctx.dxrSupported)
@@ -897,6 +912,34 @@ void RenderLightingPanel(Scene* scene,
                                 "霞の計算が届く最大距離。それより遠くは端の値を使います");
                 pg::SliderFloat("霞の濃さ", &at.apStrength, 0.0f, 4.0f, "%.2f", nullptr,
                                 "1 = 物理どおり。演出で濃くしたり薄くしたりできます");
+
+                pg::Group("雲 (ボリュメトリック)");
+                {
+                    auto& cl = at.clouds;
+                    pg::Checkbox("雲を描く", &cl.enabled,
+                                 "ON: 層積雲〜積乱雲のボリュメトリッククラウドを空に描きます（1/4 解像度のレイマーチ + 時間再投影）。\n"
+                                 "太陽光は透過率で色づき（夕方は赤く）、地平線近くは大気の霞が掛かります。OFF（既定）なら何も走りません");
+                    if (cl.enabled)
+                    {
+                        pg::SliderFloat("雲量", &cl.coverage, 0.0f, 1.0f, "%.2f", nullptr, "0 = 快晴 / 1 = ほぼ全天");
+                        pg::SliderFloat("雲の型", &cl.cloudType, 0.0f, 1.0f, "%.2f", nullptr,
+                                        "0 = 層雲（薄く平ら）/ 0.5 = 積雲（もこもこ）/ 1 = 積乱雲（高く伸びる）");
+                        pg::SliderFloat("濃さ", &cl.density, 0.0f, 4.0f, "%.2f", nullptr, "消散係数の倍率。大きいほど不透明で暗い雲底になります");
+                        pg::SliderFloat("雲底の高度 (km)", &cl.baseAltitudeKm, 0.0f, 12.0f, "%.2f", nullptr, "海面（atmosphere の seaLevelY）からの高さ");
+                        pg::SliderFloat("雲層の厚さ (km)", &cl.thicknessKm, 0.2f, 10.0f, "%.2f", nullptr, "厚いほど縦に伸びた雲になります");
+                        pg::SliderFloat("風向 (度)", &cl.windDirDeg, -180.0f, 180.0f, "%.0f°", nullptr, "雲が流れていく向き（+Z = 0°、+X = 90°）");
+                        pg::SliderFloat("風速 (m/s)", &cl.windSpeed, 0.0f, 60.0f, "%.1f", nullptr, "雲のパターンが時間で流れる速さ。0 で止まる");
+                        pg::SliderFloat("細部の強さ", &cl.detailStrength, 0.0f, 1.0f, "%.2f", nullptr, "高周波ノイズでの削り。輪郭の細かさ");
+                        pg::SliderFloat("雲の粒の大きさ", &cl.scale, 0.25f, 4.0f, "%.2f", nullptr, "ノイズの大きさの倍率（大きいほど大きな塊）");
+                        pg::SliderInt("品質 (ステップ数)", &cl.steps, 16, 128, nullptr, "視線方向のレイマーチ段数。多いほど綺麗で重い（既定 48）");
+                        pg::Checkbox("雲の影", &cl.shadows,
+                                     "ON: 雲を太陽方向に積分した透過率を、地面・建物の影マスク（RT 影 / コンタクトシャドウと同じ枠）に掛けます。\n"
+                                     "雲が動けば影も動きます。大気が環境光（driveIBL）の元のときは、雲は空キューブにも焼き込まれ、曇りで環境光が灰色く暗くなります（この ON/OFF に関係なく）");
+                        if (cl.shadows)
+                            pg::SliderFloat("雲の影の濃さ", &cl.shadowStrength, 0.0f, 1.0f, "%.2f", nullptr,
+                                            "0 = 影なし / 1 = 雲の透過率どおり");
+                    }
+                }
 
                 // ---- 読み取り専用: いまの太陽 ----
                 {

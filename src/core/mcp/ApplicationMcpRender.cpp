@@ -227,6 +227,23 @@ void Application::RegisterMcpRenderMethods()
             resp["result"] = RenderScaleJson();
         });
 
+    // シーンの内部描画解像度を WxH に固定する（性能測定用。1920x1080 で測りたいときなど）。0,0 で解除。
+    // render_scale とは別軸（固定中は render_scale もパネル矩形も無視）。settings.json には保存しない。
+    McpDefine("set_view_size", "width:int,height:int", DX12E_MCP_HANDLER
+        {
+            if (!params.contains("width") || !params.contains("height"))
+                throw McpError(McpErr::InvalidParam, "need width and height",
+                    "例: width:1920,height:1080（固定）/ width:0,height:0（解除してパネル矩形×render_scale に戻す）");
+            const int w = static_cast<int>(McpFloatParam(params, "width", 0.0f, 0.0f, 8192.0f));
+            const int h = static_cast<int>(McpFloatParam(params, "height", 0.0f, 0.0f, 8192.0f));
+            if ((w == 0) != (h == 0) || (w != 0 && (w < 16 || h < 16)) || static_cast<long long>(w) * h > 8192LL * 4096LL)
+                throw McpError(McpErr::InvalidParam, "width/height は両方 0（解除）か、各辺 16〜8192・総画素 8192x4096 まで",
+                    "例: width:1920,height:1080");
+            SetViewSize(static_cast<u32>(w), static_cast<u32>(h));
+            resp["ok"] = true;
+            resp["result"] = RenderScaleJson();
+        });
+
     McpDefine("get_depth_prepass", "", DX12E_MCP_HANDLER
         {
             resp["ok"] = true;
@@ -390,7 +407,8 @@ void Application::RegisterMcpRenderMethods()
               "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
-              "shadowSunAngle:number", DX12E_MCP_HANDLER
+              "shadowSunAngle:number,reflectionsEnabled:any,reflectionMaxRoughness:number,"
+              "reflectionMaxDistance:number,reflectionHalfRes:any,reflectionIntensity:number", DX12E_MCP_HANDLER
         {
             // get/set を 1 本のハンドラで捌く（"a|b" 登録）。
             //   RT サン影は既存のコンタクトシャドウ枠(t11)、RT-AO は既存の SSAO 枠(t8) へ書く。
@@ -428,6 +446,15 @@ void Application::RegisterMcpRenderMethods()
                 if (params.contains("maxInstances"))
                     r.maxInstances = std::clamp(params.value("maxInstances", r.maxInstances), 0, 32768);
                 r.forceBuildTlas = params.value("forceBuildTlas", r.forceBuildTlas);
+                // RT 反射（R2）。SSR の後段で t16 へ合成。ヒット点の shading は DDGI と共通
+                r.reflectionsEnabled = params.value("reflectionsEnabled", r.reflectionsEnabled);
+                if (params.contains("reflectionMaxRoughness"))
+                    r.reflectionMaxRoughness = McpFloatParam(params, "reflectionMaxRoughness", r.reflectionMaxRoughness, 0.05f, 1.0f);
+                if (params.contains("reflectionMaxDistance"))
+                    r.reflectionMaxDistance = McpFloatParam(params, "reflectionMaxDistance", r.reflectionMaxDistance, 1.0f, 100000.0f);
+                r.reflectionHalfRes = params.value("reflectionHalfRes", r.reflectionHalfRes);
+                if (params.contains("reflectionIntensity"))
+                    r.reflectionIntensity = McpFloatParam(params, "reflectionIntensity", r.reflectionIntensity, 0.0f, 1.0f);
 
                 // DDGI（計画09 Step 6）。RT 設定と同じハンドラで捌く（TLAS が前提なので）。
                 DdgiSettings& g = m_scene->GetDdgiSettings();
@@ -475,7 +502,10 @@ void Application::RegisterMcpRenderMethods()
                          {"instanceDescBytes", s.instanceDescBytes},
                          {"skippedSkinned", s.skippedSkinned},
                          {"skippedTransparent", s.skippedTransparent},
-                         {"skippedAlphaTest", s.skippedAlphaTest},
+                         {"skippedAlphaTest", s.skippedAlphaTest},   // RT2 以降は常に 0（MASK も TLAS に入る）
+                         // RT2: TLAS に入った MASK(アルファテスト)のインスタンス数 / 非不透明で建てた BLAS の個数
+                         {"alphaTestInstances", s.alphaTestInstances},
+                         {"alphaTestBlasCount", s.alphaTestBlasCount},
                          {"droppedOverLimit", s.droppedOverLimit},
                          // TLAS 再利用（静止シーンでは組み直さない）。何フレーム連続で
                          // 前フレームの TLAS を使い回しているか。0 = 今フレームは組み直した。
@@ -544,6 +574,11 @@ void Application::RegisterMcpRenderMethods()
                               {"aoDenoiseRadius", r.aoDenoiseRadius},
                               {"maxInstances", r.maxInstances},
                               {"forceBuildTlas", r.forceBuildTlas},
+                              {"reflectionsEnabled", r.reflectionsEnabled},
+                              {"reflectionMaxRoughness", r.reflectionMaxRoughness},
+                              {"reflectionMaxDistance", r.reflectionMaxDistance},
+                              {"reflectionHalfRes", r.reflectionHalfRes},
+                              {"reflectionIntensity", r.reflectionIntensity},
                               // DDGI の設定値。set_dxr の読み返し照合(applyAndVerify)はここを見る。
                               {"ddgiEnabled", dg.enabled},
                               {"ddgiSpacing", dg.spacing},
@@ -586,8 +621,11 @@ nlohmann::json Application::RenderScaleJson() const
         //   ここで返る renderResolution はまだ 1 フレーム前の値であり得る。
         {"renderResolution",  {{"width", m_renderW}, {"height", m_renderH}}},
         {"displayResolution", {{"width", dvw},       {"height", dvh}}},
+        {"viewSize", {{"width", m_viewSizeW}, {"height", m_viewSizeH}, {"fixed", m_viewSizeW > 0 && m_viewSizeH > 0}}},
         {"pending", (m_renderW != 0) &&
-                    (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW)},
+                    ((m_viewSizeW > 0 && m_viewSizeH > 0)
+                         ? (m_viewSizeW != m_renderW || m_viewSizeH != m_renderH)
+                         : (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW))},
         {"note", "シーン系 RT（sceneRT/深度/SSAO/TAA/SSR/SSGI/ブルーム/DoF/ゴッドレイ）の"
                  "解像度。UI と ImGui は常に表示解像度。dx12_screenshot はレンダー解像度、"
                  "dx12_screenshot_final は表示解像度で返る"}};

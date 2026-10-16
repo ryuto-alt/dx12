@@ -62,7 +62,9 @@ void RaytracingScene::Shutdown()
 
 void RaytracingScene::RemoveBlas(const Mesh* mesh)
 {
-    if (m_blas.erase(mesh) > 0)
+    // 不透明 / 非不透明（MASK）どちらの BLAS も捨てる（RT2: キーは (Mesh*, フラグ)）。
+    const size_t erased = m_blas.erase(BlasKey(mesh, false)) + m_blas.erase(BlasKey(mesh, true));
+    if (erased > 0)
     {
         m_tlasValid = false;   // 次フレームで TLAS を組み直す
         m_cacheable = false;   // 消した BLAS を指したままの TLAS を使い回してはいけない
@@ -94,6 +96,7 @@ void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, 
     m_stats.skippedSkinned     = skippedSkinned;
     m_stats.skippedTransparent = skippedTransparent;
     m_stats.skippedAlphaTest   = skippedAlphaTest;
+    m_stats.alphaTestInstances = 0;
     m_stats.skinnedInstances   = 0;
     m_stats.skinnedRebuilds    = 0;
     m_stats.skinnedStale       = 0;
@@ -129,6 +132,7 @@ void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const
     PendingInstance p;
     p.mesh = mesh;
     p.geo  = geo;
+    p.nonOpaque = (geo.flags & kGeomFlagAlphaTest) != 0u;
     XMStoreFloat4x4(&p.world, world);
     const XMVECTOR c = XMLoadFloat3(&center);
     p.distSq = XMVectorGetX(XMVector3LengthSq(XMVectorSubtract(c, XMLoadFloat3(&m_cameraPos))));
@@ -145,6 +149,7 @@ void RaytracingScene::AddSkinnedInstance(u64 key, const Mesh* mesh,
     PendingInstance p;
     p.mesh        = mesh;
     p.geo         = geo;
+    p.nonOpaque   = (geo.flags & kGeomFlagAlphaTest) != 0u;
     p.geo.flags  |= kGeomFlagSkinned;
     p.skinnedKey  = key;
     p.deformedVb  = deformedVb;
@@ -162,7 +167,8 @@ void RaytracingScene::AddSkinnedInstance(u64 key, const Mesh* mesh,
 // ★動的 BLAS は 60〜80 B/三角形（静的コンパクション済みの約 3 倍）。VRAM 見積もりに注意。
 const RaytracingScene::BlasEntry* RaytracingScene::EnsureSkinnedBlas(
     GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd, u64 key, const Mesh* mesh,
-    D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount, u64 poseHash, u32& triangleBudget)
+    D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount, u64 poseHash, bool nonOpaque,
+    u32& triangleBudget)
 {
     const auto& ibView = mesh->GetIndexBufferLod(0).GetView();   // ★静的と同じく LOD0 固定
     const u32   indexCount = mesh->GetIndexCountLod(0);
@@ -174,7 +180,8 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureSkinnedBlas(
     auto it = m_skinnedBlas.find(key);
     const bool haveUsable = (it != m_skinnedBlas.end())
                          && it->second.indexCount == indexCount
-                         && it->second.vbAddress  == deformedVb;
+                         && it->second.vbAddress  == deformedVb
+                         && it->second.nonOpaque  == nonOpaque;   // 材質を MASK に切り替えたら建て直す
 
     // ポーズが前フレームと同じなら変形後頂点も同じ＝BLAS は再構築不要。
     // （SkinningCompute 側でスキニング自体も省いている）
@@ -199,7 +206,7 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureSkinnedBlas(
 
     D3D12_RAYTRACING_GEOMETRY_DESC geom{};
     geom.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    geom.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+    geom.Flags = nonOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_NONE : D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
     geom.Triangles.Transform3x4               = 0;
     geom.Triangles.IndexFormat                = DXGI_FORMAT_R32_UINT;
     geom.Triangles.VertexFormat               = DXGI_FORMAT_R32G32B32_FLOAT;
@@ -258,6 +265,7 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureSkinnedBlas(
     entry.triangles     = triangles;
     entry.lastUsedFrame = m_frameCounter;
     entry.poseHash      = poseHash;
+    entry.nonOpaque     = nonOpaque;
 
     triangleBudget -= triangles;
     ++m_stats.skinnedRebuilds;
@@ -265,7 +273,7 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureSkinnedBlas(
 }
 
 const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
-    GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd, const Mesh* mesh, u32& budget)
+    GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd, const Mesh* mesh, bool nonOpaque, u32& budget)
 {
     const auto& vbView = mesh->GetVertexBuffer().GetView();
     const auto& ibView = mesh->GetIndexBufferLod(0).GetView();   // ★LOD0 固定
@@ -275,7 +283,9 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
         || indexCount < 3 || vbView.StrideInBytes == 0)
         return nullptr;
 
-    auto it = m_blas.find(mesh);
+    // ★RT2: キーは (Mesh*, 非不透明か)。同じ Mesh が alphaModeOverride で MASK にも不透明にもなり得る。
+    const uintptr_t key = BlasKey(mesh, nonOpaque);
+    auto it = m_blas.find(key);
     if (it != m_blas.end())
     {
         BlasEntry& e = it->second;
@@ -306,9 +316,11 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
 
     D3D12_RAYTRACING_GEOMETRY_DESC geom{};
     geom.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
-    // ★OPAQUE を必ず立てる。any-hit を一切使わない設計なので固定機能のトラバースが効く
-    //   （NVIDIA: "Mark geometry as OPAQUE whenever possible"）。
-    geom.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+    // ★不透明材質は OPAQUE を必ず立てる（NVIDIA: "Mark geometry as OPAQUE whenever possible"）。
+    //   固定機能のトラバースだけで済み、従来と同じ経路になる。
+    //   RT2: アルファテスト(MASK)の材質だけ外す。RayQuery が候補三角形ごとに Proceed() で止まり、
+    //   シェーダ側（RT_PROCEED_WITH_ALPHA）が baseColor の α を見て確定 / 素通しを決める。
+    geom.Flags = nonOpaque ? D3D12_RAYTRACING_GEOMETRY_FLAG_NONE : D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
     geom.Triangles.Transform3x4               = 0;
     geom.Triangles.IndexFormat                = DXGI_FORMAT_R32_UINT;   // IndexBuffer は u32 固定
     geom.Triangles.VertexFormat               = DXGI_FORMAT_R32G32B32_FLOAT;
@@ -332,17 +344,17 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
 
     // ★BlasEntry は RtBuffer（GpuResource 派生 = コピーもムーブも不可）を持つので、
     //   ローカルに作って map へ move することはできない。必ずマップ側で既定構築してから埋める。
-    BlasEntry& entry = m_blas[mesh];
+    BlasEntry& entry = m_blas[key];
     if (!entry.as.Initialize(device, info.ResultDataMaxSizeInBytes,
                              RtBuffer::Kind::AccelStruct, L"BLAS"))
     {
-        m_blas.erase(mesh);
+        m_blas.erase(key);
         return nullptr;
     }
     if (!m_blasScratch.EnsureCapacity(device, info.ScratchDataSizeInBytes,
                                       RtBuffer::Kind::Scratch, L"BLAS scratch"))
     {
-        m_blas.erase(mesh);
+        m_blas.erase(key);
         return nullptr;
     }
 
@@ -363,6 +375,7 @@ const RaytracingScene::BlasEntry* RaytracingScene::EnsureBlas(
     entry.triangles     = indexCount / 3;
     entry.sizeInBytes   = info.ResultDataMaxSizeInBytes;
     entry.lastUsedFrame = m_frameCounter;
+    entry.nonOpaque     = nonOpaque;
 
     m_stats.blasBytes     += entry.sizeInBytes;
     m_stats.blasTriangles += entry.triangles;
@@ -435,14 +448,16 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     {
         const BlasEntry* blas = (p.skinnedKey != 0)
             ? EnsureSkinnedBlas(device, cmd4.Get(), p.skinnedKey, p.mesh,
-                                p.deformedVb, p.vertexCount, p.poseHash, skinBudget)
-            : EnsureBlas(device, cmd4.Get(), p.mesh, budget);
+                                p.deformedVb, p.vertexCount, p.poseHash, p.nonOpaque, skinBudget)
+            : EnsureBlas(device, cmd4.Get(), p.mesh, p.nonOpaque, budget);
         if (!blas) continue;   // まだ建っていない（予算切れ / 不正なメッシュ）→ 次フレームで入る
         if (p.skinnedKey != 0)
         {
             ++m_stats.skinnedInstances;
             m_stats.skinnedTriangles += blas->triangles;
         }
+
+        if (p.nonOpaque) ++m_stats.alphaTestInstances;
 
         D3D12_RAYTRACING_INSTANCE_DESC& dst = descs[count];
         // ★Transform[3][4] は row-major 3x4（平行移動が 4 列目）。
@@ -478,6 +493,8 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     }
 
     m_stats.blasCount = static_cast<u32>(m_blas.size());
+    m_stats.alphaTestBlasCount = 0;
+    for (const auto& kv : m_blas) if (kv.second.nonOpaque) ++m_stats.alphaTestBlasCount;
     if (count == 0) return false;
 
     // ---- TLAS を毎フレーム再構築 ----

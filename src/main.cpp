@@ -620,6 +620,22 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         fleetInstanceId = toUtf8(argv[++i]);
                     else if (wcscmp(argv[i], L"--scene") == 0 && i + 1 < argc)
                         startupScene = toUtf8(argv[++i]);
+                    else if (wcscmp(argv[i], L"--view-size") == 0 || wcsncmp(argv[i], L"--view-size=", 12) == 0)
+                    {
+                        // 性能測定用: シーン(とゲームビュー)の毎フレームの内部描画解像度を、パネル/ウィンドウの大きさに関係なく WxH に固定する。
+                        // 例: --view-size 1920x1080。表示はパネルへ縮小される。実行中は MCP の set_view_size で変えられる。
+                        std::string value;
+                        if (argv[i][11] == L'=') value = toUtf8(argv[i] + 12);
+                        else if (i + 1 < argc)   value = toUtf8(argv[++i]);
+                        uint32_t vw = 0, vh = 0;
+                        if (dx12e::offshot::ParseSize(value, vw, vh)
+                            && dx12e::offshot::Validate(vw, vh, false) == dx12e::offshot::Verdict::Ok)
+                        {
+                            dx12e::offshot::Cli().viewW = vw;
+                            dx12e::offshot::Cli().viewH = vh;
+                        }
+                        else OutputDebugStringA(("--view-size の値が不正です（例 1920x1080。1 辺 16〜8192・総画素 8192x4096 まで）: " + value + "\n").c_str());
+                    }
                     else if (wcscmp(argv[i], L"--size") == 0 || wcsncmp(argv[i], L"--size=", 7) == 0)
                     {
                         // Q2: screenshot_final の既定の撮影解像度（ビューポート / ウィンドウに依存しないオフスクリーン出力）。例: --size 1920x1080

@@ -34,7 +34,7 @@ struct GeometryInfo
     float3 tint;             // 色 tint（packedTint の rgb。アルベドに乗る）
     uint emissiveSrvIndex;   // 発光テクスチャの SRV（flags bit1 が立つときだけ有効）
     float3 emissive;         // 放射輝度 = 色 × 強度（テクスチャ前）
-    uint pad;
+    float alphaCutoff;       // RT2: アルファテスト(MASK)のカットオフ（flags bit3 が立つときだけ有効。CSM の ShadowMask と同じ 8bit 量子化値）
     // ★A3 修正: 64B。PT と共有の金属度 / 粗さ（PtHost::ResolveHitMaterial）
     uint  mrSrvIndex;        // MR テクスチャの SRV（flags bit2 が立つときだけ有効。G=粗さ / B=金属度）
     float metallic;
@@ -44,6 +44,7 @@ struct GeometryInfo
 #define RT_GEOM_FLAG_SKINNED     1u
 #define RT_GEOM_FLAG_EMISSIVETEX 2u
 #define RT_GEOM_FLAG_MRTEX       4u
+#define RT_GEOM_FLAG_ALPHATEST   8u   // RT2: MASK 材質。BLAS のジオメトリも非不透明で建っている（候補ループで alpha を見る）
 
 // Mesh.h の Vertex（96B インターリーブ）のバイトオフセット。
 // ★ここがズレると全部が静かに壊れる。SkinCompute.hlsl と同じ表。
@@ -72,8 +73,43 @@ struct RtHitInfo
     float  roughness;
 };
 
+// ---------------------------------------------------------------------------
+// RT2: アルファテスト(MASK)。DXR 1.1 の any-hit 相当を RayQuery の候補ループで行う。
+// ---------------------------------------------------------------------------
+// 非不透明（MASK 材質の BLAS ジオメトリ）の候補三角形について、UV を補間して baseColor の α を引き、
+// カットオフ以上なら true（＝そこで当たったことにしてよい）。判定式は shaders/shadow/ShadowMask.hlsl の
+// clip(a - cutoff) と同じ（a >= cutoff で残る）＝ CSM の影と RT の影で葉の抜け方が一致する。
+// ★Sample() は使えない（候補ごとにディスクリプタ添字が発散し LOD が未定義になる）。SampleLevel(…, 0)。
+// ★ここは候補（InstanceID = GeometryInfo の添字）を引く。MASK 以外は BLAS が OPAQUE で建っているので
+//   そもそも来ないが、来ても true を返す（安全側＝従来と同じ不透明扱い）。
+bool RtAlphaTestPass(uint instanceId, uint primIndex, float2 bxy, SamplerState samp)
+{
+    const GeometryInfo g = gGeometry[instanceId];
+    if ((g.flags & RT_GEOM_FLAG_ALPHATEST) == 0u) return true;
+    if (g.vbSrvIndex == 0xFFFFFFFFu || g.ibSrvIndex == 0xFFFFFFFFu
+        || g.baseColorSrvIndex == 0xFFFFFFFFu)
+        return true;   // テクスチャ無し = α は 1 のまま
+
+    ByteAddressBuffer ib = ResourceDescriptorHeap[NonUniformResourceIndex(g.ibSrvIndex)];
+    ByteAddressBuffer vb = ResourceDescriptorHeap[NonUniformResourceIndex(g.vbSrvIndex)];
+    const uint3 idx = ib.Load3(primIndex * 12) * RT_VTX_STRIDE;
+    const float3 bc = float3(1.0 - bxy.x - bxy.y, bxy.x, bxy.y);
+    const float2 uv = asfloat(vb.Load2(idx.x + RT_VTX_OFS_UV)) * bc.x
+                    + asfloat(vb.Load2(idx.y + RT_VTX_OFS_UV)) * bc.y
+                    + asfloat(vb.Load2(idx.z + RT_VTX_OFS_UV)) * bc.z;
+    Texture2D<float4> tex = ResourceDescriptorHeap[NonUniformResourceIndex(g.baseColorSrvIndex)];
+    return tex.SampleLevel(samp, uv, 0).a >= g.alphaCutoff;
+}
+
+// TraceRayInline の後ろで Proceed() を最後まで回す。非不透明の候補は RtAlphaTestPass を通ったものだけ確定する。
+// ★RayQuery<flags> はフラグごとに別の型なので関数にできない＝マクロ。呼ぶ場所は RT を撃つ全部
+//   （RT 影 / RT-AO / DDGI の更新 / デバッグ）。ACCEPT_FIRST_HIT_AND_END_SEARCH の影レイでも
+//   CommitNonOpaqueTriangleHit で確定した時点で探索が終わる。
+// ★RAY_FLAG_CULL_NON_OPAQUE / RAY_FLAG_FORCE_OPAQUE をクエリに付けないこと（MASK が消える / 矩形に戻る）。
+#define RT_PROCEED_WITH_ALPHA(q, samp)                                                       while ((q).Proceed())                                                                    {                                                                                            if ((q).CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE                                     && RtAlphaTestPass((q).CandidateInstanceID(), (q).CandidatePrimitiveIndex(),                                (q).CandidateTriangleBarycentrics(), (samp)))                         (q).CommitNonOpaqueTriangleHit();                                                }
+
 // ヒット点の属性を読む。RayQuery は CLOSEST_HIT で確定済みであること。
-RtHitInfo RtLoadHit(RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q)
+RtHitInfo RtLoadHit(RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q)
 {
     RtHitInfo h = (RtHitInfo)0;
     if (q.CommittedStatus() != COMMITTED_TRIANGLE_HIT)

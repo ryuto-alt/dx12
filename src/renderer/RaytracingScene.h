@@ -24,12 +24,18 @@ class Mesh;
 //    ベストプラクティス: "Build the Top-Level Acceleration Structure rather than Update"）。
 //    中身が 1 ビットも変わらないフレームは ReuseLastFrame() で前フレームの TLAS を
 //    そのまま使う。変化検知は呼び出し元（Application::BuildDrawList のハッシュ）の担当。
-//  - **半透明とスキンドは入れない。** 半透明を入れると any-hit が要る（2〜10 倍遅い）。
+//  - **半透明は入れない。** 半透明を入れると any-hit が要る（2〜10 倍遅い）。
 //    スキンドは変形後の頂点が GPU のどこにも存在しない（頂点シェーダ内スキニング）ので
-//    compute スキニング（計画09 Step 4）を作るまで原理的に無理。
+//    compute スキニング（計画09 Step 4）が動いているフレームだけ入る。
 //    → 影は「TLAS に入るもの = RT / 入らないもの = CSM」の**排他ハイブリッド**にする
 //      （判定は DrawItem.h の IsRaytracedItem() に一本化してある）。
-//  - 全ジオメトリは `D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE`。any-hit を一切使わない。
+//  - 不透明材質のジオメトリは `D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE`（従来と同じ。any-hit 無し）。
+//  - ★RT2: アルファテスト(MASK。葉・柵・金網)の材質だけ OPAQUE を外した BLAS を建てる（TLAS にも入る）。
+//    RayQuery の候補ループ（shaders/raytracing/RtBindless.hlsli の RT_PROCEED_WITH_ALPHA）が
+//    UV を補間して baseColor の α を見て、カットオフ未満なら素通しにする。
+//    BLAS のキャッシュは **(Mesh*, 非不透明か)** の組。材質は Mesh ごとに固定だが、
+//    MeshRenderer の alphaModeOverride で同じ Mesh が MASK/不透明どちらにもなり得るので、
+//    フラグ違いの BLAS を別物として持つ（共有して取り違えると、葉が板になるか、不透明が重くなる）。
 //
 // 同期はすべて nullptr の UAV バリアで行う（AS は状態遷移できない）。RtUavBarrier() 参照。
 //
@@ -55,16 +61,19 @@ public:
     //   DDGI のヒットとパストレーサーのヒットは色 / 発光が同じ値になる（8bit 量子化込み）。
     //   A3 修正で 64B（metallic / roughness / MR SRV を追加）。
     //   RT 影 / RT-AO は GeometryInfo を読まない（TLAS だけ）ので影響しない。
+    //   ★RT2: MASK のインスタンスに限り、RT 影 / RT-AO / DDGI もここを読む（RtAlphaTestPass）。
     struct GeometryInfo
     {
         u32 vbSrvIndex        = 0xFFFFFFFFu; // 属性用 VB（96B インターリーブ）の raw SRV。0xFFFFFFFF = 無効
         u32 ibSrvIndex        = 0xFFFFFFFFu; // u32 インデックスバッファの raw SRV
         u32 baseColorSrvIndex = 0xFFFFFFFFu; // アルベドテクスチャの SRV。0xFFFFFFFF = テクスチャ無し
-        u32 flags             = 0;           // bit0 = スキンド（位置は変形後バッファ / 属性は元 VB）/ bit1 = 発光テクスチャあり
+        u32 flags             = 0;           // bit0 = スキンド（位置は変形後バッファ / 属性は元 VB）/ bit1 = 発光テクスチャあり / bit2 = MR あり / bit3 = アルファテスト(MASK)
         f32 tint[3]           = {1.0f, 1.0f, 1.0f}; // 色 tint（リニア。アルベドに乗る）
         u32 emissiveSrvIndex  = 0xFFFFFFFFu; // 発光テクスチャの SRV（flags bit1 が立つときだけ有効）
         f32 emissive[3]       = {0.0f, 0.0f, 0.0f}; // 放射輝度 = 色 × 強度（テクスチャ前。フォワードの packedEmissive と同じ量子化）
-        u32 pad               = 0;
+        // RT2: アルファテストのカットオフ（flags の kGeomFlagAlphaTest が立つときだけ有効）。
+        //   CSM の ShadowMask と同じく 8bit に量子化した値（残り方がラスタの影と一致する）。
+        f32 alphaCutoff       = 0.0f;
         // ★A3 修正: 48B → 64B。DDGI のヒット（GI New）が PT と同じ材質（金属度 / 粗さ / MR テクスチャ）で
         //   「方向平均した反射率」を作るために PtHost::ResolveHitMaterial の metallic / roughness を持つ。
         u32 mrSrvIndex        = 0xFFFFFFFFu; // MR テクスチャの SRV（flags bit2 が立つときだけ有効。G=粗さ / B=金属度）
@@ -76,6 +85,7 @@ public:
     static constexpr u32 kGeomFlagSkinned     = 1u;
     static constexpr u32 kGeomFlagEmissiveTex = 2u;
     static constexpr u32 kGeomFlagMrTex       = 4u;
+    static constexpr u32 kGeomFlagAlphaTest   = 8u;   // RT2: MASK。BLAS も非不透明で建つ
 
     struct Stats
     {
@@ -84,9 +94,11 @@ public:
         u32 blasBuiltThisFrame = 0;
         u32 skippedSkinned     = 0;   // スキンドで除外した DrawItem 数（compute スキニングが無い時のみ）
         u32 skippedTransparent = 0;   // 半透明で除外した DrawItem 数（CSM が担当する）
-        // アルファテスト(MASK。葉・柵・金網)で除外した DrawItem 数（CSM の ShadowMask が担当する）。
-        // 全ジオメトリが GEOMETRY_FLAG_OPAQUE なので TLAS に入れると矩形の影になる。
+        // アルファテスト(MASK。葉・柵・金網)で除外した DrawItem 数。RT2 以降は TLAS に入れるので常に 0
+        // （旧版は「全ジオメトリが OPAQUE なので矩形の影になる」ために除外していた。互換のためフィールドは残す）。
         u32 skippedAlphaTest   = 0;
+        u32 alphaTestInstances = 0;   // RT2: TLAS に入ったアルファテスト(MASK)のインスタンス数（非不透明 BLAS を使うもの）
+        u32 alphaTestBlasCount = 0;   // 同 BLAS の個数（キャッシュ中の非不透明 BLAS）
         u32 skinnedInstances   = 0;   // TLAS に入ったスキンドインスタンス数
         u32 skinnedRebuilds    = 0;   // このフレームで再構築したスキンド BLAS 数
         u32 skinnedStale       = 0;   // 予算切れで前フレームの BLAS を流用した数
@@ -124,7 +136,7 @@ public:
     void Invalidate();
 
     // 解放されたメッシュの BLAS を捨てる（Scene::CollectUnusedMeshes とセットで使う）。
-    // ★m_blas のキーは Mesh* なので、解放したまま残すと同じアドレスへ再確保された
+    // ★m_blas のキーは Mesh*（+ 非不透明フラグ）なので、解放したまま残すと同じアドレスへ再確保された
     //   別メッシュが古い BLAS を掴む＝ラスタは正しいのにレイトレの影/反射だけ違う形になる。
     void RemoveBlas(const Mesh* mesh);
 
@@ -206,20 +218,27 @@ private:
         u64 sizeInBytes = 0;
         u64 lastUsedFrame = 0;
         u64 poseHash    = 0;   // スキンドのみ。前フレームと同じなら再構築を省く
+        bool nonOpaque  = false;   // RT2: GEOMETRY_FLAG_OPAQUE を付けずに建てた（アルファテスト材質）
     };
+
+    // 静的 BLAS のキャッシュキー = (Mesh*, 非不透明か)。Mesh* は 8 バイト整列なので最下位ビットを使う。
+    static uintptr_t BlasKey(const Mesh* mesh, bool nonOpaque)
+    {
+        return reinterpret_cast<uintptr_t>(mesh) | (nonOpaque ? 1u : 0u);
+    }
 
     // 既にあれば返す。無ければ cmd にビルドを積んで作る。作れなければ nullptr。
     const BlasEntry* EnsureBlas(GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd,
-                                const Mesh* mesh, u32& budget);
+                                const Mesh* mesh, bool nonOpaque, u32& budget);
 
     // スキンド用。毎フレーム同じ AS バッファへ再構築する（変形後頂点が毎フレーム変わるため）。
     // triangleBudget を使い切ったら再構築を見送り、既存の BLAS をそのまま返す。
     const BlasEntry* EnsureSkinnedBlas(GraphicsDevice& device, ID3D12GraphicsCommandList4* cmd,
                                        u64 key, const Mesh* mesh,
                                        D3D12_GPU_VIRTUAL_ADDRESS deformedVb, u32 vertexCount,
-                                       u64 poseHash, u32& triangleBudget);
+                                       u64 poseHash, bool nonOpaque, u32& triangleBudget);
 
-    std::unordered_map<const Mesh*, BlasEntry> m_blas;
+    std::unordered_map<uintptr_t, BlasEntry>   m_blas;   // キーは BlasKey(mesh, nonOpaque)
     std::unordered_map<u64, BlasEntry>         m_skinnedBlas;   // キーは呼び出し側が作る u64
     RtBuffer m_blasScratch;                                 // BLAS ビルド用（連続ビルドは UAV バリアで直列化）
     RtBuffer m_tlas;
@@ -231,6 +250,7 @@ private:
     struct PendingInstance
     {
         const Mesh*         mesh;
+        bool                nonOpaque = false;   // RT2: geo.flags の kGeomFlagAlphaTest から決める（BLAS の選択に使う）
         DirectX::XMFLOAT4X4 world;    // ノード変換合成済みのメッシュワールド
         float               distSq;   // カメラからの距離²（上限超過時の足切り用）
         // --- スキンドのみ（skinnedKey != 0 で判別）---

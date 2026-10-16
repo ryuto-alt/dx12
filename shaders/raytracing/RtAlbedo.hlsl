@@ -15,7 +15,6 @@
 #include "RtCommon.hlsli"     // 深度 / TLAS / RtParams（スクリーンパス用のバインド一式）
 #include "RtBindless.hlsli"   // ヒット点の属性読み取り（gGeometry は t6）
 
-SamplerState gLinearWrap : register(s0);
 
 float4 PSMain(FSQuadVSOut i) : SV_TARGET
 {
@@ -33,9 +32,9 @@ float4 PSMain(FSQuadVSOut i) : SV_TARGET
     r.TMin      = max(gZNear, 1e-3);
     r.TMax      = RT_TMAX;
 
-    RayQuery<RAY_FLAG_CULL_NON_OPAQUE | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
     q.TraceRayInline(gTlas, 0, 0xFF, r);
-    q.Proceed();
+    RT_PROCEED_WITH_ALPHA(q, gLinearWrap);   // RT2: MASK は α を見て抜く
 
     const RtHitInfo h = RtLoadHit(q);
     if (!h.valid)

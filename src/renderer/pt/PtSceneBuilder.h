@@ -3,7 +3,7 @@
 // PtSceneBuilder — パストレーサー専用のシーン(BLAS / TLAS / 各テーブル)を組む。
 // ---------------------------------------------------------------------------
 // なぜ RaytracingScene の TLAS を使わないのか
-//   ・RaytracingScene は半透明 / アルファテスト(MASK)を TLAS から外し、全ジオメトリを OPAQUE で作る
+//   ・RaytracingScene は半透明を TLAS から外し、不透明材質は OPAQUE の BLAS で作る(MASK は RT2 で非不透明の BLAS として入った)
 //     (RT 影 / RT-AO / DDGI 向けの排他ハイブリッド)。パストレーサーは全部を光輸送に入れる必要がある。
 //   ・ヒット点で引く材質(metallic / roughness / 法線 / MR / emissive / 不透明度)は GeometryInfo(16B)に無い。
 //   ・ジョブは数分〜数十分続く。共有 TLAS / BLAS キャッシュはその間に別の用途で作り直される

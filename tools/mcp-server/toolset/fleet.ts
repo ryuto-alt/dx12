@@ -48,6 +48,7 @@ const DEFS: Record<string, Def> = {
       mode: z.enum(["background", "headless", "visible"]).optional().describe("background(既定)=窓は画面外で前面化しない / headless=窓なし(画面が要らない検証。既定ではディスクへ書かない)/ visible=窓を画面に出す(既定で拒否。DX12_MCP_ALLOW_VISIBLE=1 と confirm:true が要る)。"),
       scene: z.string().optional().describe("起動後に開くシーン(assets 相対)。"),
       dpiScale: z.number().optional().describe("表示倍率(0.75〜3.0)。既定は OS の倍率。"),
+      viewSize: z.string().optional().describe("シーン(とゲームビュー)の内部描画解像度を固定する。例 \"1920x1080\"。パネルの大きさに関係なくその解像度で描く(性能測定用)。省略で従来どおり(パネル矩形×render_scale)。実行中は dx12_call {name:\"set_view_size\", args:{width,height}} で変えられる。"),
       args: z.array(z.string()).optional().describe("追加の起動引数。ポート・owner・idle・project・背景モード(--mcp-port 等)は指定できない。"),
       waitReadyMs: z.number().int().min(1000).max(600000).optional().describe("ping に応答するまで待つ時間(ms、既定 60000)。"),
       confirm: z.boolean().optional().describe("mode:'visible' のときだけ必要。ユーザーの承認を得たときだけ true(実マウス・フォーカスを奪い得る)。"),

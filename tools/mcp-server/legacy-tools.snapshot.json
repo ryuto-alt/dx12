@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 421175,
+ "totalBytes": 422629,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -1092,8 +1092,8 @@
   },
   {
    "name": "dx12_perf_stats",
-   "sha256": "b1a88ca82483b5a091317ec7edc067ac78ea0987d95de45fba5f8ef1cdbf52e4",
-   "semSha256": "b6eb6720e416375227a79c30134dd9898d89e1fea7ed22498d13092831539c93",
+   "sha256": "47ac090b91d1e2f98af45ab5cb040e2507b1379745be9c041c47d60cc8fc9ed4",
+   "semSha256": "f8ac46ecc02cf1da2e5709ae81eab7ef9def1e6a53d6a85b9234ce6681f17d3a",
    "outputSchemaBytes": 303,
    "argKeys": [
     "window"
@@ -1678,8 +1678,8 @@
   },
   {
    "name": "dx12_get_dxr",
-   "sha256": "77ac45e9dfa278738d727c0c0c316486f7862b6f5474eaf6661bff1a7e40a958",
-   "semSha256": "6cfd79c2b7545da82872b6c8e55f48fb8d1fc478d3a0f274e5773d94688b209c",
+   "sha256": "4071a143e9ede600e8b79bf613555efad811685782e1057c451deae528c2b305",
+   "semSha256": "026d559fafb18a5948988d30da4ecd811609996ee8f050962e96e7e75e91f6e7",
    "outputSchemaBytes": 303,
    "argKeys": [],
    "annotations": {
@@ -1690,8 +1690,8 @@
   },
   {
    "name": "dx12_set_dxr",
-   "sha256": "8057e462743a19469ebd481d046529f91b03ea570810eb0a17a1bf0f671c456c",
-   "semSha256": "c3d4489f2ae169015ab268de7f56b8c9f441d8ac513c20723377b4842b662a9a",
+   "sha256": "8082ee957f848627019857aec611fb585545f4412154fd0e7ddf33073b0973e9",
+   "semSha256": "2ce7fecaa3ac816e630a5168f7df2e3a21b55baf851830b3cf5005807b658c70",
    "outputSchemaBytes": 303,
    "argKeys": [
     "shadowEnabled",
@@ -1724,7 +1724,12 @@
     "ddgiBounceIntensity",
     "ddgiFollowCamera",
     "ddgiSpacing1",
-    "ddgiBudgetMs"
+    "ddgiBudgetMs",
+    "reflectionsEnabled",
+    "reflectionMaxRoughness",
+    "reflectionMaxDistance",
+    "reflectionHalfRes",
+    "reflectionIntensity"
    ],
    "annotations": {
     "title": "DXR設定変更",

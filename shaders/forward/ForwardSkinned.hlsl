@@ -182,6 +182,10 @@ float4 PSMain(PSInput input) : SV_TARGET
     {
         N = normalize(input.worldNormal);
     }
+#ifdef ALPHA_TEST
+    // 両面の薄い面（髪カードなど）は裏から見たら法線を視線側へ返す（理由は Forward.hlsl の同じ箇所）。
+    if (dot(input.worldNormal, cameraPos - input.worldPos) < 0.0) N = -N;
+#endif
 
     // ★ラフネスの下限 0.04 は UnoShadeLighting の中で掛かる。
     float metallic, roughness;

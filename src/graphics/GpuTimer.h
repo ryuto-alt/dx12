@@ -25,6 +25,7 @@ public:
         ClusterCull,   // クラスタ AABB 構築 + ライトカリング（compute 2 パス）
         Raytracing,    // DXR: BLAS の遅延構築 + TLAS の毎フレーム再構築（加速構造だけ）
         RtScreen,      // DXR: RT サン影 + RT-AO + RT デバッグ（スクリーン空間パス）
+        RtReflection,  // DXR: RT 反射（トレース + 時間/空間フィルタ + SSR との合成。SSR の後段）
         Ddgi,          // DDGI: プローブのレイトレ + 八面体アトラスへのブレンド（compute 2 パス）
         ScreenSpaceGI, // SSR + SSGI（トレース/時間蓄積/アップサンプル + 前フレームカラー退避）
         VolumetricFog, // froxel フォグ（注入/散乱/Z積分の compute 3 パス + 合成）
@@ -34,6 +35,8 @@ public:
         PostFX,        // ブルーム/DoF/自動露出/uber 等ポスト一式
         UI,            // エディタアイコン/スプライト/ImGui/トランジション
         VgCull,        // 仮想ジオメトリ: GPU カリング（インスタンス / BVH 走査 / クラスタ / 二相 HZB。P2 は統計のみ）
+        Clouds,        // ボリュメトリッククラウド: 粗いレイマーチ + 時間再投影(compute 2 パス)+ 合成（Particles の内数になる区間に重なる）
+        CloudShadow,   // 雲の影: 影マップ(compute)+ 影マスクへの適用(全画面 PS。プリパス区間 PrepassSSAO の内数)
         Count
     };
     static const char* Name(u32 s);

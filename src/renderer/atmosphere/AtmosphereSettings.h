@@ -20,6 +20,35 @@
 namespace dx12e
 {
 
+// ---- ボリュメトリッククラウド(A2/A3。Schneider 2015 / Hillaire 2016 系のレイマーチ。既定 OFF)----
+// シーン JSON の "atmosphere"."clouds" に保存。atmosphere.enabled が ON のときだけ描かれる(太陽光は透過率 LUT で色づけ、遠景は AP を掛ける)。
+// 高度は海面基準(atmosphere.seaLevelY が標高 0)で km。
+struct CloudSettings
+{
+    bool  enabled        = false;   // false = 雲なし(既定。パスも確保も走らない)
+    float coverage       = 0.5f;    // 0..1 雲量(0 = 快晴 / 1 = ほぼ全天)
+    float cloudType      = 0.5f;    // 0..1 雲の型(0 = 層雲 / 0.5 = 積雲 / 1 = 積乱雲。高さ方向の密度分布が連続的に変わる)
+    float density        = 1.0f;    // 0..4 消散係数の倍率(濃さ。1 で積雲の芯が不透明になる程度)
+    float baseAltitudeKm = 1.5f;    // 雲底の高度[km]
+    float thicknessKm    = 3.0f;    // 雲層の厚さ[km]
+    float windDirDeg     = 0.0f;    // 風が吹いていく向き(エンジン規約: +Z = 0°、+X = 90°)
+    float windSpeed      = 8.0f;    // 風速[m/s]。雲のパターンが時間で流れる。0 で止まる
+    float detailStrength = 0.5f;    // 0..1 高周波ノイズでの削り(輪郭の細かさ)
+    float scale          = 1.0f;    // 0.25..4 雲の粒の大きさ倍率
+    int   steps          = 48;      // 16..128 視線方向のレイマーチ段数(品質。1/4 解像度なので 48 でも軽い)
+    bool  shadows        = true;    // 雲の影を地面・建物へ落とす(雲が ON のときだけ効く。影マスク t11 に掛ける)
+    float shadowStrength = 1.0f;    // 0..1 雲の影の濃さ(0 = 影なし)
+
+    bool operator==(const CloudSettings& o) const
+    {
+        return enabled == o.enabled && coverage == o.coverage && cloudType == o.cloudType && density == o.density
+            && baseAltitudeKm == o.baseAltitudeKm && thicknessKm == o.thicknessKm && windDirDeg == o.windDirDeg
+            && windSpeed == o.windSpeed && detailStrength == o.detailStrength && scale == o.scale && steps == o.steps
+            && shadows == o.shadows && shadowStrength == o.shadowStrength;
+    }
+    bool operator!=(const CloudSettings& o) const { return !(*this == o); }
+};
+
 struct AtmosphereSettings
 {
     // ---- 切替 ----
@@ -71,6 +100,9 @@ struct AtmosphereSettings
     float iblRebakeMaxHz        = 2.0f;                                // 再ベイクを始める頻度の上限
     // 大きな変化(シーン読込・パラメータ変更・>5°)は 1 フレームで全部焼く。小さな変化は数フレームに分けて焼く。
 
+    // ---- ボリュメトリッククラウド(既定 OFF)----
+    CloudSettings clouds;
+
     bool operator==(const AtmosphereSettings& o) const;
     bool operator!=(const AtmosphereSettings& o) const { return !(*this == o); }
 };
@@ -94,7 +126,8 @@ inline bool AtmosphereSettings::operator==(const AtmosphereSettings& o) const
         && nightSkyNits == o.nightSkyNits && skyLuminanceScale == o.skyLuminanceScale
         && aerialPerspective == o.aerialPerspective && apStartDepth == o.apStartDepth
         && apMaxDistanceKm == o.apMaxDistanceKm && apStrength == o.apStrength
-        && iblRebakeThresholdDeg == o.iblRebakeThresholdDeg && iblRebakeMaxHz == o.iblRebakeMaxHz;
+        && iblRebakeThresholdDeg == o.iblRebakeThresholdDeg && iblRebakeMaxHz == o.iblRebakeMaxHz
+        && clouds == o.clouds;
 }
 
 // ---- プリセット(パラメータの一括設定。enabled / 時刻系 / driveSun 等の「使い方」は保つ)----

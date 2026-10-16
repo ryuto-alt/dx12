@@ -20,6 +20,15 @@ using json = nlohmann::json;
 
 inline json Rgb3(const float* v) { return json::array({v[0], v[1], v[2]}); }
 
+// ボリュメトリッククラウド(atmosphere.clouds)。キー名・範囲は SceneSerializer.cpp と同じ。
+inline json CloudsToJson(const CloudSettings& c)
+{
+    return {{"enabled", c.enabled}, {"coverage", c.coverage}, {"cloudType", c.cloudType}, {"density", c.density},
+            {"baseAltitudeKm", c.baseAltitudeKm}, {"thicknessKm", c.thicknessKm}, {"windDirDeg", c.windDirDeg},
+            {"windSpeed", c.windSpeed}, {"detailStrength", c.detailStrength}, {"scale", c.scale}, {"steps", c.steps},
+            {"shadows", c.shadows}, {"shadowStrength", c.shadowStrength}};
+}
+
 inline json ToJson(const AtmosphereSettings& a)
 {
     return {
@@ -40,6 +49,7 @@ inline json ToJson(const AtmosphereSettings& a)
         {"aerialPerspective", a.aerialPerspective}, {"apStartDepth", a.apStartDepth},
         {"apMaxDistanceKm", a.apMaxDistanceKm}, {"apStrength", a.apStrength},
         {"iblRebakeThresholdDeg", a.iblRebakeThresholdDeg}, {"iblRebakeMaxHz", a.iblRebakeMaxHz},
+        {"clouds", CloudsToJson(a.clouds)},
     };
 }
 
@@ -52,7 +62,7 @@ inline const std::vector<std::string>& Keys()
         "mieScattering", "mieAbsorption", "mieScaleHeightKm", "mieG", "ozoneAbsorption", "ozoneCenterKm", "ozoneWidthKm",
         "groundAlbedo", "sunAngularRadius", "sunIlluminance", "sunTint", "moonIlluminance", "moonTint",
         "multiScatteringFactor", "seaLevelY", "nightSkyNits", "skyLuminanceScale", "aerialPerspective", "apStartDepth",
-        "apMaxDistanceKm", "apStrength", "iblRebakeThresholdDeg", "iblRebakeMaxHz"};
+        "apMaxDistanceKm", "apStrength", "iblRebakeThresholdDeg", "iblRebakeMaxHz", "clouds"};
     return k;
 }
 
@@ -108,6 +118,54 @@ inline bool Apply(AtmosphereSettings& a, const json& j, std::string& err)
             if (std::isfinite(f)) dst[i] = std::clamp(f, 0.0f, 1000.0f);
         }
     };
+    // clouds: 部分指定可({"enabled":true,"coverage":0.6} など)。未知キー・型不正はエラー。
+    if (j.contains("clouds") && !j["clouds"].is_null())
+    {
+        const auto& c = j["clouds"];
+        if (!c.is_object()) { err = "clouds はオブジェクト"; return false; }
+        static const char* const ck[] = {"enabled", "coverage", "cloudType", "density", "baseAltitudeKm", "thicknessKm",
+                                         "windDirDeg", "windSpeed", "detailStrength", "scale", "steps", "shadows", "shadowStrength"};
+        for (auto it = c.begin(); it != c.end(); ++it)
+        {
+            bool known = false;
+            for (const char* k : ck) known = known || it.key() == k;
+            if (!known) { err = "clouds の未知のキー: " + it.key(); return false; }
+        }
+        CloudSettings& cl = a.clouds;
+        auto cnum = [&](const char* key, float& dst, float lo, float hi)
+        {
+            if (!ok || !c.contains(key) || c[key].is_null()) return;
+            if (!c[key].is_number()) { err = std::string("clouds.") + key + " は数値"; ok = false; return; }
+            const float v = c[key].get<float>();
+            dst = std::isfinite(v) ? std::clamp(v, lo, hi) : dst;
+        };
+        if (c.contains("enabled") && !c["enabled"].is_null())
+        {
+            if (!c["enabled"].is_boolean()) { err = "clouds.enabled は true / false"; return false; }
+            cl.enabled = c["enabled"].get<bool>();
+        }
+        cnum("coverage", cl.coverage, 0.0f, 1.0f);
+        cnum("cloudType", cl.cloudType, 0.0f, 1.0f);
+        cnum("density", cl.density, 0.0f, 4.0f);
+        cnum("baseAltitudeKm", cl.baseAltitudeKm, 0.0f, 20.0f);
+        cnum("thicknessKm", cl.thicknessKm, 0.1f, 15.0f);
+        cnum("windDirDeg", cl.windDirDeg, -360.0f, 360.0f);
+        cnum("windSpeed", cl.windSpeed, 0.0f, 500.0f);
+        cnum("detailStrength", cl.detailStrength, 0.0f, 1.0f);
+        cnum("scale", cl.scale, 0.25f, 4.0f);
+        cnum("shadowStrength", cl.shadowStrength, 0.0f, 1.0f);
+        if (ok && c.contains("shadows") && !c["shadows"].is_null())
+        {
+            if (!c["shadows"].is_boolean()) { err = "clouds.shadows は true / false"; return false; }
+            cl.shadows = c["shadows"].get<bool>();
+        }
+        if (ok && c.contains("steps") && !c["steps"].is_null())
+        {
+            if (!c["steps"].is_number()) { err = "clouds.steps は数値"; return false; }
+            cl.steps = std::clamp(c["steps"].get<int>(), 16, 128);
+        }
+        if (!ok) return false;
+    }
     flag("enabled", a.enabled);
     num("timeOfDay", a.timeOfDay, 0.0f, 24.0f);
     num("timeSpeed", a.timeSpeed, -240.0f, 240.0f);

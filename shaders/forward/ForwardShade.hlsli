@@ -169,6 +169,20 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     // Directional Light（影付き）
     float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);
 
+#ifdef UNO_SHADE_FOLIAGE_TRANSMISSION
+    // ===== 薄い葉の透過光（植生専用。定義しない経路の DXIL は不変）=====
+    //   葉・草は薄いので、太陽が葉の向こうにあると光が透けて黄緑に光る。これが無いと逆光の植生が
+    //   影絵のように真っ黒になる（2026-10-15、veg_test）。N は両面処理で視線側へ返してあるので、
+    //   太陽が裏側にある＝dot(N, L) < 0 の分を透過として足す。色は albedo（葉の透過色はほぼ反射色と同じ）。
+    //   視線が太陽を向くほど前方散乱で強める。shadow は同じ点の太陽の遮蔽（他の葉・幹の陰では透けない）。
+    {
+        const float back    = saturate(-dot(N, L));
+        const float forward = pow(saturate(dot(-V, L)), 4.0);
+        const float k       = UNO_SHADE_FOLIAGE_TRANSMISSION * (0.55 + 0.45 * forward);
+        Lo += albedo * (1.0 - metallic) * (k * back / PI) * lightColor * shadow;
+    }
+#endif
+
     // Point Lights + Spot Lights（クラスタードライティング / Forward+。灯数上限なし）
 #ifndef UNO_SHADE_LITE
     Lo += AccumulatePunctualLights(N, V, si.worldPos, albedo, F0, metallic, roughness,
@@ -227,6 +241,8 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
 
     // ===== Ambient / IBL =====
     float3 ambient;
+    // 検証用（set_gi_mode の debugStage bit5-7 = giParams2.y）で項ごとに出すための控え。ふだんは読まない。
+    float3 dbgDiff = 0.0, dbgSpec = 0.0, dbgIrr = 0.0, dbgIblIrr = 0.0;
     if (hasIBL != 0u)
     {
         float3 R   = reflect(-V, N);
@@ -269,7 +285,12 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         }
         prefiltered = lerp(prefiltered, ssrRgb, ssrConf);
         float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
-        float3 specularIBL = prefiltered * (F * envBRDF.x + envBRDF.y);
+        // ★GI モード New: split-sum の LUT（IntegrateBRDF.hlsl）は Fresnel を積分済み（A = ∫(1-Fc)G, B = ∫Fc G）なので、
+        //   掛けるのは F0（Karis 2013 / UE と同じ）。視線依存の FresnelSchlickRoughness を掛けると Fresnel を二重に数え、
+        //   斜めから見た誘電体（床・葉・壁）で鏡面の環境光が 2 倍前後になる（空の青白い反射が日陰の色を薄める）。
+        //   パストレーサー（GGX + Schlick）と一致するのは F0 の方。Legacy は従来どおり（既存シーンの絵を変えない）。
+        const float3 specF = giNew ? F0 : F;
+        float3 specularIBL = prefiltered * (specF * envBRDF.x + envBRDF.y);
 
         // ★AO の掛け方（二重計上の解消）:
         //   SSGI/SSR が担当していない分にだけ AO を掛ける。どちらも「実際に届いた光」を
@@ -278,6 +299,10 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         float aoDiff = lerp(ao, 1.0, ssgiConf);
         float aoSpec = lerp(ao, 1.0, ssrConf);
         ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * (giNew ? 1.0 : iblIntensity);
+        dbgDiff = kD * diffuseIBL * aoDiff;
+        dbgSpec = specularIBL * aoSpec;
+        dbgIrr  = irradiance;
+        dbgIblIrr = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb * iblIntensity;
     }
     else
     {
@@ -312,6 +337,21 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         const float4 pd = DdgiLoadProbeData(DdgiProbeIndex(sc, cnt), cnt);
         const float off = saturate(length(pd.xyz) / max(ddgiSpacing.x, 1e-4) / 0.45);
         return float3(pd.w < 0.5 ? 1.0 : 0.0, pd.w >= 0.5 ? 0.6 : 0.0, off);
+    }
+    // 検証用（set_gi_mode の debugStage bit5-7 → giParams2.y = 1..7）: シーンの単位のまま項を 1 つだけ出す
+    //   （パストレーサーの bounces / 光源の ON/OFF と突き合わせて、どの項がずれているかを数値で見る）。
+    //   1 = 直接光 / 2 = 拡散の環境光（kD·albedo·irradiance·AO）/ 3 = 鏡面の環境光 / 4 = 拡散に使った irradiance（albedo 前）/
+    //   5 = DDGI の irradiance（法線方向）/ 6 = IBL の irradiance キューブ（× iblIntensity）/ 7 = (AO, DDGI conf, SSGI conf)
+    if (giNew && giParams2.y > 0.5)
+    {
+        const uint sel = uint(giParams2.y + 0.5);
+        if (sel == 1u) return Lo;
+        if (sel == 2u) return dbgDiff;
+        if (sel == 3u) return dbgSpec;
+        if (sel == 4u) return dbgIrr;
+        if (sel == 5u) return ddgiIrr;
+        if (sel == 6u) return dbgIblIrr;
+        return float3(ao, ddgiConf, ssgiConf);
     }
 #endif
     return ambient + Lo + decalEmissive;
