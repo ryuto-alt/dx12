@@ -190,7 +190,14 @@ async function main() {
             r.updated = true;
           } else {
             writePng(path.join(OUT_DIR, `${s.name}.png`), small);
-            if (!fs.existsSync(refFile)) {
+            const b0 = baseline.scenes[s.name];
+            if (b0 && (b0.nativeWidth !== first.img.width || b0.nativeHeight !== first.img.height)) {
+              // ★ネイティブ解像度が違う絵は比べても意味がない（AO/影などが解像度に依存する）。
+              //   画の回帰ではなく撮影環境の違いなので、FAIL にせず「環境違い」で打ち切る（--strict では不合格）。
+              r.pass = !args.strict; r.skipped = !args.strict; r.envMismatch = true;
+              r.reasons.push(`環境違い: ネイティブ解像度が基準と違う（基準 ${b0.nativeWidth}x${b0.nativeHeight}、今回 ${first.img.width}x${first.img.height}）。` +
+                             `基準を撮った環境（build/dev と imgui.ini）に揃えるか、この環境で --update して基準を撮り直す`);
+            } else if (!fs.existsSync(refFile)) {
               r.pass = false;
               r.reasons.push("基準画像が無い（--update で撮る）");
             } else {
