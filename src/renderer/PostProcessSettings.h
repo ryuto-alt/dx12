@@ -46,7 +46,7 @@ struct PostProcessSettings
     float evComp       = 0.0f;     // 露出補正[EV]。手動・自動の両方に効く
     float aeMinEv100   = -10.0f;   // 自動露出の EV100 下限 / 上限（UE の既定と同じ範囲）
     float aeMaxEv100   = 20.0f;
-    float aeSpeedUp    = 0.0f;     // 明るくなる方向 / 暗くなる方向の適応速度[1/秒]。0 = aeSpeed と同じ
+    float aeSpeedUp    = 0.0f;     // 明るくなる方向 / 暗くなる方向の適応速度。exposureMode=2 は UE と同じ[段/秒]、それ以外は[1/秒]。0 = aeSpeed と同じ
     float aeSpeedDown  = 0.0f;
     // 測光に使うヒストグラムの範囲（輝度の低い方から数えた割合）。0..1 = 全画素の対数平均（平均輝度）。
     // 0.8..0.983 = UE のヒストグラム測光の既定（暗部と極端な明部を無視する）。

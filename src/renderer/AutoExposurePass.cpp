@@ -197,6 +197,7 @@ void AutoExposurePass::Generate(ID3D12GraphicsCommandList* cmd,
     cb.p0[3] = (std::max)(s.aeSpeed, 0.01f);
     cb.p1[0] = aeComp;
     cb.p1[1] = static_cast<float>(rectW) * static_cast<float>(rectH);
+    cb.p1[2] = (s.exposureMode == 2) ? 1.0f : 0.0f;   // UE 式の適応（速度は段/秒）。AutoExposure.hlsl の CSAdapt
     cb.rect[0] = static_cast<int>(rectLeft);
     cb.rect[1] = static_cast<int>(rectTop);
     cb.rect[2] = static_cast<int>(rectW);

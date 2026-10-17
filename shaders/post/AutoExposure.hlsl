@@ -8,7 +8,7 @@
 cbuffer AECB : register(b0)
 {
     float4 p0;   // x=minLog2, y=1/(maxLog2-minLog2), z=dt, w=適応速度
-    float4 p1;   // x=EV補正, y=矩形の総ピクセル数, zw=未使用
+    float4 p1;   // x=EV補正, y=矩形の総ピクセル数, z=1 なら UE 式の適応（exposureMode=2、速度は段/秒）, w=未使用
     int4   rect; // x=left, y=top, z=width, w=height（シーンRT内の測光サブ矩形 px）
     // ▼ Q2: 測光の詳細（既定 (0,1,0,0) では従来と同じ計算）
     float4 p2;   // x=下側の除外割合 y=上側の上限割合（ヒストグラムの窓。0..1 = 全体の平均）z=明るくなる方向の速度 w=暗くなる方向の速度（0=p0.w）
@@ -89,9 +89,27 @@ void CSAdapt(uint gi : SV_GroupIndex)
         float speed = p0.w;
         if (targetLum > prev && p2.z > 0.0) speed = p2.z;        // シーンが明るくなった（露出は絞る方向）
         else if (targetLum < prev && p2.w > 0.0) speed = p2.w;   // シーンが暗くなった（露出は開ける方向）
-        float a = saturate(1.0 - exp(-p0.z * speed));
-        float adapted = lerp(prev, targetLum, a);
-        if (a >= 0.999) adapted = targetLum;                      // 初回は即適応（dt 大で強制）
+        float adapted;
+        if (p1.z > 0.5)
+        {
+            // 物理露出(exposureMode=2): UE と同じく速度は「段/秒」で、ログ輝度の上を動く。
+            //   目標から 1.5 段より遠い間は一定速度（線形）、それより近いと指数で寄る
+            //   （r.EyeAdaptation.ExponentialTransitionDistance の既定 1.5。境目で速さが連続になるよう rate = speed/1.5）。
+            //   線形輝度を指数で追う従来式は、暗い所へ入ると数百 ms で露出が開き、歩くだけで日陰が晴れて見えた。
+            const float kTransition = 1.5;
+            const float diff = log2(targetLum) - log2(prev);
+            const float dt   = p0.z;
+            float step;
+            if (abs(diff) > kTransition) step = sign(diff) * min(speed * dt, abs(diff) - kTransition);   // 境目を越えた分は次のフレームから指数
+            else                         step = diff * saturate(1.0 - exp(-dt * speed / kTransition));
+            adapted = (dt > 1.0e8) ? targetLum : exp2(log2(prev) + step);   // 初回は即適応（dt 大で強制）
+        }
+        else
+        {
+            float a = saturate(1.0 - exp(-p0.z * speed));
+            adapted = lerp(prev, targetLum, a);
+            if (a >= 0.999) adapted = targetLum;                  // 初回は即適応（dt 大で強制）
+        }
 
         gExposure[1] = adapted;
         float key = 0.18 * exp2(p1.x);                            // EV補正込みのキー値
