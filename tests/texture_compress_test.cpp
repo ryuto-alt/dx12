@@ -653,6 +653,82 @@ static void Test_EquirectToCube()
     CHECK(allFinite);
 }
 
+// リニアで読む画像に付いた sRGB の印を、圧縮の前に外すこと（2026-10-17）。
+//
+// 直したバグ: Poly Haven の一部の jpg（EXIF の ColorSpace=sRGB 付き）は、WIC が R8G8B8A8_UNORM_SRGB を返す。
+// SelectViewFormat はビューの形式を MakeLinear で直していたが、その前の ConvertForCompression が
+// DirectXTex の Convert で _SRGB → _UNORM を変換し、形式の色空間の違いから sRGB→リニアを【値に】掛けていた。
+// 法線の 0.5 が 0.21 になって法線が約 55° 寝る → 日なたの歩道から直射光が消えた。
+// ここでは「印を外さないと値が化ける」（DirectXTex の挙動＝前提）と「外せば値が残る」の両方を、本番と同じ
+// Convert → BC5 の道筋で固定する。
+static void Test_StripSrgbBeforeConvert()
+{
+    using namespace DirectX;
+    auto makeTagged = [](ScratchImage& img) {
+        if (FAILED(img.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 8, 8, 1, 1))) return false;
+        const Image* im = img.GetImage(0, 0, 0);
+        for (size_t y = 0; y < im->height; ++y)
+            for (size_t x = 0; x < im->width; ++x)
+            {
+                uint8_t* p = im->pixels + y * im->rowPitch + x * 4;
+                p[0] = 128; p[1] = 128; p[2] = 255; p[3] = 255;   // 平らな法線
+            }
+        return true;
+    };
+    // 本番と同じ道筋: ConvertForCompression（→ R8G8B8A8_UNORM。同じ形式なら変換しない）→ BC5_UNORM → 伸長して R を読む
+    auto pipelineR = [](const ScratchImage& img) -> int {
+        const ScratchImage* src = &img;
+        ScratchImage conv;
+        if (img.GetMetadata().format != DXGI_FORMAT_R8G8B8A8_UNORM)
+        {
+            if (FAILED(Convert(img.GetImages(), img.GetImageCount(), img.GetMetadata(), DXGI_FORMAT_R8G8B8A8_UNORM,
+                               TEX_FILTER_DEFAULT, TEX_THRESHOLD_DEFAULT, conv)))
+                return -1;
+            src = &conv;
+        }
+        ScratchImage bc, dec;
+        if (FAILED(Compress(*src->GetImage(0, 0, 0), DXGI_FORMAT_BC5_UNORM, TEX_COMPRESS_DEFAULT,
+                            TEX_THRESHOLD_DEFAULT, bc)))
+            return -1;
+        if (FAILED(Decompress(*bc.GetImage(0, 0, 0), DXGI_FORMAT_R8G8B8A8_UNORM, dec)))
+            return -1;
+        return dec.GetImage(0, 0, 0)->pixels[0];
+    };
+
+    // 前提（DirectXTex の挙動）: 印が付いたままだと 128 が約 55 に化ける（実測 55）
+    {
+        ScratchImage img;
+        CHECK(makeTagged(img));
+        const int r = pipelineR(img);
+        CHECK(r >= 0 && r < 80);
+    }
+    // 直し: リニア要求なら印を外す → 128 のまま BC5 まで届く
+    {
+        ScratchImage img;
+        CHECK(makeTagged(img));
+        CHECK(TextureLoader::NeedsSrgbStrip(img.GetMetadata(), /*srgb=*/false));
+        CHECK(TextureLoader::StripSrgbForLinear(img, /*srgb=*/false));
+        CHECK(img.GetMetadata().format == DXGI_FORMAT_R8G8B8A8_UNORM);
+        CHECK(img.GetImage(0, 0, 0)->pixels[0] == 128);
+        const int r = pipelineR(img);
+        if (r < 126 || r > 130) std::printf("  stripped pipeline R = %d (want 128)\n", r);
+        CHECK(r >= 126 && r <= 130);
+    }
+    // sRGB で読む（アルベド）なら何もしない／元々リニアなら何もしない
+    {
+        ScratchImage img;
+        CHECK(makeTagged(img));
+        CHECK(!TextureLoader::NeedsSrgbStrip(img.GetMetadata(), /*srgb=*/true));
+        CHECK(!TextureLoader::StripSrgbForLinear(img, /*srgb=*/true));
+        CHECK(img.GetMetadata().format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB);
+    }
+    {
+        ScratchImage img;
+        CHECK(SUCCEEDED(img.Initialize2D(DXGI_FORMAT_R8G8B8A8_UNORM, 4, 4, 1, 1)));
+        CHECK(!TextureLoader::StripSrgbForLinear(img, /*srgb=*/false));
+    }
+}
+
 int main()
 {
     Test_ExrDecode();
@@ -660,6 +736,7 @@ int main()
     Test_EquirectToCube();
     Test_FormatSelection();
     Test_ViewFormatStripsSrgb();
+    Test_StripSrgbBeforeConvert();
     Test_CompressibleSize();
     Test_BC7Roundtrip();
     Test_BC5NormalRoundtrip();

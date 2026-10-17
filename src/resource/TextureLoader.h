@@ -8,7 +8,7 @@
 #include <cstdint>
 
 struct ID3D12GraphicsCommandList;
-namespace DirectX { class ScratchImage; }
+namespace DirectX { class ScratchImage; struct TexMetadata; }
 
 namespace dx12e
 {
@@ -57,6 +57,12 @@ public:
     // srgb=false は「sRGB を付けない」ではなく「sRGB を外す」でなければならない。
     // 詳しい理由は .cpp 側の実装コメントを参照。
     static DXGI_FORMAT SelectViewFormat(DXGI_FORMAT fmt, bool srgb);
+
+    // リニアで読む（srgb=false）画像の sRGB の印を、読み込み直後（縮小・ミップ・BC 圧縮より前）に外す。値は変えない。
+    // ビューの形式だけ直しても、DirectXTex の Convert が形式から色空間を決めて圧縮前に値を化かす。.cpp のコメント参照。
+    // 戻り値: 外したら true（圧縮キャッシュのキーを分ける）。テストから叩けるよう public。
+    static bool NeedsSrgbStrip(const DirectX::TexMetadata& meta, bool srgb);
+    static bool StripSrgbForLinear(DirectX::ScratchImage& scratch, bool srgb);
 
     static DXGI_FORMAT SelectCompressedFormat(TextureUsage usage, DXGI_FORMAT srcFormat, bool srgb);
 

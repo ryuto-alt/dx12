@@ -419,6 +419,22 @@ bool LoadEncryptedCache(const std::string& path, DirectX::ScratchImage& out)
 }
 
 // 圧縮前にソース形式を BC コーデックが素直に食える形へ揃える（BC6H=float16, それ以外=RGBA8）。
+// リニアで読みたい（srgb=false）のに元画像のメタデータが _SRGB なら、印だけ外す（画素の値は変えない）。
+// ★外さないと DirectXTex の Convert / GenerateMipMaps / Resize が【形式から】色空間を決め、
+//   ConvertForCompression の R8G8B8A8_UNORM_SRGB → R8G8B8A8_UNORM で sRGB→リニアを値に掛けてから BC5/BC7 へ詰める。
+//   ビューの形式（SelectViewFormat の MakeLinear）は正しくても中身が化けているので、法線の 0.5 が 0.21 になって
+//   法線が約 55° 寝る → 日なたなのに直射光が消える（2026-10-17、Poly Haven の EXIF ColorSpace=sRGB 付き jpg の
+//   法線マップで実測。同じ jpg でも EXIF の無いものは無事だった）。WIC は EXIF/ICC の sRGB を見て _SRGB を返す。
+// 戻り値: 外したら true。圧縮キャッシュのキーを分けるのに使う（化けた古いキャッシュを読み続けないため）。
+bool NeedsSrgbStrip(const DirectX::TexMetadata& meta, bool srgb)
+{
+    return TextureLoader::NeedsSrgbStrip(meta, srgb);
+}
+bool StripSrgbForLinear(DirectX::ScratchImage& scratch, bool srgb)
+{
+    return TextureLoader::StripSrgbForLinear(scratch, srgb);
+}
+
 bool ConvertForCompression(DirectX::ScratchImage& scratch, DXGI_FORMAT dstFormat)
 {
     using namespace DirectX;
@@ -467,8 +483,10 @@ std::string NormalizeCacheKey(const std::string& key)
 //   「キャッシュがあるのに PNG を毎回デコードしてから捨てる」に逆戻りする。
 // ★ 品質をキーに含める（含めないと texture_compression を 1↔2 で切り替えても
 //   古い品質のキャッシュを読み続けて設定が効かない）。
+// srgbStripped: StripSrgbForLinear で sRGB の印を外した画像。キーを分ける（直す前に作った化けたキャッシュを読まない）。
+//   false のときのキーは従来と 1 文字も変わらない＝既存のキャッシュはそのまま当たる。
 std::string CacheStem(DXGI_FORMAT dst, size_t arraySize, TextureUsage usage,
-                      uint64_t contentHash, const std::string& cacheKey)
+                      uint64_t contentHash, const std::string& cacheKey, bool srgbStripped = false)
 {
     if (cacheKey.empty())
         return {};
@@ -476,7 +494,8 @@ std::string CacheStem(DXGI_FORMAT dst, size_t arraySize, TextureUsage usage,
                           + "|u" + std::to_string(static_cast<int>(usage))
                           + "|f" + std::to_string(static_cast<int>(dst))
                           + "|a" + std::to_string(static_cast<unsigned>(arraySize))
-                          + "|q" + std::to_string(g_compressionMode.load()) + "|v3";
+                          + "|q" + std::to_string(g_compressionMode.load()) + "|v3"
+                          + (srgbStripped ? "|l1" : "");
     char name[32];
     snprintf(name, sizeof(name), "t%016llx", static_cast<unsigned long long>(HashString(key)));
     return name;
@@ -500,7 +519,7 @@ std::string CompressedCachePath(const std::string& stem)
 // どちらの経路でも同じ値になる。
 bool TryLoadCachedCompressed(const DirectX::TexMetadata& srcMeta, TextureUsage usage, bool srgb,
                              uint64_t contentHash, const std::string& cacheKey,
-                             bool allowArray, DirectX::ScratchImage& outScratch)
+                             bool allowArray, bool srgbStripped, DirectX::ScratchImage& outScratch)
 {
     using namespace DirectX;
     if (g_compressionMode.load() == 0 || usage == TextureUsage::Unknown)
@@ -519,7 +538,7 @@ bool TryLoadCachedCompressed(const DirectX::TexMetadata& srcMeta, TextureUsage u
     if (dst == DXGI_FORMAT_UNKNOWN)
         return false;
 
-    const std::string stem = CacheStem(dst, srcMeta.arraySize, usage, contentHash, cacheKey);
+    const std::string stem = CacheStem(dst, srcMeta.arraySize, usage, contentHash, cacheKey, srgbStripped);
     if (stem.empty())
         return false;
 
@@ -568,7 +587,7 @@ bool TryLoadCachedCompressed(const DirectX::TexMetadata& srcMeta, TextureUsage u
 
 void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool srgb,
                      uint64_t contentHash, const std::string& cacheKey,
-                     bool allowArray = false)
+                     bool allowArray = false, bool srgbStripped = false)
 {
     using namespace DirectX;
     const int quality = g_compressionMode.load();
@@ -594,13 +613,13 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
     // それでも残してあるのは、事前判定を通らない経路（配列テクスチャ等）のため。
     {
         ScratchImage cached;
-        if (TryLoadCachedCompressed(meta, usage, srgb, contentHash, cacheKey, allowArray, cached))
+        if (TryLoadCachedCompressed(meta, usage, srgb, contentHash, cacheKey, allowArray, srgbStripped, cached))
         {
             scratch = std::move(cached);
             return;
         }
     }
-    const std::string stem      = CacheStem(dst, meta.arraySize, usage, contentHash, cacheKey);
+    const std::string stem      = CacheStem(dst, meta.arraySize, usage, contentHash, cacheKey, srgbStripped);
     const std::string cachePath = CompressedCachePath(stem);
 
     // ---- 圧縮（BC7/BC6H は重いので TEX_COMPRESS_PARALLEL 必須）----
@@ -710,7 +729,8 @@ TextureLoader::PrewarmResult TextureLoader::PrewarmCompressedCache(
         DirectX::TexMetadata srcMeta{};
         DirectX::ScratchImage probe;
         if (SUCCEEDED(DirectX::GetMetadataFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, srcMeta))
-            && TryLoadCachedCompressed(srcMeta, usage, srgb, contentHash, pathStr, false, probe))
+            && TryLoadCachedCompressed(srcMeta, usage, srgb, contentHash, pathStr, false,
+                                       NeedsSrgbStrip(srcMeta, srgb), probe))
         {
             return PrewarmResult::AlreadyCached;
         }
@@ -719,10 +739,11 @@ TextureLoader::PrewarmResult TextureLoader::PrewarmCompressedCache(
     DirectX::ScratchImage scratch;
     if (FAILED(DirectX::LoadFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, scratch)))
         return PrewarmResult::Failed;
+    const bool srgbStripped = StripSrgbForLinear(scratch, srgb);   // ★縮小・ミップ・圧縮より前
 
     DownscaleIfLarger(scratch, maxDimension);
     EnsureMipChain(scratch, srgb);
-    CompressInPlace(scratch, usage, srgb, contentHash, pathStr);   // ここで .texcache へ書かれる
+    CompressInPlace(scratch, usage, srgb, contentHash, pathStr, false, srgbStripped);   // ここで .texcache へ書かれる
     return PrewarmResult::Compressed;
 }
 
@@ -752,12 +773,27 @@ bool TextureLoader::IsCompressionEnabled()
 //   法線なら 0.5 が 0.21 になり、ORM なら粗さと金属度がまるごとずれる。
 //   ライティングが静かに壊れるだけでエラーは出ない。
 //
-//   BC 圧縮が効く経路は SelectCompressedFormat が形式を明示するので無事だった。
-//   踏むのは圧縮が省かれる経路――圧縮 OFF、4 の倍数でないサイズ、
-//   ConvertForCompression の失敗――で、そこだけ黙って壊れていた。
+//   ★BC 圧縮が効く経路も無事ではなかった（2026-10-17）。形式は SelectCompressedFormat が明示するが、
+//   圧縮前の Convert（_SRGB → _UNORM）が値そのものを sRGB→リニアで化かしていた（128 → 55）。
+//   そちらは読み込み直後の StripSrgbForLinear で塞いである。ここ（ビューの形式）は圧縮が省かれる経路
+//   ――圧縮 OFF、4 の倍数でないサイズ、ConvertForCompression の失敗――の受け皿。
 DXGI_FORMAT TextureLoader::SelectViewFormat(DXGI_FORMAT fmt, bool srgb)
 {
     return srgb ? DirectX::MakeSRGB(fmt) : DirectX::MakeLinear(fmt);
+}
+
+// 理由は無名名前空間の NeedsSrgbStrip / StripSrgbForLinear のコメント（ConvertForCompression の直前）
+bool TextureLoader::NeedsSrgbStrip(const DirectX::TexMetadata& meta, bool srgb)
+{
+    return !srgb && DirectX::IsSRGB(meta.format);
+}
+
+bool TextureLoader::StripSrgbForLinear(DirectX::ScratchImage& scratch, bool srgb)
+{
+    if (scratch.GetImageCount() == 0 || !NeedsSrgbStrip(scratch.GetMetadata(), srgb))
+        return false;
+    scratch.OverrideFormat(DirectX::MakeLinear(scratch.GetMetadata().format));
+    return true;
 }
 
 DXGI_FORMAT TextureLoader::SelectCompressedFormat(TextureUsage usage, DXGI_FORMAT srcFormat, bool srgb)
@@ -976,7 +1012,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
         fromCache = SUCCEEDED(DirectX::GetMetadataFromWICFile(
                         filePath.c_str(), DirectX::WIC_FLAGS_NONE, srcMeta))
                  && TryLoadCachedCompressed(srcMeta, usage, srgb, contentHash, pathStr,
-                                            false, scratchImage);
+                                            false, NeedsSrgbStrip(srcMeta, srgb), scratchImage);
     }
 
     if (!fromCache)
@@ -990,6 +1026,8 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
             Logger::Error("テクスチャの読み込みに失敗しました: {}", pathStr);
             return nullptr;
         }
+        // ★リニアで読む画像の sRGB の印は、縮小・ミップ・圧縮より前に外す（StripSrgbForLinear のコメント）
+        const bool srgbStripped = StripSrgbForLinear(scratchImage, srgb);
 
         // ★縮小はミップ生成より前。後だとフルサイズのミップ鎖を一度作ってから捨てることになる。
         DownscaleIfLarger(scratchImage, maxDimension);
@@ -999,7 +1037,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
 
         // BC 圧縮（キャッシュ経由）。キャッシュキーはファイルの中身のハッシュ。
         if (usage != TextureUsage::Unknown)
-            CompressInPlace(scratchImage, usage, srgb, contentHash, pathStr);
+            CompressInPlace(scratchImage, usage, srgb, contentHash, pathStr, false, srgbStripped);
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
@@ -1171,7 +1209,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
         fromCache = SUCCEEDED(DirectX::GetMetadataFromWICMemory(
                         data, dataSize, DirectX::WIC_FLAGS_NONE, srcMeta))
                  && TryLoadCachedCompressed(srcMeta, usage, srgb, contentHash, cacheKey,
-                                            false, scratchImage);
+                                            false, NeedsSrgbStrip(srcMeta, srgb), scratchImage);
     }
 
     if (!fromCache)
@@ -1193,6 +1231,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
             Logger::Error("埋め込みテクスチャの読み込みに失敗しました（format={}）", hint);
             return nullptr;
         }
+        const bool srgbStripped = StripSrgbForLinear(scratchImage, srgb);   // ★縮小・ミップ・圧縮より前
 
         // ★縮小はミップ生成より前（LoadFromFile と同じ）
         DownscaleIfLarger(scratchImage, maxDimension);
@@ -1203,7 +1242,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
         // BC 圧縮（キャッシュ経由）。元バイト列のハッシュをキーにするので、
         // ディスクモード(ルーズファイル)でも pak モードでも同じ判定になる。
         if (usage != TextureUsage::Unknown)
-            CompressInPlace(scratchImage, usage, srgb, contentHash, cacheKey);
+            CompressInPlace(scratchImage, usage, srgb, contentHash, cacheKey, false, srgbStripped);
     }
 
     DirectX::TexMetadata meta = scratchImage.GetMetadata();
