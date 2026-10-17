@@ -25,10 +25,11 @@ public:
     struct Entry
     {
         MaterialAssetData data;
-        u32  srvBlockStart = 0xFFFFFFFF;  // albedo/normal/metalRoughness/emissive の連続4スロット先頭
+        u32  srvBlockStart = 0xFFFFFFFF;  // albedo/normal/metalRoughness/emissive/height の連続5スロット先頭
         bool hasNormalTex  = false;       // pbrFlags のビット1相当(法線マップの有無)
         bool hasMRTex      = false;       // pbrFlags のビット2相当(metalRoughnessテクスチャの有無)
         bool hasEmissiveTex = false;      // pbrFlags のビット3相当(emissiveテクスチャの有無)
+        bool hasHeightTex  = false;       // 高さテクスチャが実際に読めた（POM の前提。無ければ parallaxScale があっても無効）
         bool valid         = false;
         bool attempted     = false;               // ロードを一度試みたか(失敗時の毎フレーム再試行を防ぐ)
         std::filesystem::file_time_type mtime{};  // ホットリロード検知用(エディタのみ使用)

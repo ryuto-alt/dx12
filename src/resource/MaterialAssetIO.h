@@ -36,6 +36,14 @@ struct MaterialAssetData
     f32 uvTilingU = 1.0f;
     f32 uvTilingV = 1.0f;
 
+    // 視差オクルージョンマッピング（POM）。heightPath = 非色・単チャンネルの高さ（白 = 高い。Poly Haven の *_disp_*.png）。
+    // parallaxScale = 凹凸の深さ(m)。0 = 無効（既定）＝既存の .dxmat は 1 ピクセルも変わらず、キーも書き出さない。
+    // parallaxSteps = 視線方向の最大ステップ数（8/16/32/64 の段に丸められる）。距離とグレージング角で自動に減る。
+    // 不透明の材質専用（アルファテスト / ブレンドでは無視。深度は書き換えないのでシルエットは平らなまま）。
+    std::string heightPath;
+    f32 parallaxScale = 0.0f;
+    int parallaxSteps = 24;
+
     std::string source;   // 例 "Poly Haven"（未指定可）
     std::string license;  // 例 "CC0"（未指定可）
 

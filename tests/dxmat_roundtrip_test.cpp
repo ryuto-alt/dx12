@@ -111,8 +111,58 @@ static void Test_InvalidInputFails()
     CHECK(!ParseMaterialAsset(ToBytes(R"({"name":"empty"})"), out));      // テクスチャ参照なし = 無効
 }
 
+// POM の項目: 無いときは出力 JSON が従来と同一（キーが増えない）、あるときは往復で一致、範囲外はクランプ。
+static void Test_Parallax()
+{
+    MaterialAssetData plain;
+    plain.name = "plain";
+    plain.albedoPath = "textures/a.png";
+    const std::string jsonPlain = SerializeMaterialAsset(plain);
+    CHECK(jsonPlain.find("height") == std::string::npos);
+    CHECK(jsonPlain.find("parallax") == std::string::npos);
+    // 既定値のまま読んで書き戻しても同一
+    MaterialAssetData reread;
+    CHECK(ParseMaterialAsset(ToBytes(jsonPlain), reread));
+    CHECK(reread.heightPath.empty() && reread.parallaxScale == 0.0f && reread.parallaxSteps == 24);
+    CHECK(SerializeMaterialAsset(reread) == jsonPlain);
+
+    MaterialAssetData src = plain;
+    src.heightPath = "textures/a/a_disp_4k.png";
+    src.parallaxScale = 0.06f;
+    src.parallaxSteps = 32;
+    const std::string json = SerializeMaterialAsset(src);
+    MaterialAssetData out;
+    CHECK(ParseMaterialAsset(ToBytes(json), out));
+    CHECK(out.heightPath == src.heightPath);
+    CHECK_F(out.parallaxScale, 0.06f);
+    CHECK(out.parallaxSteps == 32);
+    CHECK(SerializeMaterialAsset(out) == json);          // 安定（書き戻しで変わらない）
+
+    // 手書き JSON・範囲外はクランプ。steps 省略 = 既定
+    const std::string hand = R"({"albedo":"x.png","height":"h.png","parallaxScale":9.0,"parallaxSteps":1000})";
+    MaterialAssetData h;
+    CHECK(ParseMaterialAsset(ToBytes(hand), h));
+    CHECK_F(h.parallaxScale, 0.25f);
+    CHECK(h.parallaxSteps == 64);
+    const std::string hand2 = R"({"albedo":"x.png","height":"h.png","parallaxScale":0.04})";
+    MaterialAssetData h2;
+    CHECK(ParseMaterialAsset(ToBytes(hand2), h2));
+    CHECK(h2.parallaxSteps == 24);
+    // 型違いは読み捨て（ロードは通る）
+    const std::string bad = R"({"albedo":"x.png","height":5,"parallaxScale":"deep"})";
+    MaterialAssetData b;
+    CHECK(ParseMaterialAsset(ToBytes(bad), b));
+    CHECK(b.heightPath.empty() && b.parallaxScale == 0.0f);
+    // グラフ材質は POM 非対応（書いても無視）
+    const std::string graph = R"({"graph":"g.dxmg","height":"h.png","parallaxScale":0.1})";
+    MaterialAssetData g;
+    CHECK(ParseMaterialAsset(ToBytes(graph), g));
+    CHECK(g.heightPath.empty() && g.parallaxScale == 0.0f);
+}
+
 int main()
 {
+    Test_Parallax();
     Test_Roundtrip();
     Test_MissingFieldsUseDefaults();
     Test_InvalidInputFails();

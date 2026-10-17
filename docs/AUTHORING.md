@@ -641,6 +641,28 @@ AO は **ORM テクスチャの R チャンネル**（R=AO / G=Roughness / B=Met
 **OpenGL 規約**（`PBR.hlsli` の `PerturbNormal` が G 反転しない）。Poly Haven からは `nor_gl` を選ぶこと
 （`nor_dx` は使わない）。
 
+**視差オクルージョン（POM、メッシュ用・既定 OFF）**: 石畳・レンガ・石壁を「凹凸が描かれた平面」でなく、
+視点を動かすと縁が立ち上がって見えるようにする。`.dxmat` に次の 3 キーを足す（`height` と `parallaxScale > 0` の両方が要る）:
+```json
+{
+  "albedo": "textures/cobblestone_floor_08/cobblestone_floor_08_diff_4k.jpg",
+  "normal": "textures/cobblestone_floor_08/cobblestone_floor_08_nor_gl_4k.png",
+  "metalRoughness": "textures/cobblestone_floor_08/cobblestone_floor_08_arm_4k.png",
+  "aoStrength": 1.0,
+  "height": "textures/cobblestone_floor_08/cobblestone_floor_08_disp_4k.png",
+  "parallaxScale": 0.05,
+  "parallaxSteps": 24
+}
+```
+- `height`: 非色・単チャンネル（R）の高さ。**白 = 面の最上面**、黒 = 最上面から `parallaxScale` 下。Poly Haven の `*_disp_*.png` をそのまま使う。
+- `parallaxScale`: 凹凸の深さ（**m**、0..0.25）。0 / 未指定 = 無効＝既存の `.dxmat` は 1 ピクセルも変わらず、書き戻してもキーが増えない。石畳なら 0.03〜0.08。
+- `parallaxSteps`: 視線方向の最大ステップ数（既定 24、4..64。**8/16/32/64 の段に丸められる**）。実際の段数は視線が寝るほど増え、遠いほど減る。
+- 割り当て: 4 枚目の SRV ブロックの 5 枚目（`t25`、ヒープ上は +4）に高さを張る。**ルート定数は増えない**（振幅と段数は `pbrFlags` の空きビットに詰める。`renderer/Material.h`）。
+- 効くのは **不透明材質**（アルファテスト / ブレンドは無効）。UV は `Mesh::ApplyUVScale` で頂点に焼かれたタイリングも含めて、画面空間微分から面内の UV 勾配を作るので接線や uvTiling に依存しない。
+- **深度は書き換えない**（深度プリパス・Hi-Z と一致のまま）ので、シルエット（面の縁）は平らのまま。**影・RT・パストレーサー・スキンドメッシュ・マテリアルグラフは対象外**（影は平らな面として落ちる）。
+- 距離フェード: viewDepth 14〜36 m で効果が 0 へ。かすめ角（N·V が約 0.04〜0.14）でも 0 へ。
+- エディタ: マテリアルエディタに Height スロットと Depth(cm) / Max steps がある。MCP に `.dxmat` を書く専用ツールは無い（`dx12_material_apply` / `dx12_set_texture` は `MeshRenderer` の上書きで、`height` スロットは無い）ので、ファイルを書いて `materialAsset` に指す。
+
 **優先度**: `MeshRenderer::materialAsset`(サブメッシュ単位、`.dxmat` の assets相対パス) が設定されて
 いれば、7節の `overrideXxxTexture` より**常に優先**される。どちらも未設定ならモデル焼き込みの
 `Material` を使う。Metallic/Roughness は `overrideMetallic`/`overrideRoughness`(>=0 のとき) がさらに

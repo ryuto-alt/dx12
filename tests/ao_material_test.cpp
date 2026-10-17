@@ -155,11 +155,35 @@ void Test_FlagPacking()
     const u32 g = PackAlphaTestFlags(PackAoFlags(2u, 0.5f), a);
     CHECK(((g >> 8) & 0xFF) == 128 && ((g >> 16) & 0xFF) == 128 && (g & kPbrFlagAoInMR));
 }
+
+// POM（視差）の b2 詰め方。無効なら flags は 1 ビットも変わらず、有効でも AO / cutoff / 既存ビットと衝突しない。
+void Test_ParallaxFlags()
+{
+    // 無効（scale<=0、量子化して 0 になる微小値）は何も足さない
+    CHECK(PackParallaxFlags(2u, 0.0f, 32) == 2u);
+    CHECK(PackParallaxFlags(2u, -1.0f, 32) == 2u);
+    CHECK(PackParallaxFlags(2u, 1e-6f, 32) == 2u);
+    CHECK(UnpackParallaxScale(2u | kPbrFlagAoInMR) == 0.0f);
+
+    AlphaParams a; a.mode = AlphaMode::Mask; a.cutoff = 0.5f;
+    u32 f = PackAlphaTestFlags(PackAoFlags(2u | kPbrFlagEmissiveTex, 0.5f), a);
+    const u32 before = f;
+    f = PackParallaxFlags(f, 0.05f, 24);
+    CHECK((f & kPbrFlagParallax) != 0);
+    CHECK((f & 0x00FFFF1Fu) == (before & 0x00FFFF1Fu));            // bit0..4 / cutoff / AO 強度はそのまま
+    CHECK(std::fabs(UnpackParallaxScale(f) - 0.05f) < kParallaxScaleMax / 255.0f);
+    CHECK(ParallaxLevelToSteps((f >> 6) & 3u) == 32u);              // 24 → 32 段
+    CHECK(PackParallaxFlags(0u, 9.0f, 4) >> 24 == 255u);            // 上限でクランプ
+    CHECK(ParallaxStepsToLevel(4) == 0 && ParallaxStepsToLevel(16) == 1
+       && ParallaxStepsToLevel(32) == 2 && ParallaxStepsToLevel(64) == 3);
+    static_assert(kMaterialSrvBlockSize == 5 && kMaterialHeightSrvOffset == 4);
+}
 } // namespace
 
 int main()
 {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    Test_ParallaxFlags();
     Test_Probe();
     Test_ComposeOrm();
     Test_FlagPacking();

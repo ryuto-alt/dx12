@@ -1600,6 +1600,8 @@ u32 Application::EnsureMaterialOverrideSrv(entt::entity e, u32 submeshIndex, con
     normal->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 1));
     mr->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 2));
     emis->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 3));
+    m_resourceManager->GetDefaultBlackTexture()->CreateSRV(*m_graphicsDevice,
+        m_srvHeap->GetCpuHandle(entry.blockStart + kMaterialHeightSrvOffset));   // 5 枚目(height)は黒で蓋
 
     entry.albedoPath = albedoPath;
     entry.normalPath = normalPath;
@@ -1678,7 +1680,10 @@ u32 Application::EnsureTerrainSrv(entt::entity e, const Terrain& terrain,
         // 4 枚目(t24)は黒で埋める。Terrain.hlsl は宣言していないので読まれないが、
         // 未初期化ディスクリプタをテーブルへ入れないための蓋。
         if (auto* black = m_resourceManager->GetDefaultBlackTexture())
+        {
             black->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + 3));
+            black->CreateSRV(*m_graphicsDevice, m_srvHeap->GetCpuHandle(entry.blockStart + kMaterialHeightSrvOffset));
+        }
         entry.layerGeneration = layers->generation;
         entry.layerSetPath    = terrain.layerSetPath;
     }

@@ -462,6 +462,7 @@ void ResourceManager::RefreshMaterialSrvBlocks()
             normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex + 1));
             mr    ->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex + 2));
             emis  ->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex + 3));
+            m_defaultBlack->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(mat->srvBlockIndex + kMaterialHeightSrvOffset));
         }
     }
 }

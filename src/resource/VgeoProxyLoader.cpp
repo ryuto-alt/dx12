@@ -252,6 +252,7 @@ ModelData LoadVgeoProxy(GraphicsDevice& device,
             normal->CreateSRV(dev, srvHeap->GetCpuHandle(blockStart + 1));
             mrTex->CreateSRV(dev, srvHeap->GetCpuHandle(blockStart + 2));
             emis->CreateSRV(dev, srvHeap->GetCpuHandle(blockStart + 3));
+            resourceManager.GetDefaultBlackTexture()->CreateSRV(dev, srvHeap->GetCpuHandle(blockStart + kMaterialHeightSrvOffset));
             material->srvBlockIndex = blockStart;
         }
 

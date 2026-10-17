@@ -465,6 +465,7 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
     DrawTextureSlot(assetsDir, "Albedo", m_current.albedoPath);
     DrawTextureSlot(assetsDir, "Normal", m_current.normalPath);
     DrawTextureSlot(assetsDir, "MetalRoughness (ARM: G=Rough/B=Metal)", m_current.metalRoughnessPath);
+    DrawTextureSlot(assetsDir, "Height (POM displacement, white=high)", m_current.heightPath);
 
     ImGui::Spacing();
     ImGui::TextDisabled("Scalars");
@@ -500,6 +501,26 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
         "\xe2\x80\xbb\xe3\x81\x93\xe3\x82\x8c\xe3\x81\x8b\xe3\x82\x89\xe5\x89\xb2\xe3\x82\x8a\xe5\xbd\x93\xe3\x81\xa6\xe3\x82\x8b\xe6\x99\x82\xe3\x81\xae\xe5\x88\x9d\xe6\x9c\x9f\xe5\x80\xa4\xe3\x81\xa7\xe3\x81\x99\xe3\x80\x82\xe6\x97\xa2\xe3\x81\xab\xe8\xb2\xbc\xe3\x81\xa3\xe3\x81\xa6\xe3\x81\x82\xe3\x82\x8b\xe3\x83\xa1\xe3\x83\x83\xe3\x82\xb7\xe3\x83\xa5\xe3\x81\xaf\xe5\xa4\x89\xe3\x82\x8f\xe3\x82\x8a\xe3\x81\xbe\xe3\x81\x9b\xe3\x82\x93");
     ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "%s",
         "\xef\xbc\x88UV \xe3\x81\xaf\xe9\xa0\x82\xe7\x82\xb9\xe3\x81\xab\xe7\x84\xbc\xe3\x81\x8d\xe8\xbe\xbc\xe3\x82\x80\xe3\x81\x9f\xe3\x82\x81\xef\xbc\x89\xe3\x80\x82Inspector > MeshRenderer > UVTiling \xe3\x81\xa7\xe5\xa4\x89\xe3\x81\x88\xe3\x81\xa6\xe3\x81\x8f\xe3\x81\xa0\xe3\x81\x95\xe3\x81\x84\xe3\x80\x82");
+
+    // 視差オクルージョン（POM）。Height に画像を入れて Depth(cm) > 0 にすると有効。0 = 無効（既定）。
+    // 不透明の材質のみ・深度は書き換えない（シルエットは平らなまま）。保存は離した瞬間。
+    ImGui::Spacing();
+    ImGui::TextDisabled("Parallax Occlusion (POM)");
+    {
+        f32 depthCm = m_current.parallaxScale * 100.0f;
+        if (ui::SliderFloat("Depth (cm)", &depthCm, 0.0f, 25.0f, "%.2f"))
+            m_current.parallaxScale = depthCm / 100.0f;
+        if (ImGui::IsItemDeactivatedAfterEdit() && !m_currentPath.empty())
+            SaveAsset(assetsDir);
+        if (ui::SliderInt("Max steps", &m_current.parallaxSteps, 4, 64))
+        {
+            // 8/16/32/64 の段に丸められる（renderer/Material.h）
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit() && !m_currentPath.empty())
+            SaveAsset(assetsDir);
+        if (m_current.heightPath.empty() && m_current.parallaxScale > 0.0f)
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "%s", "Height texture is not set: POM stays off");
+    }
 
     if (m_currentPath.empty())
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),

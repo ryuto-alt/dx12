@@ -61,12 +61,16 @@ struct Material
     u32 srvBlockIndex = 0xFFFFFFFF;  // SRVヒープ上の連続4スロットの先頭
 };
 
-// マテリアルの SRV ブロック長。albedo(t0) / normal(t1) / metalRoughness(t2) / emissive(t24)。
+// マテリアルの SRV ブロック長。albedo(t0) / normal(t1) / metalRoughness(t2) / emissive(t24) / height(t25)。
 // ★レジスタ番号は t2 と t24 で飛んでいるが、ディスクリプタテーブルは OFFSET_APPEND なので
-//   **ヒープ上は 4 連続**。t3..t23 は他の用途で埋まっていて、材質側が使える空きが t24 だった。
+//   **ヒープ上は 5 連続**。t3..t23 は他の用途で埋まっていて、材質側が使える空きが t24 以降だった。
 //   ブロックを確保する側（ModelLoader / MaterialAssetManager / Application の上書き・地形）は
-//   必ずこの定数を使うこと。3 のまま確保すると 4 枚目に無関係なディスクリプタが写る。
-constexpr u32 kMaterialSrvBlockSize = 4;
+//   必ずこの定数を使うこと。短いまま確保すると 4/5 枚目に無関係なディスクリプタが写る。
+//   5 枚目の height(t25) は視差オクルージョン用の高さ（R）。使わない材質は黒を張って蓋をする
+//   （kPbrFlagParallax が立っていないときシェーダは絶対にサンプルしない）。
+constexpr u32 kMaterialSrvBlockSize = 5;
+// 5 枚目（height）のブロック内オフセット。
+constexpr u32 kMaterialHeightSrvOffset = 4;
 
 // マテリアル（モデル焼き込み）とエンティティ側オーバーライド（MeshRenderer）を合成した実効値。
 struct AlphaParams
@@ -100,8 +104,8 @@ inline AlphaParams ResolveAlphaParams(const Material* mat, int modeOverride,
 //     pbrFlags   bit8..15  = alphaCutoff を 8bit 量子化（0..255 → 0..1）
 //     pbrFlags   bit4      = MR テクスチャの R をマテリアル AO として読む（kPbrFlagAoInMR）
 //     pbrFlags   bit16..23 = AO 強度を 8bit 量子化（255 = 1.0）
-//   （使用済み: bit0 法線 / bit1 MR / bit2 アルファテスト / bit3 emissive / bit4 AO / bit8..15 cutoff / bit16..23 AO 強度。
-//     空き: bit5..7 / bit24..31）
+//   （使用済み: bit0 法線 / bit1 MR / bit2 アルファテスト / bit3 emissive / bit4 AO / bit5 POM / bit6..7 POM 段数 /
+//     bit8..15 cutoff / bit16..23 AO 強度 / bit24..31 POM 振幅。空き: なし）
 //     packedTint bit24..31 = opacity を 8bit 量子化（255 = 不透明 = 従来と同じ）
 // ★packedTint の上位バイトは従来 0 が入っていた。opacity として読むようになったので
 //   **不透明でも必ず 255 を書くこと**（0 のままだと全部消える）。
@@ -116,6 +120,12 @@ constexpr u32 kPbrFlagEmissiveTex = 8u;
 //   このビットを立てると全面が真っ黒になる＝必ず PackAoFlags 経由で立てること。
 constexpr u32 kPbrFlagAoInMR = 16u;
 
+// bit5 = 視差オクルージョンマッピング（POM）有効。t25（ブロックの 5 枚目）に高さテクスチャ(R) が入っている。
+// bit6..7 = 最大ステップ数の段（0..3 → 8 / 16 / 32 / 64）、bit24..31 = 高さ振幅(m)を 8bit 量子化
+// （255 = kParallaxScaleMax）。★bit5 が 0 のとき bit6..7 / bit24..31 も必ず 0（従来と 1 ビットも違わない）。
+constexpr u32 kPbrFlagParallax = 32u;
+constexpr f32 kParallaxScaleMax = 0.25f;   // m。これより深い凹凸は POM でなくジオメトリの仕事
+
 inline u32 QuantizeUnorm8(f32 v)
 {
     return static_cast<u32>(static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f));
@@ -126,6 +136,31 @@ inline u32 PackAlphaTestFlags(u32 flags, const AlphaParams& a)
 {
     if (a.mode == AlphaMode::Mask) flags |= kPbrFlagAlphaTest;
     return (flags & ~0x0000FF00u) | (QuantizeUnorm8(a.cutoff) << 8);
+}
+
+// POM の最大ステップ数 → 2bit の段（8/16/32/64 のうち対数で最も近いもの）
+inline u32 ParallaxStepsToLevel(int steps)
+{
+    if (steps <= 11) return 0;
+    if (steps <= 22) return 1;
+    if (steps <= 45) return 2;
+    return 3;
+}
+inline u32 ParallaxLevelToSteps(u32 level) { return 8u << (level & 3u); }
+
+// pbrFlags へ POM 情報を焼く。scaleMeters<=0 なら何もしない（＝従来と同じ絵）。
+inline u32 PackParallaxFlags(u32 flags, f32 scaleMeters, int steps)
+{
+    if (!(scaleMeters > 0.0f)) return flags;
+    const u32 q = QuantizeUnorm8(scaleMeters / kParallaxScaleMax);
+    if (q == 0u) return flags;
+    return flags | kPbrFlagParallax | (ParallaxStepsToLevel(steps) << 6) | (q << 24);
+}
+// シェーダ側と対の復元（テスト用）
+inline f32 UnpackParallaxScale(u32 flags)
+{
+    if (!(flags & kPbrFlagParallax)) return 0.0f;
+    return (static_cast<f32>(flags >> 24) / 255.0f) * kParallaxScaleMax;
 }
 
 // マテリアル AO の実効強度（0 = AO なし）。エンティティ側の上書き(<0 で従う)があっても、

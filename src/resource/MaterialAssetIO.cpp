@@ -87,6 +87,13 @@ bool ParseMaterialAsset(const std::vector<uint8_t>& jsonBytes, MaterialAssetData
     data.roughness           = j.value("roughness", 1.0f);
     data.emissiveIntensity   = j.value("emissiveIntensity", 0.0f);
     data.aoStrength          = std::clamp(j.value("aoStrength", 0.0f), 0.0f, 1.0f);
+    // POM（キーが無ければ既定 = 無効）。型が違う値は読み捨てる（ロードを止めない）。
+    if (j.contains("height") && j["height"].is_string())
+        data.heightPath = j["height"].get<std::string>();
+    if (j.contains("parallaxScale") && j["parallaxScale"].is_number())
+        data.parallaxScale = std::clamp(j["parallaxScale"].get<f32>(), 0.0f, 0.25f);
+    if (j.contains("parallaxSteps") && j["parallaxSteps"].is_number())
+        data.parallaxSteps = std::clamp(j["parallaxSteps"].get<int>(), 4, 64);
     data.source              = j.value("source", "");
     data.license             = j.value("license", "");
 
@@ -100,6 +107,8 @@ bool ParseMaterialAsset(const std::vector<uint8_t>& jsonBytes, MaterialAssetData
         data.normalPath.clear();
         data.metalRoughnessPath.clear();
         data.emissivePath.clear();
+        data.heightPath.clear();       // グラフ材質は POM 非対応
+        data.parallaxScale = 0.0f;
         data.metallic          = j.value("metallic", 0.0f);
         data.roughness         = j.value("roughness", 0.5f);
         data.emissiveIntensity = 0.0f;
@@ -194,6 +203,13 @@ std::string SerializeMaterialAsset(const MaterialAssetData& data)
     // AO も「使っている .dxmat にだけ」書く（既存ファイルの書き戻しでキーが増えない）。
     if (data.aoStrength > 0.0f && !data.metalRoughnessPath.empty())
         j["aoStrength"] = data.aoStrength;
+    // POM も「使っている .dxmat にだけ」書く（既存ファイルの書き戻しでキーが増えない）。
+    if (!data.heightPath.empty())
+    {
+        j["height"]        = data.heightPath;
+        j["parallaxScale"] = ShortFloat(data.parallaxScale);
+        if (data.parallaxSteps != 24) j["parallaxSteps"] = data.parallaxSteps;
+    }
     if (!data.source.empty())  j["source"]  = data.source;
     if (!data.license.empty()) j["license"] = data.license;
     return j.dump(2);

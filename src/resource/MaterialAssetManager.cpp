@@ -41,6 +41,7 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
     entry.hasNormalTex = false;
     entry.hasMRTex = false;
     entry.hasEmissiveTex = false;
+    entry.hasHeightTex = false;
     ++entry.loadSerial;
 
     // mtime は成否に関わらずここで先に刻む(失敗時も含めて)。こうすることで
@@ -85,7 +86,10 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
     // 自己発光は色なので sRGB。未指定は黒(無発光)へ落とす。
     Texture* emis   = resolve(data.emissivePath, m_resourceManager->GetDefaultBlackTexture(),
                               /*srgb=*/true,  TextureUsage::BaseColor);
-    if (!albedo || !normal || !mr || !emis)
+    // 高さ（POM）。線形・非色。未指定 / 読めないときは黒＝蓋だけ（hasHeightTex=false のままなのでシェーダは読まない）。
+    Texture* blackTex = m_resourceManager->GetDefaultBlackTexture();
+    Texture* height = resolve(data.heightPath, blackTex, /*srgb=*/false, TextureUsage::NonColor);
+    if (!albedo || !normal || !mr || !emis || !height)
         return;
 
     if (entry.srvBlockStart == 0xFFFFFFFF)
@@ -102,6 +106,7 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
         normal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 1));
         mr->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 2));
         emis->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + 3));
+        height->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(entry.srvBlockStart + kMaterialHeightSrvOffset));
     }
     entry.srvIsProxy = data.IsGraph();
 
@@ -109,6 +114,7 @@ void MaterialAssetManager::LoadInto(Entry& entry, const std::string& relPath, ID
     entry.hasNormalTex   = !data.normalPath.empty();
     entry.hasMRTex       = !data.metalRoughnessPath.empty();
     entry.hasEmissiveTex = !data.emissivePath.empty();
+    entry.hasHeightTex   = !data.IsGraph() && !data.heightPath.empty() && height != blackTex;
     entry.valid = true;
 }
 

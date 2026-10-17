@@ -33,8 +33,8 @@ public:
 
     static constexpr u32 kSlotPerObject    = 0;  // RootConstants b0 (40 DWORD = MVP+Model+CustomEffect+pad3+CustomParams)
     static constexpr u32 kSlotPerFrame     = 1;  // CBV b1 (PerFrame + cameraPos)
-    // DescriptorTable t0,t1,t2 (albedo, normal, metalRoughness) + t24 (emissive)。
-    // レジスタは飛んでいるがヒープ上は 4 連続（renderer/Material.h kMaterialSrvBlockSize）。
+    // DescriptorTable t0,t1,t2 (albedo, normal, metalRoughness) + t24 (emissive) + t25 (height)。
+    // レジスタは飛んでいるがヒープ上は 5 連続（renderer/Material.h kMaterialSrvBlockSize）。
     static constexpr u32 kSlotSRVTable     = 2;
     static constexpr u32 kSlotBonesSRV     = 3;  // DescriptorTable t3 (bones)
     static constexpr u32 kSlotShadowSRV    = 4;  // DescriptorTable t4 (shadow map)

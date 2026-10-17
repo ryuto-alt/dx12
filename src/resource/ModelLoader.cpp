@@ -1360,6 +1360,8 @@ ModelData ModelLoader::LoadFromFile(
                 normal->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 1));
                 mr->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 2));
                 emis->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + 3));
+                // 5 枚目（height / POM）は焼き込みモデルでは使わない。黒で蓋をする（未初期化ディスクリプタを置かない）。
+                resourceManager.GetDefaultBlackTexture()->CreateSRV(*dev, srvHeap->GetCpuHandle(blockStart + kMaterialHeightSrvOffset));
             }
 
             material->srvBlockIndex = blockStart;

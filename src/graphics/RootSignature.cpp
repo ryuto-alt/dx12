@@ -42,7 +42,8 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[1].Descriptor.Flags          = D3D12_ROOT_DESCRIPTOR_FLAG_NONE;
     rootParams[1].ShaderVisibility          = D3D12_SHADER_VISIBILITY_ALL;
 
-    // [2] PBR Textures: DescriptorTable (t0=albedo, t1=normal, t2=metalRoughness, t24=emissive)
+    // [2] PBR Textures: DescriptorTable (t0=albedo, t1=normal, t2=metalRoughness, t24=emissive, t25=height)
+    // ★t25 の高さ（視差オクルージョン）も同じ流儀で同じレンジへ足しただけ＝ルート定数は 62/64 のまま。
     // ★emissive は新しいルートスロットを取らず、材質テーブルへ**レンジを 1 本足して**相乗りする
     //   （テーブルはレンジを何本持っても 1 DWORD＝ルート定数の予算はびた一文増えない）。
     //   t3..t23 は骨/影/IBL/SSAO/クラスタ/デカール/DDGI が使用済みで、空いていたのが t24。
@@ -57,7 +58,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     pbrRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     pbrRanges[1].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    pbrRanges[1].NumDescriptors                    = 1;  // t24 = emissive（ヒープ上は +3）
+    pbrRanges[1].NumDescriptors                    = 2;  // t24 = emissive（ヒープ上は +3）, t25 = height（+4・POM 用）
     pbrRanges[1].BaseShaderRegister                = 24;
     pbrRanges[1].RegisterSpace                     = 0;
     pbrRanges[1].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;

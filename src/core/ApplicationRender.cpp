@@ -1230,6 +1230,12 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             //   packedTint の上位バイトは opacity。不透明でも 255 が入る＝従来と同じ絵。
             pbrParams.flags      = PackAlphaTestFlags(pbrParams.flags, alphaP);
             pbrParams.packedTint = PackTintWithOpacity(pbrParams.packedTint, alphaP.opacity);
+            // ---- 視差オクルージョン（POM）: .dxmat の height + parallaxScale > 0、かつ不透明のときだけ ----
+            // ★深度は書き換えない（プリパスと一致のまま）ので、プリパスや影には何も送らない。
+            //   既定（parallaxScale=0 / height 無し / 非 matAsset）は flags に 1 ビットも足さない＝従来と同じ絵。
+            if (matAsset && matAsset->hasHeightTex && alphaP.mode == AlphaMode::Opaque)
+                pbrParams.flags = PackParallaxFlags(pbrParams.flags, matAsset->data.parallaxScale,
+                                                    matAsset->data.parallaxSteps);
 
             // ---- 自己発光（emissive）----
             // 優先度は metallic/roughness と同じ（MeshRenderer 上書き > materialAsset > 焼き込み Material）。
