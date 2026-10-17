@@ -64,11 +64,53 @@ float3 ACESFilm(float3 x)
 // 法線マップは BC5_UNORM（RG 2ch）で圧縮して読み込むため、サンプルの b は常に 0 になる。
 // 単位長のタンジェント空間法線なら z は xy から一意に決まるので、
 // 非圧縮(RGB)テクスチャでも同じ結果になり、経路を分ける必要がない。
+
+// 接線を VS で正規化するとき用。★壊れた接線（ModelLoader が 0 にした頂点）を normalize すると NaN になるので 0 のまま返す。
+float3 NormalizeTangentOrZero(float3 t)
+{
+    const float l2 = dot(t, t);
+    return (l2 > 1e-20) ? t * rsqrt(l2) : float3(0.0, 0.0, 0.0);
+}
+
+// 接空間法線（法線マップのサンプル）→ ワールド。T/B は呼び出し側が作った基底（長さ・直交は問わない）。
+float3 ApplyTangentNormal(float3 N, float3 T, float3 B, float3 normalMapSample)
+{
+    float3x3 TBN = float3x3(T, B, N);
+    float2 xy = normalMapSample.xy * 2.0 - 1.0;
+    // ★z を 0 まで落とさない理由は PerturbNormal のコメントを参照
+    float  z  = sqrt(saturate(1.0 - dot(xy, xy)));
+    float3 tangentNormal = normalize(float3(xy, max(z, 0.35)));
+    return normalize(mul(tangentNormal, TBN));
+}
+
+// 頂点の接線が使えないとき（UV が潰れて assimp が NaN にした頂点など）の接空間。
+// Schüler「Followup: Normal Mapping Without Precomputed Tangents」の cotangent frame。
+// T = dP/du、B = dP/dv の向き＝頂点経路（assimp の接線・従接線）と同じ規約。
+// dp1/dp2 = ddx/ddy(worldPos)、duv1/duv2 = ddx/ddy(uv)。★導関数は分岐の外で作って渡すこと。
+float3 PerturbNormalCotangent(float3 worldNormal, float3 dp1, float3 dp2, float2 duv1, float2 duv2,
+                              float3 normalMapSample)
+{
+    const float3 N = normalize(worldNormal);
+    const float3 dp2perp = cross(dp2, N);
+    const float3 dp1perp = cross(N, dp1);
+    const float3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    const float3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    const float  m = max(dot(T, T), dot(B, B));
+    if (!(m > 1e-30)) return N;   // UV が画面上で動かない（本当に潰れている）なら法線マップは掛けない
+    const float invmax = rsqrt(m);
+    return ApplyTangentNormal(N, T * invmax, B * invmax, normalMapSample);
+}
+
 float3 PerturbNormal(float3 worldNormal, float3 worldTangent, float tangentW,
                      float3 normalMapSample)
 {
     float3 N = normalize(worldNormal);
-    float3 T = normalize(worldTangent - dot(worldTangent, N) * N); // Gram-Schmidt orthogonalize
+    // ★接線が壊れている（0・NaN・法線と平行）と Gram-Schmidt の結果が 0 → normalize で NaN →
+    //   saturate(N·L)=0 で直射光だけが消える。基底が作れないなら法線マップを掛けずに幾何法線を返す
+    //   （Forward.hlsl は先に PerturbNormalCotangent へ振り分けるので、ここへ来るのは他のシェーダの保険）。
+    float3 Tp = worldTangent - dot(worldTangent, N) * N;
+    if (!(dot(Tp, Tp) > 1e-12)) return N;
+    float3 T = normalize(Tp); // Gram-Schmidt orthogonalize
     float3 B = cross(N, T) * tangentW;
     float3x3 TBN = float3x3(T, B, N);
 

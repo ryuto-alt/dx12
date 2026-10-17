@@ -76,7 +76,10 @@ struct UnoMatInput
 float3 UnoNormalFromTangentSpace(float3 worldNormal, float3 worldTangent, float tangentW, float3 normalTS)
 {
     float3 N = normalize(worldNormal);
-    float3 T = normalize(worldTangent - dot(worldTangent, N) * N); // Gram-Schmidt orthogonalize
+    // ★壊れた接線（0・NaN）では基底が作れない → NaN 法線で直射光が消える。幾何法線へ落とす（PBR.hlsli の PerturbNormal と同じ）
+    float3 Tp = worldTangent - dot(worldTangent, N) * N;
+    if (!(dot(Tp, Tp) > 1e-12)) return N;
+    float3 T = normalize(Tp); // Gram-Schmidt orthogonalize
     float3 B = cross(N, T) * tangentW;
     float3x3 TBN = float3x3(T, B, N);
     float3 tn = normalize(float3(normalTS.xy, max(normalTS.z, 0.35)));

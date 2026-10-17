@@ -147,7 +147,7 @@ PSInput VSMain(VSInput input)
     float4 worldPos4    = mul(float4(input.position, 1.0f), model);
     output.worldPos     = worldPos4.xyz;
     output.worldNormal  = normalize(mul(input.normal, (float3x3)model));
-    output.worldTangent = normalize(mul(input.tangent.xyz, (float3x3)model));
+    output.worldTangent = NormalizeTangentOrZero(mul(input.tangent.xyz, (float3x3)model));
     output.tangentW     = input.tangent.w;
     output.color        = input.color;
     output.texCoord     = input.texCoord;

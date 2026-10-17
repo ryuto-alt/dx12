@@ -53,7 +53,7 @@ PSInput VSMain(VSInput input)
     output.positionSV   = mul(worldPos4, gViewProjT);
     output.worldPos     = worldPos4.xyz;
     output.worldNormal  = normalize(mul((float3x3)modelT, input.normal));
-    output.worldTangent = normalize(mul((float3x3)modelT, input.tangent.xyz));
+    output.worldTangent = NormalizeTangentOrZero(mul((float3x3)modelT, input.tangent.xyz));
     output.tangentW     = input.tangent.w;
     output.color        = input.color * input.icolor;
     output.texCoord     = input.texCoord;

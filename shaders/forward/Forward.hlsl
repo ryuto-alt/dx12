@@ -131,7 +131,7 @@ PSInput VSMain(VSInput input)
     float4 worldPos4    = mul(float4(input.position, 1.0f), model);
     output.worldPos     = worldPos4.xyz;
     output.worldNormal  = normalize(mul(input.normal, (float3x3)model));
-    output.worldTangent = normalize(mul(input.tangent.xyz, (float3x3)model));
+    output.worldTangent = NormalizeTangentOrZero(mul(input.tangent.xyz, (float3x3)model));
     output.tangentW     = input.tangent.w;
     output.color        = input.color;
     output.texCoord     = input.texCoord;
@@ -251,6 +251,9 @@ float4 PSMain(PSInput input) : SV_TARGET
 #endif
     const float2 uvGx = ddx(uv);
     const float2 uvGy = ddy(uv);
+    // 画面微分の接空間（頂点の接線が壊れているサブメッシュ用）。★導関数は分岐の外で取る
+    const float3 posGx = ddx(input.worldPos);
+    const float3 posGy = ddy(input.worldPos);
     [branch]
     if (pom)
         uv += ParallaxOffset(pbrFlags, uv, uvGx, uvGy, input.worldPos, input.worldNormal, input.viewDepth);
@@ -284,7 +287,10 @@ float4 PSMain(PSInput input) : SV_TARGET
     if (pbrFlags & 1u)
     {
         float3 normalSample = SampleMat(g_normalMap, uv, pom, uvGx, uvGy).rgb;
-        N = PerturbNormal(input.worldNormal, input.worldTangent, input.tangentW, normalSample);
+        // 頂点の接線が 0（ModelLoader が UV の潰れた頂点を 0 にした）なら画面微分の接空間で掛ける
+        N = (dot(input.worldTangent, input.worldTangent) > 1e-8)
+            ? PerturbNormal(input.worldNormal, input.worldTangent, input.tangentW, normalSample)
+            : PerturbNormalCotangent(input.worldNormal, posGx, posGy, uvGx, uvGy, normalSample);
     }
     else
     {

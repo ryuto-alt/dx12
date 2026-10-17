@@ -123,13 +123,13 @@ PSInput VSMain(VSInput input)
 
     float4 skinnedPos = mul(float4(input.position, 1.0f), skinMatrix);
     float3 skinnedNormal = normalize(mul(input.normal, (float3x3)skinMatrix));
-    float3 skinnedTangent = normalize(mul(input.tangent.xyz, (float3x3)skinMatrix));
+    float3 skinnedTangent = NormalizeTangentOrZero(mul(input.tangent.xyz, (float3x3)skinMatrix));
 
     output.positionSV   = mul(skinnedPos, mvp);
     float4 worldPos4    = mul(skinnedPos, model);
     output.worldPos     = worldPos4.xyz;
     output.worldNormal  = normalize(mul(skinnedNormal, (float3x3)model));
-    output.worldTangent = normalize(mul(skinnedTangent, (float3x3)model));
+    output.worldTangent = NormalizeTangentOrZero(mul(skinnedTangent, (float3x3)model));
     output.tangentW     = input.tangent.w;
     output.color        = input.color;
     output.texCoord     = input.texCoord;

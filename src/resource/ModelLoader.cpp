@@ -1395,6 +1395,7 @@ ModelData ModelLoader::LoadFromFile(
         // --- Build vertex data ---
         std::vector<Vertex> vertices;
         vertices.reserve(aiMeshPtr->mNumVertices);
+        unsigned int invalidTangents = 0;
 
         for (unsigned int v = 0; v < aiMeshPtr->mNumVertices; ++v)
         {
@@ -1453,10 +1454,38 @@ ModelData ModelLoader::LoadFromFile(
                     float dot = XMVectorGetX(XMVector3Dot(B_computed, B_expected));
                     vertex.tangent.w = (dot < 0.0f) ? -1.0f : 1.0f;
                 }
+                // ★assimp の CalcTangentSpace は UV が潰れた頂点（3 頂点の UV が同一直線上など）の接線を
+                //   【NaN】にする。そのまま GPU へ渡すと PerturbNormal の法線が NaN になり、saturate(N·L)=0 で
+                //   直射日光だけが消えて「日なたなのに日陰の暗さ」になる（2026-10-17 Bistro の歩道
+                //   Pavement_Brick_BLENDSHADER で実測）。法線と平行な接線も同じく基底が作れない。
+                //   壊れた接線は 0 にしておき、シェーダが画面微分の接空間へ切り替える（PBR.hlsli の
+                //   PerturbNormal / Forward.hlsl の CotangentFrame）。
+                {
+                    const XMFLOAT4& t = vertex.tangent;
+                    const XMFLOAT3& n = vertex.normal;
+                    const bool  finite = std::isfinite(t.x) && std::isfinite(t.y) && std::isfinite(t.z);
+                    const float len2 = t.x * t.x + t.y * t.y + t.z * t.z;
+                    const float tn   = t.x * n.x + t.y * n.y + t.z * n.z;
+                    // 法線と平行（Gram-Schmidt で長さがほぼ 0 になる）も無効扱い。法線は単位長の前提
+                    if (!finite || !(len2 > 1e-12f) || (len2 - tn * tn) <= 1e-6f * len2)
+                    {
+                        vertex.tangent = { 0.0f, 0.0f, 0.0f, 1.0f };
+                        ++invalidTangents;
+                    }
+                }
             }
 
             // boneIndices / boneWeights are zero-initialized by default
             vertices.push_back(vertex);
+        }
+        if (invalidTangents > 0)
+        {
+            const char* matName = (aiMeshPtr->mMaterialIndex < scene->mNumMaterials)
+                                      ? scene->mMaterials[aiMeshPtr->mMaterialIndex]->GetName().C_Str()
+                                      : "";
+            Logger::Warn("接線が計算できない頂点 {}/{} を 0 にしました（UV が潰れている。シェーダは画面微分の接空間へ切替）"
+                         " mesh='{}' material='{}'",
+                         invalidTangents, aiMeshPtr->mNumVertices, aiMeshPtr->mName.C_Str(), matName);
         }
 
         // Write bone weights if skeleton exists
