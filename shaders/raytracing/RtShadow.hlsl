@@ -23,8 +23,9 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
     const float  d  = gDepth.Load(int3(int2(px), 0));
     const float3 P  = RtWorldFromDepth(px, d);
 
-    // ddx/ddy は分岐の前に評価する（quad 内で分岐すると未定義）。
-    float3 N = RtNormalFromWorldPos(P);
+    // 法線は深度の隣接 4 点から段差をまたがない側を選んで作る（ddx/ddy は縁ででたらめになり、
+    // レイ始点のオフセットがジッタごとにずれて影の縁がちらつく。RtCommon.hlsli の同名関数を参照）。
+    float3 N = RtNormalFromDepthRobust(px, P);
 
     if (!RtInsideViewport(px)) return 1.0;   // エディタのパネル下に潜る領域は素通し
     if (d >= 1.0) return 1.0;                // 空（背景）に影は落ちない

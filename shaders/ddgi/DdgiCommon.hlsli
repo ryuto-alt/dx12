@@ -148,6 +148,35 @@ float3x3 DdgiRayRotation(uint frameIndex)
     return mul(ry, rx);
 }
 
+// GI モード New のレイの回し方: フレーム番号に加えて【プローブごと】に別の回転にする。
+// ★DdgiRayRotation は全プローブ共通の回転なので、同じフレームに更新したプローブがみな同じ向きの誤差
+//   （太陽に照らされた壁を多めに拾う / 少なめに拾う）を持ち、日陰全体が一斉に明るく・暗く呼吸していた
+//   （Bistro: 日陰の平均が 0.4〜0.95% 揺れ、日向は 0.03%、DDGI を切ると 0.01〜0.17%。2026-10-17）。
+//   プローブごとに回すと誤差がプローブ間で独立になり、補間（8 プローブ）と時間方向の平均で打ち消し合う。
+//   回転は Shoemake の一様乱数四元数（SO(3) 全体を一様に覆う。旧式の 2 軸回しは極の向きが偏る）。
+//   Trace / ProbeData / Blend / BlendDistance が同じ (frameIndex, probeIndex) で同じ向きを再現する。
+float3x3 DdgiRayRotationProbe(uint frameIndex, uint probeIndex, bool giNew)
+{
+    if (!giNew) return DdgiRayRotation(frameIndex);   // Legacy は従来の回転のまま（絵を 1 ビットも変えない）
+    uint h = probeIndex * 747796405u + 2891336453u;   // PCG ハッシュ（プローブごとの位相）
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    const float ph = float(h & 0xFFFFFFu) / 16777216.0;
+    const float f  = float(frameIndex);
+    const float u1 = frac(f * 0.6180339887 + ph);
+    const float u2 = frac(f * 0.7548776662 + ph * 1.6180339887);
+    const float u3 = frac(f * 0.5698402910 + ph * 2.4142135624);
+    const float s1 = sqrt(1.0 - u1), s2 = sqrt(u1);
+    const float t2 = 6.2831853 * u2, t3 = 6.2831853 * u3;
+    const float4 q = float4(s1 * sin(t2), s1 * cos(t2), s2 * sin(t3), s2 * cos(t3));   // (x, y, z, w)
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    return float3x3(1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz),       2.0 * (xz + wy),
+                    2.0 * (xy + wz),       1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx),
+                    2.0 * (xz - wy),       2.0 * (yz + wx),       1.0 - 2.0 * (xx + yy));
+}
+
 // ============================================================================
 // シェーディング側のサンプル（段階1）。プローブ更新は使わないので、
 // フォワード PS からも同じ配置ルールで引けるようここに置く。

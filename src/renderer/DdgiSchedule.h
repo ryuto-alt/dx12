@@ -252,11 +252,17 @@ inline Split SplitBudget(uint32_t P, uint32_t n0, uint32_t n1)
 }
 
 // 更新周期（フレーム数）の見積り。有効ヒステリシスを h^period にして、間引いても実時間の収束速度を保つ。
+// ★ただし kMinEffectiveHysteresis で下を止める。遠景は約 29 フレームに 1 回しか更新されず、0.97^29 = 0.41 だと
+//   1 回の更新で 64 本のレイの推定値が履歴の 6 割を置き換え、更新のたびに日陰の明るさが揺れる
+//   （定常のノイズの分散は 1 回の推定の (1-h)/(1+h) 倍 = 0.42 倍。0.9 なら 0.053 倍）。収束は遅くなる（遠景で約 5 秒）。
+//   設定のヒステリシスがこれより低いときは設定を優先する（下限は min(h, 0.9)）。
+constexpr float kMinEffectiveHysteresis = 0.9f;
 inline float EffectiveHysteresis(float h, uint32_t n, uint32_t k)
 {
-    if (k == 0 || n == 0) return h;
+    const float hc = std::clamp(h, 0.0f, 0.995f);
+    if (k == 0 || n == 0) return hc;
     const float period = std::max(1.0f, static_cast<float>(n) / static_cast<float>(k));
-    return std::pow(std::clamp(h, 0.0f, 0.995f), period);
+    return std::max(std::pow(hc, period), std::min(hc, kMinEffectiveHysteresis));
 }
 
 // ---- ライトグリッド（ヒット点の点光源を絞る）の CPU 側の参照実装 -------------------------------------------

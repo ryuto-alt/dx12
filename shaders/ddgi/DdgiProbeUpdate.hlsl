@@ -169,7 +169,7 @@ void TraceCS(uint3 dtid : SV_DispatchThreadID)
         probeWS += gProbeData[DdgiProbeDataTexel(probeIndex, gDdgi.probeCounts)].xyz;
 
     // 球面フィボナッチをフレームごとに回す。レイ 64 本でも時間方向で球面が埋まる。
-    const float3 dir = mul(DdgiRayRotation(gDdgi.frameIndex),
+    const float3 dir = mul(DdgiRayRotationProbe(gDdgi.frameIndex, probeIndex, (gGiFlags & 1u) != 0u),
                            DdgiSphericalFibonacci(rayIndex, DDGI_RAYS_PER_PROBE));
 
     RayDesc r;
@@ -306,7 +306,7 @@ void ProbeDataCS(uint3 dtid : SV_DispatchThreadID)
     for (uint i = 0; i < DDGI_RAYS_PER_PROBE; ++i)
     {
         const float d = gRayData[uint2(i, probeIndex)].w;
-        const float3 rayDir = mul(DdgiRayRotation(gDdgi.frameIndex),
+        const float3 rayDir = mul(DdgiRayRotationProbe(gDdgi.frameIndex, probeIndex, (gGiFlags & 1u) != 0u),
                                   DdgiSphericalFibonacci(i, DDGI_RAYS_PER_PROBE));
         if (d < 0.0)
         {
@@ -421,7 +421,7 @@ void BlendCS(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
             if (rd.w < 0.0)
                 continue;   // 負の距離 = 裏面ヒット（壁の中）= 無効。ミスは +1e30 なので通る
 
-            const float3 rayDir = mul(DdgiRayRotation(gDdgi.frameIndex),
+            const float3 rayDir = mul(DdgiRayRotationProbe(gDdgi.frameIndex, probeIndex, (gGiFlags & 1u) != 0u),
                                       DdgiSphericalFibonacci(i, DDGI_RAYS_PER_PROBE));
             // コサイン重み。テクセルの方向から見て裏側のレイは寄与しない。
             const float w = max(0.0, dot(texelDir, rayDir));
@@ -525,7 +525,7 @@ void BlendDistanceCS(uint3 gid : SV_GroupID, uint3 gtid : SV_GroupThreadID)
             //     フォワード PS まで壊れた値が届く。ここで必ず潰すこと。
             const float d = min(abs(rd.w), maxDist);
 
-            const float3 rayDir = mul(DdgiRayRotation(gDdgi.frameIndex),
+            const float3 rayDir = mul(DdgiRayRotationProbe(gDdgi.frameIndex, probeIndex, (gGiFlags & 1u) != 0u),
                                       DdgiSphericalFibonacci(i, DDGI_RAYS_PER_PROBE));
             const float c = max(0.0, dot(texelDir, rayDir));
             if (c <= 0.0) continue;

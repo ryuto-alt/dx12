@@ -200,6 +200,29 @@ float RtTraceClosestT(float3 origin, float3 dir, float tMin, float tMax)
     return (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? q.CommittedRayT() : -1.0;
 }
 
+// 深度の隣接 4 点から「より連続している側」を選んで幾何法線を作る（Wicked/Humus 方式）。
+// ★ddx/ddy の法線は 2x2 クアッドの片側差分で、深度の段差（建物の凹凸の縁・柱・看板）をまたぐと
+//   縁だけ法線がでたらめになる。RT 影はこの法線でレイ始点を押し出す（NdotL とオフセット量）ので、
+//   縁の画素だけ始点がずれて、TAA のジッタごとに影が出たり消えたりして縦線状にちらつく
+//   （AssetBench の Bistro 遠景ファサードで実測、2026-10-17）。
+//   隣の画素を Load で直接読み、カメラからの距離が近い方（段差をまたがない方）の差分を採る。
+//   ddx/ddy を使わないので quad 内の分岐に関する制約も無い。
+float3 RtNormalFromDepthRobust(float2 px, float3 P)
+{
+    const int2 ip = int2(px);
+    const float3 Pl = RtWorldFromDepth(px + float2(-1, 0), gDepth.Load(int3(ip + int2(-1, 0), 0)));
+    const float3 Pr = RtWorldFromDepth(px + float2( 1, 0), gDepth.Load(int3(ip + int2( 1, 0), 0)));
+    const float3 Pu = RtWorldFromDepth(px + float2(0, -1), gDepth.Load(int3(ip + int2(0, -1), 0)));
+    const float3 Pd = RtWorldFromDepth(px + float2(0,  1), gDepth.Load(int3(ip + int2(0,  1), 0)));
+    const float  d0 = length(P - gCameraPos);
+    // 片側ずつ、カメラからの距離の差が小さい方を採る。
+    const float3 dx = (abs(length(Pr - gCameraPos) - d0) < abs(length(Pl - gCameraPos) - d0)) ? (Pr - P) : (P - Pl);
+    const float3 dy = (abs(length(Pd - gCameraPos) - d0) < abs(length(Pu - gCameraPos) - d0)) ? (Pd - P) : (P - Pu);
+    float3 N = normalize(cross(dx, dy));
+    // cross の向きは dx/dy の符号選択で反転しうるので、画面側(カメラ側)へ揃える。
+    return (dot(N, gCameraPos - P) < 0.0) ? -N : N;
+}
+
 // 深度から復元したワールド位置の画面微分で法線を作る。
 // ★ddx/ddy は quad 内で分岐すると値が未定義になるので、早期 return より前に必ず評価すること
 //   （ContactShadow.hlsl と同じ作法）。

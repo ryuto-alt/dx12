@@ -231,8 +231,12 @@ void TestRoundRobinAndBudget()
     // 間引いたぶんはヒステリシスを h^周期 に（実時間の収束の速さを保つ）
     {
         CHECK(std::fabs(EffectiveHysteresis(0.97f, 1000, 1000) - 0.97f) < 1e-6f);
-        CHECK(std::fabs(EffectiveHysteresis(0.97f, 1000, 250) - std::pow(0.97f, 4.0f)) < 1e-5f);
-        CHECK(EffectiveHysteresis(0.97f, 1000, 10) < 0.05f);
+        CHECK(std::fabs(EffectiveHysteresis(0.97f, 1000, 500) - std::pow(0.97f, 2.0f)) < 1e-5f);   // 0.941（下限より上）
+        // 間引きが強くても下限（0.9）より下げない＝1 回の更新で履歴を大きく置き換えない（日陰のもやもや対策）
+        CHECK(std::fabs(EffectiveHysteresis(0.97f, 1000, 10) - kMinEffectiveHysteresis) < 1e-6f);
+        CHECK(std::fabs(EffectiveHysteresis(0.97f, 3872, 130) - kMinEffectiveHysteresis) < 1e-6f);   // 遠景の実測に近い周期 30
+        // 設定がもっと低いなら設定を優先する
+        CHECK(std::fabs(EffectiveHysteresis(0.5f, 1000, 10) - 0.5f) < 1e-6f);
     }
 }
 
