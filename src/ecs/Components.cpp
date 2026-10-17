@@ -10,11 +10,38 @@
 #include "animation/NodeAnimationClip.h"
 #include "animation/NodeAnimator.h"
 #include "animation/AnimGraphRuntime.h"
+#include "renderer/Mesh.h"
 
 using namespace DirectX;
 
 namespace dx12e
 {
+
+void MeshRenderer::RefreshMaterialRemap() const
+{
+    if (materialRemap.empty())
+    {
+        if (!_remapResolved.empty()) { _remapResolved.clear(); }
+        _remapKey = 0;
+        return;
+    }
+    // 指紋 = 表のサイズ + メッシュ列のポインタ(モデルの差し替え・再読込を拾う)。表の中身の変更は Invalidate で通知する。
+    u64 key = 1469598103934665603ull;
+    auto mix = [&key](u64 v) { key = (key ^ v) * 1099511628211ull; };
+    mix(materialRemap.size());
+    mix(meshes.size());
+    for (const Mesh* m : meshes) mix(reinterpret_cast<u64>(m));
+    if (key == 0) key = 1;
+    if (key == _remapKey && _remapResolved.size() == meshes.size()) return;
+    _remapKey = key;
+    _remapResolved.assign(meshes.size(), std::string());
+    for (size_t i = 0; i < meshes.size(); ++i)
+    {
+        if (!meshes[i]) continue;
+        const auto it = materialRemap.find(meshes[i]->GetMaterialName());
+        if (it != materialRemap.end()) _remapResolved[i] = it->second;
+    }
+}
 
 XMMATRIX Transform::GetWorldMatrix() const
 {

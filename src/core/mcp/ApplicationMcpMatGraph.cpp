@@ -1022,6 +1022,120 @@ void Application::RegisterMcpMatGraphMethods()
                 resp["result"] = {{"entity", static_cast<uint32_t>(e)}, {"submesh", sub}, {"path", rel}, {"cleared", rel.empty()}};
             });
     }
+
+    // ------------------------------------------------------------------ mesh_material_list
+    {
+        McpMeta m;
+        m.summary   = "エンティティのサブメッシュを元の材質名(Assimp の材質名)ごとに集計する { name, submeshCount, albedo(幅x高さ), remap(現在の差し替え先), remapped(個数) }。materialRemap を決める前の診断用";
+        m.keywords  = "mesh material list names submesh remap bistro 材質名 サブメッシュ 一覧 診断 materialRemap";
+        m.category  = "material";
+        m.effect    = McpEffect::Read;
+        m.timeoutMs = 10000;
+        m.idempotent = true;
+        m.aliases   = {"dx12_mesh_material_list"};
+        m.params    = {P("entity", "entityRef", false, nullptr, nullptr, nullptr, nullptr, "エンティティ id(int)。name と排他。"),
+                       P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。"),
+                       P("filter", "string", false, nullptr, nullptr, nullptr, nullptr, "材質名の部分一致(大文字小文字を区別しない)。空 = 全部")};
+        m.next      = {{"mesh_material_remap", "材質名 → .dxmat の差し替え表を設定する"}};
+        McpDefine("mesh_material_list", McpMeta(m), DX12E_MCP_HANDLER
+            {
+                const auto e = ResolveMcpEntity(*m_scene, params);
+                auto& reg = m_scene->GetRegistry();
+                if (!reg.all_of<MeshRenderer>(e))
+                    throw McpError(McpErr::NotFound, "entity has no MeshRenderer", "メッシュ（モデル）を持つエンティティを指定する");
+                const auto& mr = reg.get<MeshRenderer>(e);
+                mr.RefreshMaterialRemap();
+                std::string flt = params.value("filter", std::string());
+                for (char& c : flt) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                struct Row { u32 count = 0; u32 remapped = 0; u32 w = 0, h = 0; };
+                std::map<std::string, Row> rows;
+                for (u32 mi = 0; mi < static_cast<u32>(mr.meshes.size()); ++mi)
+                {
+                    const Mesh* mesh = mr.meshes[mi];
+                    if (!mesh) continue;
+                    const std::string& nm = mesh->GetMaterialName();
+                    if (!flt.empty())
+                    {
+                        std::string low = nm;
+                        for (char& c : low) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                        if (low.find(flt) == std::string::npos) continue;
+                    }
+                    Row& r = rows[nm];
+                    ++r.count;
+                    if (mr.MaterialIsRemapped(mi)) ++r.remapped;
+                    if (const Material* mat = mesh->GetMaterial(); mat && mat->albedoTexture && r.w == 0)
+                    { r.w = mat->albedoTexture->GetWidth(); r.h = mat->albedoTexture->GetHeight(); }
+                }
+                json arr = json::array();
+                for (const auto& [nm, r] : rows)
+                {
+                    json row = {{"name", nm}, {"submeshCount", r.count}, {"remapped", r.remapped}};
+                    if (r.w) row["albedo"] = std::to_string(r.w) + "x" + std::to_string(r.h);
+                    if (auto it = mr.materialRemap.find(nm); it != mr.materialRemap.end()) row["remap"] = it->second;
+                    arr.push_back(std::move(row));
+                }
+                resp["ok"] = true;
+                resp["result"] = {{"entity", static_cast<uint32_t>(e)}, {"submeshTotal", static_cast<u32>(mr.meshes.size())},
+                                  {"materialCount", static_cast<u32>(rows.size())}, {"remapEntries", static_cast<u32>(mr.materialRemap.size())},
+                                  {"materials", std::move(arr)}};
+            });
+    }
+
+    // ------------------------------------------------------------------ mesh_material_remap
+    {
+        McpMeta m;
+        m.summary   = "エンティティの materialRemap(元の材質名 → .dxmat)を設定する。set に {材質名: path} を渡すと追加/上書き(path が空文字ならその行を消す)、clear:true で全消去、unset に材質名の配列で個別に消す。Undo できる。個別の materialAsset があればそちらが勝つ";
+        m.keywords  = "mesh material remap set clear bistro dxmat 材質名 差し替え 一括 materialRemap";
+        m.category  = "material";
+        m.effect    = McpEffect::WriteScene;
+        m.timeoutMs = 10000;
+        m.aliases   = {"dx12_mesh_material_remap"};
+        m.params    = {P("entity", "entityRef", false, nullptr, nullptr, nullptr, nullptr, "エンティティ id(int)。name と排他。"),
+                       P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。"),
+                       P("set", "object", false, nullptr, nullptr, nullptr, nullptr, "{ \"材質名\": \"materials/x.dxmat\", ... }。assets 相対。空文字で消去"),
+                       P("unset", "array", false, nullptr, nullptr, nullptr, nullptr, "消したい材質名の配列"),
+                       P("clear", "bool", false, nullptr, nullptr, nullptr, "false", "true で表を全部消す(set より先に処理)")};
+        m.next      = {{"mesh_material_list", "差し替わった個数を確かめる"}, {"screenshot", "見た目を確かめる"}};
+        McpDefine("mesh_material_remap", McpMeta(m), DX12E_MCP_HANDLER
+            {
+                const auto e = ResolveMcpEntity(*m_scene, params);
+                auto& reg = m_scene->GetRegistry();
+                if (!reg.all_of<MeshRenderer>(e))
+                    throw McpError(McpErr::NotFound, "entity has no MeshRenderer", "メッシュ（モデル）を持つエンティティを指定する");
+                // 先に全部検証してから書く(途中で失敗して半端な表を残さない)
+                std::map<std::string, std::string> toSet;
+                if (params.contains("set") && params["set"].is_object())
+                {
+                    for (const auto& [from, v] : params["set"].items())
+                    {
+                        std::string rel = v.is_string() ? v.get<std::string>() : std::string();
+                        for (char& c : rel) if (c == '\\') c = '/';
+                        if (rel.rfind("assets/", 0) == 0) rel.erase(0, 7);
+                        if (!rel.empty())
+                        {
+                            if (rel.find("..") != std::string::npos || rel[0] == '/' || !EndsWith(rel, ".dxmat"))
+                                ThrowMg(McpErr::InvalidParam, "E_INVALID_PARAM", "mesh_material_remap: path は assets 相対の .dxmat です: " + rel, "例: materials/brick.dxmat");
+                            if (!vfs::Exists(rel))
+                                ThrowMg(McpErr::NotFound, "E_NOT_FOUND", "mesh_material_remap: 材質が無い: " + rel, "dx12_list_assets で確かめる");
+                        }
+                        toSet[from] = rel;
+                    }
+                }
+                McpUndo().Track<MeshRenderer>(e);
+                auto& mr = reg.get<MeshRenderer>(e);
+                if (params.value("clear", false)) mr.materialRemap.clear();
+                if (params.contains("unset") && params["unset"].is_array())
+                    for (const auto& n : params["unset"]) if (n.is_string()) mr.materialRemap.erase(n.get<std::string>());
+                for (const auto& [from, rel] : toSet)
+                {
+                    if (rel.empty()) mr.materialRemap.erase(from);
+                    else             mr.materialRemap[from] = rel;
+                }
+                mr.InvalidateMaterialRemap();
+                resp["ok"] = true;
+                resp["result"] = {{"entity", static_cast<uint32_t>(e)}, {"remapEntries", static_cast<u32>(mr.materialRemap.size())}};
+            });
+    }
 }
 
 } // namespace dx12e

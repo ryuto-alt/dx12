@@ -567,6 +567,61 @@ static void Test_MissingModelIsKept()
     CHECK(!out.contains("primitive"));   // 箱に化けない
 }
 
+static void Test_MaterialRemap()
+{
+    // remap あり: デバイス無しで MeshRenderer を直接積み、JSON に materialRemap が出て、読み戻し(モデル無し=MissingModel)でも保たれる。
+    {
+        Scene src, dst;
+        auto& rs = src.GetRegistry();
+        const entt::entity e = rs.create();
+        rs.emplace<NameTag>(e, NameTag{"Bistro"});
+        rs.emplace<Transform>(e);
+        MeshRenderer mr;
+        mr.modelPath = "models/not_there/bistro.fbx";
+        mr.materialRemap["Pavement_Cobblestone_01"] = "materials/ph_cobble.dxmat";
+        mr.materialRemap["MASTER_Brick_Small_Red"]  = "materials/ph_brick.dxmat";
+        rs.emplace<MeshRenderer>(e, std::move(mr));
+        const auto out = nlohmann::json::parse(SceneSerializer::SerializeEntity(src, e, ""));
+        CHECK(out.contains("materialRemap") && out["materialRemap"].is_object());
+        CHECK(out["materialRemap"].value("Pavement_Cobblestone_01", "") == "materials/ph_cobble.dxmat");
+        CHECK(out["materialRemap"].size() == 2);
+        CHECK(!out.contains("materialAssets"));
+        const entt::entity e2 = SceneSerializer::InstantiateEntity(dst, out.dump(), "", /*keepGuid=*/true);
+        CHECK(e2 != entt::null);
+        if (e2 != entt::null)
+        {
+            const auto out2 = nlohmann::json::parse(SceneSerializer::SerializeEntity(dst, e2, ""));
+            CHECK(out2.contains("materialRemap") && out2["materialRemap"].size() == 2);
+        }
+    }
+    // remap なし: キーは出ない(既存シーンのバイト列が変わらない根拠)
+    {
+        Scene src;
+        auto& rs = src.GetRegistry();
+        const entt::entity e = rs.create();
+        rs.emplace<NameTag>(e, NameTag{"Plain"});
+        rs.emplace<Transform>(e);
+        MeshRenderer mr;
+        mr.modelPath = "models/not_there/plain.fbx";
+        rs.emplace<MeshRenderer>(e, std::move(mr));
+        const auto out = nlohmann::json::parse(SceneSerializer::SerializeEntity(src, e, ""));
+        CHECK(!out.contains("materialRemap"));
+    }
+    // 優先順位: 個別 materialAsset > remap。remap 由来かどうかの判定。
+    {
+        MeshRenderer mr;
+        mr._remapResolved = {"materials/a.dxmat", "materials/b.dxmat", ""};
+        MeshRenderer::SetOverride(mr.materialAsset, 1, "materials/own.dxmat");
+        CHECK(mr.MaterialAssetOf(0) == "materials/a.dxmat" && mr.MaterialIsRemapped(0));
+        CHECK(mr.MaterialAssetOf(1) == "materials/own.dxmat" && !mr.MaterialIsRemapped(1));
+        CHECK(!mr.HasMaterialAsset(2) && !mr.MaterialIsRemapped(2));
+        CHECK(!mr.HasMaterialAsset(99));
+        mr.materialRemap.clear();
+        mr.RefreshMaterialRemap();   // 表が空なら解決結果も空へ
+        CHECK(!mr.HasMaterialAsset(0));
+    }
+}
+
 static void Test_RigidBody()
 {
     Case<RigidBody>(
@@ -2364,6 +2419,7 @@ int main()
     Test_Trigger();
     Test_RigidBody();
     Test_MissingModelIsKept();
+    Test_MaterialRemap();
     Test_NetworkIdentity();
     Test_NetworkTransform();
     Test_Decal();

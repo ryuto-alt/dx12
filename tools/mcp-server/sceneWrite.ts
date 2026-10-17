@@ -84,7 +84,7 @@ export const ENTITY_OWN_KEYS = [
   // これが無かったせいで、既定シーンの Ground が保存→再読込で 20m から 50m へ広がっていた。
   "primitive", "primitiveSize", "meshRenderer",
   "shader", "shaderAlphaBlend", "shaderEffectValue", "shaderParams",
-  "materialTextureOverrides", "materialAssets",
+  "materialTextureOverrides", "materialAssets", "materialRemap",
   "color", "material", "uvTiling", "uvScroll", "flipbook",
   "terrain", "sculpt", "gridPlane",
   "gimmick", "audioSource", "particleEmitter", "trigger",

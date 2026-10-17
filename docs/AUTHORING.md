@@ -686,6 +686,13 @@ AO は **ORM テクスチャの R チャンネル**（R=AO / G=Roughness / B=Met
   クリックしてピッカーから選択。割当中は7節のテクスチャ個別上書きスロットが無効表示になる
   （優先度がひと目でわかるように）。
 
+**材質名による一括差し替え（`materialRemap`）**: Bistro のように 1 エンティティに数百の材質がまとまり、部品番号を外から引けないモデル用。
+シーン JSON の `"materialRemap": { "<元の材質名(Assimp)>": "materials/x.dxmat", ... }` と書くか、MCP `mesh_material_list`（材質名ごとの個数を診断）→
+`mesh_material_remap`（`set` / `unset` / `clear`）で設定する。優先度は **個別 `materialAsset` > `materialRemap` > `overrideXxxTexture` > 焼き込み**。
+空なら JSON に書かれない（既存シーンは 1 バイトも変わらない）。★remap 由来の `.dxmat` だけは **`uvTiling` を描画時に掛ける**
+（フォワード・MASK の深度/影・パストレーサー。材質ごとに別の密度にできる。個別 `materialAsset` の `uvTiling` は従来どおり無視）。
+RT 反射 / DDGI のヒットは `PtHost::ResolveHitMaterial` 経由で remap を反映するが、GeometryInfo に UV 倍率は無いので**アルベドは未タイリングの UV で引く**（平均色はほぼ同じ）。
+
 シーン JSON には `"materialAssets"`（サブメッシュ数ぶんの配列、`.dxmat` の assets相対パス。空文字列 = 未割当）
 として保存される。`--validate` は参照している `.dxmat` の実在チェックも行う。
 

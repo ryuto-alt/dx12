@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <unordered_set>
 #include <memory>
 #include <cstddef>
@@ -270,6 +271,19 @@ struct MeshRenderer
     // Material。実データの解決/SRV構築は Application::m_materialAssetManager(MaterialAssetManager)が行う。
     std::vector<std::string> materialAsset;
 
+    // 材質名による一括差し替え(元の材質名 → .dxmat の assets 相対パス)。Bistro のように 1 エンティティに
+    // 数百の材質がまとまっていて、部品番号を外から引けないモデル用。サブメッシュの Mesh::GetMaterialName()
+    // (Assimp の材質名)が表にあれば、そのサブメッシュの materialAsset と同じ扱いになる。
+    // ★優先度: 個別の materialAsset > materialRemap > overrideXxx > 焼き込み。空ならシリアライズしない
+    //   (既存シーンは 1 バイトも変わらない)。解決結果は _remapResolved に持つ(非シリアライズ)。
+    std::map<std::string, std::string> materialRemap;
+    mutable std::vector<std::string> _remapResolved;   // サブメッシュ番号 → remap で決まった .dxmat(空 = 無し)
+    mutable u64 _remapKey = 0;                          // 解決した時の (remap, meshes) の指紋。0 = 要再解決
+    // 表とメッシュ列から _remapResolved を作り直す(指紋が同じなら何もしない)。BuildDrawList が毎フレーム呼ぶ。
+    void RefreshMaterialRemap() const;
+    // 表を書き換えたら呼ぶ(次の RefreshMaterialRemap で必ず再解決する)。
+    void InvalidateMaterialRemap() const { _remapKey = 0; }
+
     // 上記4ベクタの範囲外アクセスを避けるためのヘルパ(未設定インデックスは空文字列扱い)
     static const std::string& SafeGetOverride(const std::vector<std::string>& v, u32 mi)
     {
@@ -288,9 +302,20 @@ struct MeshRenderer
             || !SafeGetOverride(overrideMetalRoughnessTexture, mi).empty()
             || !SafeGetOverride(overrideEmissiveTexture, mi).empty();
     }
+    // サブメッシュ mi に効く .dxmat(個別 materialAsset > materialRemap。空 = 無し)。描画側はこれを使う。
+    const std::string& MaterialAssetOf(u32 mi) const
+    {
+        const std::string& a = SafeGetOverride(materialAsset, mi);
+        return a.empty() ? SafeGetOverride(_remapResolved, mi) : a;
+    }
+    // その .dxmat が materialRemap 由来か(個別指定ではない)。remap 由来のときだけ .dxmat の uvTiling を描画時に掛ける。
+    bool MaterialIsRemapped(u32 mi) const
+    {
+        return SafeGetOverride(materialAsset, mi).empty() && !SafeGetOverride(_remapResolved, mi).empty();
+    }
     bool HasMaterialAsset(u32 mi) const
     {
-        return !SafeGetOverride(materialAsset, mi).empty();
+        return !MaterialAssetOf(mi).empty();
     }
 
     // ---- 透明（アルファクリップ / アルファブレンド）のエンティティ単位オーバーライド ----

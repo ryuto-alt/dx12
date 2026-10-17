@@ -182,6 +182,19 @@ int RunValidate(const std::string& scenePathStr)
                     }
                 }
 
+                if (ej.contains("materialRemap") && ej["materialRemap"].is_object())
+                {
+                    for (const auto& [from, mj] : ej["materialRemap"].items())
+                    {
+                        if (!mj.is_string()) continue;
+                        std::string mp = mj.get<std::string>();
+                        if (mp.empty()) continue;
+                        std::error_code ec;
+                        if (!fs::exists(assetsDir / mp, ec))
+                            errors.push_back("material remap asset not found: " + mp + " [" + from + "] (entity: " + nm + ")");
+                    }
+                }
+
                 if (ej.contains("trigger"))
                 {
                     ++triggers;

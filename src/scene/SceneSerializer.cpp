@@ -230,7 +230,7 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity, 
 static const char* const kRendererKeys[] = {
     "meshRenderer", "material", "color", "uvTiling", "uvScroll", "flipbook",
     "shader", "shaderAlphaBlend", "shaderEffectValue", "shaderParams", "shaderParamsB",
-    "materialTextureOverrides", "materialAssets",
+    "materialTextureOverrides", "materialAssets", "materialRemap",
 };
 
 struct DefaultsProbe { std::string key; std::function<json()> run; };
@@ -760,6 +760,14 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 }
                 if (anyMaterial)
                     ej["materialAssets"] = materialsJson;
+            }
+
+            // 材質名による一括差し替え(元の材質名 → .dxmat)。空なら書かない＝既存シーンは 1 バイトも変わらない。
+            if (!mr.materialRemap.empty())
+            {
+                json remapJson = json::object();
+                for (const auto& [from, to] : mr.materialRemap) remapJson[from] = to;
+                ej["materialRemap"] = std::move(remapJson);
             }
 
             // 色ティント保存。明示的な割当(hasColorTint: JSONのcolor/scene:setColor由来)は
@@ -2359,6 +2367,17 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     MeshRenderer::SetOverride(mrMat.materialAsset, static_cast<u32>(i), arr[i].get<std::string>());
             }
 
+            // 材質名による一括差し替え復元
+            if (ej.contains("materialRemap") && ej["materialRemap"].is_object() && reg.all_of<MeshRenderer>(e))
+            {
+                auto& mrRemap = reg.get<MeshRenderer>(e);
+                mrRemap.materialRemap.clear();
+                for (const auto& [from, to] : ej["materialRemap"].items())
+                    if (to.is_string() && !to.get<std::string>().empty())
+                        mrRemap.materialRemap[from] = to.get<std::string>();
+                mrRemap.InvalidateMaterialRemap();
+            }
+
             // LuaScript 復元（env は構築しない。Play 開始時に初期化される）
             if (ej.contains("luaScript"))
             {
@@ -3766,6 +3785,7 @@ void ForEachAssetPathField(Scene& scene, Fn&& fn)
         for (auto& p : mr.overrideMetalRoughnessTexture) fn(p, who, "metalRoughness");
         for (auto& p : mr.overrideEmissiveTexture)       fn(p, who, "emissive");
         for (auto& p : mr.materialAsset)                 fn(p, who, "material");
+        for (auto& kv : mr.materialRemap)                fn(kv.second, who, "material");
     }
     for (auto [e, t] : reg.view<Terrain>().each())
     {

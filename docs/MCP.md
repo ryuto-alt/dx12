@@ -870,6 +870,8 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 | `material_graph_graphize` | write_file(journal) | `{path(.dxmat)}` | 従来の PBR 材質 → 標準テンプレートのインスタンス(`graph` + `params`)。**手動のみ**。元ファイルは `<name>.dxmat.bak`(最初の 1 回だけ。既にあれば守る)。返り値 `{template, params, wroteTemplate, wroteBackup, wroteInstance}`。**dryRun:true** で変換後の中身(`instanceText`)だけ |
 | `material_graph_set_param` | write_file(journal) | `{path(.dxmat), name, value, save?:bool}` | params の書き換え(数値 / 配列 / テクスチャのパス / null で上書きを消す)。**再コンパイルしない**(プールのレコードを書き直すだけ)。`save:false` でメモリ上だけ。グラフに無い名前は `warnings`。**dryRun:true** 対応 |
 | `material_graph_apply` | write_scene | `{entity\|name, path, submesh?:int(0)}` | エンティティのサブメッシュへ `.dxmat`(グラフ材質 / 従来材質)を割り当てる。`path:""` で解除。Undo 可 |
+| `mesh_material_list` | read | `{entity\|name, filter?}` | サブメッシュを元の材質名(Assimp)ごとに集計 `{name, submeshCount, albedo, remap, remapped}`。`materialRemap` を決める診断用 |
+| `mesh_material_remap` | write_scene | `{entity\|name, set?:{材質名:.dxmat}, unset?:[材質名], clear?:bool}` | `MeshRenderer.materialRemap`(材質名→`.dxmat`)を設定。個別 `materialAsset` が優先。remap 由来の `.dxmat` は `uvTiling` を描画時に掛ける。Undo 可 |
 
 - 典型: `material_graph_graphize {path}` → `material_graph_apply {name, path}` → `step_frames {frames:60}` → `material_graph_status`(`hasActive:true`)→ `screenshot_final`。値の調整は `material_graph_set_param`、構造の編集は `material_graph_edit`。
 - 編集した `.dxmg` はエンジンが次のフレームに読み直す(HLSL が変わらない編集は再コンパイルなし)。HLSL が変わる編集は `compiling:true` の間、旧版で描画される。失敗しても描画は止まらず、エラーは `material_graph_status` の `errorLog` / `diagnostics`(nodeId つき)に残る。

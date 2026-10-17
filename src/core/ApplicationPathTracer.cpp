@@ -200,7 +200,7 @@ void PtHost::ResolveHitMaterial(Application& app, const DrawItem& it, u32 mi, ID
     const MaterialAssetManager::Entry* matAsset = nullptr;
     if (r.HasMaterialAsset(mi) && app.m_materialAssetManager)
     {
-        const auto* loaded = app.m_materialAssetManager->GetOrLoad(MeshRenderer::SafeGetOverride(r.materialAsset, mi), cmd);
+        const auto* loaded = app.m_materialAssetManager->GetOrLoad(r.MaterialAssetOf(mi), cmd);
         if (loaded && loaded->valid) matAsset = loaded;
     }
     const u32 overrideBlock = app.EnsureMaterialOverrideSrv(it.e, mi, r, mat, cmd);
@@ -303,6 +303,11 @@ void PtHost::ResolveHitMaterial(Application& app, const DrawItem& it, u32 mi, ID
         const float du = r.uvScrollU * r._animT, dv = r.uvScrollV * r._animT;
         m.uvScaleOffset[2] = du - std::floor(du);
         m.uvScaleOffset[3] = dv - std::floor(dv);
+    }
+    if (matAsset && r.animFrames <= 0 && r.MaterialIsRemapped(mi))   // フォワードと同じ remap 由来の uvTiling
+    {
+        m.uvScaleOffset[0] *= matAsset->data.uvTilingU;
+        m.uvScaleOffset[1] *= matAsset->data.uvTilingV;
     }
 }
 

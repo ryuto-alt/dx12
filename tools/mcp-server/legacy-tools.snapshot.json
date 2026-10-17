@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 423050,
+ "totalBytes": 423788,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -1092,8 +1092,8 @@
   },
   {
    "name": "dx12_perf_stats",
-   "sha256": "47ac090b91d1e2f98af45ab5cb040e2507b1379745be9c041c47d60cc8fc9ed4",
-   "semSha256": "f8ac46ecc02cf1da2e5709ae81eab7ef9def1e6a53d6a85b9234ce6681f17d3a",
+   "sha256": "0483cb45e8b86eca8933ba8ac328c68d1ee178c5d7509d4e194f16349273cb7e",
+   "semSha256": "f0f1656831a040fa8e130d5a987ac9a071f129cb62ccbd5c7930fde77b59bbce",
    "outputSchemaBytes": 303,
    "argKeys": [
     "window"
@@ -1678,8 +1678,8 @@
   },
   {
    "name": "dx12_get_dxr",
-   "sha256": "5398ac2a52b86be4d64da4214131fd4338acdec3c727c162caba4f13d3677334",
-   "semSha256": "9f4b454819aa66127376dc9edd867627d14966b16212c6713a46dc81e64fd5ce",
+   "sha256": "4de3531dc1de5c6686974867b1bae88fd195a4759b59f0e70a1fa127ccb83022",
+   "semSha256": "76f4d6eccde82d12958ffbcfd6d7e64d64846027f1c6979f0d9df71c8df3267b",
    "outputSchemaBytes": 303,
    "argKeys": [],
    "annotations": {
@@ -1690,8 +1690,8 @@
   },
   {
    "name": "dx12_set_dxr",
-   "sha256": "f1fcdf1bea181f1694fac30a17b382752a216d0af6386e8cdec3c0197b1f6eef",
-   "semSha256": "061e3412db405877a1f8dc684c9d5cfeae01a9fa9594c9b67727eec0e04a6dda",
+   "sha256": "958ee11b814314b830f8010b6b25e4a40f1bea2a08cffbe248e076cb8785dfb1",
+   "semSha256": "ef4ddb1a4fa63b5a98c6b3cfdb39d6951b45b206fad6f582864cffc1c0d7c602",
    "outputSchemaBytes": 303,
    "argKeys": [
     "shadowEnabled",
@@ -1699,6 +1699,7 @@
     "shadowNormalBias",
     "shadowMaxDistance",
     "shadowIntensity",
+    "shadowDenoise",
     "aoEnabled",
     "aoRadius",
     "aoRayCount",

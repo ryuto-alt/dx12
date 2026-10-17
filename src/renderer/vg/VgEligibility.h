@@ -29,6 +29,7 @@ inline const char* VgIneligibleReason(const entt::registry& reg, entt::entity e)
     const MeshRenderer* mr = reg.try_get<MeshRenderer>(e);
     if (!mr) return nullptr;
     if (!mr->shaderPath.empty()) return "カスタムシェーダーは仮想ジオメトリの対象外です（プロキシで描きます）";
+    if (!mr->materialRemap.empty()) return "材質名による差し替え（materialRemap）は仮想ジオメトリの対象外です（プロキシで描きます）";
     for (uint32_t mi = 0; mi < static_cast<uint32_t>(mr->materialAsset.size()); ++mi)
         if (mr->HasMaterialAsset(mi)) return "材質アセット（.dxmat / マテリアルグラフ）は仮想ジオメトリの対象外です（プロキシで描きます）";
     const size_t nOv = (std::max)((std::max)(mr->overrideAlbedoTexture.size(), mr->overrideNormalTexture.size()),

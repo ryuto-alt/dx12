@@ -186,6 +186,7 @@ void Application::BuildDrawList()
     auto emitItem = [&](entt::entity e, const MeshRenderer& renderer, const XMMATRIX& world,
                         const XMFLOAT4X4* prevWorldIn, u32 instanceIndex, u64 guid)
     {
+        renderer.RefreshMaterialRemap();   // 材質名による差し替え(materialRemap)の解決。表が空なら即 return
         DrawItem item{};
         item.e        = e;
         item.renderer = &renderer;
@@ -357,7 +358,7 @@ void Application::BuildDrawList()
                         RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.x) | (bitsOf(hm->emissiveColor.y) << 32));
                         RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.z) | (bitsOf(hm->emissiveIntensity) << 32));
                     }
-                    const std::string& matPath = MeshRenderer::SafeGetOverride(renderer.materialAsset, hmi);
+                    const std::string& matPath = renderer.MaterialAssetOf(hmi);
                     if (!matPath.empty())
                     {
                         RtHashMix(rtItemHash, std::hash<std::string>{}(matPath));
@@ -395,7 +396,7 @@ void Application::BuildDrawList()
         if (item.alphaClass == 2u) item.sortKey = 3u;
         // マテリアルグラフ（G2b）: 同じグラフ HLSL の物を連続させて PSO 切替を減らす。グラフ材質を使わないシーンは 0 のまま（並び不変）。
         if (m_graphMaterials && renderer.HasMaterialAsset(0))
-            item.graphHash = m_graphMaterials->PeekShaderHash(MeshRenderer::SafeGetOverride(renderer.materialAsset, 0));
+            item.graphHash = m_graphMaterials->PeekShaderHash(renderer.MaterialAssetOf(0));
 
         // ---- 自動インスタンシングの適格判定 ----
         // 「per-object 定数を一切必要としない静的メッシュ」だけを畳む。
@@ -1084,7 +1085,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             if (renderer.HasMaterialAsset(mi))
             {
                 const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(
-                    MeshRenderer::SafeGetOverride(renderer.materialAsset, mi), nativeCmdList);
+                    renderer.MaterialAssetOf(mi), nativeCmdList);
                 if (loaded && loaded->valid) matAsset = loaded;
             }
 
@@ -1278,6 +1279,13 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 pbrParams.uvOffsetX = du - std::floor(du);
                 pbrParams.uvOffsetY = dv - std::floor(dv);
             }
+            // materialRemap 由来の .dxmat は uvTiling を描画時に掛ける(頂点へ焼くと共有メッシュ・材質ごとに別値にできない)。
+            // 個別 materialAsset の uvTiling は従来どおり無視(既存シーンの絵は変わらない)。
+            if (matAsset && renderer.animFrames <= 0 && renderer.MaterialIsRemapped(mi))
+            {
+                pbrParams.uvScaleX *= matAsset->data.uvTilingU;
+                pbrParams.uvScaleY *= matAsset->data.uvTilingV;
+            }
             // ★マテリアルグラフ（G2b）。.dxmat が graph キーを持つ材質なら、グラフの PSO とパラメータプールのレコードで描く。
             //   b2 は同じ 9 DWORD を読み替える（DWORD0 = recordBase / DWORD1 = プールの SRV 添字 / DWORD2 = graphFlags。
             //   tint / uvScaleOffset / emissive はそのまま。ForwardGraph.hlsl の cbuffer GraphMaterial）。DWORD 数は増えない。
@@ -1286,7 +1294,7 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             bool useGraph = false;
             if (matAsset && !skin && m_graphMaterials && matAsset->data.IsGraph())
             {
-                useGraph = m_graphMaterials->Resolve(MeshRenderer::SafeGetOverride(renderer.materialAsset, mi), *matAsset,
+                useGraph = m_graphMaterials->Resolve(renderer.MaterialAssetOf(mi), *matAsset,
                                                      nativeCmdList, frameIndex, depthPrepassActive, graphDraw);
                 if (useGraph)
                 {
@@ -1821,7 +1829,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         if (m_materialAssetManager && r.HasMaterialAsset(mi))
         {
             const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(
-                MeshRenderer::SafeGetOverride(r.materialAsset, mi), m_commandList->GetNative());
+                r.MaterialAssetOf(mi), m_commandList->GetNative());
             if (loaded && loaded->valid) { baseM = loaded->data.metallic; baseR = loaded->data.roughness; }
         }
         metal = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : baseM;
@@ -1880,7 +1888,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         if (m_materialAssetManager && r.HasMaterialAsset(mi))
         {
             const auto* loaded = m_materialAssetManager->GetOrLoad(
-                MeshRenderer::SafeGetOverride(r.materialAsset, mi), m_commandList->GetNative());
+                r.MaterialAssetOf(mi), m_commandList->GetNative());
             if (loaded && loaded->valid) matAsset = loaded;
         }
         const u32 ovBlock = EnsureMaterialOverrideSrv(e, mi, r, mat, m_commandList->GetNative());
@@ -1901,6 +1909,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         cb.flags      = PackAlphaTestFlags(0u, ap);
         cb.packedTint = PackTintWithOpacity(0x00FFFFFFu, 1.0f);
         ComputeMeshUvScaleOffset(r, cb.uvScaleX, cb.uvScaleY, cb.uvOffsetX, cb.uvOffsetY);
+        if (matAsset && r.animFrames <= 0 && r.MaterialIsRemapped(mi))   // フォワードと同じ remap 由来の uvTiling
+        {
+            cb.uvScaleX *= matAsset->data.uvTilingU;
+            cb.uvScaleY *= matAsset->data.uvTilingV;
+        }
         // 深度/影パスは自己発光を読まないが、ルート定数は残留するので 0 を明示的に書いておく。
         cb.packedEmissive = 0u;
         m_commandList->GetNative()->SetGraphicsRoot32BitConstants(
@@ -2274,7 +2287,7 @@ void Application::RecordPerceptionIds(ID3D12GraphicsCommandList* cmd, ID3D12Reso
         if (m_materialAssetManager && r.HasMaterialAsset(mi))
         {
             const auto* loaded = m_materialAssetManager->GetOrLoad(
-                MeshRenderer::SafeGetOverride(r.materialAsset, mi), cmd);
+                r.MaterialAssetOf(mi), cmd);
             if (loaded && loaded->valid) matAsset = loaded;
         }
         const u32 ovBlock = EnsureMaterialOverrideSrv(e, mi, r, mat, cmd);
