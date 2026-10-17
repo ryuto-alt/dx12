@@ -146,7 +146,12 @@ void Mesh::GenerateLods(GraphicsDevice& device,
 
     struct LodSpec { f32 targetRatio; f32 maxError; };
     static constexpr LodSpec kSpecs[kMaxLods - 1] =
-        { {0.30f, 0.05f}, {0.10f, 0.25f}, {0.03f, 0.45f}, {0.01f, 0.65f} };
+        { {0.30f, 0.010f}, {0.10f, 0.025f}, {0.03f, 0.060f}, {0.01f, 0.150f} };
+    // ★maxError は meshopt の相対誤差（メッシュ範囲 = 2*半径 に対する比）。「その LOD に切り替わる距離で
+    //   画面上 1.5px 以内」から逆算した値（切替距離は半径の 12/27/75/190 倍＝ kLodScaleDefault=1.5、
+    //   1080p / FOV60 で 1px ≒ 0.001rad）。旧値 0.05/0.25/0.45/0.65 は LOD2 で範囲の 25% まで
+    //   崩れて良いことになり、遠景で形が変わるのが見えていた（2026-10-17）。
+    //   効かないメッシュは下の「有意に減らなければ打ち切り」で LOD 数が減るだけで、絵は劣化しない。
 
     // Permissive: DCCエクスポート品はUV/法線シームで頂点が全スプリットされがちで、
     // 既定では全エッジが境界扱い＝簡略化がほぼ進まない（例: Blender GLB が 755712→755706）。

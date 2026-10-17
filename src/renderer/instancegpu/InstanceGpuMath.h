@@ -132,6 +132,16 @@ inline std::vector<ChunkRecord> BuildChunks(const InstanceRecord* rec, u32 count
     return out;
 }
 
+// LOD 選択の距離スケール（BuildDrawList / GPU カリングの共通値。>1 で遠くまでフル解像度を維持）。
+// ★2026-10-17: 1.0 → 1.5。1.0 では半径 0.5m の物が 4m で LOD1 / 9m で LOD2 に落ち、
+//   一人称・歩行速度で「近づくと形が出来上がる」ポップが見えていた。1.5 なら同じ物が
+//   LOD1 = 6m / LOD2 = 13m / LOD3 = 38m / LOD4 = 95m（半径の 12/27/75/190 倍）。
+//   2.0 も試した: 高ポリ 5000 体の stress で主パス三角形が 2.1 倍（8.8M→18.7M）・fps 106→75 になったので 1.5。
+//   Mesh::GenerateLods の maxError はこの距離で 1.5px 以内に収まる値に揃えてある（Mesh.cpp）。
+//   BuildDrawList の LOD 式（ApplicationRender.cpp）・shaders/instancegpu/InstanceCull.hlsl の
+//   閾値はこの式の複製。式を変えるときは 3 箇所を一緒に。
+inline constexpr f32 kLodScaleDefault = 1.5f;
+
 // 1 ビュー分のカリング・LOD の入力。
 struct ViewParams
 {
@@ -140,7 +150,7 @@ struct ViewParams
     u32 lodBias = 0;             // 影パスは 1
     f32 texelWorld = 0.0f;       // 影カスケードの 1 テクセルが何 m か（0 = 無効）
     u32 maxList = kLists - 1;    // 描く最大 LOD（サブメッシュの最大 LOD 数 - 1。これを超える LOD は丸める）
-    f32 lodScale = 1.0f;         // BuildDrawList の kLodScale
+    f32 lodScale = kLodScaleDefault;   // BuildDrawList の LOD スケールと同じ値
 };
 
 inline void PlanesFromViewProj(const DirectX::XMFLOAT4X4& viewProj, f32 out[6][4])

@@ -29,6 +29,7 @@
 #include "renderer/TransitionPresets.h"
 #include "renderer/ViewDesc.h"
 #include "renderer/ViewPasses.h"
+#include "renderer/instancegpu/InstanceGpuMath.h"   // kLodScaleDefault
 #include "editor/AssetDrop.h"
 #include "editor/panels/NodeGraphSandboxPanel.h"   // ノードグラフ サンドボックス窓（マテリアルグラフ G0）
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
@@ -294,7 +295,10 @@ void Application::BuildDrawList()
         //   目の前でベベルの陰影が消えるのが見えてしまっていた。今の値なら同じ壁が
         //   LOD0 = 約 25m / LOD1 = 約 55m まで保つ。屋内の視距離ならほぼ常にフル解像度。
         //   遠景を大量に出すシーンで重くなったら kLodScale を下げる方向で調整すること。
-        constexpr f32 kLodScale = 1.0f;   // >1 で更に遠くまでフル解像度を維持
+        //   ★2026-10-17: 1.0 → 1.5（instgpu::kLodScaleDefault。GPU カリングと同じ値を共有）。
+        //     半径 0.5m の物は LOD1 = 6m / LOD2 = 13m / LOD3 = 38m / LOD4 = 95m。オープンワールドで
+        //     「近づくと形が出来上がる」見え方を避けるため。Mesh::GenerateLods の maxError も同じ基準。
+        constexpr f32 kLodScale = instgpu::kLodScaleDefault;
         const f32 dist = XMVectorGetX(XMVector3Length(
             XMVectorSubtract(XMLoadFloat3(&item.center), camPos)));
         const f32 apparent = item.radius / (std::max)(dist, 1e-3f) * kLodScale;
@@ -4520,7 +4524,11 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         f32 camNear = m_camera->GetNearZ();
         f32 camFar  = m_camera->GetFarZ();
         // 影が無限遠まで必要なわけではないので、現実的な距離にクランプ（タイトに保つ）。
-        camFar = (std::min)(camFar, 200.0f);
+        // ★2026-10-17: 200 → 400。200m だと通りの先の建物の影が「近づくと現れる」ように見えた
+        //   （最終カスケードの外は無影）。近景の解像度を保つため分割は lambda 0.7（Application.h）で
+        //   手前寄りに取る: 分割 ≒ 31/64/125/400m（旧 25/52/90/200m）。RT サン影が有効なら静的ジオメトリは
+        //   無限遠まで RT が担当するので、CSM はスキンド / 半透明の分だけ。
+        camFar = (std::min)(camFar, 400.0f);
         ComputeCascades(lightDir, camNear, camFar);
     }
 

@@ -1291,7 +1291,7 @@ private:
     f32                                m_persistedBlendBand     = -1.0f;
     f32                                m_persistedDepthBias     = -1.0f;
     // CSM パラメータ（ImGui 編集用）
-    f32                                m_cascadeSplitLambda = 0.5f;  // 0=一様, 1=対数
+    f32                                m_cascadeSplitLambda = 0.7f;  // 0=一様, 1=対数（0.5→0.7: 描画距離 400m でも近景の解像度を保つ）
     f32                                m_cascadeBlendBand   = 1.5f;  // 境界ブレンド幅(view深度)
     f32                                m_shadowDepthBias    = 0.0015f; // shadowParams.y: 受光面アクネ/ピーターパン調整
     bool                               m_showCascadeDebug   = false;

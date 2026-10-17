@@ -185,7 +185,14 @@ void TestMath()
         CHECK(NominalLod(1.0f, 60.0f, 1.0f) == 3);   // 0.0166
         CHECK(NominalLod(1.0f, 200.0f, 1.0f) == 4);  // 0.005
         CHECK(NominalLod(1.0f, 0.0f, 1.0f) == 0);    // 距離 0 でも壊れない（max(dist, 1e-3)）
+        // 既定の lodScale（kLodScaleDefault = 1.5）での切替距離（半径 1: 12 / 27 / 75 / 190）
+        CHECK(NominalLod(1.0f, 11.0f, kLodScaleDefault) == 0);
+        CHECK(NominalLod(1.0f, 13.0f, kLodScaleDefault) == 1);
+        CHECK(NominalLod(1.0f, 28.0f, kLodScaleDefault) == 2);
+        CHECK(NominalLod(1.0f, 80.0f, kLodScaleDefault) == 3);
+        CHECK(NominalLod(1.0f, 200.0f, kLodScaleDefault) == 4);
         ViewParams v = MakeView({0, 0, 0}, {0, 0, 1}, 90.0f, 1000.0f, 0, 0.0f, 4);
+        v.lodScale = 1.0f;   // 以降の期待値は lodScale 1 前提（既定値は上で確認）
         InstanceRecord r{};
         r.center[2] = 20.0f; r.radius = 1.0f;   // LOD 2
         CHECK(SelectList(v, r) == 2);
