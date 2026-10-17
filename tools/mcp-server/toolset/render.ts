@@ -475,13 +475,13 @@ reg(
   + "★このツールは非対応 GPU でも【成功する】(supported:false が返るだけ)。"
   + "RT 系を触る前にまずこれを呼んで supported を見ること。"
   + "\n■ ケーパビリティ: supported(bool) / raytracingTier(\"1.1\" \"1.2\" … or \"none\") / highestShaderModel(\"6.8\" 等)。"
-  + "\n■ 設定: shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, "
+  + "\n■ 設定: shadowEnabled, shadowSunAngle, shadowNormalBias, shadowMaxDistance, shadowIntensity, shadowDenoise, "
   + "aoEnabled, aoRadius, aoRayCount, aoIntensity, aoPower, aoCombineWithSsao, aoDenoise, aoDenoiseRadius, "
   + "maxInstances, forceBuildTlas。"
   + "\n■ RT 反射: reflectionsEnabled, reflectionMaxRoughness, reflectionMaxDistance, reflectionHalfRes, reflectionIntensity。"
   + "反射パスの GPU 時間は dx12_benchmark の gpuPassMs.rtReflection。"
   + "\n■ DDGI: ddgiEnabled, ddgiSpacing, ddgiProbeCountX/Y/Z, ddgiOriginX/Y/Z, ddgiRayLength, "
-  + "ddgiHysteresis, ddgiIntensity, ddgiNormalBias, ddgiBounceIntensity, ddgiFollowCamera, ddgiSpacing1, ddgiBudgetMs。"
+  + "ddgiHysteresis, ddgiIntensity, ddgiNormalBias, ddgiBounceIntensity, ddgiFollowCamera, ddgiSpacing1, ddgiBudgetMs, ddgiCascadeCount。"
   + "実測は stats.ddgiReady(PSO が建ったか) / ddgiEnabled / ddgiProbes / ddgiRaysCast / ddgiBytes。"
   + "★ddgiEnabled:true なのに ddgiProbes:0 なら TLAS が無い(tlasReady を見ること)。"
   + "\n■ 実際に走ったか: shadowActive(ON でも本当に RT 影パスが走ったフレームか) / tlasReady(TLAS が建っているか)。"
@@ -526,6 +526,11 @@ reg(
       "影レイの最大距離(m)。0..100000 にクランプ。既定 0 = 無限。遠景の遮蔽物を追わない分だけ速くなる。"),
     shadowIntensity: z.number().optional().describe(
       "RT 影の強さ。0..1 にクランプ。既定 1(RT 影のみ)。0 で無効、途中の値は CSM とのブレンド(デバッグ用)。"),
+    shadowDenoise: z.boolean().optional().describe(
+      "RT 影の専用デノイザ(時間蓄積 + 半影の幅に比例した空間フィルタ。NRD SIGMA / SVGF 系)を使うか(既定 true)。"
+      + "太陽の円盤をジッタした 1px 1 レイの生の影を、速度で再投影した履歴(最大 32 フレーム)と平滑化する。"
+      + "★false で完全に従来経路(R8 へ直接トレース、TAA だけが平均)に戻る=ビット一致。"
+      + "★G-Buffer と速度が書かれないフレームは自動で従来経路。GPU 時間は dx12_perf_stats の gpuPassMs.rtShadowDenoise。"),
     aoEnabled: z.boolean().optional().describe(
       "RT-AO を使うか(既定 false)。ON の間は SSAO 枠(t8)を RT-AO が埋める。"),
     aoRadius: z.number().optional().describe("半球レイの長さ(m)。0.01..100 にクランプ。既定 1。"),
@@ -587,6 +592,10 @@ reg(
       + "ddgiProbeCountX/Y/Z は 1 カスケードの格子数・ddgiOrigin は無視)。false(既定)= 従来の固定ボリューム。"),
     ddgiSpacing1: z.number().optional().describe(
       "遠景カスケードのプローブ間隔(m)。0.1..100 にクランプ。既定 2.0。ddgiFollowCamera:true のときだけ使う。"),
+    ddgiCascadeCount: z.number().int().optional().describe(
+      "DDGI のカスケード数。1..4 にクランプ。既定 2(従来と同じ絵)。ddgiFollowCamera:true のときだけ使う。"
+      + "間隔は 近景=ddgiSpacing / 2 段目=max(ddgiSpacing1, ddgiSpacing*1.25) / 3 段目以降=直前の 2 倍(クリップマップ)。"
+      + "1 段の格子数 ddgiProbeCountX*Y*Z は 4096 以下(超えると E_OUT_OF_RANGE)。"),
     ddgiBudgetMs: z.number().optional().describe(
       "1 フレームの DDGI の GPU 予算(ms)。0.05..20 にクランプ。既定 1。実測の GPU 時間から更新するプローブ数を決める(超えそうなら間引く)。"),
     reflectionsEnabled: z.boolean().optional().describe(

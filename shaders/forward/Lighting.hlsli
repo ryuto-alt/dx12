@@ -51,7 +51,7 @@ Texture2D<float4> g_ddgiProbeData  : register(t30);
 // CSM 対応で lightViewProj(64B) を cascadeViewProj[4](256B) + cascadeSplitsView(16B) + shadowParams(16B) へ拡張。
 // IBL 対応で iblParams(16B) を追加。スポット/ポイント影対応で shadowIndex・spotShadowMatrix[]・
 // spotShadowTexel/pointShadowNear を追加。コンタクトシャドウ対応で末尾に 16B を追加。
-// C++ Application.cpp の FrameConstants(1536B) とバイト単位で一致させること。
+// C++ Application.cpp の FrameConstants(1600B) とバイト単位で一致させること。
 cbuffer PerFrameConstants : register(b1)
 {
     float4x4 view;                               // 64B  (offset   0)
@@ -102,7 +102,13 @@ cbuffer PerFrameConstants : register(b1)
     // ▼ 法線マップフィルタリング（旧 _csPad の 12B をそのまま使う＝レイアウトは 1 バイトも動かない）
     //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
     float3 normalFilterParams;
-};                                               // total = 1536B
+    // ▼ DDGI のカスケード 2 / 3（末尾追記 64B。既存のオフセットは 1 バイトも動かない）。ddgiCounts.w = カスケード数。
+    //   カスケードが 2 以下 / 固定ボリューム / Legacy では 0（読まない）。
+    float4   ddgiC2;                              // 16B  (offset 1536) .xyz=カスケード 2 の窓の原点 .w=間隔
+    float4   ddgiScroll2;                         // 16B  (offset 1552) .xyz=カスケード 2 の記憶領域のずらし（整数）
+    float4   ddgiC3;                              // 16B  (offset 1568)
+    float4   ddgiScroll3;                         // 16B  (offset 1584)
+};                                               // total = 1600B
 
 // DDGI の拡散間接光。PerFrame のパラメータで包んだだけの薄いラッパ。
 // 戻り値は IBL の irradiance キューブと同じ単位（コサイン加重の平均放射輝度）なので、
@@ -146,9 +152,11 @@ DdgiNewSample SampleDdgiNew(float3 worldPos, float3 N, float3 V, float3 R)
     const uint  perCasc = counts.x * counts.y * counts.z;
     const DdgiVol v0 = DdgiMakeVol(ddgiOrigin.xyz, ddgiSpacing.xyz, counts, int3(ddgiScroll0.xyz), 0u);
     const DdgiVol v1 = DdgiMakeVol(ddgiC1.xyz, ddgiC1.www, counts, int3(ddgiScroll1.xyz), perCasc);
+    const DdgiVol v2 = DdgiMakeVol(ddgiC2.xyz, ddgiC2.www, counts, int3(ddgiScroll2.xyz), perCasc * 2u);
+    const DdgiVol v3 = DdgiMakeVol(ddgiC3.xyz, ddgiC3.www, counts, int3(ddgiScroll3.xyz), perCasc * 3u);
     // camDir は「カメラ → 点」＝ -V
     const DdgiNewResult r = DdgiSampleNew(g_ddgiIrradiance, g_ddgiDistance, g_ddgiSampler, worldPos, N, -V, R, true,
-                                          v0, v1, nCasc, atlasCounts, giParams.y, giParams.z);
+                                          v0, v1, v2, v3, nCasc, atlasCounts, giParams.y, giParams.z);
     o.conf = r.conf;
     if (r.conf <= 0.0) return o;
     // giParams2.w = DDGI の内部単位 → シーンの単位への倍率（従来単位は 1。物理ライティング単位は 1/kClassicUnitScale）

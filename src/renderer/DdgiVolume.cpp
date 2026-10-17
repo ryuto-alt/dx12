@@ -283,8 +283,19 @@ bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s, 
     const u32 py = static_cast<u32>(std::clamp(s.probeCountY, 1, 32));
     const u32 pz = static_cast<u32>(std::clamp(s.probeCountZ, 1, 32));
     const u32 total = px * py * pz;
-    if (total == 0 || total > kMaxProbes) return false;
-    cascades = std::clamp(cascades, 1u, 2u);
+    cascades = std::clamp(cascades, 1u, kMaxCascades);
+    if (total == 0 || total > kMaxProbes)
+    {
+        // ★1 カスケードのプローブ数が上限を超えると、以前は黙って false を返して DDGI が壊れた絵になった（22→32 で実際に起きた）。
+        const u64 key = (static_cast<u64>(px) << 40) | (static_cast<u64>(py) << 32) | (static_cast<u64>(pz) << 24) | cascades;
+        if (m_lastFailKey != key)
+        {
+            m_lastFailKey = key;
+            Logger::Warn("DDGI: 1 カスケードのプローブ数 {}x{}x{} = {} が上限 {} を超えています。DDGI を更新しません（格子数を減らしてください）",
+                         px, py, pz, total, kMaxProbes);
+        }
+        return false;
+    }
     // ★MatchesGrid は m_planCascades（PlanFrame の結果）と比べる。Update が別の値で呼ぶことは無いが念のため揃える。
     if (m_rayData && m_irradiance && m_distance && m_probeData
         && m_probesX == px && m_probesY == py && m_probesZ == pz && m_layoutCascades == cascades)
@@ -344,9 +355,15 @@ bool DdgiVolume::EnsureResources(GraphicsDevice& device, const DdgiSettings& s, 
     }
     if (!ok)
     {
-        Logger::Warn("DDGI: プローブ用テクスチャを確保できません（{} プローブ）", allProbes);
+        const u64 key = (static_cast<u64>(1) << 62) | (static_cast<u64>(allProbes) << 8) | cascades;
+        if (m_lastFailKey != key)
+        {
+            m_lastFailKey = key;
+            Logger::Warn("DDGI: プローブ用テクスチャを確保できません（{} プローブ）", allProbes);
+        }
         return false;
     }
+    m_lastFailKey = 0;
     // 旧リソース / ディスクリプタは GPU が使い終わるまで預ける（TDR 対策。RetireOldResources のコメント参照）。
     RetireOldResources();
     TickRetired();
@@ -574,14 +591,15 @@ void DdgiVolume::BuildList(const DdgiSettings& s)
     const u32 budget = m_budget == 0 ? total : std::min(m_budget, total);
     u32 rrP = budget > m_listReset ? budget - m_listReset : 0u;
     rrP = std::max(rrP, budget / 8u);
-    const ddgi::Split sp = ddgi::SplitBudget(rrP, perCasc, nc > 1 ? perCasc : 0u);
-    ddgi::PickRoundRobin(perCasc, sp.k0, m_cursor[0], 0, m_pending, m_list);
-    if (nc > 1) ddgi::PickRoundRobin(perCasc, sp.k1, m_cursor[1], perCasc, m_pending, m_list);
+    u32 nPer[kMaxCascades] = {perCasc, perCasc, perCasc, perCasc};
+    const ddgi::SplitN sp = ddgi::SplitBudgetN(rrP, nPer, static_cast<int>(nc));
+    for (u32 c = 0; c < nc; ++c)
+        ddgi::PickRoundRobin(perCasc, sp.k[c], m_cursor[c], c * perCasc, m_pending, m_list);
 
     // 間引いたぶんは実効ヒステリシスを h^周期 にして、実時間の収束の速さを保つ
     const float h = std::clamp(s.hysteresis, 0.0f, 0.995f);
-    m_hyst[0] = ddgi::EffectiveHysteresis(h, perCasc, sp.k0);
-    m_hyst[1] = nc > 1 ? ddgi::EffectiveHysteresis(h, perCasc, sp.k1) : m_hyst[0];
+    for (u32 c = 0; c < kMaxCascades; ++c)
+        m_hyst[c] = c < nc ? ddgi::EffectiveHysteresis(h, perCasc, sp.k[c]) : m_hyst[0];
 }
 
 void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& cam, const XMFLOAT3& camFwd,
@@ -603,7 +621,7 @@ void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& ca
         return;
     }
     m_planFollow   = s.followCamera;
-    m_planCascades = m_planFollow ? 2u : 1u;
+    m_planCascades = m_planFollow ? static_cast<u32>(std::clamp(s.cascadeCount, 1, static_cast<int>(kMaxCascades))) : 1u;
     m_counts[0] = std::clamp(s.probeCountX, 1, 32);
     m_counts[1] = std::clamp(s.probeCountY, 1, 32);
     m_counts[2] = std::clamp(s.probeCountZ, 1, 32);
@@ -613,12 +631,14 @@ void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& ca
 
     m_spacing[0] = std::max(s.spacing, 0.05f);
     m_spacing[1] = m_planFollow ? std::max(s.spacing1, m_spacing[0] * 1.25f) : m_spacing[0];
+    for (u32 c = 2; c < kMaxCascades; ++c) m_spacing[c] = m_spacing[c - 1] * 2.0f;   // c2 以降は直前の段の 2 倍（クリップマップ）
 
     PlanKey key;
     for (int a = 0; a < 3; ++a) key.counts[a] = m_counts[a];
     key.cascades = nc;
     key.spacing0 = m_spacing[0];
     key.spacing1 = m_spacing[1];
+    key.spacingTop = m_spacing[nc - 1];
     key.follow   = m_planFollow;
     if (!m_planFollow) { key.origin[0] = s.originX; key.origin[1] = s.originY; key.origin[2] = s.originZ; }
     if (!(key == m_planKey) || m_pending.size() != total)
@@ -626,9 +646,8 @@ void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& ca
         // 格子の形 / 間隔 / 追従の切り替え: 全部作り直し（全プローブをリセット待ちにする）
         m_planKey = key;
         m_pending.assign(total, 1);
-        m_win[0] = ddgi::Window{};
-        m_win[1] = ddgi::Window{};
-        m_cursor[0] = m_cursor[1] = 0;
+        for (auto& w : m_win) w = ddgi::Window{};
+        for (auto& cu : m_cursor) cu = 0;
         m_budget = 0;
         m_requestResetAll = false;
     }
@@ -636,8 +655,7 @@ void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& ca
     {
         // 履歴の破棄（シーン切替 / リセット）: 全プローブをリセット待ちに。窓は位置をカメラへ取り直す。
         std::fill(m_pending.begin(), m_pending.end(), static_cast<u8>(1));
-        m_win[0] = ddgi::Window{};
-        m_win[1] = ddgi::Window{};
+        for (auto& w : m_win) w = ddgi::Window{};
         m_requestResetAll = false;
     }
 
@@ -677,7 +695,8 @@ void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& ca
         m_stats.groundDown = {g.down[0], g.down[1], g.down[2], g.downHit ? 1.0f : 0.0f};
         m_stats.groundView = {g.view[0], g.view[1], g.view[2], g.viewHit ? 1.0f : 0.0f};
         m_stats.anchorOffset0 = {m_anchorOffset[0][0], m_anchorOffset[0][1], m_anchorOffset[0][2]};
-        m_stats.anchorOffset1 = {m_anchorOffset[1][0], m_anchorOffset[1][1], m_anchorOffset[1][2]};
+        const u32 farIdx = std::min<u32>(1u, nc - 1);   // anchorOffset1 は c1（段が 1 つなら c0）
+        m_stats.anchorOffset1 = {m_anchorOffset[farIdx][0], m_anchorOffset[farIdx][1], m_anchorOffset[farIdx][2]};
     }
 
     // ---- 予算: GPU 時間の実測（kLag フレーム遅れ）から 1 プローブの費用を見積もり、更新するプローブ数を決める ----
@@ -728,6 +747,19 @@ DdgiVolume::SampleParams DdgiVolume::GetSampleParams(const DdgiSettings& s) cons
                   static_cast<float>(m_win[0].scroll[2]), 0.0f};
     p.scroll1  = {static_cast<float>(m_win[1].scroll[0]), static_cast<float>(m_win[1].scroll[1]),
                   static_cast<float>(m_win[1].scroll[2]), 0.0f};
+    p.c2 = p.c3 = p.scroll2 = p.scroll3 = {0.0f, 0.0f, 0.0f, 0.0f};
+    if (m_planCascades > 2)
+    {
+        p.c2      = {m_origin[2][0], m_origin[2][1], m_origin[2][2], m_spacing[2]};
+        p.scroll2 = {static_cast<float>(m_win[2].scroll[0]), static_cast<float>(m_win[2].scroll[1]),
+                     static_cast<float>(m_win[2].scroll[2]), 0.0f};
+    }
+    if (m_planCascades > 3)
+    {
+        p.c3      = {m_origin[3][0], m_origin[3][1], m_origin[3][2], m_spacing[3]};
+        p.scroll3 = {static_cast<float>(m_win[3].scroll[0]), static_cast<float>(m_win[3].scroll[1]),
+                     static_cast<float>(m_win[3].scroll[2]), 0.0f};
+    }
     return p;
 }
 
@@ -909,6 +941,18 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
         putF(11, m_spacing[1]);
         putF(15, m_hyst[0]);
         putF(19, m_hyst[1]);
+        // c2 = 32-34 scroll / 35 spacing / 36-38 origin / 39 hyst、c3 = 40-42 / 43 / 44-46 / 47
+        for (u32 c = 2; c < kMaxCascades; ++c)
+        {
+            const u32 b = 32u + (c - 2u) * 8u;
+            for (int a = 0; a < 3; ++a)
+            {
+                putI(b + a,      m_win[c].scroll[a]);
+                putF(b + 4 + a,  m_origin[c][a]);
+            }
+            putF(b + 3, m_spacing[c]);
+            putF(b + 7, m_hyst[c]);
+        }
         putF(23, m_lgCell);
         lgCells = static_cast<u32>(m_lgDims[0]) * m_lgDims[1] * m_lgDims[2];
         const bool useGrid = m_psoLightGrid != nullptr && d.lightSrvIndex != kNoSrv && d.lightCount > 0
@@ -1074,6 +1118,7 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     m_stats.lightGridCells = lgCells;
     m_stats.hysteresis0 = giNew ? m_hyst[0] : s.hysteresis;
     m_stats.hysteresis1 = giNew ? m_hyst[1] : s.hysteresis;
+    m_stats.hysteresisTop = giNew ? m_hyst[std::max<u32>(m_layoutCascades, 1u) - 1u] : s.hysteresis;
     m_stats.cascades = giNew ? m_layoutCascades : 1u;
     m_historyValid   = true;
     if (giNew)

@@ -71,10 +71,11 @@ SamplerState gLinearWrap : register(s0);
 //   [0]=更新リストの長さ [1]=カスケード数 [2]=1 カスケードのプローブ数 [3]=ライトグリッドの 1 セルの最大灯数
 //   [4..6]=カスケード 0 の scroll(int) [7]=間隔0(float) [8..10]=scroll1 [11]=間隔1 [12..14]=origin0 [15]=hyst0 [16..18]=origin1 [19]=hyst1
 //   [20..22]=ライトグリッドの原点 [23]=セルの大きさ [24..26]=格子の分割数(uint) [27]=グリッドを使う(1/0) [28]=グリッド外で総当たりする灯数の上限
-//   [32..]=更新リスト。要素 = プローブの通し番号 | 0x80000000（最上位ビット = 履歴を捨てて埋め直す）
+//   [32..34]=カスケード 2 の scroll(int) [35]=間隔2 [36..38]=origin2 [39]=hyst2 / [40..42]=scroll3 [43]=間隔3 [44..46]=origin3 [47]=hyst3
+//   [64..]=更新リスト（DDGI_PLAN_HDR）。要素 = プローブの通し番号 | 0x80000000（最上位ビット = 履歴を捨てて埋め直す）
 //  ★更新リスト方式は GI モード New 専用（giFlags bit6）。Legacy は従来どおり dtid をそのままプローブ番号に使う。
 // ---------------------------------------------------------------------------
-#define DDGI_PLAN_HDR 32u
+#define DDGI_PLAN_HDR 64u
 bool DdgiPlanMode() { return (gGiFlags & 64u) != 0u; }
 uint DdgiPlanU(uint i)  { StructuredBuffer<uint> p = ResourceDescriptorHeap[gPlanSrv]; return p[i]; }
 float DdgiPlanF(uint i) { return asfloat(DdgiPlanU(i)); }
@@ -94,12 +95,14 @@ struct DdgiCasc
 DdgiCasc DdgiLoadCasc(uint c)
 {
     DdgiCasc k;
-    const bool c1 = (c != 0u);
-    k.origin  = DdgiPlanF3(c1 ? 16u : 12u);
-    k.spacing = DdgiPlanF(c1 ? 11u : 7u);
-    k.scroll  = DdgiPlanI3(c1 ? 8u : 4u);
+    // c0 / c1 は従来の語の位置（4-6 scroll / 7 間隔 / 12-14 origin / 15 hyst、8-10 / 11 / 16-18 / 19）。
+    // c2 = 32 + 8*(c-2) から scroll(3) / 間隔 / origin(3) / hyst。
+    const uint hi = 32u + (c >= 2u ? (c - 2u) * 8u : 0u);
+    k.origin  = DdgiPlanF3(c >= 2u ? hi + 4u : (c == 1u ? 16u : 12u));
+    k.spacing = DdgiPlanF(c >= 2u ? hi + 3u : (c == 1u ? 11u : 7u));
+    k.scroll  = DdgiPlanI3(c >= 2u ? hi : (c == 1u ? 8u : 4u));
     k.baseIdx = c * DdgiPlanU(2);
-    k.hyst    = DdgiPlanF(c1 ? 19u : 15u);
+    k.hyst    = DdgiPlanF(c >= 2u ? hi + 7u : (c == 1u ? 19u : 15u));
     return k;
 }
 
@@ -308,23 +311,25 @@ float3 RtHitShadeGiNew(RtHitInfo h, float3 dir, bool oldSky, float extScale, flo
                 Texture2D<float4> prevIrrN  = ResourceDescriptorHeap[gPrevIrradianceSrv];
                 Texture2D<float2> prevDistN = ResourceDescriptorHeap[gPrevDistanceSrv];
                 // カスケード: 更新計画の窓（固定ボリュームは cb の格子 = カスケード 1 本・scroll 0）
-                DdgiVol v0, v1;
+                DdgiVol v0, v1, v2, v3;
                 uint nCasc = 1u;
                 if (DdgiPlanMode())
                 {
                     v0 = DdgiVolOf(DdgiLoadCasc(0u));
-                    nCasc = max(DdgiPlanU(1), 1u);
-                    v1 = v0;
+                    nCasc = clamp(DdgiPlanU(1), 1u, 4u);
+                    v1 = v0; v2 = v0; v3 = v0;
                     if (nCasc > 1u) v1 = DdgiVolOf(DdgiLoadCasc(1u));
+                    if (nCasc > 2u) v2 = DdgiVolOf(DdgiLoadCasc(2u));
+                    if (nCasc > 3u) v3 = DdgiVolOf(DdgiLoadCasc(3u));
                 }
                 else
                 {
                     v0 = DdgiMakeVol(gDdgi.originWS, gDdgi.spacing, gDdgi.probeCounts, int3(0, 0, 0), 0u);
-                    v1 = v0;
+                    v1 = v0; v2 = v0; v3 = v0;
                 }
                 const uint3 atlasCounts = uint3(gDdgi.probeCounts.x, gDdgi.probeCounts.y, gDdgi.probeCounts.z * nCasc);
                 const DdgiNewResult sr = DdgiSampleNew(prevIrrN, prevDistN, gLinearWrap, h.worldPos, h.worldNormal, dir,
-                                                       h.worldNormal, false, v0, v1, nCasc, atlasCounts,
+                                                       h.worldNormal, false, v0, v1, v2, v3, nCasc, atlasCounts,
                                                        gViewBias, gNormalBiasNew);
                 bounceNew = gDdgi.bounceIntensity * sr.conf * sr.irrN;
             }

@@ -770,8 +770,8 @@ void RenderLightingPanel(Scene* scene,
                 ImGui::TextColored(theme::Warn,
                                    "DDGI が OFF のため、環境光は従来の IBL のままです。");
             else if (dd.followCamera)
-                ImGui::TextDisabled("DDGI カメラ追従 2 カスケード（各 %d × %d × %d）/ 近 %.2f m・遠 %.2f m",
-                                    dd.probeCountX, dd.probeCountY, dd.probeCountZ, dd.spacing, dd.spacing1);
+                ImGui::TextDisabled("DDGI カメラ追従 %d カスケード（各 %d × %d × %d）/ 近 %.2f m・次 %.2f m",
+                                    dd.cascadeCount, dd.probeCountX, dd.probeCountY, dd.probeCountZ, dd.spacing, dd.spacing1);
             else
                 ImGui::TextDisabled("DDGI 固定ボリューム %d × %d × %d（%d 個）/ 間隔 %.2f m",
                                     dd.probeCountX, dd.probeCountY, dd.probeCountZ,

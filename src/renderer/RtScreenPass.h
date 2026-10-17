@@ -15,6 +15,7 @@ class GraphicsDevice;
 class DescriptorHeap;
 class RenderTarget;
 class ConstantBuffer;
+class GpuTimer;
 
 // DXR 1.1 inline raytracing（RayQuery）を使うスクリーン空間パスをまとめたクラス。
 //   ・RT サン影（Step 2）→ R8_UNORM。既存のコンタクトシャドウ枠(t11)へそのまま差し込む
@@ -53,6 +54,9 @@ public:
     static constexpr DXGI_FORMAT kDebugFormat = DXGI_FORMAT_R16G16_FLOAT;
     // アルベド可視化は RGB が要るので RG16F では足りない（kDebugFormat は流用できない）。
     static constexpr DXGI_FORMAT kAlbedoFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    // 影デノイザ: トレース(x=可視率, y=遮蔽物までの距離)は RG16F、履歴(平均/2次モーメント/長さ/ビューZ)は RGBA16F。
+    static constexpr DXGI_FORMAT kShadowTraceFormat = DXGI_FORMAT_R16G16_FLOAT;
+    static constexpr DXGI_FORMAT kShadowHistFormat  = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
     void Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, DescriptorHeap* srvHeap,
                     u32 width, u32 height, const std::wstring& shaderDir);
@@ -94,12 +98,20 @@ public:
         // GeometryInfo テーブル（RaytracingScene::GetGeometryInfoAddress()）。
         // 0 なら バインドレスのヒット点情報は使えない。
         D3D12_GPU_VIRTUAL_ADDRESS geometryInfo = 0;
+        // --- 影デノイザ ---
+        // 速度バッファ（R16G16_FLOAT。現 UV - 前 UV。TaaPass::GetVelocitySrvIndex）。ptr==0 ならデノイズしない。
+        D3D12_GPU_DESCRIPTOR_HANDLE velocitySrv{};
+        // 通し番号（Application::m_perfTotalFrames）。履歴が「直前のフレーム」のものか判定する。
+        u64   frameSerial = 0;
     };
 
     // 生成して SRV index を返す。未準備なら DescriptorHeap::kInvalidIndex。
     // 呼び出し側は深度を PIXEL_SHADER_RESOURCE へ遷移しておくこと。
     // 戻り時、出力 RT は PIXEL_SHADER_RESOURCE。RT/ビューポート/RootSig は呼び出し側で再設定すること。
-    u32 GenerateShadow(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s);
+    // RtSettings::shadowDenoise が true で G-Buffer と速度があれば、トレース → 時間蓄積 → 空間フィルタ。
+    // timer が非 null ならデノイズ 2 パスを GpuTimer::RtShadowDenoise で挟む。
+    u32 GenerateShadow(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s,
+                       GpuTimer* timer = nullptr);
     u32 GenerateAo    (ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s);
     u32 GenerateDebug (ID3D12GraphicsCommandList* cmd, const GenerateDesc& d);
     // バインドレス検証用: ヒット点のアルベドをそのまま出す（計画09 Step 5）。
@@ -109,13 +121,26 @@ public:
 
 private:
     // ★PassDebug までの番号は変えないこと（Run 内のフォーマット判定が依存している）。
+    // PassShadow は影の最終出力(R8)。デノイザ ON のときは空間フィルタの出力先、OFF のときはトレースの出力先。
+    // ★PassShadowTrace 以降は影デノイザ用で、初回使用時に確保する（RT 影が無いシーンでメモリを食わない）。
     enum PassIndex : u32 { PassShadow = 0, PassAo = 1, PassDebug = 2,
-                           PassAoDenoise = 3, PassAlbedo = 4, PassCount = 5 };
+                           PassAoDenoise = 3, PassAlbedo = 4,
+                           PassShadowTrace = 5, PassShadowHist0 = 6, PassShadowHist1 = 7,
+                           PassCount = 8 };
+    // Run が差し替えて使う入力（t5 / t7 / t8）と PSO。
+    struct Extra
+    {
+        ID3D12PipelineState* pso = nullptr;
+        D3D12_GPU_DESCRIPTOR_HANDLE shTrace{}, shHist{}, shVel{};
+        float histValid = 0.0f, pixelAngle = 0.0f, maxN = 32.0f;
+    };
+    bool EnsureShadowTargets(GraphicsDevice& device);
+    void TransitionRt(ID3D12GraphicsCommandList* cmd, PassIndex idx, D3D12_RESOURCE_STATES next);
 
     void CreateRootSignature(GraphicsDevice& device);
     // 3 パス共通の実行本体（CB を書いて全画面三角形を 1 枚描く）。
     u32  Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s,
-             PassIndex pass);
+             PassIndex pass, const Extra* extra = nullptr);
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadow;
@@ -123,6 +148,9 @@ private:
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoDebug;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAoDenoise;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoAlbedo;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadowTrace;      // RG16F 出力のトレース
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadowTemporal;   // RGBA16F
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadowSpatial;    // R8
 
     std::unique_ptr<RenderTarget>   m_rt[PassCount];
     std::unique_ptr<ConstantBuffer> m_paramCB;   // kFrameCount × PassCount 個
@@ -132,10 +160,19 @@ private:
 
     // デノイズパスが読む「生 AO」の GPU ハンドル。GenerateAo がトレース直後に詰める。
     D3D12_GPU_DESCRIPTOR_HANDLE m_rawAoSrv{};
+    DescriptorHeap* m_rtvHeap = nullptr;   // 影デノイザの RT を遅延確保するために覚えておく
     DescriptorHeap* m_srvHeap = nullptr;   // 生 AO の SRV index → GPU ハンドル変換用
     // SM 6.6 Dynamic Resources（ResourceDescriptorHeap[]）が使えるか。
     // ルートシグネチャのフラグとシェーダ側の分岐が必ず一致していなければならない。
     bool m_dynamicResources = false;
+
+    // --- 影デノイザの履歴（ピンポン）---
+    u32  m_shHistWrite = 0;               // 次に書く側（0 or 1）。読む側は 1 - m_shHistWrite
+    bool m_shHistAny   = false;           // 履歴が有効な中身を持つか
+    u64  m_shLastSerial = 0;              // 最後に履歴を書いたフレームの通し番号
+    DirectX::XMFLOAT3 m_shLastLightDir{0, -1, 0};
+    bool m_shTargetsFailed = false;
+    GraphicsDevice* m_device = nullptr;
 
     u32 m_width  = 0;
     u32 m_height = 0;

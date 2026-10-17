@@ -402,6 +402,9 @@ if(DXC_EXECUTABLE)
     set(SHADER_RT_AO         "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAo.hlsl")
     set(SHADER_RT_DEBUG      "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtDebug.hlsl")
     set(SHADER_RT_AODENOISE  "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAoDenoise.hlsl")
+    # RT 影の専用デノイザ（トレース RG16F 版 + 時間蓄積 + 半影幅に比例した空間フィルタ）。
+    set(SHADER_RT_SHDTEMP    "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtShadowTemporal.hlsl")
+    set(SHADER_RT_SHDSPAT    "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtShadowSpatial.hlsl")
     set(SHADER_RT_ALBEDO     "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAlbedo.hlsl")
     # RT 反射（R2）。ヒット点の shading は DDGI と共通（RtHitShade.hlsli）。
     set(SHADER_RT_REFLECTION "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtReflection.hlsl")
@@ -528,6 +531,9 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtDebug_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtAoDenoise_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtShadowTrace_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtShadowTemporal_PS.cso"
+        "${SHADER_OUTPUT_DIR}/RtShadowSpatial_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtAlbedo_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtReflTrace_PS.cso"
         "${SHADER_OUTPUT_DIR}/RtReflTemporal_PS.cso"
@@ -1289,6 +1295,25 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtShadow_PS.cso" "${SHADER_RT_SHADOW}"
         DEPENDS "${SHADER_RT_SHADOW}" ${SHADER_RT_INC}
         COMMENT "Compiling RtShadow.hlsl -> RtShadow_PS.cso (ps_6_5)"
+    )
+    # RT 影デノイザ用: 同じ RtShadow.hlsl を RG16F 出力（x=可視率, y=遮蔽物までの距離）で建てる。
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtShadowTrace_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -D RT_SHADOW_RG=1 -Fo "${SHADER_OUTPUT_DIR}/RtShadowTrace_PS.cso" "${SHADER_RT_SHADOW}"
+        DEPENDS "${SHADER_RT_SHADOW}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtShadow.hlsl -> RtShadowTrace_PS.cso (ps_6_6, RT_SHADOW_RG)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtShadowTemporal_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtShadowTemporal_PS.cso" "${SHADER_RT_SHDTEMP}"
+        DEPENDS "${SHADER_RT_SHDTEMP}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtShadowTemporal.hlsl -> RtShadowTemporal_PS.cso (ps_6_6)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/RtShadowSpatial_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_6 -E PSMain -Fo "${SHADER_OUTPUT_DIR}/RtShadowSpatial_PS.cso" "${SHADER_RT_SHDSPAT}"
+        DEPENDS "${SHADER_RT_SHDSPAT}" ${SHADER_RT_INC}
+        COMMENT "Compiling RtShadowSpatial.hlsl -> RtShadowSpatial_PS.cso (ps_6_6)"
     )
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/RtAo_PS.cso"

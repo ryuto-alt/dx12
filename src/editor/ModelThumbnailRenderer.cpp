@@ -90,14 +90,14 @@ void ModelThumbnailRenderer::CreateSharedResources()
     }
 
     // ===== PerFrame アップロードバッファ =====
-    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1536B)
-    // と一致させる。256B アラインで 1536B 確保（CSM の cascadeViewProj[4]/cascadeSplitsView/
+    // main の Forward PSO を流用するため b1 のレイアウトは Application.cpp の FrameConstants(1600B)
+    // と一致させる。256B アラインで 1792B 確保（CSM の cascadeViewProj[4]/cascadeSplitsView/
     // shadowParams/スポット影行列/IBL/コンタクトシャドウまで含めて書けるサイズ）。
     {
         D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_UPLOAD};
         D3D12_RESOURCE_DESC desc{};
         desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Width            = 1536;  // >= 1520、256B アライン
+        desc.Width            = 1792;  // >= 1600、256B アライン
         desc.Height           = 1;
         desc.DepthOrArraySize = 1;
         desc.MipLevels        = 1;
@@ -378,8 +378,13 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
         // ▼ コンタクトシャドウ制御 16B (offset 1520)。サムネは白ダミー(t11)なので 0 固定。
         float contactShadowEnabled;
         XMFLOAT3 _csPad;
-    };  // total = 1536B
-    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes (match Application.cpp / Lighting.hlsli)");
+        // ▼ DDGI のカスケード 2 / 3（末尾追記 64B）。サムネでは 0
+        XMFLOAT4 ddgiC2;        // (offset 1536)
+        XMFLOAT4 ddgiScroll2;   // (offset 1552)
+        XMFLOAT4 ddgiC3;        // (offset 1568)
+        XMFLOAT4 ddgiScroll3;   // (offset 1584)
+    };  // total = 1600B
+    static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes (match Application.cpp / Lighting.hlsli)");
     {
         FrameConstants fc{};
         XMStoreFloat4x4(&fc.view, XMMatrixTranspose(viewMat));

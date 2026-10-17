@@ -913,10 +913,15 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // ▼ コンタクトシャドウ制御 16B (offset 1520)
         float                contactShadowEnabled;
         DirectX::XMFLOAT3    _csPad;
-    };  // total = 1536B
+        // ▼ DDGI のカスケード 2 / 3（末尾追記 64B。既存のオフセットは動かない）
+        DirectX::XMFLOAT4 ddgiC2;        // (offset 1536)
+        DirectX::XMFLOAT4 ddgiScroll2;   // (offset 1552)
+        DirectX::XMFLOAT4 ddgiC3;        // (offset 1568)
+        DirectX::XMFLOAT4 ddgiScroll3;   // (offset 1584)
+    };  // total = 1600B
     // ここは CB の確保サイズを決めるためだけの定義。Render() 内の同名構造体・
     // ModelThumbnailRenderer・Lighting.hlsli の PerFrameConstants と必ず揃えること。
-    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
+    static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
 

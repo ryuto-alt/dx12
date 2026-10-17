@@ -212,6 +212,76 @@ void TestRoundRobinAndBudget()
         const Split tiny = SplitBudget(1, 2000, 2000);
         CHECK(tiny.k0 >= 1 && tiny.k1 >= 1);
     }
+    // 予算の分配: N 段への一般化（クリップマップ）
+    {
+        // 従来の 2 段の式（一般化前の実装そのもの）。N=2 は全入力でこれと一致すること
+        auto oldSplit = [](uint32_t P, uint32_t n0, uint32_t n1) {
+            Split s;
+            if (n1 == 0) { s.k0 = std::min(P, n0); return s; }
+            if (P >= n0 + n1) { s.k0 = n0; s.k1 = n1; return s; }
+            const float a = static_cast<float>(n1) / (kNearWeight * static_cast<float>(n0));
+            const float k0f = static_cast<float>(P) / (1.0f + a);
+            s.k0 = std::min(n0, std::max(1u, static_cast<uint32_t>(k0f + 0.5f)));
+            const uint32_t rest = P > s.k0 ? P - s.k0 : 0u;
+            s.k1 = std::min(n1, std::max(1u, rest));
+            return s;
+        };
+        const uint32_t ns[] = {1, 7, 100, 1936, 2000, 3872, 4096};
+        for (uint32_t n0 : ns)
+            for (uint32_t n1 : {0u, 1u, 100u, 3872u, 4096u})
+                for (uint32_t P : {0u, 1u, 64u, 300u, 1000u, 3871u, 3872u, 5000u, 9000u})
+                {
+                    const Split o = oldSplit(P, n0, n1), nw = SplitBudget(P, n0, n1);
+                    CHECK(o.k0 == nw.k0 && o.k1 == nw.k1);
+                    const uint32_t arr[2] = {n0, n1};
+                    const SplitN g = SplitBudgetN(P, arr, n1 == 0 ? 1 : 2);
+                    CHECK(g.k[0] == o.k0 && g.k[1] == o.k1 && g.k[2] == 0 && g.k[3] == 0);
+                }
+        // N=3, 4: 合計が予算（四捨五入の誤差 ±N）/ 周期の比が 1 : w : w^2 : w^3
+        for (int N = 3; N <= 4; ++N)
+        {
+            const uint32_t nn[4] = {3872, 3872, 3872, 3872};
+            const SplitN full = SplitBudgetN(100000, nn, N);
+            for (int c = 0; c < N; ++c) CHECK(full.k[c] == 3872);
+            CHECK(full.k[3] == (N == 3 ? 0u : 3872u));   // N=3 のときは k[3] は 0
+            for (uint32_t P : {1000u, 2000u, 4000u})
+            {
+                const SplitN s = SplitBudgetN(P, nn, N);
+                uint32_t sum = 0;
+                for (int c = 0; c < N; ++c) { sum += s.k[c]; CHECK(s.k[c] >= 1); }
+                CHECK(sum + static_cast<uint32_t>(N) >= P && sum <= P + static_cast<uint32_t>(N));
+                for (int c = N; c < 4; ++c) CHECK(s.k[c] == 0);
+                float prevT = 3872.0f / static_cast<float>(s.k[0]);
+                for (int c = 1; c < N; ++c)
+                {
+                    const float t = 3872.0f / static_cast<float>(s.k[c]);
+                    CHECK(std::fabs(t / prevT - kNearWeight) < 0.12f * kNearWeight);   // 丸めの誤差ぶんは許す
+                    prevT = t;
+                }
+            }
+            // 一部だけ予算があるとき、遠い段ほど 1 プローブの更新周期が長い（近い段が優先）
+            const SplitN part = SplitBudgetN(1000, nn, N);
+            for (int c = 1; c < N; ++c) CHECK(part.k[c] < part.k[c - 1]);
+        }
+        // 段ごとにプローブ数が違っても合計は予算（N=3）
+        {
+            const uint32_t nn[3] = {1000, 2000, 500};
+            const SplitN s = SplitBudgetN(900, nn, 3);
+            CHECK(s.k[0] + s.k[1] + s.k[2] >= 897 && s.k[0] + s.k[1] + s.k[2] <= 903);
+        }
+        // 実効ヒステリシスは段ごと: 周期が長い段ほど低い（下限はそのまま）
+        {
+            const uint32_t nn[4] = {3872, 3872, 3872, 3872};
+            const SplitN s = SplitBudgetN(2000, nn, 4);
+            float prev = 1.0f;
+            for (int c = 0; c < 4; ++c)
+            {
+                const float h = EffectiveHysteresis(0.97f, 3872, s.k[c]);
+                CHECK(h <= prev + 1e-6f && h >= kMinEffectiveHysteresis - 1e-6f);
+                prev = h;
+            }
+        }
+    }
     // 予算の制御
     {
         uint32_t p = 4000;

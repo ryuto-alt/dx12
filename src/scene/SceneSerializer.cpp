@@ -1381,6 +1381,7 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"shadowNormalBias",   rt.shadowNormalBias},
             {"shadowMaxDistance",  rt.shadowMaxDistance},
             {"shadowIntensity",    rt.shadowIntensity},
+            {"shadowDenoise",      rt.shadowDenoise},
             {"aoEnabled",          rt.aoEnabled},
             {"aoRadius",           rt.aoRadius},
             {"aoRayCount",         rt.aoRayCount},
@@ -1422,6 +1423,7 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             if (dg.followCamera)              jd["followCamera"] = true;
             if (dg.spacing1 != def.spacing1)  jd["spacing1"]     = dg.spacing1;
             if (dg.budgetMs != def.budgetMs)  jd["budgetMs"]     = dg.budgetMs;
+            if (dg.cascadeCount != def.cascadeCount) jd["cascadeCount"] = dg.cascadeCount;   // 既定（2）なら書かない＝旧シーンの JSON は変わらない
         }
     }
 
@@ -1706,6 +1708,7 @@ static void LoadRtSettings(Scene& scene, const json& root)
         rt.shadowNormalBias  = j.value("shadowNormalBias",  rt.shadowNormalBias);
         rt.shadowMaxDistance = j.value("shadowMaxDistance", rt.shadowMaxDistance);
         rt.shadowIntensity   = j.value("shadowIntensity",   rt.shadowIntensity);
+        rt.shadowDenoise     = j.value("shadowDenoise",     rt.shadowDenoise);
         rt.aoEnabled         = j.value("aoEnabled",         rt.aoEnabled);
         rt.aoRadius          = j.value("aoRadius",          rt.aoRadius);
         rt.aoRayCount        = j.value("aoRayCount",        rt.aoRayCount);
@@ -1744,6 +1747,7 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.followCamera = j.value("followCamera", dg.followCamera);
         dg.spacing1     = j.value("spacing1",     dg.spacing1);
         dg.budgetMs     = j.value("budgetMs",     dg.budgetMs);
+        dg.cascadeCount = j.value("cascadeCount", dg.cascadeCount);
         // ★MCP の set_dxr と同じ範囲へ丸める（手書き JSON でプローブ数 999 を書かれても落ちない）
         dg.probeCountX = std::clamp(dg.probeCountX, 1, 32);
         dg.probeCountY = std::clamp(dg.probeCountY, 1, 32);
@@ -1755,6 +1759,7 @@ static void LoadRtSettings(Scene& scene, const json& root)
         dg.normalBias  = std::clamp(dg.normalBias, 0.0f, 1.0f);
         dg.spacing1    = std::clamp(dg.spacing1,   0.1f, 100.0f);
         dg.budgetMs    = std::clamp(dg.budgetMs,   0.05f, 20.0f);
+        dg.cascadeCount = std::clamp(dg.cascadeCount, 1, 4);
         // 1 を超えさせない。E/(1-ρ·b) の幾何級数が発散する。
         dg.bounceIntensity = std::clamp(dg.bounceIntensity, 0.0f, 1.0f);
     }

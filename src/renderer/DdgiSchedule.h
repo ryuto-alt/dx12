@@ -236,18 +236,53 @@ inline uint32_t NextProbeBudget(uint32_t cur, float costMsPer, float budgetMs, u
 // 予算 P をカスケードへ分ける。近い方は遠い方の kNearWeight 倍の頻度（= 1 プローブあたりの更新周期が 1/kNearWeight）。
 // n0 / n1 は各カスケードのプローブ数（n1 = 0 で 1 カスケード）。結果は各カスケードの 1 フレームの更新数。
 struct Split { uint32_t k0 = 0, k1 = 0; };
+
+// カスケード数の上限（クリップマップ。段 c の間隔は c0 の約 2^c 倍）。
+constexpr int kMaxCascades = 4;
+
+// N 段（1..kMaxCascades）への一般化。段 c の周期 Tc = kNearWeight^c * T0（近い段の kNearWeight 倍ずつ長い）。
+//   kc = nc / Tc、Σkc = P → k0 = P / (1 + Σ_{c>=1} nc / (kNearWeight^c * n0))。
+//   中間の段は理想値を四捨五入、最後の段は残り（N=2 のときは従来の式そのもの）。
+struct SplitN { uint32_t k[kMaxCascades] = {0, 0, 0, 0}; };
+inline SplitN SplitBudgetN(uint32_t P, const uint32_t* n, int count)
+{
+    SplitN s;
+    count = std::clamp(count, 1, kMaxCascades);
+    if (count == 1) { s.k[0] = std::min(P, n[0]); return s; }
+    uint32_t sum = 0;
+    for (int c = 0; c < count; ++c) sum += n[c];
+    // 全部更新できるなら全部
+    if (P >= sum) { for (int c = 0; c < count; ++c) s.k[c] = n[c]; return s; }
+    // 周期 T0 = n0/k0, T1 = n1/k1 = kNearWeight * T0 → k1 = n1 * k0 / (kNearWeight * n0)、k0 + k1 = P
+    float a = 0.0f;
+    float wc = 1.0f;
+    float ratio[kMaxCascades] = {1.0f, 0.0f, 0.0f, 0.0f};   // nc / (w^c * n0)
+    for (int c = 1; c < count; ++c)
+    {
+        wc *= kNearWeight;
+        ratio[c] = static_cast<float>(n[c]) / (wc * static_cast<float>(n[0]));
+        a += ratio[c];
+    }
+    const float k0f = static_cast<float>(P) / (1.0f + a);
+    s.k[0] = std::min(n[0], std::max(1u, static_cast<uint32_t>(k0f + 0.5f)));
+    uint32_t rest = P > s.k[0] ? P - s.k[0] : 0u;
+    for (int c = 1; c < count - 1; ++c)
+    {
+        const uint32_t kc = std::min(n[c], std::max(1u, static_cast<uint32_t>(k0f * ratio[c] + 0.5f)));
+        s.k[c] = kc;
+        rest = rest > kc ? rest - kc : 0u;
+    }
+    s.k[count - 1] = std::min(n[count - 1], std::max(1u, rest));
+    return s;
+}
+
 inline Split SplitBudget(uint32_t P, uint32_t n0, uint32_t n1)
 {
     Split s;
-    if (n1 == 0) { s.k0 = std::min(P, n0); return s; }
-    // 全部更新できるなら全部
-    if (P >= n0 + n1) { s.k0 = n0; s.k1 = n1; return s; }
-    // 周期 T0 = n0/k0, T1 = n1/k1 = kNearWeight * T0 → k1 = n1 * k0 / (kNearWeight * n0)、k0 + k1 = P
-    const float a = static_cast<float>(n1) / (kNearWeight * static_cast<float>(n0));
-    const float k0f = static_cast<float>(P) / (1.0f + a);
-    s.k0 = std::min(n0, std::max(1u, static_cast<uint32_t>(k0f + 0.5f)));
-    const uint32_t rest = P > s.k0 ? P - s.k0 : 0u;
-    s.k1 = std::min(n1, std::max(1u, rest));
+    const uint32_t n[2] = {n0, n1};
+    const SplitN r = SplitBudgetN(P, n, n1 == 0 ? 1 : 2);
+    s.k0 = r.k[0];
+    s.k1 = r.k[1];
     return s;
 }
 

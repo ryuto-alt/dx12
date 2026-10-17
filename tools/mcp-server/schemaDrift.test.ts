@@ -86,12 +86,12 @@ const SHARED_BLOCK_KEYS: Record<string, string[]> = {
   ],
   // ApplicationMcp*.cpp(連結) `get_dxr || set_dxr`。同じく get は引数を取らない。
   get_dxr: [
-    "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity",
+    "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity", "shadowDenoise",
     "aoEnabled", "aoRadius", "aoRayCount", "aoIntensity", "aoPower", "aoCombineWithSsao",
     "aoDenoise", "aoDenoiseRadius", "maxInstances", "forceBuildTlas",
     "ddgiEnabled", "ddgiSpacing", "ddgiProbeCountX", "ddgiProbeCountY", "ddgiProbeCountZ",
     "ddgiOriginX", "ddgiOriginY", "ddgiOriginZ", "ddgiRayLength", "ddgiHysteresis",
-    "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity", "ddgiFollowCamera", "ddgiSpacing1", "ddgiBudgetMs",
+    "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity", "ddgiFollowCamera", "ddgiSpacing1", "ddgiBudgetMs", "ddgiCascadeCount",
     "reflectionsEnabled", "reflectionMaxRoughness", "reflectionMaxDistance", "reflectionHalfRes", "reflectionIntensity",
   ],
   // ApplicationMcp*.cpp(連結):6358 `terrain_paint || terrain_autopaint`
@@ -437,12 +437,12 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
     ],
     dx12_get_shadow_pcss: [],
     dx12_set_dxr: [
-      "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity",
+      "shadowEnabled", "shadowSunAngle", "shadowNormalBias", "shadowMaxDistance", "shadowIntensity", "shadowDenoise",
       "aoEnabled", "aoRadius", "aoRayCount", "aoIntensity", "aoPower", "aoCombineWithSsao",
       "aoDenoise", "aoDenoiseRadius", "maxInstances", "forceBuildTlas",
       "ddgiEnabled", "ddgiSpacing", "ddgiProbeCountX", "ddgiProbeCountY", "ddgiProbeCountZ",
       "ddgiOriginX", "ddgiOriginY", "ddgiOriginZ", "ddgiRayLength", "ddgiHysteresis",
-      "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity", "ddgiFollowCamera", "ddgiSpacing1", "ddgiBudgetMs",
+      "ddgiIntensity", "ddgiNormalBias", "ddgiBounceIntensity", "ddgiFollowCamera", "ddgiSpacing1", "ddgiBudgetMs", "ddgiCascadeCount",
     "reflectionsEnabled", "reflectionMaxRoughness", "reflectionMaxDistance", "reflectionHalfRes", "reflectionIntensity",
     ],
     dx12_get_dxr: [],

@@ -5,6 +5,7 @@
 #include "graphics/RenderTarget.h"
 #include "graphics/Buffer.h"
 #include "graphics/FrameResources.h"
+#include "graphics/GpuTimer.h"
 #include "resource/ShaderCompiler.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
@@ -31,6 +32,8 @@ void RtScreenPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, D
     m_width  = (width  > 0) ? width  : 1;
     m_height = (height > 0) ? height : 1;
     m_srvHeap = srvHeap;
+    m_rtvHeap = rtvHeap;
+    m_device  = &device;
 
     CreateRootSignature(device);
     m_shaderDir = shaderDir;
@@ -39,7 +42,7 @@ void RtScreenPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, D
     // 影 / AO は「1 = 遮蔽なし」なのでクリアは白。デバッグはミス(-1)で埋める。
     const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     const float miss[4]  = {-1.0f, -1.0f, 0.0f, 0.0f};
-    for (u32 i = 0; i < PassCount; ++i)
+    for (u32 i = 0; i < PassShadowTrace; ++i)   // 影デノイザ用の RT は EnsureShadowTargets で遅延確保
     {
         m_rt[i] = std::make_unique<RenderTarget>();
         const DXGI_FORMAT fmt = (i == PassDebug)  ? kDebugFormat
@@ -82,7 +85,22 @@ void RtScreenPass::CreateRootSignature(GraphicsDevice& device)
     rawRange.NumDescriptors     = 1;
     rawRange.BaseShaderRegister = 4;
 
-    D3D12_ROOT_PARAMETER params[7]{};
+    // 影デノイザ用（t5 = 今フレームのトレース / t7 = 履歴 or 時間蓄積の出力 / t8 = 速度）。
+    // t6 は GeometryInfo（ルート SRV）が使っているので飛ばす。
+    D3D12_DESCRIPTOR_RANGE shTraceRange{};
+    shTraceRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shTraceRange.NumDescriptors     = 1;
+    shTraceRange.BaseShaderRegister = 5;
+    D3D12_DESCRIPTOR_RANGE shHistRange{};
+    shHistRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shHistRange.NumDescriptors     = 1;
+    shHistRange.BaseShaderRegister = 7;
+    D3D12_DESCRIPTOR_RANGE shVelRange{};
+    shVelRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    shVelRange.NumDescriptors     = 1;
+    shVelRange.BaseShaderRegister = 8;
+
+    D3D12_ROOT_PARAMETER params[10]{};
     params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[0].DescriptorTable.NumDescriptorRanges = 1;
     params[0].DescriptorTable.pDescriptorRanges   = &srvRange;
@@ -116,6 +134,15 @@ void RtScreenPass::CreateRootSignature(GraphicsDevice& device)
     params[6].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_SRV;
     params[6].Descriptor.ShaderRegister = 6;
     params[6].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    const D3D12_DESCRIPTOR_RANGE* shRanges[3] = { &shTraceRange, &shHistRange, &shVelRange };
+    for (u32 k = 0; k < 3; ++k)
+    {
+        params[7 + k].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[7 + k].DescriptorTable.NumDescriptorRanges = 1;
+        params[7 + k].DescriptorTable.pDescriptorRanges   = shRanges[k];
+        params[7 + k].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
 
     D3D12_ROOT_SIGNATURE_FLAGS flags =
           D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
@@ -234,6 +261,9 @@ void RtScreenPass::RecreatePipelines(GraphicsDevice& device)
     make(L"RtAo_PS.cso",        kMaskFormat,  m_psoAo);
     make(L"RtDebug_PS.cso",     kDebugFormat, m_psoDebug);
     make(L"RtAoDenoise_PS.cso", kMaskFormat,  m_psoAoDenoise);
+    make(L"RtShadowTrace_PS.cso",    kShadowTraceFormat, m_psoShadowTrace);
+    make(L"RtShadowTemporal_PS.cso", kShadowHistFormat,  m_psoShadowTemporal);
+    make(L"RtShadowSpatial_PS.cso",  kMaskFormat,        m_psoShadowSpatial);
     // ★アルベド可視化は Dynamic Resources が使えるときだけ作る。
     //   ルートシグネチャに HEAP_DIRECTLY_INDEXED が立っていない状態で
     //   ResourceDescriptorHeap[] を使うシェーダの PSO を作ると検証で落ちる。
@@ -258,20 +288,61 @@ void RtScreenPass::Resize(GraphicsDevice& device, u32 width, u32 height)
         if (m_rt[i]) m_rt[i]->Resize(device, width, height);
         m_rtState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
+    m_shHistAny = false;   // 履歴は作り直し（中身は未定義）
+}
+
+bool RtScreenPass::EnsureShadowTargets(GraphicsDevice& device)
+{
+    if (m_shTargetsFailed || !m_rtvHeap || !m_srvHeap) return false;
+    if (m_rt[PassShadowTrace]) return true;
+    const float zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    for (u32 i = PassShadowTrace; i < PassCount; ++i)
+    {
+        m_rt[i] = std::make_unique<RenderTarget>();
+        const DXGI_FORMAT fmt = (i == PassShadowTrace) ? kShadowTraceFormat : kShadowHistFormat;
+        m_rt[i]->Initialize(device, m_rtvHeap, m_srvHeap, m_width, m_height, fmt, zero);
+        m_rtState[i] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        if (m_rt[i]->GetSrvIndex() == DescriptorHeap::kInvalidIndex)
+        {
+            Logger::Warn("RT 影デノイザ: テクスチャを確保できませんでした（従来経路で描きます）");
+            for (u32 k = PassShadowTrace; k <= i; ++k) m_rt[k].reset();
+            m_shTargetsFailed = true;
+            return false;
+        }
+    }
+    m_shHistAny = false;
+    return true;
+}
+
+void RtScreenPass::TransitionRt(ID3D12GraphicsCommandList* cmd, PassIndex idx, D3D12_RESOURCE_STATES next)
+{
+    if (!m_rt[idx] || m_rtState[idx] == next) return;
+    D3D12_RESOURCE_BARRIER b{};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource   = m_rt[idx]->GetResource();
+    b.Transition.StateBefore = m_rtState[idx];
+    b.Transition.StateAfter  = next;
+    b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    cmd->ResourceBarrier(1, &b);
+    m_rtState[idx] = next;
 }
 
 u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s,
-                      PassIndex pass)
+                      PassIndex pass, const Extra* extra)
 {
     if (!m_rootSig || !m_rt[pass] || d.tlas == 0) return DescriptorHeap::kInvalidIndex;
 
-    ID3D12PipelineState* pso = (pass == PassShadow)    ? m_psoShadow.Get()
+    ID3D12PipelineState* pso = (extra && extra->pso)   ? extra->pso
+                             : (pass == PassShadow)    ? m_psoShadow.Get()
                              : (pass == PassAo)        ? m_psoAo.Get()
                              : (pass == PassAoDenoise) ? m_psoAoDenoise.Get()
                              : (pass == PassAlbedo)    ? m_psoAlbedo.Get()
                                                        : m_psoDebug.Get();
     if (!pso) return DescriptorHeap::kInvalidIndex;
 
+    // ★位置復元はジッタなしの行列。プリパスの深度はジッタ付き(camVPJ)で描かれているので理屈の上では
+    //   最大 0.5px ずれるが、影の縁の時間揺れで A/B した結果（ジッタ付き逆行列での復元）は差が出なかった
+    //   （2026-10-17 実測: 縁の揺れ 1.36→1.36 / 2.96→2.96。RtScreenPass.h 参照）ので採用していない。
     const XMMATRIX viewProj = d.view * d.proj;
 
     RtParamsCB cb{};
@@ -306,7 +377,8 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
                static_cast<float>(d.denoiseFrame & 0xFFFFu),
                // 空間フィルタの半径(px)。G-Buffer が無いフレームは重みが作れないので 0＝無効。
                (s.aoDenoise && d.gbufferValid) ? std::max(s.aoDenoiseRadius, 0.0f) : 0.0f};
-    cb.p[7] = {d.gbufferValid ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    cb.p[7] = {d.gbufferValid ? 1.0f : 0.0f,
+               extra ? extra->histValid : 0.0f, extra ? extra->pixelAngle : 0.0f, extra ? extra->maxN : 32.0f};
 
     const u32 cbSlot = d.frameIndex % FrameResources::kFrameCount * PassCount + pass;
     m_paramCB->Update(&cb, sizeof(cb), cbSlot);
@@ -359,6 +431,10 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
     // GeometryInfo テーブル。未構築のフレームは TLAS のアドレスで埋める（読まれないが
     // ルートパラメータは必ず有効なアドレスでなければならない）。
     cmd->SetGraphicsRootShaderResourceView(6, d.geometryInfo ? d.geometryInfo : d.tlas);
+    // 影デノイザの入力（t5 / t7 / t8）。使わないパスにも有効なディスクリプタを貼る。
+    cmd->SetGraphicsRootDescriptorTable(7, (extra && extra->shTrace.ptr) ? extra->shTrace : d.depthSrv);
+    cmd->SetGraphicsRootDescriptorTable(8, (extra && extra->shHist.ptr)  ? extra->shHist  : d.depthSrv);
+    cmd->SetGraphicsRootDescriptorTable(9, (extra && extra->shVel.ptr)   ? extra->shVel   : d.depthSrv);
     cmd->DrawInstanced(3, 1, 0, 0);
 
     transition(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -366,9 +442,74 @@ u32 RtScreenPass::Run(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, con
     return m_rt[pass]->GetSrvIndex();
 }
 
-u32 RtScreenPass::GenerateShadow(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s)
+u32 RtScreenPass::GenerateShadow(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s,
+                                 GpuTimer* timer)
 {
-    return Run(cmd, d, s, PassShadow);
+    const bool canDenoise = s.shadowDenoise && d.gbufferValid && d.velocitySrv.ptr != 0
+                          && m_psoShadowTrace && m_psoShadowTemporal && m_psoShadowSpatial
+                          && m_srvHeap && m_device && EnsureShadowTargets(*m_device);
+    if (!canDenoise)
+        return Run(cmd, d, s, PassShadow);   // 従来経路（R8 へ直接トレース。ビット一致）
+
+    // ---- ① トレース（RG16F: x=可視率, y=遮蔽物までの距離）----
+    Extra tr{};
+    tr.pso           = m_psoShadowTrace.Get();
+    const u32 traceIdx = Run(cmd, d, s, PassShadowTrace, &tr);
+    if (traceIdx == DescriptorHeap::kInvalidIndex) return Run(cmd, d, s, PassShadow);
+    const auto traceGpu = m_srvHeap->GetGpuHandle(traceIdx);
+
+    // ---- 履歴の有効判定 ----
+    // 直前のフレームに書いた履歴だけ使う。太陽が動いたら履歴の長さを縮める（残像対策）。
+    XMFLOAT3 L{};
+    XMStoreFloat3(&L, XMVector3Normalize(XMLoadFloat3(&d.lightDir)));
+    const float lc = std::clamp(L.x * m_shLastLightDir.x + L.y * m_shLastLightDir.y + L.z * m_shLastLightDir.z,
+                                -1.0f, 1.0f);
+    const float lightAngle = std::acos(lc);
+    bool  histValid = m_shHistAny && d.frameSerial == m_shLastSerial + 1;
+    float maxN = 32.0f;
+    if (lightAngle > 2e-3f)      histValid = false;
+    else if (lightAngle > 2e-4f) maxN = 6.0f;
+
+    const PassIndex histRead  = (m_shHistWrite == 0) ? PassShadowHist1 : PassShadowHist0;
+    const PassIndex histWrite = (m_shHistWrite == 0) ? PassShadowHist0 : PassShadowHist1;
+    TransitionRt(cmd, histRead, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    XMFLOAT4X4 pj{};
+    XMStoreFloat4x4(&pj, d.proj);
+    const float pxAngle = 2.0f / std::max(std::abs(pj._22) * static_cast<float>(std::max(d.vpH, 1u)), 1e-6f);
+    const bool  ortho = std::abs(pj._44 - 1.0f) < 1e-4f;   // 行ベクトル規約: 正射は _44 = 1
+
+    if (timer) timer->Begin(cmd, GpuTimer::RtShadowDenoise);
+
+    // ---- ② 時間蓄積 ----
+    Extra tp{};
+    tp.pso        = m_psoShadowTemporal.Get();
+    tp.shTrace    = traceGpu;
+    tp.shHist     = m_srvHeap->GetGpuHandle(m_rt[histRead]->GetSrvIndex());
+    tp.shVel      = d.velocitySrv;
+    tp.histValid  = histValid ? 1.0f : 0.0f;
+    tp.maxN       = maxN;
+    tp.pixelAngle = ortho ? -pxAngle : pxAngle;
+    const u32 tempIdx = Run(cmd, d, s, histWrite, &tp);
+
+    // ---- ③ 空間フィルタ → R8（今の影マスクの置き換え）----
+    u32 result = DescriptorHeap::kInvalidIndex;
+    if (tempIdx != DescriptorHeap::kInvalidIndex)
+    {
+        Extra sp{};
+        sp.pso        = m_psoShadowSpatial.Get();
+        sp.shTrace    = traceGpu;
+        sp.shHist     = m_srvHeap->GetGpuHandle(tempIdx);
+        sp.pixelAngle = ortho ? -pxAngle : pxAngle;
+        result = Run(cmd, d, s, PassShadow, &sp);
+    }
+    if (timer) timer->End(cmd, GpuTimer::RtShadowDenoise);
+
+    m_shHistWrite   = 1u - m_shHistWrite;
+    m_shHistAny     = (tempIdx != DescriptorHeap::kInvalidIndex);
+    m_shLastSerial  = d.frameSerial;
+    m_shLastLightDir = L;
+    return (result != DescriptorHeap::kInvalidIndex) ? result : Run(cmd, d, s, PassShadow);
 }
 
 u32 RtScreenPass::GenerateAo(ID3D12GraphicsCommandList* cmd, const GenerateDesc& d, const RtSettings& s)

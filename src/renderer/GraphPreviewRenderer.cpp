@@ -27,7 +27,7 @@ namespace
 {
 
 // ---------------------------------------------------------------------------------------------
-// b1（PerFrameConstants, 1536 バイト）。Lighting.hlsli / Application の FrameConstants / ModelThumbnailRenderer と同じレイアウト
+// b1（PerFrameConstants, 1600 バイト）。Lighting.hlsli / Application の FrameConstants / ModelThumbnailRenderer と同じレイアウト
 // ---------------------------------------------------------------------------------------------
 struct FrameConstants
 {
@@ -62,10 +62,11 @@ struct FrameConstants
     float      skyboxIntensity;
     float      contactShadowEnabled;
     XMFLOAT3   normalFilterParams;
+    XMFLOAT4   ddgiC2, ddgiScroll2, ddgiC3, ddgiScroll3;   // 末尾追記 64B（プレビューでは 0）
 };
-static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes (Lighting.hlsli PerFrameConstants)");
+static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes (Lighting.hlsli PerFrameConstants)");
 
-constexpr u32 kCbSlotBytes = 1536;   // 256 の倍数
+constexpr u32 kCbSlotBytes = 1792;   // 256 の倍数（>= 1600）
 constexpr u32 kCbSlotsPerFrame = 2;  // 0 = メイン / 1 = タイル・RAW
 constexpr u32 kClusterTable = 9;     // kSlotClusterSRV のテーブル長: t13-15 + t18-21 + t22-23
 

@@ -147,9 +147,9 @@ reg(
   "dx12_perf_stats",
   "パフォーマンス統計",
   "直近 window フレーム(既定60)の性能統計を即時取得。fps / frameMs(avg,min,max,p95) / cpu(workMs,fenceWaitMs,presentMs) / "
-  + "gpuPassMs(total, shadows, depthPrepass, prepassSsao, clusterCull, raytracing, rtScreen, rtReflection, ddgi, screenSpaceGi, volFog, hiZ, mainScene, particles, postFx, ui, vgCull, clouds, cloudShadow "
+  + "gpuPassMs(total, shadows, depthPrepass, prepassSsao, clusterCull, raytracing, rtScreen, rtReflection, ddgi, screenSpaceGi, volFog, hiZ, mainScene, particles, postFx, ui, vgCull, clouds, cloudShadow, rtShadowDenoise "
   + "※約3フレーム遅れのGPUタイムスタンプ。raytracing = DXR の BLAS 遅延構築 + TLAS の毎フレーム再構築(加速構造だけ)、"
-  + "rtScreen = RT サン影 + RT-AO + RT デバッグのスクリーン空間パス。rtReflection = RT 反射(トレース + フィルタ + SSR との合成)。どちらも DXR OFF なら 0。vgCull = 仮想ジオメトリ(Nanite 風)の GPU カリング。既定 OFF なら 0。clouds / cloudShadow = ボリュメトリック雲と雲の影。雲 OFF なら 0) / "
+  + "rtScreen = RT サン影 + RT-AO + RT デバッグのスクリーン空間パス。rtReflection = RT 反射(トレース + フィルタ + SSR との合成)。どちらも DXR OFF なら 0。vgCull = 仮想ジオメトリ(Nanite 風)の GPU カリング。既定 OFF なら 0。clouds / cloudShadow = ボリュメトリック雲と雲の影。雲 OFF なら 0。rtShadowDenoise = RT 影デノイザ(時間蓄積 + 空間フィルタ。rtScreen の内数。shadowDenoise=false なら 0)) / "
   + "drawCalls / culled / triangles / vsync / fpsLimit / scene(エンティティ内訳・shadows/ssao) と "
   + "analysis(verdict: gpu-bound|cpu-bound|fps-limit-capped 等 + 改善ノート)を返す。FPS が出ない時はまずこれで犯人を特定する。",
   { window: z.number().int().optional().describe("平均するフレーム数(既定 60, 最大 240)。") },

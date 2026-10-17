@@ -1010,6 +1010,7 @@ void FillManifestChunk10(ManifestRows& o)
             P("shadowNormalBias", "number", false, nullptr, nullptr, nullptr, nullptr, "レイ始点の法線方向オフセット(m)。0..1 にクランプ。既定 0.02。アクネ(自己遮蔽の縞)が出るなら上げる。"),
             P("shadowMaxDistance", "number", false, nullptr, nullptr, nullptr, nullptr, "影レイの最大距離(m)。0..100000 にクランプ。既定 0 = 無限。遠景の遮蔽物を追わない分だけ速くなる。"),
             P("shadowIntensity", "number", false, nullptr, nullptr, nullptr, nullptr, "RT 影の強さ。0..1 にクランプ。既定 1(RT 影のみ)。0 で無効、途中の値は CSM とのブレンド(デバッグ用)。"),
+            P("shadowDenoise", "bool", false, nullptr, nullptr, nullptr, nullptr, "RT 影の専用デノイザ(時間蓄積 + 半影の幅に比例した空間フィルタ)を使うか。既定 true。false で従来経路(R8 へ直接トレース、TAA だけが平均する)に戻る=ビット一致。G-Buffer と速度が書かれないフレームは自動で従来経路。"),
             P("aoEnabled", "bool", false, nullptr, nullptr, nullptr, nullptr, "RT-AO を使うか(既定 false)。ON の間は SSAO 枠(t8)を RT-AO が埋める。"),
             P("aoRadius", "number", false, nullptr, nullptr, nullptr, nullptr, "半球レイの長さ(m)。0.01..100 にクランプ。既定 1。"),
             P("aoRayCount", "int", false, nullptr, nullptr, nullptr, nullptr, "1px あたりのレイ本数。1..8 にクランプ。既定 2。増やすほど滑らかで重い。"),
@@ -1040,6 +1041,7 @@ void FillManifestChunk10(ManifestRows& o)
             P("ddgiBounceIntensity", "number", false, nullptr, nullptr, nullptr, nullptr, "多重バウンスの強さ。0..1 にクランプ。既定 0 = 1 バウンスのみ(段階2 までと同じ絵)。プローブレイのヒット点で【前フレームのプローブ】を引いて足す量。"),
             P("ddgiFollowCamera", "bool", false, nullptr, nullptr, nullptr, nullptr, "GI モード new のときだけ有効。true = カメラ追従のスクロール格子 + 2 カスケード(近景 ddgiSpacing / 遠景 ddgiSpacing1。ddgiProbeCountX/Y/Z は 1 カスケードの格子数・ddgiOrigin は無視)。false(既定)= 従来の固定ボリューム。"),
             P("ddgiSpacing1", "number", false, nullptr, nullptr, nullptr, nullptr, "遠景カスケードのプローブ間隔(m)。0.1..100 にクランプ。既定 2.0。ddgiFollowCamera:true のときだけ使う。"),
+            P("ddgiCascadeCount", "int", false, nullptr, nullptr, nullptr, nullptr, "DDGI のカスケード数。1..4 にクランプ。既定 2(従来と同じ絵)。ddgiFollowCamera:true のときだけ使う(固定ボリュームは 1 段)。間隔は 近景=ddgiSpacing / 2 段目=max(ddgiSpacing1, ddgiSpacing*1.25) / 3 段目以降=直前の 2 倍(クリップマップ)。1 段の格子数(X*Y*Z)の上限は 4096。"),
             P("ddgiBudgetMs", "number", false, nullptr, nullptr, nullptr, nullptr, "1 フレームの DDGI の GPU 予算(ms)。0.05..20 にクランプ。既定 1。実測の GPU 時間から更新するプローブ数を決める(超えそうなら間引く)。"),
         })});
     o.push_back({"set_editor_camera", M("シーンビューのカメラを任意視点に置く(focus_camera より自由。俯瞰・引き構図・特定アングルの確認用)。position で位置、target で注視点(yaw/pitch を自動逆算)、または yawDeg/pitchDeg を直接指定。",

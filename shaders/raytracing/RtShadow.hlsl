@@ -14,10 +14,22 @@
 //   CSM のアクネ（本来明るいのに縞状に暗い）とカスケード境界の段差が**残ってしまう**。
 //   RT 影の価値の半分はここにある。
 //
+// ★RT_SHADOW_RG=1 でビルドした版（RtShadowTrace_PS.cso）は影デノイザの入力用で、出力が
+//   R16G16_FLOAT: x = 可視率（R8 版と同じ値）、y = 遮蔽物までの距離 t（遮蔽なし・空は 0）。
+//   RT_SHADOW_RG を付けない版は従来のまま（R8。ビット一致）。
+//
 // VS は post/FullscreenTri.hlsli の FSTriVS（頂点バッファ不要のフルスクリーン三角形）。
 #include "RtCommon.hlsli"
 
-float PSMain(FSQuadVSOut i) : SV_TARGET
+#ifdef RT_SHADOW_RG
+#define SHADOW_OUT_T   float2
+#define SHADOW_RET(v)  return float2((v), 0.0)
+#else
+#define SHADOW_OUT_T   float
+#define SHADOW_RET(v)  return (v)
+#endif
+
+SHADOW_OUT_T PSMain(FSQuadVSOut i) : SV_TARGET
 {
     const float2 px = i.pos.xy;                       // 出力 RT のピクセル中心座標
     const float  d  = gDepth.Load(int3(int2(px), 0));
@@ -27,8 +39,8 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
     // レイ始点のオフセットがジッタごとにずれて影の縁がちらつく。RtCommon.hlsli の同名関数を参照）。
     float3 N = RtNormalFromDepthRobust(px, P);
 
-    if (!RtInsideViewport(px)) return 1.0;   // エディタのパネル下に潜る領域は素通し
-    if (d >= 1.0) return 1.0;                // 空（背景）に影は落ちない
+    if (!RtInsideViewport(px)) SHADOW_RET(1.0);   // エディタのパネル下に潜る領域は素通し
+    if (d >= 1.0) SHADOW_RET(1.0);                // 空（背景）に影は落ちない
 
     // 太陽へ向かうベクトル（lightDir は光の進行方向）。
     const float3 L = normalize(-gLightDir);
@@ -47,7 +59,16 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
     const float  offset = gNormalBias * (1.0 + 3.0 * (1.0 - NdotL));
     const float3 origin = P + N * offset;
 
+#ifdef RT_SHADOW_RG
+    // ★デノイザは「ノイズが時間で変わる」ことが前提（変わらないと分散が 0 に見えて素通しされ、時間蓄積も効かない）。
+    //   gFrameJitter は TAA 有効時しか回らないので、TAA が無いときは常に回る gFrameIndex から位相を作る。
+    const float phase = (gFrameJitter != 0.0) ? gFrameJitter : frac(gFrameIndex * 0.6180339887);
+    const float3 magic = float3(0.06711056, 0.00583715, 52.9829189);
+    const float2 xi = float2(frac(magic.z * frac(dot(px + phase, magic.xy))),
+                             RtHash(px, 3.71 + phase));
+#else
     const float2 xi = float2(RtIgn(px), RtHash(px, 3.71 + gFrameJitter));
+#endif
     const float3 dir = RtJitterSunDir(L, xi, gSunTan);
 
     const float tMax = (gMaxDistance > 0.0) ? gMaxDistance : RT_TMAX;

@@ -98,6 +98,10 @@ public:
         DirectX::XMFLOAT3 ddgiScroll0{0, 0, 0};          // カスケード 0 の記憶領域のずらし
         DirectX::XMFLOAT3 ddgiScroll1{0, 0, 0};
         float  ddgiCascades = 1.0f;
+        // カスケード 2 / 3（無いときは 0）
+        DirectX::XMFLOAT3 ddgiC2Origin{0, 0, 0}, ddgiC3Origin{0, 0, 0};
+        float  ddgiC2Spacing = 0.0f, ddgiC3Spacing = 0.0f;
+        DirectX::XMFLOAT3 ddgiScroll2{0, 0, 0}, ddgiScroll3{0, 0, 0};
     };
 
     // SSR / SSGI を生成し、それぞれの SRV index を返す（生成しなかった側は kInvalidIndex）。

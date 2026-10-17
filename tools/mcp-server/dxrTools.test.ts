@@ -131,7 +131,7 @@ function payload(res: any): any {
 
 const DXR_DEFAULTS = {
   shadowEnabled: false, shadowSunAngle: 0.53, shadowNormalBias: 0.02,
-  shadowMaxDistance: 0, shadowIntensity: 1,
+  shadowMaxDistance: 0, shadowIntensity: 1, shadowDenoise: true,
   aoEnabled: false, aoRadius: 1, aoRayCount: 2, aoIntensity: 1, aoPower: 1.5,
   aoCombineWithSsao: false, aoDenoise: true, aoDenoiseRadius: 8,
   maxInstances: 0, forceBuildTlas: false,
@@ -139,7 +139,7 @@ const DXR_DEFAULTS = {
   ddgiEnabled: false, ddgiSpacing: 2, ddgiProbeCountX: 8, ddgiProbeCountY: 4, ddgiProbeCountZ: 8,
   ddgiOriginX: -8, ddgiOriginY: 0.5, ddgiOriginZ: -8,
   ddgiRayLength: 30, ddgiHysteresis: 0.97, ddgiIntensity: 1, ddgiNormalBias: 0.02, ddgiBounceIntensity: 0,
-  ddgiFollowCamera: false, ddgiSpacing1: 2.0, ddgiBudgetMs: 1,
+  ddgiFollowCamera: false, ddgiSpacing1: 2.0, ddgiBudgetMs: 1, ddgiCascadeCount: 2,
   reflectionsEnabled: false, reflectionMaxRoughness: 0.6, reflectionMaxDistance: 100, reflectionHalfRes: true, reflectionIntensity: 1,
 };
 

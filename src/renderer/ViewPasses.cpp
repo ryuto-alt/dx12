@@ -219,7 +219,7 @@ void RtScreenGeneratePass::Execute(const RenderPassContext& ctx)
     if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
     GpuScope t(ctx, GpuTimer::RtScreen);
-    if (m_in.shadow && m_in.settings) m_shadow = m_in.rt->GenerateShadow(ctx.native, *m_in.desc, *m_in.settings);
+    if (m_in.shadow && m_in.settings) m_shadow = m_in.rt->GenerateShadow(ctx.native, *m_in.desc, *m_in.settings, ctx.timer);
     if (m_in.ao && m_in.settings)     m_ao     = m_in.rt->GenerateAo(ctx.native, *m_in.desc, *m_in.settings);
     if (m_in.debug)
         m_debug = m_in.debugAlbedo ? m_in.rt->GenerateAlbedo(ctx.native, *m_in.desc)

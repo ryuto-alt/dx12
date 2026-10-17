@@ -2458,7 +2458,7 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
 // ===========================================================================
 
 // b1 の CPU 側。★レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること
-// （サイズは 4 箇所で 1536B を static_assert。00-COORDINATION §4）。
+// （サイズは 4 箇所で 1600B を static_assert。00-COORDINATION §4）。
 // 以前は Render() の関数内ローカル型だったが、カメラプレビューが「メインビューの値を流用して
 // 視点だけ差し替える」ために段をまたいで持ち回すので、Application の入れ子型にした。
 struct Application::FrameConstants
@@ -2506,6 +2506,11 @@ struct Application::FrameConstants
     // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
     //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
     DirectX::XMFLOAT3 normalFilterParams;
+    // ▼ DDGI のカスケード 2 / 3（末尾追記 64B。既存のオフセットは動かない）。cascadeCount < 3 / 固定ボリューム / Legacy では 0
+    DirectX::XMFLOAT4 ddgiC2;        // 16B  (offset 1536) .xyz=カスケード 2 の窓の原点 .w=間隔
+    DirectX::XMFLOAT4 ddgiScroll2;   // 16B  (offset 1552)
+    DirectX::XMFLOAT4 ddgiC3;        // 16B  (offset 1568)
+    DirectX::XMFLOAT4 ddgiScroll3;   // 16B  (offset 1584)
 };
 // ★サイズの static_assert は RenderMainView の fc の直前にある（private な入れ子型なので
 //   名前空間スコープからは sizeof を取れない）。
@@ -5323,7 +5328,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ★RT-AO も G-Buffer の法線を使う（レイ方向とデノイザの bilateral 重み）。
     //   ここに足さないと G-Buffer が書かれず、AO は ddx/ddy 法線へ落ち、
     //   空間デノイザは丸ごとスキップされる。
-    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo || useRtRefl)
+    // ★RT 影デノイザ（shadowDenoise）も速度（時間蓄積の再投影）と G-Buffer（空間フィルタの法線）を使う。
+    const bool useRtShadowDenoise = useRtShadow && m_scene->GetRtSettings().shadowDenoise && m_taaPass;
+    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo || useRtRefl || useRtShadowDenoise)
                                && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
@@ -5537,6 +5544,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             // GeometryInfo テーブル（Build() が毎フレーム詰め直す）。0 なら
             // ヒット点のバインドレス情報は使えない＝アルベド可視化は黒になる。
             rd.geometryInfo = m_rtScene->GetGeometryInfoAddress();
+            // 影デノイザ: 速度バッファ（TAA と同じ）と通し番号。G-Buffer が書かれたフレームだけ有効。
+            if (velocityPrepass && m_taaPass)
+                rd.velocitySrv = m_srvHeap->GetGpuHandle(m_taaPass->GetVelocitySrvIndex());
+            rd.frameSerial = m_perfTotalFrames;
 
             RtScreenGeneratePass::Inputs ri{};
             ri.rt          = m_rtScreenPass.get();
@@ -5609,6 +5620,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                         gd.ddgiC1Spacing = sp.c1.w;
                         gd.ddgiScroll0 = {sp.scroll0.x, sp.scroll0.y, sp.scroll0.z};
                         gd.ddgiScroll1 = {sp.scroll1.x, sp.scroll1.y, sp.scroll1.z};
+                        gd.ddgiC2Origin = {sp.c2.x, sp.c2.y, sp.c2.z}; gd.ddgiC2Spacing = sp.c2.w;
+                        gd.ddgiC3Origin = {sp.c3.x, sp.c3.y, sp.c3.z}; gd.ddgiC3Spacing = sp.c3.w;
+                        gd.ddgiScroll2 = {sp.scroll2.x, sp.scroll2.y, sp.scroll2.z};
+                        gd.ddgiScroll3 = {sp.scroll3.x, sp.scroll3.y, sp.scroll3.z};
                         gd.ddgiCascades = sp.counts.w;
                         gd.ddgiViewBias   = DdgiVolume::kViewBiasRatio   * sp.spacing0.x;
                         gd.ddgiNormalBias = DdgiVolume::kNormalBiasRatio * sp.spacing0.x;
@@ -5659,7 +5674,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ★副ビューは主ビューが作った b1 のシーン側（ライト / 影行列 / IBL / DDGI / 法線フィルタ /
     //   灯数）をそのまま流用し、視点に依る値（view / proj / cameraPos / PCSS / AO・影の読み分け /
     //   クラスタ）だけを差し替える。シーン側は下の if (primary) の中でしか書かない。
-    static_assert(sizeof(FrameConstants) == 1536, "FrameConstants must be 1536 bytes");
+    static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes");
     FrameConstants fc = primary ? FrameConstants{} : frame.mainConstants;
     // シーン側（太陽 / CSM / DDGI / スポット影行列 / IBL / 法線フィルタ）はフレームで 1 回＝主ビューだけ。
     if (primary) FillSceneFrameConstants(fc, frame);
@@ -6969,6 +6984,7 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
                 const DdgiVolume::SampleParams sp = m_ddgi->GetSampleParams(ddgiCfg);
                 fc.ddgiOrigin = sp.origin0; fc.ddgiSpacing = sp.spacing0; fc.ddgiCounts = sp.counts;
                 fc.ddgiC1 = sp.c1; fc.ddgiScroll0 = sp.scroll0; fc.ddgiScroll1 = sp.scroll1;
+                fc.ddgiC2 = sp.c2; fc.ddgiC3 = sp.c3; fc.ddgiScroll2 = sp.scroll2; fc.ddgiScroll3 = sp.scroll3;
             }
             else
             {

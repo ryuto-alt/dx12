@@ -96,9 +96,12 @@ float4 TracePS(FSQuadVSOut i) : SV_TARGET
         const uint3 gc    = uint3(gDdgi2.xyz);
         const uint  nCasc = max(uint(gDdgi4.w), 1u);
         const DdgiVol v0 = DdgiMakeVol(gDdgi0.xyz, gDdgi1.xyz, gc, int3(gDdgi4.xyz), 0u);
-        const DdgiVol v1 = DdgiMakeVol(gDdgi3.xyz, gDdgi3.www, gc, int3(gDdgi5.xyz), gc.x * gc.y * gc.z);
+        const uint  perC = gc.x * gc.y * gc.z;
+        const DdgiVol v1 = DdgiMakeVol(gDdgi3.xyz, gDdgi3.www, gc, int3(gDdgi5.xyz), perC);
+        const DdgiVol v2 = DdgiMakeVol(gDdgi6.xyz, gDdgi6.www, gc, int3(gDdgi7.xyz), perC * 2u);
+        const DdgiVol v3 = DdgiMakeVol(gDdgi8.xyz, gDdgi8.www, gc, int3(gDdgi9.xyz), perC * 3u);
         const DdgiNewResult dr = DdgiSampleNew(g_ddgiIrradiance, g_ddgiDistance, g_linearClamp, posW, surf.N, camDir,
-                                               surf.N, false, v0, v1, nCasc, uint3(gc.x, gc.y, gc.z * nCasc),
+                                               surf.N, false, v0, v1, v2, v3, nCasc, uint3(gc.x, gc.y, gc.z * nCasc),
                                                gDdgi1.w, gDdgi2.w);
         // dr.conf = 0（範囲外 / 周囲 8 個とも壁の中）なら DDGI は答えられない → IBL へ戻す
         //   ★旧実装は conf の分だけ DDGI を積み、残りを 0 にしていた。カスケードの外（カメラから

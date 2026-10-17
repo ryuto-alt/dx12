@@ -59,6 +59,9 @@ struct DdgiSettings
     bool  followCamera = false;
     float spacing1   = 2.0f;    // カスケード 1（遠景）の間隔(m)。followCamera のときだけ使う
     float budgetMs   = 1.0f;    // 1 フレームの DDGI の GPU 予算(ms)。実測から更新するプローブ数を決める（超えそうなら間引く）
+    // カスケード数（1..4）。followCamera のときだけ使う（固定ボリュームは 1 段）。間隔: c0 = spacing / c1 = max(spacing1, spacing*1.25) /
+    //   c2 以降は直前の段の 2 倍。JSON のキーが無い = 2（従来と同じ絵）。
+    int   cascadeCount = 2;
 };
 
 // シーン単位の GI モード。Scene が保持し、保存 / 読込 / Undo を通る。
@@ -88,7 +91,8 @@ public:
     //   シェーダの DDGI_DISTANCE_TEXELS / DDGI_DISTANCE_TILE と一致させること。
     static constexpr u32 kDistanceTexels   = 14;
     static constexpr u32 kDistanceTile     = kDistanceTexels + 2;
-    static constexpr u32 kMaxProbes        = 4096;
+    static constexpr u32 kMaxProbes        = 4096;   // 1 カスケードのプローブ数の上限（px*py*pz）
+    static constexpr u32 kMaxCascades      = static_cast<u32>(ddgi::kMaxCascades);
     // GiMode::New のバイアス類（プローブ間隔に対する比）。フォワードの b1 へも同じ式で渡す（Application）。
     static constexpr float kViewBiasRatio   = 0.3f;   // 補間の surface bias: 視線方向
     static constexpr float kNormalBiasRatio = 0.3f;   // 補間の surface bias: 法線方向
@@ -182,6 +186,10 @@ public:
         DirectX::XMFLOAT4 c1;         // xyz = カスケード 1 の窓の原点 / w = カスケード 1 の間隔
         DirectX::XMFLOAT4 scroll0;    // xyz = カスケード 0 の記憶領域のずらし
         DirectX::XMFLOAT4 scroll1;
+        DirectX::XMFLOAT4 c2;         // カスケード 2 / 3（無いときは 0）
+        DirectX::XMFLOAT4 c3;
+        DirectX::XMFLOAT4 scroll2;
+        DirectX::XMFLOAT4 scroll3;
     };
     SampleParams GetSampleParams(const DdgiSettings& s) const;
     u32 CascadeCount() const { return m_planCascades; }
@@ -210,7 +218,8 @@ public:
         u32   budgetProbes  = 0;   // 予算（プローブ数 / フレーム）
         float costUsPerProbe = 0;  // 1 プローブの GPU 時間の見積り(us)
         u32   lightGridCells = 0;
-        float hysteresis0 = 0, hysteresis1 = 0;   // 実効ヒステリシス（間引きを考慮）
+        float hysteresis0 = 0, hysteresis1 = 0;
+        float hysteresisTop = 0;   // 最後の段の実効ヒステリシス   // 実効ヒステリシス（間引きを考慮）
         // 窓の置き場所（カメラ追従のとき）。groundDown/View = 地面レイのヒット点（w = 1 ヒット / 0 なし）、
         // anchorOffset0/1 = 窓の中心をカメラからずらした量(m)。地上の視点では 0。
         DirectX::XMFLOAT4 groundDown{0, 0, 0, 0}, groundView{0, 0, 0, 0};
@@ -257,8 +266,8 @@ private:
     u32 m_lightGridCapCells = 0;
     // 更新計画バッファ（UPLOAD。ヘッダ + 更新リスト）。飛行中のフレーム数ぶんのリング。bindless SRV（cb の planSrvIndex）。
     static constexpr u32 kPlanRing        = 3;
-    static constexpr u32 kPlanHeaderWords = 32;
-    static constexpr u32 kMaxListEntries  = 2 * kMaxProbes;
+    static constexpr u32 kPlanHeaderWords = 64;
+    static constexpr u32 kMaxListEntries  = kMaxCascades * kMaxProbes;
     static constexpr u32 kLightGridMaxPerCell = 40;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_planBuf[kPlanRing];
     u8*  m_planMapped[kPlanRing] = {};
@@ -276,7 +285,7 @@ private:
     bool EnsureGroundBuffers(GraphicsDevice& device);
     ddgi::GroundHits m_groundHits;           // 最新の読み戻し
     DirectX::XMFLOAT3 m_planCam{0, 0, 0}, m_planFwd{0, 0, 1};
-    float m_anchorOffset[2][3] = {};         // 窓の中心 - カメラ（なめらかに追う）
+    float m_anchorOffset[kMaxCascades][3] = {};         // 窓の中心 - カメラ（なめらかに追う）
 
     // ---- 計画（PlanFrame の結果）----
     bool m_planGiNew = false;        // 今フレームは GI モード New（かつ PSO あり）
@@ -287,18 +296,18 @@ private:
     bool m_requestResetAll = false;  // InvalidateHistory が呼ばれた
     u32  m_planCascades = 1;
     int  m_counts[3] = {1, 1, 1};    // 1 カスケードの格子数
-    ddgi::Window m_win[2];
-    float m_spacing[2] = {1.0f, 1.0f};
-    float m_origin[2][3] = {};
+    ddgi::Window m_win[kMaxCascades];
+    float m_spacing[kMaxCascades] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float m_origin[kMaxCascades][3] = {};
     std::vector<u8>  m_pending;      // プローブごとの「履歴を捨てて埋め直す」待ち（全カスケードぶん。通し番号で引く）
-    u32  m_cursor[2] = {0, 0};       // ラウンドロビンの位置
+    u32  m_cursor[kMaxCascades] = {0, 0, 0, 0};       // ラウンドロビンの位置
     u32  m_budget = 0;               // 予算（プローブ数 / フレーム）
     float m_costPerProbe = 0.0f;     // ms
     u32  m_countHist[8] = {};        // 直近 8 フレームの更新プローブ数（GPU 計測の遅れ分を引くため）
     u32  m_planSeq = 0;
     std::vector<u32> m_list;         // 更新リスト（通し番号 | リセットビット）
     u32  m_listReset = 0;
-    float m_hyst[2] = {0.97f, 0.97f};
+    float m_hyst[kMaxCascades] = {0.97f, 0.97f, 0.97f, 0.97f};
     float m_lgOrigin[3] = {};
     float m_lgCell = 1.0f;
     int  m_lgDims[3] = {1, 1, 1};
@@ -308,12 +317,13 @@ private:
         int counts[3] = {0, 0, 0};
         u32 cascades = 0;
         float spacing0 = 0, spacing1 = 0;
+        float spacingTop = 0;          // 最後の段の間隔（段数・間隔の倍率が変わったら作り直す）
         float origin[3] = {0, 0, 0};   // 固定ボリュームのときだけ
         bool follow = false;
         bool operator==(const PlanKey& o) const
         {
             return counts[0] == o.counts[0] && counts[1] == o.counts[1] && counts[2] == o.counts[2] && cascades == o.cascades
-                && spacing0 == o.spacing0 && spacing1 == o.spacing1 && origin[0] == o.origin[0] && origin[1] == o.origin[1]
+                && spacing0 == o.spacing0 && spacing1 == o.spacing1 && spacingTop == o.spacingTop && origin[0] == o.origin[0] && origin[1] == o.origin[1]
                 && origin[2] == o.origin[2] && follow == o.follow;
         }
     } m_planKey;
@@ -336,6 +346,7 @@ private:
     u32  m_layoutCascades = 0;    // いまのリソースのカスケード数（アトラスの行数）
     bool m_justRecreated = false; // EnsureResources がこのフレームに作り直した
     bool m_historyValid = false;
+    u64  m_lastFailKey = 0;       // EnsureResources が失敗した設定（同じ失敗の警告を 1 回に絞る）
     // irradiance アトラスの現在のステート。段階1 でフォワード PS が読むようになったので
     // compute(UAV) と PS(SRV) を行き来する。遷移の面倒はこのクラスの中で完結させる。
     D3D12_RESOURCE_STATES m_irradianceState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;

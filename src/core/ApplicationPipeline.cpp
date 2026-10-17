@@ -671,7 +671,7 @@ void Application::EnsureSplitResources()
                              wantW, wantH, kSceneColorFormat, clear);
             makeDepth(a, wantW, wantH);
             a.frameCB = std::make_unique<ConstantBuffer>();
-            a.frameCB->Initialize(*m_graphicsDevice, 1536u /*sizeof(FrameConstants)。Application.cpp の static_assert と同値*/, FrameResources::kFrameCount);
+            a.frameCB->Initialize(*m_graphicsDevice, 1600u /*sizeof(FrameConstants)。Application.cpp の static_assert と同値*/, FrameResources::kFrameCount);
             a.w = a.pendW = wantW;  a.h = a.pendH = wantH;  a.settle = 0;
             Logger::Info("画面分割: 区画{} のRTを作成 {}x{}", i + 1, wantW, wantH);
             continue;
@@ -1020,7 +1020,8 @@ void Application::RegisterShaderReloadHandlers()
     {
         m_shaderManager->RegisterReloadHandler(
             { L"Rt_VS.cso", L"RtShadow_PS.cso", L"RtAo_PS.cso", L"RtDebug_PS.cso",
-              L"RtAoDenoise_PS.cso" },
+              L"RtAoDenoise_PS.cso", L"RtShadowTrace_PS.cso", L"RtShadowTemporal_PS.cso",
+              L"RtShadowSpatial_PS.cso" },
             [this]() { m_rtScreenPass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_rtReflection)

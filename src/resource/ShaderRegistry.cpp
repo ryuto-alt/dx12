@@ -381,7 +381,21 @@ const std::vector<ShaderSource>& BuildRegistry()
             {
                 { L"Rt_VS.cso",       L"FSTriVS", L"vs_6_0" },
                 { L"RtShadow_PS.cso", L"PSMain",  L"ps_6_6" },
+                // 影デノイザ用の RG16F 出力版（x=可視率, y=遮蔽物までの距離）。
+                { L"RtShadowTrace_PS.cso", L"PSMain", L"ps_6_6", L"RT_SHADOW_RG=1" },
             },
+            { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
+            // RT 影の時間蓄積（速度で再投影した履歴 + 2 次モーメント）。
+            "raytracing/RtShadowTemporal.hlsl",
+            { { L"RtShadowTemporal_PS.cso", L"PSMain", L"ps_6_6" } },
+            { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
+        },
+        {
+            // RT 影の空間フィルタ（半影の幅に比例した半径の SVGF 風 bilateral）。
+            "raytracing/RtShadowSpatial.hlsl",
+            { { L"RtShadowSpatial_PS.cso", L"PSMain", L"ps_6_6" } },
             { "raytracing/RtCommon.hlsli", "raytracing/RtBindless.hlsli", "post/FullscreenTri.hlsli" },
         },
         {

@@ -51,6 +51,10 @@ cbuffer SsParams : register(b0)
     float4 gDdgi3;         // xyz=カスケード 1 の窓の原点 w=カスケード 1 のプローブ間隔（GI S4）
     float4 gDdgi4;         // xyz=カスケード 0 の記憶領域のずらし w=カスケード数（0/1 = 固定ボリューム）
     float4 gDdgi5;         // xyz=カスケード 1 の記憶領域のずらし w=予約
+    float4 gDdgi6;         // xyz=カスケード 2 の窓の原点 w=カスケード 2 のプローブ間隔（無ければ 0）
+    float4 gDdgi7;         // xyz=カスケード 2 の記憶領域のずらし
+    float4 gDdgi8;         // xyz=カスケード 3 の窓の原点 w=カスケード 3 のプローブ間隔
+    float4 gDdgi9;         // xyz=カスケード 3 の記憶領域のずらし
 };
 
 #define SS_INV_RT   (gRT.xy)

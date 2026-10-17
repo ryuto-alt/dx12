@@ -74,6 +74,10 @@ cbuffer RtParams : register(b0)
 #define gFrameIndex   gRtP[6].z
 #define gAoDenoiseRadius gRtP[6].w  // 空間フィルタの半径(px)。0 でフィルタ無効
 #define gGBufferValid gRtP[7].x     // 1 で G-Buffer が書かれている（法線を読んでよい）
+// --- RT 影デノイザ（RtShadowTemporal / RtShadowSpatial）専用 ---
+#define gShHistValid  gRtP[7].y     // 1 で履歴が使える（初回・リサイズ直後・1 フレーム空いたら 0）
+#define gShPixelAngle gRtP[7].z     // 透視: 1 画素の視角(rad) = 2/(proj11*高さ)。正射: 負（-1 画素のワールド幅）
+#define gShMaxN       gRtP[7].w     // 履歴の長さの上限（通常 32。太陽が動いたフレームは小さくして残像を抑える）
 
 // 八面体デコード（ScreenSpaceCommon.hlsli の SS_OctDecode と同一の式）。
 // G-Buffer の .xy から ワールド法線を復元する。
@@ -182,6 +186,25 @@ float RtTraceOcclusion(float3 origin, float3 dir, float tMin, float tMax)
     q.TraceRayInline(gTlas, 0, 0xFF, r);
     RT_PROCEED_WITH_ALPHA(q, gLinearWrap);
     return (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0 : 1.0;
+}
+
+// RtTraceOcclusion の「ヒットした t も返す」版。t = 最初に見つかったヒットまでの距離（遮蔽なしは 0）。
+// ACCEPT_FIRST_HIT なので最近傍とは限らない。影デノイザが半影の幅を見積もるためだけに使う。
+float RtTraceOcclusionT(float3 origin, float3 dir, float tMin, float tMax, out float hitT)
+{
+    RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+           | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+           | RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES> q;
+    RayDesc r;
+    r.Origin = origin;
+    r.Direction = dir;
+    r.TMin = tMin;
+    r.TMax = tMax;
+    q.TraceRayInline(gTlas, 0, 0xFF, r);
+    RT_PROCEED_WITH_ALPHA(q, gLinearWrap);
+    const bool hit = (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT);
+    hitT = hit ? q.CommittedRayT() : 0.0;
+    return hit ? 0.0 : 1.0;
 }
 
 // 最近傍ヒットまでの距離。ミスなら -1。

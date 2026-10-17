@@ -41,8 +41,12 @@ struct SsParamsCB
     XMFLOAT4 ddgi3;       // xyz=カスケード 1 の窓の原点 w=カスケード 1 のプローブ間隔
     XMFLOAT4 ddgi4;       // xyz=カスケード 0 の記憶領域のずらし w=カスケード数
     XMFLOAT4 ddgi5;       // xyz=カスケード 1 の記憶領域のずらし
+    XMFLOAT4 ddgi6;       // xyz=カスケード 2 の窓の原点 w=間隔
+    XMFLOAT4 ddgi7;       // xyz=カスケード 2 の記憶領域のずらし
+    XMFLOAT4 ddgi8;       // xyz=カスケード 3 の窓の原点 w=間隔
+    XMFLOAT4 ddgi9;       // xyz=カスケード 3 の記憶領域のずらし
 };
-static_assert(sizeof(SsParamsCB) == 64 * 4 + 16 * 14, "SsParamsCB layout mismatch with ScreenSpaceParams.hlsli");
+static_assert(sizeof(SsParamsCB) == 64 * 4 + 16 * 18, "SsParamsCB layout mismatch with ScreenSpaceParams.hlsli");
 
 // ルートパラメータ。全パスが同じ 6 テーブル + CBV を使い、そのパスが読まないレジスタにも
 // 有効なディスクリプタを必ず貼る（未初期化のテーブルをバインドするとデバッグレイヤが落とす）。
@@ -301,6 +305,10 @@ void ScreenSpaceGiPass::Generate(CommandList& cmd, const GenerateDesc& d,
     cb.ddgi3 = { d.ddgiC1Origin.x, d.ddgiC1Origin.y, d.ddgiC1Origin.z, d.ddgiC1Spacing };
     cb.ddgi4 = { d.ddgiScroll0.x, d.ddgiScroll0.y, d.ddgiScroll0.z, d.ddgiCascades };
     cb.ddgi5 = { d.ddgiScroll1.x, d.ddgiScroll1.y, d.ddgiScroll1.z, 0.0f };
+    cb.ddgi6 = { d.ddgiC2Origin.x, d.ddgiC2Origin.y, d.ddgiC2Origin.z, d.ddgiC2Spacing };
+    cb.ddgi7 = { d.ddgiScroll2.x, d.ddgiScroll2.y, d.ddgiScroll2.z, 0.0f };
+    cb.ddgi8 = { d.ddgiC3Origin.x, d.ddgiC3Origin.y, d.ddgiC3Origin.z, d.ddgiC3Spacing };
+    cb.ddgi9 = { d.ddgiScroll3.x, d.ddgiScroll3.y, d.ddgiScroll3.z, 0.0f };
     ++m_frameCounter;
     m_paramCB->Update(&cb, sizeof(cb), d.frameIndex);
 

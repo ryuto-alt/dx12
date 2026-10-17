@@ -472,10 +472,12 @@ float4 DdgiFetchTaps(Texture2D<float4> atlas, SamplerState samp, DdgiTaps t, uin
     return (t.wsum > 0.0) ? (sum / t.wsum) : float4(0.0, 0.0, 0.0, 0.0);
 }
 
-// ---- GI モード New のサンプル（フォワード / SSGI / プローブ更新のバウンス共通）。カスケード 1〜2 本 ----
-//   カスケード 0（近景）の外縁 kCascadeBlendCells セルの幅で、カスケード 1（遠景）へ滑らかに切り替える。
-//   カスケード 0 の外縁のプローブ（窓がずれて入ってきた直後＝まだ収束していない）は重みが 0 に近いので見えない。
-//   cascadeCount=1（固定ボリューム）なら従来と同じ（cover=1・遠景は引かない）。
+// ---- GI モード New のサンプル（フォワード / SSGI / プローブ更新のバウンス共通）。カスケード 1〜4 本（クリップマップ）----
+//   近い段から順に、各段の外縁 kCascadeBlendCells セルの幅で次の段へ滑らかに切り替える（最後の段だけ cover なし）。
+//   近い段の外縁のプローブ（窓がずれて入ってきた直後＝まだ収束していない）は重みが 0 に近いので見えない。
+//   段 c の重み a_c = rem * conf_c * cover_c、rem は「まだ前の段が答えていない割合」（rem_0 = 1、rem_{c+1} = rem_c - a_c）。
+//   バイアスは段の間隔比（spacing_c / spacing_0）で拡大する。
+//   cascadeCount=1（固定ボリューム）なら従来と同じ（cover=1・遠景は引かない）。2 段のときは従来の式と同じ値。
 //   irrN : 法線 N 方向の irradiance / irrR : 反射方向 R の irradiance（wantR のときだけ）/ skyVisR : R 方向の空の可視率
 //   conf : 範囲外 0（呼び出し側がこの割合で IBL へ戻す）
 struct DdgiNewResult
@@ -488,48 +490,49 @@ struct DdgiNewResult
 
 DdgiNewResult DdgiSampleNew(Texture2D<float4> atlas, Texture2D<float2> distAtlas, SamplerState samp,
                             float3 worldPos, float3 N, float3 camDir, float3 R, bool wantR,
-                            DdgiVol v0, DdgiVol v1, uint cascadeCount, uint3 atlasCounts,
+                            DdgiVol v0, DdgiVol v1, DdgiVol v2, DdgiVol v3, uint cascadeCount, uint3 atlasCounts,
                             float viewBias, float normalBias)
 {
     DdgiNewResult o;
     o.irrN = 0.0.xxx; o.irrR = 0.0.xxx; o.skyVisR = 1.0; o.conf = 0.0;
 
-    const bool two = cascadeCount > 1;
-    const DdgiTaps t0 = DdgiComputeTaps(distAtlas, samp, worldPos, N, camDir, v0, atlasCounts,
-                                        viewBias, normalBias, two ? DDGI_CASCADE_BLEND_CELLS : 0.0);
-    const float a0 = t0.conf * t0.cover;
-    float3 n0 = 0.0.xxx, r0 = 0.0.xxx; float s0 = 1.0;
-    if (a0 > 0.0)
+    // ★[unroll]（4 段ぶん展開）の方が [loop] + 段の選択より速い（実測 mainScene: 展開 +0.4ms / [loop] +1.4ms。2 段の設定との比較）。
+    const uint nc = clamp(cascadeCount, 1u, 4u);
+    DdgiVol vols[4] = { v0, v1, v2, v3 };
+    float  a[4] = { 0.0, 0.0, 0.0, 0.0 };
+    float3 n[4], r[4];
+    float  s[4];
+    float  rem = 1.0;
+    [unroll]
+    for (uint c = 0; c < 4; ++c)
     {
-        n0 = DdgiFetchTaps(atlas, samp, t0, atlasCounts, N).rgb;
-        if (wantR) { const float4 r = DdgiFetchTaps(atlas, samp, t0, atlasCounts, R); r0 = r.rgb; s0 = r.a; }
-    }
-    float a1 = 0.0;
-    float3 n1 = 0.0.xxx, r1 = 0.0.xxx; float s1 = 1.0;
-    if (two && a0 < 1.0)
-    {
-        const float ratio = v1.spacing.x / max(v0.spacing.x, 1e-4);
-        const DdgiTaps t1 = DdgiComputeTaps(distAtlas, samp, worldPos, N, camDir, v1, atlasCounts,
-                                            viewBias * ratio, normalBias * ratio, 0.0);
-        a1 = (1.0 - a0) * t1.conf;
-        if (a1 > 0.0)
+        n[c] = 0.0.xxx; r[c] = 0.0.xxx; s[c] = 1.0;
+        if (c >= nc || rem <= 0.0) continue;
+        const bool  last  = (c + 1u >= nc);
+        const float ratio = (c == 0u) ? 1.0 : vols[c].spacing.x / max(v0.spacing.x, 1e-4);
+        const DdgiTaps t = DdgiComputeTaps(distAtlas, samp, worldPos, N, camDir, vols[c], atlasCounts,
+                                           viewBias * ratio, normalBias * ratio, last ? 0.0 : DDGI_CASCADE_BLEND_CELLS);
+        a[c] = rem * t.conf * t.cover;
+        rem -= a[c];
+        if (a[c] > 0.0)
         {
-            n1 = DdgiFetchTaps(atlas, samp, t1, atlasCounts, N).rgb;
-            if (wantR) { const float4 r = DdgiFetchTaps(atlas, samp, t1, atlasCounts, R); r1 = r.rgb; s1 = r.a; }
+            n[c] = DdgiFetchTaps(atlas, samp, t, atlasCounts, N).rgb;
+            if (wantR) { const float4 rr = DdgiFetchTaps(atlas, samp, t, atlasCounts, R); r[c] = rr.rgb; s[c] = rr.a; }
         }
     }
-    const float tot = a0 + a1;
+    const float tot  = a[0] + a[1] + a[2] + a[3];
     if (tot <= 0.0) return o;
-    if (a1 <= 0.0)   // 近景だけ（固定ボリュームもここ。従来の式と同じ値）
+    const float rest = a[1] + a[2] + a[3];
+    if (rest <= 0.0)   // 近景だけ（固定ボリュームもここ。従来の式と同じ値）
     {
-        o.irrN = n0; o.irrR = r0; o.skyVisR = saturate(s0);
+        o.irrN = n[0]; o.irrR = r[0]; o.skyVisR = saturate(s[0]);
     }
     else
     {
         const float inv = 1.0 / tot;
-        o.irrN = (a0 * n0 + a1 * n1) * inv;
-        o.irrR = (a0 * r0 + a1 * r1) * inv;
-        o.skyVisR = saturate((a0 * s0 + a1 * s1) * inv);
+        o.irrN = (a[0] * n[0] + a[1] * n[1] + a[2] * n[2] + a[3] * n[3]) * inv;
+        o.irrR = (a[0] * r[0] + a[1] * r[1] + a[2] * r[2] + a[3] * r[3]) * inv;
+        o.skyVisR = saturate((a[0] * s[0] + a[1] * s[1] + a[2] * s[2] + a[3] * s[3]) * inv);
     }
     if (!wantR) o.skyVisR = 1.0;
     o.conf = tot;

@@ -403,11 +403,11 @@ void Application::RegisterMcpRenderMethods()
               "ddgiEnabled:any,ddgiSpacing:number,ddgiRayLength:number,ddgiHysteresis:number,"
               "ddgiIntensity:number,ddgiProbeCountX:any,ddgiProbeCountY:any,ddgiProbeCountZ:any,"
               "ddgiOriginX:number,ddgiOriginY:number,ddgiOriginZ:number,ddgiNormalBias:number,"
-              "ddgiBounceIntensity:number,ddgiFollowCamera:any,ddgiSpacing1:number,ddgiBudgetMs:number,"
+              "ddgiBounceIntensity:number,ddgiFollowCamera:any,ddgiSpacing1:number,ddgiBudgetMs:number,ddgiCascadeCount:any,"
               "aoEnabled:any,aoIntensity:number,aoPower:number,aoRadius:number,"
               "aoRayCount:any,forceBuildTlas:any,maxInstances:any,shadowEnabled:any,"
               "shadowIntensity:number,shadowMaxDistance:number,shadowNormalBias:number,"
-              "shadowSunAngle:number,reflectionsEnabled:any,reflectionMaxRoughness:number,"
+              "shadowSunAngle:number,shadowDenoise:any,reflectionsEnabled:any,reflectionMaxRoughness:number,"
               "reflectionMaxDistance:number,reflectionHalfRes:any,reflectionIntensity:number", DX12E_MCP_HANDLER
         {
             // get/set を 1 本のハンドラで捌く（"a|b" 登録）。
@@ -421,7 +421,31 @@ void Application::RegisterMcpRenderMethods()
                         "this GPU does not support inline raytracing",
                         "DXR Tier 1.1 かつ Shader Model 6.5 が必要（RTX 20 系 / RX 6000 系以降）。"
                         "起動ログの \"DXR:\" 行に実際の Tier と SM が出る");
+                // DDGI の 1 カスケードのプローブ数（X*Y*Z）は DdgiVolume::kMaxProbes まで。超えると DDGI のリソースが確保できず
+                // 黙って壊れた絵になる（22→32 で実際に起きた）ので、何も書き換える前に断る。
+                {
+                    const DdgiSettings& cur = m_scene->GetDdgiSettings();
+                    const int nx = std::clamp(params.value("ddgiProbeCountX", cur.probeCountX), 1, 32);
+                    const int ny = std::clamp(params.value("ddgiProbeCountY", cur.probeCountY), 1, 32);
+                    const int nz = std::clamp(params.value("ddgiProbeCountZ", cur.probeCountZ), 1, 32);
+                    const long long total = static_cast<long long>(nx) * ny * nz;
+                    if (total > static_cast<long long>(DdgiVolume::kMaxProbes))
+                    {
+                        McpError err(McpErr::InvalidParam,
+                                     "set_dxr: ddgiProbeCountX*Y*Z = " + std::to_string(total) + " exceeds the limit "
+                                     + std::to_string(DdgiVolume::kMaxProbes),
+                                     "1 カスケードのプローブ数（X*Y*Z）は " + std::to_string(DdgiVolume::kMaxProbes)
+                                     + " 以下（例: 22x8x22=3872 / 16x16x16=4096）。カスケードを増やしても 1 段の上限は同じで、段数ぶんアトラスが増える");
+                        err.name = "E_OUT_OF_RANGE";
+                        err.cause = "ddgiProbeCountX*Y*Z がプローブ数の上限を超えている（超えると DDGI のリソースを確保できず、壊れた絵になる）";
+                        err.details = {{"param", "ddgiProbeCountX*ddgiProbeCountY*ddgiProbeCountZ"}, {"value", total},
+                                       {"range", {{"min", 1}, {"max", DdgiVolume::kMaxProbes}}},
+                                       {"requested", {nx, ny, nz}}};
+                        throw err;
+                    }
+                }
                 r.shadowEnabled = params.value("shadowEnabled", r.shadowEnabled);
+                r.shadowDenoise = params.value("shadowDenoise", r.shadowDenoise);
                 if (params.contains("shadowSunAngle"))
                     r.shadowSunAngle = McpFloatParam(params, "shadowSunAngle", r.shadowSunAngle, 0.0f, 20.0f);
                 if (params.contains("shadowNormalBias"))
@@ -474,6 +498,7 @@ void Application::RegisterMcpRenderMethods()
                 g.followCamera = params.value("ddgiFollowCamera", g.followCamera);
                 g.spacing1     = std::clamp(params.value("ddgiSpacing1", g.spacing1), 0.1f, 100.0f);
                 g.budgetMs     = std::clamp(params.value("ddgiBudgetMs", g.budgetMs), 0.05f, 20.0f);
+                g.cascadeCount = std::clamp(params.value("ddgiCascadeCount", g.cascadeCount), 1, static_cast<int>(DdgiVolume::kMaxCascades));
                 g.originX     = params.value("ddgiOriginX", g.originX);
                 g.originY     = params.value("ddgiOriginY", g.originY);
                 g.originZ     = params.value("ddgiOriginZ", g.originZ);
@@ -484,7 +509,8 @@ void Application::RegisterMcpRenderMethods()
                     || g.spacing != before.spacing || g.originX != before.originX
                     || g.originY != before.originY || g.originZ != before.originZ
                     || g.rayLength != before.rayLength
-                    || g.followCamera != before.followCamera || g.spacing1 != before.spacing1;
+                    || g.followCamera != before.followCamera || g.spacing1 != before.spacing1
+                    || g.cascadeCount != before.cascadeCount;
                 if (m_ddgi && ((!before.enabled && g.enabled) || gridMoved))
                     m_ddgi->InvalidateHistory();
             }
@@ -573,6 +599,7 @@ void Application::RegisterMcpRenderMethods()
                               {"shadowNormalBias", r.shadowNormalBias},
                               {"shadowMaxDistance", r.shadowMaxDistance},
                               {"shadowIntensity", r.shadowIntensity},
+                              {"shadowDenoise", r.shadowDenoise},
                               {"aoEnabled", r.aoEnabled},
                               {"aoRadius", r.aoRadius},
                               {"aoRayCount", r.aoRayCount},
@@ -602,6 +629,7 @@ void Application::RegisterMcpRenderMethods()
                               {"ddgiFollowCamera", dg.followCamera},
                               {"ddgiSpacing1", dg.spacing1},
                               {"ddgiBudgetMs", dg.budgetMs},
+                              {"ddgiCascadeCount", dg.cascadeCount},
                               {"ddgiOriginX", dg.originX},
                               {"ddgiOriginY", dg.originY},
                               {"ddgiOriginZ", dg.originZ},
