@@ -315,14 +315,15 @@ void TestAnchor()
         AnchorForCascade(cam, g, sp, counts, out);
         CHECK(out[0] == cam[0] && out[1] == cam[1] && out[2] == cam[2]);
     }
-    // 上空 40m・視線の先 40m に路面 → 窓の中心 y = 0 + 10.5 - 3 = 7.5、水平は視線の先へ最大で半幅（31.5m）だけ寄る
+    // 上空 40m・視線の先 40m に路面 → 窓の中心 y = 0 + 10.5 - 3 = 7.5。水平は視線の先へ寄る。
+    //   40m は半幅（31.5m）の外なので効きは wv = (63 - 40) / 31.5、寄せは半幅 × wv = 23m
     {
         GroundHits g; g.downHit = true; g.down[1] = 0.0f;
         g.viewHit = true; g.view[0] = 40.0f; g.view[1] = 0.0f; g.view[2] = 0.0f;
         const float cam[3] = {0.0f, 40.0f, 0.0f};
         AnchorForCascade(cam, g, sp, counts, out);
         CHECK(std::fabs(out[1] - 7.5f) < 1e-4f);
-        CHECK(std::fabs(out[0] - 31.5f) < 1e-4f && out[2] == 0.0f);
+        CHECK(std::fabs(out[0] - 31.5f * (63.0f - 40.0f) / 31.5f) < 1e-3f && out[2] == 0.0f);
         // 窓の下端（中心 - 縦の半分）は路面の 1 セル下
         CHECK(std::fabs((out[1] - 10.5f) - (0.0f - sp)) < 1e-4f);
     }
@@ -334,6 +335,36 @@ void TestAnchor()
         AnchorForCascade(cam, g, sp, counts, out);
         CHECK(std::fabs(out[1] - 7.5f) < 1e-4f);
         CHECK(out[2] > 0.0f && out[2] <= 25.0f + 1e-4f);
+    }
+    // ★連続性: カメラを少しずつ前へ動かしても、窓の中心は飛ばない（しきい値で入り切りしていた不具合の再発防止）。
+    //   視線の先の面がカメラから 70m → 50m（窓の半幅 31.5m の 2 倍 = 63m をまたぐ）へ近づく間、1cm ごとの変化は小さい。
+    {
+        GroundHits g; g.downHit = true; g.down[1] = 0.3f;
+        g.viewHit = true; g.view[1] = 4.0f; g.view[2] = 0.0f;
+        float prev[3] = {0, 0, 0}; bool first = true; float maxStep = 0.0f;
+        for (float x = -70.0f; x <= -50.0f; x += 0.01f)
+        {
+            g.view[0] = 0.0f;
+            const float cam[3] = {x, 19.0f, 0.0f};
+            AnchorForCascade(cam, g, sp, counts, out);
+            const float off[3] = {out[0] - cam[0], out[1] - cam[1], out[2] - cam[2]};
+            if (!first)
+                for (int a = 0; a < 3; ++a) maxStep = std::max(maxStep, std::fabs(off[a] - prev[a]));
+            for (int a = 0; a < 3; ++a) prev[a] = off[a];
+            first = false;
+        }
+        CHECK(maxStep < 0.05f);
+        CHECK(std::fabs(prev[0]) > 10.0f);   // 近づき切ったら視線の先へ大きく寄っている（寄せ自体は効いている）
+    }
+    // 真下の高さのならし: 下がるのは即座、上がるのはゆっくり
+    {
+        CHECK(FilterGroundY(false, 0.0f, 25.0f) == 25.0f);
+        CHECK(FilterGroundY(true, 25.0f, 0.3f) == 0.3f);
+        float y = 0.3f;
+        for (int i = 0; i < 60; ++i) y = FilterGroundY(true, y, 25.0f);   // 屋根の上を 1 秒
+        CHECK(y > 0.3f && y < 10.0f);
+        for (int i = 0; i < 5000; ++i) y = FilterGroundY(true, y, 25.0f); // ずっと屋根の上なら追いつく
+        CHECK(std::fabs(y - 25.0f) < 1e-3f);
     }
     // 視線の先が遠すぎる（窓の幅の 2 倍の外）面は使わない（地平線の向こうの低い面で引っぱらない）
     {

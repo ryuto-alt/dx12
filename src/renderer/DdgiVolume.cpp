@@ -990,6 +990,9 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
             g.downHit = p[3] >= 0.0f;
             g.viewHit = p[7] >= 0.0f;
             for (int a = 0; a < 3; ++a) { g.down[a] = p[a]; g.view[a] = p[4 + a]; }
+            // 真下の高さは上がる向きだけゆっくり追う（屋根の上を横切るたびに窓が上下へ飛ばない。ddgi::FilterGroundY）
+            if (g.downHit)
+                g.down[1] = ddgi::FilterGroundY(m_groundHits.downHit, m_groundHits.down[1], g.down[1]);
             m_groundHits = g;
             m_groundPending[ring] = false;
         }

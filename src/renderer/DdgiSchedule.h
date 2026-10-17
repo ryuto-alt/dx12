@@ -111,24 +111,38 @@ inline void AnchorForCascade(const float cam[3], const GroundHits& g, float spac
     const float halfX = 0.5f * static_cast<float>(counts[0] - 1) * sp;
     const float halfY = 0.5f * static_cast<float>(counts[1] - 1) * sp;
     const float halfZ = 0.5f * static_cast<float>(counts[2] - 1) * sp;
-    // 視線の先の面は、窓が届く範囲（水平に窓の幅まで）にあるものだけ使う。地平線の向こうの低い面で窓を引っぱらない。
+    // 視線の先の面の効き wv: 水平距離が窓の半幅までは 1、そこから半幅の 2 倍で 0 へ線形に落とす。
+    //   地平線の向こうの低い面で窓を引っぱらない。★しきい値で入り切りすると、カメラが数 cm 動いただけで
+    //   窓が半幅（遠景で 31.5m）一気に飛び、日陰の明るさが前後移動で進んだり戻ったりして見えた（2026-10-17）。
+    //   ここに出てくる量はすべてカメラ位置とヒット点に対して連続にしてある。
+    const float lim  = std::min(halfX, halfZ);
     const float vdx = g.view[0] - cam[0], vdz = g.view[2] - cam[2];
     const float vlen = std::sqrt(vdx * vdx + vdz * vdz);
-    const bool  viewNear = g.viewHit && vlen <= 2.0f * std::min(halfX, halfZ);
-    if (!g.downHit && !viewNear) return;
-    float refY = 1.0e30f;
-    if (g.downHit) refY = std::min(refY, g.down[1]);
-    if (viewNear)  refY = std::min(refY, g.view[1]);
+    const float wv = g.viewHit ? std::clamp((2.0f * lim - vlen) / std::max(lim, 1.0e-4f), 0.0f, 1.0f) : 0.0f;
+    if (!g.downHit && wv <= 0.0f) return;
+    float refY;
+    if (g.downHit) refY = g.down[1] - wv * std::max(g.down[1] - g.view[1], 0.0f);   // 低い方へ wv の割合だけ寄せる
+    else           refY = g.view[1];                                              // 真下に何も無い: 視線の先だけ（wv > 0）
     const float maxCenterY = refY + halfY - sp;   // 窓の下端 = refY - 1 セル
     if (cam[1] <= maxCenterY) return;
     out[1] = maxCenterY;
-    if (!viewNear || vlen <= 1.0e-4f) return;
-    // 下げた量が縦の半分に達したら、視線の先へ最大で窓の半幅まで寄せる（途中は比例）。
+    if (wv <= 0.0f || vlen <= 1.0e-4f) return;
+    // 下げた量が縦の半分に達したら、視線の先へ最大で窓の半幅まで寄せる（途中は比例）。真下だけで決めたとき（wv が小さい）は寄せも小さい。
     const float k     = std::min((cam[1] - maxCenterY) / std::max(halfY, 1.0e-4f), 1.0f);
-    const float lim   = std::min(halfX, halfZ);
-    const float scale = (vlen > lim ? lim / vlen : 1.0f) * k;
+    const float scale = (vlen > lim ? lim / vlen : 1.0f) * k * wv;
     out[0] += vdx * scale;
     out[2] += vdz * scale;
+}
+
+// 真下の面の高さのならし（屋根の上を横切るたびに窓が上下へ飛ばないように）。
+// 下がるときは即座に追う（路面が窓の外へ出るのが本題の不具合なので遅らせない）。上がるときはゆっくり
+// （1 回あたり差の kRiseRatio + kRiseMeters）。屋根を 1 秒（60 回）横切っても 25m 中 7m 程度しか上がらない。
+constexpr float kGroundRiseRatio  = 0.005f;
+constexpr float kGroundRiseMeters = 0.03f;
+inline float FilterGroundY(bool hadPrev, float prev, float now)
+{
+    if (!hadPrev || now <= prev) return now;
+    return std::min(now, prev + (now - prev) * kGroundRiseRatio + kGroundRiseMeters);
 }
 
 // 窓の最小コーナーのワールド座標。
