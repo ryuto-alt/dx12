@@ -5005,8 +5005,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // ===== GI S4: DDGI のカメラ追従（スクロール格子 + 2 カスケード）と更新の間引きの計画（主ビューだけ。b1 を書く前）=====
     // GI モード New のときだけ窓を動かす。Legacy は何もしない（従来の固定格子）。
     if (primary && m_ddgi)
-        m_ddgi->PlanFrame(m_scene->GetDdgiSettings(), m_scene->GetGiSettings().mode == GiMode::New, viewPos,
+    {
+        // 前方向 = ビュー行列（LH・行優先）の第 3 列。窓を地面寄りへ置く地面レイが使う。
+        const XMFLOAT3 viewFwd{view.view._13, view.view._23, view.view._33};
+        m_ddgi->PlanFrame(m_scene->GetDdgiSettings(), m_scene->GetGiSettings().mode == GiMode::New, viewPos, viewFwd,
                           m_gpuTimer ? m_gpuTimer->GetMs(GpuTimer::Ddgi) : 0.0f);
+    }
 
     // ===== 植生 F1: レイヤー収集 + GPU カリング（主ビュー + 影カスケード 0/1）。影パスより前 =====
     // ★FoliageLayer が 1 つも無いシーンでは foliageOn が false ＝ 以降の植生の呼び出しは全部スキップされ、コマンドは 1 命令も増えない。

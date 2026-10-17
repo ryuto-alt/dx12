@@ -545,6 +545,15 @@ void Application::RegisterMcpRenderMethods()
                          {"ddgiHysteresisFar", m_ddgi ? m_ddgi->GetStats().hysteresis1 : 0.0f},
                          {"bytesPerTriangle", s.blasTriangles
                               ? static_cast<double>(s.blasBytes) / static_cast<double>(s.blasTriangles) : 0.0}};
+                if (m_ddgi)
+                {
+                    // 窓の置き場所（カメラ追従）。地面レイのヒット点 [x,y,z,ヒット 1/0] と、窓の中心のカメラからのずらし(m)。
+                    const auto& ds = m_ddgi->GetStats();
+                    stats["ddgiGroundDown"] = {ds.groundDown.x, ds.groundDown.y, ds.groundDown.z, ds.groundDown.w};
+                    stats["ddgiGroundView"] = {ds.groundView.x, ds.groundView.y, ds.groundView.z, ds.groundView.w};
+                    stats["ddgiAnchorOffsetNear"] = {ds.anchorOffset0.x, ds.anchorOffset0.y, ds.anchorOffset0.z};
+                    stats["ddgiAnchorOffsetFar"]  = {ds.anchorOffset1.x, ds.anchorOffset1.y, ds.anchorOffset1.z};
+                }
                 if (m_skinningCompute)
                 {
                     const auto& sc = m_skinningCompute->GetStats();

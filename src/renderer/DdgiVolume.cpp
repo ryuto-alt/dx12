@@ -8,7 +8,9 @@
 #include "graphics/DeferredRelease.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <utility>
 
 using namespace DirectX;
 
@@ -101,6 +103,16 @@ void DdgiVolume::Shutdown()
     }
     m_lightGrid.Reset();
     m_lightGridUav = 0xFFFFFFFFu;
+    for (u32 f = 0; f < kPlanRing; ++f)
+    {
+        if (m_groundReadback[f] && m_groundMapped[f]) m_groundReadback[f]->Unmap(0, nullptr);
+        m_groundMapped[f] = nullptr;
+        m_groundPending[f] = false;
+        m_groundReadback[f].Reset();
+    }
+    m_groundBuf.Reset();
+    m_psoGround.Reset();
+    m_groundHits = ddgi::GroundHits{};
     m_retired.clear();
     m_rayDataUav = m_irradianceUav = m_distanceUav = m_probeDataUav = 0xFFFFFFFFu;
     m_irradianceSrv = m_distanceSrv = m_probeDataSrv = 0xFFFFFFFFu;
@@ -124,9 +136,10 @@ void DdgiVolume::Shutdown()
 void DdgiVolume::CreateRootSignature(GraphicsDevice& device)
 {
     // b0(32bit定数) + t0(TLAS root SRV) + t1(GeometryInfo root SRV) + u0..u4(UAV テーブル)
-    // DWORD: kDdgiCBNum32(44) + t0(2) + t1(2) + テーブル(1) = 49/64。
+    //   + u5(地面レイの結果 root UAV) + b1(地面レイの定数 8 個)
+    // DWORD: kDdgiCBNum32(44) + t0(2) + t1(2) + テーブル(1) + u5(2) + b1(8) = 59/64。
     // 専用ルートシグネチャなので PBR の 61/64 とは無関係。
-    D3D12_ROOT_PARAMETER params[4]{};
+    D3D12_ROOT_PARAMETER params[6]{};
     params[0].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     params[0].Constants.ShaderRegister = 0;
     params[0].Constants.Num32BitValues = kDdgiCBNum32;
@@ -145,6 +158,12 @@ void DdgiVolume::CreateRootSignature(GraphicsDevice& device)
     params[3].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     params[3].DescriptorTable.NumDescriptorRanges = 1;
     params[3].DescriptorTable.pDescriptorRanges   = &uavRange;
+
+    params[4].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_UAV;   // u5 = 地面レイの結果（バッファなのでルート UAV でよい）
+    params[4].Descriptor.ShaderRegister = 5;
+    params[5].ParameterType            = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;   // b1 = カメラ位置 + 前方向
+    params[5].Constants.ShaderRegister = 1;
+    params[5].Constants.Num32BitValues = 8;
 
     D3D12_STATIC_SAMPLER_DESC samp{};
     samp.Filter         = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -196,6 +215,7 @@ void DdgiVolume::RecreatePipelines(GraphicsDevice& device)
     make(L"DdgiBlendDist_CS.cso", m_psoBlendDist);
     make(L"DdgiProbeData_CS.cso", m_psoProbeData);
     make(L"DdgiLightGrid_CS.cso", m_psoLightGrid);
+    make(L"DdgiGround_CS.cso", m_psoGround);
 }
 
 bool DdgiVolume::MatchesGrid(const DdgiSettings& s) const
@@ -446,6 +466,48 @@ bool DdgiVolume::EnsurePlanBuffers(GraphicsDevice& device)
     return true;
 }
 
+bool DdgiVolume::EnsureGroundBuffers(GraphicsDevice& device)
+{
+    if (m_groundBuf && m_groundMapped[0]) return true;
+    auto* dev = device.GetDevice();
+    constexpr u64 bytes = kGroundRays * 4ull * sizeof(float);
+    auto makeBuf = [&](D3D12_HEAP_TYPE type, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state,
+                       Microsoft::WRL::ComPtr<ID3D12Resource>& out) -> bool
+    {
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = type;
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension        = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width            = bytes;
+        desc.Height           = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels        = 1;
+        desc.Format           = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc       = {1, 0};
+        desc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.Flags            = flags;
+        return SUCCEEDED(dev->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr,
+                                                      IID_PPV_ARGS(&out)));
+    };
+    if (!makeBuf(D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS, m_groundBuf))
+    {
+        Logger::Warn("DDGI: 地面レイのバッファを確保できません（窓はカメラ中心のまま）");
+        return false;
+    }
+    for (u32 f = 0; f < kPlanRing; ++f)
+    {
+        if (!makeBuf(D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST,
+                     m_groundReadback[f]))
+            return false;
+        void* mapped = nullptr;
+        if (FAILED(m_groundReadback[f]->Map(0, nullptr, &mapped))) return false;   // 永続マップ（READBACK は読む範囲を毎回指定しなくてよい）
+        m_groundMapped[f]  = static_cast<const float*>(mapped);
+        m_groundPending[f] = false;
+    }
+    return true;
+}
+
 bool DdgiVolume::WriteProbeDataSrv(GraphicsDevice& device, D3D12_CPU_DESCRIPTOR_HANDLE dst) const
 {
     if (!m_probeData || dst.ptr == 0) return false;
@@ -522,8 +584,11 @@ void DdgiVolume::BuildList(const DdgiSettings& s)
     m_hyst[1] = nc > 1 ? ddgi::EffectiveHysteresis(h, perCasc, sp.k1) : m_hyst[0];
 }
 
-void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& cam, float lastGpuMs)
+void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& cam, const XMFLOAT3& camFwd,
+                           float lastGpuMs)
 {
+    m_planCam = cam;
+    m_planFwd = camFwd;
     m_planReady = false;
     m_hitPlanValid = false;   // RT 反射が DDGI を引いてよいのは、今フレームの Update が済んだあとだけ
     ++m_planSeq;
@@ -581,16 +646,38 @@ void DdgiVolume::PlanFrame(const DdgiSettings& s, bool giNew, const XMFLOAT3& ca
         const float camv[3] = {cam.x, cam.y, cam.z};
         for (u32 c = 0; c < nc; ++c)
         {
-            const ddgi::Move mv = ddgi::UpdateWindow(m_win[c], camv, m_spacing[c], m_counts);
+            // 窓の中心: 地上の視点ならカメラそのもの。上空では地面寄り・視線の先へ寄せる（ddgi::AnchorForCascade）。
+            // ★ずらし量は 1 フレームに 15% ずつ追う。屋根の上を横切って真下の面の高さが跳んでも窓が一気に飛ばない
+            //   （入れ替わるプローブのリセットが 1 フレームに集中しない）。
+            float anchor[3];
+            ddgi::AnchorForCascade(camv, m_groundHits, m_spacing[c], m_counts, anchor);
+            float pos[3];
+            for (int a = 0; a < 3; ++a)
+            {
+                const float target = anchor[a] - camv[a];
+                float& off = m_anchorOffset[c][a];
+                off += (target - off) * 0.15f;
+                if (target == 0.0f && std::fabs(off) < 1.0e-3f) off = 0.0f;   // 地上に戻ったら厳密に 0（従来と同じ窓）
+                pos[a] = camv[a] + off;
+            }
+            const ddgi::Move mv = ddgi::UpdateWindow(m_win[c], pos, m_spacing[c], m_counts);
             ddgi::WindowOrigin(m_win[c], m_spacing[c], m_origin[c]);
             ddgi::MarkEntering(m_win[c], mv, m_counts, m_pending, c * perCasc);
         }
     }
     else
     {
+        for (auto& o : m_anchorOffset) o[0] = o[1] = o[2] = 0.0f;
         m_origin[0][0] = s.originX; m_origin[0][1] = s.originY; m_origin[0][2] = s.originZ;
         m_win[0].valid = true;
         for (int a = 0; a < 3; ++a) { m_win[0].base[a] = 0; m_win[0].scroll[a] = 0; }
+    }
+    {
+        const ddgi::GroundHits& g = m_groundHits;
+        m_stats.groundDown = {g.down[0], g.down[1], g.down[2], g.downHit ? 1.0f : 0.0f};
+        m_stats.groundView = {g.view[0], g.view[1], g.view[2], g.viewHit ? 1.0f : 0.0f};
+        m_stats.anchorOffset0 = {m_anchorOffset[0][0], m_anchorOffset[0][1], m_anchorOffset[0][2]};
+        m_stats.anchorOffset1 = {m_anchorOffset[1][0], m_anchorOffset[1][1], m_anchorOffset[1][2]};
     }
 
     // ---- 予算: GPU 時間の実測（kLag フレーム遅れ）から 1 プローブの費用を見積もり、更新するプローブ数を決める ----
@@ -889,6 +976,44 @@ void DdgiVolume::Update(ID3D12GraphicsCommandList* cmd, GraphicsDevice& device,
     cmd->SetComputeRootShaderResourceView(1, d.tlas);
     cmd->SetComputeRootShaderResourceView(2, d.geometryInfo);
     cmd->SetComputeRootDescriptorTable(3, m_srvHeap->GetGpuHandle(m_rayDataUav));
+
+    // ---- 地面レイ（カメラ追従のときだけ）: 窓の置き場所を決めるヒット点を測って読み戻す（ddgi::AnchorForCascade）----
+    //   ★同じリングの枠は、その枠のフレームの完了待ち（BeginFrame）を経てから再び回ってくるので、前回のコピーは読み終わっていてよい。
+    //   読んだ値は次のフレームの PlanFrame が使う（約 kPlanRing フレーム遅れ。窓はなめらかに追うので問題にならない）。
+    if (giNew && m_planFollow && m_psoGround && EnsureGroundBuffers(device))
+    {
+        const u32 ring = d.ringIndex % kPlanRing;
+        if (m_groundPending[ring])
+        {
+            const float* p = m_groundMapped[ring];
+            ddgi::GroundHits g;
+            g.downHit = p[3] >= 0.0f;
+            g.viewHit = p[7] >= 0.0f;
+            for (int a = 0; a < 3; ++a) { g.down[a] = p[a]; g.view[a] = p[4 + a]; }
+            m_groundHits = g;
+            m_groundPending[ring] = false;
+        }
+        const float gc[8] = {m_planCam.x, m_planCam.y, m_planCam.z, 0.0f, m_planFwd.x, m_planFwd.y, m_planFwd.z, 0.0f};
+        cmd->SetComputeRootUnorderedAccessView(4, m_groundBuf->GetGPUVirtualAddress());
+        cmd->SetComputeRoot32BitConstants(5, 8, gc, 0);
+        cmd->SetPipelineState(m_psoGround.Get());
+        cmd->Dispatch(1, 1, 1);
+        D3D12_RESOURCE_BARRIER gb{};
+        gb.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        gb.Transition.pResource   = m_groundBuf.Get();
+        gb.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        gb.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        gb.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        cmd->ResourceBarrier(1, &gb);
+        cmd->CopyBufferRegion(m_groundReadback[ring].Get(), 0, m_groundBuf.Get(), 0, kGroundRays * 4ull * sizeof(float));
+        std::swap(gb.Transition.StateBefore, gb.Transition.StateAfter);
+        cmd->ResourceBarrier(1, &gb);
+        m_groundPending[ring] = true;
+    }
+    else if (!m_planFollow)
+    {
+        m_groundHits = ddgi::GroundHits{};
+    }
 
     // ---- ライトグリッド（GI モード New: ヒット点の点光源を絞る。1 スレッド = 1 セル）----
     if (giNew && reinterpret_cast<const u32*>(m_planMapped[d.ringIndex % kPlanRing])[27] != 0u)

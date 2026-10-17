@@ -102,6 +102,40 @@ void LightGridCS(uint3 dtid : SV_DispatchThreadID)
 }
 
 // ---------------------------------------------------------------------------
+//  Ground: 窓の置き場所を決める地面レイ（GI S4 のカメラ追従。DdgiSchedule.h の AnchorForCascade）
+//  スレッド 0 = カメラの真下 / 1 = 視線の中心。結果は xyz = ヒット点 / w = 距離（ミスは -1）。CPU が読み戻す。
+//  ★α抜きの面（葉カードなど）は無視する（RAY_FLAG_CULL_NON_OPAQUE）。木の下では梢でなく地面を拾いたい。
+// ---------------------------------------------------------------------------
+cbuffer DdgiGroundCB : register(b1)
+{
+    float3 gGroundCam; float gGroundPad0;
+    float3 gGroundFwd; float gGroundPad1;
+};
+RWStructuredBuffer<float4> gGroundOut : register(u5);
+
+[numthreads(2, 1, 1)]
+void GroundCS(uint3 dtid : SV_DispatchThreadID)
+{
+    if (dtid.x >= 2u) return;
+    const float3 fwd = (dot(gGroundFwd, gGroundFwd) > 1.0e-8) ? normalize(gGroundFwd) : float3(0.0, 0.0, 1.0);
+    RayDesc r;
+    r.Origin    = gGroundCam;
+    r.Direction = (dtid.x == 0u) ? float3(0.0, -1.0, 0.0) : fwd;
+    r.TMin      = 0.0;
+    r.TMax      = 1.0e5;
+    RayQuery<RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES | RAY_FLAG_CULL_NON_OPAQUE> q;
+    q.TraceRayInline(gTlas, 0, 0xFF, r);
+    q.Proceed();
+    float4 o = float4(0.0, 0.0, 0.0, -1.0);
+    if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    {
+        const float t = q.CommittedRayT();
+        o = float4(r.Origin + r.Direction * t, t);
+    }
+    gGroundOut[dtid.x] = o;
+}
+
+// ---------------------------------------------------------------------------
 //  Trace: 1 スレッド = 1 レイ
 // ---------------------------------------------------------------------------
 [numthreads(DDGI_RAYS_PER_PROBE, 1, 1)]

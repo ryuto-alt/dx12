@@ -91,6 +91,46 @@ inline Move UpdateWindow(Window& w, const float cam[3], float spacing, const int
     return m;
 }
 
+// ---- 窓の置き場所（カメラが地面から離れたとき）----------------------------------------------------------
+// 窓はカメラを中心に追従するが、縦の幅は (counts.y-1)*spacing しかない（既定 8 段: 近景 0.8m で 5.6m / 遠景 3m で 21m）。
+// カメラが上がると窓が地面の上へ抜け、路面・壁の下の方が DDGI の外＝遮蔽の無い IBL（空）で照らされる。
+// Bistro で、高さ 15m を超えると日陰がどんどん明るく浮き、下りると暗く戻っていた（2026-10-17）。
+// そこで GPU のレイでカメラの真下と視線の先の面を測り（DdgiGround_CS）、窓の下端が「面の 1 セル下」より
+// 上へ行かないように窓の中心を下げる。下げた分だけ、水平方向も視線の先（見えている所）へ寄せる。
+// ★面より 1 セル下まで下げずに済む高さ（＝地上の視点）では cam をそのまま返す＝従来と同じ窓。
+struct GroundHits
+{
+    bool  downHit = false;  float down[3] = {0, 0, 0};   // カメラの真下の面
+    bool  viewHit = false;  float view[3] = {0, 0, 0};   // 視線の中心の先の面
+};
+
+inline void AnchorForCascade(const float cam[3], const GroundHits& g, float spacing, const int counts[3], float out[3])
+{
+    for (int a = 0; a < 3; ++a) out[a] = cam[a];
+    const float sp    = std::max(spacing, 1.0e-4f);
+    const float halfX = 0.5f * static_cast<float>(counts[0] - 1) * sp;
+    const float halfY = 0.5f * static_cast<float>(counts[1] - 1) * sp;
+    const float halfZ = 0.5f * static_cast<float>(counts[2] - 1) * sp;
+    // 視線の先の面は、窓が届く範囲（水平に窓の幅まで）にあるものだけ使う。地平線の向こうの低い面で窓を引っぱらない。
+    const float vdx = g.view[0] - cam[0], vdz = g.view[2] - cam[2];
+    const float vlen = std::sqrt(vdx * vdx + vdz * vdz);
+    const bool  viewNear = g.viewHit && vlen <= 2.0f * std::min(halfX, halfZ);
+    if (!g.downHit && !viewNear) return;
+    float refY = 1.0e30f;
+    if (g.downHit) refY = std::min(refY, g.down[1]);
+    if (viewNear)  refY = std::min(refY, g.view[1]);
+    const float maxCenterY = refY + halfY - sp;   // 窓の下端 = refY - 1 セル
+    if (cam[1] <= maxCenterY) return;
+    out[1] = maxCenterY;
+    if (!viewNear || vlen <= 1.0e-4f) return;
+    // 下げた量が縦の半分に達したら、視線の先へ最大で窓の半幅まで寄せる（途中は比例）。
+    const float k     = std::min((cam[1] - maxCenterY) / std::max(halfY, 1.0e-4f), 1.0f);
+    const float lim   = std::min(halfX, halfZ);
+    const float scale = (vlen > lim ? lim / vlen : 1.0f) * k;
+    out[0] += vdx * scale;
+    out[2] += vdz * scale;
+}
+
 // 窓の最小コーナーのワールド座標。
 inline void WindowOrigin(const Window& w, float spacing, float out[3])
 {

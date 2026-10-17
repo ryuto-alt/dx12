@@ -170,7 +170,9 @@ public:
     // フレームで 1 回、b1 を書く前に呼ぶ（主ビュー）。窓をカメラへ合わせ（はみ出した列だけ履歴を捨てる印を立てる）、
     // 更新リスト（リセット待ち + 予算ぶんのラウンドロビン）を作る。giNew=false なら何もしない（Legacy は従来の固定格子）。
     //   lastGpuMs: 直近に完了したフレームの DDGI の GPU 時間(ms)（GpuTimer。0 = 未計測）
-    void PlanFrame(const DdgiSettings& s, bool giNew, const DirectX::XMFLOAT3& cam, float lastGpuMs);
+    //   camFwd   : カメラの前方向（窓を地面寄り・視線の先へ寄せるための地面レイに使う。ddgi::AnchorForCascade）
+    void PlanFrame(const DdgiSettings& s, bool giNew, const DirectX::XMFLOAT3& cam, const DirectX::XMFLOAT3& camFwd,
+                   float lastGpuMs);
     // フォワード / SSGI へ渡す格子の記述（PlanFrame の結果。GI モード New 用。固定ボリュームはカスケード 1・scroll 0）。
     struct SampleParams
     {
@@ -209,6 +211,10 @@ public:
         float costUsPerProbe = 0;  // 1 プローブの GPU 時間の見積り(us)
         u32   lightGridCells = 0;
         float hysteresis0 = 0, hysteresis1 = 0;   // 実効ヒステリシス（間引きを考慮）
+        // 窓の置き場所（カメラ追従のとき）。groundDown/View = 地面レイのヒット点（w = 1 ヒット / 0 なし）、
+        // anchorOffset0/1 = 窓の中心をカメラからずらした量(m)。地上の視点では 0。
+        DirectX::XMFLOAT4 groundDown{0, 0, 0, 0}, groundView{0, 0, 0, 0};
+        DirectX::XMFLOAT3 anchorOffset0{0, 0, 0}, anchorOffset1{0, 0, 0};
     };
     const Stats& GetStats() const { return m_stats; }
 
@@ -258,6 +264,19 @@ private:
     u8*  m_planMapped[kPlanRing] = {};
     u32  m_planSrv[kPlanRing] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
     bool EnsurePlanBuffers(GraphicsDevice& device);
+
+    // 地面レイ（DdgiGround_CS）: カメラの真下と視線の先へ 1 本ずつ撃ったヒット点を読み戻して、窓の置き場所に使う。
+    // 結果は UAV（u5、ルート UAV）→ READBACK のリングへコピーし、同じリングの枠を次に使う直前（GPU が済ませた後）に読む。
+    static constexpr u32 kGroundRays = 2;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoGround;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_groundBuf;                  // float4 × kGroundRays（xyz = ヒット点 / w = 距離。ミスは負）
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_groundReadback[kPlanRing];
+    const float* m_groundMapped[kPlanRing] = {};
+    bool m_groundPending[kPlanRing] = {};   // その枠へコピーを積んだ（まだ読んでいない）
+    bool EnsureGroundBuffers(GraphicsDevice& device);
+    ddgi::GroundHits m_groundHits;           // 最新の読み戻し
+    DirectX::XMFLOAT3 m_planCam{0, 0, 0}, m_planFwd{0, 0, 1};
+    float m_anchorOffset[2][3] = {};         // 窓の中心 - カメラ（なめらかに追う）
 
     // ---- 計画（PlanFrame の結果）----
     bool m_planGiNew = false;        // 今フレームは GI モード New（かつ PSO あり）

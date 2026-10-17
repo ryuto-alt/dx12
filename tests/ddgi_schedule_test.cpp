@@ -9,6 +9,7 @@
 #include "renderer/DdgiSchedule.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <set>
@@ -293,6 +294,64 @@ void TestLightGrid()
     const float inP[3] = {gridOrigin[0] + 1e-3f, gridOrigin[1] + 1e-3f, gridOrigin[2] + 1e-3f};
     CHECK(CellOf(inP, gridOrigin, cell, dims, c) && c[0] == 0 && c[1] == 0 && c[2] == 0);
 }
+// 窓の置き場所: 地上の視点では動かさない / 上空では窓の下端が面の 1 セル下に来るまで下げる / 視線の先へ寄せる
+void TestAnchor()
+{
+    const int counts[3] = {22, 8, 22};
+    const float sp = 3.0f;                       // 遠景カスケード: 半幅 31.5m / 縦の半分 10.5m
+    float out[3];
+    // 面が無い（空を見上げている・何も無い所）→ カメラそのまま
+    {
+        GroundHits g;
+        const float cam[3] = {1.0f, 50.0f, 2.0f};
+        AnchorForCascade(cam, g, sp, counts, out);
+        CHECK(out[0] == cam[0] && out[1] == cam[1] && out[2] == cam[2]);
+    }
+    // 地上の視点（目の高さ 1.7m）→ 従来と同じ（カメラそのもの）
+    {
+        GroundHits g; g.downHit = true; g.down[1] = 0.0f;
+        g.viewHit = true; g.view[0] = 20.0f; g.view[1] = 1.5f; g.view[2] = 0.0f;
+        const float cam[3] = {0.0f, 1.7f, 0.0f};
+        AnchorForCascade(cam, g, sp, counts, out);
+        CHECK(out[0] == cam[0] && out[1] == cam[1] && out[2] == cam[2]);
+    }
+    // 上空 40m・視線の先 40m に路面 → 窓の中心 y = 0 + 10.5 - 3 = 7.5、水平は視線の先へ最大で半幅（31.5m）だけ寄る
+    {
+        GroundHits g; g.downHit = true; g.down[1] = 0.0f;
+        g.viewHit = true; g.view[0] = 40.0f; g.view[1] = 0.0f; g.view[2] = 0.0f;
+        const float cam[3] = {0.0f, 40.0f, 0.0f};
+        AnchorForCascade(cam, g, sp, counts, out);
+        CHECK(std::fabs(out[1] - 7.5f) < 1e-4f);
+        CHECK(std::fabs(out[0] - 31.5f) < 1e-4f && out[2] == 0.0f);
+        // 窓の下端（中心 - 縦の半分）は路面の 1 セル下
+        CHECK(std::fabs((out[1] - 10.5f) - (0.0f - sp)) < 1e-4f);
+    }
+    // 屋根の上 (真下 30m) でも、近くに見えている路面 (y=0) を優先する
+    {
+        GroundHits g; g.downHit = true; g.down[1] = 30.0f;
+        g.viewHit = true; g.view[0] = 0.0f; g.view[1] = 0.0f; g.view[2] = 25.0f;
+        const float cam[3] = {0.0f, 45.0f, 0.0f};
+        AnchorForCascade(cam, g, sp, counts, out);
+        CHECK(std::fabs(out[1] - 7.5f) < 1e-4f);
+        CHECK(out[2] > 0.0f && out[2] <= 25.0f + 1e-4f);
+    }
+    // 視線の先が遠すぎる（窓の幅の 2 倍の外）面は使わない（地平線の向こうの低い面で引っぱらない）
+    {
+        GroundHits g; g.viewHit = true; g.view[0] = 500.0f; g.view[1] = -50.0f; g.view[2] = 0.0f;
+        const float cam[3] = {0.0f, 5.0f, 0.0f};
+        AnchorForCascade(cam, g, sp, counts, out);
+        CHECK(out[0] == cam[0] && out[1] == cam[1] && out[2] == cam[2]);
+    }
+    // 少しだけ浮いたとき（下げる量が縦の半分未満）は、水平の寄せも比例して小さい
+    {
+        GroundHits g; g.downHit = true; g.down[1] = 0.0f;
+        g.viewHit = true; g.view[0] = 20.0f; g.view[1] = 0.0f; g.view[2] = 0.0f;
+        const float cam[3] = {0.0f, 9.0f, 0.0f};   // 7.5 を 1.5m 超え → k = 1.5 / 10.5
+        AnchorForCascade(cam, g, sp, counts, out);
+        CHECK(std::fabs(out[1] - 7.5f) < 1e-4f);
+        CHECK(std::fabs(out[0] - 20.0f * (1.5f / 10.5f)) < 1e-3f);
+    }
+}
 } // namespace
 
 int main()
@@ -302,6 +361,7 @@ int main()
     TestEnteringOnlyNewProbes();
     TestRoundRobinAndBudget();
     TestLightGrid();
+    TestAnchor();
     std::printf("DdgiScheduleTests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
