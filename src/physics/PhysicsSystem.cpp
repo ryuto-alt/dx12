@@ -16,6 +16,10 @@
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <thread>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -60,6 +64,7 @@
 #pragma warning(pop)
 
 #include <entt/entt.hpp>
+#include <windows.h>   // SetThreadPriority（形状を先に組む裏のスレッド）
 
 using namespace DirectX;
 
@@ -321,10 +326,8 @@ struct PhysicsSystem::JoltImpl
     std::unordered_map<uint32_t, BodyPrev> prevBody;
     u32 stepStamp = 0;   // 実行した固定ステップの通し番号
 
-    // MeshCollider の三角形形状キャッシュ。キー = modelPath + "|" + scale。
-    // 同じモデルを何千個置く「レベル丸ごと取り込み」で BVH を毎回組むと数十秒かかるので、
-    // 形状は共有する（Jolt の Shape は refcount 管理＝複数ボディから安全に指せる）。
-    std::unordered_map<std::string, JPH::RefConst<JPH::Shape>> meshShapeCache;
+    // ★MeshCollider の三角形形状キャッシュは PhysicsSystem::MeshShapeStore（m_shapes）へ移した。
+    //   ここ（JoltImpl）は Stop のたびに作り直すので、ここに置くと Play のたびに BVH を組み直すことになる。
 
     // 静的 / キネマティックの「いまの Jolt 側の状態」の控え（Play 中の Transform・スケール・コライダー部品の
     // 変更を拾うため）。chain = 親を含む Transform 生値のハッシュ、comp = コライダー部品 + RigidBody の値のハッシュ、
@@ -384,8 +387,7 @@ static constexpr JPH::uint kMaxBodies             = 131072;
 static constexpr JPH::uint kMaxBodyPairs          = 131072;
 static constexpr JPH::uint kMaxContactConstraints = 65536;
 
-PhysicsSystem::PhysicsSystem() = default;
-PhysicsSystem::~PhysicsSystem() { Shutdown(); }
+// コンストラクタ / デストラクタは MeshShapeStore の定義の後ろ。
 
 void PhysicsSystem::Initialize()
 {
@@ -732,14 +734,23 @@ namespace {
 //   実測: 親を (10,0,0)、子をローカル (0,6,0) に置いて落とすと、箱は world x=10 に描かれるのに
 //   overlapSphere が拾うのは x=0（親なしの対照は一致する）。
 //   スケールも同じで、親を 2 倍にしても当たり判定は等倍のままだった。
-// MeshRenderer のメッシュから Jolt の三角形メッシュ形状（スケール抜き・静的専用）を作る。
-// 作れなければ nullptr。MeshCollider（1 エンティティ 1 ボディ）とインスタンス群が共有する。
-JPH::RefConst<JPH::Shape> BuildStaticMeshShape(const MeshRenderer& mr)
+// MeshRenderer のメッシュから Jolt の三角形メッシュ形状（スケール抜き・静的専用）の材料（頂点と三角形）を写す。
+// Mesh を読むのでメインスレッドで呼ぶ。重いのは次の CreateStaticMeshShape（BVH の構築）で、こちらは数十 ms。
+void CollectStaticMeshTriangles(const MeshRenderer& mr, JPH::VertexList& verts, JPH::IndexedTriangleList& tris)
 {
-    JPH::RefConst<JPH::Shape> base;
-    JPH::VertexList          verts;
-    JPH::IndexedTriangleList tris;
-    uint32_t                 vbase = 0;
+    // ★先に合計を数えて 1 回だけ確保する。reserve はちょうどの大きさで取り直すので、メッシュごとに
+    //   reserve すると毎回それまでの全部を写し直す二乗になる（Bistro の 1591 メッシュで約 7.5 秒かかっていた）。
+    size_t vertTotal = 0, triTotal = 0;
+    for (const Mesh* mesh : mr.meshes)
+    {
+        if (mesh == nullptr || mesh->GetPositions().empty() || mesh->GetIndices().size() < 3) continue;
+        vertTotal += mesh->GetPositions().size();
+        triTotal  += mesh->GetIndices().size() / 3;
+    }
+    verts.reserve(verts.size() + vertTotal);
+    tris.reserve(tris.size() + triTotal);
+
+    uint32_t vbase = 0;
     for (size_t mi = 0; mi < mr.meshes.size(); ++mi)
     {
         const Mesh* mesh = mr.meshes[mi];
@@ -754,7 +765,6 @@ JPH::RefConst<JPH::Shape> BuildStaticMeshShape(const MeshRenderer& mr)
         if (mi < mr.meshNodeTransforms.size())
             node = DirectX::XMLoadFloat4x4(&mr.meshNodeTransforms[mi]);
 
-        verts.reserve(verts.size() + positions.size());
         for (const auto& lp : positions)
         {
             DirectX::XMFLOAT3 wp{};
@@ -763,7 +773,6 @@ JPH::RefConst<JPH::Shape> BuildStaticMeshShape(const MeshRenderer& mr)
             verts.push_back(JPH::Float3(wp.x, wp.y, wp.z));
         }
 
-        tris.reserve(tris.size() + indices.size() / 3);
         for (size_t t = 0; t + 2 < indices.size(); t += 3)
             tris.push_back(JPH::IndexedTriangle(vbase + indices[t],
                                                 vbase + indices[t + 1],
@@ -796,15 +805,26 @@ JPH::RefConst<JPH::Shape> BuildStaticMeshShape(const MeshRenderer& mr)
                 tris.push_back(JPH::IndexedTriangle(tris[i].mIdx[0], tris[i].mIdx[2], tris[i].mIdx[1], 0));
         }
     }
+}
 
-    if (!verts.empty() && !tris.empty())
-    {
-        JPH::MeshShapeSettings settings(std::move(verts), std::move(tris));
-        auto result = settings.Create();
-        if (result.IsValid()) base = result.Get();
-        else Logger::Error("meshCollider の三角形形状を作れませんでした（{}）: {}",
-                           mr.modelPath, result.GetError().c_str());
-    }
+// 写した材料から Jolt の MeshShape（BVH）を組む。Mesh に触らないので裏のスレッドから呼んでよい。
+// 作れなければ nullptr。重い（Bistro の 283 万三角形で約 3 秒）ので 0.1 秒を超えたら所要時間を出す。
+JPH::RefConst<JPH::Shape> CreateStaticMeshShape(JPH::VertexList&& verts, JPH::IndexedTriangleList&& tris,
+                                                const std::string& modelPath, const char* where)
+{
+    JPH::RefConst<JPH::Shape> base;
+    if (verts.empty() || tris.empty()) return base;
+    const size_t triCount = tris.size();
+    const auto t0 = std::chrono::steady_clock::now();
+    JPH::MeshShapeSettings settings(std::move(verts), std::move(tris));
+    auto result = settings.Create();
+    if (result.IsValid()) base = result.Get();
+    else Logger::Error("meshCollider の三角形形状を作れませんでした（{}）: {}",
+                       modelPath, result.GetError().c_str());
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (ms >= 100.0)
+        Logger::Info("meshCollider の三角形形状を組みました（{}）: {} 三角形 / {:.0f} ms（{}）",
+                     modelPath, triCount, ms, where);
     return base;
 }
 
@@ -1038,6 +1058,13 @@ uint64_t MeshShapeSignature(const MeshRenderer& mr)
     return h;
 }
 
+// 形状キャッシュのキー。MeshCollider もインスタンス群もこれを使う。
+// 形状は Play をまたいで残るので、modelPath だけでなく中身の署名も入れる（モデルを差し替えたら別のキーになる）。
+std::string MeshShapeKey(const MeshRenderer& mr, bool isStatic)
+{
+    return mr.modelPath + "|" + std::to_string(MeshShapeSignature(mr)) + (isStatic ? "|tri" : "|hull");
+}
+
 // 接触イベントの整理テーブルから、消えたボディを含む対を捨てる。
 void PurgeContactState(std::unordered_map<uint64_t, int>& counts, std::unordered_set<uint64_t>& suspended, uint32_t bodyId)
 {
@@ -1051,6 +1078,173 @@ void PurgeContactState(std::unordered_map<uint64_t, int>& counts, std::unordered
 }
 
 } // namespace
+
+// meshCollider の形状キャッシュと、それを先に組んでおく裏のスレッド（1 本・低優先度）。
+// 材料（頂点と三角形）はメインスレッドで写してから渡す＝裏のスレッドは Mesh に触らない。
+struct PhysicsSystem::MeshShapeStore
+{
+    struct Job
+    {
+        std::string              key;
+        std::string              modelPath;
+        JPH::VertexList          verts;
+        JPH::IndexedTriangleList tris;
+    };
+
+    std::mutex              mtx;
+    std::condition_variable cv;
+    std::unordered_map<std::string, JPH::RefConst<JPH::Shape>> shapes;   // 組み終えた形状（失敗は入れない）
+    std::unordered_set<std::string> failed;     // 裏で組めなかったキー（毎回積み直さない）
+    std::deque<Job> queue;                      // 未着手
+    std::string     building;                   // 裏で組んでいる最中のキー（空 = なし）
+    bool            stop = false;
+    bool            workerStarted = false;
+
+    bool Known(const std::string& key) const
+    {
+        return shapes.count(key) != 0 || failed.count(key) != 0 || building == key ||
+               std::any_of(queue.begin(), queue.end(), [&](const Job& j) { return j.key == key; });
+    }
+
+    // 呼ぶ側が mtx を持っていること。
+    void StartWorkerLocked(const std::shared_ptr<MeshShapeStore>& self)
+    {
+        if (workerStarted) return;
+        workerStarted = true;
+        std::thread([self]() {
+            // 人の操作（エディタ・ほかのアプリ）を邪魔しない
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+            std::unique_lock lk(self->mtx);
+            for (;;)
+            {
+                self->cv.wait(lk, [&] { return self->stop || !self->queue.empty(); });
+                if (self->stop) return;
+                Job job = std::move(self->queue.front());
+                self->queue.pop_front();
+                self->building = job.key;
+                lk.unlock();
+                JPH::RefConst<JPH::Shape> shape =
+                    CreateStaticMeshShape(std::move(job.verts), std::move(job.tris), job.modelPath, "エディタ中に裏で");
+                lk.lock();
+                if (shape.GetPtr() != nullptr) self->shapes[job.key] = shape;
+                else                           self->failed.insert(job.key);
+                self->building.clear();
+                self->cv.notify_all();
+            }
+        }).detach();
+    }
+
+    // メインスレッド用。キャッシュにあれば返す。裏で組んでいる最中なら待つ。積んだだけで未着手なら横取りしてここで組む。
+    JPH::RefConst<JPH::Shape> AcquireStatic(const std::string& key, const MeshRenderer& mr)
+    {
+        std::unique_lock lk(mtx);
+        if (building == key)
+        {
+            Logger::Info("meshCollider の形状を裏で組んでいる最中なので、終わるのを待ちます（{}）", mr.modelPath);
+            cv.wait(lk, [&] { return building != key; });
+        }
+        if (auto it = shapes.find(key); it != shapes.end()) return it->second;
+
+        JPH::VertexList          verts;
+        JPH::IndexedTriangleList tris;
+        bool collected = false;
+        if (auto it = std::find_if(queue.begin(), queue.end(), [&](const Job& j) { return j.key == key; });
+            it != queue.end())
+        {
+            verts = std::move(it->verts);
+            tris  = std::move(it->tris);
+            queue.erase(it);
+            collected = true;
+        }
+        failed.erase(key);
+        lk.unlock();
+
+        if (!collected) CollectStaticMeshTriangles(mr, verts, tris);
+        JPH::RefConst<JPH::Shape> shape = CreateStaticMeshShape(std::move(verts), std::move(tris), mr.modelPath, "Play 開始時");
+        if (shape.GetPtr() != nullptr)
+        {
+            lk.lock();
+            shapes[key] = shape;
+        }
+        return shape;
+    }
+
+    JPH::RefConst<JPH::Shape> Find(const std::string& key)
+    {
+        std::lock_guard lk(mtx);
+        auto it = shapes.find(key);
+        return it != shapes.end() ? it->second : JPH::RefConst<JPH::Shape>();
+    }
+
+    void Put(const std::string& key, const JPH::RefConst<JPH::Shape>& shape)
+    {
+        std::lock_guard lk(mtx);
+        shapes[key] = shape;
+    }
+};
+
+PhysicsSystem::PhysicsSystem() : m_shapes(std::make_shared<MeshShapeStore>()) {}
+PhysicsSystem::~PhysicsSystem()
+{
+    Shutdown();
+    // 裏のスレッドは detach 済み（組んでいる最中なら終わってから抜ける。m_shapes は共有なので先に消えない）。
+    std::lock_guard lk(m_shapes->mtx);
+    m_shapes->stop = true;
+    m_shapes->queue.clear();
+    m_shapes->cv.notify_all();
+}
+
+void PhysicsSystem::PrewarmMeshShapes(entt::registry& registry)
+{
+    // 2 秒に 1 回くらい（60fps 想定）。署名は 1 メッシュ 16 点しか読まないので、数千体でも 1〜2 ms。
+    // 読み込み途中のメッシュがあった回は 10 フレーム後に見直す（読み終えたらすぐ組み始める）。
+    if (m_prewarmTick > 0) { --m_prewarmTick; return; }
+    m_prewarmTick = 120;
+    if (!m_shapes) return;
+
+    std::unordered_set<std::string> live;
+    bool complete = true;   // シーンの meshCollider を全部見られた（読み込み途中のメッシュが無い）
+    for (auto [entity, rb, mc, mr] : registry.view<RigidBody, MeshCollider, MeshRenderer>().each())
+    {
+        (void)mc;
+        if (rb.motionType != MotionType::Static) continue;   // 動く剛体は凸包（軽い）なので先に組まない
+        if (registry.all_of<MissingModel>(entity)) continue;
+        if (mr.meshes.empty()) { complete = false; continue; }
+
+        std::string key = MeshShapeKey(mr, true);
+        {
+            std::lock_guard lk(m_shapes->mtx);
+            if (m_shapes->Known(key)) { live.insert(std::move(key)); continue; }
+        }
+
+        MeshShapeStore::Job job;
+        job.key       = key;
+        job.modelPath = mr.modelPath;
+        const auto t0 = std::chrono::steady_clock::now();
+        CollectStaticMeshTriangles(mr, job.verts, job.tris);
+        if (job.verts.empty() || job.tris.empty()) continue;
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (ms >= 30.0)   // メインスレッドで払う分。裏で組む前の 1 回だけ
+            Logger::Info("meshCollider の材料を写しました（{}）: {} 三角形 / {:.0f} ms", mr.modelPath, job.tris.size(), ms);
+
+        std::lock_guard lk(m_shapes->mtx);
+        m_shapes->queue.push_back(std::move(job));
+        m_shapes->StartWorkerLocked(m_shapes);
+        m_shapes->cv.notify_all();
+        live.insert(std::move(key));
+    }
+
+    // 今のシーンで使われなくなった形状は捨てる（シーンを渡り歩いても溜め込まない）。
+    // 使用中のボディは自分で参照を持っているので、ここで捨てても壊れない。
+    if (!complete) { m_prewarmTick = 10; return; }
+    std::lock_guard lk(m_shapes->mtx);
+    for (auto it = m_shapes->shapes.begin(); it != m_shapes->shapes.end(); )
+        it = live.count(it->first) ? std::next(it) : m_shapes->shapes.erase(it);
+    for (auto it = m_shapes->queue.begin(); it != m_shapes->queue.end(); )
+        it = live.count(it->key) ? std::next(it) : m_shapes->queue.erase(it);
+    for (auto it = m_shapes->failed.begin(); it != m_shapes->failed.end(); )
+        it = live.count(*it) ? std::next(it) : m_shapes->failed.erase(it);
+}
 
 void PhysicsSystem::SyncTransformsToPhysics(entt::registry& registry, f32 dt)
 {
@@ -1471,10 +1665,8 @@ void PhysicsSystem::RegisterGroupBodies(entt::registry& registry, entt::entity e
         return;
     }
 
-    const std::string key = mr->modelPath + "|tri";
-    JPH::RefConst<JPH::Shape> base;
-    if (auto it = m_impl->meshShapeCache.find(key); it != m_impl->meshShapeCache.end()) base = it->second;
-    else { base = BuildStaticMeshShape(*mr); m_impl->meshShapeCache[key] = base; }
+    // ★キーは MeshCollider と同じ（中身の署名入り）。形状は Play をまたいで残るので modelPath だけでは古い形を拾う。
+    const JPH::RefConst<JPH::Shape> base = m_shapes->AcquireStatic(MeshShapeKey(*mr, true), *mr);
     if (base.GetPtr() == nullptr) { m_groupBodies[entity] = gb; return; }   // 形が作れなかったら箱で代用しない
 
     const instgroup::InstanceSet& set = *grp->_set;
@@ -1814,19 +2006,11 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
         colliderOffset = registry.get<MeshCollider>(entity).offset;
 
         const bool isStatic = (rb->motionType == MotionType::Static);
-        const std::string key = mr->modelPath + "|" + std::to_string(MeshShapeSignature(*mr)) + (isStatic ? "|tri" : "|hull");
+        const std::string key = MeshShapeKey(*mr, isStatic);
 
-        JPH::RefConst<JPH::Shape> base;
-        if (auto it = m_impl->meshShapeCache.find(key); it != m_impl->meshShapeCache.end())
-        {
-            base = it->second;
-        }
-        else if (isStatic)
-        {
-            base = BuildStaticMeshShape(*mr);
-            if (base.GetPtr() != nullptr) m_impl->meshShapeCache[key] = base;   // 失敗（nullptr）はキャッシュしない
-        }
-        else
+        // 静的: キャッシュ → 裏で組んでいる最中なら待つ → 無ければここで組む（失敗はキャッシュしない）
+        JPH::RefConst<JPH::Shape> base = isStatic ? m_shapes->AcquireStatic(key, *mr) : m_shapes->Find(key);
+        if (!isStatic && base.GetPtr() == nullptr)
         {
             // 動く剛体は MeshShape を持てない（Jolt の制約）ので凸包で妥協する＝凹みは埋まる。
             std::vector<JPH::Vec3> hull;
@@ -1843,7 +2027,7 @@ void PhysicsSystem::RegisterBody(entt::registry& registry, entt::entity entity)
                 auto result = hs.Create();
                 if (result.IsValid()) base = result.Get();
             }
-            if (base.GetPtr() != nullptr) m_impl->meshShapeCache[key] = base;
+            if (base.GetPtr() != nullptr) m_shapes->Put(key, base);
             Logger::Warn("meshCollider '{}' は Static ではないので凸包にフォールバックしました"
                          "（三角形メッシュ形状は静的な剛体にしか付けられません）", mr->modelPath);
         }
@@ -2080,7 +2264,8 @@ void PhysicsSystem::UnregisterAllBodies(entt::registry& registry)
     m_impl->scanCursor = 0;
     m_impl->contactCount.clear();
     m_impl->contactSuspended.clear();
-    m_impl->meshShapeCache.clear();   // メッシュ形状キャッシュも捨てる（次のシーンの Mesh* とは無関係）
+    // ★メッシュ形状のキャッシュ（m_shapes）はここで捨てない（次の Play で 283 万三角形の BVH を組み直していた）。
+    //   使われなくなった形状は PrewarmMeshShapes が捨てる。
     m_regBackoff.clear();
     m_regWarned.clear();
     LogSessionSummary();              // セッションの終わり: 上限超過・作れなかったボディの要約を 1 回だけ出して数え直す

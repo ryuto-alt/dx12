@@ -2872,6 +2872,11 @@ void Application::Update()
         { DX12_PROFILE_ZONE_N("Physics");
           m_physicsSystem->Update(dt, m_scene->GetRegistry()); }
     }
+    // エディタ中は meshCollider の三角形形状を裏で先に組んでおく（Play を押した瞬間に十数秒固まらないように）
+    else if (m_engineMode == EngineMode::Editor && !m_isGameMode)
+    {
+        m_physicsSystem->PrewarmMeshShapes(m_scene->GetRegistry());
+    }
 
     // ネットワーク送信処理（物理確定後の座標を使うため直後。フェーズ⑤でスナップショット送信を実装）。
     if (simRunning && m_networkSystem)

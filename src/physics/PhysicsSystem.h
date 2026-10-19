@@ -68,11 +68,18 @@ public:
     void RefreshSculptColliders(entt::registry& registry);
 
     // インスタンス群（InstanceGroup + 静的 RigidBody + MeshCollider）のコライダー。インスタンス ≤128 個ごとに
-    // StaticCompoundShape の静的ボディ 1 つ（形状はモデル単位の meshShapeCache を共有し、拡縮だけ ScaledShape）。
+    // StaticCompoundShape の静的ボディ 1 つ（形状はモデル単位の形状キャッシュ（m_shapes）を共有し、拡縮だけ ScaledShape）。
     // 群の InstanceSet が差し替わった / 群や祖先の Transform が動いた（Play 中）ときに作り直す。
     void RefreshInstanceGroupColliders(entt::registry& registry);
     // 群が張っているボディの数（診断・テスト用）。群でなければ 0。
     size_t InstanceGroupBodyCount(entt::entity e) const;
+
+    // エディタ中に毎フレーム呼んでよい（中で間引く）。静的な meshCollider の三角形形状（BVH）を
+    // 裏のスレッド 1 本で先に組んでおき、Play を押した瞬間に組まずに済ませる。
+    // 実測: Bistro（283 万三角形・1591 メッシュ）は BVH を組むのに約 3 秒。以前は Play のたびに組み直し
+    // （材料の写しの二乗の 7.5 秒と合わせて約 11 秒）、その間 Play ボタンを押したまま窓が固まっていた。
+    // 今のシーンで使われなくなった形状はここで捨てる。
+    void PrewarmMeshShapes(entt::registry& registry);
 
     // Entity の物理体を登録/解除
     // Play 中に足された RigidBody / CharacterController を拾って登録する（Update の頭で毎フレーム）。
@@ -199,6 +206,13 @@ private:
 
     struct JoltImpl;
     std::unique_ptr<JoltImpl> m_impl;
+
+    // meshCollider の三角形形状のキャッシュ + 裏の構築スレッド。m_impl（Jolt の世界）は Stop のたびに
+    // 作り直すが、形状は PhysicsSystem の寿命いっぱい残す（以前は m_impl の中にあり、Play のたびに組み直していた）。
+    // 裏のスレッドも指すので shared_ptr。
+    struct MeshShapeStore;
+    std::shared_ptr<MeshShapeStore> m_shapes;
+    uint32_t m_prewarmTick = 0;   // PrewarmMeshShapes の次の見直しまでのフレーム数
 
     // bodyId → entt::entity の逆引き（RegisterBody 時に追加、Unregister 時に削除）。
     std::unordered_map<uint32_t, entt::entity> m_bodyToEntity;
