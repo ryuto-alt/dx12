@@ -666,6 +666,7 @@ void GitIntegration::WriteGitignore(const std::string& workDir)
         "build/", "out/", "*.user", "imgui.ini", ".vs/", "*.tmp",
         "assets/.texcache/",    // BC 圧縮済み .dds（TextureLoader が生成）
         "assets/.thumbcache/",  // モデル/マテリアルのサムネイル
+        "assets/.modelcache/",  // 解析済みモデル・LOD（ModelSceneCache が生成）
         "assets/scenes/.autosave/",   // 自動保存（本体を保存すれば用済み）
         ".mcp.json",            // MCP の接続設定は各自の環境依存
         ".dx12/",               // エディタのユーザー領域（セーブ・バックアップ・ランチャーのサムネイル）。各自の環境の産物

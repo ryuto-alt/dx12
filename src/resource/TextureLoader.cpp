@@ -22,6 +22,7 @@
 #include <cstring>     // ハッシュの memcpy
 #include <cwctype>     // 拡張子の小文字化
 #include <filesystem>  // .texcache の作成/存在確認
+#include "core/LoadProfile.h"
 #include <fstream>     // HashFileContents（中身を読んでハッシュする）
 #include <set>         // bake で使ったキャッシュの一覧
 #include <mutex>       // 同上（プリウォームのワーカースレッドと共有するメモ）
@@ -675,6 +676,98 @@ void CompressInPlace(DirectX::ScratchImage& scratch, TextureUsage usage, bool sr
     scratch = std::move(compressed);
 }
 
+// ---- 解析結果（透明の有無・G/B 平均）のディスクキャッシュ ----------------------------------
+// 透明の有無（IsAlphaAllOpaque）は BC 画像を全ミップぶん展開して調べるので、4K の BC7 で 1 枚 80ms 前後かかる。
+// BC キャッシュに当たってデコードを丸ごと省けても、ここだけで AssetBench の読み込みの 7 秒を占めていた。
+// 結果は「元の中身 + 最終形（形式・大きさ・ミップ数）+ 用途」だけで決まるので、.texcache/analysis.txt に
+// 1 行 1 件で追記しておき、2 回目からは引くだけにする。エディタ（平文キャッシュ）のときだけ使う。
+struct TexAnalysis
+{
+    bool  hasAlpha = false;   // BaseColor: 不透明でない画素がある
+    bool  hasGB    = false;   // NonColor: G/B の平均が取れた
+    float g = 1.0f, b = 1.0f;
+};
+
+constexpr char kAnalysisFile[] = "analysis.txt";
+std::mutex                               g_analysisMutex;
+std::string                              g_analysisDir;   // 今読んでいる索引の置き場（プロジェクトを替えたら読み直す）
+std::unordered_map<uint64_t, TexAnalysis> g_analysis;
+
+uint64_t AnalysisKey(uint64_t contentHash, TextureUsage usage, bool srgb, const DirectX::TexMetadata& m)
+{
+    const uint64_t fields[] = { contentHash, static_cast<uint64_t>(usage), srgb ? 1ull : 0ull,
+                                static_cast<uint64_t>(m.format), m.width, m.height, m.mipLevels, m.arraySize,
+                                2 /* 解析の式の版。HasTransparentAlpha / AverageGB を変えたら上げる */ };
+    return HashBytes(reinterpret_cast<const uint8_t*>(fields), sizeof(fields));
+}
+
+// 呼ぶ側が g_analysisMutex を持っていること。置き場が変わっていたら索引を読み直す。
+bool EnsureAnalysisLoadedLocked()
+{
+    if (!PlainCache()) return false;
+    const std::string dir = CacheDir();
+    if (dir.empty()) return false;
+    if (dir == g_analysisDir) return true;
+    g_analysisDir = dir;
+    g_analysis.clear();
+    std::ifstream f(dir + kAnalysisFile);
+    std::string line;
+    while (std::getline(f, line))
+    {
+        unsigned long long key = 0;
+        int alpha = 0, gb = 0;
+        float g = 1.0f, b = 1.0f;
+        if (sscanf_s(line.c_str(), "%llx %d %d %f %f", &key, &alpha, &gb, &g, &b) == 5)
+            g_analysis[key] = TexAnalysis{ alpha != 0, gb != 0, g, b };
+    }
+    return true;
+}
+
+// 最終形の画像を解析して tex に控える（キャッシュがあれば引くだけ）。contentHash が 0 ならキャッシュしない。
+void ApplyAnalysis(Texture& tex, const DirectX::ScratchImage& img, TextureUsage usage, bool srgb,
+                   uint64_t contentHash)
+{
+    if (usage != TextureUsage::BaseColor && usage != TextureUsage::NonColor) return;
+    loadprof::ScopedLoadTimer lt(loadprof::Slot::TexAnalyze);
+
+    const uint64_t key = contentHash ? AnalysisKey(contentHash, usage, srgb, img.GetMetadata()) : 0;
+    TexAnalysis a;
+    bool found = false;
+    if (key != 0)
+    {
+        std::lock_guard lock(g_analysisMutex);
+        if (EnsureAnalysisLoadedLocked())
+            if (auto it = g_analysis.find(key); it != g_analysis.end()) { a = it->second; found = true; }
+    }
+    if (!found)
+    {
+        // アルベドだけ、最終形（キャッシュ読み込み / BC 圧縮後を含む）で判定する。
+        if (usage == TextureUsage::BaseColor)
+            a.hasAlpha = TextureLoader::HasTransparentAlpha(img);
+        // metalRoughness 等の非カラー: G/B の平均を控える（G-Buffer の代表値。ModelLoader 参照）。
+        if (usage == TextureUsage::NonColor)
+            a.hasGB = TextureLoader::AverageGB(img, a.g, a.b);
+        if (key != 0)
+        {
+            std::lock_guard lock(g_analysisMutex);
+            if (EnsureAnalysisLoadedLocked())
+            {
+                g_analysis[key] = a;
+                // 追記だけ（同じキーが重複しても読むときに後勝ち）。書けなくても次回また解析するだけ。
+                if (std::ofstream f(g_analysisDir + kAnalysisFile, std::ios::app); f)
+                {
+                    char buf[96];
+                    snprintf(buf, sizeof(buf), "%016llx %d %d %.6f %.6f\n",
+                             static_cast<unsigned long long>(key), a.hasAlpha ? 1 : 0, a.hasGB ? 1 : 0, a.g, a.b);
+                    f << buf;
+                }
+            }
+        }
+    }
+    if (usage == TextureUsage::BaseColor) tex.SetHasTransparentAlpha(a.hasAlpha);
+    if (usage == TextureUsage::NonColor && a.hasGB) tex.SetChannelAverages(a.g, a.b);
+}
+
 } // namespace
 
 std::string TextureLoader::NormalizeCacheKeyPath(const std::string& key)
@@ -1001,13 +1094,17 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     //（混ぜると git checkout のたびに全ミスする。ContentHashForCacheKey のコメント参照）。
     uint64_t contentHash = 0;
     if (!isDds && usage != TextureUsage::Unknown)
+    {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexHash);
         contentHash = TextureLoader::ContentHashForCacheKey(filePath);
+    }
 
     // ★ デコードより先に BC 圧縮キャッシュを引く（LoadFromMemory 側と同じ理由）。
     //   ヘッダだけ読めばキーが組めるので、ヒットすればデコードもミップ生成も不要。
     bool fromCache = false;
     if (!isDds && usage != TextureUsage::Unknown)
     {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexCacheRead);
         DirectX::TexMetadata srcMeta{};
         fromCache = SUCCEEDED(DirectX::GetMetadataFromWICFile(
                         filePath.c_str(), DirectX::WIC_FLAGS_NONE, srcMeta))
@@ -1017,6 +1114,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
 
     if (!fromCache)
     {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexDecode);
         HRESULT hr = isDds
             ? DirectX::LoadFromDDSFile(filePath.c_str(), DirectX::DDS_FLAGS_NONE, nullptr, scratchImage)
             : DirectX::LoadFromWICFile(filePath.c_str(), DirectX::WIC_FLAGS_NONE, nullptr, scratchImage);
@@ -1067,16 +1165,14 @@ std::unique_ptr<Texture> TextureLoader::LoadFromFile(
     }
 
     auto texture = std::make_unique<Texture>();
-    texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
-    // アルベドだけ、最終形（キャッシュ読み込み / BC 圧縮後を含む）で 1 回だけ判定する。
-    if (usage == TextureUsage::BaseColor)
-        texture->SetHasTransparentAlpha(TextureLoader::HasTransparentAlpha(scratchImage));
-    // metalRoughness 等の非カラー: G/B の平均を控える（G-Buffer の代表値。ModelLoader 参照）。
-    if (usage == TextureUsage::NonColor)
     {
-        float g = 1.0f, b = 1.0f;
-        if (TextureLoader::AverageGB(scratchImage, g, b)) texture->SetChannelAverages(g, b);
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexUpload);
+        texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
     }
+    // 透明の有無・G/B 平均（解析キャッシュ経由）。DDS 入力は BC キャッシュのキーを作っていないのでここで中身を見る。
+    if (contentHash == 0 && (usage == TextureUsage::BaseColor || usage == TextureUsage::NonColor))
+        contentHash = TextureLoader::ContentHashForCacheKey(filePath);
+    ApplyAnalysis(*texture, scratchImage, usage, srgb, contentHash);
 
     Logger::Info("Texture loaded: {}x{}, mips={}, format={}",
                  static_cast<u32>(meta.width),
@@ -1201,10 +1297,15 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     //   キャッシュが効いていても 1 枚あたり 143〜169ms 払って結果を捨てていた
     //   （Nocturne の 70 枚で実測 3.2 秒）。ヘッダだけ読めばキーは組める。
     bool fromCache = false;
-    const uint64_t contentHash = (!isDds && usage != TextureUsage::Unknown)
-                                     ? HashBytes(data, dataSize) : 0;
+    uint64_t contentHash = 0;
     if (!isDds && usage != TextureUsage::Unknown)
     {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexHash);
+        contentHash = HashBytes(data, dataSize);
+    }
+    if (!isDds && usage != TextureUsage::Unknown)
+    {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexCacheRead);
         DirectX::TexMetadata srcMeta{};
         fromCache = SUCCEEDED(DirectX::GetMetadataFromWICMemory(
                         data, dataSize, DirectX::WIC_FLAGS_NONE, srcMeta))
@@ -1214,6 +1315,7 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
 
     if (!fromCache)
     {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexDecode);
         if (isDds)
         {
             hr = DirectX::LoadFromDDSMemory(data, dataSize,
@@ -1262,15 +1364,17 @@ std::unique_ptr<Texture> TextureLoader::LoadFromMemory(
     if (subs.empty()) return nullptr;
 
     auto texture = std::make_unique<Texture>();
-    texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
-    if (usage == TextureUsage::BaseColor)
-        texture->SetHasTransparentAlpha(TextureLoader::HasTransparentAlpha(scratchImage));
-    // metalRoughness 等の非カラー: G/B の平均を控える（G-Buffer の代表値。ModelLoader 参照）。
-    if (usage == TextureUsage::NonColor)
     {
-        float g = 1.0f, b = 1.0f;
-        if (TextureLoader::AverageGB(scratchImage, g, b)) texture->SetChannelAverages(g, b);
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexUpload);
+        texture->Initialize(device, cmdList, resourceDesc, subs.data(), static_cast<u32>(subs.size()));
     }
+    // 透明の有無・G/B 平均（解析キャッシュ経由）。DDS 入力は BC キャッシュのキーを作っていないのでここで中身を見る。
+    if (contentHash == 0 && (usage == TextureUsage::BaseColor || usage == TextureUsage::NonColor))
+    {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexHash);
+        contentHash = HashBytes(data, dataSize);
+    }
+    ApplyAnalysis(*texture, scratchImage, usage, srgb, contentHash);
 
     Logger::Info("Embedded texture loaded: {}x{}, mips={} (format={})",
                  static_cast<u32>(meta.width), static_cast<u32>(meta.height),

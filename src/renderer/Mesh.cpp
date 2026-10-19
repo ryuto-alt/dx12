@@ -1,7 +1,10 @@
 #include "renderer/Mesh.h"
 #include "graphics/DescriptorHeap.h"
 #include "core/Logger.h"
+#include "core/LoadProfile.h"
+#include "resource/ModelSceneCache.h"   // LOD のディスクキャッシュ
 #include <algorithm>
+#include <cstring>
 #include <meshoptimizer.h>
 
 using namespace DirectX;
@@ -76,6 +79,7 @@ void Mesh::Initialize(GraphicsDevice& device,
     std::vector<u32>    indices;
     if (!inVertices.empty() && !inIndices.empty())
     {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::MeshOptimize);
         std::vector<u32> remap(inVertices.size());
         const size_t unique = meshopt_generateVertexRemap(remap.data(),
             inIndices.data(), inIndices.size(),
@@ -118,18 +122,46 @@ void Mesh::Initialize(GraphicsDevice& device,
         }
     }
 
-    m_vertexBuffer.Initialize(device,
-                              vertices.data(),
-                              static_cast<u32>(vertices.size() * sizeof(Vertex)),
-                              static_cast<u32>(sizeof(Vertex)),
-                              cmd);
+    {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::MeshUpload);
+        m_vertexBuffer.Initialize(device,
+                                  vertices.data(),
+                                  static_cast<u32>(vertices.size() * sizeof(Vertex)),
+                                  static_cast<u32>(sizeof(Vertex)),
+                                  cmd);
 
-    m_indexBuffer.Initialize(device,
-                             indices.data(),
-                             static_cast<u32>(indices.size()),
-                             cmd);
+        m_indexBuffer.Initialize(device,
+                                 indices.data(),
+                                 static_cast<u32>(indices.size()),
+                                 cmd);
+    }
 
+    loadprof::ScopedLoadTimer lt(loadprof::Slot::MeshLod);
     GenerateLods(device, vertices, indices, cmd);
+}
+
+// LOD キャッシュのキー = 位置 + インデックス + 簡略化の設定の版（下の kSpecs / kSimplifyOpts を変えたら kLodAlgoVersion を上げる）。
+static uint64_t LodCacheKey(const std::vector<Vertex>& vertices, const std::vector<u32>& indices)
+{
+    constexpr uint64_t kLodAlgoVersion = 1;
+    constexpr uint64_t kPrime = 1099511628211ull;
+    uint64_t h = 1469598103934665603ull ^ (kLodAlgoVersion * kPrime) ^ (static_cast<uint64_t>(MESHOPTIMIZER_VERSION) << 32);
+    const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; h ^= h >> 29; };
+    mix(vertices.size());
+    mix(indices.size());
+    for (const auto& v : vertices)
+    {
+        uint64_t xy = 0;
+        uint32_t z  = 0;
+        std::memcpy(&xy, &v.position.x, 8);
+        std::memcpy(&z, &v.position.z, 4);
+        mix(xy);
+        mix(z);
+    }
+    size_t i = 0;
+    for (; i + 2 <= indices.size(); i += 2) mix(static_cast<uint64_t>(indices[i]) | (static_cast<uint64_t>(indices[i + 1]) << 32));
+    if (i < indices.size()) mix(indices[i]);
+    return h == 0 ? 1 : h;
 }
 
 // meshoptimizer で LOD1(~30%) / LOD2(~10%) のインデックスを生成する。
@@ -143,6 +175,26 @@ void Mesh::GenerateLods(GraphicsDevice& device,
     m_lodCount = 1;
     // 小さいメッシュはLOD不要（切替の手間のほうが高くつく）
     if (vertices.empty() || indices.size() < 3000) return;
+
+    // ディスクの LOD キャッシュ（ModelLoader がモデルを読んでいる間だけ有効。assets/.modelcache/）。
+    // 簡略化は位置とインデックスだけで決まるので、その 2 つのハッシュで引く。
+    uint64_t cacheKey = 0;
+    std::vector<std::vector<u32>> built;
+    if (modelcache::LodCacheActive())
+    {
+        cacheKey = LodCacheKey(vertices, indices);
+        std::vector<std::vector<u32>> cached;
+        if (modelcache::FindLods(cacheKey, cached))
+        {
+            for (const auto& lod : cached)
+            {
+                if (m_lodCount >= kMaxLods || lod.empty()) break;
+                m_lodIndexBuffers[m_lodCount - 1].Initialize(device, lod.data(), static_cast<u32>(lod.size()), cmd);
+                ++m_lodCount;
+            }
+            return;
+        }
+    }
 
     struct LodSpec { f32 targetRatio; f32 maxError; };
     static constexpr LodSpec kSpecs[kMaxLods - 1] =
@@ -184,11 +236,13 @@ void Mesh::GenerateLods(GraphicsDevice& device,
         meshopt_optimizeVertexCache(dst.data(), dst.data(), n, vertices.size());
         m_lodIndexBuffers[m_lodCount - 1].Initialize(device, dst.data(), static_cast<u32>(n), cmd);
         ++m_lodCount;
+        if (cacheKey != 0) built.push_back(dst);
 
         prev     = std::move(dst);
         srcIdx   = prev.data();
         srcCount = prev.size();
     }
+    if (cacheKey != 0) modelcache::StoreLods(cacheKey, built);   // 簡略化が効かなかった（空）も覚えて次回は試さない
 }
 
 void Mesh::FinishUpload()

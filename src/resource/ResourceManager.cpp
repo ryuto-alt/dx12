@@ -2,6 +2,7 @@
 
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "core/LoadProfile.h"
 #include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
 #include "graphics/Texture.h"
@@ -169,7 +170,11 @@ std::unique_ptr<Texture> LoadTextureFromDisk(GraphicsDevice& device,
          (filePath.substr(dotPos) == L".dds" || filePath.substr(dotPos) == L".DDS"))
         ? "dds" : "";
 
-    auto bytes = vfs::ReadAssetAbs(filePath);
+    std::vector<uint8_t> bytes;
+    {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::TexFileRead);
+        bytes = vfs::ReadAssetAbs(filePath);
+    }
     if (!bytes.empty())
     {
         auto tex = TextureLoader::LoadFromMemory(

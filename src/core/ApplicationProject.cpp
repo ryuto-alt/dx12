@@ -8,6 +8,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
+#include "core/LoadProfile.h"          // 読み込みの内訳
 #include "core/CrashHandler.h"
 #include "core/BuildJob.h"   // ビルド設定窓の進捗表示（BuildProgress）
 #include "core/vfs/PakWriter.h"   // BakeTexturesIntoPak: 既存 pak への追記
@@ -267,6 +268,8 @@ void Application::UpdateProjectLoad(f32 dt)
         //   人が作業している画面を奪う（そもそもそれを避けるための機能）。
         m_deferredFirstShow = false;
         SplashScreen::SetStage(splash::Stage::ProjectFinalize);
+        if (const std::string prof = loadprof::TakeSummary(); !prof.empty())
+            Logger::Info("読み込みの内訳（裏のスレッドも含む延べ）: {}", prof);
         // メイン窓は ready の演出のあとにスプラッシュが呼ぶ（PumpMainThread）。スプラッシュが無ければ即出す。
         // ★ヘッドレスでは窓を出さない（人の作業している画面を奪わない）。
         SplashScreen::Finish([this] { if (m_window && !m_headless) m_window->Show(); });

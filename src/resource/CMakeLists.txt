@@ -28,6 +28,7 @@ add_library(Resource STATIC
     AssetPrewarmer.cpp
     ShaderTemplates.cpp
     ModelLoader.cpp
+    ModelSceneCache.cpp     # 解析済み aiScene（assbin）と LOD のディスクキャッシュ（assets/.modelcache/）
     VgeoProxyLoader.cpp     # .vgeo（仮想ジオメトリ）のプロキシ読込（ModelLoader::LoadFromFile から分岐）
     ResourceManager.cpp
     VfsIOSystem.cpp

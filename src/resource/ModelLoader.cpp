@@ -16,6 +16,8 @@
 #include <cctype>   // ::tolower(拡張子の小文字化)
 #include <nlohmann/json.hpp>
 #include <assimp/Importer.hpp>
+#include "core/LoadProfile.h"
+#include "resource/ModelSceneCache.h"   // 解析済みシーン・LOD のディスクキャッシュ
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include <assimp/config.h>
@@ -748,6 +750,7 @@ ModelData ModelLoader::LoadFromFile(
     const std::filesystem::path& filePath,
     ResourceManager& resourceManager)
 {
+    loadprof::ScopedLoadTimer totalTimer(loadprof::Slot::ModelTotal);
     // .vgeo（仮想ジオメトリ）はプロキシを通常のモデルとして読む（assimp は通らない）。
     if (IsVgeoPath(filePath))
         return LoadVgeoProxy(device, cmdList, filePath, resourceManager);
@@ -775,13 +778,39 @@ ModelData ModelLoader::LoadFromFile(
         aiProcess_FlipUVs |
         kUnitScaleFlag;
 
-    const aiScene* scene = importer.ReadFile(filePath.string(), flags);
+    // ★解析済みのシーン（assets/.modelcache/）があればそれを読む。FBX / glTF の解析と後処理を丸ごと飛ばせる
+    //   （Bistro の FBX 120MB で 3.1 秒）。無ければ普通に読み、関数を抜けるときに裏で書き出す（下の sceneSaver）。
+    const aiScene* scene = nullptr;
+    bool sceneFromCache = false;
+    {
+        loadprof::ScopedLoadTimer lt(loadprof::Slot::AssimpRead);
+        scene = modelcache::TryLoadScene(importer, filePath, flags);
+        sceneFromCache = (scene != nullptr);
+        if (!scene) scene = importer.ReadFile(filePath.string(), flags);
+    }
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
     {
         Logger::Error("モデルの読み込みに失敗しました: {}", filePath.string());
         return {};
     }
+
+    // 初回: 関数を抜けるとき（importer が消える前）にシーンを引き取って裏で書き出す。
+    // ★importer より後に宣言すること（先に破棄される＝シーンがまだ生きている）。
+    struct SceneCacheSaver
+    {
+        Assimp::Importer&            imp;
+        const std::filesystem::path& path;
+        unsigned int                 flags;
+        bool                         armed;
+        ~SceneCacheSaver()
+        {
+            if (armed)
+                if (aiScene* s = imp.GetOrphanedScene()) modelcache::SaveSceneAsync(s, path, flags);
+        }
+    } sceneSaver{ importer, filePath, flags, !sceneFromCache && modelcache::IsSceneCacheable(scene) };
+    // LOD の簡略化結果もモデル単位でキャッシュする（Mesh::GenerateLods が引く）。
+    modelcache::LodCacheScope lodCacheScope(filePath);
 
     // 単位正規化はスキンメッシュには掛けない(kUnitScaleFlag のコメント参照)。
     // 掛かった形跡(k != 1)があるスキンモデルだけ、フラグを外して読み直す。
