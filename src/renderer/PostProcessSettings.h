@@ -253,5 +253,5 @@ struct PostProcessSettings
 
 // SSAOSettings 版（同じ流儀。実体は renderer/SSAOSettings.h）
 #define DX12E_SSAO_FIELDS(B, F, I)                                                \
-    B(enabled) F(radius) F(bias) F(intensity) F(power) I(sampleCount) B(blur)
+    B(enabled) F(radius) F(bias) F(intensity) F(power) I(sampleCount) B(blur) B(multiBounce)
 }

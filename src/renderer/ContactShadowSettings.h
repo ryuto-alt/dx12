@@ -20,6 +20,11 @@ struct ContactShadowSettings
     int   steps        = 16;      // レイマーチのステップ数(4..32)
     float maxDistance  = 50.0f;   // この距離(m)を超えたらフェードアウト開始
     float fadeDistance = 10.0f;   // フェードにかける距離(m)
+    // ▼ ローカル光（影付きのスポット / ポイント）のコンタクトシャドウ。UE のスポット / ポイントのコンタクトシャドウ相当。
+    //   `enabled`（太陽）とは独立。どちらかが ON ならパスが走る。既定 OFF。
+    //   対象は影スロットを持つ灯のうち先頭 3 灯（スポット → ポイントの順）。厚み / バイアス / ステップ数 / 強さ / 距離は太陽と共通。
+    bool  localLights     = false;
+    float localRayLength  = 0.30f;  // 光源方向へ辿る長さ(m)。伸ばすほどサンプル間隔が粗くなりノイズが増える
 };
 
 } // namespace dx12e

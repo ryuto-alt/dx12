@@ -77,6 +77,7 @@ void Application::RegisterMcpRenderMethods()
             resp["result"] = {{"enabled", s.enabled}, {"radius", s.radius}, {"bias", s.bias},
                               {"intensity", s.intensity}, {"power", s.power},
                               {"sampleCount", s.sampleCount}, {"blur", s.blur},
+                              {"multiBounce", s.multiBounce},
                               {"active", s.enabled && ScreenSpaceViewSupported()}};
         });
 
@@ -90,6 +91,7 @@ void Application::RegisterMcpRenderMethods()
             s.power = params.value("power", s.power);
             s.sampleCount = params.value("sampleCount", s.sampleCount);
             s.blur = params.value("blur", s.blur);
+            s.multiBounce = params.value("multiBounce", s.multiBounce);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         });
@@ -160,13 +162,14 @@ void Application::RegisterMcpRenderMethods()
                               {"thickness", c.thickness}, {"bias", c.bias},
                               {"intensity", c.intensity}, {"steps", c.steps},
                               {"maxDistance", c.maxDistance}, {"fadeDistance", c.fadeDistance},
+                              {"localLights", c.localLights}, {"localRayLength", c.localRayLength},
                               // ★RT サン影が ON だと t11 スロットを取られて無効になる
-                              {"active", c.enabled && ScreenSpaceViewSupported()
+                              {"active", (c.enabled || c.localLights) && ScreenSpaceViewSupported()
                                          && !m_scene->GetRtSettings().shadowEnabled}};
         });
 
-    McpDefine("set_contact_shadow", "bias:any,enabled:any,fadeDistance:any,intensity:any,maxDistance:any,rayLength:any,"
-              "steps:any,thickness:any", DX12E_MCP_HANDLER
+    McpDefine("set_contact_shadow", "bias:any,enabled:any,fadeDistance:any,intensity:any,localLights:any,localRayLength:any,"
+              "maxDistance:any,rayLength:any,steps:any,thickness:any", DX12E_MCP_HANDLER
         {
             auto& c = m_scene->GetContactShadowSettings();
             c.enabled      = params.value("enabled",      c.enabled);
@@ -177,6 +180,8 @@ void Application::RegisterMcpRenderMethods()
             c.steps        = params.value("steps",        c.steps);
             c.maxDistance  = params.value("maxDistance",  c.maxDistance);
             c.fadeDistance = params.value("fadeDistance", c.fadeDistance);
+            c.localLights    = params.value("localLights",    c.localLights);
+            c.localRayLength = params.value("localRayLength", c.localRayLength);
             resp["ok"] = true;
             resp["result"] = {{"applied", true}};
         });

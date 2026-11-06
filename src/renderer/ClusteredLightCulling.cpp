@@ -35,7 +35,7 @@ constexpr u64 kAabbBytes  = static_cast<u64>(cluster::kClusterCount) * 32;      
 constexpr u64 kIndexBytes = static_cast<u64>(cluster::kClusterCount)
                           * cluster::kMaxLightsPerCluster * sizeof(u32);                 // 1.69 MB
 constexpr u64 kCountBytes = static_cast<u64>(cluster::kClusterCount) * sizeof(u32);      // 13.5 KB
-constexpr u64 kLightBytes = static_cast<u64>(cluster::kMaxSceneLights) * 64;             // 64 KB
+constexpr u64 kLightBytes = static_cast<u64>(cluster::kMaxSceneLights) * sizeof(ClusteredLightCulling::LightGPU);   // 96 KB
 
 // カリング結果の「読める状態」。フォワード PS だけでなく **compute からも読まれる**
 // （ボリュメトリックフォグの散乱パスがクラスタライトリストを引く。計画06 F5）ので、

@@ -47,6 +47,19 @@ SamplerState      g_ddgiSampler    : register(s5);
 // ★Legacy / DDGI 無効のときは 1x1 黒ダミー。読むかどうかは giParams.x（GI モード New）で決める。
 Texture2D<float4> g_ddgiProbeData  : register(t30);
 #define DDGI_PROBEDATA_LOAD(t) g_ddgiProbeData.Load(int3(int2(t), 0))
+
+// スポットのクッキー（Light Function 相当）と IES プロファイル（同じ slot11 テーブルの t31 / t32）。
+// 灯の cookieIndex / iesIndex が -1 の間は一切読まない（絵は従来とビット一致）。LightCookieSystem が埋める。
+//   クッキー: 256x256 sRGB の Texture2DArray（スライス = cookieIndex）。UV はスポット軸から見た tan / tan(外側半角)。
+//   IES    : R16F、幅 256 = 光軸からの角度 0..180°、高さ 8 = IES ファイルの行。最大 1.0 に正規化済み（強度の倍率）。
+Texture2DArray<float4> g_lightCookie : register(t31);
+Texture2D<float>       g_lightIes    : register(t32);
+#define LIGHT_IES_SAMPLES 256.0
+#define LIGHT_IES_ROWS    8.0
+
+// コンタクトシャドウ RT（t11）。RGBA8: R=太陽 / G,B,A=ローカル光（ClusterLight.contactChannel = 1..3）。
+// 太陽だけ読む経路は .r。ローカル光の読み出しは contactLocalOn（PerFrame の _clusterReserved[8].x）が立っているときだけ。
+Texture2D<float4> g_contactShadow : register(t11);
 #include "../ddgi/DdgiCommon.hlsli"
 
 // PerFrame constants (b1)
@@ -83,7 +96,10 @@ cbuffer PerFrameConstants : register(b1)
     float4   ddgiOrigin;                          // 16B  (offset 560) .xyz=格子の原点 .w=有効(1/0)
     float4   ddgiSpacing;                         // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
     float4   ddgiCounts;                          // 16B  (offset 592) .xyz=各軸のプローブ数（1 カスケードぶん）.w=カスケード数（GI モード New。0/1 = 固定ボリューム）
-    float4   _clusterReserved[35];                // 560B (offset 608..1167) 予約（[0..1] = 植生の風）
+    float4   _clusterReserved[34];                // 544B (offset 608..1151) 予約（[0..1] = 植生の風）
+    // ▼ 反射プローブ 16B (offset 1152)。_clusterReserved の末尾 1 本を削って作った＝総サイズも他のオフセットも動かない。
+    //   .x=プローブ数（0 なら t33/t34 を読まない＝従来と同じ絵） .y=最大ミップ .z=Multi-bounce AO(1/0) .w=予約
+    float4   reflProbeParams;                     // 16B  (offset 1152)
     // ▼ DDGI のカスケード（GI S4。GI モード New のカメラ追従スクロール格子 + 2 カスケード）48B (offset 1168)。_clusterReserved の末尾 3 本を削って作った。
     //   Legacy / 固定ボリュームでは scroll=0・ddgiCounts.w=0/1 ＝従来の値（ビット一致）。
     float4   ddgiC1;                              // 16B  (offset 1168) .xyz=カスケード 1 の窓の原点 .w=カスケード 1 のプローブ間隔
@@ -335,6 +351,30 @@ float SampleSpotShadowSoft(int idx, float3 worldPos, float3 N, float3 Ldir, floa
     return s / (float)LS_FILTER_TAPS;
 }
 
+// スポットのクッキー × IES の倍率。dirFromLight = ライトから見た表面点の方向（正規化済み）。
+float3 SpotCookieIesFactor(ClusterLight L, float3 dirFromLight)
+{
+    float3 m = 1.0;
+    const float cz = dot(dirFromLight, L.direction);
+    if (L.cookieIndex >= 0.0 && cz > 0.01)
+    {
+        const float3 right = L.axisRight;
+        const float3 up    = cross(L.direction, right);
+        const float2 p  = float2(dot(dirFromLight, right), dot(dirFromLight, up)) / (cz * max(L.cookieTanOuter, 1.0e-3));
+        const float2 uv = float2(p.x, -p.y) * 0.5 + 0.5;
+        const float3 c  = g_lightCookie.SampleLevel(g_ddgiSampler, float3(uv, L.cookieIndex), 0).rgb;
+        m = lerp(1.0.xxx, c, L.cookieStrength);
+    }
+    if (L.iesIndex >= 0.0)
+    {
+        const float theta = acos(clamp(cz, -1.0, 1.0)) * (1.0 / 3.14159265);   // 0..1 = 0..180°
+        const float2 iuv  = float2((theta * (LIGHT_IES_SAMPLES - 1.0) + 0.5) / LIGHT_IES_SAMPLES,
+                                   (L.iesIndex + 0.5) / LIGHT_IES_ROWS);
+        m *= g_lightIes.SampleLevel(g_ddgiSampler, iuv, 0);
+    }
+    return m;
+}
+
 // 1 灯ぶんの Cook-Torrance 寄与。L は正規化済みでライトへ向かうベクトル、
 // radiance はライト色（減衰・コーン・影を乗じたもの）。
 float3 ShadePunctual(float3 N, float3 V, float3 L, float3 radiance,
@@ -440,6 +480,8 @@ float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
             cone *= cone;
             if (cone <= 0.0) continue;
             radiance *= cone;
+            if (L.cookieIndex >= 0.0 || L.iesIndex >= 0.0)
+                radiance *= SpotCookieIesFactor(L, -Ldir);
             if (L.shadowIndex >= 0.0)
                 radiance *= SampleSpotShadowSoft((int)L.shadowIndex, worldPos, N, Ldir, dist, L.range,
                                                  L.cosOuter, L._pad, svPosXY);
@@ -450,6 +492,11 @@ float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
                 radiance *= SamplePointShadowSoft((int)L.shadowIndex, worldPos, N, L.position, L.range,
                                                   L._pad, svPosXY);
         }
+
+        // ローカル光のコンタクトシャドウ（ContactShadowPass が G/B/A に書いた画面空間の近接遮蔽。0 = 遮蔽）。
+        // contactLocalOn が 0（無効 / t11 が別パスの出力に差し替わった）のときは読まない。
+        if (L.contactChannel > 0.5 && _clusterReserved[8].x > 0.5)
+            radiance *= g_contactShadow.Load(int3(int2(svPosXY), 0))[(int)L.contactChannel];
 
         Lo += ShadePunctual(N, V, Ldir, radiance, albedo, F0, metallic, roughness);
     }

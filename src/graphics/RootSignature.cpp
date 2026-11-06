@@ -196,7 +196,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     //   ヒープを消費しない）。DATA_VOLATILE でも「ディスクリプタ自体」は静的扱いなので、
     //   予約枠 4 本も有効なディスクリプタで埋めてから SetGraphicsRootDescriptorTable すること
     //   （ClusteredLightCulling::Initialize がカウントバッファの SRV で埋めている）。
-    D3D12_DESCRIPTOR_RANGE1 clusterRanges[4]{};
+    D3D12_DESCRIPTOR_RANGE1 clusterRanges[6]{};
     clusterRanges[0].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     clusterRanges[0].NumDescriptors                    = 3;   // t13,t14,t15
     clusterRanges[0].BaseShaderRegister                = 13;
@@ -229,6 +229,24 @@ void RootSignature::Initialize(GraphicsDevice& device)
     clusterRanges[3].RegisterSpace                     = 0;
     clusterRanges[3].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
     clusterRanges[3].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    // t31 = スポットライトのクッキー配列（Texture2DArray） / t32 = IES の縦角プロファイル（Texture2D）。
+    // 使わない灯は index=-1 で読まない。未使用でも 1 スライスの白 / 一様 1.0 のダミーで必ず埋めること（LightCookieSystem）。
+    clusterRanges[4].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    clusterRanges[4].NumDescriptors                    = 2;   // t31, t32
+    clusterRanges[4].BaseShaderRegister                = 31;
+    clusterRanges[4].RegisterSpace                     = 0;
+    clusterRanges[4].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    clusterRanges[4].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    // t33 = 反射プローブのキューブ配列（TextureCubeArray） / t34 = プローブ情報（StructuredBuffer）。
+    // プローブ数 0（b1 の反射プローブ予約が 0）のときは読まない。未使用でもダミーで必ず埋めること（ReflectionProbeSystem）。
+    clusterRanges[5].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    clusterRanges[5].NumDescriptors                    = 2;   // t33, t34
+    clusterRanges[5].BaseShaderRegister                = 33;
+    clusterRanges[5].RegisterSpace                     = 0;
+    clusterRanges[5].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+    clusterRanges[5].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
     rootParams[11].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[11].DescriptorTable.NumDescriptorRanges = _countof(clusterRanges);

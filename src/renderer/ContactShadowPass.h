@@ -16,8 +16,16 @@ class DescriptorHeap;
 class RenderTarget;
 class ConstantBuffer;
 
+// ローカル光（影付きスポット / ポイント）1 灯ぶんの入力。ワールド座標と影響範囲。
+struct ContactLocalLight
+{
+    DirectX::XMFLOAT3 posWorld{0.0f, 0.0f, 0.0f};
+    float             range = 0.0f;
+};
+
 // 深度プリパスで完成したカメラ深度(R32_FLOAT SRV)を入力に、太陽方向へスクリーン空間
-// レイマーチして近接遮蔽テクスチャ(R8_UNORM, 1=遮蔽なし)を作る。
+// レイマーチして近接遮蔽テクスチャ(RGBA8_UNORM, 1=遮蔽なし)を作る。
+//   R = 太陽 / G,B,A = ローカル光（先頭 3 灯。ContactLocalLight の並び順）。
 // 構造は SSAOPass と同じ（専用 RootSignature / PSO / RT / パラメータ CB を自己完結で保持）。
 // SSAO と違いブラーは掛けない（接地の細い影が潰れるため。ディザは PS 側の
 // interleaved gradient noise で散らしてある）。
@@ -45,14 +53,15 @@ public:
                   const ContactShadowSettings& s,
                   const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj,
                   const DirectX::XMFLOAT3& lightDirWorld,
-                  u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex);
+                  u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex,
+                  bool sunEnabled = true, const ContactLocalLight* localLights = nullptr, u32 localCount = 0);
 
     bool IsReady() const { return m_pso != nullptr; }
 
 private:
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSig;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pso;
-    std::unique_ptr<RenderTarget>   m_rt;       // R8_UNORM（1=遮蔽なし）
+    std::unique_ptr<RenderTarget>   m_rt;       // RGBA8_UNORM（1=遮蔽なし。R=太陽 / GBA=ローカル光）
     std::unique_ptr<ConstantBuffer> m_paramCB;  // ContactShadowParams（フレーム多重化）
     // RT は native cmd で遷移するため RenderTarget の内部状態を使わず自前で追跡する。
     D3D12_RESOURCE_STATES m_rtState = D3D12_RESOURCE_STATE_RENDER_TARGET;

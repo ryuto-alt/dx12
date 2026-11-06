@@ -36,6 +36,7 @@ inline EntityGlyph PickEntityGlyph(entt::registry& reg, entt::entity e, bool has
     if (reg.all_of<Terrain>(e))                                    return { ICON_T_TERRAIN,  &TypeMesh };
     if (reg.all_of<ParticleEmitter>(e))                            return { ICON_T_PARTICLE, &TypeLight };
     if (reg.all_of<DecalComponent>(e))                             return { ICON_T_DECAL,    &TypeMesh };
+    if (reg.all_of<ReflectionProbe>(e))                            return { ICON_T_LIGHT,    &TypeLight };
     if (reg.all_of<MeshRenderer>(e) || reg.all_of<SculptMesh>(e))  return { ICON_T_MESH,     &TypeMesh };
     if (reg.any_of<AudioSource, AudioReverbZone>(e))               return { ICON_T_AUDIO,    &TypeAudio };
     if (reg.any_of<RigidBody, CharacterController>(e))             return { ICON_T_PHYSICS,  &TypePhysics };

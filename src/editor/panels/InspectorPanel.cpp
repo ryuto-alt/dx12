@@ -1342,6 +1342,7 @@ const AddOp* FindAddOp(std::string_view id)
         MakeAddOp<ParticleEmitter>("ParticleEmitter"),
         MakeAddOp<TrailRenderer>("TrailRenderer"),
         MakeAddOp<DecalComponent>("DecalComponent"),
+        MakeAddOp<ReflectionProbe>("ReflectionProbe"),
         MakeAddOp<VirtualGeometry>("VirtualGeometry"),
         MakeAddOp<FoliageLayer>("FoliageLayer"),
         MakeAddOp<AudioSource>("AudioSource"),
@@ -3882,6 +3883,49 @@ void InspectorPanel::Render(entt::registry& reg,
         }
         }});
 
+        // ReflectionProbe（反射プローブ: 室内の金属・光沢床へ部屋の中身を映す局所キューブ）
+        blocks.push_back({"ReflectionProbe", [&]() {
+        if (Common<ReflectionProbe>(reg, ctx))
+        {
+            bool open = IconHeader(ic, ic ? ic->entLight : 0, "Reflection Probe");
+            bool removed = ComponentRemoveMenu<ReflectionProbe>(reg, ctx, ctx.selectedEntity, "Reflection Probe");
+            if (open && !removed)
+            {
+                BeginEdit(reg, ctx.selectedEntity, m_reflProbeEdit);
+                auto& rp = reg.get<ReflectionProbe>(ctx.selectedEntity);
+                bool changed = false, active = false;
+                if (pg::Begin("ReflectionProbe"))
+                {
+                    pg::Group("範囲");
+                    changed |= pg::Float3("影響範囲の半径 HalfExtents", &rp.halfExtents.x, 0.1f, 0.1f, 500.0f, "%.2f", &active,
+                        "影響範囲の箱の半径 (x,y,z)。ワールド軸に平行で、中心は Transform の位置（撮影点でもある）");
+                    changed |= pg::Float("ブレンド幅 Blend", &rp.blendDistance, 0.05f, 0.0f, 50.0f, "%.2f", &active,
+                        "箱の縁から内側へ向かって、隣のプローブ / 空の反射へなじませる幅 [m]");
+                    changed |= pg::Checkbox("視差補正 BoxProjection", &rp.boxProjection);
+                    pg::Group("見た目");
+                    changed |= pg::SliderFloat("強さ Intensity", &rp.intensity, 0.0f, 4.0f, "%.2f", &active);
+                    changed |= pg::Int("優先度 Priority", &rp.priority, 1.0f, -99, 99, &active,
+                        "重なる箱で大きい方が先に重みを取る。同値は体積の小さい方");
+                    pg::End();
+                }
+                if (ctx.reflProbeStatusEntity == ctx.selectedEntity)
+                {
+                    if (ctx.reflProbeStatusState == 2)
+                        ImGui::TextDisabled("焼き済み（%.0f 秒前）", ctx.reflProbeAgeSec);
+                    else if (ctx.reflProbeStatusState == 1)
+                        ImGui::TextDisabled("焼き待ち（シーン読み込み後に自動で焼く）");
+                    else
+                        ImGui::TextDisabled("未登録");
+                }
+                if (ImGui::Button("再キャプチャ（このプローブ）")) ctx.reflProbeCaptureEntity = ctx.selectedEntity;
+                ImGui::SameLine();
+                if (ImGui::Button("全部焼き直す")) ctx.reflProbeCaptureAll = true;
+                ImGui::TextDisabled("焼くのはシーン読み込み後と、このボタン / MCP reflection_capture のときだけ。自分自身は写りません");
+                EndEdit(reg, ctx, ctx.selectedEntity, m_reflProbeEdit, changed, active, "Reflection Probe");
+            }
+        }
+        }});
+
         // NetworkIdentity（マルチプレイ複製対象の印。netId/owner はランタイム表示のみ）
         blocks.push_back({"NetworkIdentity", [&]() {
         if (Common<NetworkIdentity>(reg, ctx))
@@ -5378,6 +5422,27 @@ void InspectorPanel::RenderLightHero(entt::registry& reg, EditorContext& ctx, en
             changed |= pg::Checkbox("影を落とす Shadows", &sl.castShadows,
                 "同時に影を落とせるスポットライトは最大4灯（カメラに近い順で優先）。\n"
                 "超えた分は影なしにフォールバックします。");
+            // UE の Light Function / IES プロファイル相当。空 = 無効。同梱: engine/light/*.png, *.ies
+            {
+                char buf[256] = {};
+                size_t n = sl.cookiePath.copy(buf, sizeof(buf) - 1);
+                buf[n] = '\0';
+                if (pg::InputText("クッキー Cookie", buf, sizeof(buf), 0, &active,
+                                  "assets 相対の 2D 画像（例: engine/light/flashlight_a.png）。スポット軸から見た投影で乗算します。\n"
+                                  "外側コーンの縁が画像の端。グレースケールでも色でも可。空 = 無効。"))
+                { sl.cookiePath = buf; changed = true; }
+                n = sl.iesPath.copy(buf, sizeof(buf) - 1);
+                buf[n] = '\0';
+                if (pg::InputText("IES プロファイル", buf, sizeof(buf), 0, &active,
+                                  "assets 相対の .ies（例: engine/light/flashlight.ies）。縦角ごとの光度を、最大 1.0 に正規化して\n"
+                                  "明るさ（物理単位では cd）の倍率として掛けます。空 = 無効。"))
+                { sl.iesPath = buf; changed = true; }
+                if (!sl.cookiePath.empty())
+                {
+                    changed |= pg::SliderFloat("クッキーの強さ", &sl.cookieStrength, 0.0f, 1.0f, "%.2f", &active);
+                    changed |= pg::SliderFloat("クッキーの回転", &sl.cookieRotationDeg, -180.0f, 180.0f, "%.0f°", &active);
+                }
+            }
             pg::End();
         }
         changed |= DirectionEditor("slDir", sl.direction, active);

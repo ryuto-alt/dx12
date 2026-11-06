@@ -15,6 +15,9 @@ struct SSAOSettings
     float power       = 1.5f;    // pow() のべき指数（コントラスト）
     int   sampleCount = 16;      // 8 / 16
     bool  blur        = true;    // 4x4 ボックスブラー
+    // 拡散 AO に Multi-bounce（Jimenez 2016, GTAO）を掛ける。暗い隙間でも明るい色の面は周囲からの
+    // 反射光で完全には暗くならない近似（albedo 依存）。既定 OFF ＝ 既存シーンの絵は 1 ビットも変わらない。
+    bool  multiBounce = false;
 };
 
 } // namespace dx12e

@@ -684,6 +684,16 @@ struct SpotLight
     f32               outerConeDeg = 28.0f;  // この角度でゼロまで減衰
     bool              castShadows  = false;  // true でこのライトが影を落とす（同時上限あり、カメラ近い順で優先）
     f32               sourceRadius = 0.0f;   // 光源の半径[m]。物理ライティング単位のときだけ効く（PointLight と同じ）
+    // ▼ UE の Light Function / IES プロファイル相当。どちらも空文字 = 無効（従来の絵とビット一致）。
+    //   cookiePath    : assets 相対の 2D 画像（グレースケール / カラー）。スポットの投影 UV（軸から見た tan で -1..1）で乗算。
+    //                   外側コーンの縁が UV の端になる（円錐の断面に画像を貼る）。画像は 256x256 に縮小して使う。
+    //   iesPath       : assets 相対の .ies（LM-63）。縦角 → 光度を 1D に焼き、最大値で 1.0 に正規化して強度（cd）の倍率として掛ける。
+    //   cookieStrength: 0 = クッキーを無視 / 1 = そのまま。中間は lerp(1, cookie, strength)。
+    //   cookieRotationDeg: クッキーを軸まわりに回す（度）。
+    std::string       cookiePath;
+    std::string       iesPath;
+    f32               cookieStrength    = 1.0f;
+    f32               cookieRotationDeg = 0.0f;
 
     // Transform 回転の変化分を direction に反映するための前フレーム回転（非シリアライズ）
     DirectX::XMFLOAT3 _prevRot{0.0f, 0.0f, 0.0f};
@@ -1739,6 +1749,21 @@ struct DecalComponent
     f32  angleFadeDeg   = 60.0f;  // 投影軸と受け面法線の角度がこれを超えたら消える（引き伸ばし防止）
     f32  fadeEdge       = 0.1f;   // 箱の縁からのフェード幅（ローカル座標。0=硬い縁）
     int  sortOrder      = 0;      // 小さいものから下に重なる（同値なら不定）
+};
+
+// 反射プローブ（UE の Box Reflection Capture 相当）。屋内の金属・光沢床に「部屋の中身」を映すための
+// 局所的な環境キューブ。Transform の位置から 6 面を描いて GGX プリフィルタし、影響範囲の箱の中の
+// 画素の鏡面 IBL（空キューブ / DDGI の埋め）を置き換える（箱の縁は blendDistance でなじませる）。
+// 焼きはシーン読み込み後と明示操作（MCP reflection_capture / Inspector のボタン）だけ。毎フレームは描かない。
+// 実体（キューブ・スロット・焼き時刻）は ReflectionProbeSystem が持つ＝コンポーネントは設定だけ
+// （InspectorPanel の EndEdit が memcmp 比較なので std::string 等は持たせない）。
+struct ReflectionProbe
+{
+    DirectX::XMFLOAT3 halfExtents{6.0f, 3.0f, 6.0f};  // 影響範囲の箱の半径（ワールド軸平行。中心は Transform の位置）
+    f32  blendDistance = 1.0f;     // 箱の縁から内側へ向かう、隣のプローブ / 既存経路へのなじませ幅 [m]
+    bool boxProjection = true;     // 視差補正（反射ベクトルを箱と交差させて撮影点からの方向に直す）
+    f32  intensity     = 1.0f;     // 強さ（鏡面の寄与への倍率）
+    int  priority      = 0;        // 大きいほど優先（重なる箱で先に重みを取る。同値は体積の小さい方）
 };
 
 // --- Trigger（イベント）: 範囲に入った/出た/居る ときに宣言的なアクションを実行する部品 ---

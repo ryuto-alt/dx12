@@ -89,6 +89,8 @@ struct ViewDesc
     bool primary = true;
     // ゲームの絵か（true ならエディタのグリッドを出さない / fx:pulse の画面インパクトを掛ける）。
     bool isGameView = false;
+    // 反射プローブをこのビューでは読まない（プローブの撮影自身が、自分のキューブを映さないため）。
+    bool noReflectionProbes = false;
 
     bool Has(u32 f) const { return (features & f) == f; }
 };

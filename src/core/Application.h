@@ -36,6 +36,7 @@
 #include "renderer/DrawItem.h"      // 描画リストの要素（エディタのピッキングも読むので独立ヘッダ）
 #include "renderer/ClusteredLightCulling.h"  // LightGPU を値で持つので完全型が要る（軽量ヘッダ）
 #include "renderer/DecalSystem.h"            // DecalGPU を値で持つので同上
+#include "renderer/LightCookieSystem.h"     // スポットのクッキー / IES（unique_ptr のデストラクタに完全型が要る）
 #include "core/ApplicationGpuInstance.h"     // GPU 駆動のインスタンス群の状態（GpuInstState を値で持つので完全型が要る）
 
 // Forward declarations for graphics module
@@ -68,6 +69,7 @@ namespace dx12e
     class OcclusionCullPass;
     namespace vg { class VirtualGeometrySystem; }   // renderer/vg/VirtualGeometrySystem.h（仮想ジオメトリ P2）
     namespace foliage { class FoliageSystem; }      // renderer/foliage/FoliageSystem.h（植生 F1）
+    class ReflectionProbeSystem;   // renderer/ReflectionProbeSystem.h（反射プローブ）
     namespace water { class WaterRenderer; struct WaterStats; }   // renderer/water/WaterRenderer.h（水面 W1）
     class TaaPass;
     class RenderDebugPass;
@@ -1823,6 +1825,20 @@ private:
     nlohmann::json WaterStatsJson() const;             // MCP water_stats / perf_stats の water ブロック
     void RegisterMcpWaterMethods();                    // mcp/ApplicationMcpWater.cpp
 
+    // ---- 反射プローブ（ReflectionProbe。UE の Reflection Capture 相当）。実装は ApplicationReflectionProbe.cpp / mcp/ApplicationMcpReflectionProbe.cpp ----
+    // ★ReflectionProbe が 1 つも無いシーンでは、b1 の反射プローブ予約が 0 のまま ＝ フォワードは t33/t34 を 1 テクセルも読まない。
+    std::unique_ptr<ReflectionProbeSystem> m_reflProbes;
+    void InitReflectionProbes();
+    void ShutdownReflectionProbes();
+    void SyncReflectionProbes();                                        // 台帳の更新（位置・設定の追従・新顔の焼き待ち・動いたら焼き直し）
+    // FillSceneFrameConstants から: b1 の予約 16B（out）を書き、プローブ情報 + テーブルの SRV を張る
+    void FillReflectionProbeFrame(DirectX::XMFLOAT4* out, u32 frameIndex);
+    void RenderReflectionProbeCaptures(RenderFrameContext& frame);     // 主ビューの後: 焼き待ちのプローブを撮る
+    void CaptureReflectionProbe(RenderFrameContext& frame, u32 slot);
+    int  RequestReflectionProbeCapture(entt::entity e);                 // null = 全部。戻り値 = 焼き待ちにした数
+    nlohmann::json ReflectionProbeStatsJson() const;
+    void RegisterMcpReflectionProbeMethods();                           // mcp/ApplicationMcpReflectionProbe.cpp
+
     // ---- コンタクトシャドウ（同じ深度プリパスを使うスクリーン空間レイマーチ）----
     // 白ダミーは SSAO と共用（どちらも 1x1 R8_UNORM の 1.0）。
     std::unique_ptr<ContactShadowPass> m_contactShadowPass;
@@ -2000,6 +2016,16 @@ private:
     // シェーダ可視ヒープからは不正）。ResourceManager のキャッシュが所有者。
     Texture*    m_decalAtlasTex      = nullptr;
     bool        m_decalSrvDirty      = true;
+
+    // ---- スポットのクッキー / IES（LightCookieSystem。slot11 テーブルの t31 / t32）----
+    std::unique_ptr<LightCookieSystem> m_lightCookies;
+    // ---- ローカル光のコンタクトシャドウ（ContactShadowPass の RGBA8 の G/B/A に割り当てた灯。影スロットを持つ灯が先）----
+    entt::entity      m_contactLocalEntity[3]{entt::null, entt::null, entt::null};
+    DirectX::XMFLOAT4 m_contactLocalPosRange[3]{};   // world 位置 + range
+    u32               m_contactLocalCount = 0;
+    u32               m_contactLocalSrv   = 0xFFFFFFFFu;   // 今フレーム ContactShadowPass が出した SRV（t11 がこれのときだけ PS が G/B/A を読む）
+    void SyncLightCookies();          // 毎フレーム: 要求の集計 → 増えたときだけ WaitIdle して作り直す（BeginFrame の前）
+    void BuildContactLocalLights(bool on);   // 影スロット確定後に G/B/A へ灯を割り当てる
     // 毎フレームのデカール収集バッファ（再確保を避けるためメンバで使い回す）。
     // sortOrder 昇順に並べてから GPU へ送る＝重ね順が「下から上へ」で決まる。
     struct DecalEntry { int sortOrder; DecalSystem::DecalGPU gpu; };

@@ -29,6 +29,7 @@ class TaaPass;
 class HiZPass;
 class SSAOPass;
 class ContactShadowPass;
+struct ContactLocalLight;
 struct SSAOSettings;
 struct ContactShadowSettings;
 struct RtSettings;
@@ -164,6 +165,9 @@ public:
         DirectX::XMFLOAT4X4          view{}, proj{};     // ジッタなし
         DirectX::XMFLOAT3            lightDir{};
         u32 width = 0, height = 0;
+        bool                      sunEnabled = true;       // false = R は常に 1（ローカル光だけ欲しいとき）
+        const ContactLocalLight*  locals = nullptr;        // G/B/A に出すローカル光（最大 3）
+        u32                       localCount = 0;
     };
     explicit ContactShadowGeneratePass(const Inputs& in) : m_in(in) {}
     const char* Name() const override { return "ContactShadow"; }

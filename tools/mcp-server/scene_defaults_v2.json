@@ -255,11 +255,15 @@
       1.0,
       1.0
     ],
+    "cookiePath": "",
+    "cookieRotationDeg": 0.0,
+    "cookieStrength": 1.0,
     "direction": [
       0.0,
       -1.0,
       0.0
     ],
+    "iesPath": "",
     "innerConeDeg": 18.0,
     "intensity": 3.0,
     "outerConeDeg": 28.0,

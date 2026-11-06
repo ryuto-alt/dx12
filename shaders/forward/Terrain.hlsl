@@ -35,7 +35,7 @@ SamplerState g_iblSampler     : register(s2);   // LINEAR CLAMP（mip 有）★�
 SamplerState g_brdfSampler    : register(s3);
 
 Texture2D<float> g_ssao          : register(t8);
-Texture2D<float> g_contactShadow : register(t11);
+// g_contactShadow(t11) は Lighting.hlsli で宣言（RGBA8: R=太陽 / GBA=ローカル光 3 灯）
 Texture2D<float4> g_ssr  : register(t16);
 Texture2D<float4> g_ssgi : register(t17);
 

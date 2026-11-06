@@ -363,6 +363,8 @@ reg(
     steps: z.number().int().optional().describe("4〜32。既定 16。"),
     maxDistance: z.number().optional().describe("この距離(m)からフェード開始。"),
     fadeDistance: z.number().optional().describe("フェードにかける距離(m)。"),
+    localLights: z.boolean().optional().describe("影付きのスポット / ポイント(影スロットを持つ灯の先頭 3 灯)にもコンタクトシャドウを掛ける。既定 false。enabled(太陽)とは独立で、どちらかが true なら走る。"),
+    localRayLength: z.number().optional().describe("ローカル光のレイ長(m)。光源方向へ辿る長さ。既定 0.3。"),
   },
   { idempotentHint: true },
   (a) => run(() => applyAndVerify("set_contact_shadow", "get_contact_shadow", a)),

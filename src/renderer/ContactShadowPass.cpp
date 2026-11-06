@@ -28,11 +28,13 @@ struct ContactShadowParamsCB
     XMFLOAT3   _pad0;        // 12B → 16B
     XMFLOAT4   viewport;     // 16B  xy=原点(px), zw=サイズ(px)
     XMFLOAT4   lightDirVS;   // 16B  xyz=ビュー空間でライトへ向かう単位ベクトル
+    XMFLOAT4   localLightVS[3]; // 48B  xyz=ローカル光のビュー空間位置 / w=range
+    XMFLOAT4   localParams;  // 16B  x=ローカル光の数 / y=ローカル光のレイ長(m) / z=太陽を計算する(1/0)
 };
 static_assert(sizeof(ContactShadowParamsCB) % 16 == 0, "ContactShadowParamsCB must be 16B aligned");
-static_assert(sizeof(ContactShadowParamsCB) == 208, "layout mismatch with ContactShadow.hlsl");
+static_assert(sizeof(ContactShadowParamsCB) == 272, "layout mismatch with ContactShadow.hlsl");
 
-static constexpr DXGI_FORMAT kShadowFormat = DXGI_FORMAT_R8_UNORM;
+static constexpr DXGI_FORMAT kShadowFormat = DXGI_FORMAT_R8G8B8A8_UNORM;   // R=太陽 / GBA=ローカル光
 
 void ContactShadowPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, DescriptorHeap* srvHeap,
                                    u32 width, u32 height, const std::wstring& shaderDir)
@@ -86,7 +88,7 @@ void ContactShadowPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHe
     m_shaderDir = shaderDir;
     RecreatePipelines(device);
 
-    // --- 遮蔽 RT（R8_UNORM, クリア=白=遮蔽なし）---
+    // --- 遮蔽 RT（RGBA8_UNORM, クリア=白=遮蔽なし）---
     const float clear[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     m_rt = std::make_unique<RenderTarget>();
     m_rt->Initialize(device, rtvHeap, srvHeap, m_width, m_height, kShadowFormat, clear);
@@ -143,7 +145,8 @@ u32 ContactShadowPass::Generate(ID3D12GraphicsCommandList* cmd,
                                 const ContactShadowSettings& s,
                                 const DirectX::XMMATRIX& view, const DirectX::XMMATRIX& proj,
                                 const DirectX::XMFLOAT3& lightDirWorld,
-                                u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex)
+                                u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex,
+                                bool sunEnabled, const ContactLocalLight* localLights, u32 localCount)
 {
     // 未準備（PSO/RT 未生成）時は無効 index を返し、呼び出し側で白ダミー(1.0)へフォールバックさせる。
     if (!m_pso || !m_rt) return DescriptorHeap::kInvalidIndex;
@@ -176,6 +179,17 @@ u32 ContactShadowPass::Generate(ID3D12GraphicsCommandList* cmd,
         XMStoreFloat3(&l, toLightView);
         cb.lightDirVS = {l.x, l.y, l.z, 0.0f};
     }
+    // ローカル光（ワールド → ビュー空間）。最大 3 灯。
+    const u32 nLocal = (localLights && localCount > 3) ? 3 : (localLights ? localCount : 0);
+    for (u32 li = 0; li < nLocal; ++li)
+    {
+        XMVECTOR p = XMVector3Transform(XMLoadFloat3(&localLights[li].posWorld), view);
+        XMFLOAT3 pv{};
+        XMStoreFloat3(&pv, p);
+        cb.localLightVS[li] = {pv.x, pv.y, pv.z, localLights[li].range};
+    }
+    cb.localParams = {static_cast<float>(nLocal), (s.localRayLength > 0.0f) ? s.localRayLength : 0.01f,
+                      sunEnabled ? 1.0f : 0.0f, 0.0f};
     m_paramCB->Update(&cb, sizeof(cb), frameIndex);
 
     D3D12_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(m_width), static_cast<float>(m_height), 0.0f, 1.0f};

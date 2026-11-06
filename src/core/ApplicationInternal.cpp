@@ -667,7 +667,7 @@ nlohmann::json McpLuaApi()
         "hasComponent(type:string) -> bool  (type: Transform,NameTag,Tag,DataComponent,MeshRenderer,"
         "SkeletalAnimation,NodeAnimation,GridPlane,PointLight,DirectionalLight,SpotLight,Camera,Sprite2D,"
         "AudioSource,Gimmick,RigidBody,BoxCollider,SphereCollider,CapsuleCollider,ConvexHullCollider,"
-        "CharacterController,LuaScript,ParticleEmitter,TrailRenderer,DecalComponent,Trigger,UICanvas,UIRect,"
+        "CharacterController,LuaScript,ParticleEmitter,TrailRenderer,DecalComponent,ReflectionProbe,Trigger,UICanvas,UIRect,"
         "UIImage,UIText,UIButton,UISlider,UIToggle,UIScrollView,UILayout,UIAnimator,AnimatorController,FootIK,Brain)"
         "  ※知らない型名は false ではなくログに警告が出る(タイプミスを黙って握り潰さない)",
         "playAnim(clipIndex:int, blend:float)",

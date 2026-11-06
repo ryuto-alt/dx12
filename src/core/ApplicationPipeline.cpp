@@ -1134,6 +1134,12 @@ void Application::RegisterShaderReloadHandlers()
             { L"IrradianceConvolution_CS.cso", L"PrefilterEnv_CS.cso", L"IntegrateBRDF_CS.cso" },
             [this]() { m_iblBaker->RecreatePipelines(*m_graphicsDevice); });
     }
+    if (m_reflProbes)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"ProbeCopyFace_CS.cso", L"ProbeDownsample_CS.cso", L"PrefilterEnv_CS.cso" },
+            [this]() { if (m_reflProbes) m_reflProbes->RecreatePipelines(*m_graphicsDevice); });
+    }
     if (m_physicsDebugRenderer)
     {
         m_shaderManager->RegisterReloadHandler(

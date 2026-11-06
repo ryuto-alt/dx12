@@ -53,6 +53,7 @@ inline constexpr ComponentInfo kCatalog[] = {
     {"ParticleEmitter",   "Particle Emitter",   "描画",          "パーティクルの発生源（炎・煙・火花）",              "particle vfx effect パーティクル エフェクト 炎"},
     {"TrailRenderer",     "Trail Renderer",     "描画",          "動いた軌跡に帯を引く",                              "trail 軌跡 ライン ribbon"},
     {"DecalComponent",    "Decal",              "描画",          "面へ貼り付ける絵（傷・血痕・ひび割れ）",            "decal デカール 貼り付け"},
+    {"ReflectionProbe",   "Reflection Probe",   "描画",          "室内の反射を焼く局所キューブ（金属・光沢床に部屋が映る）", "reflection probe capture 反射 プローブ 室内 映り込み"},
     {"VirtualGeometry",   "Virtual Geometry (.vgeo・P2 は統計のみ)", "描画", "仮想ジオメトリ（.vgeo）。P2 時点は統計のみ", "virtual geometry vgeo nanite"},
     {"FoliageLayer",      "Foliage Layer (植生・GPU カリング + 風)", "描画", "1 コンポーネント = 数十万〜百万のインスタンス（草・木）。エンティティにせず GPU で描く", "foliage vegetation grass tree wind 植生 草 木 風 instancing"},
     // ---- オーディオ ----

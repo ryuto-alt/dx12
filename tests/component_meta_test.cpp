@@ -85,6 +85,7 @@ int main()
     Expect<DecalComponent>({ "atlasUV", "atlasUVNormal", "tint", "opacity", "emissive",
                              "normalStrength", "roughness", "metallic", "angleFadeDeg",
                              "fadeEdge", "sortOrder" });
+    Expect<ReflectionProbe>({ "halfExtents", "blendDistance", "boxProjection", "intensity", "priority" });
     Expect<AnimatorController>({ "graphPath", "playOnStart", "speed", "applyRootMotion", "eventChannel" });
     // _state / _loaded / _failed / _loadedPath はランタイム専有なので meta に出てはいけない
     CHECK(FieldNames<AnimatorController>().size() == 5);

@@ -609,7 +609,13 @@ void RenderLightingPanel(Scene* scene,
             pg::Checkbox("有効", &cs.enabled,
                          "深度バッファを太陽方向へレイマーチして、物と地面の接地部の細かい影を足します"
                          "（透視ビューのみ。2D 正射では無効）");
-            ImGui::BeginDisabled(!cs.enabled);
+            pg::Checkbox("ローカル光 (スポット/ポイント)", &cs.localLights,
+                         "影を落とすスポット/ポイント（先頭 3 灯）にも、光源方向へ短くレイマーチした接地の細い影を足します。"
+                         "懐中電灯で足元の小物に落ちる影など。太陽の「有効」とは独立（どちらかが ON なら走る）");
+            ImGui::BeginDisabled(!(cs.enabled || cs.localLights));
+            if (cs.localLights)
+                pg::SliderFloat("ローカル光のレイ長 (m)", &cs.localRayLength, 0.02f, 2.0f, "%.2f", nullptr,
+                                "光源方向へ辿る長さ。厚み / バイアス / ステップ数 / 強度 / フェードは太陽と共通");
             pg::SliderFloat("レイ長 (m)", &cs.rayLength, 0.02f, 2.0f, "%.2f", nullptr,
                             "伸ばすほど遠くの遮蔽を拾えますが、サンプル間隔が粗くなりノイズが増えます");
             pg::SliderInt("ステップ数", &cs.steps, 4, 32, nullptr,

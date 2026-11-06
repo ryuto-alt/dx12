@@ -673,6 +673,7 @@ void Application::RenderSceneSettingsWindows()
             }
             pg::Checkbox("ブラー Blur", &ss.blur);
             ImGui::EndDisabled();
+            pg::Checkbox("Multi-bounce（拡散 AO の albedo 補正）", &ss.multiBounce);
             pg::End();
         }
         ImGui::End();

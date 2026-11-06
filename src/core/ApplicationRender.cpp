@@ -2775,6 +2775,7 @@ void Application::Render()
     PrepareFrame(frame);
     RenderView(MakeMainViewDesc(frame), frame);
     RenderSplitViews(frame);   // 画面分割: 区画 2..N（無効なら何もしない）
+    RenderReflectionProbeCaptures(frame);   // 反射プローブ: 焼き待ちを撮る（無ければ何もしない）
     RenderViewportOverlays(frame);
     RenderImGuiFrame(frame);
     SubmitFrame(frame);
@@ -2804,6 +2805,9 @@ void Application::BeginRenderFrame(RenderFrameContext& frame)
         m_loadedSkyboxPath.clear();   // 旧パス一致による再ロードスキップを防ぐ
         m_skyboxDirty = true;
     }
+
+    // スポットのクッキー / IES: 新しい画像が増えたときだけ WaitIdle して作る（Skybox 再ベイクと同じ作法）。
+    SyncLightCookies();
 
     // Skybox 再ベイク要求（エディタでパス変更時）。専用 cmdList + WaitIdle で安全に処理。
     if (m_skyboxDirty && m_iblBaker)
@@ -5564,7 +5568,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                        && (!useRtAo || m_scene->GetRtSettings().aoCombineWithSsao);
     // ★RT 影が走るフレームはコンタクトシャドウを走らせない。どちらも同じ t11 枠へ書くので
     //   先に書いた方が捨てられるだけ（RT 影は接地の遮蔽も正しく拾うので上位互換）。
-    const bool useContactShadow = csCfg.enabled && m_contactShadowPass
+    const bool useContactShadow = (csCfg.enabled || csCfg.localLights) && m_contactShadowPass
                                 && m_contactShadowPass->IsReady()
                                 && viewSupportsScreenSpace && !useRtShadow;
     // 雲の影（atmosphere.clouds.enabled && shadows）。深度から世界位置を出して影マスク(t11)に掛けるので深度プリパスが要る。
@@ -5790,11 +5794,24 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             ci.lightDir = lightDirF3;
             ci.width    = rW;
             ci.height   = rH;
+            // ローカル光（影付きスポット / ポイントの先頭 3 灯）。G/B/A に出る。主ビューだけが灯の割当を持つ。
+            ContactLocalLight localLights[3];
+            BuildContactLocalLights(csCfg.localLights && primary);
+            for (u32 li = 0; li < m_contactLocalCount; ++li)
+            {
+                localLights[li].posWorld = {m_contactLocalPosRange[li].x, m_contactLocalPosRange[li].y, m_contactLocalPosRange[li].z};
+                localLights[li].range    = m_contactLocalPosRange[li].w;
+            }
+            ci.sunEnabled = csCfg.enabled;
+            ci.locals     = localLights;
+            ci.localCount = m_contactLocalCount;
             ContactShadowGeneratePass csPass(ci);
             csPass.Execute(passCtx);
             csSrv = csPass.ResultSrv();
             if (csSrv == DescriptorHeap::kInvalidIndex)
                 csSrv = m_ssaoWhiteSrvIndex;
+            else
+                m_contactLocalSrv = csSrv;
         }
 
         // --- DXR: RT サン影 / RT-AO / RT デバッグ（同じ深度 + TLAS）---
@@ -5967,6 +5984,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     //   クラスタ）だけを差し替える。シーン側は下の if (primary) の中でしか書かない。
     static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes");
     FrameConstants fc = primary ? FrameConstants{} : frame.mainConstants;
+    // 反射プローブの撮影ビューは、プローブ自身を読まない（予約 16B のうち数を 0 にする。Multi-bounce の印は残す）
+    if (view.noReflectionProbes) { fc._clusterReserved[34].x = 0.0f; }
     // シーン側（太陽 / CSM / DDGI / スポット影行列 / IBL / 法線フィルタ）はフレームで 1 回＝主ビューだけ。
     if (primary) FillSceneFrameConstants(fc, frame);
 
@@ -6004,6 +6023,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
     // コンタクトシャドウも同じ規約（白ダミーが張られている時はシェーダ側で読まない）。
     fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
+    // ローカル光のコンタクトシャドウ: t11 が ContactShadowPass の RGBA8 のままのときだけ G/B/A を読む
+    // （雲の影など別パスが t11 を差し替えると 1 チャンネルしか無いので読ませない）。
+    fc._clusterReserved[8] = {(m_contactLocalCount > 0 && csSrv == m_contactLocalSrv && fc.contactShadowEnabled > 0.5f) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
 
     // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
     // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
@@ -7331,6 +7353,9 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
         XMStoreFloat4x4(&fc.spotShadowMatrix[i],
             i < m_numSpotShadowSlots ? XMMatrixTranspose(XMLoadFloat4x4(&m_spotShadowViewProj[i])) : XMMatrixIdentity());
 
+    // 反射プローブ（b1 の予約 16B + プローブ情報 / テーブルの t33,t34）。プローブが 0 個なら .x=0 ＝ フォワードは何も読まない。
+    FillReflectionProbeFrame(&fc._clusterReserved[34], frameIndex);
+
     // IBL 制御
     fc.iblIntensity    = m_iblReady ? m_iblIntensity : 0.0f;
     fc.maxPrefilterMip = m_iblBaker ? m_iblBaker->GetMaxPrefilterMip() : 4.0f;
@@ -7389,6 +7414,10 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
             pld.cosInner  = 1.0f;
             pld.sinOuter  = 0.0f;
             pld.sourceRadius = pl.sourceRadius;   // Q2: 物理ライティング単位の .cso だけが読む（従来 .cso では未使用の padding）
+            pld.cookieIndex = -1.0f; pld.iesIndex = -1.0f; pld.cookieStrength = 0.0f; pld.cookieTanOuter = 0.0f; pld.axisRight = {1.0f, 0.0f, 0.0f};
+            pld.contactChannel = -1.0f;
+            for (u32 ci = 0; ci < m_contactLocalCount; ++ci)
+                if (m_contactLocalEntity[ci] == e) { pld.contactChannel = static_cast<f32>(ci + 1); break; }
 
             // 影スロット割当（上で計算済みの m_pointShadowEntity[]）と突合
             pld.shadowIndex = -1.0f;
@@ -7433,6 +7462,34 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
                          sl.color.z * sl.intensity};
             sld.sourceRadius = sl.sourceRadius;   // Q2: 同上
 
+            // クッキー / IES（LightCookieSystem のスライス / 行。無い・読めない・満杯は -1）
+            sld.cookieIndex = -1.0f; sld.iesIndex = -1.0f; sld.cookieStrength = 0.0f;
+            sld.cookieTanOuter = std::tan(XMConvertToRadians((std::min)(outerDeg, 89.0f)));
+            if (m_lightCookies)
+            {
+                const int ck = m_lightCookies->CookieSlot(sl.cookiePath);
+                const int ie = m_lightCookies->IesSlot(sl.iesPath);
+                if (ck >= 0) { sld.cookieIndex = static_cast<f32>(ck); sld.cookieStrength = std::clamp(sl.cookieStrength, 0.0f, 1.0f); }
+                if (ie >= 0) sld.iesIndex = static_cast<f32>(ie);
+            }
+            // クッキーの横軸 = Transform の X 軸を direction に直交化し、軸まわりに cookieRotationDeg 回す。
+            {
+                XMVECTOR right = XMVector3Normalize(world.r[0]);
+                right = XMVectorSubtract(right, XMVectorScale(dir, XMVectorGetX(XMVector3Dot(right, dir))));
+                if (XMVectorGetX(XMVector3LengthSq(right)) < 1.0e-6f)
+                {
+                    const XMVECTOR helper = (std::fabs(XMVectorGetY(dir)) < 0.99f) ? XMVectorSet(0, 1, 0, 0) : XMVectorSet(1, 0, 0, 0);
+                    right = XMVector3Cross(helper, dir);
+                }
+                right = XMVector3Normalize(right);
+                if (sl.cookieRotationDeg != 0.0f)
+                    right = XMVector3Rotate(right, XMQuaternionRotationAxis(dir, XMConvertToRadians(sl.cookieRotationDeg)));
+                XMStoreFloat3(&sld.axisRight, right);
+            }
+            sld.contactChannel = -1.0f;
+            for (u32 ci = 0; ci < m_contactLocalCount; ++ci)
+                if (m_contactLocalEntity[ci] == e) { sld.contactChannel = static_cast<f32>(ci + 1); break; }
+
             // 影スロット割当（上で計算済みの m_spotShadowEntity[]）と突合
             sld.shadowIndex = -1.0f;
             for (u32 si = 0; si < m_numSpotShadowSlots; ++si)
@@ -7469,6 +7526,8 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
             pld.cosInner    = 1.0f;
             pld.sinOuter    = 0.0f;
             pld.shadowIndex = -1.0f;
+            pld.cookieIndex = -1.0f; pld.iesIndex = -1.0f; pld.cookieStrength = 0.0f; pld.contactChannel = -1.0f;
+            pld.cookieTanOuter = 0.0f; pld.axisRight = {1.0f, 0.0f, 0.0f};
             m_clusterLights.push_back(pld);
             fc.numPointLights++;
         }
@@ -7517,6 +7576,78 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
         m_decalGpu.clear();
         m_decalGpu.reserve(m_decalEntries.size());
         for (const auto& en : m_decalEntries) m_decalGpu.push_back(en.gpu);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// スポットのクッキー / IES: 要求を集計し、画像が増えたときだけ GPU テクスチャを作り直す。
+// WaitIdle して専用 cmdList で作る（スカイボックスの再ベイクと同じ作法）ので 3 フレームぶんのテーブルを安全に書き換えられる。
+// 増えるのは「新しい画像を割り当てた」ときだけ（インスペクタで画像を選んだ瞬間 / シーンを開いた瞬間）。
+// ---------------------------------------------------------------------------
+void Application::SyncLightCookies()
+{
+    if (!m_lightCookies || !m_scene || !m_clusteredLighting || !m_clusteredLighting->IsReady()
+        || !m_graphicsDevice || !m_frameResources || !m_commandQueue || !m_srvHeap)
+        return;
+    {
+        auto& reg = m_scene->GetRegistry();
+        m_lightCookies->BeginRequests();
+        for (auto [e, sl] : reg.view<const dx12e::SpotLight>().each())
+        {
+            (void)e;
+            if (!sl.cookiePath.empty() || !sl.iesPath.empty())
+                m_lightCookies->Request(sl.cookiePath, sl.iesPath);
+        }
+    }
+    if (!m_lightCookies->NeedsRebuild()) return;
+
+    m_commandQueue->WaitIdle();
+    auto* cmd = m_frameResources->BeginFrame(*m_commandQueue);
+    m_lightCookies->Rebuild(*m_graphicsDevice, cmd);
+    ThrowIfFailed(cmd->Close());
+    m_commandQueue->ExecuteCommandList(cmd);
+    m_commandQueue->WaitIdle();
+    m_frameResources->EndFrame(*m_commandQueue);
+    for (u32 f = 0; f < ClusteredLightCulling::kFrameCount; ++f)
+    {
+        const u32 block = m_clusteredLighting->GetSrvTableIndex(f);
+        if (block == DescriptorHeap::kInvalidIndex) continue;
+        m_lightCookies->WriteSrvs(*m_graphicsDevice,
+            m_srvHeap->GetCpuHandle(block + ClusteredLightCulling::kCookieSrvOffset),
+            m_srvHeap->GetCpuHandle(block + ClusteredLightCulling::kIesSrvOffset));
+    }
+}
+
+// ローカル光のコンタクトシャドウの割当: 影スロットを持つ灯を G/B/A（最大 3 灯）へ。スポット → ポイントの順。
+// 影スロットは影の段で確定済みであること。on=false なら 0 灯（パスは R だけを書く）。
+void Application::BuildContactLocalLights(bool on)
+{
+    using namespace DirectX;
+    m_contactLocalCount = 0;
+    for (auto& e : m_contactLocalEntity) e = entt::null;
+    if (!on || !m_scene) return;
+    auto& reg = m_scene->GetRegistry();
+    auto add = [&](entt::entity e, f32 range)
+    {
+        if (m_contactLocalCount >= 3 || !reg.valid(e) || !reg.all_of<Transform>(e)) return;
+        const auto& tf = reg.get<Transform>(e);
+        const XMMATRIX world = (tf.parent != entt::null) ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
+        XMFLOAT3 p{};
+        XMStoreFloat3(&p, world.r[3]);
+        m_contactLocalEntity[m_contactLocalCount]   = e;
+        m_contactLocalPosRange[m_contactLocalCount] = {p.x, p.y, p.z, range};
+        ++m_contactLocalCount;
+    };
+    for (u32 si = 0; si < m_numSpotShadowSlots; ++si)
+    {
+        const entt::entity e = m_spotShadowEntity[si];
+        if (reg.valid(e) && reg.all_of<dx12e::SpotLight>(e)) add(e, reg.get<dx12e::SpotLight>(e).range);
+    }
+    for (u32 si = 0; si < m_numPointShadowSlots; ++si)
+    {
+        const entt::entity e = m_pointShadowEntity[si];
+        if (m_pointShadowCache[si].valid && reg.valid(e) && reg.all_of<dx12e::PointLight>(e))
+            add(e, reg.get<dx12e::PointLight>(e).range);
     }
 }
 
@@ -8565,5 +8696,109 @@ void Application::SubmitFrame(RenderFrameContext& frame)
     RecordPerfFrame();
 }
 
+
+constexpr u32 kReflProbeMaxCapturesPerFrame = 2;   // 1 フレームに撮る上限（1 個 = 6 回のシーン描画）
+
+// ---------------------------------------------------------------------------
+// 主ビューの後（RenderSplitViews の後）に呼ぶ。焼き待ち（wait=0）のプローブを撮る。
+// ---------------------------------------------------------------------------
+void Application::RenderReflectionProbeCaptures(RenderFrameContext& frame)
+{
+    if (!m_reflProbes || !m_reflProbes->IsReady() || !m_scene || frame.rtv.ptr == 0) return;
+
+    if (m_editorCtx)   // Inspector のボタン
+    {
+        if (m_editorCtx->reflProbeCaptureAll) { m_editorCtx->reflProbeCaptureAll = false; RequestReflectionProbeCapture(entt::null); }
+        if (m_editorCtx->reflProbeCaptureEntity != entt::null)
+        {
+            RequestReflectionProbeCapture(m_editorCtx->reflProbeCaptureEntity);
+            m_editorCtx->reflProbeCaptureEntity = entt::null;
+        }
+        // Inspector の表示用（選択中 1 個分）
+        m_editorCtx->reflProbeStatusEntity = entt::null;
+        if (m_editorCtx->selectedEntity != entt::null)
+        {
+            const int s = m_reflProbes->FindSlot(m_editorCtx->selectedEntity);
+            if (s >= 0)
+            {
+                const auto& sl = m_reflProbes->Slots()[s];
+                m_editorCtx->reflProbeStatusEntity = m_editorCtx->selectedEntity;
+                m_editorCtx->reflProbeStatusState = sl.captured ? 2 : 1;
+                m_editorCtx->reflProbeAgeSec = sl.captured
+                    ? static_cast<float>(ReflectionProbeSystem::NowSec() - sl.capturedAtSec) : 0.0f;
+            }
+        }
+    }
+
+    // ロード中・Play の切り替え中などは撮らない（レンダー状態が落ち着いてから）
+    u32 done = 0;
+    for (u32 i = 0; i < ReflectionProbeSystem::kMaxProbes && done < kReflProbeMaxCapturesPerFrame; ++i)
+    {
+        auto& s = m_reflProbes->Slots()[i];
+        if (!s.used || !s.pending || s.wait > 0 || s.disabled) continue;
+        CaptureReflectionProbe(frame, i);
+        ++done;
+    }
+    if (done > 0)
+    {
+        // 撮影でバインドした RT / ビューポートを、バックバッファへ戻す（オーバーレイ / ImGui のため）
+        m_commandList->SetRenderTarget(frame.rtv);
+        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+    }
+}
+
+void Application::CaptureReflectionProbe(RenderFrameContext& frame, u32 slot)
+{
+    using namespace DirectX;
+    auto& sys = *m_reflProbes;
+    auto& sl = sys.Slots()[slot];
+    ID3D12GraphicsCommandList* const cmd = frame.cmd;
+
+    // D3D のキューブ面の向き（IBLCommon.hlsli の DirectionFromFaceUV と同じ: +X,-X,+Y,-Y,+Z,-Z）
+    static const f32 kFwd[6][3] = { {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}, {0,0,1}, {0,0,-1} };
+    static const f32 kUp[6][3]  = { {0,1,0}, {0,1,0},  {0,0,-1}, {0,0,1}, {0,1,0}, {0,1,0} };
+
+    const f32 farZ = (std::max)(frame.camFar, 100.0f);
+    const XMVECTOR eye = XMLoadFloat3(&sl.pos);
+    const XMMATRIX proj = XMMatrixPerspectiveFovLH(XM_PIDIV2, 1.0f, 0.05f, farZ);
+
+    sys.BeginCapture(cmd);
+    for (u32 f = 0; f < 6; ++f)
+    {
+        const XMMATRIX view = XMMatrixLookToLH(eye, XMVectorSet(kFwd[f][0], kFwd[f][1], kFwd[f][2], 0.0f),
+                                               XMVectorSet(kUp[f][0], kUp[f][1], kUp[f][2], 0.0f));
+        ViewDesc v{};
+        v.name = "reflectionProbe";
+        XMStoreFloat4x4(&v.view, view);
+        XMStoreFloat4x4(&v.proj, proj);
+        XMStoreFloat4x4(&v.viewProj, view * proj);
+        v.viewProjJittered = v.viewProj;   // ジッタなし（TAA は主ビューだけ）
+        v.position = sl.pos;
+        v.nearZ = 0.05f;
+        v.farZ  = farZ;
+        v.width = v.height = ReflectionProbeSystem::kCaptureSize;
+        v.sceneColor    = sys.CaptureColor();
+        v.depth         = sys.CaptureDepth();
+        v.depthDsv      = sys.CaptureDsv();
+        v.depthSrvIndex = DescriptorHeap::kInvalidIndex;   // 深度を読む機能は無い
+        v.perFrameCB    = sys.FaceCB(f);                   // 面ごとに専用（共有すると先に記録した面まで巻き込む）
+        v.outputToBackBuffer = false;
+        v.output = nullptr;                                // トーンマップしない: sceneColor（線形 HDR）をそのまま使う
+        // 空 + 不透明 + 影マップ（主ビューが作った物を読む）。ポスト・SSR・パーティクル・フォグは掛けない。
+        v.features   = kViewSkybox;
+        v.primary    = false;
+        v.isGameView = true;
+        v.noReflectionProbes = true;                       // 自分自身のキューブ（前回分）を映さない
+        RenderView(v, frame);
+        sys.CopyFace(cmd, f);
+    }
+    sys.EndCapture(cmd, slot);
+
+    sl.captured = true;
+    sl.pending = false;
+    sl.capturedPos = sl.pos;
+    sl.capturedAtSec = ReflectionProbeSystem::NowSec();
+    ++sl.captureCount;
+}
 
 } // namespace dx12e

@@ -41,7 +41,7 @@ SamplerState     g_ssaoSampler : register(s4);  // POINT CLAMP（未使用だが
 
 // コンタクトシャドウ（深度バッファのスクリーン空間レイマーチ。1=遮蔽なし）。
 // CSM が解像度不足で落とせない接地部の細かい影を補うため、太陽の寄与へ乗算する。
-Texture2D<float> g_contactShadow : register(t11);
+// g_contactShadow(t11) は Lighting.hlsli で宣言（RGBA8: R=太陽 / GBA=ローカル光 3 灯）
 
 // SSR（スクリーン空間反射。rgb=反射放射輝度 / a=confidence）と
 // SSGI（スクリーン空間GI。rgb=間接放射照度＝albedo を掛ける前）。

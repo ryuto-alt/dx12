@@ -21,8 +21,9 @@
 #define CLUSTER_TYPE_POINT 0.0
 #define CLUSTER_TYPE_SPOT  1.0
 
-// 64B。C++ 側は ClusteredLightCulling::LightGPU（static_assert(sizeof == 64) つき）。
+// 96B。C++ 側は ClusteredLightCulling::LightGPU（static_assert(sizeof == 96) つき）。
 // color は intensity 乗算済み。shadowIndex は -1=影なし、それ以外は既存の影スロット index。
+// 後半 32B はスポットのクッキー / IES / ローカル光のコンタクトシャドウ用。point や該当なしは index=-1。
 struct ClusterLight
 {
     float3 position;   float range;
@@ -30,6 +31,9 @@ struct ClusterLight
     float3 direction;  float cosOuter;     // スポット軸(正規化済) / cos(外側半角)
     float  cosInner;   float sinOuter;     // cos(内側半角) / sin(外側半角)
     float  shadowIndex; float _pad;
+    float  cookieIndex; float iesIndex;    // クッキー配列のスライス / IES テクスチャの行（-1 = 無し）
+    float  cookieStrength; float contactChannel;   // クッキーの効き(0..1) / コンタクトシャドウ RT のチャンネル(1..3、-1 = 無し)
+    float3 axisRight;  float cookieTanOuter;       // クッキーの横軸（world、direction と直交、回転済み）/ tan(外側半角)
 };
 
 // 32B。CS 専用（PS からは読まない）。

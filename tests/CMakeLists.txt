@@ -93,6 +93,18 @@ else()
 endif()
 add_test(NAME ClusterMathTests COMMAND ClusterMathTests)
 
+# IES (LM-63) の解析と縦角プロファイルへの焼き込み（renderer/IesProfile.h。ヘッダオンリー・GPU 不要）。
+# 同梱の assets/engine/light/*.ies も読めることを確かめる（tools/gen_light_assets.py の出力）。
+add_executable(IesProfileTests ies_profile_test.cpp)
+target_include_directories(IesProfileTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(IesProfileTests PRIVATE DX12_TEST_ASSETS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../assets/")
+if(MSVC)
+    target_compile_options(IesProfileTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(IesProfileTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME IesProfileTests COMMAND IesProfileTests)
+
 # 仮想ジオメトリ(Nanite 風)の `.vgeo` 形式（renderer/vg/VgeoFormat.h + VgsrcFormat.h + VgeoBvh.h）。
 # ヘッダオンリー・標準ライブラリのみなので、依存ゼロのスタンドアロン構成（CI）でも回る。
 # 構造体のサイズ/オフセット固定・往復・境界値・破損入力の拒否・決定論・手書き 3 レベル DAG の不変条件を見る。

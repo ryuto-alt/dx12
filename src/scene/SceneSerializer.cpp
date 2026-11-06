@@ -335,6 +335,7 @@ static void RegisterCoreComponentSerializers()
     R.Register(MakeReflectedInfo<Sprite2D>("Sprite2D", "sprite2d", true));
     R.Register(MakeReflectedInfo<TrailRenderer>("TrailRenderer", "trailRenderer", true));
     R.Register(MakeReflectedInfo<DecalComponent>("DecalComponent", "decal", true));
+    R.Register(MakeReflectedInfo<ReflectionProbe>("ReflectionProbe", "reflectionProbe", true));
     R.Register(MakeReflectedInfo<NetworkIdentity>("NetworkIdentity", "networkIdentity", true));
     R.Register(MakeReflectedInfo<NetworkTransform>("NetworkTransform", "networkTransform", true));
     // ゲーム内UI（retained-mode）。ランタイム状態（_付き）は ComponentMeta 未登録なので保存されない
@@ -1300,6 +1301,7 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"power",       ss.power},
             {"sampleCount", ss.sampleCount},
             {"blur",        ss.blur},
+            {"multiBounce", ss.multiBounce},
         };
     }
 
@@ -1316,6 +1318,12 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"maxDistance",  cs.maxDistance},
             {"fadeDistance", cs.fadeDistance},
         };
+        // ローカル光のコンタクトシャドウは ON のときだけ書く（既定 OFF のシーンの保存結果を 1 バイトも変えない）
+        if (cs.localLights)
+        {
+            root["contactShadow"]["localLights"]    = true;
+            root["contactShadow"]["localRayLength"] = cs.localRayLength;
+        }
     }
 
     // 法線マップフィルタリング（シーン単位）
@@ -1600,6 +1608,7 @@ static void LoadSSAOSettings(Scene& scene, const json& root)
         ss.power       = sj.value("power",       ss.power);
         ss.sampleCount = sj.value("sampleCount", ss.sampleCount);
         ss.blur        = sj.value("blur",        ss.blur);
+        ss.multiBounce = sj.value("multiBounce", ss.multiBounce);
     }
     scene.GetSSAOSettings() = ss;
 }
@@ -1619,6 +1628,8 @@ static void LoadContactShadowSettings(Scene& scene, const json& root)
         cs.steps        = cj.value("steps",        cs.steps);
         cs.maxDistance  = cj.value("maxDistance",  cs.maxDistance);
         cs.fadeDistance = cj.value("fadeDistance", cs.fadeDistance);
+        cs.localLights    = cj.value("localLights",    cs.localLights);
+        cs.localRayLength = cj.value("localRayLength", cs.localRayLength);
     }
     scene.GetContactShadowSettings() = cs;
 }

@@ -30,11 +30,13 @@ add_library(Renderer STATIC
     OcclusionCullPass.cpp
     VolumetricFogPass.cpp
     DecalSystem.cpp
+    LightCookieSystem.cpp
     SpriteRenderer.cpp
     SceneTransition.cpp
     ParticleSystem.cpp
     GpuParticleSystem.cpp
     IBLBaker.cpp
+    ReflectionProbeSystem.cpp      # 反射プローブ（撮影キューブ → GGX 畳み込み → 配列。台帳）
     SkyboxRenderer.cpp
     ViewPasses.cpp          # RenderView の段を IRenderPass（RenderPass.h の状態の契約）として切り出したもの
     PerceptionPass.cpp      # 知覚層（dx12_perceive）の ID パス + 読み戻し

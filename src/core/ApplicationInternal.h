@@ -72,6 +72,7 @@
 #include "renderer/vg/VirtualGeometrySystem.h"   // 仮想ジオメトリ P2（unique_ptr のデストラクタに完全型が要る）
 #include "renderer/foliage/FoliageSystem.h"      // 植生 F1（unique_ptr のデストラクタに完全型が要る）
 #include "renderer/water/WaterRenderer.h"        // 水面 W1（unique_ptr のデストラクタに完全型が要る）
+#include "renderer/ReflectionProbeSystem.h"      // 反射プローブ（同上）
 #include "renderer/VolumetricFogPass.h"
 #include "renderer/DecalSystem.h"
 #include "renderer/PrevWorldComponent.h"
@@ -291,6 +292,7 @@ inline bool RemoveRegisteredComponent(entt::registry& reg, entt::entity e, const
     else if (key == "luaScript")           reg.remove<LuaScript>(e);
     else if (key == "trailRenderer")       reg.remove<TrailRenderer>(e);
     else if (key == "decal")               reg.remove<DecalComponent>(e);
+    else if (key == "reflectionProbe")     reg.remove<ReflectionProbe>(e);
     else if (key == "networkIdentity")     reg.remove<NetworkIdentity>(e);
     else if (key == "networkTransform")    reg.remove<NetworkTransform>(e);
     else if (key == "uiCanvas")            reg.remove<UICanvas>(e);
@@ -1060,6 +1062,7 @@ inline nlohmann::json McpComponentTypesOf(const entt::registry& reg, entt::entit
     if (reg.all_of<LuaScript>(e))           a.push_back("luaScript");
     if (reg.all_of<TrailRenderer>(e))       a.push_back("trailRenderer");
     if (reg.all_of<DecalComponent>(e))      a.push_back("decal");
+    if (reg.all_of<ReflectionProbe>(e))     a.push_back("reflectionProbe");
     if (reg.all_of<NetworkIdentity>(e))     a.push_back("networkIdentity");
     if (reg.all_of<NetworkTransform>(e))    a.push_back("networkTransform");
     if (reg.all_of<Terrain>(e))             a.push_back("terrain");

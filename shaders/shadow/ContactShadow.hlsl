@@ -6,7 +6,9 @@
 // VS は post/FullscreenTri.hlsli の FSTriVS を流用（頂点バッファ不要のフルスクリーン三角形）。
 // PS はカメラ深度(R32_FLOAT)を読み、ピクセルのビュー空間位置から太陽方向へ短いレイを飛ばして、
 // 深度バッファに写っている物体に当たったら遮蔽とみなす。
-// 出力は R8_UNORM（1=遮蔽なし, 0=完全遮蔽）。Forward の PS が太陽の寄与へ乗算する。
+// 出力は RGBA8_UNORM（1=遮蔽なし, 0=完全遮蔽）。R = 太陽（Forward の PS が太陽の寄与へ乗算する）。
+// G / B / A = ローカル光（影付きのスポット / ポイントのうち先頭 3 灯。ClusterLight.contactChannel = 1..3）。
+// ローカル光は「そのピクセルから光源へ向かう短いレイ」を同じ手法で辿る（UE のスポット / ポイントのコンタクトシャドウ相当）。
 //
 // 実装の要点（リサーチで確認した実用値・定石）:
 //  - レイ長は「接触」スケールの短距離(既定 0.25m)。長くするほどサンプル間隔が粗くなり
@@ -45,6 +47,8 @@ cbuffer ContactShadowParams : register(b0)
     float3   _pad0;
     float4   viewport;     // xy=ビューポート原点(px), zw=ビューポートサイズ(px)
     float4   lightDirVS;   // xyz = ビュー空間で「ライトへ向かう」単位ベクトル
+    float4   localLightVS[3]; // xyz = ローカル光のビュー空間位置 / w = その灯の range
+    float4   localParams;     // x = ローカル光の数(0..3) / y = ローカル光のレイ長(m) / z = 太陽を計算する(1/0)
 };
 
 // フル RT の UV(0..1) → サブビューポート基準の NDC(-1..1, y上向き)。SSAO.hlsl と同じ規約。
@@ -78,46 +82,12 @@ float InterleavedGradientNoise(float2 px)
     return frac(magic.z * frac(dot(px, magic.xy)));
 }
 
-float PSMain(FSQuadVSOut i) : SV_TARGET
+// 1 本のレイをスクリーン空間で辿る。戻り値は 0..1 の遮蔽量（hitFade 込み。0 = 当たらない）。
+// origin はビュー空間、L はビュー空間の単位方向、rayLen はメートル。
+float MarchContact(float3 origin, float3 L, float rayLen, float jitter)
 {
-    float2 px = i.uv / max(invRTSize, 1e-6);
-    float  d  = g_depth.Sample(g_pointClamp, i.uv);
-    float3 P  = ViewPosFromDepth(i.uv, d);
-
-    // 深度から法線を再構成（SSAO.hlsl と同じ勾配の外積。LH なので視線へ向くよう符号を整える）。
-    // ddx/ddy は quad 内で分岐すると値が未定義になるので、早期リターンより前に必ず評価する。
-    float3 N = normalize(cross(ddx(P), ddy(P)));
-    if (dot(N, -P) < 0.0) N = -N;
-
-    // ビューポート矩形の外（エディタのパネル下に潜る領域）は素通し。
-    if (px.x < viewport.x || px.x > viewport.x + viewport.z ||
-        px.y < viewport.y || px.y > viewport.y + viewport.w)
-        return 1.0;
-
-    if (d >= 1.0)
-        return 1.0;   // 背景（クリア値）に影は落ちない
-
-    // カメラから遠いピクセルはフェードアウト（スクリーン空間の精度が落ちる領域を切る）。
-    float distFade = 1.0 - saturate((P.z - maxDistance) / max(fadeDistance, 1e-4));
-    if (distFade <= 0.0)
-        return 1.0;
-
-    float3 L = normalize(lightDirVS.xyz);
-
-    // ① 太陽に背を向けた面は Forward 側の NdotL で既に真っ暗。ここで影を重ねると
-    //    輪郭に自己遮蔽のシミが出るだけなので早期に抜ける。
-    float NdotL = dot(N, L);
-    if (NdotL <= 0.0)
-        return 1.0;
-
-    // ② レイ始点を法線方向へ押し出す。グレージング角ほど大きく（1/NdotL ではなく
-    //    (1-NdotL) の線形項で頭打ちにして、真横から当たる面で爆発しないようにする）。
-    float startOffset = bias * (1.0 + 2.0 * (1.0 - NdotL));
-    float3 origin = P + N * startOffset;
-
     int   stepCount = clamp(steps, 4, 32);
     float invSteps  = 1.0 / (float)stepCount;
-    float jitter    = InterleavedGradientNoise(px);   // ③ 空間ディザで縞を散らす
 
     float occluded = 0.0;
     float hitFade  = 1.0;
@@ -126,7 +96,7 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
     for (int k = 1; k <= stepCount; ++k)
     {
         // 最初のサンプルでも必ず 1 ステップ以上進む（k=1..N、ジッタは 0..1 ステップ分）。
-        float  t = rayLength * ((float)k + jitter) * invSteps;
+        float  t = rayLen * ((float)k + jitter) * invSteps;
         float3 samplePos = origin + L * t;
 
         float4 clip = mul(float4(samplePos, 1.0), proj);
@@ -156,7 +126,72 @@ float PSMain(FSQuadVSOut i) : SV_TARGET
             // （march-behind-surfaces）。
         }
     }
+    return occluded * hitFade;
+}
 
-    float shadow = 1.0 - occluded * saturate(intensity) * hitFade * distFade;
-    return saturate(shadow);
+float4 PSMain(FSQuadVSOut i) : SV_TARGET
+{
+    float2 px = i.uv / max(invRTSize, 1e-6);
+    float  d  = g_depth.Sample(g_pointClamp, i.uv);
+    float3 P  = ViewPosFromDepth(i.uv, d);
+
+    // 深度から法線を再構成（SSAO.hlsl と同じ勾配の外積。LH なので視線へ向くよう符号を整える）。
+    // ddx/ddy は quad 内で分岐すると値が未定義になるので、早期リターンより前に必ず評価する。
+    float3 N = normalize(cross(ddx(P), ddy(P)));
+    if (dot(N, -P) < 0.0) N = -N;
+
+    // ビューポート矩形の外（エディタのパネル下に潜る領域）は素通し。
+    if (px.x < viewport.x || px.x > viewport.x + viewport.z ||
+        px.y < viewport.y || px.y > viewport.y + viewport.w)
+        return float4(1, 1, 1, 1);
+
+    if (d >= 1.0)
+        return float4(1, 1, 1, 1);   // 背景（クリア値）に影は落ちない
+
+    // カメラから遠いピクセルはフェードアウト（スクリーン空間の精度が落ちる領域を切る）。
+    float distFade = 1.0 - saturate((P.z - maxDistance) / max(fadeDistance, 1e-4));
+    if (distFade <= 0.0)
+        return float4(1, 1, 1, 1);
+
+    float jitter = InterleavedGradientNoise(px);   // ③ 空間ディザで縞を散らす
+
+    float4 result = float4(1, 1, 1, 1);
+
+    // ===== R: 太陽 =====
+    if (localParams.z > 0.5)
+    {
+        float3 L = normalize(lightDirVS.xyz);
+
+        // ① 太陽に背を向けた面は Forward 側の NdotL で既に真っ暗。ここで影を重ねると
+        //    輪郭に自己遮蔽のシミが出るだけなので早期に抜ける。
+        float NdotL = dot(N, L);
+        if (NdotL > 0.0)
+        {
+            // ② レイ始点を法線方向へ押し出す。グレージング角ほど大きく（1/NdotL ではなく
+            //    (1-NdotL) の線形項で頭打ちにして、真横から当たる面で爆発しないようにする）。
+            float startOffset = bias * (1.0 + 2.0 * (1.0 - NdotL));
+            float3 origin = P + N * startOffset;
+            float occ = MarchContact(origin, L, rayLength, jitter);
+            result.r = saturate(1.0 - occ * saturate(intensity) * distFade);
+        }
+    }
+
+    // ===== G / B / A: ローカル光（影付きスポット / ポイント）=====
+    for (int li = 0; li < 3; ++li)
+    {
+        if ((float)li >= localParams.x) break;
+        float3 toLight = localLightVS[li].xyz - P;
+        float  dist    = length(toLight);
+        if (dist >= localLightVS[li].w || dist < 1e-3) continue;   // 範囲外は減衰 0
+        float3 L = toLight / dist;
+        float NdotL = dot(N, L);
+        if (NdotL <= 0.0) continue;
+        float startOffset = bias * (1.0 + 2.0 * (1.0 - NdotL));
+        float3 origin = P + N * startOffset;
+        // 光源の手前で止める（光源の向こう側を辿って無関係な物に当たらない）
+        float rayLen = min(localParams.y, dist * 0.9);
+        float occ = MarchContact(origin, L, rayLen, jitter);
+        result[li + 1] = saturate(1.0 - occ * saturate(intensity) * distFade);
+    }
+    return result;
 }

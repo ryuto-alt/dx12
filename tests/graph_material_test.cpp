@@ -273,8 +273,8 @@ int main()
         std::printf("  初回: codegen %.2f ms / DXC %.0f ms / PSO %.0f ms / cacheHit=%d\n", st.codegenMs, st.dxcMs, st.psoMs, st.cacheHit);
     }
     const auto c1 = sys->GetCounters();
-    CHECK_MSG(c1.dxcCompiles == 2, "初回の DXC は VS + PS の 2 回のはず（%u 回）", c1.dxcCompiles);
-    CHECK(c1.cacheStores == 2 && c1.cacheHits == 0);
+    CHECK_MSG(c1.dxcCompiles == 3, "初回の DXC は VS + インスタンス版 VS + PS の 3 回のはず（%u 回）", c1.dxcCompiles);
+    CHECK(c1.cacheStores == 3 && c1.cacheHits == 0);
 
     // ---- 2. パラメータプール（レコード）-----------------------------------------------------------
     std::printf("stage: pool\n");
@@ -314,7 +314,7 @@ int main()
               "レコードが隙間なく詰まっていない（m1=%u m2=%u len=%d）", p1.recordBase, p2.recordBase, cr0.slotCount);
     CHECK_MSG(p2.pso == p1.pso, "同じ HLSL の材質が PSO を共有していない");
     CHECK(sys->GetCounters().variants == 1);
-    CHECK(sys->GetCounters().dxcCompiles == 2);   // 2 枚目は DXC を呼ばない（同じ変種）
+    CHECK(sys->GetCounters().dxcCompiles == 3);   // 2 枚目は DXC を呼ばない（同じ変種）
     CHECK(p1.poolSrvIndex == p2.poolSrvIndex);
     {
         std::vector<float> rec2;
@@ -390,7 +390,7 @@ int main()
         sys->GetInstanceStatus("materials/m1.dxmat", st);
         CHECK(st.generation == 2 && !st.compiling && !st.failed);
         std::printf("  旧版のまま %d 回描画 → 新版へ / DXC %.0f ms\n", keptOld, st.dxcMs);
-        CHECK(sys->GetCounters().dxcCompiles == 3);   // 新しい PS だけ（VS は共通スタブでキャッシュ済み。ディスクキャッシュのヒット）
+        CHECK(sys->GetCounters().dxcCompiles == 4);   // 新しい PS だけ（VS は共通スタブでキャッシュ済み。ディスクキャッシュのヒット）
         // 旧版の PSO を使っていた m2 は別のグラフ版のまま（m2 も同じ .dxmg を指すので通知で作り直される）
         pump();
         GraphMaterialSystem::DrawParams q2{};
@@ -490,8 +490,8 @@ int main()
         std::vector<std::string> bakeErrors;
         const bool baked = sys->BakeForBuild(blobs, bakeErrors);
         CHECK_MSG(baked, "BakeForBuild が失敗: %s", bakeErrors.empty() ? "" : bakeErrors[0].c_str());
-        // m1 / m2 は同じ HLSL（1 個）+ 共通の vs
-        CHECK_MSG(blobs.size() == 2, "焼いたシェーダーが %zu 個（PS 1 + VS 1 のはず）", blobs.size());
+        // m1 / m2 は同じ HLSL（1 個）+ 共通の vs + インスタンス版の vs
+        CHECK_MSG(blobs.size() == 3, "焼いたシェーダーが %zu 個（PS 1 + VS 1 + インスタンス版 VS 1 のはず）", blobs.size());
         bool hasVs = false, hasPs = false;
         for (const auto& b : blobs)
         {

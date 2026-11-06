@@ -42,7 +42,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             //   ズレは ShaderIncludeDepsTests が見張る。
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
-              "forward/ForwardShade.hlsli", "forward/UnoSurface.hlsli" },
+              "forward/ForwardShade.hlsli", "forward/ReflectionProbe.hlsli", "forward/UnoSurface.hlsli" },
         },
         {
             "forward/ForwardSkinned.hlsl",
@@ -57,7 +57,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             //   ズレは ShaderIncludeDepsTests が見張る。
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
-              "forward/ForwardShade.hlsli", "forward/UnoSurface.hlsli" },
+              "forward/ForwardShade.hlsli", "forward/ReflectionProbe.hlsli", "forward/UnoSurface.hlsli" },
         },
         {
             // クラスタードライティング（Forward+）のライトカリング compute。
@@ -125,7 +125,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             },
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
-              "forward/ForwardShade.hlsli", "forward/UnoSurface.hlsli" },
+              "forward/ForwardShade.hlsli", "forward/ReflectionProbe.hlsli", "forward/UnoSurface.hlsli" },
         },
         {
             "shadow/ShadowPass.hlsl",
@@ -317,6 +317,16 @@ const std::vector<ShaderSource>& BuildRegistry()
             "ibl/IntegrateBRDF.hlsl",
             { { L"IntegrateBRDF_CS.cso", L"CSMain", L"cs_6_0" } },
             { "ibl/IBLCommon.hlsli" },
+        },
+        {
+            "ibl/ProbeCopyFace.hlsl",
+            { { L"ProbeCopyFace_CS.cso", L"CSMain", L"cs_6_0" } },
+            {},
+        },
+        {
+            "ibl/ProbeDownsample.hlsl",
+            { { L"ProbeDownsample_CS.cso", L"CSMain", L"cs_6_0" } },
+            {},
         },
         {
             "ibl/Skybox.hlsl",

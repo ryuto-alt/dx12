@@ -305,6 +305,7 @@ if(DXC_EXECUTABLE)
         "${CMAKE_SOURCE_DIR}/shaders/forward/ShadowPcss.hlsli"
         # ★シェーディング尾部（マテリアルグラフ G2a で Forward/Skinned/Terrain から外出し）と契約構造体。
         "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardShade.hlsli"
+        "${CMAKE_SOURCE_DIR}/shaders/forward/ReflectionProbe.hlsli"
         "${CMAKE_SOURCE_DIR}/shaders/forward/UnoSurface.hlsli"
         # ★DdgiCommon.hlsli も Lighting.hlsli が include している（DDGI 段階1）。
         #   入れ忘れると DDGI のサンプル式を直してもフォワード系の .cso が古いまま残る。
@@ -364,6 +365,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_IBL_IRR       "${CMAKE_SOURCE_DIR}/shaders/ibl/IrradianceConvolution.hlsl")
     set(SHADER_IBL_PRE       "${CMAKE_SOURCE_DIR}/shaders/ibl/PrefilterEnv.hlsl")
     set(SHADER_IBL_BRDF      "${CMAKE_SOURCE_DIR}/shaders/ibl/IntegrateBRDF.hlsl")
+    set(SHADER_PROBE_COPY    "${CMAKE_SOURCE_DIR}/shaders/ibl/ProbeCopyFace.hlsl")
+    set(SHADER_PROBE_DOWN    "${CMAKE_SOURCE_DIR}/shaders/ibl/ProbeDownsample.hlsl")
     set(SHADER_SKYBOX        "${CMAKE_SOURCE_DIR}/shaders/ibl/Skybox.hlsl")
     set(SHADER_IBL_INC       "${CMAKE_SOURCE_DIR}/shaders/ibl/IBLCommon.hlsli")
     set(SHADER_SSAO          "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAO.hlsl")
@@ -493,6 +496,8 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/IrradianceConvolution_CS.cso"
         "${SHADER_OUTPUT_DIR}/PrefilterEnv_CS.cso"
         "${SHADER_OUTPUT_DIR}/IntegrateBRDF_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ProbeCopyFace_CS.cso"
+        "${SHADER_OUTPUT_DIR}/ProbeDownsample_CS.cso"
         "${SHADER_OUTPUT_DIR}/Skybox_VS.cso"
         "${SHADER_OUTPUT_DIR}/Skybox_PS.cso"
         "${SHADER_OUTPUT_DIR}/SSAO_VS.cso"
@@ -1180,6 +1185,20 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/PrefilterEnv_CS.cso" "${SHADER_IBL_PRE}"
         DEPENDS "${SHADER_IBL_PRE}" "${SHADER_IBL_INC}"
         COMMENT "Compiling PrefilterEnv.hlsl -> PrefilterEnv_CS.cso (cs_6_0)"
+    )
+
+    # --- 反射プローブ（ReflectionProbeSystem）: 撮影した面のコピー + ミップ列 ---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ProbeCopyFace_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ProbeCopyFace_CS.cso" "${SHADER_PROBE_COPY}"
+        DEPENDS "${SHADER_PROBE_COPY}"
+        COMMENT "Compiling ProbeCopyFace.hlsl -> ProbeCopyFace_CS.cso (cs_6_0)"
+    )
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/ProbeDownsample_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/ProbeDownsample_CS.cso" "${SHADER_PROBE_DOWN}"
+        DEPENDS "${SHADER_PROBE_DOWN}"
+        COMMENT "Compiling ProbeDownsample.hlsl -> ProbeDownsample_CS.cso (cs_6_0)"
     )
 
     add_custom_command(

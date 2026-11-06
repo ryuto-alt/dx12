@@ -62,7 +62,11 @@ void RegisterCoreComponentMeta()
         .data<&SpotLight::innerConeDeg>("innerConeDeg")
         .data<&SpotLight::outerConeDeg>("outerConeDeg")
         .data<&SpotLight::castShadows>("castShadows")
-        .data<&SpotLight::sourceRadius>("sourceRadius");
+        .data<&SpotLight::sourceRadius>("sourceRadius")
+        .data<&SpotLight::cookiePath>("cookiePath")
+        .data<&SpotLight::iesPath>("iesPath")
+        .data<&SpotLight::cookieStrength>("cookieStrength")
+        .data<&SpotLight::cookieRotationDeg>("cookieRotationDeg");
 
     entt::meta_factory<CameraComponent>{}
         .type("CameraComponent")
@@ -294,6 +298,14 @@ void RegisterCoreComponentMeta()
         .data<&DecalComponent::angleFadeDeg>("angleFadeDeg")
         .data<&DecalComponent::fadeEdge>("fadeEdge")
         .data<&DecalComponent::sortOrder>("sortOrder");
+
+    entt::meta_factory<ReflectionProbe>{}
+        .type("ReflectionProbe")
+        .data<&ReflectionProbe::halfExtents>("halfExtents")
+        .data<&ReflectionProbe::blendDistance>("blendDistance")
+        .data<&ReflectionProbe::boxProjection>("boxProjection")
+        .data<&ReflectionProbe::intensity>("intensity")
+        .data<&ReflectionProbe::priority>("priority");
 
     entt::meta_factory<NetworkIdentity>{}
         .type("NetworkIdentity")

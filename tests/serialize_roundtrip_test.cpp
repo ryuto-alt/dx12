@@ -718,6 +718,27 @@ static void Test_Decal()
         });
 }
 
+static void Test_ReflectionProbe()
+{
+    Case<ReflectionProbe>(
+        [](entt::registry& r, entt::entity e) {
+            ReflectionProbe p;
+            p.halfExtents   = {4.5f, 2.0f, 7.25f};
+            p.blendDistance = 0.75f;
+            p.boxProjection = false;
+            p.intensity     = 1.5f;
+            p.priority      = 3;
+            r.emplace<ReflectionProbe>(e, p);
+        },
+        [](const ReflectionProbe& p) {
+            CHECK_V3(p.halfExtents, 4.5f, 2.0f, 7.25f);
+            CHECK_F(p.blendDistance, 0.75f);
+            CHECK(p.boxProjection == false);
+            CHECK_F(p.intensity, 1.5f);
+            CHECK(p.priority == 3);
+        });
+}
+
 // アニメーションステートマシン（.animfsm へのパス + 実行時パラメータ）。
 // _state / _loaded はランタイム専有なので meta 未登録＝往復に出てこないこと。
 static void Test_AnimatorController()
@@ -2423,6 +2444,7 @@ int main()
     Test_NetworkIdentity();
     Test_NetworkTransform();
     Test_Decal();
+    Test_ReflectionProbe();
     Test_TerrainSplatPathIsWrittenWithoutLayerSet();
     Test_AnimatorController();
     Test_FootIK();

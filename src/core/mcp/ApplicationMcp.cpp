@@ -149,6 +149,7 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpAudioMethods();
     RegisterMcpAiMethods();
     RegisterMcpPathTracerMethods();
+    RegisterMcpReflectionProbeMethods();   // 反射プローブ: reflection_capture / reflection_probe_stats
     RegisterMcpWaterMethods();      // 水面 W1: water_apply_preset
     RegisterMcpFoliageMethods();    // 植生 F1: foliage_scatter / paint / clear / save / stats / get_wind / set_wind
     RegisterMcpInstanceGroupMethods();   // インスタンス群: instance_group（convert / explode / info / add / remove / set）

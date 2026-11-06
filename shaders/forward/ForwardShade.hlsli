@@ -34,6 +34,9 @@
 #define FORWARD_SHADE_HLSLI
 
 #include "UnoSurface.hlsli"
+#ifndef UNO_SHADE_LITE
+#include "ReflectionProbe.hlsli"   // 反射プローブ（t33/t34）と Multi-bounce AO
+#endif
 
 #ifndef UNO_SHADE_SANITIZE
 #define UNO_SHADE_SANITIZE(x) (x)
@@ -163,7 +166,7 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     // contactShadowEnabled=0（無効/正射/フォールバック）のときは読まず 1.0。
     // 白ダミーは 1x1 のため Load(画面座標) が範囲外で 0 を返し、太陽光を全消しするのを防ぐ。
     if (contactShadowEnabled > 0.5)
-        shadow = min(shadow, g_contactShadow.Load(int3(si.svPos, 0)));
+        shadow = min(shadow, g_contactShadow.Load(int3(si.svPos, 0)).r);
 #endif
 
     // Directional Light（影付き）
@@ -198,6 +201,13 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     float ao = (aoEnabled > 0.5) ? g_ssao.Load(int3(si.svPos, 0)) : 1.0;
 #endif
     ao *= s.ao;   // マテリアル AO（既定 1.0 = 恒等。地形の岩の隙間 / グラフの AmbientOcclusion 出力）
+#ifdef UNO_SHADE_LITE
+    const bool aoMultiBounce = false;
+#else
+    // 拡散 AO の Multi-bounce（reflProbeParams.z。0 なら下の式は従来と同一）
+    const bool aoMultiBounce = (reflProbeParams.z > 0.5);
+    const bool probesOn      = (reflProbeParams.x > 0.5);
+#endif
 
     // SSR / SSGI（無効時は 1x1 黒ダミー → Load が範囲外で 0 = 寄与ゼロ）
     //   ssr .rgb=反射放射輝度 / .a=confidence
@@ -283,6 +293,15 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
             const float fillW = lerp(smoothstep(0.1, 0.6, roughness), 1.0, metallic);
             prefiltered = prefiltered * vis + UNO_SHADE_SANITIZE(gn.irrR) * ((1.0 - vis) * fillW);
         }
+#ifndef UNO_SHADE_LITE
+        // ★反射プローブ: 箱の中の画素は、焼いたキューブ（部屋の中身を含む）で空 / DDGI の埋めを置き換える。
+        //   プローブの絵は遮蔽込みなので空の可視率は掛けない。SSR / RT 反射が当たった所は直後の lerp でそちらが勝つ。
+        [branch] if (probesOn)
+        {
+            const float4 pr = SampleReflectionProbes(si.worldPos, R, roughness);
+            prefiltered = prefiltered * (1.0 - pr.a) + pr.rgb;
+        }
+#endif
         prefiltered = lerp(prefiltered, ssrRgb, ssrConf);
         float2 envBRDF = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoV, roughness), 0).rg;
         // ★GI モード New: split-sum の LUT（IntegrateBRDF.hlsl）は Fresnel を積分済み（A = ∫(1-Fc)G, B = ∫Fc G）なので、
@@ -297,12 +316,16 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         //   画面空間で積分した結果なので遮蔽は織り込み済み。そこへ AO を重ねると
         //   窪みが二重に暗くなる。
         float aoDiff = lerp(ao, 1.0, ssgiConf);
+        float3 aoDiffV = float3(aoDiff, aoDiff, aoDiff);
+#ifndef UNO_SHADE_LITE
+        if (aoMultiBounce) aoDiffV = UnoGtaoMultiBounce(aoDiff, albedo);
+#endif
         // 鏡面遮蔽（Lagarde 2014）: AO と NoV・粗さから鏡面の可視率を近似。ao=1 なら so=1。
         float  soExp = exp2(-16.0 * roughness - 1.0);
         float  so    = saturate(pow(max(NoV + ao, 1e-4), soExp) - 1.0 + ao);
         float aoSpec = lerp(so, 1.0, ssrConf);
-        ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * (giNew ? 1.0 : iblIntensity);
-        dbgDiff = kD * diffuseIBL * aoDiff;
+        ambient = (kD * diffuseIBL * aoDiffV + specularIBL * aoSpec) * (giNew ? 1.0 : iblIntensity);
+        dbgDiff = kD * diffuseIBL * aoDiffV;
         dbgSpec = specularIBL * aoSpec;
         dbgIrr  = irradiance;
         dbgIblIrr = g_irradianceMap.SampleLevel(g_iblSampler, N, 0).rgb * iblIntensity;
@@ -315,6 +338,11 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         float3 ambientSpecular = lerp(F0, ssrRgb, ssrConf);
         // 環境光へ AO を乗算（直接光は遮蔽しない）。
         ambient = ambientStrength * (ambientDiffuse + ambientSpecular) * ao;
+#ifndef UNO_SHADE_LITE
+        const float3 aoDiffMB = aoMultiBounce ? UnoGtaoMultiBounce(ao, albedo) : float3(ao, ao, ao);
+        if (aoMultiBounce)
+            ambient = ambientStrength * (ambientDiffuse * aoDiffMB + ambientSpecular * ao);
+#endif
         // ★屋内は envMap が空＝hasIBL=0 なので、ここが DDGI の本命の経路。
         //   固定 ambient（部屋のどこでも同じ明るさ）をプローブの irradiance で置き換える。
         //   AO は掛けたまま: プローブ間隔 2m は皺や隅の小さな遮蔽を持っていないので、
@@ -322,10 +350,37 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         ambient = lerp(ambient,
                        (ddgiIrr * ambientDiffuse + ambientStrength * ambientSpecular) * ao,
                        ddgiConf);
+#ifndef UNO_SHADE_LITE
+        if (aoMultiBounce)
+            ambient = lerp(ambientStrength * (ambientDiffuse * aoDiffMB + ambientSpecular * ao),
+                           ddgiIrr * ambientDiffuse * aoDiffMB + ambientStrength * ambientSpecular * ao,
+                           ddgiConf);
+#endif
         // SSGI があるなら拡散側をその放射照度で置き換える（AO は掛けない）。
         ambient = lerp(ambient,
                        ssgiRgb * ambientDiffuse + ambientStrength * ambientSpecular * ao,
                        ssgiConf);
+#ifndef UNO_SHADE_LITE
+        // ★反射プローブ（IBL 無しの屋内）: 固定 ambient の鏡面（F0 一色）をプローブの映り込みで置き換える。
+        //   split-sum の LUT は IBL ブロックのものと同じ意味だが、ここでは解析近似（Karis 2014）で足りる。
+        [branch] if (probesOn)
+        {
+            const float3 Rp  = reflect(-V, N);
+            const float  NoVp = max(dot(N, V), 0.0);
+            const float4 pr  = SampleReflectionProbes(si.worldPos, Rp, roughness);
+            const float4 c0 = float4(-1.0, -0.0275, -0.572, 0.022);
+            const float4 c1 = float4( 1.0,  0.0425,  1.04, -0.04);
+            const float4 rr = roughness * c0 + c1;
+            const float  aa = min(rr.x * rr.x, exp2(-9.28 * NoVp)) * rr.x + rr.y;
+            const float2 ab = float2(-1.04, 1.04) * aa + rr.zw;
+            const float  soExp2 = exp2(-16.0 * roughness - 1.0);
+            const float  so2    = saturate(pow(max(NoVp + ao, 1e-4), soExp2) - 1.0 + ao);
+            const float3 probeSpec = pr.rgb * (F0 * ab.x + ab.y) * so2;
+            // 既存の鏡面（F0 * ambientStrength）を重み分だけ引いて、プローブの寄与を足す。SSR が当たった所は SSR 優先。
+            ambient -= ambientStrength * ambientSpecular * ao * pr.a * (1.0 - ssrConf);
+            ambient += probeSpec * (1.0 - ssrConf);
+        }
+#endif
     }
 
 #ifndef UNO_SHADE_LITE

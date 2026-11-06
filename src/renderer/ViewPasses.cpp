@@ -200,7 +200,8 @@ void ContactShadowGeneratePass::Execute(const RenderPassContext& ctx)
     const XMMATRIX proj = XMLoadFloat4x4(&m_in.proj);
     m_result = m_in.pass->Generate(ctx.native, m_in.depthSrv, *m_in.settings,
                                    view, proj, m_in.lightDir,
-                                   0u, 0u, m_in.width, m_in.height, ctx.frameIndex);
+                                   0u, 0u, m_in.width, m_in.height, ctx.frameIndex,
+                                   m_in.sunEnabled, m_in.locals, m_in.localCount);
 }
 
 // ---- RtScreenGeneratePass ---------------------------------------------------------------

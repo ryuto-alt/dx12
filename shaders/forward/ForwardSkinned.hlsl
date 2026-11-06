@@ -35,7 +35,7 @@ Texture2D<float> g_ssao        : register(t8);
 SamplerState     g_ssaoSampler : register(s4);  // POINT CLAMP（未使用だが RootSig 整合のため宣言）
 
 // コンタクトシャドウ（深度バッファのスクリーン空間レイマーチ。1=遮蔽なし）。太陽の寄与へ乗算する。
-Texture2D<float> g_contactShadow : register(t11);
+// g_contactShadow(t11) は Lighting.hlsli で宣言（RGBA8: R=太陽 / GBA=ローカル光 3 灯）
 
 // SSR / SSGI（Forward.hlsl と同じ規約。無効時は 1x1 黒ダミー → Load が範囲外で 0 = 寄与ゼロ）
 Texture2D<float4> g_ssr  : register(t16);

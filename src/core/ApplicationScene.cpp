@@ -1251,6 +1251,7 @@ void Application::FinishSceneLoad(const std::string& fullPath, const std::string
 {
     // TAA: 別のシーンの絵を履歴として持ち越さない（持ち越すと切替直後に前のシーンが半透明で残る）。
     InvalidateTemporalHistory();
+    if (m_reflProbes) m_reflProbes->ResetAll();   // 反射プローブ: 台帳を捨てる（新しいシーンの ReflectionProbe は同期で拾って焼く）
 
     if (runtime)
     {

@@ -1230,6 +1230,11 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
         // デカール（クラスタードフォワードデカール）。SRV は ClusteredLightCulling の
         // テーブル（7 本）の +3..+6 を借りるので、自前のディスクリプタは 1 本も取らない。
+        // スポットのクッキー / IES（t31 / t32）。GPU テクスチャは最初のフレームで SyncLightCookies が作る。
+        m_lightCookies = std::make_unique<LightCookieSystem>();
+#ifdef ASSETS_DIR
+        m_lightCookies->SetEngineAssetsDir(ASSETS_DIR);   // 開発時: プロジェクトに無い engine/light/* はエンジン同梱から読む
+#endif
         m_decalSystem = std::make_unique<DecalSystem>();
         m_decalSystem->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
         // ★ここで即座に t18..t21 を「正しい型の」ディスクリプタで埋める。
@@ -1245,6 +1250,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                                              m_ssBlackTex.get());
         }
         m_decalSrvDirty = true;
+
+        // 反射プローブ（撮影用 RT / キューブ配列。テーブルの +12/+13 = t33/t34 をここで有効なディスクリプタで埋める）
+        InitReflectionProbes();
 
         // 2D スプライト（バックバッファ＝スワップチェイン形式へ描く）
         m_spriteRenderer = std::make_unique<SpriteRenderer>();
@@ -2316,6 +2324,7 @@ void Application::Shutdown()
     ShutdownVirtualGeometry();   // 仮想ジオメトリ P2（専用ヒープ / COPY キュー / m_vgHiZ のディスクリプタ）。ヒープより先に返す
     ShutdownFoliage();           // 植生 F1（compute / 間接描画バッファ。デバイス解放より前に）
     ShutdownGpuInst();           // GPU 駆動のインスタンス群（4-3。compute / 永続バッファ。デバイス解放より前に）
+    ShutdownReflectionProbes();  // 反射プローブ（ディスクリプタ / キューブ配列。ヒープより前に）
     ShutdownWater();             // 水面 W1（コピー用テクスチャ / ディスクリプタ。デバイス解放より前に）
     m_perceptionPass.reset();   // 知覚層（RT / 読み戻し / 専用ヒープ）。要求が無ければ最初から null
     m_contactShadowPass.reset();

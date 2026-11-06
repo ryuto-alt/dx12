@@ -27,6 +27,7 @@ add_library(Core STATIC
     ApplicationVg.cpp               # 仮想ジオメトリ P2: インスタンス収集 + GPU カリング呼び出し + 統計（既定 OFF）
     ApplicationClouds.cpp           # ボリュメトリッククラウドの Application 側の糊（enabled=false なら何もしない）
     ApplicationAtmosphere.cpp       # 物理ベース大気 A1: 時刻系 / AtmosphereRenderer の遅延確保 / IBL 増分再ベイク / 空・AP の呼び出し（enabled=false なら何もしない）
+    ApplicationReflectionProbe.cpp  # 反射プローブ: 台帳の同期 / 6 面の撮影 / b1 への受け渡し（ReflectionProbe が無ければ何もしない）
     ApplicationWater.cpp            # 水面 W1: WaterRenderer の遅延確保 / フレーム開始 / 統計（WaterBody が無ければ何もしない）
     ApplicationFoliage.cpp          # 植生 F1: FoliageSystem の遅延確保 / GPU カリング呼び出し / 描画呼び出し / 統計（FoliageLayer が無ければ何もしない）
     ApplicationInstanceGpu.cpp      # GPU 駆動のインスタンス群（4-3）: 群の GPU 経路 / 描画パスの呼び出し / 統計（しきい値 0 なら何もしない）
@@ -52,6 +53,7 @@ add_library(Core STATIC
     mcp/ApplicationMcpUndo.cpp       # Undo / Redo / トランザクション（MCP の編集を Undo に積む）
     mcp/ApplicationMcpAi.cpp         # ゲーム AI の観測（brain_state）
     mcp/ApplicationMcpPathTracer.cpp # DXR パストレーサー（render_reference / render_reference_status / render_reference_cancel）
+    mcp/ApplicationMcpReflectionProbe.cpp  # 反射プローブ（reflection_capture / reflection_probe_stats）
     mcp/ApplicationMcpWater.cpp      # 水面 W1（water_apply_preset）
     mcp/ApplicationMcpSceneBackup.cpp   # シーンの世代つきバックアップ（scene_backups）
     mcp/ApplicationMcpInstanceGroup.cpp   # インスタンス群（instance_group）

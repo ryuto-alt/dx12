@@ -720,6 +720,14 @@ public:
     bool pendingSaveScene        = false;   // 保存（Ctrl+S）。Application が Editor モードで処理し、通知も出す
     bool pendingOpenSceneDialog  = false;   // シーンを開く（Ctrl+O）。ToolbarPanel がファイルダイアログを出す
     int  pendingPlayRequest      = 0;       // 0=なし / 1=Play / 2=Stop。EditorLayer が Play/Stop 要求へ変換する
+    // 反射プローブの再キャプチャ要求（Inspector のボタン → Application が次フレームで焼く）。
+    //   reflProbeCaptureEntity = 特定の 1 個 / reflProbeCaptureAll = シーン内の全部。
+    entt::entity reflProbeCaptureEntity = entt::null;
+    bool         reflProbeCaptureAll    = false;
+    // Application が毎フレーム書く Inspector 表示用の状態（焼き済みか / 何秒前か）。
+    entt::entity reflProbeStatusEntity  = entt::null;   // 以下は選択中エンティティ分だけ
+    int          reflProbeStatusState   = 0;            // 0=プローブ無し/未登録 1=焼き待ち 2=焼き済み
+    float        reflProbeAgeSec        = 0.0f;
     bool pendingFocusSelection   = false;   // 選択へカメラを寄せる（F / パレットのジャンプ）。Application が処理
     int  paletteRequest          = 0;       // 0=なし / 1=コマンドパレット(Ctrl+K) / 2=クイックオープン(Ctrl+P)
     bool paletteOpen             = false;   // パレット表示中（ショートカットを止める）

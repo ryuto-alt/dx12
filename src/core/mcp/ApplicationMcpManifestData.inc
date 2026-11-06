@@ -210,7 +210,7 @@ void FillManifestChunk2(ManifestRows& o)
             P("includeChildren", "bool", false, nullptr, nullptr, nullptr, nullptr, "true で子孫エンティティの AABB も合成する(モデルルートが empty の時に有効)。"),
             P("perSubmesh", "bool", false, nullptr, nullptr, nullptr, nullptr, "true でサブメッシュ 1 個ずつの内訳を submeshes[] に返す。既定 false。"),
         })});
-    o.push_back({"get_contact_shadow", M("現在のシーンのコンタクトシャドウ(深度バッファをスクリーン空間でレイマーチする近接遮蔽)設定を返す。{enabled, rayLength, thickness, bias, intensity, steps, maxDistance, fadeDistance}。",
+    o.push_back({"get_contact_shadow", M("現在のシーンのコンタクトシャドウ(深度バッファをスクリーン空間でレイマーチする近接遮蔽)設定を返す。{enabled, rayLength, thickness, bias, intensity, steps, maxDistance, fadeDistance, localLights, localRayLength, active}。enabled=太陽、localLights=影付きスポット/ポイントのコンタクトシャドウ。",
         "get contact shadow コンタクトシャドウ設定取得",
         "render", "render_setting", "contact_shadow", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_contact_shadow", {
@@ -977,7 +977,7 @@ void FillManifestChunk10(ManifestRows& o)
         "none", "dx12_set_component", {
             P("entity", "entityRef", false, nullptr, nullptr, nullptr, nullptr, "エンティティ id(int)。name と排他。"),
             P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。id の代わりに使える。Stop 後など id が変わる場面で安定。"),
-            P("component", "string", true, nullptr, nullptr, nullptr, nullptr, "jsonKey。例: pointLight, directionalLight, spotLight, camera, rigidBody, boxCollider, transform, tags…"),
+            P("component", "string", true, nullptr, nullptr, nullptr, nullptr, "jsonKey。例: pointLight, spotLight, directionalLight, camera, rigidBody, tags…。spotLight は cookiePath(2D 画像)・iesPath(.ies)・cookieStrength・cookieRotationDeg を持つ(UE の Light Function / IES 相当。同梱 engine/light/*)。"),
             P("data", "any", true, nullptr, nullptr, nullptr, nullptr, "コンポーネントの値。オブジェクト or 配列(tags は文字列配列)。dx12_describe_components の fields に合わせる。"),
             P("layer", "any", false, nullptr, nullptr, nullptr, nullptr, "particleEmitter のときだけ有効: 編集するレイヤーの index か名前。省略すると 1 枚目が書き換わる。一覧は dx12_list_particle_layers。"),
             P("values", "any", false, nullptr, nullptr, nullptr, nullptr, nullptr),
@@ -994,6 +994,8 @@ void FillManifestChunk10(ManifestRows& o)
             P("steps", "int", false, nullptr, nullptr, nullptr, nullptr, "4〜32。既定 16。"),
             P("maxDistance", "number", false, nullptr, nullptr, nullptr, nullptr, "この距離(m)からフェード開始。"),
             P("fadeDistance", "number", false, nullptr, nullptr, nullptr, nullptr, "フェードにかける距離(m)。"),
+            P("localLights", "bool", false, nullptr, nullptr, nullptr, nullptr, "影付きスポット/ポイント(影スロットの先頭 3 灯)にもコンタクトシャドウを掛ける。既定 false。enabled(太陽)とは独立。RT サン影が ON のときは走らない。"),
+            P("localRayLength", "number", false, nullptr, nullptr, nullptr, nullptr, "ローカル光のレイ長(m)。光源方向へ辿る長さ。既定 0.3。伸ばすほどノイズが増える。"),
         })});
     o.push_back({"set_depth_prepass", M("深度プリパスを単独で走らせる。通常は SSAO / コンタクトシャドウ / TAA / SSR / SSGI / DXR のどれかが要求したときだけ走る。",
         "set depth prepass 深度プリパス単独トグル",
@@ -1314,6 +1316,7 @@ void FillManifestChunk11(ManifestRows& o)
             P("power", "number", false, nullptr, nullptr, nullptr, nullptr, nullptr),
             P("sampleCount", "int", false, nullptr, nullptr, nullptr, nullptr, "8 か 16。"),
             P("blur", "bool", false, nullptr, nullptr, nullptr, nullptr, nullptr),
+            P("multiBounce", "bool", false, nullptr, nullptr, nullptr, nullptr, "拡散 AO に Multi-bounce（Jimenez 2016）を掛ける。明るい色の面の隙間が黒く潰れない。既定 false（既存シーンの絵は変わらない）"),
         })});
     o.push_back({"set_ssgi", M("SSGI(スクリーン空間GI) のフィールドを指定分だけ更新する(未指定は現状維持)。前フレームのシーンカラーを間接光のソースにして、IBL の拡散(irradiance)を置き換える。",
         "set ssgi SSGI設定変更",

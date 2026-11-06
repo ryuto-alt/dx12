@@ -73,7 +73,7 @@ inline unsigned ClassifyTypes(const entt::registry& reg, entt::entity e)
     if (reg.any_of<RigidBody, CharacterController, BoxCollider, SphereCollider,
                    CapsuleCollider, ConvexHullCollider, MeshCollider>(e))              m |= kTPhysics;
     if (reg.any_of<LuaScript, Brain>(e))                                               m |= kTScript;
-    if (reg.any_of<ParticleEmitter, TrailRenderer, DecalComponent>(e))                 m |= kTEffect;
+    if (reg.any_of<ParticleEmitter, TrailRenderer, DecalComponent, ReflectionProbe>(e)) m |= kTEffect;
     if (reg.any_of<AudioSource, AudioReverbZone>(e))                                   m |= kTAudio;
     if (eflags::Self<EditorFolder>(reg, e))                                            m |= kTFolder;
     return m;
@@ -157,6 +157,7 @@ inline const CompEntry* CompTable(int& count)
         DX12E_HIER_COMP("ParticleEmitter", ParticleEmitter),
         DX12E_HIER_COMP("TrailRenderer", TrailRenderer),
         DX12E_HIER_COMP("DecalComponent", DecalComponent),
+        DX12E_HIER_COMP("ReflectionProbe", ReflectionProbe),
         DX12E_HIER_COMP("Trigger", Trigger),
         DX12E_HIER_COMP("Gimmick", Gimmick),
         DX12E_HIER_COMP("PrefabLink", PrefabLink),
