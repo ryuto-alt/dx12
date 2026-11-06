@@ -55,6 +55,7 @@
 #include "renderer/LensFlarePass.h"
 #include "renderer/DofPass.h"
 #include "renderer/MotionBlurPass.h"
+#include "renderer/LocalExposurePass.h"
 #include "renderer/GpuParticleSystem.h"
 #include "renderer/SSAOPass.h"
 #include "renderer/HiZPass.h"

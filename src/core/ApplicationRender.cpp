@@ -6822,6 +6822,20 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         if (m_mcpFinalShot.pending && m_mcpFinalShot.WantLinear() && m_mcpFinalShot.reply.client != 0)
             RecordLinearCapture(nativeCmdList, curSceneSrv, rW, rH);
 
+        // ---- ローカル露出（UE5 Local Exposure 相当。露出測光の後・ブルームの前）----
+        // 露出後の対数輝度で明部 / 暗部のコントラストだけを局所的に縮めた「シーン」を作り、以降（ブルーム / uber）の入力にする。
+        // OFF・恒等（コントラスト / ディテールが全部 1）なら NeedsRun が false ＝ 1 命令も記録しない（絵は従来と不変）。
+        // 線形 HDR スクリーンショット（上）は補正前のシーンを撮る。
+        if (m_localExposurePass && LocalExposurePass::NeedsRun(ppApplied))
+        {
+            const u32 o = m_localExposurePass->Apply(*m_commandList, curSceneSrv, exposureVA,
+                                                     rW, rH, ppApplied);
+            if (o != DescriptorHeap::kInvalidIndex)
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+            // 自前のルートシグネチャ / 出力先を張るので、後段のために SRV ヒープを張り直す。
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        }
+
         // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
         if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))

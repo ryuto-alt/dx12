@@ -209,6 +209,17 @@ const std::vector<ShaderSource>& BuildRegistry()
             { "post/FullscreenTri.hlsli" },
         },
         {
+            "post/LocalExposure.hlsl",
+            {
+                { L"LocalExposureGrid_CS.cso", L"CSGrid", L"cs_6_0" },
+                { L"LocalExposureDown_CS.cso", L"CSDown", L"cs_6_0" },
+                { L"LocalExposureGridBlur_CS.cso", L"CSGridBlur", L"cs_6_0" },
+                { L"LocalExposureLumBlur_CS.cso", L"CSLumBlur", L"cs_6_0" },
+                { L"LocalExposure_PS.cso", L"LocalExposurePS", L"ps_6_0" },
+            },
+            { "post/FullscreenTri.hlsli" },
+        },
+        {
             "sprite/Sprite.hlsl",
             {
                 { L"Sprite_VS.cso", L"VSMain", L"vs_6_0" },

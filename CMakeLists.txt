@@ -347,6 +347,7 @@ if(DXC_EXECUTABLE)
     set(SHADER_LENSFLARE     "${CMAKE_SOURCE_DIR}/shaders/post/LensFlare.hlsl")
     set(SHADER_DOF           "${CMAKE_SOURCE_DIR}/shaders/post/DoF.hlsl")
     set(SHADER_MOTIONBLUR    "${CMAKE_SOURCE_DIR}/shaders/post/MotionBlur.hlsl")
+    set(SHADER_LOCALEXPOSURE "${CMAKE_SOURCE_DIR}/shaders/post/LocalExposure.hlsl")
     set(SHADER_SPRITE        "${CMAKE_SOURCE_DIR}/shaders/sprite/Sprite.hlsl")
     set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
@@ -461,6 +462,11 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/DofGather_PS.cso"
         "${SHADER_OUTPUT_DIR}/DofComposite_PS.cso"
         "${SHADER_OUTPUT_DIR}/MotionBlur_PS.cso"
+        "${SHADER_OUTPUT_DIR}/LocalExposureGrid_CS.cso"
+        "${SHADER_OUTPUT_DIR}/LocalExposureDown_CS.cso"
+        "${SHADER_OUTPUT_DIR}/LocalExposureGridBlur_CS.cso"
+        "${SHADER_OUTPUT_DIR}/LocalExposureLumBlur_CS.cso"
+        "${SHADER_OUTPUT_DIR}/LocalExposure_PS.cso"
         "${SHADER_OUTPUT_DIR}/Sprite_VS.cso"
         "${SHADER_OUTPUT_DIR}/Sprite_PS.cso"
         "${SHADER_OUTPUT_DIR}/IconBillboard_VS.cso"
@@ -985,6 +991,42 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E MotionBlurPS -Fo "${SHADER_OUTPUT_DIR}/MotionBlur_PS.cso" "${SHADER_MOTIONBLUR}"
         DEPENDS "${SHADER_MOTIONBLUR}" "${SHADER_POST_INC}"
         COMMENT "Compiling MotionBlur.hlsl -> MotionBlur_PS.cso (ps_6_0)"
+    )
+
+    # --- ローカル露出（compute 4 本 + 適用 PS。VS は PostProcess_VS.cso を流用）---
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/LocalExposureGrid_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSGrid -Fo "${SHADER_OUTPUT_DIR}/LocalExposureGrid_CS.cso" "${SHADER_LOCALEXPOSURE}"
+        DEPENDS "${SHADER_LOCALEXPOSURE}" "${SHADER_POST_INC}"
+        COMMENT "Compiling LocalExposure.hlsl -> LocalExposureGrid_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/LocalExposureDown_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSDown -Fo "${SHADER_OUTPUT_DIR}/LocalExposureDown_CS.cso" "${SHADER_LOCALEXPOSURE}"
+        DEPENDS "${SHADER_LOCALEXPOSURE}" "${SHADER_POST_INC}"
+        COMMENT "Compiling LocalExposure.hlsl -> LocalExposureDown_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/LocalExposureGridBlur_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSGridBlur -Fo "${SHADER_OUTPUT_DIR}/LocalExposureGridBlur_CS.cso" "${SHADER_LOCALEXPOSURE}"
+        DEPENDS "${SHADER_LOCALEXPOSURE}" "${SHADER_POST_INC}"
+        COMMENT "Compiling LocalExposure.hlsl -> LocalExposureGridBlur_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/LocalExposureLumBlur_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSLumBlur -Fo "${SHADER_OUTPUT_DIR}/LocalExposureLumBlur_CS.cso" "${SHADER_LOCALEXPOSURE}"
+        DEPENDS "${SHADER_LOCALEXPOSURE}" "${SHADER_POST_INC}"
+        COMMENT "Compiling LocalExposure.hlsl -> LocalExposureLumBlur_CS.cso (cs_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/LocalExposure_PS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E LocalExposurePS -Fo "${SHADER_OUTPUT_DIR}/LocalExposure_PS.cso" "${SHADER_LOCALEXPOSURE}"
+        DEPENDS "${SHADER_LOCALEXPOSURE}" "${SHADER_POST_INC}"
+        COMMENT "Compiling LocalExposure.hlsl -> LocalExposure_PS.cso (ps_6_0)"
     )
 
     add_custom_command(

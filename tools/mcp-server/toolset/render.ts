@@ -21,7 +21,7 @@ reg(
 reg(
   "dx12_set_post_process",
   "ポストプロセス設定変更",
-  "ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。カラーグレーディング(exposure/contrast/brightness/saturation/warmth/hueShift/tint) / 自動露出(autoExposureOn/ae*) / 3D LUT(lutOn/lutPath/lutAmount) / ブルーム・ビネット(bloom/bloomThreshold/bloomKnee/bloomRadius/vignette) / ゴッドレイ(godraysOn/gr*) / レンズフレア(lensflareOn/lf*) / 被写界深度(dofOn/dof*) / モーションブラー(motionBlurOn/mb*) / スタイライズ(chromatic/pixelSize/posterize/ditherLevels/scanline/sharpen/grain) / 色操作(invert/sepia/grayscale) / 歪み(lens/waveAmp・Freq・Speed/radial/glitch) / 輪郭(outline/outlineColor) / fxaaOn / debandOn。各エフェクトは <name>On(bool) で有効化しないと数値を変えても見た目に効かない。先に dx12_get_post_process で現状値を確認するとよい。★適用後にエンジンから読み返した実値を current に入れて返す(要求と食い違うものは mismatched に出る)。",
+  "ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。カラーグレーディング(exposure/contrast/brightness/saturation/warmth/hueShift/tint) / 自動露出(autoExposureOn/ae*) / ローカル露出(localExposureOn/le*) / 3D LUT(lutOn/lutPath/lutAmount) / ブルーム・ビネット(bloom/bloomThreshold/bloomKnee/bloomRadius/vignette) / ゴッドレイ(godraysOn/gr*) / レンズフレア(lensflareOn/lf*) / 被写界深度(dofOn/dof*) / モーションブラー(motionBlurOn/mb*) / スタイライズ(chromatic/pixelSize/posterize/ditherLevels/scanline/sharpen/grain) / 色操作(invert/sepia/grayscale) / 歪み(lens/waveAmp・Freq・Speed/radial/glitch) / 輪郭(outline/outlineColor) / fxaaOn / debandOn。各エフェクトは <name>On(bool) で有効化しないと数値を変えても見た目に効かない。先に dx12_get_post_process で現状値を確認するとよい。★適用後にエンジンから読み返した実値を current に入れて返す(要求と食い違うものは mismatched に出る)。",
   {
     enabled: z.boolean().optional().describe("マスタースイッチ(false で全エフェクト素通し)。"),
     // エンジンは以前から tonemapper を受けていたのに、このスキーマに無いせいで MCP から渡せなかった。
@@ -69,6 +69,13 @@ reg(
     aeEvComp: z.number().optional().describe("EV 補正(+で明るく)。既定 0。"),
     aeLogMin: z.number().optional().describe("測光レンジ下限(log2 輝度)。既定 -8。"),
     aeLogMax: z.number().optional().describe("測光レンジ上限(log2 輝度)。既定 4。"),
+    // ── ローカル露出(UE5 の Local Exposure 相当。トーンマップ前・露出後の対数輝度で明部/暗部のコントラストだけを局所的に縮める) ──
+    localExposureOn: z.boolean().optional().describe("ローカル露出。懐中電灯が近くの壁を照らして白飛びする / 暗がりが潰れる、を局所的に抑える。OFF(既定)かコントラスト・ディテールが全部 1 ならパスごと走らず絵は不変。"),
+    leHighlightContrast: z.number().optional().describe("明るい側のコントラスト(既定 1 = 何もしない)。UE のホラー設定は 0.45。小さいほど明部を中間灰(0.18)へ寄せる。"),
+    leShadowContrast: z.number().optional().describe("暗い側のコントラスト(既定 1)。小さいほど暗部が持ち上がる。UE のホラー設定は 1.0。"),
+    leDetailStrength: z.number().optional().describe("細部(周囲の明るさからの差)の強さ(既定 1)。>1 で細部を強調。"),
+    leBlurredLumBlend: z.number().optional().describe("周囲の明るさ = lerp(バイラテラルグリッド, ぼかした縮小輝度, この値)(既定 0.6)。0 でエッジ保存優先、1 でなめらか。"),
+    leMiddleGreyBias: z.number().optional().describe("中間灰の位置の補正[EV](既定 0)。境目は log2(0.18)+この値。+ にすると『暗い側』の範囲が広がる。"),
     // ── 3D LUT カラーグレーディング(トーンマップ後の LDR に適用) ──
     lutOn: z.boolean().optional().describe("3D LUT を有効化。"),
     lutPath: z.string().optional().describe("LUT 画像の assets 相対パス(ストリップ形式 N*N x N。例 1024x32)。"),

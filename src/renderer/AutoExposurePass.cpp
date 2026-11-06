@@ -229,7 +229,10 @@ void AutoExposurePass::Generate(ID3D12GraphicsCommandList* cmd,
 void AutoExposurePass::EnsureReadable(ID3D12GraphicsCommandList* cmd)
 {
     if (!m_exposureBuf) return;
-    if (m_exposureState == D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return;
+    // PS（uber）に加えて CS（ローカル露出のグリッド集計）も読むので、NON_PIXEL も含めた複合読取状態にする。
+    constexpr D3D12_RESOURCE_STATES kReadable =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (m_exposureState == kReadable) return;
 
     // 初回 Generate 前（COPY_DEST のまま）でも読取状態にしておく（中身は 0 = 露出 0 倍。
     // その場合 uber 側のマスクも立っていないので実際には参照されない）。
@@ -237,10 +240,10 @@ void AutoExposurePass::EnsureReadable(ID3D12GraphicsCommandList* cmd)
     b.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     b.Transition.pResource   = m_exposureBuf.Get();
     b.Transition.StateBefore = m_exposureState;
-    b.Transition.StateAfter  = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    b.Transition.StateAfter  = kReadable;
     b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     cmd->ResourceBarrier(1, &b);
-    m_exposureState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    m_exposureState = kReadable;
 }
 
 } // namespace dx12e

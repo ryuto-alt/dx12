@@ -758,6 +758,7 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
     if (m_lensFlarePass)    m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
     if (m_dofPass)          m_dofPass->Resize(*m_graphicsDevice, w, h);
     if (m_motionBlurPass)   m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
+    if (m_localExposurePass) m_localExposurePass->Resize(*m_graphicsDevice, w, h);
     if (m_distortRT)        m_distortRT->Resize(*m_graphicsDevice, w, h);
     if (m_taaPass)          m_taaPass->Resize(*m_graphicsDevice, w, h);
     if (m_gbufferRT)        m_gbufferRT->Resize(*m_graphicsDevice, w, h);
@@ -1074,6 +1075,13 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"GodRaysMask_PS.cso", L"GodRaysBlur_PS.cso" },
             [this]() { m_godRaysPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_localExposurePass)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"LocalExposureGrid_CS.cso", L"LocalExposureDown_CS.cso", L"LocalExposureGridBlur_CS.cso",
+              L"LocalExposureLumBlur_CS.cso", L"LocalExposure_PS.cso" },
+            [this]() { m_localExposurePass->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_autoExposure)
     {

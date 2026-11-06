@@ -1073,6 +1073,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_motionBlurPass = std::make_unique<MotionBlurPass>();
         m_motionBlurPass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
                                      m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
+        m_localExposurePass = std::make_unique<LocalExposurePass>();
+        m_localExposurePass->Initialize(*m_graphicsDevice, m_offscreenRtvHeap.get(), m_srvHeap.get(),
+                                        m_window->GetWidth(), m_window->GetHeight(), PathResolver::ShaderDirW());
 
         // SSAO（深度プリパス → 半球カーネル AO → ブラー）。AO/Blur RT は offscreenRtvHeap から確保。
         m_ssaoPass = std::make_unique<SSAOPass>();
@@ -2297,6 +2300,7 @@ void Application::Shutdown()
     m_lensFlarePass.reset();
     m_dofPass.reset();
     m_motionBlurPass.reset();
+    m_localExposurePass.reset();
     m_distortRT.reset();
     m_screenShaderRT.reset();
     m_screenShaderPass.reset();

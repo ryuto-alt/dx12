@@ -13,6 +13,7 @@ add_library(Renderer STATIC
     LensFlarePass.cpp
     DofPass.cpp
     MotionBlurPass.cpp
+    LocalExposurePass.cpp     # ローカル露出（UE5 Local Exposure 相当。バイラテラルグリッド + ぼかし輝度）
     SSAOPass.cpp
     ContactShadowPass.cpp
     TaaPass.cpp

@@ -85,6 +85,20 @@ struct PostProcessSettings
     float aeLogMin  = -8.0f;
     float aeLogMax  = 4.0f;
 
+    // ── ローカル露出（UE5 の Local Exposure 相当。トーンマップ前・露出後のリニア HDR に対して）──
+    // 露出後の対数輝度 log2(L) を「バイラテラルグリッド（1/16）」と「ぼかした縮小輝度（1/8）」の 2 つで
+    // 画素ごとの base（周囲の明るさ）に分解し、base が中間灰(0.18)より上なら leHighlightContrast、下なら
+    // leShadowContrast で (base - 中間灰) を縮め、detail = log2(L) - base に leDetailStrength を掛けて足し戻す。
+    // ＝懐中電灯が近くの壁を照らして白飛びする / 暗がりが潰れる、を局所的に抑える。
+    // localExposureOn=false（既定）ならパスごと走らない＝絵は 1 ビットも変わらない。
+    // 3 つのコントラスト/ディテールがすべて 1.0 でも走らない（恒等変換）。
+    bool  localExposureOn     = false;
+    float leHighlightContrast = 1.0f;   // 明るい側のコントラスト（1=何もしない / 0.45 で明部を縮める / 0 で明部を中間灰へ潰す）
+    float leShadowContrast    = 1.0f;   // 暗い側のコントラスト（1=何もしない / 小さいほど暗部が持ち上がる）
+    float leDetailStrength    = 1.0f;   // 細部（base からの差）の強さ。1=そのまま / >1 で細部を強調
+    float leBlurredLumBlend   = 0.6f;   // base = lerp(グリッド, ぼかし輝度, この値)。0=グリッドのみ（エッジ保存）/ 1=ぼかしのみ
+    float leMiddleGreyBias    = 0.0f;   // 中間灰の位置の補正[EV]。log2(0.18) + この値 が境目
+
     // ── 3D LUT カラーグレーディング（ストリップ形式 N*N x N、例: 1024x32）──
     // トーンマップ後の LDR に適用。lutPath は assets 基準の相対パス。
     bool        lutOn = false;
@@ -210,6 +224,8 @@ struct PostProcessSettings
     B(vignetteOn)   F(vignette) F(vignetteRadius) F(vignetteSoftness)             \
     F(vignetteRoundness) V(vignetteColor)                                         \
     B(autoExposureOn) F(aeSpeed) F(aeEvComp) F(aeLogMin) F(aeLogMax)              \
+    B(localExposureOn) F(leHighlightContrast) F(leShadowContrast)                 \
+    F(leDetailStrength) F(leBlurredLumBlend) F(leMiddleGreyBias)                  \
     B(lutOn)        S(lutPath) F(lutAmount)                                       \
     B(chromaticOn)  F(chromatic) I(chromaMode)                                    \
     B(pixelizeOn)   F(pixelSize)                                                  \
