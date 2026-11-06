@@ -66,7 +66,7 @@ constexpr int kMaxPerClusterRef   = 128;
 // 影スロットの同時上限。出所は Application.h の kMaxShadowSpot / kMaxShadowPoint。
 // あぶれたライトは「影だけ」落ちる（ライト自体は出る）＝気付きにくいので注意で出す。
 constexpr int kMaxShadowSpotRef  = 4;
-constexpr int kMaxShadowPointRef = 2;
+constexpr int kMaxShadowPointRef = 16;
 
 // ScenePickOptions::maxCandidates（editor/ScenePick.h）。ナローフェーズに掛ける候補数の歯止め。
 constexpr int kPickCandidateLimitRef = 64;

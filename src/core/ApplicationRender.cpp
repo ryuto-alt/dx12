@@ -5141,11 +5141,19 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             ShadowMapPass(std::move(si)).Execute(passCtx);
         }
 
-        // ===== ポイントライト影スロット割当（castShadows なライトをカメラに近い順で最大kMaxShadowPoint灯）=====
-        m_numPointShadowSlots = 0;
+        // ===== ポイントライト影スロット割当 + 静的キャッシュ（2026-11-06 作り直し）=====
+        // 旧: castShadows な灯をカメラに近い順で 2 灯、毎フレーム 12 面を描き直していた。
+        //     → 屋内の天井灯 50 灯のうち影が付くのは 2 灯だけで、残りは壁を抜けて隣の部屋まで照らしていた。
+        // 新: 最大 kMaxShadowPoint(16) 灯。スロットは詰めずに居座らせ、中身（灯の位置・range・範囲に入る
+        //     描画物の guid とワールド行列）が前回と同じなら描き直さない。動く物・スキンドが範囲に入って
+        //     いる灯だけ毎フレーム描く（上限 kMaxDynamicPointPerFrame 灯。超えた分は前の絵のまま）。
+        // 優先度は「カメラが灯の影響球からどれだけ外にいるか」(max(0, dist - range))。中にいる灯が最優先。
+        m_numPointShadowSlots = kMaxShadowPoint;
+        m_pointShadowRenderedFaces = 0;
+        std::array<bool, kMaxShadowPoint> pointNeedsRender{};
         {
             auto& reg = m_scene->GetRegistry();
-            struct PointShadowCandidate { entt::entity e; f32 distSq; };
+            struct PointShadowCandidate { entt::entity e; f32 prio; XMFLOAT3 pos; f32 range; };
             std::vector<PointShadowCandidate> candidates;
             XMFLOAT3 camPosF3 = viewPos;
             XMVECTOR camPos = XMLoadFloat3(&camPosF3);
@@ -5153,22 +5161,89 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             for (auto [e, pl, tf] : plShadowView.each())
             {
                 if (!pl.castShadows) continue;
+                if (eflags::IsDisabled(reg, e)) continue;
                 XMMATRIX world = (tf.parent != entt::null)
                     ? ComputeWorldMatrix(reg, e) : tf.GetWorldMatrix();
-                XMVECTOR d = XMVectorSubtract(world.r[3], camPos);
-                candidates.push_back({e, XMVectorGetX(XMVector3LengthSq(d))});
+                PointShadowCandidate c{};
+                c.e = e;
+                XMStoreFloat3(&c.pos, world.r[3]);
+                c.range = (std::max)(pl.range, 0.2f);
+                const f32 dist = XMVectorGetX(XMVector3Length(XMVectorSubtract(world.r[3], camPos)));
+                c.prio = (std::max)(0.0f, dist - c.range) * 1000.0f + dist;   // 球の外までの距離が主、実距離で同点を割る
+                candidates.push_back(c);
             }
             std::sort(candidates.begin(), candidates.end(),
-                     [](const auto& a, const auto& b) { return a.distSq < b.distSq; });
+                      [](const auto& a, const auto& b) { return a.prio < b.prio; });
+            if (candidates.size() > kMaxShadowPoint) candidates.resize(kMaxShadowPoint);
 
-            const u32 n = (std::min)(static_cast<u32>(candidates.size()), kMaxShadowPoint);
-            for (u32 i = 0; i < n; ++i)
-                m_pointShadowEntity[i] = candidates[i].e;
-            m_numPointShadowSlots = n;
+            // 居座り: 選ばれ続けている灯は前と同じスロット。外れた灯のスロットを空けて新顔へ回す。
+            std::array<int, kMaxShadowPoint> slotOfCand; slotOfCand.fill(-1);
+            std::array<bool, kMaxShadowPoint> slotTaken{};
+            for (size_t ci = 0; ci < candidates.size(); ++ci)
+                for (u32 s = 0; s < kMaxShadowPoint; ++s)
+                    if (m_pointShadowCache[s].e == candidates[ci].e && !slotTaken[s])
+                    { slotOfCand[ci] = static_cast<int>(s); slotTaken[s] = true; break; }
+            for (size_t ci = 0; ci < candidates.size(); ++ci)
+            {
+                if (slotOfCand[ci] >= 0) continue;
+                for (u32 s = 0; s < kMaxShadowPoint; ++s)
+                    if (!slotTaken[s])
+                    {
+                        slotOfCand[ci] = static_cast<int>(s); slotTaken[s] = true;
+                        m_pointShadowCache[s] = {candidates[ci].e, 0, false};
+                        break;
+                    }
+            }
+            for (u32 s = 0; s < kMaxShadowPoint; ++s)
+            {
+                if (!slotTaken[s]) m_pointShadowCache[s] = {};   // 空き（e=null で shadowIndex が付かない）
+                m_pointShadowEntity[s] = m_pointShadowCache[s].e;
+            }
+
+            // 中身のハッシュ（FNV-1a 64）。範囲に入る描画物だけを見る（半透明 = alphaClass 2 は影に入らない）。
+            auto fnv = [](u64 h, const void* p, size_t n) {
+                const u8* b = static_cast<const u8*>(p);
+                for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+                return h;
+            };
+            constexpr u32 kMaxDynamicPointPerFrame = 6;
+            u32 dynamicBudget = kMaxDynamicPointPerFrame;
+            for (size_t ci = 0; ci < candidates.size(); ++ci)   // 優先度順 = 動的の予算も近い灯から使う
+            {
+                const auto& c = candidates[ci];
+                const u32 s = static_cast<u32>(slotOfCand[ci]);
+                u64 h = 1469598103934665603ull;
+                h = fnv(h, &c.pos, sizeof(c.pos));
+                h = fnv(h, &c.range, sizeof(c.range));
+                bool dynamic = false;
+                const XMVECTOR lp = XMLoadFloat3(&c.pos);
+                for (const DrawItem& it : m_drawItems)
+                {
+                    if (it.alphaClass == 2u) continue;
+                    const f32 d = XMVectorGetX(XMVector3Length(XMVectorSubtract(XMLoadFloat3(&it.center), lp)));
+                    if (d > c.range + it.radius) continue;
+                    h = fnv(h, &it.guid, sizeof(it.guid));
+                    h = fnv(h, &it.world, sizeof(it.world));
+                    if (it.skin || it.hasNodeAnim
+                        || std::memcmp(&it.world, &it.prevWorld, sizeof(it.world)) != 0)
+                        dynamic = true;
+                }
+                auto& cache = m_pointShadowCache[s];
+                if (!cache.valid || cache.key != h)
+                    pointNeedsRender[s] = true;                    // 新顔・配置が変わった（静的でも 1 回は描く）
+                else if (dynamic && dynamicBudget > 0)
+                {
+                    pointNeedsRender[s] = true;                    // 中で何かが動いている（スキンド等）
+                    --dynamicBudget;
+                }
+                cache.key = h;
+            }
         }
 
         // ===== ポイントライト影パス（灯ごとに6面。D3Dキューブ面順: +X,-X,+Y,-Y,+Z,-Z）=====
-        if (m_scene && m_scene->GetShadowsEnabled() && m_numPointShadowSlots > 0)
+        // 描くのは pointNeedsRender のスロットだけ。描かないスロットのスライスは前フレームの中身が残る
+        // （ShadowMapPass はスライスごとにクリアするので、描かないスライスには触れない）。
+        if (m_scene && m_scene->GetShadowsEnabled())
         {
             static const XMFLOAT3 kFaceDir[6] = {
                 { 1,  0,  0}, {-1,  0,  0}, { 0,  1,  0}, { 0, -1,  0}, { 0,  0,  1}, { 0,  0, -1},
@@ -5178,10 +5253,13 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             };
 
             std::array<ShadowMapPass::Slice, kMaxShadowPoint * 6> slices{};
+            u32 sliceCount = 0;
             auto& reg = m_scene->GetRegistry();
-            for (u32 i = 0; i < m_numPointShadowSlots; ++i)
+            for (u32 i = 0; i < kMaxShadowPoint; ++i)
             {
+                if (!pointNeedsRender[i]) continue;
                 entt::entity e = m_pointShadowEntity[i];
+                if (e == entt::null || !reg.valid(e)) continue;
                 const auto& pl = reg.get<const dx12e::PointLight>(e);
                 const auto& tf = reg.get<const Transform>(e);
                 XMMATRIX world = (tf.parent != entt::null)
@@ -5193,20 +5271,26 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 for (u32 f = 0; f < 6; ++f)
                 {
                     XMMATRIX faceView = XMMatrixLookToLH(pos, XMLoadFloat3(&kFaceDir[f]), XMLoadFloat3(&kFaceUp[f]));
-                    u32 slice = i * 6 + f;
-                    slices[slice].dsv = m_pointShadowDsvHandles[slice];
-                    XMStoreFloat4x4(&slices[slice].viewProj, faceView * faceProj);
+                    const u32 slice = i * 6 + f;
+                    slices[sliceCount].dsv = m_pointShadowDsvHandles[slice];
+                    XMStoreFloat4x4(&slices[sliceCount].viewProj, faceView * faceProj);
+                    ++sliceCount;
                 }
+                m_pointShadowCache[i].valid = true;
             }
-            ShadowMapPass::Inputs pi{};
-            pi.name       = "PointShadows";
-            pi.map        = m_pointShadowMap.Get();
-            pi.size       = kPointShadowMapSize;
-            pi.rootSig    = m_rootSignature.get();
-            pi.slices     = slices.data();
-            pi.sliceCount = m_numPointShadowSlots * 6;
-            pi.drawDepth  = shadowDepth(/*skipRtCovered*/ false);
-            ShadowMapPass(std::move(pi)).Execute(passCtx);
+            if (sliceCount > 0)
+            {
+                ShadowMapPass::Inputs pi{};
+                pi.name       = "PointShadows";
+                pi.map        = m_pointShadowMap.Get();
+                pi.size       = kPointShadowMapSize;
+                pi.rootSig    = m_rootSignature.get();
+                pi.slices     = slices.data();
+                pi.sliceCount = sliceCount;
+                pi.drawDepth  = shadowDepth(/*skipRtCovered*/ false);
+                ShadowMapPass(std::move(pi)).Execute(passCtx);
+            }
+            m_pointShadowRenderedFaces = sliceCount;
         }
 
         // ===== シャドウパス（CSM: カスケード毎に kNumCascades 回描画）=====
@@ -5714,7 +5798,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         const bool pcssOn = pcss.enabled && !viewOrtho
                          && m_scene->GetShadowsEnabled();
         f32 phase = 0.0f;
-        if (pcssOn && pcss.temporalDither && taaActive)
+        // ★太陽の PCSS が OFF でも位相は回す: ローカルライトの柔らかい影（Lighting.hlsli の
+        //   SamplePoint/SpotShadowSoft）が同じ .z で円盤を回して TAA に均させる（2026-11-06）。
+        //   太陽側は .x = 0 なら .z を読まないので、ここを緩めても太陽の絵は変わらない。
+        if (pcss.temporalDither && taaActive && !viewOrtho)
             phase = std::fmod(static_cast<f32>(m_perfTotalFrames & 0xFFFFull) * 0.61803398875f, 1.0f);
         fc.pcssParams = {
             pcssOn ? (std::max)(pcss.lightTanAngle, 1e-4f) : 0.0f,
@@ -7104,7 +7191,8 @@ void Application::CollectLightsAndDecals(FrameConstants& fc)
             pld.shadowIndex = -1.0f;
             for (u32 si = 0; si < m_numPointShadowSlots; ++si)
             {
-                if (m_pointShadowEntity[si] == e) { pld.shadowIndex = static_cast<f32>(si); break; }
+                if (m_pointShadowEntity[si] == e && m_pointShadowCache[si].valid)
+                { pld.shadowIndex = static_cast<f32>(si); break; }
             }
 
             m_clusterLights.push_back(pld);

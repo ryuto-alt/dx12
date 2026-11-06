@@ -11,7 +11,9 @@
 
 #define NUM_CASCADES     4
 #define MAX_SHADOW_SPOT  4   // 影を落とせるスポットライトの同時上限（castShadows かつカメラ近い順）
-#define MAX_SHADOW_POINT 2   // 影を落とせるポイントライトの同時上限（6面/灯）
+#define MAX_SHADOW_POINT 16  // 影を落とせるポイントライトの同時上限（6面/灯）。Application.h の kMaxShadowPoint と一致
+#define SPOT_SHADOW_MAP_SIZE  1024.0  // Application.h の kSpotShadowMapSize
+#define POINT_SHADOW_MAP_SIZE 512.0   // Application.h の kPointShadowMapSize
 
 // ★MAX_POINT_LIGHTS / MAX_SPOT_LIGHTS（各 8）は撤廃した。ライトは
 //   StructuredBuffer<ClusterLight>（t13）に point/spot 統合で最大 CLUSTER_MAX_SCENE_LIGHTS 灯入り、
@@ -188,7 +190,7 @@ float SampleSpotShadow(int idx, float3 worldPos)
     return s / 9.0;
 }
 
-// ポイントライト影: major-axis 距離から比較深度を再構成して SampleCmpLevelZero 1発。
+// ポイントライト影（旧・硬い 1 タップ）。比較用に残す（呼ぶのは LOCAL_SHADOW_HARD を定義したときだけ）。
 // fromLight = worldPos - lightPos（ライトからピクセルへの方向、正規化不要）。range = ライトのrange(=far)。
 float SamplePointShadow(int idx, float3 fromLight, float range)
 {
@@ -199,6 +201,138 @@ float SamplePointShadow(int idx, float3 fromLight, float range)
     float current = (f / (f - n)) - (f * n) / (f - n) / max(dist, 0.0001) - shadowParams.y;
     return g_pointShadowMap.SampleCmpLevelZero(g_shadowSampler,
         float4(fromLight, (float)idx), current);
+}
+
+// ===== ローカルライトの柔らかい影（2026-11-06）=====
+// UE の Virtual Shadow Map + SourceRadius に相当する見た目を、影マップの PCSS で出す。
+//   1) 法線方向オフセット（1 テクセルぶん。グレージング角ほど大きく）でアクネと影の浮きを同時に抑える。
+//      深度バイアスは従来の 1/4 だけ残す（オフセットが主役）。
+//   2) ブロッカー探索 8 タップ → 平均遮蔽距離 dB。半影の角度 = r·(dR-dB)/(dB·dR)（光源の半径 r）。
+//      接地点ではくっきり、遮蔽物から離れるほどぼける（コンタクトハードニング）。
+//   3) フィルタ 12 タップ（Vogel 円盤・画素ごとに回転・TAA の位相で毎フレーム回す）。
+// r = ClusterLight の _pad（= PointLight/SpotLight::sourceRadius[m]）。0 の灯も最低 2cm として扱う
+// （0 = 完全な点光源は現実に無く、1 タップの硬い縁はギザギザにしか見えない）。
+// ★ブロッカー探索は比較なしの深度を読む。サンプラは DDGI 用の LINEAR CLAMP(s5) を借りる
+//   （ルートシグネチャの静的サンプラを増やさないため。線形補間した深度は平均を取るので害がない）。
+#define LS_BLOCKER_TAPS 8
+#define LS_FILTER_TAPS  12
+#define LS_MIN_SOURCE_RADIUS 0.02
+
+float2 LsVogel(int i, int n, float phi)
+{
+    float r = sqrt((i + 0.5) / (float)n);
+    float t = i * 2.39996323 + phi;
+    float sn, cs;
+    sincos(t, sn, cs);
+    return float2(r * cs, r * sn);
+}
+float LsIgn(float2 px)
+{
+    return frac(52.9829189 * frac(dot(px, float2(0.06711056, 0.00583715))));
+}
+// 0..1 の透視深度 → 線形距離（near=n, far=f。LH・標準 Z）
+float LsLinearDepth(float z, float n, float f)
+{
+    return (f * n) / max(f - z * (f - n), 1.0e-5);
+}
+
+float SamplePointShadowSoft(int idx, float3 worldPos, float3 N, float3 lightPos, float range,
+                            float srcR, float2 svPos)
+{
+    const float n = pointShadowNear;
+    const float f = max(range, n + 0.01);
+    const float texelAng = 2.0 / POINT_SHADOW_MAP_SIZE;          // キューブ面の中央で 1 テクセルが張る角[rad]
+
+    float3 toP   = worldPos - lightPos;
+    float  dist  = max(length(toP), 1.0e-4);
+    float  NdotL = saturate(dot(N, -toP / dist));
+    float3 p     = worldPos + N * (dist * texelAng) * (1.0 + 2.0 * (1.0 - NdotL));
+    float3 fl    = p - lightPos;
+    float  dR    = max(max(abs(fl.x), abs(fl.y)), abs(fl.z));    // キューブの深度は主軸の距離
+    float  zRecv = (f / (f - n)) - (f * n) / (f - n) / max(dR, 1.0e-4) - shadowParams.y * 0.25;
+
+    float3 dir = normalize(fl);
+    float3 up  = (abs(dir.y) < 0.99) ? float3(0.0, 1.0, 0.0) : float3(1.0, 0.0, 0.0);
+    float3 T   = normalize(cross(up, dir));
+    float3 B   = cross(dir, T);
+    const float phi = (LsIgn(svPos) + pcssParams.z) * 6.28318531;
+    const float r   = max(srcR, LS_MIN_SOURCE_RADIUS);
+
+    // ブロッカー探索（光源の見かけの大きさぶん。最低 2 テクセル、最大 24 テクセル）
+    const float searchAng = clamp(r / max(dR, 0.05), 2.0 * texelAng, 24.0 * texelAng);
+    float bSum = 0.0, bCnt = 0.0;
+    [unroll]
+    for (int i = 0; i < LS_BLOCKER_TAPS; ++i)
+    {
+        float2 o = LsVogel(i, LS_BLOCKER_TAPS, phi) * searchAng;
+        float  z = g_pointShadowMap.SampleLevel(g_ddgiSampler, float4(dir + T * o.x + B * o.y, (float)idx), 0).r;
+        if (z < zRecv) { bSum += LsLinearDepth(z, n, f); bCnt += 1.0; }
+    }
+    if (bCnt < 0.5) return 1.0;                                  // 遮蔽物なし（日向の大半はここで抜ける）
+
+    const float dB     = bSum / bCnt;
+    const float penAng = clamp(r * max(dR - dB, 0.0) / max(dB * dR, 1.0e-4), 1.0 * texelAng, 32.0 * texelAng);
+
+    float s = 0.0;
+    [unroll]
+    for (int j = 0; j < LS_FILTER_TAPS; ++j)
+    {
+        float2 o = LsVogel(j, LS_FILTER_TAPS, phi + 1.7) * penAng;
+        s += g_pointShadowMap.SampleCmpLevelZero(g_shadowSampler, float4(dir + T * o.x + B * o.y, (float)idx), zRecv);
+    }
+    return s / (float)LS_FILTER_TAPS;
+}
+
+// スポット版。半影の角度は点光源と同じ式で求め、影マップの uv へは「中心で 1rad = 1/(2·tan(半画角))」で直す。
+float SampleSpotShadowSoft(int idx, float3 worldPos, float3 N, float3 Ldir, float dist, float range,
+                           float cosOuter, float srcR, float2 svPos)
+{
+    // C++ 側の画角 = 外コーン角×2×1.02（ApplicationRender.cpp のスポット影スロット割当）
+    const float outer   = acos(clamp(cosOuter, -1.0, 1.0)) * 1.02;
+    const float tanHalf = clamp(tan(min(outer, 1.48)), 0.05, 12.0);
+    const float texelUV = 1.0 / SPOT_SHADOW_MAP_SIZE;
+    const float uvPerRad = 0.5 / tanHalf;
+
+    float NdotL = saturate(dot(N, Ldir));
+    float texelWorld = 2.0 * dist * tanHalf * texelUV;
+    float3 p = worldPos + N * texelWorld * (1.0 + 2.0 * (1.0 - NdotL));
+
+    float4 clip = mul(float4(p, 1.0), spotShadowMatrix[idx]);
+    if (clip.w <= 0.0) return 1.0;
+    float3 ndc = clip.xyz / clip.w;
+    float2 uv = ndc.xy * 0.5 + 0.5;
+    uv.y = 1.0 - uv.y;
+    if (any(uv < 0.0) || any(uv > 1.0)) return 1.0;
+
+    const float n = 0.1;
+    const float f = max(range, 0.2);
+    const float zRecv = ndc.z - shadowParams.y * 0.25;
+    const float dR = clip.w;                                     // LH 透視の w = ライト空間の奥行き
+    const float phi = (LsIgn(svPos) + pcssParams.z) * 6.28318531;
+    const float r   = max(srcR, LS_MIN_SOURCE_RADIUS);
+
+    const float searchUV = clamp(r / max(dR, 0.05) * uvPerRad, 2.0 * texelUV, 24.0 * texelUV);
+    float bSum = 0.0, bCnt = 0.0;
+    [unroll]
+    for (int i = 0; i < LS_BLOCKER_TAPS; ++i)
+    {
+        float2 o = LsVogel(i, LS_BLOCKER_TAPS, phi) * searchUV;
+        float  z = g_spotShadowMap.SampleLevel(g_ddgiSampler, float3(uv + o, (float)idx), 0).r;
+        if (z < zRecv) { bSum += LsLinearDepth(z, n, f); bCnt += 1.0; }
+    }
+    if (bCnt < 0.5) return 1.0;
+
+    const float dB    = bSum / bCnt;
+    const float penUV = clamp(r * max(dR - dB, 0.0) / max(dB * dR, 1.0e-4) * uvPerRad, 1.0 * texelUV, 32.0 * texelUV);
+
+    float s = 0.0;
+    [unroll]
+    for (int j = 0; j < LS_FILTER_TAPS; ++j)
+    {
+        float2 o = LsVogel(j, LS_FILTER_TAPS, phi + 1.7) * penUV;
+        s += g_spotShadowMap.SampleCmpLevelZero(g_shadowSampler, float3(uv + o, (float)idx), zRecv);
+    }
+    return s / (float)LS_FILTER_TAPS;
 }
 
 // 1 灯ぶんの Cook-Torrance 寄与。L は正規化済みでライトへ向かうベクトル、
@@ -307,12 +441,14 @@ float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
             if (cone <= 0.0) continue;
             radiance *= cone;
             if (L.shadowIndex >= 0.0)
-                radiance *= SampleSpotShadow((int)L.shadowIndex, worldPos);
+                radiance *= SampleSpotShadowSoft((int)L.shadowIndex, worldPos, N, Ldir, dist, L.range,
+                                                 L.cosOuter, L._pad, svPosXY);
         }
         else                // point
         {
             if (L.shadowIndex >= 0.0)
-                radiance *= SamplePointShadow((int)L.shadowIndex, -d, L.range);
+                radiance *= SamplePointShadowSoft((int)L.shadowIndex, worldPos, N, L.position, L.range,
+                                                  L._pad, svPosXY);
         }
 
         Lo += ShadePunctual(N, V, Ldir, radiance, albedo, F0, metallic, roughness);

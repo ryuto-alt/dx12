@@ -128,12 +128,12 @@ inline PostProcessSettings ApplyLightingPresetToPost(const LightingPreset& p,
 //   ここを超えた分は【無言で消える】。これは CPU 側からは検出できないので、
 //   エディタのクラスタデバッグ表示（ライト複雑度ヒートマップ）で目視するしかない。
 //
-//   影マップの本数（spot 4 / point 2）は据え置き＝クラスタード化しても
+//   影マップの本数（spot 4 / point 16）は別枠＝クラスタード化しても
 //   シャドウパスの描画回数は 1 回も減らないため（別問題として切り離してある）。
 inline constexpr int kLightBudgetTotal      = 1024;  // point + spot の合計（kMaxSceneLights）
 inline constexpr int kLightBudgetPerCluster = 128;   // 1 クラスタ内で評価できる灯数（kMaxLightsPerCluster）
 inline constexpr int kLightBudgetShadowSpot = 4;     // MAX_SHADOW_SPOT（Application::kMaxShadowSpot）
-inline constexpr int kLightBudgetShadowPoint = 2;    // Application::kMaxShadowPoint（6面/灯）
+inline constexpr int kLightBudgetShadowPoint = 16;   // Application::kMaxShadowPoint（6面/灯）
 // 後方互換のエイリアス（呼び出し側を段階的に移行するため。どちらも合計上限を指す）。
 inline constexpr int kLightBudgetPoint = kLightBudgetTotal;
 inline constexpr int kLightBudgetSpot  = kLightBudgetTotal;

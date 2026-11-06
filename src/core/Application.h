@@ -1306,7 +1306,10 @@ private:
     // castShadows=true のライトのうちカメラに近い順で固定スロットへ毎フレーム割当（多数灯があっても
     // 上限を超えた分は影なしにフォールバック＝CSMと同じ「固定配列」方針）。
     static constexpr u32 kMaxShadowSpot      = 4;   // スポット影の同時上限
-    static constexpr u32 kMaxShadowPoint     = 2;   // ポイント影の同時上限（6面/灯）
+    // ★2→16（2026-11-06）。屋内の天井灯がどれも影を落とさず、壁を抜けて光が漏れていた（Miku Oblivion）。
+    //   静的なキューブはキャッシュする（m_pointShadowCache）ので、16 灯でも毎フレーム描き直すのは
+    //   「動く物・スキンドが範囲に入っている灯」だけ。VRAM は 512²×6×16×4B = 96MB。
+    static constexpr u32 kMaxShadowPoint     = 16;  // ポイント影の同時上限（6面/灯）
     static constexpr u32 kSpotShadowMapSize  = 1024;
     static constexpr u32 kPointShadowMapSize = 512;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_spotShadowMap;   // Texture2DArray(ArraySize=kMaxShadowSpot)
@@ -1322,8 +1325,16 @@ private:
     u32                                m_numSpotShadowSlots = 0;
     // ポイント影: シェーダ側は距離ベースで比較深度を再構成するので面ごとのVPはCBへ渡さない
     // （描画パス内のローカル変数で完結）。永続する必要があるのは「どの灯がどのキューブスロットか」のみ。
+    // ★スロットは「詰めない」。選ばれ続けている灯は同じスロットに居座る＝キャッシュが生き残る。
+    //   空きスロットは entt::null。m_numPointShadowSlots は「走査する上限」（= kMaxShadowPoint 固定）。
     entt::entity                       m_pointShadowEntity[kMaxShadowPoint]{};
     u32                                m_numPointShadowSlots = 0;
+    // 静的キャッシュ: スロットの中身が前回描いたときと同じなら描き直さない。
+    //   key = 灯の位置・range と、範囲に入る描画物の (guid, ワールド行列) のハッシュ。
+    //   dynamic = 範囲にスキンド / ノードアニメ / 前フレームから動いた物がある（毎フレーム描く）。
+    struct PointShadowCacheSlot { entt::entity e = entt::null; u64 key = 0; bool valid = false; };
+    PointShadowCacheSlot               m_pointShadowCache[kMaxShadowPoint]{};
+    u32                                m_pointShadowRenderedFaces = 0;   // 統計: 直近フレームで描いた面数（perf_stats 用）
     // エディタレイアウト
     static constexpr f32 kLeftPanelWidth  = 280.0f;
     static constexpr f32 kToolbarHeight   = 68.0f;  // タイトルバー兼メニューバー(~35px) + アイコン列の2段

@@ -140,7 +140,7 @@ void Application::RegisterMcpLightingMethods()
                 {"warnings", warnings},
                 {"note", "Transform を持つライトだけを数える(GPU へ送られる条件と同じ)。"
                          "灯数はクラスタードライティングで合計 1024 灯まで(点/スポットの個別上限は無い)。"
-                         "ただし影が落ちるのは spot 4 / point 2 のまま。"
+                         "影が落ちるのは spot 4 / point 16（静的な影はキャッシュ、動く物が入った灯だけ毎フレーム描き直す）。"
                          "太陽の調整は dx12_set_sun、まとめて雰囲気を変えるなら dx12_apply_lighting_preset。"}};
         });
 
