@@ -33,7 +33,9 @@ def phase(name, t):
 # ---------------------------------------------------------------- 引数
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    o = dict(res="auto", preview=None, front="+x", samples_mask=96, density=1024.0, stats=False)
+    o = dict(res="auto", preview=None, front="+x", samples_mask=96, density=512.0, max_res=2048, stats=False)
+    # ★既定は 512 px/m・上限 2048(AAA の一人称の小物の相場)。1024 px/m・上限 4096 で 125 個焼いたら GPU メモリが
+    #   約 6GB になり 8GB の GPU で落ちた(2026-11-06)。手に取る主役だけ --density 1024 --max-res 4096 を渡す
     i = 0
     while i < len(argv):
         k = argv[i]
@@ -41,7 +43,7 @@ def parse_args():
             o["stats"] = True
             i += 1
             continue
-        if k in ("--in", "--recipe", "--out", "--res", "--preview", "--front", "--samples-mask", "--density"):
+        if k in ("--in", "--recipe", "--out", "--res", "--preview", "--front", "--samples-mask", "--density", "--max-res"):
             key = k[2:].replace("-", "_")
             o[key] = argv[i + 1]
             i += 2
@@ -49,6 +51,7 @@ def parse_args():
             i += 1
     o["samples_mask"] = int(o["samples_mask"])
     o["density"] = float(o["density"])
+    o["max_res"] = int(o["max_res"])
     for k in ("in", "recipe", "out"):
         if k not in o:
             raise SystemExit("missing --" + k)
@@ -661,8 +664,8 @@ def main():
     # 解像度
     if A["res"] == "auto":
         need = area_b * A["density"] ** 2 / 0.62
-        r = 1024
-        while r * r < need and r < 4096:
+        r = 512
+        while r * r < need and r < A["max_res"]:
             r *= 2
         res = r
     else:

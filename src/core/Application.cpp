@@ -1525,6 +1525,9 @@ void Application::Run()
                     fg.TouchInput();
             }
             if (m_uiTestsRequested) fg.TouchInput();   // --ui-tests 系（m_uiTests は通常起動でも常に在るので使えない）
+            // シーンの読み込み中も活動に数える。初回のモデル解析と BC 圧縮で 10 分を超える重いシーンがあり、
+            // その間は MCP の呼び出しも ping(活動に数えない)しか通らないので、読み込みの途中で自分から終了していた(2026-11-06)
+            if (IsSceneLoadJobActive()) fg.TouchInput();
             static bool fleetQuitting = false;
             const fleet::ExitReason why = fleetQuitting ? fleet::ExitReason::None : fg.PollExit();
             if (why != fleet::ExitReason::None)
