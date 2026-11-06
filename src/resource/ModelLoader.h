@@ -69,6 +69,13 @@ struct ModelImportOptions
     // 結合セルの一辺（モデル空間の単位）。0 以下 / 省略は自動 = モデル AABB の XZ 最大辺 / 8。
     float mergeCellSize = 0.0f;
 
+    // 右手系の座標（Blender / FBX / glTF）を左手系のエンジンへ正しく変換する（aiProcess_MakeLeftHanded + FlipWindingOrder）。
+    // ★既定 false = 従来どおり「右手系の座標をそのまま左手系として読む」＝モデルが鏡写しになる（文字・時計回りが逆、
+    //   Blender の +Y が奥(-Z)へ行く）。既存シーンはこの向きで置かれているので全体の既定は変えず、モデルごとに選ぶ。
+    //   true のとき Blender の (X, Y, Z) は (X, Z, Y) に来る（UE と同じく見た目が保たれる）。2026-11-06、UE 版の FBX の
+    //   ラベルが左右反転して見えた件で追加。
+    bool leftHanded = false;
+
     // JSON 文字列から読む。壊れている / キーが無い / 型違いは既定値（全部 false / 0）。
     static ModelImportOptions Parse(const std::string& jsonText);
     // モデルの隣の import.json を vfs 経由で読む（配布ゲームの pak でも読める）。無ければ既定値。

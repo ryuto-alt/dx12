@@ -91,6 +91,12 @@ export function materializeBin(src: SourceBuild, dstBin: string): { exePath: str
       }
       if (src.shadersDir) fs.cpSync(src.shadersDir, path.join(dstBin, "shaders"), { recursive: true, force: true });
       if (src.assetsDir) fs.cpSync(src.assetsDir, path.join(dstBin, "assets"), { recursive: true, force: true });
+      // マテリアルグラフは実行時に ForwardGraph.hlsl を include してコンパイルする。exe のコピーからはリポジトリの shaders/ が
+      // 見えないので、exe 隣の shaders-src/（配布の形）として写す（2026-11-06。無いとグラフ材質が全部コンパイル失敗した）。
+      // ★ジャンクションにはしない: dstBin は上の rmSync で再帰削除されるので、リンク先の本体が消える。
+      const shaderSrc = [path.join(src.dir, "shaders-src"), path.join(src.dir, "..", "..", "shaders")]
+        .find((c) => statOrNull(c)?.isDirectory());
+      if (shaderSrc) fs.cpSync(shaderSrc, path.join(dstBin, "shaders-src"), { recursive: true, force: true });
       const after = fs.statSync(src.exe);
       const copied = fs.statSync(path.join(dstBin, ENGINE_EXE));
       if (after.mtimeMs !== before.mtimeMs || after.size !== before.size || copied.size !== after.size) throw new BuildInProgress("コピー中に元の exe が変わった(ビルド中)");

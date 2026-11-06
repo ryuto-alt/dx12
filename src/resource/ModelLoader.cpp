@@ -621,6 +621,8 @@ ModelImportOptions ModelImportOptions::Parse(const std::string& jsonText)
         o.specularIsORM = it->get<bool>();
     if (auto it = j.find("mergeStatic"); it != j.end() && it->is_boolean())
         o.mergeStatic = it->get<bool>();
+    if (auto it = j.find("leftHanded"); it != j.end() && it->is_boolean())
+        o.leftHanded = it->get<bool>();
     if (auto it = j.find("mergeCellSize"); it != j.end() && it->is_number())
     {
         const double v = it->get<double>();
@@ -681,7 +683,10 @@ ModelProbeInfo ModelLoader::Probe(const std::filesystem::path& filePath)
     //   2026-07-30 に「揃っていない」と判断して Probe 側でもフラグを外す変更を入れたところ、
     //   `ModelScaleTests` の cube1m_skinned.fbx が 1m → **100m** になって落ちた。
     //   触る前に必ず `ctest -R ModelScaleTests` を通すこと（tests/data に FBX 一式がある）。
-    const aiScene* scene = importer.ReadFile(filePath.string(), kUnitScaleFlag);
+    // leftHanded は LoadFromFile と揃える（揃えないと asset_info の AABB が実際の描画と鏡写しで食い違う）
+    const unsigned int probeFlags = kUnitScaleFlag
+        | (ModelImportOptions::LoadFor(filePath).leftHanded ? (aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder) : 0u);
+    const aiScene* scene = importer.ReadFile(filePath.string(), probeFlags);
     if (!scene || !scene->mRootNode)
     {
         info.error = importer.GetErrorString();
@@ -777,6 +782,10 @@ ModelData ModelLoader::LoadFromFile(
         aiProcess_PopulateArmatureData |
         aiProcess_FlipUVs |
         kUnitScaleFlag;
+    // 取り込みオプション（<モデル名>.import.json）。無ければ全部既定＝従来どおり。
+    // ★フラグを決める前に読む（leftHanded は Assimp の後処理。解析キャッシュの鍵にもフラグが入るので、切り替えれば作り直される）。
+    const ModelImportOptions importOpts = ModelImportOptions::LoadFor(filePath);
+    if (importOpts.leftHanded) flags |= aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder;
 
     // ★解析済みのシーン（assets/.modelcache/）があればそれを読む。FBX / glTF の解析と後処理を丸ごと飛ばせる
     //   （Bistro の FBX 120MB で 3.1 秒）。無ければ普通に読み、関数を抜けるときに裏で書き出す（下の sceneSaver）。
@@ -839,8 +848,6 @@ ModelData ModelLoader::LoadFromFile(
     }
 
     const std::filesystem::path parentDir = filePath.parent_path();
-    // 取り込みオプション（<モデル名>.import.json）。無ければ全部既定＝従来どおり。
-    const ModelImportOptions importOpts = ModelImportOptions::LoadFor(filePath);
 
     // Build skeleton first (needed for bone weight assignment)
     auto skeleton = BuildSkeleton(scene);
