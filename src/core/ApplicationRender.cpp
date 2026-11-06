@@ -5589,6 +5589,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             si.zFar     = viewFar;
             si.width    = rW;
             si.height   = rH;
+            si.frameSeq = taaActive ? static_cast<u32>(m_perfTotalFrames & 0xFFFFull) : 0u;
             SsaoGeneratePass ssaoPass(si);
             ssaoPass.Execute(passCtx);
             aoSrv = ssaoPass.ResultSrv();

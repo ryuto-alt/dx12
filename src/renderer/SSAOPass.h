@@ -17,7 +17,7 @@ class RenderTarget;
 class ConstantBuffer;
 
 // 深度プリパスで完成したカメラ深度(R32_FLOAT SRV)を入力に、
-// 半球カーネル SSAO → 4x4 ボックスブラー を実行して AO テクスチャ(R8_UNORM)を生成する。
+// GTAO → 深度を見る 5x5 バイラテラルブラー を実行して AO テクスチャ(R8_UNORM)を生成する。
 // 専用 RootSignature / PSO / RT(AO, Blur) / パラメータ CB を自己完結で保持する。
 class SSAOPass
 {
@@ -36,12 +36,14 @@ public:
     // 戻り時、AO/Blur RT は PIXEL_SHADER_RESOURCE 状態。RT/ビューポートは呼び出し側で再設定すること。
     // vpLeft/vpTop/vpW/vpH: ジオメトリが深度バッファへ描かれているサブ矩形（px）。
     //   フル RT(m_width×m_height) の UV↔NDC をこの矩形基準で計算してエディタ視点でも歪まないようにする。
+    // frameSeq: ノイズ位相を回すフレーム連番（TAA 有効時のみ進める。無効時は 0 を渡す）。
     // 未準備（PSO/RT 未生成）時は DescriptorHeap::kInvalidIndex を返す（呼び出し側で白ダミーへフォールバック）。
     u32  Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
                   D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
                   const SSAOSettings& s, const DirectX::XMMATRIX& proj,
                   float nearZ, float farZ,
-                  u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex);
+                  u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex,
+                  u32 frameSeq = 0);
 
     bool IsReady() const { return m_psoAO != nullptr; }
 
@@ -53,7 +55,6 @@ private:
     std::unique_ptr<RenderTarget>   m_blurRT;   // R8_UNORM（ブラー済み）
     std::unique_ptr<ConstantBuffer> m_paramCB;  // SSAOParams（フレーム多重化）
     std::unique_ptr<ConstantBuffer> m_blurCB;   // BlurCB（フレーム多重化）
-    DirectX::XMFLOAT4 m_kernel[16]{};           // 半球カーネル（初期化時に1度生成）
     // AO/Blur RT は native cmd で遷移するため RenderTarget の内部状態を使わず自前で追跡する。
     D3D12_RESOURCE_STATES m_aoState   = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES m_blurState = D3D12_RESOURCE_STATE_RENDER_TARGET;

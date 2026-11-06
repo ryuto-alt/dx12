@@ -139,6 +139,7 @@ public:
         DirectX::XMFLOAT4X4         proj{};              // ジッタなし
         float zNear = 0.1f, zFar = 1000.0f;
         u32   width = 0, height = 0;
+        u32   frameSeq = 0;   // ノイズ位相用（TAA 有効時のみ連番、無効時 0）
     };
     explicit SsaoGeneratePass(const Inputs& in) : m_in(in) {}
     const char* Name() const override { return "Ssao"; }

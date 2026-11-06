@@ -180,7 +180,7 @@ void SsaoGeneratePass::Execute(const RenderPassContext& ctx)
     const XMMATRIX proj = XMLoadFloat4x4(&m_in.proj);
     m_result = m_in.ssao->Generate(ctx.native, ctx.srvHeap, m_in.depthSrv, *m_in.settings,
                                    proj, m_in.zNear, m_in.zFar,
-                                   0u, 0u, m_in.width, m_in.height, ctx.frameIndex);
+                                   0u, 0u, m_in.width, m_in.height, ctx.frameIndex, m_in.frameSeq);
 }
 
 // ---- ContactShadowGeneratePass ----------------------------------------------------------

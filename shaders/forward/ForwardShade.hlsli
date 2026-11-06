@@ -297,7 +297,10 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         //   画面空間で積分した結果なので遮蔽は織り込み済み。そこへ AO を重ねると
         //   窪みが二重に暗くなる。
         float aoDiff = lerp(ao, 1.0, ssgiConf);
-        float aoSpec = lerp(ao, 1.0, ssrConf);
+        // 鏡面遮蔽（Lagarde 2014）: AO と NoV・粗さから鏡面の可視率を近似。ao=1 なら so=1。
+        float  soExp = exp2(-16.0 * roughness - 1.0);
+        float  so    = saturate(pow(max(NoV + ao, 1e-4), soExp) - 1.0 + ao);
+        float aoSpec = lerp(so, 1.0, ssrConf);
         ambient = (kD * diffuseIBL * aoDiff + specularIBL * aoSpec) * (giNew ? 1.0 : iblIntensity);
         dbgDiff = kD * diffuseIBL * aoDiff;
         dbgSpec = specularIBL * aoSpec;

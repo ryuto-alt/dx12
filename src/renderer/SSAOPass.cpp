@@ -8,8 +8,8 @@
 #include "core/Assert.h"
 #include "core/Logger.h"
 
+#include <algorithm>
 #include <cstring>
-#include <random>
 
 namespace dx12e
 {
@@ -27,22 +27,23 @@ struct SSAOParamsCB
     float      power;       // 4B
     float      nearZ;       // 4B
     float      farZ;        // 4B  → 16B
-    int        sampleCount; // 4B
-    float      _pad0;       // 4B
-    XMFLOAT2   _pad1;       // 8B  → 16B
+    int        stepCount;   // 4B  片側あたりのステップ数
+    u32        frameSeq;    // 4B  ノイズ位相用フレーム連番
+    XMFLOAT2   _pad;        // 8B  → 16B
     XMFLOAT4   viewport;    // 16B  xy=原点(px), zw=サイズ(px)
-    XMFLOAT4   kernel[16];  // 256B
 };
 static_assert(sizeof(SSAOParamsCB) % 16 == 0, "SSAOParamsCB must be 16B aligned");
-static_assert(sizeof(SSAOParamsCB) == 448, "SSAOParamsCB layout mismatch with SSAO.hlsl");
+static_assert(sizeof(SSAOParamsCB) == 192, "SSAOParamsCB layout mismatch with SSAO.hlsl");
 
 // HLSL の cbuffer BlurCB(b0) と一致。
 struct SSAOBlurCB
 {
-    XMFLOAT2 invRTSize;
-    XMFLOAT2 _pad;
+    XMFLOAT4X4 invProj;     // 64B  転置済み
+    XMFLOAT2   invRTSize;   // 8B
+    XMFLOAT2   _pad;        // 8B
 };
 static_assert(sizeof(SSAOBlurCB) % 16 == 0, "SSAOBlurCB must be 16B aligned");
+static_assert(sizeof(SSAOBlurCB) == 80, "SSAOBlurCB layout mismatch with SSAOBlur.hlsl");
 
 static constexpr DXGI_FORMAT kAOFormat = DXGI_FORMAT_R8_UNORM;
 
@@ -53,33 +54,16 @@ void SSAOPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Descr
     m_width  = (width  > 0) ? width  : 1;
     m_height = (height > 0) ? height : 1;
 
-    // --- 半球カーネル生成（[0,1) z 上向き、距離を内側へ寄せる）---
-    {
-        std::mt19937 rng(1337u);
-        std::uniform_real_distribution<float> dist01(0.0f, 1.0f);
-        std::uniform_real_distribution<float> distNP(-1.0f, 1.0f);
-        for (int i = 0; i < 16; ++i)
-        {
-            XMVECTOR v = XMVectorSet(distNP(rng), distNP(rng), dist01(rng), 0.0f);
-            v = XMVector3Normalize(v);
-            v = XMVectorScale(v, dist01(rng));
-            // 近距離側に多くサンプルを寄せる（accelerated interpolation）
-            float scale = static_cast<float>(i) / 16.0f;
-            scale = 0.1f + 0.9f * scale * scale;
-            v = XMVectorScale(v, scale);
-            XMStoreFloat4(&m_kernel[i], v);
-            m_kernel[i].w = 0.0f;
-        }
-    }
-
-    // --- RootSignature: t0(SRV table) + b0(CBV) + s0(point clamp) ---
+    // --- RootSignature: t0(SRV table) + b0(CBV) + t1(SRV table: ブラーの深度) + s0(point clamp) ---
     {
         D3D12_DESCRIPTOR_RANGE srvRange{};
         srvRange.RangeType          = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         srvRange.NumDescriptors     = 1;
         srvRange.BaseShaderRegister = 0;  // t0
+        D3D12_DESCRIPTOR_RANGE srvRange1 = srvRange;
+        srvRange1.BaseShaderRegister = 1; // t1
 
-        D3D12_ROOT_PARAMETER params[2]{};
+        D3D12_ROOT_PARAMETER params[3]{};
         params[0].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[0].DescriptorTable.NumDescriptorRanges = 1;
         params[0].DescriptorTable.pDescriptorRanges   = &srvRange;
@@ -88,6 +72,11 @@ void SSAOPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Descr
         params[1].ParameterType             = D3D12_ROOT_PARAMETER_TYPE_CBV;
         params[1].Descriptor.ShaderRegister = 0;  // b0
         params[1].ShaderVisibility          = D3D12_SHADER_VISIBILITY_PIXEL;
+
+        params[2].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges   = &srvRange1;
+        params[2].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_STATIC_SAMPLER_DESC samp{};
         samp.Filter           = D3D12_FILTER_MIN_MAG_MIP_POINT;
@@ -100,7 +89,7 @@ void SSAOPass::Initialize(GraphicsDevice& device, DescriptorHeap* rtvHeap, Descr
         samp.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC desc{};
-        desc.NumParameters     = 2;
+        desc.NumParameters     = 3;
         desc.pParameters       = params;
         desc.NumStaticSamplers = 1;
         desc.pStaticSamplers   = &samp;
@@ -188,7 +177,7 @@ u32 SSAOPass::Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
                        D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu,
                        const SSAOSettings& s, const DirectX::XMMATRIX& proj,
                        float nearZ, float farZ,
-                       u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex)
+                       u32 vpLeft, u32 vpTop, u32 vpW, u32 vpH, u32 frameIndex, u32 frameSeq)
 {
     // 未準備（PSO/RT 未生成）時は無効 index を返し、呼び出し側で白ダミー(AO=1.0)へフォールバックさせる。
     // SRV index 0 は誤テクスチャを AO として読みうるため返してはならない。
@@ -209,14 +198,16 @@ u32 SSAOPass::Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
     cb.power       = s.power;
     cb.nearZ       = nearZ;
     cb.farZ        = farZ;
-    cb.sampleCount = (s.sampleCount >= 16) ? 16 : ((s.sampleCount <= 8) ? 8 : s.sampleCount);
+    // sampleCount は「ステップ数の目安」: 8 -> 片側 4 ステップ、16 -> 8 ステップ。
+    cb.stepCount   = std::clamp(s.sampleCount / 2, 2, 8);
+    cb.frameSeq    = frameSeq;
     // ジオメトリが描かれているサブ矩形（UV↔NDC をこの矩形基準で計算）。
     cb.viewport = {static_cast<float>(vpLeft), static_cast<float>(vpTop),
                    static_cast<float>(vpW), static_cast<float>(vpH)};
-    for (int i = 0; i < 16; ++i) cb.kernel[i] = m_kernel[i];
     m_paramCB->Update(&cb, sizeof(cb), frameIndex);
 
     SSAOBlurCB bcb{};
+    XMStoreFloat4x4(&bcb.invProj, XMMatrixTranspose(XMMatrixInverse(nullptr, proj)));
     bcb.invRTSize = {invW, invH};
     m_blurCB->Update(&bcb, sizeof(bcb), frameIndex);
 
@@ -253,6 +244,7 @@ u32 SSAOPass::Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
         cmd->SetPipelineState(m_psoAO.Get());
         cmd->SetGraphicsRootDescriptorTable(0, depthSrvGpu);
         cmd->SetGraphicsRootConstantBufferView(1, m_paramCB->GetGpuAddress(frameIndex));
+        cmd->SetGraphicsRootDescriptorTable(2, depthSrvGpu);
         cmd->DrawInstanced(3, 1, 0, 0);
 
         transition(m_aoRT->GetResource(), m_aoState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -270,6 +262,7 @@ u32 SSAOPass::Generate(ID3D12GraphicsCommandList* cmd, DescriptorHeap* srvHeap,
         cmd->SetPipelineState(m_psoBlur.Get());
         cmd->SetGraphicsRootDescriptorTable(0, srvHeap->GetGpuHandle(m_aoRT->GetSrvIndex()));
         cmd->SetGraphicsRootConstantBufferView(1, m_blurCB->GetGpuAddress(frameIndex));
+        cmd->SetGraphicsRootDescriptorTable(2, depthSrvGpu);
         cmd->DrawInstanced(3, 1, 0, 0);
 
         transition(m_blurRT->GetResource(), m_blurState, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
