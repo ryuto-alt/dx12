@@ -158,6 +158,45 @@ PSInput VSMain(VSInput input)
     return output;
 }
 
+// ---- 自動インスタンシング版の VS（VSMainInstanced）--------------------------------------------------
+//   GraphMaterialSystem が入力レイアウト違い（slot1 = MeshInstanceData: transpose(world) の先頭 3 行 + 色）の PSO をもう 1 本作る。PS は共通。
+//   b0 は 40 DWORD のまま（先頭 16 = transpose(viewProj)。ForwardInstanced と同じ流儀 / 後ろの自由枠 8 float は PS の ObjectParameter 用に送る）。
+//   ★色ティントは b2.packedTint（バッチ内で一様 = batchKey に混ぜてある）で掛かるので、ここでは per-instance 色を頂点色へ掛けない
+//     （1 体ずつの経路と頂点色 mi.vertexColor を一致させる）。
+struct VSInputInst
+{
+    float3 position    : POSITION;
+    float3 normal      : NORMAL;
+    float4 color       : COLOR;
+    float2 texCoord    : TEXCOORD0;
+    float4 tangent     : TANGENT;
+    uint4  boneIndices : BLENDINDICES;
+    float4 boneWeights : BLENDWEIGHT;
+    float4 ir0         : TEXCOORD8;
+    float4 ir1         : TEXCOORD9;
+    float4 ir2         : TEXCOORD10;
+    float4 icolor      : TEXCOORD11;
+};
+
+PSInput VSMainInstanced(VSInputInst input)
+{
+    PSInput output;
+    float4x4 modelT = float4x4(input.ir0, input.ir1, input.ir2, float4(0, 0, 0, 1));
+
+    float4 worldPos4    = mul(modelT, float4(input.position, 1.0f));
+    output.positionSV   = mul(worldPos4, mvp);   // mvp = transpose(viewProj)（インスタンス経路の b0 先頭）
+    output.worldPos     = worldPos4.xyz;
+    output.worldNormal  = normalize(mul((float3x3)modelT, input.normal));
+    output.worldTangent = NormalizeTangentOrZero(mul((float3x3)modelT, input.tangent.xyz));
+    output.tangentW     = input.tangent.w;
+    output.color        = input.color;
+    output.texCoord     = input.texCoord;
+
+    float4 viewPos4     = mul(worldPos4, view);
+    output.viewDepth    = viewPos4.z;
+    return output;
+}
+
 // packedEmissive（エンティティの発光上書き。テクスチャ無し）。Forward.hlsl の UnpackEmissive と同じ復元。
 float3 UnoUnpackEntityEmissive(uint packed)
 {

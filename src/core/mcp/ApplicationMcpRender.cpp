@@ -536,6 +536,8 @@ void Application::RegisterMcpRenderMethods()
                          // TLAS 再利用（静止シーンでは組み直さない）。何フレーム連続で
                          // 前フレームの TLAS を使い回しているか。0 = 今フレームは組み直した。
                          {"tlasReuseFrames", s.tlasReuseFrames},
+                         // 静的部分だけ CPU キャッシュから写して組み直した連続フレーム数（スキンドがいるシーン用）
+                         {"tlasStaticReuseFrames", s.tlasStaticReuseFrames},
                          // スキンド（計画09 Step 4 / compute スキニング）
                          {"skinnedInstances", s.skinnedInstances},
                          {"skinnedTriangles", s.skinnedTriangles},

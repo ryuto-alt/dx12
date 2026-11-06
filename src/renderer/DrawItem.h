@@ -77,6 +77,9 @@ struct DrawItem
     //   「1 つの e = 1 つの姿勢」を前提にする処理（PrevWorldMatrix・entity 単位のキー）は instanceIndex も見ること。
     // 並べ替えの最後の決め手は guid → instanceIndex → entity（決定論）。
     u32                 instanceIndex = 0xFFFFFFFFu;
+    // TLAS の動的側（スキンド / ノードアニメ / このフレームでワールド行列が変わった物）。BuildDrawList が立てる。
+    // 静的キャッシュ（RaytracingScene）には入れず、毎フレーム流し込む。
+    bool                rtDynamic = false;
 };
 
 // 自動インスタンシングで 1 ドローに畳まれる連続区間（ソート済み描画リスト上の [first, first+count)）。

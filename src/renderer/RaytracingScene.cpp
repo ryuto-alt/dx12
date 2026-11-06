@@ -56,6 +56,9 @@ void RaytracingScene::Shutdown()
     m_pending.shrink_to_fit();
     m_tlasValid   = false;
     m_cacheable   = false;
+    m_staticValid = false;
+    m_staticDescs.clear(); m_staticDescs.shrink_to_fit();
+    m_staticGeos.clear();  m_staticGeos.shrink_to_fit();
     m_initialized = false;
     m_stats = Stats{};
 }
@@ -67,6 +70,7 @@ void RaytracingScene::RemoveBlas(const Mesh* mesh)
     if (erased > 0)
     {
         m_tlasValid = false;   // 次フレームで TLAS を組み直す
+        m_staticValid = false; // 静的キャッシュも消した BLAS のアドレスを持つ
         m_cacheable = false;   // 消した BLAS を指したままの TLAS を使い回してはいけない
     }
 }
@@ -75,6 +79,7 @@ void RaytracingScene::Invalidate()
 {
     m_blas.clear();
     m_skinnedBlas.clear();   // エンティティ id が再利用されるので必ず捨てる（N30 と同じ理由）
+    m_staticValid = false;   // 静的キャッシュの BLAS アドレスも死んだ
     m_tlasValid = false;
     m_cacheable = false;     // 全 BLAS を捨てたので前フレームの TLAS は壊れたアドレスを指している
     m_stats.blasBytes        = 0;
@@ -109,6 +114,12 @@ void RaytracingScene::BeginFrame(const XMFLOAT3& cameraPos, u32 skippedSkinned, 
     m_blasDeferred             = 0;
 }
 
+bool RaytracingScene::CanReuseStatic(u64 staticHash) const
+{
+    return m_initialized && staticHash != 0 && m_staticValid && staticHash == m_staticHash
+        && !m_staticDescs.empty() && m_staticDescs.size() == m_staticGeos.size();
+}
+
 // 前フレームの TLAS をそのまま使う。ヘッダのコメント参照。
 bool RaytracingScene::ReuseLastFrame()
 {
@@ -126,11 +137,12 @@ bool RaytracingScene::ReuseLastFrame()
 }
 
 void RaytracingScene::AddInstance(const Mesh* mesh, const XMMATRIX& world, const XMFLOAT3& center,
-                                  const GeometryInfo& geo)
+                                  const GeometryInfo& geo, bool dynamic)
 {
     if (!mesh || !m_initialized) return;
     PendingInstance p;
     p.mesh = mesh;
+    p.dynamic = dynamic;
     p.geo  = geo;
     p.nonOpaque = (geo.flags & kGeomFlagAlphaTest) != 0u;
     XMStoreFloat4x4(&p.world, world);
@@ -404,21 +416,44 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
 
     const u32 limit = (std::min)((d.maxInstances > 0) ? d.maxInstances : kMaxRtInstances,
                                  kMaxRtInstances);
-    if (m_pending.size() > limit)
+
+    // ---- 静的部分のキャッシュ（スキンドだけ毎フレーム変わるシーン向け）----
+    //  cacheMode   : 呼び出し元が静的ハッシュを渡した＝静的を先頭・スキンドを後ろに並べる（InstanceID も同じ並び）。
+    //  reuseStatic : 静的は前回の CPU 側コピーを memcpy する。m_pending にはスキンドしか入っていない
+    //                （Feed が静的の詰め込みを飛ばした）。判定は呼び出し元が CanReuseStatic で先に済ませている。
+    const bool cacheMode   = (d.staticHash != 0);
+    const bool reuseStatic = cacheMode && d.reuseStatic;
+    if (reuseStatic && !CanReuseStatic(d.staticHash))
+    {
+        // Feed と食い違った（起きないはず）。静的が欠けた TLAS を建てないよう、このフレームは諦める。
+        m_staticValid = false;
+        return false;
+    }
+    if (reuseStatic)
+    {
+        // 念のため: 静的が混じっていても使わない（キャッシュ側が正）。
+        m_pending.erase(std::remove_if(m_pending.begin(), m_pending.end(),
+                        [](const PendingInstance& p) { return !p.dynamic && p.skinnedKey == 0; }), m_pending.end());
+    }
+    const u32 staticCached = reuseStatic ? static_cast<u32>(m_staticDescs.size()) : 0u;
+    const u32 pendLimit    = (limit > staticCached) ? (limit - staticCached) : 0u;
+
+    if (m_pending.size() > pendLimit)
     {
         // 上限超過。カメラに近い順で残す（遠景を落としても影 / AO への寄与は小さい）。
-        std::nth_element(m_pending.begin(), m_pending.begin() + limit, m_pending.end(),
+        std::nth_element(m_pending.begin(), m_pending.begin() + pendLimit, m_pending.end(),
             [](const PendingInstance& a, const PendingInstance& b) { return a.distSq < b.distSq; });
-        m_stats.droppedOverLimit = static_cast<u32>(m_pending.size()) - limit;
-        m_pending.resize(limit);
+        m_stats.droppedOverLimit = static_cast<u32>(m_pending.size()) - pendLimit;
+        m_pending.resize(pendLimit);
     }
-    if (m_pending.empty()) return false;
+    const u32 totalInstances = staticCached + static_cast<u32>(m_pending.size());
+    if (totalInstances == 0) return false;
 
     // ---- インスタンス記述を書く（BLAS は必要になった時点で遅延構築）----
     // ★リング添字は d.frameIndex ではなく「実際に書いた回数」(m_writeSlot)。理由はヘッダ参照。
     const u32 slot = m_writeSlot % FrameResources::kFrameCount;
     RtBuffer& descBuf = m_instanceDescs[slot];
-    const u64 needBytes = static_cast<u64>(m_pending.size()) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+    const u64 needBytes = static_cast<u64>(totalInstances) * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
     if (!descBuf.EnsureCapacity(device, needBytes, RtBuffer::Kind::Upload, L"TLAS instance descs"))
         return false;
 
@@ -429,7 +464,7 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     // ★インスタンス記述とまったく同じ添字で書く。下のループの count が両方の添字になる。
     RtBuffer& geoBuf = m_geoInfos[slot];
     GeometryInfo* geos = nullptr;
-    if (geoBuf.EnsureCapacity(device, static_cast<u64>(m_pending.size()) * sizeof(GeometryInfo),
+    if (geoBuf.EnsureCapacity(device, static_cast<u64>(totalInstances) * sizeof(GeometryInfo),
                               RtBuffer::Kind::Upload, L"RT geometry info"))
         geos = static_cast<GeometryInfo*>(geoBuf.GetMappedPtr());
     m_geoInfoAddress = geos ? geoBuf.GetGpuAddress() : 0;
@@ -441,11 +476,117 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     u32 count       = 0;
     // 近いものから処理する＝予算が切れたときに古いポーズで残るのは遠くのキャラになる。
     // （Metro Exodus の「見えている/近いものを優先」と同じ考え方の、最小の実装）
-    std::sort(m_pending.begin(), m_pending.end(),
-              [](const PendingInstance& a, const PendingInstance& b) { return a.distSq < b.distSq; });
-    m_stats.skinnedTriangles = 0;
-    for (const PendingInstance& p : m_pending)
+    auto byDist = [](const PendingInstance& a, const PendingInstance& b) { return a.distSq < b.distSq; };
+    auto staticEnd = m_pending.begin();   // [begin, staticEnd) = 静的（cacheMode && !reuseStatic のときだけ非空）
+    if (cacheMode && !reuseStatic)
     {
+        staticEnd = std::partition(m_pending.begin(), m_pending.end(),
+                                   [](const PendingInstance& p) { return !p.dynamic && p.skinnedKey == 0; });
+        std::sort(m_pending.begin(), staticEnd, byDist);
+        std::sort(staticEnd, m_pending.end(), byDist);
+    }
+    else
+        std::sort(m_pending.begin(), m_pending.end(), byDist);
+    m_stats.skinnedTriangles = 0;
+
+    // GeometryInfo の統計（書いた 1 件ぶん）
+    auto noteGeo = [&](const GeometryInfo& g)
+    {
+        if (g.vbSrvIndex != 0xFFFFFFFFu) ++m_stats.geoInfoWritten;
+        const bool tex  = (g.baseColorSrvIndex != 0xFFFFFFFFu);
+        const bool tint = (g.tint[0] != 1.0f || g.tint[1] != 1.0f || g.tint[2] != 1.0f);
+        if (tex)  ++m_stats.geoInfoWithTexture;
+        if (tint) ++m_stats.geoInfoWithTint;
+        if (tex || tint) ++m_stats.geoInfoWithAlbedo;
+        if (g.emissive[0] > 0.0f || g.emissive[1] > 0.0f || g.emissive[2] > 0.0f)
+            ++m_stats.geoInfoWithEmissive;
+    };
+    // インスタンス記述 1 件を埋める（InstanceID = idx）。
+    auto fillDesc = [](const PendingInstance& p, const BlasEntry* blas, u32 idx,
+                       D3D12_RAYTRACING_INSTANCE_DESC& dst)
+    {
+        // ★Transform[3][4] は row-major 3x4（平行移動が 4 列目）。
+        //   DirectXMath の行ベクトル規約のワールド行列 W に対して、これは
+        //   transpose(W) の先頭 3 行そのもの。XMStoreFloat3x4 がまさに転置して書くので
+        //   自前で並べ替えるコードは要らない（バイト一致。計画09 §4.3）。
+        XMFLOAT3X4 t;
+        XMStoreFloat3x4(&t, XMLoadFloat4x4(&p.world));
+        static_assert(sizeof(t.m) == sizeof(dst.Transform), "3x4 transform layout mismatch");
+        std::memcpy(dst.Transform, t.m, sizeof(dst.Transform));
+        // ★GeometryInfo テーブルの添字。24bit なので kMaxRtInstances(32768) には十分。
+        //   m_pending の添字ではなく「実際に書き出した順」であることが重要
+        //   （距離順にソートしたうえ、BLAS が建っていないものは continue で飛んでいる）。
+        dst.InstanceID                          = idx;
+        dst.InstanceMask                        = 0xFF;
+        dst.InstanceContributionToHitGroupIndex = 0;
+        dst.Flags                               = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+        dst.AccelerationStructure               = blas->as.GetGpuAddress();
+    };
+
+    if (reuseStatic)
+    {
+        // 静的は前回の CPU 側コピーをそのまま写す（アップロードヒープは読み戻さない）。
+        std::memcpy(descs, m_staticDescs.data(), staticCached * sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
+        if (geos) std::memcpy(geos, m_staticGeos.data(), staticCached * sizeof(GeometryInfo));
+        count = staticCached;
+        if (geos)
+        {
+            m_stats.geoInfoWritten      += m_staticStat.geoWritten;
+            m_stats.geoInfoWithAlbedo   += m_staticStat.albedo;
+            m_stats.geoInfoWithTexture  += m_staticStat.texture;
+            m_stats.geoInfoWithTint     += m_staticStat.tint;
+            m_stats.geoInfoWithEmissive += m_staticStat.emissive;
+        }
+        m_stats.alphaTestInstances += m_staticStat.alphaTest;
+        m_stats.tlasStaticReuseFrames = ++m_staticStreak;
+    }
+    else
+    {
+        m_staticStreak = 0;
+        m_stats.tlasStaticReuseFrames = 0;
+        if (cacheMode)
+        {
+            // 静的を CPU 側の std::vector に組み、キャッシュとして残してから GPU へ写す。
+            m_staticValid = false;
+            m_staticDescs.clear();
+            m_staticGeos.clear();
+            m_staticDescs.reserve(static_cast<size_t>(staticEnd - m_pending.begin()));
+            m_staticGeos.reserve(m_staticDescs.capacity());
+            const Stats before = m_stats;
+            for (auto it = m_pending.begin(); it != staticEnd; ++it)
+            {
+                const BlasEntry* blas = EnsureBlas(device, cmd4.Get(), it->mesh, it->nonOpaque, budget);
+                if (!blas) continue;   // まだ建っていない → m_blasDeferred が立ちキャッシュしない
+                if (it->nonOpaque) ++m_stats.alphaTestInstances;
+                D3D12_RAYTRACING_INSTANCE_DESC dd{};
+                fillDesc(*it, blas, count, dd);
+                m_staticDescs.push_back(dd);
+                m_staticGeos.push_back(it->geo);
+                if (geos) noteGeo(it->geo);
+                ++count;
+            }
+            if (count > 0)
+            {
+                std::memcpy(descs, m_staticDescs.data(), count * sizeof(D3D12_RAYTRACING_INSTANCE_DESC));
+                if (geos) std::memcpy(geos, m_staticGeos.data(), count * sizeof(GeometryInfo));
+            }
+            m_staticStat.alphaTest  = m_stats.alphaTestInstances  - before.alphaTestInstances;
+            m_staticStat.geoWritten = m_stats.geoInfoWritten      - before.geoInfoWritten;
+            m_staticStat.albedo     = m_stats.geoInfoWithAlbedo   - before.geoInfoWithAlbedo;
+            m_staticStat.texture    = m_stats.geoInfoWithTexture  - before.geoInfoWithTexture;
+            m_staticStat.tint       = m_stats.geoInfoWithTint     - before.geoInfoWithTint;
+            m_staticStat.emissive   = m_stats.geoInfoWithEmissive - before.geoInfoWithEmissive;
+            // 間引き / BLAS 遅延構築 / GeometryInfo 書けず のどれかがあれば使い回さない。
+            m_staticValid = (m_stats.droppedOverLimit == 0) && (m_blasDeferred == 0)
+                         && (geos != nullptr) && (count > 0);
+            m_staticHash  = d.staticHash;
+        }
+    }
+
+    const u32 staticWritten = count;   // これより後ろは動的側（スキンド / 動いた物）
+    for (auto it = (cacheMode ? staticEnd : m_pending.begin()); it != m_pending.end(); ++it)
+    {
+        const PendingInstance& p = *it;
         const BlasEntry* blas = (p.skinnedKey != 0)
             ? EnsureSkinnedBlas(device, cmd4.Get(), p.skinnedKey, p.mesh,
                                 p.deformedVb, p.vertexCount, p.poseHash, p.nonOpaque, skinBudget)
@@ -459,36 +600,12 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
 
         if (p.nonOpaque) ++m_stats.alphaTestInstances;
 
-        D3D12_RAYTRACING_INSTANCE_DESC& dst = descs[count];
-        // ★Transform[3][4] は row-major 3x4（平行移動が 4 列目）。
-        //   DirectXMath の行ベクトル規約のワールド行列 W に対して、これは
-        //   transpose(W) の先頭 3 行そのもの。XMStoreFloat3x4 がまさに転置して書くので
-        //   自前で並べ替えるコードは要らない（バイト一致。計画09 §4.3）。
-        XMFLOAT3X4 t;
-        XMStoreFloat3x4(&t, XMLoadFloat4x4(&p.world));
-        static_assert(sizeof(t.m) == sizeof(dst.Transform), "3x4 transform layout mismatch");
-        std::memcpy(dst.Transform, t.m, sizeof(dst.Transform));
-
-        // ★GeometryInfo テーブルの添字。24bit なので kMaxRtInstances(32768) には十分。
-        //   m_pending の添字ではなく「実際に書き出した順」であることが重要
-        //   （上で距離順にソートしたうえ、BLAS が建っていないものは continue で飛んでいる）。
-        dst.InstanceID                          = count;
+        fillDesc(p, blas, count, descs[count]);
         if (geos)
         {
             geos[count] = p.geo;
-            if (p.geo.vbSrvIndex != 0xFFFFFFFFu) ++m_stats.geoInfoWritten;
-            const bool tex  = (p.geo.baseColorSrvIndex != 0xFFFFFFFFu);
-            const bool tint = (p.geo.tint[0] != 1.0f || p.geo.tint[1] != 1.0f || p.geo.tint[2] != 1.0f);
-            if (tex)  ++m_stats.geoInfoWithTexture;
-            if (tint) ++m_stats.geoInfoWithTint;
-            if (tex || tint) ++m_stats.geoInfoWithAlbedo;
-            if (p.geo.emissive[0] > 0.0f || p.geo.emissive[1] > 0.0f || p.geo.emissive[2] > 0.0f)
-                ++m_stats.geoInfoWithEmissive;
+            noteGeo(p.geo);
         }
-        dst.InstanceMask                        = 0xFF;
-        dst.InstanceContributionToHitGroupIndex = 0;
-        dst.Flags                               = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-        dst.AccelerationStructure               = blas->as.GetGpuAddress();
         ++count;
     }
 
@@ -541,6 +658,7 @@ bool RaytracingScene::Build(GraphicsDevice& device, ID3D12GraphicsCommandList* c
     // ・BLAS の遅延構築が残っている: 欠けたままの TLAS を固定してしまうので不可。
     // ・GeometryInfo が書けなかった: アドレスが 0 のまま固定されるので不可。
     m_cacheable = (m_stats.skinnedInstances == 0)
+               && (!cacheMode || count == staticWritten)   // 動的が 1 つでも入ったら使い回さない
                && (m_stats.droppedOverLimit == 0)
                && (m_blasDeferred == 0)
                && (geos != nullptr);

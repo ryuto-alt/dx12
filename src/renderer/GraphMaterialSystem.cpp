@@ -389,7 +389,7 @@ void GraphMaterialSystem::WorkerMain(int /*index*/)
 //   job.stage == 1（高速版）: 先に最適化版のキャッシュを引く（あればそれを返して out.level = 2 にする）→ 無ければ -Od でコンパイル。
 //   job.stage == 2（最適化版）: 最適化版のキャッシュ → 無ければ通常のコンパイル。
 bool GraphMaterialSystem::CompileBlobs(const Job& job, ShaderRuntimeCompiler& compiler, const std::string& dxcVersion, JobResult& out,
-                                       std::vector<u8>& vs, std::vector<u8>& ps)
+                                       std::vector<u8>& vs, std::vector<u8>& vsInst, std::vector<u8>& ps)
 {
     const std::string srcDir = EngineShaderSrcDir();
     if (srcDir.empty())
@@ -428,6 +428,10 @@ bool GraphMaterialSystem::CompileBlobs(const Job& job, ShaderRuntimeCompiler& co
     vsIn.kind = "vs";
     vsIn.extra = std::string("vs_6_6|VSMain|") + kDxcArgsKey;
     const u64 vsKey = matgraph::MakeShaderKey(vsIn);
+    // インスタンス版 VS（ForwardGraph.hlsl の VSMainInstanced。Forward 種別だけ。グラフごとに変わらない共通スタブ）
+    matgraph::ShaderKeyInput vsInstIn = vsIn;
+    vsInstIn.extra = std::string("vs_6_6|VSMainInstanced|") + kDxcArgsKey;
+    const u64 vsInstKey = matgraph::MakeShaderKey(vsInstIn);
 
     auto compile = [&](const std::string& text, const wchar_t* entry, const wchar_t* profile, const std::string& name, bool od,
                        const std::vector<std::wstring>& defines, std::vector<u8>& bytes) -> bool {
@@ -482,22 +486,39 @@ bool GraphMaterialSystem::CompileBlobs(const Job& job, ShaderRuntimeCompiler& co
         }
         m_cache->Store(vsKey, "vs", vs);
     }
+    // インスタンス版 VS。失敗しても致命ではない（インスタンス PSO が無いだけ = そのバッチは代理材質で描く）ので errorLog は戻す
+    vsInst.clear();
+    if (job.kind == Kind::Forward)
+    {
+        if (!(!job.force && m_cache->Load(vsInstKey, "vs", vsInst)))
+        {
+            const std::string savedLog = out.errorLog;
+            const auto savedMapped = out.mapped;
+            if (compile(kVsStub, L"VSMainInstanced", L"vs_6_6", "_graph/vs_stub_inst.hlsl", false, {}, vsInst))
+                m_cache->Store(vsInstKey, "vs", vsInst);
+            else
+                vsInst.clear();
+            out.errorLog = savedLog;
+            out.mapped = savedMapped;
+        }
+    }
     return true;
 }
 
 // ---- PSO。D3D12 デバイスはフリースレッドなのでワーカーで作る -----------------------------------------
 //   Forward: less / lequal を並列に作る（壁時計は長い方だけ）。PreviewLite: less だけ。Node*: 深度なし・1 本。
-bool GraphMaterialSystem::BuildPsos(Kind kind, const std::vector<u8>& vs, const std::vector<u8>& ps, JobResult& out)
+bool GraphMaterialSystem::BuildPsos(Kind kind, const std::vector<u8>& vs, const std::vector<u8>& vsInst, const std::vector<u8>& ps, JobResult& out)
 {
     const auto t0 = Clock::now();
-    auto make = [&](D3D12_COMPARISON_FUNC depthFunc, Microsoft::WRL::ComPtr<ID3D12PipelineState>& dst, std::string& err) {
+    auto make = [&](D3D12_COMPARISON_FUNC depthFunc, Microsoft::WRL::ComPtr<ID3D12PipelineState>& dst, std::string& err, bool inst = false) {
         try
         {
             PipelineStateBuilder b;
             b.SetRootSignature(m_desc.rootSignature->Get())
-             .SetVertexShader(vs.data(), vs.size())
+             .SetVertexShader(inst ? vsInst.data() : vs.data(), inst ? vsInst.size() : vs.size())
              .SetPixelShader(ps.data(), ps.size())
-             .SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount())
+             .SetInputLayout(inst ? Mesh::GetInstancedInputLayout() : Mesh::GetInputLayout(),
+                             inst ? Mesh::GetInstancedInputLayoutCount() : Mesh::GetInputLayoutCount())
              .SetCullMode(D3D12_CULL_MODE_NONE);   // 従来の Forward と同じ（両面描画）
             if (kind == Kind::NodeLdr || kind == Kind::NodeRaw)
             {
@@ -525,8 +546,19 @@ bool GraphMaterialSystem::BuildPsos(Kind kind, const std::vector<u8>& vs, const 
     if (kind == Kind::Forward)
     {
         std::thread th([&] { make(D3D12_COMPARISON_FUNC_LESS_EQUAL, out.lequal, errLequal); });
+        // インスタンス版（失敗しても致命ではない = null のまま。バッチは代理材質で描かれる）
+        std::string errInstA, errInstB;
+        std::thread thIa, thIb;
+        if (!vsInst.empty())
+        {
+            thIa = std::thread([&] { make(D3D12_COMPARISON_FUNC_LESS, out.lessInst, errInstA, true); });
+            thIb = std::thread([&] { make(D3D12_COMPARISON_FUNC_LESS_EQUAL, out.lequalInst, errInstB, true); });
+        }
         make(D3D12_COMPARISON_FUNC_LESS, out.less, errLess);
         th.join();
+        if (thIa.joinable()) thIa.join();
+        if (thIb.joinable()) thIb.join();
+        if (!errInstA.empty() || !errInstB.empty()) { out.lessInst.Reset(); out.lequalInst.Reset(); }
     }
     else
         make(D3D12_COMPARISON_FUNC_LESS, out.less, errLess);
@@ -535,6 +567,8 @@ bool GraphMaterialSystem::BuildPsos(Kind kind, const std::vector<u8>& vs, const 
         out.errorLog = !errLess.empty() ? errLess : errLequal;
         out.less.Reset();
         out.lequal.Reset();
+        out.lessInst.Reset();
+        out.lequalInst.Reset();
         return false;
     }
     out.psoMs = MsSince(t0);
@@ -544,13 +578,14 @@ bool GraphMaterialSystem::BuildPsos(Kind kind, const std::vector<u8>& vs, const 
 // 配布ビルドの pak に焼くシェーダーのキー（BakeForBuild と ProcessJob が同じ名前を使う）
 static std::string BakedShaderRel(u64 hash) { return "shaders/graph/" + matgraph::Hex16(hash) + "_PS.cso"; }
 static const char* const kBakedVsRel = "shaders/graph/vs.cso";
+static const char* const kBakedVsInstRel = "shaders/graph/vs_inst.cso";   // 自動インスタンシング用 VS（無ければインスタンス PSO を作らない = 代理材質）
 
 void GraphMaterialSystem::ProcessJob(const Job& job, ShaderRuntimeCompiler& compiler, const std::string& dxcVersion, JobResult& out)
 {
-    std::vector<u8> vs, ps;
+    std::vector<u8> vs, vsInst, ps;
     if (m_desc.allowCompile)
     {
-        if (!CompileBlobs(job, compiler, dxcVersion, out, vs, ps)) return;
+        if (!CompileBlobs(job, compiler, dxcVersion, out, vs, vsInst, ps)) return;
     }
     else
     {
@@ -564,6 +599,7 @@ void GraphMaterialSystem::ProcessJob(const Job& job, ShaderRuntimeCompiler& comp
         out.level = 2;
         ps = vfs::ReadAsset(BakedShaderRel(job.hash));
         vs = vfs::ReadAsset(kBakedVsRel);
+        vsInst = vfs::ReadAsset(kBakedVsInstRel);
         if (ps.empty() || vs.empty())
         {
             out.errorLog = "配布ビルドにこのグラフのシェーダーが入っていません（" + BakedShaderRel(job.hash) + "）。エディタでゲームをビルドし直してください";
@@ -572,7 +608,7 @@ void GraphMaterialSystem::ProcessJob(const Job& job, ShaderRuntimeCompiler& comp
         out.cacheHit = true;
     }
     if (job.phase) job.phase->store(2);   // PSO
-    if (!BuildPsos(job.kind, vs, ps, out)) return;
+    if (!BuildPsos(job.kind, vs, vsInst, ps, out)) return;
     out.ok = true;
 }
 
@@ -592,7 +628,7 @@ bool GraphMaterialSystem::BakeForBuild(std::vector<BakedBlob>& out, std::vector<
     }
     const std::string dxcVersion = compiler.GetVersionString();
     std::set<u64> done;
-    std::vector<u8> vsShared;
+    std::vector<u8> vsShared, vsInstShared;
     bool ok = true;
     std::error_code ec;
     const std::string rootUtf8 = PathResolver::AssetsDir();
@@ -623,8 +659,8 @@ bool GraphMaterialSystem::BakeForBuild(std::vector<BakedBlob>& out, std::vector<
         job.hash = cr->hash;
         job.hlsl = cr->hlsl;
         JobResult jr;
-        std::vector<u8> vs, ps;
-        if (!CompileBlobs(job, compiler, dxcVersion, jr, vs, ps))
+        std::vector<u8> vs, vsInst, ps;
+        if (!CompileBlobs(job, compiler, dxcVersion, jr, vs, vsInst, ps))
         {
             ok = false;
             errors.push_back(rel + ": " + jr.errorLog);
@@ -632,8 +668,10 @@ bool GraphMaterialSystem::BakeForBuild(std::vector<BakedBlob>& out, std::vector<
         }
         out.push_back({BakedShaderRel(cr->hash), std::move(ps)});
         if (vsShared.empty()) vsShared = std::move(vs);
+        if (vsInstShared.empty()) vsInstShared = std::move(vsInst);
     }
     if (!vsShared.empty()) out.push_back({kBakedVsRel, std::move(vsShared)});
+    if (!vsInstShared.empty()) out.push_back({kBakedVsInstRel, std::move(vsInstShared)});
     return ok;
 }
 
@@ -732,9 +770,11 @@ void GraphMaterialSystem::DrainResults()
                 ++m_counters.staleIgnored;
                 continue;
             }
-            if (v.less || v.lequal) m_gravePsos.push_back({std::move(v.less), std::move(v.lequal), m_frame});   // 差し替えで置き換わる PSO
+            if (v.less || v.lequal) m_gravePsos.push_back({std::move(v.less), std::move(v.lequal), std::move(v.lessInst), std::move(v.lequalInst), m_frame});   // 差し替えで置き換わる PSO
             v.less = std::move(r.less);
             v.lequal = std::move(r.lequal);
+            v.lessInst = std::move(r.lessInst);
+            v.lequalInst = std::move(r.lequalInst);
             v.state = Variant::State::Ready;
             v.errorLog.clear();
             v.dxcMs = r.dxcMs;
@@ -1113,6 +1153,7 @@ bool GraphMaterialSystem::ResolveCommon(Instance& inst, ID3D12GraphicsCommandLis
     SyncPool(frameIndex);
     // lequal を持たない種別（PreviewLite / Node*）は less だけ。段階の差し替えで PSO が入れ替わるので毎回変種から引く
     out.pso = (lequal && b->variant->lequal) ? b->variant->lequal.Get() : b->variant->less.Get();
+    out.psoInst = (lequal && b->variant->lequalInst) ? b->variant->lequalInst.Get() : b->variant->lessInst.Get();
     out.recordBase = b->rec.base;
     out.poolSrvIndex = m_poolSrv[frameIndex % kFrames];
     return out.pso != nullptr;

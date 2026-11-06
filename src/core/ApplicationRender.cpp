@@ -159,6 +159,9 @@ void Application::BuildDrawList()
     m_rtContentHashValid = wantRtHash;
     m_rtContentHash      = 1469598103934665603ull;
     m_rtSkinnedItems     = 0;
+    m_rtSkinHash         = 1469598103934665603ull;
+    m_rtDynamicItems     = 0;
+    m_rtCurItemIds.clear();
     {
     CpuScopeTimer _scan(&m_cpuMs[CpuBuildList]); DX12_PROFILE_ZONE_N("BuildDrawList");   // 走査部（ソートは listSort で別計上）
     // 描画リストの対象にしてよいエンティティか（普通のエンティティも、インスタンス群のエンティティもここを通す）。
@@ -412,9 +415,19 @@ void Application::BuildDrawList()
 
         item.batchKey   = 0;
         item.batchOrder = 0;
+        // サブメッシュ 1〜32。どのサブメッシュもテクスチャ上書き無し・メッシュ非 null が条件。
+        //   材質アセット（個別 materialAsset / materialRemap）はサブメッシュごとにパスを鍵へ混ぜるので許す
+        //   （従来は meshes[0] に材質アセットがあると不可だった）。
+        bool batchMeshesOk = !renderer.meshes.empty() && renderer.meshes.size() <= 32;
+        bool batchExt = renderer.meshes.size() > 1;   // 「拡張」= 複数サブメッシュ or 材質アセット付き（従来の鍵に無かった成分を混ぜる）
+        if (batchMeshesOk)
+            for (u32 bmi = 0; bmi < static_cast<u32>(renderer.meshes.size()); ++bmi)
+            {
+                if (!renderer.meshes[bmi] || renderer.HasAnyTextureOverride(bmi)) { batchMeshesOk = false; break; }
+                if (renderer.HasMaterialAsset(bmi)) batchExt = true;
+            }
         if (item.sortKey == 0u && !item.skin && !item.hasNodeAnim && !splatTerrain
-            && renderer.meshes.size() == 1 && renderer.meshes[0]
-            && !renderer.HasMaterialAsset(0) && !renderer.HasAnyTextureOverride(0)
+            && batchMeshesOk
             && renderer.animFrames == 0
             && renderer.uvScrollU == 0.0f && renderer.uvScrollV == 0.0f)
         {
@@ -445,8 +458,30 @@ void Application::BuildDrawList()
             mix(bits(renderer.alphaCutoffOverride));
             mix(bits(renderer.opacity));
             mix(static_cast<u64>(renderer.alphaModeOverride + 2));
+            // ★拡張（複数サブメッシュ / 材質アセット付き）だけ追加の成分を混ぜる。従来の単一メッシュ・材質アセット無しの鍵と並びは不変。
+            //   ・サブメッシュ数と、サブメッシュごとの材質アセットのパス（内容のハッシュ = 起動をまたいで安定）と remap 由来か
+            //     （remap 由来のときだけ .dxmat の uvTiling が掛かる）、2 番目以降のメッシュの安定キー。
+            //     同じ鍵 = 描画結果が同じ。混ぜ漏らすと先頭 1 体の材質で全部が描かれる。
+            //   ・色ティントの値。拡張経路は per-instance 色ではなく b2.packedTint（バッチ内一様）で掛けるので、
+            //     違う色を 1 バッチに畳めない（グラフ材質も 1 体ずつの経路と同じ packedTint 経由で色が付く）。
+            if (batchExt)
+            {
+                mix(static_cast<u64>(renderer.meshes.size()) | 0x100000000ull);
+                for (u32 bmi = 0; bmi < static_cast<u32>(renderer.meshes.size()); ++bmi)
+                {
+                    mix(std::hash<std::string>{}(renderer.MaterialAssetOf(bmi)));
+                    mix(renderer.MaterialIsRemapped(bmi) ? 1ull : 2ull);
+                    if (bmi > 0) mix(renderer.meshes[bmi]->GetStableKey());
+                }
+                mix(renderer.hasColorTint ? 1ull : 0ull);
+                if (renderer.hasColorTint)
+                {
+                    mix(bits(renderer.colorTint.x)); mix(bits(renderer.colorTint.y));
+                    mix(bits(renderer.colorTint.z));
+                }
+            }
             item.batchOrder = k | 1ull;   // 0 は「不可」の予約値なので必ず非 0 にする
-            mix(reinterpret_cast<u64>(renderer.meshes[0]));
+            for (const auto* bm : renderer.meshes) mix(reinterpret_cast<u64>(bm));   // 全サブメッシュのポインタ（単一メッシュなら従来と同じ）
             item.batchKey   = k | 1ull;
         }
 
@@ -456,17 +491,32 @@ void Application::BuildDrawList()
         // （カットオフ / モード上書きの変更は rtItemHash 側で拾う）。
         if (wantRtHash && item.sortKey != 3u)
         {
-            if (item.skin) ++m_rtSkinnedItems;   // >0 なら再利用しない（ポーズが毎フレーム変わる）
+            // 動的側 = スキンド / ノードアニメ / 「前フレームの同じ並びの同じ物からワールド行列が変わった物」。
+            // 動的は静的の鍵（m_rtContentHash）に混ぜず、別ハッシュに「数・エンティティ・メッシュ」だけ残す
+            // （ワールド行列は入れない）。静的キャッシュの後ろに毎フレーム追記される。止まった物は次フレームから静的に戻る。
+            u64 idH = rtItemHash;
+            RtHashMix(idH, static_cast<u64>(entt::to_integral(e)));
+            RtHashMix(idH, static_cast<u64>(instanceIndex));
+            u64 worldH = 1469598103934665603ull;
+            RtHashMixBytes(worldH, &item.world, sizeof(item.world));
+            const size_t rtIdx = m_rtCurItemIds.size();
+            m_rtCurItemIds.push_back({idH, worldH});
+            const bool moved = rtIdx < m_rtPrevItemIds.size() && m_rtPrevItemIds[rtIdx].first == idH
+                            && m_rtPrevItemIds[rtIdx].second != worldH;
+            if (item.skin || item.hasNodeAnim || moved)
+            {
+                item.rtDynamic = true;
+                ++m_rtDynamicItems;
+                if (item.skin) ++m_rtSkinnedItems;   // TLAS 丸ごとの再利用はしない（ポーズが毎フレーム変わる）
+                RtHashMix(m_rtSkinHash, idH);
+            }
+            else
+            {
             RtHashMix(m_rtContentHash, rtItemHash);
             RtHashMix(m_rtContentHash, static_cast<u64>(entt::to_integral(e)));
             RtHashMix(m_rtContentHash, static_cast<u64>(instanceIndex));
             RtHashMixBytes(m_rtContentHash, &item.world, sizeof(item.world));
-            if (item.hasNodeAnim)
-            {
-                // ノードアニメはメッシュ単位の変換が別に掛かる（RT 側も同じ式で合成する）。
-                RtHashMixBytes(m_rtContentHash, renderer.meshNodeTransforms.data(),
-                               renderer.meshNodeTransforms.size() * sizeof(XMFLOAT4X4));
-            }
+            }   // 静的
         }
         // 仮想ジオメトリ P3: VG 本体が描くエンティティはプロキシを主ビューの深度プリパス / フォワードから外す印を立てる。
         //   自動インスタンシングには混ぜない（バッチ単位で skip できないため）。影 / TLAS / ピッキングはこの印を見ない。
@@ -563,6 +613,8 @@ void Application::BuildDrawList()
         m_statInstGroupItems += n;
     }
     }   // _scan
+    m_rtPrevItemIds.swap(m_rtCurItemIds);   // 次フレームの「動いたか」判定用（並び順で突き合わせる）
+    if (!wantRtHash) m_rtPrevItemIds.clear();
 
     // 速度バッファ用に「今フレームのワールド行列」を次フレームの prevWorld として記録する。
     // ★view 走査を抜けてから別ループで書く（走査中に別ストレージへ emplace すると entt の
@@ -1426,6 +1478,11 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             }
         }
 
+        // 拡張（複数サブメッシュ / 材質アセット付き）の判定。batchKey に同じ判定の成分を混ぜてあるのでバッチ内で一様。
+        bool batchExt = head.renderer->meshes.size() > 1;
+        for (u32 bmi = 0; !batchExt && bmi < static_cast<u32>(head.renderer->meshes.size()); ++bmi)
+            batchExt = head.renderer->HasMaterialAsset(bmi);
+
         // 同一 batchKey のランのうち「見えている物」だけインスタンスへ積む
         instScratch.clear();
         size_t j = i;
@@ -1446,8 +1503,9 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             //   混ぜると色違いというだけでバッチが割れて描画数が増える）。
             {
                 const MeshRenderer* mrI = m_drawItems[j].renderer;
-                d.color = (mrI && mrI->hasColorTint) ? mrI->colorTint
-                                                     : DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
+                // 拡張はティントを b2.packedTint で掛ける（鍵に混ぜてある）ので per-instance 色は白。
+                d.color = (!batchExt && mrI && mrI->hasColorTint) ? mrI->colorTint
+                                                                  : DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
             }
             instScratch.push_back(d);
         }
@@ -1474,90 +1532,187 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                     instScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstanceData));
         m_instanceCursor += n;
 
-        const Mesh*     mesh = head.renderer->meshes[0];
-        const Material* mat  = mesh->GetMaterial();
-        // ★batchKey にメッシュポインタと透明パラメータが入っている＝バッチ内で実効値は同一。
-        const AlphaParams alphaP = ResolveAlphaParams(mat, head.renderer->alphaModeOverride,
-                                                      head.renderer->alphaCutoffOverride,
-                                                      head.renderer->opacity);
-        PipelineState* batchPso = instPso;
-        if (alphaP.mode == AlphaMode::Mask)
-        {
-            PipelineState* mp = depthPrepassActive ? m_pipelineStateInstMaskLEqual.get()
-                                                   : m_pipelineStateInstMask.get();
-            if (mp && mp->Get()) batchPso = mp;
-        }
-        if (batchPso->Get() != lastPso)
-        {
-            m_commandList->SetPipelineState(*batchPso);
-            lastPso = batchPso->Get();
-        }
+        // ---- バッチの描画（サブメッシュごとに 1 ドロー × n インスタンス）----
+        //   バッチ内は batchKey で「全サブメッシュのポインタ・材質アセットのパス・透明パラメータ・PBR 上書き」が同一なので、
+        //   先頭の 1 体で材質を解決すれば全体に正しい。サブメッシュごとの解決は 1 体ずつの経路（drawEntity）と同じ規則。
+        const MeshRenderer& r = *head.renderer;
+        const u32 subCount = static_cast<u32>(r.meshes.size());
         m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
 
-        D3D12_GPU_DESCRIPTOR_HANDLE matSrv;
-        if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
-            matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
-        else
-        {
-            Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture
-                                                       : m_resourceManager->GetDefaultWhiteTexture();
-            matSrv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
-        }
-        if (matSrv.ptr != lastMatSrv)
-        {
-            m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, matSrv);
-            lastMatSrv = matSrv.ptr;
-        }
-
-        // 適格判定で materialAsset/上書きテクスチャ/UVアニメは除外済みなので単純形でよい
-        struct { float metallic; float roughness; u32 flags; u32 packedTint;
-                 float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; u32 packedEmissive; } pbrParams;
-        const MeshRenderer& r = *head.renderer;
-        pbrParams.metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic
-                                                            : (mat ? mat->defaultMetallic : 0.0f);
-        pbrParams.roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness
-                                                            : (mat ? mat->defaultRoughness : 0.5f);
-        pbrParams.flags = 0;
-        if (mat && mat->normalMapTexture)      pbrParams.flags |= 1u;
-        // ★metallic/roughness のスカラーは glTF 意味論の「係数」＝ MR テクスチャを殺さない
-        //   （非インスタンス経路 / matAsset 経路と同じ規則。#26 で揃えた）
-        if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
-        if (mat && mat->emissiveTexture)       pbrParams.flags |= kPbrFlagEmissiveTex;
-        pbrParams.flags = PackAoFlags(pbrParams.flags, ResolveAoStrength(mat, r.overrideAoStrength));
-        // ★インスタンス経路の色は per-instance 頂点ストリーム（inst.color）で掛かるのでここは白。
-        //   b0 も同様に 16 DWORD しか書かないので、この経路では b0 の 16 番以降を読んではいけない。
-        pbrParams.packedTint = 0x00FFFFFFu;
-        // 透明パラメータ（インスタンス経路は MASK のみ。BLEND は sortKey=3 でバッチ対象外）。
-        pbrParams.flags      = PackAlphaTestFlags(pbrParams.flags, alphaP);
-        pbrParams.packedTint = PackTintWithOpacity(pbrParams.packedTint, alphaP.opacity);
-        pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
-        pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
-        // 自己発光（バッチ内は batchKey で同値が保証されているので先頭の値でよい）
-        pbrParams.packedEmissive = PackEmissive(ResolveEmissiveParams(
-            mat ? mat->emissiveColor : DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f},
-            mat ? mat->emissiveIntensity : 0.0f,
-            r.overrideEmissiveColor, r.overrideEmissiveIntensity));
-        nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 9, &pbrParams, 0);
-
-        m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());              // slot0
-        m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(head.lod).GetView());
         D3D12_VERTEX_BUFFER_VIEW iv = m_instanceVbView[frameIndex];
         iv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstanceData);
         iv.SizeInBytes     = n * sizeof(MeshInstanceData);
         nativeCmdList->IASetVertexBuffers(1, 1, &iv);                                   // slot1
-        lastVbMesh = mesh;
-        lastLod    = head.lod;
 
-        const u32 idx = mesh->GetIndexCountLod(head.lod);
-        m_commandList->DrawIndexedInstanced(idx, n);
+        for (u32 mi = 0; mi < subCount; ++mi)
+        {
+            const Mesh*     mesh = r.meshes[mi];
+            const Material* mat  = mesh->GetMaterial();
+            // ★batchKey にメッシュポインタと透明パラメータが入っている＝バッチ内で実効値は同一。
+            const AlphaParams alphaP = ResolveAlphaParams(mat, r.alphaModeOverride, r.alphaCutoffOverride, r.opacity);
+
+            const MaterialAssetManager::Entry* matAsset = nullptr;
+            if (batchExt && m_materialAssetManager && r.HasMaterialAsset(mi))
+            {
+                const MaterialAssetManager::Entry* loaded = m_materialAssetManager->GetOrLoad(
+                    r.MaterialAssetOf(mi), nativeCmdList);
+                if (loaded && loaded->valid) matAsset = loaded;
+            }
+
+            D3D12_GPU_DESCRIPTOR_HANDLE matSrv;
+            if (matAsset)
+                matSrv = m_srvHeap->GetGpuHandle(matAsset->srvBlockStart);
+            else if (mat && mat->srvBlockIndex != 0xFFFFFFFF)
+                matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
+            else
+            {
+                Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture
+                                                           : m_resourceManager->GetDefaultWhiteTexture();
+                matSrv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+            }
+            if (matSrv.ptr != lastMatSrv)
+            {
+                m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, matSrv);
+                lastMatSrv = matSrv.ptr;
+            }
+
+            struct { float metallic; float roughness; u32 flags; u32 packedTint;
+                     float uvScaleX, uvScaleY, uvOffsetX, uvOffsetY; u32 packedEmissive; } pbrParams;
+            if (matAsset)
+            {
+                // drawEntity の matAsset 経路と同じ規則（テクスチャ上書きはバッチ対象外なので上書き分岐は無い）
+                pbrParams.metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic  : matAsset->data.metallic;
+                pbrParams.roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness : matAsset->data.roughness;
+                pbrParams.flags = 0;
+                if (matAsset->hasNormalTex)   pbrParams.flags |= 1u;
+                if (matAsset->hasMRTex)       pbrParams.flags |= 2u;
+                if (matAsset->hasEmissiveTex) pbrParams.flags |= kPbrFlagEmissiveTex;
+                pbrParams.flags = PackAoFlags(pbrParams.flags,
+                    (matAsset->data.aoStrength > 0.0f)
+                        ? ((r.overrideAoStrength >= 0.0f) ? r.overrideAoStrength : matAsset->data.aoStrength)
+                        : 0.0f);
+            }
+            else
+            {
+                pbrParams.metallic  = (r.overrideMetallic  >= 0.0f) ? r.overrideMetallic
+                                                                    : (mat ? mat->defaultMetallic : 0.0f);
+                pbrParams.roughness = (r.overrideRoughness >= 0.0f) ? r.overrideRoughness
+                                                                    : (mat ? mat->defaultRoughness : 0.5f);
+                pbrParams.flags = 0;
+                if (mat && mat->normalMapTexture)      pbrParams.flags |= 1u;
+                // ★metallic/roughness のスカラーは glTF 意味論の「係数」＝ MR テクスチャを殺さない
+                //   （非インスタンス経路 / matAsset 経路と同じ規則。#26 で揃えた）
+                if (mat && mat->metalRoughnessTexture) pbrParams.flags |= 2u;
+                if (mat && mat->emissiveTexture)       pbrParams.flags |= kPbrFlagEmissiveTex;
+                pbrParams.flags = PackAoFlags(pbrParams.flags, ResolveAoStrength(mat, r.overrideAoStrength));
+            }
+            if (batchExt)
+            {
+                // 拡張: 1 体ずつの経路と同じ packedTint（色はバッチ内一様 = 鍵に混ぜてある）。icolor は白。
+                const auto q = [](f32 v) {
+                    return static_cast<u32>(static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f));
+                };
+                const DirectX::XMFLOAT4 tc = r.hasColorTint ? r.colorTint : DirectX::XMFLOAT4{1.0f, 1.0f, 1.0f, 1.0f};
+                pbrParams.packedTint = (q(tc.x) << 16) | (q(tc.y) << 8) | q(tc.z);
+            }
+            else
+            {
+                // ★インスタンス経路の色は per-instance 頂点ストリーム（inst.color）で掛かるのでここは白。
+                //   b0 も同様に 16 DWORD しか書かないので、この経路では b0 の 16 番以降を読んではいけない。
+                pbrParams.packedTint = 0x00FFFFFFu;
+            }
+            // 透明パラメータ（インスタンス経路は MASK のみ。BLEND は sortKey=3 でバッチ対象外）。
+            pbrParams.flags      = PackAlphaTestFlags(pbrParams.flags, alphaP);
+            pbrParams.packedTint = PackTintWithOpacity(pbrParams.packedTint, alphaP.opacity);
+            if (matAsset && matAsset->hasHeightTex && alphaP.mode == AlphaMode::Opaque)
+                pbrParams.flags = PackParallaxFlags(pbrParams.flags, matAsset->data.parallaxScale,
+                                                    matAsset->data.parallaxSteps);
+            pbrParams.uvScaleX = 1.0f; pbrParams.uvScaleY = 1.0f;
+            pbrParams.uvOffsetX = 0.0f; pbrParams.uvOffsetY = 0.0f;
+            // materialRemap 由来の .dxmat は uvTiling を描画時に掛ける（drawEntity と同じ。animFrames==0 はバッチ条件）
+            if (matAsset && r.MaterialIsRemapped(mi))
+            {
+                pbrParams.uvScaleX *= matAsset->data.uvTilingU;
+                pbrParams.uvScaleY *= matAsset->data.uvTilingV;
+            }
+            // 自己発光（バッチ内は batchKey で同値が保証されているので先頭の値でよい）
+            {
+                DirectX::XMFLOAT3 baseColor = mat ? mat->emissiveColor : DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f};
+                f32 baseIntensity = mat ? mat->emissiveIntensity : 0.0f;
+                if (matAsset)
+                {
+                    baseColor = { matAsset->data.emissiveColor[0], matAsset->data.emissiveColor[1],
+                                  matAsset->data.emissiveColor[2] };
+                    baseIntensity = matAsset->data.emissiveIntensity;
+                }
+                pbrParams.packedEmissive = PackEmissive(ResolveEmissiveParams(
+                    baseColor, baseIntensity, r.overrideEmissiveColor, r.overrideEmissiveIntensity));
+            }
+
+            // ---- マテリアルグラフ（G2b）のインスタンス描画 ----
+            //   インスタンス版 PSO（VSMainInstanced）が揃っているときだけ。準備中 / 失敗 / インスタンス PSO 無しは
+            //   Resolve が false か psoInst == null = 1 体ずつの経路と同じ代理材質（単色）で描く。
+            GraphMaterialSystem::DrawParams graphDraw;
+            bool useGraph = false;
+            if (matAsset && m_graphMaterials && matAsset->data.IsGraph())
+            {
+                useGraph = m_graphMaterials->Resolve(r.MaterialAssetOf(mi), *matAsset,
+                                                     nativeCmdList, frameIndex, depthPrepassActive, graphDraw)
+                           && graphDraw.psoInst != nullptr;
+                if (useGraph)
+                {
+                    std::memcpy(&pbrParams.metallic,  &graphDraw.recordBase,   sizeof(u32));
+                    std::memcpy(&pbrParams.roughness, &graphDraw.poolSrvIndex, sizeof(u32));
+                    pbrParams.flags = 0;   // graphFlags（予約）
+                }
+            }
+            nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 9, &pbrParams, 0);
+
+            ID3D12PipelineState* wantPso = nullptr;
+            if (useGraph)
+            {
+                // PS の ObjectParameter（b0 の自由枠）を 1 体ずつの経路と同じ位置に送る。先頭 16 DWORD = transpose(viewProj)。
+                struct { XMMATRIX vpT; XMMATRIX unusedModel; f32 custom[shaderparams::kMeshFreeFloats]; } gb0;
+                static_assert(sizeof(gb0) == 40 * sizeof(f32), "b0 は 40 DWORD");
+                gb0.vpT = passVpT;
+                gb0.unusedModel = XMMatrixIdentity();
+                std::memcpy(gb0.custom, r.CustomParamBase(), sizeof(gb0.custom));
+                m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 40, &gb0);
+                wantPso = graphDraw.psoInst;
+            }
+            else
+            {
+                PipelineState* batchPso = instPso;
+                if (alphaP.mode == AlphaMode::Mask)
+                {
+                    PipelineState* mp = depthPrepassActive ? m_pipelineStateInstMaskLEqual.get()
+                                                           : m_pipelineStateInstMask.get();
+                    if (mp && mp->Get()) batchPso = mp;
+                }
+                wantPso = batchPso->Get();
+            }
+            if (wantPso != lastPso)
+            {
+                nativeCmdList->SetPipelineState(wantPso);
+                lastPso = wantPso;
+            }
+
+            m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());              // slot0
+            m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(head.lod).GetView());
+            lastVbMesh = mesh;
+            lastLod    = head.lod;
+
+            const u32 idx = mesh->GetIndexCountLod(head.lod);
+            m_commandList->DrawIndexedInstanced(idx, n);
+            ++m_statDraws;
+            m_statTris += idx / 3 * n;
+            ++m_passBucket->draws;
+            m_passBucket->tris += idx / 3 * n;
+        }
         // ★実際にドローを発行したときだけ数える。区間を訪れた回数を数えると、
         //   視錐台で全部落ちた区間まで「述語を張った」ことになって数字が嘘になる。
         if (batchPredicated) ++m_statPredicated;
-        ++m_statDraws;
-        m_statTris += idx / 3 * n;
-        ++m_passBucket->draws;
-        m_passBucket->tris += idx / 3 * n;
 
         i = j;
     }
@@ -2012,47 +2167,16 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                                 depthInstPrevScratch.data(), static_cast<size_t>(n) * sizeof(MeshInstancePrevData));
                 m_instanceCursor += n;
 
-                // MASK バッチは clip 入りの深度 PSO へ差し替え、t0/b2 も貼る。
-                // batchKey に透明パラメータを混ぜてあるのでバッチ内の実効値は同一。
-                PipelineState* usePso = instPSO;
-                if (maskEnabled && maskPsos->inst)
-                {
-                    const AlphaParams ap = resolveAlphaOf(*item.renderer, item.renderer->meshes[0]);
-                    if (ap.mode == AlphaMode::Mask)
-                    {
-                        usePso = maskPsos->inst;
-                        bindMaskMaterial(item.e, 0, *item.renderer, item.renderer->meshes[0], ap);
-                    }
-                }
-                if (usePso->Get() != lastPso)
-                {
-                    m_commandList->SetPipelineState(*usePso);
-                    lastPso = usePso->Get();
-                }
-                if (velocityMode)
-                {
-                    // batchKey にマテリアルが含まれているので、バッチ単位で 1 回貼れば正しい。
-                    float rough = 0.5f, metal = 0.0f;
-                    resolvePbr(*item.renderer, item.renderer->meshes[0], 0, rough, metal);
-
-                    VelocityInstObjCB vc;
-                    vc.vpJ       = passVpT;                            // transpose(jittered VP)
-                    vc.prevVp    = XMMatrixTranspose(prevViewProj);    // transpose(prev non-jittered VP)
-                    vc.jitter    = jitterNdc;
-                    vc.matPacked = packMaterial(rough, metal);
-                    vc.pad       = 0.0f;
-                    m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityInstObjNum32, &vc);
-                }
-                else
-                {
+                // ---- バッチの深度描画: サブメッシュごとに 1 ドロー × n インスタンス ----
+                //   材質が深度に効くのは MASK（アルファテスト）だけ。不透明サブメッシュは instPSO、MASK のサブメッシュは
+                //   clip 入りの instance 版（maskPsos->inst）+ t0/b2 を貼る。batchKey に全サブメッシュのポインタ・材質アセットの
+                //   パス・透明パラメータが入っているので、バッチ内の実効値は同一（先頭の 1 体で決めてよい）。
+                //   ★depthInstScratch / depthInstPrevScratch は上で同数・同順に積み終えている（インスタンス VB は全サブメッシュで共用）。
+                const MeshRenderer& rb = *item.renderer;
+                const u32 subCount = static_cast<u32>(rb.meshes.size());
+                if (!velocityMode)
                     m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, 16, &passVpT);
-                }
 
-                const Mesh* mesh = item.renderer->meshes[0];
-                const u32   lodI = runLod;   // ラン条件で全要素が同一と保証済み
-                m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
-                m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lodI).GetView());
                 D3D12_VERTEX_BUFFER_VIEW iv = m_instanceVbView[frameIndex];
                 iv.BufferLocation += static_cast<u64>(base) * sizeof(MeshInstanceData);
                 iv.SizeInBytes     = n * sizeof(MeshInstanceData);
@@ -2064,15 +2188,55 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                     pv.SizeInBytes     = n * sizeof(MeshInstancePrevData);
                     m_commandList->GetNative()->IASetVertexBuffers(2, 1, &pv);
                 }
-                lastVbMesh = mesh;
-                lastLod    = lodI;
 
-                const u32 idx = mesh->GetIndexCountLod(lodI);
-                m_commandList->DrawIndexedInstanced(idx, n);
-                ++m_statDraws;
-                m_statTris += idx / 3 * n;
-                ++m_passBucket->draws;
-                m_passBucket->tris += idx / 3 * n;
+                const u32 lodI = runLod;   // ラン条件で全要素が同一と保証済み
+                for (u32 mi = 0; mi < subCount; ++mi)
+                {
+                    const Mesh* mesh = rb.meshes[mi];
+
+                    PipelineState* usePso = instPSO;
+                    if (maskEnabled && maskPsos->inst)
+                    {
+                        const AlphaParams ap = resolveAlphaOf(rb, mesh);
+                        if (ap.mode == AlphaMode::Mask)
+                        {
+                            usePso = maskPsos->inst;
+                            bindMaskMaterial(item.e, mi, rb, mesh, ap);
+                        }
+                    }
+                    if (usePso->Get() != lastPso)
+                    {
+                        m_commandList->SetPipelineState(*usePso);
+                        lastPso = usePso->Get();
+                    }
+                    if (velocityMode)
+                    {
+                        // 粗さ / 金属度はサブメッシュごと（材質が違う）。バッチ内は同一なので先頭の 1 体で決める。
+                        float rough = 0.5f, metal = 0.0f;
+                        resolvePbr(rb, mesh, mi, rough, metal);
+
+                        VelocityInstObjCB vc;
+                        vc.vpJ       = passVpT;                            // transpose(jittered VP)
+                        vc.prevVp    = XMMatrixTranspose(prevViewProj);    // transpose(prev non-jittered VP)
+                        vc.jitter    = jitterNdc;
+                        vc.matPacked = packMaterial(rough, metal);
+                        vc.pad       = 0.0f;
+                        m_commandList->SetPerObjectConstants(RootSignature::kSlotPerObject, kVelocityInstObjNum32, &vc);
+                    }
+
+                    m_commandList->SetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    m_commandList->SetVertexBuffer(mesh->GetVertexBuffer().GetView());
+                    m_commandList->SetIndexBuffer(mesh->GetIndexBufferLod(lodI).GetView());
+                    lastVbMesh = mesh;
+                    lastLod    = lodI;
+
+                    const u32 idx = mesh->GetIndexCountLod(lodI);
+                    m_commandList->DrawIndexedInstanced(idx, n);
+                    ++m_statDraws;
+                    m_statTris += idx / 3 * n;
+                    ++m_passBucket->draws;
+                    m_passBucket->tris += idx / 3 * n;
+                }
 
                 i = j - 1;
                 continue;
@@ -4680,14 +4844,18 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             // ★カメラが動いただけでは組み直さない（ハッシュにカメラを混ぜていない）。距離ソートは
             //   上限超過時の間引きにしか効かず、間引き中は IsLastBuildCacheable() が false を返す。
             // ★forceBuildTlas / スキンドがいるフレーム / ハッシュ未計算 は従来どおり毎フレーム構築。
-            u64 rtHash = 0;
-            if (m_rtContentHashValid && m_rtSkinnedItems == 0 && !rtCfg.forceBuildTlas)
+            // staticKey = 静的部分の鍵（スキンドのワールド行列は入っていない）。スキンドがいるフレームでも
+            // 静的インスタンス記述 / GeometryInfo のキャッシュ（RaytracingScene::CanReuseStatic）に使う。
+            // rtHash = TLAS 丸ごと再利用の鍵（スキンドが 0 体のときだけ）。
+            u64 staticKey = 0;
+            if (m_rtContentHashValid && !rtCfg.forceBuildTlas)
             {
-                rtHash = m_rtContentHash;
-                RtHashMix(rtHash, bd.maxInstances);   // 上限が変われば入る中身も変わる
-                RtHashMix(rtHash, (skinnedInTlas ? 1u : 0u) | (wantGeoInfo ? 2u : 0u));
-                if (rtHash == 0) rtHash = 1;          // 0 は「使い回し不可」の予約値
+                staticKey = m_rtContentHash;
+                RtHashMix(staticKey, bd.maxInstances);   // 上限が変われば入る中身も変わる
+                RtHashMix(staticKey, (skinnedInTlas ? 1u : 0u) | (wantGeoInfo ? 2u : 0u));
+                if (staticKey == 0) staticKey = 1;       // 0 は「使い回し不可」の予約値
             }
+            const u64 rtHash = (m_rtDynamicItems == 0) ? staticKey : 0;
 
             bool tlasOk = false;
             if (rtHash != 0 && rtHash == m_rtBuiltHash && m_rtScene->ReuseLastFrame())
@@ -4699,6 +4867,10 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             {
             // ★ここから下は BuildDrawList の計時ブロックと同じ流儀で、字下げを増やさずに
             //   スコープだけ開ける（従来経路の中身は 1 行も変えていない）。
+            // 静的部分を CPU キャッシュから写せるか。Feed（下）と Build の両方へこの 1 変数を渡す。
+            const bool staticReuse = (staticKey != 0) && m_rtScene->CanReuseStatic(staticKey);
+            bd.staticHash  = staticKey;
+            bd.reuseStatic = staticReuse;
             m_gpuTimer->Begin(nativeCmdList, GpuTimer::Raytracing);
             if (m_skinningCompute) m_skinningCompute->BeginFrame();
             {
@@ -4767,6 +4939,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
 
             for (const DrawItem& it : m_drawItems)
             {
+                if (staticReuse && !it.rtDynamic) continue;   // 静的は RaytracingScene のキャッシュから写す（動的 = スキンド / ノードアニメ / 動いた物は毎回流す）
                 if (!IsRaytracedItem(it, skinnedInTlas)) continue;
                 const MeshRenderer& r = *it.renderer;
                 const XMMATRIX world = XMLoadFloat4x4(&it.world);
@@ -4813,7 +4986,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
                     if (it.hasNodeAnim && mi < static_cast<u32>(r.meshNodeTransforms.size()))
                         meshWorld = XMLoadFloat4x4(&r.meshNodeTransforms[mi]) * world;
                     m_rtScene->AddInstance(r.meshes[mi], meshWorld, it.center,
-                                           makeGeoInfo(it, mi));
+                                           makeGeoInfo(it, mi), it.rtDynamic);
                 }
             }
 
@@ -4822,6 +4995,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             // 組み直す（TLAS の内容ハッシュが変わった）フレームだけここへ来る。
             for (const GpuInstFrameGroup& fg : m_gpuInst.frame)
             {
+                if (staticReuse) break;   // GPU 駆動の群は静的＝キャッシュに入っている
                 const MeshRenderer& r = *fg.renderer;
                 DrawItem rep{};
                 rep.e = fg.e;
@@ -5222,6 +5396,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 h = fnv(h, &c.pos, sizeof(c.pos));
                 h = fnv(h, &c.range, sizeof(c.range));
                 bool dynamic = false;
+                u64 itemSum = 0;
                 const XMVECTOR lp = XMLoadFloat3(&c.pos);
                 for (const DrawItem& it : m_drawItems)
                 {
@@ -5229,12 +5404,17 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                     if (it.renderer && !it.renderer->castShadows) continue;   // 影に入らない物は動いても描き直さない
                     const f32 d = XMVectorGetX(XMVector3Length(XMVectorSubtract(XMLoadFloat3(&it.center), lp)));
                     if (d > c.range + it.radius) continue;
-                    h = fnv(h, &it.guid, sizeof(it.guid));
-                    h = fnv(h, &it.world, sizeof(it.world));
+                    // ★描画リストの並び順に依存させない（1 個ずつのハッシュを足し合わせる）。並びは同点の
+                    //   ソートで毎フレーム揺れることがあり、順に混ぜると鍵が毎フレーム変わって 16 灯 × 6 面を
+                    //   全部描き直していた（UE 版の建築 3,472 体を入れたシーンで影の描画コール 5 万/フレーム）。
+                    u64 hi = fnv(1469598103934665603ull, &it.guid, sizeof(it.guid));
+                    hi = fnv(hi, &it.world, sizeof(it.world));
+                    itemSum += hi * 0x9E3779B97F4A7C15ull + (hi >> 29);
                     if (it.skin || it.hasNodeAnim
                         || std::memcmp(&it.world, &it.prevWorld, sizeof(it.world)) != 0)
                         dynamic = true;
                 }
+                h = fnv(h, &itemSum, sizeof(itemSum));
                 auto& cache = m_pointShadowCache[s];
                 if (!cache.valid || cache.key != h)
                     pointNeedsRender[s] = true;                    // 新顔・配置が変わった（静的でも 1 回は描く）

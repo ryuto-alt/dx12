@@ -115,6 +115,9 @@ public:
         ID3D12PipelineState* pso = nullptr;
         u32 recordBase = 0;      // b2 DWORD0
         u32 poolSrvIndex = 0;    // b2 DWORD1（このフレームのプールの SRV 添字）
+        // 自動インスタンシング用（入力レイアウトが slot1 の per-instance 行列つき + VSMainInstanced）。Forward 種別だけが持つ。
+        //   null = まだ作れていない / 作れなかった（その場合インスタンス描画では代理材質で描く）。PS・b2 の詰め方は pso と同じ。
+        ID3D12PipelineState* psoInst = nullptr;
     };
     // グラフ材質の描画に必要なものを返す。false = まだ使えない / 失敗 → 従来の代理材質（単色プロキシ）で描くこと。
     // lequal: 深度プリパス併用時の LESS_EQUAL 版。cmd はテクスチャ読み込み用。
@@ -246,6 +249,7 @@ private:
         std::shared_ptr<std::atomic<int>> phaseFast = std::make_shared<std::atomic<int>>(0);   // ワーカーの進み具合（0 待機 / 1 DXC / 2 PSO / 3 完了）
         std::shared_ptr<std::atomic<int>> phaseOpt = std::make_shared<std::atomic<int>>(0);
         Microsoft::WRL::ComPtr<ID3D12PipelineState> less, lequal;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> lessInst, lequalInst;   // インスタンス版（Forward のみ。失敗しても null のまま）
         std::string errorLog;
         std::vector<matgraph::Diagnostic> mapped;    // DXC エラーの nodeId 逆引き
         double dxcMs = 0, psoMs = 0;                 // 直近に受理した段階の所要
@@ -307,6 +311,7 @@ private:
         std::string errorLog;
         std::vector<matgraph::Diagnostic> mapped;
         Microsoft::WRL::ComPtr<ID3D12PipelineState> less, lequal;
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> lessInst, lequalInst;
         double dxcMs = 0, psoMs = 0;
         bool cacheHit = false;
     };
@@ -335,8 +340,8 @@ private:
     void WorkerMain(int index);
     void ProcessJob(const Job& job, ShaderRuntimeCompiler& compiler, const std::string& dxcVersion, JobResult& out);
     bool CompileBlobs(const Job& job, ShaderRuntimeCompiler& compiler, const std::string& dxcVersion, JobResult& out,
-                      std::vector<u8>& vs, std::vector<u8>& ps);
-    bool BuildPsos(Kind kind, const std::vector<u8>& vs, const std::vector<u8>& ps, JobResult& out);
+                      std::vector<u8>& vs, std::vector<u8>& vsInst, std::vector<u8>& ps);
+    bool BuildPsos(Kind kind, const std::vector<u8>& vs, const std::vector<u8>& vsInst, const std::vector<u8>& ps, JobResult& out);
     static int JobPriority(const Job& j) { return (j.kind != Kind::Forward || j.stage == 1) ? 0 : 1; }
 
     // ---- 状態 -------------------------------------------------------------------------------
@@ -360,7 +365,7 @@ private:
     std::vector<GraveRecord> m_graveRecords;
     struct GraveVariant { std::shared_ptr<Variant> v; u64 frame; };
     std::vector<GraveVariant> m_graveVariants;
-    struct GravePso { Microsoft::WRL::ComPtr<ID3D12PipelineState> a, b; u64 frame; };   // 段階の差し替えで置き換わった PSO（GPU が使い終わるまで）
+    struct GravePso { Microsoft::WRL::ComPtr<ID3D12PipelineState> a, b, c, d; u64 frame; };   // 段階の差し替えで置き換わった PSO（GPU が使い終わるまで）
     std::vector<GravePso> m_gravePsos;
 
     std::map<std::string, std::unique_ptr<Instance>> m_instances;

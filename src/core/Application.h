@@ -1896,7 +1896,13 @@ private:
     //   cacheable=false を返して毎フレーム組み直しになるため）。
     u64  m_rtContentHash      = 0;
     bool m_rtContentHashValid = false;   // false = 今フレームは計算していない（＝必ず組み直す）
-    u32  m_rtSkinnedItems     = 0;       // TLAS 対象のスキンド DrawItem 数。>0 なら再利用しない
+    u32  m_rtSkinnedItems     = 0;       // TLAS 対象のスキンド DrawItem 数。>0 なら TLAS 丸ごとの再利用はしない
+    // スキンドの「誰がいるか」（数・エンティティ・メッシュ。ワールド行列は含めない）。
+    // 静的キャッシュの鍵 m_rtContentHash には混ぜない（スキンドは毎フレーム書き直すので静的の鍵を汚さない）。
+    u64  m_rtSkinHash         = 0;
+    u32  m_rtDynamicItems     = 0;       // 動的側（スキンド / ノードアニメ / 動いた物）の DrawItem 数。>0 なら TLAS 丸ごとの再利用はしない
+    // 「動いたか」の判定用。TLAS 候補を走査した順に (識別ハッシュ, ワールド行列ハッシュ) を持つ。前フレームと突き合わせる。
+    std::vector<std::pair<u64, u64>> m_rtPrevItemIds, m_rtCurItemIds;
     u64  m_rtBuiltHash        = 0;       // 現在の TLAS を建てたときのハッシュ。0 = 使い回し不可
     // このフレームで RT サン影が実際に走ったか。CSM 側の排他描画（skipRtCovered）と
     // フォワードの min() 合成が食い違わないよう、判定は必ずこの 1 変数を見ること。

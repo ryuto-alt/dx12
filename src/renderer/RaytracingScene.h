@@ -116,6 +116,9 @@ public:
         // 前フレームの TLAS をそのまま使ったフレームが何連続しているか（ReuseLastFrame）。
         // 0 = このフレームは組み直した。静止シーンで 0 のままなら再利用が効いていない。
         u32 tlasReuseFrames    = 0;
+        // 静的部分（インスタンス記述 / GeometryInfo）を CPU 側キャッシュから写して TLAS を組み直したフレームの連続数。
+        // 0 = このフレームは静的も作り直した（スキンドがいて静的が不変なら 1,2,3... と増える）。
+        u32 tlasStaticReuseFrames = 0;
         u64 blasBytes          = 0;   // BLAS 実サイズ合計（PrebuildInfo の実測値）
         u64 blasTriangles      = 0;   // BLAS に入っている三角形の総数
         u64 tlasBytes          = 0;
@@ -148,7 +151,7 @@ public:
                     u32 skippedAlphaTest = 0);
     void AddInstance(const Mesh* mesh, const DirectX::XMMATRIX& world,
                      const DirectX::XMFLOAT3& center,
-                     const GeometryInfo& geo = GeometryInfo{});
+                     const GeometryInfo& geo = GeometryInfo{}, bool dynamic = false);
 
     // スキンド用（計画09 Step 4）。compute スキニングが書いた変形後頂点バッファを指定する。
     // key は「エンティティ × サブメッシュ」で一意な値を呼び出し側が作って渡すこと。
@@ -176,6 +179,11 @@ public:
         // ponytail: これを恒常的に超えるようになったら refit（PREFER_FAST_TRACE|ALLOW_UPDATE +
         //   PERFORM_UPDATE）へ移行すること。refit は ~1000M tris/sec で 10 倍速い。
         u32 maxSkinnedTrianglesPerFrame = 200000;
+        // 静的部分のキャッシュ。staticHash != 0 のとき、静的を先頭・スキンドを後ろに並べて静的をキャッシュする。
+        // reuseStatic = true は CanReuseStatic(staticHash) が true だったフレームだけ。このとき AddInstance は
+        // スキンドしか呼ばないこと（静的はキャッシュから写す）。
+        u64  staticHash   = 0;
+        bool reuseStatic  = false;
     };
     // BLAS の遅延構築と TLAS 再構築を cmd へ積む。
     // 戻り値: この後 RayQuery を投げてよいか（TLAS が有効か）。
@@ -197,6 +205,10 @@ public:
     // 直近の Build() の結果が次フレームで使い回せるか（スキンド無し・上限間引き無し・
     // BLAS の遅延構築が残っていない）。ReuseLastFrame() が内部で同じ判定をする。
     bool IsLastBuildCacheable() const { return m_cacheable; }
+
+    // 静的キャッシュが staticHash で使えるか。BeginFrame の前に呼び、true なら Feed は静的を飛ばして Build に reuseStatic=true を渡す。
+    // 使える = 同じハッシュで完全に（間引き無し・BLAS 遅延構築無しで）建てた静的キャッシュがある。
+    bool CanReuseStatic(u64 staticHash) const;
 
     bool IsReady() const { return m_tlasValid; }
     D3D12_GPU_VIRTUAL_ADDRESS GetTlasAddress() const { return m_tlas.GetGpuAddress(); }
@@ -254,6 +266,7 @@ private:
         DirectX::XMFLOAT4X4 world;    // ノード変換合成済みのメッシュワールド
         float               distSq;   // カメラからの距離²（上限超過時の足切り用）
         // --- スキンドのみ（skinnedKey != 0 で判別）---
+        bool                      dynamic = false;   // 静的キャッシュに入れず毎フレーム追記する（動いた物。スキンドは skinnedKey != 0 で動的）
         u64                       skinnedKey = 0;
         D3D12_GPU_VIRTUAL_ADDRESS deformedVb = 0;
         u32                       vertexCount = 0;
@@ -262,6 +275,15 @@ private:
         //   予算切れで要素も落ちるので、呼び出し順から添字を復元できない。
         GeometryInfo              geo{};
     };
+    // 静的部分のキャッシュ（CPU 側コピー。アップロードヒープは write-combined なので読み戻さない）。
+    // 添字 = InstanceID = GeometryInfo の添字（静的が先頭から同じ順、スキンドはその後ろ）。
+    struct StaticStat { u32 alphaTest = 0, geoWritten = 0, albedo = 0, texture = 0, tint = 0, emissive = 0; };
+    std::vector<D3D12_RAYTRACING_INSTANCE_DESC> m_staticDescs;
+    std::vector<GeometryInfo>                   m_staticGeos;
+    StaticStat m_staticStat;
+    u64  m_staticHash   = 0;
+    bool m_staticValid  = false;
+    u32  m_staticStreak = 0;
     std::vector<PendingInstance> m_pending;
     DirectX::XMFLOAT3 m_cameraPos{0, 0, 0};
 
