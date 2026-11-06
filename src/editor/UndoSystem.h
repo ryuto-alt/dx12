@@ -305,6 +305,7 @@ struct MeshRendererLook
     f32  animFps = 0.0f;
     std::string shaderPath;
     bool shaderAlphaBlend = false;
+    bool castShadows = true;
     f32  effectValue = 0.0f;
     DirectX::XMFLOAT3 shaderParamsB{0, 0, 0};
     DirectX::XMFLOAT4 shaderParams{0, 0, 0, 0};

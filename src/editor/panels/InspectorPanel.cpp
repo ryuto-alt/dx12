@@ -4971,6 +4971,12 @@ void InspectorPanel::Render(entt::registry& reg,
                     }
                 }
 
+                // 影を落とすか（UE の Cast Shadow）。Undo は下の MeshRendererLook がまとめて積む
+                ImGui::Checkbox("影を落とす castShadows", &mr.castShadows);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("OFF: 影マップに描かない（本体は描かれ、影は受ける）。\n"
+                                      "照明器具の筐体・薄い飾り・大量の小物に。RT の影/GI には効かない");
+
                 // UVスクロール（頂点は触らずシェーダー側で流す。滝/溶岩/コンベア）と
                 // 連番アニメ（有効中はタイリング/スクロールより優先）
                 if (pg::Begin("UVAnim"))

@@ -191,6 +191,13 @@ struct MeshRenderer
     // 間接光（IBL・アンビエント・GI）だけに掛かり、直接光には掛からない。MCP は dx12_set_pbr の aoStrength。
     float overrideAoStrength = -1.0f;
 
+    // ---- 影を落とすか（UE の Cast Shadow）。2026-11-06 ----
+    // false = 影マップ（CSM / スポット / ポイント）に描かない。本体は普通に描かれ、影は受ける。
+    // 照明器具の筐体（灯を中に入れると器具が自分の灯を遮ってまだらな影になる）・薄い飾り・
+    // 大量の小物の負荷落としに使う。シーン JSON はエンティティ直下の "castShadows": false（true は書かない）。
+    // ★RT の加速構造（RT 影・DDGI・RT 反射）には今は効かない（影マップの経路だけ）。
+    bool castShadows = true;
+
     // UV タイリング（頂点バッファへ焼き込む方式。値を変えると Mesh::ApplyUVScale で VB を作り直す）
     float uvScaleU = 1.0f;
     float uvScaleV = 1.0f;

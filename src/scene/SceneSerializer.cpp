@@ -228,7 +228,7 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity, 
 // MeshRenderer があるときだけ書かれる描画まわりのキー（SerializeEntityJson の MeshRenderer 節）。
 // モデルが読めなかったエンティティはこれを MissingModel に取っておき、保存時に書き戻す。
 static const char* const kRendererKeys[] = {
-    "meshRenderer", "material", "color", "uvTiling", "uvScroll", "flipbook",
+    "meshRenderer", "material", "color", "uvTiling", "uvScroll", "flipbook", "castShadows",
     "shader", "shaderAlphaBlend", "shaderEffectValue", "shaderParams", "shaderParamsB",
     "materialTextureOverrides", "materialAssets", "materialRemap",
 };
@@ -858,6 +858,9 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             {
                 ej["uvScroll"] = {{"u", mr.uvScrollU}, {"v", mr.uvScrollV}};
             }
+
+            // 影を落とさない（既定 true のときは書かない）
+            if (!mr.castShadows) ej["castShadows"] = false;
 
             // 連番アニメ（無効時は書かない）
             if (mr.animFrames > 0)
@@ -2292,6 +2295,10 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
                     }
                 }
             }
+
+            // 影を落とすか（MeshRenderer::castShadows。無ければ true のまま）
+            if (ej.contains("castShadows") && ej["castShadows"].is_boolean() && reg.all_of<MeshRenderer>(e))
+                reg.get<MeshRenderer>(e).castShadows = ej["castShadows"].get<bool>();
 
             // UV スクロール復元（頂点は触らないのでロード時の再構築は不要）
             if (ej.contains("uvScroll") && reg.all_of<MeshRenderer>(e))

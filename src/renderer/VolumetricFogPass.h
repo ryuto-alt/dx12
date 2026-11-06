@@ -56,6 +56,7 @@ public:
         DirectX::XMFLOAT4 clusterGrid{};
         u32   numLights        = 0;      // シーン総灯数（統計用。ループ上限はクラスタのカウント）
         u32   maxPerCluster    = 128;    // cluster::kMaxLightsPerCluster
+        bool  physicalUnits    = false;  // 物理ライティング単位（点・スポットを cd の逆二乗で散乱させる。フォワードの UNO_PHYSICAL_LIGHTS と同じ）
         // スポット影。★Application の FrameConstants::spotShadowMatrix と同じ「転置済み」を渡すこと
         //   （未使用スロットは単位行列で埋まっている）。cascadeViewProj だけが非転置なので注意。
         const DirectX::XMFLOAT4X4* spotShadowMatrixTransposed = nullptr;  // 4 本

@@ -1758,6 +1758,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                                                : XMMatrixIdentity();
     const XMFLOAT2 jitterNdc = prepass ? prepass->jitterNdc : XMFLOAT2{0.0f, 0.0f};
     const bool skipTransparent = prepass && prepass->skipTransparent;
+    const bool shadowPass = (prepass == nullptr);   // 影マップ（CSM / スポット / ポイント）の呼び出し
     PipelineState* const instPsoForGpu = instPSO;   // GPU 駆動のインスタンス群（4-3）は専用の前フレームストリームを持つので、前ワールド VB の有無に依らない
     if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 前ワールドVBが無ければ従来経路
 
@@ -1946,6 +1947,10 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         //   alphaClass=0 のままなので従来どおり影を落とす（既存シーンの非退行）。
         if (item.alphaClass == 2u) continue;
 
+        // MeshRenderer::castShadows = false は影マップ（prepass == nullptr の呼び出し＝CSM / スポット / ポイント）に出さない。
+        // カメラの深度プリパスには出す（本体は普通に描かれるので深度は要る）。
+        if (shadowPass && item.renderer && !item.renderer->castShadows) continue;
+
         // ★RT サン影が有効なとき、CSM は「DXR の TLAS に入っていないもの」だけを描く。
         //   CSM と RT で担当を排他にしておかないと、フォワードの
         //     shadow = min(csmShadow, contactShadowTex)
@@ -1970,6 +1975,7 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
                                  && passLod(m_drawItems[j]) == runLod; ++j)
             {
                 XMMATRIX w = XMLoadFloat4x4(&m_drawItems[j].world);
+                if (shadowPass && m_drawItems[j].renderer && !m_drawItems[j].renderer->castShadows) continue;   // 2 つの push_back より前（不変条件を崩さない）
                 if (!frustum.SphereVisible(XMLoadFloat3(&m_drawItems[j].center), m_drawItems[j].radius)) { ++m_statCulled; continue; }
                 XMMATRIX t = XMMatrixTranspose(w);
                 MeshInstanceData d;
@@ -5220,6 +5226,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 for (const DrawItem& it : m_drawItems)
                 {
                     if (it.alphaClass == 2u) continue;
+                    if (it.renderer && !it.renderer->castShadows) continue;   // 影に入らない物は動いても描き直さない
                     const f32 d = XMVectorGetX(XMVector3Length(XMVectorSubtract(XMLoadFloat3(&it.center), lp)));
                     if (d > c.range + it.radius) continue;
                     h = fnv(h, &it.guid, sizeof(it.guid));
@@ -6138,6 +6145,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         fv.farZ  = viewFar;
         fv.numLights     = numClusterLights;
         fv.maxPerCluster = cluster::kMaxLightsPerCluster;
+        fv.physicalUnits = (m_lightingUnitsApplied == 1);
         fv.spotShadowMatrixTransposed = fc.spotShadowMatrix;   // ★転置済み（未使用枠は単位行列）
         fv.spotShadowTexel = fc.spotShadowTexel;
         fv.pointShadowNear = fc.pointShadowNear;

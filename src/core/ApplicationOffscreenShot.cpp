@@ -32,7 +32,14 @@ void Application::UpdateLightingUnits()
     RecreateForwardPsos();
     RecreateSkinnedPsos();
     RecreateTerrainPsos();
-    Logger::Info("ライティング単位: {}（フォワード系 PSO を差し替えました）", want == 1 ? "物理" : "従来");
+    // ★時間方向に光を溜めているものは履歴を捨てる。単位が変わると同じ値の意味が数百倍変わる。
+    //   シーンを開いた最初のフレームはまだ前のシーンの単位で描かれる（ここは Run ループの先頭でしか呼ばれない）ため、
+    //   物理単位のシーンを開くと DDGI がカンデラ値を従来の減衰で照らした巨大な値をプローブに溜め、
+    //   履歴 0.97 + 多重バウンスの再注入で数十秒白飛びしたままになった（MikuOblivion、2026-11-06）。
+    if (m_ddgi)              m_ddgi->InvalidateHistory();
+    if (m_volumetricFogPass) m_volumetricFogPass->InvalidateHistory();
+    if (m_taaPass)           m_taaPass->InvalidateHistory();
+    Logger::Info("ライティング単位: {}（フォワード系 PSO を差し替え、DDGI・フォグ・TAA の履歴を捨てました）", want == 1 ? "物理" : "従来");
 }
 
 // ---------------------------------------------------------------------------

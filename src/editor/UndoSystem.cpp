@@ -19,6 +19,7 @@ MeshRendererLook MeshRendererLook::From(const MeshRenderer& mr)
     v.animFrames = mr.animFrames; v.animCols = mr.animCols; v.animRow = mr.animRow;
     v.animRows = mr.animRows; v.animMode = mr.animMode; v.animFps = mr.animFps;
     v.shaderPath = mr.shaderPath; v.shaderAlphaBlend = mr.shaderAlphaBlend;
+    v.castShadows = mr.castShadows;
     v.effectValue = mr.effectValue; v.shaderParams = mr.shaderParams;
     v.shaderParamsB = mr.shaderParamsB;
     return v;
@@ -31,6 +32,7 @@ void MeshRendererLook::ApplyTo(MeshRenderer& mr) const
     mr.animFrames = animFrames; mr.animCols = animCols; mr.animRow = animRow;
     mr.animRows = animRows; mr.animMode = animMode; mr.animFps = animFps;
     mr.shaderPath = shaderPath; mr.shaderAlphaBlend = shaderAlphaBlend;
+    mr.castShadows = castShadows;
     mr.effectValue = effectValue; mr.shaderParams = shaderParams;
     mr.shaderParamsB = shaderParamsB;
 }
@@ -42,6 +44,7 @@ bool MeshRendererLook::operator==(const MeshRendererLook& o) const
         && animFrames == o.animFrames && animCols == o.animCols && animRow == o.animRow
         && animRows == o.animRows && animMode == o.animMode && animFps == o.animFps
         && shaderPath == o.shaderPath && shaderAlphaBlend == o.shaderAlphaBlend
+        && castShadows == o.castShadows
         && effectValue == o.effectValue
         && shaderParams.x == o.shaderParams.x && shaderParams.y == o.shaderParams.y
         && shaderParams.z == o.shaderParams.z && shaderParams.w == o.shaderParams.w

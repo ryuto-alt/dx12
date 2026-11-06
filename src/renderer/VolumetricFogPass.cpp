@@ -469,7 +469,7 @@ void VolumetricFogPass::BuildVolumes(ID3D12GraphicsCommandList* cmd, GraphicsDev
     // クラスタライトの散乱を使わない設定なら .w を落として compute 側の分岐を切る。
     if (!s.lightScattering) cb.clusterGrid.w = 0.0f;
     cb.lightCounts = {static_cast<float>(v.numLights),
-                      static_cast<float>(v.maxPerCluster), 0.0f, 0.0f};
+                      static_cast<float>(v.maxPerCluster), v.physicalUnits ? 1.0f : 0.0f, 0.0f};
     for (u32 i = 0; i < 4; ++i)
     {
         if (v.spotShadowMatrixTransposed) cb.spotShadowMatrix[i] = v.spotShadowMatrixTransposed[i];

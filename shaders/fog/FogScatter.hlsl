@@ -107,6 +107,19 @@ void CSScatter(uint3 tid : SV_DispatchThreadID)
             // ★減衰式・コーン式は Lighting.hlsli の AccumulatePunctualLights と完全同一に保つこと。
             float att = saturate(1.0 - dist / Lt.range);
             att *= att;
+            if (gLightCounts.z > 0.5)
+            {
+                // 物理ライティング単位: フォワードの UNO_PHYSICAL_LIGHTS と同じ逆二乗 + 影響半径の窓（2026-11-06）。
+                // ★これが無いと cd（数百）が従来の減衰にそのまま乗り、霧が真っ白になった。
+                // ★最短距離は光源半径ではなく froxel の大きさ程度(0.5m)で抑える。froxel は 1 個が数十 cm〜数 m の
+                //   体積の平均なのに中心 1 点で 1/d² を評価するので、光源のすぐ前の froxel だけ何桁も明るくなり、
+                //   懐中電灯の前に丸い光の玉が浮いた(2026-11-06)。
+                const float srcR = max(Lt._pad, 0.5);
+                const float d2   = max(dist * dist, srcR * srcR);
+                const float xr   = dist / max(Lt.range, 1.0e-4);
+                const float win  = saturate(1.0 - xr * xr * xr * xr);
+                att = win * win / d2;
+            }
             float3 radiance = Lt.color * att;
 
             if (Lt.type > 0.5)   // spot

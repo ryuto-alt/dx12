@@ -45,7 +45,7 @@ cbuffer FogParams : register(b0)
     float4   gRect;       // 576  .xy = ビューポート原点(RT px) / .zw = ビューポートサイズ(px)
     float4   gDepthLin;   // 592  .x=nearZ .y=farZ / .zw=未使用
     float4   gExtend;     // 608  .xyz = 遠方フォールバックの in-scatter 色 / .w = 遠方 σ_t
-    float4   gLightCounts;// 624  .x=シーン総灯数 .y=1クラスタ最大灯数 .zw=未使用
+    float4   gLightCounts;// 624  .x=シーン総灯数 .y=1クラスタ最大灯数 .z=物理ライティング単位(1/0) .w=未使用
     float4x4 gSpotShadowMatrix[4]; // 640  スポット影の world→clip（転置済み）
 };                        // = 896B
 
