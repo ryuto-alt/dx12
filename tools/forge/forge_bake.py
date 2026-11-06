@@ -33,10 +33,14 @@ def phase(name, t):
 # ---------------------------------------------------------------- 引数
 def parse_args():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-    o = dict(res="auto", preview=None, front="+x", samples_mask=96, density=1024.0)
+    o = dict(res="auto", preview=None, front="+x", samples_mask=96, density=1024.0, stats=False)
     i = 0
     while i < len(argv):
         k = argv[i]
+        if k == "--stats":
+            o["stats"] = True
+            i += 1
+            continue
         if k in ("--in", "--recipe", "--out", "--res", "--preview", "--front", "--samples-mask", "--density"):
             key = k[2:].replace("-", "_")
             o[key] = argv[i + 1]
@@ -306,14 +310,14 @@ def build_layer_material(name, P, ctx):
     # --- 垢: くぼみ / 下ほど / 大域 AO / 縦の垂れ筋 / 手垢(触れる所は暗い油膜で艶が出る)
     low = B.math("SUBTRACT", 1.0, B.math("MULTIPLY", Hn, 3.2, cl=True))   # 下から物の高さの約 3 割まで
     low = B.math("MULTIPLY", low, low)
-    gm = B.math("MULTIPLY", B.math("MULTIPLY", C, dirt), B.math("ADD", 0.5, B.math("MULTIPLY", N1, 0.9)))
+    gm = B.math("MULTIPLY", B.math("MULTIPLY", B.sr(C, 0.25, 0.9), dirt), B.math("ADD", 0.5, B.math("MULTIPLY", N1, 0.9)))
     gl = B.math("MULTIPLY", B.math("MULTIPLY", low, dirt * 0.9), B.math("ADD", 0.3, B.math("MULTIPLY", Ns, 1.0)))
-    gb = B.math("MULTIPLY", B.math("MULTIPLY", Cbig, dirt), 0.45)
-    drip = B.math("MULTIPLY", B.math("MULTIPLY", B.sr(Ns, 0.57, 0.74), vert), B.math("MULTIPLY", dirt, 0.55))
-    hand = B.math("MULTIPLY", B.math("MULTIPLY", T, B.math("ADD", 0.35, N2)), 0.45)
-    grime = B.math("ADD", B.math("ADD", B.math("MULTIPLY", gm, 1.4), B.math("MULTIPLY", gl, 0.85)), B.math("ADD", gb, drip), cl=True)
+    gb = B.math("MULTIPLY", B.math("MULTIPLY", B.sr(Cbig, 0.3, 0.9), dirt), 0.3)
+    drip = B.math("MULTIPLY", B.math("MULTIPLY", B.sr(Ns, 0.57, 0.74), vert), B.math("MULTIPLY", dirt, 0.4))
+    hand = B.math("MULTIPLY", B.math("MULTIPLY", T, B.math("ADD", 0.35, N2)), 0.3)
+    grime = B.math("ADD", B.math("ADD", B.math("MULTIPLY", gm, 0.95), B.math("MULTIPLY", gl, 0.5)), B.math("ADD", gb, drip), cl=True)
     grime = B.math("ADD", grime, hand, cl=True)
-    color = B.mixc(grime, color, (0.36, 0.30, 0.23), "MULTIPLY")
+    color = B.mixc(grime, color, (0.42, 0.35, 0.27), "MULTIPLY")
     rough = B.mixf(B.math("MULTIPLY", grime, 0.7), rough, 0.9)
     rough = B.mixf(B.math("MULTIPLY", hand, 0.9), rough, B.math("MULTIPLY", rough, 0.55))   # 手垢は艶
     metal = B.math("MULTIPLY", metal, B.math("SUBTRACT", 1.0, B.math("MULTIPLY", grime, 0.4))) if not isinstance(metal, float) or metal > 0 else metal
@@ -321,8 +325,11 @@ def build_layer_material(name, P, ctx):
     # --- 上面の埃
     dm = B.math("MULTIPLY", B.math("MULTIPLY", B.sr(U, 0.5, 0.95), B.math("SUBTRACT", 1.0, C)),
                 B.math("MULTIPLY", B.math("ADD", 0.35, B.math("MULTIPLY", N1, 0.9)), min(1.0, dirt * 0.9)))
-    dm = B.math("MULTIPLY", dm, 0.8, cl=True)
-    color = B.mixc(dm, color, (0.21, 0.2, 0.18))
+    dm = B.math("MULTIPLY", dm, 0.6, cl=True)
+    cr, cg, cb = B.sep(color)
+    dlum = B.math("MULTIPLY", B.math("ADD", B.math("ADD", cr, cg), cb), 1.0 / 3.0)
+    dust_col = B.mixc(B.sr(dlum, 0.0, 0.1), (0.08, 0.075, 0.07), (0.21, 0.2, 0.18))   # 暗い下地に明るい埃を載せすぎない
+    color = B.mixc(dm, color, dust_col)
     rough = B.mixf(dm, rough, 0.95)
     metal = B.math("MULTIPLY", metal, B.math("SUBTRACT", 1.0, dm)) if not isinstance(metal, float) or metal > 0 else metal
 
@@ -361,7 +368,7 @@ def build_layer_material(name, P, ctx):
     orm = B.comb(ao, rough, metal)
 
     # --- 検査用(--stats): スロット番号 / 見える面 / 上向き、層の量
-    sid = (ctx["slot_index"].get(name, 0) + 1) * 0.01
+    sid = (ctx["slot_index"].get(name[2:] if name.startswith("L_") else name, 0) + 1) * 0.01
     ids = B.comb(sid, vis, B.math("ADD", B.math("MULTIPLY", U, 0.5), 0.5))
     dbg1 = B.comb(grime, dm, rf)
     dbg2 = B.comb(chip, hv, T)
@@ -469,6 +476,115 @@ def do_bake(ob, bake_type, samples, margin=8, normal=False):
     bpy.ops.object.bake(**kw)
 
 
+# ---------------------------------------------------------------- 見える面 / 手の触れる所 / 検査
+def compute_visibility(ob, me, diag):
+    """面ごとの「外から見えるか」。面の外側から法線とそれを傾けた 9 方向へ光線を飛ばし、1 本でも逃げれば 1。"""
+    from mathutils.bvhtree import BVHTree
+    dg = bpy.context.evaluated_depsgraph_get()
+    bvh = BVHTree.FromObject(ob, dg)
+    n = len(me.polygons)
+    cen = np.zeros(n * 3, np.float32)
+    me.polygons.foreach_get("center", cen)
+    cen = cen.reshape(-1, 3)
+    nor = np.zeros(n * 3, np.float32)
+    me.polygons.foreach_get("normal", nor)
+    nor = nor.reshape(-1, 3)
+    up = np.where(np.abs(nor[:, 2:3]) < 0.9, np.array([[0, 0, 1.0]], np.float32), np.array([[1.0, 0, 0]], np.float32))
+    t1 = np.cross(nor, up)
+    t1 /= np.maximum(np.linalg.norm(t1, axis=1, keepdims=True), 1e-9)
+    t2 = np.cross(nor, t1)
+    dirs = [nor]
+    for tilt in (math.radians(45), math.radians(70)):
+        for a in (0, 90, 180, 270):
+            ar = math.radians(a)
+            dirs.append(nor * math.cos(tilt) + (t1 * math.cos(ar) + t2 * math.sin(ar)) * math.sin(tilt))
+    far = diag * 4.0
+    vis = np.zeros(n, np.float32)
+    org = cen + nor * 0.0015
+    for i in range(n):
+        o = Vector(org[i])
+        for d in dirs:
+            if bvh.ray_cast(o, Vector(d[i]), far)[0] is None:
+                vis[i] = 1.0
+                break
+    return vis
+
+
+def box1(a, axis, r):
+    k = 2 * r + 1
+    ap = np.pad(a, [(r + 1, r) if i == axis else (0, 0) for i in range(3)])
+    c = np.cumsum(ap, axis=axis, dtype=np.float32)
+
+    def sl(s):
+        return tuple(s if i == axis else slice(None) for i in range(3))
+    return (c[sl(slice(k, None))] - c[sl(slice(0, -k))]) / k
+
+
+def compute_touch(pos_px, src_pts, bmin, bmax, diag):
+    """src_pts(取っ手・ボタンなど)の近さ 0..1 を、焼き用 UV のテクセルごとの世界座標 pos_px(N,3)から引く。"""
+    vox = max(0.01, diag / 200.0)
+    pad = 6
+    dims = np.ceil((bmax - bmin) / vox).astype(int) + 2 * pad + 1
+    g = np.zeros(dims, np.float32)
+    idx = np.floor((src_pts - bmin) / vox).astype(int) + pad
+    idx = np.clip(idx, 0, dims - 1)
+    g[idx[:, 0], idx[:, 1], idx[:, 2]] = 1.0
+    r = max(1, int(0.022 / vox) + 1)
+    for _ in range(3):
+        for ax in range(3):
+            g = box1(g, ax, r)
+    g = np.clip(g / max(float(g.max()), 1e-9) * 1.8, 0, 1)
+    out = np.zeros(len(pos_px), np.float32)
+    for s in range(0, len(pos_px), 4_000_000):
+        p = pos_px[s:s + 4_000_000]
+        ii = np.floor((p - bmin) / vox).astype(np.int32) + pad
+        ii = np.clip(ii, 0, np.array(dims) - 1)
+        out[s:s + 4_000_000] = g[ii[:, 0], ii[:, 1], ii[:, 2]]
+    return out
+
+
+def srgb_to_lin(x):
+    x = np.asarray(x, np.float32)
+    return np.where(x <= 0.04045, x / 12.92, ((x + 0.055) / 1.055) ** 2.4)
+
+
+def lin_to_srgb(x):
+    x = np.clip(np.asarray(x, np.float32), 0, 1)
+    return np.where(x <= 0.0031308, x * 12.92, 1.055 * x ** (1 / 2.4) - 0.055)
+
+
+def scan_avg_lin(P):
+    """UE の式の下地: lerp(スキャン平均, 0.5, Flat) x Tint(リニア RGB)。"""
+    sc = scan_files(P.get("tex", ""), P.get("packed_dir"))
+    avg = np.array([0.5, 0.5, 0.5], np.float32)
+    if sc:
+        im = bpy.data.images.load(sc["color"], check_existing=True)
+        im.colorspace_settings.name = "Non-Color"
+        a = np.empty(len(im.pixels), np.float32)
+        im.pixels.foreach_get(a)
+        a = a.reshape(-1, 4)[::7, :3]
+        avg = srgb_to_lin(a).mean(0)
+    flat = P.get("flat", 0.0)
+    return ((1 - flat) * avg + flat * 0.5) * np.array(P.get("tint", (0.5, 0.5, 0.5)), np.float32)
+
+
+def lum(c):
+    return c[..., 0] * 0.2126 + c[..., 1] * 0.7152 + c[..., 2] * 0.0722
+
+
+def solid_png(path, srgb_rgb):
+    im = bpy.data.images.new(os.path.basename(path), 4, 4, alpha=False)
+    im.colorspace_settings.name = "Non-Color"
+    px = []
+    for _ in range(16):
+        px += [float(srgb_rgb[0]), float(srgb_rgb[1]), float(srgb_rgb[2]), 1.0]
+    im.pixels = px
+    im.filepath_raw = path
+    im.file_format = "PNG"
+    im.save()
+    return path
+
+
 # ---------------------------------------------------------------- メイン
 def main():
     A = parse_args()
@@ -527,7 +643,7 @@ def main():
             log("slot not in recipe, default:", nm)
         slots.append((nm, spec))
     bake_idx = [i for i, (_, sp) in enumerate(slots) if sp.get("kind", "bake") == "bake"]
-    keep_idx = [i for i, (_, sp) in enumerate(slots) if sp.get("kind") == "image"]
+    keep_idx = [i for i, (_, sp) in enumerate(slots) if sp.get("kind") in ("image", "emissive")]
 
     npoly = len(me.polygons)
     mi = np.zeros(npoly, dtype=np.int32)
@@ -591,11 +707,28 @@ def main():
     log("texel density %.0f px/m, uv bbox %s %s, coverage %.2f" % (density, umin, umax, float(uva[isb].sum())))
     phase("uv", t)
 
+    # --- 見える面
+    t = time.time()
+    vis_f = compute_visibility(ob, me, diag)
+    va = me.attributes.new("Vis", "FLOAT", "FACE")
+    va.data.foreach_set("value", vis_f)
+    vis_frac = float((vis_f * area)[isb].sum() / max(area_b, 1e-9))
+    log("visible area fraction %.2f" % vis_frac)
+    phase("visibility", t)
+
     # --- マスクを焼く
-    ctx = dict(bevel_r=bevel_r, zmin=float(bmin[2]))
+    names_b = []
+    for i in bake_idx:
+        if slots[i][0] not in names_b:
+            names_b.append(slots[i][0])
+    ctx = dict(bevel_r=bevel_r, zmin=float(bmin[2]), height=float(bmax[2] - bmin[2]),
+               ao_big=min(0.2, max(0.06, diag * 0.05)), slot_index={n: k for k, n in enumerate(names_b)})
     mask_img = bpy.data.images.new("forge_mask", res, res, alpha=False, float_buffer=True)
     mask_img.colorspace_settings.name = "Non-Color"
     ctx["mask_img"] = mask_img
+    touch_img = bpy.data.images.new("forge_touch", res, res, alpha=False, float_buffer=True)
+    touch_img.colorspace_settings.name = "Non-Color"
+    ctx["touch_img"] = touch_img
     dummy_img = bpy.data.images.new("forge_dummy", 8, 8)
     dmat = dummy_material(dummy_img)
     mm = build_mask_material(ctx)
@@ -624,24 +757,58 @@ def main():
         ob.material_slots[i].material = lm[nm]["mat"]
     phase("build_layers", t)
 
+    SRC = {"color": "color", "colorf": "color", "orm": "orm", "base": "base", "ids": "ids", "dbg1": "dbg1",
+           "dbg2": "dbg2", "pos": "pos", "aof": "ao"}
+
     def run_pass(kind, img, samples, normal=False):
         for L in lm.values():
             nt = L["nt"]
             for lk in list(L["out"].inputs["Surface"].links):
                 nt.links.remove(lk)
             L["imgn"].image = img
-            if kind == "color":
-                nt.links.new(L["color"], L["emis"].inputs["Color"])
-                nt.links.new(L["emis"].outputs[0], L["out"].inputs["Surface"])
-            elif kind == "orm":
-                nt.links.new(L["orm"], L["emis"].inputs["Color"])
-                nt.links.new(L["emis"].outputs[0], L["out"].inputs["Surface"])
-            else:
+            if normal:
                 nt.links.new(L["prin"].outputs[0], L["out"].inputs["Surface"])
+            else:
+                nt.links.new(L[SRC[kind]], L["emis"].inputs["Color"])
+                nt.links.new(L["emis"].outputs[0], L["out"].inputs["Surface"])
         dummy_img.colorspace_settings.name = "sRGB"
         tt = time.time()
         do_bake(ob, "NORMAL" if normal else "EMIT", samples, margin=8, normal=normal)
         phase("bake_" + kind, tt)
+
+    def read_f(img):
+        a = np.empty(len(img.pixels), np.float32)
+        img.pixels.foreach_get(a)
+        return a.reshape(-1, 4)
+
+    fimg = bpy.data.images.new("forge_f", res, res, alpha=False, float_buffer=True)
+    fimg.colorspace_settings.name = "Non-Color"
+
+    # --- 手の触れる所(touch 指定のスロットの近く)
+    touch_src = [i for i in bake_idx if slots[i][1].get("touch")]
+    touch_area = float(area[np.isin(mi, touch_src)].sum()) if touch_src else 0.0
+    touch_used = bool(touch_src) and touch_area / max(area_b, 1e-9) < 0.3
+    if touch_used:
+        t = time.time()
+        run_pass("pos", fimg, 4)
+        pos_px = read_f(fimg)[:, :3].copy()
+        sel_t = np.isin(mi, touch_src)
+        lp = np.zeros(len(me.loops), np.int32)
+        me.loops.foreach_get("vertex_index", lp)
+        tri = lp.reshape(-1, 3)[sel_t]
+        p0, p1, p2 = co[tri[:, 0]], co[tri[:, 1]], co[tri[:, 2]]
+        pts = np.concatenate([p0, p1, p2, (p0 + p1) / 2, (p1 + p2) / 2, (p2 + p0) / 2, (p0 + p1 + p2) / 3])
+        tv = compute_touch(pos_px, pts, bmin, bmax, diag)
+        del pos_px
+        arr = np.zeros((res * res, 4), np.float32)
+        arr[:, 0] = tv
+        arr[:, 3] = 1.0
+        touch_img.pixels.foreach_set(arr.reshape(-1))
+        del arr
+        phase("touch", t)
+        log("touch: source area %.3f m2 (%.1f%%)" % (touch_area, 100 * touch_area / max(area_b, 1e-9)))
+    else:
+        log("touch: なし(指定なし or 面積が大きすぎ %.0f%%)" % (100 * touch_area / max(area_b, 1e-9)))
 
     img_c = bpy.data.images.new("forge_color", res, res, alpha=False)
     img_c.colorspace_settings.name = "sRGB"
@@ -652,6 +819,64 @@ def main():
     run_pass("color", img_c, 8)
     run_pass("orm", img_o, 8)
     run_pass("normal", img_n, 48, normal=True)
+
+    # --- 検査(--stats): スロットごとの平均リニア色(UE の式 / 下地 / 最終)、垢の面積、AO
+    stats = None
+    if A.get("stats"):
+        t = time.time()
+        run_pass("ids", fimg, 4)
+        ids = read_f(fimg).copy()
+        sidx = np.rint(ids[:, 0] / 0.01).astype(np.int32) - 1
+        visp = ids[:, 1]
+        uz = ids[:, 2] * 2 - 1
+        valid = sidx >= 0
+        run_pass("base", fimg, 4)
+        base = read_f(fimg)[:, :3].copy()
+        run_pass("colorf", fimg, 4)
+        colf = read_f(fimg)[:, :3].copy()
+        run_pass("dbg1", fimg, 4)
+        d1 = read_f(fimg)[:, :3].copy()
+        run_pass("dbg2", fimg, 4)
+        d2 = read_f(fimg)[:, :3].copy()
+        run_pass("aof", fimg, 4)
+        aoa = read_f(fimg)[:, 0].copy()
+        seen = valid & (visp > 0.5) & (uz > -0.7)
+        nonup = seen & (uz < 0.7)
+        rows = []
+        for k, nm in enumerate(names_b):
+            m = valid & (sidx == k)
+            if m.sum() < 50:
+                continue
+            ue = scan_avg_lin(recipe["slots"].get(nm, {}))
+            mv = m & (visp > 0.5)
+            mn = m & nonup
+            mu = m & seen & (uz >= 0.7)
+            r = dict(slot=nm, texels=int(m.sum()), ue_formula_lum=float(lum(ue)),
+                     baked_base_lum=float(lum(base[mv].mean(0))) if mv.sum() else None,
+                     final_lum=float(lum(colf[mv].mean(0))) if mv.sum() else None,
+                     grime_mean_nonup=float(d1[mn, 0].mean()) if mn.sum() else None,
+                     grime_cover_nonup=float((d1[mn, 0] > 0.25).mean()) if mn.sum() else None,
+                     dust_mean_up=float(d1[mu, 1].mean()) if mu.sum() else None,
+                     ao_visible=float(aoa[m & seen].mean()) if (m & seen).sum() else None)
+            if r["baked_base_lum"]:
+                r["final_over_base"] = r["final_lum"] / max(r["baked_base_lum"], 1e-9)
+            rows.append(r)
+        sa = seen.sum()
+        stats = dict(rows=rows, ao_visible_mean=float(aoa[seen].mean()), ao_all_mean=float(aoa[valid].mean()),
+                     visible_texel_fraction=float((valid & (visp > 0.5)).sum() / max(valid.sum(), 1)),
+                     grime_mean_nonup=float(d1[nonup, 0].mean()), grime_cover_nonup=float((d1[nonup, 0] > 0.25).mean()),
+                     dust_mean_up=float(d1[seen & (uz >= 0.7), 1].mean()) if (seen & (uz >= 0.7)).sum() else None,
+                     chip_cover_nonup=float((d2[nonup, 0] > 0.5).mean()), touch_cover=float((d2[seen, 2] > 0.3).mean()),
+                     final_over_base_nonup=float(lum(colf[nonup].mean(0)) / max(lum(base[nonup].mean(0)), 1e-9)))
+        del ids, base, colf, d1, d2, aoa
+        phase("stats", t)
+        for r in rows:
+            log("STAT", json.dumps(r, ensure_ascii=False))
+        log("STAT-ALL", json.dumps({k: v for k, v in stats.items() if k != "rows"}))
+
+    # --- PBR の検算(UE の Material Analyzer / Substance の PBR Validate と同じ規則)
+    pbr = pbr_validate(img_c, img_o)
+    log("PBR-VALIDATE", json.dumps(pbr))
 
     # --- 保存
     paths = {}
@@ -674,6 +899,8 @@ def main():
     # 頂点カラーは捨てる(dx12 は色に掛けてしまう)
     for a in list(me.color_attributes):
         me.color_attributes.remove(a)
+    if "Vis" in me.attributes:
+        me.attributes.remove(me.attributes["Vis"])
     me.update()
 
     # --- 書き出し
@@ -693,10 +920,52 @@ def main():
     info = dict(name=stem, seconds=round(time.time() - T0, 1), phases=PHASES, resolution=res, tris=ntri,
                 texel_density_px_per_m=round(density, 1), surface_area_m2=round(area_b, 3), bevel_mm=round(bevel_r * 1000, 1),
                 device=dev, baked_slots=[slots[i][0] for i in bake_idx], kept_slots=[slots[i][0] for i in keep_idx],
-                glb_mb=round(os.path.getsize(out) / 1e6, 2), diag_m=round(diag, 3))
+                glb_mb=round(os.path.getsize(out) / 1e6, 2), diag_m=round(diag, 3),
+                visible_area_fraction=round(vis_frac, 3), touch_used=touch_used, stats=stats, pbr_validate=pbr)
     with open(out + ".forge.json", "w", encoding="utf-8") as f:
         json.dump(info, f, ensure_ascii=False, indent=1)
     log("done", json.dumps(info, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------- PBR の検算
+# 金属の反射色(= BaseColor)は実物で sRGB 180〜255(リニア 0.45〜1.0)。それより暗い「金属」は物理的に無い
+#   (黒い鉄に見えるのは錆・垢・塗膜 = 誘電体)。暗い金属は UE だと Lumen の反射で部屋が映って灰色に見えるが、
+#   反射の弱い所では真っ黒になる(2026-11-06、dx12 で焼却機がほぼ黒だった。B の平均 0.28・鉄板の色 0.06)。
+#   規則: ①暗い金属は誘電体へ寄せる(錆・垢として拡散で見える) ②残った金属は反射色を 0.45 以上へ持ち上げる
+#         ③誘電体は sRGB 30〜240(リニア 0.012〜0.87)に収める(真っ黒・真っ白の拡散は無い)
+PBR_METAL_MIN = 0.45      # 金属の反射色の下限(リニアの輝度)
+PBR_DARK_LO, PBR_DARK_HI = 0.05, 0.30   # この輝度の間で金属度を 0→元の値へ戻す
+PBR_DIEL_MIN, PBR_DIEL_MAX = 0.012, 0.87
+
+
+def pbr_validate(img_c, img_o):
+    w, h = img_c.size
+    c = np.empty(w * h * 4, np.float32); img_c.pixels.foreach_get(c); c = c.reshape(-1, 4)
+    o = np.empty(w * h * 4, np.float32); img_o.pixels.foreach_get(o); o = o.reshape(-1, 4)
+    valid = c[:, 3] > 0.5
+    rgb = srgb_to_lin(np.clip(c[:, :3], 0, 1))           # 色の画像は sRGB で入っている
+    L = rgb @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    m = o[:, 2].copy()
+    before = dict(metal_mean=float(m[valid].mean()) if valid.any() else 0.0,
+                  dark_metal=float(((m > 0.5) & (L < PBR_METAL_MIN) & valid).mean()))
+    k = np.clip((L - PBR_DARK_LO) / (PBR_DARK_HI - PBR_DARK_LO), 0.0, 1.0)
+    m2 = m * k * k * (3 - 2 * k)                        # ①
+    lift = np.where((m2 > 0.0) & (L < PBR_METAL_MIN), PBR_METAL_MIN / np.maximum(L, 1e-4), 1.0)
+    lift = 1.0 + (lift - 1.0) * m2                     # ②金属度の分だけ持ち上げる(混ざった縁はなだらかに)
+    rgb2 = rgb * lift[:, None]
+    Ld = rgb2 @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    lo = np.where(Ld < PBR_DIEL_MIN, PBR_DIEL_MIN / np.maximum(Ld, 1e-5), 1.0)
+    hi = np.where(Ld > PBR_DIEL_MAX, PBR_DIEL_MAX / np.maximum(Ld, 1e-5), 1.0)
+    diel = 1.0 - m2
+    rgb2 = rgb2 * (1.0 + (lo * hi - 1.0) * diel)[:, None]   # ③誘電体の分だけ範囲へ
+    rgb2 = np.clip(rgb2, 0.0, 1.0)
+    c[valid, :3] = lin_to_srgb(rgb2)[valid]
+    o[valid, 2] = m2[valid]
+    img_c.pixels.foreach_set(c.reshape(-1)); img_c.update()
+    img_o.pixels.foreach_set(o.reshape(-1)); img_o.update()
+    after = dict(metal_mean=float(m2[valid].mean()) if valid.any() else 0.0,
+                 dark_metal=float(((m2 > 0.5) & (rgb2 @ np.array([0.2126, 0.7152, 0.0722], np.float32) < PBR_METAL_MIN * 0.99) & valid).mean()))
+    return dict(before=before, after=after)
 
 
 # ---------------------------------------------------------------- 最終材質・書き出し
@@ -756,6 +1025,47 @@ def gfx_material(name, image_path, alpha):
     return mat
 
 
+def emissive_material(name, sp, work, extras):
+    """発光スロット: 焼かずに別材質で残す。BaseColor = スキャン平均 x tint の単色、emissiveTexture = 発光色 x min(強さ,1)。
+    強さ・色は extras(glTF material.extras)にも書く(エンジン / Lua が動的に変える用)。"""
+    base = scan_avg_lin(sp)
+    emis = np.array(sp.get("emis", (1, 1, 1)), np.float32)
+    strength = float(sp.get("emis_str", 0.0))
+    tex_e = emis * min(strength, 1.0)
+    pb = solid_png(os.path.join(work, "em_base_%s.png" % name), lin_to_srgb(base))
+    pe = solid_png(os.path.join(work, "em_emis_%s.png" % name), lin_to_srgb(tex_e))
+    po = solid_png(os.path.join(work, "em_orm_%s.png" % name), (1.0, min(0.9, max(0.08, float(sp.get("rough_const", 0.5)))), 0.0))
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    B = NB(nt)
+    prin = B.node("ShaderNodeBsdfPrincipled")
+    out = B.node("ShaderNodeOutputMaterial")
+    nt.links.new(prin.outputs[0], out.inputs["Surface"])
+    c = B.node("ShaderNodeTexImage")
+    c.image = load_img(pb, False)
+    nt.links.new(c.outputs["Color"], prin.inputs["Base Color"])
+    e = B.node("ShaderNodeTexImage")
+    e.image = load_img(pe, False)
+    nt.links.new(e.outputs["Color"], prin.inputs["Emission Color"])
+    prin.inputs["Emission Strength"].default_value = 1.0
+    o = B.node("ShaderNodeTexImage")
+    o.image = load_img(po, True)
+    R, G, Bl = B.sep(o.outputs["Color"])
+    nt.links.new(G, prin.inputs["Roughness"])
+    nt.links.new(Bl, prin.inputs["Metallic"])
+    grp = bpy.data.node_groups.get("glTF Material Output")
+    if grp is None:
+        grp = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
+        grp.interface.new_socket("Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
+    gn = B.node("ShaderNodeGroup")
+    gn.node_tree = grp
+    nt.links.new(R, gn.inputs[0])
+    extras[name] = {"forge_emissive_color": [round(float(x), 4) for x in emis], "forge_emissive_strength": strength}
+    return mat
+
+
 def build_final_materials(ob, me, slots, bake_idx, keep_idx, paths, stem, work):
     for m0 in list(bpy.data.materials):   # 元の材質名と衝突して .001 が付かないように退避
         if not m0.name.startswith(('L_', 'forge_')):
@@ -777,21 +1087,26 @@ def build_final_materials(ob, me, slots, bake_idx, keep_idx, paths, stem, work):
 
     mats = [final_material("forge_" + stem, paths)]
     alpha_names = []
+    extras = {}
     new_slot_of = {}
     for i in bake_idx:
         new_slot_of[i] = 0
     for i in keep_idx:
         nm, sp = slots[i]
-        m = gfx_material(nm, sp["image"], sp.get("alpha") == "mask")
-        # ORM を載せる
-        nt = m.node_tree
-        prin = [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"][0]
-        o = nt.nodes.new("ShaderNodeTexImage")
-        o.image = load_img(gorm_path(float(sp.get("rough_const", 0.75))), True)
-        sep = nt.nodes.new("ShaderNodeSeparateColor")
-        nt.links.new(o.outputs["Color"], sep.inputs[0])
-        nt.links.new(sep.outputs[1], prin.inputs["Roughness"])
-        nt.links.new(sep.outputs[2], prin.inputs["Metallic"])
+        if sp.get("kind") == "emissive":
+            m = emissive_material(nm, sp, work, extras)
+        else:
+            m = gfx_material(nm, sp["image"], sp.get("alpha") == "mask")
+        # ORM を載せる(発光材質は作成時に載せ済み)
+        if sp.get("kind") != "emissive":
+            nt = m.node_tree
+            prin = [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"][0]
+            o = nt.nodes.new("ShaderNodeTexImage")
+            o.image = load_img(gorm_path(float(sp.get("rough_const", 0.75))), True)
+            sep = nt.nodes.new("ShaderNodeSeparateColor")
+            nt.links.new(o.outputs["Color"], sep.inputs[0])
+            nt.links.new(sep.outputs[1], prin.inputs["Roughness"])
+            nt.links.new(sep.outputs[2], prin.inputs["Metallic"])
         new_slot_of[i] = len(mats)
         mats.append(m)
         if sp.get("alpha") == "mask":
@@ -808,7 +1123,7 @@ def build_final_materials(ob, me, slots, bake_idx, keep_idx, paths, stem, work):
         ob.data.materials.append(m)
     me.polygons.foreach_set("material_index", new)
     me.update()
-    return dict(mats=mats, alpha=alpha_names)
+    return dict(mats=mats, alpha=alpha_names, extras=extras)
 
 
 def export_glb(out, fm):
@@ -820,10 +1135,11 @@ def export_glb(out, fm):
         bpy.ops.export_scene.gltf(export_vertex_color="NONE", **kw)
     except TypeError:
         bpy.ops.export_scene.gltf(**kw)
-    postprocess_glb(out, fm["alpha"])
+    postprocess_glb(out, fm["alpha"], fm.get("extras", {}))
 
 
-def postprocess_glb(path, alpha_names):
+def postprocess_glb(path, alpha_names, extras=None):
+    extras = extras or {}
     import struct
     d = open(path, "rb").read()
     jl, jt = struct.unpack("<II", d[12:20])
@@ -834,7 +1150,12 @@ def postprocess_glb(path, alpha_names):
         pbr["baseColorFactor"] = [1, 1, 1, 1]
         pbr["metallicFactor"] = 1.0
         pbr["roughnessFactor"] = 1.0
-        m.pop("emissiveFactor", None)
+        if "emissiveTexture" in m:
+            m["emissiveFactor"] = [1.0, 1.0, 1.0]
+        else:
+            m.pop("emissiveFactor", None)
+        if m.get("name") in extras:
+            m["extras"] = extras[m["name"]]
         m["doubleSided"] = m.get("doubleSided", False)
         if m.get("name") in alpha_names:
             m["alphaMode"] = "MASK"
