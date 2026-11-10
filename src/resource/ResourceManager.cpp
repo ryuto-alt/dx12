@@ -10,6 +10,7 @@
 #include "graphics/GraphicsDevice.h"
 #include "resource/TextureLoader.h"
 #include "resource/ModelLoader.h"
+#include "resource/VgAutoCook.h"
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
 
@@ -338,6 +339,59 @@ const CachedModel* ResourceManager::GetOrLoadModel(
         return it->second.model.get();
     }
 
+    // ---- 仮想ジオメトリの自動 cook（resource/VgAutoCook）----
+    //   ハイポリの静的モデルは通常メッシュ（96 B 頂点の CPU 複製 + 4 段 LOD）を作らず、cook 済みの .vgeo のプロキシを読む。
+    //   cook がまだなら裏で始めて仮の箱を返す（メインスレッドで Assimp も LOD 生成もしない = 2,097 万三角形で約 100 秒固まっていた所）。
+    if (m_device && !vfs::InGameMode())
+    {
+        const std::filesystem::path fp(PathResolver::Utf8ToWide(filePath));
+        const vgauto::QueryResult q = vgauto::Cooker::Get().Query(fp);
+        if (q.state == vgauto::State::Ready)
+        {
+            auto vgData = ModelLoader::LoadFromFile(*m_device, cmdList, std::filesystem::path(PathResolver::Utf8ToWide(q.vgeoPath)), *this);
+            if (!vgData.meshes.empty())
+            {
+                auto cached = std::make_unique<CachedModel>();
+                cached->meshes           = std::move(vgData.meshes);
+                cached->materials        = std::move(vgData.materials);
+                cached->vgMaterialOfMesh = std::move(vgData.vgMaterialOfMesh);
+                cached->vgAutoVgeo       = q.vgeoPath;
+                StampMeshStableKeys(*cached, key);
+                const CachedModel* rawPtr = cached.get();
+                ModelCacheEntry entry;
+                entry.model = std::move(cached);
+                entry.path  = filePath;
+                entry.stamp = FileStamp(filePath);
+                m_modelCache[key] = std::move(entry);
+                {
+                    std::lock_guard<std::mutex> lk(m_normKeyMutex);
+                    m_normKeyCache.emplace(filePath, key);
+                }
+                for (auto& mesh : rawPtr->meshes) m_pendingMeshUploads.push_back(mesh.get());
+                m_uploadsPending = true;
+                Logger::Info("仮想ジオメトリ: 自動 cook 済みの .vgeo を使います（{} → {}。プロキシ {} メッシュ）", filePath, q.vgeoPath,
+                             rawPtr->meshes.size());
+                return rawPtr;
+            }
+            Logger::Warn("仮想ジオメトリ: 自動 cook 済みの .vgeo を読めないので通常のモデルとして読みます: {}", q.vgeoPath);
+        }
+        else if (q.state == vgauto::State::Pending)
+        {
+            // ★キャッシュには入れるが、cook が終わったら PumpVgAuto が捨てて読み直す（vgPlaceholder）
+            auto cached = MakeVgPlaceholder(q.bmin, q.bmax, cmdList);
+            const CachedModel* rawPtr = cached.get();
+            ModelCacheEntry entry;
+            entry.model = std::move(cached);
+            entry.path  = filePath;
+            entry.stamp = FileStamp(filePath);
+            m_modelCache[key] = std::move(entry);
+            for (auto& mesh : rawPtr->meshes) m_pendingMeshUploads.push_back(mesh.get());
+            m_uploadsPending = true;
+            return rawPtr;
+        }
+        // Ineligible（小さい / 静的でない / アルファ材質 …）は通常の読み込みへ。理由は vg_stats.autoCook.skipped に出る
+    }
+
     auto modelData = ModelLoader::LoadFromFile(*m_device, cmdList,
                                                std::filesystem::path(filePath), *this);
 
@@ -359,6 +413,7 @@ const CachedModel* ResourceManager::GetOrLoadModel(
     cached->animClips     = std::move(modelData.animClips);
     cached->nodeGraph     = std::move(modelData.nodeGraph);
     cached->nodeAnimClips = std::move(modelData.nodeAnimClips);
+    cached->vgMaterialOfMesh = std::move(modelData.vgMaterialOfMesh);   // .vgeo を直接読んだときのプロキシ → 材質番号
     StampMeshStableKeys(*cached, key);
 
     const CachedModel* rawPtr = cached.get();
@@ -553,6 +608,13 @@ AssetReloadResult ResourceManager::ReloadChangedAssets(ID3D12GraphicsCommandList
         if (!std::filesystem::exists(std::filesystem::path(entry.path), ec)) continue;
         const int64_t now = FileStamp(entry.path);
         if (!force && (now == 0 || now == entry.stamp)) continue;
+        // ★仮想ジオメトリの自動 cook 済み / cook 中のモデルは、ここで普通に読み直すと 2,000 万三角形の glb をメインスレッドで
+        //   読むことになる（固まる）。読み直しは見送り、中身が変わっていれば次に読み込んだとき（シーンを開き直す）に裏で cook し直す。
+        if (entry.model && (!entry.model->vgAutoVgeo.empty() || entry.model->vgPlaceholder))
+        {
+            out.skipped.push_back(entry.path + ": 仮想ジオメトリの自動 cook 済み（読み直すにはシーンを開き直す。裏で cook し直す）");
+            continue;
+        }
 
         auto data = ModelLoader::LoadFromFile(*m_device, cmdList,
                                               std::filesystem::path(entry.path), *this);
@@ -620,6 +682,101 @@ void ResourceManager::FinishUploads()
         }
     }
     m_uploadsPending = false;
+}
+
+// ---- 仮想ジオメトリの自動 cook ----------------------------------------------------
+// cook 中の仮表示: 範囲（glTF の accessor。無ければ 1 m の箱）を覆う灰色の箱 1 個。面ごとに頂点を分けた 24 頂点。
+std::unique_ptr<CachedModel> ResourceManager::MakeVgPlaceholder(const float bmin[3], const float bmax[3], ID3D12GraphicsCommandList* cmdList)
+{
+    auto model = std::make_unique<CachedModel>();
+    model->vgPlaceholder = true;
+    const float lo[3] = {bmin[0], bmin[1], bmin[2]};
+    float hi[3] = {bmax[0], bmax[1], bmax[2]};
+    for (int k = 0; k < 3; ++k) if (!(hi[k] > lo[k])) hi[k] = lo[k] + 1e-3f;
+    std::vector<Vertex> v;
+    std::vector<u32> idx;
+    v.reserve(24);
+    // 6 面: 法線軸 a、符号 sgn。面の 4 隅は残りの 2 軸 (b, c)
+    for (int a = 0; a < 3; ++a)
+        for (int sgn = 0; sgn < 2; ++sgn)
+        {
+            const int b = (a + 1) % 3, c = (a + 2) % 3;
+            const u32 base = static_cast<u32>(v.size());
+            for (int q = 0; q < 4; ++q)
+            {
+                Vertex x{};
+                float p[3];
+                p[a] = sgn ? hi[a] : lo[a];
+                p[b] = (q == 1 || q == 2) ? hi[b] : lo[b];
+                p[c] = (q >= 2) ? hi[c] : lo[c];
+                x.position = {p[0], p[1], p[2]};
+                float n[3] = {0, 0, 0};
+                n[a] = sgn ? 1.0f : -1.0f;
+                x.normal = {n[0], n[1], n[2]};
+                x.color = {1, 1, 1, 1};
+                x.texCoord = {(q == 1 || q == 2) ? 1.0f : 0.0f, (q >= 2) ? 1.0f : 0.0f};
+                x.tangent = {0, 0, 0, 1};
+                v.push_back(x);
+            }
+            // 両面描画なので巻き順はどちらでもよい（フォワードは CULL_NONE）
+            idx.insert(idx.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
+        }
+    auto mesh = std::make_unique<Mesh>();
+    mesh->Initialize(*m_device, v, idx, cmdList);
+    auto material = std::make_unique<Material>();
+    material->defaultMetallic  = 0.0f;
+    material->defaultRoughness = 0.9f;
+    const u32 blockStart = m_srvHeap->AllocateBlock(kMaterialSrvBlockSize);
+    m_defaultWhite->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(blockStart));
+    m_defaultNormal->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(blockStart + 1));
+    m_defaultMetalRoughness->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(blockStart + 2));
+    m_defaultBlack->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(blockStart + 3));
+    m_defaultBlack->CreateSRV(*m_device, m_srvHeap->GetCpuHandle(blockStart + kMaterialHeightSrvOffset));
+    material->srvBlockIndex = blockStart;
+    mesh->SetMaterial(material.get());
+    mesh->SetName("vg_cooking");
+    mesh->SetMaterialName("vg_cooking");
+    model->meshes.push_back(std::move(mesh));
+    model->materials.push_back(std::move(material));
+    return model;
+}
+
+std::vector<std::string> ResourceManager::PumpVgAuto(ID3D12GraphicsCommandList* cmdList)
+{
+    std::vector<std::string> swapped;
+    if (!cmdList || !m_device) return swapped;
+    const std::vector<std::string> done = vgauto::Cooker::Get().TakeFinished();
+    for (const std::string& model : done)
+    {
+        const std::string key = NormalizeModelKey(model);
+        auto it = m_modelCache.find(key);
+        if (it == m_modelCache.end() || !it->second.model) continue;   // 誰も読んでいない（手動 cook だけ）/ 読み込み失敗
+        CachedModel& cur = *it->second.model;
+        // 差し替えるのは: 仮の箱（cook の成否に関係なく読み直す）/ 通常のモデルだが cook 済みになった（手動 vg_cook）
+        bool swap = cur.vgPlaceholder;
+        if (!swap && cur.vgAutoVgeo.empty())
+            swap = vgauto::Cooker::Get().Query(std::filesystem::path(PathResolver::Utf8ToWide(it->second.path))).state == vgauto::State::Ready;
+        if (!swap) continue;
+        const std::string path = it->second.path;
+        for (auto& oldMesh : cur.meshes)
+            m_pendingMeshUploads.erase(std::remove(m_pendingMeshUploads.begin(), m_pendingMeshUploads.end(), oldMesh.get()),
+                                       m_pendingMeshUploads.end());
+        m_retiredModels.push_back(std::move(it->second.model));   // ★GPU が使い終わるまで生かす（ReleaseRetiredModels）
+        m_modelCache.erase(it);
+        if (GetOrLoadModel(path, cmdList)) swapped.push_back(key);
+    }
+    return swapped;
+}
+
+void ResourceManager::ReleaseRetiredModels()
+{
+    for (auto& m : m_retiredModels)
+    {
+        if (!m) continue;
+        for (auto& mat : m->materials)
+            if (mat && mat->srvBlockIndex != 0xFFFFFFFFu) m_srvHeap->FreeBlock(mat->srvBlockIndex, kMaterialSrvBlockSize);
+    }
+    m_retiredModels.clear();
 }
 
 } // namespace dx12e

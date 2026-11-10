@@ -140,7 +140,7 @@ float4 PSMain(VSOut i) : SV_Target0
         VgReconstruct(vis, i.pos.xy, gViewProj, float2(gRast.yz), gHeap0.z, gOffs1.y, gHeap0.y, gHeap0.x, s);
         if (mode == VG_DBG_MATERIAL) return float4(VgHashColor(VgHash((s.inst.assetIndex + 1u) * 0x9E3779B1u ^ (s.materialIndex * 0x85EBCA6Bu))), 1);
         if (mode == VG_DBG_NORMAL)   return float4(normalize(s.worldNormal) * 0.5 + 0.5, 1);
-        const VgMaterialGpu m = VgLoadMaterial(gHeap1.w, s.asset, s.materialIndex);
+        const VgMaterialGpu m = VgLoadMaterial(gHeap1.w, s.asset, s.inst, s.materialIndex);
         if (m.albedoSrv == VG_NONE) return float4(0.35, 0.35, 0.35, 1);
         Texture2D tex = ResourceDescriptorHeap[NonUniformResourceIndex(m.albedoSrv)];
         uint tw, th, levels;

@@ -169,6 +169,9 @@ struct MeshRenderer
     std::vector<Mesh*>     meshes;
     std::vector<Material*> materials;
     std::vector<DirectX::XMFLOAT4X4> meshNodeTransforms;
+    // 仮想ジオメトリの自動 cook（resource/VgAutoCook）で modelPath の代わりに描く .vgeo の絶対パス（非保存。読み込み時に
+    // CachedModel::vgAutoVgeo から写す）。空 = 自動 cook ではない。meshes はそのとき .vgeo のプロキシ（≤ 25 万三角形）。
+    std::string vgAutoPath;
 
     // エディタ用 PBR オーバーライド（Material ポインタに依存しない直接値）
     float overrideMetallic  = -1.0f;  // < 0 = Material の値を使う

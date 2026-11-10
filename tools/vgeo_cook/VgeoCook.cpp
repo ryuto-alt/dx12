@@ -15,6 +15,7 @@
 
 #include <meshoptimizer.h>
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cfloat>
@@ -1066,7 +1067,9 @@ struct OutMats
         m.metalRoughPathOff = remap(m.metalRoughPathOff);
         m.emissivePathOff = remap(m.emissivePathOff);
         m.sectionKind = kind;
-        m.reserved = 0;
+        // v1.1: AO（kMatAoInMR + aoStrength）は入力の値を写す。フラグが無ければ 0（v1.0 の予約と同じバイト）。
+        if (!(m.flags & kMatAoInMR) || !(m.flags & kMatHasMetalRough)) { m.flags &= ~kMatAoInMR; m.aoStrength = 0.0f; }
+        else m.aoStrength = std::clamp(m.aoStrength, 0.0f, 1.0f);
         if (kind == 0) m.flags &= ~(kMatAlphaTest | kMatBlend);
         const u32 idx = static_cast<u32>(recs.size());
         recs.push_back(m);

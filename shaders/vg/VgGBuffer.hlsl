@@ -48,7 +48,7 @@ GOut PSMain(VSOut i)
     float3 n = normalize(s.worldNormal);
     if (!VgIsFrontFacing(s, gCamPos.xyz)) n = -n;
 
-    const VgMaterialGpu m = VgLoadMaterial(gHeap1.w, s.asset, s.materialIndex);
+    const VgMaterialGpu m = VgLoadMaterial(gHeap1.w, s.asset, s.inst, s.materialIndex);
     const float rough = floor(saturate(max(VgEffRoughness(m, s.inst), 0.04)) * 255.0 + 0.5) / 255.0;
     const float metal = floor(saturate(VgEffMetallic(m, s.inst)) * 255.0 + 0.5) / 255.0;
     o.gbuffer = SS_PackGBuffer(n, rough, metal);

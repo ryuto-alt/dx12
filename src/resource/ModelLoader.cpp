@@ -628,7 +628,28 @@ ModelImportOptions ModelImportOptions::Parse(const std::string& jsonText)
         const double v = it->get<double>();
         if (v > 0.0 && v < 1.0e9) o.mergeCellSize = static_cast<float>(v);   // 0 以下・巨大値は自動
     }
+    // 仮想ジオメトリの自動 cook: "auto"（既定）/ "on" / "off"。true / false も受ける（on / off）。不明な値は auto。
+    if (auto it = j.find("virtualGeometry"); it != j.end())
+    {
+        if (it->is_boolean()) o.virtualGeometry = it->get<bool>() ? VgMode::On : VgMode::Off;
+        else if (it->is_string())
+        {
+            const std::string v = it->get<std::string>();
+            if (v == "on") o.virtualGeometry = VgMode::On;
+            else if (v == "off") o.virtualGeometry = VgMode::Off;
+        }
+    }
     return o;
+}
+
+unsigned int ModelLoader::LoadFlags(const ModelImportOptions& opts)
+{
+    // ★LoadFromFile の flags と同じ式（変えるときは両方。解析キャッシュの鍵にもなる）
+    unsigned int flags = aiProcess_Triangulate | aiProcess_SortByPType | aiProcess_GenNormals | aiProcess_CalcTangentSpace
+                       | aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights | aiProcess_PopulateArmatureData
+                       | aiProcess_FlipUVs | kUnitScaleFlag;
+    if (opts.leftHanded) flags |= aiProcess_MakeLeftHanded | aiProcess_FlipWindingOrder;
+    return flags;
 }
 
 ModelImportOptions ModelImportOptions::LoadFor(const std::filesystem::path& modelPath)
@@ -758,7 +779,11 @@ ModelData ModelLoader::LoadFromFile(
     loadprof::ScopedLoadTimer totalTimer(loadprof::Slot::ModelTotal);
     // .vgeo（仮想ジオメトリ）はプロキシを通常のモデルとして読む（assimp は通らない）。
     if (IsVgeoPath(filePath))
+    {
+        // プロキシ（≤ 25 万三角形）の LOD も .modelcache に覚える（自動 cook の差し替えで毎回 4 段の簡略化をしない）
+        modelcache::LodCacheScope vgLodScope(filePath);
         return LoadVgeoProxy(device, cmdList, filePath, resourceManager);
+    }
 
     Assimp::Importer importer;
     importer.SetIOHandler(new VfsIOSystem()); // importer が所有権を持ち dtor で delete する
@@ -1788,6 +1813,318 @@ std::vector<std::unique_ptr<AnimationClip>> ModelLoader::LoadAnimationsFromFile(
 
     Logger::Info("Loaded {} animation(s) from {}", clips.size(), filePath.string());
     return clips;
+}
+
+
+// ===========================================================================
+// 仮想ジオメトリの自動 cook 用: GPU を使わない取り出し（resource/VgAutoCook.cpp が裏のスレッドから呼ぶ）
+// ---------------------------------------------------------------------------
+// ★LoadFromFile と同じ規則で頂点を作る（ここを変えたら LoadFromFile も見ること。逆も同じ）:
+//   ・後処理フラグ = LoadFlags(import.json)。ただし接線（CalcTangentSpace）と頂点の融合（JoinIdenticalVertices）は使わない
+//     （VG は接線を持たない・cooker が位置 + 法線 + UV で融合する。2,097 万三角形の glb で ReadFile の大半がこの 2 つ）。
+//     LoadFromFile が作った解析キャッシュ（.modelcache の assbin）があればそちらを読む（同じ頂点・速い）
+//   ・静的モデルはノードごとに展開（同じ mesh を複数ノードが参照しても全部出す）し、ノードの既定変換を焼く
+//   ・UV 変換（AI_MATKEY_UVTRANSFORM(DIFFUSE)）を焼く / 三角形だけ拾う
+//   ・行列式が負のノードは巻き順を反転して「cross(p1-p0, p2-p0) が外向き」（.vgeo の規約 C26）に揃える
+//     （フォワードは両面描画なので巻き順を見ないが、VG は法線コーンで裏面を落とすため）
+//   材質はテクスチャの出どころ（ファイル / 埋め込みのバイト列 / 合成した ORM）と係数だけ（GPU のテクスチャは作らない）。
+//   ★取りこぼし（LoadFromFile との差）: FBX/OBJ の「albedo のアルファに切り抜きがあれば Mask」の救済はしない（画像を
+//     デコードしないと分からない）。alphaMode を持たない形式で切り抜きのあるモデルは import.json で virtualGeometry:"off" にする。
+// ===========================================================================
+namespace
+{
+std::string LowerExtOf(const std::filesystem::path& p)
+{
+    std::string e = p.extension().string();
+    if (!e.empty() && e[0] == '.') e.erase(0, 1);
+    for (char& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return e;
+}
+
+// テクスチャ 1 枚の出どころ（LoadFromFile の albedo / loadPBRTexture と同じ探し方）。見つからなければ空。
+StaticTexSource FindTextureSource(const aiScene* scene, const aiMaterial* aiMat, aiTextureType type,
+                                  const std::filesystem::path& parentDir, bool allowStarIndex)
+{
+    StaticTexSource src;
+    if (aiMat->GetTextureCount(type) == 0) return src;
+    aiString tp;
+    if (aiMat->GetTexture(type, 0, &tp) != AI_SUCCESS) return src;
+    if (const aiTexture* emb = scene->GetEmbeddedTexture(tp.C_Str()))
+    {
+        if (emb->mHeight != 0) return src;   // 非圧縮 ARGB の埋め込み（LoadFromFile も読めない = 白）
+        src.bytes.assign(reinterpret_cast<const uint8_t*>(emb->pcData),
+                         reinterpret_cast<const uint8_t*>(emb->pcData) + emb->mWidth);
+        src.ext = emb->achFormatHint[0] ? std::string(emb->achFormatHint) : std::string("png");
+        return src;
+    }
+    if (tp.C_Str()[0] == '*')
+    {
+        if (!allowStarIndex) return src;
+        const int embIdx = std::atoi(tp.C_Str() + 1);
+        if (embIdx >= 0 && static_cast<unsigned>(embIdx) < scene->mNumTextures && scene->mTextures[embIdx]->mHeight == 0)
+        {
+            const aiTexture* t = scene->mTextures[embIdx];
+            src.bytes.assign(reinterpret_cast<const uint8_t*>(t->pcData), reinterpret_cast<const uint8_t*>(t->pcData) + t->mWidth);
+            src.ext = t->achFormatHint[0] ? std::string(t->achFormatHint) : std::string("png");
+        }
+        return src;
+    }
+    const std::filesystem::path resolved = ResolveTexturePath(tp.C_Str(), parentDir);
+    if (!resolved.empty()) { src.file = resolved; src.ext = LowerExtOf(resolved); }
+    return src;
+}
+
+bool ReadTexBytes(const StaticTexSource& s, std::vector<uint8_t>& out)
+{
+    if (!s.bytes.empty()) { out = s.bytes; return true; }
+    if (s.file.empty()) return false;
+    out = vfs::ReadAssetAbs(s.file.wstring());
+    if (out.empty())
+    {
+        std::ifstream f(s.file, std::ios::binary);
+        out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    return !out.empty();
+}
+
+// LoadFromFile の emitMesh の材質部分と同じ規則（テクスチャの探し方・AO・自己発光・係数・透明）
+void ExtractMaterialCpu(const aiScene* scene, const aiMaterial* aiMat, const std::filesystem::path& filePath,
+                        const ModelImportOptions& importOpts, StaticMaterialCpu& m)
+{
+    const std::filesystem::path parentDir = filePath.parent_path();
+    m.name = aiMat->GetName().C_Str();
+    m.albedo = FindTextureSource(scene, aiMat, aiTextureType_DIFFUSE, parentDir, /*allowStarIndex=*/true);
+    m.normal = FindTextureSource(scene, aiMat, aiTextureType_NORMALS, parentDir, false);
+    if (m.normal.Empty()) m.normal = FindTextureSource(scene, aiMat, aiTextureType_HEIGHT, parentDir, false);
+    m.metalRough = FindTextureSource(scene, aiMat, aiTextureType_METALNESS, parentDir, false);
+    if (m.metalRough.Empty()) m.metalRough = FindTextureSource(scene, aiMat, aiTextureType_DIFFUSE_ROUGHNESS, parentDir, false);
+    bool specularAsOrm = false;
+    if (importOpts.specularIsORM && m.metalRough.Empty())
+    {
+        m.metalRough = FindTextureSource(scene, aiMat, aiTextureType_SPECULAR, parentDir, false);
+        specularAsOrm = !m.metalRough.Empty();
+    }
+
+    // マテリアル AO（glTF occlusionTexture）。(a) MR と同じ画像 → R をそのまま / (b) 別画像 → R へ詰めた ORM を作る
+    if (aiMat->GetTextureCount(aiTextureType_LIGHTMAP) > 0)
+    {
+        const OcclusionInfo oi = ReadOcclusionInfo(aiMat, filePath);
+        if (oi.has && oi.sharedWithMR && !m.metalRough.Empty())
+        {
+            m.occlusionInMR = true;
+            m.aoStrength = oi.strength;
+        }
+        else if (oi.has)
+        {
+            const StaticTexSource occ = FindTextureSource(scene, aiMat, aiTextureType_LIGHTMAP, parentDir, false);
+            const bool hasMr = oi.hasMr && !m.metalRough.Empty();
+            std::vector<uint8_t> aoBytes, mrBytes, ormPng;
+            std::string err;
+            const bool aoOk = ReadTexBytes(occ, aoBytes);
+            const bool mrOk = hasMr && ReadTexBytes(m.metalRough, mrBytes);
+            if (aoOk && (!hasMr || mrOk)
+                && TextureLoader::ComposeOrmPng(mrOk ? mrBytes.data() : nullptr, mrBytes.size(), aoBytes.data(), aoBytes.size(), ormPng, err))
+            {
+                m.metalRough = StaticTexSource{};
+                m.metalRough.bytes = std::move(ormPng);
+                m.metalRough.ext = "png";
+                m.occlusionInMR = true;
+                m.aoStrength = oi.strength;
+            }
+        }
+    }
+
+    // 自己発光（LoadFromFile と同じ: 色が黒でテクスチャも無いなら強度 0）
+    m.emissive = FindTextureSource(scene, aiMat, aiTextureType_EMISSIVE, parentDir, false);
+    {
+        aiColor3D ec(0.0f, 0.0f, 0.0f);
+        const bool hasColor = (aiMat->Get(AI_MATKEY_COLOR_EMISSIVE, ec) == AI_SUCCESS);
+        float strength = 1.0f;
+        aiMat->Get(AI_MATKEY_EMISSIVE_INTENSITY, strength);
+        if (hasColor && (ec.r > 0.0f || ec.g > 0.0f || ec.b > 0.0f)) { m.emissiveColor[0] = ec.r; m.emissiveColor[1] = ec.g; m.emissiveColor[2] = ec.b; }
+        else if (!m.emissive.Empty()) { m.emissiveColor[0] = m.emissiveColor[1] = m.emissiveColor[2] = 1.0f; }
+        const bool authored = !m.emissive.Empty() || m.emissiveColor[0] > 0.0f || m.emissiveColor[1] > 0.0f || m.emissiveColor[2] > 0.0f;
+        m.emissiveIntensity = authored ? (std::max)(strength, 0.0f) : 0.0f;
+    }
+
+    float metallic = 0.0f, roughness = 0.5f;
+    aiMat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);
+    aiMat->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness);
+    if (specularAsOrm) { metallic = 1.0f; roughness = 1.0f; }
+    m.metallic = metallic;
+    m.roughness = roughness;
+
+    // 透明（glTF alphaMode / alphaCutoff / baseColorFactor.a、FBX/OBJ の opacity < 1 は BLEND）
+    {
+        aiString alphaMode;
+        if (aiMat->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS)
+        {
+            const std::string am = alphaMode.C_Str();
+            m.alphaMode = (am == "MASK") ? AlphaMode::Mask : (am == "BLEND") ? AlphaMode::Blend : AlphaMode::Opaque;
+        }
+        float cutoff = 0.5f;
+        if (aiMat->Get(AI_MATKEY_GLTF_ALPHACUTOFF, cutoff) == AI_SUCCESS) m.alphaCutoff = cutoff;
+        float alpha = 1.0f;
+        aiColor4D baseColor;
+        if (aiMat->Get(AI_MATKEY_BASE_COLOR, baseColor) == AI_SUCCESS) alpha = baseColor.a;
+        else { float op = 1.0f; if (aiMat->Get(AI_MATKEY_OPACITY, op) == AI_SUCCESS) alpha = op; }
+        m.baseColorAlpha = std::clamp(alpha, 0.0f, 1.0f);
+        if (m.alphaMode == AlphaMode::Opaque && m.baseColorAlpha < 0.999f && alphaMode.length == 0) m.alphaMode = AlphaMode::Blend;
+    }
+    int twoSided = 0;
+    if (aiMat->Get(AI_MATKEY_TWOSIDED, twoSided) == AI_SUCCESS) m.doubleSided = (twoSided != 0);
+}
+} // namespace
+
+bool ModelLoader::ExtractStaticForVg(const std::filesystem::path& filePath, StaticModelCpu& out, std::string* err, bool countOnly)
+{
+    out = StaticModelCpu{};
+    auto fail = [&](std::string msg) { if (err) *err = std::move(msg); return false; };
+    if (IsVgeoPath(filePath)) return fail(".vgeo はそのまま VG で描けるので cook しない");
+
+    const ModelImportOptions importOpts = ModelImportOptions::LoadFor(filePath);
+    const unsigned int fullFlags = LoadFlags(importOpts);
+    const unsigned int flags = fullFlags & ~static_cast<unsigned int>(aiProcess_CalcTangentSpace | aiProcess_JoinIdenticalVertices
+                                                                      | aiProcess_LimitBoneWeights | aiProcess_PopulateArmatureData);
+    Assimp::Importer importer;
+    importer.SetIOHandler(new VfsIOSystem());
+    const aiScene* scene = modelcache::TryLoadScene(importer, filePath, fullFlags);   // LoadFromFile の解析キャッシュ（同じ頂点）
+    if (!scene) scene = importer.ReadFile(filePath.string(), flags);
+    if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
+        return fail(std::string("Assimp で読めません: ") + importer.GetErrorString());
+
+    out.hasSkin = SceneHasBones(scene);
+    out.hasAnimation = scene->mNumAnimations > 0;
+
+    // 焼き込み行列（LoadFromFile の静的モデル経路と同じ: ノードの既定変換を親から順に掛ける）
+    std::unique_ptr<NodeGraph> nodeGraph = BuildNodeGraph(scene);
+    std::vector<DirectX::XMMATRIX> bake;
+    if (nodeGraph)
+    {
+        const u32 n = nodeGraph->GetNodeCount();
+        bake.resize(n, DirectX::XMMatrixIdentity());
+        for (u32 i = 0; i < n; ++i)
+        {
+            const SceneNode& sn = nodeGraph->GetNode(i);
+            const DirectX::XMMATRIX local = DirectX::XMLoadFloat4x4(&sn.localDefault);
+            bake[i] = (sn.parentIndex >= 0) ? local * bake[static_cast<u32>(sn.parentIndex)] : local;
+        }
+    }
+    struct Ref { unsigned int meshIdx; i32 node; };
+    std::vector<Ref> refs;
+    if (nodeGraph)
+    {
+        for (u32 n = 0; n < nodeGraph->GetNodeCount(); ++n)
+            for (u32 mi : nodeGraph->GetNode(n).meshIndices)
+                if (mi < scene->mNumMeshes) refs.push_back({mi, static_cast<i32>(n)});
+        std::vector<bool> referenced(scene->mNumMeshes, false);
+        for (const Ref& r : refs) referenced[r.meshIdx] = true;
+        for (unsigned i = 0; i < scene->mNumMeshes; ++i) if (!referenced[i]) refs.push_back({i, -1});
+    }
+    else
+        for (unsigned i = 0; i < scene->mNumMeshes; ++i) refs.push_back({i, -1});
+
+    // 材質: aiMaterial 番号 → 出力の材質番号（使われている物だけ・初出順）
+    std::unordered_map<unsigned int, u32> matMap;
+    std::vector<std::vector<u32>> matIdx;        // 出力材質ごとのインデックス（あとで連結して sections にする）
+    auto matFor = [&](unsigned int aiIdx) -> u32
+    {
+        auto it = matMap.find(aiIdx);
+        if (it != matMap.end()) return it->second;
+        StaticMaterialCpu m;
+        if (aiIdx < scene->mNumMaterials) ExtractMaterialCpu(scene, scene->mMaterials[aiIdx], filePath, importOpts, m);
+        else m.name = "default";
+        const u32 k = static_cast<u32>(out.materials.size());
+        out.materials.push_back(std::move(m));
+        matIdx.emplace_back();
+        matMap.emplace(aiIdx, k);
+        return k;
+    };
+
+    for (const Ref& r : refs)
+    {
+        const aiMesh* am = scene->mMeshes[r.meshIdx];
+        u64 tris = 0;
+        for (unsigned f = 0; f < am->mNumFaces; ++f) if (am->mFaces[f].mNumIndices == 3) ++tris;
+        if (tris == 0 || am->mNumVertices == 0) continue;
+        out.triangles += tris;
+        const u32 mk = matFor(am->mMaterialIndex);
+        if (countOnly) continue;
+        if (am->mColors[0] && !out.hasVertexColor)
+            for (unsigned v = 0; v < am->mNumVertices; ++v)
+            {
+                const aiColor4D& c = am->mColors[0][v];
+                if (c.r < 0.999f || c.g < 0.999f || c.b < 0.999f || c.a < 0.999f) { out.hasVertexColor = true; break; }
+            }
+
+        const i32 nodeIdx = (r.node >= 0) ? r.node : (nodeGraph ? nodeGraph->FindNodeForMesh(r.meshIdx) : -1);
+        const bool doBake = nodeIdx >= 0 && static_cast<size_t>(nodeIdx) < bake.size();
+        const DirectX::XMMATRIX M = doBake ? bake[static_cast<u32>(nodeIdx)] : DirectX::XMMatrixIdentity();
+        const bool mirrored = doBake && DirectX::XMVectorGetX(DirectX::XMMatrixDeterminant(M)) < 0.0f;
+        if (mirrored) ++out.mirroredNodes;
+
+        // UV 変換（LoadFromFile と同じく DIFFUSE の 0 番）
+        float usx = 1.0f, usy = 1.0f, uox = 0.0f, uoy = 0.0f;
+        if (am->mMaterialIndex < scene->mNumMaterials)
+        {
+            aiUVTransform uvt;
+            if (scene->mMaterials[am->mMaterialIndex]->Get(AI_MATKEY_UVTRANSFORM(aiTextureType_DIFFUSE, 0), uvt) == AI_SUCCESS)
+            { usx = uvt.mScaling.x; usy = uvt.mScaling.y; uox = uvt.mTranslation.x; uoy = uvt.mTranslation.y; }
+        }
+
+        const u64 base = out.positions.size() / 3;
+        if (base + am->mNumVertices > 0xFFFFFFFFull) return fail("頂点が 2^32 個を超えます");
+        out.positions.reserve(out.positions.size() + static_cast<size_t>(am->mNumVertices) * 3);
+        out.normals.reserve(out.normals.size() + static_cast<size_t>(am->mNumVertices) * 3);
+        out.uvs.reserve(out.uvs.size() + static_cast<size_t>(am->mNumVertices) * 2);
+        for (unsigned v = 0; v < am->mNumVertices; ++v)
+        {
+            DirectX::XMFLOAT3 p(am->mVertices[v].x, am->mVertices[v].y, am->mVertices[v].z);
+            DirectX::XMFLOAT3 n(0.0f, 0.0f, 0.0f);
+            if (am->mNormals) n = DirectX::XMFLOAT3(am->mNormals[v].x, am->mNormals[v].y, am->mNormals[v].z);
+            if (doBake)
+            {
+                DirectX::XMStoreFloat3(&p, DirectX::XMVector3TransformCoord(DirectX::XMLoadFloat3(&p), M));
+                DirectX::XMStoreFloat3(&n, DirectX::XMVector3Normalize(DirectX::XMVector3TransformNormal(DirectX::XMLoadFloat3(&n), M)));
+            }
+            out.positions.insert(out.positions.end(), {p.x, p.y, p.z});
+            out.normals.insert(out.normals.end(), {n.x, n.y, n.z});
+            float u = 0.0f, w = 0.0f;
+            if (am->mTextureCoords[0]) { u = am->mTextureCoords[0][v].x; w = am->mTextureCoords[0][v].y; }
+            out.uvs.insert(out.uvs.end(), {u * usx + uox, w * usy + uoy});
+        }
+        std::vector<u32>& dst = matIdx[mk];
+        dst.reserve(dst.size() + static_cast<size_t>(tris) * 3);
+        for (unsigned f = 0; f < am->mNumFaces; ++f)
+        {
+            const aiFace& face = am->mFaces[f];
+            if (face.mNumIndices != 3) continue;
+            const u32 a = static_cast<u32>(base) + face.mIndices[0];
+            const u32 b = static_cast<u32>(base) + face.mIndices[1];
+            const u32 c = static_cast<u32>(base) + face.mIndices[2];
+            if (mirrored) dst.insert(dst.end(), {a, c, b});
+            else          dst.insert(dst.end(), {a, b, c});
+        }
+    }
+    if (out.triangles == 0) return fail("三角形がありません");
+    if (countOnly) return true;
+
+    // 材質ごとのインデックスを連結して sections にする（VGSRC と同じく先頭から隙間なく覆う）
+    size_t total = 0;
+    for (const auto& v : matIdx) total += v.size();
+    out.indices.reserve(total);
+    for (u32 k = 0; k < static_cast<u32>(matIdx.size()); ++k)
+    {
+        if (matIdx[k].empty()) continue;
+        StaticModelCpu::Section s;
+        s.material = k;
+        s.firstIndex = static_cast<u32>(out.indices.size());
+        s.indexCount = static_cast<u32>(matIdx[k].size());
+        out.indices.insert(out.indices.end(), matIdx[k].begin(), matIdx[k].end());
+        std::vector<u32>().swap(matIdx[k]);
+        out.sections.push_back(s);
+    }
+    return true;
 }
 
 } // namespace dx12e

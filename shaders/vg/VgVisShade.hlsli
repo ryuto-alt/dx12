@@ -171,8 +171,10 @@ bool VgIsFrontFacing(VgVisSurface s, float3 camPos)
     return dot(cross(s.w1 - s.w0, s.w2 - s.w0), camPos - s.w0) > 0.0;
 }
 
-// 材質（未登録 / 範囲外は既定: 白・metallic 0・roughness 0.5）
-VgMaterialGpu VgLoadMaterial(uint materialsSrv, VgAssetGpu asset, uint mi)
+// 材質（未登録 / 範囲外は既定: 白・metallic 0・roughness 0.5）。
+// 区間はインスタンスの materialBase（エンティティ単位の材質: .dxmat / テクスチャ上書き / materialRemap）> アセットの materialBase。
+// ★両面フラグはエンティティ単位の区間でもアセットの値を写す（K2 の法線コーン棄却はアセットの区間だけを見るため。ApplicationVg.cpp）。
+VgMaterialGpu VgLoadMaterial(uint materialsSrv, VgAssetGpu asset, VgInstance inst, uint mi)
 {
     VgMaterialGpu m = (VgMaterialGpu)0;
     m.albedoSrv = VG_NONE; m.normalSrv = VG_NONE; m.metalRoughSrv = VG_NONE; m.emissiveSrv = VG_NONE;
@@ -180,10 +182,11 @@ VgMaterialGpu VgLoadMaterial(uint materialsSrv, VgAssetGpu asset, uint mi)
     m.metallic = 0.0;
     m.roughness = 0.5;
     m.uvScaleOffset = float4(1.0, 1.0, 0.0, 0.0);
-    if (asset.materialBase != VG_NONE && mi < asset.materialCount)
+    const uint base = (inst.materialBase != VG_NONE) ? inst.materialBase : asset.materialBase;
+    if (base != VG_NONE && mi < asset.materialCount)
     {
         StructuredBuffer<VgMaterialGpu> mats = ResourceDescriptorHeap[materialsSrv];
-        m = mats[asset.materialBase + mi];
+        m = mats[base + mi];
     }
     return m;
 }

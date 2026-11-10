@@ -889,6 +889,7 @@ LoadError VirtualGeometrySystem::LoadImpl(const ByteSource& src, Asset& a)
         m.emissiveIntensity = r.emissiveIntensity;
         std::memcpy(m.uvScaleOffset, r.uvScaleOffset, 16);
         m.sectionKind = r.sectionKind;
+        m.aoStrength = (r.flags & kMatAoInMR) ? r.aoStrength : 0.0f;   // v1.1（v1.0 のファイルは 0 = AO 無し）
         a.materials.push_back(std::move(m));
     }
     in.materialCount = static_cast<uint32_t>(a.materials.size());
@@ -1502,6 +1503,7 @@ bool VirtualGeometrySystem::Execute(const ExecuteDesc& d)
     m_tsGb[f] = false;   // P4: G-Buffer / resolve はこの後で呼ばれたら立つ
     m_tsRv[f] = false;
     ++m_frameCounter;
+    if (!m_matRetired.empty()) RetireMaterialBlocks();
 
     if (d.restoreHeap)
     {
@@ -1704,6 +1706,93 @@ bool VirtualGeometrySystem::AssetMaterialsBound(uint32_t id) const
     return id < m_assets.size() && m_assets[id]->state.load(std::memory_order_acquire) == 2 && m_assets[id]->matBase != 0xFFFFFFFFu;
 }
 
+// エンティティ単位の材質区間（.dxmat / テクスチャ上書き / materialRemap）。アセットの区間と同じ表の別の場所に取る。
+uint32_t VirtualGeometrySystem::AllocMaterialBlock(uint32_t count)
+{
+    if (!m_ready || !m_matMapped || count == 0) return 0xFFFFFFFFu;
+    std::lock_guard<std::mutex> lk(m_assetsMutex);
+    const uint32_t b = m_matAlloc.AllocateBlock(count);
+    if (b == IndexAllocator::kInvalid) return 0xFFFFFFFFu;
+    m_instMatBlocks += count;
+    return b;
+}
+
+bool VirtualGeometrySystem::WriteMaterialBlock(uint32_t base, const VgMaterialGpu* mats, uint32_t count)
+{
+    if (!m_ready || !m_matMapped || !mats || base == 0xFFFFFFFFu || static_cast<uint64_t>(base) + count > m_desc.maxMaterials) return false;
+    // UPLOAD ヒープへ直接書く（GPU が読んでいる途中でも、その画素が古い材質か新しい材質かのどちらかになるだけ）
+    std::memcpy(m_matMapped + static_cast<size_t>(base) * sizeof(VgMaterialGpu), mats, static_cast<size_t>(count) * sizeof(VgMaterialGpu));
+    return true;
+}
+
+void VirtualGeometrySystem::FreeMaterialBlock(uint32_t base, uint32_t count)
+{
+    if (base == 0xFFFFFFFFu || count == 0) return;
+    std::lock_guard<std::mutex> lk(m_assetsMutex);
+    // ★GPU がまだ読んでいるかもしれないので、フレームスロットぶん（+1）遅らせて返す（すぐ別のエンティティに使い回すと 1 フレーム化ける）
+    m_matRetired.push_back({base, count, m_frameCounter + m_desc.frameCount + 1});
+}
+
+void VirtualGeometrySystem::RetireMaterialBlocks()
+{
+    std::lock_guard<std::mutex> lk(m_assetsMutex);
+    for (size_t i = 0; i < m_matRetired.size();)
+    {
+        if (m_matRetired[i].frame <= m_frameCounter)
+        {
+            m_matAlloc.FreeBlock(m_matRetired[i].base, m_matRetired[i].count);
+            m_instMatBlocks -= std::min(m_instMatBlocks, m_matRetired[i].count);
+            m_matRetired[i] = m_matRetired.back();
+            m_matRetired.pop_back();
+        }
+        else ++i;
+    }
+}
+
+bool VirtualGeometrySystem::GetAssetMaterialsGpu(uint32_t id, std::vector<VgMaterialGpu>& out) const
+{
+    std::lock_guard<std::mutex> lk(m_assetsMutex);
+    out.clear();
+    if (id >= m_assets.size()) return false;
+    const Asset& a = *m_assets[id];
+    if (a.state.load(std::memory_order_acquire) != 2 || a.matBase == 0xFFFFFFFFu) return false;
+    out = a.gpuMats;
+    return !out.empty();
+}
+
+uint32_t VirtualGeometrySystem::SetKeyedMaterials(uint32_t key, const VgMaterialGpu* mats, uint32_t count)
+{
+    if (!m_ready || !mats || count == 0) return 0xFFFFFFFFu;
+    KeyedMat& k = m_keyedMats[key];
+    k.touched = true;
+    if (k.base != 0xFFFFFFFFu && k.count == count && k.cpu.size() == count
+        && std::memcmp(k.cpu.data(), mats, static_cast<size_t>(count) * sizeof(VgMaterialGpu)) == 0)
+        return k.base;                                   // 変わっていない（毎フレーム同じ物を渡される）
+    if (k.base == 0xFFFFFFFFu || k.count != count)
+    {
+        if (k.base != 0xFFFFFFFFu) FreeMaterialBlock(k.base, k.count);
+        k.base = AllocMaterialBlock(count);
+        k.count = (k.base == 0xFFFFFFFFu) ? 0u : count;
+        if (k.base == 0xFFFFFFFFu) { k.cpu.clear(); return 0xFFFFFFFFu; }
+    }
+    WriteMaterialBlock(k.base, mats, count);
+    k.cpu.assign(mats, mats + count);
+    return k.base;
+}
+
+void VirtualGeometrySystem::EndKeyedMaterialFrame()
+{
+    for (auto it = m_keyedMats.begin(); it != m_keyedMats.end();)
+    {
+        if (!it->second.touched)
+        {
+            if (it->second.base != 0xFFFFFFFFu) FreeMaterialBlock(it->second.base, it->second.count);
+            it = m_keyedMats.erase(it);
+        }
+        else { it->second.touched = false; ++it; }
+    }
+}
+
 bool VirtualGeometrySystem::SetAssetMaterials(uint32_t id, const VgMaterialGpu* mats, uint32_t count)
 {
     if (!m_ready || !m_matMapped || !mats) return false;
@@ -1727,6 +1816,7 @@ bool VirtualGeometrySystem::SetAssetMaterials(uint32_t id, const VgMaterialGpu* 
         a.matCount = count;
     }
     std::memcpy(m_matMapped + static_cast<size_t>(a.matBase) * sizeof(VgMaterialGpu), mats, static_cast<size_t>(count) * sizeof(VgMaterialGpu));
+    a.gpuMats.assign(mats, mats + count);
     a.gpu.materialBase = a.matBase;
     a.gpu.materialCount = count;
     a.info.materialsBound = true;

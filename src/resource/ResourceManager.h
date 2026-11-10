@@ -36,6 +36,15 @@ struct CachedModel
     // Node animation（skeleton が null でアニメーションがある場合）
     std::unique_ptr<NodeGraph>                         nodeGraph;
     std::vector<std::unique_ptr<NodeAnimationClip>>    nodeAnimClips;
+
+    // ---- 仮想ジオメトリ ----
+    // .vgeo（直接 / 自動 cook のどちらでも）のプロキシ: meshes[i] が .vgeo のどの材質番号か（ModelData::vgMaterialOfMesh）。
+    std::vector<uint32_t> vgMaterialOfMesh;
+    // 自動 cook（resource/VgAutoCook）で .glb / .fbx / .obj の代わりに読んだ .vgeo の絶対パス。空 = 自動 cook ではない。
+    // MeshRenderer::vgAutoPath へ写され、VG がこのパスのアセットで描く（meshes はプロキシ）。
+    std::string vgAutoVgeo;
+    // 自動 cook の最中の仮表示（箱 1 個）。cook が終わったら ResourceManager::PumpVgAuto が差し替える。
+    bool vgPlaceholder = false;
 };
 
 // dx12_reload_assets の結果。どれを読み直したか / どれを見送ったかを MCP へそのまま返す。
@@ -149,6 +158,14 @@ public:
     // 読み直したモデルのキー → 新しい CachedModel（ReloadChangedAssets の後だけ有効）
     const CachedModel* FindModel(const std::string& key) const;
 
+    // ---- 仮想ジオメトリの自動 cook（resource/VgAutoCook）----
+    // 毎フレーム（メインスレッド）。cook が終わったモデル（仮の箱 / 手動 cook した通常モデル）のキャッシュを作り直し、
+    // 作り直したモデルのキー（NormalizeModelKey）を返す。呼び出し側は MeshRenderer を張り替え、GPU の完了を待ってから
+    // ReleaseRetiredModels を呼ぶ（古い CachedModel をそこまで生かす）。
+    std::vector<std::string> PumpVgAuto(ID3D12GraphicsCommandList* cmdList);
+    void ReleaseRetiredModels();
+    bool HasRetiredModels() const { return !m_retiredModels.empty(); }
+
     void FinishUploads();
     // 直近のフレームで新しいアップロード(テクスチャ/モデル)を積んだか。
     // true のフレームだけ WaitIdle+FinishUploads する＝定常時の毎フレーム全同期を撤廃。
@@ -195,6 +212,10 @@ private:
 
     // マテリアルの 3 連続 SRV ブロックを今のテクスチャ実体で張り直す（テクスチャ再読込後）
     void RefreshMaterialSrvBlocks();
+
+    // 仮想ジオメトリの自動 cook: cook 中の仮表示（箱）/ 差し替えで外した古いモデル
+    std::unique_ptr<CachedModel> MakeVgPlaceholder(const float bmin[3], const float bmax[3], ID3D12GraphicsCommandList* cmdList);
+    std::vector<std::unique_ptr<CachedModel>> m_retiredModels;
 
     // 今フレームでロードされ、アップロードステージングが未回収のテクスチャ
     // (キャッシュは解放されないので生ポインタで安全)。毎フレーム末尾の

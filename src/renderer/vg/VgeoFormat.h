@@ -111,6 +111,10 @@ inline constexpr u32 kMatAlphaTest       = 1u << 2;   // NONVG
 inline constexpr u32 kMatHasEmissiveTex  = 1u << 3;
 inline constexpr u32 kMatDoubleSided     = 1u << 4;
 inline constexpr u32 kMatBlend           = 1u << 5;   // NONVG
+// v1.1（minor。2026-11-10）: metalRough テクスチャの R をマテリアル AO として読む（glTF occlusionTexture / ORM）。
+//   強さは MaterialRecord::aoStrength（旧 reserved@92）。知らない v1.0 の読み手は AO 無しで描く（予約の利用 = minor で許される変更）。
+inline constexpr u32 kMatAoInMR          = 1u << 6;
+inline constexpr u32 kMatKnownFlags      = 0x7Fu;
 
 // ProxySectionEntry::flags
 inline constexpr u32 kProxyFlagExact = 1u << 0;       // 簡略化していない完全詳細（error == 0）
@@ -186,7 +190,7 @@ struct MaterialRecord                    // 96 B
     f32 baseColorFactor[4];              // 56
     f32 uvScaleOffset[4];                // 72
     u32 sectionKind;                     // 88  0 = VG / 1 = NONVG
-    u32 reserved;                        // 92
+    f32 aoStrength;                      // 92  v1.1: kMatAoInMR のときの AO の強さ（0..1。立っていなければ 0）。v1.0 では reserved
 };
 
 struct HierChild                         // 48 B（float4 境界に 3 本）
@@ -316,7 +320,7 @@ VG_OFF(MaterialRecord, emissivePathOff, 20); VG_OFF(MaterialRecord, metallic, 24
 VG_OFF(MaterialRecord, emissiveColor, 32); VG_OFF(MaterialRecord, emissiveIntensity, 44);
 VG_OFF(MaterialRecord, alphaCutoff, 48);  VG_OFF(MaterialRecord, baseColorAlpha, 52);
 VG_OFF(MaterialRecord, baseColorFactor, 56); VG_OFF(MaterialRecord, uvScaleOffset, 72);
-VG_OFF(MaterialRecord, sectionKind, 88);  VG_OFF(MaterialRecord, reserved, 92);
+VG_OFF(MaterialRecord, sectionKind, 88);  VG_OFF(MaterialRecord, aoStrength, 92);
 
 VG_SIZE(HierChild, 48);
 VG_OFF(HierChild, cullSphere, 0); VG_OFF(HierChild, lodSphere, 16); VG_OFF(HierChild, minOwnError, 32);
@@ -1266,6 +1270,9 @@ inline VgeoError WriteVgeo(const VgeoContent& c, ByteSink& sink)
 
     VgeoHeader h{};
     h.magic = kVgeoMagic; h.versionMajor = kVersionMajor; h.versionMinor = kVersionMinor; h.headerSize = kHeaderSize;
+    // v1.1 の欄（材質 AO）を使うファイルだけ minor = 1 にする（使わないファイルは v1.0 とバイト一致 = 金型ハッシュ不変）。
+    for (const MaterialRecord& mr : c.materials)
+        if (mr.flags & kMatAoInMR) { h.versionMinor = 1; break; }
     h.flags = (c.header.flags & 0xFFFF0000u) | (c.proxy.empty() ? 0u : kFlagHasProxy) | (c.nonvg.empty() ? 0u : kFlagHasNonVg);
     h.maxClusterVerts = c.header.maxClusterVerts ? c.header.maxClusterVerts : kMaxClusterVerts;
     h.maxClusterTris  = c.header.maxClusterTris  ? c.header.maxClusterTris  : kMaxClusterTris;
@@ -1693,7 +1700,21 @@ inline void CheckMaterials(Ctx& x, const VgeoMeta& m)
                           r.alphaCutoff, r.baseColorAlpha, r.baseColorFactor[0], r.baseColorFactor[1], r.baseColorFactor[2], r.baseColorFactor[3],
                           r.uvScaleOffset[0], r.uvScaleOffset[1], r.uvScaleOffset[2], r.uvScaleOffset[3]};
         for (f32 f : fl) if (!Finite(f)) { x.Add(Errc::BadFloat, Fmt("material %u has a non-finite value", i), i); break; }
-        if (x.opt.strictReserved && (r.reserved != 0 || (r.flags & ~0x3Fu))) x.Add(Errc::ReservedNotZero, Fmt("material %u reserved bits are not zero", i), i);
+        // v1.1: aoStrength（旧 reserved）。AO フラグが立っているときだけ 0..1、立っていなければ 0（= v1.0 の予約と同じバイト）。
+        if (r.flags & kMatAoInMR)
+        {
+            if (!Finite(r.aoStrength) || r.aoStrength < 0.0f || r.aoStrength > 1.0f)
+                x.Add(Errc::MaterialInvalid, Fmt("material %u: aoStrength must be in [0, 1]", i), i);
+            if (!(r.flags & kMatHasMetalRough))
+                x.Add(Errc::MaterialInvalid, Fmt("material %u: AO-in-MR needs a metalRough texture", i), i);
+        }
+        else if (x.opt.strictReserved)
+        {
+            u32 bits = 0;
+            std::memcpy(&bits, &r.aoStrength, 4);
+            if (bits != 0) x.Add(Errc::ReservedNotZero, Fmt("material %u: aoStrength must be 0 without kMatAoInMR", i), i);
+        }
+        if (x.opt.strictReserved && (r.flags & ~kMatKnownFlags)) x.Add(Errc::ReservedNotZero, Fmt("material %u reserved bits are not zero", i), i);
     }
 }
 

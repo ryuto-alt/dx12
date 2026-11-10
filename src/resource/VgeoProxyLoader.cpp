@@ -232,6 +232,13 @@ ModelData LoadVgeoProxy(GraphicsDevice& device,
         material->metalRoughnessTexture = loadTex(mr.metalRoughPathOff, false, TextureUsage::NonColor);
         material->emissiveTexture       = loadTex(mr.emissivePathOff,   true,  TextureUsage::BaseColor);
 
+        // v1.1: マテリアル AO（metalRough の R）。VG の resolve と同じ値をフォワード（プロキシ）にも効かせる
+        if ((mr.flags & vg::kMatAoInMR) && material->metalRoughnessTexture)
+        {
+            material->occlusionInMR = true;
+            material->aoStrength    = std::clamp(mr.aoStrength, 0.0f, 1.0f);
+        }
+
         material->emissiveColor     = { mr.emissiveColor[0], mr.emissiveColor[1], mr.emissiveColor[2] };
         material->emissiveIntensity = mr.emissiveIntensity;
         if (material->emissiveTexture && material->emissiveIntensity <= 0.0f)
@@ -262,6 +269,7 @@ ModelData LoadVgeoProxy(GraphicsDevice& device,
 
         result.meshes.push_back(std::move(mesh));
         result.materials.push_back(std::move(material));
+        result.vgMaterialOfMesh.push_back(sec.materialIndex);   // VG のエンティティ単位の材質（サブメッシュ番号 → .vgeo の材質番号）
     }
 
     Logger::Info(".vgeo プロキシを読み込みました: {} （{} セクション, {}）", filePath.string(),
