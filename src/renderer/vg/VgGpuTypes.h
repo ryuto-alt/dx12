@@ -127,7 +127,7 @@ struct VgCullConstants
     float    planes[6][4];       // 128  錐台 6 平面（今フレーム）
     float    camPos[4];          // 224  xyz, w = zNear
     float    viewport[4];        // 240  x, y, w, h（px）
-    float    lodParams[4];       // 256  x = τ（px）, y = projScale, z = instanceMinPx, w = 0
+    float    lodParams[4];       // 256  x = τ（px）, y = projScale, z = instanceMinPx, w = HZB の球の矩形（1 = 正確 / 0 = 旧の立方体）
     float    hzbParams[4];       // 272  x, y = mip0 の解像度, z = ミップ数, w = 0
     uint32_t counts[4];          // 288  x = instanceCount, y = hzbPrevValid, z = hzbCurValid, w = coneCulling
     uint32_t heap0[4];           // 304  x = assetsSrv, y = instancesSrv, z = workUav, w = instExtraUav

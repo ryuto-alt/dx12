@@ -1872,6 +1872,7 @@ private:
     bool m_dlssThisFrame     = false;   // PrepareFrame が決める「今フレーム DLSS で解決するか」（ジッタ位相・ミップバイアスもこれに従う）
     bool m_dlssFallbackLogged = false;  // 縮退の理由をログに出したか（モードを変えるとリセット）
     u32  m_postW = 0, m_postH = 0;      // ポスト後段（DLSS 出力以降）の解像度。DLSS でなければ m_renderW/H と同じ
+    u32  m_vgLodHeight = 0;             // VG: τ を測った画面の高さ（出力解像度。vg_stats.lodPixelHeight）
     f32  m_texMipBias = 0.0f;           // 今フレームのテクスチャのミップバイアス（b1 の _clusterReserved[8].y）
     // 今フレーム DLSS を使うべきか（設定 + 可用性 + 透視ビュー）。reason は使えない理由（使うなら空）。
     bool DlssWanted(std::string* reason = nullptr) const;

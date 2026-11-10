@@ -127,7 +127,15 @@ inline bool HzbOccludedSphere(const HzbCpu& hzb, const f32 vp[16], const f32 c[3
     std::memcpy(&m, vp, 64);
     HiZViewport viewport;
     viewport.originX = v.vpX; viewport.originY = v.vpY; viewport.width = v.vpW; viewport.height = v.vpH;
-    const ScreenBounds sb = ProjectAabbToScreen(XMVectorSet(c[0] - r, c[1] - r, c[2] - r, 0.0f), XMVectorSet(c[0] + r, c[1] + r, c[2] + r, 0.0f), XMLoadFloat4x4(&m), viewport);
+    // 球の正確な画面矩形（VgLodMath.h）。正射のときだけ従来の「球を包む立方体」の投影
+    ScreenBounds sb;
+    const SphereScreenRect sr = ProjectSphereToScreen(vp, c, r, v.vpX, v.vpY, v.vpW, v.vpH);
+    if (sr.ortho)
+        sb = ProjectAabbToScreen(XMVectorSet(c[0] - r, c[1] - r, c[2] - r, 0.0f), XMVectorSet(c[0] + r, c[1] + r, c[2] + r, 0.0f), XMLoadFloat4x4(&m), viewport);
+    else
+    {
+        sb.minX = sr.minX; sb.minY = sr.minY; sb.maxX = sr.maxX; sb.maxY = sr.maxY; sb.minZ = sr.minZ; sb.valid = sr.valid;
+    }
     if (!sb.valid) return false;
     const u32 mip = SelectHiZMip(sb, hzb.mips);
     const f32 inv = 1.0f / static_cast<f32>(1u << mip);

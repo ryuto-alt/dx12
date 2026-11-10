@@ -1223,7 +1223,8 @@ bool VirtualGeometrySystem::Execute(const ExecuteDesc& d)
     std::memcpy(c.planes, fp.p, sizeof(c.planes));
     c.camPos[0] = d.camPos[0]; c.camPos[1] = d.camPos[1]; c.camPos[2] = d.camPos[2]; c.camPos[3] = d.zNear;
     c.viewport[0] = d.vpX; c.viewport[1] = d.vpY; c.viewport[2] = d.vpW; c.viewport[3] = d.vpH;
-    c.lodParams[0] = tau; c.lodParams[1] = d.projScale; c.lodParams[2] = d.settings.instanceMinPx; c.lodParams[3] = 0.0f;
+    c.lodParams[0] = tau; c.lodParams[1] = d.projScale; c.lodParams[2] = d.settings.instanceMinPx;
+    c.lodParams[3] = d.settings.hzbExactSphere ? 1.0f : 0.0f;   // gLod.w: HZB の球の矩形（1 = 正確 / 0 = 旧の立方体）
     const bool hzbOn = d.settings.hzbCulling && d.hzb.width > 0 && d.hzb.mips > 0;
     const bool prevOk = hzbOn && d.hzb.prev && d.hzb.prevValid;
     const bool curOk = hzbOn && d.hzb.cur && (d.hzb.curValid || d.hzb.buildBetweenPhases);
@@ -1624,6 +1625,8 @@ void VirtualGeometrySystem::CollectStats(uint32_t f)
     st.msPrimCulled = s[VG_STAT_MS_PRIM_CULLED];
     st.psInvocations = s[VG_STAT_PS_INVOC];
     st.coveredPixels = s[VG_STAT_COVERED_PIXELS];
+    st.clustersWithPixels = s[VG_STAT_CL_WITH_PIXELS];
+    st.trisInClustersWithPixels = s[VG_STAT_TRIS_IN_CL_WITH_PIXELS];
     for (uint32_t i = 0; i < VG_EDGE_BINS; ++i) { st.edgeClusters[i] = s[VG_STAT_EDGE_CL_BASE + i]; st.edgeTris[i] = s[VG_STAT_EDGE_TRI_BASE + i]; }
     st.stableOrder = m_stableOn[f];
     st.sortedClusters = s[VG_STAT_SORTED];

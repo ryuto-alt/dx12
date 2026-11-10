@@ -41,7 +41,8 @@ namespace dx12e::vgauto
 {
 
 // 自動 cook の版。出力の作り方（取り出し・材質の詰め方・cook の既定値）を変えたら上げる（古い .vgeo は鍵が外れて作り直される）。
-inline constexpr uint32_t kAutoCookVersion = 1;
+//   2（2026-11-10）: cooker 1.1 の LOD 誤差（幾何誤差 + max の累積）。1 の .vgeo は遠景で三角形を描きすぎるので作り直させる。
+inline constexpr uint32_t kAutoCookVersion = 2;
 
 struct Config
 {

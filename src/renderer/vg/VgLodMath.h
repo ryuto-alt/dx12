@@ -50,6 +50,16 @@ inline float ProjectedErrorPxFar(float err, const float sphereWorld[4], const fl
     return err * s * projScale / d;
 }
 
+// LOD の projScale（= 0.5 * 画面高(px) / tan(fovY / 2)）。τ は**出力解像度の px**で評価する（設計書 §2.3.2）:
+//   時間方向アップスケーラ（DLSS / TSR）で内部解像度 renderH から outputH へ引き伸ばすときは outputH で測る
+//   （内部 720p → 出力 1080p で内部 px のまま測ると、出力では 1.5 px の誤差を許してしまう）。outputH <= renderH なら renderH。
+//   cotHalfFovY = proj._22。
+inline float LodProjScale(float renderH, float outputH, float cotHalfFovY)
+{
+    const float h = (outputH > renderH) ? outputH : renderH;
+    return 0.5f * h * cotHalfFovY;
+}
+
 // ── 錐台（6 平面）─────────────────────────────────────────────────────────────
 // 平面は (nx, ny, nz, d)。内側が dot(n, p) + d >= 0。正規化済み。順序: left / right / bottom / top / near / far。
 // D3D の深度 0..1 なので near は 3 列目そのもの（z >= 0）、far は w - z。
@@ -162,6 +172,83 @@ inline bool ConeCulls(const float center[3], float radius, const float axis[3], 
     const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
     const float dp = dx * axis[0] + dy * axis[1] + dz * axis[2];
     return dp >= cutoff * len + radius;
+}
+
+// ── 球の画面矩形（HZB 判定用。2026-11-10）──────────────────────────────────────
+// 球 (c, r) を viewProj（行ベクトル規約・ジッタ込みでよい）で投影した**正確な**外接矩形（ピクセル）と最近点の NDC 深度。
+//   以前は「球を包む立方体の 8 隅」を投影していた（HiZMath.h の ProjectAabbToScreen）。立方体の影は球の影より 1.4〜1.7 倍広く、
+//   最近点も立方体の隅（中心から r√3）で測るので、小さなクラスタほど HZB で落ちなかった（実測: 1 画素も残らないクラスタが描いた数の 6 割）。
+//   求め方: NDC の x = k の平面 (colX - k colW)·(p,1) = 0 が球に接する k を解く（2 次式）。判別式は打ち消しの無い形
+//     disc = r² (|Wc nX - Xc nW|² - r² |nX × nW|²)（ラグランジュの恒等式）で計算する（素直な b² - ac は遠くの小さい球で桁落ちする）。
+//   最近点 = 球の「w が最小の点」c - r nW/|nW|（透視の標準 Z は w について単調なので NDC 深度も最小）。
+//   valid = false（呼び出し側は「見える」扱い）: 球が w = kMinW より手前に掛かる / 最近点が near より手前・far より奥 / 画面外 / NaN。
+//   ortho = true: 正射（w が位置に依らない）なので、この式は使えない（呼び出し側は立方体の投影へ戻す）。
+struct SphereScreenRect
+{
+    float minX = 0, minY = 0, maxX = 0, maxY = 0, minZ = 0;
+    bool valid = false;
+    bool ortho = false;
+};
+
+inline SphereScreenRect ProjectSphereToScreen(const float vp[16], const float c[3], float r,
+                                              float vpX, float vpY, float vpW, float vpH)
+{
+    SphereScreenRect o;
+    constexpr float kMinW = 1e-4f;
+    if (!(r >= 0.0f) || !(vpW > 0.0f) || !(vpH > 0.0f)) return o;
+    // 列 j = clip の成分 j（vp[row * 4 + j]）
+    const float nX[3] = {vp[0], vp[4], vp[8]},  oX = vp[12];
+    const float nY[3] = {vp[1], vp[5], vp[9]},  oY = vp[13];
+    const float nZ[3] = {vp[2], vp[6], vp[10]}, oZ = vp[14];
+    const float nW[3] = {vp[3], vp[7], vp[11]}, oW = vp[15];
+    const float nw2 = nW[0] * nW[0] + nW[1] * nW[1] + nW[2] * nW[2];
+    if (!(nw2 > 1e-12f)) { o.ortho = true; return o; }
+    const float Xc = c[0] * nX[0] + c[1] * nX[1] + c[2] * nX[2] + oX;
+    const float Yc = c[0] * nY[0] + c[1] * nY[1] + c[2] * nY[2] + oY;
+    const float Wc = c[0] * nW[0] + c[1] * nW[1] + c[2] * nW[2] + oW;
+    const float nwLen = std::sqrt(nw2);
+    if (!(Wc - r * nwLen > kMinW)) return o;               // 球がカメラ平面に掛かる（内側にいる）
+    const float r2 = r * r;
+    const float a = Wc * Wc - r2 * nw2;                    // > 0（上の判定から）
+    // 軸ごとの [kMin, kMax]（NDC）
+    auto axis = [&](const float nP[3], float Pc, float& kMin, float& kMax) -> bool
+    {
+        const float b = Pc * Wc - r2 * (nP[0] * nW[0] + nP[1] * nW[1] + nP[2] * nW[2]);
+        const float u[3] = {Wc * nP[0] - Pc * nW[0], Wc * nP[1] - Pc * nW[1], Wc * nP[2] - Pc * nW[2]};
+        const float x[3] = {nP[1] * nW[2] - nP[2] * nW[1], nP[2] * nW[0] - nP[0] * nW[2], nP[0] * nW[1] - nP[1] * nW[0]};
+        const float uu = u[0] * u[0] + u[1] * u[1] + u[2] * u[2];
+        const float xx = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+        float disc = r2 * (uu - r2 * xx);
+        if (!(disc >= 0.0f)) disc = 0.0f;                  // 丸めで負になったら接点 1 つ（a > 0 なので本来は非負）
+        const float s = std::sqrt(disc);
+        const float inv = 1.0f / a;
+        kMin = (b - s) * inv;
+        kMax = (b + s) * inv;
+        return (kMin == kMin) && (kMax == kMax);
+    };
+    float x0, x1, y0, y1;
+    if (!axis(nX, Xc, x0, x1) || !axis(nY, Yc, y0, y1)) return o;
+    // 最近点の深度
+    const float k = r / nwLen;
+    const float p[3] = {c[0] - k * nW[0], c[1] - k * nW[1], c[2] - k * nW[2]};
+    const float zc = p[0] * nZ[0] + p[1] * nZ[1] + p[2] * nZ[2] + oZ;
+    const float wc = p[0] * nW[0] + p[1] * nW[1] + p[2] * nW[2] + oW;
+    if (!(wc > kMinW)) return o;
+    const float z = zc / wc;
+    if (!(z == z) || z < 0.0f || z > 1.0f) return o;
+    const float sx0 = vpX + (x0 * 0.5f + 0.5f) * vpW;
+    const float sx1 = vpX + (x1 * 0.5f + 0.5f) * vpW;
+    const float sy0 = vpY + (1.0f - (y1 * 0.5f + 0.5f)) * vpH;
+    const float sy1 = vpY + (1.0f - (y0 * 0.5f + 0.5f)) * vpH;
+    const float vx1 = vpX + vpW, vy1 = vpY + vpH;
+    if (sx1 < vpX || sx0 > vx1 || sy1 < vpY || sy0 > vy1) return o;
+    o.minX = sx0 < vpX ? vpX : sx0;
+    o.minY = sy0 < vpY ? vpY : sy0;
+    o.maxX = sx1 > vx1 ? vx1 : sx1;
+    o.maxY = sy1 > vy1 ? vy1 : sy1;
+    o.minZ = z;
+    o.valid = true;
+    return o;
 }
 
 inline float ConeAxisComponent(uint32_t coneS8, int i)

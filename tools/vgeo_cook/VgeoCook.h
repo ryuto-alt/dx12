@@ -19,7 +19,8 @@
 namespace dx12e::vg::cook
 {
 
-inline constexpr const char* kCookerVersion = "1.0.0";
+// 1.1.0（2026-11-10）: LOD の誤差を幾何誤差（m）+ max の累積に変えた（errorMetric / errorAccum）。.vgeo のバイト配置は 1.0 と同じ。
+inline constexpr const char* kCookerVersion = "1.1.0";
 
 enum class Lod0Builder : u32
 {
@@ -49,6 +50,12 @@ struct CookOptions
     bool regularize = false;               // meshopt_SimplifyRegularize: 三角形の大きさ / 形を揃える（細長い三角形の折れ返しを減らす。幾何精度は少し落ちる）
     bool debugNoLocks = false;             // ★診断専用: グループ境界をロックしない（クラックが出ることをテストが確かめる。実 cook では使わない）
     u32  permissive = 2;                   // meshopt_SimplifyPermissive（属性の不連続 = UV / 法線の継ぎ目・極の扇 をまたぐ縮約を許す）: 0 = 使わない / 1 = 常に / 2 = 自動（通常の簡略化が目標に届かないグループだけ）
+    // ── LOD の誤差（ランタイムが画面 px へ射影して LOD を選ぶ値。CookGeomError.h）──
+    //   errorMetric: 0 = meshopt の result_error（位置 + 属性の混合。cooker 1.0.x の挙動）/ 1 = 幾何誤差（入力 ⇄ 出力の面の距離、m）
+    //   errorAccum : 0 = 親 = 子の最大 + 今回（和）/ 1 = 親 = max(子の最大, 今回)（UE の Nanite と同じく単調性だけを max で保つ）
+    //   既定（1, 1）は 2026-11-10 の実測で決めた（docs/VIRTUAL_GEOMETRY_DESIGN.md §2.4.10）。
+    u32  errorMetric = 1;
+    u32  errorAccum  = 1;
     // ── 入力の前処理 ──
     bool dedupe = true;                    // 位置 + 法線 + UV が同一の頂点を融合する
     // ── プロキシ / NONVG ──
@@ -78,7 +85,9 @@ struct LevelStat
     u64  sharedEdges = 0;                  // クラスタ間で共有される境界エッジの総数（無向）
     u64  trisIn = 0, trisOut = 0;          // 簡略化の入力 / 出力三角形数（このレベルのグループの合計）
     u64  lockedVerts = 0, groupVerts = 0;  // ロックされた頂点 / グループの頂点の合計
-    f64  meanSimplifyErr = 0, maxSimplifyErr = 0;   // このレベルの簡略化 1 回分の誤差（m）
+    f64  meanSimplifyErr = 0, maxSimplifyErr = 0;   // このレベルの簡略化 1 回分の誤差（m。errorMetric で選んだ方）
+    f64  meanMeshoptErr = 0, maxMeshoptErr = 0;     // 同・meshopt の result_error（位置 + 属性。比較用）
+    f64  meanGeomErr = 0, maxGeomErr = 0;           // 同・幾何誤差（m。errorMetric = 1 のときだけ測る）
     f64  meanLodErr = 0, maxLodErr = 0;    // このレベルのクラスタの lodError（累積。m）
     u64  reachedTarget = 0;                // 目標三角形数に到達したグループ数
     u64  permissiveGroups = 0;             // 継ぎ目をまたぐ縮約（permissive）で簡略化したグループ数
@@ -107,6 +116,7 @@ struct CookStats
     std::vector<LodCurvePoint> lodCurve;
     // 時間（ms）
     f64 msIngest = 0, msLod0 = 0, msDag = 0, msGraph = 0, msGroup = 0, msSimplify = 0, msPack = 0, msBvh = 0, msProxy = 0, msTotal = 0;
+    f64 msGeomErr = 0;                     // 幾何誤差の計測（msSimplify の内数。全スレッドの合計 = CPU 時間）
     u64 peakWorkingSet = 0;                // Cook 呼び出し中に観測した最大（バイト。Windows のみ）
 };
 

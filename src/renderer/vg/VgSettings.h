@@ -29,6 +29,10 @@ struct VirtualGeometrySettings
     // ── P4（実行時の設定。保存しない）──
     bool resolve       = true;     // 材質 resolve（フォワードと同じライティング）。false = P3 の暫定シェーディング（A/B 用）
     bool stableOrder   = false;    // 決定論（可視リストの安定ソート）。決定論キャプチャ中は自動で ON
+    // ── 2026-11-10（実行時。保存しない）──
+    bool hzbExactSphere = true;    // HZB 判定に球の正確な画面矩形を使う（false = 旧: 球を包む立方体の 8 隅。前後比較用）
+    bool lodOutputPixels = false;  // τ を出力解像度の px で測る（DLSS 等で内部解像度 < 出力のとき細かくなる。既定 = 内部解像度の px。
+                                   //   500 個の岩で三角形 1.7 倍・近接 1 個で +2 ms の代わりに参照との差が下がる。docs/VIRTUAL_GEOMETRY_DESIGN.md §2.4.10）
 
     bool operator==(const VirtualGeometrySettings& o) const
     {

@@ -4,7 +4,7 @@
 //     1. Ingest   : 座標変換 → 24bit 格子へ量子化 → （任意）頂点融合 → 溶接 ID → 縮退三角形の除去 → セクション（材質）別の三角形リスト
 //     2. Lod0     : セクションごとに三角形を空間（Morton）チャンクへ分け、チャンク内を meshopt でクラスタ化（並列）
 //     3. DAG      : 1 レベルずつ [クラスタ隣接グラフ → グループ化 → グループごとに境界頂点をロックして簡略化 → 再クラスタ]（並列）
-//                   親の誤差 = max(子の誤差) + 今回の簡略化誤差（単調）。球はグループ内で共有（Nanite 方式）。
+//                   親の誤差 = max(子の誤差, 今回の簡略化の幾何誤差)（単調。errorAccum = 0 なら和）。球はグループ内で共有（Nanite 方式）。
 //     4. Pack     : ルートグループ → レベル降順 → Morton の順にページへ詰める（2 パス: サイズ計算 → 参照を書いて符号化）
 //     5. BVH / ヘッダ / プロキシ / NONVG / debugJson
 //
@@ -12,6 +12,7 @@
 //   ★メモリ: 頂点は 24 B（格子座標 + oct 法線 + UV）で 1 本だけ持ち、クラスタは全レベルで同じ頂点配列を参照する
 //            （簡略化は頂点を動かさない）。入力配列は量子化後すぐ解放する。
 #include "VgeoCook.h"
+#include "CookGeomError.h"
 
 #include <meshoptimizer.h>
 
@@ -43,7 +44,10 @@ std::string CookOptions::CanonicalString() const
                   static_cast<f64>(coneWeight), dedupe ? 1 : 0, GroupMethodName(groupMethod), regularize ? 1 : 0, debugNoLocks ? 1 : 0, permissive, groupSize, lockOpenBorders ? 1 : 0, static_cast<u32>(lod0Builder), lod0ChunkTris,
                   maxTris, maxVerts, nonVgMaxTris, static_cast<f64>(normalWeight), pinPages, proxy ? 1 : 0, proxyMaxTris, static_cast<f64>(reduction), static_cast<f64>(targetFill),
                   static_cast<f64>(uvWeight), (vertexCacheOpt ? 1 : 0) + (overdrawOpt ? 2 : 0));
-    return buf;
+    std::string s = buf;
+    // cooker 1.1: LOD 誤差の測り方（1.0 の挙動 = 0/0 のときは付けない＝旧い鍵と同じ文字列）
+    if (errorMetric != 0 || errorAccum != 0) s += Fmt(";errmetric=%u;erraccum=%u", errorMetric, errorAccum);
+    return s;
 }
 
 VgsrcData MakeVgsrcFromTriangles(const std::vector<f32>& positions, const std::vector<u32>& indices, const std::vector<f32>* normals, const std::vector<f32>* uvs,
@@ -651,7 +655,9 @@ struct GroupOut
     Batch products;
     f32 sphere[4] = {0, 0, 0, 0};
     f32 err = 0.0f;
-    f32 simErr = 0.0f;
+    f32 simErr = 0.0f;                  // LOD の誤差に使った今回の簡略化誤差（errorMetric で選んだ方）
+    f32 meshoptErr = 0.0f, geomErr = 0.0f;
+    f64 msGeom = 0.0;                   // 幾何誤差の計測にかかった時間（統計）   // 比較用: meshopt の result_error / 幾何誤差（m。errorMetric = 1 のときだけ）
     u32 trisIn = 0, trisOut = 0, verts = 0, lockedVerts = 0, permissiveUsed = 0;
     bool reached = false;
 };
@@ -812,6 +818,16 @@ void SimplifyGroup(const DagCtx& cx, const u32* members, u32 nMembers, bool fina
         targetTris = std::max<size_t>(4, static_cast<size_t>(static_cast<f64>(targetTris) * 0.7));   // ルートが 1 クラスタに収まらない: もっと削る
     }
     out.products = std::move(products);
+    out.meshoptErr = simErr;
+    if (opt.errorMetric == 1)
+    {
+        // 幾何誤差（m）: 入力の面 ⇄ 出力の面の距離（CookGeomError.h）。属性の重みに依らない。
+        //   グループが丸ごと消えた（nOut == 0 → 最大面積の 1 三角形を残した）ときも同じ測り方で、残した三角形からの距離になる。
+        const auto tg = std::chrono::steady_clock::now();
+        out.geomErr = (nOut != sc.lidx.size()) ? geomerr::SimplifyGeomError(sc.lpos.data(), nv, sc.lidx.data(), sc.lidx.size(), sc.outIdx.data(), nOut) : 0.0f;
+        out.msGeom = MsSince(tg);
+        simErr = out.geomErr;
+    }
     out.simErr = simErr;
     out.trisIn = trisIn;
     out.trisOut = static_cast<u32>(nOut / 3);
@@ -838,7 +854,7 @@ void SimplifyGroup(const DagCtx& cx, const u32* members, u32 nMembers, bool fina
     }
 
     // 5) 誤差と球（グループ内で共有）
-    out.err = childMaxErr + simErr;
+    out.err = (opt.errorAccum == 1) ? std::max(childMaxErr, simErr) : childMaxErr + simErr;
     sc.sp.resize(static_cast<size_t>(nMembers) * 4);
     for (u32 i = 0; i < nMembers; ++i) std::memcpy(&sc.sp[static_cast<size_t>(i) * 4], st.cl[members[i]].lodSphere, 16);
     const meshopt_Bounds b = meshopt_computeSphereBounds(sc.sp.data(), nMembers, 16, sc.sp.data() + 3, 16);
@@ -1010,6 +1026,9 @@ struct DagBuilder
                 groups.push_back(gr);
                 ls.trisIn += o.trisIn; ls.trisOut += o.trisOut; ls.lockedVerts += o.lockedVerts; ls.groupVerts += o.verts;
                 ls.meanSimplifyErr += o.simErr; ls.maxSimplifyErr = std::max<f64>(ls.maxSimplifyErr, o.simErr);
+                ls.meanMeshoptErr += o.meshoptErr; ls.maxMeshoptErr = std::max<f64>(ls.maxMeshoptErr, o.meshoptErr);
+                ls.meanGeomErr += o.geomErr; ls.maxGeomErr = std::max<f64>(ls.maxGeomErr, o.geomErr);
+                stats.msGeomErr += o.msGeom;
                 if (o.reached) ++ls.reachedTarget;
                 ls.permissiveGroups += o.permissiveUsed;
                 const f32 sphere[4] = {o.sphere[0], o.sphere[1], o.sphere[2], o.sphere[3]};
@@ -1600,7 +1619,12 @@ static VgeoError CookImpl(VgsrcData&& in, const CookOptions& opt, VgeoContent& o
         for (size_t i = 0; i < levels.size(); ++i)
         {
             levels[i].meanLodErr = nErr[i] ? sumErr[i] / static_cast<f64>(nErr[i]) : 0.0;
-            if (levels[i].groups) levels[i].meanSimplifyErr /= static_cast<f64>(levels[i].groups);
+            if (levels[i].groups)
+            {
+                levels[i].meanSimplifyErr /= static_cast<f64>(levels[i].groups);
+                levels[i].meanMeshoptErr /= static_cast<f64>(levels[i].groups);
+                levels[i].meanGeomErr /= static_cast<f64>(levels[i].groups);
+            }
         }
         stats.perLevel = levels;
         if (opt.collectStats && vgTris) stats.lodCurve = ComputeLodCurve(st, h.boundingSphere, vgTris);

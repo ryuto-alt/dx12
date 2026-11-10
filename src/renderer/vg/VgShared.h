@@ -65,6 +65,8 @@
 #define VG_STAT_EDGE_CL_BASE      72u   // 可視クラスタの最長辺（画面 px）ヒストグラム: クラスタ数 x 8 段（計測）
 #define VG_STAT_EDGE_TRI_BASE     80u   //   同: 三角形数 x 8 段（計測）
 #define VG_EDGE_BINS              8u    // [0,1) [1,2) [2,4) [4,8) [8,16) [16,32) [32,64) [64,inf) px
+#define VG_STAT_CL_WITH_PIXELS    88u   // 可視性バッファに 1 画素でも残った可視クラスタ数（計測。VgCoverage）
+#define VG_STAT_TRIS_IN_CL_WITH_PIXELS 89u   // 同・そのクラスタの三角形数の合計（計測）
 #define VG_STAT_COUNT             128u
 
 // ── 作業バッファのレイアウト（バイト）────────────────────────────────────────

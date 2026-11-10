@@ -112,7 +112,34 @@ void CSCoverage(uint3 dtid : SV_DispatchThreadID)
     RWByteAddressBuffer work = VgWork();
     Texture2D<uint> vis = ResourceDescriptorHeap[gHeap2.y];
     uint covered = 0;
+    uint v = VG_VIS_EMPTY;
     if (dtid.x < gRast.y && dtid.y < gRast.z)
-        covered = (vis.Load(int3(dtid.xy, 0)) != VG_VIS_EMPTY) ? 1u : 0u;
+    {
+        v = vis.Load(int3(dtid.xy, 0));
+        covered = (v != VG_VIS_EMPTY) ? 1u : 0u;
+    }
     VgStatAdd(work, VG_STAT_COVERED_PIXELS, covered);
+    // 「1 画素でも残った」可視クラスタの数と、その三角形数（描いたのに 1 画素も残らなかったクラスタ = 隠れ / 裏面の無駄の目安）。
+    //   可視リストの clusterRef の bit31（予約。読む側は全員 0xFFFF / >>16 & 0xFF で切り出す）を「画素あり」の印に使う。
+    uint firstHit = 0, hitTris = 0;
+    if (covered != 0)
+    {
+        const uint slot = v >> VG_VIS_TRI_BITS;
+        uint orig;
+        work.InterlockedOr(gOffs1.y + slot * 8u + 4u, 0x80000000u, orig);
+        if ((orig & 0x80000000u) == 0u)
+        {
+            firstHit = 1;
+            const uint2 e = work.Load2(gOffs1.y + slot * 8u);
+            StructuredBuffer<VgInstance> instances = ResourceDescriptorHeap[gHeap0.y];
+            StructuredBuffer<VgAssetGpu> assets     = ResourceDescriptorHeap[gHeap0.x];
+            const VgAssetGpu asset = assets[instances[e.x].assetIndex];
+            const uint page = e.y & 0xFFFFu;
+            ByteAddressBuffer pool = ResourceDescriptorHeap[NonUniformResourceIndex(asset.poolSrvBase + (page >> VG_CHUNK_PAGES_LOG2))];
+            const uint hb = (page & ((1u << VG_CHUNK_PAGES_LOG2) - 1u)) * VG_PAGE_BYTES + 64u + ((e.y >> 16) & 0xFFu) * 128u;
+            hitTris = (pool.Load(hb + 72) >> 8) & 0xFFu;
+        }
+    }
+    VgStatAdd(work, VG_STAT_CL_WITH_PIXELS, firstHit);
+    VgStatAdd(work, VG_STAT_TRIS_IN_CL_WITH_PIXELS, hitTris);
 }

@@ -653,7 +653,11 @@ void Application::RunVirtualGeometryCull(ID3D12GraphicsCommandList* cmd, const V
     std::memcpy(d.prevViewProj, m_vgHiZHistory ? &m_vgPrevViewProj : &view.viewProjJittered, 64);
     d.camPos[0] = view.position.x; d.camPos[1] = view.position.y; d.camPos[2] = view.position.z;
     d.zNear = view.nearZ;
-    d.projScale = 0.5f * static_cast<f32>(rH) * view.proj._22;     // 0.5 * H / tan(fovY / 2)（proj._22 = cot(fovY/2)）
+    // 0.5 * H / tan(fovY / 2)（proj._22 = cot(fovY/2)）。H は出力解像度（DLSS で内部 720p → 出力 1080p なら 1080。VgLodMath.h）
+    //   既定は内部解像度の px（lodOutputPixels = false）。
+    const u32 lodH = st.lodOutputPixels ? std::max<u32>(rH, m_postH) : rH;
+    m_vgLodHeight = lodH;
+    d.projScale = vg::LodProjScale(static_cast<f32>(rH), static_cast<f32>(lodH), view.proj._22);
     d.vpX = 0.0f; d.vpY = 0.0f; d.vpW = static_cast<f32>(rW); d.vpH = static_cast<f32>(rH);
     d.instances = inst.data();
     d.instanceCount = static_cast<u32>(inst.size());
@@ -662,6 +666,7 @@ void Application::RunVirtualGeometryCull(ID3D12GraphicsCommandList* cmd, const V
     d.settings.coneCulling = st.coneCulling;
     d.settings.instanceMinPx = st.instanceMinPx;
     d.settings.forceLod0 = st.forceLod0;
+    d.settings.hzbExactSphere = st.hzbExactSphere;
     // P4: 決定論（可視リストの安定ソート）。決定論キャプチャ（screenshot_final deterministic）の間は自動で ON。
     d.settings.stableOrder = st.stableOrder || m_deterministicCapture;
     // P4: G-Buffer の速度はジッタ無しの今 / 前フレームの VP（深度プリパスと同じ。履歴が無ければ今と同じ = 速度 0）
@@ -724,7 +729,8 @@ nlohmann::json Application::VirtualGeometryStatsJson() const
                      {"instanceMinPx", st.instanceMinPx}, {"vramBudgetMB", st.vramBudgetMB},
                      {"raster", st.raster}, {"rasterAs", st.rasterAs}, {"smallPrimCull", st.smallPrimCull},
                      {"measure", st.measure}, {"forceLod0", st.forceLod0},
-                     {"resolve", st.resolve}, {"stableOrder", st.stableOrder}};
+                     {"resolve", st.resolve}, {"stableOrder", st.stableOrder}, {"hzbExactSphere", st.hzbExactSphere},
+                     {"lodOutputPixels", st.lodOutputPixels}};
     j["meshShaders"] = m_graphicsDevice ? m_graphicsDevice->SupportsMeshShaders() : false;
     j["rasterWanted"] = VirtualGeometryRasterWanted(true);
     j["hiddenProxies"] = m_vgHiddenEntities.size();     // VG 本体が描くためプロキシを外しているエンティティ数
@@ -788,6 +794,10 @@ nlohmann::json Application::VirtualGeometryStatsJson() const
         r["psInvocations"] = s.psInvocations;
         r["coveredPixels"] = s.coveredPixels;
         r["overdraw"] = s.coveredPixels ? r3(static_cast<double>(s.psInvocations) / static_cast<double>(s.coveredPixels)) : 0.0;
+        // 描いた三角形 / 被覆画素（画素あたりの三角形数）と、1 画素でも残ったクラスタの割合（残らない = 隠れ / 裏面で無駄に描いた）
+        r["trianglesPerCoveredPixel"] = s.coveredPixels ? r3(static_cast<double>(s.trianglesDrawn) / static_cast<double>(s.coveredPixels)) : 0.0;
+        r["clustersWithPixels"] = s.clustersWithPixels;
+        r["trianglesInClustersWithPixels"] = s.trisInClustersWithPixels;
     }
     if (s.rasterActive && st.measure)
     {
@@ -821,6 +831,7 @@ nlohmann::json Application::VirtualGeometryStatsJson() const
     j["vramMB"] = r3(static_cast<double>(s.vramBytes) / 1048576.0);
     j["overflow"] = s.overflow;
     j["tauUsed"] = r3(s.tauUsed);
+    j["lodPixelHeight"] = m_vgLodHeight;   // τ を測る画面の高さ（px）。アップスケール時は出力解像度（内部解像度ではない）
     j["culled"] = {{"clustersFrustum", s.clustersCulledFrustum}, {"clustersCone", s.clustersCulledCone},
                    {"clustersHzbDeferred", s.clustersDeferred}, {"clustersHzbDropped", s.clustersHzbDropped},
                    {"nodesFrustum", s.nodesCulledFrustum}, {"nodesLod", s.nodesCulledLod}, {"nodesHzbDeferred", s.nodesDeferred},

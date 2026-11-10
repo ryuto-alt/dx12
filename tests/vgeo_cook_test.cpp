@@ -13,6 +13,7 @@
 // meshoptimizer に依存するので統合ビルドでのみビルドされる（tests/CMakeLists.txt）。
 
 #include "CookBench.h"
+#include "CookGeomError.h"
 #include "CookGroup.h"
 #include "CookObj.h"
 #include "VgeoCook.h"
@@ -23,6 +24,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <map>
+#include <random>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -1247,6 +1249,124 @@ void TestStubCompat()
     CHECK(GotLod0(as) == GotLod0(ac));
 }
 
+// 幾何誤差（CookGeomError.h）: 点と三角形の距離 = 密な標本の最小 / 平らな面の簡略化は 0 / 突起を消すと突起の高さ / 出力なしは対角の半分
+//   / 格子探索 + 打ち切り（今までの最大以下で止める）が総当たりの「最短距離の最大」と一致 / cook が lodError に幾何誤差の max を入れている
+void TestGeomError()
+{
+    std::printf("[geom error] point-triangle distance / simplification error / cooker error metric\n");
+    using namespace dx12e::vg::cook::geomerr;
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<float> U(-1.0f, 1.0f);
+    // 1) 点と三角形
+    int bad = 0;
+    for (int t = 0; t < 300; ++t)
+    {
+        const float a[3] = {U(rng), U(rng), U(rng)}, b[3] = {U(rng), U(rng), U(rng)}, c[3] = {U(rng), U(rng), U(rng)};
+        const float p[3] = {U(rng) * 2, U(rng) * 2, U(rng) * 2};
+        const float d = std::sqrt(PointTriDist2(p, a, b, c));
+        float best = 1e30f;
+        const int N = 120;
+        for (int i = 0; i <= N; ++i)
+            for (int j = 0; i + j <= N; ++j)
+            {
+                const float u = static_cast<float>(i) / N, v = static_cast<float>(j) / N, w = 1 - u - v;
+                const float q[3] = {a[0] * w + b[0] * u + c[0] * v, a[1] * w + b[1] * u + c[1] * v, a[2] * w + b[2] * u + c[2] * v};
+                best = std::min(best, std::sqrt((p[0] - q[0]) * (p[0] - q[0]) + (p[1] - q[1]) * (p[1] - q[1]) + (p[2] - q[2]) * (p[2] - q[2])));
+            }
+        if (!(d <= best + 1e-5f && d >= best - 0.03f)) ++bad;
+    }
+    CHECK(bad == 0);
+    // 2) 平らな格子（n x n）: 入力 = 全三角形、出力 = 外周 4 隅の 2 三角形 → 誤差 0
+    const int n = 16;
+    std::vector<float> pos;
+    for (int y = 0; y <= n; ++y)
+        for (int x = 0; x <= n; ++x) { pos.push_back(static_cast<float>(x)); pos.push_back(static_cast<float>(y)); pos.push_back(0.0f); }
+    auto id = [&](int x, int y) { return static_cast<uint32_t>(y * (n + 1) + x); };
+    std::vector<uint32_t> in;
+    for (int y = 0; y < n; ++y)
+        for (int x = 0; x < n; ++x)
+        {
+            in.insert(in.end(), {id(x, y), id(x + 1, y), id(x + 1, y + 1)});
+            in.insert(in.end(), {id(x, y), id(x + 1, y + 1), id(x, y + 1)});
+        }
+    const std::vector<uint32_t> out = {id(0, 0), id(n, 0), id(n, n), id(0, 0), id(n, n), id(0, n)};
+    const size_t nv = pos.size() / 3;
+    CHECK(SimplifyGeomError(pos.data(), nv, in.data(), in.size(), out.data(), out.size()) < 1e-5f);
+    // 3) 中央の頂点を 0.25 持ち上げる（突起）→ 出力の 2 三角形からの距離 = 0.25
+    pos[static_cast<size_t>(id(n / 2, n / 2)) * 3 + 2] = 0.25f;
+    CHECK(std::fabs(SimplifyGeomError(pos.data(), nv, in.data(), in.size(), out.data(), out.size()) - 0.25f) < 1e-4f);
+    // 4) 出力なし → 境界箱の対角の半分
+    {
+        const float e = SimplifyGeomError(pos.data(), nv, in.data(), in.size(), out.data(), 0);
+        CHECK(std::fabs(e - 0.5f * std::sqrt(static_cast<float>(n * n * 2) + 0.25f * 0.25f)) < 1e-3f);
+    }
+    // 5) 格子探索 + 打ち切り == 総当たり（ランダムなでこぼこ面、出力は 2 格子ごとに間引いた三角形）
+    for (int t = 0; t < 6; ++t)
+    {
+        std::vector<float> P = pos;
+        for (size_t v = 0; v < nv; ++v) P[v * 3 + 2] = 0.3f * U(rng);
+        std::vector<uint32_t> o2;
+        for (int y = 0; y < n; y += 2)
+            for (int x = 0; x < n; x += 2)
+            {
+                o2.insert(o2.end(), {id(x, y), id(x + 2, y), id(x + 2, y + 2)});
+                o2.insert(o2.end(), {id(x, y), id(x + 2, y + 2), id(x, y + 2)});
+            }
+        const float fast = SimplifyGeomError(P.data(), nv, in.data(), in.size(), o2.data(), o2.size());
+        auto nearest = [&](const float* q, const std::vector<uint32_t>& tri)
+        {
+            float b = 1e30f;
+            for (size_t k = 0; k < tri.size(); k += 3)
+                b = std::min(b, PointTriDist2(q, &P[static_cast<size_t>(tri[k]) * 3], &P[static_cast<size_t>(tri[k + 1]) * 3], &P[static_cast<size_t>(tri[k + 2]) * 3]));
+            return b;
+        };
+        float slow = 0.0f;
+        for (size_t k = 0; k < in.size(); ++k) slow = std::max(slow, nearest(&P[static_cast<size_t>(in[k]) * 3], o2));
+        for (size_t k = 0; k < o2.size(); k += 3)
+        {
+            const float* a = &P[static_cast<size_t>(o2[k]) * 3];
+            const float* b = &P[static_cast<size_t>(o2[k + 1]) * 3];
+            const float* c = &P[static_cast<size_t>(o2[k + 2]) * 3];
+            float s[4][3];
+            for (int m = 0; m < 3; ++m)
+            {
+                s[0][m] = (a[m] + b[m] + c[m]) * (1.0f / 3.0f);
+                s[1][m] = 0.5f * (a[m] + b[m]);
+                s[2][m] = 0.5f * (b[m] + c[m]);
+                s[3][m] = 0.5f * (c[m] + a[m]);
+            }
+            for (auto& q : s) slow = std::max(slow, nearest(q, in));
+        }
+        slow = std::sqrt(slow);
+        CHECK(std::fabs(fast - slow) <= 1e-5f + 1e-4f * slow);
+    }
+    // 6) cook: 既定（幾何誤差 + max）のルート誤差は形の大きさより小さい（旧: meshopt の混合誤差 + 和では 524 万の岩で 6.5 m = 形の 5 倍になった）
+    {
+        CookOptions co = TestOpts();
+        CookStats st;
+        VgeoContent c;
+        CHECK(CookOk(Bench("rock", 60000, 3), co, c, &st, "geomerr"));
+        const f32 radius = c.header.boundingSphere[3];
+        CHECK(!st.perLevel.empty());
+        const f64 rootErr = st.perLevel.empty() ? 0.0 : st.perLevel.back().maxLodErr;
+        std::printf("  rock 60k: root lodErr %.4f (bounding radius %.3f)\n", rootErr, static_cast<double>(radius));
+        CHECK(rootErr > 0.0 && rootErr < static_cast<f64>(radius));   // 120 三角形のルートでも形（境界球）より小さい
+        // 単調（max の累積）: レベルが上がるほど lodError の最大は減らない
+        for (size_t i = 1; i < st.perLevel.size(); ++i) CHECK(st.perLevel[i].maxLodErr + 1e-9 >= st.perLevel[i - 1].maxLodErr);
+        // 旧の挙動（meshopt + 和）はオプションで再現でき、ルート誤差はそれより大きい
+        CookOptions old = co;
+        old.errorMetric = 0;
+        old.errorAccum = 0;
+        CookStats st2;
+        VgeoContent c2;
+        CHECK(CookOk(Bench("rock", 60000, 3), old, c2, &st2, "geomerr-old"));
+        CHECK(!st2.perLevel.empty() && st2.perLevel.back().maxLodErr > rootErr);
+        // 鍵: 旧の挙動の正準文字列は cooker 1.0 と同じ（errmetric が付かない）、既定は付く
+        CHECK(old.CanonicalString().find("errmetric") == std::string::npos);
+        CHECK(co.CanonicalString().find("errmetric=1;erraccum=1") != std::string::npos);
+    }
+}
+
 } // namespace
 
 int main()
@@ -1262,6 +1382,7 @@ int main()
     TestRegression();
     TestInvalid();
     TestStubCompat();
+    TestGeomError();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

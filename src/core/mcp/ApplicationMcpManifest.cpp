@@ -499,7 +499,9 @@ void Application::RegisterMcpManifestMethods()
                            P("measure", "bool", false, nullptr, nullptr, nullptr, nullptr, "P3: 計測（断片数 / オーバードロー / 被覆画素 / 辺長ヒストグラムを vg_stats.raster へ）。少し遅い（既定 false）"),
                            P("forceLod0", "bool", false, nullptr, nullptr, nullptr, nullptr, "P3: 検証 / 計測用。LOD0 の葉クラスタだけを選ぶ（全 LOD0 の素朴な参照。三角形が桁違いに増える）"),
                            P("resolve", "bool", false, nullptr, nullptr, nullptr, nullptr, "P4: 材質 resolve（フォワードと同じライティングで VG 画素を塗る。既定 true）。false = P3 の暫定シェーディング（A/B 用。シーンには保存されない）"),
-                           P("stableOrder", "bool", false, nullptr, nullptr, nullptr, nullptr, "P4: 決定論（可視リストをフェーズごとに安定ソート。同じ深さの面の先着が起動ごとに変わらない）。決定論キャプチャ中は自動で ON（既定 false）")};
+                           P("stableOrder", "bool", false, nullptr, nullptr, nullptr, nullptr, "P4: 決定論（可視リストをフェーズごとに安定ソート。同じ深さの面の先着が起動ごとに変わらない）。決定論キャプチャ中は自動で ON（既定 false）"),
+                           P("hzbExactSphere", "bool", false, nullptr, nullptr, nullptr, nullptr, "HZB 判定に球の正確な画面矩形を使う（既定 true）。false = 旧（球を包む立方体の 8 隅の投影。ゆるい）。前後比較用・保存しない"),
+                           P("lodOutputPixels", "bool", false, nullptr, nullptr, nullptr, nullptr, "τ を出力解像度の px で測る（DLSS で内部 720p → 出力 1080p なら 1.5 倍細かい LOD。既定 false = 内部解像度の px）。保存しない")};
         vset.next       = {{"vg_stats", "結果の統計を読む"}};
         vset.examples   = {{"{\"enabled\":true,\"lodPixelError\":1.0}", "VG カリングを ON にして統計を出す"}};
         McpDefine("set_virtual_geometry", vset, DX12E_MCP_HANDLER
@@ -518,6 +520,8 @@ void Application::RegisterMcpManifestMethods()
                 s.forceLod0     = params.value("forceLod0",     s.forceLod0);
                 s.resolve       = params.value("resolve",       s.resolve);
                 s.stableOrder   = params.value("stableOrder",   s.stableOrder);
+                s.hzbExactSphere = params.value("hzbExactSphere", s.hzbExactSphere);
+                s.lodOutputPixels = params.value("lodOutputPixels", s.lodOutputPixels);
                 resp["ok"] = true;
                 resp["result"] = VirtualGeometryStatsJson();
             });

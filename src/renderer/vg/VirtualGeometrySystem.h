@@ -114,6 +114,7 @@ struct CullSettings
     bool  autoTau       = true;     // キュー溢れを検出したら次フレームの τ を自動で 1.25 倍する
     bool  forceLod0     = false;    // 検証 / 計測用: LOD0 の葉クラスタだけを選ぶ（τ = 1e-6。autoTau も無効）。全 LOD0 を素朴に描いた参照になる
     bool  stableOrder   = false;    // P4: 決定論。各フェーズの可視リストを {instance, clusterRef} 順にソートしてからラスタする（AS は使わない）
+    bool  hzbExactSphere = true;    // HZB 判定に球の正確な画面矩形を使う（false = 旧: 球を包む立方体の 8 隅。前後比較用）
 };
 
 // P4: アプリのディスクリプタヒープを使う（VG 設計書 §2.4.8(1)）。heap が null なら VG の専用ヒープ（テスト用）。
@@ -279,6 +280,8 @@ struct FrameStats
     uint64_t msPrimCulled = 0;         // 小三角形カリングで落とした三角形数（measure のとき）
     uint64_t psInvocations = 0;        // 深度テストを通った断片数（measure のとき）
     uint64_t coveredPixels = 0;        // 可視性バッファの被覆画素数（measure のとき）
+    uint32_t clustersWithPixels = 0;   // 1 画素でも残った可視クラスタ数（measure のとき）
+    uint64_t trisInClustersWithPixels = 0;   // 同・その三角形数（measure のとき）
     uint32_t edgeClusters[VG_EDGE_BINS] = {};   // 最長辺（px）ヒストグラム: クラスタ数（edgeHist のとき）
     uint32_t edgeTris[VG_EDGE_BINS] = {};       //                       三角形数
     // P4

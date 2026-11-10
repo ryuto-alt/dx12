@@ -49,7 +49,8 @@ int Usage()
         "  vgeo_cook --sweep group|lod0|weights (IN.vgsrc | --gen-bench KIND --tris N) [options]\n"
         "options: --threads N --normal-priority --mem-limit-gb G --group-method M --group-size G --reduction R --target-fill F --normal-weight W --uv-weight W\n"
         "         --lock-borders --no-dedupe --lod0 classic|flex|spatial --vcache --max-verts V --max-tris T --cone-weight W --proxy-tris N --nonvg-tris N --no-proxy\n"
-        "         --pin-pages N --label NAME --no-validate --json FILE --levels --curve --flip-winding --scale S\n");
+        "         --pin-pages N --label NAME --no-validate --json FILE --levels --curve --flip-winding --scale S\n"
+        "         --error-metric geom|meshopt (LOD error: geometric m [default] / meshopt result_error [cooker 1.0])  --error-accum max|sum\n");
     return 1;
 }
 
@@ -92,13 +93,13 @@ int Validate(const std::string& path, const ReadOptions& opt)
 
 void PrintLevels(const CookStats& st)
 {
-    std::printf("  level  clusters      tris  groups  avgGrp  cutEdges/shared  locked%%  tris out/in  reach%%  simplifyErr(mean/max)  lodErr(mean/max)\n");
+    std::printf("  level  clusters      tris  groups  avgGrp  cutEdges/shared  locked%%  tris out/in  reach%%  simplifyErr(mean/max)  meshoptErr(mean/max)  lodErr(mean/max)\n");
     for (const LevelStat& l : st.perLevel)
-        std::printf("  %5u %9llu %9llu %7llu %7.2f %8llu/%-8llu %6.1f %10.3f %7.1f  %9.3g / %-9.3g  %9.3g / %-9.3g\n", l.level, static_cast<unsigned long long>(l.clusters),
+        std::printf("  %5u %9llu %9llu %7llu %7.2f %8llu/%-8llu %6.1f %10.3f %7.1f  %9.3g / %-9.3g  %9.3g / %-9.3g  %9.3g / %-9.3g\n", l.level, static_cast<unsigned long long>(l.clusters),
                     static_cast<unsigned long long>(l.tris), static_cast<unsigned long long>(l.groups), l.groups ? static_cast<double>(l.groupClusters) / static_cast<double>(l.groups) : 0.0,
                     static_cast<unsigned long long>(l.cutEdges), static_cast<unsigned long long>(l.sharedEdges), l.groupVerts ? 100.0 * static_cast<double>(l.lockedVerts) / static_cast<double>(l.groupVerts) : 0.0,
                     l.trisIn ? static_cast<double>(l.trisOut) / static_cast<double>(l.trisIn) : 0.0, l.groups ? 100.0 * static_cast<double>(l.reachedTarget) / static_cast<double>(l.groups) : 0.0,
-                    l.meanSimplifyErr, l.maxSimplifyErr, l.meanLodErr, l.maxLodErr);
+                    l.meanSimplifyErr, l.maxSimplifyErr, l.meanMeshoptErr, l.maxMeshoptErr, l.meanLodErr, l.maxLodErr);
 }
 
 void PrintCurve(const CookStats& st)
@@ -121,8 +122,8 @@ void PrintSummary(const CookStats& st, u64 fileBytes)
     if (fileBytes && st.vgTris)
         std::printf("  size: file %.2f MB = %.2f B / LOD0 tri | pages %.2f MB = %.2f B / LOD0 tri\n", Mb(fileBytes), static_cast<double>(fileBytes) / static_cast<double>(st.vgTris),
                     Mb(st.pageBytes), static_cast<double>(st.pageBytes) / static_cast<double>(st.vgTris));
-    std::printf("  time ms: ingest %.0f  lod0 %.0f  dag %.0f (graph %.0f, group %.0f, simplify %.0f)  pack %.0f  bvh %.0f  proxy %.0f | cook total %.0f (%.2f Mtri/s, %u threads)\n", st.msIngest, st.msLod0,
-                st.msDag, st.msGraph, st.msGroup, st.msSimplify, st.msPack, st.msBvh, st.msProxy, st.msTotal,
+    std::printf("  time ms: ingest %.0f  lod0 %.0f  dag %.0f (graph %.0f, group %.0f, simplify %.0f [geomErr cpu %.0f])  pack %.0f  bvh %.0f  proxy %.0f | cook total %.0f (%.2f Mtri/s, %u threads)\n", st.msIngest, st.msLod0,
+                st.msDag, st.msGraph, st.msGroup, st.msSimplify, st.msGeomErr, st.msPack, st.msBvh, st.msProxy, st.msTotal,
                 st.msTotal > 0 ? static_cast<double>(st.vgTris) / 1e6 / (st.msTotal / 1000.0) : 0.0, st.threadsUsed);
 }
 
@@ -146,10 +147,12 @@ void WriteJson(const std::string& path, const CookStats& st, u64 fileBytes, doub
     {
         const LevelStat& l = st.perLevel[i];
         std::fprintf(f, "    {\"level\":%u,\"clusters\":%llu,\"tris\":%llu,\"groups\":%llu,\"groupClusters\":%llu,\"cutEdges\":%llu,\"sharedEdges\":%llu,\"trisIn\":%llu,\"trisOut\":%llu,\"lockedVerts\":%llu,\"groupVerts\":%llu,"
-                     "\"meanSimplifyErr\":%.6g,\"maxSimplifyErr\":%.6g,\"meanLodErr\":%.6g,\"maxLodErr\":%.6g,\"reached\":%llu}%s\n",
+                     "\"meanSimplifyErr\":%.6g,\"maxSimplifyErr\":%.6g,\"meanMeshoptErr\":%.6g,\"maxMeshoptErr\":%.6g,\"meanGeomErr\":%.6g,\"maxGeomErr\":%.6g,"
+                     "\"meanLodErr\":%.6g,\"maxLodErr\":%.6g,\"reached\":%llu}%s\n",
                      l.level, static_cast<unsigned long long>(l.clusters), static_cast<unsigned long long>(l.tris), static_cast<unsigned long long>(l.groups), static_cast<unsigned long long>(l.groupClusters),
                      static_cast<unsigned long long>(l.cutEdges), static_cast<unsigned long long>(l.sharedEdges), static_cast<unsigned long long>(l.trisIn), static_cast<unsigned long long>(l.trisOut),
-                     static_cast<unsigned long long>(l.lockedVerts), static_cast<unsigned long long>(l.groupVerts), l.meanSimplifyErr, l.maxSimplifyErr, l.meanLodErr, l.maxLodErr,
+                     static_cast<unsigned long long>(l.lockedVerts), static_cast<unsigned long long>(l.groupVerts), l.meanSimplifyErr, l.maxSimplifyErr,
+                     l.meanMeshoptErr, l.maxMeshoptErr, l.meanGeomErr, l.maxGeomErr, l.meanLodErr, l.maxLodErr,
                      static_cast<unsigned long long>(l.reachedTarget), i + 1 < st.perLevel.size() ? "," : "");
     }
     std::fprintf(f, "  ],\n  \"lodCurve\":[\n");
@@ -352,6 +355,8 @@ int main(int argc, char** argv)
         else if (s == "--lock-borders") a.co.lockOpenBorders = true;
         else if (s == "--regularize") a.co.regularize = true;
         else if (s == "--permissive" && (v = next())) a.co.permissive = static_cast<u32>(std::strtoul(v, nullptr, 10));
+        else if (s == "--error-metric" && (v = next())) a.co.errorMetric = std::string(v) == "meshopt" ? 0u : 1u;   // meshopt | geom
+        else if (s == "--error-accum" && (v = next())) a.co.errorAccum = std::string(v) == "sum" ? 0u : 1u;       // sum | max
         else if (s == "--no-dedupe") a.co.dedupe = false;
         else if (s == "--lod0" && (v = next()))
         {

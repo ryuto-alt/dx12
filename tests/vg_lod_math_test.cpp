@@ -44,6 +44,10 @@ void TestProjectedError()
     CHECK(std::fabs(ProjectedErrorPx(0.001f, inside, cam, 1.0f, 1000.0f, 0.1f) - 0.001f * 1000.0f / 0.1f) < 1e-3f);   // 近距離は zNear で頭打ち
     CHECK(ProjectedErrorPx(std::numeric_limits<float>::infinity(), sph, cam, 1.0f, 1000.0f, 0.1f) > 1e30f);    // +INF は常に粗い
     CHECK(ProjectedErrorPx(0.0f, sph, cam, 1.0f, 1000.0f, 0.1f) == 0.0f);
+    // τ は出力解像度の px: 内部 720p → 出力 1080p なら 1080 で測る / 出力が内部以下なら内部
+    CHECK(std::fabs(LodProjScale(720.0f, 1080.0f, 1.7320508f) - 0.5f * 1080.0f * 1.7320508f) < 1e-3f);
+    CHECK(std::fabs(LodProjScale(1080.0f, 1080.0f, 1.7320508f) - 0.5f * 1080.0f * 1.7320508f) < 1e-3f);
+    CHECK(std::fabs(LodProjScale(1080.0f, 0.0f, 2.0f) - 1080.0f) < 1e-3f);
     // 最遠点版は近点版以下（遠いほど小さく見える）
     CHECK(ProjectedErrorPxFar(1.0f, sph2, cam, 1.0f, 1000.0f, 0.1f) <= ProjectedErrorPx(1.0f, sph2, cam, 1.0f, 1000.0f, 0.1f));
 }
@@ -229,6 +233,70 @@ void TestMonotone()
     }
     CHECK(prev < 5000);   // 遠距離では大きく減る
 }
+// 球の正確な画面矩形（HZB 判定用）: 球面上の点を密に投影した矩形を必ず含み、ほぼ一致する（ジッタ込みの VP・画面の端・遠くの小さい球）。
+//   最近点の深度は球面上の点の最小 NDC 深度以下。カメラが球に掛かる / 正射は valid = false / ortho = true。
+void TestSphereRect()
+{
+    std::mt19937 rng(11);
+    std::uniform_real_distribution<float> U(-1.0f, 1.0f);
+    const float W = 1280.0f, H = 720.0f;
+    int tested = 0, loose = 0;
+    for (int t = 0; t < 400; ++t)
+    {
+        const XMVECTOR eye = XMVectorSet(U(rng) * 5, 1 + U(rng), U(rng) * 5, 1);
+        const XMVECTOR at = XMVectorSet(U(rng) * 2, 1, 20, 1);
+        const XMMATRIX v = XMMatrixLookAtLH(eye, at, XMVectorSet(0, 1, 0, 0));
+        const XMMATRIX p = XMMatrixPerspectiveFovLH(1.0472f, W / H, 0.1f, 2000.0f) * XMMatrixTranslation(U(rng) * 0.002f, U(rng) * 0.002f, 0.0f);   // ジッタ
+        XMFLOAT4X4 vp;
+        XMStoreFloat4x4(&vp, v * p);
+        // 球: 視線の周り（画面の端も含む）、距離 2〜1500 m、半径 1 mm〜3 m
+        const float dist = std::pow(10.0f, 0.3f + 2.9f * (0.5f + 0.5f * U(rng)));
+        const XMVECTOR fwd = XMVector3Normalize(XMVectorSubtract(at, eye));
+        const XMVECTOR side = XMVector3Normalize(XMVector3Cross(XMVectorSet(0, 1, 0, 0), fwd));
+        const XMVECTOR up = XMVector3Cross(fwd, side);
+        const XMVECTOR cen = XMVectorAdd(eye, XMVectorAdd(XMVectorScale(fwd, dist), XMVectorAdd(XMVectorScale(side, U(rng) * dist * 0.75f), XMVectorScale(up, U(rng) * dist * 0.45f))));
+        const float r = std::pow(10.0f, -3.0f + 3.5f * (0.5f + 0.5f * U(rng)));
+        const float c[3] = {XMVectorGetX(cen), XMVectorGetY(cen), XMVectorGetZ(cen)};
+        const SphereScreenRect s = ProjectSphereToScreen(&vp._11, c, r, 0, 0, W, H);
+        CHECK(!s.ortho);
+        if (!s.valid) continue;
+        // 球面の点を密に投影（画面内にクランプ）
+        float mnx = 1e30f, mny = 1e30f, mxx = -1e30f, mxy = -1e30f, mnz = 1e30f;
+        const int N = 96;
+        for (int i = 0; i <= N; ++i)
+            for (int j = 0; j < 2 * N; ++j)
+            {
+                const float th = 3.14159265f * static_cast<float>(i) / N, ph = 3.14159265f * static_cast<float>(j) / N;
+                const XMVECTOR q = XMVectorSet(c[0] + r * std::sin(th) * std::cos(ph), c[1] + r * std::cos(th), c[2] + r * std::sin(th) * std::sin(ph), 1);
+                const XMVECTOR cl = XMVector4Transform(q, XMLoadFloat4x4(&vp));
+                const float w = XMVectorGetW(cl);
+                const float x = (XMVectorGetX(cl) / w * 0.5f + 0.5f) * W, y = (1.0f - (XMVectorGetY(cl) / w * 0.5f + 0.5f)) * H;
+                mnx = std::min(mnx, std::clamp(x, 0.0f, W)); mxx = std::max(mxx, std::clamp(x, 0.0f, W));
+                mny = std::min(mny, std::clamp(y, 0.0f, H)); mxy = std::max(mxy, std::clamp(y, 0.0f, H));
+                mnz = std::min(mnz, XMVectorGetZ(cl) / w);
+            }
+        const float tol = 1e-3f + 1e-4f * std::max(mxx - mnx, mxy - mny);
+        CHECK(s.minX <= mnx + tol && s.minY <= mny + tol && s.maxX >= mxx - tol && s.maxY >= mxy - tol);   // 球を必ず含む
+        CHECK(s.minZ <= mnz + 1e-6f);
+        // きつさ: サンプルの矩形より 2% + 0.05 px 以上広くない（サンプルの粗さぶんの余裕）
+        const float slack = 0.05f + 0.02f * std::max(mxx - mnx, mxy - mny);
+        if (s.minX < mnx - slack || s.minY < mny - slack || s.maxX > mxx + slack || s.maxY > mxy + slack) ++loose;
+        ++tested;
+    }
+    std::printf("球の画面矩形: %d ケース / ゆるい %d\n", tested, loose);
+    CHECK(tested > 200);
+    CHECK(loose == 0);
+    // カメラが球の中 → valid = false。正射 → ortho
+    {
+        XMFLOAT4X4 vp;
+        XMStoreFloat4x4(&vp, XMMatrixLookAtLH(XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 0, 1, 1), XMVectorSet(0, 1, 0, 0)) * XMMatrixPerspectiveFovLH(1.0f, 1.0f, 0.1f, 100.0f));
+        const float c0[3] = {0, 0, 0.5f};
+        CHECK(!ProjectSphereToScreen(&vp._11, c0, 1.0f, 0, 0, W, H).valid);
+        XMStoreFloat4x4(&vp, XMMatrixOrthographicLH(10, 10, 0.1f, 100.0f));
+        const float c1[3] = {0, 0, 5};
+        CHECK(ProjectSphereToScreen(&vp._11, c1, 1.0f, 0, 0, W, H).ortho);
+    }
+}
 } // namespace
 
 int main()
@@ -237,6 +305,7 @@ int main()
     TestFrustum();
     TestTransforms();
     TestCone();
+    TestSphereRect();
     TestMonotone();
     std::printf("VgLodMathTests: %d チェック / 失敗 %d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

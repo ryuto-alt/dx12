@@ -20,7 +20,7 @@ cbuffer VgCullCB : register(b0)
     float4   gPlanes[6];
     float4   gCamPos;        // xyz, w = zNear
     float4   gViewport;      // x, y, w, h
-    float4   gLod;           // x = tau(px), y = projScale, z = instanceMinPx
+    float4   gLod;           // x = tau(px), y = projScale, z = instanceMinPx, w = HZB の球の矩形（1 = 正確 / 0 = 旧の立方体）
     float4   gHzb;           // x, y = mip0 解像度, z = ミップ数
     uint4    gCounts;        // x = instanceCount, y = hzbPrevValid, z = hzbCurValid, w = coneCulling
     uint4    gHeap0;         // x = assetsSrv, y = instancesSrv, z = workUav, w = instExtraUav
@@ -188,11 +188,79 @@ uint VgSelectMip(float4 rect, uint mipCount)
     return (uint)mip;
 }
 
-// 世界空間の球 (c, r) を軸平行箱に直して HZB で判定する。true = 完全に遮蔽されている。
+// 球の正確な画面矩形（VgLodMath.h の ProjectSphereToScreen と同一の式・同じ演算順）。ortho = 正射（この式は使えない）。
+VgScreenBounds VgProjectSphere(float4x4 vp, float3 c, float r, out bool ortho)
+{
+    VgScreenBounds o;
+    o.rect = float4(0, 0, 0, 0);
+    o.minZ = 0;
+    o.valid = false;
+    ortho = false;
+    const float kMinW = 1e-4;
+    if (!(r >= 0.0) || !(gViewport.z > 0) || !(gViewport.w > 0)) return o;
+    // mul(float4(p,1), vp) の成分 j = vp の列 j
+    const float3 nX = float3(vp[0].x, vp[1].x, vp[2].x); const float oX = vp[3].x;
+    const float3 nY = float3(vp[0].y, vp[1].y, vp[2].y); const float oY = vp[3].y;
+    const float3 nZ = float3(vp[0].z, vp[1].z, vp[2].z); const float oZ = vp[3].z;
+    const float3 nW = float3(vp[0].w, vp[1].w, vp[2].w); const float oW = vp[3].w;
+    const float nw2 = nW.x * nW.x + nW.y * nW.y + nW.z * nW.z;
+    if (!(nw2 > 1e-12)) { ortho = true; return o; }
+    const float Xc = c.x * nX.x + c.y * nX.y + c.z * nX.z + oX;
+    const float Yc = c.x * nY.x + c.y * nY.y + c.z * nY.z + oY;
+    const float Wc = c.x * nW.x + c.y * nW.y + c.z * nW.z + oW;
+    const float nwLen = sqrt(nw2);
+    if (!(Wc - r * nwLen > kMinW)) return o;
+    const float r2 = r * r;
+    const float a = Wc * Wc - r2 * nw2;
+    const float inv = 1.0 / a;
+    float2 kx, ky;
+    {
+        const float b = Xc * Wc - r2 * (nX.x * nW.x + nX.y * nW.y + nX.z * nW.z);
+        const float3 u = float3(Wc * nX.x - Xc * nW.x, Wc * nX.y - Xc * nW.y, Wc * nX.z - Xc * nW.z);
+        const float3 x = float3(nX.y * nW.z - nX.z * nW.y, nX.z * nW.x - nX.x * nW.z, nX.x * nW.y - nX.y * nW.x);
+        float disc = r2 * ((u.x * u.x + u.y * u.y + u.z * u.z) - r2 * (x.x * x.x + x.y * x.y + x.z * x.z));
+        if (!(disc >= 0.0)) disc = 0.0;
+        const float s = sqrt(disc);
+        kx = float2((b - s) * inv, (b + s) * inv);
+    }
+    {
+        const float b = Yc * Wc - r2 * (nY.x * nW.x + nY.y * nW.y + nY.z * nW.z);
+        const float3 u = float3(Wc * nY.x - Yc * nW.x, Wc * nY.y - Yc * nW.y, Wc * nY.z - Yc * nW.z);
+        const float3 x = float3(nY.y * nW.z - nY.z * nW.y, nY.z * nW.x - nY.x * nW.z, nY.x * nW.y - nY.y * nW.x);
+        float disc = r2 * ((u.x * u.x + u.y * u.y + u.z * u.z) - r2 * (x.x * x.x + x.y * x.y + x.z * x.z));
+        if (!(disc >= 0.0)) disc = 0.0;
+        const float s = sqrt(disc);
+        ky = float2((b - s) * inv, (b + s) * inv);
+    }
+    if (!(kx.x == kx.x) || !(kx.y == kx.y) || !(ky.x == ky.x) || !(ky.y == ky.y)) return o;
+    const float k = r / nwLen;
+    const float3 p = float3(c.x - k * nW.x, c.y - k * nW.y, c.z - k * nW.z);
+    const float zc = p.x * nZ.x + p.y * nZ.y + p.z * nZ.z + oZ;
+    const float wc = p.x * nW.x + p.y * nW.y + p.z * nW.z + oW;
+    if (!(wc > kMinW)) return o;
+    const float z = zc / wc;
+    if (!(z == z) || z < 0.0 || z > 1.0) return o;
+    const float sx0 = gViewport.x + (kx.x * 0.5 + 0.5) * gViewport.z;
+    const float sx1 = gViewport.x + (kx.y * 0.5 + 0.5) * gViewport.z;
+    const float sy0 = gViewport.y + (1.0 - (ky.y * 0.5 + 0.5)) * gViewport.w;
+    const float sy1 = gViewport.y + (1.0 - (ky.x * 0.5 + 0.5)) * gViewport.w;
+    const float vx1 = gViewport.x + gViewport.z, vy1 = gViewport.y + gViewport.w;
+    if (sx1 < gViewport.x || sx0 > vx1 || sy1 < gViewport.y || sy0 > vy1) return o;
+    o.rect = float4(max(sx0, gViewport.x), max(sy0, gViewport.y), min(sx1, vx1), min(sy1, vy1));
+    o.minZ = z;
+    o.valid = true;
+    return o;
+}
+
+// 世界空間の球 (c, r) を HZB で判定する。true = 完全に遮蔽されている。
 // hzbSrv = HZB の SRV 添字、vp = そのミップを作った深度と同じ（ジッタ付き）VP。
+// 透視は球の正確な画面矩形（VgProjectSphere）、正射だけ従来の「球を包む軸平行箱」の投影。
 bool VgHzbOccludedSphere(uint hzbSrv, float4x4 vp, float3 c, float r)
 {
-    const VgScreenBounds sb = VgProjectAabb(vp, c - r, c + r);
+    bool ortho = true;
+    VgScreenBounds sb;
+    if (gLod.w > 0.5) sb = VgProjectSphere(vp, c, r, ortho);   // gLod.w = 1: 正確な球の矩形（0 = 旧の立方体。前後比較用）
+    if (ortho) sb = VgProjectAabb(vp, c - r, c + r);
     if (!sb.valid) return false;                       // 判定不能は必ず「見える」
 
     const uint mipCount = (uint)gHzb.z;
