@@ -62,6 +62,7 @@
 #include "renderer/OcclusionCullPass.h"
 #include "renderer/ContactShadowPass.h"
 #include "renderer/TaaPass.h"
+#include "renderer/UpscalerPass.h"
 #include "renderer/RenderDebugPass.h"
 #include "renderer/ScreenSpaceGiPass.h"
 #include "renderer/RaytracingScene.h"

@@ -137,7 +137,8 @@ void Application::ServiceOffscreenShot()
 
     if (!fs.offApplied)
     {
-        if (m_renderW != fs.offW || m_renderH != fs.offH) return;   // まだ切り替わっていない
+        // ★比べるのはポスト解像度（= 出力）。DLSS の間は内部解像度が品質モードで小さくなる。
+        if (m_postW != fs.offW || m_postH != fs.offH) return;   // まだ切り替わっていない
 
         // 出力先（LDR。バックバッファと同じ形式）を用意する
         try

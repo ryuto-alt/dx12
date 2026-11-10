@@ -1,4 +1,5 @@
 #include "scene/SceneSerializer.h"
+#include "renderer/UpscalerMath.h"
 #include "core/AtomicFileJson.h"
 #include "core/SceneBackup.h"
 #include "scene/SceneFormatV2.h"
@@ -1376,6 +1377,12 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"varianceGamma", ta.varianceGamma},
             {"jitterScale",   ta.jitterScale},
         };
+        // 時間方向アップスケーラ（renderer/UpscalerMath.h）。既定（TAA / Quality）のシーンには書かない
+        // ＝ 既存シーンを保存し直しても JSON は 1 行も変わらない。
+        if (ta.upscaler != 0)
+            root["taa"]["upscaler"] = (ta.upscaler == static_cast<int>(upscale::Kind::Dlss)) ? "dlss" : "taa";
+        if (ta.dlssQuality != static_cast<int>(upscale::DlssQuality::Quality))
+            root["taa"]["dlssQuality"] = upscale::QualityName(upscale::ClampQuality(ta.dlssQuality));
     }
 
     // PCSS（ソフトシャドウ・シーン単位）。既定 OFF なので、未設定シーンは従来どおり。
@@ -1698,6 +1705,16 @@ static void LoadTaaSettings(Scene& scene, const json& root)
         ta.feedbackMax   = tj.value("feedbackMax",   ta.feedbackMax);
         ta.varianceGamma = tj.value("varianceGamma", ta.varianceGamma);
         ta.jitterScale   = tj.value("jitterScale",   ta.jitterScale);
+        // 時間方向アップスケーラ（無ければ TAA / Quality ＝ 従来の絵）
+        if (tj.contains("upscaler") && tj["upscaler"].is_string())
+            ta.upscaler = (tj["upscaler"].get<std::string>() == "dlss") ? static_cast<int>(upscale::Kind::Dlss)
+                                                                       : static_cast<int>(upscale::Kind::Taa);
+        if (tj.contains("dlssQuality") && tj["dlssQuality"].is_string())
+        {
+            upscale::DlssQuality q{};
+            if (upscale::ParseQuality(tj["dlssQuality"].get<std::string>().c_str(), q))
+                ta.dlssQuality = static_cast<int>(q);
+        }
     }
     scene.GetTaaSettings() = ta;   // debugVelocity は常に既定 OFF（保存対象外）
 }

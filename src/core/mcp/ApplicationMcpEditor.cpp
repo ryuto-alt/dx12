@@ -925,6 +925,7 @@ void Application::RegisterMcpEditorMethods()
             // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
             rep["clustered"]  = m_clusteredEnabled;
             rep["occlusion"]  = OcclusionReportJson();
+            rep["upscaler"]   = UpscalerJson();   // 時間方向アップスケーラ（off/taa/dlss・内部/出力解像度）。gpuPassMs.upscale が DLSS の GPU 時間
             if (m_vg) rep["virtualGeometry"] = VirtualGeometryStatsJson();   // 仮想ジオメトリ P2（有効化した後だけ出る）
             if (m_foliage) rep["foliage"] = FoliageStatsJson();               // 植生 F1（FoliageLayer があるときだけ出る）
             rep["instanceGpu"] = GpuInstStatsJson();                         // GPU 駆動のインスタンス群（4-3。しきい値 / 今フレームの群数・カリング数・ExecuteIndirect 数）

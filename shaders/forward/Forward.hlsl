@@ -96,7 +96,7 @@ float3 UnpackEmissive(uint packed, float2 uv)
     // 強度は二乗で伸長（0 付近を細かく、ブルームに要る 1 超の領域まで 8bit で届かせるため）
     const float n = float((packed >> 24) & 0xFF) / 255.0;
     float3 e = c * (n * n * 64.0);
-    if (pbrFlags & 8u) e *= g_emissive.Sample(g_sampler, uv).rgb;
+    if (pbrFlags & 8u) e *= g_emissive.SampleBias(g_sampler, uv, UNO_TEX_MIP_BIAS).rgb;
     return e;
 }
 
@@ -224,11 +224,16 @@ float2 ParallaxOffset(uint flags, float2 uv, float2 gx, float2 gy, float3 worldP
 
 // 通常は Sample、POM のときだけ元の UV の微分で SampleGrad（ずらした UV の微分は段差でミップが暴れるため）。
 // pom は b2 由来＝ドロー内で一様なので Sample の導関数は壊れない。
+// ★アップスケーラのミップバイアス（UNO_TEX_MIP_BIAS。既定 0）を両方の経路に掛ける。SampleGrad は勾配を 2^bias 倍。
 float4 SampleMat(Texture2D t, float2 uv, bool pom, float2 gx, float2 gy)
 {
     [branch]
-    if (pom) return t.SampleGrad(g_sampler, uv, gx, gy);
-    return t.Sample(g_sampler, uv);
+    if (pom)
+    {
+        const float g = exp2(UNO_TEX_MIP_BIAS);
+        return t.SampleGrad(g_sampler, uv, gx * g, gy * g);
+    }
+    return t.SampleBias(g_sampler, uv, UNO_TEX_MIP_BIAS);
 }
 
 // ===== シェーディング尾部（デカール → 影 → ライティング → IBL → 自己発光 → デバッグ）=====
@@ -275,7 +280,14 @@ float4 PSMain(PSInput input) : SV_TARGET
 #ifdef ALPHA_TEST
     {
         const float cutoff = float((pbrFlags >> 8) & 0xFF) / 255.0;
-        clip(albedo4.a - cutoff);
+        // ★クリップはバイアス無しのアルファで判定する。深度 / 速度プリパス（ShadowMask・VelocityPrepassMask）は
+        //   バイアスを掛けずに抜くので、ここだけ細かいミップで判定すると被覆が食い違い、プリパスが深度を書いた
+        //   画素をフォワードが捨てて穴（背景色）になる。バイアス 0（既定）なら従来と同じ albedo4.a。
+        float clipA = albedo4.a;
+        [branch]
+        if (UNO_TEX_MIP_BIAS != 0.0)
+            clipA = g_albedo.Sample(g_sampler, uv).a * input.color.a;
+        clip(clipA - cutoff);
     }
 #endif
     // 不透明度。BLEND 用 PSO でのみ意味を持つ（不透明 PSO はブレンド無効なので無視される）。

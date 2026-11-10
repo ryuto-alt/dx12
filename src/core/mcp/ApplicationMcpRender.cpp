@@ -318,6 +318,46 @@ void Application::RegisterMcpRenderMethods()
             resp["result"] = {{"applied", true}};
         });
 
+    // ---- 時間方向アップスケーラ（off / taa / dlss）----
+    // 実体は TaaSettings（enabled + upscaler + dlssQuality。シーンに保存）。get は「頼んだもの」と「実際に動いているもの」を
+    // 分けて返す（DLSS が使えない環境では effective が taa に落ち、reason に理由が出る）。
+    McpDefine("get_upscaler", "", DX12E_MCP_HANDLER
+        {
+            resp["ok"] = true;
+            resp["result"] = UpscalerJson();
+        });
+
+    McpDefine("set_upscaler", "debugJitterSign:any,mode:string,quality:string", DX12E_MCP_HANDLER
+        {
+            auto& t = m_scene->GetTaaSettings();
+            if (params.contains("mode"))
+            {
+                const std::string m = params.value("mode", std::string());
+                if      (m == "off")  { t.enabled = false; }
+                else if (m == "taa")  { t.enabled = true; t.upscaler = static_cast<int>(upscale::Kind::Taa); }
+                else if (m == "dlss") { t.enabled = true; t.upscaler = static_cast<int>(upscale::Kind::Dlss); }
+                else throw McpError(McpErr::InvalidParam, "mode は off | taa | dlss", "例: mode:'dlss', quality:'quality'");
+            }
+            if (params.contains("quality"))
+            {
+                const std::string q = params.value("quality", std::string());
+                upscale::DlssQuality dq{};
+                if (!upscale::ParseQuality(q.c_str(), dq))
+                    throw McpError(McpErr::InvalidParam, "quality は dlaa | quality | balanced | performance",
+                                   "例: quality:'performance'（内部 50%）");
+                t.dlssQuality = static_cast<int>(dq);
+            }
+            if (params.contains("debugJitterSign") && m_upscaler)
+                m_upscaler->SetDebugJitterSign(static_cast<float>(McpFloatParam(params, "debugJitterSign", 1.0f, -1.0f, 1.0f)));
+            // 内部解像度が変わる（DLSS の品質 / 空間スケールとの切替）。次フレームの先頭で即反映し、履歴は捨てる。
+            m_renderResFlush     = true;
+            m_dlssFallbackLogged = false;
+            InvalidateTemporalHistory(/*includeDdgi*/ false);
+            resp["ok"] = true;
+            resp["result"] = UpscalerJson();
+            resp["result"]["note"] = "反映は次のフレームから（renderResolution / effective は 1〜2 フレーム後に dx12_get_upscaler で確かめる）";
+        });
+
     McpDefine("get_volumetric_fog", "", DX12E_MCP_HANDLER
         {
             const auto& f = m_scene->GetVolumetricFogSettings();
@@ -666,13 +706,59 @@ nlohmann::json Application::RenderScaleJson() const
         {"renderResolution",  {{"width", m_renderW}, {"height", m_renderH}}},
         {"displayResolution", {{"width", dvw},       {"height", dvh}}},
         {"viewSize", {{"width", m_viewSizeW}, {"height", m_viewSizeH}, {"fixed", m_viewSizeW > 0 && m_viewSizeH > 0}}},
+        // アップスケーラ（DLSS）の出力解像度。DLSS でなければ renderResolution と同じ。
+        {"outputResolution", {{"width", m_postW}, {"height", m_postH}}},
+        {"upscaler", m_dlssThisFrame ? "dlss" : "none"},
         {"pending", (m_renderW != 0) &&
-                    ((m_viewSizeW > 0 && m_viewSizeH > 0)
-                         ? (m_viewSizeW != m_renderW || m_viewSizeH != m_renderH)
-                         : (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW))},
+                    (m_dlssThisFrame
+                         ? ((m_viewSizeW > 0 && m_viewSizeH > 0) ? (m_viewSizeW != m_postW || m_viewSizeH != m_postH)
+                                                                 : (dvw != m_postW))
+                         : ((m_viewSizeW > 0 && m_viewSizeH > 0)
+                                ? (m_viewSizeW != m_renderW || m_viewSizeH != m_renderH)
+                                : (static_cast<u32>(std::lround(dvw * static_cast<double>(m_renderScale))) != m_renderW)))},
         {"note", "シーン系 RT（sceneRT/深度/SSAO/TAA/SSR/SSGI/ブルーム/DoF/ゴッドレイ）の"
                  "解像度。UI と ImGui は常に表示解像度。dx12_screenshot はレンダー解像度、"
                  "dx12_screenshot_final は表示解像度で返る"}};
+}
+
+nlohmann::json Application::UpscalerJson()
+{
+    const TaaSettings* t = m_scene ? &m_scene->GetTaaSettings() : nullptr;
+    const bool enabled = t && t->enabled;
+    const bool askDlss = enabled && t->upscaler == static_cast<int>(upscale::Kind::Dlss);
+    std::string why;
+    const bool dlssOk = askDlss && DlssWanted(&why);
+    const upscale::DlssQuality q = upscale::ClampQuality(t ? t->dlssQuality : 1);
+    nlohmann::json j = {
+        {"mode",      !enabled ? "off" : (askDlss ? "dlss" : "taa")},
+        {"quality",   upscale::QualityName(q)},
+        // 実際に今フレーム解決しているもの（DLSS が使えない環境では taa に落ちる）
+        {"effective", !enabled ? "off" : (m_dlssThisFrame ? "dlss" : "taa")},
+        {"renderResolution", {{"width", m_renderW}, {"height", m_renderH}}},
+        {"outputResolution", {{"width", m_postW},   {"height", m_postH}}},
+        {"renderScaleUsed",  !dlssOk},   // DLSS の間は空間レンダースケール(render_scale)を使わない
+        {"jitterPhases", m_dlssThisFrame && m_upscaler ? m_upscaler->LastPhaseCount()
+                                                       : static_cast<u32>(t ? t->sampleCount : 8)},
+        {"textureMipBias", m_texMipBias},
+    };
+    nlohmann::json d = {
+        {"compiledIn", DlssBackend::CompiledIn()},
+        {"available",  m_upscaler && m_upscaler->DlssAvailable()},
+        {"reason",     m_upscaler ? m_upscaler->DlssReason() : std::string("アップスケーラが初期化されていない")},
+    };
+    if (m_upscaler)
+    {
+        d["featureVramMB"] = static_cast<double>(m_upscaler->Dlss().FeatureVramBytes()) / (1024.0 * 1024.0);
+        d["evalCount"]     = m_upscaler->EvalCount();
+        d["lastEvalOk"]    = m_upscaler->LastEvalOk();
+        d["evalErrors"]    = m_upscaler->Dlss().EvalErrors();
+        d["jitterSign"]    = m_upscaler->DebugJitterSign();
+        d["cameraCuts"]    = m_upscaler->CutCount();   // カメラカットとして履歴を捨てた回数
+    }
+    if (askDlss && !dlssOk) d["fallbackReason"] = why;
+    j["dlss"] = d;
+    j["gpuMs"] = (m_gpuTimer ? m_gpuTimer->GetMs(GpuTimer::Upscale) : 0.0f);
+    return j;
 }
 
 nlohmann::json Application::DepthPrepassJson() const

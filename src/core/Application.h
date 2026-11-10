@@ -72,6 +72,7 @@ namespace dx12e
     class ReflectionProbeSystem;   // renderer/ReflectionProbeSystem.h（反射プローブ）
     namespace water { class WaterRenderer; struct WaterStats; }   // renderer/water/WaterRenderer.h（水面 W1）
     class TaaPass;
+    class UpscalerPass;
     class RenderDebugPass;
     enum class RenderDebugMode : u32;   // renderer/RenderDebugPass.h（前方宣言可能な scoped enum）
     class ScreenSpaceGiPass;
@@ -760,7 +761,8 @@ private:
     // >= GpuTimer::Scope::Count（cpp で static_assert）。
     // 12 → 14（計画09 が raytracing / rtScreen の 2 スコープを足して 12 使用。残り 2）。
     // 14 → 16（Hi-Z オクルージョンカリングが hiZ を足して 15 使用。残り 1）。
-    static constexpr u32 kPerfGpuScopes = 20;
+    // 20 → 24（時間方向アップスケーラが upscale を足して 21 使用。残り 3）。
+    static constexpr u32 kPerfGpuScopes = 24;
                                                // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {
@@ -953,7 +955,10 @@ private:
     // 単体ゲーム / ゲームモードはウィンドウ全面。
     void GetDisplayViewport(u32& x, u32& y, u32& w, u32& h) const;
     // シーン系 RT を丸ごと (w,h) へ作り直す（WaitIdle 込み・時間履歴は必ず捨てる）。
-    void ApplyRenderResolution(u32 w, u32 h);
+    // ★(w,h) = 内部解像度（シーン系 RT）、(pw,ph) = ポスト後段の解像度（アップスケーラの出力 = 表示側）。
+    //   アップスケーラを使わないときは pw,ph = w,h（従来どおり全 RT が同じ寸法）。
+    void ApplyRenderResolution(u32 w, u32 h, u32 pw, u32 ph);
+    void ApplyRenderResolution(u32 w, u32 h) { ApplyRenderResolution(w, h, w, h); }
     // 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale と現状がズレていたら追従する。
     void UpdateRenderResolution();
     void SetRenderScale(f32 s);          // settings.json へ保存し、次フレームで即反映
@@ -971,6 +976,7 @@ private:
     // get/set を別ツールに分けたぶん、返り値の形を 1 箇所に持つためのヘルパ
     // （MCP ハンドラのラムダは明示キャプチャなのでローカルラムダを掴めない）。
     nlohmann::json RenderScaleJson() const;
+    nlohmann::json UpscalerJson();       // MCP get_upscaler / set_upscaler / perf_stats が返す状態
     nlohmann::json DepthPrepassJson() const;
     void EnsureInstancePrevBuffer();     // 速度パス用 per-instance 前ワールドバッファの遅延確保
     void RegisterShaderReloadHandlers(); // 上記全部+PostProcess等を ShaderManager に束ねて登録する(Initialize末尾で1回)
@@ -1847,6 +1853,18 @@ private:
     // 深度プリパスを MRT 化して速度(RG16F)を書き、ポストチェーンの先頭（トーンマップ前の
     // HDR）で解決する。ジッタは Camera には一切入れない（ピッキング/MCP 投影を壊さないため）。
     std::unique_ptr<TaaPass>       m_taaPass;
+    // ---- 時間方向アップスケーラ（off / taa / dlss。renderer/UpscalerPass.h）----
+    // DLSS を選び、かつ使える（NVIDIA + ドライバ + SDK 入りビルド）ときだけ働く。使えなければ TAA へ縮退し、
+    // 理由を 1 回だけログに出す。DLSS の間は品質モードが内部解像度を決め、空間レンダースケール(render_scale)は使わない。
+    std::unique_ptr<UpscalerPass>  m_upscaler;
+    bool m_dlssThisFrame     = false;   // PrepareFrame が決める「今フレーム DLSS で解決するか」（ジッタ位相・ミップバイアスもこれに従う）
+    bool m_dlssFallbackLogged = false;  // 縮退の理由をログに出したか（モードを変えるとリセット）
+    u32  m_postW = 0, m_postH = 0;      // ポスト後段（DLSS 出力以降）の解像度。DLSS でなければ m_renderW/H と同じ
+    f32  m_texMipBias = 0.0f;           // 今フレームのテクスチャのミップバイアス（b1 の _clusterReserved[8].y）
+    // 今フレーム DLSS を使うべきか（設定 + 可用性 + 透視ビュー）。reason は使えない理由（使うなら空）。
+    bool DlssWanted(std::string* reason = nullptr) const;
+    // 表示側の矩形 (dw,dh) から、アップスケーラ込みの内部解像度とポスト解像度を決める。
+    void ComputeRenderSizes(u32 dw, u32 dh, u32& rw, u32& rh, u32& pw, u32& ph);
     // ---- G-Buffer（深度+速度プリパスに相乗り。SSR/SSGI が読む）----
     // R16G16B16A16_FLOAT: xy=oct(ワールド法線) z=roughness w=metallic。
     // 速度 RT と同じ MRT に書くので、速度プリパスが走るときは必ず一緒に書かれる

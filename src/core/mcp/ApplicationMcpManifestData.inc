@@ -343,6 +343,11 @@ void FillManifestChunk4(ManifestRows& o)
         "render", "render_setting", "taa", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_taa", {
         })});
+    o.push_back({"get_upscaler", M("時間方向アップスケーラ(off / taa / dlss)の状態を返す。mode=頼んだもの、effective=今フレーム実際に解決しているもの(DLSS が使えない環境では taa に落ち、dlss.fallbackReason に理由)。renderResolution(内部)/outputResolution(アップスケール出力)/jitterPhases/textureMipBias/dlss{compiledIn,available,reason,featureVramMB,evalCount,lastEvalOk}/gpuMs。",
+        "get upscaler アップスケーラ DLSS DLAA 状態取得 upscale",
+        "render", "render_setting", "taa", McpEffect::Read, "any", 10000, true, false,
+        "none", "", {
+        })});
     o.push_back({"get_volumetric_fog", M("現在のシーンのボリュメトリックフォグ(froxel)設定を返す。",
         "get volumetric fog ボリュメトリックフォグ設定取得",
         "render", "render_setting", "volumetric_fog", McpEffect::Read, "any", 10000, true, false,
@@ -1373,6 +1378,14 @@ void FillManifestChunk12(ManifestRows& o)
             P("varianceGamma", "number", false, nullptr, nullptr, nullptr, nullptr, "近傍色の許容幅 μ±γσ。既定 1.0。下げるとゴーストが減りチラつきが増える。"),
             P("jitterScale", "number", false, nullptr, nullptr, nullptr, nullptr, "ジッタ量の倍率。1.0 = ±0.5px。ブラーが強すぎるなら下げる。"),
             P("debugVelocity", "bool", false, nullptr, nullptr, nullptr, nullptr, "速度バッファを画面に可視化する(検証用)。静止時に全面が均一なグレーになるのが正常で、縞々に揺れていたらジッタ除去のバグ。カメラを右へパンすると赤寄り、左で緑寄り。"),
+        })});
+    o.push_back({"set_upscaler", M("時間方向アップスケーラを切り替える(シーンに保存。既定は従来どおり)。off=アップスケーラなし / taa=エンジン内蔵 TAA(空間 render_scale と組み合わせる) / dlss=NVIDIA DLSS(品質モードが内部解像度を決め、render_scale は使わない)。DLSS が使えない環境(非 NVIDIA・ドライバ古い・SDK 無しビルド)では自動で TAA になり、理由を返す。",
+        "set upscaler アップスケーラ DLSS DLAA 切替 品質 quality performance upscale",
+        "render", "render_setting", "taa", McpEffect::WriteSetting, "any", 10000, true, false,
+        "none", "", {
+            P("mode", "enum", false, "off|taa|dlss", nullptr, nullptr, nullptr, "off / taa / dlss。省略で現状維持。"),
+            P("quality", "enum", false, "dlaa|quality|balanced|performance", nullptr, nullptr, nullptr, "DLSS の品質モード。dlaa=100% / quality=66.7% / balanced=58% / performance=50%(内部解像度 / 出力)。"),
+            P("debugJitterSign", "number", false, nullptr, "-1", "1", nullptr, "検証用(保存しない)。DLSS へ渡すジッタの符号。1(既定)/-1。"),
         })});
     o.push_back({"set_texture", M("エンティティの MeshRenderer にテクスチャを割り当てる(Inspector のアセットブラウザ D&D と同じ操作)。",
         "set texture テクスチャ上書き割当",

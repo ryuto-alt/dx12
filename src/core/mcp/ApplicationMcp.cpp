@@ -29,7 +29,7 @@ bool IsMcpReadOnlyMethod(const std::string& method)
         "ping", "get_mode", "get_log", "get_entity", "get_hierarchy", "list_entities",
         "list_scenes", "list_assets", "list_lights", "query_entities", "find_entity",
         "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
-        "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_contact_shadow",
+        "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_upscaler", "get_contact_shadow",
         "get_normal_filter",
         "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
         "audio_state",
@@ -518,7 +518,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             //   エンティティ系ツールのように弾いてしまうと「動いている絵を見ながら詰める」
             //   という正当な使い方まで潰れるので、捨てられることを応答に書く。
             static const std::unordered_set<std::string> kSceneRenderSetters = {
-                "set_post_process", "set_ssao", "set_ssr", "set_ssgi", "set_taa",
+                "set_post_process", "set_ssao", "set_ssr", "set_ssgi", "set_taa", "set_upscaler",
                 "set_volumetric_fog", "set_shadow_pcss", "set_contact_shadow",
                 "set_dxr", "set_sun", "apply_lighting_preset", "set_scene_settings",
             };

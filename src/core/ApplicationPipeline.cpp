@@ -543,6 +543,7 @@ bool Application::ScreenSpaceViewSupported() const
 void Application::InvalidateTemporalHistory(bool includeDdgi)
 {
     if (m_taaPass) m_taaPass->InvalidateHistory();
+    if (m_upscaler) m_upscaler->ResetHistory();   // DLSS も次の評価を reset=1 で（前のシーン / 解像度の履歴を使わない）
     // SSR/SSGI も「前フレームカラー」と時間蓄積の履歴を持っている。捨てないと
     // シーン切替直後の 1 フレームだけ前のシーンの色が反射/間接光として写り込む。
     if (m_screenSpaceGi) m_screenSpaceGi->InvalidateHistory();
@@ -692,10 +693,11 @@ void Application::EnsureSplitResources()
 
 // シーン系 RT を丸ごと (w,h) へ作り直す。**呼び出し側はフレーム外（Run ループ）であること。**
 // スワップチェイン（表示解像度）はここでは触らない。
-void Application::ApplyRenderResolution(u32 w, u32 h)
+void Application::ApplyRenderResolution(u32 w, u32 h, u32 pw, u32 ph)
 {
     if (w == 0 || h == 0) return;
-    if (w == m_renderW && h == m_renderH) return;
+    if (pw == 0 || ph == 0) { pw = w; ph = h; }
+    if (w == m_renderW && h == m_renderH && pw == m_postW && ph == m_postH) return;
     if (!m_graphicsDevice || !m_commandQueue) return;
 
     m_commandQueue->WaitIdle();
@@ -753,13 +755,16 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
     // 仮想ジオメトリ P2 の二相 HZB（履歴も捨てる）。ここは WaitIdle 済みなので古いピラミッドを解放してよい。
     if (m_vgHiZ)            { m_vgHiZ->Resize(*m_graphicsDevice, w, h); m_vgHiZHistory = false; }
     if (m_contactShadowPass)m_contactShadowPass->Resize(*m_graphicsDevice, w, h);
-    if (m_bloomPass)        m_bloomPass->Resize(*m_graphicsDevice, w, h);
-    if (m_godRaysPass)      m_godRaysPass->Resize(*m_graphicsDevice, w, h);
-    if (m_lensFlarePass)    m_lensFlarePass->Resize(*m_graphicsDevice, w, h);
-    if (m_dofPass)          m_dofPass->Resize(*m_graphicsDevice, w, h);
-    if (m_motionBlurPass)   m_motionBlurPass->Resize(*m_graphicsDevice, w, h);
-    if (m_localExposurePass) m_localExposurePass->Resize(*m_graphicsDevice, w, h);
-    if (m_distortRT)        m_distortRT->Resize(*m_graphicsDevice, w, h);
+    // ★ポスト後段（アップスケーラの出力より後ろ）は (pw,ph)。DLSS を使わなければ (w,h) と同じ。
+    //   どれも深度 / 速度を UV でサンプルするので、内部解像度の深度とは寸法が違ってよい。
+    if (m_bloomPass)        m_bloomPass->Resize(*m_graphicsDevice, pw, ph);
+    if (m_godRaysPass)      m_godRaysPass->Resize(*m_graphicsDevice, pw, ph);
+    if (m_lensFlarePass)    m_lensFlarePass->Resize(*m_graphicsDevice, pw, ph);
+    if (m_dofPass)          m_dofPass->Resize(*m_graphicsDevice, pw, ph);
+    if (m_motionBlurPass)   m_motionBlurPass->Resize(*m_graphicsDevice, pw, ph);
+    if (m_localExposurePass) m_localExposurePass->Resize(*m_graphicsDevice, pw, ph);
+    if (m_upscaler)         m_upscaler->Resize(w, h, pw, ph);
+    if (m_distortRT)        m_distortRT->Resize(*m_graphicsDevice, w, h);   // 歪みはパーティクル（内部解像度）が書き、uber が UV で読む
     if (m_taaPass)          m_taaPass->Resize(*m_graphicsDevice, w, h);
     if (m_gbufferRT)        m_gbufferRT->Resize(*m_graphicsDevice, w, h);
     if (m_screenSpaceGi)    m_screenSpaceGi->Resize(*m_graphicsDevice, w, h);
@@ -772,32 +777,83 @@ void Application::ApplyRenderResolution(u32 w, u32 h)
 
     m_renderW = w;
     m_renderH = h;
+    m_postW   = pw;
+    m_postH   = ph;
     m_pendingRenderW = w;
     m_pendingRenderH = h;
     m_renderResizeSettle = 0;
-    Logger::Info("レンダー解像度: {}x{}（scale {:.2f}）", w, h, m_renderScale);
+    if (pw != w || ph != h)
+        Logger::Info("レンダー解像度: {}x{} → アップスケール出力 {}x{}", w, h, pw, ph);
+    else
+        Logger::Info("レンダー解像度: {}x{}（scale {:.2f}）", w, h, m_renderScale);
 }
 
-// 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale へ追従する。
+// 時間方向アップスケーラ: 今フレーム DLSS を使うべきか。使いたいのに使えないときは reason に理由を入れて false。
+bool Application::DlssWanted(std::string* reason) const
+{
+    if (!m_scene) return false;
+    const TaaSettings& t = m_scene->GetTaaSettings();
+    if (!t.enabled || t.upscaler != static_cast<int>(upscale::Kind::Dlss)) return false;   // 頼まれていない（理由は空）
+    auto no = [&](const std::string& r) { if (reason) *reason = r; return false; };
+    if (!m_upscaler)                                   return no("アップスケーラが初期化されていない");
+    if (!m_upscaler->DlssAvailable())                  return no(m_upscaler->DlssReason());
+    if (!m_taaPass || !m_taaPass->IsReady() || !m_velocityPSO || !m_velocityPSOSkinned)
+                                                       return no("速度バッファ / 速度プリパスの PSO が無い");
+    if ((m_editorCtx && m_editorCtx->view2D) || !m_camera || m_camera->IsOrthographic())
+                                                       return no("正射 / 2D ビュー（DLSS は透視カメラだけ）");
+    return true;
+}
+
+// 表示側 (dw,dh) → 内部解像度 (rw,rh) とポスト解像度 (pw,ph)。
+//   DLSS: 出力 = 表示側、内部 = 品質モード（NGX の推奨値）。空間レンダースケールは使わない。
+//   それ以外: 従来どおり 内部 = 表示 × render_scale、ポスト = 内部（uber パスが表示矩形へ拡大する）。
+void Application::ComputeRenderSizes(u32 dw, u32 dh, u32& rw, u32& rh, u32& pw, u32& ph)
+{
+    dw = (std::max)(dw, 1u);
+    dh = (std::max)(dh, 1u);
+    if (DlssWanted())
+    {
+        pw = (std::max)(16u, dw);
+        ph = (std::max)(16u, dh);
+        m_upscaler->DlssRenderSize(pw, ph, upscale::ClampQuality(m_scene->GetTaaSettings().dlssQuality), rw, rh);
+        rw = (std::max)(16u, rw);
+        rh = (std::max)(16u, rh);
+        return;
+    }
+    const f32 s = std::clamp(m_renderScale, 0.25f, 1.0f);
+    rw = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));
+    rh = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dh) * s)));
+    pw = rw;
+    ph = rh;
+}
+
+// 毎フレーム Run ループの先頭で呼ぶ。表示矩形 × renderScale（DLSS なら品質モード）へ追従する。
 void Application::UpdateRenderResolution()
 {
     u32 dx = 0, dy = 0, dw = 0, dh = 0;
     GetMainViewRect(dx, dy, dw, dh);   // 画面分割中はメインカメラの区画（それ以外は表示矩形そのまま）
-    const f32 s = std::clamp(m_renderScale, 0.25f, 1.0f);
     // ★アスペクトは表示側の値を使い続ける（Render() の renderAspect）。ここは丸めるだけ。
-    u32 want = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dw) * s)));
-    u32 wantH = (std::max)(16u, static_cast<u32>(std::lround(static_cast<double>(dh) * s)));
+    u32 want = 0, wantH = 0, postW = 0, postH = 0;
+    ComputeRenderSizes(dw, dh, want, wantH, postW, postH);
     // --view-size / set_view_size: パネルの大きさにも render_scale にも依らず固定する（表示は uber パスが矩形へ縮小/拡大）。
-    if (m_viewSizeW > 0 && m_viewSizeH > 0) { want = m_viewSizeW; wantH = m_viewSizeH; }
+    // DLSS のときは「アップスケールの出力」をこの値に固定する（内部解像度は品質モードで決まる）。
+    if (m_viewSizeW > 0 && m_viewSizeH > 0)
+    {
+        if (DlssWanted()) ComputeRenderSizes(m_viewSizeW, m_viewSizeH, want, wantH, postW, postH);
+        else { want = m_viewSizeW; wantH = m_viewSizeH; postW = want; postH = wantH; }
+    }
 
     // ★Q2: screenshot_final {width,height} / --size のオフスクリーン撮影中は、表示矩形と無関係にその解像度へ即時に切り替える。
     //   終わったら（m_mcpFinalShot.reply の消去で OffscreenActive() が false）次のフレームで表示矩形 × renderScale へ即時に戻す。
+    //   DLSS のときは撮影解像度 = アップスケールの出力（内部解像度は品質モード）。
     if (m_mcpFinalShot.OffscreenActive())
     {
         m_offscreenWasActive = true;
-        if (m_renderW != m_mcpFinalShot.offW || m_renderH != m_mcpFinalShot.offH)
+        u32 ow = m_mcpFinalShot.offW, oh = m_mcpFinalShot.offH, opw = ow, oph = oh;
+        if (DlssWanted()) ComputeRenderSizes(m_mcpFinalShot.offW, m_mcpFinalShot.offH, ow, oh, opw, oph);
+        if (m_renderW != ow || m_renderH != oh || m_postW != opw || m_postH != oph)
         {
-            try { ApplyRenderResolution(m_mcpFinalShot.offW, m_mcpFinalShot.offH); }
+            try { ApplyRenderResolution(ow, oh, opw, oph); }
             catch (const std::exception& e)
             {
                 AbortOffscreenShot(std::string("render target allocation failed at ")
@@ -809,7 +865,7 @@ void Application::UpdateRenderResolution()
     }
     if (m_offscreenWasActive) { m_offscreenWasActive = false; m_renderResFlush = true; }
 
-    if (want == m_renderW && wantH == m_renderH)
+    if (want == m_renderW && wantH == m_renderH && postW == m_postW && postH == m_postH)
     {
         m_pendingRenderW = want; m_pendingRenderH = wantH;
         m_renderResizeSettle = 0;
@@ -820,7 +876,7 @@ void Application::UpdateRenderResolution()
     if (m_renderResFlush || m_renderW == 0)
     {
         m_renderResFlush = false;
-        ApplyRenderResolution(want, wantH);
+        ApplyRenderResolution(want, wantH, postW, postH);
         return;
     }
 
@@ -830,7 +886,7 @@ void Application::UpdateRenderResolution()
     if (want == m_pendingRenderW && wantH == m_pendingRenderH)
     {
         if (++m_renderResizeSettle >= kRenderResizeSettleFrames)
-            ApplyRenderResolution(want, wantH);
+            ApplyRenderResolution(want, wantH, postW, postH);
     }
     else
     {
@@ -972,6 +1028,12 @@ void Application::RegisterShaderReloadHandlers()
         m_shaderManager->RegisterReloadHandler(
             { L"TaaResolve_PS.cso", L"VelocityDebug_PS.cso" },
             [this]() { m_taaPass->RecreatePipelines(*m_graphicsDevice); });
+    }
+    if (m_upscaler)
+    {
+        m_shaderManager->RegisterReloadHandler(
+            { L"UpscalePrep_CS.cso" },
+            [this]() { m_upscaler->RecreatePipelines(*m_graphicsDevice); });
     }
     if (m_renderDebugPass)
     {

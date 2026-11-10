@@ -856,6 +856,7 @@ void Application::RecordPerfFrame()
             rep["instancing"] = m_instancingEnabled;
             rep["clustered"]  = m_clusteredEnabled;
             rep["occlusion"]  = OcclusionReportJson();
+            rep["upscaler"]   = UpscalerJson();   // 時間方向アップスケーラ（off/taa/dlss・内部/出力解像度）。gpuPassMs.upscale が DLSS の GPU 時間
             if (m_vg) rep["virtualGeometry"] = VirtualGeometryStatsJson();   // 仮想ジオメトリ P2（有効化した後だけ出る）
             if (m_foliage) rep["foliage"] = FoliageStatsJson();               // 植生 F1（FoliageLayer があるときだけ出る）
             if (m_water) rep["water"] = WaterStatsJson();                    // 水面 W1（WaterBody があるときだけ出る）
@@ -2759,6 +2760,7 @@ struct Application::PostChainInputs
     TrackedState*   depthState    = nullptr;
     bool taaActive            = false;
     bool taaResolveActive     = false;
+    bool dlssResolveActive    = false;   // TAA の解決の代わりに DLSS（出力はポスト解像度 m_postW x m_postH）
     bool velocityPrepass      = false;
     bool particleDistortDrawn = false;
 };
@@ -4742,6 +4744,29 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     const TaaSettings& taaCfg = m_scene->GetTaaSettings();
     const bool taaViewOk = !(m_editorCtx && m_editorCtx->view2D) && !m_camera->IsOrthographic();
     const bool taaActive = taaCfg.enabled && m_taaPass && m_taaPass->IsReady() && taaViewOk;
+    // ===== 時間方向アップスケーラ（DLSS）=====
+    // DLSS も「速度 + G-Buffer プリパス・前フレームのワールド行列の追跡・投影行列のジッタ」は TAA と同じ仕組みを使う
+    // （DLSS を選んだシーンは taaCfg.enabled = true なので taaActive に含まれる）。違うのは解決（RenderPostChain）と
+    // ジッタの位相数、テクスチャのミップバイアスだけ。使えないときは TAA のまま描き、理由を 1 回だけログに出す。
+    {
+        std::string why;
+        m_dlssThisFrame = taaActive && DlssWanted(&why);
+        const bool asked = taaCfg.enabled && taaCfg.upscaler == static_cast<int>(upscale::Kind::Dlss);
+        if (asked && !m_dlssThisFrame && !m_dlssFallbackLogged)
+        {
+            Logger::Warn("アップスケーラ: DLSS を使えないので TAA で描く（{}）", why.empty() ? std::string("速度バッファが使えない") : why);
+            m_dlssFallbackLogged = true;
+        }
+        m_texMipBias = m_dlssThisFrame ? upscale::TextureMipBias(rW, (m_postW > 0) ? m_postW : rW) : 0.0f;
+        if (m_dlssThisFrame)
+        {
+            // カメラカット（大きなワープ / 急な向きの変化）では DLSS の履歴を捨てる
+            const XMMATRIX inv = XMMatrixInverse(nullptr, m_camera->GetViewMatrix());
+            XMFLOAT3 fwd{};
+            XMStoreFloat3(&fwd, XMVector3Normalize(inv.r[2]));
+            m_upscaler->ObserveCamera(m_camera->GetPosition(), fwd);
+        }
+    }
     // SSR/SSGI も速度+G-Buffer プリパスを要求する（TAA が OFF でも）。速度バッファはヒット点の
     // 再投影に使うので、前フレームのワールド行列の追跡もインスタンス用の前ワールド VB も要る。
     // ★ここを taaActive だけにすると、SSR だけ ON のときに動く物体の速度が 0 になり、
@@ -4765,9 +4790,12 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     //   透視では clip.w = z_view、正射では clip.w = 1 なので、どちらでも NDC が jx 平行移動する
     //   （_31/_32 を直接いじる透視専用の方法より汎用で安全）。
     // ★ジッタ幅は「レンダー解像度の 1px」基準（ラスタライズするのはレンダー解像度）。
-    if (taaActive) m_taaJitterNdc = m_taaPass->NextJitterNdc(
+    // ★DLSS のときは位相数を 8 ×（出力/内部）² に増やす（TAA の固定 8 では Quality で 18 位相に足りない）。
+    //   ジッタ量は ±0.5px 固定（jitterScale は TAA 専用の調整）。
+    if (m_dlssThisFrame)  m_taaJitterNdc = m_upscaler->NextJitterNdc(rW, rH, (m_postW > 0) ? m_postW : rW);
+    else if (taaActive)   m_taaJitterNdc = m_taaPass->NextJitterNdc(
         static_cast<u32>(taaCfg.sampleCount), rW, rH, taaCfg.jitterScale);
-    else           m_taaJitterNdc = {0.0f, 0.0f};
+    else                  m_taaJitterNdc = {0.0f, 0.0f};
     const XMFLOAT2 jitterNdc = m_taaJitterNdc;
 
     // ラスタライズ用（ジッタあり）と、計算用（ジッタなし）を明確に分ける。
@@ -5629,7 +5657,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
     // ★taaActive を必ず併記すること。SSR だけ ON のときに TAA が勝手に効いてしまう。
-    const bool taaResolveActive = taaActive && velocityPrepass && m_taaPass->IsResolveReady();
+    // DLSS は主ビューだけ（PrepareFrame が m_dlssThisFrame を決める）。DLSS で解決するフレームは TAA の解決を走らせない。
+    const bool dlssResolveActive = primary && m_dlssThisFrame && taaActive && velocityPrepass && m_upscaler != nullptr;
+    const bool taaResolveActive = taaActive && velocityPrepass && m_taaPass->IsResolveReady() && !dlssResolveActive;
     // 走らないフレームでは履歴を捨てる。TAA を OFF→ON したり 2D ビューを往復したときに
     // 何十フレームも前の絵が半透明で残るのを防ぐ。★履歴は主ビューのものなので主ビューだけが触る。
     if (primary && !taaResolveActive && m_taaPass) m_taaPass->InvalidateHistory();
@@ -6025,7 +6055,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     fc.contactShadowEnabled = (csSrv != m_ssaoWhiteSrvIndex) ? 1.0f : 0.0f;
     // ローカル光のコンタクトシャドウ: t11 が ContactShadowPass の RGBA8 のままのときだけ G/B/A を読む
     // （雲の影など別パスが t11 を差し替えると 1 チャンネルしか無いので読ませない）。
-    fc._clusterReserved[8] = {(m_contactLocalCount > 0 && csSrv == m_contactLocalSrv && fc.contactShadowEnabled > 0.5f) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    // .y = テクスチャのミップバイアス（アップスケーラが内部解像度 < 出力のときだけ負。Lighting.hlsli の UNO_TEX_MIP_BIAS）。
+    //      主ビューだけ（副ビュー / プレビューはアップスケールしないので 0）。
+    fc._clusterReserved[8] = {(m_contactLocalCount > 0 && csSrv == m_contactLocalSrv && fc.contactShadowEnabled > 0.5f) ? 1.0f : 0.0f,
+                              primary ? m_texMipBias : 0.0f, 0.0f, 0.0f};
 
     // ===== ライト収集（point / spot を 1 本の配列へ統合してクラスタード用 SB へ送る）=====
     // 旧 8 灯固定配列は撤廃。上限は ClusteredLightCulling::kMaxSceneLights（1024）。
@@ -6782,6 +6815,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         pci.depthState    = &depthState;
         pci.taaActive            = taaActive;
         pci.taaResolveActive     = taaResolveActive;
+        pci.dlssResolveActive    = dlssResolveActive;
         pci.velocityPrepass      = velocityPrepass;
         pci.particleDistortDrawn = particleDistortDrawn;
         RenderPostChain(pci, backBuffer, rtv);
@@ -6848,9 +6882,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
 
         // ★#16: シーンは RT 全面に描かれているので「サブ矩形の UV」は常に (0,0,1,1)。
         //   かつてここで計算していた uvOfs/uvScl は 7 パスから丸ごと消えた。
-        //   fullW/fullH ＝ レンダー解像度（テクセルサイズの供給元）。
-        const f32 fullW = static_cast<f32>(sceneRT->GetWidth());
-        const f32 fullH = static_cast<f32>(sceneRT->GetHeight());
+        //   テクセルサイズの供給元は postW/postH（アップスケーラの後ろ。DLSS でなければ = レンダー解像度）。
         const auto sceneSrvGpu = m_srvHeap->GetGpuHandle(sceneRT->GetSrvIndex());
 
         // ポストエフェクトも Scene/Game で同じ設定を適用する。
@@ -6930,7 +6962,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         //   深度を読むかどうか」で戻す場所を 2 通りに書き分けていた。
         const bool screenShaderWantsDepth =
             useScreenShader && depthRes && depthSrvIndex != DescriptorHeap::kInvalidIndex;
-        const bool needDepthSrv = wantDepthPost || taaResolve || screenShaderWantsDepth;
+        const bool needDepthSrv = wantDepthPost || taaResolve || screenShaderWantsDepth || in.dlssResolveActive;
         D3D12_GPU_DESCRIPTOR_HANDLE depthSrvGpu{};
         if (needDepthSrv)
         {
@@ -6958,6 +6990,43 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             // TaaPass は自前のルートシグネチャ/PSO を張るので、後段のために SRV ヒープを張り直す。
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         }
+
+        // ---- 時間方向アップスケーラ（DLSS）: TAA の解決と同じ位置（トーンマップ前・露出前のリニア HDR）----
+        // 内部解像度 (rW,rH) → 出力 (m_postW,m_postH)。ここから後ろ（DoF / モーションブラー / 自動露出 / ローカル露出 /
+        // ブルーム / ゴッドレイ / レンズフレア / uber）は出力解像度で走る（ApplyRenderResolution がその寸法で確保済み）。
+        // 失敗したフレームは内部解像度の絵のまま後段へ流す（uber が表示矩形へ拡大する＝真っ黒にはしない）。
+        u32 pW = rW, pH = rH;
+        if (in.dlssResolveActive && m_upscaler)
+        {
+            if (m_gpuTimer) m_gpuTimer->Begin(nativeCmdList, GpuTimer::Upscale);
+            depthState.Require(*m_commandList,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            UpscalerPass::DlssFrame df{};
+            df.color    = sceneRT;
+            df.depth    = depthRes;
+            df.depthSrv = m_srvHeap->GetGpuHandle(depthSrvIndex);
+            df.velocity = m_taaPass ? m_taaPass->GetVelocityRT() : nullptr;
+            XMStoreFloat4x4(&df.invViewProjT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVP)));
+            XMStoreFloat4x4(&df.prevViewProjT, XMMatrixTranspose(
+                m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP));
+            df.jitterNdc = m_taaJitterNdc;
+            df.frameMs   = (std::max)(0.1f, m_gameClock.GetDeltaTime() * 1000.0f);
+            df.quality   = upscale::ClampQuality(taaCfg.dlssQuality);
+            df.waitIdle  = [this]() { m_commandQueue->WaitIdle(); };
+            const u32 o = m_upscaler->EvaluateDlss(*m_commandList, df);
+            // NGX は自前のヒープ / ルートシグネチャ / PSO を張るので、後段のために張り直す。
+            m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            if (m_gpuTimer) m_gpuTimer->End(nativeCmdList, GpuTimer::Upscale);
+            if (o != DescriptorHeap::kInvalidIndex)
+            {
+                curSceneSrv = m_srvHeap->GetGpuHandle(o);
+                pW = m_upscaler->OutW();
+                pH = m_upscaler->OutH();
+            }
+            ppApplied.fxaaOn = false;   // DLSS 済みの絵に FXAA を重ねると輪郭が二重にぼける（TAA と同じ扱い）
+        }
+        const f32 postW = static_cast<f32>(pW), postH = static_cast<f32>(pH);
+
         if (wantDepthPost && ppApplied.dofOn && m_dofPass)
         {
             XMFLOAT4X4 projF;
@@ -7000,7 +7069,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             const auto velSrvGpu = mbUseVelocity ? m_srvHeap->GetGpuHandle(velIdx) : depthSrvGpu;
             const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
                 curSceneSrv, depthSrvGpu, velSrvGpu, mbUseVelocity, invT, prevT,
-                rW, rH, ppApplied);
+                pW, pH, ppApplied);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
@@ -7009,7 +7078,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         // Q2: 露出モード 2（自動 EV100）はマスター(enabled)が OFF でも走らせる。0 は従来どおり。
         if (m_autoExposure && ((ppApplied.enabled && ppApplied.autoExposureOn && ppApplied.exposureMode == 0)
                                || ppApplied.exposureMode == 2))
-            m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, rW, rH,
+            m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, pW, pH,
                                      m_gameClock.GetDeltaTime(), ppApplied);
         D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
         if (m_autoExposure)
@@ -7022,7 +7091,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         // トーンマップ前・露出前のシーン色（TAA / DoF / モーションブラー後）を、撮影の要求があるフレームだけ読み出す。
         // 自動露出と同じ位置・同じ SRV（同じ読み取り状態）。要求が無ければ 1 命令も記録しない。
         if (m_mcpFinalShot.pending && m_mcpFinalShot.WantLinear() && m_mcpFinalShot.reply.client != 0)
-            RecordLinearCapture(nativeCmdList, curSceneSrv, rW, rH);
+            RecordLinearCapture(nativeCmdList, curSceneSrv, pW, pH);
 
         // ---- ローカル露出（UE5 Local Exposure 相当。露出測光の後・ブルームの前）----
         // 露出後の対数輝度で明部 / 暗部のコントラストだけを局所的に縮めた「シーン」を作り、以降（ブルーム / uber）の入力にする。
@@ -7031,7 +7100,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         if (m_localExposurePass && LocalExposurePass::NeedsRun(ppApplied))
         {
             const u32 o = m_localExposurePass->Apply(*m_commandList, curSceneSrv, exposureVA,
-                                                     rW, rH, ppApplied);
+                                                     pW, pH, ppApplied);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
             // 自前のルートシグネチャ / 出力先を張るので、後段のために SRV ヒープを張り直す。
@@ -7042,7 +7111,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
         if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
             bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), curSceneSrv,
-                                             1.0f / fullW, 1.0f / fullH, ppApplied);
+                                             1.0f / postW, 1.0f / postH, ppApplied);
         const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
         const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
 
@@ -7082,7 +7151,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
                         // ★#16: シーンは RT 全面なので、ローカル UV がそのまま RT の UV。
                         //   （かつては lu * uvScl + uvOfs でサブ矩形へ写していた）
                         godraysSrv = m_godRaysPass->Generate(*m_commandList, m_srvHeap.get(),
-                            depthSrvGpu, rW, rH, lu, lv, fade, sunColI, ppApplied);
+                            depthSrvGpu, pW, pH, lu, lv, fade, sunColI, ppApplied);
                     }
                 }
             }
@@ -7161,7 +7230,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         // ★ここが唯一の「レンダー解像度 → 表示解像度」の橋渡し。ビューポートが表示矩形で、
         //   シーン RT の全面をサンプルする＝renderScale < 1 なら自動的にバイリニア拡大になる。
         m_postProcess->Apply(nativeCmdList, pin, ppApplied,
-            1.0f / fullW, 1.0f / fullH, totalTime, frameIndex);
+            1.0f / postW, 1.0f / postH, totalTime, frameIndex);
 
         // ---- 画面全体のカスタムシェーダー（中間 RT → バックバッファ）----
         if (useScreenShader)

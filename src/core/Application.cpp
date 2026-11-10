@@ -1102,6 +1102,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                               m_window->GetWidth(), m_window->GetHeight(),
                               kSceneColorFormat, m_swapChain->GetFormat(), PathResolver::ShaderDirW());
 
+        // 時間方向アップスケーラ（DLSS）。NGX の初期化に失敗しても例外にしない（DLSS を選んだシーンは TAA へ縮退）。
+        // 出力 / MV のテクスチャは DLSS を最初に使うフレームまで確保しない。
+        m_upscaler = std::make_unique<UpscalerPass>();
+        try
+        {
+            m_upscaler->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW(),
+                                   PathResolver::Utf8ToWide(ProjectManager::DataDir() + "/ngx"));
+        }
+        catch (const std::exception& e)
+        {
+            Logger::Warn("UpscalerPass の初期化に失敗（DLSS は使わない）: {}", e.what());
+            m_upscaler.reset();
+        }
+
         // G-Buffer（速度プリパスの RTV1）。速度 PSO は常に MRT=2 なので、速度プリパスが
         // 走るときは必ずここへも書かれる＝常に確保しておく（分岐を作らない）。
         const float gbufClear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -2331,6 +2345,8 @@ void Application::Shutdown()
     ShutdownWater();             // 水面 W1（コピー用テクスチャ / ディスクリプタ。デバイス解放より前に）
     m_perceptionPass.reset();   // 知覚層（RT / 読み戻し / 専用ヒープ）。要求が無ければ最初から null
     m_contactShadowPass.reset();
+    if (m_upscaler) m_upscaler->Shutdown();   // NGX の機能 / パラメータ（デバイス解放より前に）
+    m_upscaler.reset();
     m_taaPass.reset();
     m_gbufferRT.reset();
     m_screenSpaceGi.reset();

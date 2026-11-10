@@ -128,6 +128,11 @@ cbuffer PerFrameConstants : register(b1)
     float4   ddgiScroll3;                         // 16B  (offset 1584)
 };                                               // total = 1600B
 
+// テクスチャのミップバイアス（時間方向アップスケーラ）。内部解像度 < 出力（DLSS Quality など）のときだけ
+// log2(内部/出力) の負の値が入り、それ以外は 0 ＝ SampleBias(…, 0) は Sample と同じ結果。
+// C++ 側は Application::m_texMipBias（RenderView が _clusterReserved[8].y へ書く。主ビュー以外は 0）。
+#define UNO_TEX_MIP_BIAS (_clusterReserved[8].y)
+
 // DDGI の拡散間接光。PerFrame のパラメータで包んだだけの薄いラッパ。
 // 戻り値は IBL の irradiance キューブと同じ単位（コサイン加重の平均放射輝度）なので、
 // ★足すのではなく「置き換える」こと。足すと同じ光を二重に数える（SSGI と同じ理屈）。
