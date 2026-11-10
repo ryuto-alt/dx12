@@ -29,6 +29,7 @@ const char* GpuTimer::Name(u32 s)
     case CloudShadow: return "cloudShadow";
     case RtShadowDenoise: return "rtShadowDenoise";
     case Upscale:     return "upscale";
+    case VgShadow:    return "vgShadow";
     default:          return "?";
     }
 }

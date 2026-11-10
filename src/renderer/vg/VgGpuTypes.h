@@ -48,6 +48,7 @@ struct VgInstanceInput
     uint32_t emissiveFlags = 0;          // P4: VG_INST_EMIS_COLOR_OV | VG_INST_EMIS_INT_OV
     float    overrideMetallic  = -1.0f;  // P4: < 0 = 材質の値
     float    overrideRoughness = -1.0f;
+    uint32_t shadowSkipMask = 0;         // 影（ExecuteShadow）: bit v = 影のビュー v ではこのインスタンスを VG で描かない（プロキシが描く）
 };
 
 inline VgInstance MakeInstance(const VgInstanceInput& in, uint32_t assetIndexOnGpu)
@@ -57,7 +58,8 @@ inline VgInstance MakeInstance(const VgInstanceInput& in, uint32_t assetIndexOnG
     PackWorld34(in.hasPrev ? in.prevWorld : in.world, o.prevWorld);
     o.assetIndex = assetIndexOnGpu;
     o.flags = (Det3(in.world) < 0.0f ? VG_INST_MIRRORED : 0u) | (in.hasPrev ? VG_INST_HAS_PREV : 0u)
-            | (in.emissiveFlags & (VG_INST_EMIS_COLOR_OV | VG_INST_EMIS_INT_OV));
+            | (in.emissiveFlags & (VG_INST_EMIS_COLOR_OV | VG_INST_EMIS_INT_OV))
+            | ((in.shadowSkipMask & 0xFFu) << VG_INST_SHADOW_SKIP_SHIFT);
     o.packedTint = in.packedTint;
     o.packedEmissive = in.packedEmissive;
     o.maxScale = MaxAxisScale(in.world);

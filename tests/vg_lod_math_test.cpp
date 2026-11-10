@@ -48,6 +48,17 @@ void TestProjectedError()
     CHECK(std::fabs(LodProjScale(720.0f, 1080.0f, 1.7320508f) - 0.5f * 1080.0f * 1.7320508f) < 1e-3f);
     CHECK(std::fabs(LodProjScale(1080.0f, 1080.0f, 1.7320508f) - 0.5f * 1080.0f * 1.7320508f) < 1e-3f);
     CHECK(std::fabs(LodProjScale(1080.0f, 0.0f, 2.0f) - 1080.0f) < 1e-3f);
+    // 影（正射のカスケード）: テクセル / m = 解像度 / 幅、誤差のテクセル数は距離に依らない、+INF は +INF、半径 0 は 0
+    CHECK(std::fabs(CascadeTexelsPerMeter(2048.0f, 10.0f) - 102.4f) < 1e-3f);
+    CHECK(CascadeTexelsPerMeter(2048.0f, 0.0f) == 0.0f);
+    CHECK(std::fabs(ProjectedErrorOrtho(0.01f, 2.0f, 102.4f) - 2.048f) < 1e-4f);
+    CHECK(ProjectedErrorOrtho(std::numeric_limits<float>::infinity(), 1.0f, 100.0f) > 1e30f);
+    // プロキシで足りるか: 偏差 1 cm・テクセル 2 cm（50 テクセル / m）・τ 0.5 → 0.5 テクセル = ちょうど足りる / 偏差 1.1 cm は足りない
+    CHECK(ShadowProxySuffices(0.01f, 50.0f, 0.5f));
+    CHECK(!ShadowProxySuffices(0.011f, 50.0f, 0.5f));
+    CHECK(ShadowProxySuffices(0.0f, 50.0f, 0.5f));             // プロキシ = LOD0（小さいメッシュ）なら常にプロキシ
+    // 単調: 親の誤差 >= 子なら正射でも親の射影 >= 子（スケール・解像度に依らない）
+    CHECK(ProjectedErrorOrtho(0.02f, 1.5f, 80.0f) >= ProjectedErrorOrtho(0.01f, 1.5f, 80.0f));
     // 最遠点版は近点版以下（遠いほど小さく見える）
     CHECK(ProjectedErrorPxFar(1.0f, sph2, cam, 1.0f, 1000.0f, 0.1f) <= ProjectedErrorPx(1.0f, sph2, cam, 1.0f, 1000.0f, 0.1f));
 }

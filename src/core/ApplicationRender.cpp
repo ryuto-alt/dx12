@@ -2034,8 +2034,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     //   1 テクセルあたり数トライアングルになる（実測: stress_5000 で影が GPU の 45%）。
     //   ★max を取るので、現在より細かい LOD になることは無い。1 テクセルが 3cm の
     //     cascade0 では tl が常に 0 側に出るので近景の絵は変わらない。
+    // 検証用: DX12_SHADOW_LOD0=1 で影マップの通常メッシュを LOD0（フル解像度）で描く（VG の影の正解を作るため。既定は従来どおり）
+    static const bool kShadowLod0 = [] { char b[4]{}; size_t n = 0; return ::getenv_s(&n, b, sizeof(b), "DX12_SHADOW_LOD0") == 0 && n > 0 && b[0] == '1'; }();
     const auto passLod = [&](const DrawItem& it) -> u32
     {
+        if (kShadowLod0 && shadowPass) return 0u;
         u32 lod = it.lod + lodBias;
         if (cascadeTexelWorld > 0.0f)
         {
@@ -2118,6 +2121,8 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
 
         // 仮想ジオメトリ P3: VG 本体が描くエンティティのプロキシは主ビューの深度プリパスから外す（影パスでは m_vgSkipProxies = false）。
         if (item.vg && m_vgSkipProxies) continue;
+        // 影（2026-11-10）: VG が CSM へ実ジオメトリを描くフレームは、CSM にプロキシを描かない（m_vgShadowSkipProxies は CSM パスの間だけ）
+        if (item.vg && shadowPass && m_vgShadowSkipProxies && !VgShadowDrawsProxy(item.e, m_vgShadowSlice)) continue;
 
         // 半透明（カスタムシェーダ + shaderAlphaBlend）はカメラのプリパスから除外する。
         // ＝プリパスが半透明の深度を書いてしまうと、その裏の不透明が forward の LESS_EQUAL で
@@ -5584,7 +5589,31 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                 };
             }
             CpuScopeTimer _tShadow(cpuSlot(CpuShadowRec)); DX12_PROFILE_ZONE_N("Rec/Shadows");
+            // 仮想ジオメトリの影（2026-11-10）: VG の物は CSM へ VG の実ジオメトリで描く（プロキシは外す）。
+            //   ★RT サン影のフレームは CSM が静的物を描かない（skipRtCovered）＝ VG の影も描かない（RT は TLAS のプロキシ）。
+            const bool vgShadow = primary && !m_rtShadowActiveThisFrame && PrepareVirtualGeometryShadow(viewPos);
+            m_vgShadowSkipProxies = vgShadow;
+            m_vgShadowSlice = 0;
+            if (vgShadow)
+            {
+                // スライス番号（= カスケード番号）を RenderDepthOnlyScene へ渡す（そのカスケードで VG が描く物のプロキシを外す）
+                auto inner = csmIn.drawDepth;
+                csmIn.drawDepth = [this, inner, slice = 0u](const ShadowMapPass::Slice& sl) mutable { m_vgShadowSlice = slice++; inner(sl); };
+            }
             ShadowMapPass(std::move(csmIn)).Execute(passCtx);
+            m_vgShadowSkipProxies = false;
+            m_vgShadowActiveThisFrame = false;
+            if (vgShadow)
+            {
+                m_commandList->TransitionResource(m_shadowMap.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                gpuBegin(GpuTimer::VgShadow);
+                m_vgShadowActiveThisFrame = RunVirtualGeometryShadowCsm(nativeCmdList, frameIndex);
+                gpuEnd(GpuTimer::VgShadow);
+                m_commandList->TransitionResource(m_shadowMap.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                // VG は専用のルートシグネチャ / ビューポートを張ったまま返る。以降のパスは自分で張り直す（DepthPrepassPass ほか）が、念のため戻す
+                m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+                m_commandList->SetRootSignature(*m_rootSignature);
+            }
         }
 
         gpuEnd(GpuTimer::Shadows);

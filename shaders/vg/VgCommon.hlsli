@@ -29,7 +29,7 @@ cbuffer VgCullCB : register(b0)
     uint4    gOffs0;         // x = nodeQ0, y = nodeQ1, z = deferred, w = groupQ0
     uint4    gOffs1;         // x = groupQ1, y = visible, z = counters, w = stats
     uint4    gHeap2;         // P3: x = depthSrv, y = visSrv, z = overdrawUav, w = visUav
-    uint4    gRast;          // P3: x = ラスタのフラグ(VG_RF_*), y = 可視性バッファの幅, z = 高さ
+    uint4    gRast;          // P3: x = ラスタのフラグ(VG_RF_*), y = 可視性バッファの幅, z = 高さ, w = ビューのフラグ（VG_VF_*。影）
     float4   gDbg;           // P3: x = 深度の表示レンジ(m), y = 過剰描画の表示上限, z = zFar
     float4x4 gViewProjNJ;    // P4: 今フレームのジッタ無し VP（速度）
     float4x4 gPrevViewProjNJ;// P4: 前フレームのジッタ無し VP（速度）
@@ -95,6 +95,7 @@ bool VgSphereOutsideFrustum(float3 c, float r)
 float VgProjErr(float err, float4 sphereW, float s)
 {
     if (!(err < 3.0e38)) return 3.4e38;
+    if ((gRast.w & VG_VF_ORTHO) != 0u) return err * s * gLod.y;   // 正射（影のカスケード。VgLodMath.h の ProjectedErrorOrtho）
     const float3 dv = sphereW.xyz - gCamPos.xyz;
     const float dist = sqrt(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z);
     float d = dist - sphereW.w;
@@ -106,6 +107,7 @@ float VgProjErr(float err, float4 sphereW, float s)
 float VgProjErrFar(float err, float4 sphereW, float s)
 {
     if (!(err < 3.0e38)) return 3.4e38;
+    if ((gRast.w & VG_VF_ORTHO) != 0u) return err * s * gLod.y;   // 正射は距離に依らない（最近点 = 最遠点）
     const float3 dv = sphereW.xyz - gCamPos.xyz;
     float d = sqrt(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z) + sphereW.w;
     if (d < gCamPos.w) d = gCamPos.w;

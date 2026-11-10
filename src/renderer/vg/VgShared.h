@@ -109,6 +109,12 @@
 #define VG_DBG_RAW_UVGRAD         17u       // xy = dUV/dx、zw = dUV/dy（1 画素差分）
 #define VG_DBG_RAW_UV             18u       // xy = UV、z = ワールド位置の dW/dx の長さ、w = 三角形番号
 
+// ── ビューのフラグ（gRast.w。2026-11-10 影）──
+#define VG_VF_ORTHO               1u        // 正射のビュー（影のカスケード）: 誤差の射影は距離に依らない err * s * gLod.y（gLod.y = テクセル / m）
+#define VG_VF_SHADOW              2u        // 影のビュー: gRast.z = ビュー番号。インスタンスの flags の bit (16 + ビュー番号) が立っていれば K0 で落とす
+                                            //   （そのビューはプロキシで足りる = CPU が決めてプロキシを描く。VgLodMath.h ShadowProxySuffices）
+#define VG_INST_SHADOW_SKIP_SHIFT 16u       // VgInstance.flags の bit 16..23 = 影のビュー 0..7 で VG を描かない
+
 // ── インスタンスのフラグ ─────────────────────────────────────────────────────
 #define VG_INST_MIRRORED          1u        // 行列式 < 0
 #define VG_INST_HAS_PREV          2u        // prevWorld が有効

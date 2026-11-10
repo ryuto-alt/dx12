@@ -38,6 +38,27 @@ inline float ProjectedErrorPx(float err, const float sphereWorld[4], const float
     return err * s * projScale / d;
 }
 
+// 正射のビュー（影のカスケード）: 1 m = texelsPerMeter テクセル（= 影マップの解像度 / カスケードの幅）。距離に依らない。
+//   影の LOD は「影のテクセルに対して τ テクセル」（画面の τ を流用しない）。+INF は +INF。
+inline float ProjectedErrorOrtho(float err, float s, float texelsPerMeter)
+{
+    if (!(err < 3.0e38f)) return 3.4e38f;
+    return err * s * texelsPerMeter;
+}
+// CSM のカスケード 1 枚の「テクセル / m」。カスケードは半径 radius の球にぴったりの正射（幅 2 * radius）を mapSize テクセルで覆う。
+inline float CascadeTexelsPerMeter(float mapSize, float radius)
+{
+    return (radius > 0.0f) ? mapSize / (2.0f * radius) : 0.0f;
+}
+
+// 影のビューで「プロキシで足りるか」: プロキシの LOD0 からの最大偏差（ワールド m = アセットの proxyError * 最大軸スケール）が
+//   τ テクセル以下なら、そのビューは VG を描かずにプロキシを描く（VG の方が粗くなる / 同じなら安い方）。
+//   ★CPU だけが決める（プロキシを描く側と VG の K0 が同じ答えを使う。GPU で同じ式を別に評価すると境目で両方 / どちらも描かない穴が出る）。
+inline bool ShadowProxySuffices(float proxyErrorWorld, float texelsPerMeter, float tauTexels)
+{
+    return !(proxyErrorWorld * texelsPerMeter > tauTexels);
+}
+
 // 部分木の枝刈り用: 球の最遠点（= 中心距離 + 半径）までの距離で射影する（誤差の下界）。
 inline float ProjectedErrorPxFar(float err, const float sphereWorld[4], const float camPos[3], float s, float projScale, float zNear)
 {

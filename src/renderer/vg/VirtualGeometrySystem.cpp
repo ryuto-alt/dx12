@@ -32,7 +32,8 @@ constexpr uint32_t kDescArgsUav  = 2;
 constexpr uint32_t kDescMaterials = 3;                // P4: 材質表（StructuredBuffer<VgMaterialGpu>）
 constexpr uint32_t kDescFrameBase = 4;                // フレームスロット f: kDescFrameBase + 8 * f + {assets, instances, hzbPrev, hzbCur, depthSrv, visSrv, overdrawUav, visUav}
 constexpr uint32_t kDescPerFrame = 8;
-constexpr uint32_t kQueriesPerSlot = 10;              // 0 開始 / 1,2 一相目ラスタの前後 / 3,4 二相目ラスタの前後 / 5 終了 / P4: 6,7 G-Buffer の前後 / 8,9 resolve の前後
+constexpr uint32_t kQueriesPerSlot = 12;              // 0 開始 / 1,2 一相目ラスタの前後 / 3,4 二相目ラスタの前後 / 5 終了 / P4: 6,7 G-Buffer の前後 / 8,9 resolve の前後 / 影: 10,11 ExecuteShadow の前後
+constexpr uint32_t kDescShadowBase = kDescFrameBase + kDescPerFrame * 8;   // 影: フレームスロット f の {assets, instances} = kDescShadowBase + 2 * f（68..83）
 constexpr DXGI_FORMAT kVisFormat = DXGI_FORMAT_R32_UINT;
 
 HRESULT MakeBuffer(ID3D12Device* dev, uint64_t bytes, D3D12_HEAP_TYPE heapType, D3D12_RESOURCE_FLAGS flags,
@@ -660,6 +661,9 @@ void VirtualGeometrySystem::Shutdown()
         if (m_cbBuf[f] && m_cbMapped[f]) m_cbBuf[f]->Unmap(0, nullptr);
         m_instMapped[f] = m_assetMapped[f] = m_cbMapped[f] = nullptr;
         m_instBuf[f].Reset(); m_assetBuf[f].Reset(); m_cbBuf[f].Reset(); m_statsReadback[f].Reset();
+        m_shadowInstBuf[f].Reset(); m_shadowAssetBuf[f].Reset(); m_shadowCbBuf[f].Reset(); m_shadowReadback[f].Reset();
+        m_shadowInstMapped[f] = m_shadowAssetMapped[f] = m_shadowCbMapped[f] = nullptr;
+        m_shadowPending[f] = false;
     }
     // アセットのディスクリプタ（externalHeap のときはアプリのヒープへ返す。呼び出し側は GPU の完了を待ってから Shutdown すること）
     for (auto& up : m_assets)
@@ -675,6 +679,7 @@ void VirtualGeometrySystem::Shutdown()
     m_work.Reset(); m_extra.Reset(); m_args.Reset(); m_dumpReadback.Reset();
     m_queryHeap.Reset(); m_queryReadback.Reset();
     m_psoReset.Reset(); m_psoArgs.Reset(); m_psoInstance.Reset(); m_psoTraverse.Reset(); m_psoCluster.Reset();
+    m_psoShadow.Reset(); m_shadowRes = false;
     m_psoRasterArgs.Reset(); m_psoCoverage.Reset(); m_psoDebug.Reset(); m_cmdSigMesh.Reset();
     for (auto& r : m_psoRaster) for (auto& p : r) p.Reset();
     m_vis.Reset(); m_overdraw.Reset(); m_retired.clear(); m_rtvHeap.Reset(); m_clearHeap.Reset();
@@ -1517,6 +1522,237 @@ bool VirtualGeometrySystem::Execute(const ExecuteDesc& d)
     return true;
 }
 
+// ── 影（2026-11-10）─────────────────────────────────────────────────────────────
+// 影のビュー専用のインスタンス表 / アセット表 / 定数（ビューごと）/ 統計の読み戻し。主ビューと同じ作業バッファを使う。
+bool VirtualGeometrySystem::EnsureShadowResources()
+{
+    if (m_shadowRes) return true;
+    ID3D12Device* dev = m_device.Get();
+    for (uint32_t f = 0; f < m_desc.frameCount; ++f)
+    {
+        if (FAILED(MakeBuffer(dev, static_cast<uint64_t>(m_desc.maxInstances) * sizeof(VgInstance), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
+                              D3D12_RESOURCE_STATE_GENERIC_READ, m_shadowInstBuf[f], L"VgShadowInstances")) ||
+            FAILED(MakeBuffer(dev, static_cast<uint64_t>(m_desc.maxAssets) * sizeof(VgAssetGpu), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
+                              D3D12_RESOURCE_STATE_GENERIC_READ, m_shadowAssetBuf[f], L"VgShadowAssets")) ||
+            FAILED(MakeBuffer(dev, static_cast<uint64_t>(kCbSlotBytes) * kMaxShadowViews, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
+                              D3D12_RESOURCE_STATE_GENERIC_READ, m_shadowCbBuf[f], L"VgShadowCB")) ||
+            FAILED(MakeBuffer(dev, static_cast<uint64_t>(kStatsReadbackBytes) * kMaxShadowViews + 16, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE,
+                              D3D12_RESOURCE_STATE_COPY_DEST, m_shadowReadback[f], L"VgShadowStatsReadback")))
+        {
+            Logger::Warn("VG: 影のバッファを確保できない（影はプロキシのまま）");
+            return false;
+        }
+        D3D12_RANGE nr{0, 0};
+        void* p = nullptr;
+        m_shadowInstBuf[f]->Map(0, &nr, &p);  m_shadowInstMapped[f] = static_cast<uint8_t*>(p);
+        m_shadowAssetBuf[f]->Map(0, &nr, &p); m_shadowAssetMapped[f] = static_cast<uint8_t*>(p);
+        m_shadowCbBuf[f]->Map(0, &nr, &p);    m_shadowCbMapped[f] = static_cast<uint8_t*>(p);
+        const uint32_t base = D(kDescShadowBase + 2 * f);
+        D3D12_SHADER_RESOURCE_VIEW_DESC s{};
+        s.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        s.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        s.Format = DXGI_FORMAT_UNKNOWN;
+        s.Buffer.NumElements = m_desc.maxAssets;
+        s.Buffer.StructureByteStride = sizeof(VgAssetGpu);
+        dev->CreateShaderResourceView(m_shadowAssetBuf[f].Get(), &s, CpuHandle(base + 0));
+        s.Buffer.NumElements = m_desc.maxInstances;
+        s.Buffer.StructureByteStride = sizeof(VgInstance);
+        dev->CreateShaderResourceView(m_shadowInstBuf[f].Get(), &s, CpuHandle(base + 1));
+        m_fixedVram += static_cast<uint64_t>(m_desc.maxInstances) * sizeof(VgInstance) + static_cast<uint64_t>(m_desc.maxAssets) * sizeof(VgAssetGpu) +
+                       static_cast<uint64_t>(kCbSlotBytes) * kMaxShadowViews;
+    }
+    m_shadowRes = true;
+    return true;
+}
+
+// 深度だけのメッシュシェーダ PSO（PS なし・RT なし）。ラスタの状態は影の PSO（ApplicationPipeline.cpp RecreateShadowPsos）と揃える。
+ID3D12PipelineState* VirtualGeometrySystem::GetShadowPso(int bias, float slope, bool cullBack)
+{
+    if (m_psoShadow && m_psoShadowBias == bias && m_psoShadowSlope == slope && m_psoShadowCull == cullBack) return m_psoShadow.Get();
+    MeshPipelineStateBuilder b;
+    b.SetRootSignature(m_rootSig.Get());
+    b.SetMeshShader(m_bcMsPlain.data(), m_bcMsPlain.size())
+     .SetRenderTargetFormats(0, nullptr).SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+     .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS).SetCullMode(cullBack ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE)
+     .SetDepthBias(bias, slope);
+    std::string err;
+    ComPtr<ID3D12PipelineState> pso = b.Build(m_device.Get(), &err);
+    if (!pso) { Logger::Warn("VG: 影の PSO を作れない: {}", err); return nullptr; }
+    m_psoShadow = pso;
+    m_psoShadowBias = bias; m_psoShadowSlope = slope; m_psoShadowCull = cullBack;
+    return m_psoShadow.Get();
+}
+
+bool VirtualGeometrySystem::ExecuteShadow(const ShadowDesc& d)
+{
+    if (!m_ready || !m_rasterOk || !d.cmd || d.frameSlot >= m_desc.frameCount || !d.views || d.viewCount == 0) return false;
+    if (!EnsureShadowResources()) return false;
+    ID3D12PipelineState* pso = GetShadowPso(d.depthBias, d.slopeBias, d.cullBack);
+    if (!pso) return false;
+    ID3D12GraphicsCommandList* cmd = d.cmd;
+    const uint32_t f = d.frameSlot;
+    const uint32_t nv = std::min(d.viewCount, kMaxShadowViews);
+
+    // インスタンス / アセット表（影の専用面）
+    uint32_t n = 0;
+    {
+        std::lock_guard<std::mutex> lk(m_assetsMutex);
+        auto* dst = reinterpret_cast<VgInstance*>(m_shadowInstMapped[f]);
+        for (uint32_t i = 0; i < d.instanceCount && n < m_desc.maxInstances; ++i)
+        {
+            const VgInstanceInput& in = d.instances[i];
+            if (in.assetId >= m_assets.size() || m_assets[in.assetId]->state.load(std::memory_order_acquire) != 2) continue;
+            dst[n++] = MakeInstance(in, in.assetId);
+        }
+        auto* ad = reinterpret_cast<VgAssetGpu*>(m_shadowAssetMapped[f]);
+        const uint32_t na = std::min<uint32_t>(static_cast<uint32_t>(m_assets.size()), m_desc.maxAssets);
+        for (uint32_t i = 0; i < na; ++i)
+            ad[i] = (m_assets[i]->state.load(std::memory_order_acquire) == 2) ? m_assets[i]->gpu : VgAssetGpu{};
+    }
+    m_shadowInstCount[f] = n;
+    m_shadowPending[f] = false;
+    if (n == 0) return true;
+
+    // ビューごとの定数
+    const float tau = std::clamp(d.tauTexels, 0.05f, 64.0f);
+    auto transposeTo = [](const float* m, float* o) { for (int r = 0; r < 4; ++r) for (int k = 0; k < 4; ++k) o[k * 4 + r] = m[r * 4 + k]; };
+    const uint32_t fb = D(kDescFrameBase + kDescPerFrame * f);
+    const uint32_t sb = D(kDescShadowBase + 2 * f);
+    for (uint32_t v = 0; v < nv; ++v)
+    {
+        const ShadowView& sv = d.views[v];
+        VgCullConstants c{};
+        transposeTo(sv.viewProj, c.viewProj);
+        transposeTo(sv.viewProj, c.prevViewProj);
+        transposeTo(sv.viewProj, c.viewProjNJ);
+        transposeTo(sv.viewProj, c.prevViewProjNJ);
+        FrustumPlanes fp;
+        ExtractFrustumPlanes(sv.viewProj, fp);
+        std::memcpy(c.planes, fp.p, sizeof(c.planes));
+        c.camPos[0] = sv.camPos[0]; c.camPos[1] = sv.camPos[1]; c.camPos[2] = sv.camPos[2]; c.camPos[3] = sv.zNear;
+        c.viewport[0] = 0.0f; c.viewport[1] = 0.0f; c.viewport[2] = static_cast<float>(sv.size); c.viewport[3] = static_cast<float>(sv.size);
+        c.lodParams[0] = tau; c.lodParams[1] = sv.lodScale; c.lodParams[2] = 0.0f; c.lodParams[3] = 0.0f;   // 極小棄却なし
+        c.counts[0] = n; c.counts[1] = 0; c.counts[2] = 0; c.counts[3] = 0;                                // HZB なし / コーンなし
+        c.heap0[0] = sb + 0; c.heap0[1] = sb + 1; c.heap0[2] = D(kDescWorkUav); c.heap0[3] = D(kDescExtraUav);
+        c.heap1[0] = fb + 2; c.heap1[1] = fb + 3; c.heap1[2] = D(kDescArgsUav); c.heap1[3] = D(kDescMaterials);
+        c.caps[0] = m_layout.nodeQCap; c.caps[1] = m_layout.groupQCap; c.caps[2] = m_layout.visibleCap; c.caps[3] = m_layout.deferredCap;
+        c.offs0[0] = m_layout.nodeQ0; c.offs0[1] = m_layout.nodeQ1; c.offs0[2] = m_layout.deferred; c.offs0[3] = m_layout.groupQ0;
+        c.offs1[0] = m_layout.groupQ1; c.offs1[1] = m_layout.visible; c.offs1[2] = m_layout.counters; c.offs1[3] = m_layout.stats;
+        c.heap2[0] = VG_NONE; c.heap2[1] = VG_NONE; c.heap2[2] = VG_NONE; c.heap2[3] = VG_NONE;
+        c.rast[0] = 0; c.rast[1] = 0; c.rast[2] = v; c.rast[3] = VG_VF_SHADOW | (sv.ortho ? VG_VF_ORTHO : 0u);
+        c.dbg[0] = 100.0f; c.dbg[1] = 8.0f; c.dbg[2] = 1000.0f; c.dbg[3] = 0.0f;
+        std::memcpy(m_shadowCbMapped[f] + static_cast<size_t>(v) * kCbSlotBytes, &c, sizeof(c));
+    }
+
+    const bool ts = m_queryHeap != nullptr;
+    const uint32_t q0 = f * kQueriesPerSlot;
+    if (ts) cmd->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, q0 + 10);
+
+    const D3D12_RESOURCE_BARRIER uavAll = UavBarrier(nullptr);
+    auto setPass = [&](uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t b0, uint32_t b1, uint32_t b2, uint32_t b3)
+    {
+        const uint32_t vv[8] = {a0, a1, a2, a3, b0, b1, b2, b3};
+        cmd->SetComputeRoot32BitConstants(1, 8, vv, 0);
+    };
+    if (m_argsState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+    {
+        const auto b = Transition(m_args.Get(), m_argsState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        cmd->ResourceBarrier(1, &b);
+        m_argsState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+    auto argsThenIndirect = [&](uint32_t mode, uint32_t readCnt, uint32_t clearCnt, uint32_t cap, uint32_t slot)
+    {
+        cmd->SetPipelineState(m_psoArgs.Get());
+        setPass(mode, readCnt, clearCnt, cap, slot, 0, 0, 0);
+        cmd->Dispatch(1, 1, 1);
+        const D3D12_RESOURCE_BARRIER b1[2] = {uavAll, Transition(m_args.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)};
+        cmd->ResourceBarrier(2, b1);
+    };
+    auto endIndirect = [&]()
+    {
+        const D3D12_RESOURCE_BARRIER b2[2] = {Transition(m_args.Get(), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, D3D12_RESOURCE_STATE_UNORDERED_ACCESS), uavAll};
+        cmd->ResourceBarrier(2, b2);
+    };
+    const uint32_t depthLevels = m_maxDepth + 1;
+
+    for (uint32_t v = 0; v < nv; ++v)
+    {
+        const ShadowView& sv = d.views[v];
+        const D3D12_GPU_VIRTUAL_ADDRESS cbAddr = m_shadowCbBuf[f]->GetGPUVirtualAddress() + static_cast<uint64_t>(v) * kCbSlotBytes;
+        BindCompute(cmd, cbAddr);
+        // 0. リセット → 1. K0
+        cmd->SetPipelineState(m_psoReset.Get());
+        setPass(0, 0, 0, 0, 0, 0, 0, 0);
+        cmd->Dispatch((VG_CNT_COUNT + VG_STAT_COUNT + VG_THREADS - 1) / VG_THREADS, 1, 1);
+        cmd->ResourceBarrier(1, &uavAll);
+        cmd->SetPipelineState(m_psoInstance.Get());
+        setPass(0, 0, 0, 0, 0, 0, 0, 0);
+        cmd->Dispatch(std::max<uint32_t>((n + VG_THREADS - 1) / VG_THREADS, 1u), 1, 1);
+        cmd->ResourceBarrier(1, &uavAll);
+        // 2. BVH 走査（一相目だけ。HZB が無いので二相目へ回るものは無い）
+        const uint32_t nqOff[2] = {m_layout.nodeQ0, m_layout.nodeQ1};
+        const uint32_t nqCnt[2] = {VG_CNT_NODEQ0, VG_CNT_NODEQ1};
+        for (uint32_t L = 0; L < depthLevels; ++L)
+        {
+            const uint32_t in = L & 1u, out = (L + 1u) & 1u;
+            argsThenIndirect(0, nqCnt[in], nqCnt[out], m_layout.nodeQCap, VG_ARGS_TRAVERSE);
+            cmd->SetPipelineState(m_psoTraverse.Get());
+            setPass(0, nqOff[in], nqCnt[in], m_layout.nodeQCap, nqOff[out], nqCnt[out], m_layout.nodeQCap, 0);
+            cmd->ExecuteIndirect(m_cmdSigDispatch.Get(), 1, m_args.Get(), VG_ARGS_TRAVERSE * VG_ARGS_STRIDE, nullptr, 0);
+            endIndirect();
+        }
+        // 3. クラスタ（LOD + 錐台）
+        argsThenIndirect(1, VG_CNT_GROUPQ0, VG_NONE, m_layout.groupQCap, VG_ARGS_CLUSTER);
+        cmd->SetPipelineState(m_psoCluster.Get());
+        setPass(0, m_layout.groupQ0, VG_CNT_GROUPQ0, m_layout.groupQCap, 0, 0, 0, 0);
+        cmd->ExecuteIndirect(m_cmdSigDispatch.Get(), 1, m_args.Get(), VG_ARGS_CLUSTER * VG_ARGS_STRIDE, nullptr, 0);
+        endIndirect();
+        // 4. 引数 → 深度だけのメッシュシェーダ
+        cmd->SetPipelineState(m_psoRasterArgs.Get());
+        setPass(0, VG_ARGS_RASTER, 0, 0, 0, 0, 0, 0);
+        cmd->Dispatch(1, 1, 1);
+        {
+            const D3D12_RESOURCE_BARRIER b1[2] = {uavAll, Transition(m_args.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT)};
+            cmd->ResourceBarrier(2, b1);
+        }
+        cmd->SetGraphicsRootSignature(m_rootSig.Get());
+        cmd->SetGraphicsRootConstantBufferView(0, cbAddr);
+        const uint32_t rv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        cmd->SetGraphicsRoot32BitConstants(1, 8, rv, 0);
+        cmd->OMSetRenderTargets(0, nullptr, FALSE, &sv.dsv);
+        const D3D12_VIEWPORT vp{0.0f, 0.0f, static_cast<float>(sv.size), static_cast<float>(sv.size), 0.0f, 1.0f};
+        const D3D12_RECT sc{0, 0, static_cast<LONG>(sv.size), static_cast<LONG>(sv.size)};
+        cmd->RSSetViewports(1, &vp);
+        cmd->RSSetScissorRects(1, &sc);
+        cmd->SetPipelineState(pso);
+        cmd->ExecuteIndirect(m_cmdSigMesh.Get(), 1, m_args.Get(), VG_ARGS_RASTER * VG_ARGS_STRIDE, nullptr, 0);
+        endIndirect();
+        // 5. このビューの統計を読み戻しへ
+        {
+            const D3D12_RESOURCE_BARRIER b = Transition(m_work.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            cmd->ResourceBarrier(1, &b);
+            cmd->CopyBufferRegion(m_shadowReadback[f].Get(), static_cast<uint64_t>(v) * kStatsReadbackBytes, m_work.Get(), 0, kStatsReadbackBytes);
+            const D3D12_RESOURCE_BARRIER b2 = Transition(m_work.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            cmd->ResourceBarrier(1, &b2);
+        }
+    }
+    if (ts)
+    {
+        cmd->EndQuery(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, q0 + 11);
+        cmd->ResolveQueryData(m_queryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, q0 + 10, 2, m_queryReadback.Get(), (static_cast<uint64_t>(q0) + 10) * 8);
+    }
+    m_shadowPending[f] = true;
+    m_shadowViewCount[f] = nv;
+    for (uint32_t v = 0; v < nv; ++v) m_shadowUserCount[f][v] = d.views[v].userCount;
+    m_tsShadow[f] = ts;
+    if (d.restoreHeap)
+    {
+        ID3D12DescriptorHeap* heaps[] = {d.restoreHeap};
+        cmd->SetDescriptorHeaps(1, heaps);
+    }
+    return true;
+}
+
 // 可視性バッファを全画面で表示する（暫定シェーディング / デバッグ可視化）。
 bool VirtualGeometrySystem::DrawDebug(const DebugDrawDesc& d)
 {
@@ -1582,7 +1818,51 @@ bool VirtualGeometrySystem::DrawDebug(const DebugDrawDesc& d)
 
 void VirtualGeometrySystem::CollectStats(uint32_t f)
 {
-    if (!m_ready || f >= m_desc.frameCount || !m_statsPending[f]) return;
+    if (!m_ready || f >= m_desc.frameCount) return;
+    // 影（ExecuteShadow）の統計: ビューごとの可視クラスタ / 三角形の合計
+    if (m_shadowPending[f] && m_shadowReadback[f])
+    {
+        void* p = nullptr;
+        const uint32_t nv = m_shadowViewCount[f];
+        D3D12_RANGE rr{0, static_cast<SIZE_T>(kStatsReadbackBytes) * nv};
+        ShadowStats ss;
+        if (SUCCEEDED(m_shadowReadback[f]->Map(0, &rr, &p)) && p)
+        {
+            ss.valid = true;
+            ss.views = nv;
+            ss.instances = m_shadowInstCount[f];
+            for (uint32_t v = 0; v < nv; ++v)
+            {
+                const uint32_t* s = static_cast<const uint32_t*>(p) + static_cast<size_t>(v) * (kStatsReadbackBytes / 4) + VG_CNT_COUNT;
+                ss.viewClusters[v] = s[VG_STAT_VISIBLE_P1] + s[VG_STAT_VISIBLE_P2];
+                ss.viewTriangles[v] = s[VG_STAT_TRIS];
+                ss.viewUserCount[v] = m_shadowUserCount[f][v];
+                ss.clusters += ss.viewClusters[v];
+                ss.triangles += ss.viewTriangles[v];
+                ss.nodesVisited += s[VG_STAT_NODES_VISITED];
+                ss.clustersTested += s[VG_STAT_CLUSTERS_TESTED];
+                ss.overflow = ss.overflow || (s[VG_STAT_OVF_NODEQ] | s[VG_STAT_OVF_GROUPQ] | s[VG_STAT_OVF_VISIBLE] | s[VG_STAT_OVF_DEFERRED]) != 0;
+            }
+            D3D12_RANGE nw0{0, 0};
+            m_shadowReadback[f]->Unmap(0, &nw0);
+        }
+        if (m_tsShadow[f] && m_queryReadback)
+        {
+            void* q = nullptr;
+            const SIZE_T qb = (static_cast<SIZE_T>(f) * kQueriesPerSlot + 10) * 8;
+            D3D12_RANGE qr{qb, qb + 16};
+            if (SUCCEEDED(m_queryReadback->Map(0, &qr, &q)) && q)
+            {
+                const uint64_t* t = static_cast<const uint64_t*>(q) + static_cast<size_t>(f) * kQueriesPerSlot + 10;
+                if (t[1] > t[0] && m_tsFreq) ss.gpuMs = static_cast<float>(static_cast<double>(t[1] - t[0]) * 1000.0 / static_cast<double>(m_tsFreq));
+                D3D12_RANGE nw1{0, 0};
+                m_queryReadback->Unmap(0, &nw1);
+            }
+        }
+        m_shadowStats = ss;
+        m_shadowPending[f] = false;
+    }
+    if (!m_statsPending[f]) return;
     void* p = nullptr;
     D3D12_RANGE rr{0, kStatsReadbackBytes};
     if (FAILED(m_statsReadback[f]->Map(0, &rr, &p)) || !p) return;

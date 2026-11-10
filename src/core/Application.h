@@ -1,4 +1,5 @@
 #pragma once
+#include "renderer/vg/VgGpuTypes.h"   // 影: vg::VgInstanceInput（m_vgShadowInst）
 
 #include "Types.h"
 #include "Window.h"
@@ -1755,6 +1756,21 @@ private:
     bool VirtualGeometryHidesProxy(entt::entity e) const;
     std::unordered_set<u32> m_vgHiddenEntities;
     bool m_vgSkipProxies = false;    // 主ビューの深度プリパス〜フォワードの間だけ true（影 / TLAS / ピッキングは常にプロキシを見る）
+    // 影（2026-11-10）: 太陽の CSM へ VG のクラスタを深度だけで描く。true の間（CSM パスの間だけ）は CSM がプロキシを描かない。
+    bool m_vgShadowSkipProxies = false;
+    bool VirtualGeometryShadowWanted() const;     // 設定 shadows + ラスタ有効 + VG が描くエンティティがある
+    // CSM の全カスケードへ VG を描く（影マップは DEPTH_WRITE で渡す。プロキシ等はもう描いてある）。描いたら true
+    bool RunVirtualGeometryShadowCsm(ID3D12GraphicsCommandList* cmd, u32 frameIndex);
+    bool m_vgShadowActiveThisFrame = false;
+    // 影: このフレームの CSM で VG を描くインスタンス（PrepareVirtualGeometryShadow が作る）と、エンティティ → 「VG を描かないカスケード」のビット
+    bool PrepareVirtualGeometryShadow(const DirectX::XMFLOAT3& camPos);
+    f32 m_vgShadowCasterCap[4] = {1e9f, 1e9f, 1e9f, 1e9f};   // カスケードごとに VG で描く物の数の上限（三角形の目安から毎フレーム見直す）
+    u32 m_vgShadowCasters[4] = {};                          // 統計: このフレーム VG で描く物の数（カスケードごと）
+    bool VgShadowDrawsProxy(entt::entity e, u32 slice) const;   // CSM の slice でこのエンティティのプロキシを描くか
+    std::vector<vg::VgInstanceInput> m_vgShadowInst;
+    std::unordered_map<u32, u32> m_vgShadowSkip;
+    u32 m_vgShadowSlice = 0;
+    u32 m_vgShadowVgViews = 0;   // 統計: VG が 1 体以上を描くカスケードのビット
     // 自動 cook（MeshRenderer::vgAutoPath）のエンティティがシーンにある。シーンの VG 設定が OFF でもそれらだけは VG で描く
     // （「置くだけで VG」。VirtualGeometryCollectProxyHide が毎フレーム数え直す）。
     bool m_vgAutoPresent = false;

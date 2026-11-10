@@ -1508,6 +1508,11 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
             {"instanceMinPx", vgs.instanceMinPx},
             {"vramBudgetMB",  vgs.vramBudgetMB},
         };
+        // 影（2026-11-10）: 既定値のときは書かない（既存の VG シーンのバイト列を変えない）
+        const vg::VirtualGeometrySettings def{};
+        if (vgs.shadows != def.shadows) root["virtualGeometry"]["shadows"] = vgs.shadows;
+        if (vgs.shadowLodTexels != def.shadowLodTexels) root["virtualGeometry"]["shadowLodTexels"] = vgs.shadowLodTexels;
+        if (vgs.shadowTriBudgetM != def.shadowTriBudgetM) root["virtualGeometry"]["shadowTriBudgetM"] = vgs.shadowTriBudgetM;
     }
 
     // シーンの風（植生 F1）。既定値のときは書かない＝旧シーンと差分ゼロ。
@@ -1853,6 +1858,10 @@ static void LoadVirtualGeometrySettings(Scene& scene, const json& root)
         v.coneCulling   = j.value("coneCulling",   v.coneCulling);
         v.instanceMinPx = j.value("instanceMinPx", v.instanceMinPx);
         v.vramBudgetMB  = j.value("vramBudgetMB",  v.vramBudgetMB);
+        v.shadows         = j.value("shadows",         v.shadows);
+        v.shadowLodTexels = j.value("shadowLodTexels", v.shadowLodTexels);
+        v.shadowLodTexels = std::clamp(v.shadowLodTexels, 0.25f, 8.0f);
+        v.shadowTriBudgetM = std::clamp(j.value("shadowTriBudgetM", v.shadowTriBudgetM), 0.0f, 1000.0f);
         // 手書き JSON でも範囲外を持ち込まない（実行時の使用範囲と同じ）。
         v.lodPixelError = std::clamp(v.lodPixelError, 0.25f, 8.0f);
         v.instanceMinPx = std::clamp(v.instanceMinPx, 0.0f, 64.0f);

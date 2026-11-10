@@ -63,6 +63,10 @@ void CSInstanceCull(uint3 dtid : SV_DispatchThreadID)
 
         bool cull = VgSphereOutsideFrustum(c, r);
 
+        // 影のビュー: このビューはプロキシで足りる（CPU が決めて、プロキシを影マップへ描いている）インスタンスは VG で描かない
+        if (!cull && (gRast.w & VG_VF_SHADOW) != 0u && ((inst.flags >> (VG_INST_SHADOW_SKIP_SHIFT + gRast.z)) & 1u) != 0u)
+            cull = true;
+
         // 画面上の半径が小さすぎるインスタンスは棄却（gLod.z = 0 で無効）
         if (!cull && gLod.z > 0.0)
         {

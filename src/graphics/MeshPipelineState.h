@@ -97,6 +97,14 @@ public:
     }
     MeshPipelineStateBuilder& SetDepthFunc(D3D12_COMPARISON_FUNC f) { m_desc.DepthStencilState.DepthFunc = f; return *this; }
     MeshPipelineStateBuilder& SetCullMode(D3D12_CULL_MODE m) { m_desc.RasterizerState.CullMode = m; return *this; }
+    // 深度バイアス（影マップ用。PipelineStateBuilder::SetDepthBias と同じ意味・clamp 0）
+    MeshPipelineStateBuilder& SetDepthBias(INT bias, FLOAT slopeScaled)
+    {
+        m_desc.RasterizerState.DepthBias = bias;
+        m_desc.RasterizerState.SlopeScaledDepthBias = slopeScaled;
+        m_desc.RasterizerState.DepthBiasClamp = 0.0f;
+        return *this;
+    }
     MeshPipelineStateBuilder& SetAlphaBlendEnabled(bool on)
     {
         auto& rt = m_desc.BlendState.RenderTarget[0];

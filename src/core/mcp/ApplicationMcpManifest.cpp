@@ -501,7 +501,10 @@ void Application::RegisterMcpManifestMethods()
                            P("resolve", "bool", false, nullptr, nullptr, nullptr, nullptr, "P4: 材質 resolve（フォワードと同じライティングで VG 画素を塗る。既定 true）。false = P3 の暫定シェーディング（A/B 用。シーンには保存されない）"),
                            P("stableOrder", "bool", false, nullptr, nullptr, nullptr, nullptr, "P4: 決定論（可視リストをフェーズごとに安定ソート。同じ深さの面の先着が起動ごとに変わらない）。決定論キャプチャ中は自動で ON（既定 false）"),
                            P("hzbExactSphere", "bool", false, nullptr, nullptr, nullptr, nullptr, "HZB 判定に球の正確な画面矩形を使う（既定 true）。false = 旧（球を包む立方体の 8 隅の投影。ゆるい）。前後比較用・保存しない"),
-                           P("lodOutputPixels", "bool", false, nullptr, nullptr, nullptr, nullptr, "τ を出力解像度の px で測る（DLSS で内部 720p → 出力 1080p なら 1.5 倍細かい LOD。既定 false = 内部解像度の px）。保存しない")};
+                           P("lodOutputPixels", "bool", false, nullptr, nullptr, nullptr, nullptr, "τ を出力解像度の px で測る（DLSS で内部 720p → 出力 1080p なら 1.5 倍細かい LOD。既定 false = 内部解像度の px）。保存しない"),
+                           P("shadows", "bool", false, nullptr, nullptr, nullptr, nullptr, "太陽の CSM へ VG の実ジオメトリを描く（既定 true。false = プロキシの影）。RT サン影が有効なフレームは CSM が静的物を描かないので効かない。シーンに保存"),
+                           P("shadowLodTexels", "number", false, nullptr, "0.25", "8", nullptr, "影の LOD の誤差しきい値（影のテクセル。既定 0.5。画面の τ とは別）。シーンに保存"),
+                           P("shadowTriBudgetM", "number", false, nullptr, "0", "1000", nullptr, "影: カスケード 1 枚に VG で描く三角形の目安（百万。既定 4）。超えそうなら遠い物からプロキシへ回す。0 = 上限なし。シーンに保存")};
         vset.next       = {{"vg_stats", "結果の統計を読む"}};
         vset.examples   = {{"{\"enabled\":true,\"lodPixelError\":1.0}", "VG カリングを ON にして統計を出す"}};
         McpDefine("set_virtual_geometry", vset, DX12E_MCP_HANDLER
@@ -522,6 +525,9 @@ void Application::RegisterMcpManifestMethods()
                 s.stableOrder   = params.value("stableOrder",   s.stableOrder);
                 s.hzbExactSphere = params.value("hzbExactSphere", s.hzbExactSphere);
                 s.lodOutputPixels = params.value("lodOutputPixels", s.lodOutputPixels);
+                s.shadows         = params.value("shadows", s.shadows);
+                s.shadowLodTexels = std::clamp(params.value("shadowLodTexels", s.shadowLodTexels), 0.25f, 8.0f);
+                s.shadowTriBudgetM = std::clamp(params.value("shadowTriBudgetM", s.shadowTriBudgetM), 0.0f, 1000.0f);
                 resp["ok"] = true;
                 resp["result"] = VirtualGeometryStatsJson();
             });

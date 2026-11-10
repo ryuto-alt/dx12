@@ -245,6 +245,52 @@ struct ExecuteDesc
     bool                   dumpVisible = false;    // 可視クラスタ表を CPU へ読み戻す（テスト / 小シーン専用。GetDump で読む）
 };
 
+// ── 影（2026-11-10）: VG のクラスタを影マップのスライスへ深度だけで描く ─────────────────
+//   ビューごとに「インスタンス → BVH → クラスタ（LOD + 錐台）→ メッシュシェーダで深度だけ」。HZB / 法線コーン / 極小棄却は使わない
+//   （光源側の HZB は無い。影は裏面も落とすのでコーンで落とさない）。LOD は影のテクセルに対して tauTexels（画面の τ は流用しない）。
+//   呼び出し側は深度リソースを DEPTH_WRITE にしておき、スライスのクリアも済ませておく（プロキシ等と同じスライスへ追記する）。
+//   作業バッファは主ビューと共用（Execute より前にコマンドリストへ積むこと。同じフレームの主ビューの統計は Execute が作り直す）。
+inline constexpr uint32_t kMaxShadowViews = 8;
+struct ShadowView
+{
+    float viewProj[16]{};                 // 非転置・行優先（world * viewProj）
+    bool  ortho = true;                   // true = 正射（CSM）。lodScale = テクセル / m
+    float lodScale = 1.0f;                // 正射: テクセル / m（CascadeTexelsPerMeter）/ 透視: 0.5 * size * cot(fovY / 2)
+    float camPos[3]{};                    // 透視のときの光源位置（誤差の距離に使う）
+    float zNear = 0.1f;
+    uint32_t size = 2048;                 // スライスの解像度（正方形）
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
+    uint32_t userCount = 0;               // 呼び出し側の数（このビューで VG に描かせた物の数など）。統計と一緒に返す（ShadowStats::viewUserCount）
+};
+struct ShadowDesc
+{
+    ID3D12GraphicsCommandList* cmd = nullptr;
+    uint32_t frameSlot = 0;               // Execute と同じ値
+    const VgInstanceInput* instances = nullptr;
+    uint32_t instanceCount = 0;
+    const ShadowView* views = nullptr;
+    uint32_t viewCount = 0;               // <= kMaxShadowViews
+    float tauTexels = 1.0f;               // LOD の誤差しきい値（影のテクセル）
+    int   depthBias = 8000;               // 影の PSO と同じ値（ApplicationPipeline.cpp RecreateShadowPsos）
+    float slopeBias = 2.0f;
+    bool  cullBack = true;                // 影の PSO と同じ（既定 CULL_BACK）
+    ID3D12DescriptorHeap* restoreHeap = nullptr;
+};
+struct ShadowStats
+{
+    bool     valid = false;
+    uint32_t views = 0;
+    uint32_t instances = 0;
+    uint32_t clusters = 0;                // 全ビューの可視クラスタ数の合計
+    uint64_t triangles = 0;               // 全ビューの三角形数の合計
+    uint32_t viewClusters[kMaxShadowViews] = {};
+    uint64_t viewTriangles[kMaxShadowViews] = {};
+    uint32_t viewUserCount[kMaxShadowViews] = {};   // その統計を作った ExecuteShadow の ShadowView::userCount（統計と同じフレームの値）
+    uint32_t nodesVisited = 0, clustersTested = 0;
+    bool     overflow = false;
+    float    gpuMs = 0.0f;                // ExecuteShadow 全体（全ビュー）
+};
+
 // ── 統計（非同期の読み戻し。1〜2 フレーム遅れ）─────────────────────────────────
 struct FrameStats
 {
@@ -373,6 +419,10 @@ public:
     bool ResolveSupported() const { return m_rasterOk && m_extHeap && !m_bcResolveVs.empty() && !m_bcResolvePs.empty(); }
     bool UsesExternalHeap() const { return m_extHeap; }
     uint32_t DescriptorsInUse() const;             // VG が確保しているディスクリプタ数（固定領域 + アセット）
+
+    // ── 影（2026-11-10）──
+    bool ExecuteShadow(const ShadowDesc& d);
+    const ShadowStats& GetShadowStats() const { return m_shadowStats; }
 
     // デバッグ / テスト用
     const VgWorkLayout& WorkLayout() const { return m_layout; }
@@ -515,6 +565,21 @@ private:
     std::deque<uint32_t> m_jobs;
     bool m_quit = false;
     std::atomic<uint32_t> m_pending{0};
+
+    // 影（ExecuteShadow。初回に確保）
+    bool EnsureShadowResources();
+    ID3D12PipelineState* GetShadowPso(int bias, float slope, bool cullBack);
+    bool m_shadowRes = false;
+    Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowInstBuf[8], m_shadowAssetBuf[8], m_shadowCbBuf[8], m_shadowReadback[8];
+    uint8_t* m_shadowInstMapped[8]{}; uint8_t* m_shadowAssetMapped[8]{}; uint8_t* m_shadowCbMapped[8]{};
+    bool m_shadowPending[8]{};
+    uint32_t m_shadowViewCount[8]{};
+    uint32_t m_shadowUserCount[8][kMaxShadowViews]{};
+    uint32_t m_shadowInstCount[8]{};
+    bool m_tsShadow[8]{};
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadow;
+    int m_psoShadowBias = 0; float m_psoShadowSlope = 0.0f; bool m_psoShadowCull = false;
+    ShadowStats m_shadowStats;
 
     // 統計
     FrameStats m_stats;

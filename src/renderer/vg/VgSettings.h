@@ -19,6 +19,11 @@ struct VirtualGeometrySettings
     bool coneCulling   = true;     // 法線コーンの背面棄却（両面材質は P4 で対応）
     f32  instanceMinPx = 0.5f;     // 画面上の半径がこれ未満のインスタンスは棄却（0 で無効）
     i32  vramBudgetMB  = 3072;     // 全アセットのページ + BVH の合計がこれを超える読込は構造化エラーで拒否
+    // ── 影（2026-11-10。シーン JSON に保存。既定値のときは書かない = 既存シーンのバイト列は不変）──
+    bool shadows         = true;   // 太陽の CSM へ VG の実ジオメトリを描く（false = 従来どおりプロキシ）。メッシュシェーダ非対応 / VG OFF はプロキシ
+    f32  shadowLodTexels = 0.5f;   // 影の LOD の誤差しきい値（影のテクセル。画面の τ とは別。0.25〜8）。1 だと 25 万のプロキシと
+                                   //   影の形が同じ程度にしかならない（PCF で 1 テクセルの誤差が縁に出る）ので半テクセル（実測。設計書 §2.4.11）
+    f32  shadowTriBudgetM = 4.0f;  // 影: カスケード 1 枚に VG で描く三角形の目安（百万）。超えそうなら遠い物から順にプロキシへ回す（0 = 上限なし）
 
     // ── P3（実行時の設定。シーン JSON には保存しない = 既存シーンのバイト列は不変。シーンを開き直すと既定へ戻る）──
     bool raster        = true;     // false = P2 の挙動（統計だけ・プロキシを描く）。true でも GPU 非対応なら自動で無効
@@ -37,7 +42,8 @@ struct VirtualGeometrySettings
     bool operator==(const VirtualGeometrySettings& o) const
     {
         return enabled == o.enabled && lodPixelError == o.lodPixelError && hzbCulling == o.hzbCulling
-            && coneCulling == o.coneCulling && instanceMinPx == o.instanceMinPx && vramBudgetMB == o.vramBudgetMB;
+            && coneCulling == o.coneCulling && instanceMinPx == o.instanceMinPx && vramBudgetMB == o.vramBudgetMB
+            && shadows == o.shadows && shadowLodTexels == o.shadowLodTexels && shadowTriBudgetM == o.shadowTriBudgetM;
         // ★P3 の実行時設定（raster / rasterAs / ...）は比較に含めない: シーン JSON の保存要否（!= 既定）を変えない＝既存シーンはバイト不変。
     }
     bool operator!=(const VirtualGeometrySettings& o) const { return !(*this == o); }

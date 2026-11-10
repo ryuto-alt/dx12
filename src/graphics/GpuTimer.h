@@ -39,6 +39,7 @@ public:
         CloudShadow,   // 雲の影: 影マップ(compute)+ 影マスクへの適用(全画面 PS。プリパス区間 PrepassSSAO の内数)
         RtShadowDenoise, // RT 影デノイザ: 時間蓄積 + 空間フィルタ（RtScreen の内数。トレースは含まない）
         Upscale,       // 時間方向アップスケーラ（DLSS の MV 準備 + 評価。PostFX の内数）
+        VgShadow,      // 仮想ジオメトリ: 太陽の CSM へ VG のクラスタを深度だけで描く（Shadows の内数）
         Count
     };
     static const char* Name(u32 s);

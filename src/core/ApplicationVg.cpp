@@ -17,6 +17,7 @@
 #include "resource/VgAutoCook.h"         // 仮想ジオメトリの自動 cook（状態 / 差し替え）
 #include "resource/MaterialAssetManager.h"
 
+#include <array>
 #include <cctype>
 #include <cmath>
 
@@ -156,6 +157,164 @@ std::function<bool(const std::string&)> Application::VgGraphPredicate() const
         const MaterialAssetManager::Entry* en = m_materialAssetManager->FindLoaded(rel);
         return en && en->data.IsGraph();
     };
+}
+
+// 影（2026-11-10）: VG の物の影を太陽の CSM へ VG の実ジオメトリで描くか。主ビューが VG 本体を描いているエンティティだけが対象
+//   （m_vgHiddenEntities。プロキシを主ビューから外しているのと同じ集合 = 影でもプロキシと二重にならない）。
+bool Application::VirtualGeometryShadowWanted() const
+{
+    if (!m_vg || !m_scene || m_vgHiddenEntities.empty()) return false;
+    if (!m_scene->GetVirtualGeometrySettings().shadows) return false;
+    return VirtualGeometryRasterWanted(true);
+}
+
+// 影を落とす VG のインスタンスと、カスケードごとの「VG で描くか / プロキシで足りるか」を決める（CSM のプロキシ描画より前に呼ぶ）。
+//   プロキシの LOD0 からの最大偏差（proxyError × 最大軸スケール）が τ テクセル以下のカスケードはプロキシで描く（VG より安く、粗くもない）。
+//   それ以外のカスケードは VG（τ テクセル）で描き、プロキシは描かない。決めるのは CPU だけ（VgLodMath.h ShadowProxySuffices）。
+bool Application::PrepareVirtualGeometryShadow(const DirectX::XMFLOAT3& camPos)
+{
+    using namespace DirectX;
+    m_vgShadowInst.clear();
+    m_vgShadowSkip.clear();
+    m_vgShadowVgViews = 0;
+    for (u32& c : m_vgShadowCasters) c = 0;
+    if (!VirtualGeometryShadowWanted()) return false;
+    const vg::VirtualGeometrySettings& st = m_scene->GetVirtualGeometrySettings();
+    entt::registry& reg = m_scene->GetRegistry();
+    m_vgShadowInst.reserve(m_vgHiddenEntities.size());
+    std::unordered_map<u32, f32> proxyErrById;
+    ForEachVgEntity(reg, st.enabled, [&](entt::entity e, const std::string& path, const MeshRenderer* mr, bool)
+    {
+        const u32 key = static_cast<u32>(entt::to_integral(e));
+        if (!m_vgHiddenEntities.count(key)) return;
+        if (mr && !mr->castShadows) return;                       // プロキシと同じ規則（castShadows = false は影マップに出さない）
+        const u32 id = m_vg->FindAsset(ResolveVgPath(path));
+        if (id == 0xFFFFFFFFu || !VgAssetDrawable(*m_vg, id)) return;
+        auto pe = proxyErrById.find(id);
+        if (pe == proxyErrById.end())
+        {
+            vg::AssetInfo ai;
+            pe = proxyErrById.emplace(id, m_vg->GetAssetInfo(id, ai) ? ai.proxyError : 0.0f).first;
+        }
+        XMFLOAT4X4 w;
+        XMStoreFloat4x4(&w, ComputeWorldMatrix(reg, e));
+        vg::VgInstanceInput in;
+        std::memcpy(in.world, &w, 64);
+        std::memcpy(in.prevWorld, &w, 64);
+        in.hasPrev = false;
+        in.assetId = id;
+        in.entityId = key;
+        const f32 errWorld = pe->second * vg::MaxAxisScale(in.world);
+        u32 skip = 0;
+        for (u32 ci = 0; ci < kNumCascades; ++ci)
+        {
+            const f32 tpm = vg::CascadeTexelsPerMeter(static_cast<f32>(m_shadowMapSize), m_cascadeRadius[ci]);
+            if (!(tpm > 0.0f) || vg::ShadowProxySuffices(errWorld, tpm, st.shadowLodTexels)) skip |= 1u << ci;
+        }
+        in.shadowSkipMask = skip;
+        m_vgShadowInst.push_back(in);
+    });
+    if (m_vgShadowInst.empty()) return false;
+
+    // 三角形の目安（カスケード 1 枚あたり shadowTriBudgetM 百万）: カスケードに入る VG の候補をカメラに近い順に並べ、
+    //   上限 m_vgShadowCasterCap[ci] を超えた遠い物はプロキシへ回す（近くの影ほど細かさが見えるので近い物を優先）。
+    //   上限は前の統計（1 物あたりの三角形数）から決める。並びは距離と entity 番号で決まる（決定的）。
+    {
+        vg::AssetInfo ai;
+        std::unordered_map<u32, std::array<f32, 4>> sphereById;
+        std::vector<std::pair<f32, u32>> cand;
+        for (u32 ci = 0; ci < kNumCascades; ++ci)
+        {
+            vg::FrustumPlanes fp;
+            vg::ExtractFrustumPlanes(&m_cascadeViewProj[ci]._11, fp);
+            cand.clear();
+            for (u32 i = 0; i < m_vgShadowInst.size(); ++i)
+            {
+                vg::VgInstanceInput& in = m_vgShadowInst[i];
+                if ((in.shadowSkipMask >> ci) & 1u) continue;
+                auto sp = sphereById.find(in.assetId);
+                if (sp == sphereById.end())
+                {
+                    std::array<f32, 4> s4{0, 0, 0, 0};
+                    if (m_vg->GetAssetInfo(in.assetId, ai)) for (int k = 0; k < 4; ++k) s4[k] = ai.boundingSphere[k];
+                    sp = sphereById.emplace(in.assetId, s4).first;
+                }
+                f32 rows[12], c[3];
+                vg::PackWorld34(in.world, rows);
+                vg::TransformPoint34(rows, sp->second.data(), c);
+                const f32 r = sp->second[3] * vg::MaxAxisScale(in.world);
+                if (vg::SphereOutsideFrustum(fp, c, r)) { in.shadowSkipMask |= 1u << ci; continue; }   // このカスケードに入らない（K0 も落とす）
+                const f32 dx = c[0] - camPos.x, dy = c[1] - camPos.y, dz = c[2] - camPos.z;
+                cand.emplace_back(std::max(0.0f, std::sqrt(dx * dx + dy * dy + dz * dz) - r), i);
+            }
+            std::sort(cand.begin(), cand.end(), [&](const auto& a, const auto& b)
+            {
+                if (a.first != b.first) return a.first < b.first;
+                return m_vgShadowInst[a.second].entityId < m_vgShadowInst[b.second].entityId;
+            });
+            const size_t cap = (st.shadowTriBudgetM > 0.0f) ? static_cast<size_t>(std::max(1.0f, m_vgShadowCasterCap[ci])) : cand.size();
+            for (size_t k = cap; k < cand.size(); ++k) m_vgShadowInst[cand[k].second].shadowSkipMask |= 1u << ci;
+            m_vgShadowCasters[ci] = static_cast<u32>(std::min(cap, cand.size()));
+            if (m_vgShadowCasters[ci] > 0) m_vgShadowVgViews |= 1u << ci;
+        }
+    }
+    for (const vg::VgInstanceInput& in : m_vgShadowInst) m_vgShadowSkip[in.entityId] = in.shadowSkipMask;
+
+    // 次のフレームの上限: 統計（2 フレーム前）の「VG で描いた 1 物あたりの三角形数」から、目安に収まる数（ゆっくり動かす = 毎フレーム入れ替わらない）
+    {
+        const vg::ShadowStats& ss = m_vg->GetShadowStats();
+        for (u32 ci = 0; ci < kNumCascades && ci < ss.views; ++ci)
+        {
+            // ★統計を作ったフレームの物の数（viewUserCount）で割る（今のフレームの数で割ると、上限を変えた直後に食い違って振動した）
+            if (!ss.valid || ss.viewUserCount[ci] == 0 || ss.viewTriangles[ci] == 0 || !(st.shadowTriBudgetM > 0.0f)) continue;
+            const f32 perCaster = static_cast<f32>(ss.viewTriangles[ci]) / static_cast<f32>(ss.viewUserCount[ci]);
+            const f32 want = std::max(1.0f, st.shadowTriBudgetM * 1.0e6f / std::max(perCaster, 1.0f));
+            f32& capRef = m_vgShadowCasterCap[ci];
+            if (capRef > 1.0e8f) capRef = want;                                  // 初回
+            else if (want < capRef * 0.9f || want > capRef * 1.25f) capRef = capRef * 0.5f + want * 0.5f;   // 10% 以上ずれたら半分だけ寄せる
+        }
+    }
+    return true;
+}
+
+// CSM の slice でエンティティのプロキシを描くか。VG の影の対象外（集合に無い）なら従来どおり描く。
+bool Application::VgShadowDrawsProxy(entt::entity e, u32 slice) const
+{
+    const auto it = m_vgShadowSkip.find(static_cast<u32>(entt::to_integral(e)));
+    if (it == m_vgShadowSkip.end()) return true;
+    return ((it->second >> slice) & 1u) != 0u;
+}
+
+bool Application::RunVirtualGeometryShadowCsm(ID3D12GraphicsCommandList* cmd, u32 frameIndex)
+{
+    if (m_vgShadowInst.empty() || m_vgShadowVgViews == 0) return false;
+    const vg::VirtualGeometrySettings& st = m_scene->GetVirtualGeometrySettings();
+    // ビュー番号 = カスケード番号（インスタンスの shadowSkipMask のビットと一致させる）
+    std::array<vg::ShadowView, kNumCascades> views{};
+    const u32 nv = kNumCascades;
+    for (u32 ci = 0; ci < kNumCascades; ++ci)
+    {
+        vg::ShadowView& v = views[ci];
+        std::memcpy(v.viewProj, &m_cascadeViewProj[ci], 64);
+        v.ortho = true;
+        v.lodScale = vg::CascadeTexelsPerMeter(static_cast<f32>(m_shadowMapSize), m_cascadeRadius[ci]);
+        v.size = m_shadowMapSize;
+        v.dsv = m_shadowDsvHandles[ci];
+        v.userCount = m_vgShadowCasters[ci];   // 統計と一緒に返る（三角形の目安の見直しに使う）
+    }
+    vg::ShadowDesc d;
+    d.cmd = cmd;
+    d.frameSlot = frameIndex % FrameResources::kFrameCount;
+    d.instances = m_vgShadowInst.data();
+    d.instanceCount = static_cast<u32>(m_vgShadowInst.size());
+    d.views = views.data();
+    d.viewCount = nv;
+    d.tauTexels = st.shadowLodTexels;
+    d.depthBias = 8000;      // RecreateShadowPsos（m_shadowPipelineState）と同じ
+    d.slopeBias = 2.0f;
+    d.cullBack = true;
+    d.restoreHeap = m_srvHeap->GetHeap();
+    return m_vg->ExecuteShadow(d);
 }
 
 bool Application::VirtualGeometryHidesProxy(entt::entity e) const
@@ -730,7 +889,8 @@ nlohmann::json Application::VirtualGeometryStatsJson() const
                      {"raster", st.raster}, {"rasterAs", st.rasterAs}, {"smallPrimCull", st.smallPrimCull},
                      {"measure", st.measure}, {"forceLod0", st.forceLod0},
                      {"resolve", st.resolve}, {"stableOrder", st.stableOrder}, {"hzbExactSphere", st.hzbExactSphere},
-                     {"lodOutputPixels", st.lodOutputPixels}};
+                     {"lodOutputPixels", st.lodOutputPixels},
+                     {"shadows", st.shadows}, {"shadowLodTexels", st.shadowLodTexels}, {"shadowTriBudgetM", st.shadowTriBudgetM}};
     j["meshShaders"] = m_graphicsDevice ? m_graphicsDevice->SupportsMeshShaders() : false;
     j["rasterWanted"] = VirtualGeometryRasterWanted(true);
     j["hiddenProxies"] = m_vgHiddenEntities.size();     // VG 本体が描くためプロキシを外しているエンティティ数
@@ -827,6 +987,22 @@ nlohmann::json Application::VirtualGeometryStatsJson() const
         j["stableOrder"] = {{"active", s.stableOrder}, {"sortedClusters", s.sortedClusters}, {"skippedPhases", s.sortSkipped}};
         // VG の GPU 合計（カリング + ラスタ + HZB 再構築 + G-Buffer + resolve）
         j["vgGpuTotalMs"] = r3(s.executeGpuMs + s.gbufferGpuMs + s.resolveGpuMs);
+    }
+    // 影（2026-11-10）: 太陽の CSM へ VG の実ジオメトリで描いた分
+    {
+        const vg::ShadowStats& ss = m_vg->GetShadowStats();
+        json vt = json::array(), vc = json::array();
+        for (u32 i = 0; i < ss.views; ++i) { vt.push_back(ss.viewTriangles[i]); vc.push_back(ss.viewClusters[i]); }
+        json texel = json::array();   // カスケードの 1 テクセル（cm）= LOD の誤差しきい値の単位
+        for (u32 ci = 0; ci < kNumCascades; ++ci) texel.push_back(r3(200.0 * m_cascadeRadius[ci] / static_cast<double>(std::max(1u, m_shadowMapSize))));
+        j["shadow"] = {{"enabled", st.shadows}, {"active", m_vgShadowActiveThisFrame}, {"lodTexels", st.shadowLodTexels},
+                       {"views", ss.views}, {"instances", ss.instances}, {"clusters", ss.clusters}, {"triangles", ss.triangles},
+                       {"perViewTriangles", vt}, {"perViewClusters", vc}, {"nodesVisited", ss.nodesVisited},
+                       {"clustersTested", ss.clustersTested}, {"overflow", ss.overflow}, {"gpuMs", r3(ss.gpuMs)}, {"cascadeTexelCm", texel},
+                       {"vgCascadesMask", m_vgShadowVgViews}, {"casters", m_vgShadowInst.size()},
+                       {"vgCastersPerCascade", {m_vgShadowCasters[0], m_vgShadowCasters[1], m_vgShadowCasters[2], m_vgShadowCasters[3]}},
+                       {"triBudgetM", st.shadowTriBudgetM},
+                       {"note", "太陽の CSM だけ（スポット / ポイント / RT 影 / 物理はプロキシ）。カスケードごとに、プロキシの偏差が lodTexels 以下ならプロキシ・超えるなら VG（vgCascadesMask）。RT サン影が有効なフレームは CSM が静的物を描かないので VG の影も描かない"}};
     }
     j["vramMB"] = r3(static_cast<double>(s.vramBytes) / 1048576.0);
     j["overflow"] = s.overflow;
