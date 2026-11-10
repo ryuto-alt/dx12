@@ -112,6 +112,12 @@ CMake が UTF-8 で書いた `msvc_deps_prefix` と一致せず、ninja が依�
 起動直後に落ちる（2026-07-30 と 2026-09-25 に実際に起きた）。確認は
 `ninja -C build/release -t deps | grep '#deps 0'`、出た .obj は消して建て直す。
 
+**実測（2026-11-10、コンソールの既定は CP932）**: 効くのは「configure したときのコードページ」と「ビルドしたときのコードページ」が**一致しているか**。
+CMake は configure 時に `cl` の出力を見て `msvc_deps_prefix` を `rules.ninja` に書く（CP932 だと `83 81 83 82 3a 20`、65001 だと UTF-8 の `e3 83 a1 e3 83 a2 3a 20`）。
+configure=932/build=65001 も configure=65001/build=932 も、ヘッダを touch して建てた .obj は `#deps 0`（以後ヘッダを変えても再コンパイルされない）。932/932 と 65001/65001 は `#deps 38` で正しく記録される。
+★ninja は `VerifyGlobs` で CMake を**ビルド中に自動で再 configure する**ので、configure を別のコードページで走らせたつもりがなくても、そのときのコンソールのコードページで書き直される。
+→ configure（`cmake --preset ...`）もビルドも**両方を `chcp 65001 >nul &&` の下で**走らせる（片方だけ chcp するのが一番危ない）。`#deps 0` が出たら .obj を touch / 削除して同じコードページで建て直す。
+
 ### プロファイリング（Tracy）
 CPU のどこで時間を食っているかを**フレーム単位の時系列**で見る。
 `dx12_perf_stats` は「N フレーム平均を 8 スロットに畳んだ数値」で、Update の中身
@@ -132,7 +138,9 @@ build/tracy/DX12Engine.exe
   `SetUnhandledExceptionFilter` がクラッシュレポートを奪われる
 - `on-demand` フィーチャ有効＝プロファイラを繋ぐまでのオーバーヘッドはほぼゼロ
 - `BuildGame` は exe 隣の DLL を無条件コピーするので、`tracyclient.dll` は
-  `kDllExcludeList`（`ApplicationProject.cpp`）で配布物から除外している
+  `kDllExcludeList`（`ApplicationBuild.cpp`）で配布物から除外している
+- `nvngx_dlss.dll`（56MB）は、`assets/scenes` のどれかのシーンが保存済み `taa.upscaler == "dlss"` のときだけ同梱する
+  （`ProjectUsesDlss`）。無ければ実行時は DLSS を使えないと判断して TAA で描く
 - ゾーンは `src/core/Profiler.h` の `DX12_PROFILE_ZONE_N()`。既存の `CpuScopeTimer` は
   消さず**同じ行に並べる**（前者は AI が読む数値、後者は人間が読むタイムライン）
 
