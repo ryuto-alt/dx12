@@ -703,7 +703,8 @@ void TestCorruption()
       ReadOptions o; o.decompress = [](const u8* s, u32 n, u8* d, u32 dn) { if (n != dn) return false; std::memcpy(d, s, n); return true; };
       CHECK(ValidateVgeo(MemorySource(b), o).ok()); }
     // strictReserved: 予約領域が非 0 でも通常は読める / 厳密モードでは拒否
-    { std::vector<u8> b = base; VgeoHeader h = GetHeader(b); h.reserved1[3] = 7; h.reserved0 = 1; PutHeader(b, h); Reseal(b);
+    //   ★v1.1: reserved1[0..12) は拡張テーブル（VGEO_SPEC C33）なので、予約のまま残る [12..20) を使う
+    { std::vector<u8> b = base; VgeoHeader h = GetHeader(b); h.reserved1[15] = 7; h.reserved0 = 1; PutHeader(b, h); Reseal(b);
       CHECK(Validate(b, false).ok()); CHECK_ERR(Validate(b, true), Errc::ReservedNotZero); }
     // ローダ用の LoadMeta も同じエラーを返す（最初の 1 件）
     { std::vector<u8> b = base; b[0] = 'X'; VgeoMeta m; const VgeoError e = LoadMeta(MemorySource(b), m); CHECK(e.code == Errc::BadMagic); CHECK(!e.ok()); CHECK(e.ToString().find("BadMagic") != std::string::npos); }
