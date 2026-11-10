@@ -4779,8 +4779,22 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     {
         std::string why;
         m_dlssThisFrame = taaActive && DlssWanted(&why);
+        // 機能（NGX）の作成は別スレッド。出来るまでの数十〜数百 ms（冷えた初回は数十秒）はこのフレームを TAA で描く
+        // ＝フレームを止めない。出来たら次のフレームから DLSS（履歴は reset=1 で始める）。
+        bool dlssBuilding = false;
+        if (m_dlssThisFrame && m_upscaler && m_commandQueue)
+        {
+            const bool ready = m_upscaler->PrepareDlssFeature(m_commandQueue->GetQueue(),
+                upscale::ClampQuality(taaCfg.dlssQuality), [this]() { m_commandQueue->WaitIdle(); });
+            if (!ready)
+            {
+                dlssBuilding = m_upscaler->DlssFeatureBuilding();
+                m_dlssThisFrame = false;
+                if (!m_upscaler->DlssAvailable()) why = m_upscaler->DlssReason();   // 作成に失敗した（以後は TAA 固定）
+            }
+        }
         const bool asked = taaCfg.enabled && taaCfg.upscaler == static_cast<int>(upscale::Kind::Dlss);
-        if (asked && !m_dlssThisFrame && !m_dlssFallbackLogged)
+        if (asked && !m_dlssThisFrame && !dlssBuilding && !m_dlssFallbackLogged)
         {
             Logger::Warn("アップスケーラ: DLSS を使えないので TAA で描く（{}）", why.empty() ? std::string("速度バッファが使えない") : why);
             m_dlssFallbackLogged = true;
