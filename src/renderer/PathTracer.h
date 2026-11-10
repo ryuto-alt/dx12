@@ -60,6 +60,7 @@ struct EnvDesc
     float    bgScale    = 0.0f;        // カメラ直視の背景(skyboxIntensity。背景を出さないなら 0)
     bool     nee = true;               // 環境の NEE(空が明るいなら true。真っ黒なら false で省く)
     uint32_t atmosSrvBase = kNoIndex;  // 物理大気(A1)の SRV ブロック先頭(AtmosphereRenderer::SrvBlockBase)。有効なら従来の cubeSrv / uniform は使わない
+    uint32_t brdfLutSrv = kNoIndex;    // IBL の BRDF LUT（IBLBaker::GetBrdfLutSrv）。マルチスキャッタ / シーンの方向アルベドに使う
 };
 
 struct JobDesc

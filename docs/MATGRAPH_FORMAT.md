@@ -220,7 +220,18 @@
 | `AmbientOcclusion` | float | `ao` | 1 |
 | `Opacity` | float | `opacity` | 1 |
 | `OpacityMask` | float | `opacityMask` | 1 |
-| **予約（灰色・接続不可 = `E_RESERVED_PIN`）** | | `anisotropy` `subsurfaceColor` `subsurfaceOpacity` `clearCoat` `clearCoatRoughness`（＋ `Specular` `Tangent` `WorldPositionOffset` `PixelDepthOffset` `Refraction` は欄なし） | |
+| `Specular` | float | `specular`（UE 流。誘電体の F0 = 0.08 × Specular） | 0.5（→ F0 0.04） |
+| `Anisotropy` | float（-1..1） | `anisotropy`（異方性 GGX の強さ。αt = mix(α, 1, s²)。接線 = UV の +U 方向） | 0 |
+| `AnisotropyRotation` | float（ラジアン） | `anisotropyRotation`（接空間で接線から反時計回り） | 0 |
+| `ClearCoat` | float（0..1） | `clearCoat`（F0 0.04 の第 2 層。下層を 1 − coat·Fc で減衰。コートの法線 = 幾何法線） | 0 |
+| `ClearCoatRoughness` | float（0..1） | `clearCoatRoughness` | 0 |
+| `SheenColor` | float3 | `sheenColor`（Charlie のシーン。0 = 無し） | 0 |
+| `SheenRoughness` | float（0..1） | `sheenRoughness` | 0.3 |
+| **予約（灰色・接続不可 = `E_RESERVED_PIN`）** | | `subsurfaceColor` `subsurfaceOpacity`（＋ `Tangent` `WorldPositionOffset` `PixelDepthOffset` `Refraction` は欄なし） | |
+
+> 2026-11（拡張シェーディング）: `Specular` / `Anisotropy` / `ClearCoat` / `ClearCoatRoughness` を予約から外し、`AnisotropyRotation` / `SheenColor` / `SheenRoughness` を足した。
+> 既存のピン名・意味は変えていない（追加だけ）ので `version` は 1 のまま。これらのピンを使ったグラフを古いエンジンで開くと `E_RESERVED_PIN` になる。
+> 式は `shaders/forward/BrdfExt.hlsli`（フォワード・VG resolve・パストレーサーで共通）。
 
 出力ノードは**ちょうど 1 個**（0 個 = `E_NO_OUTPUT`、2 個以上 = `E_MULTI_OUTPUT`）。
 
@@ -310,7 +321,7 @@
 | Custom | 制御 | In0:any, In1:any, In2:any, In3:any, In4:any, In5:any, In6:any, In7:any | Out:float(1-4) | HLSL の式または関数本体を書く。入力は In0〜In7（接続したものだけが引数になる）、本文に return があれば関数本体、無ければ式として扱う。テクスチャは Texture2D として渡される。 |
 | Reroute | 制御 | In:any* | Out:float(1-4) | ワイヤの中継点。型はそのまま引き継ぐ。生成コードには現れない。 |
 | Select | 制御 | A:float(1-4), B:float(1-4), Cond:bool | Out:float(1-4) | Cond が true なら A、false なら B。両方を評価してから選ぶ（テクスチャサンプルの微分を壊さない）。 |
-| MaterialOutput | 出力 | BaseColor:float3, Metallic:float, Roughness:float, Normal:float3, Emissive:float3, AmbientOcclusion:float, Opacity:float, OpacityMask:float, Specular:float(予約), Anisotropy:float(予約), SubsurfaceColor:float3(予約), SubsurfaceOpacity:float(予約), ClearCoat:float(予約), ClearCoatRoughness:float(予約), Tangent:float3(予約), WorldPositionOffset:float3(予約), PixelDepthOffset:float(予約), Refraction:float3(予約) |  | マテリアルの出力。グラフに 1 個だけ置く。未接続のピンは既定のサーフェス値のまま。灰色のピンは将来用の予約（接続不可）。 |
+| MaterialOutput | 出力 | BaseColor:float3, Metallic:float, Roughness:float, Normal:float3, Emissive:float3, AmbientOcclusion:float, Opacity:float, OpacityMask:float, Specular:float, Anisotropy:float, AnisotropyRotation:float, ClearCoat:float, ClearCoatRoughness:float, SheenColor:float3, SheenRoughness:float, SubsurfaceColor:float3(予約), SubsurfaceOpacity:float(予約), Tangent:float3(予約), WorldPositionOffset:float3(予約), PixelDepthOffset:float(予約), Refraction:float3(予約) |  | マテリアルの出力。グラフに 1 個だけ置く。未接続のピンは既定のサーフェス値のまま。灰色のピンは将来用の予約（接続不可）。 |
 
 主なプロパティ（型 → プロパティ名: 役割 / 種別）。**種別**は再コンパイルの要否を決める: `Code` = 変えると HLSL が変わる、`Slot` = 値はパラメータプールのスロット（変えても再コンパイル不要。`inline: true` のノードでは Code 扱い）、`Meta` = 名前・グループ・範囲など。
 
@@ -413,7 +424,7 @@ void UnoMatEval(UnoMatInput mi, UnoMatPool pool, out UnoSurface s)
 
 | 識別子 | 内容 |
 |---|---|
-| `struct UnoSurface` | `float3 baseColor; float metallic; float roughness; float3 normalTS; bool hasNormal; float3 emissive; float ao; float opacity; float opacityMask; float3 subsurfaceColor; float subsurfaceOpacity; float clearCoat; float clearCoatRoughness; float anisotropy; uint shadingModel;`（**予約欄も最初から持つ**。後から特殊シェーディングを足しても既存グラフ・生成物は壊れない） |
+| `struct UnoSurface` | `float3 baseColor; float metallic; float roughness; float3 normalTS; bool hasNormal; float3 emissive; float ao; float opacity; float opacityMask; float3 subsurfaceColor; float subsurfaceOpacity; float clearCoat; float clearCoatRoughness; float anisotropy; uint shadingModel; float anisotropyRotation; float3 sheenColor; float sheenRoughness; float specular; float3 specularTint; float specularF90;`（**予約欄も最初から持つ**。2026-11 に拡張シェーディングの欄を末尾へ追加。後から特殊シェーディングを足しても既存グラフ・生成物は壊れない） |
 | `UnoSurfaceDefault()` | 既定値: baseColor=(0.5,0.5,0.5)、metallic=0、roughness=0.5、normalTS=(0,0,1)、hasNormal=false、emissive=0、ao=1、opacity=1、opacityMask=1、その他 0（CPU 側 `SurfaceValues` と同じ） |
 | `struct UnoMatInput` | `float2 uv; float3 worldPos; float3 vertexNormalWS; float3 vertexTangentWS; float tangentW; float4 vertexColor; float4 svPos; float3 cameraPos; float time;`。生成コードが現在使うのは `uv` / `worldPos` / `vertexNormalWS` / `cameraPos` / `vertexColor` / `time` |
 | `struct UnoMatPool` | メソッド `F1(uint slot)` / `F2` / `F3` / `F4`（float4 スロットの先頭成分を返す）、`Tex(uint slot)`（`Texture2D<float4>`。`ResourceDescriptorHeap[asuint(record[slot].x)]`）。**メソッド名と意味だけ揃えれば実装は自由**（参照実装は `StructuredBuffer` を直読み。エンジンは b2 の recordBase / プール SRV 添字で読む） |

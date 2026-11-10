@@ -420,6 +420,8 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
         fc.iblIntensity    = 0.0f;
         fc.maxPrefilterMip = 4.0f;
         fc.hasIBL          = 0u;
+        // IBL テーブル（t7 の BRDF LUT）を張らないので、マルチスキャッタ補償は無効（_clusterReserved[9].x = 1）
+        fc._clusterReserved[9].x = 1.0f;
         fc.skyboxIntensity = 0.0f;
 
         void* mapped = nullptr;
@@ -513,11 +515,13 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
     for (const auto& mesh : model->meshes)
     {
         // PerObject (MVP + Model)
-        struct { XMMATRIX mvp; XMMATRIX mdl; } objData;
+        // ★b0 の後ろ 8 DWORD（offset 32..39）は Forward_PS が拡張シェーディングとして読む。書かないと未定義の値になるので、
+        //   サムネイルは拡張無し（0）で埋める。
+        struct { XMMATRIX mvp; XMMATRIX mdl; u32 ext[8]; } objData{};
         objData.mvp = XMMatrixTranspose(worldMat * viewProj);
         objData.mdl = XMMatrixTranspose(worldMat);
         cmdList->SetGraphicsRoot32BitConstants(
-            RootSignature::kSlotPerObject, 32, &objData, 0);
+            RootSignature::kSlotPerObject, 40, &objData, 0);
 
         // テクスチャ
         const Material* mat = mesh->GetMaterial();

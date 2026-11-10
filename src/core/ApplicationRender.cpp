@@ -352,6 +352,7 @@ void Application::BuildDrawList()
                 RtHashMix(rtItemHash, bitsOf(renderer.colorTint.z));
                 RtHashMix(rtItemHash, bitsOf(renderer.overrideEmissiveColor.x) | (bitsOf(renderer.overrideEmissiveColor.y) << 32));
                 RtHashMix(rtItemHash, bitsOf(renderer.overrideEmissiveColor.z) | (bitsOf(renderer.overrideEmissiveIntensity) << 32));
+                RtHashMix(rtItemHash, HashShadingExtOverride(renderer.overrideShading));   // 拡張シェーディング（GeometryInfo.ext）
                 for (u32 hmi = 0; hmi < static_cast<u32>(renderer.meshes.size()); ++hmi)
                 {
                     const Material* hm = renderer.meshes[hmi] ? renderer.meshes[hmi]->GetMaterial() : nullptr;
@@ -360,6 +361,10 @@ void Application::BuildDrawList()
                         RtHashMix(rtItemHash, bitsOf(hm->defaultMetallic) | (bitsOf(hm->defaultRoughness) << 32));
                         RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.x) | (bitsOf(hm->emissiveColor.y) << 32));
                         RtHashMix(rtItemHash, bitsOf(hm->emissiveColor.z) | (bitsOf(hm->emissiveIntensity) << 32));
+                        {
+                            const PackedShadingExt pe = PackShadingExt(hm->shading);
+                            for (u32 w = 0; w < 8; w += 2) RtHashMix(rtItemHash, pe[w] | (static_cast<u64>(pe[w + 1]) << 32));
+                        }
                     }
                     const std::string& matPath = renderer.MaterialAssetOf(hmi);
                     if (!matPath.empty())
@@ -372,6 +377,8 @@ void Application::BuildDrawList()
                                 RtHashMix(rtItemHash, bitsOf(ent->data.metallic) | (bitsOf(ent->data.roughness) << 32));
                                 RtHashMix(rtItemHash, bitsOf(ent->data.emissiveColor[0]) | (bitsOf(ent->data.emissiveColor[1]) << 32));
                                 RtHashMix(rtItemHash, bitsOf(ent->data.emissiveColor[2]) | (bitsOf(ent->data.emissiveIntensity) << 32));
+                                const PackedShadingExt pe = PackShadingExt(ent->data.shading);
+                                for (u32 w = 0; w < 8; w += 2) RtHashMix(rtItemHash, pe[w] | (static_cast<u64>(pe[w + 1]) << 32));
                             }
                     }
                     if (renderer.HasAnyTextureOverride(hmi))
@@ -445,6 +452,7 @@ void Application::BuildDrawList()
             //   1 バッチに畳まれ、先頭の 1 体の発光で全部が描かれる（看板が全部同じ色に光る）。
             mix(bits(renderer.overrideEmissiveIntensity));
             mix(bits(renderer.overrideAoStrength));   // AO 強度の上書きが違う個体を 1 バッチに畳まない
+            mix(HashShadingExtOverride(renderer.overrideShading));   // 拡張シェーディングの上書きが違う個体も畳まない（b0 の自由枠は 1 ドロー 1 値）
             mix(bits(renderer.overrideEmissiveColor.x));
             mix(bits(renderer.overrideEmissiveColor.y));
             mix(bits(renderer.overrideEmissiveColor.z));
@@ -1357,6 +1365,18 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             }
             nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 9, &pbrParams, 0);
 
+            // ---- 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ）→ b0 の自由枠（offset 32..39 DWORD）----
+            // ★既定シェーダ（Forward / ForwardSkinned）のドローだけ。カスタムシェーダ・グラフ材質は自由枠を作者の値として読むので触らない
+            //   （グラフは ClearCoat 等のピンで持つ）。拡張が無ければ 0 を書く＝上の 40 DWORD に入った作者の自由枠の値を
+            //   Forward が拡張と誤読しないよう、既定シェーダでは必ず上書きする。
+            if (!useGraph && !usesCustomShader && !isGrid)
+            {
+                const ShadingExt baseExt = (matAsset && !matAsset->data.IsGraph()) ? matAsset->data.shading
+                                         : (mat ? mat->shading : ShadingExt{});
+                const PackedShadingExt ext = PackShadingExt(ResolveShadingExt(baseExt, renderer.overrideShading));
+                nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPerObject, 8, ext.data(), 32);
+            }
+
             // 透明バリアントへ切り替える（サブメッシュ単位）。PSO が無ければ従来どおり不透明で描く。
             // グラフ材質は専用 PSO（v1 は不透明のみ。半透明 / マスクは G3b）。
             if (useGraph)
@@ -1682,6 +1702,14 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
             }
             else
             {
+                // 拡張シェーディング（b0 の自由枠 = offset 32..39 DWORD。この経路は先頭 16 DWORD しか書かないので必ず書く）。
+                //   バッチ内は batchKey（メッシュ = 材質と、拡張の上書きのハッシュ）で同値が保証されている。
+                {
+                    const ShadingExt baseExt = (matAsset && !matAsset->data.IsGraph()) ? matAsset->data.shading
+                                             : (mat ? mat->shading : ShadingExt{});
+                    const PackedShadingExt ext = PackShadingExt(ResolveShadingExt(baseExt, r.overrideShading));
+                    nativeCmdList->SetGraphicsRoot32BitConstants(RootSignature::kSlotPerObject, 8, ext.data(), 32);
+                }
                 PipelineState* batchPso = instPso;
                 if (alphaP.mode == AlphaMode::Mask)
                 {
@@ -7370,6 +7398,14 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
             nf.enabled ? (std::max)(nf.strength, 0.0f) : 0.0f,
             (std::max)(nf.varianceClamp, 0.0f),
             (std::max)(nf.geometricBlend, 0.0f));
+    }
+
+    // 材質シェーディング: マルチスキャッタのエネルギー補償（_clusterReserved[9].x = 1 で無効。0 埋めの既定は有効）。
+    //   ★BRDF LUT（t7）が焼けていないときは必ず無効にする（未初期化の LUT の E で割ると金属が飛ぶ）。
+    {
+        const bool lutOk = m_iblReady && m_iblBaker && m_iblBaker->IsBrdfLutReady();
+        const bool msOn  = m_scene ? m_scene->GetShadingSettings().multiScatter : true;
+        fc._clusterReserved[9] = {(msOn && lutOk) ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f};
     }
 
     // 植生 F1: 風のフレーム共通値を予約領域 [0..1] へ（FoliageLayer があるときだけ書く。他の誰も読まない領域）

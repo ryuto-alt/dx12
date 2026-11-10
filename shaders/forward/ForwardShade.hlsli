@@ -94,6 +94,8 @@ struct UnoShadeInput
     float3 worldNormal;   // 補間された頂点法線（未正規化）。法線フィルタの幾何法線 Ng に使う
     float2 svPos;         // SV_Position.xy（クラスタ / SSAO / SSR / SSGI / デカールの画面座標）
     float  viewDepth;     // view 空間深度（正値）。カスケード選択・デカール
+    float3 tangentWS;     // 異方性の向きの基準（UV の +U 方向のワールド接線。0 = 無し → 法線から任意の基底）
+    float  tangentW;      // 従法線の符号
 };
 
 UnoShadeInput UnoMakeShadeInput(float3 worldPos, float3 worldNormal, float4 positionSV, float viewDepth)
@@ -103,6 +105,8 @@ UnoShadeInput UnoMakeShadeInput(float3 worldPos, float3 worldNormal, float4 posi
     si.worldNormal = worldNormal;
     si.svPos       = positionSV.xy;
     si.viewDepth   = viewDepth;
+    si.tangentWS   = float3(0.0, 0.0, 0.0);
+    si.tangentW    = 1.0;
     return si;
 }
 
@@ -154,7 +158,76 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     float3 L = normalize(-lightDir);
 
     // PBR Cook-Torrance BRDF
-    float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+    // 誘電体の F0 = 0.08·specular·specularTint（既定 0.5 / 白 → 0.04。従来の定数と同じ値）
+    float3 F0 = lerp((0.08 * s.specular) * s.specularTint, albedo, metallic);
+
+    // ===== 拡張シェーディングの文脈（マルチスキャッタ / クリアコート / 異方性 / シーン）=====
+    // ★拡張を持たない材質は flags = 0 → 直接光は従来の ShadePunctual と同じ式（UnoShadePunctualCtx の先頭で分岐）。
+    //   マルチスキャッタ（Kulla-Conty の E で割る近似）はシーン設定で切れる（_clusterReserved[9].x = 1 で無効）。
+    const float NoVs  = max(dot(N, V), 0.0);
+    const bool  msOn  = (_clusterReserved[9].x < 0.5);
+    UnoBrdfCtx bc = UnoBrdfCtxDefault(albedo, F0, metallic, roughness);
+    bc.F90 = lerp(s.specularF90, 1.0, metallic);
+    float3 msCompIbl = float3(1.0, 1.0, 1.0);   // IBL（split-sum の G）の補償。直接光は bc.msComp（直接光の G）
+    uint extFlags = 0u;
+    if (s.clearCoat > 0.0)          extFlags |= UNO_EXT_COAT;
+    if (s.anisotropy != 0.0)        extFlags |= UNO_EXT_ANISO;
+    if (any(s.sheenColor > 0.0))    extFlags |= UNO_EXT_SHEEN;
+    bc.flags = extFlags;
+    float sheenE = 0.0;
+    [branch] if (extFlags != 0u)
+    {
+        if ((extFlags & UNO_EXT_ANISO) != 0u)
+        {
+            float3 aT, aB;
+            UnoBxAnisoFrame(N, si.tangentWS, si.tangentW, s.anisotropyRotation, s.anisotropy, aT, aB);
+            bc.anisoT = aT;
+            bc.anisoB = aB;
+            const float2 aa = UnoBxAnisoAlpha(roughness, s.anisotropy);
+            bc.at = aa.x;
+            bc.ab = aa.y;
+        }
+    }
+    // マルチスキャッタ: 遮蔽モデルごとの方向アルベド E で割る（直接光 = LUT .a / IBL = .r + .g）。
+    //   異方性は等価ラフネス sqrt(sqrt(αt·αb)) で引く（強さ 0 なら元の粗さ＝連続）。
+    if (msOn)
+    {
+        const bool  anMs = ((extFlags & UNO_EXT_ANISO) != 0u);
+        const float rMs  = anMs ? UnoBxAnisoEqRoughness(bc.at, bc.ab) : roughness;
+        const float nvMs = anMs ? UnoBxAnisoMsNoV(NoVs, bc.at, bc.ab) : NoVs;
+        const float4 lut0 = g_brdfLUT.SampleLevel(g_brdfSampler, float2(nvMs, rMs), 0);
+        bc.msComp = UnoBxMultiScatterComp(F0, lut0.a);
+        // IBL の split-sum は元の (N·V, 粗さ) の A+B を使うので、補償も同じ座標の E で割る（異方性でも基底の粗さ）
+        const float2 abI = anMs ? g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoVs, roughness), 0).rg : lut0.rg;
+        msCompIbl = UnoBxMultiScatterComp(F0, abI.x + abI.y);
+    }
+    float coatMsIbl = 1.0;
+    [branch] if (extFlags != 0u)
+    {
+        if ((extFlags & UNO_EXT_SHEEN) != 0u)
+        {
+            bc.sheenColor     = saturate(s.sheenColor);
+            bc.sheenRoughness = clamp(s.sheenRoughness, 0.07, 1.0);
+            sheenE = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NoVs, bc.sheenRoughness), 0).b;
+            bc.sheenScaleV = 1.0 - UnoBxMax3(bc.sheenColor) * sheenE;
+        }
+        if ((extFlags & UNO_EXT_COAT) != 0u)
+        {
+            float3 Nc = normalize(si.worldNormal);
+            if (dot(Nc, N) < 0.0) Nc = -Nc;   // 両面の裏（法線を視線側へ返した面）でもコートは同じ側
+            bc.Nc            = Nc;
+            bc.coat          = saturate(s.clearCoat);
+            bc.coatRoughness = UNO_SHADE_ROUGHNESS(saturate(s.clearCoatRoughness));
+            const float NcV  = max(dot(Nc, V), 0.0);
+            bc.coatAttenV    = 1.0 - bc.coat * (0.04 + 0.96 * pow(saturate(1.0 - NcV), 5.0));
+            if (msOn)
+            {
+                const float4 lc = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NcV, bc.coatRoughness), 0);
+                bc.coatMs = UnoBxMultiScatterComp(float3(0.04, 0.04, 0.04), lc.a).x;
+                coatMsIbl = UnoBxMultiScatterComp(float3(0.04, 0.04, 0.04), lc.r + lc.g).x;
+            }
+        }
+    }
 
 #ifdef UNO_SHADE_LITE
     float shadow = 1.0;
@@ -170,7 +243,7 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
 #endif
 
     // Directional Light（影付き）
-    float3 Lo = ShadePunctual(N, V, L, lightColor * shadow, albedo, F0, metallic, roughness);
+    float3 Lo = UnoShadePunctualCtx(N, V, L, lightColor * shadow, bc);
 
 #ifdef UNO_SHADE_FOLIAGE_TRANSMISSION
     // ===== 薄い葉の透過光（植生専用。定義しない経路の DXIL は不変）=====
@@ -188,8 +261,7 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
 
     // Point Lights + Spot Lights（クラスタードライティング / Forward+。灯数上限なし）
 #ifndef UNO_SHADE_LITE
-    Lo += AccumulatePunctualLights(N, V, si.worldPos, albedo, F0, metallic, roughness,
-                                   si.svPos);
+    Lo += AccumulatePunctualLightsCtx(N, V, si.worldPos, bc, si.svPos);
 #endif
 
     // SSAO（スクリーン空間 AO）: フル解像度・同一ビューポートなのでピクセル直読み。
@@ -257,6 +329,9 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     {
         float3 R   = reflect(-V, N);
         float  NoV = max(dot(N, V), 0.0);
+        // 異方性: 反射が伸びる向きへ曲げた反射ベクトルで引く（split-sum の近似）
+        if ((extFlags & UNO_EXT_ANISO) != 0u)
+            R = UnoBxAnisoBentReflect(N, V, bc.anisoB, s.anisotropy, roughness);
         float3 F   = FresnelSchlickRoughness(NoV, F0, roughness);
         float3 kD  = (1.0 - F) * (1.0 - metallic);
         // ★GI モード New: 拡散の環境光は視線ごとの Fresnel（NoV が小さい壁・天井で F が 0.3 を超える）で減らさない。
@@ -309,7 +384,14 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         //   斜めから見た誘電体（床・葉・壁）で鏡面の環境光が 2 倍前後になる（空の青白い反射が日陰の色を薄める）。
         //   パストレーサー（GGX + Schlick）と一致するのは F0 の方。Legacy は従来どおり（既存シーンの絵を変えない）。
         const float3 specF = giNew ? F0 : F;
-        float3 specularIBL = prefiltered * (specF * envBRDF.x + envBRDF.y);
+        float3 specularIBL = prefiltered * (specF * envBRDF.x + envBRDF.y * bc.F90);
+        // マルチスキャッタ: スペキュラを 1 + F0(1/E - 1) 倍。拡散は残りのエネルギー 1 - E_ms だけにする
+        //   （白い炉で 拡散 + 鏡面 = 1 を超えないため。msOn = false なら従来の kD / specularIBL のまま）。
+        if (msOn)
+        {
+            specularIBL *= msCompIbl;
+            kD = (1.0 - saturate((specF * envBRDF.x + envBRDF.y * bc.F90) * msCompIbl)) * (1.0 - metallic);
+        }
 
         // ★AO の掛け方（二重計上の解消）:
         //   SSGI/SSR が担当していない分にだけ AO を掛ける。どちらも「実際に届いた光」を
@@ -324,7 +406,39 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         float  soExp = exp2(-16.0 * roughness - 1.0);
         float  so    = saturate(pow(max(NoV + ao, 1e-4), soExp) - 1.0 + ao);
         float aoSpec = lerp(so, 1.0, ssrConf);
-        ambient = (kD * diffuseIBL * aoDiffV + specularIBL * aoSpec) * (giNew ? 1.0 : iblIntensity);
+        float3 ambBase = kD * diffuseIBL * aoDiffV + specularIBL * aoSpec;
+        [branch] if (extFlags != 0u)
+        {
+            // シーン: 下層を 1 - max3(C)·E(N·V) で減衰し、シーンの方向アルベド × 拡散の放射照度を足す
+            //   （シーンの葉は広いので、反射方向のプリフィルタではなく拡散の irradiance で近似する）
+            if ((extFlags & UNO_EXT_SHEEN) != 0u)
+                ambBase = ambBase * bc.sheenScaleV + bc.sheenColor * (sheenE * irradiance) * aoDiffV;
+            // クリアコート: コート法線の反射方向をコートの粗さでもう 1 回引く（反射プローブ・SSR / RT 反射も同じ置き換え）
+            if ((extFlags & UNO_EXT_COAT) != 0u)
+            {
+                const float3 Rc  = reflect(-V, bc.Nc);
+                const float  NcV = max(dot(bc.Nc, V), 0.0);
+                float3 pc = g_prefilteredMap.SampleLevel(g_iblSampler, Rc, bc.coatRoughness * maxPrefilterMip).rgb;
+                if (giNew)
+                {
+                    pc *= iblIntensity;
+                    const float visC = lerp(1.0, gn.skyVisR, saturate(gn.conf * giParams.w));
+                    pc = pc * visC + UNO_SHADE_SANITIZE(gn.irrR) * ((1.0 - visC) * smoothstep(0.1, 0.6, bc.coatRoughness));
+                }
+#ifndef UNO_SHADE_LITE
+                [branch] if (probesOn)
+                {
+                    const float4 prc = SampleReflectionProbes(si.worldPos, Rc, bc.coatRoughness);
+                    pc = pc * (1.0 - prc.a) + prc.rgb;
+                }
+#endif
+                pc = lerp(pc, ssrRgb, ssrConf);
+                const float2 ec = g_brdfLUT.SampleLevel(g_brdfSampler, float2(NcV, bc.coatRoughness), 0).rg;
+                const float  coatE = (0.04 * ec.x + ec.y) * coatMsIbl;
+                ambBase = ambBase * bc.coatAttenV + (bc.coat * coatE) * pc * aoSpec;
+            }
+        }
+        ambient = ambBase * (giNew ? 1.0 : iblIntensity);
         dbgDiff = kD * diffuseIBL * aoDiffV;
         dbgSpec = specularIBL * aoSpec;
         dbgIrr  = irradiance;
@@ -375,7 +489,7 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
             const float2 ab = float2(-1.04, 1.04) * aa + rr.zw;
             const float  soExp2 = exp2(-16.0 * roughness - 1.0);
             const float  so2    = saturate(pow(max(NoVp + ao, 1e-4), soExp2) - 1.0 + ao);
-            const float3 probeSpec = pr.rgb * (F0 * ab.x + ab.y) * so2;
+            const float3 probeSpec = pr.rgb * (F0 * ab.x + ab.y) * so2 * msCompIbl;
             // 既存の鏡面（F0 * ambientStrength）を重み分だけ引いて、プローブの寄与を足す。SSR が当たった所は SSR 優先。
             ambient -= ambientStrength * ambientSpecular * ao * pr.a * (1.0 - ssrConf);
             ambient += probeSpec * (1.0 - ssrConf);

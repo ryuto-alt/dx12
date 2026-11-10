@@ -179,6 +179,10 @@ CpuEvalResult EvaluateCpu(const CompileResult& r, const EvalEnv& env, const Para
         else if (f == "clearCoat") s.clearCoat = v.v[0];
         else if (f == "clearCoatRoughness") s.clearCoatRoughness = v.v[0];
         else if (f == "anisotropy") s.anisotropy = v.v[0];
+        else if (f == "anisotropyRotation") s.anisotropyRotation = v.v[0];
+        else if (f == "sheenColor") for (int k = 0; k < 3; ++k) s.sheenColor[k] = v.v[k];
+        else if (f == "sheenRoughness") s.sheenRoughness = v.v[0];
+        else if (f == "specular") s.specular = v.v[0];
         else if (f == "preview")
         {
             // 部分グラフ出力（CompileOptions::previewNode）。HLSL の写像と同じ: F1 = (v,v,v) / F2 = (x,y,0) / F3 = そのまま / F4 = rgb + alpha

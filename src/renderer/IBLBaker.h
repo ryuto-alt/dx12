@@ -48,6 +48,10 @@ public:
     bool  HasEnvironment()     const { return m_hasEnv; }
     u32   GetIrradianceSrv()   const { return m_blockStart; }  // ブロック先頭(=t5)
     float GetMaxPrefilterMip() const { return static_cast<float>(kPrefilterMips - 1); }
+    // BRDF LUT（t7。rg = split-sum / b = シーンの方向アルベド）が焼けているか / その SRV（ブロック先頭 + 2）。
+    // マルチスキャッタの補償はこれが焼けているときだけ有効にする（未初期化の LUT を読むと金属が真っ白に飛ぶ）。
+    bool  IsBrdfLutReady()     const { return m_lutBaked && m_blockStart != 0xFFFFFFFFu; }
+    u32   GetBrdfLutSrv()      const { return m_blockStart + 2; }
 
     // SRV ブロックの先頭/枚数（Application が Free する用）
     u32   GetSrvBlockStart()   const { return m_blockStart; }
@@ -60,6 +64,8 @@ private:
     static constexpr u32 kPrefilterSize  = 128;
     static constexpr u32 kPrefilterMips  = 5;
     static constexpr u32 kBrdfSize       = 512;
+    // LUT の形式。rg = split-sum / b = シーンの方向アルベド（R16G16 だと b が無い）
+    static constexpr DXGI_FORMAT kBrdfFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
 
     void CreateDerivedResources(GraphicsDevice& device);
 
@@ -88,6 +94,7 @@ private:
     u32  m_blockStart = 0xFFFFFFFFu;  // srvHeap 上の連続3枚先頭(=irradiance)
     bool m_valid  = false;
     bool m_hasEnv = false;
+    bool m_lutBaked = false;   // BRDF LUT を一度でも焼いたか（環境に依らない。環境無しの Bake でも焼く）
     bool m_initialized = false;
 };
 

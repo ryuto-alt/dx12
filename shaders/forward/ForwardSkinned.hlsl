@@ -49,6 +49,11 @@ cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
     float4x4 model;
+    // ★b0 の自由枠（offset 128..159。カスタムシェーダの effectValue / shaderParams と同じ場所）を、既定シェーダでは
+    //   拡張シェーディングの 8 DWORD（src/renderer/ShadingExt.h の PackShadingExt）として読む。描画側は既定シェーダの
+    //   ドローで必ずここを書き直す。w0 の上位 8bit が 0xA5 でなければ「拡張無し」＝従来と同じ絵。
+    uint4    gMatExt0;
+    uint4    gMatExt1;
 };
 
 // PBR Material constants (b2)
@@ -210,12 +215,15 @@ float4 PSMain(PSInput input) : SV_TARGET
     s.metallic  = metallic;
     s.roughness = roughness;
     s.ao        = materialAo;   // 間接光だけに掛かる（ForwardShade.hlsli: ao *= s.ao）
+    UnoApplyShadingExt(s, gMatExt0, gMatExt1);   // クリアコート / 異方性 / シーン / スペキュラ（Forward.hlsl と同じ）
 
     // ★以降（デカール / 法線フィルタ / 影 / ライティング / IBL / **DDGI** / 自己発光 / デバッグ）は
     //   ForwardShade.hlsli の UnoShadeLighting / UnoShadeFinish。かつては Forward.hlsl の複製で、DDGI の追加が
     //   スキンドにだけ抜けて「キャラだけ GI が乗らない」不具合を出した。共有したのでその事故は起きない。
-    const UnoShadeInput si = UnoMakeShadeInput(input.worldPos, input.worldNormal,
-                                               input.positionSV, input.viewDepth);
+    UnoShadeInput si = UnoMakeShadeInput(input.worldPos, input.worldNormal,
+                                         input.positionSV, input.viewDepth);
+    si.tangentWS = input.worldTangent;
+    si.tangentW  = input.tangentW;
     const float3 lit = UnoShadeLighting(s, N, si);
 
     // ===== 自己発光（emissive）=====

@@ -31,6 +31,10 @@ struct SurfaceValues
     float clearCoat           = 0.0f;
     float clearCoatRoughness  = 0.0f;
     float anisotropy          = 0.0f;
+    float anisotropyRotation  = 0.0f;
+    float sheenColor[3]       = {0.0f, 0.0f, 0.0f};
+    float sheenRoughness      = 0.0f;
+    float specular            = 0.5f;
 };
 
 struct CpuEvalResult

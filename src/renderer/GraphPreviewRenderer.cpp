@@ -832,6 +832,8 @@ void GraphPreviewRenderer::Impl::FillFrame(FrameConstants& fc, const XMMATRIX& v
     fc.hasIBL = ibl ? 1u : 0u;
     fc.skyboxIntensity = 0.0f;
     fc.contactShadowEnabled = 0.0f;
+    // マルチスキャッタ補償（_clusterReserved[9].x = 1 で無効）。BRDF LUT（t7）が張られるとき（BindCommon と同じ条件）だけ有効
+    fc._clusterReserved[9].x = (env && env->baker && env->baker->IsValid() && env->baker->IsBrdfLutReady()) ? 0.0f : 1.0f;
 }
 
 void GraphPreviewRenderer::Impl::BindCommon(ID3D12GraphicsCommandList* cmd, D3D12_GPU_VIRTUAL_ADDRESS cbAddr, const Env* env)

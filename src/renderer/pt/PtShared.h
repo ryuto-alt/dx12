@@ -21,6 +21,7 @@ constexpr uint32_t kFlagEmissiveBoth  = 16u;
 constexpr uint32_t kFlagForceLambert  = 32u;
 constexpr uint32_t kFlagNoNormalMap   = 64u;
 constexpr uint32_t kFlagAtmosphere    = 128u;   // 環境 = 物理大気(A1)。atmosSrvBase の SRV ブロックを引く
+constexpr uint32_t kFlagMultiScatter  = 256u;   // マルチスキャッタのエネルギー補償(フォワードと同じ。brdfLutSrv の LUT の A+B を使う)
 
 // ---- 材質フラグ(PT_MAT_*)----
 constexpr uint32_t kMatNormalMap   = 1u;
@@ -44,7 +45,7 @@ struct InstanceGpu
 };
 static_assert(sizeof(InstanceGpu) == 128, "PtInstance と一致させること");
 
-// 80B(PtMaterial)
+// 112B(PtMaterial)
 struct MaterialGpu
 {
     float tint[3];     float opacity;
@@ -52,8 +53,9 @@ struct MaterialGpu
     float emissive[3]; uint32_t albedoSrv;
     uint32_t normalSrv, mrSrv, emissiveSrv, alphaMode;   // 0=Opaque 1=Mask 2=Blend
     float uvScaleOffset[4];
+    uint32_t ext[8];   // 拡張シェーディング(renderer/ShadingExt.h の PackShadingExt。0 = 無し)。フォワードの b0 の自由枠と同じ並び
 };
-static_assert(sizeof(MaterialGpu) == 80, "PtMaterial と一致させること");
+static_assert(sizeof(MaterialGpu) == 112, "PtMaterial と一致させること");
 
 // 64B(PtLight)。ClusterLight と同じ並び(shadowIndex の枠は未使用)。
 struct LightGpu
@@ -89,7 +91,7 @@ struct JobConstants
     float sunE[3];       float sunEnabled;
     float envConst[3];   float envLightScale;
     float envBgScale;    uint32_t rrStart; float lensRadius; float focusDist;
-    float pixelFilter;   uint32_t countRays; uint32_t atmosSrvBase, pad1;   // atmosSrvBase = 大気 SRV ブロック先頭(kFlagAtmosphere のとき)
+    float pixelFilter;   uint32_t countRays; uint32_t atmosSrvBase, brdfLutSrv;   // atmosSrvBase = 大気 SRV ブロック先頭(kFlagAtmosphere のとき) / brdfLutSrv = IBL の BRDF LUT(rg = split-sum / b = シーンの方向アルベド。無ければ kNoIndex)
 };
 static_assert(sizeof(JobConstants) == 16 * 11, "cbuffer JobCB と一致させること");
 

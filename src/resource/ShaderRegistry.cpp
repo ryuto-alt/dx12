@@ -40,7 +40,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             //   保存しても Terrain.hlsl しか再コンパイルされず、しかも
             //   「シェーダーホットリロード成功: forward/Terrain.hlsl」だけがログに出る。
             //   ズレは ShaderIncludeDepsTests が見張る。
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/BrdfExt.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
               "forward/ForwardShade.hlsli", "forward/ReflectionProbe.hlsli", "forward/UnoSurface.hlsli" },
         },
@@ -55,7 +55,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             //   保存しても Terrain.hlsl しか再コンパイルされず、しかも
             //   「シェーダーホットリロード成功: forward/Terrain.hlsl」だけがログに出る。
             //   ズレは ShaderIncludeDepsTests が見張る。
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/BrdfExt.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
               "forward/ForwardShade.hlsli", "forward/ReflectionProbe.hlsli", "forward/UnoSurface.hlsli" },
         },
@@ -95,7 +95,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardGrid_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"ForwardGrid_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli", "ddgi/DdgiCommon.hlsli" },
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/BrdfExt.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli", "ddgi/DdgiCommon.hlsli" },
         },
         {
             // ★自動インスタンシング用の VS。長らく登録漏れで**ホットリロードの対象外**だった。
@@ -111,7 +111,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             {
                 { L"ForwardInstanced_VS.cso", L"VSMain", L"vs_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli",
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/BrdfExt.hlsli",
               "forward/ClusterCommon.hlsli", "ddgi/DdgiCommon.hlsli" },
         },
         {
@@ -123,7 +123,7 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"Terrain_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"Terrain_PS.cso", L"PSMain", L"ps_6_0" },
             },
-            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
+            { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/BrdfExt.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
               "forward/ForwardShade.hlsli", "forward/ReflectionProbe.hlsli", "forward/UnoSurface.hlsli" },
         },
@@ -316,7 +316,7 @@ const std::vector<ShaderSource>& BuildRegistry()
         {
             "ibl/IntegrateBRDF.hlsl",
             { { L"IntegrateBRDF_CS.cso", L"CSMain", L"cs_6_0" } },
-            { "ibl/IBLCommon.hlsli" },
+            { "ibl/IBLCommon.hlsli", "forward/BrdfExt.hlsli" },
         },
         {
             "ibl/ProbeCopyFace.hlsl",

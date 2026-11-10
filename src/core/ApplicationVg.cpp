@@ -184,6 +184,10 @@ void Application::VirtualGeometryBindMaterials(ID3D12GraphicsCommandList* cmd)
             std::memcpy(g.uvScaleOffset, m.uvScaleOffset, 16);
             std::memcpy(g.emissiveColor, m.emissiveColor, 12);
             g.emissiveIntensity = m.emissiveIntensity;
+            {
+                const PackedShadingExt ext = PackShadingExt(m.shading);   // 既定なら 8 個とも 0
+                std::memcpy(g.ext, ext.data(), sizeof(g.ext));
+            }
             if (g.emissiveSrv != VG_NONE && g.emissiveIntensity <= 0.0f)
             {
                 // テクスチャだけの指定＝素通し（VgeoProxyLoader / ModelLoader と同じ扱い）

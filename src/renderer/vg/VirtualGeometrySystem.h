@@ -41,6 +41,7 @@
 
 #include "core/IndexAllocator.h"
 #include "renderer/vg/VgGpuTypes.h"
+#include "renderer/ShadingExt.h"
 
 namespace dx12e::vg
 {
@@ -99,6 +100,7 @@ struct AssetMaterial
     float    emissiveIntensity = 0.0f;
     float    uvScaleOffset[4] = {1, 1, 0, 0};
     uint32_t sectionKind = 0;           // 0 = VG / 1 = NONVG
+    ShadingExt shading;                 // 拡張シェーディング（.vgeo は今は持たない＝既定。VgMaterialGpu::ext へ詰める）
 };
 
 // ── 設定 ─────────────────────────────────────────────────────────────────────
