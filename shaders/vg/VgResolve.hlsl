@@ -4,7 +4,8 @@
 //   ・材質評価は Forward.hlsl の PSMain と同じ手順（アルベド × ティント → 法線マップ → MR → 自己発光）。違いは
 //       - テクスチャは材質表（VgMaterialGpu）の SRV 添字から ResourceDescriptorHeap[] で引き、**SampleGrad**（解析 UV 勾配）で読む
 //       - 接線は三角形の UV 勾配から作る（VgTangentFrame。assimp の CalcTangentSpace と同じ式・符号）
-//       - 頂点カラーは持たない（白）
+//       - 頂点カラーは持たない（白）。頂点カラー付きのモデルは自動 cook の対象外（VgAutoCook。読み込み時に判定）
+//       - 視差オクルージョン（POM）はしない（VgMaterialGpu に高さテクスチャの枠が無い。.dxmat の parallaxScale は VG では無視）
 //   ・シェーディングは ForwardShade.hlsli の UnoShadeLighting → 自己発光 → UnoShadeFinish を**そのまま**呼ぶ
 //     （デカール → 法線フィルタ → CSM + コンタクト影 → 平行光 → クラスタライト → SSAO / SSR / SSGI / DDGI / IBL → デバッグ）。
 //     Forward.hlsl を直したら、この resolve も同じ結果になる（複製しない。VG 設計書 §2.4.8）。
@@ -95,7 +96,7 @@ float4 PSMain(VSOut i) : SV_Target0
     if (!VgReconstruct(vis, i.pos.xy, gRvViewProjJ, gRvViewport.xy, gRvHeap0.y, gRvHeap1.y, gRvHeap0.z, gRvHeap0.w, s))
         discard;
 
-    const VgMaterialGpu m = VgLoadMaterial(gRvHeap1.x, s.asset, s.materialIndex);
+    const VgMaterialGpu m = VgLoadMaterial(gRvHeap1.x, s.asset, s.inst, s.materialIndex);
     // UV（材質の uvScaleOffset。勾配はスケールだけ掛かる）
     const float2 uv   = s.uv * m.uvScaleOffset.xy + m.uvScaleOffset.zw;
     const float2 dUVx = s.uvDx * m.uvScaleOffset.xy;
@@ -126,11 +127,15 @@ float4 PSMain(VSOut i) : SV_Target0
     // Metallic / Roughness（テクスチャ × 係数。係数はインスタンスの上書き > 材質）
     float metallic  = VgEffMetallic(m, s.inst);
     float roughness = VgEffRoughness(m, s.inst);
+    // マテリアル AO（MR の R。Forward.hlsl の pbrFlags bit4 と同じ式。aoStrength は CPU 側で 8bit 量子化済み = フォワードと同じ値）
+    float materialAo = 1.0;
     if ((m.flags & VG_MAT_MR_TEX) != 0u && m.metalRoughSrv != VG_NONE)
     {
         const float4 mr = VgSampleTex(m.metalRoughSrv, uv, dUVx, dUVy);
         roughness = mr.g * roughness;
         metallic  = mr.b * metallic;
+        if (m.aoStrength > 0.0)
+            materialAo = 1.0 + m.aoStrength * (mr.r - 1.0);
     }
 
     // ===== 画面空間微分（フックへ渡す解析値）=====
@@ -151,6 +156,7 @@ float4 PSMain(VSOut i) : SV_Target0
     su.baseColor = albedo;
     su.metallic  = metallic;
     su.roughness = roughness;
+    su.ao        = materialAo;   // 間接光だけに掛かる（ForwardShade.hlsli: ao *= s.ao。フォワードと同じ）
     UnoApplyShadingExt(su, m.ext0, m.ext1);   // 拡張シェーディング（材質表の 8 DWORD。0 = 無し）
 
     const float viewDepth = mul(float4(s.worldPos, 1.0), view).z;   // フォワード VS と同じ（LH: 前方 +z）

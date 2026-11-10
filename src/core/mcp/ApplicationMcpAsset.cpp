@@ -921,49 +921,23 @@ void Application::ProcessMcpAssetReloads(ID3D12GraphicsCommandList* cmdList)
                 byKey[k] = m_resourceManager->FindModel(k);
             }
             auto& reg = m_scene->GetRegistry();
+            // 張り替えの前のサブメッシュ数（アニメ付きで数が変わったら警告する）
+            std::unordered_map<u32, size_t> before;
             for (auto [e, mr] : reg.view<MeshRenderer>().each())
+                if (reg.all_of<SkeletalAnimation>(e) || reg.all_of<NodeAnimationComp>(e))
+                    before.emplace(static_cast<u32>(entt::to_integral(e)), mr.meshes.size());
+            reboundEntities = RebindModelEntities(byKey);
+            for (auto& [eid, n] : before)
             {
-                if (mr.modelPath.empty()) continue;
-                // modelPath は「assets 相対」で保存されるが、D&D 配置直後は絶対パスのこともある。
-                // GetOrLoadModel と同じ正規化を両方の綴りで試す(片方でも当たれば同じモデル)。
-                const CachedModel* cm = nullptr;
-                {
-                    auto it = byKey.find(ResourceManager::NormalizeModelKey(mr.modelPath));
-                    if (it == byKey.end())
-                        it = byKey.find(ResourceManager::NormalizeModelKey(assetsDir + mr.modelPath));
-                    if (it != byKey.end()) cm = it->second;
-                }
-                if (!cm) continue;
-
-                // ★ヒットしたら必ず張り替える。「アニメ付きだから見送る」は
-                //   死んだポインタを残す＝次の描画で落ちるので絶対にやらない。
-                const size_t before = mr.meshes.size();
-                mr.meshes.clear();
-                mr.materials.clear();
-                for (const auto& m : cm->meshes)    mr.meshes.push_back(m.get());
-                for (const auto& m : cm->materials) mr.materials.push_back(m.get());
-                if (!mr.meshNodeTransforms.empty() || cm->nodeGraph)
-                {
-                    DirectX::XMFLOAT4X4 ident;
-                    DirectX::XMStoreFloat4x4(&ident, DirectX::XMMatrixIdentity());
-                    mr.meshNodeTransforms.assign(mr.meshes.size(), ident);
-                }
-                ++reboundEntities;
-                if (before != mr.meshes.size()
-                    && (reg.all_of<SkeletalAnimation>(e) || reg.all_of<NodeAnimationComp>(e)))
-                {
+                const entt::entity e = static_cast<entt::entity>(eid);
+                const MeshRenderer* mr = reg.valid(e) ? reg.try_get<MeshRenderer>(e) : nullptr;
+                if (mr && mr->meshes.size() != n)
                     warnings.push_back(
-                        "サブメッシュ数が " + std::to_string(before) + " -> "
-                        + std::to_string(mr.meshes.size()) + " に変わりました(" + mr.modelPath
+                        "サブメッシュ数が " + std::to_string(n) + " -> "
+                        + std::to_string(mr->meshes.size()) + " に変わりました(" + mr->modelPath
                         + ")。アニメーションの割り当ては作り直さないので、動きがおかしければ "
                           "dx12_open_scene でシーンを開き直すこと");
-                }
             }
-            // BLAS キャッシュのキーは Mesh*。解放したアドレスへ新しいメッシュが載ると
-            // 「ラスタは正しいのにレイトレの影/反射だけ古い形」になるので全部捨てる。
-            if (m_rtScene) m_rtScene->Invalidate();
-            // 植生のレイヤーも Mesh* / Material* を握っている（MeshRenderer と同じく張り替えないと GPU がハングする）
-            if (m_foliage) m_foliage->InvalidateModels();
         }
 
         // ---- テクスチャを読み直したなら、マテリアル上書きの SRV ブロックも作り直す ----

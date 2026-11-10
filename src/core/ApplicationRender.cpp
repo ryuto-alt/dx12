@@ -3750,6 +3750,8 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
     // ---- MCP 由来のアセット再読込（dx12_reload_assets）----
     // テクスチャ/モデルのロードは GPU アップロードを伴うので、記録中の cmdList があるここで走らせる。
     ProcessMcpAssetReloads(nativeCmdList);
+    // ---- 仮想ジオメトリの自動 cook が終わったモデルを差し替える（仮の箱 → .vgeo のプロキシ + VG / 対象外なら通常メッシュ）----
+    ProcessVgAutoSwaps(nativeCmdList);
 
     // ---- MCP 由来の地形 / スカルプト生成（GPU メッシュ構築に cmdList が要るのでフレーム境界）----
     // pendingSpawns と同じ流儀。生成後に本物の entityId を遅延応答で返す。

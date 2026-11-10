@@ -8,6 +8,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
+#include "resource/VgAutoCook.h"       // 仮想ジオメトリの自動 cook の設定（vg_auto / vg_auto_min_triangles）
 #include "core/LoadProfile.h"          // 読み込みの内訳
 #include "core/CrashHandler.h"
 #include "core/BuildJob.h"   // ビルド設定窓の進捗表示（BuildProgress）
@@ -656,6 +657,17 @@ void Application::LoadProject(const ProjectInfo& info)
     // Hi-Z オクルージョンカリング。既定 OFF。
     m_occlusionCulling = PersistGet("render_occlusion_culling", 0.0) != 0.0;
     if (m_occlusionCulling) Logger::Info("オクルージョンカリング: ON（render_occlusion_culling=1）");
+
+    // 仮想ジオメトリの自動 cook（resource/VgAutoCook）。既定 ON・しきい値 20 万三角形。
+    //   vg_auto = 0 で無効（ハイポリの glb も通常メッシュで読む = 従来どおり）。モデル単位は <モデル>.import.json の virtualGeometry。
+    {
+        vgauto::Config c = vgauto::Cooker::Get().GetConfig();
+        c.enabled      = PersistGet("vg_auto", 1.0) != 0.0;
+        c.minTriangles = static_cast<u64>(std::max(0.0, PersistGet("vg_auto_min_triangles", 200000.0)));
+        c.maxMaterials = static_cast<u32>(std::clamp(PersistGet("vg_auto_max_materials", 64.0), 1.0, 65536.0));
+        vgauto::Cooker::Get().SetConfig(c);
+        Logger::Info("仮想ジオメトリの自動 cook: {}（しきい値 {} 三角形・材質 {} 個まで）", c.enabled ? "ON" : "OFF", c.minTriangles, c.maxMaterials);
+    }
 
     // 内部解像度スケール（#16）。1.0 で従来と完全に同じ絵。0.5 なら 3D だけ半解像度で
     // 描いて表示解像度へ引き伸ばす（UI / ImGui は表示解像度のまま鮮明）。

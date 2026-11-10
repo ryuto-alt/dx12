@@ -16,7 +16,7 @@ struct VgInstance
     float4 w0; float4 w1; float4 w2;         // 行 i = 4x4 行列の列 i
     float4 p0; float4 p1; float4 p2;         // prevWorld
     uint assetIndex; uint flags; uint packedTint; uint packedEmissive;
-    float maxScale; uint entityId; float overrideMetallic; float overrideRoughness;
+    float maxScale; uint materialBase; float overrideMetallic; float overrideRoughness;   // materialBase: VG_NONE = アセットの区間
 };
 
 struct VgAssetGpu
@@ -39,7 +39,7 @@ struct VgMaterialGpu
     uint   flags;              // VG_MAT_*
     float  metallic;
     float  roughness;
-    uint   reserved0;
+    float  aoStrength;         // マテリアル AO（MR の R）の強さ。0 = 読まない
     float4 uvScaleOffset;      // xy = スケール / zw = オフセット
     float3 emissiveColor;
     float  emissiveIntensity;

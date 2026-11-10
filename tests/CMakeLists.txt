@@ -950,6 +950,20 @@ if(TARGET Resource AND TARGET Renderer)
     add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
 endif()
 
+# 仮想ジオメトリの自動 cook（resource/VgAutoCook）と .vgeo v1.1（AO / 拡張シェーディング 'MSHD'）。GPU 不要。
+if(TARGET Resource AND TARGET Renderer AND TARGET VgeoCookLib)
+    add_executable(VgAutoCookTests vg_auto_cook_test.cpp)
+    target_link_libraries(VgAutoCookTests PRIVATE Resource Renderer VgeoCookLib)
+    target_compile_definitions(VgAutoCookTests PRIVATE DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(VgAutoCookTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgAutoCookTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET VgAutoCookTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgAutoCookTests>")
+    add_test(NAME VgAutoCookTests COMMAND VgAutoCookTests)
+endif()
+
 # モデル取り込み: import.json（ModelImportOptions）と albedo アルファの透明判定（TextureLoader::HasTransparentAlpha）。GPU 不要。
 if(TARGET Resource AND TARGET Renderer)
     add_executable(ModelImportAlphaTests model_import_alpha_test.cpp)

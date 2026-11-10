@@ -67,6 +67,7 @@ namespace dx12e
     class ContactShadowPass;
     class HiZPass;
     class OcclusionCullPass;
+    struct CachedModel;   // resource/ResourceManager.h（RebindModelEntities）
     namespace vg { class VirtualGeometrySystem; }   // renderer/vg/VirtualGeometrySystem.h（仮想ジオメトリ P2）
     namespace foliage { class FoliageSystem; }      // renderer/foliage/FoliageSystem.h（植生 F1）
     class ReflectionProbeSystem;   // renderer/ReflectionProbeSystem.h（反射プローブ）
@@ -467,6 +468,10 @@ private:
     void RegisterMcpAssetMethods();       // カメラ / 空間クエリ / アセット入出力 / ピッキング
     // dx12_reload_assets の実処理（フレーム境界で 1 度だけ呼ぶ。cmdList が要る）。
     void ProcessMcpAssetReloads(ID3D12GraphicsCommandList* cmdList);
+    // 仮想ジオメトリの自動 cook（resource/VgAutoCook）: cook が終わったモデルのキャッシュを作り直し、MeshRenderer を張り替える
+    void ProcessVgAutoSwaps(ID3D12GraphicsCommandList* cmdList);
+    // ModelKey（ResourceManager::NormalizeModelKey）→ 新しい CachedModel で、今シーンの MeshRenderer を張り替える（張り替えた数）
+    int RebindModelEntities(const std::unordered_map<std::string, const CachedModel*>& byKey);
     void RegisterMcpTerrainMethods();     // 地形 / スカルプト
     void RegisterMcpLightingMethods();    // ライティング / 診断
     void RegisterMcpNavMethods();         // ナビメッシュ（生成 / 設定 / 経路 / レイ / 可視化）
@@ -1750,6 +1755,9 @@ private:
     bool VirtualGeometryHidesProxy(entt::entity e) const;
     std::unordered_set<u32> m_vgHiddenEntities;
     bool m_vgSkipProxies = false;    // 主ビューの深度プリパス〜フォワードの間だけ true（影 / TLAS / ピッキングは常にプロキシを見る）
+    // 自動 cook（MeshRenderer::vgAutoPath）のエンティティがシーンにある。シーンの VG 設定が OFF でもそれらだけは VG で描く
+    // （「置くだけで VG」。VirtualGeometryCollectProxyHide が毎フレーム数え直す）。
+    bool m_vgAutoPresent = false;
     // 暫定シェーディング / デバッグ可視化（P4 の resolve まで）。描いたら true
     bool DrawVirtualGeometryDebug(ID3D12GraphicsCommandList* cmd, u32 frameIndex, u32 mode, D3D12_CPU_DESCRIPTOR_HANDLE rtv,
                                   u32 w, u32 h, f32 zFar);
@@ -1771,6 +1779,10 @@ private:
     // スカイの後・フォワードの前に呼ぶ。描いたら true（false なら呼び出し側が暫定シェーディングへ縮退する）
     bool DrawVirtualGeometryResolve(ID3D12GraphicsCommandList* cmd, const VgResolveIn& in);
     void VirtualGeometryBindMaterials(ID3D12GraphicsCommandList* cmd);   // 準備済みアセットの材質（テクスチャ）を材質表へ登録
+    // エンティティ単位の材質区間（.dxmat / テクスチャ上書き / materialRemap / AO・拡張シェーディングの上書き）。上書きが無ければ VG_NONE
+    u32 VgEntityMaterialBase(entt::entity e, const MeshRenderer& mr, u32 assetId, ID3D12GraphicsCommandList* cmd);
+    // .dxmat がマテリアルグラフか（VgIneligibleReason に渡す。未読込なら false）
+    std::function<bool(const std::string&)> VgGraphPredicate() const;
 
     // ---- 植生 F1（FoliageLayer + GPU カリング + ExecuteIndirect + 風）。実装は ApplicationFoliage.cpp / mcp/ApplicationMcpFoliage.cpp ----
     // ★FoliageLayer が 1 つも無いシーンでは m_foliage を作らず、描画パスの呼び出し点は FoliageActive() で弾く（未使用シーンは 1 命令も変わらない）。

@@ -100,6 +100,7 @@ struct AssetMaterial
     float    emissiveIntensity = 0.0f;
     float    uvScaleOffset[4] = {1, 1, 0, 0};
     uint32_t sectionKind = 0;           // 0 = VG / 1 = NONVG
+    float    aoStrength = 0.0f;         // .vgeo v1.1: MR の R を AO として読む強さ（0 = 読まない）
     ShadingExt shading;                 // 拡張シェーディング（.vgeo は今は持たない＝既定。VgMaterialGpu::ext へ詰める）
 };
 
@@ -351,6 +352,19 @@ public:
     // 材質表へ登録する（count = アセットの材質数）。以後 G-Buffer / resolve / K2（両面材質）がこの表を読む。
     bool SetAssetMaterials(uint32_t id, const VgMaterialGpu* mats, uint32_t count);
     bool AssetMaterialsBound(uint32_t id) const;
+    // エンティティ単位の材質区間（VgInstanceInput::materialBase に入れる）。.dxmat / テクスチャ上書き / materialRemap を VG で描くため。
+    //   Alloc → Write（何度でも上書きしてよい）→ 要らなくなったら Free（GPU の使用が終わるまで遅らせて返す）。失敗は 0xFFFFFFFF。
+    uint32_t AllocMaterialBlock(uint32_t count);
+    bool WriteMaterialBlock(uint32_t base, const VgMaterialGpu* mats, uint32_t count);
+    void FreeMaterialBlock(uint32_t base, uint32_t count);
+    uint32_t InstanceMaterialSlots() const { return m_instMatBlocks; }   // エンティティ単位の区間が使っている材質の個数（統計）
+    // 鍵（エンティティ ID）ごとの材質区間。中身が変わったときだけ表へ書く。戻り値 = VgInstanceInput::materialBase（失敗は 0xFFFFFFFF）。
+    //   EndKeyedMaterialFrame を呼ぶと、前回の End 以降に SetKeyedMaterials されなかった鍵の区間を解放する（エンティティの削除・上書きの解除）。
+    uint32_t SetKeyedMaterials(uint32_t key, const VgMaterialGpu* mats, uint32_t count);
+    void EndKeyedMaterialFrame();
+    uint32_t KeyedMaterialCount() const { return static_cast<uint32_t>(m_keyedMats.size()); }
+    // SetAssetMaterials で登録した材質の写し（エンティティ単位の材質の土台）。未登録なら false。
+    bool GetAssetMaterialsGpu(uint32_t id, std::vector<VgMaterialGpu>& out) const;
     bool DrawGBuffer(const GBufferDesc& d);
     bool DrawResolve(const ResolveDesc& d);
     bool ResolveSupported() const { return m_rasterOk && m_extHeap && !m_bcResolveVs.empty() && !m_bcResolvePs.empty(); }
@@ -378,6 +392,7 @@ private:
         std::vector<AssetMaterial> materials;   // P4: .vgeo の材質（読込時にワーカーが詰める）
         uint32_t matBase = 0xFFFFFFFFu;     // P4: 材質表の区間
         uint32_t matCount = 0;
+        std::vector<VgMaterialGpu> gpuMats; // 登録した材質の写し（エンティティ単位の材質の土台。GetAssetMaterialsGpu）
     };
 
     struct Uploader;
@@ -443,6 +458,12 @@ private:
     Microsoft::WRL::ComPtr<ID3D12Resource> m_matBuf;
     uint8_t* m_matMapped = nullptr;
     IndexAllocator m_matAlloc;
+    struct RetiredMatBlock { uint32_t base = 0, count = 0; uint64_t frame = 0; };
+    std::vector<RetiredMatBlock> m_matRetired;             // エンティティ単位の材質区間の遅延解放（Execute ごとに RetireMaterialBlocks）
+    uint32_t m_instMatBlocks = 0;
+    void RetireMaterialBlocks();
+    struct KeyedMat { uint32_t base = 0xFFFFFFFFu, count = 0; std::vector<VgMaterialGpu> cpu; bool touched = false; };
+    std::unordered_map<uint32_t, KeyedMat> m_keyedMats;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoSort, m_psoGBuffer, m_psoResolve;
     std::vector<uint8_t> m_bcGbVs, m_bcGbPs, m_bcResolveVs, m_bcResolvePs;
     ID3D12RootSignature* m_psoResolveRs = nullptr;

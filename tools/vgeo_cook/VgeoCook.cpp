@@ -15,6 +15,7 @@
 
 #include <meshoptimizer.h>
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
 #include <cfloat>
@@ -1066,7 +1067,9 @@ struct OutMats
         m.metalRoughPathOff = remap(m.metalRoughPathOff);
         m.emissivePathOff = remap(m.emissivePathOff);
         m.sectionKind = kind;
-        m.reserved = 0;
+        // v1.1: AO（kMatAoInMR + aoStrength）は入力の値を写す。フラグが無ければ 0（v1.0 の予約と同じバイト）。
+        if (!(m.flags & kMatAoInMR) || !(m.flags & kMatHasMetalRough)) { m.flags &= ~kMatAoInMR; m.aoStrength = 0.0f; }
+        else m.aoStrength = std::clamp(m.aoStrength, 0.0f, 1.0f);
         if (kind == 0) m.flags &= ~(kMatAlphaTest | kMatBlend);
         const u32 idx = static_cast<u32>(recs.size());
         recs.push_back(m);
@@ -1508,6 +1511,13 @@ static VgeoError CookImpl(VgsrcData&& in, const CookOptions& opt, VgeoContent& o
     // ── ヘッダ / 材質 / debugJson ───────────────────────────────────────────
     out.materials = mats.recs;
     out.strings = mats.pool.Data();
+    // v1.1: 拡張シェーディング（入力の材質番号 → 出力の材質番号。VG / NONVG で同じ入力材質が 2 つに分かれても同じ値）
+    out.materialShading.clear();
+    if (!in.materialShading.empty() && in.materialShading.size() == in.materials.size())
+    {
+        out.materialShading.assign(out.materials.size(), {});
+        for (const auto& [key, idx] : mats.index) out.materialShading[idx] = in.materialShading[key.first];
+    }
     VgeoHeader& h = out.header;
     h.maxClusterVerts = opt.maxVerts;
     h.maxClusterTris = opt.maxTris;

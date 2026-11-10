@@ -25,7 +25,8 @@ struct VgInstance
     uint32_t packedTint;      // 104  RGB888 + opacity8（MeshRenderer::colorTint。白 = 0xFFFFFFFF）
     uint32_t packedEmissive;  // 108  P4: 自己発光の上書き（RGB888 = 色 / 上位 8bit = 強度。どちらが有効かは flags の VG_INST_EMIS_*）
     float    maxScale;        // 112  ワールド行列の最大軸スケール（誤差 / 球半径の上界）
-    uint32_t entityId;        // 116  デバッグ / ピッキング
+    uint32_t materialBase;    // 116  材質表の区間（エンティティ単位の材質: .dxmat / テクスチャ上書き / materialRemap）。VG_NONE = アセットの区間（VgAssetGpu::materialBase）
+                              //      ★旧 entityId（GPU は読んでいなかった）。2026-11-10
     float    overrideMetallic;  // 120  P4: MeshRenderer::overrideMetallic（< 0 = 材質の値）
     float    overrideRoughness; // 124  P4: 同 overrideRoughness
 };
@@ -40,7 +41,8 @@ struct VgInstanceInput
     float    prevWorld[16]{};      // hasPrev == false のとき world と同値として扱う
     bool     hasPrev   = false;
     uint32_t assetId   = 0;        // VirtualGeometrySystem が返したアセット ID
-    uint32_t entityId  = 0;
+    uint32_t entityId  = 0;        // CPU 側の識別用（GPU へは送らない）
+    uint32_t materialBase = 0xFFFFFFFFu;   // エンティティ単位の材質区間（VirtualGeometrySystem::AllocMaterialBlock）。0xFFFFFFFF = アセットの区間
     uint32_t packedTint = 0xFFFFFFFFu;
     uint32_t packedEmissive = 0;
     uint32_t emissiveFlags = 0;          // P4: VG_INST_EMIS_COLOR_OV | VG_INST_EMIS_INT_OV
@@ -59,7 +61,7 @@ inline VgInstance MakeInstance(const VgInstanceInput& in, uint32_t assetIndexOnG
     o.packedTint = in.packedTint;
     o.packedEmissive = in.packedEmissive;
     o.maxScale = MaxAxisScale(in.world);
-    o.entityId = in.entityId;
+    o.materialBase = in.materialBase;
     o.overrideMetallic = in.overrideMetallic;
     o.overrideRoughness = in.overrideRoughness;
     return o;
@@ -78,7 +80,7 @@ struct VgMaterialGpu
     uint32_t flags;            // 16  VG_MAT_*（bit0 法線 / bit1 MR / bit3 自己発光テクスチャ / bit4 両面）
     float    metallic;         // 20  Material::defaultMetallic 相当
     float    roughness;        // 24  同 defaultRoughness
-    uint32_t reserved0;        // 28
+    float    aoStrength;       // 28  マテリアル AO（MR の R）の強さ。0 = 読まない。フォワードの PackAoFlags と同じ 8bit 量子化済みの値（旧 reserved0）
     float    uvScaleOffset[4]; // 32  xy = スケール / zw = オフセット（MaterialRecord.uvScaleOffset）
     float    emissiveColor[3]; // 48
     float    emissiveIntensity;// 60

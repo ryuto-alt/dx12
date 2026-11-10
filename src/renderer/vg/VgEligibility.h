@@ -7,8 +7,15 @@
 //   ★判定はこの 1 関数に一本化する（ApplicationVg.cpp のインスタンス収集 / プロキシを外す集合 / エディタの Inspector の警告が
 //     同じ関数を呼ぶ。IsRaytracedItem と同じ理由: 判定が 2 箇所に割れると「VG でもプロキシでも描かれない」事故になる）。
 //   ヘッダオンリー（ECS の読み取りだけ）。
+//
+//   2026-11-10（feat/vg-materials）: 材質アセット（.dxmat）・テクスチャの上書き・materialRemap は VG で描けるようになった
+//   （エンティティ単位の材質区間。ApplicationVg.cpp の BuildVgEntityMaterials）。残る対象外は下の列挙だけ。
+//   マテリアルグラフ（.dxmat の graph = .dxmg）は材質ごとにシェーダが違うので、resolve の材質 ID ごとのパスが要る（未実装。
+//   docs/VIRTUAL_GEOMETRY_DESIGN.md §2.4.9）。判定には .dxmat の中身が要るので、呼び出し側が isGraphMaterial を渡す
+//   （渡さなければグラフかどうかは見ない = Inspector の簡易表示）。
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -20,7 +27,9 @@ namespace dx12e::vg
 {
 
 // 戻り値: 対象外の理由（日本語の短文）/ nullptr = VG で描ける。
-inline const char* VgIneligibleReason(const entt::registry& reg, entt::entity e)
+//   isGraphMaterial(.dxmat の assets 相対パス) = その材質がマテリアルグラフか（未読込なら false でよい。次のフレームで読める）。
+inline const char* VgIneligibleReason(const entt::registry& reg, entt::entity e,
+                                      const std::function<bool(const std::string&)>& isGraphMaterial = {})
 {
     if (reg.all_of<SkeletalAnimation>(e)) return "スキンドメッシュは仮想ジオメトリの対象外です（プロキシで描きます）";
     if (reg.all_of<NodeAnimationComp>(e)) return "ノードアニメのあるモデルは仮想ジオメトリの対象外です（プロキシで描きます）";
@@ -29,13 +38,13 @@ inline const char* VgIneligibleReason(const entt::registry& reg, entt::entity e)
     const MeshRenderer* mr = reg.try_get<MeshRenderer>(e);
     if (!mr) return nullptr;
     if (!mr->shaderPath.empty()) return "カスタムシェーダーは仮想ジオメトリの対象外です（プロキシで描きます）";
-    if (!mr->materialRemap.empty()) return "材質名による差し替え（materialRemap）は仮想ジオメトリの対象外です（プロキシで描きます）";
-    for (uint32_t mi = 0; mi < static_cast<uint32_t>(mr->materialAsset.size()); ++mi)
-        if (mr->HasMaterialAsset(mi)) return "材質アセット（.dxmat / マテリアルグラフ）は仮想ジオメトリの対象外です（プロキシで描きます）";
-    const size_t nOv = (std::max)((std::max)(mr->overrideAlbedoTexture.size(), mr->overrideNormalTexture.size()),
-                                  (std::max)(mr->overrideMetalRoughnessTexture.size(), mr->overrideEmissiveTexture.size()));
-    for (uint32_t mi = 0; mi < static_cast<uint32_t>(nOv); ++mi)
-        if (mr->HasAnyTextureOverride(mi)) return "テクスチャの上書きは仮想ジオメトリの対象外です（プロキシで描きます）";
+    if (isGraphMaterial)
+    {
+        const u32 n = static_cast<u32>((std::max)(mr->meshes.size(), mr->materialAsset.size()));
+        for (u32 mi = 0; mi < n; ++mi)
+            if (mr->HasMaterialAsset(mi) && isGraphMaterial(mr->MaterialAssetOf(mi)))
+                return "マテリアルグラフ（.dxmg）の材質は仮想ジオメトリの対象外です（プロキシで描きます。設計は VIRTUAL_GEOMETRY_DESIGN.md §2.4.9）";
+    }
     if (mr->alphaModeOverride == 1 || mr->alphaModeOverride == 2)
         return "アルファクリップ / 半透明は仮想ジオメトリの対象外です（プロキシで描きます）";
     if (mr->opacity < 0.999f) return "不透明度が 1 未満（半透明）は仮想ジオメトリの対象外です（プロキシで描きます）";

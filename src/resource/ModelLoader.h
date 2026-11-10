@@ -29,6 +29,10 @@ struct ModelData
     // Node animation（skeleton が null でアニメーションがある場合）
     std::unique_ptr<NodeGraph>                         nodeGraph;
     std::vector<std::unique_ptr<NodeAnimationClip>>    nodeAnimClips;
+
+    // .vgeo のプロキシだけ: meshes[i] が .vgeo のどの材質（MaterialRecord の番号）か。VG の材質（.dxmat / 上書き）を
+    // サブメッシュ番号から引くのに使う。通常のモデルは空。
+    std::vector<uint32_t> vgMaterialOfMesh;
 };
 
 // MCP asset_info 用: GPU を使わずモデルのメタ情報だけ読む(Assimp のみ)。
@@ -76,15 +80,70 @@ struct ModelImportOptions
     //   ラベルが左右反転して見えた件で追加。
     bool leftHanded = false;
 
+    // 仮想ジオメトリ（VG）の自動 cook（resource/VgAutoCook）。"auto"（既定）= 静的・不透明・三角形数がしきい値以上なら裏で cook して
+    // VG で描く / "on" = しきい値・材質数に関係なく cook する（アルファ材質は NONVG セクションへ）/ "off" = 常に通常メッシュ。
+    // ★鍵（キャッシュ）には import.json の中身ごと入るので、ここを変えると作り直される。
+    enum class VgMode : uint8_t { Auto, On, Off };
+    VgMode virtualGeometry = VgMode::Auto;
+
     // JSON 文字列から読む。壊れている / キーが無い / 型違いは既定値（全部 false / 0）。
     static ModelImportOptions Parse(const std::string& jsonText);
     // モデルの隣の import.json を vfs 経由で読む（配布ゲームの pak でも読める）。無ければ既定値。
     static ModelImportOptions LoadFor(const std::filesystem::path& modelPath);
 };
 
+// ── 仮想ジオメトリの自動 cook 用: GPU を使わずに「エンジンが描くのと同じ頂点」と材質の出どころを取り出す ──
+//   LoadFromFile と同じ import 設定（import.json の leftHanded・単位正規化・FlipUVs）・同じノード変換の焼き込み・
+//   同じ UV 変換・同じ三角形の拾い方。材質ごとに 1 セクションへまとめる（mergeStatic の結合は描画単位の都合なので頂点は同じ）。
+struct StaticTexSource
+{
+    std::filesystem::path file;          // 実ファイル（空なら bytes）
+    std::vector<uint8_t>  bytes;         // 埋め込み / 合成（ORM）の画像バイト列
+    std::string           ext;           // 書き出すときの拡張子（"png" / "jpg" …。file のときは元の拡張子）
+    bool Empty() const { return file.empty() && bytes.empty(); }
+};
+
+struct StaticMaterialCpu
+{
+    std::string     name;
+    StaticTexSource albedo, normal, metalRough, emissive;
+    bool  occlusionInMR = false;         // metalRough の R を AO として読む（Material::occlusionInMR と同じ）
+    float aoStrength    = 1.0f;
+    float metallic      = 0.0f, roughness = 0.5f;
+    float emissiveColor[3] = {0.0f, 0.0f, 0.0f};
+    float emissiveIntensity = 0.0f;
+    AlphaMode alphaMode = AlphaMode::Opaque;
+    float alphaCutoff   = 0.5f;
+    float baseColorAlpha = 1.0f;
+    bool  doubleSided   = false;         // AI_MATKEY_TWOSIDED（glTF doubleSided）
+    ShadingExt shading;                  // 拡張シェーディング（glTF の clearcoat / anisotropy / sheen / specular / ior。LoadFromFile と同じ読み方）
+};
+
+struct StaticModelCpu
+{
+    std::vector<float>    positions;     // xyz（エンジン空間・ノード変換を焼いた後）
+    std::vector<float>    normals;       // xyz（正規化済み）
+    std::vector<float>    uvs;           // uv（UV 変換を焼いた後・D3D の左上原点）
+    std::vector<uint32_t> indices;       // 三角形リスト（sections が先頭から隙間なく覆う）
+    struct Section { uint32_t material = 0, firstIndex = 0, indexCount = 0; };
+    std::vector<Section>  sections;      // 材質ごとに 1 個
+    std::vector<StaticMaterialCpu> materials;   // sections[i].material の指す先（使われている aiMaterial だけ）
+    uint64_t triangles = 0;
+    bool hasSkin = false, hasAnimation = false;
+    bool hasVertexColor = false;         // 白以外の頂点カラーがある（VG は頂点カラーを持たない）
+    uint32_t mirroredNodes = 0;          // 行列式が負のノード（巻き順を反転して外向きに揃えた）
+};
+
 class ModelLoader
 {
 public:
+    // VG の自動 cook 用（裏のスレッドから呼んでよい。GPU・ResourceManager に触らない）。失敗は false と err。
+    // countOnly = true なら頂点を作らず triangles / hasSkin / hasAnimation / 材質だけ埋める（しきい値の判定用）。
+    static bool ExtractStaticForVg(const std::filesystem::path& filePath, StaticModelCpu& out, std::string* err,
+                                   bool countOnly = false);
+    // LoadFromFile が Assimp に渡す後処理フラグ（import 設定込み）。解析キャッシュの鍵にもなる。
+    static unsigned int LoadFlags(const ModelImportOptions& opts);
+
     // glTF の occlusionTexture をマテリアルごとに調べる（LoadFromFile と同じ判定）。読めなければ空。
     static std::vector<OcclusionProbe> ProbeOcclusion(const std::filesystem::path& filePath);
 

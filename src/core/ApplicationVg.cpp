@@ -14,6 +14,8 @@
 #include "renderer/ViewDesc.h"
 #include "renderer/vg/VgEligibility.h"
 #include "renderer/vg/VgeoFormat.h"     // P4: 材質の flags（kMat*）/ テクスチャパスの安全検査
+#include "resource/VgAutoCook.h"         // 仮想ジオメトリの自動 cook（状態 / 差し替え）
+#include "resource/MaterialAssetManager.h"
 
 #include <cctype>
 #include <cmath>
@@ -51,6 +53,37 @@ std::string ResolveVgPath(const std::string& p)
     return p;
 }
 
+// VG で描くエンティティを列挙する（★プロキシを外す集合・インスタンス収集・統計が同じ列挙を使う）。
+//   ・VirtualGeometry コンポーネント（enabled）: パス = vgeoPath > MeshRenderer.modelPath（.vgeo）> MeshRenderer.vgAutoPath。
+//     シーンの VG 設定が ON のときだけ。
+//   ・自動 cook（MeshRenderer.vgAutoPath。コンポーネント無し）: シーンの VG 設定に関係なく（「置くだけで VG」）。
+//     VirtualGeometry{enabled=false} を付ければそのエンティティだけ外せる。
+//   fn(entity, path, meshRenderer or null, isAuto)
+template <class Fn>
+void ForEachVgEntity(entt::registry& reg, bool sceneEnabled, Fn&& fn)
+{
+    if (sceneEnabled)
+        for (auto [e, vgc] : reg.view<VirtualGeometry>().each())
+        {
+            if (!vgc.enabled) continue;
+            const MeshRenderer* mr = reg.try_get<MeshRenderer>(e);
+            std::string path = vgc.vgeoPath;
+            if (path.empty() && mr) path = IsVgeoPath(mr->modelPath) ? mr->modelPath : mr->vgAutoPath;
+            if (path.empty() || !IsVgeoPath(path)) continue;
+            fn(e, path, mr, !mr || mr->vgAutoPath.empty() ? false : path == mr->vgAutoPath);
+        }
+    for (auto [e, mr] : reg.view<MeshRenderer>().each())
+    {
+        if (mr.vgAutoPath.empty()) continue;
+        if (const VirtualGeometry* vgc = reg.try_get<VirtualGeometry>(e))
+            if (!vgc->enabled || sceneEnabled) continue;   // 外された / 上のループで済んだ
+        fn(e, mr.vgAutoPath, &mr, true);
+    }
+}
+
+// サブメッシュ番号 → .vgeo の材質番号（CachedModel::vgMaterialOfMesh）。MeshRenderer の先頭メッシュで覚える（差し替えで捨てる）。
+std::unordered_map<const Mesh*, std::vector<u32>> g_vgMeshMatMap;
+
 // P4: VG 本体で描いてよいアセットか（準備済み + 材質を登録済み）。★インスタンス収集とプロキシを外す集合の両方が同じ条件を使う。
 bool VgAssetDrawable(const vg::VirtualGeometrySystem& sys, u32 id)
 {
@@ -64,7 +97,8 @@ bool Application::VirtualGeometryCullWanted(bool primary) const
 {
     if (!primary || m_vgUnavailable || !m_scene || !m_graphicsDevice) return false;
     if (!m_graphicsDevice->SupportsDynamicResources()) return false;   // SM 6.6 + Resource Binding Tier 3
-    return m_scene->GetVirtualGeometrySettings().enabled;
+    // 自動 cook のエンティティがあればシーンの設定が OFF でも回す（それらだけを描く。ForEachVgEntity）
+    return m_scene->GetVirtualGeometrySettings().enabled || m_vgAutoPresent;
 }
 
 // P3: このフレーム、VG のラスタ（メッシュシェーダ）を回すか。設定 ON + raster + GPU 対応 + 初期化済み（未初期化なら見込みで true）。
@@ -89,19 +123,39 @@ bool Application::VirtualGeometryRasterWanted(bool primary) const
 void Application::VirtualGeometryCollectProxyHide()
 {
     m_vgHiddenEntities.clear();
+    // 自動 cook のエンティティがあるか（VirtualGeometryCullWanted が見る。毎フレーム数え直す）
+    m_vgAutoPresent = false;
+    if (m_scene)
+    {
+        entt::registry& r = m_scene->GetRegistry();
+        for (auto [e, mr] : r.view<MeshRenderer>().each())
+        {
+            if (mr.vgAutoPath.empty()) continue;
+            if (const VirtualGeometry* vgc = r.try_get<VirtualGeometry>(e); vgc && !vgc->enabled) continue;
+            m_vgAutoPresent = true;
+            break;
+        }
+    }
     if (!m_scene || !m_vg || !VirtualGeometryRasterWanted(true)) return;
     entt::registry& reg = m_scene->GetRegistry();
-    for (auto [e, vgc] : reg.view<VirtualGeometry>().each())
+    const auto isGraph = VgGraphPredicate();
+    ForEachVgEntity(reg, m_scene->GetVirtualGeometrySettings().enabled,
+        [&](entt::entity e, const std::string& path, const MeshRenderer*, bool)
+        {
+            if (vg::VgIneligibleReason(reg, e, isGraph)) return;   // P4: 対象外（スキンド / 半透明 / カスタムシェーダー / グラフ材質 …）はプロキシで描く
+            const u32 id = m_vg->FindAsset(ResolveVgPath(path));
+            if (id != 0xFFFFFFFFu && VgAssetDrawable(*m_vg, id)) m_vgHiddenEntities.insert(static_cast<u32>(entt::to_integral(e)));
+        });
+}
+
+std::function<bool(const std::string&)> Application::VgGraphPredicate() const
+{
+    return [this](const std::string& rel)
     {
-        if (!vgc.enabled) continue;
-        if (vg::VgIneligibleReason(reg, e)) continue;   // P4: 対象外（スキンド / 半透明 / カスタムシェーダー / 材質アセット …）はプロキシで描く
-        std::string path = vgc.vgeoPath;
-        if (path.empty())
-            if (const MeshRenderer* mr = reg.try_get<MeshRenderer>(e)) path = mr->modelPath;
-        if (path.empty() || !IsVgeoPath(path)) continue;
-        const u32 id = m_vg->FindAsset(ResolveVgPath(path));
-        if (id != 0xFFFFFFFFu && VgAssetDrawable(*m_vg, id)) m_vgHiddenEntities.insert(static_cast<u32>(entt::to_integral(e)));
-    }
+        if (!m_materialAssetManager) return false;
+        const MaterialAssetManager::Entry* en = m_materialAssetManager->FindLoaded(rel);
+        return en && en->data.IsGraph();
+    };
 }
 
 bool Application::VirtualGeometryHidesProxy(entt::entity e) const
@@ -181,6 +235,9 @@ void Application::VirtualGeometryBindMaterials(ID3D12GraphicsCommandList* cmd)
                     | (g.emissiveSrv != VG_NONE ? VG_MAT_EMISSIVE_TEX : 0u) | ((m.flags & vg::kMatDoubleSided) ? VG_MAT_DOUBLE_SIDED : 0u);
             g.metallic  = m.metallic;
             g.roughness = m.roughness;
+            // マテリアル AO（.vgeo v1.1。フォワードの PackAoFlags と同じ 8bit 量子化の値。MR が読めたときだけ）
+            g.aoStrength = (g.metalRoughSrv != VG_NONE && m.aoStrength > 0.0f)
+                         ? static_cast<f32>(QuantizeUnorm8(std::clamp(m.aoStrength, 0.0f, 1.0f))) / 255.0f : 0.0f;
             std::memcpy(g.uvScaleOffset, m.uvScaleOffset, 16);
             std::memcpy(g.emissiveColor, m.emissiveColor, 12);
             g.emissiveIntensity = m.emissiveIntensity;
@@ -266,6 +323,208 @@ bool Application::DrawVirtualGeometryResolve(ID3D12GraphicsCommandList* cmd, con
     return m_vg->DrawResolve(d);
 }
 
+// ---------------------------------------------------------------------------
+// エンティティ単位の材質（2026-11-10。VgEligibility の「材質アセット / テクスチャ上書き / materialRemap は対象外」を外した中身）。
+//   アセットの材質（.vgeo の MaterialRecord → VirtualGeometryBindMaterials）を土台に、フォワード（ApplicationRender.cpp の
+//   drawEntity）と同じ優先度で差し替える: materialAsset（個別 > materialRemap）> overrideXxxTexture > 焼き込み。
+//   係数（metallic / roughness / ティント / 自己発光）のエンティティ上書きはインスタンス表（VgInstance）が持つので、ここは
+//   「テクスチャ・材質の土台・AO の強さ・拡張シェーディング」だけ。毎フレーム作り直し、中身が変わったときだけ材質表へ書く
+//   （VirtualGeometrySystem::SetKeyedMaterials）。
+//   ★両面フラグはアセットの値を残す（K2 の法線コーン棄却はアセットの区間しか見ない。.dxmat / 上書きは両面を変えない）。
+//   ★POM（.dxmat の height / parallaxScale）は VG では効かない（VgMaterialGpu に高さの枠が無い。VgResolve.hlsl の冒頭）。
+// ---------------------------------------------------------------------------
+u32 Application::VgEntityMaterialBase(entt::entity e, const MeshRenderer& mr, u32 assetId, ID3D12GraphicsCommandList* cmd)
+{
+    if (!m_vg) return VG_NONE;
+    mr.RefreshMaterialRemap();
+    const u32 nSub = static_cast<u32>(mr.meshes.size());
+    const bool shadingOv = HashShadingExtOverride(mr.overrideShading) != HashShadingExtOverride(ShadingExtOverride{});
+    bool any = mr.overrideAoStrength >= 0.0f || shadingOv;
+    for (u32 si = 0; si < nSub && !any; ++si)
+        if (mr.HasMaterialAsset(si) || mr.HasAnyTextureOverride(si)) any = true;
+    if (!any) return VG_NONE;
+
+    std::vector<vg::VgMaterialGpu> mats;
+    if (!m_vg->GetAssetMaterialsGpu(assetId, mats)) return VG_NONE;
+    std::vector<vg::AssetMaterial> src;
+    m_vg->GetAssetMaterials(assetId, src);
+
+    // サブメッシュ → .vgeo の材質番号（プロキシは .vgeo の材質ごとに 1 メッシュ。CachedModel::vgMaterialOfMesh）
+    const std::vector<u32>* map = nullptr;
+    if (!mr.meshes.empty() && m_resourceManager)
+    {
+        auto it = g_vgMeshMatMap.find(mr.meshes[0]);
+        if (it == g_vgMeshMatMap.end())
+        {
+            std::vector<u32> m;
+            const CachedModel* cm = m_resourceManager->FindModel(ResourceManager::NormalizeModelKey(mr.modelPath));
+            if (!cm) cm = m_resourceManager->FindModel(ResourceManager::NormalizeModelKey(PathResolver::AssetsDir() + mr.modelPath));
+            if (cm && !cm->meshes.empty() && cm->meshes[0].get() == mr.meshes[0]) m = cm->vgMaterialOfMesh;
+            it = g_vgMeshMatMap.emplace(mr.meshes[0], std::move(m)).first;
+        }
+        if (!it->second.empty()) map = &it->second;
+    }
+    auto quantAo = [](f32 v) { return static_cast<f32>(QuantizeUnorm8(std::clamp(v, 0.0f, 1.0f))) / 255.0f; };
+
+    std::vector<bool> done(mats.size(), false);
+    for (u32 si = 0; si < nSub; ++si)
+    {
+        const u32 k = map ? (si < map->size() ? (*map)[si] : 0xFFFFFFFFu) : si;
+        if (k >= mats.size() || done[k]) continue;
+        done[k] = true;
+        vg::VgMaterialGpu& g = mats[k];
+        const u32 doubleSided = g.flags & VG_MAT_DOUBLE_SIDED;
+        ShadingExt baseExt = (k < src.size()) ? src[k].shading : ShadingExt{};
+        const Material* mat = (si < mr.materials.size() && mr.materials[si]) ? mr.materials[si]
+                            : (mr.meshes[si] ? mr.meshes[si]->GetMaterial() : nullptr);
+
+        if (mr.HasMaterialAsset(si) && m_materialAssetManager)
+        {
+            const MaterialAssetManager::Entry* ma = m_materialAssetManager->GetOrLoad(mr.MaterialAssetOf(si), cmd);
+            if (ma && ma->valid && !ma->data.IsGraph() && ma->srvBlockStart != 0xFFFFFFFFu)
+            {
+                // .dxmat の 5 連続ブロック（albedo / normal / MR / emissive / height）をそのまま添字で引く
+                g = vg::VgMaterialGpu{};
+                g.albedoSrv     = ma->srvBlockStart;
+                g.normalSrv     = ma->hasNormalTex   ? ma->srvBlockStart + 1 : VG_NONE;
+                g.metalRoughSrv = ma->hasMRTex       ? ma->srvBlockStart + 2 : VG_NONE;
+                g.emissiveSrv   = ma->hasEmissiveTex ? ma->srvBlockStart + 3 : VG_NONE;
+                g.flags = (ma->hasNormalTex ? VG_MAT_NORMAL_TEX : 0u) | (ma->hasMRTex ? VG_MAT_MR_TEX : 0u)
+                        | (ma->hasEmissiveTex ? VG_MAT_EMISSIVE_TEX : 0u) | doubleSided;
+                g.metallic  = ma->data.metallic;
+                g.roughness = ma->data.roughness;
+                // AO: .dxmat の aoStrength > 0 のときだけ（エンティティ上書きは強さだけ差し替える。フォワードと同じ）
+                g.aoStrength = (ma->hasMRTex && ma->data.aoStrength > 0.0f)
+                             ? quantAo(mr.overrideAoStrength >= 0.0f ? mr.overrideAoStrength : ma->data.aoStrength) : 0.0f;
+                g.uvScaleOffset[0] = 1.0f; g.uvScaleOffset[1] = 1.0f; g.uvScaleOffset[2] = 0.0f; g.uvScaleOffset[3] = 0.0f;
+                if (mr.MaterialIsRemapped(si))   // remap 由来の .dxmat だけ uvTiling を描画時に掛ける（フォワードと同じ）
+                {
+                    g.uvScaleOffset[0] = ma->data.uvTilingU;
+                    g.uvScaleOffset[1] = ma->data.uvTilingV;
+                }
+                std::memcpy(g.emissiveColor, ma->data.emissiveColor, 12);
+                g.emissiveIntensity = ma->data.emissiveIntensity;
+                baseExt = ma->data.shading;
+            }
+        }
+        else if (mr.HasAnyTextureOverride(si))
+        {
+            auto load = [&](const std::string& rel, bool srgb, TextureUsage usage) -> u32
+            {
+                if (rel.empty() || !m_resourceManager || !vfs::Exists(rel)) return VG_NONE;
+                const u32 idx = m_resourceManager->GetOrLoadTextureSrvIndex(PathResolver::Utf8ToWide(PathResolver::AssetsDir() + rel), cmd, srgb, usage);
+                return idx == ResourceManager::kInvalidSrvIndex ? VG_NONE : idx;
+            };
+            const u32 a  = load(MeshRenderer::SafeGetOverride(mr.overrideAlbedoTexture, si), true, TextureUsage::BaseColor);
+            const u32 n  = load(MeshRenderer::SafeGetOverride(mr.overrideNormalTexture, si), false, TextureUsage::Normal);
+            const u32 r  = load(MeshRenderer::SafeGetOverride(mr.overrideMetalRoughnessTexture, si), false, TextureUsage::NonColor);
+            const u32 em = load(MeshRenderer::SafeGetOverride(mr.overrideEmissiveTexture, si), true, TextureUsage::BaseColor);
+            if (a != VG_NONE) g.albedoSrv = a;
+            if (n != VG_NONE) { g.normalSrv = n; g.flags |= VG_MAT_NORMAL_TEX; }
+            if (r != VG_NONE) { g.metalRoughSrv = r; g.flags |= VG_MAT_MR_TEX; g.aoStrength = 0.0f; }   // 差し替えた MR の R は AO と限らない（フォワードと同じ）
+            if (em != VG_NONE) { g.emissiveSrv = em; g.flags |= VG_MAT_EMISSIVE_TEX; }
+            if (r == VG_NONE && mr.overrideAoStrength >= 0.0f && mat && mat->occlusionInMR) g.aoStrength = quantAo(mr.overrideAoStrength);
+        }
+        else if (mr.overrideAoStrength >= 0.0f && g.aoStrength > 0.0f)
+        {
+            g.aoStrength = quantAo(mr.overrideAoStrength);   // ResolveAoStrength と同じ（モデルが AO を持つときだけ効く）
+        }
+        const PackedShadingExt ext = PackShadingExt(ResolveShadingExt(baseExt, mr.overrideShading));
+        std::memcpy(g.ext, ext.data(), sizeof(g.ext));
+    }
+    return m_vg->SetKeyedMaterials(static_cast<u32>(entt::to_integral(e)), mats.data(), static_cast<u32>(mats.size()));
+}
+
+// ---------------------------------------------------------------------------
+// 自動 cook（resource/VgAutoCook）が終わったモデルの差し替え。毎フレーム、MCP のアセット再読込の直後に呼ぶ。
+//   仮の箱 → .vgeo のプロキシ（+ VG 本体）/ 対象外・失敗 → 通常のモデル。手動 cook（vg_cook）した通常モデル → プロキシ + VG。
+//   ★古いモデルは GPU が使い終わってから捨てる（WaitIdle。差し替えのあるフレームだけ・1 回）。
+// ---------------------------------------------------------------------------
+void Application::ProcessVgAutoSwaps(ID3D12GraphicsCommandList* cmdList)
+{
+    if (!m_resourceManager || !cmdList) return;
+    const auto retired = m_resourceManager->PumpVgAuto();
+    if (!retired.empty())
+    {
+        // 使っているエンティティがあるモデルだけ読み直す（無ければ次に要求されたときに読む）
+        std::unordered_map<std::string, std::string> wanted;   // key → path
+        for (const auto& [k, p] : retired) wanted.emplace(k, p);
+        std::unordered_map<std::string, const CachedModel*> byKey;
+        if (m_scene)
+        {
+            const std::string assetsDir = PathResolver::AssetsDir();
+            for (auto [e, mr] : m_scene->GetRegistry().view<MeshRenderer>().each())
+            {
+                if (mr.modelPath.empty() || wanted.empty()) continue;
+                std::string k = ResourceManager::NormalizeModelKey(mr.modelPath);
+                auto it = wanted.find(k);
+                if (it == wanted.end()) { k = ResourceManager::NormalizeModelKey(assetsDir + mr.modelPath); it = wanted.find(k); }
+                if (it == wanted.end() || byKey.count(k)) continue;
+                byKey[k] = m_resourceManager->GetOrLoadModel(it->second, cmdList);
+            }
+        }
+        const int n = RebindModelEntities(byKey);
+        Logger::Info("仮想ジオメトリ: 自動 cook の結果を反映しました（外したモデル {} / 読み直し {} / {} 体）", retired.size(), byKey.size(), n);
+        if (m_rtScene) m_rtScene->Invalidate();
+        if (m_foliage) m_foliage->InvalidateModels();
+    }
+    if (m_resourceManager->HasRetiredModels())
+    {
+        m_commandQueue->WaitIdle();
+        m_resourceManager->ReleaseRetiredModels();
+    }
+}
+
+int Application::RebindModelEntities(const std::unordered_map<std::string, const CachedModel*>& byKey)
+{
+    if (!m_scene || byKey.empty()) return 0;
+    g_vgMeshMatMap.clear();   // Mesh* が入れ替わる（古いアドレスに新しいメッシュが載りうる）
+    const std::string assetsDir = PathResolver::AssetsDir();
+    int rebound = 0;
+    auto& reg = m_scene->GetRegistry();
+    for (auto [e, mr] : reg.view<MeshRenderer>().each())
+    {
+        if (mr.modelPath.empty()) continue;
+        // modelPath は「assets 相対」で保存されるが、D&D 配置直後は絶対パスのこともある。
+        // GetOrLoadModel と同じ正規化を両方の綴りで試す(片方でも当たれば同じモデル)。
+        const CachedModel* cm = nullptr;
+        bool hit = false;
+        {
+            auto it = byKey.find(ResourceManager::NormalizeModelKey(mr.modelPath));
+            if (it == byKey.end()) it = byKey.find(ResourceManager::NormalizeModelKey(assetsDir + mr.modelPath));
+            if (it != byKey.end()) { cm = it->second; hit = true; }
+        }
+        if (!hit) continue;
+        if (!cm)
+        {
+            // 読み直しに失敗した: 古い（外した）モデルを指したままにしない（描画で死んだポインタを踏む）
+            mr.meshes.clear(); mr.materials.clear(); mr.vgAutoPath.clear();
+            ++rebound;
+            continue;
+        }
+        // ★ヒットしたら必ず張り替える。「アニメ付きだから見送る」は死んだポインタを残す＝次の描画で落ちるので絶対にやらない。
+        mr.meshes.clear();
+        mr.materials.clear();
+        for (const auto& m : cm->meshes)    mr.meshes.push_back(m.get());
+        for (const auto& m : cm->materials) mr.materials.push_back(m.get());
+        mr.vgAutoPath = cm->vgAutoVgeo;
+        mr.InvalidateMaterialRemap();
+        if (!mr.meshNodeTransforms.empty() || cm->nodeGraph)
+        {
+            DirectX::XMFLOAT4X4 ident;
+            DirectX::XMStoreFloat4x4(&ident, DirectX::XMMatrixIdentity());
+            mr.meshNodeTransforms.assign(mr.meshes.size(), ident);
+        }
+        ++rebound;
+    }
+    // BLAS キャッシュのキーは Mesh*。解放したアドレスへ新しいメッシュが載ると
+    // 「ラスタは正しいのにレイトレの影/反射だけ古い形」になるので全部捨てる。
+    if (m_rtScene) m_rtScene->Invalidate();
+    // 植生のレイヤーも Mesh* / Material* を握っている（MeshRenderer と同じく張り替えないと GPU がハングする）
+    if (m_foliage) m_foliage->InvalidateModels();
+    return rebound;
+}
+
 void Application::ShutdownVirtualGeometry()
 {
     if (m_vg) m_vg->Shutdown();
@@ -334,20 +593,16 @@ void Application::RunVirtualGeometryCull(ID3D12GraphicsCommandList* cmd, const V
     std::vector<vg::VgInstanceInput> inst;
     std::unordered_map<std::string, u32> idCache;
     std::unordered_map<u32, XMFLOAT4X4> nextPrev;
-    for (auto [e, vgc] : reg.view<VirtualGeometry>().each())
+    const auto isGraph = VgGraphPredicate();
+    ForEachVgEntity(reg, st.enabled, [&](entt::entity e, const std::string& path, const MeshRenderer* mr, bool)
     {
-        if (!vgc.enabled) continue;
-        if (vg::VgIneligibleReason(reg, e)) continue;   // P4: 対象外はプロキシで描く（VirtualGeometryCollectProxyHide と同じ判定）
-        std::string path = vgc.vgeoPath;
-        const MeshRenderer* mr = reg.try_get<MeshRenderer>(e);
-        if (path.empty() && mr) path = mr->modelPath;
-        if (path.empty() || !IsVgeoPath(path)) continue;
+        if (vg::VgIneligibleReason(reg, e, isGraph)) return;   // P4: 対象外はプロキシで描く（VirtualGeometryCollectProxyHide と同じ判定）
 
         u32 id;
         auto it = idCache.find(path);
         if (it != idCache.end()) id = it->second;
         else { id = m_vg->RequestAsset(ResolveVgPath(path)); idCache.emplace(path, id); }
-        if (id == 0xFFFFFFFFu || !VgAssetDrawable(*m_vg, id)) continue;
+        if (id == 0xFFFFFFFFu || !VgAssetDrawable(*m_vg, id)) return;
 
         XMFLOAT4X4 w;
         XMStoreFloat4x4(&w, ComputeWorldMatrix(reg, e));
@@ -381,10 +636,13 @@ void Application::RunVirtualGeometryCull(ID3D12GraphicsCommandList* cmd, const V
                 const f32 norm = std::sqrt(std::clamp(mr->overrideEmissiveIntensity, 0.0f, kEmissiveIntensityMax) / kEmissiveIntensityMax);
                 in.packedEmissive |= QuantizeUnorm8(norm) << 24;
             }
+            // エンティティ単位の材質（.dxmat / テクスチャ上書き / materialRemap / AO・拡張シェーディングの上書き）
+            in.materialBase = VgEntityMaterialBase(e, *mr, id, cmd);
         }
         inst.push_back(in);
         nextPrev.emplace(key, w);
-    }
+    });
+    m_vg->EndKeyedMaterialFrame();   // 上書きが外れた / 消えたエンティティの材質区間を返す
     m_vgPrevWorld = std::move(nextPrev);
 
     // ---- 実行 ----
@@ -472,26 +730,32 @@ nlohmann::json Application::VirtualGeometryStatsJson() const
     j["hiddenProxies"] = m_vgHiddenEntities.size();     // VG 本体が描くためプロキシを外しているエンティティ数
     j["note"] = "P4: メッシュシェーダ対応 GPU では VG 本体が可視性バッファ + 深度へ描かれ、材質 resolve（フォワードと同じライティング）で"
                 "色が付く。プロキシは主ビューの深度プリパス / フォワードから外れる（影 / TLAS / ピッキング / 物理はプロキシ）。"
-                "対象外（スキンド / 半透明 / カスタムシェーダー / 材質アセット …）はプロキシで描く（ineligible）。統計は 1〜2 フレーム遅れ";
+                "対象外（スキンド / 半透明 / カスタムシェーダー / マテリアルグラフ …）はプロキシで描く（ineligible）。.dxmat・テクスチャ上書き・"
+                "materialRemap は VG で描く。ハイポリの glb / fbx / obj は読み込み時に自動 cook（autoCook）。統計は 1〜2 フレーム遅れ";
     // P4: VG の対象外（プロキシで描く）エンティティと理由（先頭 16 件）
     if (m_scene)
     {
-        const entt::registry& reg = m_scene->GetRegistry();
+        entt::registry& reg = const_cast<entt::registry&>(m_scene->GetRegistry());   // ForEachVgEntity は読むだけ
         json inel = json::array();
-        u32 inelCount = 0;
-        for (auto [e, vgc] : reg.view<const VirtualGeometry>().each())
+        u32 inelCount = 0, autoCount = 0;
+        const auto isGraph = VgGraphPredicate();
+        ForEachVgEntity(reg, st.enabled, [&](entt::entity e, const std::string&, const MeshRenderer*, bool isAuto)
         {
-            if (!vgc.enabled) continue;
-            const char* why = vg::VgIneligibleReason(reg, e);
-            if (!why) continue;
+            if (isAuto) ++autoCount;
+            const char* why = vg::VgIneligibleReason(reg, e, isGraph);
+            if (!why) return;
             ++inelCount;
             if (inel.size() < 16)
             {
                 const NameTag* nt = reg.try_get<NameTag>(e);
-                inel.push_back({{"entity", static_cast<u32>(entt::to_integral(e))}, {"name", nt ? nt->name : std::string()}, {"reason", why}});
+                inel.push_back({{"entity", static_cast<u32>(entt::to_integral(e))}, {"name", nt ? nt->name : std::string()}, {"reason", why},
+                                {"autoCook", isAuto}});
             }
-        }
+        });
         j["ineligible"] = {{"count", inelCount}, {"entities", inel}};
+        j["autoEntities"] = autoCount;     // 自動 cook（glb / fbx / obj を置いただけ）で VG に乗っているエンティティ数
+        // 通常メッシュのまま描かれている「cook 中」「対象外」の理由（自動 cook の判定）
+        j["autoCook"] = vgauto::Cooker::Get().StatusJson();
     }
     if (!m_vg) return j;
 
@@ -589,6 +853,7 @@ nlohmann::json Application::VirtualGeometryStatsJson() const
     }
     j["assets"] = assets;
     j["pendingLoads"] = m_vg->PendingLoads();
+    j["entityMaterials"] = {{"entities", m_vg->KeyedMaterialCount()}, {"slots", m_vg->InstanceMaterialSlots()}};   // エンティティ単位の材質区間
     return j;
 }
 

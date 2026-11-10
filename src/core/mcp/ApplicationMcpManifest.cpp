@@ -19,6 +19,7 @@
 #include "core/mcp/McpManifestBuild.h"
 #include "scene/GiMigration.h"   // S5: migrate_gi
 #include "core/mcp/McpSafety.h"   // M5: ガードトークン / 冪等ストア / プレビュー表 / ジャーナル
+#include "resource/VgAutoCook.h"   // vg_cook（仮想ジオメトリの手動 cook）
 
 #include <algorithm>
 #include <chrono>
@@ -442,6 +443,37 @@ void Application::RegisterMcpManifestMethods()
             {
                 resp["ok"] = true;
                 resp["result"] = VirtualGeometryStatsJson();
+            });
+
+        // 手動 cook: glb / gltf / fbx / obj → .vgeo（エンジンと同じ読み込み。assets/.modelcache/vg/）。読み込み済みのエンティティは
+        //   cook が終わると自動でプロキシ + VG に差し替わる（ProcessVgAutoSwaps）。しきい値・材質数・import.json の off は見ない。
+        McpMeta vck;
+        vck.summary    = "モデル（glb / gltf / fbx / obj）を仮想ジオメトリ（.vgeo）へ裏で cook する（エンジンと同じ import 設定・座標変換。材質・テクスチャつき）。"
+                         "置いてあるエンティティは cook が終わると VG に差し替わる。進み具合は vg_stats.autoCook。"
+                         "20 万三角形以上の静的・不透明なモデルは読み込み時に自動で cook されるので、これは「しきい値未満でも VG にしたい」「作り直したい(force)」とき用";
+        vck.keywords   = "vg virtual geometry nanite cook 仮想ジオメトリ 変換 glb fbx obj vgeo ハイポリ";
+        vck.category   = "asset";
+        vck.group      = "asset";
+        vck.target     = "virtual_geometry";
+        vck.effect     = McpEffect::WriteFile;
+        vck.timeoutMs  = 8000;
+        vck.aliases    = {"dx12_vg_cook"};
+        vck.params     = {P("path", "string", true, nullptr, nullptr, nullptr, nullptr, "モデルの assets 相対パス（または絶対パス）"),
+                          P("force", "bool", false, nullptr, nullptr, nullptr, nullptr, "cook 済みでも作り直す（既定 false）")};
+        vck.next       = {{"vg_stats", "autoCook.active / recent で進み具合と結果（秒・三角形数・.vgeo のパス）"}};
+        vck.examples   = {{"{\"path\":\"models/rock.glb\"}", "rock.glb を裏で cook する"}};
+        McpDefine("vg_cook", vck, DX12E_MCP_HANDLER
+            {
+                std::string path = params.value("path", std::string());
+                const bool force = params.value("force", false);
+                std::filesystem::path fp(PathResolver::Utf8ToWide(path));
+                if (!fp.is_absolute()) fp = std::filesystem::path(PathResolver::Utf8ToWide(PathResolver::AssetsDir() + path));
+                std::string err;
+                if (!vgauto::Cooker::Get().Request(fp, force, &err))
+                    throw McpError(McpErr::InvalidParam, "vg_cook: " + err, "glb / gltf / fbx / obj の assets 相対パスを渡す");
+                resp["ok"] = true;
+                resp["result"] = {{"queued", true}, {"model", PathResolver::WideToUtf8(fp.lexically_normal().generic_wstring())},
+                                  {"note", "裏で cook 中。vg_stats.autoCook で進み具合。終わると置いてあるエンティティが VG に差し替わる"}};
             });
 
         McpMeta vset;

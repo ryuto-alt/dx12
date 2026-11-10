@@ -30,6 +30,7 @@ add_library(Resource STATIC
     ModelLoader.cpp
     ModelSceneCache.cpp     # 解析済み aiScene（assbin）と LOD のディスクキャッシュ（assets/.modelcache/）
     VgeoProxyLoader.cpp     # .vgeo（仮想ジオメトリ）のプロキシ読込（ModelLoader::LoadFromFile から分岐）
+    VgAutoCook.cpp          # 仮想ジオメトリの自動 cook（ハイポリの glb / fbx / obj を読み込み時に裏で .vgeo へ。assets/.modelcache/vg/）
     ResourceManager.cpp
     VfsIOSystem.cpp
     MaterialAssetIO.cpp
@@ -48,6 +49,7 @@ target_link_libraries(Resource PUBLIC
     Microsoft::DirectXShaderCompiler
     nlohmann_json::nlohmann_json
     MatGraph    # マテリアルグラフ G2b: MaterialGraphize（グラフ化）が使う（純ロジック。src/renderer/CMakeLists.txt で定義）
+    VgeoCookLib # 仮想ジオメトリの cooker（tools/vgeo_cook。VgAutoCook が読み込み時に使う。src/renderer/CMakeLists.txt から add_subdirectory）
 )
 
 target_compile_options(Resource PRIVATE ${DX12_COMPILE_OPTIONS})

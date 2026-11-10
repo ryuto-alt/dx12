@@ -117,6 +117,7 @@ Entity Scene::Spawn(const std::string& name,
     // MeshRenderer コンポーネント
     MeshRenderer& renderer = entity.AddComponent<MeshRenderer>();
     renderer.modelPath = modelPath;
+    renderer.vgAutoPath = cached->vgAutoVgeo;   // 仮想ジオメトリの自動 cook 済み（空 = 通常のモデル）
     for (const auto& mesh : cached->meshes)
     {
         renderer.meshes.push_back(mesh.get());
