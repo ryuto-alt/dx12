@@ -6,6 +6,7 @@
 #include <DirectXMath.h>
 
 #include "core/Types.h"
+#include "renderer/ShadingExt.h"
 
 namespace dx12e
 {
@@ -57,6 +58,11 @@ struct Material
     AlphaMode alphaMode      = AlphaMode::Opaque;
     float     alphaCutoff    = 0.5f;   // Mask のしきい値（glTF 既定 0.5）
     float     baseColorAlpha = 1.0f;   // Blend の基準不透明度（glTF baseColorFactor.a）
+
+    // ---- 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR）----
+    // glTF の KHR_materials_clearcoat / _anisotropy / _sheen / _specular / _ior と同じ意味（renderer/ShadingExt.h）。
+    // ★既定（IsDefault）なら GPU へは 0 が渡り、拡張の分岐は丸ごと飛ぶ＝既存モデルは 1 ビットも変わらない。
+    ShadingExt shading;
 
     u32 srvBlockIndex = 0xFFFFFFFF;  // SRVヒープ上の連続4スロットの先頭
 };

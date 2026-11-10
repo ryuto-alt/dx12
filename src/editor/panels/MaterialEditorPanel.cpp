@@ -522,6 +522,62 @@ void MaterialEditorPanel::RenderWindow(EditorContext& ctx, const std::string& as
             ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "%s", "Height texture is not set: POM stays off");
     }
 
+    // 拡張シェーディング（クリアコート / 異方性 / シーン(布) / スペキュラ・IOR。glTF の KHR_materials_* と同じ意味）。
+    // 既定値のままなら .dxmat にキーは書かれない。グラフ材質はピンで持つので出さない。保存は離した瞬間（POM と同じ）。
+    if (!m_current.IsGraph())
+    {
+        ImGui::Spacing();
+        ImGui::TextDisabled("拡張シェーディング");
+        ShadingExt& sh = m_current.shading;
+        auto saveOnRelease = [&]()
+        {
+            if (ImGui::IsItemDeactivatedAfterEdit() && !m_currentPath.empty())
+                SaveAsset(assetsDir);
+        };
+        auto shSlider = [&](const char* label, f32* v, f32 lo, f32 hi, const char* fmt = "%.3f")
+        {
+            if (ui::SliderFloat(label, v, lo, hi, fmt)) ClampShadingExt(sh);
+            saveOnRelease();
+        };
+        auto shColor = [&](const char* label, f32* c)
+        {
+            if (ui::ColorEdit3(label, c)) ClampShadingExt(sh);
+            saveOnRelease();
+        };
+        if (ImGui::CollapsingHeader("クリアコート Clear Coat", sh.HasClearCoat() ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+        {
+            shSlider("強さ##coat", &sh.clearCoat, 0.0f, 1.0f);
+            shSlider("粗さ##coatR", &sh.clearCoatRoughness, 0.0f, 1.0f);
+        }
+        if (ImGui::CollapsingHeader("異方性 Anisotropy", sh.HasAnisotropy() ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+        {
+            shSlider("強さ##an", &sh.anisotropy, -1.0f, 1.0f);
+            f32 deg = sh.anisotropyRotation * 57.29577951f;
+            if (ui::SliderFloat("向き (度)##anR", &deg, 0.0f, 360.0f, "%.1f"))
+            {
+                sh.anisotropyRotation = deg * 0.017453292519943295f;
+                ClampShadingExt(sh);
+            }
+            saveOnRelease();
+        }
+        if (ImGui::CollapsingHeader("シーン（布の縁の光沢） Sheen", sh.HasSheen() ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+        {
+            shColor("色##sh", sh.sheenColor);
+            shSlider("粗さ##shR", &sh.sheenRoughness, 0.0f, 1.0f);
+        }
+        if (ImGui::CollapsingHeader("スペキュラ / IOR", sh.HasSpecular() ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+        {
+            shSlider("強さ##sp", &sh.specularFactor, 0.0f, 1.0f);
+            shColor("色##spC", sh.specularColor);
+            shSlider("屈折率 IOR##ior", &sh.ior, 1.0f, 3.0f, "%.3f");
+        }
+        if (!sh.IsDefault() && ImGui::SmallButton("拡張を既定に戻す"))
+        {
+            sh = ShadingExt{};
+            if (!m_currentPath.empty()) SaveAsset(assetsDir);
+        }
+    }
+
     if (m_currentPath.empty())
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
             "\xe6\x9c\xaa\xe4\xbf\x9d\xe5\xad\x98\xe3\x81\xae\xe6\x96\xb0\xe8\xa6\x8f\xe3\x83\x9e\xe3\x83\x86\xe3\x83\xaa\xe3\x82\xa2\xe3\x83\xab"

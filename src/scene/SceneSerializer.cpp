@@ -9,6 +9,7 @@
 #include "ecs/ComponentMeta.h"             // entt::meta フィールド反映（シリアライズの単一ソース）
 #include "renderer/Mesh.h"
 #include "renderer/Material.h"
+#include "resource/ShadingExtJson.h"   // 拡張シェーディングの上書き（"material" の clearCoat 等）
 #include "core/Logger.h"
 #include "core/PathResolver.h"
 #include "core/vfs/Vfs.h"
@@ -113,6 +114,8 @@ static void ReadEmissiveOverrides(const nlohmann::json& mj, MeshRenderer& mr)
     // マテリアル AO の強さの上書き（無ければ <0 = モデルに従う）
     if (mj.contains("aoStrength"))
         mr.overrideAoStrength = std::clamp(mj["aoStrength"].get<f32>(), 0.0f, 1.0f);
+    // 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR）の上書き。無いキーは「材質に従う」のまま
+    shadingjson::ReadOverride(mj, mr.overrideShading);
 }
 
 // --- スクリプトプロパティ型 ↔ 文字列（自己記述的に保存するため）---
@@ -832,6 +835,13 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
                 ej["material"]["aoStrength"] = mr.overrideAoStrength;
             }
 
+            // 拡張シェーディングの上書き（設定した欄だけ書く＝既存シーンの JSON は増えない）
+            if (mr.overrideShading.Any())
+            {
+                if (!ej.contains("material")) ej["material"] = nlohmann::json::object();
+                shadingjson::WriteOverride(ej["material"], mr.overrideShading);
+            }
+
             // ---- 透明（アルファクリップ / アルファブレンド）----
             // ★書くのは「エンティティ側のオーバーライド」だけ。モデル焼き込みの alphaMode は
             //   毎回 ModelLoader が読み直すので保存しない（既定のままなら 1 キーも増えない
@@ -1337,6 +1347,10 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
         };
     }
 
+    // 材質シェーディング設定（シーン単位）。既定（マルチスキャッタ ON）のときは何も書かない＝既存シーンの保存結果は不変
+    if (!scene.GetShadingSettings().multiScatter)
+        root["shading"]["multiScatter"] = false;
+
     // SSR / SSGI 設定（シーン単位）。どちらも既定 OFF なので旧シーンは無変更で開く。
     {
         const auto& sr = scene.GetSsrSettings();
@@ -1647,6 +1661,15 @@ static void LoadNormalFilterSettings(Scene& scene, const json& root)
         nf.geometricBlend = j.value("geometricBlend", nf.geometricBlend);
     }
     scene.GetNormalFilterSettings() = nf;
+}
+
+// JSON から材質シェーディング設定を復元（キーが無ければ既定 = マルチスキャッタ ON）
+static void LoadShadingSettings(Scene& scene, const json& root)
+{
+    ShadingSettings sh;
+    if (root.contains("shading") && root["shading"].is_object())
+        sh.multiScatter = root["shading"].value("multiScatter", sh.multiScatter);
+    scene.GetShadingSettings() = sh;
 }
 
 // JSON から SSR / SSGI 設定を復元（キーが無ければデフォルト OFF = 後方互換）
@@ -2496,6 +2519,8 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     catch (const json::exception& e) { Logger::Warn("contactShadow 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadNormalFilterSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("normalFilter 設定をスキップしました（型不正）: {}", e.what()); }
+    try { LoadShadingSettings(scene, root); }
+    catch (const json::exception& e) { Logger::Warn("shading 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadTaaSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("taa 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadScreenSpaceGiSettings(scene, root); }

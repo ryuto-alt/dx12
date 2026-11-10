@@ -275,6 +275,17 @@ void FillManifestChunk3(ManifestRows& o)
         "render", "render_setting", "normal_filter", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_normal_filter", {
         })});
+    o.push_back({"get_shading", M("材質シェーディングのシーン設定(マルチスキャッタのエネルギー補償 ON/OFF)を返す。{multiScatter}。",
+        "get shading 材質シェーディング設定取得 マルチスキャッタ",
+        "render", "render_setting", "shading", McpEffect::Read, "any", 10000, true, false,
+        "none", "dx12_get_shading", {
+        })});
+    o.push_back({"set_shading", M("材質シェーディングのシーン設定(マルチスキャッタのエネルギー補償 ON/OFF)を設定する。OFF にすると従来(補償なし)と同じ絵になる。",
+        "set shading 材質シェーディング設定変更 マルチスキャッタ",
+        "render", "render_setting", "shading", McpEffect::WriteSetting, "any", 10000, true, false,
+        "none", "dx12_set_shading", {
+            P("multiScatter", "bool", false, nullptr, nullptr, nullptr, nullptr, "マルチスキャッタのエネルギー補償(粗い金属が暗く沈まない)。既定 true。false で従来どおり"),
+        })});
     o.push_back({"get_occlusion", M("Hi-Z オクルージョンカリングの状態を返す。{enabled, active, ready, pyramid{width,height,mips}}。",
         "get occlusion オクルージョンカリング取得",
         "render", "render_setting", "occlusion", McpEffect::Read, "any", 10000, true, false,
@@ -1111,7 +1122,7 @@ void FillManifestChunk11(ManifestRows& o)
             P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。id の代わりに使える。Stop 後など id が変わる場面で安定。"),
             P("parent", "int", false, nullptr, nullptr, nullptr, nullptr, "親エンティティ id。省略で親解除。"),
         })});
-    o.push_back({"set_pbr", M("エンティティの PBR パラメータ(metallic/roughness/UV スケール/透明/自己発光)を設定する。指定分のみ更新。",
+    o.push_back({"set_pbr", M("エンティティの PBR パラメータ(metallic/roughness/UV スケール/透明/自己発光/クリアコート/異方性/シーン/スペキュラ・IOR)を設定する。指定分のみ更新。",
         "set pbr PBR マテリアル設定",
         "material", "", "", McpEffect::WriteScene, "any", 8000, true, false,
         "none", "dx12_set_pbr", {
@@ -1127,6 +1138,16 @@ void FillManifestChunk11(ManifestRows& o)
             P("emissiveIntensity", "number", false, nullptr, nullptr, nullptr, nullptr, "自己発光の強さ 0..64(0=消灯、負=マテリアルに従う)。1 を超えるとブルームが乗る。目安: 看板 2..5 / 天井照明パネル 4..10 / 非常口サイン 3..6"),
             P("emissiveColor", "vec3", false, nullptr, nullptr, nullptr, nullptr, "自己発光の色 [r,g,b](0..1、リニア)。省略して強度だけ指定すると白になる"),
             P("aoStrength", "number", false, nullptr, nullptr, nullptr, nullptr, "マテリアル AO(ORM の R / glTF occlusionTexture)の強さ 0..1(0=AO オフ、負=モデルの値に従う)。間接光だけに掛かる。AO を持たないモデルには効かない(get_entity の bakedTextures[].hasAO で確認)"),
+            P("clearCoat", "number", false, nullptr, nullptr, nullptr, nullptr, "クリアコート(車のクリア塗装・ラッカー)の強さ 0..1(0=無し。glTF KHR_materials_clearcoat)。負/null=材質に従う。get_entity の bakedTextures[].shading に実効値"),
+            P("clearCoatRoughness", "number", false, nullptr, nullptr, nullptr, nullptr, "クリアコート層の粗さ 0..1(0=鏡面)。負/null=材質に従う"),
+            P("anisotropy", "number", false, nullptr, nullptr, nullptr, nullptr, "異方性(ヘアライン金属・ブラシ仕上げ)の強さ -1..1。正は接線(UV の U)方向に伸び、負は従法線方向(glTF KHR_materials_anisotropy)。値域に負を含むので、材質に従う状態へ戻すのは null"),
+            P("anisotropyRotation", "number", false, nullptr, nullptr, nullptr, nullptr, "異方性の向き[ラジアン]。接線から接空間で反時計回り。負は 0..2π に丸める。null=材質に従う"),
+            P("anisotropyRotationDeg", "number", false, nullptr, nullptr, nullptr, nullptr, "anisotropyRotation の度数版(90 = 接線に直交)。両方あれば Deg が優先"),
+            P("sheenColor", "vec3", false, nullptr, nullptr, nullptr, nullptr, "シーン(布の縁の光沢。ベルベット・サテン)の色 [r,g,b] 0..1(リニア。[0,0,0]=無し。glTF KHR_materials_sheen)。null か負=材質に従う"),
+            P("sheenRoughness", "number", false, nullptr, nullptr, nullptr, nullptr, "シーンの粗さ 0..1。負/null=材質に従う"),
+            P("specularFactor", "number", false, nullptr, nullptr, nullptr, nullptr, "誘電体のスペキュラの強さ 0..1(既定 1。0 で鏡面反射が消える。glTF KHR_materials_specular)。負/null=材質に従う"),
+            P("specularColor", "vec3", false, nullptr, nullptr, nullptr, nullptr, "誘電体のスペキュラ色 [r,g,b](リニア。既定 [1,1,1]、上限 16)。null か負=材質に従う"),
+            P("ior", "number", false, nullptr, nullptr, nullptr, nullptr, "屈折率 1..5(既定 1.5 で F0=0.04。水 1.33 / ダイヤ 2.4。glTF KHR_materials_ior)。1 未満/null=材質に従う"),
         })});
     o.push_back({"set_post_process", M("ポストプロセスのフィールドを指定分だけ更新する(未指定フィールドは現状維持)。",
         "set post process ポストプロセス設定変更",

@@ -12,6 +12,7 @@
 #include <DirectXMath.h>
 #include <entt/entt.hpp>
 #include "core/Types.h"
+#include "renderer/ShadingExt.h"
 
 namespace dx12e
 {
@@ -190,6 +191,11 @@ struct MeshRenderer
     // ★モデルが AO を持たない（Material::occlusionInMR=false）ときは何を入れても効かない＝絵は変わらない。
     // 間接光（IBL・アンビエント・GI）だけに掛かり、直接光には掛からない。MCP は dx12_set_pbr の aoStrength。
     float overrideAoStrength = -1.0f;
+
+    // ---- 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR）のエンティティ単位の上書き ----
+    // 各欄「負 = 材質に従う」（renderer/ShadingExt.h の ShadingExtOverride）。合成は必ず ResolveShadingExt。
+    // シーン JSON は "material": { "clearCoat": .., "sheenColor": [..] ... }（設定した欄だけ書く）。MCP は dx12_set_pbr。
+    ShadingExtOverride overrideShading;
 
     // ---- 影を落とすか（UE の Cast Shadow）。2026-11-06 ----
     // false = 影マップ（CSM / スポット / ポイント）に描かない。本体は普通に描かれ、影は受ける。

@@ -208,6 +208,24 @@ void Application::RegisterMcpRenderMethods()
             resp["result"] = {{"applied", true}};
         });
 
+    // ---- 材質シェーディングのシーン設定（マルチスキャッタのエネルギー補償）----
+    McpDefine("get_shading", "", DX12E_MCP_HANDLER
+        {
+            resp["ok"] = true;
+            resp["result"] = {{"multiScatter", m_scene->GetShadingSettings().multiScatter}};
+        });
+
+    McpDefine("set_shading", "multiScatter:any", DX12E_MCP_HANDLER
+        {
+            auto& sh = m_scene->GetShadingSettings();
+            if (params.contains("multiScatter") && !params["multiScatter"].is_boolean())
+                throw McpError(McpErr::InvalidParam, "multiScatter は true / false",
+                    "例: multiScatter:false（従来の補償なしに戻す）");
+            sh.multiScatter = params.value("multiScatter", sh.multiScatter);
+            resp["ok"] = true;
+            resp["result"] = {{"applied", true}, {"multiScatter", sh.multiScatter}};
+        });
+
     // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----
     // 3D シーンだけを scale 倍の解像度で描き、最終パスで表示解像度へ引き伸ばす。
     // UI / ImGui / エディタのギズモは常に表示解像度のまま＝文字がボケない。

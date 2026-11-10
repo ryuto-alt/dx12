@@ -33,6 +33,7 @@ add_library(Resource STATIC
     ResourceManager.cpp
     VfsIOSystem.cpp
     MaterialAssetIO.cpp
+    GltfShadingExt.cpp      # glTF 拡張シェーディング（clearcoat/anisotropy/sheen/specular/ior）の取り込み（純関数）
     MaterialAssetManager.cpp
     MaterialGraphize.cpp    # マテリアルグラフ G2b: 従来 PBR 材質 → 等価グラフのインスタンスへ（グラフ化。手動だけ）
     TerrainLayerSet.cpp
