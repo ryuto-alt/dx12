@@ -740,9 +740,9 @@ void Application::RegisterMcpEntityMethods()
             //   進行中だったジョブの FinishSceneLoad が【こちらの】遅延応答を消費してしまい、
             //   要求したシーンがまだ読まれていないのに ok が返る（実際に踏んだ: 別シーンの
             //   完了で 9 秒後に ok が返り、要求したシーンのロードはその後に始まっていた）。
-            if (m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob)
+            if (m_loading || m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob)
                 throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes",
-                    "読み込み中のシーンが終わるまで待つ。dx12_ping の currentScene が変わったら呼び直す");
+                    "読み込み中のシーンが終わるまで待つ。dx12_ping の sceneLoading が false になったら呼び直す");
             const std::string full = PathResolver::AssetsDir() + rel;
             if (!fs::exists(full)) throw McpNotFoundAsset("scene not found: " + rel,
                 "dx12_list_scenes で実在するシーンのパスを確かめる。新しく作るなら dx12_new_scene",
@@ -1476,6 +1476,11 @@ void Application::RegisterMcpEntityMethods()
                 {"sceneGeneration", m_sceneGeneration},
                 {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
                 {"sceneDirty", m_editorCtx->IsSceneDirty()},   // 未保存の変更があるか
+                // シーン/プロジェクトの読み込み中か。true の間は open_scene / new_scene / open_project が
+                // E_MODE_CONFLICT で断られる。起動直後の操作はこれが false になってから。
+                {"sceneLoading", m_loading || m_sceneLoadJob != nullptr || m_mcpLoadReply.client != 0
+                                 || !m_editorCtx->pendingLoadPath.empty() || m_editorCtx->pendingNewScene},
+                {"projectLoading", m_loading},
                 // MCP セッション中は編集の 2 秒後に自動で本保存されるので、sceneDirty は
                 // 一瞬しか true にならない。未保存の確認モーダルも出ない（＝ここで止まらない）。
                 {"aiAutoSave", m_editorCtx->aiSessionEver},
@@ -1811,6 +1816,13 @@ void Application::RegisterMcpEntityMethods()
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a new scene while Playing",
                     "先に dx12_stop で Editor へ戻してから作る");
+            // ★読み込み中の new_scene は受け付けない（open_scene と同じ流儀で明示エラー）。
+            //   起動直後に受けると、読み込み途中のシーンや後から消化される pendingLoadPath と競合し、
+            //   空シーンへの編集が既存シーンに自動保存される事故が実際に起きた。黙って成功を返さない。
+            if (m_loading || m_sceneLoadJob || m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty()
+                || m_editorCtx->pendingNewScene)
+                throw McpError(McpErr::ModeConflict, "a scene/project load is in progress; new_scene was not applied",
+                    "読み込み中は新規シーンを作れない（既存シーンへ上書きされる恐れ）。dx12_ping の sceneLoading が false になってから呼び直す");
             std::string rel = params.value("savePath", std::string());
             if (!rel.empty())
             {
