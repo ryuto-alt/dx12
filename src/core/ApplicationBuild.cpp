@@ -43,6 +43,34 @@ struct Pipeline
     void BakeTextures();
 };
 
+// assets/scenes 配下のどれかのシーンが保存済み taa.upscaler == "dlss" か（nvngx_dlss.dll を同梱するかの判定）。
+// 使わないゲームに 56MB の DLL を入れない。実行時に DLL が無い場合は UpscalerPass が DLSS を使えないと
+// 判断して TAA へ縮退する（保存値は変えない）。判定は保存済みのディスクの内容＝ビルドが書き出す対象と同じ。
+// 重いシーン JSON を全部パースしないよう、先に文字列 "dlss" の有無で足切りする。
+bool ProjectUsesDlss(const fs::path& assetsDir)
+{
+    std::error_code ec;
+    const fs::path scenesDir = assetsDir / "scenes";
+    if (!fs::is_directory(scenesDir, ec)) return false;
+    for (fs::recursive_directory_iterator it(scenesDir, ec), end; !ec && it != end; it.increment(ec))
+    {
+        if (!it->is_regular_file(ec) || it->path().extension() != ".json") continue;
+        std::ifstream f(it->path(), std::ios::binary);
+        if (!f) continue;
+        const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (text.find("\"dlss\"") == std::string::npos) continue;
+        try
+        {
+            const auto j = nlohmann::json::parse(text, nullptr, /*allow_exceptions*/ false);
+            if (j.is_object() && j.contains("taa") && j["taa"].is_object()
+                && j["taa"].value("upscaler", std::string()) == "dlss")
+                return true;
+        }
+        catch (...) {}
+    }
+    return false;
+}
+
 // ---- 段 1〜2: 出力先の用意とランタイムのコピー ---------------------------------------------
 bool Pipeline::CopyRuntime()
 {
@@ -70,6 +98,9 @@ bool Pipeline::CopyRuntime()
     // ★tracyclient.dll: 計測ビルド(cmake --preset windows-tracy)のツリーからゲームを
     //   ビルドしたときに、プロファイラのクライアントが配布物へ紛れ込むのを防ぐ。
     static const std::unordered_set<std::string> kDllExcludeList = { "dxcompiler.dll", "tracyclient.dll" };
+    // ★nvngx_dlss.dll（56MB）は、どれかのシーンが DLSS を指定しているときだけ同梱する（ProjectUsesDlss）。
+    const bool bundleDlss = ProjectUsesDlss(in.assetsDir);
+    Logger::Info("nvngx_dlss.dll の同梱: {}", bundleDlss ? "する（シーンが DLSS を指定）" : "しない（DLSS を指定するシーンが無い）");
     for (auto& entry : fs::directory_iterator(in.exeDir, ec))
     {
         if (Cancelled()) return false;
@@ -79,6 +110,7 @@ bool Pipeline::CopyRuntime()
         std::string lowerName = entry.path().filename().string();
         for (char& c : lowerName) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (kDllExcludeList.count(lowerName)) continue;
+        if (lowerName == "nvngx_dlss.dll" && !bundleDlss) continue;
         std::error_code cec;
         fs::copy_file(entry.path(), in.outputDir / entry.path().filename(), fs::copy_options::overwrite_existing, cec);
         Logger::Info("Copied dll -> {}", entry.path().filename().string());
