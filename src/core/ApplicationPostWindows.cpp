@@ -271,7 +271,35 @@ void Application::RenderPostProcessWindows()
          "速度バッファ + 前フレームの履歴でサブピクセル AA。動くものもぼけません。"
          "有効にすると FXAA は自動で無視されます（透視ビューのみ。2D 正射では無効）",
          &taa.enabled,
-            [&]{ int sc = (taa.sampleCount <= 4) ? 0 : (taa.sampleCount >= 16 ? 2 : 1);
+            [&]{ // 時間方向アップスケーラ（TAA = エンジン内蔵 / DLSS = NVIDIA。DLSS の間は品質モードが内部解像度を決める）
+                 int kind = (taa.upscaler == static_cast<int>(upscale::Kind::Dlss)) ? 1 : 0;
+                 bool resChanged = false;
+                 if (PgCombo("方式", &kind, "TAA (内蔵)\0" "DLSS (NVIDIA)\0"))
+                 {
+                     taa.upscaler = (kind == 1) ? static_cast<int>(upscale::Kind::Dlss) : static_cast<int>(upscale::Kind::Taa);
+                     resChanged = true;
+                 }
+                 if (kind == 1)
+                 {
+                     int q = static_cast<int>(upscale::ClampQuality(taa.dlssQuality));
+                     if (PgCombo("DLSS 品質", &q, "DLAA (100%)\0" "Quality (66.7%)\0" "Balanced (58%)\0" "Performance (50%)\0"))
+                     {
+                         taa.dlssQuality = q;
+                         resChanged = true;
+                     }
+                     if (m_upscaler && !m_upscaler->DlssAvailable())
+                         ImGui::TextWrapped("DLSS は使えないので TAA で描きます: %s", m_upscaler->DlssReason().c_str());
+                     else if (m_upscaler)
+                         ImGui::TextDisabled("内部 %ux%u → 出力 %ux%u", m_renderW, m_renderH, m_postW, m_postH);
+                 }
+                 if (resChanged)
+                 {
+                     m_renderResFlush     = true;    // 内部解像度を次フレームで即反映
+                     m_dlssFallbackLogged = false;
+                     InvalidateTemporalHistory(/*includeDdgi*/ false);
+                 }
+                 if (kind == 1) return;   // 以下は内蔵 TAA の調整（DLSS では使わない）
+                 int sc = (taa.sampleCount <= 4) ? 0 : (taa.sampleCount >= 16 ? 2 : 1);
                  if (PgCombo("ジッタ数", &sc, "4 (シャープ)\0" "8 (標準)\0" "16 (滑らか)\0"))
                      taa.sampleCount = (sc == 0) ? 4 : (sc == 2 ? 16 : 8);
                  pg::SliderFloat("ジッタ量", &taa.jitterScale, 0.0f, 1.0f, "%.3f", nullptr,

@@ -448,6 +448,16 @@ if(TARGET Renderer)
     endif()
     add_test(NAME VelocityMathTests COMMAND VelocityMathTests)
 
+    # 時間方向アップスケーラ（DLSS）の純関数（位相数・ミップバイアス・ジッタのピクセル変換・品質モード）。
+    # renderer/UpscalerMath.h はヘッダオンリー・GPU 非依存。
+    add_executable(UpscalerMathTests upscaler_math_test.cpp)
+    target_include_directories(UpscalerMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(UpscalerMathTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(UpscalerMathTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME UpscalerMathTests COMMAND UpscalerMathTests)
+
     # AnimationClip::NormalizeToSeconds（ticks→秒正規化。glTF=1000ticks/s 由来の
     # ポーズ凍結/スロー再生の再発防止）テスト。AnimationClip.cpp は純ロジックなので直接ビルド。
     add_executable(AnimClipNormalizeTests

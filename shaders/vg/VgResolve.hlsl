@@ -72,7 +72,9 @@ VSOut VSMain(uint id : SV_VertexID)
 float4 VgSampleTex(uint srv, float2 uv, float2 dx, float2 dy)
 {
     Texture2D t = ResourceDescriptorHeap[NonUniformResourceIndex(srv)];
-    return t.SampleGrad(g_sampler, uv, dx, dy);
+    // アップスケーラのミップバイアス（既定 0）。解析勾配を 2^bias 倍して効かせる。
+    const float g = exp2(UNO_TEX_MIP_BIAS);
+    return t.SampleGrad(g_sampler, uv, dx * g, dy * g);
 }
 
 // 重心座標を baryOff だけずらした点（= 隣の画素。同じ三角形の平面上）のシェーディング法線（法線フィルタの 1 画素差分用）

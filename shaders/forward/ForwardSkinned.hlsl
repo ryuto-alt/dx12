@@ -88,7 +88,7 @@ float3 UnpackEmissive(uint packed, float2 uv)
     // 強度は二乗で伸長（0 付近を細かく、ブルームに要る 1 超の領域まで 8bit で届かせるため）
     const float n = float((packed >> 24) & 0xFF) / 255.0;
     float3 e = c * (n * n * 64.0);
-    if (pbrFlags & 8u) e *= g_emissive.Sample(g_sampler, uv).rgb;
+    if (pbrFlags & 8u) e *= g_emissive.SampleBias(g_sampler, uv, UNO_TEX_MIP_BIAS).rgb;
     return e;
 }
 
@@ -160,7 +160,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     const float3 objectTint = float3((packedTint >> 16) & 0xFF,
                                      (packedTint >>  8) & 0xFF,
                                      (packedTint      ) & 0xFF) / 255.0;
-    float4 albedo4 = g_albedo.Sample(g_sampler, uv) * input.color * float4(objectTint, 1.0);
+    float4 albedo4 = g_albedo.SampleBias(g_sampler, uv, UNO_TEX_MIP_BIAS) * input.color * float4(objectTint, 1.0);
     float3 albedo = albedo4.rgb;
 
     // ===== 透明（アルファクリップ / アルファブレンド）=====
@@ -170,7 +170,12 @@ float4 PSMain(PSInput input) : SV_TARGET
 #ifdef ALPHA_TEST
     {
         const float cutoff = float((pbrFlags >> 8) & 0xFF) / 255.0;
-        clip(albedo4.a - cutoff);
+        // クリップはバイアス無しのアルファで（プリパスと被覆を揃える。理由は Forward.hlsl の同じ箇所）
+        float clipA = albedo4.a;
+        [branch]
+        if (UNO_TEX_MIP_BIAS != 0.0)
+            clipA = g_albedo.Sample(g_sampler, uv).a * input.color.a;
+        clip(clipA - cutoff);
     }
 #endif
     // 不透明度。BLEND 用 PSO でのみ意味を持つ（不透明 PSO はブレンド無効なので無視される）。
@@ -180,7 +185,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float3 N;
     if (pbrFlags & 1u)
     {
-        float3 normalSample = g_normalMap.Sample(g_sampler, uv).rgb;
+        float3 normalSample = g_normalMap.SampleBias(g_sampler, uv, UNO_TEX_MIP_BIAS).rgb;
         N = PerturbNormal(input.worldNormal, input.worldTangent, input.tangentW, normalSample);
     }
     else
@@ -198,7 +203,7 @@ float4 PSMain(PSInput input) : SV_TARGET
     float materialAo = 1.0;
     if (pbrFlags & 2u)
     {
-        float4 mr = g_metalRoughness.Sample(g_sampler, uv);
+        float4 mr = g_metalRoughness.SampleBias(g_sampler, uv, UNO_TEX_MIP_BIAS);
         roughness = mr.g * defaultRoughness;
         metallic  = mr.b * defaultMetallic;
         if (pbrFlags & 16u)

@@ -59,8 +59,9 @@ SamplerState g_unoSampPointWrap  : register(s8);   // POINT WRAP
 #define UNO_SAMP_POINT_CLAMP   g_ssaoSampler
 
 // 生成コードは Sample を直接書かず、必ずこのマクロを通す（VG resolve が SampleGrad へ差し替える点）。
-#define UnoSample(tex, samp, uv)            (tex).Sample((samp), (uv))
-#define UnoSampleBias(tex, samp, uv, bias)  (tex).SampleBias((samp), (uv), (bias))
+// ★アップスケーラのミップバイアス（UNO_TEX_MIP_BIAS。既定 0 ＝ Sample と同じ結果）を足す。
+#define UnoSample(tex, samp, uv)            (tex).SampleBias((samp), (uv), UNO_TEX_MIP_BIAS)
+#define UnoSampleBias(tex, samp, uv, bias)  (tex).SampleBias((samp), (uv), (bias) + UNO_TEX_MIP_BIAS)
 
 #include "forward/ForwardShade.hlsli"
 

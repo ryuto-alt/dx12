@@ -38,6 +38,7 @@ public:
         Clouds,        // ボリュメトリッククラウド: 粗いレイマーチ + 時間再投影(compute 2 パス)+ 合成（Particles の内数になる区間に重なる）
         CloudShadow,   // 雲の影: 影マップ(compute)+ 影マスクへの適用(全画面 PS。プリパス区間 PrepassSSAO の内数)
         RtShadowDenoise, // RT 影デノイザ: 時間蓄積 + 空間フィルタ（RtScreen の内数。トレースは含まない）
+        Upscale,       // 時間方向アップスケーラ（DLSS の MV 準備 + 評価。PostFX の内数）
         Count
     };
     static const char* Name(u32 s);

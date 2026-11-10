@@ -188,6 +188,10 @@ float4 HeightBlend4(float4 h, float4 a, float depth)
 
 LayerSample SampleLayerPlanar(uint i, float2 uv, float2 dx, float2 dy)
 {
+    // アップスケーラのミップバイアス（既定 0 ＝ 勾配そのまま）。SampleGrad は勾配を 2^bias 倍して効かせる。
+    const float mipG = exp2(UNO_TEX_MIP_BIAS);
+    dx *= mipG;
+    dy *= mipG;
     float4 a = g_layerAlbedo .SampleGrad(g_sampler, float3(uv, (float)i), dx, dy);
     float4 s = g_layerSurface.SampleGrad(g_sampler, float3(uv, (float)i), dx, dy);
 
