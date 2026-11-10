@@ -116,6 +116,18 @@ inline constexpr u32 kMatBlend           = 1u << 5;   // NONVG
 inline constexpr u32 kMatAoInMR          = 1u << 6;
 inline constexpr u32 kMatKnownFlags      = 0x7Fu;
 
+// v1.1: 拡張テーブル（VGEO_SPEC §2.6 の「新セクションの置き場」を実装したもの）。ヘッダ reserved1[0..8) = u64 テーブルの位置、
+//   [8..12) = u32 エントリ数（0 = 無し。v1.0 と同じバイト）。エントリ 32 B: {fourcc, flags(bit0 = required), offset, size, crc32, reserved}。
+//   テーブルと中身は最後のセクションの後ろ（16 整列）に置く。知らない required のエントリがあれば読み手は拒否（UnsupportedFeature）、
+//   知らない任意のエントリは無視する。
+inline constexpr u32 kExtRequired = 1u << 0;
+// 'MSHD' = 材質ごとの拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR）。materialCount 個 × 64 B =
+//   f32 × 16: clearCoat, clearCoatRoughness, anisotropy, anisotropyRotation, sheenColor[3], sheenRoughness, specularFactor,
+//   specularColor[3], ior, 0, 0, 0（renderer/ShadingExt.h の ShadingExt の並び。GPU 形の 8 DWORD は読み手が PackShadingExt で作る）。
+//   任意（知らない読み手は既定のシェーディングで描く）。どの材質も既定なら書かない。
+inline constexpr u32 kExtMaterialShading = 0x4448534Du;   // 'M''S''H''D'
+inline constexpr u32 kMaterialShadingWords = 16;
+
 // ProxySectionEntry::flags
 inline constexpr u32 kProxyFlagExact = 1u << 0;       // 簡略化していない完全詳細（error == 0）
 
@@ -171,6 +183,16 @@ struct VgeoHeader                        // 512 B
     SectionEntry sections[kSectionCount];// 200
     u8  reserved1[20];                   // 488
     u32 headerCrc32;                     // 508
+};
+
+struct ExtEntry                          // 32 B（v1.1 の拡張テーブルの 1 行）
+{
+    u32 fourcc;                          // 0
+    u32 flags;                           // 4   bit0 = required
+    u64 offset;                          // 8   ファイル先頭から
+    u64 size;                            // 16
+    u32 crc32;                           // 24  中身の CRC32（必須）
+    u32 reserved;                        // 28
 };
 
 struct MaterialRecord                    // 96 B
@@ -321,6 +343,7 @@ VG_OFF(MaterialRecord, emissiveColor, 32); VG_OFF(MaterialRecord, emissiveIntens
 VG_OFF(MaterialRecord, alphaCutoff, 48);  VG_OFF(MaterialRecord, baseColorAlpha, 52);
 VG_OFF(MaterialRecord, baseColorFactor, 56); VG_OFF(MaterialRecord, uvScaleOffset, 72);
 VG_OFF(MaterialRecord, sectionKind, 88);  VG_OFF(MaterialRecord, aoStrength, 92);
+static_assert(sizeof(ExtEntry) == 32, "ExtEntry size");
 
 VG_SIZE(HierChild, 48);
 VG_OFF(HierChild, cullSphere, 0); VG_OFF(HierChild, lodSphere, 16); VG_OFF(HierChild, minOwnError, 32);
@@ -999,6 +1022,8 @@ struct VgeoContent
     std::vector<ProxySectionData> proxy;
     std::vector<ProxySectionData> nonvg;
     std::string                 debugJson;
+    // v1.1: 材質ごとの拡張シェーディング（空 = 書かない。あるなら materials と同じ個数。kExtMaterialShading の並び）
+    std::vector<std::array<u32, kMaterialShadingWords>> materialShading;
 };
 
 // 重複を畳む文字列プール。offset 0 は常に空文字列。
@@ -1315,6 +1340,27 @@ inline VgeoError WriteVgeo(const VgeoContent& c, ByteSink& sink)
         e.offset = offsets[i]; e.size = sizes[i]; e.count = counts[i];
         e.crc32 = (i == kSecPages) ? 0u : Crc32(secBytes[i].data(), secBytes[i].size());
     }
+    // v1.1: 拡張テーブル（最後のセクションの後ろ）。拡張が無ければ何も足さない（v1.0 とバイト一致）
+    std::vector<u8> extTableBytes, extBlob;
+    u64 extTableOffset = 0;
+    {
+        if (!c.materialShading.empty())
+        {
+            if (c.materialShading.size() != c.materials.size()) return MakeErr(Errc::CountMismatch, "materialShading must have one entry per material");
+            extTableOffset = AlignUp(std::max<u64>(cursor, kSectionAlign), 16);
+            const u64 blobOff = AlignUp(extTableOffset + sizeof(ExtEntry), 16);
+            detail::AppendPod(extBlob, c.materialShading.data(), c.materialShading.size());
+            ExtEntry e{};
+            e.fourcc = kExtMaterialShading; e.flags = 0; e.offset = blobOff; e.size = extBlob.size();
+            e.crc32 = Crc32(extBlob.data(), extBlob.size());
+            detail::AppendPod(extTableBytes, &e, 1);
+            const u32 extCount = 1;
+            std::memcpy(h.reserved1, &extTableOffset, 8);
+            std::memcpy(h.reserved1 + 8, &extCount, 4);
+            h.versionMinor = 1;
+            cursor = blobOff + extBlob.size();
+        }
+    }
     const u64 fileSize = AlignUp(std::max<u64>(cursor, kSectionAlign), kSectionAlign);
     h.headerCrc32 = Crc32(&h, kHeaderSize - 4);
 
@@ -1338,6 +1384,13 @@ inline VgeoError WriteVgeo(const VgeoContent& c, ByteSink& sink)
         if (!padTo(offsets[i])) return MakeErr(Errc::IoError, "sink write failed (padding)");
         const bool ok = (i == kSecPages) ? put(c.pages.data(), c.pages.size()) : put(secBytes[i].data(), secBytes[i].size());
         if (!ok) return MakeErr(Errc::IoError, Fmt("sink write failed (section %u)", i));
+    }
+    if (extTableOffset != 0)
+    {
+        ExtEntry e{};
+        std::memcpy(&e, extTableBytes.data(), sizeof e);
+        if (!padTo(extTableOffset) || !put(extTableBytes.data(), extTableBytes.size()) || !padTo(e.offset) || !put(extBlob.data(), extBlob.size()))
+            return MakeErr(Errc::IoError, "sink write failed (extensions)");
     }
     if (!padTo(fileSize)) return MakeErr(Errc::IoError, "sink write failed (tail padding)");
     return VgeoError{};
@@ -1465,6 +1518,8 @@ struct VgeoMeta
     std::vector<u32>            pageDeps;
     std::string                 debugJson;
     u64                         fileSize = 0;
+    // v1.1: 拡張テーブルの 'MSHD'（無ければ空 = 全材質が既定のシェーディング）
+    std::vector<std::array<u32, kMaterialShadingWords>> materialShading;
     // 検証済みの offset なら NUL 終端の文字列。kNone / 範囲外は空文字列。
     const char* String(u32 off) const { return (off < strings.size()) ? strings.data() + off : ""; }
     u64 PagesOffset() const { return header.sections[kSecPages].offset; }
@@ -1609,7 +1664,7 @@ inline void CheckHeaderStruct(Ctx& x, const VgeoHeader& h, u64 fileSize)
     if (((h.flags & kFlagHasNonVg) != 0) != (h.nonVgSectionCount > 0)) x.Fatal(Errc::CountMismatch, "flags.hasNonVg disagrees with nonVgSectionCount");
     if (x.opt.strictReserved)
     {
-        if (h.reserved0 != 0 || !IsZeroBytes(h.reserved1, sizeof h.reserved1)) x.Add(Errc::ReservedNotZero, "header reserved bytes are not zero");
+        if (h.reserved0 != 0 || !IsZeroBytes(h.reserved1 + 12, sizeof h.reserved1 - 12)) x.Add(Errc::ReservedNotZero, "header reserved bytes are not zero");
     }
 
     static const u32 kNominal[kSectionCount] = {sizeof(MaterialRecord), 1, sizeof(HierNode), sizeof(PageTableEntry), 4, kPageSize, 0, 0, 1};
@@ -1895,6 +1950,40 @@ inline void LoadMetaImpl(Ctx& x, VgeoMeta& m, std::vector<GroupInfo>* groupsOut)
         m.pageDeps.assign(raw.begin() + h.pageCount + 1, raw.end());
     }
     m.debugJson.resize(static_cast<size_t>(h.sections[kSecDebugJson].size)); readSection(kSecDebugJson, m.debugJson.data());
+
+    // v1.1: 拡張テーブル（reserved1[0..12)。0 = 無し）
+    {
+        u64 extOff = 0;
+        u32 extCount = 0;
+        std::memcpy(&extOff, h.reserved1, 8);
+        std::memcpy(&extCount, h.reserved1 + 8, 4);
+        if (extCount > 64) x.Fatal(Errc::LimitExceeded, Fmt("extension table has %u entries (max 64)", extCount));
+        if ((extOff == 0) != (extCount == 0)) x.Fatal(Errc::SectionRange, "extension table offset / count disagree");
+        if (extCount > 0)
+        {
+            if (extOff < kSectionAlign || extOff % 16 != 0 || extOff > fs || static_cast<u64>(extCount) * sizeof(ExtEntry) > fs - extOff)
+                x.Fatal(Errc::SectionRange, "extension table is out of the file");
+            std::vector<ExtEntry> ents(extCount);
+            ReadOrFatal(x, extOff, ents.data(), static_cast<u64>(extCount) * sizeof(ExtEntry), "extension table");
+            for (u32 i = 0; i < extCount; ++i)
+            {
+                const ExtEntry& e = ents[i];
+                if (e.offset > fs || e.size > fs - e.offset) x.Fatal(Errc::SectionRange, Fmt("extension %u is out of the file", i), i, e.offset);
+                if (x.opt.strictReserved && (e.reserved != 0 || (e.flags & ~kExtRequired))) x.Add(Errc::ReservedNotZero, Fmt("extension %u reserved bits are not zero", i), i);
+                if (e.fourcc == kExtMaterialShading)
+                {
+                    if (e.size != static_cast<u64>(h.materialCount) * kMaterialShadingWords * 4)
+                        x.Fatal(Errc::SectionShape, Fmt("MSHD size %llu != materialCount * 64", static_cast<unsigned long long>(e.size)), i, e.offset);
+                    m.materialShading.resize(h.materialCount);
+                    if (e.size > 0) ReadOrFatal(x, e.offset, m.materialShading.data(), e.size, "MSHD", i);
+                    if (x.opt.verifyCrc && Crc32(m.materialShading.data(), static_cast<size_t>(e.size)) != e.crc32)
+                        x.Fatal(Errc::SectionCrcMismatch, "MSHD CRC32 mismatch", i, e.offset);
+                }
+                else if (e.flags & kExtRequired)
+                    x.Fatal(Errc::UnsupportedFeature, Fmt("unknown required extension 0x%08X", e.fourcc), i, e.offset);
+            }
+        }
+    }
 
     std::vector<GroupInfo> groups;
     CheckSmallSections(x, m, groups);

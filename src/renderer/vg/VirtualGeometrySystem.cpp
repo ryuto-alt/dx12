@@ -1,4 +1,5 @@
 #include "renderer/vg/VirtualGeometrySystem.h"
+#include "renderer/vg/VgShadingRecord.h"
 
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
@@ -890,6 +891,8 @@ LoadError VirtualGeometrySystem::LoadImpl(const ByteSource& src, Asset& a)
         std::memcpy(m.uvScaleOffset, r.uvScaleOffset, 16);
         m.sectionKind = r.sectionKind;
         m.aoStrength = (r.flags & kMatAoInMR) ? r.aoStrength : 0.0f;   // v1.1（v1.0 のファイルは 0 = AO 無し）
+        if (a.materials.size() < meta.materialShading.size())               // v1.1 の 'MSHD'（無ければ既定）
+            m.shading = UnpackShadingRecord(meta.materialShading[a.materials.size()]);
         a.materials.push_back(std::move(m));
     }
     in.materialCount = static_cast<uint32_t>(a.materials.size());

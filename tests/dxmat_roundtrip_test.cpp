@@ -160,8 +160,65 @@ static void Test_Parallax()
     CHECK(g.heightPath.empty() && g.parallaxScale == 0.0f);
 }
 
+// 拡張シェーディング: 既定なら出力にキーが増えない / 往復で一致 / 範囲外はクランプ / グラフ材質は読まない・書かない
+static void Test_ShadingExt()
+{
+    MaterialAssetData plain;
+    plain.name = "plain";
+    plain.albedoPath = "textures/a.png";
+    const std::string jsonPlain = SerializeMaterialAsset(plain);
+    for (const char* k : {"clearCoat", "anisotropy", "sheen", "specular", "ior"})
+        CHECK(jsonPlain.find(k) == std::string::npos);
+    MaterialAssetData reread;
+    CHECK(ParseMaterialAsset(ToBytes(jsonPlain), reread));
+    CHECK(reread.shading.IsDefault());
+    CHECK(SerializeMaterialAsset(reread) == jsonPlain);
+
+    MaterialAssetData src = plain;
+    src.shading.clearCoat = 0.75f;
+    src.shading.clearCoatRoughness = 0.25f;
+    src.shading.anisotropy = -0.6f;
+    src.shading.anisotropyRotation = 1.5707964f;
+    src.shading.sheenColor[0] = 0.2f; src.shading.sheenColor[1] = 0.4f; src.shading.sheenColor[2] = 0.8f;
+    src.shading.sheenRoughness = 0.4f;
+    src.shading.specularFactor = 0.5f;
+    src.shading.specularColor[0] = 1.0f; src.shading.specularColor[1] = 0.5f; src.shading.specularColor[2] = 0.25f;
+    src.shading.ior = 1.33f;
+    const std::string json = SerializeMaterialAsset(src);
+    MaterialAssetData out;
+    CHECK(ParseMaterialAsset(ToBytes(json), out));
+    CHECK(out.shading == src.shading);
+    CHECK(SerializeMaterialAsset(out) == json);   // 書き戻しで変わらない
+
+    // 一部だけ: 書いた欄以外は既定のまま、キーも増えない
+    MaterialAssetData part = plain;
+    part.shading.clearCoat = 1.0f;
+    const std::string jp = SerializeMaterialAsset(part);
+    CHECK(jp.find("clearCoat") != std::string::npos);
+    CHECK(jp.find("clearCoatRoughness") == std::string::npos);
+    CHECK(jp.find("ior") == std::string::npos);
+
+    // 範囲外はクランプ
+    MaterialAssetData cl;
+    CHECK(ParseMaterialAsset(ToBytes(R"({"albedo":"a.png","clearCoat":3,"anisotropy":-9,"ior":0.2,"specularFactor":2,"sheenColor":[2,-1,0.5]})"), cl));
+    CHECK_F(cl.shading.clearCoat, 1.0f);
+    CHECK_F(cl.shading.anisotropy, -1.0f);
+    CHECK_F(cl.shading.ior, 1.0f);
+    CHECK_F(cl.shading.specularFactor, 1.0f);
+    CHECK_F(cl.shading.sheenColor[0], 1.0f);
+    CHECK_F(cl.shading.sheenColor[1], 0.0f);
+
+    // グラフ材質は拡張のキーを読まない / 書かない
+    MaterialAssetData g;
+    CHECK(ParseMaterialAsset(ToBytes(R"({"graph":"g.dxmg","clearCoat":0.5})"), g));
+    CHECK(g.IsGraph() && g.shading.IsDefault());
+    g.shading.clearCoat = 0.9f;
+    CHECK(SerializeMaterialAsset(g).find("clearCoat") == std::string::npos);
+}
+
 int main()
 {
+    Test_ShadingExt();
     Test_Parallax();
     Test_Roundtrip();
     Test_MissingFieldsUseDefaults();

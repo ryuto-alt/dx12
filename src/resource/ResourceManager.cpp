@@ -741,10 +741,10 @@ std::unique_ptr<CachedModel> ResourceManager::MakeVgPlaceholder(const float bmin
     return model;
 }
 
-std::vector<std::string> ResourceManager::PumpVgAuto(ID3D12GraphicsCommandList* cmdList)
+std::vector<std::pair<std::string, std::string>> ResourceManager::PumpVgAuto()
 {
-    std::vector<std::string> swapped;
-    if (!cmdList || !m_device) return swapped;
+    std::vector<std::pair<std::string, std::string>> retired;
+    if (!m_device) return retired;
     const std::vector<std::string> done = vgauto::Cooker::Get().TakeFinished();
     for (const std::string& model : done)
     {
@@ -752,20 +752,19 @@ std::vector<std::string> ResourceManager::PumpVgAuto(ID3D12GraphicsCommandList* 
         auto it = m_modelCache.find(key);
         if (it == m_modelCache.end() || !it->second.model) continue;   // 誰も読んでいない（手動 cook だけ）/ 読み込み失敗
         CachedModel& cur = *it->second.model;
-        // 差し替えるのは: 仮の箱（cook の成否に関係なく読み直す）/ 通常のモデルだが cook 済みになった（手動 vg_cook）
+        // 外すのは: 仮の箱（cook の成否に関係なく）/ 通常のモデルだが cook 済みになった（手動 vg_cook）
         bool swap = cur.vgPlaceholder;
         if (!swap && cur.vgAutoVgeo.empty())
             swap = vgauto::Cooker::Get().Query(std::filesystem::path(PathResolver::Utf8ToWide(it->second.path))).state == vgauto::State::Ready;
         if (!swap) continue;
-        const std::string path = it->second.path;
         for (auto& oldMesh : cur.meshes)
             m_pendingMeshUploads.erase(std::remove(m_pendingMeshUploads.begin(), m_pendingMeshUploads.end(), oldMesh.get()),
                                        m_pendingMeshUploads.end());
+        retired.emplace_back(key, it->second.path);
         m_retiredModels.push_back(std::move(it->second.model));   // ★GPU が使い終わるまで生かす（ReleaseRetiredModels）
         m_modelCache.erase(it);
-        if (GetOrLoadModel(path, cmdList)) swapped.push_back(key);
     }
-    return swapped;
+    return retired;
 }
 
 void ResourceManager::ReleaseRetiredModels()

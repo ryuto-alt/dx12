@@ -202,6 +202,9 @@ bool PathTracer::BeginJob(const JobDesc& desc, const SceneGpu& scene, std::strin
     jc.countRays = desc.countStats ? 1u : 0u;
     if (desc.env.nee) jc.flags |= kFlagEnvNee; else jc.flags &= ~kFlagEnvNee;
     if (desc.env.atmosSrvBase != kNoIndex) { jc.flags |= kFlagAtmosphere; jc.atmosSrvBase = desc.env.atmosSrvBase; }
+    // 拡張シェーディング: BRDF LUT（マルチスキャッタの E / シーンの方向アルベド）。無ければマルチスキャッタも切る
+    jc.brdfLutSrv = desc.env.brdfLutSrv;
+    if (desc.env.brdfLutSrv == kNoIndex) jc.flags &= ~kFlagMultiScatter;
     void* mapped = nullptr;
     D3D12_RANGE none{0, 0};
     if (FAILED(m_jobCb->Map(0, &none, &mapped))) return fail("ジョブ定数を Map できない");

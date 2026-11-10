@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "resource/ShadingExtJson.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstdlib>
@@ -94,6 +96,8 @@ bool ParseMaterialAsset(const std::vector<uint8_t>& jsonBytes, MaterialAssetData
         data.parallaxScale = std::clamp(j["parallaxScale"].get<f32>(), 0.0f, 0.25f);
     if (j.contains("parallaxSteps") && j["parallaxSteps"].is_number())
         data.parallaxSteps = std::clamp(j["parallaxSteps"].get<int>(), 4, 64);
+    // 拡張シェーディング（キーが無ければ既定＝従来と同じ）。グラフ材質は読まない（下で IsGraph を判定した後に消す）
+    shadingjson::Read(j, data.shading);
     data.source              = j.value("source", "");
     data.license             = j.value("license", "");
 
@@ -109,6 +113,7 @@ bool ParseMaterialAsset(const std::vector<uint8_t>& jsonBytes, MaterialAssetData
         data.emissivePath.clear();
         data.heightPath.clear();       // グラフ材質は POM 非対応
         data.parallaxScale = 0.0f;
+        data.shading = ShadingExt{};   // グラフ材質はピンで持つ
         data.metallic          = j.value("metallic", 0.0f);
         data.roughness         = j.value("roughness", 0.5f);
         data.emissiveIntensity = 0.0f;
@@ -210,6 +215,8 @@ std::string SerializeMaterialAsset(const MaterialAssetData& data)
         j["parallaxScale"] = ShortFloat(data.parallaxScale);
         if (data.parallaxSteps != 24) j["parallaxSteps"] = data.parallaxSteps;
     }
+    // 拡張シェーディングも「既定と違う欄だけ」書く（既存ファイルの書き戻しでキーが増えない）
+    shadingjson::Write(j, data.shading);
     if (!data.source.empty())  j["source"]  = data.source;
     if (!data.license.empty()) j["license"] = data.license;
     return j.dump(2);

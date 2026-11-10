@@ -7,11 +7,13 @@
 #include "graphics/DescriptorHeap.h"
 #include "resource/ResourceManager.h"
 #include "resource/TextureLoader.h"
+#include "resource/GltfShadingExt.h"   // glTF 拡張シェーディング（clearcoat / sheen / specular / ior / anisotropy）
 #include "resource/VfsIOSystem.h"
 #include "resource/VgeoProxyLoader.h"
 #include "core/vfs/Vfs.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <cmath>    // 祖先変換が単位行列かの判定
 #include <cctype>   // ::tolower(拡張子の小文字化)
 #include <nlohmann/json.hpp>
@@ -610,6 +612,38 @@ OcclusionInfo ReadOcclusionInfo(const aiMaterial* aiMat, const std::filesystem::
     o.sharedWithMR = o.hasMr && o.occPath == o.mrPath;
     return o;
 }
+
+// glTF / GLB の拡張シェーディング（KHR_materials_clearcoat 等）を JSON から読む。ParseGltfShading 参照
+//   （Assimp は anisotropy を読まず、specularFactor=0 のような値も落とすため JSON を正とする）。
+//   glb は大きいので先頭の JSON チャンクだけ読む。ディスクに無ければ vfs（game.pak）から全部読む。材質の添字は aiMaterial 番号と同じ。
+std::vector<GltfShadingEntry> LoadGltfShadingEntries(const std::filesystem::path& filePath)
+{
+    std::string ext = filePath.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (ext != ".gltf" && ext != ".glb") return {};
+    std::vector<uint8_t> bytes;
+    if (std::ifstream f(filePath, std::ios::binary); f)
+    {
+        if (ext == ".glb")
+        {
+            uint8_t hdr[20] = {};
+            f.read(reinterpret_cast<char*>(hdr), 20);
+            uint32_t clen = 0, ctype = 0;
+            std::memcpy(&clen, hdr + 12, 4);
+            std::memcpy(&ctype, hdr + 16, 4);
+            if (f.gcount() == 20 && std::memcmp(hdr, "glTF", 4) == 0 && ctype == 0x4E4F534Au && clen < (256u << 20))
+            {
+                bytes.resize(clen);
+                f.read(reinterpret_cast<char*>(bytes.data()), clen);
+                if (static_cast<uint32_t>(f.gcount()) != clen) bytes.clear();
+            }
+        }
+        else
+            bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    if (bytes.empty()) bytes = vfs::ReadAssetAbs(filePath.wstring());   // pak 内（glb はそのまま ParseGltfShading が読む）
+    return ParseGltfShading(bytes.data(), bytes.size());
+}
 } // namespace
 
 ModelImportOptions ModelImportOptions::Parse(const std::string& jsonText)
@@ -845,6 +879,14 @@ ModelData ModelLoader::LoadFromFile(
     } sceneSaver{ importer, filePath, flags, !sceneFromCache && modelcache::IsSceneCacheable(scene) };
     // LOD の簡略化結果もモデル単位でキャッシュする（Mesh::GenerateLods が引く）。
     modelcache::LodCacheScope lodCacheScope(filePath);
+
+    // glTF 拡張シェーディング（JSON）。glTF / GLB 以外は空＝何もしない（OBJ の Ni=1.0 などを ior と誤読しない）
+    const bool isGltfFile = [&]() {
+        std::string e = filePath.extension().string();
+        std::transform(e.begin(), e.end(), e.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return e == ".gltf" || e == ".glb";
+    }();
+    const std::vector<GltfShadingEntry> gltfShading = isGltfFile ? LoadGltfShadingEntries(filePath) : std::vector<GltfShadingEntry>{};
 
     // 単位正規化はスキンメッシュには掛けない(kUnitScaleFlag のコメント参照)。
     // 掛かった形跡(k != 1)があるスキンモデルだけ、フラグを外して読み直す。
@@ -1326,6 +1368,27 @@ ModelData ModelLoader::LoadFromFile(
                                  material->emissiveColor.z, material->emissiveIntensity,
                                  material->emissiveTexture ? "あり" : "なし",
                                  aiMat->GetName().C_Str());
+            }
+
+            // ---- 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR）----
+            // glTF/GLB だけ。JSON が正、無ければ Assimp のキー。拡張が無い材質は Material::shading が既定のまま＝絵は変わらない。
+            if (isGltfFile)
+            {
+                ShadingExt sh;
+                const size_t mi = aiMeshPtr->mMaterialIndex;
+                bool has = false;
+                if (mi < gltfShading.size() && gltfShading[mi].any) { sh = gltfShading[mi].shading; has = true; }
+                else if (gltfShading.empty())                        has = ReadAssimpShading(aiMat, sh);
+                if (has && !sh.IsDefault())
+                {
+                    material->shading = sh;
+                    Logger::Info("拡張シェーディング: coat={:.2f}/{:.2f} aniso={:.2f}@{:.2f}rad sheen=({:.2f},{:.2f},{:.2f})/{:.2f} "
+                                 "specular={:.2f}x({:.2f},{:.2f},{:.2f}) ior={:.3f} ({})",
+                                 sh.clearCoat, sh.clearCoatRoughness, sh.anisotropy, sh.anisotropyRotation,
+                                 sh.sheenColor[0], sh.sheenColor[1], sh.sheenColor[2], sh.sheenRoughness,
+                                 sh.specularFactor, sh.specularColor[0], sh.specularColor[1], sh.specularColor[2], sh.ior,
+                                 aiMat->GetName().C_Str());
+                }
             }
 
             // PBR scalar factors
@@ -2024,6 +2087,11 @@ bool ModelLoader::ExtractStaticForVg(const std::filesystem::path& filePath, Stat
     else
         for (unsigned i = 0; i < scene->mNumMeshes; ++i) refs.push_back({i, -1});
 
+    // 拡張シェーディング（LoadFromFile と同じ: glTF / GLB だけ。JSON が正、無ければ Assimp のキー）
+    const std::string lowerExt = LowerExtOf(filePath);
+    const bool isGltfFile = (lowerExt == "gltf" || lowerExt == "glb");
+    const std::vector<GltfShadingEntry> gltfShading = isGltfFile ? LoadGltfShadingEntries(filePath) : std::vector<GltfShadingEntry>{};
+
     // 材質: aiMaterial 番号 → 出力の材質番号（使われている物だけ・初出順）
     std::unordered_map<unsigned int, u32> matMap;
     std::vector<std::vector<u32>> matIdx;        // 出力材質ごとのインデックス（あとで連結して sections にする）
@@ -2032,7 +2100,18 @@ bool ModelLoader::ExtractStaticForVg(const std::filesystem::path& filePath, Stat
         auto it = matMap.find(aiIdx);
         if (it != matMap.end()) return it->second;
         StaticMaterialCpu m;
-        if (aiIdx < scene->mNumMaterials) ExtractMaterialCpu(scene, scene->mMaterials[aiIdx], filePath, importOpts, m);
+        if (aiIdx < scene->mNumMaterials)
+        {
+            ExtractMaterialCpu(scene, scene->mMaterials[aiIdx], filePath, importOpts, m);
+            if (isGltfFile)
+            {
+                ShadingExt sh;
+                bool has = false;
+                if (aiIdx < gltfShading.size() && gltfShading[aiIdx].any) { sh = gltfShading[aiIdx].shading; has = true; }
+                else if (gltfShading.empty())                              has = ReadAssimpShading(scene->mMaterials[aiIdx], sh);
+                if (has && !sh.IsDefault()) m.shading = sh;
+            }
+        }
         else m.name = "default";
         const u32 k = static_cast<u32>(out.materials.size());
         out.materials.push_back(std::move(m));

@@ -157,9 +157,17 @@ float4 PSMain(VSOut i) : SV_Target0
     su.metallic  = metallic;
     su.roughness = roughness;
     su.ao        = materialAo;   // 間接光だけに掛かる（ForwardShade.hlsli: ao *= s.ao。フォワードと同じ）
+    UnoApplyShadingExt(su, m.ext0, m.ext1);   // 拡張シェーディング（材質表の 8 DWORD。0 = 無し）
 
     const float viewDepth = mul(float4(s.worldPos, 1.0), view).z;   // フォワード VS と同じ（LH: 前方 +z）
-    const UnoShadeInput si = UnoMakeShadeInput(s.worldPos, s.worldNormal, i.pos, viewDepth);
+    UnoShadeInput si = UnoMakeShadeInput(s.worldPos, s.worldNormal, i.pos, viewDepth);
+    if (su.anisotropy != 0.0)
+    {
+        // 異方性の向きの基準 = 三角形の UV 勾配から作った接線（法線マップと同じ VgTangentFrame）
+        if (!hasNormalMap) VgTangentFrame(s, m.uvScaleOffset, normalize(s.worldNormal), T, tw);
+        si.tangentWS = T;
+        si.tangentW  = tw;
+    }
     const float3 lit = UnoShadeLighting(su, N, si);
 
     // ===== 自己発光（影・AO・ライティングを通さずに足す。フォワードと同じ 8bit 量子化の値）=====

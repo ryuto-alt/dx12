@@ -61,6 +61,8 @@ struct PbrOverrides
     // （別コマンドに分けると色と強度で Undo が 2 回要る＝片方だけ戻る状態が作れてしまう）。
     DirectX::XMFLOAT3 emissiveColor{-1.0f, -1.0f, -1.0f};
     float emissiveIntensity = -1.0f;
+    // 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR）の上書き。同じく相乗り。
+    ShadingExtOverride shading;
 
     static PbrOverrides From(const MeshRenderer& mr)
     {
@@ -72,6 +74,7 @@ struct PbrOverrides
         v.opacity     = mr.opacity;
         v.emissiveColor     = mr.overrideEmissiveColor;
         v.emissiveIntensity = mr.overrideEmissiveIntensity;
+        v.shading           = mr.overrideShading;
         return v;
     }
     void ApplyTo(MeshRenderer& mr) const
@@ -83,6 +86,7 @@ struct PbrOverrides
         mr.opacity             = opacity;
         mr.overrideEmissiveColor     = emissiveColor;
         mr.overrideEmissiveIntensity = emissiveIntensity;
+        mr.overrideShading           = shading;
     }
     // XMFLOAT3 は operator== を持たないので明示比較（= default が使えない）。
     bool operator==(const PbrOverrides& o) const
@@ -91,7 +95,15 @@ struct PbrOverrides
             && alphaMode == o.alphaMode && alphaCutoff == o.alphaCutoff
             && opacity == o.opacity && emissiveIntensity == o.emissiveIntensity
             && emissiveColor.x == o.emissiveColor.x && emissiveColor.y == o.emissiveColor.y
-            && emissiveColor.z == o.emissiveColor.z;
+            && emissiveColor.z == o.emissiveColor.z
+            && shading.clearCoat == o.shading.clearCoat && shading.clearCoatRoughness == o.shading.clearCoatRoughness
+            && shading.anisotropySet == o.shading.anisotropySet && shading.anisotropy == o.shading.anisotropy
+            && shading.anisotropyRotation == o.shading.anisotropyRotation
+            && shading.sheenColor[0] == o.shading.sheenColor[0] && shading.sheenColor[1] == o.shading.sheenColor[1]
+            && shading.sheenColor[2] == o.shading.sheenColor[2] && shading.sheenRoughness == o.shading.sheenRoughness
+            && shading.specularFactor == o.shading.specularFactor
+            && shading.specularColor[0] == o.shading.specularColor[0] && shading.specularColor[1] == o.shading.specularColor[1]
+            && shading.specularColor[2] == o.shading.specularColor[2] && shading.ior == o.shading.ior;
     }
 };
 

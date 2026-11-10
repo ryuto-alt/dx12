@@ -5,6 +5,8 @@
 // ★ディザの式は全パスで同一（FoliageDitherNoise）。深度プリパス / 速度パスも同じ断片を捨てること。
 // 薄い葉の透過光の強さ（ForwardShade.hlsli。1 = 裏から当たった太陽を表のランバートと同じだけ通す）
 #define UNO_SHADE_FOLIAGE_TRANSMISSION 0.8
+// 植生は b0 の自由枠を風・LOD に使う（拡張シェーディングの 8 DWORD として読まない）
+#define UNO_FORWARD_NO_SHADING_EXT
 #include "../forward/Forward.hlsl"
 #include "FoliageCommon.hlsli"
 

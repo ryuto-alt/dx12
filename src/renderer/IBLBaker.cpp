@@ -143,7 +143,8 @@ void IBLBaker::CreateDerivedResources(GraphicsDevice& device)
         d.Height           = kBrdfSize;
         d.DepthOrArraySize = 1;
         d.MipLevels        = 1;
-        d.Format           = DXGI_FORMAT_R16G16_FLOAT;
+        // ★RGBA16F: rg = split-sum (A, B) / b = シーンの方向アルベド / a = 予約（shaders/ibl/IntegrateBRDF.hlsl）
+        d.Format           = kBrdfFormat;
         d.SampleDesc       = {1, 0};
         d.Flags            = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         ThrowIfFailed(dev->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE,
@@ -193,7 +194,7 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
 
         D3D12_SHADER_RESOURCE_VIEW_DESC l{};
         l.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        l.Format                  = DXGI_FORMAT_R16G16_FLOAT;
+        l.Format                  = kBrdfFormat;
         l.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURE2D;
         l.Texture2D.MipLevels     = 1;
         dev->CreateShaderResourceView(m_brdfLut.Get(), &l, srvHeap.GetCpuHandle(m_blockStart + 2));
@@ -219,11 +220,50 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
         m_derivedState = after;
     };
 
-    // env が無ければベイクせず、リソースを SRV へ遷移して bind 可能にして終了（hasIBL=false 運用）
+    // env が無ければ irradiance / prefiltered は焼かず、リソースを SRV へ遷移して bind 可能にして終了（hasIBL=false 運用）。
+    // ★BRDF LUT だけは環境に依らないので焼く（マルチスキャッタの補償・シーンの方向アルベドは直接光でも使う。
+    //   焼かずに放置すると中身が未初期化のまま読まれる）。
     if (!envCube)
     {
+        if (!m_lutBaked)
+        {
+            transitionDerived(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            const u32 tmp = srvHeap.AllocateBlock(2);   // [0] = 未使用の SRV（テーブルを張るため null）/ [1] = LUT の UAV
+            DX_ASSERT(tmp != DescriptorHeap::kInvalidIndex, "IBL LUT temp descriptor allocation failed");
+            {
+                D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+                sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+                sd.ViewDimension           = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                sd.Format                  = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                sd.TextureCube.MipLevels   = 1;
+                dev->CreateShaderResourceView(nullptr, &sd, srvHeap.GetCpuHandle(tmp));
+                D3D12_UNORDERED_ACCESS_VIEW_DESC lu{};
+                lu.Format        = kBrdfFormat;
+                lu.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+                dev->CreateUnorderedAccessView(m_brdfLut.Get(), nullptr, &lu, srvHeap.GetCpuHandle(tmp + 1));
+            }
+            u8* cbBase = nullptr;
+            ThrowIfFailed(m_cbUpload->Map(0, nullptr, reinterpret_cast<void**>(&cbBase)));
+            const IBLConstants c{ kBrdfSize, 0.0f, 0u, 0u };
+            std::memcpy(cbBase + static_cast<size_t>(1 + kPrefilterMips) * kCBSlotStride, &c, sizeof(c));
+            m_cbUpload->Unmap(0, nullptr);
+            ID3D12DescriptorHeap* heaps[] = { srvHeap.GetHeap() };
+            cmdList->SetDescriptorHeaps(1, heaps);
+            cmdList->SetComputeRootSignature(m_computeRS.Get());
+            cmdList->SetPipelineState(m_psoBrdf.Get());
+            cmdList->SetComputeRootConstantBufferView(0, m_cbUpload->GetGPUVirtualAddress()
+                + static_cast<UINT64>(1 + kPrefilterMips) * kCBSlotStride);
+            cmdList->SetComputeRootDescriptorTable(1, srvHeap.GetGpuHandle(tmp));
+            cmdList->SetComputeRootDescriptorTable(2, srvHeap.GetGpuHandle(tmp + 1));
+            cmdList->Dispatch(kBrdfSize / 8, kBrdfSize / 8, 1);
+            transitionDerived(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            // Bake は Execute + WaitIdle 込みで呼ばれる運用（下の env 経路と同じ）なので即時 Free で安全
+            srvHeap.FreeBlock(tmp, 2);
+            m_lutBaked = true;
+            Logger::Info("IBL: BRDF LUT を焼きました（環境マップ無し。マルチスキャッタ / シーン用）");
+        }
         transitionDerived(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        m_valid = true;   // テーブルは有効（中身ダミー）
+        m_valid = true;   // テーブルは有効（irradiance / prefiltered は中身ダミー、LUT は実物）
         return;
     }
 
@@ -275,7 +315,7 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
         makeArrayUAV(m_prefilteredCube.Get(), m, tmpUavStart + 1 + m);
     {
         D3D12_UNORDERED_ACCESS_VIEW_DESC lu{};
-        lu.Format        = DXGI_FORMAT_R16G16_FLOAT;
+        lu.Format        = kBrdfFormat;
         lu.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
         dev->CreateUnorderedAccessView(m_brdfLut.Get(), nullptr, &lu,
             srvHeap.GetCpuHandle(tmpUavStart + 1 + kPrefilterMips));
@@ -361,6 +401,7 @@ void IBLBaker::Bake(GraphicsDevice& device, ID3D12GraphicsCommandList* cmdList,
     srvHeap.Free(tmpEnvSrv);
     srvHeap.FreeBlock(tmpUavStart, 7);
 
+    m_lutBaked = true;
     m_valid = true;
     Logger::Info("IBL baked (irradiance/prefiltered/BRDF LUT)");
 }
@@ -459,6 +500,7 @@ void IBLBaker::Reset()
     m_bakedEnvSize = 0;
     m_valid = false;
     m_hasEnv = false;
+    m_lutBaked = false;
     m_initialized = false;
 }
 

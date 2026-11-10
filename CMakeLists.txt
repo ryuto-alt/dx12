@@ -337,7 +337,9 @@ if(DXC_EXECUTABLE)
         # ★DdgiCommon.hlsli も Lighting.hlsli が include している（DDGI 段階1）。
         #   入れ忘れると DDGI のサンプル式を直してもフォワード系の .cso が古いまま残る。
         "${CMAKE_SOURCE_DIR}/shaders/ddgi/DdgiCommon.hlsli"
-        "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli")
+        "${CMAKE_SOURCE_DIR}/shaders/forward/Lighting.hlsli"
+        # ★拡張シェーディング（マルチスキャッタ / クリアコート / 異方性 / シーン）の純関数。PT と IBL の LUT も include する。
+        "${CMAKE_SOURCE_DIR}/shaders/forward/BrdfExt.hlsli")
     # クラスタードライティング（Forward+）のライトカリング compute 2 本
     set(SHADER_CLUSTER_BUILD "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterBuild.hlsl")
     set(SHADER_CLUSTER_CULL  "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCull.hlsl")
@@ -1234,7 +1236,7 @@ if(DXC_EXECUTABLE)
     add_custom_command(
         OUTPUT "${SHADER_OUTPUT_DIR}/IntegrateBRDF_CS.cso"
         COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E CSMain -Fo "${SHADER_OUTPUT_DIR}/IntegrateBRDF_CS.cso" "${SHADER_IBL_BRDF}"
-        DEPENDS "${SHADER_IBL_BRDF}" "${SHADER_IBL_INC}"
+        DEPENDS "${SHADER_IBL_BRDF}" "${SHADER_IBL_INC}" "${CMAKE_SOURCE_DIR}/shaders/forward/BrdfExt.hlsli"
         COMMENT "Compiling IntegrateBRDF.hlsl -> IntegrateBRDF_CS.cso (cs_6_0)"
     )
 
@@ -1583,7 +1585,7 @@ if(DXC_EXECUTABLE)
         OUTPUT "${SHADER_OUTPUT_DIR}/PathTrace_CS.cso"
         COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E PathTraceCS -Fo "${SHADER_OUTPUT_DIR}/PathTrace_CS.cso" "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl"
         DEPENDS "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl" "${CMAKE_SOURCE_DIR}/shaders/pt/PtCommon.hlsli"
-                "${CMAKE_SOURCE_DIR}/src/renderer/pt/PtShared.h"
+                "${CMAKE_SOURCE_DIR}/src/renderer/pt/PtShared.h" "${CMAKE_SOURCE_DIR}/shaders/forward/BrdfExt.hlsli"
                 "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereCommon.hlsli" "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereSkyRadiance.hlsli"
         COMMENT "Compiling PathTrace.hlsl -> PathTrace_CS.cso (cs_6_6)"
     )
@@ -1593,7 +1595,7 @@ if(DXC_EXECUTABLE)
         OUTPUT "${SHADER_OUTPUT_DIR}/PathTraceAtmos_CS.cso"
         COMMAND ${DXC_EXECUTABLE} -T cs_6_6 -E PathTraceCS -D PT_ATMOSPHERE=1 -Fo "${SHADER_OUTPUT_DIR}/PathTraceAtmos_CS.cso" "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl"
         DEPENDS "${CMAKE_SOURCE_DIR}/shaders/pt/PathTrace.hlsl" "${CMAKE_SOURCE_DIR}/shaders/pt/PtCommon.hlsli"
-                "${CMAKE_SOURCE_DIR}/src/renderer/pt/PtShared.h"
+                "${CMAKE_SOURCE_DIR}/src/renderer/pt/PtShared.h" "${CMAKE_SOURCE_DIR}/shaders/forward/BrdfExt.hlsli"
                 "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereCommon.hlsli" "${CMAKE_SOURCE_DIR}/shaders/atmosphere/AtmosphereSkyRadiance.hlsli"
         COMMENT "Compiling PathTrace.hlsl -> PathTraceAtmos_CS.cso (cs_6_6, PT_ATMOSPHERE)"
     )

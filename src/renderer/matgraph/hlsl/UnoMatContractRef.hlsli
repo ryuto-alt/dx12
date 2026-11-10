@@ -26,10 +26,17 @@ struct UnoSurface
     // ---- 予約（現行の共通シェーディングは無視する）----
     float3 subsurfaceColor;
     float  subsurfaceOpacity;
-    float  clearCoat;
-    float  clearCoatRoughness;
-    float  anisotropy;
-    uint   shadingModel;
+    // ---- 拡張シェーディング（ForwardShade.hlsli が消費する。既定値なら従来と同じ絵）----
+    float  clearCoat;           // 0..1（KHR_materials_clearcoat）
+    float  clearCoatRoughness;  // 0..1
+    float  anisotropy;          // -1..1（KHR_materials_anisotropy の強さ。負は 90° 回した向き）
+    uint   shadingModel;        // 予約
+    float  anisotropyRotation;  // ラジアン（接空間で +U から反時計回り）
+    float3 sheenColor;          // リニア（KHR_materials_sheen。0 = 無し）
+    float  sheenRoughness;      // 0..1
+    float  specular;            // UE 流 0..1（既定 0.5 → 誘電体の F0 = 0.08·specular = 0.04）
+    float3 specularTint;        // 誘電体の F0 に掛かる色（既定 1。glTF の specularColor / ior はここへ畳む）
+    float  specularF90;         // 誘電体の F90（既定 1。glTF の specularFactor）
 };
 
 UnoSurface UnoSurfaceDefault()
@@ -50,6 +57,12 @@ UnoSurface UnoSurfaceDefault()
     s.clearCoatRoughness = 0.0;
     s.anisotropy         = 0.0;
     s.shadingModel       = 0;
+    s.anisotropyRotation = 0.0;
+    s.sheenColor         = float3(0.0, 0.0, 0.0);
+    s.sheenRoughness     = 0.0;
+    s.specular           = 0.5;
+    s.specularTint       = float3(1.0, 1.0, 1.0);
+    s.specularF90        = 1.0;
     return s;
 }
 

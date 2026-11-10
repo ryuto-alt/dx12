@@ -81,6 +81,9 @@ struct VgsrcData
     std::vector<VgsrcSection> sections;
     std::vector<MaterialRecord> materials;
     std::vector<char> strings;               // 先頭 '\0'
+    // メモリ上だけ（VGSRC ファイルには書かない）: 材質ごとの拡張シェーディング（.vgeo の 'MSHD' の 16 語。空 = 無し）。
+    //   エンジン内の自動 cook（resource/VgAutoCook）が渡す。materials と同じ個数。
+    std::vector<std::array<u32, kMaterialShadingWords>> materialShading;
 };
 
 // 各配列のファイル内位置（ヘッダのカウントとフラグだけから決まる。書き手も読み手もこの関数を使う）

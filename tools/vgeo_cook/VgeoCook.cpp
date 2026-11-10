@@ -1511,6 +1511,13 @@ static VgeoError CookImpl(VgsrcData&& in, const CookOptions& opt, VgeoContent& o
     // ── ヘッダ / 材質 / debugJson ───────────────────────────────────────────
     out.materials = mats.recs;
     out.strings = mats.pool.Data();
+    // v1.1: 拡張シェーディング（入力の材質番号 → 出力の材質番号。VG / NONVG で同じ入力材質が 2 つに分かれても同じ値）
+    out.materialShading.clear();
+    if (!in.materialShading.empty() && in.materialShading.size() == in.materials.size())
+    {
+        out.materialShading.assign(out.materials.size(), {});
+        for (const auto& [key, idx] : mats.index) out.materialShading[idx] = in.materialShading[key.first];
+    }
     VgeoHeader& h = out.header;
     h.maxClusterVerts = opt.maxVerts;
     h.maxClusterTris = opt.maxTris;

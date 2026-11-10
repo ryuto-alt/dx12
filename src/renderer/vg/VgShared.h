@@ -118,7 +118,7 @@
 #define VG_MAT_MR_TEX             2u
 #define VG_MAT_EMISSIVE_TEX       8u
 #define VG_MAT_DOUBLE_SIDED       16u       // 両面材質: K2 の法線コーン棄却をしない
-#define VG_MAT_STRIDE             64u       // sizeof(VgMaterialGpu)
+#define VG_MAT_STRIDE             96u       // sizeof(VgMaterialGpu)（64 + 拡張シェーディングの 8 DWORD）
 
 // ── P4: 安定コンパクション（決定論）──
 #define VG_SORT_THREADS           256u      // ビトニックソート 1 グループのスレッド数（1 スレッド = 比較 1 組）

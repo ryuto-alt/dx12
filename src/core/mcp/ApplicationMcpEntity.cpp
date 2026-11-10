@@ -13,6 +13,7 @@ namespace dx12e { nlohmann::json McpSafetyInfoJson(); }   // ApplicationMcpManif
 #include "core/mcp/FleetGuard.h"   // ping の pid / uptime / idle / VRAM
 #include "resource/ShaderDiagnostics.h"
 #include "resource/ShaderTemplates.h"
+#include "resource/ShadingExtJson.h"   // set_pbr の拡張シェーディング / get_entity の shadingOverride
 
 #include <algorithm>
 #include <cctype>
@@ -643,6 +644,22 @@ void Application::RegisterMcpEntityMethods()
             //   Texture はパスを持たない（ResourceManager がキャッシュを握る）ので有無だけ返す。
             if (const auto* mr = reg.try_get<MeshRenderer>(e))
             {
+                // 拡張シェーディングの「基の値」: .dxmat 割当のサブメッシュはその .dxmat、それ以外はモデルの Material
+                auto baseShadingOf = [&](u32 mi, const Material* mat) -> ShadingExt
+                {
+                    if (mr->HasMaterialAsset(mi) && m_materialAssetManager)
+                        if (const auto* ent = m_materialAssetManager->FindLoaded(mr->MaterialAssetOf(mi)); ent && ent->valid)
+                            return ent->data.shading;
+                    return mat ? mat->shading : ShadingExt{};
+                };
+                auto ShadingExtToJson = [](const ShadingExt& x) -> json
+                {
+                    return {{"clearCoat", x.clearCoat}, {"clearCoatRoughness", x.clearCoatRoughness},
+                            {"anisotropy", x.anisotropy}, {"anisotropyRotation", x.anisotropyRotation},
+                            {"sheenColor", {x.sheenColor[0], x.sheenColor[1], x.sheenColor[2]}},
+                            {"sheenRoughness", x.sheenRoughness}, {"specularFactor", x.specularFactor},
+                            {"specularColor", {x.specularColor[0], x.specularColor[1], x.specularColor[2]}}, {"ior", x.ior}};
+                };
                 json baked = json::array();
                 for (const Material* mat : mr->materials)
                 {
@@ -653,6 +670,9 @@ void Application::RegisterMcpEntityMethods()
                         // hasAO = ORM の R をマテリアル AO として読んでいる / aoStrength = 実効の強さ（上書き込み。AO なしは 0）
                         {"hasAO",          mat && mat->occlusionInMR},
                         {"aoStrength",     ResolveAoStrength(mat, mr->overrideAoStrength)},
+                        // 拡張シェーディングの実効値（材質 × エンティティ上書き。ResolveShadingExt 後。.dxmat 割当のサブメッシュは .dxmat の値）
+                        {"shading",        ShadingExtToJson(ResolveShadingExt(
+                                               baseShadingOf(static_cast<u32>(baked.size()), mat), mr->overrideShading))},
                     });
                 }
                 if (!baked.empty()) result["bakedTextures"] = std::move(baked);
@@ -1609,8 +1629,10 @@ void Application::RegisterMcpEntityMethods()
                               {"target", {wpos.x, wpos.y, wpos.z}}, {"distance", dist}};
         });
 
-    McpDefine("set_pbr", "alphaCutoff:any,alphaMode:string,aoStrength:any,emissiveColor:any,emissiveIntensity:any,"
-              "entity:int,metallic:any,name:string,opacity:any,roughness:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
+    McpDefine("set_pbr", "alphaCutoff:any,alphaMode:string,anisotropy:any,anisotropyRotation:any,anisotropyRotationDeg:any,"
+              "aoStrength:any,clearCoat:any,clearCoatRoughness:any,emissiveColor:any,emissiveIntensity:any,"
+              "entity:int,ior:any,metallic:any,name:string,opacity:any,roughness:any,sheenColor:any,sheenRoughness:any,"
+              "specularColor:any,specularFactor:any,uvScaleU:any,uvScaleV:any", DX12E_MCP_HANDLER
         {
             const auto e = ResolveMcpEntity(*m_scene, params);
             auto& reg = m_scene->GetRegistry();
@@ -1628,6 +1650,79 @@ void Application::RegisterMcpEntityMethods()
             {
                 const float v = params["aoStrength"].get<float>();
                 mr.overrideAoStrength = (v < 0.0f) ? -1.0f : std::clamp(v, 0.0f, 1.0f);
+            }
+            // ---- 拡張シェーディング（クリアコート / 異方性 / シーン(布) / スペキュラ・IOR。glTF の KHR_materials_* と同じ意味）----
+            // 数値の欄は「負 または null = 材質に従う」へ戻す。例外: anisotropy は -1..1 の値域に負が入るので null だけで戻す。
+            //   clearCoat 0..1 / clearCoatRoughness 0..1 / anisotropy -1..1 / anisotropyRotation ラジアン（anisotropyRotationDeg は度）
+            //   sheenColor [r,g,b] 0..1 / sheenRoughness 0..1 / specularFactor 0..1 / specularColor [r,g,b] 0..16 / ior 1..5
+            {
+                auto& ov = mr.overrideShading;
+                auto num01 = [&](const char* key, f32& dst, f32 hi)
+                {
+                    if (!params.contains(key)) return;
+                    const auto& v = params[key];
+                    if (v.is_null()) { dst = -1.0f; return; }
+                    if (!v.is_number())
+                        throw McpError(McpErr::InvalidParam, std::string(key) + " は数値（負 / null で材質に従う）",
+                            std::string("例: ") + key + ":0.5。材質に従う状態へ戻すなら " + key + ":-1");
+                    const f32 x = v.get<f32>();
+                    dst = (x < 0.0f || !std::isfinite(x)) ? -1.0f : std::clamp(x, 0.0f, hi);
+                };
+                auto rgb = [&](const char* key, f32 (&dst)[3], f32 hi)
+                {
+                    if (!params.contains(key)) return;
+                    const auto& v = params[key];
+                    if (v.is_null()) { dst[0] = dst[1] = dst[2] = -1.0f; return; }
+                    if (!v.is_array() || v.size() < 3 || !v[0].is_number() || !v[1].is_number() || !v[2].is_number())
+                        throw McpError(McpErr::InvalidParam, std::string(key) + " は [r,g,b]（リニア。null で材質に従う）",
+                            std::string("例: ") + key + ":[0.8, 0.2, 0.1]");
+                    const f32 r = v[0].get<f32>(), g = v[1].get<f32>(), b = v[2].get<f32>();
+                    if (r < 0.0f || g < 0.0f || b < 0.0f) { dst[0] = dst[1] = dst[2] = -1.0f; return; }
+                    dst[0] = std::clamp(r, 0.0f, hi); dst[1] = std::clamp(g, 0.0f, hi); dst[2] = std::clamp(b, 0.0f, hi);
+                };
+                num01("clearCoat", ov.clearCoat, 1.0f);
+                num01("clearCoatRoughness", ov.clearCoatRoughness, 1.0f);
+                if (params.contains("anisotropy"))
+                {
+                    const auto& v = params["anisotropy"];
+                    if (v.is_null()) { ov.anisotropySet = false; ov.anisotropy = 0.0f; }
+                    else if (v.is_number()) { ov.anisotropySet = true; ov.anisotropy = std::clamp(v.get<f32>(), -1.0f, 1.0f); }
+                    else throw McpError(McpErr::InvalidParam, "anisotropy は -1..1 の数値（null で材質に従う）",
+                                        "例: anisotropy:0.6（接線方向に伸びる）/ -0.6（従法線方向）。戻すなら anisotropy:null");
+                }
+                if (params.contains("anisotropyRotation") || params.contains("anisotropyRotationDeg"))
+                {
+                    const bool deg = params.contains("anisotropyRotationDeg");
+                    const auto& v = params[deg ? "anisotropyRotationDeg" : "anisotropyRotation"];
+                    if (v.is_null()) ov.anisotropyRotation = -1.0f;
+                    else if (v.is_number())
+                    {
+                        f32 x = v.get<f32>();
+                        if (deg) x *= 0.017453292519943295f;
+                        if (!std::isfinite(x)) ov.anisotropyRotation = -1.0f;
+                        else
+                        {
+                            // 負は「従う」と衝突するので 0..2π へ丸めて保存する（-90° = 270° として効く。従うへ戻すのは null）
+                            const f32 twoPi = 6.28318530718f;
+                            x = std::fmod(x, twoPi);
+                            if (x < 0.0f) x += twoPi;
+                            ov.anisotropyRotation = x;
+                        }
+                    }
+                    else throw McpError(McpErr::InvalidParam, "anisotropyRotation はラジアン（anisotropyRotationDeg は度）の数値。null で材質に従う",
+                                        "例: anisotropyRotationDeg:90（接線から反時計回りに 90 度）");
+                }
+                rgb("sheenColor", ov.sheenColor, 1.0f);
+                num01("sheenRoughness", ov.sheenRoughness, 1.0f);
+                num01("specularFactor", ov.specularFactor, 1.0f);
+                rgb("specularColor", ov.specularColor, 16.0f);
+                if (params.contains("ior"))
+                {
+                    const auto& v = params["ior"];
+                    if (v.is_null()) ov.ior = -1.0f;
+                    else if (v.is_number()) { const f32 x = v.get<f32>(); ov.ior = (x < 1.0f || !std::isfinite(x)) ? -1.0f : std::clamp(x, 1.0f, 5.0f); }
+                    else throw McpError(McpErr::InvalidParam, "ior は 1..5 の数値（1 未満 / null で材質に従う）", "例: ior:1.33（水）/ 1.5（ガラス・既定）/ 2.4（ダイヤ）");
+                }
             }
             // ---- 自己発光（emissive）----
             // emissiveIntensity: 発光の強さ 0..64（0 で消灯、負で「マテリアルに従う」へ戻す）
@@ -1693,6 +1788,7 @@ void Application::RegisterMcpEntityMethods()
                               {"opacity", mr.opacity},
                               {"emissiveIntensity", mr.overrideEmissiveIntensity},
                               {"aoStrength", mr.overrideAoStrength},
+                              {"shadingOverride", [&]() { json o = json::object(); shadingjson::WriteOverride(o, mr.overrideShading); return o; }()},
                               {"emissiveColor", {mr.overrideEmissiveColor.x,
                                                  mr.overrideEmissiveColor.y,
                                                  mr.overrideEmissiveColor.z}}};

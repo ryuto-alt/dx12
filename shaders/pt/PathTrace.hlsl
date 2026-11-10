@@ -191,6 +191,9 @@ PtMatEval PtEvalMaterial(PtGeo g)
     e.surf.roughness = max(roughness, 0.04);   // UNO_SHADE_ROUGHNESS
     e.surf.F0        = lerp(float3(0.04, 0.04, 0.04), albedo4.rgb, metallic);
     e.surf.lambert   = ((M.flags & PT_MAT_LAMBERT) != 0u) || ((gFlags & PT_FLAG_FORCE_LAMBERT) != 0u);
+    // 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ。フォワードの b0 の自由枠と同じ 8 DWORD）。
+    // 視線に依る量（マルチスキャッタ・コートの減衰・異方性の基底）は反射点で PtFinalizeSurf が作る。
+    PtApplyShadingExt(e.surf, M.ext0, M.ext1);
 
     float3 em = M.emissive;
     if (any(em > 0.0) && (M.flags & PT_MAT_EMISSIVETEX) != 0u && M.emissiveSrv != PT_NO_INDEX)
@@ -345,7 +348,7 @@ float3 PtDirectLighting(PtShadeCtx c, inout uint rng)
         if (NdotL > 0.0 && dot(c.Ng, L) > 0.0)
         {
             if (!PtOccluded(PtShadowOrigin(c, L), L, 1e30, rng))
-                sum += PtEvalBrdf(c.N, c.V, L, c.surf) * NdotL * gSunE;
+                sum += PtEvalBrdfCos(c.N, c.V, L, c.surf) * gSunE;
         }
     }
 
@@ -382,8 +385,8 @@ float3 PtDirectLighting(PtShadeCtx c, inout uint rng)
             if (!PtOccluded(PtShadowOrigin(c, Ld), Ld, dist * 0.999, rng))
             {
                 // 推定量 = f * NdotL * color * att / p、p = w / wSum
-                const float3 f = PtEvalBrdf(c.N, c.V, Ld, c.surf);
-                sum += f * (NdotL * att) * L.color * (wSum / max(pickW, 1e-20));
+                const float3 fc = PtEvalBrdfCos(c.N, c.V, Ld, c.surf);   // f · N·L
+                sum += fc * att * L.color * (wSum / max(pickW, 1e-20));
             }
         }
     }
@@ -423,7 +426,7 @@ float3 PtDirectLighting(PtShadeCtx c, inout uint rng)
                         const PtMatEval le = PtEvalMaterial(lg);
                         const float pdfB = PtBsdfPdf(c.N, c.V, L, c.surf, c.pSpec);
                         const float mis = PtMisPower(pdfLight, pdfB);
-                        sum += PtEvalBrdf(c.N, c.V, L, c.surf) * NdotL * le.emission * (mis / pdfLight);
+                        sum += PtEvalBrdfCos(c.N, c.V, L, c.surf) * le.emission * (mis / pdfLight);
                     }
                 }
             }
@@ -442,7 +445,7 @@ float3 PtDirectLighting(PtShadeCtx c, inout uint rng)
             {
                 const float pdfB = PtBsdfPdf(c.N, c.V, L, c.surf, c.pSpec);
                 const float mis = PtMisPower(pdfE, pdfB);
-                sum += PtEvalBrdf(c.N, c.V, L, c.surf) * NdotL * PtEnvRadiance(L, gEnvLightScale) * (mis / pdfE);
+                sum += PtEvalBrdfCos(c.N, c.V, L, c.surf) * PtEnvRadiance(L, gEnvLightScale) * (mis / pdfE);
             }
         }
     }
@@ -550,14 +553,15 @@ float3 PtTracePath(float3 origin, float3 dir, inout uint rng, inout uint rrEnded
         c.N    = N;
         c.V    = -curDir;
         c.surf = me.surf;
-        c.pSpec = PtSpecProb(N, c.V, me.surf);
+        PtFinalizeSurf(c.surf, N, c.V, front ? g.Ns : -g.Ns, g.T, g.Tw);   // マルチスキャッタ / コート / 異方性 / シーン
+        c.pSpec = PtSpecProb(N, c.V, c.surf);
 
         // ---- 直接光(NEE)----
         radiance += throughput * PtDirectLighting(c, rng);
 
         // ---- BSDF サンプリング ----
         float3 Ls; float pdf; float3 wgt;
-        if (!PtSampleBsdf(N, c.V, me.surf, c.pSpec, rng, Ls, pdf, wgt)) break;
+        if (!PtSampleBsdf(N, c.V, c.surf, c.pSpec, rng, Ls, pdf, wgt)) break;
         if (dot(Ng, Ls) <= 0.0) break;   // 幾何的に面の裏へ出る方向は無効(粗いメッシュ + 滑らか法線の保険)
         throughput *= wgt;
         prevPdf = pdf;

@@ -14,6 +14,7 @@
 #include "renderer/SSAOSettings.h"
 #include "renderer/ContactShadowSettings.h"
 #include "renderer/NormalFilterSettings.h"
+#include "renderer/ShadingSettings.h"
 #include "renderer/ShadowPcssSettings.h"
 #include "renderer/RtSettings.h"
 #include "renderer/DdgiVolume.h"   // DdgiSettings
@@ -194,6 +195,8 @@ public:
     // 法線マップフィルタリング（分散→ラフネス / 平均法線の復元）。既定 ON。
     NormalFilterSettings&       GetNormalFilterSettings()       { return m_normalFilter; }
     const NormalFilterSettings& GetNormalFilterSettings() const { return m_normalFilter; }
+    ShadingSettings&            GetShadingSettings()            { return m_shading; }
+    const ShadingSettings&      GetShadingSettings() const      { return m_shading; }
 
     // PCSS（ソフトシャドウ）。既定 OFF ＝ 従来の 3x3 PCF とビット一致。
     ShadowPcssSettings&       GetShadowPcssSettings()       { return m_shadowPcss; }
@@ -318,6 +321,7 @@ private:
     SSAOSettings        m_ssao;
     ContactShadowSettings m_contactShadow;
     NormalFilterSettings  m_normalFilter;
+    ShadingSettings       m_shading;   // 材質シェーディングのシーン設定（マルチスキャッタ補償）
     ShadowPcssSettings    m_shadowPcss;
     SsrSettings         m_ssr;
     SsgiSettings        m_ssgi;

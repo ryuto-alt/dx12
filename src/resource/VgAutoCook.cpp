@@ -609,8 +609,8 @@ void Cooker::WorkerMain()
         }
         const double sec = std::chrono::duration<double>(j->tEnd - j->t0).count();
         if (j->result == State::Ready)
-            Logger::Info("仮想ジオメトリ: 自動 cook 完了 {}（{} 三角形・材質 {}・{:.1f} 秒 = ハッシュ {:.1f} / 読込 {:.1f} / cook {:.1f} / 書出 {:.1f}）→ {}",
-                         j->model, j->triangles, j->materials, sec, j->secHash, j->secRead, j->secCook, j->secWrite, j->vgeoPath);
+            Logger::Info("仮想ジオメトリ: 自動 cook 完了 {}（{} 三角形・材質 {}・{:.1f} 秒 = ハッシュ {:.1f} / 読込 {:.1f} / テクスチャ {:.1f} / cook {:.1f} / 書出 {:.1f}）→ {}",
+                         j->model, j->triangles, j->materials, sec, j->secHash, j->secRead, j->secTex, j->secCook, j->secWrite, j->vgeoPath);
         else if (j->result == State::Ineligible)
             Logger::Info("仮想ジオメトリ: 自動 cook の対象外 {}（{}）。通常メッシュで描きます", j->model, j->reason);
         else
@@ -702,6 +702,7 @@ void Cooker::RunJob(Job& j)
     src.unitScaleToMeters = 1.0f;
     src.sourceHash = content;
     vg::StringPool pool;
+    bool anyShading = false;
     for (size_t mi = 0; mi < cpu.materials.size(); ++mi)
     {
         const StaticMaterialCpu& m = cpu.materials[mi];
@@ -748,23 +749,47 @@ void Cooker::RunJob(Job& j)
         r.alphaCutoff = m.alphaCutoff;
         r.baseColorAlpha = m.baseColorAlpha;
         src.materials.push_back(r);
+        // 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ）→ .vgeo の 'MSHD'
+        src.materialShading.push_back(vg::PackShadingRecord(m.shading));
+        if (!m.shading.IsDefault()) anyShading = true;
     }
+    if (!anyShading) src.materialShading.clear();   // 全部既定なら書かない（v1.0 とバイト一致）
     src.strings = pool.Data();
     // テクスチャの BC 圧縮キャッシュ（.texcache）を裏で作っておく。差し替えの瞬間（メインスレッド）に 4K の BC7 圧縮を
     //   何枚も踏むと数十秒固まるため。引数（sRGB / 用途）は VgeoProxyLoader・VirtualGeometryBindMaterials と同じ。
     SetStage(j, "texcache");
-    for (const vg::MaterialRecord& r : src.materials)
+    t = clock::now();
     {
-        const struct { uint32_t off; bool srgb; TextureUsage usage; } ts[4] = {
-            {r.albedoPathOff, true, TextureUsage::BaseColor}, {r.normalPathOff, false, TextureUsage::Normal},
-            {r.metalRoughPathOff, false, TextureUsage::NonColor}, {r.emissivePathOff, true, TextureUsage::BaseColor}};
-        for (const auto& tx : ts)
+        struct Item { std::wstring path; bool srgb; TextureUsage usage; };
+        std::vector<Item> items;
+        for (const vg::MaterialRecord& r : src.materials)
         {
-            if (tx.off == vg::kNone || tx.off >= src.strings.size() || m_cancel) continue;
-            const fs::path p = (dir / U8Path(std::string(src.strings.data() + tx.off))).lexically_normal();
-            TextureLoader::PrewarmCompressedCache(fs::path(p.generic_wstring()).wstring(), tx.srgb, tx.usage);
+            const struct { uint32_t off; bool srgb; TextureUsage usage; } ts[4] = {
+                {r.albedoPathOff, true, TextureUsage::BaseColor}, {r.normalPathOff, false, TextureUsage::Normal},
+                {r.metalRoughPathOff, false, TextureUsage::NonColor}, {r.emissivePathOff, true, TextureUsage::BaseColor}};
+            for (const auto& tx : ts)
+            {
+                if (tx.off == vg::kNone || tx.off >= src.strings.size()) continue;
+                const fs::path p = (dir / U8Path(std::string(src.strings.data() + tx.off))).lexically_normal();
+                items.push_back({fs::path(p.generic_wstring()).wstring(), tx.srgb, tx.usage});
+            }
         }
+        // 1 枚ずつは単一スレッドの BC7 圧縮（4K で 10 秒前後）なので、最大 4 枚を同時に（別ファイルなら同時に渡してよい）。低優先度。
+        std::atomic<size_t> next{0};
+        const unsigned nThreads = static_cast<unsigned>(std::min<size_t>(items.size(), 4));
+        std::vector<std::thread> workers;
+        for (unsigned ti = 0; ti < nThreads; ++ti)
+            workers.emplace_back([&]
+            {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+                for (size_t i; (i = next.fetch_add(1)) < items.size() && !m_cancel;)
+                    TextureLoader::PrewarmCompressedCache(items[i].path, items[i].srgb, items[i].usage);
+                if (SUCCEEDED(hr)) CoUninitialize();
+            });
+        for (auto& th : workers) th.join();
     }
+    j.secTex = since(t);
     for (const auto& s : cpu.sections) src.sections.push_back(vg::VgsrcSection{s.material, s.firstIndex, s.indexCount, 0u});
     src.positions = std::move(cpu.positions);
     src.normals = std::move(cpu.normals);
@@ -866,7 +891,7 @@ nlohmann::json Cooker::StatusJson() const
             o["levels"] = x.levels;
             o["fileMB"] = std::round(static_cast<double>(x.fileBytes) / 1048576.0 * 10.0) / 10.0;
             o["sec"] = {{"hash", std::round(x.secHash * 10) / 10}, {"read", std::round(x.secRead * 10) / 10},
-                        {"cook", std::round(x.secCook * 10) / 10}, {"write", std::round(x.secWrite * 10) / 10}};
+                        {"texcache", std::round(x.secTex * 10) / 10}, {"cook", std::round(x.secCook * 10) / 10}, {"write", std::round(x.secWrite * 10) / 10}};
         }
         return o;
     };

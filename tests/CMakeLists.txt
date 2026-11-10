@@ -609,6 +609,16 @@ endif()
     endif()
     add_test(NAME HiZMathTests COMMAND HiZMathTests)
 
+    # 拡張シェーディング（shaders/forward/BrdfExt.hlsli）の CPU 写し: 分布の正規化・相反性・白い炉のエネルギー上限。
+    # ヘッダオンリー（renderer/ShadingExt.h）。GPU 不要。
+    add_executable(ShadingBrdfTests shading_brdf_test.cpp)
+    target_include_directories(ShadingBrdfTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(ShadingBrdfTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ShadingBrdfTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ShadingBrdfTests COMMAND ShadingBrdfTests)
+
     # 精密ピッキングの土台（editor/RayGeometry.h: レイ-三角形/AABB/球 + ヒット順ソート）テスト。
     # ヘッダオンリー・純 DirectXMath（entt も GPU も要らない）。
     add_executable(RayPickTests ray_pick_test.cpp)
@@ -940,6 +950,20 @@ if(TARGET Resource AND TARGET Renderer)
     add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
 endif()
 
+# 仮想ジオメトリの自動 cook（resource/VgAutoCook）と .vgeo v1.1（AO / 拡張シェーディング 'MSHD'）。GPU 不要。
+if(TARGET Resource AND TARGET Renderer AND TARGET VgeoCookLib)
+    add_executable(VgAutoCookTests vg_auto_cook_test.cpp)
+    target_link_libraries(VgAutoCookTests PRIVATE Resource Renderer VgeoCookLib)
+    target_compile_definitions(VgAutoCookTests PRIVATE DX12E_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    if(MSVC)
+        target_compile_options(VgAutoCookTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VgAutoCookTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_custom_command(TARGET VgAutoCookTests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgAutoCookTests>")
+    add_test(NAME VgAutoCookTests COMMAND VgAutoCookTests)
+endif()
+
 # モデル取り込み: import.json（ModelImportOptions）と albedo アルファの透明判定（TextureLoader::HasTransparentAlpha）。GPU 不要。
 if(TARGET Resource AND TARGET Renderer)
     add_executable(ModelImportAlphaTests model_import_alpha_test.cpp)
@@ -951,6 +975,19 @@ if(TARGET Resource AND TARGET Renderer)
         target_compile_definitions(ModelImportAlphaTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME ModelImportAlphaTests COMMAND ModelImportAlphaTests)
+endif()
+
+# 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR）: Pack/Unpack・Resolve・JSON・glTF 取り込み（Blender 製 glb）。GPU 不要。
+if(TARGET Resource AND TARGET Renderer)
+    add_executable(ShadingExtTests shading_ext_test.cpp)
+    target_link_libraries(ShadingExtTests PRIVATE Resource Renderer)
+    target_compile_definitions(ShadingExtTests PRIVATE
+        DX12E_SHADING_TEST_GLB="${CMAKE_CURRENT_SOURCE_DIR}/data/shading_ext.glb")
+    if(MSVC)
+        target_compile_options(ShadingExtTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ShadingExtTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ShadingExtTests COMMAND ShadingExtTests)
 endif()
 
 # マテリアル AO（ORM の R / glTF occlusionTexture）。ModelLoader::ProbeOcclusion / TextureLoader::ComposeOrmPng / Material.h の詰め方。GPU 不要。

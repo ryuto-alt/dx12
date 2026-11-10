@@ -309,6 +309,15 @@ void PtHost::ResolveHitMaterial(Application& app, const DrawItem& it, u32 mi, ID
         m.uvScaleOffset[0] *= matAsset->data.uvTilingU;
         m.uvScaleOffset[1] *= matAsset->data.uvTilingV;
     }
+
+    // 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ）。フォワードの b0 の自由枠と同じ 8 DWORD・同じ優先順
+    //   （.dxmat > モデル焼き込み、その上にエンティティの上書き）。グラフ材質はピンで持つので、ここ（代理材質）は焼き込みの値。
+    {
+        const ShadingExt baseExt = (matAsset && !matAsset->data.IsGraph()) ? matAsset->data.shading
+                                 : (mat ? mat->shading : ShadingExt{});
+        const PackedShadingExt ext = PackShadingExt(ResolveShadingExt(baseExt, r.overrideShading));
+        std::memcpy(m.ext, ext.data(), sizeof(m.ext));
+    }
 }
 
 bool PtHost::Snapshot(Application& app, ID3D12GraphicsCommandList* cmd, std::string* err)
@@ -348,6 +357,10 @@ bool PtHost::Snapshot(Application& app, ID3D12GraphicsCommandList* cmd, std::str
               | (req.physicalFalloff ? pt::kFlagPhysFalloff : 0u)
               | (req.forceLambert ? pt::kFlagForceLambert : 0u)
               | (req.noNormalMaps ? pt::kFlagNoNormalMap : 0u);
+    // マルチスキャッタ: フォワードと同じシーン設定。LUT は環境の有無に依らず IBLBaker が焼いている
+    if (app.m_scene->GetShadingSettings().multiScatter) job.flags |= pt::kFlagMultiScatter;
+    if (app.m_iblReady && app.m_iblBaker && app.m_iblBaker->IsBrdfLutReady())
+        job.env.brdfLutSrv = app.m_iblBaker->GetBrdfLutSrv();
     job.tileSize = req.tileSize;
     job.samplesPerDispatch = req.samplesPerDispatch;
 

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/Types.h"
+#include "renderer/ShadingExt.h"
 
 namespace dx12e
 {
@@ -43,6 +44,10 @@ struct MaterialAssetData
     std::string heightPath;
     f32 parallaxScale = 0.0f;
     int parallaxSteps = 24;
+
+    // 拡張シェーディング（クリアコート / 異方性 / シーン / スペキュラ・IOR。renderer/ShadingExt.h）。
+    // 既定値のキーは書き出さない＝既存の .dxmat は 1 バイトも変わらない。
+    ShadingExt shading;
 
     std::string source;   // 例 "Poly Haven"（未指定可）
     std::string license;  // 例 "CC0"（未指定可）

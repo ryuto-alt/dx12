@@ -466,6 +466,11 @@ void Application::GpuInstDrawMain(ID3D12GraphicsCommandList* cmd, u32 frameIndex
                 mat ? mat->emissiveColor : DirectX::XMFLOAT3{0.0f, 0.0f, 0.0f}, mat ? mat->emissiveIntensity : 0.0f,
                 r.overrideEmissiveColor, r.overrideEmissiveIntensity));
             cmd->SetGraphicsRoot32BitConstants(RootSignature::kSlotPBRMaterial, 9, &pbr, 0);
+            // 拡張シェーディング（b0 の自由枠 = offset 32..39 DWORD。Forward_PS が読む。先頭 16 DWORD しか書かない経路なので必ず書く）
+            {
+                const PackedShadingExt ext = PackShadingExt(ResolveShadingExt(mat ? mat->shading : ShadingExt{}, r.overrideShading));
+                cmd->SetGraphicsRoot32BitConstants(RootSignature::kSlotPerObject, 8, ext.data(), 32);
+            }
             GpuInstExecute(cmd, fg, *rt, s, false);
         }
     }

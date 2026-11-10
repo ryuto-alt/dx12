@@ -241,8 +241,11 @@ float4 PSMain(PSInput input) : SV_TARGET
         : normalize(input.worldNormal);
 
     // ===== シェーディング尾部（デカール → 影 → 直接光 → 環境光 → 自己発光 → デバッグ）=====
-    return UnoShadeForward(s, N,
-        UnoMakeShadeInput(input.worldPos, input.worldNormal, input.positionSV, input.viewDepth));
+    //   ClearCoat / Anisotropy / Sheen / Specular のピンは UnoSurface の拡張欄へ直接入っている（ForwardShade.hlsli が消費）。
+    UnoShadeInput si = UnoMakeShadeInput(input.worldPos, input.worldNormal, input.positionSV, input.viewDepth);
+    si.tangentWS = input.worldTangent;   // 異方性の向きの基準
+    si.tangentW  = input.tangentW;
+    return UnoShadeForward(s, N, si);
 }
 
 // ---- ノード内サムネイル / ノード単位プレビュー用の PS（G2c）--------------------------------------------

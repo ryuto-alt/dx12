@@ -4,7 +4,8 @@
 - 位置づけ: `docs/VIRTUAL_GEOMETRY_DESIGN.md` の §3（`.vgeo`）と §3.8（VGSRC）を精査し、曖昧・矛盾・実装不能な点を潰した**確定版**。設計書自体は書き換えていない。差分は §1「設計書からの変更点」に全部ある。
 - 実装: `src/renderer/vg/VgeoFormat.h`（構造体・Reader・Writer・Validator）/ `VgeoBvh.h`（BVH ビルダ）/ `VgsrcFormat.h`（VGSRC）。**食い違ったらこの文書が正**。ヘッダの `static_assert` が §4〜§11 の全オフセットを固定している。
 - テスト: `tests/vgeo_format_test.cpp`（形式・破損・境界・決定論・手書き DAG）/ `tests/vgeo_stub_test.cpp`（スタブ生成器）。金型ハッシュ（`kGoldenHandDag`）が「バイト列が変わった」ことを検知する。 cooker は `tests/vgeo_cook_test.cpp`（クラックなし・誤差の単調性・カバレッジ・決定論・GPU 写像・回帰・不正入力）。
-- 状態: P0 完了（形式・スタブ）/ **P1 完了（オフライン cooker `tools/vgeo_cook`。階層 LOD・クラックなしを検証済み。§16.2）**。エンジン本体（描画・ローダ）には未統合（P2）。
+- 状態（2026-11-10）: **v1.1**（材質 AO・拡張テーブル・拡張シェーディング 'MSHD'。§1 C32〜C35）。エンジン内の自動 cook（`resource/VgAutoCook`）が glb / gltf / fbx / obj から材質・テクスチャつきの `.vgeo` を作る（§16.3）。
+- 旧状態: P0 完了（形式・スタブ）/ **P1 完了（オフライン cooker `tools/vgeo_cook`。階層 LOD・クラックなしを検証済み。§16.2）**。エンジン本体（描画・ローダ）には未統合（P2）。
 - 表記: 「**必須**」= 違反したら Validator がエラーにする。「**推奨**」= しなくてもエラーにはならない。オフセットは特記なき限り**構造体先頭からのバイト**。
 
 ---
@@ -44,6 +45,10 @@
 | C29 | （P0 の未決）「非ルートグループは、そこから生まれた親クラスタが 1 つ以上必要」だが、簡略化でグループが丸ごと消える場合が未定義 | **確定: 最低 1 三角形は残す**。cooker は簡略化の結果が 0 三角形なら、入力のうち最大面積の三角形を 1 枚残し、誤差に「グループのジオメトリの境界球半径」を足す。Validator の規則（§10-5）は緩めない | 「消えたら親なし」を許すと、その領域を親が覆えず、粗い LOD を選んだ瞬間に穴（= クラック）になる。1 枚残せば親クラスタは必ず 1 個以上でき、誤差の加算で「そこは粗すぎる」と実行時に判定される |
 | C30 | ルートグループは 1 つ（C6）| **ルートグループは複数あってよい**（各 1〜15 クラスタ）。cooker は ① VG セクション（材質）ごとに別の DAG を持つ ② 材質境界（共有頂点の永久ロック）や `lockOpenBorders` のロックが支配的でこれ以上簡略化できないとき、**そのレベルをそのままルートにする**（15 クラスタごとにルートグループを分ける）。`rootClusterCount` は 1〜2 とは限らない（複数材質で数個〜十数個）| 形式は元から複数ルートを許す（Validator は「INF の共有」だけ見る）。明文化して、cooker が「簡略化できない入力」で失敗せず有効なファイルを出せるようにする |
 | C31 | ページ順は「レベルの降順」（§8.3）| **確定: ルートグループ → レベル降順 → グループ中心の Morton コード → 生成順**。group id = この順位（BVH の葉も同じ順）。`pinnedPageCount` = max(ルートを含む最後のページ + 1, min(pageCount, `pinPages`（既定 64 = 8 MiB）))。深さの違う DAG（材質ごと）が混ざっても、依存は必ず小さいページ添字へ向く（子を生んだグループのレベルは親より 1 小さい）| ルートを含むページが先頭に固まる（pinned の条件）。レベル帯 → Morton の並びで BVH の LOD 枝刈りが効く |
+| C32 | （v1.1。2026-11-10）`MaterialRecord` の 92 は reserved | **`aoStrength`（f32）**。`flags.bit6 = kMatAoInMR`（metalRough テクスチャの R をマテリアル AO として読む。glTF occlusionTexture / ORM）のときだけ 0..1、立っていなければ 0（= v1.0 の予約と同じバイト）。bit6 は `kMatHasMetalRough` が前提 | Blender / glTF の AO を VG とプロキシ（フォワード）で同じに描くため。予約の利用 = minor で許される変更（§2.6-1）。知らない v1.0 の読み手は AO 無しで描く |
+| C33 | （v1.1）拡張テーブルは「将来」 | **実装した**: ヘッダ `reserved1[0..8)` = u64 テーブル位置、`[8..12)` = u32 個数（0 = 無し）、`[12..20)` は予約のまま。エントリ 32 B `{fourcc, flags(bit0 = required), u64 offset, u64 size, crc32, reserved}`。テーブルと中身は**最後のセクションの後ろ**（16 整列。ファイル末尾は従来どおり 4096 に切り上げ）。CRC は必須。知らない required は `UnsupportedFeature`、知らない任意は無視。個数の上限 64 | §2.6-3 の新セクションの置き場。既存 9 セクションの並び・整列規則を一切変えずに足せる |
+| C34 | （v1.1）拡張シェーディングの置き場なし | 拡張 **`'MSHD'`（任意）** = 材質ごと 64 B: f32 × 16（clearCoat, clearCoatRoughness, anisotropy, anisotropyRotation, sheenColor[3], sheenRoughness, specularFactor, specularColor[3], ior, 0, 0, 0。`renderer/ShadingExt.h` の `ShadingExt` の並び）。サイズ = `materialCount * 64`。どの材質も既定なら書かない | GPU 形（`PackShadingExt` の 8 DWORD）ではなく意味の値を持つ（GPU の詰め方が変わっても作り直さなくてよい）。読み手は `VgShadingRecord.h` の `UnpackShadingRecord`（`ClampShadingExt` を通す）|
+| C35 | （v1.1）`versionMinor` | writer は **C32〜C34 のどれかを使うファイルだけ minor = 1**。使わなければ minor = 0・reserved1 は全部 0（= v1.0 とバイト一致。金型ハッシュ不変）| 既存の `.vgeo` と既存の cook の出力を 1 バイトも変えない |
 
 ---
 
@@ -208,7 +213,7 @@ cull = dot(center - camera, axis) >= cutoff * length(center - camera) + radius  
 | offset | size | 型 | 名前 | 備考 |
 |---:|---:|---|---|---|
 | 0 | 4 | u32 | `nameOff` | STRINGS 内。`kNone(0xFFFFFFFF)` = 名前無し |
-| 4 | 4 | u32 | `flags` | bit0 hasNormalMap / bit1 hasMetalRough / bit2 alphaTest（NONVG 専用）/ bit3 hasEmissiveTex / bit4 doubleSided / bit5 blend（NONVG 専用）。bit6.. 予約 |
+| 4 | 4 | u32 | `flags` | bit0 hasNormalMap / bit1 hasMetalRough / bit2 alphaTest（NONVG 専用）/ bit3 hasEmissiveTex / bit4 doubleSided / bit5 blend（NONVG 専用）/ **bit6 aoInMR（v1.1）**。bit7.. 予約 |
 | 8 | 4 | u32 | `albedoPathOff` | 相対パス（§1 C24）。`kNone` = 無し |
 | 12 | 4 | u32 | `normalPathOff` | 同上 |
 | 16 | 4 | u32 | `metalRoughPathOff` | G = roughness, B = metallic（`Material.h` と同じ）|
@@ -222,7 +227,7 @@ cull = dot(center - camera, axis) >= cutoff * length(center - camera) + radius  
 | 56 | 16 | f32[4] | `baseColorFactor` | 記録するが v1 のランタイムは無視（`ModelLoader` と同じ挙動）|
 | 72 | 16 | f32[4] | `uvScaleOffset` | xy = scale, zw = offset（既定 1,1,0,0）|
 | 88 | 4 | u32 | `sectionKind` | 0 = VG / 1 = NONVG。それ以外は不正 |
-| 92 | 4 | u32 | reserved | |
+| 92 | 4 | f32 | `aoStrength` | v1.1（C32）。`flags.bit6` のときだけ 0..1、それ以外は 0 |
 
 - テクスチャは BC7（albedo = sRGB, MR = linear）/ BC5（normal）の `.dds`（ミップ付き）。パスは **`.vgeo` のあるフォルダ基準**の相対パス。
 - 全フィールドは有限であること。VG 材質（`sectionKind == 0`）は `alphaTest` / `blend` 不可。
@@ -697,6 +702,15 @@ LOD0 の前処理（`meshopt_optimizeVertexCache` / `+ OverdrawOptimize`）は�
 
 ---
 
+### 16.3 エンジン内の自動 cook（2026-11-10。`src/resource/VgAutoCook.{h,cpp}`）
+
+- 入口: `ResourceManager::GetOrLoadModel`（シーンの読み込み・`spawn_model`・`blender_place` などモデルを読む経路はすべてここを通る）→ `vgauto::Cooker::Query`。手動は MCP `vg_cook {path, force}`。
+- 取り出し: `ModelLoader::ExtractStaticForVg` = `LoadFromFile` と同じ import 設定（`.import.json` の `leftHanded` 等）・単位正規化・ノード変換の焼き込み・UV 変換。接線と頂点の融合（`CalcTangentSpace` / `JoinIdenticalVertices`）は使わない（VG は接線を持たない / cooker が融合する）。`.modelcache` の解析キャッシュ（assbin）があれば読む。行列式が負のノードは巻き順を反転（C26 の外向き）。材質ごとに 1 セクション。
+- 判定（`DecideIneligible`）: `.import.json` の `"virtualGeometry": "auto"`（既定）/ `"on"` / `"off"`。auto は 静的（スキン・アニメ無し）・三角形 ≥ `vg_auto_min_triangles`（既定 200000）・不透明（MASK / BLEND 無し）・頂点カラー無し・材質 ≤ `vg_auto_max_materials`（既定 64）。on はしきい値・材質数・アルファ（NONVG へ）・頂点カラー（捨てる）を見ない。glb / gltf は JSON だけで先に判定する（`PrecheckGltf*`。メインスレッドで本体を読まない）。FBX / OBJ は 8 MB 未満なら試さない。
+- 鍵: `ComputeKey(中身のハッシュ, import.json の中身, kAutoCookVersion, CookOptions::CanonicalString())`。中身のハッシュは「パス + サイズ + 更新時刻」で `m<パスのハッシュ>.json` に覚える。出力 `assets/.modelcache/vg/v<鍵>.vgeo` + テクスチャ `v<鍵>/m<材質>_<a|n|r|e>.<拡張子>`（.vgeo の材質は .vgeo のフォルダ基準の安全な相対パスしか持てないので、glb の埋め込み画像は書き出し、外部の画像は写す。BC 圧縮のキャッシュは裏で先に作る）。同じモデルの古い鍵の出力は消す。
+- cook の既定値は `CookOptions{}`（tools/vgeo_cook と同じ）。スレッド = 論理コア / 4（上限 12）・BelowNormal。書いたファイルは `ValidateVgeo`（strict・deep なし）を通してから置き換える。
+- 状態は `vg_stats.autoCook`（active / recent（各段の秒・三角形数・クラスタ・ファイル MB）/ skipped（対象外の理由））。
+
 ## 17. 変更履歴
 
 | 日付 | 内容 |
@@ -705,4 +719,5 @@ LOD0 の前処理（`meshopt_optimizeVertexCache` / `+ OverdrawOptimize`）は�
 | 2026-09-30 | **P1 完了（オフライン cooker `tools/vgeo_cook`）**。§1 に C29〜C31 を追加（消えるグループは最低 1 三角形を残す / ルートグループは複数可 / ページ順 = ルート → レベル降順 → Morton と pinned の方針）。**形式のバイト列は変えていない**（金型ハッシュ不変）。`VgsrcFormat.h` の `WriteVgsrc` をストリーム書きにし（出力バイトは同一・巨大入力で本体ぶんのメモリを確保しない）、`ReadVgsrc` のハッシュ検証を 64 MiB ずつの連鎖ハッシュにした。実測と設計判断の根拠 = §16.2 |
 | 2026-09-30 | **P2 完了（ランタイム読込 + GPU カリング）**。§14.1 に実装した GPU 写像を追記（アセットごとのチャンク列・専用 RS / ヒープ・K0〜K2・二相 HZB）。**形式のバイト列は変えていない**（金型ハッシュ不変）|
 | 2026-09-30 | **P3 完了（メッシュシェーダ描画 + 可視性バッファ）**。§14.2 に実装した GPU ラスタを追記（可視性バッファ `R32_UINT` = スロット 25bit + 三角形 7bit・二相ラスタ・MS / AS・PSO ストリーム・デバッグ表示）。**形式のバイト列は変えていない**（金型ハッシュ不変）|
+| 2026-11-10 | **v1.1（feat/vg-materials）**: §1 C32〜C35（材質 AO・拡張テーブル・'MSHD'・minor の付け方）、§16.3（エンジン内の自動 cook）。**v1.1 の欄を使わないファイルは v1.0 とバイト一致**（金型ハッシュ不変）。テスト `tests/vg_auto_cook_test.cpp`（`VgAutoCookTests`）|
 | 2026-09-30 | **P4（材質 resolve + 既存統合）**。§14.3 を追記（VG のディスクリプタをアプリの SRV ヒープへ一本化・材質表 `VgMaterialGpu`・`VgAssetGpu.materialBase` / `VgInstance` の上書き欄（旧 reserved）・G-Buffer + 速度・resolve・安定ソート）。**形式のバイト列は変えていない**（金型ハッシュ不変）|

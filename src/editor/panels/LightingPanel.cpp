@@ -633,6 +633,17 @@ void RenderLightingPanel(Scene* scene,
             pg::End();
         }
 
+        // ---- 材質シェーディング（シーン設定）----
+        if (pg::Begin("LightShading"))
+        {
+            auto& shs = scene->GetShadingSettings();
+            pg::Group("材質シェーディング");
+            pg::Checkbox("マルチスキャッタ補償", &shs.multiScatter,
+                         "粗い金属が暗く沈むのを防ぎます（面の中で何度も跳ね返る光のエネルギーを補う）。"
+                         "OFF にすると従来の見た目に戻ります");
+            pg::End();
+        }
+
         // ---- PCSS（ソフトシャドウ）----
         // CSM の固定幅 PCF を「ブロッカー探索 → 可変ペナンブラ」へ置き換える。
         // OFF のときシェーダは従来の 3x3 PCF 経路をそのまま通る＝絵はビット一致。

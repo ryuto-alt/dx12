@@ -27,10 +27,17 @@ struct UnoSurface
     // ---- 予約（現行の共通シェーディングは無視する）----
     float3 subsurfaceColor;
     float  subsurfaceOpacity;
-    float  clearCoat;
-    float  clearCoatRoughness;
-    float  anisotropy;
-    uint   shadingModel;
+    // ---- 拡張シェーディング（ForwardShade.hlsli が消費する。既定値なら従来と同じ絵）----
+    float  clearCoat;           // 0..1（KHR_materials_clearcoat）
+    float  clearCoatRoughness;  // 0..1
+    float  anisotropy;          // -1..1（KHR_materials_anisotropy の強さ。負は 90° 回した向き）
+    uint   shadingModel;        // 予約
+    float  anisotropyRotation;  // ラジアン（接空間で +U から反時計回り）
+    float3 sheenColor;          // リニア（KHR_materials_sheen。0 = 無し）
+    float  sheenRoughness;      // 0..1
+    float  specular;            // UE 流 0..1（既定 0.5 → 誘電体の F0 = 0.08·specular = 0.04）
+    float3 specularTint;        // 誘電体の F0 に掛かる色（既定 1。glTF の specularColor / ior はここへ畳む）
+    float  specularF90;         // 誘電体の F90（既定 1。glTF の specularFactor）
 };
 
 UnoSurface UnoSurfaceDefault()
@@ -51,6 +58,12 @@ UnoSurface UnoSurfaceDefault()
     s.clearCoatRoughness = 0.0;
     s.anisotropy         = 0.0;
     s.shadingModel       = 0;
+    s.anisotropyRotation = 0.0;
+    s.sheenColor         = float3(0.0, 0.0, 0.0);
+    s.sheenRoughness     = 0.0;
+    s.specular           = 0.5;
+    s.specularTint       = float3(1.0, 1.0, 1.0);
+    s.specularF90        = 1.0;
     return s;
 }
 
@@ -84,6 +97,38 @@ float3 UnoNormalFromTangentSpace(float3 worldNormal, float3 worldTangent, float 
     float3x3 TBN = float3x3(T, B, N);
     float3 tn = normalize(float3(normalTS.xy, max(normalTS.z, 0.35)));
     return normalize(mul(tn, TBN));
+}
+
+// ---- 拡張シェーディングの 8 DWORD（src/renderer/ShadingExt.h の PackShadingExt と一対一）→ UnoSurface ----
+//   e0 = w0..w3 / e1 = w4..w7。w0 の上位 8bit が 0xA5 でなければ「拡張無し」（何も書かない＝既定値のまま）。
+//   フォワードの b0 の自由枠・パストレーサーの材質・RT の GeometryInfo・VG の材質表が同じ並びで持つ。
+void UnoApplyShadingExt(inout UnoSurface s, uint4 e0, uint4 e1)
+{
+    if ((e0.x & 0xFF000000u) != 0xA5000000u) return;
+    const uint f = e0.x & 0xFFu;
+    if (f & 1u)
+    {
+        s.clearCoat          = float(e0.y & 0xFFFFu) / 65535.0;
+        s.clearCoatRoughness = float(e0.y >> 16) / 65535.0;
+    }
+    if (f & 2u)
+    {
+        const int sv = int(e0.z << 16) >> 16;   // snorm16 の符号拡張
+        s.anisotropy         = max(float(sv) / 32767.0, -1.0);
+        s.anisotropyRotation = float(e0.z >> 16) / 65535.0 * 6.28318530718;
+    }
+    if (f & 4u)
+    {
+        s.sheenColor     = float3((e0.w >> 16) & 0xFFu, (e0.w >> 8) & 0xFFu, e0.w & 0xFFu) / 255.0;
+        s.sheenRoughness = float(e0.w >> 24) / 255.0;
+    }
+    if (f & 8u)
+    {
+        // F0 の色はそのまま specularTint へ（specular = 0.5 → 0.08·0.5 = 0.04 を掛けて戻る）
+        s.specular     = 0.5;
+        s.specularTint = asfloat(e1.xyz) / 0.04;
+        s.specularF90  = asfloat(e1.w);
+    }
 }
 
 #endif // UNO_SURFACE_HLSLI

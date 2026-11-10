@@ -29,7 +29,7 @@ struct VgAssetGpu
     uint clusterCount; uint materialCount; uint materialBase; uint reserved;
 };
 
-// P4: 材質（VgMaterialGpu。64 B）
+// P4: 材質（VgMaterialGpu。96 B）
 struct VgMaterialGpu
 {
     uint   albedoSrv;
@@ -43,6 +43,8 @@ struct VgMaterialGpu
     float4 uvScaleOffset;      // xy = スケール / zw = オフセット
     float3 emissiveColor;
     float  emissiveIntensity;
+    uint4  ext0;               // 拡張シェーディングの 8 DWORD（src/renderer/ShadingExt.h の PackShadingExt。0 = 無し）
+    uint4  ext1;
 };
 
 struct HierChild

@@ -7,6 +7,7 @@
 #define LIGHTING_HLSLI
 
 #include "PBR.hlsli"
+#include "BrdfExt.hlsli"
 #include "ClusterCommon.hlsli"
 
 #define NUM_CASCADES     4
@@ -382,8 +383,9 @@ float3 SpotCookieIesFactor(ClusterLight L, float3 dirFromLight)
 
 // 1 灯ぶんの Cook-Torrance 寄与。L は正規化済みでライトへ向かうベクトル、
 // radiance はライト色（減衰・コーン・影を乗じたもの）。
-float3 ShadePunctual(float3 N, float3 V, float3 L, float3 radiance,
-                     float3 albedo, float3 F0, float metallic, float roughness)
+// specScale = マルチスキャッタの補償係数（1 なら従来と同じ値。x * 1.0 は IEEE で x のまま）。
+float3 ShadePunctualMS(float3 N, float3 V, float3 L, float3 radiance,
+                       float3 albedo, float3 F0, float metallic, float roughness, float3 specScale)
 {
     float3 H = normalize(V + L);
     float  NdotV = max(dot(N, V), 0.001);
@@ -396,7 +398,103 @@ float3 ShadePunctual(float3 N, float3 V, float3 L, float3 radiance,
     float3 kD   = (1.0 - F) * (1.0 - metallic);
     float3 spec = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.0001);
 
-    return (kD * albedo / PI + spec) * radiance * NdotL;
+    return (kD * albedo / PI + spec * specScale) * radiance * NdotL;
+}
+
+float3 ShadePunctual(float3 N, float3 V, float3 L, float3 radiance,
+                     float3 albedo, float3 F0, float metallic, float roughness)
+{
+    return ShadePunctualMS(N, V, L, radiance, albedo, F0, metallic, roughness, float3(1.0, 1.0, 1.0));
+}
+
+// ===== 拡張シェーディングの文脈（1 画素ぶん。UnoShadeLighting が作り、直接光の全灯で使い回す）=====
+//   flags = 0 かつ msComp = 1 なら UnoShadePunctualCtx は ShadePunctual と同じ値（既存の材質は絵が変わらない）。
+struct UnoBrdfCtx
+{
+    float3 albedo;
+    float3 F0;
+    float  F90;
+    float  metallic;
+    float  roughness;
+    float3 msComp;        // マルチスキャッタの補償（直接光の G の E = LUT .a から。1 = 無効）
+    uint   flags;         // UNO_EXT_COAT | UNO_EXT_ANISO | UNO_EXT_SHEEN（UNO_EXT_SPECULAR は F0/F90 に畳み済み）
+    // 異方性
+    float3 anisoT;
+    float3 anisoB;
+    float  at;
+    float  ab;
+    // シーン
+    float3 sheenColor;
+    float  sheenRoughness;
+    float  sheenScaleV;   // 下層の減衰 1 - max3(sheenColor)·E_sheen(N·V)
+    // クリアコート
+    float3 Nc;            // コートの法線（法線マップを掛けない幾何法線）
+    float  coat;
+    float  coatRoughness;
+    float  coatAttenV;    // 下層の減衰 1 - coat·Fc(Nc·V)
+    float  coatMs;        // コートのマルチスキャッタ補償（F0 = 0.04）
+};
+
+UnoBrdfCtx UnoBrdfCtxDefault(float3 albedo, float3 F0, float metallic, float roughness)
+{
+    UnoBrdfCtx c = (UnoBrdfCtx)0;
+    c.albedo = albedo; c.F0 = F0; c.F90 = 1.0; c.metallic = metallic; c.roughness = roughness;
+    c.msComp = float3(1.0, 1.0, 1.0);
+    c.flags = 0u;
+    c.anisoT = float3(1.0, 0.0, 0.0); c.anisoB = float3(0.0, 1.0, 0.0); c.at = 1.0; c.ab = 1.0;
+    c.sheenScaleV = 1.0;
+    c.Nc = float3(0.0, 0.0, 1.0);
+    c.coatAttenV = 1.0; c.coatMs = 1.0;
+    return c;
+}
+
+// 拡張込みの 1 灯ぶん（N はシェーディング法線）。式は shaders/forward/BrdfExt.hlsli、パストレーサーの PtEvalBrdf と同じ。
+float3 UnoShadePunctualCtx(float3 N, float3 V, float3 L, float3 radiance, UnoBrdfCtx c)
+{
+    [branch] if (c.flags == 0u)
+        return ShadePunctualMS(N, V, L, radiance, c.albedo, c.F0, c.metallic, c.roughness, c.msComp);
+
+    const float3 H = normalize(V + L);
+    const float NdotV = max(dot(N, V), 0.001);
+    const float NdotL = max(dot(N, L), 0.0);
+    const float NoH   = max(dot(N, H), 0.0);
+    const float VoH   = max(dot(H, V), 0.0);
+    const float3 F    = UnoBxFresnel(c.F0, c.F90, VoH);
+    float3 spec;
+    [branch] if ((c.flags & UNO_EXT_ANISO) != 0u)
+    {
+        const float D = UnoBxD_GGXAniso(NoH, dot(c.anisoT, H), dot(c.anisoB, H), c.at, c.ab);
+        const float G = UnoBxG1Aniso(max(dot(N, V), 0.0), dot(c.anisoT, V), dot(c.anisoB, V), c.at, c.ab)
+                      * UnoBxG1Aniso(NdotL, dot(c.anisoT, L), dot(c.anisoB, L), c.at, c.ab);
+        spec = (D * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+    }
+    else
+    {
+        const float NDF = UnoBxD_GGX(NoH, c.roughness);
+        const float G   = UnoBxG1(max(dot(N, V), 0.0), c.roughness) * UnoBxG1(NdotL, c.roughness);
+        spec = (NDF * G * F) / (4.0 * NdotV * NdotL + 0.0001);
+    }
+    const float3 kD = (1.0 - F) * (1.0 - c.metallic);
+    float3 col = kD * c.albedo / PI + spec * c.msComp;
+    [branch] if ((c.flags & UNO_EXT_SHEEN) != 0u)
+    {
+        const float Ds = UnoBxD_Charlie(c.sheenRoughness, NoH);
+        const float Vs = UnoBxV_Charlie(NdotL, NdotV, c.sheenRoughness);
+        col = col * c.sheenScaleV + c.sheenColor * (Ds * Vs);
+    }
+    float3 o = col * NdotL;
+    [branch] if ((c.flags & UNO_EXT_COAT) != 0u)
+    {
+        const float NcL = max(dot(c.Nc, L), 0.0);
+        const float NcV = max(dot(c.Nc, V), 0.001);
+        const float NcH = max(dot(c.Nc, H), 0.0);
+        const float Fc  = 0.04 + 0.96 * pow(saturate(1.0 - VoH), 5.0);
+        const float Dc  = UnoBxD_GGX(NcH, c.coatRoughness);
+        const float Gc  = UnoBxG1(NcV, c.coatRoughness) * UnoBxG1(NcL, c.coatRoughness);
+        const float specC = (Dc * Gc * Fc) / (4.0 * NcV * NcL + 0.0001) * c.coatMs;
+        o = o * c.coatAttenV + (c.coat * specC * NcL);
+    }
+    return o * radiance;
 }
 
 // ピクセル座標 + view 空間深度 から、クラスタの線形 index を求める。
@@ -419,9 +517,7 @@ uint ClusterIndexFromPixel(float2 svPosXY, float viewZ)
 // 減衰式 saturate(1-dist/range)^2 ・コーン式 saturate((cd-cosOuter)/(cosInner-cosOuter))^2 ・
 // 影サンプルは旧 8 灯経路と完全に同一。dist >= range の早期 continue だけが新規だが、
 // そこは減衰が 0 なので見た目は変わらない（8 灯以下のシーンは従来と同じ絵になる）。
-float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
-                                float3 albedo, float3 F0, float metallic, float roughness,
-                                float2 svPosXY)
+float3 AccumulatePunctualLightsCtx(float3 N, float3 V, float3 worldPos, UnoBrdfCtx bc, float2 svPosXY)
 {
     float3 Lo = 0.0;
 
@@ -503,10 +599,18 @@ float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
         if (L.contactChannel > 0.5 && _clusterReserved[8].x > 0.5)
             radiance *= g_contactShadow.Load(int3(int2(svPosXY), 0))[(int)L.contactChannel];
 
-        Lo += ShadePunctual(N, V, Ldir, radiance, albedo, F0, metallic, roughness);
+        Lo += UnoShadePunctualCtx(N, V, Ldir, radiance, bc);
     }
 
     return Lo;
+}
+
+// 従来の呼び口（水面など。拡張もマルチスキャッタも無し＝従来と同じ値）
+float3 AccumulatePunctualLights(float3 N, float3 V, float3 worldPos,
+                                float3 albedo, float3 F0, float metallic, float roughness,
+                                float2 svPosXY)
+{
+    return AccumulatePunctualLightsCtx(N, V, worldPos, UnoBrdfCtxDefault(albedo, F0, metallic, roughness), svPosXY);
 }
 
 // クラスタのデバッグ可視化（clusterExtra.z: 0=off / 1=ライト複雑度ヒートマップ / 2=クラスタ境界）。

@@ -30,7 +30,7 @@ bool IsMcpReadOnlyMethod(const std::string& method)
         "list_scenes", "list_assets", "list_lights", "query_entities", "find_entity",
         "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
         "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_upscaler", "get_contact_shadow",
-        "get_normal_filter",
+        "get_normal_filter", "get_shading",
         "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
         "audio_state",
         "brain_state",

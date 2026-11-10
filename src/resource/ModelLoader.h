@@ -116,6 +116,7 @@ struct StaticMaterialCpu
     float alphaCutoff   = 0.5f;
     float baseColorAlpha = 1.0f;
     bool  doubleSided   = false;         // AI_MATKEY_TWOSIDED（glTF doubleSided）
+    ShadingExt shading;                  // 拡張シェーディング（glTF の clearcoat / anisotropy / sheen / specular / ior。LoadFromFile と同じ読み方）
 };
 
 struct StaticModelCpu

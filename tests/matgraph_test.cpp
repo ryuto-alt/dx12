@@ -281,7 +281,8 @@ void TestModel()
         const PinInfo po = b.g.QueryPin("f", "Out", true);
         CHECK(po.exists && po.connected && po.outDecl != nullptr);
         CHECK(!b.g.QueryPin("f", "Nope", true).exists);
-        CHECK(b.g.QueryPin("out", "Specular", false).reserved);
+        CHECK(b.g.QueryPin("out", "Tangent", false).reserved);
+        CHECK(!b.g.QueryPin("out", "Specular", false).reserved);   // 拡張シェーディング（2026-11）で接続可能になった
     }
 
     // 接続可否
@@ -299,7 +300,7 @@ void TestModel()
         CHECK(c.verdict == ConnectCheck::Verdict::Warn && c.code == code::kTruncate && c.ok());
         c = b.g.CanConnect("f", "Out", "out", "BaseColor");   // 拡張（splat）は無警告
         CHECK(c.verdict == ConnectCheck::Verdict::Ok);
-        c = b.g.CanConnect("f2", "Out", "out", "Specular");   // 予約ピン
+        c = b.g.CanConnect("f2", "Out", "out", "Tangent");    // 予約ピン
         CHECK(c.verdict == ConnectCheck::Verdict::Reject && c.code == code::kReservedPin);
         c = b.g.CanConnect("m", "Out", "m", "B");             // 自己ループ
         CHECK(c.verdict == ConnectCheck::Verdict::Reject && c.code == code::kCycle);
@@ -334,7 +335,7 @@ void TestModel()
         CHECK(HasDiag(b.g.Analysis().diags, code::kExpandForbidden, "cr", "B"));   // 状態は診断でエラーとして見える
         CHECK(!b.g.ConnectUnchecked("u2", "Nope", "cr", "B"));       // 出力ピンが無い
         CHECK(!b.g.ConnectUnchecked("u2", "Out", "cr", "Zzz"));      // 入力ピンが無い
-        CHECK(!b.g.ConnectUnchecked("u2", "Out", "out", "Specular")); // 予約ピン
+        CHECK(!b.g.ConnectUnchecked("u2", "Out", "out", "Tangent"));  // 予約ピン
         CHECK(!b.g.ConnectUnchecked("ghost", "Out", "cr", "B"));
         CHECK(b.g.Disconnect("cr", "B"));
         b.g.RemoveNode("u2");
@@ -343,7 +344,7 @@ void TestModel()
     // リテラル
     CHECK(b.g.SetLiteral("m", "B", Value::Float(2.0f)));
     CHECK(b.g.Binding("m", "B") && b.g.Binding("m", "B")->literal && !b.g.Binding("m", "B")->link);
-    CHECK(!b.g.SetLiteral("out", "Specular", Value::Float(1.0f)));    // 予約ピンは不可
+    CHECK(!b.g.SetLiteral("out", "Tangent", Value::Float3(1, 0, 0))); // 予約ピンは不可
     CHECK(!b.g.SetLiteral("cr", "A", Value::Float2(1, 2)));           // float2 → float3 は拡張不可
     CHECK(b.g.SetLiteral("cr", "A", Value::Float3(1, 2, 3)));
     CHECK(b.g.ClearLiteral("m", "B"));
@@ -519,9 +520,23 @@ void TestDiagnostics()
     {
         MaterialGraph g = FromText(Dxmg(R"(
             "f": { "type": "Float" },
-            "out": { "type": "MaterialOutput", "in": { "ClearCoat": "f.Out", "Anisotropy": 0.5 } })"));
+            "out": { "type": "MaterialOutput", "in": { "SubsurfaceOpacity": "f.Out", "PixelDepthOffset": 0.5 } })"));
         const CompileResult r = CompileGraph(g, TestOpt());
-        CHECK(!r.ok && HasDiag(r.diagnostics, code::kReservedPin, "out", "ClearCoat") && HasDiag(r.diagnostics, code::kReservedPin, "out", "Anisotropy"));
+        CHECK(!r.ok && HasDiag(r.diagnostics, code::kReservedPin, "out", "SubsurfaceOpacity") && HasDiag(r.diagnostics, code::kReservedPin, "out", "PixelDepthOffset"));
+    }
+    // 11b. 拡張シェーディングのピン（ClearCoat / Anisotropy / Sheen / Specular）は接続できて、UnoSurface の欄へ書かれる
+    {
+        MaterialGraph g = FromText(Dxmg(R"(
+            "f": { "type": "Float" },
+            "c": { "type": "Float3" },
+            "out": { "type": "MaterialOutput", "in": { "ClearCoat": "f.Out", "ClearCoatRoughness": 0.1, "Anisotropy": 0.5,
+                                                       "AnisotropyRotation": 1.0, "SheenColor": "c.Out", "SheenRoughness": 0.4,
+                                                       "Specular": 0.25 } })"));
+        const CompileResult r = CompileGraph(g, TestOpt());
+        CHECK(r.ok);
+        for (const char* f : { "s.clearCoat", "s.clearCoatRoughness", "s.anisotropy", "s.anisotropyRotation", "s.sheenColor",
+                               "s.sheenRoughness", "s.specular" })
+            CHECK_MSG(Contains(r.hlsl, f), "生成 HLSL に %s が無い", f);
     }
     // 12. 出力ノードが無い / 2 個ある
     {

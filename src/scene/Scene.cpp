@@ -508,6 +508,7 @@ void Scene::Clear()
     m_ssao           = SSAOSettings{};
     m_contactShadow  = ContactShadowSettings{};
     m_normalFilter   = NormalFilterSettings{};
+    m_shading        = ShadingSettings{};
     m_shadowPcss     = ShadowPcssSettings{};
     m_ssr            = SsrSettings{};
     m_ssgi           = SsgiSettings{};

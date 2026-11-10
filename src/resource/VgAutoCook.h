@@ -19,6 +19,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -33,6 +35,7 @@
 #include <nlohmann/json.hpp>
 
 #include "resource/ModelLoader.h"
+#include "renderer/vg/VgShadingRecord.h"
 
 namespace dx12e::vgauto
 {
@@ -120,7 +123,7 @@ private:
         std::string reason, vgeoPath;
         uint64_t    triangles = 0, clusters = 0, fileBytes = 0;
         uint32_t    materials = 0, levels = 0;
-        double      secHash = 0, secRead = 0, secCook = 0, secWrite = 0;
+        double      secHash = 0, secRead = 0, secTex = 0, secCook = 0, secWrite = 0;
         bool        done = false;
     };
     void WorkerMain();

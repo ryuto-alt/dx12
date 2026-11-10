@@ -67,7 +67,7 @@ inline VgInstance MakeInstance(const VgInstanceInput& in, uint32_t assetIndexOnG
     return o;
 }
 
-// ── P4: 材質（64 B）: StructuredBuffer<VgMaterialGpu>。アセットごとの連続区間（VgAssetGpu::materialBase から materialCount 個）──
+// ── P4: 材質（96 B）: StructuredBuffer<VgMaterialGpu>。アセットごとの連続区間（VgAssetGpu::materialBase から materialCount 個）──
 //   テクスチャはアプリの SRV ヒープの添字（ResourceDescriptorHeap[]）。VG_NONE = 無し（アルベドは白、他は flags で読まない）。
 //   自己発光は Material.h の ResolveEmissiveParams の入力（色 / 強度の float）。インスタンスの上書きと合成してから
 //   PackEmissive と同じ 8bit 量子化を通す（フォワードの b2 と同じ値になる）。
@@ -84,6 +84,7 @@ struct VgMaterialGpu
     float    uvScaleOffset[4]; // 32  xy = スケール / zw = オフセット（MaterialRecord.uvScaleOffset）
     float    emissiveColor[3]; // 48
     float    emissiveIntensity;// 60
+    uint32_t ext[8];           // 64  拡張シェーディング（renderer/ShadingExt.h の PackShadingExt。0 = 無し）
 };
 static_assert(sizeof(VgMaterialGpu) == VG_MAT_STRIDE, "VgMaterialGpu size");
 static_assert(offsetof(VgMaterialGpu, uvScaleOffset) == 32 && offsetof(VgMaterialGpu, emissiveColor) == 48, "VgMaterialGpu layout");

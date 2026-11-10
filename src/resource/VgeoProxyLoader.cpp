@@ -8,6 +8,7 @@
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
 #include "renderer/vg/VgeoFormat.h"
+#include "renderer/vg/VgShadingRecord.h"
 #include "resource/ResourceManager.h"
 
 #include <algorithm>
@@ -238,6 +239,10 @@ ModelData LoadVgeoProxy(GraphicsDevice& device,
             material->occlusionInMR = true;
             material->aoStrength    = std::clamp(mr.aoStrength, 0.0f, 1.0f);
         }
+
+        // v1.1: 拡張シェーディング（'MSHD'）。VG の材質表と同じ値をプロキシ（フォワード / 影 / RT）にも
+        if (sec.materialIndex < meta.materialShading.size())
+            material->shading = vg::UnpackShadingRecord(meta.materialShading[sec.materialIndex]);
 
         material->emissiveColor     = { mr.emissiveColor[0], mr.emissiveColor[1], mr.emissiveColor[2] };
         material->emissiveIntensity = mr.emissiveIntensity;

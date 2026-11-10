@@ -451,6 +451,43 @@ H  最終深度から HZB を作り直し（次フレームの一相目の入力
 - 仕様上、増幅シェーダ無しの `DispatchMesh` は**グループ順にラスタ結果が確定する**（D3D12 Mesh Shader 仕様 "Rasterization Order"）。そこで各フェーズのラスタ直前に可視リスト `[start, start+count)` を `(instance, clusterRef)` の 64bit キーで**ビトニックソート**（全比較が昇順の「反転 + 半クリーナー」版。末尾の仮想パディングへは書かないので範囲外書き込みが無い）してから描く。可視スロット（= 可視性バッファの値）も並びも起動ごとに同一になる。`stableOrder`（MCP）または決定論キャプチャ中に自動で ON。AS 経由は子グループの順序が不定なので、安定モードでは MS のみに切り替える。
 ---
 
+#### 2.4.9 材質つき VG（2026-11-10。feat/vg-materials）と、マテリアルグラフを VG に載せる設計（未実装・見積もり）
+
+**入ったもの**
+- **自動 cook**（`src/resource/VgAutoCook`）: ハイポリの静的 glb / gltf / fbx / obj は読み込み時に裏で `.vgeo` へ cook し、仮の箱 → プロキシ + VG 本体へ差し替える。
+  頂点はエンジン自身の読み込み（`ModelLoader::ExtractStaticForVg` = `LoadFromFile` と同じ import 設定・座標変換・ノード焼き込み）から作る。詳細は VGEO_SPEC §16.3。
+  VG に乗るモデルは**フル解像度の通常メッシュを作らない**（96 B 頂点の CPU 複製 + 4 段 LOD + Assimp の接線 / 頂点融合をメインスレッドで回していたのが固まりの正体）。
+  影 / TLAS / ピッキング / 物理は `.vgeo` のプロキシ（≤ 25 万三角形）。
+- **エンティティ単位の材質**: `.dxmat`（個別 / `materialRemap`）・テクスチャの上書き・AO / 拡張シェーディングの上書きを VG で描く。
+  材質表に「エンティティごとの区間」を取り（`VirtualGeometrySystem::SetKeyedMaterials`。中身が変わったときだけ書く・使われなくなったら
+  フレームスロットぶん遅らせて返す）、`VgInstance.materialBase`（旧 entityId。GPU は読んでいなかった）で引く。土台はアセットの材質、
+  優先度はフォワードと同じ（materialAsset > overrideXxxTexture > 焼き込み）。**両面フラグはアセットの値を残す**（K2 の法線コーン棄却は
+  アセットの区間だけを見る。カリングのシェーダは触っていない）。
+- **材質 AO**（`VgMaterialGpu.aoStrength` = 旧 reserved0、.vgeo v1.1 の `MaterialRecord.aoStrength`）と**拡張シェーディング**（`VgMaterialGpu.ext`、.vgeo の 'MSHD'）。
+  resolve は `su.ao` / `UnoApplyShadingExt` を通してフォワードと同じ `UnoShadeLighting` を呼ぶ（共通のシェーディング関数。複製しない）。
+- **接線は保存しない**（ピクセル側で導出）。理由: (1) 4 B/頂点（全 DAG で 1 億頂点級なら 400 MB）を節約、(2) 簡略化で頂点が間引かれた粗い LOD の
+  接線を作り直す手間が無い（UV と位置から毎回作る）、(3) resolve は 1 画素 1 回の評価なので三角形の 3 頂点から作る費用は小さい。
+  代償: 三角形ごとに一定の接線（assimp の CalcTangentSpace と同じ式・符号。頂点で平均しない）なので、UV が強く歪む曲面では
+  フォワード（頂点で平均した接線）と法線マップの陰影がわずかに違う。UV の鏡写し（U 反転）は三角形ごとの符号（tangentW）で正しく出る。
+- **POM は VG ではしない**: `VgMaterialGpu` に高さテクスチャの枠が無い（96 B）うえ、POM は 1 画素で高さを 8〜64 回引く反復で、
+  可視性バッファの「1 画素 1 回評価」の予算を崩す。深度も書き換えない視差なので、VG の細かいジオメトリで凹凸を作る方が正しい。
+  `.dxmat` の parallaxScale は VG では無視（フォワードのプロキシでは効く）。
+
+**マテリアルグラフ（.dxmg）を VG に載せる設計（見積もり 7〜9 日。今回は入れていない）**
+1. 材質表に「グラフの番号」を持たせる（`VgMaterialGpu.flags` の上位 16bit = グラフスロット。0 = 標準材質）。グラフ材質のエンティティは
+   今は `VgIneligibleReason` が弾く（プロキシで描く）。
+2. **材質の分類（タイル）**: 可視性バッファから 8×8 タイルごとに「使われているグラフスロットの集合」を作る CS（ビットマスク 64bit / タイル、
+   スロット 64 個まで）→ スロットごとのタイル一覧 + `DrawIndexedInstanced` の間接引数（UE の Nanite の material classification と同じ）。
+   ★ステンシル方式（G-Buffer パスでスロットをステンシルへ書き、スロットごとに全画面 + ステンシル EQUAL）は、深度が D32_FLOAT（ステンシル無し）
+   なのでエンジン全体の深度形式を D32_S8 に変える必要があり、影響が大きいので採らない。
+3. **グラフごとの resolve PS**: `ForwardGraph.hlsl` と同じくグラフの `UnoMatEval` を差し込んだ `VgResolveGraph.hlsl` を `ShaderRuntimeCompiler` で
+   グラフごとに作る（PSO キャッシュは GraphMaterialSystem に相乗り）。タイルの四角形を描き、画素のスロットが違えば discard。
+4. **微分の置き換え**: グラフのテクスチャ読みは `UnoSample` / `UnoSampleBias` マクロ（`UnoMatContractRef.hlsli`）なので、VG 版では
+   `SampleGrad` に差し替え、UV の勾配を渡す。UV を線形に変えるノード（タイル・オフセット・回転）は勾配に同じ変換を掛ければよいが、
+   非線形（極座標・トライプラナー・視差）は勾配が変わる → コード生成で UV を「値 + x/y 方向の微分」の組（前進微分）で運ぶのが正攻法（これが最大の工数）。
+5. 検証: グラフ材質の板を VG / フォワードで撮って PFM の差（`tests/vg_resolve_gpu_test.cpp` にグラフ 1 本の GPU テストを足す）、タイル分類のコスト（グラフ 0 本なら 0）。
+- 工数の内訳: 分類 CS + 間接引数 1.5 日 / VG 版のグラフ PS と PSO 1.5 日 / 前進微分のコード生成 2〜3 日 / 統合（ホットリロード・Inspector・vg_stats）1 日 / テスト・計測 1.5 日。
+
 ## 3. `.vgeo` 仕様（v1.0）
 
 ### 3.1 規約

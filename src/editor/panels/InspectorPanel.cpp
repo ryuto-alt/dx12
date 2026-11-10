@@ -4609,7 +4609,8 @@ void InspectorPanel::Render(entt::registry& reg,
                         if (!inheritMetal || !inheritRough || mr.alphaModeOverride >= 0
                             || mr.alphaCutoffOverride >= 0.0f || mr.opacity != 1.0f
                             || mr.overrideEmissiveIntensity >= 0.0f
-                            || mr.overrideEmissiveColor.x >= 0.0f)
+                            || mr.overrideEmissiveColor.x >= 0.0f
+                            || mr.overrideShading.Any())
                         {
                             pg::Label("");
                             if (ImGui::SmallButton("継承に戻す"))
@@ -4631,8 +4632,98 @@ void InspectorPanel::Render(entt::registry& reg,
                         pg::End();
                     }
 
+                    // ---- 拡張シェーディング（クリアコート / 異方性 / シーン(布) / スペキュラ・IOR）----
+                    // 表示は「実効値」（材質 × エンティティ上書き。合成は ResolveShadingExt が正）。metallic/roughness と同じで、
+                    // 動かしたときだけ上書きを書く＝開いただけでは潰さない。各節の「継承に戻す」で節ごとに従う状態へ戻せる。
+                    // 基準は model の Material（.dxmat を割り当てている場合は .dxmat の値が基準になる）。
+                    bool shActive = false;
+                    {
+                        ShadingExtOverride& ov = mr.overrideShading;
+                        const ShadingExt eff = ResolveShadingExt(mat->shading, ov);
+                        const ShadingExt& bs = mat->shading;
+                        auto resetBtn = [&](const char* id, bool overridden, auto&& clear)
+                        {
+                            if (!overridden) { WarnRow("継承中（動かすと上書きになります）"); return; }
+                            pg::Label("");
+                            ImGui::PushID(id);
+                            if (ImGui::SmallButton("継承に戻す"))
+                            {
+                                const PbrOverrides before = PbrOverrides::From(mr);
+                                clear();
+                                if (!(before == PbrOverrides::From(mr)))
+                                    ctx.undoSystem.PushCommand(std::make_unique<PBRCommand>(
+                                        &reg, ctx.selectedEntity, before, PbrOverrides::From(mr)));
+                            }
+                            ImGui::PopID();
+                        };
+                        // 負 = 継承の float 欄
+                        auto ovSlider = [&](const char* label, f32& field, f32 shown, f32 lo, f32 hi, const char* tip)
+                        {
+                            bool act = false;
+                            f32 v = shown;
+                            if (pg::SliderFloat(label, &v, lo, hi, "%.3f", &act, tip)) field = v;
+                            shActive |= act;
+                        };
+                        auto ovColor = [&](const char* label, f32 (&field)[3], const f32 (&shown)[3])
+                        {
+                            f32 c[3] = { shown[0], shown[1], shown[2] };
+                            if (pg::Color3(label, c))
+                            {
+                                field[0] = c[0]; field[1] = c[1]; field[2] = c[2];
+                                shActive = true;   // Undo は離したときに m_pbrEditing の流れで 1 つだけ積む
+                            }
+                        };
+
+                        if (ImGui::CollapsingHeader("クリアコート Clear Coat", (ov.clearCoat >= 0.0f || ov.clearCoatRoughness >= 0.0f || bs.HasClearCoat()) ? ImGuiTreeNodeFlags_DefaultOpen : 0)
+                            && pg::Begin("ShadingCoat"))
+                        {
+                            ovSlider("強さ Coat", ov.clearCoat, eff.clearCoat, 0.0f, 1.0f, "車のクリア塗装・ラッカーのような透明な上塗り。0 で無し");
+                            ovSlider("粗さ Coat Roughness", ov.clearCoatRoughness, eff.clearCoatRoughness, 0.0f, 1.0f, "コート層の粗さ。0 で鏡面");
+                            resetBtn("coat", ov.clearCoat >= 0.0f || ov.clearCoatRoughness >= 0.0f,
+                                     [&]() { ov.clearCoat = -1.0f; ov.clearCoatRoughness = -1.0f; });
+                            pg::End();
+                        }
+                        if (ImGui::CollapsingHeader("異方性 Anisotropy", (ov.anisotropySet || ov.anisotropyRotation >= 0.0f || bs.HasAnisotropy()) ? ImGuiTreeNodeFlags_DefaultOpen : 0)
+                            && pg::Begin("ShadingAniso"))
+                        {
+                            f32 a = eff.anisotropy;
+                            bool act = false;
+                            if (pg::SliderFloat("強さ Anisotropy", &a, -1.0f, 1.0f, "%.3f", &act,
+                                                "ヘアライン金属・ブラシ仕上げ。正は接線方向、負は従法線方向に伸びる"))
+                            { ov.anisotropySet = true; ov.anisotropy = a; }
+                            shActive |= act;
+                            f32 deg = eff.anisotropyRotation * 57.29577951f;
+                            act = false;
+                            if (pg::SliderFloat("向き Rotation (度)", &deg, 0.0f, 360.0f, "%.1f", &act, "接線(UV の U 方向)から反時計回り"))
+                                ov.anisotropyRotation = std::fmod(deg, 360.0f) * 0.017453292519943295f;
+                            shActive |= act;
+                            resetBtn("aniso", ov.anisotropySet || ov.anisotropyRotation >= 0.0f,
+                                     [&]() { ov.anisotropySet = false; ov.anisotropy = 0.0f; ov.anisotropyRotation = -1.0f; });
+                            pg::End();
+                        }
+                        if (ImGui::CollapsingHeader("シーン（布の縁の光沢） Sheen", (ov.sheenColor[0] >= 0.0f || ov.sheenRoughness >= 0.0f || bs.HasSheen()) ? ImGuiTreeNodeFlags_DefaultOpen : 0)
+                            && pg::Begin("ShadingSheen"))
+                        {
+                            ovColor("色 Sheen Color", ov.sheenColor, eff.sheenColor);
+                            ovSlider("粗さ Sheen Roughness", ov.sheenRoughness, eff.sheenRoughness, 0.0f, 1.0f, "ベルベット・サテンなどの布の縁の光沢。色が黒なら無し");
+                            resetBtn("sheen", ov.sheenColor[0] >= 0.0f || ov.sheenRoughness >= 0.0f,
+                                     [&]() { ov.sheenColor[0] = ov.sheenColor[1] = ov.sheenColor[2] = -1.0f; ov.sheenRoughness = -1.0f; });
+                            pg::End();
+                        }
+                        if (ImGui::CollapsingHeader("スペキュラ / IOR", (ov.specularFactor >= 0.0f || ov.specularColor[0] >= 0.0f || ov.ior >= 0.0f || bs.HasSpecular()) ? ImGuiTreeNodeFlags_DefaultOpen : 0)
+                            && pg::Begin("ShadingSpec"))
+                        {
+                            ovSlider("強さ Specular", ov.specularFactor, eff.specularFactor, 0.0f, 1.0f, "誘電体の鏡面反射の強さ。0 で消える");
+                            ovColor("色 Specular Color", ov.specularColor, eff.specularColor);
+                            ovSlider("屈折率 IOR", ov.ior, eff.ior, 1.0f, 3.0f, "既定 1.5（F0 = 0.04）。水 1.33 / ダイヤ 2.4");
+                            resetBtn("spec", ov.specularFactor >= 0.0f || ov.specularColor[0] >= 0.0f || ov.ior >= 0.0f,
+                                     [&]() { ov.specularFactor = -1.0f; ov.specularColor[0] = ov.specularColor[1] = ov.specularColor[2] = -1.0f; ov.ior = -1.0f; });
+                            pg::End();
+                        }
+                    }
+
                     const bool pbrActive = metalActive || roughActive || cutoffActive
-                                        || opacityActive || emisActive;
+                                        || opacityActive || emisActive || shActive;
                     if (pbrActive)
                         m_pbrEditing = true;
 

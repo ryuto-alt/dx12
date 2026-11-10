@@ -67,6 +67,7 @@ namespace dx12e
     class ContactShadowPass;
     class HiZPass;
     class OcclusionCullPass;
+    struct CachedModel;   // resource/ResourceManager.h（RebindModelEntities）
     namespace vg { class VirtualGeometrySystem; }   // renderer/vg/VirtualGeometrySystem.h（仮想ジオメトリ P2）
     namespace foliage { class FoliageSystem; }      // renderer/foliage/FoliageSystem.h（植生 F1）
     class ReflectionProbeSystem;   // renderer/ReflectionProbeSystem.h（反射プローブ）
@@ -1778,6 +1779,10 @@ private:
     // スカイの後・フォワードの前に呼ぶ。描いたら true（false なら呼び出し側が暫定シェーディングへ縮退する）
     bool DrawVirtualGeometryResolve(ID3D12GraphicsCommandList* cmd, const VgResolveIn& in);
     void VirtualGeometryBindMaterials(ID3D12GraphicsCommandList* cmd);   // 準備済みアセットの材質（テクスチャ）を材質表へ登録
+    // エンティティ単位の材質区間（.dxmat / テクスチャ上書き / materialRemap / AO・拡張シェーディングの上書き）。上書きが無ければ VG_NONE
+    u32 VgEntityMaterialBase(entt::entity e, const MeshRenderer& mr, u32 assetId, ID3D12GraphicsCommandList* cmd);
+    // .dxmat がマテリアルグラフか（VgIneligibleReason に渡す。未読込なら false）
+    std::function<bool(const std::string&)> VgGraphPredicate() const;
 
     // ---- 植生 F1（FoliageLayer + GPU カリング + ExecuteIndirect + 風）。実装は ApplicationFoliage.cpp / mcp/ApplicationMcpFoliage.cpp ----
     // ★FoliageLayer が 1 つも無いシーンでは m_foliage を作らず、描画パスの呼び出し点は FoliageActive() で弾く（未使用シーンは 1 命令も変わらない）。
@@ -2174,6 +2179,7 @@ private:
         // 自己発光のオーバーライド（透明と同じ理由。Play 中に光らせても Stop で編集時へ戻す）
         DirectX::XMFLOAT3 emissiveColorOverride{-1.0f, -1.0f, -1.0f};
         float emissiveIntensityOverride = -1.0f;
+        ShadingExtOverride shadingOverride;   // 拡張シェーディングの上書き（Play 中に変えても Stop で編集時へ戻す）
         float aoStrengthOverride = -1.0f;   // マテリアル AO の強さの上書き（Play 中に変えても Stop で編集時へ戻す）
         float materialRoughnessOverride = -1.0f;
     };

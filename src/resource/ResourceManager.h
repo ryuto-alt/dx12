@@ -159,10 +159,11 @@ public:
     const CachedModel* FindModel(const std::string& key) const;
 
     // ---- 仮想ジオメトリの自動 cook（resource/VgAutoCook）----
-    // 毎フレーム（メインスレッド）。cook が終わったモデル（仮の箱 / 手動 cook した通常モデル）のキャッシュを作り直し、
-    // 作り直したモデルのキー（NormalizeModelKey）を返す。呼び出し側は MeshRenderer を張り替え、GPU の完了を待ってから
-    // ReleaseRetiredModels を呼ぶ（古い CachedModel をそこまで生かす）。
-    std::vector<std::string> PumpVgAuto(ID3D12GraphicsCommandList* cmdList);
+    // 毎フレーム（メインスレッド）。cook が終わったモデル（仮の箱 / 手動 cook した通常モデル）をキャッシュから外し、
+    // (キー = NormalizeModelKey, 読んだパス) を返す。★読み直しはしない（誰も使っていないモデルを読むと固まる。サムネイル等が
+    // 読んだだけの物もある）。呼び出し側は、使っているエンティティがあれば GetOrLoadModel で読み直して張り替え、GPU の完了を
+    // 待ってから ReleaseRetiredModels を呼ぶ（古い CachedModel をそこまで生かす）。
+    std::vector<std::pair<std::string, std::string>> PumpVgAuto();
     void ReleaseRetiredModels();
     bool HasRetiredModels() const { return !m_retiredModels.empty(); }
 

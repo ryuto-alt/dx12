@@ -156,7 +156,8 @@ void Test_Structure()
     // 尾部の本体はここに 1 個ずつだけある
     CHECK(Count(shade, "float CalcShadow(") == 1);
     CHECK(Count(shade, "int SelectCascade(") == 1);
-    CHECK(Count(shade, "AccumulatePunctualLights(") == 1);
+    // 拡張シェーディング（2026-11）から、尾部はクリアコート / 異方性 / シーンの文脈つきの版（…Ctx）を呼ぶ
+    CHECK(Count(shade, "AccumulatePunctualLightsCtx(") == 1);
     CHECK(Count(shade, "FilterShadingNormal(") == 1);
     CHECK(Count(shade, "ApplyDecals(") == 1);
     CHECK(Count(shade, "SampleDdgi(") == 1);

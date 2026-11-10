@@ -59,6 +59,11 @@ cbuffer PerObjectConstants : register(b0)
 {
     float4x4 mvp;
     float4x4 model;
+    // ★b0 の自由枠（offset 128..159。カスタムシェーダの effectValue / shaderParams と同じ場所）を、既定シェーダでは
+    //   拡張シェーディングの 8 DWORD（src/renderer/ShadingExt.h の PackShadingExt）として読む。描画側は既定シェーダの
+    //   ドローで必ずここを書き直す。w0 の上位 8bit が 0xA5 でなければ「拡張無し」＝従来と同じ絵。
+    uint4    gMatExt0;
+    uint4    gMatExt1;
 };
 
 // PBR Material constants (b2)
@@ -342,9 +347,21 @@ float4 PSMain(PSInput input) : SV_TARGET
     s.metallic  = metallic;
     s.roughness = roughness;
     s.ao        = materialAo;   // 間接光だけに掛かる（ForwardShade.hlsli: ao *= s.ao）
+#ifndef UNO_FORWARD_NO_SHADING_EXT
+    UnoApplyShadingExt(s, gMatExt0, gMatExt1);   // クリアコート / 異方性 / シーン / スペキュラ（無ければ何もしない）
+#endif
 
-    const UnoShadeInput si = UnoMakeShadeInput(input.worldPos, input.worldNormal,
-                                               input.positionSV, input.viewDepth);
+    UnoShadeInput si = UnoMakeShadeInput(input.worldPos, input.worldNormal,
+                                         input.positionSV, input.viewDepth);
+    // 異方性の向きの基準。頂点の接線が壊れている（0）ときは画面微分の cotangent frame の T（= dP/du）を使う
+    float3 tAniso = input.worldTangent;
+    if (!(dot(tAniso, tAniso) > 1e-8))
+    {
+        const float3 Ng = normalize(input.worldNormal);
+        tAniso = cross(posGy, Ng) * uvGx.x + cross(Ng, posGx) * uvGy.x;
+    }
+    si.tangentWS = tAniso;
+    si.tangentW  = input.tangentW;
     const float3 lit = UnoShadeLighting(s, N, si);
 
     // ===== 自己発光（emissive）=====

@@ -214,7 +214,7 @@ void TestCatalog()
     const auto cats = ng::PaletteCategories(m);
     CHECK(cats.size() == 11 && cats.front() == "定数" && cats.back() == "出力", "カテゴリ 11 種 (%zu)", cats.size());
     // 予約ピンは出さない
-    CHECK(m.FindNodeType("MaterialOutput")->inputs.size() == 8, "MaterialOutput の入力（予約を除く 8 ピン）");
+    CHECK(m.FindNodeType("MaterialOutput")->inputs.size() == 15, "MaterialOutput の入力（予約を除く 15 ピン = 基本 8 + 拡張シェーディング 7）");
     // 型互換: G1 の CheckCast と一致
     using VT = mat::ValueType;
     const VT vts[] = {VT::F1, VT::F2, VT::F3, VT::F4, VT::Int, VT::Bool, VT::Tex2D};
