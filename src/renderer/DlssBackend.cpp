@@ -6,8 +6,12 @@
 #include <windows.h>
 #include <cstdio>
 #include <filesystem>
+#include <atomic>
+#include <chrono>
 #include <iterator>
 #include <string>
+#include <thread>
+#include <wrl/client.h>
 
 #if defined(UNO_ENABLE_DLSS)
 #include <nvsdk_ngx.h>
@@ -76,6 +80,17 @@ struct DlssBackend::Impl
     u32 fRenderW = 0, fRenderH = 0, fOutW = 0, fOutH = 0;
     upscale::DlssQuality fQuality = upscale::DlssQuality::Quality;
     std::wstring exeDir;
+
+    // ---- 非同期作成（PrepareFeatureAsync）。build: 0 = なし / 1 = 作成中 / 2 = 成功（回収待ち）/ 3 = 失敗（回収待ち）----
+    std::thread          worker;
+    std::atomic<int>     build{0};
+    NVSDK_NGX_Handle*    newFeature = nullptr;   // ワーカーが書き、build が 2 になってからメインが読む
+    u64                  newVram    = 0;
+    double               newMs      = 0.0;
+    std::string          buildErr;
+    u32 bRenderW = 0, bRenderH = 0, bOutW = 0, bOutH = 0;
+    upscale::DlssQuality bQuality = upscale::DlssQuality::Quality;
+    void JoinWorker() { if (worker.joinable()) worker.join(); }
 };
 
 DlssBackend::DlssBackend() : m_impl(std::make_unique<Impl>()) {}
@@ -186,9 +201,116 @@ void DlssBackend::ReleaseFeature()
 {
     if (!m_impl) return;
     Impl& m = *m_impl;
+    // 作成中のワーカーは待ってから捨てる（出来た機能が宙に浮かないように）
+    m.JoinWorker();
+    if (m.newFeature) { NVSDK_NGX_D3D12_ReleaseFeature(m.newFeature); m.newFeature = nullptr; }
+    m.build.store(0);
     if (m.feature) { NVSDK_NGX_D3D12_ReleaseFeature(m.feature); m.feature = nullptr; }
     m.fRenderW = m.fRenderH = m.fOutW = m.fOutH = 0;
     m_vramBytes = 0;
+}
+
+bool DlssBackend::FeatureBuilding() const
+{
+    return m_impl && m_impl->build.load() == 1;
+}
+
+bool DlssBackend::PrepareFeatureAsync(ID3D12CommandQueue* queue, u32 renderW, u32 renderH, u32 outW, u32 outH,
+                                      upscale::DlssQuality q)
+{
+    if (!m_available || !queue || !m_impl->device) return false;
+    Impl& m = *m_impl;
+
+    // 出来上がり（または失敗）の回収
+    const int st = m.build.load();
+    if (st == 2 || st == 3)
+    {
+        m.JoinWorker();
+        if (st == 2)
+        {
+            m.feature = m.newFeature; m.newFeature = nullptr;
+            m.fRenderW = m.bRenderW; m.fRenderH = m.bRenderH; m.fOutW = m.bOutW; m.fOutH = m.bOutH; m.fQuality = m.bQuality;
+            m_vramBytes = m.newVram;
+            {   // 作成に使った一時パラメータの統計は 0 になるので、能力パラメータ側から読み直す（ログ / get_upscaler 用）
+                unsigned long long vram = 0;
+                if (m.params && NVSDK_NGX_SUCCEED(NGX_DLSS_GET_STATS(m.params, &vram)) && vram) m_vramBytes = vram;
+            }
+            Logger::Info("DLSS: 機能を作成（別スレッド・{:.0f} ms）{}x{} → {}x{}（{}、VRAM {:.1f} MB）", m.newMs,
+                         m.fRenderW, m.fRenderH, m.fOutW, m.fOutH, upscale::QualityName(m.fQuality),
+                         static_cast<double>(m_vramBytes) / (1024.0 * 1024.0));
+        }
+        else
+        {
+            ++m_evalErrors;
+            m_available = false;   // 以後は TAA へ縮退（理由は Reason()）
+            m_reason = "DLSS 機能の作成に失敗: " + m.buildErr;
+            Logger::Warn("DLSS: {}（{}x{} → {}x{}, {}）", m_reason, m.bRenderW, m.bRenderH, m.bOutW, m.bOutH,
+                         upscale::QualityName(m.bQuality));
+        }
+        m.build.store(0);
+    }
+    if (!m_available) return false;
+    if (m.feature) return !FeatureMismatch(renderW, renderH, outW, outH, q);
+    if (m.build.load() == 1) return false;
+
+    m.bRenderW = renderW; m.bRenderH = renderH; m.bOutW = outW; m.bOutH = outH; m.bQuality = q;
+    m.build.store(1);
+    Logger::Info("DLSS: 機能の作成を別スレッドで開始（{}x{} → {}x{}、{}）。出来るまで TAA で描く", renderW, renderH, outW, outH,
+                 upscale::QualityName(q));
+    m.worker = std::thread([&m, queue, renderW, renderH, outW, outH, q]()
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        Microsoft::WRL::ComPtr<ID3D12CommandAllocator>    alloc;
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+        Microsoft::WRL::ComPtr<ID3D12Fence>               fence;
+        NVSDK_NGX_Parameter* p = nullptr;
+        NVSDK_NGX_Handle*    h = nullptr;
+        bool ok = false;
+        std::string err;
+        do
+        {
+            if (FAILED(m.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc)))) { err = "コマンドアロケータを作れない"; break; }
+            if (FAILED(m.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr, IID_PPV_ARGS(&list)))) { err = "コマンドリストを作れない"; break; }
+            if (FAILED(m.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) { err = "フェンスを作れない"; break; }
+            NVSDK_NGX_Result r = NVSDK_NGX_D3D12_AllocateParameters(&p);
+            if (NVSDK_NGX_FAILED(r) || !p) { err = "NGX パラメータを確保できない: " + NarrowResult(r); break; }
+            NVSDK_NGX_DLSS_Create_Params cp{};
+            cp.Feature.InWidth            = renderW;
+            cp.Feature.InHeight           = renderH;
+            cp.Feature.InTargetWidth      = outW;
+            cp.Feature.InTargetHeight     = outH;
+            cp.Feature.InPerfQualityValue = ToNgx(q);
+            cp.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR
+                                    | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes
+                                    | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
+            cp.InEnableOutputSubrects = false;
+            r = NGX_D3D12_CREATE_DLSS_EXT(list.Get(), 1, 1, &h, p, &cp);
+            if (NVSDK_NGX_FAILED(r) || !h) { h = nullptr; err = NarrowResult(r); break; }
+            unsigned long long vram = 0;
+            if (NVSDK_NGX_SUCCEED(NGX_DLSS_GET_STATS(p, &vram))) m.newVram = vram;
+            if (FAILED(list->Close())) { err = "コマンドリストを閉じられない"; break; }
+            ID3D12CommandList* lists[] = { list.Get() };
+            queue->ExecuteCommandLists(1, lists);
+            // 評価は同じキューの後続コマンド＝順序は保証されるが、作成が GPU で終わるまで「出来た」とは言わない
+            HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!ev || FAILED(queue->Signal(fence.Get(), 1)) || FAILED(fence->SetEventOnCompletion(1, ev)))
+            {
+                if (ev) CloseHandle(ev);
+                err = "フェンス待ちに失敗";
+                break;
+            }
+            WaitForSingleObject(ev, INFINITE);
+            CloseHandle(ev);
+            ok = true;
+        } while (false);
+        if (p) NVSDK_NGX_D3D12_DestroyParameters(p);
+        if (!ok && h) { NVSDK_NGX_D3D12_ReleaseFeature(h); h = nullptr; }
+        m.newFeature = ok ? h : nullptr;
+        m.buildErr   = err;
+        m.newMs      = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        m.build.store(ok ? 2 : 3);
+    });
+    return false;
 }
 
 bool DlssBackend::Evaluate(ID3D12GraphicsCommandList* cmd, const Eval& e)
@@ -270,6 +392,8 @@ bool DlssBackend::RenderSize(u32 outW, u32 outH, upscale::DlssQuality q, u32& rw
     return false;
 }
 bool DlssBackend::Evaluate(ID3D12GraphicsCommandList*, const Eval&) { return false; }
+bool DlssBackend::PrepareFeatureAsync(ID3D12CommandQueue*, u32, u32, u32, u32, upscale::DlssQuality) { return false; }
+bool DlssBackend::FeatureBuilding() const { return false; }
 bool DlssBackend::FeatureMismatch(u32, u32, u32, u32, upscale::DlssQuality) const { return false; }
 void DlssBackend::ReleaseFeature() {}
 

@@ -57,6 +57,16 @@ public:
     // 今の機能が (render, out, quality) と食い違うか（＝作り直しが要るか）
     bool FeatureMismatch(u32 renderW, u32 renderH, u32 outW, u32 outH, upscale::DlssQuality q) const;
     void ReleaseFeature();
+
+    // ---- 機能の非同期作成 ----
+    // 機能（NGX_D3D12_CREATE_DLSS_EXT）の作成は CPU を長く塞ぐ（実測: ウォームで 0.05〜0.3 秒、初回の冷えた状態では
+    // 20 秒超の報告）。描画スレッドで呼ぶとその間フレームが止まるので、専用のコマンドリスト / ワーカースレッドで作り、
+    // 出来上がるまで呼び出し側は TAA で描く。
+    //   戻り値 true  … 今の (render, out, quality) の機能が出来ている（Evaluate してよい）
+    //   戻り値 false … 作成中（初回呼び出しで開始）または失敗。失敗すると Available() が false になる。
+    // 食い違う機能が残っているときは false を返すだけ。呼び出し側が GPU アイドルで ReleaseFeature() してから呼び直す。
+    bool PrepareFeatureAsync(ID3D12CommandQueue* queue, u32 renderW, u32 renderH, u32 outW, u32 outH, upscale::DlssQuality q);
+    bool FeatureBuilding() const;
     u64  FeatureVramBytes() const { return m_vramBytes; }
     u32  EvalErrors() const { return m_evalErrors; }
 

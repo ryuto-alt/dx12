@@ -347,6 +347,10 @@ Claude Code の「2 分を超える MCP 呼び出しの自動背景化」は**�
 - **ただし Node 側は id で待つだけでよい。** エンジンは処理完了後に【同じ id】で本物の result を返す。
 - 旧仕様の `{queued:true}` は**もう返ってこない**。`entityId` / `sceneGeneration` 等の本物の値が直接返る。
 - **「名前で list して探す」旧パターンは完全廃止。** 返ってきた `entityId` を使い続ける。
+- **★読み込み中の `new_scene` / `open_scene` は `E_MODE_CONFLICT` で断られる**（起動直後のスタートアップのシーン読み込み・
+  段階ロード・プロジェクト読み込みの間）。待って実行するのではなく明示エラーにしている（空シーンへの編集が読み込み中の
+  シーンへ自動保存される事故があったため。open_scene が既にそうしていたのに揃えた）。起動直後は
+  `ping` の **`sceneLoading`**（シーン / プロジェクトの読み込み中なら true）/ `projectLoading` が false になるのを待ってから操作する。
 
 ```
 AI → dx12_create_entity(type:"box", name:"Floor")

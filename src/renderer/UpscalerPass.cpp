@@ -186,6 +186,21 @@ void UpscalerPass::ObserveCamera(const XMFLOAT3& pos, const XMFLOAT3& fwd)
     m_prevCamValid = true;
 }
 
+bool UpscalerPass::PrepareDlssFeature(ID3D12CommandQueue* queue, upscale::DlssQuality q, const std::function<void()>& waitIdle)
+{
+    if (!m_dlss.Available() || m_renderW == 0 || m_outW == 0) return false;
+    if (m_dlss.FeatureMismatch(m_renderW, m_renderH, m_outW, m_outH, q))
+    {
+        if (waitIdle) waitIdle();
+        m_dlss.ReleaseFeature();
+        m_reset = true;
+    }
+    const bool wasBuilding = m_dlss.FeatureBuilding();
+    const bool ready = m_dlss.PrepareFeatureAsync(queue, m_renderW, m_renderH, m_outW, m_outH, q);
+    if (ready && wasBuilding) m_reset = true;   // 作成中は TAA で描いていた＝DLSS の履歴は空
+    return ready;
+}
+
 u32 UpscalerPass::EvaluateDlss(CommandList& cmd, const DlssFrame& f)
 {
     m_lastEvalOk = false;

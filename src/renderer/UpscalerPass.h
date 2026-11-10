@@ -81,6 +81,12 @@ public:
     // ★戻った後はディスクリプタヒープ / ルートシグネチャが別物になっているので、呼び出し側で張り直すこと。
     u32 EvaluateDlss(CommandList& cmd, const DlssFrame& f);
 
+    // フレームの先頭（PrepareFrame）で呼ぶ。今の寸法 / 品質の DLSS 機能が出来ていれば true。
+    // 出来ていなければ（作成中 / 失敗）false ＝ 呼び出し側はこのフレームを TAA で描く（フレームは止まらない）。
+    // 寸法 / 品質が食い違う古い機能はここで GPU アイドル待ちのうえ捨て、作り直しを別スレッドで始める。
+    bool PrepareDlssFeature(ID3D12CommandQueue* queue, upscale::DlssQuality q, const std::function<void()>& waitIdle);
+    bool DlssFeatureBuilding() const { return m_dlss.FeatureBuilding(); }
+
     u32  RenderW() const { return m_renderW; }
     u32  RenderH() const { return m_renderH; }
     u32  OutW() const { return m_outW; }
