@@ -13,6 +13,23 @@ option(DX12_BUILD_TESTS "Build unit tests" ON)
 # 計測したいときだけ  cmake --preset windows-tracy  で別ディレクトリへ建てる。
 option(DX12_ENABLE_TRACY "Tracy Profiler を有効化（開発計測用。既定 OFF）" OFF)
 
+# NVIDIA DLSS Super Resolution / DLAA（NGX）。SDK はリポジトリに入れず tools/fetch_dlss.ps1 で
+# third_party/dlss へ取得する（NVIDIA RTX SDK ライセンス 4.e: SDK をオープンソースのライセンス条件に服させない）。
+# ON でも SDK が見つからなければ自動で OFF に落ちてビルドは通る（実行時は TAA へ縮退）。
+option(UNO_ENABLE_DLSS "NVIDIA DLSS（SDK が third_party/dlss にあれば有効）" ON)
+set(UNO_DLSS_SDK_DIR "${CMAKE_SOURCE_DIR}/third_party/dlss" CACHE PATH "NVIDIA DLSS SDK のルート（tools/fetch_dlss.ps1 の取得先）")
+set(UNO_DLSS_ACTIVE OFF)
+if(UNO_ENABLE_DLSS)
+    if(EXISTS "${UNO_DLSS_SDK_DIR}/include/nvsdk_ngx_helpers.h"
+       AND EXISTS "${UNO_DLSS_SDK_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib"
+       AND EXISTS "${UNO_DLSS_SDK_DIR}/lib/Windows_x86_64/rel/nvngx_dlss.dll")
+        set(UNO_DLSS_ACTIVE ON)
+        message(STATUS "DLSS: ON（${UNO_DLSS_SDK_DIR}）")
+    else()
+        message(STATUS "DLSS: OFF（SDK が無い。pwsh tools/fetch_dlss.ps1 で取得してから構成し直すと有効になる）")
+    endif()
+endif()
+
 # MSVC compile options (not global - applied per-target to avoid conflicts with FetchContent deps)
 set(DX12_COMPILE_OPTIONS /W4 /WX /permissive- /utf-8 /external:anglebrackets /external:W0 /bigobj)
 set(DX12_COMPILE_DEFS UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -248,6 +265,16 @@ foreach(DX12_MESHOPT_TARGET DX12Engine GameRuntime)
             "$<TARGET_FILE_DIR:${DX12_MESHOPT_TARGET}>"
         COMMENT "Bundling meshoptimizer.dll next to ${DX12_MESHOPT_TARGET}.exe")
 endforeach()
+# nvngx_dlss.dll（DLSS 有効ビルドのみ）。NGX は exe のフォルダから探すので隣へ置く。
+# 再配布は NVIDIA RTX SDK ライセンスで許可されている（商用リリース前の NVIDIA への通知義務あり。LICENSE.txt の補足 4）。
+if(UNO_DLSS_ACTIVE)
+    foreach(DX12_DLSS_TARGET DX12Engine GameRuntime)
+        add_custom_command(TARGET ${DX12_DLSS_TARGET} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${UNO_DLSS_SDK_DIR}/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$<TARGET_FILE_DIR:${DX12_DLSS_TARGET}>"
+            COMMENT "Bundling nvngx_dlss.dll next to ${DX12_DLSS_TARGET}.exe")
+    endforeach()
+endif()
 # TracyClient.dll（Tracy 有効ビルドのみ）。dxil.dll / meshoptimizer.dll と同じ理由で明示コピー。
 if(DX12_ENABLE_TRACY)
     foreach(DX12_TRACY_TARGET DX12Engine GameRuntime)
@@ -398,6 +425,8 @@ if(DXC_EXECUTABLE)
     # ★ shaders/debug/ は .gitignore の "Debug/" に食われて新規ファイルが追跡されない。
     #    velocity/ 配下に置くこと（DebugLine.hlsl は昔から追跡済みなので生き残っているだけ）。
     set(SHADER_VEL_DEBUG     "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityDebug.hlsl")
+    # 時間方向アップスケーラ（DLSS）の入力準備: 空（深度=1）の画素へカメラ運動の速度を埋めた MV を作る compute。
+    set(SHADER_UPSCALE_PREP  "${CMAKE_SOURCE_DIR}/shaders/post/UpscalePrep.hlsl")
     # dx12_render_debug（中間バッファ可視化）。同じ理由で shaders/debug/ には置けない。
     set(SHADER_RENDER_DEBUG  "${CMAKE_SOURCE_DIR}/shaders/renderdebug/RenderDebug.hlsl")
     # DXR 1.1 inline raytracing（計画09 Step 1〜3）。★プロファイルは ps_6_5（RayQuery は SM 6.5 必須）。
@@ -514,6 +543,7 @@ if(DXC_EXECUTABLE)
         "${SHADER_OUTPUT_DIR}/VelocityPrepassInstancedMask_VS.cso"
         "${SHADER_OUTPUT_DIR}/VelocityPrepassSkinnedMask_VS.cso"
         "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso"
+        "${SHADER_OUTPUT_DIR}/UpscalePrep_CS.cso"
         "${SHADER_OUTPUT_DIR}/VelocityDebug_PS.cso"
         "${SHADER_OUTPUT_DIR}/RenderDebug_PS.cso"
         "${SHADER_OUTPUT_DIR}/ClusterBuild_CS.cso"
@@ -1326,6 +1356,13 @@ if(DXC_EXECUTABLE)
         COMMAND ${DXC_EXECUTABLE} -T ps_6_0 -E TaaResolvePS -Fo "${SHADER_OUTPUT_DIR}/TaaResolve_PS.cso" "${SHADER_TAA}"
         DEPENDS "${SHADER_TAA}" "${SHADER_POST_INC}"
         COMMENT "Compiling TAA.hlsl -> TaaResolve_PS.cso (ps_6_0)"
+    )
+
+    add_custom_command(
+        OUTPUT "${SHADER_OUTPUT_DIR}/UpscalePrep_CS.cso"
+        COMMAND ${DXC_EXECUTABLE} -T cs_6_0 -E UpscalePrepCS -Fo "${SHADER_OUTPUT_DIR}/UpscalePrep_CS.cso" "${SHADER_UPSCALE_PREP}"
+        DEPENDS "${SHADER_UPSCALE_PREP}"
+        COMMENT "Compiling UpscalePrep.hlsl -> UpscalePrep_CS.cso (cs_6_0)"
     )
 
     add_custom_command(

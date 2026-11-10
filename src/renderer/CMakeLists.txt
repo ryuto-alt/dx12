@@ -17,6 +17,8 @@ add_library(Renderer STATIC
     SSAOPass.cpp
     ContactShadowPass.cpp
     TaaPass.cpp
+    UpscalerPass.cpp          # 時間方向アップスケーラ（off / taa / dlss）の共通部分（MV 準備 compute・出力 RT・ジッタ位相）
+    DlssBackend.cpp           # NVIDIA DLSS（NGX）。UNO_ENABLE_DLSS が無いビルドでは「使えない」を返すだけ
     RenderDebugPass.cpp
     ScreenSpaceGiPass.cpp
     AccelerationStructure.cpp
@@ -56,6 +58,17 @@ target_link_libraries(Renderer PUBLIC Graphics Microsoft::DirectXMath Resource m
 
 target_compile_options(Renderer PRIVATE ${DX12_COMPILE_OPTIONS})
 target_compile_definitions(Renderer PRIVATE ${DX12_COMPILE_DEFS})
+
+# NVIDIA DLSS（ルートの UNO_DLSS_ACTIVE で決まる。SDK のヘッダは DlssBackend.cpp だけが読む）
+if(UNO_DLSS_ACTIVE)
+    # ★PCH は外す: このファイルだけ /D を足すと PCH 作成時との定義の食い違い（C4605）が /WX で落ちる。
+    set_source_files_properties(DlssBackend.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${UNO_DLSS_SDK_DIR}/include"
+        COMPILE_DEFINITIONS "UNO_ENABLE_DLSS=1"
+        SKIP_PRECOMPILE_HEADERS ON)
+    target_link_libraries(Renderer PRIVATE
+        "$<IF:$<CONFIG:Debug>,${UNO_DLSS_SDK_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_d_dbg.lib,${UNO_DLSS_SDK_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib>")
+endif()
 
 # 仮想ジオメトリ(Nanite 風) P0: スタブ .vgeo 生成 CLI（tools/vgeo_stub。EXCLUDE_FROM_ALL = 既定ビルドに入らない）。
 # 実装は src/renderer/vg/ のヘッダオンリー（VgeoFormat.h ほか）。ターゲットが要るのは CLI とテストだけで、Renderer には何も足さない。
