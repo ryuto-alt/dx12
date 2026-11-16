@@ -180,6 +180,10 @@ foreach ($b in $bundle) {
 }
 # version.txt（更新後の確認用）
 Set-Content -Path (Join-Path $stage "version.txt") -Value $version -NoNewline
+
+$labSshStage = Join-Path $stage "tools\lab-ssh"
+New-Item -ItemType Directory -Force -Path $labSshStage | Out-Null
+Copy-Item -LiteralPath (Join-Path $here "lab-ssh\Start-UnoLabTunnel.ps1") -Destination $labSshStage
 # README
 Copy-Item (Join-Path $here "README.txt") -Destination $stage -ErrorAction SilentlyContinue
 

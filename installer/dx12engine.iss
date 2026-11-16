@@ -60,6 +60,7 @@ Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion re
 ; https://github.com/ryuto-alt/dx12-mcp から取得し、Node.js も無ければ自動で入れて Codex / Claude Code などへ登録する。
 ; VSCode 補完用の Lua API 型定義（導入手順は同フォルダの README.md）
 Source: "{#RepoRoot}\tools\lua-defs\*"; DestDir: "{app}\tools\lua-defs"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "lab-ssh\Start-UnoLabTunnel.ps1"; DestDir: "{app}\tools\lab-ssh"; Flags: ignoreversion
 ; ArduinoLab（Arduino / ESP32 の実験キット。初回起動時に Documents\UnoProjects へ置かれる）とファームウェア
 Source: "{#RepoRoot}\hardware\lab\ArduinoLab\*"; DestDir: "{app}\samples\ArduinoLab"; Excludes: ".dx12,.autosave"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#RepoRoot}\hardware\lab\GroveLab\*"; DestDir: "{app}\samples\GroveLab"; Excludes: ".dx12,.autosave"; Flags: ignoreversion recursesubdirs createallsubdirs
