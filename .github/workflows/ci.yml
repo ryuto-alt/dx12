@@ -45,3 +45,68 @@ jobs:
       - name: Test
         working-directory: tools/mcp-server
         run: npm test
+
+  engine-build:
+    name: Engine build (VS2026 + shaders)
+    # VS2026 入りのホステッドイメージ。windows-latest の付け替えを待たずにラベルで固定する。
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 120
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      # vcpkg のビルド済みバイナリをここへ貯め、actions/cache で次回へ持ち越す。
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/vcpkg-bincache
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-bincache,readwrite
+    steps:
+      - uses: actions/checkout@v4
+
+      # vcpkg.json の builtin-baseline を解決するため、フル履歴の vcpkg を自前で取る。
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force -Path "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-${{ runner.os }}-vs2026-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-vs2026-
+
+      # cl / link / rc と WindowsSdkVerBinPath（= SDK の dxc.exe）を PATH に載せる。
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # src/core/generated/AssetKey.h（gitignore）。無いと configure が FATAL_ERROR。
+      - name: Generate asset key
+        shell: pwsh
+        run: ./tools/gen_asset_key.ps1
+
+      - name: Configure
+        run: cmake --preset windows-release
+
+      # PR は軽く: エンジン本体(/W4 /WX)とシェーダーだけ建てる。テスト 127 本と GameRuntime は
+      # master への push（と手動実行）で全部建てて ctest まで回す。
+      - name: Build (PR - DX12Engine + Shaders)
+        if: github.event_name == 'pull_request'
+        run: cmake --build build/release --target DX12Engine Shaders
+
+      - name: Build (full)
+        if: github.event_name != 'pull_request'
+        run: cmake --build build/release
+
+      # DXC が見つからないと CMakeLists は黙ってシェーダーを飛ばすので、.cso が出たことを確かめる。
+      - name: Check shaders compiled
+        shell: pwsh
+        run: |
+          $cso = Get-ChildItem build/release/shaders -Filter *.cso -ErrorAction SilentlyContinue
+          if (-not $cso) { Write-Error "シェーダー(.cso)が 1 つも生成されていない（DXC 未検出）"; exit 1 }
+          Write-Host "compiled shaders: $($cso.Count)"
+
+      # エンジンにリンクするテスト（tests/CMakeLists.txt の if(TARGET Core) 側）はここでしか回らない。
+      - name: Test (engine-linked)
+        if: github.event_name != 'pull_request'
+        # CI のサーバーには GPU が無い。gpu ラベルのテストはソフトウェア描画で遅く、時間基準で落ちるので除外する。
+        run: ctest --preset windows-release -LE gpu

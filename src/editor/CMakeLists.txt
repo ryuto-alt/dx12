@@ -12,6 +12,7 @@ add_library(Editor STATIC
     panels/AssetBrowserPanel.cpp
     panels/ConsolePanel.cpp
     panels/McpBridgePanel.cpp
+    McpInstaller.cpp             # MCP のワンクリック導入（Node + サーバ + AI ツールへの登録）
     panels/VfxEditorPanel.cpp
     panels/UiEditorPanel.cpp
     panels/AnimationEditorPanel.cpp

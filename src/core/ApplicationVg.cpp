@@ -11,6 +11,7 @@
 //   VG 対象外の判定（renderer/vg/VgEligibility.h）/ 決定論（stableOrder）。VG のディスクリプタはアプリの SRV ヒープへ一本化。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/PathTracerHost.h"   // PtHost::Invalidate（張り替えでジョブを中止）
 #include "renderer/ViewDesc.h"
 #include "renderer/vg/VgEligibility.h"
 #include "renderer/vg/VgeoFormat.h"     // P4: 材質の flags（kMat*）/ テクスチャパスの安全検査
@@ -681,6 +682,9 @@ int Application::RebindModelEntities(const std::unordered_map<std::string, const
     if (m_rtScene) m_rtScene->Invalidate();
     // 植生のレイヤーも Mesh* / Material* を握っている（MeshRenderer と同じく張り替えないと GPU がハングする）
     if (m_foliage) m_foliage->InvalidateModels();
+    // パストレーサーのジオメトリキーも Mesh* 由来。走行中のジョブは古い形を引くので中止する。
+    if (m_ptHost) m_ptHost->Invalidate("アセットを再読込したため");
+    m_rtBuiltHash = 0;   // 念のため TLAS の使い回しも禁止（Invalidate 済みだが二重に守る）
     return rebound;
 }
 

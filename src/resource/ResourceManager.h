@@ -165,7 +165,11 @@ public:
     // 待ってから ReleaseRetiredModels を呼ぶ（古い CachedModel をそこまで生かす）。
     std::vector<std::pair<std::string, std::string>> PumpVgAuto();
     void ReleaseRetiredModels();
-    bool HasRetiredModels() const { return !m_retiredModels.empty(); }
+    bool HasRetiredModels() const { return !m_vgRetiredModels.empty(); }
+    // モデルの世代。ReloadChangedAssets が CachedModel を作り直すたびに +1。
+    // Mesh* / Material* を永続的に握る側（植生・BLAS・PT など）は、自分が記録した世代と比べて
+    // 違えば握っているポインタを捨てて組み直す（呼び出し側の「張り替え漏れ」をここで拾う）。
+    u64 ModelGeneration() const { return m_modelGeneration; }
 
     void FinishUploads();
     // 直近のフレームで新しいアップロード(テクスチャ/モデル)を積んだか。
@@ -204,6 +208,17 @@ private:
     };
     std::unordered_map<std::string, ModelCacheEntry> m_modelCache;
 
+    // 再読込で置き換えられた古い CachedModel / マテリアルの SRV ブロックは、すぐには壊さず
+    // kRetireFrames フレーム保留する（DeferPendingUploads が毎フレーム数える）。
+    // 万一どこかが古い Mesh* / Material* を握っていても、解放済みメモリを読んで GPU がハングする代わりに
+    // 「古い絵が出る」だけで済む。フレーム多重化（最大 3）より十分長い値にしてある。
+    static constexpr u32 kRetireFrames = 8;
+    struct RetiredModel { std::unique_ptr<CachedModel> model; u32 framesLeft = kRetireFrames; };
+    struct RetiredSrvBlock { u32 start = 0; u32 framesLeft = kRetireFrames; };
+    std::vector<RetiredModel>    m_retiredModels;
+    std::vector<RetiredSrvBlock> m_retiredSrvBlocks;
+    u64 m_modelGeneration = 0;
+
     // 入力文字列 → NormalizeModelKey の結果（weakly_canonical がファイルシステムを叩いて 1 回 ~30µs かかるため、
     // 同じモデルを何千体も置くシーン読み込みで支配的だった）。★読み込みに成功したパスだけ入れる
     //（存在しなかった綴りの正規化結果は、ファイルができたあと変わりうる＝キャッシュしない）。
@@ -216,7 +231,7 @@ private:
 
     // 仮想ジオメトリの自動 cook: cook 中の仮表示（箱）/ 差し替えで外した古いモデル
     std::unique_ptr<CachedModel> MakeVgPlaceholder(const float bmin[3], const float bmax[3], ID3D12GraphicsCommandList* cmdList);
-    std::vector<std::unique_ptr<CachedModel>> m_retiredModels;
+    std::vector<std::unique_ptr<CachedModel>> m_vgRetiredModels;   // ReleaseRetiredModels が GPU 待ちのあとで解放（再読込の m_retiredModels とは別）
 
     // 今フレームでロードされ、アップロードステージングが未回収のテクスチャ
     // (キャッシュは解放されないので生ポインタで安全)。毎フレーム末尾の

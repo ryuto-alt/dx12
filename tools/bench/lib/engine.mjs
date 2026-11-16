@@ -17,6 +17,35 @@ import { fileURLToPath } from "node:url";
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 export const DEFAULT_EXE = path.join(REPO_ROOT, "build", "dev", "DX12Engine.exe");
 
+/**
+ * 既定の exe を探す。DX12_ENGINE_EXE が最優先、次に build/dev → windows-release の出力先
+ * （build/release/DX12Engine.exe と build/release/Release/DX12Engine.exe）の順に、最初に存在するもの。
+ * 何も無ければ DEFAULT_EXE を返す（launchEngine が「エンジンが無い」と分かりやすく落とす）。
+ */
+export function findDefaultExe() {
+  if (process.env.DX12_ENGINE_EXE) return path.resolve(process.env.DX12_ENGINE_EXE);
+  const cands = [
+    DEFAULT_EXE,
+    path.join(REPO_ROOT, "build", "release", "DX12Engine.exe"),
+    path.join(REPO_ROOT, "build", "release", "Release", "DX12Engine.exe"),
+  ];
+  return cands.find((c) => fs.existsSync(c)) ?? DEFAULT_EXE;
+}
+
+
+/** project を実在するフォルダへ解決する。見つからなければ null。 */
+export function resolveProject(project, env = process.env, exists = fs.existsSync) {
+  if (path.isAbsolute(project) && exists(project)) return project;
+  const inRepo = path.resolve(REPO_ROOT, project);
+  if (!path.isAbsolute(project) && exists(inRepo)) return inRepo;
+  const root = env.DX12_GOLDEN_PROJECTS_ROOT;
+  if (root) {
+    const alt = path.join(root, path.basename(project));
+    if (exists(alt)) return alt;
+  }
+  return null;
+}
+
 /** そのポートで誰かが listen しているか。 */
 export function portOpen(port, timeoutMs = 300) {
   return new Promise((resolve) => {

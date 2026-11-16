@@ -82,6 +82,14 @@ public:
                                        std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploadKeepAlive,
                                        std::string* err = nullptr);
 
+    // インスタンスの中身だけが変わった（散布 / ブラシ）ときの差し替え。構造（ビュー数 / list 数 / 容量 / 描画グループ）が
+    // 同じなら、数十 MB 級の compact ストリーム（visible）・カウンタ・間接引数・読み戻しは作り直さず再利用し、
+    // インスタンス表 / チャンク表 / チャンクごとの個数だけを作り直す（CreateLayer 全体の作り直しは 1 フレーム数十 ms 止まり得る）。
+    // 古いバッファは uploadKeepAlive へ移す＝呼び出し側が CreateLayer と同様に GPU 完了後まで保持すること。
+    // 戻り値 false = 構造が違う / 失敗（layer は無傷。呼び出し側は CreateLayer で作り直す）。
+    bool UpdateInstances(Layer& layer, const LayerGpuDesc& desc, ID3D12GraphicsCommandList* cmd,
+                         std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>>& uploadKeepAlive, std::string* err = nullptr);
+
     // 1 レイヤーぶんのカリング一式を cmd へ記録する（compute）。終わると Layer は描画用の状態（VB / INDIRECT_ARGUMENT）になる。
     // restoreHeap: HZB 用に専用ヒープを張った後、これを SetDescriptorHeaps し直す（null なら何もしない）。
     // frameSlot: 0..frameCount-1（統計の読み戻しの多重化）。

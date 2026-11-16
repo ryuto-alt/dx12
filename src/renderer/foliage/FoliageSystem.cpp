@@ -326,6 +326,13 @@ bool FoliageSystem::BeginFrame(const FrameIn& in)
     const u32 slot = in.frameSlot % I.frameCount;
     I.curSlot = slot;
 
+    // ---- モデルが作り直されていたら、握っている Mesh* / Material* を捨てる（寿命の保険）----
+    if (I.d.resources && I.d.resources->ModelGeneration() != m_modelGenSeen)
+    {
+        m_modelGenSeen = I.d.resources->ModelGeneration();
+        InvalidateModels();
+    }
+
     // ---- 風のフレーム値（PerFrame の予約領域 / 専用 CBV へ）----
     I.wind = in.wind ? *in.wind : SceneWind{};
     {
@@ -572,10 +579,20 @@ bool FoliageSystem::BeginFrame(const FrameIn& in)
             for (const auto& g : rt.groups) { gd.groupSlot.push_back(g.slot); gd.groupIndexCount.push_back(g.indexCount); }
             std::vector<ComPtr<ID3D12Resource>> keep;
             std::string cerr;
-            I.retired.push_back({in.frameId, std::move(rt.gpu), {}});
-            rt.gpu = I.culler.CreateLayer(gd, in.cmd, keep, &cerr);
-            if (!rt.gpu) { rt.note = "GPU resources failed: " + cerr; st.note = rt.note; m_stats.push_back(st); continue; }
-            I.retired.push_back({in.frameId, nullptr, std::move(keep)});
+            // 構造が同じなら大きい compact ストリームは再利用し、インスタンス表だけ差し替える（ブラシのたびの数十 ms の停止を避ける）。
+            // 差し替えできない（構造が違う / 失敗）ときだけ従来どおり丸ごと作り直す。
+            if (I.culler.UpdateInstances(*rt.gpu, gd, in.cmd, keep, &cerr))
+            {
+                I.retired.push_back({in.frameId, nullptr, std::move(keep)});
+            }
+            else
+            {
+                keep.clear();
+                I.retired.push_back({in.frameId, std::move(rt.gpu), {}});
+                rt.gpu = I.culler.CreateLayer(gd, in.cmd, keep, &cerr);
+                if (!rt.gpu) { rt.note = "GPU resources failed: " + cerr; st.note = rt.note; m_stats.push_back(st); continue; }
+                I.retired.push_back({in.frameId, nullptr, std::move(keep)});
+            }
             rt.instVersion = set.version;
             rt.instCount = set.Count();
             rt.instPtr = &set;

@@ -7,6 +7,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
+#include "core/PathTracerHost.h"   // PtHost::Invalidate（再読込でジョブを中止）
 
 #include <algorithm>
 #include <limits>
