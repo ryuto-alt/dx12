@@ -136,7 +136,7 @@ export function fleetIssues(f: Record<string, any>): DoctorIssue[] {
     issues.push({
       code: "FLEET_STALE_EXE", severity: "warn",
       message: `exe コピーが古いエンジンがある(${stale.join(", ")})。ビルド出力の DX12Engine.exe がコピー後に更新されている`,
-      fix: (mine.length ? mine : stale.slice(0, 1)).map((id) => ({ tool: "dx12_engine_refresh", args: { engine: id }, why: `${id} を最新の exe で再起動する(entityId は失効。シーンは自動保存されたものが開き直される)` })),
+      fix: (mine.length ? mine : stale.slice(0, 1)).map((id) => ({ tool: "dx12_engine_refresh", args: { engine: id }, why: `${id} を最新の exe で再起動する(entityId は失効。人の未保存の変更は本体に含まれない。先に dx12_editor_state で autosave を確認)` })),
     });
   }
   const orphans: string[] = Array.isArray(f.orphans) ? f.orphans : [];

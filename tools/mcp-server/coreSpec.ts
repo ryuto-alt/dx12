@@ -464,7 +464,7 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
     + "使う: 作業の区切り、シーン JSON を外部で触る前・開き直す前。使わない: JSON を丸ごと書く(→ dx12_call {name:'dx12_scene_write'})。\n"
     + "副作用: ファイル書込み(Undo 不可)。\n"
     + "注意: Play 中に撃たない(欠けたシーンが書かれることがある)。dx12_ping で mode:Editor を確認し、path は明示する。"
-    + "結果の autosave.blockedByHumanEdits が true なら、人の未保存の変更があるため AI の作業は自動保存でディスクに残らない(warnings[] にも出る)。人に保存を依頼する(dx12_guide {topic:'autosave'})。",
+    + "人の未保存の変更があっても save_scene は止まらず、それも本体へ書く(結果の autosave.wroteHumanEdits:true と warnings[])。自動保存の停止を避けるために撃たない。blockedByHumanEdits が true の間は人に保存を依頼する(guide autosave)。",
 
   dx12_batch:
     "複数の操作を順に実行して往復を減らす。ops は [{method, params}](method はエンジンの method 名で dx12_ 接頭辞なし)。既定 atomic:true はトランザクションで包み、失敗すれば丸ごとロールバック(成功時は Undo 1 回で戻る)。\n"
@@ -486,7 +486,7 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
   dx12_engine_stop:
     "自分の専用エンジンを止める(プロセスツリーごと終了)。engine=id / name / port、all:true で自分の全部。他のセッションのエンジンは止められない(孤児は可)。\n"
     + "使う: 作業の終わり、上限の枠を空けるとき。使わない: 最新の exe への入れ替え(→ dx12_engine_refresh)。\n"
-    + "副作用: エンジンが終了する(未保存は MCP の自動保存の範囲だけ残る)。使い捨てプロジェクトは 24 時間残る。\n"
+    + "副作用: エンジンが終了する(taskkill。保存は通らない)。先に dx12_editor_state の autosave.blockedByHumanEdits を見て、true なら人に保存を依頼する(guide autosave)。使い捨てプロジェクトは 24 時間残る。\n"
     + "注意: 閉じ忘れても 10 分で自動終了する。返り値: {stopped[]}。",
 
   dx12_engine_attach:
@@ -498,7 +498,7 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
   dx12_engine_refresh:
     "ビルドの後に、専用エンジンの exe コピーを最新へ差し替えて、同じポート・プロジェクトで再起動する。\n"
     + "使う: ビルドの後、dx12_doctor が古い exe コピーを警告したとき(build ジョブの refreshEngines:true でも同じ)。使わない: エンジンを増やす(→ dx12_engine_launch)。\n"
-    + "副作用: エンジンを再起動する(entityId は全て失効。シーンは自動保存されたものが開き直される)。\n"
+    + "副作用: エンジンを再起動する(taskkill。entityId は全て失効。開き直されるのはシーン本体で、人の未保存の変更は含まれない)。先に dx12_editor_state の autosave.blockedByHumanEdits を見て、true なら人に保存を依頼する(guide autosave)。\n"
     + "注意: 元の exe がビルド中なら断る(動いているエンジンは止めない)。返り値: {engineId, pid, exe}。",
 
   dx12_engine_use:
