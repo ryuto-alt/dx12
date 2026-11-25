@@ -325,19 +325,23 @@ add_test(NAME NoPaidApi
     COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${DX12_REPO_ROOT} -P ${DX12_REPO_ROOT}/cmake/lint/NoPaidApi.cmake)
 set_tests_properties(NoPaidApi PROPERTIES TIMEOUT 120)
 
-# AnchorLint / GenBudgetsCheck: 常に登録する。node のスクリプト（W05-31 / W05-34）がまだ無ければ
-# ラッパーが終了コード 77 を返して SKIP になる（スクリプトが現れた後は再コンフィグ無しでそのまま走る）。
+# AnchorLint: tools/check_anchors.mjs（W05-31、M0 で統合済み）を --strict で直接実行する。
+# node が見つからないときも、黙って登録を省かず、必ず失敗するテストとして登録する。
+# GenBudgetsCheck: gen_budgets.mjs（W05-34、M5）がまだ無ければ、ラッパーが終了コード 77 を返して SKIP になる。
 find_program(DX12_NODE_EXE node)
 if(DX12_NODE_EXE)
     set(DX12_NODE_IF_EXISTS ${DX12_REPO_ROOT}/cmake/lint/run_if_exists.mjs)
-    add_test(NAME AnchorLint COMMAND ${DX12_NODE_EXE} ${DX12_NODE_IF_EXISTS}
-             ${DX12_REPO_ROOT}/tools/check_anchors.mjs
+    add_test(NAME AnchorLint COMMAND ${DX12_NODE_EXE}
+             ${DX12_REPO_ROOT}/tools/check_anchors.mjs --strict
              WORKING_DIRECTORY ${DX12_REPO_ROOT})
-    set_tests_properties(AnchorLint PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    set_tests_properties(AnchorLint PROPERTIES TIMEOUT 120)
     add_test(NAME GenBudgetsCheck COMMAND ${DX12_NODE_EXE} ${DX12_NODE_IF_EXISTS}
              ${DX12_REPO_ROOT}/tools/gen_budgets.mjs --check
              WORKING_DIRECTORY ${DX12_REPO_ROOT})
     set_tests_properties(GenBudgetsCheck PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+else()
+    # node が無い環境: 失敗として見えるようにする（cmake -E false は常に終了コード 1）。
+    add_test(NAME AnchorLint COMMAND ${CMAKE_COMMAND} -E false)
 endif()
 # ==== lane-A end ====
 
