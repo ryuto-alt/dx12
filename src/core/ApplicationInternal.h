@@ -32,7 +32,6 @@
 #include "graphics/DeferredRelease.h"
 #include "graphics/SwapChain.h"
 #include "graphics/FrameResources.h"
-#include "core/SplashScreen.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/GpuResource.h"
 #include "graphics/Buffer.h"

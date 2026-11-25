@@ -98,11 +98,13 @@ endif()
 
 # アプリアイコン（exe 埋め込み + ウィンドウアイコン）。両 exe に同じリソースを付ける。
 set(DX12_APP_ICON_RC "${CMAKE_SOURCE_DIR}/resources/app.rc")
+# エディタ専用リソース（DX12Engine だけ。GameRuntime には付けない。W05-17）
+set(DX12_EDITOR_RC "${CMAKE_SOURCE_DIR}/resources/editor.rc")
 # アプリケーションマニフェスト（Per-Monitor V2 DPI。MSVC のリンカ既定マニフェストへ CMake が /MANIFESTINPUT で併合する）。
 set(DX12_APP_MANIFEST "${CMAKE_SOURCE_DIR}/resources/dx12.manifest")
 
 # Main executable
-add_executable(DX12Engine WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_APP_MANIFEST})
+add_executable(DX12Engine WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_EDITOR_RC} ${DX12_APP_MANIFEST})
 
 target_link_libraries(DX12Engine
     PRIVATE
