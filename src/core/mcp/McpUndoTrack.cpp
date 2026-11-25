@@ -4,6 +4,9 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpUndoTrack.h"
 
+#include "scene/ComponentSerializerRegistry.h"
+
+#include <nlohmann/json.hpp>
 #include <random>
 
 namespace dx12e
@@ -104,6 +107,36 @@ public:
     const char* GetName() const override { return "Scene Settings"; }
 private:
     std::vector<std::unique_ptr<IMcpSceneSlot>> m_slots;
+};
+
+// レジストリ登録の型（ComponentSerializerList.inc）の前後を JSON で持つ Undo の枠。
+// Components.h に無い型は Track<T> できないので、save/load で往復する（W05-15）。
+class McpRegistrySlot final : public IMcpUndoSlot
+{
+public:
+    explicit McpRegistrySlot(const ComponentSerializer& cs) : m_cs(cs) {}
+    static const void* TagFor(const ComponentSerializer& cs) { return &cs; }   // 登録表の要素は寿命が静的で一意
+    const void* TypeTag() const override { return &m_cs; }
+    void Capture(entt::registry& reg, entt::entity e, std::optional<nlohmann::json>& dst)
+    {
+        dst.reset();
+        if (m_cs.has(reg, e)) { nlohmann::json j; m_cs.save(reg, e, j); dst = std::move(j); }
+    }
+    void CaptureBefore(entt::registry& reg, entt::entity e) { Capture(reg, e, m_before); }
+    void CaptureAfter(entt::registry& reg, entt::entity e) override { Capture(reg, e, m_after); }
+    void Apply(Scene& /*scene*/, entt::registry& reg, entt::entity e, bool useAfter) override
+    {
+        const std::optional<nlohmann::json>& v = useAfter ? m_after : m_before;
+        if (!v)
+        {
+            if (m_cs.has(reg, e) && m_cs.remove) m_cs.remove(reg, e);
+            return;
+        }
+        m_cs.load(reg, e, *v);
+    }
+private:
+    const ComponentSerializer& m_cs;
+    std::optional<nlohmann::json> m_before, m_after;
 };
 } // namespace
 
@@ -311,6 +344,18 @@ bool McpUndoTracker::TrackByJsonKey(entt::entity e, const std::string& key)
     else if (key == "animatorController")  Track<AnimatorController>(e);
     else if (key == "footIK")              Track<FootIK>(e);
     else if (key == "brain")               Track<Brain>(e);
+    else if (const ComponentSerializer* cs = FindComponentSerializer(key.c_str()))
+    {
+        // レジストリ登録の型（Components.h に無い新しい型）は JSON の往復で Undo にする。
+        if (!Active()) return true;
+        Rec* rec = RecordFor(e);
+        if (!rec) return true;
+        for (const auto& s : rec->slots)
+            if (s->TypeTag() == McpRegistrySlot::TagFor(*cs)) return true;
+        auto slot = std::make_unique<McpRegistrySlot>(*cs);
+        slot->CaptureBefore(Registry(), e);
+        rec->slots.push_back(std::move(slot));
+    }
     else return false;
     return true;
 }

@@ -155,6 +155,7 @@ std::vector<PostFieldInfo> BuildPostTable()
 {
     std::vector<PostFieldInfo> t = {
         DX12E_POST_FIELDS(DX12E_SEQ_PB, DX12E_SEQ_PF, DX12E_SEQ_PI, DX12E_SEQ_PV, DX12E_SEQ_PS)
+        DX12E_POST_FIELDS_V2(DX12E_SEQ_PB, DX12E_SEQ_PF, DX12E_SEQ_PI, DX12E_SEQ_PV, DX12E_SEQ_PS)
     };
     // 「XxxOn」の bool は、続く値フィールド(次の XxxOn まで)の ON スイッチ。XxxOn 以外の bool(enabled / grainColored …)は割り込まない。
     int lastOn = -1;
