@@ -303,7 +303,7 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     const size_t depth0 = ed->undoSystem.UndoDepth();
     std::vector<entt::entity> existing;
     for (auto e : reg.view<NameTag>()) existing.push_back(e);
-    AddEntity(ctx, "Box");
+    AddEntity(ctx, "Point Light");   // Mesh を持たない種別（Mesh 所有時は履歴を捨てる暫定仕様のため）
     IM_CHECK(reg.view<NameTag>().size() == before + 1);
     IM_CHECK(ed->undoSystem.UndoDepth() == depth0 + 1);
     entt::entity box = entt::null;   // 新しいエンティティの自動選択は W05-21 の担当なので、ここでは差分から見つけて選ぶ
@@ -312,6 +312,9 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     if (box != entt::null) ed->Select(box);
     IM_CHECK(box != entt::null && reg.valid(box));
     const size_t depth = ed->undoSystem.UndoDepth();
+
+    // Scene が Mesh を所有していると履歴は捨てられる（解放済み Mesh* の書き戻しを避ける暫定仕様）。
+    const bool ownsMeshes = scene->GetOwnedMeshCount() > 0;
 
     LogStep(ctx, "Play → Stop");
     app->RequestMode(Application::EngineMode::Playing);
@@ -323,7 +326,14 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     IM_CHECK(app->GetEngineMode() == Application::EngineMode::Editor);
     ctx->Yield(10);
 
-    LogStep(ctx, "Undo 履歴と選択が残り、id が同じで、Ctrl+Z で Box が消える");
+    LogStep(ctx, "Undo 履歴と選択が残り、id が同じで、Ctrl+Z でエンティティが消える");
+    if (ownsMeshes)
+    {
+        // Mesh 所有シーン: 履歴は捨てられるが、選択は GUID から戻り、落ちないこと。
+        IM_CHECK(ed->undoSystem.UndoDepth() == 0);
+        IM_CHECK(ed->selectedEntity != entt::null);
+        goto cleanup;
+    }
     IM_CHECK(ed->undoSystem.UndoDepth() == depth);
     IM_CHECK(ed->selectedEntity == box);          // id も選択も同じ
     IM_CHECK(reg.valid(box));
@@ -333,6 +343,7 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     IM_CHECK(reg.view<NameTag>().size() == before);
     IM_CHECK(!reg.valid(box) || !reg.all_of<NameTag>(box));
 
+cleanup:
     LogStep(ctx, "後始末（元のシーンへ戻す）");
     if (!snapshot.empty())
     {
