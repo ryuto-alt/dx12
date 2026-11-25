@@ -4,6 +4,7 @@ add_library(Renderer STATIC
     Material.cpp
     GraphMaterialSystem.cpp   # マテリアルグラフ G2b: グラフ材質のランタイム（パラメータプール・非同期 DXC + PSO・ホットリロード）
     GraphPreviewRenderer.cpp  # マテリアルグラフ G2c: エディタのライブプレビュー + ノード内サムネイルの描画（エディタ専用）
+    RenderStageHooks.cpp      # W05-01b: FeatureRegistry の入口（空。中身は α3）
     PostProcess.cpp
     ScreenShaderPass.cpp
     BloomPass.cpp

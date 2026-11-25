@@ -8,6 +8,7 @@ add_library(Graphics STATIC
     DeferredRelease.cpp
     Buffer.cpp
     RootSignature.cpp
+    RenderBackendExt.cpp     # W05-01b: 拡張メンバの入口（空。中身は F1〜F3）
     PipelineState.cpp
     CommandList.cpp
     Texture.cpp
