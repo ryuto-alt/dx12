@@ -1603,7 +1603,18 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.mouseSensitivity = m_camera->GetMouseSensitivity();
 
     // Lua が触る前のエディタ状態を Stop 時の完全復元用に保存
-    m_playSceneJson = SceneSerializer::SaveToString(*m_scene, PathResolver::AssetsDir());
+    // W05-11: Stop で Undo 履歴を残すため、各エンティティの entt id（"_eid"）・選択の GUID・Undo の位置を控える。
+    //   ★SaveToString が GUID を未付与のエンティティへ振るので、選択の GUID はその後に読む。
+    m_playSceneJson = SceneSerializer::SaveToString(*m_scene, PathResolver::AssetsDir(), /*writeEntityIds=*/true);
+    m_editorCtx->playUndoSeq   = m_editorCtx->undoSystem.PushSeq();
+    m_editorCtx->playHumanSeq  = m_editorCtx->undoSystem.LastHumanEditSeq();
+    m_editorCtx->playSelectionGuids.clear();
+    for (entt::entity se : m_editorCtx->selectedEntities)
+    {
+        if (!m_scene->GetRegistry().valid(se)) continue;
+        if (const auto* g = m_scene->GetRegistry().try_get<EntityGuid>(se); g && g->value != 0)
+            m_editorCtx->playSelectionGuids.push_back(g->value);
+    }
 
     // ★「isActive なカメラが無ければ先頭を有効化」はこのスナップショットより**後**に置く。
     //   前に置くと自動有効化が JSON に焼き付き、全カメラを非アクティブにしてあるシーンで
@@ -1962,6 +1973,7 @@ void Application::EnterEditorMode()
     m_loadedSkyboxPath.clear();
     m_skyboxDirty = true;
 
+    // 選択は復元後に GUID から張り直す（W05-11）。ここでは一旦外す（古い entity を指したままにしない）。
     m_editorCtx->ClearSelection();
 
     // Play 中のランタイムシーン切替で汚れたシーンパスを Play 開始時点に戻す。
@@ -1976,6 +1988,8 @@ void Application::EnterEditorMode()
     m_playScenePathSnapshot.clear();
     m_playSceneRelSnapshot.clear();
 
+    bool idsPreserved = false;       // W05-11: 全エンティティが Play 前と同じ id で戻ったか
+    bool usedDiskFallback = false;
     // JSON スナップショットからシーン全体を完全復元
     {
         auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
@@ -1994,12 +2008,15 @@ void Application::EnterEditorMode()
         nav::NavMesh savedNav = std::move(m_scene->GetNavMesh());
 
         bool restored = false;
+        SceneSerializer::SceneLoadOptions loadOpts;
+        loadOpts.preserveEntityIds = true;   // W05-11: Undo の履歴が握っている entt id をそのまま復元する
         try {
-            restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
+            restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir(), &loadOpts);
         } catch (const std::exception& ex) {
             Logger::Error("EnterEditorMode: スナップショット復元で例外が発生: {}", ex.what());
         }
         if (!restored && !m_editorCtx->currentScenePath.empty()) {
+            usedDiskFallback = true;
             Logger::Error("EnterEditorMode: スナップショット復元に失敗。ディスクから再読込します: {}",
                           ToAssetRel(m_editorCtx->currentScenePath));
             try {
@@ -2009,6 +2026,8 @@ void Application::EnterEditorMode()
                 Logger::Error("EnterEditorMode: ディスクからの再読込にも失敗: {}", ex.what());
             }
         }
+        // ディスクからの再読込（id は新規）に落ちた場合も、id が一致しなかった場合も、Undo 履歴は使えない。
+        idsPreserved = restored && loadOpts.idsPreserved && !usedDiskFallback;
         if (!restored)
             Logger::Error("EnterEditorMode: Stop 後のシーンが空です（有効なスナップショットもディスクのシーンもありません）");
 
@@ -2035,9 +2054,26 @@ void Application::EnterEditorMode()
     m_playSceneJson.shrink_to_fit();
 
     // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
+    // W05-11: id が保たれたなら Undo 履歴を残し、Play 中に積まれた分だけ捨てる。選択は GUID から張り直す。
+    //   保てなかった（id の衝突・ディスクからの再読込）ときだけ従来どおり履歴を消す。
     McpUndoAutoClose("play");
-    m_editorCtx->undoSystem.Clear();
-    m_editorCtx->ClearSelection();
+    if (idsPreserved)
+    {
+        m_editorCtx->undoSystem.TruncateTo(m_editorCtx->playUndoSeq, m_editorCtx->playHumanSeq);
+        m_editorCtx->ClearSelection();
+        for (uint64_t g : m_editorCtx->playSelectionGuids)
+        {
+            const entt::entity ne = FindEntityByGuid(m_scene->GetRegistry(), g);
+            if (ne != entt::null) m_editorCtx->AddToSelection(ne);
+        }
+    }
+    else
+    {
+        Logger::Warn("Stop: エンティティ id を復元できなかったため Undo 履歴を破棄しました");
+        m_editorCtx->undoSystem.Clear();
+        m_editorCtx->ClearSelection();
+    }
+    m_editorCtx->playSelectionGuids.clear();
 
     // Stop でもシーンを丸ごと作り直すため entity id が全部変わる。open_scene/new_scene と同様に
     // 世代を進めて古い id を無効化する(これが無いと Stop 後に古い id が別 entity に化けて

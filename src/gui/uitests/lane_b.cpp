@@ -6,6 +6,7 @@
 #include "core/PathResolver.h"
 #include "editor/EditorContext.h"
 #include "project/ProjectManager.h"
+#include "ecs/Components.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
 #include "scene/SceneSettingsHash.h"
@@ -18,11 +19,13 @@
 #include <imgui_te_context.h>
 #pragma warning(pop)
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <vector>
 
 namespace dx12e
 {
@@ -271,6 +274,75 @@ void T_NewSceneCancelKeepsNoPath(ImGuiTestContext* ctx)
     }
     ed->currentScenePath = origPath;
     if (!origPath.empty()) ProjectManager::SaveLastOpenedScene(origPath);
+}
+
+// 仮想入力で Box を作る → Play → Stop → 選択が Box、Ctrl+Z で Box が消える（W05-11）。
+void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    Application* app = App();
+    IM_CHECK(ed != nullptr && app != nullptr);
+    if (!ed || !app) return;
+    Scene* scene = app->GetScene();
+    IM_CHECK(scene != nullptr);
+    if (!scene) return;
+
+    const std::string snapshot = app->SaveSceneSnapshot();   // 終わったら元のシーンへ戻す
+    const std::string origPath = ed->currentScenePath;
+    auto& reg = scene->GetRegistry();
+
+    LogStep(ctx, "Play に要るカメラを足し、仮想入力で Box を作る");
+    {
+        const entt::entity cam = reg.create();
+        reg.emplace<NameTag>(cam, NameTag{"UiTestPlayCam"});
+        reg.emplace<Transform>(cam);
+        CameraComponent cc; cc.isActive = true;
+        reg.emplace<CameraComponent>(cam, cc);
+    }
+    const size_t before = reg.view<NameTag>().size();
+    const size_t depth0 = ed->undoSystem.UndoDepth();
+    std::vector<entt::entity> existing;
+    for (auto e : reg.view<NameTag>()) existing.push_back(e);
+    AddEntity(ctx, "Box");
+    IM_CHECK(reg.view<NameTag>().size() == before + 1);
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth0 + 1);
+    entt::entity box = entt::null;   // 新しいエンティティの自動選択は W05-21 の担当なので、ここでは差分から見つけて選ぶ
+    for (auto e : reg.view<NameTag>())
+        if (std::find(existing.begin(), existing.end(), e) == existing.end()) box = e;
+    if (box != entt::null) ed->Select(box);
+    IM_CHECK(box != entt::null && reg.valid(box));
+    const size_t depth = ed->undoSystem.UndoDepth();
+
+    LogStep(ctx, "Play → Stop");
+    app->RequestMode(Application::EngineMode::Playing);
+    for (int i = 0; i < 240 && app->GetEngineMode() != Application::EngineMode::Playing; ++i) ctx->Yield();
+    IM_CHECK(app->GetEngineMode() == Application::EngineMode::Playing);
+    ctx->Yield(10);
+    app->RequestMode(Application::EngineMode::Editor);
+    for (int i = 0; i < 240 && app->GetEngineMode() != Application::EngineMode::Editor; ++i) ctx->Yield();
+    IM_CHECK(app->GetEngineMode() == Application::EngineMode::Editor);
+    ctx->Yield(10);
+
+    LogStep(ctx, "Undo 履歴と選択が残り、id が同じで、Ctrl+Z で Box が消える");
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth);
+    IM_CHECK(ed->selectedEntity == box);          // id も選択も同じ
+    IM_CHECK(reg.valid(box));
+    ctx->SetRef("//$FOCUSED");
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.view<NameTag>().size() == before);
+    IM_CHECK(!reg.valid(box) || !reg.all_of<NameTag>(box));
+
+    LogStep(ctx, "後始末（元のシーンへ戻す）");
+    if (!snapshot.empty())
+    {
+        app->RequestSceneRestore(snapshot);
+        for (int i = 0; i < 240 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield();
+        ctx->Yield(60);
+        std::error_code ec;
+        fs::remove(snapshot, ec);
+    }
+    ed->currentScenePath = origPath;
 }
 
 } // namespace uitest
