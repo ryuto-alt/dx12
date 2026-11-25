@@ -204,6 +204,27 @@ void TestEntityProp()
     CHECK(LS(reg, e).props.back().str == "Boss" && LS(reg, e).props.back().guid == 0xBEEFull);
 }
 
+// 「既定値に戻す」は Entity 参照の guid も消す。Undo / Redo で guid まで往復する
+void TestResetEntity()
+{
+    entt::registry reg;
+    const entt::entity e = MakeEntity(reg, 0x12ull);
+    LS(reg, e).props.push_back(Prop("target", ScriptPropType::Entity));
+    auto& p = LS(reg, e).props.back();
+    p.str = "Boss"; p.guid = 0xBEEFull;
+    const std::vector<ScriptProp> before = LS(reg, e).props;
+    p.str.clear(); p.guid = 0;   // リセット相当
+    auto cmd = MakeScriptPropertiesResetCommand(reg, e, before);
+    CHECK(cmd != nullptr);
+    if (!cmd) return;
+    UndoSystem sys;
+    sys.PushCommand(std::move(cmd));
+    sys.Undo();
+    CHECK(LS(reg, e).props.back().str == "Boss" && LS(reg, e).props.back().guid == 0xBEEFull);
+    sys.Redo();
+    CHECK(LS(reg, e).props.back().str.empty() && LS(reg, e).props.back().guid == 0);
+}
+
 void TestNaNEqual()
 {
     ScriptProp a = Prop("n", ScriptPropType::Float);
@@ -222,6 +243,7 @@ int main()
     TestHotReload();
     TestResetComposite();
     TestEntityProp();
+    TestResetEntity();
     TestNaNEqual();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

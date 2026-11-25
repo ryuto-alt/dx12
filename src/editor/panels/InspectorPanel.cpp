@@ -598,18 +598,31 @@ void PushLuaPropUndo(entt::registry& reg, dx12e::EditorContext& ctx, entt::entit
         ctx.undoSystem.PushCommand(std::make_unique<dx12e::ScriptPropertyUndo>(&reg, std::move(c)));
 }
 
-// 掴んだまま選択が変わった/外れた/削除された場合に、旧エンティティの現在値で確定する。
-// （次のフレームで Inspector がそのエンティティの節を描かないと、確定が永久に来ないため）
-void FlushLuaPropDragIfStale(entt::registry& reg, dx12e::EditorContext& ctx, entt::entity drawn)
+// 掴んでいる途中の編集を、旧エンティティの現在値で 1 件に確定して s_luaDrag を空にする。
+// 旧エンティティが無効 / LuaScript が無い / 同名のプロパティが無い場合は、何も積まずに捨てる。
+void CommitLuaPropDrag(entt::registry& reg, dx12e::EditorContext& ctx)
 {
-    if (!s_luaDrag.active || s_luaDrag.entity == drawn) return;
     const LuaPropDrag d = s_luaDrag;
     s_luaDrag = LuaPropDrag{};
-    if (!reg.valid(d.entity)) return;
+    if (!d.active || !reg.valid(d.entity)) return;
     const auto* ls = reg.try_get<dx12e::LuaScript>(d.entity);
     if (!ls) return;
     for (const auto& p : ls->props)
         if (p.name == d.name) { PushLuaPropUndo(reg, ctx, d.entity, d.name, d.before, p); return; }
+}
+
+// 掴んだまま選択が変わった/外れた/削除された場合に、旧エンティティの現在値で確定する。
+// （次のフレームで Inspector がそのエンティティの節を描かないと、確定が永久に来ないため）
+// drawn は「固定を反映した後」の、これから節を描くエンティティ。
+// 同じエンティティでも、LuaScript やそのプロパティが消えていたら（ホットリロード / MCP）捨てる。
+void FlushLuaPropDragIfStale(entt::registry& reg, dx12e::EditorContext& ctx, entt::entity drawn)
+{
+    if (!s_luaDrag.active) return;
+    if (s_luaDrag.entity != drawn) { CommitLuaPropDrag(reg, ctx); return; }
+    const auto* ls = reg.valid(drawn) ? reg.try_get<dx12e::LuaScript>(drawn) : nullptr;
+    bool found = false;
+    if (ls) for (const auto& p : ls->props) if (p.name == s_luaDrag.name) { found = true; break; }
+    if (!found) s_luaDrag = LuaPropDrag{};
 }
 
 void DrawLuaScriptSection(entt::registry& reg,
@@ -841,7 +854,10 @@ void DrawLuaScriptSection(entt::registry& reg,
                                 PushLuaPropUndo(reg, ctx, e, d.name, pre, p);
                         }
                         else if (act && !mine)
+                        {
+                            if (s_luaDrag.active) CommitLuaPropDrag(reg, ctx);       // 別の欄へ直接移った: 先に編集中の分を確定
                             s_luaDrag = LuaPropDrag{true, e, d.name, pre};          // 掴んだ時点の値を覚える
+                        }
                         else if (mine && !act)
                         {
                             PushLuaPropUndo(reg, ctx, e, d.name, s_luaDrag.before, p);   // 離した時点で 1 件
@@ -861,6 +877,7 @@ void DrawLuaScriptSection(entt::registry& reg,
                 {
                     auto& p = ls.props[i]; const auto& d = schema[i];
                     p.num = d.def.num; p.b = d.def.b; p.str = d.def.str; p.vec = d.def.vec;
+                    p.guid = 0;   // Entity 参照は guid が優先されるので、必ず消す（既定値に guid は無い）
                 }
                 propsEdited = true;   // 1 クリックで全プロパティが変わる。ここが一番失いやすい
                 // 全プロパティを 1 件の複合コマンドにする（Ctrl+Z 1 回で全部戻る）
@@ -1853,7 +1870,6 @@ void InspectorPanel::Render(entt::registry& reg,
                             EditorContext& ctx,
                             Scene* scene)
 {
-    FlushLuaPropDragIfStale(reg, ctx, ctx.selectedEntities.size() <= 1 ? ctx.selectedEntity : entt::null);
     // ---- コンソールのシェーダーエラー行から飛んできた場合の受け口 ----
     // そのシェーダーを使っているエンティティを選び直し、該当セクションを開く指示を
     // このフレームだけ立てる（開く/スクロールは各セクションの描画箇所で行う）。
@@ -1913,6 +1929,8 @@ void InspectorPanel::Render(entt::registry& reg,
         ctx.selectedEntity = m_pinned;
         ctx.selectedEntities.assign(1, m_pinned);
     }
+    // Lua プロパティのドラッグ確定。固定を反映した後の「描くエンティティ」で比べる（固定中に別を選んでも毎フレーム積まない）
+    FlushLuaPropDragIfStale(reg, ctx, ctx.selectedEntities.size() <= 1 ? ctx.selectedEntity : entt::null);
     // 選択 / 検索語が変わったら「一致行なし」の記録を捨てる（1 フレームだけ全見出しを出して取り直す）
     if (ctx.selectedEntity != m_lastSelected || g_ui.filter != m_filterBuf)
     {

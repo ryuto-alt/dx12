@@ -586,6 +586,25 @@ void T_LuaPropUndo(ImGuiTestContext* ctx)
     auto& reg = scene->GetRegistry();
 
     const std::string snapshot = app->SaveSceneSnapshot();   // 終わったら元のシーンへ戻す
+    const fs::path scriptFile = fs::path(PathResolver::AssetsDir()) / "scripts" / "uitest_lua_prop.lua";
+    // IM_CHECK が失敗して途中で return しても、シーンの復元とスクリプトの削除は必ず行う
+    struct Cleanup
+    {
+        ImGuiTestContext* ctx; Application* app; EditorContext* ed; std::string snapshot; fs::path scriptFile;
+        ~Cleanup()
+        {
+            if (!snapshot.empty())
+            {
+                app->RequestSceneRestore(snapshot);
+                for (int i = 0; i < 240 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield();
+                ctx->Yield(60);
+                std::error_code ec;
+                fs::remove(snapshot, ec);
+            }
+            std::error_code rec;
+            fs::remove(scriptFile, rec);
+        }
+    } cleanup{ctx, app, ed, snapshot, scriptFile};
 
     LogStep(ctx, "LuaScript（Spinner）を付けたエンティティを作って選ぶ");
     const entt::entity e = reg.create();
@@ -594,7 +613,6 @@ void T_LuaPropUndo(ImGuiTestContext* ctx)
     reg.emplace<EntityGuid>(e, EntityGuid{0x70A14ull});
     // 使い捨てプロジェクトには components/ が無いので、プロパティ宣言だけのスクリプトを assets に書く
     const fs::path scriptDir = fs::path(PathResolver::AssetsDir()) / "scripts";
-    const fs::path scriptFile = scriptDir / "uitest_lua_prop.lua";
     {
         std::error_code mec;
         fs::create_directories(scriptDir, mec);
@@ -603,6 +621,7 @@ void T_LuaPropUndo(ImGuiTestContext* ctx)
               "  { name = \"speed\", type = \"float\", default = 90.0, min = -720, max = 720, label = \"speed\" },\n"
               "  { name = \"axis\", type = \"vec3\", default = {0, 1, 0}, label = \"axis\" },\n"
               "  { name = \"spin\", type = \"bool\", default = true, label = \"spin\" },\n"
+              "  { name = \"note\", type = \"string\", default = \"\", label = \"note\" },\n"
               "}\n"
               "function OnUpdate(self, dt) end\n";
     }
@@ -670,6 +689,45 @@ void T_LuaPropUndo(ImGuiTestContext* ctx)
         ctx->Yield(2);
     }
 
+    LogStep(ctx, "固定中に別を選んでドラッグしても、毎フレームは積まれない（1 件）");
+    {
+        const entt::entity other = reg.create();
+        reg.emplace<NameTag>(other, NameTag{"UiTestLuaPropPin"});
+        reg.emplace<Transform>(other);
+        reg.emplace<EntityGuid>(other, EntityGuid{0x70A16ull});
+        ctx->SetRef(kWinInspector);
+        ctx->ItemClick("##pinInspector/##ib");   // e に固定
+        ctx->Yield(3);
+        ed->Select(other);
+        ctx->Yield(3);
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->ItemDragWithDelta("**/speed/##v", ImVec2(40.0f, 0.0f));
+        ctx->Yield(6);
+        IM_CHECK(reg.get<LuaScript>(e).props[0].num != 200.0);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);
+        ctx->ItemClick("##pinInspector/##ib");   // 固定を解除
+        ctx->Yield(3);
+        ed->Select(e);
+        ctx->Yield(3);
+        reg.get<LuaScript>(e).props[0].num = 200.0;
+        ctx->Yield(2);
+    }
+
+    LogStep(ctx, "下の文字欄を編集中に、上のスライダーへ直接移っても文字欄の Undo が残る");
+    {
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->SetRef(kWinInspector);
+        ctx->ItemClick("**/note/##v");
+        ctx->KeyChars("abc");
+        ctx->Yield(2);
+        ctx->ItemClick("**/speed/##v");
+        ctx->Yield(4);
+        IM_CHECK(reg.get<LuaScript>(e).props.back().str == "abc");
+        IM_CHECK(ed->undoSystem.UndoDepth() >= d + 1);
+        reg.get<LuaScript>(e).props[0].num = 200.0;
+        ctx->Yield(2);
+    }
+
     LogStep(ctx, "既定値に戻す → Ctrl+Z 1 回で全部戻る");
     {
         auto& props = reg.get<LuaScript>(e).props;
@@ -693,18 +751,6 @@ void T_LuaPropUndo(ImGuiTestContext* ctx)
     for (size_t i = 0; i < before.size() && i < after.size(); ++i)
         IM_CHECK(after[i].num == before[i].num && after[i].b == before[i].b
                  && after[i].vec.x == before[i].vec.x && after[i].vec.y == before[i].vec.y);
-
-    LogStep(ctx, "後始末（元のシーンへ戻す）");
-    if (!snapshot.empty())
-    {
-        app->RequestSceneRestore(snapshot);
-        for (int i = 0; i < 240 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield();
-        ctx->Yield(60);
-        std::error_code ec;
-        fs::remove(snapshot, ec);
-    }
-    std::error_code rec;
-    fs::remove(scriptFile, rec);
 }
 
 } // namespace uitest
