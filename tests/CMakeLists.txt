@@ -470,6 +470,18 @@ if(TARGET Scene)
     add_test(NAME PlayStopUndoTests COMMAND PlayStopUndoTests)
     set_tests_properties(PlayStopUndoTests PROPERTIES TIMEOUT 120)
 endif()
+# Lua 公開プロパティの Undo（W05-14）: 値の往復 / GUID で引く / ホットリロードで例外なし / 既定値に戻すは複合 1 件。GPU 不要。
+if(TARGET ECS)
+    add_executable(ScriptPropertyUndoTests script_property_undo_test.cpp ../src/editor/undo/ScriptPropertyUndo.cpp)
+    target_link_libraries(ScriptPropertyUndoTests PRIVATE ECS)
+    target_include_directories(ScriptPropertyUndoTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(ScriptPropertyUndoTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ScriptPropertyUndoTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ScriptPropertyUndoTests COMMAND ScriptPropertyUndoTests)
+    set_tests_properties(ScriptPropertyUndoTests PROPERTIES TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、

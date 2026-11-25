@@ -379,7 +379,7 @@ void WriteTinyGlb(const fs::path& path)
     std::ofstream o(path, std::ios::binary);
     o.write("glTF", 4); u32(o, 2); u32(o, total);
     u32(o, jsonLen); o.write("JSON", 4); o.write(json.data(), static_cast<std::streamsize>(json.size()));
-    u32(o, binLen);  o.write("BIN ", 4); o.write(reinterpret_cast<const char*>(verts), sizeof(verts));
+    u32(o, binLen);  o.write("BIN\0", 4); o.write(reinterpret_cast<const char*>(verts), sizeof(verts));
 }
 
 // 一覧が期待の件数になるまで待つ（走査はワーカースレッド）。
@@ -569,6 +569,188 @@ void T_AssetRenameKeepsExt(ImGuiTestContext* ctx)
     ab->NavigateTo(assets);
     ctx->Yield(10);
     saferm::RemoveAll(work, ec, assets);
+}
+
+
+// Lua の公開プロパティ: スライダーを動かす → Ctrl+Z で元の値 → Ctrl+Y で戻る。
+// 「既定値に戻す」→ Ctrl+Z 1 回で全部戻る（W05-14）。
+void T_LuaPropUndo(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    Application* app = App();
+    IM_CHECK(ed != nullptr && app != nullptr);
+    if (!ed || !app) return;
+    Scene* scene = app->GetScene();
+    IM_CHECK(scene != nullptr);
+    if (!scene) return;
+    auto& reg = scene->GetRegistry();
+
+    const std::string snapshot = app->SaveSceneSnapshot();   // 終わったら元のシーンへ戻す
+    const fs::path scriptFile = fs::path(PathResolver::AssetsDir()) / "scripts" / "uitest_lua_prop.lua";
+    // IM_CHECK が失敗して途中で return しても、シーンの復元とスクリプトの削除は必ず行う
+    struct Cleanup
+    {
+        ImGuiTestContext* ctx; Application* app; EditorContext* ed; std::string snapshot; fs::path scriptFile;
+        ~Cleanup()
+        {
+            if (!snapshot.empty())
+            {
+                app->RequestSceneRestore(snapshot);
+                for (int i = 0; i < 240 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield();
+                ctx->Yield(60);
+                std::error_code ec;
+                fs::remove(snapshot, ec);
+            }
+            std::error_code rec;
+            fs::remove(scriptFile, rec);
+        }
+    } cleanup{ctx, app, ed, snapshot, scriptFile};
+
+    LogStep(ctx, "LuaScript（Spinner）を付けたエンティティを作って選ぶ");
+    const entt::entity e = reg.create();
+    reg.emplace<NameTag>(e, NameTag{"UiTestLuaProp"});
+    reg.emplace<Transform>(e);
+    reg.emplace<EntityGuid>(e, EntityGuid{0x70A14ull});
+    // 使い捨てプロジェクトには components/ が無いので、プロパティ宣言だけのスクリプトを assets に書く
+    const fs::path scriptDir = fs::path(PathResolver::AssetsDir()) / "scripts";
+    {
+        std::error_code mec;
+        fs::create_directories(scriptDir, mec);
+        std::ofstream sf(scriptFile, std::ios::binary);
+        sf << "properties = {\n"
+              "  { name = \"speed\", type = \"float\", default = 90.0, min = -720, max = 720, label = \"speed\" },\n"
+              "  { name = \"axis\", type = \"vec3\", default = {0, 1, 0}, label = \"axis\" },\n"
+              "  { name = \"spin\", type = \"bool\", default = true, label = \"spin\" },\n"
+              "  { name = \"note\", type = \"string\", default = \"\", label = \"note\" },\n"
+              "}\n"
+              "function OnUpdate(self, dt) end\n";
+    }
+    LuaScript ls;
+    ls.scriptPath = "scripts/uitest_lua_prop.lua";
+    reg.emplace<LuaScript>(e, std::move(ls));
+    ed->Select(e);
+    ImGuiID insp = FocusWindow(ctx, kWinInspector);
+    IM_CHECK(insp != 0);
+    ctx->Yield(6);   // SyncScriptProps が既定値（speed = 90）で props を作る
+    IM_CHECK(reg.get<LuaScript>(e).props.size() >= 1);
+    const double speed0 = reg.get<LuaScript>(e).props[0].num;
+    const size_t depth0 = ed->undoSystem.UndoDepth();
+
+    LogStep(ctx, "速度を 200 にする → Undo 1 件 → Ctrl+Z で元の値 → Ctrl+Y で戻る");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemInputValue("**/speed/##v", 200.0f);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == 200.0);
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth0 + 1);
+    ctx->SetRef("//$FOCUSED");
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == speed0);
+    ctx->KeyPress(ImGuiKey_Y | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == 200.0);
+
+    LogStep(ctx, "マウスで数フレーム動かすドラッグは 1 件にまとまる");
+    {
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->SetRef(kWinInspector);
+        ctx->ItemDragWithDelta("**/speed/##v", ImVec2(40.0f, 0.0f));
+        ctx->Yield(6);
+        IM_CHECK(reg.get<LuaScript>(e).props[0].num != 200.0);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);
+        ctx->SetRef("//$FOCUSED");
+        ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+        ctx->Yield(6);
+        IM_CHECK(reg.get<LuaScript>(e).props[0].num == 200.0);   // 1 回で掴む前へ戻る
+    }
+
+    LogStep(ctx, "掴んだまま選択が変わっても Undo が 1 件積まれる");
+    {
+        const entt::entity other = reg.create();
+        reg.emplace<NameTag>(other, NameTag{"UiTestLuaPropOther"});
+        reg.emplace<Transform>(other);
+        reg.emplace<EntityGuid>(other, EntityGuid{0x70A15ull});
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->SetRef(kWinInspector);
+        ctx->MouseMove("**/speed/##v");
+        ctx->MouseDown(0);
+        ctx->MouseMoveToPos(ImVec2(ctx->UiContext->IO.MousePos.x + 30.0f, ctx->UiContext->IO.MousePos.y));
+        ctx->Yield(3);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d);   // 掴んでいる間は積まない
+        ed->Select(other);
+        ctx->Yield(4);
+        ctx->MouseUp(0);
+        ctx->Yield(2);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);
+        ed->Select(e);
+        ctx->Yield(4);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);   // 選び直しても遅れて積まれない
+        reg.get<LuaScript>(e).props[0].num = 200.0;
+        ctx->Yield(2);
+    }
+
+    LogStep(ctx, "固定中に別を選んでドラッグしても、毎フレームは積まれない（1 件）");
+    {
+        const entt::entity other = reg.create();
+        reg.emplace<NameTag>(other, NameTag{"UiTestLuaPropPin"});
+        reg.emplace<Transform>(other);
+        reg.emplace<EntityGuid>(other, EntityGuid{0x70A16ull});
+        ctx->SetRef(kWinInspector);
+        ctx->ItemClick("##pinInspector/##ib");   // e に固定
+        ctx->Yield(3);
+        ed->Select(other);
+        ctx->Yield(3);
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->ItemDragWithDelta("**/speed/##v", ImVec2(40.0f, 0.0f));
+        ctx->Yield(6);
+        IM_CHECK(reg.get<LuaScript>(e).props[0].num != 200.0);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);
+        ctx->ItemClick("##pinInspector/##ib");   // 固定を解除
+        ctx->Yield(3);
+        ed->Select(e);
+        ctx->Yield(3);
+        reg.get<LuaScript>(e).props[0].num = 200.0;
+        ctx->Yield(2);
+    }
+
+    LogStep(ctx, "下の文字欄を編集中に、上のスライダーへ直接移っても文字欄の Undo が残る");
+    {
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->SetRef(kWinInspector);
+        ctx->ItemClick("**/note/##v");
+        ctx->KeyChars("abc");
+        ctx->Yield(2);
+        ctx->ItemClick("**/speed/##v");
+        ctx->Yield(4);
+        IM_CHECK(reg.get<LuaScript>(e).props.back().str == "abc");
+        IM_CHECK(ed->undoSystem.UndoDepth() >= d + 1);
+        reg.get<LuaScript>(e).props[0].num = 200.0;
+        ctx->Yield(2);
+    }
+
+    LogStep(ctx, "既定値に戻す → Ctrl+Z 1 回で全部戻る");
+    {
+        auto& props = reg.get<LuaScript>(e).props;
+        for (auto& p : props)
+            if (p.type == ScriptPropType::Bool) p.b = false;      // 既定値（true）から外しておく
+        if (props.size() > 1) props[1].vec = {1.0f, 0.0f, 0.0f};  // axis も外す
+    }
+    ctx->Yield(2);
+    const size_t depth1 = ed->undoSystem.UndoDepth();
+    const auto before = reg.get<LuaScript>(e).props;
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("**/既定値に戻す");
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == 90.0);
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth1 + 1);       // 複合 1 件
+    ctx->SetRef("//$FOCUSED");
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    const auto& after = reg.get<LuaScript>(e).props;
+    IM_CHECK(after.size() == before.size());
+    for (size_t i = 0; i < before.size() && i < after.size(); ++i)
+        IM_CHECK(after[i].num == before[i].num && after[i].b == before[i].b
+                 && after[i].vec.x == before[i].vec.x && after[i].vec.y == before[i].vec.y);
 }
 
 } // namespace uitest
