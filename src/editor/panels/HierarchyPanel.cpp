@@ -1028,9 +1028,22 @@ void HierarchyPanel::Render(entt::registry& reg, EditorContext& ctx)
     // 親→子の索引 / 表示行 / 検索結果（構造が変わった時だけ作り直す）
     RefreshModel(reg, ctx);
 
+    // Undo / Redo / 削除で消えたエンティティを選択に残さない（無効な id を指す選択を持ち越さない）。
+    {
+        auto& sel = ctx.selectedEntities;
+        const size_t before = sel.size();
+        sel.erase(std::remove_if(sel.begin(), sel.end(),
+                                 [&](entt::entity s) { return !reg.valid(s); }), sel.end());
+        if (sel.size() != before || (ctx.selectedEntity != entt::null && !reg.valid(ctx.selectedEntity)))
+            ctx.selectedEntity = sel.empty() ? entt::null : sel.back();
+    }
+
     // 選択が外から変わった（3Dビューでクリック / MCP / F フォーカス）なら、その行を露出する。
     // 祖先グループを開き、次の描画でスクロールして見せる＝畳んだ階層の中でも迷子にならない。
-    if (ctx.selectedEntity != m_lastRevealed)
+    // revealInHierarchy: 人の操作で新しく作ったエンティティ（W05-21）。選択が同じ id でも強制的に露出する。
+    const bool forceReveal = ctx.revealInHierarchy;
+    ctx.revealInHierarchy = false;
+    if (ctx.selectedEntity != m_lastRevealed || forceReveal)
     {
         m_lastRevealed = ctx.selectedEntity;
         if (reg.valid(ctx.selectedEntity) && reg.all_of<Transform>(ctx.selectedEntity))
