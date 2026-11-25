@@ -7,6 +7,8 @@
 #include "core/AppAccess.h"
 #include "core/AutosaveGuard.h"
 #include "core/SceneBackup.h"
+#include "graphics/DeviceCaps.h"
+#include "graphics/GraphicsDevice.h"
 #include "scene/SceneSettingsHash.h"
 
 #include <chrono>
@@ -20,6 +22,31 @@ namespace dx12e
 {
 void Application::RegisterMcpLaneAMethods()
 {
+    using namespace appdetail;
+    // W05-04: デバイスの機能（caps）。読み取り専用。値は GraphicsDevice が作成時に 1 回だけ判定したもの。
+    McpDefine("get_device_caps", "", DX12E_MCP_HANDLER
+        {
+            const DeviceCaps* caps = m_graphicsDevice ? m_graphicsDevice->GetCaps() : nullptr;
+            if (!caps) throw McpError(McpErr::Internal, "device caps not available", "GraphicsDevice が初期化される前。起動直後なら少し待って呼び直す");
+            nlohmann::json c = nlohmann::json::object();
+            for (const DeviceCapsField& f : DeviceCapsFields(*caps))
+            {
+                if (f.kind == DeviceCapsField::Kind::Bool) c[f.name] = (f.value != 0);
+                else                                       c[f.name] = f.value;
+            }
+            const u32 sm = caps->highestShaderModel;
+            char smName[16];
+            std::snprintf(smName, sizeof(smName), "%u.%u", sm >> 4, sm & 0xF);
+            resp["ok"]         = true;
+            resp["shaderModel"] = smName;
+            resp["summary"]    = DeviceCapsSummary(*caps);
+            resp["caps"]       = std::move(c);
+        });
+}
+
+const DeviceCaps* AppAccess::GetDeviceCaps(Application& app)
+{
+    return app.m_graphicsDevice ? app.m_graphicsDevice->GetCaps() : nullptr;
 }
 
 namespace

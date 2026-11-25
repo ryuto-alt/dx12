@@ -34,6 +34,8 @@ struct AppAccess
     static void AnnotateAutosave(Application&, nlohmann::json& resp, const std::string& method);
     // 未保存の新規シーン（_mcp_untitled_*）の置き場: <project>/.dx12/untitled/
     static std::string UntitledDir();
+    // W05-04: GraphicsDevice の caps（DeviceCaps.h を include した TU だけが型を使える）。デバイスが無ければ nullptr。
+    static const struct DeviceCaps* GetDeviceCaps(Application&);
     // ==== lane-A end ====
 
     // ==== lane-B begin ====
