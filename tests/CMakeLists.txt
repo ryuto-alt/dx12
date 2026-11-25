@@ -825,6 +825,16 @@ if(TARGET Renderer)
     endif()
     add_test(NAME FrameConstantsLayoutTests COMMAND FrameConstantsLayoutTests)
 endif()
+# slot11（クラスタのディスクリプタテーブル）の宣言表。W05-24。
+if(TARGET Renderer)
+    add_executable(ClusterTableLayoutTests cluster_table_layout_test.cpp)
+    target_include_directories(ClusterTableLayoutTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(ClusterTableLayoutTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ClusterTableLayoutTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ClusterTableLayoutTests COMMAND ClusterTableLayoutTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====

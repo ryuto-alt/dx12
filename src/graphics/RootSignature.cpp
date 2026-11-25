@@ -1,5 +1,6 @@
 #include "graphics/RootSignature.h"
 #include "graphics/GraphicsDevice.h"
+#include "renderer/ClusterTableLayout.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
 
@@ -196,57 +197,18 @@ void RootSignature::Initialize(GraphicsDevice& device)
     //   ヒープを消費しない）。DATA_VOLATILE でも「ディスクリプタ自体」は静的扱いなので、
     //   予約枠 4 本も有効なディスクリプタで埋めてから SetGraphicsRootDescriptorTable すること
     //   （ClusteredLightCulling::Initialize がカウントバッファの SRV で埋めている）。
-    D3D12_DESCRIPTOR_RANGE1 clusterRanges[6]{};
-    clusterRanges[0].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    clusterRanges[0].NumDescriptors                    = 3;   // t13,t14,t15
-    clusterRanges[0].BaseShaderRegister                = 13;
-    clusterRanges[0].RegisterSpace                     = 0;
-    clusterRanges[0].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    clusterRanges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    clusterRanges[1].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    clusterRanges[1].NumDescriptors                    = 4;   // t18,t19,t20,t21（デカール予約）
-    clusterRanges[1].BaseShaderRegister                = 18;
-    clusterRanges[1].RegisterSpace                     = 0;
-    clusterRanges[1].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    clusterRanges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // t22 = DDGI の irradiance アトラス（段階1） / t23 = 距離モーメント（段階2）。
-    // ★ここも新規スロットを取らず slot11 へ相乗りする＝ルート定数の予算は 61/64 のまま。
-    //   OFF のときも 1x1 黒ダミーで必ず埋めること（未初期化はデバッグレイヤが落とす）。
-    clusterRanges[2].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    clusterRanges[2].NumDescriptors                    = 2;   // t22, t23
-    clusterRanges[2].BaseShaderRegister                = 22;
-    clusterRanges[2].RegisterSpace                     = 0;
-    clusterRanges[2].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    clusterRanges[2].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // t30 = DDGI のプローブデータ（GI モード New の再配置オフセット + 状態）。t25..t29 は VG / 材質拡張 / 雲影 /
-    // 布 DFG の予約番号（GRAPHICS_PARITY_DESIGN §2.0）なので避けて t30。ここも 1x1 黒ダミーで必ず埋めること。
-    clusterRanges[3].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    clusterRanges[3].NumDescriptors                    = 1;   // t30
-    clusterRanges[3].BaseShaderRegister                = 30;
-    clusterRanges[3].RegisterSpace                     = 0;
-    clusterRanges[3].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    clusterRanges[3].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // t31 = スポットライトのクッキー配列（Texture2DArray） / t32 = IES の縦角プロファイル（Texture2D）。
-    // 使わない灯は index=-1 で読まない。未使用でも 1 スライスの白 / 一様 1.0 のダミーで必ず埋めること（LightCookieSystem）。
-    clusterRanges[4].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    clusterRanges[4].NumDescriptors                    = 2;   // t31, t32
-    clusterRanges[4].BaseShaderRegister                = 31;
-    clusterRanges[4].RegisterSpace                     = 0;
-    clusterRanges[4].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    clusterRanges[4].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
-
-    // t33 = 反射プローブのキューブ配列（TextureCubeArray） / t34 = プローブ情報（StructuredBuffer）。
-    // プローブ数 0（b1 の反射プローブ予約が 0）のときは読まない。未使用でもダミーで必ず埋めること（ReflectionProbeSystem）。
-    clusterRanges[5].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    clusterRanges[5].NumDescriptors                    = 2;   // t33, t34
-    clusterRanges[5].BaseShaderRegister                = 33;
-    clusterRanges[5].RegisterSpace                     = 0;
-    clusterRanges[5].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
-    clusterRanges[5].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    // ★レンジは renderer/ClusterTableLayout.h の kClusterRanges から生成する（W05-24。宣言順 = ヒープ上の並び）。
+    //   レンジは何本あってもテーブルは 1 DWORD なので、ルート定数は 62/64 のまま。
+    D3D12_DESCRIPTOR_RANGE1 clusterRanges[kClusterRangeCount]{};
+    for (u32 i = 0; i < kClusterRangeCount; ++i)
+    {
+        clusterRanges[i].RangeType                         = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        clusterRanges[i].NumDescriptors                    = kClusterRanges[i].count;
+        clusterRanges[i].BaseShaderRegister                = kClusterRanges[i].baseRegister;
+        clusterRanges[i].RegisterSpace                     = 0;
+        clusterRanges[i].Flags                             = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_VOLATILE;
+        clusterRanges[i].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+    }
 
     rootParams[11].ParameterType                       = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     rootParams[11].DescriptorTable.NumDescriptorRanges = _countof(clusterRanges);

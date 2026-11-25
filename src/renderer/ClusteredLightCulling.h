@@ -7,6 +7,7 @@
 
 #include "core/Types.h"
 #include "renderer/ClusterMath.h"
+#include "renderer/ClusterTableLayout.h"
 
 namespace dx12e
 {
@@ -38,7 +39,8 @@ public:
     // ディスクリプタテーブルの本数（t13,t14,t15 + デカール 4 本 + DDGI 3 本）。
     // ★slot11 のテーブルは「新機能の SRV が相乗りする場所」。増やすときはここと
     //   RootSignature.cpp の clusterRanges を必ず一緒に直すこと。
-    static constexpr u32 kSrvTableSize = 14;
+    //   → W05-24 以降は renderer/ClusterTableLayout.h の表が正本。将来分（t35 以降）も含めた全長を確保する。
+    static constexpr u32 kSrvTableSize = kClusterTableCount;
     // DDGI の irradiance アトラス（t22）/ 距離モーメント（t23）のテーブル内オフセット。
     static constexpr u32 kDdgiSrvOffset     = 7;
     static constexpr u32 kDdgiDistSrvOffset = 8;
@@ -50,6 +52,15 @@ public:
     // 反射プローブ: キューブ配列（t33。TextureCubeArray）/ プローブ情報（t34。StructuredBuffer<ReflProbeGpu>）。
     static constexpr u32 kReflProbeCubeSrvOffset = 12;
     static constexpr u32 kReflProbeInfoSrvOffset = 13;
+    // 手書きのオフセットが宣言表とずれたらビルドを落とす。
+    static_assert(kDdgiSrvOffset == ClusterTableOffsetOf(22) && kDdgiDistSrvOffset == ClusterTableOffsetOf(22) + 1);
+    static_assert(kDdgiProbeSrvOffset == ClusterTableOffsetOf(30));
+    static_assert(kCookieSrvOffset == ClusterTableOffsetOf(31) && kIesSrvOffset == ClusterTableOffsetOf(32));
+    static_assert(kReflProbeCubeSrvOffset == ClusterTableOffsetOf(33) && kReflProbeInfoSrvOffset == ClusterTableOffsetOf(34));
+    static_assert(kClusterTableExisting == 14 && ClusterTableOffsetOf(35) == kClusterTableExisting);
+    // 型つきのヌル SRV（リソース無し。読むと 0）を dst へ書く。テーブルは Set の時点で全数が初期化済みである
+    // ことをデバッグレイヤが要求するので、未使用の枠を DummyKind に合わせてこれで埋める（W05-24）。
+    static void WriteDummySrv(ID3D12Device* dev, DummyKind kind, D3D12_CPU_DESCRIPTOR_HANDLE dst);
     // フレーム多重化数（FrameResources::kFrameCount と一致させること）。
     static constexpr u32 kFrameCount = 3;
 

@@ -14,6 +14,7 @@
 #include "graphics/PipelineState.h"
 #include "graphics/RootSignature.h"
 #include "graphics/Texture.h"
+#include "renderer/ClusteredLightCulling.h"
 #include "renderer/IBLBaker.h"
 #include "renderer/Mesh.h"
 #include "resource/ResourceManager.h"
@@ -34,7 +35,7 @@ using FrameConstants = FrameConstantsData;   // 正本は renderer/FrameConstant
 
 constexpr u32 kCbSlotBytes = 1792;   // 256 の倍数（>= 1600）
 constexpr u32 kCbSlotsPerFrame = 2;  // 0 = メイン / 1 = タイル・RAW
-constexpr u32 kClusterTable = 9;     // kSlotClusterSRV のテーブル長: t13-15 + t18-21 + t22-23
+constexpr u32 kClusterTable = kClusterTableCount;   // kSlotClusterSRV のテーブル長（ClusterTableLayout.h が正本。以前は 9 で 5 本不足していた）
 
 struct Immediate   // 環境のベイク用の専用キュー（メインのキューとは独立。完了まで待つ）
 {
@@ -263,7 +264,7 @@ struct GraphPreviewRenderer::Impl
     // ダミー（メイン RS のテーブルは何かを指している必要がある。実際には読まれない）
     ComPtr<ID3D12Resource> aoWhite, ssBlack, dummyBuf;
     u32 aoWhiteSrv = DescriptorHeap::kInvalidIndex, ssBlackSrv = DescriptorHeap::kInvalidIndex;
-    u32 clusterSrv = DescriptorHeap::kInvalidIndex;   // 9 個連続（t13-15 / t18-21 / t22-23。RootSignature.cpp の kSlotClusterSRV）
+    u32 clusterSrv = DescriptorHeap::kInvalidIndex;   // kClusterTableCount 個連続（ClusterTableLayout.h。RootSignature.cpp の kSlotClusterSRV）
 
     ComPtr<ID3D12RootSignature> tmRS;
     ComPtr<ID3D12PipelineState> tmPso;
@@ -546,7 +547,7 @@ bool GraphPreviewRenderer::Impl::CreateDummies()
         sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         dev->CreateShaderResourceView(ssBlack.Get(), &sd, d.srvHeap->GetCpuHandle(ssBlackSrv));
 
-        // クラスタライト / インデックス / カウント / デカール / DDGI（9 個）: 中身は読まれない。共通の小さなバッファを指す
+        // クラスタライト / インデックス / カウント / デカール / DDGI ほか（kClusterTableCount 個）: 中身は読まれない。共通の小さなバッファを指す
         D3D12_HEAP_PROPERTIES up{};
         up.Type = D3D12_HEAP_TYPE_UPLOAD;
         D3D12_RESOURCE_DESC bd{};
@@ -560,7 +561,13 @@ bool GraphPreviewRenderer::Impl::CreateDummies()
         bs.Format = DXGI_FORMAT_UNKNOWN;
         bs.Buffer.NumElements = 16;
         bs.Buffer.StructureByteStride = 16;
-        for (u32 i = 0; i < kClusterTable; ++i) dev->CreateShaderResourceView(dummyBuf.Get(), &bs, d.srvHeap->GetCpuHandle(clusterSrv + i));
+        for (u32 i = 0; i < kClusterTable; ++i)
+        {
+            if (i < kClusterTableExisting)
+                dev->CreateShaderResourceView(dummyBuf.Get(), &bs, d.srvHeap->GetCpuHandle(clusterSrv + i));
+            else   // 将来分は DummyKind に合わせた型つきのヌル SRV
+                ClusteredLightCulling::WriteDummySrv(dev, ClusterDummyKindAt(i), d.srvHeap->GetCpuHandle(clusterSrv + i));
+        }
         // ダミーの初期化（白 / 黒）: UPLOAD 経由でコピー（専用の即時キューで完了まで待つ）
         Immediate exd;
         if (!exd.Init(dev)) throw std::runtime_error("即時キューを作れません");
