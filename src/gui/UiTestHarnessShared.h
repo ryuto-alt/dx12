@@ -87,6 +87,7 @@ void T_SaveAsOverwriteConfirm(ImGuiTestContext* ctx);   // W05-12
 void T_NewSceneNameKept(ImGuiTestContext* ctx);         // W05-12
 void T_NewSceneCancelKeepsNoPath(ImGuiTestContext* ctx); // W05-12
 void T_PlayStopKeepsUndo(ImGuiTestContext* ctx);        // W05-11
+void T_AssetRenameKeepsExt(ImGuiTestContext* ctx);      // W05-13
 // ==== lane-B:decl end ====
 // ==== lane-C:decl begin ====
 // ==== lane-C:decl end ====
