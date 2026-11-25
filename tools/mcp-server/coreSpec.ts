@@ -463,7 +463,8 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
     "現在のシーンを保存する。path は assets 相対(例 scenes/title.json)、省略で今開いているシーンへ上書き。{path} を返す(配置検査の要約 layout も付く)。\n"
     + "使う: 作業の区切り、シーン JSON を外部で触る前・開き直す前。使わない: JSON を丸ごと書く(→ dx12_call {name:'dx12_scene_write'})。\n"
     + "副作用: ファイル書込み(Undo 不可)。\n"
-    + "注意: Play 中に撃たない(欠けたシーンが書かれることがある)。dx12_ping で mode:Editor を確認し、path は明示する。",
+    + "注意: Play 中に撃たない(欠けたシーンが書かれることがある)。dx12_ping で mode:Editor を確認し、path は明示する。"
+    + "結果の autosave.blockedByHumanEdits が true なら、人の未保存の変更があるため AI の作業は自動保存でディスクに残らない(warnings[] にも出る)。人に保存を依頼する(dx12_guide {topic:'autosave'})。",
 
   dx12_batch:
     "複数の操作を順に実行して往復を減らす。ops は [{method, params}](method はエンジンの method 名で dx12_ 接頭辞なし)。既定 atomic:true はトランザクションで包み、失敗すれば丸ごとロールバック(成功時は Undo 1 回で戻る)。\n"
@@ -549,7 +550,7 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
   dx12_editor_state:
     "エディタの今の状態を読む(読み取り専用)。scope: all / selection(選択)/ windows(開いているツール窓・ドック・フォーカス)/ layout / modal(モーダル・ダイアログの有無と種類)/ mode(Play・未保存・カメラ・ビューモード・背景/仮想入力)/ undo / toasts(直近の通知)/ perf。\n"
     + "使う: 操作の前後の確認、モーダルで詰まったとき、選択・未保存・Play 中かの確認。使わない: シーン内のエンティティ(→ dx12_list_entities / dx12_get_entity)、詳しい性能(→ dx12_get_perf)。\n"
-    + "副作用: なし。注意: modal.blocking が true の間はエディタのコマンドが断られる。\n"
+    + "副作用: なし。注意: modal.blocking が true の間はエディタのコマンドが断られる。結果の autosave.blockedByHumanEdits が true なら人の未保存の変更があり、AI の作業は自動保存でディスクに残らない(人に保存を依頼。dx12_guide {topic:'autosave'})。\n"
     + "次: モーダルは dx12_call {name:'dx12_editor_modal', args:{action:'dismiss'}} で閉じる(Esc では閉じない)。操作は dx12_editor_command。",
 
   dx12_editor_notify:
