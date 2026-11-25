@@ -185,13 +185,9 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[10].DescriptorTable.pDescriptorRanges   = &prevBoneRange;
     rootParams[10].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_VERTEX;
 
-    // [11] クラスタードライティング SRV DescriptorTable。ヒープ上は renderer/ClusterTableLayout.h の全 28 本連続（レンジはそこからループ生成）。旧説明:
-    // シェーダレジスタは t13,t14,t15（クラスタ）と t18..t21（デカール予約）に割れている。
-    //   t13 = StructuredBuffer<ClusterLight>（フレーム毎に切り替わる）
-    //   t14 = クラスタ別ライトインデックスリスト（固定ストライド 128/クラスタ）
-    //   t15 = クラスタ毎のライト数
-    //   t18..t21 = デカール（計画06）が同じテーブルへ相乗りするための予約枠
-    // t16/t17 は SSR/SSGI（計画04）が別スロットで取るのでレンジを 2 本に割ってある。
+    // [11] クラスタードライティング SRV DescriptorTable。ヒープ上は renderer/ClusterTableLayout.h の全 28 本連続（レンジはそこからループ生成）。
+    // 各レンジの baseRegister と型は ClusterTableLayout.h が正本（t13..t15 クラスタ、t18..t21 デカール、t22.. DDGI ほか、将来分）。
+    // t16/t17 は SSR/SSGI（計画04）が別スロットで取るのでレンジを割ってある。
     // ★ディスクリプタテーブルはレンジを何本持っても 1 DWORD。
     // ★OFFSET_APPEND なので 2 本目はヒープ上でオフセット 3 から始まる（レジスタの穴は
     //   ヒープを消費しない）。DATA_VOLATILE でも「ディスクリプタ自体」は静的扱いなので、

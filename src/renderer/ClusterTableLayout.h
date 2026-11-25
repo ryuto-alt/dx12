@@ -51,6 +51,8 @@ inline constexpr ClusterRange kClusterRanges[] = {
     {49, 2, DummyKind::Tex2D,        "予約"},
 };
 inline constexpr u32 kClusterRangeCount = static_cast<u32>(sizeof(kClusterRanges) / sizeof(kClusterRanges[0]));
+// RootSignature.cpp は kClusterRangeCount 本のレンジを表から生成する（テーブルは 1 DWORD なのでルート定数は増えない）。
+static_assert(kClusterRangeCount == 21, "kClusterRanges のレンジ数が変わった。RootSignature の生成結果と DWORD 数（62/64）を確認すること");
 
 namespace cluster_table_detail
 {

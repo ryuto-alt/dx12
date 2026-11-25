@@ -263,7 +263,7 @@ struct GraphPreviewRenderer::Impl
     std::unique_ptr<Mesh> sphere, plane, cylinder, cube, quad;
 
     // ダミー（メイン RS のテーブルは何かを指している必要がある。実際には読まれない）
-    ComPtr<ID3D12Resource> aoWhite, ssBlack, dummyBuf;
+    ComPtr<ID3D12Resource> aoWhite, ssBlack;
     u32 aoWhiteSrv = DescriptorHeap::kInvalidIndex, ssBlackSrv = DescriptorHeap::kInvalidIndex;
     // 材質テーブル（slot2: kMaterialTableCount 本）と点光源影テーブル（slot8: 2 本）の連続ブロック。
     // 以前は既定の白 1 枚の SRV の先頭だけを渡していたため、続きの記述子（別リソース）まで読んでいた（GBV の id=1358）
@@ -570,27 +570,10 @@ bool GraphPreviewRenderer::Impl::CreateDummies()
             ClusteredLightCulling::WriteDummySrv(dev, DummyKind::TexCubeArray, d.srvHeap->GetCpuHandle(punctSrv + 1));
         }
 
-        // クラスタライト / インデックス / カウント / デカール / DDGI ほか（kClusterTableCount 個）: 中身は読まれない。共通の小さなバッファを指す
-        D3D12_HEAP_PROPERTIES up{};
-        up.Type = D3D12_HEAP_TYPE_UPLOAD;
-        D3D12_RESOURCE_DESC bd{};
-        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        bd.Width = 256; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1; bd.SampleDesc.Count = 1;
-        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        ThrowIfFailed(dev->CreateCommittedResource(&up, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&dummyBuf)));
-        D3D12_SHADER_RESOURCE_VIEW_DESC bs{};
-        bs.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        bs.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        bs.Format = DXGI_FORMAT_UNKNOWN;
-        bs.Buffer.NumElements = 16;
-        bs.Buffer.StructureByteStride = 16;
+        // クラスタライト / インデックス / カウント / デカール / DDGI ほか（kClusterTableCount 個）: プレビューは灯数 0 で
+        // どの枠も読まない。全枠を ClusterDummyKindAt(i)（HLSL の宣言と同じ型）の型つきヌル SRV で埋める。
         for (u32 i = 0; i < kClusterTable; ++i)
-        {
-            if (i < kClusterTableExisting)
-                dev->CreateShaderResourceView(dummyBuf.Get(), &bs, d.srvHeap->GetCpuHandle(clusterSrv + i));
-            else   // 将来分は DummyKind に合わせた型つきのヌル SRV
-                ClusteredLightCulling::WriteDummySrv(dev, ClusterDummyKindAt(i), d.srvHeap->GetCpuHandle(clusterSrv + i));
-        }
+            ClusteredLightCulling::WriteDummySrv(dev, ClusterDummyKindAt(i), d.srvHeap->GetCpuHandle(clusterSrv + i));
         // ダミーの初期化（白 / 黒）: UPLOAD 経由でコピー（専用の即時キューで完了まで待つ）
         Immediate exd;
         if (!exd.Init(dev)) throw std::runtime_error("即時キューを作れません");

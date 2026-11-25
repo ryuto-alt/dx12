@@ -457,7 +457,7 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
             m_srvHeap->GetGpuHandle(m_ssBlackSrvIndex));
     }
 
-    // クラスタライトテーブル (t13,t14,t15 + デカール予約 t18..t21)。
+    // クラスタライトテーブル（slot11。ClusterTableLayout.h の全 28 本。Application が ClusteredLightCulling のテーブルを貸す）。
     // 灯数 0 + clusterGrid.w=0 なので実際には読まれないが、テーブルは必ずバインドする。
     if (m_clusterSrvIndex != 0xFFFFFFFFu)
     {

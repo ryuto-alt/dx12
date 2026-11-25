@@ -19,6 +19,7 @@ int main()
     for (const auto& r : kClusterRanges) sum += r.count;
     CHECK(sum == kClusterTableCount);
     CHECK(kClusterTableCount == 28);
+    CHECK(kClusterRangeCount == 21);   // RootSignature が生成するレンジ数（slot11 は 1 パラメータのまま）
     CHECK(kClusterTableExisting == 14);
 
     // レジスタの重複が無い。

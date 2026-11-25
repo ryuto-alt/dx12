@@ -37,9 +37,8 @@ public:
     static constexpr u32 kMaxSceneLights      = cluster::kMaxSceneLights;
 
     // ディスクリプタテーブルの本数（正本は renderer/ClusterTableLayout.h。t13..15 + デカール + DDGI + 将来分の全 28 本）。
-    // ★slot11 のテーブルは「新機能の SRV が相乗りする場所」。増やすときはここと
-    //   RootSignature.cpp の clusterRanges を必ず一緒に直すこと。
-    //   → W05-24 以降は renderer/ClusterTableLayout.h の表が正本。将来分（t35 以降）も含めた全長を確保する。
+    // ★slot11 のテーブルは「新機能の SRV が相乗りする場所」。増やすときは renderer/ClusterTableLayout.h の
+    //   表だけを直す（RootSignature.cpp のレンジはそこから生成される）。将来分（t35 以降）も含めた全長を確保する。
     static constexpr u32 kSrvTableSize = kClusterTableCount;
     // DDGI の irradiance アトラス（t22）/ 距離モーメント（t23）のテーブル内オフセット。
     static constexpr u32 kDdgiSrvOffset     = 7;
