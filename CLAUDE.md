@@ -102,6 +102,8 @@ build/debug/Debug/DX12Engine.exe
 ```
 
 ### ★コマンドラインからビルドするときは `chcp 65001` を先頭に
+**`pwsh tools/build.ps1` を使えば下記は自動で満たされる**（ビルドを `chcp 65001` 下で走らせ、`rules.ninja` の `msvc_deps_prefix` が UTF-8 でなければ警告、ビルド後に `#deps 0` の .obj 件数を表示する。`_deps/` の外部ライブラリは clean 対象外）。configure だけは手動なので `chcp 65001` を付けること。
+
 PowerShell / Git Bash から vcvars 経由で建てるときは必ずこう書く:
 ```
 cmd /c 'chcp 65001 >nul && "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul && cmake --build build/release'
