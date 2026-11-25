@@ -113,3 +113,11 @@ Uno Engine のエディタの見た目は、フェーズ 1a（2026-09-30）で *
 - **効果音の規約**: **意味のある操作だけ鳴らす**（確定・失敗・完了など、結果が変わる操作）。ホバー、スクロール、連打される操作では鳴らさない。音量はユーザー設定で全体を下げられるようにする。
 - 並列レーンで共有の登録表（`tests/CMakeLists.txt`、ルート `CMakeLists.txt` のシェーダ表、`ApplicationMcpManifestData.inc`、`ToolWindows.h`、`EditorCommandTable.h`、`docs/MCP.md`）へ足すときは、
   各ファイルの `==== wave<N>-lane<X> ==== begin/end` の枠の中にだけ書く。
+- **シェーダの登録は後ろの枠に書く**: ルート `CMakeLists.txt` の枠は 2 組ある。前の組（`set(SHADER_*)` の間）には
+  パス変数と include 変数だけを置く。`add_custom_command` と `list(APPEND SHADER_OUTPUTS ...)` は、`set(SHADER_OUTPUTS ...)` の後ろにある
+  `==== wave<N>-lane<X> (登録) ==== begin/end` の枠に書く（前の組に `list(APPEND SHADER_OUTPUTS ...)` を書くと、後の `set` で消えて .cso がビルドされない）。
+  include 変数（`SHADER_FWD_INC` など）は後ろの枠の位置ではすべて定義済み。
+- **MCP メソッドの追加**: 新しいメソッドは `McpDefine(names, McpMeta, fn)` のオーバーロードで足す。`ApplicationMcpManifestData.inc` は
+  生成物由来の表で、レーンが編集する必要はない（枠は予備。使う場合は新しい `FillManifestChunk` 関数に加え、`FillGeneratedManifestRows` の呼び出し行も要るため競合しやすい）。
+- **ツールウィンドウの追加**: `ToolWindows.h` の行は `EditorContext::showXxx` を指すため、`EditorContext.h` にもフィールドが要る。
+  `EditorContext.h` には枠がないので、その変更は各レーンの最初のヘッダ変更のまとまり（ロードマップ 4 節）に入れる。

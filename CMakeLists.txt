@@ -1553,6 +1553,9 @@ if(DXC_EXECUTABLE)
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_vgOut}.cso")
     endforeach()
 
+    # ==== wave1-laneA (登録) ==== begin
+    # ==== wave1-laneA (登録) ==== end
+
     # 仮想ジオメトリ P3: メッシュシェーダ描画（MS = ms_6_5 / AS = as_6_5 / PS = ps_6_6）+ デバッグ全画面表示。
     #   VgRaster_MS      … 1 グループ = 1 クラスタ（AS なし）/ VgRasterAs_MS … 増幅シェーダの payload を受ける版
     #   VgRasterCount_PS … 計測版（[earlydepthstencil] + 断片数 / オーバードロー画像）
@@ -1597,6 +1600,9 @@ if(DXC_EXECUTABLE)
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_vgOut}.cso")
     endforeach()
 
+    # ==== wave1-laneB (登録) ==== begin
+    # ==== wave1-laneB (登録) ==== end
+
     # DXR パストレーサー(地上真値レンダラ。パリティ基盤 Q1a)。inline RayQuery の compute 1 本（cs_6_6 / バインドレス）。
     # ★PtShared.h は C++ と HLSL が共有するレイアウト。変えたら再コンパイルさせる。
     add_custom_command(
@@ -1627,6 +1633,9 @@ if(DXC_EXECUTABLE)
     )
     list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/PtCopy_CS.cso")
 
+    # ==== wave1-laneC (登録) ==== begin
+    # ==== wave1-laneC (登録) ==== end
+
     # エディタ専用: 選択 / ホバーの輪郭（マスク描画 + 縁の合成。ゲーム・Play では使わない）。
     # shaders/editor/SelectionOutline.hlsl 1 本から 7 つのエントリを切り出す（ワイヤ表示モードも同じ土台）。
     foreach(_so IN ITEMS "SelectionMask_VS|vs_6_0|VSMask" "SelectionMaskSkinned_VS|vs_6_0|VSMaskSkinned"
@@ -1645,6 +1654,9 @@ if(DXC_EXECUTABLE)
         )
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_soOut}.cso")
     endforeach()
+
+    # ==== wave2-laneA (登録) ==== begin
+    # ==== wave2-laneA (登録) ==== end
 
     # 植生 F1（FoliageLayer + GPU カリング + ExecuteIndirect + 風）。shaders/foliage/。
     #   compute: Reset / Count / Scan / Emit / Finalize（FoliageCull.hlsl。専用ルートシグネチャ。決定論的な compact）+ テスト専用の風評価
@@ -1698,6 +1710,9 @@ if(DXC_EXECUTABLE)
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_foOut}.cso")
     endforeach()
 
+    # ==== wave2-laneB (登録) ==== begin
+    # ==== wave2-laneB (登録) ==== end
+
     # GPU 駆動のインスタンス群（設計 docs/SCENE_FORMAT_DESIGN.md §4.2 = 4-3）。shaders/instancegpu/InstanceCull.hlsl から compute 5 本を切り出す。
     #   Reset / Count / Scan / Finalize / Emit（専用ルートシグネチャ。決定論的な compact）。描画は既存の ForwardInstanced / ShadowPassInstanced / VelocityPrepassInstanced を共用。
     foreach(_ig IN ITEMS "InstanceCullReset_CS|CSReset" "InstanceCullCount_CS|CSCount" "InstanceCullScan_CS|CSScan"
@@ -1713,6 +1728,9 @@ if(DXC_EXECUTABLE)
         )
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_igOut}.cso")
     endforeach()
+
+    # ==== wave2-laneC (登録) ==== begin
+    # ==== wave2-laneC (登録) ==== end
 
     # 物理ベース大気 A1（Hillaire 2020 の 4 LUT + 環境キューブ + 空パス + AP 合成）。shaders/atmosphere/。
     #   compute: Transmittance / MultiScattering / SkyView / AerialPerspective / SkyCube（AtmosphereLuts.hlsl。専用ルートシグネチャ）
@@ -1748,6 +1766,9 @@ if(DXC_EXECUTABLE)
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_atOut}.cso")
     endforeach()
 
+    # ==== wave3-laneA (登録) ==== begin
+    # ==== wave3-laneA (登録) ==== end
+
     # ボリュメトリッククラウド（A2/A3。CloudNoise = 起動時のノイズ生成、CloudMarch = 粗いレイマーチ + 時間再投影 + 合成）。専用ルートシグネチャ。
     foreach(_cl IN ITEMS
             "CloudShape_CS|CloudNoise|cs_6_0|ShapeCS"
@@ -1773,6 +1794,9 @@ if(DXC_EXECUTABLE)
         )
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_clOut}.cso")
     endforeach()
+
+    # ==== wave3-laneB (登録) ==== begin
+    # ==== wave3-laneB (登録) ==== end
 
     # 水面 W1（WaterBody + 専用パス）。shaders/water/。専用ルートシグネチャ（メイン RS を汚さない）で描く。
     #   WaterSurface: リングの頂点（ゲルストナー変位）+ ピクセル（屈折 / Beer 吸収 / 反射 / 泡 / 岸）。Phys = Q2 の物理ライティング単位版
@@ -1813,6 +1837,9 @@ if(DXC_EXECUTABLE)
         )
         list(APPEND SHADER_OUTPUTS "${SHADER_OUTPUT_DIR}/${_waOut}.cso")
     endforeach()
+
+    # ==== wave3-laneC (登録) ==== begin
+    # ==== wave3-laneC (登録) ==== end
 
     add_custom_target(Shaders ALL DEPENDS ${SHADER_OUTPUTS})
     add_dependencies(DX12Engine Shaders)
