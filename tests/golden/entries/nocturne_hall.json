@@ -1,0 +1,19 @@
+{
+  "name": "nocturne_hall",
+  "project": "Nocturne",
+  "requiresProjectsRoot": true,
+  "scene": "scenes/main.json",
+  "camera": {
+    "position": [
+      0,
+      1.66,
+      -8
+    ],
+    "target": [
+      -6,
+      1.4,
+      -14
+    ]
+  },
+  "note": "屋内。TAA / ボリュメトリックフォグ / SSAO / コンタクトシャドウ / ブルーム"
+}

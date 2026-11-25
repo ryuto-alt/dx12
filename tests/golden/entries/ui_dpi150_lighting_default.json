@@ -1,0 +1,29 @@
+{
+  "name": "ui_dpi150_lighting_default",
+  "kind": "ui",
+  "dpi": 1.5,
+  "theme": "default",
+  "layout": "lighting",
+  "masks": [
+    [
+      0.215,
+      0.093,
+      0.772,
+      0.645
+    ],
+    [
+      0.76,
+      0.972,
+      1,
+      1
+    ],
+    [
+      0.808,
+      0.908,
+      0.985,
+      0.96
+    ]
+  ],
+  "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+  "note": "エディタ UI 全体（Lighting ワークスペース・DPI 150%・Default）"
+}

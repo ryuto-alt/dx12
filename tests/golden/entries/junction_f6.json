@@ -1,0 +1,19 @@
+{
+  "name": "junction_f6",
+  "project": "Junction",
+  "requiresProjectsRoot": true,
+  "scene": "scenes/stagedemo3.json",
+  "camera": {
+    "position": [
+      14,
+      5.1,
+      122
+    ],
+    "target": [
+      14,
+      4.9,
+      117
+    ]
+  },
+  "note": "継ぎ目6 の焦点（Liminal.lua の focus）から破片 C6_p0/p1 を見る。フォグ / グレイン / FXAA / AgX"
+}

@@ -1,0 +1,19 @@
+{
+  "name": "perftest_stress_5000",
+  "project": "PerfTest",
+  "requiresProjectsRoot": true,
+  "scene": "scenes/stress_5000.json",
+  "camera": {
+    "position": [
+      -14.7,
+      9.6,
+      -9
+    ],
+    "target": [
+      -7.2492,
+      4.7342,
+      -4.4383
+    ]
+  },
+  "note": "インスタンシングと LOD の経路（5000 体）"
+}

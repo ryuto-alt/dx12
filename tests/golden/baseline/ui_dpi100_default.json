@@ -1,0 +1,14 @@
+{
+  "kind": "ui",
+  "nativeWidth": 1920,
+  "nativeHeight": 1080,
+  "nativeSha256": "0f0021862ebcd87cec355beacf17b502c0dfcca45d76ac8b0b92d204200d503f",
+  "compareSha256": "4eb89d827814a28391e591f1b8f107467e32bdd5f5c4c5c223576a971cd287b6",
+  "width": 640,
+  "height": 360,
+  "dpi": 1,
+  "theme": "default",
+  "commit": "c86c324",
+  "capturedAt": "2026-11-25T15:44:17.985Z",
+  "deterministicInSession": true
+}
