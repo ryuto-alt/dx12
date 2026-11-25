@@ -387,7 +387,8 @@ if(COMMAND uno_agility_test_exe)
     #   独立に問い合わせた値と一致する。
     add_executable(DeviceCapsTests device_caps_test.cpp)
     target_include_directories(DeviceCapsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-    target_link_libraries(DeviceCapsTests PRIVATE Graphics)
+    # GraphicsDevice::Initialize が Window& を取る（Window.cpp が InputSystem を参照）
+    target_link_libraries(DeviceCapsTests PRIVATE Graphics Input)
     if(MSVC)
         target_compile_options(DeviceCapsTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
         target_compile_definitions(DeviceCapsTests PRIVATE ${DX12_COMPILE_DEFS})

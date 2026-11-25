@@ -3,13 +3,17 @@
 #include <Windows.h>
 
 #include <directx/d3d12.h>
+#include <dxgi1_4.h>
 #include <wrl/client.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <set>
 #include <string>
 
+#include "core/Window.h"
 #include "graphics/DeviceCaps.h"
+#include "graphics/GraphicsDevice.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace dx12e;
@@ -23,6 +27,36 @@ static int g_fail = 0;
             ++g_fail;                                     \
         }                                                 \
     } while (0)
+
+static bool EnvSet(const char* n)
+{
+    char b[8]{};
+    size_t len = 0;
+    return ::getenv_s(&len, b, sizeof(b), n) == 0 && len > 1 && b[0] == '1';
+}
+
+// アダプタのベンダと UMD の版。NVIDIA は UMD の版（a.b.c.d）の c の下 1 桁と d の上 2 桁が 5xx.xx の 5xx になる。
+struct AdapterInfo { UINT vendor = 0; int nvDriver = 0; unsigned long long umd = 0; };
+static AdapterInfo QueryAdapterInfo(ID3D12Device* device)
+{
+    AdapterInfo r;
+    ComPtr<IDXGIFactory4> f;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&f)))) return r;
+    ComPtr<IDXGIAdapter1> a;
+    if (FAILED(f->EnumAdapterByLuid(device->GetAdapterLuid(), IID_PPV_ARGS(&a)))) return r;
+    DXGI_ADAPTER_DESC1 d{};
+    a->GetDesc1(&d);
+    r.vendor = d.VendorId;
+    LARGE_INTEGER v{};
+    if (SUCCEEDED(a->CheckInterfaceSupport(__uuidof(IDXGIDevice), &v)))
+    {
+        r.umd = static_cast<unsigned long long>(v.QuadPart);
+        const int c = static_cast<int>((v.QuadPart >> 16) & 0xFFFF);
+        const int dd = static_cast<int>(v.QuadPart & 0xFFFF);
+        if (d.VendorId == 0x10DE) r.nvDriver = (c % 10) * 100 + dd / 100;
+    }
+    return r;
+}
 
 int main()
 {
@@ -66,9 +100,18 @@ int main()
                 expect = static_cast<UINT>(d.HighestShaderModel);
         }
         CHECK(c.highestShaderModel == expect, "SM が独立の問い合わせと不一致 (%X vs %X)", c.highestShaderModel, expect);
-        if (c.highestShaderModel < 0x69)
-            std::printf("NOTE: SM が 6.9 未満（0x%X）。ドライバが 595 未満なら想定内。\n", c.highestShaderModel);
-        CHECK(c.highestShaderModel >= 0x68, "SM が 6.8 未満 (0x%X)", c.highestShaderModel);
+        const AdapterInfo ai = QueryAdapterInfo(device.Get());
+        std::printf("アダプタ: vendor=0x%04X UMD=%llu.%llu.%llu.%llu (NVIDIA ドライバ 約 %d)\n", ai.vendor,
+                    (ai.umd >> 48) & 0xFFFF, (ai.umd >> 32) & 0xFFFF, (ai.umd >> 16) & 0xFFFF, ai.umd & 0xFFFF, ai.nvDriver);
+        if (ai.vendor == 0x10DE && ai.nvDriver >= 595)
+            CHECK(c.highestShaderModel >= 0x69, "NVIDIA ドライバ %d（595 以上）なのに SM が 6.9 未満 (0x%X)。ランタイム/ドライバの取り違えの疑い",
+                  ai.nvDriver, c.highestShaderModel);
+        else
+        {
+            if (c.highestShaderModel < 0x69)
+                std::printf("NOTE: SM 0x%X（6.9 未満）を許容: NVIDIA ドライバが 595 未満または NVIDIA 以外のため。\n", c.highestShaderModel);
+            CHECK(c.highestShaderModel >= 0x68, "SM が 6.8 未満 (0x%X)", c.highestShaderModel);
+        }
     }
 
     // OPTIONS12 / 16 / 5 / 7 を独立に
@@ -107,6 +150,46 @@ int main()
             CHECK(l7 != nullptr, "AsList7 が null");
             list->Close();
         }
+    }
+
+    // GraphicsDevice の getter が GetCaps() と一致する（GraphicsDevice::Initialize は窓を使わない）
+    {
+        Window window;
+        GraphicsDevice dev;
+        try { dev.Initialize(window); }
+        catch (...) { std::printf("FAIL: GraphicsDevice::Initialize\n"); return 1; }
+        const DeviceCaps* gc = dev.GetCaps();
+        CHECK(gc != nullptr, "GetCaps() が null");
+        if (gc)
+        {
+            CHECK(static_cast<u32>(dev.GetHighestShaderModel()) == gc->highestShaderModel, "GetHighestShaderModel 不一致");
+            CHECK(static_cast<u32>(dev.GetRaytracingTier()) == gc->raytracingTier, "GetRaytracingTier 不一致");
+            CHECK(static_cast<u32>(dev.GetResourceBindingTier()) == gc->resourceBindingTier, "GetResourceBindingTier 不一致");
+            CHECK(static_cast<u32>(dev.GetMeshShaderTier()) == gc->meshShaderTier, "GetMeshShaderTier 不一致");
+            CHECK(dev.SupportsDxr12() == (gc->raytracingTier >= static_cast<u32>(D3D12_RAYTRACING_TIER_1_2)), "SupportsDxr12 不一致");
+            CHECK((dev.GetDevice10() != nullptr) == gc->device10, "GetDevice10 と caps.device10 不一致");
+            // 上書きが無ければ、素の問い合わせとも一致する
+            if (!EnvSet("DX12_DISABLE_DXR") && !EnvSet("DX12_DISABLE_MESHSHADER"))
+            {
+                CHECK(gc->highestShaderModel == c.highestShaderModel, "GraphicsDevice の caps と素の問い合わせで SM 不一致");
+                CHECK(gc->raytracingTier == c.raytracingTier, "GraphicsDevice の caps と素の問い合わせで DXR tier 不一致");
+            }
+        }
+    }
+    // 環境変数の上書きが caps に反映される
+    {
+        _putenv_s("DX12_DISABLE_DXR", "1");
+        _putenv_s("DX12_DISABLE_MESHSHADER", "1");
+        Window window;
+        GraphicsDevice dev;
+        try { dev.Initialize(window); }
+        catch (...) { std::printf("FAIL: GraphicsDevice::Initialize（上書き）\n"); return 1; }
+        const DeviceCaps* gc = dev.GetCaps();
+        CHECK(gc && gc->raytracingTier == 0 && !gc->omm && !gc->serActuallyReorders, "DX12_DISABLE_DXR が caps に反映されない");
+        CHECK(gc && gc->meshShaderTier == 0 && !gc->meshShader, "DX12_DISABLE_MESHSHADER が caps に反映されない");
+        CHECK(!dev.SupportsDxr12() && dev.GetMeshShaderTier() == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED, "getter に上書きが反映されない");
+        _putenv_s("DX12_DISABLE_DXR", "");
+        _putenv_s("DX12_DISABLE_MESHSHADER", "");
     }
 
     // 要約の形

@@ -38,7 +38,7 @@ struct DeviceCaps
     bool samplerFeedback    = false;       // OPTIONS7.SamplerFeedbackTier >= 0.9
     u32  vrsTier            = 0;           // OPTIONS6.VariableShadingRateTier（0 / 1 / 2）
     u32  wsTier             = 0;           // OPTIONS21.WorkGraphsTier（0 / 10）。設計の "wsTier" を Work Graphs と解釈した
-    u32  resourceBindingTier = 1;          // OPTIONS.ResourceBindingTier（1..3。GraphicsDevice::GetResourceBindingTier の元）
+    u32  resourceBindingTier = 1;          // OPTIONS.ResourceBindingTier（1..3）。既定 1 は旧 GraphicsDevice の既定（TIER_1）との互換のため（他の項目の「失敗は 0 / false」とは異なる）
     bool device10           = false;       // ID3D12Device10 を QueryInterface できる
     bool list7              = false;       // ID3D12GraphicsCommandList7 を QueryInterface できる（実リストで確認）
 };
