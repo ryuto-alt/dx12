@@ -20,7 +20,7 @@ struct AppAccess
     static bool ProtectHumanEdits(Application&, EditorContext::DiscardReason);
     static bool ProtectHumanEditsOrSave(Application&, EditorContext::DiscardReason);
     // MCP の dispatch の前後（書き込み系だけ。読み取り専用は呼ばない）。Pre は人の settings 変更を拾う。
-    static void McpWriteBegin(Application&);
+    static void McpWriteBegin(Application&, const std::string& method);
     static void McpWriteEnd(Application&);
     // シーンを置き換える MCP（open_scene / new_scene / scene_backups restore）の前。人の変更を退避する。失敗なら false（置き換えない）。
     static bool ProtectBeforeSceneReplace(Application&, EditorContext::DiscardReason);

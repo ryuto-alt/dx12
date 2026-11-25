@@ -102,6 +102,8 @@ int Prune(const std::filesystem::path& projectRoot, const Policy& policy);
 std::string SnapshotExternal(const std::filesystem::path& projectRoot, const std::filesystem::path& scenePath,
                              const std::filesystem::path& stagingScenePath, const std::string& reason,
                              std::string* why = nullptr);
+// Prune が世代数の上限で消さない世代の id（restore の対象が退避の直後に消えないように。空で解除。W05-02）。
+void SetPinnedId(const std::string& id);
 // 世代の理由（無ければ空）。
 std::string ReadReason(const std::filesystem::path& projectRoot, const std::string& id);
 

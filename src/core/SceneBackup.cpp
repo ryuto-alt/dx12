@@ -27,6 +27,10 @@ namespace fs = std::filesystem;
 
 namespace dx12e::scenebackup
 {
+static std::string& PinnedRef() { static std::string s; return s; }
+static const std::string& PinnedId() { return PinnedRef(); }
+void SetPinnedId(const std::string& id) { PinnedRef() = id; }
+
 
 Policy& GlobalPolicy()
 {
@@ -117,9 +121,16 @@ bool IsBackupTarget(const fs::path& projectRoot, const fs::path& scenePath)
     if (root.empty() || abs.empty()) return false;
     const fs::path rel = abs.lexically_relative(root);
     if (rel.empty() || *rel.begin() == "..") return false;
-    for (const auto& comp : rel)
+    // .dx12/untitled/ だけは対象にする（MCP の新規シーンの置き場。人の編集の退避先でもある。W05-02）
+    auto it = rel.begin();
+    if (it != rel.end() && it->string() == ".dx12")
     {
-        const std::string c = comp.string();
+        auto n = it; ++n;
+        if (n != rel.end() && n->string() == "untitled") { ++n; if (n != rel.end()) it = n; else return false; }
+    }
+    for (; it != rel.end(); ++it)
+    {
+        const std::string c = it->string();
         if (c.size() > 1 && c[0] == '.') return false;   // .autosave / .dx12 など生成物
     }
     return true;
@@ -692,7 +703,7 @@ int Prune(const fs::path& projectRoot, const Policy& policy)
         const size_t keep = static_cast<size_t>((std::max)(1, policy.generations));
         for (size_t i = 0; i < gens.size(); ++i)
         {
-            if (i >= keep) { RemoveGenFiles(dir, gens[i].id); ++removed; }
+            if (i >= keep && gens[i].id != PinnedId()) { RemoveGenFiles(dir, gens[i].id); ++removed; }
             else all.push_back(gens[i]);
         }
     }

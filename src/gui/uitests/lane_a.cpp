@@ -59,6 +59,23 @@ void T_AutosaveHumanEditNotWritten(ImGuiTestContext* ctx)
     const auto mtimeBefore = fs::last_write_time(scenePath);
     const size_t gensBefore = scenebackup::List(root, scenePath, false).size();
 
+    // どこで検査が失敗して抜けても、検査用の状態（旗・保存先・退避・検査用のシーン）を戻す
+    struct Cleanup
+    {
+        EditorContext* ed; Application* app; fs::path root, scenePath; std::string prevPath; size_t gensBefore;
+        ~Cleanup()
+        {
+            ed->aiSessionEver = false;
+            ed->mcpSaveCountdown = -1.0f;
+            auto gens = scenebackup::List(root, scenePath, false);
+            while (gens.size() > gensBefore) { scenebackup::Remove(root, gens.front().id); gens.erase(gens.begin()); }
+            ed->currentScenePath = prevPath;
+            if (app->GetScene()) ed->MarkSceneSaved(SceneSettingsFingerprint(*app->GetScene()));
+            std::error_code ec;
+            fs::remove(scenePath, ec);
+        }
+    } cleanup{ed, app, root, scenePath, prevPath, gensBefore};
+
     LogStep(ctx, "仮想入力（人の操作）で Box を作る");
     AddEntity(ctx, "Box");
     IM_CHECK(ed->IsSceneHumanDirty());
@@ -75,17 +92,10 @@ void T_AutosaveHumanEditNotWritten(ImGuiTestContext* ctx)
     IM_CHECK(!gens.empty() && gens.front().reason.rfind("protect-human-edits", 0) == 0);
     IM_CHECK(ed->autosaveBlockedByHumanEdits);   // MCP の結果の autosave.blockedByHumanEdits の元
 
-    // 後始末: 追加した退避と検査用のシーンを消し、保存先を戻す（Box は Undo で戻す）
-    if (!gens.empty()) scenebackup::Remove(root, gens.front().id);
-    ed->aiSessionEver = false;
-    ed->mcpSaveCountdown = -1.0f;
+    // 後始末: Box は Undo で戻す（退避・保存先・検査用のシーンは Cleanup が戻す）
     ctx->SetRef(kWinHierarchy);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
-    ed->currentScenePath = prevPath;
-    ed->MarkSceneSaved(SceneSettingsFingerprint(*app->GetScene()));
-    std::error_code ec;
-    fs::remove(scenePath, ec);
 }
 
 } // namespace uitest

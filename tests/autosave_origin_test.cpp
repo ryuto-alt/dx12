@@ -208,12 +208,68 @@ void TestBackupRoundtrip()
     std::error_code ec;
     saferm::RemoveAll(root, ec, fs::temp_directory_path());
 }
+
+void TestUntitledAndPin()
+{
+    std::printf("[3] .dx12/untitled の退避・退避の固定・世代の置き換えを間引く鍵\n");
+    const fs::path root = fs::temp_directory_path() / ("autosave_origin_test_u_" + std::to_string(std::time(nullptr)));
+    { std::error_code e0; saferm::RemoveAll(root, e0, fs::temp_directory_path()); }
+    scenebackup::GlobalPolicy() = scenebackup::Policy{};
+
+    // .dx12/untitled/ の中のシーンは退避の対象（ほかの .dx12/ の中は対象外のまま）
+    const fs::path ut = root / ".dx12" / "untitled" / "_mcp_untitled_1.json";
+    const fs::path st = root / ".dx12" / "protect" / "_mcp_untitled_1.json";
+    WriteAll(ut, "{\"v\":\"DISK\"}");
+    WriteAll(st, "{\"v\":\"HUMAN\"}");
+    std::string why;
+    const std::string id = scenebackup::SnapshotExternal(root, ut, st, "protect-human-edits:Quit", &why);
+    Check(!id.empty(), "untitled の中のシーンも退避できる");
+    Check(ReadAll(ut) == "{\"v\":\"DISK\"}", "untitled の本体は不変");
+    const fs::path other = root / ".dx12" / "other" / "_x.json";
+    WriteAll(other, "{}");
+    WriteAll(root / ".dx12" / "protect" / "_x.json", "{\"v\":1}");
+    Check(scenebackup::SnapshotExternal(root, other, root / ".dx12" / "protect" / "_x.json", "r").empty(), ".dx12/untitled 以外は対象外のまま");
+    Check(scenebackup::SnapshotExternal(root, root / ".dx12" / "untitled", root / ".dx12" / "protect" / "untitled.json", "r").empty(), "untitled フォルダそのものは対象外");
+
+    // 固定した世代は世代数の上限で消えない
+    scenebackup::Policy pol = scenebackup::Policy{};
+    pol.generations = 1;
+    scenebackup::GlobalPolicy() = pol;
+    scenebackup::SetPinnedId(id);
+    WriteAll(st, "{\"v\":\"HUMAN2\"}");
+    const std::string id2 = scenebackup::SnapshotExternal(root, ut, st, "protect-human-edits:OpenScene", &why);
+    Check(!id2.empty() && id2 != id, "別の内容は別の世代");
+    bool pinnedAlive = false;
+    for (const auto& g : scenebackup::List(root, ut)) if (g.id == id) pinnedAlive = true;
+    Check(pinnedAlive, "固定した世代は上限を超えても残る");
+    scenebackup::SetPinnedId({});
+    scenebackup::Prune(root, pol);
+    pinnedAlive = false;
+    for (const auto& g : scenebackup::List(root, ut)) if (g.id == id) pinnedAlive = true;
+    Check(!pinnedAlive, "固定を外せば通常どおり消える");
+
+    // 間引きの鍵: 同じ状態は Same、MCP だけの変更（EditSeq だけ進む）では鍵が変わらない
+    UndoSystem u; int v = 0;
+    Edit(u, v, 1);
+    autosaveguard::ProtectStamp stamp;
+    stamp.Set(u.LastHumanEditSeq(), 0);
+    { EditOriginScope sc(EditOrigin::Mcp); Edit(u, v, 2); Edit(u, v, 3); }
+    Check(stamp.Same(u.LastHumanEditSeq(), 0), "MCP の編集だけでは退避の鍵が変わらない（世代が増えない）");
+    Edit(u, v, 4);
+    Check(!stamp.Same(u.LastHumanEditSeq(), 0), "人の編集が進めば鍵が変わる");
+
+    scenebackup::GlobalPolicy() = scenebackup::Policy{};
+    scenebackup::WaitIdle();
+    std::error_code ec;
+    saferm::RemoveAll(root, ec, fs::temp_directory_path());
+}
 } // namespace
 
 int main()
 {
     TestOriginAndGuard();
     TestBackupRoundtrip();
+    TestUntitledAndPin();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

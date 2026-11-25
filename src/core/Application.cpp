@@ -1554,7 +1554,17 @@ void Application::Run()
                     && !(m_headless && !m_headlessAllowSave))
                 {
                     // W05-02: 人の未保存の変更があるときは本体に書かず退避する（MCP 由来だけなら今までどおり本保存）
-                    try { AppAccess::ProtectHumanEditsOrSave(*this, EditorContext::DiscardReason::FleetIdle); } catch (...) {}   // best-effort（使い捨てプロジェクトが前提）
+                    bool ok = false;
+                    try { ok = AppAccess::ProtectHumanEditsOrSave(*this, EditorContext::DiscardReason::FleetIdle); } catch (...) {}   // best-effort（使い捨てプロジェクトが前提）
+                    // 退避できなかったとき（バックアップ無効・プロジェクトの外など）は、本体ではない復旧用の退避（オートセーブ）を最後の手段にする。
+                    // 本体には書かない（W05-02 のフォールバック禁止の範囲内）。Play 中は実行の状態なので書かない。
+                    if (!ok && m_engineMode == EngineMode::Editor)
+                    {
+                        bool wrote = false;
+                        try { wrote = WriteAutosave(); } catch (...) {}
+                        if (wrote) Logger::Warn("Fleet: 退避できなかったので復旧用のオートセーブを書きました（次回起動時に復旧できます）");
+                        else       Logger::Error("Fleet: 人の未保存の変更を退避も保存もできませんでした");
+                    }
                 }
                 PostQuitMessage(0);
             }
@@ -1787,6 +1797,12 @@ void Application::Run()
 
         m_gameClock.Tick();
 
+        // W05-02: 人の settings 編集の判定は毎フレーム（MCP の遅延実行と人の変更を区別するため。settingsHash 自体の更新は下の 0.5 秒ごと）
+        if (m_editorCtx && m_scene && !m_showLauncher && !m_isGameMode && m_engineMode == EngineMode::Editor)
+            AppAccess::PollHumanSettings(*this, /*active=*/true, SceneSettingsFingerprint(*m_scene));
+        else if (m_editorCtx)
+            AppAccess::PollHumanSettings(*this, /*active=*/false, 0);   // Play 中・ランチャー中は判定しない
+
         // シーントランジション更新（WP9）
         // 段階ロード中は中間点（画面が隠れきった状態）で止める＝ロードが終わる前に
         // 開き始めて、まだ構築されていないシーンが見えてしまうのを防ぐ。
@@ -1839,11 +1855,6 @@ void Application::Run()
                 // savedSettingsHash と比べて行う。ここで MarkEdited すると、保存直前の
                 // 変更を保存後に二重計上してしまう。
                 m_editorCtx->settingsHash = SceneSettingsFingerprint(*m_scene);
-                AppAccess::PollHumanSettings(*this, /*active=*/true, m_editorCtx->settingsHash);   // W05-02
-            }
-            else if (m_editorCtx)
-            {
-                AppAccess::PollHumanSettings(*this, /*active=*/false, 0);   // Play 中・ランチャー中は判定しない
             }
 
             // コンポーネント .lua（assets/components/*.lua 等）のホットリロード。
@@ -3501,6 +3512,7 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
                          && !pd.virtualInput && !vinput::Enabled();
     if (m_editorCtx->aiSessionEver && !(humanDirty && realHuman))
     {
+        m_editorCtx->pendingDiscard = {};   // この要求の起点は使い終わった（古い Human の要求を次の確認へ持ち越さない）
         // ヘッドレスの読み取り専用モードでは何も書かずに進む（CI は捨てるだけ）
         if (m_headless && !m_headlessAllowSave) return true;
         if (humanDirty)
