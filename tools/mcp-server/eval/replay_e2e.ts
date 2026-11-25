@@ -1,8 +1,11 @@
 // W05-36: 記録したトレースを新しいエンジンに再生して採点し、元の採点と同じになることを確かめる。LLM は呼ばない。
 //   node replay_e2e.ts --task T1 --trace <trace.jsonl> --expect <score_T1.json> [--port 8856] [--ts-dir <dir>]
-//                      [--project <プロジェクトの場所(新しいエンジンに --project で渡したもの)>]
-// 新しいエンジンは、課題と同じ手順(run_e2e.ts --phase prepare)で用意しておく。再生はトレースの tools/call を
+//                      [--project <プロジェクトの場所(新しいエンジンに --project で渡したもの)>] [--allow-ts-mismatch] [--keep-engine]
+// 新しいエンジンは run_e2e.ts --phase prepare-replay で用意する(<task>/replay/project に作る。元の trace と保存物には触れない)。
+// --project の既定は <trace のあるフォルダ>/replay/project。トレースの meta の tsCommit と --ts-dir の HEAD が違えば拒む
+// (改修前の TS で撮ったトレースを黙って現行の TS で再生しない)。再生はトレースの tools/call を
 // 順に MCP サーバ(index.ts を stdio で起動)へ投げ直し、新しいトレースを <trace>.replay.jsonl に書く。
+// ★再生が終わったら(成否を問わず)prepare-replay で起動したエンジンを止める。残したいときだけ --keep-engine。
 // 同じ採点 = 合否・各チェックの合否・呼び出し数・再試行数・エラー数が一致すること。
 import fs from "node:fs";
 import path from "node:path";
@@ -10,6 +13,8 @@ import { fileURLToPath } from "node:url";
 import { assertNoPaidApiKey, loadTasks, runProbes, scoreTask } from "./score_e2e.ts";
 import type { Score } from "./score_e2e.ts";
 import { readTrace, summarizeTrace, TraceWriter } from "./trace.ts";
+import { compareTsToTrace } from "./provenance.ts";
+import { stopEngine } from "./run_e2e.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -65,7 +70,13 @@ async function main(argv: string[]) {
   const tsDir = arg(argv, "--ts-dir", path.resolve(here, ".."))!;
   const task = loadTasks().find((t) => t.id === taskId);
   if (!task) throw new Error(`課題が無い: ${taskId}`);
-  const calls = extractCalls(readTrace(tracePath));
+  const records = readTrace(tracePath);
+  const mism = compareTsToTrace(summarizeTrace(records).meta, tsDir);
+  if (mism.length > 0 && !argv.includes("--allow-ts-mismatch")) throw new Error(`再生を拒否する(--allow-ts-mismatch で無視できる):
+  ${mism.join("\n  ")}`);
+  if (mism.length > 0) console.log(`[replay_e2e] 警告: ${mism.join(" / ")}`);
+  const projectDir = arg(argv, "--project", path.join(path.dirname(path.resolve(tracePath)), "replay", "project"))!;
+  const calls = extractCalls(records);
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
   const env: Record<string, string> = {};
@@ -84,7 +95,7 @@ async function main(argv: string[]) {
   const { EngineClient } = await import("../engineClient.ts");
   const ec = new EngineClient("127.0.0.1", port, 15000);
   let probes;
-  try { probes = await runProbes(task, ec); } finally { ec.close(); }
+  try { probes = await runProbes(task, ec, projectDir); } finally { ec.close(); if (!argv.includes("--keep-engine")) stopEngine(); }
   const score = scoreTask(task, probes, summarizeTrace(readTrace(replayTrace)));
   const expected = JSON.parse(fs.readFileSync(expectPath, "utf8")) as Score;
   const diff = diffScores(expected, score);
@@ -94,5 +105,5 @@ async function main(argv: string[]) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
-  main(process.argv.slice(2)).catch((e) => { console.error(String(e?.message ?? e)); process.exit(2); });
+  main(process.argv.slice(2)).catch((e) => { console.error(String(e?.message ?? e)); if (!process.argv.includes("--keep-engine")) stopEngine(); process.exit(2); });
 }

@@ -4,6 +4,7 @@
 // トレースに秘密(トークン等)を書かない: 書く前に redact() を必ず通す。
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 export type TraceDir = "c2s" | "s2c";
 export type TraceRecord =
@@ -28,6 +29,22 @@ export function redact(v: unknown): any {
   return v;
 }
 
+/** 画像(MCP の image コンテンツ)の data は長さとハッシュだけにする(トレースが巨大になるのを防ぐ)。元は変えない。 */
+export function shrinkImages(v: unknown): any {
+  if (Array.isArray(v)) return v.map(shrinkImages);
+  if (v && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    if (o["type"] === "image" && typeof o["data"] === "string") {
+      const d = o["data"] as string;
+      return { ...o, data: `[image len=${d.length} sha256=${createHash("sha256").update(d).digest("hex").slice(0, 16)}]` };
+    }
+    const r: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(o)) r[k] = shrinkImages(x);
+    return r;
+  }
+  return v;
+}
+
 export class TraceWriter {
   private seq = 0;
   private t0 = Date.now();
@@ -43,11 +60,11 @@ export class TraceWriter {
   line(dir: TraceDir, raw: string) {
     let msg: any;
     try { msg = JSON.parse(raw); } catch { msg = { _nonJson: redact(raw.slice(0, 2000)) }; }
-    this.write({ seq: this.seq++, t: Date.now() - this.t0, dir, msg: redact(msg) });
+    this.write({ seq: this.seq++, t: Date.now() - this.t0, dir, msg: redact(shrinkImages(msg)) });
   }
   /** 既に組み立てた JSON-RPC メッセージを記録する(replay 用)。 */
   message(dir: TraceDir, msg: unknown) {
-    this.write({ seq: this.seq++, t: Date.now() - this.t0, dir, msg: redact(msg) });
+    this.write({ seq: this.seq++, t: Date.now() - this.t0, dir, msg: redact(shrinkImages(msg)) });
   }
   private write(r: TraceRecord) { fs.writeSync(this.fd, JSON.stringify(r) + "\n"); }
   close() { try { fs.closeSync(this.fd); } catch { /* 二重 close は無視 */ } }
@@ -78,6 +95,13 @@ function toolKey(name: string, args: any): string {
   return name;
 }
 
+/** 再試行の判定に使う対象の主キー(name / entity / entityId)。無ければ空。 */
+function targetKey(name: string, args: any): string {
+  const a = name === "dx12_call" ? (args && typeof args.args === "object" ? args.args : null) : args;
+  const v = a?.name ?? a?.entity ?? a?.entityId;
+  return v === undefined || v === null || typeof v === "object" ? "" : String(v);
+}
+
 function responseIsError(msg: any): boolean {
   return !!msg?.error || msg?.result?.isError === true;
 }
@@ -86,7 +110,9 @@ function responseIsError(msg: any): boolean {
  * tools/call の要求と応答を id で突き合わせて数える。
  *  - 呼び出し数: tools/call の要求の数(initialize / tools/list 等は数えない)。
  *  - エラー: JSON-RPC の error、または result.isError。応答が来なかった呼び出しもエラーに数える。
- *  - 再試行: 直近の「同じツール」(dx12_call は中身の名前)の呼び出しがエラーだった後の、同じツールの呼び出し。
+ *  - 再試行: 直近の「同じツール かつ 同じ対象」(dx12_call は中身の名前。対象は引数の name / entity / entityId)の呼び出しが
+ *    エラーだった後の、同じ組の呼び出し。対象が別なら(set_parent(Tent) の失敗直後の set_parent(Fire) など)再試行に数えない。
+ *    対象の引数を持たないツールはツール名だけで判定する。
  */
 export function summarizeTrace(records: TraceRecord[]): TraceSummary {
   const meta: Record<string, unknown> = {};
@@ -114,9 +140,10 @@ export function summarizeTrace(records: TraceRecord[]): TraceSummary {
   let retryCount = 0;
   for (const c of calls) {
     byTool[c.tool] = (byTool[c.tool] ?? 0) + 1;
-    if (lastErr.get(c.tool) === true) { c.isRetry = true; retryCount++; }
+    const rk = `${c.tool}\u0000${targetKey(c.name, c.args)}`;
+    if (lastErr.get(rk) === true) { c.isRetry = true; retryCount++; }
     if (c.isError) errorCount++;
-    lastErr.set(c.tool, c.isError);
+    lastErr.set(rk, c.isError);
   }
   return { calls, callCount: calls.length, errorCount, retryCount, byTool, meta };
 }

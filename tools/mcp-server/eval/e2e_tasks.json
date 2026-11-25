@@ -1,5 +1,5 @@
 {
-  "_doc": "MCP-14 の E2E 課題(W05-36)。課題はメインが起動する Claude Code のサブエージェントが実行する(run_e2e.ts は LLM を呼ばない)。合否はエンジンの状態への probes だけで決まる(決定論)。probe は engine の method を直接呼び、asserts で結果を検査する。path は a.b[0].c と、配列の絞り込み a[name=X] が使える。op: exists / absent / eq / approx(tol) / gte / lte / between(value=[lo,hi]) / contains / count。expectError:true の probe は「エラーで返ること」を合格とする。maxCalls は目安(採点には使わず報告だけ)。プロジェクトは課題ごとに新しく作る(既定シーン: MainCamera / DirectionalLight / Cube / Ground / Grid)。",
+  "_doc": "MCP-14 の E2E 課題(W05-36)。課題はメインが起動する Claude Code のサブエージェントが実行する(run_e2e.ts は LLM を呼ばない)。合否はエンジンの状態への probes だけで決まる(決定論)。probe は engine の method を直接呼び、asserts で結果を検査する。path は a.b[0].c と、配列の絞り込み a[name=X] が使える。op: exists / absent / eq / approx(tol) / gte / lte / between(value=[lo,hi]) / contains / count。expectError に 「E_NOT_FOUND」のような文字列を書いた probe は「その errName(接頭辞)のエラーで返ること」を合格とする(true なら何のエラーでも可)。op elevationDeg は [x,y,z] の向きの高度(度)を value=[lo,hi] と比べる(正規化の有無に依らない)。file の probe は project/ 内の JSON を読む(保存物の検査)。maxCalls は目安(採点には使わず報告だけ)。プロジェクトは課題ごとに新しく作る(既定シーン: MainCamera / DirectionalLight / Cube / Ground / Grid)。",
   "version": 1,
   "tasks": [
     {
@@ -19,7 +19,7 @@
         { "id": "hero", "method": "get_entity", "params": { "name": "Hero" }, "asserts": [
           { "path": "result.transform.position", "op": "approx", "value": [2, 0.5, -4], "tol": 0.01 },
           { "path": "result.transform.scale", "op": "approx", "value": [2, 2, 2], "tol": 0.01 }] },
-        { "id": "no_cube", "method": "get_entity", "params": { "name": "Cube" }, "expectError": true, "asserts": [] },
+        { "id": "no_cube", "method": "get_entity", "params": { "name": "Cube" }, "expectError": "E_NOT_FOUND", "asserts": [] },
         { "id": "count", "method": "list_entities", "params": {}, "asserts": [{ "path": "result.total", "op": "eq", "value": 5 }] }
       ]
     },
@@ -27,8 +27,8 @@
       "id": "T3", "title": "床と格子を消す", "maxCalls": 6,
       "prompt": "シーンから Ground と Grid の 2 つのエンティティを削除してください。MainCamera、DirectionalLight、Cube は残してください。",
       "probes": [
-        { "id": "no_ground", "method": "get_entity", "params": { "name": "Ground" }, "expectError": true, "asserts": [] },
-        { "id": "no_grid", "method": "get_entity", "params": { "name": "Grid" }, "expectError": true, "asserts": [] },
+        { "id": "no_ground", "method": "get_entity", "params": { "name": "Ground" }, "expectError": "E_NOT_FOUND", "asserts": [] },
+        { "id": "no_grid", "method": "get_entity", "params": { "name": "Grid" }, "expectError": "E_NOT_FOUND", "asserts": [] },
         { "id": "rest", "method": "list_entities", "params": {}, "asserts": [
           { "path": "result.total", "op": "eq", "value": 3 },
           { "path": "result.entities[name=MainCamera]", "op": "exists" },
@@ -54,7 +54,7 @@
       "prompt": "太陽(DirectionalLight)を夕方の低い位置にしてください。太陽の高度を 8 度から 18 度の間にし、方位は東西どちらでもかまいません。他のエンティティは変更しないでください。",
       "probes": [
         { "id": "sun", "method": "get_entity", "params": { "name": "DirectionalLight" }, "asserts": [
-          { "path": "result.directionalLight.direction[1]", "op": "between", "value": [-0.3090, -0.1392] }] },
+          { "path": "result.directionalLight.direction", "op": "elevationDeg", "value": [8, 18] }] },
         { "id": "count", "method": "list_entities", "params": {}, "asserts": [{ "path": "result.total", "op": "eq", "value": 5 }] }
       ]
     },
@@ -63,7 +63,10 @@
       "prompt": "エンティティ Marker(箱でよい)を位置 (1, 0.5, 1) に置き、シーンを scenes/e2e_level.json という名前で保存してください。",
       "probes": [
         { "id": "marker", "method": "get_entity", "params": { "name": "Marker" }, "asserts": [{ "path": "result.transform.position", "op": "approx", "value": [1, 0.5, 1], "tol": 0.01 }] },
-        { "id": "saved", "method": "list_scenes", "params": {}, "asserts": [{ "path": "result[path=scenes/e2e_level.json]", "op": "exists" }] }
+        { "id": "saved", "method": "list_scenes", "params": {}, "asserts": [{ "path": "result[path=scenes/e2e_level.json]", "op": "exists" }] },
+        { "id": "saved_content", "file": "assets/scenes/e2e_level.json", "asserts": [
+          { "path": "result.entities[name=Marker]", "op": "exists" },
+          { "path": "result.entities[name=Marker].transform.position", "op": "approx", "value": [1, 0.5, 1], "tol": 0.01 }] }
       ]
     }
   ]

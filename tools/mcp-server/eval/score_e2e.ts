@@ -1,5 +1,5 @@
 // W05-36: MCP-14 E2E の採点。LLM は呼ばない。エンジンの状態(probe の結果)とトレースだけから決定論で採点する。
-//   node score_e2e.ts --task T1 --trace <file> --port 8856 [--out <score.json>] [--save-probes <file>]
+//   node score_e2e.ts --task T1 --trace <file> --port 8856 [--out <score.json>] [--save-probes <file>] [--project <project dir>]
 //   node score_e2e.ts --task T1 --trace <file> --probes <saved.json>      (エンジン無しで再採点)
 // 合否 = 全 probe の asserts が通ること。呼び出し数・再試行・エラーはトレースから数えて報告する(合否には使わない)。
 import fs from "node:fs";
@@ -11,9 +11,11 @@ import type { TraceSummary } from "./trace.ts";
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 export type Assert = { path: string; op: string; value?: any; tol?: number };
-export type Probe = { id: string; method: string; params: Record<string, unknown>; expectError?: boolean; asserts: Assert[] };
+// method のとき: エンジンの method を呼ぶ。file のとき: プロジェクト内(project/ からの相対)の JSON ファイルを読む(保存物の検査)。
+// expectError: true なら何かのエラー、文字列なら errName がその接頭辞(E_NOT_FOUND など)で返ること。
+export type Probe = { id: string; method?: string; params?: Record<string, unknown>; file?: string; expectError?: boolean | string; asserts: Assert[] };
 export type Task = { id: string; title: string; prompt: string; maxCalls?: number; probes: Probe[] };
-export type ProbeResult = { id: string; ok: boolean; result?: any; error?: string };
+export type ProbeResult = { id: string; ok: boolean; result?: any; error?: string; errName?: string; code?: number };
 export type CheckResult = { id: string; ok: boolean; detail: string };
 export type Score = {
   taskId: string; pass: boolean; checks: CheckResult[];
@@ -80,6 +82,13 @@ export function evalAssert(root: any, a: Assert): CheckResult {
       if (got.length !== want.length || got.some((x: any) => typeof x !== "number")) return fail(`実際: ${JSON.stringify(v)}`);
       return got.every((x: number, i: number) => Math.abs(x - want[i]) <= tol) ? ok() : fail(`実際: ${JSON.stringify(v)}`);
     }
+    case "elevationDeg": { // 向きベクトル [x,y,z] の高度(度)。光の進む向きが下向き(y<0)なら正。正規化の有無に依らない
+      if (!Array.isArray(v) || v.length !== 3 || v.some((x: any) => typeof x !== "number")) return fail(`実際: ${JSON.stringify(v)}`);
+      const len = Math.hypot(v[0], v[1], v[2]);
+      if (!(len > 1e-9)) return fail("ゼロベクトル");
+      const el = (Math.asin(Math.max(-1, Math.min(1, -v[1] / len))) * 180) / Math.PI;
+      return el >= a.value[0] && el <= a.value[1] ? ok() : fail(`高度 ${el.toFixed(2)} 度(実際: ${JSON.stringify(v)})`);
+    }
     case "gte": return typeof v === "number" && v >= a.value ? ok() : fail(`実際: ${JSON.stringify(v)}`);
     case "lte": return typeof v === "number" && v <= a.value ? ok() : fail(`実際: ${JSON.stringify(v)}`);
     case "between": return typeof v === "number" && v >= a.value[0] && v <= a.value[1] ? ok() : fail(`実際: ${JSON.stringify(v)}`);
@@ -99,7 +108,10 @@ export function scoreTask(task: Task, probes: ProbeResult[], summary: TraceSumma
     const pr = probes.find((x) => x.id === p.id);
     if (!pr) { checks.push({ id: `${p.id}`, ok: false, detail: "probe の結果が無い" }); continue; }
     if (p.expectError) {
-      checks.push({ id: `${p.id}: エラーで返る`, ok: !pr.ok, detail: pr.ok ? "成功してしまった(あってはいけない)" : "エラー(期待どおり)" });
+      const want = typeof p.expectError === "string" ? p.expectError : "";
+      // errName があれば接頭辞で照合。無い古いエンジンは、エンジンが返した数値コードがあるエラーだけ認める(接続断・タイムアウトは認めない)
+      const kindOk = !pr.ok && (want === "" ? true : pr.errName !== undefined ? pr.errName.startsWith(want) : pr.code !== undefined);
+      checks.push({ id: `${p.id}: エラーで返る${want ? ` (${want})` : ""}`, ok: kindOk, detail: pr.ok ? "成功してしまった(あってはいけない)" : kindOk ? "エラー(期待どおり)" : `別のエラー: ${pr.errName ?? pr.error ?? ""}` });
       continue;
     }
     if (!pr.ok) { checks.push({ id: `${p.id}: 応答`, ok: false, detail: `エラー: ${pr.error ?? ""}` }); continue; }
@@ -117,11 +129,18 @@ export function scoreTask(task: Task, probes: ProbeResult[], summary: TraceSumma
 }
 
 /** エンジンへ probe を投げる(client は EngineClient 互換: call(method, params))。 */
-export async function runProbes(task: Task, client: { call(m: string, p: Record<string, unknown>): Promise<any> }): Promise<ProbeResult[]> {
+export async function runProbes(task: Task, client: { call(m: string, p: Record<string, unknown>): Promise<any> }, projectDir?: string): Promise<ProbeResult[]> {
   const out: ProbeResult[] = [];
   for (const p of task.probes) {
-    try { out.push({ id: p.id, ok: true, result: await client.call(p.method, p.params) }); }
-    catch (e: any) { out.push({ id: p.id, ok: false, error: String(e?.message ?? e).slice(0, 300) }); }
+    try {
+      if (p.file !== undefined) {
+        if (!projectDir) throw new Error("file probe には projectDir が要る");
+        const root = path.resolve(projectDir);
+        const f = path.resolve(root, p.file);
+        if (f !== root && !f.startsWith(root + path.sep)) throw new Error("project の外は読まない");
+        out.push({ id: p.id, ok: true, result: JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, "")) });
+      } else out.push({ id: p.id, ok: true, result: await client.call(p.method!, p.params ?? {}) });
+    } catch (e: any) { out.push({ id: p.id, ok: false, error: String(e?.message ?? e).slice(0, 300), errName: typeof e?.errName === "string" ? e.errName : undefined, code: typeof e?.code === "number" ? e.code : undefined }); }
   }
   return out;
 }
@@ -144,7 +163,7 @@ async function main(argv: string[]) {
     const port = Number(arg(argv, "--port") ?? "8856");
     const { EngineClient } = await import("../engineClient.ts");
     const client = new EngineClient("127.0.0.1", port, 15000);
-    try { probes = await runProbes(task, client); } finally { client.close(); }
+    try { probes = await runProbes(task, client, arg(argv, "--project")); } finally { client.close(); }
     const sp = arg(argv, "--save-probes");
     if (sp) fs.writeFileSync(sp, JSON.stringify(probes, null, 2));
   }
