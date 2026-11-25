@@ -148,7 +148,10 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
         else { Logger::Warn("DRED: 有効化に失敗しました（OFF 扱い）"); m_options.dred = false; }
     }
     else
+    {
+        dred::EnableBeforeDeviceCreation(false);   // 同一プロセスの先行デバイスが ON にした設定を持ち越さない
         Logger::Info("DRED: OFF");
+    }
 
     // --- Device Creation ---
     // ★フィーチャーレベルは高い順に試して落ちる。12_1 を無条件要求すると、

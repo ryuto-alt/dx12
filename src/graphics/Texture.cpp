@@ -64,6 +64,7 @@ void Texture::Initialize(
     uploadDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     uploadDesc.Flags            = D3D12_RESOURCE_FLAG_NONE;
 
+    // 注: m_uploadBuffer（と Buffer.cpp の staging）は短命なので SetName しない（ページフォルトの対象になりにくい）。
     D3D12_HEAP_PROPERTIES uploadHeapProps{};
     uploadHeapProps.Type                 = D3D12_HEAP_TYPE_UPLOAD;
     uploadHeapProps.CPUPageProperty      = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;

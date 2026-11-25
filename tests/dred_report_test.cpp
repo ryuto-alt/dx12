@@ -25,6 +25,7 @@
 #include "graphics/DredReport.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/RenderTarget.h"
+#include "graphics/Texture.h"
 
 using Microsoft::WRL::ComPtr;
 using namespace dx12e;
@@ -54,6 +55,14 @@ static void TestDecide()
     CHECK(Decide(true, CmdLine::ForceOn, true), "--dred は GameRuntime でも ON");
     CHECK(!Decide(true, CmdLine::ForceOff, false), "--no-dred は OFF");
     CHECK(!Decide(false, CmdLine::ForceOn, false), "要求が false（コードからの明示）は --dred でも OFF");
+    // 出荷したゲームは exe が <productName>.exe に改名される。このテスト exe の名前に gameruntime は含まれないが、
+    // gameMode=true なら exe 名に関係なく既定 OFF になること（コマンドラインに --dred / --no-dred が無い前提）。
+    CHECK(!dred::IsGameRuntimeExe(), "テスト exe は gameruntime を含まない名前（前提）");
+    if (dred::ParseCommandLine(::GetCommandLineW()) == CmdLine::None)
+    {
+        CHECK(!dred::ResolveForMode(true), "改名した exe でも gameMode=true なら DRED 既定 OFF");
+        CHECK(dred::ResolveForMode(false), "エディタ（gameMode=false）は既定 ON");
+    }
     CHECK(dred::ParseCommandLine(L"DX12Engine.exe --background --no-dred") == CmdLine::ForceOff, "--no-dred の解析");
     CHECK(dred::ParseCommandLine(L"\"C:\\a b\\GameRuntime.exe\" --dred") == CmdLine::ForceOn, "--dred の解析（引用符つき exe）");
     CHECK(dred::ParseCommandLine(L"DX12Engine.exe --dredx --project d") == CmdLine::None, "前方一致で拾わない");
@@ -93,6 +102,31 @@ int main()
         const float clear[4] = {0, 0, 0, 1};
         rt.Initialize(dev, &rtvHeap, &srvHeap, 64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, clear);
         CHECK(HasName(rt.GetResource()), "RenderTarget に名前が付かない");
+        // Texture::Initialize の自動 SetName（アップロード用の一時バッファ m_uploadBuffer / Buffer の staging は短命なので無名のまま）
+        {
+            ComPtr<ID3D12CommandAllocator> a;
+            ComPtr<ID3D12GraphicsCommandList> l;
+            if (SUCCEEDED(dev.GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a))) &&
+                SUCCEEDED(dev.GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, a.Get(), nullptr, IID_PPV_ARGS(&l))))
+            {
+                D3D12_RESOURCE_DESC td{};
+                td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                td.Width = 4; td.Height = 4; td.DepthOrArraySize = 1; td.MipLevels = 1;
+                td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                td.SampleDesc.Count = 1;
+                td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+                const unsigned int px[16] = {};
+                D3D12_SUBRESOURCE_DATA sd{};
+                sd.pData = px; sd.RowPitch = 16; sd.SlicePitch = 64;
+                Texture tex;
+                tex.Initialize(dev, l.Get(), td, &sd, 1);
+                CHECK(HasName(tex.GetResource()), "Texture に名前が付かない");
+                l->Close();
+                queue.ExecuteCommandList(l.Get());
+                queue.WaitIdle();
+            }
+            else CHECK(false, "Texture 用のコマンドリストを作れない");
+        }
         queue.WaitIdle();
     }
 
@@ -199,6 +233,15 @@ int main()
                 for (const auto& b : j["breadcrumbs"])
                     for (const auto& c : b["contexts"])
                         if (c.value("context", "") == "TestPass") foundCtx = true;
+                // パンくずが埋まる環境（夜間・別 PC・本物のハング）では中身を必須にする。
+                if (!j["breadcrumbs"].empty())
+                {
+                    CHECK(foundCtx, "パンくずがあるのにコンテキスト TestPass が無い");
+                    bool foundList = false;
+                    for (const auto& b : j["breadcrumbs"])
+                        if (b.value("commandList", "") == "DredTestList") { foundList = true; CHECK(b.contains("lastCompletedOp"), "lastCompletedOp が無い"); }
+                    CHECK(foundList, "commandList == DredTestList のノードが無い");
+                }
                 std::printf("NOTE: 実デバイスのパンくず %zu 件、コンテキスト TestPass %s\n", j["breadcrumbs"].size(),
                             foundCtx ? "あり" : "なし（この環境では RemoveDevice で DRED が埋まらない）");
             }

@@ -194,13 +194,20 @@ bool ResolveEnabled(bool requested)
     return Decide(requested, ParseCommandLine(::GetCommandLineW()), IsGameRuntimeExe());
 }
 
-bool EnableBeforeDeviceCreation()
+bool ResolveForMode(bool gameMode)
 {
-    static ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> s;   // 設定を持つ間は保持（作成後も生かす）
+    return Decide(true, ParseCommandLine(::GetCommandLineW()), gameMode);
+}
+
+bool EnableBeforeDeviceCreation(bool on)
+{
+    // 設定はデバイス作成前に適用すればよく、保持は不要（ローカル。static を持たないのでスレッド競合もない）。
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> s;
     if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&s))) || !s) return false;
-    s->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-    s->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-    s->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    const D3D12_DRED_ENABLEMENT e = on ? D3D12_DRED_ENABLEMENT_FORCED_ON : D3D12_DRED_ENABLEMENT_FORCED_OFF;
+    s->SetAutoBreadcrumbsEnablement(e);
+    s->SetPageFaultEnablement(e);
+    s->SetBreadcrumbContextEnablement(e);
     return true;
 }
 
@@ -303,6 +310,20 @@ std::string WriteReport(ID3D12Device* device, HRESULT removedReason, bool dredEn
         f.write(body.data(), static_cast<std::streamsize>(body.size()));
         f.close();
         if (!f) return {};
+        // 古い device_removed_*.json を落とす（CrashReport はディレクトリしか数えないので、ここで新しい 20 件に絞る）。
+        try
+        {
+            std::vector<fs::path> files;
+            for (const auto& e : fs::directory_iterator(dir, ec))
+            {
+                const std::wstring n = e.path().filename().wstring();
+                if (n.rfind(L"device_removed_", 0) == 0 && e.path().extension() == L".json") files.push_back(e.path());
+            }
+            std::sort(files.begin(), files.end());   // 名前に UTC 時刻が入っているので辞書順 = 古い順
+            constexpr size_t kKeep = 20;
+            for (size_t i = 0; files.size() > kKeep && i + kKeep < files.size(); ++i) fs::remove(files[i], ec);
+        }
+        catch (...) {}
         const std::u8string u8 = path.u8string();
         return std::string(u8.begin(), u8.end());
     }

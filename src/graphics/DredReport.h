@@ -21,7 +21,7 @@ namespace dx12e::dred
 enum class CmdLine { None, ForceOn, ForceOff };
 CmdLine ParseCommandLine(const wchar_t* commandLine);
 
-// GameRuntime（exe 名に GameRuntime を含む）か。
+// exe 名に GameRuntime を含むか（フォールバック用。改名されると外れるので、通常は gameMode を使うこと）。
 bool IsGameRuntimeExe();
 
 // 純関数: 要求（GraphicsDeviceOptions::dred）・コマンドライン・GameRuntime か、から実際に ON にするかを決める。
@@ -31,8 +31,13 @@ bool Decide(bool requested, CmdLine cmd, bool gameRuntime);
 // 現在のプロセスのコマンドライン・exe から Decide する。
 bool ResolveEnabled(bool requested);
 
-// デバイス作成の前に呼ぶ。FORCED_ON を設定できたら true（取れなければ false）。
-bool EnableBeforeDeviceCreation();
+// gameMode（Application::Initialize が受ける。GameRuntime・出荷したゲームは常に true）から既定を決める。
+//   exe 名には頼らない（BuildGame は GameRuntime.exe を <productName>.exe に改名するため）。--dred / --no-dred は尊重する。
+bool ResolveForMode(bool gameMode);
+
+// デバイス作成の前に呼ぶ。on=true なら FORCED_ON、false なら FORCED_OFF に明示する（同一プロセスの後続デバイスに
+// 前の設定を引きずらない）。設定を適用できたら true（インターフェースが取れなければ false）。
+bool EnableBeforeDeviceCreation(bool on = true);
 
 // DRED から取った生のデータ（単体テストが手で組み立てられるよう公開）。ポインタは呼び出し側が生かしておく。
 struct ReportData

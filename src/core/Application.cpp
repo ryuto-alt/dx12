@@ -245,7 +245,12 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // グラフィックスデバイス初期化
     SplashScreen::SetStage(splash::Stage::Graphics);
     m_graphicsDevice = std::make_unique<GraphicsDevice>();
-    m_graphicsDevice->Initialize(*m_window);
+    {
+        // W05-05: DRED の既定は gameMode で決める（出荷したゲームは exe 名が変わるので exe 名には頼らない）。--dred / --no-dred は尊重。
+        GraphicsDeviceOptions gdOpt;
+        gdOpt.dred = dred::ResolveForMode(gameMode);
+        m_graphicsDevice->Initialize(*m_window, gdOpt);
+    }
 
     // コマンドキュー作成
     m_commandQueue = std::make_unique<CommandQueue>();
