@@ -5,7 +5,7 @@
     pwsh tools/run_ui_tests.ps1 -Only open_all_tool_windows,build_game   # 指定テストだけ
     pwsh tools/run_ui_tests.ps1 -Skip build_game      # 除外
     pwsh tools/run_ui_tests.ps1 -Deep                 # 超詳細診断だけ(--ui-tests-deep)。run_ui_tests.bat -Deep でも同じ
-    run_ui_tests.bat -Deep --foo --bar=1              # 名前つき引数以外(--で始まる語)は全部エンジンへそのまま渡す追加引数。-ExtraArgs とは書かず、カンマ区切りにもしない
+    run_ui_tests.bat -Deep --foo --bar=1              # 名前つき引数以外(--で始まる語と、それに続く値)は全部エンジンへそのまま渡す追加引数。-ExtraArgs とは書かず、カンマ区切りにもしない
     pwsh tools/run_ui_tests.ps1 -Port 8830 -Name my   # 並走する別エージェントとポートを分ける
     (worktree では -Name/-Port 省略時に worktree 名から自動決定。docs/PARALLEL_WORK.md 参照)
 
@@ -17,6 +17,7 @@
     4. 終了後に JUnit XML を集計して 失敗テスト名と理由を出す。終了コード 0 = 全件緑・前面不変。
   配布ゲームの起動確認(build_game)も --background=offscreen,tool で動くので除外は不要。
 #>
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Name = '',
     [int]$Port = 0,

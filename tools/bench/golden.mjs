@@ -164,6 +164,26 @@ function prepareUiProject() {
 }
 
 /** 起動引数（決定論・DPI・テーマ案）。テーマ default は何も付けない＝現行の見た目そのまま。 */
+// "1.1" / "6.5" 形式のバージョン文字列を [major, minor] にする（不正なら [0,0]）。
+function parseVer(v) {
+  const m = /^(\d+)\.(\d+)/.exec(String(v ?? ""));
+  return m ? [Number(m[1]), Number(m[2])] : [0, 0];
+}
+const verGE = (v, maj, min) => { const [a, b] = parseVer(v); return a > maj || (a === maj && b >= min); };
+
+// requiresDxr シーンの判定（エンジンの SupportsInlineRaytracing と同じ: Tier >= 1.1 かつ SM >= 6.5）。
+//   getDxr: get_dxr の結果、または Error（呼び出し失敗）。返り値 { status: "run"|"skip"|"fail", reason }
+export function judgeDxr(getDxr) {
+  if (getDxr instanceof Error)
+    return { status: "fail", reason: `get_dxr が失敗した（通信/MCP の不具合）: ${getDxr.message}` };
+  const d = getDxr ?? {};
+  const hw = verGE(d.raytracingTier, 1, 1) && verGE(d.highestShaderModel, 6, 5);
+  if (!hw) return { status: "skip", reason: "インライン RT 非対応のハード（Tier 1.1 / SM 6.5 未満）なので SKIP（requiresDxr）" };
+  if (!d.supported)
+    return { status: "fail", reason: "ハードは DXR 対応（Tier 1.1 以上・SM 6.5 以上）なのに get_dxr.supported=false（DXR パイプライン/.cso の回帰）" };
+  return { status: "run", reason: "" };
+}
+
 export function uiExtraArgs(s, forceTheme = null) {
   const a = ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0)];
   const theme = forceTheme ?? s.theme ?? "default";
@@ -313,33 +333,18 @@ async function main() {
     let conn;
     try {
       conn = await connect(eng.port);
-      // requiresDxr:true のシーンは「ハードが DXR 非対応」のときだけ SKIP（不合格にしない）。
-      // ハードは raytracingTier で判定する。supported は 6 段ゲート通過後の値なので、Tier があるのに false なら回帰として FAIL。
-      let dxrHw = null;   // true=ハード対応, false=非対応, Error=get_dxr 失敗
-      let dxrEnabled = false;
+      // requiresDxr:true のシーンは「ハードがインライン RT 非対応」のときだけ SKIP（judgeDxr 参照）。
+      let dxrJudge = null;
       if (list.some((x) => x.requiresDxr)) {
-        try {
-          const d = await conn.call("get_dxr");
-          dxrHw = String(d.raytracingTier ?? "none") !== "none";
-          dxrEnabled = !!d.supported;
-        } catch (e) { dxrHw = e instanceof Error ? e : new Error(String(e)); }
+        try { dxrJudge = judgeDxr(await conn.call("get_dxr")); }
+        catch (e) { dxrJudge = judgeDxr(e instanceof Error ? e : new Error(String(e))); }
       }
       for (const s of list) {
         const r = { name: s.name, pass: true, reasons: [] };
         results.push(r);
         if (s.requiresDxr) {
-          if (dxrHw instanceof Error) {
-            r.pass = false; r.reasons.push(`get_dxr が失敗した（通信/MCP の不具合）: ${dxrHw.message}`);
-            continue;
-          }
-          if (!dxrHw) {
-            r.skipped = true; r.reasons.push("DXR 非対応の PC なので SKIP（requiresDxr）");
-            continue;
-          }
-          if (!dxrEnabled) {
-            r.pass = false; r.reasons.push("ハードは DXR 対応（raytracingTier あり）なのに get_dxr.supported=false（DXR パイプライン/.cso の回帰）");
-            continue;
-          }
+          if (dxrJudge.status === "fail") { r.pass = false; r.reasons.push(dxrJudge.reason); continue; }
+          if (dxrJudge.status === "skip") { r.skipped = true; r.reasons.push(dxrJudge.reason); continue; }
         }
         try {
           if (s.newScene) await createNewScene(conn); else await openScene(conn, s.scene);

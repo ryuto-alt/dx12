@@ -22,7 +22,7 @@ run_golden.bat --group repeat --repeat 2             # DDGI/DXR の別枠（core
   基準画像は撮った PC のもの（旧 launchEngine で 1043x587）。★今の launchEngine は engine_instance.ps1 経由で 977x550 なので、そのプロジェクトがある PC で一度 `--update` して撮り直すまでは環境違い（strict では不合格）になる。
   `--only` はこの絞り込みの後に効く（環境変数なしで `--only nocturne_hall` と名指ししても「対象のシーンが無い」）。
 - 既定は `--strict`（プロジェクトが見つからないシーンは不合格）。緩めるのは `--no-strict`。
-- `group:"repeat"` のシーン（DDGI / DXR など決定論が崩れるもの）は通常実行に含めず、`--group repeat` で別枠に回す。今は `core_new_scene_gi` が該当: 実際の `new_scene` コマンド（Grid + Ground + Cube + DirectionalLight + MainCamera + `gi::ApplyNew` = DDGI 自動配置 / 環境光 0 / SSGI / RT 影）の結果。新規シーンの既定プリセットを変える作業はこれで検出する（`scene` ではなく `newScene:true`）。`requiresDxr:true` が付いており、DXR 非対応の PC（`get_dxr` の `supported:false`）では撮らずに SKIP になる（不合格にはしない。新 GI が使えない環境の絵は基準と別物になるため）。
+- `group:"repeat"` のシーン（DDGI / DXR など決定論が崩れるもの）は通常実行に含めず、`--group repeat` で別枠に回す。今は `core_new_scene_gi` が該当: 実際の `new_scene` コマンド（Grid + Ground + Cube + DirectionalLight + MainCamera + `gi::ApplyNew` = DDGI 自動配置 / 環境光 0 / SSGI / RT 影）の結果。新規シーンの既定プリセットを変える作業はこれで検出する（`scene` ではなく `newScene:true`）。`requiresDxr:true` が付いており、インライン RT 非対応のハード（`get_dxr` の `raytracingTier` が 1.1 未満、または `highestShaderModel` が 6.5 未満）では撮らずに SKIP になる。対応ハードなのに `supported:false` のとき、または `get_dxr` が例外のときは FAIL（回帰扱い。新 GI が使えない環境の絵は基準と別物になるため）。
 - 新しい `core_*` の基準は RTX 5060 で `--update --repeat 2` して撮った（同一セッションで 2 枚が 1 ビットも違わないことを確認）。ネイティブ解像度は 977x550。
 - 出力は `build/golden-out/`（撮った絵・`*.diff.png`。違う画素は赤）。
 - 純関数（縮小・差分・判定・プロジェクト解決）だけなら GPU 不要: `node --test tools/bench/golden.test.mjs`。

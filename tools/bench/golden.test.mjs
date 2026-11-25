@@ -118,3 +118,13 @@ test("C3: layout:material の UI ゴールデン 4 件（DPI 1.0/1.5 x default/b
   assert.deepEqual(mats.map((s) => `${s.dpi}/${s.theme}`).sort(), ["1.5/b", "1.5/default", "1/b", "1/default"]);
   for (const s of mats) assert.ok(fs.existsSync(path.join(REPO_ROOT, "tests/golden/ui", `${s.name}.png`)), `${s.name}.png`);
 });
+
+import { judgeDxr } from "./golden.mjs";
+test("judgeDxr: Tier 1.0 / SM 不足は SKIP、対応ハードで supported:false は FAIL、例外は FAIL", () => {
+  assert.equal(judgeDxr({ raytracingTier: "none", highestShaderModel: "6.7", supported: false }).status, "skip");
+  assert.equal(judgeDxr({ raytracingTier: "1.0", highestShaderModel: "6.7", supported: false }).status, "skip");
+  assert.equal(judgeDxr({ raytracingTier: "1.1", highestShaderModel: "6.4", supported: false }).status, "skip");
+  assert.equal(judgeDxr({ raytracingTier: "1.1", highestShaderModel: "6.5", supported: false }).status, "fail");
+  assert.equal(judgeDxr({ raytracingTier: "1.1", highestShaderModel: "6.7", supported: true }).status, "run");
+  assert.equal(judgeDxr(new Error("x")).status, "fail");
+});
