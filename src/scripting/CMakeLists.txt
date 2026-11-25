@@ -36,3 +36,9 @@ target_include_directories(Scripting PRIVATE ${LUA_INCLUDE_DIR})
 
 target_compile_options(Scripting PRIVATE ${DX12_COMPILE_OPTIONS} /bigobj)
 target_compile_definitions(Scripting PRIVATE ${DX12_COMPILE_DEFS})
+
+# レーン別の追加ソース（中身は各レーンが書く。OPTIONAL は付けない＝読み忘れを検出するため）
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/scripting_lane_a.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/scripting_lane_b.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/scripting_lane_c.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/scripting_lane_d.cmake)

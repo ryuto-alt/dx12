@@ -275,8 +275,71 @@ if(TARGET Scene)
     add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
 endif()
 
-# ==== wave1-laneA ==== begin
-# ==== wave1-laneA ==== end
+# ==== lane-A begin ====
+# --- 検査（lint）の登録（EXEC_W05_W1 W05-01）---
+# GpuLabelLint: D3D12CreateDevice / GraphicsDevice を使うテスト exe に gpu ラベルがあるか。
+#   コンフィグの最後（DEFER）に、tests/ の各テスト exe の自前ソースを見て、違反の一覧をファイルへ書く。
+#   ctest は cmake/lint/GpuLabelLint.cmake でそのファイルを読んで落とす。
+#   同じソースを GPU 無しで使うテスト（GPU 部分が #if で外れる）は下の IGNORE へ。
+# リポジトリのルート。CMAKE_SOURCE_DIR は使わない（CI は `cmake -S tests` で単独構成するので tests/ になる）。
+get_filename_component(DX12_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
+set(DX12_GPU_LABEL_LINT_IGNORE AtmosphereMathTests)
+function(dx12_gpu_label_lint_collect)
+    get_property(_tgts DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY BUILDSYSTEM_TARGETS)
+    set(_bad "")
+    foreach(_t IN LISTS _tgts)
+        if(NOT TEST ${_t} OR _t IN_LIST DX12_GPU_LABEL_LINT_IGNORE)
+            continue()
+        endif()
+        get_target_property(_srcs ${_t} SOURCES)
+        set(_uses FALSE)
+        foreach(_s IN LISTS _srcs)
+            if(NOT IS_ABSOLUTE "${_s}")
+                set(_s "${CMAKE_CURRENT_SOURCE_DIR}/${_s}")
+            endif()
+            # tests/ 直下の自前ソースだけを見る（ライブラリ側の GraphicsDevice の参照は数えない）
+            if(_s MATCHES "/tests/[^/]+\\.cpp$" AND EXISTS "${_s}")
+                file(READ "${_s}" _txt)
+                if(_txt MATCHES "D3D12CreateDevice" OR _txt MATCHES "GraphicsDevice")
+                    set(_uses TRUE)
+                endif()
+            endif()
+        endforeach()
+        if(_uses)
+            get_test_property(${_t} LABELS _labels)
+            if(NOT "gpu" IN_LIST _labels)
+                string(APPEND _bad "  ${_t}\n")
+            endif()
+        endif()
+    endforeach()
+    file(WRITE "${CMAKE_BINARY_DIR}/gpu_label_lint_report.txt" "${_bad}")
+endfunction()
+cmake_language(DEFER DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" CALL dx12_gpu_label_lint_collect)
+add_test(NAME GpuLabelLint
+    COMMAND ${CMAKE_COMMAND} -DREPORT=${CMAKE_BINARY_DIR}/gpu_label_lint_report.txt
+            -P ${DX12_REPO_ROOT}/cmake/lint/GpuLabelLint.cmake)
+set_tests_properties(GpuLabelLint PROPERTIES TIMEOUT 60)
+
+# NoPaidApi: 有料の Anthropic API の SDK・キーの参照が無いこと（決定 3。検索語は cmake/lint/NoPaidApi.cmake）。
+add_test(NAME NoPaidApi
+    COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${DX12_REPO_ROOT} -P ${DX12_REPO_ROOT}/cmake/lint/NoPaidApi.cmake)
+set_tests_properties(NoPaidApi PROPERTIES TIMEOUT 120)
+
+# AnchorLint / GenBudgetsCheck: 常に登録する。node のスクリプト（W05-31 / W05-34）がまだ無ければ
+# ラッパーが終了コード 77 を返して SKIP になる（スクリプトが現れた後は再コンフィグ無しでそのまま走る）。
+find_program(DX12_NODE_EXE node)
+if(DX12_NODE_EXE)
+    set(DX12_NODE_IF_EXISTS ${DX12_REPO_ROOT}/cmake/lint/run_if_exists.mjs)
+    add_test(NAME AnchorLint COMMAND ${DX12_NODE_EXE} ${DX12_NODE_IF_EXISTS}
+             ${DX12_REPO_ROOT}/tools/check_anchors.mjs
+             WORKING_DIRECTORY ${DX12_REPO_ROOT})
+    set_tests_properties(AnchorLint PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    add_test(NAME GenBudgetsCheck COMMAND ${DX12_NODE_EXE} ${DX12_NODE_IF_EXISTS}
+             ${DX12_REPO_ROOT}/tools/gen_budgets.mjs --check
+             WORKING_DIRECTORY ${DX12_REPO_ROOT})
+    set_tests_properties(GenBudgetsCheck PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+endif()
+# ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
 # 生成モード: SceneFormatV2Tests --emit-defaults <out.json> で src/scene/scene_defaults_v2.json の初期値を作る。
@@ -367,8 +430,8 @@ if(TARGET Scene)
     add_test(NAME ShaderParamTweenTests COMMAND ShaderParamTweenTests)
 endif()
 
-# ==== wave1-laneB ==== begin
-# ==== wave1-laneB ==== end
+# ==== lane-B begin ====
+# ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
 # エンジン本体と一緒にビルドする構成でのみ有効(スタンドアロン構成では Resource が無いのでスキップ)。
@@ -686,8 +749,10 @@ if(TARGET Renderer)
     add_test(NAME TerrainTests COMMAND TerrainTests)
 endif()
 
-# ==== wave1-laneC ==== begin
-# ==== wave1-laneC ==== end
+# ==== lane-C begin ====
+# ==== lane-C end ====
+# ==== lane-D begin ====
+# ==== lane-D end ====
 
 # 頂点スカルプト（素体生成 / 溶接・隣接 / 各ブラシ / 法線の部分再計算 / 対称 / .smsh 往復）テスト。
 # SculptMesh.cpp も純ロジック（重み関数とノイズだけ TerrainBrush と共有）なので、
@@ -786,9 +851,6 @@ if(TARGET ProjectLib)
     endif()
     add_test(NAME GitIntegrationTests COMMAND GitIntegrationTests)
 endif()
-
-# ==== wave2-laneA ==== begin
-# ==== wave2-laneA ==== end
 
 # ENet ループバック疎通テスト（同一プロセス内でサーバー/クライアントを立てて往復確認）。
 # Network（+ vcpkg unofficial-enet, Core）が必要なので統合ビルドでのみ有効。
@@ -912,6 +974,7 @@ if(TARGET Renderer AND TARGET VgeoCookLib)
     add_custom_command(TARGET VgCullGpuTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgCullGpuTests>")
     add_test(NAME VgCullGpuTests COMMAND VgCullGpuTests)
+    set_tests_properties(VgCullGpuTests PROPERTIES LABELS gpu)
 
     # 仮想ジオメトリ P3: メッシュシェーダのラスタ。GPU の可視性バッファ + 深度 = CPU の三角形ラスタ / 全 LOD0 の素朴な参照（穴・はみ出しの検出）。
     #   GPU が無い / メッシュシェーダ Tier 1 が無い環境では「SKIP」を出して 0 で終わる。
@@ -929,6 +992,7 @@ if(TARGET Renderer AND TARGET VgeoCookLib)
     add_custom_command(TARGET VgRasterGpuTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgRasterGpuTests>")
     add_test(NAME VgRasterGpuTests COMMAND VgRasterGpuTests)
+    set_tests_properties(VgRasterGpuTests PROPERTIES LABELS gpu)
 
     # 仮想ジオメトリ P4: 可視性バッファからの属性復元（重心座標・1 画素差分・UV 勾配 = resolve の SampleGrad の入力）/ G-Buffer + 速度 /
     #   決定論（stableOrder で 2 回の可視性バッファがビット一致）/ 両面材質のコーン棄却。CPU の独立参照（レイと三角形の交点）と比較。
@@ -946,6 +1010,7 @@ if(TARGET Renderer AND TARGET VgeoCookLib)
     add_custom_command(TARGET VgResolveGpuTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:VgResolveGpuTests>")
     add_test(NAME VgResolveGpuTests COMMAND VgResolveGpuTests)
+    set_tests_properties(VgResolveGpuTests PROPERTIES LABELS gpu)
 endif()
 
 # モデルのインポートサイズ回帰テスト（FBX の cm→m 正規化）。ModelLoader::Probe は GPU を
@@ -961,9 +1026,6 @@ if(TARGET Resource AND TARGET Renderer)
     endif()
     add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
 endif()
-
-# ==== wave2-laneB ==== begin
-# ==== wave2-laneB ==== end
 
 # 仮想ジオメトリの自動 cook（resource/VgAutoCook）と .vgeo v1.1（AO / 拡張シェーディング 'MSHD'）。GPU 不要。
 if(TARGET Resource AND TARGET Renderer AND TARGET VgeoCookLib)
@@ -1226,9 +1288,6 @@ if(TARGET Core)
     add_test(NAME AutosaveSlotTests COMMAND AutosaveSlotTests)
 endif()
 
-# ==== wave2-laneC ==== begin
-# ==== wave2-laneC ==== end
-
 # 自作ナビメッシュ（ボクセル化 → 領域分割 → 輪郭 → ポリゴン化 → A*/ファネル）のテスト。
 # nav/ は純ロジック（GPU も entt も DirectXMath も vfs も不要）なので、
 # TerrainTests と同じくライブラリをリンクせず .cpp を直接ビルドする＝スタンドアロン CI でも動く。
@@ -1459,9 +1518,6 @@ if(TARGET Editor)
     add_test(NAME NodeGraphTests COMMAND NodeGraphTests)
 endif()
 
-# ==== wave3-laneA ==== begin
-# ==== wave3-laneA ==== end
-
 # マテリアルグラフ G1（src/renderer/matgraph/）。型システム・モデル API・診断・HLSL コード生成（決定論・CSE・スロット）・
 # CPU 参照実装・.dxmg 往復・ゴールデン（tests/data/matgraph/*.dxmg ↔ *.hlsl.expected）。GPU / DXC 不要の純ロジック。
 # ゴールデンの更新: MATGRAPH_UPDATE_GOLDEN=1 で実行 → git diff を目視。
@@ -1497,7 +1553,7 @@ if(TARGET MatGraph)
                 COMMENT "Bundling dxcompiler.dll / dxil.dll next to MatGraphDxcTests.exe")
         endif()
         add_test(NAME MatGraphDxcTests COMMAND MatGraphDxcTests)
-        set_tests_properties(MatGraphDxcTests PROPERTIES LABELS dxc TIMEOUT 300)
+        set_tests_properties(MatGraphDxcTests PROPERTIES LABELS "gpu;dxc" TIMEOUT 300)
     endif()
 endif()
 
@@ -1646,7 +1702,7 @@ if(TARGET Renderer)
     add_custom_command(TARGET PathTracerGpuTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:PathTracerGpuTests>")
     add_test(NAME PathTracerGpuTests COMMAND PathTracerGpuTests)
-    set_tests_properties(PathTracerGpuTests PROPERTIES TIMEOUT 900)
+    set_tests_properties(PathTracerGpuTests PROPERTIES LABELS gpu TIMEOUT 900)
 endif()
 
 # ============================================================================
@@ -1681,9 +1737,6 @@ if(TARGET Renderer AND TARGET Resource)
     add_test(NAME AtmosphereGpuTests COMMAND AtmosphereGpuTests)
     set_tests_properties(AtmosphereGpuTests PROPERTIES LABELS gpu TIMEOUT 300)
 endif()
-
-# ==== wave3-laneB ==== begin
-# ==== wave3-laneB ==== end
 
 # パリティ基盤(tools/parity)の Python テスト(pytest。指標・ノイズ床・ゲート・シーン仕様・偽エンジンでのランナー統合)。
 # Python か依存(numpy / scikit-image / flip-evaluator など。pwsh tools/parity/setup.ps1)が無い環境ではスキップ扱い。
@@ -1873,6 +1926,7 @@ if(TARGET Renderer)
     add_custom_command(TARGET FoliageGpuTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:FoliageGpuTests>")
     add_test(NAME FoliageGpuTests COMMAND FoliageGpuTests)
+    set_tests_properties(FoliageGpuTests PROPERTIES LABELS gpu)
 
     # GPU 駆動のインスタンス群（設計 §4.2 = 4-3）。純ロジック（チャンク / LOD の CPU 参照）+ 窓なしの D3D12 で compute を実行して GPU = CPU を確かめる。
     #   GPU が無い環境では GPU 部分だけ「SKIP」。
@@ -1890,6 +1944,7 @@ if(TARGET Renderer)
     add_custom_command(TARGET InstanceGpuTests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:meshoptimizer::meshoptimizer>" "$<TARGET_FILE_DIR:InstanceGpuTests>")
     add_test(NAME InstanceGpuTests COMMAND InstanceGpuTests)
+    set_tests_properties(InstanceGpuTests PROPERTIES LABELS gpu)
 endif()
 
 # パリティ Q2: 新しいトーンマップ(shaders/post/Tonemap.hlsli)の HLSL を実際に動かして C++ 参照(PhotometricMath.h)と突き合わせる。
@@ -1916,9 +1971,6 @@ if(TARGET Graphics AND TARGET Microsoft::DirectXShaderCompiler)
     add_test(NAME TonemapGpuTests COMMAND TonemapGpuTests)
     set_tests_properties(TonemapGpuTests PROPERTIES LABELS gpu TIMEOUT 300)
 endif()
-
-# ==== wave3-laneC ==== begin
-# ==== wave3-laneC ==== end
 
 # ============================================================================
 # GI モード「新」の既定と移行（S5。scene/GiMigration.* ・ editor/GiMigrationCommand.h ・ テンプレート）:

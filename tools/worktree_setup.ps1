@@ -2,6 +2,8 @@
   並列作業用の git worktree を作り、本体と資産を共有したまま configure まで済ませる。
 
     pwsh tools/worktree_setup.ps1 -Lane A                       # %USERPROFILE%\dx12-wt\lane-a、ブランチ wave-lane-a
+    pwsh tools/worktree_setup.ps1 -Lane D                       # ビルドしないレーン(NB)。既定で configure しない(-NoBuild)
+    pwsh tools/worktree_setup.ps1 -Lane D -WhatIf               # 何もせず、ポート・junction・npm ci の予定だけ表示
     pwsh tools/worktree_setup.ps1 -Lane B -Branch wave1/lane-b -Base overhaul/wave0
     pwsh tools/worktree_setup.ps1 -Path %USERPROFILE%\dx12-wt\wt-selftest -Branch wt-selftest   # レーン外(使い捨て)
     pwsh tools/worktree_setup.ps1 -Path ... -Remove             # worktree を片付ける(--force)
@@ -12,15 +14,22 @@
     3. chcp 65001 の下で configure(Ninja / Release)。次を本体と共有してディスクと時間を節約する:
          -DVCPKG_INSTALLED_DIR=<本体>\build\release\vcpkg_installed  -DVCPKG_MANIFEST_INSTALL=OFF
          -DFETCHCONTENT_SOURCE_DIR_ASSIMP=<本体>\build\release\_deps\assimp-src
-    4. ポートの帯を表示する(エンジン MCP: A 8851 / B 8852 / C 8853、UI テスト: 8881〜8883)。
+    4. 本体に third_party/dlss と third_party/agility があれば、各 worktree へ junction を張る(取得物の二重ダウンロードを避ける。
+       -Remove は junction を先に外し、リンク先(本体側)を消さない)。
+    5. tools/mcp-server で npm ci(-NoNpm で省略)。
+    6. VCPKG_DEFAULT_BINARY_CACHE を共通の固定パス(%USERPROFILE%\dx12-vcpkg-cache。tools/build.ps1 も同じ既定を使う)にそろえる。
+    7. ポートを表示する(エンジン MCP: A 8851 / B 8852 / C 8853 / D 8855、UI テスト: A〜D = 8911〜8914。
+       ドッグフードと E2E 専用は MCP 8856 / UI 8915 でレーンには割り当てない)。
   ビルドは configure 後に `pwsh tools/build.ps1`(PC 全体で直列化される)。本体の build\release は触らない。
 #>
 param(
-    [ValidateSet('A', 'B', 'C', '')][string]$Lane = '',
+    [ValidateSet('A', 'B', 'C', 'D', '')][string]$Lane = '',
     [string]$Path = '',
     [string]$Branch = '',
     [string]$Base = 'HEAD',   # 本体 worktree の HEAD(実行元 worktree の HEAD ではない)
-    [switch]$NoConfigure,
+    [Alias('NoBuild')][switch]$NoConfigure,
+    [switch]$NoNpm,
+    [switch]$WhatIf,   # 何も作らず、予定(ポート / junction / npm ci / バイナリキャッシュ)だけ表示
     [switch]$Remove
 )
 $ErrorActionPreference = 'Stop'
@@ -32,12 +41,16 @@ $main = (Split-Path -Parent $common) -replace '/', '\'
 
 if ($Lane) {
     $Lane = $Lane.ToUpper()
+    if ($Lane -eq 'D') { $NoConfigure = $true }   # NB レーンはビルドしない
     if (-not $Path)   { $Path = Join-Path (Join-Path (Split-Path -Parent $main) 'dx12-wt') "lane-$($Lane.ToLower())" }
     if (-not $Branch) { $Branch = "wave-lane-$($Lane.ToLower())" }
 }
 if (-not $Path) { Write-Host '[wt] -Lane か -Path を指定してください'; exit 2 }
 $Path = [IO.Path]::GetFullPath($Path)
 if (-not $Branch) { $Branch = Split-Path -Leaf $Path }
+
+# 本体から junction で共有する取得物（スクリプトが取得する。コミットしない）
+$junctionNames = @('third_party\dlss', 'third_party\agility')
 
 if ($Remove) {
     # 登録済みのリンク worktree だけを対象にする(本体や無関係なフォルダは絶対に消さない)。
@@ -50,12 +63,42 @@ if ($Remove) {
         Write-Host '[wt] (git worktree list で確認。残骸フォルダは手で削除してください)'
         exit 2
     }
+    # junction(取得物の共有)を先に外す。リンク先(本体側)は消さない(rmdir はリンクだけを外す)。
+    foreach ($j in $junctionNames) {
+        $jp = Join-Path $Path $j
+        $it = Get-Item -LiteralPath $jp -Force -ErrorAction SilentlyContinue
+        if ($it -and ($it.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            cmd /c "rmdir `"$jp`"" | Out-Null
+            # 外れたことを確認する。まだ残っていれば、この先の remove / Remove-Item -Recurse がリンク先
+            # (本体側の取得物)を消しかねないので、ここで中止する(二重の安全)。
+            $left = Get-Item -LiteralPath $jp -Force -ErrorAction SilentlyContinue
+            if ($left -and ($left.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                Write-Host "[wt] junction を外せませんでした。本体側を守るため中止します: $jp"
+                exit 1
+            }
+        }
+    }
     git -C $main worktree remove --force $Path
     if ($LASTEXITCODE -ne 0) { Write-Host '[wt] git worktree remove failed'; exit 1 }
     # git 成功後に残ったフォルダ(ロック等で消えなかった分)だけ片付ける。
     if (Test-Path $Path) { Remove-Item -Recurse -Force $Path }
     git -C $main worktree prune
     Write-Host "[wt] removed $Path"
+    exit 0
+}
+
+$mcpPortsW = @{ A = 8851; B = 8852; C = 8853; D = 8855 }
+$uiPortsW  = @{ A = 8911; B = 8912; C = 8913; D = 8914 }
+if ($WhatIf) {
+    Write-Host "[wt] WhatIf: path=$Path branch=$Branch configure=$(-not $NoConfigure)"
+    if ($Lane) { Write-Host ("[wt] WhatIf: lane {0}: engine MCP port {1}, UI test port {2}" -f $Lane, $mcpPortsW[$Lane], $uiPortsW[$Lane]) }
+    foreach ($j in $junctionNames) {
+        $src = Join-Path $main $j
+        Write-Host ("[wt] WhatIf: junction {0} -> {1} ({2})" -f $j, $src, $(if (Test-Path $src) { 'あり' } else { '本体に無いので張らない' }))
+    }
+    Write-Host ("[wt] WhatIf: npm ci in tools\mcp-server = {0}" -f (-not $NoNpm))
+    $bc = if ($env:VCPKG_DEFAULT_BINARY_CACHE) { $env:VCPKG_DEFAULT_BINARY_CACHE } else { Join-Path $env:USERPROFILE 'dx12-vcpkg-cache' }
+    Write-Host "[wt] WhatIf: VCPKG_DEFAULT_BINARY_CACHE=$bc"
     exit 0
 }
 
@@ -83,9 +126,30 @@ Copy-Item (Join-Path $main $key) (Join-Path $Path $key)
 $gh = Join-Path $main 'third_party\gh-cli'
 if (Test-Path $gh) { Copy-Item -Recurse -Force $gh (Join-Path $Path 'third_party\gh-cli') }
 
-# ポート帯の案内
-$idx = if ($Lane) { [int][char]$Lane - [int][char]'A' } else { -1 }
-if ($idx -ge 0) { Write-Host ("[wt] lane {0}: engine MCP port {1}, UI test port {2}" -f $Lane, (8851 + $idx), (8881 + $idx)) }
+# ポートの案内（MCP: A 8851 / B 8852 / C 8853 / D 8855、UI: A〜D = 8911〜8914。8856 / 8915 はドッグフードと E2E 専用）
+$mcpPorts = $mcpPortsW; $uiPorts = $uiPortsW   # 上の表を再利用
+if ($Lane) { Write-Host ("[wt] lane {0}: engine MCP port {1}, UI test port {2}" -f $Lane, $mcpPorts[$Lane], $uiPorts[$Lane]) }
+
+# junction（本体に取得物があるときだけ）
+foreach ($j in $junctionNames) {
+    $src = Join-Path $main $j
+    if (Test-Path $src) {
+        $dst = Join-Path $Path $j
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
+        if (-not (Test-Path $dst)) { cmd /c "mklink /J `"$dst`" `"$src`"" | Out-Null; if ($LASTEXITCODE -eq 0 -and (Test-Path $dst)) { Write-Host "[wt] junction: $j -> $src" } else { Write-Host "[wt] junction 作成に失敗: $j (続行)" } }
+    }
+}
+
+# npm ci（TS のテストを worktree 単体で走らせるため）
+$mcpDir = Join-Path $Path 'tools\mcp-server'
+if (-not $NoNpm -and (Test-Path (Join-Path $mcpDir 'package-lock.json')) -and (Get-Command npm -ErrorAction SilentlyContinue)) {
+    Push-Location $mcpDir
+    try { npm ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Write-Host '[wt] npm ci failed (続行)' } } finally { Pop-Location }
+}
+
+# vcpkg のバイナリキャッシュを共通の固定パスにそろえる
+if (-not $env:VCPKG_DEFAULT_BINARY_CACHE) { $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:USERPROFILE 'dx12-vcpkg-cache' }
+New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
 if (-not $NoConfigure) {
     $cache = Join-Path $main 'build\release\CMakeCache.txt'

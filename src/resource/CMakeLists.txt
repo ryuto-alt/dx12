@@ -54,3 +54,9 @@ target_link_libraries(Resource PUBLIC
 
 target_compile_options(Resource PRIVATE ${DX12_COMPILE_OPTIONS})
 target_compile_definitions(Resource PRIVATE ${DX12_COMPILE_DEFS})
+
+# レーン別の追加ソース（中身は各レーンが書く。OPTIONAL は付けない＝読み忘れを検出するため）
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/resource_lane_a.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/resource_lane_b.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/resource_lane_c.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/resource_lane_d.cmake)

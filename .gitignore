@@ -121,3 +121,4 @@ zz_*_test_proj/
 # NVIDIA DLSS SDK（NGX）。NVIDIA RTX SDK ライセンス 4.e（SDK をオープンソースのライセンス条件に服させない）のため
 # MIT 公開のこのリポジトリには入れない。各自 pwsh tools/fetch_dlss.ps1 で取得する。
 /third_party/dlss/
+/third_party/agility/
