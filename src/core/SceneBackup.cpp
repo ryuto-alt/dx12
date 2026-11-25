@@ -258,16 +258,19 @@ bool StoreObject(const fs::path& dir, const std::string& hash, const char* bytes
 }
 
 // 世代の目録
-bool WriteManifest(const fs::path& dir, const std::string& id, const std::vector<Entry>& es)
+bool WriteManifest(const fs::path& dir, const std::string& id, const std::vector<Entry>& es, const std::string& reason = {})
 {
     std::string t = "DX12GEN1\n";
+    // 理由（W05-02: protect-human-edits ほか）。列が 2 つなので、理由を知らない読み手は 4 列未満の行として読み飛ばす。
+    if (!reason.empty()) t += "REASON\t" + reason + "\n";
     for (const Entry& e : es) t += e.rel + "\t" + e.hash + "\t" + std::to_string(e.size) + "\t" + std::to_string(e.mtime) + "\n";
     t += "END\n";
     return atomicfile::WriteFile(dir / (id + ".gen"), t).ok;
 }
-bool ReadManifest(const fs::path& path, std::vector<Entry>& out)
+bool ReadManifest(const fs::path& path, std::vector<Entry>& out, std::string* reason = nullptr)
 {
     out.clear();
+    if (reason) reason->clear();
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
     std::string line;
@@ -280,6 +283,7 @@ bool ReadManifest(const fs::path& path, std::vector<Entry>& out)
         std::vector<std::string> c;
         size_t a = 0;
         for (;;) { const size_t b = line.find('\t', a); c.push_back(line.substr(a, b == std::string::npos ? b : b - a)); if (b == std::string::npos) break; a = b + 1; }
+        if (c.size() == 2 && c[0] == "REASON") { if (reason) *reason = c[1]; continue; }
         if (c.size() < 4) continue;
         Entry e;
         e.rel = c[0]; e.hash = c[1];
@@ -407,7 +411,7 @@ static std::vector<Generation> ListImpl(const fs::path& projectRoot, const fs::p
         else if (withBytes)
         {
             std::vector<Entry> es;
-            if (!ReadManifest(e.path(), es)) continue;   // 書きかけ・壊れた目録は一覧に出さない
+            if (!ReadManifest(e.path(), es, &g.reason)) continue;   // 書きかけ・壊れた目録は一覧に出さない
             for (const Entry& x : es)
             {
                 g.bytes += x.size;
@@ -590,6 +594,56 @@ std::string Snapshot(const fs::path& projectRoot, const fs::path& scenePath, boo
     if (!WriteManifest(dir, id, entries)) { RemoveGenFiles(dir, id); return no("世代を書けません"); }
     Prune(projectRoot, pol);
     return id;
+}
+
+std::string SnapshotExternal(const fs::path& projectRoot, const fs::path& scenePath, const fs::path& stagingScenePath,
+                             const std::string& reason, std::string* why)
+{
+    auto no = [&](const char* w) { if (why) *why = w; return std::string(); };
+    WaitIdle();
+    const Policy pol = GlobalPolicy();
+    if (!pol.enabled) return no("バックアップは無効です");
+    std::error_code ec;
+    if (!fs::is_regular_file(stagingScenePath, ec)) return no("退避する中身がありません");
+    if (!IsBackupTarget(projectRoot, scenePath)) return no("プロジェクトの外または生成物のフォルダです");
+    if (stagingScenePath.stem() != scenePath.stem()) return no("退避の一式の名前がシーンと違います");
+    const fs::path dir = BackupDir(projectRoot);
+    fs::create_directories(dir, ec);
+    if (ec) return no("バックアップのフォルダを作れません");
+
+    const std::vector<Entry> newest = NewestEntries(projectRoot, scenePath);
+    std::vector<Entry> entries;
+    if (!BuildEntries(dir, stagingScenePath, ListLive(stagingScenePath), {}, newest, entries)) return no("世代を書けません");
+    // 最新の世代と同じ内容なら作らない（自動保存のたびに同じ退避が積もらない）
+    if (!newest.empty() && newest.size() == entries.size())
+    {
+        bool same = true;
+        std::map<std::string, std::string> nh;
+        for (const Entry& e : newest) nh[e.rel] = e.hash;
+        for (const Entry& e : entries) { const auto it = nh.find(e.rel); if (it == nh.end() || it->second != e.hash) { same = false; break; } }
+        if (same)
+        {
+            // 同じ内容がすでに最新の世代にある＝退避は済んでいる。その id を返す（呼び出し側は成功として扱える）。
+            const std::vector<Generation> gens = ListImpl(projectRoot, scenePath, /*withBytes=*/false);
+            Prune(projectRoot, pol);
+            if (why) *why = "最新の世代と同じ内容です";
+            if (!gens.empty()) return gens.front().id;
+            return no("最新の世代と同じ内容です");
+        }
+    }
+    const std::string id = NewId(dir, projectRoot, scenePath);
+    if (!WriteManifest(dir, id, entries, reason)) { RemoveGenFiles(dir, id); return no("世代を書けません"); }
+    Prune(projectRoot, pol);
+    return id;
+}
+
+std::string ReadReason(const fs::path& projectRoot, const std::string& id)
+{
+    WaitIdle();
+    std::vector<Entry> es;
+    std::string reason;
+    if (!ReadManifest(BackupDir(projectRoot) / (id + ".gen"), es, &reason)) return {};
+    return reason;
 }
 
 int Prune(const fs::path& projectRoot, const Policy& policy)

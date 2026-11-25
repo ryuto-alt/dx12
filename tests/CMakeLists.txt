@@ -343,6 +343,17 @@ else()
     # node が無い環境: 失敗として見えるようにする（cmake -E false は常に終了コード 1）。
     add_test(NAME AnchorLint COMMAND ${CMAKE_COMMAND} -E false)
 endif()
+# W05-02（BUG-06）: 人の未保存の変更を自動保存が本体に書かない（編集の起点・自動保存の守り・退避の世代）。エンジン非リンク。
+add_executable(AutosaveOriginTests autosave_origin_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/SceneBackup.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/AtomicFile.cpp)
+target_include_directories(AutosaveOriginTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AutosaveOriginTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AutosaveOriginTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AutosaveOriginTests COMMAND AutosaveOriginTests)
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。

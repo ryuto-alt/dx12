@@ -7,12 +7,31 @@
 //   各レーンは自分のブロックだけに追記し、定義は自分の .cpp に書く。
 // ===========================================================================
 #include "core/Application.h"
+#include "editor/EditorContext.h"
 
 namespace dx12e
 {
 struct AppAccess
 {
     // ==== lane-A begin ====
+    // W05-02: 人の未保存の変更を自動保存が上書きしない（定義は mcp/ApplicationMcpLaneA.cpp）。
+    //   ProtectHumanEdits       … 人の未保存の変更があれば、本体に書かずに SceneBackup へ退避する。退避できた / 不要なら true。
+    //   ProtectHumanEditsOrSave … 人の変更が無ければ本体へ保存（MCP 由来の変更だけ）。有れば ProtectHumanEdits。
+    static bool ProtectHumanEdits(Application&, EditorContext::DiscardReason);
+    static bool ProtectHumanEditsOrSave(Application&, EditorContext::DiscardReason);
+    // MCP の dispatch の前後（書き込み系だけ。読み取り専用は呼ばない）。Pre は人の settings 変更を拾う。
+    static void McpWriteBegin(Application&);
+    static void McpWriteEnd(Application&);
+    // シーンを置き換える MCP（open_scene / new_scene / scene_backups restore）の前。人の変更を退避する。失敗なら false（置き換えない）。
+    static bool ProtectBeforeSceneReplace(Application&, EditorContext::DiscardReason);
+    // 定期の settings 指紋の更新（active=false は Play 中などで判定しない）。
+    static void PollHumanSettings(Application&, bool active, u64 freshHash);
+    // MarkSceneClean の後（保存済みに揃えた）。
+    static void OnSceneMarkedClean(Application&);
+    // 保存系と editor_state の MCP 結果に autosave: { blockedByHumanEdits, lastBackupId } を足す（真なら warnings[] にも）。
+    static void AnnotateAutosave(Application&, nlohmann::json& resp, const std::string& method);
+    // 未保存の新規シーン（_mcp_untitled_*）の置き場: <project>/.dx12/untitled/
+    static std::string UntitledDir();
     // ==== lane-A end ====
 
     // ==== lane-B begin ====

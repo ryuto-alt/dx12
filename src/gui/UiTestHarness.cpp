@@ -4941,6 +4941,7 @@ const DiagReg kTests[] = {
 
     // ---- 各レーンの UI テスト（下の「launcher_screen」と deep 区画より前に置く。登録順＝実行順）----
     // ==== lane-A begin ====
+    { "autosave", "autosave_human_edit_not_written", "保存", "人の編集は MCP の自動保存で本体に書かれない", uitest::T_AutosaveHumanEditNotWritten },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     // ==== lane-B end ====

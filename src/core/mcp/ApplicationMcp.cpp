@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AppAccess.h"        // W05-02: 人の未保存の変更の退避 / settings 指紋の追跡
 #include "core/mcp/FleetGuard.h"   // ping / manifest 以外の method を「活動」に数える（--idle-exit）
 #include "gui/VirtualInputImGui.h"   // imgui_screenshot の hideCursor を撮影後に戻す
 #include "core/mcp/McpSafety.h"    // M5: guarded ゲート / 冪等ストア / dryRun プレビュー / ファイルジャーナル
@@ -228,6 +229,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     const std::string method = req.value("method", std::string());
     const json params = req.value("params", json::object());
     fleet::Instance().Touch(method);
+
+    // W05-02: 編集の起点。MCP の呼び出しの間は Mcp、仮想入力（imgui_* / input_*）は人の操作として Human に数える。
+    //   （後のフレームで実行される要求は、実行する側が CallScope（McpUndoRouter の横取り）か自前の scope で起点を持つ）
+    const bool isVirtualInputMethod = method.rfind("imgui_", 0) == 0 || method.rfind("input_", 0) == 0;
+    EditOriginScope editOriginScope(isVirtualInputMethod ? EditOrigin::Human : EditOrigin::Mcp);
+    const bool writeMethod = !method.empty() && !isVirtualInputMethod && !IsMcpReadOnlyMethod(method);
+    struct WriteEndGuard
+    {
+        Application* app; bool on;
+        ~WriteEndGuard() { if (on) AppAccess::McpWriteEnd(*app); }
+    } writeEnd{this, writeMethod};
+    if (writeMethod) AppAccess::McpWriteBegin(*this);
 
     // 遅延応答(create/spawn/delete/open_scene/play/stop)の相関情報。
     // 該当ハンドラで deferred=true にし、保留キューへ mcp を積んで空文字列を返す。
@@ -462,6 +475,18 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
             bool undoRecorded = false;
             if (!skipRun)
             {
+                // W05-02: シーンを置き換える MCP の前に、人の未保存の変更を SceneBackup へ退避する（本体は書かない）。
+                //   退避できなければ置き換えない（失うよりまし）。確認モーダルは出さない（AI は押せない）。
+                if (m_engineMode == EngineMode::Editor && m_editorCtx)
+                {
+                    using DR = EditorContext::DiscardReason;
+                    const bool restoreOp = method == "scene_backups" && params.value("op", std::string()) == "restore";
+                    const DR dr = method == "open_scene" ? DR::OpenScene : method == "new_scene" ? DR::NewScene
+                                : restoreOp ? DR::OpenScene : DR::None;
+                    if (dr != DR::None && !AppAccess::ProtectBeforeSceneReplace(*this, dr))
+                        throw McpError(McpErr::ModeConflict, "人の未保存の変更を退避できなかったため、シーンを置き換えませんでした",
+                            "人に保存を依頼する。退避できない理由は dx12_engine.log（保存先のフォルダの書き込み権限・バックアップの設定を確認）");
+                }
                 // ファイルジャーナル: journal 対応 method は 1 呼び出し = 1 エントリ（トランザクション中は tx のエントリへ入る）。
                 struct JournalScope
                 {
@@ -515,6 +540,8 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
                         resp["result"]["undoTransaction"] = m_editorCtx->mcpUndo.TxLabel();
                 }
             }
+
+            AppAccess::AnnotateAutosave(*this, resp, method);   // W05-02: 自動保存を止めているかを結果に出す
 
             // ★シーンに属する描画設定は Play 中に変えても Stop で捨てられる
             //   （Stop は Play 開始時のシーン JSON から丸ごと復元する）。

@@ -47,6 +47,7 @@ struct Generation
     bool                  hasParts = false, hasInst = false, hasNav = false;
     std::filesystem::path root;        // 世代を表すファイル（目録 <id>.gen。旧方式の世代は <id>.json）
     bool                  legacy = false;   // 旧方式（ファイルのコピー）の世代
+    std::string           reason;      // 退避の理由（"protect-human-edits:Quit" など。通常の世代は空。withBytes=true の List だけ埋まる）
 };
 
 std::filesystem::path BackupDir(const std::filesystem::path& projectRoot);   // <プロジェクト>/.dx12/backups
@@ -92,6 +93,17 @@ void ForceNext(const std::filesystem::path& scenePath);
 
 // 古い世代の掃除（世代数と合計容量）。Snapshot / Finish が呼ぶ。消した世代の数を返す。
 int Prune(const std::filesystem::path& projectRoot, const Policy& policy);
+
+// ---- 人の未保存の変更の退避（W05-02）----
+// scenePath の世代として、別の場所に書いたシーン一式（stagingScenePath = <別のフォルダ>/<scenePath と同じ名前>.json と、
+// その .parts / .inst / .nav）を残す。scenePath 本体と、ディスク上の今の版には一切触れない。
+// 間隔の制限は無視する。最新の世代と同じ内容なら作らず、その最新の世代の id を返す（why に理由。退避は済んでいる）。失敗は空。reason は目録に書く。
+// 「以前の版に戻す」/ scene_backups の restore で 1 操作で戻せる（通常の世代と同じ形）。
+std::string SnapshotExternal(const std::filesystem::path& projectRoot, const std::filesystem::path& scenePath,
+                             const std::filesystem::path& stagingScenePath, const std::string& reason,
+                             std::string* why = nullptr);
+// 世代の理由（無ければ空）。
+std::string ReadReason(const std::filesystem::path& projectRoot, const std::string& id);
 
 // 世代 id の内容でシーンを置き換える（本体・.parts・.inst・.nav をまとめて 1 回のコミットで）。
 // 置き換える前に今の版を 1 世代として残す（復元を取り消せる）。
