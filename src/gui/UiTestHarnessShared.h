@@ -83,6 +83,9 @@ inline constexpr const char* kMenuScript      = "スクリプト";
 // ==== lane-A:decl begin ====
 // ==== lane-A:decl end ====
 // ==== lane-B:decl begin ====
+void T_SaveAsOverwriteConfirm(ImGuiTestContext* ctx);   // W05-12
+void T_NewSceneNameKept(ImGuiTestContext* ctx);         // W05-12
+void T_NewSceneCancelKeepsNoPath(ImGuiTestContext* ctx); // W05-12
 // ==== lane-B:decl end ====
 // ==== lane-C:decl begin ====
 void T_CreateEntitySelects(ImGuiTestContext* ctx);   // W05-21
