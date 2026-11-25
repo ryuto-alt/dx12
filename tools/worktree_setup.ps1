@@ -127,8 +127,7 @@ $gh = Join-Path $main 'third_party\gh-cli'
 if (Test-Path $gh) { Copy-Item -Recurse -Force $gh (Join-Path $Path 'third_party\gh-cli') }
 
 # ポートの案内（MCP: A 8851 / B 8852 / C 8853 / D 8855、UI: A〜D = 8911〜8914。8856 / 8915 はドッグフードと E2E 専用）
-$mcpPorts = @{ A = 8851; B = 8852; C = 8853; D = 8855 }
-$uiPorts  = @{ A = 8911; B = 8912; C = 8913; D = 8914 }
+$mcpPorts = $mcpPortsW; $uiPorts = $uiPortsW   # 上の表を再利用
 if ($Lane) { Write-Host ("[wt] lane {0}: engine MCP port {1}, UI test port {2}" -f $Lane, $mcpPorts[$Lane], $uiPorts[$Lane]) }
 
 # junction（本体に取得物があるときだけ）
@@ -137,13 +136,13 @@ foreach ($j in $junctionNames) {
     if (Test-Path $src) {
         $dst = Join-Path $Path $j
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dst) | Out-Null
-        if (-not (Test-Path $dst)) { cmd /c "mklink /J `"$dst`" `"$src`"" | Out-Null; Write-Host "[wt] junction: $j -> $src" }
+        if (-not (Test-Path $dst)) { cmd /c "mklink /J `"$dst`" `"$src`"" | Out-Null; if ($LASTEXITCODE -eq 0 -and (Test-Path $dst)) { Write-Host "[wt] junction: $j -> $src" } else { Write-Host "[wt] junction 作成に失敗: $j (続行)" } }
     }
 }
 
 # npm ci（TS のテストを worktree 単体で走らせるため）
 $mcpDir = Join-Path $Path 'tools\mcp-server'
-if (-not $NoNpm -and (Test-Path (Join-Path $mcpDir 'package-lock.json'))) {
+if (-not $NoNpm -and (Test-Path (Join-Path $mcpDir 'package-lock.json')) -and (Get-Command npm -ErrorAction SilentlyContinue)) {
     Push-Location $mcpDir
     try { npm ci --no-audit --no-fund; if ($LASTEXITCODE -ne 0) { Write-Host '[wt] npm ci failed (続行)' } } finally { Pop-Location }
 }

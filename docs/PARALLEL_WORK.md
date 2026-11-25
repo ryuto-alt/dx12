@@ -28,7 +28,7 @@
   `src/editor/ToolWindows.h`、`src/editor/EditorCommandTable.h`、`src/core/ReleaseNotesData.inc`、
   `src/gui/UiTestHarness.cpp`(kTests)、`src/gui/UiTestHarnessShared.h`(テスト本体の宣言。`lane-X:decl`)。
   新設の `src/renderer/FeatureList.inc`・`src/scripting/LuaBindList.inc`・`src/scene/ComponentSerializerList.inc`・
-  `shaders/manifest/lane_{a,b,c,d}.cmake` も同じ書式(中身はアンカーだけ。後続の W05-15 / W05-16 / W05-25 / W05-11 が使う)。
+  `shaders/manifest/lane_{a,b,c,d}.cmake` も同じ書式(中身はアンカーだけ。後続の W05-15 / W05-16 / W05-25 が使う)。
 - `ReleaseNotesData.inc` のレーンのブロックは `Release{}` の外の最上位にある。**レーンは自分のブロックに `Release` を足さない**
   (同じ版の `Release` が重なり、版の検査が赤になる)。次の版の `Release{}` はメインが版を切るときに 1 つだけ作る。
   レーンは自分のブロックに、その版に載せる項目の案をコメント(`// W05-xx: ...`)で書き、メインが `highlights` / `items` へ移す。

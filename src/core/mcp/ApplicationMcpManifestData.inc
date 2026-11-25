@@ -98,9 +98,6 @@ void FillManifestChunk0(ManifestRows& o)
         })});
 }
 
-// ==== lane-A begin ====
-// ==== lane-A end ====
-
 void FillManifestChunk1(ManifestRows& o)
 {
     o.push_back({"debug_human_edit", M("ヘッドレス専用の検証口。人の編集を模して Transform を直接書く（Undo へ人の操作として積む）",
@@ -266,9 +263,6 @@ void FillManifestChunk2(ManifestRows& o)
         })});
 }
 
-// ==== lane-B begin ====
-// ==== lane-B end ====
-
 void FillManifestChunk3(ManifestRows& o)
 {
     o.push_back({"get_mode", M("現在のエンジンモード(Editor / Playing)を返す。",
@@ -421,11 +415,6 @@ void FillManifestChunk4(ManifestRows& o)
         "none", "dx12_git_status", {
         })});
 }
-
-// ==== lane-C begin ====
-// ==== lane-C end ====
-// ==== lane-D begin ====
-// ==== lane-D end ====
 
 void FillManifestChunk5(ManifestRows& o)
 {
@@ -1734,4 +1723,12 @@ void FillGeneratedManifestRows(ManifestRows& o)
     FillManifestChunk12(o);
     FillManifestChunk13(o);
     FillManifestChunk14(o);
+    // ==== lane-A begin ====
+    // ==== lane-A end ====
+    // ==== lane-B begin ====
+    // ==== lane-B end ====
+    // ==== lane-C begin ====
+    // ==== lane-C end ====
+    // ==== lane-D begin ====
+    // ==== lane-D end ====
 }
