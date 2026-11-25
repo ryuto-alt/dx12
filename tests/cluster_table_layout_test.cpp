@@ -2,6 +2,7 @@
 // レジスタの重複が無い、総数の一致、ダミーで埋める本数、他のルートパラメータとの衝突が無い。
 #include "renderer/ClusterTableLayout.h"
 #include "renderer/MaterialTableLayout.h"
+#include "renderer/Material.h"
 
 #include <cstdio>
 #include <set>
@@ -64,6 +65,7 @@ int main()
 
     // 材質テーブル（slot 2）の枚数。
     CHECK(kMaterialTableCount == 5);
+    CHECK(kMaterialTableCount == kMaterialSrvBlockSize);   // Material.h の SRV ブロック長と同期していること
 
     std::printf("ClusterTableLayoutTests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -16,6 +16,7 @@
 #include "graphics/Texture.h"
 #include "renderer/ClusteredLightCulling.h"
 #include "renderer/IBLBaker.h"
+#include "renderer/MaterialTableLayout.h"
 #include "renderer/Mesh.h"
 #include "resource/ResourceManager.h"
 #include "resource/ShaderRuntimeCompiler.h"
@@ -264,6 +265,10 @@ struct GraphPreviewRenderer::Impl
     // ダミー（メイン RS のテーブルは何かを指している必要がある。実際には読まれない）
     ComPtr<ID3D12Resource> aoWhite, ssBlack, dummyBuf;
     u32 aoWhiteSrv = DescriptorHeap::kInvalidIndex, ssBlackSrv = DescriptorHeap::kInvalidIndex;
+    // 材質テーブル（slot2: kMaterialTableCount 本）と点光源影テーブル（slot8: 2 本）の連続ブロック。
+    // 以前は既定の白 1 枚の SRV の先頭だけを渡していたため、続きの記述子（別リソース）まで読んでいた（GBV の id=1358）
+    u32 matSrv = DescriptorHeap::kInvalidIndex;
+    u32 punctSrv = DescriptorHeap::kInvalidIndex;
     u32 clusterSrv = DescriptorHeap::kInvalidIndex;   // kClusterTableCount 個連続（ClusterTableLayout.h。RootSignature.cpp の kSlotClusterSRV）
 
     ComPtr<ID3D12RootSignature> tmRS;
@@ -536,6 +541,10 @@ bool GraphPreviewRenderer::Impl::CreateDummies()
         aoWhiteSrv = d.srvHeap->AllocateIndex();
         ssBlackSrv = d.srvHeap->AllocateIndex();
         clusterSrv = d.srvHeap->AllocateBlock(kClusterTable);
+        matSrv = d.srvHeap->AllocateBlock(kMaterialTableCount);
+        punctSrv = d.srvHeap->AllocateBlock(2);
+        if (matSrv == DescriptorHeap::kInvalidIndex || punctSrv == DescriptorHeap::kInvalidIndex)
+            throw std::runtime_error("SRV heap exhausted");
         if (aoWhiteSrv == DescriptorHeap::kInvalidIndex || ssBlackSrv == DescriptorHeap::kInvalidIndex || clusterSrv == DescriptorHeap::kInvalidIndex)
             throw std::runtime_error("SRV heap exhausted");
         D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
@@ -546,6 +555,20 @@ bool GraphPreviewRenderer::Impl::CreateDummies()
         dev->CreateShaderResourceView(aoWhite.Get(), &sd, d.srvHeap->GetCpuHandle(aoWhiteSrv));
         sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         dev->CreateShaderResourceView(ssBlack.Get(), &sd, d.srvHeap->GetCpuHandle(ssBlackSrv));
+
+        {
+            // 材質テーブルは既定の白で全部埋める。点光源影は t9 = 2D 配列 / t10 = キューブ配列の型つきヌル
+            Texture* wt = d.resources->GetDefaultWhiteTexture();
+            D3D12_SHADER_RESOURCE_VIEW_DESC wd{};
+            wd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            wd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            wd.Format = wt->GetFormat();
+            wd.Texture2D.MipLevels = wt->GetMipLevels();
+            for (u32 i = 0; i < kMaterialTableCount; ++i)
+                dev->CreateShaderResourceView(wt->GetResource(), &wd, d.srvHeap->GetCpuHandle(matSrv + i));
+            ClusteredLightCulling::WriteDummySrv(dev, DummyKind::Tex2DArray, d.srvHeap->GetCpuHandle(punctSrv));
+            ClusteredLightCulling::WriteDummySrv(dev, DummyKind::TexCubeArray, d.srvHeap->GetCpuHandle(punctSrv + 1));
+        }
 
         // クラスタライト / インデックス / カウント / デカール / DDGI ほか（kClusterTableCount 個）: 中身は読まれない。共通の小さなバッファを指す
         D3D12_HEAP_PROPERTIES up{};
@@ -819,9 +842,9 @@ void GraphPreviewRenderer::Impl::BindCommon(ID3D12GraphicsCommandList* cmd, D3D1
     cmd->SetGraphicsRootConstantBufferView(RootSignature::kSlotPerFrame, cbAddr);
     Texture* white = d.resources->GetDefaultWhiteTexture();
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteH = h.GetGpuHandle(white->GetSrvIndex());
-    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotSRVTable, whiteH);
+    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotSRVTable, h.GetGpuHandle(matSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotShadowSRV, whiteH);
-    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotPunctualShadowSRV, whiteH);
+    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotPunctualShadowSRV, h.GetGpuHandle(punctSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotAOSRV, h.GetGpuHandle(aoWhiteSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotContactShadowSRV, h.GetGpuHandle(aoWhiteSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotSsrSRV, h.GetGpuHandle(ssBlackSrv));
@@ -890,6 +913,8 @@ void GraphPreviewRenderer::Shutdown()
             if (I.srvAtlas != DescriptorHeap::kInvalidIndex) I.d.srvHeap->Free(I.srvAtlas);
             if (I.aoWhiteSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->Free(I.aoWhiteSrv);
             if (I.ssBlackSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->Free(I.ssBlackSrv);
+            if (I.matSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->FreeBlock(I.matSrv, kMaterialTableCount);
+            if (I.punctSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->FreeBlock(I.punctSrv, 2);
             if (I.clusterSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->FreeBlock(I.clusterSrv, kClusterTable);
             for (auto& e : I.envs)
                 if (e.baker && e.baker->GetSrvBlockStart() != DescriptorHeap::kInvalidIndex)

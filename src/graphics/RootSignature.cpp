@@ -185,7 +185,7 @@ void RootSignature::Initialize(GraphicsDevice& device)
     rootParams[10].DescriptorTable.pDescriptorRanges   = &prevBoneRange;
     rootParams[10].ShaderVisibility                    = D3D12_SHADER_VISIBILITY_VERTEX;
 
-    // [11] クラスタードライティング SRV DescriptorTable。ヒープ上は 7 本連続だが、
+    // [11] クラスタードライティング SRV DescriptorTable。ヒープ上は renderer/ClusterTableLayout.h の全 28 本連続（レンジはそこからループ生成）。旧説明:
     // シェーダレジスタは t13,t14,t15（クラスタ）と t18..t21（デカール予約）に割れている。
     //   t13 = StructuredBuffer<ClusterLight>（フレーム毎に切り替わる）
     //   t14 = クラスタ別ライトインデックスリスト（固定ストライド 128/クラスタ）
