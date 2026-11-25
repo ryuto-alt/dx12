@@ -3410,12 +3410,25 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                     }
                     else
                     {
-                        entt::entity it = m_editorCtx->selectedEntity;
+                        const entt::entity sel = m_editorCtx->selectedEntity;
+                        entt::entity it = sel;
                         for (int guard = 0; guard < 64 && it != entt::null && reg.valid(it); ++guard)
                         {
                             if (reg.all_of<UICanvas>(it))
                             {
-                                uiParent = m_editorCtx->selectedEntity;   // 選択そのものの子にする
+                                // 入れ物（Canvas / ScrollView）が選択されていれば、その子にする。
+                                // それ以外の UI 要素（直前に作った Image 等）が選択されているときは、
+                                // 入れ子の鎖にならないよう、その要素の親に兄弟として付ける。
+                                if (reg.all_of<UICanvas>(sel) || reg.all_of<UIScrollView>(sel))
+                                {
+                                    uiParent = sel;
+                                }
+                                else
+                                {
+                                    const auto* st = reg.try_get<Transform>(sel);
+                                    uiParent = (st && st->parent != entt::null && reg.valid(st->parent))
+                                                   ? st->parent : it;
+                                }
                                 break;
                             }
                             const auto* t = reg.try_get<Transform>(it);

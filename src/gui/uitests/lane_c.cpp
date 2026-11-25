@@ -31,6 +31,8 @@ namespace uitest
 
 namespace
 {
+bool HierarchyRowDrawn(ImGuiTestContext* ctx, entt::entity e);
+
 // 生成要求を積んで（人の操作と同じ経路）、選択が「新しいエンティティ 1 件」になるか確かめる。
 void ExpectSelectsNewEntity(ImGuiTestContext* ctx, EditorContext* ed, Scene* scene,
                             const char* what, void (*spawn)(ImGuiTestContext*, EditorContext*))
@@ -47,6 +49,8 @@ void ExpectSelectsNewEntity(ImGuiTestContext* ctx, EditorContext* ed, Scene* sce
     IM_CHECK(reg.valid(ed->selectedEntity));
     IM_CHECK(ed->selectedEntities.size() == 1 && ed->selectedEntities[0] == ed->selectedEntity);
     IM_CHECK(!ed->revealInHierarchy);   // ヒエラルキーが露出を処理した
+    ctx->Yield(4);
+    IM_CHECK(HierarchyRowDrawn(ctx, ed->selectedEntity));   // 行が実際に描かれている
 }
 
 // 三角形 1 枚だけの最小 .glb を書き出す（外部のモデルに頼らず .glb 分岐を通すため）
@@ -182,6 +186,37 @@ void T_CreateEntitySelects(ImGuiTestContext* ctx)
         IM_CHECK(reg.get<Transform>(img).parent != entt::null);
         ctx->Yield(4);
         IM_CHECK(HierarchyRowDrawn(ctx, img));
+
+        // 続けて作っても入れ子の鎖にならない（選択が Image のとき、Text は Image の兄弟 = Canvas 直下）
+        PendingSpawnRequest tx; tx.modelPath = "__ui_text__";
+        ed->pendingSpawns.push_back(tx);
+        ctx->Yield(8);
+        const entt::entity txt = ed->selectedEntity;
+        IM_CHECK(txt != entt::null && reg.valid(txt) && txt != img);
+        IM_CHECK(reg.get<Transform>(txt).parent == canvas);
+        PendingSpawnRequest bt; bt.modelPath = "__ui_button__";
+        ed->pendingSpawns.push_back(bt);
+        ctx->Yield(8);
+        const entt::entity btn = ed->selectedEntity;
+        IM_CHECK(btn != entt::null && reg.valid(btn) && btn != txt);
+        IM_CHECK(reg.get<Transform>(btn).parent == canvas);
+        // Canvas を選んで作れば Canvas の子
+        ed->ClearSelection(); ed->Select(canvas);
+        PendingSpawnRequest sl; sl.modelPath = "__ui_slider__";
+        ed->pendingSpawns.push_back(sl);
+        ctx->Yield(8);
+        IM_CHECK(reg.get<Transform>(ed->selectedEntity).parent == canvas);
+        // ScrollView（入れ物）を選んで作れば ScrollView の子
+        ed->ClearSelection(); ed->Select(canvas);
+        PendingSpawnRequest sv; sv.modelPath = "__ui_scrollview__";
+        ed->pendingSpawns.push_back(sv);
+        ctx->Yield(8);
+        const entt::entity scroll = ed->selectedEntity;
+        IM_CHECK(scroll != entt::null && reg.valid(scroll) && reg.all_of<UIScrollView>(scroll));
+        PendingSpawnRequest tx2; tx2.modelPath = "__ui_text__";
+        ed->pendingSpawns.push_back(tx2);
+        ctx->Yield(8);
+        IM_CHECK(reg.get<Transform>(ed->selectedEntity).parent == scroll);
     }
 
     // MCP の生成は選択を変えない（primitive / ui_button（ラベル子つき） / prefab）
