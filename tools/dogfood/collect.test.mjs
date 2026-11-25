@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
-  validateChecklist, validateResults, deriveBugs, nextBugNumber, makeBugId, collect, evaluateGreen, exitCodeOf,
+  validateChecklist, validateResults, normalizeResults, deriveBugs, nextBugNumber, makeBugId, collect, evaluateGreen, exitCodeOf,
   SEVERITIES, STATUSES, BUG_STATUSES, EVIDENCE_KINDS, CHECK_REQUIRED, RESULT_REQUIRED, BUG_REQUIRED, STEP_KINDS, FILE_BASES,
 } from "./collect.mjs";
 
@@ -64,6 +64,62 @@ bugs = deriveBugs(cl2, { wave: "w05", runner, results: [{ id: "D1", status: "pas
 check("直ったら verified になる", bugs[0].status === "verified");
 bugs = deriveBugs(cl2, { wave: "w05", runner, results: [{ id: "D1", status: "fail", observed: "再発" }, { id: "D2", status: "fail", observed: "b" }] }, bugs, "T4");
 check("再発は新しい番号（DF-W05-02, 03）", bugs.map((b) => b.id).join() === "DF-W05-01,DF-W05-02,DF-W05-03", bugs.map((b) => b.id));
+
+// [4b] 不具合の fixed → verified / 開き直し
+{
+  const fx = deriveBugs(cl2, res1, [], "T").map((b) => ({ ...b, status: "fixed" }));
+  const ok = deriveBugs(cl2, { wave: "w05", runner, results: [{ id: "D1", status: "pass" }] }, fx, "T2");
+  check("fixed の不具合は pass で verified になる", ok.length === 1 && ok[0].status === "verified", ok);
+  const again = deriveBugs(cl2, { wave: "w05", runner, results: [{ id: "D1", status: "fail", observed: "また" }] }, fx, "T3");
+  check("fixed のあとの fail は同じ番号を開き直す", again.length === 1 && again[0].status === "open" && again[0].actual === "また" && again[0].reopenedAt === "T3", again);
+}
+
+// [4c] dpi の扱いとゲート名
+{
+  const clD = { wave: "w05", version: 1, checks: [
+    { id: "D1", area: "a", steps: [{ kind: "note", text: "x" }], expect: "e", evidence: ["json"], severityIfFail: "blocker", gate: ["dg05a"] },
+    { id: "D10", area: "a", steps: [{ kind: "note", text: "x" }], expect: "e", evidence: ["json"], severityIfFail: "major", dpi: [1, 1.5], gate: ["dg05a"] }] };
+  const ev = [{ kind: "json", path: "x" }];
+  const docOf = (results) => ({ wave: "w05", runner, results });
+  // dpi の一覧が無いチェックに付いた dpi は無視される（緑になる）
+  const norm = normalizeResults(docOf([{ id: "D1", status: "pass", dpi: 1.0, evidence: ev }, { id: "D10", status: "pass", dpi: 1, evidence: ev }, { id: "D10", status: "pass", dpi: 1.5, evidence: ev }]), clD);
+  check("一覧の無いチェックの dpi は外れ、検証を通る", norm.results[0].dpi === undefined && validateResults(norm, clD).length === 0, validateResults(norm, clD));
+  const g = evaluateGreen(clD, norm.results, "dg05a");
+  check("dpi 付きで書いた pass でもゲートが緑になる", g.notGreenBlockerMajor.length === 0 && g.notRun.length === 0, g);
+  check("一覧のあるチェックの dpi が文字列・範囲外・欠落だと落ちる",
+    validateResults(docOf([{ id: "D10", status: "pass", dpi: "1.5" }]), clD).length > 0 &&
+    validateResults(docOf([{ id: "D10", status: "pass", dpi: 3 }]), clD).length > 0 &&
+    validateResults(docOf([{ id: "D10", status: "pass" }]), clD).length > 0);
+  check("一覧の無いチェックの文字列 dpi は落ちる", validateResults(docOf([{ id: "D1", status: "pass", dpi: "1.0" }]), clD).length > 0);
+  let threw = false;
+  try { evaluateGreen(clD, [], "dg05-a"); } catch { threw = true; }
+  check("未知のゲート名は例外（空の対象で緑にならない）", threw);
+  // collect 経由でも、何も書き込まずに落ちる
+  const t = fs.mkdtempSync(path.join(os.tmpdir(), "dogfood_g_"));
+  try {
+    fs.writeFileSync(path.join(t, "cl.json"), JSON.stringify(clD));
+    fs.writeFileSync(path.join(t, "res.json"), JSON.stringify(docOf([])));
+    let threw2 = false;
+    try { collect({ checklistPath: path.join(t, "cl.json"), resultsPath: path.join(t, "res.json"), outDir: path.join(t, "out"), gate: "dg05-a" }); } catch { threw2 = true; }
+    check("collect --gate の打ち間違いは例外で、出力を作らない", threw2 && !fs.existsSync(path.join(t, "out", "results.json")));
+  } finally { fs.rmSync(t, { recursive: true, force: true }); }
+  // file ステップの場所
+  check("file.path が scenes/ で始まる（project 基準）と落ちる", validateChecklist(mk({ steps: [{ kind: "file", path: "scenes/main.json", check: "exists" }] })).length > 0 && validateChecklist(mk({ steps: [{ kind: "file", path: "assets/scenes/main.json", check: "exists" }] })).length === 0);
+  check("file.path が engine.log だと落ちる", validateChecklist(mk({ steps: [{ kind: "file", path: "engine.log", check: "exists", base: "instance" }] })).length > 0);
+  // 実チェックリストの固定: シーン・ログの場所、create_entity の type、scene_backups の op
+  const allSteps = [...w05.checks, ...w1.checks].flatMap((c) => c.steps.map((s) => ({ c: c.id, s })));
+  check("実チェックリスト: file.path に scenes/ 始まりが無い", allSteps.every(({ s }) => s.kind !== "file" || (s.base ?? "project") !== "project" || !/^scenes\//.test(s.path)));
+  check("実チェックリスト: create_entity の type が有効（cube を使わない）", allSteps.every(({ s }) => !(s.kind === "mcp" && s.method === "create_entity") || ["box", "sphere", "plane", "particle_emitter"].includes(s.params?.type)));
+  check("実チェックリスト: scene_backups は op を持つ", allSteps.every(({ s }) => !(s.kind === "mcp" && s.method === "scene_backups") || typeof s.params?.op === "string"));
+  check("実チェックリスト: ログは dx12_engine.log", allSteps.every(({ s }) => !(s.kind === "file" && /\.log$/.test(s.path)) || s.path === "dx12_engine.log"));
+  // D16 / G9: vfx_preview の前に放出器を置く
+  for (const [cl, id] of [[w05, "D16"], [w1, "G9"]]) {
+    const st = cl.checks.find((c) => c.id === id).steps;
+    const iv = st.findIndex((s) => s.kind === "mcp" && s.method === "vfx_preview");
+    const ic = st.findIndex((s) => s.kind === "mcp" && s.method === "create_entity" && s.params?.type === "particle_emitter");
+    check(`${id}: vfx_preview の前に放出器を置く`, ic >= 0 && iv > ic, [ic, iv]);
+  }
+}
 
 // [5] collect: 証拠のコピー、root 外の拒否、結果のマージ
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dogfood_"));
@@ -165,8 +221,8 @@ try {
   check("record_hash 無しの hash_unchanged を落とす", stepsOf([{ kind: "file", path: "scenes/main.json", check: "hash_unchanged" }]).length > 0);
   check("別の path の record_hash では足りない", stepsOf([{ kind: "file", path: "a.json", check: "record_hash" }, { kind: "file", path: "b.json", check: "hash_changed" }]).length > 0);
   check("record_hash の後なら hash_changed が通る", stepsOf([{ kind: "file", path: "a.json", check: "record_hash" }, { kind: "file", path: "a.json", check: "hash_changed" }]).length === 0);
-  check("contains に pattern が無いと落ちる", stepsOf([{ kind: "file", path: "engine.log", check: "contains", base: "instance" }]).length > 0);
-  check("pattern と base 付きの contains は通る", stepsOf([{ kind: "file", path: "engine.log", check: "contains", pattern: "x", base: "instance" }]).length === 0);
+  check("contains に pattern が無いと落ちる", stepsOf([{ kind: "file", path: "dx12_engine.log", check: "contains", base: "instance" }]).length > 0);
+  check("pattern と base 付きの contains は通る", stepsOf([{ kind: "file", path: "dx12_engine.log", check: "contains", pattern: "x", base: "instance" }]).length === 0);
   check("不正な base を落とす", stepsOf([{ kind: "file", path: "a", check: "exists", base: "home" }]).length > 0);
   check("engine.args の --env を落とす", stepsOf([{ kind: "engine", action: "start", args: ["--env", "A=1"] }]).length > 0);
   check("engine.env は通り、ANTHROPIC は落ちる", stepsOf([{ kind: "engine", action: "start", env: ["DX12_D3D_DEBUG=1"] }]).length === 0 && stepsOf([{ kind: "engine", action: "start", env: ["ANTHRO" + "PIC_KEY=x"] }]).length > 0);
@@ -208,7 +264,7 @@ try {
 {
   const probe = spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"], { encoding: "utf8" });
   if (probe.status === 0) {
-    const r = spawnSync("pwsh", ["-NoProfile", "-File", path.join(here, "run.ps1"), "-Wave", "w05", "-Action", "start", "-BuildDir", path.join(os.tmpdir(), "dogfood_no_such_build_dir")], { encoding: "utf8" });
+    const r = spawnSync("pwsh", ["-NoProfile", "-File", path.join(here, "run.ps1"), "-Wave", "w05", "-NameSuffix", "-unittest", "-Action", "start", "-BuildDir", path.join(os.tmpdir(), "dogfood_no_such_build_dir")], { encoding: "utf8" });
     check("run.ps1: ビルド出力が無いと終了コード 4（1 に潰れない）", r.status === 4, [r.status, r.stdout, r.stderr]);
     const dry = spawnSync("pwsh", ["-NoProfile", "-File", path.join(here, "run.ps1"), "-Wave", "w05", "-Action", "restart", "-DryRun", "-IdleExitMin", "0.5"], { encoding: "utf8" });
     check("run.ps1: restart -IdleExitMin が --idle-exit 0.5 になる", dry.status === 0 && /--idle-exit 0\.5/.test(dry.stdout), dry.stdout);

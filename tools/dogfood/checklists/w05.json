@@ -13,7 +13,7 @@
       "steps": [
         {
           "kind": "note",
-          "text": "前提: プロジェクトに scenes/main.json がある（無ければ最初に save_scene で作る）。以降 main.json が現在のシーンであること"
+          "text": "前提: プロジェクトに assets/scenes/main.json（MCP の path は scenes/main.json）がある（無ければ最初に save_scene で作る）。以降 main.json が現在のシーンであること"
         },
         {
           "kind": "engine",
@@ -29,7 +29,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
@@ -49,7 +49,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         },
         {
@@ -80,7 +80,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
@@ -88,7 +88,7 @@
           "method": "create_entity",
           "params": {
             "name": "McpOnlyBox",
-            "type": "cube"
+            "type": "box"
           }
         },
         {
@@ -97,7 +97,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_changed"
         },
         {
@@ -128,7 +128,7 @@
       "steps": [
         {
           "kind": "note",
-          "text": "前提: scenes/main.json がある。経路ごとに「新しい人の編集」を入れてから確かめる（前の経路の編集を引き継がない）"
+          "text": "前提: assets/scenes/main.json（MCP の path は scenes/main.json）がある。経路ごとに「新しい人の編集」を入れてから確かめる（前の経路の編集を引き継がない）"
         },
         {
           "kind": "engine",
@@ -162,7 +162,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
@@ -196,7 +196,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         },
         {
@@ -223,7 +223,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
@@ -254,7 +254,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         },
         {
@@ -286,7 +286,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
@@ -314,7 +314,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         },
         {
@@ -335,9 +335,54 @@
         {
           "kind": "input",
           "op": "screenshot"
+        },
+        {
+          "kind": "file",
+          "path": "assets/scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
+        },
+        {
+          "kind": "note",
+          "text": "scene_backups の list から、経路 3 で退避された世代の id を選ぶ（退避の理由つきの最新）"
+        },
+        {
+          "kind": "note",
+          "text": "選んだ id で scene_backups op=restore を 1 回だけ呼ぶ（次の手順の params.id に入れる）"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups",
+          "params": {
+            "op": "restore",
+            "id": "<list で選んだ世代の id>"
+          }
+        },
+        {
+          "kind": "wait",
+          "ms": 2000
+        },
+        {
+          "kind": "file",
+          "path": "assets/scenes/main.json",
+          "check": "hash_changed"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
         }
       ],
-      "expect": "3 経路（open_scene / new_scene / アイドル終了）それぞれで、新しい人の編集の後に main.json のハッシュが不変、退避が各経路で 1 件ずつ増える、モーダルが出ない。退避から 1 操作で戻る",
+      "expect": "3 経路（open_scene / new_scene / アイドル終了）それぞれで、新しい人の編集の後に main.json のハッシュが不変、退避が各経路で 1 件ずつ増える、モーダルが出ない。退避から scene_backups restore の 1 操作で戻り（main.json のハッシュが変わり、editor_state に退避した編集が戻る）、モーダルが出ない",
       "evidence": [
         "json",
         "log",
@@ -358,7 +403,7 @@
       "steps": [
         {
           "kind": "note",
-          "text": "前提: scenes/main.json がある。(a) アイドル終了、(b) taskkill の順"
+          "text": "前提: assets/scenes/main.json（MCP の path は scenes/main.json）がある。(a) アイドル終了、(b) taskkill の順"
         },
         {
           "kind": "engine",
@@ -378,7 +423,7 @@
           "method": "create_entity",
           "params": {
             "name": "McpOnlyBox",
-            "type": "cube"
+            "type": "box"
           }
         },
         {
@@ -387,7 +432,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
@@ -408,7 +453,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         },
         {
@@ -445,7 +490,7 @@
           "method": "create_entity",
           "params": {
             "name": "McpOnlyBox2",
-            "type": "cube"
+            "type": "box"
           }
         },
         {
@@ -454,7 +499,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
@@ -474,7 +519,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         },
         {
@@ -539,7 +584,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/_mcp_untitled_*",
+          "path": "assets/scenes/_mcp_untitled_*",
           "check": "absent"
         },
         {
@@ -610,10 +655,68 @@
         },
         {
           "kind": "note",
-          "text": "MCP だけのセッションに切り替えて Play → Stop。humanSettingsDirty が立たず自動保存が止まらないこと"
+          "text": "【後半: MCP だけのセッション】人の編集が無い別セッションで確かめる"
+        },
+        {
+          "kind": "engine",
+          "action": "restart",
+          "freshData": true
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "file",
+          "path": "assets/scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "McpPlayBox",
+            "type": "box"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "play"
+        },
+        {
+          "kind": "wait",
+          "ms": 2000
+        },
+        {
+          "kind": "mcp",
+          "method": "stop"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "wait",
+          "ms": 10000
+        },
+        {
+          "kind": "file",
+          "path": "assets/scenes/main.json",
+          "check": "hash_changed"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "note",
+          "text": "Play → Stop の後も humanSettingsDirty が立たず（autosave.blockedByHumanEdits が false）、MCP の編集が main.json に保存されたこと（hash_changed）を確かめる"
         }
       ],
-      "expect": "undoDepth が 3、選択が残り、Ctrl+Z で 1 回ずつ戻る。MCP だけのセッションの Play → Stop の後も自動保存が止まらない（humanSettingsDirty が立たない）",
+      "expect": "前半: undoDepth が 3、選択が残り、Ctrl+Z で 1 回ずつ戻る。後半（エンジンを起動し直した MCP だけのセッション）: Play → Stop の後も humanSettingsDirty が立たず、MCP の編集（McpPlayBox）が main.json に保存される（自動保存が止まらない）",
       "evidence": [
         "json",
         "screenshot"
@@ -801,7 +904,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/*.json",
+          "path": "assets/scenes/*.json",
           "check": "record_hash"
         },
         {
@@ -810,7 +913,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/*.json",
+          "path": "assets/scenes/*.json",
           "check": "hash_unchanged"
         },
         {
@@ -819,7 +922,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/Forest.json",
+          "path": "assets/scenes/Forest.json",
           "check": "exists"
         },
         {
@@ -967,7 +1070,7 @@
         },
         {
           "kind": "file",
-          "path": "engine.log",
+          "path": "dx12_engine.log",
           "check": "contains",
           "pattern": "D3D12 runtime:.*D3D12Core.dll 1.620.2.*redist=yes",
           "base": "instance"
@@ -1010,10 +1113,14 @@
         },
         {
           "kind": "file",
-          "path": "engine.log",
+          "path": "dx12_engine.log",
           "check": "contains",
           "pattern": "warn.*dlss|dlss.*warn",
           "base": "instance"
+        },
+        {
+          "kind": "note",
+          "text": "ログ（dx12_engine.log）の DLSS に関する Warn 行を数え、ちょうど 1 行であることを確かめる（contains では数えられない）。1 行でなければ fail にして行数を observed に書く"
         }
       ],
       "expect": "DLSS 有りなら textureMipBias が -1.585（Quality）。無しなら fallbackReason が入り、ログに Warn が 1 回だけ",
@@ -1059,7 +1166,7 @@
         },
         {
           "kind": "file",
-          "path": "engine.log",
+          "path": "dx12_engine.log",
           "check": "contains",
           "pattern": "Debug Layer enabled",
           "base": "instance"
@@ -1159,21 +1266,49 @@
         },
         {
           "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "VfxProbe",
+            "type": "particle_emitter"
+          }
+        },
+        {
+          "kind": "wait",
+          "ms": 10000
+        },
+        {
+          "kind": "note",
+          "text": "放出器 VfxProbe を置いてから基準を取る（シーンが空だと vfx_preview が何も動かさず、不変が自明に通ってしまう）"
+        },
+        {
+          "kind": "mcp",
           "method": "editor_state"
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
           "kind": "mcp",
-          "method": "scene_backups"
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
         },
         {
           "kind": "mcp",
           "method": "vfx_preview",
-          "params": {}
+          "params": {
+            "name": "VfxProbe"
+          }
         },
         {
           "kind": "wait",
@@ -1185,12 +1320,15 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         },
         {
           "kind": "mcp",
-          "method": "scene_backups"
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
         }
       ],
       "expect": "undoDepth と main.json が不変、バックアップが増えない",

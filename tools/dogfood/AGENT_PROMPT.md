@@ -18,7 +18,7 @@
 1. `pwsh tools/dogfood/run.ps1 -Wave <wave> -Action start -Project <プロジェクト>` でエンジンを起動する。
    手順の `engine` の項目は次のように渡す: `args` → `-ExtraArgs`（カンマ区切り）、`env` → `-EnvVar`、`idleMin` → `-IdleExitMin`、`freshData` → `-FreshData`、`{evidence}` → `-EvidenceDir`。
    `action` は `start` / `restart`（DPI や環境変数を変えるとき。start は起動中だと終了コード 3）/ `stop` / `kill`（taskkill）/ `idle_exit`（`-Action idle_exit`。事前に短い `idleMin` で起動し、待っている間は MCP を呼ばない。終了コード 5 はタイムアウト）/ `run`（`-Action run`。一回きり・窓なしの実行）。
-   `file` の手順は `base`（`project` は起動した `-Project`、`instance` は `%LOCALAPPDATA%UnoEngineagent-instancesdogfood-<wave>`）を基準に読み、`contains` は `pattern`（大文字小文字を区別しない正規表現）を探す。`record_hash` の記録は同じ `path` の `hash_unchanged` / `hash_changed` と比べる。
+   `file` の手順は `base`（`project` は起動した `-Project`、`instance` は `%LOCALAPPDATA%\UnoEngine\agent-instances\dogfood-<wave>`）を基準に読み、`contains` は `pattern`（大文字小文字を区別しない正規表現）を探す。`record_hash` の記録は同じ `path` の `hash_unchanged` / `hash_changed` と比べる。
 2. `ping` で接続とバージョンを確かめ、`results.json` の `engine` にバージョンとコミットを書く。
 3. チェックを ID 順に実行する（DG05-a は `gate` に `dg05a` を持つものだけ）。各チェックで:
    - `steps` を順に実行する。`note` は文章の指示なので仮想入力で実現する。
@@ -34,14 +34,15 @@
   "runner": { "model": "<自分のモデル ID>", "promptVersion": "1" },
   "engine": { "commit": "<hash>", "version": "<版>" },
   "results": [
-    { "id": "D1", "status": "pass", "dpi": 1.0, "notes": "",
-      "evidence": [{ "kind": "json", "path": "D1/editor_state.json" }] }
+    { "id": "D13", "status": "pass", "dpi": 1.5, "notes": "",
+      "evidence": [{ "kind": "json", "path": "D13/editor_state.json" }] }
   ]
 }
 ```
 
 - 証拠の `path` は `--evidence-root`（自分が作った作業フォルダ）からの相対パス。
-- 同じチェックを DPI 違いで繰り返したら、`dpi` を付けた結果を別々に書く。
+- `dpi` は、チェックに `dpi` の一覧があるものだけに付ける（一覧の数値のどれか。無いチェックでは付けても無視される）。一覧のあるチェックを DPI 違いで繰り返したら、結果を別々に書く。一覧のあるチェックの結果に `dpi` が無い・一覧に無い値は検証で落ちる。
+- `--gate` の名前が間違っている（そのゲートを持つチェックが無い）と終了コード 2 で止まる。
 - DG05-a の判定は `collect.mjs collect --gate dg05a`。結果が無いチェックや `blocked` / `skip` の blocker・major は緑でないので、実行できなかったものも結果に `blocked`（理由つき）で書く。`fail` にも `evidence` が要る。
 - `collect.mjs` の終了コードが 1 のときは、出力の `missingEvidence` / `openBlockerMajor` / `notGreenBlockerMajor` / `notRun` をそのまま報告する。
 

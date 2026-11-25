@@ -62,6 +62,10 @@ export function validateStep(s, where, errs) {
     if (s.base !== undefined && !FILE_BASES.includes(s.base)) errs.push(`${where}: file.base が不正 ${s.base}`);
     if (s.check === "contains" && !(typeof s.pattern === "string" && s.pattern)) errs.push(`${where}: contains には pattern が要る`);
     if (s.pattern !== undefined && s.check !== "contains") errs.push(`${where}: pattern は contains だけ`);
+    // シーンは <プロジェクト>/assets/scenes/ にある（MCP の path は assets 相対の scenes/...、file の path は根から）
+    if ((s.base ?? "project") === "project" && typeof s.path === "string" && /^scenes[\\/]/.test(s.path)) errs.push(`${where}: file.path は assets/scenes/... と書く（プロジェクトの根から）: ${s.path}`);
+    // ログはエンジンの作業フォルダ（インスタンスフォルダ）の dx12_engine.log
+    if (typeof s.path === "string" && /^engine.log$/i.test(s.path)) errs.push(`${where}: ログのファイル名は dx12_engine.log`);
   }
   if (FORBIDDEN.test(JSON.stringify(s))) errs.push(`${where}: 実マウス・フォーカスを要求する語が含まれる`);
 }
@@ -104,6 +108,16 @@ export function validateChecklist(doc) {
   return errs;
 }
 
+// dpi の一覧を持たないチェックの結果に付いた dpi は無視する（外す）。一覧を持つチェックの dpi は一覧の中の数値でなければならない。
+export function normalizeResults(doc, checklist) {
+  const byId = new Map(checklist.checks.map((c) => [c.id, c]));
+  for (const r of doc?.results ?? []) {
+    const c = r && byId.get(r.id);
+    if (c && !(c.dpi && c.dpi.length) && r.dpi !== undefined) delete r.dpi;
+  }
+  return doc;
+}
+
 export function validateResults(doc, checklist) {
   const errs = [];
   if (!doc || typeof doc !== "object") return ["結果がオブジェクトでない"];
@@ -115,6 +129,10 @@ export function validateResults(doc, checklist) {
   for (const r of doc.results) {
     const w = `result ${r?.id ?? "?"}`;
     if (!r || !ids.has(r.id)) { errs.push(`${w}: チェックリストに無い ID`); continue; }
+    const c = checklist.checks.find((x) => x.id === r.id);
+    if (c.dpi && c.dpi.length) {
+      if (typeof r.dpi !== "number" || !c.dpi.includes(r.dpi)) errs.push(`${w}: dpi は ${JSON.stringify(c.dpi)} のどれかの数値（${JSON.stringify(r.dpi)}）`);
+    } else if (r.dpi !== undefined && typeof r.dpi !== "number") errs.push(`${w}: dpi が数値でない`);
     const key = `${r.id}@${r.dpi ?? ""}`;
     if (seen.has(key)) errs.push(`${w}: 同じ ID と DPI の結果が重複`);
     seen.add(key);
@@ -146,8 +164,11 @@ export function deriveBugs(checklist, results, existing, nowIso) {
   for (const r of results.results) {
     const c = byId.get(r.id);
     const open = bugs.find((b) => b.checkId === r.id && dpiOf(b) === dpiOf(r) && b.status === "open");
+    const fixed = bugs.find((b) => b.checkId === r.id && dpiOf(b) === dpiOf(r) && b.status === "fixed");
     if (r.status === "fail") {
       if (open) continue;
+      // 直したと言われた（fixed）のにまた落ちた: 同じ不具合を開き直す（新しい番号にしない）
+      if (fixed) { fixed.status = "open"; fixed.actual = r.observed; fixed.evidence = (r.evidence ?? []).map((e) => e.collected).filter(Boolean); fixed.reopenedAt = nowIso; continue; }
       const bug = {
         id: makeBugId(checklist.wave, n++), checkId: r.id, severity: c.severityIfFail, area: c.area,
         title: `${r.id}${r.dpi ? ` (dpi ${r.dpi})` : ""}: ${c.title ?? c.expect.slice(0, 60)}`, expected: c.expect, actual: r.observed,
@@ -155,8 +176,10 @@ export function deriveBugs(checklist, results, existing, nowIso) {
       };
       if (r.dpi) bug.dpi = r.dpi;
       bugs.push(bug);
-    } else if (r.status === "pass" && open) {
-      open.status = "verified";
+    } else if (r.status === "pass") {
+      // open（直さずに通った）も fixed（直したと言われて通った）も、その DPI が pass したら verified
+      if (open) open.status = "verified";
+      if (fixed) fixed.status = "verified";
     }
   }
   return bugs;
@@ -204,6 +227,7 @@ function readJson(p) { return JSON.parse(fs.readFileSync(p, "utf8").replace(/^�
 // 結果が無い（notRun）・blocked・skip・fail は緑でない。blocker / major は ng、minor は warn に分ける。
 export function evaluateGreen(checklist, mergedResults, gate) {
   const scope = checklist.checks.filter((c) => !gate || (c.gate ?? []).includes(gate));
+  if (gate && scope.length === 0) throw new Error(`--gate ${gate} を持つチェックが無い（ゲート名の誤り）。使えるゲート: ${[...new Set(checklist.checks.flatMap((c) => c.gate ?? []))].join(", ") || "なし"}`);
   const byKey = new Map(mergedResults.map((r) => [`${r.id}@${r.dpi ?? ""}`, r]));
   const bucket = { notRun: [], blocked: [], skip: [], fail: [] };
   const ng = [], warn = [];
@@ -224,10 +248,11 @@ export function collect({ checklistPath, resultsPath, evidenceRoot, outDir, gate
   const checklist = readJson(checklistPath);
   const ce = validateChecklist(checklist);
   if (ce.length) throw new Error("チェックリストが不正:\n" + ce.join("\n"));
-  const results = readJson(resultsPath);
+  const results = normalizeResults(readJson(resultsPath), checklist);
   const re = validateResults(results, checklist);
   if (re.length) throw new Error("結果が不正:\n" + re.join("\n"));
   if (results.wave !== checklist.wave) throw new Error(`wave が食い違う: ${results.wave} / ${checklist.wave}`);
+  if (gate && !checklist.checks.some((c) => (c.gate ?? []).includes(gate))) evaluateGreen(checklist, [], gate); // 未知のゲート名はここで落とす（何も書き込む前）
   fs.mkdirSync(outDir, { recursive: true });
   results._checklistById = new Map(checklist.checks.map((c) => [c.id, c]));
   const missing = collectEvidence(results, evidenceRoot ?? path.dirname(resultsPath), outDir);

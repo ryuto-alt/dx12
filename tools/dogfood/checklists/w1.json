@@ -352,17 +352,42 @@
         },
         {
           "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "VfxProbe",
+            "type": "particle_emitter"
+          }
+        },
+        {
+          "kind": "wait",
+          "ms": 10000
+        },
+        {
+          "kind": "note",
+          "text": "放出器 VfxProbe を置いてから基準を取る（シーンが空だと vfx_preview が何も動かさず、不変が自明に通ってしまう）"
+        },
+        {
+          "kind": "mcp",
           "method": "editor_state"
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "record_hash"
         },
         {
           "kind": "mcp",
           "method": "vfx_preview",
-          "params": {}
+          "params": {
+            "name": "VfxProbe"
+          }
         },
         {
           "kind": "mcp",
@@ -370,7 +395,7 @@
         },
         {
           "kind": "file",
-          "path": "scenes/main.json",
+          "path": "assets/scenes/main.json",
           "check": "hash_unchanged"
         }
       ],
@@ -684,7 +709,7 @@
         },
         {
           "kind": "file",
-          "path": "engine.log",
+          "path": "dx12_engine.log",
           "check": "contains",
           "pattern": "Debug Layer enabled",
           "base": "instance"

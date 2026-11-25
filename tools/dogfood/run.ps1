@@ -11,6 +11,7 @@
   - -IdleExitMin: エンジンの --idle-exit（分。小数可。後ろに置くので engine_instance の既定 45 を上書きする）。
     idle_exit 経路（FleetGuard の自己終了）は、短い値で start / restart しておき、MCP を呼ばずに idle_exit で終了を待つ。
   - -FreshData: 起動前にこのインスタンスの data フォルダ（設定・テーマなど）を消す（「設定なしの初回起動」用。プロジェクトは消さない）。
+  - -NameSuffix: インスタンス名の後ろに付ける（単体テストが実際の dogfood インスタンスと衝突しないため）。
   - -EvidenceDir: -ExtraArgs 中の {evidence} をこのフォルダに置き換える。
   - 終了コード: 0 正常 / 2 引数・環境の拒否 / 3 既に起動中 / 4 ビルド出力が無い / 5 idle_exit がタイムアウト / 6 run がタイムアウトまたは失敗
     （engine_instance.ps1 は Write-Error で止まり 1 を返すので、メッセージから 3 / 4 / 2 に直して返す）。
@@ -30,6 +31,7 @@ param(
     [double]$IdleExitMin = 0,
     [switch]$FreshData,
     [string]$EvidenceDir = '',
+    [string]$NameSuffix = '',   # テスト用: インスタンス名に付ける（既定は空。dogfood-<wave>）
     [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -47,7 +49,7 @@ foreach ($scope in 'Process', 'User', 'Machine') {
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $inst = Join-Path $root 'tools\engine_instance.ps1'
-$name = "dogfood-$Wave"
+$name = "dogfood-$Wave$NameSuffix"
 $instBase = Join-Path $env:LOCALAPPDATA 'UnoEngine\agent-instances'
 $instDir = Join-Path $instBase $name
 $pidFile = Join-Path $instDir 'engine.pid'
@@ -94,16 +96,30 @@ foreach ($e in $EnvVar) {
 
 if ($Action -eq 'run') {
     # 一回きりの窓なし実行（--splash-selftest など）。終了コードをそのまま返す。
+    # build\release の exe を直接起動すると exe が掴まれて次のビルドが LNK1104 になるので、インスタンスフォルダのコピーで動かす
     $src = if ($BuildDir) { $BuildDir } else { Join-Path $root 'build\release' }
-    $exe = Join-Path $src 'DX12Engine.exe'
-    if ($DryRun) { Write-Host "[dogfood] DryRun: run $exe $($extra -join ' ')"; exit 0 }
-    if (-not (Test-Path $exe)) { Write-Host "[dogfood] ビルド出力がありません: $src"; exit 4 }
+    $srcExe = Join-Path $src 'DX12Engine.exe'
+    $exe = Join-Path $instDir 'DX12Engine.exe'
+    if ($DryRun) { Write-Host "[dogfood] DryRun: run $exe（$srcExe のコピー） $($extra -join ' ')"; exit 0 }
+    if (-not (Test-Path $srcExe)) { Write-Host "[dogfood] ビルド出力がありません: $src"; exit 4 }
+    # コピーは、インスタンスのコピーが無いか、ビルド出力より古く、かつエンジンが動いていないときだけ（動いている exe は上書きできない）
+    $stale = (-not (Test-Path $exe)) -or ((Get-Item $exe).LastWriteTimeUtc -lt (Get-Item $srcExe).LastWriteTimeUtc)
+    if ($stale -and (Get-EnginePid) -eq 0) {
+        New-Item -ItemType Directory -Force $instDir | Out-Null
+        robocopy $src $instDir DX12Engine.exe GameRuntime.exe gh.exe *.dll /NFL /NDL /NJH /NJS /NP | Out-Null
+        robocopy (Join-Path $src 'shaders') (Join-Path $instDir 'shaders') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+        robocopy (Join-Path $root 'assets') (Join-Path $instDir 'assets') /MIR /XF 'splash_d.*' /NFL /NDL /NJH /NJS /NP | Out-Null
+        robocopy (Join-Path $root 'shaders') (Join-Path $instDir 'shaders-src') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+    }
+    if (-not (Test-Path $exe)) { Write-Host "[dogfood] インスタンスのコピーを作れません: $instDir"; exit 4 }
     $dataDir = Join-Path $instDir 'run-data'
     New-Item -ItemType Directory -Force $dataDir | Out-Null
     $env:DX12E_DATA_DIR = $dataDir
     $env:DX12E_NO_SPLASH = '1'
     foreach ($k in $envSet.Keys) { Set-Item -Path "Env:$k" -Value $envSet[$k] }
-    $proc = Start-Process -FilePath $exe -ArgumentList $extra -WorkingDirectory $src -WindowStyle Hidden -PassThru
+    # Start-Process は配列の要素を引用しないので、空白を含む引数（{evidence} のパスなど）は自分で引用する
+    $argLine = ($extra | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join ' '
+    $proc = if ($argLine) { Start-Process -FilePath $exe -ArgumentList $argLine -WorkingDirectory $instDir -WindowStyle Hidden -PassThru } else { Start-Process -FilePath $exe -WorkingDirectory $instDir -WindowStyle Hidden -PassThru }
     try { $proc.PriorityClass = 'BelowNormal' } catch {}
     if (-not $proc.WaitForExit(120000)) { & taskkill /PID $proc.Id /T /F 2>$null | Out-Null; Write-Host '{"exited":false,"note":"run timeout 120s"}'; exit 6 }
     Write-Host ("{0}" -f (@{ exited = $true; exitCode = $proc.ExitCode } | ConvertTo-Json -Compress))
@@ -120,7 +136,13 @@ if ($FreshData) {
     elseif ((Get-EnginePid) -ne 0 -and $Action -ne 'restart') { Write-Host '[dogfood] 起動中は -FreshData できない（restart を使う）'; exit 3 }
     elseif (Test-Path $full) {
         if ($Action -eq 'restart') { & pwsh -NoProfile -File $inst -Name $name -Stop | Out-Null }
-        Remove-Item -LiteralPath $full -Recurse -Force
+        # taskkill 直後はファイルがまだ掴まれていることがあるので、少し待って数回やり直す
+        $removed = $false
+        for ($try = 0; $try -lt 10 -and -not $removed; $try++) {
+            try { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop; $removed = $true }
+            catch { Start-Sleep -Milliseconds 500 }
+        }
+        if (-not $removed -and (Test-Path $full)) { Write-Host "[dogfood] data を消せません（使用中）: $full"; exit 2 }
     }
 }
 

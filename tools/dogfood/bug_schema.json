@@ -432,6 +432,9 @@
         },
         "dpi": {
           "type": "number"
+        },
+        "reopenedAt": {
+          "type": "string"
         }
       }
     }
