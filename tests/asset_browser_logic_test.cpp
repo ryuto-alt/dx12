@@ -457,6 +457,27 @@ void TestIndex()
     idx.Stop();
     idx.Stop();   // 二重 Stop は安全
 }
+void TestRenameCompose()
+{
+    auto c = [](const char* o, const char* i) { return abl::ComposeRenamedFileName(o, i); };
+    CHECK(c("a.glb", "b").name == "b.glb" && !c("a.glb", "b").extChanged, "拡張子なし入力は元の拡張子を補う");
+    CHECK(c("a.glb", "b.glb").name == "b.glb" && !c("a.glb", "b.glb").extChanged, "同じ拡張子");
+    CHECK(c("a.glb", "b.GLB").name == "b.GLB" && !c("a.glb", "b.GLB").extChanged, "大文字小文字違いは同じ拡張子");
+    CHECK(c("a.glb", "b.png").name == "b.png" && c("a.glb", "b.png").extChanged, "別の拡張子は確認");
+    CHECK(c("モデル.glb", "新しい名前").name == "新しい名前.glb", "日本語名");
+    CHECK(c("a.tar.gz", "b").name == "b.gz", "二重拡張子は最後の 1 つ");
+    CHECK(c("a.tar.gz", "b.tar").extChanged, "二重拡張子の別拡張子");
+    CHECK(c(".gitignore", "x").name == "x" && !c(".gitignore", "x").extChanged, "先頭ドットのファイルは拡張子なし");
+    CHECK(c("README", "docs").name == "docs", "元に拡張子なし");
+    CHECK(c("a.glb", "b.").name == "b.", "末尾ドットはそのまま（検証側で弾く）");
+    CHECK(c("a.glb", ".hidden").name == ".hidden.glb", "先頭ドットのみの入力は拡張子なし扱い");
+    CHECK(c("x.glb", ".glb").name == "x.glb" && !c("x.glb", ".glb").extChanged, "拡張子だけを打つと変更なし（.glb.glb にしない）");
+    CHECK(c("x.glb", ".GLB").name == "x.glb", "拡張子だけ（大文字小文字無視）");
+    CHECK(abl::StemByteLength("abc.glb") == 3, "stem 長");
+    CHECK(abl::StemByteLength("モデル.glb") == 9, "stem 長は UTF-8 のバイト数（境界は '.' の直前）");
+    CHECK(abl::StemByteLength("a.tar.gz") == 5, "stem 長（二重拡張子）");
+    CHECK(abl::StemByteLength(".gitignore") == 10 && abl::StemByteLength("noext") == 5, "拡張子なしは全体");
+}
 } // namespace
 
 int main()
@@ -475,6 +496,7 @@ int main()
     TestUniqueAndImport();
     TestReferences();
     TestThumbs();
+    TestRenameCompose();
     TestIndex();
 
     std::error_code ec;
