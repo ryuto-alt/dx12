@@ -17,7 +17,9 @@ struct AppAccess
     // W05-02: 人の未保存の変更を自動保存が上書きしない（定義は mcp/ApplicationMcpLaneA.cpp）。
     //   ProtectHumanEdits       … 人の未保存の変更があれば、本体に書かずに SceneBackup へ退避する。退避できた / 不要なら true。
     //   ProtectHumanEditsOrSave … 人の変更が無ければ本体へ保存（MCP 由来の変更だけ）。有れば ProtectHumanEdits。
-    static bool ProtectHumanEdits(Application&, EditorContext::DiscardReason);
+    // force=true: 間引き・同じ状態の省略をせず必ず今の状態を新しい世代へ残す（閉じる・開く・置き換えの全経路）。
+    // includeMcp=true: 人の変更が無くても（MCP 由来だけでも）退避する（Play 中で本体へ書けないとき）。
+    static bool ProtectHumanEdits(Application&, EditorContext::DiscardReason, bool force = false, bool includeMcp = false);
     static bool ProtectHumanEditsOrSave(Application&, EditorContext::DiscardReason);
     // MCP の dispatch の前後（書き込み系だけ。読み取り専用は呼ばない）。Pre は人の settings 変更を拾う。
     static void McpWriteBegin(Application&, const std::string& method);

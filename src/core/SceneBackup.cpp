@@ -22,14 +22,16 @@
 #include <ctime>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 
 namespace fs = std::filesystem;
 
 namespace dx12e::scenebackup
 {
+static std::mutex& PinnedMutex() { static std::mutex m; return m; }
 static std::string& PinnedRef() { static std::string s; return s; }
-static const std::string& PinnedId() { return PinnedRef(); }
-void SetPinnedId(const std::string& id) { PinnedRef() = id; }
+static std::string PinnedId() { std::lock_guard<std::mutex> lk(PinnedMutex()); return PinnedRef(); }   // Prune は worker スレッドから読む
+void SetPinnedId(const std::string& id) { std::lock_guard<std::mutex> lk(PinnedMutex()); PinnedRef() = id; }
 
 
 Policy& GlobalPolicy()

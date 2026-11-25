@@ -3518,7 +3518,7 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
         if (humanDirty)
         {
             // 人の未保存の変更: 本体に書かず退避してから進む（モーダルは出さない）。退避できなければ進まない（失うよりまし）。
-            if (AppAccess::ProtectHumanEdits(*this, pd.reason))
+            if (AppAccess::ProtectHumanEdits(*this, pd.reason, /*force=*/true))
             {
                 m_editorCtx->pendingDiscard = {};
                 m_editorCtx->Notify(ui::ToastKind::Warn, "未保存の変更を退避しました（ファイル > 以前の版に戻す）", 8.0f);

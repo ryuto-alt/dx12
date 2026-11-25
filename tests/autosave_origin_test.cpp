@@ -263,10 +263,23 @@ void TestUntitledAndPin()
     std::error_code ec;
     saferm::RemoveAll(root, ec, fs::temp_directory_path());
 }
+
+// 回帰（レビュー blocker）: 間引き・同じ状態の省略は自動保存の経路だけ。閉じる・開く等は force で必ず撮る。
+void TestForceNeverSkips()
+{
+    using autosaveguard::CanSkipProtect;
+    // シナリオ: t=2s に退避済み、t=10s に人が編集、t=15s に別シーンを開く（鍵が同じ扱い・30 秒未満でも force は撮る）
+    Check(CanSkipProtect(false, false, true, 13.0, 30.0), "自動保存の経路は 30 秒未満なら間引く");
+    Check(CanSkipProtect(false, true, true, 100.0, 30.0), "自動保存の経路は同じ鍵なら省く");
+    Check(!CanSkipProtect(true, false, true, 13.0, 30.0), "force は間引かない（throttle 窓の中の破棄）");
+    Check(!CanSkipProtect(true, true, true, 0.0, 30.0), "force は同じ鍵でも省かない");
+    Check(!CanSkipProtect(false, false, true, 31.0, 30.0), "30 秒を過ぎれば自動保存の経路も撮る");
+}
 } // namespace
 
 int main()
 {
+    TestForceNeverSkips();
     TestOriginAndGuard();
     TestBackupRoundtrip();
     TestUntitledAndPin();

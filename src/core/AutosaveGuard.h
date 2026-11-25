@@ -59,4 +59,13 @@ struct ProtectStamp
     void Reset() { editSeq = ~0ull; settings = ~0ull; }
 };
 
+// 退避を省いてよいか。force（閉じる・開く・置き換え・fleet 終了の全経路）は絶対に省かない。
+// 省けるのは UpdateMcpAutoSave の経路（force=false）だけ: 同じ状態で退避済み、または直前の退避から間もない。
+inline bool CanSkipProtect(bool force, bool blockedAndSameStamp, bool hasProtected, double secSinceLast, double minIntervalSec)
+{
+    if (force) return false;
+    if (blockedAndSameStamp) return true;
+    return hasProtected && secSinceLast < minIntervalSec;
+}
+
 } // namespace dx12e::autosaveguard

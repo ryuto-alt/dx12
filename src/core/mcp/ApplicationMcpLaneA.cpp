@@ -98,26 +98,27 @@ std::string AppAccess::UntitledDir()
     return PathResolver::BaseDir() + ".dx12/untitled/";
 }
 
-bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason reason)
+bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason reason, bool forceArg, bool includeMcp)
 {
     namespace fs = std::filesystem;
     EditorContext* ctx = app.m_editorCtx.get();
     if (!ctx || !app.m_scene) return true;
     const bool playing = app.m_engineMode != Application::EngineMode::Editor;
     if (!ctx->IsSceneDirty()) ctx->humanSettingsDirty = false;
-    if (!ctx->IsSceneHumanDirty()) return true;   // MCP 由来の変更だけ。退避の必要は無い
+    if (!includeMcp && !ctx->IsSceneHumanDirty()) return true;   // MCP 由来の変更だけ。退避の必要は無い
+    if (includeMcp && !ctx->IsSceneDirty()) return true;
 
     LaneAState& st = S();
     // Play 中のシーンは実行の状態。Play の開始時のスナップショット（Stop で戻る先）から退避する。無ければ「退避していない」として false。
     if (playing && app.m_playSceneJson.empty()) return false;
-    const bool force = reason != Reason::None;   // 閉じる・開く・終了は必ず今の状態を残す。自動保存の経路だけ間引く
+    const bool force = forceArg || includeMcp || reason != Reason::None;   // 閉じる・開く・置き換えは必ず今の状態を残す。UpdateMcpAutoSave の経路だけ間引く
     const unsigned long long humanSeq = ctx->undoSystem.LastHumanEditSeq();
     const unsigned long long sflag = ctx->humanSettingsDirty ? 1ull : 0ull;
     if (!force)
     {
         if (st.failedStamp.Same(humanSeq, sflag)) return false;   // 同じ状態で失敗済み（毎回直列化・通知しない）
-        if (ctx->autosaveBlockedByHumanEdits && st.stamp.Same(humanSeq, sflag)) return true;
-        if (st.hasProtected && std::chrono::duration<double>(std::chrono::steady_clock::now() - st.lastProtect).count() < kAutoProtectMinIntervalSec)
+        const double since = st.hasProtected ? std::chrono::duration<double>(std::chrono::steady_clock::now() - st.lastProtect).count() : 0.0;
+        if (autosaveguard::CanSkipProtect(false, ctx->autosaveBlockedByHumanEdits && st.stamp.Same(humanSeq, sflag), st.hasProtected, since, kAutoProtectMinIntervalSec))
             return true;
     }
 
@@ -150,6 +151,7 @@ bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason
         return id;
     };
     const autosaveguard::Result r = autosaveguard::ProtectOrSave(true, ops);
+    const bool humanBlock = ctx->IsSceneHumanDirty();
     st.lastProtect = std::chrono::steady_clock::now();
     st.hasProtected = true;
     if (r.outcome != autosaveguard::Outcome::Protected)
@@ -160,6 +162,7 @@ bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason
         return false;
     }
     st.failedStamp.Reset();
+    if (!humanBlock) { st.lastBackupId = r.backupId; return true; }   // MCP 由来だけの退避（Play 中）。自動保存の停止表示にはしない
     const bool changed = !ctx->autosaveBlockedByHumanEdits || r.backupId != st.lastBackupId;
     ctx->autosaveBlockedByHumanEdits = true;
     st.lastBackupId = r.backupId;
@@ -176,13 +179,18 @@ bool AppAccess::ProtectHumanEditsOrSave(Application& app, EditorContext::Discard
     if (!ctx->IsSceneDirty()) ctx->humanSettingsDirty = false;
     if (ctx->IsSceneHumanDirty()) return ProtectHumanEdits(app, reason);
     ctx->autosaveBlockedByHumanEdits = false;
-    if (app.m_engineMode != Application::EngineMode::Editor) return true;   // Play 中のシーンは実行の状態。本体へ書かない
+    if (app.m_engineMode != Application::EngineMode::Editor)
+    {
+        // Play 中のシーンは実行の状態なので本体へ書かない。Play 前の状態（MCP の未保存の編集を含む）を退避へ残す。
+        if (app.m_playSceneJson.empty()) return false;
+        return ProtectHumanEdits(app, reason, true, true);
+    }
     return app.SaveSceneForMcp();
 }
 
 bool AppAccess::ProtectBeforeSceneReplace(Application& app, EditorContext::DiscardReason reason)
 {
-    return ProtectHumanEdits(app, reason);
+    return ProtectHumanEdits(app, reason, true);
 }
 
 void AppAccess::McpWriteBegin(Application& app, const std::string& method)

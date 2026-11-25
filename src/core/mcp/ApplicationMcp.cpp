@@ -235,7 +235,7 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
     //   （後のフレームで実行される要求は、実行する側が CallScope（McpUndoRouter の横取り）か自前の scope で起点を持つ）
     const bool isVirtualInputMethod = method.rfind("imgui_", 0) == 0 || method.rfind("input_", 0) == 0;
     EditOriginScope editOriginScope(isVirtualInputMethod ? EditOrigin::Human : EditOrigin::Mcp);
-    const bool writeMethod = !method.empty() && !isVirtualInputMethod && !IsMcpReadOnlyMethod(method);
+    const bool writeMethod = !method.empty() && !isVirtualInputMethod && method != "ping";   // 読み取り専用リストには変更するメソッドも入っているので使わない（指紋は軽い）
     struct WriteEndGuard
     {
         Application* app; bool on;
