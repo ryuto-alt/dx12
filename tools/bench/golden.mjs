@@ -11,7 +11,8 @@
 //   node tools/bench/golden.mjs --update        基準を撮り直す（tests/golden/*.png と baseline.json）
 //   node tools/bench/golden.mjs --repeat 2      同じシーンを 2 回撮って決定論も確かめる
 //   node tools/bench/golden.mjs --only a,b      名前で絞る
-//   node tools/bench/golden.mjs --strict        プロジェクトが見つからないシーンを SKIP ではなく不合格にする
+//   node tools/bench/golden.mjs --no-strict     プロジェクトが見つからないシーンを不合格ではなく SKIP にする（既定は strict）
+//   node tools/bench/golden.mjs --group repeat  group:"repeat"（DDGI/DXR など決定論が崩れるシーン）だけ回す（通常実行には含めない）
 //   node tools/bench/golden.mjs --ui-only       kind:"ui"（エディタ UI の絵）だけ回す。--no-ui は逆に UI を回さない
 //   node tools/bench/golden.mjs --force-theme b UI を指定のテーマ案で撮る（基準は変えない＝差分を検出できるかの確認用）
 //   node tools/bench/golden.mjs --exe <path>    別の exe を撮る（既定: 環境変数 DX12_ENGINE_EXE → build/dev → build/release の順で最初にあるもの）
@@ -58,7 +59,7 @@ const UI_PROJECT_SRC = path.join(GOLDEN_DIR, "ui_project");       // UI 撮影�
 
 // ─── 引数 ───────────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const a = { update: false, repeat: 1, only: null, exe: findDefaultExe(), strict: false, uiOnly: false, noUi: false, forceTheme: null };
+  const a = { update: false, repeat: 1, only: null, exe: findDefaultExe(), strict: true, group: null, uiOnly: false, noUi: false, forceTheme: null };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--update") a.update = true;
@@ -66,6 +67,8 @@ function parseArgs(argv) {
     else if (k === "--only") a.only = new Set(String(argv[++i]).split(",").map((s) => s.trim()).filter(Boolean));
     else if (k === "--exe") a.exe = path.resolve(argv[++i]);
     else if (k === "--strict") a.strict = true;
+    else if (k === "--no-strict") a.strict = false;
+    else if (k === "--group") a.group = String(argv[++i]);
     else if (k === "--ui-only") a.uiOnly = true;
     else if (k === "--no-ui") a.noUi = true;
     else if (k === "--force-theme") a.forceTheme = String(argv[++i]);
@@ -272,6 +275,15 @@ async function main() {
     return 0;
   }
   let scenes = loadConfig();
+  // requiresProjectsRoot（手元のゲームが要る既存 4 件）は DX12_GOLDEN_PROJECTS_ROOT があるときだけ回す。無ければ対象から外す。
+  const hasRoot = !!process.env.DX12_GOLDEN_PROJECTS_ROOT;
+  const gated = scenes.filter((s) => s.requiresProjectsRoot && !hasRoot);
+  if (gated.length) {
+    console.log(`対象外（DX12_GOLDEN_PROJECTS_ROOT 未設定）: ${gated.map((s) => s.name).join(", ")}`);
+    scenes = scenes.filter((s) => !gated.includes(s));
+  }
+  // group:"repeat" は --group repeat のときだけ。指定が無ければ group の無いシーンだけ。
+  scenes = scenes.filter((s) => (args.group ? s.group === args.group : !s.group));
   if (args.only) scenes = scenes.filter((s) => args.only.has(s.name));
   if (!scenes.length) { console.log("対象のシーンが無い"); return 1; }
   const uiScenes = scenes.filter((s) => s.kind === "ui");

@@ -155,6 +155,61 @@
       "commit": "59c2804",
       "capturedAt": "2026-11-25T15:54:50.166Z",
       "deterministicInSession": true
+    },
+    "core_pbr_spheres": {
+      "nativeWidth": 977,
+      "nativeHeight": 550,
+      "nativeSha256": "6023be95478463cbe9993b43d9d8b43c3cf8331fbbb4f35633ed160e1855f339",
+      "compareSha256": "ff42257c7648251386e83eaed54e3eb2b69bfe24b40aa4fcffe7f6afe6e9f863",
+      "width": 640,
+      "height": 360,
+      "commit": "884b229",
+      "capturedAt": "2026-11-25T16:02:01.524Z",
+      "deterministicInSession": true
+    },
+    "core_csm_shadows": {
+      "nativeWidth": 977,
+      "nativeHeight": 550,
+      "nativeSha256": "b93ffead304489768d53524c787dfa57bd393d78e5f641a36c5a062c3f208f66",
+      "compareSha256": "d20d0920538be6486d3284125662b227eff9831d936a68ed3d5d82dbee5f85f9",
+      "width": 640,
+      "height": 360,
+      "commit": "884b229",
+      "capturedAt": "2026-11-25T16:02:03.073Z",
+      "deterministicInSession": true
+    },
+    "core_transparency": {
+      "nativeWidth": 977,
+      "nativeHeight": 550,
+      "nativeSha256": "c215126e02daecb63af3bab05d6ea469a7ffaa7f7d57cf1ccc637b9a7d1f87b0",
+      "compareSha256": "f81ec560b56c097917c9129d013478684a408cfa3afdd538cc59d7c3d6865857",
+      "width": 640,
+      "height": 360,
+      "commit": "884b229",
+      "capturedAt": "2026-11-25T16:02:04.615Z",
+      "deterministicInSession": true
+    },
+    "core_post_stack": {
+      "nativeWidth": 977,
+      "nativeHeight": 550,
+      "nativeSha256": "ef1bb384d61a8d777e5835867a75c05946ec1a35004f7231488e59b97c768bc3",
+      "compareSha256": "872aac608c55a49e1ee8b607cb93b2211a526b55bf1367da325d0b0420c31c9d",
+      "width": 640,
+      "height": 360,
+      "commit": "884b229",
+      "capturedAt": "2026-11-25T16:02:06.157Z",
+      "deterministicInSession": true
+    },
+    "core_scene_default": {
+      "nativeWidth": 977,
+      "nativeHeight": 550,
+      "nativeSha256": "f2518221d8d75d03d007df6544ac92bc60ecf6e840ef6e6a9f21da40567c78c9",
+      "compareSha256": "3706227c3b73c325b5f0049c29543b727cbe209e5e7a6995a1d4742c4fe40071",
+      "width": 640,
+      "height": 360,
+      "commit": "884b229",
+      "capturedAt": "2026-11-25T16:02:07.702Z",
+      "deterministicInSession": true
     }
   }
 }

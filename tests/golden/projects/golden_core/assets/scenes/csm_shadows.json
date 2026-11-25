@@ -1,0 +1,495 @@
+{
+  "skybox": {
+    "iblIntensity": 1,
+    "skyboxIntensity": 1,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          -0.7,
+          -0.35,
+          -0.5
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 4,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 160,
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Pillar_0",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.2,
+          1.5,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_1",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.2,
+          1.5,
+          5.45
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_2",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.2,
+          1.5,
+          8.8
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_3",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.2,
+          1.5,
+          13.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_4",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.2,
+          1.5,
+          18.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_5",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.2,
+          1.5,
+          24.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_6",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.2,
+          1.5,
+          31.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_7",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.2,
+          1.5,
+          39.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_8",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.2,
+          1.5,
+          47.8
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_9",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.2,
+          1.5,
+          57.45
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_10",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.2,
+          1.5,
+          68
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_11",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.2,
+          1.5,
+          79.45
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_12",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.2,
+          1.5,
+          91.8
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    },
+    {
+      "name": "Pillar_13",
+      "primitive": "box",
+      "color": [
+        0.75,
+        0.72,
+        0.68
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.2,
+          1.5,
+          105.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.6,
+          3,
+          0.6
+        ]
+      }
+    }
+  ],
+  "shadows": true
+}

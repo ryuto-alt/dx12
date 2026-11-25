@@ -19,7 +19,11 @@
     "  dpi = --dpi-scale、theme = --theme-variant（default は何も付けない）、project は tests/golden/ui_project のコピー。",
     "  masks = [[x0,y0,x1,y1],...]（0..1 の割合）。トースト・時刻などの揺れる領域を比べる前に塗りつぶす。",
     "  UI は同じセッションで 2 枚撮り、ネイティブ解像度で 1 ビットも違わないことを毎回確かめる（決定論）。",
-    "  組み合わせは DPI 1.0/1.5 x テーマ default/b x レイアウト default/material/lighting の組み合わせ。layout は editor_command_run の workspace.<layout> で切り替える。★material は今は入れていない（Material WS を開くと ImGui が何も描かれなくなる＝エンジン側の不具合。直るまで基準にしない）。"
+    "  組み合わせは DPI 1.0/1.5 x テーマ default/b x レイアウト default/material/lighting の組み合わせ。layout は editor_command_run の workspace.<layout> で切り替える。★material は今は入れていない（Material WS を開くと ImGui が何も描かれなくなる＝エンジン側の不具合。直るまで基準にしない）。",
+    "★W0-2: core_* は tests/golden/projects/golden_core（プリミティブと手続きの空だけ・リポジトリ内で完結）。新環境でも必ず回る。基準は RTX 5060 で --update して撮った。",
+    "★requiresProjectsRoot:true の 4 件（PerfTest/Nocturne/Junction）は手元のゲームが要る。環境変数 DX12_GOLDEN_PROJECTS_ROOT があるときだけ回し、無ければ対象から外す（SKIP の見かけ合格にしない）。",
+    "★group:\"repeat\" のシーン（DDGI/DXR など決定論が崩れるもの）は通常実行に含めず、--group repeat のときだけ回す。今は該当シーン無し。",
+    "★既定は strict（プロジェクトが見つからないシーンは不合格）。緩めるときだけ --no-strict。"
   ],
   "defaults": {
     "width": 640,
@@ -33,6 +37,7 @@
     {
       "name": "perftest_ddgi_probe",
       "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
+      "requiresProjectsRoot": true,
       "scene": "scenes/ddgi_probe.json",
       "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
       "note": "DDGI は既定 OFF のまま（ON にすると deterministic で frameIndex が止まり絵が変わる）"
@@ -40,6 +45,7 @@
     {
       "name": "perftest_stress_5000",
       "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
+      "requiresProjectsRoot": true,
       "scene": "scenes/stress_5000.json",
       "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
       "note": "インスタンシングと LOD の経路（5000 体）"
@@ -47,6 +53,7 @@
     {
       "name": "nocturne_hall",
       "project": "C:/Users/ryuto/Documents/dev/game/Nocturne",
+      "requiresProjectsRoot": true,
       "scene": "scenes/main.json",
       "camera": { "position": [0.0, 1.66, -8.0], "target": [-6.0, 1.4, -14.0] },
       "note": "屋内。TAA / ボリュメトリックフォグ / SSAO / コンタクトシャドウ / ブルーム"
@@ -54,9 +61,45 @@
     {
       "name": "junction_f6",
       "project": "C:/Users/ryuto/Documents/dev/game/Junction",
+      "requiresProjectsRoot": true,
       "scene": "scenes/stagedemo3.json",
       "camera": { "position": [14.0, 5.1, 122.0], "target": [14.0, 4.9, 117.0] },
       "note": "継ぎ目6 の焦点（Liminal.lua の focus）から破片 C6_p0/p1 を見る。フォグ / グレイン / FXAA / AgX"
+    },
+    {
+      "name": "core_pbr_spheres",
+      "project": "tests/golden/projects/golden_core",
+      "scene": "scenes/pbr_spheres.json",
+      "camera": { "position": [0.0, 4.5, -6.0], "target": [0.0, 0.4, 1.1] },
+      "note": "PBR 球 2 列（金属 0/1 x 粗さ 0.05〜1.0）と手続きの空の IBL"
+    },
+    {
+      "name": "core_csm_shadows",
+      "project": "tests/golden/projects/golden_core",
+      "scene": "scenes/csm_shadows.json",
+      "camera": { "position": [0.0, 2.5, -4.0], "target": [0.0, 1.5, 20.0] },
+      "note": "低い太陽と奥へ並ぶ柱＝カスケードシャドウの継ぎ目"
+    },
+    {
+      "name": "core_transparency",
+      "project": "tests/golden/projects/golden_core",
+      "scene": "scenes/transparency.json",
+      "camera": { "position": [0.0, 2.0, -6.0], "target": [0.0, 1.0, 1.0] },
+      "note": "半透明（blend）の球と板を不透明の箱の手前に重ねる"
+    },
+    {
+      "name": "core_post_stack",
+      "project": "tests/golden/projects/golden_core",
+      "scene": "scenes/post_stack.json",
+      "camera": { "position": [0.0, 2.0, -6.0], "target": [0.0, 1.0, 1.0] },
+      "note": "ポスト（bloom / vignette / 彩度 / FXAA）と SSAO・発光"
+    },
+    {
+      "name": "core_scene_default",
+      "project": "tests/golden/projects/golden_core",
+      "scene": "scenes/scene_default.json",
+      "camera": { "position": [4.0, 3.0, -5.0], "target": [0.5, 0.5, 0.0] },
+      "note": "新規シーンの既定（設定ブロック無し）"
     },
     {
       "name": "ui_dpi100_default",

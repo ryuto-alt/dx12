@@ -1,0 +1,8 @@
+{
+  "assetsDir": "assets",
+  "defaultScene": "scenes/pbr_spheres.json",
+  "lastOpenedScene": "",
+  "name": "golden_core",
+  "scriptsDir": "scripts",
+  "version": "0.1.0"
+}

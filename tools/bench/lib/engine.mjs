@@ -11,7 +11,8 @@
 import net from "node:net";
 import path from "node:path";
 import fs from "node:fs";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -73,38 +74,20 @@ export async function findFreePort(start = Number(process.env.DX12_BENCH_PORT_ST
 
 /**
  * ヘッドレスで起動して MCP ポートが開くまで待つ。
- * CWD は exe のフォルダ（ログ / クラッシュダンプ / 既定スクショの置き場。リポジトリ直下を汚さない）。
+ * ★ビルド出力の exe を直接起動しない（握られて次のビルドが LNK1104 になる）。tools/engine_instance.ps1 で
+ *   exe / DLL / shaders / assets をインスタンス専用フォルダ（%LOCALAPPDATA%/UnoEngine/agent-instances/<name>）へ
+ *   コピーしてから --headless で起動する。データ領域（DX12E_DATA_DIR）もインスタンス専用。
+ * name 省略時はリポジトリのパスから決める（別 worktree と取り合わない）。
  * --mcp-port を明示するので %TEMP%/dx12_mcp.port は書き換わらない＝人のエディタの接続を奪わない。
+ * 戻り値: { port, dir, kill }。kill は自分のインスタンスの PID だけを落とす。
  */
-export async function launchEngine({ exe = DEFAULT_EXE, project, scene, port, timeoutMs = 120_000 } = {}) {
+export async function launchEngine({ exe = DEFAULT_EXE, project, scene, port, name, timeoutMs = 180_000 } = {}) {
   if (!fs.existsSync(exe)) throw new Error(`エンジンが無い: ${exe}（build/dev をビルドしたか）`);
-  const usePort = port ?? (await findFreePort());
-  const args = ["--headless", "--project", project, "--mcp-port", String(usePort)];
-  if (scene) args.push("--scene", scene);
-  // DX12E_NO_SPLASH=1: 起動画面(スプラッシュ)を人の画面の前面へ出さない(--headless でも出ていた)
-  const child = spawn(exe, args, { cwd: path.dirname(exe), detached: false, stdio: "ignore", windowsHide: true, env: { ...process.env, DX12E_NO_SPLASH: "1" } });
-  let exited = false;
-  child.on("exit", () => { exited = true; });
-
-  const kill = () => {
-    if (exited || child.pid == null) return;
-    // GUI サブシステムのプロセスは SIGTERM で死なないので taskkill（自分の PID だけ）。
-    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-    exited = true;
-  };
-  // 異常終了でも孤児を残さない
-  const onExit = () => kill();
-  process.once("exit", onExit);
-  process.once("SIGINT", () => { kill(); process.exit(130); });
-
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    if (exited) throw new Error(`エンジンが起動直後に終了した（code=${child.exitCode}）`);
-    if (await portOpen(usePort)) return { port: usePort, pid: child.pid, kill };
-    await new Promise((r) => setTimeout(r, 400));
-  }
-  kill();
-  throw new Error(`ヘッドレス起動が ${timeoutMs}ms でポート ${usePort} を開けなかった`);
+  const instName = name ?? `golden-3d-${createHash("sha1").update(REPO_ROOT).digest("hex").slice(0, 8)}`;
+  return launchInstance({
+    name: instName, project, port, buildDir: path.dirname(exe), mode: "headless",
+    extraArgs: scene ? ["--scene", scene] : [], timeoutMs,
+  });
 }
 
 /**

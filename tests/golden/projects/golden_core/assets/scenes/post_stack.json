@@ -1,0 +1,182 @@
+{
+  "postProcess": {
+    "enabled": true,
+    "tonemapper": 1,
+    "bloomOn": true,
+    "bloom": 0.6,
+    "bloomThreshold": 1,
+    "vignetteOn": true,
+    "vignette": 0.4,
+    "saturationOn": true,
+    "saturation": 1.1,
+    "fxaaOn": true
+  },
+  "ssao": {
+    "enabled": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          -0.3,
+          -0.6,
+          -0.5
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 5,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 30,
+      "color": [
+        0.3,
+        0.3,
+        0.32
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Hot",
+      "primitive": "sphere",
+      "primitiveSize": 0.7,
+      "color": [
+        1,
+        0.95,
+        0.9
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.2,
+        "emissiveColor": [
+          6,
+          4,
+          2
+        ]
+      },
+      "transform": {
+        "position": [
+          -1.2,
+          0.7,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Chrome",
+      "primitive": "sphere",
+      "primitiveSize": 0.7,
+      "color": [
+        0.9,
+        0.9,
+        0.95
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.1
+      },
+      "transform": {
+        "position": [
+          1.2,
+          0.7,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Wall",
+      "primitive": "box",
+      "color": [
+        0.6,
+        0.6,
+        0.65
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          0,
+          1.5,
+          3.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          8,
+          3,
+          0.3
+        ]
+      }
+    }
+  ],
+  "shadows": true
+}

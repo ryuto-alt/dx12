@@ -1,0 +1,385 @@
+{
+  "skybox": {
+    "iblIntensity": 1,
+    "skyboxIntensity": 1,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          -0.4,
+          -1,
+          -0.35
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 3,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 30,
+      "color": [
+        0.4,
+        0.4,
+        0.42
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m0_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.8,
+        0.15,
+        0.12
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -2.6,
+          0.6,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m0_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.8,
+        0.15,
+        0.12
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.25
+      },
+      "transform": {
+        "position": [
+          -1.3,
+          0.6,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m0_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.8,
+        0.15,
+        0.12
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.6,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m0_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.8,
+        0.15,
+        0.12
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.75
+      },
+      "transform": {
+        "position": [
+          1.3,
+          0.6,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m0_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.8,
+        0.15,
+        0.12
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          2.6,
+          0.6,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m1_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.95,
+        0.78,
+        0.45
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -2.6,
+          0.6,
+          2.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m1_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.95,
+        0.78,
+        0.45
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.25
+      },
+      "transform": {
+        "position": [
+          -1.3,
+          0.6,
+          2.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m1_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.95,
+        0.78,
+        0.45
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.6,
+          2.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m1_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.95,
+        0.78,
+        0.45
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.75
+      },
+      "transform": {
+        "position": [
+          1.3,
+          0.6,
+          2.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "S_m1_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.95,
+        0.78,
+        0.45
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          2.6,
+          0.6,
+          2.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "shadows": true
+}
