@@ -2776,6 +2776,7 @@ struct Application::PostChainInputs
     bool dlssResolveActive    = false;   // TAA の解決の代わりに DLSS（出力はポスト解像度 m_postW x m_postH）
     bool velocityPrepass      = false;
     bool particleDistortDrawn = false;
+    u32  hiZSrvIndex          = 0xFFFFFFFFu;   // W05-25: Hi-Z が作られたフレームだけ有効（ステージ ctx 用）
 };
 
 void Application::Render()
@@ -5321,6 +5322,21 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // b1 を作る前（影・深度プリパス）のステージでは perFrame は 0 / null。
     FrameConstantsData*       stagePfCpu = nullptr;
     D3D12_GPU_VIRTUAL_ADDRESS stagePfVa  = 0;
+    // 機能から受け取るもの（灯・速度プリパス要求・コンタクトシャドウ差し込み）と、ステージで有効な資源の旗。
+    struct StageWiring
+    {
+        Application*              app = nullptr;
+        std::vector<ClusterLight> lights;          // AppendClusterLights の受け皿（ライト収集の後で m_clusterLights へ足す）
+        bool                      velocityReq = false;
+        ContactShadowWriter       contactShadow;
+        bool                      sceneValid  = false;   // sceneRT が RENDER_TARGET で描画済みの位置か
+        bool                      depthValid  = false;   // 今フレームの深度が出来ている位置か
+        bool                      prepassActive = false; // 深度プリパスが走ったフレームか（PSO の LESS / LESS_EQUAL）
+        u32                       hiZSrv      = 0xFFFFFFFFu;
+        u32                       velocitySrv = 0xFFFFFFFFu;
+    } wiring;
+    wiring.app = this;
+    struct StageStateOps { CommandList* cl; RenderTarget* rt; TrackedState* depth; } stateOps{m_commandList.get(), sceneRT, &depthState};
     auto runStage = [&](Stage st)
     {
         if (!m_features || m_features->Empty(st)) return;
@@ -5331,15 +5347,58 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         sc.outW       = m_postW; sc.outH = m_postH;
         sc.frameIndex = frameIndex;
         sc.primary    = primary;
-        sc.sceneColor = sceneRT->GetResource();
-        sc.sceneRtv   = sceneRT->GetRtv();
-        sc.depth      = depthRes;
-        if (depthSrvIndex != 0xFFFFFFFFu) sc.depthSrv = m_srvHeap->GetGpuHandle(depthSrvIndex);
+        // sceneColor は RENDER_TARGET に遷移してクリアした後（BeforeForwardOpaque 以降）だけ有効。それ以前は読み取り状態で未描画。
+        if (wiring.sceneValid)
+        {
+            sc.sceneColor      = sceneRT->GetResource();
+            sc.sceneRtv        = sceneRT->GetRtv();
+            sc.sceneColorState = sceneRT->GetState();
+            sc.TransitionSceneColorFn = [](void* u, D3D12_RESOURCE_STATES to)
+            { auto* o = static_cast<StageStateOps*>(u); o->rt->Transition(*o->cl, to); };
+        }
+        if (wiring.depthValid)
+        {
+            sc.depth         = depthRes;
+            sc.depthResState = depthState.state;
+            if (depthSrvIndex != 0xFFFFFFFFu) sc.depthSrv = m_srvHeap->GetGpuHandle(depthSrvIndex);
+            sc.TransitionDepthFn = [](void* u, D3D12_RESOURCE_STATES to)
+            { auto* o = static_cast<StageStateOps*>(u); o->depth->Require(*o->cl, to); };
+        }
+        sc.stateUser = &stateOps;
+        if (wiring.hiZSrv != 0xFFFFFFFFu)      sc.hiZSrv      = m_srvHeap->GetGpuHandle(wiring.hiZSrv);
+        if (wiring.velocitySrv != 0xFFFFFFFFu) sc.velocitySrv = m_srvHeap->GetGpuHandle(wiring.velocitySrv);
         sc.perFrameGpuVa = stagePfVa;
         sc.perFrameCpu   = stagePfCpu;
         sc.descriptors   = m_srvHeap.get();
         sc.timer         = passCtx.timer;
+        // コンタクトシャドウの差し込み口 / 今のフォワード PSO の選び方
+        sc.contactShadow = &wiring.contactShadow;
+        ForwardPsoProvider fpp;
+        {
+            auto P = [](const PipelineState* p) -> ID3D12PipelineState* { return p ? p->Get() : nullptr; };
+            fpp.staticMesh = {P(m_pipelineState.get()), P(m_pipelineStateLEqual.get()), P(m_pipelineStateMask.get()),
+                              P(m_pipelineStateMaskLEqual.get()), P(m_pipelineStateBlend.get())};
+            fpp.skinned    = {P(m_skinnedPipelineState.get()), P(m_skinnedPipelineStateLEqual.get()), P(m_skinnedPipelineStateMask.get()),
+                              P(m_skinnedPipelineStateMaskLEqual.get()), P(m_skinnedPipelineStateBlend.get())};
+            fpp.depthPrepassActive = wiring.prepassActive;
+        }
+        sc.forwardPso = &fpp;
+        // 灯の追加 / ミップバイアス / 速度プリパス要求。ライト収集・b1・速度判定より前のステージだけ効く（ヘッダに記載）。
+        sc.self = &wiring;
+        if (primary)
+        {
+            sc.AppendClusterLights = [](void* self, const ClusterLight* l, u32 n)
+            { auto* w = static_cast<StageWiring*>(self); for (u32 i = 0; i < n; ++i) w->lights.push_back(l[i]); };
+            sc.SetTexMipBiasFn = [](void* self, float b)
+            { auto* w = static_cast<StageWiring*>(self); w->app->m_texMipBias = b; };
+            sc.velocityPrepassRequest = &wiring.velocityReq;
+        }
+        const D3D12_RESOURCE_STATES entrySceneState = sceneRT->GetState();
+        const D3D12_RESOURCE_STATES entryDepthState = depthState.state;
         m_features->Run(st, sc);
+        // 機能が遷移していたら入口の状態へ戻す（後段の既存コードは入口の状態を前提にしている）。
+        if (wiring.depthValid) depthState.Require(*m_commandList, entryDepthState);
+        if (wiring.sceneValid) sceneRT->Transition(*m_commandList, entrySceneState);
         // 機能が張り替えたかもしれないので、後段のために SRV ヒープだけ張り直す。
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
     };
@@ -5758,9 +5817,11 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
                       && viewSupportsScreenSpace;
     // ★Hi-Z を除いてもプリパスが要るか（診断用。ここが false のときに Hi-Z を ON にすると
     //   オクルージョンのためだけにプリパスが走って描画コールが増える＝損になる）。
+    // 機能の速度プリパス要求（BeforeShadows / AfterShadows で RequestVelocityPrepass された）。TAA が無い / 2D ビューでは無視。
+    const bool stageVelocityReq = wiring.velocityReq && m_taaPass && viewSupportsScreenSpace;
     const bool prepassWithoutHiZ = useSSAO || useContactShadow || taaActive || useSsr || useSsgi || useRtRefl
                                  || useRtShadow || useRtAo || useRtDebug || useCloudShadow
-                                 || (m_forceDepthPrepass && viewSupportsScreenSpace);
+                                 || (m_forceDepthPrepass && viewSupportsScreenSpace) || stageVelocityReq;
     // 仮想ジオメトリ P2（GPU カリング・統計のみ）。既定 OFF。HZB の入力に深度が要るのでプリパスを走らせる。
     const bool useVgCull = viewSupportsScreenSpace && VirtualGeometryCullWanted(primary);
     // P3: メッシュシェーダで VG 本体を可視性バッファ + 深度へ描く（対応 GPU + raster=true）。true の間だけプロキシ（DrawItem::vg）を主ビューから外す。
@@ -5781,7 +5842,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     //   空間デノイザは丸ごとスキップされる。
     // ★RT 影デノイザ（shadowDenoise）も速度（時間蓄積の再投影）と G-Buffer（空間フィルタの法線）を使う。
     const bool useRtShadowDenoise = useRtShadow && m_scene->GetRtSettings().shadowDenoise && m_taaPass;
-    const bool velocityPrepass = (taaActive || useSsr || useSsgi || useRtAo || useRtRefl || useRtShadowDenoise)
+    const bool velocityPrepass = (taaActive || stageVelocityReq || useSsr || useSsgi || useRtAo || useRtRefl || useRtShadowDenoise)
                                && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
@@ -6116,7 +6177,19 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     if (primary)
         m_cpuMs[CpuPrepass] += std::chrono::duration<f32, std::milli>(
             std::chrono::high_resolution_clock::now() - _prepassT0).count();
+    // ---- W05-25: AfterDepthPrepass の ctx。深度はプリパスが走ったフレームだけ有効（無いフレームはこの後 Clear される）----
+    wiring.depthValid    = useDepthPrepass;
+    wiring.prepassActive = useDepthPrepass;
+    if (useDepthPrepass && useHiZ && m_hiZPass) wiring.hiZSrv = m_hiZPass->GetSrvIndex();
+    if (useDepthPrepass && velocityPrepass && m_taaPass)
+    {
+        const u32 vi = m_taaPass->GetVelocitySrvIndex();
+        if (vi != DescriptorHeap::kInvalidIndex) wiring.velocitySrv = vi;
+    }
     runStage(Stage::AfterDepthPrepass);
+    // コンタクトシャドウの差し込み（機能が Provide したら、以後のフォワード系はその SRV を読む）
+    if (wiring.contactShadow.Provided() != ContactShadowWriter::kNone)
+        csSrv = wiring.contactShadow.Provided();
 
     sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
@@ -6128,6 +6201,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // プリパス有効時は深度が完成済みなので forward では clear しない（再利用）。
     if (!useDepthPrepass)
         m_commandList->ClearDepthStencil(depthDsv);
+    wiring.sceneValid = true;   // W05-25: ここから sceneColor / 深度が有効（BeforeForwardOpaque 以降）
+    wiring.depthValid = true;
     // クリアした直後にこのビューの描画先（シーン RT + 深度）とビューポートを張っておく。
     // ★この先の段（IRenderPass）は使うものを入口で自分で張り直すので、状態の契約のためではない。
     //   これを抜くと、GPU 律速のシーンでクリアの後始末が次の計測区間（clusterCull）へ数えられ、
@@ -6200,6 +6275,26 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     const auto _lightsT0 = std::chrono::high_resolution_clock::now();
     // シーン側: ライト / デカールの収集（副ビューは主ビューの結果を読むだけ）
     if (primary) CollectLightsAndDecals(fc);
+    // W05-25: 機能が AppendClusterLights で足した灯（ライト収集の後・灯数の確定の前に点光源として足す。上限を超えた分は捨てる）。
+    if (primary && !wiring.lights.empty())
+    {
+        for (const ClusterLight& l : wiring.lights)
+        {
+            if (m_clusterLights.size() >= ClusteredLightCulling::kMaxSceneLights) break;
+            ClusteredLightCulling::LightGPU g{};
+            g.position = l.position;
+            g.range    = l.range;
+            g.color    = {l.color.x * l.intensity, l.color.y * l.intensity, l.color.z * l.intensity};
+            g.type     = 0.0f;
+            g.direction = {0.0f, 0.0f, 1.0f};
+            g.cosOuter = -1.0f;  g.cosInner = 1.0f;  g.sinOuter = 0.0f;
+            g.shadowIndex = -1.0f;
+            g.cookieIndex = -1.0f; g.iesIndex = -1.0f; g.cookieStrength = 0.0f; g.contactChannel = -1.0f;
+            g.cookieTanOuter = 0.0f; g.axisRight = {1.0f, 0.0f, 0.0f};
+            m_clusterLights.push_back(g);
+            fc.numPointLights++;
+        }
+    }
 
     // ===== クラスタードライティングのパラメータ =====
     // クラスタ AABB の構築が透視前提なので、正射カメラ（俯瞰ゲーム / 2D ビュー）と
@@ -6963,6 +7058,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         pci.dlssResolveActive    = dlssResolveActive;
         pci.velocityPrepass      = velocityPrepass;
         pci.particleDistortDrawn = particleDistortDrawn;
+        if (useDepthPrepass && useHiZ && m_hiZPass) pci.hiZSrvIndex = m_hiZPass->GetSrvIndex();
         RenderPostChain(pci, backBuffer, rtv);
     }
     // ビューの出口の契約: 深度は DEPTH_WRITE（次フレームのプリパス / Forward と、ビューの外の
@@ -7018,8 +7114,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
 
     // ---- W05-25: ポストのステージフック（登録 0 件なら何も記録しない）----
     // ポスト中は sceneRT が読み取り状態なので sceneRtv は 0。sceneColorSrv が「今のチェーンの絵」。
-    // toBackBuffer=true のとき（PostPostUber）は sceneColor / sceneRtv がバックバッファ（RENDER_TARGET）を指す。
-    auto postStage = [&](Stage st, D3D12_GPU_DESCRIPTOR_HANDLE chainSrv, bool toBackBuffer, bool depthSrvReady,
+    // finalOut != nullptr のとき（PostPostUber）は sceneColor / sceneRtv が uber の最終出力先（RENDER_TARGET）を指す。
+    struct PostOut { ID3D12Resource* res; D3D12_CPU_DESCRIPTOR_HANDLE rtv; u32 w, h; };
+    struct PostStateOps { CommandList* cl; RenderTarget* rt; TrackedState* depth; } postOps{m_commandList.get(), sceneRT, in.depthState};
+    auto postStage = [&](Stage st, D3D12_GPU_DESCRIPTOR_HANDLE chainSrv, const PostOut* finalOut, bool depthSrvReady,
                          D3D12_GPU_DESCRIPTOR_HANDLE depthSrvH)
     {
         if (!m_features || m_features->Empty(st)) return;
@@ -7030,14 +7128,42 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         sc.outW       = m_postW; sc.outH = m_postH;
         sc.frameIndex = frameIndex;
         sc.primary    = true;
-        sc.sceneColor = toBackBuffer ? backBuffer : sceneRT->GetResource();
-        if (toBackBuffer) sc.sceneRtv = rtv;
+        const D3D12_RESOURCE_STATES entrySceneState = sceneRT->GetState();
+        const D3D12_RESOURCE_STATES entryDepthState = in.depthState ? in.depthState->state : D3D12_RESOURCE_STATE_COMMON;
+        if (finalOut)
+        {
+            sc.sceneColor = finalOut->res;
+            sc.sceneRtv   = finalOut->rtv;
+            sc.sceneColorState = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            sc.outW = finalOut->w;  sc.outH = finalOut->h;
+        }
+        else
+        {
+            sc.sceneColor      = sceneRT->GetResource();
+            sc.sceneColorState = entrySceneState;
+            sc.TransitionSceneColorFn = [](void* u, D3D12_RESOURCE_STATES to)
+            { auto* o = static_cast<PostStateOps*>(u); o->rt->Transition(*o->cl, to); };
+        }
         sc.sceneColorSrv = chainSrv;
         sc.depth      = depthRes;
+        sc.depthResState = entryDepthState;
+        if (in.depthState)
+            sc.TransitionDepthFn = [](void* u, D3D12_RESOURCE_STATES to)
+            { auto* o = static_cast<PostStateOps*>(u); o->depth->Require(*o->cl, to); };
+        sc.stateUser = &postOps;
         if (depthSrvReady) sc.depthSrv = depthSrvH;
+        if (in.hiZSrvIndex != 0xFFFFFFFFu) sc.hiZSrv = m_srvHeap->GetGpuHandle(in.hiZSrvIndex);
+        if (velocityPrepass && m_taaPass)
+        {
+            const u32 vi = m_taaPass->GetVelocitySrvIndex();
+            if (vi != DescriptorHeap::kInvalidIndex) sc.velocitySrv = m_srvHeap->GetGpuHandle(vi);
+        }
         sc.descriptors = m_srvHeap.get();
         sc.timer       = m_gpuTimer.get();
         m_features->Run(st, sc);
+        // 機能が遷移していたら入口の状態へ戻す（後段の既存コードは入口の状態を前提にしている）。
+        if (in.depthState) in.depthState->Require(*m_commandList, entryDepthState);
+        if (!finalOut) sceneRT->Transition(*m_commandList, entrySceneState);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
     };
 
@@ -7142,7 +7268,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
 
         // ---- シーン変換チェーン: TAA → DoF → モーションブラー（結果を以降の「シーン」として使う）----
         D3D12_GPU_DESCRIPTOR_HANDLE curSceneSrv = sceneSrvGpu;
-        postStage(Stage::BeforeTemporal, curSceneSrv, false, needDepthSrv, depthSrvGpu);
+        postStage(Stage::BeforeTemporal, curSceneSrv, nullptr, needDepthSrv, depthSrvGpu);
 
         // ★TAA はチェーンの先頭。トーンマップ前のリニア HDR に対して解決する。
         //   露出に依存するアーティファクトを避けるためと、以降の DoF / モーションブラー /
@@ -7197,7 +7323,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             ppApplied.fxaaOn = false;   // DLSS 済みの絵に FXAA を重ねると輪郭が二重にぼける（TAA と同じ扱い）
         }
         // 時間方向の解決（TAA / DLSS）が終わった位置（解決が無効でも呼ぶ）。
-        postStage(Stage::AfterUpscale, curSceneSrv, false, needDepthSrv, depthSrvGpu);
+        postStage(Stage::AfterUpscale, curSceneSrv, nullptr, needDepthSrv, depthSrvGpu);
         const f32 postW = static_cast<f32>(pW), postH = static_cast<f32>(pH);
 
         if (wantDepthPost && ppApplied.dofOn && m_dofPass)
@@ -7280,7 +7406,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         }
 
-        postStage(Stage::PostPreBloom, curSceneSrv, false, needDepthSrv, depthSrvGpu);
+        postStage(Stage::PostPreBloom, curSceneSrv, nullptr, needDepthSrv, depthSrvGpu);
 
         // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
@@ -7363,7 +7489,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             }
         }
 
-        postStage(Stage::PostPreUber, curSceneSrv, false, needDepthSrv, depthSrvGpu);
+        postStage(Stage::PostPreUber, curSceneSrv, nullptr, needDepthSrv, depthSrvGpu);
 
         // ---- 最終(uber)パス: バックバッファへ ----
         // ★スクリーンシェーダーがある回だけ、ここの出力先を中間 RT へ差し替える
@@ -7444,9 +7570,16 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             m_screenShaderPass->Apply(nativeCmdList, screenPso, colorSrv, dSrv, sc);
         }
 
-        // uber（と画面全体のカスタムシェーダー）の後。★オフスクリーン撮影のフレームは uber の出力先が別 RT のため、
-        //   バックバッファへ描く機能はこのフレームでは効かない（撮影の絵には写らない）。
-        postStage(Stage::PostPostUber, {}, true, false, {});
+        // uber（と画面全体のカスタムシェーダー）の後。出力先は、画面全体のカスタムシェーダーがあればバックバッファ、
+        // 無くてオフスクリーン撮影のフレームなら撮影用 RT（uber の出力先と同じ）、それ以外はバックバッファ。
+        if (m_features && !m_features->Empty(Stage::PostPostUber))
+        {
+            PostOut po{backBuffer, rtv, m_window->GetWidth(), m_window->GetHeight()};
+            if (!useScreenShader && OffscreenCaptureFrame() && m_offscreenOutRT)
+                po = PostOut{m_offscreenOutRT->GetResource(), m_offscreenOutRT->GetRtv(),
+                             m_offscreenOutRT->GetWidth(), m_offscreenOutRT->GetHeight()};
+            postStage(Stage::PostPostUber, {}, &po, false, {});
+        }
 
         // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
         // 静止時に全面が均一な (0.5,0.5,0.5) グレーになるのが「ジッタが正しく除去されている」証拠。
@@ -7997,7 +8130,7 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
     {
         StageCtx sc{};
         sc.cmd = nativeCmdList; sc.frameIndex = frameIndex; sc.primary = true;
-        sc.outW = m_postW; sc.outH = m_postH;
+        sc.outW = m_window->GetWidth(); sc.outH = m_window->GetHeight();
         sc.sceneColor = backBuffer; sc.sceneRtv = rtv;
         sc.descriptors = m_srvHeap.get(); sc.timer = m_gpuTimer.get();
         m_features->Run(Stage::EditorOverlay, sc);
@@ -8201,7 +8334,7 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
     {
         StageCtx sc{};
         sc.cmd = nativeCmdList; sc.frameIndex = frameIndex; sc.primary = true;
-        sc.outW = m_postW; sc.outH = m_postH;
+        sc.outW = m_window->GetWidth(); sc.outH = m_window->GetHeight();
         sc.sceneColor = backBuffer; sc.sceneRtv = rtv;
         sc.descriptors = m_srvHeap.get(); sc.timer = m_gpuTimer.get();
         m_features->Run(Stage::EditorPreview, sc);

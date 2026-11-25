@@ -8,8 +8,43 @@
 //
 // 契約（Record の中の機能が守ること）:
 //   - 入口でパイプライン状態（RootSig / PSO / RT / ビューポート / ヒープ）について何も仮定しない。使うものは自分で張る。
-//   - 出口で状態は戻さなくてよい（呼び出し側が SRV ヒープだけ張り直す）。リソースは既定の置き場へ戻す。
+//   - 出口で状態は戻さなくてよい（呼び出し側が SRV ヒープだけ張り直す）。
 //   - StageCtx のポインタ / ハンドルは、0 / null のとき「このステージのこの位置では得られない」の意味。必ず確認する。
+//   - リソース状態: sceneColor / depth の「入口の状態」は ctx.sceneColorState / ctx.depthResState に入る。状態を変えるときは
+//     生のバリアを使わず ctx.RequireSceneColor() / ctx.RequireDepth() を呼ぶ（呼び出し側の追跡と同期する）。
+//     出口で呼び出し側が、その 2 つを入口の状態へ戻す（機能は戻さなくてよい。戻した前提で書かない）。
+//     sceneColor / depth 以外のリソース（自分のもの）は自分で管理する。
+//
+// ステージごとの sceneColor / sceneRtv / depth の状態（ApplicationRender.cpp の位置と一致させること）:
+//   BeforeShadows, AfterShadows : sceneColor=null, sceneRtv=0（前フレームの読み取り状態のまま・まだ描かれていない）。
+//                                 depth=null（まだ今フレームの深度は無い）。perFrame も無い。
+//   AfterDepthPrepass           : 位置は「SSAO / コンタクトシャドウ / RT / SSR / SSGI の後（PrepassSSAO 計測区間の外）、
+//                                 sceneRT の RENDER_TARGET 遷移とクリアの前」。sceneColor=null, sceneRtv=0。
+//                                 depth / depthSrv は useDepthPrepass のときだけ有効（無いフレームは null / 0。この後 Clear される）。
+//                                 depth の入口状態は DEPTH_WRITE。hiZSrv は Hi-Z が作られたフレームだけ、velocitySrv は速度プリパスのフレームだけ有効。
+//   BeforeForwardOpaque 以降（AfterTranslucent まで）:
+//                                 sceneColor / sceneRtv が有効で入口状態は RENDER_TARGET。depth は有効（入口状態は通常 DEPTH_WRITE）。
+//   AfterForwardOpaque / BeforeTranslucent:
+//                                 水が有るシーン: 不透明 →（AfterForwardOpaque）→ 水 →（BeforeTranslucent）→ 半透明。
+//                                 水が無いシーン: 不透明と半透明が 1 つのパスのため、2 つは「パスの直後で続けて」呼ばれる。
+//                                 つまり AfterForwardOpaque は、水が無いシーンでは半透明まで描かれた絵を見る
+//                                 （水が有るシーンでは見ない）。屈折・不透明コピー系の機能はこの差を前提にすること。
+//   BeforeTemporal, AfterUpscale, PostPreBloom, PostPreUber（ポスト）:
+//                                 sceneRtv=0。sceneColor は sceneRT で入口状態は読み取り（PIXEL | NON_PIXEL）。
+//                                 「今のチェーンの絵」は sceneColorSrv。depth は有効、depthSrv は読める位置のときだけ有効。
+//   PostPostUber                : sceneColor / sceneRtv は「uber の最終出力先」（通常はバックバッファ。オフスクリーン撮影のフレームは
+//                                 撮影用 RT）。入口状態は RENDER_TARGET で、機能もその状態で返す（RequireSceneColor は null）。
+//                                 outW / outH はその出力先の大きさ。
+//   EditorOverlay, EditorPreview: sceneColor / sceneRtv はバックバッファ（RENDER_TARGET）。outW / outH はバックバッファ（ウィンドウ）の大きさ。
+//
+// 提供の範囲（W05-25 時点）:
+//   - caps は null（DeviceCaps は W05-04 のマージ後に GraphicsDevice の getter 経由で結線する。追跡: 引き継ぎ事項）。
+//   - asyncCompute は null（W4 の ASYNC-1）。
+//   - forwardPso は「今のフォワード PSO の選び方を包んだだけ」（shadingRevision / debugView による差し替えは W1 の C）。
+//   - contactShadow は差し込み口だけ（Provide した SRV を、AfterDepthPrepass の直後から内蔵のコンタクトシャドウの代わりに読む）。
+//   - AppendClusterLights は「ライト収集の前」のステージ（BeforeShadows / AfterShadows / AfterDepthPrepass）だけ有効。
+//     それより後のステージで呼んでも捨てられる。SetTexMipBias も b1 を作る前（同じ 3 ステージ）だけ有効。
+//   - RequestVelocityPrepass は BeforeShadows / AfterShadows だけ有効（速度プリパスの判定より前）。
 // ===========================================================================
 #include "core/Types.h"
 
@@ -25,8 +60,6 @@ namespace dx12e
 
 class DescriptorHeap;
 class GpuTimer;
-class ContactShadowWriter;   // 画面空間の影の書き込み口（W1 の C が定義する。それまでは null）
-class ForwardPsoProvider;    // shadingRevision と debugView で PSO を差し替える入口（W1 の C が定義する。それまでは null）
 struct ViewDesc;             // renderer/ViewDesc.h
 struct DeviceCaps;           // graphics/DeviceCaps.h（W05-04）
 struct FrameConstantsData;   // renderer/FrameConstants.h
@@ -87,6 +120,50 @@ struct ClusterLight
     float             intensity = 1.0f;
 };
 
+// 画面空間の影（コンタクトシャドウ）の結果の差し込み口。AfterDepthPrepass で Provide すると、
+// 以後のフォワード系がその SRV を内蔵のコンタクトシャドウの代わりに読む（番号は m_srvHeap 内）。
+// 最小の形: 何も Provide しなければ従来どおり。W1 の C が拡張する。
+class ContactShadowWriter
+{
+public:
+    static constexpr u32 kNone = 0xFFFFFFFFu;
+    void Provide(u32 srvIndex) { m_srvIndex = srvIndex; }
+    u32  Provided() const { return m_srvIndex; }
+    void Reset() { m_srvIndex = kNone; }
+private:
+    u32 m_srvIndex = kNone;
+};
+
+// 今のフォワード PSO の選び方を包んだだけの読み取り口（shadingRevision / debugView による差し替えは W1 の C）。
+// ステージ呼び出しごとに、その時点の PSO（準備中は null）を詰めて渡す。
+class ForwardPsoProvider
+{
+public:
+    enum class Variant : u8 { Opaque, Mask, Blend };
+    struct Set
+    {
+        ID3D12PipelineState* opaque = nullptr;        // 深度プリパス無し（LESS）
+        ID3D12PipelineState* opaqueLEqual = nullptr;  // 深度プリパス有り（LESS_EQUAL）
+        ID3D12PipelineState* mask = nullptr;
+        ID3D12PipelineState* maskLEqual = nullptr;
+        ID3D12PipelineState* blend = nullptr;
+    };
+    Set  staticMesh;
+    Set  skinned;
+    bool depthPrepassActive = false;
+
+    ID3D12PipelineState* Select(bool skin, Variant v) const
+    {
+        const Set& s = skin ? skinned : staticMesh;
+        switch (v)
+        {
+        case Variant::Mask:  return depthPrepassActive ? s.maskLEqual : s.mask;
+        case Variant::Blend: return s.blend;
+        default:             return depthPrepassActive ? s.opaqueLEqual : s.opaque;
+        }
+    }
+};
+
 // F3（レンダーグラフ）へ移すための宣言の口。今は何も受け取らない。
 struct StageResourceDecl
 {
@@ -107,8 +184,25 @@ struct StageCtx
     D3D12_GPU_DESCRIPTOR_HANDLE sceneColorSrv{};           // ポストのステージでは「今のチェーンの絵」の SRV
     ID3D12Resource*             depth = nullptr;
     D3D12_GPU_DESCRIPTOR_HANDLE depthSrv{};
-    D3D12_GPU_DESCRIPTOR_HANDLE hiZSrv{};                  // 未提供なら ptr==0
-    D3D12_GPU_DESCRIPTOR_HANDLE velocitySrv{};             // 未提供なら ptr==0
+    D3D12_GPU_DESCRIPTOR_HANDLE hiZSrv{};                  // Hi-Z が作られたフレームの AfterDepthPrepass 以降（ポスト含む）。無ければ ptr==0
+    D3D12_GPU_DESCRIPTOR_HANDLE velocitySrv{};             // 速度プリパスのフレームの AfterDepthPrepass 以降（ポスト含む）。無ければ ptr==0
+    // 入口の状態（sceneColor / depth が null のときは意味を持たない）。変えるときは Require* を使う。
+    D3D12_RESOURCE_STATES       sceneColorState = D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES       depthResState   = D3D12_RESOURCE_STATE_COMMON;
+    // 呼び出し側の追跡と同期して遷移する口。null のとき（PostPostUber / エディタ系の sceneColor など）は遷移できない。
+    void (*TransitionSceneColorFn)(void* user, D3D12_RESOURCE_STATES to) = nullptr;
+    void (*TransitionDepthFn)(void* user, D3D12_RESOURCE_STATES to) = nullptr;
+    void* stateUser = nullptr;
+    bool RequireSceneColor(D3D12_RESOURCE_STATES to)
+    {
+        if (!TransitionSceneColorFn || !sceneColor) return false;
+        TransitionSceneColorFn(stateUser, to); sceneColorState = to; return true;
+    }
+    bool RequireDepth(D3D12_RESOURCE_STATES to)
+    {
+        if (!TransitionDepthFn || !depth) return false;
+        TransitionDepthFn(stateUser, to); depthResState = to; return true;
+    }
     D3D12_GPU_VIRTUAL_ADDRESS   perFrameGpuVa = 0;         // b1（PerFrameConstants）。作る前のステージでは 0
     FrameConstantsData*         perFrameCpu = nullptr;     // PfSlot 経由で書く。作る前のステージでは null
 
