@@ -29,6 +29,7 @@ param(
     [string]$Base = 'HEAD',   # 本体 worktree の HEAD(実行元 worktree の HEAD ではない)
     [Alias('NoBuild')][switch]$NoConfigure,
     [switch]$NoNpm,
+    [switch]$OwnDeps,   # 依存(vcpkg_installed)をレーン専用にする。本体の installed dir が vcpkg.json の overrides と合わないときは自動で有効
     [switch]$WhatIf,   # 何も作らず、予定(ポート / junction / npm ci / バイナリキャッシュ)だけ表示
     [switch]$Remove
 )
@@ -172,11 +173,30 @@ if (-not $NoConfigure) {
     }
     Remove-Item Env:\VSLANG -ErrorAction SilentlyContinue
     try { (Get-Process -Id $PID).PriorityClass = 'BelowNormal' } catch {}
+    # vcpkg.json の overrides（依存の版の固定）は VCPKG_MANIFEST_INSTALL=ON のときだけ効く。本体の installed dir が
+    # その版になっていないうちは（依存を更新する変更が本体へ入る前後）、本体の dir を共有する(OFF)と古い依存で建ってしまう。
+    # そのときは本体の dir を複製してレーン専用にし、ON で configure する（本体は触らない）。
+    $ownInst = $null
+    try {
+        $vj = Get-Content -Raw (Join-Path $Path 'vcpkg.json') | ConvertFrom-Json
+        foreach ($o in @($vj.overrides)) {
+            $hit = @(Get-ChildItem (Join-Path $vcpkgInst 'vcpkg\info') -Filter ("{0}_{1}_*" -f $o.name, $o.version) -ErrorAction SilentlyContinue)
+            if ($hit.Count -eq 0) { $OwnDeps = $true; Write-Host ("[wt] 本体の installed dir に {0} {1} が無い -> レーン専用の依存にする" -f $o.name, $o.version) }
+        }
+    } catch { Write-Host "[wt] vcpkg.json の overrides を読めない(共有のまま続行): $_" }
+    if ($OwnDeps) {
+        $ownInst = Join-Path $Path 'build\release\vcpkg_installed'
+        New-Item -ItemType Directory -Force -Path $ownInst | Out-Null
+        Write-Host "[wt] vcpkg_installed を複製: $ownInst"
+        robocopy $vcpkgInst $ownInst /E /NFL /NDL /NJH /NJS /NP | Out-Null
+        if ($LASTEXITCODE -ge 8) { Write-Host '[wt] vcpkg_installed の複製に失敗'; exit 1 }
+        $vcpkgInstC = $ownInst -replace '\\', '/'
+    }
     Push-Location $Path
     try {
         $cfg = @('-S', '.', '-B', 'build\release', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
             "-DCMAKE_TOOLCHAIN_FILE=$tc", '-DVCPKG_TARGET_TRIPLET=x64-windows',
-            "-DVCPKG_INSTALLED_DIR=$vcpkgInstC", '-DVCPKG_MANIFEST_INSTALL=OFF',
+            "-DVCPKG_INSTALLED_DIR=$vcpkgInstC", "-DVCPKG_MANIFEST_INSTALL=$(if ($ownInst) { 'ON' } else { 'OFF' })",
             "-DFETCHCONTENT_SOURCE_DIR_ASSIMP=$assimpC")
         $q = ($cfg | ForEach-Object { "`"$_`"" }) -join ' '
         & cmd /c "chcp 65001>nul && cmake $q"

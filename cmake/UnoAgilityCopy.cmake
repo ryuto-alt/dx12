@@ -15,3 +15,7 @@ foreach(_n D3D12Core.dll d3d12SDKLayers.dll)
         message(FATAL_ERROR "UnoAgilityCopy.cmake: ${_n} のコピーに失敗: ${_r}")
     endif()
 endforeach()
+# 再配布条件のライセンス文（取得先の 1 つ上）。ゲームの配布（BuildGame）が licenses/ へ運ぶ元になる。
+if(EXISTS "${SRC}/../LICENSE.txt")
+    file(COPY_FILE "${SRC}/../LICENSE.txt" "${DST}/LICENSE.txt" ONLY_IF_DIFFERENT)
+endif()

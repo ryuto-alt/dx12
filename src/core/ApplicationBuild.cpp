@@ -124,7 +124,7 @@ bool Pipeline::CopyRuntime()
         std::error_code aec;
         if (!fs::exists(agilitySrc, aec))
         {
-            Logger::Error("D3D12/D3D12Core.dll が見つかりません（{}）。cmake の configure（Agility の取得）とビルドをやり直してください", agilitySrc.string());
+            Logger::Error("D3D12/D3D12Core.dll が見つかりません（{}）。cmake の configure（Agility の取得）とビルドをやり直してください", PathResolver::WideToUtf8(agilitySrc.wstring()));
             return Fail("D3D12/D3D12Core.dll が見つかりません。エンジンをビルドし直してください（Agility SDK のランタイム）");
         }
         fs::create_directories(in.outputDir / "D3D12", aec);
@@ -132,6 +132,16 @@ bool Pipeline::CopyRuntime()
         fs::copy_file(agilitySrc, in.outputDir / "D3D12" / "D3D12Core.dll", fs::copy_options::overwrite_existing, aec);
         if (aec) return Fail("D3D12/D3D12Core.dll をコピーできません: " + aec.message());
         Logger::Info("Copied D3D12/D3D12Core.dll");
+        // 再配布条件: ライセンス文を licenses/ へ添える（インストーラ・更新 zip と同じ名前）。
+        const fs::path agilityLic = in.exeDir / "D3D12" / "LICENSE.txt";
+        if (fs::exists(agilityLic, aec))
+        {
+            aec.clear();
+            fs::create_directories(in.outputDir / "licenses", aec);
+            aec.clear();
+            fs::copy_file(agilityLic, in.outputDir / "licenses" / "Microsoft.Direct3D.D3D12-LICENSE.txt", fs::copy_options::overwrite_existing, aec);
+            if (aec) Logger::Warn("Agility のライセンス文をコピーできません: {}", aec.message());
+        }
     }
 
     // ★エディタで作ったキー割り当てを配布物へ持っていく。

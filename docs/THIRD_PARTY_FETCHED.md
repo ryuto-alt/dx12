@@ -20,17 +20,23 @@
 - 配置: exe の隣の `D3D12\`（`D3D12SDKPath = ".\D3D12\"` は exe からの相対）。ビルドツリーには `d3d12SDKLayers.dll` も置く
   （Release でも `DX12_D3D_DEBUG=1` でデバッグレイヤーを使うため）。配布の 3 経路（ゲーム配布 / インストーラ / 更新用 zip）は
   `D3D12Core.dll` だけを運び、SDKLayers は含めない。
-- 再頒布ライセンス（`Microsoft.Direct3D.D3D12` の `LICENSE.txt`）に従い、ライセンス文を配布物に同梱する。
+- 再頒布ライセンス（`Microsoft.Direct3D.D3D12` の `LICENSE.txt`）に従い、ライセンス文を配布物に同梱する（ゲーム配布は `licenses\Microsoft.Direct3D.D3D12-LICENSE.txt`。ビルドツリーの `D3D12\LICENSE.txt` から運ぶ）。
 - エンジンを別の場所へコピーして起動するときは `D3D12\` も運ぶ（`tools/engine_instance.ps1` は対応済み）。
 
 ## vcpkg の版の上書き（overrides）と worktree
 
 `vcpkg.json` の `overrides`（directx-headers 1.620.2 / d3d12-memory-allocator 3.3.0）は、`VCPKG_MANIFEST_INSTALL=ON` で configure したときだけ効く。
-`tools/worktree_setup.ps1` が作るレーンは、本体の `build\release\vcpkg_installed` を共有して `VCPKG_MANIFEST_INSTALL=OFF` で configure するため、
+従来の `tools/worktree_setup.ps1` が作るレーンは、本体の `build\release\vcpkg_installed` を共有して `VCPKG_MANIFEST_INSTALL=OFF` で configure するため、
 そのままでは古い版（1.619.1 / 3.0.1）が使われ、`AgilityExports.cpp` の `static_assert`（D3D12_SDK_VERSION == lock の SDK）でビルドが止まる。
 
-依存を更新する手順（共有ディレクトリを無断で書き換えない）:
+`worktree_setup.ps1` は、本体の installed dir に overrides の版が無いとき（または `-OwnDeps` を付けたとき）、
+本体の installed dir を複製したレーン専用の dir（`build\release\vcpkg_installed`）で `MANIFEST_INSTALL=ON` にして configure する（新しいレーンに手作業は要らない）。
+本体の installed dir が overrides の版になっていれば、従来どおり共有（OFF）のままにする。
+
+既に configure 済みのレーンを手で切り替えるとき（`worktree_setup.ps1 -Remove` して作り直すのが確実）:
 1. レーン専用の installed dir を作る（本体の `vcpkg_installed` を robocopy で複製）。
 2. `cmake -S . -B build\release -DVCPKG_INSTALLED_DIR=<レーンの build\release\vcpkg_installed> -DVCPKG_MANIFEST_INSTALL=ON`（vcvars64 と VS の Installer フォルダ（vswhere）が PATH にある状態で）。
 3. `CMakeCache.txt` に残る本体側の `vcpkg_installed` への絶対パス（`*_DIR`、`ZLIB_*` など）を、レーンのパスへ置換する。
-4. 本体のマージ後は、本体を同じ設定で 1 回 configure して共有の installed dir を更新し、各レーンを rebase する。
+
+M2 の夕方（メイン）: 本体を `-DVCPKG_MANIFEST_INSTALL=ON` で 1 回 configure して共有の installed dir を 1.620.2 / 3.3.0 にし、
+各レーンを rebase する。その後に作るレーンは自動で共有（OFF）になる。

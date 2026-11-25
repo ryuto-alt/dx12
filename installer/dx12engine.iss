@@ -1,7 +1,7 @@
 ﻿; Uno Engine 個人用インストーラー（Inno Setup）
 ; - 管理者不要（%LOCALAPPDATA%\Programs\DX12Engine へインストール）
 ; - 既存の GitHub リリース自動更新(Updater)はそのまま動く（書き込み可能フォルダのため）
-; ビルド: ISCC.exe installer\dx12engine.iss  （/DMyAppVersion=0.5.1 で版を上書き可）
+; ビルド: pwsh installer\build.ps1（cmake\agility.lock.json の版を /DAgilityVersion で渡す。ISCC を直接呼ぶときは /DAgilityVersion=<SDK 版> も要る。/DMyAppVersion=0.5.1 で版を上書き可）
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.5.2"

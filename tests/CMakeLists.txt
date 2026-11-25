@@ -394,12 +394,34 @@ if(COMMAND uno_agility_test_exe)
         COMMAND AgilityPolicyCheck $<TARGET_FILE:DX12Engine> $<TARGET_FILE:GameRuntime>)
     set_tests_properties(AgilityVersionPolicy PROPERTIES TIMEOUT 60)
 
+    # AgilityGuardNegative（gpu）: AgilityTestGuard が実際に落とす（D3D12\ 無しで 98、継承した UNO_DEBUG_LAYER_FAILED は無視）。
+    find_program(DX12_PWSH_EXE pwsh)
+    if(DX12_PWSH_EXE)
+        add_test(NAME AgilityGuardNegative
+            COMMAND ${DX12_PWSH_EXE} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/agility_guard_negative.ps1
+                    -ExeDir $<TARGET_FILE_DIR:AgilityLoadTests>)
+        set_tests_properties(AgilityGuardNegative PROPERTIES LABELS gpu TIMEOUT 180)
+    endif()
+
     # AgilityMissingRedist（夜間）: D3D12\ を抜いた一時コピーを --headless で動かし、縮退か決まったコード（0x2A）で終わる。
     find_program(DX12_PWSH_EXE pwsh)
     if(DX12_PWSH_EXE)
+        # エンジンの MCP ポートはレーンごとの固定値（worktree_setup.ps1 の表: lane-a 8851 / b 8852 / c 8853 / d 8855）。
+        # 夜間に 2 レーンが同時に回っても衝突しないよう、worktree のフォルダ名から決める（本体は 8859）。
+        get_filename_component(_uno_wt_name "${CMAKE_SOURCE_DIR}" NAME)
+        set(_uno_lane_port 8859)
+        if(_uno_wt_name STREQUAL "lane-a")
+            set(_uno_lane_port 8851)
+        elseif(_uno_wt_name STREQUAL "lane-b")
+            set(_uno_lane_port 8852)
+        elseif(_uno_wt_name STREQUAL "lane-c")
+            set(_uno_lane_port 8853)
+        elseif(_uno_wt_name STREQUAL "lane-d")
+            set(_uno_lane_port 8855)
+        endif()
         add_test(NAME AgilityMissingRedist
             COMMAND ${DX12_PWSH_EXE} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/agility_missing_redist.ps1
-                    -ExeDir $<TARGET_FILE_DIR:DX12Engine>)
+                    -ExeDir $<TARGET_FILE_DIR:DX12Engine> -McpPort ${_uno_lane_port})
         set_tests_properties(AgilityMissingRedist PROPERTIES LABELS "nightly;gpu" TIMEOUT 180)
     endif()
 endif()

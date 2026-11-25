@@ -2,7 +2,7 @@
   AgilityMissingRedist（夜間）: D3D12\ を抜いた一時コピーを --headless で動かし、
   「in-box に縮退して動く」か「決まった終了コード 0x2A」のどちらかで終わる（クラッシュしない）ことを確かめる。
     pwsh tests/agility_missing_redist.ps1 -ExeDir build\release -McpPort 8851
-  -McpPort は自分のレーンのポートを渡す（他のエンジンと衝突させない。未指定は環境変数 UNO_LANE_MCP_PORT、無ければ 8859）。
+  -McpPort は自分のレーンのポートを渡す（他のエンジンと衝突させない。未指定は環境変数 UNO_LANE_MCP_PORT、無ければ 8859。ctest は tests/CMakeLists.txt が worktree 名から渡す）。
   窓は出さない（--headless + --background）。クラッシュ時の WER ダイアログも出さない（SetErrorMode を子に継承）。
 #>
 param(
