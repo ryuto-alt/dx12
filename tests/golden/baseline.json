@@ -192,24 +192,35 @@
     "core_post_stack": {
       "nativeWidth": 977,
       "nativeHeight": 550,
-      "nativeSha256": "ef1bb384d61a8d777e5835867a75c05946ec1a35004f7231488e59b97c768bc3",
-      "compareSha256": "872aac608c55a49e1ee8b607cb93b2211a526b55bf1367da325d0b0420c31c9d",
+      "nativeSha256": "70a0f770e77d553fb26dcbd94c48a47a61ffb82c2e9db5bb0e9c56cc6b269960",
+      "compareSha256": "73cfb157ad142c7469cf5a4f5a1d993488f7237fbeb74ae37170b594d80721e0",
       "width": 640,
       "height": 360,
-      "commit": "884b229",
-      "capturedAt": "2026-11-25T16:02:06.157Z",
+      "commit": "1ebd201",
+      "capturedAt": "2026-11-25T16:06:55.886Z",
       "deterministicInSession": true
     },
-    "core_scene_default": {
+    "core_load_defaults": {
       "nativeWidth": 977,
       "nativeHeight": 550,
       "nativeSha256": "f2518221d8d75d03d007df6544ac92bc60ecf6e840ef6e6a9f21da40567c78c9",
       "compareSha256": "3706227c3b73c325b5f0049c29543b727cbe209e5e7a6995a1d4742c4fe40071",
       "width": 640,
       "height": 360,
-      "commit": "884b229",
-      "capturedAt": "2026-11-25T16:02:07.702Z",
+      "commit": "1ebd201",
+      "capturedAt": "2026-11-25T16:06:57.426Z",
       "deterministicInSession": true
+    },
+    "core_new_scene_gi": {
+      "nativeWidth": 977,
+      "nativeHeight": 550,
+      "nativeSha256": "d5ba5b21448217feb69d170a518ffe585c0a22216929595a83ff2e356b716e2d",
+      "compareSha256": "812349370bd239accc4a3127cb09f54b81af403dae86a860a4809b5d3ca48a83",
+      "width": 640,
+      "height": 360,
+      "commit": "1ebd201",
+      "capturedAt": "2026-11-25T16:07:01.331Z",
+      "deterministicInSession": false
     }
   }
 }

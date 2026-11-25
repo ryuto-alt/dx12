@@ -8,19 +8,21 @@
 ```
 run_golden.bat                 # 純関数のテスト → 3D（core_*）+ UI を撮って比較
 run_golden.bat --update        # 意図した絵の変更のときだけ基準を撮り直す
-run_golden.bat --only nocturne_hall --repeat 2   # 決定論も確かめる
+run_golden.bat --only core_pbr_spheres --repeat 2   # 決定論も確かめる
+run_golden.bat --group repeat --repeat 2             # DDGI/DXR の別枠（core_new_scene_gi）
 ```
 
 - exe: `DX12_ENGINE_EXE` → `build/dev/DX12Engine.exe` → `build/release/...` の順で最初にあるもの（`--exe` で明示も可）。
   起動は `tools/engine_instance.ps1` 経由（`--headless`）。exe / DLL / shaders / assets をインスタンス専用フォルダ
   （`%LOCALAPPDATA%/UnoEngine/agent-instances/golden-3d-<リポジトリパスのハッシュ>`）へコピーしてから起動するので、ビルド出力を握らず次のビルドが LNK1104 にならない。
 - **`core_*`（リポジトリ内で完結）**: `tests/golden/projects/golden_core`（プリミティブと手続きの空だけ）の 5 シーン
-  （PBR 球の列 / CSM / 半透明 / ポスト / 新規シーンの既定）。どの PC でも必ず回る。シーンは `gen_scenes.mjs` で再生成する。
+  （PBR 球の列 / CSM / 半透明 / ポスト・発光 / ロード時の既定値 = 設定ブロックの無い手書きシーン）。別枠 `core_new_scene_gi` は実際の new_scene の結果（下記 group:"repeat"）。どの PC でも必ず回る。シーンは `gen_scenes.mjs` で再生成する。
 - **手元のゲーム由来の 4 件**（perftest_ddgi_probe / perftest_stress_5000 / nocturne_hall / junction_f6）は `requiresProjectsRoot:true`。
   環境変数 `DX12_GOLDEN_PROJECTS_ROOT=<PerfTest/Nocturne/Junction の親フォルダ>` があるときだけ回し、無ければ**対象から外す**（SKIP の見かけ合格にしない）。
-  基準画像は撮った PC のもの（解像度 1043x587）。
+  基準画像は撮った PC のもの（旧 launchEngine で 1043x587）。★今の launchEngine は engine_instance.ps1 経由で 977x550 なので、そのプロジェクトがある PC で一度 `--update` して撮り直すまでは環境違い（strict では不合格）になる。
+  `--only` はこの絞り込みの後に効く（環境変数なしで `--only nocturne_hall` と名指ししても「対象のシーンが無い」）。
 - 既定は `--strict`（プロジェクトが見つからないシーンは不合格）。緩めるのは `--no-strict`。
-- `group:"repeat"` のシーン（DDGI / DXR など決定論が崩れるもの）は通常実行に含めず、`--group repeat` で別枠に回す（今は該当シーン無し）。
+- `group:"repeat"` のシーン（DDGI / DXR など決定論が崩れるもの）は通常実行に含めず、`--group repeat` で別枠に回す。今は `core_new_scene_gi` が該当: 実際の `new_scene` コマンド（DirectionalLight + MainCamera + `gi::ApplyNew` = DDGI 自動配置 / 環境光 0 / SSGI / RT 影）の結果。新規シーンの既定プリセットを変える作業はこれで検出する（`scene` ではなく `newScene:true`）。
 - 新しい `core_*` の基準は RTX 5060 で `--update --repeat 2` して撮った（同一セッションで 2 枚が 1 ビットも違わないことを確認）。ネイティブ解像度は 977x550。
 - 出力は `build/golden-out/`（撮った絵・`*.diff.png`。違う画素は赤）。
 - 純関数（縮小・差分・判定・プロジェクト解決）だけなら GPU 不要: `node --test tools/bench/golden.test.mjs`。

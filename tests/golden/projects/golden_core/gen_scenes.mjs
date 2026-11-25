@@ -50,10 +50,10 @@ const write = (name, scene) => fs.writeFileSync(path.join(OUT, `${name}.json`), 
   es.push(box("Pane", [0, 1.0, -1.8], [4, 2, 0.05], [0.4, 0.8, 0.9], 0.0, 0.05, { alphaMode: "blend", opacity: 0.35 }));
   write("transparency", { entities: es, shadows: true });
 }
-// 4) ポスト: 明るい物と暗い物を置いて bloom / vignette / grain / FXAA を効かせる
+// 4) ポスト: 発光する物と暗い物を置いて bloom / vignette / 彩度 / FXAA / SSAO を効かせる（grain は入れていない）
 {
   const es = [sun([-0.3, -0.6, -0.5], 5.0), ground(30, [0.3, 0.3, 0.32]),
-    sphere("Hot", [-1.2, 0.7, 0], 0.7, [1.0, 0.95, 0.9], 0.0, 0.2, { emissiveColor: [6.0, 4.0, 2.0] }),
+    sphere("Hot", [-1.2, 0.7, 0], 0.7, [1.0, 0.95, 0.9], 0.0, 0.2, { emissiveColor: [1.0, 0.66, 0.33], emissiveIntensity: 6.0 }),
     sphere("Chrome", [1.2, 0.7, 0], 0.7, [0.9, 0.9, 0.95], 1.0, 0.1),
     box("Wall", [0, 1.5, 3.5], [8, 3, 0.3], [0.6, 0.6, 0.65], 0.0, 0.7)];
   write("post_stack", {
@@ -61,9 +61,9 @@ const write = (name, scene) => fs.writeFileSync(path.join(OUT, `${name}.json`), 
       saturationOn: true, saturation: 1.1, fxaaOn: true },
     ssao: { enabled: true }, entities: es, shadows: true });
 }
-// 5) 新規シーンの既定: 設定ブロックを何も書かない（ロード時の既定値そのもの）
+// 5) ロード時の既定値: 設定ブロックを何も書かない手書きシーン（新規シーンコマンドの結果ではない。そちらは golden.json の core_new_scene_gi）
 {
-  write("scene_default", { entities: [sun(), ground(30), box("Cube", [0, 0.5, 0], [1, 1, 1], [0.6, 0.65, 0.75]),
+  write("load_defaults", { entities: [sun(), ground(30), box("Cube", [0, 0.5, 0], [1, 1, 1], [0.6, 0.65, 0.75]),
     sphere("Ball", [1.8, 0.5, 0.5], 0.5, [0.8, 0.4, 0.3], 0.0, 0.5)] });
 }
 console.log("シーンを生成した:", OUT);

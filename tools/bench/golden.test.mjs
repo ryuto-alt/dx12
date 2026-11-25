@@ -74,3 +74,38 @@ test("resolveProject: 絶対パス / リポジトリ内相対 / 親フォルダ�
     resolveProject("C:/Users/x/Nocturne", { DX12_GOLDEN_PROJECTS_ROOT: "/other" }, exists(new Set([path.normalize(alt)]))), alt);
   assert.equal(resolveProject("C:/Users/x/Nocturne", {}, () => false), null);
 });
+
+// ─── 絞り込み・引数（W0-2: 「SKIP の見かけ合格にしない」を守る純ロジック）─────────────────
+import { selectScenes, parseArgs } from "./lib/sceneSelect.mjs";
+const SC = [
+  { name: "old", requiresProjectsRoot: true },
+  { name: "core_a" }, { name: "core_b" },
+  { name: "rep", group: "repeat" },
+  { name: "old_rep", group: "repeat", requiresProjectsRoot: true },
+];
+test("selectScenes: ROOT が無ければ requiresProjectsRoot を対象から外す（SKIP にしない）", () => {
+  const r = selectScenes(SC, { hasRoot: false });
+  assert.deepEqual(r.scenes.map((s) => s.name), ["core_a", "core_b"]);
+  assert.deepEqual(r.gated, ["old", "old_rep"]);
+});
+test("selectScenes: ROOT があれば requiresProjectsRoot も回る", () => {
+  assert.deepEqual(selectScenes(SC, { hasRoot: true }).scenes.map((s) => s.name), ["old", "core_a", "core_b"]);
+});
+test("selectScenes: group 指定はその group だけ・無指定は group 無しだけ", () => {
+  assert.deepEqual(selectScenes(SC, { group: "repeat" }).scenes.map((s) => s.name), ["rep"]);
+  assert.ok(!selectScenes(SC, {}).scenes.some((s) => s.group));
+});
+test("selectScenes: --only は対象外のシーンを復活させない", () => {
+  assert.equal(selectScenes(SC, { only: new Set(["old"]) }).scenes.length, 0);
+  assert.deepEqual(selectScenes(SC, { only: new Set(["core_b"]) }).scenes.map((s) => s.name), ["core_b"]);
+});
+test("parseArgs: 既定は strict・--no-strict で緩む・--group/--only/--repeat", () => {
+  assert.equal(parseArgs([]).strict, true);
+  assert.equal(parseArgs(["--no-strict"]).strict, false);
+  assert.equal(parseArgs(["--no-strict", "--strict"]).strict, true);
+  const a = parseArgs(["--group", "repeat", "--only", "a, b", "--repeat", "2"]);
+  assert.equal(a.group, "repeat");
+  assert.deepEqual([...a.only], ["a", "b"]);
+  assert.equal(a.repeat, 2);
+  assert.throws(() => parseArgs(["--nanika"]), /不明な引数/);
+});

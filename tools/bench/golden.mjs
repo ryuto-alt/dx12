@@ -43,6 +43,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { REPO_ROOT, findDefaultExe, resolveProject, launchEngine, launchInstance, connect, sleep } from "./lib/engine.mjs";
+import { parseArgs, selectScenes } from "./lib/sceneSelect.mjs";
 import { sha256, resampleArea, compareImages, judge } from "./lib/imageDiff.mjs";
 
 export { sha256, resampleArea, compareImages, judge };
@@ -57,28 +58,7 @@ const OUT_DIR = path.join(REPO_ROOT, "build", "golden-out");
 const UI_DIR = path.join(GOLDEN_DIR, "ui");                       // UI ゴールデンの基準 PNG
 const UI_PROJECT_SRC = path.join(GOLDEN_DIR, "ui_project");       // UI 撮影用の最小プロジェクト（コピーして使う）
 
-// ─── 引数 ───────────────────────────────────────────────────────────────
-function parseArgs(argv) {
-  const a = { update: false, repeat: 1, only: null, exe: findDefaultExe(), strict: true, group: null, uiOnly: false, noUi: false, forceTheme: null };
-  for (let i = 0; i < argv.length; i++) {
-    const k = argv[i];
-    if (k === "--update") a.update = true;
-    else if (k === "--repeat") a.repeat = Math.max(1, Number(argv[++i]) || 1);
-    else if (k === "--only") a.only = new Set(String(argv[++i]).split(",").map((s) => s.trim()).filter(Boolean));
-    else if (k === "--exe") a.exe = path.resolve(argv[++i]);
-    else if (k === "--strict") a.strict = true;
-    else if (k === "--no-strict") a.strict = false;
-    else if (k === "--group") a.group = String(argv[++i]);
-    else if (k === "--ui-only") a.uiOnly = true;
-    else if (k === "--no-ui") a.noUi = true;
-    else if (k === "--force-theme") a.forceTheme = String(argv[++i]);
-    else if (k === "--help" || k === "-h") { a.help = true; }
-    else throw new Error(`不明な引数: ${k}`);
-  }
-  if (a.update && a.forceTheme) throw new Error("--update と --force-theme は同時に使えない（基準をテーマ違いで上書きしてしまう）");
-  return a;
-}
-
+// ─── 引数 ─ parseArgs / selectScenes は lib/sceneSelect.mjs ────────────────
 // ─── 画像ユーティリティ（純関数） ───────────────────────────────────────
 export function readPng(file) {
   const png = PNG.sync.read(fs.readFileSync(file));
@@ -124,6 +104,26 @@ async function openScene(eng, scene) {
     await sleep(500);
   }
   throw new Error(`シーンが開かない: ${scene}`);
+}
+
+/**
+ * 実際の「新規シーン」コマンド（new_scene。エディタの「新規シーン」と同じ経路で DirectionalLight + MainCamera + gi::ApplyNew が走る）で
+ * シーンを作る。保存先は指定しない（リポジトリのプロジェクトを汚さない）。作り直しの完了は sceneGeneration の増加で待つ。
+ */
+async function createNewScene(eng) {
+  let before = (await eng.call("ping")).sceneGeneration;
+  for (let i = 0; i < 600; i++) {
+    const p = await eng.call("ping");
+    if (!p.sceneLoading) { before = p.sceneGeneration; break; }
+    await sleep(500);
+  }
+  await eng.call("new_scene", {}, 300_000);
+  for (let i = 0; i < 600; i++) {
+    const p = await eng.call("ping");
+    if (!p.sceneLoading && p.sceneGeneration > before) return p;
+    await sleep(200);
+  }
+  throw new Error("new_scene が完了しない");
 }
 
 /** 1 シーンを決定論モードで撮る。戻り値はネイティブ解像度の画像と保存先。 */
@@ -275,16 +275,10 @@ async function main() {
     return 0;
   }
   let scenes = loadConfig();
-  // requiresProjectsRoot（手元のゲームが要る既存 4 件）は DX12_GOLDEN_PROJECTS_ROOT があるときだけ回す。無ければ対象から外す。
-  const hasRoot = !!process.env.DX12_GOLDEN_PROJECTS_ROOT;
-  const gated = scenes.filter((s) => s.requiresProjectsRoot && !hasRoot);
-  if (gated.length) {
-    console.log(`対象外（DX12_GOLDEN_PROJECTS_ROOT 未設定）: ${gated.map((s) => s.name).join(", ")}`);
-    scenes = scenes.filter((s) => !gated.includes(s));
-  }
-  // group:"repeat" は --group repeat のときだけ。指定が無ければ group の無いシーンだけ。
-  scenes = scenes.filter((s) => (args.group ? s.group === args.group : !s.group));
-  if (args.only) scenes = scenes.filter((s) => args.only.has(s.name));
+  // requiresProjectsRoot（手元のゲームが要る既存 4 件）/ group の振り分けは lib/sceneSelect.mjs（単体テストあり）。
+  const sel = selectScenes(scenes, { hasRoot: !!process.env.DX12_GOLDEN_PROJECTS_ROOT, group: args.group, only: args.only });
+  if (sel.gated.length) console.log(`対象外（DX12_GOLDEN_PROJECTS_ROOT 未設定）: ${sel.gated.join(", ")}`);
+  scenes = sel.scenes;
   if (!scenes.length) { console.log("対象のシーンが無い"); return 1; }
   const uiScenes = scenes.filter((s) => s.kind === "ui");
   for (const s of scenes) if (s.kind === "ui" && !["default", "material", "lighting"].includes(s.layout ?? "default")) throw new Error(`${s.name}: layout "${s.layout}" は未対応（default / material / lighting）`);
@@ -315,7 +309,7 @@ async function main() {
       continue;
     }
     const t0 = Date.now();
-    const eng = await launchEngine({ exe: args.exe, project, scene: list[0].scene });
+    const eng = await launchEngine({ exe: args.exe, project, scene: list[0].scene ?? list[0].launchScene });
     let conn;
     try {
       conn = await connect(eng.port);
@@ -323,7 +317,7 @@ async function main() {
         const r = { name: s.name, pass: true, reasons: [] };
         results.push(r);
         try {
-          await openScene(conn, s.scene);
+          if (s.newScene) await createNewScene(conn); else await openScene(conn, s.scene);
           const shots = [];
           for (let k = 0; k < args.repeat; k++)
             shots.push(await captureScene(conn, s, args.repeat > 1 ? `.${k}` : ""));

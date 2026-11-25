@@ -93,10 +93,11 @@
         "metallic": 0,
         "roughness": 0.2,
         "emissiveColor": [
-          6,
-          4,
-          2
-        ]
+          1,
+          0.66,
+          0.33
+        ],
+        "emissiveIntensity": 6
       },
       "transform": {
         "position": [
