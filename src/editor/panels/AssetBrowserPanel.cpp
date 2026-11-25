@@ -1713,7 +1713,7 @@ void AssetBrowserPanel::DrawRenameField(EditorContext& ctx)
     const bool entered = ImGui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
                                           ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackAlways, RenameSelectCallback);
     ui::OutlineLastItem();
-    if (g_renameSelectFrames > 0) --g_renameSelectFrames;
+    if (g_renameSelectFrames > 0 && ImGui::IsItemActive()) --g_renameSelectFrames;   // 実際に入力欄が有効になってから数える
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { m_renamePath.clear(); return; }
     if (entered) { CommitRename(ctx); return; }
     if (m_renameWarmup == 0 && !ImGui::IsItemActive() && !ImGui::IsItemFocused()) CommitRename(ctx);   // フォーカスが外れたら確定
@@ -2239,6 +2239,8 @@ void AssetBrowserPanel::DrawModals(EditorContext& ctx)
         ImGui::PushStyleColor(ImGuiCol_Text, th::Warn);
         ImGui::TextWrapped("拡張子が変わるため、ファイルの種類が変わります。サムネイルや参照が使えなくなることがあります。");
         ImGui::PopStyleColor();
+        if (!g_extChange.keepName.empty())
+            ImGui::TextDisabled("「拡張子を保つ」の場合の名前: %s", g_extChange.keepName.c_str());
         ImGui::Separator();
         if (ui::DangerButton("名前変更する", ui::Px(140.0f, 0.0f)))
         {
@@ -2250,8 +2252,8 @@ void AssetBrowserPanel::DrawModals(EditorContext& ctx)
         if (!g_extChange.keepName.empty())
         {
             ImGui::SameLine();
-            const std::string label = "拡張子を保つ（" + g_extChange.keepName + "）";
-            if (ImGui::Button(label.c_str()))
+            // 名前はユーザー入力（## を含みうる）なのでラベルに入れない。ID は固定にする。
+            if (ImGui::Button("拡張子を保つ###RenameKeepExt"))
             {
                 const std::filesystem::path src = g_extChange.src;
                 BeginRelocate(ctx, {RelocateOp{src, src.parent_path() / g_extChange.keepName}}, /*isRename=*/true, /*checkRefs=*/!g_extChange.isNew);
@@ -2260,7 +2262,8 @@ void AssetBrowserPanel::DrawModals(EditorContext& ctx)
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f)))
+        const bool escCancel = ImGui::IsKeyPressed(ImGuiKey_Escape);
+        if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f)) || escCancel)
         {
             g_extChange = PendingExtChange{};
             ImGui::CloseCurrentPopup();

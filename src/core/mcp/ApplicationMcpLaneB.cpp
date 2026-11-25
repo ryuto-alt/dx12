@@ -4,10 +4,16 @@
 // Application の private に触れる処理は core/AppAccess.h のレーン B のブロックへ宣言する。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AppAccess.h"
 
 namespace dx12e
 {
 void Application::RegisterMcpLaneBMethods()
 {
+}
+
+uint64_t AppAccess::ModelThumbHandle(Application& app, const std::string& path)
+{
+    return app.m_thumbRenderer ? app.m_thumbRenderer->GetCachedHandle(path) : 0;
 }
 } // namespace dx12e
