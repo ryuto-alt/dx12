@@ -124,3 +124,9 @@ target_link_libraries(Renderer PUBLIC nlohmann_json::nlohmann_json)
 target_sources(Renderer PRIVATE
     water/WaterRenderer.cpp        # 水域の収集 / カリング / 色・深度のコピー / 水中 / 水面メッシュ（専用 RS）
 )
+
+# レーン別の追加ソース（中身は各レーンが書く。OPTIONAL は付けない＝読み忘れを検出するため）
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/renderer_lane_a.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/renderer_lane_b.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/renderer_lane_c.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/renderer_lane_d.cmake)

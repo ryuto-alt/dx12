@@ -121,3 +121,9 @@ target_compile_definitions(Core PRIVATE ${DX12_COMPILE_DEFS})
 # Application*.cpp は MCP ハンドラ + nlohmann::json のテンプレート実体化が多く、Debug(未最適化)では
 # COFF セクション上限(C1128)を超える。/bigobj で回避（Release は最適化で収まるが両構成へ付けて統一）。
 target_compile_options(Core PRIVATE /bigobj)
+
+# レーン別の追加ソース（中身は各レーンが書く。OPTIONAL は付けない＝読み忘れを検出するため）
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/core_lane_a.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/core_lane_b.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/core_lane_c.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/core_lane_d.cmake)

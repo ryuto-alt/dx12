@@ -1,4 +1,5 @@
 #include "gui/UiTestHarness.h"
+#include "gui/UiTestHarnessShared.h"   // レーン別テスト（gui/uitests/lane_*.cpp）との共有部
 #include "core/Application.h"
 #include "core/CrashHandler.h"
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
@@ -4966,6 +4967,14 @@ const DiagReg kTests[] = {
 
     // ★最後に置く: プロジェクトを閉じて開き直すので、シーンの中身（前のテストが作った物）は入れ替わる。
     { "launcher","launcher_screen",     "ランチャー",         "タブ切替 / 新規フォームの検証 / テンプレ選択 / 検索",  T_LauncherScreen        },
+    // ==== lane-A begin ====
+    // ==== lane-A end ====
+    // ==== lane-B begin ====
+    // ==== lane-B end ====
+    // ==== lane-C begin ====
+    // ==== lane-C end ====
+    // ==== lane-D begin ====
+    // ==== lane-D end ====
 };
 
 const DiagReg* FindReg(const ImGuiTest* test)
@@ -5624,5 +5633,21 @@ void UiTestHarness::RegisterTests()
         };
     }
 }
+
+// ===================== レーン別テストとの共有ヘルパ（gui/UiTestHarnessShared.h）=====================
+namespace uitest
+{
+Application* App() { return g_app; }
+EditorContext* Editor() { return g_app ? g_app->GetEditorContext() : nullptr; }
+void LogStep(ImGuiTestContext* ctx, const char* fmt, ...)
+{
+    char buf[192];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    Step(ctx, "%s", buf);
+}
+} // namespace uitest
 
 } // namespace dx12e

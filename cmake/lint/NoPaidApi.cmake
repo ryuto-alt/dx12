@@ -1,0 +1,75 @@
+# ctest NoPaidApi: 有料の Anthropic API を使わない（EXEC_W05_W1 決定 3）。
+#   リポジトリ内のソース・スクリプト・全 package.json に
+#     - @anthropic-ai の依存 / import
+#     - ANTHROPIC_API_KEY の参照
+#   が無いことを確かめる。検査の定義そのものと、「環境にあれば起動を拒む」ガードは
+#   cmake/lint/NoPaidApi.allow.txt（1 行 1 つの接頭辞。# 始まりはコメント）に載せる。
+# 使い方: cmake -DREPO_ROOT=<dir> -P NoPaidApi.cmake
+if(NOT REPO_ROOT)
+    message(FATAL_ERROR "REPO_ROOT が未指定")
+endif()
+
+set(_allow "")
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/NoPaidApi.allow.txt" _allow_lines)
+foreach(_l IN LISTS _allow_lines)
+    string(STRIP "${_l}" _l)
+    if(_l AND NOT _l MATCHES "^#")
+        list(APPEND _allow "${_l}")
+    endif()
+endforeach()
+
+# 追跡されているファイルだけを見る（node_modules や build を走査しない）。git が無ければ主要ディレクトリを glob。
+execute_process(COMMAND git -C "${REPO_ROOT}" ls-files
+                OUTPUT_VARIABLE _files RESULT_VARIABLE _rc ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(_rc EQUAL 0 AND _files)
+    string(REPLACE "\n" ";" _files "${_files}")
+else()
+    set(_files "")
+    foreach(_d src tools tests cmake installer .github)
+        file(GLOB_RECURSE _g RELATIVE "${REPO_ROOT}" "${REPO_ROOT}/${_d}/*")
+        list(APPEND _files ${_g})
+    endforeach()
+    file(GLOB_RECURSE _pk RELATIVE "${REPO_ROOT}" "${REPO_ROOT}/*package.json")
+    list(APPEND _files ${_pk})
+    list(FILTER _files EXCLUDE REGEX "(^|/)(node_modules|build|third_party)/")
+endif()
+
+set(_violations "")
+foreach(_f IN LISTS _files)
+    # 対象: コード・スクリプト・設定。docs と CLAUDE.md の注意書きは対象外
+    if(NOT _f MATCHES "\\.(ts|tsx|js|mjs|cjs|json|ps1|psm1|py|cmake|txt|cpp|h|hpp|inc|yml|yaml|bat|cmd|iss)$")
+        continue()
+    endif()
+    if(_f MATCHES "(^|/)(node_modules|third_party)/")
+        continue()
+    endif()
+    set(_skip FALSE)
+    foreach(_a IN LISTS _allow)
+        string(FIND "${_f}" "${_a}" _pos)
+        if(_pos EQUAL 0)
+            set(_skip TRUE)
+            break()
+        endif()
+    endforeach()
+    if(_skip)
+        continue()
+    endif()
+    if(NOT EXISTS "${REPO_ROOT}/${_f}")
+        continue()
+    endif()
+    file(SIZE "${REPO_ROOT}/${_f}" _sz)
+    if(_sz GREATER 4000000)
+        continue()
+    endif()
+    file(READ "${REPO_ROOT}/${_f}" _txt)
+    if(_txt MATCHES "@anthropic-ai" OR _txt MATCHES "ANTHROPIC_API_KEY")
+        list(APPEND _violations "${_f}")
+    endif()
+endforeach()
+
+if(_violations)
+    string(REPLACE ";" "\n  " _msg "${_violations}")
+    message(FATAL_ERROR "NoPaidApi: 有料 API の参照があります（@anthropic-ai / ANTHROPIC_API_KEY）:\n  ${_msg}\n許可が要る場合は cmake/lint/NoPaidApi.allow.txt へ（検査の定義とガードだけ）。")
+endif()
+list(LENGTH _files _n)
+message(STATUS "NoPaidApi: OK (${_n} ファイルを走査)")

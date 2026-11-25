@@ -98,8 +98,8 @@ void FillManifestChunk0(ManifestRows& o)
         })});
 }
 
-// ==== wave1-laneA ==== begin
-// ==== wave1-laneA ==== end
+// ==== lane-A begin ====
+// ==== lane-A end ====
 
 void FillManifestChunk1(ManifestRows& o)
 {
@@ -266,8 +266,8 @@ void FillManifestChunk2(ManifestRows& o)
         })});
 }
 
-// ==== wave1-laneB ==== begin
-// ==== wave1-laneB ==== end
+// ==== lane-B begin ====
+// ==== lane-B end ====
 
 void FillManifestChunk3(ManifestRows& o)
 {
@@ -422,8 +422,10 @@ void FillManifestChunk4(ManifestRows& o)
         })});
 }
 
-// ==== wave1-laneC ==== begin
-// ==== wave1-laneC ==== end
+// ==== lane-C begin ====
+// ==== lane-C end ====
+// ==== lane-D begin ====
+// ==== lane-D end ====
 
 void FillManifestChunk5(ManifestRows& o)
 {
@@ -520,9 +522,6 @@ void FillManifestChunk5(ManifestRows& o)
             P("component_type", "string", false, nullptr, nullptr, nullptr, nullptr, "指定 jsonKey を持つものだけに絞る(例 pointLight)。"),
         })});
 }
-
-// ==== wave2-laneA ==== begin
-// ==== wave2-laneA ==== end
 
 void FillManifestChunk6(ManifestRows& o)
 {
@@ -736,9 +735,6 @@ void FillManifestChunk7(ManifestRows& o)
             P("camera.target", "vec3", false, nullptr, nullptr, nullptr, nullptr, nullptr),
         })});
 }
-
-// ==== wave2-laneB ==== begin
-// ==== wave2-laneB ==== end
 
 void FillManifestChunk8(ManifestRows& o)
 {
@@ -956,9 +952,6 @@ void FillManifestChunk9(ManifestRows& o)
         })});
 }
 
-// ==== wave2-laneC ==== begin
-// ==== wave2-laneC ==== end
-
 void FillManifestChunk10(ManifestRows& o)
 {
     o.push_back({"sculpt_create", M("彫るための素体メッシュ(box/sphere/plane/cylinder)を作る。岩は sphere、アーチ・柱は cylinder、崖は box が早い。",
@@ -1110,9 +1103,6 @@ void FillManifestChunk10(ManifestRows& o)
             P("alphaBlend", "bool", false, nullptr, nullptr, nullptr, nullptr, "true でシェーダーの alpha 出力を SrcAlpha/InvSrcAlpha ブレンドに使う(DepthWrite OFF)。省略時は既存値を維持、既定は false(不透明固定)。"),
         })});
 }
-
-// ==== wave3-laneA ==== begin
-// ==== wave3-laneA ==== end
 
 void FillManifestChunk11(ManifestRows& o)
 {
@@ -1534,9 +1524,6 @@ void FillManifestChunk12(ManifestRows& o)
         })});
 }
 
-// ==== wave3-laneB ==== begin
-// ==== wave3-laneB ==== end
-
 void FillManifestChunk13(ManifestRows& o)
 {
     o.push_back({"terrain_create", M("ハイトフィールド地形を作る(静的コライダー付き)。★冪等: 同じ name の地形が既にあれば作り直さず設定だけ更新する(resolution か worldSize を変えたときだけ高さ配列がリセットされ heightsReset:true が返る)。",
@@ -1729,9 +1716,6 @@ void FillManifestChunk14(ManifestRows& o)
             P("path", "assetPath", false, nullptr, nullptr, nullptr, nullptr, "assets 相対パス。省略時は現在開いているシーン。"),
         })});
 }
-
-// ==== wave3-laneC ==== begin
-// ==== wave3-laneC ==== end
 
 void FillGeneratedManifestRows(ManifestRows& o)
 {

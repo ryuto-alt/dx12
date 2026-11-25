@@ -1,0 +1,9 @@
+# NoPaidApi の許可リスト（リポジトリルートからの相対パスの接頭辞）。
+# 検査そのものの定義と、「環境に ANTHROPIC_API_KEY があれば起動を拒む」ガードだけを載せる。
+cmake/lint/
+tools/check_anchors.mjs
+tools/nightly.ps1
+tools/dogfood/
+tools/mcp-server/eval/noPaidApi.test.ts
+tools/mcp-server/eval/run_e2e.ts
+tools/mcp-server/eval/score_e2e.ts

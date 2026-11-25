@@ -167,3 +167,9 @@ target_sources(Editor PRIVATE
     FoliageOps.cpp
     panels/FoliagePanel.cpp
 )
+
+# レーン別の追加ソース（中身は各レーンが書く。OPTIONAL は付けない＝読み忘れを検出するため）
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_a.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_b.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_c.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_d.cmake)

@@ -4,6 +4,15 @@
 //   書式: Release{ 版, 日付, 見出し, { {題, 本文, 補足, 分野} ... }, { {種類, 題, 本文} ... } }
 //   本文は 1〜2 行（カード向け）。数値や移行手順などの補足は detail に書く（GitHub 本文とツールチップに出る）。
 
+// ==== lane-A begin ====
+// ==== lane-A end ====
+// ==== lane-B begin ====
+// ==== lane-B end ====
+// ==== lane-C begin ====
+// ==== lane-C end ====
+// ==== lane-D begin ====
+// ==== lane-D end ====
+
 v.push_back(Release{
     "2.6.1", "2026-11-16",
     "インストーラに Uno Lab 用の リバース SSH トンネルのランチャー（Start-UnoLabTunnel.ps1）を同梱しました",
