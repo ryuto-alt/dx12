@@ -5,8 +5,11 @@
 //   projects/<id>/         使い捨てプロジェクト(停止後も 24 時間は残す)
 //
 // ★exe は実コピー。実行中イメージはハードリンク名でも上書き・削除できないので、リンクにするとビルドの LNK1104 が消えない。
-//   ハードリンクにするのは dxcompiler.dll / dxil.dll(再ビルドされないサードパーティ製の大きい DLL)と GameRuntime.exe(エンジンは実行せず、
-//   dx12_build_game が出力へコピーする材料)だけ。shaders / assets はビルドが上書きするので実コピー。
+//   ハードリンクにするのは dxcompiler.dll / dxil.dll / D3D12\**(Agility SDK。再ビルドされないサードパーティ製)と GameRuntime.exe(エンジンは実行せず、
+//   dx12_build_game が出力へコピーする材料)だけ。
+//   ★既知のトレードオフ: D3D12Core.dll は fleet のエンジンがロードする(実行中イメージ)ので、エンジン稼働中はどのリンク名からも
+//   上書き・削除できない。W05-03 の redist コピー(build/release/D3D12)や Agility のバージョン更新は、エンジンを止めるか
+//   copy_if_different にしないとロックで失敗しうる。shaders / assets はビルドが上書きするので実コピー。
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

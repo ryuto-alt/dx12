@@ -24,10 +24,16 @@ try {
   const r = materializeBin(build!, dst);
   assert.equal(fs.readFileSync(path.join(dst, "D3D12", "D3D12Core.dll"), "utf8"), "core");
   assert.equal(fs.readFileSync(path.join(dst, "D3D12", "sub", "nested.bin"), "utf8"), "nested");
-  assert.ok(r.linked.some((f) => f.endsWith("D3D12Core.dll")) || r.copiedBytes > 0);
+  assert.ok(fs.statSync(path.join(dst, "D3D12", "D3D12Core.dll")).nlink >= 2);
+  assert.ok(r.linked.includes("D3D12/D3D12Core.dll") && r.linked.includes("D3D12/sub/nested.bin"));
+  // 再 materialize + インスタンス削除でも元のファイルは無傷
+  materializeBin(build!, dst);
+  fs.rmSync(path.join(tmp, "inst"), { recursive: true, force: true });
+  assert.equal(fs.readFileSync(path.join(src, "D3D12", "D3D12Core.dll"), "utf8"), "core");
   console.log("  OK  bin/D3D12/D3D12Core.dll がある(再帰)");
 
   // D3D12 の無いビルド(M2 前)でも従来どおり動く
+  fs.mkdirSync(dst, { recursive: true });
   fs.rmSync(path.join(src, "D3D12"), { recursive: true });
   materializeBin(statBuild(src, "test")!, dst);
   assert.ok(!fs.existsSync(path.join(dst, "D3D12")));
