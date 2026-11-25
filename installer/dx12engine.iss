@@ -55,7 +55,8 @@ Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion re
 ; シェーダーソース(.hlsl/.hlsli)。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用
 ; (PathResolver::ShaderSourceDirW() が配布時に exe 隣の shaders-src/ を見る)。
 Source: "{#RepoRoot}\shaders\*"; DestDir: "{app}\shaders-src"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 起動音 splash_d.*（出どころ/ライセンス未確認）は配布しない。開発機に変換済み WAV があっても入れない。
+Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Excludes: "splash_d.*"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; MCP(AI ブリッジ)サーバは同梱しない。エディタの「MCP / AI Bridge」窓のボタン 1 回（または DX12Engine.exe --install-mcp）で
 ; https://github.com/ryuto-alt/dx12-mcp から取得し、Node.js も無ければ自動で入れて Codex / Claude Code などへ登録する。
 ; VSCode 補完用の Lua API 型定義（導入手順は同フォルダの README.md）
