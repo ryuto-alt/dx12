@@ -7,6 +7,7 @@
 #include "core/PathResolver.h"
 #include "core/Window.h"
 #include "graphics/AgilityRuntime.h"
+#include "graphics/DredReport.h"
 
 #include <filesystem>
 
@@ -137,6 +138,17 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
     if (!redistPresent)
         Logger::Error("D3D12 runtime: <exe>/D3D12/D3D12Core.dll がありません。in-box のランタイムに縮退します"
                       "（SDK {} 未満だとデバイスを作れません）", RequiredAgilitySdk());
+
+    // --- DRED（デバイス作成の前に設定する）---
+    // 既定はエディタで ON、GameRuntime で OFF。--dred / --no-dred で上書き（perf_gate・スコアカード・夜間の計測は --no-dred）。
+    m_options.dred = dred::ResolveEnabled(options.dred);
+    if (m_options.dred)
+    {
+        if (dred::EnableBeforeDeviceCreation()) Logger::Info("DRED: ON（AutoBreadcrumbs / PageFault / BreadcrumbContext）");
+        else { Logger::Warn("DRED: 有効化に失敗しました（OFF 扱い）"); m_options.dred = false; }
+    }
+    else
+        Logger::Info("DRED: OFF");
 
     // --- Device Creation ---
     // ★フィーチャーレベルは高い順に試して落ちる。12_1 を無条件要求すると、

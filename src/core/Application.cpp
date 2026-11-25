@@ -9,6 +9,7 @@
 #include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
 #include "core/AppAccess.h"     // W05-02: 人の未保存の変更を退避する入口（lane-A のブロック）
+#include "graphics/DredReport.h"   // W05-05: デバイス消失のレポート
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（断った理由をログへ出す）
 #include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
@@ -3211,6 +3212,13 @@ bool Application::HandleDeviceLoss()
         Logger::Error("未保存の変更を退避しました。次回起動時に復旧するか聞きます");
     else
         Logger::Error("未保存の変更はありません（退避不要）");
+
+    // W05-05: DRED のレポート（パンくず・ページフォルト）を書く。ここから先は D3D を呼んでも失敗しうるので内部で全部握りつぶす。
+    {
+        const std::string path = dred::WriteReport(m_graphicsDevice->GetDevice(), reason, m_graphicsDevice->GetOptions().dred);
+        if (!path.empty()) Logger::Error("デバイス消失のレポートを書きました: {}", path);
+        else Logger::Warn("デバイス消失のレポートを書けませんでした");
+    }
 
     m_deviceLost = true;
     return true;

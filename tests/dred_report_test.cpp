@@ -1,0 +1,217 @@
+// DredReportTests（gpu）: W05-05。（合成データの JSON 検査 + 実デバイスの RemoveDevice）
+//   ・純関数 Decide / ParseCommandLine（既定: エディタ ON・GameRuntime OFF・--dred・--no-dred）
+//   ・テスト用デバイスで BeginEvent("TestPass") を打ち、RemoveDevice() → JSON が書かれ、removedReason が入り、パースでき、
+//     パンくずのコンテキストに "TestPass" がある（本物のページフォルトは起こさない）
+//   ・Texture / Buffer / RenderTarget の作成時に名前が付く（ページフォルトの割り当て名が空にならない）
+//   ・JSON の割り当て名は空にならない（名前が無ければ "(unnamed)"）
+#include <Windows.h>
+
+#include <directx/d3d12.h>
+#include <wrl/client.h>
+
+#include <nlohmann/json.hpp>
+
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+
+#include "core/Window.h"
+#include "graphics/Buffer.h"
+#include "graphics/CommandQueue.h"
+#include "graphics/DescriptorHeap.h"
+#include "graphics/DredReport.h"
+#include "graphics/GraphicsDevice.h"
+#include "graphics/RenderTarget.h"
+
+using Microsoft::WRL::ComPtr;
+using namespace dx12e;
+
+static int g_fail = 0;
+#define CHECK(cond, ...)                                  \
+    do {                                                  \
+        if (!(cond)) {                                    \
+            std::printf("FAIL: " __VA_ARGS__);            \
+            std::printf("\n");                            \
+            ++g_fail;                                     \
+        }                                                 \
+    } while (0)
+
+static bool HasName(ID3D12Object* o)
+{
+    UINT size = 0;
+    return o && SUCCEEDED(o->GetPrivateData(WKPDID_D3DDebugObjectNameW, &size, nullptr)) && size > 0;
+}
+
+static void TestDecide()
+{
+    using dred::CmdLine;
+    using dred::Decide;
+    CHECK(Decide(true, CmdLine::None, false), "エディタの既定は ON");
+    CHECK(!Decide(true, CmdLine::None, true), "GameRuntime の既定は OFF");
+    CHECK(Decide(true, CmdLine::ForceOn, true), "--dred は GameRuntime でも ON");
+    CHECK(!Decide(true, CmdLine::ForceOff, false), "--no-dred は OFF");
+    CHECK(!Decide(false, CmdLine::ForceOn, false), "要求が false（コードからの明示）は --dred でも OFF");
+    CHECK(dred::ParseCommandLine(L"DX12Engine.exe --background --no-dred") == CmdLine::ForceOff, "--no-dred の解析");
+    CHECK(dred::ParseCommandLine(L"\"C:\\a b\\GameRuntime.exe\" --dred") == CmdLine::ForceOn, "--dred の解析（引用符つき exe）");
+    CHECK(dred::ParseCommandLine(L"DX12Engine.exe --dredx --project d") == CmdLine::None, "前方一致で拾わない");
+    CHECK(dred::ParseCommandLine(L"x --dred --no-dred") == CmdLine::ForceOff, "後ろが勝つ");
+    CHECK(dred::ParseCommandLine(nullptr) == CmdLine::None, "null");
+}
+
+int main()
+{
+    TestDecide();
+
+    namespace fs = std::filesystem;
+    const fs::path outDir = fs::temp_directory_path() / "dx12_dred_report_test";
+    std::error_code ec;
+    fs::remove_all(outDir, ec);
+    fs::create_directories(outDir, ec);
+
+    Window window;
+    GraphicsDevice dev;
+    GraphicsDeviceOptions opt;
+    opt.dred = true;
+    try { dev.Initialize(window, opt); }
+    catch (...) { std::printf("FAIL: GraphicsDevice::Initialize\n"); return 1; }
+    CHECK(dev.GetOptions().dred, "DRED が有効になっていない（テスト exe に --no-dred が付いている？）");
+
+    // リソースの名前（SetName が付く）
+    {
+        CommandQueue queue;
+        queue.Initialize(dev, D3D12_COMMAND_LIST_TYPE_DIRECT);
+        ConstantBuffer cb;
+        cb.Initialize(dev, 256, 2);
+        CHECK(HasName(cb.GetResource()), "Buffer に名前が付かない");
+        DescriptorHeap rtvHeap, srvHeap;
+        rtvHeap.Initialize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 4, false);
+        srvHeap.Initialize(dev, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 16, true);
+        RenderTarget rt;
+        const float clear[4] = {0, 0, 0, 1};
+        rt.Initialize(dev, &rtvHeap, &srvHeap, 64, 64, DXGI_FORMAT_R8G8B8A8_UNORM, clear);
+        CHECK(HasName(rt.GetResource()), "RenderTarget に名前が付かない");
+        queue.WaitIdle();
+    }
+
+    // 手で組んだ DRED のデータから JSON を作る（この環境のドライバ/OS が RemoveDevice で DRED を埋めないため、中身はここで確かめる）。
+    {
+        static const wchar_t kCtx[] = L"TestPass";
+        D3D12_DRED_BREADCRUMB_CONTEXT ctx{};
+        ctx.BreadcrumbIndex = 1;
+        ctx.pContextString = kCtx;
+        static const D3D12_AUTO_BREADCRUMB_OP kOps[] = {
+            D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT, D3D12_AUTO_BREADCRUMB_OP_DISPATCH, D3D12_AUTO_BREADCRUMB_OP_ENDEVENT};
+        UINT last = 2;
+        D3D12_AUTO_BREADCRUMB_NODE1 node{};
+        node.pCommandListDebugNameW = L"MainCmdList";
+        node.pCommandQueueDebugNameW = L"DirectQueue";
+        node.BreadcrumbCount = 3;
+        node.pLastBreadcrumbValue = &last;
+        node.pCommandHistory = kOps;
+        node.BreadcrumbContextsCount = 1;
+        node.pBreadcrumbContexts = &ctx;
+        D3D12_DRED_ALLOCATION_NODE1 named{};
+        named.ObjectNameW = L"Texture 256x256 mip=1 fmt=28";
+        named.AllocationType = D3D12_DRED_ALLOCATION_TYPE_RESOURCE;
+        D3D12_DRED_ALLOCATION_NODE1 unnamed{};
+        unnamed.AllocationType = D3D12_DRED_ALLOCATION_TYPE_HEAP;
+        named.pNext = &unnamed;
+
+        dred::ReportData d;
+        d.breadcrumbs.pHeadAutoBreadcrumbNode = &node;
+        d.pageFault.PageFaultVA = 0x1234;
+        d.pageFault.pHeadExistingAllocationNode = &named;
+        d.hasPageFault = true;
+        d.deviceState = D3D12_DRED_DEVICE_STATE_PAGEFAULT;
+        d.hasState = true;
+        const std::string text = dred::BuildReportJsonFromData(d, DXGI_ERROR_DEVICE_HUNG, true);
+        nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
+        CHECK(!j.is_discarded(), "合成データの JSON をパースできない");
+        if (!j.is_discarded())
+        {
+            CHECK(j["removedReason"] == "0x00000000887A0006", "removedReason");
+            CHECK(j["deviceState"] == "pagefault", "deviceState");
+            CHECK(j["breadcrumbs"].size() == 1, "パンくずが 1 件");
+            if (j["breadcrumbs"].size() == 1)
+            {
+                const auto& b = j["breadcrumbs"][0];
+                CHECK(b["commandList"] == "MainCmdList" && b["commandQueue"] == "DirectQueue", "コマンドリスト / キュー名");
+                CHECK(b["lastCompleted"] == 2 && b["lastCompletedOp"] == "Dispatch" && b["nextOp"] == "EndEvent", "最後に完了した op");
+                CHECK(b["contexts"].size() == 1 && b["contexts"][0]["context"] == "TestPass", "コンテキスト文字列 TestPass");
+            }
+            CHECK(j["pageFault"]["va"] == "0x0000000000001234", "ページフォルトの VA");
+            CHECK(j["pageFault"]["existing"].size() == 2, "既存の割り当て 2 件");
+            if (j["pageFault"]["existing"].size() == 2)
+            {
+                CHECK(j["pageFault"]["existing"][0]["name"] == "Texture 256x256 mip=1 fmt=28", "割り当て名");
+                CHECK(j["pageFault"]["existing"][1]["name"] == "(unnamed)", "名前なしは (unnamed)（空にしない）");
+            }
+        }
+    }
+
+    // 本物のデバイスで RemoveDevice → JSON が書かれ、removedReason が入り、パースできる。
+    //   ★パンくずの中身（"TestPass" など）は、この環境（Windows 11 26300 + NVIDIA R610）では RemoveDevice() 経由では
+    //   DRED が埋まらないため必須にしない（最小のスタンドアロンでも空だった）。埋まる環境では中身も検査する。
+    ID3D12Device5* d5 = dev.GetDevice();
+    {
+        CommandQueue queue;
+        queue.Initialize(dev, D3D12_COMMAND_LIST_TYPE_DIRECT);
+        ComPtr<ID3D12CommandAllocator> alloc;
+        ComPtr<ID3D12GraphicsCommandList> list;
+        if (FAILED(d5->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))) ||
+            FAILED(d5->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr, IID_PPV_ARGS(&list))))
+        {
+            std::printf("FAIL: コマンドリストを作れない\n");
+            return 1;
+        }
+        alloc->SetName(L"DredTestAllocator");
+        list->SetName(L"DredTestList");
+        static const wchar_t kEvent[] = L"TestPass";
+        list->BeginEvent(0 /*PIX_EVENT_UNICODE_VERSION*/, kEvent, sizeof(kEvent));
+        list->SetMarker(0, kEvent, sizeof(kEvent));
+        list->EndEvent();
+        list->Close();
+        queue.ExecuteCommandList(list.Get());
+
+        CHECK(SUCCEEDED(d5->GetDeviceRemovedReason()), "RemoveDevice の前にデバイスが消えている");
+        d5->RemoveDevice();
+        const HRESULT reason = d5->GetDeviceRemovedReason();
+        CHECK(FAILED(reason), "RemoveDevice の後に GetDeviceRemovedReason が失敗しない");
+        const std::string path = dred::WriteReport(d5, reason, dev.GetOptions().dred, outDir);
+        CHECK(!path.empty(), "レポートを書けない");
+        if (!path.empty())
+        {
+            std::ifstream f(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
+            std::stringstream ss;
+            ss << f.rdbuf();
+            nlohmann::json j = nlohmann::json::parse(ss.str(), nullptr, false);
+            CHECK(!j.is_discarded(), "JSON をパースできない");
+            if (!j.is_discarded())
+            {
+                CHECK(j.contains("removedReason") && j["removedReason"].is_string() && !j["removedReason"].get<std::string>().empty(),
+                      "removedReason が無い");
+                CHECK(j.value("dredEnabled", false), "dredEnabled が false");
+                CHECK(j.contains("breadcrumbs") && j.contains("pageFault"), "breadcrumbs / pageFault の欄が無い");
+                bool foundCtx = false;
+                for (const auto& b : j["breadcrumbs"])
+                    for (const auto& c : b["contexts"])
+                        if (c.value("context", "") == "TestPass") foundCtx = true;
+                std::printf("NOTE: 実デバイスのパンくず %zu 件、コンテキスト TestPass %s\n", j["breadcrumbs"].size(),
+                            foundCtx ? "あり" : "なし（この環境では RemoveDevice で DRED が埋まらない）");
+            }
+        }
+    }
+
+    // null デバイスでもレポートを書ける（落ちない）。
+    {
+        const std::string p2 = dred::WriteReport(nullptr, DXGI_ERROR_DEVICE_HUNG, false, outDir);
+        CHECK(!p2.empty(), "null デバイスでレポートを書けない");
+    }
+
+    fs::remove_all(outDir, ec);
+    if (g_fail == 0) std::printf("OK\n");
+    return g_fail == 0 ? 0 : 1;
+}

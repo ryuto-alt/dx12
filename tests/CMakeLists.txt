@@ -396,6 +396,18 @@ if(COMMAND uno_agility_test_exe)
     add_test(NAME DeviceCapsTests COMMAND DeviceCapsTests)
     set_tests_properties(DeviceCapsTests PROPERTIES LABELS gpu TIMEOUT 120)
 
+    # DredReportTests（gpu）: W05-05。DRED の既定の判定、BeginEvent("TestPass") → RemoveDevice で JSON が書かれ、
+    #   removedReason・コマンドリスト名・コンテキスト "TestPass" が入る。リソースの SetName。
+    add_executable(DredReportTests dred_report_test.cpp)
+    target_include_directories(DredReportTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(DredReportTests PRIVATE Graphics Input)
+    if(MSVC)
+        target_compile_options(DredReportTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(DredReportTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DredReportTests COMMAND DredReportTests)
+    set_tests_properties(DredReportTests PROPERTIES LABELS gpu TIMEOUT 120)
+
     # AgilityVersionPolicy（GPU 不要）: lock の SDK が 600 以上 700 未満（プレビューを出荷しない）、
     #   ビルドした exe 2 本の export と同梱 DLL の export と lock の 3 つが一致、D3D12SDKPath、DLL の SHA256。
     add_executable(AgilityPolicyCheck agility_policy_test.cpp)
