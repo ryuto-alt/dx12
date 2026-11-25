@@ -435,6 +435,18 @@ if(TARGET Scene)
 endif()
 
 # ==== lane-B begin ====
+# 保存まわり（W05-12）: シーン名の検証 / 既存ファイルの検出 / SaveLastOpenedScene が実在しないパスを記録しない。
+if(TARGET ProjectLib)
+    add_executable(SceneSavePathsTests scene_save_paths_test.cpp)
+    target_include_directories(SceneSavePathsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(SceneSavePathsTests PRIVATE ProjectLib)
+    if(MSVC)
+        target_compile_options(SceneSavePathsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SceneSavePathsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SceneSavePathsTests COMMAND SceneSavePathsTests)
+    set_tests_properties(SceneSavePathsTests PROPERTIES TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
