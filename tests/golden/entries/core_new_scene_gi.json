@@ -1,0 +1,21 @@
+{
+  "name": "core_new_scene_gi",
+  "group": "repeat",
+  "requiresDxr": true,
+  "newScene": true,
+  "launchScene": "scenes/pbr_spheres.json",
+  "project": "tests/golden/projects/golden_core",
+  "camera": {
+    "position": [
+      4,
+      3,
+      -9
+    ],
+    "target": [
+      0,
+      0.5,
+      0
+    ]
+  },
+  "note": "実際の new_scene コマンドの結果（Grid + Ground + Cube + DirectionalLight + MainCamera + gi::ApplyNew = DDGI 自動配置 / 環境光 0 / SSGI / RT 影）。新規シーンの既定プリセットを変える作業はこれで検出する。DDGI/DXR で決定論が崩れうるので group:repeat（--group repeat のときだけ回す）"
+}

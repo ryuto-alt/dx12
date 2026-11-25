@@ -6,6 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { sha256, resampleArea, compareImages, judge } from "./lib/imageDiff.mjs";
 import { resolveProject, REPO_ROOT } from "./lib/engine.mjs";
+import os from "node:os";
+import { loadGoldenEntries, loadBaseline, writeBaselineEntries } from "./lib/goldenStore.mjs";
 
 const solid = (w, h, r, g, b) => {
   const data = Buffer.alloc(w * h * 4);
@@ -112,7 +114,7 @@ test("parseArgs: 既定は strict・--no-strict で緩む・--group/--only/--rep
 });
 
 test("C3: layout:material の UI ゴールデン 4 件（DPI 1.0/1.5 x default/b）が定義され、基準 PNG がある", () => {
-  const g = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "tests/golden/golden.json"), "utf8"));
+  const g = loadGoldenEntries(path.join(REPO_ROOT, "tests/golden"));
   const mats = g.scenes.filter((s) => s.kind === "ui" && s.layout === "material");
   assert.equal(mats.length, 4);
   assert.deepEqual(mats.map((s) => `${s.dpi}/${s.theme}`).sort(), ["1.5/b", "1.5/default", "1/b", "1/default"]);
@@ -127,4 +129,51 @@ test("judgeDxr: Tier 1.0 / SM 不足は SKIP、対応ハードで supported:fals
   assert.equal(judgeDxr({ raytracingTier: "1.1", highestShaderModel: "6.5", supported: false }).status, "fail");
   assert.equal(judgeDxr({ raytracingTier: "1.1", highestShaderModel: "6.7", supported: true }).status, "run");
   assert.equal(judgeDxr(new Error("x")).status, "fail");
+});
+
+// ─── W05-32: entries / baseline の分割 ───────────────────────────────────────
+const mkGolden = (files) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "golden-split-"));
+  for (const [rel, obj] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), JSON.stringify(obj));
+  }
+  return dir;
+};
+test("entries: order の ID が先（その順）、残りはファイル名の辞書順（作成順に依らない）", () => {
+  const dir = mkGolden({
+    "golden.json": { defaults: { width: 10 }, order: ["zeta", "alpha"], scenes: [] },
+    "entries/new_b.json": { name: "new_b" }, "entries/alpha.json": { name: "alpha" },
+    "entries/zeta.json": { name: "zeta" }, "entries/new_a.json": { name: "new_a" },
+  });
+  const r = loadGoldenEntries(dir);
+  assert.deepEqual(r.scenes.map((s) => s.name), ["zeta", "alpha", "new_a", "new_b"]);
+  assert.equal(r.defaults.width, 10);
+});
+test("entries: ID の重複（互換の scenes との重複を含む）・ファイル名との不一致・order の欠落はエラー", () => {
+  assert.throws(() => loadGoldenEntries(mkGolden({ "golden.json": { scenes: [{ name: "a" }] }, "entries/a.json": { name: "a" } })), /重複/);
+  assert.throws(() => loadGoldenEntries(mkGolden({ "entries/a.json": { name: "b" } })), /一致しない/);
+  assert.throws(() => loadGoldenEntries(mkGolden({ "golden.json": { order: ["x"] }, "entries/a.json": { name: "a" } })), /order/);
+});
+test("writeBaselineEntries: 指定した ID のファイルだけを書き、他の ID には触れない", () => {
+  const dir = mkGolden({ "baseline/a.json": { v: 1 }, "baseline/b.json": { v: 2 } });
+  const bl = loadBaseline(dir);
+  const fileA = path.join(dir, "baseline/a.json"), fileB = path.join(dir, "baseline/b.json");
+  const old = new Date(2000, 0, 1);
+  fs.utimesSync(fileB, old, old);
+  bl.scenes.a = { v: 10 }; bl.scenes.b = { v: 20 }; bl.scenes.c = { v: 3 };
+  assert.deepEqual(writeBaselineEntries(dir, bl, ["a", "c"]), ["a", "c"]);
+  assert.equal(JSON.parse(fs.readFileSync(fileA, "utf8")).v, 10);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "baseline/c.json"), "utf8")).v, 3);
+  assert.equal(JSON.parse(fs.readFileSync(fileB, "utf8")).v, 2);          // b は書き換わっていない
+  assert.equal(fs.statSync(fileB).mtimeMs, old.getTime());
+  assert.deepEqual(writeBaselineEntries(dir, bl, ["a"]), []);              // 同じ内容は書き直さない
+});
+test("リポジトリの entries と baseline: ID が重複せず、基準 PNG と baseline ファイルが対応する", () => {
+  const dir = path.join(REPO_ROOT, "tests/golden");
+  const cfg = loadGoldenEntries(dir).scenes;
+  const bl = loadBaseline(dir).scenes;
+  assert.equal(new Set(cfg.map((s) => s.name)).size, cfg.length);
+  for (const s of cfg) assert.ok(bl[s.name], `baseline/${s.name}.json`);
+  assert.deepEqual(Object.keys(bl).filter((k) => !cfg.some((s) => s.name === k)), []);
 });

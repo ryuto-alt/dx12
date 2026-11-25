@@ -1,0 +1,18 @@
+{
+  "name": "core_csm_shadows",
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/csm_shadows.json",
+  "camera": {
+    "position": [
+      0,
+      2.5,
+      -4
+    ],
+    "target": [
+      0,
+      1.5,
+      20
+    ]
+  },
+  "note": "低い太陽と奥へ並ぶ柱＝カスケードシャドウの継ぎ目"
+}

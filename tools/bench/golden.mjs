@@ -8,7 +8,7 @@
 //
 // 使い方:
 //   node tools/bench/golden.mjs                 基準と比べる（終了コード 0 = 全部合格 / 1 = どれか不合格）
-//   node tools/bench/golden.mjs --update        基準を撮り直す（tests/golden/*.png と baseline.json）
+//   node tools/bench/golden.mjs --update        基準を撮り直す（tests/golden/*.png と baseline/<id>.json。--only で絞ればその ID のファイルだけ）
 //   node tools/bench/golden.mjs --repeat 2      同じシーンを 2 回撮って決定論も確かめる
 //   node tools/bench/golden.mjs --only a,b      名前で絞る
 //   node tools/bench/golden.mjs --no-strict     プロジェクトが見つからないシーンを不合格ではなく SKIP にする（既定は strict）
@@ -24,7 +24,7 @@
 //   プロジェクトは tests/golden/ui_project をコピーして使う（エディタが書き込んでも作業ツリーを汚さない）。
 //   masks: [[x0,y0,x1,y1],...]（0..1 の割合）の矩形は比べる前に塗りつぶす（トースト・時刻などの揺れる領域）。
 //
-// 設定は tests/golden/golden.json。出力（撮った絵・差分画像）は build/golden-out/。
+// 設定は tests/golden/entries/<id>.json（共通の defaults と読み込み順は golden.json）、基準は tests/golden/baseline/<id>.json。出力（撮った絵・差分画像）は build/golden-out/。
 //
 // ★比べ方は 2 段:
 //   1) ネイティブ解像度（ヘッドレスの表示矩形そのもの）の画素 SHA-256 が基準と同じか → bitExact
@@ -44,6 +44,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { REPO_ROOT, findDefaultExe, resolveProject, launchEngine, launchInstance, connect, sleep } from "./lib/engine.mjs";
 import { parseArgs, selectScenes } from "./lib/sceneSelect.mjs";
+import { loadGoldenEntries, loadBaseline, writeBaselineEntries } from "./lib/goldenStore.mjs";
 import { sha256, resampleArea, compareImages, judge } from "./lib/imageDiff.mjs";
 
 export { sha256, resampleArea, compareImages, judge };
@@ -52,8 +53,6 @@ const require = createRequire(import.meta.url);
 const { PNG } = require(path.join(REPO_ROOT, "tools/mcp-server/node_modules/pngjs"));
 
 const GOLDEN_DIR = path.join(REPO_ROOT, "tests", "golden");
-const CONFIG = path.join(GOLDEN_DIR, "golden.json");
-const BASELINE = path.join(GOLDEN_DIR, "baseline.json");
 const OUT_DIR = path.join(REPO_ROOT, "build", "golden-out");
 const UI_DIR = path.join(GOLDEN_DIR, "ui");                       // UI ゴールデンの基準 PNG
 const UI_PROJECT_SRC = path.join(GOLDEN_DIR, "ui_project");       // UI 撮影用の最小プロジェクト（コピーして使う）
@@ -72,9 +71,9 @@ export function writePng(file, img) {
 }
 
 // ─── 設定 ───────────────────────────────────────────────────────────────
-function loadConfig() {
-  const cfg = JSON.parse(fs.readFileSync(CONFIG, "utf8"));
-  const d = cfg.defaults ?? {};
+export function loadConfig(goldenDir = GOLDEN_DIR) {
+  const cfg = loadGoldenEntries(goldenDir);
+  const d = cfg.defaults;
   return cfg.scenes.map((s) => ({
     width: d.width ?? 640, height: d.height ?? 360,
     settleFrames: d.settleFrames ?? 8, warmupFrames: d.warmupFrames ?? 60,
@@ -307,7 +306,7 @@ async function main() {
   if (args.noUi) uiScenes.length = 0;
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  const baseline = fs.existsSync(BASELINE) ? JSON.parse(fs.readFileSync(BASELINE, "utf8")) : { scenes: {} };
+  const baseline = loadBaseline(GOLDEN_DIR);
   const head = gitHead();
   console.log(`${args.update ? "基準を撮り直す" : "基準と比べる"}: ${scenes.length} シーン / exe=${path.relative(REPO_ROOT, args.exe)} / HEAD=${head}`);
 
@@ -419,7 +418,8 @@ async function main() {
   if (uiScenes.length) await runUiScenes(uiScenes, args, baseline, results);
 
   if (args.update) {
-    fs.writeFileSync(BASELINE, JSON.stringify(baseline, null, 2) + "\n");
+    // 今回撮り直した ID の baseline/<id>.json だけを書く（--only で絞れば、他の ID のファイルには触れない）
+    writeBaselineEntries(GOLDEN_DIR, baseline, results.filter((r) => r.updated).map((r) => r.name));
   }
 
   console.log("");
