@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
   夜間ビルド / 改修前バイナリ作成。統合ブランチ(または任意の Ref)を専用 worktree でビルドして、
   exe 一式を出力フォルダへ置く。ビルドは tools/build.ps1 経由(名前付き Mutex Global\dx12-build、BelowNormal)。
@@ -69,6 +70,20 @@ $outT = $Out.TrimEnd('\')
 if ($outT -ieq ([IO.Path]::GetFullPath($home2)).TrimEnd('\')) { Write-Host "[nightly] -Out にホームは指定できない: $Out"; exit 2 }
 foreach ($w in $allWt) {
     if ($outT -ieq $w -or $outT.StartsWith($w + '\', [StringComparison]::OrdinalIgnoreCase)) { Write-Host "[nightly] -Out が worktree の中: $Out ($w)"; exit 2 }
+    # worktree の祖先(例: dx12-wt 全体)も不可
+    if ($w.StartsWith($outT + '\', [StringComparison]::OrdinalIgnoreCase)) { Write-Host "[nightly] -Out が worktree の祖先: $Out ($w)"; exit 2 }
+}
+# ドライブのルートとその直下、ホームの祖先も不可
+$homeT = ([IO.Path]::GetFullPath($home2)).TrimEnd('\')
+if ($homeT.StartsWith($outT + '\', [StringComparison]::OrdinalIgnoreCase)) { Write-Host "[nightly] -Out がホームの祖先: $Out"; exit 2 }
+$outRoot = [IO.Path]::GetPathRoot($Out).TrimEnd('\')
+if ($outT -ieq $outRoot -or (Split-Path -Parent $outT).TrimEnd('\') -ieq $outRoot) { Write-Host "[nightly] -Out にドライブのルート直下は指定できない: $Out"; exit 2 }
+# 使えるのは「存在しない」「空」「前回の nightly.json がある」フォルダだけ(robocopy /MIR や dll 削除で他物を消さない)
+if (Test-Path -LiteralPath $Out) {
+    $hasItems = $null -ne (Get-ChildItem -LiteralPath $Out -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($hasItems -and -not (Test-Path -LiteralPath (Join-Path $Out 'nightly.json'))) {
+        Write-Host "[nightly] -Out は空か前回の nightly.json があるフォルダだけ使える: $Out"; exit 2
+    }
 }
 
 # 登録済みの worktree を再利用してよいのは dx12-wt\nightly* の detached だけ(レーンの作業を reset --hard で消さない)
@@ -105,6 +120,13 @@ if ($Dlss -eq 'require' -and -not (Test-Path (Join-Path $main 'third_party\dlss\
     Write-Host '[nightly] -Dlss require だが本体に third_party\dlss が無い。pwsh tools/fetch_dlss.ps1 を先に実行すること。'
     if (-not $WhatIf) { exit 1 }
 }
+$wtRegistered = $allWt -icontains $Worktree.TrimEnd('\')
+if ((Test-Path $Worktree) -and -not $wtRegistered) { Write-Host "[nightly] 登録されていないフォルダが既にある: $Worktree"; exit 2 }
+if (-not (Test-Path (Join-Path $Worktree 'build\release\build.ninja'))) {
+    foreach ($p in @((Join-Path $main 'build\release\vcpkg_installed'), (Join-Path $main 'build\release\_deps\assimp-src'))) {
+        if (-not (Test-Path $p)) { Write-Host "[nightly] 本体に $p が無い。本体を先にビルドしてあること"; exit 1 }
+    }
+}
 if ($WhatIf) {
     Write-Host "[nightly] WhatIf: worktree $(if (Test-Path $Worktree) { '再利用' } else { '新規作成(--detach)' }), configure $(if (Test-Path (Join-Path $Worktree 'build\release\build.ninja')) { '済み(増分)' } else { '実行' })"
     foreach ($j in $junctionNames) { Write-Host ("[nightly] WhatIf: junction {0} ({1})" -f $j, $(if (Test-Path (Join-Path $main $j)) { '張る' } else { '本体に無い' })) }
@@ -138,8 +160,7 @@ try {
         git -C $main worktree add --detach $Worktree $commit
         if ($LASTEXITCODE -ne 0) { Write-Host '[nightly] git worktree add failed'; exit 1 }
     } else {
-        # 再利用してよいのは dx12-wt
-ightly* の detached worktree だけ(レーンの作業を消さない)
+        # 再利用してよいのは dx12-wt の nightly* の detached worktree だけ(レーンの作業を消さない)
         $leaf = Split-Path -Leaf $Worktree
         $blk = (git -C $main worktree list --porcelain) -join "`n"
         $mine = ($blk -split "`n`n") | Where-Object { $_ -match ('(?m)^worktree ' + [regex]::Escape(($Worktree -replace '\\', '/')) + '\s*$') -or $_ -match ('(?m)^worktree ' + [regex]::Escape($Worktree) + '\s*$') } | Select-Object -First 1
@@ -155,10 +176,11 @@ ightly* の detached worktree だけ(レーンの作業を消さない)
     # --- 未追跡だがビルドに必要な物を本体から
     $key = 'src\core\generated\AssetKey.h'
     $keyDst = Join-Path $Worktree $key
-    if (-not (Test-Path $keyDst)) {
-        if (-not (Test-Path (Join-Path $main $key))) { Write-Host "[nightly] 本体に $key が無い"; exit 1 }
+    $keySrc = Join-Path $main $key
+    if (-not (Test-Path $keySrc)) { Write-Host "[nightly] 本体に $key が無い"; exit 1 }
+    if (-not (Test-Path $keyDst) -or (Get-FileHash $keySrc).Hash -ne (Get-FileHash $keyDst).Hash) {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyDst) | Out-Null
-        Copy-Item (Join-Path $main $key) $keyDst
+        Copy-Item -Force $keySrc $keyDst
     }
     $gh = Join-Path $main 'third_party\gh-cli'
     if ((Test-Path $gh) -and -not (Test-Path (Join-Path $Worktree 'third_party\gh-cli'))) {
@@ -225,7 +247,7 @@ ightly* の detached worktree だけ(レーンの作業を消さない)
         Push-Location $Worktree
         try {
             $oldCp = ((& cmd /c chcp 2>$null) -replace '\D', '')
-            $log = & cmd /c "chcp 65001>nul && cmake -DUNO_ENABLE_DLSS=$dlssFlag -S . -B buildelease 2>&1"
+            $log = & cmd /c "chcp 65001>nul && cmake -DUNO_ENABLE_DLSS=$dlssFlag -S . -B build\release 2>&1"
             $code = $LASTEXITCODE
             if ($oldCp -match '^\d+$' -and $oldCp -ne '65001') { & cmd /c "chcp $oldCp>nul" }
             if ($code -ne 0) { $log | Select-Object -Last 15 | ForEach-Object { Write-Host $_ }; Write-Host '[nightly] re-configure failed'; exit 1 }
