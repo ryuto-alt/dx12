@@ -8,6 +8,7 @@
 #include "core/AtomicFileJson.h"
 #include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
+#include "core/AppAccess.h"     // W05-02: 人の未保存の変更を退避する入口（lane-A のブロック）
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（断った理由をログへ出す）
 #include "core/ReleaseNotes.h"   // 「更新内容」の前回→今の版の範囲（--show-whats-new の既定の前回版）
 #include "resource/AssetPrewarmer.h"   // unique_ptr のデストラクタに完全型が要る
@@ -1552,7 +1553,18 @@ void Application::Run()
                 if (m_editorCtx && m_editorCtx->aiSessionEver && m_editorCtx->IsSceneDirty()
                     && !(m_headless && !m_headlessAllowSave))
                 {
-                    try { SaveSceneForMcp(); } catch (...) {}   // best-effort（使い捨てプロジェクトが前提）
+                    // W05-02: 人の未保存の変更があるときは本体に書かず退避する（MCP 由来だけなら今までどおり本保存）
+                    bool ok = false;
+                    try { ok = AppAccess::ProtectHumanEditsOrSave(*this, EditorContext::DiscardReason::FleetIdle); } catch (...) {}   // best-effort（使い捨てプロジェクトが前提）
+                    // 退避できなかったとき（バックアップ無効・プロジェクトの外など）は、本体ではない復旧用の退避（オートセーブ）を最後の手段にする。
+                    // 本体には書かない（W05-02 のフォールバック禁止の範囲内）。Play 中は実行の状態なので書かない。
+                    if (!ok && m_engineMode == EngineMode::Editor)
+                    {
+                        bool wrote = false;
+                        try { wrote = WriteAutosave(); } catch (...) {}
+                        if (wrote) Logger::Warn("Fleet: 退避できなかったので復旧用のオートセーブを書きました（次回起動時に復旧できます）");
+                        else       Logger::Error("Fleet: 人の未保存の変更を退避も保存もできませんでした");
+                    }
                 }
                 PostQuitMessage(0);
             }
@@ -1784,6 +1796,12 @@ void Application::Run()
         ServiceOffscreenShot();
 
         m_gameClock.Tick();
+
+        // W05-02: 人の settings 編集の判定は毎フレーム（MCP の遅延実行と人の変更を区別するため。settingsHash 自体の更新は下の 0.5 秒ごと）
+        if (m_editorCtx && m_scene && !m_showLauncher && !m_isGameMode && m_engineMode == EngineMode::Editor)
+            AppAccess::PollHumanSettings(*this, /*active=*/true, SceneSettingsFingerprint(*m_scene));
+        else if (m_editorCtx)
+            AppAccess::PollHumanSettings(*this, /*active=*/false, 0);   // Play 中・ランチャー中は判定しない
 
         // シーントランジション更新（WP9）
         // 段階ロード中は中間点（画面が隠れきった状態）で止める＝ロードが終わる前に
@@ -3358,7 +3376,8 @@ bool Application::SaveSceneForMcp()
         const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         std::tm tmv{};
         if (localtime_s(&tmv, &t) == 0) std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
-        const std::string full = PathResolver::AssetsDir() + "scenes/_mcp_untitled_" + stamp + ".json";
+        // scenes/ の一覧を汚さない（W05-02）。.dx12/ は backups / thumbnail / saves と同じ置き場。
+        const std::string full = AppAccess::UntitledDir() + "_mcp_untitled_" + stamp + ".json";
         fs::create_directories(fs::path(full).parent_path(), ec);
         m_editorCtx->currentScenePath = full;
         Logger::Info("未保存の新規シーンに保存先を割り当てました: {}", full);
@@ -3407,7 +3426,8 @@ void Application::UpdateMcpAutoSave(f32 dt)
     m_editorCtx->mcpSaveCountdown = -1.0f;
 
     if (!m_editorCtx->IsSceneDirty()) return;
-    SaveSceneForMcp();
+    // W05-02: 人の未保存の変更があるときは本体に書かず退避する。MCP 由来の変更だけなら本保存。
+    AppAccess::ProtectHumanEditsOrSave(*this, EditorContext::DiscardReason::None);
 }
 
 void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
@@ -3477,17 +3497,38 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
 {
     outCancelled = false;
     if (!m_editorCtx) return true;
-    if (!m_editorCtx->IsSceneDirty()) return true;   // 汚れていないなら黙って進む
+    if (!m_editorCtx->IsSceneDirty()) { m_editorCtx->pendingDiscard = {}; return true; }   // 汚れていないなら黙って進む
 
     // ★AI（MCP）が絡んだセッションでは未保存モーダルを絶対に出さない。
     //   AI はボタンを押せないので、出た瞬間にツール呼び出しがタイムアウトし、
     //   人間からは「エディタがハングした」ようにしか見えない。
     //   代わりに黙って本保存する。保存できなかった時だけ退避（オートセーブ）へ逃がす
     //   ＝どちらに転んでも作業は残り、モーダルは出ない。
-    if (m_editorCtx->aiSessionEver)
+    //   W05-02: ただし「実入力の人が閉じる / 開く」（起点が Human・仮想入力でない・理由が分かっている）で人の未保存の変更が
+    //   あるときは、AI が押せない心配が無いので下の通常の確認を出す。
+    const EditorContext::PendingDiscard pd = m_editorCtx->pendingDiscard;
+    const bool humanDirty = m_editorCtx->IsSceneHumanDirty();
+    const bool realHuman  = pd.reason != EditorContext::DiscardReason::None && pd.origin == EditOrigin::Human
+                         && !pd.virtualInput && !vinput::Enabled();
+    if (m_editorCtx->aiSessionEver && !(humanDirty && realHuman))
     {
+        m_editorCtx->pendingDiscard = {};   // この要求の起点は使い終わった（古い Human の要求を次の確認へ持ち越さない）
         // ヘッドレスの読み取り専用モードでは何も書かずに進む（CI は捨てるだけ）
         if (m_headless && !m_headlessAllowSave) return true;
+        if (humanDirty)
+        {
+            // 人の未保存の変更: 本体に書かず退避してから進む（モーダルは出さない）。退避できなければ進まない（失うよりまし）。
+            if (AppAccess::ProtectHumanEdits(*this, pd.reason, /*force=*/true))
+            {
+                m_editorCtx->pendingDiscard = {};
+                m_editorCtx->Notify(ui::ToastKind::Warn, "未保存の変更を退避しました（ファイル > 以前の版に戻す）", 8.0f);
+                MarkSceneClean();
+                return true;
+            }
+            m_editorCtx->pendingDiscard = {};
+            outCancelled = true;
+            return false;
+        }
         if (SaveSceneForMcp()) return true;
         if (WriteAutosave())
             Logger::Warn("保存に失敗したので退避しました。次回起動時に復旧できます");
@@ -3503,6 +3544,7 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     {
         m_editorCtx->unsavedChoice      = Choice::None;
         m_editorCtx->showUnsavedConfirm = false;
+        m_editorCtx->pendingDiscard     = {};   // 答えが出た（次の要求で立て直す）
     }
 
     switch (choice)
@@ -3543,6 +3585,7 @@ void Application::MarkSceneClean(bool dropAutosave)
     // 保存後に「新しい変更」として再検出される）。
     if (!m_editorCtx || !m_scene) return;
     m_editorCtx->MarkSceneSaved(SceneSettingsFingerprint(*m_scene));
+    AppAccess::OnSceneMarkedClean(*this);   // W05-02: 人の変更の旗を落とす
 
     // ★ここに来た＝「今の内容が正」とユーザーが決めた（保存した / 破棄を選んだ）。
     //   退避しておいたオートセーブはもう復旧候補ではないので消す。

@@ -871,6 +871,8 @@ bool Application::HandleWindowCloseRequest()
     // ★ここで直接 m_showLauncher を立てない。立てた瞬間に EditorLayer が呼ばれなくなり、
     //   未保存の確認モーダルを出す場所が無くなる（＝黙って作業が消える）。
     //   pendingCloseProject へ回して、フレーム内の消化側で確認してから遷移させる。
+    // W05-02: 閉じる要求は人の操作。仮想入力で閉じた場合は確認を出さない（AI が押せない）ので virtualInput を記録する。
+    m_editorCtx->pendingDiscard = {EditorContext::DiscardReason::Quit, EditOrigin::Human, vinput::Enabled()};
     m_editorCtx->pendingCloseProject = true;
     return false;
 }

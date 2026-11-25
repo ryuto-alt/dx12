@@ -28,9 +28,19 @@ public:
                                const std::string& assetsDir);
 
     // in-memory snapshot 用（Play→Stop 時のシーン復元に使用）
-    static std::string SaveToString(const Scene& scene, const std::string& assetsDir);
+    // writeEntityIds=true: 各エンティティに一時フィールド "_eid"（entt の整数値）を書く。Play 用のスナップショット
+    // 専用（W05-11）。保存ファイル（Save / SaveToStringV2）には出さない。
+    static std::string SaveToString(const Scene& scene, const std::string& assetsDir,
+                                    bool writeEntityIds = false);
+    // 復元のオプション（W05-11）。preserveEntityIds=true なら "_eid" を持つエンティティを同じ id（版つき）で作り直す
+    // （Undo の履歴が entt の id を握っているため）。作れなかったものがあれば idsPreserved=false（出力）。
+    struct SceneLoadOptions
+    {
+        bool preserveEntityIds = false;
+        bool idsPreserved = true;   // 出力: 全エンティティが元の id で復元できたか
+    };
     static bool LoadFromString(Scene& scene, const std::string& jsonStr,
-                               const std::string& assetsDir);
+                               const std::string& assetsDir, SceneLoadOptions* opts = nullptr);
 
     // シーンファイル形式 v2（docs/SCENE_FORMAT_DESIGN.md）。Save が書くファイル本体と同じ文字列を返す
     // （既定値の省略・最短 float・1 行 1 体。version 2）。検証・テスト用。Play のスナップショットには使わない。
