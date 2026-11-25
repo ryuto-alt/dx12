@@ -3545,8 +3545,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 }
                 else if (!created.empty())
                 {
-                    if (uiPrimary != entt::null)
-                        m_editorCtx->Select(uiPrimary);   // 自動生成 Canvas の下でも本体を選択状態に
+                    // 選択は生成の後処理（人の操作のときだけ mcpUiPrimary を選ぶ）。MCP の生成では変えない
                     m_editorCtx->undoSystem.PushCommand(
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), created));
@@ -3608,7 +3607,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                             rect->offsetMax = {rect->offsetMin.x + w, rect->offsetMin.y + h};
                         }
                     }
-                    m_editorCtx->Select(root);
+                    // 選択は生成の後処理（人の操作のときだけ mcpPrefabRoot を選ぶ）。MCP の spawn_prefab では変えない
                     m_editorCtx->undoSystem.PushCommand(
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), all));
