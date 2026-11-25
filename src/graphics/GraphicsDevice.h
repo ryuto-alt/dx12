@@ -7,25 +7,39 @@
 #include <wrl/client.h>
 #include <D3D12MemAlloc.h>
 
+#include <memory>
+
 #include "core/Types.h"
 
 namespace dx12e
 {
 
 class Window;
+struct DeviceCaps;   // W05-04（DeviceCaps.h）。120 TU に include を広げないよう前方宣言とポインタだけで持つ
+
+// デバイス作成時のオプション（W05-03 で形を確定。W05-05 の DRED が dred を読む）。
+struct GraphicsDeviceOptions
+{
+    bool dred = true;   // DRED（自動ブレッドクラム + ページフォールト情報）。--no-dred で false
+};
 
 class GraphicsDevice
 {
 public:
-    GraphicsDevice() = default;
+    GraphicsDevice();   // .cpp で定義（unique_ptr<DeviceCaps> が不完全型のため）
     ~GraphicsDevice();
 
     GraphicsDevice(const GraphicsDevice&) = delete;
     GraphicsDevice& operator=(const GraphicsDevice&) = delete;
 
-    void Initialize(Window& window);
+    void Initialize(Window& window, const GraphicsDeviceOptions& options = GraphicsDeviceOptions{});
 
     ID3D12Device5*      GetDevice()      const { return m_device.Get(); }
+    // F1 以降（Enhanced Barriers など）が使う新しいインターフェース。取れなければ nullptr。
+    ID3D12Device10*     GetDevice10()    const { return m_device10.Get(); }
+    // W05-04 で中身が入る（DeviceCaps.h を include した TU だけが型を使える）。
+    const DeviceCaps*   GetCaps()        const { return m_caps.get(); }
+    const GraphicsDeviceOptions& GetOptions() const { return m_options; }
     IDXGIFactory6*      GetFactory()     const { return m_factory.Get(); }
     D3D12MA::Allocator* GetAllocator()   const { return m_allocator; }
     // 「DXR が何かしら使える」だけの弱い判定（Tier 1.0 でも true）。
@@ -77,6 +91,9 @@ private:
     void QueryCapabilities();
 
     Microsoft::WRL::ComPtr<ID3D12Device5>  m_device;
+    Microsoft::WRL::ComPtr<ID3D12Device10> m_device10;
+    std::unique_ptr<DeviceCaps>            m_caps;   // 型は不完全。デストラクタは .cpp で定義
+    GraphicsDeviceOptions                  m_options;
     Microsoft::WRL::ComPtr<IDXGIFactory6>  m_factory;
     Microsoft::WRL::ComPtr<IDXGIAdapter1>  m_adapter;
     D3D12MA::Allocator*                    m_allocator = nullptr;

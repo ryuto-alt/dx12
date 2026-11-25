@@ -1,5 +1,7 @@
 #include "GraphicsDevice.h"
 
+#include "DeviceCaps.h"
+
 #include "core/Assert.h"
 #include "core/Logger.h"
 #include "core/Window.h"
@@ -8,6 +10,8 @@ using Microsoft::WRL::ComPtr;
 
 namespace dx12e
 {
+
+GraphicsDevice::GraphicsDevice() = default;
 
 GraphicsDevice::~GraphicsDevice()
 {
@@ -18,8 +22,9 @@ GraphicsDevice::~GraphicsDevice()
     }
 }
 
-void GraphicsDevice::Initialize(Window& /*window*/)
+void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions& options)
 {
+    m_options = options;
     // --- Debug Layer ---
     // ★Debug ビルド限定にしない。このリポジトリでは Debug ビルドが実際には作られておらず
     //   （build/debug が存在しない）、デバッグレイヤの指摘が「誰にも見えない」状態が続いていた。
