@@ -1,0 +1,9 @@
+# NoPaidApi の許可リスト（リポジトリルートからの相対パスの接頭辞）。
+# 全面除外は検査の定義と自己テストだけ。それ以外は guard: 行で、
+# 「環境に ANTHROPIC_API_KEY があれば拒む」ガードの行の形だけを許す（@anthropic-ai はどこでも不可）。
+cmake/lint/
+tools/mcp-server/eval/noPaidApi.test.ts
+guard:tools/nightly.ps1
+guard:tools/dogfood/
+guard:tools/mcp-server/eval/run_e2e.ts
+guard:tools/mcp-server/eval/score_e2e.ts

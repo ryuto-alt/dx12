@@ -581,6 +581,34 @@ public:
         return undoSystem.EditSeq() != sceneSavedSeq || settingsHash != savedSettingsHash;
     }
 
+    // ── 人の未保存の変更（W05-02。自動保存が上書きしてよいかの判定）──
+    // MCP 由来の変更だけなら偽。Undo を積む人の編集は LastHumanEditSeq、積まない人の編集は humanSettingsDirty。
+    bool humanSettingsDirty          = false;  // settingsHash の変化による人の編集のみ（MarkEdited は LastHumanEditSeq に入る）
+    bool autosaveBlockedByHumanEdits = false;  // 自動保存を止めている（MCP の結果に出す）
+    bool IsSceneHumanDirty() const { return undoSystem.LastHumanEditSeq() > sceneSavedSeq || humanSettingsDirty; }
+
+    // 未保存のシーンを捨てる要求の理由と起点（ConfirmDiscardScene が見る）。
+    enum class DiscardReason : u8 { None, Quit, OpenScene, NewScene, FleetIdle, Launcher };
+    struct PendingDiscard
+    {
+        // reason==None は「起点不明」。確認モーダルは出さない（MCP 経路で origin の書き忘れがあっても AI を固めない）。
+        DiscardReason reason       = DiscardReason::None;
+        EditOrigin    origin       = EditOrigin::Human;
+        bool          virtualInput = false;
+    };
+    PendingDiscard pendingDiscard;
+
+    // ── Play → Stop で Undo 履歴と選択を保つ（W05-11）──
+    u64                   playUndoSeq = 0;      // Play 開始時の UndoSystem::PushSeq()
+    u64                   playHumanSeq = 0;     // Play 開始時の UndoSystem::LastHumanEditSeq()（TruncateTo の第 2 引数）
+    std::vector<uint64_t> playSelectionGuids;   // Play 開始時の選択（EntityGuid::value）
+
+    // ── 名前を付けて保存の上書き確認（W05-12）。Ctrl+N の名前は既存の pendingNewScenePath を使う ──
+    struct SaveAsOverwriteModal { bool open = false; std::string path; } saveAsOverwrite;
+
+    // ── 新しいエンティティまでヒエラルキーを展開（W05-21）──
+    bool revealInHierarchy = false;
+
     // ── AI（MCP）セッション ──
     // MCP でゲームを作っている間、未保存の確認モーダルは**絶対に出してはいけない**。
     // AI はモーダルを押せないので、出た瞬間にツール呼び出しが 8 秒でタイムアウトし、

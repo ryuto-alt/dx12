@@ -160,6 +160,10 @@ void Application::EnsureMcpMethodTable()
     RegisterMcpMatGraphMethods();   // マテリアルグラフ(G2b): material_graph_get / edit / validate / compile / status / graphize / set_param / apply / nodes
     RegisterMcpHardwareMethods();   // 物理ハードウェア: hw_list_ports / hw_status / hw_connect / hw_read / hw_write / hw_simulate / hw_calibrate / hw_flash ほか
     RegisterMcpEditorUiMethods();   // M7: editor_command_list / run / run_guarded / editor_state / editor_notify / editor_select
+    RegisterMcpLaneAMethods();      // W05-01b: レーンごとの登録口（mcp/ApplicationMcpLane{A,B,C,D}.cpp。中身は各レーン）
+    RegisterMcpLaneBMethods();
+    RegisterMcpLaneCMethods();
+    RegisterMcpLaneDMethods();
     RegisterMcpManifestMethods();   // describe_mcp_manifest（meta を直接渡す最初の method）
     ApplyMcpManifest();            // 全 method へ meta を流し込み、manifestHash を 1 度だけ計算する
 

@@ -539,8 +539,8 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_list_lights` | `{limit?:int=50, cursor?:int}` | `{lights:[{entityId,name,type,position,slot,color,intensity,range?,direction?,innerConeDeg?,outerConeDeg?,castShadows?,overBudget,effective}], count, total, cursor, nextCursor, has_more, budget:{total,perCluster,point,spot,directional,shadowSpot,shadowPoint}, warnings:[...]}` ※**上限超過は無言で描画されない**ので必ずここで確認する。クラスタードライティング(Forward+)で点/スポットの個別上限は撤廃され、**合計 1024 灯 / 1 クラスタ 128 灯**が上限。**影は spot 4 / point 2 のまま** |
 | `dx12_diagnose` | `{only?:string[], fast?:bool}` | `DeepDiag::RunAll` の JSON(`{version, engine, checks:[{id,title,checked,errors,warnings,infos,issues,omitted,skipped}], summary:{checks,errors,warnings,infos,ok,unknownIds}, checkIds, note}`) ※`summary.errors > 0` だけが失敗 |
 
-<!-- ==== wave1-laneA ==== begin -->
-<!-- ==== wave1-laneA ==== end -->
+<!-- ==== lane-A begin ==== -->
+<!-- ==== lane-A end ==== -->
 ### 4-2. 編集系(同期)
 
 | ツール | params | 返り値 |
@@ -685,8 +685,8 @@ OFF のときは TAA を一時的に ON にして撮る（`warnings` に出る�
 | `dx12_navmesh_clear` | `{}` | `{cleared}` ※★Editor 限定 |
 | `dx12_apply_lighting_preset` | `{preset:"day"\|"dusk"\|"night"\|"indoor"\|"horror"\|"studio"}` | `{preset, label, tip, sun:{...}\|null, post:{exposure/bloom/vignette/saturation...}}` ※**エディタの「ライティング」窓と同じ表・同じ式**(`src/editor/LightingPresets.h` に 1 本化)。太陽が無ければポストのみ適用 |
 
-<!-- ==== wave1-laneB ==== begin -->
-<!-- ==== wave1-laneB ==== end -->
+<!-- ==== lane-B begin ==== -->
+<!-- ==== lane-B end ==== -->
 ### 4-3. 生成・削除・モード遷移(遅延同期 — 本物の値が返る)
 
 | ツール | params | 返り値 |
@@ -757,8 +757,10 @@ dx12_stop
 
 ---
 
-<!-- ==== wave1-laneC ==== begin -->
-<!-- ==== wave1-laneC ==== end -->
+<!-- ==== lane-C begin ==== -->
+<!-- ==== lane-C end ==== -->
+<!-- ==== lane-D begin ==== -->
+<!-- ==== lane-D end ==== -->
 ### 4-7. Git / GitHub（同期）
 
 エディタの「Git」窓と同じ操作。対象は**プロジェクトフォルダの git リポジトリ**で、
@@ -814,8 +816,6 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 | `dx12_vfx_apply` | `{preset:string, entity?/name?, position?:[x,y,z], entityName?:string, parentName?:string, scale?:f, rate?:f, intensity?:f, color?:[r,g,b], oneShot?:bool, duration?:f, life?:f, light?:bool, replaceLayers?:bool, dryRun?:bool}` | `{applied, preset, title, entityId, name, created, layersApplied[], layersRemoved, trailApplied, current, estimatedLiveParticles, notes, lookHint, warnings, next}` ※レシピから複数レイヤーの放出器を 1 コールで組み立てる(新規作成 or 既存へ付与)。★Editor 限定(新規生成を伴うため)。置いた後は必ず `dx12_vfx_preview` で確認すること |
 | `dx12_vfx_preview` | `{entity?/name?, seconds?:f=1.5, frames?:int=6(2..12), distance?:f=3, height?:f=0.5, fire?:bool, columns?:int=3, additive?:bool=true, baseline?:bool=true}` | PNG 画像ブロック + text(計測値と助言) ※放出器に寄って時間を進めながら連写し、格子画像+計測値を返す。★静止画 1 枚では「たまたま写っていない」のか「そもそも出ていない」のか区別できない。ワンショットは `fire:true` で試し撃ちしてから撮る |
 
-<!-- ==== wave2-laneA ==== begin -->
-<!-- ==== wave2-laneA ==== end -->
 ### 4-9. ルック(絵作り)
 
 ポストは約 90 フィールドあり、1 つずつ触っても bloom と exposure だけ上げて終わりがち。
@@ -846,8 +846,6 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 | `dx12_sequence_author` | `{name:string, tracks:object[], camera?:string, loop?:bool, attachTo?:string, doneEvent?:string, activateCamera?:bool, dryRun?:bool}` | `{applied, name, path, camera, attachedTo, createdEntity, duration, trackCount, playEvent, stopEvent, doneEvent, referenced, vfx, warnings, next}` ※時間軸の台本(JSON)から Lua コンポーネントを生成して貼る。track の type: camera(位置移動+注視) / fade / post / timeScale(スローモ) / shake / vfx / sound / move・rotate / light / event / scene / log。★時計は実時間(タイムスケール非適用)で進むので、スローモを掛けても台本は実時間で流れる。終了時にタイムスケールを 1.0 へ戻す。★カメラを動かすには `camera` に CameraComponent 持ちのエンティティ名が要る(グローバルカメラは毎フレーム上書きされるため)。他スクリプトから `events:emit('<name>:play'/'stop')` で操作できる |
 | `dx12_sequence_preview` | `{seconds?:f=5, frames?:int=6(2..12), startDelay?:f=0, columns?:int=3, name?:string}` | PNG 画像ブロック + text(`{path, name, frames, secondsTotal, secondsPerFrame, frameDiffs, moved, recentLog, hint}`) ※Play して演出を実際に流し、ゲーム画面を時間で連写した格子画像を返す。撮影後は必ず Stop する。★撮る前に `dx12_set_editor_camera` の固定を自動解除する(残っていると演出が動いても絵が変わらない事故になる) |
 
-<!-- ==== wave2-laneB ==== begin -->
-<!-- ==== wave2-laneB ==== end -->
 ### 4-11b. シーケンサー(`.dxseq`。時間軸で演出を編集 / 評価 / 再生する)
 
 `dx12_sequence_author`(台本 → Lua 生成)とは別に、エンジンが**シーケンスそのもの**(`assets/sequences/<名前>.dxseq`)を持つ。カメラワーク・カメラカット・Transform / 任意プロパティのキー・ポスト / DoF・シェイク・イベントを 1 本の時間軸で扱い、AI は **SeqOp の JSON**(`sequence_apply_op`)で宣言的に編集する。形式・適用規則・PreAnimatedState の仕様は `docs/DXSEQ_FORMAT.md`(§18〜§20)、Lua は `Sequence.*`(`docs/API_REFERENCE.md`)。**既存の `dx12_sequence_author` / `dx12_sequence_preview` / `dx12_camera_path` は名前も挙動も返り値も残す**(移行は S6)。
@@ -896,8 +894,6 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 - 編集した `.dxmg` はエンジンが次のフレームに読み直す(HLSL が変わらない編集は再コンパイルなし)。HLSL が変わる編集は `compiling:true` の間、旧版で描画される。失敗しても描画は止まらず、エラーは `material_graph_status` の `errorLog` / `diagnostics`(nodeId つき)に残る。
 - v1 の範囲: Opaque / DefaultLit のみ(他は警告して不透明で描く)。影・深度・DXR・パストレは単色プロキシ、VG 対象外(`docs/MATGRAPH_G2B.md` §5)。
 
-<!-- ==== wave2-laneC ==== begin -->
-<!-- ==== wave2-laneC ==== end -->
 ### 4-12. シーンの整理 / 命名規約
 
 | ツール | params | 返り値 |
@@ -917,8 +913,6 @@ dx12_git_merge(name:"feature/x")                 # conflicts[] が空なら完�
 | `dx12_quality_gate` | `{checks?:("scene"\|"layout"\|"polish"\|"ui"\|"readability"\|"playtests")[], heavy?:bool=false, screenshot?:bool=true, strictness?:"balanced"\|"strict", screen?:string, playtests?:bool\|string[], readability?:[{label?, camera?:"editor"\|"game"\|{position, target, fovDeg?}, targets:(string\|{name, role?})[]}](最大 4), judge?:bool=true, bundle?:"perDomain"\|"one"(既定 perDomain)}` | `{pass, blocking[], keep[{…item, judge:{question, value, threshold, confidence, source}, why}], suggestions[{check, text, tool?, args?}], uncertain[{check, id, why, look:{tool, args}}], counts:{blocking, keep, uncertain, suggestions}, blockingByCode:{"検査:コード":件数}, truncated, cost:{requests, tokens, usd, ms}, checks[{id, title, ran, skipped?, ms, summary, judge?}], judge:{used, source, briefMissing?, bundle, bundles}, elapsedMs, next}` ※作業の区切りで 1 回撃つ品質ゲート(§4-17)。シーンの検証・配置・仕上がり・UI・(指定すれば)読みやすさとプレイテストのルールの結論を 1 つの合否にまとめ、Jev が Brief に照らして意図どおり(keep)と判断したものは blocking から外す。uncertain は合否に入れず、見るためのツール呼び出し付きで返す |
 | `dx12_oracle` | `{op:"status"|"add_view"|"capture"|"add_perf"|"check"|"seal", name?, camera?:{position,target}, width?, height?, tolerance?:{lsb?=8, maxDiffPct?=0.5}, frames?, max?:{frameMsP95?, frameMsAvg?, drawCalls?, gpuMsTotal?}, scene?}` | status: `{manifest, views[], perf[], playtests[], ledger:{sealed, changed[], missing[], extra[]}}` / add_view・capture: `{added|captured, golden, note}` / check: `{pass, summary, items[]}` / seal: `{sealedAt, files}` ※**書き換えられない正解(Q2)**。固定カメラの金画像(`.dx12/oracles/views/*.png`)・性能予算・封印したプレイテストを `dx12_quality_gate` の `oracles` 検査が照合する。台帳は `%LOCALAPPDATA%/UnoEngine/oracles/`(`DX12_ORACLE_LEDGER_DIR` で上書き)。封印後の改ざんは `ORACLE_TAMPERED`(blocking)。**`seal` だけ guarded**(`dx12_call` の `confirm:true` が要る。直接呼ぶと `E_GUARDED`)。人用 CLI: `node tools/mcp-server/scripts/oracle-seal.ts <projectDir> [--status]`。legacy 面には出ない(長尾) |
 
-<!-- ==== wave3-laneA ==== begin -->
-<!-- ==== wave3-laneA ==== end -->
 ### 4-14. Blender 連携(自動起動 → PBR素材/仕上げ → 規約どおり書き出し → 実寸検証)
 
 アドオンの既定は全部 OFF なので、放っておくと AI はプリミティブだけで真っ白でのっぺりしたモデルを組む。
@@ -1011,8 +1005,6 @@ Jev(TypeSafe System One)は文章を生成せず型付きの判断(noul / choice
 
   直した経緯(何が外れ、どの語が衝突したか)は各質問ファイルの `notes`。★Jev の答えを見てから直した / 広げたラベルが 2 件ある(`layout.no_collider_ok` の写実の森のホログラム看板を false→true、`play.cause` の「軽快なアクションで止まって見回したがゴールに着いた人」を lost_way→lost_way か none)。人が見直すこと。
 
-<!-- ==== wave3-laneB ==== begin -->
-<!-- ==== wave3-laneB ==== end -->
 ### 4-17. 品質ゲート `dx12_quality_gate`
 
 作業の区切り(部屋を組み終えた・UI を作った・ステージを直した)で 1 回撃つ。検査の道具(validate_scene / diagnose / validate_layout / polish_audit / ui_audit / perceive / run_playtests)を 1 つの合否に畳む。本体は `tools/mcp-server/jev/qualityGate.ts`。
@@ -1109,8 +1101,6 @@ dx12_imgui_screenshot {path:"C:/tmp/shot.png"}      → 仮想カーソル込み
 - 起動時のプロジェクトランチャー等、ImGui 上のダイアログは普通に操作できる。ネイティブのファイル選択ダイアログは開かない(ブロックしてログに残す)。
 - 別プロセスの子エディタ(テストクライアント起動)は同じ `--background` / `--virtual-input` を引き継いで起動する。
 
-<!-- ==== wave3-laneC ==== begin -->
-<!-- ==== wave3-laneC ==== end -->
 ### 4-19. 物理ハードウェア（Arduino / ESP32。`hw_*`）
 
 USB シリアルでつないだ Arduino / ESP32 を扱う（仕様の正は [`docs/HARDWARE.md`](HARDWARE.md)。実装は `src/hardware/` と `src/core/mcp/ApplicationMcpHardware.cpp`）。

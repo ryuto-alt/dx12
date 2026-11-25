@@ -6,6 +6,7 @@
 #include "editor/UiWidgets.h"
 #include "editor/PropertyGrid.h"   // フェーズ 1b: ビルド設定窓を pg:: 2 カラムへ
 #include "core/ApplicationInternal.h"
+#include "core/SplashScreen.h"   // 直接 include（ApplicationInternal.h 経由に頼らない。W05-01）
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "resource/AssetPrewarmer.h"   // BeginAssetPrewarm / Stop
 #include "resource/VgAutoCook.h"       // 仮想ジオメトリの自動 cook の設定（vg_auto / vg_auto_min_triangles）

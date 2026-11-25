@@ -82,6 +82,8 @@ public:
         return true;
     }
     bool InCall() const { return m_callDepth > 0; }
+    // 横取り中か（EditOrigin の判定用に公開。UndoSystem の横取りの状態を返すだけ）。
+    bool IsCapturing() const { return m_undo.Capturing(); }
 
     // ================= トランザクション =================
     enum class TxStatus { Ok, AlreadyOpen, NotOpen };
@@ -208,6 +210,7 @@ public:
         const StepStatus s = CheckUndo(onlyAi);
         if (s != StepStatus::Ok) return s;
         if (undoneName) *undoneName = m_undo.PeekUndoName();
+        EditOriginScope origin(EditOrigin::Mcp);   // 遅延実行でも Mcp（呼び出し元は MCP の undo だけ）
         m_undo.Undo();
         return StepStatus::Ok;
     }
@@ -216,6 +219,7 @@ public:
         const StepStatus s = CheckRedo(onlyAi);
         if (s != StepStatus::Ok) return s;
         if (redoneName) *redoneName = m_undo.PeekRedoName();
+        EditOriginScope origin(EditOrigin::Mcp);
         m_undo.Redo();
         return StepStatus::Ok;
     }
