@@ -68,6 +68,7 @@ Texture2D<float4> g_contactShadow : register(t11);
 // IBL 対応で iblParams(16B) を追加。スポット/ポイント影対応で shadowIndex・spotShadowMatrix[]・
 // spotShadowTexel/pointShadowNear を追加。コンタクトシャドウ対応で末尾に 16B を追加。
 // C++ Application.cpp の FrameConstants(1600B) とバイト単位で一致させること。
+// ★CPU 側の正本は src/renderer/FrameConstants.h（FrameConstantsData。_clusterReserved の番号は PfSlot）。変えるときは両方を同時に。
 cbuffer PerFrameConstants : register(b1)
 {
     float4x4 view;                               // 64B  (offset   0)

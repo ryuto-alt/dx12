@@ -1,4 +1,5 @@
 #include "editor/ModelThumbnailRenderer.h"
+#include "renderer/FrameConstants.h"
 #include "editor/AssetBrowserLogic.h"
 #include "graphics/GraphicsDevice.h"
 #include "graphics/DescriptorHeap.h"
@@ -340,50 +341,7 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
     // バイト単位で一致させること。サムネには影を出さないため CSM 領域は
     // 「cascade0 を必ず選ばせて UV クリップ → CalcShadow が 1.0(無影) を返す」値に倒す。
     // スポット/ポイント影も numPointLights/numSpotLights=0 で未使用（shadowIndex 参照自体が発生しない）。
-    static constexpr u32 kMaxShadowSpotThumb = 4;  // = MAX_SHADOW_SPOT (Lighting.hlsli)
-    struct FrameConstants {
-        XMFLOAT4X4 view;                          // 64B  (offset   0)
-        XMFLOAT4X4 proj;                          // 64B  (offset  64)
-        XMFLOAT3   lightDir;        float time;   // 16B  (offset 128)
-        XMFLOAT3   lightColor;      float ambientStrength; // 16B (offset 144)
-        XMFLOAT4X4 cascadeViewProj[4];            // 256B (offset 160)
-        XMFLOAT4   cascadeSplitsView;             // 16B  (offset 416)
-        XMFLOAT4   shadowParams;                  // 16B  (offset 432)
-        XMFLOAT3   cameraPos;       float _pad;   // 16B  (offset 448)
-        u32        numPointLights;  u32 numSpotLights;
-        float      spotShadowTexel; float pointShadowNear;   // 16B (offset 464)
-        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
-        // サムネイルは灯数 0 なので clusterGrid.w=0（総当たりフォールバック）で十分。
-        XMFLOAT4   clusterParams;    // (offset 480)
-        XMFLOAT4   clusterGrid;      // (offset 496)
-        XMFLOAT4   clusterViewport;  // (offset 512)
-        XMFLOAT4   clusterExtra;     // (offset 528)
-        XMFLOAT4   pcssParams;                            // 16B  (offset 544) PCSS（サムネイルでは常に 0＝従来 PCF）
-        // ▼ DDGI 48B (offset 560)。サムネイルでは常に 0＝t22 を読まない
-        XMFLOAT4   ddgiOrigin;                            // 16B  (offset 560)
-        XMFLOAT4   ddgiSpacing;                           // 16B  (offset 576)
-        XMFLOAT4   ddgiCounts;                            // 16B  (offset 592)
-        XMFLOAT4   _clusterReserved[35];                  // 560B (offset 608..1167)
-        XMFLOAT4   ddgiC1;                                // 16B  (offset 1168) GI S4。サムネでは 0
-        XMFLOAT4   ddgiScroll0;                           // 16B  (offset 1184)
-        XMFLOAT4   ddgiScroll1;                           // 16B  (offset 1200)
-        XMFLOAT4   giParams;                              // 16B  (offset 1216) GI モード。サムネでは 0＝Legacy
-        XMFLOAT4   giParams2;                             // 16B  (offset 1232)
-        XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpotThumb]; // 256B (offset 1248)
-        // ▼ IBL 制御 16B (offset 1504)
-        float iblIntensity;
-        float maxPrefilterMip;
-        u32   hasIBL;
-        float skyboxIntensity;
-        // ▼ コンタクトシャドウ制御 16B (offset 1520)。サムネは白ダミー(t11)なので 0 固定。
-        float contactShadowEnabled;
-        XMFLOAT3 _csPad;
-        // ▼ DDGI のカスケード 2 / 3（末尾追記 64B）。サムネでは 0
-        XMFLOAT4 ddgiC2;        // (offset 1536)
-        XMFLOAT4 ddgiScroll2;   // (offset 1552)
-        XMFLOAT4 ddgiC3;        // (offset 1568)
-        XMFLOAT4 ddgiScroll3;   // (offset 1584)
-    };  // total = 1600B
+    using FrameConstants = FrameConstantsData;   // 正本は renderer/FrameConstants.h（W05-23）
     static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes (match Application.cpp / Lighting.hlsli)");
     {
         FrameConstants fc{};

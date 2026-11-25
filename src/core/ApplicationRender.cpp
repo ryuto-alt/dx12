@@ -16,6 +16,7 @@
 #include "editor/LightMath.h"   // 新規シーンの太陽の既定（W05-22）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
+#include "renderer/FrameConstants.h"
 #include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/AtmosphereHost.h"   // 大気の空キューブ（DDGI のミスが引く放射輝度）
@@ -2709,56 +2710,8 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
 // （サイズは 4 箇所で 1600B を static_assert。00-COORDINATION §4）。
 // 以前は Render() の関数内ローカル型だったが、カメラプレビューが「メインビューの値を流用して
 // 視点だけ差し替える」ために段をまたいで持ち回すので、Application の入れ子型にした。
-struct Application::FrameConstants
+struct Application::FrameConstants : FrameConstantsData
 {
-    DirectX::XMFLOAT4X4 view;
-    DirectX::XMFLOAT4X4 proj;
-    DirectX::XMFLOAT3   lightDir;
-    float      time;
-    DirectX::XMFLOAT3   lightColor;
-    float      ambientStrength;
-    DirectX::XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B
-    DirectX::XMFLOAT4   cascadeSplitsView;             // 16B
-    DirectX::XMFLOAT4   shadowParams;                  // 16B
-    DirectX::XMFLOAT3   cameraPos;
-    float      aoEnabled;   // 1=実AOを読む / 0=AO読まず ao=1（白ダミー1x1の範囲外Load=0で環境光が消えるのを防ぐ）
-    u32        numPointLights;   // 統計/デバッグ用（シェーダは読まない）
-    u32        numSpotLights;
-    float      spotShadowTexel;   // 1/kSpotShadowMapSize
-    float      pointShadowNear;
-    // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
-    DirectX::XMFLOAT4   clusterParams;    // .x=zNear .y=zFar(クラスタ用) .z=sliceScale .w=sliceBias
-    DirectX::XMFLOAT4   clusterGrid;      // .x=gridX .y=gridY .z=gridZ .w=クラスタード有効(1/0)
-    DirectX::XMFLOAT4   clusterViewport;  // .xy=ビューポート原点(RT px) .zw=(gridX/vpW, gridY/vpH)
-    DirectX::XMFLOAT4   clusterExtra;     // .x=総灯数 .y=maxLightsPerCluster .z=デバッグ表示 .w=予約
-    DirectX::XMFLOAT4   pcssParams;                       // 16B  (offset 544) PCSS: .x=tanTheta(0で無効) .y=maxPenumbraTexels .z=時間ディザ位相 .w=探索半径texel
-    // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
-    DirectX::XMFLOAT4   ddgiOrigin;                       // 16B  (offset 560) .xyz=格子の原点 .w=強さ(0=無効)
-    DirectX::XMFLOAT4   ddgiSpacing;                      // 16B  (offset 576) .xyz=プローブ間隔 .w=法線バイアス(m)
-    DirectX::XMFLOAT4   ddgiCounts;                       // 16B  (offset 592) .xyz=各軸のプローブ数
-    DirectX::XMFLOAT4   _clusterReserved[35];             // 560B (offset 608..1167)
-    DirectX::XMFLOAT4   ddgiC1;                           // 16B  (offset 1168) GI S4: カスケード 1（.xyz=原点 .w=間隔）
-    DirectX::XMFLOAT4   ddgiScroll0;                      // 16B  (offset 1184) カスケード 0 の記憶領域のずらし
-    DirectX::XMFLOAT4   ddgiScroll1;                      // 16B  (offset 1200)
-    // ▼ GI モード 32B (offset 1216)。HLSL の giParams / giParams2（Legacy は全部 0 ＝従来経路）
-    DirectX::XMFLOAT4   giParams;                         // 16B  .x=New(1/0) .y=視線バイアス(m) .z=法線バイアス(m) .w=鏡面の空遮蔽の強さ
-    DirectX::XMFLOAT4   giParams2;                        // 16B  予約
-    DirectX::XMFLOAT4X4 spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
-    // ▼ IBL 制御 16B
-    float iblIntensity;
-    float maxPrefilterMip;
-    u32   hasIBL;
-    float skyboxIntensity;
-    // ▼ コンタクトシャドウ制御 16B
-    float contactShadowEnabled;  // 1=実テクスチャ(t11)を読む / 0=読まず 1.0（白ダミー1x1の範囲外Load=0対策）
-    // ▼ 法線マップフィルタリング（旧 _csPad の 12B を流用＝レイアウトは 1 バイトも動かない）
-    //   .x=強さ(0 で完全に恒等) .y=α に足せる量の上限 .z=幾何法線へ寄せる強さ
-    DirectX::XMFLOAT3 normalFilterParams;
-    // ▼ DDGI のカスケード 2 / 3（末尾追記 64B。既存のオフセットは動かない）。cascadeCount < 3 / 固定ボリューム / Legacy では 0
-    DirectX::XMFLOAT4 ddgiC2;        // 16B  (offset 1536) .xyz=カスケード 2 の窓の原点 .w=間隔
-    DirectX::XMFLOAT4 ddgiScroll2;   // 16B  (offset 1552)
-    DirectX::XMFLOAT4 ddgiC3;        // 16B  (offset 1568)
-    DirectX::XMFLOAT4 ddgiScroll3;   // 16B  (offset 1584)
 };
 // ★サイズの static_assert は RenderMainView の fc の直前にある（private な入れ子型なので
 //   名前空間スコープからは sizeof を取れない）。
