@@ -11,6 +11,7 @@
 #include "gui/VirtualInputImGui.h"
 #include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
+#include "editor/undo/ScriptPropertyUndo.h"   // Lua プロパティの Undo（W05-14）
 #include "editor/AssetDrop.h"
 #include "ecs/Components.h"
 #include "ecs/InstanceGroup.h"   // インスタンス群（Inspector）
@@ -578,6 +579,25 @@ void SyncScriptProps(dx12e::LuaScript& ls, const std::vector<dx12e::ScriptPropDe
     ls.props = std::move(next);
 }
 
+// Lua プロパティのドラッグ中の状態（アクティブになった時点の値を覚えて、離したときに 1 件で積む）
+struct LuaPropDrag
+{
+    bool           active = false;
+    entt::entity   entity = entt::null;
+    std::string    name;
+    dx12e::ScriptProp before;
+};
+
+LuaPropDrag s_luaDrag;   // 同時に掴めるのは 1 つだけ
+
+void PushLuaPropUndo(entt::registry& reg, dx12e::EditorContext& ctx, entt::entity e, const std::string& name,
+                     const dx12e::ScriptProp& before, const dx12e::ScriptProp& after)
+{
+    dx12e::ScriptPropertyChange c;
+    if (dx12e::MakeScriptPropertyChange(reg, e, name, before, after, c))
+        ctx.undoSystem.PushCommand(std::make_unique<dx12e::ScriptPropertyUndo>(&reg, std::move(c)));
+}
+
 void DrawLuaScriptSection(entt::registry& reg,
                           entt::entity e,
                           dx12e::EditorContext& ctx,
@@ -721,6 +741,8 @@ void DrawLuaScriptSection(entt::registry& reg,
                 {
                     const auto& d = schema[i];
                     auto& p = ls.props[i];
+                    const dx12e::ScriptProp pre = p;   // このフレームの編集前（Undo の「変更前」）
+                    bool act = false;                  // このウィジェットを掴んでいる間 true（pg の active 出力）
                     const char* lbl = d.label.empty() ? d.name.c_str() : d.label.c_str();
                     ImGui::PushID(static_cast<int>(i));
                     switch (d.type)
@@ -728,16 +750,16 @@ void DrawLuaScriptSection(entt::registry& reg,
                     case dx12e::ScriptPropType::Float:
                     {
                         float v = static_cast<float>(p.num);
-                        bool ch = d.hasRange ? dx12e::pg::SliderFloat(lbl, &v, d.minVal, d.maxVal)
-                                             : dx12e::pg::Float(lbl, &v, 0.01f);
+                        bool ch = d.hasRange ? dx12e::pg::SliderFloat(lbl, &v, d.minVal, d.maxVal, "%.3f", &act)
+                                             : dx12e::pg::Float(lbl, &v, 0.01f, 0.0f, 0.0f, "%.3f", &act);
                         if (ch) { p.num = v; propsEdited = true; }
                         break;
                     }
                     case dx12e::ScriptPropType::Int:
                     {
                         int v = static_cast<int>(p.num);
-                        bool ch = d.hasRange ? dx12e::pg::SliderInt(lbl, &v, static_cast<int>(d.minVal), static_cast<int>(d.maxVal))
-                                             : dx12e::pg::Int(lbl, &v);
+                        bool ch = d.hasRange ? dx12e::pg::SliderInt(lbl, &v, static_cast<int>(d.minVal), static_cast<int>(d.maxVal), &act)
+                                             : dx12e::pg::Int(lbl, &v, 1.0f, 0, 0, &act);
                         if (ch) { p.num = v; propsEdited = true; }
                         break;
                     }
@@ -749,15 +771,17 @@ void DrawLuaScriptSection(entt::registry& reg,
                         char buf[256];
                         std::memset(buf, 0, sizeof(buf));
                         strncpy_s(buf, sizeof(buf), p.str.c_str(), _TRUNCATE);
-                        if (dx12e::pg::InputText(lbl, buf, sizeof(buf)))
+                        if (dx12e::pg::InputText(lbl, buf, sizeof(buf), 0, &act))
                         { p.str = buf; propsEdited = true; }
                         break;
                     }
                     case dx12e::ScriptPropType::Vec3:
-                        if (dx12e::pg::Float3(lbl, &p.vec.x, 0.01f)) propsEdited = true;
+                        if (dx12e::pg::Float3(lbl, &p.vec.x, 0.01f, 0.0f, 0.0f, "%.3f", &act)) propsEdited = true;
                         break;
                     case dx12e::ScriptPropType::Color:
-                        if (dx12e::pg::Color3(lbl, &p.vec.x)) propsEdited = true;
+                        // Color3 は active を返さない。変化したフレーム、または掴み続けている間は「操作中」とみなす。
+                        if (dx12e::pg::Color3(lbl, &p.vec.x)) { propsEdited = true; act = ImGui::IsAnyItemActive(); }
+                        else act = ImGui::IsAnyItemActive() && s_luaDrag.active && s_luaDrag.entity == e && s_luaDrag.name == d.name;
                         break;
                     case dx12e::ScriptPropType::Entity:
                     {
@@ -790,18 +814,44 @@ void DrawLuaScriptSection(entt::registry& reg,
                         break;
                     }
                     }
+                    // ── Undo（W05-14）──
+                    // ドラッグは「アクティブになった時点の値」→「離した時点の値」で 1 件。毎フレームは積まない。
+                    // Entity のコンボはウィジェットが 1 つではないので、選んだ瞬間に 1 件積む。
+                    {
+                        const bool isEntity = d.type == dx12e::ScriptPropType::Entity;
+                        const bool mine = s_luaDrag.active && s_luaDrag.entity == e && s_luaDrag.name == d.name;
+                        if (isEntity || d.type == dx12e::ScriptPropType::Bool)
+                        {
+                            // 1 クリックで確定する種別: その場で 1 件
+                            if (!(pre.str == p.str && pre.guid == p.guid && pre.b == p.b))
+                                PushLuaPropUndo(reg, ctx, e, d.name, pre, p);
+                        }
+                        else if (act && !mine)
+                            s_luaDrag = LuaPropDrag{true, e, d.name, pre};          // 掴んだ時点の値を覚える
+                        else if (mine && !act)
+                        {
+                            PushLuaPropUndo(reg, ctx, e, d.name, s_luaDrag.before, p);   // 離した時点で 1 件
+                            s_luaDrag = LuaPropDrag{};
+                        }
+                        else if (!mine && !act)
+                            PushLuaPropUndo(reg, ctx, e, d.name, pre, p);           // 掴まずに 1 フレームで変わった（キー操作など）
+                    }
                     ImGui::PopID();
                 }
                 dx12e::pg::End();
             }
-            if (ImGui::SmallButton("規定値に戻す"))
+            if (ImGui::SmallButton("既定値に戻す"))
             {
+                const std::vector<dx12e::ScriptProp> propsBefore = ls.props;
                 for (size_t i = 0; i < schema.size(); ++i)
                 {
                     auto& p = ls.props[i]; const auto& d = schema[i];
                     p.num = d.def.num; p.b = d.def.b; p.str = d.def.str; p.vec = d.def.vec;
                 }
                 propsEdited = true;   // 1 クリックで全プロパティが変わる。ここが一番失いやすい
+                // 全プロパティを 1 件の複合コマンドにする（Ctrl+Z 1 回で全部戻る）
+                if (auto cmd = dx12e::MakeScriptPropertiesResetCommand(reg, e, propsBefore))
+                    ctx.undoSystem.PushCommand(std::move(cmd));
             }
             if (propsEdited) ctx.undoSystem.MarkEdited();
         }

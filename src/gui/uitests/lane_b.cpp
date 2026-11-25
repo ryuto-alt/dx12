@@ -571,5 +571,100 @@ void T_AssetRenameKeepsExt(ImGuiTestContext* ctx)
     saferm::RemoveAll(work, ec, assets);
 }
 
+
+// Lua の公開プロパティ: スライダーを動かす → Ctrl+Z で元の値 → Ctrl+Y で戻る。
+// 「既定値に戻す」→ Ctrl+Z 1 回で全部戻る（W05-14）。
+void T_LuaPropUndo(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    Application* app = App();
+    IM_CHECK(ed != nullptr && app != nullptr);
+    if (!ed || !app) return;
+    Scene* scene = app->GetScene();
+    IM_CHECK(scene != nullptr);
+    if (!scene) return;
+    auto& reg = scene->GetRegistry();
+
+    const std::string snapshot = app->SaveSceneSnapshot();   // 終わったら元のシーンへ戻す
+
+    LogStep(ctx, "LuaScript（Spinner）を付けたエンティティを作って選ぶ");
+    const entt::entity e = reg.create();
+    reg.emplace<NameTag>(e, NameTag{"UiTestLuaProp"});
+    reg.emplace<Transform>(e);
+    reg.emplace<EntityGuid>(e, EntityGuid{0x70A14ull});
+    // 使い捨てプロジェクトには components/ が無いので、プロパティ宣言だけのスクリプトを assets に書く
+    const fs::path scriptDir = fs::path(PathResolver::AssetsDir()) / "scripts";
+    const fs::path scriptFile = scriptDir / "uitest_lua_prop.lua";
+    {
+        std::error_code mec;
+        fs::create_directories(scriptDir, mec);
+        std::ofstream sf(scriptFile, std::ios::binary);
+        sf << "properties = {\n"
+              "  { name = \"speed\", type = \"float\", default = 90.0, min = -720, max = 720, label = \"speed\" },\n"
+              "  { name = \"axis\", type = \"vec3\", default = {0, 1, 0}, label = \"axis\" },\n"
+              "  { name = \"spin\", type = \"bool\", default = true, label = \"spin\" },\n"
+              "}\n"
+              "function OnUpdate(self, dt) end\n";
+    }
+    LuaScript ls;
+    ls.scriptPath = "scripts/uitest_lua_prop.lua";
+    reg.emplace<LuaScript>(e, std::move(ls));
+    ed->Select(e);
+    ImGuiID insp = FocusWindow(ctx, kWinInspector);
+    IM_CHECK(insp != 0);
+    ctx->Yield(6);   // SyncScriptProps が既定値（speed = 90）で props を作る
+    IM_CHECK(reg.get<LuaScript>(e).props.size() >= 1);
+    const double speed0 = reg.get<LuaScript>(e).props[0].num;
+    const size_t depth0 = ed->undoSystem.UndoDepth();
+
+    LogStep(ctx, "速度を 200 にする → Undo 1 件 → Ctrl+Z で元の値 → Ctrl+Y で戻る");
+    ctx->SetRef(kWinInspector);
+    ctx->ItemInputValue("**/speed/##v", 200.0f);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == 200.0);
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth0 + 1);
+    ctx->SetRef("//$FOCUSED");
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == speed0);
+    ctx->KeyPress(ImGuiKey_Y | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == 200.0);
+
+    LogStep(ctx, "既定値に戻す → Ctrl+Z 1 回で全部戻る");
+    {
+        auto& props = reg.get<LuaScript>(e).props;
+        for (auto& p : props)
+            if (p.type == ScriptPropType::Bool) p.b = false;      // 既定値（true）から外しておく
+        if (props.size() > 1) props[1].vec = {1.0f, 0.0f, 0.0f};  // axis も外す
+    }
+    ctx->Yield(2);
+    const size_t depth1 = ed->undoSystem.UndoDepth();
+    const auto before = reg.get<LuaScript>(e).props;
+    ctx->SetRef(kWinInspector);
+    ctx->ItemClick("**/既定値に戻す");
+    ctx->Yield(6);
+    IM_CHECK(reg.get<LuaScript>(e).props[0].num == 90.0);
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth1 + 1);       // 複合 1 件
+    ctx->SetRef("//$FOCUSED");
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    const auto& after = reg.get<LuaScript>(e).props;
+    IM_CHECK(after.size() == before.size());
+    for (size_t i = 0; i < before.size() && i < after.size(); ++i)
+        IM_CHECK(after[i].num == before[i].num && after[i].b == before[i].b
+                 && after[i].vec.x == before[i].vec.x && after[i].vec.y == before[i].vec.y);
+
+    LogStep(ctx, "後始末（元のシーンへ戻す）");
+    if (!snapshot.empty())
+    {
+        app->RequestSceneRestore(snapshot);
+        for (int i = 0; i < 240 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield();
+        ctx->Yield(60);
+        std::error_code ec;
+        fs::remove(snapshot, ec);
+    }
+}
+
 } // namespace uitest
 } // namespace dx12e
