@@ -8,6 +8,7 @@
 #include "ecs/Components.h"
 #include "renderer/Mesh.h"   // Scene のデストラクタが Mesh の完全型を要る
 #include "editor/UndoCore.h"
+#include "editor/UndoSystem.h"   // 実コマンド（ComponentEditCommand / AddComponentCommand はヘッダ内で完結する）
 
 #include <entt/entt.hpp>
 
@@ -142,6 +143,41 @@ int main()
         CHECK(SceneSerializer::LoadFromString(s2, dup, "", &o2));
         CHECK(!o2.idsPreserved);
         (void)r2;
+    }
+
+    // ── 実コマンド: ComponentEditCommand<Transform> / AddComponentCommand<RigidBody> をまたぐ ──
+    {
+        Scene s3;
+        auto& r3 = s3.GetRegistry();
+        const entt::entity x = Add(s3, "X", 0x31);
+        UndoSystem u3;
+        Transform before = r3.get<Transform>(x), after = before;
+        after.position.x = 5.0f;
+        r3.get<Transform>(x) = after;
+        u3.PushCommand(std::make_unique<ComponentEditCommand<Transform>>(&r3, x, before, after, "Move"));
+        RigidBody rb;                       // bodyId は既定（未登録）。ランタイムの bodyId は Play 中の物理が入れる
+        r3.emplace<RigidBody>(x, rb);
+        u3.PushCommand(std::make_unique<AddComponentCommand<RigidBody>>(&r3, x, rb, "AddRigidBody"));
+        CHECK(u3.UndoDepth() == 2);
+        const std::string snap3 = SceneSerializer::SaveToString(s3, "", true);
+        const uint64_t ps = u3.PushSeq(), hs = u3.LastHumanEditSeq();
+        // Play 中に別の編集を積む
+        r3.get<Transform>(x).position.x = 9.0f;
+        u3.PushCommand(std::make_unique<ComponentEditCommand<Transform>>(&r3, x, after, r3.get<Transform>(x), "Move2"));
+        s3.Clear();
+        SceneSerializer::SceneLoadOptions o3; o3.preserveEntityIds = true;
+        CHECK(SceneSerializer::LoadFromString(s3, snap3, "", &o3));
+        CHECK(o3.idsPreserved);
+        u3.TruncateTo(ps, hs);
+        CHECK(u3.UndoDepth() == 2 && r3.valid(x));
+        u3.Undo();                           // RigidBody を外す
+        CHECK(!r3.all_of<RigidBody>(x));
+        u3.Redo();                           // 付け直す（bodyId は捕捉時のまま = 未登録）
+        CHECK(r3.all_of<RigidBody>(x) && r3.get<RigidBody>(x).bodyId == kInvalidBodyId);
+        u3.Undo(); u3.Undo();                // 外す → Transform を戻す
+        CHECK(r3.get<Transform>(x).position.x == before.position.x);
+        u3.Redo(); u3.Redo();
+        CHECK(r3.get<Transform>(x).position.x == 5.0f);
     }
 
     std::printf("play_stop_undo_test: %d checks, %d failures\n", g_checks, g_failures);

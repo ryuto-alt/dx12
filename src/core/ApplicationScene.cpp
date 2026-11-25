@@ -1588,7 +1588,7 @@ void Application::EnterPlayMode()
         }
     }
 
-    // AI のトランザクションが開いていたら確定扱いで閉じる（Stop で Undo 履歴ごと消えるので、
+    // AI のトランザクションが開いていたら確定扱いで閉じる（Stop で MCP のトランザクションは閉じるので、
     // 開いたまま Play に入っても rollback できない。MCP の play は開いている間は断っている）。
     McpUndoAutoClose("play");
 
@@ -2058,25 +2058,23 @@ void Application::EnterEditorMode()
     //   保てなかった（id の衝突・ディスクからの再読込）ときだけ従来どおり履歴を消す。
     McpUndoAutoClose("play");
     if (idsPreserved)
-    {
         m_editorCtx->undoSystem.TruncateTo(m_editorCtx->playUndoSeq, m_editorCtx->playHumanSeq);
-        m_editorCtx->ClearSelection();
-        for (uint64_t g : m_editorCtx->playSelectionGuids)
-        {
-            const entt::entity ne = FindEntityByGuid(m_scene->GetRegistry(), g);
-            if (ne != entt::null) m_editorCtx->AddToSelection(ne);
-        }
-    }
     else
     {
         Logger::Warn("Stop: エンティティ id を復元できなかったため Undo 履歴を破棄しました");
         m_editorCtx->undoSystem.Clear();
-        m_editorCtx->ClearSelection();
+    }
+    // 選択は GUID から張り直す（id が保てた場合も保てなかった場合も同じ。後者でも選択は失わない）。
+    m_editorCtx->ClearSelection();
+    for (uint64_t g : m_editorCtx->playSelectionGuids)
+    {
+        const entt::entity ne = FindEntityByGuid(m_scene->GetRegistry(), g);
+        if (ne != entt::null) m_editorCtx->AddToSelection(ne);
     }
     m_editorCtx->playSelectionGuids.clear();
 
-    // Stop でもシーンを丸ごと作り直すため entity id が全部変わる。open_scene/new_scene と同様に
-    // 世代を進めて古い id を無効化する(これが無いと Stop 後に古い id が別 entity に化けて
+    // Stop はシーンを作り直す（W05-11 以降、エディタの Undo 用の id は保つが、MCP が握る id は別契約）。
+    // open_scene/new_scene と同様に世代を進めて MCP の古い id を無効化する(これが無いと Stop 後に古い id が別 entity に化けて
     // "invalid entity id" や誤動作になる)。dx12_stop の応答に新しい sceneGeneration が乗る。
     ++m_sceneGeneration;
 

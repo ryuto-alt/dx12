@@ -2618,6 +2618,9 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     {
         entt::entity e = entt::null;
         // W05-11: 次に reg.create() が返す id を "_eid" の値にそろえる（hint で作って即解放 → 空き列の先頭に載せる）
+        // ★規則: InstantiateEntityJson が最初に呼ぶ registry.create() は、そのエンティティ自身でなければならない
+        //   （各 Spawn* は Scene::CreateEntityWithTransform 経由、失敗時の退避も reg.create()）。
+        //   これが崩れると id がずれるが、直後の e != wantId の検査で idsPreserved=false になり Undo 履歴を捨てる側へ倒れる。
         entt::entity wantId = entt::null;
         if (g_preserveIds && g_preserveIds->preserveEntityIds && ej.is_object()
             && ej.contains("_eid") && ej["_eid"].is_number_unsigned())
