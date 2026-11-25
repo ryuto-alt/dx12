@@ -57,6 +57,9 @@ try {
     if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
         $vc = 'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat'
         if (-not (Test-Path $vc)) { Write-Host "[build] vcvars64.bat not found: $vc"; exit 2 }
+        # vcvars64.bat が呼ぶ vswhere.exe は Installer ディレクトリが PATH に無いと「認識されていません」を出すので足しておく
+        $vsInstaller = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+        if ((Test-Path $vsInstaller) -and ($env:PATH -notlike "*$vsInstaller*")) { $env:PATH = "$env:PATH;$vsInstaller" }
         cmd /c "`"$vc`" >nul && set" | ForEach-Object {
             if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2]) }
         }
@@ -74,12 +77,36 @@ try {
     if (Test-Path $rules) {
         $line = [IO.File]::ReadAllLines($rules, [Text.Encoding]::Latin1) | Where-Object { $_ -match '^\s*msvc_deps_prefix\s*=' } | Select-Object -First 1
         if ($line) {
+            $bytes = [Text.Encoding]::Latin1.GetBytes($line)
+            $prefixOk = $false
             try {
                 $strict = [Text.UTF8Encoding]::new($false, $true)
-                [void]$strict.GetString([Text.Encoding]::Latin1.GetBytes($line))
-            } catch {
-                Write-Host "[build] WARNING: msvc_deps_prefix in rules.ninja is not UTF-8 (configured under another codepage). Headers deps will show '#deps 0'. Re-run configure under 'chcp 65001'."
+                $txt = $strict.GetString($bytes)
+                # 日本語 MSVC の既定「メモ: インクルード ファイル:」(UTF-8)、または少なくとも非 ASCII の UTF-8 であること。
+                # ASCII のみ(英語ロケール)の prefix は chcp 65001 でも同一なので問題ない。
+                $jp = [string]::new([char[]](0x30E1,0x30E2,0x3A))   # "メモ:"
+                $prefixOk = $txt.Contains($jp) -or ($txt -notmatch '[^\x00-\x7F]' -and $txt -match 'Note: including file:')
+            } catch { $prefixOk = $false }
+            if (-not $prefixOk) {
+                Write-Host "[build] WARNING: msvc_deps_prefix in rules.ninja is not the expected UTF-8 'メモ: インクルード ファイル:' (configured under another codepage?). Header deps would show '#deps 0'. Re-run configure under 'chcp 65001'."
             }
+        }
+    }
+
+    # `#deps 0` の .obj のうち、本当に依存が欠落しているものだけを返す。
+    # システムヘッダだけを include する TU は ninja が(INCLUDE 配下を除外するため)正当に #deps 0 になる。
+    # ソースに `#include "..."`(プロジェクトヘッダ)がある obj だけを異常とみなす。
+    function Get-BrokenDepObjs($ninjaExe, $dir) {
+        $zero = @(& $ninjaExe -C $dir -t deps 2>$null | Where-Object { $_ -match '^(.+\.obj): #deps 0,.*\(VALID\)' -and $_ -notmatch '(^|[\/])_deps[\/]' } |   # .ddi(C++20 モジュール走査)の #deps 0 は正常なので .obj だけ。_deps/(外部ライブラリ)は対象外
+                  ForEach-Object { $Matches[1] })
+        foreach ($o in $zero) {
+            $src = & $ninjaExe -C $dir -t query $o 2>$null | Where-Object { $_ -match '^\s{4}(\S.*\.(cpp|cc|cxx|c))\s*$' } | Select-Object -First 1
+            if ($src -match '^\s{4}(\S.*)$') {
+                $sp = $Matches[1]
+                if (-not [IO.Path]::IsPathRooted($sp)) { $sp = Join-Path (Join-Path $root $dir) $sp }
+                if ((Test-Path -LiteralPath $sp) -and -not (Select-String -LiteralPath $sp -Pattern '^\s*#\s*include\s*"' -Quiet)) { continue }
+            }
+            $o
         }
     }
 
@@ -91,9 +118,8 @@ try {
         if ($m) { $ninja = $m.Matches[0].Groups[1].Value.Trim() }
     }
     if ($ninja -and (Test-Path $ninja)) {
-        $bad = & $ninja -C $Dir -t deps 2>$null | Where-Object { $_ -match '^(.+\.obj): #deps 0,.*\(VALID\)' -and $_ -notmatch '(^|[\/])_deps[\/]' } |   # .ddi(C++20 モジュール走査)の #deps 0 は正常なので .obj だけ。_deps/(外部ライブラリ)は対象外
-               ForEach-Object { $Matches[1] }
-        if ($bad -and $bad.Count -gt 0) {
+        $bad = @(Get-BrokenDepObjs $ninja $Dir)
+        if ($bad.Count -gt 0) {
             Write-Host "[build] WARNING: $($bad.Count) objects have no header deps (#deps 0). cleaning them once so they rebuild with correct deps."
             $bad | ForEach-Object -Begin { $batch = @() } -Process {
                 $batch += $_
@@ -109,12 +135,15 @@ try {
     Write-Host "[build] cmake $($args2 -join ' ')  (jobs=$Jobs, priority=BelowNormal)"
     $bsw = [Diagnostics.Stopwatch]::StartNew()
     $cmdArgs = ($args2 | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
+    $oldCp = $null
+    try { $oldCp = ((& cmd /c chcp 2>$null) -replace '\D', '') } catch {}
     & cmd /c "chcp 65001>nul && cmake $cmdArgs"
     $code = $LASTEXITCODE
+    if ($oldCp -match '^\d+$' -and $oldCp -ne '65001') { & cmd /c "chcp $oldCp>nul" }   # 呼び出し元のコンソール コードページを戻す
     Write-Host ("[build] {0} in {1:n1}s (exit {2})" -f ($(if ($code -eq 0) { 'OK' } else { 'FAILED' })), $bsw.Elapsed.TotalSeconds, $code)
     # ビルド後に `#deps 0` の .obj の件数を表示する(0 が正常)
     if ($ninja -and (Test-Path $ninja)) {
-        $after = @(& $ninja -C $Dir -t deps 2>$null | Where-Object { $_ -match '^(.+\.obj): #deps 0,.*\(VALID\)' -and $_ -notmatch '(^|[\/])_deps[\/]' })
+        $after = @(Get-BrokenDepObjs $ninja $Dir)
         if ($after.Count -gt 0) { Write-Host "[build] WARNING: #deps 0 objects after build: $($after.Count) (configure/build codepage mismatch?)" }
         else { Write-Host "[build] #deps 0 objects: 0" }
     }
