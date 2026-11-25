@@ -379,7 +379,7 @@ void WriteTinyGlb(const fs::path& path)
     std::ofstream o(path, std::ios::binary);
     o.write("glTF", 4); u32(o, 2); u32(o, total);
     u32(o, jsonLen); o.write("JSON", 4); o.write(json.data(), static_cast<std::streamsize>(json.size()));
-    u32(o, binLen);  o.write("BIN ", 4); o.write(reinterpret_cast<const char*>(verts), sizeof(verts));
+    u32(o, binLen);  o.write("BIN\0", 4); o.write(reinterpret_cast<const char*>(verts), sizeof(verts));
 }
 
 // 一覧が期待の件数になるまで待つ（走査はワーカースレッド）。
@@ -631,6 +631,45 @@ void T_LuaPropUndo(ImGuiTestContext* ctx)
     ctx->Yield(6);
     IM_CHECK(reg.get<LuaScript>(e).props[0].num == 200.0);
 
+    LogStep(ctx, "マウスで数フレーム動かすドラッグは 1 件にまとまる");
+    {
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->SetRef(kWinInspector);
+        ctx->ItemDragWithDelta("**/speed/##v", ImVec2(40.0f, 0.0f));
+        ctx->Yield(6);
+        IM_CHECK(reg.get<LuaScript>(e).props[0].num != 200.0);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);
+        ctx->SetRef("//$FOCUSED");
+        ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+        ctx->Yield(6);
+        IM_CHECK(reg.get<LuaScript>(e).props[0].num == 200.0);   // 1 回で掴む前へ戻る
+    }
+
+    LogStep(ctx, "掴んだまま選択が変わっても Undo が 1 件積まれる");
+    {
+        const entt::entity other = reg.create();
+        reg.emplace<NameTag>(other, NameTag{"UiTestLuaPropOther"});
+        reg.emplace<Transform>(other);
+        reg.emplace<EntityGuid>(other, EntityGuid{0x70A15ull});
+        const size_t d = ed->undoSystem.UndoDepth();
+        ctx->SetRef(kWinInspector);
+        ctx->MouseMove("**/speed/##v");
+        ctx->MouseDown(0);
+        ctx->MouseMoveToPos(ImVec2(ctx->UiContext->IO.MousePos.x + 30.0f, ctx->UiContext->IO.MousePos.y));
+        ctx->Yield(3);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d);   // 掴んでいる間は積まない
+        ed->Select(other);
+        ctx->Yield(4);
+        ctx->MouseUp(0);
+        ctx->Yield(2);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);
+        ed->Select(e);
+        ctx->Yield(4);
+        IM_CHECK(ed->undoSystem.UndoDepth() == d + 1);   // 選び直しても遅れて積まれない
+        reg.get<LuaScript>(e).props[0].num = 200.0;
+        ctx->Yield(2);
+    }
+
     LogStep(ctx, "既定値に戻す → Ctrl+Z 1 回で全部戻る");
     {
         auto& props = reg.get<LuaScript>(e).props;
@@ -664,6 +703,8 @@ void T_LuaPropUndo(ImGuiTestContext* ctx)
         std::error_code ec;
         fs::remove(snapshot, ec);
     }
+    std::error_code rec;
+    fs::remove(scriptFile, rec);
 }
 
 } // namespace uitest

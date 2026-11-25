@@ -5,8 +5,10 @@ namespace dx12e
 
 bool ScriptPropValueEquals(const ScriptProp& a, const ScriptProp& b)
 {
-    return a.num == b.num && a.b == b.b && a.str == b.str && a.guid == b.guid
-        && a.vec.x == b.vec.x && a.vec.y == b.vec.y && a.vec.z == b.vec.z;
+    // NaN どうしは等しいとみなす（そうしないと NaN の既定値で毎フレーム Undo が積まれる）
+    const auto eq = [](double x, double y) { return x == y || (x != x && y != y); };
+    return eq(a.num, b.num) && a.b == b.b && a.str == b.str && a.guid == b.guid
+        && eq(a.vec.x, b.vec.x) && eq(a.vec.y, b.vec.y) && eq(a.vec.z, b.vec.z);
 }
 
 namespace

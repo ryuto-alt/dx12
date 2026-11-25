@@ -572,7 +572,7 @@ void SyncScriptProps(dx12e::LuaScript& ls, const std::vector<dx12e::ScriptPropDe
         const dx12e::ScriptProp* old = nullptr;
         for (auto& ex : ls.props)
             if (ex.name == d.name && ex.type == d.type) { old = &ex; break; }
-        if (old) { p.num = old->num; p.b = old->b; p.str = old->str; p.vec = old->vec; }
+        if (old) { p.num = old->num; p.b = old->b; p.str = old->str; p.vec = old->vec; p.guid = old->guid; }
         else     { p.num = d.def.num; p.b = d.def.b; p.str = d.def.str; p.vec = d.def.vec; }
         next.push_back(std::move(p));
     }
@@ -596,6 +596,20 @@ void PushLuaPropUndo(entt::registry& reg, dx12e::EditorContext& ctx, entt::entit
     dx12e::ScriptPropertyChange c;
     if (dx12e::MakeScriptPropertyChange(reg, e, name, before, after, c))
         ctx.undoSystem.PushCommand(std::make_unique<dx12e::ScriptPropertyUndo>(&reg, std::move(c)));
+}
+
+// 掴んだまま選択が変わった/外れた/削除された場合に、旧エンティティの現在値で確定する。
+// （次のフレームで Inspector がそのエンティティの節を描かないと、確定が永久に来ないため）
+void FlushLuaPropDragIfStale(entt::registry& reg, dx12e::EditorContext& ctx, entt::entity drawn)
+{
+    if (!s_luaDrag.active || s_luaDrag.entity == drawn) return;
+    const LuaPropDrag d = s_luaDrag;
+    s_luaDrag = LuaPropDrag{};
+    if (!reg.valid(d.entity)) return;
+    const auto* ls = reg.try_get<dx12e::LuaScript>(d.entity);
+    if (!ls) return;
+    for (const auto& p : ls->props)
+        if (p.name == d.name) { PushLuaPropUndo(reg, ctx, d.entity, d.name, d.before, p); return; }
 }
 
 void DrawLuaScriptSection(entt::registry& reg,
@@ -1839,6 +1853,7 @@ void InspectorPanel::Render(entt::registry& reg,
                             EditorContext& ctx,
                             Scene* scene)
 {
+    FlushLuaPropDragIfStale(reg, ctx, ctx.selectedEntities.size() <= 1 ? ctx.selectedEntity : entt::null);
     // ---- コンソールのシェーダーエラー行から飛んできた場合の受け口 ----
     // そのシェーダーを使っているエンティティを選び直し、該当セクションを開く指示を
     // このフレームだけ立てる（開く/スクロールは各セクションの描画箇所で行う）。

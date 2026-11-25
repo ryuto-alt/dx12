@@ -10,6 +10,7 @@
 
 #include <entt/entt.hpp>
 
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -202,6 +203,16 @@ void TestEntityProp()
     u.Redo();
     CHECK(LS(reg, e).props.back().str == "Boss" && LS(reg, e).props.back().guid == 0xBEEFull);
 }
+
+void TestNaNEqual()
+{
+    ScriptProp a = Prop("n", ScriptPropType::Float);
+    a.num = std::nan("");
+    ScriptProp b = a;
+    CHECK(ScriptPropValueEquals(a, b));
+    b.num = 1.0;
+    CHECK(!ScriptPropValueEquals(a, b));
+}
 } // namespace
 
 int main()
@@ -211,6 +222,7 @@ int main()
     TestHotReload();
     TestResetComposite();
     TestEntityProp();
+    TestNaNEqual();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
