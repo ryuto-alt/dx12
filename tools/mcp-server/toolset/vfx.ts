@@ -9,6 +9,7 @@ import fs from "node:fs";
 import { guardApproval } from "../guardCtx.ts";
 import { buildContactSheet } from "../contactSheet.ts";
 import { engine, entityId, entityRef, errResult, reg, regRaw, run } from "./core.ts";
+import type { ToolResult } from "./core.ts";
 
 // ════════════════════════════════════════════════════════════════
 //  VFX（パーティクル / トレイル）
@@ -265,20 +266,33 @@ regRaw(
     let firedLayers: number[] = [];
     let playing = false;
     let ownTx = false;   // 自分で開いたトランザクションがあるか(finally で必ず rollback する)
+    let ownWrites = 0;   // トランザクション中に自分が出した書き込み系の呼び出し数(rollback の calls と突き合わせる)
     const preNotes: string[] = [];
+    let result: ToolResult | undefined;
+    const call = (method: string, params: any) => {
+      if (ownTx && (method === "set_transform" || method === "set_component" || method === "eval_lua")) ownWrites++;
+      return engine.call(method, params);
+    };
     try {
       if (entity === undefined && !name) {
         throw argError("entity か name のどちらかが要る", "放出器のエンティティを指定する");
       }
-      const info = await engine.call("get_entity", ref) as any;
+      const info = await call("get_entity", ref) as any;
       // ★BUG-13: プレビューの退避(set_transform / set_component)と復元を 1 つのトランザクションで包み、最後に必ず rollback する。
       //   rollback なら Undo に何も残らず、トランザクション中は自動保存も走らない。
       //   開けなかったとき(古いエンジン / 既に誰かが開いている)は従来どおり個別に復元する。
       try {
-        await engine.call("transaction_begin", { label: "vfx_preview" });
+        await call("transaction_begin", { label: "vfx_preview" });
         ownTx = true;
       } catch (e: any) {
-        preNotes.push(`トランザクションを開けなかったので、プレビュー中の変更を個別に戻した: ${e?.message ?? e}`);
+        const msg = String(e?.message ?? e);
+        if (/unknown method|未対応|不明なメソッド/i.test(msg)) {
+          preNotes.push(`このエンジンはトランザクションに対応していないので、プレビュー中の変更を個別に戻した(Undo に履歴が残ることがある): ${msg}`);
+        } else {
+          preNotes.push(
+            `★別のトランザクションが既に開いている(または開けなかった)ので、プレビューの変更はその中に入った。`
+            + `そのトランザクションの commit / rollback と運命を共にする。個別の復元は行った: ${msg}`);
+        }
       }
       const pos: number[] = info?.transform?.position ?? info?.position ?? [0, 0, 0];
       const layers: any[] = info?.particleEmitter?.layers ?? [];
@@ -293,14 +307,14 @@ regRaw(
       // カメラを 3/4 の位置へ。target は少し上(立ち上る効果を画角に入れるため)。
       const camPos: [number, number, number] = [pos[0] + dist * 0.75, pos[1] + dist * 0.45, pos[2] + dist * 0.75];
       const camTarget: [number, number, number] = [pos[0], pos[1] + lookY, pos[2]];
-      await engine.call("set_editor_camera", { position: camPos, target: camTarget });
+      await call("set_editor_camera", { position: camPos, target: camTarget });
 
       // ★撮影先は必ず【絶対パスで明示】する。省略するとエンジンは自分の CWD へ書くが、
       //   ヘッドレス起動だと CWD が書けない場所(C:\Windows\System32 等)になることがあり、
       //   その場合 "WIC stream open failed" で撮影ごと失敗する(実際に踏んだ)。
       const shoot = async (): Promise<Buffer> => {
         const outFrame = path.join(os.tmpdir(), `dx12_vfx_frame_${stamp}_${shotIndex++}.png`);
-        const shot = await engine.call("screenshot_final", { gizmos: false, path: outFrame }) as any;
+        const shot = await call("screenshot_final", { gizmos: false, path: outFrame }) as any;
         const got = shot?.path ?? outFrame;
         if (!fs.existsSync(got)) throw new Error(`screenshot_final が PNG を残さなかった: ${got}`);
         const buf = fs.readFileSync(got);
@@ -309,7 +323,7 @@ regRaw(
       };
       const step = async (n: number) => {
         for (let left = n; left > 0; left -= 600) {
-          await engine.call("step_frames", {
+          await call("step_frames", {
             frames: Math.min(600, left), deterministic: true, hold: true,
           });
         }
@@ -327,11 +341,11 @@ regRaw(
           baselineBuf = await shoot();
         } else {
           // 放出器を遠くへ退けて、生きている粒が寿命で消えるまで待ってから撮る
-          await engine.call("set_transform", { ...ref, position: [pos[0], pos[1] + 5000, pos[2]] });
+          await call("set_transform", { ...ref, position: [pos[0], pos[1] + 5000, pos[2]] });
           restorePos = pos;
           await step(settleFrames);
           baselineBuf = await shoot();
-          await engine.call("set_transform", { ...ref, position: pos });
+          await call("set_transform", { ...ref, position: pos });
           restorePos = null;
           await step(settleFrames);   // 戻してから定常状態になるまで待つ
         }
@@ -348,7 +362,7 @@ regRaw(
         } else {
           for (const l of layers) if (l.looping === false) firedLayers.push(layers.indexOf(l));
           // 固定の 1 行(名前は JSON.stringify で埋める)。ユーザーのコードではないので、この内部呼び出しだけ eval_lua のゲートを承認済みにする。
-          const r = await guardApproval.run({ approved: true, via: "internal:vfx_preview" }, () => engine.call("eval_lua", {
+          const r = await guardApproval.run({ approved: true, via: "internal:vfx_preview" }, () => call("eval_lua", {
             code: `return tostring(fx:play(${JSON.stringify(nm)}))`,
           })).catch(() => null) as any;
           const okFire = typeof r?.result === "string" ? r.result.includes("true") : false;
@@ -367,13 +381,13 @@ regRaw(
         shots.push(await shoot());
       }
       // 時間を止めたままにしない(hold の解除)。
-      await engine.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
+      await call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
 
       if (playing) {
-        await engine.call("stop", {}).catch(() => {});
+        await call("stop", {}).catch(() => {});
         playing = false;
         for (const idx of firedLayers) {
-          await engine.call("set_component", {
+          await call("set_component", {
             ...ref, component: "particleEmitter", layer: idx, data: { playOnStart: false },
           }).catch(() => {});
         }
@@ -385,7 +399,7 @@ regRaw(
       const outPath = path.join(os.tmpdir(), `dx12_vfx_preview_${stamp}.png`);
       fs.writeFileSync(outPath, sheet.sheetPng);
 
-      return {
+      result = {
         content: [
           { type: "image", data: sheet.sheetPng.toString("base64"), mimeType: "image/png" },
           {
@@ -409,25 +423,54 @@ regRaw(
         ],
       };
     } catch (e: any) {
-      return errResult(e);
+      result = errResult(e);
     } finally {
       // 退けたまま / Play したまま / 時間を止めたままにしない。
       if (restorePos) {
-        await engine.call("set_transform", { ...ref, position: restorePos }).catch(() => {});
+        await call("set_transform", { ...ref, position: restorePos }).catch(() => {});
       }
       if (playing) {
-        await engine.call("stop", {}).catch(() => {});
+        await call("stop", {}).catch(() => {});
         for (const idx of firedLayers) {
-          await engine.call("set_component", {
+          await call("set_component", {
             ...ref, component: "particleEmitter", layer: idx, data: { playOnStart: false },
           }).catch(() => {});
         }
       }
-      await engine.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
+      await call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
       // 撮影用のカメラ固定を残さない(残るとゲーム画面の撮影が全部この視点になる)
-      await engine.call("set_editor_camera", { release: true }).catch(() => {});
+      await call("set_editor_camera", { release: true }).catch(() => {});
       // 最後に rollback(成功・失敗どちらでも)。Undo もシーンの変更も残さない。
-      if (ownTx) await engine.call("transaction_rollback", {}).catch(() => {});
+      // rollback の失敗・想定外の中身は握りつぶさず、結果に載せる。
+      if (ownTx) {
+        try {
+          const rb = await engine.call("transaction_rollback", {}) as any;
+          const calls = Number(rb?.calls);
+          if (Number.isFinite(calls) && calls > ownWrites) {
+            preNotes.push(
+              `★警告: rollback で ${calls} 件の変更が破棄されたが、プレビュー自身の書き込みは ${ownWrites} 件。`
+              + `差の ${calls - ownWrites} 件は同じ時間帯の他の MCP 書き込み(別クライアントや並列呼び出し)で、巻き戻された。確認すること。`);
+          }
+        } catch (e: any) {
+          preNotes.push(
+            `★警告: rollback に失敗した(${e?.message ?? e})。Play / Ctrl+Z などでトランザクションが自動で閉じられ、`
+            + `Undo に 'vfx_preview' が積まれたか、シーンが変更されたままの可能性がある。Undo の深さとシーンの変更状態を確認すること。`);
+        }
+      }
     }
+    // rollback の結果を含めるため、結果はここで組み立て直す。
+    if (result && preNotes.length > 0) {
+      const t = result.content.find((c: any) => c.type === "text") as any;
+      if (result.isError) {
+        if (t) t.text += "\n" + preNotes.join("\n");
+      } else if (t) {
+        try {
+          const o = JSON.parse(t.text);
+          o.notes = preNotes;
+          t.text = JSON.stringify(o);
+        } catch { t.text += "\n" + preNotes.join("\n"); }
+      }
+    }
+    return result!;
   },
 );
