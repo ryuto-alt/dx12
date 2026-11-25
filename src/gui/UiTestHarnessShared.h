@@ -81,6 +81,7 @@ inline constexpr const char* kMenuScript      = "スクリプト";
 
 // ---- 各レーンのテスト本体の宣言（void(ImGuiTestContext*)）----
 // ==== lane-A:decl begin ====
+void T_AutosaveHumanEditNotWritten(ImGuiTestContext* ctx);   // W05-02
 // ==== lane-A:decl end ====
 // ==== lane-B:decl begin ====
 void T_SaveAsOverwriteConfirm(ImGuiTestContext* ctx);   // W05-12

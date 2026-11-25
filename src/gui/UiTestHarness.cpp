@@ -4941,6 +4941,7 @@ const DiagReg kTests[] = {
 
     // ---- 各レーンの UI テスト（下の「launcher_screen」と deep 区画より前に置く。登録順＝実行順）----
     // ==== lane-A begin ====
+    { "autosave", "autosave_human_edit_not_written", "保存", "人の編集は MCP の自動保存で本体に書かれない", uitest::T_AutosaveHumanEditNotWritten },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },
