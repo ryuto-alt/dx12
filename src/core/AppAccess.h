@@ -37,6 +37,8 @@ struct AppAccess
     // ==== lane-A end ====
 
     // ==== lane-B begin ====
+    // W05-13: モデルのサムネイルのキャッシュ済みハンドル（0 = まだ無い）。UI テスト用。
+    static uint64_t ModelThumbHandle(Application& app, const std::string& path);
     // ==== lane-B end ====
 
     // ==== lane-C begin ====

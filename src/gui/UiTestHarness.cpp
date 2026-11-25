@@ -4948,6 +4948,7 @@ const DiagReg kTests[] = {
     { "panel", "new_scene_name_kept", "パネル", "Ctrl+N の名前: 確認で保存 → 旧シーンは旧パス、新規は指定の名前", uitest::T_NewSceneNameKept },
     { "panel", "new_scene_cancel_no_path", "パネル", "Ctrl+N の名前: 確認でキャンセル → 保存先が残らず、無題の新規シーンは空パス", uitest::T_NewSceneCancelKeepsNoPath },
     { "panel", "play_stop_keeps_undo", "パネル", "Box を作る → Play → Stop → 選択と Undo 履歴が残り、Ctrl+Z で Box が消える", uitest::T_PlayStopKeepsUndo },
+    { "panel", "asset_rename_keeps_ext", "パネル", "アセットブラウザ: F2 の名前変更で拡張子が残る（初期選択は拡張子の前まで / .glb は Model のまま / 拡張子を変えると確認）", uitest::T_AssetRenameKeepsExt },
     // ==== lane-B end ====
     // ==== lane-C begin ====
     { "basic", "create_entity_selects", "基本操作", "新しく作ったエンティティが選択される（W05-21）", uitest::T_CreateEntitySelects },

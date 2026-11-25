@@ -2,8 +2,12 @@
 // 登録は gui/UiTestHarness.cpp の kTests の lane-B ブロックに足す。
 #include "gui/UiTestHarnessShared.h"
 
+#include "core/AppAccess.h"
 #include "core/Application.h"
 #include "core/PathResolver.h"
+#include "core/SafeRemove.h"
+#include "editor/AssetBrowserLogic.h"
+#include "editor/panels/AssetBrowserPanel.h"
 #include "editor/EditorContext.h"
 #include "project/ProjectManager.h"
 #include "ecs/Components.h"
@@ -354,6 +358,217 @@ cleanup:
         fs::remove(snapshot, ec);
     }
     ed->currentScenePath = origPath;
+}
+
+namespace
+{
+// 三角形 1 枚だけの最小の .glb を書く（読み込みエラーのログを出さないため、中身は本物にする）。
+void WriteTinyGlb(const fs::path& path)
+{
+    std::string json =
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"min\":[0,0,0],\"max\":[1,1,0]}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteLength\":36}],\"buffers\":[{\"byteLength\":36}]}";
+    while (json.size() % 4) json.push_back(' ');
+    const float verts[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    const uint32_t jsonLen = static_cast<uint32_t>(json.size());
+    const uint32_t binLen = sizeof(verts);
+    const uint32_t total = 12 + 8 + jsonLen + 8 + binLen;
+    auto u32 = [](std::ofstream& o, uint32_t v) { o.write(reinterpret_cast<const char*>(&v), 4); };
+    std::ofstream o(path, std::ios::binary);
+    o.write("glTF", 4); u32(o, 2); u32(o, total);
+    u32(o, jsonLen); o.write("JSON", 4); o.write(json.data(), static_cast<std::streamsize>(json.size()));
+    u32(o, binLen);  o.write("BIN ", 4); o.write(reinterpret_cast<const char*>(verts), sizeof(verts));
+}
+
+// 一覧が期待の件数になるまで待つ（走査はワーカースレッド）。
+bool WaitEntries(ImGuiTestContext* ctx, AssetBrowserPanel* ab, size_t expect)
+{
+    for (int i = 0; i < 600; ++i)
+    {
+        ctx->Yield(1);
+        if (!ab->IsScanning() && ab->EntryCount() == expect) { ctx->Yield(2); return true; }
+    }
+    ctx->LogWarning("一覧が %zu 件になりません（現在 %zu 件）", expect, ab->EntryCount());
+    return false;
+}
+
+bool WaitExists(ImGuiTestContext* ctx, const fs::path& p, bool want)
+{
+    for (int i = 0; i < 240; ++i)
+    {
+        std::error_code ec;
+        if (fs::exists(p, ec) == want) { ctx->Yield(3); return true; }
+        ctx->Yield(1);
+    }
+    return false;
+}
+
+// 名前欄は ##FileGrid の中の ##Items（子の子）にある。
+ImGuiID ItemsWindow(ImGuiTestContext* ctx)
+{
+    ImGuiID id = ChildWindowId(ctx, "//アセットブラウザ/##FileGrid/##Items");
+    if (id != 0) return id;
+    ImGuiContext& g = *ctx->UiContext;
+    for (ImGuiWindow* w : g.Windows)
+        if (w->WasActive && std::strstr(w->Name, "##Items") != nullptr && std::strstr(w->Name, "アセットブラウザ") != nullptr) return w->ID;
+    return 0;
+}
+
+// 選択 → F2 → 名前欄の初期選択範囲が「0 .. stemBytes」か。
+bool BeginF2(ImGuiTestContext* ctx, AssetBrowserPanel* ab, const fs::path& target, int stemBytes)
+{
+    const ImGuiID win = FocusWindow(ctx, kWinAssets);
+    if (win == 0) { LogStep(ctx, "アセットブラウザの窓が無い"); return false; }
+    ab->SelectOnly(target);
+    ctx->Yield(2);
+    ctx->KeyPress(ImGuiKey_F2);
+    ImGuiID items = 0;
+    for (int i = 0; i < 30 && !(items = ItemsWindow(ctx), ItemExistsIn(ctx, items, "**/##Rename")); ++i) ctx->Yield(1);
+    if (!ItemExistsIn(ctx, items, "**/##Rename")) { LogStep(ctx, "##Rename が出ない（items=%u）", items); return false; }
+    ctx->Yield(8);   // warmup（3 フレーム）+ 選択の掛け直し（5 フレーム）を越える
+    ctx->SetRef(items);
+    const ImGuiID fid = ctx->ItemInfo("**/##Rename", ImGuiTestOpFlags_NoError).ID;
+    ImGuiInputTextState* st = ImGui::GetInputTextState(fid);
+    if (!st) { LogStep(ctx, "InputTextState が無い"); return false; }
+    LogStep(ctx, "F2 の選択: start=%d end=%d（期待 0..%d）", st->GetSelectionStart(), st->GetSelectionEnd(), stemBytes);
+    return st->GetSelectionStart() == 0 && st->GetSelectionEnd() == stemBytes;
+}
+
+bool ExtConfirmOpen()
+{
+    ImGuiWindow* w = ImGui::FindWindowByName("##RenameExtConfirm");
+    return w != nullptr && w->WasActive;
+}
+
+// 本体。IM_CHECK で途中終了しても、呼び出し側が後始末（モーダルを閉じる / マスク復帰 / 削除）をする。
+void RenameKeepsExtBody(ImGuiTestContext* ctx, AssetBrowserPanel* ab, const fs::path& work)
+{
+    const fs::path jp = fs::path(u8"日本.glb");    // パスは UTF-8 から作る（ACP 解釈を避ける）
+    const fs::path jpNew = fs::path(u8"新.glb");
+    constexpr uint32_t kModelMask = 1u << static_cast<int>(abl::Kind::Model);
+    WriteTinyGlb(work / "x.glb");
+    WriteTinyGlb(work / jp);
+    WriteTinyGlb(work / "y.glb");
+    WriteTinyGlb(work / "z.glb");
+
+    LogStep(ctx, "使い捨てフォルダへ移動");
+    ab->SetListView(false);
+    ab->NavigateTo(work);
+    IM_CHECK(WaitEntries(ctx, ab, 4));
+    const ImGuiID win = FocusWindow(ctx, kWinAssets);
+    IM_CHECK(win != 0);
+
+    LogStep(ctx, "x.glb: F2 → 初期選択は拡張子の前まで → b と打って Enter → b.glb");
+    IM_CHECK(BeginF2(ctx, ab, work / "x.glb", 1));
+    ctx->KeyChars("b");
+    ctx->KeyPress(ImGuiKey_Enter);
+    IM_CHECK(WaitExists(ctx, work / "b.glb", true));
+    IM_CHECK(!fs::exists(work / "x.glb"));
+    IM_CHECK(WaitEntries(ctx, ab, 4));
+    IM_CHECK(ab->DrawnCellsLastFrame() > 0);
+    LogStep(ctx, "パネル自身の分類: Model だけ表示すると .glb 4 件が全部残る");
+    ab->SetKindMask(kModelMask);
+    ctx->Yield(3);
+    IM_CHECK(ab->VisibleCount() == 4 + 1);   // + 「..」の行（フォルダは常に通る）
+    ab->SetKindMask(0);
+    ctx->Yield(2);
+    LogStep(ctx, "サムネイル: 改名後の b.glb のハンドルが取れる");
+    {
+        Application* app = App();
+        IM_CHECK(app != nullptr);
+        if (!app) return;
+        const std::string key = (work / "b.glb").string();
+        bool got = false;
+        for (int i = 0; i < 600 && !got; ++i)
+        {
+            got = AppAccess::ModelThumbHandle(*app, key) != 0;
+            if (!got) ctx->Yield(1);
+        }
+        IM_CHECK(got);
+    }
+
+    LogStep(ctx, "日本.glb: 初期選択は 6 バイト（日本）→ 新 と打って 新.glb");
+    IM_CHECK(BeginF2(ctx, ab, work / jp, 6));
+    ctx->KeyChars("新");   // 新
+    ctx->KeyPress(ImGuiKey_Enter);
+    IM_CHECK(WaitExists(ctx, work / jpNew, true));
+    IM_CHECK(!fs::exists(work / jp));
+    IM_CHECK(WaitEntries(ctx, ab, 4));
+
+    LogStep(ctx, "y.glb: b.png と打つと確認 → キャンセルで不変");
+    IM_CHECK(BeginF2(ctx, ab, work / "y.glb", 1));
+    ctx->KeyPress(ImGuiKey_A | ImGuiMod_Ctrl);   // 拡張子ごと選び直して上書きする
+    ctx->KeyChars("b.png");
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(6);
+    IM_CHECK(ExtConfirmOpen());
+    ctx->SetRef("//##RenameExtConfirm");
+    ctx->ItemClick("キャンセル");
+    ctx->Yield(6);
+    IM_CHECK(!ExtConfirmOpen());
+    IM_CHECK(fs::exists(work / "y.glb") && !fs::exists(work / "b.png"));
+
+    LogStep(ctx, "同じ操作で確認 → 「名前変更する」で b.png になる");
+    IM_CHECK(BeginF2(ctx, ab, work / "y.glb", 1));
+    ctx->KeyPress(ImGuiKey_A | ImGuiMod_Ctrl);   // 拡張子ごと選び直して上書きする
+    ctx->KeyChars("b.png");
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(6);
+    ctx->SetRef("//##RenameExtConfirm");
+    ctx->ItemClick("名前変更する");
+    IM_CHECK(WaitExists(ctx, work / "b.png", true));
+    IM_CHECK(!fs::exists(work / "y.glb"));
+
+    LogStep(ctx, "z.glb → q.png と打つと確認 →「拡張子を保つ」で q.png.glb になる");
+    IM_CHECK(BeginF2(ctx, ab, work / "z.glb", 1));
+    ctx->KeyPress(ImGuiKey_A | ImGuiMod_Ctrl);
+    ctx->KeyChars("q.png");
+    ctx->KeyPress(ImGuiKey_Enter);
+    ctx->Yield(6);
+    IM_CHECK(ExtConfirmOpen());
+    ctx->SetRef("//##RenameExtConfirm");
+    ctx->ItemClick("###RenameKeepExt");
+    IM_CHECK(WaitExists(ctx, work / "q.png.glb", true));
+    IM_CHECK(!fs::exists(work / "z.glb") && !fs::exists(work / "q.png"));
+
+    LogStep(ctx, "パネルの分類: Model だけ表示すると b.png は外れ、.glb 3 件が残る");
+    IM_CHECK(WaitEntries(ctx, ab, 4));
+    ab->SetKindMask(kModelMask);
+    ctx->Yield(3);
+    IM_CHECK(ab->VisibleCount() == 3 + 1);   // + 「..」の行
+}
+}  // namespace
+
+// F2 で名前変更しても拡張子が残る（BUG-09）。.glb は種別 Model（パネルの分類）とサムネイルを保つ。拡張子を変えると確認が出る。
+void T_AssetRenameKeepsExt(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr && ed->assetBrowser != nullptr);
+    if (!ed || !ed->assetBrowser) return;
+    AssetBrowserPanel* ab = ed->assetBrowser;
+    const fs::path assets = fs::path(PathResolver::AssetsDir()).lexically_normal();
+    const fs::path work = assets / "__ab_rename_ext_test";
+    const uint32_t origMask = ab->KindMask();
+    std::error_code ec;
+    saferm::RemoveAll(work, ec, assets);
+    fs::create_directories(work);
+
+    RenameKeepsExtBody(ctx, ab, work);
+
+    // 成功でも失敗でも通す後始末（残すと後続のテストが巻き込まれる）
+    LogStep(ctx, "後始末");
+    if (ExtConfirmOpen())
+    {
+        ctx->SetRef("//##RenameExtConfirm");
+        ctx->ItemClick("キャンセル");
+        ctx->Yield(4);
+    }
+    ab->SetKindMask(origMask);
+    ab->NavigateTo(assets);
+    ctx->Yield(10);
+    saferm::RemoveAll(work, ec, assets);
 }
 
 } // namespace uitest
