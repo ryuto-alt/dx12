@@ -337,7 +337,7 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
 
     // ===== PerFrame CB 書き込み =====
     // main の Forward PSO(Forward.hlsl)を流用するので b1 のレイアウトは
-    // Application.cpp の FrameConstants(1536B) / Lighting.hlsli の PerFrameConstants と
+    // renderer/FrameConstants.h の FrameConstantsData(1600B) / Lighting.hlsli の PerFrameConstants と
     // バイト単位で一致させること。サムネには影を出さないため CSM 領域は
     // 「cascade0 を必ず選ばせて UV クリップ → CalcShadow が 1.0(無影) を返す」値に倒す。
     // スポット/ポイント影も numPointLights/numSpotLights=0 で未使用（shadowIndex 参照自体が発生しない）。

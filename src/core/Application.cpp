@@ -876,8 +876,8 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     // PerFrame Constant Buffer（ライトはクラスタードライティングの StructuredBuffer 側へ移動済み）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
     using FrameConstants = FrameConstantsData;   // 正本は renderer/FrameConstants.h（W05-23）
-    // ここは CB の確保サイズを決めるためだけの定義。Render() 内の同名構造体・
-    // ModelThumbnailRenderer・Lighting.hlsli の PerFrameConstants と必ず揃えること。
+    // ここは CB の確保サイズを決めるためだけの定義。正本は renderer/FrameConstants.h
+    // （Lighting.hlsli の PerFrameConstants と必ず揃えること）。
     static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);

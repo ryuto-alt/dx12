@@ -28,7 +28,7 @@ namespace
 {
 
 // ---------------------------------------------------------------------------------------------
-// b1（PerFrameConstants, 1600 バイト）。Lighting.hlsli / Application の FrameConstants / ModelThumbnailRenderer と同じレイアウト
+// b1（PerFrameConstants, 1600 バイト）。Lighting.hlsli / renderer/FrameConstants.h（正本）と同じレイアウト
 // ---------------------------------------------------------------------------------------------
 using FrameConstants = FrameConstantsData;   // 正本は renderer/FrameConstants.h（W05-23）
 

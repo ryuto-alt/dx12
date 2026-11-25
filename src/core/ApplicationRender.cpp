@@ -6104,6 +6104,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     //   灯数）をそのまま流用し、視点に依る値（view / proj / cameraPos / PCSS / AO・影の読み分け /
     //   クラスタ）だけを差し替える。シーン側は下の if (primary) の中でしか書かない。
     static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes");
+    static_assert(kNumCascades == kFrameConstantsCascades && kMaxShadowSpot == kFrameConstantsSpotShadow,
+                  "Application の定数と renderer/FrameConstants.h の配列長を揃えること");
     FrameConstants fc = primary ? FrameConstants{} : frame.mainConstants;
     // 反射プローブの撮影ビューは、プローブ自身を読まない（予約 16B のうち数を 0 にする。Multi-bounce の印は残す）
     if (view.noReflectionProbes) { fc._clusterReserved[34].x = 0.0f; }
