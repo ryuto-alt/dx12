@@ -1,0 +1,5 @@
+// cmake/UnoAgility.cmake が cmake/agility.lock.json から生成する（手で編集しない）。
+#pragma once
+#define UNO_AGILITY_SDK         @UNO_AGILITY_SDK@
+#define UNO_AGILITY_VERSION     "@UNO_AGILITY_VERSION@"
+#define UNO_AGILITY_CORE_SHA256 "@UNO_AGILITY_CORE_SHA256@"

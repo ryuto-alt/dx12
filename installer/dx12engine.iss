@@ -11,6 +11,10 @@
 #define MyAppURL "https://github.com/ryuto-alt/dx12"
 #define MyAppExeName "DX12Engine.exe"
 #define RepoRoot ".."
+; Agility SDK の版。installer\build.ps1 が cmake\agility.lock.json から /DAgilityVersion=... で渡す（版の数字はここに書かない）。
+#ifndef AgilityVersion
+  #error AgilityVersion が未定義です。installer\build.ps1 経由で生成してください（cmake\agility.lock.json の version）。
+#endif
 #define SrcDir RepoRoot + "\build\release"
 
 [Setup]
@@ -51,6 +55,10 @@ Source: "{#SrcDir}\GameRuntime.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; CMake configure 時に third_party/gh-cli/ へ自動取得され、ビルド後に exe の隣へコピーされる。
 Source: "{#SrcDir}\gh.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#SrcDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+; D3D12 Agility SDK のランタイム。D3D12\* のワイルドカードは使わない（ビルドツリーには d3d12SDKLayers.dll もあり、配布しないため）。
+Source: "{#SrcDir}\D3D12\D3D12Core.dll"; DestDir: "{app}\D3D12"; Flags: ignoreversion
+; Agility の再頒布ライセンス文（third_party\agility は configure が取得する物）
+Source: "{#RepoRoot}\third_party\agility\{#AgilityVersion}\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "Microsoft.Direct3D.D3D12-LICENSE.txt"; Flags: ignoreversion
 Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; シェーダーソース(.hlsl/.hlsli)。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用
 ; (PathResolver::ShaderSourceDirW() が配布時に exe 隣の shaders-src/ を見る)。

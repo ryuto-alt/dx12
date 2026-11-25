@@ -68,6 +68,10 @@ New-Item -ItemType Directory -Force $dir, (Join-Path $dir 'data') | Out-Null
 # exe コピー(DLL は同一ボリュームならハードリンクでディスク節約。失敗したらコピー)
 robocopy $src $dir DX12Engine.exe GameRuntime.exe gh.exe *.dll /NFL /NDL /NJH /NJS /NP | Out-Null
 robocopy (Join-Path $src 'shaders') (Join-Path $dir 'shaders') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+# Agility のランタイム（exe の隣の D3D12\）。無いと D3D12SDKPath の先が空になり、in-box のランタイムに縮退する（W05-03）。
+if (Test-Path (Join-Path $src 'D3D12')) {
+    robocopy (Join-Path $src 'D3D12') (Join-Path $dir 'D3D12') /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+}
 robocopy (Join-Path $root 'assets') (Join-Path $dir 'assets') /MIR /XF 'splash_d.*' /NFL /NDL /NJH /NJS /NP | Out-Null
 # HLSL ソース（配布版の shaders-src/ と同じ置き場）。マテリアルグラフ（GraphMaterialSystem）が ForwardGraph.hlsl などを実行時に DXC でコンパイルする。
 # exe 隣に assets/ があると「配布レイアウト」とみなされ、ソースの場所は exe 隣の shaders-src/ になる。

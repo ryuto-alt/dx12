@@ -116,6 +116,24 @@ bool Pipeline::CopyRuntime()
         Logger::Info("Copied dll -> {}", entry.path().filename().string());
     }
 
+    // ★D3D12 Agility のランタイム（<exe>/D3D12/D3D12Core.dll）。D3D12SDKPath が exe の隣の D3D12/ を指すので、
+    //   配布物にも同じ場所へ置く。無いまま配ると in-box が古い PC で起動できないので、黙って飛ばさず止める。
+    //   d3d12SDKLayers.dll（デバッグレイヤー）は配らない。
+    {
+        const fs::path agilitySrc = in.exeDir / "D3D12" / "D3D12Core.dll";
+        std::error_code aec;
+        if (!fs::exists(agilitySrc, aec))
+        {
+            Logger::Error("D3D12/D3D12Core.dll が見つかりません（{}）。cmake の configure（Agility の取得）とビルドをやり直してください", agilitySrc.string());
+            return Fail("D3D12/D3D12Core.dll が見つかりません。エンジンをビルドし直してください（Agility SDK のランタイム）");
+        }
+        fs::create_directories(in.outputDir / "D3D12", aec);
+        aec.clear();
+        fs::copy_file(agilitySrc, in.outputDir / "D3D12" / "D3D12Core.dll", fs::copy_options::overwrite_existing, aec);
+        if (aec) return Fail("D3D12/D3D12Core.dll をコピーできません: " + aec.message());
+        Logger::Info("Copied D3D12/D3D12Core.dll");
+    }
+
     // ★エディタで作ったキー割り当てを配布物へ持っていく。
     //   input_bindings.json はプロジェクトルート直下にあり、pak に入るのは
     //   assets / scripts / shaders の 3 本だけなので、これまで **一度も同梱されていなかった**。

@@ -4,12 +4,41 @@
 
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 #include "core/Window.h"
+#include "graphics/AgilityRuntime.h"
+
+#include <filesystem>
 
 using Microsoft::WRL::ComPtr;
 
 namespace dx12e
 {
+
+namespace
+{
+// 決まった終了コード（Agility のランタイムが無くデバイスを作れなかった）。AgilityMissingRedist が見る。
+constexpr UINT kExitMissingAgility = 0x2A;
+
+// <exeDir>\D3D12\D3D12Core.dll が無く、in-box のランタイムが lock の SDK 未満でデバイスを作れなかった。
+// GameRuntime（game.pak が exe の隣にある配布ゲーム）は利用者向けのメッセージを出す。エディタはログだけ。
+[[noreturn]] void FailMissingAgility(HRESULT hr)
+{
+    Logger::Error("D3D12 runtime: D3D12/D3D12Core.dll が <exe>/D3D12/ に無く、デバイスを作れません（0x{:08X}）。"
+                  "再インストールしてください。", static_cast<unsigned>(hr));
+    Logger::Shutdown();
+    wchar_t exe[MAX_PATH * 4] = {};
+    const DWORD n = ::GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+    const std::filesystem::path pak = std::filesystem::path(std::wstring(exe, n)).parent_path() / L"game.pak";
+    std::error_code ec;
+    if (std::filesystem::exists(pak, ec))
+    {
+        ::MessageBoxW(nullptr, L"D3D12 フォルダがありません。再インストールしてください。", L"起動できません",
+                      MB_OK | MB_ICONERROR);
+    }
+    ::ExitProcess(kExitMissingAgility);
+}
+} // namespace
 
 GraphicsDevice::GraphicsDevice() = default;
 
@@ -50,6 +79,22 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
             debugController->EnableDebugLayer();
             debugController->SetEnableGPUBasedValidation(wantGbv ? TRUE : FALSE);
             Logger::Info("D3D12 Debug Layer enabled (GBV={})", wantGbv ? "on" : "off");
+            {
+                // どの d3d12SDKLayers.dll が読み込まれたか（Agility 版なら <exe>\D3D12\ のはず）をログへ出す。
+                const std::wstring layers = LoadedModulePath(L"d3d12SDKLayers.dll");
+                int n = WideCharToMultiByte(CP_UTF8, 0, layers.c_str(), static_cast<int>(layers.size()), nullptr, 0, nullptr, nullptr);
+                std::string utf8(static_cast<size_t>(n), '\0');
+                if (n > 0)
+                    WideCharToMultiByte(CP_UTF8, 0, layers.c_str(), static_cast<int>(layers.size()), utf8.data(), n, nullptr, nullptr);
+                Logger::Info("D3D12 SDKLayers: {}", utf8.empty() ? std::string("(未読み込み)") : utf8);
+            }
+        }
+        else
+        {
+            // 黙って続けると「デバッグレイヤーのエラー 0」が空振りで合格する。見えるようにする。
+            NoteDebugLayerFailure();
+            Logger::Error("D3D12 Debug Layer を要求しましたが D3D12GetDebugInterface が失敗しました"
+                          "（<exe>/D3D12/d3d12SDKLayers.dll が無い、または Core と版が違う）");
         }
     }
 
@@ -86,6 +131,13 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
         Logger::Info("GPU selected: {}", adapterName);
     }
 
+    // --- Agility のランタイムの有無（デバイスを作る前に確かめる）---
+    // in-box が lock の SDK 未満だとデバイス作成が 0x887E0003 で失敗するので、先に原因をログへ出す。
+    const bool redistPresent = AgilityRedistPresent();
+    if (!redistPresent)
+        Logger::Error("D3D12 runtime: <exe>/D3D12/D3D12Core.dll がありません。in-box のランタイムに縮退します"
+                      "（SDK {} 未満だとデバイスを作れません）", RequiredAgilitySdk());
+
     // --- Device Creation ---
     // ★フィーチャーレベルは高い順に試して落ちる。12_1 を無条件要求すると、
     //   D3D12 は動くのに FL は 12_0 止まり、という GPU（AMD GCN/Polaris、Intel Gen9 など）で
@@ -120,7 +172,27 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
                 break;
             }
         }
+        if (FAILED(lastHr) && !redistPresent && lastHr == static_cast<HRESULT>(0x887E0003L))
+            FailMissingAgility(lastHr);
         ThrowIfFailed(lastHr);
+    }
+
+    // --- 読み込まれたランタイムのログ（合否は D3D12Core.dll が export する SDK 版だけで判定する）---
+    {
+        const AgilityInfo ai = QueryAgilityRuntime();
+        const std::string path = PathResolver::WideToUtf8(ai.corePath);
+        const std::string fver = PathResolver::WideToUtf8(ai.fileVersion);
+        Logger::Info("D3D12 runtime: {} {} (loaded SDK {}, required {}, redist={})", path, fver,
+                     ai.loadedSdkVersion, RequiredAgilitySdk(), ai.fromRedistDir ? "yes" : "no");
+        if (ai.loadedSdkVersion < RequiredAgilitySdk())
+            Logger::Error("D3D12 runtime: 読み込まれた SDK {} が必要な {} 未満です（Agility のランタイムで動いていません）",
+                          ai.loadedSdkVersion, RequiredAgilitySdk());
+        else if (!ai.fromRedistDir)
+            Logger::Info("D3D12 runtime: <exe>/D3D12/ ではなく OS 同梱のランタイムが選ばれました（SDK {} 以上なので問題なし）",
+                         RequiredAgilitySdk());
+        else if (!ai.sha256Match)
+            Logger::Warn("D3D12 runtime: D3D12Core.dll の SHA256 が agility.lock.json と一致しません");
+        m_device.As(&m_device10);   // 取れなければ nullptr のまま（F1 以降が見る）
     }
 
     // --- Info Queue (Debug) ---
@@ -165,7 +237,9 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
         D3D12MA::ALLOCATOR_DESC allocatorDesc{};
         allocatorDesc.pDevice  = m_device.Get();
         allocatorDesc.pAdapter = m_adapter.Get();
-        allocatorDesc.Flags    = D3D12MA::ALLOCATOR_FLAG_NONE;
+        // F0 は D3D12MA 3.3 の配置の自動変更（タイトなアライメント）を使わない。VRAM の統計・エイリアス・
+        // スコアカードの数字が動くため。有効にするのは F1 で、個別の A/B と VRAM の差分を取ってから。
+        allocatorDesc.Flags    = D3D12MA::ALLOCATOR_FLAG_DONT_USE_TIGHT_ALIGNMENT;
 
         ThrowIfFailed(D3D12MA::CreateAllocator(&allocatorDesc, &m_allocator));
         Logger::Info("D3D12 Memory Allocator initialized");
