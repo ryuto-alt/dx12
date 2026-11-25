@@ -446,6 +446,18 @@ if(TARGET Scene)
 endif()
 
 # ==== lane-B begin ====
+# 保存まわり（W05-12）: シーン名の検証 / 既存ファイルの検出 / SaveLastOpenedScene が実在しないパスを記録しない。
+if(TARGET ProjectLib)
+    add_executable(SceneSavePathsTests scene_save_paths_test.cpp)
+    target_include_directories(SceneSavePathsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(SceneSavePathsTests PRIVATE ProjectLib)
+    if(MSVC)
+        target_compile_options(SceneSavePathsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SceneSavePathsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SceneSavePathsTests COMMAND SceneSavePathsTests)
+    set_tests_properties(SceneSavePathsTests PROPERTIES TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
@@ -765,6 +777,18 @@ if(TARGET Renderer)
 endif()
 
 # ==== lane-C begin ====
+# 新規シーンの太陽の既定（editor/LightMath.h の数式）。W05-22。
+if(TARGET Renderer)
+    find_package(directxmath CONFIG REQUIRED)
+    add_executable(NewSceneDefaultsTests new_scene_defaults_test.cpp)
+    target_include_directories(NewSceneDefaultsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(NewSceneDefaultsTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(NewSceneDefaultsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(NewSceneDefaultsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME NewSceneDefaultsTests COMMAND NewSceneDefaultsTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====

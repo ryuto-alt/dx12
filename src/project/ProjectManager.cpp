@@ -369,6 +369,15 @@ static nlohmann::json ReadEditorStateLocked(const std::string& file)
 
 void ProjectManager::SaveLastOpenedScene(const std::string& scenePath)
 {
+    // 実在しないパスを「前回のシーン」に記録すると、次回の起動で開けない。呼び出し側ではなくここで確かめる。
+    {
+        std::error_code ec;
+        if (scenePath.empty() || !fs::exists(launcher::PathFromUtf8(scenePath), ec))
+        {
+            Logger::Debug("前回のシーンに記録しません（ファイルがありません）: {}", scenePath);
+            return;
+        }
+    }
     std::lock_guard<std::mutex> lk(StoreMutex());
     const std::string file = GetEditorStatePath();
     nlohmann::json j = ReadEditorStateLocked(file);   // 既存の state を読み込んでマージ
