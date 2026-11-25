@@ -1,0 +1,18 @@
+{
+  "name": "core_post_stack",
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/post_stack.json",
+  "camera": {
+    "position": [
+      0,
+      2,
+      -6
+    ],
+    "target": [
+      0,
+      1,
+      1
+    ]
+  },
+  "note": "ポスト（bloom / vignette / 彩度 / FXAA）と SSAO・発光"
+}
