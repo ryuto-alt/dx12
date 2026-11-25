@@ -13,6 +13,7 @@
 #include "ecs/InstanceGroup.h"         // インスタンス群の展開（BuildDrawList）
 #include "editor/InstanceGroupCommand.h"   // インスタンス群: 変換 / 展開の Undo（エディタの「まとめる」「展開」）
 #include "editor/Toast.h"
+#include "editor/LightMath.h"   // 新規シーンの太陽の既定（W05-22）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
 #include "editor/panels/HardwarePanel.h"
@@ -33,6 +34,30 @@
 #include "editor/AssetDrop.h"
 #include "editor/panels/NodeGraphSandboxPanel.h"   // ノードグラフ サンドボックス窓（マテリアルグラフ G0）
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
+
+namespace
+{
+// 新規シーン（new_scene / Ctrl+N）の太陽の既定: 方位 220°・高度 38°（影が斜めに落ちる）、色温度 5500K。
+// tests/new_scene_defaults_test.cpp が同じ式を検証する（値を変えるときは両方）。
+struct NewSceneSun
+{
+    DirectX::XMFLOAT3 direction{};   // 光が進む向き（正規化済み）
+    DirectX::XMFLOAT3 rotation{};    // Transform の回転（度）。direction と同じ向き
+    DirectX::XMFLOAT3 color{};
+};
+
+NewSceneSun MakeNewSceneSun()
+{
+    namespace lm = dx12e::lightmath;
+    NewSceneSun d;
+    const lm::SunAngles a{220.0f, 38.0f};
+    d.direction = lm::SunAnglesToDirection(a);
+    d.color     = lm::KelvinToRGB(5500.0f);
+    d.rotation  = {a.elevationDeg, lm::WrapDeg180(a.azimuthDeg + 180.0f), 0.0f};
+    return d;
+}
+}  // namespace
+
 
 namespace dx12e
 {
@@ -2928,6 +2953,8 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         MarkSceneClean();
         m_editorCtx->currentScenePath = starterPath;  // 空なら未保存の新規シーン
         m_scene->Clear();
+        // Scene::Clear は大気設定を戻さないので、前のシーンの物理大気が太陽の向きを上書きしないよう既定へ戻す
+        m_scene->GetAtmosphereSettings() = AtmosphereSettings{};
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
         // ---- 再生に必要な最低限のデフォルト配置 ----
@@ -2939,8 +2966,16 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             // 平行光源
             auto lightE = reg.create();
             reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
-            reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
-            reg.emplace<DirectionalLight>(lightE);
+            // 太陽の向き: 方位 220° / 高度 38°（影が斜めに落ちる）、色温度 5500K。
+            // Transform の回転と direction を同じ向きで作り、prevRot を初期化して初回フレームの動きを 0 にする。
+            const NewSceneSun sun = MakeNewSceneSun();
+            reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, sun.rotation, {1,1,1}});
+            DirectionalLight sunLight;
+            sunLight.direction    = sun.direction;
+            sunLight.color        = sun.color;
+            sunLight._prevRot     = sun.rotation;
+            sunLight._prevRotInit = true;
+            reg.emplace<DirectionalLight>(lightE, sunLight);
 
             // メインカメラ（CameraComponent が無いと Play で映らないため必須）
             auto camE = reg.create();
