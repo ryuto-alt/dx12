@@ -38,7 +38,7 @@ void Application::RegisterMcpLaneAMethods()
             char smName[16];
             std::snprintf(smName, sizeof(smName), "%u.%u", sm >> 4, sm & 0xF);
             resp["ok"]         = true;
-            resp["shaderModel"] = smName;
+            resp["shaderModelName"] = smName;
             resp["summary"]    = DeviceCapsSummary(*caps);
             resp["caps"]       = std::move(c);
         });

@@ -1726,7 +1726,7 @@ void FillGeneratedManifestRows(ManifestRows& o)
     // ==== lane-A begin ====
     o.push_back({"get_device_caps", M("デバイスの機能(caps)を返す: 最高シェーダモデル(0x69=SM6.9)・Enhanced Barriers・GPU Upload Heap・ルートシグネチャ最大版・DXR/SER/OMM・Fence Barriers・メッシュシェーダ・VRS など。起動時に 1 回だけ判定した値(読み取り専用)。",
         "get device caps デバイス機能 agility SM6.9 enhanced barriers",
-        "render", "", "", McpEffect::Read, "any", 8000, true, false,
+        "render", "render_setting", "device_caps", McpEffect::Read, "any", 8000, true, false,
         "none", "dx12_get_device_caps", {
         })});
     // ==== lane-A end ====
