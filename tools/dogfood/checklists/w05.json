@@ -9,15 +9,28 @@
       "target": [
         "W05-02"
       ],
-      "title": "人の編集では main.json を書かない",
+      "title": "人の編集では main.json を書かない（MCP だけなら書く）",
       "steps": [
         {
+          "kind": "note",
+          "text": "前提: プロジェクトに scenes/main.json がある（無ければ最初に save_scene で作る）。以降 main.json が現在のシーンであること"
+        },
+        {
           "kind": "engine",
-          "action": "start"
+          "action": "start",
+          "freshData": true
         },
         {
           "kind": "mcp",
-          "method": "new_scene"
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
         },
         {
           "kind": "input",
@@ -28,11 +41,11 @@
         },
         {
           "kind": "note",
-          "text": "仮想入力で Box を作る（アセット/メニューのどちらでもよい）"
+          "text": "仮想入力で人の編集を 1 つ入れる（Box を作る。アセット/メニューのどちらでもよい）。直前に editor_state で humanSettingsDirty / 未保存の印を確かめる"
         },
         {
           "kind": "wait",
-          "ms": 3000
+          "ms": 10000
         },
         {
           "kind": "file",
@@ -41,11 +54,34 @@
         },
         {
           "kind": "mcp",
-          "method": "scene_backups"
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
         },
         {
           "kind": "mcp",
           "method": "editor_state"
+        },
+        {
+          "kind": "note",
+          "text": "【後半: 人の編集が無いセッション】人の編集が残っていると自動保存が正しく止まるので、別のセッションで確かめる"
+        },
+        {
+          "kind": "engine",
+          "action": "restart"
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
         },
         {
           "kind": "mcp",
@@ -57,15 +93,22 @@
         },
         {
           "kind": "wait",
-          "ms": 3000
+          "ms": 10000
         },
         {
           "kind": "file",
           "path": "scenes/main.json",
           "check": "hash_changed"
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity",
+          "params": {
+            "name": "McpOnlyBox"
+          }
         }
       ],
-      "expect": "main.json が書かれない。scene_backups に理由つきの世代が 1 件。editor_state に autosave.blockedByHumanEdits=true と warning。MCP の create_entity だけの場合は本体が保存される",
+      "expect": "前半: main.json が書かれない。scene_backups に理由つきの世代が 1 件。editor_state に autosave.blockedByHumanEdits=true と warning。後半（人の編集が無い別セッション）: MCP の create_entity だけなら main.json が保存されて変わり、McpOnlyBox が入っている",
       "evidence": [
         "json",
         "log"
@@ -84,8 +127,50 @@
       "title": "人の編集 → open_scene / new_scene / アイドル終了で本体不変",
       "steps": [
         {
+          "kind": "note",
+          "text": "前提: scenes/main.json がある。経路ごとに「新しい人の編集」を入れてから確かめる（前の経路の編集を引き継がない）"
+        },
+        {
           "kind": "engine",
-          "action": "start"
+          "action": "start",
+          "freshData": true
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "save_scene",
+          "params": {
+            "path": "scenes/other.json"
+          }
+        },
+        {
+          "kind": "note",
+          "text": "【経路 1: open_scene】"
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
         },
         {
           "kind": "input",
@@ -96,12 +181,7 @@
         },
         {
           "kind": "note",
-          "text": "仮想入力で人の編集を 1 つ入れる"
-        },
-        {
-          "kind": "file",
-          "path": "scenes/main.json",
-          "check": "record_hash"
+          "text": "仮想入力で人の編集を 1 つ入れる（open_scene）。直前に editor_state で humanSettingsDirty / 未保存の印を確かめる"
         },
         {
           "kind": "mcp",
@@ -111,30 +191,126 @@
           }
         },
         {
+          "kind": "input",
+          "op": "screenshot"
+        },
+        {
           "kind": "file",
           "path": "scenes/main.json",
           "check": "hash_unchanged"
         },
         {
           "kind": "mcp",
-          "method": "scene_backups"
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
+        },
+        {
+          "kind": "note",
+          "text": "open_scene の経路: 退避の件数が編集の前より 1 件だけ増えたことと、モーダルが出ていないこと（スクリーンショット）を確かめる"
+        },
+        {
+          "kind": "note",
+          "text": "【経路 2: new_scene】"
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "仮想入力で人の編集を 1 つ入れる（new_scene）。直前に editor_state で humanSettingsDirty / 未保存の印を確かめる"
         },
         {
           "kind": "mcp",
           "method": "new_scene"
         },
         {
+          "kind": "input",
+          "op": "screenshot"
+        },
+        {
           "kind": "file",
           "path": "scenes/main.json",
           "check": "hash_unchanged"
         },
         {
           "kind": "mcp",
-          "method": "scene_backups"
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
+        },
+        {
+          "kind": "note",
+          "text": "new_scene の経路: 退避の件数が編集の前より 1 件だけ増えたことと、モーダルが出ていないこと（スクリーンショット）を確かめる"
+        },
+        {
+          "kind": "note",
+          "text": "【経路 3: アイドル終了】短いアイドル終了（1 分）で起動し直し、人の編集を入れてから MCP を呼ばずに待つ"
         },
         {
           "kind": "engine",
-          "action": "idle_exit"
+          "action": "restart",
+          "idleMin": 1
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "仮想入力で人の編集を 1 つ入れる（アイドル終了の経路）。直前に editor_state で humanSettingsDirty / 未保存の印を確かめる"
+        },
+        {
+          "kind": "engine",
+          "action": "idle_exit",
+          "idleMin": 1
         },
         {
           "kind": "file",
@@ -147,14 +323,21 @@
         },
         {
           "kind": "mcp",
-          "method": "scene_backups"
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
         },
         {
           "kind": "note",
-          "text": "「以前の版に戻す」（または scene_backups の復元）で 1 操作で戻ることを確かめる"
+          "text": "退避の件数が経路 3 の前より 1 件増えたことを確かめる。続けて「以前の版に戻す」（または scene_backups restore）で 1 操作で戻ることを確かめる"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
         }
       ],
-      "expect": "main.json のハッシュが不変。退避がそれぞれ 1 件。モーダルが出ない。1 操作で戻る",
+      "expect": "3 経路（open_scene / new_scene / アイドル終了）それぞれで、新しい人の編集の後に main.json のハッシュが不変、退避が各経路で 1 件ずつ増える、モーダルが出ない。退避から 1 操作で戻る",
       "evidence": [
         "json",
         "log",
@@ -174,8 +357,38 @@
       "title": "終了の経路（fleet アイドル終了と taskkill）",
       "steps": [
         {
+          "kind": "note",
+          "text": "前提: scenes/main.json がある。(a) アイドル終了、(b) taskkill の順"
+        },
+        {
           "kind": "engine",
-          "action": "start"
+          "action": "start",
+          "freshData": true,
+          "idleMin": 1
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "McpOnlyBox",
+            "type": "cube"
+          }
+        },
+        {
+          "kind": "wait",
+          "ms": 10000
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
         },
         {
           "kind": "input",
@@ -186,11 +399,12 @@
         },
         {
           "kind": "note",
-          "text": "MCP の編集を 1 つ、続けて人の編集を 1 つ入れる"
+          "text": "仮想入力で人の編集を 1 つ入れる（(a) の人の編集）。直前に editor_state で humanSettingsDirty / 未保存の印を確かめる"
         },
         {
           "kind": "engine",
-          "action": "idle_exit"
+          "action": "idle_exit",
+          "idleMin": 1
         },
         {
           "kind": "file",
@@ -202,23 +416,11 @@
           "action": "start"
         },
         {
-          "kind": "input",
-          "op": "virtual_input",
+          "kind": "mcp",
+          "method": "open_scene",
           "params": {
-            "enabled": true
+            "path": "scenes/main.json"
           }
-        },
-        {
-          "kind": "note",
-          "text": "MCP の編集を 1 つ、続けて人の編集を 1 つ入れる"
-        },
-        {
-          "kind": "engine",
-          "action": "kill"
-        },
-        {
-          "kind": "engine",
-          "action": "start"
         },
         {
           "kind": "mcp",
@@ -229,10 +431,79 @@
         },
         {
           "kind": "mcp",
-          "method": "scene_backups"
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
+        },
+        {
+          "kind": "note",
+          "text": "【(b) taskkill】"
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "McpOnlyBox2",
+            "type": "cube"
+          }
+        },
+        {
+          "kind": "wait",
+          "ms": 10000
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "仮想入力で人の編集を 1 つ入れる（(b) の人の編集）。直前に editor_state で humanSettingsDirty / 未保存の印を確かめる"
+        },
+        {
+          "kind": "engine",
+          "action": "kill"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity",
+          "params": {
+            "name": "McpOnlyBox2"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups",
+          "params": {
+            "op": "list"
+          }
         }
       ],
-      "expect": "(a) アイドル終了: 人の編集は退避され本体は不変 (b) taskkill: 開き直すと main.json は最後の MCP の編集だけで保存された内容。人の編集は退避の世代に残る。どちらもモーダルで止まらない（MCP の終了メソッドは存在しない）",
+      "expect": "(a) アイドル終了: 人の編集は退避され main.json は不変（最後の MCP だけの保存のまま）。McpOnlyBox が残る (b) taskkill: 開き直すと main.json は最後の MCP の編集（McpOnlyBox2 まで）だけの内容で、人の編集は退避の世代に残る。どちらもモーダルで止まらない（MCP の終了メソッドは存在しない）",
       "evidence": [
         "json",
         "log"
@@ -529,6 +800,11 @@
           }
         },
         {
+          "kind": "file",
+          "path": "scenes/*.json",
+          "check": "record_hash"
+        },
+        {
           "kind": "note",
           "text": "既存の名前で名前を付けて保存 → 確認が出る → キャンセル → 元ファイル不変"
         },
@@ -692,7 +968,9 @@
         {
           "kind": "file",
           "path": "engine.log",
-          "check": "contains"
+          "check": "contains",
+          "pattern": "D3D12 runtime:.*D3D12Core.dll 1.620.2.*redist=yes",
+          "base": "instance"
         },
         {
           "kind": "mcp",
@@ -733,7 +1011,9 @@
         {
           "kind": "file",
           "path": "engine.log",
-          "check": "contains"
+          "check": "contains",
+          "pattern": "warn.*dlss|dlss.*warn",
+          "base": "instance"
         }
       ],
       "expect": "DLSS 有りなら textureMipBias が -1.585（Quality）。無しなら fallbackReason が入り、ログに Warn が 1 回だけ",
@@ -755,10 +1035,11 @@
           "kind": "engine",
           "action": "start",
           "args": [
-            "--env",
-            "DX12_D3D_DEBUG=1",
             "--dpi-scale",
             "1.5"
+          ],
+          "env": [
+            "DX12_D3D_DEBUG=1"
           ]
         },
         {
@@ -779,7 +1060,9 @@
         {
           "kind": "file",
           "path": "engine.log",
-          "check": "contains"
+          "check": "contains",
+          "pattern": "Debug Layer enabled",
+          "base": "instance"
         }
       ],
       "expect": "ログに「Debug Layer enabled」があり、例外・デバッグレイヤーのエラー・黒画面が 0",

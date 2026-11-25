@@ -14,9 +14,7 @@
         {
           "kind": "engine",
           "action": "start",
-          "args": [
-            "--fresh-settings"
-          ]
+          "freshData": true
         },
         {
           "kind": "input",
@@ -157,11 +155,8 @@
           "method": "get_quality"
         },
         {
-          "kind": "engine",
-          "action": "restart",
-          "args": [
-            "--no-dxr"
-          ]
+          "kind": "note",
+          "text": "DXR が使えない条件を作る（DXR 無効化の手段がエンジンに実装されていればそれで再起動する。無ければこの後半は blocked にして理由を書く）"
         },
         {
           "kind": "mcp",
@@ -479,12 +474,12 @@
           "action": "run",
           "args": [
             "--splash-selftest",
-            "--splash-dump"
+            "{evidence}/splash_selftest"
           ]
         },
         {
           "kind": "note",
-          "text": "キーフレーム PNG・黄の検査（boot の許可集合）・オフライン音のダンプでロックと絵の静止フレームの差を確認"
+          "text": "selftest の出力先（{evidence}/splash_selftest）のキーフレーム PNG・黄の検査（boot の許可集合）・オフライン音のダンプでロックと絵の静止フレームの差を確認"
         }
       ],
       "expect": "キーフレームの PNG が出る（窓は出ない）。黄の検査が緑。ロックと絵の静止フレームの差が ±1 フレーム",
@@ -675,8 +670,7 @@
         {
           "kind": "engine",
           "action": "start",
-          "args": [
-            "--env",
+          "env": [
             "DX12_D3D_DEBUG=1"
           ]
         },
@@ -691,7 +685,9 @@
         {
           "kind": "file",
           "path": "engine.log",
-          "check": "contains"
+          "check": "contains",
+          "pattern": "Debug Layer enabled",
+          "base": "instance"
         }
       ],
       "expect": "「Debug Layer enabled」があり、デバッグレイヤーのエラー 0",
@@ -746,7 +742,8 @@
           "kind": "engine",
           "action": "run",
           "args": [
-            "--splash-selftest"
+            "--splash-selftest",
+            "{evidence}/splash_selftest_g19"
           ]
         },
         {
