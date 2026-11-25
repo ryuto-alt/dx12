@@ -60,6 +60,8 @@ inline constexpr Def kCommands[] = {
     {"file.save",        "保存",                             "Save",              "ファイル", "Ctrl+S",       "", "シーンを保存（Play 中は保存せず通知だけ出す）", Scope::Always, KeyMode::Global},
     {"file.saveAs",      "名前を付けて保存",                 "Save As",           "ファイル", "Ctrl+Shift+S", "", "名前を付けてシーンを保存",             Scope::Editor, KeyMode::Global},
     {"file.newScript",   "新規スクリプト",                   "New Script Lua",    "ファイル", "Ctrl+L",       "", "新しい Lua スクリプトを作る",           Scope::Editor, KeyMode::Global},
+    // ==== wave1-laneA ==== begin
+    // ==== wave1-laneA ==== end
     {"file.newShader",   "新規シェーダー",                   "New Shader HLSL",   "ファイル", "",             "", "",                                     Scope::Editor, KeyMode::Global},
     {"file.closeProject","プロジェクトを閉じる（ランチャーに戻る）", "Close Project", "ファイル", "",        "", "",                                     Scope::Editor, KeyMode::Global},
 
@@ -73,6 +75,8 @@ inline constexpr Def kCommands[] = {
     {"edit.rename",      "名前を変更",                       "Rename",            "編集",     "F2",           "", "選択エンティティの名前を変更",         Scope::Editor, KeyMode::Typing},
     {"edit.group",       "選択をグループ化",                 "Group",             "編集",     "Ctrl+G",       "", "選択をグループ化（ヒエラルキーにフォーカス時）", Scope::Editor, KeyMode::Panel},
     {"edit.selectNone",  "選択を解除",                       "Deselect",          "編集",     "Esc",          "", "選択解除（フライ中は解除 / Play 一時停止中は停止）", Scope::Always, KeyMode::Typing},
+    // ==== wave1-laneB ==== begin
+    // ==== wave1-laneB ==== end
     {"edit.focus",       "選択にフォーカス",                 "Focus Frame",       "編集",     "F",            "", "選択エンティティへカメラを寄せる",     Scope::Editor, KeyMode::Typing},
     // ---- ヒエラルキー: 表示 / ロック / フォルダ（フェーズ 1b。エディタ専用。ゲームには影響しない）----
     {"edit.toggleHidden","選択の表示 / 非表示を切り替え",   "Toggle Hidden Hide Show", "編集", "H",            "", "選択をエディタのビューポートで隠す / 表示する（ゲームには影響しない）", Scope::Editor, KeyMode::Typing},
@@ -88,6 +92,8 @@ inline constexpr Def kCommands[] = {
     {"view.gizmoSpace",  "ローカル / ワールド空間を切り替え", "Local World Space", "表示",     "T",            "", "ギズモの空間を切り替え",               Scope::Editor, KeyMode::Typing},
     {"view.fill",        "編集用の照らし込み",               "Viewport Fill Light", "表示",   "Shift+F2",     "", "暗いシーンを見るための光（ゲームには影響なし）", Scope::Editor, KeyMode::Typing},
     {"view.flyMode",     "キーボードフライの切り替え",       "Keyboard Fly",      "表示",     "Grave",        "", "` キーでキーボードフライ（WASD / Q E / 矢印）", Scope::Editor, KeyMode::Typing},
+    // ==== wave1-laneC ==== begin
+    // ==== wave1-laneC ==== end
     {"view.toggle2D",    "2D / 3D ビューを切り替え",         "2D 3D View",        "表示",     "",             "", "",                                     Scope::Editor, KeyMode::Global},
     {"view.resetLayout", "レイアウトをリセット",             "Reset Layout",      "表示",     "",             "", "",                                     Scope::Always, KeyMode::Global},
     {"view.closeTools",  "ツール窓をすべて閉じる",           "Close All Tool Windows", "表示", "",            "", "",                                     Scope::Always, KeyMode::Global},
@@ -98,6 +104,8 @@ inline constexpr Def kCommands[] = {
     {"view.bookmark.jump.3", "カメラブックマーク 3 へ移動", "Camera Bookmark 3 Jump", "表示", "3", "", "保存したカメラ位置へなめらかに移動", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.jump.4", "カメラブックマーク 4 へ移動", "Camera Bookmark 4 Jump", "表示", "4", "", "保存したカメラ位置へなめらかに移動", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.jump.5", "カメラブックマーク 5 へ移動", "Camera Bookmark 5 Jump", "表示", "5", "", "保存したカメラ位置へなめらかに移動", Scope::Editor, KeyMode::Typing},
+    // ==== wave2-laneA ==== begin
+    // ==== wave2-laneA ==== end
     {"view.bookmark.jump.6", "カメラブックマーク 6 へ移動", "Camera Bookmark 6 Jump", "表示", "6", "", "保存したカメラ位置へなめらかに移動", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.jump.7", "カメラブックマーク 7 へ移動", "Camera Bookmark 7 Jump", "表示", "7", "", "保存したカメラ位置へなめらかに移動", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.jump.8", "カメラブックマーク 8 へ移動", "Camera Bookmark 8 Jump", "表示", "8", "", "保存したカメラ位置へなめらかに移動", Scope::Editor, KeyMode::Typing},
@@ -108,6 +116,8 @@ inline constexpr Def kCommands[] = {
     {"view.bookmark.set.4", "カメラブックマーク 4 に現在の視点を保存", "Camera Bookmark 4 Save", "表示", "Ctrl+4", "", "今のカメラ位置と向きを 4 番に保存", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.set.5", "カメラブックマーク 5 に現在の視点を保存", "Camera Bookmark 5 Save", "表示", "Ctrl+5", "", "今のカメラ位置と向きを 5 番に保存", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.set.6", "カメラブックマーク 6 に現在の視点を保存", "Camera Bookmark 6 Save", "表示", "Ctrl+6", "", "今のカメラ位置と向きを 6 番に保存", Scope::Editor, KeyMode::Typing},
+    // ==== wave2-laneB ==== begin
+    // ==== wave2-laneB ==== end
     {"view.bookmark.set.7", "カメラブックマーク 7 に現在の視点を保存", "Camera Bookmark 7 Save", "表示", "Ctrl+7", "", "今のカメラ位置と向きを 7 番に保存", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.set.8", "カメラブックマーク 8 に現在の視点を保存", "Camera Bookmark 8 Save", "表示", "Ctrl+8", "", "今のカメラ位置と向きを 8 番に保存", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.set.9", "カメラブックマーク 9 に現在の視点を保存", "Camera Bookmark 9 Save", "表示", "Ctrl+9", "", "今のカメラ位置と向きを 9 番に保存", Scope::Editor, KeyMode::Typing},
@@ -123,6 +133,8 @@ inline constexpr Def kCommands[] = {
     {"workspace.lighting",  "ワークスペース: ライティング",         "Workspace Lighting Post Process", "ワークスペース", "", "", "ライティング / ポストプロセス / 空 / SSAO を開く",         Scope::Always, KeyMode::Global},
     {"workspace.animation", "ワークスペース: アニメ・シーケンサー", "Workspace Animation Sequencer Timeline", "ワークスペース", "", "", "下部ドックを広げてタイムラインのタブを出す", Scope::Always, KeyMode::Global},
     {"workspace.vfx",       "ワークスペース: VFX",                  "Workspace VFX Particle Effect",  "ワークスペース", "", "", "パーティクルエディタを開く",                             Scope::Always, KeyMode::Global},
+    // ==== wave2-laneC ==== begin
+    // ==== wave2-laneC ==== end
     {"workspace.ui",        "ワークスペース: UI",                   "Workspace UI Canvas",            "ワークスペース", "", "", "UI エディタを開く",                          Scope::Always, KeyMode::Global},
     {"layout.save",         "レイアウトを保存…",                    "Save Layout",                    "表示", "", "", "今のレイアウト（分割比・開いている窓・配置先）に名前を付けて保存", Scope::Always, KeyMode::Global},
     {"layout.slots",        "ツール窓の配置先…",                    "Tool Window Placement Dock Split Bottom Float", "表示", "", "", "ツール窓を右カラム / 右分割 / 下部ドック / フローティングのどこに開くかを選ぶ", Scope::Always, KeyMode::Global},
@@ -145,6 +157,8 @@ inline constexpr Def kCommands[] = {
     {"graph.frameAll",    "ノード: 全体を表示",           "Graph Frame All",        "ノードグラフ", "Home",         "", "グラフ全体が収まるように表示",   Scope::Always, KeyMode::Panel},
     {"graph.palette",     "ノード: 検索パレットを開く",   "Graph Node Palette",     "ノードグラフ", "Space",        "", "ノード検索パレット（右クリックでも開く）", Scope::Always, KeyMode::Panel},
     {"graph.comment",     "ノード: コメントで囲む",       "Graph Comment Box",      "ノードグラフ", "C",            "", "選択ノードをコメントで囲む（未選択なら空のコメント）", Scope::Always, KeyMode::Panel},
+    // ==== wave3-laneA ==== begin
+    // ==== wave3-laneA ==== end
     {"graph.selectUpstream",  "ノード: 上流を選択",       "Graph Select Upstream",  "ノードグラフ", "Alt+Left",     "", "選択ノードの上流をすべて選択",   Scope::Always, KeyMode::Panel},
     {"graph.selectDownstream","ノード: 下流を選択",       "Graph Select Downstream","ノードグラフ", "Alt+Right",    "", "選択ノードの下流をすべて選択",   Scope::Always, KeyMode::Panel},
     {"graph.alignLeft",   "ノード: 左揃え",               "Graph Align Left",       "ノードグラフ", "Shift+Alt+A",  "", "",                               Scope::Always, KeyMode::Panel},
@@ -155,6 +169,8 @@ inline constexpr Def kCommands[] = {
     {"graph.alignCenterV","ノード: 垂直中央揃え",         "Graph Align Center V",   "ノードグラフ", "Shift+Alt+X",  "", "",                               Scope::Always, KeyMode::Panel},
     {"graph.distributeH", "ノード: 水平に等間隔",         "Graph Distribute H",     "ノードグラフ", "Shift+Alt+H",  "", "3 個以上を等間隔に",             Scope::Always, KeyMode::Panel},
     {"graph.distributeV", "ノード: 垂直に等間隔",         "Graph Distribute V",     "ノードグラフ", "Shift+Alt+V",  "", "3 個以上を等間隔に",             Scope::Always, KeyMode::Panel},
+    // ==== wave3-laneB ==== begin
+    // ==== wave3-laneB ==== end
     {"graph.resetZoom",   "ノード: 表示を 100% に",       "Graph Reset Zoom",       "ノードグラフ", "Ctrl+0",       "", "ズームを 100% に戻す",           Scope::Always, KeyMode::Panel},
     {"graph.disconnectSelected", "ノード: 選択ノードのワイヤを切断", "Graph Disconnect Selected", "ノードグラフ", "", "", "", Scope::Always, KeyMode::Global},
     {"graph.toggleSnap",  "ノード: グリッドスナップの切替", "Graph Toggle Snap",    "ノードグラフ", "",             "", "",                               Scope::Always, KeyMode::Global},
@@ -170,6 +186,8 @@ inline constexpr Def kCommands[] = {
     {"matgraph.open",     "マテリアルグラフ: 開く…",              "Material Graph Open",       "マテリアルグラフ", "",           "", ".dxmg を開く（Ctrl+O）",                  Scope::Always, KeyMode::Global},
     {"matgraph.save",     "マテリアルグラフ: 保存",               "Material Graph Save",       "マテリアルグラフ", "",           "", "グラフを保存（Ctrl+S）",                  Scope::Always, KeyMode::Global},
     {"matgraph.saveAs",   "マテリアルグラフ: 名前を付けて保存…",  "Material Graph Save As",    "マテリアルグラフ", "",           "", "グラフを別名で保存（Ctrl+Shift+S）",      Scope::Always, KeyMode::Global},
+    // ==== wave3-laneC ==== begin
+    // ==== wave3-laneC ==== end
     {"matgraph.recompile","マテリアルグラフ: HLSL を再生成",      "Material Graph Recompile",  "マテリアルグラフ", "Ctrl+Enter", "", "グラフを検証して HLSL を作り直す",         Scope::Always, KeyMode::Panel},
     {"matgraph.nextDiag", "マテリアルグラフ: 次の診断へ移動",     "Material Graph Next Diagnostic", "マテリアルグラフ", "F8",   "", "診断リストの次の項目のノードへ移動",      Scope::Always, KeyMode::Panel},
     {"matgraph.copyHlsl", "マテリアルグラフ: 生成 HLSL をコピー", "Material Graph Copy HLSL",  "マテリアルグラフ", "",           "", "生成された HLSL をクリップボードへ",       Scope::Always, KeyMode::Global},

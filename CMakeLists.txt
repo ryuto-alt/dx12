@@ -343,6 +343,8 @@ if(DXC_EXECUTABLE)
     # クラスタードライティング（Forward+）のライトカリング compute 2 本
     set(SHADER_CLUSTER_BUILD "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterBuild.hlsl")
     set(SHADER_CLUSTER_CULL  "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCull.hlsl")
+    # ==== wave1-laneA ==== begin
+    # ==== wave1-laneA ==== end
     set(SHADER_CLUSTER_INC   "${CMAKE_SOURCE_DIR}/shaders/forward/ClusterCommon.hlsli")
     # Hi-Z オクルージョンカリング。深度ピラミッド構築 compute（コピー + 縮約の 2 エントリ）。
     set(SHADER_HIZ_BUILD     "${CMAKE_SOURCE_DIR}/shaders/hiz/HiZBuild.hlsl")
@@ -361,6 +363,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_FWD_INST      "${CMAKE_SOURCE_DIR}/shaders/forward/ForwardInstanced.hlsl")
     set(SHADER_SHADOW_INST   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassInstanced.hlsl")
     set(SHADER_SHADOW        "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPass.hlsl")
+    # ==== wave1-laneB ==== begin
+    # ==== wave1-laneB ==== end
     set(SHADER_SHADOW_SKIN   "${CMAKE_SOURCE_DIR}/shaders/shadow/ShadowPassSkinned.hlsl")
     # アルファクリップ(MASK)マテリアル専用の深度パス（葉の影を葉の形に抜く）。
     # 1 本から VS×3 + PS×1 = 4 CSO を作る。
@@ -372,6 +376,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_POST          "${CMAKE_SOURCE_DIR}/shaders/post/PostProcess.hlsl")
     set(SHADER_POST_INC      "${CMAKE_SOURCE_DIR}/shaders/post/FullscreenTri.hlsli")
     set(SHADER_BLOOM         "${CMAKE_SOURCE_DIR}/shaders/post/Bloom.hlsl")
+    # ==== wave1-laneC ==== begin
+    # ==== wave1-laneC ==== end
     set(SHADER_AUTOEXPOSURE  "${CMAKE_SOURCE_DIR}/shaders/post/AutoExposure.hlsl")
     set(SHADER_GODRAYS       "${CMAKE_SOURCE_DIR}/shaders/post/GodRays.hlsl")
     set(SHADER_LENSFLARE     "${CMAKE_SOURCE_DIR}/shaders/post/LensFlare.hlsl")
@@ -379,6 +385,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_MOTIONBLUR    "${CMAKE_SOURCE_DIR}/shaders/post/MotionBlur.hlsl")
     set(SHADER_LOCALEXPOSURE "${CMAKE_SOURCE_DIR}/shaders/post/LocalExposure.hlsl")
     set(SHADER_SPRITE        "${CMAKE_SOURCE_DIR}/shaders/sprite/Sprite.hlsl")
+    # ==== wave2-laneA ==== begin
+    # ==== wave2-laneA ==== end
     set(SHADER_ICON_BB       "${CMAKE_SOURCE_DIR}/shaders/editor/IconBillboard.hlsl")
     set(SHADER_TRANSITION    "${CMAKE_SOURCE_DIR}/shaders/post/Transition.hlsl")
     # トランジションの「形」の唯一の実装。実機(Transition.hlsl)とエディタのプレビュー窓/
@@ -388,12 +396,16 @@ if(DXC_EXECUTABLE)
     set(SHADER_PARTICLE      "${CMAKE_SOURCE_DIR}/shaders/particle/Particle.hlsl")
     set(SHADER_BEAM          "${CMAKE_SOURCE_DIR}/shaders/particle/Beam.hlsl")
     set(SHADER_TRAIL         "${CMAKE_SOURCE_DIR}/shaders/particle/Trail.hlsl")
+    # ==== wave2-laneB ==== begin
+    # ==== wave2-laneB ==== end
     set(SHADER_GPU_PARTICLE_SIM  "${CMAKE_SOURCE_DIR}/shaders/particle/GpuParticleSim.hlsl")
     set(SHADER_GPU_PARTICLE_DRAW "${CMAKE_SOURCE_DIR}/shaders/particle/GpuParticleDraw.hlsl")
     set(SHADER_PARTICLE_INC  "${CMAKE_SOURCE_DIR}/shaders/particle/ParticleCommon.hlsli")
     set(SHADER_IBL_IRR       "${CMAKE_SOURCE_DIR}/shaders/ibl/IrradianceConvolution.hlsl")
     set(SHADER_IBL_PRE       "${CMAKE_SOURCE_DIR}/shaders/ibl/PrefilterEnv.hlsl")
     set(SHADER_IBL_BRDF      "${CMAKE_SOURCE_DIR}/shaders/ibl/IntegrateBRDF.hlsl")
+    # ==== wave2-laneC ==== begin
+    # ==== wave2-laneC ==== end
     set(SHADER_PROBE_COPY    "${CMAKE_SOURCE_DIR}/shaders/ibl/ProbeCopyFace.hlsl")
     set(SHADER_PROBE_DOWN    "${CMAKE_SOURCE_DIR}/shaders/ibl/ProbeDownsample.hlsl")
     set(SHADER_SKYBOX        "${CMAKE_SOURCE_DIR}/shaders/ibl/Skybox.hlsl")
@@ -401,6 +413,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_SSAO          "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAO.hlsl")
     set(SHADER_SSAO_BLUR     "${CMAKE_SOURCE_DIR}/shaders/ssao/SSAOBlur.hlsl")
     set(SHADER_CONTACT_SHADOW "${CMAKE_SOURCE_DIR}/shaders/shadow/ContactShadow.hlsl")
+    # ==== wave3-laneA ==== begin
+    # ==== wave3-laneA ==== end
     set(SHADER_VELOCITY      "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepass.hlsl")
     set(SHADER_VELOCITY_INST "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassInstanced.hlsl")
     set(SHADER_VELOCITY_SKIN "${CMAKE_SOURCE_DIR}/shaders/velocity/VelocityPrepassSkinned.hlsl")
@@ -420,6 +434,8 @@ if(DXC_EXECUTABLE)
     # ボリュメトリックフォグ（froxel）。compute 3 本 + 合成 VS/PS。
     set(SHADER_FOG_INC       "${CMAKE_SOURCE_DIR}/shaders/fog/FogCommon.hlsli")
     set(SHADER_FOG_INJECT    "${CMAKE_SOURCE_DIR}/shaders/fog/FogInject.hlsl")
+    # ==== wave3-laneB ==== begin
+    # ==== wave3-laneB ==== end
     set(SHADER_FOG_SCATTER   "${CMAKE_SOURCE_DIR}/shaders/fog/FogScatter.hlsl")
     set(SHADER_FOG_INTEGRATE "${CMAKE_SOURCE_DIR}/shaders/fog/FogIntegrate.hlsl")
     set(SHADER_FOG_COMPOSITE "${CMAKE_SOURCE_DIR}/shaders/fog/FogComposite.hlsl")
@@ -436,6 +452,8 @@ if(DXC_EXECUTABLE)
     set(SHADER_RT_SHADOW     "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtShadow.hlsl")
     set(SHADER_RT_AO         "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAo.hlsl")
     set(SHADER_RT_DEBUG      "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtDebug.hlsl")
+    # ==== wave3-laneC ==== begin
+    # ==== wave3-laneC ==== end
     set(SHADER_RT_AODENOISE  "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtAoDenoise.hlsl")
     # RT 影の専用デノイザ（トレース RG16F 版 + 時間蓄積 + 半影幅に比例した空間フィルタ）。
     set(SHADER_RT_SHDTEMP    "${CMAKE_SOURCE_DIR}/shaders/raytracing/RtShadowTemporal.hlsl")

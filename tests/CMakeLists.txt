@@ -275,6 +275,9 @@ if(TARGET Scene)
     add_test(NAME SerializeRoundtripTests COMMAND SerializeRoundtripTests)
 endif()
 
+# ==== wave1-laneA ==== begin
+# ==== wave1-laneA ==== end
+
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
 # 生成モード: SceneFormatV2Tests --emit-defaults <out.json> で src/scene/scene_defaults_v2.json の初期値を作る。
 if(TARGET Scene)
@@ -363,6 +366,9 @@ if(TARGET Scene)
     endif()
     add_test(NAME ShaderParamTweenTests COMMAND ShaderParamTweenTests)
 endif()
+
+# ==== wave1-laneB ==== begin
+# ==== wave1-laneB ==== end
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
 # エンジン本体と一緒にビルドする構成でのみ有効(スタンドアロン構成では Resource が無いのでスキップ)。
@@ -680,6 +686,9 @@ if(TARGET Renderer)
     add_test(NAME TerrainTests COMMAND TerrainTests)
 endif()
 
+# ==== wave1-laneC ==== begin
+# ==== wave1-laneC ==== end
+
 # 頂点スカルプト（素体生成 / 溶接・隣接 / 各ブラシ / 法線の部分再計算 / 対称 / .smsh 往復）テスト。
 # SculptMesh.cpp も純ロジック（重み関数とノイズだけ TerrainBrush と共有）なので、
 # TerrainTests と同じくライブラリをリンクせず直接ビルドする。
@@ -777,6 +786,9 @@ if(TARGET ProjectLib)
     endif()
     add_test(NAME GitIntegrationTests COMMAND GitIntegrationTests)
 endif()
+
+# ==== wave2-laneA ==== begin
+# ==== wave2-laneA ==== end
 
 # ENet ループバック疎通テスト（同一プロセス内でサーバー/クライアントを立てて往復確認）。
 # Network（+ vcpkg unofficial-enet, Core）が必要なので統合ビルドでのみ有効。
@@ -949,6 +961,9 @@ if(TARGET Resource AND TARGET Renderer)
     endif()
     add_test(NAME ModelScaleTests COMMAND ModelScaleTests)
 endif()
+
+# ==== wave2-laneB ==== begin
+# ==== wave2-laneB ==== end
 
 # 仮想ジオメトリの自動 cook（resource/VgAutoCook）と .vgeo v1.1（AO / 拡張シェーディング 'MSHD'）。GPU 不要。
 if(TARGET Resource AND TARGET Renderer AND TARGET VgeoCookLib)
@@ -1211,6 +1226,9 @@ if(TARGET Core)
     add_test(NAME AutosaveSlotTests COMMAND AutosaveSlotTests)
 endif()
 
+# ==== wave2-laneC ==== begin
+# ==== wave2-laneC ==== end
+
 # 自作ナビメッシュ（ボクセル化 → 領域分割 → 輪郭 → ポリゴン化 → A*/ファネル）のテスト。
 # nav/ は純ロジック（GPU も entt も DirectXMath も vfs も不要）なので、
 # TerrainTests と同じくライブラリをリンクせず .cpp を直接ビルドする＝スタンドアロン CI でも動く。
@@ -1441,6 +1459,9 @@ if(TARGET Editor)
     add_test(NAME NodeGraphTests COMMAND NodeGraphTests)
 endif()
 
+# ==== wave3-laneA ==== begin
+# ==== wave3-laneA ==== end
+
 # マテリアルグラフ G1（src/renderer/matgraph/）。型システム・モデル API・診断・HLSL コード生成（決定論・CSE・スロット）・
 # CPU 参照実装・.dxmg 往復・ゴールデン（tests/data/matgraph/*.dxmg ↔ *.hlsl.expected）。GPU / DXC 不要の純ロジック。
 # ゴールデンの更新: MATGRAPH_UPDATE_GOLDEN=1 で実行 → git diff を目視。
@@ -1660,6 +1681,9 @@ if(TARGET Renderer AND TARGET Resource)
     add_test(NAME AtmosphereGpuTests COMMAND AtmosphereGpuTests)
     set_tests_properties(AtmosphereGpuTests PROPERTIES LABELS gpu TIMEOUT 300)
 endif()
+
+# ==== wave3-laneB ==== begin
+# ==== wave3-laneB ==== end
 
 # パリティ基盤(tools/parity)の Python テスト(pytest。指標・ノイズ床・ゲート・シーン仕様・偽エンジンでのランナー統合)。
 # Python か依存(numpy / scikit-image / flip-evaluator など。pwsh tools/parity/setup.ps1)が無い環境ではスキップ扱い。
@@ -1892,6 +1916,9 @@ if(TARGET Graphics AND TARGET Microsoft::DirectXShaderCompiler)
     add_test(NAME TonemapGpuTests COMMAND TonemapGpuTests)
     set_tests_properties(TonemapGpuTests PROPERTIES LABELS gpu TIMEOUT 300)
 endif()
+
+# ==== wave3-laneC ==== begin
+# ==== wave3-laneC ==== end
 
 # ============================================================================
 # GI モード「新」の既定と移行（S5。scene/GiMigration.* ・ editor/GiMigrationCommand.h ・ テンプレート）:

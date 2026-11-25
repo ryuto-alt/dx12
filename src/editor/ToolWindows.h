@@ -53,37 +53,55 @@ inline constexpr Desc kAll[] = {
     // ---- レンダリング ----
     {"postProcess",    "Post Process",             "Post Process",            ICON_T_LAYERS,  "レンダリング", &EditorContext::showPostProcess,       DockSlot::RightTab, MenuHome::View,  "ポストプロセス bloom tonemap"},
     {"postParams",     "Post Process パラメータ",  "Post Process パラメータ", ICON_T_SLIDERS, "レンダリング", &EditorContext::showPostParams,        DockSlot::RightTab, MenuHome::View,  "post process parameters"},
+    // ==== wave1-laneA ==== begin
+    // ==== wave1-laneA ==== end
     {"skybox",         "Skybox / IBL",             "Skybox / IBL",            ICON_T_SUN,     "レンダリング", &EditorContext::showSkybox,            DockSlot::RightTab, MenuHome::View,  "空 環境光 sky ibl"},
     {"ssao",           "SSAO",                     "SSAO",                    ICON_T_GRID,    "レンダリング", &EditorContext::showSSAO,              DockSlot::RightTab, MenuHome::View,  "ambient occlusion"},
     {"ssr",            "SSR / SSGI",               "SSR / SSGI",              ICON_T_MONITOR, "レンダリング", &EditorContext::showScreenSpaceGi,     DockSlot::RightTab, MenuHome::View,  "反射 reflection gi"},
+    // ==== wave1-laneB ==== begin
+    // ==== wave1-laneB ==== end
     {"fog",            "Volumetric Fog",           "Volumetric Fog",          ICON_T_FOG,     "レンダリング", &EditorContext::showVolumetricFog,     DockSlot::RightTab, MenuHome::View,  "霧 フォグ"},
     {"lighting",       "ライティング",             "",                        ICON_T_LIGHT,   "レンダリング", &EditorContext::showLighting,          DockSlot::Floating, MenuHome::View,  "lighting sun shadow 太陽 影"},
     // ---- プロジェクト・システム ----
     {"engineSettings", "エンジン設定",             "エンジン設定",            ICON_SETTINGS,  "プロジェクト", &EditorContext::showEngineSettings,    DockSlot::RightTab, MenuHome::View,  "engine settings 設定"},
     {"buildSettings",  "ビルド設定",               "ビルド設定",              ICON_HAMMER,    "プロジェクト", &EditorContext::showBuildSettings,     DockSlot::RightTab, MenuHome::View,  "build 配布 パッケージ"},
+    // ==== wave1-laneC ==== begin
+    // ==== wave1-laneC ==== end
     {"sceneFlow",      "Scene Flow",               "Scene Flow",              ICON_T_SPLINE,  "プロジェクト", &EditorContext::showSceneFlow,         DockSlot::RightTab, MenuHome::View,  "シーン遷移"},
     {"project",        "Project",                  "Project",                 ICON_FOLDER,    "プロジェクト", &EditorContext::showProject,           DockSlot::RightTab, MenuHome::View,  "プロジェクト"},
     {"git",            "Git 変更",                 "Git 変更###Version Control (Git)", ICON_GIT_BRANCH, "プロジェクト", &EditorContext::showVersionControl, DockSlot::RightTab, MenuHome::View, "git version control コミット"},
     // ---- 制作ツール ----
     {"terrain",        "地形ツール",               "",                        ICON_T_TERRAIN, "制作ツール",   &EditorContext::showTerrainEditor,     DockSlot::Floating, MenuHome::Tools, "terrain heightfield 山 地面"},
+    // ==== wave2-laneA ==== begin
+    // ==== wave2-laneA ==== end
     {"foliage",        "植生ツール",               "",                        ICON_T_TERRAIN, "制作ツール",   &EditorContext::showFoliageTool,       DockSlot::Floating, MenuHome::Tools, "foliage vegetation grass tree 植生 草 木 散布 ブラシ 風"},
     {"sculpt",         "スカルプト",               "",                        ICON_T_MESH,    "制作ツール",   &EditorContext::showSculptEditor,      DockSlot::Floating, MenuHome::Tools, "sculpt 彫刻 異形"},
     {"navmesh",        "ナビメッシュ",             "",                        ICON_T_NAV,     "制作ツール",   &EditorContext::showNavMesh,           DockSlot::Floating, MenuHome::Tools, "navmesh ai 経路"},
     {"pathTracer",     "リファレンスレンダー",     "",                        ICON_CAMERA,    "レンダリング", &EditorContext::showPathTracer,        DockSlot::Floating, MenuHome::Tools, "path tracer reference ground truth パストレーサー 地上真値 基準画像 レイトレ"},
+    // ==== wave2-laneB ==== begin
+    // ==== wave2-laneB ==== end
     {"particle",       "パーティクルエディタ",     "",                        ICON_T_PARTICLE,"制作ツール",   &EditorContext::showVfxEditor,         DockSlot::Floating, MenuHome::Tools, "particle vfx effect エフェクト"},
     {"uiEditor",       "UIエディタ",               "",                        ICON_T_UI,      "制作ツール",   &EditorContext::showUiEditor,          DockSlot::Floating, MenuHome::Tools, "ui editor canvas"},
     {"uiAnim",         "UIアニメーション",         "",                        ICON_T_ANIM,    "制作ツール",   &EditorContext::showAnimEditor,        DockSlot::Floating, MenuHome::Tools, "ui animation timeline"},
+    // ==== wave2-laneC ==== begin
+    // ==== wave2-laneC ==== end
     {"spriteSheet",    "スプライトシート",         "",                        ICON_T_SPRITE,  "制作ツール",   &EditorContext::showSpriteSheetEditor, DockSlot::Floating, MenuHome::Tools, "sprite sheet"},
     {"transition",     "トランジション",           "トランジション",          ICON_FILM,      "制作ツール",   &EditorContext::showTransitionPreview, DockSlot::Floating, MenuHome::Tools, "transition シーン切り替え"},
     {"material",       "マテリアルエディタ",       "",                        ICON_T_MATERIAL,"制作ツール",   &EditorContext::showMaterialEditor,    DockSlot::Floating, MenuHome::Tools, "material editor"},
+    // ==== wave3-laneA ==== begin
+    // ==== wave3-laneA ==== end
     {"materialLib",    "マテリアルライブラリ (Poly Haven)", "",               ICON_PACKAGE,   "制作ツール",   &EditorContext::showMaterialLibrary,   DockSlot::Floating, MenuHome::Tools, "material library polyhaven"},
     {"materialGraph",  "マテリアルグラフ",         "マテリアルグラフ###MaterialGraph", ICON_T_SPLINE, "制作ツール", &EditorContext::showMaterialGraph,  DockSlot::Floating, MenuHome::Tools, "material graph node shader dxmg マテリアル グラフ ノード シェーダー"},
     {"nodeGraphSandbox", "ノードグラフ サンドボックス", "ノードグラフ サンドボックス###NodeGraphSandbox", ICON_T_SPLINE, "制作ツール", &EditorContext::showNodeGraphSandbox, DockSlot::Floating, MenuHome::Tools, "node graph sandbox ノード ワイヤ material graph 開発用"},
+    // ==== wave3-laneB ==== begin
+    // ==== wave3-laneB ==== end
     {"audioMixer",     "オーディオミキサー",       "",                        ICON_T_AUDIO,   "制作ツール",   &EditorContext::showAudioMixer,        DockSlot::Floating, MenuHome::Tools, "audio mixer 音"},
     // ---- 接続・診断 ----
     {"mcp",            "MCP / AI Bridge",          "MCP / AI Bridge",         ICON_CLOUD,     "接続・診断",   &EditorContext::showMcpBridge,         DockSlot::RightTab, MenuHome::Tools, "mcp ai bridge"},
     {"network",        "Network",                  "Network",                 ICON_T_NET,     "接続・診断",   &EditorContext::showNetworkStatus,     DockSlot::RightTab, MenuHome::Tools, "multiplayer マルチプレイ"},
     {"networkSettings","Network 設定",             "Network 設定",            ICON_SETTINGS,  "接続・診断",   &EditorContext::showNetworkSettings,   DockSlot::RightTab, MenuHome::Tools, "network settings"},
+    // ==== wave3-laneC ==== begin
+    // ==== wave3-laneC ==== end
     {"hardware",       "ハードウェア",             "ハードウェア###HardwareFloating", ICON_CPU, "接続・診断", &EditorContext::showHardware,       DockSlot::Floating, MenuHome::Tools, "hardware arduino esp32 シリアル 書き込み flash ボード"},
     {"diagnostics",    "エンジン診断 (UI 自動テスト)", "",                    ICON_BUG,       "接続・診断",   &EditorContext::showEngineDiagnostics, DockSlot::Floating, MenuHome::Tools, "diagnostics ui test"},
 };
