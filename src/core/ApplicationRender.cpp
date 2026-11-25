@@ -13,6 +13,7 @@
 #include "ecs/InstanceGroup.h"         // インスタンス群の展開（BuildDrawList）
 #include "editor/InstanceGroupCommand.h"   // インスタンス群: 変換 / 展開の Undo（エディタの「まとめる」「展開」）
 #include "editor/Toast.h"
+#include "editor/LightMath.h"   // 新規シーンの太陽の既定（W05-22）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
 #include "editor/panels/HardwarePanel.h"
@@ -33,6 +34,30 @@
 #include "editor/AssetDrop.h"
 #include "editor/panels/NodeGraphSandboxPanel.h"   // ノードグラフ サンドボックス窓（マテリアルグラフ G0）
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
+
+namespace
+{
+// 新規シーン（new_scene / Ctrl+N）の太陽の既定: 方位 220°・高度 38°（影が斜めに落ちる）、色温度 5500K。
+// tests/new_scene_defaults_test.cpp が同じ式を検証する（値を変えるときは両方）。
+struct NewSceneSun
+{
+    DirectX::XMFLOAT3 direction{};   // 光が進む向き（正規化済み）
+    DirectX::XMFLOAT3 rotation{};    // Transform の回転（度）。direction と同じ向き
+    DirectX::XMFLOAT3 color{};
+};
+
+NewSceneSun MakeNewSceneSun()
+{
+    namespace lm = dx12e::lightmath;
+    NewSceneSun d;
+    const lm::SunAngles a{220.0f, 38.0f};
+    d.direction = lm::SunAnglesToDirection(a);
+    d.color     = lm::KelvinToRGB(5500.0f);
+    d.rotation  = {a.elevationDeg, lm::WrapDeg180(a.azimuthDeg + 180.0f), 0.0f};
+    return d;
+}
+}  // namespace
+
 
 namespace dx12e
 {
@@ -2928,6 +2953,8 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         MarkSceneClean();
         m_editorCtx->currentScenePath = starterPath;  // 空なら未保存の新規シーン
         m_scene->Clear();
+        // Scene::Clear は大気設定を戻さないので、前のシーンの物理大気が太陽の向きを上書きしないよう既定へ戻す
+        m_scene->GetAtmosphereSettings() = AtmosphereSettings{};
         m_scene->Initialize(m_resourceManager.get(), m_graphicsDevice.get(),
                             m_srvHeap.get(), nativeCmdList);
         // ---- 再生に必要な最低限のデフォルト配置 ----
@@ -2939,8 +2966,16 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             // 平行光源
             auto lightE = reg.create();
             reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
-            reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
-            reg.emplace<DirectionalLight>(lightE);
+            // 太陽の向き: 方位 220° / 高度 38°（影が斜めに落ちる）、色温度 5500K。
+            // Transform の回転と direction を同じ向きで作り、prevRot を初期化して初回フレームの動きを 0 にする。
+            const NewSceneSun sun = MakeNewSceneSun();
+            reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, sun.rotation, {1,1,1}});
+            DirectionalLight sunLight;
+            sunLight.direction    = sun.direction;
+            sunLight.color        = sun.color;
+            sunLight._prevRot     = sun.rotation;
+            sunLight._prevRotInit = true;
+            reg.emplace<DirectionalLight>(lightE, sunLight);
 
             // メインカメラ（CameraComponent が無いと Play で映らないため必須）
             auto camE = reg.create();
@@ -3198,6 +3233,8 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             // （トランザクション中ならそちらへ）。人の D&D / メニュー生成（client==0）は素通し。
             McpUndoRouter::CallScope undoScope(m_editorCtx->mcpUndo, req.mcp.client != 0,
                                                req.mcp.method, McpNowSec());
+            // 後のフレームで実行される生成の起点を正しく記録する（W05-02 の依頼）
+            EditOriginScope originScope(req.mcp.client ? EditOrigin::Mcp : EditOrigin::Human);
             std::string name = std::filesystem::path(req.modelPath).stem().string();
             if (!req.name.empty()) name = req.name;   // MCP 等からの任意名で上書き
 
@@ -3408,12 +3445,25 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                     }
                     else
                     {
-                        entt::entity it = m_editorCtx->selectedEntity;
+                        const entt::entity sel = m_editorCtx->selectedEntity;
+                        entt::entity it = sel;
                         for (int guard = 0; guard < 64 && it != entt::null && reg.valid(it); ++guard)
                         {
                             if (reg.all_of<UICanvas>(it))
                             {
-                                uiParent = m_editorCtx->selectedEntity;   // 選択そのものの子にする
+                                // 入れ物（Canvas / ScrollView）が選択されていれば、その子にする。
+                                // それ以外の UI 要素（直前に作った Image 等）が選択されているときは、
+                                // 入れ子の鎖にならないよう、その要素の親に兄弟として付ける。
+                                if (reg.all_of<UICanvas>(sel) || reg.all_of<UIScrollView>(sel))
+                                {
+                                    uiParent = sel;
+                                }
+                                else
+                                {
+                                    const auto* st = reg.try_get<Transform>(sel);
+                                    uiParent = (st && st->parent != entt::null && reg.valid(st->parent))
+                                                   ? st->parent : it;
+                                }
                                 break;
                             }
                             const auto* t = reg.try_get<Transform>(it);
@@ -3543,8 +3593,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 }
                 else if (!created.empty())
                 {
-                    if (uiPrimary != entt::null)
-                        m_editorCtx->Select(uiPrimary);   // 自動生成 Canvas の下でも本体を選択状態に
+                    // 選択は生成の後処理（人の操作のときだけ mcpUiPrimary を選ぶ）。MCP の生成では変えない
                     m_editorCtx->undoSystem.PushCommand(
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), created));
@@ -3606,7 +3655,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                             rect->offsetMax = {rect->offsetMin.x + w, rect->offsetMin.y + h};
                         }
                     }
-                    m_editorCtx->Select(root);
+                    // 選択は生成の後処理（人の操作のときだけ mcpPrefabRoot を選ぶ）。MCP の spawn_prefab では変えない
                     m_editorCtx->undoSystem.PushCommand(
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), all));
@@ -3706,6 +3755,22 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                         m_scene.get(), PathResolver::AssetsDir(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
+
+            // 人の操作（ヒエラルキーの「＋」/ Ctrl+K / .glb のダブルクリック等）で作ったものは、
+            // 新しいエンティティ（階層なら親）を選択してヒエラルキーで見せる。MCP は選択を変えない。
+            if (req.mcp.client == 0)
+            {
+                auto& selReg = m_scene->GetRegistry();
+                entt::entity sel = entt::null;
+                if (mcpPrefabRoot != entt::null)                                   sel = mcpPrefabRoot;
+                else if (mcpUiPrimary != entt::null && selReg.valid(mcpUiPrimary)) sel = mcpUiPrimary;
+                else if (spawnedEntity != entt::null && selReg.valid(spawnedEntity)) sel = spawnedEntity;
+                if (sel != entt::null)
+                {
+                    m_editorCtx->Select(sel);
+                    m_editorCtx->revealInHierarchy = true;
+                }
+            }
 
             // MCP create_entity / spawn_model / spawn_prefab の遅延応答(本物の entityId を返す)。
             if (req.mcp.client != 0)

@@ -4951,6 +4951,7 @@ const DiagReg kTests[] = {
     { "panel", "lua_prop_undo", "パネル", "Lua プロパティ: スライダー → Ctrl+Z で戻る / Ctrl+Y で進む / 既定値に戻す → Ctrl+Z 1 回で全部戻る", uitest::T_LuaPropUndo },
     // ==== lane-B end ====
     // ==== lane-C begin ====
+    { "basic", "create_entity_selects", "基本操作", "新しく作ったエンティティが選択される（W05-21）", uitest::T_CreateEntitySelects },
     // ==== lane-C end ====
     // ==== lane-D begin ====
     // ==== lane-D end ====

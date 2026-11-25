@@ -91,6 +91,7 @@ void T_AssetRenameKeepsExt(ImGuiTestContext* ctx);      // W05-13
 void T_LuaPropUndo(ImGuiTestContext* ctx);               // W05-14
 // ==== lane-B:decl end ====
 // ==== lane-C:decl begin ====
+void T_CreateEntitySelects(ImGuiTestContext* ctx);   // W05-21
 // ==== lane-C:decl end ====
 // ==== lane-D:decl begin ====
 // ==== lane-D:decl end ====
