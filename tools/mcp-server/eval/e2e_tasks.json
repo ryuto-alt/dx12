@@ -1,0 +1,70 @@
+{
+  "_doc": "MCP-14 の E2E 課題(W05-36)。課題はメインが起動する Claude Code のサブエージェントが実行する(run_e2e.ts は LLM を呼ばない)。合否はエンジンの状態への probes だけで決まる(決定論)。probe は engine の method を直接呼び、asserts で結果を検査する。path は a.b[0].c と、配列の絞り込み a[name=X] が使える。op: exists / absent / eq / approx(tol) / gte / lte / between(value=[lo,hi]) / contains / count。expectError:true の probe は「エラーで返ること」を合格とする。maxCalls は目安(採点には使わず報告だけ)。プロジェクトは課題ごとに新しく作る(既定シーン: MainCamera / DirectionalLight / Cube / Ground / Grid)。",
+  "version": 1,
+  "tasks": [
+    {
+      "id": "T1", "title": "箱を 3 つ並べる", "maxCalls": 8,
+      "prompt": "シーンに箱(Box)のエンティティを 3 つ置いてください。名前は Box1, Box2, Box3。位置は Box1=(0, 0.5, 0)、Box2=(3, 0.5, 0)、Box3=(6, 0.5, 0)。既存のエンティティは触らないでください。",
+      "probes": [
+        { "id": "box1", "method": "get_entity", "params": { "name": "Box1" }, "asserts": [{ "path": "result.transform.position", "op": "approx", "value": [0, 0.5, 0], "tol": 0.01 }] },
+        { "id": "box2", "method": "get_entity", "params": { "name": "Box2" }, "asserts": [{ "path": "result.transform.position", "op": "approx", "value": [3, 0.5, 0], "tol": 0.01 }] },
+        { "id": "box3", "method": "get_entity", "params": { "name": "Box3" }, "asserts": [{ "path": "result.transform.position", "op": "approx", "value": [6, 0.5, 0], "tol": 0.01 }] },
+        { "id": "count", "method": "list_entities", "params": {}, "asserts": [{ "path": "result.total", "op": "eq", "value": 8 }] }
+      ]
+    },
+    {
+      "id": "T2", "title": "名前を変えて動かして大きくする", "maxCalls": 6,
+      "prompt": "既存の Cube の名前を Hero に変え、位置を (2, 0.5, -4)、スケールを (2, 2, 2) にしてください。Cube という名前のエンティティは残さず、新しく作り直さないでください。",
+      "probes": [
+        { "id": "hero", "method": "get_entity", "params": { "name": "Hero" }, "asserts": [
+          { "path": "result.transform.position", "op": "approx", "value": [2, 0.5, -4], "tol": 0.01 },
+          { "path": "result.transform.scale", "op": "approx", "value": [2, 2, 2], "tol": 0.01 }] },
+        { "id": "no_cube", "method": "get_entity", "params": { "name": "Cube" }, "expectError": true, "asserts": [] },
+        { "id": "count", "method": "list_entities", "params": {}, "asserts": [{ "path": "result.total", "op": "eq", "value": 5 }] }
+      ]
+    },
+    {
+      "id": "T3", "title": "床と格子を消す", "maxCalls": 6,
+      "prompt": "シーンから Ground と Grid の 2 つのエンティティを削除してください。MainCamera、DirectionalLight、Cube は残してください。",
+      "probes": [
+        { "id": "no_ground", "method": "get_entity", "params": { "name": "Ground" }, "expectError": true, "asserts": [] },
+        { "id": "no_grid", "method": "get_entity", "params": { "name": "Grid" }, "expectError": true, "asserts": [] },
+        { "id": "rest", "method": "list_entities", "params": {}, "asserts": [
+          { "path": "result.total", "op": "eq", "value": 3 },
+          { "path": "result.entities[name=MainCamera]", "op": "exists" },
+          { "path": "result.entities[name=DirectionalLight]", "op": "exists" },
+          { "path": "result.entities[name=Cube]", "op": "exists" }] }
+      ]
+    },
+    {
+      "id": "T4", "title": "親子関係を作る", "maxCalls": 10,
+      "prompt": "空のグループ用エンティティ Camp を作り、その子として Tent と Fire の 2 つのエンティティ(箱でよい)を作ってください。階層は Camp の下に Tent と Fire が並ぶ形にします。",
+      "probes": [
+        { "id": "tree", "method": "get_hierarchy", "params": {}, "asserts": [
+          { "path": "result.roots[name=Camp]", "op": "exists" },
+          { "path": "result.roots[name=Camp].children[name=Tent]", "op": "exists" },
+          { "path": "result.roots[name=Camp].children[name=Fire]", "op": "exists" },
+          { "path": "result.roots[name=Camp].children", "op": "count", "value": 2 },
+          { "path": "result.roots[name=Tent]", "op": "absent" },
+          { "path": "result.roots[name=Fire]", "op": "absent" }] }
+      ]
+    },
+    {
+      "id": "T5", "title": "夕方の低い太陽にする", "maxCalls": 5,
+      "prompt": "太陽(DirectionalLight)を夕方の低い位置にしてください。太陽の高度を 8 度から 18 度の間にし、方位は東西どちらでもかまいません。他のエンティティは変更しないでください。",
+      "probes": [
+        { "id": "sun", "method": "get_entity", "params": { "name": "DirectionalLight" }, "asserts": [
+          { "path": "result.directionalLight.direction[1]", "op": "between", "value": [-0.3090, -0.1392] }] },
+        { "id": "count", "method": "list_entities", "params": {}, "asserts": [{ "path": "result.total", "op": "eq", "value": 5 }] }
+      ]
+    },
+    {
+      "id": "T6", "title": "目印を置いてシーンを保存する", "maxCalls": 6,
+      "prompt": "エンティティ Marker(箱でよい)を位置 (1, 0.5, 1) に置き、シーンを scenes/e2e_level.json という名前で保存してください。",
+      "probes": [
+        { "id": "marker", "method": "get_entity", "params": { "name": "Marker" }, "asserts": [{ "path": "result.transform.position", "op": "approx", "value": [1, 0.5, 1], "tol": 0.01 }] },
+        { "id": "saved", "method": "list_scenes", "params": {}, "asserts": [{ "path": "result[path=scenes/e2e_level.json]", "op": "exists" }] }
+      ]
+    }
+  ]
+}
