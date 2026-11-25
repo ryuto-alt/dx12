@@ -53,9 +53,14 @@
 // 必須の条件: プリセットは epic_1080p60 / high_1080p60 / cinematic_1080p30 の 3 つ。Epic は dlss / taau / taaNative の 3 列。
 //   gate の列はちょうど 1 つで、dlss であること（W1 の合否は DLSS 列）。全ての行に degrade（超えたときの縮退）が要る。
 //   degrade / owner は JSON の行と .inc（UNO_QP_DEGRADE）へ出す。
+// 行の作り方: MainScene の「重い群」(V2 の重い群 0.3 など) は MainScene の 1 行にまとめる（同じ葉 mainScene を指す行を 2 つ置くと赤。
+//   同じ葉の実測値が 2 つの上限で別々に判定されてしまうため）。1 つの葉は、同じ列の中で 1 行からだけ指す。
+// leaves は GpuTimer の「葉」（子を持たないスコープ）だけ。親（total / shadows / postFx / particles / rtScreen 等）を指すと --check-leaves が赤。
+// leavesPending は vfx.rows の行だけに true を付けられる（W1-BD4 の前の仮。JSON の vfx.rows と列の rows の両方に出る）。
+// 同じ id の degrade は、プリセット内で全列・全行を通して 1 つ（.inc の UNO_QP_DEGRADE は行ごとに 1 つのため。食い違うと赤）。
 // gate の意味: gate = perf_gate の合否に使う（W1 の合否は DLSS 列）、gateAfterW2BD = W2-BD（TAA v2）の後のゲートから合否に使う、
 //              record = 記録だけ（合否にしない）。
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, mkdtempSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -88,7 +93,7 @@ export function validate(input) {
     return errs;
   }
   for (const need of REQUIRED_PRESETS) if (!presets[need]) e(`presets.${need} が必要（perf_gate が testing/budgets/ から読む）`);
-  const checkRows = (rows, where, ids) => {
+  const checkRows = (rows, where, ids, allowPending = false) => {
     if (!Array.isArray(rows)) { e(`${where}: rows が配列でない`); return; }
     for (const [i, r] of rows.entries()) {
       const w = `${where}.rows[${i}]`;
@@ -99,6 +104,8 @@ export function validate(input) {
       if (r.leaves !== undefined && (!Array.isArray(r.leaves) || !r.leaves.length || r.leaves.some((l) => typeof l !== "string" || !l)))
         e(`${w}(${r.id}): leaves は空でない文字列の配列`);
       if (typeof r.degrade !== "string" || !r.degrade.trim()) e(`${w}(${r.id}): degrade（超えたときの縮退）が必要`);
+      if (r.leavesPending !== undefined && (typeof r.leavesPending !== "boolean" || (r.leavesPending && !allowPending)))
+        e(`${w}(${r.id}): leavesPending は vfx.rows の行だけに true を付けられる（葉の検査を外すため）`);
       if (r.owner !== undefined && typeof r.owner !== "string") e(`${w}(${r.id}): owner は文字列`);
     }
   };
@@ -106,6 +113,8 @@ export function validate(input) {
     const w = `presets.${pid}`;
     if (!PRESET_ID_RE.test(pid)) e(`${w}: プリセット名が不正`);
     if (!p || typeof p !== "object") { e(`${w}: オブジェクトでない`); continue; }
+    const errsBefore = errs.length;
+    if (p.label !== undefined && typeof p.label !== "string") e(`${w}: label は文字列`);
     if (!isNum(p.targetFps) || p.targetFps <= 0) e(`${w}: targetFps`);
     if (!Array.isArray(p.output) || p.output.length !== 2 || !p.output.every((v) => Number.isInteger(v) && v > 0)) e(`${w}: output は [幅, 高さ]`);
     if (!isNum(p.p95Ms) || !isNum(p.p99Ms) || p.p99Ms < p.p95Ms) e(`${w}: p95Ms / p99Ms（p99 >= p95）`);
@@ -114,7 +123,7 @@ export function validate(input) {
     if (Array.isArray(p.rows) && p.rows.some((r) => r?.id === "Vfx")) e(`${w}: rows に集約行 Vfx を置かない（VfxSim / VfxDraw が唯一の表現）`);
     if (p.vfx) {
       const vids = new Set(ids);
-      checkRows(p.vfx.rows, `${w}.vfx`, vids);
+      checkRows(p.vfx.rows, `${w}.vfx`, vids, true);
       for (const id of vids) ids.add(id);
     }
     const cols = p.upscalerColumns;
@@ -126,6 +135,17 @@ export function validate(input) {
         if (!GATES.includes(c?.gate)) e(`${cw}: gate は ${GATES.join(" / ")}`);
         if (!isNum(c?.renderScale) || c.renderScale <= 0 || c.renderScale > 1) e(`${cw}: renderScale は (0,1]`);
         checkRows(c?.rows, cw, new Set(ids));
+        if (Array.isArray(p.rows) && (c?.rows === undefined || Array.isArray(c.rows)) && (!p.vfx || Array.isArray(p.vfx.rows))) {
+          const owner = new Map();
+          for (const r of columnRows(p, c ?? {})) {
+            if (!r || typeof r.id !== "string") continue;
+            for (const l of rowLeaves(r)) {
+              if (owner.has(l) && owner.get(l) !== r.id)
+                e(`${cw}: 葉 "${l}" を行 ${owner.get(l)} と ${r.id} が重複して指す（同じ実測値が 2 つの上限で判定され、合計も二重になる。1 行にまとめる）`);
+              else owner.set(l, r.id);
+            }
+          }
+        }
       }
       const gateCols = Object.entries(cols).filter(([, c]) => c?.gate === "gate").map(([n]) => n);
       if (gateCols.length > 1) e(`${w}: gate の列は 1 つまで`);
@@ -134,15 +154,22 @@ export function validate(input) {
       if (pid === "epic_1080p60")
         for (const need of COLUMNS) if (!cols[need]) e(`${w}: Epic は ${need} 列が必要`);
     }
+    if (cols && typeof cols === "object") {
+      const dg = new Map();
+      const all = [...(Array.isArray(p.rows) ? p.rows : []), ...(Array.isArray(p.vfx?.rows) ? p.vfx.rows : []),
+        ...Object.values(cols).flatMap((c) => (Array.isArray(c?.rows) ? c.rows : []))];
+      for (const r of all) {
+        if (!r || typeof r.id !== "string" || typeof r.degrade !== "string") continue;
+        if (dg.has(r.id) && dg.get(r.id) !== r.degrade) e(`${w}: 行 ${r.id} の degrade が列・行で食い違う（.inc の UNO_QP_DEGRADE は行ごとに 1 つ）`);
+        else dg.set(r.id, r.degrade);
+      }
+    }
     if (p.vfx) {
       if (!isNum(p.vfx.emissionMultiplier) || p.vfx.emissionMultiplier <= 0) e(`${w}.vfx: emissionMultiplier`);
       if (!Number.isInteger(p.vfx.maxParticles) || p.vfx.maxParticles <= 0) e(`${w}.vfx: maxParticles`);
       if (!isNum(p.vfx.peakMs)) e(`${w}.vfx: peakMs`);
       for (const need of ["VfxSim", "VfxDraw"])
-        if (!(p.vfx.rows ?? []).some((r) => r.id === need)) e(`${w}.vfx: ${need} の行が必要`);
-      const vr = Array.isArray(p.vfx.rows) ? p.vfx.rows : [];
-      const sim = vr.find((r) => r?.id === "VfxSim"), draw = vr.find((r) => r?.id === "VfxDraw");
-      if (sim && draw && rowLeaves(sim).some((l) => rowLeaves(draw).includes(l))) e(`${w}.vfx: VfxSim と VfxDraw は別の葉を指すこと（同じ葉だと両方が全体の時間で判定される）`);
+        if (!(Array.isArray(p.vfx.rows) ? p.vfx.rows : []).some((r) => r?.id === need)) e(`${w}.vfx: ${need} の行が必要`);
     } else e(`${w}: vfx が無い（VFX の行とアップスケーラの列は両方出力する）`);
     if (!p.vram) e(`${w}.vram`);
     else {
@@ -151,8 +178,16 @@ export function validate(input) {
       if (!isNum(p.vram.precheckGb) || p.vram.precheckGb <= 0) e(`${w}.vram.precheckGb は正の数`);
     }
     if (!p.cpu || !isNum(p.cpu.gameThreadP95Ms)) e(`${w}.cpu.gameThreadP95Ms`);
-    if (p.expectedTotalMs && cols) {
-      for (const [cn, want] of Object.entries(p.expectedTotalMs)) {
+    const structOk = errs.length === errsBefore && Array.isArray(p.rows) && Array.isArray(p.vfx?.rows) && cols && typeof cols === "object";
+    if (structOk) {
+      for (const [cn, c] of Object.entries(cols)) {
+        const got = columnTotal(p, c);
+        if (c.gate === "gate" && got > p.p95Ms + 1e-9) e(`${w}: gate の列 ${cn} の合計 ${num(got)} が p95Ms ${p.p95Ms} を超える（入力の打ち間違い）`);
+      }
+    }
+    if (p.expectedTotalMs !== undefined && structOk) {
+      if (!p.expectedTotalMs || typeof p.expectedTotalMs !== "object") e(`${w}.expectedTotalMs はオブジェクト`);
+      else for (const [cn, want] of Object.entries(p.expectedTotalMs)) {
         if (!cols[cn]) { e(`${w}.expectedTotalMs.${cn}: その列が無い`); continue; }
         const got = columnTotal(p, cols[cn]);
         if (Math.abs(got - want) > 0.05) e(`${w}: 列 ${cn} の合計 ${num(got)} が expectedTotalMs ${want} と 0.05ms 以上ずれる`);
@@ -179,7 +214,7 @@ export function buildBudgetJson(pid, p) {
       gate: c.gate,
       renderScale: c.renderScale,
       totalMs: round4(columnTotal(p, c)),
-      rows: rows.map((r) => ({ id: r.id, ms: round4(r.ms), leaves: rowLeaves(r), degrade: r.degrade, owner: r.owner ?? "" })),
+      rows: rows.map((r) => ({ id: r.id, ms: round4(r.ms), leaves: rowLeaves(r), degrade: r.degrade, owner: r.owner ?? "", leavesPending: !!r.leavesPending })),
     };
   }
   return {
@@ -210,7 +245,10 @@ export function buildInc(input) {
   L.push("// 自動生成: tools/gen_budgets.mjs（入力 budgets/quality_presets.json）。手で編集しない。");
   L.push("// 使う側が次のマクロを定義してから include する。使わないものは定義しなくてよい。");
   L.push("//   UNO_QP_PRESET(id, label, targetFps, outW, outH, p95Ms, p99Ms)");
-  L.push("//   UNO_QP_ROW(preset, column, row, ms)        column: dlss / taau / taaNative。row は GpuTimer の葉に対応する行名");
+  L.push("//   UNO_QP_ROW(preset, column, row, ms)        column: dlss / taau / taaNative。row は予算の行名で、GpuTimer::Scope の識別子ではない");
+  L.push("//                                              （複数の葉をまとめた行や、スコープの無い行がある。GpuTimer の実測との対応は UNO_QP_LEAF）");
+  L.push("//   UNO_QP_LEAF(preset, row, leaf)             行が指す GpuTimer の葉の名前（文字列。1 行に複数ありうる）");
+  L.push("// このファイルの用途は VFX とアップスケーラの値の読み出しに限る。予算超過の判定には使わない（判定は perf_gate が JSON で行う）。");
   L.push("//   UNO_QP_UPSCALER(preset, column, gate, renderScale, totalMs)   gate: Gate / GateAfterW2BD / Record");
   L.push("//   UNO_QP_VFX(preset, emissionMultiplier, maxParticles, vfxSimMs, vfxDrawMs, peakMs)");
   L.push("//   UNO_QP_VRAM(preset, hasCap, capGb, marginGb, precheckGb)   hasCap=0 のとき capGb は無視（固定上限なし）。実効上限 = min(capGb, 予算 - marginGb)");
@@ -232,6 +270,16 @@ export function buildInc(input) {
       for (const [cn, c] of Object.entries(p.upscalerColumns))
         for (const r of columnRows(p, c))
           L.push(`UNO_QP_ROW(${cident(pid)}, ${cn}, ${cident(r.id)}, ${num(r.ms)})`);
+  });
+  ifdef("UNO_QP_LEAF", () => {
+    for (const [pid, p] of entries) {
+      const seen = new Set();
+      for (const r of [...p.rows, ...(p.vfx?.rows ?? []), ...Object.values(p.upscalerColumns).flatMap((c) => c.rows ?? [])]) {
+        if (seen.has(r.id)) continue;
+        seen.add(r.id);
+        for (const l of rowLeaves(r)) L.push(`UNO_QP_LEAF(${cident(pid)}, ${cident(r.id)}, ${cstr(l)})`);
+      }
+    }
   });
   ifdef("UNO_QP_VFX", () => {
     for (const [pid, p] of entries) {
@@ -267,20 +315,51 @@ export function generate(input) {
 }
 
 // ---- 葉の存在検査 ----
-export function loadGpuTimerLeaves(root) {
+// GpuTimer.cpp から (葉, 親) を読む。2 つの書き方に対応する。
+//   旧（T-00 より前）: switch の  return "name";  を全部集める。入れ子の情報が無いので、既知の親（LEGACY_PARENTS）を除いたものを葉とする。
+//   新（W05-26 の ScopeInfo 表）: 表の 1 行 { "name", Scope::Parent, "alias" } を読み、parent に名前を持つ行を親とする。子を持たないものが葉。
+//     alias（RtReflect=RtReflection など）は、葉の別名として葉の集合へ足す。Scope の識別子から名前への対応は小文字化で取る（PostFX → postFx）。
+// 実際の表の書き方が違えば、ここの正規表現を W05-26 の後に合わせる（self-test の断片も直す）。
+const LEGACY_PARENTS = ["total", "shadows", "postFx", "prepassSsao", "particles", "rtScreen"];
+export function loadGpuTimerScopes(root) {
   const f = join(root, "src", "graphics", "GpuTimer.cpp");
   if (!existsSync(f)) return null;
   const src = readFileSync(f, "utf8");
-  return new Set([...src.matchAll(/return\s+"([A-Za-z0-9_]+)"/g)].map((m) => m[1]));
+  const table = [...src.matchAll(/\{\s*"([A-Za-z0-9_]+)"\s*,\s*(?:Scope::)?([A-Za-z0-9_]+)\s*(?:,\s*(?:"([A-Za-z0-9_]*)"|nullptr))?\s*\}/g)];
+  const all = new Set(), parents = new Set(), aliases = new Map();
+  if (table.length) {
+    const byLower = new Map(table.map((m) => [m[1].toLowerCase(), m[1]]));
+    for (const m of table) {
+      all.add(m[1]);
+      if (m[3]) aliases.set(m[3], m[1]);
+      const par = byLower.get(m[2].toLowerCase());
+      if (par && par !== m[1]) parents.add(par);
+    }
+  } else {
+    for (const m of src.matchAll(/return\s+"([A-Za-z0-9_]+)"/g)) all.add(m[1]);
+    for (const n of LEGACY_PARENTS) if (all.has(n)) parents.add(n);
+  }
+  const leaves = new Set([...all].filter((n) => !parents.has(n)));
+  for (const [a, n] of aliases) if (leaves.has(n)) leaves.add(a);
+  return { all, parents, leaves };
 }
 
-export function checkLeaves(input, leaves) {
+export function loadGpuTimerLeaves(root) {
+  const s = loadGpuTimerScopes(root);
+  return s ? s.leaves : null;
+}
+
+// parents: 親のスコープ名の集合（指定されたら、親を指す行は赤。省略時は「存在するか」だけ）
+export function checkLeaves(input, leaves, parents = new Set()) {
   const errs = [];
   for (const [pid, p] of Object.entries(input.presets)) {
     const rows = [...p.rows, ...Object.values(p.upscalerColumns).flatMap((c) => c.rows ?? []), ...p.vfx.rows];
     for (const r of rows) {
       if (r.leavesPending) continue; // VFX の行は W1-BD4 の後に検査を有効にする
-      for (const l of rowLeaves(r)) if (!leaves.has(l)) errs.push(`${pid}: 行 ${r.id} の葉 "${l}" が GpuTimer に無い`);
+      for (const l of rowLeaves(r)) {
+        if (parents.has(l)) errs.push(`${pid}: 行 ${r.id} の "${l}" は親のスコープ（葉ではない。二重計上になる）`);
+        else if (!leaves.has(l)) errs.push(`${pid}: 行 ${r.id} の葉 "${l}" が GpuTimer に無い`);
+      }
     }
   }
   return [...new Set(errs)];
@@ -359,6 +438,8 @@ function selfTest() {
   const inc = files.get("inc");
   t("inc に VFX とアップスケーラ", /UNO_QP_VFX\(epic_1080p60/.test(inc) && /UNO_QP_UPSCALER\(epic_1080p60, taaNative, Record/.test(inc));
   t("inc に VFX の行", /UNO_QP_ROW\(epic_1080p60, dlss, VfxSim,/.test(inc));
+  t("inc に葉の対応", /UNO_QP_LEAF\(epic_1080p60, ClusterCull, "vgCull"\)/.test(inc));
+  t("JSON の列の rows に leavesPending", b.columns.dlss.rows.find((r) => r.id === "VfxSim").leavesPending === true && b.columns.dlss.rows[0].leavesPending === false);
   t("inc に degrade", /UNO_QP_DEGRADE\(epic_1080p60, MainScene,/.test(inc));
   t("inc の VRAM（上限あり）", /UNO_QP_VRAM\(epic_1080p60, 1, 6\.0, 0\.6, 6\.5\)/.test(inc));
   t("inc の VRAM（上限なし）", /UNO_QP_VRAM\(cinematic_1080p30, 0, 0\.0, 0\.6, 6\.5\)/.test(inc));
@@ -372,7 +453,15 @@ function selfTest() {
   t("必須プリセットの欠落を検出", validate({ schema: 1, presets: { epic_1080p60: ex.presets.epic_1080p60 } }).filter((m) => m.includes("が必要（perf_gate")).length === 2);
   t("Epic の列欠落を検出", has(mut((p) => { delete p.upscalerColumns.taaNative; }), "Epic は taaNative 列が必要"));
   t("集約 Vfx 行を検出", has(mut((p) => { p.rows.push({ id: "Vfx", ms: 1.3, degrade: "x" }); }), "集約行 Vfx"));
-  t("VfxSim / VfxDraw が同じ葉を指すのを検出", has(mut((p) => { p.vfx.rows[1].leaves = ["vfxSim"]; }), "別の葉"));
+  t("VfxSim / VfxDraw が同じ葉を指すのを検出", has(mut((p) => { p.vfx.rows[1].leaves = ["vfxSim"]; }), "重複して指す"));
+  t("別々の行が同じ葉（MainScene の重い群）を検出", has(mut((p) => { p.rows.push({ id: "MainSceneV2Heavy", ms: 0.3, leaves: ["mainScene"], degrade: "x" }); }), "重複して指す"));
+  t("列の行が共通の行と同じ葉を指すのを検出", has(mut((p) => { p.upscalerColumns.taau.rows.push({ id: "Extra", ms: 0.1, leaves: ["mainScene"], degrade: "x" }); }), "重複して指す"));
+  t("rows が無く expectedTotalMs があっても落ちない", has(mut((p) => { delete p.rows; p.expectedTotalMs = { dlss: 1 }; }), "rows が配列でない"));
+  t("vfx.rows に null があっても落ちない", has(mut((p) => { p.vfx.rows.push(null); }), "id が不正"));
+  t("label が文字列でないのを検出", has(mut((p) => { p.label = 5; }), "label は文字列"));
+  t("leavesPending を VFX 以外に付けるのを検出", has(mut((p) => { p.rows[0].leavesPending = true; }), "leavesPending"));
+  t("列の合計が p95Ms を超えるのを検出", has(mut((p) => { p.rows[3].ms = 30; }), "p95Ms"));
+  t("列ごとの degrade の食い違いを検出", has(mut((p) => { p.upscalerColumns.taau.rows[0].degrade = "別の縮退"; }), "食い違う"));
   t("VFX の行と列の行の id 重複を検出", has(mut((p) => { p.upscalerColumns.dlss.rows.push({ id: "VfxSim", ms: 1, degrade: "x" }); }), "重複"));
   t("degrade 欠落を検出", has(mut((p) => { delete p.rows[0].degrade; }), "degrade"));
   t("vram.marginGb 欠落を検出", has(mut((p) => { delete p.vram.marginGb; }), "marginGb"));
@@ -380,6 +469,7 @@ function selfTest() {
   t("vram.capGb が undefined を検出", has(mut((p) => { delete p.vram.capGb; }), "capGb"));
   const lv = new Set(["depthPrepass", "hiZ", "clusterCull", "vgCull", "raytracing", "mainScene", "ddgi", "upscale"]);
   t("葉検査（全部ある）", checkLeaves(ex, lv).length === 0);
+  t("親のスコープを指す行は赤", checkLeaves(ex, lv, new Set(["mainScene"])).some((m) => m.includes("親のスコープ") && m.includes("mainScene")));
   lv.delete("ddgi");
   t("葉検査（欠落を検出）", checkLeaves(ex, lv).length === 3 && checkLeaves(ex, lv).every((m) => m.includes("ddgi")));
   // GpuTimer.cpp の Name() 形式の読み取り（実ファイルの形を模した断片）
@@ -390,6 +480,17 @@ function selfTest() {
       'const char* GpuTimer::Name(Pass p) {\n  switch (p) {\n    case Pass::A: return "depthPrepass";\n    case Pass::B: return "hiZ";\n    default: return "unknown";\n  }\n}\n');
     const got = loadGpuTimerLeaves(tmp);
     t("GpuTimer.cpp の葉を読む", got && got.has("depthPrepass") && got.has("hiZ") && !got.has("ddgi"));
+    t("旧形式: 親は葉に入らない", (() => {
+      writeFileSync(join(tmp, "src", "graphics", "GpuTimer.cpp"), 'case A: return "total";\ncase B: return "postFx";\ncase C: return "upscale";\ncase D: return "mainScene";\n');
+      const sc = loadGpuTimerScopes(tmp);
+      return sc.leaves.has("upscale") && sc.leaves.has("mainScene") && !sc.leaves.has("total") && !sc.leaves.has("postFx") && sc.parents.has("postFx");
+    })());
+    t("新形式（ScopeInfo 表）: parent と alias を読む", (() => {
+      writeFileSync(join(tmp, "src", "graphics", "GpuTimer.cpp"),
+        'static const ScopeInfo kInfo[] = {\n {"total", Scope::Total, nullptr},\n {"postFx", Scope::Total, nullptr},\n {"upscale", Scope::PostFX, "TaaUp"},\n {"mainScene", Scope::Total, nullptr},\n};\n');
+      const sc = loadGpuTimerScopes(tmp);
+      return sc.leaves.has("upscale") && sc.leaves.has("TaaUp") && sc.leaves.has("mainScene") && !sc.leaves.has("postFx") && sc.parents.has("postFx") && sc.parents.has("total");
+    })());
     t("GpuTimer.cpp が無ければ null", loadGpuTimerLeaves(join(tmp, "none")) === null);
   } finally { rmSync(tmp, { recursive: true, force: true }); }
   if (fail) { console.error(`self-test 失敗: ${fail} 件`); return 1; }
@@ -422,7 +523,7 @@ function main() {
     return o.mode === "check" ? 77 : 2;
   }
   let input;
-  try { input = JSON.parse(readFileSync(presetsPath, "utf8")); }
+  try { input = JSON.parse(readFileSync(presetsPath, "utf8").replace(/^﻿/, "")); }
   catch (err) { console.error(`入力の JSON が読めない: ${err.message}`); return 1; }
   const errs = validate(input);
   if (errs.length) { console.error("入力の検証に失敗:\n" + errs.map((m) => "  - " + m).join("\n")); return 1; }
@@ -439,9 +540,9 @@ function main() {
     const expected = new Set(Object.keys(input.presets).map((pid) => `${pid}.json`));
     for (const f of listJson(outDir)) if (!expected.has(f)) bad.push(`${join(outDir, f)} は入力に無いプリセットの古い生成物（消す）`);
     if (o.checkLeaves) {
-      const leaves = loadGpuTimerLeaves(root);
-      if (!leaves) bad.push("src/graphics/GpuTimer.cpp が読めない");
-      else bad.push(...checkLeaves(input, leaves));
+      const sc = loadGpuTimerScopes(root);
+      if (!sc) bad.push("src/graphics/GpuTimer.cpp が読めない");
+      else bad.push(...checkLeaves(input, sc.leaves, sc.parents));
     }
     if (bad.length) { console.error("GenBudgetsCheck 失敗:\n" + bad.map((m) => "  - " + m).join("\n")); return 1; }
     console.log(`GenBudgetsCheck OK（${targets.size} ファイル${o.checkLeaves ? "、葉の検査あり" : ""}）`);
@@ -459,4 +560,6 @@ function main() {
   return 0;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exit(main());
+// ジャンクション / シンボリックリンク経由の起動でも直接実行と判定する（実体のパスへ正規化して比べる）
+const realOf = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
+if (process.argv[1] && realOf(process.argv[1]) === realOf(fileURLToPath(import.meta.url))) process.exit(main());
