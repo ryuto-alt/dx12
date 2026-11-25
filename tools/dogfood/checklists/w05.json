@@ -1,0 +1,923 @@
+{
+  "wave": "w05",
+  "source": "EXEC_W05_W1 1.5 (D1-D16)",
+  "version": 1,
+  "checks": [
+    {
+      "id": "D1",
+      "area": "data-loss",
+      "target": [
+        "W05-02"
+      ],
+      "title": "人の編集では main.json を書かない",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "new_scene"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "仮想入力で Box を作る（アセット/メニューのどちらでもよい）"
+        },
+        {
+          "kind": "wait",
+          "ms": 3000
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "McpOnlyBox",
+            "type": "cube"
+          }
+        },
+        {
+          "kind": "wait",
+          "ms": 3000
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_changed"
+        }
+      ],
+      "expect": "main.json が書かれない。scene_backups に理由つきの世代が 1 件。editor_state に autosave.blockedByHumanEdits=true と warning。MCP の create_entity だけの場合は本体が保存される",
+      "evidence": [
+        "json",
+        "log"
+      ],
+      "severityIfFail": "blocker",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D1b",
+      "area": "data-loss",
+      "target": [
+        "W05-02"
+      ],
+      "title": "人の編集 → open_scene / new_scene / アイドル終了で本体不変",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "仮想入力で人の編集を 1 つ入れる"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/other.json"
+          }
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups"
+        },
+        {
+          "kind": "mcp",
+          "method": "new_scene"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups"
+        },
+        {
+          "kind": "engine",
+          "action": "idle_exit"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups"
+        },
+        {
+          "kind": "note",
+          "text": "「以前の版に戻す」（または scene_backups の復元）で 1 操作で戻ることを確かめる"
+        }
+      ],
+      "expect": "main.json のハッシュが不変。退避がそれぞれ 1 件。モーダルが出ない。1 操作で戻る",
+      "evidence": [
+        "json",
+        "log",
+        "screenshot"
+      ],
+      "severityIfFail": "blocker",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D2",
+      "area": "data-loss",
+      "target": [
+        "W05-02"
+      ],
+      "title": "終了の経路（fleet アイドル終了と taskkill）",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "MCP の編集を 1 つ、続けて人の編集を 1 つ入れる"
+        },
+        {
+          "kind": "engine",
+          "action": "idle_exit"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "MCP の編集を 1 つ、続けて人の編集を 1 つ入れる"
+        },
+        {
+          "kind": "engine",
+          "action": "kill"
+        },
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity",
+          "params": {
+            "name": "McpOnlyBox"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups"
+        }
+      ],
+      "expect": "(a) アイドル終了: 人の編集は退避され本体は不変 (b) taskkill: 開き直すと main.json は最後の MCP の編集だけで保存された内容。人の編集は退避の世代に残る。どちらもモーダルで止まらない（MCP の終了メソッドは存在しない）",
+      "evidence": [
+        "json",
+        "log"
+      ],
+      "severityIfFail": "blocker",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D3",
+      "area": "data-loss",
+      "target": [
+        "W05-02"
+      ],
+      "title": "new_scene で _mcp_untitled が増えない",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "new_scene"
+        },
+        {
+          "kind": "mcp",
+          "method": "new_scene"
+        },
+        {
+          "kind": "mcp",
+          "method": "new_scene"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/_mcp_untitled_*",
+          "check": "absent"
+        },
+        {
+          "kind": "file",
+          "path": ".dx12/untitled/*",
+          "check": "exists"
+        }
+      ],
+      "expect": "scenes/ に _mcp_untitled_* が増えず、.dx12/untitled/ に出る",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "major",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D4",
+      "area": "data-loss",
+      "target": [
+        "W05-11",
+        "W05-02"
+      ],
+      "title": "Play → Stop で Undo が残る",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "仮想入力で編集を 3 回"
+        },
+        {
+          "kind": "mcp",
+          "method": "play"
+        },
+        {
+          "kind": "wait",
+          "ms": 2000
+        },
+        {
+          "kind": "mcp",
+          "method": "stop"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "input",
+          "op": "key",
+          "params": {
+            "key": "ctrl+z"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "note",
+          "text": "MCP だけのセッションに切り替えて Play → Stop。humanSettingsDirty が立たず自動保存が止まらないこと"
+        }
+      ],
+      "expect": "undoDepth が 3、選択が残り、Ctrl+Z で 1 回ずつ戻る。MCP だけのセッションの Play → Stop の後も自動保存が止まらない（humanSettingsDirty が立たない）",
+      "evidence": [
+        "json",
+        "screenshot"
+      ],
+      "severityIfFail": "blocker",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D5",
+      "area": "data-loss",
+      "target": [
+        "W05-14"
+      ],
+      "title": "Lua プロパティの Undo",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "Lua の移動速度をドラッグ"
+        },
+        {
+          "kind": "input",
+          "op": "key",
+          "params": {
+            "key": "ctrl+z"
+          }
+        },
+        {
+          "kind": "note",
+          "text": "「既定値に戻す」を押す"
+        },
+        {
+          "kind": "input",
+          "op": "key",
+          "params": {
+            "key": "ctrl+z"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity"
+        }
+      ],
+      "expect": "ドラッグが Ctrl+Z で戻る。「既定値に戻す」が Ctrl+Z 1 回で戻る",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "major",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D6",
+      "area": "editor",
+      "target": [
+        "W05-21"
+      ],
+      "title": "新規エンティティが選択されヒエラルキーで見える",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "「＋エンティティ追加」、Ctrl+K、.glb のダブルクリックを順に行い、そのつど選択とヒエラルキーを確認"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "screenshot",
+          "id": "d6_hierarchy"
+        }
+      ],
+      "expect": "3 経路のどれでも、新しいエンティティが選択され、ヒエラルキーで見える",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "major",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D7",
+      "area": "data-loss",
+      "target": [
+        "W05-13"
+      ],
+      "title": ".glb の改名で拡張子が残る",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "input",
+          "op": "find",
+          "params": {
+            "name": "model.glb"
+          }
+        },
+        {
+          "kind": "input",
+          "op": "key",
+          "params": {
+            "key": "f2"
+          }
+        },
+        {
+          "kind": "input",
+          "op": "key",
+          "params": {
+            "text": "renamed"
+          }
+        },
+        {
+          "kind": "input",
+          "op": "key",
+          "params": {
+            "key": "enter"
+          }
+        },
+        {
+          "kind": "screenshot",
+          "id": "d7_assets"
+        }
+      ],
+      "expect": "拡張子、種別、サムネイルが残る",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "major",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D8",
+      "area": "data-loss",
+      "target": [
+        "W05-12"
+      ],
+      "title": "名前を付けて保存と新規シーンの安全",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "既存の名前で名前を付けて保存 → 確認が出る → キャンセル → 元ファイル不変"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/*.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "note",
+          "text": "未保存の編集がある状態で Ctrl+N、名前「Forest」、確認で保存"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/Forest.json",
+          "check": "exists"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "note",
+          "text": "メニューの新規シーン（名前なし）の後に Ctrl+S → 旧シーンを上書きしない"
+        }
+      ],
+      "expect": "確認が出てキャンセルで不変。旧シーンのファイルに旧シーンの中身。パスとタイトルが scenes/Forest.json。前回のシーンが実在のパス。名前なし新規の後の Ctrl+S が旧シーンを上書きしない",
+      "evidence": [
+        "json",
+        "screenshot"
+      ],
+      "severityIfFail": "blocker",
+      "gate": [
+        "dg05a"
+      ]
+    },
+    {
+      "id": "D9",
+      "area": "render",
+      "target": [
+        "W05-22"
+      ],
+      "title": "new_scene の太陽が斜め",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "new_scene"
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity",
+          "params": {
+            "name": "DirectionalLight"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot"
+        }
+      ],
+      "expect": "DirectionalLight の高度が 20〜60 度、スクショで影が斜め",
+      "evidence": [
+        "json",
+        "screenshot"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "D10",
+      "area": "editor",
+      "target": [
+        "BUG-01"
+      ],
+      "title": "マテリアル WS とグラフ窓が DPI 1.0/1.5/2.0 で描かれる",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start",
+          "args": [
+            "--dpi-scale",
+            "1.0"
+          ]
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "マテリアルのワークスペースと window.materialGraph を開き、ズームを 20 回往復"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        },
+        {
+          "kind": "engine",
+          "action": "restart",
+          "args": [
+            "--dpi-scale",
+            "1.5"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "同じ操作"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        },
+        {
+          "kind": "engine",
+          "action": "restart",
+          "args": [
+            "--dpi-scale",
+            "2.0"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "同じ操作"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        }
+      ],
+      "expect": "UI が全部描かれている（imgui_screenshot が黒画面でない、メニューバーがある）",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "blocker",
+      "dpi": [
+        1,
+        1.5,
+        2
+      ]
+    },
+    {
+      "id": "D11",
+      "area": "f0",
+      "target": [
+        "W05-03",
+        "W05-04",
+        "W05-42"
+      ],
+      "title": "Agility ランタイムがロードされている",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "file",
+          "path": "engine.log",
+          "check": "contains"
+        },
+        {
+          "kind": "mcp",
+          "method": "get_device_caps"
+        }
+      ],
+      "expect": "ログに「D3D12 runtime: …\\D3D12\\D3D12Core.dll 1.620.2 (loaded SDK 620 …) redist=yes」。get_device_caps で SM 6.9（ドライバ次第で 6.8）と EB=1",
+      "evidence": [
+        "log",
+        "json"
+      ],
+      "severityIfFail": "blocker"
+    },
+    {
+      "id": "D12",
+      "area": "f0",
+      "target": [
+        "W05-07",
+        "W05-08"
+      ],
+      "title": "set_upscaler と textureMipBias",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "set_upscaler",
+          "params": {
+            "mode": "dlss"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "get_upscaler"
+        },
+        {
+          "kind": "file",
+          "path": "engine.log",
+          "check": "contains"
+        }
+      ],
+      "expect": "DLSS 有りなら textureMipBias が -1.585（Quality）。無しなら fallbackReason が入り、ログに Warn が 1 回だけ",
+      "evidence": [
+        "json",
+        "log"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "D13",
+      "area": "f0",
+      "target": [
+        "W05-03"
+      ],
+      "title": "デバッグレイヤー ON で全ワークスペースを開閉",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start",
+          "args": [
+            "--env",
+            "DX12_D3D_DEBUG=1",
+            "--dpi-scale",
+            "1.5"
+          ]
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "全ワークスペースを順に開いて閉じる"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        },
+        {
+          "kind": "file",
+          "path": "engine.log",
+          "check": "contains"
+        }
+      ],
+      "expect": "ログに「Debug Layer enabled」があり、例外・デバッグレイヤーのエラー・黒画面が 0",
+      "evidence": [
+        "log",
+        "screenshot"
+      ],
+      "severityIfFail": "major",
+      "dpi": [
+        1.5
+      ]
+    },
+    {
+      "id": "D14",
+      "area": "perf",
+      "target": [
+        "W05-26",
+        "W05-05"
+      ],
+      "title": "perf_stats の GPU 葉と DRED",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "step_frames",
+          "params": {
+            "count": 120
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "perf_stats"
+        }
+      ],
+      "expect": "gpuLeafMs と gpuScopeTree があり、葉の合計 <= Total + 0.1ms。DRED の状態が出る",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "D15",
+      "area": "data-loss",
+      "target": [
+        "W05-15"
+      ],
+      "title": "テンプレートから作って保存 → 開き直しで一致",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "note",
+          "text": "新しいプロジェクトをテンプレートから作る"
+        },
+        {
+          "kind": "mcp",
+          "method": "save_scene"
+        },
+        {
+          "kind": "mcp",
+          "method": "list_entities"
+        },
+        {
+          "kind": "engine",
+          "action": "restart"
+        },
+        {
+          "kind": "mcp",
+          "method": "list_entities"
+        }
+      ],
+      "expect": "保存前後で内容が一致（resave のバイト一致の実機版）",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "D16",
+      "area": "data-loss",
+      "target": [
+        "W05-41"
+      ],
+      "title": "vfx_preview の前後で状態不変",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups"
+        },
+        {
+          "kind": "mcp",
+          "method": "vfx_preview",
+          "params": {}
+        },
+        {
+          "kind": "wait",
+          "ms": 2000
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "file",
+          "path": "scenes/main.json",
+          "check": "hash_unchanged"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_backups"
+        }
+      ],
+      "expect": "undoDepth と main.json が不変、バックアップが増えない",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "blocker",
+      "gate": [
+        "dg05a"
+      ]
+    }
+  ]
+}

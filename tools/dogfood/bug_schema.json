@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dogfood schemas (W05-38)",
+  "description": "ドッグフードのチェックリスト・結果・不具合の形。collect.mjs が同じ規則を依存なしで検査する（この JSON は仕様の正）。",
+  "$defs": {
+    "severity": { "enum": ["blocker", "major", "minor"] },
+    "step": {
+      "description": "手順。実マウス・フォーカス・前面化を要求する種別は無い。",
+      "oneOf": [
+        { "type": "object", "required": ["kind", "method"], "properties": { "kind": { "const": "mcp" }, "method": { "type": "string" }, "params": { "type": "object" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "op"], "properties": { "kind": { "const": "input" }, "op": { "enum": ["virtual_input", "find", "pointer", "key", "screenshot"] }, "params": { "type": "object" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "ms"], "properties": { "kind": { "const": "wait" }, "ms": { "type": "integer", "minimum": 0 } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "path", "check"], "properties": { "kind": { "const": "file" }, "path": { "type": "string" }, "check": { "enum": ["exists", "absent", "record_hash", "hash_unchanged", "hash_changed", "contains"] } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "action"], "properties": { "kind": { "const": "engine" }, "action": { "enum": ["start", "stop", "restart", "kill", "idle_exit", "run"] }, "args": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "id"], "properties": { "kind": { "const": "screenshot" }, "id": { "type": "string" } }, "additionalProperties": false },
+        { "type": "object", "required": ["kind", "text"], "properties": { "kind": { "const": "note" }, "text": { "type": "string" } }, "additionalProperties": false }
+      ]
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "area", "steps", "expect", "evidence", "severityIfFail"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Z][0-9]+[a-z]?$" },
+        "area": { "type": "string" },
+        "target": { "type": "array", "items": { "type": "string" } },
+        "title": { "type": "string" },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
+        "expect": { "type": "string" },
+        "evidence": { "type": "array", "minItems": 1, "items": { "enum": ["screenshot", "json", "log"] } },
+        "severityIfFail": { "$ref": "#/$defs/severity" },
+        "gate": { "type": "array", "items": { "type": "string" } },
+        "dpi": { "type": "array", "items": { "type": "number" } },
+        "reuse": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "checklist": {
+      "type": "object",
+      "required": ["wave", "version", "checks"],
+      "properties": { "wave": { "type": "string" }, "version": { "type": "integer" }, "source": { "type": "string" }, "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } } }
+    },
+    "results": {
+      "type": "object",
+      "required": ["wave", "runner", "results"],
+      "properties": {
+        "wave": { "type": "string" },
+        "runner": { "type": "object", "required": ["model", "promptVersion"], "properties": { "model": { "type": "string" }, "promptVersion": { "type": "string" } } },
+        "engine": { "type": "object" },
+        "results": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "status"],
+            "properties": {
+              "id": { "type": "string" },
+              "status": { "enum": ["pass", "fail", "skip", "blocked"] },
+              "dpi": { "type": "number" },
+              "observed": { "type": "string" },
+              "notes": { "type": "string" },
+              "evidence": { "type": "array", "items": { "type": "object", "required": ["kind", "path"], "properties": { "kind": { "enum": ["screenshot", "json", "log"] }, "path": { "type": "string" } } } }
+            }
+          }
+        }
+      }
+    },
+    "bug": {
+      "type": "object",
+      "required": ["id", "checkId", "severity", "area", "title", "expected", "actual", "evidence", "status"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^DF-[A-Z0-9]+-[0-9]{2,}$" },
+        "checkId": { "type": "string" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "area": { "type": "string" },
+        "title": { "type": "string" },
+        "expected": { "type": "string" },
+        "actual": { "type": "string" },
+        "target": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "status": { "enum": ["open", "fixed", "verified"] },
+        "firstSeen": { "type": "string" }
+      }
+    }
+  }
+}

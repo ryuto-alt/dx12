@@ -5,3 +5,4 @@ fleetMaterialize.test.ts
 autosaveGuide.test.ts
 eval/e2e.test.ts
 eval/noPaidApi.test.ts
+../dogfood/collect.test.mjs
