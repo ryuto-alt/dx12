@@ -38,6 +38,13 @@
 //   EditorOverlay, EditorPreview: sceneColor / sceneRtv はバックバッファ（RENDER_TARGET）。outW / outH はバックバッファ（ウィンドウ）の大きさ。
 //
 // 提供の範囲（W05-25 時点）:
+//   - perFrameGpuVa / perFrameCpu: b1 は BeforeShadows 〜 AfterDepthPrepass の時点では未作成（0 / null）。BeforeForwardOpaque 〜
+//     AfterTranslucent は perFrameGpuVa と perFrameCpu（読み取り専用。書き込みは b1 のアップロード後なので GPU へ届かない）が有効。
+//     ポスト系（BeforeTemporal 〜 PostPostUber）は perFrameGpuVa だけ有効で perFrameCpu は null。エディタ系は両方 0 / null。
+//     b1 の中身を変えたい機能は、b1 を作る前のステージで AppendClusterLights / SetTexMipBias / RequestVelocityPrepass を使う。
+//   - ForwardPsoProvider::depthPrepassActive は BeforeShadows / AfterShadows では常に false（深度プリパスの判定より前なので Select は LESS 版を返す）。
+//   - hiZSrv / velocitySrv が指すリソースの状態は PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE の読み取り状態（遷移は不要。書き込む場合は自前で管理）。
+//   - contactShadow.Provide は AfterDepthPrepass のステージの中だけ有効（その直後に取り込む。それ以降に呼んでも黙って無視される）。
 //   - caps は null（DeviceCaps は W05-04 のマージ後に GraphicsDevice の getter 経由で結線する。追跡: 引き継ぎ事項）。
 //   - asyncCompute は null（W4 の ASYNC-1）。
 //   - forwardPso は「今のフォワード PSO の選び方を包んだだけ」（shadingRevision / debugView による差し替えは W1 の C）。
@@ -204,7 +211,10 @@ struct StageCtx
         TransitionDepthFn(stateUser, to); depthResState = to; return true;
     }
     D3D12_GPU_VIRTUAL_ADDRESS   perFrameGpuVa = 0;         // b1（PerFrameConstants）。作る前のステージでは 0
-    FrameConstantsData*         perFrameCpu = nullptr;     // PfSlot 経由で書く。作る前のステージでは null
+    const FrameConstantsData*   perFrameCpu = nullptr;     // 読み取り専用（b1 は上げた後なので書き換えても GPU へ届かない）。作る前・ポスト系のステージでは null
+    // 出力の矩形（バックバッファ上）。PostPostUber / EditorOverlay / EditorPreview で有効（vpW==0 なら未設定＝outW x outH 全体）。
+    // uber はエディタのシーンビューの部分矩形へ描くので、出力を重ねる機能はこの矩形へ描くこと。副ビューでも outW / outH は主ビューの値のまま。
+    u32                         vpLeft = 0, vpTop = 0, vpW = 0, vpH = 0;
 
     DescriptorHeap*             descriptors = nullptr;     // シェーダ可視の CBV/SRV/UAV ヒープ（ctx 作成時点で張られている）
     GpuTimer*                   timer = nullptr;           // 主ビューだけ非 null

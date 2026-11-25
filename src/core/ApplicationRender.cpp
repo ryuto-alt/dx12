@@ -5320,7 +5320,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
     // ---- W05-25: ステージフック（登録 0 件のステージは何も記録しない）----
     // b1 を作る前（影・深度プリパス）のステージでは perFrame は 0 / null。
-    FrameConstantsData*       stagePfCpu = nullptr;
+    const FrameConstantsData* stagePfCpu = nullptr;
     D3D12_GPU_VIRTUAL_ADDRESS stagePfVa  = 0;
     // 機能から受け取るもの（灯・速度プリパス要求・コンタクトシャドウ差し込み）と、ステージで有効な資源の旗。
     struct StageWiring
@@ -5368,7 +5368,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         if (wiring.hiZSrv != 0xFFFFFFFFu)      sc.hiZSrv      = m_srvHeap->GetGpuHandle(wiring.hiZSrv);
         if (wiring.velocitySrv != 0xFFFFFFFFu) sc.velocitySrv = m_srvHeap->GetGpuHandle(wiring.velocitySrv);
         sc.perFrameGpuVa = stagePfVa;
-        sc.perFrameCpu   = stagePfCpu;
+        sc.perFrameCpu   = stagePfCpu;   // const（読み取り専用）
         sc.descriptors   = m_srvHeap.get();
         sc.timer         = passCtx.timer;
         // コンタクトシャドウの差し込み口 / 今のフォワード PSO の選び方
@@ -7158,8 +7158,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             const u32 vi = m_taaPass->GetVelocitySrvIndex();
             if (vi != DescriptorHeap::kInvalidIndex) sc.velocitySrv = m_srvHeap->GetGpuHandle(vi);
         }
+        if (in.view && in.view->perFrameCB) sc.perFrameGpuVa = in.view->perFrameCB->GetGpuAddress(frameIndex);   // b1 は RenderView で上げ済み
         sc.descriptors = m_srvHeap.get();
         sc.timer       = m_gpuTimer.get();
+        if (finalOut) { sc.vpLeft = vpLeft; sc.vpTop = vpTop; sc.vpW = vpW; sc.vpH = vpH; }
         m_features->Run(st, sc);
         // 機能が遷移していたら入口の状態へ戻す（後段の既存コードは入口の状態を前提にしている）。
         if (in.depthState) in.depthState->Require(*m_commandList, entryDepthState);
@@ -8133,6 +8135,7 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
         sc.outW = m_window->GetWidth(); sc.outH = m_window->GetHeight();
         sc.sceneColor = backBuffer; sc.sceneRtv = rtv;
         sc.descriptors = m_srvHeap.get(); sc.timer = m_gpuTimer.get();
+        sc.vpLeft = vpLeft; sc.vpTop = vpTop; sc.vpW = vpW; sc.vpH = vpH;
         m_features->Run(Stage::EditorOverlay, sc);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         m_commandList->SetRenderTarget(rtv);
@@ -8337,6 +8340,7 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
         sc.outW = m_window->GetWidth(); sc.outH = m_window->GetHeight();
         sc.sceneColor = backBuffer; sc.sceneRtv = rtv;
         sc.descriptors = m_srvHeap.get(); sc.timer = m_gpuTimer.get();
+        sc.vpLeft = vpLeft; sc.vpTop = vpTop; sc.vpW = vpW; sc.vpH = vpH;
         m_features->Run(Stage::EditorPreview, sc);
         m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         m_commandList->SetRenderTarget(rtv);

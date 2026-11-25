@@ -4,6 +4,10 @@
 //   （ここでは型のヘッダを include しないので、レーンの機能を足してもこの TU の依存は増えない）。
 #include "renderer/RenderStageHooks.h"
 #include "renderer/StagePriority.h"
+#if defined(UNO_TESTING)
+#include "core/Logger.h"
+#include "renderer/FrameConstants.h"
+#endif
 
 #include <cstdlib>
 #include <memory>
@@ -37,6 +41,59 @@ public:
         ctx.cmd->ClearRenderTargetView(ctx.sceneRtv, color, 1, &rect);
     }
 };
+
+// 試験用（UNO_TEST_STAGE_RECT=2）: ステージ経路の配線を実機で通す。
+//   BeforeShadows: 速度プリパスを要求 / AfterDepthPrepass: depth を NON_PIXEL へ遷移・灯を 1 つ足す・ミップバイアスを書く /
+//   BeforeForwardOpaque: perFrameCpu から灯数を読む / PostPreBloom: sceneColor を COPY_SOURCE へ遷移（呼び出し側が戻す）。
+//   各ステージの観測値を、最初の数フレームだけログへ出す。
+class TestWiringFeature final : public IRenderFeature
+{
+public:
+    const char* Name() const override { return "TestWiring"; }
+    StageMask   Stages() const override
+    {
+        return StageBit(Stage::BeforeShadows) | StageBit(Stage::AfterDepthPrepass) |
+               StageBit(Stage::BeforeForwardOpaque) | StageBit(Stage::PostPreBloom);
+    }
+    i32         Priority(Stage) const override { return stage_priority::kDefault_C.lo; }
+    void        Record(Stage st, StageCtx& ctx) override
+    {
+        if (!ctx.primary) return;
+        const bool log = m_logged < 6;
+        switch (st)
+        {
+        case Stage::BeforeShadows:
+            ctx.RequestVelocityPrepass();
+            break;
+        case Stage::AfterDepthPrepass:
+        {
+            const bool tr = ctx.RequireDepth(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            ClusterLight l{};
+            l.position = {0.0f, 3.0f, 0.0f}; l.range = 8.0f; l.intensity = 1.0f;
+            if (ctx.AppendClusterLights) ctx.AppendClusterLights(ctx.self, &l, 1);
+            ctx.SetTexMipBias(0.0f);
+            if (log) Logger::Info("[TestWiring] AfterDepthPrepass depth={} transitioned={} velocitySrv={} hiZSrv={} pfVa={}",
+                                  ctx.depth != nullptr, tr, ctx.velocitySrv.ptr != 0, ctx.hiZSrv.ptr != 0, ctx.perFrameGpuVa != 0);
+            break;
+        }
+        case Stage::BeforeForwardOpaque:
+            if (log) Logger::Info("[TestWiring] BeforeForwardOpaque lights(clusterExtra.x)={} pfVa={} sceneRtv={}",
+                                  ctx.perFrameCpu ? ctx.perFrameCpu->clusterExtra.x : -1.0f, ctx.perFrameGpuVa != 0, ctx.sceneRtv.ptr != 0);
+            break;
+        case Stage::PostPreBloom:
+        {
+            const bool tr = ctx.RequireSceneColor(D3D12_RESOURCE_STATE_COPY_SOURCE);
+            if (log) Logger::Info("[TestWiring] PostPreBloom sceneColor={} transitioned={} pfVa={} pfCpuNull={}",
+                                  ctx.sceneColor != nullptr, tr, ctx.perFrameGpuVa != 0, ctx.perFrameCpu == nullptr);
+            ++m_logged;
+            break;
+        }
+        default: break;
+        }
+    }
+private:
+    u32 m_logged = 0;
+};
 } // namespace
 #endif
 
@@ -56,6 +113,7 @@ void RegisterAllFeatures(FeatureRegistry& reg)
     if (_dupenv_s(&e, &len, "UNO_TEST_STAGE_RECT") == 0 && e)
     {
         if (e[0] == '1') reg.Add(std::make_unique<TestRectFeature>());
+        if (e[0] == '2') reg.Add(std::make_unique<TestWiringFeature>());
         free(e);
     }
 #endif
