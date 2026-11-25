@@ -754,7 +754,7 @@ if(TARGET Renderer)
 endif()
 
 # ==== lane-C begin ====
-# 新規シーンの太陽の既定（scene/NewSceneDefaults.h。ヘッダオンリー・純 DirectXMath）。W05-22。
+# 新規シーンの太陽の既定（editor/LightMath.h の数式）。W05-22。
 if(TARGET Renderer)
     find_package(directxmath CONFIG REQUIRED)
     add_executable(NewSceneDefaultsTests new_scene_defaults_test.cpp)

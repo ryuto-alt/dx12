@@ -1,7 +1,7 @@
-// scene/NewSceneDefaults.h（新規シーンの太陽の既定）の単体テスト。ヘッダオンリー・純 DirectXMath。
+// 新規シーンの太陽の既定（ApplicationRender.cpp の MakeNewSceneSun と同じ式）の検証。LightMath.h の数式のみ使う。
 // 守りたい回帰: 高度 20〜60° / 影が斜め / Transform 回転と direction が同じ向き / 色温度 5500K。
 
-#include "scene/NewSceneDefaults.h"
+#include "editor/LightMath.h"
 
 #include <DirectXMath.h>
 #include <cmath>
@@ -11,6 +11,22 @@ using namespace dx12e;
 using namespace DirectX;
 
 namespace { int g_failures = 0, g_checks = 0; }
+
+namespace newscene
+{
+struct SunDefaults { XMFLOAT3 direction{}, rotation{}, color{}; };
+// ApplicationRender.cpp の MakeNewSceneSun と同じ値（方位 220°・高度 38°・5500K）
+inline SunDefaults MakeSunDefaults()
+{
+    namespace lm = dx12e::lightmath;
+    SunDefaults d;
+    const lm::SunAngles a{220.0f, 38.0f};
+    d.direction = lm::SunAnglesToDirection(a);
+    d.color     = lm::KelvinToRGB(5500.0f);
+    d.rotation  = {a.elevationDeg, lm::WrapDeg180(a.azimuthDeg + 180.0f), 0.0f};
+    return d;
+}
+}
 
 #define CHECK(cond)                                                          \
     do {                                                                     \
