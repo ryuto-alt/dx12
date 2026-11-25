@@ -26,6 +26,7 @@ param(
     [ValidateSet('require', 'auto', 'off')][string]$Dlss = 'require',
     [string]$Worktree = '',
     [int]$Jobs = 0,
+    [switch]$IgnoreManifestMismatch,
     [switch]$WhatIf
 )
 $ErrorActionPreference = 'Stop'
@@ -33,7 +34,7 @@ $ErrorActionPreference = 'Stop'
 # --- 課金の経路を持ち込まない
 foreach ($scope in 'Process', 'User', 'Machine') {
     if ([Environment]::GetEnvironmentVariable('ANTHROPIC_API_KEY', $scope)) {
-        Write-Host "[nightly] ANTHROPIC_API_KEY が $scope に設定されている。API 課金を避けるため起動しない。"
+        Write-Host "[nightly] ANTHROPIC_API_KEY が $scope に設定されている。API 課金を避けるため起動を拒否する。"
         exit 2
     }
 }
@@ -61,9 +62,42 @@ foreach ($p in @($Out, $Worktree)) {
 }
 if ($Out.TrimEnd('\') -ieq $Worktree.TrimEnd('\')) { Write-Host '[nightly] -Out と -Worktree が同じ'; exit 2 }
 
+# -Out は本体・登録済み worktree の中や等しい場所、ホーム直下を禁止(robocopy /MIR で消さないため)
+$allWt = @(git -C $main worktree list --porcelain | Where-Object { $_ -like 'worktree *' } |
+    ForEach-Object { ([IO.Path]::GetFullPath($_.Substring(9).Trim())).TrimEnd('\') })
+$outT = $Out.TrimEnd('\')
+if ($outT -ieq ([IO.Path]::GetFullPath($home2)).TrimEnd('\')) { Write-Host "[nightly] -Out にホームは指定できない: $Out"; exit 2 }
+foreach ($w in $allWt) {
+    if ($outT -ieq $w -or $outT.StartsWith($w + '\', [StringComparison]::OrdinalIgnoreCase)) { Write-Host "[nightly] -Out が worktree の中: $Out ($w)"; exit 2 }
+}
+
+# 登録済みの worktree を再利用してよいのは dx12-wt\nightly* の detached だけ(レーンの作業を reset --hard で消さない)
+if ($allWt -icontains $Worktree.TrimEnd('\')) {
+    $blkAll = (git -C $main worktree list --porcelain) -join "`n"
+    $mine0 = ($blkAll -split "`n`n") | Where-Object { ($_ -split "`n")[0].Substring(9).Trim().Replace('/', '\').TrimEnd('\') -ieq $Worktree.TrimEnd('\') } | Select-Object -First 1
+    if ((Split-Path -Leaf $Worktree) -notlike 'nightly*' -or -not $mine0 -or $mine0 -match '(?m)^branch ') {
+        Write-Host "[nightly] 再利用できない worktree(nightly* かつ detached のみ可): $Worktree"; exit 2
+    }
+}
+
 $commit = (git -C $main rev-parse --verify "$Ref^{commit}" 2>$null)
 if ($LASTEXITCODE -ne 0 -or -not $commit) { Write-Host "[nightly] Ref が見つからない: $Ref"; exit 2 }
 $commit = $commit.Trim()
+
+# 依存の取り違え防止: 本体の vcpkg_installed を使い回すので、Ref の vcpkg.json が本体と違えば拒否する。
+# (改修前ビルドは M2 で vcpkg.json が変わる前に実行すること)
+$oldEnc = [Console]::OutputEncoding; [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$refManifest = (git -C $main show "${commit}:vcpkg.json" 2>$null) -join "`n"
+[Console]::OutputEncoding = $oldEnc
+$mainManifestPath = Join-Path $main 'vcpkg.json'
+if ($refManifest -and (Test-Path $mainManifestPath)) {
+    $mainManifest = (Get-Content -Raw $mainManifestPath)
+    $norm = { param($t) ($t -replace '[^\x21-\x7E]', '') }
+    if ((& $norm $refManifest) -ne (& $norm $mainManifest)) {
+        Write-Host "[nightly] $Ref の vcpkg.json が本体と違う。本体の vcpkg_installed を使い回すと依存が食い違うため拒否する(-IgnoreManifestMismatch で強行)。"
+        if (-not $IgnoreManifestMismatch) { exit 2 }
+    }
+}
 
 $junctionNames = @('third_party\dlss', 'third_party\agility')
 Write-Host "[nightly] ref=$Ref ($($commit.Substring(0,9))) worktree=$Worktree out=$Out dlss=$Dlss"
@@ -104,6 +138,14 @@ try {
         git -C $main worktree add --detach $Worktree $commit
         if ($LASTEXITCODE -ne 0) { Write-Host '[nightly] git worktree add failed'; exit 1 }
     } else {
+        # 再利用してよいのは dx12-wt
+ightly* の detached worktree だけ(レーンの作業を消さない)
+        $leaf = Split-Path -Leaf $Worktree
+        $blk = (git -C $main worktree list --porcelain) -join "`n"
+        $mine = ($blk -split "`n`n") | Where-Object { $_ -match ('(?m)^worktree ' + [regex]::Escape(($Worktree -replace '\\', '/')) + '\s*$') -or $_ -match ('(?m)^worktree ' + [regex]::Escape($Worktree) + '\s*$') } | Select-Object -First 1
+        if ($leaf -notlike 'nightly*' -or -not $mine -or $mine -match '(?m)^branch ') {
+            Write-Host "[nightly] 再利用できない worktree(nightly* かつ detached のみ可): $Worktree"; exit 2
+        }
         # 追跡ファイルだけ戻す(build\ や取得物の junction は未追跡 / ignore なので残る)
         git -C $Worktree reset --hard -q
         git -C $Worktree -c advice.detachedHead=false checkout --detach $commit
@@ -151,7 +193,8 @@ try {
     # --- configure(初回だけ。以降は ninja が必要なときに自動で再 configure する)
     $dlssFlag = switch ($Dlss) { 'off' { 'OFF' } default { 'ON' } }
     $bdir = Join-Path $Worktree 'build\release'
-    if (-not (Test-Path (Join-Path $bdir 'build.ninja'))) {
+    $needCfg = -not (Test-Path (Join-Path $bdir 'build.ninja'))
+    if ($needCfg) {
         $vcpkgInst = Join-Path $main 'build\release\vcpkg_installed'
         $assimp = Join-Path $main 'build\release\_deps\assimp-src'
         foreach ($p in @($vcpkgInst, $assimp)) { if (-not (Test-Path $p)) { Write-Host "[nightly] 本体に $p が無い。本体を先にビルドしてあること"; exit 1 } }
@@ -169,10 +212,23 @@ try {
         $q = ($cfg | ForEach-Object { "`"$_`"" }) -join ' '
         Push-Location $Worktree
         try {
+            $oldCp = ((& cmd /c chcp 2>$null) -replace '\D', '')
             $log = & cmd /c "chcp 65001>nul && cmake $q 2>&1"
             $code = $LASTEXITCODE
+            if ($oldCp -match '^\d+$' -and $oldCp -ne '65001') { & cmd /c "chcp $oldCp>nul" }
             $log | Select-Object -Last 15 | ForEach-Object { Write-Host $_ }
             if ($code -ne 0) { Write-Host '[nightly] configure failed'; exit 1 }
+            if ($Dlss -eq 'require' -and -not ($log -match 'DLSS: ON')) { Write-Host '[nightly] -Dlss require だが configure が DLSS: ON にならなかった'; exit 1 }
+        } finally { Pop-Location }
+    } else {
+        # 既存キャッシュでも -Dlss の指定を毎回反映する
+        Push-Location $Worktree
+        try {
+            $oldCp = ((& cmd /c chcp 2>$null) -replace '\D', '')
+            $log = & cmd /c "chcp 65001>nul && cmake -DUNO_ENABLE_DLSS=$dlssFlag -S . -B buildelease 2>&1"
+            $code = $LASTEXITCODE
+            if ($oldCp -match '^\d+$' -and $oldCp -ne '65001') { & cmd /c "chcp $oldCp>nul" }
+            if ($code -ne 0) { $log | Select-Object -Last 15 | ForEach-Object { Write-Host $_ }; Write-Host '[nightly] re-configure failed'; exit 1 }
             if ($Dlss -eq 'require' -and -not ($log -match 'DLSS: ON')) { Write-Host '[nightly] -Dlss require だが configure が DLSS: ON にならなかった'; exit 1 }
         } finally { Pop-Location }
     }
@@ -193,6 +249,7 @@ try {
     foreach ($f in 'DX12Engine.exe', 'GameRuntime.exe') {
         if (-not (Test-Path (Join-Path $src $f))) { Write-Host "[nightly] ビルド出力に $f が無い"; exit 4 }
     }
+    if ($Dlss -eq 'off') { Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $src 'nvngx_dlss.dll') }
     if ($Dlss -eq 'require' -and -not (Test-Path (Join-Path $src 'nvngx_dlss.dll'))) {
         Write-Host '[nightly] -Dlss require だが nvngx_dlss.dll が出力に無い'; exit 4
     }
@@ -201,6 +258,8 @@ try {
         robocopy @a /NFL /NDL /NJH /NJS /NP | Out-Null
         if ($LASTEXITCODE -ge 8) { Write-Host "[nightly] robocopy failed ($LASTEXITCODE): $($a -join ' ')(出力側の exe が起動中ではないか)"; exit 5 }
     }
+    # 直下の dll はビルド出力と揃える(出なくなった dll を残さない)
+    Get-ChildItem -Path $Out -Filter *.dll -File -ErrorAction SilentlyContinue | Where-Object { -not (Test-Path (Join-Path $src $_.Name)) } | Remove-Item -Force
     Invoke-Robo @($src, $Out, 'DX12Engine.exe', 'GameRuntime.exe', 'gh.exe', '*.dll')
     Invoke-Robo @((Join-Path $src 'shaders'), (Join-Path $Out 'shaders'), '/MIR')
     Invoke-Robo @((Join-Path $Worktree 'assets'), (Join-Path $Out 'assets'), '/MIR', '/XF', 'splash_d.*')
