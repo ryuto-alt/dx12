@@ -1155,7 +1155,7 @@ static json SerializeAtmosphere(const AtmosphereSettings& a)
     };
 }
 
-static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
+static json BuildSceneJson(const Scene& scene, const std::string& assetsDir, bool writeEntityIds = false)
 {
     json root;
     root["version"] = 1;
@@ -1209,6 +1209,8 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir)
 
         if (const auto* g = reg.try_get<EntityGuid>(entity))
             ej["guid"] = GuidToHex(g->value);
+        if (writeEntityIds)
+            ej["_eid"] = static_cast<uint64_t>(entt::to_integral(entity));   // Play 用スナップショットだけ（W05-11）
 
         const auto& transform = reg.get<Transform>(entity);
         if (transform.parent != entt::null && reg.valid(transform.parent))
@@ -2514,6 +2516,8 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
 // JSON ノードを既存シーンに展開（共通処理）
 // root は非 const: version >= 2 のとき入口で既定値表から補完する（補完後は v1 保存と同じ JSON になるので、
 // 下流の InstantiateEntityJson は v1/v2 を区別しない）。
+static thread_local SceneSerializer::SceneLoadOptions* g_preserveIds = nullptr;   // LoadFromString が一時的に立てる（W05-11）
+
 static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDir)
 {
     scene.Clear();
@@ -2613,6 +2617,20 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     for (const auto& ej : root["entities"])
     {
         entt::entity e = entt::null;
+        // W05-11: 次に reg.create() が返す id を "_eid" の値にそろえる（hint で作って即解放 → 空き列の先頭に載せる）
+        // ★規則: InstantiateEntityJson が最初に呼ぶ registry.create() は、そのエンティティ自身でなければならない
+        //   （各 Spawn* は Scene::CreateEntityWithTransform 経由、失敗時の退避も reg.create()）。
+        //   これが崩れると id がずれるが、直後の e != wantId の検査で idsPreserved=false になり Undo 履歴を捨てる側へ倒れる。
+        entt::entity wantId = entt::null;
+        if (g_preserveIds && g_preserveIds->preserveEntityIds && ej.is_object()
+            && ej.contains("_eid") && ej["_eid"].is_number_unsigned())
+        {
+            auto& rg = scene.GetRegistry();
+            wantId = static_cast<entt::entity>(ej["_eid"].get<uint64_t>());
+            const entt::entity got = rg.create(wantId);
+            if (got == wantId) rg.destroy(got, entt::to_version(got));
+            else               { rg.destroy(got); wantId = entt::null; g_preserveIds->idsPreserved = false; }
+        }
         try
         {
             e = InstantiateEntityJson(scene, ej, assetsDir);
@@ -2623,6 +2641,7 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
                 ? ej["name"].get<std::string>() : "?";
             Logger::Error("エンティティ [{}] \"{}\" をスキップしました（値不正）: {}", created.size(), nm, ex.what());
         }
+        if (wantId != entt::null && e != wantId) g_preserveIds->idsPreserved = false;
         created.push_back(e);
     }
     scene.EndBulkSpawn();
@@ -3281,9 +3300,9 @@ bool SceneSerializer::Load(Scene& scene, const std::string& filePath,
     return ok;
 }
 
-std::string SceneSerializer::SaveToString(const Scene& scene, const std::string& assetsDir)
+std::string SceneSerializer::SaveToString(const Scene& scene, const std::string& assetsDir, bool writeEntityIds)
 {
-    json root = BuildSceneJson(scene, assetsDir);
+    json root = BuildSceneJson(scene, assetsDir, writeEntityIds);
     return root.dump();
 }
 
@@ -3295,9 +3314,12 @@ std::string SceneSerializer::SaveToStringV2(const Scene& scene, const std::strin
 }
 
 bool SceneSerializer::LoadFromString(Scene& scene, const std::string& jsonStr,
-                                     const std::string& assetsDir)
+                                     const std::string& assetsDir, SceneLoadOptions* opts)
 {
     size_t entityCount = 0;
+    struct Reset { SceneLoadOptions* prev; ~Reset() { g_preserveIds = prev; } } reset{ g_preserveIds };
+    g_preserveIds = opts;
+    if (opts) opts->idsPreserved = true;
     const bool ok = LoadSceneText(scene, jsonStr, assetsDir, /*fromFile=*/false, &entityCount);
     if (ok)
         Logger::Info("Scene restored from snapshot ({} entities)", entityCount);

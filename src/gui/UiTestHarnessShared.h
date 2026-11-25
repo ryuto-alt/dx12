@@ -87,6 +87,7 @@ void T_AutosaveHumanEditNotWritten(ImGuiTestContext* ctx);   // W05-02
 void T_SaveAsOverwriteConfirm(ImGuiTestContext* ctx);   // W05-12
 void T_NewSceneNameKept(ImGuiTestContext* ctx);         // W05-12
 void T_NewSceneCancelKeepsNoPath(ImGuiTestContext* ctx); // W05-12
+void T_PlayStopKeepsUndo(ImGuiTestContext* ctx);        // W05-11
 // ==== lane-B:decl end ====
 // ==== lane-C:decl begin ====
 void T_CreateEntitySelects(ImGuiTestContext* ctx);   // W05-21

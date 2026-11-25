@@ -458,6 +458,18 @@ if(TARGET ProjectLib)
     add_test(NAME SceneSavePathsTests COMMAND SceneSavePathsTests)
     set_tests_properties(SceneSavePathsTests PROPERTIES TIMEOUT 120)
 endif()
+# Play -> Stop で Undo 履歴と選択を保つ（W05-11）: "_eid" の往復で entt id が一致 / TruncateTo。GPU 不要。
+if(TARGET Scene)
+    add_executable(PlayStopUndoTests play_stop_undo_test.cpp)
+    target_link_libraries(PlayStopUndoTests PRIVATE Scene)
+    target_include_directories(PlayStopUndoTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(PlayStopUndoTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(PlayStopUndoTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME PlayStopUndoTests COMMAND PlayStopUndoTests)
+    set_tests_properties(PlayStopUndoTests PROPERTIES TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
