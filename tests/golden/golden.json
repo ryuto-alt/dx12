@@ -19,7 +19,7 @@
     "  dpi = --dpi-scale、theme = --theme-variant（default は何も付けない）、project は tests/golden/ui_project のコピー。",
     "  masks = [[x0,y0,x1,y1],...]（0..1 の割合）。トースト・時刻などの揺れる領域を比べる前に塗りつぶす。",
     "  UI は同じセッションで 2 枚撮り、ネイティブ解像度で 1 ビットも違わないことを毎回確かめる（決定論）。",
-    "  組み合わせは DPI 1.0/1.5 x テーマ default/b x 既定レイアウト。マテリアル・ライティング WS は未実装（layout は \"default\" 以外だと golden.mjs がエラーにする）。"
+    "  組み合わせは DPI 1.0/1.5 x テーマ default/b x レイアウト default/material/lighting の組み合わせ。layout は editor_command_run の workspace.<layout> で切り替える。★material は今は入れていない（Material WS を開くと ImGui が何も描かれなくなる＝エンジン側の不具合。直るまで基準にしない）。"
   ],
   "defaults": {
     "width": 640,
@@ -27,83 +27,35 @@
     "settleFrames": 8,
     "warmupFrames": 60,
     "uiWarmupFrames": 120,
-    "tolerance": {
-      "pixelThreshold": 12,
-      "maxDiffRatio": 0.001,
-      "maxMeanAbs": 0.25
-    }
+    "tolerance": { "pixelThreshold": 12, "maxDiffRatio": 0.001, "maxMeanAbs": 0.25 }
   },
   "scenes": [
     {
       "name": "perftest_ddgi_probe",
       "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
       "scene": "scenes/ddgi_probe.json",
-      "camera": {
-        "position": [
-          -14.7,
-          9.6,
-          -9.0
-        ],
-        "target": [
-          -7.2492,
-          4.7342,
-          -4.4383
-        ]
-      },
+      "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
       "note": "DDGI は既定 OFF のまま（ON にすると deterministic で frameIndex が止まり絵が変わる）"
     },
     {
       "name": "perftest_stress_5000",
       "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
       "scene": "scenes/stress_5000.json",
-      "camera": {
-        "position": [
-          -14.7,
-          9.6,
-          -9.0
-        ],
-        "target": [
-          -7.2492,
-          4.7342,
-          -4.4383
-        ]
-      },
+      "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
       "note": "インスタンシングと LOD の経路（5000 体）"
     },
     {
       "name": "nocturne_hall",
       "project": "C:/Users/ryuto/Documents/dev/game/Nocturne",
       "scene": "scenes/main.json",
-      "camera": {
-        "position": [
-          0.0,
-          1.66,
-          -8.0
-        ],
-        "target": [
-          -6.0,
-          1.4,
-          -14.0
-        ]
-      },
+      "camera": { "position": [0.0, 1.66, -8.0], "target": [-6.0, 1.4, -14.0] },
       "note": "屋内。TAA / ボリュメトリックフォグ / SSAO / コンタクトシャドウ / ブルーム"
     },
     {
       "name": "junction_f6",
       "project": "C:/Users/ryuto/Documents/dev/game/Junction",
       "scene": "scenes/stagedemo3.json",
-      "camera": {
-        "position": [
-          14.0,
-          5.1,
-          122.0
-        ],
-        "target": [
-          14.0,
-          4.9,
-          117.0
-        ]
-      },
+      "camera": { "position": [14.0, 5.1, 122.0], "target": [14.0, 4.9, 117.0] },
       "note": "継ぎ目6 の焦点（Liminal.lua の focus）から破片 C6_p0/p1 を見る。フォグ / グレイン / FXAA / AgX"
     },
     {
@@ -113,24 +65,9 @@
       "theme": "default",
       "layout": "default",
       "masks": [
-        [
-          0.215,
-          0.093,
-          0.772,
-          0.645
-        ],
-        [
-          0.76,
-          0.972,
-          1.0,
-          1.0
-        ],
-        [
-          0.808,
-          0.908,
-          0.985,
-          0.96
-        ]
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
       ],
       "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
       "note": "エディタ UI 全体（既定レイアウト・DPI 100%・Default テーマ）"
@@ -142,24 +79,9 @@
       "theme": "b",
       "layout": "default",
       "masks": [
-        [
-          0.215,
-          0.093,
-          0.772,
-          0.645
-        ],
-        [
-          0.76,
-          0.972,
-          1.0,
-          1.0
-        ],
-        [
-          0.808,
-          0.908,
-          0.985,
-          0.96
-        ]
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
       ],
       "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
       "note": "同上を --theme-variant b で。Default との差分を検出できることの証拠にもなる"
@@ -171,24 +93,9 @@
       "theme": "default",
       "layout": "default",
       "masks": [
-        [
-          0.215,
-          0.093,
-          0.772,
-          0.645
-        ],
-        [
-          0.76,
-          0.972,
-          1.0,
-          1.0
-        ],
-        [
-          0.808,
-          0.908,
-          0.985,
-          0.96
-        ]
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
       ],
       "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
       "note": "エディタ UI 全体（既定レイアウト・DPI 150%・Default テーマ）"
@@ -200,27 +107,68 @@
       "theme": "b",
       "layout": "default",
       "masks": [
-        [
-          0.215,
-          0.093,
-          0.772,
-          0.645
-        ],
-        [
-          0.76,
-          0.972,
-          1.0,
-          1.0
-        ],
-        [
-          0.808,
-          0.908,
-          0.985,
-          0.96
-        ]
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
       ],
       "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
       "note": "同上を --theme-variant b で。Default との差分を検出できることの証拠にもなる"
+    },
+    {
+      "name": "ui_dpi100_lighting_default",
+      "kind": "ui",
+      "dpi": 1.0,
+      "theme": "default",
+      "layout": "lighting",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 100%・Default）"
+    },
+    {
+      "name": "ui_dpi100_lighting_b",
+      "kind": "ui",
+      "dpi": 1.0,
+      "theme": "b",
+      "layout": "lighting",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 100%・テーマ b）"
+    },
+    {
+      "name": "ui_dpi150_lighting_default",
+      "kind": "ui",
+      "dpi": 1.5,
+      "theme": "default",
+      "layout": "lighting",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 150%・Default）"
+    },
+    {
+      "name": "ui_dpi150_lighting_b",
+      "kind": "ui",
+      "dpi": 1.5,
+      "theme": "b",
+      "layout": "lighting",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 150%・テーマ b）"
     }
   ]
 }

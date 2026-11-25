@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 423788,
+ "totalBytes": 425597,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -1062,11 +1062,12 @@
   },
   {
    "name": "dx12_imgui_screenshot",
-   "sha256": "aafb4c6621134243de1e1af3135631937fcae599bd0f61097ac3fbada2506042",
-   "semSha256": "aafb4c6621134243de1e1af3135631937fcae599bd0f61097ac3fbada2506042",
+   "sha256": "650447bf1b06c33795116b4bae777cd8f0eb666681883195ceab4aee748fa953",
+   "semSha256": "650447bf1b06c33795116b4bae777cd8f0eb666681883195ceab4aee748fa953",
    "outputSchemaBytes": 0,
    "argKeys": [
-    "path"
+    "path",
+    "hideCursor"
    ],
    "annotations": {
     "title": "ImGui込みスクリーンショット",
@@ -1252,8 +1253,8 @@
   },
   {
    "name": "dx12_set_post_process",
-   "sha256": "2ffac83edd179e86a09b979068bf7dadd29c07c59d1b07438a905698fe082f83",
-   "semSha256": "d65c357076ebdc6dda5a999ac793d77047d8374bc72a13084bc63fe87fdae9aa",
+   "sha256": "d1ebe078496d830282132b5debb9665617b107d5c44e09eb65c6ffdba4183081",
+   "semSha256": "f2f81df431646c52263fd3ed11f6c758c76a7b1aa86721825d9672dc5b0c3a8a",
    "outputSchemaBytes": 303,
    "argKeys": [
     "enabled",
@@ -1303,6 +1304,12 @@
     "aeEvComp",
     "aeLogMin",
     "aeLogMax",
+    "localExposureOn",
+    "leHighlightContrast",
+    "leShadowContrast",
+    "leDetailStrength",
+    "leBlurredLumBlend",
+    "leMiddleGreyBias",
     "lutOn",
     "lutPath",
     "lutAmount",
@@ -1598,8 +1605,8 @@
   },
   {
    "name": "dx12_set_contact_shadow",
-   "sha256": "42566f4d6f21b891d21cd6fde40a25f4bf32ff591206870c89e1aeaefb568346",
-   "semSha256": "a4c2527d499ed1acf16f34a276e22293aba97ad9d9664b19017b04583f87ddc6",
+   "sha256": "ac80b57a4291d573c2121e84b874a41acafcc3e03552a7d429209cbc005fd18b",
+   "semSha256": "7ece9f268ff482477ca02220bc040a89f9d3b90a3b45e933c45ec76fa7d62518",
    "outputSchemaBytes": 303,
    "argKeys": [
     "enabled",
@@ -1609,7 +1616,9 @@
     "intensity",
     "steps",
     "maxDistance",
-    "fadeDistance"
+    "fadeDistance",
+    "localLights",
+    "localRayLength"
    ],
    "annotations": {
     "title": "コンタクトシャドウ設定変更",

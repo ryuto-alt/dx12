@@ -38,6 +38,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { REPO_ROOT, findDefaultExe, resolveProject, launchEngine, launchInstance, connect, sleep } from "./lib/engine.mjs";
@@ -168,9 +169,12 @@ export function uiExtraArgs(s, forceTheme = null) {
 }
 
 /** 1 つの UI シーンを撮る（起動 → 落ち着くまで回す → imgui_screenshot を repeat 回）。 */
+// 並行レーン（別 worktree）が同じインスタンスを奪い合わないよう、リポジトリのパスからインスタンス名を決める。
+const UI_INSTANCE_NAME = `golden-ui-${createHash("sha1").update(REPO_ROOT).digest("hex").slice(0, 8)}`;
+
 async function captureUi(s, args, project) {
   const buildDir = path.dirname(args.exe);
-  const eng = await launchInstance({ name: "golden-ui", project, buildDir, extraArgs: uiExtraArgs(s, args.forceTheme) });
+  const eng = await launchInstance({ name: UI_INSTANCE_NAME, project, buildDir, extraArgs: uiExtraArgs(s, args.forceTheme) });
   let conn;
   try {
     conn = await connect(eng.port);
@@ -180,6 +184,12 @@ async function captureUi(s, args, project) {
       catch (e) { if (i === 239) throw e; await sleep(500); }
     }
     await conn.call("imgui_virtual_input", { enable: true });
+    // レイアウト: default 以外はワークスペース切替コマンド（workspace.material / workspace.lighting）を流してから温める。
+    const layout = s.layout ?? "default";
+    if (layout !== "default") {
+      await conn.call("editor_command_run", { id: `workspace.${layout}` }, 30_000);
+      await conn.call("step_frames", { frames: 4, deterministic: true }, 60_000);
+    }
     if (s.warmupFrames > 0) await conn.call("step_frames", { frames: s.warmupFrames, deterministic: true }, 300_000);
     const shots = [];
     const n = Math.max(2, args.repeat);   // UI は常に 2 枚以上撮って決定論を確かめる
@@ -265,7 +275,7 @@ async function main() {
   if (args.only) scenes = scenes.filter((s) => args.only.has(s.name));
   if (!scenes.length) { console.log("対象のシーンが無い"); return 1; }
   const uiScenes = scenes.filter((s) => s.kind === "ui");
-  for (const s of scenes) if (s.kind === "ui" && (s.layout ?? "default") !== "default") throw new Error(`${s.name}: layout "${s.layout}" は未対応（今は "default" だけ。WS 切替は未実装）`);
+  for (const s of scenes) if (s.kind === "ui" && !["default", "material", "lighting"].includes(s.layout ?? "default")) throw new Error(`${s.name}: layout "${s.layout}" は未対応（default / material / lighting）`);
   scenes = scenes.filter((s) => s.kind !== "ui");
   if (args.uiOnly) scenes = [];
   if (args.noUi) uiScenes.length = 0;

@@ -99,6 +99,62 @@
       "commit": "88db7ad",
       "capturedAt": "2026-11-25T15:48:53.792Z",
       "deterministicInSession": true
+    },
+    "ui_dpi100_lighting_default": {
+      "kind": "ui",
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "nativeSha256": "29a6057873492403b21998416316959002ba9a5cb57615dc46f2a38089f0dba4",
+      "compareSha256": "178ede65811d175914f1baf7c4aae174bcd0ae1a14a3e17299a9f27cd5e369e6",
+      "width": 640,
+      "height": 360,
+      "dpi": 1,
+      "theme": "default",
+      "commit": "59c2804",
+      "capturedAt": "2026-11-25T15:54:19.224Z",
+      "deterministicInSession": true
+    },
+    "ui_dpi100_lighting_b": {
+      "kind": "ui",
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "nativeSha256": "ca37fc0685191a9a4692e0c07e57e9bcb80efb0ad97a6961fd440652bfa47dc4",
+      "compareSha256": "6fb078eae65639099e192e48aa0775ee7f54ce5fd3147ab7ef108de1c9d54789",
+      "width": 640,
+      "height": 360,
+      "dpi": 1,
+      "theme": "b",
+      "commit": "59c2804",
+      "capturedAt": "2026-11-25T15:54:25.839Z",
+      "deterministicInSession": true
+    },
+    "ui_dpi150_lighting_default": {
+      "kind": "ui",
+      "nativeWidth": 2880,
+      "nativeHeight": 1620,
+      "nativeSha256": "43d933809e7df6859d968ce6d79087463c8010667d99dfa8ed7e82003258dd9b",
+      "compareSha256": "140f702fbad6eccf92e8b88654ced5f16641ffbfef5285384893583a03ff0a8b",
+      "width": 640,
+      "height": 360,
+      "dpi": 1.5,
+      "theme": "default",
+      "commit": "59c2804",
+      "capturedAt": "2026-11-25T15:54:44.397Z",
+      "deterministicInSession": true
+    },
+    "ui_dpi150_lighting_b": {
+      "kind": "ui",
+      "nativeWidth": 2880,
+      "nativeHeight": 1620,
+      "nativeSha256": "7d3b56933d3a20e55d0ebb469ae919fb3996cd39147e707b71e45015572c8f21",
+      "compareSha256": "b9ee6a577d3b2b5469450a4e8c4864cecc1ea8d0361fcf9e5ad7e4a522a61f3a",
+      "width": 640,
+      "height": 360,
+      "dpi": 1.5,
+      "theme": "b",
+      "commit": "59c2804",
+      "capturedAt": "2026-11-25T15:54:50.166Z",
+      "deterministicInSession": true
     }
   }
 }

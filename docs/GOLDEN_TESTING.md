@@ -44,7 +44,10 @@ node tools/bench/golden.mjs --no-ui                    3D のゴールデンだ�
 - 同じセッションで毎回 2 枚撮り、ネイティブ解像度で **1 ビットも違わない**ことを確かめる（違えば FAIL。`build/golden-out/<name>.repeat-diff.png`）。
 - 比較は 3D と同じ（640x360 へ面積平均で縮め、同じ許容差）。揺れる領域（トースト・時刻）は `masks: [[x0,y0,x1,y1]]`（0..1 の割合）で塗りつぶしてから縮める。
 - 撮影用プロジェクトは `tests/golden/ui_project`（`--new-project --template empty` で作った最小構成）。実行のたびに `build/golden-out/ui_project` へコピーして使う。
-- 今ある組み合わせ: DPI 100% × テーマ default / b × 既定レイアウト。DPI 150%、マテリアル / ライティング WS のレイアウトは必要になったら `golden.json` へ足す（`dpi`・`theme` で指定。レイアウトは未実装）。
+- 組み合わせ: DPI 100% / 150% × テーマ default / b × レイアウト default / lighting の 8 通り（`golden.json` の `dpi`・`theme`・`layout`）。lighting は撮影前に `editor_command_run {id:"workspace.lighting"}` で切り替える。`layout:"material"` も同じ仕組みで撮れるが、**Material WS を開くと ImGui が何も描かれなくなる（エンジン側の不具合・未調査）ため基準に入れていない**。直ったら 4 件足す。
+- ★**カバーしていない範囲**: 各シーンは 3D ビューポート全面（約 31%）を `masks` で塗りつぶしている（DDGI / SSGI / RT 影のノイズが ±1 LSB 揺れるため）。ビューポート内のオーバーレイ（ライト・カメラ・音源アイコン、選択の描画）は**このゴールデンでは検出できない**。別途、決定論なシーン（GI / RT 影を切った撮影専用シーン）か、3D 画像だけを覆うマスクの検討が要る。
+- 複数 worktree で同時に回しても衝突しないよう、インスタンス名は `golden-ui-<リポジトリパスのハッシュ>`。同じ worktree で 2 本同時に回すのは不可。
+- 基準 PNG は 2880x1620（DPI 150% の native）などで撮っている。baseline.json の `commit` は撮影時の HEAD（dpi100 の 2 件はキャプチャ処理の追加前の親コミットを指しているが、基準画像の内容とは無関係）。
 - 環境（GPU・ドライバ・フォント）が変わると基準とずれうる。ネイティブ解像度が違うときは SKIP（`--strict` で不合格）。
 
 ## CI への組み込み案（自前 GPU ランナー）

@@ -855,6 +855,7 @@ void Application::CaptureFinalBackBufferRegion(ID3D12GraphicsCommandList* cmd, I
     auto bail = [&](const char* why)
     {
         FailMcp(m_mcpBridge.get(), m_mcpFinalShot.reply, McpErr::Internal, why);
+        if (m_mcpFinalShot.withImGui) vinput_gui::SetCursorHidden(false);   // hideCursor は 1 枚限り（失敗でも戻す）
         m_mcpFinalShot = {};
         m_deterministicCapture = false;
     };
@@ -934,6 +935,9 @@ void Application::FinishFinalScreenshot()
 {
     if (!m_mcpFinalShot.captured) return;
     m_mcpFinalShot.captured = false;
+    // hideCursor はこの 1 枚だけに効かせる。撮影はもう終わっているので、以降のどの出口（読み戻し失敗・
+    // パス不正・PNG 書き出し失敗・応答の取り消し）でも居座らないよう、入口で戻しておく。
+    if (m_mcpFinalShot.withImGui) vinput_gui::SetCursorHidden(false);
     const bool wasDeterministic = m_mcpFinalShot.deterministic;
     const bool hidGizmos        = m_mcpFinalShot.hideGizmos;
     m_deterministicCapture = false;   // 撮り終わったら必ず通常の時間へ戻す
@@ -1042,7 +1046,6 @@ void Application::FinishFinalScreenshot()
     }
     if (m_mcpFinalShot.withImGui)
     {
-        vinput_gui::SetCursorHidden(false);   // hideCursor はこの 1 枚だけに効かせる
         // dx12_imgui_screenshot: ImGui（パネル / ギズモ / 仮想カーソル）込みの最終画。
         CompleteMcp(m_mcpBridge.get(), reply,
             nlohmann::json{{"path", outPath.string()},
