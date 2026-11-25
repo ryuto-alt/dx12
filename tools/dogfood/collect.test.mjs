@@ -264,7 +264,7 @@ try {
 {
   const probe = spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"], { encoding: "utf8" });
   if (probe.status === 0) {
-    const r = spawnSync("pwsh", ["-NoProfile", "-File", path.join(here, "run.ps1"), "-Wave", "w05", "-NameSuffix", "-unittest", "-Action", "start", "-BuildDir", path.join(os.tmpdir(), "dogfood_no_such_build_dir")], { encoding: "utf8" });
+    const r = spawnSync("pwsh", ["-NoProfile", "-File", path.join(here, "run.ps1"), "-Wave", "w05", "-NameSuffix", "_unittest", "-Action", "start", "-BuildDir", path.join(os.tmpdir(), "dogfood_no_such_build_dir")], { encoding: "utf8" });
     check("run.ps1: ビルド出力が無いと終了コード 4（1 に潰れない）", r.status === 4, [r.status, r.stdout, r.stderr]);
     const dry = spawnSync("pwsh", ["-NoProfile", "-File", path.join(here, "run.ps1"), "-Wave", "w05", "-Action", "restart", "-DryRun", "-IdleExitMin", "0.5"], { encoding: "utf8" });
     check("run.ps1: restart -IdleExitMin が --idle-exit 0.5 になる", dry.status === 0 && /--idle-exit 0\.5/.test(dry.stdout), dry.stdout);
