@@ -1,0 +1,19 @@
+{
+  "name": "perftest_ddgi_probe",
+  "project": "PerfTest",
+  "requiresProjectsRoot": true,
+  "scene": "scenes/ddgi_probe.json",
+  "camera": {
+    "position": [
+      -14.7,
+      9.6,
+      -9
+    ],
+    "target": [
+      -7.2492,
+      4.7342,
+      -4.4383
+    ]
+  },
+  "note": "DDGI は既定 OFF のまま（ON にすると deterministic で frameIndex が止まり絵が変わる）"
+}

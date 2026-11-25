@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/SplashScreen.h"   // 直接 include（ApplicationInternal.h 経由に頼らない。W05-01）
 #include "core/AtomicFileJson.h"
 #include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）

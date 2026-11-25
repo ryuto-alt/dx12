@@ -8,6 +8,7 @@ add_library(Graphics STATIC
     DeferredRelease.cpp
     Buffer.cpp
     RootSignature.cpp
+    RenderBackendExt.cpp     # W05-01b: 拡張メンバの入口（空。中身は F1〜F3）
     PipelineState.cpp
     CommandList.cpp
     Texture.cpp
@@ -35,3 +36,9 @@ target_link_libraries(Graphics
 
 target_compile_options(Graphics PRIVATE ${DX12_COMPILE_OPTIONS})
 target_compile_definitions(Graphics PRIVATE ${DX12_COMPILE_DEFS})
+
+# レーン別の追加ソース（中身は各レーンが書く。OPTIONAL は付けない＝読み忘れを検出するため）
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/graphics_lane_a.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/graphics_lane_b.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/graphics_lane_c.cmake)
+include(${CMAKE_SOURCE_DIR}/cmake/lanes/graphics_lane_d.cmake)

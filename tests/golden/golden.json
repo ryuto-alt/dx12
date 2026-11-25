@@ -3,7 +3,7 @@
     "描画の回帰テスト（ゴールデン画像）の設定。実行は node tools/bench/golden.mjs（--update で基準を撮り直す）。",
     "camera はエディタカメラ（set_editor_camera の position/target）。fov はエディタ既定の 45 度。",
     "width/height は【比べる解像度】。エンジンはヘッドレスの表示矩形（今は 1043x587）で撮り、面積平均でここへ縮める。",
-    "ネイティブ解像度の画素ハッシュも tests/golden/baseline.json に残すので、1 ビットでも変わったかは別に分かる。",
+    "ネイティブ解像度の画素ハッシュも tests/golden/baseline/<id>.json に残すので、1 ビットでも変わったかは別に分かる。",
     "tolerance: pixelThreshold = 1 画素の RGB ユークリッド距離(0..441)がこれを超えたら『違う画素』。",
     "           maxDiffRatio = 違う画素の割合の上限。maxMeanAbs = 全チャンネル平均絶対差(0..255)の上限。",
     "★決定論（2026-09-25 実測）: 同じプロセス内で撮り直すと 4 シーンとも 1 ビットも変わらない（--repeat 2）。",
@@ -24,7 +24,9 @@
     "★requiresProjectsRoot:true の 4 件（PerfTest/Nocturne/Junction）は手元のゲームが要る。環境変数 DX12_GOLDEN_PROJECTS_ROOT があるときだけ回し、無ければ対象から外す（SKIP の見かけ合格にしない）。",
     "★group:\"repeat\" のシーン（DDGI/DXR など決定論が崩れるもの）は通常実行に含めず、--group repeat のときだけ回す。core_new_scene_gi（実際の new_scene の結果）が該当。requiresDxr:true のシーンは、インライン RT 非対応のハード（Tier 1.1 未満または SM 6.5 未満）でだけ SKIP にする。対応ハードで supported:false、または get_dxr が例外のときは FAIL。",
     "★requiresProjectsRoot の 4 件の基準は旧 launchEngine（exe 直起動・imgui.ini あり）で 1043x587 で撮ったもの。今の launchEngine（engine_instance.ps1 経由）は 977x550 なので、DX12_GOLDEN_PROJECTS_ROOT を設定して回すと環境違い（strict では不合格）になる。そのプロジェクトがある PC で一度 --update して撮り直すこと。",
-    "★既定は strict（プロジェクトが見つからないシーンは不合格）。緩めるときだけ --no-strict。"
+    "★既定は strict（プロジェクトが見つからないシーンは不合格）。緩めるときだけ --no-strict。",
+    "★W05-32: 設定と基準は 1 件 1 ファイルに分けた。設定 = tests/golden/entries/<id>.json、基準 = tests/golden/baseline/<id>.json（旧 baseline.json は廃止）。このファイルは $comment / defaults / order だけを持つ（scenes は互換のため空）。",
+    "  新しいゴールデンは entries/<id>.json を足すだけ（order へは書かない。order に無い ID はファイル名の辞書順で最後に回る）。ID の重複はエラー。--update --only <id> はその ID の baseline ファイルだけを書き換える。"
   ],
   "defaults": {
     "width": 640,
@@ -32,261 +34,35 @@
     "settleFrames": 8,
     "warmupFrames": 60,
     "uiWarmupFrames": 120,
-    "tolerance": { "pixelThreshold": 12, "maxDiffRatio": 0.001, "maxMeanAbs": 0.25 }
-  },
-  "scenes": [
-    {
-      "name": "perftest_ddgi_probe",
-      "project": "PerfTest",
-      "requiresProjectsRoot": true,
-      "scene": "scenes/ddgi_probe.json",
-      "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
-      "note": "DDGI は既定 OFF のまま（ON にすると deterministic で frameIndex が止まり絵が変わる）"
-    },
-    {
-      "name": "perftest_stress_5000",
-      "project": "PerfTest",
-      "requiresProjectsRoot": true,
-      "scene": "scenes/stress_5000.json",
-      "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
-      "note": "インスタンシングと LOD の経路（5000 体）"
-    },
-    {
-      "name": "nocturne_hall",
-      "project": "Nocturne",
-      "requiresProjectsRoot": true,
-      "scene": "scenes/main.json",
-      "camera": { "position": [0.0, 1.66, -8.0], "target": [-6.0, 1.4, -14.0] },
-      "note": "屋内。TAA / ボリュメトリックフォグ / SSAO / コンタクトシャドウ / ブルーム"
-    },
-    {
-      "name": "junction_f6",
-      "project": "Junction",
-      "requiresProjectsRoot": true,
-      "scene": "scenes/stagedemo3.json",
-      "camera": { "position": [14.0, 5.1, 122.0], "target": [14.0, 4.9, 117.0] },
-      "note": "継ぎ目6 の焦点（Liminal.lua の focus）から破片 C6_p0/p1 を見る。フォグ / グレイン / FXAA / AgX"
-    },
-    {
-      "name": "core_pbr_spheres",
-      "project": "tests/golden/projects/golden_core",
-      "scene": "scenes/pbr_spheres.json",
-      "camera": { "position": [0.0, 4.5, -6.0], "target": [0.0, 0.4, 1.1] },
-      "note": "PBR 球 2 列（金属 0/1 x 粗さ 0.05〜1.0）と手続きの空の IBL"
-    },
-    {
-      "name": "core_csm_shadows",
-      "project": "tests/golden/projects/golden_core",
-      "scene": "scenes/csm_shadows.json",
-      "camera": { "position": [0.0, 2.5, -4.0], "target": [0.0, 1.5, 20.0] },
-      "note": "低い太陽と奥へ並ぶ柱＝カスケードシャドウの継ぎ目"
-    },
-    {
-      "name": "core_transparency",
-      "project": "tests/golden/projects/golden_core",
-      "scene": "scenes/transparency.json",
-      "camera": { "position": [0.0, 2.0, -6.0], "target": [0.0, 1.0, 1.0] },
-      "note": "半透明（blend）の球と板を不透明の箱の手前に重ねる"
-    },
-    {
-      "name": "core_post_stack",
-      "project": "tests/golden/projects/golden_core",
-      "scene": "scenes/post_stack.json",
-      "camera": { "position": [0.0, 2.0, -6.0], "target": [0.0, 1.0, 1.0] },
-      "note": "ポスト（bloom / vignette / 彩度 / FXAA）と SSAO・発光"
-    },
-    {
-      "name": "core_load_defaults",
-      "project": "tests/golden/projects/golden_core",
-      "scene": "scenes/load_defaults.json",
-      "camera": { "position": [4.0, 3.0, -5.0], "target": [0.5, 0.5, 0.0] },
-      "note": "ロード時の既定値（設定ブロックを書かない手書きシーン。新規シーンコマンドの結果ではない）"
-    },
-    {
-      "name": "core_new_scene_gi",
-      "group": "repeat",
-      "requiresDxr": true,
-      "newScene": true,
-      "launchScene": "scenes/pbr_spheres.json",
-      "project": "tests/golden/projects/golden_core",
-      "camera": { "position": [4.0, 3.0, -9.0], "target": [0.0, 0.5, 0.0] },
-      "note": "実際の new_scene コマンドの結果（Grid + Ground + Cube + DirectionalLight + MainCamera + gi::ApplyNew = DDGI 自動配置 / 環境光 0 / SSGI / RT 影）。新規シーンの既定プリセットを変える作業はこれで検出する。DDGI/DXR で決定論が崩れうるので group:repeat（--group repeat のときだけ回す）"
-    },
-    {
-      "name": "ui_dpi100_default",
-      "kind": "ui",
-      "dpi": 1.0,
-      "theme": "default",
-      "layout": "default",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（既定レイアウト・DPI 100%・Default テーマ）"
-    },
-    {
-      "name": "ui_dpi100_b",
-      "kind": "ui",
-      "dpi": 1.0,
-      "theme": "b",
-      "layout": "default",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "同上を --theme-variant b で。Default との差分を検出できることの証拠にもなる"
-    },
-    {
-      "name": "ui_dpi150_default",
-      "kind": "ui",
-      "dpi": 1.5,
-      "theme": "default",
-      "layout": "default",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（既定レイアウト・DPI 150%・Default テーマ）"
-    },
-    {
-      "name": "ui_dpi150_b",
-      "kind": "ui",
-      "dpi": 1.5,
-      "theme": "b",
-      "layout": "default",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "同上を --theme-variant b で。Default との差分を検出できることの証拠にもなる"
-    },
-    {
-      "name": "ui_dpi100_lighting_default",
-      "kind": "ui",
-      "dpi": 1.0,
-      "theme": "default",
-      "layout": "lighting",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 100%・Default）"
-    },
-    {
-      "name": "ui_dpi100_lighting_b",
-      "kind": "ui",
-      "dpi": 1.0,
-      "theme": "b",
-      "layout": "lighting",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 100%・テーマ b）"
-    },
-    {
-      "name": "ui_dpi150_lighting_default",
-      "kind": "ui",
-      "dpi": 1.5,
-      "theme": "default",
-      "layout": "lighting",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 150%・Default）"
-    },
-    {
-      "name": "ui_dpi150_lighting_b",
-      "kind": "ui",
-      "dpi": 1.5,
-      "theme": "b",
-      "layout": "lighting",
-      "masks": [
-        [0.215, 0.093, 0.772, 0.645],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（Lighting ワークスペース・DPI 150%・テーマ b）"
-    },
-    {
-      "name": "ui_dpi100_material_default",
-      "kind": "ui",
-      "dpi": 1.0,
-      "theme": "default",
-      "layout": "material",
-      "masks": [
-        [0.64, 0.2, 0.83, 0.585],
-        [0.72, 0.105, 0.835, 0.15],
-        [0.335, 0.87, 0.465, 0.895],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "右パネルのプレビュー球（GPU 描画・±1 LSB 揺れる）/ 右上「生成 OK ms」バッジ（実測時間）/ 下部の「HLSL 行 ms」状態表示（実測時間）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 100%・テーマ default）。UI が何も描かれない不具合の回帰検出"
-    },
-    {
-      "name": "ui_dpi100_material_b",
-      "kind": "ui",
-      "dpi": 1.0,
-      "theme": "b",
-      "layout": "material",
-      "masks": [
-        [0.64, 0.2, 0.83, 0.585],
-        [0.72, 0.105, 0.835, 0.15],
-        [0.335, 0.87, 0.465, 0.895],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "右パネルのプレビュー球（GPU 描画・±1 LSB 揺れる）/ 右上「生成 OK ms」バッジ（実測時間）/ 下部の「HLSL 行 ms」状態表示（実測時間）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 100%・テーマ b）。UI が何も描かれない不具合の回帰検出"
-    },
-    {
-      "name": "ui_dpi150_material_default",
-      "kind": "ui",
-      "dpi": 1.5,
-      "theme": "default",
-      "layout": "material",
-      "masks": [
-        [0.64, 0.2, 0.83, 0.585],
-        [0.72, 0.105, 0.835, 0.15],
-        [0.335, 0.87, 0.465, 0.895],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "右パネルのプレビュー球（GPU 描画・±1 LSB 揺れる）/ 右上「生成 OK ms」バッジ（実測時間）/ 下部の「HLSL 行 ms」状態表示（実測時間）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 150%・テーマ default）。UI が何も描かれない不具合の回帰検出"
-    },
-    {
-      "name": "ui_dpi150_material_b",
-      "kind": "ui",
-      "dpi": 1.5,
-      "theme": "b",
-      "layout": "material",
-      "masks": [
-        [0.64, 0.2, 0.83, 0.585],
-        [0.72, 0.105, 0.835, 0.15],
-        [0.335, 0.87, 0.465, 0.895],
-        [0.76, 0.972, 1, 1],
-        [0.808, 0.908, 0.985, 0.96]
-      ],
-      "maskNote": "右パネルのプレビュー球（GPU 描画・±1 LSB 揺れる）/ 右上「生成 OK ms」バッジ（実測時間）/ 下部の「HLSL 行 ms」状態表示（実測時間）/ 右下の FPS 表示 / 右下のトースト",
-      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 150%・テーマ b）。UI が何も描かれない不具合の回帰検出"
+    "tolerance": {
+      "pixelThreshold": 12,
+      "maxDiffRatio": 0.001,
+      "maxMeanAbs": 0.25
     }
-  ]
+  },
+  "order": [
+    "perftest_ddgi_probe",
+    "perftest_stress_5000",
+    "nocturne_hall",
+    "junction_f6",
+    "core_pbr_spheres",
+    "core_csm_shadows",
+    "core_transparency",
+    "core_post_stack",
+    "core_load_defaults",
+    "core_new_scene_gi",
+    "ui_dpi100_default",
+    "ui_dpi100_b",
+    "ui_dpi150_default",
+    "ui_dpi150_b",
+    "ui_dpi100_lighting_default",
+    "ui_dpi100_lighting_b",
+    "ui_dpi150_lighting_default",
+    "ui_dpi150_lighting_b",
+    "ui_dpi100_material_default",
+    "ui_dpi100_material_b",
+    "ui_dpi150_material_default",
+    "ui_dpi150_material_b"
+  ],
+  "scenes": []
 }

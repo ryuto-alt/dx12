@@ -1,0 +1,18 @@
+{
+  "name": "core_pbr_spheres",
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/pbr_spheres.json",
+  "camera": {
+    "position": [
+      0,
+      4.5,
+      -6
+    ],
+    "target": [
+      0,
+      0.4,
+      1.1
+    ]
+  },
+  "note": "PBR 球 2 列（金属 0/1 x 粗さ 0.05〜1.0）と手続きの空の IBL"
+}
