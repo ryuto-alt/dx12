@@ -1588,7 +1588,7 @@ void Application::EnterPlayMode()
         }
     }
 
-    // AI のトランザクションが開いていたら確定扱いで閉じる（Stop で Undo 履歴ごと消えるので、
+    // AI のトランザクションが開いていたら確定扱いで閉じる（Stop で MCP のトランザクションは閉じるので、
     // 開いたまま Play に入っても rollback できない。MCP の play は開いている間は断っている）。
     McpUndoAutoClose("play");
 
@@ -1603,7 +1603,18 @@ void Application::EnterPlayMode()
     m_cameraSnapshot.mouseSensitivity = m_camera->GetMouseSensitivity();
 
     // Lua が触る前のエディタ状態を Stop 時の完全復元用に保存
-    m_playSceneJson = SceneSerializer::SaveToString(*m_scene, PathResolver::AssetsDir());
+    // W05-11: Stop で Undo 履歴を残すため、各エンティティの entt id（"_eid"）・選択の GUID・Undo の位置を控える。
+    //   ★SaveToString が GUID を未付与のエンティティへ振るので、選択の GUID はその後に読む。
+    m_playSceneJson = SceneSerializer::SaveToString(*m_scene, PathResolver::AssetsDir(), /*writeEntityIds=*/true);
+    m_editorCtx->playUndoSeq   = m_editorCtx->undoSystem.PushSeq();
+    m_editorCtx->playHumanSeq  = m_editorCtx->undoSystem.LastHumanEditSeq();
+    m_editorCtx->playSelectionGuids.clear();
+    for (entt::entity se : m_editorCtx->selectedEntities)
+    {
+        if (!m_scene->GetRegistry().valid(se)) continue;
+        if (const auto* g = m_scene->GetRegistry().try_get<EntityGuid>(se); g && g->value != 0)
+            m_editorCtx->playSelectionGuids.push_back(g->value);
+    }
 
     // ★「isActive なカメラが無ければ先頭を有効化」はこのスナップショットより**後**に置く。
     //   前に置くと自動有効化が JSON に焼き付き、全カメラを非アクティブにしてあるシーンで
@@ -1962,6 +1973,7 @@ void Application::EnterEditorMode()
     m_loadedSkyboxPath.clear();
     m_skyboxDirty = true;
 
+    // 選択は復元後に GUID から張り直す（W05-11）。ここでは一旦外す（古い entity を指したままにしない）。
     m_editorCtx->ClearSelection();
 
     // Play 中のランタイムシーン切替で汚れたシーンパスを Play 開始時点に戻す。
@@ -1976,6 +1988,8 @@ void Application::EnterEditorMode()
     m_playScenePathSnapshot.clear();
     m_playSceneRelSnapshot.clear();
 
+    bool idsPreserved = false;       // W05-11: 全エンティティが Play 前と同じ id で戻ったか
+    bool usedDiskFallback = false;
     // JSON スナップショットからシーン全体を完全復元
     {
         auto* cmdList = m_frameResources->BeginFrame(*m_commandQueue);
@@ -1993,13 +2007,23 @@ void Application::EnterEditorMode()
         //   焼いた結果が消える（利用者から見ると「再生したらナビメッシュが無くなった」）。
         nav::NavMesh savedNav = std::move(m_scene->GetNavMesh());
 
+        // ★暫定対策（W05-11 レビュー blocker）: Scene::Clear() は Scene 所有の Mesh（プリミティブ・読み込みモデル等）を解放する。
+        //   ComponentEditCommand<MeshRenderer> などは MeshRenderer を値コピーして生の Mesh* を握っているので、
+        //   id を保ったまま Undo を残すと解放済みポインタが書き戻される（use-after-free）。
+        //   凍結ファイル（UndoSystem.h / Scene.cpp）を直せるまでは、Scene が Mesh を所有しているときは履歴を残さない。
+        //   恒久策は MeshRenderer 用の ComponentEditCommand 特殊化、または Stop をまたいで Mesh を生かすこと。
+        const bool sceneOwnsMeshes = m_scene->GetOwnedMeshCount() > 0;
+
         bool restored = false;
+        SceneSerializer::SceneLoadOptions loadOpts;
+        loadOpts.preserveEntityIds = true;   // W05-11: Undo の履歴が握っている entt id をそのまま復元する
         try {
-            restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir());
+            restored = SceneSerializer::LoadFromString(*m_scene, m_playSceneJson, PathResolver::AssetsDir(), &loadOpts);
         } catch (const std::exception& ex) {
             Logger::Error("EnterEditorMode: スナップショット復元で例外が発生: {}", ex.what());
         }
         if (!restored && !m_editorCtx->currentScenePath.empty()) {
+            usedDiskFallback = true;
             Logger::Error("EnterEditorMode: スナップショット復元に失敗。ディスクから再読込します: {}",
                           ToAssetRel(m_editorCtx->currentScenePath));
             try {
@@ -2009,6 +2033,8 @@ void Application::EnterEditorMode()
                 Logger::Error("EnterEditorMode: ディスクからの再読込にも失敗: {}", ex.what());
             }
         }
+        // ディスクからの再読込（id は新規）に落ちた場合も、id が一致しなかった場合も、Undo 履歴は使えない。
+        idsPreserved = restored && loadOpts.idsPreserved && !usedDiskFallback && !sceneOwnsMeshes;
         if (!restored)
             Logger::Error("EnterEditorMode: Stop 後のシーンが空です（有効なスナップショットもディスクのシーンもありません）");
 
@@ -2035,12 +2061,28 @@ void Application::EnterEditorMode()
     m_playSceneJson.shrink_to_fit();
 
     // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
+    // W05-11: id が保たれたなら Undo 履歴を残し、Play 中に積まれた分だけ捨てる。選択は GUID から張り直す。
+    //   保てなかった（id の衝突・ディスクからの再読込・Scene が Mesh を所有している）ときだけ従来どおり履歴を消す。
+    //   注意: Play 中に 1 件でも Push されると redo 側は消える（Play 前の redo は Stop 後に戻らない）。
     McpUndoAutoClose("play");
-    m_editorCtx->undoSystem.Clear();
+    if (idsPreserved)
+        m_editorCtx->undoSystem.TruncateTo(m_editorCtx->playUndoSeq, m_editorCtx->playHumanSeq);
+    else
+    {
+        Logger::Warn("Stop: エンティティ id を復元できなかったため Undo 履歴を破棄しました");
+        m_editorCtx->undoSystem.Clear();
+    }
+    // 選択は GUID から張り直す（id が保てた場合も保てなかった場合も同じ。後者でも選択は失わない）。
     m_editorCtx->ClearSelection();
+    for (uint64_t g : m_editorCtx->playSelectionGuids)
+    {
+        const entt::entity ne = FindEntityByGuid(m_scene->GetRegistry(), g);
+        if (ne != entt::null) m_editorCtx->AddToSelection(ne);
+    }
+    m_editorCtx->playSelectionGuids.clear();
 
-    // Stop でもシーンを丸ごと作り直すため entity id が全部変わる。open_scene/new_scene と同様に
-    // 世代を進めて古い id を無効化する(これが無いと Stop 後に古い id が別 entity に化けて
+    // Stop はシーンを作り直す（W05-11 以降、エディタの Undo 用の id は保つが、MCP が握る id は別契約）。
+    // open_scene/new_scene と同様に世代を進めて MCP の古い id を無効化する(これが無いと Stop 後に古い id が別 entity に化けて
     // "invalid entity id" や誤動作になる)。dx12_stop の応答に新しい sceneGeneration が乗る。
     ++m_sceneGeneration;
 

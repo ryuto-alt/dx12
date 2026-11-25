@@ -343,6 +343,17 @@ else()
     # node が無い環境: 失敗として見えるようにする（cmake -E false は常に終了コード 1）。
     add_test(NAME AnchorLint COMMAND ${CMAKE_COMMAND} -E false)
 endif()
+# W05-02（BUG-06）: 人の未保存の変更を自動保存が本体に書かない（編集の起点・自動保存の守り・退避の世代）。エンジン非リンク。
+add_executable(AutosaveOriginTests autosave_origin_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/SceneBackup.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../src/core/AtomicFile.cpp)
+target_include_directories(AutosaveOriginTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(AutosaveOriginTests PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(AutosaveOriginTests PRIVATE -Wall -Wextra -Werror)
+endif()
+add_test(NAME AutosaveOriginTests COMMAND AutosaveOriginTests)
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
@@ -446,6 +457,30 @@ if(TARGET ProjectLib)
     endif()
     add_test(NAME SceneSavePathsTests COMMAND SceneSavePathsTests)
     set_tests_properties(SceneSavePathsTests PROPERTIES TIMEOUT 120)
+endif()
+# Play -> Stop で Undo 履歴と選択を保つ（W05-11）: "_eid" の往復で entt id が一致 / TruncateTo。GPU 不要。
+if(TARGET Scene)
+    add_executable(PlayStopUndoTests play_stop_undo_test.cpp)
+    target_link_libraries(PlayStopUndoTests PRIVATE Scene)
+    target_include_directories(PlayStopUndoTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(PlayStopUndoTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(PlayStopUndoTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME PlayStopUndoTests COMMAND PlayStopUndoTests)
+    set_tests_properties(PlayStopUndoTests PROPERTIES TIMEOUT 120)
+endif()
+# Lua 公開プロパティの Undo（W05-14）: 値の往復 / GUID で引く / ホットリロードで例外なし / 既定値に戻すは複合 1 件。GPU 不要。
+if(TARGET ECS)
+    add_executable(ScriptPropertyUndoTests script_property_undo_test.cpp ../src/editor/undo/ScriptPropertyUndo.cpp)
+    target_link_libraries(ScriptPropertyUndoTests PRIVATE ECS)
+    target_include_directories(ScriptPropertyUndoTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(ScriptPropertyUndoTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ScriptPropertyUndoTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ScriptPropertyUndoTests COMMAND ScriptPropertyUndoTests)
+    set_tests_properties(ScriptPropertyUndoTests PROPERTIES TIMEOUT 120)
 endif()
 # ==== lane-B end ====
 
