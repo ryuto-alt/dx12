@@ -21,9 +21,9 @@ import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // 旧書式を許すファイル（常に通す）。M3 で W05-16 が区画を消したら、この配列を空にする。
-export const LEGACY_ALLOWLIST = ["CMakeLists.txt"];
+export const LEGACY_ALLOWLIST = [];
 // 許可リストのファイルごとの旧書式の行数（期待値）。食い違えば赤にする（取りこぼしや、区画が消えて古くなった項目の検出）。
-export const LEGACY_EXPECTED_LINES = { "CMakeLists.txt": 36 };
+export const LEGACY_EXPECTED_LINES = {};
 
 const NEW_RE = /^(?:\/\/|#|<!--)?\s*={4} lane-([A-D])(?::([A-Za-z0-9_.-]+))? (begin|end) ={4}\s*(?:-->)?\s*$/;
 const BAD_RE = /^(?:\/\/|#|<!--|\/\*|--|;|REM\b)?\s*={4}\s*lane-\S*\s+(?:begin|end)\b/i;
