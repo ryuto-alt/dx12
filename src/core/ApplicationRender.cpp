@@ -13,6 +13,7 @@
 #include "ecs/InstanceGroup.h"         // インスタンス群の展開（BuildDrawList）
 #include "editor/InstanceGroupCommand.h"   // インスタンス群: 変換 / 展開の Undo（エディタの「まとめる」「展開」）
 #include "editor/Toast.h"
+#include "scene/NewSceneDefaults.h"   // 新規シーンの太陽の既定（W05-22）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
 #include "editor/panels/HardwarePanel.h"
@@ -2939,8 +2940,16 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             // 平行光源
             auto lightE = reg.create();
             reg.emplace<NameTag>(lightE, NameTag{"DirectionalLight"});
-            reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, {-45, -30, 0}, {1,1,1}});
-            reg.emplace<DirectionalLight>(lightE);
+            // 太陽の向き: 方位 220° / 高度 38°（影が斜めに落ちる）、色温度 5500K。
+            // Transform の回転と direction を同じ向きで作り、prevRot を初期化して初回フレームの動きを 0 にする。
+            const newscene::SunDefaults sun = newscene::MakeSunDefaults();
+            reg.emplace<Transform>(lightE, Transform{{0, 10, 0}, sun.rotation, {1,1,1}});
+            DirectionalLight sunLight;
+            sunLight.direction    = sun.direction;
+            sunLight.color        = sun.color;
+            sunLight._prevRot     = sun.rotation;
+            sunLight._prevRotInit = true;
+            reg.emplace<DirectionalLight>(lightE, sunLight);
 
             // メインカメラ（CameraComponent が無いと Play で映らないため必須）
             auto camE = reg.create();
