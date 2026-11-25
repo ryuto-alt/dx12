@@ -37,7 +37,7 @@
   "scenes": [
     {
       "name": "perftest_ddgi_probe",
-      "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
+      "project": "PerfTest",
       "requiresProjectsRoot": true,
       "scene": "scenes/ddgi_probe.json",
       "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
@@ -45,7 +45,7 @@
     },
     {
       "name": "perftest_stress_5000",
-      "project": "C:/Users/ryuto/Documents/dev/game/PerfTest",
+      "project": "PerfTest",
       "requiresProjectsRoot": true,
       "scene": "scenes/stress_5000.json",
       "camera": { "position": [-14.7, 9.6, -9.0], "target": [-7.2492, 4.7342, -4.4383] },
@@ -53,7 +53,7 @@
     },
     {
       "name": "nocturne_hall",
-      "project": "C:/Users/ryuto/Documents/dev/game/Nocturne",
+      "project": "Nocturne",
       "requiresProjectsRoot": true,
       "scene": "scenes/main.json",
       "camera": { "position": [0.0, 1.66, -8.0], "target": [-6.0, 1.4, -14.0] },
@@ -61,7 +61,7 @@
     },
     {
       "name": "junction_f6",
-      "project": "C:/Users/ryuto/Documents/dev/game/Junction",
+      "project": "Junction",
       "requiresProjectsRoot": true,
       "scene": "scenes/stagedemo3.json",
       "camera": { "position": [14.0, 5.1, 122.0], "target": [14.0, 4.9, 117.0] },

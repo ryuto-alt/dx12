@@ -313,17 +313,33 @@ async function main() {
     let conn;
     try {
       conn = await connect(eng.port);
-      // requiresDxr:true のシーンは DXR 非対応の PC では SKIP（不合格にしない）
-      let dxrSupported = null;
+      // requiresDxr:true のシーンは「ハードが DXR 非対応」のときだけ SKIP（不合格にしない）。
+      // ハードは raytracingTier で判定する。supported は 6 段ゲート通過後の値なので、Tier があるのに false なら回帰として FAIL。
+      let dxrHw = null;   // true=ハード対応, false=非対応, Error=get_dxr 失敗
+      let dxrEnabled = false;
       if (list.some((x) => x.requiresDxr)) {
-        try { dxrSupported = !!(await conn.call("get_dxr")).supported; } catch { dxrSupported = false; }
+        try {
+          const d = await conn.call("get_dxr");
+          dxrHw = String(d.raytracingTier ?? "none") !== "none";
+          dxrEnabled = !!d.supported;
+        } catch (e) { dxrHw = e instanceof Error ? e : new Error(String(e)); }
       }
       for (const s of list) {
         const r = { name: s.name, pass: true, reasons: [] };
         results.push(r);
-        if (s.requiresDxr && !dxrSupported) {
-          r.skipped = true; r.reasons.push("DXR 非対応の PC なので SKIP（requiresDxr）");
-          continue;
+        if (s.requiresDxr) {
+          if (dxrHw instanceof Error) {
+            r.pass = false; r.reasons.push(`get_dxr が失敗した（通信/MCP の不具合）: ${dxrHw.message}`);
+            continue;
+          }
+          if (!dxrHw) {
+            r.skipped = true; r.reasons.push("DXR 非対応の PC なので SKIP（requiresDxr）");
+            continue;
+          }
+          if (!dxrEnabled) {
+            r.pass = false; r.reasons.push("ハードは DXR 対応（raytracingTier あり）なのに get_dxr.supported=false（DXR パイプライン/.cso の回帰）");
+            continue;
+          }
         }
         try {
           if (s.newScene) await createNewScene(conn); else await openScene(conn, s.scene);
