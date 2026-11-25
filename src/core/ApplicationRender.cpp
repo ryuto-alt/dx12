@@ -3198,6 +3198,8 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             // （トランザクション中ならそちらへ）。人の D&D / メニュー生成（client==0）は素通し。
             McpUndoRouter::CallScope undoScope(m_editorCtx->mcpUndo, req.mcp.client != 0,
                                                req.mcp.method, McpNowSec());
+            // 後のフレームで実行される生成の起点を正しく記録する（W05-02 の依頼）
+            EditOriginScope originScope(req.mcp.client ? EditOrigin::Mcp : EditOrigin::Human);
             std::string name = std::filesystem::path(req.modelPath).stem().string();
             if (!req.name.empty()) name = req.name;   // MCP 等からの任意名で上書き
 
@@ -3408,12 +3410,25 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                     }
                     else
                     {
-                        entt::entity it = m_editorCtx->selectedEntity;
+                        const entt::entity sel = m_editorCtx->selectedEntity;
+                        entt::entity it = sel;
                         for (int guard = 0; guard < 64 && it != entt::null && reg.valid(it); ++guard)
                         {
                             if (reg.all_of<UICanvas>(it))
                             {
-                                uiParent = m_editorCtx->selectedEntity;   // 選択そのものの子にする
+                                // 入れ物（Canvas / ScrollView）が選択されていれば、その子にする。
+                                // それ以外の UI 要素（直前に作った Image 等）が選択されているときは、
+                                // 入れ子の鎖にならないよう、その要素の親に兄弟として付ける。
+                                if (reg.all_of<UICanvas>(sel) || reg.all_of<UIScrollView>(sel))
+                                {
+                                    uiParent = sel;
+                                }
+                                else
+                                {
+                                    const auto* st = reg.try_get<Transform>(sel);
+                                    uiParent = (st && st->parent != entt::null && reg.valid(st->parent))
+                                                   ? st->parent : it;
+                                }
                                 break;
                             }
                             const auto* t = reg.try_get<Transform>(it);
@@ -3543,8 +3558,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 }
                 else if (!created.empty())
                 {
-                    if (uiPrimary != entt::null)
-                        m_editorCtx->Select(uiPrimary);   // 自動生成 Canvas の下でも本体を選択状態に
+                    // 選択は生成の後処理（人の操作のときだけ mcpUiPrimary を選ぶ）。MCP の生成では変えない
                     m_editorCtx->undoSystem.PushCommand(
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), created));
@@ -3606,7 +3620,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                             rect->offsetMax = {rect->offsetMin.x + w, rect->offsetMin.y + h};
                         }
                     }
-                    m_editorCtx->Select(root);
+                    // 選択は生成の後処理（人の操作のときだけ mcpPrefabRoot を選ぶ）。MCP の spawn_prefab では変えない
                     m_editorCtx->undoSystem.PushCommand(
                         std::make_unique<SpawnPrefabCommand>(
                             m_scene.get(), PathResolver::AssetsDir(), all));
@@ -3706,6 +3720,22 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                         m_scene.get(), PathResolver::AssetsDir(), spawnedEntity));
             }
             Logger::Info("Spawned: {}", name);
+
+            // 人の操作（ヒエラルキーの「＋」/ Ctrl+K / .glb のダブルクリック等）で作ったものは、
+            // 新しいエンティティ（階層なら親）を選択してヒエラルキーで見せる。MCP は選択を変えない。
+            if (req.mcp.client == 0)
+            {
+                auto& selReg = m_scene->GetRegistry();
+                entt::entity sel = entt::null;
+                if (mcpPrefabRoot != entt::null)                                   sel = mcpPrefabRoot;
+                else if (mcpUiPrimary != entt::null && selReg.valid(mcpUiPrimary)) sel = mcpUiPrimary;
+                else if (spawnedEntity != entt::null && selReg.valid(spawnedEntity)) sel = spawnedEntity;
+                if (sel != entt::null)
+                {
+                    m_editorCtx->Select(sel);
+                    m_editorCtx->revealInHierarchy = true;
+                }
+            }
 
             // MCP create_entity / spawn_model / spawn_prefab の遅延応答(本物の entityId を返す)。
             if (req.mcp.client != 0)
