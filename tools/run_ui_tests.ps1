@@ -5,6 +5,7 @@
     pwsh tools/run_ui_tests.ps1 -Only open_all_tool_windows,build_game   # 指定テストだけ
     pwsh tools/run_ui_tests.ps1 -Skip build_game      # 除外
     pwsh tools/run_ui_tests.ps1 -Port 8830 -Name my   # 並走する別エージェントとポートを分ける
+    (worktree では -Name/-Port 省略時に worktree 名から自動決定。docs/PARALLEL_WORK.md 参照)
 
   やっていること:
     1. 使い捨てプロジェクトを作る(実プロジェクトには触れない。.autosave も残らない)。
@@ -15,8 +16,8 @@
   配布ゲームの起動確認(build_game)も --background=offscreen,tool で動くので除外は不要。
 #>
 param(
-    [string]$Name = 'uitests',
-    [int]$Port = 8822,
+    [string]$Name = '',
+    [int]$Port = 0,
     [string[]]$Only = @(),
     [string[]]$Skip = @(),
     [int]$TimeoutMin = 30,
@@ -26,6 +27,18 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+# 既定の -Name/-Port は worktree 名から決める(docs/PARALLEL_WORK.md)。レーン worktree(lane-a/b/c)は
+# uitests-lane-a / 8881..8883、その他の worktree は uitests-<フォルダ名> / 8890..8899、本体は uitests / 8822。
+$leaf = Split-Path -Leaf $root
+$isWt = (Test-Path (Join-Path $root '.git') -PathType Leaf)   # worktree では .git がファイル
+if (-not $Name) {
+    $Name = if ($isWt) { "uitests-$leaf" } else { 'uitests' }
+}
+if ($Port -le 0) {
+    if ($leaf -match '(?i)lane-?([abc])$') { $Port = 8881 + ([int][char]$Matches[1].ToLower()[0] - [int][char]'a') }
+    elseif ($isWt) { $Port = 8890 + (([int[]][char[]]$leaf | Measure-Object -Sum).Sum % 10) }
+    else { $Port = 8822 }
+}
 $inst = Join-Path $root 'tools\engine_instance.ps1'
 $base = Join-Path $env:LOCALAPPDATA 'UnoEngine\agent-instances'
 $dir  = Join-Path $base $Name
