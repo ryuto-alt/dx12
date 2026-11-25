@@ -36,7 +36,7 @@ int main()
     lua.open_libraries(sol::lib::base, sol::lib::math, sol::lib::string, sol::lib::table);
     RunAllLuaBindings(lua, ctx);
 
-    // post の 5 関数と ssao の 5 関数が揃っている
+    // post の 4 関数と ssao の 4 関数が揃っている
     for (const char* t : { "post", "ssao" })
         for (const char* f : { "get", "set", "setMany", "names" })
         {

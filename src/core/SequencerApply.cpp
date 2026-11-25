@@ -155,17 +155,15 @@ std::vector<PostFieldInfo> BuildPostTable()
 {
     std::vector<PostFieldInfo> t = {
         DX12E_POST_FIELDS(DX12E_SEQ_PB, DX12E_SEQ_PF, DX12E_SEQ_PI, DX12E_SEQ_PV, DX12E_SEQ_PS)
+    };
+    const std::size_t v1End = t.size();
+    const std::vector<PostFieldInfo> v2 = {
         DX12E_POST_FIELDS_V2(DX12E_SEQ_PB, DX12E_SEQ_PF, DX12E_SEQ_PI, DX12E_SEQ_PV, DX12E_SEQ_PS)
     };
-    // 「XxxOn」の bool は、続く値フィールド(次の XxxOn まで)の ON スイッチ。XxxOn 以外の bool(enabled / grainColored …)は割り込まない。
-    int lastOn = -1;
-    for (std::size_t i = 0; i < t.size(); ++i)
-    {
-        const std::string n = t[i].name;
-        const bool isOn = t[i].kind == 'B' && n.size() > 2 && n.compare(n.size() - 2, 2, "On") == 0;
-        if (isOn) { lastOn = static_cast<int>(i); continue; }
-        if (t[i].kind != 'B') t[i].onIndex = lastOn;
-    }
+    t.insert(t.end(), v2.begin(), v2.end());
+    // V1 と V2 は別々に解決する（V2 の XxxOn の無い値が V1 末尾の debandOn を継承しないように）
+    AssignPostOnIndices(t, 0, v1End);
+    AssignPostOnIndices(t, v1End, t.size());
     return t;
 }
 #undef DX12E_SEQ_PB
@@ -174,6 +172,19 @@ std::vector<PostFieldInfo> BuildPostTable()
 #undef DX12E_SEQ_PV
 #undef DX12E_SEQ_PS
 } // namespace
+
+void AssignPostOnIndices(std::vector<PostFieldInfo>& t, std::size_t begin, std::size_t end)
+{
+    // XxxOn 以外の bool(enabled / grainColored …)は割り込まない。
+    int lastOn = -1;
+    for (std::size_t i = begin; i < end && i < t.size(); ++i)
+    {
+        const std::string n = t[i].name;
+        const bool isOn = t[i].kind == 'B' && n.size() > 2 && n.compare(n.size() - 2, 2, "On") == 0;
+        if (isOn) { lastOn = static_cast<int>(i); continue; }
+        if (t[i].kind != 'B') t[i].onIndex = lastOn;
+    }
+}
 
 const std::vector<PostFieldInfo>& PostFieldTable()
 {

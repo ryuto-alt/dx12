@@ -3,6 +3,7 @@
 //   ・未知の型の往復（エンティティ JSON → 別シーン）。skipOnSave の型は書かれない。"_eid" は通常の保存に出ない
 //   ・登録が空のとき、保存結果にレジストリ由来のキーが出ない
 //   ・V2 のダミーのフィールドは、既定のままなら JSON にもハッシュにも出ず、違えば出る（往復する）
+#include "core/SequencerApply.h"
 #include "scene/ComponentSerializerRegistry.h"
 #include "scene/PostV2Fields.h"
 #include "scene/Scene.h"
@@ -19,6 +20,7 @@
 #include <string>
 
 using namespace dx12e;
+using namespace dx12e::seqhost;
 using nlohmann::json;
 
 namespace
@@ -106,7 +108,7 @@ int main()
         std::set<std::string> names;
         bool ok = true;
         for (const auto& cs : list)
-            ok = ok && cs.typeName && cs.has && cs.save && cs.load && names.insert(cs.typeName).second;
+            ok = ok && cs.typeName && cs.has && cs.save && cs.load && cs.remove && names.insert(cs.typeName).second;
         CHECK(ok);
         // .inc を展開し直しても同じ並び
         std::vector<ComponentSerializer> again;
@@ -196,6 +198,23 @@ int main()
         const json j1 = SaveFake(one);
         CHECK(j1.size() == 1 && j1.contains("amount"));   // 違うものだけ
         CHECK(LoadFake(json::object()).mode == 2);        // キーが無ければ既定
+    }
+
+    // ── ポスト表: V2 の値が V1 末尾の XxxOn を継承しない ──
+    {
+        std::vector<PostFieldInfo> t(5);
+        t[0].name = "aOn";    t[0].kind = 'B';   // V1
+        t[1].name = "aAmt";   t[1].kind = 'F';
+        t[2].name = "debandOn"; t[2].kind = 'B'; // V1 の末尾
+        t[3].name = "v2Val";  t[3].kind = 'F';   // V2: 自分の On が無い
+        t[4].name = "v2Flag"; t[4].kind = 'B';
+        AssignPostOnIndices(t, 0, 3);
+        AssignPostOnIndices(t, 3, t.size());
+        CHECK(t[1].onIndex == 0);
+        CHECK(t[3].onIndex == -1);   // 継承しない（debandOn = 2 になってはいけない）
+        // 実際の表でも、V1 の末尾 XxxOn を指す V2 の値が無い（今は V2 が空なので一致するだけ）
+        const auto& real = PostFieldTable();
+        CHECK(!real.empty());
     }
 
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

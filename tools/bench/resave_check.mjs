@@ -22,7 +22,8 @@ const args = process.argv.slice(2);
 const opt = (name, dflt) => { const i = args.indexOf(name); return i >= 0 && i + 1 < args.length ? args[i + 1] : dflt; };
 const has = (name) => args.includes(name);
 
-const PROJECTS = ["tests/golden/projects/golden_core", "tests/golden/ui_project"];
+// samples/ は無い。hardware/lab の 2 プロジェクトも tracked なので対象に含める。
+const PROJECTS = ["tests/golden/projects/golden_core", "tests/golden/ui_project", "hardware/lab/ArduinoLab", "hardware/lab/GroveLab"];
 
 function listScenes(projRoot) {
   const dir = path.join(projRoot, "assets", "scenes");
@@ -30,8 +31,19 @@ function listScenes(projRoot) {
   return fs.readdirSync(dir).filter((f) => f.endsWith(".json")).sort().map((f) => `scenes/${f}`);
 }
 
-// guid を持たないエンティティは保存のたびに乱数の guid が振られるので、値だけ固定してから比べる。
-const sha = (buf) => createHash("sha256").update(buf.toString("utf8").replace(/"(guid|valueGuid)":"[0-9a-fA-F]+"/g, '"$1":"X"')).digest("hex");
+// ビルド間の比較用ハッシュ。guid を持たないエンティティは保存のたびに乱数の guid が振られるので、
+// 値そのものではなく「最初に現れた順」の番号（g0, g1, …）に置き換えてから比べる。
+// 欠落・重複した guid や、parentGuid のつながりの変化は、番号の並びの違いとして残る。
+// （Play→Stop の前後の比較は 1 つのエンジンの中なので、この置き換えをせず生のバイトで比べる）
+function normalizeGuids(text) {
+  const map = new Map();
+  return text.replace(/"(guid|valueGuid|parentGuid)":"([0-9a-fA-F]+)"/g, (_m, k, v) => {
+    if (!map.has(v)) map.set(v, `g${map.size}`);
+    return `"${k}":"${map.get(v)}"`;
+  });
+}
+const sha = (buf) => createHash("sha256").update(normalizeGuids(buf.toString("utf8"))).digest("hex");
+const rawSha = (buf) => createHash("sha256").update(buf).digest("hex");
 
 async function waitIdle(c, timeoutMs = 60_000) {
   const t0 = Date.now();
@@ -66,6 +78,7 @@ async function resaveProject(projRel, exe, port, withPlay) {
       if (bytes.includes("_eid")) problems.push(`${projRel}/${scene}: 保存ファイルに "_eid" が出ている`);
       const key = `${path.basename(projRel)}/${scene}`;
       out[key] = sha(bytes);
+      const firstRaw = rawSha(bytes);
       const keep = opt("--keep", "");
       if (keep) { const dst = path.join(keep, key); fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.writeFileSync(dst, bytes); }
       if (withPlay) {
@@ -77,7 +90,7 @@ async function resaveProject(projRel, exe, port, withPlay) {
         await c.call("save_scene", { path: outRel });
         const again = fs.readFileSync(abs);
         if (again.includes("_eid")) problems.push(`${key}: Play→Stop の後の保存に "_eid" が出ている`);
-        if (sha(again) !== out[key]) problems.push(`${key}: Play→Stop の前後で保存結果が変わった`);
+        if (rawSha(again) !== firstRaw) problems.push(`${key}: Play→Stop の前後で保存結果が変わった`);
       }
     }
   } finally {

@@ -2,6 +2,10 @@
 
 #include <cstddef>
 #include <cstring>
+#include <set>
+#include <string>
+
+#include "core/Logger.h"
 
 namespace dx12e
 {
@@ -24,12 +28,28 @@ namespace
 constexpr size_t kReserve = 256;   // 参照（McpUndo のスロットが握る）を再確保で無効にしないための余裕
 size_t g_baseCount = 0;
 
+// 必須の関数が欠けた / typeName が重複した登録は警告して落とす（保存と読み込みが null を呼ばないように）。
+// remove は Undo の「前は無かった」に要るので必須。
+void ValidateSerializers(std::vector<ComponentSerializer>& v)
+{
+    std::set<std::string> seen;
+    for (size_t i = 0; i < v.size();)
+    {
+        const ComponentSerializer& cs = v[i];
+        const bool ok = cs.typeName && cs.has && cs.save && cs.load && cs.remove && seen.insert(cs.typeName).second;
+        if (ok) { ++i; continue; }
+        Logger::Warn("[ComponentRegistry] 不正な登録を無視しました（関数の欠け / typeName の重複）: {}", cs.typeName ? cs.typeName : "(null)");
+        v.erase(v.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+}
+
 std::vector<ComponentSerializer>& MutableList()
 {
     static std::vector<ComponentSerializer> list = [] {
         std::vector<ComponentSerializer> v;
         v.reserve(kReserve);
         RegisterAllComponentSerializers(v);
+        ValidateSerializers(v);
         g_baseCount = v.size();
         return v;
     }();

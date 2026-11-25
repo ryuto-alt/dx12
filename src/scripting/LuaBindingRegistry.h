@@ -16,6 +16,8 @@ struct ScriptContext
     Scene* const* scene = nullptr;   // ScriptEngine::m_scene
 };
 
+// ★ctx は束縛の呼び出し中だけ有効（ScriptEngine の呼び出しのスタック上の値）。
+//   必要な値はコピーして持ち出し、ctx（や &ctx）をラムダで捕まえてはいけない。
 using LuaBindFn = void (*)(sol::state&, ScriptContext&);
 
 // LuaBindList.inc の UNO_LUA_BIND(Fn) を書いた順に呼ぶ。

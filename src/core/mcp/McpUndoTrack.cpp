@@ -129,7 +129,9 @@ public:
         const std::optional<nlohmann::json>& v = useAfter ? m_after : m_before;
         if (!v)
         {
-            if (m_cs.has(reg, e) && m_cs.remove) m_cs.remove(reg, e);
+            if (!m_cs.has(reg, e)) return;
+            if (m_cs.remove) m_cs.remove(reg, e);
+            else Logger::Warn("[Undo] {} の remove が無いので、追加の取り消しで残ります", m_cs.typeName);
             return;
         }
         m_cs.load(reg, e, *v);

@@ -494,6 +494,18 @@ if(TARGET Scene)
     add_test(NAME ComponentRegistryTests COMMAND ComponentRegistryTests)
     set_tests_properties(ComponentRegistryTests PROPERTIES TIMEOUT 120)
 endif()
+# McpUndoTracker のレジストリ経由のフォールバック（W05-15）: 編集 / 追加 / 削除の Undo・Redo が JSON まで戻る。GPU 不要。
+if(TARGET Core AND TARGET Gui AND TARGET Editor AND TARGET ProjectLib)   # エンジン本体と同じリンク集合（McpUndoTrack.cpp が Core の奥まで引くため）
+    add_executable(McpUndoRegistryTests mcp_undo_registry_test.cpp)
+    target_link_libraries(McpUndoRegistryTests PRIVATE Core Graphics Renderer Resource Animation ECS Audio Input Hardware Terrain Nav AI Scene Scripting Physics Network Gui Ui Editor ProjectLib)
+    target_include_directories(McpUndoRegistryTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(McpUndoRegistryTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(McpUndoRegistryTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME McpUndoRegistryTests COMMAND McpUndoRegistryTests)
+    set_tests_properties(McpUndoRegistryTests PROPERTIES TIMEOUT 120)
+endif()
 # Lua 束縛の登録表（W05-15）: post.* の往復 / names / setMany / 不明キー。GPU 不要。
 if(TARGET Scripting)
     add_executable(LuaBindingRegistryTests lua_binding_registry_test.cpp)
