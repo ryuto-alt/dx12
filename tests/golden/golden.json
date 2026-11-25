@@ -22,7 +22,7 @@
     "  組み合わせは DPI 1.0/1.5 x テーマ default/b x レイアウト default/material/lighting の組み合わせ。layout は editor_command_run の workspace.<layout> で切り替える。material は C3 で追加（マテリアルグラフ窓の GPU パスが RT を戻さず ImGui が何も描かれなかった不具合の回帰検出を兼ねる）。",
     "★W0-2: core_* は tests/golden/projects/golden_core（プリミティブと手続きの空だけ・リポジトリ内で完結）。新環境でも必ず回る。基準は RTX 5060 で --update して撮った。",
     "★requiresProjectsRoot:true の 4 件（PerfTest/Nocturne/Junction）は手元のゲームが要る。環境変数 DX12_GOLDEN_PROJECTS_ROOT があるときだけ回し、無ければ対象から外す（SKIP の見かけ合格にしない）。",
-    "★group:\"repeat\" のシーン（DDGI/DXR など決定論が崩れるもの）は通常実行に含めず、--group repeat のときだけ回す。core_new_scene_gi（実際の new_scene の結果）が該当。",
+    "★group:\"repeat\" のシーン（DDGI/DXR など決定論が崩れるもの）は通常実行に含めず、--group repeat のときだけ回す。core_new_scene_gi（実際の new_scene の結果）が該当。requiresDxr:true のシーンは DXR 非対応の PC（get_dxr の supported:false）では SKIP にする。",
     "★requiresProjectsRoot の 4 件の基準は旧 launchEngine（exe 直起動・imgui.ini あり）で 1043x587 で撮ったもの。今の launchEngine（engine_instance.ps1 経由）は 977x550 なので、DX12_GOLDEN_PROJECTS_ROOT を設定して回すと環境違い（strict では不合格）になる。そのプロジェクトがある PC で一度 --update して撮り直すこと。",
     "★既定は strict（プロジェクトが見つからないシーンは不合格）。緩めるときだけ --no-strict。"
   ],
@@ -105,11 +105,12 @@
     {
       "name": "core_new_scene_gi",
       "group": "repeat",
+      "requiresDxr": true,
       "newScene": true,
       "launchScene": "scenes/pbr_spheres.json",
       "project": "tests/golden/projects/golden_core",
       "camera": { "position": [4.0, 3.0, -9.0], "target": [0.0, 0.5, 0.0] },
-      "note": "実際の new_scene コマンドの結果（DirectionalLight + MainCamera + Cube + gi::ApplyNew = DDGI 自動配置 / 環境光 0 / SSGI / RT 影）。新規シーンの既定プリセットを変える作業はこれで検出する。DDGI/DXR で決定論が崩れうるので group:repeat（--group repeat のときだけ回す）"
+      "note": "実際の new_scene コマンドの結果（Grid + Ground + Cube + DirectionalLight + MainCamera + gi::ApplyNew = DDGI 自動配置 / 環境光 0 / SSGI / RT 影）。新規シーンの既定プリセットを変える作業はこれで検出する。DDGI/DXR で決定論が崩れうるので group:repeat（--group repeat のときだけ回す）"
     },
     {
       "name": "ui_dpi100_default",

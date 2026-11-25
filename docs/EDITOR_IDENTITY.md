@@ -117,7 +117,10 @@ Uno Engine のエディタの見た目は、フェーズ 1a（2026-09-30）で *
   パス変数と include 変数だけを置く。`add_custom_command` と `list(APPEND SHADER_OUTPUTS ...)` は、`set(SHADER_OUTPUTS ...)` の後ろにある
   `==== wave<N>-lane<X> (登録) ==== begin/end` の枠に書く（前の組に `list(APPEND SHADER_OUTPUTS ...)` を書くと、後の `set` で消えて .cso がビルドされない）。
   include 変数（`SHADER_FWD_INC` など）は後ろの枠の位置ではすべて定義済み。
+- **アンカー枠の約束**: 枠の名前は `wave<N>-lane<X>`（N = Wave 番号、X = A/B/C）。1 つのファイルの所有者は Wave の中で 1 レーンだけで、
+  レーンは自分の枠の外を編集しない（マージ衝突を枠内に閉じ込めるため）。ルート `CMakeLists.txt` のシェーダ表は枠が 2 組ある（前の組 = パス変数と include 変数、
+  後ろの組 `(登録)` = `add_custom_command` と `list(APPEND SHADER_OUTPUTS ...)`。上の「シェーダの登録は後ろの枠に書く」）。
 - **MCP メソッドの追加**: 新しいメソッドは `McpDefine(names, McpMeta, fn)` のオーバーロードで足す。`ApplicationMcpManifestData.inc` は
-  生成物由来の表で、レーンが編集する必要はない（枠は予備。使う場合は新しい `FillManifestChunk` 関数に加え、`FillGeneratedManifestRows` の呼び出し行も要るため競合しやすい）。
+  生成物由来の表で、レーンが編集する必要はない。この表のアンカー枠は参考情報（informational）で、レーンはメソッドを枠ではなく `McpDefine` で足す（枠は予備。使う場合は新しい `FillManifestChunk` 関数に加え、`FillGeneratedManifestRows` の呼び出し行も要るため競合しやすい）。
 - **ツールウィンドウの追加**: `ToolWindows.h` の行は `EditorContext::showXxx` を指すため、`EditorContext.h` にもフィールドが要る。
-  `EditorContext.h` には枠がないので、その変更は各レーンの最初のヘッダ変更のまとまり（ロードマップ 4 節）に入れる。
+  `EditorContext.h` には枠がないので、その変更は各レーンの最初のヘッダ変更のまとまり（再ビルドの連鎖を減らすため。docs/PARALLEL_WORK.md の「4. ルール」参照）に入れる。

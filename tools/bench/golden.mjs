@@ -313,9 +313,18 @@ async function main() {
     let conn;
     try {
       conn = await connect(eng.port);
+      // requiresDxr:true のシーンは DXR 非対応の PC では SKIP（不合格にしない）
+      let dxrSupported = null;
+      if (list.some((x) => x.requiresDxr)) {
+        try { dxrSupported = !!(await conn.call("get_dxr")).supported; } catch { dxrSupported = false; }
+      }
       for (const s of list) {
         const r = { name: s.name, pass: true, reasons: [] };
         results.push(r);
+        if (s.requiresDxr && !dxrSupported) {
+          r.skipped = true; r.reasons.push("DXR 非対応の PC なので SKIP（requiresDxr）");
+          continue;
+        }
         try {
           if (s.newScene) await createNewScene(conn); else await openScene(conn, s.scene);
           const shots = [];

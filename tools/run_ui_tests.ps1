@@ -4,6 +4,8 @@
     pwsh tools/run_ui_tests.ps1                       # 全件(既定ポート 8822)
     pwsh tools/run_ui_tests.ps1 -Only open_all_tool_windows,build_game   # 指定テストだけ
     pwsh tools/run_ui_tests.ps1 -Skip build_game      # 除外
+    pwsh tools/run_ui_tests.ps1 -Deep                 # 超詳細診断だけ(--ui-tests-deep)。run_ui_tests.bat -Deep でも同じ
+    pwsh tools/run_ui_tests.ps1 -ExtraArgs '--foo','--bar=1'   # エンジンへそのまま渡す追加引数
     pwsh tools/run_ui_tests.ps1 -Port 8830 -Name my   # 並走する別エージェントとポートを分ける
     (worktree では -Name/-Port 省略時に worktree 名から自動決定。docs/PARALLEL_WORK.md 参照)
 
@@ -23,7 +25,9 @@ param(
     [int]$TimeoutMin = 30,
     [int]$StallSec = 240,
     [int]$Speed = 0,
-    [switch]$KeepProject
+    [switch]$KeepProject,
+    [switch]$Deep,
+    [string[]]$ExtraArgs = @()
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -61,9 +65,11 @@ New-Item -ItemType Directory -Force (Join-Path $proj 'assets\scenes'), (Join-Pat
 & $inst -Name $Name -Stop | Out-Null
 if (Test-Path $dir) { Remove-Item (Join-Path $dir 'ui_test_report.txt'), (Join-Path $dir 'ui_test_results.xml') -ErrorAction SilentlyContinue }
 
-$extra = @('--ui-tests-run-all', "--ui-tests-speed=$Speed")
+$extra = if ($Deep) { @('--ui-tests-deep', "--ui-tests-speed=$Speed") } else { @('--ui-tests-run-all', "--ui-tests-speed=$Speed") }
 if ($Only.Count -gt 0) { $extra += @('--ui-tests-only', ($Only -join ',')) }
 if ($Skip.Count -gt 0) { $extra += @('--ui-tests-skip', ($Skip -join ',')) }
+
+if ($ExtraArgs.Count -gt 0) { $extra += $ExtraArgs }
 
 $fg0 = Get-Fg
 $sw = [Diagnostics.Stopwatch]::StartNew()

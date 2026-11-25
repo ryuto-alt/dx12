@@ -1,7 +1,10 @@
 # 並列作業(worktree レーン)運用
 
 大改修(新アイデンティティへ移行中)は、Wave ごとに最大 3 本のレーン(A/B/C)を git worktree で並走させる。
-計画の全体は大改修ロードマップ(§4 並列運用モデル)を参照。
+運用の要点: Wave ごとに最大 3 本のレーン(A/B/C)を並走させ、1 つのファイルの所有者は 1 レーンだけにする。
+共有の登録表は `==== wave<N>-lane<X> ==== begin/end` のアンカー枠の中にだけ書く(ルート `CMakeLists.txt` のシェーダ表は枠が 2 組:
+前の組はパス変数・include 変数、後ろの `(登録)` の組は `add_custom_command` と `list(APPEND SHADER_OUTPUTS ...)`)。
+`ApplicationMcpManifestData.inc` の枠は参考情報で、MCP メソッドは `McpDefine` で足す。詳細は docs/EDITOR_IDENTITY.md の「大改修」節。
 
 ## 1. worktree の作り方
 
@@ -49,6 +52,6 @@ worktree の中で `pwsh tools/build.ps1`(必ずこれ経由)。ビルドは Mut
 
 ## 4. ルール
 
-- 1 つのファイルの所有者は、Wave の中で 1 レーンだけ。共有の登録表はレーン別のアンカーブロックにだけ追記する。
+- 1 つのファイルの所有者は、Wave の中で 1 レーンだけ。共有の登録表はレーン別のアンカーブロック(`==== wave<N>-lane<X> ==== begin/end`。シェーダ表は前の組と後ろの `(登録)` の組の 2 組)にだけ追記する。
 - マージは Wave の終わりに C → B → A の順で master へ入れ、各マージ後に `build.ps1 -Tests` と各種テストを回す。
 - 作業が終わった worktree は `-Remove`(= `git worktree remove --force` + 残ったフォルダの削除)で片付ける。
