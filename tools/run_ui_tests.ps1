@@ -28,15 +28,15 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 # 既定の -Name/-Port は worktree 名から決める(docs/PARALLEL_WORK.md)。レーン worktree(lane-a/b/c)は
-# uitests-lane-a / 8881..8883、その他の worktree は uitests-<フォルダ名> / 8890..8899、本体は uitests / 8822。
+# uitests-lane-a / 8881..8883、その他の worktree は uitests-<フォルダ名> / 8910..8919、本体は uitests / 8822。
 $leaf = Split-Path -Leaf $root
 $isWt = (Test-Path (Join-Path $root '.git') -PathType Leaf)   # worktree では .git がファイル
 if (-not $Name) {
     $Name = if ($isWt) { "uitests-$leaf" } else { 'uitests' }
 }
 if ($Port -le 0) {
-    if ($leaf -match '(?i)lane-?([abc])$') { $Port = 8881 + ([int][char]$Matches[1].ToLower()[0] - [int][char]'a') }
-    elseif ($isWt) { $Port = 8890 + (([int[]][char[]]$leaf | Measure-Object -Sum).Sum % 10) }
+    if ($leaf -match '(?i)(^|[-_])lane-?([abc])$') { $Port = 8881 + ([int][char]$Matches[2].ToLower()[0] - [int][char]'a') }
+    elseif ($isWt) { $Port = 8910 + (([int[]][char[]]$leaf | Measure-Object -Sum).Sum % 10) }
     else { $Port = 8822 }
 }
 $inst = Join-Path $root 'tools\engine_instance.ps1'

@@ -14,7 +14,7 @@ pwsh tools/worktree_setup.ps1 -Path C:\Users\ryuto\dx12-wt\wt-foo -Remove       
 
 スクリプトがやること:
 
-1. `git worktree add`(ブランチが無ければ `-Base`、既定 HEAD から作る)。
+1. `git worktree add`(ブランチが無ければ `-Base` から作る。既定は本体 worktree の HEAD で、実行元 worktree の HEAD ではない)。
 2. 本体から未追跡の必須物をコピー: `src/core/generated/AssetKey.h`(gitignore 対象)、`third_party/gh-cli`(約 40MB)。
 3. `chcp 65001` の下で configure(Ninja / Release)。次の 3 つを本体と共有し、vcpkg の再インストールと assimp の再取得を避ける。
    - `-DVCPKG_INSTALLED_DIR=<本体>\build\release\vcpkg_installed`(約 1.3GB を共有)
@@ -23,6 +23,7 @@ pwsh tools/worktree_setup.ps1 -Path C:\Users\ryuto\dx12-wt\wt-foo -Remove       
 
 前提: 本体の `build\release` が一度ビルド済みであること(vcpkg_installed と assimp-src を参照する)。
 本体の vcpkg_installed を作り直す(vcpkg の更新など)ときは、全 worktree のビルドを止めてから行う。
+注意: worktree は本体の vcpkg_installed を `VCPKG_MANIFEST_INSTALL=OFF` で共有する。レーンで vcpkg.json に依存を足しても worktree 側には入らない(本体で追加・再インストールしてから各 worktree を再 configure する)。逆に、本体のビルドで manifest install が走ると本体の vcpkg.json に合わせてパッケージが整理され、worktree のビルドに影響しうる。
 
 ## 2. ビルド
 
@@ -37,11 +38,12 @@ worktree の中で `pwsh tools/build.ps1`(必ずこれ経由)。ビルドは Mut
 | A | 8851 | 8881 |
 | B | 8852 | 8882 |
 | C | 8853 | 8883 |
+- 8881〜8883 は MCP フリート自動割当帯(8860〜8899、docs/MCP.md)と重なる。フリートのエンジンが同じポートを使っていると衝突するので、その場合は `-Port` で逃がす。非レーンの 8910〜8919 は帯の外。
 
 - 本体(master 側)の UI テスト既定は従来どおり `-Name uitests -Port 8822`。
 - `tools/run_ui_tests.ps1` は `-Name` / `-Port` を省略すると worktree 名から決める。
   - フォルダ名が `lane-a` / `lane-b` / `lane-c` で終わる: `-Name uitests-<フォルダ名>`、ポート 8881〜8883。
-  - それ以外の worktree: `-Name uitests-<フォルダ名>`、ポート 8890〜8899(フォルダ名から決まる固定値)。
+  - それ以外の worktree: `-Name uitests-<フォルダ名>`、ポート 8910〜8919(フォルダ名から決まる固定値)。
   - 本体: `uitests` / 8822。
 - エンジンを手で起動するときも、`--background` か `--headless`(または `tools/engine_instance.ps1`)だけを使い、窓を出さない・マウスを奪わない。
 

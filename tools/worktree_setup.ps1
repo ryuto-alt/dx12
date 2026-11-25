@@ -19,7 +19,7 @@ param(
     [ValidateSet('A', 'B', 'C', '')][string]$Lane = '',
     [string]$Path = '',
     [string]$Branch = '',
-    [string]$Base = 'HEAD',
+    [string]$Base = 'HEAD',   # 本体 worktree の HEAD(実行元 worktree の HEAD ではない)
     [switch]$NoConfigure,
     [switch]$Remove
 )
@@ -31,7 +31,8 @@ $common = (git -C $here rev-parse --path-format=absolute --git-common-dir).Trim(
 $main = (Split-Path -Parent $common) -replace '/', '\'
 
 if ($Lane) {
-    if (-not $Path)   { $Path = "C:\Users\ryuto\dx12-wt\lane-$($Lane.ToLower())" }
+    $Lane = $Lane.ToUpper()
+    if (-not $Path)   { $Path = Join-Path (Join-Path (Split-Path -Parent $main) 'dx12-wt') "lane-$($Lane.ToLower())" }
     if (-not $Branch) { $Branch = "wave-lane-$($Lane.ToLower())" }
 }
 if (-not $Path) { Write-Host '[wt] -Lane か -Path を指定してください'; exit 2 }
@@ -39,7 +40,19 @@ $Path = [IO.Path]::GetFullPath($Path)
 if (-not $Branch) { $Branch = Split-Path -Leaf $Path }
 
 if ($Remove) {
+    # 登録済みのリンク worktree だけを対象にする(本体や無関係なフォルダは絶対に消さない)。
+    if ($Path.TrimEnd('\') -ieq $main.TrimEnd('\')) { Write-Host "[wt] 本体は削除できません: $Path"; exit 2 }
+    $registered = @(git -C $main worktree list --porcelain | Where-Object { $_ -like 'worktree *' } |
+        ForEach-Object { ($_.Substring(9).Trim() -replace '/', '\').TrimEnd('\') })
+    if ($LASTEXITCODE -ne 0) { Write-Host '[wt] git worktree list failed'; exit 1 }
+    if ($registered -inotcontains $Path.TrimEnd('\')) {
+        Write-Host "[wt] 登録された worktree ではないため削除しません: $Path"
+        Write-Host '[wt] (git worktree list で確認。残骸フォルダは手で削除してください)'
+        exit 2
+    }
     git -C $main worktree remove --force $Path
+    if ($LASTEXITCODE -ne 0) { Write-Host '[wt] git worktree remove failed'; exit 1 }
+    # git 成功後に残ったフォルダ(ロック等で消えなかった分)だけ片付ける。
     if (Test-Path $Path) { Remove-Item -Recurse -Force $Path }
     git -C $main worktree prune
     Write-Host "[wt] removed $Path"
