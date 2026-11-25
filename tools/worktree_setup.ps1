@@ -60,7 +60,16 @@ if ($Remove) {
 }
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
-if (Test-Path $Path) { Write-Host "[wt] already exists: $Path"; exit 2 }
+if (Test-Path $Path) { Write-Host "[wt] already exists: $Path (半端な残骸なら -Remove を先に実行)"; exit 2 }
+
+# 事前条件は worktree add の前に確認する(失敗して半端な worktree を残さない)。
+$key = 'src\core\generated\AssetKey.h'
+if (-not (Test-Path (Join-Path $main $key))) { Write-Host "[wt] 本体に $key が無い(本体を一度 configure してください)"; exit 1 }
+$vcpkgInst = Join-Path $main 'build\release\vcpkg_installed'
+$assimp = Join-Path $main 'build\release\_deps\assimp-src'
+if (-not $NoConfigure) {
+    foreach ($p in @($vcpkgInst, $assimp)) { if (-not (Test-Path $p)) { Write-Host "[wt] 本体に $p が無い。本体を先にビルドしてください"; exit 1 } }
+}
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
 
 git -C $main show-ref --verify --quiet "refs/heads/$Branch"
@@ -69,8 +78,6 @@ else { git -C $main worktree add -b $Branch $Path $Base }
 if ($LASTEXITCODE -ne 0) { Write-Host '[wt] git worktree add failed'; exit 1 }
 
 # 未追跡だがビルドに必要なものを本体からコピーする。
-$key = 'src\core\generated\AssetKey.h'
-if (-not (Test-Path (Join-Path $main $key))) { Write-Host "[wt] 本体に $key が無い(本体を一度 configure してください)"; exit 1 }
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $Path $key)) | Out-Null
 Copy-Item (Join-Path $main $key) (Join-Path $Path $key)
 $gh = Join-Path $main 'third_party\gh-cli'
@@ -88,9 +95,10 @@ if (-not $NoConfigure) {
         if ($m) { $tc = $m.Matches[0].Groups[1].Value.Trim() }
     }
     if (-not $tc) { if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = 'C:\Users\ryuto\vcpkg' }; $tc = "$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" }
-    $vcpkgInst = Join-Path $main 'build\release\vcpkg_installed'
-    $assimp = Join-Path $main 'build\release\_deps\assimp-src'
-    foreach ($p in @($vcpkgInst, $assimp)) { if (-not (Test-Path $p)) { Write-Host "[wt] 本体に $p が無い。本体を先にビルドしてください"; exit 1 } }
+    # CMake に渡すパスは / 区切りにする(\r や \U が再パースで化けるのを避ける)。
+    $tc = $tc -replace '\\', '/'
+    $vcpkgInstC = $vcpkgInst -replace '\\', '/'
+    $assimpC = $assimp -replace '\\', '/'
 
     if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
         $vc = 'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat'
@@ -104,8 +112,8 @@ if (-not $NoConfigure) {
     try {
         $cfg = @('-S', '.', '-B', 'build\release', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
             "-DCMAKE_TOOLCHAIN_FILE=$tc", '-DVCPKG_TARGET_TRIPLET=x64-windows',
-            "-DVCPKG_INSTALLED_DIR=$vcpkgInst", '-DVCPKG_MANIFEST_INSTALL=OFF',
-            "-DFETCHCONTENT_SOURCE_DIR_ASSIMP=$assimp")
+            "-DVCPKG_INSTALLED_DIR=$vcpkgInstC", '-DVCPKG_MANIFEST_INSTALL=OFF',
+            "-DFETCHCONTENT_SOURCE_DIR_ASSIMP=$assimpC")
         $q = ($cfg | ForEach-Object { "`"$_`"" }) -join ' '
         & cmd /c "chcp 65001>nul && cmake $q"
         if ($LASTEXITCODE -ne 0) { Write-Host '[wt] configure failed'; exit 1 }
