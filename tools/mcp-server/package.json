@@ -8,6 +8,7 @@
     "start": "node index.ts",
     "test": "node scripts/run_tests.mjs",
     "test:offline": "node scripts/run_tests.mjs --offline",
+    "test:gen-budgets": "node ../gen_budgets.mjs --self-test",
     "check:anchors": "node ../check_anchors.mjs",
     "gen:legacy-snapshot": "node scripts/gen_legacy_snapshot.mjs",
     "check:legacy-snapshot": "node scripts/gen_legacy_snapshot.mjs --check",
