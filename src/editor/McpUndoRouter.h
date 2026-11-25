@@ -82,6 +82,8 @@ public:
         return true;
     }
     bool InCall() const { return m_callDepth > 0; }
+    // 横取り中か（EditOrigin の判定用に公開。UndoSystem の横取りの状態を返すだけ）。
+    bool IsCapturing() const { return m_undo.Capturing(); }
 
     // ================= トランザクション =================
     enum class TxStatus { Ok, AlreadyOpen, NotOpen };

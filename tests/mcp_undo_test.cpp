@@ -246,6 +246,107 @@ void TestCaptureOutsideCallIsHuman()
     Edit(u, log, "y", v, 2);
     Check(u.UndoDepth() == 2 && !u.PeekUndoIsAi(), "外で積んだ物は人の操作");
 }
+
+// ── W05-02a: 編集の起点 / TruncateTo / 横取りカウンタ ──
+void TestLastHumanEditSeq()
+{
+    std::printf("[7] LastHumanEditSeq: Human / Mcp スコープ / 横取り中 / AI エントリ / MarkEdited / Undo\n");
+    UndoSystem u; McpUndoRouter r(u);
+    std::vector<std::string> log; int v = 0;
+    Check(u.LastHumanEditSeq() == 0, "初期値 0");
+    Edit(u, log, "h1", v, 1);
+    Check(u.LastHumanEditSeq() == u.EditSeq() && u.EditSeq() == 1, "人の Push で追従");
+    { EditOriginScope s(EditOrigin::Mcp); Edit(u, log, "m1", v, 2); }
+    Check(u.EditSeq() == 2 && u.LastHumanEditSeq() == 1, "スコープ Mcp は追従しない");
+    AiCall(r, u, log, "ai", v, 3);
+    const u64 afterAi = u.EditSeq();
+    Check(afterAi > 2 && u.LastHumanEditSeq() == 1, "横取り中と AI エントリは追従しない");
+    { EditOriginScope s(EditOrigin::Mcp); u.MarkEdited(); }
+    Check(u.EditSeq() == afterAi + 1 && u.LastHumanEditSeq() == 1, "Mcp の MarkEdited は追従しない");
+    u.MarkEdited();
+    Check(u.LastHumanEditSeq() == afterAi + 2 && u.EditSeq() == afterAi + 2, "人の MarkEdited は追従する");
+    u.Undo();
+    Check(u.EditSeq() == afterAi + 3 && u.LastHumanEditSeq() == afterAi + 3, "人の Undo は人の編集");
+    u.Redo();
+    Check(u.LastHumanEditSeq() == afterAi + 4, "人の Redo は人の編集");
+    { EditOriginScope s(EditOrigin::Mcp); u.Undo(); }
+    Check(u.EditSeq() == afterAi + 5 && u.LastHumanEditSeq() == afterAi + 4, "Mcp スコープの Undo は追従しない");
+}
+
+void TestEditOriginScopeNesting()
+{
+    std::printf("[8] EditOriginScope: 入れ子と例外時の復元\n");
+    Check(CurrentEditOrigin() == EditOrigin::Human, "既定は Human");
+    {
+        EditOriginScope a(EditOrigin::Mcp);
+        Check(CurrentEditOrigin() == EditOrigin::Mcp, "外 Mcp");
+        {
+            EditOriginScope b(EditOrigin::Human);
+            Check(CurrentEditOrigin() == EditOrigin::Human, "内 Human");
+        }
+        Check(CurrentEditOrigin() == EditOrigin::Mcp, "内を抜けて Mcp に戻る");
+    }
+    Check(CurrentEditOrigin() == EditOrigin::Human, "外を抜けて Human");
+    try { EditOriginScope a(EditOrigin::Mcp); throw 1; } catch (int) {}
+    Check(CurrentEditOrigin() == EditOrigin::Human, "例外でも復元");
+}
+
+void TestCaptureCounterPairing()
+{
+    std::printf("[9] 横取りカウンタ: 張る/外すが対、破棄でも戻る\n");
+    std::vector<std::unique_ptr<IUndoCommand>> sink;
+    {
+        UndoSystem u;
+        u.SetCaptureSink(&sink);
+        Check(CurrentEditOrigin() == EditOrigin::Mcp, "横取り中は Mcp");
+        u.SetCaptureSink(nullptr);
+        Check(CurrentEditOrigin() == EditOrigin::Human, "外すと Human");
+        u.SetCaptureSink(&sink);   // 外さずに破棄する
+    }
+    Check(CurrentEditOrigin() == EditOrigin::Human, "横取り中の破棄でカウンタが戻る");
+}
+
+void TestTruncateTo()
+{
+    std::printf("[10] TruncateTo: タグが Undo/Redo/上限切り捨てでずれない\n");
+    std::vector<std::string> log; int v = 0;
+    {
+        UndoSystem u;
+        Edit(u, log, "a", v, 1);
+        Edit(u, log, "b", v, 2);
+        const u64 mark = u.PushSeq();
+        const u64 humanMark = u.LastHumanEditSeq();
+        Edit(u, log, "c", v, 3);
+        Edit(u, log, "d", v, 4);
+        u.TruncateTo(mark, humanMark);
+        Check(u.UndoDepth() == 2 && std::string(u.PeekUndoName()) == "b", "mark より後を捨てる");
+        Check(!u.CanRedo(), "捨てた分があれば Redo も空");
+        Check(u.LastHumanEditSeq() == humanMark, "LastHumanEditSeq を Play 前へ戻す");
+        Check(v == 4, "Undo せずに捨てる（値は触らない）");
+    }
+    {
+        UndoSystem u;
+        Edit(u, log, "a", v, 1);
+        Edit(u, log, "b", v, 2);
+        const u64 mark = u.PushSeq();
+        Edit(u, log, "c", v, 3);
+        u.Undo();                          // c が Redo へ（タグは Redo 側へ移る）
+        u.TruncateTo(mark);
+        Check(u.UndoDepth() == 2 && u.CanRedo(), "何も捨てなければ Redo を残す");
+        u.Redo();
+        u.TruncateTo(mark);
+        Check(u.UndoDepth() == 2 && !u.CanRedo(), "Redo し直した c は捨てられる");
+    }
+    {
+        UndoSystem u;
+        for (int i = 0; i < 120; ++i) Edit(u, log, "x", v, i);
+        const u64 mark = u.PushSeq();      // 120
+        Edit(u, log, "y", v, 1000);
+        u.TruncateTo(mark);
+        Check(u.UndoDepth() == 99, "上限 100 で先頭を捨てた後でもタグが合う（y だけ捨てる）");
+        Check(std::string(u.PeekUndoName()) == "x", "最後の x が残る");
+    }
+}
 } // namespace
 
 int main()
@@ -257,6 +358,10 @@ int main()
     TestRollback();
     TestNestingAndStates();
     TestCaptureOutsideCallIsHuman();
+    TestLastHumanEditSeq();
+    TestEditOriginScopeNesting();
+    TestCaptureCounterPairing();
+    TestTruncateTo();
     std::printf("%s: %d checks / %d failures\n", g_failures == 0 ? "OK" : "NG", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
