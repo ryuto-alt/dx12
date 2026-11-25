@@ -142,6 +142,10 @@ namespace dx12e
 namespace dx12e
 {
 
+// W05-01b: 不透明なポインタ（定義と削除関数は別 TU。Application.cpp は完全型を必要としない）
+class FeatureRegistry;   struct FeatureRegistryDeleter  { void operator()(FeatureRegistry*) const; };    // 定義は renderer/RenderStageHooks.cpp
+struct RenderBackendExt; struct RenderBackendExtDeleter { void operator()(RenderBackendExt*) const; };   // 定義は graphics/RenderBackendExt.cpp
+
 // ★実装は 1 ファイルではない。18k 行のゴッドファイルだったのをテーマ別 TU へ分割してある
 //   （クラス定義はこのヘッダのまま・メンバ定義を移しただけ。全体像は ApplicationInternal.h）:
 //     Application.cpp          ctor / Initialize / Run / Update / Shutdown
@@ -166,6 +170,7 @@ struct SceneAssetRef
 class Application
 {
     friend struct PtHost;   // パストレーサーのスナップショットが描画リスト / SRV / カメラを読む
+    friend struct AppAccess;   // レーンごとの関数は core/AppAccess.h のレーンのブロックに static で宣言する
 public:
     Application();
     ~Application();
@@ -508,6 +513,10 @@ private:
     void RegisterMcpPathTracerMethods();  // DXR パストレーサー（render_reference / _status / _cancel）
     void RegisterMcpSequenceMethods();    // シーケンサー（sequence_list / load / save / get / eval / scrub / play / stop / apply_op）
     void RegisterMcpMatGraphMethods();    // マテリアルグラフ G2b（material_graph_get / edit / validate / compile / graphize / set_param）
+    void RegisterMcpLaneAMethods();       // mcp/ApplicationMcpLaneA.cpp（L1 / A）
+    void RegisterMcpLaneBMethods();       // mcp/ApplicationMcpLaneB.cpp（L2 / BD）
+    void RegisterMcpLaneCMethods();       // mcp/ApplicationMcpLaneC.cpp（L3 / C）
+    void RegisterMcpLaneDMethods();       // mcp/ApplicationMcpLaneD.cpp（予備）
     void RegisterMcpHardwareMethods();    // 物理ハードウェア（hw_list_ports / hw_status / hw_connect / hw_read / hw_write / hw_simulate / hw_calibrate / hw_flash ほか。mcp/ApplicationMcpHardware.cpp）
     void RegisterMcpEditorUiMethods();    // M7: エディタ操作の全面公開（editor_command_list / run / editor_state / editor_notify / editor_select。mcp/ApplicationMcpEditorUi.cpp）
     void ServiceMcpEditorUi();            // M7: editor_command_run の遅延応答（毎フレーム。ServiceMcpVirtualInput と同じ位置から呼ぶ）
@@ -2255,6 +2264,9 @@ private:
     std::unordered_map<std::string, double> m_persistStore;
     bool m_persistLoaded = false;
 
+    // W05-01b: 以後 W7 まで Application.h は凍結。追加メンバの入口はこの 2 つ（中身は各レーンの TU 側）
+    std::unique_ptr<FeatureRegistry, FeatureRegistryDeleter>   m_features;     // α3 が作る
+    std::unique_ptr<RenderBackendExt, RenderBackendExtDeleter> m_backendExt;   // F1〜F3（BarrierBatch、UploadRing、D3D12MA の予算、レンダーグラフ）の入口
 };
 
 // ══════════════════════════════════════════════════════════════════════════

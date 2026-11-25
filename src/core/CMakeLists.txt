@@ -56,6 +56,10 @@ add_library(Core STATIC
     mcp/ApplicationMcpReflectionProbe.cpp  # 反射プローブ（reflection_capture / reflection_probe_stats）
     mcp/ApplicationMcpWater.cpp      # 水面 W1（water_apply_preset）
     mcp/ApplicationMcpSceneBackup.cpp   # シーンの世代つきバックアップ（scene_backups）
+    mcp/ApplicationMcpLaneA.cpp         # W05-01b: レーン別の MCP 登録口（中身は各レーン。D は予備）
+    mcp/ApplicationMcpLaneB.cpp
+    mcp/ApplicationMcpLaneC.cpp
+    mcp/ApplicationMcpLaneD.cpp
     mcp/ApplicationMcpInstanceGroup.cpp   # インスタンス群（instance_group）
     mcp/ApplicationMcpFoliage.cpp    # 植生 F1（foliage_scatter / foliage_paint / foliage_stats / set_wind ほか）
     mcp/ApplicationMcpImGui.cpp      # 仮想入力モード（AI が OS の入力を奪わずエディタ UI を操作: dx12_imgui_*）
