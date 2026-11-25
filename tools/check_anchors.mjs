@@ -1,16 +1,17 @@
 // アンカーの lint（W05-31）。使い方: node tools/check_anchors.mjs [--self-test] [--strict] [--quiet]
 //
 // アンカーの書式（1 行に単独で書く。前後にコメント記号だけ許す）:
-//   ==== lane-A begin ====   ...   ==== lane-A end ====          （A〜D の 4 組）
-//   ==== lane-A:<名前> begin ====  ...  ==== lane-A:<名前> end ====   （名前付き。複数可）
+//   例: `==== lane-A begin ====` ... `==== lane-A end ====`（A〜D の 4 組）
+//   例: `==== lane-A:<名前> begin ====` ... `==== lane-A:<名前> end ====`（名前付き。複数可）
 //   コメント記号: C++ は //、CMake は #、Markdown は <!-- ... -->
+//   ※このヘッダ自身がアンカーに見えないよう、書式の例は必ず文章の途中に（バッククォートで）書く。
 // 検査:
 //   - begin / end が同じレーン・同じ名前で対になる（入れ子・取り残しは赤）
 //   - 名前の無いブロックを 1 つでも持つファイルは、A〜D の 4 つがそれぞれちょうど 1 回ある
 //   - 名前付きブロックは (レーン, 名前) ごとに 1 回だけ
 //   - 空のブロックは許す
 // 旧書式（==== wave<N>-lane<X> ==== begin/end）:
-//   ルート CMakeLists.txt の DXC / シェーダ区画の 18 組は許可リストで通す（M3 で W05-16 が消したら空にする）。
+//   ルート CMakeLists.txt の DXC / シェーダ区画の 36 行 = 18 組は許可リストで通す（M3 で W05-16 が消したら空にする）。
 //   それ以外のファイルの旧書式は W05-01 が新書式へ移すまでの暫定で、件数を報告して通す。
 //   --strict を付けると、許可リスト以外の旧書式はすべて赤になる（W05-01 のマージ後に使う）。
 import { execFileSync } from "node:child_process";
@@ -20,9 +21,11 @@ import { fileURLToPath } from "node:url";
 
 // 旧書式を許すファイル（常に通す）。M3 で W05-16 が区画を消したら、この配列を空にする。
 export const LEGACY_ALLOWLIST = ["CMakeLists.txt"];
+// 許可リストのファイルごとの旧書式の行数（期待値）。食い違えば赤にする（取りこぼしや、区画が消えて古くなった項目の検出）。
+export const LEGACY_EXPECTED_LINES = { "CMakeLists.txt": 36 };
 
 const NEW_RE = /^(?:\/\/|#|<!--)?\s*={4} lane-([A-D])(?::([A-Za-z0-9_.-]+))? (begin|end) ={4}\s*(?:-->)?\s*$/;
-const BAD_RE = /^(?:\/\/|#|<!--)?\s*={4} lane-\S*\s+(?:begin|end)\b/;
+const BAD_RE = /^(?:\/\/|#|<!--|\/\*|--|;|REM\b)?\s*={4}\s*lane-\S*\s+(?:begin|end)\b/i;
 const LEGACY_RE = /={4} wave\d+-lane[A-Za-z]\b.*?={4} (?:begin|end)\b/;
 const LANES = ["A", "B", "C", "D"];
 
@@ -40,9 +43,16 @@ export function checkText(text, name, { strict = false, legacyAllowed = false } 
   const open = new Map(); // key -> begin の行番号
   const seenBlocks = new Map(); // key -> begin の出現回数
   let unnamed = 0;
+  let fence = false; // Markdown のコードフェンス内は説明用の例なので対象外
+  const isMd = /\.(md|markdown)$/i.test(name);
   lines.forEach((raw, i) => {
     const ln = i + 1;
     const trimmed = raw.trim();
+    if (isMd && /^(```|~~~)/.test(trimmed)) {
+      fence = !fence;
+      return;
+    }
+    if (fence) return;
     const m = NEW_RE.exec(trimmed);
     if (!m) {
       if (BAD_RE.test(trimmed)) errors.push(`${name}:${ln}: アンカーの書式が不正です: ${trimmed}`);
@@ -103,6 +113,14 @@ function selfTest() {
   t(checkText("// ==== wave1-laneA ==== begin", "a", { strict: true, legacyAllowed: true }).errors.length === 0, "許可リスト");
   t(checkText("説明: `==== lane-A begin ====` と書く", "a").errors.length === 0, "文中の引用は対象外");
   t(checkText("", "a").errors.length === 0, "アンカーの無いファイル");
+  t(checkText("/* ==== lane-A begin ==== */", "a").errors.length > 0, "/* */ 形式は不正として赤");
+  t(checkText("-- ==== lane-A begin ====", "a").errors.length > 0, "-- 形式は不正として赤");
+  t(checkText("// ==== Lane-A begin ====", "a").errors.length > 0, "大文字の Lane は赤");
+  t(checkText("// ====  lane-A begin ====", "a").errors.length > 0, "空白が 2 つは赤");
+  t(checkText("```\n// ==== lane-A begin ====\n```", "a.md").errors.length === 0, "Markdown のフェンス内は対象外");
+  t(checkText("```\n// ==== lane-A begin ====\n```", "a.cpp").errors.length > 0, "Markdown 以外ではフェンスを見ない");
+  t(checkText(readFileSync(fileURLToPath(import.meta.url), "utf8"), "self").errors.length === 0, "このファイル自身が緑");
+  t(checkText("//   ==== lane-A begin ====   ...   ==== lane-A end ====", "a").errors.length > 0, "行頭アンカー風の説明行は赤（ヘッダに書かない）");
   console.log("self-test OK");
 }
 
@@ -120,6 +138,7 @@ function main() {
   let legacyFiles = 0;
   let legacyLines = 0;
   let anchored = 0;
+  const allowedSeen = new Set();
   for (const f of files) {
     if (SKIP_EXT.has(extname(f).toLowerCase())) continue;
     let text;
@@ -129,13 +148,24 @@ function main() {
       continue; // 消えたファイルなど
     }
     if (!text.includes("====")) continue;
-    const r = checkText(text, f, { strict, legacyAllowed: LEGACY_ALLOWLIST.includes(f) });
+    const allowed = LEGACY_ALLOWLIST.includes(f);
+    const r = checkText(text, f, { strict, legacyAllowed: allowed });
     errors.push(...r.errors);
+    if (allowed) {
+      const n = text.split(/\r?\n/).filter((l) => LEGACY_RE.test(l)).length;
+      const want = LEGACY_EXPECTED_LINES[f];
+      allowedSeen.add(f);
+      if (n === 0) errors.push(`${f}: 許可リストに載っているが旧書式が 0 行です（許可リストから外すこと）`);
+      else if (want !== undefined && n !== want) errors.push(`${f}: 旧書式が ${n} 行（期待 ${want}）。許可リストの外へ増えたか、消えた可能性があります`);
+    }
     if (r.legacy > 0) {
       legacyFiles++;
       legacyLines += r.legacy;
     }
     if (text.includes("==== lane-")) anchored++;
+  }
+  for (const f of LEGACY_ALLOWLIST) {
+    if (!allowedSeen.has(f)) errors.push(`${f}: 許可リストに載っているがファイルがありません（許可リストから外すこと）`);
   }
   if (errors.length > 0) {
     console.error(errors.join("\n"));
@@ -150,4 +180,5 @@ function main() {
   return 0;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) process.exitCode = main();
+// junction / シンボリックリンク / subst 経由でも確実に走らせるため、argv[1] との比較はしない（import 先は無い）。
+process.exitCode = main();

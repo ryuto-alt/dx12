@@ -35,6 +35,7 @@ export function collectTests({ offline = false } = {}) {
   }
   if (!offline) return all;
   const excl = new Set(readList("tests.offline-exclude.txt", true));
+  for (const x of excl) if (!seen.has(x)) throw new Error(`tests.offline-exclude.txt に未知のテストがあります: ${x}`);
   return all.filter((t) => !excl.has(t));
 }
 
@@ -43,6 +44,7 @@ function main() {
   const offline = args.includes("--offline");
   const list = args.includes("--list");
   const tests = collectTests({ offline });
+  if (tests.length === 0) throw new Error("テストが 0 本です（一覧ファイルが空）");
   if (list) {
     for (const t of tests) console.log(t);
     return 0;
@@ -59,11 +61,10 @@ function main() {
   return 0;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  try {
-    process.exitCode = main();
-  } catch (e) {
-    console.error(String(e?.message ?? e));
-    process.exitCode = 2;
-  }
+// 起動方法（junction / subst / シンボリックリンク経由でも）に関わらず必ず走らせる。import 先は無い。
+try {
+  process.exitCode = main();
+} catch (e) {
+  console.error(String(e?.message ?? e));
+  process.exitCode = 2;
 }
