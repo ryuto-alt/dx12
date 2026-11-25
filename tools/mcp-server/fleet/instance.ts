@@ -20,6 +20,21 @@ export const ENGINE_EXE = "DX12Engine.exe";
 // エンジンは GameRuntime.exe を実行しないので、リンクしても上書き・削除をロックしない)。
 const LINKABLE_DLLS = new Set(["dxcompiler.dll", "dxil.dll", "gameruntime.exe"]);
 
+/** src\D3D12 を dst\D3D12 へ再帰で運ぶ(Agility SDK の D3D12Core.dll 等。第三者製で再ビルドされないのでハードリンク、失敗したら実コピー)。 */
+export function materializeD3D12(srcDir: string, dstDir: string, linked: string[], rel = "D3D12"): number {
+  let copied = 0;
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const ent of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const from = path.join(srcDir, ent.name);
+    const to = path.join(dstDir, ent.name);
+    if (ent.isDirectory()) { copied += materializeD3D12(from, to, linked, `${rel}/${ent.name}`); continue; }
+    if (!ent.isFile()) continue;
+    try { fs.linkSync(from, to); linked.push(`${rel}/${ent.name}`); }
+    catch { fs.copyFileSync(from, to); copied += fs.statSync(from).size; }
+  }
+  return copied;
+}
+
 export type SourceBuild = {
   dir: string;
   exe: string;
@@ -89,6 +104,8 @@ export function materializeBin(src: SourceBuild, dstBin: string): { exePath: str
           catch { fs.copyFileSync(from, path.join(dstBin, f)); copiedBytes += st.size; }
         }
       }
+      const d3d12Src = path.join(src.dir, "D3D12");
+      if (statOrNull(d3d12Src)?.isDirectory()) copiedBytes += materializeD3D12(d3d12Src, path.join(dstBin, "D3D12"), linked);
       if (src.shadersDir) fs.cpSync(src.shadersDir, path.join(dstBin, "shaders"), { recursive: true, force: true });
       if (src.assetsDir) fs.cpSync(src.assetsDir, path.join(dstBin, "assets"), { recursive: true, force: true });
       // マテリアルグラフは実行時に ForwardGraph.hlsl を include してコンパイルする。exe のコピーからはリポジトリの shaders/ が
