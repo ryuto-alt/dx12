@@ -6,10 +6,10 @@
 ## 1. worktree の作り方
 
 ```powershell
-pwsh tools/worktree_setup.ps1 -Lane A      # C:\Users\ryuto\dx12-wt\lane-a / ブランチ wave-lane-a
+pwsh tools/worktree_setup.ps1 -Lane A      # %USERPROFILE%\dx12-wt\lane-a / ブランチ wave-lane-a
 pwsh tools/worktree_setup.ps1 -Lane B -Branch wave1/lane-b -Base overhaul/wave0
-pwsh tools/worktree_setup.ps1 -Path C:\Users\ryuto\dx12-wt\wt-foo -Branch wt-foo   # レーン外・使い捨て
-pwsh tools/worktree_setup.ps1 -Path C:\Users\ryuto\dx12-wt\wt-foo -Remove           # 片付け
+pwsh tools/worktree_setup.ps1 -Path %USERPROFILE%\dx12-wt\wt-foo -Branch wt-foo   # レーン外・使い捨て
+pwsh tools/worktree_setup.ps1 -Path %USERPROFILE%\dx12-wt\wt-foo -Remove           # 片付け
 ```
 
 スクリプトがやること:

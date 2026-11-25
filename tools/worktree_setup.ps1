@@ -1,9 +1,9 @@
 <#
   並列作業用の git worktree を作り、本体と資産を共有したまま configure まで済ませる。
 
-    pwsh tools/worktree_setup.ps1 -Lane A                       # C:\Users\ryuto\dx12-wt\lane-a、ブランチ wave-lane-a
+    pwsh tools/worktree_setup.ps1 -Lane A                       # %USERPROFILE%\dx12-wt\lane-a、ブランチ wave-lane-a
     pwsh tools/worktree_setup.ps1 -Lane B -Branch wave1/lane-b -Base overhaul/wave0
-    pwsh tools/worktree_setup.ps1 -Path C:\Users\ryuto\dx12-wt\wt-selftest -Branch wt-selftest   # レーン外(使い捨て)
+    pwsh tools/worktree_setup.ps1 -Path %USERPROFILE%\dx12-wt\wt-selftest -Branch wt-selftest   # レーン外(使い捨て)
     pwsh tools/worktree_setup.ps1 -Path ... -Remove             # worktree を片付ける(--force)
 
   やっていること:
@@ -94,7 +94,7 @@ if (-not $NoConfigure) {
         $m = Select-String -Path $cache -Pattern '^CMAKE_TOOLCHAIN_FILE:[A-Z]+=(.+)$' | Select-Object -First 1
         if ($m) { $tc = $m.Matches[0].Groups[1].Value.Trim() }
     }
-    if (-not $tc) { if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = 'C:\Users\ryuto\vcpkg' }; $tc = "$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" }
+    if (-not $tc) { if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = Join-Path $env:USERPROFILE 'vcpkg' }; $tc = "$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" }
     # CMake に渡すパスは / 区切りにする(\r や \U が再パースで化けるのを避ける)。
     $tc = $tc -replace '\\', '/'
     $vcpkgInstC = $vcpkgInst -replace '\\', '/'
