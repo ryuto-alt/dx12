@@ -469,6 +469,7 @@ void FillManifestChunk5(ManifestRows& o)
         "editor_ui", "", "", McpEffect::Read, "any", 30000, true, true,
         "none", "dx12_imgui_screenshot", {
             P("path", "string", false, nullptr, nullptr, nullptr, nullptr, "保存先 PNG(絶対パス推奨)。省略で CWD の mcp_imgui_screenshot.png。"),
+            P("hideCursor", "bool", false, nullptr, nullptr, nullptr, nullptr, "true で仮想カーソル(矢印・クリックの波紋)を絵に写さない(UI ゴールデン用。省略 = 写す)。"),
         })});
     o.push_back({"imgui_virtual_input", M("エディタの『仮想入力モード』を ON/OFF し、現在の状態を返す。★AI がエディタ UI(ImGui)を操作・撮影するときは必ずこのモードを ON にして、起動引数 --background(手前に出さない起動)と併用すること。",
         "imgui virtual input 仮想入力モード切替",

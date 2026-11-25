@@ -10,6 +10,7 @@
 #include "core/vfs/Vfs.h"
 #include "core/DpiScale.h"
 #include "gui/UiTestHarness.h"   // --ui-tests-skip（UI テストの除外指定）
+#include "gui/UiClock.h"         // --ui-deterministic（UI の時計を「フレーム番号 × 1/60」に固定）
 #include "editor/EditorTheme.h"   // --theme-variant（エディタのアイデンティティ案。開発用）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
 #include "core/OffscreenShot.h"     // --size WxH（screenshot_final の既定の撮影解像度。純ロジック）
@@ -641,6 +642,12 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         float v = 1.0f;
                         if (dx12e::dpi::ParseScale(value, v)) dx12e::dpi::SetOverride(v);
                         else OutputDebugStringA(("--dpi-scale の値が不正です（0.75〜3.0）: " + value + "\n").c_str());
+                    }
+                    else if (wcscmp(argv[i], L"--ui-deterministic") == 0)
+                    {
+                        // 検証用: UI の時計を実時間から切り離す（dt=1/60 固定・キャレット点滅なし・仮想カーソル非表示）。
+                        // UI ゴールデン（tests/golden/ui/）を同じ絵で撮るためのフラグ。通常の起動では使わない。
+                        dx12e::ui::clock::SetDeterministic(true);
                     }
                     else if (wcscmp(argv[i], L"--theme-variant") == 0 || wcsncmp(argv[i], L"--theme-variant=", 16) == 0)
                     {

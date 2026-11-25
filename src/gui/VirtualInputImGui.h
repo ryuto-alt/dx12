@@ -50,6 +50,10 @@ void SetImGuiVirtualMode(bool on);
 // 仮想カーソル（矢印 + クリックの波紋）を ForegroundDrawList(メインビューポート)へ描く。
 // 仮想モード ON の間だけ呼ぶこと。ImGui::Render の直前。
 void DrawVirtualCursor();
+// 仮想カーソルを描かない（imgui_screenshot {hideCursor:true} と --ui-deterministic。UI ゴールデン用）。
+// 仮想入力そのものは効いたまま、絵にだけ写さない。
+void SetCursorHidden(bool hidden);
+bool CursorHidden();
 // テスト用: 波紋の内部状態を捨てる。
 void ResetVirtualCursorState();
 // 描画した要素数（テスト用。矢印 + 波紋）。

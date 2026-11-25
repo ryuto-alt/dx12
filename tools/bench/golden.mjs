@@ -12,7 +12,16 @@
 //   node tools/bench/golden.mjs --repeat 2      同じシーンを 2 回撮って決定論も確かめる
 //   node tools/bench/golden.mjs --only a,b      名前で絞る
 //   node tools/bench/golden.mjs --strict        プロジェクトが見つからないシーンを SKIP ではなく不合格にする
+//   node tools/bench/golden.mjs --ui-only       kind:"ui"（エディタ UI の絵）だけ回す。--no-ui は逆に UI を回さない
+//   node tools/bench/golden.mjs --force-theme b UI を指定のテーマ案で撮る（基準は変えない＝差分を検出できるかの確認用）
 //   node tools/bench/golden.mjs --exe <path>    別の exe を撮る（既定: 環境変数 DX12_ENGINE_EXE → build/dev → build/release の順で最初にあるもの）
+//
+// ★kind:"ui"（W0-3）: エディタ UI（ImGui 込みの最終画面）のゴールデン。基準は tests/golden/ui/*.png。
+//   --background の背景起動（tools/engine_instance.ps1 経由・exe のコピー・人の画面には何も出ない）＋
+//   --ui-deterministic（UI の時計を「フレーム番号 × 1/60」に固定・キャレット点滅なし）＋
+//   imgui_screenshot {hideCursor:true} で撮る。DPI（--dpi-scale）とテーマ案（--theme-variant）を組み合わせる。
+//   プロジェクトは tests/golden/ui_project をコピーして使う（エディタが書き込んでも作業ツリーを汚さない）。
+//   masks: [[x0,y0,x1,y1],...]（0..1 の割合）の矩形は比べる前に塗りつぶす（トースト・時刻などの揺れる領域）。
 //
 // 設定は tests/golden/golden.json。出力（撮った絵・差分画像）は build/golden-out/。
 //
@@ -31,7 +40,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { REPO_ROOT, findDefaultExe, resolveProject, launchEngine, connect, sleep } from "./lib/engine.mjs";
+import { REPO_ROOT, findDefaultExe, resolveProject, launchEngine, launchInstance, connect, sleep } from "./lib/engine.mjs";
 import { sha256, resampleArea, compareImages, judge } from "./lib/imageDiff.mjs";
 
 export { sha256, resampleArea, compareImages, judge };
@@ -43,10 +52,12 @@ const GOLDEN_DIR = path.join(REPO_ROOT, "tests", "golden");
 const CONFIG = path.join(GOLDEN_DIR, "golden.json");
 const BASELINE = path.join(GOLDEN_DIR, "baseline.json");
 const OUT_DIR = path.join(REPO_ROOT, "build", "golden-out");
+const UI_DIR = path.join(GOLDEN_DIR, "ui");                       // UI ゴールデンの基準 PNG
+const UI_PROJECT_SRC = path.join(GOLDEN_DIR, "ui_project");       // UI 撮影用の最小プロジェクト（コピーして使う）
 
 // ─── 引数 ───────────────────────────────────────────────────────────────
 function parseArgs(argv) {
-  const a = { update: false, repeat: 1, only: null, exe: findDefaultExe(), strict: false };
+  const a = { update: false, repeat: 1, only: null, exe: findDefaultExe(), strict: false, uiOnly: false, noUi: false, forceTheme: null };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--update") a.update = true;
@@ -54,6 +65,9 @@ function parseArgs(argv) {
     else if (k === "--only") a.only = new Set(String(argv[++i]).split(",").map((s) => s.trim()).filter(Boolean));
     else if (k === "--exe") a.exe = path.resolve(argv[++i]);
     else if (k === "--strict") a.strict = true;
+    else if (k === "--ui-only") a.uiOnly = true;
+    else if (k === "--no-ui") a.noUi = true;
+    else if (k === "--force-theme") a.forceTheme = String(argv[++i]);
     else if (k === "--help" || k === "-h") { a.help = true; }
     else throw new Error(`不明な引数: ${k}`);
   }
@@ -80,6 +94,7 @@ function loadConfig() {
     width: d.width ?? 640, height: d.height ?? 360,
     settleFrames: d.settleFrames ?? 8, warmupFrames: d.warmupFrames ?? 60,
     ...s,
+    ...(s.kind === "ui" ? { warmupFrames: s.warmupFrames ?? d.uiWarmupFrames ?? 120 } : {}),
     tolerance: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25, ...(d.tolerance ?? {}), ...(s.tolerance ?? {}) },
   }));
 }
@@ -117,6 +132,127 @@ async function captureScene(eng, s, tag) {
   return { img: readPng(r.path), file: r.path, meta: r };
 }
 
+// ─── UI ゴールデン（kind:"ui"）──────────────────────────────────────────
+/** masks（0..1 の矩形）を単色で塗りつぶした複製を返す。基準にも今回にも同じ処理をする。 */
+export function applyMasks(img, masks) {
+  if (!masks?.length) return img;
+  const data = Buffer.from(img.data);
+  for (const [x0, y0, x1, y1] of masks) {
+    const ax = Math.max(0, Math.floor(x0 * img.width)), bx = Math.min(img.width, Math.ceil(x1 * img.width));
+    const ay = Math.max(0, Math.floor(y0 * img.height)), by = Math.min(img.height, Math.ceil(y1 * img.height));
+    for (let y = ay; y < by; y++)
+      for (let x = ax; x < bx; x++) {
+        const o = (y * img.width + x) * 4;
+        data[o] = 255; data[o + 1] = 0; data[o + 2] = 255; data[o + 3] = 255;
+      }
+  }
+  return { width: img.width, height: img.height, data };
+}
+
+/** 撮影用プロジェクトを build/golden-out/ui_project へ作り直す（毎回まっさらにする）。 */
+function prepareUiProject() {
+  if (!fs.existsSync(UI_PROJECT_SRC)) throw new Error(`UI 撮影用プロジェクトが無い: ${path.relative(REPO_ROOT, UI_PROJECT_SRC)}`);
+  const dst = path.join(OUT_DIR, "ui_project");
+  fs.rmSync(dst, { recursive: true, force: true });
+  fs.cpSync(UI_PROJECT_SRC, dst, { recursive: true });
+  return dst;
+}
+
+/** 起動引数（決定論・DPI・テーマ案）。テーマ default は何も付けない＝現行の見た目そのまま。 */
+export function uiExtraArgs(s, forceTheme = null) {
+  const a = ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0)];
+  const theme = forceTheme ?? s.theme ?? "default";
+  if (theme !== "default") a.push("--theme-variant", theme);
+  return a;
+}
+
+/** 1 つの UI シーンを撮る（起動 → 落ち着くまで回す → imgui_screenshot を repeat 回）。 */
+async function captureUi(s, args, project) {
+  const buildDir = path.dirname(args.exe);
+  const eng = await launchInstance({ name: "golden-ui", project, buildDir, extraArgs: uiExtraArgs(s, args.forceTheme) });
+  let conn;
+  try {
+    conn = await connect(eng.port);
+    // 起動直後はプロジェクトのロード中。ping が通り、数フレーム回せるようになるまで待つ。
+    for (let i = 0; i < 240; i++) {
+      try { await conn.call("ping"); await conn.call("step_frames", { frames: 2 }, 60_000); break; }
+      catch (e) { if (i === 239) throw e; await sleep(500); }
+    }
+    await conn.call("imgui_virtual_input", { enable: true });
+    if (s.warmupFrames > 0) await conn.call("step_frames", { frames: s.warmupFrames, deterministic: true }, 300_000);
+    const shots = [];
+    const n = Math.max(2, args.repeat);   // UI は常に 2 枚以上撮って決定論を確かめる
+    for (let k = 0; k < n; k++) {
+      const file = path.join(OUT_DIR, `${s.name}.${k}.native.png`);
+      await conn.call("step_frames", { frames: s.settleFrames, deterministic: true }, 120_000);
+      const r = await conn.call("imgui_screenshot", { hideCursor: true, path: file }, 120_000);
+      shots.push({ img: readPng(r.path), file: r.path });
+    }
+    return shots;
+  } finally {
+    try { conn?.close(); } catch { /* 既に切れている */ }
+    eng.kill();
+  }
+}
+
+async function runUiScenes(list, args, baseline, results) {
+  fs.mkdirSync(UI_DIR, { recursive: true });
+  const head = gitHead();
+  for (const s of list) {
+    const r = { name: s.name, pass: true, reasons: [], ui: true };
+    results.push(r);
+    const t0 = Date.now();
+    try {
+      const project = prepareUiProject();
+      const shots = await captureUi(s, args, project);
+      const first = shots[0];
+      r.native = `${first.img.width}x${first.img.height}`;
+      // ★マスク（3D ビューポート・FPS・トースト）を塗ってから比べる。ハッシュもマスク後の絵のもの。
+      const masked = shots.map((x) => applyMasks(x.img, s.masks));
+      r.sha = sha256(masked[0]);
+      r.deterministic = masked.every((x) => sha256(x) === r.sha);
+      if (!r.deterministic) {
+        const c = compareImages(masked[0], masked.at(-1), s.tolerance.pixelThreshold);
+        r.determinismDiff = { diffRatio: c.diffRatio, meanAbs: c.meanAbs, maxDist: c.maxDist };
+        writePng(path.join(OUT_DIR, `${s.name}.repeat-diff.png`), c.diffImage);
+        r.pass = false;
+        r.reasons.push("同じセッションで撮り直した 2 枚が一致しない（UI に実時間・乱数が混ざっている）。masks を足すか、原因を直す");
+      }
+      const small = resampleArea(masked[0], s.width, s.height);
+      const refFile = path.join(UI_DIR, `${s.name}.png`);
+      if (args.update) {
+        writePng(refFile, small);
+        baseline.scenes[s.name] = {
+          kind: "ui", nativeWidth: first.img.width, nativeHeight: first.img.height, nativeSha256: r.sha /* マスク後 */,
+          compareSha256: sha256(small), width: s.width, height: s.height, dpi: s.dpi ?? 1.0, theme: s.theme ?? "default",
+          commit: head, capturedAt: new Date().toISOString(), deterministicInSession: r.deterministic,
+        };
+        r.updated = true;
+        continue;
+      }
+      writePng(path.join(OUT_DIR, `${s.name}.png`), small);
+      const b = baseline.scenes[s.name];
+      if (!fs.existsSync(refFile)) { r.pass = false; r.reasons.push("基準画像が無い（--update で撮る）"); continue; }
+      if (b && (b.nativeWidth !== first.img.width || b.nativeHeight !== first.img.height)) {
+        r.pass = args.strict ? false : r.pass; r.skipped = !args.strict; r.envMismatch = true;
+        r.reasons.push(`環境違い: ネイティブ解像度が基準と違う（基準 ${b.nativeWidth}x${b.nativeHeight}、今回 ${first.img.width}x${first.img.height}）`);
+        continue;
+      }
+      const ref = readPng(refFile);
+      const cmp = compareImages(ref, small, s.tolerance.pixelThreshold);
+      writePng(path.join(OUT_DIR, `${s.name}.diff.png`), cmp.diffImage);
+      r.diffRatio = cmp.diffRatio; r.meanAbs = cmp.meanAbs; r.maxDist = cmp.maxDist;
+      const j = judge(cmp, s.tolerance);
+      r.pass = r.pass && j.pass; r.reasons.push(...j.reasons);
+      if (b) r.bitExact = b.nativeSha256 === r.sha;
+    } catch (e) {
+      r.pass = false;
+      r.reasons.push(`撮影失敗: ${e.message}`);
+    }
+    console.log(`  (ui ${s.name}: ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+  }
+}
+
 // ─── 本体 ───────────────────────────────────────────────────────────────
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -127,6 +263,10 @@ async function main() {
   let scenes = loadConfig();
   if (args.only) scenes = scenes.filter((s) => args.only.has(s.name));
   if (!scenes.length) { console.log("対象のシーンが無い"); return 1; }
+  const uiScenes = scenes.filter((s) => s.kind === "ui");
+  scenes = scenes.filter((s) => s.kind !== "ui");
+  if (args.uiOnly) scenes = [];
+  if (args.noUi) uiScenes.length = 0;
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
   const baseline = fs.existsSync(BASELINE) ? JSON.parse(fs.readFileSync(BASELINE, "utf8")) : { scenes: {} };
@@ -227,6 +367,8 @@ async function main() {
     }
     console.log(`  (${path.basename(project)}: ${((Date.now() - t0) / 1000).toFixed(1)}s)`);
   }
+
+  if (uiScenes.length) await runUiScenes(uiScenes, args, baseline, results);
 
   if (args.update) {
     fs.writeFileSync(BASELINE, JSON.stringify(baseline, null, 2) + "\n");

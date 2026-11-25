@@ -1,4 +1,5 @@
 #include "gui/VirtualInputImGui.h"
+#include "gui/UiClock.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -173,6 +174,7 @@ struct Ripple { float x, y; double t0; int button; };
 std::vector<Ripple> g_ripples;
 uint64_t g_seenClickSeq = 0;
 int      g_lastPrimCount = 0;
+bool     g_cursorHidden = false;
 
 constexpr double kRippleLife = 0.55;
 
@@ -197,9 +199,13 @@ void ResetVirtualCursorState()
 
 int LastCursorPrimCount() { return g_lastPrimCount; }
 
+void SetCursorHidden(bool hidden) { g_cursorHidden = hidden; }
+bool CursorHidden() { return g_cursorHidden; }
+
 void DrawVirtualCursor()
 {
     g_lastPrimCount = 0;
+    if (g_cursorHidden) return;   // UI ゴールデン: カーソルも波紋も写さない
     ImGuiContext* g = ImGui::GetCurrentContext();
     if (!g) return;
     const vinput::Queue::Applied& st = vinput::Global().State();
@@ -207,7 +213,7 @@ void DrawVirtualCursor()
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImDrawList* dl = ImGui::GetForegroundDrawList(vp);   // ★メインビューポート指定（引数なしは別 OS 窓へ描く罠）
-    const double now = ImGui::GetTime();
+    const double now = ui::clock::Now();
     const float dk = ImGui::GetStyle().FontScaleDpi > 0.0f ? ImGui::GetStyle().FontScaleDpi : 1.0f;   // 表示倍率（仮想カーソルの大きさ）
 
     const vinput::ImGuiPoint pos = vinput::ClientToImGui(

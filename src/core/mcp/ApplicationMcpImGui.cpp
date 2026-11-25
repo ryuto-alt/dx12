@@ -433,7 +433,7 @@ void Application::RegisterMcpImGuiMethods()
         });
 
     // ---- スクショ（ImGui 込み）----
-    McpDefine("imgui_screenshot", "path:string", DX12E_MCP_HANDLER
+    McpDefine("imgui_screenshot", "hideCursor:bool,path:string", DX12E_MCP_HANDLER
         {
             if (m_isGameMode || !m_imguiManager)
                 throw McpError(McpErr::ModeConflict, "editor UI is not available", "エディタとして起動していること");
@@ -442,6 +442,9 @@ void Application::RegisterMcpImGuiMethods()
                     "a screenshot is already pending; retry shortly",
                     "前の imgui_screenshot / screenshot_final の応答を待ってから撮る（通常 1〜2 フレームで返る）");
             m_mcpFinalShot = {};
+            // hideCursor:true = 仮想カーソル（矢印・波紋）を絵に写さない（UI ゴールデン用）。
+            // 次に描くフレームの EndFrame から効き、次の imgui_screenshot が指定し直すまで続く（省略 = 写す）。
+            vinput_gui::SetCursorHidden(params.value("hideCursor", false));
             m_mcpFinalShot.path      = params.value("path", std::string());
             m_mcpFinalShot.reply     = deferred;
             m_mcpFinalShot.withImGui = true;

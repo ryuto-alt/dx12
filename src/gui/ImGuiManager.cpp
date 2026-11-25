@@ -17,6 +17,7 @@
 #include "editor/EditorTheme.h"
 #include "gui/VirtualInputImGui.h"
 #include "gui/FloatingGuard.h"
+#include "gui/UiClock.h"
 
 #include <filesystem>
 
@@ -802,6 +803,17 @@ void ImGuiManager::BeginFrame()
     {
         ImGui_ImplDX12_NewFrame();
         ImGui_ImplWin32_NewFrame();
+    }
+    // --ui-deterministic: 実時間を UI に持ち込まない（UI ゴールデン用）。
+    //   dt を 1/60 に固定する＝ImGui::GetTime() もキャレット点滅も「フレーム番号 × 1/60」で進む。
+    //   キャレットは点滅させず常に表示、仮想カーソルは描かない。
+    ui::clock::Advance();
+    if (ui::clock::Deterministic())
+    {
+        ImGuiIO& dio = ImGui::GetIO();
+        dio.DeltaTime = static_cast<float>(ui::clock::kFixedDt);
+        dio.ConfigInputTextCursorBlink = false;
+        vinput_gui::SetCursorHidden(true);
     }
     ImGui::NewFrame();
 

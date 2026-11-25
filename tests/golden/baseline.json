@@ -43,6 +43,34 @@
       "commit": "d5193dd",
       "capturedAt": "2026-09-25T13:10:58.233Z",
       "deterministicInSession": null
+    },
+    "ui_dpi100_default": {
+      "kind": "ui",
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "nativeSha256": "0f0021862ebcd87cec355beacf17b502c0dfcca45d76ac8b0b92d204200d503f",
+      "compareSha256": "4eb89d827814a28391e591f1b8f107467e32bdd5f5c4c5c223576a971cd287b6",
+      "width": 640,
+      "height": 360,
+      "dpi": 1,
+      "theme": "default",
+      "commit": "c86c324",
+      "capturedAt": "2026-11-25T15:44:17.985Z",
+      "deterministicInSession": true
+    },
+    "ui_dpi100_b": {
+      "kind": "ui",
+      "nativeWidth": 1920,
+      "nativeHeight": 1080,
+      "nativeSha256": "0509bd3d54a715e1ca1d0c559932a812e7d141b1cba9620ded1f4f651ee8cdd6",
+      "compareSha256": "ecc1b1f51913dd6134997cb77631073562d5566fa90bec72d5fcaf3f88146647",
+      "width": 640,
+      "height": 360,
+      "dpi": 1,
+      "theme": "b",
+      "commit": "c86c324",
+      "capturedAt": "2026-11-25T15:44:23.350Z",
+      "deterministicInSession": true
     }
   }
 }

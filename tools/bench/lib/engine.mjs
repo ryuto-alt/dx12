@@ -108,6 +108,40 @@ export async function launchEngine({ exe = DEFAULT_EXE, project, scene, port, ti
 }
 
 /**
+ * tools/engine_instance.ps1 経由で「exe のコピー」を背景起動する（UI ゴールデン用）。
+ *   - 既定は --background（オフスクリーン・仮想入力・前面化しない）。窓は人の画面に出ない。
+ *   - exe / DLL / shaders はインスタンス専用フォルダへコピーされる＝ビルド出力を握らない（LNK1104 を避ける）。
+ *   - データ領域（DX12E_DATA_DIR）もインスタンスごと＝人の設定（テーマ・最近のプロジェクト）に影響されない。
+ *   - imgui.ini はインスタンスのフォルダにあるので、起動前に消して「既定レイアウト」から始める。
+ * buildDir: DX12Engine.exe のあるフォルダ（省略で build/release）。
+ * 止めるときは engine_instance.ps1 -Stop（自分の PID だけ）。
+ */
+export async function launchInstance({ name, project, port, buildDir, mode = "background", extraArgs = [], timeoutMs = 180_000 } = {}) {
+  const script = path.join(REPO_ROOT, "tools", "engine_instance.ps1");
+  const usePort = port ?? (await findFreePort());
+  const stop = () => spawnSync("pwsh", ["-NoProfile", "-File", script, "-Name", name, "-Stop"], { stdio: "ignore" });
+  stop();
+  const instDir = path.join(process.env.LOCALAPPDATA ?? "", "UnoEngine", "agent-instances", name);
+  for (const f of ["imgui.ini"]) { try { fs.rmSync(path.join(instDir, f), { force: true }); } catch { /* 無ければよい */ } }
+  // ★-ExtraArgs は string[] で値が "--" 始まりなので、-File ではなく -Command で配列リテラルとして渡す。
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  let cmd = `& ${q(script)} -Name ${q(name)} -Port ${usePort} -Project ${q(project)} -Mode ${q(mode)} -IdleExitMin 20`;
+  if (buildDir) cmd += ` -BuildDir ${q(buildDir)}`;
+  if (extraArgs.length) cmd += ` -ExtraArgs @(${extraArgs.map(q).join(",")})`;
+  const r = spawnSync("pwsh", ["-NoProfile", "-Command", cmd], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`engine_instance.ps1 が失敗（${r.status}）: ${(r.stderr || r.stdout || "").trim()}`);
+  const onExit = () => stop();
+  process.once("exit", onExit);
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    if (await portOpen(usePort)) return { port: usePort, dir: instDir, kill: () => { process.removeListener("exit", onExit); stop(); } };
+    await new Promise((res) => setTimeout(res, 500));
+  }
+  stop();
+  throw new Error(`インスタンス起動が ${timeoutMs}ms でポート ${usePort} を開けなかった`);
+}
+
+/**
  * 行 JSON で 1 本繋ぐ。応答は id で突き合わせる（遅延応答が混ざっても取り違えない）。
  * call() は ok:false なら例外（error / error_hint を載せる）。
  */

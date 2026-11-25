@@ -25,6 +25,28 @@ run_golden.bat --only nocturne_hall --repeat 2   # 決定論も確かめる
 ★基準は撮った PC の GPU / ドライバに依存する。別の GPU では 1 LSB 以上ずれ得るので、
 CI で回す場合は基準を撮った GPU と同じランナーで回すこと（GitHub-hosted の Windows には GPU が無く、エンジンもビルドできない）。
 
+## UI ゴールデン（kind:"ui"。大改修の安全網）
+
+エディタ UI（ImGui 込みの最終画面）の見た目が意図せず変わっていないかを見る。3D のゴールデンとは別枠で、`golden.json` の `kind:"ui"` のシーンが対象。
+
+```
+node tools/bench/golden.mjs --ui-only                  UI だけ基準と比べる
+node tools/bench/golden.mjs --ui-only --update         UI の基準（tests/golden/ui/*.png）を撮り直す
+node tools/bench/golden.mjs --ui-only --force-theme b  default のシーンを --theme-variant b で撮って比べる（差分を検出できる確認用。FAIL が正しい）
+node tools/bench/golden.mjs --no-ui                    3D のゴールデンだけ回す
+```
+
+- 起動は `tools/engine_instance.ps1` 経由の **`--background`**（exe のコピー・窓は人の画面に出ない・実マウスに触れない）。データ領域と `imgui.ini` はインスタンス専用なので、人の設定に左右されず**既定レイアウト**で始まる。
+- 決定論は 3 つで作る:
+  1. `--ui-deterministic`: UI の時計 `ui::clock::Now()`（`src/gui/UiClock.h`）が「フレーム番号 × 1/60」になり、`io.DeltaTime` も 1/60 固定、キャレットは点滅せず、仮想カーソルは描かれない。W1-A2 の `ui::anim` もこの時計を使う。
+  2. `imgui_screenshot {hideCursor:true}`: 仮想カーソル（矢印・波紋）を絵に写さない。
+  3. `step_frames` で warmup（既定 120 フレーム）してから撮る。
+- 同じセッションで毎回 2 枚撮り、ネイティブ解像度で **1 ビットも違わない**ことを確かめる（違えば FAIL。`build/golden-out/<name>.repeat-diff.png`）。
+- 比較は 3D と同じ（640x360 へ面積平均で縮め、同じ許容差）。揺れる領域（トースト・時刻）は `masks: [[x0,y0,x1,y1]]`（0..1 の割合）で塗りつぶしてから縮める。
+- 撮影用プロジェクトは `tests/golden/ui_project`（`--new-project --template empty` で作った最小構成）。実行のたびに `build/golden-out/ui_project` へコピーして使う。
+- 今ある組み合わせ: DPI 100% × テーマ default / b × 既定レイアウト。DPI 150%、マテリアル / ライティング WS のレイアウトは必要になったら `golden.json` へ足す（`dpi`・`theme` で指定。レイアウトは未実装）。
+- 環境（GPU・ドライバ・フォント）が変わると基準とずれうる。ネイティブ解像度が違うときは SKIP（`--strict` で不合格）。
+
 ## CI への組み込み案（自前 GPU ランナー）
 
 `.github/workflows/` はクラウドのセッションから push できないため、ここに案だけ置く。

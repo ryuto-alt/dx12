@@ -113,6 +113,7 @@ regRaw(
       + "返る値: 画像 + {path, width, height, source:'backbuffer+imgui', virtualCursor}。",
     inputSchema: {
       path: z.string().optional().describe("保存先 PNG(絶対パス推奨)。省略で CWD の mcp_imgui_screenshot.png。"),
+      hideCursor: z.boolean().optional().describe("true で仮想カーソル(矢印・クリックの波紋)を絵に写さない(UI ゴールデン用)。省略 = 写す。"),
     },
     annotations: { title: "ImGui込みスクリーンショット", openWorldHint: false, readOnlyHint: true },
   },

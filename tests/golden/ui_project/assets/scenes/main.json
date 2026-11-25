@@ -1,0 +1,23 @@
+{
+  "gi": { "mode": "new" },
+  "raytracing": { "shadowEnabled": true,
+    "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
+              "spacing1": 2.0, "bounceIntensity": 1.0 } },
+  "ssgi": { "enabled": true },
+  "entities": [
+    { "name": "Sun",
+      "directionalLight": { "direction": [-0.4, -1.0, -0.35], "color": [1.0, 0.97, 0.9], "intensity": 1.1, "ambient": 0.0 },
+      "transform": { "position": [0.0, 12.0, 0.0], "rotation": [55.0, -30.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
+    { "name": "MainCamera",
+      "camera": { "fovDegrees": 60.0, "nearClip": 0.1, "farClip": 1000.0, "isActive": true },
+      "transform": { "position": [0.0, 8.0, -12.0], "rotation": [28.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
+    { "name": "Grid", "gridPlane": { "size": 50.0 },
+      "transform": { "position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] } },
+    { "name": "Cube", "primitive": "box", "color": [0.6, 0.65, 0.75],
+      "luaScript": { "scriptPath": "components/Spinner.lua", "enabled": true, "props": [] },
+      "transform": { "position": [0.0, 0.5, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] } }
+  ],
+  "postProcess": { "enabled": true, "fxaaOn": true },
+  "ssao": { "enabled": true },
+  "shadows": true
+}
