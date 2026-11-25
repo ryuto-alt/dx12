@@ -4945,6 +4945,7 @@ const DiagReg kTests[] = {
     // ==== lane-B begin ====
     // ==== lane-B end ====
     // ==== lane-C begin ====
+    { "basic", "create_entity_selects", "基本操作", "新しく作ったエンティティが選択される（W05-21）", uitest::T_CreateEntitySelects },
     // ==== lane-C end ====
     // ==== lane-D begin ====
     // ==== lane-D end ====
