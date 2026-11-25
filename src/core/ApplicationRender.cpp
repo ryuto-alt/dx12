@@ -30,6 +30,7 @@
 #include "editor/PostPresetSwatch.h"
 #include "renderer/TransitionPresets.h"
 #include "renderer/ViewDesc.h"
+#include "renderer/RenderStageHooks.h"   // W05-25: ステージフック（FeatureRegistry）
 #include "renderer/ViewPasses.h"
 #include "renderer/instancegpu/InstanceGpuMath.h"   // kLodScaleDefault
 #include "editor/AssetDrop.h"
@@ -2757,6 +2758,7 @@ struct Application::RenderFrameContext
 struct Application::PostChainInputs
 {
     ID3D12GraphicsCommandList* cmd = nullptr;
+    const ViewDesc* view = nullptr;   // W05-25: ステージフックの ctx 用（主ビューの ViewDesc）
     u32 frameIndex = 0;
     f32 totalTime  = 0.0f;
     u32 vpLeft = 0, vpTop = 0, vpW = 0, vpH = 0;   // 出力矩形（バックバッファ上）
@@ -2778,6 +2780,12 @@ struct Application::PostChainInputs
 
 void Application::Render()
 {
+    // W05-25: ステージフックの登録簿（初回のフレームで 1 回だけ作る。登録 0 件なら以後のフックは何も記録しない）
+    if (!m_features)
+    {
+        m_features.reset(new FeatureRegistry());
+        RegisterAllFeatures(*m_features);
+    }
     RenderFrameContext frame{};
     BeginRenderFrame(frame);
     // ★MCP / エディタの遅延コマンド（生成・削除・複製・Undo・シーンロード等）のドレインは
@@ -5309,6 +5317,34 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     passCtx.timer      = primary ? m_gpuTimer.get() : nullptr;
     passCtx.depth      = &depthState;
 
+    // ---- W05-25: ステージフック（登録 0 件のステージは何も記録しない）----
+    // b1 を作る前（影・深度プリパス）のステージでは perFrame は 0 / null。
+    FrameConstantsData*       stagePfCpu = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS stagePfVa  = 0;
+    auto runStage = [&](Stage st)
+    {
+        if (!m_features || m_features->Empty(st)) return;
+        StageCtx sc{};
+        sc.cmd        = nativeCmdList;
+        sc.view       = &view;
+        sc.internalW  = rW;  sc.internalH = rH;
+        sc.outW       = m_postW; sc.outH = m_postH;
+        sc.frameIndex = frameIndex;
+        sc.primary    = primary;
+        sc.sceneColor = sceneRT->GetResource();
+        sc.sceneRtv   = sceneRT->GetRtv();
+        sc.depth      = depthRes;
+        if (depthSrvIndex != 0xFFFFFFFFu) sc.depthSrv = m_srvHeap->GetGpuHandle(depthSrvIndex);
+        sc.perFrameGpuVa = stagePfVa;
+        sc.perFrameCpu   = stagePfCpu;
+        sc.descriptors   = m_srvHeap.get();
+        sc.timer         = passCtx.timer;
+        m_features->Run(st, sc);
+        // 機能が張り替えたかもしれないので、後段のために SRV ヒープだけ張り直す。
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+    };
+    if (primary && m_features) m_features->SyncResize(rW, rH, m_postW, m_postH);
+
     // ===== 物理ベース大気 A1: LUT 更新 + IBL 増分再ベイク（主ビューだけ・影パスより前）=====
     // ★atmosphere.enabled=false（既定）なら即 return ＝ コマンドは 1 命令も増えない。IBL の派生（t5..t7）は影・フォワード・SSGI・DDGI より前に更新される。
     if (primary) AtmosphereRecordFrame(view, frameIndex, nativeCmdList);
@@ -5382,6 +5418,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             m_numSpotShadowSlots = n;
         }
 
+        runStage(Stage::BeforeShadows);
         gpuBegin(GpuTimer::Shadows);
         m_passBucket = primary ? &m_passShadow : &m_passOther;
         // ヒープ / ルートシグネチャ / 遷移 / ビューポート / クリアは ShadowMapPass が張る
@@ -5650,6 +5687,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
         gpuEnd(GpuTimer::Shadows);
         m_passBucket = &m_passOther;
+        runStage(Stage::AfterShadows);
     }   // kViewShadows
 
     // ===== メインパス（オフスクリーン RT へ描画）=====
@@ -6078,6 +6116,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     if (primary)
         m_cpuMs[CpuPrepass] += std::chrono::duration<f32, std::milli>(
             std::chrono::high_resolution_clock::now() - _prepassT0).count();
+    runStage(Stage::AfterDepthPrepass);
 
     sceneRT->Transition(*m_commandList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
@@ -6201,6 +6240,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // b1 はビューごとに別バッファ（同じフレーム内で別視点を描くので主ビューの分を上書きできない）。
     ConstantBuffer* const frameCB = view.perFrameCB;
     frameCB->Update(&fc, sizeof(fc), frameIndex);
+    stagePfCpu = &fc;
+    stagePfVa  = frameCB->GetGpuAddress(frameIndex);
 
     // ===== ここから下の compute（クラスタ / DDGI / デカール / フォグ）はフレームで 1 回だけ ====
     // ＝主ビューの仕事。副ビューは主ビューが作ったライトリスト / プローブ / フォグを読むだけ。
@@ -6537,6 +6578,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             DrawVirtualGeometryDebug(nativeCmdList, frameIndex, /*VG_DBG_SHADE*/ 0u, sceneRT->GetRtv(), rW, rH, viewFar);
     }
 
+    runStage(Stage::BeforeForwardOpaque);
+
     // ===== Forward+（全Entity。メインパスなら編集カメラ視点）=====
     // AO / コンタクトシャドウは有効時のみ実テクスチャ、無効時は白（＝素通し）。深度プリパスが
     // 走ったときだけ深度が完成済み → LESS_EQUAL forward PSO で再利用する。
@@ -6581,12 +6624,16 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         if (!waterPass)
         {
             ForwardScenePass(std::move(fwd)).Execute(passCtx);
+            // 水が無いときは不透明と半透明が 1 つのパスなので、境の 2 つのステージは続けて呼ぶ。
+            runStage(Stage::AfterForwardOpaque);
+            runStage(Stage::BeforeTranslucent);
         }
         else
         {
             m_meshPhase = 1;   // 不透明（+ 植生）
             ForwardScenePass(fwd).Execute(passCtx);
             m_meshPhase = 0;
+            runStage(Stage::AfterForwardOpaque);
             water::PassIn wp{};
             wp.cmd = nativeCmdList;
             wp.wrap = m_commandList.get();
@@ -6605,6 +6652,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             wp.width = rW;
             wp.height = rH;
             m_water->Record(wp);
+            runStage(Stage::BeforeTranslucent);
             m_meshPhase = 2;   // 半透明 + グリッド + 発光弾（GPU タイマーは 1 回目で計測済み）
             RenderPassContext ctxNoTimer = passCtx;
             ctxNoTimer.timer = nullptr;
@@ -6738,6 +6786,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         DrawWorldSprites(nativeCmdList, camVPJ, camRight, camUp,
                          sceneRT->GetRtv(), depthDsv, 0u, 0u, rW, rH, totalTime);
     }
+
+    // 半透明・パーティクル・ワールドスプライトまで終わった位置（VFX の合成などの帯）。
+    runStage(Stage::AfterTranslucent);
 
     // ===== 中間バッファ可視化（dx12_render_debug）=====
     // ★ここに挿す理由: シーン RT がまだ RENDER_TARGET で、ポストチェーンより前。
@@ -6892,6 +6943,7 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     {
         PostChainInputs pci{};
         pci.cmd        = nativeCmdList;
+        pci.view       = &view;
         pci.frameIndex = frameIndex;
         pci.totalTime  = totalTime;
         pci.vpLeft = vpLeft;  pci.vpTop = vpTop;  pci.vpW = vpW;  pci.vpH = vpH;
@@ -6963,6 +7015,31 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
 
     backBuffer = m_swapChain->GetCurrentBackBuffer();
     rtv        = m_swapChain->GetCurrentRTV();
+
+    // ---- W05-25: ポストのステージフック（登録 0 件なら何も記録しない）----
+    // ポスト中は sceneRT が読み取り状態なので sceneRtv は 0。sceneColorSrv が「今のチェーンの絵」。
+    // toBackBuffer=true のとき（PostPostUber）は sceneColor / sceneRtv がバックバッファ（RENDER_TARGET）を指す。
+    auto postStage = [&](Stage st, D3D12_GPU_DESCRIPTOR_HANDLE chainSrv, bool toBackBuffer, bool depthSrvReady,
+                         D3D12_GPU_DESCRIPTOR_HANDLE depthSrvH)
+    {
+        if (!m_features || m_features->Empty(st)) return;
+        StageCtx sc{};
+        sc.cmd        = nativeCmdList;
+        sc.view       = in.view;
+        sc.internalW  = rW;  sc.internalH = rH;
+        sc.outW       = m_postW; sc.outH = m_postH;
+        sc.frameIndex = frameIndex;
+        sc.primary    = true;
+        sc.sceneColor = toBackBuffer ? backBuffer : sceneRT->GetResource();
+        if (toBackBuffer) sc.sceneRtv = rtv;
+        sc.sceneColorSrv = chainSrv;
+        sc.depth      = depthRes;
+        if (depthSrvReady) sc.depthSrv = depthSrvH;
+        sc.descriptors = m_srvHeap.get();
+        sc.timer       = m_gpuTimer.get();
+        m_features->Run(st, sc);
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+    };
 
     // シーンRT は PS（ブルーム/uber）と CS（自動露出）の両方から読むので複合読取状態へ遷移
     sceneRT->Transition(*m_commandList,
@@ -7065,6 +7142,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
 
         // ---- シーン変換チェーン: TAA → DoF → モーションブラー（結果を以降の「シーン」として使う）----
         D3D12_GPU_DESCRIPTOR_HANDLE curSceneSrv = sceneSrvGpu;
+        postStage(Stage::BeforeTemporal, curSceneSrv, false, needDepthSrv, depthSrvGpu);
 
         // ★TAA はチェーンの先頭。トーンマップ前のリニア HDR に対して解決する。
         //   露出に依存するアーティファクトを避けるためと、以降の DoF / モーションブラー /
@@ -7118,6 +7196,8 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             }
             ppApplied.fxaaOn = false;   // DLSS 済みの絵に FXAA を重ねると輪郭が二重にぼける（TAA と同じ扱い）
         }
+        // 時間方向の解決（TAA / DLSS）が終わった位置（解決が無効でも呼ぶ）。
+        postStage(Stage::AfterUpscale, curSceneSrv, false, needDepthSrv, depthSrvGpu);
         const f32 postW = static_cast<f32>(pW), postH = static_cast<f32>(pH);
 
         if (wantDepthPost && ppApplied.dofOn && m_dofPass)
@@ -7200,6 +7280,8 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
         }
 
+        postStage(Stage::PostPreBloom, curSceneSrv, false, needDepthSrv, depthSrvGpu);
+
         // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
         if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
@@ -7281,6 +7363,8 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             }
         }
 
+        postStage(Stage::PostPreUber, curSceneSrv, false, needDepthSrv, depthSrvGpu);
+
         // ---- 最終(uber)パス: バックバッファへ ----
         // ★スクリーンシェーダーがある回だけ、ここの出力先を中間 RT へ差し替える
         //   （中間 RT はバックバッファと同じ寸法・同じビューポートで描くので、
@@ -7359,6 +7443,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
                                                      : m_srvHeap->GetGpuHandle(m_ssaoWhiteSrvIndex);
             m_screenShaderPass->Apply(nativeCmdList, screenPso, colorSrv, dSrv, sc);
         }
+
+        // uber（と画面全体のカスタムシェーダー）の後。★オフスクリーン撮影のフレームは uber の出力先が別 RT のため、
+        //   バックバッファへ描く機能はこのフレームでは効かない（撮影の絵には写らない）。
+        postStage(Stage::PostPostUber, {}, true, false, {});
 
         // ---- 速度バッファのデバッグ可視化（ポスト後のバックバッファを上書き）----
         // 静止時に全面が均一な (0.5,0.5,0.5) グレーになるのが「ジッタが正しく除去されている」証拠。
@@ -7904,6 +7992,20 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
 
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
 
+    // W05-25: エディタのオーバーレイのフック（ポスト後のバックバッファ。アイコンや ImGui より前）。
+    if (m_features && !m_features->Empty(Stage::EditorOverlay))
+    {
+        StageCtx sc{};
+        sc.cmd = nativeCmdList; sc.frameIndex = frameIndex; sc.primary = true;
+        sc.outW = m_postW; sc.outH = m_postH;
+        sc.sceneColor = backBuffer; sc.sceneRtv = rtv;
+        sc.descriptors = m_srvHeap.get(); sc.timer = m_gpuTimer.get();
+        m_features->Run(Stage::EditorOverlay, sc);
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRenderTarget(rtv);
+        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
+    }
+
     // ---- Editor Icon Draw（ポスト後のバックバッファへ, エディタモード + 一時停止中）----
     // ★一時停止(F1)中も描く。シーンビューを飛び回って「ゲームカメラが今どこを向いているか」を
     //   見るための機能なので、ここで切ると一時停止の意味が半分無くなる。
@@ -8091,6 +8193,21 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
             m_commandList->SetRenderTarget(rtv);   // 深度は張らない（#16: メイン深度はレンダー解像度）
             m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
         }
+    }
+
+    // W05-25: エディタのプレビュー系（パーティクル / トランジション / マテリアル）の前のフック。
+    //   機能は自前のオフスクリーン RT へ描く。出口でバックバッファへ戻す。
+    if (m_features && !m_features->Empty(Stage::EditorPreview))
+    {
+        StageCtx sc{};
+        sc.cmd = nativeCmdList; sc.frameIndex = frameIndex; sc.primary = true;
+        sc.outW = m_postW; sc.outH = m_postH;
+        sc.sceneColor = backBuffer; sc.sceneRtv = rtv;
+        sc.descriptors = m_srvHeap.get(); sc.timer = m_gpuTimer.get();
+        m_features->Run(Stage::EditorPreview, sc);
+        m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+        m_commandList->SetRenderTarget(rtv);
+        m_commandList->SetViewportAndScissor(m_window->GetWidth(), m_window->GetHeight());
     }
 
     // ===== パーティクルエディタのプレビュー（専用オフスクリーンRT。UI本体は後段のImGuiパスで描く）=====

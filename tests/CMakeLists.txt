@@ -835,6 +835,19 @@ if(TARGET Renderer)
     endif()
     add_test(NAME ClusterTableLayoutTests COMMAND ClusterTableLayoutTests)
 endif()
+# ステージフック / FeatureRegistry（ヘッダだけで完結）。W05-25。
+if(TARGET Renderer)
+    find_package(directxmath CONFIG REQUIRED)
+    find_package(directx-headers CONFIG REQUIRED)
+    add_executable(RenderStageHooksTests render_stage_hooks_test.cpp)
+    target_include_directories(RenderStageHooksTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(RenderStageHooksTests PRIVATE Microsoft::DirectXMath Microsoft::DirectX-Headers)
+    if(MSVC)
+        target_compile_options(RenderStageHooksTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(RenderStageHooksTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME RenderStageHooksTests COMMAND RenderStageHooksTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====
