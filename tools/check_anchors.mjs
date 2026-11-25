@@ -6,7 +6,7 @@
 //   コメント記号: C++ は //、CMake は #、Markdown は <!-- ... -->
 //   ※このヘッダ自身がアンカーに見えないよう、書式の例は必ず文章の途中に（バッククォートで）書く。
 // 検査:
-//   - begin / end が同じレーン・同じ名前で対になる（入れ子・取り残しは赤）
+//   - begin / end が同じレーン・同じ名前で対になる（入れ子・交差・取り残しは赤。名前付きブロックも他のブロックの中には置けない）
 //   - 名前の無いブロックを 1 つでも持つファイルは、A〜D の 4 つがそれぞれちょうど 1 回ある
 //   - 名前付きブロックは (レーン, 名前) ごとに 1 回だけ
 //   - 空のブロックは許す
@@ -14,6 +14,7 @@
 //   ルート CMakeLists.txt の DXC / シェーダ区画の 36 行 = 18 組は許可リストで通す（M3 で W05-16 が消したら空にする）。
 //   それ以外のファイルの旧書式は W05-01 が新書式へ移すまでの暫定で、件数を報告して通す。
 //   --strict を付けると、許可リスト以外の旧書式はすべて赤になる（W05-01 のマージ後に使う）。
+//   追跡条件: W05-01 のマージ後（M0）に、ctest の AnchorLint を --strict で登録するか、この既定を strict に切り替える。
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, extname } from "node:path";
@@ -26,7 +27,9 @@ export const LEGACY_EXPECTED_LINES = { "CMakeLists.txt": 36 };
 
 const NEW_RE = /^(?:\/\/|#|<!--)?\s*={4} lane-([A-D])(?::([A-Za-z0-9_.-]+))? (begin|end) ={4}\s*(?:-->)?\s*$/;
 const BAD_RE = /^(?:\/\/|#|<!--|\/\*|--|;|REM\b)?\s*={4}\s*lane-\S*\s+(?:begin|end)\b/i;
-const LEGACY_RE = /={4} wave\d+-lane[A-Za-z]\b.*?={4} (?:begin|end)\b/;
+const LEGACY_RE = /^\s*(?:\/\/|#|<!--|\/\*|--|;|REM\b)?\s*={4} wave\d+-lane[A-Za-z]\b.*?={4} (?:begin|end)\b/;
+// 名前に空白が入った begin/end（`lane-A:foo bar begin`）。NEW_RE に合わないので別に拾う。
+const BAD_NAME_RE = /^(?:\/\/|#|<!--|\/\*|--|;|REM\b)?\s*={4} lane-[A-Da-d]:\S*\s+\S.*?\s(?:begin|end) ={4}/;
 const LANES = ["A", "B", "C", "D"];
 
 const SKIP_EXT = new Set([
@@ -40,22 +43,31 @@ export function checkText(text, name, { strict = false, legacyAllowed = false } 
   const errors = [];
   let legacy = 0;
   const lines = text.split(/\r?\n/);
-  const open = new Map(); // key -> begin の行番号
+  const stack = []; // 開いているブロック（{key, ln}）。入れ子・交差は赤
   const seenBlocks = new Map(); // key -> begin の出現回数
   let unnamed = 0;
-  let fence = false; // Markdown のコードフェンス内は説明用の例なので対象外
+  let fence = null; // Markdown のコードフェンス内（開きの記号 ``` か ~~~）は説明用の例なので対象外
+  let fenceLn = 0;
   const isMd = /\.(md|markdown)$/i.test(name);
   lines.forEach((raw, i) => {
     const ln = i + 1;
     const trimmed = raw.trim();
-    if (isMd && /^(```|~~~)/.test(trimmed)) {
-      fence = !fence;
-      return;
+    if (isMd) {
+      const fm = /^(```|~~~)/.exec(trimmed);
+      if (fm && !fence) {
+        fence = fm[1];
+        fenceLn = ln;
+        return;
+      }
+      if (fm && fm[1] === fence) {
+        fence = null;
+        return;
+      }
     }
     if (fence) return;
     const m = NEW_RE.exec(trimmed);
     if (!m) {
-      if (BAD_RE.test(trimmed)) errors.push(`${name}:${ln}: アンカーの書式が不正です: ${trimmed}`);
+      if (BAD_RE.test(trimmed) || BAD_NAME_RE.test(trimmed)) errors.push(`${name}:${ln}: アンカーの書式が不正です: ${trimmed}`);
       if (LEGACY_RE.test(raw) && !legacyAllowed) {
         legacy++;
         if (strict) errors.push(`${name}:${ln}: 旧書式のアンカーです（--strict）: ${trimmed}`);
@@ -65,19 +77,26 @@ export function checkText(text, name, { strict = false, legacyAllowed = false } 
     const [, lane, label, kind] = m;
     const key = label ? `${lane}:${label}` : lane;
     if (kind === "begin") {
-      if (open.has(key)) errors.push(`${name}:${ln}: lane-${key} の begin が入れ子/重複です（前の begin は ${open.get(key)} 行）`);
-      else open.set(key, ln);
+      if (stack.length > 0) {
+        const top = stack[stack.length - 1];
+        errors.push(`${name}:${ln}: lane-${key} の begin が lane-${top.key}（${top.ln} 行）の中にあります。入れ子は不可`);
+      }
+      stack.push({ key, ln });
       const c = (seenBlocks.get(key) ?? 0) + 1;
       seenBlocks.set(key, c);
       if (c === 2) errors.push(`${name}:${ln}: lane-${key} のブロックが重複しています`);
       if (!label) unnamed++;
-    } else if (!open.has(key)) {
-      errors.push(`${name}:${ln}: lane-${key} の end に対応する begin がありません`);
+    } else if (stack.length === 0 || stack[stack.length - 1].key !== key) {
+      const top = stack[stack.length - 1];
+      errors.push(`${name}:${ln}: lane-${key} の end が対応する begin と合いません（直近の begin は ${top ? `lane-${top.key} ${top.ln} 行` : "なし"}）`);
+      const idx = stack.map((b) => b.key).lastIndexOf(key);
+      if (idx >= 0) stack.splice(idx, 1);
     } else {
-      open.delete(key);
+      stack.pop();
     }
   });
-  for (const [key, ln] of open) errors.push(`${name}:${ln}: lane-${key} の begin に対応する end がありません`);
+  if (fence) errors.push(`${name}:${fenceLn}: Markdown のコードフェンスが閉じていません`);
+  for (const { key, ln } of stack) errors.push(`${name}:${ln}: lane-${key} の begin に対応する end がありません`);
   if (unnamed > 0) {
     for (const l of LANES) {
       if (!seenBlocks.has(l)) errors.push(`${name}: lane-${l} のブロックがありません（A〜D の 4 つが必要）`);
@@ -121,6 +140,17 @@ function selfTest() {
   t(checkText("```\n// ==== lane-A begin ====\n```", "a.cpp").errors.length > 0, "Markdown 以外ではフェンスを見ない");
   t(checkText(readFileSync(fileURLToPath(import.meta.url), "utf8"), "self").errors.length === 0, "このファイル自身が緑");
   t(checkText("//   ==== lane-A begin ====   ...   ==== lane-A end ====", "a").errors.length > 0, "行頭アンカー風の説明行は赤（ヘッダに書かない）");
+  const A = (k, kind) => `// ==== lane-${k} ${kind} ====`;
+  const J = (...a) => a.join("\n");
+  t(checkText(J(A("A", "begin"), A("B", "begin"), A("A", "end"), A("B", "end")), "a").errors.length > 0, "交差は赤");
+  t(checkText(J(A("A", "begin"), A("B", "begin"), A("B", "end"), A("A", "end")), "a").errors.length > 0, "レーン間の入れ子は赤");
+  t(checkText(J(A("A", "begin"), A("A:x", "begin"), A("A:x", "end"), A("A", "end")), "a").errors.length > 0, "名前付きの入れ子も赤");
+  t(checkText(J(A("A:x", "begin"), A("A:x", "end"), A("B:y", "begin"), A("B:y", "end")), "a").errors.length === 0, "並びは緑");
+  t(checkText("// ==== lane-A:foo bar begin ====", "a").errors.length > 0, "名前の空白は赤");
+  t(checkText(J("```", "foo"), "a.md").errors.length > 0, "閉じていないフェンスは赤");
+  t(checkText(J("```", "~~~", A("A", "begin"), "```"), "a.md").errors.length === 0, "``` の中の ~~~ は閉じ扱いにしない");
+  t(checkText(J("~~~", "```", "~~~", A("A", "begin")), "a.md").errors.length > 0, "~~~ で閉じた後は検査する");
+  t(checkText("説明 ==== wave1-laneA ==== begin", "a", { strict: true }).errors.length === 0, "旧書式は行頭のみ（文中は対象外）");
   console.log("self-test OK");
 }
 

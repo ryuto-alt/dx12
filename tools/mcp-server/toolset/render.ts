@@ -151,7 +151,7 @@ reg(
 reg(
   "dx12_get_ssao",
   "SSAO設定取得",
-  "現在のシーンの SSAO(スクリーンスペース環境遮蔽)設定を返す。{enabled, radius, bias, intensity, power, sampleCount, blur, multiBounce}。★正射カメラ(俯瞰パズル等)では SSAO は自動無効化される(エンジン側の既知の制約)。",
+  "現在のシーンの SSAO(スクリーンスペース環境遮蔽)設定を返す。{enabled, radius, bias, intensity, power, sampleCount, blur}。★正射カメラ(俯瞰パズル等)では SSAO は自動無効化される(エンジン側の既知の制約)。",
   {},
   { readOnlyHint: true },
   () => run(() => engine.call("get_ssao", {})),
@@ -169,7 +169,6 @@ reg(
     power: z.number().optional(),
     sampleCount: z.number().int().optional().describe("8 か 16。"),
     blur: z.boolean().optional(),
-    multiBounce: z.boolean().optional().describe("Multi-bounce(拡散 AO の albedo 補正)。既定 false。"),
   },
   { idempotentHint: true },
   (a) => run(() => applyAndVerify("set_ssao", "get_ssao", a)),

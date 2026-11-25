@@ -14,8 +14,7 @@ import { unknownKeyIssues, bodyFromIssues } from "../validate.ts";
 import { envelope } from "../errors.ts";
 import { ERROR_BODY } from "../toolRuntime.ts";
 
-// 仮想ジオメトリ 3 本(vg_stats / set_virtual_geometry / vg_cook)と、同じ作法で登録する材質シェーディング 2 本(get_shading / set_shading)。
-export const VG_TOOLS = ["dx12_vg_stats", "dx12_set_virtual_geometry", "dx12_vg_cook", "dx12_get_shading", "dx12_set_shading"];
+export const VG_TOOLS = ["dx12_vg_stats", "dx12_set_virtual_geometry"];
 
 const SET_SHAPE: Record<string, z.ZodTypeAny> = {
   enabled: z.boolean().optional().describe("GPU カリング + メッシュシェーダ描画を ON/OFF(既定 OFF)。"),
@@ -31,14 +30,7 @@ const SET_SHAPE: Record<string, z.ZodTypeAny> = {
   forceLod0: z.boolean().optional().describe("検証 / 計測用。LOD0 の葉クラスタだけを選ぶ(全 LOD0 の素朴な参照。三角形が桁違いに増える)。"),
   resolve: z.boolean().optional().describe("P4: 材質 resolve(フォワードと同じライティングで VG 画素を塗る。既定 true)。false = P3 の暫定シェーディング(A/B 用。シーンには保存されない)。"),
   stableOrder: z.boolean().optional().describe("P4: 決定論(可視リストをフェーズごとに安定ソート。同じ深さの面の先着が起動ごとに変わらない)。決定論キャプチャ中は自動で ON(既定 false)。"),
-  hzbExactSphere: z.boolean().optional(),
-  lodOutputPixels: z.boolean().optional(),
-  shadows: z.boolean().optional().describe("VG を影にも描く。"),
-  shadowLodTexels: z.number().min(0.25).max(8).optional(),
-  shadowTriBudgetM: z.number().min(0).max(1000).optional().describe("影の三角形予算(百万。0=無制限)"),
 };
-
-const LONG_TAIL = new Set(["dx12_vg_cook", "dx12_get_shading", "dx12_set_shading"]);
 
 type Def = { title: string; description: string; shape: Record<string, z.ZodTypeAny>; annotations: Record<string, unknown>; keywords: string; method: string };
 const DEFS: Record<string, Def> = {
@@ -58,29 +50,6 @@ const DEFS: Record<string, Def> = {
       + "実行時のみの raster / rasterAs / smallPrimCull / measure / forceLod0 / resolve / stableOrder。SM 6.6 + Resource Binding Tier 3 が無い GPU では無効(gpuSupported:false)。",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     keywords: "vg virtual geometry nanite 仮想ジオメトリ 設定 enabled lodPixelError hzb cone",
-  },
-  dx12_vg_cook: {
-    title: "仮想ジオメトリへ cook", method: "vg_cook",
-    shape: {
-      path: z.string().describe("モデルの assets 相対パス(glb / gltf / fbx / obj)。"),
-      force: z.boolean().optional().describe("cook 済みでも作り直す(既定 false)。"),
-    },
-    description: "モデルを仮想ジオメトリ(.vgeo)へ裏で cook する。置いたエンティティは完了後に自動で VG へ差し替わる。進み具合は dx12_vg_stats の autoCook。20 万三角形以上の静的モデルは読み込み時に自動 cook されるので、しきい値未満でも VG にしたい / 作り直したい(force)ときに使う。",
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    keywords: "vg virtual geometry nanite cook 仮想ジオメトリ 変換 glb fbx obj vgeo ハイポリ",
-  },
-  dx12_get_shading: {
-    title: "シェーディング設定取得", method: "get_shading", shape: {},
-    description: "材質シェーディングのシーン設定を返す。{multiScatter}。",
-    annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
-    keywords: "shading 材質シェーディング マルチスキャッタ multiScatter",
-  },
-  dx12_set_shading: {
-    title: "シェーディング設定変更", method: "set_shading",
-    shape: { multiScatter: z.boolean().optional().describe("マルチスキャッタのエネルギー補償(既定 true。false で従来の絵)。") },
-    description: "材質シェーディングのシーン設定(マルチスキャッタのエネルギー補償 ON/OFF)を変える。{applied, multiScatter}。",
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    keywords: "shading 材質シェーディング マルチスキャッタ multiScatter",
   },
 };
 
@@ -102,8 +71,7 @@ if (ENHANCED && SURFACE !== "legacy") {
         return errResult(e);
       }
     };
-    // vg_cook / get_shading / set_shading は長尾: full 面の tools/list にも出さず dx12_call で使う(full の総バイト数を M0 以下に保つ)。
-    const hidden = SURFACE === "shell" || SURFACE === "core" || LONG_TAIL.has(name);
+    const hidden = SURFACE === "shell" || SURFACE === "core";
     const registered = server.registerTool(
       name,
       { title: def.title, description: def.description, inputSchema: z.object(def.shape).passthrough() as any, annotations: { title: def.title, ...def.annotations } },

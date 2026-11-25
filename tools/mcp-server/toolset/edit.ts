@@ -165,23 +165,10 @@ reg(
       .number()
       .optional()
       .describe("マテリアル AO の強さ 0..1(0=オフ、負=モデルの値)。AO を持つモデル(ORM の R / glTF occlusionTexture)にだけ効き、間接光にだけ掛かる"),
-    // 拡張シェーディング(glTF の KHR_materials_* と同じ意味)。null で「材質に従う」へ戻す。
-    clearCoat: z.number().nullable().optional().describe("クリアコート 0..1(null=材質)"),
-    clearCoatRoughness: z.number().nullable().optional(),
-    anisotropy: z.number().nullable().optional().describe("異方性 -1..1"),
-    anisotropyRotation: z.number().nullable().optional(),
-    anisotropyRotationDeg: z.number().nullable().optional(),
-    sheenColor: z.array(z.number()).length(3).nullable().optional(),
-    sheenRoughness: z.number().nullable().optional(),
-    specularFactor: z.number().nullable().optional(),
-    specularColor: z.array(z.number()).length(3).nullable().optional(),
-    ior: z.number().nullable().optional().describe("屈折率 1..5"),
   },
   { idempotentHint: true },
   ({ entity, name, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity,
-     emissiveIntensity, emissiveColor, aoStrength, clearCoat, clearCoatRoughness, anisotropy,
-     anisotropyRotation, anisotropyRotationDeg, sheenColor, sheenRoughness, specularFactor,
-     specularColor, ior }) =>
+     emissiveIntensity, emissiveColor, aoStrength }) =>
     run(() =>
       engine.call("set_pbr", {
         entity,
@@ -196,16 +183,6 @@ reg(
         emissiveIntensity,
         emissiveColor,
         aoStrength,
-        clearCoat,
-        clearCoatRoughness,
-        anisotropy,
-        anisotropyRotation,
-        anisotropyRotationDeg,
-        sheenColor,
-        sheenRoughness,
-        specularFactor,
-        specularColor,
-        ior,
       }),
     ),
 );
