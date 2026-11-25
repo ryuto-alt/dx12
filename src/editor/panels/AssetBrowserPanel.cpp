@@ -122,6 +122,31 @@ bool ValidFileName(const std::string& n)
 #include <imgui_internal.h>
 #pragma warning(pop)
 
+namespace
+{
+// 名前変更のインライン編集の一時状態（パネルのヘッダを変えずに持つ。編集中のフィールドは同時に 1 つだけ）。
+int    g_renameSelectFrames = 0;   // >0 の間、InputText のコールバックで「拡張子の前まで」を選択し直す
+size_t g_renameStemBytes = 0;      // 選択する範囲（バイト。ImGui の SelectionStart/End はバイト位置）
+struct PendingExtChange
+{
+    bool open = false;             // モーダルを開く要求
+    std::filesystem::path src;
+    std::string name;
+    bool isNew = false;
+} g_extChange;
+
+int RenameSelectCallback(ImGuiInputTextCallbackData* data)
+{
+    if (g_renameSelectFrames > 0 && data->BufTextLen > 0)
+    {
+        data->SelectionStart = 0;
+        data->SelectionEnd = static_cast<int>((std::min)(g_renameStemBytes, static_cast<size_t>(data->BufTextLen)));
+        data->CursorPos = data->SelectionEnd;
+    }
+    return 0;
+}
+} // namespace
+
 namespace dx12e
 {
 
@@ -1665,6 +1690,10 @@ void AssetBrowserPanel::StartRename(const std::filesystem::path& p, bool isNew)
     m_renameWarmup = 3;   // 3 フレーム分フォーカス安定を待つ（セルが描かれてから数える）
     std::memset(m_renameBuf, 0, sizeof(m_renameBuf));
     strncpy_s(m_renameBuf, p.filename().string().c_str(), _TRUNCATE);
+    // F2 の初期選択は拡張子の前まで（フォルダは全体）。コールバックは warmup 中のフォーカス再取得の後にも掛け直す。
+    std::error_code dec;
+    g_renameStemBytes = std::filesystem::is_directory(p, dec) ? std::strlen(m_renameBuf) : abl::StemByteLength(m_renameBuf);
+    g_renameSelectFrames = 5;
 }
 
 void AssetBrowserPanel::DrawRenameField(EditorContext& ctx)
@@ -1674,8 +1703,11 @@ void AssetBrowserPanel::DrawRenameField(EditorContext& ctx)
         ImGui::SetKeyboardFocusHere();
         --m_renameWarmup;
     }
-    const bool entered = ui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
-                                       ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    // ui::InputText はコールバックを渡せないので直接呼び、枠だけ ui 側の描画に合わせる。
+    const bool entered = ImGui::InputText("##Rename", m_renameBuf, sizeof(m_renameBuf),
+                                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackAlways, RenameSelectCallback);
+    ui::OutlineLastItem();
+    if (g_renameSelectFrames > 0) --g_renameSelectFrames;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) { m_renamePath.clear(); return; }
     if (entered) { CommitRename(ctx); return; }
     if (m_renameWarmup == 0 && !ImGui::IsItemActive() && !ImGui::IsItemFocused()) CommitRename(ctx);   // フォーカスが外れたら確定
@@ -1689,10 +1721,26 @@ void AssetBrowserPanel::CommitRename(EditorContext& ctx)
     std::string name = m_renameBuf;
     while (!name.empty() && name.front() == ' ') name.erase(name.begin());
     while (!name.empty() && name.back() == ' ') name.pop_back();
+    // 拡張子を守る（フォルダは対象外）: 名前だけ打てば元の拡張子が付く。別の拡張子が付いていたら確認する。
+    bool extChanged = false;
+    if (std::error_code dec; !std::filesystem::is_directory(src, dec))
+    {
+        const abl::RenamedName rn = abl::ComposeRenamedFileName(src.filename().string(), name);
+        name = rn.name;
+        extChanged = rn.extChanged;
+    }
     if (name == src.filename().string()) return;
     if (!ValidFileName(name))
     {
         ctx.Notify(ui::ToastKind::Warn, "この名前は使えません（\\ / : * ? \" < > | は使えず、末尾に空白や . も付けられません）");
+        return;
+    }
+    if (extChanged)
+    {
+        g_extChange.open = true;
+        g_extChange.src = src;
+        g_extChange.name = name;
+        g_extChange.isNew = isNew;
         return;
     }
     BeginRelocate(ctx, {RelocateOp{src, src.parent_path() / name}}, /*isRename=*/true, /*checkRefs=*/!isNew);
@@ -2153,6 +2201,36 @@ void AssetBrowserPanel::DrawModals(EditorContext& ctx)
             m_pendingDelete.clear();
             m_deleteError.clear();
             m_deletePopupOpen = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    // ---- 名前変更で拡張子（= 種類）が変わるときの確認 ----
+    if (g_extChange.open)
+    {
+        ImGui::OpenPopup("##RenameExtConfirm");
+        g_extChange.open = false;
+    }
+    ImGui::SetNextWindowSize(ui::Px(440.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("##RenameExtConfirm", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("「%s」を「%s」に名前変更しますか？", g_extChange.src.filename().string().c_str(), g_extChange.name.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, th::Warn);
+        ImGui::TextWrapped("拡張子が変わるため、ファイルの種類が変わります。サムネイルや参照が使えなくなることがあります。");
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+        if (ui::DangerButton("名前変更する", ui::Px(140.0f, 0.0f)))
+        {
+            const std::filesystem::path src = g_extChange.src;
+            BeginRelocate(ctx, {RelocateOp{src, src.parent_path() / g_extChange.name}}, /*isRename=*/true, /*checkRefs=*/!g_extChange.isNew);
+            g_extChange = PendingExtChange{};
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f)))
+        {
+            g_extChange = PendingExtChange{};
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

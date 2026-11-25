@@ -819,4 +819,58 @@ inline std::string FormatSize(uint64_t bytes)
     return buf;
 }
 
+// ============================================================ 名前変更（拡張子の保護）
+
+// 拡張子（最後の '.' 以降）の開始バイト位置。無ければ npos。先頭のドットだけのファイル（.gitignore）は拡張子なし。
+inline size_t ExtensionPos(std::string_view name)
+{
+    const size_t dot = name.rfind('.');
+    if (dot == std::string_view::npos || dot == 0) return std::string_view::npos;
+    return dot;
+}
+
+// F2 の初期選択範囲（バイト数。ImGui の SelectionStart/End はバイト位置なので UTF-8 の境界を壊さない。
+// '.' は ASCII で、UTF-8 の継続バイトには現れないので、最後の '.' の位置は必ずコードポイントの境界）。
+inline size_t StemByteLength(std::string_view name)
+{
+    const size_t p = ExtensionPos(name);
+    return p == std::string_view::npos ? name.size() : p;
+}
+
+struct RenamedName
+{
+    std::string name;
+    bool        extChanged = false;   // true = 元と別の拡張子が指定された（呼び出し側が「種類が変わります」を確認する）
+};
+
+// input（前後の空白は呼び出し側で除去済み）を元の名前 oldName の拡張子ルールで確定名にする。
+//   ・input に拡張子が無ければ元の拡張子を付ける（a.glb + b → b.glb）
+//   ・input の拡張子が元と同じ（大文字小文字無視）ならそのまま
+//   ・別の拡張子なら input のまま extChanged = true
+//   ・二重拡張子（.tar.gz）は最後の 1 つだけを拡張子とみなす。元に拡張子が無ければ何もしない。
+// フォルダには使わない（呼び出し側が分岐する）。
+inline RenamedName ComposeRenamedFileName(std::string_view oldName, std::string_view input)
+{
+    RenamedName r;
+    r.name = std::string(input);
+    const size_t oldPos = ExtensionPos(oldName);
+    if (oldPos == std::string_view::npos || input.empty()) return r;
+    const std::string_view oldExt = oldName.substr(oldPos);
+    const size_t newPos = ExtensionPos(input);
+    // 「.glb」だけを打った（先頭ドットのみ = ExtensionPos では拡張子なし）。元の拡張子と同じなら名前は空 = 変更なし。
+    if (newPos == std::string_view::npos && input.size() > 1 && input.find('.', 1) == std::string_view::npos && LowerAscii(input) == LowerAscii(oldExt))
+    {
+        r.name = std::string(oldName);
+        return r;
+    }
+    if (newPos == std::string_view::npos)
+    {
+        if (input.back() == '.') return r;   // "b." は不正名として呼び出し側の検証が弾く
+        r.name += std::string(oldExt);
+        return r;
+    }
+    if (LowerAscii(input.substr(newPos)) != LowerAscii(oldExt)) r.extChanged = true;
+    return r;
+}
+
 } // namespace dx12e::abl
