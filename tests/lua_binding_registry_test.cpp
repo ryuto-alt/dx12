@@ -4,7 +4,12 @@
 #include "scene/Scene.h"
 #include "renderer/Mesh.h"   // Scene のデストラクタが Mesh の完全型を要る
 
+#pragma warning(push)
+#pragma warning(disable: 4100 4189 4244 4267 4996)
+#define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
+#pragma warning(pop)
+static_assert(SOL_IS_ON(SOL_SAFE_FUNCTION_CALLS), "sol2 の安全チェックが ON であること");
 
 #include <cmath>
 #include <cstdio>

@@ -13,6 +13,7 @@
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
 #pragma warning(pop)
+static_assert(SOL_IS_ON(SOL_SAFE_FUNCTION_CALLS), "sol2 の安全チェックが ON であること（LuaBindingRegistry.h などが sol を先に読むと OFF になる）");
 
 #include "scene/Scene.h"
 #include "scene/Entity.h"

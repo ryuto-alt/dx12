@@ -3,7 +3,9 @@
 // 新しい束縛は scripting/bind/<名前>.cpp に `void BindXxx(sol::state&, ScriptContext&)` を書き、
 // LuaBindList.inc に UNO_LUA_BIND(BindXxx) を 1 行足す（ScriptEngine.cpp は触らない）。
 // ★自己登録（静的初期化子）は使わない。静的ライブラリでは .obj ごとリンカに捨てられるため。
-#include <sol/forward.hpp>
+// ★sol のヘッダは include しない。<sol/forward.hpp> は sol/version.hpp 経由で SOL_ALL_SAFETIES_ON を
+//   その時点で確定させ、後続の #define を無効にする（TU 間で安全チェックが食い違う ODR 違反になる）。
+namespace sol { class state; }
 
 namespace dx12e
 {

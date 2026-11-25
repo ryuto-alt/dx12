@@ -35,14 +35,25 @@ function listScenes(projRoot) {
 // 値そのものではなく「最初に現れた順」の番号（g0, g1, …）に置き換えてから比べる。
 // 欠落・重複した guid や、parentGuid のつながりの変化は、番号の並びの違いとして残る。
 // （Play→Stop の前後の比較は 1 つのエンジンの中なので、この置き換えをせず生のバイトで比べる）
-function normalizeGuids(text) {
+function normalizeGuids(text, stable) {
+  // stable: 元のシーンファイルに書かれていた guid。これは生の値のまま比べる（別の値への書き換えを見逃さない）。
+  // 保存時に新しく振られた guid だけを出現順の番号にする。
   const map = new Map();
-  return text.replace(/"(guid|valueGuid|parentGuid)":"([0-9a-fA-F]+)"/g, (_m, k, v) => {
+  return text.replace(/"(guid|valueGuid|parentGuid)":"([0-9a-fA-F]+)"/g, (m, k, v) => {
+    if (stable && stable.has(v)) return m;
     if (!map.has(v)) map.set(v, `g${map.size}`);
     return `"${k}":"${map.get(v)}"`;
   });
 }
-const sha = (buf) => createHash("sha256").update(normalizeGuids(buf.toString("utf8"))).digest("hex");
+function stableGuids(origBytes) {
+  const set = new Set();
+  if (!origBytes) return set;
+  for (const m of origBytes.toString("utf8").matchAll(/"(?:guid|valueGuid|parentGuid)":"([0-9a-fA-F]+)"/g)) set.add(m[1]);
+  return set;
+}
+// 注意: --record と --compare はどちらもエンジンの保存結果どうしの比較（ビルド間の一致）で、
+// 元のシーンファイルとのバイト一致は見ていない。
+const sha = (buf, orig) => createHash("sha256").update(normalizeGuids(buf.toString("utf8"), stableGuids(orig))).digest("hex");
 const rawSha = (buf) => createHash("sha256").update(buf).digest("hex");
 
 async function waitIdle(c, timeoutMs = 60_000) {
@@ -77,7 +88,9 @@ async function resaveProject(projRel, exe, port, withPlay) {
       const bytes = fs.readFileSync(abs);
       if (bytes.includes("_eid")) problems.push(`${projRel}/${scene}: 保存ファイルに "_eid" が出ている`);
       const key = `${path.basename(projRel)}/${scene}`;
-      out[key] = sha(bytes);
+      let orig = null;
+      try { orig = fs.readFileSync(path.join(proj, "assets", scene)); } catch { /* 元ファイルが読めなければ全 guid を番号にする */ }
+      out[key] = sha(bytes, orig);
       const firstRaw = rawSha(bytes);
       const keep = opt("--keep", "");
       if (keep) { const dst = path.join(keep, key); fs.mkdirSync(path.dirname(dst), { recursive: true }); fs.writeFileSync(dst, bytes); }
