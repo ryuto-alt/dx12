@@ -19,7 +19,7 @@
     "  dpi = --dpi-scale、theme = --theme-variant（default は何も付けない）、project は tests/golden/ui_project のコピー。",
     "  masks = [[x0,y0,x1,y1],...]（0..1 の割合）。トースト・時刻などの揺れる領域を比べる前に塗りつぶす。",
     "  UI は同じセッションで 2 枚撮り、ネイティブ解像度で 1 ビットも違わないことを毎回確かめる（決定論）。",
-    "  組み合わせは DPI 1.0/1.5 x テーマ default/b x レイアウト default/material/lighting の組み合わせ。layout は editor_command_run の workspace.<layout> で切り替える。★material は今は入れていない（Material WS を開くと ImGui が何も描かれなくなる＝エンジン側の不具合。直るまで基準にしない）。",
+    "  組み合わせは DPI 1.0/1.5 x テーマ default/b x レイアウト default/material/lighting の組み合わせ。layout は editor_command_run の workspace.<layout> で切り替える。material は C3 で追加（マテリアルグラフ窓の GPU パスが RT を戻さず ImGui が何も描かれなかった不具合の回帰検出を兼ねる）。",
     "★W0-2: core_* は tests/golden/projects/golden_core（プリミティブと手続きの空だけ・リポジトリ内で完結）。新環境でも必ず回る。基準は RTX 5060 で --update して撮った。",
     "★requiresProjectsRoot:true の 4 件（PerfTest/Nocturne/Junction）は手元のゲームが要る。環境変数 DX12_GOLDEN_PROJECTS_ROOT があるときだけ回し、無ければ対象から外す（SKIP の見かけ合格にしない）。",
     "★group:\"repeat\" のシーン（DDGI/DXR など決定論が崩れるもの）は通常実行に含めず、--group repeat のときだけ回す。core_new_scene_gi（実際の new_scene の結果）が該当。",
@@ -222,6 +222,62 @@
       ],
       "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
       "note": "エディタ UI 全体（Lighting ワークスペース・DPI 150%・テーマ b）"
+    },
+    {
+      "name": "ui_dpi100_material_default",
+      "kind": "ui",
+      "dpi": 1.0,
+      "theme": "default",
+      "layout": "material",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 100%・テーマ default）。UI が何も描かれない不具合の回帰検出"
+    },
+    {
+      "name": "ui_dpi100_material_b",
+      "kind": "ui",
+      "dpi": 1.0,
+      "theme": "b",
+      "layout": "material",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 100%・テーマ b）。UI が何も描かれない不具合の回帰検出"
+    },
+    {
+      "name": "ui_dpi150_material_default",
+      "kind": "ui",
+      "dpi": 1.5,
+      "theme": "default",
+      "layout": "material",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 150%・テーマ default）。UI が何も描かれない不具合の回帰検出"
+    },
+    {
+      "name": "ui_dpi150_material_b",
+      "kind": "ui",
+      "dpi": 1.5,
+      "theme": "b",
+      "layout": "material",
+      "masks": [
+        [0.215, 0.093, 0.772, 0.645],
+        [0.76, 0.972, 1, 1],
+        [0.808, 0.908, 0.985, 0.96]
+      ],
+      "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
+      "note": "エディタ UI 全体（マテリアル ワークスペース・DPI 150%・テーマ b）。UI が何も描かれない不具合の回帰検出"
     }
   ]
 }

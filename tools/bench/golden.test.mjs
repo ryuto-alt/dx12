@@ -2,6 +2,7 @@
 //   node --test tools/bench
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { sha256, resampleArea, compareImages, judge } from "./lib/imageDiff.mjs";
 import { resolveProject, REPO_ROOT } from "./lib/engine.mjs";
@@ -108,4 +109,12 @@ test("parseArgs: 既定は strict・--no-strict で緩む・--group/--only/--rep
   assert.deepEqual([...a.only], ["a", "b"]);
   assert.equal(a.repeat, 2);
   assert.throws(() => parseArgs(["--nanika"]), /不明な引数/);
+});
+
+test("C3: layout:material の UI ゴールデン 4 件（DPI 1.0/1.5 x default/b）が定義され、基準 PNG がある", () => {
+  const g = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "tests/golden/golden.json"), "utf8"));
+  const mats = g.scenes.filter((s) => s.kind === "ui" && s.layout === "material");
+  assert.equal(mats.length, 4);
+  assert.deepEqual(mats.map((s) => `${s.dpi}/${s.theme}`).sort(), ["1.5/b", "1.5/default", "1/b", "1/default"]);
+  for (const s of mats) assert.ok(fs.existsSync(path.join(REPO_ROOT, "tests/golden/ui", `${s.name}.png`)), `${s.name}.png`);
 });

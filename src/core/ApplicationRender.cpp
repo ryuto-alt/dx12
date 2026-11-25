@@ -8624,6 +8624,11 @@ void Application::RenderImGuiFrame(RenderFrameContext& frame)
         NodeGraphSandboxPanel::Render(*m_editorCtx);
         // マテリアルグラフ窓の GPU 側（G2c）: プレビューの RT とノード内サムネイルのアトラスを描く（窓が閉じていれば何もしない。UI の直後 = 同フレームの ImGui 描画より前）。
         MaterialGraphPanel::RenderGpu(nativeCmdList, m_swapChain->GetCurrentBackBufferIndex());
+        // ★RenderGpu はプレビュー RT / サムネイルのアトラスへ OMSetRenderTargets するので、そのままだと直後の ImGui 描画が
+        //   バックバッファではなくそれらの RT へ出てしまい、画面に UI が一切出なくなる（マテリアルグラフ窓を開くと全 UI が消える不具合）。
+        //   ImGui（EndFrame）の前にバックバッファへ戻す。
+        nativeCmdList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+        m_commandList->SetViewportAndScissor(0, 0, m_window->GetWidth(), m_window->GetHeight());
     }
 
     // ---- ゲーム内 UI: テキスト/ボタン（ImGui オーバーレイ・ゲーム/Play 中のみ）----

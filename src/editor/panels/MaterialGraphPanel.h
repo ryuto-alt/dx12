@@ -68,6 +68,8 @@ struct GpuInit
 bool InitializeGpu(const GpuInit& init);
 void ShutdownGpu();
 bool GpuReady();
+// ★RenderGpu は RT・ビューポート・シザーをプレビュー/アトラス用に変えたまま戻さない。呼び出し側が直後にバックバッファへ OMSetRenderTargets と
+//   ビューポートを戻すこと（戻さないと後続の ImGui がバックバッファに出ず UI が消える）。
 void RenderGpu(ID3D12GraphicsCommandList* cmd, unsigned frameIndex);
 
 // MCP / 自動テスト用の窓の操作と状態（JSON 文字列の入出力。op: status / open / new / edit / preview / screenshot / bench）。
