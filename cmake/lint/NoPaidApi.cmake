@@ -3,18 +3,26 @@
 #     - @anthropic-ai の依存 / import
 #     - ANTHROPIC_API_KEY の参照
 #   が無いことを確かめる。検査の定義そのものと、「環境にあれば起動を拒む」ガードは
-#   cmake/lint/NoPaidApi.allow.txt（1 行 1 つの接頭辞。# 始まりはコメント）に載せる。
+#   cmake/lint/NoPaidApi.allow.txt に載せる。書式（# 始まりはコメント）:
+#     <接頭辞>        … 検査の定義そのもの（全面除外）。cmake/lint/ とその自己テストだけ。
+#     guard:<接頭辞>  … 「環境に ANTHROPIC_API_KEY があれば拒む」ガードの行の形（if / throw / exit / Remove-Item /
+#                       delete / 拒否・refuse・reject を含む行）だけ ANTHROPIC_API_KEY を許す。@anthropic-ai は許さない。
 # 使い方: cmake -DREPO_ROOT=<dir> -P NoPaidApi.cmake
 if(NOT REPO_ROOT)
     message(FATAL_ERROR "REPO_ROOT が未指定")
 endif()
 
 set(_allow "")
+set(_guard "")
 file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/NoPaidApi.allow.txt" _allow_lines)
 foreach(_l IN LISTS _allow_lines)
     string(STRIP "${_l}" _l)
     if(_l AND NOT _l MATCHES "^#")
-        list(APPEND _allow "${_l}")
+        if(_l MATCHES "^guard:(.+)$")
+            list(APPEND _guard "${CMAKE_MATCH_1}")
+        else()
+            list(APPEND _allow "${_l}")
+        endif()
     endif()
 endforeach()
 
@@ -62,8 +70,35 @@ foreach(_f IN LISTS _files)
         continue()
     endif()
     file(READ "${REPO_ROOT}/${_f}" _txt)
-    if(_txt MATCHES "@anthropic-ai" OR _txt MATCHES "ANTHROPIC_API_KEY")
+    if(_txt MATCHES "@anthropic-ai")
         list(APPEND _violations "${_f}")
+        continue()
+    endif()
+    if(_txt MATCHES "ANTHROPIC_API_KEY")
+        set(_isguard FALSE)
+        foreach(_g IN LISTS _guard)
+            string(FIND "${_f}" "${_g}" _gpos)
+            if(_gpos EQUAL 0)
+                set(_isguard TRUE)
+                break()
+            endif()
+        endforeach()
+        if(NOT _isguard)
+            list(APPEND _violations "${_f}")
+        else()
+            # ガードの形の行を除いた残りに ANTHROPIC_API_KEY があれば違反
+            string(REPLACE "\n" ";" _lines "${_txt}")
+            string(REPLACE "[" "<" _lines "${_lines}")
+            string(REPLACE "]" ">" _lines "${_lines}")
+            foreach(_ln IN LISTS _lines)
+                if(_ln MATCHES "ANTHROPIC_API_KEY"
+                   AND NOT _ln MATCHES "(^|[^A-Za-z])(if|throw|exit|process[.]exit|Remove-Item|delete)([^A-Za-z]|$)"
+                   AND NOT _ln MATCHES "拒|refuse|reject")
+                    list(APPEND _violations "${_f}（ガードの形ではない行: ${_ln}）")
+                    break()
+                endif()
+            endforeach()
+        endif()
     endif()
 endforeach()
 

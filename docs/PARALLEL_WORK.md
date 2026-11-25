@@ -27,9 +27,13 @@
 - アンカーがあるファイル: `tests/CMakeLists.txt`、`docs/MCP.md`、`src/core/mcp/ApplicationMcpManifestData.inc`、
   `src/editor/ToolWindows.h`、`src/editor/EditorCommandTable.h`、`src/core/ReleaseNotesData.inc`、
   `src/gui/UiTestHarness.cpp`(kTests)、`src/gui/UiTestHarnessShared.h`(テスト本体の宣言。`lane-X:decl`)。
-  新設の `.inc`(`FeatureList.inc` など)と `shaders/manifest/lane_*.cmake` も同じ書式。
-- **区画の例外**: ルート `CMakeLists.txt` のシェーダ / DXC の区画(346〜456 行と 1556〜1842 行付近)にある旧形式のアンカー 18 個
-  (`wave<N>-lane<X>`)は L2 の所有。移行(`shaders/manifest/lane_*.cmake` への置き換え)までは lint の許可リストで通す。
+  新設の `src/renderer/FeatureList.inc`・`src/scripting/LuaBindList.inc`・`src/scene/ComponentSerializerList.inc`・
+  `shaders/manifest/lane_{a,b,c,d}.cmake` も同じ書式(中身はアンカーだけ。後続の W05-15 / W05-16 / W05-25 / W05-11 が使う)。
+- `ReleaseNotesData.inc` のレーンのブロックは `Release{}` の外の最上位にある。**レーンは自分のブロックに `Release` を足さない**
+  (同じ版の `Release` が重なり、版の検査が赤になる)。次の版の `Release{}` はメインが版を切るときに 1 つだけ作る。
+  レーンは自分のブロックに、その版に載せる項目の案をコメント(`// W05-xx: ...`)で書き、メインが `highlights` / `items` へ移す。
+- **区画の例外**: ルート `CMakeLists.txt` のシェーダ / DXC の区画(346〜456 行と 1556〜1842 行付近)にある旧形式のアンカー 36 行(18 組。`wave<N>-lane<X>` の begin / end)
+  は L2 の所有。移行(`shaders/manifest/lane_*.cmake` への置き換え)までは lint の許可リストで通す。
 - `src/ecs/Components.h` にはアンカーを置かない(135 TU の再ビルドになるため)。新しいコンポーネントは
   `ComponentSerializerList.inc` と、それを使う TU からの直接の include だけで足す。
 - 各 `src/<subdir>/CMakeLists.txt` の末尾に `include(${CMAKE_SOURCE_DIR}/cmake/lanes/<subdir>_lane_{a,b,c,d}.cmake)` の 4 行がある。
@@ -56,7 +60,7 @@ pwsh tools/worktree_setup.ps1 -Path %USERPROFILE%\dx12-wt\wt-foo -Remove        
 3. 本体に `third_party/dlss` と `third_party/agility` があれば、各 worktree へ **junction** を張る(取得物の二重ダウンロードを避ける)。
    `-Remove` は junction を先に外してから worktree を消す(リンク先の本体側は消さない)。
 4. `tools/mcp-server` で `npm ci`(`-NoNpm` で省略)。
-5. `VCPKG_DEFAULT_BINARY_CACHE` を共通の固定パス(未設定なら `%LOCALAPPDATA%\dx12-vcpkg-cache`)にそろえる(configure の間だけ)。
+5. `VCPKG_DEFAULT_BINARY_CACHE` を共通の固定パス `%USERPROFILE%\dx12-vcpkg-cache` にそろえる。`tools/build.ps1` も同じ既定で設定するので、ビルド中の自動 re-configure にも効く。
 6. `chcp 65001` の下で configure(Ninja / Release)。vcpkg_installed と assimp-src は本体と共有する。
 
 前提: 本体の `build\release` が一度ビルド済みであること。
@@ -71,8 +75,12 @@ worktree 側には入らない(本体で追加・再インストールしてか�
   - `-Gpu` で GPU テスト、`-Ui` で UI テスト(エンジンを起動する)を含める。**オーナーの離席中か、メインの指示があるときだけ**。
   - `-R <正規表現>` / `-N`(一覧だけ)。
 - デバイスを作るテスト(`D3D12CreateDevice` / `GraphicsDevice` を使う)には必ず `LABELS gpu` を付ける。`GpuLabelLint` が検査する。
-- 常時走る検査: `AnchorLint`(アンカーの対・4 レーンの存在・重複)、`NoPaidApi`(有料 API の SDK とキーの参照が無いこと)、
-  `GenBudgetsCheck`、`GpuLabelLint`。
+- 常に登録される検査(`tests/CMakeLists.txt` の lane-A ブロック。リポジトリのルートは `DX12_REPO_ROOT`。
+  CI は `cmake -S tests` で単独構成するので `CMAKE_SOURCE_DIR` を使わない): `GpuLabelLint`、`NoPaidApi`(有料 API の SDK とキーの参照が無いこと。
+  `@anthropic-ai` はどこでも不可、`ANTHROPIC_API_KEY` は許可リストの `guard:` に載るファイルの「拒むガード」の行だけ)、
+  `AnchorLint`(アンカーの対・4 レーンの存在・重複)、`GenBudgetsCheck`。後の 2 つは node のスクリプト(W05-31 / W05-34)が
+  まだ無いうちは SKIP(終了コード 77)になり、スクリプトが入れば再 configure なしで走る。
+- UI テストの kTests にレーンが足すテストは `launcher_screen`(プロジェクトを開き直す)と deep 区画より**前**のレーンのブロックに置く。
 - エンジンは `--background` / `--headless`(または `tools/engine_instance.ps1`)だけで起動する。窓を出さない・マウスを奪わない。
 
 ## 4. マージ順と Wave の境界

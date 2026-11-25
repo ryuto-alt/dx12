@@ -17,7 +17,7 @@
     4. 本体に third_party/dlss と third_party/agility があれば、各 worktree へ junction を張る(取得物の二重ダウンロードを避ける。
        -Remove は junction を先に外し、リンク先(本体側)を消さない)。
     5. tools/mcp-server で npm ci(-NoNpm で省略)。
-    6. VCPKG_DEFAULT_BINARY_CACHE を共通の固定パス(未設定なら %LOCALAPPDATA%\dx12-vcpkg-cache)にそろえる(configure の間だけ)。
+    6. VCPKG_DEFAULT_BINARY_CACHE を共通の固定パス(%USERPROFILE%\dx12-vcpkg-cache。tools/build.ps1 も同じ既定を使う)にそろえる。
     7. ポートを表示する(エンジン MCP: A 8851 / B 8852 / C 8853 / D 8855、UI テスト: A〜D = 8911〜8914。
        ドッグフードと E2E 専用は MCP 8856 / UI 8915 でレーンには割り当てない)。
   ビルドは configure 後に `pwsh tools/build.ps1`(PC 全体で直列化される)。本体の build\release は触らない。
@@ -67,7 +67,16 @@ if ($Remove) {
     foreach ($j in $junctionNames) {
         $jp = Join-Path $Path $j
         $it = Get-Item -LiteralPath $jp -Force -ErrorAction SilentlyContinue
-        if ($it -and ($it.Attributes -band [IO.FileAttributes]::ReparsePoint)) { cmd /c "rmdir `"$jp`"" | Out-Null }
+        if ($it -and ($it.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            cmd /c "rmdir `"$jp`"" | Out-Null
+            # 外れたことを確認する。まだ残っていれば、この先の remove / Remove-Item -Recurse がリンク先
+            # (本体側の取得物)を消しかねないので、ここで中止する(二重の安全)。
+            $left = Get-Item -LiteralPath $jp -Force -ErrorAction SilentlyContinue
+            if ($left -and ($left.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                Write-Host "[wt] junction を外せませんでした。本体側を守るため中止します: $jp"
+                exit 1
+            }
+        }
     }
     git -C $main worktree remove --force $Path
     if ($LASTEXITCODE -ne 0) { Write-Host '[wt] git worktree remove failed'; exit 1 }
@@ -88,7 +97,7 @@ if ($WhatIf) {
         Write-Host ("[wt] WhatIf: junction {0} -> {1} ({2})" -f $j, $src, $(if (Test-Path $src) { 'あり' } else { '本体に無いので張らない' }))
     }
     Write-Host ("[wt] WhatIf: npm ci in tools\mcp-server = {0}" -f (-not $NoNpm))
-    $bc = if ($env:VCPKG_DEFAULT_BINARY_CACHE) { $env:VCPKG_DEFAULT_BINARY_CACHE } else { Join-Path $env:LOCALAPPDATA 'dx12-vcpkg-cache' }
+    $bc = if ($env:VCPKG_DEFAULT_BINARY_CACHE) { $env:VCPKG_DEFAULT_BINARY_CACHE } else { Join-Path $env:USERPROFILE 'dx12-vcpkg-cache' }
     Write-Host "[wt] WhatIf: VCPKG_DEFAULT_BINARY_CACHE=$bc"
     exit 0
 }
@@ -140,7 +149,7 @@ if (-not $NoNpm -and (Test-Path (Join-Path $mcpDir 'package-lock.json'))) {
 }
 
 # vcpkg のバイナリキャッシュを共通の固定パスにそろえる
-if (-not $env:VCPKG_DEFAULT_BINARY_CACHE) { $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:LOCALAPPDATA 'dx12-vcpkg-cache' }
+if (-not $env:VCPKG_DEFAULT_BINARY_CACHE) { $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:USERPROFILE 'dx12-vcpkg-cache' }
 New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
 if (-not $NoConfigure) {

@@ -281,6 +281,8 @@ endif()
 #   コンフィグの最後（DEFER）に、tests/ の各テスト exe の自前ソースを見て、違反の一覧をファイルへ書く。
 #   ctest は cmake/lint/GpuLabelLint.cmake でそのファイルを読んで落とす。
 #   同じソースを GPU 無しで使うテスト（GPU 部分が #if で外れる）は下の IGNORE へ。
+# リポジトリのルート。CMAKE_SOURCE_DIR は使わない（CI は `cmake -S tests` で単独構成するので tests/ になる）。
+get_filename_component(DX12_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(DX12_GPU_LABEL_LINT_IGNORE AtmosphereMathTests)
 function(dx12_gpu_label_lint_collect)
     get_property(_tgts DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY BUILDSYSTEM_TARGETS)
@@ -315,28 +317,27 @@ endfunction()
 cmake_language(DEFER DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" CALL dx12_gpu_label_lint_collect)
 add_test(NAME GpuLabelLint
     COMMAND ${CMAKE_COMMAND} -DREPORT=${CMAKE_BINARY_DIR}/gpu_label_lint_report.txt
-            -P ${CMAKE_SOURCE_DIR}/cmake/lint/GpuLabelLint.cmake)
+            -P ${DX12_REPO_ROOT}/cmake/lint/GpuLabelLint.cmake)
 set_tests_properties(GpuLabelLint PROPERTIES TIMEOUT 60)
 
 # NoPaidApi: 有料の Anthropic API の SDK・キーの参照が無いこと（決定 3。検索語は cmake/lint/NoPaidApi.cmake）。
 add_test(NAME NoPaidApi
-    COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/lint/NoPaidApi.cmake)
+    COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${DX12_REPO_ROOT} -P ${DX12_REPO_ROOT}/cmake/lint/NoPaidApi.cmake)
 set_tests_properties(NoPaidApi PROPERTIES TIMEOUT 120)
 
-# AnchorLint / GenBudgetsCheck: node のスクリプトが入っている（W05-31 / W05-34）ときだけ登録する。
-# スクリプトが現れたら再コンフィグするよう依存に載せる（OPTIONAL にしない代わりの追跡）。
+# AnchorLint / GenBudgetsCheck: 常に登録する。node のスクリプト（W05-31 / W05-34）がまだ無ければ
+# ラッパーが終了コード 77 を返して SKIP になる（スクリプトが現れた後は再コンフィグ無しでそのまま走る）。
 find_program(DX12_NODE_EXE node)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    "${CMAKE_SOURCE_DIR}/tools/check_anchors.mjs" "${CMAKE_SOURCE_DIR}/tools/gen_budgets.mjs")
-if(DX12_NODE_EXE AND EXISTS "${CMAKE_SOURCE_DIR}/tools/check_anchors.mjs")
-    add_test(NAME AnchorLint COMMAND ${DX12_NODE_EXE} ${CMAKE_SOURCE_DIR}/tools/check_anchors.mjs
-             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-    set_tests_properties(AnchorLint PROPERTIES TIMEOUT 120)
-endif()
-if(DX12_NODE_EXE AND EXISTS "${CMAKE_SOURCE_DIR}/tools/gen_budgets.mjs")
-    add_test(NAME GenBudgetsCheck COMMAND ${DX12_NODE_EXE} ${CMAKE_SOURCE_DIR}/tools/gen_budgets.mjs --check
-             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-    set_tests_properties(GenBudgetsCheck PROPERTIES TIMEOUT 120)
+if(DX12_NODE_EXE)
+    set(DX12_NODE_IF_EXISTS ${DX12_REPO_ROOT}/cmake/lint/run_if_exists.mjs)
+    add_test(NAME AnchorLint COMMAND ${DX12_NODE_EXE} ${DX12_NODE_IF_EXISTS}
+             ${DX12_REPO_ROOT}/tools/check_anchors.mjs
+             WORKING_DIRECTORY ${DX12_REPO_ROOT})
+    set_tests_properties(AnchorLint PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+    add_test(NAME GenBudgetsCheck COMMAND ${DX12_NODE_EXE} ${DX12_NODE_IF_EXISTS}
+             ${DX12_REPO_ROOT}/tools/gen_budgets.mjs --check
+             WORKING_DIRECTORY ${DX12_REPO_ROOT})
+    set_tests_properties(GenBudgetsCheck PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
 endif()
 # ==== lane-A end ====
 

@@ -65,6 +65,9 @@ try {
         }
     }
     if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = Join-Path $env:USERPROFILE 'vcpkg' }
+    # vcpkg のバイナリキャッシュは全 worktree で共通の固定パス(ninja の自動 re-configure にも効く)
+    if (-not $env:VCPKG_DEFAULT_BINARY_CACHE) { $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:USERPROFILE 'dx12-vcpkg-cache' }
+    New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
     # cl.exe の /showIncludes はコンソールのコードページで出る。CMake は configure 時の出力を UTF-8 で
     # rules.ninja の msvc_deps_prefix に書くので、ビルドも chcp 65001 で走らせて一致させる(下の cmd /c 参照)。

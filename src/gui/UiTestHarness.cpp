@@ -79,35 +79,29 @@ namespace
 // テストから窓を指すときは必ず先頭に "//"（絶対参照）を付ける。
 // 付けないと「直前の SetRef からの相対パス」として別 ID にハッシュされ、
 // 窓は出ているのに「見つかりません」と誤判定してテストが黙ってスキップされる。
-const char* kWinHierarchyName = "ヒエラルキー";   // ImGui::Begin に渡している生の名前（内部 API 用）
-
-const char* kWinHierarchy   = "//ヒエラルキー";
-const char* kWinInspector   = "//インスペクター";
-const char* kWinConsole     = "//コンソール";
-const char* kWinAssets      = "//アセットブラウザ";
-const char* kWinToolbar     = "//##Toolbar";
-const char* kWinVfx         = "//パーティクルエディタ###VfxEditorPanelFloating";
-const char* kWinUiEditor    = "//UIエディタ###UiEditorPanelFloating";
-const char* kWinMaterial    = "//マテリアルエディタ###MaterialEditorFloating";
-const char* kWinMatLibrary  = "//マテリアルライブラリ (Poly Haven)###MaterialLibraryFloating";
-const char* kWinBuild       = "//ビルド設定";
-// 後から増えた独立フローティング窓（NoDocking なので右下のツール窓群には入らない）
-const char* kWinLighting    = "//ライティング###LightingPanelFloating";
-const char* kWinTerrain     = "//地形ツール###TerrainToolFloating";
-const char* kWinSculpt      = "//スカルプト（異形）###SculptToolFloating";
-const char* kWinNavMesh     = "//ナビメッシュ###NavMeshFloating";
-const char* kWinAudioMixer  = "//オーディオミキサー###AudioMixerFloating";
-
-// パーティクルエディタは中身を BeginChild で 3 分割している。子ウィンドウの中の項目は
-// 親窓からの ID パスでは引けない（子窓の実 ID は "親名/str_id_XXXXXXXX" のハッシュ）ので、
-// WindowInfo に子窓まで辿らせて ID を取ってから触る。
-const char* kWinVfxAssetList = "//パーティクルエディタ###VfxEditorPanelFloating/##VfxAssetList";
-const char* kWinVfxMain      = "//パーティクルエディタ###VfxEditorPanelFloating/##VfxMain";
-const char* kWinVfxEmission  = "//パーティクルエディタ###VfxEditorPanelFloating/##VfxMain/##VfxEmission";
-
-const char* kBtnAddEntity    = ICON_PLUS " エンティティ追加";      // EditorIcons.h（Lucide グリフ + ラベル）
-const char* kBtnAddComponent = ICON_PLUS " コンポーネント追加";
-const char* kMenuScript      = "スクリプト";
+// 値の唯一の定義は gui/UiTestHarnessShared.h（レーン別テストと共有）。
+using uitest::kWinHierarchyName;
+using uitest::kWinHierarchy;
+using uitest::kWinInspector;
+using uitest::kWinConsole;
+using uitest::kWinAssets;
+using uitest::kWinToolbar;
+using uitest::kWinVfx;
+using uitest::kWinUiEditor;
+using uitest::kWinMaterial;
+using uitest::kWinMatLibrary;
+using uitest::kWinBuild;
+using uitest::kWinLighting;
+using uitest::kWinTerrain;
+using uitest::kWinSculpt;
+using uitest::kWinNavMesh;
+using uitest::kWinAudioMixer;
+using uitest::kWinVfxAssetList;
+using uitest::kWinVfxMain;
+using uitest::kWinVfxEmission;
+using uitest::kBtnAddEntity;
+using uitest::kBtnAddComponent;
+using uitest::kMenuScript;
 
 // ===================== 実行中の状態 =====================
 // テスト関数はキャプチャ不可のラムダ（関数ポインタ）なので、共有状態はファイル静的に置く。
@@ -4945,6 +4939,16 @@ const DiagReg kTests[] = {
     { "stress","rapid_selection",       "ストレス",           "選択を高速に切り替える",               T_RapidSelection        },
     { "stress","spam_add_delete",       "ストレス",           "生成と削除を連打",                     T_SpamAddDelete         },
 
+    // ---- 各レーンの UI テスト（下の「launcher_screen」と deep 区画より前に置く。登録順＝実行順）----
+    // ==== lane-A begin ====
+    // ==== lane-A end ====
+    // ==== lane-B begin ====
+    // ==== lane-B end ====
+    // ==== lane-C begin ====
+    // ==== lane-C end ====
+    // ==== lane-D begin ====
+    // ==== lane-D end ====
+
     // ---- 超詳細診断（deep=true。「すべて検査する」には含まれない）----
     { "deep",  "deep_shaders",          "超詳細: シェーダー", "全 .cso の存在 / 破損 / 鮮度",         T_DeepShaders,        true },
     { "deep",  "deep_textures",         "超詳細: テクスチャ", "全画像の読み込みと色空間",             T_DeepTextures,       true },
@@ -4965,16 +4969,8 @@ const DiagReg kTests[] = {
     { "deep",  "deep_primitive_save",   "超詳細: 保存",       "プリミティブの寸法と PBR が保存往復するか", T_DeepPrimitiveSaveRoundtrip, true },
     { "deep",  "deep_alpha_save",       "超詳細: 保存",       "透明(アルファ)の上書きが保存往復するか", T_DeepAlphaSaveRoundtrip, true },
 
-    // ★最後に置く: プロジェクトを閉じて開き直すので、シーンの中身（前のテストが作った物）は入れ替わる。
+    // ★最後に置く（レーンのブロックはこの行より前。ここより後ろへ足さない）: プロジェクトを閉じて開き直すので、シーンの中身（前のテストが作った物）は入れ替わる。
     { "launcher","launcher_screen",     "ランチャー",         "タブ切替 / 新規フォームの検証 / テンプレ選択 / 検索",  T_LauncherScreen        },
-    // ==== lane-A begin ====
-    // ==== lane-A end ====
-    // ==== lane-B begin ====
-    // ==== lane-B end ====
-    // ==== lane-C begin ====
-    // ==== lane-C end ====
-    // ==== lane-D begin ====
-    // ==== lane-D end ====
 };
 
 const DiagReg* FindReg(const ImGuiTest* test)
@@ -5637,6 +5633,17 @@ void UiTestHarness::RegisterTests()
 // ===================== レーン別テストとの共有ヘルパ（gui/UiTestHarnessShared.h）=====================
 namespace uitest
 {
+ImGuiID FocusWindow(ImGuiTestContext* ctx, const char* windowRef) { return ::dx12e::FocusWindow(ctx, windowRef); }
+ImGuiID ChildWindowId(ImGuiTestContext* ctx, const char* pathRef) { return ::dx12e::ChildWindowId(ctx, pathRef); }
+bool ItemExistsIn(ImGuiTestContext* ctx, ImGuiID windowId, const char* path) { return ::dx12e::ItemExistsIn(ctx, windowId, path); }
+bool ClickPath(ImGuiTestContext* ctx, ImGuiID windowId, const char* path) { return ::dx12e::ClickPath(ctx, windowId, path); }
+bool ClickPopupItemContaining(ImGuiTestContext* ctx, const char* needle) { return ::dx12e::ClickPopupItemContaining(ctx, needle); }
+void AddEntity(ImGuiTestContext* ctx, const char* type) { ::dx12e::AddEntity(ctx, type); }
+void SelectLastEntity(ImGuiTestContext* ctx) { ::dx12e::SelectLastEntity(ctx); }
+ImGuiID OpenToolWindow(ImGuiTestContext* ctx, bool EditorContext::* flag, const char* windowRef) { return ::dx12e::OpenToolWindow(ctx, flag, windowRef); }
+void CloseToolWindow(ImGuiTestContext* ctx, bool EditorContext::* flag) { ::dx12e::CloseToolWindow(ctx, flag); }
+void LogWatchBegin() { ::dx12e::LogWatchBegin(); }
+std::string LogWatchEnd() { return ::dx12e::LogWatchEnd(); }
 Application* App() { return g_app; }
 EditorContext* Editor() { return g_app ? g_app->GetEditorContext() : nullptr; }
 void LogStep(ImGuiTestContext* ctx, const char* fmt, ...)
