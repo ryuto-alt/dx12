@@ -787,9 +787,12 @@ void ToolbarPanel::Render(bool isPlaying,
     }
 
     // ===== 新規シーン / 名前を付けて保存の名前入力ダイアログ =====
-    // 題名は操作ごとに分ける（## 以降の ID は EditorStateMcp が見るので変えない）。
+    // 題名は操作ごとに分ける（### で ID を固定。EditorStateMcp は # 以降を見る）。
     const char* const sceneDlgPopupId = ctx.newSceneDialogIsCreate
-        ? "新規シーン##NewScenePopup" : "名前を付けて保存##NewScenePopup";
+        ? "新規シーン###NewScenePopup" : "名前を付けて保存###NewScenePopup";
+    // 取り消し・保存失敗で pendingNewScene だけ落ちたときに、前回の保存先が残らないようにする
+    //（残ると MCP の new_scene（savePath なし）が古いパスへ黙って保存してしまう）。
+    if (!ctx.pendingNewScene) ctx.pendingNewScenePath.clear();
     if (ctx.showNewSceneDialog)
     {
         ImGui::OpenPopup(sceneDlgPopupId);
@@ -819,7 +822,7 @@ void ToolbarPanel::Render(bool isPlaying,
     ImGui::SetNextWindowSize(ui::Px(350.0f, 0.0f), ImGuiCond_Appearing);
     if (ImGui::BeginPopupModal(sceneDlgPopupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
-        ImGui::Text("ã·ã¼ã³å:");  // シーン名:
+        ImGui::Text("\xe3\x82\xb7\xe3\x83\xbc\xe3\x83\xb3\xe5\x90\x8d\x3a");  // シーン名:
         ImGui::SetNextItemWidth(-1);
         bool enterPressed = ui::InputText("##SceneName", ctx.newSceneNameBuf,
             sizeof(ctx.newSceneNameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
@@ -833,12 +836,12 @@ void ToolbarPanel::Render(bool isPlaying,
         const std::optional<std::string> fileName = SceneFileNameFromInput(ctx.newSceneNameBuf);
         const bool nameValid = fileName.has_value();
         if (!nameValid && ctx.newSceneNameBuf[0] != '\0')
-            ImGui::TextDisabled("この名前は使えません（記号 / : * ? \" < > | と予約名は不可）");
+            ImGui::TextDisabled("この名前は使えません（記号 \\ / : * ? \" < > | と予約名は不可）");
 
         if (!nameValid) ImGui::BeginDisabled();
         const char* btnLabel = ctx.newSceneDialogIsCreate
-            ? "ä½æ"    // 作成
-            : "ä¿å­";   // 保存
+            ? "\xe4\xbd\x9c\xe6\x88\x90"    // 作成
+            : "\xe4\xbf\x9d\xe5\xad\x98";   // 保存
         if (ImGui::Button(btnLabel, ui::Px(120.0f, 0.0f)) || (enterPressed && nameValid))
         {
             const std::string scenesDir = assetsDir + "scenes/";
@@ -874,7 +877,7 @@ void ToolbarPanel::Render(bool isPlaying,
         if (!nameValid) ImGui::EndDisabled();
 
         ImGui::SameLine();
-        if (ImGui::Button("ã­ã£ã³ã»ã«", ui::Px(120.0f, 0.0f)))  // キャンセル
+        if (ImGui::Button("\xe3\x82\xad\xe3\x83\xa3\xe3\x83\xb3\xe3\x82\xbb\xe3\x83\xab", ui::Px(120.0f, 0.0f)))  // キャンセル
             ImGui::CloseCurrentPopup();
 
         ImGui::EndPopup();
@@ -883,11 +886,11 @@ void ToolbarPanel::Render(bool isPlaying,
     // ===== 名前を付けて保存の上書き確認 =====
     if (ctx.saveAsOverwrite.open)
     {
-        ImGui::OpenPopup("名前を付けて保存##SaveAsOverwritePopup");
+        ImGui::OpenPopup("名前を付けて保存###SaveAsOverwritePopup");
         ctx.saveAsOverwrite.open = false;
     }
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (ImGui::BeginPopupModal("名前を付けて保存##SaveAsOverwritePopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (ImGui::BeginPopupModal("名前を付けて保存###SaveAsOverwritePopup", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         const std::string name = std::filesystem::path(ctx.saveAsOverwrite.path).filename().string();
         ImGui::Text("%s は既にあります。上書きしますか？", name.c_str());

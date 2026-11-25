@@ -4945,6 +4945,7 @@ const DiagReg kTests[] = {
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },
     { "panel", "new_scene_name_kept", "パネル", "Ctrl+N の名前: 確認で保存 → 旧シーンは旧パス、新規は指定の名前", uitest::T_NewSceneNameKept },
+    { "panel", "new_scene_cancel_no_path", "パネル", "Ctrl+N の名前: 確認でキャンセル → 保存先が残らず、無題の新規シーンは空パス", uitest::T_NewSceneCancelKeepsNoPath },
     // ==== lane-B end ====
     // ==== lane-C begin ====
     // ==== lane-C end ====
