@@ -266,11 +266,11 @@ regRaw(
     let firedLayers: number[] = [];
     let playing = false;
     let ownTx = false;   // 自分で開いたトランザクションがあるか(finally で必ず rollback する)
-    let ownWrites = 0;   // トランザクション中に自分が出した書き込み系の呼び出し数(rollback の calls と突き合わせる)
+    let ownWrites = 0;   // トランザクション中に自分が出したUndo を積む書き込み(set_transform / set_component)の発行数(eval_lua は Undo を積まないので数えない)
     const preNotes: string[] = [];
     let result: ToolResult | undefined;
     const call = (method: string, params: any) => {
-      if (ownTx && (method === "set_transform" || method === "set_component" || method === "eval_lua")) ownWrites++;
+      if (ownTx && (method === "set_transform" || method === "set_component")) ownWrites++;
       return engine.call(method, params);
     };
     try {
@@ -288,10 +288,20 @@ regRaw(
         const msg = String(e?.message ?? e);
         if (/unknown method|未対応|不明なメソッド/i.test(msg)) {
           preNotes.push(`このエンジンはトランザクションに対応していないので、プレビュー中の変更を個別に戻した(Undo に履歴が残ることがある): ${msg}`);
-        } else {
+        } else if (/already open|既に開い/i.test(msg)) {
           preNotes.push(
-            `★別のトランザクションが既に開いている(または開けなかった)ので、プレビューの変更はその中に入った。`
+            `★別のトランザクションが既に開いているので、プレビューの変更はその中に入った。`
             + `そのトランザクションの commit / rollback と運命を共にする。個別の復元は行った: ${msg}`);
+        } else {
+          // 分類できない失敗(Play 中の MODE_CONFLICT・通信タイムアウトなど)。タイムアウトでも begin が通っていることがあるので状態を読む。
+          let adopted = false;
+          try {
+            const ts = await engine.call("transaction_status", {}) as any;
+            if (ts?.open === true && ts?.label === "vfx_preview") { ownTx = true; adopted = true; }
+          } catch { /* 状態も読めない */ }
+          preNotes.push(adopted
+            ? `transaction_begin は失敗を返したが実際には開いていた(${msg})。自分のものとして最後に rollback する。`
+            : `トランザクションを開けなかった(別のトランザクションとは限らない。Play 中など): ${msg}。個別の復元を行った。`);
         }
       }
       const pos: number[] = info?.transform?.position ?? info?.position ?? [0, 0, 0];
@@ -440,16 +450,26 @@ regRaw(
       await call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
       // 撮影用のカメラ固定を残さない(残るとゲーム画面の撮影が全部この視点になる)
       await call("set_editor_camera", { release: true }).catch(() => {});
-      // 最後に rollback(成功・失敗どちらでも)。Undo もシーンの変更も残さない。
+      // 最後に rollback(成功・失敗どちらでも)。Undo には残さない(自動保存の扱いはエンジン側 L1 の修正待ち)。
       // rollback の失敗・想定外の中身は握りつぶさず、結果に載せる。
       if (ownTx) {
         try {
+          // rollback の前に中身を読み、自分の書き込み以外が混じっていないか確かめる(rollback の calls は Undo を横取りした件数で、eval_lua は数えない)。
+          let foreign: string[] | null = null;
+          let human = 0;
+          try {
+            const ts = await engine.call("transaction_status", {}) as any;
+            if (Array.isArray(ts?.callNames)) foreign = ts.callNames.filter((n: any) => n !== "set_transform" && n !== "set_component").map(String);
+            human = Number(ts?.humanEditsDuringTransaction) || 0;
+          } catch { /* 読めなければ calls の件数で代用 */ }
           const rb = await engine.call("transaction_rollback", {}) as any;
           const calls = Number(rb?.calls);
-          if (Number.isFinite(calls) && calls > ownWrites) {
+          if ((foreign && foreign.length > 0) || human > 0 || (foreign === null && Number.isFinite(calls) && calls > ownWrites)) {
             preNotes.push(
-              `★警告: rollback で ${calls} 件の変更が破棄されたが、プレビュー自身の書き込みは ${ownWrites} 件。`
-              + `差の ${calls - ownWrites} 件は同じ時間帯の他の MCP 書き込み(別クライアントや並列呼び出し)で、巻き戻された。確認すること。`);
+              `★警告: rollback でプレビュー以外の変更も破棄された可能性がある(`
+              + (foreign && foreign.length > 0 ? `他の呼び出し: ${foreign.slice(0, 8).join(", ")}; ` : "")
+              + (human > 0 ? `人の編集 ${human} 件; ` : "")
+              + `calls=${Number.isFinite(calls) ? calls : "?"}, 自分の書き込み=${ownWrites})。別クライアントや並列呼び出しの書き込みが巻き戻されていないか確認すること。`);
           }
         } catch (e: any) {
           preNotes.push(

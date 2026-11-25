@@ -12,7 +12,7 @@ import { McpStdio, payload, startFakeEngine } from "./jev/testHarness.ts";
 let passed = 0;
 const pass = (label: string) => { passed++; console.log(`  OK  ${label}`); };
 
-const st = { open: false, undoDepth: 3, saves: 0, failScreenshot: false, noTx: false, pending: 0, rbFail: false, foreignAt: 0 };
+const st = { open: false, undoDepth: 3, saves: 0, failScreenshot: false, noTx: false, pending: 0, rbFail: false, foreignAt: 0, beginErr: "", beginTimeoutOpen: false, names: [] as string[] };
 const png = (() => { const p = new PNG({ width: 8, height: 8 }); p.data.fill(60); return PNG.sync.write(p); })();
 const err = (code: number, message: string) => Object.assign(new Error(message), { code });
 
@@ -21,12 +21,15 @@ function handler(method: string, params: any): any {
     case "get_entity": return { entityId: 5, name: "Fire", transform: { position: [0, 0, 0] }, particleEmitter: { layers: [{ looping: true, lifetime: 1 }] } };
     case "transaction_begin":
       if (st.noTx) throw err(1, "unknown method: transaction_begin");
+      if (st.beginErr) { if (st.beginTimeoutOpen) { st.open = true; st.pending = 0; } throw err(3, st.beginErr); }
       if (st.open) throw err(3, "transaction already open");
       st.open = true; st.pending = 0; return { open: true };
     case "transaction_rollback":
       if (!st.open) throw err(3, "no open transaction");
       if (st.rbFail) { st.open = false; throw err(3, "no open transaction (closed by Play)"); }
       { const calls = st.pending + st.foreignAt; st.open = false; st.pending = 0; return { rolledBack: true, calls }; }
+    case "transaction_status":
+      return { open: st.open, label: st.open ? "vfx_preview" : undefined, callNames: [...Array(st.pending).fill("set_transform"), ...Array(st.foreignAt).fill("other_client_write"), ...st.names], humanEditsDuringTransaction: 0 };
     case "transaction_commit":
       st.open = false; st.undoDepth += 1; return { committed: true };
     case "set_transform": case "set_component":
@@ -89,7 +92,7 @@ try {
   {
     st.foreignAt = 2;
     const out = payload(await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000));
-    assert.ok(out.notes?.some((x: string) => /rollback で \d+ 件/.test(x)), "calls 不一致の警告");
+    assert.ok(out.notes?.some((x: string) => /破棄された可能性/.test(x)), "calls 不一致の警告");
     st.foreignAt = 0;
     pass("rollback の calls が自分の書き込みより多ければ notes に警告");
   }
@@ -110,6 +113,34 @@ try {
     assert.ok(out.notes?.some((x: string) => /既に開いている/.test(x)), "別トランザクションの note");
     st.open = false;
     pass("他人のトランザクションが開いていれば、そう note して rollback しない");
+  }
+  console.log("[7] fire:true で他者の書き込み(callNames)を検出");
+  {
+    st.names = ["other_client_write"];
+    const out = payload(await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000));
+    assert.ok(out.notes?.some((x: string) => /破棄された可能性/.test(x) && /other_client_write/.test(x)), "callNames の混入を警告");
+    st.names = [];
+    pass("callNames に自分以外の呼び出しがあれば警告");
+  }
+  console.log("[8] Play 中の begin 失敗は別トランザクション扱いにしない");
+  {
+    st.beginErr = "cannot begin a transaction while Playing";
+    const n = engine.received.length;
+    const out = payload(await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000));
+    assert.ok(out.notes?.some((x: string) => /開けなかった/.test(x)) && !out.notes?.some((x: string) => /既に開いている/.test(x)));
+    assert.ok(!seq(n).includes("transaction_rollback"));
+    st.beginErr = "";
+    pass("分類不能な begin 失敗は別トランザクションと誤認しない");
+  }
+  console.log("[9] begin が失敗応答だが実際は開いた(タイムアウト相当)");
+  {
+    st.beginErr = "timeout"; st.beginTimeoutOpen = true;
+    const n = engine.received.length;
+    await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000);
+    assert.ok(seq(n).includes("transaction_rollback"), "自分のものとして rollback");
+    assert.equal(st.open, false, "開きっぱなしにしない");
+    st.beginErr = ""; st.beginTimeoutOpen = false;
+    pass("実際は開いていた begin を adopt して rollback する");
   }
 } catch (e) {
   console.log(`  NG  ${(e as Error).message}`);
