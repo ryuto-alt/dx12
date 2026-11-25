@@ -264,12 +264,22 @@ regRaw(
     let restorePos: number[] | null = null;   // 退けた放出器を戻すための元位置
     let firedLayers: number[] = [];
     let playing = false;
+    let ownTx = false;   // 自分で開いたトランザクションがあるか(finally で必ず rollback する)
     const preNotes: string[] = [];
     try {
       if (entity === undefined && !name) {
         throw argError("entity か name のどちらかが要る", "放出器のエンティティを指定する");
       }
       const info = await engine.call("get_entity", ref) as any;
+      // ★BUG-13: プレビューの退避(set_transform / set_component)と復元を 1 つのトランザクションで包み、最後に必ず rollback する。
+      //   rollback なら Undo に何も残らず、トランザクション中は自動保存も走らない。
+      //   開けなかったとき(古いエンジン / 既に誰かが開いている)は従来どおり個別に復元する。
+      try {
+        await engine.call("transaction_begin", { label: "vfx_preview" });
+        ownTx = true;
+      } catch (e: any) {
+        preNotes.push(`トランザクションを開けなかったので、プレビュー中の変更を個別に戻した: ${e?.message ?? e}`);
+      }
       const pos: number[] = info?.transform?.position ?? info?.position ?? [0, 0, 0];
       const layers: any[] = info?.particleEmitter?.layers ?? [];
       const dist = Math.max(0.3, distance ?? 3);
@@ -416,6 +426,8 @@ regRaw(
       await engine.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
       // 撮影用のカメラ固定を残さない(残るとゲーム画面の撮影が全部この視点になる)
       await engine.call("set_editor_camera", { release: true }).catch(() => {});
+      // 最後に rollback(成功・失敗どちらでも)。Undo もシーンの変更も残さない。
+      if (ownTx) await engine.call("transaction_rollback", {}).catch(() => {});
     }
   },
 );

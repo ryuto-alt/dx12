@@ -1,0 +1,93 @@
+/**
+ * BUG-13(W05-41): dx12_vfx_preview がトランザクションで包まれ、最後に必ず rollback することの e2e テスト。
+ * 偽エンジンは undoDepth / 保存回数 / トランザクションの開閉を持つ。ネット不要・エディタ不要。
+ *
+ * 実行: node vfxPreviewTx.test.ts
+ */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { PNG } from "pngjs";
+import { McpStdio, payload, startFakeEngine } from "./jev/testHarness.ts";
+
+let passed = 0;
+const pass = (label: string) => { passed++; console.log(`  OK  ${label}`); };
+
+const st = { open: false, undoDepth: 3, saves: 0, failScreenshot: false, noTx: false, pending: 0 };
+const png = (() => { const p = new PNG({ width: 8, height: 8 }); p.data.fill(60); return PNG.sync.write(p); })();
+const err = (code: number, message: string) => Object.assign(new Error(message), { code });
+
+function handler(method: string, params: any): any {
+  switch (method) {
+    case "get_entity": return { entityId: 5, name: "Fire", transform: { position: [0, 0, 0] }, particleEmitter: { layers: [{ looping: true, lifetime: 1 }] } };
+    case "transaction_begin":
+      if (st.noTx) throw err(1, "unknown method: transaction_begin");
+      if (st.open) throw err(3, "transaction already open");
+      st.open = true; st.pending = 0; return { open: true };
+    case "transaction_rollback":
+      if (!st.open) throw err(3, "no open transaction");
+      st.open = false; st.pending = 0; return { rolledBack: true };
+    case "transaction_commit":
+      st.open = false; st.undoDepth += 1; return { committed: true };
+    case "set_transform": case "set_component":
+      if (st.open) st.pending++; else st.undoDepth++;
+      return { ok: true };
+    case "set_editor_camera": case "step_frames": return { ok: true };
+    case "screenshot_final":
+      if (st.failScreenshot) throw err(9, "engine error: screenshot failed");
+      fs.writeFileSync(params.path, png); return { path: params.path };
+    case "save_scene": st.saves++; return { saved: true };
+    default: return undefined;
+  }
+}
+
+const engine = await startFakeEngine(handler);
+const mcp = new McpStdio({ enginePort: engine.port, jevUrl: "http://127.0.0.1:9/none", key: "" });
+await mcp.init();
+const seq = (n: number) => engine.received.slice(n).map((x) => x.method);
+
+try {
+  console.log("[1] 成功経路");
+  {
+    const n = engine.received.length, depth = st.undoDepth;
+    payload(await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000));
+    const m = seq(n);
+    assert.equal(m[1], "transaction_begin", "get_entity の直後に begin");
+    assert.equal(m[m.length - 1], "transaction_rollback", "最後は rollback");
+    assert.ok(m.includes("set_transform"), "退避の set_transform が走っている");
+    assert.equal(m.filter((x) => x === "transaction_commit").length, 0, "commit しない");
+    assert.equal(st.undoDepth, depth, "undoDepth 不変");
+    assert.equal(st.open, false);
+    assert.equal(st.saves, 0, "保存しない");
+    pass("begin → 撮影 → rollback。undoDepth 不変・保存なし");
+  }
+  console.log("[2] エンジンのエラー(失敗経路)でも rollback");
+  {
+    st.failScreenshot = true;
+    const n = engine.received.length, depth = st.undoDepth;
+    const r = await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000);
+    assert.equal(r.result.isError, true);
+    const m = seq(n);
+    assert.equal(m[m.length - 1], "transaction_rollback");
+    assert.equal(st.open, false);
+    assert.equal(st.undoDepth, depth);
+    st.failScreenshot = false;
+    pass("screenshot 失敗でも rollback が走り undoDepth 不変");
+  }
+  console.log("[3] トランザクションの無い古いエンジン");
+  {
+    st.noTx = true;
+    const n = engine.received.length;
+    const out = payload(await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000));
+    assert.ok(!seq(n).includes("transaction_rollback"));
+    assert.ok(out.notes?.some((x: string) => /トランザクション/.test(x)));
+    st.noTx = false;
+    pass("begin に失敗したら rollback せず、従来どおり個別復元(note に理由)");
+  }
+} catch (e) {
+  console.log(`  NG  ${(e as Error).message}`);
+  mcp.kill(); engine.server.close();
+  process.exit(1);
+}
+mcp.kill(); engine.server.close();
+console.log(`\nOK: vfx_preview トランザクション e2e テスト ${passed} 項目すべて通過`);
+process.exit(0);
