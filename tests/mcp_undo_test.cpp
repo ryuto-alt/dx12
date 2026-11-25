@@ -332,10 +332,11 @@ void TestTruncateTo()
         Edit(u, log, "c", v, 3);
         u.Undo();                          // c が Redo へ（タグは Redo 側へ移る）
         u.TruncateTo(mark);
-        Check(u.UndoDepth() == 2 && u.CanRedo(), "何も捨てなければ Redo を残す");
-        u.Redo();
-        u.TruncateTo(mark);
-        Check(u.UndoDepth() == 2 && !u.CanRedo(), "Redo し直した c は捨てられる");
+        Check(u.UndoDepth() == 2 && !u.CanRedo(), "Play 後の Redo 側のエントリも捨てる");
+        Edit(u, log, "d", v, 4);
+        u.Undo();
+        u.TruncateTo(u.PushSeq());         // 捨てるものが無ければ Redo は残る
+        Check(u.CanRedo(), "mark 以前のエントリの Redo は残す");
     }
     {
         UndoSystem u;
@@ -346,6 +347,23 @@ void TestTruncateTo()
         Check(u.UndoDepth() == 99, "上限 100 で先頭を捨てた後でもタグが合う（y だけ捨てる）");
         Check(std::string(u.PeekUndoName()) == "x", "最後の x が残る");
     }
+}
+
+void TestRouterUndoRedoIsMcp()
+{
+    std::printf("[11] McpUndoRouter::Undo/Redo は呼び出し側のスコープ無しでも Mcp（遅延実行で LastHumanEditSeq を進めない）\n");
+    UndoSystem u; McpUndoRouter r(u);
+    std::vector<std::string> log; int v = 0;
+    AiCall(r, u, log, "ai", v, 1);
+    const u64 human = u.LastHumanEditSeq();
+    const u64 seq0 = u.EditSeq();
+    std::string name;
+    Check(r.Undo(false, &name) == McpUndoRouter::StepStatus::Ok, "router.Undo 成功");
+    Check(u.EditSeq() > seq0 && u.LastHumanEditSeq() == human, "router.Undo は LastHumanEditSeq を進めない");
+    Check(r.Redo(false, &name) == McpUndoRouter::StepStatus::Ok, "router.Redo 成功");
+    Check(u.LastHumanEditSeq() == human, "router.Redo も進めない");
+    u.Undo();
+    Check(u.LastHumanEditSeq() == u.EditSeq(), "（対照）UndoSystem::Undo 直呼びは Human");
 }
 } // namespace
 
@@ -362,6 +380,7 @@ int main()
     TestEditOriginScopeNesting();
     TestCaptureCounterPairing();
     TestTruncateTo();
+    TestRouterUndoRedoIsMcp();
     std::printf("%s: %d checks / %d failures\n", g_failures == 0 ? "OK" : "NG", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

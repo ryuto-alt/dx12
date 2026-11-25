@@ -210,6 +210,7 @@ public:
         const StepStatus s = CheckUndo(onlyAi);
         if (s != StepStatus::Ok) return s;
         if (undoneName) *undoneName = m_undo.PeekUndoName();
+        EditOriginScope origin(EditOrigin::Mcp);   // 遅延実行でも Mcp（呼び出し元は MCP の undo だけ）
         m_undo.Undo();
         return StepStatus::Ok;
     }
@@ -218,6 +219,7 @@ public:
         const StepStatus s = CheckRedo(onlyAi);
         if (s != StepStatus::Ok) return s;
         if (redoneName) *redoneName = m_undo.PeekRedoName();
+        EditOriginScope origin(EditOrigin::Mcp);
         m_undo.Redo();
         return StepStatus::Ok;
     }

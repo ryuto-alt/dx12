@@ -583,7 +583,7 @@ public:
 
     // ── 人の未保存の変更（W05-02。自動保存が上書きしてよいかの判定）──
     // MCP 由来の変更だけなら偽。Undo を積む人の編集は LastHumanEditSeq、積まない人の編集は humanSettingsDirty。
-    bool humanSettingsDirty          = false;  // Undo を積まない人の編集（MarkEdited と settingsHash）
+    bool humanSettingsDirty          = false;  // settingsHash の変化による人の編集のみ（MarkEdited は LastHumanEditSeq に入る）
     bool autosaveBlockedByHumanEdits = false;  // 自動保存を止めている（MCP の結果に出す）
     bool IsSceneHumanDirty() const { return undoSystem.LastHumanEditSeq() > sceneSavedSeq || humanSettingsDirty; }
 

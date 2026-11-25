@@ -8,6 +8,7 @@
 //   tests/mcp_undo_test.cpp がエンジン抜きで検証できるようにするため。
 
 #include <cassert>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <thread>
@@ -190,6 +191,8 @@ public:
         if (m_capture)
         {
             assert(m_captureThread == std::this_thread::get_id() && "SetCaptureSink: 張ったスレッドで外すこと");
+            if (m_captureThread != std::this_thread::get_id())   // NDEBUG でも気付けるように（カウンタが漏れる）
+                std::fprintf(stderr, "[UndoSystem] SetCaptureSink: 張ったスレッドと別のスレッドで外した（thread_local の数が漏れる）\n");
             if (tls.captures > 0) --tls.captures;
         }
         m_capture = sink;
@@ -221,9 +224,10 @@ public:
     u64  LastHumanEditSeq() const { return m_lastHumanSeq; }
 
     // Play 中に積まれた分を捨てる（W05-11）。seq は Play 開始時に控えた PushSeq()。
-    // それより後に積まれた Undo エントリを Undo せずに捨てる（Play のエンティティは Stop で消えるため）。
-    // Redo 側は捨てた分があるときだけ空にする。EditSeq / LastHumanEditSeq は変えない。
-    // humanSeqBefore: Play 開始時の LastHumanEditSeq()。捨てた分があるときだけ m_lastHumanSeq をそこまで戻す
+    // それより後に積まれた Undo エントリ、および Redo 側にある seq より後のタグのエントリを Undo せずに捨てる
+    // （Play のエンティティは Stop で消えるため）。Redo 側に seq より後のものがあれば Redo 全体を空にする。
+    // EditSeq は変えない。
+    // humanSeqBefore: Play 開始時の LastHumanEditSeq()。何か捨てたときだけ m_lastHumanSeq をそこまで戻す
     // （Play 中の人の Push が Stop の後も「人の未保存」として残るのを防ぐ）。省略時は戻さない。
     void TruncateTo(u64 seq, u64 humanSeqBefore = ~u64(0))
     {
@@ -234,8 +238,11 @@ public:
             m_undoTags.pop_back();
             dropped = true;
         }
+        for (u64 t : m_redoTags)
+            if (t > seq) { dropped = true; m_redoStack.clear(); m_redoTags.clear(); break; }
         if (dropped)
         {
+            // Undo 側を捨てた場合も Redo は無効（積んだ直後の状態でしか Redo できない）
             m_redoStack.clear(); m_redoTags.clear();
             if (humanSeqBefore != ~u64(0) && m_lastHumanSeq > humanSeqBefore) m_lastHumanSeq = humanSeqBefore;
         }
