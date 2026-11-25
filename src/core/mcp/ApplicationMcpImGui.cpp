@@ -443,7 +443,7 @@ void Application::RegisterMcpImGuiMethods()
                     "前の imgui_screenshot / screenshot_final の応答を待ってから撮る（通常 1〜2 フレームで返る）");
             m_mcpFinalShot = {};
             // hideCursor:true = 仮想カーソル（矢印・波紋）を絵に写さない（UI ゴールデン用）。
-            // 次に描くフレームの EndFrame から効き、次の imgui_screenshot が指定し直すまで続く（省略 = 写す）。
+            // 次に描くフレームの EndFrame から効き、この 1 枚を撮り終えると元に戻る（省略 = 写す）。
             vinput_gui::SetCursorHidden(params.value("hideCursor", false));
             m_mcpFinalShot.path      = params.value("path", std::string());
             m_mcpFinalShot.reply     = deferred;

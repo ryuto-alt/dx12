@@ -71,6 +71,7 @@ function parseArgs(argv) {
     else if (k === "--help" || k === "-h") { a.help = true; }
     else throw new Error(`不明な引数: ${k}`);
   }
+  if (a.update && a.forceTheme) throw new Error("--update と --force-theme は同時に使えない（基準をテーマ違いで上書きしてしまう）");
   return a;
 }
 
@@ -264,6 +265,7 @@ async function main() {
   if (args.only) scenes = scenes.filter((s) => args.only.has(s.name));
   if (!scenes.length) { console.log("対象のシーンが無い"); return 1; }
   const uiScenes = scenes.filter((s) => s.kind === "ui");
+  for (const s of scenes) if (s.kind === "ui" && (s.layout ?? "default") !== "default") throw new Error(`${s.name}: layout "${s.layout}" は未対応（今は "default" だけ。WS 切替は未実装）`);
   scenes = scenes.filter((s) => s.kind !== "ui");
   if (args.uiOnly) scenes = [];
   if (args.noUi) uiScenes.length = 0;

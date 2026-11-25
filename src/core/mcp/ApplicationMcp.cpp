@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/FleetGuard.h"   // ping / manifest 以外の method を「活動」に数える（--idle-exit）
+#include "gui/VirtualInputImGui.h"   // imgui_screenshot の hideCursor を撮影後に戻す
 #include "core/mcp/McpSafety.h"    // M5: guarded ゲート / 冪等ストア / dryRun プレビュー / ファイルジャーナル
 #include "renderer/PhotometricMath.h"   // Q2: 露出(EV100)とトーンマップの純関数（screenshot の CPU ミラーが共有）
 #include "renderer/LinearCapturePass.h"  // Q2: 線形 HDR スクリーンショットの読み出し
@@ -1041,6 +1042,7 @@ void Application::FinishFinalScreenshot()
     }
     if (m_mcpFinalShot.withImGui)
     {
+        vinput_gui::SetCursorHidden(false);   // hideCursor はこの 1 枚だけに効かせる
         // dx12_imgui_screenshot: ImGui（パネル / ギズモ / 仮想カーソル）込みの最終画。
         CompleteMcp(m_mcpBridge.get(), reply,
             nlohmann::json{{"path", outPath.string()},

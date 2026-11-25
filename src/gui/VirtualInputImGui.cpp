@@ -205,7 +205,7 @@ bool CursorHidden() { return g_cursorHidden; }
 void DrawVirtualCursor()
 {
     g_lastPrimCount = 0;
-    if (g_cursorHidden) return;   // UI ゴールデン: カーソルも波紋も写さない
+    if (g_cursorHidden || ui::clock::Deterministic()) return;   // UI ゴールデン: カーソルも波紋も写さない
     ImGuiContext* g = ImGui::GetCurrentContext();
     if (!g) return;
     const vinput::Queue::Applied& st = vinput::Global().State();

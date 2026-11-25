@@ -112,7 +112,7 @@ export async function launchEngine({ exe = DEFAULT_EXE, project, scene, port, ti
  *   - 既定は --background（オフスクリーン・仮想入力・前面化しない）。窓は人の画面に出ない。
  *   - exe / DLL / shaders はインスタンス専用フォルダへコピーされる＝ビルド出力を握らない（LNK1104 を避ける）。
  *   - データ領域（DX12E_DATA_DIR）もインスタンスごと＝人の設定（テーマ・最近のプロジェクト）に影響されない。
- *   - imgui.ini はインスタンスのフォルダにあるので、起動前に消して「既定レイアウト」から始める。
+ *   - imgui.ini / editor_state.json は <インスタンス>/data/ にあるので、起動前に消して「既定レイアウト」から始める。
  * buildDir: DX12Engine.exe のあるフォルダ（省略で build/release）。
  * 止めるときは engine_instance.ps1 -Stop（自分の PID だけ）。
  */
@@ -122,7 +122,7 @@ export async function launchInstance({ name, project, port, buildDir, mode = "ba
   const stop = () => spawnSync("pwsh", ["-NoProfile", "-File", script, "-Name", name, "-Stop"], { stdio: "ignore" });
   stop();
   const instDir = path.join(process.env.LOCALAPPDATA ?? "", "UnoEngine", "agent-instances", name);
-  for (const f of ["imgui.ini"]) { try { fs.rmSync(path.join(instDir, f), { force: true }); } catch { /* 無ければよい */ } }
+  for (const f of ["data/imgui.ini", "data/editor_state.json", "imgui.ini"]) { try { fs.rmSync(path.join(instDir, f), { force: true }); } catch { /* 無ければよい */ } }
   // ★-ExtraArgs は string[] で値が "--" 始まりなので、-File ではなく -Command で配列リテラルとして渡す。
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
   let cmd = `& ${q(script)} -Name ${q(name)} -Port ${usePort} -Project ${q(project)} -Mode ${q(mode)} -IdleExitMin 20`;
