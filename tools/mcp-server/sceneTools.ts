@@ -69,6 +69,8 @@ export const DIAG_CHECKS = [
   // Hi-Z オクルージョンカリング。「ON にしたのに効いていない」「ON にしたせいで遅くなっている」
   // を名指しする。特に「プリパスを要求しているのがオクルージョンだけ」＝損をしている状態。
   "hiz_occlusion",
+  // デバイスの機能（caps。W05-04 の DeviceCaps）。SM・Enhanced Barriers・DXR Tier などの全項目。
+  "caps",
 ] as const;
 /** 重い検査（assets 全走査）。速く回したいときはこれを外す。 */
 export const DIAG_SLOW_CHECKS = ["textures", "models"] as const;
