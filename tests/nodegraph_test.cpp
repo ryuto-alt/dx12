@@ -10,9 +10,11 @@
 #include "editor/nodegraph/GraphIO.h"
 #include "editor/nodegraph/GraphMath.h"
 #include "editor/nodegraph/GraphPalette.h"
+#include "editor/nodegraph/GraphTextQuant.h"
 #include "editor/nodegraph/SandboxGraphModel.h"
 #include "editor/nodegraph/SandboxSamples.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -975,6 +977,23 @@ void TestSampleAndStress()
     CHECK(ms < 5.0, "索引の再構築が速い %.3f ms", ms);
 }
 
+// FU-E-9: 行の高さは「qpx で測って r 倍」。qpx * r == px（量子化しても測る幅が描画と一致）、
+// 段ちょうど（FocusNode の最小ズーム 0.75 を含む）では r == 1。
+void TestTextQuantMeasure()
+{
+    for (float dpi : {1.0f, 1.5f, 2.0f})
+        for (float units : {9.0f, 11.0f, 13.0f, 16.0f})
+            for (float z = 0.5f; z <= 4.0f; z += 0.013f)
+            {
+                const float px = std::max(1.0f, std::floor(units * z * dpi + 0.5f));
+                const QuantText q = QuantizeText(px, z);
+                CHECK(std::fabs(q.qpx * q.r - px) < 1e-3f * px, "qpx*r==px z=%.3f px=%.1f", static_cast<double>(z), static_cast<double>(px));
+                CHECK(q.r <= 1.0f + 1e-4f, "r<=1 z=%.3f r=%.4f", static_cast<double>(z), static_cast<double>(q.r));
+            }
+    for (float s : kTextZoomSteps)
+        CHECK(QuantizeText(std::floor(13.0f * s + 0.5f), s).r == 1.0f, "段ちょうどは r==1 (%.2f)", static_cast<double>(s));
+}
+
 void TestCommandTableEntries()
 {
     // （表そのものの検査は editor_ux_test.cpp。ここでは graph.* が存在しキーが衝突しないことだけを確認する）
@@ -1006,6 +1025,7 @@ int main(int argc, char** argv)
     TestPalette();
     TestSampleAndStress();
     TestUndoFuzz();
+    TestTextQuantMeasure();
     TestCommandTableEntries();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

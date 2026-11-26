@@ -5,6 +5,7 @@
 #include "core/CpuScope.h"
 #include "editor/EditorCommandTable.h"
 #include "editor/UiWidgets.h"
+#include "editor/nodegraph/GraphTextQuant.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -210,12 +211,12 @@ bool GraphView::FocusNode(NodeId id, bool animate)
     ShowBringToFront(m_sel);
     const Rect r = m_doc->NodeRect(id);
     if (IsEmptyRect(r)) return true;
-    // 十分読める大きさ（70% 以上）で、ノードが窓の中に収まっているときは動かさない。そうでなければ中央へ寄せる
+    // 十分読める大きさ（75% 以上。文字サイズの段 kTextZoomSteps に合わせ、量子化の r が 1 になる）で、ノードが窓の中に収まっているときは動かさない。そうでなければ中央へ寄せる
     const Viewport v = m_vp;
     const Rect vis = v.VisibleGraphRect();
     const bool inView = vis.Expanded(-24.0f).Contains(r);
-    if (inView && m_zoomTarget >= 0.7f) return true;
-    m_zoomTarget = std::max(m_zoomTarget, 0.7f);
+    if (inView && m_zoomTarget >= 0.75f) return true;
+    m_zoomTarget = std::max(m_zoomTarget, 0.75f);
     CenterOn(r.Center(), animate);
     return true;
 }
@@ -300,9 +301,15 @@ void GraphView::Draw(const char* strId, ImVec2 size)
         {
             const LayoutConfig& c = m_doc->Layout().Config();
             const float scale = m_zoom * m_dpi;
-            m_lhLabel = FontBody()->CalcTextSizeA(std::max(1.0f, std::floor(c.textUnits * scale + 0.5f)), FLT_MAX, 0.0f, "Ag").y;
-            m_lhTitle = FontBold()->CalcTextSizeA(std::max(1.0f, std::floor(c.titleUnits * scale + 0.5f)), FLT_MAX, 0.0f, "Ag").y;
-            m_lhMono  = FontMono()->CalcTextSizeA(std::max(1.0f, std::floor(c.textUnits * scale + 0.5f)), FLT_MAX, 0.0f, "0.").y;
+            // 描画（TextSizeQ / AddTextQ）と同じ量子化で測る。焼くサイズ qpx で測り、高さは r 倍する。
+            auto lineH = [&](ImFont* f, float units, const char* t) {
+                const float px = std::max(1.0f, std::floor(units * scale + 0.5f));
+                const QuantText q = QuantizeText(px, m_zoom);
+                return f->CalcTextSizeA(q.qpx, FLT_MAX, 0.0f, t).y * q.r;
+            };
+            m_lhLabel = lineH(FontBody(), c.textUnits, "Ag");
+            m_lhTitle = lineH(FontBold(), c.titleUnits, "Ag");
+            m_lhMono  = lineH(FontMono(), c.textUnits, "0.");
         }
 
         m_vp.origin = Vec2(m_canvasMin.x, m_canvasMin.y);
