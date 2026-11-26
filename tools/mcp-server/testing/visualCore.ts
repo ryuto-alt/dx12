@@ -86,35 +86,21 @@ export function flipMean(repoDir: string, aPng: string, bPng: string, env: NodeJ
   return { status: "ok", mean: round(v, 5) as number };
 }
 
-// ── golden suite の判定(golden.mjs と同じ式) ─────────────────────────────────
+// ── golden suite の判定(golden.mjs の judgeScene を呼ぶ) ─────────────────────────────────
 export type GoldenBaseline = { nativeWidth: number; nativeHeight: number; nativeSha256: string; compareSha256?: string };
 export type GoldenVerdict = { pass: boolean; skipped?: boolean; envMismatch?: boolean; bitExact?: boolean; diffRatio?: number; meanAbs?: number; maxDist?: number; reasons: string[]; native: string; sha: string };
 
 /**
- * 3D ゴールデン 1 件の判定。golden.mjs の runScenes と同じ順序・同じ文言の条件:
- *   ネイティブ解像度の違い → 環境違い(strict は不合格、そうでなければ SKIP)/ 基準画像なし → 不合格 / 縮めて許容差。
- * native = 今回のネイティブ画像、ref = 基準 PNG(width x height)。maskedNative は UI のとき applyMasks 後のもの。
+ * ゴールデン 1 件の判定。判定そのものは golden.mjs の judgeScene(3D / UI 共通。runScenes / runUiScenes も同じ関数)を呼ぶ。
+ * ここでは縮小と結果の整形だけ。native = 今回のネイティブ画像(UI は applyMasks 後)、ref = 基準 PNG。
  */
-export function judgeGolden(lib: DiffLib, o: { native: Rgba; ref: Rgba | null; baseline: GoldenBaseline | undefined; width: number; height: number; tol: Tolerance; strict: boolean; ui?: boolean }): GoldenVerdict {
+export function judgeGolden(lib: DiffLib, o: { gm: { judgeScene: (a: any) => any }; native: Rgba; ref: Rgba | null; baseline: GoldenBaseline | undefined; width: number; height: number; tol: Tolerance; strict: boolean; ui?: boolean }): GoldenVerdict {
   const sha = lib.sha256(o.native);
   const native = `${o.native.width}x${o.native.height}`;
-  const v: GoldenVerdict = { pass: true, reasons: [], native, sha };
-  const b = o.baseline;
-  // UI の経路(golden.mjs の runUiScenes)は、基準画像なしを環境違いより先に見る。3D の経路は逆。
-  if (o.ui && !o.ref) { v.pass = false; v.reasons.push("基準画像が無い(--update で撮る)"); if (b) v.bitExact = b.nativeSha256 === sha; return v; }
-  if (b && (b.nativeWidth !== o.native.width || b.nativeHeight !== o.native.height)) {
-    v.pass = !o.strict; v.skipped = !o.strict; v.envMismatch = true;
-    v.reasons.push(`環境違い: ネイティブ解像度が基準と違う(基準 ${b.nativeWidth}x${b.nativeHeight}、今回 ${native})`);
-    return v;
-  }
-  if (!o.ref) { v.pass = false; v.reasons.push("基準画像が無い(--update で撮る)"); if (b) v.bitExact = b.nativeSha256 === sha; return v; }
   const small = lib.resampleArea(o.native, o.width, o.height);
-  const cmp = lib.compareImages(o.ref, small, o.tol.pixelThreshold);
-  v.diffRatio = cmp.diffRatio; v.meanAbs = cmp.meanAbs; v.maxDist = cmp.maxDist;
-  const j = lib.judge(cmp, o.tol);
-  v.pass = j.pass; v.reasons.push(...j.reasons);
-  if (b) v.bitExact = b.nativeSha256 === sha;
-  return v;
+  const j = o.gm.judgeScene({ native: o.native, sha, small, ref: o.ref, baseline: o.baseline, tolerance: o.tol, strict: o.strict, ui: !!o.ui });
+  const { diffImage: _d, ...rest } = j;
+  return { ...rest, native, sha } as GoldenVerdict;
 }
 
 // ── 撮影(golden.mjs の captureScene / openScene / createNewScene と同じ手順) ─────────────────────────

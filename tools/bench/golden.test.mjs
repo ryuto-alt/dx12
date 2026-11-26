@@ -184,3 +184,26 @@ test("既定の許容差: imageDiff が持ち、golden.mjs も visual_regression
   assert.equal(g.DEFAULT_TOLERANCE, DEFAULT_TOLERANCE);                    // golden.mjs が再 export する
   for (const s of g.loadConfig()) for (const k of Object.keys(DEFAULT_TOLERANCE)) assert.equal(typeof s.tolerance[k], "number");
 });
+test("judgeScene: 3D と UI の順序・文言(環境違い / 基準画像なし / 許容差 / bitExact)", async () => {
+  const { judgeScene } = await import("./golden.mjs");
+  const img = { width: 4, height: 4, data: Buffer.alloc(64, 100) };
+  const tol = { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 };
+  const mis = { nativeWidth: 5, nativeHeight: 4, nativeSha256: "x" };
+  const base = { native: img, sha: "x", small: img, tolerance: tol };
+  // UI: 基準画像なしが先。3D: 環境違いが先
+  const ui = judgeScene({ ...base, ref: null, baseline: mis, strict: false, ui: true });
+  assert.equal(ui.pass, false); assert.ok(!ui.skipped); assert.equal(ui.bitExact, undefined);
+  const d3 = judgeScene({ ...base, ref: null, baseline: mis, strict: false });
+  assert.equal(d3.skipped, true); assert.equal(d3.pass, true); assert.equal(d3.envMismatch, true);
+  assert.ok(d3.reasons.some((r) => r.includes("基準を撮った環境")));       // 3D だけの案内文
+  assert.ok(d3.reasons.some((r) => r.startsWith("注意: ネイティブ解像度")));
+  assert.equal(d3.bitExact, true);
+  assert.equal(judgeScene({ ...base, ref: img, baseline: mis, strict: true }).pass, false);
+  const uiEnv = judgeScene({ ...base, ref: img, baseline: mis, strict: false, ui: true });
+  assert.ok(!uiEnv.reasons.some((r) => r.includes("基準を撮った環境")) && uiEnv.skipped === true);
+  // 一致 / 差あり
+  const ok = judgeScene({ ...base, ref: img, baseline: { nativeWidth: 4, nativeHeight: 4, nativeSha256: "x" }, strict: true });
+  assert.equal(ok.pass, true); assert.equal(ok.bitExact, true); assert.ok(ok.diffImage);
+  const bad = { width: 4, height: 4, data: Buffer.alloc(64, 200) };
+  assert.equal(judgeScene({ ...base, small: bad, ref: img, baseline: undefined, strict: true }).pass, false);
+});

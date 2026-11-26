@@ -183,6 +183,43 @@ export function judgeDxr(getDxr) {
   return { status: "run", reason: "" };
 }
 
+export const DETERMINISM_REASON = "同じセッションで撮り直した 2 枚が一致しない（UI に実時間・乱数が混ざっている）。masks を足すか、原因を直す";
+
+/**
+ * 1 シーンの合否判定（3D / UI 共通・副作用なし）。runScenes / runUiScenes と MCP の visual_regression が同じものを呼ぶ。
+ *   native = {width,height}、sha = ネイティブ画像（UI はマスク後）の sha256、small = resampleArea 後、ref = 基準 PNG（無ければ null）。
+ *   UI は「基準画像なし」を環境違いより先に見る。3D は逆。戻りの diffImage は呼び出し側が書く。
+ */
+export function judgeScene({ native, sha, small, ref, baseline: b, tolerance, strict, ui = false }) {
+  const v = { pass: true, reasons: [] };
+  const dimsDiffer = !!b && (b.nativeWidth !== native.width || b.nativeHeight !== native.height);
+  const nativeStr = `${native.width}x${native.height}`;
+  if (ui && !ref) { v.pass = false; v.reasons.push("基準画像が無い（--update で撮る）"); return v; }
+  if (dimsDiffer) {
+    // ★ネイティブ解像度が違う絵は比べても意味がない（AO/影などが解像度に依存する）。
+    //   画の回帰ではなく撮影環境の違いなので、FAIL にせず「環境違い」で打ち切る（--strict では不合格）。
+    v.pass = !strict; v.skipped = !strict; v.envMismatch = true;
+    v.reasons.push(`環境違い: ネイティブ解像度が基準と違う（基準 ${b.nativeWidth}x${b.nativeHeight}、今回 ${nativeStr}）` +
+                   (ui ? "" : "。基準を撮った環境（build/dev と imgui.ini）に揃えるか、この環境で --update して基準を撮り直す"));
+  } else if (!ref) {
+    v.pass = false;
+    v.reasons.push("基準画像が無い（--update で撮る）");
+  } else {
+    const cmp = compareImages(ref, small, tolerance.pixelThreshold);
+    v.diffImage = cmp.diffImage;
+    v.diffRatio = cmp.diffRatio; v.meanAbs = cmp.meanAbs; v.maxDist = cmp.maxDist;
+    const j = judge(cmp, tolerance);
+    v.pass = j.pass; v.reasons.push(...j.reasons);
+  }
+  if (ui && dimsDiffer) return v;
+  if (b) {
+    v.bitExact = b.nativeSha256 === sha;
+    if (!ui && dimsDiffer)
+      v.reasons.push(`注意: ネイティブ解像度が基準と違う（基準 ${b.nativeWidth}x${b.nativeHeight}）。build/dev/imgui.ini やウィンドウの DPI が変わっていないか`);
+  }
+  return v;
+}
+
 export function uiExtraArgs(s, forceTheme = null) {
   const a = ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0)];
   const theme = forceTheme ?? s.theme ?? "default";
@@ -249,7 +286,7 @@ async function runUiScenes(list, args, baseline, results) {
         r.determinismDiff = { diffRatio: c.diffRatio, meanAbs: c.meanAbs, maxDist: c.maxDist };
         writePng(path.join(OUT_DIR, `${s.name}.repeat-diff.png`), c.diffImage);
         r.pass = false;
-        r.reasons.push("同じセッションで撮り直した 2 枚が一致しない（UI に実時間・乱数が混ざっている）。masks を足すか、原因を直す");
+        r.reasons.push(DETERMINISM_REASON);
       }
       const small = resampleArea(masked[0], s.width, s.height);
       const refFile = path.join(UI_DIR, `${s.name}.png`);
@@ -264,20 +301,11 @@ async function runUiScenes(list, args, baseline, results) {
         continue;
       }
       writePng(path.join(OUT_DIR, `${s.name}.png`), small);
-      const b = baseline.scenes[s.name];
-      if (!fs.existsSync(refFile)) { r.pass = false; r.reasons.push("基準画像が無い（--update で撮る）"); continue; }
-      if (b && (b.nativeWidth !== first.img.width || b.nativeHeight !== first.img.height)) {
-        r.pass = args.strict ? false : r.pass; r.skipped = !args.strict; r.envMismatch = true;
-        r.reasons.push(`環境違い: ネイティブ解像度が基準と違う（基準 ${b.nativeWidth}x${b.nativeHeight}、今回 ${first.img.width}x${first.img.height}）`);
-        continue;
-      }
-      const ref = readPng(refFile);
-      const cmp = compareImages(ref, small, s.tolerance.pixelThreshold);
-      writePng(path.join(OUT_DIR, `${s.name}.diff.png`), cmp.diffImage);
-      r.diffRatio = cmp.diffRatio; r.meanAbs = cmp.meanAbs; r.maxDist = cmp.maxDist;
-      const j = judge(cmp, s.tolerance);
-      r.pass = r.pass && j.pass; r.reasons.push(...j.reasons);
-      if (b) r.bitExact = b.nativeSha256 === r.sha;
+      const v = judgeScene({ native: first.img, sha: r.sha, small, ref: fs.existsSync(refFile) ? readPng(refFile) : null,
+                             baseline: baseline.scenes[s.name], tolerance: s.tolerance, strict: args.strict, ui: true });
+      if (v.diffImage) writePng(path.join(OUT_DIR, `${s.name}.diff.png`), v.diffImage);
+      r.pass = r.pass && v.pass; r.reasons.push(...v.reasons);
+      for (const k of ["skipped", "envMismatch", "diffRatio", "meanAbs", "maxDist", "bitExact"]) if (v[k] !== undefined) r[k] = v[k];
     } catch (e) {
       r.pass = false;
       r.reasons.push(`撮影失敗: ${e.message}`);
@@ -377,31 +405,11 @@ async function main() {
             r.updated = true;
           } else {
             writePng(path.join(OUT_DIR, `${s.name}.png`), small);
-            const b0 = baseline.scenes[s.name];
-            if (b0 && (b0.nativeWidth !== first.img.width || b0.nativeHeight !== first.img.height)) {
-              // ★ネイティブ解像度が違う絵は比べても意味がない（AO/影などが解像度に依存する）。
-              //   画の回帰ではなく撮影環境の違いなので、FAIL にせず「環境違い」で打ち切る（--strict では不合格）。
-              r.pass = !args.strict; r.skipped = !args.strict; r.envMismatch = true;
-              r.reasons.push(`環境違い: ネイティブ解像度が基準と違う（基準 ${b0.nativeWidth}x${b0.nativeHeight}、今回 ${first.img.width}x${first.img.height}）。` +
-                             `基準を撮った環境（build/dev と imgui.ini）に揃えるか、この環境で --update して基準を撮り直す`);
-            } else if (!fs.existsSync(refFile)) {
-              r.pass = false;
-              r.reasons.push("基準画像が無い（--update で撮る）");
-            } else {
-              const ref = readPng(refFile);
-              const cmp = compareImages(ref, small, s.tolerance.pixelThreshold);
-              writePng(path.join(OUT_DIR, `${s.name}.diff.png`), cmp.diffImage);
-              r.diffRatio = cmp.diffRatio; r.meanAbs = cmp.meanAbs; r.maxDist = cmp.maxDist;
-              const j = judge(cmp, s.tolerance);
-              r.pass = j.pass; r.reasons.push(...j.reasons);
-            }
-            const b = baseline.scenes[s.name];
-            if (b) {
-              r.bitExact = b.nativeSha256 === r.sha;
-              if (b.nativeWidth !== first.img.width || b.nativeHeight !== first.img.height)
-                r.reasons.push(`注意: ネイティブ解像度が基準と違う（基準 ${b.nativeWidth}x${b.nativeHeight}）。` +
-                               `build/dev/imgui.ini やウィンドウの DPI が変わっていないか`);
-            }
+            const v = judgeScene({ native: first.img, sha: r.sha, small, ref: fs.existsSync(refFile) ? readPng(refFile) : null,
+                                   baseline: baseline.scenes[s.name], tolerance: s.tolerance, strict: args.strict, ui: false });
+            if (v.diffImage) writePng(path.join(OUT_DIR, `${s.name}.diff.png`), v.diffImage);
+            r.pass = v.pass; r.reasons.push(...v.reasons);
+            for (const k of ["skipped", "envMismatch", "diffRatio", "meanAbs", "maxDist", "bitExact"]) if (v[k] !== undefined) r[k] = v[k];
           }
         } catch (e) {
           r.pass = false;

@@ -35,7 +35,9 @@ type GoldenScene = any;
 export async function loadGoldenScenes(repoDir: string): Promise<{ scenes: GoldenScene[]; baseline: { scenes: Record<string, GoldenBaseline> }; goldenDir: string; gated: string[]; gm: any }> {
   const store = await importBench(repoDir, "goldenStore.mjs");
   const sel = await importBench(repoDir, "sceneSelect.mjs");
-  const gm = await importBench(repoDir, "../golden.mjs");
+  let gm: any = null;
+  try { gm = await importBench(repoDir, "../golden.mjs", true); }
+  catch (e: any) { jobFail({ code: "E_UNSUPPORTED", message: `visual_regression {suite:'golden'}: tools/bench/golden.mjs を読み込めない(${String(e?.message ?? e).slice(0, 300)})。tools/mcp-server で npm ci したか確認`, retryable: false }); }
   if (!store || !sel || !gm) jobFail({ code: "E_UNSUPPORTED", message: "visual_regression {suite:'golden'}: tools/bench(lib / golden.mjs)が見つからない(リポジトリの外では golden を回せない)", retryable: false });
   const goldenDir = path.join(repoDir, "tests", "golden");
   return { scenes: gm.loadConfig(goldenDir), baseline: store.loadBaseline(goldenDir), goldenDir, gated: [], _sel: sel, gm } as any;
@@ -84,8 +86,8 @@ export async function runGolden(a: Record<string, any>, deps: GoldenRunDeps): Pr
       const call = h.call;
       let dxr: { status: string; reason: string } | null = null;
       if (list.some((x) => x.requiresDxr)) {
-        const judgeDxr = loaded.gm?.judgeDxr;
-        try { const g = await call("get_dxr"); dxr = judgeDxr ? judgeDxr(g) : { status: "run", reason: "" }; } catch (e: any) { dxr = judgeDxr ? judgeDxr(e instanceof Error ? e : new Error(String(e))) : { status: "fail", reason: String(e?.message ?? e) }; }
+        const judgeDxr = loaded.gm.judgeDxr;
+        try { const g = await call("get_dxr"); dxr = judgeDxr(g); } catch (e: any) { dxr = judgeDxr(e instanceof Error ? e : new Error(String(e))); }
       }
       for (const s of list) {
         if (ctx.signal.aborted) throw new Error("aborted");
@@ -101,7 +103,7 @@ export async function runGolden(a: Record<string, any>, deps: GoldenRunDeps): Pr
           const shots: { img: any; file: string }[] = [];
           for (let k = 0; k < repeat; k++) shots.push(await captureFinal(call, path.join(deps.outDir, `${s.name}${repeat > 1 ? `.${k}` : ""}.native.png`), { camera: s.camera, warmupFrames: s.warmupFrames, settleFrames: s.settleFrames }));
           const first = shots[0];
-          const v = judgeGolden(lib, { native: first.img, ref: refPng(path.join(loaded.goldenDir, `${s.name}.png`)), baseline: loaded.baseline.scenes[s.name], width: s.width, height: s.height, tol: { ...s.tolerance, ...tolOverride }, strict });
+          const v = judgeGolden(lib, { gm: loaded.gm, native: first.img, ref: refPng(path.join(loaded.goldenDir, `${s.name}.png`)), baseline: loaded.baseline.scenes[s.name], width: s.width, height: s.height, tol: { ...s.tolerance, ...tolOverride }, strict });
           Object.assign(r, v);
           if (shots.length > 1) {
             r.deterministic = shots.every((x) => lib.sha256(x.img) === v.sha);
@@ -146,9 +148,9 @@ export async function runGolden(a: Record<string, any>, deps: GoldenRunDeps): Pr
       const masked = shots.map((x) => loaded.gm.applyMasks(x, s.masks));
       const sha = lib.sha256(masked[0]);
       const det = masked.every((x) => lib.sha256(x) === sha);
-      if (!det) { r.pass = false; r.deterministic = false; r.reasons.push("同じセッションで撮り直した 2 枚が一致しない(UI に実時間・乱数が混ざっている)。masks を足すか、原因を直す"); } else r.deterministic = true;
+      if (!det) { r.pass = false; r.deterministic = false; r.reasons.push(loaded.gm.DETERMINISM_REASON); } else r.deterministic = true;
       const refFile = path.join(loaded.goldenDir, "ui", `${s.name}.png`);
-      const v = judgeGolden(lib, { native: masked[0], ref: refPng(refFile), baseline: loaded.baseline.scenes[s.name], width: s.width, height: s.height, tol: { ...s.tolerance, ...tolOverride }, strict, ui: true });
+      const v = judgeGolden(lib, { gm: loaded.gm, native: masked[0], ref: refPng(refFile), baseline: loaded.baseline.scenes[s.name], width: s.width, height: s.height, tol: { ...s.tolerance, ...tolOverride }, strict, ui: true });
       r.pass = r.pass && v.pass; r.skipped = v.skipped; r.reasons.push(...v.reasons);
       Object.assign(r, { native: v.native, sha: v.sha, bitExact: v.bitExact, diffRatio: v.diffRatio, meanAbs: v.meanAbs, maxDist: v.maxDist, envMismatch: v.envMismatch });
     } catch (e: any) { r.pass = false; r.reasons.push(`撮影失敗: ${e?.message ?? e}`); }

@@ -117,9 +117,26 @@ console.log("[3] golden suite の判定(golden.mjs と同じ式)");
   check("既定の許容差は golden.mjs の export と同一(写しを持たない)", lib.DEFAULT_TOLERANCE === gm.DEFAULT_TOLERANCE && lib.DEFAULT_TOLERANCE.pixelThreshold === 12, lib.DEFAULT_TOLERANCE);
 
   const ls = await loadGoldenScenes(REPO);
-  check("MCP のシーン一覧は golden.mjs loadConfig() と全項目一致(写しを持たない)", ls.scenes.length > 0 && JSON.stringify(ls.scenes) === JSON.stringify(gm.loadConfig(path.join(REPO, "tests", "golden"))), ls.scenes.length);
-  check("applyMasks / uiExtraArgs は golden.mjs の export を使う", ls.gm.applyMasks === gm.applyMasks && ls.gm.uiExtraArgs === gm.uiExtraArgs);
+  check("MCP のシーン一覧が空でない(一覧は gm.loadConfig の戻りそのもの)", ls.scenes.length > 0 && ls.gm.judgeScene === gm.judgeScene, ls.scenes.length);
 
+  // runGolden の UI 経路を偽プロバイダで回し、golden.mjs の uiExtraArgs / applyMasks / judgeScene が実際に使われることを確かめる(写しに戻ると落ちる)
+  {
+    const uiScene: any = ls.scenes.find((x: any) => x.kind === "ui" && fs.existsSync(path.join(REPO, "tests", "golden", "ui", `${x.name}.png`)));
+    const launched: any[] = [];
+    const png = fs.readFileSync(path.join(REPO, "tests", "golden", "ui", `${uiScene.name}.png`));
+    const fakeProvider: EngineProvider = {
+      attach: () => ({ call: engineCall as any, close: async () => {} }),
+      launch: async (o: any) => { launched.push(o); return { close: async () => {}, call: (async (m: string, pr: any = {}) => {
+        if (m === "imgui_screenshot") { fs.mkdirSync(path.dirname(pr.path), { recursive: true }); fs.writeFileSync(pr.path, png); return { path: pr.path }; }
+        return { currentScene: "x" };
+      }) as any }; },
+    };
+    const k2 = visualRegressionKind(env, { provider: fakeProvider, repoDir: REPO });
+    const r = await k2.run({ suite: "golden", only: [uiScene.name], uiOnly: true }, mkCtx());
+    const item = (r.result as any)?.results?.[0];
+    check("UI 経路は golden.mjs の uiExtraArgs を起動引数に渡す", launched.length === 1 && JSON.stringify(launched[0].extraArgs) === JSON.stringify(gm.uiExtraArgs(uiScene, null)), launched[0]?.extraArgs);
+    check("UI 経路の判定は judgeScene と同じ(決定論・基準との差・bitExact)", item?.ui === true && item.deterministic === true && typeof item.native === "string", item);
+  }
   const goldenDir = path.join(REPO, "tests", "golden");
   const store: any = await import(new URL(`file:///${path.join(REPO, "tools/bench/lib/goldenStore.mjs").replace(/\\/g, "/")}`).href);
   const cfgG = store.loadGoldenEntries(goldenDir), base = store.loadBaseline(goldenDir);
@@ -131,26 +148,26 @@ console.log("[3] golden suite の判定(golden.mjs と同じ式)");
     const ref = readPng(refFile);
     const b = base.scenes[s.name];
     // ネイティブ = 基準 PNG そのもの(縮小は恒等)。基準の native サイズに合わせた偽のメタを渡して判定だけを見る
-    const okV = judgeGolden(lib, { native: ref, ref, baseline: { ...b, nativeWidth: ref.width, nativeHeight: ref.height }, width: ref.width, height: ref.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
+    const okV = judgeGolden(lib, { gm, native: ref, ref, baseline: { ...b, nativeWidth: ref.width, nativeHeight: ref.height }, width: ref.width, height: ref.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
     if (!okV.pass) allOk = false;
     const broken = { width: ref.width, height: ref.height, data: Buffer.from(ref.data) };
     for (let i = 0; i < broken.data.length; i += 4) { broken.data[i] = 255 - broken.data[i]; }
-    const badV = judgeGolden(lib, { native: broken, ref, baseline: { ...b, nativeWidth: ref.width, nativeHeight: ref.height }, width: ref.width, height: ref.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
+    const badV = judgeGolden(lib, { gm, native: broken, ref, baseline: { ...b, nativeWidth: ref.width, nativeHeight: ref.height }, width: ref.width, height: ref.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
     if (badV.pass) allBad = false;
   }
   check("基準と同じ絵は全件合格", allOk);
   check("赤を反転した絵は全件不合格", allBad);
   const s0 = withRef[0], r0 = readPng(path.join(goldenDir, s0.kind === "ui" ? "ui" : "", `${s0.name}.png`));
-  const env1 = judgeGolden(lib, { native: r0, ref: r0, baseline: { nativeWidth: r0.width + 1, nativeHeight: r0.height, nativeSha256: "x" }, width: r0.width, height: r0.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
+  const env1 = judgeGolden(lib, { gm, native: r0, ref: r0, baseline: { nativeWidth: r0.width + 1, nativeHeight: r0.height, nativeSha256: "x" }, width: r0.width, height: r0.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
   check("ネイティブ解像度が違えば環境違い: strict は不合格", env1.envMismatch === true && env1.pass === false && !env1.skipped, env1);
-  const env2 = judgeGolden(lib, { native: r0, ref: r0, baseline: { nativeWidth: r0.width + 1, nativeHeight: r0.height, nativeSha256: "x" }, width: r0.width, height: r0.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: false });
+  const env2 = judgeGolden(lib, { gm, native: r0, ref: r0, baseline: { nativeWidth: r0.width + 1, nativeHeight: r0.height, nativeSha256: "x" }, width: r0.width, height: r0.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: false });
   check("ネイティブ解像度が違えば環境違い: 非 strict は SKIP", env2.skipped === true && env2.pass === true, env2);
-  const noRef = judgeGolden(lib, { native: r0, ref: null, baseline: undefined, width: r0.width, height: r0.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
+  const noRef = judgeGolden(lib, { gm, native: r0, ref: null, baseline: undefined, width: r0.width, height: r0.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
   check("基準画像が無ければ不合格", noRef.pass === false && /基準画像が無い/.test(noRef.reasons[0]), noRef);
   const tolD = { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 };
   const mis = { nativeWidth: r0.width + 1, nativeHeight: r0.height, nativeSha256: "x" };
-  const uiMis = judgeGolden(lib, { native: r0, ref: null, baseline: mis, width: r0.width, height: r0.height, tol: tolD, strict: false, ui: true });
-  const d3Mis = judgeGolden(lib, { native: r0, ref: null, baseline: mis, width: r0.width, height: r0.height, tol: tolD, strict: false });
+  const uiMis = judgeGolden(lib, { gm, native: r0, ref: null, baseline: mis, width: r0.width, height: r0.height, tol: tolD, strict: false, ui: true });
+  const d3Mis = judgeGolden(lib, { gm, native: r0, ref: null, baseline: mis, width: r0.width, height: r0.height, tol: tolD, strict: false });
   check("UI は基準画像なしを環境違いより先に見る(--no-strict でも FAIL)/ 3D は環境違いが先(SKIP)", uiMis.pass === false && !uiMis.skipped && d3Mis.skipped === true, { uiMis, d3Mis });
 }
 
