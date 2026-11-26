@@ -15,6 +15,7 @@
 #include <cstring>
 #include "core/vfs/Vfs.h"
 #include "editor/EditorTheme.h"
+#include "editor/ThemeGraphite.h"   // Graphite Gauge の Spec（W1 A2。TU をリンカが落とさないよう Initialize から明示登録する）
 #include "gui/VirtualInputImGui.h"
 #include "gui/FloatingGuard.h"
 #include "gui/UiClock.h"
@@ -504,6 +505,7 @@ void ImGuiManager::Initialize(
     u32 frameCount)
 {
     IMGUI_CHECKVERSION();
+    theme::RegisterGraphite();   // 冪等。ThemeGraphite.cpp の静的初期化が既に登録済みのはずだが、TU を確実にリンクさせる
     ImGui::CreateContext();
     m_hwnd = hwnd;
 

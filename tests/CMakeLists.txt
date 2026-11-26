@@ -514,6 +514,24 @@ else()
     message(WARNING "Python3 が見つからないため FontSubsetCheck を登録できません（tools/subset_fonts.py --check は標準ライブラリだけで動く）")
 endif()
 
+# --- Graphite Gauge のトークン（W1-A2）。生成物と tokens.json の突き合わせ。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(GgTokensGenTests gg_tokens_gen_test.cpp)
+    target_link_libraries(GgTokensGenTests PRIVATE Gui)
+    target_include_directories(GgTokensGenTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(GgTokensGenTests PRIVATE GG_TEST_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(GgTokensGenTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GgTokensGenTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GgTokensGenTests COMMAND GgTokensGenTests)
+endif()
+# tools/theme/gen_gg_tokens.py --check（標準ライブラリだけ。生成物が最新か / tokens の SHA256 が lock と一致か / integrate_check が全緑か）
+if(Python3_Interpreter_FOUND)
+    add_test(NAME GgTokensGenCheck COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/theme/gen_gg_tokens.py --check)
+    set_tests_properties(GgTokensGenCheck PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
