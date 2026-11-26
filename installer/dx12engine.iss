@@ -54,7 +54,16 @@ Source: "{#SrcDir}\GameRuntime.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; gh.exe(GitHub CLI、同梱): エディタの GitHub 連携(リポジトリ作成/push/ログイン)に必要。
 ; CMake configure 時に third_party/gh-cli/ へ自動取得され、ビルド後に exe の隣へコピーされる。
 Source: "{#SrcDir}\gh.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+; nvngx_dlss.dll もこのワイルドカードで入る（DLSS 有効ビルドのとき）。-Dlss off のときだけ DllExcludes で外す。
+#ifdef DllExcludes
+Source: "{#SrcDir}\*.dll"; DestDir: "{app}"; Excludes: "{#DllExcludes}"; Flags: ignoreversion
+#else
 Source: "{#SrcDir}\*.dll"; DestDir: "{app}"; Flags: ignoreversion
+#endif
+#ifdef DlssLicense
+; NVIDIA DLSS SDK のライセンス文（nvngx_dlss.dll を配るときは必ずセット）。ビルドが SDK の LICENSE.txt を exe の隣の licenses へコピーした物を使う（UNO_DLSS_SDK_DIR を替えても DLL と一致する）。
+Source: "{#SrcDir}\licenses\NVIDIA_DLSS_LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+#endif
 ; D3D12 Agility SDK のランタイム。D3D12\* のワイルドカードは使わない（ビルドツリーには d3d12SDKLayers.dll もあり、配布しないため）。
 Source: "{#SrcDir}\D3D12\D3D12Core.dll"; DestDir: "{app}\D3D12"; Flags: ignoreversion
 ; Agility の再頒布ライセンス文（third_party\agility は configure が取得する物）

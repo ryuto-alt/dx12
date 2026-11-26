@@ -116,6 +116,28 @@ bool Pipeline::CopyRuntime()
         Logger::Info("Copied dll -> {}", entry.path().filename().string());
     }
 
+    // ★nvngx_dlss.dll を配るときは NVIDIA のライセンス文もセットで入れる（再頒布条件。DLL だけ配らない）。
+    //   ライセンス文は cmake が <exe>/licenses/NVIDIA_DLSS_LICENSE.txt へ置く（third_party/dlss/LICENSE.txt の写し）。
+    if (bundleDlss && fs::exists(in.outputDir / "nvngx_dlss.dll", ec))
+    {
+        const fs::path dlssLic = in.exeDir / "licenses" / "NVIDIA_DLSS_LICENSE.txt";
+        std::error_code lec;
+        if (fs::exists(dlssLic, lec))
+        {
+            fs::create_directories(in.outputDir / "licenses", lec);
+            lec.clear();
+            fs::copy_file(dlssLic, in.outputDir / "licenses" / "NVIDIA_DLSS_LICENSE.txt", fs::copy_options::overwrite_existing, lec);
+            if (lec) return Fail("NVIDIA DLSS のライセンス文をコピーできません: " + lec.message());
+            Logger::Info("Copied licenses/NVIDIA_DLSS_LICENSE.txt");
+        }
+        else
+        {
+            // DLL だけを配る状態は作らない
+            fs::remove(in.outputDir / "nvngx_dlss.dll", lec);
+            Logger::Warn("NVIDIA DLSS のライセンス文が見つからないため nvngx_dlss.dll を同梱しません（{}）", PathResolver::WideToUtf8(dlssLic.wstring()));
+        }
+    }
+
     // ★D3D12 Agility のランタイム（<exe>/D3D12/D3D12Core.dll）。D3D12SDKPath が exe の隣の D3D12/ を指すので、
     //   配布物にも同じ場所へ置く。無いまま配ると in-box が古い PC で起動できないので、黙って飛ばさず止める。
     //   d3d12SDKLayers.dll（デバッグレイヤー）は配らない。

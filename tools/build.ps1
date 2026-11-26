@@ -7,6 +7,15 @@
     pwsh tools/build.ps1 -Tests              # 全ターゲット(テスト exe 含む)
     pwsh tools/build.ps1 -Jobs 8             # 並列数を明示(既定 = 論理コア/2, 最大 12)
     pwsh tools/build.ps1 -Dir build\tracy    # 別ビルドディレクトリ
+    pwsh tools/build.ps1 -Dlss require       # DLSS SDK が無ければ失敗(終了コード 3)。夜間ビルドと公式リリース用
+    pwsh tools/build.ps1 -Dlss off           # DLSS を入れない(-DUNO_ENABLE_DLSS=OFF)
+
+  -Dlss auto|require|off (既定 auto):
+    auto    … SDK(third_party/dlss。pwsh tools/fetch_dlss.ps1 で取得)があれば DLSS 付き。無ければビルドの最後に
+              「DLSS: OFF」を枠付きで表示し、DLSS 無しで成功する。
+    require … SDK が無ければビルドせず終了コード 3。ビルド後に exe の隣へ nvngx_dlss.dll が無くても 3。
+    off     … DLSS を入れない。古い nvngx_dlss.dll が出力に残っていれば消す。
+    ゴールデンとショーケースは決定論モードで常に DLSS OFF なので、どのモードでも結果は同じ。
 
   やっていること:
     1. 名前付き Mutex(Global\dx12-build)で全ビルドを直列化。待っている間は待機中と表示する。
@@ -21,12 +30,30 @@ param(
     [string]$Dir = 'build\release',
     [int]$Jobs = 0,
     [switch]$Tests,
-    [int]$WaitMinutes = 40
+    [int]$WaitMinutes = 40,
+    [ValidateSet('auto', 'require', 'off')][string]$Dlss = 'auto'
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+# --- DLSS SDK の有無（CMakeLists.txt の UNO_DLSS_ACTIVE と同じ 3 ファイルで判定する）
+$dlssSdk = Join-Path $root 'third_party\dlss'
+# 構成済みなら CMake キャッシュの UNO_DLSS_SDK_DIR（ユーザーが差し替え可能）を優先する
+$dlssCache = Join-Path (Join-Path $root $Dir) 'CMakeCache.txt'
+if (Test-Path $dlssCache) {
+    $sd = Select-String -Path $dlssCache -Pattern '^UNO_DLSS_SDK_DIR:[A-Z]+=(.+)$' | Select-Object -First 1
+    if ($sd) { $dlssSdk = $sd.Matches[0].Groups[1].Value.Trim() -replace '/', '\' }
+}
+$sdkPresent = (Test-Path (Join-Path $dlssSdk 'include\nvsdk_ngx_helpers.h')) -and
+              (Test-Path (Join-Path $dlssSdk 'lib\Windows_x86_64\x64\nvsdk_ngx_d.lib')) -and
+              (Test-Path (Join-Path $dlssSdk 'lib\Windows_x86_64\rel\nvngx_dlss.dll'))
+if ($Dlss -eq 'require' -and -not $sdkPresent) {
+    Write-Host '[build] -Dlss require: DLSS SDK (third_party/dlss) が無い。pwsh tools/fetch_dlss.ps1 で取得してから実行して'
+    exit 3
+}
+$dlssWanted = ($Dlss -ne 'off') -and $sdkPresent   # このビルドで DLSS が有効になるはずか
 
 # --- 並列数: 論理コアの半分、最大 12（16GB 機で cl 1本が最大 ~1GB 使うため）
 if ($Jobs -le 0) {
@@ -131,6 +158,22 @@ try {
         }
     }
 
+    # --- 3a. DLSS の状態が前回の configure と違うときだけ構成し直す（UNO_ENABLE_DLSS と SDK の有無は configure で決まる）
+    $dlssMarker = Join-Path (Join-Path $root $Dir) '.uno_dlss_configured'
+    # 要求(-Dlss)も含めて記録する: ON / OFF:nosdk（SDK 無しで OFF）/ OFF:off（-Dlss off）
+    $dlssWant = if ($dlssWanted) { 'ON' } elseif ($Dlss -eq 'off') { 'OFF:off' } else { 'OFF:nosdk' }
+    # 注: マーカーが無い既存ビルドは最初の 1 回だけ（状態が同じでも）構成し直す。未構成のディレクトリは build.ps1 が configure しないので -Dlss off は効かない。
+    # -Dlss require で SDK 無しの終了コード 3 はロック待ちタイムアウトと同じ。ログの "[build] -Dlss require" 行で見分ける。
+    $dlssHave = ''
+    if (Test-Path $dlssMarker) { $raw = Get-Content $dlssMarker -Raw; if ($raw) { $dlssHave = $raw.Trim() } }
+    if ((Test-Path $cache) -and $dlssHave -ne $dlssWant) {
+        $enableFlag = if ($Dlss -eq 'off') { 'OFF' } else { 'ON' }
+        Write-Host "[build] DLSS configure state: '$dlssHave' -> '$dlssWant' (UNO_ENABLE_DLSS=$enableFlag). reconfiguring..."
+        & cmd /c "chcp 65001>nul && cmake -S . -B `"$Dir`" -DUNO_ENABLE_DLSS=$enableFlag"
+        if ($LASTEXITCODE -ne 0) { Write-Host "[build] reconfigure FAILED (exit $LASTEXITCODE)"; exit $LASTEXITCODE }
+        Set-Content -Path $dlssMarker -Value $dlssWant -NoNewline
+    }
+
     # --- 3. ビルド
     $args2 = @('--build', $Dir, '-j', $Jobs)
     if (-not $Tests) { foreach ($t in $Target) { $args2 += @('--target', $t) } }
@@ -149,6 +192,30 @@ try {
         $after = @(Get-BrokenDepObjs $ninja $Dir)
         if ($after.Count -gt 0) { Write-Host "[build] WARNING: #deps 0 objects after build: $($after.Count) (configure/build codepage mismatch?)" }
         else { Write-Host "[build] #deps 0 objects: 0" }
+    }
+    # --- 5. DLSS の結果表示（成功したときだけ。出力に実際に nvngx_dlss.dll があるかを見る）
+    if ($code -eq 0) {
+        $outDir = Join-Path $root $Dir
+        $dllOut = Join-Path $outDir 'nvngx_dlss.dll'
+        if (-not $dlssWanted) {
+            # 古いビルドの残りを消す（DlssWiringCheck の「無いときは無い」を守る）。exe が掴んでいれば諦める
+            foreach ($stale in @($dllOut, (Join-Path $outDir 'licenses\NVIDIA_DLSS_LICENSE.txt'))) {
+                if (Test-Path $stale) { try { Remove-Item -Force $stale -ErrorAction Stop } catch {} }
+            }
+        }
+        $dllNow = Test-Path $dllOut
+        if ($dlssWanted -and -not $dllNow) {
+            Write-Host '[build] DLSS: SDK はあるが出力に nvngx_dlss.dll が無い（-Target に DX12Engine / GameRuntime を含めたか確認）'
+            if ($Dlss -eq 'require') { exit 3 }
+        } elseif ($dllNow) {
+            Write-Host '[build] DLSS: ON'
+        } elseif ($Dlss -eq 'off') {
+            Write-Host '[build] DLSS: OFF (-Dlss off)'
+        } else {
+            $msg = 'DLSS: OFF (pwsh tools/fetch_dlss.ps1)'
+            $bar = '+' + ('-' * ($msg.Length + 2)) + '+'
+            Write-Host $bar; Write-Host "| $msg |"; Write-Host $bar
+        }
     }
     exit $code
 }

@@ -175,6 +175,13 @@ const EXTRA_NEXT: Record<string, { tool: string; when?: string }[]> = {
   dx12_select_entity: [{ tool: "dx12_editor_select", when: "複数選択・名前のパターン(Wall*)・タグ・追加/解除・全解除・フォーカス(1 体だけならこのツールで足りる)" }],
 };
 
+/** エンジンのマニフェストに examples が無いツールに、TS 側で足す例(MCP の完了の条件: 例 1 件以上)。キーは dx12_ 付きのツール名。 */
+const EXTRA_EXAMPLES: Record<string, { args: Record<string, unknown>; note?: string }[]> = {
+  dx12_get_device_caps: [{ args: {}, note: "GPU の機能(Agility・SM6.9・Enhanced Barriers・DXR・SER・OMM など)を読む。読み取り専用。経路は切り替わらない" }],
+  dx12_get_upscaler: [{ args: {}, note: "mode と effective が違えばフォールバック中。理由は dlss.fallbackReason" }],
+  dx12_editor_state: [{ args: { scope: "mode" }, note: "結果の autosave.blockedByHumanEdits が true なら人の未保存の変更あり。人に保存を依頼する(dx12_guide {topic:'autosave'})" }],
+};
+
 /** 統合ツールの代表の副作用(実際の呼び出しは、振り分け先の旧ツールの副作用で判定する)。 */
 const CONSOLIDATED_EFFECT: Record<string, EffectName> = {
   dx12_get_render_settings: "read", dx12_set_render_settings: "write_setting", dx12_get_perf: "read",
@@ -371,7 +378,7 @@ export function buildCatalog(
       dryRun: mf?.dryRun === "native" ? "native" : mf?.dryRun === "preview" ? "preview" : "static",
       ...(mf?.journal ? { journal: true } : {}),
       next: [...(mf?.next ?? []), ...(EXTRA_NEXT[t.name] ?? [])],
-      examples: mf?.examples ?? t.examples ?? [],
+      examples: mf?.examples?.length ? mf.examples : t.examples?.length ? t.examples : EXTRA_EXAMPLES[t.name] ?? [],
       composite: !isShell && !mf,
       destructive: t.annotations?.destructiveHint === true,
       source: mf ? `ts+${mf.source ?? "manifest"}` : "ts",
@@ -405,7 +412,7 @@ export function buildCatalog(
         dryRun: mf.dryRun === "native" ? "native" : mf.dryRun === "preview" ? "preview" : "static",
         ...(mf.journal ? { journal: true } : {}),
         next: mf.next ?? [],
-        examples: mf.examples ?? [],
+        examples: mf.examples?.length ? mf.examples : EXTRA_EXAMPLES["dx12_" + mf.name] ?? [],
         composite: false,
         source: mf.source ?? "manifest",
       });

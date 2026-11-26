@@ -596,7 +596,7 @@ export class Fleet {
       return {
         engineId: id, name: entry.name, port, pid, mode: o.mode, bound: !o.input.noBind,
         dir: { instance: this.instanceDir(id), bin, data: this.dataDir(id), project: entry.project.dir, log: path.join(bin, "dx12_engine.log"), launchLog: this.launchLog(id) },
-        project: { dir: entry.project.dir, disposable: entry.project.disposable, note: entry.project.disposable ? "使い捨てプロジェクト。エンジン停止後も 24 時間は残る" : "指定されたプロジェクト。MCP 接続中は 2 秒アイドルで自動保存され、実ファイルに書き込まれる" },
+        project: { dir: entry.project.dir, disposable: entry.project.disposable, note: entry.project.disposable ? "使い捨てプロジェクト。エンジン停止後も 24 時間は残る" : "指定されたプロジェクト。MCP の編集は 2 秒アイドルで自動保存されるが、人の未保存の変更があると本体へは書かれず止まる(guide autosave)" },
         exe: { path: entry.exe.path, sourcePath: entry.exe.sourcePath, sizeMB: +(entry.exe.sizeBytes / 1048576).toFixed(1), stale: view.exe.stale, linked: mat.linked, copiedMB: +(mat.copiedBytes / 1048576).toFixed(1), copyMs },
         timing: { totalMs: this.now() - o.t0, readyMs, copyMs },
         idle: { idleMin: this.cfg.idleMin, engineIdleExitMin: idleExitMin, note: `${this.cfg.idleMin} 分、(ping 以外の)呼び出しが無いと自動終了する` },
@@ -736,7 +736,7 @@ export class Fleet {
     const out = await this.startEngine(entry.id, {
       mode: entry.mode, build: build!, extra: argsExtra.extra, input: { scene: argsExtra.scene, dpiScale: argsExtra.dpiScale, waitReadyMs: input.waitReadyMs }, warnings: [], resources: null, t0, isRefresh: true,
     });
-    return { ...out, refreshed: true, previous: { pid: entry.pid, wasStale: before.stale }, note: "エンジンを再起動した。シーンは(MCP 接続中の自動保存で)ディスクにあるものが開き直される。entityId は全て失効している" };
+    return { ...out, refreshed: true, previous: { pid: entry.pid, wasStale: before.stale }, note: "エンジンを再起動した。開き直されるのはディスクのシーン本体で、人の未保存の変更は含まれない(先に editor_state の autosave.blockedByHumanEdits を確認。guide autosave)。entityId は全て失効している" };
   }
 
   // ── attach / use ────────────────────────────────────────────────────

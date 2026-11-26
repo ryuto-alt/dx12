@@ -2,3 +2,10 @@
 runTestsList.test.mjs
 vfxPreviewTx.test.ts
 fleetMaterialize.test.ts
+autosaveGuide.test.ts
+eval/e2e.test.ts
+eval/noPaidApi.test.ts
+../dogfood/collect.test.mjs
+genBudgets.test.mjs
+../scorecard/report.test.mjs
+../scorecard/baseline_perf.test.mjs
