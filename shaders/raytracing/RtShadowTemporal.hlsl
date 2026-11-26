@@ -102,9 +102,18 @@ float4 PSMain(FSQuadVSOut i) : SV_TARGET
     // ---- 履歴のクランプと n の減衰（FFX と同じ: 箱は ±0.5σ、減衰は exp(-t²/20)）----
     if (histN > 0.0)
     {
-        const float t = (histMean - nbMean) / max(0.5 * nbSd, 0.001);
+        // ★FU-E-23: 箱は「近傍 ±0.5σ」に今フレームの値 cur を含めて広げる。
+        //   cur を含めないと、細い影（遠くの柱の影は 1〜3 画素幅）の画素では近傍がほぼ日向（μ≈0.95・σ 小）なので、
+        //   履歴が影（0）のまま正しくても箱の外になり、n が毎フレーム 0 へ縮む → 空間フィルタの輝度重みが効かず
+        //   （lumTrust = 0）、日向の隣画素に混ぜられて影が消える（LS-A の 15m / 30m / 60m の柱で捕捉 0.15 / 0.07 / 0）。
+        //   cur と履歴が一致するなら履歴は正しい。cur が箱の外へ動く本当の変化（影の移動）は、履歴が箱の外のままなので従来どおり捨てる。
+        const float boxLo   = min(nbMean - 0.5 * nbSd, cur);
+        const float boxHi   = max(nbMean + 0.5 * nbSd, cur);
+        const float boxMid  = 0.5 * (boxLo + boxHi);
+        const float boxHalf = 0.5 * (boxHi - boxLo);
+        const float t = (histMean - boxMid) / max(boxHalf, 0.001);
         histN   *= exp(-t * t / 20.0);
-        const float clamped = clamp(histMean, nbMean - 0.5 * nbSd, nbMean + 0.5 * nbSd);
+        const float clamped = clamp(histMean, boxLo, boxHi);
         // 2 次モーメントは平均を動かした分だけ平行移動する（分散は保つ）。
         histMom  = max(histMom + clamped * clamped - histMean * histMean, 0.0);
         histMean = clamped;

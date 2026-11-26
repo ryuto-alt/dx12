@@ -1293,6 +1293,13 @@ if(MSVC)
     target_compile_options(PerfStatsGpuTests PRIVATE /W4 /WX /permissive- /utf-8)
 endif()
 add_test(NAME PerfStatsGpuTests COMMAND PerfStatsGpuTests)
+# 速度プリパスの前提（前ワールドの追跡 / 前ワールド VB の確保）。FU-E-23。純ロジック（ヘッダのみ）
+add_executable(VelocityPolicyTests velocity_policy_test.cpp)
+target_include_directories(VelocityPolicyTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(VelocityPolicyTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME VelocityPolicyTests COMMAND VelocityPolicyTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。

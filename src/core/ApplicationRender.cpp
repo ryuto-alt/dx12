@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/SplitScreen.h"
+#include "renderer/VelocityPolicy.h"
 #include "core/GameUiFont.h"
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/UiWidgets.h"
@@ -2026,7 +2027,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     const bool skipTransparent = prepass && prepass->skipTransparent;
     const bool shadowPass = (prepass == nullptr);   // 影マップ（CSM / スポット / ポイント）の呼び出し
     PipelineState* const instPsoForGpu = instPSO;   // GPU 駆動のインスタンス群（4-3）は専用の前フレームストリームを持つので、前ワールド VB の有無に依らない
-    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 前ワールドVBが無ければ従来経路
+    // ★FU-E-23: 速度パスを個別ドローへ落とさない。フォワードは同じ物を自動インスタンシングで描くので、
+    //   ここだけ個別ドロー（world*viewProj を CPU で畳んだ MVP）にするとクリップ Z がずれ、LESS_EQUAL で大きな面が欠ける。
+    //   前ワールド VB が無ければここで確保する（呼び出し側が先に確保済みなら何もしない）。
+    if (velocityMode) EnsureInstancePrevBuffer();
+    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 確保に失敗したときだけ従来経路
 
     // 速度+G-Buffer パスの b0。静的/スキンドは 40 DWORD（ルート定数の上限ぴったり）、
     // インスタンシングは 36 DWORD（法線はインスタンスデータから取れるので行列を送らない）。
@@ -4947,8 +4952,22 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     const bool ssGiWantsPrepass =
         m_screenSpaceGi && m_screenSpaceGi->IsReady() && taaViewOk
         && (m_scene->GetSsrSettings().enabled || m_scene->GetSsgiSettings().enabled);
-    if (taaActive || ssGiWantsPrepass) EnsureInstancePrevBuffer();
-    m_trackPrevWorld = taaActive || ssGiWantsPrepass;
+    // ★FU-E-23: RT 影デノイザ / RT-AO / RT 反射も速度プリパスを要求する（velocityPrepass の条件と揃えること。renderer/VelocityPolicy.h）。
+    //   ここに入れないと前ワールド VB が無いまま速度パスが個別ドローへ落ち、フォワードの自動インスタンシングと Z がずれて大きな面が欠ける。
+    VelocityPrepassReasons velReasons;
+    velReasons.taa             = taaActive;
+    velReasons.ssr             = ssGiWantsPrepass && m_scene->GetSsrSettings().enabled;
+    velReasons.ssgi            = ssGiWantsPrepass && m_scene->GetSsgiSettings().enabled;
+    if (m_rtScene && m_taaPass && taaViewOk)
+    {
+        const RtSettings& rtVel = m_scene->GetRtSettings();
+        velReasons.rtShadowDenoise = rtVel.shadowEnabled && rtVel.shadowDenoise;
+        velReasons.rtAo            = rtVel.aoEnabled;
+        velReasons.rtReflections   = rtVel.reflectionsEnabled;
+    }
+    const bool wantsVelocityPrevWorld = WantsVelocityPrevWorld(velReasons);
+    if (wantsVelocityPrevWorld) EnsureInstancePrevBuffer();
+    m_trackPrevWorld = wantsVelocityPrevWorld;
 
     // ★かつてここに「ビューポート矩形が変わったら履歴を捨てる」ブロックがあったが、
     //   #16 でシーンは常に RT 全面に描くようになり、履歴の UV 対応が表示矩形に依存しなくなった。
