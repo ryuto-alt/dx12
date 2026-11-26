@@ -453,6 +453,19 @@ if(COMMAND uno_agility_test_exe)
     endif()
 endif()
 
+# W05-06（AUD-04）: ディスクリプタの遅延返却（GPU 不要。DescriptorHeap の管理表だけを使う）。
+if(TARGET Graphics)
+    add_executable(DescriptorDeferredFreeTests descriptor_deferred_free_test.cpp)
+    target_include_directories(DescriptorDeferredFreeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(DescriptorDeferredFreeTests PRIVATE Graphics)
+    if(MSVC)
+        target_compile_options(DescriptorDeferredFreeTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(DescriptorDeferredFreeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DescriptorDeferredFreeTests COMMAND DescriptorDeferredFreeTests)
+    set_tests_properties(DescriptorDeferredFreeTests PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
