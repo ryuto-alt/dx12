@@ -305,7 +305,8 @@ void GraphView::Draw(const char* strId, ImVec2 size)
             auto lineH = [&](ImFont* f, float units, const char* t) {
                 const float px = std::max(1.0f, std::floor(units * scale + 0.5f));
                 const QuantText q = QuantizeText(px, m_zoom);
-                return f->CalcTextSizeA(q.qpx, FLT_MAX, 0.0f, t).y * q.r;
+                // qpx*(px/qpx) の丸め誤差で中央寄せの floor が 1px ずれないよう、px 単位に丸める
+                return std::floor(f->CalcTextSizeA(q.qpx, FLT_MAX, 0.0f, t).y * q.r + 0.5f);
             };
             m_lhLabel = lineH(FontBody(), c.textUnits, "Ag");
             m_lhTitle = lineH(FontBold(), c.titleUnits, "Ag");
