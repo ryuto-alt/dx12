@@ -4945,6 +4945,7 @@ const DiagReg kTests[] = {
     { "autosave", "autosave_protect_rolling_slot", "保存", "自動保存の退避は 1 枠に畳まれ、原本を押し出さない", uitest::T_AutosaveProtectRollingSlot },
     { "autosave", "autosave_protect_keeps_forced_merge", "保存", "強制の退避が合流した自動保存の世代を次の自動保存が消さない", uitest::T_AutosaveProtectKeepsForcedMerge },
     { "matgraph", "matgraph_zoom_stress", "マテリアルグラフ", "DPI 1.0/1.5/2.0 でズーム 40 回往復（SRV 割り当て・フォント量子化）", uitest::T_MatgraphZoomStress },
+    { "workspace", "ws_animation_placeholder", "ワークスペース", "アニメ・シーケンサーの案内・.dxseq / .uvfx の種別・.dxseq の再生要求で再生が始まる", uitest::T_WsAnimationPlaceholder },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },

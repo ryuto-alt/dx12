@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/SequencerHost.h"
+#include "core/AppAccess.h"
 
 namespace dx12e
 {
@@ -42,6 +43,29 @@ void Application::UpdateSequencers(f32 dt, bool paused)
 {
     if (!m_sequencer || !m_scene) return;
     m_sequencer->SetScene(m_scene.get());
+    // A10: アセットブラウザの .dxseq のダブルクリック（EditorContext::pendingSequencePlay = assets 相対パス）。
+    // MCP sequence_play と同じ関数（LoadDoc → PlayRuntime / EditorPlay）で再生する。
+    if (m_editorCtx && !m_editorCtx->pendingSequencePlay.empty())
+    {
+        const std::string rel = std::move(m_editorCtx->pendingSequencePlay);
+        m_editorCtx->pendingSequencePlay.clear();
+        std::string err;
+        bool ok = false;
+        if (seqhost::DocPtr d = m_sequencer->LoadDoc(rel, err))
+        {
+            if (m_engineMode == EngineMode::Playing)
+            {
+                SequencePlayOptions o;   // 既定 = sequence_play の既定（実時間・meta.loop・終了時に復元）
+                ok = m_sequencer->PlayRuntime(d, o, err) > 0;
+            }
+            else
+            {
+                ok = m_sequencer->EditorScrub(d, 0, err) && m_sequencer->EditorPlay(d, /*loop=*/false, /*rate=*/1.0, err);
+            }
+        }
+        if (ok) m_editorCtx->Notify(ui::ToastKind::Info, "シーケンスを再生します: " + rel);
+        else    m_editorCtx->Notify(ui::ToastKind::Warn, "シーケンスを再生できません: " + err);
+    }
     const seqhost::HostMode mode = (m_engineMode == EngineMode::Playing) ? seqhost::HostMode::Playing : seqhost::HostMode::Editor;
     // シーンが作り直されると変わる値(open_scene / Stop / ランタイムの loadScene)。entity id は全部入れ替わる。
     const std::uint64_t token = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(m_sceneGeneration)) << 32) ^
@@ -62,6 +86,20 @@ entt::entity Application::FindActiveCameraEntity()
     for (auto [e, cam] : reg.view<const CameraComponent>().each())
         if (cam.isActive) return e;
     return entt::null;
+}
+
+std::string AppAccess::SequenceEditorPlayingDoc(Application& app)
+{
+    if (!app.m_sequencer) return {};
+    const seqhost::EditorStatus st = app.m_sequencer->GetEditorStatus();
+    return (st.active && st.playing) ? st.doc : std::string();
+}
+
+void AppAccess::SequenceEditorStopForTest(Application& app)
+{
+    if (!app.m_sequencer) return;
+    app.m_sequencer->EditorPause();
+    app.m_sequencer->EditorEnd();
 }
 
 } // namespace dx12e

@@ -31,6 +31,9 @@ namespace dx12e::ws
 enum class Slot : int { RightTab = 0, RightSplit = 1, BottomTab = 2, Floating = 3 };
 inline constexpr int kSlotCount = 4;
 
+// A10: アニメ・シーケンサーの下部タブ（id "timeline"）に出す暫定の案内。シーケンサー本体（W3）が同じ id で差し替える。
+inline constexpr const char* kTimelineGuidance = "シーケンサーは W3 で入ります。いまは .dxseq をアセットブラウザからダブルクリックすると再生できます。";
+
 inline const char* SlotKey(Slot s)
 {
     switch (s)
@@ -271,7 +274,7 @@ inline const std::vector<Preset>& Presets()
             l.open = {"lighting", "postProcess", "skybox", "ssao"};
             v.push_back({"lighting", "ライティング", "lighting light sun ポスト 空", l});
         }
-        {   // アニメ・シーケンサー: 下部ドックを厚くしてタイムライン（ダミー / シーケンサー）。大きな浮かぶ窓で下部ドックを隠さないよう、窓は開かない
+        {   // アニメ・シーケンサー: 下部ドックを厚くしてタイムライン（W1 は案内のタブ / W3 でシーケンサー）。大きな浮かぶ窓で下部ドックを隠さないよう、窓は開かない
             Layout l;
             l.ratios.bottom = 0.40f;
             l.bottomTabs = {"timeline"};

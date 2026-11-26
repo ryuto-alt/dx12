@@ -8,6 +8,7 @@
 #include "editor/Toast.h"            // 右下トースト
 #include "core/Window.h"            // OS ファイルドロップのハンドラ設定（アセットの取り込み）
 #include "editor/WorkspaceManager.h"   // ドックの構築・レイアウト保存・ワークスペース・下部ドックのスロット
+#include "editor/WorkspaceLogic.h"     // ws::kTimelineGuidance
 #include "editor/BottomDock.h"
 #include "editor/EditorPrefs.h"
 #include "gui/FloatingGuard.h"   // フローティング窓の収容領域
@@ -116,11 +117,11 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_viewportBar  = std::make_unique<ViewportToolbar>();
     m_viewportBar->SetAssetsDir(assetsDir);
 
-    // 下部ドックの登録タブ（ダミー）。シーケンサーは同じ id "timeline" で Register し直せば、そのまま本物に入れ替わる（BottomDock.h）。
-    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM,
+    // 下部ドックの登録タブ（W1 の暫定の案内）。シーケンサー（W3）は同じ id "timeline" で Register し直せば、そのまま本物に入れ替わる（BottomDock.h）。
+    bottomdock::Register({"timeline", "タイムライン", ICON_FILM,
         [](EditorContext&) {
             ImGui::Spacing();
-            ImGui::TextDisabled("ここにシーケンサーのタイムラインが入ります（下部ドックのスロット。動作確認用のダミー）。");
+            ImGui::TextDisabled("%s", ws::kTimelineGuidance);
             ImGui::TextDisabled("タブ帯をダブルクリックすると下部ドックが広がります（もう一度で元に戻ります）。");
         }});
     m_workspace = std::make_unique<WorkspaceManager>();

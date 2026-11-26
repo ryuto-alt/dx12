@@ -177,6 +177,8 @@ static ImVec4 KindColor(Kind k)
     case Kind::UiAnim:        return th::TypeUi;        // アニメ系はマゼンタ寄りで統一
     case Kind::SpriteSheet:   return th::TypeUi;
     case Kind::MaterialGraph: return th::TypeLight;
+    case Kind::Sequence:      return th::TypeUi;        // アニメ系（UI アニメと同じ）
+    case Kind::Vfx:           return th::TypeLight;     // 光り物
     default:                  return th::TypeEmpty;
     }
 }
@@ -197,6 +199,8 @@ static const char* KindGlyph(Kind k)
     case Kind::UiAnim:        return ICON_T_ANIM;
     case Kind::SpriteSheet:   return ICON_T_GRID;
     case Kind::MaterialGraph: return ICON_T_SPLINE;   // .dxmg（ノードのつながり）
+    case Kind::Sequence:      return ICON_T_LAYERS;   // .dxseq（トラックの重なり）
+    case Kind::Vfx:           return ICON_T_PARTICLE; // .uvfx
     default:                  return ICON_FILE;
     }
 }
@@ -1447,6 +1451,12 @@ void AssetBrowserPanel::OpenEntry(EditorContext& ctx, const Entry& e)
         ctx.pendingOpenSpriteSheetPath = e.path.string();
         ctx.showSpriteSheetEditor = true;
         break;
+    case Kind::Sequence:
+        ctx.pendingSequencePlay = abl::AssetsRelative(m_assetsRoot, e.path);   // ApplicationSequencer が sequence_play と同じ関数で再生する
+        break;
+    case Kind::Vfx:
+        ctx.pendingVfxPlace = abl::AssetsRelative(m_assetsRoot, e.path);       // 置くのは BD4（ビューポートの注視点）
+        break;
     default:
         dx12e::guard::ShellExecuteGuarded(nullptr, "open", e.path.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         break;
@@ -1488,6 +1498,14 @@ void AssetBrowserPanel::DrawItemMenu(EditorContext& ctx, const Entry& e)
                 req.position = SpawnPositionFrontOfCamera(ctx);
                 ctx.pendingSpawns.push_back(req);
             }
+        }
+        else if (e.kind == Kind::Sequence)
+        {
+            if (ui::MenuItem(ICON_PLAY, "再生")) OpenEntry(ctx, e);
+        }
+        else if (e.kind == Kind::Vfx)
+        {
+            if (ui::MenuItem(ICON_PLUS, "シーンに置く")) OpenEntry(ctx, e);
         }
         else if (e.kind == Kind::Material || e.kind == Kind::MaterialGraph || e.kind == Kind::UiAnim || e.kind == Kind::SpriteSheet)
         {
