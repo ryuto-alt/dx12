@@ -229,6 +229,17 @@ void T_CreateEntitySelects(ImGuiTestContext* ctx)
     IM_CHECK(sentinel != entt::null);
     ExpectMcpKeepsSelection(ctx, ed, scene, sentinel, "__primitive_box__", "primitive");
     ExpectMcpKeepsSelection(ctx, ed, scene, sentinel, "__ui_button__", "ui_button");
+    {
+        // C14 / R1-14: 既定の放出器にはレイヤーが 1 枚入っている（空だと「何も出さない」ので）
+        ExpectMcpKeepsSelection(ctx, ed, scene, sentinel, "__particle_emitter__", "particle_emitter");
+        bool found = false;
+        for (auto e : reg.view<ParticleEmitter>())
+        {
+            const auto& pe = reg.get<ParticleEmitter>(e);
+            if (pe.layers.size() == 1 && pe.layers[0].name == "Layer 1") found = true;
+        }
+        IM_CHECK(found);
+    }
     IM_CHECK(WriteTinyPrefab(scene, assets, "prefabs/__uitest_w0521b.prefab", "__uitest_w0521b_src"));
     sentinel = firstEntity();
     ExpectMcpKeepsSelection(ctx, ed, scene, sentinel, "prefabs/__uitest_w0521b.prefab", "prefab");

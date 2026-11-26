@@ -1,0 +1,10 @@
+{
+  "name": "lookdev_grid",
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/lookdev_grid.json",
+  "camera": {
+    "position": [0, 8.0, -8.0],
+    "target": [0, 0.2, 2.6]
+  },
+  "note": "MH-1 ルックデブ: 粗さ x 金属度の 7x7 球 + 18% グレーカード + 24 パッチ。V1（既定）の基準。V2 は tools/lookdev_check.ps1 で撮る"
+}

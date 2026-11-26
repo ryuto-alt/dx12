@@ -7,10 +7,12 @@
 //                     → 空(Sky-View LUT)→ 環境キューブ → IBL(irradiance / prefilter の増分再ベイク)→ DDGI の空項(IBL の irradiance キューブを読む)
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AppAccess.h"
 #include "core/AtmosphereHost.h"
 #include "ecs/EditorFlags.h"
 #include "renderer/ViewDesc.h"
 #include "renderer/atmosphere/AtmospherePasses.h"
+#include "renderer/atmosphere/IblRebakePolicy.h"
 
 namespace dx12e
 {
@@ -57,6 +59,11 @@ uint64_t MakeIblKey(const AtmosphereGpuParams& g, const AtmosphereSettings& s, d
         h = Fnv(h, cv, sizeof(cv));
     }
     return h;
+}
+
+double SunElevationDeg(const Vec3d& d)   // 太陽の高度[度]（ワールド +y が上）
+{
+    return std::asin(std::clamp(d.y, -1.0, 1.0)) * 180.0 / kPi;
 }
 
 void StoreMatT(float* dst, const XMMATRIX& m)   // HLSL の mul(v, M) 用に転置して 16 float へ
@@ -255,13 +262,21 @@ void Application::AtmosphereRecordFrame(const ViewDesc& view, u32 frameIndex, ID
         const double dot = std::clamp(Dot(h.sunDir, h.iblSunDir), -1.0, 1.0);
         const double angDeg = std::acos(dot) * 180.0 / kPi;
         h.lastSunDeltaDeg = static_cast<float>(angDeg);
-        const double dAltM = std::fabs(h.camAltKm - h.iblAltKm) * 1000.0;
+        // きっかけの判定は IblRebakePolicy.h（W1-C9）。高度 0.5° 以上の変化は、ユーザーの閾値が緩くても必ず焼き直す。
         const uint64_t key = MakeIblKey(h.params, s, h.unitScale);
-        const bool big = key != h.iblKey || angDeg > 5.0 || m_deterministicCapture;
-        const double thr = std::max(static_cast<double>(s.iblRebakeThresholdDeg), 1.0e-4);
-        const bool need = big || angDeg > thr || dAltM > std::max(50.0, 0.1 * h.iblAltKm * 1000.0);
-        const double minInterval = 1.0 / std::max(static_cast<double>(s.iblRebakeMaxHz), 0.1);
-        if (need && (big || h.iblSinceStart >= minInterval))
+        IblRebakeInput in;
+        in.deterministic   = m_deterministicCapture;
+        in.keyChanged      = key != h.iblKey;
+        in.sunAngleDeg     = angDeg;
+        in.sunElevDeltaDeg = SunElevationDeg(h.sunDir) - SunElevationDeg(h.iblSunDir);
+        in.altDeltaM       = std::fabs(h.camAltKm - h.iblAltKm) * 1000.0;
+        in.altBaseM        = h.iblAltKm * 1000.0;
+        in.thresholdDeg    = s.iblRebakeThresholdDeg;
+        in.maxHz           = s.iblRebakeMaxHz;
+        in.sinceStartSec   = h.iblSinceStart;
+        const IblRebakeDecision dec = DecideIblRebake(in);
+        const bool big = dec.burst;
+        if (dec.start)
         {
             h.renderer.RecordSkyCube(cmd, frameIndex);
             AtmosphereCloudsToSkyCube(cmd, frameIndex);   // 雲が ON なら空キューブに雲を焼き込む（曇りの環境光）
@@ -403,6 +418,50 @@ bool Application::LoadAtmosphereEnvironment(ID3D12GraphicsCommandList* cmd)
     h.iblSinceStart = 0.0;
     Logger::Info("物理大気: 環境（空キューブ {}^2x6 → IBL）を焼いた", AtmosphereRenderer::kSkyCubeSize);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// W1-C9: 撮影が足す「IBL の焼き直しを待つフレーム数」。待たなくてよい（焼き直しが無い / 終わっている）なら 0。
+// ---------------------------------------------------------------------------
+int AppAccess::IblRebakeWaitFrames(Application& app)
+{
+    if (!app.m_scene) return 0;
+    const AtmosphereSettings& s = app.m_scene->GetAtmosphereSettings();
+    IblWaitState st;
+    st.sceneEnabled  = s.enabled;
+    st.sceneDriveIbl = s.driveIBL;
+    st.skyboxDirty   = app.m_skyboxDirty;
+    st.thresholdDeg  = s.iblRebakeThresholdDeg;
+    if (app.m_atmo)
+    {
+        const AtmoHost& h = *app.m_atmo;
+        st.hostExists    = true;
+        st.enabledPrev   = h.enabledPrev;
+        st.envWantedPrev = h.iblEnvWanted;
+        st.iblValid      = h.iblValid;
+        st.iblRunning    = h.iblRunning;
+        st.envLoaded     = app.m_loadedSkyboxPath == kAtmosphereSkyPath;
+        if (s.enabled && s.driveIBL && h.iblValid && h.enabledPrev)
+        {
+            // 今の時刻の太陽（まだ UpdateAtmosphereTime が走っていないかもしれない）と、焼いた太陽の差。
+            // sunMode==1 は DirectionalLight の向き（UpdateAtmosphereTime と同じ式）。キャッシュの h.sunDir は古いことがある。
+            Vec3d sunNow = SunDirectionFromTime(s);
+            if (s.sunMode == 1)
+            {
+                const entt::entity sunEnt = FirstSun(app.m_scene->GetRegistry());
+                if (sunEnt != entt::null)
+                {
+                    const DirectionalLight& dl = app.m_scene->GetRegistry().get<DirectionalLight>(sunEnt);
+                    const XMVECTOR d = XMVector3Normalize(XMLoadFloat3(&dl.direction));
+                    XMFLOAT3 f; XMStoreFloat3(&f, XMVectorNegate(d));
+                    sunNow = {f.x, f.y, f.z};
+                }
+            }
+            st.sunAngleDeg     = std::acos(std::clamp(Dot(sunNow, h.iblSunDir), -1.0, 1.0)) * 180.0 / kPi;
+            st.sunElevDeltaDeg = SunElevationDeg(sunNow) - SunElevationDeg(h.iblSunDir);
+        }
+    }
+    return atmosphere::IblRebakeWaitFrames(st, static_cast<int>(IBLBaker::kRebakeStageCount));
 }
 
 } // namespace dx12e

@@ -1,0 +1,12 @@
+{
+  "name": "lookdev_grazing",
+  "normal": "textures/lookdev/grazing_n.png",
+  "metallic": 0,
+  "roughness": 0.2,
+  "uvTiling": [
+    24,
+    24
+  ],
+  "source": "tests/golden/projects/golden_core/gen_lookdev_textures.mjs（手続き生成）",
+  "license": "CC0-1.0"
+}

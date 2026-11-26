@@ -1757,7 +1757,7 @@ void T_LayoutSaveRestore(ImGuiTestContext* ctx)
     W_ResetLayout(ctx, ed);
 }
 
-// 下部ドックのスロット: 登録タブ（ダミーのタイムライン）を開くと中央下ノードへ入る・ビューポートの矩形が変わらない・
+// 下部ドックのスロット: 登録タブ（タイムライン）を開くと中央下ノードへ入る・ビューポートの矩形が変わらない・
 // 最大化 / 元に戻す（コマンドとタブ帯のダブルクリック）で寸法が往復・最大化中もゲーム絵の矩形が 0 にならない・再登録で置き換わる。
 void T_BottomDockSlot(ImGuiTestContext* ctx)
 {
@@ -1771,7 +1771,7 @@ void T_BottomDockSlot(ImGuiTestContext* ctx)
     IM_CHECK_GT(ed->dockNodeBottom, 0u);
     const f32 vpW0 = ed->viewportW, vpH0 = ed->viewportH;
 
-    Step(ctx, "ダミータブを開くと中央下ノード（アセットブラウザと同じ）へ入り、ビューポートは変わらない");
+    Step(ctx, "タイムラインのタブを開くと中央下ノード（アセットブラウザと同じ）へ入り、ビューポートは変わらない");
     bottomdock::SetOpen("timeline", true);
     ctx->Yield(12);
     const std::string winName = bottomdock::WindowName(*bottomdock::Find("timeline"));
@@ -1828,21 +1828,21 @@ void T_BottomDockSlot(ImGuiTestContext* ctx)
 
     Step(ctx, "同じ id で再登録すると置き換わる（開閉は保つ。シーケンサーが本物を差し込む経路）");
     const size_t nTabs = bottomdock::Tabs().size();
+    const bottomdock::Tab* origTab = bottomdock::Find("timeline");
+    IM_CHECK(origTab != nullptr);
+    const bottomdock::Tab savedTab = *origTab;   // 本物の登録（A10 の案内）。最後に戻す
     bool drawn = false;
     static bool* s_drawn = nullptr;
     s_drawn = &drawn;
-    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM, [](EditorContext&) { if (s_drawn) *s_drawn = true; }});
+    bottomdock::Register({"timeline", savedTab.title, ICON_FILM, [](EditorContext&) { if (s_drawn) *s_drawn = true; }});
     ctx->Yield(6);
     s_drawn = nullptr;   // 以降は呼ばれても触らない（drawn はこの関数のローカル）
     IM_CHECK_EQ(bottomdock::Tabs().size(), nTabs);
     IM_CHECK(bottomdock::IsOpen("timeline"));
     IM_CHECK(drawn);
-    // 元のダミーの本文へ戻す（他のテストの見た目に影響させない）
-    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM, [](EditorContext&) {
-        ImGui::Spacing();
-        ImGui::TextDisabled("ここにシーケンサーのタイムラインが入ります（下部ドックのスロット。動作確認用のダミー）。");
-        ImGui::TextDisabled("タブ帯をダブルクリックすると下部ドックが広がります（もう一度で元に戻ります）。");
-    }});
+    // 元の登録（案内の本文つき）へ戻す。他のテスト・スクリーンショットが A10 の案内を見られるように
+    bottomdock::Register(savedTab);
+    IM_CHECK_EQ(bottomdock::Tabs().size(), nTabs);
 
     bottomdock::SetOpen("timeline", false);
     W_ResetLayout(ctx, ed);
@@ -4944,6 +4944,19 @@ const DiagReg kTests[] = {
     { "autosave", "autosave_human_edit_not_written", "保存", "人の編集は MCP の自動保存で本体に書かれない", uitest::T_AutosaveHumanEditNotWritten },
     { "autosave", "autosave_protect_rolling_slot", "保存", "自動保存の退避は 1 枠に畳まれ、原本を押し出さない", uitest::T_AutosaveProtectRollingSlot },
     { "autosave", "autosave_protect_keeps_forced_merge", "保存", "強制の退避が合流した自動保存の世代を次の自動保存が消さない", uitest::T_AutosaveProtectKeepsForcedMerge },
+    { "matgraph", "matgraph_zoom_stress", "マテリアルグラフ", "DPI 1.0/1.5/2.0 でズーム 40 回往復（SRV 割り当て・フォント量子化）", uitest::T_MatgraphZoomStress },
+    { "workspace", "ws_animation_placeholder", "ワークスペース", "アニメ・シーケンサーの案内・.dxseq / .uvfx の種別・.dxseq の再生要求で再生が始まる", uitest::T_WsAnimationPlaceholder },
+    { "vfx", "vfx_apply_confirm", "パーティクルエディタ", "「適用」: レイヤー 0 に中身があると確認 → キャンセルで不変 / 置き換え → Undo で戻る / MCP 中は確認なし", uitest::T_VfxApplyConfirm },
+    { "editor-ux", "modal_blocks_scene_actions", "エディタ操作", "モーダル中はビューポートのクリック・Ctrl+Z / Ctrl+Y・Ctrl+S がシーンに効かない", uitest::T_ModalBlocksSceneActions },
+    { "editor-ux", "save_untitled_asks_name", "エディタ操作", "MCP が作った無題のシーンで Ctrl+S → 名前を付けて保存（隠しフォルダへ黙って保存しない）", uitest::T_SaveUntitledAsksName },
+    { "editor-ux", "console_error_focus_once", "エディタ操作", "「エラーで前面」は 1 バーストにつき 1 回・モーダル中は奪わない", uitest::T_ConsoleErrorFocusOnce },
+    { "editor-ux", "rename_typed_ext_not_doubled", "エディタ操作", "F2 で拡張子まで打っても二重にならない（box4.txt.txt にならない）", uitest::T_RenameTypedExtNotDoubled },
+    { "editor-ux", "undo_to_saved_state_clears_dirty", "エディタ操作", "人の編集を全部 Undo で戻すと未保存が解ける（Redo で戻る・設定が違えば解けない）", uitest::T_UndoToSavedStateClearsDirty },
+    { "editor-ux", "undo_to_baseline_without_save", "エディタ操作", "保存しなくても、シーンを開いた直後・新規作成直後まで Undo で戻せば未保存が解ける", uitest::T_UndoToBaselineWithoutSave },
+    { "editor-ux", "unsaved_confirm_save_untitled_asks_name", "エディタ操作", "未保存の確認で「保存して続行」を押しても、MCP の仮の保存先へは書かず名前を聞く", uitest::T_UnsavedConfirmSaveUntitledAsksName },
+    { "editor-ux", "new_scene_confirm_virtual_input", "エディタ操作", "仮想入力・MCP セッションでも Ctrl+N の作成で未保存の確認が出る", uitest::T_NewSceneConfirmUnderVirtualInput },
+    { "editor-ux", "undo_after_save_as_stays_dirty", "エディタ操作", "名前を付けて保存のあとに Undo で戻しても、ディスクと違えば未保存のまま（無題からの命名保存も）", uitest::T_UndoAfterSaveAsStaysDirty },
+    { "editor-ux", "game_lua_under_project_root", "エディタ操作", "グローバル game.lua はプロジェクトルートの下で解決される", uitest::T_GameLuaUnderProjectRoot },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },

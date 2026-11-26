@@ -5,6 +5,7 @@
 #include "editor/FuzzyMatch.h"
 #include "editor/ToolWindows.h"
 #include "editor/UiWidgets.h"
+#include "editor/UiMotion.h"
 #include "editor/panels/AssetBrowserPanel.h"
 #include "gui/VirtualInputImGui.h"
 #include "core/Logger.h"
@@ -83,6 +84,9 @@ const char* AssetIcon(int type, int& tint)
     case T::Material:    return ICON_T_MATERIAL;
     case T::UiAnim:      tint = 7; return ICON_T_ANIM;
     case T::SpriteSheet: tint = 7; return ICON_T_SPRITE;
+    case T::MaterialGraph: tint = 1; return ICON_T_SPLINE;   // アセットブラウザ（KindGlyph / KindColor）と同じ
+    case T::Sequence:    tint = 7; return ICON_T_LAYERS;
+    case T::Vfx:         tint = 1; return ICON_T_PARTICLE;
     default:             return ICON_FILE;
     }
 }
@@ -482,11 +486,24 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
     const float rowH = ui::Px(kRowH);
     const float listH = (m_items.empty() ? 1 : rows) * rowH;
 
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + ui::Px(84.0f)), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    // Graphite Gauge: パレット本体は kPaletteIn（120ms・standard）でフェードインしつつ 4px 上へ収まる。決定論 / --background は即時。
+    //   暗幕（ModalWindowDimBg）は ImGui 1.92 では style.Alpha を掛けず、g.DimBgRatio が DeltaTime*6 で線形に上がる（約 167ms・linear）。
+    //   = scrimIn（120ms・standard）とモーション則 05 に未達の既知の差。kPaletteOut（閉じ）と共に A14 で入れる（閉じ中も描き続ける形）。
+    float palAlpha = 1.0f;
+    float palDropPx = 0.0f;
+    if (th::CurrentVariant() == th::Variant::Graphite)
+    {
+        const ImGuiID fadeId = ImGui::GetID("##palfade");
+        if (openedThisFrame) ui::anim::Animate(fadeId, 0.0f, 0.0f);   // 開き直しは 0 から
+        palAlpha = ui::anim::Animate(fadeId, 1.0f, ui::anim::dur::kPaletteIn);
+        palDropPx = (1.0f - palAlpha) * ui::Px(4.0f);
+    }
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + ui::Px(84.0f) + palDropPx), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
     ImGui::SetNextWindowSize(ImVec2(ui::Px(kWidth), 0.0f), ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(10.0f, 10.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Px(6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, ui::Px(1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, palAlpha * ImGui::GetStyle().Alpha);   // 継承した Alpha に掛ける（置き換えない）
     ImGui::PushStyleColor(ImGuiCol_PopupBg, th::Bg2);
     ImGui::PushStyleColor(ImGuiCol_Border, th::BorderStrong);
 
@@ -646,7 +663,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
             {
                 ImGui::EndPopup();
                 ImGui::PopStyleColor(2);
-                ImGui::PopStyleVar(3);
+                ImGui::PopStyleVar(4);
                 return;
             }
         }
@@ -668,7 +685,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
         Close(ctx);
     }
     ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
 }
 
 } // namespace dx12e

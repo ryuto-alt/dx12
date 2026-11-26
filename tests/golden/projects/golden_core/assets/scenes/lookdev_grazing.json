@@ -1,0 +1,349 @@
+{
+  "skybox": {
+    "iblIntensity": 1,
+    "skyboxIntensity": 1,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          0.18,
+          -0.14,
+          -1
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 5,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Floor",
+      "primitive": "plane",
+      "primitiveSize": 80,
+      "color": [
+        0.6,
+        0.6,
+        0.62
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.2
+      },
+      "materialAssets": [
+        "materials/lookdev_grazing.dxmat"
+      ],
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Post_0",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.12
+      },
+      "transform": {
+        "position": [
+          -1.6,
+          0.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Post_1",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.22
+      },
+      "transform": {
+        "position": [
+          1.6,
+          0.6,
+          6.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Post_2",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.32
+      },
+      "transform": {
+        "position": [
+          -1.6,
+          0.6,
+          9.4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Post_3",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.42000000000000004
+      },
+      "transform": {
+        "position": [
+          1.6,
+          0.6,
+          12.600000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Post_4",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.12
+      },
+      "transform": {
+        "position": [
+          -1.6,
+          0.6,
+          15.8
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Post_5",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.22
+      },
+      "transform": {
+        "position": [
+          1.6,
+          0.6,
+          19
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Post_6",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.32
+      },
+      "transform": {
+        "position": [
+          -1.6,
+          0.6,
+          22.200000000000003
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Post_7",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.9,
+        0.92
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.42000000000000004
+      },
+      "transform": {
+        "position": [
+          1.6,
+          0.6,
+          25.400000000000002
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.18,
+          1.2,
+          0.18
+        ]
+      }
+    },
+    {
+      "name": "Chrome",
+      "primitive": "sphere",
+      "primitiveSize": 0.5,
+      "color": [
+        0.95,
+        0.95,
+        0.97
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          0,
+          0.5,
+          2.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "shadows": true
+}

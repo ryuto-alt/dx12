@@ -106,6 +106,11 @@ public:
 
     // 段階コンパイルの切り替え（Initialize の stagedCompile を後から変える。既に投入済みのジョブには効かない）
     void SetStagedCompile(bool on) { m_staged = on; }
+    // ★W1-C3（MH-0a）: シーンの shadingRevision（1 = V1 / 2 = UNO_SHADING_V2）。Forward 種別だけが見る（プレビュー / ノード内サムネイルは常に V1）。
+    //   2 のとき ForwardGraph のコンパイル引数へ -D UNO_SHADING_V2=1 を足し、ディスクキャッシュのキーと変種のキーにも入れる（V1 のキーは不変）。
+    //   値が変わったら Forward 種別のインスタンスを作り直す（描ける版が出来るまでは旧版で描き続ける）。毎フレーム呼んでよい（同じ値なら何もしない）。
+    void SetShadingRevision(u8 rev);
+    u8   ShadingRevision() const { return m_shadingRev; }
     bool StagedCompile() const { return m_staged; }
     int  WorkerCount() const { return static_cast<int>(m_workers.size()); }
 
@@ -243,6 +248,7 @@ private:
         enum class State : u8 { Compiling, Ready, Failed };
         u64   hash = 0;
         Kind  kind = Kind::Forward;
+        u8    rev = 1;                               // shadingRevision（VKey に入る）
         State state = State::Compiling;
         matgraph::StageGate gate;                    // 受理した最高の段階（0 / 1 / 2）。遅れて届いた古い結果を捨てる
         bool  optQueued = false;                     // 最適化版のジョブを投入した（level 1 で描きながら待っている）
@@ -262,6 +268,7 @@ private:
 
     struct Build
     {
+        u8 rev = 1;                          // この Build を作ったときの shadingRevision（Forward 種別だけ 2 になりうる）
         std::shared_ptr<const matgraph::CompileResult> cr;
         PoolRecord rec;
         std::shared_ptr<Variant> variant;
@@ -297,6 +304,7 @@ private:
     {
         u64  hash = 0;
         Kind kind = Kind::Forward;
+        u8   rev = 1;                       // shadingRevision（2 のとき -D UNO_SHADING_V2=1）
         std::string hlsl;
         bool force = false;
         int  stage = 2;                     // 1 = -Od の高速版 / 2 = 最適化版（キャッシュ優先）
@@ -306,6 +314,7 @@ private:
     {
         u64  hash = 0;
         Kind kind = Kind::Forward;
+        u8   rev = 1;
         int  level = 2;                     // この結果の段階（高速版のジョブでも、最適化版がキャッシュにあれば 2 になる）
         bool ok = false;
         std::string errorLog;
@@ -316,7 +325,13 @@ private:
         bool cacheHit = false;
     };
 
-    static u64 VKey(u64 hash, Kind kind) { return hash ^ (static_cast<u64>(kind) * 0x9E3779B97F4A7C15ull); }
+    // rev=1 のときは従来と同じ値（V1 の変種のキーを変えない）。
+    static u64 VKey(u64 hash, Kind kind, u8 rev = 1)
+    {
+        return hash ^ (static_cast<u64>(kind) * 0x9E3779B97F4A7C15ull) ^ (rev > 1 ? static_cast<u64>(rev) * 0xC2B2AE3D27D4EB4Full : 0ull);
+    }
+    // Forward 種別だけが shadingRevision を見る
+    u8 RevFor(Kind k) const { return (k == Kind::Forward) ? m_shadingRev : static_cast<u8>(1); }
 
     // ---- メインスレッド --------------------------------------------------------------------
     void RebuildInstance(Instance& inst, ID3D12GraphicsCommandList* cmd);
@@ -387,6 +402,7 @@ private:
     std::atomic<int> m_stage1DelayMs{0}, m_stage2DelayMs{0};
     std::atomic<u32> m_inFlight{0};
     std::atomic<u32> m_dxcCompiles{0}, m_fastCompiles{0}, m_optCompiles{0}, m_psoCreates{0};
+    u8   m_shadingRev = 1;                                          // SetShadingRevision（W1-C3）
     bool m_forceNext = false;                                       // 次の構造ビルドはキャッシュを使わず DXC からやり直す
 };
 

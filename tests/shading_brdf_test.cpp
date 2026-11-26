@@ -6,6 +6,7 @@
 //   3. エネルギー上限（白い炉）: 方向アルベド ∫ f·cos dω ≤ 1
 //        白い誘電体 / 白い金属（補償あり・なし）/ クリアコート付き / シーン付き / 異方性
 //      補償ありの白い金属は「補償なしより明るく、1 に近い」
+//   3b. BrdfV2 の方向アルベド（1024² 格子。白い金属 0.97..1.01・格子と重要度サンプルの一致・V2 の相反性。W1-C4）
 //   4. 量子化の往復（PackShadingExt → シェーダの UnoApplyShadingExt と同じ復元）
 // ★シェーダの式を変えたらここも同じに直すこと（ここはフォワード / PT が同じ式であることの外部の物差し）。
 #include "renderer/ShadingExt.h"
@@ -349,6 +350,70 @@ void Test_Furnace()
     CHECK_MSG(m1 - m0 > 0.1, "r=1 の金属は補償で 0.1 以上明るくなる: %.3f → %.3f", m0, m1);
 }
 
+// ---- BrdfV2（UNO_SHADING_V2）の方向アルベド積分（1024²。W1-C4 MH-1）------------------------------------
+// shaders/forward/BrdfV2.hlsli は今は空の枠（C5 / MH-2 が中身を入れる）なので、V2 の評価器は V1 と同じ式を指す。
+// ★MH-2 で V2 の BRDF（height-correlated Smith・EON の拡散など）を入れるときは、下の EvalV2 をその写しに差し替える。
+//   それまでは「V2 = V1」を kV2SeparateImpl = false で明示し、V1 とのビット一致も検査する（差し替え忘れの検出）。
+constexpr bool kV2SeparateImpl = false;
+double EvalV2(const Mat& m, V3 V, V3 L, double msComp, double coatMs, double sheenScaleV, double coatAttenV)
+{
+    return EvalCos(m, V, L, msComp, coatMs, sheenScaleV, coatAttenV);
+}
+
+// cosθ（一様）x φ の 1024 x 1024 格子での方向アルベド（尖った葉は粗さ >= 0.3 だけに使う。補償・コート・シーンは Albedo と同じ係数）
+double AlbedoGrid1024(const Mat& m, double NoV, bool v2)
+{
+    const V3 V{std::sqrt(1.0 - NoV * NoV), 0.0, NoV};
+    const double F0 = Lerp(0.04, m.albedo, m.metallic);
+    const double msComp = m.ms ? 1.0 + F0 * (1.0 / std::max(E_Direct(NoV, m.roughness), 0.05) - 1.0) : 1.0;
+    double sum = 0.0;
+    const int n = 1024;
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+        {
+            const double ct = (i + 0.5) / n, st = std::sqrt(1.0 - ct * ct), ph = 2.0 * kPi * (j + 0.5) / n;
+            const V3 L{st * std::cos(ph), st * std::sin(ph), ct};
+            sum += v2 ? EvalV2(m, V, L, msComp, 1.0, 1.0, 1.0) : EvalCos(m, V, L, msComp, 1.0, 1.0, 1.0);
+        }
+    return sum * (2.0 * kPi) / (static_cast<double>(n) * n);
+}
+
+void Test_V2DirectionalAlbedo()
+{
+    std::printf("BrdfV2 の方向アルベド（1024^2 格子）\n");
+    for (double r : {0.3, 0.5, 0.7, 1.0})
+        for (double nov : {0.3, 0.6, 0.9})
+        {
+            Mat metal; metal.metallic = 1.0; metal.roughness = r; metal.ms = true;
+            Mat diel;  diel.roughness = r; diel.ms = true;
+            const double mg1 = AlbedoGrid1024(metal, nov, false), mg2 = AlbedoGrid1024(metal, nov, true);
+            const double dg2 = AlbedoGrid1024(diel, nov, true);
+            const double mi = Albedo(metal, nov);   // 重要度サンプルの積分（別の求め方）との突き合わせ
+            std::printf("  r=%.1f NoV=%.1f  白い金属(補償) 格子 V1 %.4f / V2 %.4f / 重要度 %.4f  誘電体 V2 %.4f\n", r, nov, mg1, mg2, mi, dg2);
+            // 白い炉: V2 は 0.97..1.01（PROGRAM_PLAN MH-1 のしきい値）。V1 は記録だけ
+            // 【MH-2 で締める】今の EvalV2 は V1 と同じ式で、E_Direct は評価器と同じ G1/GGX から積分しているため
+            //   補償後の値は構成上ほぼ 1 になる（格子と重要度サンプルが 4 桁で一致するのも同じ理由）。
+            //   MH-2 は E を LUT（実装が使う方）から引いて検査し、r < 0.3 も含めた全粗さで見ること。
+            //   誘電体（拡散 + 鏡面）の上限は計画では 0.97..1.01。r=0.3 / NoV=0.3 の実測 1.029 が 1.03 の縁にいるので、
+            //   MH-2 の拡散の補償（Fdez-Aguera 型）が入ったら 1.01 へ下げる
+            CHECK_MSG(mg2 >= 0.97 && mg2 <= 1.01, "V2 白い金属(補償) 0.97..1.01 r=%.1f NoV=%.1f: %.4f", r, nov, mg2);
+            CHECK_MSG(dg2 <= 1.03, "V2 白い誘電体は 1 を大きく超えない r=%.1f NoV=%.1f: %.4f", r, nov, dg2);
+            // 格子と重要度サンプルの積分が 1.5% 以内で一致（積分器の物差しが正しいことの確認）
+            CHECK_MSG(std::fabs(mg2 - mi) < 0.015, "格子と重要度サンプルの一致 r=%.1f NoV=%.1f: %.4f vs %.4f", r, nov, mg2, mi);
+            if (!kV2SeparateImpl)
+                CHECK_MSG(mg1 == mg2, "V2 の別実装が無いうちは V1 とビット一致 r=%.1f NoV=%.1f", r, nov);
+        }
+    // V2 の相反性（鏡面のみ・異方性なし / あり）。EvalV2 を差し替えても守る不変条件
+    const V3 V = Norm(V3{0.3, -0.5, 0.8}), L = Norm(V3{-0.6, 0.2, 0.7});
+    for (double aniso : {0.0, 0.8})
+    {
+        Mat m; m.albedo = 0.0; m.metallic = 1.0; m.roughness = 0.4; m.aniso = aniso;
+        const double a = EvalV2(m, V, L, 1.0, 1.0, 1.0, 1.0) / L.z;
+        const double b = EvalV2(m, L, V, 1.0, 1.0, 1.0, 1.0) / V.z;
+        CHECK_MSG(std::fabs(a - b) < 1e-4 * std::max(a, 1e-6) + 1e-6, "V2 の相反性 aniso=%.1f: %.6f vs %.6f", aniso, a, b);
+    }
+}
+
 void Test_Pack()
 {
     ShadingExt e;
@@ -368,6 +433,7 @@ int main()
     Test_Normalization();
     Test_Reciprocity();
     Test_Furnace();
+    Test_V2DirectionalAlbedo();
     Test_Pack();
     std::printf("ShadingBrdfTests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

@@ -6,6 +6,8 @@
 //   ・SetVariant の往復でトークンが元に戻ること / ScaleStyleFrom が全案で行高を整数 px にすること
 // ImGui のコンテキストは要らない（ImGuiStyle は単なる構造体）。EditorTheme.h が imgui.h を include するので Gui ターゲットで有効。
 #include "editor/EditorTheme.h"
+#include "editor/ThemeGraphite.h"
+#include "editor/ThemeGraphite.gen.h"   // 値を直接読む（Graphite の固定値・黄の予算・コントラスト）
 
 #include <cmath>
 #include <cstdio>
@@ -40,8 +42,6 @@ float Saturation(const ImVec4& c)
 const th::Variant kAll[] = { th::Variant::Default, th::Variant::B, th::Variant::C, th::Variant::Graphite };
 const th::Variant kOld[] = { th::Variant::Default, th::Variant::B, th::Variant::C };
 
-// この target には ThemeGraphite.cpp が無いので、暫定スタブを登録する（未登録の SpecOf(Graphite) は abort する設計）。
-const th::Spec& GraphiteStub() { static const th::Spec s = th::detail::MakeGraphitePlaceholder(); return s; }
 const th::Variant kNew[] = { th::Variant::B, th::Variant::C, th::Variant::Graphite };   // 既定以外（別テーマ）
 
 void TestDefaultIsNeon()
@@ -255,7 +255,8 @@ void TestGraphiteShape()
     CHECK(std::string(th::VariantName(th::Variant::Graphite)) == "Graphite Gauge");
     for (th::Variant var : kAll)
     {
-        CHECK(th::SpecOf(var).gg == nullptr);   // スタブは gg = null（製品の登録関数だけが非 null を返す）
+        if (var == th::Variant::Graphite) CHECK(th::SpecOf(var).gg == &th::gg::kGgSpec);
+        else CHECK(th::SpecOf(var).gg == nullptr);   // 旧案は gg = null
         if (var != th::Variant::Graphite)
             CHECK(th::SpecOf(var).m.fontBase == 16.0f && th::SpecOf(var).m.fontMono == 14.0f);
     }
@@ -263,8 +264,8 @@ void TestGraphiteShape()
     th::SetVariant(th::Variant::Graphite);
     CHECK(th::CurrentVariant() == th::Variant::Graphite);
     th::SetVariant(th::Variant::Default);
-    // 旧案の Extra は各案のパレットから導かれていること
-    for (th::Variant var : kAll)
+    // 旧案の Extra は各案のパレットから導かれていること（Graphite は生成仕様の値。TestGraphiteValues が見る）
+    for (th::Variant var : kOld)
     {
         const th::Spec& sp = th::SpecOf(var);
         CHECK(SameVec4(sp.ext.info, sp.pal.accent));
@@ -275,7 +276,7 @@ void TestGraphiteShape()
     }
     CHECK(SameVec4(th::SpecOf(th::Variant::Default).ext.axisX, th::Hex(0xE25454)));
     CHECK(SameVec4(th::SpecOf(th::Variant::C).ext.axisX, th::Hex(0xB87672)));
-    CHECK(th::IsGraphiteRegistered());    // main() でスタブを登録済み
+    CHECK(th::IsGraphiteRegistered());
     // 線幅の規則（DPI 1.0 / 1.25 / 1.5 / 1.75 / 2.0）
     const float scales[] = { 1.0f, 1.25f, 1.5f, 1.75f, 2.0f };
     const float hair[]   = { 1, 1, 1, 1, 2 };
@@ -291,11 +292,129 @@ void TestGraphiteShape()
     }
     th::SetScale(1.0f);
 }
+
+// ---- W1 A2: Graphite Gauge の値 ----
+// OKLCH（黄ゾーンの判定。tokens.yellowBudget.yellowZone と同じ定義: C>=0.07 かつ h in [75,105]）
+struct Lch { double L, C, h; };
+Lch ToOklch(const ImVec4& c)
+{
+    auto lin = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+    const double r = lin(c.x), g = lin(c.y), b = lin(c.z);
+    const double l = std::cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const double m = std::cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const double s = std::cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    const double L = 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+    const double A = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s;
+    const double B = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s;
+    double h = std::atan2(B, A) * 180.0 / 3.14159265358979323846;
+    if (h < 0) h += 360.0;
+    return { L, std::sqrt(A * A + B * B), h };
+}
+bool InYellowZone(const ImVec4& c)
+{
+    const th::gg::GgYellowBudget bud{};
+    const Lch k = ToOklch(c);
+    return k.C >= bud.zoneChromaMin && k.h >= bud.zoneHueMin && k.h <= bud.zoneHueMax;
+}
+bool SameRgb(const ImVec4& a, const ImVec4& b) { return a.x == b.x && a.y == b.y && a.z == b.z; }
+
+void TestGraphiteValues()
+{
+    namespace gg = th::gg;
+    const th::Spec& sp = th::SpecOf(th::Variant::Graphite);
+    const th::Palette& p = sp.pal;
+    // 固定値（final tokens v3.1.0）
+    CHECK(SameVec4(p.bg0, th::Hex(0x131312)) && SameVec4(p.bg1, th::Hex(0x1B1A19)) && SameVec4(p.bg2, th::Hex(0x222120)));
+    CHECK(SameVec4(p.bg3, th::Hex(0x2A2927)) && SameVec4(p.bg4, th::Hex(0x34322F)));
+    CHECK(SameVec4(p.windowBg, p.bg1) && SameVec4(p.popupBg, th::Hex(0x242321)));
+    CHECK(SameVec4(p.accent, th::Hex(0xF0C23B)) && SameVec4(p.accentHover, th::Hex(0xF6D265)) && SameVec4(p.accentPressed, th::Hex(0xD4A82A)));
+    CHECK(SameVec4(p.text, th::Hex(0xE6E2DA)) && SameVec4(p.textFaint, th::Hex(0xA39E94)));
+    CHECK(SameVec4(gg::kChrome.accentDim, th::Hex(0x9A8240)));
+    // Metrics: 角と線（フォントは 17 / 15）
+    const th::Metrics& m = sp.m;
+    CHECK(m.windowRounding == 0.0f && m.childRounding == 0.0f && m.frameRounding == 3.0f && m.grabRounding == 0.0f);
+    CHECK(m.popupRounding == 5.0f && m.tabRounding == 0.0f && m.scrollbarRounding == 2.0f);
+    CHECK(m.tabOverline == 0.0f && m.dockSeparator == 1.0f && m.fontBase == 17.0f && m.fontMono == 15.0f);
+    CHECK(sp.deco.glow == 0.0f && sp.deco.hoverTint == 0.0f && sp.deco.layeredShadow && sp.deco.easeSec == 0.09f);
+    CHECK(sp.gg != nullptr && sp.gg->deco.caliper && sp.gg->deco.rowNeedleBar && !sp.gg->deco.headerOverline);
+    CHECK(SameVec4(sp.ext.needleDim, gg::kChrome.accentDim) && SameVec4(sp.ext.info, gg::kStatus.info));
+    CHECK(SameVec4(sp.ext.axisX, gg::kAxis.x) && SameVec4(sp.ext.badText, gg::kStatus.badText));
+    // popupRim（tokens.deco）は暗幕側の popupInnerTop の alpha と一致する
+    CHECK(std::fabs(sp.deco.popupRim - gg::kChrome.popupInnerTop.w) < 0.002f);
+
+    // 黄が accent 系の 4 トークン以外に無い（Palette 全フィールドと生成した追加色の全部。黄ゾーン = OKLCH C>=0.07 かつ h 75..105）
+    static_assert(sizeof(th::Palette) % sizeof(ImVec4) == 0, "Palette は ImVec4 だけの並び");
+    const ImVec4 accents[] = { p.accent, p.accentHover, p.accentPressed, gg::kChrome.accentDim };
+    auto allowedYellow = [&](const ImVec4& c) { for (const ImVec4& a : accents) if (SameRgb(a, c)) return true; return false; };
+    const ImVec4* pf = reinterpret_cast<const ImVec4*>(&p);
+    int yellowInPalette = 0;
+    for (size_t i = 0; i < sizeof(th::Palette) / sizeof(ImVec4); ++i)
+    {
+        if (!InYellowZone(pf[i])) continue;
+        ++yellowInPalette;
+        CHECKF(allowedYellow(pf[i]), "Palette[%zu] が黄ゾーンにあるのに accent 系の値ではない", i);
+    }
+    CHECK(yellowInPalette >= 3);   // accent / accentHover / accentPressed（+ tabOverline）
+    auto scanStruct = [&](const void* base, size_t bytes, const char* name) {
+        const ImVec4* f = static_cast<const ImVec4*>(base);
+        for (size_t i = 0; i < bytes / sizeof(ImVec4); ++i)
+            if (InYellowZone(f[i]))
+                CHECKF(allowedYellow(f[i]), "%s[%zu] が黄ゾーンにあるのに accent 系の値ではない", name, i);
+    };
+    scanStruct(&gg::kViewport, sizeof(gg::kViewport), "viewport");
+    scanStruct(&gg::kTimeline, sizeof(gg::kTimeline), "timeline");
+    scanStruct(&gg::kStatus, sizeof(gg::kStatus), "status");
+    scanStruct(&gg::kStatusCvd, sizeof(gg::kStatusCvd), "statusCvd");
+    scanStruct(&gg::kAxis, sizeof(gg::kAxis), "axis");
+    scanStruct(&gg::kKind, sizeof(gg::kKind), "kind");
+    scanStruct(&gg::kChrome, sizeof(gg::kChrome), "chrome");
+    CHECK(!InYellowZone(p.onAccent));
+
+    // 黄の予算の数（tokens の値と生成値の一致は GgTokensGenTests が見る。ここは設計値の固定）
+    const gg::GgYellowBudget& bud = sp.gg->budget;
+    CHECK(bud.editLinesMax == 9 && bud.budgetLineCount == 9 && bud.fillCount == 2);
+    CHECK(bud.editPixelRatioMax == 1.5f && bud.playPixelRatioMax == 2.5f && bud.editFillsMax == 0);
+
+    // コントラスト（final の contrast.md と同じ組: 文字 4 段 x 12 面、状態の文字 x 面。UI 境界 3:1）
+    const ImVec4 selHover = p.selectionHover, selAct = p.selectionActive;
+    const ImVec4* surfaces[] = { &p.bg0, &p.bg1, &p.bg2, &p.bg3, &p.bg4, &p.popupBg, &p.inputBg, &p.inputBgHover, &p.inputBgActive,
+                                 &p.selection, &selHover, &selAct };
+    const ImVec4* texts[] = { &p.text, &p.textMid, &p.textDim, &p.textFaint };
+    for (int ti = 0; ti < 4; ++ti)
+        for (int si = 0; si < 12; ++si)
+        {
+            if (ti == 3 && si == 11) continue;   // 禁止の組（t4 on selActive = 4.20。実装は t3 へ自動昇格させる）
+            const float r = th::ContrastRatio(*texts[ti], *surfaces[si]);
+            CHECKF(r >= 4.5f, "Graphite 文字 t%d on 面 %d = %.2f", ti + 1, si, r);
+        }
+    const ImVec4 statusText[] = { p.good, p.warn, gg::kStatus.badText, gg::kStatus.info };
+    for (const ImVec4& t : statusText)
+        for (int si = 0; si < 10; ++si)
+        {
+            const float r = th::ContrastRatio(t, *surfaces[si]);
+            CHECKF(r >= 4.5f, "Graphite 状態文字 on 面 %d = %.2f", si, r);
+        }
+    CHECK(th::ContrastRatio(p.onAccent, p.accent) >= 4.5f && th::ContrastRatio(p.onAccent, p.accentHover) >= 4.5f);
+    CHECK(th::ContrastRatio(p.onAccent, p.accentPressed) >= 4.5f);
+    // UI 境界 3:1（入力欄の記入線 / 部品の外形 / 黄の線）
+    CHECKF(th::ContrastRatio(gg::kChrome.inLine, p.bg2) >= 3.0f, "inLine on bg2 = %.2f", th::ContrastRatio(gg::kChrome.inLine, p.bg2));
+    CHECKF(th::ContrastRatio(gg::kChrome.inLine, p.inputBg) >= 3.0f, "inLine on input = %.2f", th::ContrastRatio(gg::kChrome.inLine, p.inputBg));
+    CHECK(th::ContrastRatio(gg::kChrome.controlEdge, p.bg1) >= 3.0f && th::ContrastRatio(gg::kChrome.controlEdge, p.bg2) >= 3.0f);
+    CHECK(th::ContrastRatio(gg::kChrome.primaryBtnEdge, p.bg1) >= 3.0f);
+    CHECK(th::ContrastRatio(p.accent, p.bg0) >= 3.0f && th::ContrastRatio(p.accent, p.bg1) >= 3.0f);
+    CHECK(th::ContrastRatio(gg::kChrome.accentDim, p.bg1) >= 3.0f);   // フォーカス外パネルの黄の線（3:1 以上）
+
+    // SetVariant(Graphite) でグローバルが Graphite の値になる
+    th::SetVariant(th::Variant::Graphite);
+    CHECK(SameVec4(th::Bg0, p.bg0) && SameVec4(th::Accent, p.accent) && SameVec4(th::NeedleDim, gg::kChrome.accentDim));
+    CHECK(SameVec4(th::AxisX, gg::kAxis.x) && SameVec4(th::BadText, gg::kStatus.badText));
+    th::SetVariant(th::Variant::Default);
+}
 } // namespace
 
 int main()
 {
-    th::g_graphiteSpecFn = &GraphiteStub;
+    th::RegisterGraphite();   // Gui ライブラリの ThemeGraphite.cpp（製品と同じ Spec。静的初期化でも登録済み）
     TestDefaultIsNeon();
     TestParse();
     TestContrast();
@@ -304,6 +423,7 @@ int main()
     TestSetVariantRoundTrip();
     TestNames();
     TestGraphiteShape();
+    TestGraphiteValues();
     if (g_fail == 0) std::printf("ThemeVariantTests: all passed\n");
     else std::printf("ThemeVariantTests: %d failure(s)\n", g_fail);
     return g_fail == 0 ? 0 : 1;

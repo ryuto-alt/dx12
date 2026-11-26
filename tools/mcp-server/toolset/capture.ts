@@ -31,6 +31,8 @@ const captureParams = () => ({
     + "物理・ナビメッシュのワイヤ / 床のグリッド】。選択を外しても消えない『アクティブなカメラの視錐台』もこれで消える。"
     + "★戻すための呼び出しは不要。撮影状態と一緒に破棄されるので【次の 1 枚では必ず元どおり】。"
     + "★dx12_screenshot(ポスト前)では deterministic:true のときだけ効く(既定経路は直前フレームの読み戻しなので撮り直さないため)。"),
+  waitIblRebake: z.boolean().optional().describe(
+    "true で、物理大気の ON/OFF・時刻の変更に伴う IBL の焼き直しが終わるまで待ってから撮る(焼き直しが未了のときだけ決定論経路へ回り、待ちフレームを settleFrames に足す)。既定 false。"),
 });
 
 // ── dx12_screenshot_final 専用の引数(Q2 校正): 出力形式と任意解像度 ─────────────────────
@@ -66,9 +68,9 @@ regRaw(
     inputSchema: { ...captureParams() },
     annotations: { title: "スクリーンショット(ポスト前)", openWorldHint: false, readOnlyHint: true },
   },
-  async ({ path: outPath, deterministic, settleFrames, gizmos }) => {
+  async ({ path: outPath, deterministic, settleFrames, gizmos, waitIblRebake }) => {
     try {
-      const shot = await engine.call("screenshot", { path: outPath, deterministic, settleFrames, gizmos });
+      const shot = await engine.call("screenshot", { path: outPath, deterministic, settleFrames, gizmos, waitIblRebake });
       if (!shot || !shot.path) throw new Error("screenshot が path を返さなかった");
       return imageResult(shot.path, {
         width: shot.width, height: shot.height,
@@ -96,9 +98,9 @@ regRaw(
     inputSchema: { ...captureParams(), ...finalOnlyParams() },
     annotations: { title: "最終画スクリーンショット(ポスト後)", openWorldHint: false, readOnlyHint: true },
   },
-  async ({ path: outPath, deterministic, settleFrames, gizmos, format, formats, width, height }) => {
+  async ({ path: outPath, deterministic, settleFrames, gizmos, waitIblRebake, format, formats, width, height }) => {
     try {
-      const shot = await engine.call("screenshot_final", { path: outPath, deterministic, settleFrames, gizmos, format, formats, width, height });
+      const shot = await engine.call("screenshot_final", { path: outPath, deterministic, settleFrames, gizmos, waitIblRebake, format, formats, width, height });
       if (!shot || !shot.path) throw new Error("screenshot_final が path を返さなかった");
       const meta = {
         width: shot.width, height: shot.height,
