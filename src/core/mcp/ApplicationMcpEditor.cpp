@@ -7,6 +7,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1 の JSON 変換
+#include "core/mcp/FleetGuard.h"   // vramBaselineMB（QueryVideoMemoryMB）
 
 namespace dx12e
 {
@@ -901,13 +902,17 @@ void Application::RegisterMcpEditorMethods()
                 s.draws += f.draws; s.culled += f.culled; s.tris += f.tris;
                 mainDraws += f.passMain.draws; mainTris += f.passMain.tris;
                 shadowDraws += f.passShadow.draws; shadowTris += f.passShadow.tris;
-                for (u32 g = 0; g < GpuTimer::Count; ++g) s.gpuMs[g] += f.gpuMs[g];
                 for (u32 c = 0; c < CpuScopeCount; ++c)   s.cpuMs[c] += f.cpuMs[c];
             }
             const double inv = 1.0 / static_cast<double>(n);
             s.workMs *= inv; s.fenceWaitMs *= inv; s.presentMs *= inv;
             s.draws *= inv; s.culled *= inv; s.tris *= inv;
-            for (u32 g = 0; g < GpuTimer::Count; ++g) s.gpuMs[g] *= inv;
+            if (m_gpuTimer)   // 全スコープの平均は GpuTimer の履歴から（PerfFrame::gpuMs は先頭 24 本だけ）
+            {
+                float avg[GpuTimer::Count];
+                m_gpuTimer->AverageHistory(n, avg);
+                for (u32 g = 0; g < GpuTimer::Count; ++g) s.gpuMs[g] = avg[g];
+            }
             for (u32 c = 0; c < CpuScopeCount; ++c)   s.cpuMs[c] *= inv;
             s.samples = static_cast<int>(fm.size());
             if (!fm.empty())
@@ -924,6 +929,48 @@ void Application::RegisterMcpEditorMethods()
             // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。
             // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
             rep["clustered"]  = m_clusteredEnabled;
+            // W05-26 T-00: 葉だけの GPU 時間 / 親子関係 / VRAM。gpuPassMs（旧名を含む全スコープ）の形は変えない。
+            {
+                auto r2 = [](double v) { return std::round(v * 100.0) / 100.0; };
+                float msf[GpuTimer::Count];
+                for (u32 g = 0; g < GpuTimer::Count; ++g) msf[g] = static_cast<float>(s.gpuMs[g]);
+                const u64 multi = m_gpuTimer ? m_gpuTimer->MultiWriteMask() : 0ull;   // 複数ビューで書かれたスコープ（葉から外す）
+                // 葉: 構造上の葉は自分の時間、親は "<親>.self" = 親 − Σ子（どの子にも入っていない作業。未計装の子があっても過小にならない）。
+                GpuTimer::LeafEntry le[GpuTimer::kMaxScopes];
+                const u32 ln = GpuTimer::LeafEntries(msf, multi, le);
+                nlohmann::json leaf = nlohmann::json::object();
+                for (u32 k = 0; k < ln; ++k)
+                    leaf[std::string(GpuTimer::Name(le[k].scope)) + (le[k].self ? ".self" : "")] = r2(le[k].ms);
+                nlohmann::json tree = nlohmann::json::object();
+                for (u32 g = 0; g < GpuTimer::Count; ++g)
+                {
+                    const auto sc = static_cast<GpuTimer::Scope>(g);
+                    const GpuTimer::ScopeInfo& inf = GpuTimer::Info(sc);
+                    nlohmann::json node = {{"parent", g == GpuTimer::Total ? nlohmann::json(nullptr)
+                                                                            : nlohmann::json(GpuTimer::Name(inf.parent))},
+                                           {"leaf", GpuTimer::IsLeaf(sc)}};
+                    if (inf.alias) node["alias"] = inf.alias;
+                    tree[inf.name] = node;
+                }
+                nlohmann::json multiNames = nlohmann::json::array();
+                for (u32 g = 1; g < GpuTimer::Count; ++g)
+                    if (multi & (1ull << g)) multiNames.push_back(GpuTimer::Name(g));
+                rep["gpuLeafMs"]      = leaf;                                   // 葉の合計 ≤ gpuPassMs.total + 0.1ms
+                rep["gpuLeafSumMs"]   = r2(GpuTimer::LeafSumMs(msf, multi));
+                rep["gpuScopeTree"]   = tree;
+                rep["gpuTimerChecks"] = {{"nestViolations",    m_gpuTimer ? m_gpuTimer->NestViolations() : 0u},
+                                         {"leafSumViolations", m_gpuTimer ? m_gpuTimer->LeafSumViolations() : 0u},
+                                         {"multiWrite",        multiNames}};   // 複数ビューで Begin が重複したスコープ（入れ子の検査と葉から除外）
+                // このプロセスの現在の VRAM 使用量（MB。fleet::QueryVideoMemoryMB の値で、シーンのアセットも含む）。
+                // 「基盤の実測」にするには、空シーンで起動直後に取ること。取れなければ -1。
+                double vramUsedMB = -1.0;
+                if (m_graphicsDevice)
+                {
+                    double used = 0.0, budget = 0.0;
+                    if (fleet::QueryVideoMemoryMB(m_graphicsDevice->GetDevice(), used, budget)) vramUsedMB = used;
+                }
+                rep["vramBaselineMB"] = r2(vramUsedMB);
+            }
             rep["occlusion"]  = OcclusionReportJson();
             rep["upscaler"]   = UpscalerJson();   // 時間方向アップスケーラ（off/taa/dlss・内部/出力解像度）。gpuPassMs.upscale が DLSS の GPU 時間
             if (m_vg) rep["virtualGeometry"] = VirtualGeometryStatsJson();   // 仮想ジオメトリ P2（有効化した後だけ出る）
@@ -996,6 +1043,7 @@ void Application::RegisterMcpEditorMethods()
             m_benchDraws = m_benchCulled = m_benchTris = 0;
             m_benchWork = m_benchFence = m_benchPresent = 0;
             for (auto& g : m_benchGpu) g = 0;
+            if (m_gpuTimer) m_gpuTimer->BenchReset();
             for (auto& c : m_benchCpu) c = 0;
             // 既定で FPS 上限/VSync を計測中だけ外す(=真のスループットを測る)。
             // uncap:false を渡せば普段の設定のまま測れる。終了時に必ず戻す。

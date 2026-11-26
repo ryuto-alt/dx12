@@ -36,6 +36,8 @@
 #include "editor/AssetDrop.h"
 #include "editor/panels/NodeGraphSandboxPanel.h"   // ノードグラフ サンドボックス窓（マテリアルグラフ G0）
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
+#include "graphics/GpuTimer.h"
+
 
 namespace
 {
@@ -840,9 +842,13 @@ void Application::RecordPerfFrame()
     f.tris   = m_statTris;
     f.passMain   = m_passMain;
     f.passShadow = m_passShadow;
-    for (u32 s = 0; s < GpuTimer::Count; ++s)
+    // gpuMs は先頭 kPerfGpuScopes 本だけ（worstFrames の内訳用）。全スコープの平均は GpuTimer の履歴から出す。
+    for (u32 s = 0; s < kPerfGpuScopes && s < GpuTimer::Count; ++s)
         f.gpuMs[s] = m_gpuTimer ? m_gpuTimer->GetMs(static_cast<GpuTimer::Scope>(s)) : 0.0f;
+    if (m_gpuTimer) m_gpuTimer->RecordHistory();
     for (u32 s = 0; s < CpuScopeCount; ++s) { f.cpuMs[s] = m_cpuMs[s]; m_cpuMs[s] = 0.0f; }
+    // GpuTimer の履歴窓と PerfFrame の履歴窓は同じ長さでなければならない（perf_stats が窓 n を AverageHistory(n) に渡す）。
+    static_assert(GpuTimer::kHistory == Application::kPerfHistory, "GpuTimer::kHistory と Application::kPerfHistory がずれている");
     m_perfHistory[static_cast<size_t>(m_perfTotalFrames % kPerfHistory)] = f;
     ++m_perfTotalFrames;
 
@@ -861,7 +867,7 @@ void Application::RecordPerfFrame()
         }
         m_benchDraws += f.draws; m_benchCulled += f.culled; m_benchTris += f.tris;
         m_benchWork += f.workMs; m_benchFence += f.fenceWaitMs; m_benchPresent += f.presentMs;
-        for (u32 s = 0; s < GpuTimer::Count; ++s) m_benchGpu[s] += f.gpuMs[s];
+        if (m_gpuTimer) m_gpuTimer->BenchAdd();   // 全スコープぶんの集計は GpuTimer 側（m_benchGpu は 24 本で足りない）
         for (u32 s = 0; s < CpuScopeCount; ++s)  m_benchCpu[s] += f.cpuMs[s];
 
         if (--m_benchFramesLeft == 0)
@@ -883,11 +889,26 @@ void Application::RecordPerfFrame()
                 sum.presentMs = m_benchPresent * inv;
                 sum.draws = m_benchDraws * inv; sum.culled = m_benchCulled * inv;
                 sum.tris = m_benchTris * inv;
-                for (u32 s = 0; s < GpuTimer::Count; ++s) sum.gpuMs[s] = m_benchGpu[s] * inv;
+                float benchMs[GpuTimer::Count] = {};
+                if (m_gpuTimer) m_gpuTimer->BenchAverage(benchMs);
+                for (u32 s = 0; s < GpuTimer::Count; ++s) sum.gpuMs[s] = benchMs[s];
                 for (u32 s = 0; s < CpuScopeCount; ++s)  sum.cpuMs[s] = m_benchCpu[s] * inv;
             }
             nlohmann::json rep = PerfReportJson(sum, m_useVsync, m_fpsLimit);
             rep["frames"] = static_cast<int>(n);
+            {   // W05-26: 予算ゲート（perf_gate）が葉の合計を読めるように、perf_stats と同じ葉の内訳を出す
+                float msf[GpuTimer::Count];
+                for (u32 g = 0; g < GpuTimer::Count; ++g) msf[g] = static_cast<float>(sum.gpuMs[g]);
+                const u64 multi = m_gpuTimer ? m_gpuTimer->MultiWriteMask() : 0ull;
+                GpuTimer::LeafEntry le[GpuTimer::kMaxScopes];
+                const u32 ln = GpuTimer::LeafEntries(msf, multi, le);
+                nlohmann::json leaf = nlohmann::json::object();
+                for (u32 k = 0; k < ln; ++k)
+                    leaf[std::string(GpuTimer::Name(le[k].scope)) + (le[k].self ? ".self" : "")] =
+                        std::round(static_cast<double>(le[k].ms) * 100.0) / 100.0;
+                rep["gpuLeafMs"]    = std::move(leaf);
+                rep["gpuLeafSumMs"] = std::round(static_cast<double>(GpuTimer::LeafSumMs(msf, multi)) * 100.0) / 100.0;
+            }
             rep["instancing"] = m_instancingEnabled;
             rep["clustered"]  = m_clusteredEnabled;
             rep["occlusion"]  = OcclusionReportJson();
@@ -923,7 +944,7 @@ void Application::RecordPerfFrame()
                     for (u32 s = 0; s < CpuScopeCount; ++s)
                         if (w.cpuMs[s] >= 0.05f) cpu[appdetail::CpuScopeName(s)] = r2(w.cpuMs[s]);
                     nlohmann::json gpu = nlohmann::json::object();
-                    for (u32 s = 0; s < GpuTimer::Count; ++s)
+                    for (u32 s = 0; s < kPerfGpuScopes && s < GpuTimer::Count; ++s)   // 先頭 24 本（旧 22 本 + shadowCsm/Local）だけ
                         if (w.gpuMs[s] >= 0.05f) gpu[GpuTimer::Name(s)] = r2(w.gpuMs[s]);
                     worst.push_back({{"frameMs", r2(w.frameMs)}, {"workMs", r2(w.workMs)},
                                      {"fenceWaitMs", r2(w.fenceWaitMs)}, {"presentMs", r2(w.presentMs)},
@@ -2859,7 +2880,7 @@ void Application::BeginRenderFrame(RenderFrameContext& frame)
     m_commandList->Wrap(nativeCmdList);
 
     // GPU パス計測: このスロットの前回結果（約3フレーム前）を読み戻してから今フレームの計測開始
-    static_assert(GpuTimer::Count <= kPerfGpuScopes, "kPerfGpuScopes を GpuTimer::Count に合わせて広げること");
+    // ※ PerfFrame::gpuMs は 24 本固定（Application.h は凍結）。全スコープぶんの履歴 / ベンチ集計は GpuTimer が持つ。
     m_gpuTimer->NewFrame(m_swapChain->GetCurrentBackBufferIndex());
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::Total);
     // オクルージョン統計も同じタイミングで回収する（このスロットの GPU 作業は
@@ -6564,7 +6585,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             dci.zFarCluster = fc.clusterParams.y;
             dci.zFarCamera  = viewFar;
             dci.decalCount  = uploadedDecals;
+            gpuBegin(GpuTimer::Decals);   // W05-26 T-00: デカールの GPU 時間（Total 直下の葉）
             DecalCullPass(dci).Execute(passCtx);
+            gpuEnd(GpuTimer::Decals);
         }
     }   // primary: クラスタ / DDGI / デカール
 
@@ -6636,7 +6659,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     // RT / ビューポート / ヒープはパスが自分で張る。後始末（メインの RootSig/PSO の張り直し）は要らない。
     // 物理大気（atmosphere.enabled）のときは、従来のスカイボックスの代わりに大気の空を描く（空パス = Sky-View LUT + 太陽円盤 + 星）。
     const bool atmoSky = AtmosphereSkyUsable(view);
-    if (atmoSky) AtmosphereDrawSky(view, passCtx);
+    if (atmoSky)
+    {
+        gpuBegin(GpuTimer::Atmosphere);   // W05-26 T-00: 空パスだけ（AP / 雲は Particles 区間の中）
+        AtmosphereDrawSky(view, passCtx);
+        gpuEnd(GpuTimer::Atmosphere);
+    }
     if (!atmoSky && view.Has(kViewSkybox) &&
         m_iblReady && m_drawSkybox && m_skyboxIntensity > 0.0f && m_skyboxRenderer &&
         m_iblBaker && m_iblBaker->HasEnvironment() &&
@@ -7108,6 +7136,9 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
     const bool particleDistortDrawn = in.particleDistortDrawn;
     ID3D12Resource*             backBuffer = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
+    // W05-26 T-00: ポスト各パスの GPU 計測（PostFX の内数。RenderPostChain は主ビューだけが通る）。
+    auto postGpuBegin = [&](GpuTimer::Scope s) { if (m_gpuTimer) m_gpuTimer->Begin(nativeCmdList, s); };
+    auto postGpuEnd   = [&](GpuTimer::Scope s) { if (m_gpuTimer) m_gpuTimer->End(nativeCmdList, s); };
 
     backBuffer = m_swapChain->GetCurrentBackBuffer();
     rtv        = m_swapChain->GetCurrentRTV();
@@ -7282,12 +7313,14 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             XMStoreFloat4x4(&invVpT, XMMatrixTranspose(XMMatrixInverse(nullptr, camVP)));
             XMStoreFloat4x4(&prevVpT, XMMatrixTranspose(
                 m_prevViewProjNJValid ? XMLoadFloat4x4(&m_prevViewProjNoJitter) : camVP));
+            postGpuBegin(GpuTimer::Taa);
             const u32 o = m_taaPass->Resolve(*m_commandList, curSceneSrv, depthSrvGpu,
                 invVpT, prevVpT, rW, rH, taaCfg);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
             // TaaPass は自前のルートシグネチャ/PSO を張るので、後段のために SRV ヒープを張り直す。
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
+            postGpuEnd(GpuTimer::Taa);
         }
 
         // ---- 時間方向アップスケーラ（DLSS）: TAA の解決と同じ位置（トーンマップ前・露出前のリニア HDR）----
@@ -7347,9 +7380,11 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
                     if (vz > 0.0f) focusOverride = vz;
                 }
             }
+            postGpuBegin(GpuTimer::Dof);
             const u32 o = m_dofPass->Apply(*m_commandList, m_srvHeap.get(),
                 curSceneSrv, depthSrvGpu, projF._33, projF._43, projF._22,
                 ppApplied, focusOverride);
+            postGpuEnd(GpuTimer::Dof);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
@@ -7368,9 +7403,11 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
                                                : DescriptorHeap::kInvalidIndex;
             const bool mbUseVelocity = (velIdx != DescriptorHeap::kInvalidIndex);
             const auto velSrvGpu = mbUseVelocity ? m_srvHeap->GetGpuHandle(velIdx) : depthSrvGpu;
+            postGpuBegin(GpuTimer::MotionBlur);
             const u32 o = m_motionBlurPass->Apply(*m_commandList, m_srvHeap.get(),
                 curSceneSrv, depthSrvGpu, velSrvGpu, mbUseVelocity, invT, prevT,
                 pW, pH, ppApplied);
+            postGpuEnd(GpuTimer::MotionBlur);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
         }
@@ -7379,8 +7416,12 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         // Q2: 露出モード 2（自動 EV100）はマスター(enabled)が OFF でも走らせる。0 は従来どおり。
         if (m_autoExposure && ((ppApplied.enabled && ppApplied.autoExposureOn && ppApplied.exposureMode == 0)
                                || ppApplied.exposureMode == 2))
+        {
+            postGpuBegin(GpuTimer::AutoExposure);
             m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, pW, pH,
                                      m_gameClock.GetDeltaTime(), ppApplied);
+            postGpuEnd(GpuTimer::AutoExposure);
+        }
         D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
         if (m_autoExposure)
         {
@@ -7400,8 +7441,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         // 線形 HDR スクリーンショット（上）は補正前のシーンを撮る。
         if (m_localExposurePass && LocalExposurePass::NeedsRun(ppApplied))
         {
+            postGpuBegin(GpuTimer::LocalExposure);
             const u32 o = m_localExposurePass->Apply(*m_commandList, curSceneSrv, exposureVA,
                                                      pW, pH, ppApplied);
+            postGpuEnd(GpuTimer::LocalExposure);
             if (o != DescriptorHeap::kInvalidIndex)
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
             // 自前のルートシグネチャ / 出力先を張るので、後段のために SRV ヒープを張り直す。
@@ -7413,8 +7456,12 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         // ---- ブルーム（レンズフレアの入力も兼ねる。内部で RT/ビューポート切替）----
         u32 bloomSrv = DescriptorHeap::kInvalidIndex;
         if (m_bloomPass && ppApplied.enabled && (ppApplied.bloomOn || ppApplied.lensflareOn))
+        {
+            postGpuBegin(GpuTimer::Bloom);
             bloomSrv = m_bloomPass->Generate(*m_commandList, m_srvHeap.get(), curSceneSrv,
                                              1.0f / postW, 1.0f / postH, ppApplied);
+            postGpuEnd(GpuTimer::Bloom);
+        }
         const bool bloomReady = (bloomSrv != DescriptorHeap::kInvalidIndex);
         const auto bloomSrvGpu = m_srvHeap->GetGpuHandle(bloomReady ? bloomSrv : m_ssaoWhiteSrvIndex);
 
@@ -7453,8 +7500,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
                     {
                         // ★#16: シーンは RT 全面なので、ローカル UV がそのまま RT の UV。
                         //   （かつては lu * uvScl + uvOfs でサブ矩形へ写していた）
+                        postGpuBegin(GpuTimer::GodRays);
                         godraysSrv = m_godRaysPass->Generate(*m_commandList, m_srvHeap.get(),
                             depthSrvGpu, pW, pH, lu, lv, fade, sunColI, ppApplied);
+                        postGpuEnd(GpuTimer::GodRays);
                     }
                 }
             }
@@ -7467,8 +7516,12 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         {
             const u32 mip = m_bloomPass->GetMipSrvIndex(1);
             if (mip != DescriptorHeap::kInvalidIndex)
+            {
+                postGpuBegin(GpuTimer::LensFx);
                 flareSrv = m_lensFlarePass->Generate(*m_commandList, m_srvHeap.get(),
                     m_srvHeap->GetGpuHandle(mip), ppApplied);
+                postGpuEnd(GpuTimer::LensFx);
+            }
         }
         const bool lfReady = (flareSrv != DescriptorHeap::kInvalidIndex);
 
@@ -7534,8 +7587,10 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
 
         // ★ここが唯一の「レンダー解像度 → 表示解像度」の橋渡し。ビューポートが表示矩形で、
         //   シーン RT の全面をサンプルする＝renderScale < 1 なら自動的にバイリニア拡大になる。
+        postGpuBegin(GpuTimer::Uber);
         m_postProcess->Apply(nativeCmdList, pin, ppApplied,
             1.0f / postW, 1.0f / postH, totalTime, frameIndex);
+        postGpuEnd(GpuTimer::Uber);
 
         // ---- 画面全体のカスタムシェーダー（中間 RT → バックバッファ）----
         if (useScreenShader)
