@@ -272,6 +272,26 @@ public:
     int pendingBookmarkJump = 0;   // 1..9（コマンド表 / 帯のボタンが立て、ViewportToolbar が消化する）
     int pendingBookmarkSet  = 0;
 
+    // ---- W1 の受け渡し口（A2a: 形だけ。値の書き込みと消化は各項目が行う。重ヘッダなのでこの 1 回だけ）----
+    // A10: アセットブラウザの .dxseq のダブルクリックが立てる（assets 相対パス）。ApplicationSequencer.cpp が消費し、
+    //      MCP の sequence_play と同じ関数で再生する。空 = 要求なし。
+    std::string pendingSequencePlay;
+    // A10 が立て、BD4 が消費する: アセットブラウザの .uvfx のダブルクリック（assets 相対パス）。ビューポートの注視点に置く。
+    // A と BD の間はこのフィールドだけでつながる（互いのファイルを触らない）。空 = 要求なし。
+    std::string pendingVfxPlace;
+    // A11: 裏に回ったときのフレーム間引き（MOD-ED-11）の状態。Application のメインループが毎フレーム更新する。
+    //   tier: 0 = 制限なし / 1 = 入力なし 30fps / 2 = 非アクティブ 10fps。
+    //   lastActivitySec: 最後に入力・再生・MCP の要求・仮想入力・ジョブがあった時刻（単調時計の秒）。
+    //   alwaysRealtime: 「常にリアルタイム」の設定（true で間引きを無効にする。EditorPrefs と同期）。
+    struct FrameThrottleState
+    {
+        int    tier            = 0;
+        double lastActivitySec = 0.0;
+        bool   windowActive    = true;
+        bool   alwaysRealtime  = false;
+    };
+    FrameThrottleState frameThrottle;
+
     // ビューポート上の一時状態（毎フレーム SceneViewPanel / ViewportToolbar が更新）
     entt::entity hoveredEntity = entt::null;       // マウスの下のエンティティ（精密ピッキングの結果。ホバー強調用）
     bool  marqueeActive = false;                   // 矩形選択のドラッグ中

@@ -27,7 +27,7 @@ namespace dx12e::theme
 
 // ---- テーマ・バリアント（アイデンティティ候補。既定 = 現行）----
 // 下のトークン（Bg0 等）は【可変】。SetVariant() が案の表（ThemeVariants.h）から書き換える。
-// 起動引数 --theme-variant a|b|c（main.cpp）→ ImGuiManager::Initialize の前に SetVariant → ApplyStyle が ImGuiStyle へ流す。
+// 起動引数 --theme-variant a|b|c|graphite|g（main.cpp）→ ImGuiManager::Initialize の前に SetVariant → ApplyStyle が ImGuiStyle へ流す。
 // 実行中の切替は ImGuiManager::SetThemeVariant()（基準スタイルの作り直しまで行う）。
 inline Variant g_variant = Variant::Default;
 inline Variant CurrentVariant() { return g_variant; }
@@ -104,6 +104,17 @@ inline ImVec4 AccentLight = AccentHover;
 inline ImVec4 AccentDim   = SelectionHover;
 inline ImVec4 AccentDim2  = Selection;
 
+// ---- W1 A2a: Graphite Gauge 用の追加トークン（旧案では互換値。見た目は変わらない）----
+// ★AccentDim は旧名（= SelectionHover）が既にあるので、指針の減光は NeedleDim という名前にする。
+inline ImVec4 NeedleDim = SpecOf(Variant::Default).ext.needleDim;
+inline ImVec4 InLine    = SpecOf(Variant::Default).ext.inLine;
+inline ImVec4 Info      = SpecOf(Variant::Default).ext.info;
+inline ImVec4 WarnText  = SpecOf(Variant::Default).ext.warnText;
+inline ImVec4 BadText   = SpecOf(Variant::Default).ext.badText;
+inline ImVec4 AxisX     = SpecOf(Variant::Default).ext.axisX;
+inline ImVec4 AxisY     = SpecOf(Variant::Default).ext.axisY;
+inline ImVec4 AxisZ     = SpecOf(Variant::Default).ext.axisZ;
+
 // 案を切り替える（トークンを書き換える）。ImGuiStyle への反映は ApplyStyle（と ImGuiManager::SetThemeVariant）が行う。
 inline void SetVariant(Variant v)
 {
@@ -123,6 +134,9 @@ inline void SetVariant(Variant v)
     AppBg = p.bg0; PanelBg = p.bg1; Chrome = p.bg1; GroupBg = p.bg2;
     FrameBg = p.inputBg; FrameBgHi = p.inputBgHover; FrameBgActive = p.inputBgActive;
     BorderSoft = p.inputBorder; AccentLight = p.accentHover; AccentDim = p.selectionHover; AccentDim2 = p.selection;
+    const Extra& x = SpecOf(v).ext;
+    NeedleDim = x.needleDim; InLine = x.inLine; Info = x.info; WarnText = x.warnText; BadText = x.badText;
+    AxisX = x.axisX; AxisY = x.axisY; AxisZ = x.axisZ;
 }
 
 // ---- 寸法トークン ----
@@ -236,12 +250,27 @@ inline ImGuiStyle ScaleStyleFrom(const ImGuiStyle& base, float scale)
     return s;
 }
 
+// ---- 線幅のヘルパ（W1 A2a）。GG tokens の line 規則どおり（倍率 s = Scale()）----
+//   hairPx = max(1, floor(s)) / accentPx = max(2, round(2s)) / playFramePx = max(3, round(3s))
+//   keylinePx = hairPx / tickAlphaScale = hairPx>=2 のとき 0.75（それ以外 1.0）
+inline float HairPx()      { return (std::max)(1.0f, std::floor(Scale() + 1e-4f)); }
+inline float AccentPx()    { return (std::max)(2.0f, std::floor(2.0f * Scale() + 0.5f)); }
+inline float PlayFramePx() { return (std::max)(3.0f, std::floor(3.0f * Scale() + 0.5f)); }
+inline float KeylinePx()   { return HairPx(); }
+inline float TickAlphaScale() { return HairPx() >= 2.0f ? 0.75f : 1.0f; }
+// 案ごとのフォントサイズ（論理 px）。旧案は size::kFontBase / kFontMono と同じ（16 / 14）、Graphite は 17 / 15。
+inline float FontBaseOf() { return CurrentSpec().m.fontBase; }
+inline float FontMonoOf() { return CurrentSpec().m.fontMono; }
+
 // ---- フォントのハンドル（ImGuiManager が起動時に埋める。null なら既定フォント）----
 struct Fonts
 {
     ImFont* body = nullptr;   // Segoe UI + Yu Gothic UI + Segoe UI Symbol + Lucide（既定）
     ImFont* bold = nullptr;   // 見出し / タブ / 選択名（Segoe UI Bold + Yu Gothic UI Semibold + Lucide）
     ImFont* mono = nullptr;   // 数値（Cascadia Mono / Consolas + Lucide）
+    ImFont* medium    = nullptr;   // NEW（GG）: Plex Medium（bodyMedium / overline。A14 が埋める）
+    ImFont* monoJP    = nullptr;   // NEW（GG）: 等幅の日本語（A14 が埋める）
+    ImFont* monoLight = nullptr;   // NEW（GG）: 等幅 Light（大きな数値。A14 が埋める）
     bool    icons = false;    // Lucide を読み込めたか（false のとき ICON_* は化ける）
 };
 inline Fonts g_fonts;
