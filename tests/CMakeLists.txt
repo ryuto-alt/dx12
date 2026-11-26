@@ -1078,6 +1078,16 @@ if(TARGET Renderer)
     endif()
     add_test(NAME GpuMarkerTests COMMAND GpuMarkerTests)
 endif()
+# 品質プリセットの口（生成表が読まれていること・既定値が従来どおり）。ヘッダだけで完結。W1-C1。
+if(TARGET Renderer)
+    add_executable(QualityPresetTableTests quality_preset_table_test.cpp)
+    target_include_directories(QualityPresetTableTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(QualityPresetTableTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(QualityPresetTableTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME QualityPresetTableTests COMMAND QualityPresetTableTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====
