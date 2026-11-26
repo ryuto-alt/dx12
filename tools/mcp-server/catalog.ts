@@ -183,7 +183,7 @@ const EXTRA_EXAMPLES: Record<string, { args: Record<string, unknown>; note?: str
   dx12_screenshot_final: [{ args: { waitIblRebake: true, path: "shots/after_sunset_final.png" }, note: "大気/時刻を変えた直後の最終画。焼き直し前の暗い絵を避ける。deterministic を付けなくても未了のときだけ待つ" }],
   dx12_get_device_caps: [{ args: {}, note: "GPU の機能(Agility・SM6.9・Enhanced Barriers・DXR・SER・OMM など)を読む。読み取り専用。経路は切り替わらない" }],
   dx12_get_upscaler: [{ args: {}, note: "mode と effective が違えばフォールバック中。理由は dlss.fallbackReason" }],
-  dx12_get_quality_preset: [{ args: {}, note: "現在のプリセットと予算(目標 fps・p95/p99・VFX の放出倍率と最大粒子数)。applied:false は C7 まで絵に未反映の意味" }],
+  dx12_get_quality_preset: [{ args: {}, note: "現在のプリセット。high/epic/cinematic は hasBudget:true で予算(目標 fps・p95/p99・VFX)付き。low/medium は hasBudget:false で予算なし。applied:false は C7 まで絵に未反映の意味" }],
   dx12_set_quality_preset: [{ args: { preset: "epic" }, note: "プリセット名は小文字。C1 時点では選択の記録だけ(applied:false)。性能測定の前に合わせる" }],
   dx12_editor_state: [{ args: { scope: "mode" }, note: "結果の autosave.blockedByHumanEdits が true なら人の未保存の変更あり。人に保存を依頼する(dx12_guide {topic:'autosave'})" }],
 };

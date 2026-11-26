@@ -116,10 +116,15 @@ function payload(res: any): any {
 }
 
 
+const REAL = {
+  high: { preset: "high", label: "High", hasBudget: true, targetFps: 60, output: [2560, 1440], p95Ms: 14, p99Ms: 16.6, vfx: { emission: 1, maxParticles: 100000 } },
+  low: { preset: "low", label: "Low", hasBudget: false },
+  epic: { preset: "epic", label: "Epic", hasBudget: true, targetFps: 60, output: [3840, 2160], p95Ms: 14, p99Ms: 16.6, vfx: { emission: 1, maxParticles: 200000 } },
+} as Record<string, any>;
 let current = "high";
 const eng = await startFakeEngine((method, params) => {
-  if (method === "get_quality_preset") return { result: { preset: current, applied: false } };
-  if (method === "set_quality_preset") { current = params.preset; return { result: { preset: current, applied: false, note: "記録のみ" } }; }
+  if (method === "get_quality_preset") return { result: { ...REAL[current], applied: false, note: "記録のみ" } };
+  if (method === "set_quality_preset") { current = params.preset; return { result: { ...(REAL[current] ?? { preset: current, label: current, hasBudget: false }), applied: false, note: "記録のみ" } }; }
   return { result: {} };
 });
 const mcp = new McpStdio(eng.port);
@@ -127,28 +132,26 @@ try {
   await mcp.init();
   const list = await mcp.listTools();
   const tools: any[] = list.result.tools;
-  const get = tools.find((t) => t.name === "dx12_get_quality_preset");
-  const set = tools.find((t) => t.name === "dx12_set_quality_preset");
-  assert.ok(get && set, "2 本が tools/list にある");
-  assert.ok(!JSON.stringify([get, set]).includes("$ref"), "$ref が無い");
-  assert.deepEqual(set.inputSchema.properties.preset.enum, ["low", "medium", "high", "epic", "cinematic"]);
-  assert.deepEqual(set.inputSchema.required, ["preset"]);
-  assert.equal(get.annotations?.readOnlyHint, true);
-  pass("tools/list に 2 本・$ref なし・preset は小文字 enum で必須・get は readOnly");
+  assert.ok(!tools.some((t) => /quality_preset/.test(t.name)), "長尾なので tools/list には出ない(M0 基準を動かさない)");
+  pass("tools/list には出ない(長尾。dx12_call で使う)");
 
-  const g = payload(await mcp.callTool("dx12_get_quality_preset", {}));
+  const g = payload(await mcp.callTool("dx12_call", { name: "dx12_get_quality_preset", args: {} })).result;
   assert.equal(g.preset, "high");
+  assert.equal(g.hasBudget, true);
   assert.equal(eng.received.filter((r) => r.method === "get_quality_preset").length, 1);
-  pass("get はエンジンの値をそのまま返す");
+  pass("get はエンジンの値をそのまま返す(実エンジンの形)");
 
-  const s = payload(await mcp.callTool("dx12_set_quality_preset", { preset: "epic" }));
+  const s = payload(await mcp.callTool("dx12_call", { name: "dx12_set_quality_preset", args: { preset: "epic" } })).result;
   assert.equal(s.preset, "epic");
   assert.deepEqual(eng.received.find((r) => r.method === "set_quality_preset")?.params, { preset: "epic" });
-  pass("set は preset をエンジンへ渡す");
+  const lo = payload(await mcp.callTool("dx12_call", { name: "dx12_set_quality_preset", args: { preset: "low" } })).result;
+  assert.equal(lo.hasBudget, false);
+  assert.equal(lo.targetFps, undefined);
+  pass("set は preset をエンジンへ渡す。low は hasBudget:false で予算なし");
 
   const before = eng.received.length;
   for (const bad of [{ preset: "Epic" }, { preset: "ultra" }, {}]) {
-    const r = await mcp.callTool("dx12_set_quality_preset", bad);
+    const r = await mcp.callTool("dx12_call", { name: "dx12_set_quality_preset", args: bad });
     assert.equal(r.result?.isError, true, JSON.stringify(bad));
   }
   assert.equal(eng.received.length, before, "不正な引数はエンジンに届かない");
