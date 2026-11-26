@@ -1,5 +1,5 @@
 // エラー構造化(M2)のテスト。偽エンジンだけを使う(実エンジン不要)。
-//   [1] エラー再現 47 ケース(eval/errors.cases.json): 期待コード・空でない fix・タイポ系の didYouMean[0] が正解
+//   [1] エラー再現 50 ケース(eval/errors.cases.json): 期待コード・空でない fix・タイポ系の didYouMean[0] が正解
 //   [2] 自己修復: 壊れた呼び出し 20 件に fix[0] / didYouMean[0] を機械的に適用して再送 → 80% 以上成功
 //   [3] 診断(doctor): ポート閉鎖 / 応答なし / 別ポート / 古いポートファイル
 //   [4] タイムアウト後の遅延結果 / 再接続 / 再接続後の警告
@@ -12,7 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { startMockEngine } from "./mockEngine.ts";
-import { DIALECT_PATTERN, ERROR_CODES, isErrorCodeName } from "./errors.ts";
+import { DIALECT_PATTERN, ERROR_CODES, isErrorCodeName, resetRepeatedFixGuard } from "./errors.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let failed = 0;
@@ -60,6 +60,7 @@ const cases: any = JSON.parse(fs.readFileSync(path.join(here, "eval", "errors.ca
 const allBodies: any[] = [];
 
 console.log("[1] エラー再現ケース");
+resetRepeatedFixGuard();   // E_UNKNOWN_TOOL の「同じ fix を 2 回返したら打ち切り」の記録を、このテストの先頭から数える
 await shell.refresh(true);
 const downCases: any[] = [];
 for (const c of cases.cases) {
@@ -85,6 +86,13 @@ for (const c of cases.cases) {
   if (e.didYouMean0 && b.didYouMean?.[0] !== e.didYouMean0) problems.push(`didYouMean[0]=${b.didYouMean?.[0]} (期待 ${e.didYouMean0})`);
   if (e.fixTool && !b.fix?.some((f: any) => f.tool === e.fixTool)) problems.push(`fix に ${e.fixTool} が無い: ${JSON.stringify(b.fix?.map((f: any) => f.tool))}`);
   if (e.fixCommand && !b.fix?.some((f: any) => String(f.command ?? "").includes(e.fixCommand))) problems.push(`fix に command(${e.fixCommand}) が無い`);
+  // BUG-14: 呼べない名前(tools/list に無いツール)を勧める fix は dx12_call の形で、同じ fix を 2 回返したら打ち切りの文面にする
+  if (e.giveUp !== undefined && (b.details?.giveUp === true) !== e.giveUp) problems.push(`details.giveUp=${b.details?.giveUp} (期待 ${e.giveUp})`);
+  if (e.giveUp === true) {
+    if (!/撃ち直しをやめる/.test(JSON.stringify(b.fix))) problems.push("打ち切りの文言が fix に無い");
+    if (b.fix?.some((f: any) => f.tool && f.tool !== "dx12_tool_search")) problems.push(`打ち切りなのに撃ち直しを誘う fix が残っている: ${JSON.stringify(b.fix)}`);
+  }
+  if (e.code === "E_UNKNOWN_TOOL") for (const f of b.fix ?? []) if (f.tool && f.tool !== "dx12_call" && !shell.isDirectlyCallable(f.tool)) problems.push(`直接呼べない名前 ${f.tool} を、dx12_call に包まずに勧めている`);
   if (e.fixArgs) for (const [k, v] of Object.entries(e.fixArgs)) if (JSON.stringify(b.fix?.[0]?.args?.[k]) !== JSON.stringify(v)) problems.push(`fix[0].args.${k}=${JSON.stringify(b.fix?.[0]?.args?.[k])} (期待 ${JSON.stringify(v)})`);
   if (e.validValues) for (const v of e.validValues) if (!b.validValues?.includes(v)) problems.push(`validValues に ${v} が無い`);
   if (e.retryable !== undefined && b.retryable !== e.retryable) problems.push(`retryable=${b.retryable}`);
@@ -104,7 +112,9 @@ console.log("[2] 自己修復(fix[0] / didYouMean[0] を機械的に適用して
     let how = success ? "そのまま成功" : "";
     if (!success) {
       const b = parse(first);
-      const usable = (b.fix ?? []).filter((f: any) => f.tool && !INFO_TOOLS.has(f.tool));
+      // fix が dx12_call の形(直接呼べない名前を包んだもの)なら、中の name / args を取り出して撃ち直す(エージェントが dx12_call を呼ぶのと同じ)
+      const unwrap = (f: any) => (f.tool === "dx12_call" && typeof f.args?.name === "string" ? { ...f, tool: f.args.name, args: f.args.args ?? {} } : f);
+      const usable = (b.fix ?? []).map(unwrap).filter((f: any) => f.tool && !INFO_TOOLS.has(f.tool));
       if (usable.length) {
         const f = usable[0];
         if (f.thenRetry) {

@@ -199,6 +199,17 @@ console.log("[3] stdio の MCP クライアントで一巡");
     check("e2e: 旧ツール直接呼び出しの型エラーは SDK の本文 + 構造化 JSON(E_BAD_TYPE)", direct.isError === true && dt.length === 2 && JSON.parse(dt[1]).error_code === "E_BAD_TYPE", dt);
     const dirunk = await call("dx12_no_such_tool", {});
     check("e2e: 未知ツールを直接呼ぶと構造化 JSON(E_UNKNOWN_TOOL)が付く", dirunk.isError === true && JSON.parse(dirunk.content[dirunk.content.length - 1].text).error_code === "E_UNKNOWN_TOOL", dirunk.content);
+    // BUG-14: full 面の tools/list に無い dx12_sequence を直接呼ぶ → fix は dx12_call の形(直接呼べない名前を勧めない)。同じ呼び出しの 2 回目は打ち切り。
+    check("e2e: dx12_sequence は full 面の tools/list に出ていない", !names.includes("dx12_sequence"), null);
+    const seq1 = await call("dx12_sequence", { op: "list" });
+    const sb1 = JSON.parse(seq1.content[seq1.content.length - 1].text);
+    check("e2e(BUG-14): 呼べない dx12_sequence を直接呼ぶ → fix[0] は dx12_call {name:'dx12_sequence'}", seq1.isError === true && sb1.error_code === "E_UNKNOWN_TOOL" && sb1.fix?.[0]?.tool === "dx12_call" && sb1.fix[0].args?.name === "dx12_sequence" && sb1.fix[0].args?.args?.op === "list" && !sb1.fix.some((f: any) => f.tool === "dx12_sequence"), sb1);
+    const seq2 = await call(sb1.fix[0].tool, sb1.fix[0].args);
+    const sb2 = JSON.parse(seq2.content[seq2.content.length - 1].text);
+    check("e2e(BUG-14): fix[0] をそのまま撃つと E_UNKNOWN_TOOL にならず先へ進む(無限に繰り返さない)", sb2.error_code !== "E_UNKNOWN_TOOL", sb2);
+    const seq3 = await call("dx12_sequence", { op: "list" });
+    const sb3 = JSON.parse(seq3.content[seq3.content.length - 1].text);
+    check("e2e(BUG-14): 同じ呼び出しをもう一度撃つと打ち切りの文言(撃ち直しを誘う fix が無い)", sb3.details?.giveUp === true && /撃ち直しをやめる/.test(JSON.stringify(sb3.fix)) && !sb3.fix.some((f: any) => f.tool && f.tool !== "dx12_tool_search"), sb3);
     const unkey = await call("dx12_set_transform", { name: "Floor", postion: [0, 0, 0] });
     check("e2e: 旧ツールの未知キーは従来の本文 + 構造化 JSON(E_UNKNOWN_PARAM)", unkey.isError === true && unkey.content.length === 2 && JSON.parse(unkey.content[1].text).didYouMean?.[0] === "position", unkey.content);
     const doc = await call("dx12_doctor", {});
