@@ -22,6 +22,10 @@ if(NOT _dll EQUAL _compiled)
     message(FATAL_ERROR "DLSS の配線が食い違う: compiledIn=${_compiled}、${ENGINE_DIR}/nvngx_dlss.dll の有無=${_dll}（tools/build.ps1 で建て直す）")
 endif()
 message(STATUS "OK: compiledIn=${_compiled} と nvngx_dlss.dll の有無が一致")
+# DLL を配るならライセンス文も隣の licenses/ に要る（DLL とライセンス文は必ずセット）
+if(_dll AND NOT EXISTS "${ENGINE_DIR}/licenses/NVIDIA_DLSS_LICENSE.txt")
+    message(FATAL_ERROR "nvngx_dlss.dll はあるが ${ENGINE_DIR}/licenses/NVIDIA_DLSS_LICENSE.txt が無い（third_party/dlss/LICENSE.txt を確認して建て直す）")
+endif()
 
 if(PWSH)
     set(_ps "${REPO_ROOT}/installer/build.ps1")

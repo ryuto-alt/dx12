@@ -24,6 +24,9 @@ $ErrorActionPreference = "Stop"
 
 $here     = Split-Path -Parent $MyInvocation.MyCommand.Path   # installer/
 $repoRoot = Split-Path -Parent $here
+if ($SrcDir -and -not $CheckDlssOnly) {
+  Write-Error "-SrcDir は -CheckDlssOnly と一緒にだけ使える（ISCC は dx12engine.iss の build\release を使うため、別の場所を指すと DLSS の判定と配布物がずれる）。"
+}
 $srcDir   = if ($SrcDir) { $SrcDir } else { Join-Path $repoRoot "build\release" }   # exe + dll + shaders
 $outDir   = Join-Path $here "output"
 

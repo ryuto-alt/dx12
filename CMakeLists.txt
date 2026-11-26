@@ -287,6 +287,8 @@ if(UNO_DLSS_ACTIVE)
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${UNO_DLSS_SDK_DIR}/LICENSE.txt" "$<TARGET_FILE_DIR:${DX12_DLSS_TARGET}>/licenses/NVIDIA_DLSS_LICENSE.txt"
                 COMMENT "Bundling NVIDIA_DLSS_LICENSE.txt next to ${DX12_DLSS_TARGET}.exe")
+        else()
+            message(WARNING "DLSS: ${UNO_DLSS_SDK_DIR}/LICENSE.txt が無い。ライセンス文の無い DLL だけの出力になる（pwsh tools/fetch_dlss.ps1 で取り直す）")
         endif()
     endforeach()
 endif()

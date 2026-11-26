@@ -40,6 +40,12 @@ Set-Location $root
 
 # --- DLSS SDK の有無（CMakeLists.txt の UNO_DLSS_ACTIVE と同じ 3 ファイルで判定する）
 $dlssSdk = Join-Path $root 'third_party\dlss'
+# 構成済みなら CMake キャッシュの UNO_DLSS_SDK_DIR（ユーザーが差し替え可能）を優先する
+$dlssCache = Join-Path (Join-Path $root $Dir) 'CMakeCache.txt'
+if (Test-Path $dlssCache) {
+    $sd = Select-String -Path $dlssCache -Pattern '^UNO_DLSS_SDK_DIR:[A-Z]+=(.+)$' | Select-Object -First 1
+    if ($sd) { $dlssSdk = $sd.Matches[0].Groups[1].Value.Trim() -replace '/', '\' }
+}
 $sdkPresent = (Test-Path (Join-Path $dlssSdk 'include\nvsdk_ngx_helpers.h')) -and
               (Test-Path (Join-Path $dlssSdk 'lib\Windows_x86_64\x64\nvsdk_ngx_d.lib')) -and
               (Test-Path (Join-Path $dlssSdk 'lib\Windows_x86_64\rel\nvngx_dlss.dll'))
@@ -154,8 +160,10 @@ try {
 
     # --- 3a. DLSS の状態が前回の configure と違うときだけ構成し直す（UNO_ENABLE_DLSS と SDK の有無は configure で決まる）
     $dlssMarker = Join-Path (Join-Path $root $Dir) '.uno_dlss_configured'
-    $dlssWant = if ($dlssWanted) { 'ON' } else { 'OFF' }
-    $dlssHave = if (Test-Path $dlssMarker) { (Get-Content $dlssMarker -Raw).Trim() } else { '' }
+    # 要求(-Dlss)も含めて記録する: ON / OFF:nosdk（SDK 無しで OFF）/ OFF:off（-Dlss off）
+    $dlssWant = if ($dlssWanted) { 'ON' } elseif ($Dlss -eq 'off') { 'OFF:off' } else { 'OFF:nosdk' }
+    $dlssHave = ''
+    if (Test-Path $dlssMarker) { $raw = Get-Content $dlssMarker -Raw; if ($raw) { $dlssHave = $raw.Trim() } }
     if ((Test-Path $cache) -and $dlssHave -ne $dlssWant) {
         $enableFlag = if ($Dlss -eq 'off') { 'OFF' } else { 'ON' }
         Write-Host "[build] DLSS configure state: '$dlssHave' -> '$dlssWant' (UNO_ENABLE_DLSS=$enableFlag). reconfiguring..."

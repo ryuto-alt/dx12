@@ -21,26 +21,6 @@
 namespace dx12e
 {
 
-namespace
-{
-// DLSS が使えないとき、Warn を 1 回だけ出す（W05-07。毎回の Initialize やフレームごとにログを埋めない）。
-// 使えない理由はビルド（SDK 無し）か環境（非 NVIDIA / ドライバ）で、前者の直し方は tools/fetch_dlss.ps1。
-void WarnUnavailableOnce(const std::string& reason)
-{
-    static std::atomic<bool> warned{false};
-    if (warned.exchange(true)) return;
-    Logger::Warn("DLSS: 使えない（{}）。アップスケーラに dlss を選んでも TAA で描く", reason);
-}
-
-// Initialize のどの return でも、使えなかったときに 1 回だけ警告する。
-struct UnavailableWarnGuard
-{
-    const bool&        available;
-    const std::string& reason;
-    ~UnavailableWarnGuard() { if (!available) WarnUnavailableOnce(reason); }
-};
-}  // namespace
-
 #if defined(UNO_ENABLE_DLSS)
 
 namespace
@@ -120,7 +100,6 @@ bool DlssBackend::CompiledIn() { return true; }
 
 bool DlssBackend::Initialize(ID3D12Device* device, const std::wstring& dataDir)
 {
-    UnavailableWarnGuard warnGuard{m_available, m_reason};
     m_available = false;
     m_reason.clear();
     if (!device) { m_reason = "D3D12 デバイスが無い"; return false; }
@@ -402,7 +381,6 @@ DlssBackend::~DlssBackend() = default;
 bool DlssBackend::CompiledIn() { return false; }
 bool DlssBackend::Initialize(ID3D12Device*, const std::wstring&)
 {
-    UnavailableWarnGuard warnGuard{m_available, m_reason};
     m_available = false;
     m_reason = "DLSS SDK 無しでビルドされている（pwsh tools/fetch_dlss.ps1 → cmake を構成し直す）";
     return false;
