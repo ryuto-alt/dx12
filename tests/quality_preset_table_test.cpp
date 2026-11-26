@@ -26,6 +26,11 @@ int main()
         CHECK(ParseQualityPreset(p.mcpName, back) && back == p.id);
     }
     QualityPresetId dummy{};
+    CHECK(ParseQualityPreset("Epic", dummy) && dummy == QualityPresetId::Epic);
+    CHECK(ParseQualityPreset("HIGH", dummy) && dummy == QualityPresetId::High);
+    CHECK(!ParseQualityPreset("epics", dummy) && !ParseQualityPreset("epi", dummy));
+    CHECK(!GetPreset(QualityPresetId::Low).HasParticleCap() && !GetPreset(QualityPresetId::Medium).HasParticleCap());
+    CHECK(GetPreset(QualityPresetId::Epic).HasParticleCap());
     CHECK(!ParseQualityPreset("ultra", dummy));
     CHECK(!ParseQualityPreset(nullptr, dummy));
     CHECK(!ParseQualityPreset("", dummy));
@@ -74,6 +79,11 @@ int main()
     }
     CHECK(epicDlssVfxSim == 1 && epicDlssVfxDraw == 1);
     CHECK(epicDlssRows > 0 && epicDlssRows == epicTaauRows && epicDlssRows == epicNativeRows);   // 3 列の形（全行・全列）
+
+    size_t nLeaf = 0;
+    const QualityLeafRow* leaves = GetLeafRows(nLeaf);
+    CHECK(nLeaf > 0);
+    for (size_t i = 0; i < nLeaf; ++i) CHECK(leaves[i].preset != QualityPresetId::Count && leaves[i].leaf[0] != '\0');
 
     size_t nDeg = 0;
     const QualityDegradeRow* deg = GetDegradeRows(nDeg);

@@ -39,6 +39,7 @@ void Application::RegisterMcpLaneCMethods()
         {
             resp["ok"]     = true;
             resp["result"] = QualityPresetJson(GetQualityPreset(*this));
+            resp["result"]["applied"] = false;   // C7 までは記録のみ
         });
     McpDefine("set_quality_preset", "preset:string", DX12E_MCP_HANDLER
         {
@@ -51,6 +52,9 @@ void Application::RegisterMcpLaneCMethods()
                 throw McpError(McpErr::Internal, "品質プリセットを設定できなかった", "もう一度試す");
             resp["ok"]     = true;
             resp["result"] = QualityPresetJson(id);
+            // C1 は選択の記録だけ。絵・シーン・Undo には何も反映しない（C7 で入る）。
+            resp["result"]["applied"] = false;
+            resp["result"]["note"]    = "選択を記録しただけで、まだ絵には反映しない（品質プリセットの適用は C7 で入る）";
         });
 }
 } // namespace dx12e

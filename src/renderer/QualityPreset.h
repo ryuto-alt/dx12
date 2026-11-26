@@ -30,6 +30,14 @@ struct QualityBudgetRow
     float           ms;
 };
 
+// 予算の行が指す GpuTimer の葉（.inc の UNO_QP_LEAF。1 行に複数ありうる）。C7 の葉の合計検査・T-00 が使う。
+struct QualityLeafRow
+{
+    QualityPresetId preset;
+    const char*     row;
+    const char*     leaf;
+};
+
 // 縮退の表（行ごとに 1 つ。列をまたいで共通）。
 struct QualityDegradeRow
 {
@@ -59,6 +67,8 @@ struct QualityPreset
     u32   outW = 0, outH = 0;
     float p95Ms = 0.0f, p99Ms = 0.0f;
     // VFX
+    // 注意: hasBudget=false（Low / Medium）では maxParticles=0 は「上限なし」の意味。0 を上限として使わないこと
+    //       （使う側は HasParticleCap() を見る）。emissionMultiplier=1.0 は「そのまま」。
     float emissionMultiplier = 1.0f;
     u32   maxParticles       = 0;
     float vfxSimMs = 0.0f, vfxDrawMs = 0.0f, vfxPeakMs = 0.0f;
@@ -68,11 +78,19 @@ struct QualityPreset
     // アップスケーラの列
     std::array<QualityUpscalerColumn, static_cast<size_t>(QualityColumn::Count)> upscaler{};
 
+    bool HasParticleCap() const { return hasBudget && maxParticles > 0; }
+
     const QualityUpscalerColumn& Column(QualityColumn c) const { return upscaler[static_cast<size_t>(c)]; }
 };
 
 namespace qualitydetail
 {
+constexpr char Lower(char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; }
+constexpr bool StrEqNoCase(const char* a, const char* b)
+{
+    while (*a && Lower(*a) == Lower(*b)) { ++a; ++b; }
+    return Lower(*a) == Lower(*b);
+}
 constexpr bool StrEq(const char* a, const char* b)
 {
     while (*a && *a == *b) { ++a; ++b; }
@@ -136,6 +154,12 @@ inline constexpr QualityBudgetRow kBudgetRows[] = {
 #undef UNO_QP_ROW
 };
 
+inline constexpr QualityLeafRow kLeafRows[] = {
+#define UNO_QP_LEAF(preset, row, leaf) { IdFromKey(#preset), #row, leaf },
+#include "renderer/QualityPresetTable.inc"
+#undef UNO_QP_LEAF
+};
+
 inline constexpr QualityDegradeRow kDegradeRows[] = {
 #define UNO_QP_DEGRADE(preset, row, text) { IdFromKey(#preset), #row, text },
 #include "renderer/QualityPresetTable.inc"
@@ -157,18 +181,23 @@ inline const QualityBudgetRow* GetBudgetRows(size_t& count)
     count = sizeof(qualitydetail::kBudgetRows) / sizeof(qualitydetail::kBudgetRows[0]);
     return qualitydetail::kBudgetRows;
 }
+inline const QualityLeafRow* GetLeafRows(size_t& count)
+{
+    count = sizeof(qualitydetail::kLeafRows) / sizeof(qualitydetail::kLeafRows[0]);
+    return qualitydetail::kLeafRows;
+}
 inline const QualityDegradeRow* GetDegradeRows(size_t& count)
 {
     count = sizeof(qualitydetail::kDegradeRows) / sizeof(qualitydetail::kDegradeRows[0]);
     return qualitydetail::kDegradeRows;
 }
 
-// MCP / --quality の名前（小文字）から引く。無ければ false。
+// MCP / --quality の名前から引く（大文字小文字は区別しない）。無ければ false。
 inline bool ParseQualityPreset(const char* name, QualityPresetId& out)
 {
     if (!name) return false;
     for (const QualityPreset& p : qualitydetail::kPresets)
-        if (qualitydetail::StrEq(name, p.mcpName)) { out = p.id; return true; }
+        if (qualitydetail::StrEqNoCase(name, p.mcpName)) { out = p.id; return true; }
     return false;
 }
 
