@@ -1285,6 +1285,14 @@ if(MSVC)
     target_compile_options(McpLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
 endif()
 add_test(NAME McpLogicTests COMMAND McpLogicTests)
+# perf_stats の gpuFrameMs（p50/p95/p99/max）と throttleTier / alwaysRealtime の配線。FU-E-22。純ロジック
+add_executable(PerfStatsGpuTests perf_stats_gpu_test.cpp)
+target_include_directories(PerfStatsGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(PerfStatsGpuTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+if(MSVC)
+    target_compile_options(PerfStatsGpuTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME PerfStatsGpuTests COMMAND PerfStatsGpuTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
