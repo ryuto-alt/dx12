@@ -23,6 +23,9 @@
                       "regions":{...}}                               # 黄の許可領域（splash_golden.py の region_mask 参照）
   <dir>/audio.wav    PCM16 ステレオ。ミキサーのオフライン描画（実デバイスを使わない）
 
+注: この検査は通常（速い）経路だけが対象。Reduce Motion は針が最初からロック位置で静止し、N/S/O/L が成り立たない。
+    RM の音は別に graphite_1_rm.wav を基準にして確かめる（G19）。
+
 検査（すべて合格で終了コード 0）:
   E. 絵のイベント   : events.json の visualEvents が csv の event 列に 1 回ずつ現れ、その t が [tMs, tMs+1 フレーム) に入る
   N. 指針の角度     : 各フレームの PNG から指針の角度と先端位置を測り、正規の指針（events.json の PCHIP）と比べる
@@ -399,25 +402,35 @@ def run(dump: Path, events_path: Path, limits_path: Path, tokens_path: Path, ref
     lock_ev = next((e for e in ev.events if ev.tag(e) == lock_tag), None)
     roi_r = float(layout.get("needleRoiRadiusPx", L))
     hx, hy = layout["hub"]
-    def crop(i):
-        rgb = sg.load_rgb(dump / rows[i]["file"])
-        x0, y0 = int(hx - roi_r), int(hy - roi_r)
-        return rgb[max(y0, 0):int(hy + roi_r) + 1, max(x0, 0):int(hx + roi_r) + 1]
     ping_ms = next(e["tMs"] for e in ev.events if e["kind"] == "ping")
     idx_in = [i for i in range(len(rows)) if ev.clicks[-1]["tMs"] <= ts[i] <= ping_ms]
     if lock_ev and len(idx_in) >= 3:
-        final = crop(idx_in[-1])
-        first_same = idx_in[-1]
-        for i in reversed(idx_in):
-            if np.array_equal(crop(i), final):
-                first_same = i
-            else:
-                break
+        # 静止 = 針だけの先端がほぼ動かない（ロックの後も目盛りの波・ベゼルの光・三角などは動き続けるので、
+        # 画面や ROI の全体比較はしない。針の黄のマスクだけで測る）
+        tip_tol = float(lim.get("lockStillTipPx", 0.3))
+        tips_in = {}
+        for i in idx_in:
+            m = measure_needle(sg.load_rgb(dump / rows[i]["file"]), layout, accent_rb, lim["measureWindowMs"]["axisBandPx"])
+            if m:
+                tips_in[i] = np.array(m[1])
+        last = idx_in[-1]
+        if last in tips_in:
+            first_same = last
+            for i in reversed(idx_in):
+                if i in tips_in and float(np.hypot(*(tips_in[i] - tips_in[last]))) <= tip_tol:
+                    first_same = i
+                else:
+                    break
+        else:
+            first_same = None
         audio_lock_ms = onsets.get(lock_tag, lock_ev["tMs"])
         audio_frame = int(np.argmax(ts >= audio_lock_ms - 1e-6)) if (ts >= audio_lock_ms - 1e-6).any() else len(ts)
-        d = first_same - audio_frame
-        rep.add("L.lock_still", abs(d) <= lim["lockStillMaxFrames"],
-                f"指針の静止が始まるフレームと音のロックの差 {d:+d} フレーム（上限 ±{lim['lockStillMaxFrames']}）", frames=d)
+        if first_same is None:
+            rep.add("L.lock_still", False, "最後のフレームで針を測れません")
+        else:
+            d = first_same - audio_frame
+            rep.add("L.lock_still", abs(d) <= lim["lockStillMaxFrames"],
+                    f"針の先端の静止が始まるフレームと音のロックの差 {d:+d} フレーム（上限 ±{lim['lockStillMaxFrames']}、先端の許容 {tip_tol}px）", frames=d)
     else:
         rep.add("L.lock_still", False, "ロックの区間のフレームが足りません")
     # 行き過ぎ: C23 からロックまでの先端の、最終の先端からの接線方向のずれ
@@ -429,11 +442,16 @@ def run(dump: Path, events_path: Path, limits_path: Path, tokens_path: Path, ref
             tips.append((ts[i], m[1]))
     if len(tips) >= 3:
         final_tip = np.array(tips[-1][1])
-        # 360° の針の接線 = 右向き（真上の針は時計回りに進むと +x）
-        dxs = np.array([t[1][0] for t in tips]) - final_tip[0]
+        # 先端の接線方向（時計回り）= 最終の針の向きに直交。真上 0・時計回りの角 θ なら (cosθ, sinθ)
+        fx, fy = final_tip[0] - hx, final_tip[1] - hy
+        nrm = math.hypot(fx, fy) or 1.0
+        tx, ty = -fy / nrm, fx / nrm
+        dxs = np.array([(t[1][0] - final_tip[0]) * tx + (t[1][1] - final_tip[1]) * ty for t in tips])
         peak = float(dxs.max())
         limit = lim["overshootMaxPx"] + lim["needleTipMaxErrPx"]
-        rep.add("O.overshoot", peak <= limit, f"行き過ぎのピーク {peak:.2f}px（上限 {lim['overshootMaxPx']}px + 測定の許容 {lim['needleTipMaxErrPx']}px）", peakPx=peak)
+        floor = float(lim.get("overshootMinPx", 1.0))
+        rep.add("O.overshoot", floor <= peak <= limit,
+                f"行き過ぎのピーク {peak:.2f}px（下限 {floor}px、上限 {lim['overshootMaxPx']}px + 測定の許容 {lim['needleTipMaxErrPx']}px）", peakPx=peak)
     else:
         rep.add("O.overshoot", False, "行き過ぎを測れるフレームが足りません")
     return rep

@@ -326,13 +326,23 @@ def _count_lines(strict: np.ndarray, policy: YellowPolicy, scale: float) -> int:
 
 
 def check_yellow(img, mode: str, policy: YellowPolicy, regions: dict | None = None, scale: float = 1.0,
-                 region_pad_px: float = 2.0) -> YellowReport:
-    """1 枚の画面（boot / edit / play）に黄の予算を掛ける。img は PNG のパスか (H,W,3) の配列。"""
+                 region_pad_px: float = 2.0, exclude: list | None = None) -> YellowReport:
+    """1 枚の画面（boot / edit / play）に黄の予算を掛ける。img は PNG のパスか (H,W,3) の配列。
+
+    exclude: 検査から外す領域の一覧（矩形 [x0,y0,x1,y1] か {circle:[cx,cy,r]}、画素の縁を原点とする連続座標）。
+    実エディタのスクリーンショットでは 3D ビューポート・ゲーム画像・サムネイル・アイコンなど描画された
+    内容の画素が含まれる。その領域を渡すと、黄の画素比・面・線の本数・トークン外の色のどれにも数えない
+    （画素比の分母は画面全体のまま。外した分だけ分母を小さくはしない）。
+    """
     if mode not in ("boot", "edit", "play"):
         raise ValueError(mode)
     rgb = load_rgb(img)
     h, w, _ = rgb.shape
     strict = yellow_mask(rgb, policy.chroma_min, policy.hue_min, policy.hue_max)
+    excl = None
+    if exclude:
+        excl = region_mask((h, w), {"x": list(exclude)}, ["x"], 0.0)
+        strict = strict & ~excl
     ratio = float(strict.sum()) / (h * w) * 100.0
     limit = {"boot": policy.boot_ratio_pct, "edit": policy.edit_ratio_pct, "play": policy.play_ratio_pct}[mode]
     failures: list[str] = []
@@ -343,6 +353,8 @@ def check_yellow(img, mode: str, policy: YellowPolicy, regions: dict | None = No
     face = 0
     if mode == "boot":
         weak = yellow_mask(rgb, policy.weak_chroma_min, policy.weak_hue_min, policy.weak_hue_max)
+        if excl is not None:
+            weak = weak & ~excl
         face = int(erode(weak, policy.scaled(policy.boot_face_window_px, scale)).sum())
     elif mode == "edit":
         face = int(erode(strict, policy.scaled(policy.face_window_px, scale)).sum())
@@ -351,7 +363,11 @@ def check_yellow(img, mode: str, policy: YellowPolicy, regions: dict | None = No
     if face:
         failures.append(f"黄の面が {face}px 残っています（線・トンボ・点は窓に満たないので消えるはず）")
 
-    off_n, off_ex = off_token_pixels(rgb, policy.token_rgbs, policy.aa_tolerance)
+    if excl is not None:
+        notes.append(f"exclude: {int(excl.sum())}px を検査から外した（描画内容の領域）")
+        off_n, off_ex = off_token_pixels(rgb[~excl].reshape(-1, 1, 3), policy.token_rgbs, policy.aa_tolerance) if (~excl).any() else (0, [])
+    else:
+        off_n, off_ex = off_token_pixels(rgb, policy.token_rgbs, policy.aa_tolerance)
     if off_n:
         failures.append(f"トークン外の色の画素が {off_n}px（例 {off_ex[:3]}）")
 
@@ -437,6 +453,9 @@ def main(argv=None) -> int:
     p.add_argument("--mode", choices=["boot", "edit", "play"], required=True)
     p.add_argument("--regions", type=Path)
     p.add_argument("--scale", type=float, default=1.0)
+    p.add_argument("--exclude", action="append", default=[], metavar="X0,Y0,X1,Y1",
+                   help="検査から外す矩形（3D ビューポートなど。複数回指定可）")
+    p.add_argument("--exclude-json", type=Path, help="外す領域の JSON（矩形か {circle:[cx,cy,r]} の配列、または {\"exclude\": [...]}）")
     p = sub.add_parser("dir")
     p.add_argument("dump", type=Path)
     p.add_argument("--mode", choices=["boot", "edit", "play"], default="boot")
@@ -460,9 +479,13 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "yellow":
         regions = _load_regions(a.regions)
+        excl = [[float(v) for v in e.split(",")] for e in a.exclude]
+        if a.exclude_json:
+            d = json.loads(a.exclude_json.read_text(encoding="utf-8"))
+            excl += d.get("exclude", []) if isinstance(d, dict) else d
         rc = 0
         for f in a.png:
-            r = check_yellow(f, a.mode, pol, regions, a.scale)
+            r = check_yellow(f, a.mode, pol, regions, a.scale, exclude=excl or None)
             _print_report(f.name, r)
             rc |= 0 if r.ok else 1
         return rc

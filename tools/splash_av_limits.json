@@ -19,6 +19,8 @@
     "skewMaxMs": 4.0,
     "lockStillMaxFrames": 1,
     "overshootMaxPx": 2.0,
+    "overshootMinPx": 1.0,
+    "lockStillTipPx": 0.1,
     "audioOnsetEvents": [
       "click:*",
       "latch:0"

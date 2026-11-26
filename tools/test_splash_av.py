@@ -65,9 +65,16 @@ def over(img, x0, y0, cov, color, alpha=1.0):
     reg[:] = reg * (1 - a) + color[None, None, :] * a
 
 
-def render_frame(theta, dx_px=0.0, extra_len=0.0):
+def render_frame(theta, dx_px=0.0, extra_len=0.0, anim=0.0):
     img = np.empty((H, W, 3), dtype=np.float64)
     img[:] = BG
+    if anim:      # ロックの後の目盛りの波・ベゼルの光（針より下の層、無彩色）
+        yy, xx = np.mgrid[0:H, 0:W]
+        rr = np.hypot(xx + 0.5 - HUB[0], yy + 0.5 - HUB[1])
+        gray = np.array([200.0, 200.0, 200.0])
+        for r0 in (NEEDLE_LEN + 4, NEEDLE_LEN - 6):
+            band = np.clip(1.5 - np.abs(rr - r0 - 6.0 * anim), 0, 1)[..., None] * 0.6
+            img[:] = img * (1 - band) + gray * band
     hub = (HUB[0] + dx_px, HUB[1])
     # 残像線（1px、α 24% / 10%、後ろ 2.5° / 5°）。面ではなく線
     for back, al in ((2.5, 0.24), (5.0, 0.10)):
@@ -87,7 +94,7 @@ def write_png(path, img):
 
 
 def make_dump(root: Path, fps=120, render_time_shift_ms=0.0, needle_dx_px=0.0, needle_extra_len=0.0,
-              audio_shift_ms=0.0, label_shift_ms=0.0):
+              audio_shift_ms=0.0, label_shift_ms=0.0, post_lock_anim=False, late_lock_ms=0.0, no_overshoot=False):
     """合成のダンプ（BD8 の契約どおり）。引数でわざとずらして、検査が見つけることを確かめる。"""
     ev = av.Events(EVENTS)
     dt = 1000.0 / fps
@@ -110,10 +117,18 @@ def make_dump(root: Path, fps=120, render_time_shift_ms=0.0, needle_dx_px=0.0, n
         if last_click < te < ev.lock_ms:
             s = (te - last_click) / span
             ov = 2.0 * 16.0 * (s * (1 - s)) ** 2        # 行き過ぎ px（SplashGaugeMotion.h と同じ式）
-        key = (round(theta, 6), round(ov, 6))
+        if no_overshoot:
+            ov = 0.0
+        if late_lock_ms and ev.lock_ms <= te < ev.lock_ms + late_lock_ms:
+            ov += 3.0 * (1.0 - (te - ev.lock_ms) / late_lock_ms)       # ロックの後も針が戻り続ける（視覚のロックが遅い）
+        anim = 0.0
+        if post_lock_anim and ev.lock_ms <= te <= ev.lock_ms + 220.0:
+            anim = (te - ev.lock_ms) / 220.0                              # ロックの後の目盛りの波・ベゼルの光（針は静止）
+        key = (round(theta, 6), round(ov, 6), round(anim, 6))
         if key not in cache:
             # 先端の接線方向へ ov px = 針を ov/L ラジアン余計に回す
-            cache[key] = render_frame(theta + math.degrees(ov / NEEDLE_LEN), dx_px=needle_dx_px, extra_len=needle_extra_len)
+            fr = render_frame(theta + math.degrees(ov / NEEDLE_LEN), dx_px=needle_dx_px, extra_len=needle_extra_len, anim=anim)
+            cache[key] = fr
         name = f"f{k:04d}.png"
         write_png(root / name, cache[key])
         rows.append({"index": k, "t": f"{t / 1000.0:.6f}", "phase": "boot", "percent": "0", "file": name,
@@ -166,6 +181,18 @@ class AvCheckTests(unittest.TestCase):
     def test_clean_dump_passes_all(self):
         rep = self.run_case("clean")
         self.assertEqual(self.failed(rep), set(), [i for i in rep.items if not i["ok"]])
+
+    def test_lock_still_ignores_post_lock_tick_and_bezel_animation(self):
+        rep = self.run_case("postlock", post_lock_anim=True)
+        self.assertEqual(self.failed(rep), set(), [i for i in rep.items if not i["ok"]])
+
+    def test_detects_late_visual_lock(self):
+        rep = self.run_case("latelock", late_lock_ms=60.0)
+        self.assertIn("L.lock_still", self.failed(rep))
+
+    def test_detects_missing_overshoot(self):
+        rep = self.run_case("noov", no_overshoot=True)
+        self.assertIn("O.overshoot", self.failed(rep))
 
     def test_detects_12ms_skew_in_picture(self):
         rep = self.run_case("t12", render_time_shift_ms=12.0)
@@ -321,6 +348,23 @@ class GoldenTests(unittest.TestCase):
         self.assertTrue(r.ok, r.failures)
         img[10:12, 600:800] = a                                                 # 10 本目
         self.assertFalse(sg.check_yellow(img, "edit", self.pol).ok)
+
+    def test_edit_viewport_excluded_from_all_checks(self):
+        """実エディタの画面: ビューポートの描画（トークン外の色・黄っぽい砂・焚き火）を exclude で外せる。"""
+        img = np.empty((600, 900, 3), dtype=np.uint8)
+        img[:] = BG.astype(np.uint8)
+        rng = np.random.default_rng(1)
+        vp = [300, 100, 800, 500]
+        img[100:500, 300:800] = rng.integers(0, 256, (400, 500, 3), dtype=np.uint8)   # トークン外の雑多な色
+        img[200:300, 400:500] = (230, 190, 40)                                         # 黄の面（焚き火）
+        r = sg.check_yellow(img, "edit", self.pol)
+        self.assertFalse(r.ok)
+        r = sg.check_yellow(img, "edit", self.pol, exclude=[vp])
+        self.assertTrue(r.ok, r.failures)
+        self.assertEqual((r.off_token_px, r.face_px), (0, 0))
+        # 外した領域の外の違反は引き続き検出する
+        img[20:60, 20:60] = (255, 0, 255)
+        self.assertFalse(sg.check_yellow(img, "edit", self.pol, exclude=[vp]).ok)
 
     def test_ssim(self):
         a = synth_boot_frame()
