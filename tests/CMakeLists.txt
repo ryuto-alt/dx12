@@ -734,6 +734,25 @@ if(TARGET Core)
     add_test(NAME PakParallelReadTests COMMAND PakParallelReadTests)
     set_tests_properties(PakParallelReadTests PROPERTIES TIMEOUT 120)
 endif()
+# UnoFX（W1-BD4）: .uvfx の読み書き・検証・命令列 / 放出の算術・カール場の CPU 参照。GPU 不要。ソースを直接コンパイルして Renderer に依存しない。
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(directxmath CONFIG REQUIRED)
+add_executable(VfxAssetTests vfx_asset_test.cpp ../src/renderer/vfx/VfxAsset.cpp)
+target_include_directories(VfxAssetTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(VfxAssetTests PRIVATE nlohmann_json::nlohmann_json)
+add_executable(VfxSpawnMathTests vfx_spawn_math_test.cpp ../src/renderer/vfx/VfxCurl.cpp ../src/renderer/vfx/VfxAsset.cpp)
+target_include_directories(VfxSpawnMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(VfxSpawnMathTests PRIVATE nlohmann_json::nlohmann_json Microsoft::DirectXMath)
+if(MSVC)
+    foreach(_t VfxAssetTests VfxSpawnMathTests)
+        target_compile_options(${_t} PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(${_t} PRIVATE ${DX12_COMPILE_DEFS})
+    endforeach()
+endif()
+add_test(NAME VfxAssetTests COMMAND VfxAssetTests
+    ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_fire.uvfx ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_burst.uvfx)
+add_test(NAME VfxSpawnMathTests COMMAND VfxSpawnMathTests)
+set_tests_properties(VfxAssetTests VfxSpawnMathTests PROPERTIES TIMEOUT 120)
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、

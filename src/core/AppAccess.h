@@ -44,6 +44,13 @@ struct AppAccess
     // ==== lane-B begin ====
     // W05-13: モデルのサムネイルのキャッシュ済みハンドル（0 = まだ無い）。UI テスト用。
     static uint64_t ModelThumbHandle(Application& app, const std::string& path);
+    // W1-BD4（UnoFX）: 定義は mcp/ApplicationMcpLaneB.cpp。
+    //   VfxBindHost … renderer/vfx の Runtime へ「レジストリ・dt・品質・保留中の配置」の口を入れる。
+    //                 MCP の登録口が呼ぶ。★Application 起動時にも 1 回呼んでほしい（依頼: Application.cpp / ApplicationRender.cpp の持ち主へ。needs_other_lane 参照）。
+    //   VfxPlace    … .uvfx（preset 名 or assets 相対パス）のエフェクトを 1 つ置く（Undo 1 件。呼び出し中の MCP の積み口に載る）。失敗は false と err。
+    static void VfxBindHost(Application&);
+    static bool VfxPlace(Application&, const std::string& presetOrAsset, const DirectX::XMFLOAT3& worldPos, entt::entity parent,
+                         const std::string& name, entt::entity& outEntity, std::string& outAsset, std::string& err);
     // ==== lane-B end ====
 
     // ==== lane-C begin ====
