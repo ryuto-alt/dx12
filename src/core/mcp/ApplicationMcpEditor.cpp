@@ -243,7 +243,7 @@ void Application::RegisterMcpEditorMethods()
             //   見た目を判断したいときは dx12_screenshot_final を使うこと。
             // W1-C9（BUG-17）: waitIblRebake:true で、物理大気の ON/OFF・時刻の変更に伴う IBL の焼き直しが終わるまで待ってから撮る。
             //   待つ必要があるときだけ決定論経路（履歴を捨てて収束させる＝時刻・位相は固定。deterministic:false でも決定論になる）へ回し、
-//   収束フレームを足す（settleFrames は 240 で頭打ちにしてから足すので、IBL の待ちは削られない）。無ければ従来どおり。
+            //   収束フレームを足す（settleFrames は 240 で頭打ちにしてから足すので、IBL の待ちは削られない）。無ければ従来どおり。
             const int iblWait = params.value("waitIblRebake", false) ? AppAccess::IblRebakeWaitFrames(*this) : 0;
             if (params.value("deterministic", false) || iblWait > 0)
             {

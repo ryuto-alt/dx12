@@ -47,6 +47,8 @@ struct IblRebakeDecision
 inline IblRebakeDecision DecideIblRebake(const IblRebakeInput& in)
 {
     IblRebakeDecision d;
+    // 注意: 決定論撮影（in.deterministic）は毎フレーム burst になり、maxHz の間引きも効かない。
+    //   撮影の waitIblRebake は、焼き直しが未了のときだけ決定論経路へ回す（定常なら回さない）。
     d.burst = in.keyChanged || in.sunAngleDeg > kIblBurstAngleDeg || in.deterministic;
     const double thr = std::max(in.thresholdDeg, 1.0e-4);
     const bool sunMoved    = in.sunAngleDeg > thr;

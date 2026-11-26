@@ -444,7 +444,19 @@ int AppAccess::IblRebakeWaitFrames(Application& app)
         if (s.enabled && s.driveIBL && h.iblValid && h.enabledPrev)
         {
             // 今の時刻の太陽（まだ UpdateAtmosphereTime が走っていないかもしれない）と、焼いた太陽の差。
-            const Vec3d sunNow = (s.sunMode == 1) ? h.sunDir : SunDirectionFromTime(s);
+            // sunMode==1 は DirectionalLight の向き（UpdateAtmosphereTime と同じ式）。キャッシュの h.sunDir は古いことがある。
+            Vec3d sunNow = SunDirectionFromTime(s);
+            if (s.sunMode == 1)
+            {
+                const entt::entity sunEnt = FirstSun(app.m_scene->GetRegistry());
+                if (sunEnt != entt::null)
+                {
+                    const DirectionalLight& dl = app.m_scene->GetRegistry().get<DirectionalLight>(sunEnt);
+                    const XMVECTOR d = XMVector3Normalize(XMLoadFloat3(&dl.direction));
+                    XMFLOAT3 f; XMStoreFloat3(&f, XMVectorNegate(d));
+                    sunNow = {f.x, f.y, f.z};
+                }
+            }
             st.sunAngleDeg     = std::acos(std::clamp(Dot(sunNow, h.iblSunDir), -1.0, 1.0)) * 180.0 / kPi;
             st.sunElevDeltaDeg = SunElevationDeg(sunNow) - SunElevationDeg(h.iblSunDir);
         }

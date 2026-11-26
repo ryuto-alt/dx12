@@ -68,6 +68,27 @@ int main()
         CHECK(DecideIblRebake(i).need);
     }
 
+    {   // 走る太陽（60fps・毎フレーム 0.03° 進む（1.8°/秒））を 20 秒回しても、焼き直しの開始は maxHz で頭打ち。
+        //   開始のたびに基準を今の太陽へ付け替える（Application と同じ）。burst は立たない速さ。
+        const double dt = 1.0 / 60.0, stepDeg = 0.03;
+        for (double maxHz : {1.0, 2.0, 4.0})
+        {
+            double angle = 0.0, since = 100.0, elapsed = 0.0;
+            int starts = 0;
+            for (int f = 0; f < 60 * 20; ++f)
+            {
+                angle += stepDeg; since += dt; elapsed += dt;
+                IblRebakeInput i; i.sunAngleDeg = angle; i.sunElevDeltaDeg = angle;
+                i.sinceStartSec = since; i.maxHz = maxHz;
+                const auto d = DecideIblRebake(i);
+                CHECK(!d.burst);
+                if (d.start) { ++starts; angle = 0.0; since = 0.0; }
+            }
+            CHECK(starts >= 1);
+            CHECK(starts <= maxHz * elapsed + 1.0);
+        }
+    }
+
     // ---- 撮影の待ち ----
     IblWaitState w;   // 大気 OFF・ホスト無し
     CHECK(!IblRebakePending(w));
