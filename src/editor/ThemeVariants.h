@@ -64,9 +64,6 @@ inline const char* VariantName(Variant v)
     }
 }
 
-// --theme-variant の値の一覧（main.cpp のエラー文・ヘルプ文。TestParse が各語を ParseVariant に通して食い違いを防ぐ）。
-inline constexpr const char* kVariantUsage = "a | b | c | graphite|g | default";
-
 // "a" / "A" / "b" / "c" / "g" / "graphite" / "default" / "0".."4"（a・1 は旧案 A ＝ 現在の既定と同一）。解釈できなければ false（out は変えない）。
 inline bool ParseVariant(const std::string& s, Variant& out)
 {
