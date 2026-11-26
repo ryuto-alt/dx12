@@ -55,6 +55,8 @@ struct AppAccess
     static void UpdateShadingRevision(Application&);
     // W1-C3: 今 PSO に反映済みの revision と、V2 の .cso から作れた PSO の数（フォワード / スキンド / 地形）。MCP の get_shading 用。
     static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain);
+    // W1-C9: 撮影が IBL の焼き直しを待つために足すフレーム数（0 = 待たない。定義は core/ApplicationAtmosphere.cpp）。
+    static int IblRebakeWaitFrames(Application&);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====

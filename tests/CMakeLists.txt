@@ -1096,6 +1096,14 @@ if(MSVC)
     target_compile_definitions(ShadingV2AxisTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME ShadingV2AxisTests COMMAND ShadingV2AxisTests)
+# IBL 焼き直しのきっかけと撮影の待ちの判定表（ヘッダだけ）。W1-C9。
+add_executable(IblRebakeTriggerTests ibl_rebake_trigger_test.cpp)
+target_include_directories(IblRebakeTriggerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME IblRebakeTriggerTests COMMAND IblRebakeTriggerTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
