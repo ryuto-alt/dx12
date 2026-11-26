@@ -19,6 +19,7 @@
 #include "gui/VirtualInputImGui.h"
 #include "gui/FloatingGuard.h"
 #include "gui/UiClock.h"
+#include "editor/UiMotion.h"   // ui::anim の Instant 入力（--background / 仮想入力。W1 A4）
 
 #include <filesystem>
 
@@ -697,6 +698,7 @@ void ImGuiManager::SetIniPath(const std::string& utf8Path)
 void ImGuiManager::SetIniSavingDisabled(bool on)
 {
     m_iniSavingDisabled = on;
+    ui::anim::SetBackground(on);   // --background は動きを使わない（決定論。W1 A4）
     if (on && ImGui::GetCurrentContext())
     {
         g_viewportsForbidden = true;
@@ -707,6 +709,7 @@ void ImGuiManager::SetIniSavingDisabled(bool on)
 void ImGuiManager::SetVirtualInput(bool on)
 {
     vinput_gui::SetImGuiVirtualMode(on);
+    ui::anim::SetVirtualInput(on);
     // 仮想入力の間は multi-viewport を切る（別 OS 窓が実画面に出ないように）。切ると ImGui は
     // 引き出し済みの窓もメインビューポートへ戻す。OFF に戻したら（通常起動で有効だったなら）復帰。
     if (ImGui::GetCurrentContext() && g_editorStyle)

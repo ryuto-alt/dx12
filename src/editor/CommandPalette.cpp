@@ -5,6 +5,7 @@
 #include "editor/FuzzyMatch.h"
 #include "editor/ToolWindows.h"
 #include "editor/UiWidgets.h"
+#include "editor/UiMotion.h"
 #include "editor/panels/AssetBrowserPanel.h"
 #include "gui/VirtualInputImGui.h"
 #include "core/Logger.h"
@@ -487,6 +488,15 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(10.0f, 10.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Px(6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, ui::Px(1.0f));
+    // Graphite Gauge: パレット本体は 120ms の standard でフェードイン（UiMotion.h。決定論 / --background は即時）
+    float palAlpha = 1.0f;
+    if (th::CurrentVariant() == th::Variant::Graphite)
+    {
+        const ImGuiID fadeId = ImGui::GetID("##palfade");
+        if (openedThisFrame) ui::anim::Animate(fadeId, 0.0f, 0.0f);   // 開き直しは 0 から
+        palAlpha = ui::anim::Animate(fadeId, 1.0f, ui::anim::dur::kPaletteIn);
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, palAlpha);
     ImGui::PushStyleColor(ImGuiCol_PopupBg, th::Bg2);
     ImGui::PushStyleColor(ImGuiCol_Border, th::BorderStrong);
 
@@ -646,7 +656,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
             {
                 ImGui::EndPopup();
                 ImGui::PopStyleColor(2);
-                ImGui::PopStyleVar(3);
+                ImGui::PopStyleVar(4);
                 return;
             }
         }
@@ -668,7 +678,7 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
         Close(ctx);
     }
     ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
 }
 
 } // namespace dx12e

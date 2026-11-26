@@ -1,4 +1,5 @@
 #include "editor/UiWidgets.h"
+#include "editor/UiMotion.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -831,6 +832,17 @@ ImGuiStorage& EaseStore() { static ImGuiStorage s; return s; }
 
 float Ease(ImGuiID id, int slot, float target)
 {
+    if (th::CurrentVariant() == th::Variant::Graphite)
+    {
+        // Graphite Gauge: motion トークンの曲線と時間（UiMotion.h）。slot 0=hover 1=active 2=focus
+        namespace anim = ui::anim;
+        const ImGuiID key = ImHashData(&slot, sizeof(slot), id);
+        const bool rising = target > 0.5f;
+        const anim::dur::D d = slot == 1 ? (rising ? anim::dur::kPress : anim::dur::kRelease)
+                             : slot == 2 ? anim::dur::kUnfocusDim
+                                         : (rising ? anim::dur::kHover : anim::dur::kRelease);
+        return anim::Animate(key, target, d);
+    }
     const float tau = th::CurrentDeco().easeSec;
     if (tau <= 0.0f) return target;
     ImGuiStorage& st = EaseStore();

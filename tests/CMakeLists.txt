@@ -546,6 +546,19 @@ if(TARGET Gui)
     set_tests_properties(UiTokenLintTests PROPERTIES TIMEOUT 60)
 endif()
 
+# --- ui::anim（W1-A4 / GG-3）。曲線・ばね・retarget・Instant・Reduce Motion・状態の掃除。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(UiMotionTests ui_motion_test.cpp)
+    target_link_libraries(UiMotionTests PRIVATE Gui)
+    target_include_directories(UiMotionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(UiMotionTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(UiMotionTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME UiMotionTests COMMAND UiMotionTests)
+    set_tests_properties(UiMotionTests PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
