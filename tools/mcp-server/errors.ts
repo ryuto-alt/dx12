@@ -228,15 +228,16 @@ export const CALL_TOOL = "dx12_call";
  * dx12_call 自身・直接呼べる名前・tool を持たない fix(command など)はそのまま返す。
  * 引数の dx12_call 用 `dryRun` / `confirm` などは触らない(元の fix の args を name の args に入れるだけ)。
  */
-export function routeFixViaCall(fixes: Fix[] | undefined, isDirect: ((name: string) => boolean) | undefined): Fix[] | undefined {
+export function routeFixViaCall(fixes: Fix[] | undefined, isDirect: ((name: string) => boolean) | undefined, viaFor?: (name: string) => string): Fix[] | undefined {
   if (!fixes || !isDirect) return fixes;
   return fixes.map((f) => {
-    if (!f.tool || f.tool === CALL_TOOL || isDirect(f.tool)) return f;
+    if (!f.tool || f.tool === CALL_TOOL || f.tool === "dx12_call_guarded" || isDirect(f.tool)) return f;
+    const via = viaFor?.(f.tool) ?? CALL_TOOL;   // core 面の guarded は dx12_call では通らない(dx12_call_guarded を使う)
     return {
       ...f,
-      tool: CALL_TOOL,
+      tool: via,
       args: { name: f.tool, args: f.args ?? {} },
-      why: `${f.why ?? "撃ち直す"}(${f.tool} は MCP のツールとしては直接呼べない。dx12_call の name に渡す)`,
+      why: `${f.why ?? "撃ち直す"}(${f.tool} は MCP のツールとしては直接呼べない。${via} の name に渡す)`,
     };
   });
 }
@@ -253,11 +254,12 @@ export function resetRepeatedFixGuard(): void { repeatedFixes.clear(); }
  * E_UNKNOWN_TOOL の本文に「同じ fix を返した回数」を数え、2 回目以降は撃ち直しを誘わない文面へ置き換える(打ち切り)。
  * 鍵は「呼ばれた名前 + 先頭の fix」。同じ呼び出しがもう一度来た = 前回の fix では直っていない。
  */
-export function guardRepeatedFix(body: ErrorBody, requestedName: string, now: number = Date.now()): ErrorBody {
+export function guardRepeatedFix(body: ErrorBody, requestedName: string, now: number = Date.now(), scope: string = ""): ErrorBody {
   const head = body.fix?.find((f) => f.tool);
-  // 引数が違っても「同じ名前を同じ形で勧めた」なら同じ鍵(名前が通らない理由は引数と無関係)
-  const headName = head ? (head.tool === CALL_TOOL ? `${CALL_TOOL}:${(head.args as any)?.name}` : head.tool) : "-";
-  const key = `${requestedName.replace(/^dx12_/, "")}|${headName}`;
+  const isCallForm = head?.tool === CALL_TOOL || head?.tool === "dx12_call_guarded";
+  // 引数が違っても「同じ名前を同じ形で勧めた」なら同じ鍵(名前が通らない理由は引数と無関係)。scope は経路(SDK 直 / dx12_call)ごとに数えを分ける
+  const headName = head ? (isCallForm ? `${head.tool}:${(head.args as any)?.name}` : head.tool) : "-";
+  const key = `${scope}|${requestedName.replace(/^dx12_/, "")}|${headName}`;
   for (const [k, r] of repeatedFixes) if (now - r.at > REPEAT_WINDOW_MS) repeatedFixes.delete(k);
   const prev = repeatedFixes.get(key);
   const n = (prev?.n ?? 0) + 1;
@@ -265,7 +267,7 @@ export function guardRepeatedFix(body: ErrorBody, requestedName: string, now: nu
   repeatedFixes.set(key, { n, at: now });
   while (repeatedFixes.size > REPEAT_MAX_KEYS) { const oldest = repeatedFixes.keys().next().value; if (oldest === undefined) break; repeatedFixes.delete(oldest); }
   if (n < 2) return body;
-  const shown = head?.tool === CALL_TOOL ? `dx12_call {name:'${(head.args as any)?.name}'}` : head?.tool ?? "(なし)";
+  const shown = isCallForm ? `${head!.tool} {name:'${(head.args as any)?.name}'}` : head?.tool ?? "(なし)";
   body.message = `${body.message}(同じ呼び出しがもう一度来た)`;
   body.cause = `同じ修復案(${shown})を ${n} 回返している。前回の案では直っていないので、同じ呼び出しを撃ち直しても結果は変わらない`;
   body.retryable = false;
@@ -273,7 +275,24 @@ export function guardRepeatedFix(body: ErrorBody, requestedName: string, now: nu
     { tool: "dx12_tool_search", args: { query: requestedName.replace(/^dx12_/, "").replace(/_/g, " ") }, why: "名前を検索し直す(検索結果に無ければ、そのツールはこの環境に無い)" },
     { why: "ここで撃ち直しをやめる。検索しても見つからないときは、呼びたい操作と得られたエラーをユーザーに報告する" },
   ];
+  body.didYouMean = undefined;   // 打ち切りでは、撃ち直しを誘う候補も出さない
   body.details = { ...(body.details ?? {}), repeatedFix: n, giveUp: true };
+  return body;
+}
+
+/**
+ * E_UNKNOWN_TOOL の didYouMean から、今まさに失敗した名前そのものを外す(同じ名前の撃ち直しを誘わない)。
+ * 直接呼べない候補は残すが、details.didYouMeanVia に「dx12_call の name に渡す」と注記する。
+ */
+export function tidyUnknownToolSuggestions(body: ErrorBody, requestedName: string, isDirect: ((name: string) => boolean) | undefined): ErrorBody {
+  if (!body.didYouMean?.length) return body;
+  const bare = (s: string) => s.replace(/^dx12_/, "");
+  const rest = body.didYouMean.filter((n) => bare(n) !== bare(requestedName));
+  body.didYouMean = rest.length ? rest : undefined;
+  if (isDirect && rest.length) {
+    const viaCall = rest.filter((n) => !isDirect(n) && !isDirect("dx12_" + bare(n)));
+    if (viaCall.length) body.details = { ...(body.details ?? {}), didYouMeanVia: { tool: CALL_TOOL, names: viaCall, note: "直接は呼べない。dx12_call {name:'<名前>', args} で呼ぶ" } };
+  }
   return body;
 }
 

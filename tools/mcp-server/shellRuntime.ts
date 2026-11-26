@@ -11,7 +11,7 @@ import { ManifestStore } from "./manifest.ts";
 import { Catalog, CONDITIONAL_GUARDED, CONDITIONAL_WRITE, buildCatalog, type ParamDoc, type ToolDoc, type ToolEntry } from "./catalog.ts";
 import { CONSOLIDATED, CORE_GUARDED_TOOL, RENDER_SETTING_TARGETS, rewriteFixToCore, routeConsolidated, toCoreCall } from "./coreSpec.ts";
 import { SearchIndex } from "./search.ts";
-import { envelope, guardRepeatedFix, nearest, routeFixViaCall, type ErrorBody, type Fix } from "./errors.ts";
+import { envelope, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions, type ErrorBody, type Fix } from "./errors.ts";
 import { structureError } from "./structure.ts";
 import { validateAgainstParams, validateAgainstShape } from "./validate.ts";
 import { runDoctor } from "./doctor.ts";
@@ -273,11 +273,16 @@ export class ShellRuntime {
     fix.push({ tool: "dx12_tool_search", args: { query: bare.replace(/_/g, " ") }, why: "名前で検索する" });
     if (!near[0] && hits[0]) fix.push({ tool: hits[0], args, why: `意味の近い候補(確信度は低い。dx12_tool_describe で引数を確認してから使う)` });
     // ★直接呼べない名前(tools/list に無いツール・エンジンの method 名)は dx12_call の形で示す(BUG-14)。同じ案を 2 回返したら打ち切りの文面へ。
-    return guardRepeatedFix({
+    return guardRepeatedFix(tidyUnknownToolSuggestions({
       code: "E_UNKNOWN_TOOL", message: `ツール/メソッド '${name}' は無い`, cause: "名前の打ち間違いか、エンジンにまだ無い method",
-      didYouMean: dym, fix: routeFixViaCall(fix, (n) => this.isDirectlyCallable(n)), docs: "dx12_tool_search {query}",
+      didYouMean: dym, fix: routeFixViaCall(fix, (n) => this.isDirectlyCallable(n), (n) => this.fixVia(n)), docs: "dx12_tool_search {query}",
       details: { manifest: this.manifestInfo(), hint: "エンジンに method を足した直後なら、エンジンを再ビルド・再起動してからもう一度撃つ(MCP サーバの再起動は不要)。tools/list に無い名前は dx12_call {name:'<名前>', args} で呼ぶ" },
-    }, name);
+    }, name, (n) => this.isDirectlyCallable(n)), name);
+  }
+
+  /** 直接呼べない名前を包む実行口。core 面の guarded は dx12_call では通らないので dx12_call_guarded。 */
+  fixVia(name: string): string {
+    return this.deps.surface === "core" && this.catalog.resolve(name)?.effectClass === "guarded" ? CORE_GUARDED_TOOL : "dx12_call";
   }
 
   /** その名前が MCP の tools/list に出ている(= ツールとして直接呼べる)か。出ていないものは dx12_call の name に渡す。 */
@@ -425,7 +430,7 @@ export class ShellRuntime {
       let body: ErrorBody;
       const prebuilt = result ? (ERROR_BODY.get(result) as ErrorBody | undefined) : undefined;   // dx12_engine_* など、最初から構造化して返すツール
       if (prebuilt) body = { ...prebuilt };
-      else if (src) body = await structureError(src, { tool: ctxTool, args: callArgs, engine: this.deps.engine, suggestNames: () => this.catalog.names(), isDirect: (n) => this.isDirectlyCallable(n) });
+      else if (src) body = await structureError(src, { tool: ctxTool, args: callArgs, engine: this.deps.engine, suggestNames: () => this.catalog.names(), isDirect: (n) => this.isDirectlyCallable(n), routeVia: (n) => this.fixVia(n), noRepeatGuard: true });
       else {
         const msg = (result?.content ?? []).filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n");
         body = { code: "E_INVALID_PARAM", message: msg || `${doc.id} が失敗した`, retryable: false, fix: [{ tool: "dx12_tool_describe", args: { name: doc.id }, why: "引数と注意点を確認する" }] };
@@ -450,11 +455,14 @@ export class ShellRuntime {
           body.cause = "エンジンが古いか、この method を含まないビルド。名前の打ち間違いではない";
           body.retryable = false;
           body.didYouMean = undefined;
+          if (body.details) { delete (body.details as any).giveUp; delete (body.details as any).repeatedFix; delete (body.details as any).didYouMeanVia; }
           body.fix = [{ tool: "dx12_doctor", args: {}, why: "エンジンの版とマニフェストを確認する" }, { why: "エンジンを更新(または最新をビルド)して再起動する。MCP サーバ(Node)の再起動は要らない" }];
         }
       }
       // 撃ち直しの fix が tools/list に無いツール(full 面の dx12_sequence など)を指すなら dx12_call の形にする(BUG-14: 直接呼んで「ツールが無い」に戻らせない)
-      if (body.fix) body.fix = routeFixViaCall(body.fix, (n) => this.isDirectlyCallable(n));
+      if (body.fix) body.fix = routeFixViaCall(body.fix, (n) => this.isDirectlyCallable(n), (n) => this.fixVia(n));
+      // 最終コードが E_UNKNOWN_TOOL のときだけ「同じ fix の繰り返し」を数える(E_ENGINE_TOO_OLD に書き換わる呼び出しは数えない)
+      if (body.code === "E_UNKNOWN_TOOL") { tidyUnknownToolSuggestions(body, ctxTool ?? doc.id, (n) => this.isDirectlyCallable(n)); guardRepeatedFix(body, ctxTool ?? doc.id, Date.now(), "call"); }
       const late = this.deps.engine.drainLateResults();
       const env = envelope(body);
       if (late.length) env.meta = { lateResults: late };
