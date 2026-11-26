@@ -27,7 +27,7 @@ namespace dx12e::theme
 
 // ---- テーマ・バリアント（アイデンティティ候補。既定 = 現行）----
 // 下のトークン（Bg0 等）は【可変】。SetVariant() が案の表（ThemeVariants.h）から書き換える。
-// 起動引数 --theme-variant a|b|c（main.cpp）→ ImGuiManager::Initialize の前に SetVariant → ApplyStyle が ImGuiStyle へ流す。
+// 起動引数 --theme-variant a|b|c|graphite|g（main.cpp）→ ImGuiManager::Initialize の前に SetVariant → ApplyStyle が ImGuiStyle へ流す。
 // 実行中の切替は ImGuiManager::SetThemeVariant()（基準スタイルの作り直しまで行う）。
 inline Variant g_variant = Variant::Default;
 inline Variant CurrentVariant() { return g_variant; }

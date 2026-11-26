@@ -37,8 +37,12 @@ float Saturation(const ImVec4& c)
     return mx <= 0.0f ? 0.0f : (mx - mn) / mx;
 }
 
-const th::Variant kAll[] = { th::Variant::Default, th::Variant::B, th::Variant::C };
-const th::Variant kNew[] = { th::Variant::B, th::Variant::C };   // 既定以外（別テーマ）
+const th::Variant kAll[] = { th::Variant::Default, th::Variant::B, th::Variant::C, th::Variant::Graphite };
+const th::Variant kOld[] = { th::Variant::Default, th::Variant::B, th::Variant::C };
+
+// この target には ThemeGraphite.cpp が無いので、暫定スタブを登録する（未登録の SpecOf(Graphite) は abort する設計）。
+const th::Spec& GraphiteStub() { static const th::Spec s = th::detail::MakeGraphitePlaceholder(); return s; }
+const th::Variant kNew[] = { th::Variant::B, th::Variant::C, th::Variant::Graphite };   // 既定以外（別テーマ）
 
 void TestDefaultIsNeon()
 {
@@ -205,9 +209,19 @@ void TestSetVariantRoundTrip()
         CHECK(SameVec4(th::Chrome, p.bg1) && SameVec4(th::AccentDim2, p.selection) && SameVec4(th::FrameBg, p.inputBg));
         CHECK(SameVec4(th::TypeLight, p.typeLight) && SameVec4(th::Bad, p.bad));
         CHECK(!th::IsDefaultVariant());
+        const th::Extra& x = th::SpecOf(var).ext;
+        CHECK(SameVec4(th::NeedleDim, x.needleDim) && SameVec4(th::InLine, x.inLine) && SameVec4(th::Info, x.info));
+        CHECK(SameVec4(th::WarnText, x.warnText) && SameVec4(th::BadText, x.badText));
+        CHECK(SameVec4(th::AxisX, x.axisX) && SameVec4(th::AxisY, x.axisY) && SameVec4(th::AxisZ, x.axisZ));
     }
     th::SetVariant(th::Variant::Default);
     CHECK(th::IsDefaultVariant());
+    {   // 起動直後（= Default）の追加グローバルは SpecOf(Default).ext と一致
+        const th::Extra& x = th::SpecOf(th::Variant::Default).ext;
+        CHECK(SameVec4(th::NeedleDim, x.needleDim) && SameVec4(th::InLine, x.inLine) && SameVec4(th::Info, x.info));
+        CHECK(SameVec4(th::WarnText, x.warnText) && SameVec4(th::BadText, x.badText));
+        CHECK(SameVec4(th::AxisX, x.axisX) && SameVec4(th::AxisY, x.axisY) && SameVec4(th::AxisZ, x.axisZ));
+    }
     CHECK(SameVec4(th::Bg0, bg0) && SameVec4(th::Accent, acc) && SameVec4(th::Selection, sel));
     CHECK(SameVec4(th::Text, txt) && SameVec4(th::Chrome, chrome) && SameVec4(th::AccentDim2, dim));
 
@@ -241,8 +255,9 @@ void TestGraphiteShape()
     CHECK(std::string(th::VariantName(th::Variant::Graphite)) == "Graphite Gauge");
     for (th::Variant var : kAll)
     {
-        CHECK(th::SpecOf(var).gg == nullptr);
-        CHECK(th::SpecOf(var).m.fontBase == 16.0f && th::SpecOf(var).m.fontMono == 14.0f);
+        CHECK(th::SpecOf(var).gg == nullptr);   // スタブは gg = null（製品の登録関数だけが非 null を返す）
+        if (var != th::Variant::Graphite)
+            CHECK(th::SpecOf(var).m.fontBase == 16.0f && th::SpecOf(var).m.fontMono == 14.0f);
     }
     CHECK(th::SpecOf(th::Variant::Graphite).m.fontBase == 17.0f && th::SpecOf(th::Variant::Graphite).m.fontMono == 15.0f);
     th::SetVariant(th::Variant::Graphite);
@@ -260,7 +275,7 @@ void TestGraphiteShape()
     }
     CHECK(SameVec4(th::SpecOf(th::Variant::Default).ext.axisX, th::Hex(0xE25454)));
     CHECK(SameVec4(th::SpecOf(th::Variant::C).ext.axisX, th::Hex(0xB87672)));
-    CHECK(!th::IsGraphiteRegistered());   // この target には ThemeGraphite.cpp が無い
+    CHECK(th::IsGraphiteRegistered());    // main() でスタブを登録済み
     // 線幅の規則（DPI 1.0 / 1.25 / 1.5 / 1.75 / 2.0）
     const float scales[] = { 1.0f, 1.25f, 1.5f, 1.75f, 2.0f };
     const float hair[]   = { 1, 1, 1, 1, 2 };
@@ -280,6 +295,7 @@ void TestGraphiteShape()
 
 int main()
 {
+    th::g_graphiteSpecFn = &GraphiteStub;
     TestDefaultIsNeon();
     TestParse();
     TestContrast();

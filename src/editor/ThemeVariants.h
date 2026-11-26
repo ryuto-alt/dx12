@@ -17,6 +17,9 @@
 // ★色の値を増やす時は Palette に足し、3 つの表（Default / B / C）と theme::SetVariant に配線する。
 //   単体テスト（tests/theme_variant_test.cpp）が「Default の採用値の固定」「各案の文字コントラストが AA」を検査する。
 
+#include <cstdio>
+#include <cstdlib>
+
 #pragma warning(push)
 #pragma warning(disable: 4201)
 #include <imgui.h>
@@ -165,10 +168,14 @@ struct Spec
 };
 
 // Graphite の Spec の提供口。生成ヘッダ（ThemeGraphite.gen.h）は重ヘッダから include しないので、
-// ThemeGraphite.cpp（A2）が自分の Spec を返す関数をここへ登録する。未登録の間は SpecOf(Graphite) が
-// 旧 Default 由来の暫定値を返す（既定の選択は変えないので通常は呼ばれない）。
-// ★申し送り（A2）: (1) main.cpp の --theme-variant 解釈（SetVariant）より前に必ず登録すること（後だと可変グローバルが暫定値のまま）。
-//   (2) 登録済みかは IsGraphiteRegistered() で検査できる。DX12Engine の起動直後に assert / ログで確認すること。
+// ThemeGraphite.cpp（A2）が自分の Spec を返す関数をここへ登録する。
+// ★未登録のまま SpecOf(Graphite) / SetVariant(Graphite) が呼ばれたら、暫定値へ黙って落とさず stderr に出して abort する
+//   （登録漏れで既定の見た目が黙ってネオンに戻り、UI ゴールデンに焼き込まれるのを防ぐ）。
+// ★申し送り（A2）: (1) main.cpp の --theme-variant 解釈（SetVariant）より前に必ず登録すること（main.cpp の担当レーンはメインが決める）。
+//   登録を静的ライブラリの自己登録で書かない（リンカがその TU を落とす）。起動時に明示的な関数呼び出しで登録すること。
+//   (2) 登録済みかは IsGraphiteRegistered() で検査できる。
+// ★注意: Graphite の Spec::gg は ThemeGraphite.cpp の登録関数が返す Spec では非 null だが、登録の無い環境（単体テスト等）の
+//   スタブは null のことがある。gg を参照するコード（deco::* / ビューポート / タイムライン）は必ず null を検査すること。
 inline const Spec& (*g_graphiteSpecFn)() = nullptr;
 inline bool IsGraphiteRegistered() { return g_graphiteSpecFn != nullptr; }
 
@@ -208,7 +215,6 @@ inline Spec MakeBase()
     m.windowBorder = 1.0f; m.childBorder = 1.0f; m.popupBorder = 1.0f; m.frameBorder = 1.0f;
     m.tabBarBorder = 1.0f; m.tabOverline = 2.0f; m.dockSeparator = 3.0f;
     m.fontBase = 16.0f; m.fontMono = 14.0f;
-
 
     Deco& d = s.deco;
     d.glow = 0.0f; d.hoverTint = 0.0f; d.easeSec = 0.0f;
@@ -366,23 +372,34 @@ inline Spec CompatExtra(Spec s, bool mutedAxes)
 
 } // namespace detail
 
-// 旧 Default 由来の暫定 Graphite（フォントだけ Graphite 値）。g_graphiteSpecFn 未登録のときだけ使う。
+namespace detail
+{
+// 旧 Default 由来の暫定 Graphite（フォントだけ Graphite 値）。単体テストが登録するスタブ用。製品のコードは使わない。
 inline Spec MakeGraphitePlaceholder()
 {
-    Spec s = detail::CompatExtra(detail::MakeDefault(), false);
+    Spec s = CompatExtra(MakeDefault(), false);
     s.m.fontBase = 17.0f; s.m.fontMono = 15.0f;
     return s;
 }
+[[noreturn]] inline void FailGraphiteUnregistered()
+{
+    std::fputs("FATAL: theme::Variant::Graphite が選ばれたが ThemeGraphite の Spec が未登録（g_graphiteSpecFn == nullptr）", stderr);
+    std::fputc(10, stderr);
+    std::fflush(stderr);
+    std::abort();
+}
+} // namespace detail
 
 inline const Spec& SpecOf(Variant v)
 {
     static const Spec kDefault = detail::CompatExtra(detail::MakeDefault(), false);
     static const Spec kB = detail::CompatExtra(detail::MakeB(), false);
     static const Spec kC = detail::CompatExtra(detail::MakeC(), true);
-    static const Spec kGraphitePlaceholder = MakeGraphitePlaceholder();
     switch (v)
     {
-    case Variant::Graphite: return g_graphiteSpecFn ? g_graphiteSpecFn() : kGraphitePlaceholder;
+    case Variant::Graphite:
+        if (!g_graphiteSpecFn) detail::FailGraphiteUnregistered();
+        return g_graphiteSpecFn();
     case Variant::B: return kB;
     case Variant::C: return kC;
     default:         return kDefault;
