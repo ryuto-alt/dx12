@@ -7,7 +7,7 @@
 
 import type { EngineClient, EngineCallError } from "./engineClient.ts";
 import type { ErrorBody, ErrorCodeName, Fix } from "./errors.ts";
-import { ERROR_CODES, classifyCode, extractValidValues, guardRepeatedFix, nearest, routeFixViaCall } from "./errors.ts";
+import { ERROR_CODES, classifyCode, extractValidValues, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions } from "./errors.ts";
 import { launchFixes } from "./doctor.ts";
 
 export type StructureCtx = {
@@ -19,6 +19,10 @@ export type StructureCtx = {
   suggestNames?: () => string[];
   /** その名前が MCP の tools/list に出ている(直接呼べる)か。無いものを勧めるときは dx12_call の形に包む(BUG-14)。省略時は包まない。 */
   isDirect?: (name: string) => boolean;
+  /** 直接呼べない名前を包む実行口(既定 dx12_call。core 面の guarded は dx12_call_guarded) */
+  routeVia?: (name: string) => string;
+  /** true なら E_UNKNOWN_TOOL の打ち切り判定をここでは数えない(呼び出し側が最終コードで数える) */
+  noRepeatGuard?: boolean;
   /** 名前の候補を引く読み取り(テストで差し替える)。省略時は engine.call。 */
   lookup?: (method: string, params: Record<string, unknown>) => Promise<any>;
 };
@@ -173,8 +177,9 @@ export async function structureError(e: any, ctx: StructureCtx = {}): Promise<Er
         const fixes: Fix[] = [];
         if (body.didYouMean?.[0]) fixes.push({ tool: body.didYouMean[0].startsWith("dx12_") ? body.didYouMean[0] : "dx12_" + body.didYouMean[0], args, why: `'${bad}' に最も近い名前で撃ち直す` });
         fixes.push({ tool: "dx12_tool_search", args: { query: bare(bad).replace(/_/g, " ") }, why: "名前で検索する" });
-        body.fix = routeFixViaCall([...fixes, ...(body.fix ?? [])], ctx.isDirect);
-        guardRepeatedFix(body, bad);
+        body.fix = routeFixViaCall([...fixes, ...(body.fix ?? [])], ctx.isDirect, ctx.routeVia);
+        tidyUnknownToolSuggestions(body, bad, ctx.isDirect);
+        if (!ctx.noRepeatGuard) guardRepeatedFix(body, bad);
       }
     } else if (code === "E_ENGINE_UNREACHABLE") {
       const d = (body.details ?? {}) as any;

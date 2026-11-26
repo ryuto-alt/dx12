@@ -12,7 +12,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { startMockEngine } from "./mockEngine.ts";
-import { DIALECT_PATTERN, ERROR_CODES, isErrorCodeName, resetRepeatedFixGuard } from "./errors.ts";
+import { DIALECT_PATTERN, ERROR_CODES, guardRepeatedFix, isErrorCodeName, resetRepeatedFixGuard, routeFixViaCall, tidyUnknownToolSuggestions } from "./errors.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let failed = 0;
@@ -73,6 +73,8 @@ for (const c of cases.cases) {
     mock.removeMethod("mock_gone");
   }
   if (c.call.name === "mock_slow") mock.state.hang.add("mock_slow");
+  resetRepeatedFixGuard();   // ケース間で「同じ fix の繰り返し」の数えを引き継がない(順序に依存させない)
+  for (let i = 0; i < (c.prime ?? 0); i++) await shell.call(c.call);   // prime: 先に同じ呼び出しを n 回撃っておく(打ち切りの検証)
   const res = await shell.call(c.call);
   const b = parse(res);
   allBodies.push(b);
@@ -89,9 +91,12 @@ for (const c of cases.cases) {
   // BUG-14: 呼べない名前(tools/list に無いツール)を勧める fix は dx12_call の形で、同じ fix を 2 回返したら打ち切りの文面にする
   if (e.giveUp !== undefined && (b.details?.giveUp === true) !== e.giveUp) problems.push(`details.giveUp=${b.details?.giveUp} (期待 ${e.giveUp})`);
   if (e.giveUp === true) {
+    if (b.didYouMean?.length) problems.push(`打ち切りなのに didYouMean が残っている: ${JSON.stringify(b.didYouMean)}`);
     if (!/撃ち直しをやめる/.test(JSON.stringify(b.fix))) problems.push("打ち切りの文言が fix に無い");
     if (b.fix?.some((f: any) => f.tool && f.tool !== "dx12_tool_search")) problems.push(`打ち切りなのに撃ち直しを誘う fix が残っている: ${JSON.stringify(b.fix)}`);
   }
+  if (e.code === "E_UNKNOWN_TOOL" && c.call.name && b.didYouMean?.some((n: string) => n.replace(/^dx12_/, "") === String(c.call.name).replace(/^dx12_/, ""))) problems.push("didYouMean に失敗した名前そのものが入っている");
+  if (e.didYouMeanVia && !b.details?.didYouMeanVia?.names?.includes(e.didYouMean0)) problems.push(`直接呼べない候補 ${e.didYouMean0} が details.didYouMeanVia に注記されていない`);
   if (e.code === "E_UNKNOWN_TOOL") for (const f of b.fix ?? []) if (f.tool && f.tool !== "dx12_call" && !shell.isDirectlyCallable(f.tool)) problems.push(`直接呼べない名前 ${f.tool} を、dx12_call に包まずに勧めている`);
   if (e.fixArgs) for (const [k, v] of Object.entries(e.fixArgs)) if (JSON.stringify(b.fix?.[0]?.args?.[k]) !== JSON.stringify(v)) problems.push(`fix[0].args.${k}=${JSON.stringify(b.fix?.[0]?.args?.[k])} (期待 ${JSON.stringify(v)})`);
   if (e.validValues) for (const v of e.validValues) if (!b.validValues?.includes(v)) problems.push(`validValues に ${v} が無い`);
@@ -211,6 +216,53 @@ for (const c of downCases) {
   const dd: any = parse(await shell.doctor({ deep: true }));
   check("doctor(deep): 候補ポートを広く走査する", dd.ports.candidates.length > d.ports.candidates.length, [dd.ports.candidates.length, d.ports.candidates.length]);
   (shell.deps as any).doctorHooks = undefined;
+}
+
+console.log("[5b] BUG-14: routeFixViaCall / guardRepeatedFix / tidyUnknownToolSuggestions");
+{
+  const direct = (n: string) => n === "dx12_ping" || n === "dx12_call";
+  const r = routeFixViaCall([
+    { tool: "dx12_ping", args: {}, why: "a" }, { tool: "dx12_sequence", args: { op: "list" }, why: "b" },
+    { tool: "dx12_call", args: { name: "x" }, why: "c" }, { tool: "dx12_call_guarded", args: { name: "y" }, why: "d" }, { why: "cmd" },
+  ], direct)!;
+  check("routeFixViaCall: 直接呼べる名前はそのまま", r[0].tool === "dx12_ping", r[0]);
+  check("routeFixViaCall: 直接呼べない名前は dx12_call {name, args} に包む", r[1].tool === "dx12_call" && (r[1].args as any).name === "dx12_sequence" && (r[1].args as any).args.op === "list", r[1]);
+  check("routeFixViaCall: dx12_call / dx12_call_guarded / tool 無しはそのまま", r[2].tool === "dx12_call" && (r[2].args as any).name === "x" && r[3].tool === "dx12_call_guarded" && !r[4].tool, r);
+  check("routeFixViaCall: 実行口を選べる(core 面の guarded)", routeFixViaCall([{ tool: "dx12_git_push", args: {} }], direct, () => "dx12_call_guarded")![0].tool === "dx12_call_guarded", null);
+  check("routeFixViaCall: isDirect 無し / fix 無しはそのまま", routeFixViaCall(undefined, direct) === undefined && routeFixViaCall([{ tool: "dx12_sequence" }], undefined)![0].tool === "dx12_sequence", null);
+
+  const mk = () => ({ code: "E_UNKNOWN_TOOL", message: "m", fix: [{ tool: "dx12_call", args: { name: "dx12_sequence", args: {} } }, { tool: "dx12_tool_search", args: { query: "sequence" } }], didYouMean: ["dx12_sequence"] } as any);
+  const T0 = 1_000_000;
+  resetRepeatedFixGuard();
+  const a1 = guardRepeatedFix(mk(), "dx12_sequence", T0);
+  check("guardRepeatedFix: 1 回目は打ち切らない", a1.details?.giveUp === undefined && a1.retryable !== false, a1);
+  const a2 = guardRepeatedFix(mk(), "dx12_sequence", T0 + 1000);
+  check("guardRepeatedFix: 2 回目は打ち切り(giveUp / retryable:false / didYouMean 空)", a2.details?.giveUp === true && a2.retryable === false && a2.didYouMean === undefined, a2);
+  const a3 = guardRepeatedFix(mk(), "dx12_sequence", T0 + 1000 + 11 * 60 * 1000);
+  check("guardRepeatedFix: 10 分たつと数えが失効する", a3.details?.giveUp === undefined, a3);
+  const s1 = guardRepeatedFix(mk(), "dx12_sequence", T0 + 2000, "a");
+  check("guardRepeatedFix: scope が違えば別に数える", s1.details?.giveUp === undefined, s1);
+  resetRepeatedFixGuard();
+  guardRepeatedFix(mk(), "name_0", T0);
+  for (let i = 1; i <= 130; i++) guardRepeatedFix(mk(), `name_${i}`, T0);
+  const ev = guardRepeatedFix(mk(), "name_0", T0);
+  check("guardRepeatedFix: 128 件を超えると古い鍵から捨てる(name_0 は数え直し)", ev.details?.giveUp === undefined, ev);
+  resetRepeatedFixGuard();
+
+  const t = tidyUnknownToolSuggestions({ code: "E_UNKNOWN_TOOL", message: "m", didYouMean: ["dx12_sequence", "sequence_author", "dx12_ping"] } as any, "dx12_sequence", direct);
+  check("tidyUnknownToolSuggestions: 失敗した名前を外し、直接呼べない候補を注記する", JSON.stringify(t.didYouMean) === JSON.stringify(["sequence_author", "dx12_ping"]) && (t.details as any)?.didYouMeanVia?.names?.[0] === "sequence_author", t);
+  const t2 = tidyUnknownToolSuggestions({ code: "E_UNKNOWN_TOOL", message: "m", didYouMean: ["sequence"] } as any, "dx12_sequence", direct);
+  check("tidyUnknownToolSuggestions: 候補が自分だけなら didYouMean を空にする", t2.didYouMean === undefined, t2);
+}
+
+{
+  // core 面: 統合ツールの fix が dx12_call {name:<legacy>} に包まれても core の形へ戻る(routeFixViaCall の後で rewriteFixToCore)
+  const { rewriteFixToCore } = await import("./coreSpec.ts");
+  const wrapped = routeFixViaCall([{ tool: "dx12_set_ssao", args: { enabled: true }, why: "x" }], () => false)!;
+  const core = rewriteFixToCore(wrapped as any, "dx12_set_ssao")![0];
+  check("core 面: dx12_call {name:'dx12_set_ssao'} は dx12_set_render_settings の形へ戻る", core.tool === "dx12_set_render_settings" && (core.args as any).target === "ssao", core);
+  const plain = rewriteFixToCore([{ tool: "dx12_set_ssao", args: { enabled: true } }] as any, "dx12_set_ssao")![0];
+  check("core 面: 包まれていない旧名も従来どおり書き換える", plain.tool === "dx12_set_render_settings", plain);
 }
 
 console.log("[6] 語調 lint");
