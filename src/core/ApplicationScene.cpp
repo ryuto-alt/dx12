@@ -2039,6 +2039,18 @@ void Application::EnterEditorMode()
         if (m_scene->GetNavMesh().Empty() && !savedNav.Empty())
             m_scene->GetNavMesh() = std::move(savedNav);
 
+        // Undo 履歴の整理は Lua 状態を壊す前に済ませる（Play 中に積まれたエントリが sol の環境などを
+        // 握ったまま lua_State が先に消えると、後始末が死んだ状態を触る。防御のための順序）。
+        // W05-11: id が保たれたなら Undo 履歴を残し、Play 中に積まれた分だけ捨てる。保てなかったときだけ従来どおり消す。
+        McpUndoAutoClose("play");
+        if (idsPreserved)
+            m_editorCtx->undoSystem.TruncateTo(m_editorCtx->playUndoSeq, m_editorCtx->playHumanSeq);
+        else
+        {
+            Logger::Warn("Stop: エンティティ id を復元できなかったため Undo 履歴を破棄しました");
+            m_editorCtx->undoSystem.Clear();
+        }
+
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
                                    m_camera.get(), m_audioSystem.get(),
@@ -2060,14 +2072,7 @@ void Application::EnterEditorMode()
     // W05-11: id が保たれたなら Undo 履歴を残し、Play 中に積まれた分だけ捨てる。選択は GUID から張り直す。
     //   保てなかった（id の衝突・ディスクからの再読込）ときだけ従来どおり履歴を消す。
     //   注意: Play 中に 1 件でも Push されると redo 側は消える（Play 前の redo は Stop 後に戻らない）。
-    McpUndoAutoClose("play");
-    if (idsPreserved)
-        m_editorCtx->undoSystem.TruncateTo(m_editorCtx->playUndoSeq, m_editorCtx->playHumanSeq);
-    else
-    {
-        Logger::Warn("Stop: エンティティ id を復元できなかったため Undo 履歴を破棄しました");
-        m_editorCtx->undoSystem.Clear();
-    }
+    // （Undo 履歴の整理は m_scriptEngine->Shutdown() の前に済ませてある）
     // 選択は GUID から張り直す（id が保てた場合も保てなかった場合も同じ。後者でも選択は失わない）。
     m_editorCtx->ClearSelection();
     for (uint64_t g : m_editorCtx->playSelectionGuids)

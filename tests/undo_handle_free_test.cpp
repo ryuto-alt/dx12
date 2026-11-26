@@ -222,6 +222,168 @@ int main()
         CHECK(!undo.CanUndo());
     }
 
+    std::puts("section 4");
+    // ── Delete を Play 前に積み、Stop をまたいで Undo / Redo（外部親の id が再読込で保たれること）──
+    {
+        Scene scene;
+        auto& reg = scene.GetRegistry();
+        const entt::entity parent = Add(scene, "Parent", 0xE1);
+        const entt::entity kid = Add(scene, "Kid", 0xE2);
+        const entt::entity kidChild = Add(scene, "KidChild", 0xE3);
+        reg.get<Transform>(kid).parent = parent;
+        reg.get<Transform>(kidChild).parent = kid;
+        UndoSystem undo;
+
+        // kid のサブツリー（kid + kidChild）を削除
+        std::vector<DeletedEntityRecord> recs;
+        recs.push_back({ SceneSerializer::SerializeEntity(scene, kid, ""), -1 });
+        recs.push_back({ SceneSerializer::SerializeEntity(scene, kidChild, ""), 0 });
+        reg.destroy(kidChild);
+        reg.destroy(kid);
+        undo.PushCommand(std::make_unique<DeleteEntityCommand>(&scene, "", std::move(recs),
+            std::vector<entt::entity>{ kid, kidChild }, parent));
+        CHECK(reg.view<NameTag>().size() == 1);
+
+        // Play → Stop
+        const uint64_t ps = undo.PushSeq(), hs = undo.LastHumanEditSeq();
+        const std::string snap = SceneSerializer::SaveToString(scene, "", true);
+        CHECK(StopRestore(scene, snap));
+        undo.TruncateTo(ps, hs);
+        CHECK(undo.UndoDepth() == 1);
+        CHECK(reg.valid(parent));
+
+        undo.Undo();
+        CHECK(reg.view<NameTag>().size() == 3);
+        const entt::entity k2 = FindEntityByGuid(reg, 0xE2);
+        const entt::entity c2 = FindEntityByGuid(reg, 0xE3);
+        CHECK(k2 != entt::null && c2 != entt::null);
+        CHECK(reg.get<Transform>(k2).parent == parent);          // 外部親が戻る
+        CHECK(reg.get<Transform>(c2).parent == k2);              // 内側の親子も戻る
+        undo.Redo();
+        CHECK(reg.view<NameTag>().size() == 1);
+        undo.Undo();
+        CHECK(reg.view<NameTag>().size() == 3);
+        undo.Redo();
+        CHECK(!undo.CanRedo());
+    }
+
+    std::puts("section 5");
+    // ── Prefab 生成 / Revert（親 + 子のサブツリー）を Stop の前後でまたぐ。SpawnPrefabCommand / PrefabRevertCommand は
+    //    エンティティと JSON しか持たないので、実プレハブ資産が無くてもサブツリーで確かめられる。
+    //    （2 つを同じ履歴に積むと、Revert がサブツリーを作り直して id が変わり、生成側の古い id が効かない。
+    //      これは W05-11 以前からのコマンド設計の弱点なので、別々の履歴で確かめる）──
+    for (int variant = 0; variant < 2; ++variant)
+    {
+        Scene scene;
+        auto& reg = scene.GetRegistry();
+        const entt::entity holder = Add(scene, "Holder", 0xF0);
+        const entt::entity root = Add(scene, "PrefabRoot", 0xF1);
+        const entt::entity child = Add(scene, "PrefabChild", 0xF2);
+        reg.get<Transform>(root).parent = holder;
+        reg.get<Transform>(child).parent = root;
+        reg.get<Transform>(child).position = { 1.0f, 2.0f, 3.0f };
+        UndoSystem undo;
+        if (variant == 0)
+        {
+            undo.PushCommand(std::make_unique<SpawnPrefabCommand>(&scene, "", std::vector<entt::entity>{ root, child }));
+        }
+        else
+        {
+            // Revert: before = 変更前のサブツリー JSON、after = 今のサブツリー（子の位置が違う）
+            const std::string beforeJson = SceneSerializer::SerializeSubtree(scene, root, "");
+            reg.get<Transform>(child).position = { 9.0f, 9.0f, 9.0f };
+            undo.PushCommand(std::make_unique<PrefabRevertCommand>(&scene, "", beforeJson,
+                std::vector<entt::entity>{ root, child }, holder));
+        }
+
+        const uint64_t ps = undo.PushSeq(), hs = undo.LastHumanEditSeq();
+        const std::string snap = SceneSerializer::SaveToString(scene, "", true);
+        CHECK(StopRestore(scene, snap));
+        undo.TruncateTo(ps, hs);
+        CHECK(undo.UndoDepth() == 1);
+
+        if (variant == 0)
+        {
+            undo.Undo();   // 生成を戻す
+            CHECK(reg.view<NameTag>().size() == 1);
+            undo.Redo();   // JSON から再生成（外部親 holder を張り直す）
+            CHECK(reg.view<NameTag>().size() == 3);
+            const entt::entity r = FindEntityByGuid(reg, 0xF1);
+            const entt::entity c = FindEntityByGuid(reg, 0xF2);
+            CHECK(r != entt::null && c != entt::null);
+            CHECK(reg.get<Transform>(r).parent == holder && reg.get<Transform>(c).parent == r);
+            undo.Undo(); undo.Redo();
+            CHECK(reg.view<NameTag>().size() == 3);
+        }
+        else
+        {
+            undo.Undo();   // Revert を戻す → before のサブツリー（位置 1,2,3）
+            {
+                const entt::entity c = FindEntityByGuid(reg, 0xF2);
+                const entt::entity r = FindEntityByGuid(reg, 0xF1);
+                CHECK(c != entt::null && r != entt::null && reg.get<Transform>(c).position.x == 1.0f);
+                CHECK(reg.get<Transform>(r).parent == holder && reg.get<Transform>(c).parent == r);
+            }
+            undo.Redo();   // Revert（位置 9,9,9）
+            {
+                const entt::entity c = FindEntityByGuid(reg, 0xF2);
+                CHECK(c != entt::null && reg.get<Transform>(c).position.x == 9.0f);
+            }
+            undo.Undo();
+            CHECK(reg.view<NameTag>().size() == 3);
+        }
+    }
+
+    std::puts("section 6");
+    // ── 実行時状態を持つ他の型の特殊化 ──
+    {
+        AudioSource a; a.volume = 0.5f; a.runtimeSlot = 7; a.startedThisPlay = true;
+        const AudioSource ac = UndoValueTraits<AudioSource>::Capture(a);
+        CHECK(ac.runtimeSlot == -1 && !ac.startedThisPlay && ac.volume == 0.5f);
+        AudioSource live; live.runtimeSlot = 3; live.startedThisPlay = true; live.volume = 1.0f;
+        UndoValueTraits<AudioSource>::Merge(live, ac);
+        CHECK(live.volume == 0.5f && live.runtimeSlot == 3 && live.startedThisPlay);
+
+        CharacterController cc; cc.mass = 5.0f; cc._registered = true; cc._grounded = true;
+        const CharacterController ccc = UndoValueTraits<CharacterController>::Capture(cc);
+        CHECK(!ccc._registered && !ccc._grounded && ccc.mass == 5.0f);
+        CharacterController lc; lc._registered = true; lc._grounded = true; lc.mass = 1.0f;
+        UndoValueTraits<CharacterController>::Merge(lc, ccc);
+        CHECK(lc.mass == 5.0f && lc._registered && lc._grounded);
+
+        NetworkIdentity ni; ni.interestRadius = 4.0f; ni._netId = 99; ni._owner = 2; ni._isLocalOwner = true;
+        const NetworkIdentity nc = UndoValueTraits<NetworkIdentity>::Capture(ni);
+        CHECK(nc._netId == 0 && nc._owner == 0 && !nc._isLocalOwner && nc.interestRadius == 4.0f);
+        NetworkIdentity ln; ln._netId = 5; ln.interestRadius = 1.0f;
+        UndoValueTraits<NetworkIdentity>::Merge(ln, nc);
+        CHECK(ln.interestRadius == 4.0f && ln._netId == 5);
+
+        FoliageLayer fl; fl.cullDistance = 123.0f;
+        int dummy = 0;
+        fl._diskSet = &dummy;
+        const FoliageLayer fc = UndoValueTraits<FoliageLayer>::Capture(fl);
+        CHECK(fc._diskSet == nullptr && fc.cullDistance == 123.0f);
+        FoliageLayer lf; int other = 0; lf._diskSet = &other; lf.cullDistance = 1.0f;
+        UndoValueTraits<FoliageLayer>::Merge(lf, fc);
+        CHECK(lf.cullDistance == 123.0f && lf._diskSet == &other);
+
+        // LuaScript: started / loadError / errorMessage も生きている側のまま（env と一組）
+        LuaScript ls; ls.scriptPath = "x.lua"; ls.started = true; ls.loadError = true; ls.errorMessage = "boom";
+        const LuaScript lc2 = UndoValueTraits<LuaScript>::Capture(ls);
+        CHECK(!lc2.started && !lc2.loadError && lc2.errorMessage.empty());
+        LuaScript live2; live2.started = true; live2.loadError = false; live2.errorMessage = "live";
+        UndoValueTraits<LuaScript>::Merge(live2, lc2);
+        CHECK(live2.scriptPath == "x.lua" && live2.started && !live2.loadError && live2.errorMessage == "live");
+
+        // MeshRenderer は純データから付け直せない（Add / Remove は static_assert で禁止）
+        static_assert(!UndoValueTraits<MeshRenderer>::kSupportsEmplace);
+        // MeshRenderer の Merge は vgAutoPath を生きている側のまま、_remapKey は再解決へ
+        MeshRenderer mlive; mlive.vgAutoPath = "live.vgeo"; mlive._remapKey = 5;
+        MeshRenderer mst; mst.vgAutoPath = "stored.vgeo";
+        UndoValueTraits<MeshRenderer>::Merge(mlive, UndoValueTraits<MeshRenderer>::Capture(mst));
+        CHECK(mlive.vgAutoPath == "live.vgeo" && mlive._remapKey == 0);
+    }
+
     std::printf("undo_handle_free_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

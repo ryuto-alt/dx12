@@ -357,6 +357,9 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     IM_CHECK(reg.valid(box) && reg.all_of<MeshRenderer>(box));
     if (!reg.valid(box) || !reg.all_of<MeshRenderer>(box)) break;
     IM_CHECK(!reg.get<MeshRenderer>(box).meshes.empty());   // Stop で作り直された Mesh が付いている
+    // Stop をまたいだ後も、Play 前の編集は残っている（Undo 前の状態）
+    IM_CHECK(reg.get<MeshRenderer>(box).overrideMetallic == 0.75f);
+    IM_CHECK(reg.get<Transform>(box).position.x == trBefore.position.x + 5.0f);
 
     LogStep(ctx, "Ctrl+Z を 1 回ずつ: マテリアル → 位置 → Box が戻る / 消える（クラッシュしない）");
     ctx->SetRef("//$FOCUSED");
@@ -368,6 +371,36 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(reg.get<Transform>(box).position.x == trBefore.position.x);
+
+    LogStep(ctx, "Ctrl+Y: 位置 → マテリアルが戻る（Scene が所有する実メッシュのまま。クラッシュしない）");
+    ctx->KeyPress(ImGuiKey_Y | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<Transform>(box).position.x == trBefore.position.x + 5.0f);
+    ctx->KeyPress(ImGuiKey_Y | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<MeshRenderer>(box).overrideMetallic == 0.75f);
+    IM_CHECK(reg.get<MeshRenderer>(box).overrideRoughness == 0.25f);
+    IM_CHECK(!reg.get<MeshRenderer>(box).meshes.empty());
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<Transform>(box).position.x == trBefore.position.x);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.view<NameTag>().size() == before);
+
+    LogStep(ctx, "Ctrl+Y: Box の生成が戻り、新しい Mesh が付く");
+    ctx->KeyPress(ImGuiKey_Y | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.view<NameTag>().size() == before + 1);
+    {
+        bool found = false;
+        for (auto e : reg.view<NameTag, MeshRenderer>())
+            if (std::find(existing.begin(), existing.end(), e) == existing.end() && !reg.get<MeshRenderer>(e).meshes.empty())
+                found = true;
+        IM_CHECK(found);
+    }
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(reg.view<NameTag>().size() == before);
