@@ -698,6 +698,14 @@ if(MSVC)
     target_compile_definitions(SplashCalibrateEventsTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME SplashCalibrateEventsTests COMMAND SplashCalibrateEventsTests)
+# 起動画面 Graphite Gauge の動きの純ロジック（W1-BD2。core/SplashGaugeMotion.h）。ヘッダオンリー・GPU 不要。
+add_executable(SplashGaugeMotionTests splash_gauge_motion_test.cpp)
+target_include_directories(SplashGaugeMotionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SplashGaugeMotionTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(SplashGaugeMotionTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME SplashGaugeMotionTests COMMAND SplashGaugeMotionTests)
 # tools/gen_boot_sound_calibrate.py: --check-assets は標準ライブラリだけ（コミット済みの資産の検査）。
 # --check は再合成（numpy が要る。tools/requirements-audio.txt）。numpy が無い python では登録しない（警告ではなく STATUS。標準の環境には numpy が無い）
 find_package(Python3 COMPONENTS Interpreter)
