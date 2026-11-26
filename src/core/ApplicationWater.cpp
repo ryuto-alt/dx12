@@ -6,6 +6,7 @@
 //   WaterActive() / waterPass で先に弾くので、未使用シーンの描画コマンドは 1 命令も変わらない（決定論スクショ差分 0）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "renderer/ShadingSettings.h"
 #include "renderer/ViewDesc.h"
 #include "renderer/water/WaterRenderer.h"
 
@@ -40,7 +41,7 @@ bool Application::EnsureWaterRenderer()
     d.sceneColorFormat = appdetail::kSceneColorFormat;
     std::string err;
     m_waterPhysApplied = (m_lightingUnitsApplied == 1);
-    if (!r->Initialize(d, &err) || !r->RecreatePipelines(m_waterPhysApplied))
+    if (!r->Initialize(d, &err) || !r->RecreatePipelines(m_waterPhysApplied, m_scene && m_scene->GetShadingSettings().shadingRevision == 2))
     {
         Logger::Warn("水: 初期化に失敗したので無効にする（{}）。WaterBody は描かれない", err);
         m_waterUnavailable = true;

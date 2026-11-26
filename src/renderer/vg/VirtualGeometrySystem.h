@@ -416,6 +416,10 @@ public:
     bool GetAssetMaterialsGpu(uint32_t id, std::vector<VgMaterialGpu>& out) const;
     bool DrawGBuffer(const GBufferDesc& d);
     bool DrawResolve(const ResolveDesc& d);
+    // shadingRevision（FU-E-25）。v2 = true で VgResolveV2_PS.cso を選ぶ（無ければ警告して V1 へ縮退）。GPU が止まっているときだけ呼ぶこと。
+    bool SetShadingV2(bool v2);
+    bool ShadingV2Requested() const { return m_shadingV2Requested; }
+    int  V2PsoCount() const { return (m_resolvePsIsV2 && ResolveSupported()) ? 1 : 0; }   // resolve の PSO は初回の描画で作る（PS が V2 なら 1）
     bool ResolveSupported() const { return m_rasterOk && m_extHeap && !m_bcResolveVs.empty() && !m_bcResolvePs.empty(); }
     bool UsesExternalHeap() const { return m_extHeap; }
     uint32_t DescriptorsInUse() const;             // VG が確保しているディスクリプタ数（固定領域 + アセット）
@@ -519,6 +523,9 @@ private:
     std::unordered_map<uint32_t, KeyedMat> m_keyedMats;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoSort, m_psoGBuffer, m_psoResolve;
     std::vector<uint8_t> m_bcGbVs, m_bcGbPs, m_bcResolveVs, m_bcResolvePs;
+    bool m_shadingV2Requested = false;   // Shutdown では戻さない（シーンの shadingRevision の写し）
+    bool m_resolvePsIsV2 = false;        // m_bcResolvePs が V2 の .cso
+    bool LoadResolvePs();
     ID3D12RootSignature* m_psoResolveRs = nullptr;
     DXGI_FORMAT m_psoResolveFormat = DXGI_FORMAT_UNKNOWN;
     DXGI_FORMAT m_psoGbFormats[2] = {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN};

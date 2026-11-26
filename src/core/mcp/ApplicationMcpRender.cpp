@@ -217,16 +217,17 @@ void Application::RegisterMcpRenderMethods()
     McpDefine("get_shading", "", DX12E_MCP_HANDLER
         {
             const auto& sh = m_scene->GetShadingSettings();
-            int applied = 1, v2Fwd = 0, v2Skin = 0, v2Terr = 0;
-            AppAccess::QueryShadingPsos(*this, applied, v2Fwd, v2Skin, v2Terr);
+            int applied = 1, v2Fwd = 0, v2Skin = 0, v2Terr = 0, v2Water = 0, v2Fol = 0, v2Vg = 0;
+            AppAccess::QueryShadingPsos(*this, applied, v2Fwd, v2Skin, v2Terr, v2Water, v2Fol, v2Vg);
             resp["ok"] = true;
             // shadingRevision = シーンの設定（1 = V1 / 2 = UNO_SHADING_V2）。appliedRevision = 今 PSO に反映済みの値（次のフレーム先頭で追いつく）。
-            // v2PsoCount = V2 の .cso から作れたフォワード系 PSO の数（revision=1 のときは 0）。
+            // v2PsoCount = V2 の .cso から作れたフォワード系 PSO の数（revision=1 のときは 0）。FU-E-25: 水・植生・VG（resolve）も足す。
             resp["result"] = {{"multiScatter", sh.multiScatter},
                               {"shadingRevision", static_cast<int>(sh.shadingRevision)},
                               {"appliedRevision", applied},
-                              {"v2PsoCount", v2Fwd + v2Skin + v2Terr},
-                              {"v2Pso", {{"forward", v2Fwd}, {"skinned", v2Skin}, {"terrain", v2Terr}}}};
+                              {"v2PsoCount", v2Fwd + v2Skin + v2Terr + v2Water + v2Fol + v2Vg},
+                              {"v2Pso", {{"forward", v2Fwd}, {"skinned", v2Skin}, {"terrain", v2Terr},
+                                         {"water", v2Water}, {"foliage", v2Fol}, {"vg", v2Vg}}}};
         });
 
     McpDefine("set_shading", "multiScatter:any,shadingRevision:any", DX12E_MCP_HANDLER

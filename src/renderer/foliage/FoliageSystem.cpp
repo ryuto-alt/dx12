@@ -1,6 +1,7 @@
 #include "renderer/foliage/FoliageSystem.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include "graphics/RootSignature.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
+#include "renderer/ShadingRevisionPick.h"
 #include "renderer/foliage/FoliageLayerOps.h"
 #include "resource/ResourceManager.h"
 #include "resource/ShaderCompiler.h"
@@ -74,6 +76,8 @@ struct FoliageSystem::Impl
     std::unique_ptr<PipelineState> psoShadow[2];    // [mask]
     std::unique_ptr<PipelineState> psoVel[2];       // [mask]
     bool physApplied = false;
+    bool v2 = false;            // shadingRevision=2 を求めている（FU-E-25）
+    int  v2PsoCount = 0;        // V2 の .cso から作れたフォワード PSO の数（0..4 = [mask][depthLEqual]）
 
     ComPtr<ID3D12Resource> windCb[8];
     u8* windCbMapped[8] = {};
@@ -148,8 +152,15 @@ FoliageSystem::~FoliageSystem() { Shutdown(); }
 // ---------------------------------------------------------------------------
 bool FoliageSystem::Impl::BuildForwardPsos()
 {
-    const wchar_t* ps[2] = {physApplied ? L"ForwardFoliagePhys_PS.cso" : L"ForwardFoliage_PS.cso",
-                            physApplied ? L"ForwardFoliageMaskPhys_PS.cso" : L"ForwardFoliageMask_PS.cso"};
+    // FU-E-25: shadingRevision=2 のときは *V2_PS.cso を選ぶ。無ければ警告して V1 へ縮退（FwdPsNameRev と同じ流儀）。
+    const auto exists = [this](const std::wstring& n) { return shadingpick::CsoFileExists(d.shaderDir + n); };
+    const auto pk = std::array<shadingpick::Pick, 2>{
+        shadingpick::PickPs(v2, physApplied, L"ForwardFoliage_PS.cso", L"ForwardFoliagePhys_PS.cso", L"ForwardFoliageV2_PS.cso", L"ForwardFoliagePhysV2_PS.cso", exists),
+        shadingpick::PickPs(v2, physApplied, L"ForwardFoliageMask_PS.cso", L"ForwardFoliageMaskPhys_PS.cso", L"ForwardFoliageMaskV2_PS.cso", L"ForwardFoliageMaskPhysV2_PS.cso", exists)};
+    if (pk[0].fellBack || pk[1].fellBack)
+        Logger::Warn("植生: V2 の .cso が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）");
+    const std::wstring ps[2] = {pk[0].name, pk[1].name};
+    v2PsoCount = 0;
     auto vs = ShaderCompiler::LoadFromFile(d.shaderDir + L"ForwardFoliage_VS.cso");
     if (vs.GetSize() == 0) { Logger::Warn("植生: ForwardFoliage_VS.cso が読めない"); return false; }
     for (int mask = 0; mask < 2; ++mask)
@@ -170,6 +181,7 @@ bool FoliageSystem::Impl::BuildForwardPsos()
             b.SetDepthFunc(leq ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_LESS);
             if (!psoMain[mask][leq]) psoMain[mask][leq] = std::make_unique<PipelineState>();
             psoMain[mask][leq]->Initialize(*d.gdev, b);
+            if (pk[mask].usedV2) ++v2PsoCount;
         }
     }
     return true;
@@ -220,6 +232,17 @@ bool FoliageSystem::Impl::BuildPsos()
     return true;
 }
 
+bool FoliageSystem::SetShadingV2(bool v2)
+{
+    m_v2Requested = v2;
+    if (!m_impl) return true;               // Initialize が拾う
+    if (m_impl->v2 == v2) return true;
+    m_impl->v2 = v2;
+    return m_impl->BuildForwardPsos();      // GPU が止まっている間（UpdateShadingRevision の WaitIdle 後）にだけ呼ぶこと
+}
+
+int FoliageSystem::V2PsoCount() const { return m_impl ? m_impl->v2PsoCount : 0; }
+
 bool FoliageSystem::Initialize(const Deps& d, std::string* err)
 {
     Shutdown();
@@ -228,6 +251,7 @@ bool FoliageSystem::Initialize(const Deps& d, std::string* err)
     m_impl = std::make_unique<Impl>();
     Impl& I = *m_impl;
     I.d = d;
+    I.v2 = m_v2Requested;   // 先に SetShadingV2 されていれば最初から V2 の PSO で作る
     I.dev = d.gdev->GetDevice();
     I.frameCount = std::min(std::max(d.frameCount, 1u), 8u);
     std::string e;

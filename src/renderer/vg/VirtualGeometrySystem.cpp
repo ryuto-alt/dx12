@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
 #include "graphics/MeshPipelineState.h"
+#include "renderer/ShadingRevisionPick.h"
 #include "renderer/vg/VgeoFormat.h"
 #include "resource/ShaderCompiler.h"
 
@@ -353,6 +354,31 @@ bool VirtualGeometrySystem::CreatePipelines(std::string* err)
     return true;
 }
 
+// resolve の PS を読む（m_shadingV2Requested に従う。V2 が無ければ V1 へ縮退）。失敗 = V1 も読めない。
+bool VirtualGeometrySystem::LoadResolvePs()
+{
+    const auto exists = [this](const std::wstring& n) { return shadingpick::CsoFileExists(m_desc.shaderDir + n); };
+    const auto pk = shadingpick::PickPs(m_shadingV2Requested, false, L"VgResolve_PS.cso", L"VgResolve_PS.cso", L"VgResolveV2_PS.cso", L"VgResolveV2_PS.cso", exists);
+    if (pk.fellBack)
+        Logger::Warn("VG: VgResolveV2_PS.cso が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）");
+    auto bc = LoadCsoNoThrow(m_desc.shaderDir + pk.name);
+    if (bc.GetSize() == 0) return false;
+    m_bcResolvePs = std::move(bc.data);
+    m_resolvePsIsV2 = pk.usedV2;
+    return true;
+}
+
+// shadingRevision の切替（GPU が止まっているときだけ）。Initialize の前でも呼べる（次の CreateRasterPipelines が拾う）。
+bool VirtualGeometrySystem::SetShadingV2(bool v2)
+{
+    if (m_shadingV2Requested == v2) return true;
+    m_shadingV2Requested = v2;
+    if (m_bcResolveVs.empty() || m_bcResolvePs.empty()) return true;   // resolve が無効 / まだ作っていない
+    m_psoResolve.Reset();   // 次の DrawResolve が新しい PS で作り直す
+    m_psoResolveRs = nullptr;
+    return LoadResolvePs();
+}
+
 // P3: メッシュシェーダのラスタ（MS / AS / PS の PSO・引数生成・コマンドシグネチャ）。非致命。
 //   ★同じ専用ルートシグネチャ（b0 CBV + b1 定数 8 個 / HEAP_DIRECTLY_INDEXED）をグラフィックスでもそのまま使う。
 bool VirtualGeometrySystem::CreateRasterPipelines()
@@ -394,9 +420,10 @@ bool VirtualGeometrySystem::CreateRasterPipelines()
         m_bcGbVs.clear(); m_bcGbPs.clear();
         Logger::Warn("VG: G-Buffer のシェーダ（VgGBuffer_*.cso）が読めない。VG 画素の速度 / G-Buffer は書かれない");
     }
-    if (!load(L"VgResolve_VS.cso", m_bcResolveVs) || !load(L"VgResolve_PS.cso", m_bcResolvePs))
+    // FU-E-25: shadingRevision=2 のときは VgResolveV2_PS.cso。無ければ警告して V1 へ縮退（FwdPsNameRev と同じ流儀）。
+    if (!load(L"VgResolve_VS.cso", m_bcResolveVs) || !LoadResolvePs())
     {
-        m_bcResolveVs.clear(); m_bcResolvePs.clear();
+        m_bcResolveVs.clear(); m_bcResolvePs.clear(); m_resolvePsIsV2 = false;
         Logger::Warn("VG: resolve のシェーダ（VgResolve_*.cso）が読めない。VG は暫定シェーディングで描かれる");
     }
     auto makeCs = [&](const wchar_t* cso, ComPtr<ID3D12PipelineState>& out) -> bool
@@ -675,7 +702,7 @@ void VirtualGeometrySystem::Shutdown()
     if (m_matBuf && m_matMapped) m_matBuf->Unmap(0, nullptr);
     m_matMapped = nullptr; m_matBuf.Reset();
     m_psoSort.Reset(); m_psoGBuffer.Reset(); m_psoResolve.Reset(); m_psoResolveRs = nullptr;
-    m_bcGbVs.clear(); m_bcGbPs.clear(); m_bcResolveVs.clear(); m_bcResolvePs.clear();
+    m_bcGbVs.clear(); m_bcGbPs.clear(); m_bcResolveVs.clear(); m_bcResolvePs.clear(); m_resolvePsIsV2 = false;
     m_work.Reset(); m_extra.Reset(); m_args.Reset(); m_dumpReadback.Reset();
     m_queryHeap.Reset(); m_queryReadback.Reset();
     m_psoReset.Reset(); m_psoArgs.Reset(); m_psoInstance.Reset(); m_psoTraverse.Reset(); m_psoCluster.Reset();

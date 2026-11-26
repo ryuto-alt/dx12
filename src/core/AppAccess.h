@@ -74,7 +74,9 @@ struct AppAccess
     // W1-C3: shadingRevision（1 / 2）を PSO とグラフ材質へ反映する（定義は ApplicationPipeline.cpp。Run ループの先頭 = フレーム外で呼ぶ）。
     static void UpdateShadingRevision(Application&);
     // W1-C3: 今 PSO に反映済みの revision と、V2 の .cso から作れた PSO の数（フォワード / スキンド / 地形）。MCP の get_shading 用。
-    static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain);
+    //   FU-E-25: 水 / 植生 / 仮想ジオメトリの V2 PSO の本数も返す（実体が無い / V1 のときは 0）。
+    static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain,
+                                 int& v2Water, int& v2Foliage, int& v2Vg);
     // W1-C9: 撮影が IBL の焼き直しを待つために足すフレーム数（0 = 待たない。定義は core/ApplicationAtmosphere.cpp）。
     static int IblRebakeWaitFrames(Application&);
     // FU-E-24: freeze_time で描画の時間依存を固定している最中か（screenshot_final が「決定論キャプチャ中」と取り違えないため。定義は mcp/ApplicationMcpLaneC.cpp）。

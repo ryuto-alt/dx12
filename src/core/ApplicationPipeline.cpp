@@ -1044,8 +1044,8 @@ void Application::EnsureInstancePrevBuffer()
 //   ・シーンの ShadingSettings::shadingRevision が変わっていたら、GPU を待ってフォワード系 PSO を V2 / V1 の .cso で作り直す
 //     （V2 のシーンを開くまで V2 の PSO は作らない＝起動時間を延ばさない。UpdateLightingUnits と同じ流儀）。
 //   ・グラフ材質（ForwardGraph の実行時コンパイル）には毎回今の値を渡す（変化があれば GraphMaterialSystem 側で作り直す）。
-//   ・水 / 植生 / 仮想ジオメトリの V2 .cso は宣言済みだが、選ぶ側（WaterRenderer / FoliageSystem / VirtualGeometrySystem）は
-//     C3 の所有外のため未結線（引き継ぎ事項）。
+//   ・水 / 植生 / 仮想ジオメトリ（FU-E-25）: 各システムが自分で *V2_PS.cso を選ぶ（shadingpick::PickPs。無ければ V1 へ縮退）。
+//     要求がシーンの値とずれていたら、同じ WaitIdle の後に SetShadingV2 で追いつく（後から作られたものは次のフレームの先頭で追いつく）。
 // 呼び出し元: EnsureSplitResources の先頭（Application.cpp は W1 で A の所有のため、Run ループの同じ位置にある C の関数に相乗りする）。
 // ---------------------------------------------------------------------------
 void AppAccess::UpdateShadingRevision(Application& app)
@@ -1054,23 +1054,45 @@ void AppAccess::UpdateShadingRevision(Application& app)
     if (!app.m_scene || !app.m_commandQueue || !app.m_graphicsDevice || !app.m_rootSignature) return;
     const u8 want = (app.m_scene->GetShadingSettings().shadingRevision == 2) ? 2 : 1;
     if (app.m_graphMaterials) app.m_graphMaterials->SetShadingRevision(want);
-    if (want == s_shadingRevApplied) return;
+    // FU-E-25: 水 / 植生 / 仮想ジオメトリは、自分の要求（V1 / V2）が今のシーンの値とずれていたら追いつく。
+    //   後から作られたもの（シーンを開いた後に WaterBody / FoliageLayer が足された等）も、ここで次のフレームの先頭に追いつく。
+    const bool v2 = (want == 2);
+    const bool waterOff = app.m_water && app.m_water->IsReady() && app.m_water->ShadingV2Requested() != v2;
+    const bool foliageOff = app.m_foliage && app.m_foliage->ShadingV2Requested() != v2;
+    const bool vgOff = app.m_vg && app.m_vg->ShadingV2Requested() != v2;
+    const bool fwdOff = (want != s_shadingRevApplied);
+    if (!fwdOff && !waterOff && !foliageOff && !vgOff) return;
     app.m_commandQueue->WaitIdle();
+    if (waterOff) app.m_water->SetShadingV2(v2);
+    if (foliageOff) app.m_foliage->SetShadingV2(v2);
+    if (vgOff) app.m_vg->SetShadingV2(v2);
+    if (!fwdOff)
+    {
+        Logger::Info("shadingRevision={}: 水 {} / 植生 {} / VG {} の V2 PSO を追従させました", static_cast<int>(want),
+                     app.m_water ? app.m_water->V2PsoCount() : 0, app.m_foliage ? app.m_foliage->V2PsoCount() : 0,
+                     app.m_vg ? app.m_vg->V2PsoCount() : 0);
+        return;
+    }
     s_shadingRevApplied = want;
     app.RecreateForwardPsos();
     app.RecreateSkinnedPsos();
     app.RecreateTerrainPsos();
     app.InvalidateTemporalHistory(true);   // V1<->V2 で絵が変わる（C5 以降）ので TAA / DDGI / フォグの履歴を捨てる
-    Logger::Info("shadingRevision: {}（フォワード系 PSO を差し替えました。V2 PSO {} 本）", static_cast<int>(want),
-                 s_v2PsoCount[0] + s_v2PsoCount[1] + s_v2PsoCount[2]);
+    Logger::Info("shadingRevision: {}（フォワード系 PSO を差し替えました。V2 PSO {} 本。水 {} / 植生 {} / VG {}）", static_cast<int>(want),
+                 s_v2PsoCount[0] + s_v2PsoCount[1] + s_v2PsoCount[2], app.m_water ? app.m_water->V2PsoCount() : 0,
+                 app.m_foliage ? app.m_foliage->V2PsoCount() : 0, app.m_vg ? app.m_vg->V2PsoCount() : 0);
 }
 
-void AppAccess::QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain)
+void AppAccess::QueryShadingPsos(const Application& app, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain,
+                                 int& v2Water, int& v2Foliage, int& v2Vg)
 {
     appliedRevision = s_shadingRevApplied;
     v2Forward = s_v2PsoCount[0];
     v2Skinned = s_v2PsoCount[1];
     v2Terrain = s_v2PsoCount[2];
+    v2Water = app.m_water ? app.m_water->V2PsoCount() : 0;       // FU-E-25: 実体が無ければ 0（V1 のシーンも 0）
+    v2Foliage = app.m_foliage ? app.m_foliage->V2PsoCount() : 0;
+    v2Vg = app.m_vg ? app.m_vg->V2PsoCount() : 0;
 }
 
 // shadingRevision=2 のとき、実行時の再コンパイル表（ShaderRegistry）には V2 の .cso が無いので、
