@@ -2,6 +2,7 @@
 // 順序、優先度の帯、登録 0 件なら何も呼ばれない、ステージの選別、OnResize の通知。
 #include "renderer/RenderStageHooks.h"
 #include "renderer/StagePriority.h"
+#include "renderer/StageReadOnlyDsv.h"
 
 #include <cstdio>
 #include <cstring>
@@ -45,6 +46,24 @@ int main()
     // ステージ数と名前。
     CHECK(kStageCount == 14);
     for (u32 i = 0; i < kStageCount; ++i) CHECK(std::strcmp(StageName(static_cast<Stage>(i)), "?") != 0);
+
+    // FU-E-21: 読み取り専用 DSV。既定は 0（得られない）。記述子は READ_ONLY_DEPTH / D32_FLOAT。
+    {
+        StageCtx c;
+        CHECK(c.depthDsvReadOnly.ptr == 0);
+        const D3D12_DEPTH_STENCIL_VIEW_DESC d = MakeReadOnlyDsvDesc();
+        CHECK(d.Format == DXGI_FORMAT_D32_FLOAT);
+        CHECK(d.ViewDimension == D3D12_DSV_DIMENSION_TEXTURE2D);
+        CHECK((d.Flags & D3D12_DSV_FLAG_READ_ONLY_DEPTH) != 0);
+        D3D12_RESOURCE_DESC r{};
+        r.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; r.DepthOrArraySize = 1; r.SampleDesc = {1, 0};
+        r.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL; r.Format = DXGI_FORMAT_R32_TYPELESS;
+        CHECK(CanMakeReadOnlyDsv(r));
+        r.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;  CHECK(!CanMakeReadOnlyDsv(r));
+        r.Format = DXGI_FORMAT_D32_FLOAT;          CHECK(CanMakeReadOnlyDsv(r));
+        r.SampleDesc.Count = 4;                    CHECK(!CanMakeReadOnlyDsv(r));
+        r.SampleDesc.Count = 1; r.Flags = D3D12_RESOURCE_FLAG_NONE; CHECK(!CanMakeReadOnlyDsv(r));
+    }
 
     // 登録 0 件: 全ステージが Empty で、Run しても何も起きない。
     {

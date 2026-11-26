@@ -40,6 +40,7 @@
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
 #include "graphics/GpuTimer.h"
 #include "graphics/GpuMarker.h"
+#include "renderer/StageReadOnlyDsv.h"
 
 
 namespace
@@ -124,6 +125,37 @@ void ComputeMeshUvScaleOffset(const MeshRenderer& r, float& sx, float& sy, float
         ox = du - std::floor(du);
         oy = dv - std::floor(dv);
     }
+}
+
+// FU-E-21: StageCtx::depthDsvReadOnly 用の読み取り専用 DSV。ステージの呼び出しごとに小さな CPU 専用 DSV ヒープの次の枠へ
+// 作り直す（CPU ハンドルは記録時に消費されるので、数枠の輪で足りる）。ヒープは Application.h を変えないよう、ここに 1 つだけ持つ。
+// 作れない深度（D32_FLOAT 以外・MSAA など）と失敗時は ptr==0。
+D3D12_CPU_DESCRIPTOR_HANDLE AcquireStageReadOnlyDsv(ID3D12Device* dev, ID3D12Resource* depth)
+{
+    constexpr u32 kSlots = 8;
+    static Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> s_heap;
+    static ID3D12Device* s_dev = nullptr;
+    static u32 s_next = 0;
+    D3D12_CPU_DESCRIPTOR_HANDLE h{};
+    if (!dev || !depth) return h;
+    if (!dx12e::CanMakeReadOnlyDsv(depth->GetDesc())) return h;
+    if (!s_heap || s_dev != dev)
+    {
+        s_heap.Reset();
+        D3D12_DESCRIPTOR_HEAP_DESC hd{};
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        hd.NumDescriptors = kSlots;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&s_heap)))) return h;
+        s_dev = dev;
+        s_next = 0;
+    }
+    h = s_heap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += SIZE_T(s_next) * dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    s_next = (s_next + 1) % kSlots;
+    const D3D12_DEPTH_STENCIL_VIEW_DESC dv = dx12e::MakeReadOnlyDsvDesc();
+    dev->CreateDepthStencilView(depth, &dv, h);
+    return h;
 }
 } // namespace
 
@@ -5430,6 +5462,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             { auto* o = static_cast<StageStateOps*>(u); o->depth->Require(*o->cl, to); };
         }
         sc.stateUser = &stateOps;
+        // FU-E-21: AfterTranslucent だけ、読み取り専用 DSV を渡す（VFX のハードウェア深度テスト用）。
+        if (st == Stage::AfterTranslucent && wiring.depthValid && depthRes && m_graphicsDevice)
+            sc.depthDsvReadOnly = AcquireStageReadOnlyDsv(m_graphicsDevice->GetDevice(), depthRes);
         if (wiring.hiZSrv != 0xFFFFFFFFu)      sc.hiZSrv      = m_srvHeap->GetGpuHandle(wiring.hiZSrv);
         if (wiring.velocitySrv != 0xFFFFFFFFu) sc.velocitySrv = m_srvHeap->GetGpuHandle(wiring.velocitySrv);
         sc.perFrameGpuVa = stagePfVa;
