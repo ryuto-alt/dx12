@@ -134,6 +134,11 @@ void TestWiring()
     CHECK(!app.empty());
     CHECK(app.find("throttle::Evaluate(") != std::string::npos);
     CHECK(app.find("perf.alwaysRealtime") != std::string::npos);
+    // 設定画面（エンジン設定）に同じキーの切り替えがある（FU-E-14）
+    const std::string insp = ReadAll(fs::path(UI_LINT_ROOT) / "src" / "editor" / "panels" / "InspectorPanel.cpp");
+    CHECK(!insp.empty());
+    CHECK(insp.find("prefs::GetBool(\"perf.alwaysRealtime\"") != std::string::npos);
+    CHECK(insp.find("prefs::SetBool(\"perf.alwaysRealtime\"") != std::string::npos);
     // 待ち中に MCP を Poll する（要求を受けた瞬間に起きる）
     CHECK(app.find("pollMcp(); if (mcpActivity) break;") != std::string::npos);
     // 応答待ち・step_frames・仮想入力の待ち・ジョブを busy に数える

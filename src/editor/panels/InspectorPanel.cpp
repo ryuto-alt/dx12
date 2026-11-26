@@ -5740,6 +5740,21 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
         }
     }
 
+    // --- Performance ---
+    // 「常にリアルタイム」（prefs perf.alwaysRealtime）。ON で裏に回ったとき・無操作時の間引き（editor/FrameThrottle.h）を止める。
+    // Application のメインループが毎フレーム prefs から読むので、切り替えは即時に効く。
+    if (IconHeader(nullptr, 0, "パフォーマンス"))
+    {
+        if (pg::Begin("EnginePerf"))
+        {
+            bool alwaysRealtime = prefs::GetBool("perf.alwaysRealtime", false);
+            if (pg::Checkbox("常にリアルタイム", &alwaysRealtime,
+                             "ON にすると、窓が裏に回っても無操作でも描画を間引かない（既定は OFF）"))
+                prefs::SetBool("perf.alwaysRealtime", alwaysRealtime);
+            pg::End();
+        }
+    }
+
     // --- Shadow quality ---
     if (IconHeader(nullptr, 0, "シャドウ"))
     {
