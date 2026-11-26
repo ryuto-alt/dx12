@@ -359,7 +359,7 @@ export function vgCookKind(env: KindEnv): KindDef {
 }
 
 function findDotnet(): string | null {
-  const local = "C:\\Users\\ryuto\\.dotnet10\\dotnet.exe";
+  const local = path.join(process.env.USERPROFILE ?? "", ".dotnet10", "dotnet.exe");
   if (fs.existsSync(local)) return local;
   return onPath("dotnet");
 }

@@ -126,7 +126,10 @@ reg(
   + "透明は alphaMode(auto/opaque/mask/blend) + alphaCutoff + opacity。mask は影も同じ形に抜ける。"
   + "★自己発光(emissive)は emissiveIntensity を上げるだけで光る(色を省くと白)。ライティングも影も "
   + "通さず最終色へ加算するので、1 を超えるとブルームが乗る。天井照明パネル・看板・非常口サイン向け。"
-  + "テクスチャで発光形状を指定したいときは dx12_set_texture の slot:\"emissive\" と併用する。",
+  + "テクスチャで発光形状を指定したいときは dx12_set_texture の slot:\"emissive\" と併用する。"
+  + "★拡張シェーディング(glTF KHR_materials_clearcoat / anisotropy / sheen / specular / ior と同じ意味): "
+  + "clearCoat / clearCoatRoughness / anisotropy / anisotropyRotation(rad)・anisotropyRotationDeg / sheenColor / sheenRoughness / "
+  + "specularFactor / specularColor / ior。負または null で「材質に従う」に戻る。",
   {
     ...entityRef,
     metallic: z.number().optional().describe("金属度 0..1"),
@@ -165,26 +168,19 @@ reg(
       .number()
       .optional()
       .describe("マテリアル AO の強さ 0..1(0=オフ、負=モデルの値)。AO を持つモデル(ORM の R / glTF occlusionTexture)にだけ効き、間接光にだけ掛かる"),
+    clearCoat: z.number().nullable().optional().describe("クリアコート 0..1(車のクリア塗装)。負 / null で材質に従う"),
+    clearCoatRoughness: z.number().nullable().optional().describe("クリアコートの粗さ 0..1。負 / null で材質に従う"),
+    anisotropy: z.number().nullable().optional().describe("異方性 -1..1(ヘアライン金属。正=接線方向、負=従法線方向)。null で材質に従う(負は値域内なので null で戻す)"),
+    anisotropyRotation: z.number().nullable().optional().describe("異方性の向き(ラジアン、接線から反時計回り)。null で材質に従う"),
+    anisotropyRotationDeg: z.number().nullable().optional().describe("異方性の向き(度)。anisotropyRotation の度数版。null で材質に従う"),
+    sheenColor: z.array(z.number()).length(3).nullable().optional().describe("sheen(布の縁の光沢)の色 [r,g,b]。null で材質に従う"),
+    sheenRoughness: z.number().nullable().optional().describe("sheen の粗さ 0..1。負 / null で材質に従う"),
+    specularFactor: z.number().nullable().optional().describe("誘電体の鏡面の強さ 0..1(0 で消える)。負 / null で材質に従う"),
+    specularColor: z.array(z.number()).length(3).nullable().optional().describe("誘電体の鏡面の色 [r,g,b]。null で材質に従う"),
+    ior: z.number().nullable().optional().describe("屈折率 1..5(既定 1.5 で F0=0.04)。負 / null で材質に従う"),
   },
   { idempotentHint: true },
-  ({ entity, name, metallic, roughness, uvScaleU, uvScaleV, alphaMode, alphaCutoff, opacity,
-     emissiveIntensity, emissiveColor, aoStrength }) =>
-    run(() =>
-      engine.call("set_pbr", {
-        entity,
-        name,
-        metallic,
-        roughness,
-        uvScaleU,
-        uvScaleV,
-        alphaMode,
-        alphaCutoff,
-        opacity,
-        emissiveIntensity,
-        emissiveColor,
-        aoStrength,
-      }),
-    ),
+  (a) => run(() => engine.call("set_pbr", { ...a })),
 );
 
 reg(

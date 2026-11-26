@@ -223,7 +223,7 @@ console.log("\n[3] PostProcessSettings.h の名前表(X マクロ)と突き合�
   const postFields = parseFieldMacro(header, "DX12E_POST_FIELDS");
   const ssaoFields = parseFieldMacro(header, "DX12E_SSAO_FIELDS");
   check("DX12E_POST_FIELDS を読めている", postFields.length >= 80, `${postFields.length} fields`);
-  check("DX12E_SSAO_FIELDS を読めている", ssaoFields.length === 7, ssaoFields.join(","));
+  check("DX12E_SSAO_FIELDS を読めている", ssaoFields.length === 8, ssaoFields.join(","));
 
   const pp = tools.find((t) => t.tool === "dx12_set_post_process")!;
   const ppKeys = keysOf(pp);
