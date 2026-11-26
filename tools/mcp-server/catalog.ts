@@ -179,6 +179,8 @@ const EXTRA_NEXT: Record<string, { tool: string; when?: string }[]> = {
 
 /** エンジンのマニフェストに examples が無いツールに、TS 側で足す例(MCP の完了の条件: 例 1 件以上)。キーは dx12_ 付きのツール名。 */
 const EXTRA_EXAMPLES: Record<string, { args: Record<string, unknown>; note?: string }[]> = {
+  dx12_screenshot: [{ args: { waitIblRebake: true, path: "shots/after_sunset.png" }, note: "物理大気の ON/OFF・時刻を変えた直後に撮るとき。IBL の焼き直しが終わるまで待つ(未了のときだけ決定論経路になり、待ちフレームが settleFrames に足される。定常状態では何も足さない)" }],
+  dx12_screenshot_final: [{ args: { waitIblRebake: true, path: "shots/after_sunset_final.png" }, note: "大気/時刻を変えた直後の最終画。焼き直し前の暗い絵を避ける。deterministic を付けなくても未了のときだけ待つ" }],
   dx12_get_device_caps: [{ args: {}, note: "GPU の機能(Agility・SM6.9・Enhanced Barriers・DXR・SER・OMM など)を読む。読み取り専用。経路は切り替わらない" }],
   dx12_get_upscaler: [{ args: {}, note: "mode と effective が違えばフォールバック中。理由は dlss.fallbackReason" }],
   dx12_editor_state: [{ args: { scope: "mode" }, note: "結果の autosave.blockedByHumanEdits が true なら人の未保存の変更あり。人に保存を依頼する(dx12_guide {topic:'autosave'})" }],

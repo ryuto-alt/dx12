@@ -12,3 +12,4 @@ genBudgets.test.mjs
 visualKind.test.ts
 perfGate.test.ts
 ciSuite.test.ts
+screenshotIblHints.test.ts
