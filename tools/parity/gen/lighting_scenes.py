@@ -93,7 +93,8 @@ def ls_a() -> dict:
         [{"name": "main", "position": [0, 2.2, -6], "target": [0, 1.0, 30],
           "shadowRegions": ["shadow_tower", "lit_ground"] + [f"shadow_pillar_{z}" for z, _ in bands]},
          {"name": "char", "position": [-1.6, 1.5, 0.8], "target": [1.4, 0.4, 5.5], "shadowRegions": ["shadow_char"],
-          "note": "マネキンの影の縁(スキンドの影)を大きく撮る補助カメラ"}],
+          "note": "マネキンの影の縁(スキンドの影)を大きく撮る補助カメラ",
+          "contaminated": "このカメラのラスタは塔の上部が欠けて見える(PT には出る)。原因が分かるまで、このカメラの値はベースラインに使わない(エンジン不具合の疑い。C レーンへ依頼済み)"}],
         models=[model("Mannequin", [1.4, 0, 5.0])],
         shadowRegions=sr,
         texelBands=[5, 10, 20, 40, 80, 160],
@@ -212,21 +213,29 @@ def ls_f() -> dict:
             box("ENV_Tower", [3.0, 3.0, 6.0], [1.6, 6.0, 1.6], "#c8c4bc", rough=0.8),
             box("ENV_Pillar_10", [-3.0, 1.5, 10.0], [0.8, 3.0, 0.8], "#c8c4bc", rough=0.8),
             sphere("ENV_Sphere", [-1.0, 0.6, 3.0], 1.2, "#d0a070", rough=0.4),
+            # カメラの後ろ(太陽側)の高い塔。夕方(方位 200°/高度 10°)では、その影がカメラの前の cascade0 の範囲へ長く伸びる(AUD-01:
+            # 光側のカメラ後方の遮蔽物が、cascade0 の光の錐台の外にあって落ちる / 近平面で切られる不具合の検出用)。
+            box("ENV_BehindCaster", [-8.0, 6.0, -13.0], [2.0, 12.0, 2.0], "#c8c4bc", rough=0.8),
             sun_entity(250)]
     sr = {"shadow_tower": {"receivers": GN, "occluders": ["ENV_Tower"], "state": "roi", "roiPx": 40},
+          "shadow_behind": {"receivers": GN, "occluders": ["ENV_BehindCaster"], "state": "roi", "roiPx": 30, "minDepth": 3.0, "maxDepth": 40.0},
           "shadow_pillar": {"receivers": GN, "occluders": ["ENV_Pillar_10"], "state": "roi", "roiPx": 30},
-          "lit_ground": {"receivers": GN, "occluders": ["ENV_Tower", "ENV_Pillar_10", "ENV_Sphere"], "state": "lit", "roiPx": 60}}
+          "lit_ground": {"receivers": GN, "occluders": ["ENV_Tower", "ENV_Pillar_10", "ENV_Sphere", "ENV_BehindCaster"], "state": "lit", "roiPx": 60}}
     return scene(
         "LS-F", "LS-F 静止 8 フレームと夕方",
         "地面に塔(6m)・柱・球。カメラも物も静止で、連続 8 フレームの 8bit 表示の最大差(1/255 以下が目標)を見る。"
-        "夕方(太陽 方位 200°/高度 10°。カメラの後ろから前へ長く伸びる)の条件では cascade0 の影が長く伸び、近い塔の影が抜けないことを見る(AUD-01)。",
+        "夕方(太陽 方位 200°/高度 10°。カメラの後ろから前へ長く伸びる)の条件では、カメラの後ろにある高い塔(ENV_BehindCaster)の影が"
+        "カメラの前の cascade0 の範囲へ伸びて落ちないことを見る(AUD-01。遮蔽物が光の錐台の外・カメラの後ろにある場合)。",
         ents, sun(250, 50),
-        [{"name": "main", "position": [0, 2.0, -5.0], "target": [0, 1.0, 14.0]}],
+        [{"name": "main", "position": [0, 2.0, -5.0], "target": [0, 1.0, 14.0],
+          "shadowRegions": ["shadow_tower", "shadow_pillar", "shadow_behind", "lit_ground"]}],
         variants=[{"id": "noon", "sun": sun(250, 50)}, {"id": "evening10", "sun": sun(200, 10, intensity=2.2, kelvin=3800)}],
         shadowRegions=sr,
         temporal={"frames": 8, "settle": 120},
         conditions=["high", "epic"],
-        criteria={"temporal": {"max_range": 1}, "coverage": {"region": "shadow_tower", "camera": "main", "min_ratio": 0.95},
+        criteria={"temporal": {"max_range": 1},
+                  "coverage": {"region": "shadow_tower", "camera": "main", "min_ratio": 0.95, "variant": "noon"},
+                  "coverage_behind": {"region": "shadow_behind", "camera": "main", "min_ratio": 0.95, "variant": "evening10"},
                   "acne": {"region": "lit_ground", "camera": "main", "max_rate": 0.001}})
 
 

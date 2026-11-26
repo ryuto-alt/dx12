@@ -103,6 +103,36 @@ def test_edge_width_hard_edge_is_about_zero():
     assert e["evaluable"] and e["width_px"] < 0.5
 
 
+@pytest.mark.parametrize("dark", [0.0, 0.05, 0.2, 0.35])
+def test_edge_width_hard_edge_with_ambient_fill_is_zero(dark):
+    # 本影が環境光で持ち上がっていても、硬い縁は 0 px(環境光を半影と数えない)
+    r = SM.edge_width_error(ramp_shadow(dark=dark), ramp_shadow(dark=dark), full(), band_px=12)
+    assert r["evaluable"]
+    assert r["raster"]["width_px"] < 0.5 and r["pt"]["width_px"] < 0.5
+
+
+@pytest.mark.parametrize("dark", [0.05, 0.2, 0.35])
+def test_edge_width_ramp_independent_of_umbra_fill(dark):
+    r = SM.edge_width_error(ramp_shadow(x0=90, width=10, dark=dark), ramp_shadow(x0=90, width=10, dark=dark), full(), band_px=20)
+    assert r["raster"]["width_px"] == pytest.approx(10 * 0.8, rel=0.25, abs=1.0)
+
+
+def test_edge_width_error_ignores_fill_difference():
+    # ラスタは本影が明るい(0.35)・PT は暗い(0.05)が、縁の幅は同じ → 誤差はほぼ 0
+    pt = ramp_shadow(x0=90, width=8, dark=0.05)
+    ras = ramp_shadow(x0=90, width=8, dark=0.35)
+    r = SM.edge_width_error(ras, pt, full(), band_px=20)
+    assert r["evaluable"] and r["error_rel"] < 0.15
+    # 縁は硬いのに本影が明るいだけのラスタを、半影の広いものと誤判定しない
+    hard = SM.edge_width_error(ramp_shadow(dark=0.35), ramp_shadow(x0=90, width=8, dark=0.05), full(), band_px=20)
+    assert hard["raster"]["width_px"] < 0.5 and hard["error_rel"] > 0.7
+
+
+def test_edge_width_no_contrast_is_not_evaluable():
+    r = SM.edge_width_error(img(np.full((H, W), 0.5)), img(np.full((H, W), 0.5)), full())
+    assert r["evaluable"] is False
+
+
 def test_temporal_stats_static_and_flicker():
     base = np.full((H, W, 3), 128, np.int16)
     static = np.stack([base] * 8)
@@ -270,3 +300,44 @@ def test_compare_cli(tmp_path):
     _run(tmp_path)
     p = tmp_path / "lighting_eval.json"
     assert LE.main(["--compare", str(p), str(p)]) == 0
+
+
+# ── レビュー修正(縁の幅の正規化・夕方の後方の遮蔽物・判定・条件) ──────────────────
+
+def test_ls_f_behind_caster_shadow_lands_in_view_at_evening():
+    s = {x.id: x for x in LS.load_scenes()}["LS-F"]
+    cam = s.camera("main")
+    ev = next(v for v in s.variants() if v["id"] == "evening10")
+    m = LS.build_shadow_masks(s, cam, ev["sun"], 320, 180)
+    assert m["shadow_behind"].sum() > 300                      # 後方の塔の影がカメラの前に落ちる
+    cz = s.data["shadowRegions"]["shadow_behind"]["occluders"]
+    assert cz == ["ENV_BehindCaster"]
+    ent = next(e for e in s.entities if e["name"] == "ENV_BehindCaster")
+    assert ent["at"][2] < cam["position"][2]                   # カメラの後ろ(太陽側)にある
+    assert s.data["criteria"]["coverage_behind"]["variant"] == "evening10"
+
+
+def test_judge_variant_scoping_and_information_criteria():
+    s = {x.id: x for x in LS.load_scenes()}["LS-F"]
+    cov = {"coverage": {"evaluable": True, "ratio": 1.4, "captured": 0.5}, "acne": {"evaluable": False}}
+    cams = {"main": {"conditions": {"epic": {"shadow": {"shadow_tower": cov, "shadow_behind": cov}}}}}
+    noon = LE.judge(s, "noon", cams, "epic")
+    ev = LE.judge(s, "evening10", cams, "epic")
+    assert noon["coverage"]["status"] == "FAIL" and "coverage_behind" not in noon       # ratio ではなく captured で判定
+    assert ev["coverage_behind"]["status"] == "FAIL" and "coverage" not in ev
+    a = {x.id: x for x in LS.load_scenes()}["LS-A"]
+    ja = LE.judge(a, "default", {}, "epic")
+    assert ja["edge_char"]["status"].startswith("情報のみ")
+
+
+def test_conditions_use_real_sun_size_and_lane_port():
+    assert LE.DEFAULT_PORT == 8855
+    rt = dict(LE.CONDITIONS["epic"]["set"])["set_dxr"]
+    assert rt["shadowSunAngle"] == pytest.approx(0.53) and LE.SUN_RADIUS_DEG == pytest.approx(0.265)
+
+
+def test_compare_deterministic_keys_are_tight():
+    a = {"scorecard": {"X/default/main/epic/global/ev_mean": 0.5, "X/default/main/epic/temporal/max_range": 3.0}}
+    b = {"scorecard": {"X/default/main/epic/global/ev_mean": 0.5 + 1e-3, "X/default/main/epic/temporal/max_range": 5.0}}
+    r = LE.compare(a, b)
+    assert r["outOfTolerance"] == ["X/default/main/epic/global/ev_mean"]

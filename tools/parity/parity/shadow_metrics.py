@@ -9,10 +9,12 @@
   影の画素 = s < SHADOW_S(0.5)。半影(penumbra)の画素 = PENUM_LO(0.1) < s < PENUM_HI(0.9)。
 
 指標:
-  coverage      PT で影になっている画素のうち、ラスタも影にしている割合(ratio = ラスタの影画素数 / PT の影画素数、iou も)。
+  coverage      PT で影になっている画素のうち、ラスタも影にしている割合 captured = (両方が影の画素) / PT の影画素。★合否はこの captured で見る
+                (ratio = ラスタの影画素数 / PT の影画素数 は、ずれた影・暗すぎる影でも 1 になり得るので参考値)。iou・extra_px(余計な影)も出す。
                 LS-02b「塔の影の画素が PT 比 95% 以上」に使う。
   acne          PT で日向(s ≥ LIT_S 0.9)の画素のうち、ラスタが影(s < ACNE_S 0.75)にしている割合。LS-02a「アクネ 0.1% 未満」。
   edge_width    影の縁の幅(px) = 半影の画素数 / 影の境界の長さ(画素)。縁から band_px 以内だけ数える(床の模様を拾わない)。
+                ★半影の判定は本影を 0・日向を 1 に揃えた s' = (Y - umbra) / (lit - umbra) で行う(edge_term)。本影が環境光で持ち上がっていても環境光を半影と数えない。
                 edge_width_error = |幅(ラスタ) - 幅(PT)| / 幅(PT)。LS-02a「縁の幅の誤差が半減」。
   temporal      静止 N フレームの 8bit 表示での画素ごとの最大差(frames_8bit の max - min)。LS-F「1/255 以下」。
   texel_density 影のテクセル密度 [テクセル/px] = 1 画素が覆う距離 / 1 テクセルの大きさ。0.7 未満の距離帯が LS-13(VSM)の着手条件。
@@ -116,10 +118,31 @@ def edge_width(s: np.ndarray, mask: np.ndarray, band_px: int = 12, inner_px: int
     return {"evaluable": True, "boundary_px": nb, "penumbra_px": npen, "width_px": npen / nb}
 
 
+UMBRA_PERCENTILE = 5.0
+MIN_CONTRAST = 0.15           # (日向 - 本影) / 日向 がこれ未満なら影が無い(縁を測れない)
+
+
+def edge_term(y: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray | None, float, float]:
+    """縁の幅用の影の項 s' = (Y - umbra) / (lit - umbra)(0..1.5)。(s', umbra, lit)。
+    ★本影が空や GI の環境光で持ち上がっていても(umbra が 0.2~0.35 でも)、硬い縁を「半影」と数えないよう、本影の明るさを 0 に揃える。
+    umbra = 領域内の輝度の低パーセンタイル(影を含む領域=ROI の前提)、lit = 90 パーセンタイル。コントラストが無ければ s' = None。"""
+    v = y[mask]
+    if v.size == 0:
+        return None, 0.0, 0.0
+    umbra = float(np.percentile(v, UMBRA_PERCENTILE))
+    lit = float(np.percentile(v, LIT_PERCENTILE))
+    if lit <= 1e-9 or (lit - umbra) < MIN_CONTRAST * lit:
+        return None, umbra, lit
+    return np.clip((y - umbra) / (lit - umbra), 0.0, 1.5), umbra, lit
+
+
+_NO_EDGE = {"evaluable": False, "boundary_px": 0, "penumbra_px": 0, "width_px": None}
+
+
 def edge_width_error(raster: np.ndarray, pt: np.ndarray, mask: np.ndarray, band_px: int = 12) -> dict:
-    sr, sp, _, _ = terms(raster, pt, mask)
-    wr, wp = edge_width(sr, mask, band_px), edge_width(sp, mask, band_px)
-    out = {"raster": wr, "pt": wp, "evaluable": bool(wr["evaluable"] and wp["evaluable"])}
+    wr, ur = _edge_one(raster, mask, band_px)
+    wp, up = _edge_one(pt, mask, band_px)
+    out = {"raster": wr, "pt": wp, "umbra_raster": ur, "umbra_pt": up, "evaluable": bool(wr["evaluable"] and wp["evaluable"])}
     if out["evaluable"]:
         d = wr["width_px"] - wp["width_px"]
         out["width_diff_px"] = d
@@ -128,6 +151,13 @@ def edge_width_error(raster: np.ndarray, pt: np.ndarray, mask: np.ndarray, band_
         out["width_diff_px"] = None
         out["error_rel"] = None
     return out
+
+
+def _edge_one(img: np.ndarray, mask: np.ndarray, band_px: int) -> tuple[dict, float]:
+    s, umbra, _ = edge_term(luminance(img), mask)
+    if s is None:
+        return dict(_NO_EDGE), umbra
+    return edge_width(s, mask, band_px), umbra
 
 
 def shadow_stats(raster: np.ndarray, pt: np.ndarray, mask: np.ndarray) -> dict:
