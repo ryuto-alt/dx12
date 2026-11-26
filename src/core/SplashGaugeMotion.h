@@ -13,7 +13,9 @@
 //   Fast   … ロードが C23 までに終わる。正規のタイムライン（graphite_1.wav と同じ時計）。EvaluateGauge() が状態を持たずに返す。
 //   Slow   … ロードが C23 までに終わらない。状態を持つ GaugeSlowDriver が実進捗をバネ（ω=14、臨界減衰）で追い、
 //            完了要求から Calibrate の減速でロックへ送る。ロック以降は Fast と同じ関数（EvaluateAfterLock）。
-//   Reduce … Reduce Motion。ロックの状態から静的に始める（回転と残像なし）。ピンと退場の時計だけ進む。
+//   Reduce … Reduce Motion。整列まで終わった静止の姿（alignStep=5、着座、bellT=1。回転と残像なし）。ピンと退場の時計だけ進む。
+//            ★要ルーリング: EXEC §2.6 は「ロックの状態（alignStep 0、未着座）から静的に」、PP は「θ = 実進捗」。現実装は整列済みの姿。
+//            timelineMs は最後の reveal（5 つ目のベル）の時刻以上に保つ（reveal が動かない）。決まったらここに記録する。
 // 「ロック以降はどの経路でも同じ」: Fast / Slow / スキップは、ロックからの経過 ms を EvaluateAfterLock に渡すだけ。
 //
 // 単位: 時間は ms（double）、角度は度（12 時から時計回り）、長さは論理 px（1600x900 の設計空間）。
@@ -121,8 +123,8 @@ inline constexpr std::uint32_t kDialTickCount = 60;     // 文字盤の目盛り
 inline constexpr double kTomboStartMs = calibrate::kSweepStartMs;
 inline constexpr double kDialStartMs = calibrate::kSweepStartMs;
 inline constexpr double kDialEndMs = calibrate::kClickMs[0];
-// 暫定値（キュー表にも GG final の tokens.json にも出どころが無い。BD3 の kGaugeTokens で確定する）:
-// トンボは 8〜148ms、ベゼルの鏡面スイープは最初のベルから 200ms（1,648〜1,848）、ピンの刻印は 120ms、窓の α フェードは 180ms（〜2,328）。
+// EXEC §2.6 の Calibrate キュー表の値: トンボ 8〜148ms（140ms）、ベゼルの鏡面スイープ 1,648〜1,848ms（200ms）、窓の α フェード 2,148〜2,328ms（180ms）。
+// 暫定値は kPinStampMs（120ms）だけ（キュー表にも GG final の tokens.json にも出どころが無い。BD3 の kGaugeTokens で確定する）。
 // 注意: GG の motion.tomboDraw（160ms）は 3D 選択のトンボの値で、ここの起動画面のトンボとは別。
 inline constexpr double kTomboDurMs = 140.0;
 inline constexpr double kBezelSweepMs = 200.0;
@@ -269,8 +271,10 @@ inline GaugeFrame EvaluateAfterLock(double sinceLockMs, const CalibrateEvents& e
 }
 
 // スキップ（キー・クリック）: 絵はその時点でロックのフレームへ飛ぶ。以降の正規タイムライン上の時刻を返す。
+// ロック以降（tSkip >= lockMs）のスキップは何もしない（時計を巻き戻さない。整列波・ロック音を再演しない）。
 inline double GaugeSkippedTimelineMs(double tNowMs, double tSkipMs, const CalibrateEvents& ev = DefaultCalibrateEvents())
 {
+    if (tSkipMs >= ev.lockMs) return tNowMs;
     return ev.lockMs + std::max(0.0, tNowMs - tSkipMs);
 }
 
@@ -288,8 +292,7 @@ inline GaugeFrame EvaluateGauge(GaugePath path, double tMs, float loadProgress01
         // ロックの整列が終わったあとの静止した姿。動き（回転・残像・行き過ぎ・整列波のスイープ）は無い。
         GaugeFrame f = gauge_detail::CanonicalFrame(ev, needle, std::max(ev.bellMs[CalibrateEvents::kBells - 1], std::max(0.0, tMs)));
         f.needleDeg = 360.f; f.blurDeg = 0.f; f.overshootPx = 0.f; f.bellT = 1.f;
-        const double t = std::max(0.0, tMs);
-        f.timelineMs = static_cast<float>(t);
+        const double t = std::max(0.0, tMs);   // timelineMs は CanonicalFrame の値（最後のベルの時刻以上）のまま。reveal は動かない
         f.pinT = t >= ev.pingMs ? 1.f : 0.f;                       // 動かさない: 刻印は出るだけ
         f.fadeOutT = static_cast<float>(Clamp01((t - ev.pingMs) / gauge::kFadeOutMs));
         return f;
@@ -324,7 +327,10 @@ struct GaugeCue
 //     進み残し（ヒッチ）は欠損 D = t - S に積む（D は単調増加。最終接近が始まったら固定）。絵は S - kDisplayLagMs の時点を出し、
 //     予約は playAt = 歯の S + kDisplayLagMs + D。こうすると、どんなフレーム間隔でも playAt - issuedAt >= kLookaheadMs（50ms）が
 //     成り立つ（歯は S の直近 kMaxFrameMs 以内にしか生まれないため）。ヒッチの間は絵が止まって見え（先へ飛ばない）、音と絵は揃ったまま。
-//     ヒッチが発音待ちの予約（最大 134ms 先）に重なると、その予約ぶんだけ絵が遅れる（音は主時計）。
+//     絵の時計 p(wall) は「発行済みの予約の (playAt, 歯の S)」を結び目にした折れ線（結び目の外は傾き 1。最終接近の前は S 以下に頭打ち）。
+//     ヒッチで D が増えても、発行済みの歯は playAt ちょうどに絵が跨ぐ（音が主時計で、絵が音に合わせる。ヒッチ後の絵は前へ飛び、次の結び目へ緩やかにつながる）。
+//   ・フレーム間隔が常に 34ms を超える環境（20〜25fps）: 完了要求の前は S が 1 回 34ms しか進まず、指針は実時間より遅く動き、D は増え続ける
+//     （先読みは保たれる。完了要求のあとの最終接近は D を固定するので、音と絵は揃ってロックする）。
 //   ・完了要求が来たら残りの歯を Calibrate の減速で送り、最後の歯 + 85ms にロックする。以後は EvaluateAfterLock と同じ。
 //   ・指針の上限は 345°（最後の 1 歯はロックのために取っておく）。進捗は単調（減ったら無視）。指針は NeedleStartMs（177ms）まで 0° のまま。
 class GaugeSlowDriver
@@ -341,11 +347,16 @@ public:
         m_progress = std::max(m_progress, static_cast<double>(Clamp01(loadProgress01)));
         if (!m_approach)
         {
+            const double pNow = PictureTime(tMs);              // 今の絵の時計（新しい結び目をつなぐ起点）
+            const std::size_t firstNew = m_knots.size();
             const double dt = tMs - m_lastWall;
             const double adv = std::min(dt, gauge::kMaxFrameMs);
             m_deficit += dt - adv;
             Follow(m_lastT + adv, tMs);
             if (finishRequested) BeginApproach(m_lastT, tMs);
+            // 新しい予約があって、今が最後の結び目より後（傾き 1 の外挿の上）なら、今の点を結び目に足して絵が戻らないようにする
+            if (m_knots.size() > firstNew && (firstNew == 0 || tMs > m_knots[firstNew - 1].w))
+                m_knots.insert(m_knots.begin() + static_cast<std::ptrdiff_t>(firstNew), Knot{ tMs, pNow });
         }
         m_lastWall = tMs;
         Trim();
@@ -359,17 +370,20 @@ public:
         m_theta = deg;
         m_omega = 0.0;
         m_holdDeg = deg;                 // 進捗が低くても、持ち替えた角度より戻らない
+        m_timeOffsetMs = gauge::kDisplayLagMs;   // 絵の時計は wall - 84 から始まるので、timelineMs だけ 84 足して正規の時刻から連続させる（指針は 345 度で止まっているので影響しない）
+        m_knots.clear();
         m_nextTooth = 0;
         while (m_nextTooth < CalibrateEvents::kClicks - 1 && m_ev.clickDeg[m_nextTooth] <= deg + 1e-9) ++m_nextTooth;
         m_segs.clear();
         m_segs.push_back(Seg{ -1e9, wallMs, deg, 0.0, 0.0 });
     }
 
-    // スキップ: 絵は tMs にロックのフレームへ飛ぶ。tMs より先の未取得の予約は捨て、LockTail を tMs に即時で入れる
+    // スキップ: ロックより前なら、絵は tMs にロックのフレームへ飛ぶ。ロック以降（最終接近が決まっていて tMs >= LockWallMs）は何もしない。tMs より先の未取得の予約は捨て、LockTail を tMs に即時で入れる
     //（鳴っているボイスの 30ms フェードアウトと lock_tail の頭出しは音の側）。
     void Skip(double tMs)
     {
         if (m_skipped) return;
+        if (m_approach && tMs >= m_lockWall) return;   // ロック以降のスキップは何もしない（巻き戻さない・ロック音を重ねない）
         m_skipped = true;
         m_skipWall = tMs;
         std::erase_if(m_cues, [&](const GaugeCue& c) { return c.playAtMs > tMs; });
@@ -403,10 +417,10 @@ public:
         const double d = PictureTime(tMs);
 
         GaugeFrame f;
-        gauge_detail::FillItems(m_ev, std::min(std::max(d, 0.0), m_ev.lockMs - 1e-6), f);   // timelineMs も単調（ロックまで lockMs-1e-6 で止まる）
-        const double th = NeedleAt(tMs);
+        gauge_detail::FillItems(m_ev, std::min(std::max(d + m_timeOffsetMs, 0.0), m_ev.lockMs - 1e-6), f);   // timelineMs も単調（ロックまで lockMs-1e-6 で止まる）
+        const double th = NeedleAtPicture(d);
         f.needleDeg = static_cast<float>(th);
-        f.blurDeg = static_cast<float>(std::max(0.0, th - NeedleAtPicture(d - gauge::kBlurWindowMs, tMs)));
+        f.blurDeg = static_cast<float>(std::max(0.0, th - NeedleAtPicture(d - gauge::kBlurWindowMs)));
         if (m_approach && d >= m_toothLastMs)
             f.overshootPx = static_cast<float>(gauge_detail::OvershootPxAt(d - m_toothLastMs, gauge_detail::OvershootSpanMs(m_ev)));
         return f;
@@ -415,7 +429,21 @@ public:
 private:
     struct Seg { double t0, t1, target, a, b; };   // x(u) = (a + b u) e^{-w u} + target
 
-    double PictureTime(double wallMs) const { return wallMs - gauge::kDisplayLagMs - m_deficit; }
+    struct Knot { double w, p; };   // 実時計 w に絵の時計（S 軸）が p
+
+    // 絵の時計 p(wall): 結び目の折れ線。最初の結び目より前は wall - 84、最後の結び目より後は傾き 1
+    //（最終接近の前は S を超えない: 後から生まれる歯は必ず S より先にあるので、絵が歯を追い越さない）。
+    double PictureTime(double wallMs) const
+    {
+        const double capS = m_approach ? 1e18 : m_lastT;
+        if (m_knots.empty()) return std::min(wallMs - gauge::kDisplayLagMs, capS);
+        if (wallMs < m_knots.front().w) return std::min(wallMs - gauge::kDisplayLagMs, m_knots.front().p);
+        const auto it = std::upper_bound(m_knots.begin(), m_knots.end(), wallMs, [](double x, const Knot& k) { return x < k.w; });
+        if (it == m_knots.end()) return std::min(m_knots.back().p + (wallMs - m_knots.back().w), capS);
+        const Knot& a = *(it - 1);
+        const Knot& b = *it;
+        return a.p + (b.p - a.p) * (wallMs - a.w) / (b.w - a.w);
+    }
 
     double SegTheta(const Seg& s, double t) const
     {
@@ -467,6 +495,7 @@ private:
     {
         GaugeCue c;
         c.playAtMs = simMs + gauge::kDisplayLagMs + m_deficit;
+        m_knots.push_back(Knot{ c.playAtMs, simMs });   // この歯を絵が跨ぐ時刻 = 音の再生時刻
         c.issuedAtMs = issuedWallMs;
         c.kind = GaugeCueKind::Click;
         c.index = tooth;
@@ -511,6 +540,7 @@ private:
         m_lockSim = m_toothLastMs + gauge_detail::OvershootSpanMs(m_ev);
         m_lockWall = m_lockSim + gauge::kDisplayLagMs + m_deficit;
         for (int j = m; j <= last; ++j) PushClick(j, m_spline.t[static_cast<std::size_t>(1 + j - m)], wallNow);
+        m_knots.push_back(Knot{ m_lockWall, m_lockSim });   // 歯の結び目の後ろ（w 昇順）
         GaugeCue lock;
         lock.playAtMs = m_lockWall;
         lock.issuedAtMs = wallNow;
@@ -519,17 +549,17 @@ private:
     }
 
     // d = 絵の時計（S 軸）。最終接近以降は spline、それ以前は履歴
-    double NeedleAtPicture(double d, double wallMs) const
+    double NeedleAtPicture(double d) const
     {
         if (d <= 0.0) return 0.0;
-        if (m_approach && wallMs >= m_approachWall) return m_spline.Eval(d);
+        if (m_approach && d >= m_fApp) return m_spline.Eval(d);
         if (m_segs.empty()) return 0.0;
         auto it = std::lower_bound(m_segs.begin(), m_segs.end(), d, [](const Seg& s, double x) { return s.t1 < x; });
         if (it == m_segs.end()) return m_theta;
         if (d < it->t0) return SegTheta(*it, it->t0);
         return SegTheta(*it, d);
     }
-    double NeedleAt(double wallMs) const { return NeedleAtPicture(PictureTime(wallMs), wallMs); }
+    double NeedleAt(double wallMs) const { return NeedleAtPicture(PictureTime(wallMs)); }
 
     // 履歴は 5 秒分だけ保持（それより古い時刻を Frame に渡すと不定）
     void Trim()
@@ -538,11 +568,16 @@ private:
         std::size_t drop = 0;
         while (drop + 1 < m_segs.size() && m_segs[drop].t1 < keepFrom) ++drop;
         if (drop) m_segs.erase(m_segs.begin(), m_segs.begin() + static_cast<std::ptrdiff_t>(drop));
+        std::size_t kdrop = 0;
+        while (kdrop + 1 < m_knots.size() && m_knots[kdrop + 1].w < m_lastWall - 6000.0) ++kdrop;
+        if (kdrop) m_knots.erase(m_knots.begin(), m_knots.begin() + static_cast<std::ptrdiff_t>(kdrop));
     }
 
     CalibrateEvents m_ev;
     std::vector<Seg> m_segs;
     std::vector<GaugeCue> m_cues;
+    std::vector<Knot> m_knots;              // 絵の時計の結び目（発行済みの予約。w 昇順）
+    double m_timeOffsetMs = 0;              // timelineMs への加算（持ち替え用）
     HermiteSpline m_spline;                 // 最終接近
     double m_lastWall = 0;                  // 直近の Update の実時計
     double m_lastT = 0;                     // 計算の時計 S
@@ -580,7 +615,7 @@ public:
         if (!m_decided && tMs >= m_decisionMs)
         {
             m_decided = true;
-            if (!m_finish)
+            if (!m_finish && !m_skipped)   // スキップ済みなら持ち替えない（ロックのフレームから巻き戻らない）
             {
                 m_handed = true;
                 m_slow.StartHeld(tMs, m_ev.clickDeg[CalibrateEvents::kClicks - 2]);
@@ -589,10 +624,13 @@ public:
         if (m_handed) m_slow.Update(tMs, loadProgress01, finishRequested);
     }
 
+    // スキップ。持ち替え前は予約を出さない（速い経路の音は graphite_1.wav で、止める・頭出しするのは BD5。LockTail の予約は
+    // GaugeSlowDriver に持ち替えた後だけ出る）。BD5 は HandedOver() / LockWallMs() で分岐すること。
     void Skip(double tMs)
     {
         if (m_handed) { m_slow.Skip(tMs); return; }
         if (m_skipped) return;
+        if (m_finish && tMs >= m_ev.lockMs) return;   // ロック以降は何もしない
         m_skipped = true;
         m_skipWall = tMs;
     }

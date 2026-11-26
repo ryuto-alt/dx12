@@ -179,16 +179,13 @@ void Test_SlowScenarios()
         // 角速度が連続（1ms 刻みで |Δω| < 5 度/s）。最終接近の継ぎ目と行き過ぎ（needleDeg は 360 で止まる）を含む
         std::size_t dwAt = 0;
         const double dw = MaxDeltaOmega(r.needle1ms, &dwAt);
-        std::printf("  fin=%.0f: max d-omega %.3f at %zu ms (approach start %.1f, lock %.1f)%c", fin, dw, dwAt, fin + sp::gauge::kDisplayLagMs, r.lockWall, 10);
-        // (debug print removed)
-        if (!(dw < 5.0)) std::printf("  (fin=%.0f max d-omega = %.3f deg/s per ms)\n", fin, dw);
+        (void)dwAt;
         CHECK(dw < kSlowDwFactor * g_canonMaxDw);   // |Δω| は正規の最大の k 倍以内（EXEC §2.6 の 5 度/s/フレームは正規曲線自体が満たさないので、この形に改めた）
         // 継ぎ目（バネ -> 最終接近）で角速度が連続: 片側差分で |Δω| < 5 度/s
         {
             const double j = d.ApproachWallMs(), e = 0.01;
             const double vm = (d.NeedleDegAt(j) - d.NeedleDegAt(j - e)) / e * 1000.0;
             const double vp = (d.NeedleDegAt(j + e) - d.NeedleDegAt(j)) / e * 1000.0;
-            if (!(std::fabs(vp - vm) < 5.0)) std::printf("  junction fin=%.0f vm=%.2f vp=%.2f lock-F=%.1f""%c", fin, vm, vp, r.lockWall - j, 10);
             CHECK(std::fabs(vp - vm) < 5.0);
         }
         // 最後の C23 は 360 度、ロックで 360
@@ -237,7 +234,7 @@ void Test_SlowScenarios()
         }
         // 残りの歯の間隔は正規の最後の 3 間隔の比（62.5 : 66.7 : 68.1）を保つ
         std::vector<double> approach;
-        for (const auto& c : r.cues) if (c.kind == sp::GaugeCueKind::Click && c.index >= 20) approach.push_back(c.playAtMs);
+        for (const auto& c : r.cues) if (c.kind == sp::GaugeCueKind::Click && c.index >= 20 && c.issuedAtMs >= fin) approach.push_back(c.playAtMs);   // 最終接近で出た予約だけ
         if (approach.size() >= 4)
         {
             const std::size_t n = approach.size();
@@ -245,6 +242,18 @@ void Test_SlowScenarios()
             CHECK_NEAR(i1 / i0, (ev.clickMs[22] - ev.clickMs[21]) / (ev.clickMs[21] - ev.clickMs[20]), 0.02);
             CHECK_NEAR(i2 / i1, (ev.clickMs[23] - ev.clickMs[22]) / (ev.clickMs[22] - ev.clickMs[21]), 0.02);
         }
+    }
+}
+
+// 音と絵の同期: 各クリックの予約の再生時刻に、絵（Frame）がその歯を跨いでいる（履歴が残っている fromMs 以降の予約だけ）
+template <class Driver>
+void CheckSync(const Driver& d, const std::vector<sp::GaugeCue>& cues, double fromMs)
+{
+    for (const auto& c : cues)
+    {
+        if (c.kind != sp::GaugeCueKind::Click || c.playAtMs < fromMs) continue;
+        const double cross = CrossTime([&](double t) { return d.Frame(t); }, 15.0 * (c.index + 1), c.playAtMs - 2000.0, c.playAtMs + 1000.0);
+        CHECK_NEAR(cross, c.playAtMs, 0.5);
     }
 }
 
@@ -258,6 +267,7 @@ void Test_SlowHitches()
         double t = 0, progress = 0, lastNeedle = 0, lastTimeline = 0;
         std::uint32_t k = 0;
         bool finished = false;
+        std::vector<sp::GaugeCue> issued;
         for (int step = 0; step < 4000 && !(finished && t > d.LockWallMs() + 5.0); ++step)
         {
             const double r = sp::Rand01(100 + run, k++);
@@ -270,6 +280,7 @@ void Test_SlowHitches()
             {
                 CHECK(c.playAtMs - c.issuedAtMs >= sp::gauge::kLookaheadMs - 1e-6);
                 CHECK(c.playAtMs >= t);
+                issued.push_back(c);
             }
             const auto fr = d.Frame(t);
             CHECK(fr.needleDeg + 1e-3f >= lastNeedle);
@@ -279,10 +290,32 @@ void Test_SlowHitches()
             lastNeedle = fr.needleDeg; lastTimeline = fr.timelineMs;
         }
         CHECK(!std::isnan(d.LockWallMs()));
+        CheckSync(d, issued, t - 4000.0);   // 音と絵の同期: 発行済みの歯を絵が跨ぐ時刻 = 予約の再生時刻（ヒッチがあっても）
         CHECK(SameFrame(d.Frame(d.LockWallMs()), sp::EvaluateAfterLock(0.0)));
         CHECK(!d.Frame(d.LockWallMs() - 1e-3).locked);
         for (double s = 0; s <= 2200.0; s += 3.7) CHECK(SameFrame(d.Frame(d.LockWallMs() + s), sp::EvaluateAfterLock(s)));
     }
+}
+
+// フレーム間隔が常に 50ms（20fps。34ms を超える環境）: 先読み・単調・同期・ロックの一致は保たれる（指針は実時間より遅く進む）
+void Test_SlowConstant50ms()
+{
+    sp::GaugeSlowDriver d;
+    double t = 0, lastNeedle = 0, lastTimeline = 0;
+    std::vector<sp::GaugeCue> issued;
+    for (int i = 0; i < 160; ++i)
+    {
+        t += 50.0;
+        d.Update(t, static_cast<float>(std::min(1.0, t / 5000.0)), t >= 5000.0);
+        for (const auto& c : d.TakeCues()) { CHECK(c.playAtMs - c.issuedAtMs >= sp::gauge::kLookaheadMs - 1e-6); issued.push_back(c); }
+        const auto f = d.Frame(t);
+        CHECK(f.needleDeg + 1e-3f >= lastNeedle);
+        CHECK(f.timelineMs + 1e-3f >= lastTimeline);
+        lastNeedle = f.needleDeg; lastTimeline = f.timelineMs;
+    }
+    CHECK(!std::isnan(d.LockWallMs()));
+    CheckSync(d, issued, t - 4000.0);
+    CHECK(SameFrame(d.Frame(d.LockWallMs()), sp::EvaluateAfterLock(0.0)));
 }
 
 // 進捗が上限（0.95 = 342 度）に達して待っているところへ完了要求: 先読みと一致が保たれる
@@ -310,13 +343,15 @@ void Test_FastLateFinish()
         for (double t = 0; t < 2500.0; t += 5.3) CHECK(SameFrame(d.Frame(t), sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f)));
     }
     sp::GaugeFastDriver d;
-    double t = 0, lastNeedle = 0;
+    double t = 0, lastNeedle = 0, lastTimeline = 0;
     std::vector<sp::GaugeCue> cues;
     for (; t < 4000.0; t += 1000.0 / 60.0)
     {
         d.Update(t, 0.2f, false);
         for (const auto& c : d.TakeCues()) cues.push_back(c);
         const auto f = d.Frame(t);
+        CHECK(f.timelineMs + 1e-3f >= lastTimeline);   // 持ち替え（1,475）で timelineMs が戻らない
+        lastTimeline = f.timelineMs;
         CHECK(f.needleDeg + 1e-3f >= lastNeedle);
         CHECK(f.needleDeg <= 345.0f + 0.5f);
         CHECK(!f.locked);
@@ -338,6 +373,59 @@ void Test_FastLateFinish()
     CHECK(clicks == 1 && tails == 1);
     CHECK(SameFrame(d.Frame(d.LockWallMs()), sp::EvaluateAfterLock(0.0)));
     for (double s = 0; s <= 2200.0; s += 0.5) CHECK(SameFrame(d.Frame(d.LockWallMs() + s), sp::EvaluateGauge(sp::GaugePath::Fast, ev.lockMs + s, 0.f)));
+}
+
+// C22（1,475）より前のスキップ: 完了要求が来なくても持ち替えず、ロックのフレームのまま進む
+void Test_FastSkipBeforeHandover()
+{
+    const auto& ev = Ev();
+    sp::GaugeFastDriver d;
+    const double tSkip = 1016.7;
+    double t = 0;
+    for (; t < tSkip; t += 1000.0 / 60.0) d.Update(t, 0.1f, false);
+    d.Skip(tSkip);
+    for (t = tSkip; t < 4000.0; t += 1000.0 / 60.0)
+    {
+        d.Update(t, 0.1f, false);
+        const auto f = d.Frame(t);
+        CHECK(SameFrame(f, sp::EvaluateAfterLock(t - tSkip, ev)));
+        CHECK(f.locked);
+    }
+    CHECK(!d.HandedOver());
+    CHECK_NEAR(d.LockWallMs(), tSkip, 1e-9);
+    CHECK(d.TakeCues().empty());   // 持ち替え前は予約を出さない（音は BD5）
+}
+
+// ロック以降のスキップは何もしない（巻き戻さない・ロック音を重ねない）
+void Test_SkipAfterLockNoRewind()
+{
+    const auto& ev = Ev();
+    for (std::uint32_t k = 0; k < 5; ++k)
+    {
+        const double tSkip = ev.lockMs + 1.0 + sp::Rand01(88, k) * 1500.0;
+        // Fast ドライバ（完了要求あり）
+        sp::GaugeFastDriver f;
+        for (double t = 0; t < tSkip; t += 16.0) f.Update(t, 1.0f, true);
+        const auto before = f.Frame(tSkip);
+        f.Skip(tSkip);
+        CHECK(SameFrame(f.Frame(tSkip), before));
+        CHECK(SameFrame(f.Frame(tSkip + 100.0), sp::EvaluateGauge(sp::GaugePath::Fast, tSkip + 100.0, 0.f)));
+        CHECK_NEAR(sp::GaugeSkippedTimelineMs(tSkip + 50.0, tSkip, ev), tSkip + 50.0, 1e-9);
+        // Slow ドライバ
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 900.0; t += 16.0) d.Update(t, 1.0f, false);
+        d.Update(t, 1.0f, true);
+        d.TakeCues();
+        const double lock = d.LockWallMs();
+        const double tS = lock + 1.0 + sp::Rand01(99, k) * 1500.0;
+        const auto b = d.Frame(tS);
+        d.Skip(tS);
+        CHECK(!d.Skipped());
+        CHECK(d.PendingCues().empty());
+        CHECK(SameFrame(d.Frame(tS), b));
+        CHECK_NEAR(d.LockWallMs(), lock, 1e-9);
+    }
 }
 
 // 行き過ぎは遅い経路でも 2px 以下で、ピークがある
@@ -385,8 +473,8 @@ void Test_Skip()
     for (std::uint32_t k = 0; k < 5; ++k)
     {
         const double tSkip = 100.0 + sp::Rand01(77, k) * 3000.0;
-        // Fast
-        for (double dt = 0; dt < 1500.0; dt += 7.0)
+        // Fast（ロック以前のスキップだけ。以降は Test_SkipAfterLockNoRewind）
+        if (tSkip < ev.lockMs) for (double dt = 0; dt < 1500.0; dt += 7.0)
         {
             const double tl = sp::GaugeSkippedTimelineMs(tSkip + dt, tSkip, ev);
             CHECK(SameFrame(sp::EvaluateGauge(sp::GaugePath::Fast, tl, 0.f), sp::EvaluateAfterLock(dt, ev)));
@@ -410,6 +498,7 @@ void Test_Skip()
 void Test_Reduce()
 {
     const auto& ev = Ev();
+    float lastTl = 0.f;
     for (double t = 0; t <= 3000.0; t += 13.0)
     {
         const auto f = sp::EvaluateGauge(sp::GaugePath::Reduce, t, 0.3f);
@@ -418,6 +507,9 @@ void Test_Reduce()
         CHECK(f.alignStep == 5 && f.tickLit == sp::gauge::kDialTickCount && f.tomboT == 1.f && f.bellT == 1.f && f.needleShown);
         CHECK(f.pinT == (t >= ev.pingMs ? 1.f : 0.f));            // 動かさない（段差）
         CHECK(f.fadeOutT >= 0.f && f.fadeOutT <= 1.f);
+        CHECK(f.timelineMs >= static_cast<float>(ev.bellMs[4]));   // reveal の時計は最後の reveal 以上（全 reveal が出きっている）
+        CHECK(f.timelineMs >= lastTl);
+        lastTl = f.timelineMs;
     }
     CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, ev.pingMs + 500.0, 0.f).fadeOutT == 1.f);
 }
@@ -453,8 +545,11 @@ int main()
     Test_FastVelocityContinuity();
     Test_SlowScenarios();
     Test_SlowHitches();
+    Test_SlowConstant50ms();
     Test_SlowFinishAtCap();
     Test_FastLateFinish();
+    Test_FastSkipBeforeHandover();
+    Test_SkipAfterLockNoRewind();
     Test_SlowOvershoot();
     Test_SlowWaitsAtCap();
     Test_SlowFinishFromRest();
