@@ -116,6 +116,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             auto* app = static_cast<Application*>(ctx);
             if (app->m_editorCtx) app->m_editorCtx->Notify(ui::ToastKind::Info, msg, 10.0f);
         }, this);
+    // アセット改名・移動時の参照追従（アセットブラウザ。MCP の move_asset と同じ書き換え）
+    if (!gameMode)
+        m_editorCtx->rewriteAssetRefs = [this](const std::string& from, const std::string& to) -> int {
+            int n = 0;
+            if (m_scene)
+            {
+                const int mem = SceneSerializer::RewriteAssetPathRefs(*m_scene, from, to);
+                if (mem > 0) m_editorCtx->undoSystem.MarkEdited();
+                n += mem;
+            }
+            const auto files = SceneSerializer::RewriteAssetPathRefsInFiles(
+                PathResolver::AssetsDir(), from, to, m_editorCtx->currentScenePath);
+            return n + files.refsChanged;
+        };
     // エディタ（別ライブラリ）へ Application 側のフレームデータを読み取り専用で貸す。
     // どちらも Application の寿命いっぱい生きるメンバなのでアドレスは不変＝ここで一度だけ渡す。
     //   drawItems  … 精密ピッキングのブロードフェーズ候補（ワールド行列/球が計算済み）
@@ -1196,9 +1210,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_clusteredLighting = std::make_unique<ClusteredLightCulling>();
         m_clusteredLighting->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
         // サムネイルレンダラもメインの RootSig / Forward PSO を流用するのでテーブルが要る
-        // （灯数 0 なので中身は読まれない。frameIndex 0 のブロックで十分）。
-        if (m_thumbRenderer)
-            m_thumbRenderer->SetClusterSrv(m_clusteredLighting->GetSrvTableIndex(0));
+        // （灯数 0 なので中身は読まれない。テーブルはサムネイル側が自前のダミーを持つ）。
 
         // ボリュメトリックフォグ（froxel）。3D テクスチャ 28MB は「初めて有効になったフレーム」まで
         // 確保しない（既定 OFF）。ディスクリプタブロックだけは断片化前のここで押さえておく。

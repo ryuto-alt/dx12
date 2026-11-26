@@ -399,7 +399,7 @@ if(COMMAND uno_agility_test_exe)
     # DredReportTests（gpu）: W05-05。DRED の既定の判定、BeginEvent("TestPass") → RemoveDevice で JSON が書かれ、
     #   removedReason が入る。リソースの SetName（Buffer / RenderTarget / Texture）。gameMode=true なら exe 名に関わらず既定 OFF。
     #   ★実デバイスは、決して Signal しないフェンスでキューを待たせて未完了のリストを残し、RemoveDevice 後に
-    #   コンテキスト "TestPass"・コマンドリスト名 DredTestList・lastCompleted の整合を必須で検査する（未実機確認: -Gpu で要実行）。
+    #   コンテキスト "TestPass"・コマンドリスト名 DredTestList・lastCompleted の整合を必須で検査する（この PC のドライバは RemoveDevice で DRED を埋めない: その場合は SKIP_RETURN_CODE 77 で環境スキップ。合成データの検査は常に必須）。
     add_executable(DredReportTests dred_report_test.cpp)
     target_include_directories(DredReportTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(DredReportTests PRIVATE Graphics Input)
@@ -408,7 +408,7 @@ if(COMMAND uno_agility_test_exe)
         target_compile_definitions(DredReportTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME DredReportTests COMMAND DredReportTests)
-    set_tests_properties(DredReportTests PROPERTIES LABELS gpu TIMEOUT 120)
+    set_tests_properties(DredReportTests PROPERTIES LABELS gpu TIMEOUT 120 SKIP_RETURN_CODE 77)
 
     # AgilityVersionPolicy（GPU 不要）: lock の SDK が 600 以上 700 未満（プレビューを出荷しない）、
     #   ビルドした exe 2 本の export と同梱 DLL の export と lock の 3 つが一致、D3D12SDKPath、DLL の SHA256。
@@ -608,6 +608,18 @@ if(TARGET Scene)
     endif()
     add_test(NAME PlayStopUndoTests COMMAND PlayStopUndoTests)
     set_tests_properties(PlayStopUndoTests PROPERTIES TIMEOUT 120)
+endif()
+# Undo コマンドは実行時ハンドル（Mesh* / bodyId / Lua 環境）を持たない（W05-11 恒久策）。Stop をまたぐ往復。GPU 不要。
+if(TARGET Scene)
+    add_executable(UndoHandleFreeTests undo_handle_free_test.cpp ../src/editor/UndoSystem.cpp)
+    target_link_libraries(UndoHandleFreeTests PRIVATE Scene)
+    target_include_directories(UndoHandleFreeTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(UndoHandleFreeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(UndoHandleFreeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME UndoHandleFreeTests COMMAND UndoHandleFreeTests)
+    set_tests_properties(UndoHandleFreeTests PROPERTIES TIMEOUT 120)
 endif()
 # Lua 公開プロパティの Undo（W05-14）: 値の往復 / GUID で引く / ホットリロードで例外なし / 既定値に戻すは複合 1 件。GPU 不要。
 if(TARGET ECS)

@@ -223,6 +223,11 @@ public:
     // （地形ブラシ、ライトのハンドル操作などがここに登録する。ViewportInput 参照）
     std::vector<std::function<bool(const ViewportInput&)>> viewportToolHandlers;
 
+    // アセットを改名・移動した直後に Application が呼ぶ「参照の付け替え」フック（assets 相対パス）。
+    // 開いているシーン（メモリ上・未保存の分を含む）と、ディスク上の他ファイルの参照を新しいパスへ直す。
+    // 戻り値は付け替えた参照の数（メモリ + ファイル）。未設定なら何もしない。
+    std::function<int(const std::string& oldRel, const std::string& newRel)> rewriteAssetRefs;
+
     // ---- Application から借りている読み取り専用データ（Application::Initialize が設定）----
     // 今フレームの描画リスト。精密ピッキングのブロードフェーズ候補に使う（null なら
     // SceneViewPanel が従来どおり entt 走査へフォールバックする）。

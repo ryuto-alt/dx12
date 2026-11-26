@@ -925,6 +925,8 @@ void Application::RegisterMcpEditorMethods()
                 s.frameMsMax = fm.back();
             }
             nlohmann::json rep = PerfReportJson(s, m_useVsync, m_fpsLimit);
+            // W05-05: DRED の実際の ON/OFF（--dred / --no-dred / gameMode 解決後の値）。計測は --no-dred で行うので、読む側が確認できるようにする。
+            rep["dred"] = m_graphicsDevice ? m_graphicsDevice->GetOptions().dred : false;
             rep["instancing"] = m_instancingEnabled;   // settings.json "render_instancing" で A/B 可
             // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。
             // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。

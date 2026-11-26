@@ -33,6 +33,7 @@
 #include <entt/entt.hpp>
 #include "core/Types.h"
 #include "editor/UndoCore.h"
+#include "editor/UndoValueTraits.h"
 
 namespace dx12e
 {
@@ -48,7 +49,8 @@ struct McpRestore
 {
     static void Apply(Scene& /*scene*/, entt::registry& reg, entt::entity e, const T& v)
     {
-        reg.emplace_or_replace<T>(e, v);
+        // v は UndoValueTraits<T>::Capture を通った純データ。実行時ハンドルは生きている側を残して書き戻す（W05-11）
+        EmplaceValue<T>(reg, e, v);
     }
     static void Remove(entt::registry& reg, entt::entity e) { reg.remove<T>(e); }
 };
@@ -94,7 +96,7 @@ struct McpUndoSlot final : IMcpUndoSlot
     {
         if (const T* v = reg.try_get<T>(e))
         {
-            before = *v;
+            before = UndoValueTraits<T>::Capture(*v);
             if constexpr (std::is_same_v<T, Transform>) McpUndoCaptureParentGuid(reg, *v, parentGuidBefore);
         }
     }
@@ -102,7 +104,7 @@ struct McpUndoSlot final : IMcpUndoSlot
     {
         if (const T* v = reg.try_get<T>(e))
         {
-            after = *v;
+            after = UndoValueTraits<T>::Capture(*v);
             if constexpr (std::is_same_v<T, Transform>) McpUndoCaptureParentGuid(reg, *v, parentGuidAfter);
         }
     }

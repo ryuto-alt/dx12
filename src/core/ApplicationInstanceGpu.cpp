@@ -445,8 +445,8 @@ void Application::GpuInstDrawMain(ID3D12GraphicsCommandList* cmd, u32 frameIndex
                 matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
             else
             {
-                Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-                matSrv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+                // 単独の SRV ではなく既定の材質ブロック(5 連続)を張る。t25(height) などブロック +4 まで読まれるため。
+                matSrv = m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultMaterialSrvBlock());
             }
             m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, matSrv);
             struct { float metallic; float roughness; u32 flags; u32 packedTint;
