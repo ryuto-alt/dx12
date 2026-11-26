@@ -1,4 +1,5 @@
 #include "renderer/GraphPreviewRenderer.h"
+#include "renderer/FrameConstants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,7 +14,9 @@
 #include "graphics/PipelineState.h"
 #include "graphics/RootSignature.h"
 #include "graphics/Texture.h"
+#include "renderer/ClusteredLightCulling.h"
 #include "renderer/IBLBaker.h"
+#include "renderer/MaterialTableLayout.h"
 #include "renderer/Mesh.h"
 #include "resource/ResourceManager.h"
 #include "resource/ShaderRuntimeCompiler.h"
@@ -27,48 +30,13 @@ namespace
 {
 
 // ---------------------------------------------------------------------------------------------
-// b1（PerFrameConstants, 1600 バイト）。Lighting.hlsli / Application の FrameConstants / ModelThumbnailRenderer と同じレイアウト
+// b1（PerFrameConstants, 1600 バイト）。Lighting.hlsli / renderer/FrameConstants.h（正本）と同じレイアウト
 // ---------------------------------------------------------------------------------------------
-struct FrameConstants
-{
-    XMFLOAT4X4 view;
-    XMFLOAT4X4 proj;
-    XMFLOAT3   lightDir;   float time;
-    XMFLOAT3   lightColor; float ambientStrength;
-    XMFLOAT4X4 cascadeViewProj[4];
-    XMFLOAT4   cascadeSplitsView;
-    XMFLOAT4   shadowParams;
-    XMFLOAT3   cameraPos;  float aoEnabled;
-    u32        numPointLights; u32 numSpotLights;
-    float      spotShadowTexel; float pointShadowNear;
-    XMFLOAT4   clusterParams;
-    XMFLOAT4   clusterGrid;
-    XMFLOAT4   clusterViewport;
-    XMFLOAT4   clusterExtra;
-    XMFLOAT4   pcssParams;
-    XMFLOAT4   ddgiOrigin;
-    XMFLOAT4   ddgiSpacing;
-    XMFLOAT4   ddgiCounts;
-    XMFLOAT4   _clusterReserved[35];
-    XMFLOAT4   ddgiC1;
-    XMFLOAT4   ddgiScroll0;
-    XMFLOAT4   ddgiScroll1;
-    XMFLOAT4   giParams;
-    XMFLOAT4   giParams2;
-    XMFLOAT4X4 spotShadowMatrix[4];
-    float      iblIntensity;
-    float      maxPrefilterMip;
-    u32        hasIBL;
-    float      skyboxIntensity;
-    float      contactShadowEnabled;
-    XMFLOAT3   normalFilterParams;
-    XMFLOAT4   ddgiC2, ddgiScroll2, ddgiC3, ddgiScroll3;   // 末尾追記 64B（プレビューでは 0）
-};
-static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes (Lighting.hlsli PerFrameConstants)");
+using FrameConstants = FrameConstantsData;   // 正本は renderer/FrameConstants.h（W05-23）
 
 constexpr u32 kCbSlotBytes = 1792;   // 256 の倍数（>= 1600）
 constexpr u32 kCbSlotsPerFrame = 2;  // 0 = メイン / 1 = タイル・RAW
-constexpr u32 kClusterTable = 9;     // kSlotClusterSRV のテーブル長: t13-15 + t18-21 + t22-23
+constexpr u32 kClusterTable = kClusterTableCount;   // kSlotClusterSRV のテーブル長（ClusterTableLayout.h が正本。以前は 9 で 5 本不足していた）
 
 struct Immediate   // 環境のベイク用の専用キュー（メインのキューとは独立。完了まで待つ）
 {
@@ -295,9 +263,13 @@ struct GraphPreviewRenderer::Impl
     std::unique_ptr<Mesh> sphere, plane, cylinder, cube, quad;
 
     // ダミー（メイン RS のテーブルは何かを指している必要がある。実際には読まれない）
-    ComPtr<ID3D12Resource> aoWhite, ssBlack, dummyBuf;
+    ComPtr<ID3D12Resource> aoWhite, ssBlack;
     u32 aoWhiteSrv = DescriptorHeap::kInvalidIndex, ssBlackSrv = DescriptorHeap::kInvalidIndex;
-    u32 clusterSrv = DescriptorHeap::kInvalidIndex;   // 9 個連続（t13-15 / t18-21 / t22-23。RootSignature.cpp の kSlotClusterSRV）
+    // 材質テーブル（slot2: kMaterialTableCount 本）と点光源影テーブル（slot8: 2 本）の連続ブロック。
+    // 以前は既定の白 1 枚の SRV の先頭だけを渡していたため、続きの記述子（別リソース）まで読んでいた（GBV の id=1358）
+    u32 matSrv = DescriptorHeap::kInvalidIndex;
+    u32 punctSrv = DescriptorHeap::kInvalidIndex;
+    u32 clusterSrv = DescriptorHeap::kInvalidIndex;   // kClusterTableCount 個連続（ClusterTableLayout.h。RootSignature.cpp の kSlotClusterSRV）
 
     ComPtr<ID3D12RootSignature> tmRS;
     ComPtr<ID3D12PipelineState> tmPso;
@@ -569,6 +541,10 @@ bool GraphPreviewRenderer::Impl::CreateDummies()
         aoWhiteSrv = d.srvHeap->AllocateIndex();
         ssBlackSrv = d.srvHeap->AllocateIndex();
         clusterSrv = d.srvHeap->AllocateBlock(kClusterTable);
+        matSrv = d.srvHeap->AllocateBlock(kMaterialTableCount);
+        punctSrv = d.srvHeap->AllocateBlock(2);
+        if (matSrv == DescriptorHeap::kInvalidIndex || punctSrv == DescriptorHeap::kInvalidIndex)
+            throw std::runtime_error("SRV heap exhausted");
         if (aoWhiteSrv == DescriptorHeap::kInvalidIndex || ssBlackSrv == DescriptorHeap::kInvalidIndex || clusterSrv == DescriptorHeap::kInvalidIndex)
             throw std::runtime_error("SRV heap exhausted");
         D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
@@ -580,21 +556,24 @@ bool GraphPreviewRenderer::Impl::CreateDummies()
         sd.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
         dev->CreateShaderResourceView(ssBlack.Get(), &sd, d.srvHeap->GetCpuHandle(ssBlackSrv));
 
-        // クラスタライト / インデックス / カウント / デカール / DDGI（9 個）: 中身は読まれない。共通の小さなバッファを指す
-        D3D12_HEAP_PROPERTIES up{};
-        up.Type = D3D12_HEAP_TYPE_UPLOAD;
-        D3D12_RESOURCE_DESC bd{};
-        bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        bd.Width = 256; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1; bd.SampleDesc.Count = 1;
-        bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        ThrowIfFailed(dev->CreateCommittedResource(&up, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&dummyBuf)));
-        D3D12_SHADER_RESOURCE_VIEW_DESC bs{};
-        bs.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        bs.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-        bs.Format = DXGI_FORMAT_UNKNOWN;
-        bs.Buffer.NumElements = 16;
-        bs.Buffer.StructureByteStride = 16;
-        for (u32 i = 0; i < kClusterTable; ++i) dev->CreateShaderResourceView(dummyBuf.Get(), &bs, d.srvHeap->GetCpuHandle(clusterSrv + i));
+        {
+            // 材質テーブルは既定の白で全部埋める。点光源影は t9 = 2D 配列 / t10 = キューブ配列の型つきヌル
+            Texture* wt = d.resources->GetDefaultWhiteTexture();
+            D3D12_SHADER_RESOURCE_VIEW_DESC wd{};
+            wd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            wd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            wd.Format = wt->GetFormat();
+            wd.Texture2D.MipLevels = wt->GetMipLevels();
+            for (u32 i = 0; i < kMaterialTableCount; ++i)
+                dev->CreateShaderResourceView(wt->GetResource(), &wd, d.srvHeap->GetCpuHandle(matSrv + i));
+            ClusteredLightCulling::WriteDummySrv(dev, DummyKind::Tex2DArray, d.srvHeap->GetCpuHandle(punctSrv));
+            ClusteredLightCulling::WriteDummySrv(dev, DummyKind::TexCubeArray, d.srvHeap->GetCpuHandle(punctSrv + 1));
+        }
+
+        // クラスタライト / インデックス / カウント / デカール / DDGI ほか（kClusterTableCount 個）: プレビューは灯数 0 で
+        // どの枠も読まない。全枠を ClusterDummyKindAt(i)（HLSL の宣言と同じ型）の型つきヌル SRV で埋める。
+        for (u32 i = 0; i < kClusterTable; ++i)
+            ClusteredLightCulling::WriteDummySrv(dev, ClusterDummyKindAt(i), d.srvHeap->GetCpuHandle(clusterSrv + i));
         // ダミーの初期化（白 / 黒）: UPLOAD 経由でコピー（専用の即時キューで完了まで待つ）
         Immediate exd;
         if (!exd.Init(dev)) throw std::runtime_error("即時キューを作れません");
@@ -846,9 +825,9 @@ void GraphPreviewRenderer::Impl::BindCommon(ID3D12GraphicsCommandList* cmd, D3D1
     cmd->SetGraphicsRootConstantBufferView(RootSignature::kSlotPerFrame, cbAddr);
     Texture* white = d.resources->GetDefaultWhiteTexture();
     const D3D12_GPU_DESCRIPTOR_HANDLE whiteH = h.GetGpuHandle(white->GetSrvIndex());
-    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotSRVTable, whiteH);
+    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotSRVTable, h.GetGpuHandle(matSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotShadowSRV, whiteH);
-    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotPunctualShadowSRV, whiteH);
+    cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotPunctualShadowSRV, h.GetGpuHandle(punctSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotAOSRV, h.GetGpuHandle(aoWhiteSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotContactShadowSRV, h.GetGpuHandle(aoWhiteSrv));
     cmd->SetGraphicsRootDescriptorTable(RootSignature::kSlotSsrSRV, h.GetGpuHandle(ssBlackSrv));
@@ -917,6 +896,8 @@ void GraphPreviewRenderer::Shutdown()
             if (I.srvAtlas != DescriptorHeap::kInvalidIndex) I.d.srvHeap->Free(I.srvAtlas);
             if (I.aoWhiteSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->Free(I.aoWhiteSrv);
             if (I.ssBlackSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->Free(I.ssBlackSrv);
+            if (I.matSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->FreeBlock(I.matSrv, kMaterialTableCount);
+            if (I.punctSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->FreeBlock(I.punctSrv, 2);
             if (I.clusterSrv != DescriptorHeap::kInvalidIndex) I.d.srvHeap->FreeBlock(I.clusterSrv, kClusterTable);
             for (auto& e : I.envs)
                 if (e.baker && e.baker->GetSrvBlockStart() != DescriptorHeap::kInvalidIndex)

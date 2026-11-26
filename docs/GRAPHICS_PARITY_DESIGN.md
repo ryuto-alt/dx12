@@ -138,6 +138,99 @@ VG 書の統合方針（プロキシ + 可視性バッファ + 全画面 resolve
 
 ---
 
+**2.0.5 方針の撤回（2026-11-26 オーナー決定）と GpuTimer のスコープ表（W05-26）**
+
+**計装の入れ子の原則（W05-26 レビュー）**: 1 つのスコープが複数の親の区間にまたがる作業（植生の shadowDraw / depthDraw / mainDraw、VfxShadow は Shadows の内数など）は、段ごとに別の Begin/End で囲む。まとめて 1 本で囲むと親子どちらにも収まらず nestViolations か leafSumViolations が出る。段に分けられないものは gpuPassMs だけに出して葉の合計から外す。新 30 本の親は仮置きで、Foliage / VfxShadow / Characters / Transparent / Water は現状 Total 直下の葉。
+
+- 「Agility SDK を使わない」「フルフレームグラフを却下」という旧方針は**撤回（2026-11-26 オーナー決定）**。F0〜F4（Agility、Enhanced Barriers、bindless、レンダーグラフ）は EXEC_W05_W1 / MODERNIZATION_BACKLOG (c) に従って進める。各段で既定の経路のゴールデンがビット一致すること。`docs/VIRTUAL_GEOMETRY_DESIGN.md` の「Work Graphs（Agility SDK が要る。このエンジンは意図的に使っていない）」も同じ決定で上書きされる（Work Graphs 自体の採否は別。プレビュー版の機能は出荷しない）。
+- GpuTimer は 64 本まで（書込みマスクは u64）。旧 22 本の名前と番号は不変で、新しい 30 本を後ろに足して 52 本。子を持たないスコープが葉で、予算の合計は**葉だけ**で出す（`perf_stats` の `gpuLeafMs`。親は `gpuPassMs` に今までどおり出る）。`gpuScopeTree` が親子と別名を返す。新しいスコープは対応するパスが計装されるまで 0 ms。
+
+| スコープ（JSON 名） | 親 | 別名 / 備考 |
+|---|---|---|
+| total | — | フレーム全体（葉の合計の上限: Total + 0.1ms） |
+| shadows | total | 子: vgShadow, shadowCsm, shadowLocal |
+| prepassSsao | total | 子: depthPrepass, hiZ, vgCull, rtScreen, screenSpaceGi, cloudShadow, screenShadow, ssLighting |
+| rtScreen | prepassSsao | 子: rtShadowDenoise, rtShadow, rtLocalShadow |
+| particles | total | 子: clouds |
+| postFx | total | 子: upscale, godRays, reactive, taa, dof, motionBlur, autoExposure, localExposure, bloom, lensFx, colorLut, uber |
+| ui | total | 子: editorOverlay, gameHud |
+| raytracing | total | 別名 asBuild |
+| rtReflection | total | 別名 rtReflect |
+| volFog | total | 別名 fogScatter |
+| clusterCull, ddgi, mainScene | total | 葉 |
+| skinning, characters, transparent, water, foliage, atmosphere, decals, vfxSim, vfxDraw, vfxLighting, vfxShadow | total | 新規・葉（未計装の間は 0） |
+
+- 葉の合計は「構造上の葉は自分の時間、親は自己時間 = 親 − Σ子（下限 0）」を合成した葉（`gpuLeafMs` の `"<親>.self"`。例 `shadows.self`、`postFx.self`、`total.self`）で出す。子がどのスコープにも入っていない作業（SSAO・CSM・ポストの本体など）が親に残るため、子が未計装でも、一部だけ計装されても、予算の合計は過小にならない。合計は Total に一致し、兄弟の重なり（二重計上）だけが Total を超えて検出される。
+- 実行時の検査（`NewFrame` が読み戻しのたびに実行。実体は純関数 `GpuTimer::CheckFrame`、`tests/gpu_timer_scope_test.cpp` が CPU だけで検査）: 子の Begin/End が親の Begin/End の中に入っていること（`perf_stats.gpuTimerChecks.nestViolations`）、葉の合計 ≤ Total + 0.1ms（同 `leafSumViolations`）。同一フレームに 2 回以上 Begin されたスコープ（複数ビュー。クエリ枠が最後のビューの区間で上書きされる。例: Clouds / CloudShadow）は入れ子の検査と葉から外し（子孫も同じ）、その時間は親の self に残る（同 `multiWrite` に名前が出る）。
+- `perf_stats` / `benchmark` はどちらも `gpuPassMs`（全スコープ。形は不変）、`gpuLeafMs`、`gpuLeafSumMs` を返す。`PerfFrame::gpuMs`（`Application.h` は凍結）は先頭 24 本のままで、全スコープの履歴とベンチ集計は `GpuTimer` が持つ（`worstFrames[].gpuPassMs` だけは先頭 24 本の内訳）。
+- 計装済みの新スコープ（W05-26 時点）: `taa` / `dof` / `motionBlur` / `autoExposure` / `localExposure` / `bloom` / `godRays` / `lensFx` / `uber`（`RenderPostChain`、PostFX の子）、`decals`、`atmosphere`（空パスだけ。AP と雲は Particles 区間内）。それ以外（shadowCsm、skinning、water、vfx\* など）は対応するパスが無い、または W1 以降の項目で計装する間は 0 ms で、その時間は親の self に残る。
+- 旧名の扱い（要確認。PROGRAM_PLAN §1.4 は「旧名 Shadows / Particles / ScreenSpaceGI / RtScreen / VolumetricFog / PostFX / UI は親として残す」とするが、ScreenSpaceGI と VolumetricFog には子にできるパスの計装が無く、`FogScatter = VolumetricFog` の別名もあるため、現状は**構造上の葉**にしてある）。ScreenSpaceGI / VolumetricFog に子を足すときは、`kScopeInfo` の親だけを変えればよい。新しい 30 本の親は計装位置に合わせた仮置きで、計装のたびに `nestViolations` で照合する。
+- `vramBaselineMB` は `fleet::QueryVideoMemoryMB` の「このプロセスの現在の VRAM 使用量」（シーンのアセットを含む。取れなければ -1）。基盤（スワップチェーン・既存の RT・DDGI・既存パス）の実測として使うには、空シーンで起動直後に取ること。
+
+**2.0.6 共有リソースの割り当て表（v2。PROGRAM_PLAN §1.4 の転記）**
+
+- この節が唯一の正。実装の正は `ClusterTableLayout.h`、`MaterialTableLayout.h`、`FrameConstants.h`（PfSlot）、`StagePriority.h` の 4 つ。
+
+使用中のレジスタ（W0.5 の時点）:
+- t0〜t24 は既存。t24 は emissive。
+- **t25 は height**（`Forward.hlsl:24`）。VG の設計書にある t25/t26 の VSM の予約は無効になり、VSM は t47/t48 へ移す。
+- slot11 の既存 14 本: t13〜15、t18〜21、t22〜23、t30、t31〜32、t33〜34。
+- §2.0 の予約: t28 は雲の影、t29 は布の DFG（slot 6）。
+
+slot11（クラスタのテーブル。PIXEL 専用。OFFSET_APPEND）。W0.5 で将来分まで宣言し、ダミーで埋める:
+
+| ヒープ上の順 | レジスタ | 用途 | 項目 | Wave |
+|---|---|---|---|---|
+| 1〜14 | 既存 14 本 | — | — | — |
+| 15 | t35 | LTC の LUT（Texture2DArray 64²×2） | LS-06 | W3 |
+| 16 | t46 | IBL の SH9 | MH-5 | W3 |
+| 17 | t36 | ShadowTileGpu | LS-08 | W4 |
+| 18 | t27 | MaterialExtra（StructuredBuffer） | MH-9 | W4 |
+| 19〜20 | t37 / t38 | RT ローカル影の選択表と可視率 | LS-09 | W5 |
+| 21 | t39 | 雨の波紋の法線 | MH-6 | W5 |
+| 22 | t42 | シーン色のコピーと mip（屈折用） | MH-7 | W5 |
+| 23 | t41 | 肌のプレインテグレート LUT | MH-10 | W6 |
+| 24 | t43 | 薄膜干渉の LUT | MH-12 | W7 |
+| 25 | t40 | GTSO の LUT（解析近似にした場合は予約のまま） | LS-01 | W1 |
+| 26 | t28 | 雲の影（予約） | LS-05 | W2 |
+| 27〜28 | t49 / t50 | 予約（LS-14 と LS-16 の候補） | — | W6 |
+
+- t47 / t48 は VSM（LS-13、W8）に予約する。テーブルが別になる可能性があるので、slot11 には入れない。
+
+slot2（材質のテーブル。材質ごと）:
+
+| レジスタ | 用途 | 項目 | Wave |
+|---|---|---|---|
+| 既存 5 本（t24 emissive と t25 height を含む） | — | — | — |
+| t44 / t45 | ディテール法線とディテールマスク | MH-9 | W4（`kMaterialTableCount` を 5 から 7 にする） |
+
+- MH-9 の受け入れに次を足す: slot2 を張るすべての経路（フォワード、グラフ材質、VG、サムネイル、プレビュー）で 7 枚がダミーで埋まり、デバッグレイヤーのエラーが 0 件。
+
+PerFrame `_clusterReserved`（float4 の配列。HLSL は 34 個、C++ は 35 個で、[34] は反射プローブ）:
+
+| float4 | 所有者 | 中身 | 項目 |
+|---|---|---|---|
+| [0][1] | 既存 | 植生の風 | — |
+| [2] ShadingV2 | C | x=shadingFlags（asuint。bit: microShadow / horizonOcc / gtso / screenShadowMode / weatherOn / emissiveExpComp / atlasOn / rtLocalOn）、y=microShadowK、z=horizonK、w=sunAngularRadius | LS-01、MH-2、LS-03、MH-6、MH-14、LS-08/09 |
+| [3] CsmTexel | C | csmTexelWorld[4] | LS-02 |
+| [4] Weather | C | wetness、puddle、rain、snow | MH-6 |
+| [5] PostView | C が書く口を持つ | x=preExposure（値は BD の PI-09 が ctx で渡す）、y=debugViewMode（値は A の EC-01 が渡す） | PI-09、EC-01 |
+| [6] LocalShadow | C | アトラスと RT ローカル影の定数 | LS-08、LS-09 |
+| [7] | C | 予約（LS-14、LS-16） | — |
+| [8] | 既存 | contactLocalOn、texMipBias | — |
+| [9] | 既存 | マルチスキャッタ | — |
+| [10] VfxFrame | BD | VFX の共通値 | VFX-05、VFX-09 |
+| [11]〜[33] | — | W8 以降のために空けておく | — |
+
+- 規則: 1 つの float4 は 1 つの所有者だけが書く。既存の [8] と [9] には詰めない。V2 の .hlsli だけで、`#define PF_SHADING_FLAGS asuint(_clusterReserved[2].x)` のように名前を付ける。配列の宣言は変えない。
+
+ステージ内の順序（`StagePriority.h`）:
+- 帯は 100 刻みで、レーンと機能ごとに予約する。例: AfterTranslucent では、[0,99] が C（MH-7 のガラス）、[100,199] が BD-VFX（描画 → VFX-07 の合成 → VFX-10 の屈折）、[200,299] が BD-B（PI-03 の後ろのコピー）。
+- 新しい機能は、帯の中の番号を `StagePriority.h` に書いてから使う。この表は IF チャンクでだけ変える。
+
+ポート:
+- MCP: A 8851、BD 8852、C 8853、NB 8855。UI テスト: A 8911、BD 8912、C 8913、NB 8914（フリートの帯 8860〜8899 の外）。
+
 ### 2.1 大気・空・ボリュメトリッククラウド
 
 #### 2.1.1 推奨手法: Hillaire 2020 の 4 LUT
@@ -757,4 +850,4 @@ UE は再インストールしない方針のため、§3.5 の「UE 側」の�
 
 **低信頼度（フォーラム。設計の根拠にせず注意喚起のみ）**: https://forums.unrealengine.com/t/renderoffscreen-large-resolutions-not-working/671085 / https://forums.developer.nvidia.com/t/streamline-plugin-crashes-in-unreal-5-3-packaged-game-with-renderoffscreen-command/268872 / https://forums.unrealengine.com/t/static-mesh-merging-requires-rhi/2731294 / https://unrealcontainers.com/blog/offscreen-rendering-in-windows-containers/
 
-**本書が更新した過去の記述**: ① VG 書 P9 の「TSR 自前」を FSR 3.1 統合へ置換する提案（未決 §6-3、承認前は VG 書のまま）② memory `dx12-realism-roadmap` / 依頼文の「ルートシグネチャ残り 3」は古く **62/64・残り 2**（VG 書 F13 と同じ）③ `RaytracingScene.h:27-30` のヘッダコメント（スキンド/半透明を除外）は古く、実際の除外は半透明とアルファマスクのみ（`DrawItem.h:117-121`）。**覆した決定はない**（DirectSR 却下・フォワード PS の MRT 化禁止・DDGI 確定・フルフレームグラフ却下を全て踏襲）。
+**本書が更新した過去の記述**: ① VG 書 P9 の「TSR 自前」を FSR 3.1 統合へ置換する提案（未決 §6-3、承認前は VG 書のまま）② memory `dx12-realism-roadmap` / 依頼文の「ルートシグネチャ残り 3」は古く **62/64・残り 2**（VG 書 F13 と同じ）③ `RaytracingScene.h:27-30` のヘッダコメント（スキンド/半透明を除外）は古く、実際の除外は半透明とアルファマスクのみ（`DrawItem.h:117-121`）。**覆した決定はない**（DirectSR 却下・フォワード PS の MRT 化禁止・DDGI 確定・フルフレームグラフ却下を全て踏襲）。**ただし「フルフレームグラフ却下」は撤回（2026-11-26 オーナー決定）。F0〜F4 は EXEC_W05_W1 / MODERNIZATION_BACKLOG (c)。§2.0.5 を参照**。
