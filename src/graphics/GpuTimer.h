@@ -52,7 +52,7 @@ public:
         Transparent,   // 半透明
         Water,         // 水
         Foliage,       // 植生
-        Atmosphere,    // 大気の空パス（Sky-View LUT + 空。AP / 雲は Particles 区間の中なので含まない）
+        Atmosphere,    // 大気の空の描画だけ（AtmosphereDrawSky）。Sky-View LUT 生成（AtmosphereRecordFrame）/ AP / 雲は含まない
         GodRays,       // ゴッドレイ（PostFX の内数）
         Decals,        // デカール
         VfxSim,        // VFX: シミュレーション
@@ -134,10 +134,11 @@ public:
     u32 NestViolations()    const { return m_nestViolations; }
     u32 LeafSumViolations() const { return m_leafViolations; }
     // 直近に読み戻したフレームで、同一フレームに複数回 Begin されたスコープ（複数ビュー）。入れ子と葉から外す。
+    // 制限: 平均は窓全体、この mask は直近 1 フレームのもの。窓の途中で複数ビューの有無が変わると除外の判定が平均とずれる。
     u64 MultiWriteMask()    const { return m_multiLast; }
 
     // ---- 全スコープぶんの履歴 / ベンチ集計（Application.h の PerfFrame は 24 本固定で凍結のため、ここで持つ）----
-    static constexpr u32 kHistory = 240;   // Application::kPerfHistory と同じ
+    static constexpr u32 kHistory = 240;   // Application::kPerfHistory と同じ（ApplicationRender.cpp の static_assert で照合）
     void RecordHistory();                                    // 現在の m_ms を履歴に積む（フレームに 1 回）
     u32  HistoryCount() const { return m_histCount < kHistory ? m_histCount : kHistory; }
     // 直近 window フレームの平均を out[Count] へ。window は HistoryCount に丸める。戻り値は実際に使った数。

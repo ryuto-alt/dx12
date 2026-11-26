@@ -197,32 +197,62 @@ GpuTimer::FrameCheck GpuTimer::CheckFrame(const u64* beginTs, const u64* endTs, 
 
 const char* GpuTimer::Name(u32 s)
 {
-    // 旧 22 本はここに残す（tools/mcp-server/schemaDrift.test.ts が case 句の戻り値の文字列を読んで
-    // dx12_perf_stats の説明と照合する）。新しい 30 本は属性表から引く。
+    // 52 本すべてを case に並べる（tools/mcp-server/schemaDrift.test.ts が case 句の戻り値の文字列を読んで
+    // dx12_perf_stats の説明と照合する）。kScopeInfo の name との一致は GpuTimerScopeTests が検査する。
     switch (s)
     {
-    case Total:       return "total";
-    case Shadows:     return "shadows";
+    case Total:        return "total";
+    case Shadows:      return "shadows";
     case DepthPrepass: return "depthPrepass";
-    case PrepassSSAO: return "prepassSsao";
-    case ClusterCull: return "clusterCull";
-    case Raytracing:  return "raytracing";
-    case RtScreen:    return "rtScreen";
+    case PrepassSSAO:  return "prepassSsao";
+    case ClusterCull:  return "clusterCull";
+    case Raytracing:   return "raytracing";
+    case RtScreen:     return "rtScreen";
     case RtReflection: return "rtReflection";
-    case Ddgi:        return "ddgi";
+    case Ddgi:         return "ddgi";
     case ScreenSpaceGI: return "screenSpaceGi";
     case VolumetricFog: return "volFog";
-    case HiZ:         return "hiZ";
-    case MainScene:   return "mainScene";
-    case Particles:   return "particles";
-    case PostFX:      return "postFx";
-    case UI:          return "ui";
-    case VgCull:      return "vgCull";
-    case Clouds:      return "clouds";
-    case CloudShadow: return "cloudShadow";
+    case HiZ:          return "hiZ";
+    case MainScene:    return "mainScene";
+    case Particles:    return "particles";
+    case PostFX:       return "postFx";
+    case UI:           return "ui";
+    case VgCull:       return "vgCull";
+    case Clouds:       return "clouds";
+    case CloudShadow:  return "cloudShadow";
     case RtShadowDenoise: return "rtShadowDenoise";
-    case Upscale:     return "upscale";
-    case VgShadow:    return "vgShadow";
+    case Upscale:      return "upscale";
+    case VgShadow:     return "vgShadow";
+    case ShadowCsm:    return "shadowCsm";
+    case ShadowLocal:  return "shadowLocal";
+    case ScreenShadow: return "screenShadow";
+    case RtShadow:     return "rtShadow";
+    case RtLocalShadow: return "rtLocalShadow";
+    case SsLighting:   return "ssLighting";
+    case Skinning:     return "skinning";
+    case Characters:   return "characters";
+    case Transparent:  return "transparent";
+    case Water:        return "water";
+    case Foliage:      return "foliage";
+    case Atmosphere:   return "atmosphere";
+    case GodRays:      return "godRays";
+    case Decals:       return "decals";
+    case VfxSim:       return "vfxSim";
+    case VfxDraw:      return "vfxDraw";
+    case VfxLighting:  return "vfxLighting";
+    case VfxShadow:    return "vfxShadow";
+    case Reactive:     return "reactive";
+    case Taa:          return "taa";
+    case Dof:          return "dof";
+    case MotionBlur:   return "motionBlur";
+    case AutoExposure: return "autoExposure";
+    case LocalExposure: return "localExposure";
+    case Bloom:        return "bloom";
+    case LensFx:       return "lensFx";
+    case ColorLut:     return "colorLut";
+    case Uber:         return "uber";
+    case EditorOverlay: return "editorOverlay";
+    case GameHud:      return "gameHud";
     default:          return (s < Count) ? kScopeInfo[s].name : "?";
     }
 }

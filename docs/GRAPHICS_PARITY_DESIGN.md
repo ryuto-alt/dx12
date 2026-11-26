@@ -140,6 +140,8 @@ VG 書の統合方針（プロキシ + 可視性バッファ + 全画面 resolve
 
 **2.0.5 方針の撤回（2026-11-26 オーナー決定）と GpuTimer のスコープ表（W05-26）**
 
+**計装の入れ子の原則（W05-26 レビュー）**: 1 つのスコープが複数の親の区間にまたがる作業（植生の shadowDraw / depthDraw / mainDraw、VfxShadow は Shadows の内数など）は、段ごとに別の Begin/End で囲む。まとめて 1 本で囲むと親子どちらにも収まらず nestViolations か leafSumViolations が出る。段に分けられないものは gpuPassMs だけに出して葉の合計から外す。新 30 本の親は仮置きで、Foliage / VfxShadow / Characters / Transparent / Water は現状 Total 直下の葉。
+
 - 「Agility SDK を使わない」「フルフレームグラフを却下」という旧方針は**撤回（2026-11-26 オーナー決定）**。F0〜F4（Agility、Enhanced Barriers、bindless、レンダーグラフ）は EXEC_W05_W1 / MODERNIZATION_BACKLOG (c) に従って進める。各段で既定の経路のゴールデンがビット一致すること。`docs/VIRTUAL_GEOMETRY_DESIGN.md` の「Work Graphs（Agility SDK が要る。このエンジンは意図的に使っていない）」も同じ決定で上書きされる（Work Graphs 自体の採否は別。プレビュー版の機能は出荷しない）。
 - GpuTimer は 64 本まで（書込みマスクは u64）。旧 22 本の名前と番号は不変で、新しい 30 本を後ろに足して 52 本。子を持たないスコープが葉で、予算の合計は**葉だけ**で出す（`perf_stats` の `gpuLeafMs`。親は `gpuPassMs` に今までどおり出る）。`gpuScopeTree` が親子と別名を返す。新しいスコープは対応するパスが計装されるまで 0 ms。
 

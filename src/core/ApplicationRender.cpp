@@ -36,6 +36,8 @@
 #include "editor/AssetDrop.h"
 #include "editor/panels/NodeGraphSandboxPanel.h"   // ノードグラフ サンドボックス窓（マテリアルグラフ G0）
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
+#include "graphics/GpuTimer.h"
+
 
 namespace
 {
@@ -845,6 +847,8 @@ void Application::RecordPerfFrame()
         f.gpuMs[s] = m_gpuTimer ? m_gpuTimer->GetMs(static_cast<GpuTimer::Scope>(s)) : 0.0f;
     if (m_gpuTimer) m_gpuTimer->RecordHistory();
     for (u32 s = 0; s < CpuScopeCount; ++s) { f.cpuMs[s] = m_cpuMs[s]; m_cpuMs[s] = 0.0f; }
+    // GpuTimer の履歴窓と PerfFrame の履歴窓は同じ長さでなければならない（perf_stats が窓 n を AverageHistory(n) に渡す）。
+    static_assert(GpuTimer::kHistory == Application::kPerfHistory, "GpuTimer::kHistory と Application::kPerfHistory がずれている");
     m_perfHistory[static_cast<size_t>(m_perfTotalFrames % kPerfHistory)] = f;
     ++m_perfTotalFrames;
 
