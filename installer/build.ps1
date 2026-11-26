@@ -123,9 +123,18 @@ if (-not $iscc) {
     if (Test-Path $p) { $iscc = $p; break }
   }
 }
+# Agility SDK の版は cmake/agility.lock.json の 1 つが正。ランタイムの DLL とライセンス文が無ければ止める
+# （無いまま配ると、in-box のランタイムが古い PC で起動できない）。
+$agilityLock = Get-Content (Join-Path $repoRoot "cmake/agility.lock.json") -Raw | ConvertFrom-Json
+$agilityVersion = $agilityLock.version
+$agilityCore = Join-Path $srcDir "D3D12/D3D12Core.dll"
+$agilityLicense = Join-Path $repoRoot "third_party/agility/$agilityVersion/LICENSE.txt"
+if (-not (Test-Path $agilityCore)) { Write-Error "D3D12/D3D12Core.dll が $srcDir に無い。cmake の configure とビルドをやり直してください（Agility SDK $agilityVersion）。" }
+if (-not (Test-Path $agilityLicense)) { Write-Error "Agility のライセンス文が無い: $agilityLicense（pwsh tools/fetch_agility.ps1）" }
+
 if ($iscc) {
   Write-Host "[1/2] インストーラを生成 (ISCC)..." -ForegroundColor Yellow
-  & $iscc "/DMyAppVersion=$version" (Join-Path $here "dx12engine.iss")
+  & $iscc "/DMyAppVersion=$version" "/DAgilityVersion=$agilityVersion" (Join-Path $here "dx12engine.iss")
 } else {
   Write-Warning "[1/2] ISCC.exe が見つからないためインストーラはスキップします（Inno Setup 6 を入れてください）。"
 }
@@ -139,6 +148,12 @@ New-Item -ItemType Directory -Force -Path $stage | Out-Null
 # exe + dll（build\release 直下）
 Get-ChildItem -Path $srcDir -File | Where-Object { $_.Extension -in ".exe", ".dll" } |
   ForEach-Object { Copy-Item $_.FullName -Destination $stage }
+# D3D12 Agility のランタイム（D3D12Core.dll だけ。d3d12SDKLayers.dll は配らない）。
+# Updater.cpp が robocopy /E で上書きするので、zip に無いと自動更新した環境が壊れる。
+New-Item -ItemType Directory -Force -Path (Join-Path $stage "D3D12") | Out-Null
+Copy-Item $agilityCore -Destination (Join-Path $stage "D3D12/D3D12Core.dll")
+New-Item -ItemType Directory -Force -Path (Join-Path $stage "licenses") | Out-Null
+Copy-Item $agilityLicense -Destination (Join-Path $stage "licenses/Microsoft.Direct3D.D3D12-LICENSE.txt")
 # shaders（.cso）
 Copy-Item (Join-Path $srcDir "shaders") -Destination (Join-Path $stage "shaders") -Recurse -ErrorAction SilentlyContinue
 # shaders-src（.hlsl/.hlsli ソース。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用。

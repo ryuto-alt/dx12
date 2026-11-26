@@ -62,7 +62,7 @@ Claude Code はテキストで作れる。新機能の作法はここを参照:
 - 検証: `DX12Engine.exe --validate <scene.json>`（参照切れ・スクリプト不在をヘッドレスで報告。終了コード 0/1）
 - **超詳細診断**: `DX12Engine.exe --ui-tests-deep --project <dir>`（またはエディタの `ツール > エンジン診断 > 🔬 超詳細診断`）
   「UI は動くけど絵が間違っている」を拾う担当（UI 自動テストは絵を一切見ない）。
-  実体は `src/gui/DeepDiagnostics.{h,cpp}`。検査は 14 種（`DeepDiag::AllCheckIds()` の順）:
+  実体は `src/gui/DeepDiagnostics.{h,cpp}`。検査は 15 種（`DeepDiag::AllCheckIds()` の順）:
   | ID | 見るもの |
   |---|---|
   | `shaders` | `.cso` の存在・破損・`.hlsl` より古くないか（ビルドし忘れ） |
@@ -78,6 +78,7 @@ Claude Code はテキストで作れる。新機能の作法はここを参照:
   | `dxr` | GPU の DXR Tier / シェーダモデル・レイトレーシングのゲート通過状況・TLAS のインスタンス数と加速構造の VRAM・**TLAS に入らなかったもの**（スキンド / 半透明 / 上限超過）。「RT 影を ON にしたのにキャラの影が変わらない」の答えはここ |
   | `render_health` | **「シーンビューが真っ暗 / カメラが何も映らない」の原因を名指しする**。render_debug の出しっぱなし・露出0・ティント黒・自動露出レンジの逆転・光源ゼロ・シーン矩形の潰れ・SRV ヒープ枯渇（枯渇**前**に警告）・カメラの NaN や極端な座標・MCP のカメラ乗っ取り残り |
   | `hiz_occlusion` | Hi-Z オクルージョンカリングが**「ON にしたのに効いていない」「ON にしたせいで遅くなっている」**を名指しする。★本命は「プリパスを要求しているのがオクルージョンだけ」＝TAA/SSAO/SSR/DXR がどれも無効な状態で ON にしていて、プリパスぶんの描画コールが増えて損をしているケース。ほかに遮蔽率ほぼ0 / 述語を1本も張れていない（全部インスタンシングのバッチ）/ 正射・2Dビューで自動無効 |
+  | `caps` | デバイスの機能（`DeviceCaps`）の全項目: 最高シェーダモデル・Enhanced Barriers・GPU Upload Heap・ルートシグネチャ版・DXR Tier / SER / OMM・メッシュシェーダ・VRS など。MCP `get_device_caps` と同じ値（`DX12_DISABLE_*` の上書きが反映された値） |
   - `DeepDiag::RunAll(app, only)` が全部まとめて**機械可読な JSON** を返す（`version`/`engine`/`checks[]`/`summary`）。
     `only` はカンマ区切りの検査 ID で絞り込み（例 `"lighting,terrain,picking"`）。
     失敗判定は `summary.errors > 0` だけ見ればよい（注意/情報は赤くしない方針）

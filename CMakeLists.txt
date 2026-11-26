@@ -44,6 +44,9 @@ if(MSVC)
 endif()
 
 # Dependencies
+# D3D12 Agility SDK（版・SHA256 は cmake/agility.lock.json。configure 時に取得する）。find_package の前に include する。
+include(${CMAKE_SOURCE_DIR}/cmake/UnoAgility.cmake)
+
 find_package(spdlog CONFIG REQUIRED)
 # ルートで find_package する（サブディレクトリで呼ぶと IMPORTED ターゲットがそのディレクトリ以下にしか
 # 見えず、後段の POST_BUILD DLL コピー(DX12Engine/GameRuntime、ルート scope)から参照できないため）。
@@ -103,6 +106,7 @@ set(DX12_APP_MANIFEST "${CMAKE_SOURCE_DIR}/resources/dx12.manifest")
 
 # Main executable
 add_executable(DX12Engine WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_APP_MANIFEST})
+uno_agility_exe(DX12Engine)
 
 target_link_libraries(DX12Engine
     PRIVATE
@@ -172,6 +176,7 @@ endif()
 
 # --- GameRuntime: ゲーム専用実行ファイル（DX12_GAME_RUNTIME で常にゲームモード固定）---
 add_executable(GameRuntime WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_APP_MANIFEST})
+uno_agility_exe(GameRuntime)
 target_link_libraries(GameRuntime
     PRIVATE
         Core

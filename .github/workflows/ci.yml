@@ -79,6 +79,14 @@ jobs:
         with:
           arch: x64
 
+      # D3D12 Agility SDK のランタイム（NuGet の nupkg から configure が取得する。cmake/UnoAgility.cmake）。
+      # 版・SHA256 は cmake/agility.lock.json が正。キャッシュは取得先ごと third_party/agility に置く。
+      - name: Restore Agility SDK cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/agility
+          key: agility-${{ runner.os }}-${{ hashFiles('cmake/agility.lock.json') }}
+
       # src/core/generated/AssetKey.h（gitignore）。無いと configure が FATAL_ERROR。
       - name: Generate asset key
         shell: pwsh

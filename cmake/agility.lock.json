@@ -1,0 +1,9 @@
+{
+  "_comment": "D3D12 Agility SDK の固定版。版・SDK 番号・SHA256 の正はこのファイルの 1 つだけ。1.621 以降へは Wave の境目の IF チャンクで上げる（全ゴールデンと A/B を取り直す）。",
+  "version": "1.620.2",
+  "sdk": 620,
+  "source": "https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.d3d12/1.620.2/microsoft.direct3d.d3d12.1.620.2.nupkg",
+  "sha256": "70489669c2bbeaf318b62d72b0ac3e753d521387bfc848c9763791c4e920bfcc",
+  "coreSha256": "70a6d47d335b4a15180544c01a35b84474522a369dc582d85fe057313a3aeaa0",
+  "layersSha256": "3140822f550003d322b0a0681e0c40af7364c561296a1d7eeb96b3258c9cd32d"
+}

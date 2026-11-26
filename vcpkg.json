@@ -21,6 +21,10 @@
     "enet",
     "meshoptimizer"
   ],
+  "overrides": [
+    { "name": "directx-headers", "version": "1.620.2" },
+    { "name": "d3d12-memory-allocator", "version": "3.3.0" }
+  ],
   "features": {
     "profiling": {
       "description": "Tracy Profiler クライアント（開発計測用。配布ビルドでは有効にしない）",
