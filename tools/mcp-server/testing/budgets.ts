@@ -143,7 +143,7 @@ function mk(id: string, kind: Check["kind"], actual: number | null, limit: numbe
   return { id, kind, actual: round(actual, 3), limit: round(limit, 3), margin, status: actual <= limit ? "pass" : "fail", ...extra };
 }
 
-export function evaluateColumn(b: Budget, col: ColumnId, m: Measured): { checks: Check[]; pass: boolean; failed: Check[]; unmeasured: Check[]; gate: GateKind } {
+export function evaluateColumn(b: Budget, col: ColumnId, m: Measured): { checks: Check[]; pass: boolean; complete: boolean; missing: string[]; failed: Check[]; unmeasured: Check[]; gate: GateKind } {
   const c = b.columns[col];
   if (!c) throw new BudgetError("E_NOT_FOUND", `予算 ${b.preset} に列 ${col} が無い`, Object.keys(b.columns));
   const checks: Check[] = [];
@@ -164,7 +164,10 @@ export function evaluateColumn(b: Budget, col: ColumnId, m: Measured): { checks:
   checks.push(mk("vramMB", "vram", m.vramUsedMB, lim.limitMB, { note: lim.basis }));
   const failed = checks.filter((x) => x.status === "fail");
   const unmeasured = checks.filter((x) => x.status === "unmeasured");
-  return { checks, pass: failed.length === 0, failed, unmeasured, gate: c.gate };
+  // 判定に必須の指標(フレーム p95・GPU 合計・VRAM)と、計装済みの行が測れていないなら、合格とは言えない(complete=false → 呼び出し側は inconclusive にする)。
+  const REQUIRED = new Set(["frameMsP95", "gpuTotalMs", "vramMB"]);
+  const missing = unmeasured.filter((x) => REQUIRED.has(x.id) || x.kind === "row").map((x) => x.id);
+  return { checks, pass: failed.length === 0, complete: missing.length === 0, missing, failed, unmeasured, gate: c.gate };
 }
 
 /** 超過の大きい順に並べた、縮退の案内(各行の degrade)。 */

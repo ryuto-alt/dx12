@@ -139,6 +139,11 @@ console.log("[3] golden suite の判定(golden.mjs と同じ式)");
   check("ネイティブ解像度が違えば環境違い: 非 strict は SKIP", env2.skipped === true && env2.pass === true, env2);
   const noRef = judgeGolden(lib, { native: r0, ref: null, baseline: undefined, width: r0.width, height: r0.height, tol: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 }, strict: true });
   check("基準画像が無ければ不合格", noRef.pass === false && /基準画像が無い/.test(noRef.reasons[0]), noRef);
+  const tolD = { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 };
+  const mis = { nativeWidth: r0.width + 1, nativeHeight: r0.height, nativeSha256: "x" };
+  const uiMis = judgeGolden(lib, { native: r0, ref: null, baseline: mis, width: r0.width, height: r0.height, tol: tolD, strict: false, ui: true });
+  const d3Mis = judgeGolden(lib, { native: r0, ref: null, baseline: mis, width: r0.width, height: r0.height, tol: tolD, strict: false });
+  check("UI は基準画像なしを環境違いより先に見る(--no-strict でも FAIL)/ 3D は環境違いが先(SKIP)", uiMis.pass === false && !uiMis.skipped && d3Mis.skipped === true, { uiMis, d3Mis });
 }
 
 console.log("[4] ツール dx12_visual(stdio)");

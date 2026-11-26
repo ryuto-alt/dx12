@@ -154,7 +154,7 @@ export async function runGolden(a: Record<string, any>, deps: GoldenRunDeps): Pr
       const det = masked.every((x) => lib.sha256(x) === sha);
       if (!det) { r.pass = false; r.deterministic = false; r.reasons.push("同じセッションで撮り直した 2 枚が一致しない(UI に実時間・乱数が混ざっている)。masks を足すか、原因を直す"); } else r.deterministic = true;
       const refFile = path.join(loaded.goldenDir, "ui", `${s.name}.png`);
-      const v = judgeGolden(lib, { native: masked[0], ref: refPng(refFile), baseline: loaded.baseline.scenes[s.name], width: s.width, height: s.height, tol: { ...s.tolerance, ...tolOverride }, strict });
+      const v = judgeGolden(lib, { native: masked[0], ref: refPng(refFile), baseline: loaded.baseline.scenes[s.name], width: s.width, height: s.height, tol: { ...s.tolerance, ...tolOverride }, strict, ui: true });
       r.pass = r.pass && v.pass; r.skipped = v.skipped; r.reasons.push(...v.reasons);
       Object.assign(r, { native: v.native, sha: v.sha, bitExact: v.bitExact, diffRatio: v.diffRatio, meanAbs: v.meanAbs, maxDist: v.maxDist, envMismatch: v.envMismatch });
     } catch (e: any) { r.pass = false; r.reasons.push(`撮影失敗: ${e?.message ?? e}`); }
@@ -194,6 +194,8 @@ export async function runProject(a: Record<string, any>, deps: GoldenRunDeps & {
     suite: "project", projectDir, total: results.length, passed: results.filter((r) => r.status === "pass").length, failed, skipped,
     bitExact: results.filter((r) => r.bitExact === true).length, needsHumanReview: results.filter((r) => r.needsHumanReview).map((r) => r.key), dir: deps.outDir,
     failedNames: results.filter((r) => r.status === "fail").map((r) => r.key), adapter: curKey.adapter,
+    // 何も比べていない(全部 skipped / missing)ときの印。ci_suite はこれを合格にしない。
+    allSkipped: results.length > 0 && skipped === results.length,
   };
   return { results, summary };
 }

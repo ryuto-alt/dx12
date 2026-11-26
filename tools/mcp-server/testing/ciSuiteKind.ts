@@ -70,6 +70,7 @@ function defaultRunners(deps: CiDeps): Record<CiCheck["check"], CheckRunner> {
       const dd = { env, provider: deps.provider, lib, repoDir: deps.repoDir, outDir: path.join(ctx.artifactsDir, "visual"), ctx };
       const r = a.suite === "project" ? await runProject(a, { ...dd, call }) : await runGolden(a, dd);
       const failed = (r.summary.failed as number) ?? 0;
+      if (!failed && r.summary.allSkipped === true) return { status: "error", message: "視覚回帰: 全件が skipped で、何も比べていない(基準なし・adapter 違い・環境違い)", detail: r.summary };
       return failed ? { status: "fail", message: `視覚回帰 ${failed}/${r.summary.total} 件が不合格`, detail: r.summary.failedNames } : { status: "pass", detail: r.summary };
     },
     async perf(c, { ctx, args, env }) {
@@ -119,7 +120,12 @@ export function ciSuiteKind(env: KindEnv, injected?: Partial<CiDeps>): KindDef {
           if (noGpu && GPU_CHECKS.has(c.check)) out = { status: "skipped", message: "no-gpu-adapter" };
           else {
             try { out = await runners[c.check](c, { call: h.call, ctx, args: a, env }); }
-            catch (e: any) { if (e instanceof Aborted || e instanceof JobFailure) throw e; out = { status: "error", message: bodyFromThrown(e, c.check).message }; }
+            catch (e: any) {
+              if (e instanceof Aborted) throw e;
+              // 検査の中の JobFailure(ロック競合・VRAM 不足・DRED ON など)は、その検査の error として記録し、JUnit は必ず書く。
+              const body = e instanceof JobFailure ? ((e as any).body ?? bodyFromThrown(e, c.check)) : bodyFromThrown(e, c.check);
+              out = { status: "error", message: `${body.code ? `[${body.code}] ` : ""}${body.message}` };
+            }
           }
           const timeSec = (Date.now() - t0) / 1000;
           cases.push({ name, classname: "ci_suite", timeSec, status: out.status, message: out.message, detail: out.detail !== undefined ? JSON.stringify(out.detail).slice(0, 2000) : undefined });

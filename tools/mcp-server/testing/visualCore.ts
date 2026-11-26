@@ -28,6 +28,7 @@ export async function loadDiffLib(repoDir: string): Promise<DiffLib> {
   return m as DiffLib;
 }
 
+/** golden.mjs の既定の許容差(golden.mjs が定数を export していないので値を写している。golden.mjs 側の値を変えたらここも変える)。 */
 export const DEFAULT_TOLERANCE: Tolerance = { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 };
 /** project suite の既定。基準は同じ adapter で撮ったものだけなので、golden より厳しい(1 画素でも 2 LSB を超えて違えば不合格。±2 LSB のゆらぎは許す)。 */
 export const PROJECT_TOLERANCE: Tolerance = { pixelThreshold: 2, maxDiffRatio: 0, maxMeanAbs: 0.25 };
@@ -94,11 +95,13 @@ export type GoldenVerdict = { pass: boolean; skipped?: boolean; envMismatch?: bo
  *   ネイティブ解像度の違い → 環境違い(strict は不合格、そうでなければ SKIP)/ 基準画像なし → 不合格 / 縮めて許容差。
  * native = 今回のネイティブ画像、ref = 基準 PNG(width x height)。maskedNative は UI のとき applyMasks 後のもの。
  */
-export function judgeGolden(lib: DiffLib, o: { native: Rgba; ref: Rgba | null; baseline: GoldenBaseline | undefined; width: number; height: number; tol: Tolerance; strict: boolean }): GoldenVerdict {
+export function judgeGolden(lib: DiffLib, o: { native: Rgba; ref: Rgba | null; baseline: GoldenBaseline | undefined; width: number; height: number; tol: Tolerance; strict: boolean; ui?: boolean }): GoldenVerdict {
   const sha = lib.sha256(o.native);
   const native = `${o.native.width}x${o.native.height}`;
   const v: GoldenVerdict = { pass: true, reasons: [], native, sha };
   const b = o.baseline;
+  // UI の経路(golden.mjs の runUiScenes)は、基準画像なしを環境違いより先に見る。3D の経路は逆。
+  if (o.ui && !o.ref) { v.pass = false; v.reasons.push("基準画像が無い(--update で撮る)"); if (b) v.bitExact = b.nativeSha256 === sha; return v; }
   if (b && (b.nativeWidth !== o.native.width || b.nativeHeight !== o.native.height)) {
     v.pass = !o.strict; v.skipped = !o.strict; v.envMismatch = true;
     v.reasons.push(`環境違い: ネイティブ解像度が基準と違う(基準 ${b.nativeWidth}x${b.nativeHeight}、今回 ${native})`);

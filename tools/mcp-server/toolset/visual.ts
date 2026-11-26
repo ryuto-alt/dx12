@@ -6,7 +6,7 @@
 // 登録の作法: legacy 面には出さない。長尾(どの面でも tools/list には出さず dx12_call / dx12_tool_search で使う)。
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { z } from "zod";
 import { engine, errResult, type ToolResult } from "./core.ts";
 import { server } from "./core.ts";
@@ -20,7 +20,7 @@ import { JobFailure } from "../jobs/manager.ts";
 import { isTerminal } from "../jobs/types.ts";
 import { projectDirOf, StepError } from "../testing/common.ts";
 import {
-  approveProjectItem, baselineKeyOf, baselinePng, captureFinal, DEFAULT_TOLERANCE, loadDiffLib, openSceneWait, readBaselines, readHistoryLog,
+  approveProjectItem, baselineKeyOf, baselinePng, captureFinal, DEFAULT_TOLERANCE, loadDiffLib, openSceneWait, readBaselines, readHistoryLog, safeSeg,
 } from "../testing/visualCore.ts";
 import { listBudgetPresets } from "../testing/budgets.ts";
 
@@ -85,6 +85,10 @@ function runGoldenUpdate(repoDir: string, only: string[]): Promise<{ code: numbe
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(repoDir, "tools", "bench", "golden.mjs"), "--update", "--only", only.join(",")], { cwd: repoDir, windowsHide: true });
     let out = "";
+    // 止まらないまま居座らないよう、上限(既定 20 分、DX12_GOLDEN_UPDATE_TIMEOUT_SEC)で打ち切る。
+    const limitMs = (Number(process.env.DX12_GOLDEN_UPDATE_TIMEOUT_SEC) || 1200) * 1000;
+    const timer = setTimeout(() => { out += "[timeout] golden.mjs --update を打ち切った"; try { child.kill(); } catch { /* 無視 */ } }, limitMs);
+    child.on("exit", () => clearTimeout(timer));
     child.stdout.on("data", (d) => { out += d; });
     child.stderr.on("data", (d) => { out += d; });
     child.on("close", (code) => resolve({ code, tail: out.split(/\r?\n/).slice(-30).join("\n") }));
@@ -99,6 +103,9 @@ export async function runVisual(a: Args): Promise<unknown> {
     if (a.op === "approve") {
       if (!a.reason || !String(a.reason).trim()) bad("E_MISSING_PARAM", "approve には reason が要る(何が変わったから基準を更新するのか)");
       if (!Array.isArray(a.only) || !a.only.length) bad("E_MISSING_PARAM", "golden の approve には only(更新する ID)が要る(全件を一度に更新しない)");
+      // 基準の更新は統合ブランチ(overhaul/wave0 など)で行う。レーン(w05/lane-x)のブランチでは更新しない。
+      const branch = (() => { try { return execFileSync("git", ["-C", cfg.repoDir, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", windowsHide: true, timeout: 8000 }).trim(); } catch { return null; } })();
+      if (branch && /^w\d+\/lane-/.test(branch)) bad("E_UNSUPPORTED", `golden の approve はレーンのブランチ(${branch})では行わない。統合ブランチで行う(基準 PNG のマージ衝突を避けるため)`);
       const r = await runGoldenUpdate(cfg.repoDir, a.only);
       return { updated: r.code === 0, exitCode: r.code, only: a.only, reason: a.reason, approvedBy: "ai", note: "tests/golden の基準を golden.mjs --update で撮り直した。差分(git diff tests/golden)を人が確認してからコミットする", tail: r.tail };
     }
@@ -130,7 +137,7 @@ export async function runVisual(a: Args): Promise<unknown> {
       const scene = a.scene ?? (await currentScene());
       if (!scene) bad("E_MISSING_PARAM", "scene が要る(いまのシーンも分からない)");
       const name = a.name ?? "capture";
-      const out = path.join(dir, ".dx12", "baselines", "_current", String(scene).replace(/\\/g, "/"), `${name}.png`);
+      const out = path.join(dir, ".dx12", "baselines", "_current", safeSeg(String(scene)), `${safeSeg(String(name))}.png`);
       fs.mkdirSync(path.dirname(out), { recursive: true });
       const lib = await loadDiffLib(cfg.repoDir);
       const ec = (m: string, p: Record<string, unknown>, o?: { timeout?: number }) => call(m, p, o);

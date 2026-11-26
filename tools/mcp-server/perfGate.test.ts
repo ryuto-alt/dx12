@@ -126,6 +126,17 @@ function kindFor(w: World, extra: any = {}) {
 }
 const small = { benchFrames: 60, warmupFrames: 0, statsWindow: 10, repeats: 3 };
 
+console.log("[2b] 測れていない指標のある合格は合格にしない");
+{
+  const nul: Measured = { frameMsP95: null, gpuTotalMs: null, leafMs: {}, cpu: { gameThreadP95Ms: null, renderRecordP95Ms: null, editorUiP95Ms: null }, vramUsedMB: null, vramBudgetMB: null };
+  const ev = evaluateColumn(epic, "dlss", nul);
+  check("全部 null は pass=true でも complete=false(必須指標が missing)", ev.pass === true && ev.complete === false && ev.missing.includes("frameMsP95") && ev.missing.includes("gpuTotalMs") && ev.missing.includes("vramMB"), ev.missing);
+  const full = fullMeasured(epic, "dlss", 0.8);
+  check("全部測れていれば complete=true", evaluateColumn(epic, "dlss", full).complete === true);
+  check("VRAM だけ欠けても complete=false", evaluateColumn(epic, "dlss", { ...full, vramUsedMB: null }).complete === false);
+  check("計装済みの行が欠ければ complete=false(leavesPending の行は除く)", (() => { const r = epic.columns.dlss!.rows.find((x) => !x.leavesPending); if (!r) return true; const lm = { ...full.leafMs }; for (const l of r.leaves) delete lm[l]; return evaluateColumn(epic, "dlss", { ...full, leafMs: lm }).complete === false; })());
+}
+
 console.log("[3] ジョブ本体");
 {
   const w = newWorld();
@@ -167,6 +178,35 @@ console.log("[3] ジョブ本体");
   try { await kindFor(newWorld()).run({ preset: "nope", engine: "fake", ...small }, mkCtx()); } catch (x: any) { e = x.body; }
   check("未知の予算は E_NOT_FOUND + validValues", e?.code === "E_NOT_FOUND" && (e.details?.validValues ?? []).includes("epic_1080p60"), e);
 
+  // perf_stats の形が変わって指標が取れない → verdict は pass にならない
+  const wdrift = newWorld();
+  const base = makeEngine(wdrift);
+  const driftProvider: EngineProvider = { attach: () => ({ call: (async (m: string, p: any) => { const r = await base(m, p); return m === "perf_stats" ? { ...r, gpuPassMs: {} } : r; }) as any, close: async () => {} }), launch: async () => { throw new Error("no"); } };
+  const rd = await perfGateKind(env, { provider: driftProvider, repoDir: REPO, clock, lockFile: path.join(mk("lock"), "gpu.lock"), historyDir: mk("hist") }).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss"] }, mkCtx());
+  check("gpuPassMs.total が取れなければ inconclusive(pass にならない)", (rd.summary as any).verdict === "inconclusive" && rd.ok === false && (rd.summary as any).unmeasuredInGateColumn?.length > 0, rd.summary);
+
+  // gate 列以外の悪化は verdict に効かない(info)
+  const hd = mk("hist3");
+  const kk = kindFor(newWorld(), { historyDir: hd });
+  for (let i = 0; i < 3; i++) await kk.run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss", "taaNative"] }, mkCtx());
+  const lines = fs.readFileSync(path.join(hd, "perf-history.jsonl"), "utf8").trim().split(String.fromCharCode(10)).map((x) => JSON.parse(x));
+  // taaNative の履歴だけ良い値に書き換えて、今回が悪化に見えるようにする
+  fs.writeFileSync(path.join(hd, "perf-history.jsonl"), lines.map((l) => JSON.stringify(l.column === "taaNative" ? { ...l, frameMsP95: l.frameMsP95 / 2, gpuTotalMs: l.gpuTotalMs / 2 } : l)).join(String.fromCharCode(10)) + String.fromCharCode(10));
+  const rg = await kindFor(newWorld(), { historyDir: hd }).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss", "taaNative"] }, mkCtx());
+  check("記録だけの列(taaNative)の悪化は verdict に効かず、regressionsInfo に出る", (rg.summary as any).verdict === "pass" && rg.ok === true && (rg.summary as any).regressionsInfo?.some((x: any) => x.column === "taaNative"), rg.summary);
+
+  // 既定では専用エンジンを起動し、束縛エンジン(DRED ON)の設定を触らない
+  const wl = newWorld(); const launched: string[] = [];
+  const prov2: EngineProvider = { attach: () => { throw new Error("attach しない"); }, launch: async (o) => { launched.push(...(o.extraArgs ?? [])); return { call: makeEngine(wl) as any, close: async () => {} }; } };
+  const rl = await perfGateKind(env, { provider: prov2, repoDir: REPO, clock, lockFile: path.join(mk("lock"), "gpu.lock"), historyDir: mk("hist") }).run({ preset: "epic_1080p60", ...small, columns: ["dlss"] }, mkCtx());
+  check("engine / project / launch 無しでも専用エンジンを --no-dred で起動する", rl.ok === true && launched.includes("--no-dred"), launched);
+  const wa = newWorld({ dred: true });
+  try { await kindFor(wa).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss"] }, mkCtx()); } catch { /* DRED で拒否 */ }
+  check("DRED ON の束縛エンジンは、設定を何も変える前に拒否する", !wa.calls.some((m) => ["set_view_size", "set_quality_preset", "set_upscaler", "set_render_scale"].includes(m)), wa.calls);
+  const wr = newWorld({ mode: "taa", scale: 0.9 });
+  await kindFor(wr).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss"] }, mkCtx());
+  check("束縛エンジンの upscaler は終わりに元へ戻す", wr.mode === "taa", wr.mode);
+
   const lockFile = path.join(mk("lock2"), "gpu.lock");
   const held = await acquireGpuWindow({ file: lockFile, owner: "test" });
   e = null;
@@ -190,6 +230,13 @@ console.log("[4] A/B(ABAB + A/A)");
   check("ABAB と A/A を回した記録(クロックの基準・捨てた回)", s.rounds === 3 && s.clockRefMHz === 2500 && Array.isArray(s.discarded.ab), s);
   const same = await kindFor(newWorld()).run({ mode: "ab", preset: "epic_1080p60", a: { buildDir: "C:/b/base" }, b: { buildDir: "C:/b/same" }, rounds: 2, ...small, repeats: 1, columns: ["dlss"] }, mkCtx());
   check("同じ性能なら within-or-faster で合格", (same.summary as any).verdict === "within-or-faster" && same.ok === true, same.summary);
+  const noDlss = await kindFor(newWorld({ dlssAvailable: false })).run({ mode: "ab", preset: "epic_1080p60", a: { buildDir: "C:/b/base" }, b: { buildDir: "C:/b/same" }, rounds: 2, ...small, repeats: 1, columns: ["dlss"] }, mkCtx());
+  check("A/B で列が有効にならなければ inconclusive(pass にしない)", (noDlss.summary as any).verdict === "inconclusive" && noDlss.ok === false && /有効にならなかった/.test(((noDlss.summary as any).inconclusiveReasons ?? []).join()), noDlss.summary);
+  const lowV = await kindFor(newWorld({ vramBudget: 5000 })).run({ mode: "ab", preset: "epic_1080p60", a: { buildDir: "C:/b/base" }, b: { buildDir: "C:/b/same" }, rounds: 2, ...small, repeats: 1, columns: ["dlss"] }, mkCtx());
+  check("A/B で VRAM の前提を満たさなければ inconclusive", (lowV.summary as any).verdict === "inconclusive" && lowV.ok === false, lowV.summary);
+  const sk = kindFor(newWorld(), { clock: () => ({ stop: async () => [] }) });
+  const nc = await sk.run({ mode: "ab", preset: "epic_1080p60", a: { buildDir: "C:/b/base" }, b: { buildDir: "C:/b/same" }, rounds: 2, ...small, repeats: 1, columns: ["dlss"] }, mkCtx());
+  check("A/B でクロックが取れず全回が捨てられたら inconclusive(within-or-faster にしない)", (nc.summary as any).verdict === "inconclusive" && nc.ok === false, nc.summary);
   let e: any = null;
   try { await kindFor(newWorld()).run({ mode: "ab", ...small }, mkCtx()); } catch (x: any) { e = x.body; }
   check("a / b が無ければ E_MISSING_PARAM", e?.code === "E_MISSING_PARAM", e);
