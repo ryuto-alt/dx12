@@ -466,6 +466,33 @@ if(TARGET Graphics)
     set_tests_properties(DescriptorDeferredFreeTests PROPERTIES TIMEOUT 60)
 endif()
 
+# W05-07: DLSS の配線。DlssBackend::CompiledIn() が UNO_DLSS_ACTIVE と一致し、exe の隣の nvngx_dlss.dll の有無とも一致すること。
+#   installer/build.ps1 の -Dlss auto|require の判定もここで確かめる（pwsh があるときだけ）。GPU は使わない。
+if(TARGET Renderer)   # Renderer があるのは本体と一緒に構成したときだけ。DX12Engine はこの後に定義されるので $<TARGET_FILE_DIR:> で遅延参照する
+    add_executable(DlssCompiledInTests dlss_compiled_in_test.cpp)
+    target_include_directories(DlssCompiledInTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(DlssCompiledInTests PRIVATE Renderer)
+    if(UNO_DLSS_ACTIVE)
+        target_compile_definitions(DlssCompiledInTests PRIVATE UNO_DLSS_EXPECT_COMPILED_IN=1)
+    else()
+        target_compile_definitions(DlssCompiledInTests PRIVATE UNO_DLSS_EXPECT_COMPILED_IN=0)
+    endif()
+    if(MSVC)
+        target_compile_options(DlssCompiledInTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(DlssCompiledInTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    # テスト exe の出力先を DX12Engine と同じ場所にして、DLL の隣の探索（NGX）と条件を揃える必要は無い。検査は ENGINE_DIR で行う。
+    find_program(DX12_PWSH_EXE pwsh)
+    add_test(NAME DlssWiringCheck
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_DIR=$<TARGET_FILE_DIR:DX12Engine>
+            -DCOMPILED_IN_EXE=$<TARGET_FILE:DlssCompiledInTests>
+            -DREPO_ROOT=${DX12_REPO_ROOT}
+            -DPWSH=${DX12_PWSH_EXE}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/dlss_wiring_check.cmake)
+    set_tests_properties(DlssWiringCheck PROPERTIES TIMEOUT 120)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。

@@ -40,3 +40,23 @@
 
 M2 の夕方（メイン）: 本体を `-DVCPKG_MANIFEST_INSTALL=ON` で 1 回 configure して共有の installed dir を 1.620.2 / 3.3.0 にし、
 各レーンを rebase する。その後に作るレーンは自動で共有（OFF）になる。
+
+## NVIDIA DLSS SDK（NGX）
+
+- 取得: `pwsh tools/fetch_dlss.ps1`。版の正は同スクリプトの `$Tag` と `$ExpectedCommit`（注釈付きタグが指すコミット）の 2 つで、
+  取得後に `git rev-parse HEAD` が `$ExpectedCommit` と一致しなければ終了コード 4 で失敗する。DLL の実体は git-lfs が pointer の sha256 で照合する。
+  版を上げるときは 2 つを一緒に変える（`git ls-remote https://github.com/NVIDIA/DLSS.git "refs/tags/<tag>^{}"`）。
+- コミットしない: `third_party/dlss/` は `.gitignore` 済み。SDK の中身を git に入れる経路は無い（NVIDIA RTX SDK ライセンス 4.e）。
+- ビルド: `pwsh tools/build.ps1 -Dlss auto|require|off`。
+  - `auto`（既定）: SDK があれば DLSS 付き、無ければビルドの最後に枠付きで `DLSS: OFF (pwsh tools/fetch_dlss.ps1)` を出して DLSS 無しで成功する。
+  - `require`: SDK が無ければビルドせず終了コード 3。夜間ビルド（性能の合否は DLSS 列）と公式リリースで使う。
+  - `off`: `-DUNO_ENABLE_DLSS=OFF`。出力に古い `nvngx_dlss.dll` が残っていれば消す。
+  - ゴールデンとショーケースは決定論モードで常に DLSS OFF なので、どのモードでも結果は同じ。
+  - DLSS の有無が前回の configure と違うときだけ、`build.ps1` が configure し直す（`<ビルドdir>/.uno_dlss_configured` に記録）。
+- 配布: `nvngx_dlss.dll` は必ず NVIDIA のライセンス文とセットで配る（`licenses\NVIDIA_DLSS_LICENSE.txt`）。
+  - ビルドツリー: CMake が `nvngx_dlss.dll` と `licenses/NVIDIA_DLSS_LICENSE.txt` を exe の隣へ置く。
+  - ゲーム配布（`ApplicationBuild.cpp`）: DLL を同梱するときだけライセンス文もコピーする（ライセンス文が無ければ DLL を同梱しない）。
+  - インストーラ / 更新用 zip（`installer/build.ps1 [-Dlss auto|require|off]`）: 既定 `auto` は DLL が無ければ警告つきで DLSS 無しの配布物を作る。
+    公式リリースは `-Dlss require`（DLL かライセンス文が無ければ失敗）。
+- 検査: ctest `DlssWiringCheck`（`DlssBackend::CompiledIn()` と exe の隣の `nvngx_dlss.dll` の有無の一致、`installer/build.ps1` の auto / require の判定）。
+- 実行時: DLSS が使えない環境では `DlssBackend` が Warn を 1 回だけログに出し、TAA で描く（`get_upscaler` の `fallbackReason` に理由が入る）。

@@ -280,6 +280,14 @@ if(UNO_DLSS_ACTIVE)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${UNO_DLSS_SDK_DIR}/lib/Windows_x86_64/rel/nvngx_dlss.dll" "$<TARGET_FILE_DIR:${DX12_DLSS_TARGET}>"
             COMMENT "Bundling nvngx_dlss.dll next to ${DX12_DLSS_TARGET}.exe")
+        # DLL を配るときは NVIDIA のライセンス文もセットで運ぶ（ApplicationBuild.cpp / installer が exe の隣の licenses/ から拾う）。
+        if(EXISTS "${UNO_DLSS_SDK_DIR}/LICENSE.txt")
+            add_custom_command(TARGET ${DX12_DLSS_TARGET} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${DX12_DLSS_TARGET}>/licenses"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${UNO_DLSS_SDK_DIR}/LICENSE.txt" "$<TARGET_FILE_DIR:${DX12_DLSS_TARGET}>/licenses/NVIDIA_DLSS_LICENSE.txt"
+                COMMENT "Bundling NVIDIA_DLSS_LICENSE.txt next to ${DX12_DLSS_TARGET}.exe")
+        endif()
     endforeach()
 endif()
 # TracyClient.dll（Tracy 有効ビルドのみ）。dxil.dll / meshoptimizer.dll と同じ理由で明示コピー。
