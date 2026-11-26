@@ -54,6 +54,7 @@ void CSEmit(uint3 dtid : SV_DispatchThreadID)
     const uint k = dtid.x;
     const uint count = uA.w;
     bool alive = false;
+    bool overwritten = false;   // リングの周回で、まだ生きている古い粒子を上書きした（統計の二重計上を引く）
     if (k < count)
     {
         const uint seed = uC.x;
@@ -167,13 +168,16 @@ void CSEmit(uint3 dtid : SV_DispatchThreadID)
         p.size = PackHalf2(size0.x, size1.x);
         p.rot = PackHalf2(rot + rotRate * dtp, rotRate);
         p.flags = 0;
+        overwritten = gPool[slot].life > 0.0;   // 直前の CSSim が数えた生存。id が slot ごとに 1 つなので競合しない
         gPool[slot] = p;
         alive = p.life > 0.0;
     }
     if ((uC.w & 1u) != 0u)
     {
         const uint n = WaveActiveCountBits(alive);
+        const uint over = WaveActiveCountBits(overwritten);
         if (WaveIsFirstLane() && n > 0) InterlockedAdd(gStats[uC.y], n);
+        if (WaveIsFirstLane() && over > 0) InterlockedAdd(gStats[uC.y], 0u - over);   // u32 の巻き戻しで減算
     }
 }
 

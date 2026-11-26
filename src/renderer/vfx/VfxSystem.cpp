@@ -94,6 +94,12 @@ VfxSystem::~VfxSystem()
     if (m_opsMapped && m_opsUpload) m_opsUpload->Unmap(0, nullptr);
     for (int i = 0; i < 4; ++i)
         if (m_readbackMapped[i] && m_readback[i]) m_readback[i]->Unmap(0, nullptr);
+    // GPU がまだ使っているかもしれないものは、フェンスを待つ DeferredRelease へ渡す（無効のときは即時解放）。
+    // 記述子（m_curlSrv / m_dummyDepthSrv）は返さない: VfxSystem は FeatureRegistry の最後のメンバで、SRV ヒープは
+    // Application の終了処理で先に破棄済み。VfxSystem は 1 つだけで再確保もしないので、ヒープごと消えるのが正。
+    ComPtr<ID3D12Resource>* const owned[] = { &m_pool, &m_stats, &m_opsUpload, &m_curl, &m_dummyDepth, &m_readback[0], &m_readback[1], &m_readback[2], &m_readback[3] };
+    for (ComPtr<ID3D12Resource>* r : owned)
+        if (*r) DeferredRelease::Defer(std::move(*r), nullptr);
 }
 
 // ===========================================================================
@@ -221,9 +227,8 @@ bool VfxSystem::CreateBuffers(ID3D12Device* dev, StageCtx& ctx)
     return true;
 }
 
-bool VfxSystem::CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cmd, StageCtx& ctx)
+bool VfxSystem::CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cmd, StageCtx& ctx, const std::vector<u16>& half)
 {
-    const std::vector<u16> half = GenerateCurlFieldHalf();
     const D3D12_HEAP_PROPERTIES hp = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
     D3D12_RESOURCE_DESC d{};
     d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
@@ -266,17 +271,34 @@ bool VfxSystem::CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cm
     return true;
 }
 
-bool VfxSystem::EnsureGpu(StageCtx& ctx)
+bool VfxSystem::EnsureGpu(StageCtx& ctx, bool wait)
 {
     if (m_gpuReady) return true;
-    if (m_gpuTried) return false;
-    m_gpuTried = true;
-    if (!ctx.cmd || !ctx.descriptors) return false;
+    if (m_gpuFailed) return false;
     ComPtr<ID3D12Device> dev;
-    if (FAILED(ctx.cmd->GetDevice(IID_PPV_ARGS(&dev)))) return false;
-    if (!CreatePipelines(dev.Get()) || !CreateBuffers(dev.Get(), ctx) || !CreateCurlField(dev.Get(), ctx.cmd, ctx))
+    if (!ctx.cmd || !ctx.descriptors || FAILED(ctx.cmd->GetDevice(IID_PPV_ARGS(&dev))))
     {
-        Logger::Error("UnoFX: GPU リソースを作れなかったので無効にします");
+        m_gpuFailed = true; m_gpuError = "UnoFX: コマンドリストかデスクリプタヒープが無い";
+        return false;
+    }
+    if (!m_gpuBase)
+    {
+        if (!CreatePipelines(dev.Get()) || !CreateBuffers(dev.Get(), ctx))
+        {
+            m_gpuFailed = true; m_gpuError = "UnoFX: GPU リソース / パイプラインを作れなかった（ログとシェーダの .cso を確認）";
+            Logger::Error("{}。UnoFX を無効にします", m_gpuError);
+            return false;
+        }
+        // 64^3 のカール場の生成（約 240 万回のノイズ評価）は別スレッドへ。出来るまで今フレームは見送る
+        m_curlFuture = std::async(std::launch::async, [] { return GenerateCurlFieldHalf(); });
+        m_gpuBase = true;
+    }
+    if (!wait && m_curlFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+    const std::vector<u16> half = m_curlFuture.get();
+    if (!CreateCurlField(dev.Get(), ctx.cmd, ctx, half))
+    {
+        m_gpuFailed = true; m_gpuError = "UnoFX: カール場のテクスチャを作れなかった";
+        Logger::Error("{}。UnoFX を無効にします", m_gpuError);
         return false;
     }
     m_ranges.clear();
@@ -292,15 +314,26 @@ bool VfxSystem::EnsureGpu(StageCtx& ctx)
 VfxSystem::AssetEntry* VfxSystem::GetAsset(const std::string& path)
 {
     auto it = m_assets.find(path);
-    if (it != m_assets.end()) return it->second.ok ? &it->second : nullptr;
+    if (it != m_assets.end() && it->second.gen == m_assetGen) return it->second.ok ? &it->second : nullptr;
+    // 初回、またはアセット世代が進んだ（置き直した）: 内容を読む。同じ内容なら作り直さない
     AssetEntry& e = m_assets[path];
+    const bool had = it != m_assets.end();
+    e.gen = m_assetGen;
     const Host& host = Runtime::Get().GetHost();
     const std::vector<u8> bytes = host.readAsset ? host.readAsset(host.user, path) : vfs::ReadAsset(path);
-    if (bytes.empty()) { e.error = "ファイルが無い / 読めない: " + path; Logger::Warn("UnoFX: {}", e.error); return nullptr; }
+    if (bytes.empty())
+    {
+        if (e.ok) return &e;   // 一時的に読めないだけなら、動いているものは止めない
+        e.error = "ファイルが無い / 読めない: " + path; Logger::Warn("UnoFX: {}", e.error); return nullptr;
+    }
+    u64 h = 1469598103934665603ull;   // FNV-1a
+    for (u8 c : bytes) { h ^= c; h *= 1099511628211ull; }
+    if (had && e.hash == h) return e.ok ? &e : nullptr;   // 同じ内容（失敗していたものも同じ理由で失敗するので再試行しない）
+    e.ok = false; e.hash = h; e.error.clear();
     ParseResult pr = ParseUvfx(std::string(bytes.begin(), bytes.end()));
     if (!pr.ok) { e.error = path + ": " + pr.error; Logger::Warn("UnoFX: {}", e.error); return nullptr; }
     for (const std::string& w : pr.warnings) Logger::Warn("UnoFX: {}: {}", path, w);
-    // 命令列をアップロード用バッファへ追記する
+    // 命令列をアップロード用バッファへ追記する（追記のみ。使用中のフレームが読む領域は書き換えない）
     std::vector<CompiledEmitter> compiled;
     u32 need = 0;
     for (const EmitterDesc& em : pr.asset.emitters)
@@ -310,8 +343,14 @@ VfxSystem::AssetEntry* VfxSystem::GetAsset(const std::string& path)
         need += static_cast<u32>(ce.init.size() + ce.update.size());
         compiled.push_back(std::move(ce));
     }
-    if (m_opsUsed + need > kMaxOpsTotal) { e.error = path + ": 命令の置き場が足りない"; Logger::Warn("UnoFX: {}", e.error); return nullptr; }
+    if (m_opsUsed + need > kMaxOpsTotal)
+    {
+        e.error = path + ": 命令の置き場が足りない（" + std::to_string(kMaxOpsTotal) + " 命令。再起動で戻る）";
+        if (!m_opsFullWarned) { m_opsFullWarned = true; Logger::Warn("UnoFX: {}", e.error); }
+        return nullptr;
+    }
     e.asset = std::move(pr.asset);
+    e.em.clear();
     for (const CompiledEmitter& ce : compiled)
     {
         AssetEntry::Em em;
@@ -373,10 +412,20 @@ VfxSystem::Instance* VfxSystem::FindOrCreate(entt::entity e, u32 emitter, const 
     }
     Instance in;
     in.entity = e; in.emitter = emitter; in.assetPath = assetPath; in.cap = cap; in.seed = seed;
-    if (!AllocRange(cap, in.base)) { Logger::Warn("UnoFX: 粒子プールが足りない（{} 個）", cap); return nullptr; }
+    if (!AllocRange(cap, in.base))
+    {
+        if (!m_poolWarned) { m_poolWarned = true; Logger::Warn("UnoFX: 粒子プールが足りない（{} 個）", cap); }   // 毎フレームは出さない
+        return nullptr;
+    }
     in.statSlot = kMaxStatSlots;
     for (u32 s = 0; s < kMaxStatSlots; ++s) if (!m_statUsed[s]) { in.statSlot = s; m_statUsed[s] = true; break; }
-    if (in.statSlot == kMaxStatSlots) { FreeRange(in.base, cap); return nullptr; }
+    if (in.statSlot == kMaxStatSlots)
+    {
+        FreeRange(in.base, cap);
+        if (!m_poolWarned) { m_poolWarned = true; Logger::Warn("UnoFX: 統計のスロットが足りない（{} 個まで）", kMaxStatSlots); }
+        return nullptr;
+    }
+    m_poolWarned = false;
     in.paused = !autoplay;
     auto res = m_instances.emplace(key, std::move(in));
     return &res.first->second;
@@ -421,23 +470,15 @@ void VfxSystem::BeginCompute(StageCtx& ctx)
     cmd->SetComputeRootUnorderedAccessView(3, m_stats->GetGPUVirtualAddress());
 }
 
-void VfxSystem::RecordClear(ID3D12GraphicsCommandList* cmd, const Instance& inst)
-{
-    SimCB cb{};
-    cb.uA[0] = inst.base; cb.uA[1] = inst.cap;
-    cmd->SetPipelineState(m_psoClear.Get());
-    cmd->SetComputeRoot32BitConstants(0, 36, &cb, 0);
-    cmd->Dispatch(Groups(inst.cap), 1, 1);
-    UavBarrier(cmd, m_pool.Get());
-}
-
-void VfxSystem::RecordStep(ID3D12GraphicsCommandList* cmd, Instance& inst, const AssetEntry& a, const EmitterDesc& em,
-                           const AssetEntry::Em& aem, const float rows[12], const float curPos[3],
-                           double stepDt, bool isLast, float emissionMul)
+VfxSystem::PendingStep VfxSystem::PlanStep(Instance& inst, const AssetEntry& a, const EmitterDesc& em, const AssetEntry::Em& aem,
+                                           const float rows[12], const float curPos[3], double stepDt, bool isLast, float emissionMul)
 {
     const double t0 = inst.clk.time;
     const SpawnStep plan = PlanSpawnStep(em.spawn, a.asset.loop, a.asset.duration, stepDt, emissionMul, inst.cap, inst.clk);
-    const u32 simCount = std::min(plan.firstId, inst.cap);
+    PendingStep ps;
+    ps.simCount = std::min(plan.firstId, inst.cap);
+    ps.emitCount = plan.count;
+    ps.statClear = isLast;
 
     SimCB cb{};
     std::memcpy(cb.wRow, rows, sizeof(cb.wRow));
@@ -447,36 +488,80 @@ void VfxSystem::RecordStep(ID3D12GraphicsCommandList* cmd, Instance& inst, const
     cb.uA[0] = inst.base; cb.uA[1] = inst.cap; cb.uA[2] = plan.firstId; cb.uA[3] = plan.count;
     cb.uB[0] = aem.initStart; cb.uB[1] = aem.initCount; cb.uB[2] = aem.updStart; cb.uB[3] = aem.updCount;
     cb.fA[0] = static_cast<float>(t0); cb.fA[1] = static_cast<float>(stepDt);
-    cb.uC[0] = inst.seed; cb.uC[1] = inst.statSlot; cb.uC[2] = simCount; cb.uC[3] = isLast ? 1u : 0u;
+    cb.uC[0] = inst.seed; cb.uC[1] = inst.statSlot; cb.uC[2] = ps.simCount; cb.uC[3] = isLast ? 1u : 0u;
     cb.uD[0] = m_curlSrv;
-    cmd->SetComputeRoot32BitConstants(0, 36, &cb, 0);
+    static_assert(sizeof(ps.cb) == sizeof(cb), "PendingStep::cb は SimCB と同じ大きさ");
+    std::memcpy(ps.cb, &cb, sizeof(cb));
+    return ps;
+}
 
-    if (isLast)
+// 計画した全インスタンスのステップを、フェーズごとにまとめて記録する。
+//   インスタンスのプール区間は互いに素なので、同じフェーズの中ではバリアが要らない。
+//   フェーズの境目（統計クリア -> sim -> emit）にだけフルのバリアを 1 つ入れる。seek の多段は「ラウンド」で全インスタンスを同時に進める。
+void VfxSystem::Execute(StageCtx& ctx, std::vector<Work>& work)
+{
+    bool any = false;
+    for (const Work& w : work) if (w.clear || !w.steps.empty()) { any = true; break; }
+    if (!any) return;   // 何も走らせない: 遷移もバリアも記録しない
+    ID3D12GraphicsCommandList* cmd = ctx.cmd;
+    BeginCompute(ctx);
+    m_statsDirty = 4;
+
+    bool anyClear = false;
+    for (const Work& w : work)
     {
-        cmd->SetPipelineState(m_psoStatClear.Get());
-        cmd->Dispatch(1, 1, 1);
-        UavBarrier(cmd, m_stats.Get());
+        if (!w.clear) continue;
+        if (!anyClear) { cmd->SetPipelineState(m_psoClear.Get()); anyClear = true; }
+        SimCB cb{};
+        cb.uA[0] = w.in->base; cb.uA[1] = w.in->cap;
+        cmd->SetComputeRoot32BitConstants(0, 36, &cb, 0);
+        cmd->Dispatch(Groups(w.in->cap), 1, 1);
     }
-    if (simCount > 0)
+    if (anyClear) UavBarrier(cmd, m_pool.Get());
+
+    size_t rounds = 0;
+    for (const Work& w : work) rounds = std::max(rounds, w.steps.size());
+    for (size_t r = 0; r < rounds; ++r)
     {
-        cmd->SetPipelineState(m_psoSim.Get());
-        cmd->Dispatch(Groups(simCount), 1, 1);
-        UavBarrier(cmd, m_pool.Get());
+        bool did = false;
+        for (const Work& w : work)
+        {
+            if (r >= w.steps.size() || !w.steps[r].statClear) continue;
+            if (!did) { cmd->SetPipelineState(m_psoStatClear.Get()); did = true; }
+            cmd->SetComputeRoot32BitConstants(0, 36, w.steps[r].cb, 0);
+            cmd->Dispatch(1, 1, 1);
+        }
+        if (did) UavBarrier(cmd, m_stats.Get());
+
+        did = false;
+        for (const Work& w : work)
+        {
+            if (r >= w.steps.size() || w.steps[r].simCount == 0) continue;
+            if (!did) { cmd->SetPipelineState(m_psoSim.Get()); did = true; }
+            cmd->SetComputeRoot32BitConstants(0, 36, w.steps[r].cb, 0);
+            cmd->Dispatch(Groups(w.steps[r].simCount), 1, 1);
+        }
+        if (did) UavBarrier(cmd, m_pool.Get());
+
+        did = false;
+        for (const Work& w : work)
+        {
+            if (r >= w.steps.size() || w.steps[r].emitCount == 0) continue;
+            if (!did) { cmd->SetPipelineState(m_psoEmit.Get()); did = true; }
+            cmd->SetComputeRoot32BitConstants(0, 36, w.steps[r].cb, 0);
+            cmd->Dispatch(Groups(w.steps[r].emitCount), 1, 1);
+        }
+        if (did) UavBarrier(cmd, m_pool.Get());
     }
-    if (plan.count > 0)
-    {
-        cmd->SetPipelineState(m_psoEmit.Get());
-        cmd->Dispatch(Groups(plan.count), 1, 1);
-        UavBarrier(cmd, m_pool.Get());
-    }
-    (void)aem;
 }
 
 void VfxSystem::PublishStats(ID3D12GraphicsCommandList* cmd)
 {
-    // GPU の統計（生存数）を読み戻しリングへ。3 フレーム前に書いた分を読む（フレームの多重化は 3）。
-    if (cmd && m_gpuReady && !m_instances.empty())
+    // GPU の統計（生存数）を読み戻しリングへ。4 つ前に書いた分を読む（フレームの多重化は 3）。
+    // 計算が走ったフレームから 4 フレームだけコピーを続ける（止まっている間は何も記録しない）。
+    if (cmd && m_gpuReady && !m_instances.empty() && m_statsDirty > 0)
     {
+        --m_statsDirty;
         const u32 w = m_readbackWritten % 4;
         Transition(cmd, m_stats.Get(), m_statsState, D3D12_RESOURCE_STATE_COPY_SOURCE);
         cmd->CopyBufferRegion(m_readback[w].Get(), 0, m_stats.Get(), 0, kMaxStatSlots * sizeof(u32));
@@ -488,6 +573,7 @@ void VfxSystem::PublishStats(ID3D12GraphicsCommandList* cmd)
     }
     Stats st;
     st.gpuReady = m_gpuReady;
+    st.gpuFailed = m_gpuFailed;
     st.poolCapacity = kPoolCapacity;
     st.vramBytes = m_gpuReady ? m_vram : 0;
     for (const auto& kv : m_instances)
@@ -502,33 +588,59 @@ void VfxSystem::PublishStats(ID3D12GraphicsCommandList* cmd)
     }
     st.instances = static_cast<u32>(m_instances.size());
     for (const auto& kv : m_assets) if (!kv.second.ok && !kv.second.error.empty()) st.lastError = kv.second.error;
+    if (!m_gpuError.empty()) st.lastError = m_gpuError;
     Runtime::Get().PublishStats(std::move(st));
 }
+
+bool VfxSystem::WantsUpdate() const
+{
+    Runtime& rt = Runtime::Get();
+    if (!rt.HasHost()) return false;
+    if (!m_instances.empty() || rt.HasSeeks()) return true;
+    const Host& host = rt.GetHost();
+    entt::registry* reg = host.registry(host.user);
+    return reg && !reg->view<VfxComponent>().empty();
+}
+
+bool VfxSystem::WantsDraw() const { return m_gpuReady && !m_instances.empty(); }
 
 void VfxSystem::Update(StageCtx& ctx)
 {
     Runtime& rt = Runtime::Get();
     if (!rt.HasHost()) return;
     const Host& host = rt.GetHost();
-    if (host.pollPending) host.pollPending(host.user);   // 保留中の配置（.uvfx のダブルクリック）
+    // 保留中の配置: アプリの毎フレームの更新（VfxTick）が消化する。結線されていない間だけ、ここで消化する（従来の道）
+    if (!rt.TickDriven() && host.pollPending) host.pollPending(host.user);
     entt::registry* reg = host.registry(host.user);
-    std::vector<SeekRequest> seeks = rt.TakeSeeks();
     if (!reg) return;
 
     auto view = reg->view<VfxComponent, Transform>();
     const bool any = view.begin() != view.end();
-    if (!any && m_instances.empty()) { Stats s; rt.PublishStats(std::move(s)); return; }   // 何も無い: コマンドは 1 つも記録しない
-    if (!EnsureGpu(ctx)) return;
+    if (!any && m_instances.empty())   // 何も無い: コマンドは 1 つも記録しない
+    {
+        Stats s; s.gpuFailed = m_gpuFailed; s.lastError = m_gpuError;
+        rt.PublishStats(std::move(s));
+        rt.TakeSeeks();
+        return;
+    }
+
+    const float dtHost = host.frameDt ? host.frameDt(host.user) : 0.0f;
+    // 決定論の経路（seek 待ち / dt = 0 のキャプチャ）では、カール場の生成を待ってでも今フレームで始める
+    if (!EnsureGpu(ctx, rt.HasSeeks() || dtHost <= 0.0f)) return;
+    std::vector<SeekRequest> seeks = rt.TakeSeeks();
+    m_assetGen = rt.AssetGeneration();
 
     float emissionMul = 1.0f; u32 qualityCap = 0;
     if (host.quality) host.quality(host.user, emissionMul, qualityCap);
-    const float dtHost = host.frameDt ? host.frameDt(host.user) : 0.0f;
 
     m_computeBound = false;
     for (auto& kv : m_instances) kv.second.touched = false;
 
     {
         GpuScope scope(ctx.cmd, ctx.timer, GpuTimer::VfxSim);
+        std::vector<Work> work;
+        // 品質プリセットの maxParticles は「シーン全体」の予算。エンティティ順に確保し、尽きたエミッターは出さない
+        u64 budgetLeft = qualityCap > 0 ? qualityCap : ~0ull;
         for (entt::entity e : view)
         {
             const VfxComponent& comp = view.get<VfxComponent>(e);
@@ -542,11 +654,12 @@ void VfxSystem::Update(StageCtx& ctx)
             for (u32 ei = 0; ei < a->asset.emitters.size(); ++ei)
             {
                 const EmitterDesc& em = a->asset.emitters[ei];
-                u32 cap = em.maxParticles;
-                if (qualityCap > 0) cap = std::max(1u, std::min(cap, qualityCap));
+                const u32 cap = static_cast<u32>(std::min<u64>(em.maxParticles, budgetLeft));
+                if (cap == 0) continue;   // 予算切れ（このエミッターは出ない）
                 const u32 seed = comp.seed * 0x9E3779B1u + ei * 7919u + 1u;
                 Instance* in = FindOrCreate(e, ei, comp.asset, cap, seed, comp.autoplay);
                 if (!in) continue;
+                budgetLeft -= cap;
                 in->touched = true;
                 const AssetEntry::Em& aem = a->em[ei];
 
@@ -554,11 +667,11 @@ void VfxSystem::Update(StageCtx& ctx)
                 for (const SeekRequest& s : seeks)
                     if (s.entity == entt::null || s.entity == e) sk = &s;
 
-                BeginCompute(ctx);
+                Work w; w.in = in;
                 if (sk)
                 {
                     // 決定論の seek: 巻き戻して、固定ステップで t まで再シミュレーションする（放出体は今の位置に固定）
-                    RecordClear(ctx.cmd, *in);
+                    w.clear = true;
                     in->clk = SpawnClock{};
                     in->finished = false;
                     in->havePrev = true;
@@ -568,16 +681,18 @@ void VfxSystem::Update(StageCtx& ctx)
                     if (n > kMaxSeekSteps) { Logger::Warn("UnoFX: seek が長すぎる（{} 秒まで）", kMaxSeekSteps / 60); n = kMaxSeekSteps; }
                     const double rem = t - double(n) * kSeekStepDt;
                     const bool hasRem = rem > 1.0e-6 && n < kMaxSeekSteps;
+                    w.steps.reserve(n + 1);
                     for (u32 i = 0; i < n; ++i)
-                        RecordStep(ctx.cmd, *in, *a, em, aem, rows, curPos, kSeekStepDt, !hasRem && i + 1 == n, emissionMul);
-                    if (hasRem) RecordStep(ctx.cmd, *in, *a, em, aem, rows, curPos, rem, true, emissionMul);
+                        w.steps.push_back(PlanStep(*in, *a, em, aem, rows, curPos, kSeekStepDt, !hasRem && i + 1 == n, emissionMul));
+                    if (hasRem) w.steps.push_back(PlanStep(*in, *a, em, aem, rows, curPos, rem, true, emissionMul));
                     in->paused = !sk->resume;
                 }
                 else if (!in->paused && !in->finished && dtHost > 0.0f)
                 {
                     const double dt = std::min(double(dtHost) * std::max(0.0f, comp.timeScale), double(kMaxLiveDt));
-                    if (dt > 0.0) RecordStep(ctx.cmd, *in, *a, em, aem, rows, curPos, dt, true, emissionMul);
+                    if (dt > 0.0) w.steps.push_back(PlanStep(*in, *a, em, aem, rows, curPos, dt, true, emissionMul));
                 }
+                if (w.clear || !w.steps.empty()) work.push_back(std::move(w));
                 std::memcpy(in->prevPos, curPos, sizeof(curPos));
                 in->havePrev = true;
                 if (!a->asset.loop && a->asset.duration > 0.0f &&
@@ -585,6 +700,7 @@ void VfxSystem::Update(StageCtx& ctx)
                     in->finished = true;
             }
         }
+        Execute(ctx, work);
     }
 
     // 消えたエンティティ / コンポーネントのインスタンスを返す
@@ -600,6 +716,8 @@ void VfxSystem::Update(StageCtx& ctx)
 void VfxSystem::Draw(StageCtx& ctx)
 {
     if (!m_gpuReady || m_instances.empty() || !ctx.view || ctx.sceneRtv.ptr == 0 || !ctx.cmd || !ctx.descriptors) return;
+    // 粒子を描かないビュー（反射プローブの撮影面など）には出さない。従来の粒子経路（kViewParticles）と同じ判定
+    if (!ctx.view->Has(kViewParticles)) return;
     bool anyDraw = false;
     for (const auto& kv : m_instances) if (!kv.second.finished && kv.second.clk.spawned > 0) { anyDraw = true; break; }
     if (!anyDraw) return;
@@ -609,7 +727,7 @@ void VfxSystem::Draw(StageCtx& ctx)
     Transition(cmd, m_pool.Get(), m_poolState, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     m_poolState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-    // 深度（ソフトパーティクル）。無いビューではダミー SRV を渡して softDistance を 0 にする
+    // 深度（奥の断片の破棄とソフトパーティクル）。無いビューではダミー SRV を渡し、uP.w = 0 で読ませない
     u32 depthIdx = m_dummyDepthSrv;
     bool hasDepth = false;
     if (ctx.depth && ctx.depthSrv.ptr != 0)
@@ -644,6 +762,7 @@ void VfxSystem::Draw(StageCtx& ctx)
     cb.params2[2] = ctx.internalW ? 1.0f / float(ctx.internalW) : 0.0f;
     cb.params2[3] = ctx.internalH ? 1.0f / float(ctx.internalH) : 0.0f;
     cb.uP[1] = depthIdx;
+    cb.uP[3] = hasDepth ? 1u : 0u;
 
     for (auto& kv : m_instances)
     {
@@ -654,7 +773,7 @@ void VfxSystem::Draw(StageCtx& ctx)
         const RenderDesc& r = ai->second.asset.emitters[in.emitter].render;
         float fade = 3.0f;
         switch (r.fade) { case Fade::None: fade = 0.0f; break; case Fade::Linear: fade = 1.0f; break; case Fade::Quad: fade = 2.0f; break; default: break; }
-        cb.params[0] = r.intensity; cb.params[1] = hasDepth ? r.softDistance : 0.0f; cb.params[2] = fade; cb.params[3] = r.stretch;
+        cb.params[0] = r.intensity; cb.params[1] = r.softDistance; cb.params[2] = fade; cb.params[3] = r.stretch;
         cb.uP[0] = in.base;
         cb.uP[2] = r.blend == Blend::Alpha ? 1u : 0u;
         cmd->SetGraphicsRoot32BitConstants(0, 36, &cb, 0);

@@ -18,7 +18,7 @@ struct SpawnClock
 {
     double time      = 0.0;   // エフェクトの時刻（秒）
     double owed      = 0.0;   // 持ち越し（まだ放出していない個数。端数を含む）
-    u32    spawned   = 0;     // 通し番号（次の粒子の id）。u32 の桁あふれは wrap（slot = id % cap なので連続性は保つ）
+    u32    spawned   = 0;     // 通し番号（次の粒子の id）。u32 の桁あふれは wrap する（slot = id % cap は cap が 2^32 を割り切るときだけ連続。そうでなければ約 43 億個で 1 回だけ slot が飛ぶ）
 };
 
 struct SpawnStep

@@ -97,6 +97,12 @@ void AppAccess::VfxBindHost(Application& app)
         if (!a->m_editorCtx || a->m_editorCtx->pendingVfxPlace.empty() || !a->m_scene || !a->m_camera) return;
         const std::string rel = a->m_editorCtx->pendingVfxPlace;
         a->m_editorCtx->pendingVfxPlace.clear();
+        // Editor モードだけ（Play 中に置いても Stop で消え、Undo の項目だけが残る。vfx_place の busyPlaying と同じ判断）
+        if (a->m_engineMode != Application::EngineMode::Editor || a->m_modeChangeRequested)
+        {
+            Logger::Info("UnoFX: Play 中なので .uvfx の配置は見送った: {}", rel);
+            return;
+        }
         // ビューポートの注視点: カメラの前方。下向きなら床（y=0）との交点（50m まで）、そうでなければ前方 8m
         const DirectX::XMFLOAT3 cp = a->m_camera->GetPosition(), cf = a->m_camera->GetForward();
         float dist = 8.0f;
@@ -115,6 +121,15 @@ void AppAccess::VfxBindHost(Application& app)
         }
     };
     vfx::Runtime::Get().SetHost(h);
+}
+
+void AppAccess::VfxTick(Application& app)
+{
+    vfx::Runtime& rt = vfx::Runtime::Get();
+    if (!rt.HasHost()) VfxBindHost(app);   // 起動時の結線（MCP の初回コマンドを待たない）
+    rt.SetTickDriven(true);
+    // 保留中の配置は、フレームの更新（コマンド記録の外）で消化する
+    if (rt.GetHost().pollPending) rt.GetHost().pollPending(rt.GetHost().user);
 }
 
 bool AppAccess::VfxPlace(Application& app, const std::string& presetOrAsset, const DirectX::XMFLOAT3& worldPos, entt::entity parent,
@@ -168,6 +183,7 @@ bool AppAccess::VfxPlace(Application& app, const std::string& presetOrAsset, con
     // Undo: 生成 1 件（MCP の呼び出し中は「AI: vfx_place」の 1 エントリへ取り込まれる）
     if (app.m_editorCtx)
         app.m_editorCtx->undoSystem.PushCommand(std::make_unique<SpawnEntityCommand>(app.m_scene.get(), PathResolver::AssetsDir(), e));
+    vfx::Runtime::Get().BumpAssetGeneration();   // 置き直し = 編集した .uvfx の再読み込みと、失敗したものの再試行の合図
     Logger::Info("UnoFX: 置いた: {} ({})", name, asset);
     outEntity = e;
     outAsset = asset;
@@ -184,23 +200,39 @@ void Application::RegisterMcpLaneBMethods()
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot place VFX while Playing; call dx12_stop first",
                     "dx12_stop で Editor へ戻してから置く（Play 中に置いても Stop で消える）");
-            const std::string target = params.value("preset", params.value("asset", std::string()));
+            if (params.contains("preset") && params.contains("asset"))
+                throw McpError(McpErr::InvalidParam, "preset と asset は同時に指定できない", "どちらか 1 つだけ渡す（preset 名か assets 相対の .uvfx のパス）");
+            if ((params.contains("preset") && !params["preset"].is_string()) || (params.contains("asset") && !params["asset"].is_string()))
+                throw McpError(McpErr::InvalidParam, "preset / asset は文字列", "例: preset:\"p_campfire\"");
+            const std::string target = params.contains("preset") ? params["preset"].get<std::string>()
+                                     : params.contains("asset")  ? params["asset"].get<std::string>() : std::string();
             if (target.empty())
                 throw McpError(McpErr::InvalidParam, "preset か asset が要る",
                     "例: preset:\"p_campfire\"（engine/vfx2/presets/ の名前）か asset:\"engine/vfx2/presets/p_campfire.uvfx\"");
-            const auto p = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
-            if (p.size() != 3)
-                throw McpError(McpErr::InvalidParam, "position must be [x,y,z]", "例: position:[0, 0, 0]（ワールド座標の 3 要素）");
+            std::vector<float> p{0.0f, 0.0f, 0.0f};
+            if (params.contains("position"))
+            {
+                const auto& pj = params["position"];
+                bool okPos = pj.is_array() && pj.size() == 3;
+                if (okPos) for (const auto& c : pj) if (!c.is_number()) okPos = false;
+                if (!okPos)
+                    throw McpError(McpErr::InvalidParam, "position must be [x,y,z]", "例: position:[0, 0, 0]（ワールド座標の 3 要素の数値）");
+                p = { pj[0].get<float>(), pj[1].get<float>(), pj[2].get<float>() };
+            }
             entt::entity parent = entt::null;
             auto& reg = m_scene->GetRegistry();
             if (params.contains("parent"))
             {
+                if (!params["parent"].is_number_integer() || params["parent"].get<long long>() < 0)
+                    throw McpError(McpErr::InvalidParam, "parent は entityId（整数）", "dx12_list_entities で取った entityId を渡す。名前で指すなら parentName");
                 parent = static_cast<entt::entity>(params["parent"].get<u32>());
                 if (!reg.valid(parent))
                     throw McpError(McpErr::NotFound, "invalid parent entity id", "parent は既存エンティティの entityId（dx12_list_entities で取り直す）");
             }
             else if (params.contains("parentName"))
             {
+                if (!params["parentName"].is_string())
+                    throw McpError(McpErr::InvalidParam, "parentName は文字列", "既存エンティティの名前を渡す");
                 const std::string pn = params["parentName"].get<std::string>();
                 for (auto [pe, tag] : reg.view<const NameTag>().each())
                     if (tag.name == pn) { parent = pe; break; }
@@ -237,6 +269,9 @@ void Application::RegisterMcpLaneBMethods()
             for (auto e : reg.view<VfxComponent>()) if (r.entity == entt::null || r.entity == e) ++targets;
             if (targets == 0)
                 throw McpError(McpErr::NotFound, "VFX のエンティティが無い", "先に dx12_vfx_place で置く");
+            if (vfx::Runtime::Get().GetStats().gpuFailed)
+                throw McpError(McpErr::Unsupported, "UnoFX の GPU 初期化に失敗している: " + vfx::Runtime::Get().GetStats().lastError,
+                               "dx12_vfx_stats の lastError とログを確認。シェーダの .cso（ビルドの Shaders）が無い可能性");
             vfx::Runtime::Get().RequestSeek(r);
             resp["ok"] = true;
             resp["result"] = { {"t", t}, {"targets", targets}, {"paused", !r.resume},

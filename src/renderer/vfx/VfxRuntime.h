@@ -48,6 +48,7 @@ struct InstanceStat
 struct Stats
 {
     bool   gpuReady = false;
+    bool   gpuFailed = false;   // GPU リソース / パイプラインを作れなかった（lastError に理由）
     u32    poolUsed = 0;
     u32    poolCapacity = 0;
     u32    instances = 0;
@@ -67,6 +68,14 @@ public:
     const Host& GetHost() const { return m_host; }
 
     void RequestSeek(const SeekRequest& r) { m_seeks.push_back(r); }
+    bool HasSeeks() const { return !m_seeks.empty(); }
+    // アセットの世代。置いた（vfx_place / ダブルクリック）ときに進める。VfxSystem は世代が変わるとファイルの内容を見直す
+    //   （編集した .uvfx の再読み込み。読めなかったものの再試行）。
+    void BumpAssetGeneration() { ++m_assetGen; }
+    u32  AssetGeneration() const { return m_assetGen; }
+    // true なら保留中の配置はアプリが毎フレームの更新（VfxTick）で消化する。false の間は VfxSystem が従来どおり描画中に消化する
+    void SetTickDriven(bool v) { m_tickDriven = v; }
+    bool TickDriven() const { return m_tickDriven; }
     std::vector<SeekRequest> TakeSeeks() { std::vector<SeekRequest> v; v.swap(m_seeks); return v; }
 
     void PublishStats(Stats&& s) { m_stats = std::move(s); }
@@ -75,6 +84,8 @@ public:
 private:
     Host m_host;
     bool m_hasHost = false;
+    bool m_tickDriven = false;
+    u32  m_assetGen = 0;
     std::vector<SeekRequest> m_seeks;
     Stats m_stats;
 };

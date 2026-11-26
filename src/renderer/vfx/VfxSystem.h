@@ -6,9 +6,10 @@
 //     （GPU リソースも最初の 1 個が現れるまで作らない）。
 //   * 粒子は 1 本のプール（kPoolCapacity 個）の中の、インスタンスごとの連続区間（リング）に置く。
 // ===========================================================================
-#include <d3d12.h>
+#include <directx/d3d12.h>
 #include <wrl/client.h>
 
+#include <future>
 #include <map>
 #include <memory>
 #include <string>
@@ -36,8 +37,12 @@ public:
     ~VfxSystem();
 
     void Update(StageCtx& ctx);   // AfterDepthPrepass（主ビューだけ）
-    void Draw(StageCtx& ctx);     // AfterTranslucent（どのビューでも）
+    void Draw(StageCtx& ctx);     // AfterTranslucent（どのビューでも。kViewParticles を持たないビューは何もしない）
     u64  VramBytes() const { return m_vram; }
+    // 今フレーム、このステージで記録するものがあるか（false ならコマンドを 1 つも出さなくてよい）。
+    //   lane C の FeatureRegistry が IRenderFeature::Active(Stage) を足したら、VfxFeature がこれを返す（needs_other_lane 参照）。
+    bool WantsUpdate() const;
+    bool WantsDraw() const;
 
 private:
     struct AssetEntry
@@ -47,6 +52,8 @@ private:
         VfxAsset    asset;
         struct Em { u32 initStart = 0, initCount = 0, updStart = 0, updCount = 0; float maxLife = 1.0f; };
         std::vector<Em> em;
+        u64 hash = 0;   // ファイル内容のハッシュ（再読み込みの判定）
+        u32 gen = 0;    // 最後に内容を見直したときのアセット世代
     };
 
     struct Instance
@@ -65,10 +72,10 @@ private:
     };
 
     // ---- 初期化 ----
-    bool EnsureGpu(StageCtx& ctx);
+    bool EnsureGpu(StageCtx& ctx, bool wait);   // wait=true: カール場の生成を待つ（seek / 決定論キャプチャ）。false: 未了なら今フレームは見送る
     bool CreatePipelines(ID3D12Device* dev);
     bool CreateBuffers(ID3D12Device* dev, StageCtx& ctx);
-    bool CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cmd, StageCtx& ctx);
+    bool CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cmd, StageCtx& ctx, const std::vector<u16>& half);
 
     // ---- アセット / インスタンス ----
     AssetEntry* GetAsset(const std::string& path);
@@ -78,18 +85,29 @@ private:
     void        FreeRange(u32 base, u32 size);
 
     // ---- 記録 ----
-    struct StepCtx;
+    // 1 ステップぶんの計画（CPU で放出数を決め、定数を作る。GPU への記録は Execute がフェーズごとにまとめて行う）
+    struct PendingStep
+    {
+        u32  cb[36] = {};
+        u32  simCount = 0, emitCount = 0;
+        bool statClear = false;
+    };
+    struct Work { Instance* in = nullptr; bool clear = false; std::vector<PendingStep> steps; };
     void BeginCompute(StageCtx& ctx);
-    void RecordClear(ID3D12GraphicsCommandList* cmd, const Instance& inst);
-    void RecordStep(ID3D12GraphicsCommandList* cmd, Instance& inst, const AssetEntry& a, const EmitterDesc& em,
-                    const AssetEntry::Em& aem, const float rows[12], const float curPos[3],
-                    double stepDt, bool isLast, float emissionMul);
+    PendingStep PlanStep(Instance& inst, const AssetEntry& a, const EmitterDesc& em, const AssetEntry::Em& aem,
+                         const float rows[12], const float curPos[3], double stepDt, bool isLast, float emissionMul);
+    void Execute(StageCtx& ctx, std::vector<Work>& work);
     void UavBarrier(ID3D12GraphicsCommandList* cmd, ID3D12Resource* r);
     void Transition(ID3D12GraphicsCommandList* cmd, ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to);
     void PublishStats(ID3D12GraphicsCommandList* cmd);
 
     // ---- GPU ----
-    bool m_gpuTried = false, m_gpuReady = false;
+    bool m_gpuBase = false, m_gpuFailed = false, m_gpuReady = false;
+    std::string m_gpuError;
+    std::future<std::vector<u16>> m_curlFuture;   // カール場は別スレッドで生成（初回の VFX 配置でのヒッチを避ける）
+    u32 m_assetGen = 0;                            // Runtime のアセット世代（変わったら内容を見直す）
+    bool m_opsFullWarned = false, m_poolWarned = false;
+    u32  m_statsDirty = 0;                         // 統計の読み戻しを続けるフレーム数（計算した後の 4 フレーム）
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_simRS, m_drawRS;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoEmit, m_psoSim, m_psoClear, m_psoStatClear, m_psoDraw;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_pool, m_stats, m_opsUpload, m_curl, m_dummyDepth;

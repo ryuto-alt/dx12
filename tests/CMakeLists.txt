@@ -753,6 +753,22 @@ add_test(NAME VfxAssetTests COMMAND VfxAssetTests
     ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_fire.uvfx ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_burst.uvfx)
 add_test(NAME VfxSpawnMathTests COMMAND VfxSpawnMathTests)
 set_tests_properties(VfxAssetTests VfxSpawnMathTests PROPERTIES TIMEOUT 120)
+# VfxGpuTests（gpu）: カール場の Texture3D を窓なしの D3D12 で引き、CPU 参照（SampleCurl）と 1e-3 以内で一致することを確かめる。GPU が無ければ SKIP。
+if(TARGET Renderer)
+    add_executable(VfxGpuTests vfx_gpu_test.cpp)
+    target_include_directories(VfxGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(VfxGpuTests PRIVATE Renderer Microsoft::DirectXMath)
+    target_compile_definitions(VfxGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(VfxGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(VfxGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VfxGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME VfxGpuTests COMMAND VfxGpuTests)
+    set_tests_properties(VfxGpuTests PROPERTIES LABELS gpu TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、

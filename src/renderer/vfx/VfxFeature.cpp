@@ -25,6 +25,9 @@ public:
         else m_sys.Draw(ctx);
     }
     u64 VramBytes() const override { return m_sys.VramBytes(); }
+    // 何も出さないフレームはコマンドを 1 つも記録しない。lane C の IRenderFeature に `virtual bool Active(Stage) const`
+    // が入ったら、そのまま override になる（FeatureRegistry の Empty() / Run() が見る。needs_other_lane 参照）。
+    bool Active(Stage s) const { return s == Stage::AfterDepthPrepass ? m_sys.WantsUpdate() : m_sys.WantsDraw(); }
 
 private:
     vfx::VfxSystem m_sys;

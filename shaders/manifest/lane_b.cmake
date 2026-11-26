@@ -8,4 +8,5 @@ uno_shader(NAME VfxClear_CS     FILE vfx/VfxSim.hlsl  ENTRY CSClear     PROFILE 
 uno_shader(NAME VfxStatClear_CS FILE vfx/VfxSim.hlsl  ENTRY CSStatClear PROFILE cs_6_6 NEW)
 uno_shader(NAME VfxDraw_VS      FILE vfx/VfxDraw.hlsl ENTRY VSMain      PROFILE vs_6_6 NEW)
 uno_shader(NAME VfxDraw_PS      FILE vfx/VfxDraw.hlsl ENTRY PSMain      PROFILE ps_6_6 NEW)
+uno_shader(NAME VfxCurlProbe_CS FILE vfx/VfxCurlProbe.hlsl ENTRY CSProbe PROFILE cs_6_6 NEW)   # 試験用（tests/vfx_gpu_test.cpp）
 # ==== lane-B:shaders end ====
