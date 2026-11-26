@@ -961,6 +961,18 @@ if(TARGET Renderer)
     endif()
     add_test(NAME NewSceneDefaultsTests COMMAND NewSceneDefaultsTests)
 endif()
+# b1（PerFrameConstants）の CPU 側の定義のレイアウト表。W05-23。
+if(TARGET Renderer)
+    find_package(directxmath CONFIG REQUIRED)
+    add_executable(FrameConstantsLayoutTests frame_constants_layout_test.cpp)
+    target_include_directories(FrameConstantsLayoutTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(FrameConstantsLayoutTests PRIVATE Microsoft::DirectXMath)
+    if(MSVC)
+        target_compile_options(FrameConstantsLayoutTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(FrameConstantsLayoutTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME FrameConstantsLayoutTests COMMAND FrameConstantsLayoutTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====

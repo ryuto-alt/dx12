@@ -1,4 +1,5 @@
 #include "renderer/GraphPreviewRenderer.h"
+#include "renderer/FrameConstants.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,44 +28,9 @@ namespace
 {
 
 // ---------------------------------------------------------------------------------------------
-// b1（PerFrameConstants, 1600 バイト）。Lighting.hlsli / Application の FrameConstants / ModelThumbnailRenderer と同じレイアウト
+// b1（PerFrameConstants, 1600 バイト）。Lighting.hlsli / renderer/FrameConstants.h（正本）と同じレイアウト
 // ---------------------------------------------------------------------------------------------
-struct FrameConstants
-{
-    XMFLOAT4X4 view;
-    XMFLOAT4X4 proj;
-    XMFLOAT3   lightDir;   float time;
-    XMFLOAT3   lightColor; float ambientStrength;
-    XMFLOAT4X4 cascadeViewProj[4];
-    XMFLOAT4   cascadeSplitsView;
-    XMFLOAT4   shadowParams;
-    XMFLOAT3   cameraPos;  float aoEnabled;
-    u32        numPointLights; u32 numSpotLights;
-    float      spotShadowTexel; float pointShadowNear;
-    XMFLOAT4   clusterParams;
-    XMFLOAT4   clusterGrid;
-    XMFLOAT4   clusterViewport;
-    XMFLOAT4   clusterExtra;
-    XMFLOAT4   pcssParams;
-    XMFLOAT4   ddgiOrigin;
-    XMFLOAT4   ddgiSpacing;
-    XMFLOAT4   ddgiCounts;
-    XMFLOAT4   _clusterReserved[35];
-    XMFLOAT4   ddgiC1;
-    XMFLOAT4   ddgiScroll0;
-    XMFLOAT4   ddgiScroll1;
-    XMFLOAT4   giParams;
-    XMFLOAT4   giParams2;
-    XMFLOAT4X4 spotShadowMatrix[4];
-    float      iblIntensity;
-    float      maxPrefilterMip;
-    u32        hasIBL;
-    float      skyboxIntensity;
-    float      contactShadowEnabled;
-    XMFLOAT3   normalFilterParams;
-    XMFLOAT4   ddgiC2, ddgiScroll2, ddgiC3, ddgiScroll3;   // 末尾追記 64B（プレビューでは 0）
-};
-static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes (Lighting.hlsli PerFrameConstants)");
+using FrameConstants = FrameConstantsData;   // 正本は renderer/FrameConstants.h（W05-23）
 
 constexpr u32 kCbSlotBytes = 1792;   // 256 の倍数（>= 1600）
 constexpr u32 kCbSlotsPerFrame = 2;  // 0 = メイン / 1 = タイル・RAW
