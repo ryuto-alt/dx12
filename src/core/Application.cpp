@@ -1210,9 +1210,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         m_clusteredLighting = std::make_unique<ClusteredLightCulling>();
         m_clusteredLighting->Initialize(*m_graphicsDevice, m_srvHeap.get(), PathResolver::ShaderDirW());
         // サムネイルレンダラもメインの RootSig / Forward PSO を流用するのでテーブルが要る
-        // （灯数 0 なので中身は読まれない。frameIndex 0 のブロックで十分）。
-        if (m_thumbRenderer)
-            m_thumbRenderer->SetClusterSrv(m_clusteredLighting->GetSrvTableIndex(0));
+        // （灯数 0 なので中身は読まれない。テーブルはサムネイル側が自前のダミーを持つ）。
 
         // ボリュメトリックフォグ（froxel）。3D テクスチャ 28MB は「初めて有効になったフレーム」まで
         // 確保しない（既定 OFF）。ディスクリプタブロックだけは断片化前のここで押さえておく。

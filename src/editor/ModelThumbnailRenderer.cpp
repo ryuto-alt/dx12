@@ -8,6 +8,7 @@
 #include "graphics/Texture.h"
 #include "resource/ResourceManager.h"
 #include "renderer/Mesh.h"
+#include "renderer/ClusteredLightCulling.h"
 #include "renderer/Material.h"
 #include "core/Logger.h"
 #include "core/Assert.h"
@@ -42,6 +43,24 @@ void ModelThumbnailRenderer::Initialize(GraphicsDevice* device,
 void ModelThumbnailRenderer::CreateSharedResources()
 {
     auto* dev = m_device->GetDevice();
+
+    // ===== t9/t10 の型つきダミー（Texture2DArray + TextureCubeArray）=====
+    m_punctualDummySrvIndex = m_srvHeap->AllocateBlock(2);
+    if (m_punctualDummySrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        ClusteredLightCulling::WriteDummySrv(dev, DummyKind::Tex2DArray, m_srvHeap->GetCpuHandle(m_punctualDummySrvIndex));
+        ClusteredLightCulling::WriteDummySrv(dev, DummyKind::TexCubeArray, m_srvHeap->GetCpuHandle(m_punctualDummySrvIndex + 1));
+    }
+    else m_punctualDummySrvIndex = 0xFFFFFFFFu;
+
+    // ===== クラスタテーブルの型つきダミー（kClusterTableCount 連続）=====
+    m_clusterSrvIndex = m_srvHeap->AllocateBlock(kClusterTableCount);
+    if (m_clusterSrvIndex != DescriptorHeap::kInvalidIndex)
+    {
+        for (u32 i = 0; i < kClusterTableCount; ++i)
+            ClusteredLightCulling::WriteDummySrv(dev, ClusterDummyKindAt(i), m_srvHeap->GetCpuHandle(m_clusterSrvIndex + i));
+    }
+    else m_clusterSrvIndex = 0xFFFFFFFFu;
 
     // ===== 共有デプスバッファ =====
     {
@@ -426,11 +445,14 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
         cmdList->SetGraphicsRootDescriptorTable(
             RootSignature::kSlotShadowSRV,
             m_srvHeap->GetGpuHandle(defTex->GetSrvIndex()));
-        // スポット/ポイント影SRV(t9,t10)も同様にダミーで埋める（サムネイルは numPoint/SpotLights=0
-        // なのでシェーダ側では実際に読まれない。未セットのままだとルートシグネチャ検証に引っかかるため）。
+    }
+    // スポット/ポイント影SRV(t9=Texture2DArray, t10=TextureCubeArray)は型つきヌルの 2 連続ブロック
+    // （サムネイルは numPoint/SpotLights=0 で読まれないが、型が違うと id=1023。DF-W05-R2-01）。
+    if (m_punctualDummySrvIndex != 0xFFFFFFFFu)
+    {
         cmdList->SetGraphicsRootDescriptorTable(
             RootSignature::kSlotPunctualShadowSRV,
-            m_srvHeap->GetGpuHandle(defTex->GetSrvIndex()));
+            m_srvHeap->GetGpuHandle(m_punctualDummySrvIndex));
     }
 
     // SSAO AO SRV (t8) / コンタクトシャドウ SRV (t11): forward PS が無条件で Load するので
@@ -491,10 +513,11 @@ bool ModelThumbnailRenderer::RenderOne(const Req& req, ID3D12GraphicsCommandList
         }
         else
         {
-            Texture* wt = m_resourceMgr->GetDefaultWhiteTexture();
+            // 単独の SRV ではなく既定の材質ブロック(5 連続)。+1..+4 に隣の無関係なディスクリプタが読まれ、
+            // それが後続のモデルロードで書き換わると id=1001 になる（DF-W05-R2-01）。
             cmdList->SetGraphicsRootDescriptorTable(
                 RootSignature::kSlotSRVTable,
-                m_srvHeap->GetGpuHandle(wt->GetSrvIndex()));
+                m_srvHeap->GetGpuHandle(m_resourceMgr->GetDefaultMaterialSrvBlock()));
         }
 
         // PBR
