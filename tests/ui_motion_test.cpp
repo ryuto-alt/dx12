@@ -85,6 +85,24 @@ void TestEase()
     }
 }
 
+// CSS の cubic-bezier(x1,y1,x2,y2)（仕様の文字列から独立に二分法で解いた値。x = 0.25 / 0.5 / 0.75）。
+// トークンの転記ミス（x1/y1 の取り違えなど）を、トークン自身を使う参照実装では拾えないので、固定値で縛る。
+void TestCssReference()
+{
+    struct R { anim::Curve c; float y25, y50, y75; };
+    const R refs[] = {
+        { anim::Curve::Standard, 0.76728f, 0.94608f, 0.99111f },   // cubic-bezier(0.2, 0.8, 0.2, 1)
+        { anim::Curve::Exit,     0.09863f, 0.32481f, 0.63009f },   // cubic-bezier(0.4, 0, 1, 1)
+        { anim::Curve::Expo,     0.82562f, 0.97178f, 0.99768f },   // cubic-bezier(0.16, 1, 0.3, 1)
+    };
+    for (const R& r : refs)
+    {
+        CHECKF(std::fabs(anim::Ease(r.c, 0.25f) - r.y25) < 1e-3f, "css ref curve=%d x=.25 got=%f", static_cast<int>(r.c), anim::Ease(r.c, 0.25f));
+        CHECKF(std::fabs(anim::Ease(r.c, 0.50f) - r.y50) < 1e-3f, "css ref curve=%d x=.50 got=%f", static_cast<int>(r.c), anim::Ease(r.c, 0.50f));
+        CHECKF(std::fabs(anim::Ease(r.c, 0.75f) - r.y75) < 1e-3f, "css ref curve=%d x=.75 got=%f", static_cast<int>(r.c), anim::Ease(r.c, 0.75f));
+    }
+}
+
 void TestSpring()
 {
     // 閉形式: x(t) = target + (x0 - target)(1 + wt)e^{-wt}
@@ -202,6 +220,24 @@ void TestAnimateTimed()
     SetTime(15.31);                                              // 300ms / 600ms = 0.5 -> 6/12 段
     const float st = anim::Animate(83, 1.0f, 600.0f, anim::Curve::Stepped);
     CHECKF(std::fabs(st - 0.5f) < 1e-4f, "stepped under reduce motion st=%f", st);
+    anim::SetReduceMotionOverride(0);   // 直前の Reduce Motion の検査を解除
+    // Spring は durMs で打ち切らない: 120ms の指定でも 120ms で終点へ跳ばず、単調に近づいて 1 に着く
+    SetTime(16.0);
+    anim::Animate(84, 0.0f, 120.0f, anim::Curve::Spring);
+    SetTime(16.01);
+    anim::Animate(84, 1.0f, 120.0f, anim::Curve::Spring);
+    SetTime(16.01 + 0.13);                                       // 指定時間を 10ms 超えた時点
+    const float s130 = anim::Animate(84, 1.0f, 120.0f, anim::Curve::Spring);
+    CHECKF(s130 > 0.3f && s130 < 0.9f, "spring must not jump at durMs: %f", s130);
+    prev = s130;
+    for (int i = 1; i <= 80; ++i)
+    {
+        SetTime(16.14 + i * 0.01);
+        const float v = anim::Animate(84, 1.0f, 120.0f, anim::Curve::Spring);
+        CHECK(v >= prev - 1e-6f && v <= 1.0f);
+        prev = v;
+    }
+    CHECK(prev == 1.0f);
     anim::SetReduceMotionOverride(-1);
     ImGui::DestroyContext(ctx);
 }
@@ -241,15 +277,27 @@ void TestPurge()
     CHECKF(anim::StateCount() <= 2, "state count=%d (expired ids must be dropped)", anim::StateCount());
     ui::clock::SetDeterministic(false);
 }
+// deco::Ease（Graphite）の slot → 時間の対応。選択中のツール（slot 3）は kToolUnderline、押下（slot 1）は kPress / kRelease。
+void TestDecoSlots()
+{
+    using anim::dur::kPress; using anim::dur::kRelease; using anim::dur::kHover; using anim::dur::kUnfocusDim; using anim::dur::kToolUnderline;
+    CHECK(anim::DecoSlotDur(0, true).ms == kHover.ms && anim::DecoSlotDur(0, false).ms == kRelease.ms);
+    CHECK(anim::DecoSlotDur(1, true).ms == kPress.ms && anim::DecoSlotDur(1, false).ms == kRelease.ms);
+    CHECK(anim::DecoSlotDur(2, true).ms == kUnfocusDim.ms);
+    CHECK(anim::DecoSlotDur(3, true).ms == kToolUnderline.ms && anim::DecoSlotDur(3, false).ms == kToolUnderline.ms);
+    CHECK(kToolUnderline.ms != kPress.ms);
+}
 } // namespace
 
 int main()
 {
     TestEase();
+    TestCssReference();
     TestSpring();
     TestAnimateInstant();
     TestAnimateTimed();
     TestReduceMotionStepped();
+    TestDecoSlots();
     TestPurge();
     if (g_fail == 0) std::printf("UiMotionTests: ALL PASS\n");
     return g_fail == 0 ? 0 : 1;

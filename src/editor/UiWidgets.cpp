@@ -241,9 +241,19 @@ void ToolButtonFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool active, bool hov,
     const th::Deco& d = th::CurrentDeco();
     const th::Variant v = th::CurrentVariant();
     const float h = deco::Ease(id, 0, hov ? 1.0f : 0.0f);
-    const float a = deco::Ease(id, 1, active ? 1.0f : 0.0f);
+    // 選択中のツールは slot 3（Graphite では kToolUnderline = 160ms。押下の kPress/kRelease とは別）。旧テーマは slot 1 のまま
+    const float a = deco::Ease(id, v == th::Variant::Graphite ? 3 : 1, active ? 1.0f : 0.0f);
     const float rr = Px(v == th::Variant::B ? 6.0f : v == th::Variant::C ? 2.0f : 4.0f);
     const float b1 = Px(1.0f);
+    if (v == th::Variant::Graphite)
+    {
+        // 面は bg3（ホバー）/ bg4（押下）。選択中は下線（ホストが 1 本でスライドさせる場合は描かない。ToolbarPanel）
+        if (held) dl->AddRectFilled(mn, mx, Col(th::Bg4), rr);
+        else if (h > 0.004f) dl->AddRectFilled(mn, mx, ColA(th::Bg3, h), rr);
+        if (a > 0.004f && !ui::anim::ToolUnderlineHosted())
+            dl->AddRectFilled(ImVec2(mn.x + Px(4.0f), mx.y - Px(2.0f)), ImVec2(mx.x - Px(4.0f), mx.y), ColA(face, a), 0.0f);
+        return;
+    }
     if (v == th::Variant::C)
     {
         if (held) dl->AddRectFilled(mn, mx, Col(th::Bg4), rr);
@@ -834,13 +844,11 @@ float Ease(ImGuiID id, int slot, float target)
 {
     if (th::CurrentVariant() == th::Variant::Graphite)
     {
-        // Graphite Gauge: motion トークンの曲線と時間（UiMotion.h）。slot 0=hover 1=active 2=focus
+        // Graphite Gauge: motion トークンの曲線と時間（UiMotion.h）。slot 0=hover 1=press/active 2=focus 3=選択中のツール（下線 kToolUnderline）
         namespace anim = ui::anim;
         const ImGuiID key = ImHashData(&slot, sizeof(slot), id);
         const bool rising = target > 0.5f;
-        const anim::dur::D d = slot == 1 ? (rising ? anim::dur::kPress : anim::dur::kRelease)
-                             : slot == 2 ? anim::dur::kUnfocusDim
-                                         : (rising ? anim::dur::kHover : anim::dur::kRelease);
+        const anim::dur::D d = anim::DecoSlotDur(slot, rising);
         return anim::Animate(key, target, d);
     }
     const float tau = th::CurrentDeco().easeSec;

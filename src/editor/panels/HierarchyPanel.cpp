@@ -2,6 +2,7 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UiWidgets.h"
+#include "editor/UiMotion.h"      // 選択行の左指針のスライド（kSelectionSlide）
 #include "editor/EntityGlyph.h"
 #include "editor/UndoSystem.h"
 #include "editor/EditorCommands.h"   // 作成メニュー（エンティティ追加と共用）/ コピー・貼り付け
@@ -58,6 +59,32 @@ void PaintRowBg(ImDrawList* dl, float y0, float y1, bool selected, bool hovered,
 {
     // 見た目はテーマ・バリアントの共通ヘルパ（Default は従来と同じ描画）
     const ImRect r = ImGui::GetCurrentWindowRead()->InnerRect;
+    namespace th = dx12e::theme;
+    if (th::CurrentVariant() == th::Variant::Graphite)
+    {
+        // Graphite Gauge: 面は無彩色（選択 / ホバー / 押下）。選択の左指針は 1 本が選択行へスライドする（kSelectionSlide 120ms）。
+        // 決定論 / --background / Reduce Motion では行き先へ即時。複数選択のときは、その窓で最初に描く選択行の指針だけがスライドする。
+        if (held)          dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(th::SelectionActive));
+        else if (selected) dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(hovered ? th::SelectionActive : th::Selection));
+        else if (hovered)  dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(th::SelectionHover));
+        if (selected)
+        {
+            static int s_needleFrame = -1;
+            static ImGuiID s_needleWin = 0;
+            const int frame = ImGui::GetFrameCount();
+            const ImGuiID win = ImGui::GetCurrentWindowRead()->ID;
+            float dy = 0.0f;
+            if (s_needleFrame != frame || s_needleWin != win)
+            {
+                s_needleFrame = frame; s_needleWin = win;
+                const float scroll = ImGui::GetScrollY();   // 内容座標で動かす（スクロールで指針が流れない）
+                const float tgt = y0 + scroll;
+                dy = ui::anim::AnimatePx(ImHashStr("##selNeedleY", 0, win), tgt, ui::anim::dur::kSelectionSlide) - tgt;
+            }
+            dl->AddRectFilled(ImVec2(r.Min.x, y0 + dy), ImVec2(r.Min.x + ui::Px(3.0f), y1 + dy), ImGui::GetColorU32(th::Accent));
+        }
+        return;
+    }
     ui::deco::RowFace(dl, ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), selected, hovered, held);
 }
 

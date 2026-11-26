@@ -698,7 +698,6 @@ void ImGuiManager::SetIniPath(const std::string& utf8Path)
 void ImGuiManager::SetIniSavingDisabled(bool on)
 {
     m_iniSavingDisabled = on;
-    ui::anim::SetBackground(on);   // --background は動きを使わない（決定論。W1 A4）
     if (on && ImGui::GetCurrentContext())
     {
         g_viewportsForbidden = true;

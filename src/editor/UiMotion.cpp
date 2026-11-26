@@ -96,6 +96,10 @@ constexpr uint64_t kExpireFrames     = 600;   // これだけ参照されなけ�
 std::atomic<bool> g_background{false};
 std::atomic<bool> g_virtual{false};
 std::atomic<int>  g_reduceOverride{-1};
+std::atomic<bool> g_toolUnderlineHosted{false};
+
+// Reduce Motion は「動きの時間を 0 にする」（トークン kReduceMotionDurationMs）。0 以外に変わったら短縮の実装が要る。
+static_assert(mt::kReduceMotionDurationMs == 0.0f, "Reduce Motion = 即時。トークンが 0 でなくなったら Instant() を見直す");
 
 void Purge()
 {
@@ -169,7 +173,8 @@ const float* Step(ImGuiID id, const float* target, int n, float durMs, Curve cur
             s.cur[i] = SpringValue(s.from[i], s.target[i], tSec);
             worst = std::max(worst, std::fabs(s.target[i] - s.cur[i]));
         }
-        if (worst < snapEps || tSec * 1000.0f >= s.durMs)
+        // ばねは durMs で打ち切らない（臨界減衰 ω=14 は約 500ms かかる。打ち切ると途中で跳ぶ）
+        if (worst < snapEps)
             for (int i = 0; i < n; ++i) s.cur[i] = s.from[i] = s.target[i];
         return s.cur;
     }
@@ -229,11 +234,13 @@ float AnimatePx(ImGuiID id, float targetPx, float durMs, Curve curve)
 ImVec4 AnimateColor(ImGuiID id, ImVec4 target, float durMs, Curve curve)
 {
     const float t[4] = { target.x, target.y, target.z, target.w };
-    const float* r = Step(id, t, 4, durMs, curve, 0.002f);
+    const float* r = Step(id, t, 4, durMs, curve, kSnapColor);
     return ImVec4(r[0], r[1], r[2], r[3]);
 }
 
 void SetBackground(bool on)         { g_background.store(on); }
+void SetToolUnderlineHosted(bool on){ g_toolUnderlineHosted.store(on); }
+bool ToolUnderlineHosted()          { return g_toolUnderlineHosted.load(); }
 void SetVirtualInput(bool on)       { g_virtual.store(on); }
 void SetReduceMotionOverride(int v) { g_reduceOverride.store(v); }
 

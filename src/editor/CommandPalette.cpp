@@ -483,20 +483,24 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
     const float rowH = ui::Px(kRowH);
     const float listH = (m_items.empty() ? 1 : rows) * rowH;
 
-    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + ui::Px(84.0f)), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(ui::Px(kWidth), 0.0f), ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(10.0f, 10.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Px(6.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, ui::Px(1.0f));
-    // Graphite Gauge: パレット本体は 120ms の standard でフェードイン（UiMotion.h。決定論 / --background は即時）
+    // Graphite Gauge: パレット本体は kPaletteIn（120ms・standard）でフェードインしつつ 4px 上へ収まる。決定論 / --background は即時。
+    //   暗幕は ImGui が Alpha を掛けて描くので、本体と同じ時間で 0→34% へ出る（kScrimIn と同値）。閉じる側（kPaletteOut）は
+    //   ポップアップが即座に消えるため未実装（閉じ演出は A14 で、閉じ中も描き続ける形にして入れる）。
     float palAlpha = 1.0f;
+    float palDropPx = 0.0f;
     if (th::CurrentVariant() == th::Variant::Graphite)
     {
         const ImGuiID fadeId = ImGui::GetID("##palfade");
         if (openedThisFrame) ui::anim::Animate(fadeId, 0.0f, 0.0f);   // 開き直しは 0 から
         palAlpha = ui::anim::Animate(fadeId, 1.0f, ui::anim::dur::kPaletteIn);
+        palDropPx = (1.0f - palAlpha) * ui::Px(4.0f);
     }
-    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, palAlpha);
+    ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + ui::Px(84.0f) + palDropPx), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowSize(ImVec2(ui::Px(kWidth), 0.0f), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ui::Px(10.0f, 10.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Px(6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, ui::Px(1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, palAlpha * ImGui::GetStyle().Alpha);   // 継承した Alpha に掛ける（置き換えない）
     ImGui::PushStyleColor(ImGuiCol_PopupBg, th::Bg2);
     ImGui::PushStyleColor(ImGuiCol_Border, th::BorderStrong);
 
