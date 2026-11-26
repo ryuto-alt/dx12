@@ -8,6 +8,7 @@
 #include "core/Logger.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <mutex>
@@ -62,6 +63,22 @@ struct McpBridge::Impl
         clientCount.store(static_cast<int>(clients.size()));
     }
 
+    // 接続の出入りは 1 件ごとには debug（短命のクライアントが大量に出入りしてコンソールを埋めるため。BUG-31）。
+    // 接続数が 0 と 1 以上の間を行き来したときだけ info を 1 行出す（調査用。30 秒に 1 回まで）。
+    void LogClientChange(const char* verb, uint64_t id, int count)
+    {
+        Logger::Debug("MCP bridge: client #{} {} ({} connected)", id, verb, count);
+        const bool edge = (count == 0) || (count == 1 && verb[0] == 'c');
+        if (!edge) return;
+        const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        int64_t last = lastClientInfoSec.load();
+        if (last != 0 && now - last < 30) return;
+        if (!lastClientInfoSec.compare_exchange_strong(last, now)) return;
+        Logger::Info("MCP bridge: {} clients connected", count);
+    }
+    std::atomic<int64_t> lastClientInfoSec{0};
+
     void ReadLoop(uint64_t id, SOCKET sock)
     {
         std::string buf;
@@ -89,7 +106,7 @@ struct McpBridge::Impl
             }
         }
         DropClient(id);
-        Logger::Info("MCP bridge: client #{} disconnected ({} connected)", id, clientCount.load());
+        LogClientChange("disconnected", id, clientCount.load());
     }
 
     void AcceptLoop()
@@ -119,7 +136,7 @@ struct McpBridge::Impl
                 clients.emplace(id, sock);
                 clientCount.store(static_cast<int>(clients.size()));
             }
-            Logger::Info("MCP bridge: client #{} connected ({} connected)", id, clientCount.load());
+            LogClientChange("connected", id, clientCount.load());
             activeReaders.fetch_add(1);
             // 読み取りは接続ごとのスレッド。終わったら自分で抜ける(detach)。Stop は activeReaders が 0 になるのを待つ。
             std::thread([this, id, sock] {

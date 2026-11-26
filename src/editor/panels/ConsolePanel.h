@@ -9,6 +9,9 @@
 namespace dx12e
 {
 class ScriptEngine;
+
+// コンソールの入力欄に出す例文。どのシーンでも（エンティティが無くても）エラーにならないこと（BUG-30。UI テスト console_defaults が実行して確かめる）。
+inline constexpr const char* kConsoleLuaExample = "log(\"エンティティ数: \" .. scene:getEntityCount())";
 class EditorContext;
 
 // エディタ内コンソール（Unity の Console + Unreal の Output Log 参考）。
@@ -37,12 +40,13 @@ private:
     std::vector<int>      m_viewCount;  // 折りたたみ時の同文件数（m_view と対）
     uint64_t              m_cursor = 0; // Logger 読み取りカーソル
 
-    // 表示オプション（既定は警告+エラーのみ。情報は右上のトグルでいつでも表示できる）
-    bool m_showInfo     = false;
+    // 表示オプション（既定は情報・警告・エラーをすべて表示。BUG-31: 情報が既定で OFF だと、件数は増えるのに一覧が空に見えた）
+    bool m_showInfo     = true;
     bool m_showWarn     = true;
     bool m_showError    = true;
     bool m_collapse     = false;
     bool m_autoScroll   = true;
+    bool m_stickToEnd   = true;   // 一覧の末尾に居る（人が上へスクロールするまで true。自動スクロールの追従対象）
     bool m_clearOnPlay  = true;
     bool m_focusOnError = true;
     char m_filter[128]  = "";

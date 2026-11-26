@@ -303,10 +303,19 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
         }
         clipper.End();
 
-        // 自動スクロール: 末尾付近に居るときだけ追従（上へスクロール中は邪魔しない）
-        if (m_autoScroll && m_newThisFrame &&
-            ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - rowH * 2.0f)
-            ImGui::SetScrollHereY(1.0f);
+        // 自動スクロール（BUG-31）: 末尾に居る間だけ追従し、人が上へスクロールしたら邪魔しない。
+        // 「末尾に居るか」は人がスクロールした（ホイール / ドラッグ）フレームでだけ位置から判定する。
+        // 毎フレーム位置から判定すると、一度に大量に届いた直後は ScrollMax が 1 フレーム遅れるため末尾から外れたと誤判定する。
+        // 最大値は 1 フレーム遅れて育つので、末尾に居る間は新着が無いフレームでも最大値へ寄せ続ける（数フレームで収束）。
+        {
+            const bool userScrolled = ImGui::IsWindowHovered() &&
+                (ImGui::GetIO().MouseWheel != 0.0f || ImGui::IsMouseDown(ImGuiMouseButton_Left));
+            if (userScrolled)
+                m_stickToEnd = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - rowH * 2.0f;
+            if (m_autoScroll && m_stickToEnd && !userScrolled &&
+                (m_newThisFrame || ImGui::GetScrollY() < ImGui::GetScrollMaxY() - 0.5f))
+                ImGui::SetScrollY(ImGui::GetScrollMaxY());
+        }
 
         if (m_view.empty())
             ImGui::TextColored(theme::TextFaint,
@@ -396,8 +405,9 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
         ImGui::TextColored(theme::TextDim, "%s", ICON_TERMINAL);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1.0f);
+        static const std::string kHint = std::string("Lua を実行... (例: ") + kConsoleLuaExample + ")";
         const bool entered = ImGui::InputTextWithHint("##luainput",
-            "Lua を実行... (例: log(scene:findEntity(\"Player\"):getPosition().y))",
+            kHint.c_str(),
             m_luaInput, sizeof(m_luaInput),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackCompletion |
             ImGuiInputTextFlags_CallbackHistory,

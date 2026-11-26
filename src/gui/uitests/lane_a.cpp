@@ -13,6 +13,8 @@
 #include "core/SceneBackup.h"
 #include "core/SafeRemove.h"
 #include "core/Logger.h"
+#include "core/VirtualGuard.h"
+#include "editor/panels/ConsolePanel.h"
 #include "project/ProjectManager.h"
 #include "input/VirtualInput.h"
 #include "editor/AssetBrowserLogic.h"
@@ -1375,6 +1377,77 @@ void T_ViewportToolUnderlineHosted(ImGuiTestContext* ctx)
     ed->gizmoMode = prevMode;
     ed->vpPrefs   = prevPrefs;
     ctx->Yield(4);
+}
+
+
+// W1-A13 (BUG-30 / BUG-31 / BUG-35): コンソールの例文が動く / 情報が既定で見える / 自動スクロール / 背景モードのインポートの案内。
+void T_ConsoleDefaults(ImGuiTestContext* ctx)
+{
+    const ImGuiID win = FocusWindow(ctx, kWinConsole);
+    IM_CHECK(win != 0);
+    if (win == 0) return;
+
+    auto listWindow = [&]() -> ImGuiWindow* {
+        for (ImGuiWindow* w : ctx->UiContext->Windows)
+            if (w->WasActive && std::strstr(w->Name, "##consolelist") != nullptr) return w;
+        return nullptr;
+    };
+
+    LogStep(ctx, "例文を実行してもエラーにならない（エンティティが無くても）");
+    {
+        std::vector<LogEntry> tmp;
+        const uint64_t cursor = Logger::ReadBuffered(0, tmp);
+        ctx->SetRef(win);
+        ctx->ItemInputValue("##luainput", kConsoleLuaExample);
+        ctx->Yield(8);
+        std::vector<LogEntry> got;
+        Logger::ReadBuffered(cursor, got);
+        bool ranOk = false, luaError = false;
+        std::string errText;
+        for (const LogEntry& e : got)
+        {
+            if (e.level >= 4) { luaError = true; errText = e.text; }
+            if (e.text.find("エンティティ数") != std::string::npos) ranOk = true;
+        }
+        if (luaError) IM_ERRORF("例文がエラーになりました: %s", errText.c_str());
+        IM_CHECK(!luaError);
+        IM_CHECK(ranOk);
+    }
+
+    LogStep(ctx, "情報のログが既定で一覧に出て、末尾に自動で追従する");
+    {
+        ctx->SetRef(win);
+        ctx->ItemClick("クリア");
+        ctx->Yield(4);
+        for (int i = 0; i < 120; ++i) Logger::Info("A13 情報ログ {}", i);
+        ctx->Yield(6);
+        ImGuiWindow* lw = listWindow();
+        IM_CHECK(lw != nullptr);
+        if (lw)
+        {
+            IM_CHECK(lw->ScrollMax.y > 0.0f);   // 情報が表示されている（既定 OFF だと行が無く 0 のまま）
+            if (lw->Scroll.y < lw->ScrollMax.y - 2.0f) IM_ERRORF("scroll=%.1f max=%.1f", lw->Scroll.y, lw->ScrollMax.y);
+            IM_CHECK(lw->Scroll.y >= lw->ScrollMax.y - 2.0f);
+            for (int i = 120; i < 160; ++i) { Logger::Info("A13 情報ログ {}", i); ctx->Yield(1); }
+            ctx->Yield(4);
+            lw = listWindow();
+            IM_CHECK(lw != nullptr);
+            if (lw) IM_CHECK(lw->Scroll.y >= lw->ScrollMax.y - 2.0f);
+        }
+    }
+
+    LogStep(ctx, "背景モード（ダイアログを出せない）でインポートを押すと案内が出る");
+    if (dx12e::guard::Blocked("A13 test probe"))
+    {
+        const ImGuiID assets = FocusWindow(ctx, kWinAssets);
+        IM_CHECK(assets != 0);
+        ui::ToastClearAll();
+        ctx->Yield(2);
+        ctx->SetRef(assets);
+        ctx->ItemClick("**/" ICON_UPLOAD " インポート");
+        ctx->Yield(4);
+        IM_CHECK(ui::ToastLiveCount() >= 1);
+    }
 }
 
 } // namespace uitest

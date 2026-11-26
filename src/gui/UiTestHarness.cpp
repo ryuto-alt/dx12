@@ -4960,6 +4960,7 @@ const DiagReg kTests[] = {
     { "vfx", "vfx_tick_each_frame", "パーティクルエディタ", "MCP を使わなくても Application::Update が毎フレーム VfxTick を呼ぶ（結線済み・Tick 駆動）", uitest::T_VfxTickEachFrame },
     { "render", "shading_revision_run_loop", "シェーディング", "shadingRevision の反映は Run ループが行う（分割画面でなくても 1⇄2 が切り替わる）", uitest::T_ShadingRevisionAppliedInRunLoop },
     { "panel", "viewport_tool_underline_hosted", "パネル", "Graphite のビューポート帯: 移動/回転/拡縮の下線は選択中の 1 本（左右 4px 内側・整数 px）。既定テーマでは出ない", uitest::T_ViewportToolUnderlineHosted },
+    { "editor-ux", "console_defaults", "エディタ操作", "コンソール: 例文が動く・情報が既定で表示・自動スクロール・背景モードのインポートで案内", uitest::T_ConsoleDefaults },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },
