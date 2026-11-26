@@ -108,6 +108,9 @@ set(DX12_APP_MANIFEST "${CMAKE_SOURCE_DIR}/resources/dx12.manifest")
 
 # Main executable
 add_executable(DX12Engine WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_EDITOR_RC} ${DX12_APP_MANIFEST})
+# editor.rc が RCDATA で埋め込む WAV を変えたら .rc を再コンパイルする（rc.exe は #include 以外の依存を追わない）。
+file(GLOB_RECURSE DX12_EDITOR_RC_WAVS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/assets/editor/sounds/calibrate/*.wav")
+set_source_files_properties(${DX12_EDITOR_RC} PROPERTIES OBJECT_DEPENDS "${DX12_EDITOR_RC_WAVS}")
 uno_agility_exe(DX12Engine)
 
 target_link_libraries(DX12Engine

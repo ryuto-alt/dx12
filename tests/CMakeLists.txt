@@ -609,6 +609,11 @@ add_test(NAME ParticleApplyUndoTests COMMAND ParticleApplyUndoTests)
 set_tests_properties(ParticleApplyUndoTests PROPERTIES TIMEOUT 60)
 endif()
 
+# FU-E-3: editor.rc で埋め込んだ Calibrate の WAV が、インストーラの assets\* にも二重に入らないこと。
+add_test(NAME InstallerRcDedupCheck
+    COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${DX12_REPO_ROOT} -P ${CMAKE_CURRENT_SOURCE_DIR}/installer_rc_dedup_check.cmake)
+set_tests_properties(InstallerRcDedupCheck PROPERTIES TIMEOUT 30)
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
