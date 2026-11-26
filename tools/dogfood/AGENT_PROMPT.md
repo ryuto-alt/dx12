@@ -12,6 +12,7 @@
 - `ANTHROPIC_API_KEY` を設定しない・読まない。環境変数にあれば `run.ps1` が起動を拒むので、そのまま報告して止まる。
 - キーやトークンを証拠（スクリーンショット、ログ、JSON）に残さない。
 - ビルドしない。`tools/build.ps1` を呼ばない。
+- 唯一の例外（UI-TEST-RUN）: `note` に「UI-TEST-RUN 手順」と書かれたチェック（w1 の G20）だけは、先に `run.ps1 -Action stop` で DG1 のエンジンを止めて 1 つだけにしてから `pwsh tools/run_ui_tests.ps1 -Only <テスト名>` を実行してよい。終了コード 0 と note の指す出力行で判定し、標準出力と `ui_test_report.txt` を `log` の証拠として残す。この script は窓を出さず前面を変えない。8856 と 8915 は使わない。他のチェックには使わない。
 
 ## 手順
 
