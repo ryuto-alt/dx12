@@ -4,6 +4,7 @@
 #include "editor/nodegraph/GraphView.h"
 
 #include "editor/UiWidgets.h"
+#include "editor/nodegraph/GraphTextQuant.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -56,21 +57,6 @@ float Hash01(uint32_t x)
     return static_cast<float>(x & 0xFFFFFF) / static_cast<float>(0xFFFFFF);
 }
 
-// MOD-ED-14: ズームのたびに別サイズのグリフを焼かないよう、フォントのサイズを段（zoom 換算で
-// 0.5/0.75/1/1.25/1.5/2/3/4）に量子化し、段との差は頂点の拡縮で吸収する。
-// 段は zoom 以上の最小のものを選ぶ＝焼くサイズは常に目標以上で、描画は縮小のみ（拡大しないので滲まない）。
-// 段ちょうどのズーム（既定の 1.0 を含む）では比が 1 で、頂点にもクリップにも触らない。
-struct QuantText { float qpx; float r; };
-QuantText QuantizeText(float px, float zoom)
-{
-    static constexpr float kSteps[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f};
-    const float z = std::max(0.01f, zoom);
-    float step = kSteps[7];
-    for (float s : kSteps)
-        if (s >= z * 0.9995f) { step = s; break; }
-    const float qpx = std::max(1.0f, std::floor(px * step / z + 0.5f));
-    return {qpx, px / qpx};
-}
 ImVec2 TextSizeQ(ImFont* font, float px, float zoom, const char* text)
 {
     const QuantText q = QuantizeText(px, zoom);
@@ -80,26 +66,41 @@ ImVec2 TextSizeQ(ImFont* font, float px, float zoom, const char* text)
 void AddTextQ(ImDrawList* dl, ImFont* font, float px, float zoom, ImVec2 pos, ImU32 col, const char* text, const ImVec4* clip)
 {
     const QuantText q = QuantizeText(px, zoom);
+    // 描画リストの現在のクリップ（画面空間）と交差させ、常に細かいクリップを渡す。
+    // （AddText は細かいクリップと描画リストのクリップを qpx 空間のまま交差させるため、そのままだと縁で早く切れる）
+    ImVec4 fc(dl->GetClipRectMin().x, dl->GetClipRectMin().y, dl->GetClipRectMax().x, dl->GetClipRectMax().y);
+    if (clip)
+        fc = ImVec4(std::max(fc.x, clip->x), std::max(fc.y, clip->y), std::min(fc.z, clip->z), std::min(fc.w, clip->w));
     if (q.qpx == px)
     {
-        dl->AddText(font, px, pos, col, text, nullptr, 0.0f, clip);
+        dl->AddText(font, px, pos, col, text, nullptr, 0.0f, &fc);
         return;
     }
-    // クリップは qpx 空間へ（AddText の細かいクリップは qpx の幾何で行われ、その後に頂点を r 倍するため）
-    ImVec4 qc;
-    const ImVec4* qclip = nullptr;
-    if (clip)
-    {
-        qc = ImVec4(pos.x + (clip->x - pos.x) / q.r, pos.y + (clip->y - pos.y) / q.r, pos.x + (clip->z - pos.x) / q.r, pos.y + (clip->w - pos.y) / q.r);
-        qclip = &qc;
-    }
+    // クリップは qpx 空間へ（細かいクリップは qpx の幾何で行われ、その後に頂点を r 倍するため）。
+    // 描画リストのクリップ（画面空間）は fc に取り込み済みなので、AddText 側のヘッダのクリップは一時的に外す。
+    const ImVec4 qc(pos.x + (fc.x - pos.x) / q.r, pos.y + (fc.y - pos.y) / q.r, pos.x + (fc.z - pos.x) / q.r, pos.y + (fc.w - pos.y) / q.r);
+    // _CmdHeader.ClipRect だけを一時的に広げる（描画コマンドは増やさない。実際のクリップは既存のコマンドが持つ）
+    const ImVec4 savedHeaderClip = dl->_CmdHeader.ClipRect;
+    dl->_CmdHeader.ClipRect = ImVec4(-FLT_MAX * 0.5f, -FLT_MAX * 0.5f, FLT_MAX * 0.5f, FLT_MAX * 0.5f);
     const int v0 = dl->VtxBuffer.Size;
-    dl->AddText(font, q.qpx, pos, col, text, nullptr, 0.0f, qclip);
-    for (int i = v0; i < dl->VtxBuffer.Size; ++i)
+    dl->AddText(font, q.qpx, pos, col, text, nullptr, 0.0f, &qc);
+    dl->_CmdHeader.ClipRect = savedHeaderClip;
+    // グリフ 1 枚 = 4 頂点。原点を基準に r 倍し、四角の左上を整数 px へ丸める（半端な位置による滲みを避ける）。
+    const int vEnd = dl->VtxBuffer.Size;
+    for (int i = v0; i < vEnd; i += 4)
     {
-        ImDrawVert& v = dl->VtxBuffer[i];
-        v.pos.x = pos.x + (v.pos.x - pos.x) * q.r;
-        v.pos.y = pos.y + (v.pos.y - pos.y) * q.r;
+        const int n = std::min(4, vEnd - i);
+        float mnx = FLT_MAX, mny = FLT_MAX;
+        for (int k = 0; k < n; ++k)
+        {
+            ImDrawVert& v = dl->VtxBuffer[i + k];
+            v.pos.x = pos.x + (v.pos.x - pos.x) * q.r;
+            v.pos.y = pos.y + (v.pos.y - pos.y) * q.r;
+            mnx = std::min(mnx, v.pos.x);
+            mny = std::min(mny, v.pos.y);
+        }
+        const float dx = std::floor(mnx + 0.5f) - mnx, dy = std::floor(mny + 0.5f) - mny;
+        for (int k = 0; k < n; ++k) { dl->VtxBuffer[i + k].pos.x += dx; dl->VtxBuffer[i + k].pos.y += dy; }
     }
 }
 } // namespace

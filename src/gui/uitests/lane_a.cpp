@@ -8,6 +8,7 @@
 #include "core/DpiScale.h"
 #include "core/PathResolver.h"
 #include "core/SceneBackup.h"
+#include "editor/nodegraph/GraphTextQuant.h"
 #include "editor/panels/MaterialGraphPanel.h"
 #include "editor/EditorContext.h"
 #include "scene/Scene.h"
@@ -25,6 +26,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <set>
 #include <string>
 
 namespace dx12e
@@ -255,7 +257,7 @@ void T_AutosaveProtectKeepsForcedMerge(ImGuiTestContext* ctx)
 }
 
 // MOD-ED-01 / MOD-ED-14: マテリアルグラフを DPI 1.0 / 1.5 / 2.0 で開き、ホイールでズームを 40 回往復する。
-//   フォントのサイズは 6 段に量子化され、ImGui のテクスチャ用 SRV は DescriptorHeap の遅延返却つき確保で賄う。
+//   フォントのサイズは 9 段に量子化され、ImGui のテクスチャ用 SRV は DescriptorHeap の遅延返却つき確保で賄う。
 //   ImGui の assert（テストエンジンが失敗に変える）が 0、往復のあとも UI（ツールバー・ヒエラルキー）が残ること。
 //   アトラスの枚数は多サイズのグリフを焼いて 2 枚以上へ育てたうえで、描画が崩れない（UI が消えない）ことを見る。
 void T_MatgraphZoomStress(ImGuiTestContext* ctx)
@@ -265,6 +267,31 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
     IM_CHECK(ed != nullptr && app != nullptr);
     const bool  bg = app->IsBackground();
     const float origOverride = dpi::Override();
+
+    // QuantizeText の純関数検査: 段ちょうどで恒等・縮小のみ（r <= 1）・zoom 0.1..4.0 で焼くサイズの種類が段数に収まる。
+    {
+        using ng::QuantizeText;
+        for (float s : ng::kTextZoomSteps)
+        {
+            const ng::QuantText q = QuantizeText(std::floor(13.0f * s + 0.5f), s);
+            IM_CHECK(q.r == 1.0f);   // 段ちょうどは頂点にも触らない
+        }
+        for (float dpiScale : {1.0f, 1.5f, 2.0f})
+            for (float units : {9.0f, 11.0f, 13.0f, 16.0f})
+            {
+                std::set<int> distinct;
+                for (float z = 0.1f; z <= 4.0001f; z += 0.01f)
+                {
+                    const float px = std::floor(units * z * dpiScale + 0.5f);
+                    if (px < 5.0f) continue;
+                    const ng::QuantText q = QuantizeText(px, z);
+                    IM_CHECK(q.qpx >= px - 0.5f || z < 0.5f);   // 下限 0.5 より小さい zoom だけは拡大側へ丸めない
+                    IM_CHECK(q.r <= 1.0f + 1e-4f || z < 0.5f);
+                    distinct.insert(static_cast<int>(q.qpx));
+                }
+                IM_CHECK(static_cast<int>(distinct.size()) <= ng::kTextZoomStepCount * 3);   // px の丸め誤差（±0.5 を step/zoom 倍）で段ごとに高々 3 種。量子化が無ければ 100 種前後
+            }
+    }
 
     ed->showMaterialGraph = true;
     ctx->Yield(10);
@@ -295,7 +322,7 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
             for (float px = 24.0f; px <= 120.0f; px += 8.0f)
             {
                 font->CalcTextSizeA(px, FLT_MAX, 0.0f, "Material Graph ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789");
-                font->CalcTextSizeA(px, FLT_MAX, 0.0f, "ãããªã¢ã«ã°ã©ãããããã");
+                font->CalcTextSizeA(px, FLT_MAX, 0.0f, "\xE3\x83\x9E" "\xE3\x83\x86" "\xE3\x83\xAA" "\xE3\x82\xA2" "\xE3\x83\xAB" "\xE3\x82\xB0" "\xE3\x83\xA9" "\xE3\x83\x95" "\xE3\x80\x80" "\xE3\x81\x82" "\xE3\x81\x84" "\xE3\x81\x86" "\xE3\x81\x88" "\xE3\x81\x8A");
             }
             ctx->Yield(3);
         }
@@ -310,6 +337,11 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
             ctx->Yield(2);
         }
         ctx->Yield(6);
+        {
+            // 焼いた（ImFontBaked）数。GraphView.cpp の行高さ測定が量子化されるまでは増えるので、ログだけ残す。
+            ImFontAtlas* atlas = ImGui::GetIO().Fonts;
+            ctx->LogInfo("dpi %.2f: baked=%d", sc, atlas->Builder ? atlas->Builder->BakedPool.Size : -1);
+        }
         const int atlasId = ImGui::GetIO().Fonts->TexData ? ImGui::GetIO().Fonts->TexData->UniqueID : -1;
         if (atlasId != atlasId0) atlasGrew = true;
         ctx->LogInfo("dpi %.2f: atlas textures=%d uniqueId=%d (base %d)", sc, ImGui::GetPlatformIO().Textures.Size, atlasId, atlasId0);
@@ -323,6 +355,9 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
 
     app->SetUiScaleOverride(origOverride);
     ctx->Yield(20);
+    // 開いたグラフとズームを残さない（sample を作り直してビューを初期化する。閉じる op は無い）
+    MaterialGraphPanel::DebugCall(*ed, "{\"op\":\"new\",\"template\":\"sample\"}");
+    ctx->Yield(6);
     ed->showMaterialGraph = false;
     ctx->Yield(6);
 
@@ -332,6 +367,7 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
     const u32 srvFree1 = app->GetDiagRenderHealth().srvHeapFree;
     ctx->LogInfo("srv free: %u -> %u, atlas grew=%d", srvFree0, srvFree1, atlasGrew ? 1 : 0);
     IM_CHECK(atlasGrew);
+    // 許容 +2: 新しいアトラスのテクスチャ 1 枚と、旧テクスチャの遅延返却がまだ残る分（NumFramesInFlight 遅れ）。
     IM_CHECK(srvFree1 + 2 >= srvFree0);
 }
 
