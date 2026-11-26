@@ -5,7 +5,7 @@
   "note": "dx12-preoverhaul（tools/nightly.ps1 -Ref pre-overhaul -Out dx12-preoverhaul）で capture.ps1 を 2 回撮り、report.mjs compare が通ったら、report.mjs summarize --run <run> --out tests/scorecard/w0.json で置き換える。",
   "pending": {
     "ls-a-f": "LS-A〜F は W1 の NB3 の後で追加する",
-    "mcp14": "W05-37 が埋める",
+    "mcp14": "W05-37 が report.mjs mcp14-set で mcp14 欄を書く（run_e2e の出力から組み立てて w0.json へ併合する）。summarize で作り直しても --out の既存の mcp14 は引き継がれる",
     "perf": "W05-39 が baseline_perf.json に記録する"
   }
 }

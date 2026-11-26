@@ -4,8 +4,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { ema, parseArgs, sanitizeMsg } from "./capture_engine.mjs";
-import { compareRuns, deriveVfxTol, vfxFloor, diffSummaries, summarizeRun, relOk, scrub, TOL } from "./report.mjs";
+import { compareRuns, deriveVfxTol, vfxFloor, diffSummaries, summarizeRun, validateMcp14, buildMcp14, personalPathReason, relOk, scrub, TOL } from "./report.mjs";
 
 test("ema: 先頭から alpha で畳む", () => {
   assert.equal(ema([]), null);
@@ -51,6 +54,80 @@ test("summarize: 絶対パスを含まず pending 欄を持つ", () => {
   assert.equal(s.wave, "w0");
   assert.ok(s.pending.mcp14);
   assert.ok(!JSON.stringify(s).includes(os.tmpdir().replaceAll("\\", "\\\\")));
+});
+
+const H = "a".repeat(64);
+const IDS = ["T1", "T2", "T3", "T4", "T5", "T6"];
+const mkRec = () => ({ subagentModelId: "claude-sonnet-5-5", procedureVersion: "e2e-0123456789ab", templateSha256: H, tasksJsonSha256: H, e2eToolsCommit: "abc1234",
+  tsRef: "pre-overhaul", tsCommit: "def5678", buildRef: "pre-overhaul", buildCommit: "1234567", launchMode: "agent-tool", pointerRegistered: true,
+  otherMcpIsolated: true, isolationMethod: "see https://example.com/docs and a --strict-mcp-config", port: 8856, noPaidApiKeyChecked: true, replayMatch: true,
+  tasks: IDS.map((id) => ({ id, pass: true, calls: 5, retries: 0, errors: 0, traceSha256: H, scoreSha256: H })) });
+
+test("mcp14: 記録の検査（形式・id・非有限値・URL は許す・個人のパスは拒む）", () => {
+  const rec = mkRec();
+  assert.deepEqual(validateMcp14(rec, { userName: "someuser" }), []);
+  assert.ok(validateMcp14({ ...rec, replayMatch: false }).length);
+  assert.ok(validateMcp14({ ...rec, tasks: rec.tasks.slice(1) }).length);
+  assert.ok(validateMcp14({ ...rec, launchMode: "claude-p" }).length);
+  assert.ok(validateMcp14({ ...rec, pointerRegistered: false }).length);
+  assert.ok(validateMcp14({ ...rec, tasks: rec.tasks.map((t, i) => (i ? t : { ...t, calls: NaN })) }).length);
+  assert.ok(validateMcp14({ ...rec, tasks: rec.tasks.map((t, i) => ({ ...t, id: "X" + i })) }).length);
+  assert.ok(validateMcp14({ ...rec, tasks: rec.tasks.map((t, i) => (i ? t : { ...t, pass: 1 })) }).length);
+  for (const p of ["C:\\Users\\x", "/c/Users/x/y", "\\\\host\\share","~/work", "/home/x/y", "as someuser did"])
+    assert.ok(personalPathReason(p, "someuser"), p);
+  assert.equal(personalPathReason("see https://docs.example.com/a", "someuser"), null);
+});
+
+test("mcp14: summarize への併合と、無ければ pending のまま", () => {
+  const d = mkRun(1, { coverage: 0, lumaGain: 0, flicker: 0 });
+  const s = summarizeRun(d, { mcp14: mkRec() });
+  assert.equal(s.mcp14.tasks.length, 6);
+  assert.equal(s.pending.mcp14, undefined);
+  assert.ok(summarizeRun(d).pending.mcp14);
+});
+
+test("mcp14: buildMcp14 は欠けた出力を拒み、CLI は不正入力で終了コード 1", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "m14-")); tmpDirs.push(d);
+  const r = buildMcp14(d, { model: "m", isolation: "x" }, {});
+  assert.ok(r.errors.length && !r.record);
+  assert.ok(buildMcp14(d, {}, {}).errors.some((m) => m.includes("--model")));
+  const prefix = "ANTHROPIC_";
+  assert.ok(buildMcp14(d, { model: "m", isolation: "x" }, { [prefix + "API_KEY"]: "k" }).errors.some((m) => m.includes("有料")));
+  const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "report.mjs");
+  const w0 = path.join(d, "w0.json"); fs.writeFileSync(w0, JSON.stringify({ pending: { mcp14: "x" } }));
+  const p = spawnSync(process.execPath, [cli, "mcp14-set", "--dir", d, "--model", "m", "--isolation", "x", "--w0", w0], { encoding: "utf8" });
+  assert.equal(p.status, 1);
+  assert.ok(JSON.parse(fs.readFileSync(w0, "utf8")).pending.mcp14);   // 失敗時は書かない
+});
+
+test("mcp14: 完全な出力から記録を組み立てて検査を通す", () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "m14-")); tmpDirs.push(d);
+  fs.writeFileSync(path.join(d, "mcp.pointer.json"), "{}"); fs.writeFileSync(path.join(d, "current_trace.txt"), "");
+  const prov = { tsRef: "pre-overhaul", tsCommit: "def5678abc", tsDirty: false, buildRef: "pre-overhaul", buildCommit: "1234567abc", assetsSource: "x" };
+  for (const id of IDS) {
+    const td = path.join(d, "task_" + id); fs.mkdirSync(td);
+    const sc = { taskId: id, pass: true, checks: [{ id: "c", ok: true, detail: "" }], metrics: { calls: 4, retries: 0, errors: 0, maxCalls: 6, byTool: {} } };
+    fs.writeFileSync(path.join(td, `score_${id}.json`), JSON.stringify(sc)); fs.writeFileSync(path.join(td, `trace_${id}.replay.score.json`), JSON.stringify(sc));
+    fs.writeFileSync(path.join(td, `trace_${id}.jsonl`), "{}\n"); fs.writeFileSync(path.join(td, "provenance.json"), JSON.stringify(prov));
+    fs.writeFileSync(path.join(td, `task_${id}.md`), `# ${id}\n作業フォルダ: ${td}\n`);
+  }
+  const r = buildMcp14(d, { model: "claude-sonnet-5-5", isolation: "strict config" }, {});
+  assert.deepEqual(r.errors, undefined, JSON.stringify(r.errors));
+  assert.equal(r.record.tasks[0].traceSha256, createHash("sha256").update("{}\n").digest("hex"));
+  assert.match(r.record.procedureVersion, /^e2e-[0-9a-f]{12}$/);
+  // replay が違えば拒む
+  const f = path.join(d, "task_T3", "trace_T3.replay.score.json"); const j = JSON.parse(fs.readFileSync(f, "utf8")); j.metrics.calls = 9; fs.writeFileSync(f, JSON.stringify(j));
+  assert.ok(buildMcp14(d, { model: "m", isolation: "x" }, {}).errors.some((m) => m.includes("T3") && m.includes("replay")));
+});
+
+test("diff: mcp14 の行（条件が同じなら増減、違えば比較不可）", () => {
+  const base = { stages: {}, mcp14: mkRec() }, now = { stages: {}, mcp14: mkRec() };
+  now.mcp14.tasks[0].calls = 7; now.mcp14.tasks[1].pass = false;
+  const t = diffSummaries(base, now).text;
+  assert.match(t, /T1\.calls\s+5\.000 -> 7\.000/);
+  assert.match(t, /T2\.pass/);
+  now.mcp14.subagentModelId = "other";
+  assert.match(diffSummaries(base, now).text, /not comparable \(subagentModelId/);
 });
 
 test("diff: 変化なし / 変化あり / 数値の増減", () => {
