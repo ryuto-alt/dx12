@@ -1,0 +1,25 @@
+{
+  "uvfx": 1,
+  "name": "p_core_burst",
+  "duration": 1.0,
+  "loop": false,
+  "emitters": [
+    {
+      "name": "burst",
+      "maxParticles": 1024,
+      "spawn": { "rate": 0, "bursts": [ { "t": 0.0, "count": 400 } ] },
+      "init": [
+        { "module": "shape", "kind": "sphere", "radius": 0.1 },
+        { "module": "velocity", "mode": "radial", "speed": [2.0, 5.0] },
+        { "module": "lifetime", "range": [0.5, 1.0] },
+        { "module": "size", "start": [0.06, 0.1], "end": [0.0, 0.02] },
+        { "module": "color", "start": [4.0, 2.0, 0.8, 1.0], "end": [0.8, 0.1, 0.0, 0.0] }
+      ],
+      "update": [
+        { "module": "gravity", "value": [0, -6.0, 0] },
+        { "module": "drag", "coefficient": 1.0 }
+      ],
+      "render": { "kind": "sprite", "blend": "additive", "fade": "quad", "softDistance": 0.3 }
+    }
+  ]
+}

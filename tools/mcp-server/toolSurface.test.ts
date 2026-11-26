@@ -38,6 +38,7 @@ const PT_TOOLS = ["dx12_render_reference", "dx12_render_reference_status", "dx12
 const VG_TOOLS = ["dx12_vg_stats", "dx12_set_virtual_geometry"];
 const BLENDER_PLACE_TOOLS = ["dx12_blender_place"];   // toolset/blenderPlace.ts(Blender の配置をそのまま置く)
 const ORACLE_TOOLS = ["dx12_oracle"];   // toolset/oracles.ts(書き換えられない正解: 金画像・性能予算・封印。seal だけ guarded)
+const VISUAL_TOOLS = ["dx12_visual", "dx12_perf_gate"];   // toolset/visual.ts(視覚回帰と性能ゲート。長尾 = tools/list には出さず dx12_call で使う。M0 の総バイト数の上限に収めるため。golden の approve だけ guarded)
 const LUA_STEP_TOOLS = ["dx12_lua_step"];   // toolset/luaStep.ts(eval_lua → step_frames → eval_lua を 1 回に束ねた guarded な合成ツール)
 console.log("[1] legacy 面: M0 のスナップショットと一致");
 const legacy = await listTools("legacy");
@@ -145,7 +146,7 @@ check("shell の alwaysLoad は 5 本ちょうど(増やさない)", core.tools.
   const named = [...INSTRUCTIONS_CORE.matchAll(/dx12_[a-z_]+/g)].map((m) => m[0]);
   const listedSet = new Set(coreNames);
   const legacySet = new Set(LEGACY_NAMES);
-  const unresolved = [...new Set(named)].filter((n) => !listedSet.has(n) && !legacySet.has(n) && !FLEET_TOOL_SET.has(n) && !JOB_TOOL_SET.has(n) && !EDITOR_TOOL_SET.has(n) && !SCENE_SPEC_TOOL_SET.has(n) && !LUA_STEP_TOOLS.includes(n) && !ORACLE_TOOLS.includes(n) && !BLENDER_PLACE_TOOLS.includes(n) && !/^dx12_(get|set|list)_?$/.test(n) && !["dx12_"].includes(n));
+  const unresolved = [...new Set(named)].filter((n) => !listedSet.has(n) && !legacySet.has(n) && !FLEET_TOOL_SET.has(n) && !JOB_TOOL_SET.has(n) && !EDITOR_TOOL_SET.has(n) && !SCENE_SPEC_TOOL_SET.has(n) && !LUA_STEP_TOOLS.includes(n) && !ORACLE_TOOLS.includes(n) && !VISUAL_TOOLS.includes(n) && !BLENDER_PLACE_TOOLS.includes(n) && !/^dx12_(get|set|list)_?$/.test(n) && !["dx12_"].includes(n));
   check("instructions(core)が挙げる dx12_ 名は tools/list か旧ツールに実在(省略記法を除く)", unresolved.length === 0, unresolved);
 }
 

@@ -785,6 +785,85 @@ if(TARGET Scripting)
     add_test(NAME LuaBindingRegistryTests COMMAND LuaBindingRegistryTests)
     set_tests_properties(LuaBindingRegistryTests PROPERTIES TIMEOUT 120)
 endif()
+# 起動音 Calibrate（W1-BD1）: イベント表（生成されたヘッダ）の形の検査。GPU 不要。
+add_executable(SplashCalibrateEventsTests splash_calibrate_events_test.cpp)
+target_include_directories(SplashCalibrateEventsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SplashCalibrateEventsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(SplashCalibrateEventsTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME SplashCalibrateEventsTests COMMAND SplashCalibrateEventsTests)
+# 起動画面 Graphite Gauge の動きの純ロジック（W1-BD2。core/SplashGaugeMotion.h）。ヘッダオンリー・GPU 不要。
+add_executable(SplashGaugeMotionTests splash_gauge_motion_test.cpp)
+target_include_directories(SplashGaugeMotionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SplashGaugeMotionTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(SplashGaugeMotionTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME SplashGaugeMotionTests COMMAND SplashGaugeMotionTests)
+# tools/gen_boot_sound_calibrate.py: --check-assets は標準ライブラリだけ（コミット済みの資産の検査）。
+# --check は再合成（numpy が要る。tools/requirements-audio.txt）。numpy が無い python では登録しない（警告ではなく STATUS。標準の環境には numpy が無い）
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME CalibrateSoundAssets COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/gen_boot_sound_calibrate.py --check-assets)
+    set_tests_properties(CalibrateSoundAssets PROPERTIES TIMEOUT 120)
+    execute_process(COMMAND ${Python3_EXECUTABLE} -I -c "import numpy" RESULT_VARIABLE _calib_np_rc OUTPUT_QUIET ERROR_QUIET)
+    if(_calib_np_rc EQUAL 0)
+        add_test(NAME CalibrateSoundCheck COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/gen_boot_sound_calibrate.py --check)
+        set_tests_properties(CalibrateSoundCheck PROPERTIES TIMEOUT 300)
+    else()
+        message(STATUS "numpy が無い python のため CalibrateSoundCheck（再合成）は登録しません。venv に tools/requirements-audio.txt を入れると有効になります")
+    endif()
+else()
+    message(WARNING "Python3 が見つからないため CalibrateSoundAssets を登録できません")
+endif()
+# AUD-05（W1-BD9）: pak の並列読み取りがスレッドセーフ（8 スレッド x 1000 回で直列の結果と一致）。
+if(TARGET Core)
+    add_executable(PakParallelReadTests pak_parallel_read_test.cpp)
+    target_link_libraries(PakParallelReadTests PRIVATE Core)
+    target_include_directories(PakParallelReadTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(PakParallelReadTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(PakParallelReadTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME PakParallelReadTests COMMAND PakParallelReadTests)
+    set_tests_properties(PakParallelReadTests PROPERTIES TIMEOUT 120)
+endif()
+# UnoFX（W1-BD4）: .uvfx の読み書き・検証・命令列 / 放出の算術・カール場の CPU 参照。GPU 不要。ソースを直接コンパイルして Renderer に依存しない。
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(directxmath CONFIG REQUIRED)
+add_executable(VfxAssetTests vfx_asset_test.cpp ../src/renderer/vfx/VfxAsset.cpp)
+target_include_directories(VfxAssetTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(VfxAssetTests PRIVATE nlohmann_json::nlohmann_json)
+add_executable(VfxSpawnMathTests vfx_spawn_math_test.cpp ../src/renderer/vfx/VfxCurl.cpp ../src/renderer/vfx/VfxAsset.cpp)
+target_include_directories(VfxSpawnMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(VfxSpawnMathTests PRIVATE nlohmann_json::nlohmann_json Microsoft::DirectXMath)
+if(MSVC)
+    foreach(_t VfxAssetTests VfxSpawnMathTests)
+        target_compile_options(${_t} PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(${_t} PRIVATE ${DX12_COMPILE_DEFS})
+    endforeach()
+endif()
+add_test(NAME VfxAssetTests COMMAND VfxAssetTests
+    ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_fire.uvfx ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_burst.uvfx)
+add_test(NAME VfxSpawnMathTests COMMAND VfxSpawnMathTests)
+set_tests_properties(VfxAssetTests VfxSpawnMathTests PROPERTIES TIMEOUT 120)
+# VfxGpuTests（gpu）: カール場の Texture3D を窓なしの D3D12 で引き、CPU 参照（SampleCurl）と一致（テクセル中心は 1e-5、フィルタ込みは 2.5e-3 以内）することを確かめる。GPU が無ければ SKIP。
+if(TARGET Renderer)
+    add_executable(VfxGpuTests vfx_gpu_test.cpp)
+    target_include_directories(VfxGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(VfxGpuTests PRIVATE Renderer Microsoft::DirectXMath)
+    target_compile_definitions(VfxGpuTests PRIVATE DX12E_SHADER_DIR="${CMAKE_BINARY_DIR}/shaders/")
+    if(TARGET Shaders)
+        add_dependencies(VfxGpuTests Shaders)
+    endif()
+    if(MSVC)
+        target_compile_options(VfxGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VfxGpuTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME VfxGpuTests COMMAND VfxGpuTests)
+    set_tests_properties(VfxGpuTests PROPERTIES LABELS gpu TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
@@ -1183,8 +1262,39 @@ if(TARGET Renderer)
     endif()
     add_test(NAME QualityPresetTableTests COMMAND QualityPresetTableTests)
 endif()
+# UNO_SHADING_V2 の軸（宣言表 ⇔ V1、結線、空の枠、ForwardGraph のキー）の静的な検査。GPU / DXC 不要。W1-C3。
+add_executable(ShadingV2AxisTests shading_v2_axis_test.cpp)
+target_compile_definitions(ShadingV2AxisTests PRIVATE DX12E_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+if(MSVC)
+    target_compile_options(ShadingV2AxisTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(ShadingV2AxisTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ShadingV2AxisTests COMMAND ShadingV2AxisTests)
+# IBL 焼き直しのきっかけと撮影の待ちの判定表（ヘッダだけ）。W1-C9。
+add_executable(IblRebakeTriggerTests ibl_rebake_trigger_test.cpp)
+target_include_directories(IblRebakeTriggerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME IblRebakeTriggerTests COMMAND IblRebakeTriggerTests)
+# MCP の純ロジック（シーンパス / create_entity の引数検査 / DLSS 警告。ヘッダのみ）
+add_executable(McpLogicTests mcp_logic_test.cpp)
+target_include_directories(McpLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(McpLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME McpLogicTests COMMAND McpLogicTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
+# VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
+# ゲートでは cmake -DVFX_BAKE_PYTHON=<pytest と numpy 入りの python> -DVFX_BAKE_REQUIRED=ON を渡すと、走らなければ失敗になる。
+add_test(NAME VfxBakePyTests
+    COMMAND ${CMAKE_COMMAND} -DVFX_BAKE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake -DVFX_BAKE_PYTHON=${VFX_BAKE_PYTHON} -DVFX_BAKE_REQUIRED=${VFX_BAKE_REQUIRED} -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake/run_pytests.cmake)
+set_tests_properties(VfxBakePyTests PROPERTIES
+    SKIP_REGULAR_EXPRESSION "VFXBAKE_SKIP"
+    ENVIRONMENT "PYTHONUTF8=1"
+    TIMEOUT 900)
 # ==== lane-D end ====
 
 # 頂点スカルプト（素体生成 / 溶接・隣接 / 各ブラシ / 法線の部分再計算 / 対称 / .smsh 往復）テスト。

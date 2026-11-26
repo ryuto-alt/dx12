@@ -4,6 +4,7 @@
 // ==== lane-A begin ====
 // ==== lane-A end ====
 // ==== lane-B begin ====
+X(VfxFeature, "UnoFX")   // W1-BD4: AfterDepthPrepass で粒子を進め、AfterTranslucent で描く
 // ==== lane-B end ====
 // ==== lane-C begin ====
 // ==== lane-C end ====

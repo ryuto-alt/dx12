@@ -1,0 +1,285 @@
+{
+ "id": "LS-D",
+ "title": "LS-D 面光源の候補",
+ "description": "奥の壁に 2.4x1.2m の発光パネル(8 倍)。手前に光沢球と粗い球。太陽は 0。面光源の形に沿ったハイライトと壁・床への回り込みを見る。RectLight の実装前は、ラスタにはパネルから出る光が無い(発光は自分の画素だけ)= ベースライン。",
+ "spec": {
+  "version": 1,
+  "name": "ls_d",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#8a8680",
+    "material": {
+     "roughness": 0.35
+    }
+   },
+   {
+    "name": "LVL_Wall_N",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     3.1
+    ],
+    "size": [
+     8.4,
+     3.2,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     1.6,
+     0
+    ],
+    "size": [
+     0.2,
+     3.2,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_E",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4.1,
+     1.6,
+     0
+    ],
+    "size": [
+     0.2,
+     3.2,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ceiling",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.3,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     -3.1
+    ],
+    "size": [
+     8.4,
+     3.2,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Panel",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     2.0,
+     2.95
+    ],
+    "size": [
+     2.4,
+     1.2,
+     0.08
+    ],
+    "color": "#ffffff",
+    "material": {
+     "roughness": 0.5,
+     "emissive": [
+      1.0,
+      0.95,
+      0.85
+     ],
+     "emissiveIntensity": 8.0
+    }
+   },
+   {
+    "name": "ENV_SphereGloss",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     -1.2,
+     0.5,
+     1.2
+    ],
+    "size": 1.0,
+    "color": "#e0e0e0",
+    "material": {
+     "roughness": 0.08
+    }
+   },
+   {
+    "name": "ENV_SphereRough",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     1.2,
+     0.5,
+     1.2
+    ],
+    "size": 1.0,
+    "color": "#e0e0e0",
+    "material": {
+     "roughness": 0.6
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     270,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 270,
+  "elevation": 33,
+  "intensity": 0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -4.0,
+   0.0,
+   -3.0
+  ],
+  "max": [
+   4.0,
+   3.2,
+   3.0
+  ],
+  "spacing": 0.8
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    0,
+    1.5,
+    -2.6
+   ],
+   "target": [
+    0,
+    1.1,
+    3.0
+   ]
+  }
+ ],
+ "regions": {
+  "panel": {
+   "entities": [
+    "ENV_Panel"
+   ]
+  },
+  "floor_near_panel": {
+   "entities": [
+    "LVL_Floor"
+   ],
+   "nearEntity": "ENV_Panel",
+   "maxDist": 3.0
+  },
+  "wall_near_panel": {
+   "entities": [
+    "LVL_Wall_N"
+   ],
+   "nearEntity": "ENV_Panel",
+   "maxDist": 1.5
+  },
+  "sphere_gloss": {
+   "entities": [
+    "ENV_SphereGloss"
+   ]
+  },
+  "sphere_rough": {
+   "entities": [
+    "ENV_SphereRough"
+   ]
+  }
+ },
+ "criteria": {
+  "information": {
+   "regions": [
+    "floor_near_panel",
+    "wall_near_panel",
+    "sphere_gloss",
+    "sphere_rough"
+   ],
+   "cameras": [
+    "main"
+   ]
+  }
+ },
+ "conditions": [
+  "epic"
+ ]
+}

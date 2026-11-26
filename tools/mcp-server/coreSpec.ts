@@ -605,8 +605,10 @@ export function aliasStats(table: AliasEntry[]) {
 export function rewriteFixToCore<F extends { tool?: string; args?: Record<string, unknown> }>(fix: F[] | undefined, viaLegacy: string): F[] | undefined {
   if (!fix) return fix;
   return fix.map((f) => {
-    if (f.tool !== viaLegacy) return f;
-    const c = toCoreCall(viaLegacy, f.args ?? {});
+    // dx12_call {name:<legacy>, args} に包まれていても(routeFixViaCall)、core の形へ直す
+    const wrapped = (f.tool === "dx12_call" || f.tool === "dx12_call_guarded") && (f.args as any)?.name === viaLegacy;
+    if (f.tool !== viaLegacy && !wrapped) return f;
+    const c = toCoreCall(viaLegacy, wrapped ? (((f.args as any).args ?? {}) as Record<string, unknown>) : f.args ?? {});
     return c ? { ...f, tool: c.tool, args: c.args } : f;
   });
 }

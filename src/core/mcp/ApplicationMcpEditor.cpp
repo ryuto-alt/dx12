@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AppAccess.h"   // W1-C9: IblRebakeWaitFrames
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1 の JSON 変換
 #include "core/mcp/FleetGuard.h"   // vramBaselineMB（QueryVideoMemoryMB）
@@ -235,17 +236,22 @@ void Application::RegisterMcpEditorMethods()
             resp["result"] = arr;   // ファイル無しは空配列(grace)
         });
 
-    McpDefine("screenshot", "deterministic:bool,gizmos:bool,path:string,settleFrames:int", DX12E_MCP_HANDLER
+    McpDefine("screenshot", "deterministic:bool,gizmos:bool,path:string,settleFrames:int,waitIblRebake:bool", DX12E_MCP_HANDLER
         {
             // 直近フレームのシーン描画を PNG にして絶対パスを返す。AI 側はそのパスを画像として読む。
             // ★これは【ポスト前】の m_sceneRT。グレーディング/ブルーム/ビネット/TAA は写らない（§6 B5）。
             //   見た目を判断したいときは dx12_screenshot_final を使うこと。
-            if (params.value("deterministic", false))
+            // W1-C9（BUG-17）: waitIblRebake:true で、物理大気の ON/OFF・時刻の変更に伴う IBL の焼き直しが終わるまで待ってから撮る。
+            //   待つ必要があるときだけ決定論経路（履歴を捨てて収束させる＝時刻・位相は固定。deterministic:false でも決定論になる）へ回し、
+            //   収束フレームを足す（settleFrames は 240 で頭打ちにしてから足すので、IBL の待ちは削られない）。無ければ従来どおり。
+            const int iblWait = params.value("waitIblRebake", false) ? AppAccess::IblRebakeWaitFrames(*this) : 0;
+            if (params.value("deterministic", false) || iblWait > 0)
             {
                 if (m_deterministicCapture || m_mcpFinalShot.reply.client != 0)
                     throw McpError(McpErr::ModeConflict,
                         "another deterministic screenshot is in flight; retry shortly",
-                        "前の決定論スクショの応答を待ってから撮る（settleFrames ぶん、既定 8 フレームで返る）");
+                        "前の決定論スクショの応答を待ってから撮る（settleFrames ぶん、既定 8 フレームで返る）。"
+                        "waitIblRebake:true は IBL の焼き直しが未了のとき決定論経路に回るので、deterministic:false でも同じ衝突が起きる");
                 m_mcpFinalShot = {};
                 m_mcpFinalShot.path          = params.value("path", std::string());
                 m_mcpFinalShot.reply         = deferred;
@@ -259,7 +265,7 @@ void Application::RegisterMcpEditorMethods()
                 //   結果がわずかに残るので（実測 240 フレーム回しても 1% 残った）、
                 //   **同じ初期状態 + 同じフレーム数** にして完全に再現させる。
                 InvalidateTemporalHistory();
-                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240) + iblWait;
                 m_deterministicCapture    = true;
                 isDeferred = true;
                 return;
@@ -284,13 +290,16 @@ void Application::RegisterMcpEditorMethods()
     // ★§6 B5 の根治。バックバッファ（ポスト適用後の最終画）のビューポート矩形を撮る。
     //   ImGui を描く前にコピーするのでエディタのパネルは写らない＝ゲームと同じ絵になる。
     //   1 フレーム描いてから撮るので遅延応答。
-    McpDefine("screenshot_final", "deterministic:bool,format:string,formats:any,gizmos:bool,height:int,path:string,settleFrames:int,width:int", DX12E_MCP_HANDLER
+    McpDefine("screenshot_final", "deterministic:bool,format:string,formats:any,gizmos:bool,height:int,path:string,settleFrames:int,waitIblRebake:bool,width:int", DX12E_MCP_HANDLER
         {
             if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
                 throw McpError(McpErr::ModeConflict,
                     "a final screenshot is already pending; retry shortly",
-                    "前の screenshot_final の応答を待ってから撮る（通常 1〜9 フレームで返る）");
-            const bool det = params.value("deterministic", false);
+                    "前の screenshot_final の応答を待ってから撮る（通常 1〜9 フレームで返る）。"
+                    "waitIblRebake:true は IBL の焼き直しが未了のとき決定論経路に回るので、deterministic:false でも同じ衝突が起きる");
+            // W1-C9（BUG-17）: waitIblRebake:true なら IBL の焼き直しが終わるまで収束フレームを足す（待つ必要があるときだけ決定論経路へ）。
+            const int iblWait = params.value("waitIblRebake", false) ? AppAccess::IblRebakeWaitFrames(*this) : 0;
+            const bool det = params.value("deterministic", false) || iblWait > 0;
             m_mcpFinalShot = {};
             m_mcpFinalShot.path          = params.value("path", std::string());
             m_mcpFinalShot.reply         = deferred;
@@ -316,7 +325,7 @@ void Application::RegisterMcpEditorMethods()
             if (det && m_mcpFinalShot.offW > 0)
             {
                 // オフスクリーン: 解像度の切替を待ってから収束フレームを数える（ServiceOffscreenShot が進める）。
-                m_mcpFinalShot.offSettle  = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_mcpFinalShot.offSettle  = std::clamp(params.value("settleFrames", 8), 1, 240) + iblWait;
                 m_deterministicFramesLeft = 0;
                 m_deterministicCapture    = true;
             }
@@ -333,7 +342,7 @@ void Application::RegisterMcpEditorMethods()
                 //   結果がわずかに残るので（実測 240 フレーム回しても 1% 残った）、
                 //   **同じ初期状態 + 同じフレーム数** にして完全に再現させる。
                 InvalidateTemporalHistory();
-                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240);
+                m_deterministicFramesLeft = std::clamp(params.value("settleFrames", 8), 1, 240) + iblWait;
                 m_deterministicCapture    = true;
             }
             else

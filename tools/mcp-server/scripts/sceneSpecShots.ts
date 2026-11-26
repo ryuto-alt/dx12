@@ -1,5 +1,5 @@
 // 宣言的シーン生成(M11)の例 5 本を実エンジン(専用インスタンス・使い捨てプロジェクト)へ apply し、複数の視点で撮ってコンタクトシートにする。
-//   使い方: node scripts/sceneSpecShots.ts --port 8829 --out C:/Users/ryuto/Documents/dx12-ui-audit/shots [--only room,garden]
+//   使い方: node scripts/sceneSpecShots.ts --port 8829 --out <出力先>/shots [--only room,garden]
 //   撮影は仮想入力・MCP の set_editor_camera + screenshot_final だけ(実マウス・前面化は使わない)。使い捨てプロジェクトの scene を作り直す。
 import path from "node:path";
 import fs from "node:fs";

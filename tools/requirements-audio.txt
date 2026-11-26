@@ -1,0 +1,3 @@
+# 起動音 Calibrate の生成器（tools/gen_boot_sound_calibrate.py）の依存。版を固定する（合否は残差 -90 dBFS で判定するので、sha256 は参考値）。
+# python -m venv したあと: pip install -r tools/requirements-audio.txt
+numpy==2.5.5

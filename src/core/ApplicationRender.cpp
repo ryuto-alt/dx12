@@ -16,6 +16,8 @@
 #include "editor/LightMath.h"   // 新規シーンの太陽の既定（W05-22）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpScenePath.h"
+#include "core/mcp/McpDlssWarn.h"
 #include "renderer/FrameConstants.h"
 #include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
@@ -2915,11 +2917,15 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
     // 未保存なら先に確認する（保存 / 破棄 / 取り消し）。取り消されたら要求ごと捨てる。
     // モーダル表示中は pending を残して次フレームへ持ち越す。
     bool newSceneAllowed = false;
+    // m_mcpLoadReply は open_scene と共用。この新規シーンが MCP の new_scene のときだけ応答を扱う
+    // （MCP は必ず SkipConfirm を立てるので、確認モーダルのキャンセル経路に MCP の応答は来ない。人の Ctrl+N では触らない）。
+    const bool mcpNewScene = m_editorCtx->pendingNewScene && m_editorCtx->pendingNewSceneSkipConfirm;
     if (m_editorCtx->pendingNewScene && m_engineMode == EngineMode::Editor)
     {
         bool cancelled = false;
         newSceneAllowed = m_editorCtx->pendingNewSceneSkipConfirm || ConfirmDiscardScene(cancelled);
-        if (cancelled) m_editorCtx->pendingNewScene = false;
+        if (cancelled)
+            m_editorCtx->pendingNewScene = false;
     }
     if (newSceneAllowed)
     {
@@ -2987,6 +2993,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         if (!starterPath.empty())
             m_currentSceneRel = ToAssetRel(starterPath);
         // 作成と同時にシーンファイルを保存
+        bool starterSaved = !starterPath.empty() ? true : false;   // 保存先が無ければ何も書いていない（false）
         if (!m_editorCtx->currentScenePath.empty())
         {
             if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
@@ -3001,6 +3008,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 // 新規シーンのファイルを作れなかった。成功の通知を出すと
                 // 「作られている」と誤解したまま作業が進む。
                 Logger::Error("新規シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
+                starterSaved = false;
                 m_editorCtx->Notify(ui::ToastKind::Error, "シーンのファイルを作れませんでした（詳細は dx12_engine.log）");
             }
         }
@@ -3013,6 +3021,23 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
         m_editorCtx->sceneLoadFailedPath.clear();   // 新しく作った＝開けなかったシーンの保存停止は解除
         Logger::Info("New scene created");
+        // MCP new_scene の遅延応答（切り替え完了後の実際の結果）。人が始めた新規シーンでは、共用の m_mcpLoadReply
+        // （open_scene のもの）に触らない。
+        if (mcpNewScene && m_mcpLoadReply.client != 0)
+        {
+            int entityCount = 0;
+            for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
+            const auto paths = mcpscene::Resolve(m_editorCtx->currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir());
+            nlohmann::json result{{"sceneName", paths.path ? std::filesystem::path(*paths.path).stem().string()
+                                                           : (paths.projectPath ? std::filesystem::path(*paths.projectPath).stem().string()
+                                                                                : std::string("Untitled"))},
+                                  {"entityCount", entityCount},
+                                  {"sceneGeneration", m_sceneGeneration},
+                                  {"saved", starterSaved}};   // savePath を渡してファイルを作れたときだけ true
+            mcpscene::AddTo(result, paths);
+            CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply, std::move(result));
+            m_mcpLoadReply = {};
+        }
     }
 
     // Deferred: scene load（描画前に処理）
@@ -3350,7 +3375,11 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 auto e = reg.create();
                 reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
-                reg.emplace<ParticleEmitter>(e, ParticleEmitter{});
+                // layers が空の放出器は「何も出さない」ので既定のレイヤーを 1 枚入れる（Components.h の取り決め）。
+                ParticleEmitter pe;
+                pe.layers.emplace_back();
+                pe.layers.back().name = "Layer 1";
+                reg.emplace<ParticleEmitter>(e, std::move(pe));
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__trigger__")
@@ -3727,6 +3756,16 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                                  "（モデル: gltf/glb/obj/fbx/dae/stl/ply/3ds, 画像: png/jpg/bmp/tga/dds）",
                                  req.modelPath);
                 }
+            }
+
+            // MCP create_entity の parent / parentName（3D の種別）。UI 要素は上の分岐で親を解決済み。
+            // set_parent と同じく、position は親からの相対（ローカル）として扱う。
+            if (spawnedEntity != entt::null && req.mcp.client != 0 && req.parent != entt::null
+                && req.modelPath.rfind("__", 0) == 0 && req.modelPath.rfind("__ui_", 0) != 0)
+            {
+                auto& preg = m_scene->GetRegistry();
+                if (preg.valid(req.parent) && preg.valid(spawnedEntity) && req.parent != spawnedEntity)
+                    preg.get_or_emplace<Transform>(spawnedEntity).parent = req.parent;
             }
 
             // Undo に Spawn コマンドを積む
@@ -4848,10 +4887,16 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             }
         }
         const bool asked = taaCfg.enabled && taaCfg.upscaler == static_cast<int>(upscale::Kind::Dlss);
-        if (asked && !m_dlssThisFrame && !dlssBuilding && !m_dlssFallbackLogged)
+        // 縮退の警告は「理由が変わったとき」だけ出す（dlss → off → dlss を繰り返しても同じ理由なら 1 回。R1-14）。
+        // Application.h は凍結なので関数内 static。プロジェクトを開き直しても保持される（理由が変わるまで再警告しない）。
+        static std::string s_lastDlssFallbackReason;
+        if (m_dlssThisFrame) s_lastDlssFallbackReason.clear();
+        if (asked && !m_dlssThisFrame && !dlssBuilding)
         {
-            Logger::Warn("アップスケーラ: DLSS を使えないので TAA で描く（{}）", why.empty() ? std::string("速度バッファが使えない") : why);
-            m_dlssFallbackLogged = true;
+            static const std::string kNoVelocity = "速度バッファが使えない";
+            const std::string& reason = why.empty() ? kNoVelocity : why;   // 毎フレーム呼ぶので確保しない
+            if (mcpdlss::ShouldLogFallback(s_lastDlssFallbackReason, reason))
+                Logger::Warn("アップスケーラ: DLSS を使えないので TAA で描く（{}）", reason);
         }
         m_texMipBias = m_dlssThisFrame ? upscale::TextureMipBias(rW, (m_postW > 0) ? m_postW : rW) : 0.0f;
         if (m_dlssThisFrame)

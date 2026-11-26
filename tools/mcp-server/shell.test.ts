@@ -65,6 +65,13 @@ console.log("[1] shell 5 本(プロセス内・偽エンジン)");
   const unk = await shell.describe({ name: "dx12_set_ssoa" });
   const ub = parse(unk);
   check("describe: 未知の名前は E_UNKNOWN_TOOL + didYouMean(dx12_set_ssao) + fix", (unk as any).isError && ub.error_code === "E_UNKNOWN_TOOL" && ub.didYouMean?.[0] === "dx12_set_ssao" && ub.fix?.length > 0, ub);
+  {
+    // describe してから call する推奨手順で、最初の call が打ち切り扱いにならない
+    await shell.describe({ name: "dx12_teleportx_zz" });
+    const cb = parse(await shell.call({ name: "dx12_teleportx_zz", args: {} }));
+    check("describe の後の call は giveUp にならない", cb.error_code === "E_UNKNOWN_TOOL" && cb.details?.giveUp !== true, cb);
+    check("call の fix に失敗名自身が無い", !(cb.fix ?? []).some((f: any) => String(f.tool).replace(/^dx12_/, "") === "teleportx_zz" || String(f.args?.name ?? "").replace(/^dx12_/, "") === "teleportx_zz"), cb.fix);
+  }
 }
 {
   const r = parse(await shell.call({ name: "dx12_get_entity", args: { name: "Player" } }));
@@ -199,6 +206,19 @@ console.log("[3] stdio の MCP クライアントで一巡");
     check("e2e: 旧ツール直接呼び出しの型エラーは SDK の本文 + 構造化 JSON(E_BAD_TYPE)", direct.isError === true && dt.length === 2 && JSON.parse(dt[1]).error_code === "E_BAD_TYPE", dt);
     const dirunk = await call("dx12_no_such_tool", {});
     check("e2e: 未知ツールを直接呼ぶと構造化 JSON(E_UNKNOWN_TOOL)が付く", dirunk.isError === true && JSON.parse(dirunk.content[dirunk.content.length - 1].text).error_code === "E_UNKNOWN_TOOL", dirunk.content);
+    // BUG-14: full 面の tools/list に無い dx12_sequence を直接呼ぶ → fix は dx12_call の形(直接呼べない名前を勧めない)。同じ呼び出しの 2 回目は打ち切り。
+    check("e2e: dx12_sequence は full 面の tools/list に出ていない", !names.includes("dx12_sequence"), null);
+    const seq1 = await call("dx12_sequence", { op: "list" });
+    const sb1 = JSON.parse(seq1.content[seq1.content.length - 1].text);
+    check("e2e(BUG-14): 呼べない dx12_sequence を直接呼ぶ → fix[0] は dx12_call {name:'dx12_sequence'}", seq1.isError === true && sb1.error_code === "E_UNKNOWN_TOOL" && sb1.fix?.[0]?.tool === "dx12_call" && sb1.fix[0].args?.name === "dx12_sequence" && sb1.fix[0].args?.args?.op === "list" && !sb1.fix.some((f: any) => f.tool === "dx12_sequence"), sb1);
+    const seq2 = await call(sb1.fix[0].tool, sb1.fix[0].args);
+    const sb2 = JSON.parse(seq2.content[seq2.content.length - 1].text);
+    check("e2e(BUG-14): fix[0] をそのまま撃つと E_UNKNOWN_TOOL にならず先へ進む(無限に繰り返さない)", sb2.error_code !== "E_UNKNOWN_TOOL", sb2);
+    check("e2e(BUG-14): fix を撃った結果は打ち切り扱いにならず、E_ENGINE_TOO_OLD に giveUp が漏れない", sb2.details?.giveUp === undefined && sb2.details?.repeatedFix === undefined, sb2);
+    check("e2e(BUG-14): 1 回目の didYouMean に失敗した名前 dx12_sequence が入っていない", !(sb1.didYouMean ?? []).includes("dx12_sequence"), sb1.didYouMean);
+    const seq3 = await call("dx12_sequence", { op: "list" });
+    const sb3 = JSON.parse(seq3.content[seq3.content.length - 1].text);
+    check("e2e(BUG-14): 同じ呼び出しをもう一度撃つと打ち切りの文言(撃ち直しを誘う fix が無い)", sb3.details?.giveUp === true && !sb3.didYouMean?.length && /撃ち直しをやめる/.test(JSON.stringify(sb3.fix)) && !sb3.fix.some((f: any) => f.tool && f.tool !== "dx12_tool_search"), sb3);
     const unkey = await call("dx12_set_transform", { name: "Floor", postion: [0, 0, 0] });
     check("e2e: 旧ツールの未知キーは従来の本文 + 構造化 JSON(E_UNKNOWN_PARAM)", unkey.isError === true && unkey.content.length === 2 && JSON.parse(unkey.content[1].text).didYouMean?.[0] === "position", unkey.content);
     const doc = await call("dx12_doctor", {});

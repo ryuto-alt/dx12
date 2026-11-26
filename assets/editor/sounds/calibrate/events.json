@@ -1,0 +1,352 @@
+{
+ "format": 1,
+ "sampleRate": 44100,
+ "lengthMs": 3750.0,
+ "lengthSamples": 165375,
+ "tLockMs": 1628.0045,
+ "tLockSample": 71795,
+ "panLaw": "equal-power: L=cos((pan+1)*pi/4), R=sin((pan+1)*pi/4); pan>0 delays L, pan<0 delays R by |pan|*haasMs",
+ "haasMs": 0.35,
+ "stemGainDb": -4.915,
+ "sweep": {
+  "startMs": 8.0045,
+  "endMs": 1528.0045,
+  "note": "band noise tracking needle speed. absent in graphite_1_rm.wav (Reduce Motion)"
+ },
+ "loop": {
+  "bedStartMs": 1200.0,
+  "bedEndMs": 1600.0,
+  "crossfadeMs": 40.0
+ },
+ "events": [
+  {
+   "tMs": 268.0045,
+   "sample": 11819,
+   "kind": "click",
+   "index": 0,
+   "pan": 0.1553,
+   "gainDb": -15.924,
+   "angleDeg": 15
+  },
+  {
+   "tMs": 358.8209,
+   "sample": 15824,
+   "kind": "click",
+   "index": 1,
+   "pan": 0.3,
+   "gainDb": -15.184,
+   "angleDeg": 30
+  },
+  {
+   "tMs": 448.7982,
+   "sample": 19792,
+   "kind": "click",
+   "index": 2,
+   "pan": 0.4243,
+   "gainDb": -15.134,
+   "angleDeg": 45
+  },
+  {
+   "tMs": 536.2585,
+   "sample": 23649,
+   "kind": "click",
+   "index": 3,
+   "pan": 0.5196,
+   "gainDb": -14.231,
+   "angleDeg": 60
+  },
+  {
+   "tMs": 619.7052,
+   "sample": 27329,
+   "kind": "click",
+   "index": 4,
+   "pan": 0.5796,
+   "gainDb": -13.772,
+   "angleDeg": 75
+  },
+  {
+   "tMs": 697.8231,
+   "sample": 30774,
+   "kind": "click",
+   "index": 5,
+   "pan": 0.6,
+   "gainDb": -13.949,
+   "angleDeg": 90
+  },
+  {
+   "tMs": 769.5692,
+   "sample": 33938,
+   "kind": "click",
+   "index": 6,
+   "pan": 0.5796,
+   "gainDb": -13.438,
+   "angleDeg": 105
+  },
+  {
+   "tMs": 834.263,
+   "sample": 36791,
+   "kind": "click",
+   "index": 7,
+   "pan": 0.5196,
+   "gainDb": -13.68,
+   "angleDeg": 120
+  },
+  {
+   "tMs": 891.5873,
+   "sample": 39319,
+   "kind": "click",
+   "index": 8,
+   "pan": 0.4243,
+   "gainDb": -12.937,
+   "angleDeg": 135
+  },
+  {
+   "tMs": 941.61,
+   "sample": 41525,
+   "kind": "click",
+   "index": 9,
+   "pan": 0.3,
+   "gainDb": -13.389,
+   "angleDeg": 150
+  },
+  {
+   "tMs": 984.7846,
+   "sample": 43429,
+   "kind": "click",
+   "index": 10,
+   "pan": 0.1553,
+   "gainDb": -12.8,
+   "angleDeg": 165
+  },
+  {
+   "tMs": 1021.9274,
+   "sample": 45067,
+   "kind": "click",
+   "index": 11,
+   "pan": 0.0,
+   "gainDb": -12.956,
+   "angleDeg": 180
+  },
+  {
+   "tMs": 1054.195,
+   "sample": 46490,
+   "kind": "click",
+   "index": 12,
+   "pan": -0.1553,
+   "gainDb": -13.489,
+   "angleDeg": 195
+  },
+  {
+   "tMs": 1082.9478,
+   "sample": 47758,
+   "kind": "click",
+   "index": 13,
+   "pan": -0.3,
+   "gainDb": -13.489,
+   "angleDeg": 210
+  },
+  {
+   "tMs": 1109.7959,
+   "sample": 48942,
+   "kind": "click",
+   "index": 14,
+   "pan": -0.4243,
+   "gainDb": -13.402,
+   "angleDeg": 225
+  },
+  {
+   "tMs": 1136.4626,
+   "sample": 50118,
+   "kind": "click",
+   "index": 15,
+   "pan": -0.5196,
+   "gainDb": -13.354,
+   "angleDeg": 240
+  },
+  {
+   "tMs": 1165.6236,
+   "sample": 51404,
+   "kind": "click",
+   "index": 16,
+   "pan": -0.5796,
+   "gainDb": -13.229,
+   "angleDeg": 255
+  },
+  {
+   "tMs": 1199.7732,
+   "sample": 52910,
+   "kind": "click",
+   "index": 17,
+   "pan": -0.6,
+   "gainDb": -14.102,
+   "angleDeg": 270
+  },
+  {
+   "tMs": 1240.771,
+   "sample": 54718,
+   "kind": "click",
+   "index": 18,
+   "pan": -0.5796,
+   "gainDb": -14.16,
+   "angleDeg": 285
+  },
+  {
+   "tMs": 1289.4785,
+   "sample": 56866,
+   "kind": "click",
+   "index": 19,
+   "pan": -0.5196,
+   "gainDb": -14.152,
+   "angleDeg": 300
+  },
+  {
+   "tMs": 1345.7143,
+   "sample": 59346,
+   "kind": "click",
+   "index": 20,
+   "pan": -0.4243,
+   "gainDb": -14.107,
+   "angleDeg": 315
+  },
+  {
+   "tMs": 1408.2086,
+   "sample": 62102,
+   "kind": "click",
+   "index": 21,
+   "pan": -0.3,
+   "gainDb": -15.193,
+   "angleDeg": 330
+  },
+  {
+   "tMs": 1474.8753,
+   "sample": 65042,
+   "kind": "click",
+   "index": 22,
+   "pan": -0.1553,
+   "gainDb": -15.453,
+   "angleDeg": 345
+  },
+  {
+   "tMs": 1542.9932,
+   "sample": 68046,
+   "kind": "click",
+   "index": 23,
+   "pan": -0.0,
+   "gainDb": -15.084,
+   "angleDeg": 360
+  },
+  {
+   "tMs": 1620.0,
+   "sample": 71442,
+   "kind": "duck",
+   "index": 0,
+   "pan": 0.0,
+   "gainDb": -7.959,
+   "note": "air bed x0.4, tau 150ms"
+  },
+  {
+   "tMs": 1628.0045,
+   "sample": 71795,
+   "kind": "latch",
+   "index": 0,
+   "pan": 0.0,
+   "gainDb": -15.0
+  },
+  {
+   "tMs": 1628.0045,
+   "sample": 71795,
+   "kind": "sub",
+   "index": 0,
+   "pan": 0.0,
+   "gainDb": -9.5,
+   "note": "sub 115>50Hz"
+  },
+  {
+   "tMs": 1628.0045,
+   "sample": 71795,
+   "kind": "sub",
+   "index": 1,
+   "pan": 0.0,
+   "gainDb": -17.0,
+   "note": "thump 190Hz"
+  },
+  {
+   "tMs": 1630.0,
+   "sample": 71883,
+   "kind": "tok",
+   "index": 0,
+   "pan": 0.0,
+   "gainDb": -17.0
+  },
+  {
+   "tMs": 1646.0091,
+   "sample": 72589,
+   "kind": "latch",
+   "index": 1,
+   "pan": 0.05,
+   "gainDb": -19.0
+  },
+  {
+   "tMs": 1648.0045,
+   "sample": 72677,
+   "kind": "bell",
+   "index": 0,
+   "pan": -0.28,
+   "gainDb": -14.0,
+   "note": "D4 293.66Hz"
+  },
+  {
+   "tMs": 1672.9932,
+   "sample": 73779,
+   "kind": "bell",
+   "index": 1,
+   "pan": -0.12,
+   "gainDb": -14.0,
+   "note": "A4 440.0Hz"
+  },
+  {
+   "tMs": 1698.0045,
+   "sample": 74882,
+   "kind": "bell",
+   "index": 2,
+   "pan": 0.05,
+   "gainDb": -14.0,
+   "note": "E5 659.26Hz"
+  },
+  {
+   "tMs": 1722.9932,
+   "sample": 75984,
+   "kind": "bell",
+   "index": 3,
+   "pan": 0.18,
+   "gainDb": -14.0,
+   "note": "F#5 739.99Hz"
+  },
+  {
+   "tMs": 1748.0045,
+   "sample": 77087,
+   "kind": "bell",
+   "index": 4,
+   "pan": 0.32,
+   "gainDb": -18.0,
+   "note": "A5 880.0Hz"
+  },
+  {
+   "tMs": 2148.0045,
+   "sample": 94727,
+   "kind": "ping",
+   "index": 0,
+   "pan": 0.0,
+   "gainDb": -22.0,
+   "note": "A6 1760Hz"
+  },
+  {
+   "tMs": 3750.0,
+   "sample": 165375,
+   "kind": "end",
+   "index": 0,
+   "pan": 0.0,
+   "gainDb": 0.0
+  }
+ ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "lookdev_grazing",
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/lookdev_grazing.json",
+  "camera": {
+    "position": [0, 0.55, -3.5],
+    "target": [0, 0.25, 12]
+  },
+  "note": "MH-1 ルックデブ: 高タイリング法線マップの床をかすめる角度で撮る（スペキュラ AA・水平線）。向かい風の低い太陽"
+}

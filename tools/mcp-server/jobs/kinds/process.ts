@@ -94,7 +94,7 @@ export function buildKind(env: KindEnv): KindDef {
       if (cfg.buildCmd) { cmd = cfg.buildCmd[0]; args = [...cfg.buildCmd.slice(1), ...extra]; }
       else {
         const script = path.join(cfg.repoDir, "tools", "build.ps1");
-        if (!fs.existsSync(script)) return toolMissing("tools\\build.ps1", `リポジトリのルート(${cfg.repoDir})に tools\\build.ps1 が無い。配布リポジトリ(dx12-mcp)にはビルドスクリプトが入っていない`, [{ command: "$env:DX12_REPO_DIR = 'C:\\Users\\ryuto\\Documents\\dx12'", why: "MCP サーバの環境にリポジトリのルートを設定して再起動する" }], { repoDir: cfg.repoDir });
+        if (!fs.existsSync(script)) return toolMissing("tools\\build.ps1", `リポジトリのルート(${cfg.repoDir})に tools\\build.ps1 が無い。配布リポジトリ(dx12-mcp)にはビルドスクリプトが入っていない`, [{ command: "$env:DX12_REPO_DIR = '<repo root>'", why: "MCP サーバの環境にリポジトリのルートを設定して再起動する" }], { repoDir: cfg.repoDir });
         cmd = cfg.pwsh; args = ["-NoProfile", "-File", script, ...extra];
       }
       const plan: ProcessPlan = {
@@ -359,7 +359,7 @@ export function vgCookKind(env: KindEnv): KindDef {
 }
 
 function findDotnet(): string | null {
-  const local = "C:\\Users\\ryuto\\.dotnet10\\dotnet.exe";
+  const local = path.join(process.env.USERPROFILE ?? "", ".dotnet10", "dotnet.exe");
   if (fs.existsSync(local)) return local;
   return onPath("dotnet");
 }

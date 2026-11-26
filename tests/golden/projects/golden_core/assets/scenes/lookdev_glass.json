@@ -1,0 +1,710 @@
+{
+  "skybox": {
+    "iblIntensity": 1,
+    "skyboxIntensity": 1,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          -0.5,
+          -0.8,
+          0.25
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 3.5,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 30,
+      "color": [
+        0.35,
+        0.35,
+        0.37
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Stripe_0",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          -4.95,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_1",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          -4.05,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_2",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          -3.15,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_3",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          -2.25,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_4",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          -1.35,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_5",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          -0.45,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_6",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          0.45,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_7",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          1.35,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_8",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          2.25,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_9",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          3.15,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_10",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          4.05,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Stripe_11",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.7
+      },
+      "transform": {
+        "position": [
+          4.95,
+          1.1,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.45,
+          2.2,
+          0.08
+        ]
+      }
+    },
+    {
+      "name": "Glass_0",
+      "primitive": "sphere",
+      "primitiveSize": 0.75,
+      "color": [
+        0.92,
+        0.97,
+        1
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.02,
+        "alphaMode": "blend",
+        "opacity": 0.15,
+        "ior": 1.45,
+        "specularFactor": 1
+      },
+      "transform": {
+        "position": [
+          -2.7,
+          0.8,
+          1.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Glass_1",
+      "primitive": "sphere",
+      "primitiveSize": 0.75,
+      "color": [
+        0.92,
+        0.97,
+        1
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.12,
+        "alphaMode": "blend",
+        "opacity": 0.35,
+        "ior": 1.5,
+        "specularFactor": 1
+      },
+      "transform": {
+        "position": [
+          -0.9000000000000001,
+          0.8,
+          1.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Glass_2",
+      "primitive": "sphere",
+      "primitiveSize": 0.75,
+      "color": [
+        0.92,
+        0.97,
+        1
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.3,
+        "alphaMode": "blend",
+        "opacity": 0.6,
+        "ior": 1.5,
+        "specularFactor": 1
+      },
+      "transform": {
+        "position": [
+          0.8999999999999999,
+          0.8,
+          1.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Glass_3",
+      "primitive": "sphere",
+      "primitiveSize": 0.75,
+      "color": [
+        0.92,
+        0.97,
+        1
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "alphaMode": "blend",
+        "opacity": 0.85,
+        "ior": 1.52,
+        "specularFactor": 1
+      },
+      "transform": {
+        "position": [
+          2.7,
+          0.8,
+          1.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Tint_0",
+      "primitive": "sphere",
+      "primitiveSize": 0.5,
+      "color": [
+        0.9,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.08,
+        "alphaMode": "blend",
+        "opacity": 0.45,
+        "ior": 1.5
+      },
+      "transform": {
+        "position": [
+          -1.8,
+          0.5,
+          -0.9
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Tint_1",
+      "primitive": "sphere",
+      "primitiveSize": 0.5,
+      "color": [
+        0.2,
+        0.75,
+        0.3
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.08,
+        "alphaMode": "blend",
+        "opacity": 0.45,
+        "ior": 1.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.5,
+          -0.9
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Tint_2",
+      "primitive": "sphere",
+      "primitiveSize": 0.5,
+      "color": [
+        0.2,
+        0.35,
+        0.9
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.08,
+        "alphaMode": "blend",
+        "opacity": 0.45,
+        "ior": 1.5
+      },
+      "transform": {
+        "position": [
+          1.8,
+          0.5,
+          -0.9
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Coat",
+      "primitive": "sphere",
+      "primitiveSize": 0.55,
+      "color": [
+        0.75,
+        0.08,
+        0.06
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.55,
+        "clearCoat": 1,
+        "clearCoatRoughness": 0.03
+      },
+      "transform": {
+        "position": [
+          4.2,
+          0.55,
+          -0.9
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "shadows": true
+}

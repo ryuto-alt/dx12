@@ -268,7 +268,7 @@ await mcp.init();
   const shot = tools.find((t: any) => t.name === "dx12_screenshot");
   const final = tools.find((t: any) => t.name === "dx12_screenshot_final");
   assert.ok(final, "dx12_screenshot_final が登録されていない");
-  const want = ["deterministic", "gizmos", "path", "settleFrames"];
+  const want = ["deterministic", "gizmos", "path", "settleFrames", "waitIblRebake"];  // waitIblRebake は W1-C9
   // dx12_screenshot_final だけが Q2(校正)の出力形式 / 任意解像度(format, formats, width, height)を持つ。dx12_screenshot(ポスト前)には付けない。
   assert.deepEqual(Object.keys(final.inputSchema?.properties ?? {}).sort(), [...want, "format", "formats", "height", "width"].sort());
   assert.deepEqual(Object.keys(shot.inputSchema?.properties ?? {}).sort(), want);
