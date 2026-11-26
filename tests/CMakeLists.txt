@@ -1091,8 +1091,9 @@ endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
+# ゲートでは cmake -DVFX_BAKE_PYTHON=<pytest と numpy 入りの python> -DVFX_BAKE_REQUIRED=ON を渡すと、走らなければ失敗になる。
 add_test(NAME VfxBakePyTests
-    COMMAND ${CMAKE_COMMAND} -DVFX_BAKE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake/run_pytests.cmake)
+    COMMAND ${CMAKE_COMMAND} -DVFX_BAKE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake -DVFX_BAKE_PYTHON=${VFX_BAKE_PYTHON} -DVFX_BAKE_REQUIRED=${VFX_BAKE_REQUIRED} -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake/run_pytests.cmake)
 set_tests_properties(VfxBakePyTests PROPERTIES
     SKIP_REGULAR_EXPRESSION "VFXBAKE_SKIP"
     ENVIRONMENT "PYTHONUTF8=1"

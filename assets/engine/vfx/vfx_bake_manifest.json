@@ -1,11 +1,12 @@
 {
   "conventions": {
+    "anchoring": "炎と煙は地面(枠の下端)に根元がある『根元固定』の枠で、下端の行に不透明度が残る(炎は最大約 0.6、煙は約 0.85)。地面・ソケット・発生面に置くこと。宙に浮くビルボードに使う場合は、下端をフェードさせるか枠を上へずらして使う。",
     "atlasLayout": "枠は左上から行優先(frame = row*cols + col)。枠内の uv は左上が (0,0)、v は下向き。ミップ無し。",
     "billboardAxes": "+x = 画面右、+y = 画面上、+z = カメラ側。",
     "curl": "RGBA16 SNORM の 64³、軸は [z][y][x]、xyz が速度(周期、ラップでタイル)、w は追加のスカラーノイズ。xyz は snorm * curlScale の意味ではなく snorm そのまま(-1..1)。",
     "dataTextures": "全テクスチャはリニアのデータ(sRGB ではない)・非圧縮。SRV の形式は dxgi のとおり。",
     "fireFamilyChannels": "R = 温度(0..1。黒体の引き表へ)、G = 不透明度、B = 浸食場(小さいほど先に削れる)、A = 自己発光の重み。",
-    "motionVectors": "R16G16_SNORM。変位 d(枠 uv、u 右・v 下)= snorm * mvRange。フレーム i の絵が i+1 までに動く量。最後の枠は 0 番へ(ループ)。補間(t は 0..1): A を uv - d_A(uv)*t から、B を uv + d_B(uv)*(1-t) から引き、t で混ぜる。MV は色より低解像度(同じ枠 uv で引く)。",
+    "motionVectors": "R16G16_SNORM。変位 d(枠 uv、u 右・v 下)= snorm * mvRange。フレーム i の絵が i+1 までに動く量。最後の枠は 0 番へ(ループ)。補間(t は 0..1): A を uv - d_A(uv)*t から、B を uv + d_B(uv)*(1-t) から引き、t で混ぜる。d は出力 uv で 1 回ではなく、引く位置で評価し直す(2 回の不動点反復: p=uv; 2 回 p = uv - d_A(p)*t、B も同様 uv + d_B(p)*(1-t))。引く uv は枠の矩形に半テクセル内側でクランプしてから、アトラスのオフセットを足す(隣の枠を引かない)。MV は色より低解像度(同じ枠 uv で引く)。",
     "smoke6way": "RLU: R = 右から来る光、G = 左から、B = 上から、A = 不透明度。DBF: R = 下から、G = 奥(背面)から、B = 手前(カメラ側)から、A = 浸食場。値は不透明度で正規化済みの光の量(使うときに A を掛ける)。ライト方向 L(ビルボード空間の単位ベクトル。表面から光へ)なら 光 = Lx²*(Lx>0?R:G of RLU) + Ly²*(Ly>0?B of RLU:R of DBF) + Lz²*(Lz>0?B:G of DBF)。"
   },
   "files": {
@@ -128,7 +129,6 @@
   },
   "generatorVersion": 1,
   "license": "CC0-1.0(自作・手続き生成)",
-  "numpy": "2.5.5",
   "quick": false,
   "settings": {
     "cols": 6,
