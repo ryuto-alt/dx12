@@ -2878,7 +2878,8 @@ void Application::Update()
     UpdateAtmosphereTime((simRunning && !m_deterministicCapture) ? dt : 0.0f);
 
     // 配置パーティクル放出器（ParticleEmitter）を駆動。
-    // エディタでも常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
+    // ループはエディタで常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
+    // ワンショット（looping=false）はエディタでも Play でも duration で止まる（BUG-12）。
     if (m_particleSystem && !paused)   // 一時停止中は放出も止める（止めないと同じ位置に溜まる）
     {
         auto& peReg = m_scene->GetRegistry();

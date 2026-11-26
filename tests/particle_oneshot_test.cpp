@@ -61,8 +61,10 @@ int main()
     {
         dx12e::ParticleEmitter e; e.layers.resize(2);
         for (auto& l : e.layers) { l.looping = false; l.duration = 0.2f; Run(l, false, 1.0f, 0.1f); }
+        e.layers[1].looping = true; e.layers[1]._active = false; e.layers[1]._age = 5.0f;   // StopEffect 済みのループ
         dx12e::ParticleOneShot::Retrigger(e);
-        for (auto& l : e.layers) CHECK(l._active && l._age == 0.0f && l._emitAccum == 0.0f);
+        { const auto& l = e.layers[0]; CHECK(l._active && l._age == 0.0f && l._emitAccum == 0.0f); }
+        CHECK(!e.layers[1]._active && e.layers[1]._age == 5.0f);   // ループは変化なし
     }
     // 配線
     {

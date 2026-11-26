@@ -27,6 +27,7 @@ inline void Retrigger(ParticleLayer& pe)
 }
 inline void Retrigger(ParticleEmitter& em)
 {
-    for (auto& l : em.layers) Retrigger(l);
+    // ループのレイヤーは触らない（Play 中に StopEffect で止めたものを勝手に再開しない）。
+    for (auto& l : em.layers) if (!l.looping) Retrigger(l);
 }
 }
