@@ -520,7 +520,7 @@ void ToolbarPanel::Render(bool isPlaying,
         {
             const float x0 = ui::anim::AnimatePx(ImGui::GetID("##toolUnderlineX0"), ulMin.x + ui::Px(4.0f), ui::anim::dur::kToolUnderline);
             const float x1 = ui::anim::AnimatePx(ImGui::GetID("##toolUnderlineX1"), ulMax.x - ui::Px(4.0f), ui::anim::dur::kToolUnderline);
-            tdl->AddRectFilled(ImVec2(x0, ulMax.y - ui::Px(2.0f)), ImVec2(x1, ulMax.y), ImGui::GetColorU32(th::Accent));
+            ui::deco::NeedleBar(tdl, ImVec2(x0, ulMax.y - th::AccentPx()), ImVec2(x1, ulMax.y), ImGui::GetColorU32(th::Accent));
         }
         if (iconBtn("gizmoSpace", ctx.gizmoLocalSpace ? ICON_SPACE_LOCAL : ICON_SPACE_WORLD,
                     ctx.gizmoLocalSpace ? "ローカル空間  (T で切替)" : "ワールド空間  (T で切替)", false,

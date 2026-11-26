@@ -484,8 +484,8 @@ void CommandPalette::Render(EditorContext& ctx, const cmd::Env& env, entt::regis
     const float listH = (m_items.empty() ? 1 : rows) * rowH;
 
     // Graphite Gauge: パレット本体は kPaletteIn（120ms・standard）でフェードインしつつ 4px 上へ収まる。決定論 / --background は即時。
-    //   暗幕は ImGui が Alpha を掛けて描くので、本体と同じ時間で 0→34% へ出る（kScrimIn と同値）。閉じる側（kPaletteOut）は
-    //   ポップアップが即座に消えるため未実装（閉じ演出は A14 で、閉じ中も描き続ける形にして入れる）。
+    //   暗幕（ModalWindowDimBg）は ImGui 1.92 では style.Alpha を掛けず、g.DimBgRatio が DeltaTime*6 で線形に上がる（約 167ms・linear）。
+    //   = scrimIn（120ms・standard）とモーション則 05 に未達の既知の差。kPaletteOut（閉じ）と共に A14 で入れる（閉じ中も描き続ける形）。
     float palAlpha = 1.0f;
     float palDropPx = 0.0f;
     if (th::CurrentVariant() == th::Variant::Graphite)

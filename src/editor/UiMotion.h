@@ -28,7 +28,8 @@ enum class Curve : unsigned char { Standard, Exit, Expo, Linear, Spring, Stepped
 // 曲線。t は 0..1 に丸める。戻りは 0..1（単調）。
 //   Standard / Exit / Expo / Linear: tokens の cubic-bezier を x→t（ニュートン法＋二分法）で解いて y を返す。
 //   Spring: 臨界減衰（ω = kSpringOmega）の階段応答を、t=1 でちょうど 1 になるよう正規化したもの（settle 時間 = 7/ω 秒を 0..1 に写す）。
-//   Stepped: kSteppedSteps 段の階段（t=1 で 1）。
+//   Stepped: kSteppedSteps 段の階段（t=1 で 1）。★トークンの stepped は「12px ごとに d60」の px 基準だが、ここは距離に依らず等分。A5（進捗）で px 基準の刻みに直す。
+//   Spring: 行き先変更（retarget）では呼び出し側が指定した曲線で再スタートする（トークンの『Tween の行き先変更』とは別の選択）。
 float Ease(Curve c, float t);
 
 // 臨界減衰ばね x(t) = target + (x0 - target)(1 + ωt)e^{-ωt}（t は秒）。ω = motion_tokens::kSpringOmega。
@@ -53,7 +54,7 @@ void SetToolUnderlineHosted(bool on);
 bool ToolUnderlineHosted();
 
 // ---- Instant の入力（呼び出し元から設定する）----
-void SetBackground(bool on);          // --background / --headless
+void SetBackground(bool on);          // --background（Application の m_bgOptions.Active() から設定。--headless は別経路で未接続）
 void SetVirtualInput(bool on);        // 仮想入力モード
 // Reduce Motion の判定（SPI_GETCLIENTAREAANIMATION が FALSE のとき true）。テストでは上書きできる。
 bool ReduceMotion();

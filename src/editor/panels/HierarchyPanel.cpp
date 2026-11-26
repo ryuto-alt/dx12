@@ -55,7 +55,7 @@ void PushRenameCommand(entt::registry& reg, EditorContext& ctx, entt::entity e,
 // 行の面を窓の左端〜右端いっぱいに塗る（ImGui 標準は窓のパディング内側までしか塗らない）。
 //   選択 = アクセント 30% + 左端 2px のアクセントライン / ホバー = Bg3 / 押下 = アクセント 42%
 // ImGui 側の Header 色は透明にして呼ぶこと（二重に塗らない）。
-void PaintRowBg(ImDrawList* dl, float y0, float y1, bool selected, bool hovered, bool held)
+void PaintRowBg(ImDrawList* dl, float y0, float y1, bool selected, bool hovered, bool held, bool primary)
 {
     // 見た目はテーマ・バリアントの共通ヘルパ（Default は従来と同じ描画）
     const ImRect r = ImGui::GetCurrentWindowRead()->InnerRect;
@@ -63,25 +63,22 @@ void PaintRowBg(ImDrawList* dl, float y0, float y1, bool selected, bool hovered,
     if (th::CurrentVariant() == th::Variant::Graphite)
     {
         // Graphite Gauge: 面は無彩色（選択 / ホバー / 押下）。選択の左指針は 1 本が選択行へスライドする（kSelectionSlide 120ms）。
-        // 決定論 / --background / Reduce Motion では行き先へ即時。複数選択のときは、その窓で最初に描く選択行の指針だけがスライドする。
+        // 決定論 / --background / Reduce Motion では行き先へ即時。指針は主選択（primary）の行だけ。
         if (held)          dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(th::SelectionActive));
         else if (selected) dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(hovered ? th::SelectionActive : th::Selection));
         else if (hovered)  dl->AddRectFilled(ImVec2(r.Min.x, y0), ImVec2(r.Max.x, y1), ImGui::GetColorU32(th::SelectionHover));
-        if (selected)
+        if (selected && primary)
         {
-            static int s_needleFrame = -1;
-            static ImGuiID s_needleWin = 0;
-            const int frame = ImGui::GetFrameCount();
-            const ImGuiID win = ImGui::GetCurrentWindowRead()->ID;
-            float dy = 0.0f;
-            if (s_needleFrame != frame || s_needleWin != win)
-            {
-                s_needleFrame = frame; s_needleWin = win;
-                const float scroll = ImGui::GetScrollY();   // 内容座標で動かす（スクロールで指針が流れない）
-                const float tgt = y0 + scroll;
-                dy = ui::anim::AnimatePx(ImHashStr("##selNeedleY", 0, win), tgt, ui::anim::dur::kSelectionSlide) - tgt;
-            }
-            dl->AddRectFilled(ImVec2(r.Min.x, y0 + dy), ImVec2(r.Min.x + ui::Px(3.0f), y1 + dy), ImGui::GetColorU32(th::Accent));
+            // 指針は主選択の行だけ（複数選択の副行の棒 selection.barSecondary は A7: テーマに取り出し口が無い）。
+            // 内容座標で動かすので、窓の移動・ドッキング・スクロールで目標がずれない。
+            ImGuiWindow* w = ImGui::GetCurrentWindowRead();
+            const float tgt = y0 - w->Pos.y + w->Scroll.y;
+            const float anim = ui::anim::AnimatePx(ImHashStr("##selNeedleY", 0, w->ID), tgt, ui::anim::dur::kSelectionSlide);
+            const float dy = anim - tgt;
+            // 非フォーカスの窓では減光（selection.bar と accentDim）
+            const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+            ui::deco::NeedleBar(dl, ImVec2(r.Min.x, y0 + dy), ImVec2(r.Min.x + th::AccentPx(), y1 + dy),
+                                ImGui::GetColorU32(focused ? th::Accent : th::NeedleDim));
         }
         return;
     }
@@ -453,7 +450,7 @@ void HierarchyPanel::DrawEntityNode(entt::registry& reg, EditorContext& ctx, ent
         const bool hov = rowHoveredFull;
 
         // 選択行: アクセント 30% の面 + 左端 2px のアクセントライン（窓の左端〜右端いっぱい）
-        PaintRowBg(dl, rowMin.y, rowMax.y, selected, hov, itemActive);
+        PaintRowBg(dl, rowMin.y, rowMax.y, selected, hov, itemActive, ctx.selectedEntity == e);
 
         // 開閉 chevron（子がある行だけ。葉は領域だけ確保して名前の桁を揃える）
         if (hasChildren)

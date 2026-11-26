@@ -251,7 +251,7 @@ void ToolButtonFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool active, bool hov,
         if (held) dl->AddRectFilled(mn, mx, Col(th::Bg4), rr);
         else if (h > 0.004f) dl->AddRectFilled(mn, mx, ColA(th::Bg3, h), rr);
         if (a > 0.004f && !ui::anim::ToolUnderlineHosted())
-            dl->AddRectFilled(ImVec2(mn.x + Px(4.0f), mx.y - Px(2.0f)), ImVec2(mx.x - Px(4.0f), mx.y), ColA(face, a), 0.0f);
+            deco::NeedleBar(dl, ImVec2(mn.x + Px(4.0f), mx.y - th::AccentPx()), ImVec2(mx.x - Px(4.0f), mx.y), ColA(face, a));
         return;
     }
     if (v == th::Variant::C)
@@ -953,6 +953,12 @@ void CardSelected(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding)
     }
     else
         dl->AddRect(mn, mx, ImGui::GetColorU32(th::Accent), rounding, 0, Px(2.0f));
+}
+
+void NeedleBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx, ImU32 col)
+{
+    auto snap = [](float v) { return std::floor(v + 0.5f); };
+    dl->AddRectFilled(ImVec2(snap(mn.x), snap(mn.y)), ImVec2(snap(mx.x), snap(mx.y)), col, 0.0f);
 }
 
 void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx)
