@@ -16,6 +16,7 @@
 #include "editor/LightMath.h"   // 新規シーンの太陽の既定（W05-22）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpC14Logic.h"   // C14: パス正規化 / DLSS 警告の 1 回化
 #include "renderer/FrameConstants.h"
 #include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
@@ -2919,7 +2920,17 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
     {
         bool cancelled = false;
         newSceneAllowed = m_editorCtx->pendingNewSceneSkipConfirm || ConfirmDiscardScene(cancelled);
-        if (cancelled) m_editorCtx->pendingNewScene = false;
+        if (cancelled)
+        {
+            m_editorCtx->pendingNewScene = false;
+            // 保険（open_scene のキャンセルと同じ）: MCP の遅延応答を宙に浮かせると以後の open/new_scene が永久に失敗する。
+            if (m_mcpLoadReply.client != 0)
+            {
+                FailMcp(m_mcpBridge.get(), m_mcpLoadReply, McpErr::ModeConflict,
+                        "new scene cancelled by the unsaved-changes prompt");
+                m_mcpLoadReply = {};
+            }
+        }
     }
     if (newSceneAllowed)
     {
@@ -2987,6 +2998,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         if (!starterPath.empty())
             m_currentSceneRel = ToAssetRel(starterPath);
         // 作成と同時にシーンファイルを保存
+        bool starterSaved = true;
         if (!m_editorCtx->currentScenePath.empty())
         {
             if (SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
@@ -3001,6 +3013,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 // 新規シーンのファイルを作れなかった。成功の通知を出すと
                 // 「作られている」と誤解したまま作業が進む。
                 Logger::Error("新規シーンを保存できませんでした: {}", m_editorCtx->currentScenePath);
+                starterSaved = false;
                 m_editorCtx->Notify(ui::ToastKind::Error, "シーンのファイルを作れませんでした（詳細は dx12_engine.log）");
             }
         }
@@ -3018,13 +3031,14 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         {
             int entityCount = 0;
             for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
-            const std::string rel = ToAssetRel(m_editorCtx->currentScenePath);
+            const std::string rel = mcpc14::SceneRel(m_editorCtx->currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir());
             CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply,
                 nlohmann::json{{"sceneName", rel.empty() ? std::string("Untitled")
                                                           : std::filesystem::path(rel).stem().string()},
                                {"path", rel},
                                {"entityCount", entityCount},
-                               {"sceneGeneration", m_sceneGeneration}});
+                               {"sceneGeneration", m_sceneGeneration},
+                               {"saved", starterSaved}});   // savePath を渡したのにファイルを作れなかったら false
             m_mcpLoadReply = {};
         }
     }
@@ -4866,10 +4880,14 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             }
         }
         const bool asked = taaCfg.enabled && taaCfg.upscaler == static_cast<int>(upscale::Kind::Dlss);
-        if (asked && !m_dlssThisFrame && !dlssBuilding && !m_dlssFallbackLogged)
+        // 縮退の警告は「理由が変わったとき」だけ出す（dlss → off → dlss を繰り返しても同じ理由なら 1 回。R1-14）。
+        static std::string s_lastDlssFallbackReason;
+        if (m_dlssThisFrame) s_lastDlssFallbackReason.clear();
+        if (asked && !m_dlssThisFrame && !dlssBuilding)
         {
-            Logger::Warn("アップスケーラ: DLSS を使えないので TAA で描く（{}）", why.empty() ? std::string("速度バッファが使えない") : why);
-            m_dlssFallbackLogged = true;
+            const std::string reason = why.empty() ? std::string("速度バッファが使えない") : why;
+            if (mcpc14::ShouldLogDlssFallback(s_lastDlssFallbackReason, reason))
+                Logger::Warn("アップスケーラ: DLSS を使えないので TAA で描く（{}）", reason);
         }
         m_texMipBias = m_dlssThisFrame ? upscale::TextureMipBias(rW, (m_postW > 0) ? m_postW : rW) : 0.0f;
         if (m_dlssThisFrame)

@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/mcp/McpC14Logic.h"   // C14: パス正規化 / create_entity 引数検査（純ロジック）
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/AtomicFile.h"      // 原子的な保存（Lua / シェーダの書き出し）
 #include "scene/ScenePartition.h"   // 分割保存のシーン（セルファイルの扱い）
@@ -451,26 +452,36 @@ void Application::RegisterMcpEntityMethods()
             // ★type は必須。省略や綴り違いを黙って box にすると「頼んだ物と違う箱」が増えるだけで気づけない（R2-04 / R3-03）。
             //   宣言していないキー（position の綴り違いや size の誤記など）も黙って捨てず、明示エラーで返す。
             {
-                static const char* const kKnown[] = {"type", "name", "parent", "parentName", "position", "size", "subdivisions",
-                                                     // 全 method 共通の任意キー（ディスパッチャが先に見るもの）
-                                                     "expectGeneration", "idempotency_key", "idempotencyKey", "dryRun", "confirm_token"};
-                for (auto it = params.begin(); it != params.end(); ++it)
+                std::vector<std::string> keys;
+                for (auto it = params.begin(); it != params.end(); ++it) keys.push_back(it.key());
+                const std::string typeIn = (params.contains("type") && params["type"].is_string()) ? params["type"].get<std::string>() : std::string();
+                std::string bad;
+                switch (mcpc14::ValidateCreateEntityKeys(keys, typeIn, bad))
                 {
-                    bool known = false;
-                    for (const char* k : kKnown) if (it.key() == k) { known = true; break; }
-                    if (known) continue;
-                    McpError err(McpErr::InvalidParam, "unknown parameter '" + it.key() + "' for create_entity",
+                case mcpc14::CreateEntityCheck::UnknownKey:
+                {
+                    McpError err(McpErr::InvalidParam, "unknown parameter '" + bad + "' for create_entity",
                         "使える引数は type（必須）, name, position, parent, parentName, size, subdivisions。"
                         "向きや拡大は作成後に dx12_set_transform、色や質感は dx12_set_component / dx12_material_apply で変える");
                     err.name  = "E_UNKNOWN_PARAM";
                     err.cause = "create_entity が受け取らない引数が渡された（黙って無視すると意図と違うものが作られる）";
                     throw err;
                 }
+                case mcpc14::CreateEntityCheck::MissingType:
+                    throw McpError(McpErr::InvalidParam, "missing required 'type' (string)",
+                        "type は必須: box, sphere, plane, empty, camera, light_directional, light_point, light_spot, "
+                        "particle_emitter, trigger, decal, water, ui_*。3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"");
+                case mcpc14::CreateEntityCheck::ParentOnNonUi:
+                {
+                    McpError err(McpErr::InvalidParam, "'" + bad + "' は ui_* の type にだけ効く（type:'" + typeIn + "' では使えない）",
+                        "親子にするなら作成後に dx12_set_parent を使う。parent / parentName は ui_image / ui_text / ui_button など UI 要素の親指定専用");
+                    err.name  = "E_UNKNOWN_PARAM";
+                    err.cause = "UI 以外の type に parent を渡すと黙って無視され、ルートに作られてしまう";
+                    throw err;
+                }
+                case mcpc14::CreateEntityCheck::Ok: break;
+                }
             }
-            if (!params.contains("type") || !params["type"].is_string() || params["type"].get<std::string>().empty())
-                throw McpError(McpErr::InvalidParam, "missing required 'type' (string)",
-                    "type は必須: box, sphere, plane, empty, camera, light_directional, light_point, light_spot, "
-                    "particle_emitter, trigger, decal, water, ui_*。3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"");
             const std::string type = params["type"].get<std::string>();
             std::string name = params.value("name", std::string());
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
@@ -731,7 +742,7 @@ void Application::RegisterMcpEntityMethods()
             // （別名保存は「今開いているシーン」が保存されたわけではない）
             if (rel.empty() && m_editorCtx) MarkSceneClean();
             resp["ok"] = true;
-            resp["result"] = {{"path", rel.empty() ? ToAssetRel(m_editorCtx->currentScenePath) : rel}};   // 常に assets 相対（ping.currentScene と同じ形）
+            resp["result"] = {{"path", rel.empty() ? mcpc14::SceneRel(m_editorCtx->currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir()) : rel}};   // ping.currentScene と同じ形
             // 分割保存（シーン設定 partition.cellSize > 0）のときは、書いたファイルの内訳を返す（§4.3）
             if (const auto& sr = SceneSerializer::LastSaveReport(); sr.cellSize > 0.0f)
                 resp["result"]["partition"] = {{"cellSize", sr.cellSize}, {"partitioned", sr.partitioned},
@@ -1528,7 +1539,7 @@ void Application::RegisterMcpEntityMethods()
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
                 {"entityCount", entityCount},
                 {"sceneGeneration", m_sceneGeneration},
-                {"currentScene", ToAssetRel(m_editorCtx->currentScenePath)},
+                {"currentScene", mcpc14::SceneRel(m_editorCtx->currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir())},
                 {"sceneDirty", m_editorCtx->IsSceneDirty()},   // 未保存の変更があるか
                 // シーン/プロジェクトの読み込み中か。true の間は open_scene / new_scene / open_project が
                 // E_MODE_CONFLICT で断られる。起動直後の操作はこれが false になってから。

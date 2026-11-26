@@ -1104,6 +1104,13 @@ if(MSVC)
     target_compile_definitions(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME IblRebakeTriggerTests COMMAND IblRebakeTriggerTests)
+# C14: MCP 取りこぼし修正の純ロジック（ヘッダのみ）
+add_executable(McpC14LogicTests mcp_c14_logic_test.cpp)
+target_include_directories(McpC14LogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(McpC14LogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME McpC14LogicTests COMMAND McpC14LogicTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====
