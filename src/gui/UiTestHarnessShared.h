@@ -99,6 +99,7 @@ void T_UnsavedConfirmSaveUntitledAsksName(ImGuiTestContext* ctx); // W1-A16 (b)/
 void T_NewSceneConfirmUnderVirtualInput(ImGuiTestContext* ctx);   // W1-A16 (f)
 void T_UndoAfterSaveAsStaysDirty(ImGuiTestContext* ctx);     // W1-A16 (e)
 void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx);        // W1-A16 (g)
+void T_ViewportToolUnderlineHosted(ImGuiTestContext* ctx);    // FU-E-11
 // ==== lane-A:decl end ====
 // ==== lane-B:decl begin ====
 void T_SaveAsOverwriteConfirm(ImGuiTestContext* ctx);   // W05-12

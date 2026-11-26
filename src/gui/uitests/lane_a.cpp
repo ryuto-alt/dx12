@@ -26,6 +26,8 @@
 #include "editor/panels/MaterialGraphPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/UndoSystem.h"
+#include "editor/UiMotion.h"
+#include "editor/UiWidgets.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
 #include "renderer/vfx/VfxRuntime.h"
@@ -1253,6 +1255,85 @@ void T_ShadingRevisionAppliedInRunLoop(ImGuiTestContext* ctx)
     IM_CHECK_EQ(applied, 1);
     sh.shadingRevision = prev;
     ctx->Yield(3);
+}
+
+// FU-E-11: Graphite のビューポート帯（##ViewportBar）の移動 / 回転 / 拡縮は、アクティブ下線を 1 本だけ描く（ホスト描画）。
+//   下線 = アクセント色の NeedleBar（高さ AccentPx）。選択中のボタンの下辺に、左右 4px 内側で整数 px に丸めて出る。
+//   ボタン側の下線は ToolUnderlineHosted で止まり、描画の後はフラグが戻る。ほかのテーマ（既定）では帯のホスト描画は出ない。
+void T_ViewportToolUnderlineHosted(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr);
+    namespace th = dx12e::theme;
+    const th::Variant prevVariant = th::CurrentVariant();
+    const GizmoMode   prevMode    = ed->gizmoMode;
+    const auto        prevPrefs   = ed->vpPrefs;
+    ed->vpPrefs.barVisible = true;
+
+    // 帯の描画リストから、アクセント色の塗りの頂点を拾い、ボタンの下辺付近（[btnMaxY - AccentPx - 1, btnMaxY + 1]）に絞る。
+    struct Span { float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f; int verts = 0; };
+    auto scan = [&](float rowMaxY, float xMin, float xMax, ImU32 col) -> Span
+    {
+        Span sp;
+        ImGuiWindow* bar = ImGui::FindWindowByName("##ViewportBar");
+        if (!bar || !bar->WasActive) return sp;
+        const ImDrawList* dl = bar->DrawList;
+        for (int i = 0; i < dl->VtxBuffer.Size; ++i)
+        {
+            const ImDrawVert& v = dl->VtxBuffer[i];
+            if (v.col != col) continue;
+            if (v.pos.y < rowMaxY - th::AccentPx() - 1.0f || v.pos.y > rowMaxY + 1.0f) continue;
+            if (v.pos.x < xMin || v.pos.x > xMax) continue;
+            sp.x0 = (std::min)(sp.x0, v.pos.x); sp.x1 = (std::max)(sp.x1, v.pos.x);
+            sp.y0 = (std::min)(sp.y0, v.pos.y); sp.y1 = (std::max)(sp.y1, v.pos.y);
+            ++sp.verts;
+        }
+        return sp;
+    };
+
+    struct Tool { const char* id; GizmoMode mode; };
+    const Tool tools[] = { { "vpMove", GizmoMode::Translate }, { "vpRotate", GizmoMode::Rotate }, { "vpScale", GizmoMode::Scale } };
+
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const bool graphite = (pass == 0);
+        th::SetVariant(graphite ? th::Variant::Graphite : th::Variant::Default);
+        ctx->Yield(6);
+        ctx->SetRef("//##ViewportBar");
+        const ImGuiTestItemInfo first = ctx->ItemInfo("vpMove/##ib", ImGuiTestOpFlags_NoError);
+        const ImGuiTestItemInfo last  = ctx->ItemInfo("vpScale/##ib", ImGuiTestOpFlags_NoError);
+        IM_CHECK(first.ID != 0 && last.ID != 0);
+        const float xMin = first.RectFull.Min.x - 2.0f, xMax = last.RectFull.Max.x + 2.0f;
+        const ImU32 accent = ImGui::GetColorU32(th::Accent);
+
+        for (const Tool& t : tools)
+        {
+            ed->gizmoMode = t.mode;
+            ctx->Yield(6);
+            const ImGuiTestItemInfo it = ctx->ItemInfo((std::string(t.id) + "/##ib").c_str(), ImGuiTestOpFlags_NoError);
+            IM_CHECK(it.ID != 0);
+            IM_CHECK(!ui::anim::ToolUnderlineHosted());   // フレームの終わりでホストのフラグは戻っている
+            const Span sp = scan(it.RectFull.Max.y, xMin, xMax, accent);
+            if (graphite)
+            {
+                IM_CHECK(sp.verts > 0);
+                // 左右は 4px 内側（整数 px）。1 本だけ = 選択中ボタンの幅の外に出ない
+                const float wantX0 = std::floor(it.RectFull.Min.x + ui::Px(4.0f) + 0.5f);
+                const float wantX1 = std::floor(it.RectFull.Max.x - ui::Px(4.0f) + 0.5f);
+                IM_CHECK(std::fabs(sp.x0 - wantX0) < 0.51f);
+                IM_CHECK(std::fabs(sp.x1 - wantX1) < 0.51f);
+                IM_CHECK(std::fabs(sp.y1 - std::floor(it.RectFull.Max.y + 0.5f)) < 0.51f);
+                IM_CHECK(std::fabs((sp.y1 - sp.y0) - th::AccentPx()) < 0.51f);
+            }
+            else
+                IM_CHECK_EQ(sp.verts, 0);   // 既定テーマでは 1 本のホスト下線は出ない（ネオンの下線は別の色・形）
+        }
+    }
+
+    th::SetVariant(prevVariant);
+    ed->gizmoMode = prevMode;
+    ed->vpPrefs   = prevPrefs;
+    ctx->Yield(4);
 }
 
 } // namespace uitest

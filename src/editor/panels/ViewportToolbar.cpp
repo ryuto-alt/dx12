@@ -5,6 +5,7 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UiWidgets.h"
+#include "editor/UiMotion.h"      // アクティブツールの下線のスライド（kToolUnderline）
 #include "editor/EditorCommandTable.h"
 #include "gui/VirtualInputImGui.h"   // dx12_imgui_find 用アンカー
 #include "ecs/Components.h"
@@ -397,17 +398,37 @@ void ViewportToolbar::Render(EditorContext& ctx, Camera* camera, Scene* scene, b
     ImGui::SetCursorPosX(ui::Px(8.0f));
 
     // ===== 変形（移動 / 回転 / 拡縮 / 空間）=====
+    // Graphite: 3 ツールの下線は 1 本が選択中のボタンへスライドする（kToolUnderline 160ms。ToolbarPanel と同じ）。ボタンごとの下線は描かせない。
+    const bool slideUnderline = th::CurrentVariant() == th::Variant::Graphite;
+    ui::anim::SetToolUnderlineHosted(slideUnderline);
+    ImVec2 ulMin(0.0f, 0.0f), ulMax(0.0f, 0.0f);
+    bool   ulHas = false;
+    auto noteActive = [&](bool active)
+    {
+        if (!active) return;
+        ulMin = ImGui::GetItemRectMin(); ulMax = ImGui::GetItemRectMax(); ulHas = true;
+    };
     if (ui::IconButton("vpMove", ICON_MOVE, "移動  (W)", ctx.gizmoMode == GizmoMode::Translate, nullptr, btn))
         ctx.gizmoMode = GizmoMode::Translate;
     vinput_gui::AnchorLastItem("button", "ビュー:移動");
+    noteActive(ctx.gizmoMode == GizmoMode::Translate);
     sameLine();
     if (ui::IconButton("vpRotate", ICON_ROTATE, "回転  (E)", ctx.gizmoMode == GizmoMode::Rotate, nullptr, btn))
         ctx.gizmoMode = GizmoMode::Rotate;
     vinput_gui::AnchorLastItem("button", "ビュー:回転");
+    noteActive(ctx.gizmoMode == GizmoMode::Rotate);
     sameLine();
     if (ui::IconButton("vpScale", ICON_SCALE, "拡大縮小  (R)", ctx.gizmoMode == GizmoMode::Scale, nullptr, btn))
         ctx.gizmoMode = GizmoMode::Scale;
     vinput_gui::AnchorLastItem("button", "ビュー:拡縮");
+    noteActive(ctx.gizmoMode == GizmoMode::Scale);
+    ui::anim::SetToolUnderlineHosted(false);
+    if (slideUnderline && ulHas)
+    {
+        const float x0 = ui::anim::AnimatePx(ImGui::GetID("##vpToolUnderlineX0"), ulMin.x + ui::Px(4.0f), ui::anim::dur::kToolUnderline);
+        const float x1 = ui::anim::AnimatePx(ImGui::GetID("##vpToolUnderlineX1"), ulMax.x - ui::Px(4.0f), ui::anim::dur::kToolUnderline);
+        ui::deco::NeedleBar(dl, ImVec2(x0, ulMax.y - th::AccentPx()), ImVec2(x1, ulMax.y), U32(th::Accent));
+    }
     sameLine();
     if (ui::IconButton("vpSpace", ctx.gizmoLocalSpace ? ICON_SPACE_LOCAL : ICON_SPACE_WORLD,
                        ctx.gizmoLocalSpace ? "ローカル空間  (T で切替)" : "ワールド空間  (T で切替)", false, nullptr, btn))
