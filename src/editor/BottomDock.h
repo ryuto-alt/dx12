@@ -14,8 +14,8 @@
 //         }});
 //     dx12e::bottomdock::SetOpen("timeline", true);   // 開く（既に登録済みで閉じている場合）
 //
-//   ・同じ id を再登録すると置き換わる（開閉状態は保つ）。EditorLayer が「タイムライン（ダミー）」を登録済み＝
-//     本物を同じ id "timeline" で登録すれば、ダミーがそのまま本物に入れ替わる。
+//   ・同じ id を再登録すると置き換わる（開閉状態は保つ）。EditorLayer は「タイムライン」を暫定の案内（W1）として
+//     登録済み＝本物（シーケンサー、W3）を同じ id "timeline" で登録すれば、そのまま本物に入れ替わる。
 //   ・窓の実体は EditorLayer が Begin/End する（ImGui 名 "<title>###bottom.<id>"）。既定レイアウトが中央下ノードへドックする。
 //   ・タブの並び順・最後に選んだタブ・開閉はレイアウト（WorkspaceLogic.h の Layout::bottomTabs / bottomActive）として
 //     ワークスペース / 名前つきレイアウトに保存される。
