@@ -48,6 +48,20 @@ ImVec4 AnimateColor(ImGuiID id, ImVec4 target, float durMs, Curve curve = Curve:
 // 動きを使わないとき true（決定論 / --background / 仮想入力 / Reduce Motion）。
 bool Instant();
 
+// ---- 刻み送り（進捗・生存ティックの Stepped。W1-A5）----
+//   表示の刻み数が targetSteps へ向かって stepMs ごとに 1 刻みずつ近づく（連続に伸ばさない）。最初の 1 刻みは即時。
+//   targetSteps が表示より小さくなったら（新しいジョブ・リセット）即座にそこへ戻る。
+//   決定論 / --background / 仮想入力 / Reduce Motion では即時（刻み = 12px・30° の量子化は呼び出し側が保つ。送りだけが即時）。
+//   maxLag > 0 のとき、表示が行き先から maxLag 刻みより遅れない（遅れた分は飛ばす）。出来事の件数で回す生存ティック向け。
+//   状態は id ごと。参照されなければ捨てる（Animate と同じ表）。UI スレッド専用。
+struct StepInfo
+{
+    int    shown = 0;            // いま表示する刻み数
+    double sinceChangeSec = 0;   // targetSteps が最後に変わってからの秒（初回 = 0）
+    double sinceStartSec = 0;    // この id の状態ができてからの秒
+};
+StepInfo StepToward(ImGuiID id, int targetSteps, float stepMs, int maxLag = 0);
+
 // ツール群のアクティブ下線をホスト（ToolbarPanel など）が 1 本でスライドさせて描くとき true にする。
 // true の間、ToolButtonFace は Graphite でボタンごとの下線を描かない。
 void SetToolUnderlineHosted(bool on);

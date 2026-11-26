@@ -89,6 +89,14 @@ struct State
 };
 
 std::unordered_map<ImGuiID, State>& Store() { static std::unordered_map<ImGuiID, State> s; return s; }
+
+struct StepState
+{
+    int shown = 0, target = 0;
+    double nextAt = 0.0, lastChange = 0.0, born = 0.0;
+    uint64_t lastFrame = 0;
+};
+std::unordered_map<ImGuiID, StepState>& StepStore() { static std::unordered_map<ImGuiID, StepState> s; return s; }
 uint64_t g_lastPurge = 0;
 constexpr uint64_t kPurgeEveryFrames = 600;
 constexpr uint64_t kExpireFrames     = 600;   // これだけ参照されなければ捨てる
@@ -110,6 +118,11 @@ void Purge()
     for (auto it = m.begin(); it != m.end();)
     {
         if (now - it->second.lastFrame > kExpireFrames) it = m.erase(it); else ++it;
+    }
+    auto& sm = StepStore();
+    for (auto it = sm.begin(); it != sm.end();)
+    {
+        if (now - it->second.lastFrame > kExpireFrames) it = sm.erase(it); else ++it;
     }
 }
 
@@ -238,6 +251,53 @@ ImVec4 AnimateColor(ImGuiID id, ImVec4 target, float durMs, Curve curve)
     return ImVec4(r[0], r[1], r[2], r[3]);
 }
 
+StepInfo StepToward(ImGuiID id, int targetSteps, float stepMs, int maxLag)
+{
+    Purge();
+    const uint64_t frame = clock::FrameIndex();
+    const double now = clock::Now();
+    auto& m = StepStore();
+    auto it = m.find(id);
+    StepState* s;
+    if (it == m.end())
+    {
+        s = &m[id];
+        s->shown = s->target = targetSteps;   // 初回は行き先そのまま（開いた瞬間に 0 から走らない）
+        s->born = s->lastChange = s->nextAt = now;
+    }
+    else
+        s = &it->second;
+    s->lastFrame = frame;
+    if (targetSteps != s->target)
+    {
+        s->target = targetSteps;
+        s->lastChange = now;
+        if (targetSteps < s->shown) s->shown = targetSteps;   // 戻りは即時
+        else s->nextAt = std::max(s->nextAt, now);
+    }
+    if (s->shown < s->target)
+    {
+        const bool instant = clock::Deterministic() || g_background.load() || g_virtual.load() || ReduceMotion() || stepMs <= 0.0f;
+        if (instant) s->shown = s->target;
+        else
+        {
+            // 遅れの上限。出来事が刻みの速さより多く来ても、止まった後に回り続けない。
+            if (maxLag > 0 && s->target - s->shown > maxLag) s->shown = s->target - maxLag;
+            while (s->shown < s->target && now >= s->nextAt)
+            {
+                ++s->shown;
+                s->nextAt += static_cast<double>(stepMs) * 0.001;
+            }
+            if (s->shown >= s->target) s->nextAt = std::max(s->nextAt, now);
+        }
+    }
+    StepInfo r;
+    r.shown = s->shown;
+    r.sinceChangeSec = std::max(0.0, now - s->lastChange);
+    r.sinceStartSec = std::max(0.0, now - s->born);
+    return r;
+}
+
 void SetBackground(bool on)         { g_background.store(on); }
 void SetToolUnderlineHosted(bool on){ g_toolUnderlineHosted.store(on); }
 bool ToolUnderlineHosted()          { return g_toolUnderlineHosted.load(); }
@@ -272,7 +332,7 @@ bool Instant()
     return clock::Deterministic() || g_background.load() || g_virtual.load() || ReduceMotion();
 }
 
-int  StateCount() { return static_cast<int>(Store().size()); }
-void Reset()      { Store().clear(); g_lastPurge = 0; }
+int  StateCount() { return static_cast<int>(Store().size() + StepStore().size()); }
+void Reset()      { Store().clear(); StepStore().clear(); g_lastPurge = 0; }
 
 } // namespace dx12e::ui::anim
