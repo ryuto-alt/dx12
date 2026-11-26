@@ -3,6 +3,8 @@
 #include "core/AtomicFileJson.h"
 #include "core/SceneBackup.h"
 #include "scene/SceneFormatV2.h"
+#include "scene/ComponentSerializerRegistry.h"   // 未知の型をレジストリへ回す（W05-15）
+#include "scene/PostV2Fields.h"
 #include "scene/ScenePartition.h"   // シーンの分割保存（§4.3）
 #include "scene/Scene.h"
 #include "ecs/Components.h"
@@ -950,6 +952,11 @@ static json SerializeEntityJson(const entt::registry& reg, entt::entity entity,
             if (info.serialize) info.serialize(reg, entity, ej);
         });
 
+        // 上のどれにも当たらない型（W05-15 のレジストリ。いまの登録は空）。skipOnSave が真なら書かない。
+        for (const ComponentSerializer& cs : ComponentSerializers())
+            if (cs.has(reg, entity) && !(cs.skipOnSave && cs.skipOnSave(reg, entity)))
+                cs.save(reg, entity, ej[cs.typeName]);
+
         if (reg.all_of<Gimmick>(entity))
         {
             const auto& gm = reg.get<Gimmick>(entity);
@@ -1248,6 +1255,10 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir, boo
 #undef DX12E_PP_SAVE_I
 #undef DX12E_PP_SAVE_V
 #undef DX12E_PP_SAVE_S
+        {   // V2: 既定と違うものだけ書く（既存シーンのバイト列を変えない）
+            static const PostProcessSettings kPostDefault{};
+            UNO_POST_V2_SAVE(DX12E_POST_FIELDS_V2, pp, kPostDefault, pj)
+        }
         root["postProcess"] = std::move(pj);
     }
 
@@ -1567,6 +1578,7 @@ static void LoadPostSettings(Scene& scene, const json& root)
 #undef DX12E_PP_LOAD_I
 #undef DX12E_PP_LOAD_V
 #undef DX12E_PP_LOAD_S
+        UNO_POST_V2_LOAD(DX12E_POST_FIELDS_V2, pp, pj)
     }
     scene.GetPostSettings() = pp;
 }
@@ -2180,6 +2192,10 @@ static entt::entity InstantiateEntityJson(Scene& scene, const json& ej,
             RuntimeComponentRegistry::Get().ForEach([&](const RuntimeComponentInfo& info) {
                 if (info.deserialize) info.deserialize(reg, e, ej);
             });
+
+            for (const ComponentSerializer& cs : ComponentSerializers())
+                if (ej.contains(cs.typeName))
+                    cs.load(reg, e, ej[cs.typeName]);
 
             if (ej.contains("gimmick"))
             {
