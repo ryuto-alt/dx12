@@ -9,3 +9,6 @@ eval/noPaidApi.test.ts
 genBudgets.test.mjs
 ../scorecard/report.test.mjs
 ../scorecard/baseline_perf.test.mjs
+visualKind.test.ts
+perfGate.test.ts
+ciSuite.test.ts
