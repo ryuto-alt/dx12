@@ -1,7 +1,7 @@
 // Lighting.hlsli - 共有ライティング定義
 // PerFrame 定数バッファ（b1）と、点光源 / スポットライトの Cook-Torrance 累積。
 // Forward.hlsl と ForwardSkinned.hlsl の両方から include し、レイアウトを一致させる。
-// C++ 側 Application.cpp の FrameConstants と完全一致させること。
+// C++ 側 src/renderer/FrameConstants.h の FrameConstantsData と完全一致させること。
 
 #ifndef LIGHTING_HLSLI
 #define LIGHTING_HLSLI
@@ -67,7 +67,8 @@ Texture2D<float4> g_contactShadow : register(t11);
 // CSM 対応で lightViewProj(64B) を cascadeViewProj[4](256B) + cascadeSplitsView(16B) + shadowParams(16B) へ拡張。
 // IBL 対応で iblParams(16B) を追加。スポット/ポイント影対応で shadowIndex・spotShadowMatrix[]・
 // spotShadowTexel/pointShadowNear を追加。コンタクトシャドウ対応で末尾に 16B を追加。
-// C++ Application.cpp の FrameConstants(1600B) とバイト単位で一致させること。
+// C++ src/renderer/FrameConstants.h の FrameConstantsData(1600B) とバイト単位で一致させること。
+// ★CPU 側の正本は src/renderer/FrameConstants.h（FrameConstantsData。_clusterReserved の番号は PfSlot）。変えるときは両方を同時に。
 cbuffer PerFrameConstants : register(b1)
 {
     float4x4 view;                               // 64B  (offset   0)

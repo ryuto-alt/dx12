@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "renderer/FrameConstants.h"
 #include "core/SplashScreen.h"   // 直接 include（ApplicationInternal.h 経由に頼らない。W05-01）
 #include "core/AtomicFileJson.h"
 #include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
@@ -880,55 +881,9 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
 
     // PerFrame Constant Buffer（ライトはクラスタードライティングの StructuredBuffer 側へ移動済み）
     // レイアウトは shaders/forward/Lighting.hlsli の PerFrameConstants と完全一致させること。
-    struct FrameConstants {
-        DirectX::XMFLOAT4X4 view;            // 64B  (offset   0)
-        DirectX::XMFLOAT4X4 proj;            // 64B  (offset  64)
-        DirectX::XMFLOAT3   lightDir;        // 12B
-        float                time;            // 4B  → 16B (offset 128)
-        DirectX::XMFLOAT3   lightColor;      // 12B
-        float                ambientStrength; // 4B  → 16B (offset 144)
-        DirectX::XMFLOAT4X4 cascadeViewProj[kNumCascades]; // 256B (offset 160)
-        DirectX::XMFLOAT4   cascadeSplitsView; // 16B (offset 416)
-        DirectX::XMFLOAT4   shadowParams;      // 16B (offset 432)
-        DirectX::XMFLOAT3   cameraPos;       // 12B
-        float                _pad;            // 4B  → 16B (offset 448)
-        u32                  numPointLights;  // 4B  ← 統計/デバッグ用（シェーダは読まない）
-        u32                  numSpotLights;   // 4B
-        float                spotShadowTexel; // 4B
-        float                pointShadowNear; // 4B  → 16B (offset 464)
-        // ▼ クラスタードライティング 64B (offset 480)。旧 pointLights[8]/spotLights[8] の跡地。
-        DirectX::XMFLOAT4    clusterParams;   // (offset 480)
-        DirectX::XMFLOAT4    clusterGrid;     // (offset 496)
-        DirectX::XMFLOAT4    clusterViewport; // (offset 512)
-        DirectX::XMFLOAT4    clusterExtra;    // (offset 528)
-        DirectX::XMFLOAT4    pcssParams;                       // 16B  (offset 544) PCSS（計画03）
-        // ▼ DDGI 48B (offset 560)。ddgiOrigin.w=0 なら PS は t22 を一切読まない
-        DirectX::XMFLOAT4    ddgiOrigin;                       // 16B  (offset 560) .xyz=原点 .w=強さ
-        DirectX::XMFLOAT4    ddgiSpacing;                      // 16B  (offset 576) .xyz=間隔 .w=法線バイアス
-        DirectX::XMFLOAT4    ddgiCounts;                       // 16B  (offset 592) .xyz=プローブ数
-        DirectX::XMFLOAT4    _clusterReserved[35];             // 560B (offset 608..1167)
-        DirectX::XMFLOAT4    ddgiC1;                           // 16B  (offset 1168) GI S4: カスケード 1（.xyz=原点 .w=間隔）
-        DirectX::XMFLOAT4    ddgiScroll0;                      // 16B  (offset 1184) カスケード 0 の記憶領域のずらし
-        DirectX::XMFLOAT4    ddgiScroll1;                      // 16B  (offset 1200)
-        DirectX::XMFLOAT4    giParams;                         // 16B  (offset 1216) GI モード（GI_FOUNDATION_DESIGN）
-        DirectX::XMFLOAT4    giParams2;                        // 16B  (offset 1232)
-        DirectX::XMFLOAT4X4  spotShadowMatrix[kMaxShadowSpot]; // 256B (offset 1248)
-        // ▼ IBL 制御 16B (offset 1504)
-        float                iblIntensity;
-        float                maxPrefilterMip;
-        u32                  hasIBL;
-        float                skyboxIntensity;
-        // ▼ コンタクトシャドウ制御 16B (offset 1520)
-        float                contactShadowEnabled;
-        DirectX::XMFLOAT3    _csPad;
-        // ▼ DDGI のカスケード 2 / 3（末尾追記 64B。既存のオフセットは動かない）
-        DirectX::XMFLOAT4 ddgiC2;        // (offset 1536)
-        DirectX::XMFLOAT4 ddgiScroll2;   // (offset 1552)
-        DirectX::XMFLOAT4 ddgiC3;        // (offset 1568)
-        DirectX::XMFLOAT4 ddgiScroll3;   // (offset 1584)
-    };  // total = 1600B
-    // ここは CB の確保サイズを決めるためだけの定義。Render() 内の同名構造体・
-    // ModelThumbnailRenderer・Lighting.hlsli の PerFrameConstants と必ず揃えること。
+    using FrameConstants = FrameConstantsData;   // 正本は renderer/FrameConstants.h（W05-23）
+    // ここは CB の確保サイズを決めるためだけの定義。正本は renderer/FrameConstants.h
+    // （Lighting.hlsli の PerFrameConstants と必ず揃えること）。
     static_assert(sizeof(FrameConstants) == 1600, "FrameConstants must be 1600 bytes");
     m_perFrameCB = std::make_unique<ConstantBuffer>();
     m_perFrameCB->Initialize(*m_graphicsDevice, sizeof(FrameConstants), FrameResources::kFrameCount);
