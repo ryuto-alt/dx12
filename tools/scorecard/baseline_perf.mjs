@@ -18,15 +18,16 @@
 // 使い方（通常は baseline_perf.ps1 から。ビルドの Mutex を取ってこれを呼ぶ）:
 //   node tools/scorecard/baseline_perf.mjs snapshot --label pre-overhaul --engine-dir <exe のあるフォルダ> [--no-dred]
 //   node tools/scorecard/baseline_perf.mjs ab --id dred --a-dir D --a-label ... --a-args "--no-dred" --b-dir D --b-label ... [--rounds 5]
+//   node tools/scorecard/baseline_perf.mjs probe --engine-dir <exe のあるフォルダ>   （VRAM の門の値だけを表示）
 //   node tools/scorecard/baseline_perf.mjs validate [--file <json>] [--require pre-overhaul,w05-end,dred,f0,hooks]
-// 共通: --out <json>（既定 ~/dx12-scorecard/w0/baseline_perf.json）--port 8855 --vram-min-mb 6500
+// 共通: --out <json>（既定 ~/dx12-scorecard/w0/baseline_perf.json。試走の設定では --out の明示が必須）--port 8855 --vram-min-mb 6500
 //       --warmup 300 --frames 600 --windows 3 --scenes a,b（絞り込み。試走用）
 // 終了コード: 0 成功 / 1 失敗 / 2 引数 / 3 計測窓を取れない / 4 VRAM の余裕が足りず中止（中止の記録は JSON に残す）
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { REPO_ROOT, launchInstance, connect, sleep } from "../bench/lib/engine.mjs";
 import { loadGoldenEntries } from "../bench/lib/goldenStore.mjs";
@@ -38,6 +39,7 @@ export const DEFAULTS = Object.freeze({
 });
 export const REQUIRED_SNAPSHOTS = ["pre-overhaul", "w05-end"];
 export const REQUIRED_AB = ["dred", "f0", "hooks"];
+export const EXPECTED_SCENES = [...CORE_SCENES, NEW_SCENE_ID];
 
 // ─── 統計（純関数） ─────────────────────────────────────────────────────
 export function median(xs) {
@@ -156,12 +158,43 @@ export function validateBaseline(j, require = []) {
     if (!t.scenes || !Object.keys(t.scenes).length) errs.push(`ab ${id}: シーンが無い`);
     for (const [sid, c] of Object.entries(t.scenes ?? {})) if (c.verdict === "insufficient") errs.push(`ab ${id}/${sid}: 使える回が足りない`);
   }
-  for (const r of require) if (!(r in (j?.snapshots ?? {})) && !(r in (j?.abTests ?? {}))) errs.push(`必要な記録が無い: ${r}`);
+  // --require の対象: 試走（smoke）の記録・DRED を揃えていない記録・シーンの欠けを NG にする。
+  const sceneSets = [];
+  for (const r of require) {
+    const s = j?.snapshots?.[r], t = j?.abTests?.[r];
+    const rec = s ?? t;
+    if (!rec) { errs.push(`必要な記録が無い: ${r}`); continue; }
+    if (rec.smoke) errs.push(`${r}: 試走（smoke）の記録。公式の設定で撮り直す`);
+    if (rec.restrictedScenes) errs.push(`${r}: --scenes で絞った記録。全シーンで撮り直す`);
+    const ids = Object.keys(rec.scenes ?? {}).sort();
+    const missing = EXPECTED_SCENES.filter((x) => !ids.includes(x));
+    if (missing.length) errs.push(`${r}: シーンが欠けている: ${missing.join(", ")}`);
+    sceneSets.push([r, ids.join(",")]);
+    if (s && REQUIRED_SNAPSHOTS.includes(r) && s.noDred !== true) errs.push(`snapshot ${r}: --no-dred で撮っていない（DRED の ON/OFF が揃わない）`);
+    if (t) {
+      if (r === "dred" && t.a?.dredFlag !== "passed") errs.push("ab dred: A 側に --no-dred が渡っていない（旗の無いバイナリでは両側が同じ構成になる）");
+      if (r === "dred" && t.sameBinary !== true) errs.push("ab dred: A と B が同じバイナリではない（DRED の ON/OFF だけを変えるのが条件）");
+      if (r !== "dred" && (t.a?.noDred !== true || t.b?.noDred !== true)) errs.push(`ab ${r}: 両側を --no-dred で揃えていない`);
+    }
+  }
+  if (new Set(sceneSets.map((x) => x[1])).size > 1) errs.push(`記録の間でシーンの集合が違う: ${sceneSets.map((x) => x[0]).join(", ")}`);
   return { ok: errs.length === 0, errors: errs };
 }
 
 // ─── 計測窓のロック（%TEMP%\uno-gpu-window.lock） ────────────────────────
+// ロックの書式（NB1 の perf_gate（TS）と共有する約束）: JSON {pid, owner, startedAt}。open("wx") で排他に作る。
+// 持ち主の PID が居なければ古いロックとして奪う。奪うときは rename で自分の名前へ退避してから中身を読み直す
+// （rmSync だと、他のプロセスが作ったばかりの新しいロックを消して両方が持つ競合がある）。
 export const LOCK_FILE = path.join(os.tmpdir(), "uno-gpu-window.lock");
+/** 古いロックを奪う。退避したものの持ち主が生きていれば（他者の新しいロックだった）link で戻す（既存があれば失敗 = 上書きしない）。 */
+function stealStale(file) {
+  const moved = `${file}.stale-${process.pid}-${Date.now()}`;
+  try { fs.renameSync(file, moved); } catch { return; }   // 既に誰かが消した / 奪った
+  let h = null;
+  try { h = JSON.parse(fs.readFileSync(moved, "utf8")); } catch { /* 壊れ = 古い扱い */ }
+  if (h && Number.isInteger(h.pid) && pidAlive(h.pid)) { try { fs.linkSync(moved, file); } catch { /* 別のロックが既にある */ } }
+  try { fs.rmSync(moved, { force: true }); } catch { /* 無視 */ }
+}
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } }
 /** 排他で取る。古い（持ち主の PID が居ない）ロックは奪う。waitSec 秒まで待つ。取れたら解放関数、だめなら null。 */
 export async function acquireGpuWindow({ file = LOCK_FILE, waitSec = 0, owner = "baseline_perf", pollMs = 2000 } = {}) {
@@ -177,7 +210,7 @@ export async function acquireGpuWindow({ file = LOCK_FILE, waitSec = 0, owner = 
       if (e.code !== "EEXIST") throw e;
       let holder = null;
       try { holder = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* 読めない = 書き込み途中か壊れ */ }
-      if (holder && Number.isInteger(holder.pid) && !pidAlive(holder.pid)) { try { fs.rmSync(file, { force: true }); } catch { /* 競合 */ } continue; }
+      if (holder && Number.isInteger(holder.pid) && !pidAlive(holder.pid)) { stealStale(file); continue; }
       if (Date.now() - t0 >= waitSec * 1000) return null;
       await sleep(pollMs);
     }
@@ -196,11 +229,25 @@ function smiOnce() {
       });
   });
 }
+/** nvidia-smi を 1 本だけ起動したまま -lms で読み続ける（毎秒プロセスを起こすと benchmark の窓に雑音が乗る）。 */
 function startClockPoller(everyMs = 1000) {
   const samples = [];
-  let stopped = false;
-  const loop = (async () => { while (!stopped) { const s = await smiOnce(); if (s) samples.push(s); await sleep(everyMs); } })();
-  return { async stop() { stopped = true; await loop; return samples; } };
+  let buf = "";
+  const n = (x) => (Number.isFinite(Number(x)) ? Number(x) : null);
+  let child = null;
+  try {
+    child = spawn("nvidia-smi", ["--query-gpu=clocks.sm,temperature.gpu,memory.used,memory.total", "--format=csv,noheader,nounits", "-lms", String(everyMs)], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    child.on("error", () => { /* nvidia-smi が無い。サンプル無しで進む */ });
+    child.stdout.on("data", (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const f = buf.slice(0, i).trim().split(",").map((x) => x.trim()); buf = buf.slice(i + 1);
+        if (f.length >= 4) samples.push({ smMHz: n(f[0]), tempC: n(f[1]), memUsedMB: n(f[2]), memTotalMB: n(f[3]) });
+      }
+    });
+  } catch { child = null; }
+  return { async stop() { try { child?.kill(); } catch { /* 無視 */ } return samples; } };
 }
 export function clockStats(samples) {
   // 負荷が掛かっているサンプルだけ（アイドルの低いクロックを混ぜない）。掛かっていなければ全部。
@@ -225,29 +272,70 @@ function pickWindow(r) {
 export function resolveScenes(only) {
   const cfg = loadGoldenEntries(path.join(REPO_ROOT, "tests", "golden"));
   const byName = new Map(cfg.scenes.map((s) => [s.name, s]));
-  const ids = [...CORE_SCENES, NEW_SCENE_ID];
-  const list = ids.map((n) => byName.get(n)).filter(Boolean).filter((s) => !only || only.includes(s.name));
-  if (!list.length) throw new Error("計測するシーンが無い（tests/golden/entries と --scenes を確認）");
+  const ids = EXPECTED_SCENES;
+  const missing = ids.filter((n) => !byName.has(n));
+  if (missing.length) throw new Error(`tests/golden/entries に無いシーン: ${missing.join(", ")}`);   // 黙って落とさない
+  if (only) { const bad = only.filter((n) => !ids.includes(n)); if (bad.length) throw new Error(`--scenes に未知のシーン: ${bad.join(", ")}`); }
+  const list = ids.map((n) => byName.get(n)).filter((s) => !only || only.includes(s.name));
+  if (!list.length) throw new Error("計測するシーンが無い（--scenes を確認）");
   return { defaults: cfg.defaults, list };
+}
+
+/** 作業用のコピー（計測のたびにチェックアウトの中へ _mcp_untitled_* などを増やさない）。 */
+function copyProject(src) {
+  const dst = fs.mkdtempSync(path.join(os.tmpdir(), "uno-perf-proj-"));
+  fs.cpSync(src, dst, { recursive: true });
+  return dst;
+}
+function removeTemp(dir) {
+  const root = path.resolve(os.tmpdir());
+  const d = path.resolve(dir);
+  if (path.dirname(d) !== root || !path.basename(d).startsWith("uno-perf-proj-")) return;   // 自分が作ったものだけ
+  try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* 無視 */ }
+}
+
+/** 他プロセスの VRAM 使用量が基準（実行の最初の起動前の値）付近に戻るまで待つ。直前のエンジンの解放待ち。 */
+async function waitVramSettle(baselineMB, toleranceMB = 150, timeoutMs = 90_000) {
+  const t0 = Date.now();
+  let cur = null;
+  while (Date.now() - t0 < timeoutMs) {
+    cur = (await smiOnce())?.memUsedMB ?? null;
+    if (cur === null || baselineMB === null || cur <= baselineMB + toleranceMB) return { settled: true, memUsedMB: cur, waitedMs: Date.now() - t0 };
+    await sleep(1500);
+  }
+  return { settled: false, memUsedMB: cur, waitedMs: Date.now() - t0 };
 }
 
 /** cfg = { label, engineDir, extra[] }。シーンごとに windows 個の窓を返す。 */
 export async function measureSession(cfg, sceneList, o) {
-  const smiBefore = await smiOnce();   // 起動前の使用量 = 他のプロセスの使用量
-  const project = path.resolve(REPO_ROOT, sceneList[0].project);
-  const eng = await launchInstance({
-    name: o.instance, project, port: o.port, buildDir: cfg.engineDir, mode: "headless",
-    extraArgs: [...cfg.extra, "--scene", sceneList[0].scene ?? sceneList[0].launchScene],
-  });
+  // VRAM: 実行の最初の 1 回だけ門で判定する。以降は、直前のエンジンの解放を待ってから起動し、足りなくても警告に留める。
+  const st = (o.vramState ??= { baselineMB: null, gated: false });
+  let smiBefore = await smiOnce();   // 起動前の使用量 = 他のプロセスの使用量
+  let settle = null;
+  if (st.gated && st.baselineMB !== null) { settle = await waitVramSettle(st.baselineMB); smiBefore = await smiOnce(); }
+  const projectSrc = path.resolve(REPO_ROOT, sceneList[0].project);
+  const project = copyProject(projectSrc);
+  let eng = null;
   let conn;
-  const out = { scenes: {}, clockSamples: [] };
+  const out = { scenes: {}, clockSamples: [], vramSettle: settle };
   try {
+    eng = await launchInstance({
+      name: o.instance, project, port: o.port, buildDir: cfg.engineDir, mode: "headless",
+      extraArgs: [...cfg.extra, "--scene", sceneList[0].scene ?? sceneList[0].launchScene],
+    });
     conn = await connect(eng.port);
     await waitReady(conn);
     const ping = await conn.call("ping");
     const gate = vramGate(ping.vramBudgetMB, smiBefore?.memUsedMB, o.vramMinMB);
+    gate.smiTotalMB = smiBefore?.memTotalMB ?? null;
     out.vramCheck = gate;
-    if (!gate.ok) throw new AbortRun(gate);
+    if (!st.gated) {
+      st.gated = true; st.baselineMB = smiBefore?.memUsedMB ?? null;
+      if (!gate.ok && o.gateMode !== "report") throw new AbortRun(gate);
+    } else if (!gate.ok) {
+      console.log(`[perf] 警告: VRAM の余裕が門より少ない（${gate.reason}）。2 回目以降なので続ける`);
+    }
+    if (o.probeOnly) return out;
     for (const s of sceneList) {
       if (s.newScene) await createNewScene(conn); else await openScene(conn, s.scene);
       await conn.call("set_editor_camera", { position: s.camera.position, target: s.camera.target });
@@ -260,7 +348,8 @@ export async function measureSession(cfg, sceneList, o) {
     }
   } finally {
     try { conn?.close(); } catch { /* 切れている */ }
-    eng.kill();
+    try { eng?.kill(); } catch { /* 無視 */ }
+    removeTemp(project);
   }
   return out;
 }
@@ -295,9 +384,15 @@ function protocolOf(o) {
     metric: "gpuTotalMs（GpuTimer の Total の窓平均の、回ごとの中央値）。frameMsTypical は p50 の代わり",
     p50Note: "エンジンの benchmark は p50 を返さない。frameMsTypical = 窓の avg の中央値、frameMsP95 = 窓の p95 の中央値。",
     noClockLock: "SetStablePowerState は使わない。クロックは nvidia-smi で記録し、ずれた回は捨てる",
-    smoke: o.smoke,
   };
 }
+/** 記録ごとの設定（試走かどうか・絞り込みの有無）。併合で上書きされないよう snapshot / abTest が持つ。 */
+function recordProto(o) {
+  return { smoke: !!o.smoke, restrictedScenes: !!o.scenes, protocol: protocolOf(o) };
+}
+
+/** 全体の protocol には試走の設定を入れない（試走が公式の記録の protocol を上書きしない）。 */
+function officialProtocol(o) { return o.smoke ? null : protocolOf(o); }
 
 function scenePack(sceneIds, sessions, key) {
   // sessions: [{ index, scenes:{id:{windows,clock}} }] → シーンごと: 回ごとの値と代表値
@@ -317,8 +412,8 @@ async function cmdSnapshot(o) {
   const sessions = [];
   for (let i = 0; i < o.rounds; i++) {
     console.log(`[perf] snapshot ${o.label}: round ${i + 1}/${o.rounds}`);
-    const s = await measureSession(cfg, list, o);
-    sessions.push({ index: i, ...s });
+    try { const s = await measureSession(cfg, list, o); sessions.push({ index: i, ...s }); }
+    catch (e) { e.partial = { completedRounds: sessions.length, rounds: sessions.map((x) => ({ index: x.index, scenes: Object.fromEntries(Object.entries(x.scenes).map(([id, v]) => [id, summarizeWindows(v.windows)])) })) }; throw e; }
   }
   const perScene = {};
   const clocks = sessions.map((s, i) => ({ index: i, clockA: mean(Object.values(s.scenes).map((x) => x.clock.smMHz).filter(Number.isFinite)) }));
@@ -334,15 +429,25 @@ async function cmdSnapshot(o) {
     };
   }
   const snapshot = {
-    label: o.label, capturedAt: new Date().toISOString(), noDred: o.noDred, dredFlag, engine: engineInfo(o.engineDir, o.label),
+    label: o.label, capturedAt: new Date().toISOString(), ...recordProto(o), noDred: o.noDred, dredFlag, engine: engineInfo(o.engineDir, o.label),
     vramCheck: sessions[0].vramCheck, clockRefMHz: drop.refMHz, discardedRounds: drop.dropped, scenes: perScene,
   };
-  return { protocol: protocolOf(o), hardware: await hardwareInfo(), snapshot, at: snapshot.capturedAt };
+  return { protocol: officialProtocol(o), hardware: await hardwareInfo(), snapshot, at: snapshot.capturedAt };
 }
 
 async function hardwareInfo() {
   const s = await smiOnce();
   return { gpu: s?.name ?? null, driver: s?.driver ?? null, vramTotalMB: s?.memTotalMB ?? null, os: `${os.type()} ${os.release()}`, cpus: os.cpus()[0]?.model ?? null };
+}
+
+/** VRAM の門の値だけを表示する（Budget と nvidia-smi の使用量。実測を見て定義を決めるため）。 */
+async function cmdProbe(o) {
+  const { list } = resolveScenes(["core_pbr_spheres"].filter((n) => EXPECTED_SCENES.includes(n)).length ? ["core_pbr_spheres"] : [EXPECTED_SCENES[0]]);
+  o.probeOnly = true; o.gateMode = "report";
+  const s = await measureSession({ label: "probe", engineDir: o.engineDir, extra: [] }, list, o);
+  const g = s.vramCheck;
+  console.log(JSON.stringify({ budgetMB: g.budgetMB, nvidiaSmiUsedMB: g.othersUsedMB, nvidiaSmiTotalMB: g.smiTotalMB, availableMB: g.availableMB, minMB: g.minMB, gateOk: g.ok }, null, 2));
+  return 0;
 }
 
 async function cmdAb(o) {
@@ -354,18 +459,24 @@ async function cmdAb(o) {
   const val = (sess, id) => summarizeWindows(sess.scenes[id].windows)[key];
   const clockOf = (sess) => mean(Object.values(sess.scenes).map((x) => x.clock.smMHz).filter(Number.isFinite));
   // ABAB… と A/A（A を 2 回の組）。A/A は A/B の後に取る（同じ温度条件に近づけるため同数）。
-  const runPairs = async (cfgA, cfgB, tag) => {
-    const pairs = [];
+  const runPairs = async (cfgA, cfgB, tag, pairs) => {
     for (let i = 0; i < o.rounds; i++) {
       console.log(`[perf] ab ${o.id} ${tag}: round ${i + 1}/${o.rounds}`);
-      const a = await measureSession(cfgA, list, o);
-      const b = await measureSession(cfgB, list, o);
-      pairs.push({ index: i, a, b, clockA: clockOf(a) ?? NaN, clockB: clockOf(b) ?? NaN });
+      try {
+        const a = await measureSession(cfgA, list, o);
+        const b = await measureSession(cfgB, list, o);
+        pairs.push({ index: i, a, b, clockA: clockOf(a) ?? NaN, clockB: clockOf(b) ?? NaN });
+      } catch (e) { e.partial = partialOf(); throw e; }
     }
     return pairs;
   };
-  const abPairs = await runPairs(A, B, "A/B");
-  const aaPairs = await runPairs(A, { ...A, label: `${A.label}#2` }, "A/A");
+  // 途中で止まったときに、そこまでの結果を aborted に残すための要約
+  const done = { ab: [], aa: [] };
+  const partialOf = () => ({ completedAbRounds: done.ab.length, completedAaRounds: done.aa.length,
+    ab: done.ab.map((p) => ({ index: p.index, clockA: p.clockA, clockB: p.clockB, scenes: Object.fromEntries(ids.map((id) => [id, { a: val(p.a, id), b: val(p.b, id) }])) })),
+    aa: done.aa.map((p) => ({ index: p.index, clockA: p.clockA, clockB: p.clockB, scenes: Object.fromEntries(ids.map((id) => [id, { a: val(p.a, id), b: val(p.b, id) }])) })) });
+  const abPairs = await runPairs(A, B, "A/B", done.ab);
+  const aaPairs = await runPairs(A, { ...A, label: `${A.label}#2` }, "A/A", done.aa);
   const abDrop = dropByClock(abPairs.map((p) => ({ index: p.index, clockA: p.clockA, clockB: p.clockB })));
   const aaDrop = dropByClock(aaPairs.map((p) => ({ index: p.index, clockA: p.clockA, clockB: p.clockB })));
   const abKept = abPairs.filter((p) => abDrop.kept.some((k) => k.index === p.index));
@@ -381,7 +492,7 @@ async function cmdAb(o) {
     scenes[id].verdict = scenes[id][key].verdict;
   }
   const test = {
-    id: o.id, note: o.note ?? null, capturedAt: new Date().toISOString(), metric: key,
+    id: o.id, note: o.note ?? null, capturedAt: new Date().toISOString(), ...recordProto(o), metric: key,
     a: { label: A.label, noDred: o.aNoDred, dredFlag: A.dredFlag, extraArgs: o.aArgs, engine: engineInfo(A.engineDir, A.label) },
     b: { label: B.label, noDred: o.bNoDred, dredFlag: B.dredFlag, extraArgs: o.bArgs, engine: engineInfo(B.engineDir, B.label) },
     sameBinary: engineInfo(A.engineDir, "x").exeSha256 === engineInfo(B.engineDir, "x").exeSha256,
@@ -389,7 +500,7 @@ async function cmdAb(o) {
     aa: { pairs: aaKept.length, discardedRounds: aaDrop.dropped, clockRefMHz: aaDrop.refMHz },
     scenes,
   };
-  return { protocol: protocolOf(o), hardware: await hardwareInfo(), abTest: test, at: test.capturedAt };
+  return { protocol: officialProtocol(o), hardware: await hardwareInfo(), abTest: test, at: test.capturedAt };
 }
 
 // ─── 引数 ───────────────────────────────────────────────────────────────
@@ -400,13 +511,13 @@ export function parseArgs(argv) {
     warmup: DEFAULTS.warmup, frames: DEFAULTS.frames, windows: DEFAULTS.windows, rounds: DEFAULTS.rounds, vramMinMB: DEFAULTS.vramMinMB,
     noDred: false, aNoDred: false, bNoDred: false, aArgs: [], bArgs: [], scenes: null, lockWaitSec: 0, require: [], file: null,
   };
-  if (!["snapshot", "ab", "validate"].includes(cmd)) throw new Error("コマンドは snapshot | ab | validate");
+  if (!["snapshot", "ab", "validate", "probe"].includes(cmd)) throw new Error("コマンドは snapshot | ab | probe | validate");
   for (let i = 1; i < argv.length; i++) {
     const k = argv[i];
     const v = () => { if (i + 1 >= argv.length) throw new Error(`${k} に値が要る`); return argv[++i]; };
     const n = () => { const x = Number(v()); if (!Number.isFinite(x) || x < 0) throw new Error(`${k} は 0 以上の数`); return x; };
     switch (k) {
-      case "--out": o.out = path.resolve(v()); break;
+      case "--out": o.out = path.resolve(v()); o.outExplicit = true; break;
       case "--file": o.file = path.resolve(v()); break;
       case "--port": o.port = n(); break;
       case "--instance": o.instance = v(); break;
@@ -434,6 +545,7 @@ export function parseArgs(argv) {
       default: throw new Error(`不明な引数: ${k}`);
     }
   }
+  if (cmd === "probe" && !o.engineDir) throw new Error("--engine-dir が要る");
   if (cmd === "snapshot") { if (!o.label || !/^[A-Za-z0-9._-]+$/.test(o.label)) throw new Error("--label が要る（英数字と . _ -）"); if (!o.engineDir) throw new Error("--engine-dir が要る"); }
   if (cmd === "ab") {
     if (!o.id || !/^[A-Za-z0-9._-]+$/.test(o.id)) throw new Error("--id が要る（英数字と . _ -）");
@@ -463,11 +575,12 @@ async function main() {
     for (const e of v.errors) console.log(`  - ${e}`);
     return v.ok ? 0 : 1;
   }
-  if (process.env.ANTHROPIC_API_KEY) { console.log("[perf] ANTHROPIC_API_KEY が設定されている。API 課金を避けるため起動を拒否する。"); return 2; }
+  if (o.smoke && !o.outExplicit && o.cmd !== "probe") { console.log("[perf] 試走の設定（--frames などを既定から変えた）で公式の出力先へは書かない。--out で別の JSON を指定する。"); return 2; }
   const release = await acquireGpuWindow({ waitSec: o.lockWaitSec });
   if (!release) { console.log("[perf] 計測窓（uno-gpu-window.lock）を取れない。他の計測が走っている。--lock-wait-min で待てる。"); return 3; }
   try { os.setPriority(0, os.constants.priority.PRIORITY_BELOW_NORMAL); } catch { /* 無視 */ }
   try {
+    if (o.cmd === "probe") return await cmdProbe(o);
     const part = o.cmd === "snapshot" ? await cmdSnapshot(o) : await cmdAb(o);
     const merged = mergeInto(readJson(o.out) ?? emptyBaseline(), part);
     writeJson(o.out, merged);
@@ -475,10 +588,14 @@ async function main() {
     return 0;
   } catch (e) {
     if (e instanceof AbortRun) {
-      const rec = { at: new Date().toISOString(), command: o.cmd, target: o.label ?? o.id, reason: e.gate.reason, vramCheck: e.gate };
+      const rec = { at: new Date().toISOString(), command: o.cmd, target: o.label ?? o.id, smoke: !!o.smoke, reason: e.gate.reason, vramCheck: e.gate, partial: e.partial ?? null };
       writeJson(o.out, mergeInto(readJson(o.out) ?? emptyBaseline(), { aborted: rec, at: rec.at }));
       console.log(`[perf] 中止: ${e.gate.reason}（記録した）`);
       return 4;
+    }
+    if (e?.partial && o.cmd !== "probe") {
+      const rec = { at: new Date().toISOString(), command: o.cmd, target: o.label ?? o.id, smoke: !!o.smoke, reason: sanitizeMsg(e?.message ?? e), partial: e.partial };
+      try { writeJson(o.out, mergeInto(readJson(o.out) ?? emptyBaseline(), { aborted: rec, at: rec.at })); console.log("[perf] 途中までの結果を aborted に記録した"); } catch { /* 記録できなくても失敗は返す */ }
     }
     console.log(`[perf] 失敗: ${sanitizeMsg(e?.stack ?? e)}`);
     return 1;

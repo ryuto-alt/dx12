@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   median, stddev, summarizeWindows, abThreshold, dropByClock, compareAB, ababSchedule, vramGate,
-  emptyBaseline, mergeInto, validateBaseline, acquireGpuWindow, parseArgs, clockStats,
+  emptyBaseline, mergeInto, validateBaseline, acquireGpuWindow, parseArgs, clockStats, EXPECTED_SCENES,
 } from "./baseline_perf.mjs";
 
 test("median / stddev", () => {
@@ -76,8 +76,9 @@ test("clockStats: アイドルの低いクロックを混ぜない", () => {
   assert.equal(c.n, 2);
 });
 
-const mkSnap = (label) => ({ label, engine: { exeSha256: "a".repeat(64) }, scenes: { s1: { keptRounds: 3, summary: { frameMsTypical: 1.2 } } } });
-const mkAb = (id) => ({ id, aa: { pairs: 3 }, scenes: { s1: { verdict: "within" } } });
+const sc = (mk) => Object.fromEntries(EXPECTED_SCENES.map((id) => [id, mk]));
+const mkSnap = (label) => ({ label, noDred: true, smoke: false, engine: { exeSha256: "a".repeat(64) }, scenes: sc({ keptRounds: 3, summary: { frameMsTypical: 1.2 } }) });
+const mkAb = (id) => ({ id, smoke: false, sameBinary: true, a: { noDred: true, dredFlag: "passed" }, b: { noDred: id !== "dred" }, aa: { pairs: 3 }, scenes: sc({ verdict: "within" }) });
 
 test("mergeInto は同じキーだけ置き換える", () => {
   let j = mergeInto(emptyBaseline(), { snapshot: mkSnap("pre-overhaul") });
@@ -100,6 +101,45 @@ test("validate: 2 本・A/B がそろえば ok、欠ければ NG、絶対パス�
   assert.ok(!validateBaseline(noAa).ok);
 });
 
+const REQ = ["pre-overhaul", "w05-end", "dred", "f0", "hooks"];
+const full = () => { let j = emptyBaseline(); for (const l of ["pre-overhaul", "w05-end"]) j = mergeInto(j, { snapshot: mkSnap(l) }); for (const id of ["dred", "f0", "hooks"]) j = mergeInto(j, { abTest: mkAb(id) }); return j; };
+
+test("validate: 試走の記録は --require で NG（公式を後から回しても試走が混ざらない）", () => {
+  const j = mergeInto(full(), { snapshot: { ...mkSnap("w05-end"), smoke: true } });
+  assert.ok(validateBaseline(j, REQ).errors.some((e) => /試走/.test(e)));
+  // 試走の後に別の記録を併合しても、試走の smoke は消えない（記録ごとに持つ）
+  const j2 = mergeInto(j, { abTest: mkAb("f0") });
+  assert.ok(validateBaseline(j2, REQ).errors.some((e) => /w05-end.*試走/.test(e)));
+});
+
+test("validate: DRED を揃えていない記録は NG", () => {
+  const a = full(); a.snapshots["w05-end"].noDred = false;
+  assert.ok(validateBaseline(a, REQ).errors.some((e) => /no-dred/.test(e)));
+  const b = full(); b.abTests.dred.a.dredFlag = "binary-has-no-dred";
+  assert.ok(validateBaseline(b, REQ).errors.some((e) => /旗/.test(e)));
+});
+
+test("validate: シーンの欠落・集合の不一致は NG", () => {
+  const a = full(); delete a.snapshots["w05-end"].scenes[EXPECTED_SCENES[0]];
+  const e = validateBaseline(a, REQ).errors.join("; ");
+  assert.match(e, /欠けている/);
+  assert.match(e, /集合が違う/);
+  const b = full(); b.abTests.f0.restrictedScenes = true;
+  assert.ok(validateBaseline(b, REQ).errors.some((x) => /絞った/.test(x)));
+});
+
+test("dropByClock: クロックが二峰だと全回が捨てられうる（現状の仕様を固定）", () => {
+  const r = dropByClock([{ index: 0, clockA: 2000 }, { index: 1, clockA: 2500 }]);   // 中央値 2250 から 11% ずつ
+  assert.equal(r.kept.length, 0);
+  assert.equal(r.dropped.length, 2);
+});
+
+test("試走の既定出力先の拒否に使う outExplicit", () => {
+  assert.equal(parseArgs(["snapshot", "--label", "x", "--engine-dir", ".", "--frames", "60"]).outExplicit, undefined);
+  assert.equal(parseArgs(["snapshot", "--label", "x", "--engine-dir", ".", "--frames", "60", "--out", "x.json"]).outExplicit, true);
+  assert.throws(() => parseArgs(["probe"]));
+});
+
 test("計測窓のロック: 排他、古い持ち主は奪う、解放で消える", async () => {
   const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lk-")), "w.lock");
   const rel = await acquireGpuWindow({ file: f });
@@ -111,6 +151,18 @@ test("計測窓のロック: 排他、古い持ち主は奪う、解放で消え
   const rel2 = await acquireGpuWindow({ file: f });
   assert.ok(rel2);
   rel2();
+});
+
+test("古いロックの奪取: 持ち主の PID が居ないときだけ。生きている持ち主のロックは消さない", async () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lk-")), "w.lock");
+  fs.writeFileSync(f, JSON.stringify({ pid: process.pid, owner: "alive" }));
+  assert.equal(await acquireGpuWindow({ file: f, waitSec: 0 }), null);
+  assert.equal(JSON.parse(fs.readFileSync(f, "utf8")).owner, "alive");
+  // 古いロックを 2 つが同時に奪いに行っても、片方だけが持つ
+  fs.writeFileSync(f, JSON.stringify({ pid: 2147483000, owner: "dead" }));
+  const rs = await Promise.all([acquireGpuWindow({ file: f }), acquireGpuWindow({ file: f })]);
+  assert.equal(rs.filter(Boolean).length, 1);
+  rs.filter(Boolean)[0]();
 });
 
 test("parseArgs: 必須引数と試走の判定", () => {
