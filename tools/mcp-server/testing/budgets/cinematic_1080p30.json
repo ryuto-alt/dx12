@@ -137,7 +137,7 @@
           ],
           "degrade": "Cinematic でも RT 短距離 GI を OFF にする",
           "owner": "LS-11（GpuTimer のスコープ未作成）",
-          "leavesPending": true
+          "leavesPending": false
         },
         {
           "id": "RtLocalShadow",
@@ -269,7 +269,7 @@
           ],
           "degrade": "体数を減らす",
           "owner": "LS-16（GpuTimer のスコープ未作成）",
-          "leavesPending": true
+          "leavesPending": false
         },
         {
           "id": "Reactive",
@@ -495,7 +495,7 @@
           ],
           "degrade": "Cinematic でも RT 短距離 GI を OFF にする",
           "owner": "LS-11（GpuTimer のスコープ未作成）",
-          "leavesPending": true
+          "leavesPending": false
         },
         {
           "id": "RtLocalShadow",
@@ -627,7 +627,7 @@
           ],
           "degrade": "体数を減らす",
           "owner": "LS-16（GpuTimer のスコープ未作成）",
-          "leavesPending": true
+          "leavesPending": false
         },
         {
           "id": "Reactive",
