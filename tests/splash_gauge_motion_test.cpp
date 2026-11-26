@@ -387,7 +387,7 @@ void Test_FastSkipBeforeHandover()
     d.Skip(tSkip);
     for (t = tSkip; t < 4000.0; t += 1000.0 / 60.0)
     {
-        d.Update(t, 0.1f, false);
+        d.Update(t, 0.1f, true);
         const auto f = d.Frame(t);
         CHECK(SameFrame(f, sp::EvaluateAfterLock(t - tSkip, ev)));
         CHECK(f.locked);
@@ -489,6 +489,7 @@ void Test_Skip()
         const auto cues = d.PendingCues();
         CHECK(!cues.empty() && cues.back().kind == sp::GaugeCueKind::LockTail && cues.back().playAtMs == t);
         for (const auto& c : cues) CHECK(c.playAtMs <= t);   // 先の予約は捨てられる（ちょうど t のスキップの LockTail は残る）
+        d.Update(t, 1.0f, true);   // ロードはスキップと同時に完了（退場は自然な時刻。待たされる側は Test_SkipThenLongLoad）
         for (double dt = 0; dt < 1500.0; dt += 7.0)
             CHECK(SameFrame(d.Frame(t + dt), sp::EvaluateAfterLock(dt, ev)));
         CHECK(d.Frame(t).locked && d.Frame(t).needleDeg == 360.f);
@@ -587,9 +588,8 @@ void Test_SkipCancelsHandedOverCues()
 
 // 最終接近の途中（完了要求のあと・ロック前）のスキップ: 渡し済みの Click と LockTail を取り消し、鳴る LockTail は 1 本だけ（FU-E-18 レビュー対応）
 template <class Driver>
-void CheckSkipDuringApproach(Driver& d, double tSkip, std::uint32_t seed)
+bool CheckSkipDuringApproach(Driver& d, double tSkip)
 {
-    (void)seed;
     std::vector<sp::GaugeCue> handed;
     double t = 0;
     for (; t < 912.0; t += 16.0) { d.Update(t, static_cast<float>(t / 3500.0), false); for (const auto& c : d.TakeCues()) handed.push_back(c); }
@@ -598,7 +598,7 @@ void CheckSkipDuringApproach(Driver& d, double tSkip, std::uint32_t seed)
     for (t += 16.0; t < tSkip; t += 16.0) { d.Update(t, 1.0f, true); for (const auto& c : d.TakeCues()) handed.push_back(c); }
     const double lockWall = d.LockWallMs();
     CHECK(!std::isnan(lockWall));
-    if (t >= lockWall) return;   // ロック後はスキップ無効（別テスト）
+    if (t >= lockWall) return false;   // ロック後はスキップ無効（別テスト）。呼び出し側が実行数を数えて検査する
     d.Skip(t);
     // id は全て非 0 かつ一意（LockTail 含む）
     std::set<std::uint32_t> seen;
@@ -616,17 +616,24 @@ void CheckSkipDuringApproach(Driver& d, double tSkip, std::uint32_t seed)
     for (const auto& c : after) { active.insert(c.id); lockTails += (c.kind == sp::GaugeCueKind::LockTail); }
     CHECK(lockTails == 1);
     CHECK(d.TakeCancelledCueIds().empty());
+    return true;
 }
 
 void Test_SkipDuringApproach()
 {
     // 完了要求は t=912 付近。ロックまで 1 秒弱ある窓の中の複数時刻
-    for (double tSkip : { 930.0, 1000.0, 1200.0, 1500.0, 1800.0, 1950.0, 1985.0 })
+    int ranSlow = 0;
+    const double slowSkips[] = { 930.0, 1000.0, 1200.0, 1500.0, 1800.0, 1950.0, 1965.0 };
+    for (double tSkip : slowSkips)
     {
-        { sp::GaugeSlowDriver d; CheckSkipDuringApproach(d, tSkip, 1); }
+        sp::GaugeSlowDriver d;
+        ranSlow += CheckSkipDuringApproach(d, tSkip) ? 1 : 0;
     }
-    // Fast: 持ち替え後に完了要求 → スキップ
-    for (double tSkip : { 1900.0, 2000.0, 2100.0 })
+    CHECK(ranSlow == static_cast<int>(std::size(slowSkips)));   // 全ケースが実際にロック前のスキップになっている（時刻が変わっても黙って落ちない）
+    // Fast: 持ち替え後に完了要求 → 完了要求からの周回数 extraFrames 後にスキップ
+    int ranFast = 0;
+    const int fastExtraFrames[] = { 4, 10, 16 };
+    for (int extra : fastExtraFrames)
     {
         sp::GaugeFastDriver d;
         std::vector<sp::GaugeCue> handed;
@@ -636,8 +643,10 @@ void Test_SkipDuringApproach()
         CHECK(d.HandedOver());
         d.Update(t, 1.0f, true);
         for (const auto& c : d.TakeCues()) handed.push_back(c);
-        for (t += 16.0; t < dec + 300.0 + (tSkip - 1900.0) * 0.3 + 32.0; t += 16.0) { d.Update(t, 1.0f, true); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        for (int i = 0; i < extra; ++i) { t += 16.0; d.Update(t, 1.0f, true); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        t += 16.0;
         if (t >= d.LockWallMs()) continue;
+        ++ranFast;
         d.Skip(t);
         std::set<std::uint32_t> seen, active;
         for (const auto& c : handed) { CHECK(c.id != 0); CHECK(seen.insert(c.id).second); active.insert(c.id); }
@@ -646,6 +655,138 @@ void Test_SkipDuringApproach()
         for (const auto& c : handed) if (active.count(c.id) && c.kind == sp::GaugeCueKind::LockTail) ++lockTails;
         for (const auto& c : d.TakeCues()) lockTails += (c.kind == sp::GaugeCueKind::LockTail);
         CHECK(lockTails == 1);
+    }
+    CHECK(ranFast == static_cast<int>(std::size(fastExtraFrames)));
+}
+
+// スキップのあとロードが長引く: 退場（ピン・フェード）はロードの完了まで始まらず、完了後にその時刻から進む（FU-E-18）
+template <class Frame, class Fn>
+void CheckExitHeld(Frame frameAt, double skipWall, double finishWall, double exitStart, Fn&& /*unused*/)
+{
+    const auto& ev = Ev();
+    const double nat = ev.pingMs - ev.lockMs;
+    CHECK_NEAR(exitStart, skipWall + std::max(nat, finishWall - skipWall), 1e-9);
+    for (double t = skipWall; t < exitStart; t += 7.0)
+    {
+        const auto f = frameAt(t);
+        CHECK(f.pinT == 0.f && f.fadeOutT == 0.f);
+        CHECK(f.locked);
+    }
+    CHECK(frameAt(exitStart).pinT == 0.f);
+    CHECK(frameAt(exitStart + sp::gauge::kPinStampMs).pinT == 1.f);
+    CHECK_NEAR(frameAt(exitStart + sp::gauge::kFadeOutMs * 0.5).fadeOutT, 0.5, 1e-5);
+    CHECK(frameAt(exitStart + sp::gauge::kFadeOutMs).fadeOutT == 1.f);
+}
+
+void Test_SkipThenLongLoad()
+{
+    const auto& ev = Ev();
+    const double nat = ev.pingMs - ev.lockMs;
+    // Slow: t=500 でスキップ、ロードは t=6000 まで続く
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(t);
+        const double skipWall = t;
+        CHECK(std::isnan(d.ExitStartWallMs()));
+        for (; t < 6000.0; t += 16.0) d.Update(t, 0.3f, false);
+        CHECK(!d.FinishObserved() && std::isnan(d.ExitStartWallMs()));
+        for (double u = skipWall; u < 6000.0; u += 11.0)
+        {
+            const auto f = d.Frame(u);
+            CHECK(f.pinT == 0.f && f.fadeOutT == 0.f && f.locked);   // 自然な退場時刻（skip + nat）を過ぎても保持
+        }
+        CHECK(d.Frame(skipWall + nat + 50.0).fadeOutT == 0.f);
+        d.Update(6000.0, 1.0f, true);
+        CHECK(d.FinishObserved());
+        const double fw = 6000.0;
+        CheckExitHeld([&](double u) { return d.Frame(u); }, skipWall, fw, d.ExitStartWallMs(), 0);
+        CHECK_NEAR(d.ExitStartWallMs(), fw, 1e-9);
+        d.Update(6016.0, 1.0f, true);   // 以後の Update で動かない
+        CHECK_NEAR(d.ExitStartWallMs(), fw, 1e-9);
+    }
+    // Slow: スキップの前に完了要求が出ていたなら自然な時刻（待たない）
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 400.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Update(t, 1.0f, true);
+        t += 16.0;
+        d.Update(t, 1.0f, true);
+        d.Skip(t);
+        CHECK_NEAR(d.ExitStartWallMs(), t + nat, 1e-9);
+        CHECK(d.Frame(t + nat + sp::gauge::kPinStampMs).pinT == 1.f);
+    }
+    // Slow: スキップより先に完了要求が来てもスキップ後すぐ終わる場合も、完了要求が自然な時刻より早ければ自然な時刻
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(t);
+        const double skipWall = t;
+        d.Update(t + 16.0, 1.0f, true);   // ロックの絵から 16ms で完了
+        CHECK_NEAR(d.ExitStartWallMs(), skipWall + nat, 1e-9);
+    }
+    // Fast: 持ち替え前（C22 の前）にスキップ、ロードは長く続く
+    {
+        sp::GaugeFastDriver d;
+        double t = 0;
+        for (; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(t);
+        const double skipWall = t;
+        for (; t < 7000.0; t += 16.0) d.Update(t, 0.3f, false);
+        CHECK(!d.HandedOver() && !d.FinishObserved() && std::isnan(d.ExitStartWallMs()));
+        for (double u = skipWall; u < 7000.0; u += 11.0)
+        {
+            const auto f = d.Frame(u);
+            CHECK(f.pinT == 0.f && f.fadeOutT == 0.f && f.locked);
+        }
+        d.Update(7000.0, 1.0f, true);
+        CheckExitHeld([&](double u) { return d.Frame(u); }, skipWall, 7000.0, d.ExitStartWallMs(), 0);
+        CHECK_NEAR(d.ExitStartWallMs(), 7000.0, 1e-9);
+    }
+    // Fast: 持ち替え後（C22 より後）にスキップ → 遅い経路と同じ扱い
+    {
+        sp::GaugeFastDriver d;
+        double t = 0;
+        const double dec = ev.clickMs[sp::CalibrateEvents::kClicks - 2];
+        for (; t < dec + 200.0; t += 16.0) d.Update(t, 0.2f, false);
+        CHECK(d.HandedOver());
+        d.Skip(t);
+        const double skipWall = t;
+        for (; t < 6000.0; t += 16.0) d.Update(t, 0.3f, false);
+        for (double u = skipWall; u < 6000.0; u += 13.0) { const auto f = d.Frame(u); CHECK(f.pinT == 0.f && f.fadeOutT == 0.f); }
+        d.Update(6000.0, 1.0f, true);
+        CheckExitHeld([&](double u) { return d.Frame(u); }, skipWall, 6000.0, d.ExitStartWallMs(), 0);
+    }
+    // Reduce（状態なし）: 完了要求の観測時刻から退場
+    {
+        const double fin = 5000.0;
+        const double held = std::numeric_limits<double>::infinity();
+        for (double u = 0; u < 9000.0; u += 37.0)
+        {
+            const auto f = sp::EvaluateGauge(sp::GaugePath::Reduce, u, 0.3f, ev, held);
+            CHECK(f.pinT == 0.f && f.fadeOutT == 0.f);
+        }
+        const double es = sp::GaugeExitStartMs(ev.pingMs, fin);
+        CHECK_NEAR(es, fin, 1e-9);
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, fin - 1.0, 1.f, ev, es).fadeOutT == 0.f);
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, fin, 1.f, ev, es).pinT == 1.f);
+        CHECK_NEAR(sp::EvaluateGauge(sp::GaugePath::Reduce, fin + 90.0, 1.f, ev, es).fadeOutT, 0.5, 1e-5);
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, fin + 180.0, 1.f, ev, es).fadeOutT == 1.f);
+        // 早く終わるなら自然な時刻
+        CHECK_NEAR(sp::GaugeExitStartMs(ev.pingMs, 300.0), ev.pingMs, 1e-9);
+        CHECK(std::isinf(sp::GaugeExitStartMs(ev.pingMs, std::nan(""))));
+        // 既定（引数なし）は従来どおり
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, ev.pingMs + 500.0, 0.f).fadeOutT == 1.f);
+    }
+    // Skip の時刻は直近の Update より前には戻らない（契約）
+    {
+        sp::GaugeSlowDriver d;
+        for (double t = 0; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(100.0);
+        CHECK(d.LockWallMs() >= 496.0);
     }
 }
 
@@ -711,6 +852,7 @@ int main()
     Test_Skip();
     Test_SkipCancelsHandedOverCues();
     Test_SkipDuringApproach();
+    Test_SkipThenLongLoad();
     Test_Reduce();
     Test_Blur();
     if (g_fail == 0) std::printf("SplashGaugeMotionTests: ALL PASS\n");

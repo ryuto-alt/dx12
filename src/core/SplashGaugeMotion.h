@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace dx12e::splash
@@ -264,10 +265,33 @@ inline GaugeFrame CanonicalFrame(const CalibrateEvents& ev, const HermiteSpline&
 }
 } // namespace gauge_detail
 
-// ロックからの経過 ms（>= 0）に対する絵。Fast / Slow / スキップがすべてこれを通る（ロック以降はビット一致）。
-inline GaugeFrame EvaluateAfterLock(double sinceLockMs, const CalibrateEvents& ev = DefaultCalibrateEvents())
+// 退場（ピン・窓のフェード）の開始時刻。ロードが終わる（完了要求を観測する）前に退場が進まないよう、自然な開始時刻（ピンの時刻）と
+// 完了要求の観測時刻の遅いほうにする。finishMs が NaN（まだ完了要求を観測していない）なら +inf（開始しない = ピン 0・フェード 0 で待つ）。
+// 時刻の基準は呼び出し側で揃える（実時計 ms、またはロックからの経過 ms）。
+inline double GaugeExitStartMs(double naturalMs, double finishMs)
 {
-    return gauge_detail::CanonicalFrame(ev, gauge_detail::MakeCanonicalNeedle(ev), ev.lockMs + std::max(0.0, sinceLockMs));
+    if (std::isnan(finishMs)) return std::numeric_limits<double>::infinity();
+    return std::max(naturalMs, finishMs);
+}
+
+namespace gauge_detail
+{
+// 退場の時計だけを差し替える。dt = 退場の開始からの経過 ms（負・-inf は「まだ」= ピン 0・フェード 0）
+inline void ApplyExitClock(GaugeFrame& f, double dtMs)
+{
+    f.pinT = dtMs >= 0.0 ? static_cast<float>(EaseOutCubic(dtMs / gauge::kPinStampMs)) : 0.f;
+    f.fadeOutT = dtMs >= 0.0 ? static_cast<float>(Clamp01(dtMs / gauge::kFadeOutMs)) : 0.f;
+}
+} // namespace gauge_detail
+
+// ロックからの経過 ms（>= 0）に対する絵。Fast / Slow / スキップがすべてこれを通る（ロック以降はビット一致）。
+// exitStartSinceLockMs: 退場（ピン・フェード）の開始を「ロックからの経過 ms」で指す。NaN（既定）= 自然な時刻（ev.pingMs）。
+// +inf = まだ始めない（ロードが終わっていない。ピン 0・フェード 0 で保持）。有限値 = その時刻から始める（GaugeExitStartMs の結果をロック基準にして渡す）。
+inline GaugeFrame EvaluateAfterLock(double sinceLockMs, const CalibrateEvents& ev = DefaultCalibrateEvents(), double exitStartSinceLockMs = std::numeric_limits<double>::quiet_NaN())
+{
+    GaugeFrame f = gauge_detail::CanonicalFrame(ev, gauge_detail::MakeCanonicalNeedle(ev), ev.lockMs + std::max(0.0, sinceLockMs));
+    if (!std::isnan(exitStartSinceLockMs)) gauge_detail::ApplyExitClock(f, std::max(0.0, sinceLockMs) - exitStartSinceLockMs);
+    return f;
 }
 
 // スキップ（キー・クリック）: 絵はその時点でロックのフレームへ飛ぶ。以降の正規タイムライン上の時刻を返す。
@@ -280,7 +304,10 @@ inline double GaugeSkippedTimelineMs(double tNowMs, double tSkipMs, const Calibr
 
 // 状態を持たない評価。Fast: 正規のタイムライン。Reduce: ロックの状態の静止フレーム（ピン・退場だけ時計で進む）。
 // Slow: 非対応（状態が要る）。GaugeSlowDriver を使うこと。GaugeFrame{}（全 0）を返す。
-inline GaugeFrame EvaluateGauge(GaugePath path, double tMs, float loadProgress01, const CalibrateEvents& ev = DefaultCalibrateEvents())
+// Reduce の exitStartMs: 退場（ピン・フェード）の開始（時計 tMs と同じ基準）。NaN（既定）= ev.pingMs（ロードを待たない従来の動き）、
+// +inf = まだ始めない（ロード未完。ピン 0・フェード 0）、有限値 = GaugeExitStartMs(ev.pingMs, 完了要求の時刻)。
+inline GaugeFrame EvaluateGauge(GaugePath path, double tMs, float loadProgress01, const CalibrateEvents& ev = DefaultCalibrateEvents(),
+                                double exitStartMs = std::numeric_limits<double>::quiet_NaN())
 {
     const HermiteSpline needle = gauge_detail::MakeCanonicalNeedle(ev);
     switch (path)
@@ -293,8 +320,9 @@ inline GaugeFrame EvaluateGauge(GaugePath path, double tMs, float loadProgress01
         GaugeFrame f = gauge_detail::CanonicalFrame(ev, needle, std::max(ev.bellMs[CalibrateEvents::kBells - 1], std::max(0.0, tMs)));
         f.needleDeg = 360.f; f.blurDeg = 0.f; f.overshootPx = 0.f; f.bellT = 1.f;
         const double t = std::max(0.0, tMs);   // timelineMs は CanonicalFrame の値（最後のベルの時刻以上）のまま。reveal は動かない
-        f.pinT = t >= ev.pingMs ? 1.f : 0.f;                       // 動かさない: 刻印は出るだけ
-        f.fadeOutT = static_cast<float>(Clamp01((t - ev.pingMs) / gauge::kFadeOutMs));
+        const double exitStart = std::isnan(exitStartMs) ? ev.pingMs : exitStartMs;
+        f.pinT = t >= exitStart ? 1.f : 0.f;                       // 動かさない: 刻印は出るだけ
+        f.fadeOutT = t >= exitStart ? static_cast<float>(Clamp01((t - exitStart) / gauge::kFadeOutMs)) : 0.f;
         return f;
     }
     case GaugePath::Slow:
@@ -343,8 +371,9 @@ public:
     // 引数 t は実時計 ms。Update の間隔は任意（1 回のヒッチが何 ms でも先読みは保たれる）。
     void Update(double tMs, float loadProgress01, bool finishRequested)
     {
-        if (m_skipped) return;
         tMs = std::max(tMs, m_lastWall);
+        if (finishRequested && !m_finish) { m_finish = true; m_finishWall = tMs; }   // スキップ後も完了要求は記録する（退場はロードの完了まで待つ）
+        if (m_skipped) return;
         m_progress = std::max(m_progress, static_cast<double>(Clamp01(loadProgress01)));
         if (!m_approach)
         {
@@ -385,6 +414,7 @@ public:
     void Skip(double tMs)
     {
         if (m_skipped) return;
+        tMs = std::max(tMs, m_lastWall);               // 契約: スキップ時刻 >= 直近の Update 時刻（それより前なら Update 時刻へ丸める）
         if (m_approach && tMs >= m_lockWall) return;   // ロック以降のスキップは何もしない（巻き戻さない・ロック音を重ねない）
         m_skipped = true;
         m_skipWall = tMs;
@@ -425,12 +455,22 @@ public:
         return m_approach ? m_lockWall : std::nan("");
     }
 
+    // 退場（ピン・フェード）が実際に始まる時刻（Update の時計）。スキップ後は max(ロックの絵 + 自然な間隔, 完了要求の観測時刻)。
+    // スキップ後に完了要求が来るまでは NaN（ロード中は窓を出したまま、ピン 0・フェード 0 で保持する）。スキップしない経路は最終接近の前まで NaN。
+    // 窓を閉じる・図番を出す側（BD3 / BD5）はこの時刻を使う。
+    double ExitStartWallMs() const
+    {
+        if (m_skipped) return m_finish ? m_skipWall + SkipExitSinceLock() : std::nan("");
+        return m_approach ? m_lockWall + (m_ev.pingMs - m_ev.lockMs) : std::nan("");
+    }
+    bool FinishObserved() const { return m_finish; }
+
     // 指針の角度（倍精度。行き過ぎは含まない）。解析・テスト用
     double NeedleDegAt(double tMs) const { return NeedleAt(tMs); }
 
     GaugeFrame Frame(double tMs) const
     {
-        if (m_skipped && tMs >= m_skipWall) return EvaluateAfterLock(tMs - m_skipWall, m_ev);
+        if (m_skipped && tMs >= m_skipWall) return EvaluateAfterLock(tMs - m_skipWall, m_ev, SkipExitSinceLock());
         if (m_approach && tMs >= m_lockWall) return EvaluateAfterLock(tMs - m_lockWall, m_ev);
         const double d = PictureTime(tMs);
 
@@ -445,6 +485,12 @@ public:
     }
 
 private:
+    // スキップ後の退場の開始（ロックの絵からの経過 ms）。完了要求の前は +inf
+    double SkipExitSinceLock() const
+    {
+        return GaugeExitStartMs(m_ev.pingMs - m_ev.lockMs, m_finish ? m_finishWall - m_skipWall : std::nan(""));
+    }
+
     struct Seg { double t0, t1, target, a, b; };   // x(u) = (a + b u) e^{-w u} + target
 
     struct Knot { double w, p; };   // 実時計 w に絵の時計（S 軸）が p
@@ -612,6 +658,8 @@ private:
     double m_approachWall = 0, m_lockWall = 0;
     bool m_skipped = false;
     double m_skipWall = 0;
+    bool m_finish = false;                  // 完了要求を観測した（スキップの後でも記録する）
+    double m_finishWall = 0;                // 観測した Update の時刻
     struct TakenCue { std::uint32_t id; double playAtMs; };
     std::vector<TakenCue> m_taken;          // TakeCues で渡した予約（Click と最終接近の LockTail。Skip で playAt >= tSkip のものを取り消す）
     std::vector<std::uint32_t> m_cancelIds; // Skip が積んだ取り消し
@@ -635,7 +683,8 @@ public:
 
     void Update(double tMs, float loadProgress01, bool finishRequested)
     {
-        if (finishRequested) m_finish = true;
+        m_lastWall = std::max(tMs, m_lastWall);
+        if (finishRequested && !m_finish) { m_finish = true; m_finishWall = m_lastWall; }
         if (!m_decided && tMs >= m_decisionMs)
         {
             m_decided = true;
@@ -654,6 +703,7 @@ public:
     {
         if (m_handed) { m_slow.Skip(tMs); return; }
         if (m_skipped) return;
+        tMs = std::max(tMs, m_lastWall);               // 契約: スキップ時刻 >= 直近の Update 時刻
         if (m_finish && tMs >= m_ev.lockMs) return;   // ロック以降は何もしない
         m_skipped = true;
         m_skipWall = tMs;
@@ -662,7 +712,7 @@ public:
     GaugeFrame Frame(double tMs) const
     {
         if (m_handed) return m_slow.Frame(tMs);
-        if (m_skipped && tMs >= m_skipWall) return EvaluateAfterLock(tMs - m_skipWall, m_ev);
+        if (m_skipped && tMs >= m_skipWall) return EvaluateAfterLock(tMs - m_skipWall, m_ev, SkipExitSinceLock());
         return EvaluateGauge(GaugePath::Fast, tMs, 0.f, m_ev);
     }
 
@@ -670,6 +720,15 @@ public:
     std::vector<GaugeCue> TakeCues() { return m_slow.TakeCues(); }
     // スキップで取り消す予約の id（GaugeSlowDriver と同じ。持ち替える前は常に空）
     std::vector<std::uint32_t> TakeCancelledCueIds() { return m_slow.TakeCancelledCueIds(); }
+
+    // 退場が実際に始まる時刻（GaugeSlowDriver::ExitStartWallMs と同じ意味）。完了要求の前は NaN
+    double ExitStartWallMs() const
+    {
+        if (m_handed) return m_slow.ExitStartWallMs();
+        if (m_skipped) return m_finish ? m_skipWall + SkipExitSinceLock() : std::nan("");
+        return m_finish ? m_ev.pingMs : std::nan("");
+    }
+    bool FinishObserved() const { return m_finish; }
 
     bool HandedOver() const { return m_handed; }   // 345 度で待つ縮退に入った
     double HandOverMs() const { return m_decisionMs; }
@@ -682,11 +741,17 @@ public:
     }
 
 private:
+    double SkipExitSinceLock() const
+    {
+        return GaugeExitStartMs(m_ev.pingMs - m_ev.lockMs, m_finish ? m_finishWall - m_skipWall : std::nan(""));
+    }
+
     CalibrateEvents m_ev;
     GaugeSlowDriver m_slow;
     double m_decisionMs;
     bool m_finish = false, m_decided = false, m_handed = false, m_skipped = false;
     double m_skipWall = 0;
+    double m_lastWall = 0, m_finishWall = 0;
 };
 
 } // namespace dx12e::splash
