@@ -448,7 +448,30 @@ void Application::RegisterMcpEntityMethods()
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create entities while Playing; call dx12_stop first",
                     "dx12_stop で Editor へ戻してから作る（Play 中に作っても Stop で消える）");
-            const std::string type = params.value("type", std::string("box"));
+            // ★type は必須。省略や綴り違いを黙って box にすると「頼んだ物と違う箱」が増えるだけで気づけない（R2-04 / R3-03）。
+            //   宣言していないキー（position の綴り違いや size の誤記など）も黙って捨てず、明示エラーで返す。
+            {
+                static const char* const kKnown[] = {"type", "name", "parent", "parentName", "position", "size", "subdivisions",
+                                                     // 全 method 共通の任意キー（ディスパッチャが先に見るもの）
+                                                     "expectGeneration", "idempotency_key", "idempotencyKey", "dryRun", "confirm_token"};
+                for (auto it = params.begin(); it != params.end(); ++it)
+                {
+                    bool known = false;
+                    for (const char* k : kKnown) if (it.key() == k) { known = true; break; }
+                    if (known) continue;
+                    McpError err(McpErr::InvalidParam, "unknown parameter '" + it.key() + "' for create_entity",
+                        "使える引数は type（必須）, name, position, parent, parentName, size, subdivisions。"
+                        "向きや拡大は作成後に dx12_set_transform、色や質感は dx12_set_component / dx12_material_apply で変える");
+                    err.name  = "E_UNKNOWN_PARAM";
+                    err.cause = "create_entity が受け取らない引数が渡された（黙って無視すると意図と違うものが作られる）";
+                    throw err;
+                }
+            }
+            if (!params.contains("type") || !params["type"].is_string() || params["type"].get<std::string>().empty())
+                throw McpError(McpErr::InvalidParam, "missing required 'type' (string)",
+                    "type は必須: box, sphere, plane, empty, camera, light_directional, light_point, light_spot, "
+                    "particle_emitter, trigger, decal, water, ui_*。3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"");
+            const std::string type = params["type"].get<std::string>();
             std::string name = params.value("name", std::string());
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});
             if (pos.size() != 3) throw McpError(McpErr::InvalidParam, "position must be [x,y,z]",
@@ -708,7 +731,7 @@ void Application::RegisterMcpEntityMethods()
             // （別名保存は「今開いているシーン」が保存されたわけではない）
             if (rel.empty() && m_editorCtx) MarkSceneClean();
             resp["ok"] = true;
-            resp["result"] = {{"path", rel.empty() ? m_editorCtx->currentScenePath : rel}};
+            resp["result"] = {{"path", rel.empty() ? ToAssetRel(m_editorCtx->currentScenePath) : rel}};   // 常に assets 相対（ping.currentScene と同じ形）
             // 分割保存（シーン設定 partition.cellSize > 0）のときは、書いたファイルの内訳を返す（§4.3）
             if (const auto& sr = SceneSerializer::LastSaveReport(); sr.cellSize > 0.0f)
                 resp["result"]["partition"] = {{"cellSize", sr.cellSize}, {"partitioned", sr.partitioned},
@@ -1865,8 +1888,10 @@ void Application::RegisterMcpEntityMethods()
             }
             m_editorCtx->pendingNewScene        = true;   // フレーム境界で空シーン生成 + sceneGeneration++
             m_editorCtx->pendingNewSceneSkipConfirm = true;   // 未保存モーダルを出さない（AI は押せない）
-            resp["ok"] = true;
-            resp["result"] = {{"applied", "next frame"}};
+            // 切り替えが終わってから本当の結果（sceneName / path / entityCount / sceneGeneration）を返す。
+            // open_scene と同じ遅延応答の枠（m_mcpLoadReply）を使う（R1-13）。
+            m_mcpLoadReply = deferred;
+            isDeferred = true;
         });
 
     McpDefine("spawn_prefab", "name:string,path:string,position:any", DX12E_MCP_HANDLER

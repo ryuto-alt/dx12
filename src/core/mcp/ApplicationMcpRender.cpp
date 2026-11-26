@@ -382,6 +382,8 @@ void Application::RegisterMcpRenderMethods()
     McpDefine("set_upscaler", "debugJitterSign:any,mode:string,quality:string", DX12E_MCP_HANDLER
         {
             auto& t = m_scene->GetTaaSettings();
+            const bool prevEnabled = t.enabled;
+            const int  prevKind    = t.upscaler;
             if (params.contains("mode"))
             {
                 const std::string m = params.value("mode", std::string());
@@ -403,7 +405,9 @@ void Application::RegisterMcpRenderMethods()
                 m_upscaler->SetDebugJitterSign(static_cast<float>(McpFloatParam(params, "debugJitterSign", 1.0f, -1.0f, 1.0f)));
             // 内部解像度が変わる（DLSS の品質 / 空間スケールとの切替）。次フレームの先頭で即反映し、履歴は捨てる。
             m_renderResFlush     = true;
-            m_dlssFallbackLogged = false;
+            // 縮退の警告はモードが変わったときだけ出し直す。同じ dlss を繰り返し設定してもログを増やさない（R1-14）。
+            if (t.enabled != prevEnabled || t.upscaler != prevKind)
+                m_dlssFallbackLogged = false;
             InvalidateTemporalHistory(/*includeDdgi*/ false);
             resp["ok"] = true;
             resp["result"] = UpscalerJson();

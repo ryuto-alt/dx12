@@ -3013,6 +3013,20 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         m_mcpIdempotency.clear();   // 別シーンの entity を idempotentReplay で誤返却しないようクリア
         m_editorCtx->sceneLoadFailedPath.clear();   // 新しく作った＝開けなかったシーンの保存停止は解除
         Logger::Info("New scene created");
+        // MCP new_scene の遅延応答（切り替え完了後の実際の結果。open_scene と同じ形）。
+        if (m_mcpLoadReply.client != 0)
+        {
+            int entityCount = 0;
+            for (auto e : m_scene->GetRegistry().view<NameTag>()) { (void)e; ++entityCount; }
+            const std::string rel = ToAssetRel(m_editorCtx->currentScenePath);
+            CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply,
+                nlohmann::json{{"sceneName", rel.empty() ? std::string("Untitled")
+                                                          : std::filesystem::path(rel).stem().string()},
+                               {"path", rel},
+                               {"entityCount", entityCount},
+                               {"sceneGeneration", m_sceneGeneration}});
+            m_mcpLoadReply = {};
+        }
     }
 
     // Deferred: scene load（描画前に処理）
@@ -3350,7 +3364,11 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 auto e = reg.create();
                 reg.emplace<NameTag>(e, NameTag{name});
                 reg.emplace<Transform>(e, Transform{req.position, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}});
-                reg.emplace<ParticleEmitter>(e, ParticleEmitter{});
+                // layers が空の放出器は「何も出さない」ので既定のレイヤーを 1 枚入れる（Components.h の取り決め）。
+                ParticleEmitter pe;
+                pe.layers.emplace_back();
+                pe.layers.back().name = "Layer 1";
+                reg.emplace<ParticleEmitter>(e, std::move(pe));
                 spawnedEntity = e;
             }
             else if (req.modelPath == "__trigger__")
