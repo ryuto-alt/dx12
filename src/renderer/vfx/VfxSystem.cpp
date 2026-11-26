@@ -17,6 +17,8 @@
 #include "graphics/GpuTimer.h"
 #include "renderer/ViewDesc.h"
 #include "renderer/vfx/VfxCurl.h"
+#include "renderer/vfx/VfxFlipbook.h"
+#include "renderer/FrameConstants.h"
 #include "renderer/vfx/VfxRuntime.h"
 #include "resource/ShaderCompiler.h"
 
@@ -100,6 +102,8 @@ VfxSystem::~VfxSystem()
     ComPtr<ID3D12Resource>* const owned[] = { &m_pool, &m_stats, &m_opsUpload, &m_curl, &m_dummyDepth, &m_readback[0], &m_readback[1], &m_readback[2], &m_readback[3] };
     for (ComPtr<ID3D12Resource>* r : owned)
         if (*r) DeferredRelease::Defer(std::move(*r), nullptr);
+    for (auto& kv : m_flipTex)
+        if (kv.second.res) DeferredRelease::Defer(std::move(kv.second.res), nullptr);
 }
 
 // ===========================================================================
@@ -128,13 +132,23 @@ bool VfxSystem::CreatePipelines(ID3D12Device* dev)
         if (FAILED(dev->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_simRS)))) return false;
     }
     {
-        D3D12_ROOT_PARAMETER p[2]{};
+        D3D12_ROOT_PARAMETER p[3]{};
         p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         p[0].Constants.ShaderRegister = 0; p[0].Constants.Num32BitValues = 36;
         p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; p[1].Descriptor.ShaderRegister = 0;
         p[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+        // b1 = FlipCB（フリップブック。VfxSpriteDraw.hlsl）。36 + 2 + 24 = 62 DWORD（上限 64）
+        p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        p[2].Constants.ShaderRegister = 1; p[2].Constants.Num32BitValues = 24;
+        D3D12_STATIC_SAMPLER_DESC ss{};   // s0 = 線形・クランプ（フリップブックは枠の半テクセル内側へ自前でクランプする）
+        ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        ss.MaxLOD = D3D12_FLOAT32_MAX;
+        ss.ShaderRegister = 0;
+        ss.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        ss.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         D3D12_ROOT_SIGNATURE_DESC d{};
-        d.NumParameters = 2; d.pParameters = p;
+        d.NumParameters = 3; d.pParameters = p; d.NumStaticSamplers = 1; d.pStaticSamplers = &ss;
         d.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
                 | D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS
                 | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS
@@ -178,7 +192,15 @@ bool VfxSystem::CreatePipelines(ID3D12Device* dev)
     g.NumRenderTargets = 1;
     g.RTVFormats[0] = kSceneColorFmt;
     g.SampleDesc = {1, 0};
-    return SUCCEEDED(dev->CreateGraphicsPipelineState(&g, IID_PPV_ARGS(&m_psoDraw)));
+    if (FAILED(dev->CreateGraphicsPipelineState(&g, IID_PPV_ARGS(&m_psoDraw)))) return false;
+    // フリップブック（BD7）。無くても UnoFX は動く（flipbook はスプライトへ縮退する）
+    auto fvs = ShaderCompiler::LoadFromFile(dir + L"VfxSpriteDraw_VS.cso");
+    auto fps = ShaderCompiler::LoadFromFile(dir + L"VfxSpriteDraw_PS.cso");
+    if (fvs.GetSize() == 0 || fps.GetSize() == 0) { Logger::Warn("UnoFX: フリップブックの描画シェーダを読めない（Shaders を先にビルド）。flipbook はスプライトで描く"); return true; }
+    g.VS = { fvs.GetData(), fvs.GetSize() };
+    g.PS = { fps.GetData(), fps.GetSize() };
+    if (FAILED(dev->CreateGraphicsPipelineState(&g, IID_PPV_ARGS(&m_psoFlip)))) Logger::Warn("UnoFX: フリップブックの PSO を作れない。flipbook はスプライトで描く");
+    return true;
 }
 
 bool VfxSystem::CreateBuffers(ID3D12Device* dev, StageCtx& ctx)
@@ -305,6 +327,118 @@ bool VfxSystem::EnsureGpu(StageCtx& ctx, bool wait)
     m_ranges.push_back({0, kPoolCapacity, false});
     m_gpuReady = true;
     Logger::Info("UnoFX: 初期化（プール {} 粒子 x {}B、カール場 {}^3）", kPoolCapacity, sizeof(GPart), kCurlRes);
+    return true;
+}
+
+// ===========================================================================
+// フリップブックのテクスチャ（BD7）
+// ===========================================================================
+VfxSystem::FlipTex* VfxSystem::GetFlipTex(StageCtx& ctx, const std::string& path)
+{
+    auto it = m_flipTex.find(path);
+    if (it != m_flipTex.end() && (it->second.ok || it->second.gen == m_assetGen)) return it->second.ok ? &it->second : nullptr;
+    FlipTex& t = m_flipTex[path];
+    t.gen = m_assetGen; t.ok = false; t.error.clear();
+    const Host& host = Runtime::Get().GetHost();
+    const std::vector<u8> bytes = host.readAsset ? host.readAsset(host.user, path) : vfs::ReadAsset(path);
+    if (bytes.empty()) { t.error = "ファイルが無い / 読めない: " + path; Logger::Warn("UnoFX: {}", t.error); return nullptr; }
+    flip::DdsInfo info; std::string err;
+    if (!flip::ParseDdsHeader(bytes.data(), bytes.size(), info, err)) { t.error = path + ": " + err; Logger::Warn("UnoFX: {}", t.error); return nullptr; }
+    ComPtr<ID3D12Device> dev;
+    if (!ctx.cmd || !ctx.descriptors || FAILED(ctx.cmd->GetDevice(IID_PPV_ARGS(&dev)))) { t.error = "コマンドリストが無い"; return nullptr; }
+
+    const D3D12_HEAP_PROPERTIES hp = HeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    D3D12_RESOURCE_DESC d{};
+    d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    d.Width = info.w; d.Height = info.h; d.DepthOrArraySize = 1; d.MipLevels = 1;
+    d.Format = static_cast<DXGI_FORMAT>(info.dxgi); d.SampleDesc = {1, 0};
+    ComPtr<ID3D12Resource> res;
+    if (FAILED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &d, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&res))))
+    { t.error = path + ": テクスチャを作れない"; Logger::Warn("UnoFX: {}", t.error); return nullptr; }
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT rows = 0; UINT64 rowSize = 0, total = 0;
+    dev->GetCopyableFootprints(&d, 0, 1, 0, &fp, &rows, &rowSize, &total);
+    ComPtr<ID3D12Resource> upload;
+    if (!CreateBuffer(dev.Get(), D3D12_HEAP_TYPE_UPLOAD, total, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, upload))
+    { t.error = path + ": アップロード用バッファを作れない"; return nullptr; }
+    u8* mapped = nullptr;
+    const D3D12_RANGE none{0, 0};
+    if (FAILED(upload->Map(0, &none, reinterpret_cast<void**>(&mapped)))) { t.error = path + ": アップロード用バッファを開けない"; return nullptr; }
+    const u8* src = bytes.data() + info.dataOffset;
+    for (u32 y = 0; y < info.h; ++y)
+        std::memcpy(mapped + u64(y) * fp.Footprint.RowPitch, src + u64(y) * info.w * info.bpp, u64(info.w) * info.bpp);
+    upload->Unmap(0, nullptr);
+    D3D12_TEXTURE_COPY_LOCATION dstLoc{}, srcLoc{};
+    dstLoc.pResource = res.Get(); dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    srcLoc.pResource = upload.Get(); srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; srcLoc.PlacedFootprint = fp;
+    ctx.cmd->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+    Transition(ctx.cmd, res.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    DeferredRelease::Defer(std::move(upload), nullptr);
+
+    const u32 srv = ctx.descriptors->AllocateIndex();
+    if (srv == kNone) { t.error = "SRV ヒープが一杯"; Logger::Warn("UnoFX: {}", t.error); return nullptr; }
+    D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+    sv.Format = d.Format; sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sv.Texture2D.MipLevels = 1;
+    dev->CreateShaderResourceView(res.Get(), &sv, ctx.descriptors->GetCpuHandle(srv));
+    if (t.res)
+    {
+        const u64 old = u64(t.w) * t.h * t.bpp;
+        m_vram -= std::min(m_vram, old);
+        DeferredRelease::Defer(std::move(t.res), nullptr);
+    }
+    t.res = std::move(res); t.srv = srv; t.w = info.w; t.h = info.h; t.bpp = info.bpp; t.ok = true;
+    m_vram += u64(info.w) * info.h * info.bpp;
+    Logger::Info("UnoFX: フリップブックのテクスチャ {}（{}x{}）", path, info.w, info.h);
+    return &t;
+}
+
+void VfxSystem::PrepareFlipbook(StageCtx& ctx, const RenderDesc& r)
+{
+    if (r.kind != RenderKind::Flipbook || r.texture.empty()) return;
+    GetFlipTex(ctx, r.texture);
+    if (!r.flipDbf.empty()) GetFlipTex(ctx, r.flipDbf);
+    if (!r.flipMv.empty()) GetFlipTex(ctx, r.flipMv);
+}
+
+const VfxSystem::FlipTex* VfxSystem::FindFlipTex(const std::string& path) const
+{
+    auto it = m_flipTex.find(path);
+    return it != m_flipTex.end() && it->second.ok ? &it->second : nullptr;
+}
+
+// FlipCB（24 DWORD。VfxSpriteDraw.hlsl の b1）を組む。テクスチャが足りなければ false。
+bool VfxSystem::BindFlipbook(const RenderDesc& r, u32 out[24], const StageCtx& ctx) const
+{
+    if (!m_psoFlip || r.kind != RenderKind::Flipbook) return false;
+    const FlipTex* t0 = FindFlipTex(r.texture);
+    if (!t0) return false;
+    const bool smoke = r.flipChannels == "smoke6way";
+    const FlipTex* t1 = smoke ? FindFlipTex(r.flipDbf) : nullptr;
+    if (smoke && !t1) return false;
+    const FlipTex* tm = r.flipMv.empty() ? nullptr : FindFlipTex(r.flipMv);   // MV が読めなければ補間なし（絵は出す）
+    const u32 channel = smoke ? 1u : (r.flipChannels == "color" ? 2u : 0u);
+    const u32 frames = r.flipFrames ? r.flipFrames : r.flipCols * r.flipRows;
+    // 光: 太陽（表面から光へ = 進む向きの逆）、環境光は IBL の平均（W2 の VFX-05 で TLV に置き換える）
+    float L[3] = {0.0f, 1.0f, 0.0f}, sun[3] = {0, 0, 0}, amb[3] = {0.3f, 0.3f, 0.3f};
+    if (const FrameConstantsData* fc = ctx.perFrameCpu)
+    {
+        L[0] = -fc->lightDir.x; L[1] = -fc->lightDir.y; L[2] = -fc->lightDir.z;
+        sun[0] = fc->lightColor.x; sun[1] = fc->lightColor.y; sun[2] = fc->lightColor.z;
+        const float a = fc->ambientStrength * (fc->hasIBL ? fc->iblIntensity : 1.0f);
+        amb[0] = amb[1] = amb[2] = a;
+    }
+    const float f[16] = {
+        r.flipFps, r.flipMvRange, r.flipErodeStart, r.flipErodeWidth,
+        L[0], L[1], L[2], r.flipTempMin,
+        sun[0], sun[1], sun[2], r.flipTempMax,
+        amb[0], amb[1], amb[2], r.flipEmission };
+    out[0] = t0->srv; out[1] = t1 ? t1->srv : kNone; out[2] = tm ? tm->srv : kNone;
+    out[3] = channel | (r.AnchorBottom() ? 16u : 0u);
+    out[4] = r.flipCols; out[5] = r.flipRows; out[6] = frames; out[7] = 0;
+    std::memcpy(out + 8, f, sizeof(f));
     return true;
 }
 
@@ -665,6 +799,7 @@ void VfxSystem::Update(StageCtx& ctx)
                 budgetLeft -= cap;
                 in->touched = true;
                 const AssetEntry::Em& aem = a->em[ei];
+                PrepareFlipbook(ctx, em.render);
 
                 const SeekRequest* sk = nullptr;
                 for (const SeekRequest& s : seeks)
@@ -768,6 +903,7 @@ void VfxSystem::Draw(StageCtx& ctx)
     cb.uP[1] = depthIdx;
     cb.uP[3] = hasDepth ? 1u : 0u;
 
+    bool curFlip = false;
     for (auto& kv : m_instances)
     {
         const Instance& in = kv.second;
@@ -780,6 +916,19 @@ void VfxSystem::Draw(StageCtx& ctx)
         cb.params[0] = r.intensity; cb.params[1] = r.softDistance; cb.params[2] = fade; cb.params[3] = r.stretch;
         cb.uP[0] = in.base;
         cb.uP[2] = (r.blend == Blend::Alpha ? 1u : 0u) | (v.orthographic ? 2u : 0u);
+        u32 flipCb[24];
+        const bool flipbook = BindFlipbook(r, flipCb, ctx);
+        if (r.kind == RenderKind::Flipbook && !flipbook && !m_flipWarned)
+        {
+            m_flipWarned = true;
+            Logger::Warn("UnoFX: flipbook のテクスチャ / シェーダが無いので、スプライトで描く（{}）", in.assetPath);
+        }
+        if (flipbook != curFlip)
+        {
+            cmd->SetPipelineState(flipbook ? m_psoFlip.Get() : m_psoDraw.Get());
+            curFlip = flipbook;
+        }
+        if (flipbook) cmd->SetGraphicsRoot32BitConstants(2, 24, flipCb, 0);
         cmd->SetGraphicsRoot32BitConstants(0, 36, &cb, 0);
         cmd->DrawInstanced(6, std::min(in.clk.spawned, in.cap), 0, 0);
     }

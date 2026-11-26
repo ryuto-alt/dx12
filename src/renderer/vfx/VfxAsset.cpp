@@ -414,6 +414,46 @@ bool ParseRender(const json& in, RenderDesc& r, std::string& err, std::vector<st
             if (!fb["fps"].is_number() || !FiniteIn(fb["fps"].get<float>(), 0.0f, 1000.0f)) { err = "render.flipbook.fps は 0..1000"; return false; }
             r.flipFps = fb["fps"].get<float>();
         }
+        if (fb.contains("frames"))
+        {
+            if (!fb["frames"].is_number_integer() || fb["frames"].get<int>() < 1 || fb["frames"].get<u32>() > r.flipCols * r.flipRows)
+            { err = "render.flipbook.frames は 1..cols*rows の整数"; return false; }
+            r.flipFrames = fb["frames"].get<u32>();
+        }
+        auto fnum = [&](const char* key, float& v, float lo, float hi) -> bool
+        {
+            if (!fb.contains(key)) return true;
+            if (!fb[key].is_number() || !FiniteIn(fb[key].get<float>(), lo, hi)) { err = std::string("render.flipbook.") + key + ": 範囲の外"; return false; }
+            v = fb[key].get<float>();
+            return true;
+        };
+        auto fstr = [&](const char* key, std::string& v) -> bool
+        {
+            if (!fb.contains(key)) return true;
+            if (!fb[key].is_string()) { err = std::string("render.flipbook.") + key + ": 文字列が要る"; return false; }
+            v = fb[key].get<std::string>();
+            return true;
+        };
+        if (!fnum("mvRange", r.flipMvRange, 0.0f, 8.0f) || !fnum("tempMin", r.flipTempMin, 500.0f, 20000.0f) ||
+            !fnum("tempMax", r.flipTempMax, 500.0f, 20000.0f) || !fnum("emission", r.flipEmission, 0.0f, 1000.0f) ||
+            !fnum("erodeStart", r.flipErodeStart, 0.0f, 1.0f) || !fnum("erodeWidth", r.flipErodeWidth, 0.001f, 1.0f) ||
+            !fstr("mv", r.flipMv) || !fstr("dbf", r.flipDbf) || !fstr("channels", r.flipChannels)) return false;
+        if (r.flipChannels != "fire" && r.flipChannels != "smoke6way" && r.flipChannels != "color")
+        { err = "render.flipbook.channels: '" + r.flipChannels + "' は使えない（fire | smoke6way | color）"; return false; }
+        if (r.flipTempMax < r.flipTempMin) { err = "render.flipbook.tempMax は tempMin 以上"; return false; }
+        if (fb.contains("anchor"))
+        {
+            const std::string a = fb["anchor"].is_string() ? fb["anchor"].get<std::string>() : std::string();
+            if (a != "bottom" && a != "center") { err = "render.flipbook.anchor は bottom | center"; return false; }
+            r.flipAnchorSet = true; r.flipAnchorBottom = (a == "bottom");
+        }
+        for (auto it = fb.begin(); it != fb.end(); ++it)
+        {
+            static const char* fk[] = { "cols", "rows", "fps", "frames", "channels", "dbf", "mv", "mvRange", "anchor", "tempMin", "tempMax", "emission", "erodeStart", "erodeWidth" };
+            bool ok = false;
+            for (const char* k2 : fk) if (it.key() == k2) ok = true;
+            if (!ok) warnings.push_back("render.flipbook: 未知のキー '" + it.key() + "' は無視した");
+        }
     }
     for (auto it = in.begin(); it != in.end(); ++it)
     {
@@ -604,7 +644,21 @@ std::string SerializeUvfx(const VfxAsset& a)
         r["stretch"] = e.render.stretch;
         if (!e.render.texture.empty()) r["texture"] = e.render.texture;
         if (e.render.kind == RenderKind::Flipbook || e.render.flipCols != 1 || e.render.flipRows != 1 || e.render.flipFps != 0.0f)
-            r["flipbook"] = { {"cols", e.render.flipCols}, {"rows", e.render.flipRows}, {"fps", e.render.flipFps} };
+        {
+            json fb = { {"cols", e.render.flipCols}, {"rows", e.render.flipRows}, {"fps", e.render.flipFps} };
+            if (e.render.flipFrames != 0) fb["frames"] = e.render.flipFrames;
+            if (e.render.kind == RenderKind::Flipbook)
+            {
+                fb["channels"] = e.render.flipChannels;
+                if (!e.render.flipDbf.empty()) fb["dbf"] = e.render.flipDbf;
+                if (!e.render.flipMv.empty()) fb["mv"] = e.render.flipMv;
+                fb["mvRange"] = e.render.flipMvRange;
+                fb["anchor"] = e.render.AnchorBottom() ? "bottom" : "center";
+                fb["tempMin"] = e.render.flipTempMin; fb["tempMax"] = e.render.flipTempMax; fb["emission"] = e.render.flipEmission;
+                fb["erodeStart"] = e.render.flipErodeStart; fb["erodeWidth"] = e.render.flipErodeWidth;
+            }
+            r["flipbook"] = std::move(fb);
+        }
         je["render"] = r;
         j["emitters"].push_back(std::move(je));
     }
