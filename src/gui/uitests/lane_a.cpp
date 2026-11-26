@@ -347,6 +347,7 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
         ImGuiWindow* gw = ImGui::FindWindowByName("###MaterialGraph");
         IM_CHECK(gw != nullptr);
         const ImVec2 c(gw->Pos.x + gw->Size.x * 0.5f, gw->Pos.y + gw->Size.y * 0.5f);
+        const int baked0 = ImGui::GetIO().Fonts->Builder ? ImGui::GetIO().Fonts->Builder->BakedPool.Size : -1;
         ctx->MouseMoveToPos(c);
         for (int i = 0; i < 40; ++i)
         {
@@ -355,9 +356,11 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
         }
         ctx->Yield(6);
         {
-            // 焼いた（ImFontBaked）数。GraphView.cpp の行高さ測定が量子化されるまでは増えるので、ログだけ残す。
+            // 焼いた（ImFontBaked）数。行高さ測定も量子化されているので、ホイール往復での増分は段数×フォント数で頭打ちになる。
             ImFontAtlas* atlas = ImGui::GetIO().Fonts;
-            ctx->LogInfo("dpi %.2f: baked=%d", sc, atlas->Builder ? atlas->Builder->BakedPool.Size : -1);
+            const int baked1 = atlas->Builder ? atlas->Builder->BakedPool.Size : -1;
+            ctx->LogInfo("dpi %.2f: baked=%d (sweep +%d)", sc, baked1, baked1 - baked0);
+            IM_CHECK(baked0 < 0 || baked1 - baked0 <= ng::kTextZoomStepCount * 3 * 3);
         }
         const int atlasId = ImGui::GetIO().Fonts->TexData ? ImGui::GetIO().Fonts->TexData->UniqueID : -1;
         if (atlasId != atlasId0) atlasGrew = true;

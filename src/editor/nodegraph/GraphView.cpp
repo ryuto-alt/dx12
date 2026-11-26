@@ -211,12 +211,12 @@ bool GraphView::FocusNode(NodeId id, bool animate)
     ShowBringToFront(m_sel);
     const Rect r = m_doc->NodeRect(id);
     if (IsEmptyRect(r)) return true;
-    // 十分読める大きさ（75% 以上。文字サイズの段 kTextZoomSteps に合わせ、量子化の r が 1 になる）で、ノードが窓の中に収まっているときは動かさない。そうでなければ中央へ寄せる
+    // 十分読める大きさ（70% 以上）で、ノードが窓の中に収まっているときは動かさない。そうでなければ中央へ寄せる
     const Viewport v = m_vp;
     const Rect vis = v.VisibleGraphRect();
     const bool inView = vis.Expanded(-24.0f).Contains(r);
-    if (inView && m_zoomTarget >= 0.75f) return true;
-    m_zoomTarget = std::max(m_zoomTarget, 0.75f);
+    if (inView && m_zoomTarget >= 0.7f) return true;
+    m_zoomTarget = std::max(m_zoomTarget, 0.7f);
     CenterOn(r.Center(), animate);
     return true;
 }
@@ -297,11 +297,10 @@ void GraphView::Draw(const char* strId, ImVec2 size)
         m_windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         m_hovered = hovered;
 
-        // 1 行の高さ（今の倍率で。中央寄せに使う）
-        {
+        // 1 行の高さ（中央寄せに使う）。描画（TextSizeQ / AddTextQ）と同じ量子化で測る: 焼くサイズ qpx で測って r 倍する。
+        auto updateLineHeights = [&]() {
             const LayoutConfig& c = m_doc->Layout().Config();
             const float scale = m_zoom * m_dpi;
-            // 描画（TextSizeQ / AddTextQ）と同じ量子化で測る。焼くサイズ qpx で測り、高さは r 倍する。
             auto lineH = [&](ImFont* f, float units, const char* t) {
                 const float px = std::max(1.0f, std::floor(units * scale + 0.5f));
                 const QuantText q = QuantizeText(px, m_zoom);
@@ -311,7 +310,8 @@ void GraphView::Draw(const char* strId, ImVec2 size)
             m_lhLabel = lineH(FontBody(), c.textUnits, "Ag");
             m_lhTitle = lineH(FontBold(), c.titleUnits, "Ag");
             m_lhMono  = lineH(FontMono(), c.textUnits, "0.");
-        }
+        };
+        updateLineHeights();
 
         m_vp.origin = Vec2(m_canvasMin.x, m_canvasMin.y);
         m_vp.size = Vec2(size.x, size.y);
@@ -325,6 +325,7 @@ void GraphView::Draw(const char* strId, ImVec2 size)
         AutoPan(m_dt);
         m_vp.pan = m_pan;
         m_vp.zoom = m_zoom;
+        updateLineHeights();   // 描画に使う最終の zoom で測り直す（ホイールや枠合わせの最中に測りと描画の段がずれない）
         m_vp.Scale();
         Render();
         m_stats.zoom = m_zoom;
