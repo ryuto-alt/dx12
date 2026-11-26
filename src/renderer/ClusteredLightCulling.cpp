@@ -182,8 +182,11 @@ void ClusteredLightCulling::Initialize(GraphicsDevice& device, DescriptorHeap* s
         //   Application::Initialize の中で即座に上書きする（フォワード PS が t21/t22/t23 を
         //   Texture2D として宣言しているので、型の合わないまま描画に入らせない）。
         //   ここは「テーブルを Set した瞬間に未初期化が無い」ことの保険。
-        for (u32 i = 3; i < kSrvTableSize; ++i)
+        for (u32 i = 3; i < kClusterTableExisting; ++i)
             dev->CreateShaderResourceView(m_countBuf.Get(), &srv, m_srvHeap->GetCpuHandle(base + i));
+        // [14..] 将来分（LS-06 / MH-5 など。ClusterTableLayout.h で宣言済み）: 型つきのヌル SRV で埋める。
+        for (u32 i = kClusterTableExisting; i < kSrvTableSize; ++i)
+            WriteDummySrv(dev, ClusterDummyKindAt(i), m_srvHeap->GetCpuHandle(base + i));
     }
 
     Logger::Info("ClusteredLightCulling initialized ({}x{}x{}={} clusters, {} lights/cluster, {} scene lights, {:.1f} MB)",
@@ -191,6 +194,45 @@ void ClusteredLightCulling::Initialize(GraphicsDevice& device, DescriptorHeap* s
                  cluster::kMaxLightsPerCluster, cluster::kMaxSceneLights,
                  static_cast<double>(kAabbBytes + kIndexBytes + kCountBytes + kLightBytes * kFrameCount)
                      / (1024.0 * 1024.0));
+}
+
+void ClusteredLightCulling::WriteDummySrv(ID3D12Device* dev, DummyKind kind, D3D12_CPU_DESCRIPTOR_HANDLE dst)
+{
+    D3D12_SHADER_RESOURCE_VIEW_DESC d{};
+    d.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    d.Format                  = DXGI_FORMAT_R8G8B8A8_UNORM;
+    switch (kind)
+    {
+    case DummyKind::Buffer:
+        d.ViewDimension              = D3D12_SRV_DIMENSION_BUFFER;
+        d.Format                     = DXGI_FORMAT_UNKNOWN;
+        d.Buffer.NumElements         = 1;
+        d.Buffer.StructureByteStride = 16;
+        break;
+    case DummyKind::Tex2D:
+        d.ViewDimension       = D3D12_SRV_DIMENSION_TEXTURE2D;
+        d.Texture2D.MipLevels = 1;
+        break;
+    case DummyKind::Tex2DArray:
+        d.ViewDimension            = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        d.Texture2DArray.MipLevels = 1;
+        d.Texture2DArray.ArraySize = 1;
+        break;
+    case DummyKind::Tex3D:
+        d.ViewDimension       = D3D12_SRV_DIMENSION_TEXTURE3D;
+        d.Texture3D.MipLevels = 1;
+        break;
+    case DummyKind::TexCube:
+        d.ViewDimension         = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        d.TextureCube.MipLevels = 1;
+        break;
+    case DummyKind::TexCubeArray:
+        d.ViewDimension                = D3D12_SRV_DIMENSION_TEXTURECUBEARRAY;
+        d.TextureCubeArray.MipLevels   = 1;
+        d.TextureCubeArray.NumCubes    = 1;
+        break;
+    }
+    dev->CreateShaderResourceView(nullptr, &d, dst);
 }
 
 void ClusteredLightCulling::Shutdown()
