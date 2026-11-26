@@ -71,6 +71,24 @@ try {
     check("近い名前が didYouMean に入る", (e404b?.error_did_you_mean ?? []).includes("A (1)") || (e404b?.error_did_you_mean ?? []).includes("A"), e404b);
     const cf = await fail("create_entity", { type: "sphre" });
     check("未知の type は code 2 + E_BAD_ENUM + didYouMean", cf?.error_code === 2 && cf.error_name === "E_BAD_ENUM" && cf.error_did_you_mean?.includes("sphere"), cf);
+    // C14: type 必須 / 未知引数の拒否 / water / ui_canvas に parent は不可 / 3D の parent
+    const nt = await fail("create_entity", { name: "NoType" });
+    check("type 省略は box にせず code 2 + E_MISSING_PARAM", nt?.error_code === 2 && nt.error_name === "E_MISSING_PARAM" && (await call("find_entity", { name: "NoType" })) === null, nt);
+    const uk = await fail("create_entity", { type: "box", positon: [0, 1, 0] });
+    check("未知の引数は code 2 + E_UNKNOWN_PARAM + didYouMean(position)", uk?.error_code === 2 && uk.error_name === "E_UNKNOWN_PARAM" && uk.error_did_you_mean?.includes("position"), uk);
+    const wt = await call("create_entity", { type: "water", name: "Lake", position: [0, 2, 0] });
+    check("type:water が作れる", wt.name === "Lake", wt);
+    const cp = await fail("create_entity", { type: "ui_canvas", parent: wt.entityId });
+    check("ui_canvas に parent を付けるとエラー(code 2)", cp?.error_code === 2 && /ui_canvas/.test(cp.error ?? cp.message ?? JSON.stringify(cp)), cp);
+    const cpn = await fail("create_entity", { type: "ui_canvas", parentName: "Lake" });
+    check("ui_canvas に parentName もエラー", cpn?.error_code === 2, cpn);
+    const kid = await call("create_entity", { type: "box", name: "WaterKid", parent: wt.entityId });
+    const hier = await call("get_hierarchy");
+    const lakeNode = hier.roots.find((r: any) => r.name === "Lake");
+    check("3D でも parent で親子付けできる", JSON.stringify(lakeNode?.children ?? []).includes("WaterKid"), lakeNode);
+    const idem = await call("create_entity", { type: "empty", name: "Idem", idempotency_key: "k1" });
+    check("共通キー(idempotency_key)は未知引数にならない", idem.name === "Idem", idem);
+    await call("delete_entity", { entity: wt.entityId }); await call("delete_entity", { entity: idem.entityId });   // 後続の検査へ持ち越さない
     const f = await call("find_entity", { name: "Sun" });
     check("find_entity は {entityId,name} / 無ければ null", f?.name === "Sun" && (await call("find_entity", { name: "zzz" })) === null);
     const lv = await call("list_entities", { verbose: false, name_prefix: "A" });
@@ -299,6 +317,18 @@ try {
     check("get_mode は mock の mode を返す", (await call("get_mode")).mode === "Editor");
     check("snapshot() は entities / settings を含む複製", sim.snapshot().entities.length === sim.state.entities.length && sim.snapshot().entities !== sim.state.entities);
     check("hash は entityId / guid に依存しない(同じ内容を別 id で作っても同じ)", (() => { const a = createSceneSim(); return a.hash() === createSceneSim().hash(); })());
+    // ── [9] C14: new_scene の実結果 / ping の currentScene・currentSceneProjectPath / save_scene の path・projectPath ──
+    console.log("[9] new_scene / ping / save_scene の形");
+    const ns = await call("new_scene", { savePath: "scenes/level2.json" });
+    check("new_scene(savePath あり) = {sceneName,path,projectPath,entityCount,sceneGeneration,saved:true}", ns.sceneName === "level2" && ns.path === "scenes/level2.json" && ns.projectPath === "assets/scenes/level2.json" && ns.entityCount === 0 && typeof ns.sceneGeneration === "number" && ns.saved === true && ns.applied === undefined, ns);
+    const pg = await call("ping");
+    check("ping は currentScene(assets 相対)と currentSceneProjectPath を返す", pg.currentScene === "scenes/level2.json" && pg.currentSceneProjectPath === "assets/scenes/level2.json", pg);
+    const nu = await call("new_scene", {});
+    check("new_scene(savePath なし) = path/projectPath が null・saved:false", nu.path === null && nu.projectPath === null && nu.saved === false && nu.entityCount === 0 && nu.sceneGeneration === ns.sceneGeneration + 1, nu);
+    const pu = await call("ping");
+    check("未保存の新規シーンでは ping の currentScene / currentSceneProjectPath が null", pu.currentScene === null && pu.currentSceneProjectPath === null, pu);
+    const sv = await call("save_scene", { path: "scenes/x.json" });
+    check("save_scene は {path, projectPath} を返す", sv.path === "scenes/x.json" && sv.projectPath === "assets/scenes/x.json" && sv.saved === undefined, sv);
   }
 } finally {
   sock.destroy();

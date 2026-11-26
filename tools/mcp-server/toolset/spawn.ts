@@ -13,19 +13,19 @@ import { engine, entityId, entityRef, reg, run } from "./core.ts";
 reg(
   "dx12_create_entity",
   "エンティティ生成",
-  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返りません)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。light_*/camera/particle_emitter/trigger は既定パラメータで生成される空エンティティ+コンポーネント(中身は dx12_describe_components 参照)。細かい値は生成後 dx12_set_component / dx12_set_transform で調整する。★ui_* はゲーム内UI: エディタと同じ部品構成で生成(ui_button=背景+ラベル子、ui_toggle=箱+ラベル子)され、応答に entityIds(生成された全id)も付く。親は parent/parentName で明示指定(省略時は最初のCanvas、Canvas不在なら自動生成)。レイアウト調整は set_component の uiRect、構造確認は dx12_ui_tree、見た目確認は dx12_ui_screenshot。",
+  "エンティティを生成する(エディタ専用)。フレーム境界で実処理されるが、Node が完了を待って【本物の {entityId, name, sceneGeneration} を同期で返す】({queued} は返りません)。idempotency_key を付けると、再試行で同じキーが来ても二重生成されず同じ結果が返る。light_*/camera/particle_emitter/trigger は既定パラメータで生成される空エンティティ+コンポーネント(中身は dx12_describe_components 参照)。細かい値は生成後 dx12_set_component / dx12_set_transform で調整する。★ui_* はゲーム内UI: エディタと同じ部品構成で生成(ui_button=背景+ラベル子、ui_toggle=箱+ラベル子)され、応答に entityIds(生成された全id)も付く。親は parent/parentName で明示指定(省略時は最初のCanvas、Canvas不在なら自動生成)。type は必須(省略を box にしない)、宣言していない引数は E_UNKNOWN_PARAM(近い名前を添える)、ui_canvas に parent/parentName を付けるとエラー(Canvas は常にルート)。レイアウト調整は set_component の uiRect、構造確認は dx12_ui_tree、見た目確認は dx12_ui_screenshot。",
   {
     type: z.enum([
       "box", "sphere", "plane", "empty", "camera",
       "light_directional", "light_point", "light_spot",
-      "particle_emitter", "trigger", "decal",
+      "particle_emitter", "trigger", "decal", "water",
       "ui_canvas", "ui_image", "ui_text", "ui_button",
       "ui_slider", "ui_toggle", "ui_scrollview",
     ]).describe("種別。empty は Transform のみ。light_*/camera/particle_emitter/trigger は該当コンポーネント付きで生成(値は既定。set_component で調整)。ui_* はゲーム内UI要素(uiRect 等付き)。"),
     name: z.string().optional().describe("エンティティ名(一意推奨)。省略時は種別名。"),
     position: v3().optional().describe("[x,y,z]。省略時 [0,0,0]。UI 要素では未使用(uiRect で配置)。"),
-    parent: z.number().int().optional().describe("UI 要素の親エンティティ id(ui_canvas 以外で有効)。parentName と排他。"),
-    parentName: z.string().optional().describe("UI 要素の親エンティティ名(完全一致)。"),
+    parent: z.number().int().optional().describe("親エンティティ id(ui_canvas 以外の全種別で有効。ui_canvas に付けるとエラー)。parentName と排他。"),
+    parentName: z.string().optional().describe("親エンティティ名(完全一致。ui_canvas に付けるとエラー)。"),
     idempotency_key: z.string().optional().describe("再試行の重複防止キー。同じキーの再送は二重生成されない。"),
     size: z.number().optional()
       .describe("type:\"plane\" のときの一辺(m)。0/省略で既定。"),
@@ -211,7 +211,7 @@ reg(
 reg(
   "dx12_new_scene",
   "新規シーン",
-  "新規シーンを作る(現在のシーンを破棄)。savePath を渡すとそのパスに紐づけて作る。フレーム境界で実処理され {applied} を同期で返す。現在の編集内容は失われるので注意。",
+  "新規シーンを作る(現在のシーンを破棄)。savePath を渡すとそのパスに紐づけて作る。フレーム境界で実処理され、切り替えが終わってから本当の結果 {sceneName, path, projectPath, entityCount, sceneGeneration, saved} を返す(path は assets 相対で dx12_open_scene / dx12_save_scene にそのまま渡せる。projectPath はプロジェクトルート相対。savePath を渡さなければ path/projectPath は null で saved:false の未保存シーン)。現在の編集内容は失われるので注意。完了の再確認は dx12_ping の currentScene / currentSceneProjectPath。",
   { savePath: z.string().optional().describe("新シーンの保存先 assets 相対パス(任意)。") },
   { destructiveHint: true },
   ({ savePath }) => run(() => engine.call("new_scene", { savePath })),

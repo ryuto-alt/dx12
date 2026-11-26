@@ -168,7 +168,9 @@ const COMP_DEFAULTS: Record<string, any> = {
 const COMP_ORDER = ["pointLight", "directionalLight", "spotLight", "camera", "rigidBody", "boxCollider", "sphereCollider", "capsuleCollider", "characterController", "meshCollider", "sprite2d", "trailRenderer", "decal", "trigger", "particleEmitter", "audioSource", "audioReverbZone", "virtualGeometry", "uiCanvas", "uiRect", "uiImage", "uiText", "uiButton", "uiSlider", "uiToggle", "uiScrollView", "luaScript", "gridPlane"];
 const SETTABLE = new Set([...Object.keys(COMP_DEFAULTS).filter((k) => k !== "gridPlane"), "tags", "data"]);
 
-const CREATE_TYPES = ["box", "sphere", "plane", "empty", "camera", "light_directional", "light_point", "light_spot", "particle_emitter", "trigger", "decal", "ui_canvas", "ui_image", "ui_text", "ui_button", "ui_slider", "ui_toggle", "ui_scrollview"];
+const CREATE_TYPES = ["box", "sphere", "plane", "empty", "camera", "light_directional", "light_point", "light_spot", "particle_emitter", "trigger", "decal", "water", "ui_canvas", "ui_image", "ui_text", "ui_button", "ui_slider", "ui_toggle", "ui_scrollview"];
+/** create_entity が受ける引数(エンジンの McpCreateEntityParams.h と揃える。共通の dispatch が運ぶ共通キーも既知)。 */
+const CREATE_KNOWN_KEYS = ["type", "name", "parent", "parentName", "position", "size", "subdivisions", "expectGeneration", "idempotency_key", "idempotencyKey", "dryRun", "confirm_token"];
 const UI_DEFAULT_NAMES: Record<string, string> = { ui_canvas: "UICanvas", ui_image: "UIImage", ui_text: "UIText", ui_button: "UIButton", ui_slider: "UISlider", ui_toggle: "UIToggle", ui_scrollview: "UIScrollView" };
 
 const PRESETS: Record<string, { label: string; tip: string; sun: { intensity: number; ambient: number; color: Vec3; az: number; el: number }; post: Record<string, any> }> = {
@@ -454,7 +456,17 @@ export function createSceneSim(opts: SimOptions = {}) {
   };
   def("create_entity", "write_scene", (p, ctx) => {
     requireEditor(ctx, "create entities");
-    const type = String(p.type ?? "box");
+    // ★type は必須(省略を黙って box にしない)。未知のキーも黙って捨てず E_UNKNOWN_PARAM(エンジンの C14 と同じ)。
+    for (const k of Object.keys(p)) {
+      if (!CREATE_KNOWN_KEYS.includes(k)) {
+        const dym = nearest(k, CREATE_KNOWN_KEYS, 1);
+        throw simErr(2, `unknown parameter '${k}' for create_entity`, { error_name: "E_UNKNOWN_PARAM", error_cause: "create_entity が受け取らない引数が渡された(黙って無視すると意図と違うものが作られる)", error_did_you_mean: dym });
+      }
+    }
+    if (typeof p.type !== "string" || !p.type) throw simErr(2, "create_entity: missing required param 'type'", { error_name: "E_MISSING_PARAM", error_cause: "必須の引数 'type' が渡されていない(黙って box にしない)" });
+    const type = p.type;
+    if (type === "ui_canvas" && (p.parent !== undefined || p.parentName !== undefined)) throw simErr(2, `'${p.parent !== undefined ? "parent" : "parentName"}' cannot be used with type 'ui_canvas' (a canvas is always a root)`, { error_name: "E_INVALID_PARAM" });
+    const parentEnt = p.parent !== undefined || p.parentName !== undefined ? resolve(p.parent !== undefined ? { entity: p.parent } : { name: p.parentName }) : undefined;
     if (!CREATE_TYPES.includes(type)) throw simErr(2, `type must be one of: ${CREATE_TYPES.join(", ")}`, { error_name: "E_BAD_ENUM", error_values: CREATE_TYPES, error_did_you_mean: nearest(type, CREATE_TYPES, 3) });
     let name = typeof p.name === "string" ? p.name : "";
     if (!name) name = UI_DEFAULT_NAMES[type] ?? (type[0].toUpperCase() + type.slice(1));
@@ -469,15 +481,17 @@ export function createSceneSim(opts: SimOptions = {}) {
     else if (type === "light_directional") { e = mkEntity({ name, kind: "light", comps: { directionalLight: clone(COMP_DEFAULTS.directionalLight) } }); e.transform.rotation = [-30, 0, 0]; }
     else if (type === "trigger") e = mkEntity({ name, kind: "trigger", comps: { trigger: clone(COMP_DEFAULTS.trigger) } });
     else if (type === "particle_emitter") e = mkEntity({ name, kind: "other", comps: { particleEmitter: clone(COMP_DEFAULTS.particleEmitter) } });
+    else if (type === "water") e = mkEntity({ name, kind: "other" });
     else if (type === "decal") e = mkEntity({ name, kind: "other", comps: { decal: clone(COMP_DEFAULTS.decal) } });
     else if (type === "ui_canvas") e = mkEntity({ name, kind: "other", comps: { uiCanvas: clone(COMP_DEFAULTS.uiCanvas) } });
     else {
       // ui_*: 親 Canvas を自動選択/生成する(実エンジンと同じ)。
-      let canvas = state.entities.find((x) => x.comps.uiCanvas);
+      let canvas = parentEnt ?? state.entities.find((x) => x.comps.uiCanvas);
       if (!canvas) { canvas = addEntity(mkEntity({ name: uniquify("UICanvas"), kind: "other", comps: { uiCanvas: clone(COMP_DEFAULTS.uiCanvas) } })); ids.push(canvas.id); }
       const key = { ui_image: "uiImage", ui_text: "uiText", ui_button: "uiButton", ui_slider: "uiSlider", ui_toggle: "uiToggle", ui_scrollview: "uiScrollView" }[type as string] as string;
       e = mkEntity({ name, kind: "other", parent: canvas.id, comps: { uiRect: clone(COMP_DEFAULTS.uiRect), [key]: clone(COMP_DEFAULTS[key]) } });
     }
+    if (parentEnt && !type.startsWith("ui_")) e.parent = parentEnt.id;
     finishCreate(e, p.position, name);
     ids.push(e.id);
     return { entityId: e.id, name: e.name, sceneGeneration: 1, ...(type.startsWith("ui_") ? { entityIds: [e.id] } : {}) };

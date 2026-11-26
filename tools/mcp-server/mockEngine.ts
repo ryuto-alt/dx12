@@ -22,6 +22,8 @@ export type MockState = {
   assets: string[];
   sceneGeneration: number;
   sceneDirty: boolean;
+  /** 今開いているシーンの assets 相対パス(未保存の新規シーンは null)。ping の currentScene / save_scene・new_scene の path の元。 */
+  currentScene: string | null;
   virtualInput: boolean;
   /** 応答を返さない method(タイムアウト再現)。 */
   hang: Set<string>;
@@ -95,7 +97,7 @@ export async function startMockEngine(opts: MockOptions = {}) {
   const state: MockState = {
     mode: "Editor", entities: ["Player", "Floor", "Wall_01", "Wall_02", "Light_Main"],
     scenes: ["scenes/default.json", "scenes/level1.json"], assets: ["models/tree.glb", "models/rock.glb", "textures/wood_albedo.png"],
-    sceneGeneration: 3, sceneDirty: false, virtualInput: true, hang: new Set(), delayMs: {}, silent: false,
+    sceneGeneration: 3, sceneDirty: false, currentScene: "scenes/default.json", virtualInput: true, hang: new Set(), delayMs: {}, silent: false,
     legacyEngine: false, structuredErrors: true, oldUnknownMethod: false,
     safety: false, tokens: new Set(), idem: new Map(), exec: {}, previewMethods: new Set(), guardedMethods: new Set(["git_push", "eval_lua"]), delayOnce: {}, ...stateOpts,
   };
@@ -195,7 +197,7 @@ export async function startMockEngine(opts: MockOptions = {}) {
         return {
           id, ok: true, result: {
             pong: true, mode: state.mode, entityCount: state.entities.length, sceneGeneration: state.sceneGeneration,
-            currentScene: "scenes/default.json", sceneDirty: state.sceneDirty, protocolVersion: 4, virtualInput: state.virtualInput,
+            currentScene: state.currentScene, currentSceneProjectPath: state.currentScene ? `assets/${state.currentScene}` : null, sceneDirty: state.sceneDirty, protocolVersion: 4, virtualInput: state.virtualInput,
             background: "hidden", baseDir: "C:/mock/project", cwd: "C:/mock/bin", dpiScale: 1,
             ...(pingExtra ? pingExtra() : {}),
             ...(state.legacyEngine ? {} : { manifestHash: manifestOf().manifestHash, manifestProtocol: 1, engineVersion: "mock-1.0.0", engineStartedAtMs: 1000, methodCount: names.length }),
@@ -243,7 +245,15 @@ export async function startMockEngine(opts: MockOptions = {}) {
       }
       case "new_scene":
         if (state.mode === "Playing") return err(id, 3, "cannot new_scene while Playing", { error_hint: "先に dx12_stop で Editor に戻してから new_scene を呼ぶこと" });
-        return { id, ok: true, result: { ok: true } };
+        {
+          // 実エンジンと同じ形: 切り替え完了後の本当の結果。savePath があれば紐づけ(saved:true)、無ければ未保存の新規シーン(saved:false)。
+          const sp = typeof params.savePath === "string" && params.savePath ? params.savePath : null;
+          state.entities = []; state.sceneGeneration++; state.currentScene = sp; state.sceneDirty = false;
+          return { id, ok: true, result: {
+            sceneName: sp ? nodePath.basename(sp).replace(/\.[^.]*$/, "") : "Untitled", path: sp, projectPath: sp ? `assets/${sp}` : null,
+            entityCount: 0, sceneGeneration: state.sceneGeneration, saved: sp !== null,
+          } };
+        }
       case "terrain_generate":
         if (state.mode === "Playing") return err(id, 3, "terrain is Editor-only", { error_hint: "Play 中は地形を編集できない。dx12_stop してから撃つ" });
         return { id, ok: true, result: { generated: true } };
@@ -268,7 +278,7 @@ export async function startMockEngine(opts: MockOptions = {}) {
       }
       case "save_scene": {
         if (params.path === undefined) return err(id, 14, "WIC stream open failed", { error_name: "E_FILE_IO" });
-        return { id, ok: true, result: { saved: params.path } };
+        return { id, ok: true, result: { path: params.path, projectPath: `assets/${params.path}` } };
       }
       default: return { id, ok: true, result: { ok: true, method, params } };
     }
