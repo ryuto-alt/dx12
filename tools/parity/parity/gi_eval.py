@@ -240,8 +240,10 @@ def step(cli: EngineClient, frames: int) -> None:
 
 
 def render_pt(cli: EngineClient, base: Path, size: tuple[int, int], spp: int, bounces: int, seed: int,
-              frame_budget_ms: float | None, timeout_s: float, log) -> dict:
+              frame_budget_ms: float | None, timeout_s: float, log, extra: dict | None = None) -> dict:
     params = {"spp": spp, "bounces": bounces, "size": list(size), "seed": seed, "output": str(base), "formats": ["pfm"]}
+    if extra:
+        params.update(extra)         # 例: {"sunAngularRadiusDeg": 0.265}(LS-00b。呼び出し側が明示する)
     if frame_budget_ms:
         params["frameBudgetMs"] = frame_budget_ms
     r = cli.call("render_reference", params, timeout=120)

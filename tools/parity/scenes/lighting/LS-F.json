@@ -1,7 +1,7 @@
 {
  "id": "LS-F",
  "title": "LS-F 静止 8 フレームと夕方",
- "description": "地面に塔(6m)・柱・球。カメラも物も静止で、連続 8 フレームの 8bit 表示の最大差(1/255 以下が目標)を見る。夕方(太陽 方位 200°/高度 10°。カメラの後ろから前へ長く伸びる)の条件では cascade0 の影が長く伸び、近い塔の影が抜けないことを見る(AUD-01)。",
+ "description": "地面に塔(6m)・柱・球。カメラも物も静止で、連続 8 フレームの 8bit 表示の最大差(1/255 以下が目標)を見る。夕方(太陽 方位 200°/高度 10°。カメラの後ろから前へ長く伸びる)の条件では、カメラの後ろにある高い塔(ENV_BehindCaster)の影がカメラの前の cascade0 の範囲へ伸びて落ちないことを見る(AUD-01。遮蔽物が光の錐台の外・カメラの後ろにある場合)。",
  "spec": {
   "version": 1,
   "name": "ls_f",
@@ -175,6 +175,25 @@
     }
    },
    {
+    "name": "ENV_BehindCaster",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -8.0,
+     6.0,
+     -13.0
+    ],
+    "size": [
+     2.0,
+     12.0,
+     2.0
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
     "name": "LGT_Sun",
     "kind": "light",
     "light": "directional",
@@ -231,6 +250,12 @@
     0,
     1.0,
     14.0
+   ],
+   "shadowRegions": [
+    "shadow_tower",
+    "shadow_pillar",
+    "shadow_behind",
+    "lit_ground"
    ]
   }
  ],
@@ -242,7 +267,14 @@
   "coverage": {
    "region": "shadow_tower",
    "camera": "main",
-   "min_ratio": 0.95
+   "min_ratio": 0.95,
+   "variant": "noon"
+  },
+  "coverage_behind": {
+   "region": "shadow_behind",
+   "camera": "main",
+   "min_ratio": 0.95,
+   "variant": "evening10"
   },
   "acne": {
    "region": "lit_ground",
@@ -288,6 +320,23 @@
    "state": "roi",
    "roiPx": 40
   },
+  "shadow_behind": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2"
+   ],
+   "occluders": [
+    "ENV_BehindCaster"
+   ],
+   "state": "roi",
+   "roiPx": 30,
+   "minDepth": 3.0,
+   "maxDepth": 40.0
+  },
   "shadow_pillar": {
    "receivers": [
     "LVL_Ground_0_0",
@@ -315,7 +364,8 @@
    "occluders": [
     "ENV_Tower",
     "ENV_Pillar_10",
-    "ENV_Sphere"
+    "ENV_Sphere",
+    "ENV_BehindCaster"
    ],
    "state": "lit",
    "roiPx": 60

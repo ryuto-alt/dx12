@@ -37,7 +37,7 @@ from . import shadow_metrics as SM
 from .engine import EngineClient, EngineError, PwshLauncher, wait_ping
 from .imgio import load_image, save_png
 
-DEFAULT_PORT = 8854
+DEFAULT_PORT = 8855            # lane-d(NB)の MCP ポート。他のレーンのポートは使わない
 DEFAULT_NAME = "lighteval"
 SCHEMA = 1
 
@@ -45,7 +45,10 @@ SCHEMA = 1
 _COMMON = [("set_ssgi", {"enabled": False}), ("set_ssr", {"enabled": False}), ("set_upscaler", {"mode": "off"}),
            ("set_volumetric_fog", {"enabled": False})]
 _RT_OFF = ("set_dxr", {"shadowEnabled": False, "aoEnabled": False, "ddgiEnabled": False, "forceBuildTlas": False})
-_RT_ON = ("set_dxr", {"shadowEnabled": True, "shadowSunAngle": 0, "aoEnabled": False, "ddgiEnabled": True, "ddgiBounceIntensity": 1.0,
+# 太陽の大きさ: 実際の太陽の角直径 0.53 度。Epic は RT 影に shadowSunAngle=0.53(エンジンの既定 = 実際の Epic の値)、PT は半径 0.265 度の円盤(SUN_RADIUS_DEG)。
+SUN_DIAMETER_DEG = 0.53
+SUN_RADIUS_DEG = SUN_DIAMETER_DEG / 2.0
+_RT_ON = ("set_dxr", {"shadowEnabled": True, "shadowSunAngle": SUN_DIAMETER_DEG, "aoEnabled": False, "ddgiEnabled": True, "ddgiBounceIntensity": 1.0,
                       "ddgiIntensity": 1.0, "ddgiHysteresis": 0.97, "ddgiRayLength": 30.0, "ddgiNormalBias": 0.02, "{grid}": True})
 CONDITIONS: dict[str, dict] = {
     "flat": {"title": "全 OFF(PT 撮影時の基準の状態。CSM は PCF)",
@@ -103,6 +106,16 @@ def write_project(scenes: list[GS.GiScene], out: Path) -> dict[str, str]:
     return rels
 
 
+def capture_native(cli: EngineClient, base: Path) -> str:
+    """撮影サイズを指定せず(= 描画解像度のまま。--view-size で固定済み)screenshot_final で撮る。解像度の切り替えも履歴の破棄も起きない。"""
+    r = cli.call("screenshot_final", {"path": str(base), "format": "pfm", "gizmos": False}, timeout=240)
+    cand = (r.get("files") or {}).get("pfm") if isinstance(r.get("files"), dict) else None
+    f = Path(cand) if cand else base.with_suffix(".pfm")
+    if not f.exists():
+        raise RuntimeError(f"ラスタの PFM が書かれていない: {f}(応答: {str(r)[:300]})")
+    return str(f)
+
+
 def place_models(cli: EngineClient, scene: GS.GiScene, walk: bool) -> None:
     for m in LS.mannequin_models(scene):
         cli.call("spawn_model", {"name": m["name"], "path": "models/mannequin.glb", "position": m["at"]}, timeout=120)
@@ -144,7 +157,9 @@ def capture_all(a, scenes: list[GS.GiScene], out: Path, log) -> dict:
             port = a.port
             state["launcher"] = PwshLauncher(name=DEFAULT_NAME, port=port, mode="headless", build_dir=a.build_dir)
             log(f"エンジンを起動: name={DEFAULT_NAME} port={port}")
-            state["launcher"].start(str(proj))
+            # ★描画解像度を撮影サイズに固定して起動する。固定しないと、撮影ごとに解像度が切り替わり(screenshot_final の width/height)、
+            #   TAA の履歴が毎回捨てられて静止フレームが「蓄積の無い絵」になる(時間的な安定の指標がちらつきの偽物になる)。
+            state["launcher"].start(str(proj), [f"--view-size={size[0]}x{size[1]}"])
         state["client"] = EngineClient(port, connect_timeout=(30 if a.attach else 120))
         manifest["engine"] = {"ping": wait_ping(state["client"], 240.0)}
 
@@ -172,7 +187,8 @@ def capture_all(a, scenes: list[GS.GiScene], out: Path, log) -> dict:
                     apply_condition(cl, PT_CONDITION, s)
                     GE.step(cl, 30)
                     log(f"  {v['id']}/{cam['name']}: PT {a.spp}spp / {a.bounces} bounces")
-                    GE.render_pt(cl, d / "pt", size, a.spp, a.bounces, a.seed, a.frame_budget_ms, a.pt_timeout, log)
+                    GE.render_pt(cl, d / "pt", size, a.spp, a.bounces, a.seed, a.frame_budget_ms, a.pt_timeout, log,
+                                 extra={"sunAngularRadiusDeg": SUN_RADIUS_DEG})
                 for cn in conds:
                     apply_condition(cl, cn, s)
                     t0 = time.time()
@@ -182,7 +198,7 @@ def capture_all(a, scenes: list[GS.GiScene], out: Path, log) -> dict:
                         apply_condition(cl, cn, s, upscaler="taa")
                         cl.call("step_frames", {"frames": int(tmp.get("settle", 120)), "deterministic": True}, timeout=300)
                         for k in range(int(tmp.get("frames", 8))):
-                            GE.capture_raster(cl, d / f"raster_{cn}_t{k:02d}", size, "free", 0, 0)
+                            capture_native(cl, d / f"raster_{cn}_t{k:02d}")
                             cl.call("step_frames", {"frames": 1, "deterministic": True}, timeout=60)
                         log(f"  {v['id']}/{cam['name']}/{cn}: 静止 {tmp.get('frames', 8)} フレーム(TAA)")
         manifest["scenes"][s.id] = {"conditions": conds}
@@ -224,6 +240,8 @@ def evaluate_camera(a, s: GS.GiScene, v: dict, cam: dict, out: Path, conds: list
     d = cdir_of(out, s.id, v["id"], cam["name"])
     pt_f = _find(d, "pt.pfm")
     res: dict = {"conditions": {}}
+    if cam.get("contaminated"):
+        res["contaminated"] = cam["contaminated"]       # 既知のエンジン不具合で絵が汚れているカメラ(ベースラインとして使わない)
     if pt_f is None:
         res["error"] = "PT の画像が無い"
         return res
@@ -277,34 +295,45 @@ def texel_report(a, s: GS.GiScene) -> list[dict] | None:
 
 
 def judge(s: GS.GiScene, vid: str, cams: dict, cn: str) -> dict:
-    """シーン JSON の criteria を、条件 cn の数値から判定する。数値が無ければ 判定不能。ベースライン段階の参考(合否の集計には使わない)。"""
+    """シーン JSON の criteria を、条件 cn の数値から判定する。数値が無ければ 判定不能。ベースライン段階の参考(合否の集計には使わない)。
+    criteria のキーの先頭語が種類: coverage* / acne* / temporal* を判定する。"variant" を持つ基準はその variant だけで判定する。
+    それ以外(edge_char・information など)は判定せず「情報のみ(判定しない)」と出す。
+    ★coverage の合否は captured(PT の影画素のうち、ラスタも影にした割合)。ratio(画素数の比)はずれた影でも 1 になり得るので参考値。
+    ★temporal は影の領域(shadowRegions)の 8bit 最大差で判定する(C6 の目的は影のちらつき)。全画面は幾何の縁などを含むので full_max_range に情報として出す。"""
     out: dict = {}
     cr = s.data.get("criteria", {})
     sc = lambda cam, reg: ((cams.get(cam, {}).get("conditions", {}).get(cn, {}).get("shadow") or {}).get(reg))  # noqa: E731
-    if "coverage" in cr:
-        c = cr["coverage"]
-        st = sc(c["camera"], c["region"])
-        cov = st and st["coverage"]
-        if cov and cov.get("evaluable"):
-            out["coverage"] = {"status": "PASS" if cov["ratio"] >= c["min_ratio"] else "FAIL", "ratio": cov["ratio"], "need": c["min_ratio"]}
+    for key, c in cr.items():
+        if c.get("variant") not in (None, vid):
+            continue
+        kind = key.split("_", 1)[0]
+        if kind == "coverage":
+            st = sc(c["camera"], c["region"])
+            cov = st and st["coverage"]
+            if cov and cov.get("evaluable"):
+                out[key] = {"status": "PASS" if cov["captured"] >= c["min_ratio"] else "FAIL", "captured": cov["captured"],
+                            "ratio": cov["ratio"], "need": c["min_ratio"]}
+            else:
+                out[key] = {"status": "判定不能"}
+        elif kind == "acne":
+            st = sc(c["camera"], c["region"])
+            ac = st and st["acne"]
+            if ac and ac.get("evaluable"):
+                out[key] = {"status": "PASS" if ac["rate"] < c["max_rate"] else "FAIL", "rate": ac["rate"], "need_below": c["max_rate"]}
+            else:
+                out[key] = {"status": "判定不能"}
+        elif kind == "temporal":
+            tl = [(cm.get("conditions", {}).get(cn, {}).get("temporal") or {}) for cm in cams.values()]
+            reg = [r for t_ in tl for r in (t_.get("regions") or {}).values() if r.get("evaluable")]
+            full = [t_["full"] for t_ in tl if (t_.get("full") or {}).get("evaluable")]
+            if reg:
+                mx = max(x["max_range"] for x in reg)
+                out[key] = {"status": "PASS" if mx <= c["max_range"] else "FAIL", "max_range": mx, "need": c["max_range"], "scope": "shadow_regions",
+                            "full_max_range": max((x["max_range"] for x in full), default=None)}
+            else:
+                out[key] = {"status": "判定不能"}
         else:
-            out["coverage"] = {"status": "判定不能"}
-    if "acne" in cr:
-        c = cr["acne"]
-        st = sc(c["camera"], c["region"])
-        ac = st and st["acne"]
-        if ac and ac.get("evaluable"):
-            out["acne"] = {"status": "PASS" if ac["rate"] < c["max_rate"] else "FAIL", "rate": ac["rate"], "need_below": c["max_rate"]}
-        else:
-            out["acne"] = {"status": "判定不能"}
-    if "temporal" in cr:
-        t = [cm.get("conditions", {}).get(cn, {}).get("temporal", {}).get("full") for cm in cams.values()]
-        t = [x for x in t if x and x.get("evaluable")]
-        if t:
-            mx = max(x["max_range"] for x in t)
-            out["temporal"] = {"status": "PASS" if mx <= cr["temporal"]["max_range"] else "FAIL", "max_range": mx, "need": cr["temporal"]["max_range"]}
-        else:
-            out["temporal"] = {"status": "判定不能"}
+            out[key] = {"status": "情報のみ(判定しない)"}
     return out
 
 
@@ -372,6 +401,8 @@ def format_summary(result: dict) -> str:
                 if cr:
                     L.append(f"  [{vid}/{cn}] " + "  ".join(f"{k}={x['status']}" for k, x in cr.items()))
             for cam, crec in vrec["cameras"].items():
+                if crec.get("contaminated"):
+                    L.append(f"  !! {vid}/{cam}: 汚染(ベースラインに使わない): {crec['contaminated']}")
                 for cn, c in (crec.get("conditions") or {}).items():
                     g = c.get("global") or {}
                     if g:
@@ -389,10 +420,14 @@ def format_summary(result: dict) -> str:
 
 # ── 2 回の差(決定論の範囲か) ───────────────────────────────────────────────
 
-# 時間のフレーム列は TAA の自由走行(起動からのフレーム数でジッタの位相が決まる)なので、8bit 表示の最大差・p99 は実測の揺れ(2 回の差: 最大 12 段・p99 2 段)を覆う幅で許す。ラスタ単発(決定論モード)はビット一致。
-TOLERANCE = {"ev_mean": 0.02, "black_rate_raster": 0.002, "flip_hdr_mean": 0.005, "flip_hdr_p95": 0.01, "flip": 0.01,
-             "coverage_ratio": 0.01, "coverage_iou": 0.01, "acne_rate": 0.0005, "edge_width_raster_px": 0.25, "edge_width_pt_px": 0.25,
-             "edge_error_rel": 0.05, "max_range": 15.0, "p99_range": 4.0, "sigma_mean": 0.03, "texels_per_px": 1e-9}
+# 決定論モードのラスタ・PT 由来の指標はビット一致のはず(実測の最大差 4.6e-7)なので、ほぼ 0 の許容(1e-5)。
+# 緩めるのは TAA の時間のフレーム列(max_range / p99_range / sigma_mean)と縁の幅だけ(下の実測)。
+DET_TOL = 1e-5
+# 実測(--view-size 固定で起動・解像度の切り替え無し・同条件 2 回): max_range は最大 28 段(49 と 21。外れ値の順序統計なので揺れる)・p99_range は最大 1 段・sigma_mean は最大 0.012。
+TEMPORAL_TOL = {"max_range": 30.0, "p99_range": 2.0, "sigma_mean": 0.03}
+# 縁の幅は「半影の画素数 / 境界の長さ」で、しきい値の際の 1 画素が入れ替わると動く(実測の最大差: 幅 4.6e-4 px・相対誤差 5e-5)。
+EDGE_TOL = {"edge_width_raster_px": 0.01, "edge_width_pt_px": 0.01, "edge_error_rel": 0.005}
+TOLERANCE = {"texels_per_px": 1e-9, **TEMPORAL_TOL, **EDGE_TOL}
 
 
 def compare(a_json: dict, b_json: dict) -> dict:
@@ -403,7 +438,7 @@ def compare(a_json: dict, b_json: dict) -> dict:
             bad.append(k)
             rows.append({"key": k, "a": sa.get(k), "b": sb.get(k), "ok": False, "why": "片方に無い"})
             continue
-        tol = TOLERANCE.get(k.rsplit("/", 1)[-1], 0.01)
+        tol = TOLERANCE.get(k.rsplit("/", 1)[-1], DET_TOL)
         d = abs(sa[k] - sb[k])
         ok = d <= tol
         rows.append({"key": k, "a": sa[k], "b": sb[k], "diff": d, "tol": tol, "ok": ok})
@@ -436,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pt-timeout", type=float, default=1800.0)
     ap.add_argument("--no-pt", dest="pt", action="store_false", help="PT を撮り直さない(--out の既存 pt.pfm を使う)")
     ap.add_argument("--det-settle", type=int, default=240)
-    ap.add_argument("--walk", action="store_true", help="マネキンに歩きのループを再生させる(既定は静止の T ポーズ。PT と同じ姿勢にするため)")
+    ap.add_argument("--walk", action="store_true", help="マネキンに歩きのループを再生させる(既定は静止 = リグの既定の姿勢。PT と同じ姿勢にするため)")
     ap.add_argument("--csm-res", type=int, default=2048, help="テクセル密度の計算に使う CSM の解像度(エンジン既定 2048)")
     ap.add_argument("--csm-lambda", type=float, default=0.7)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
