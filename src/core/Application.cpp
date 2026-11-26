@@ -116,6 +116,20 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
             auto* app = static_cast<Application*>(ctx);
             if (app->m_editorCtx) app->m_editorCtx->Notify(ui::ToastKind::Info, msg, 10.0f);
         }, this);
+    // アセット改名・移動時の参照追従（アセットブラウザ。MCP の move_asset と同じ書き換え）
+    if (!gameMode)
+        m_editorCtx->rewriteAssetRefs = [this](const std::string& from, const std::string& to) -> int {
+            int n = 0;
+            if (m_scene)
+            {
+                const int mem = SceneSerializer::RewriteAssetPathRefs(*m_scene, from, to);
+                if (mem > 0) m_editorCtx->undoSystem.MarkEdited();
+                n += mem;
+            }
+            const auto files = SceneSerializer::RewriteAssetPathRefsInFiles(
+                PathResolver::AssetsDir(), from, to, m_editorCtx->currentScenePath);
+            return n + files.refsChanged;
+        };
     // エディタ（別ライブラリ）へ Application 側のフレームデータを読み取り専用で貸す。
     // どちらも Application の寿命いっぱい生きるメンバなのでアドレスは不変＝ここで一度だけ渡す。
     //   drawItems  … 精密ピッキングのブロードフェーズ候補（ワールド行列/球が計算済み）
