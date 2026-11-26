@@ -2,7 +2,7 @@
 //
 // 守る不変条件:
 //   (A) ジッタの位相数は 8 ×（出力/内部）²（DLAA 8 / Quality 18 / Performance 32）で、下限 8・上限 64。
-//   (B) テクスチャのミップバイアスは log2(内部/出力)。DLAA / ネイティブは 0（既存の絵を変えない）。
+//   (B) テクスチャのミップバイアスは log2(内部/出力) - 1.0（DLAA でも -1.0。適用は DLSS のフレームだけ）。
 //   (C) NDC のジッタ → 内部解像度のピクセルへの変換が TaaJitter.h の規約（jx = 2*hx/W, jy = -2*hy/H）の逆になっている。
 //   (D) 品質モードの公称倍率と文字列の往復。
 // 実行: ctest --output-on-failure
@@ -41,10 +41,12 @@ int main()
     Check(JitterPhaseCount(0, 1920) == 8,     "0 除算しない");
 
     // (B) ミップバイアス
-    Check(TextureMipBias(1920, 1920) == 0.0f, "DLAA は 0");
-    Check(TextureMipBias(2000, 1920) == 0.0f, "内部 > 出力でも 0");
-    Check(feq(TextureMipBias(960, 1920), -1.0f), "Performance は -1");
-    Check(feq(TextureMipBias(1280, 1920), std::log2(2.0f / 3.0f)), "Quality は log2(2/3) ≒ -0.585");
+    Check(feq(TextureMipBias(1920, 1920), -1.0f), "DLAA は -1.0");
+    Check(feq(TextureMipBias(1280, 1920), -1.585f, 1e-3f), "Quality(1.5x) は -1.585");
+    Check(feq(TextureMipBias(1114, 1920), -1.786f, 2e-3f), "Balanced は -1.786");
+    Check(feq(TextureMipBias(960, 1920), -2.0f), "Performance は -2.0");
+    Check(feq(TextureMipBias(3840, 1920), 0.0f), "2x スーパーサンプリングは log2(2)-1 = 0（clamp しない）");
+    Check(TextureMipBias(0, 1920) == 0.0f && TextureMipBias(1920, 0) == 0.0f, "0 除算しない");
 
     // (C) ジッタのピクセル変換は ComputeTaaJitterNdc の逆
     for (u32 i = 0; i < 32; ++i)
