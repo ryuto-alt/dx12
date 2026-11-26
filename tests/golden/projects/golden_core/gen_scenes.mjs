@@ -39,6 +39,19 @@ const write = (name, scene) => fs.writeFileSync(path.join(OUT, `${name}.json`), 
   }
   write("csm_shadows", { skybox: { iblIntensity: 1.0, skyboxIntensity: 1.0, drawSkybox: true }, entities: es, shadows: true });
 }
+// 2b) FU-E-23: RT 影 ON・TAA/SSR/SSGI OFF（RT 影デノイザだけが速度プリパスを要求する条件）で、
+//     40m を超える大きな箱の地面・高い塔の上部がラスタから欠けないこと。細い遠い柱の影も入れる。
+{
+  const es = [sun([-0.55, -0.6, -0.4], 4.0),
+    box("BigGround", [0, -0.5, 60], [160, 1, 200], [0.5, 0.5, 0.5], 0.0, 0.85),
+    box("Tower", [-6, 12, 30], [3, 24, 3], [0.75, 0.72, 0.68])];
+  for (const z of [15, 30, 60]) es.push(box(`Thin_${z}`, [4, 1.5, z], [0.35, 3.0, 0.35], [0.8, 0.78, 0.74]));
+  write("rt_shadow_raster", {
+    skybox: { iblIntensity: 1.0, skyboxIntensity: 1.0, drawSkybox: true }, entities: es, shadows: true,
+    taa: { enabled: false }, ssr: { enabled: false }, ssgi: { enabled: false },
+    raytracing: { shadowEnabled: true, shadowDenoise: true },
+  });
+}
 // 3) 半透明: 不透明の箱の手前に blend の球と板を重ねる
 {
   const es = [sun(), ground(30, [0.45, 0.45, 0.48]),

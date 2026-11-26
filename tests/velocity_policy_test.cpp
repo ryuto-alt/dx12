@@ -8,6 +8,8 @@
 using dx12e::VelocityPrepassReasons;
 using dx12e::WantsVelocityPrevWorld;
 using dx12e::WantsVelocityPrepass;
+using dx12e::PrepareFrameVelocityInputs;
+using dx12e::MakePrepareFrameVelocityReasons;
 
 static int g_fail = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); ++g_fail; } } while (0)
@@ -30,6 +32,23 @@ int main()
         CHECK(WantsVelocityPrevWorld(r) == WantsVelocityPrepass(r));
         CHECK(WantsVelocityPrepass(r) == (m != 0));
     }
+    // PrepareFrame の組み立て（今回の不具合は、ここで RT の理由を詰め漏らしたこと）。
+    auto want = [](const PrepareFrameVelocityInputs& in) { return WantsVelocityPrevWorld(MakePrepareFrameVelocityReasons(in)); };
+    CHECK(!want({}));
+    { PrepareFrameVelocityInputs i; i.rtSceneReady = true; i.taaPassExists = true; i.rtShadowEnabled = true; i.rtShadowDenoise = true;
+      CHECK(want(i)); }                                   // RT 影デノイザだけ（TAA/SSR/SSGI OFF）= FU-E-23 の再現条件
+    { PrepareFrameVelocityInputs i; i.rtSceneReady = true; i.taaPassExists = true; i.rtShadowEnabled = true; i.rtShadowDenoise = false;
+      CHECK(!want(i)); }                                  // デノイザ OFF なら要らない（既定の経路を変えない）
+    { PrepareFrameVelocityInputs i; i.rtSceneReady = true; i.rtShadowEnabled = true; i.rtShadowDenoise = true;
+      CHECK(!want(i)); }                                  // m_taaPass が無ければ RenderView も走らせない
+    { PrepareFrameVelocityInputs i; i.rtSceneReady = false; i.rtShadowEnabled = true; i.rtShadowDenoise = true; i.taaPassExists = true;
+      CHECK(!want(i)); }                                  // RT シーン未準備
+    { PrepareFrameVelocityInputs i; i.rtSceneReady = true; i.rtAoEnabled = true;      CHECK(want(i)); }   // 2D / 正射でも追跡する
+    { PrepareFrameVelocityInputs i; i.rtSceneReady = true; i.rtReflEnabled = true;    CHECK(want(i)); }
+    { PrepareFrameVelocityInputs i; i.ssGiWantsPrepass = true; i.ssrEnabled = true;   CHECK(want(i)); }
+    { PrepareFrameVelocityInputs i; i.ssGiWantsPrepass = true; i.ssgiEnabled = true;  CHECK(want(i)); }
+    { PrepareFrameVelocityInputs i; i.ssrEnabled = true; i.ssgiEnabled = true;        CHECK(!want(i)); }  // 画面空間 GI が無ければ要らない
+    { PrepareFrameVelocityInputs i; i.taaActive = true;                               CHECK(want(i)); }
     static_assert(!WantsVelocityPrevWorld({}), "理由が無ければ追跡しない（既定の経路を変えない）");
     if (g_fail == 0) std::printf("velocity_policy_test: OK\n");
     return g_fail == 0 ? 0 : 1;

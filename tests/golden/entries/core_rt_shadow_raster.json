@@ -1,0 +1,20 @@
+{
+  "name": "core_rt_shadow_raster",
+  "group": "repeat",
+  "requiresDxr": true,
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/rt_shadow_raster.json",
+  "camera": {
+    "position": [
+      -2,
+      8,
+      -14
+    ],
+    "target": [
+      0,
+      6,
+      40
+    ]
+  },
+  "note": "FU-E-23: RT 影 ON・TAA/SSR/SSGI OFF で、40m 超の箱の地面・高い塔の上部・遠い細い柱の影がラスタから欠けないこと。DXR で決定論が崩れうるので group:repeat"
+}

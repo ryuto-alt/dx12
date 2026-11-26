@@ -4955,17 +4955,21 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         && (m_scene->GetSsrSettings().enabled || m_scene->GetSsgiSettings().enabled);
     // ★FU-E-23: RT 影デノイザ / RT-AO / RT 反射も速度プリパスを要求する（velocityPrepass の条件と揃えること。renderer/VelocityPolicy.h）。
     //   ここに入れないと前ワールド VB が無いまま速度パスが個別ドローへ落ち、フォワードの自動インスタンシングと Z がずれて大きな面が欠ける。
-    VelocityPrepassReasons velReasons;
-    velReasons.taa             = taaActive;
-    velReasons.ssr             = ssGiWantsPrepass && m_scene->GetSsrSettings().enabled;
-    velReasons.ssgi            = ssGiWantsPrepass && m_scene->GetSsgiSettings().enabled;
-    if (m_rtScene && m_taaPass && taaViewOk)
+    PrepareFrameVelocityInputs velIn;
+    velIn.taaActive = taaActive;
+    velIn.ssGiWantsPrepass = ssGiWantsPrepass;
+    velIn.ssrEnabled = m_scene->GetSsrSettings().enabled;
+    velIn.ssgiEnabled = m_scene->GetSsgiSettings().enabled;
+    velIn.rtSceneReady = m_rtScene != nullptr;
+    velIn.taaPassExists = m_taaPass != nullptr;
     {
         const RtSettings& rtVel = m_scene->GetRtSettings();
-        velReasons.rtShadowDenoise = rtVel.shadowEnabled && rtVel.shadowDenoise;
-        velReasons.rtAo            = rtVel.aoEnabled;
-        velReasons.rtReflections   = rtVel.reflectionsEnabled;
+        velIn.rtShadowEnabled = rtVel.shadowEnabled;
+        velIn.rtShadowDenoise = rtVel.shadowDenoise;
+        velIn.rtAoEnabled     = rtVel.aoEnabled;
+        velIn.rtReflEnabled   = rtVel.reflectionsEnabled;
     }
+    const VelocityPrepassReasons velReasons = MakePrepareFrameVelocityReasons(velIn);
     const bool wantsVelocityPrevWorld = WantsVelocityPrevWorld(velReasons);   // velocityPrepass の上位集合（理由は VelocityPolicy.h）
     if (wantsVelocityPrevWorld) EnsureInstancePrevBuffer();
     m_trackPrevWorld = wantsVelocityPrevWorld;

@@ -30,9 +30,42 @@ inline constexpr bool WantsVelocityPrepass(const VelocityPrepassReasons& r) noex
     return r.taa || r.ssr || r.ssgi || r.rtShadowDenoise || r.rtAo || r.rtReflections || r.stage;
 }
 
-// 前ワールドの追跡と前ワールド VB の確保が要るか。PrepareFrame の時点の理由は velocityPrepass の部分集合ではなく上位集合
-// （RT が未準備・screenSpaceOn が false などで実際には走らないフレームでも true になりうる）。そのぶん前ワールドの
-// emplace と VB（37MB）を払うが、速度パスが走るフレームで確保漏れが起きないことを優先する。
+// PrepareFrame（描画リスト構築より前）が持っている入力。ここから理由を組むので、
+// 「PrepareFrame の組み立て」自体をテストできる（理由の詰め漏れが今回の不具合の原因だった）。
+struct PrepareFrameVelocityInputs
+{
+    bool taaActive        = false;   // taaCfg.enabled && m_taaPass ready && taaViewOk
+    bool ssGiWantsPrepass = false;   // m_screenSpaceGi ready && taaViewOk && (SSR || SSGI 有効)
+    bool ssrEnabled       = false;
+    bool ssgiEnabled      = false;
+    bool rtSceneReady     = false;   // m_rtScene がある（RenderView の useRt* の前提）
+    bool taaPassExists    = false;   // m_taaPass がある（RT 影デノイザの前提）
+    bool rtShadowEnabled  = false;
+    bool rtShadowDenoise  = false;
+    bool rtAoEnabled      = false;
+    bool rtReflEnabled    = false;
+};
+
+// PrepareFrame の理由。RenderView の useRtAo / useRtShadowDenoise / useRtRefl と同じ前提（RT シーンの有無・m_taaPass の有無）に
+// 揃える。taaViewOk（2D・正射）は掛けない: RenderView 側のデノイザ / RT-AO はそれを見ないので、掛けると 2D / 正射で
+// velocityPrepass=true なのに前ワールドを追跡しない（物体の速度が 0 になる）フレームができる。
+// stage（wiring.velocityReq）は PrepareFrame では分からないので false のまま（RenderView が true にしうる唯一の差）。
+inline constexpr VelocityPrepassReasons MakePrepareFrameVelocityReasons(const PrepareFrameVelocityInputs& in) noexcept
+{
+    VelocityPrepassReasons r{};
+    r.taa             = in.taaActive;
+    r.ssr             = in.ssGiWantsPrepass && in.ssrEnabled;
+    r.ssgi            = in.ssGiWantsPrepass && in.ssgiEnabled;
+    r.rtShadowDenoise = in.rtSceneReady && in.taaPassExists && in.rtShadowEnabled && in.rtShadowDenoise;
+    r.rtAo            = in.rtSceneReady && in.rtAoEnabled;
+    r.rtReflections   = in.rtSceneReady && in.rtReflEnabled;
+    return r;
+}
+
+// 前ワールドの追跡と前ワールド VB の確保が要るか。PrepareFrame の理由は velocityPrepass の上位集合に近いが、
+// 完全な上位集合ではない: (a) stage だけが要求するフレームは PrepareFrame では分からない、
+// (b) RenderView の useRtAo は screenSpaceOn も見る（PrepareFrame は見ない＝多めに払う側）。
+// (a) のときは RenderDepthOnlyScene が VB を自分で確保する（面は欠けない）が、前ワールド追跡は無いので速度は 0 になる。
 inline constexpr bool WantsVelocityPrevWorld(const VelocityPrepassReasons& r) noexcept
 {
     return WantsVelocityPrepass(r);
