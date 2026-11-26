@@ -227,7 +227,7 @@ def _synth_dir(root, wiggle=False):
     write_pfm(d / "pt.pfm", img(pt))
     write_pfm(d / "raster_epic.pfm", img(ras))
     for k in range(8):
-        f = ras * 1.2 if (wiggle and k == 3) else ras
+        f = ras * 2.0 if (wiggle and k == 3) else ras
         write_pfm(d / f"raster_epic_t{k:02d}.pfm", img(f))
     return root
 
