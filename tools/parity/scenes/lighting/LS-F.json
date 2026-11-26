@@ -1,0 +1,332 @@
+{
+ "id": "LS-F",
+ "title": "LS-F 静止 8 フレームと夕方",
+ "description": "地面に塔(6m)・柱・球。カメラも物も静止で、連続 8 フレームの 8bit 表示の最大差(1/255 以下が目標)を見る。夕方(太陽 方位 200°/高度 10°。カメラの後ろから前へ長く伸びる)の条件では cascade0 の影が長く伸び、近い塔の影が抜けないことを見る(AUD-01)。",
+ "spec": {
+  "version": 1,
+  "name": "ls_f",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Ground_0_0",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -20.0,
+     -0.1,
+     -10.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_0_1",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -20.0,
+     -0.1,
+     30.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_0_2",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -20.0,
+     -0.1,
+     70.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_0",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     20.0,
+     -0.1,
+     -10.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_1",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     20.0,
+     -0.1,
+     30.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_2",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     20.0,
+     -0.1,
+     70.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Tower",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     3.0,
+     3.0,
+     6.0
+    ],
+    "size": [
+     1.6,
+     6.0,
+     1.6
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_10",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -3.0,
+     1.5,
+     10.0
+    ],
+    "size": [
+     0.8,
+     3.0,
+     0.8
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Sphere",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     -1.0,
+     0.6,
+     3.0
+    ],
+    "size": 1.2,
+    "color": "#d0a070",
+    "material": {
+     "roughness": 0.4
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     250,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 250,
+  "elevation": 50,
+  "intensity": 3.0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -10.0,
+   0.0,
+   -10.0
+  ],
+  "max": [
+   10.0,
+   4.0,
+   10.0
+  ],
+  "spacing": 1.0,
+  "follow": true
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    0,
+    2.0,
+    -5.0
+   ],
+   "target": [
+    0,
+    1.0,
+    14.0
+   ]
+  }
+ ],
+ "regions": {},
+ "criteria": {
+  "temporal": {
+   "max_range": 1
+  },
+  "coverage": {
+   "region": "shadow_tower",
+   "camera": "main",
+   "min_ratio": 0.95
+  },
+  "acne": {
+   "region": "lit_ground",
+   "camera": "main",
+   "max_rate": 0.001
+  }
+ },
+ "variants": [
+  {
+   "id": "noon",
+   "sun": {
+    "azimuth": 250,
+    "elevation": 50,
+    "intensity": 3.0,
+    "ambient": 0,
+    "kelvin": 5600
+   }
+  },
+  {
+   "id": "evening10",
+   "sun": {
+    "azimuth": 200,
+    "elevation": 10,
+    "intensity": 2.2,
+    "ambient": 0,
+    "kelvin": 3800
+   }
+  }
+ ],
+ "shadowRegions": {
+  "shadow_tower": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2"
+   ],
+   "occluders": [
+    "ENV_Tower"
+   ],
+   "state": "roi",
+   "roiPx": 40
+  },
+  "shadow_pillar": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2"
+   ],
+   "occluders": [
+    "ENV_Pillar_10"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  },
+  "lit_ground": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2"
+   ],
+   "occluders": [
+    "ENV_Tower",
+    "ENV_Pillar_10",
+    "ENV_Sphere"
+   ],
+   "state": "lit",
+   "roiPx": 60
+  }
+ },
+ "temporal": {
+  "frames": 8,
+  "settle": 120
+ },
+ "conditions": [
+  "high",
+  "epic"
+ ]
+}

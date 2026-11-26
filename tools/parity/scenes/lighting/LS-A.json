@@ -1,0 +1,742 @@
+{
+ "id": "LS-A",
+ "title": "LS-A 塔・柱・マネキンの影",
+ "description": "広い地面に高さ 10m の塔(視点から 12m)、距離 6/15/30/60/120m の柱、4m 先の自作マネキン(スキンド)。太陽 方位 140°/高度 35°。影の画素の捕捉・アクネ・縁の幅・距離帯ごとのテクセル密度を見る。High(RT OFF)と Epic(RT ON)の 2 条件で撮る。",
+ "spec": {
+  "version": 1,
+  "name": "ls_a",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Ground_0_0",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -40.0,
+     -0.1,
+     -20.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_0_1",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -40.0,
+     -0.1,
+     20.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_0_2",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -40.0,
+     -0.1,
+     60.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_0_3",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -40.0,
+     -0.1,
+     100.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_0_4",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -40.0,
+     -0.1,
+     140.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_0",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0.0,
+     -0.1,
+     -20.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_1",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0.0,
+     -0.1,
+     20.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_2",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0.0,
+     -0.1,
+     60.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_3",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0.0,
+     -0.1,
+     100.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_1_4",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0.0,
+     -0.1,
+     140.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_2_0",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     40.0,
+     -0.1,
+     -20.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_2_1",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     40.0,
+     -0.1,
+     20.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_2_2",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     40.0,
+     -0.1,
+     60.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_2_3",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     40.0,
+     -0.1,
+     100.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground_2_4",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     40.0,
+     -0.1,
+     140.0
+    ],
+    "size": [
+     40.0,
+     0.2,
+     40.0
+    ],
+    "color": "#9a9a94",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Tower",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -6,
+     5,
+     12
+    ],
+    "size": [
+     2.4,
+     10,
+     2.4
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_6",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4.5,
+     2,
+     6
+    ],
+    "size": [
+     1.0,
+     4.0,
+     1.0
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_15",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.5,
+     2,
+     15
+    ],
+    "size": [
+     1.0,
+     4.0,
+     1.0
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_30",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4.5,
+     2,
+     30
+    ],
+    "size": [
+     1.0,
+     4.0,
+     1.0
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_60",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.5,
+     2,
+     60
+    ],
+    "size": [
+     1.0,
+     4.0,
+     1.0
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_120",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4.5,
+     2,
+     120
+    ],
+    "size": [
+     1.0,
+     4.0,
+     1.0
+    ],
+    "color": "#c8c4bc",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     140,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 140,
+  "elevation": 35,
+  "intensity": 3.0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -10.0,
+   0.0,
+   -10.0
+  ],
+  "max": [
+   10.0,
+   4.0,
+   10.0
+  ],
+  "spacing": 1.0,
+  "follow": true
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    0,
+    2.2,
+    -6
+   ],
+   "target": [
+    0,
+    1.0,
+    30
+   ],
+   "shadowRegions": [
+    "shadow_tower",
+    "lit_ground",
+    "shadow_pillar_6",
+    "shadow_pillar_15",
+    "shadow_pillar_30",
+    "shadow_pillar_60",
+    "shadow_pillar_120"
+   ]
+  },
+  {
+   "name": "char",
+   "position": [
+    -1.6,
+    1.5,
+    0.8
+   ],
+   "target": [
+    1.4,
+    0.4,
+    5.5
+   ],
+   "shadowRegions": [
+    "shadow_char"
+   ],
+   "note": "マネキンの影の縁(スキンドの影)を大きく撮る補助カメラ"
+  }
+ ],
+ "regions": {},
+ "criteria": {
+  "coverage": {
+   "region": "shadow_tower",
+   "camera": "main",
+   "min_ratio": 0.95
+  },
+  "acne": {
+   "region": "lit_ground",
+   "camera": "main",
+   "max_rate": 0.001
+  },
+  "edge_char": {
+   "region": "shadow_char",
+   "camera": "char"
+  }
+ },
+ "models": [
+  {
+   "name": "Mannequin",
+   "path": "assets/engine/characters/mannequin/mannequin.glb",
+   "at": [
+    1.4,
+    0,
+    5.0
+   ],
+   "proxy": {
+    "size": [
+     0.7,
+     1.8,
+     0.4
+    ]
+   }
+  }
+ ],
+ "shadowRegions": {
+  "shadow_tower": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "ENV_Tower"
+   ],
+   "state": "roi",
+   "roiPx": 40
+  },
+  "shadow_char": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "Mannequin"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  },
+  "lit_ground": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "ENV_Tower",
+    "Mannequin",
+    "ENV_Pillar_6",
+    "ENV_Pillar_15",
+    "ENV_Pillar_30",
+    "ENV_Pillar_60",
+    "ENV_Pillar_120"
+   ],
+   "state": "lit",
+   "roiPx": 60
+  },
+  "shadow_pillar_6": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "ENV_Pillar_6"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  },
+  "shadow_pillar_15": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "ENV_Pillar_15"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  },
+  "shadow_pillar_30": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "ENV_Pillar_30"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  },
+  "shadow_pillar_60": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "ENV_Pillar_60"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  },
+  "shadow_pillar_120": {
+   "receivers": [
+    "LVL_Ground_0_0",
+    "LVL_Ground_0_1",
+    "LVL_Ground_0_2",
+    "LVL_Ground_0_3",
+    "LVL_Ground_0_4",
+    "LVL_Ground_1_0",
+    "LVL_Ground_1_1",
+    "LVL_Ground_1_2",
+    "LVL_Ground_1_3",
+    "LVL_Ground_1_4",
+    "LVL_Ground_2_0",
+    "LVL_Ground_2_1",
+    "LVL_Ground_2_2",
+    "LVL_Ground_2_3",
+    "LVL_Ground_2_4"
+   ],
+   "occluders": [
+    "ENV_Pillar_120"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  }
+ },
+ "texelBands": [
+  5,
+  10,
+  20,
+  40,
+  80,
+  160
+ ],
+ "conditions": [
+  "high",
+  "epic"
+ ]
+}
