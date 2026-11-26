@@ -233,7 +233,7 @@ def ls_f() -> dict:
         shadowRegions=sr,
         temporal={"frames": 8, "settle": 120},
         conditions=["high", "epic"],
-        criteria={"temporal": {"max_range": 1},
+        criteria={"temporal": {"p99_range": 1, "max_range": 1},
                   "coverage": {"region": "shadow_tower", "camera": "main", "min_ratio": 0.95, "variant": "noon"},
                   "coverage_behind": {"region": "shadow_behind", "camera": "main", "min_ratio": 0.95, "variant": "evening10"},
                   "acne": {"region": "lit_ground", "camera": "main", "max_rate": 0.001}})

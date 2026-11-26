@@ -1,5 +1,6 @@
 """ライティング評価(LS-00b)の影の指標・シーン・評価ハーネスの単体テスト(合成画像のみ。エンジン不要)。"""
 import json
+import os
 import math
 from pathlib import Path
 
@@ -292,7 +293,7 @@ def test_temporal_flicker_fails_and_compare_detects(tmp_path):
     assert LE.compare(a, a)["deterministic"]
     assert b["scenes"]["LS-F"]["variants"]["noon"]["criteria"]["epic"]["temporal"]["status"] == "FAIL"
     diff = LE.compare(a, b)
-    assert not diff["deterministic"] and any(k.endswith("temporal/max_range") for k in diff["outOfTolerance"])
+    assert not diff["deterministic"] and any(k.endswith("temporal/p99_range") for k in diff["outOfTolerance"])
 
 
 def test_compare_cli(tmp_path):
@@ -340,4 +341,24 @@ def test_compare_deterministic_keys_are_tight():
     a = {"scorecard": {"X/default/main/epic/global/ev_mean": 0.5, "X/default/main/epic/temporal/max_range": 3.0}}
     b = {"scorecard": {"X/default/main/epic/global/ev_mean": 0.5 + 1e-3, "X/default/main/epic/temporal/max_range": 5.0}}
     r = LE.compare(a, b)
-    assert r["outOfTolerance"] == ["X/default/main/epic/global/ev_mean"]
+    assert r["outOfTolerance"] == ["X/default/main/epic/global/ev_mean"]      # max_range は情報のみ(比較に使わない)
+
+
+def test_entry_ps1_parses_to_expected_statements():
+    """入口スクリプトが壊れていない(コメントの `\r` が改行化して `elease` という文になった事故の再発防止)。pwsh の AST で全コマンドの名前を調べる。"""
+    import shutil
+    import subprocess
+    pwsh = shutil.which("pwsh")
+    if not pwsh:
+        pytest.skip("pwsh が無い")
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("lighting_eval.ps1", "gi_eval.ps1"):
+        path = os.path.join(here, name)
+        code = ("$e=$null;$t=$null;$a=[System.Management.Automation.Language.Parser]::ParseFile($env:PS1_PATH,[ref]$t,[ref]$e);"
+                "if($e.Count){$e|%{$_.Message};exit 3};"
+                "$a.FindAll({param($n)$n -is [System.Management.Automation.Language.CommandAst]},$true)|%{$_.GetCommandName()}")
+        r = subprocess.run([pwsh, "-NoProfile", "-Command", code], env={**os.environ, "PS1_PATH": path}, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        assert r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+        names = {x.strip() for x in (r.stdout or "").splitlines() if x.strip()}
+        allowed = {"Test-Path", "Join-Path", "Split-Path", "Write-Error", "Push-Location", "Pop-Location", "exit", "&", "Write-Host", "Write-Output"}
+        assert names <= allowed, f"{name}: 想定外のコマンド {sorted(names - allowed)}"

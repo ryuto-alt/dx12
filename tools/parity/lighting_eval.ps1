@@ -1,6 +1,5 @@
 # ライティング評価ハーネス(LS-00b)の入口。専用 venv の Python で `python -m parity.lighting_eval <引数>` を実行する(終了コードもそのまま返す)。
-#   pwsh -NoProfile -File tools/parity/lighting_eval.ps1 --build-dir <build
-elease のあるフォルダ>     # 全シーン(LS-A は High と Epic の 2 条件)
+#   pwsh -NoProfile -File tools/parity/lighting_eval.ps1 --build-dir <build/release のあるフォルダ>     # 全シーン(LS-A は High と Epic の 2 条件)
 #   pwsh -NoProfile -File tools/parity/lighting_eval.ps1 --scenes LS-A --conditions epic
 #   pwsh -NoProfile -File tools/parity/lighting_eval.ps1 --from-dir .dx12\parity\lighting\<日時>      # 撮影済みから指標だけ再計算
 #   pwsh -NoProfile -File tools/parity/lighting_eval.ps1 --compare a\lighting_eval.json b\lighting_eval.json   # 2 回の差が決定論の範囲か
