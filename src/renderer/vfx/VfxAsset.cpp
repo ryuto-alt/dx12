@@ -436,10 +436,12 @@ bool ParseRender(const json& in, RenderDesc& r, std::string& err, std::vector<st
         };
         if (!fnum("mvRange", r.flipMvRange, 0.0f, 8.0f) || !fnum("tempMin", r.flipTempMin, 500.0f, 20000.0f) ||
             !fnum("tempMax", r.flipTempMax, 500.0f, 20000.0f) || !fnum("emission", r.flipEmission, 0.0f, 1000.0f) ||
-            !fnum("erodeStart", r.flipErodeStart, 0.0f, 1.0f) || !fnum("erodeWidth", r.flipErodeWidth, 0.001f, 1.0f) ||
+            !fnum("erodeStart", r.flipErodeStart, 0.0f, 1.0f) || !fnum("rootFade", r.flipRootFade, 0.0f, 0.5f) || !fnum("erodeWidth", r.flipErodeWidth, 0.001f, 1.0f) ||
             !fstr("mv", r.flipMv) || !fstr("dbf", r.flipDbf) || !fstr("channels", r.flipChannels)) return false;
         if (r.flipChannels != "fire" && r.flipChannels != "smoke6way" && r.flipChannels != "color")
         { err = "render.flipbook.channels: '" + r.flipChannels + "' は使えない（fire | smoke6way | color）"; return false; }
+        if (r.kind == RenderKind::Flipbook && r.flipChannels == "smoke6way" && r.flipDbf.empty())
+        { err = "render.flipbook: channels が smoke6way なら dbf が要る"; return false; }
         if (r.flipTempMax < r.flipTempMin) { err = "render.flipbook.tempMax は tempMin 以上"; return false; }
         if (fb.contains("anchor"))
         {
@@ -449,7 +451,7 @@ bool ParseRender(const json& in, RenderDesc& r, std::string& err, std::vector<st
         }
         for (auto it = fb.begin(); it != fb.end(); ++it)
         {
-            static const char* fk[] = { "cols", "rows", "fps", "frames", "channels", "dbf", "mv", "mvRange", "anchor", "tempMin", "tempMax", "emission", "erodeStart", "erodeWidth" };
+            static const char* fk[] = { "cols", "rows", "fps", "frames", "channels", "dbf", "mv", "mvRange", "anchor", "tempMin", "tempMax", "emission", "erodeStart", "erodeWidth", "rootFade" };
             bool ok = false;
             for (const char* k2 : fk) if (it.key() == k2) ok = true;
             if (!ok) warnings.push_back("render.flipbook: 未知のキー '" + it.key() + "' は無視した");
@@ -656,6 +658,7 @@ std::string SerializeUvfx(const VfxAsset& a)
                 fb["anchor"] = e.render.AnchorBottom() ? "bottom" : "center";
                 fb["tempMin"] = e.render.flipTempMin; fb["tempMax"] = e.render.flipTempMax; fb["emission"] = e.render.flipEmission;
                 fb["erodeStart"] = e.render.flipErodeStart; fb["erodeWidth"] = e.render.flipErodeWidth;
+                fb["rootFade"] = e.render.flipRootFade;
             }
             r["flipbook"] = std::move(fb);
         }

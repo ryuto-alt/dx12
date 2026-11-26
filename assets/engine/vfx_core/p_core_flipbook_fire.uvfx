@@ -44,7 +44,7 @@
         "kind": "flipbook", "blend": "alpha", "fade": "inout", "softDistance": 0.5, "intensity": 1.0,
         "texture": "engine/vfx/smoke_6way_rlu.dds",
         "flipbook": { "cols": 6, "rows": 6, "frames": 36, "fps": 12, "channels": "smoke6way", "dbf": "engine/vfx/smoke_6way_dbf.dds",
-                      "mv": "engine/vfx/smoke_mv.dds", "mvRange": 0.5, "anchor": "bottom", "erodeStart": 0.5, "erodeWidth": 0.2 }
+                      "mv": "engine/vfx/smoke_mv.dds", "mvRange": 0.5, "anchor": "bottom", "rootFade": 0.15, "erodeStart": 0.5, "erodeWidth": 0.2 }
       }
     }
   ]

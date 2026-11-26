@@ -368,6 +368,9 @@ VfxSystem::FlipTex* VfxSystem::GetFlipTex(StageCtx& ctx, const std::string& path
     for (u32 y = 0; y < info.h; ++y)
         std::memcpy(mapped + u64(y) * fp.Footprint.RowPitch, src + u64(y) * info.w * info.bpp, u64(info.w) * info.bpp);
     upload->Unmap(0, nullptr);
+    // SRV を先に確保する（コピーを記録したあとで失敗すると、記録済みのコマンドが参照する res がすぐ解放される）
+    const u32 srv = ctx.descriptors->AllocateIndex();
+    if (srv == kNone) { t.error = "SRV ヒープが一杯"; Logger::Warn("UnoFX: {}", t.error); return nullptr; }
     D3D12_TEXTURE_COPY_LOCATION dstLoc{}, srcLoc{};
     dstLoc.pResource = res.Get(); dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     srcLoc.pResource = upload.Get(); srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; srcLoc.PlacedFootprint = fp;
@@ -376,19 +379,12 @@ VfxSystem::FlipTex* VfxSystem::GetFlipTex(StageCtx& ctx, const std::string& path
                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     DeferredRelease::Defer(std::move(upload), nullptr);
 
-    const u32 srv = ctx.descriptors->AllocateIndex();
-    if (srv == kNone) { t.error = "SRV ヒープが一杯"; Logger::Warn("UnoFX: {}", t.error); return nullptr; }
     D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
     sv.Format = d.Format; sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     sv.Texture2D.MipLevels = 1;
     dev->CreateShaderResourceView(res.Get(), &sv, ctx.descriptors->GetCpuHandle(srv));
-    if (t.res)
-    {
-        const u64 old = u64(t.w) * t.h * t.bpp;
-        m_vram -= std::min(m_vram, old);
-        DeferredRelease::Defer(std::move(t.res), nullptr);
-    }
+    // 読めたテクスチャは再読込しない（ok の間は上の早期 return）。DDS を焼き直したときはエンジンの再起動が要る
     t.res = std::move(res); t.srv = srv; t.w = info.w; t.h = info.h; t.bpp = info.bpp; t.ok = true;
     m_vram += u64(info.w) * info.h * info.bpp;
     Logger::Info("UnoFX: フリップブックのテクスチャ {}（{}x{}）", path, info.w, info.h);
@@ -437,7 +433,8 @@ bool VfxSystem::BindFlipbook(const RenderDesc& r, u32 out[24], const StageCtx& c
         amb[0], amb[1], amb[2], r.flipEmission };
     out[0] = t0->srv; out[1] = t1 ? t1->srv : kNone; out[2] = tm ? tm->srv : kNone;
     out[3] = channel | (r.AnchorBottom() ? 16u : 0u);
-    out[4] = r.flipCols; out[5] = r.flipRows; out[6] = frames; out[7] = 0;
+    out[4] = r.flipCols; out[5] = r.flipRows; out[6] = frames;
+    std::memcpy(out + 7, &r.flipRootFade, sizeof(float));
     std::memcpy(out + 8, f, sizeof(f));
     return true;
 }
@@ -918,9 +915,8 @@ void VfxSystem::Draw(StageCtx& ctx)
         cb.uP[2] = (r.blend == Blend::Alpha ? 1u : 0u) | (v.orthographic ? 2u : 0u);
         u32 flipCb[24];
         const bool flipbook = BindFlipbook(r, flipCb, ctx);
-        if (r.kind == RenderKind::Flipbook && !flipbook && !m_flipWarned)
+        if (r.kind == RenderKind::Flipbook && !flipbook && m_flipWarned.insert(in.assetPath + "|" + r.texture).second)
         {
-            m_flipWarned = true;
             Logger::Warn("UnoFX: flipbook のテクスチャ / シェーダが無いので、スプライトで描く（{}）", in.assetPath);
         }
         if (flipbook != curFlip)

@@ -11,6 +11,7 @@
 
 #include <future>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -141,7 +142,7 @@ private:
     // ---- CPU ----
     std::map<std::string, AssetEntry> m_assets;
     std::map<std::string, FlipTex> m_flipTex;
-    mutable bool m_flipWarned = false;
+    mutable std::set<std::string> m_flipWarned;   // 縮退を警告した（アセット|texture）
     std::map<u64, Instance> m_instances;
     struct Range { u32 base, size; bool used; };
     std::vector<Range> m_ranges;

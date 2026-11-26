@@ -77,8 +77,9 @@ int main(int argc, char** argv)
     CHECK(s1.find("\"anchor\": \"bottom\"") != std::string::npos);
     {
         const ParseResult fr = ParseUvfx(R"({"uvfx":1,"emitters":[{"render":{"kind":"flipbook","texture":"s.dds",
-            "flipbook":{"cols":6,"rows":6,"frames":36,"fps":12,"channels":"smoke6way","dbf":"d.dds","mv":"m.dds","mvRange":0.5,"anchor":"center","tempMin":900,"tempMax":2400,"emission":2,"erodeStart":0.2,"erodeWidth":0.1}}}]})");
+            "flipbook":{"cols":6,"rows":6,"frames":36,"fps":12,"channels":"smoke6way","dbf":"d.dds","mv":"m.dds","mvRange":0.5,"anchor":"center","tempMin":900,"tempMax":2400,"emission":2,"erodeStart":0.2,"erodeWidth":0.1,"rootFade":0.15}}}]})");
         CHECK(fr.ok);
+        CHECK(fr.asset.emitters[0].render.flipRootFade == 0.15f);
         const RenderDesc& rd = fr.asset.emitters[0].render;
         CHECK(rd.flipFrames == 36 && rd.flipChannels == "smoke6way" && rd.flipDbf == "d.dds" && rd.flipMv == "m.dds");
         CHECK(!rd.AnchorBottom() && rd.flipTempMin == 900.0f && rd.flipTempMax == 2400.0f && rd.flipEmission == 2.0f);
@@ -93,6 +94,8 @@ int main(int argc, char** argv)
     CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"channels":"neon"}}}]})", "neon"));
     CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"cols":4,"rows":4,"frames":17}}}]})", "frames"));
     CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"anchor":"top"}}}]})", "anchor"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"kind":"flipbook","flipbook":{"channels":"smoke6way"}}}]})", "dbf"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"rootFade":0.9}}}]})", "rootFade"));
     CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"tempMin":3000,"tempMax":2000}}}]})", "tempMax"));
     CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"mvRange":-1}}}]})", "mvRange"));
 

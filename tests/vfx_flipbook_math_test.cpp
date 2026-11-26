@@ -349,6 +349,39 @@ void TestRealAssets(const std::string& dir)
         CHECK(std::fabs(th.pa.x - uv.x) < mvRange && std::fabs(th.pb.y - uv.y) < mvRange);
     }
 }
+
+// 四角形の幾何（W1-BD7 レビュー対応）
+void TestQuadGeometry()
+{
+    const V2 corners[4] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    // anchor=bottom: 下端（c.y = -1）が粒子の位置（原点）、上端が 2。回転なし
+    float minY = 1e9f, maxY = -1e9f;
+    for (V2 c : corners) { const V2 q = BillboardOffset(c, true, 0.0f); minY = std::min(minY, q.y); maxY = std::max(maxY, q.y); if (c.y < 0) CHECK_NEAR(q.y, 0.0, 1e-6); }
+    CHECK_NEAR(minY, 0.0, 1e-6); CHECK_NEAR(maxY, 2.0, 1e-6);
+    // anchor=center: 中心が粒子の位置
+    minY = 1e9f; maxY = -1e9f;
+    for (V2 c : corners) { const V2 q = BillboardOffset(c, false, 0.0f); minY = std::min(minY, q.y); maxY = std::max(maxY, q.y); }
+    CHECK_NEAR(minY, -1.0, 1e-6); CHECK_NEAR(maxY, 1.0, 1e-6);
+    // 回転は根元まわり: 下端の中点（根元）は回しても原点のまま
+    { const V2 a = BillboardOffset({-1, -1}, true, 0.7f), b = BillboardOffset({1, -1}, true, 0.7f);
+      CHECK_NEAR((a.x + b.x) * 0.5, 0.0, 1e-6); CHECK_NEAR((a.y + b.y) * 0.5, 0.0, 1e-6); }
+    // 枠内 uv は v 下向き: 下端（c.y = -1）が v = 1、左が u = 0
+    CHECK_NEAR(CornerUv({-1, -1}).x, 0.0, 1e-7); CHECK_NEAR(CornerUv({-1, -1}).y, 1.0, 1e-7);
+    CHECK_NEAR(CornerUv({1, 1}).x, 1.0, 1e-7); CHECK_NEAR(CornerUv({1, 1}).y, 0.0, 1e-7);
+    // 伸ばす: 画像の +u（頭）が速度方向へ伸びる。u = 1 の角は along > 0、u = 0 の角は along < 0、直交方向は v に対応
+    for (V2 c : corners)
+    {
+        const V2 o = StretchOffset(c, 1.0f, 10.0f);
+        const V2 uv = CornerUv(c);
+        CHECK((uv.x > 0.5f) == (o.x > 0.0f));
+        CHECK(std::fabs(o.x) > std::fabs(o.y));   // 長辺が速度方向
+    }
+    CHECK_NEAR(StretchOffset({1, 0}, 0.0f, 10.0f).x, 1.0, 1e-7);   // stretch 0 なら正方形
+    // 根元のフェード: 下端（v = 1）で 0、上は 1。fade = 0 なら無し
+    CHECK_NEAR(RootFade(1.0f, 0.15f), 0.0, 1e-7); CHECK_NEAR(RootFade(0.5f, 0.15f), 1.0, 1e-7);
+    CHECK(RootFade(0.95f, 0.15f) > 0.0f && RootFade(0.95f, 0.15f) < 1.0f);
+    CHECK_NEAR(RootFade(1.0f, 0.0f), 1.0, 1e-7);
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -362,6 +395,7 @@ int main(int argc, char** argv)
     TestSixWay();
     TestBlackbodyAndErosion();
     TestShade();
+    TestQuadGeometry();
     if (argc >= 2) TestRealAssets(argv[1]);
     else std::printf("  （実データの検査は省略。第 1 引数に assets/engine/vfx を渡す）\n");
     std::printf("vfx_flipbook_math_test: %d checks, %d failures\n", g_checks, g_failures);

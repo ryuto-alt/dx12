@@ -69,6 +69,31 @@ inline V2 AtlasUv(V2 uv, const Grid& g, u32 frame)
     return {(float(c) + uv.x) / float(g.cols), (float(r) + uv.y) / float(g.rows)};
 }
 
+// ---- 四角形の幾何（VfxSpriteDraw.hlsl の VSMain と同じ式。テストで固定する）----
+// 角 c（-1..1、c.y = -1 が下）から枠内 uv（左上が (0,0)、v 下向き）。
+inline V2 CornerUv(V2 c) { return {c.x * 0.5f + 0.5f, 0.5f - c.y * 0.5f}; }
+// 通常の四角形（ビルボード軸 right/up 上の係数、size 倍する前）。anchorBottom なら下端（c.y = -1）が粒子の位置で、回転は根元まわり。
+inline V2 BillboardOffset(V2 c, bool anchorBottom, float angle)
+{
+    V2 q = c;
+    if (anchorBottom) q.y += 1.0f;
+    const float s = std::sin(angle), cs = std::cos(angle);
+    return {q.x * cs - q.y * s, q.x * s + q.y * cs};
+}
+// 伸ばす四角形（火花）。x = 速度方向（+u が頭。NB2 の sparks.dds は頭が +u）、y = 速度に直交する方向。size 倍する前。
+inline V2 StretchOffset(V2 c, float stretchParam, float speed)
+{
+    const float stretch = 1.0f + stretchParam * std::min(speed, 30.0f) * 0.06f;
+    return {c.x * stretch, c.y * 0.55f};
+}
+// 根元のフェード（v = 枠内 v、下向き。fade = 枠の高さに対する割合。0 で無し）。空中の煙で根元の行が硬く切れるのを防ぐ。
+inline float RootFade(float v, float fade)
+{
+    if (fade <= 0.0f) return 1.0f;
+    const float x = std::min(std::max((1.0f - v) / fade, 0.0f), 1.0f);
+    return x * x * (3.0f - 2.0f * x);
+}
+
 // ---- CPU のテクスチャ（DDS から読む。GPU の線形・クランプのサンプリングと同じ重み付け）----
 struct CpuTex
 {

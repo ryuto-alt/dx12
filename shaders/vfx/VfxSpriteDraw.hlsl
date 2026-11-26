@@ -21,7 +21,7 @@ cbuffer DrawCB : register(b0)
 cbuffer FlipCB : register(b1)
 {
     uint4  fTex;    // x = 色（炎族 / RLU）の SRV, y = DBF の SRV, z = MV の SRV（0xFFFFFFFF で無し）, w = 下位 4bit: チャンネル（0 炎族, 1 6-way, 2 色）、bit4: 根元固定
-    uint4  fGrid;   // x = cols, y = rows, z = frames
+    uint4  fGrid;   // x = cols, y = rows, z = frames, w = rootFade（float のビット）
     float4 fP0;     // x = fps, y = mvRange, z = erodeStart, w = erodeWidth
     float4 fLight;  // xyz = 表面から光へ（ワールド）, w = tempMin
     float4 fSun;    // rgb = 光の色, w = tempMax
@@ -81,12 +81,13 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     if (params.w > 0.0 && dot(p.vel, p.vel) > 1e-4)
     {
         // 速度方向へ伸ばす（火花）。伸ばすときは中心基準
+        // 画像の +u（c.x）= 速度方向（火花の頭）、v = 直交方向（NB2 の sparks.dds の規約）。VfxFlipbook.h の StretchOffset と同じ
         float3 vd = normalize(p.vel);
         float3 axisX = cross(vd, camRight.xyz);
         if (dot(axisX, axisX) < 1e-5) axisX = camUp.xyz;
         axisX = normalize(axisX);
         float stretch = 1.0 + params.w * min(length(p.vel), 30.0) * 0.06;
-        wp = p.pos + (axisX * 0.55) * (c.x * size) + (vd * stretch) * (c.y * size);
+        wp = p.pos + (vd * stretch) * (c.x * size) + (axisX * 0.55) * (c.y * size);
         angle = 0.0;
     }
     else
@@ -114,9 +115,16 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     return o;
 }
 
+float RootFadeV(float v, float fade)
+{
+    if (fade <= 0.0) return 1.0;
+    return smoothstep(0.0, fade, 1.0 - v);   // VfxFlipbook.h の RootFade と同じ
+}
+
 float4 PSMain(VSOut i) : SV_Target
 {
     uint2 grid = fGrid.xy;
+    float rootFade = asfloat(fGrid.w);   // 根元のフェード（枠の高さに対する割合。0 で無し）
     uint channel = fTex.w & 15u;
     float2 pa = i.uv, pb = i.uv;
     if (fTex.z != 0xFFFFFFFFu)
@@ -145,7 +153,7 @@ float4 PSMain(VSOut i) : SV_Target
         sh.rgb = s0.rgb * i.color.rgb;
         sh.a = s0.a;
     }
-    float a = i.color.a * sh.a;
+    float a = i.color.a * sh.a * RootFadeV(i.uv.y, rootFade);
 
     if (uP.w != 0u && uP.y != 0xFFFFFFFFu)
     {
