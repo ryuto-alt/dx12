@@ -140,6 +140,15 @@ void TestWiring()
     CHECK(app.find("m_mcpStepFramesLeft > 0 || m_mcpStepReply.client != 0") != std::string::npos);
     CHECK(app.find("!m_mcpVInputWaits.empty()") != std::string::npos);
     CHECK(app.find("IsSceneLoadJobActive()") != std::string::npos);
+    // 遅延応答・ジョブ（5 秒を超える要求でも間引かない）
+    CHECK(app.find("m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending") != std::string::npos);
+    CHECK(app.find("m_mcpPerceive != nullptr") != std::string::npos);
+    CHECK(app.find("!m_hwReads.empty()") != std::string::npos);
+    CHECK(app.find("!m_mcpUndoRequests.empty()") != std::string::npos);
+    CHECK(app.find("m_deterministicFramesLeft > 0") != std::string::npos);
+    CHECK(app.find("m_benchReply.client != 0") != std::string::npos);
+    CHECK(app.find("m_loading || m_scenePreloadJob != nullptr") != std::string::npos);
+    CHECK(app.find("m_thumbRenderer->GetPendingCount() > 0") != std::string::npos);
     // ゲームと UI テストでは間引かない
     CHECK(app.find("m_editorCtx && !m_isGameMode && !m_uiTestsRequested") != std::string::npos);
 #endif

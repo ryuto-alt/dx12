@@ -1505,7 +1505,18 @@ void Application::Run()
             || m_mcpGameViewReply.client != 0 || m_mcpRenderDebugFramesLeft > 0
             || m_benchFramesLeft > 0 || m_diagFrameStatsRequest
             || !m_mcpVInputWaits.empty()
-            || IsSceneLoadJobActive() || m_buildJob != nullptr;
+            || IsSceneLoadJobActive() || m_buildJob != nullptr
+            // 遅延応答・毎フレーム少しずつ進むジョブ（5 秒を超えても間引かない）
+            || m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending   // screenshot_final / オフスクリーン撮影の収束待ち
+            || m_mcpPerceive != nullptr                                      // dx12_perceive
+            || !m_hwReads.empty()                                            // hw_read（最長 10 秒）
+            || !m_mcpUndoRequests.empty()                                    // undo / redo / commit / rollback
+            || m_deterministicFramesLeft > 0                                 // 決定論撮影の収束フレーム
+            || m_benchReply.client != 0 || m_mcpRenderDebugReply.client != 0
+            || m_loading || m_scenePreloadJob != nullptr                     // プロジェクト読み込み・シーン先読み
+            || (m_thumbRenderer && m_thumbRenderer->GetPendingCount() > 0);  // サムネイル生成（1 フレーム 1 枚）
+        // editor_command_run の待ち（ApplicationMcpEditorUi.cpp の内部。最長 6 秒・180 フレーム）は
+        // 要求の 5 秒の猶予で覆われる。その先は同ファイルの所有者が口を足すこと。
     };
     // 窓が前面（同じプロセスの窓を含む。ImGui の別ビューポート窓）にあり、最小化されていない。
     // --background / --headless は窓を出さないので常に false（MCP の要求が無い間だけ間引かれる）。
