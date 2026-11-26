@@ -566,11 +566,34 @@ export function createSceneSim(opts: SimOptions = {}) {
     e.textures = { ...(e.textures ?? {}), [slot]: path };
     return { entityId: e.id, path, slot, ...undoInfo("set_texture") };
   });
+  // particleEmitter のレイヤー(実エンジンは放出器ごとに最大 16 枚)。名前は add_particle_layer が付けたものだけ追う。
+  const emitterLayers = new Map<number, string[]>();
+  const layersOf = (e: SimEntity): string[] => emitterLayers.get(e.id) ?? ["Layer 1"];
+  def("add_particle_layer", "write_scene", (p) => {
+    const e = resolve(p);
+    if (!e.comps.particleEmitter) throw simErr(6, "放出器が無い", { error_name: "E_NOT_FOUND_COMPONENT" });
+    const ls = [...layersOf(e)];
+    if (ls.length >= 16) throw simErr(3, "レイヤーは 16 枚まで", { error_name: "E_LIMIT_REACHED" });
+    ls.push(typeof p.layerName === "string" && p.layerName ? p.layerName : `Layer ${ls.length + 1}`);
+    emitterLayers.set(e.id, ls);
+    return { entityId: e.id, index: ls.length - 1, count: ls.length, ...undoInfo("add_particle_layer") };
+  });
   def("set_component", "write_scene", (p) => {
     const e = resolve(p);
     const comp = String(p.component ?? "");
     if (!comp) throw simErr(2, "missing 'component'", { error_name: "E_MISSING_PARAM" });
     const data = p.data !== undefined ? p.data : p.values;
+    // layer は選択子。範囲外・不明は【何も変えずに】E_OUT_OF_RANGE(実エンジン BUG-07 と同じ形: details={field,value,max})。
+    if (comp === "particleEmitter" && p.layer !== undefined && !(data && typeof data === "object" && "layer" in data)) {
+      if (data && typeof data === "object" && !Array.isArray(data)) (data as any).layer = p.layer;
+    }
+    if (comp === "particleEmitter" && data && typeof data === "object" && "layer" in data) {
+      const ls = layersOf(e); const lj = (data as any).layer;
+      const ok = Number.isInteger(lj) ? lj >= 0 && lj < ls.length : typeof lj === "string" && ls.includes(lj);
+      if (!ok) throw simErr(2, "set_component: particleEmitter の layer が範囲外または見つかりません", {
+        error_name: "E_OUT_OF_RANGE", error_cause: "layer が既存のレイヤーを指していない(何も変更せずに断る)", error_details: { field: "layer", value: lj, max: ls.length - 1 },
+      });
+    }
     if (comp === "tags" && Array.isArray(data)) {
       if (data.some((s: any) => typeof s !== "string")) throw simErr(2, "tags must be an array of strings", { error_name: "E_BAD_TYPE" });
       e.tags = [...data];
@@ -590,7 +613,9 @@ export function createSceneSim(opts: SimOptions = {}) {
       e.data = { ...(e.data ?? {}), ...clone(data) };
     } else if (SETTABLE.has(comp) && comp !== "tags") {
       const cur = e.comps[comp] ?? clone(COMP_DEFAULTS[comp] ?? {});
-      e.comps[comp] = fr({ ...cur, ...clone(data) });
+      const merged: any = { ...cur, ...clone(data) };
+      if (comp === "particleEmitter") delete merged.layer;
+      e.comps[comp] = fr(merged);
     } else {
       throw simErr(6, `unknown/unsupported component: ${comp} (call dx12_describe_components)`, {
         error_name: "E_NOT_FOUND_COMPONENT", error_did_you_mean: nearest(comp, [...SETTABLE], 3), error_hint: "dx12_describe_components で settable な jsonKey を確かめる",

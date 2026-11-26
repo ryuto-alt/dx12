@@ -162,6 +162,18 @@ try {
     check("set_texture: materialTextureOverrides に載る / 無いテクスチャは E_NOT_FOUND_ASSET", (await call("get_entity", { name: "M" })).materialTextureOverrides?.albedo === "textures/wood.png" && (await fail("set_texture", { name: "M", path: "textures/none.png" }))?.error_name === "E_NOT_FOUND_ASSET");
     await call("remove_component", { name: "B", component: "boxCollider" });
     check("remove_component", !(await call("get_entity", { name: "B" })).boxCollider && (await fail("remove_component", { name: "B", component: "transform" }))?.error_code === 2);
+    // FU-E-39 (C2): 3 層の放出器へ layer:7 → E_OUT_OF_RANGE / details {field,value,max:2} / エンティティは不変
+    await call("create_entity", { type: "particle_emitter", name: "Em3" });
+    await call("add_particle_layer", { name: "Em3" });
+    await call("add_particle_layer", { name: "Em3" });
+    const em0 = JSON.stringify(await call("get_entity", { name: "Em3" }));
+    const eLayer = await fail("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 7, rate: 99 } });
+    check("3 層の放出器へ layer:7 → E_OUT_OF_RANGE + error_details {field:layer,value:7,max:2}", eLayer?.error_name === "E_OUT_OF_RANGE" && JSON.stringify(eLayer.error_details) === JSON.stringify({ field: "layer", value: 7, max: 2 }), eLayer);
+    check("拒否された呼び出しの後もエンティティは変わらない", JSON.stringify(await call("get_entity", { name: "Em3" })) === em0);
+    const eLayerP = await fail("set_component", { name: "Em3", component: "particleEmitter", layer: 7, data: { rate: 99 } });
+    check("layer を params 直下に書いても同じ拒否", eLayerP?.error_name === "E_OUT_OF_RANGE" && eLayerP.error_details?.max === 2 && JSON.stringify(await call("get_entity", { name: "Em3" })) === em0, eLayerP);
+    await call("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 2, rate: 99 } });
+    check("範囲内の layer:2 は通る", (await call("get_entity", { name: "Em3" })).particleEmitter.rate === 99);
     const q = await call("set_transform", { name: "B", quaternion: [0, 0.7071068, 0, 0.7071068] });
     check("quaternion → euler(yaw 90)", nearV((await call("get_entity", { name: "B" })).transform.rotation, [0, 90, 0], 0.01) && q.entityId > 0);
     const badPos = await fail("set_transform", { name: "B", position: [1, 2] });
