@@ -57,3 +57,5 @@ import "./jobs.ts";
 import "./editorTools.ts";
 // 宣言的シーン生成(M11): dx12_apply_scene_spec(core)+ dx12_scene_spec_export(長尾)。仕様 JSON を差分適用 → 自動検証 → 失敗は specPatch で返す。中身は ../sceneSpec/。
 import "./sceneSpec.ts";
+// 視覚回帰と性能ゲート(MCP-01): dx12_visual / dx12_perf_gate。legacy 面には出さない長尾ツール(tools/list には出さず dx12_call で使う)。
+import "./visual.ts";

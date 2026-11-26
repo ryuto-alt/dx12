@@ -4,6 +4,9 @@
 // 追加の作法: 新しいツールを足したら、ここに 1 行足して eval/discovery_tasks.json に代表クエリを足す。
 
 export const SEARCH_HINTS: Record<string, string> = {
+  // 視覚回帰と性能ゲート(MCP-01)
+  visual: "視覚回帰 ビジュアルリグレッション ゴールデン golden 基準画像 baseline approve 承認 compare 比較 差分 見た目が変わっていないか FLIP bitExact スクショ比較",
+  perf_gate: "性能ゲート 性能予算 budget 合否 16.6ms フレーム時間 p95 GPU 予算 VRAM 回帰 regression ABAB A/B DLSS TAA 計測窓 Epic",
   // shell 5 本
   tool_search: "ツール検索 探す どのツール 名前が分からない 検索 search find tool 目的のツール",
   tool_describe: "ツール詳細 仕様 引数 スキーマ 例 describe 使い方を調べる 引数の確認",
