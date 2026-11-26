@@ -2,6 +2,9 @@
 // 突き合わせ（W1-A2 / GG-1）。GPU 不要。
 //   ・色トークン: `cpp` 欄が既存の Palette.xxx のものは、同名のフィールドへ同じ値が入っている（仕様の改名で黙って値が落ちない）
 //   ・色トークンの総数（別名を除く）= 生成したフィールドの総数（落ちたトークン・余ったフィールドが無い）
+//   ・全色トークン（NEW を含む 169 個、別名を含む）が、`cpp` 欄から導いた構造体・フィールドに、tokens と同じ値で入っている（kGgFieldMap）
+//   ・コントラスト: final/contrast.md の §1〜§3 の全組（文字 112 組・UI 境界 99 組。alpha は下の面へ合成してから計算）を、
+//     出荷する C++ の値で計算し直し、基準（4.5:1 / 3:1）以上であること・表の比と一致することを検査する（kGgContrast）
 //   ・黄の予算（GgYellowBudget）の各値が tokens.yellowBudget の値と一致
 //   ・黄ゾーン（OKLCH C>=0.07 かつ h 75..105）にある色トークンは accent 系の 4 つの色だけ
 //   ・モーション: 曲線・時間・待ち・Reduce Motion が tokens.motion と一致（34 の用途）
@@ -13,6 +16,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -132,6 +137,132 @@ void TestColors(const json& tok)
         + static_cast<int>((sizeof(gg::GgViewportPalette) + sizeof(gg::GgTimelinePalette) + sizeof(gg::GgStatus) + sizeof(gg::GgStatusCvd)
                             + sizeof(gg::GgAxis) + sizeof(gg::GgKind) + sizeof(gg::GgChrome)) / sizeof(ImVec4));
     CHECKF(nonAlias == generated, "tokens の別名でない色 %d 個 != 生成したフィールド %d 個", nonAlias, generated);
+}
+
+std::string LowerFirst(std::string s)
+{
+    if (!s.empty()) s[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[0])));
+    return s;
+}
+
+// `cpp` 欄（Palette.xxx / NEW Palette.xxx / Palette(cvd).xxx / Deco.xxx）から、生成物の「構造体::フィールド」を独立に導く。
+// 規則は tools/theme/gen_gg_tokens.py の classify_colors と同じ（既存の Palette 名 → Palette、cvd → GgStatusCvd、状態・軸・種別・
+// ビューポート・タイムライン → それぞれの構造体、それ以外 → GgChrome）。生成器が値を取り違えても、ここで食い違う。
+std::string ExpectedMember(const std::string& grp, const std::string& key, const std::string& cpp)
+{
+    static const std::regex re(R"(^(?:NEW\s+)?(Palette\(cvd\)|Palette|Deco)\.(\w+))");
+    std::smatch m;
+    std::string kind, name;
+    if (std::regex_search(cpp, m, re)) { kind = m[1].str(); name = m[2].str(); }
+    auto starts = [&](const char* p) { return !name.empty() && name.rfind(p, 0) == 0; };
+    if (kind == "Palette")
+        for (const PEntry& e : kPalette)
+            if (name == e.name) return std::string("Palette::") + name;
+    if (grp == "statusCvd" || kind == "Palette(cvd)") return "GgStatusCvd::" + (name.empty() ? key : name);
+    if (grp == "status") return "GgStatus::" + (name.empty() ? key : name);
+    if (grp == "axis") return "GgAxis::" + (starts("axis") ? LowerFirst(name.substr(4)) : key);
+    if (grp == "kind") return "GgKind::" + (starts("type") ? LowerFirst(name.substr(4)) : key);
+    if (grp == "viewport") return "GgViewportPalette::" + (starts("vp") ? LowerFirst(name.substr(2)) : key);
+    if (grp == "timeline") return "GgTimelinePalette::" + (starts("tl") ? LowerFirst(name.substr(2)) : key);
+    return "GgChrome::" + ((!name.empty() && kind != "Deco") ? name : key);
+}
+
+void TestFieldMap(const json& tok)
+{
+    std::set<std::string> seenPaths;
+    std::set<const ImVec4*> seenPtr;
+    int total = 0, aliases = 0;
+    for (const auto& g : tok["color"].items())
+        total += static_cast<int>(g.value().size());
+    const int mapSize = static_cast<int>(sizeof(gg::kGgFieldMap) / sizeof(gg::kGgFieldMap[0]));
+    CHECKF(mapSize == total, "kGgFieldMap の数 %d != tokens の色トークン %d", mapSize, total);
+    for (const gg::GgFieldRef& r : gg::kGgFieldMap)
+    {
+        const std::string path = r.path;   // color.<group>.<key>
+        const size_t d1 = path.find('.'), d2 = path.find('.', d1 + 1);
+        CHECKF(d1 != std::string::npos && d2 != std::string::npos && seenPaths.insert(path).second, "kGgFieldMap の path が不正か重複: %s", r.path);
+        if (d1 == std::string::npos || d2 == std::string::npos) continue;
+        const std::string grp = path.substr(d1 + 1, d2 - d1 - 1), key = path.substr(d2 + 1);
+        if (!tok["color"].contains(grp) || !tok["color"][grp].contains(key)) { CHECKF(false, "tokens に無いトークンが表にある: %s", r.path); continue; }
+        const json& t = tok["color"][grp][key];
+        CHECKF(t["cpp"].get<std::string>() == r.cpp, "%s の cpp 欄が tokens と違う", r.path);
+        CHECKF(r.ptr != nullptr && SameColor(*r.ptr, t["value"].get<std::string>()), "%s の生成値が tokens (%s) と違う（%s）", r.path, t["value"].get<std::string>().c_str(), r.member);
+        if (r.alias)
+        {
+            ++aliases;
+            CHECKF(r.cpp[0] == '=', "%s は別名なのに cpp 欄が = で始まらない", r.path);
+            // 別名の参照先（`= [NEW] Palette.xxx`）と同じ cpp 名を持つ非別名のフィールドを指す
+            static const std::regex ra(R"(^=\s*(?:NEW\s+)?(?:Palette|Deco)\.(\w+))");
+            std::smatch m; const std::string c = r.cpp;
+            bool found = false;
+            if (std::regex_search(c, m, ra))
+                for (const gg::GgFieldRef& o : gg::kGgFieldMap)
+                {
+                    static const std::regex rn(R"(^(?:NEW\s+)?(?:Palette|Deco)\.(\w+))");
+                    std::smatch mo; const std::string oc = o.cpp;
+                    if (!o.alias && std::regex_search(oc, mo, rn) && mo[1].str() == m[1].str() && o.ptr == r.ptr) { found = true; break; }
+                }
+            CHECKF(found, "%s の別名の参照先が表に無い（%s）", r.path, r.cpp);
+        }
+        else
+        {
+            CHECKF(seenPtr.insert(r.ptr).second, "%s のフィールドが他のトークンと重複している（%s）", r.path, r.member);
+            const std::string want = ExpectedMember(grp, key, r.cpp);
+            CHECKF(want == r.member, "%s: cpp 欄 (%s) から導いたフィールド %s != 生成したフィールド %s", r.path, r.cpp, want.c_str(), r.member);
+        }
+    }
+    CHECKF(aliases > 0 && static_cast<int>(seenPtr.size()) + aliases == total, "非別名 %d + 別名 %d != %d", static_cast<int>(seenPtr.size()), aliases, total);
+}
+
+// ---- コントラスト（final/contrast.md の §1〜§3）。WCAG 2.x の相対輝度（閾値 0.03928。EditorTheme.h の ContrastRatio と同じ）----
+struct Rgb8 { int r, g, b; };
+Rgb8 ToRgb8(const ImVec4& c) { return { static_cast<int>(std::lround(c.x * 255.0f)), static_cast<int>(std::lround(c.y * 255.0f)), static_cast<int>(std::lround(c.z * 255.0f)) }; }
+// fg（alpha 付き）を over（不透明）の上に合成して 8 bit に丸める。over が無ければ fg 自身（alpha は 1 でなければならない）
+Rgb8 Flatten(const ImVec4* fg, const ImVec4* over, const char* name)
+{
+    if (!over)
+    {
+        CHECKF(fg->w == 1.0f, "%s: alpha が 1 でないのに合成する面が無い", name);
+        return ToRgb8(*fg);
+    }
+    CHECKF(over->w == 1.0f, "%s: 合成先の面が不透明でない", name);
+    const double a = fg->w;
+    auto mix = [&](float f, float o) { return static_cast<int>(std::lround((a * f + (1.0 - a) * o) * 255.0)); };
+    return { mix(fg->x, over->x), mix(fg->y, over->y), mix(fg->z, over->z) };
+}
+double Lum(const Rgb8& c)
+{
+    auto lin = [](int v) { const double s = v / 255.0; return s <= 0.03928 ? s / 12.92 : std::pow((s + 0.055) / 1.055, 2.4); };
+    return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+}
+double Ratio(const Rgb8& a, const Rgb8& b)
+{
+    const double la = Lum(a), lb = Lum(b);
+    return (std::max(la, lb) + 0.05) / (std::min(la, lb) + 0.05);
+}
+
+void TestContrast()
+{
+    int nText = 0, nUi = 0, nForbidden = 0;
+    for (const gg::GgContrastPair& p : gg::kGgContrast)
+    {
+        (p.text ? nText : nUi)++;
+        const Rgb8 f = Flatten(p.fg, p.fgOver, p.fgName);
+        const Rgb8 b = Flatten(p.bg, p.bgOver, p.bgName);
+        const double r = Ratio(f, b);
+        if (p.forbidden)
+        {
+            ++nForbidden;
+            CHECKF(r < p.minRatio, "禁止の組 %s on %s が基準を満たしてしまっている: %.2f", p.fgName, p.bgName, r);
+        }
+        else
+            CHECKF(r >= p.minRatio, "%s on %s: %.2f:1 < %.1f:1（%s）", p.fgName, p.bgName, r, p.minRatio, p.text ? "文字" : "UI 境界");
+        // 表の比は 2 桁。合成した色は 8 bit への丸めで 1 段ずれうるので、合成を含む組は 1% まで許す
+        const double tol = (p.fgOver || p.bgOver) ? std::max(0.011, 0.01 * p.docRatio) : 0.011;
+        CHECKF(std::fabs(r - p.docRatio) <= tol, "%s on %s: 出荷値の比 %.3f が contrast.md の %.2f と合わない", p.fgName, p.bgName, r, p.docRatio);
+    }
+    CHECKF(nText == 112 && nUi == 99, "contrast.md の組の数: 文字 %d（112）/ UI 境界 %d（99）", nText, nUi);
+    CHECK(nForbidden == 1);   // t4 on selActive だけ
 }
 
 void TestYellow(const json& tok)
@@ -268,6 +399,8 @@ int main()
     if (tok.empty()) return 1;
     CHECK(tok["meta"]["version"].get<std::string>() == "3.1.0");
     TestColors(tok);
+    TestFieldMap(tok);
+    TestContrast();
     TestYellow(tok);
     TestBudget(tok);
     TestDeco(tok);

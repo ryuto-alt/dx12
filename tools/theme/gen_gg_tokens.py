@@ -13,6 +13,7 @@
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import pathlib
 import re
@@ -22,6 +23,33 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 GG_DIR = ROOT / "assets" / "editor" / "theme" / "gg"
 OUT_THEME = ROOT / "src" / "editor" / "ThemeGraphite.gen.h"
 OUT_MOTION = ROOT / "src" / "editor" / "UiMotionTokens.gen.h"
+
+# 変数名（ThemeGraphite.gen.h の値）。フィールドへのポインタの表（kGgFieldMap / kGgContrast）が使う
+STRUCT_VAR = {"Palette": "kGraphitePalette", "GgStatus": "kStatus", "GgStatusCvd": "kStatusCvd", "GgAxis": "kAxis", "GgKind": "kKind",
+              "GgViewportPalette": "kViewport", "GgTimelinePalette": "kTimeline", "GgChrome": "kChrome"}
+
+
+class Tracked(dict):
+    """読んだキーを覚える dict。生成に使われなかったキー（= 仕様に増えたのに黙って落ちるキー）をエラーにするために使う。"""
+    def __init__(self, d):
+        super().__init__(d)
+        self.used = set()
+
+    def __getitem__(self, k):
+        self.used.add(k)
+        return super().__getitem__(k)
+
+    def unused(self):
+        return sorted(set(self.keys()) - self.used)
+
+
+def sync_module():
+    """sync_gg_spec.py の check_green を共有する（-I だとスクリプトのフォルダが sys.path に無いので、ファイルから読む）。"""
+    sys.dont_write_bytecode = True   # tools/theme に __pycache__ を作らない
+    spec = importlib.util.spec_from_file_location("sync_gg_spec", pathlib.Path(__file__).resolve().parent / "sync_gg_spec.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 # ThemeVariants.h の Palette の宣言順（既存フィールド。ここに無い名前の `Palette.xxx` はエラー）
 PALETTE_FIELDS = """bg0 bg1 bg2 bg3 bg4 windowBg popupBg inputBg inputBgHover inputBgActive inputBorder inputBorderHover
@@ -93,14 +121,16 @@ def classify_colors(tok):
     """色トークンを 出力先ごとに振り分ける。戻り: dict[struct名] = list[(field, tokenpath, value)]、alias の一覧"""
     dest = {k: [] for k in ["Palette", "GgStatus", "GgStatusCvd", "GgAxis", "GgKind", "GgViewportPalette",
                             "GgTimelinePalette", "GgChrome"]}
-    aliases = []
+    aliases = []   # (path, cpp)
+    fmap = []      # (path, struct, field, cpp)
+    name2f = {}    # cpp 欄の名前（Palette.xxx の xxx）→ (struct, field)
     seen = {}
     for g in COLOR_GROUPS:
         for key, t in tok["color"][g].items():
             path = "color.%s.%s" % (g, key)
             info = cpp_name(t["cpp"])
             if info is None:
-                aliases.append(path)
+                aliases.append((path, t["cpp"]))
                 continue
             kind, name, _new = info
             val = t["value"]
@@ -132,7 +162,17 @@ def classify_colors(tok):
                 raise SystemExit("フィールド名が重複: %s.%s (%s と %s)" % (struct, field, seen[k], path))
             seen[k] = path
             dest[struct].append((field, path, val))
-    return dest, aliases
+            fmap.append((path, struct, field, t["cpp"]))
+            if name and kind != "Palette(cvd)":   # 別名の参照先に cvd 用の色（同名の good / warn ...）を取り違えない
+                name2f[name] = (struct, field)
+    # 別名（`= Palette.xxx` / `= NEW Palette.xxx`）は参照先のフィールドを指す。参照先が無ければエラー
+    for path, cpp in aliases:
+        m = re.match(r"=\s*(?:NEW\s+)?(?:Palette|Deco)\.(\w+)", cpp.strip())
+        if not m or m.group(1) not in name2f:
+            raise SystemExit("別名の参照先が見つからない: %s (%s)" % (path, cpp))
+        struct, field = name2f[m.group(1)]
+        fmap.append((path, struct, field, cpp))
+    return dest, aliases, fmap
 
 
 def emit_struct(name, fields):
@@ -185,9 +225,78 @@ def dash_pair(s, what):
     return int(m.group(1)), int(m.group(2))
 
 
+# ---------------------------------------------------------------- contrast.md（final の表）
+def parse_expr(e):
+    """`A` または `A ⊕ B`（A を B の上に合成）→ (path, 下の面の path or None)。"""
+    parts = [x.strip() for x in e.split("⊕")]
+    if len(parts) > 2 or not all(re.fullmatch(r"[A-Za-z]+\.[A-Za-z0-9]+", x) for x in parts):
+        raise SystemExit("contrast.md の式が不正: %r" % e)
+    return ("color." + parts[0], ("color." + parts[1]) if len(parts) == 2 else None)
+
+
+def parse_contrast(text):
+    """contrast.md の §1（マトリクス）・§2（文字）・§3（UI 境界）を (fg, fgOver, bg, bgOver, min, docRatio, isText, forbidden) の一覧にする。"""
+    m = re.search(r"文字\s*(\d+)\s*組・UI 境界\s*(\d+)\s*組", text)
+    if not m:
+        raise SystemExit("contrast.md の「文字 N 組・UI 境界 M 組」の行が見つからない（書式が変わった）")
+    want_text, want_ui = int(m.group(1)), int(m.group(2))
+    secs = re.split(r"^## ", text, flags=re.M)
+    sec = {}
+    for b in secs[1:]:
+        mm = re.match(r"(\d+)\.", b)
+        if mm:
+            sec[int(mm.group(1))] = b
+    for k in (1, 2, 3):
+        if k not in sec:
+            raise SystemExit("contrast.md に §%d が無い" % k)
+    pairs = []
+    # §1: 文字 4 段 x 面
+    rows = [l for l in sec[1].splitlines() if l.startswith("|")]
+    head = [c.strip() for c in rows[0].strip("|").split("|")][1:]
+    surf = {}
+    for h in head:
+        surf[h] = ("selection." + h) if h in ("sel", "selHover", "selActive") else ("surface." + h)
+    n1 = 0
+    for r in rows[2:]:
+        cells = [c.strip() for c in r.strip("|").split("|")]
+        mt = re.match(r"(t[1-4])(?![0-9])", cells[0])
+        if not mt:
+            raise SystemExit("contrast.md §1 の行が不正: %r" % r)
+        if len(cells) - 1 != len(head):
+            raise SystemExit("contrast.md §1 の列数が合わない: %r" % r)
+        for h, c in zip(head, cells[1:]):
+            forb = "~~" in c or "禁止" in c
+            mr = re.search(r"([0-9]+\.[0-9]+)", c)
+            if not mr:
+                raise SystemExit("contrast.md §1 の値が不正: %r" % c)
+            pairs.append(("color.text." + mt.group(1), None, "color." + surf[h], None, 4.5, float(mr.group(1)), True, forb))
+            n1 += 1
+    # §2 / §3
+    for no, is_text in ((2, True), (3, False)):
+        for l in sec[no].splitlines():
+            if not l.startswith("|") or l.startswith("|--") or l.startswith("| 前景"):
+                continue
+            c = [x.strip() for x in l.strip("|").split("|")]
+            if len(c) < 6:
+                raise SystemExit("contrast.md §%d の行が不正: %r" % (no, l))
+            fg, fo = parse_expr(c[0])
+            bg, bo = parse_expr(c[1])
+            ratio, mn = float(c[3]), float(c[4])
+            if mn != (4.5 if is_text else 3.0):
+                raise SystemExit("contrast.md §%d の基準が想定外: %r" % (no, l))
+            if c[5] != "OK":
+                raise SystemExit("contrast.md に OK でない行がある: %r" % l)
+            pairs.append((fg, fo, bg, bo, mn, ratio, is_text, False))
+    nt = sum(1 for p in pairs if p[6])
+    nu = sum(1 for p in pairs if not p[6])
+    if (nt, nu) != (want_text, want_ui):
+        raise SystemExit("contrast.md の組の数が見出しの数と合わない: 文字 %d / UI %d（見出し: %d / %d）" % (nt, nu, want_text, want_ui))
+    return pairs
+
+
 # ---------------------------------------------------------------- ThemeGraphite.gen.h
-def gen_theme(tok, lock_sha):
-    dest, aliases = classify_colors(tok)
+def gen_theme(tok, lock_sha, contrast_text):
+    dest, aliases, fmap = classify_colors(tok)
     pal = dict((f, v) for f, _p, v in dest["Palette"])
     missing = [f for f in PALETTE_FIELDS if f not in pal and f != "windowBg"]
     if missing:
@@ -239,7 +348,7 @@ def gen_theme(tok, lock_sha):
     A("")
 
     # GgDeco / GgLayout / 線
-    deco = tok["deco"]
+    deco = Tracked(tok["deco"])
     layout = tok["metric"]["layout"]
     comp = tok["metric"]["component"]
     line = tok["line"]
@@ -259,10 +368,19 @@ def gen_theme(tok, lock_sha):
     D("vernierMinorAlpha", "vernierMinorAlpha", "float"); D("vernierMajorAlpha", "vernierMajorAlpha", "float")
     D("progressStep", "progressStep"); D("dockGripW", "dockGripW"); D("dockGripH", "dockGripH"); D("dockHitPad", "dockHitPad")
     D("badBarW", "badBarW"); D("playTagH", "playTagH"); D("playTagPadX", "playTagPadX")
+    rd, bd = Tracked(tok["metric"]["rounding"]), Tracked(tok["metric"]["border"])
+    # Metrics（ImGui の StyleVar）に入らない角丸（ボタン / ピル / 再生タグ）は GgDeco で渡す（A7 が数値を持たなくて済むように）
+    deco_fields += [("roundButton", "float", fnum(rd["button"]["value"])), ("roundPill", "float", fnum(rd["pill"]["value"])),
+                    ("roundPlayTag", "float", fnum(rd["playTag"]["value"]))]
     wl, wg = dash_pair(deco["warnBarDash"]["value"], "deco.warnBarDash")
     pl, pg = dash_pair(deco["playDash"]["value"], "deco.playDash")
     deco_fields += [("warnBarDashLen", "int", str(wl)), ("warnBarDashGap", "int", str(wg)),
                     ("playDashLen", "int", str(pl)), ("playDashGap", "int", str(pg))]
+    # 列挙値は既知のものだけ（未知の値を黙って Plain にしない）。ThemeVariants.h の HeaderStyle は Plain だけ、RowStyle の NeedleBar は GgDeco::rowNeedleBar で表す
+    if deco["headerStyle"]["value"] != "Plain":
+        raise SystemExit("deco.headerStyle の値 %r は未対応（ThemeVariants.h の HeaderStyle に Plain 以外を足す変更は重ヘッダの追加承認が要る）" % deco["headerStyle"]["value"])
+    if deco["rowStyle"]["value"] not in ("NeedleBar", "Plain"):
+        raise SystemExit("deco.rowStyle の値 %r は未対応" % deco["rowStyle"]["value"])
     deco_fields += [("caliper", "bool", "true" if deco["caliper"]["value"] else "false"),
                     ("headerOverline", "bool", "true" if deco["headerOverline"]["value"] else "false"),
                     ("rowNeedleBar", "bool", "true" if deco["rowStyle"]["value"] == "NeedleBar" else "false")]
@@ -353,8 +471,44 @@ def gen_theme(tok, lock_sha):
     A("inline constexpr GgSpec kGgSpec{ kViewport, kTimeline, kStatus, kStatusCvd, kAxis, kKind, kChrome, GgDeco{}, GgLayout{}, GgYellowBudget{} };")
     A("")
 
+    # トークン → フィールドの表（テストが「全トークンが cpp 欄どおりのフィールドに入っているか」を見る）
+    ptr = {}
+    for path, struct, field, cpp in fmap:
+        ptr[path] = "&%s.%s" % (STRUCT_VAR[struct], field)
+    A("// ---- トークン → 生成フィールドの対応表（全色トークン。別名は参照先のフィールドを指す）----")
+    A("struct GgFieldRef { const char* path; const char* cpp; const char* member; const ImVec4* ptr; bool alias; };")
+    A("inline constexpr GgFieldRef kGgFieldMap[] = {")
+    alias_paths = set(a for a, _c in aliases)
+    for path, struct, field, cpp in fmap:
+        A("    { %s, %s, %s, %s, %s }," % (cstr(path), cstr(cpp), cstr("%s::%s" % (struct, field)), ptr[path],
+                                          "true" if path in alias_paths else "false"))
+    A("};")
+    A("")
+    # コントラスト（final/contrast.md の §1〜§3 の全組。A ⊕ B = A を B の上に合成した色）
+    pairs = parse_contrast(contrast_text)
+
+    def pe(path):
+        if path is None:
+            return "nullptr"
+        if path not in ptr:
+            raise SystemExit("contrast.md のトークンが tokens に無い: %s" % path)
+        return ptr[path]
+
+    def nm(path, over):
+        return cstr((path[6:] if path else "") + ((" ⊕ " + over[6:]) if over else ""))
+    A("// ---- コントラスト検査の表（final/contrast.md §1〜§3 と同じ組。文字 4.5:1 / UI 境界 3:1）----")
+    A("// fgOver / bgOver が空でなければ「fg を fgOver の上に合成した色」。docRatio は contrast.md の比（2 桁）。forbidden は「禁止の組み合わせ」（比は基準未満で正しい）。")
+    A("struct GgContrastPair { const ImVec4* fg; const ImVec4* fgOver; const ImVec4* bg; const ImVec4* bgOver; const char* fgName; const char* bgName;")
+    A("                        float minRatio; float docRatio; bool text; bool forbidden; };")
+    A("inline constexpr GgContrastPair kGgContrast[] = {")
+    for fg, fo, bg, bo, mn, ratio, is_text, forb in pairs:
+        A("    { %s, %s, %s, %s, %s, %s, %s, %s, %s, %s }," % (pe(fg), pe(fo), pe(bg), pe(bo), nm(fg, fo), nm(bg, bo), fnum(mn),
+                                                          fnum(ratio) if ratio == int(ratio) else repr(ratio) + "f",
+                                                          "true" if is_text else "false", "true" if forb else "false"))
+    A("};")
+    A("")
+
     # Metrics / Deco(旧) / Extra
-    rd, bd = tok["metric"]["rounding"], tok["metric"]["border"]
     sc = tok["typography"]["scale"]
     A("// ---- Metrics / Deco / Extra（ThemeVariants.h の既存の型へ）----")
     A("inline constexpr Metrics kMetrics = []() constexpr {")
@@ -382,7 +536,7 @@ def gen_theme(tok, lock_sha):
     for f in ["panelFocusEdge", "panelTopLine", "panelSheen", "layeredShadow", "monoIcons", "statusTopLine", "toolbarLine"]:
         A("    d.%s = %s;" % (f, "true" if deco[f]["value"] else "false"))
     A("    d.rowStyle = RowStyle::Plain;")
-    A("    d.headerStyle = HeaderStyle::%s;" % ("Plain" if deco["headerStyle"]["value"] == "Plain" else "Plain"))
+    A("    d.headerStyle = HeaderStyle::Plain;   // deco.headerStyle == \"Plain\"（上で検査済み）")
     A("    d.backdropTop = C(0x%06X, %d);" % (rgb, a))
     A("    d.backdropBottom = C(0x%06X, %d);" % (rgb2, a2))
     A("    return d;")
@@ -399,6 +553,10 @@ def gen_theme(tok, lock_sha):
     A("    x.axisX = kAxis.x; x.axisY = kAxis.y; x.axisZ = kAxis.z;")
     A("    return x;")
     A("}();")
+    for nmx, tr in (("deco", deco), ("metric.rounding", rd), ("metric.border", bd)):
+        un = tr.unused()
+        if un:
+            raise SystemExit("tokens の %s に生成されないキーがある（仕様に項目が増えた。gen_gg_tokens.py に足す）: %s" % (nmx, un))
     L2 = L
     L2.append("")
     L2.append("// 組み立て済みの Spec の部品（ThemeGraphite.cpp が Spec と gg::GgSpec をまとめる）。gg::kGgSpec の deco / layout / budget は")
@@ -505,13 +663,16 @@ def main():
         errs.append("tokens.json の SHA256 が gg_spec.lock.json と一致しない（手で書き換えた？ sync_gg_spec.py を再実行する）")
     ic = lock.get("integrateCheck", {})
     res = ic.get("result", {})
-    if not (ic.get("allGreen") is True and res.get("contrastFails") == 0 and res.get("cvdNG") == []
-            and res.get("yellowZoneViolations") == 0 and res.get("removedTokensAbsent") is True
-            and res.get("cssHasNew") is True and res.get("reduceMotionKeepsWaits") is True and res.get("tabNoUnique") is True):
-        errs.append("lock の integrate_check が全緑でない")
+    bad = sync_module().check_green(res)   # 未知の項目も合否として扱う（sync_gg_spec.py と同じ判定）
+    if ic.get("allGreen") is not True or bad:
+        errs.append("lock の integrate_check が全緑でない: %s" % bad)
     if lock.get("metaVersion") != tok["meta"]["version"]:
         errs.append("lock の metaVersion が tokens と違う")
-    theme = gen_theme(tok, sha)
+    contrast_text = (GG_DIR / "contrast.md").read_bytes().replace(bytes([13, 10]), bytes([10])).decode("utf-8")
+    csha = sha256_file(GG_DIR / "contrast.md")
+    if lock.get("contrastSha256") != csha:
+        errs.append("contrast.md の SHA256 が gg_spec.lock.json と一致しない（sync_gg_spec.py を再実行する）")
+    theme = gen_theme(tok, sha, contrast_text)
     motion = gen_motion(tok, sha)
     if args.check:
         for p, txt in [(OUT_THEME, theme), (OUT_MOTION, motion)]:
