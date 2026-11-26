@@ -690,6 +690,30 @@ if(TARGET Scripting)
     add_test(NAME LuaBindingRegistryTests COMMAND LuaBindingRegistryTests)
     set_tests_properties(LuaBindingRegistryTests PROPERTIES TIMEOUT 120)
 endif()
+# 起動音 Calibrate（W1-BD1）: イベント表（生成されたヘッダ）の形の検査。GPU 不要。
+add_executable(SplashCalibrateEventsTests splash_calibrate_events_test.cpp)
+target_include_directories(SplashCalibrateEventsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SplashCalibrateEventsTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(SplashCalibrateEventsTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME SplashCalibrateEventsTests COMMAND SplashCalibrateEventsTests)
+# tools/gen_boot_sound_calibrate.py: --check-assets は標準ライブラリだけ（コミット済みの資産の検査）。
+# --check は再合成（numpy が要る。tools/requirements-audio.txt）。numpy が無い python では登録しない（警告ではなく STATUS。標準の環境には numpy が無い）
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME CalibrateSoundAssets COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/gen_boot_sound_calibrate.py --check-assets)
+    set_tests_properties(CalibrateSoundAssets PROPERTIES TIMEOUT 120)
+    execute_process(COMMAND ${Python3_EXECUTABLE} -I -c "import numpy" RESULT_VARIABLE _calib_np_rc OUTPUT_QUIET ERROR_QUIET)
+    if(_calib_np_rc EQUAL 0)
+        add_test(NAME CalibrateSoundCheck COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/gen_boot_sound_calibrate.py --check)
+        set_tests_properties(CalibrateSoundCheck PROPERTIES TIMEOUT 300)
+    else()
+        message(STATUS "numpy が無い python のため CalibrateSoundCheck（再合成）は登録しません。venv に tools/requirements-audio.txt を入れると有効になります")
+    endif()
+else()
+    message(WARNING "Python3 が見つからないため CalibrateSoundAssets を登録できません")
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、

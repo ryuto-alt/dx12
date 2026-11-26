@@ -12,6 +12,37 @@ END
 // ==== lane-A begin ====
 // ==== lane-A end ====
 // ==== lane-B begin ====
+// 起動音 Calibrate（W1-BD1）。完成した master（full / Reduce Motion 版）と、遅い経路用のステム。
+// 資産の正は assets/editor/sounds/calibrate/（tools/gen_boot_sound_calibrate.py の出力）。ここ（エディタの exe の RCDATA）にだけ埋め込む。
+// 時刻・パンは src/core/SplashCalibrateEvents.h。ゲームのランタイム（app.rc）には入れない。
+UNO_CALIBRATE_FULL RCDATA "../assets/editor/sounds/calibrate/graphite_1.wav"
+UNO_CALIBRATE_RM RCDATA "../assets/editor/sounds/calibrate/graphite_1_rm.wav"
+UNO_CALIBRATE_BED RCDATA "../assets/editor/sounds/calibrate/stems/bed.wav"
+UNO_CALIBRATE_LOCK_TAIL RCDATA "../assets/editor/sounds/calibrate/stems/lock_tail.wav"
+UNO_CALIBRATE_CLICK_00 RCDATA "../assets/editor/sounds/calibrate/stems/click_00.wav"
+UNO_CALIBRATE_CLICK_01 RCDATA "../assets/editor/sounds/calibrate/stems/click_01.wav"
+UNO_CALIBRATE_CLICK_02 RCDATA "../assets/editor/sounds/calibrate/stems/click_02.wav"
+UNO_CALIBRATE_CLICK_03 RCDATA "../assets/editor/sounds/calibrate/stems/click_03.wav"
+UNO_CALIBRATE_CLICK_04 RCDATA "../assets/editor/sounds/calibrate/stems/click_04.wav"
+UNO_CALIBRATE_CLICK_05 RCDATA "../assets/editor/sounds/calibrate/stems/click_05.wav"
+UNO_CALIBRATE_CLICK_06 RCDATA "../assets/editor/sounds/calibrate/stems/click_06.wav"
+UNO_CALIBRATE_CLICK_07 RCDATA "../assets/editor/sounds/calibrate/stems/click_07.wav"
+UNO_CALIBRATE_CLICK_08 RCDATA "../assets/editor/sounds/calibrate/stems/click_08.wav"
+UNO_CALIBRATE_CLICK_09 RCDATA "../assets/editor/sounds/calibrate/stems/click_09.wav"
+UNO_CALIBRATE_CLICK_10 RCDATA "../assets/editor/sounds/calibrate/stems/click_10.wav"
+UNO_CALIBRATE_CLICK_11 RCDATA "../assets/editor/sounds/calibrate/stems/click_11.wav"
+UNO_CALIBRATE_CLICK_12 RCDATA "../assets/editor/sounds/calibrate/stems/click_12.wav"
+UNO_CALIBRATE_CLICK_13 RCDATA "../assets/editor/sounds/calibrate/stems/click_13.wav"
+UNO_CALIBRATE_CLICK_14 RCDATA "../assets/editor/sounds/calibrate/stems/click_14.wav"
+UNO_CALIBRATE_CLICK_15 RCDATA "../assets/editor/sounds/calibrate/stems/click_15.wav"
+UNO_CALIBRATE_CLICK_16 RCDATA "../assets/editor/sounds/calibrate/stems/click_16.wav"
+UNO_CALIBRATE_CLICK_17 RCDATA "../assets/editor/sounds/calibrate/stems/click_17.wav"
+UNO_CALIBRATE_CLICK_18 RCDATA "../assets/editor/sounds/calibrate/stems/click_18.wav"
+UNO_CALIBRATE_CLICK_19 RCDATA "../assets/editor/sounds/calibrate/stems/click_19.wav"
+UNO_CALIBRATE_CLICK_20 RCDATA "../assets/editor/sounds/calibrate/stems/click_20.wav"
+UNO_CALIBRATE_CLICK_21 RCDATA "../assets/editor/sounds/calibrate/stems/click_21.wav"
+UNO_CALIBRATE_CLICK_22 RCDATA "../assets/editor/sounds/calibrate/stems/click_22.wav"
+UNO_CALIBRATE_CLICK_23 RCDATA "../assets/editor/sounds/calibrate/stems/click_23.wav"
 // ==== lane-B end ====
 // ==== lane-C begin ====
 // ==== lane-C end ====
