@@ -8,3 +8,4 @@ eval/noPaidApi.test.ts
 ../dogfood/collect.test.mjs
 genBudgets.test.mjs
 ../scorecard/report.test.mjs
+../scorecard/baseline_perf.test.mjs
