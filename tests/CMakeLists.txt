@@ -567,6 +567,42 @@ if(TARGET ECS)
     add_test(NAME ScriptPropertyUndoTests COMMAND ScriptPropertyUndoTests)
     set_tests_properties(ScriptPropertyUndoTests PROPERTIES TIMEOUT 120)
 endif()
+# コンポーネントのシリアライザ登録表と PostProcess の V2 マクロ（W05-15）: 未知の型の往復 / skipOnSave / 既定なら保存もハッシュもしない。GPU 不要。
+if(TARGET Scene)
+    add_executable(ComponentRegistryTests component_registry_test.cpp)
+    target_link_libraries(ComponentRegistryTests PRIVATE Scene)
+    target_include_directories(ComponentRegistryTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(ComponentRegistryTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(ComponentRegistryTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME ComponentRegistryTests COMMAND ComponentRegistryTests)
+    set_tests_properties(ComponentRegistryTests PROPERTIES TIMEOUT 120)
+endif()
+# McpUndoTracker のレジストリ経由のフォールバック（W05-15）: 編集 / 追加 / 削除の Undo・Redo が JSON まで戻る。GPU 不要。
+if(TARGET Core AND TARGET Gui AND TARGET Editor AND TARGET ProjectLib)   # エンジン本体と同じリンク集合（McpUndoTrack.cpp が Core の奥まで引くため）
+    add_executable(McpUndoRegistryTests mcp_undo_registry_test.cpp)
+    target_link_libraries(McpUndoRegistryTests PRIVATE Core Graphics Renderer Resource Animation ECS Audio Input Hardware Terrain Nav AI Scene Scripting Physics Network Gui Ui Editor ProjectLib)
+    target_include_directories(McpUndoRegistryTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(McpUndoRegistryTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(McpUndoRegistryTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME McpUndoRegistryTests COMMAND McpUndoRegistryTests)
+    set_tests_properties(McpUndoRegistryTests PROPERTIES TIMEOUT 120)
+endif()
+# Lua 束縛の登録表（W05-15）: post.* の往復 / names / setMany / 不明キー。GPU 不要。
+if(TARGET Scripting)
+    add_executable(LuaBindingRegistryTests lua_binding_registry_test.cpp)
+    target_link_libraries(LuaBindingRegistryTests PRIVATE Scripting)
+    target_include_directories(LuaBindingRegistryTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src ${LUA_INCLUDE_DIR})
+    if(MSVC)
+        target_compile_options(LuaBindingRegistryTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(LuaBindingRegistryTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME LuaBindingRegistryTests COMMAND LuaBindingRegistryTests)
+    set_tests_properties(LuaBindingRegistryTests PROPERTIES TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
@@ -1323,7 +1359,8 @@ add_test(NAME FleetGuardTests COMMAND FleetGuardTests)
 # ★束縛は ScriptEngine.cpp 以外（ScriptAudioBindings.cpp など担当別の TU）にもあるので、
 #   src/scripting/*.cpp を全部 '|' 区切りで渡す。決め打ちにすると新しい TU の束縛を黙って見逃す。
 file(GLOB DX12E_SCRIPTING_TUS CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/*.cpp")
+     "${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/../src/scripting/bind/*.cpp")
 list(JOIN DX12E_SCRIPTING_TUS "|" DX12E_SCRIPTING_SOURCES)
 add_executable(LuaApiDocTests lua_api_doc_test.cpp)
 target_compile_definitions(LuaApiDocTests PRIVATE

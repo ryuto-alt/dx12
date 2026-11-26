@@ -251,6 +251,14 @@ struct PostProcessSettings
     B(motionBlurOn) F(mbStrength) I(mbSamples)                                    \
     B(fxaaOn) B(debandOn)
 
+// W2 以降に増えるポストのフィールドは、すべてこちら（V2）に入れる（W05-15 / R-00b）。
+// 引数は DX12E_POST_FIELDS と同じ（B / F / I / V / S）。いまは空。
+// ★V2 のフィールドは「値が既定と同じなら、シーン JSON にも SceneSettingsFingerprint にも出さない」
+//   （scene/PostV2Fields.h の UNO_POST_V2_SAVE / UNO_POST_V2_HASH が担当）。既存シーンのバイト列と指紋を変えないため。
+// 展開する場所（6 か所）: シーンの保存と読み込み / 指紋 / Lua（ScriptEngine の post）/ MCP（ApplicationInternal.h、
+//   ApplicationMcpRender.cpp）/ SequencerApply.cpp。
+#define DX12E_POST_FIELDS_V2(B, F, I, V, S)
+
 // SSAOSettings 版（同じ流儀。実体は renderer/SSAOSettings.h）
 #define DX12E_SSAO_FIELDS(B, F, I)                                                \
     B(enabled) F(radius) F(bias) F(intensity) F(power) I(sampleCount) B(blur) B(multiBounce)
