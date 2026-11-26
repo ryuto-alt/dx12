@@ -1058,6 +1058,7 @@ void AppAccess::UpdateShadingRevision(Application& app)
     app.RecreateForwardPsos();
     app.RecreateSkinnedPsos();
     app.RecreateTerrainPsos();
+    app.InvalidateTemporalHistory(true);   // V1<->V2 で絵が変わる（C5 以降）ので TAA / DDGI / フォグの履歴を捨てる
     Logger::Info("shadingRevision: {}（フォワード系 PSO を差し替えました。V2 PSO {} 本）", static_cast<int>(want),
                  s_v2PsoCount[0] + s_v2PsoCount[1] + s_v2PsoCount[2]);
 }
@@ -1077,16 +1078,18 @@ void Application::RegisterShaderReloadHandlers()
 
     m_shaderManager->RegisterReloadHandler(
         { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso", L"ForwardInstanced_VS.cso",
-          L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso" },
+          L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso",
+          L"ForwardV2_PS.cso", L"ForwardMaskV2_PS.cso", L"ForwardPhysV2_PS.cso", L"ForwardMaskPhysV2_PS.cso" },
         [this]() { RecreateForwardPsos(); });
     m_shaderManager->RegisterReloadHandler(
-        { L"ForwardSkinned_VS.cso", L"Forward_PS.cso", L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso" },
+        { L"ForwardSkinned_VS.cso", L"Forward_PS.cso", L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso",
+          L"ForwardV2_PS.cso", L"ForwardMaskV2_PS.cso", L"ForwardPhysV2_PS.cso", L"ForwardMaskPhysV2_PS.cso" },
         [this]() { RecreateSkinnedPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"ForwardGrid_VS.cso", L"ForwardGrid_PS.cso" },
         [this]() { RecreateGridPso(); });
     m_shaderManager->RegisterReloadHandler(
-        { L"Terrain_VS.cso", L"Terrain_PS.cso", L"TerrainPhys_PS.cso" },
+        { L"Terrain_VS.cso", L"Terrain_PS.cso", L"TerrainPhys_PS.cso", L"TerrainV2_PS.cso", L"TerrainPhysV2_PS.cso" },
         [this]() { RecreateTerrainPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"Emissive_VS.cso", L"Emissive_PS.cso" },

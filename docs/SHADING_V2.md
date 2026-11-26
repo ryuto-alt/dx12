@@ -83,3 +83,16 @@ Run ループの先頭（フレーム外）→ EnsureSplitResources → AppAcces
 
 `BrdfV2.hlsli` を `#include` するときは、同じ変更で `src/resource/ShaderRegistry.cpp` の依存表（`staticDeps`）に
 `forward/BrdfV2.hlsli` を足す（`ShaderIncludeDeps` テストが漏れを検出する）。
+
+## 8. 未解決（メインの判断待ち。C3 の所有外）
+
+1. **水 / 植生 / VG の V2 の選択**: V2 の .cso（WaterSurface/Under{,Phys}V2、ForwardFoliage*V2、VgResolveV2）は宣言・ビルド済みだが、
+   選ぶ側（`WaterRenderer`・`ApplicationWater.cpp`・`FoliageSystem.cpp`・`VirtualGeometrySystem.cpp`）は W1 の所有表に所有者がいない。
+   C6（影のバイアスを「シーン全体が V2 のときだけ」下げる）の前提なので、所有を決めて `FwdPsNameRev` と同じ流儀で結線すること。
+2. **shadingRevision の保存**: `SceneSerializer` は凍結のため保存されない。`set_shading` でシーンは dirty になるが、
+   開き直すと 1 に戻る（C7 / C8 の前に、1 行の解凍か側路の判断が必要）。
+3. **ホットリロード**: Forward / Skinned / Terrain の V2 .cso は `RegisterShaderReloadHandlers` に登録済み。
+   `ShaderRegistry.cpp`（所有者なし）の依存表への V2 名の追加は、`BrdfV2.hlsli` を include する変更で一緒に行う。
+4. **Application.cpp への直接の呼び出し**: `UpdateShadingRevision` は `EnsureSplitResources` の先頭から呼ばれている（相乗り）。
+   マージ時に lane A が Run ループの `UpdateLightingUnits` の隣へ明示的に呼び、相乗りを外すこと。
+5. 切替時に `InvalidateTemporalHistory(true)` を呼ぶ（TAA / DDGI / フォグの履歴を捨てる）。
