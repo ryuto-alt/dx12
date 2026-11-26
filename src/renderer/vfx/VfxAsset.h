@@ -58,13 +58,13 @@ struct RenderDesc
     // フリップブック（BD7）。kind=flipbook のとき使う。texture = 炎族 / RLU / 色のアトラス。
     //   channels: fire（炎族: R 温度 G 不透明度 B 浸食場 A 発光。黒体の色）/ smoke6way（texture = RLU、flipDbf = DBF。6-way のライティング）
     //             / color（straight な RGBA をそのまま）。
-    //   anchor: bottom（根元固定。四角形の下端が粒子の位置。炎と煙の枠の規約）/ center。既定は fire・smoke6way = bottom、color = center。
+    //   anchor: bottom（根元固定。四角形の下端が粒子の位置。炎と煙の枠の規約）/ center。既定は fire・smoke6way = bottom、color = center。ただし stretch > 0（火花）は center（遅くなって伸ばさない経路へ切り替わっても四角形が跳ねない）。
     //   mv: R16G16_SNORM のモーションベクトル（無ければ MV 補間なし）。mvRange: snorm 1.0 が枠 uv の何倍か（NB2 の焼き込みは 0.5）。
     std::string texture;
     u32   flipCols = 1, flipRows = 1;
     u32   flipFrames = 0;          // 0 = cols * rows
     float flipFps  = 0.0f;         // 0 = 寿命に渡って先頭から最後まで 1 回
-    std::string flipChannels = "fire";
+    std::string flipChannels = "color";   // channels の無い（BD7 以前の）フリップブックは、そのままの色のアトラスとして描く
     std::string flipDbf, flipMv;
     float flipMvRange = 0.5f;
     bool  flipAnchorSet = false;   // false = channels の既定
@@ -72,7 +72,7 @@ struct RenderDesc
     float flipTempMin = 1000.0f, flipTempMax = 2800.0f, flipEmission = 3.0f;   // 炎族（K, K, 放射の倍率）
     float flipRootFade = 0.0f;     // 根元のフェード（枠の高さに対する割合 0..0.5）。空中で動く煙は 0.1〜0.2 にする（根元の行が硬く切れる）。0 = 無し
     float flipErodeStart = 0.35f, flipErodeWidth = 0.15f;                      // 浸食（寿命の割合の開始、縁の幅）
-    bool  AnchorBottom() const { return flipAnchorSet ? flipAnchorBottom : flipChannels != "color"; }
+    bool  AnchorBottom() const { return flipAnchorSet ? flipAnchorBottom : flipChannels != "color" && stretch <= 0.0f; }
 };
 
 struct EmitterDesc

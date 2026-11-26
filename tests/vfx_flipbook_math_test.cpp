@@ -376,7 +376,40 @@ void TestQuadGeometry()
         CHECK((uv.x > 0.5f) == (o.x > 0.0f));
         CHECK(std::fabs(o.x) > std::fabs(o.y));   // 長辺が速度方向
     }
-    CHECK_NEAR(StretchOffset({1, 0}, 0.0f, 10.0f).x, 1.0, 1e-7);   // stretch 0 なら正方形
+    CHECK_NEAR(StretchOffset({1, 0}, 0.0f, 10.0f).x, 1.0, 1e-7);   // stretch 0 でも長さ方向は 1。幅は 0.55 倍（正方形ではない）
+    CHECK_NEAR(StretchOffset({0, 1}, 0.0f, 10.0f).y, 0.55, 1e-7);
+    // 3D の基底: どの速度でも四角形が画面に出る（画面に投影した面積 > 0）。カメラ = 右 +x、上 +y、カメラ側 +z
+    {
+        const V3 R{1, 0, 0}, U{0, 1, 0}, T{0, 0, 1};
+        const V3 vds[5] = {U, R, {0.6f, 0.8f, 0.0f}, {0, 0, 1}, {0.3f, 0.2f, 0.93f}};
+        for (V3 vd : vds)
+        {
+            const float l = std::sqrt(vd.x * vd.x + vd.y * vd.y + vd.z * vd.z);
+            vd = {vd.x / l, vd.y / l, vd.z / l};
+            const V3 w = StretchWidthAxis(vd, T, R);
+            CHECK_NEAR(w.x * w.x + w.y * w.y + w.z * w.z, 1.0, 1e-5);
+            CHECK_NEAR(w.x * vd.x + w.y * vd.y + w.z * vd.z, 0.0, 1e-5 + 1e-3 * std::fabs(vd.z));   // 速度とほぼ直交（視線方向の速度は camRight）
+            // 画面（xy）への投影面積 = |vd.xy × w.xy|
+            const float area = std::fabs(vd.x * w.y - vd.y * w.x);
+            if (std::fabs(vd.z) < 0.9f) CHECK(area > 0.3f);   // 視線とほぼ平行な速度は、頭が奥へ向くので細くなるのが正しい
+            // 法線（vd × w）はカメラ側を向く = 画面に正対する側
+            const V3 n{vd.y * w.z - vd.z * w.y, vd.z * w.x - vd.x * w.z, vd.x * w.y - vd.y * w.x};
+            if (std::fabs(vd.z) < 0.9f) CHECK(std::fabs(n.z) > 0.3f);
+        }
+        // 速度が真上: 幅の軸は視線（z）と速度の外積 = 画面の横。旧式（camRight との外積）は法線が -R で面積 0 だった
+        const V3 w = StretchWidthAxis(U, T, R);
+        CHECK_NEAR(std::fabs(w.x), 1.0, 1e-6);
+    }
+    // 検査: 役割と形式
+    CHECK(CheckTex(TexRole::Mv, 37, 256, 128, 4, 2).empty());
+    CHECK(!CheckTex(TexRole::Mv, 28, 256, 128, 4, 2).empty());      // MV が RGBA8
+    CHECK(!CheckTex(TexRole::Color, 29, 256, 128, 4, 2).empty());   // sRGB
+    CHECK(CheckTex(TexRole::Color, 28, 256, 128, 4, 2).empty());
+    CHECK(!CheckTex(TexRole::Color, 28, 250, 128, 4, 2).empty());   // cols で割り切れない
+    CHECK(CheckSameGrid(TexRole::Mv, 256, 128, 128, 64).empty());   // 低解像度の MV（同じ縦横比）
+    CHECK(!CheckSameGrid(TexRole::Mv, 256, 128, 128, 128).empty());
+    CHECK(CheckSameGrid(TexRole::Dbf, 256, 128, 256, 128).empty());
+    CHECK(!CheckSameGrid(TexRole::Dbf, 256, 128, 128, 64).empty());
     // 根元のフェード: 下端（v = 1）で 0、上は 1。fade = 0 なら無し
     CHECK_NEAR(RootFade(1.0f, 0.15f), 0.0, 1e-7); CHECK_NEAR(RootFade(0.5f, 0.15f), 1.0, 1e-7);
     CHECK(RootFade(0.95f, 0.15f) > 0.0f && RootFade(0.95f, 0.15f) < 1.0f);

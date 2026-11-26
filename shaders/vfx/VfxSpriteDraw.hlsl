@@ -2,7 +2,7 @@
 //   * Sub-UV（枠の切り替え）、MV 補間（引く位置で 2 回評価し直し、枠の矩形の半テクセル内側へクランプ）、6-way ライティング、黒体の色、α の浸食。
 //   * 根元固定（anchor = bottom）: 四角形の下端を粒子の位置に合わせる。炎と煙の枠は下端に根元がある（NB2 の規約）。
 //   * 出力は premultiplied（additive は alpha 0、alpha ブレンドは alpha > 0）。PSO は VfxDraw と同じ ONE / INV_SRC_ALPHA 1 本。
-//   * 環境光は IBL の平均（フレーム定数の ambientStrength * iblIntensity）で始める。W2 の VFX-05（TLV）で置き換える。
+//   * 環境光は灰色のスカラー（フレーム定数の ambientStrength * iblIntensity。IBL の色味は使わない仮置き）で始める。W2 の VFX-05（TLV）で置き換える。
 // ルートシグネチャ: b0 = DrawCB（36 DWORD。VfxDraw と同じ）, t0 = gPool（root SRV, VS）, b1 = FlipCB（24 DWORD）, s0 = 線形クランプ（静的）
 #define UNO_VFX_NO_OPS
 #include "VfxCommon.hlsli"
@@ -78,14 +78,18 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     float3 towardCam = -cross(right, up);   // ビュー空間 +z（奥）の反対 = カメラ側
     float3 wp;
     bool anchorBottom = (fTex.w & 16u) != 0u;
+    float3 bx = right, by = up, bz = towardCam;   // 四角形の実際の軸（6-way の光をこの軸で表す）
     if (params.w > 0.0 && dot(p.vel, p.vel) > 1e-4)
     {
         // 速度方向へ伸ばす（火花）。伸ばすときは中心基準
         // 画像の +u（c.x）= 速度方向（火花の頭）、v = 直交方向（NB2 の sparks.dds の規約）。VfxFlipbook.h の StretchOffset と同じ
         float3 vd = normalize(p.vel);
-        float3 axisX = cross(vd, camRight.xyz);
-        if (dot(axisX, axisX) < 1e-5) axisX = camUp.xyz;
+        // 幅の軸 = vd × 視線。四角形の法線 (vd·T)vd - T がカメラ側（T）に向き、どの速度でも画面に出る（camRight との外積だと、真上へ昇る火花などで真横から見る向きになり消える）
+        float3 axisX = cross(vd, towardCam);
+        if (dot(axisX, axisX) < 1e-5) axisX = right;   // 速度がほぼ視線方向
         axisX = normalize(axisX);
+        bx = vd; by = axisX;
+        bz = cross(bx, by); if (dot(bz, towardCam) < 0.0) bz = -bz;
         float stretch = 1.0 + params.w * min(length(p.vel), 30.0) * 0.06;
         wp = p.pos + (vd * stretch) * (c.x * size) + (axisX * 0.55) * (c.y * size);
         angle = 0.0;
@@ -105,7 +109,7 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     o.tLife = t;
 
     float3 Lw = fLight.xyz;
-    float cx = dot(Lw, right), cy = dot(Lw, up), cz = dot(Lw, towardCam);
+    float cx = dot(Lw, bx), cy = dot(Lw, by), cz = dot(Lw, bz);
     float sa = sin(angle), ca = cos(angle);
     o.lightB = float3(cx * ca + cy * sa, -cx * sa + cy * ca, cz);
 

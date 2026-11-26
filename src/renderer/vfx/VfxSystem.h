@@ -87,7 +87,7 @@ private:
         u32  gen = 0;                 // 失敗の再試行判定（アセット世代）
         Microsoft::WRL::ComPtr<ID3D12Resource> res;
         u32  srv = 0xFFFFFFFFu;
-        u32  w = 0, h = 0, bpp = 4;
+        u32  w = 0, h = 0, bpp = 4, dxgi = 0;
     };
     FlipTex* GetFlipTex(StageCtx& ctx, const std::string& path);                 // Update で呼ぶ（アップロードのコマンドを記録する）
     void     PrepareFlipbook(StageCtx& ctx, const RenderDesc& r);

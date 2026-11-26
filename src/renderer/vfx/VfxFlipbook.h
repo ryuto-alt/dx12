@@ -80,6 +80,17 @@ inline V2 BillboardOffset(V2 c, bool anchorBottom, float angle)
     const float s = std::sin(angle), cs = std::cos(angle);
     return {q.x * cs - q.y * s, q.x * s + q.y * cs};
 }
+// 伸ばす四角形の幅の軸（ワールド）。vd = 速度の単位ベクトル、towardCam = カメラ側（ビュー +z の反対）。
+// vd × towardCam なので、四角形の法線 (vd·T)vd - T は常にカメラ側を向く（camRight との外積は、速度に右成分が無いと真横から見る向きになり消える）。
+// vd がほぼ視線方向なら camRight。VfxSpriteDraw.hlsl / VfxDraw.hlsl の VSMain と同じ式。
+inline V3 StretchWidthAxis(V3 vd, V3 towardCam, V3 camRight)
+{
+    V3 a{vd.y * towardCam.z - vd.z * towardCam.y, vd.z * towardCam.x - vd.x * towardCam.z, vd.x * towardCam.y - vd.y * towardCam.x};
+    float l2 = a.x * a.x + a.y * a.y + a.z * a.z;
+    if (l2 < 1e-5f) { a = camRight; l2 = a.x * a.x + a.y * a.y + a.z * a.z; }
+    const float inv = 1.0f / std::sqrt(l2);
+    return {a.x * inv, a.y * inv, a.z * inv};
+}
 // 伸ばす四角形（火花）。x = 速度方向（+u が頭。NB2 の sparks.dds は頭が +u）、y = 速度に直交する方向。size 倍する前。
 inline V2 StretchOffset(V2 c, float stretchParam, float speed)
 {
@@ -114,6 +125,25 @@ struct DdsInfo
 bool ParseDdsHeader(const u8* data, size_t size, DdsInfo& out, std::string& err);
 bool LoadDds(const u8* data, size_t size, CpuTex& out, std::string& err);
 u32  BytesPerTexel(u32 dxgi);   // 対応外は 0
+
+// ---- 読み込んだ DDS の役割ごとの検査（NB2 の規約: データのテクスチャは線形、MV は R16G16_SNORM、アトラスは cols x rows で割り切れる）----
+enum class TexRole { Color, Dbf, Mv };
+// 問題があれば理由（空 = 問題なし）。dxgi は DXGI_FORMAT の数値（28 RGBA8_UNORM, 29 sRGB, 37 RG16_SNORM, 13 RGBA16_SNORM, 10 RGBA16_FLOAT）。
+inline std::string CheckTex(TexRole role, u32 dxgi, u32 w, u32 h, u32 cols, u32 rows)
+{
+    if (role == TexRole::Mv) { if (dxgi != 37) return "MV は R16G16_SNORM（DXGI 37）でなければならない（実際: " + std::to_string(dxgi) + "）"; }
+    else if (dxgi == 29) return "データのテクスチャは線形（RGBA8_UNORM）でなければならない。sRGB は使えない";
+    if (cols == 0 || rows == 0 || w % cols != 0 || h % rows != 0)
+        return "アトラスの大きさ " + std::to_string(w) + "x" + std::to_string(h) + " が cols x rows（" + std::to_string(cols) + "x" + std::to_string(rows) + "）で割り切れない";
+    return {};
+}
+// colour のアトラス（cw x ch）に対する dbf / MV の格子の一致。dbf は同じ大きさ、MV は低解像度でよいが枠の縦横比が同じ。問題があれば理由。
+inline std::string CheckSameGrid(TexRole role, u32 cw, u32 ch, u32 w, u32 h)
+{
+    if (role == TexRole::Dbf) { if (w != cw || h != ch) return "DBF の大きさが texture（RLU）と違う"; }
+    else if (role == TexRole::Mv) { if (u64(w) * ch != u64(cw) * h) return "MV の縦横比が texture と違う（枠の格子が合わない）"; }
+    return {};
+}
 
 // 枠 `frame` の、枠内 uv（クランプ前）の色。クランプ・アトラスのオフセットを含む。
 V4 SampleFrame(const CpuTex& atlas, const Grid& g, u32 frame, V2 uv);

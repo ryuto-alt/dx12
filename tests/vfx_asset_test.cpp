@@ -71,10 +71,18 @@ int main(int argc, char** argv)
     CHECK(r2.ok);
     CHECK(SerializeUvfx(r2.asset) == s1);
 
-    // フリップブックの既定値と規約（W1-BD7）: 炎族は根元固定、mvRange は NB2 の焼き込みと同じ 0.5
-    CHECK(e.render.flipChannels == "fire" && e.render.flipFrames == 0 && e.render.flipMv.empty() && e.render.flipMvRange == 0.5f);
-    CHECK(e.render.AnchorBottom());
-    CHECK(s1.find("\"anchor\": \"bottom\"") != std::string::npos);
+    // フリップブックの既定値と規約（W1-BD7）: channels の既定は color（中心）、mvRange は NB2 の焼き込みと同じ 0.5
+    CHECK(e.render.flipChannels == "color" && e.render.flipFrames == 0 && e.render.flipMv.empty() && e.render.flipMvRange == 0.5f);
+    CHECK(!e.render.AnchorBottom());
+    CHECK(s1.find("\"anchor\": \"center\"") != std::string::npos);
+    {   // fire / smoke6way は根元固定。ただし stretch > 0（火花）は中心
+        RenderDesc rd; rd.flipChannels = "fire";
+        CHECK(rd.AnchorBottom());
+        rd.stretch = 1.0f;
+        CHECK(!rd.AnchorBottom());
+        rd.flipAnchorSet = true; rd.flipAnchorBottom = true;
+        CHECK(rd.AnchorBottom());   // 明示した anchor は尊重する
+    }
     {
         const ParseResult fr = ParseUvfx(R"({"uvfx":1,"emitters":[{"render":{"kind":"flipbook","texture":"s.dds",
             "flipbook":{"cols":6,"rows":6,"frames":36,"fps":12,"channels":"smoke6way","dbf":"d.dds","mv":"m.dds","mvRange":0.5,"anchor":"center","tempMin":900,"tempMax":2400,"emission":2,"erodeStart":0.2,"erodeWidth":0.1,"rootFade":0.15}}}]})");

@@ -385,7 +385,7 @@ VfxSystem::FlipTex* VfxSystem::GetFlipTex(StageCtx& ctx, const std::string& path
     sv.Texture2D.MipLevels = 1;
     dev->CreateShaderResourceView(res.Get(), &sv, ctx.descriptors->GetCpuHandle(srv));
     // 読めたテクスチャは再読込しない（ok の間は上の早期 return）。DDS を焼き直したときはエンジンの再起動が要る
-    t.res = std::move(res); t.srv = srv; t.w = info.w; t.h = info.h; t.bpp = info.bpp; t.ok = true;
+    t.res = std::move(res); t.srv = srv; t.w = info.w; t.h = info.h; t.bpp = info.bpp; t.dxgi = info.dxgi; t.ok = true;
     m_vram += u64(info.w) * info.h * info.bpp;
     Logger::Info("UnoFX: フリップブックのテクスチャ {}（{}x{}）", path, info.w, info.h);
     return &t;
@@ -411,13 +411,24 @@ bool VfxSystem::BindFlipbook(const RenderDesc& r, u32 out[24], const StageCtx& c
     if (!m_psoFlip || r.kind != RenderKind::Flipbook) return false;
     const FlipTex* t0 = FindFlipTex(r.texture);
     if (!t0) return false;
+    // 役割と形式の検査（間違った入力が黙って変な絵になるのを防ぐ。理由は 1 回だけ警告）
+    auto bad = [&](const FlipTex* t, const std::string& path, flip::TexRole role) -> bool
+    {
+        std::string why = flip::CheckTex(role, t->dxgi, t->w, t->h, r.flipCols, r.flipRows);
+        if (why.empty() && role != flip::TexRole::Color) why = flip::CheckSameGrid(role, t0->w, t0->h, t->w, t->h);
+        if (why.empty()) return false;
+        if (m_flipWarned.insert("check|" + path).second) Logger::Warn("UnoFX: フリップブック {}: {}", path, why);
+        return true;
+    };
+    if (bad(t0, r.texture, flip::TexRole::Color)) return false;
     const bool smoke = r.flipChannels == "smoke6way";
     const FlipTex* t1 = smoke ? FindFlipTex(r.flipDbf) : nullptr;
-    if (smoke && !t1) return false;
-    const FlipTex* tm = r.flipMv.empty() ? nullptr : FindFlipTex(r.flipMv);   // MV が読めなければ補間なし（絵は出す）
+    if (smoke && (!t1 || bad(t1, r.flipDbf, flip::TexRole::Dbf))) return false;
+    const FlipTex* tm = r.flipMv.empty() ? nullptr : FindFlipTex(r.flipMv);   // MV が読めない / 合わなければ補間なし（絵は出す）
+    if (tm && bad(tm, r.flipMv, flip::TexRole::Mv)) tm = nullptr;
     const u32 channel = smoke ? 1u : (r.flipChannels == "color" ? 2u : 0u);
     const u32 frames = r.flipFrames ? r.flipFrames : r.flipCols * r.flipRows;
-    // 光: 太陽（表面から光へ = 進む向きの逆）、環境光は IBL の平均（W2 の VFX-05 で TLV に置き換える）
+    // 光: 太陽（表面から光へ = 進む向きの逆）、環境光は灰色のスカラー（IBL の色味は使わない仮置き。W2 の VFX-05 で TLV に置き換える）
     float L[3] = {0.0f, 1.0f, 0.0f}, sun[3] = {0, 0, 0}, amb[3] = {0.3f, 0.3f, 0.3f};
     if (const FrameConstantsData* fc = ctx.perFrameCpu)
     {
