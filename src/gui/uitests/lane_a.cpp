@@ -28,6 +28,7 @@
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
+#include "renderer/vfx/VfxRuntime.h"
 #include "scene/SceneSerializer.h"
 #include "scene/SceneSettingsHash.h"
 
@@ -1218,6 +1219,17 @@ void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx)
     }
     IM_CHECK_EQ(outside, 0);
     IM_CHECK_EQ(warns, 0);
+}
+
+// FU-E-1: Application::Update が毎フレーム 1 回 AppAccess::VfxTick を呼ぶ。
+// Tick 駆動のフラグを下ろして数フレーム進め、立ち直る（= 毎フレームの呼び出しがある）ことで確かめる。
+void T_VfxTickEachFrame(ImGuiTestContext* ctx)
+{
+    vfx::Runtime& rt = vfx::Runtime::Get();
+    rt.SetTickDriven(false);
+    ctx->Yield(3);
+    IM_CHECK(rt.HasHost());
+    IM_CHECK(rt.TickDriven());
 }
 
 } // namespace uitest

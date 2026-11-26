@@ -2629,6 +2629,10 @@ void Application::Update()
     // 非同期 git 操作の完了回収
     UpdateGitOp();
 
+    // UnoFX（BD4）: 毎フレーム 1 回、コマンド記録の外で VFX の結線と保留中の配置の消化を回す。
+    // MCP を使わない起動・GameRuntime・.uvfx のダブルクリック（pendingVfxPlace）でも VFX が出る。
+    AppAccess::VfxTick(*this);
+
     // 「テストクライアント起動」ボタン(フェーズ⑨): フレーム境界で別プロセスを起動
     if (m_editorCtx->netTestLaunchClientRequested)
     {

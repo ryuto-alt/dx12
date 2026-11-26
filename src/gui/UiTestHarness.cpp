@@ -4957,6 +4957,7 @@ const DiagReg kTests[] = {
     { "editor-ux", "new_scene_confirm_virtual_input", "エディタ操作", "仮想入力・MCP セッションでも Ctrl+N の作成で未保存の確認が出る", uitest::T_NewSceneConfirmUnderVirtualInput },
     { "editor-ux", "undo_after_save_as_stays_dirty", "エディタ操作", "名前を付けて保存のあとに Undo で戻しても、ディスクと違えば未保存のまま（無題からの命名保存も）", uitest::T_UndoAfterSaveAsStaysDirty },
     { "editor-ux", "game_lua_under_project_root", "エディタ操作", "グローバル game.lua はプロジェクトルートの下で解決される", uitest::T_GameLuaUnderProjectRoot },
+    { "vfx", "vfx_tick_each_frame", "パーティクルエディタ", "MCP を使わなくても Application::Update が毎フレーム VfxTick を呼ぶ（結線済み・Tick 駆動）", uitest::T_VfxTickEachFrame },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },
