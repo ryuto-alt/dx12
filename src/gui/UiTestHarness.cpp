@@ -4947,6 +4947,16 @@ const DiagReg kTests[] = {
     { "matgraph", "matgraph_zoom_stress", "マテリアルグラフ", "DPI 1.0/1.5/2.0 でズーム 40 回往復（SRV 割り当て・フォント量子化）", uitest::T_MatgraphZoomStress },
     { "workspace", "ws_animation_placeholder", "ワークスペース", "アニメ・シーケンサーの案内・.dxseq / .uvfx の種別・.dxseq の再生要求で再生が始まる", uitest::T_WsAnimationPlaceholder },
     { "vfx", "vfx_apply_confirm", "パーティクルエディタ", "「適用」: レイヤー 0 に中身があると確認 → キャンセルで不変 / 置き換え → Undo で戻る / MCP 中は確認なし", uitest::T_VfxApplyConfirm },
+    { "editor-ux", "modal_blocks_scene_actions", "エディタ操作", "モーダル中はビューポートのクリック・Ctrl+Z / Ctrl+Y・Ctrl+S がシーンに効かない", uitest::T_ModalBlocksSceneActions },
+    { "editor-ux", "save_untitled_asks_name", "エディタ操作", "MCP が作った無題のシーンで Ctrl+S → 名前を付けて保存（隠しフォルダへ黙って保存しない）", uitest::T_SaveUntitledAsksName },
+    { "editor-ux", "console_error_focus_once", "エディタ操作", "「エラーで前面」は 1 バーストにつき 1 回・モーダル中は奪わない", uitest::T_ConsoleErrorFocusOnce },
+    { "editor-ux", "rename_typed_ext_not_doubled", "エディタ操作", "F2 で拡張子まで打っても二重にならない（box4.txt.txt にならない）", uitest::T_RenameTypedExtNotDoubled },
+    { "editor-ux", "undo_to_saved_state_clears_dirty", "エディタ操作", "人の編集を全部 Undo で戻すと未保存が解ける（Redo で戻る・設定が違えば解けない）", uitest::T_UndoToSavedStateClearsDirty },
+    { "editor-ux", "undo_to_baseline_without_save", "エディタ操作", "保存しなくても、シーンを開いた直後・新規作成直後まで Undo で戻せば未保存が解ける", uitest::T_UndoToBaselineWithoutSave },
+    { "editor-ux", "unsaved_confirm_save_untitled_asks_name", "エディタ操作", "未保存の確認で「保存して続行」を押しても、MCP の仮の保存先へは書かず名前を聞く", uitest::T_UnsavedConfirmSaveUntitledAsksName },
+    { "editor-ux", "new_scene_confirm_virtual_input", "エディタ操作", "仮想入力・MCP セッションでも Ctrl+N の作成で未保存の確認が出る", uitest::T_NewSceneConfirmUnderVirtualInput },
+    { "editor-ux", "undo_after_save_as_stays_dirty", "エディタ操作", "名前を付けて保存のあとに Undo で戻しても、ディスクと違えば未保存のまま（無題からの命名保存も）", uitest::T_UndoAfterSaveAsStaysDirty },
+    { "editor-ux", "game_lua_under_project_root", "エディタ操作", "グローバル game.lua はプロジェクトルートの下で解決される", uitest::T_GameLuaUnderProjectRoot },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },

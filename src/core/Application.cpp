@@ -541,7 +541,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // ゲームスクリプト読み込み（グローバル game.lua）
         // 配布ゲームは起動＝ゲームプレイ開始なので OnStart を呼ぶ。
         // エディタは「プロジェクトを開いただけ」なので呼ばない（Play を押したときに呼ばれる）。
-        LoadGameScript(/*callOnStart=*/m_isGameMode);
+        // ランチャー表示中はまだプロジェクトのルートが決まっていないので探さない（engine instance の場所を見てしまう）。
+        // プロジェクトを開くと BeginProjectLoad が読み直す（W1-A16 / R1-10）。
+        if (m_isGameMode || !m_showLauncher)
+            LoadGameScript(/*callOnStart=*/m_isGameMode);
 
         // ★開始シーンを読む前に遅延解放を有効にする。以前は Initialize の末尾で有効にしていたため、
         //   シーン読込中（地形の頂点バッファの作り直しなど、同じコマンドリストが GPU 参照を持ったまま
@@ -3571,6 +3574,31 @@ void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
     Logger::Warn("保存されていない自動保存が見つかりました（{}）。復旧するか確認します", when);
 }
 
+namespace
+{
+// 保存先が未設定、または MCP の自動保存が割り当てた仮の保存先（<project>/.dx12/untitled/ 配下）か。
+bool IsUntitledScenePath(const std::string& path)
+{
+    if (path.empty()) return true;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir  = fs::weakly_canonical(fs::path(AppAccess::UntitledDir()), ec);
+    const fs::path file = fs::weakly_canonical(fs::path(path), ec);
+    if (ec || dir.empty() || file.empty()) return false;
+    const auto rel = file.lexically_relative(dir);
+    return !rel.empty() && *rel.begin() != fs::path("..") && !rel.is_absolute();
+}
+
+// 名前入力ダイアログ（保存モード）を開く。
+void OpenSaveAsDialog(EditorContext& ctx)
+{
+    ctx.showNewSceneDialog = true;
+    ctx.newSceneDialogIsCreate = false;
+    std::memset(ctx.newSceneNameBuf, 0, sizeof(ctx.newSceneNameBuf));
+    strncpy_s(ctx.newSceneNameBuf, "Untitled", _TRUNCATE);
+}
+} // namespace
+
 bool Application::ConfirmDiscardScene(bool& outCancelled)
 {
     outCancelled = false;
@@ -3586,8 +3614,11 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     //   あるときは、AI が押せない心配が無いので下の通常の確認を出す。
     const EditorContext::PendingDiscard pd = m_editorCtx->pendingDiscard;
     const bool humanDirty = m_editorCtx->IsSceneHumanDirty();
+    // 新規シーン（Ctrl+N → 名前入力 → 作成）は仮想入力でもモーダルを押せる UI 操作なので、仮想入力でも確認を出す
+    // （W1-A16 / R1-11）。閉じる要求は「押せない」前提のまま（pd.virtualInput で別に表す）。
+    const bool uiDrivesModal = pd.reason == EditorContext::DiscardReason::NewScene;
     const bool realHuman  = pd.reason != EditorContext::DiscardReason::None && pd.origin == EditOrigin::Human
-                         && !pd.virtualInput && !vinput::Enabled();
+                         && !pd.virtualInput && (uiDrivesModal || !vinput::Enabled());
     if (m_editorCtx->aiSessionEver && !(humanDirty && realHuman))
     {
         m_editorCtx->pendingDiscard = {};   // この要求の起点は使い終わった（古い Human の要求を次の確認へ持ち越さない）
@@ -3628,6 +3659,14 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     switch (choice)
     {
     case Choice::Save:
+        if (IsUntitledScenePath(m_editorCtx->currentScenePath))
+        {
+            // 保存先が無い / MCP の仮の保存先（.dx12/untitled/）。そこへ黙って書いて先へ進まず、操作を取り消して
+            // 名前を聞く（Ctrl+S と同じ。W1-A16 / R2-03）。
+            OpenSaveAsDialog(*m_editorCtx);
+            outCancelled = true;
+            return false;
+        }
         if (m_scene && !m_editorCtx->currentScenePath.empty() &&
             SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
         {
@@ -3686,13 +3725,13 @@ void Application::EditorSaveScene()
         m_editorCtx->Notify(ui::ToastKind::Warn, "Play 中は保存できません。停止してから保存してください");
         return;
     }
-    if (m_editorCtx->currentScenePath.empty())
+    // MCP の自動保存が「保存先の無い新規シーン」へ割り当てた仮の保存先（<project>/.dx12/untitled/）も、
+    // 人から見ればまだ無題のシーン。そこへ黙って保存せず、保存先が未設定のときと同じく名前を聞く（W1-A16 / R2-03）。
+    const bool untitledScene = IsUntitledScenePath(m_editorCtx->currentScenePath);
+    if (untitledScene)
     {
         // 保存先が未設定 → 名前入力ダイアログ（保存モード）。OS のダイアログは仮想入力中に出せないので使わない。
-        m_editorCtx->showNewSceneDialog = true;
-        m_editorCtx->newSceneDialogIsCreate = false;
-        std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
-        strncpy_s(m_editorCtx->newSceneNameBuf, "Untitled", _TRUNCATE);
+        OpenSaveAsDialog(*m_editorCtx);
         return;
     }
 
