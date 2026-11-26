@@ -149,6 +149,7 @@ void TestWiring()
     CHECK(app.find("m_benchReply.client != 0") != std::string::npos);
     CHECK(app.find("m_loading || m_scenePreloadJob != nullptr") != std::string::npos);
     CHECK(app.find("m_thumbRenderer->GetPendingCount() > 0") != std::string::npos);
+    CHECK(app.find("m_ptHost && m_ptHost->Busy()") != std::string::npos);
     // ゲームと UI テストでは間引かない
     CHECK(app.find("m_editorCtx && !m_isGameMode && !m_uiTestsRequested") != std::string::npos);
 #endif

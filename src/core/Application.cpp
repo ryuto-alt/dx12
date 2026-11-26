@@ -21,6 +21,7 @@
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
+#include "core/PathTracerHost.h"   // PtHost::Busy（基準レンダ中は間引かない）
 #include "editor/UiMotion.h"
 #include "editor/FrameThrottle.h"   // W1-A11: 裏に回ったときのフレーム間引き（純ロジック）
 #include "editor/EditorPrefs.h"      // W1-A11: 「常にリアルタイム」の設定（perf.alwaysRealtime）
@@ -1514,7 +1515,8 @@ void Application::Run()
             || m_deterministicFramesLeft > 0                                 // 決定論撮影の収束フレーム
             || m_benchReply.client != 0 || m_mcpRenderDebugReply.client != 0
             || m_loading || m_scenePreloadJob != nullptr                     // プロジェクト読み込み・シーン先読み
-            || (m_thumbRenderer && m_thumbRenderer->GetPendingCount() > 0);  // サムネイル生成（1 フレーム 1 枚）
+            || (m_thumbRenderer && m_thumbRenderer->GetPendingCount() > 0)   // サムネイル生成（1 フレーム 1 枚）
+            || (m_ptHost && m_ptHost->Busy());                               // パストレーサの基準レンダ（1 フレーム 1 スライス）
         // editor_command_run の待ち（ApplicationMcpEditorUi.cpp の内部。最長 6 秒・180 フレーム）は
         // 要求の 5 秒の猶予で覆われる。その先は同ファイルの所有者が口を足すこと。
     };
