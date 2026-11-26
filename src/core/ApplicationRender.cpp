@@ -2031,7 +2031,8 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     //   ここだけ個別ドロー（world*viewProj を CPU で畳んだ MVP）にするとクリップ Z がずれ、LESS_EQUAL で大きな面が欠ける。
     //   前ワールド VB が無ければここで確保する（呼び出し側が先に確保済みなら何もしない）。
     if (velocityMode) EnsureInstancePrevBuffer();
-    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 確保に失敗したときだけ従来経路
+    // （EnsureInstancePrevBuffer は確保に失敗すると例外を投げる。ここの null チェックは未確保の保険）
+    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;
 
     // 速度+G-Buffer パスの b0。静的/スキンドは 40 DWORD（ルート定数の上限ぴったり）、
     // インスタンシングは 36 DWORD（法線はインスタンスデータから取れるので行列を送らない）。
@@ -4965,7 +4966,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         velReasons.rtAo            = rtVel.aoEnabled;
         velReasons.rtReflections   = rtVel.reflectionsEnabled;
     }
-    const bool wantsVelocityPrevWorld = WantsVelocityPrevWorld(velReasons);
+    const bool wantsVelocityPrevWorld = WantsVelocityPrevWorld(velReasons);   // velocityPrepass の上位集合（理由は VelocityPolicy.h）
     if (wantsVelocityPrevWorld) EnsureInstancePrevBuffer();
     m_trackPrevWorld = wantsVelocityPrevWorld;
 
@@ -5961,7 +5962,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     //   空間デノイザは丸ごとスキップされる。
     // ★RT 影デノイザ（shadowDenoise）も速度（時間蓄積の再投影）と G-Buffer（空間フィルタの法線）を使う。
     const bool useRtShadowDenoise = useRtShadow && m_scene->GetRtSettings().shadowDenoise && m_taaPass;
-    const bool velocityPrepass = (taaActive || stageVelocityReq || useSsr || useSsgi || useRtAo || useRtRefl || useRtShadowDenoise)
+    VelocityPrepassReasons velNow;   // 判定は renderer/VelocityPolicy.h（PrepareFrame の前ワールド追跡と同じ関数）
+    velNow.taa = taaActive; velNow.stage = stageVelocityReq; velNow.ssr = useSsr; velNow.ssgi = useSsgi;
+    velNow.rtAo = useRtAo; velNow.rtReflections = useRtRefl; velNow.rtShadowDenoise = useRtShadowDenoise;
+    const bool velocityPrepass = WantsVelocityPrepass(velNow)
                                && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
