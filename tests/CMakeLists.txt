@@ -1007,6 +1007,17 @@ if(TARGET Renderer)
     endif()
     add_test(NAME GpuTimerScopeTests COMMAND GpuTimerScopeTests)
 endif()
+# GpuScope / UNO_GPU_SCOPE（PIX イベント + GpuTimer を 1 行で）。GPU は使わない。W05-27。
+if(TARGET Renderer)
+    add_executable(GpuMarkerTests gpu_marker_test.cpp)
+    target_include_directories(GpuMarkerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(GpuMarkerTests PRIVATE Renderer)
+    if(MSVC)
+        target_compile_options(GpuMarkerTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GpuMarkerTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GpuMarkerTests COMMAND GpuMarkerTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====

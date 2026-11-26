@@ -37,6 +37,7 @@
 #include "editor/panels/NodeGraphSandboxPanel.h"   // ノードグラフ サンドボックス窓（マテリアルグラフ G0）
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
 #include "graphics/GpuTimer.h"
+#include "graphics/GpuMarker.h"
 
 
 namespace
@@ -2882,7 +2883,7 @@ void Application::BeginRenderFrame(RenderFrameContext& frame)
     // GPU パス計測: このスロットの前回結果（約3フレーム前）を読み戻してから今フレームの計測開始
     // ※ PerfFrame::gpuMs は 24 本固定（Application.h は凍結）。全スコープぶんの履歴 / ベンチ集計は GpuTimer が持つ。
     m_gpuTimer->NewFrame(m_swapChain->GetCurrentBackBufferIndex());
-    m_gpuTimer->Begin(nativeCmdList, GpuTimer::Total);
+    GpuMarker::Begin(nativeCmdList, m_gpuTimer.get(), GpuTimer::Total);
     // オクルージョン統計も同じタイミングで回収する（このスロットの GPU 作業は
     // 上のフェンス待ちで完了済み。表示専用で描画には使わない）。
     if (m_occlusionCull)
@@ -5000,7 +5001,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             const bool staticReuse = (staticKey != 0) && m_rtScene->CanReuseStatic(staticKey);
             bd.staticHash  = staticKey;
             bd.reuseStatic = staticReuse;
-            m_gpuTimer->Begin(nativeCmdList, GpuTimer::Raytracing);
+            GpuMarker::Begin(nativeCmdList, m_gpuTimer.get(), GpuTimer::Raytracing);
             if (m_skinningCompute) m_skinningCompute->BeginFrame();
             {
             CpuScopeTimer _tRtFeed(&m_cpuMs[CpuRtFeed]); DX12_PROFILE_ZONE_N("Rt/Feed");
@@ -5167,7 +5168,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             }   // _tRtBuild
 
             if (m_skinningCompute) m_skinningCompute->EndFrame();
-            m_gpuTimer->End(nativeCmdList, GpuTimer::Raytracing);
+            GpuMarker::End(nativeCmdList, m_gpuTimer.get(), GpuTimer::Raytracing);
 
             // 次フレームで使い回せるのは「欠けの無い TLAS が建った」ときだけ。
             // （スキンド / 上限間引き / BLAS の遅延構築が残っている場合は false が返る）
@@ -5322,8 +5323,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
 
     // GPU / CPU の計測と描画統計は主ビューだけ（GpuTimer は 1 スコープにつきフレーム 1 組しか
     // 記録できないので、副ビューが同じスコープを開くと主ビューの値を壊す）。
-    auto gpuBegin = [&](GpuTimer::Scope s) { if (primary) m_gpuTimer->Begin(nativeCmdList, s); };
-    auto gpuEnd   = [&](GpuTimer::Scope s) { if (primary) m_gpuTimer->End(nativeCmdList, s); };
+    auto gpuBegin = [&](GpuTimer::Scope s) { if (primary) GpuMarker::Begin(nativeCmdList, m_gpuTimer.get(), s); };
+    auto gpuEnd   = [&](GpuTimer::Scope s) { if (primary) GpuMarker::End(nativeCmdList, m_gpuTimer.get(), s); };
     auto cpuSlot  = [&](CpuScope s) -> f32* { return primary ? &m_cpuMs[s] : nullptr; };
 
     // パス（renderer/RenderPass.h）が共有する実行文脈。深度はこのビューが追いかける（パスは入口で
@@ -7137,8 +7138,8 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
     ID3D12Resource*             backBuffer = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
     // W05-26 T-00: ポスト各パスの GPU 計測（PostFX の内数。RenderPostChain は主ビューだけが通る）。
-    auto postGpuBegin = [&](GpuTimer::Scope s) { if (m_gpuTimer) m_gpuTimer->Begin(nativeCmdList, s); };
-    auto postGpuEnd   = [&](GpuTimer::Scope s) { if (m_gpuTimer) m_gpuTimer->End(nativeCmdList, s); };
+    auto postGpuBegin = [&](GpuTimer::Scope s) { if (m_gpuTimer) GpuMarker::Begin(nativeCmdList, m_gpuTimer.get(), s); };
+    auto postGpuEnd   = [&](GpuTimer::Scope s) { if (m_gpuTimer) GpuMarker::End(nativeCmdList, m_gpuTimer.get(), s); };
 
     backBuffer = m_swapChain->GetCurrentBackBuffer();
     rtv        = m_swapChain->GetCurrentRTV();
@@ -7330,7 +7331,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
         u32 pW = rW, pH = rH;
         if (in.dlssResolveActive && m_upscaler)
         {
-            if (m_gpuTimer) m_gpuTimer->Begin(nativeCmdList, GpuTimer::Upscale);
+            if (m_gpuTimer) GpuMarker::Begin(nativeCmdList, m_gpuTimer.get(), GpuTimer::Upscale);
             depthState.Require(*m_commandList,
                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             UpscalerPass::DlssFrame df{};
@@ -7348,7 +7349,7 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
             const u32 o = m_upscaler->EvaluateDlss(*m_commandList, df);
             // NGX は自前のヒープ / ルートシグネチャ / PSO を張るので、後段のために張り直す。
             m_commandList->SetDescriptorHeap(m_srvHeap->GetHeap());
-            if (m_gpuTimer) m_gpuTimer->End(nativeCmdList, GpuTimer::Upscale);
+            if (m_gpuTimer) GpuMarker::End(nativeCmdList, m_gpuTimer.get(), GpuTimer::Upscale);
             if (o != DescriptorHeap::kInvalidIndex)
             {
                 curSceneSrv = m_srvHeap->GetGpuHandle(o);
@@ -8180,7 +8181,7 @@ void Application::RenderViewportOverlays(RenderFrameContext& frame)
     ID3D12Resource* const             backBuffer = frame.backBuffer;
     const D3D12_CPU_DESCRIPTOR_HANDLE rtv        = frame.rtv;
 
-    m_gpuTimer->Begin(nativeCmdList, GpuTimer::UI);
+    GpuMarker::Begin(nativeCmdList, m_gpuTimer.get(), GpuTimer::UI);
 
     // W05-25: エディタのオーバーレイのフック（ポスト後のバックバッファ。アイコンや ImGui より前）。
     if (m_features && !m_features->Empty(Stage::EditorOverlay))
@@ -9108,8 +9109,8 @@ void Application::SubmitFrame(RenderFrameContext& frame)
     ID3D12GraphicsCommandList* const nativeCmdList = frame.cmd;
     ID3D12Resource* const            backBuffer    = frame.backBuffer;
 
-    m_gpuTimer->End(nativeCmdList, GpuTimer::UI);
-    m_gpuTimer->End(nativeCmdList, GpuTimer::Total);
+    GpuMarker::End(nativeCmdList, m_gpuTimer.get(), GpuTimer::UI);
+    GpuMarker::End(nativeCmdList, m_gpuTimer.get(), GpuTimer::Total);
     m_gpuTimer->Resolve(nativeCmdList);
 
     // ---- MCP dx12_imgui_screenshot: ImGui（パネル / ギズモ / 仮想カーソル）まで描き終えた後の

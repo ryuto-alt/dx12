@@ -10,6 +10,7 @@
 
 #include "graphics/CommandList.h"
 #include "graphics/DescriptorHeap.h"
+#include "graphics/GpuMarker.h"
 #include "graphics/GpuTimer.h"
 #include "graphics/RenderTarget.h"
 #include "graphics/RootSignature.h"
@@ -30,18 +31,18 @@ using namespace DirectX;
 
 namespace
 {
-// 主ビューだけ計測する（副ビューは ctx.timer == nullptr）。
-struct GpuScope
+// 主ビューだけ計測する（副ビューは ctx.timer == nullptr）。計測と同じ区間に PIX / DRED のイベントも出す（W05-27。名前は GpuTimer::Info(scope).name）。
+struct ViewGpuScope
 {
     const RenderPassContext& ctx;
     GpuTimer::Scope          scope;
-    GpuScope(const RenderPassContext& c, GpuTimer::Scope s) : ctx(c), scope(s)
+    ViewGpuScope(const RenderPassContext& c, GpuTimer::Scope s) : ctx(c), scope(s)
     {
-        if (ctx.timer) ctx.timer->Begin(ctx.native, scope);
+        if (ctx.timer) { GpuMarker::BeginEvent(ctx.native, GpuTimer::Info(scope).name, GpuMarker::DefaultNameLen(scope)); ctx.timer->Begin(ctx.native, scope); }
     }
-    ~GpuScope() { if (ctx.timer) ctx.timer->End(ctx.native, scope); }
-    GpuScope(const GpuScope&) = delete;
-    GpuScope& operator=(const GpuScope&) = delete;
+    ~ViewGpuScope() { if (ctx.timer) { ctx.timer->End(ctx.native, scope); GpuMarker::EndEvent(ctx.native); } }
+    ViewGpuScope(const ViewGpuScope&) = delete;
+    ViewGpuScope& operator=(const ViewGpuScope&) = delete;
 };
 } // namespace
 
@@ -126,7 +127,7 @@ void DepthPrepassPass::Execute(const RenderPassContext& ctx)
         m_in.taa->BeginVelocity(cmd, m_in.depthDsv, m_in.gbuffer->GetRtv(),
                                 0u, 0u, m_in.width, m_in.height);
         {
-            GpuScope t(ctx, GpuTimer::DepthPrepass);
+            ViewGpuScope t(ctx, GpuTimer::DepthPrepass);
             m_in.drawDepth();
         }
         m_in.taa->EndVelocity(cmd);
@@ -136,7 +137,7 @@ void DepthPrepassPass::Execute(const RenderPassContext& ctx)
     else
     {
         ctx.native->OMSetRenderTargets(0, nullptr, FALSE, &m_in.depthDsv);
-        GpuScope t(ctx, GpuTimer::DepthPrepass);
+        ViewGpuScope t(ctx, GpuTimer::DepthPrepass);
         m_in.drawDepth();
     }
 }
@@ -157,7 +158,7 @@ void HiZOcclusionPass::Execute(const RenderPassContext& ctx)
     ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
     // ★GpuTimer は 1 スコープにつき 1 フレーム 1 組しか記録できないので、
     //   ピラミッド構築と可視性判定をまとめて hiZ で挟む（= 機能全体のコスト）。
-    GpuScope t(ctx, GpuTimer::HiZ);
+    ViewGpuScope t(ctx, GpuTimer::HiZ);
     m_in.hiz->Build(ctx.native, m_in.depthSrv);
     if (m_in.occlusion && m_in.device && m_in.bounds)
         m_in.occlusion->Dispatch(ctx.native, *m_in.device, *m_in.bounds, m_in.params,
@@ -219,7 +220,7 @@ void RtScreenGeneratePass::Execute(const RenderPassContext& ctx)
     if (!m_in.rt || !m_in.desc || !(m_in.shadow || m_in.ao || m_in.debug)) return;
     if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
-    GpuScope t(ctx, GpuTimer::RtScreen);
+    ViewGpuScope t(ctx, GpuTimer::RtScreen);
     if (m_in.shadow && m_in.settings) m_shadow = m_in.rt->GenerateShadow(ctx.native, *m_in.desc, *m_in.settings, ctx.timer);
     if (m_in.ao && m_in.settings)     m_ao     = m_in.rt->GenerateAo(ctx.native, *m_in.desc, *m_in.settings);
     if (m_in.debug)
@@ -239,7 +240,7 @@ void ScreenSpaceGiGeneratePass::DeclareResources(std::vector<PassResourceUse>& o
 
 void ScreenSpaceGiGeneratePass::Execute(const RenderPassContext& ctx)
 {
-    GpuScope t(ctx, GpuTimer::ScreenSpaceGI);
+    ViewGpuScope t(ctx, GpuTimer::ScreenSpaceGI);
     if (!m_in.run || !m_in.gi || !m_in.desc) return;
     if (ctx.depth) ctx.depth->Require(*ctx.cmd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     ctx.cmd->SetDescriptorHeap(ctx.srvHeap->GetHeap());
@@ -259,7 +260,7 @@ void ClusterCullPass::Execute(const RenderPassContext& ctx)
     if (!m_in.culling) return;
     if (m_in.cull)
     {
-        GpuScope t(ctx, GpuTimer::ClusterCull);
+        ViewGpuScope t(ctx, GpuTimer::ClusterCull);
         m_in.culling->Dispatch(ctx.native, XMLoadFloat4x4(&m_in.view),
                                m_in.proj11, m_in.proj22,
                                m_in.zNear, m_in.zFarCluster,
@@ -277,7 +278,7 @@ void ClusterCullPass::Execute(const RenderPassContext& ctx)
 void DdgiUpdatePass::Execute(const RenderPassContext& ctx)
 {
     if (!m_in.ddgi || !m_in.device || !m_in.settings) return;
-    GpuScope t(ctx, GpuTimer::Ddgi);
+    ViewGpuScope t(ctx, GpuTimer::Ddgi);
     m_in.ddgi->Update(ctx.native, *m_in.device, *m_in.settings, m_in.desc);
 }
 
@@ -313,7 +314,7 @@ void VolumetricFogBuildPass::DeclareResources(std::vector<PassResourceUse>& out)
 void VolumetricFogBuildPass::Execute(const RenderPassContext& ctx)
 {
     if (!m_in.fog || !m_in.device || !m_in.settings || !m_in.params) return;
-    GpuScope t(ctx, GpuTimer::VolumetricFog);
+    ViewGpuScope t(ctx, GpuTimer::VolumetricFog);
     // 影テクスチャは PIXEL_SHADER_RESOURCE で置かれている。compute から読むには NON_PIXEL が要る。
     // （クラスタのインデックス/カウントは ClusteredLightCulling が最初から
     //   PIXEL|NON_PIXEL の合成状態で置いているので遷移不要。）
@@ -410,7 +411,7 @@ void ForwardScenePass::Execute(const RenderPassContext& ctx)
     cmd.SetRenderTarget(m_in.sceneRtv, m_in.depthDsv);
     cmd.SetViewportAndScissor(m_in.width, m_in.height);
 
-    GpuScope t(ctx, GpuTimer::MainScene);
+    ViewGpuScope t(ctx, GpuTimer::MainScene);
     if (m_in.drawMeshes) m_in.drawMeshes();
 }
 

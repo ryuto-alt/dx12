@@ -1,5 +1,7 @@
 #include "FrameResources.h"
 
+#include <cstdio>
+
 #include "GraphicsDevice.h"
 #include "CommandQueue.h"
 #include "core/Assert.h"
@@ -21,6 +23,7 @@ void FrameResources::Initialize(GraphicsDevice& device, CommandQueue& /*queue*/)
             D3D12_COMMAND_LIST_TYPE_DIRECT,
             IID_PPV_ARGS(&m_frames[i].commandAllocator)));
         m_frames[i].fenceValue = 0;
+        { wchar_t nm[32]; swprintf_s(nm, L"MainCmdAllocator[%u]", i); m_frames[i].commandAllocator->SetName(nm); }   // W05-27: DRED の割り当て名
     }
 
     // コマンドリスト1つ作成 (初期状態はClose)
@@ -31,6 +34,7 @@ void FrameResources::Initialize(GraphicsDevice& device, CommandQueue& /*queue*/)
         nullptr,
         IID_PPV_ARGS(&m_commandList)));
 
+    m_commandList->SetName(L"MainCmdList");   // W05-27: DRED のパンくず / PIX 用
     ThrowIfFailed(m_commandList->Close());
 
     Logger::Info("FrameResources initialized ({} frames)", kFrameCount);
