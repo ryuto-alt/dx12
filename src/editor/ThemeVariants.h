@@ -17,6 +17,9 @@
 // ★色の値を増やす時は Palette に足し、3 つの表（Default / B / C）と theme::SetVariant に配線する。
 //   単体テスト（tests/theme_variant_test.cpp）が「Default の採用値の固定」「各案の文字コントラストが AA」を検査する。
 
+#include <cstdio>
+#include <cstdlib>
+
 #pragma warning(push)
 #pragma warning(disable: 4201)
 #include <imgui.h>
@@ -27,6 +30,10 @@
 
 namespace dx12e::theme
 {
+
+// Graphite Gauge の生成仕様（ThemeGraphite.gen.h）。完全型は生成ヘッダを include する唯一の TU（ThemeGraphite.cpp）だけが持つ。
+// ここは重ヘッダなので前方宣言だけ（W1 A2a）。
+namespace gg { struct GgSpec; }
 
 // 0xRRGGBB → ImVec4（sRGB のまま。ImGui の頂点カラーに合わせてガンマ変換はしない）
 inline ImVec4 Hex(unsigned int rgb, float a = 1.0f)
@@ -42,8 +49,9 @@ enum class Variant : int
     Default = 0,   // ネオン・エッジ（エディタの既定）
     B       = 2,   // グラス・レイヤー（別テーマ）
     C       = 3,   // インク・アンド・シグナル（別テーマ）
+    Graphite = 4,  // Graphite Gauge（W1 で追加。既定の選択を切り替えるのは A14）
 };
-inline constexpr int kVariantCount = 4;   // 番号 1 は旧案 A（Default に統合済み）で欠番
+inline constexpr int kVariantCount = 5;   // 番号 1 は旧案 A（Default に統合済み）で欠番
 
 inline const char* VariantName(Variant v)
 {
@@ -51,11 +59,12 @@ inline const char* VariantName(Variant v)
     {
     case Variant::B: return "B: グラス・レイヤー";
     case Variant::C: return "C: インク・アンド・シグナル";
+    case Variant::Graphite: return "Graphite Gauge";
     default:         return "既定: ネオン・エッジ";
     }
 }
 
-// "a" / "A" / "b" / "c" / "default" / "0".."3"（a・1 は旧案 A ＝ 現在の既定と同一）。解釈できなければ false（out は変えない）。
+// "a" / "A" / "b" / "c" / "g" / "graphite" / "default" / "0".."4"（a・1 は旧案 A ＝ 現在の既定と同一）。解釈できなければ false（out は変えない）。
 inline bool ParseVariant(const std::string& s, Variant& out)
 {
     if (s.size() == 1)
@@ -65,11 +74,13 @@ inline bool ParseVariant(const std::string& s, Variant& out)
         case 'a': case 'A': case '1': out = Variant::Default; return true;
         case 'b': case 'B': case '2': out = Variant::B;       return true;
         case 'c': case 'C': case '3': out = Variant::C;       return true;
+        case 'g': case 'G': case '4': out = Variant::Graphite; return true;
         case '0':                     out = Variant::Default; return true;
         default: return false;
         }
     }
     if (s == "default" || s == "Default" || s == "classic") { out = Variant::Default; return true; }
+    if (s == "graphite" || s == "Graphite") { out = Variant::Graphite; return true; }
     return false;
 }
 
@@ -107,6 +118,19 @@ struct Metrics
     float windowRounding, childRounding, frameRounding, grabRounding, popupRounding, tabRounding, scrollbarRounding;
     float windowBorder, childBorder, popupBorder, frameBorder;
     float tabBarBorder, tabOverline, dockSeparator;
+    float fontBase, fontMono;   // 本文 / 等幅のフォントサイズ（論理 px）。旧案は 16 / 14、Graphite は 17 / 15
+};
+
+// ---- 案ごとの追加トークン（W1 A2a。Palette を太らせず Spec に別枠で持つ）----
+// 旧案は各案のパレットから導いた互換値（CompatExtra）。Graphite は A2 が生成仕様の値で埋める。
+// 線幅（hairPx 等）は tokens では「規則」なので数値として持たない（theme::HairPx() 等が倍率から計算する）。
+struct Extra
+{
+    ImVec4 needleDim;               // 指針（Needle）の減光
+    ImVec4 inLine;                  // 面内の細い区切り線
+    ImVec4 info;                    // 情報色
+    ImVec4 warnText, badText;       // 文字用の警告 / 異常色（面用 warn / bad とは別）
+    ImVec4 axisX, axisY, axisZ;     // 軸の色
 };
 
 // ---- 装飾の方針（描画ヘルパ deco::* が読む。案の「シグネチャ要素」の有無と強さ）----
@@ -139,7 +163,21 @@ struct Spec
     Palette pal;
     Metrics m;
     Deco    deco;
+    Extra   ext{};
+    const gg::GgSpec* gg = nullptr;   // Graphite のときだけ非 null（ThemeGraphite.cpp が提供。旧案は null）
 };
+
+// Graphite の Spec の提供口。生成ヘッダ（ThemeGraphite.gen.h）は重ヘッダから include しないので、
+// ThemeGraphite.cpp（A2）が自分の Spec を返す関数をここへ登録する。
+// ★未登録のまま SpecOf(Graphite) / SetVariant(Graphite) が呼ばれたら、暫定値へ黙って落とさず stderr に出して abort する
+//   （登録漏れで既定の見た目が黙ってネオンに戻り、UI ゴールデンに焼き込まれるのを防ぐ）。
+// ★申し送り（A2）: (1) main.cpp の --theme-variant 解釈（SetVariant）より前に必ず登録すること（main.cpp の担当レーンはメインが決める）。
+//   登録を静的ライブラリの自己登録で書かない（リンカがその TU を落とす）。起動時に明示的な関数呼び出しで登録すること。
+//   (2) 登録済みかは IsGraphiteRegistered() で検査できる。
+// ★注意: Graphite の Spec::gg は ThemeGraphite.cpp の登録関数が返す Spec では非 null だが、登録の無い環境（単体テスト等）の
+//   スタブは null のことがある。gg を参照するコード（deco::* / ビューポート / タイムライン）は必ず null を検査すること。
+inline const Spec& (*g_graphiteSpecFn)() = nullptr;
+inline bool IsGraphiteRegistered() { return g_graphiteSpecFn != nullptr; }
 
 namespace detail
 {
@@ -176,6 +214,7 @@ inline Spec MakeBase()
     m.popupRounding = 4.0f;  m.tabRounding = 3.0f;   m.scrollbarRounding = 6.0f;
     m.windowBorder = 1.0f; m.childBorder = 1.0f; m.popupBorder = 1.0f; m.frameBorder = 1.0f;
     m.tabBarBorder = 1.0f; m.tabOverline = 2.0f; m.dockSeparator = 3.0f;
+    m.fontBase = 16.0f; m.fontMono = 14.0f;
 
     Deco& d = s.deco;
     d.glow = 0.0f; d.hoverTint = 0.0f; d.easeSec = 0.0f;
@@ -318,15 +357,49 @@ inline Spec MakeC()
     return s;
 }
 
+// 旧案の Extra を、確定したパレットから導く（SpecOf が各案の組み立て後に 1 回呼ぶ）。
+// 軸の色は PropertyGrid の既存の帯の色（C だけ彩度を落とした別の色）。
+inline Spec CompatExtra(Spec s, bool mutedAxes)
+{
+    const Palette& p = s.pal;
+    Extra& x = s.ext;
+    x.needleDim = p.tabOverlineDim; x.inLine = p.border; x.info = p.accent;
+    x.warnText = p.warn; x.badText = p.bad;
+    if (mutedAxes) { x.axisX = Hex(0xB87672); x.axisY = Hex(0x94B080); x.axisZ = Hex(0x7C94C2); }
+    else           { x.axisX = Hex(0xE25454); x.axisY = Hex(0x7ECC58); x.axisZ = Hex(0x5484F0); }
+    return s;
+}
+
+} // namespace detail
+
+namespace detail
+{
+// 旧 Default 由来の暫定 Graphite（フォントだけ Graphite 値）。単体テストが登録するスタブ用。製品のコードは使わない。
+inline Spec MakeGraphitePlaceholder()
+{
+    Spec s = CompatExtra(MakeDefault(), false);
+    s.m.fontBase = 17.0f; s.m.fontMono = 15.0f;
+    return s;
+}
+[[noreturn]] inline void FailGraphiteUnregistered()
+{
+    std::fputs("FATAL: theme::Variant::Graphite が選ばれたが ThemeGraphite の Spec が未登録（g_graphiteSpecFn == nullptr）", stderr);
+    std::fputc(10, stderr);
+    std::fflush(stderr);
+    std::abort();
+}
 } // namespace detail
 
 inline const Spec& SpecOf(Variant v)
 {
-    static const Spec kDefault = detail::MakeDefault();
-    static const Spec kB = detail::MakeB();
-    static const Spec kC = detail::MakeC();
+    static const Spec kDefault = detail::CompatExtra(detail::MakeDefault(), false);
+    static const Spec kB = detail::CompatExtra(detail::MakeB(), false);
+    static const Spec kC = detail::CompatExtra(detail::MakeC(), true);
     switch (v)
     {
+    case Variant::Graphite:
+        if (!g_graphiteSpecFn) detail::FailGraphiteUnregistered();
+        return g_graphiteSpecFn();
     case Variant::B: return kB;
     case Variant::C: return kC;
     default:         return kDefault;

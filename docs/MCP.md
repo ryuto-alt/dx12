@@ -758,6 +758,9 @@ dx12_stop
 ---
 
 <!-- ==== lane-C begin ==== -->
+### 品質プリセット（W1-C1）
+- `get_quality_preset` … 現在のプリセット（low / medium / high / epic / cinematic）と予算（目標 fps・出力解像度・p95/p99・VFX の放出倍率と最大粒子数）。
+- `set_quality_preset {preset}` … プリセットを選ぶ。値の正は `budgets/quality_presets.json`（生成表）。C1 の時点では選択の記録だけで、絵への反映と Undo は C7 で入る。 返り値に `applied:false` と `note` が付く（C7 までは何も反映しない）。プリセット名は C++ 側では大文字小文字を区別しない（TS ツールセットは manifest の enum が小文字なので小文字で渡すこと）。
 <!-- ==== lane-C end ==== -->
 <!-- ==== lane-D begin ==== -->
 <!-- ==== lane-D end ==== -->

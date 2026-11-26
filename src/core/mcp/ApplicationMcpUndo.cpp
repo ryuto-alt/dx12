@@ -94,7 +94,7 @@ void Application::RegisterMcpUndoMethods()
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot undo while Playing",
-                    "dx12_stop してから呼ぶこと（★Stop で Undo 履歴は消え、Play 開始時の状態へ戻る）");
+                    "dx12_stop してから呼ぶこと（★Stop で Play 中に積んだ Undo は消え、シーンは Play 開始時の状態へ戻る。Play 前の履歴は id が保てれば残る）");
             if (m_editorCtx->mcpUndo.TxOpen())
                 throw McpError(McpErr::ModeConflict,
                     "transaction '" + m_editorCtx->mcpUndo.TxLabel() + "' is open",
@@ -107,7 +107,7 @@ void Application::RegisterMcpUndoMethods()
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot redo while Playing",
-                    "dx12_stop してから呼ぶこと（★Stop で Undo 履歴は消える）");
+                    "dx12_stop してから呼ぶこと（★Stop で Play 中に積んだ Undo は消える。Play 前の履歴は id が保てれば残る）");
             if (m_editorCtx->mcpUndo.TxOpen())
                 throw McpError(McpErr::ModeConflict,
                     "transaction '" + m_editorCtx->mcpUndo.TxLabel() + "' is open",
@@ -159,7 +159,7 @@ void Application::RegisterMcpUndoMethods()
                 throw McpError(McpErr::ModeConflict, "no open transaction", LastClosedHint(m_editorCtx->mcpUndo));
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot roll back while Playing",
-                    "dx12_stop してから（★ただし Stop で Undo 履歴は消えるので、Play 前に閉じるのが正しい順）");
+                    "dx12_stop してから（★Play 中に開いたままのトランザクションは Stop で閉じられるので、Play 前に閉じるのが正しい順）");
             m_mcpUndoRequests.push_back({McpUndoRequest::Kind::Rollback, true, deferred});
             isDeferred = true;
         });
@@ -277,7 +277,7 @@ void Application::ProcessMcpUndoRequests(ID3D12GraphicsCommandList* cmdList)
             {
                 FailMcp(m_mcpBridge.get(), r.reply, McpErr::ModeConflict,
                         std::string("cannot ") + (isUndo ? "undo" : "redo") + " while Playing",
-                        "dx12_stop してから呼ぶこと（★Stop で Undo 履歴は消える）");
+                        "dx12_stop してから呼ぶこと（★Stop で Play 中に積んだ Undo は消える。Play 前の履歴は id が保てれば残る）");
                 break;
             }
             bindScene();

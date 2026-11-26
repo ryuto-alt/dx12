@@ -64,7 +64,9 @@ public:
     // クラスタライト SRV テーブル(t13,t14,t15 + デカール予約)の先頭 index。
     // サムネイルは灯数 0 なので中身は読まれないが、forward PS が t13..t15 を参照する以上
     // テーブルのバインド自体は必要（未バインドはルートシグネチャ検証違反）。
-    void SetClusterSrv(u32 srvIndex) { m_clusterSrvIndex = srvIndex; }
+    // クラスタテーブルは自前の型つきダミー（全レンジ）を使う。メインのテーブルは Application が毎フレーム書き直す
+    // （DDGI の t22/t23/t30 など）ので、それを張ってしまうと「サムネイルが握った後に同フレームで書き換え」
+    // で id=1001 になる（DF-W05-R2-01）。灯数 0 でシェーダは読まない。
     // SSR(t16)/SSGI(t17) の 1x1 黒ダミー(RGBA16F)。サムネイルは常にこれを張る。
     void SetScreenSpaceBlackSrv(u32 srvIndex) { m_ssBlackSrvIndex = srvIndex; }
 
@@ -106,7 +108,8 @@ private:
     RootSignature*    m_rootSig       = nullptr;
     PipelineState*    m_pso           = nullptr;
     u32               m_aoWhiteSrvIndex = 0xFFFFFFFFu;  // SSAO 白ダミー(t8) SRV index
-    u32               m_clusterSrvIndex = 0xFFFFFFFFu;  // クラスタライトテーブル(t13..) 先頭 index
+    u32               m_clusterSrvIndex = 0xFFFFFFFFu;  // 自前ダミーのクラスタテーブル(kClusterTableCount 連続)先頭 index
+    u32               m_punctualDummySrvIndex = 0xFFFFFFFFu;  // t9(2D配列)+t10(キューブ配列)の型つきヌル 2 連続
     u32               m_ssBlackSrvIndex = 0xFFFFFFFFu;  // SSR/SSGI 黒ダミー(t16,t17) SRV index
 
     // 共有リソース

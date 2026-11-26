@@ -9,6 +9,7 @@
 #include "core/Types.h"
 #include "ecs/Components.h"
 #include "editor/UndoCore.h"
+#include "editor/UndoValueTraits.h"
 
 namespace dx12e
 {
@@ -16,6 +17,9 @@ namespace dx12e
 class Scene;
 
 // IUndoCommand / CompositeCommand / AiUndoEntry / UndoSystem は editor/UndoCore.h（依存ゼロ）。
+
+
+// Undo の値の持ち方（UndoValueTraits / EmplaceValue）は editor/UndoValueTraits.h（MCP の Undo と共有）。
 
 // ── Transform 変更コマンド ──
 class TransformCommand : public IUndoCommand
@@ -397,18 +401,20 @@ class ComponentEditCommand : public IUndoCommand
 public:
     ComponentEditCommand(entt::registry* reg, entt::entity entity,
                          const T& before, const T& after, const char* name)
-        : m_reg(reg), m_entity(entity), m_before(before), m_after(after), m_name(name) {}
+        : m_reg(reg), m_entity(entity),
+          m_before(UndoValueTraits<T>::Capture(before)),
+          m_after(UndoValueTraits<T>::Capture(after)), m_name(name) {}
 
     void Undo() override
     {
         if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
-            m_reg->get<T>(m_entity) = m_before;
+            UndoValueTraits<T>::Merge(m_reg->get<T>(m_entity), m_before);
     }
 
     void Redo() override
     {
         if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
-            m_reg->get<T>(m_entity) = m_after;
+            UndoValueTraits<T>::Merge(m_reg->get<T>(m_entity), m_after);
     }
 
     const char* GetName() const override { return m_name; }
@@ -426,9 +432,10 @@ template<typename T>
 class AddComponentCommand : public IUndoCommand
 {
 public:
+    static_assert(UndoValueTraits<T>::kSupportsEmplace, "この型は純データから付け直せない（UndoValueTraits<T>::kSupportsEmplace）");
     AddComponentCommand(entt::registry* reg, entt::entity entity,
                         const T& value, const char* name)
-        : m_reg(reg), m_entity(entity), m_value(value), m_name(name) {}
+        : m_reg(reg), m_entity(entity), m_value(UndoValueTraits<T>::Capture(value)), m_name(name) {}
 
     void Undo() override
     {
@@ -439,7 +446,7 @@ public:
     void Redo() override
     {
         if (m_reg->valid(m_entity))
-            m_reg->emplace_or_replace<T>(m_entity, m_value);
+            EmplaceValue<T>(*m_reg, m_entity, m_value);
     }
 
     const char* GetName() const override { return m_name; }
@@ -456,14 +463,15 @@ template<typename T>
 class RemoveComponentCommand : public IUndoCommand
 {
 public:
+    static_assert(UndoValueTraits<T>::kSupportsEmplace, "この型は純データから付け直せない（UndoValueTraits<T>::kSupportsEmplace）");
     RemoveComponentCommand(entt::registry* reg, entt::entity entity,
                            const T& removedValue, const char* name)
-        : m_reg(reg), m_entity(entity), m_value(removedValue), m_name(name) {}
+        : m_reg(reg), m_entity(entity), m_value(UndoValueTraits<T>::Capture(removedValue)), m_name(name) {}
 
     void Undo() override
     {
         if (m_reg->valid(m_entity))
-            m_reg->emplace_or_replace<T>(m_entity, m_value);
+            EmplaceValue<T>(*m_reg, m_entity, m_value);
     }
 
     void Redo() override

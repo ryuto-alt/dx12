@@ -1733,6 +1733,17 @@ void FillGeneratedManifestRows(ManifestRows& o)
     // ==== lane-B begin ====
     // ==== lane-B end ====
     // ==== lane-C begin ====
+    o.push_back({"get_quality_preset", M("現在の品質プリセット(low/medium/high/epic/cinematic)と、その予算(目標 fps・出力解像度・p95/p99・VFX の放出倍率と最大粒子数)を返す。読み取り専用。",
+        "get quality preset 品質プリセット epic high cinematic 予算",
+        "render", "render_setting", "quality_preset", McpEffect::Read, "any", 8000, true, false,
+        "none", "", {
+        })});
+    o.push_back({"set_quality_preset", M("品質プリセットを選ぶ(low/medium/high/epic/cinematic)。値の正は生成表(budgets/quality_presets.json)。W1-C1 時点では選択の記録だけで、絵への反映と Undo は後続(C7)で入る。",
+        "set quality preset 品質プリセット epic high cinematic 切替",
+        "render", "render_setting", "quality_preset", McpEffect::WriteSetting, "any", 10000, true, false,
+        "none", "", {
+            P("preset", "enum", true, "low|medium|high|epic|cinematic", nullptr, nullptr, nullptr, "品質プリセット名。"),
+        })});
     // ==== lane-C end ====
     // ==== lane-D begin ====
     // ==== lane-D end ====

@@ -28,6 +28,7 @@ param(
     [int]$Speed = 0,
     [switch]$KeepProject,
     [switch]$Deep,
+    [string]$BuildDir = '',   # 既定は build\release。ASan ビルド（build\asan-undo など）の exe で流したいときに指す
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()
 )
@@ -75,7 +76,7 @@ if ($ExtraArgs.Count -gt 0) { $extra += $ExtraArgs }
 
 $fg0 = Get-Fg
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$info = (& $inst -Name $Name -Port $Port -Project $proj -IdleExitMin 60 -ExtraArgs $extra) | Select-Object -Last 1 | ConvertFrom-Json
+$info = (& $inst -Name $Name -Port $Port -Project $proj -IdleExitMin 60 -BuildDir $BuildDir -ExtraArgs $extra) | Select-Object -Last 1 | ConvertFrom-Json
 $enginePid = [int]$info.pid
 Write-Host "[uitests] engine pid=$enginePid port=$Port fg0=$fg0"
 

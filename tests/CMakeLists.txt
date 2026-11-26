@@ -399,7 +399,7 @@ if(COMMAND uno_agility_test_exe)
     # DredReportTests（gpu）: W05-05。DRED の既定の判定、BeginEvent("TestPass") → RemoveDevice で JSON が書かれ、
     #   removedReason が入る。リソースの SetName（Buffer / RenderTarget / Texture）。gameMode=true なら exe 名に関わらず既定 OFF。
     #   ★実デバイスは、決して Signal しないフェンスでキューを待たせて未完了のリストを残し、RemoveDevice 後に
-    #   コンテキスト "TestPass"・コマンドリスト名 DredTestList・lastCompleted の整合を必須で検査する（未実機確認: -Gpu で要実行）。
+    #   コンテキスト "TestPass"・コマンドリスト名 DredTestList・lastCompleted の整合を必須で検査する（この PC のドライバは RemoveDevice で DRED を埋めない: その場合は SKIP_RETURN_CODE 77 で環境スキップ。合成データの検査は常に必須）。
     add_executable(DredReportTests dred_report_test.cpp)
     target_include_directories(DredReportTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(DredReportTests PRIVATE Graphics Input)
@@ -408,7 +408,7 @@ if(COMMAND uno_agility_test_exe)
         target_compile_definitions(DredReportTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME DredReportTests COMMAND DredReportTests)
-    set_tests_properties(DredReportTests PROPERTIES LABELS gpu TIMEOUT 120)
+    set_tests_properties(DredReportTests PROPERTIES LABELS gpu TIMEOUT 120 SKIP_RETURN_CODE 77)
 
     # AgilityVersionPolicy（GPU 不要）: lock の SDK が 600 以上 700 未満（プレビューを出荷しない）、
     #   ビルドした exe 2 本の export と同梱 DLL の export と lock の 3 つが一致、D3D12SDKPath、DLL の SHA256。
@@ -491,6 +491,27 @@ if(TARGET Renderer)   # Renderer があるのは本体と一緒に構成した�
             -DPWSH=${DX12_PWSH_EXE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/dlss_wiring_check.cmake)
     set_tests_properties(DlssWiringCheck PROPERTIES TIMEOUT 120)
+endif()
+
+# --- UI 書体のサブセット（W1-A1）。生成物と字の集合の検査。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(FontSubsetTests font_subset_test.cpp)
+    target_link_libraries(FontSubsetTests PRIVATE Gui)
+    target_compile_definitions(FontSubsetTests PRIVATE FONT_TEST_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(FontSubsetTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(FontSubsetTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME FontSubsetTests COMMAND FontSubsetTests)
+endif()
+# tools/subset_fonts.py --check（標準ライブラリだけ。charset と生成物の SHA256 と上限）
+# Windows Store の python.exe スタブ（実体が無い）を拾わないよう、実行して確かめる FindPython3 を使う。見つからなければ警告を出す（黙って登録しない）
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME FontSubsetCheck COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/subset_fonts.py --check)
+    set_tests_properties(FontSubsetCheck PROPERTIES TIMEOUT 120)
+else()
+    message(WARNING "Python3 が見つからないため FontSubsetCheck を登録できません（tools/subset_fonts.py --check は標準ライブラリだけで動く）")
 endif()
 
 # ==== lane-A end ====
@@ -608,6 +629,18 @@ if(TARGET Scene)
     endif()
     add_test(NAME PlayStopUndoTests COMMAND PlayStopUndoTests)
     set_tests_properties(PlayStopUndoTests PROPERTIES TIMEOUT 120)
+endif()
+# Undo コマンドは実行時ハンドル（Mesh* / bodyId / Lua 環境）を持たない（W05-11 恒久策）。Stop をまたぐ往復。GPU 不要。
+if(TARGET Scene)
+    add_executable(UndoHandleFreeTests undo_handle_free_test.cpp ../src/editor/UndoSystem.cpp)
+    target_link_libraries(UndoHandleFreeTests PRIVATE Scene)
+    target_include_directories(UndoHandleFreeTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(UndoHandleFreeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(UndoHandleFreeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME UndoHandleFreeTests COMMAND UndoHandleFreeTests)
+    set_tests_properties(UndoHandleFreeTests PROPERTIES TIMEOUT 120)
 endif()
 # Lua 公開プロパティの Undo（W05-14）: 値の往復 / GUID で引く / ホットリロードで例外なし / 既定値に戻すは複合 1 件。GPU 不要。
 if(TARGET ECS)
@@ -1044,6 +1077,16 @@ if(TARGET Renderer)
         target_compile_definitions(GpuMarkerTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
     add_test(NAME GpuMarkerTests COMMAND GpuMarkerTests)
+endif()
+# 品質プリセットの口（生成表が読まれていること・既定値が従来どおり）。ヘッダだけで完結。W1-C1。
+if(TARGET Renderer)
+    add_executable(QualityPresetTableTests quality_preset_table_test.cpp)
+    target_include_directories(QualityPresetTableTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(QualityPresetTableTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(QualityPresetTableTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME QualityPresetTableTests COMMAND QualityPresetTableTests)
 endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====

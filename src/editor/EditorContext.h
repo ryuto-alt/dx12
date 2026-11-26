@@ -223,6 +223,11 @@ public:
     // （地形ブラシ、ライトのハンドル操作などがここに登録する。ViewportInput 参照）
     std::vector<std::function<bool(const ViewportInput&)>> viewportToolHandlers;
 
+    // アセットを改名・移動した直後に Application が呼ぶ「参照の付け替え」フック（assets 相対パス）。
+    // 開いているシーン（メモリ上・未保存の分を含む）と、ディスク上の他ファイルの参照を新しいパスへ直す。
+    // 戻り値は付け替えた参照の数（メモリ + ファイル）。未設定なら何もしない。
+    std::function<int(const std::string& oldRel, const std::string& newRel)> rewriteAssetRefs;
+
     // ---- Application から借りている読み取り専用データ（Application::Initialize が設定）----
     // 今フレームの描画リスト。精密ピッキングのブロードフェーズ候補に使う（null なら
     // SceneViewPanel が従来どおり entt 走査へフォールバックする）。
@@ -266,6 +271,26 @@ public:
     ViewportPrefs vpPrefs;
     int pendingBookmarkJump = 0;   // 1..9（コマンド表 / 帯のボタンが立て、ViewportToolbar が消化する）
     int pendingBookmarkSet  = 0;
+
+    // ---- W1 の受け渡し口（A2a: 形だけ。値の書き込みと消化は各項目が行う。重ヘッダなのでこの 1 回だけ）----
+    // A10: アセットブラウザの .dxseq のダブルクリックが立てる（assets 相対パス）。ApplicationSequencer.cpp が消費し、
+    //      MCP の sequence_play と同じ関数で再生する。空 = 要求なし。
+    std::string pendingSequencePlay;
+    // A10 が立て、BD4 が消費する: アセットブラウザの .uvfx のダブルクリック（assets 相対パス）。ビューポートの注視点に置く。
+    // A と BD の間はこのフィールドだけでつながる（互いのファイルを触らない）。空 = 要求なし。
+    std::string pendingVfxPlace;
+    // A11: 裏に回ったときのフレーム間引き（MOD-ED-11）の状態。Application のメインループが毎フレーム更新する。
+    //   tier: 0 = 制限なし / 1 = 入力なし 30fps / 2 = 非アクティブ 10fps。
+    //   lastActivitySec: 最後に入力・再生・MCP の要求・仮想入力・ジョブがあった時刻（単調時計の秒）。
+    //   alwaysRealtime: 「常にリアルタイム」の設定（true で間引きを無効にする。EditorPrefs と同期）。
+    struct FrameThrottleState
+    {
+        int    tier            = 0;
+        double lastActivitySec = 0.0;
+        bool   windowActive    = true;
+        bool   alwaysRealtime  = false;
+    };
+    FrameThrottleState frameThrottle;
 
     // ビューポート上の一時状態（毎フレーム SceneViewPanel / ViewportToolbar が更新）
     entt::entity hoveredEntity = entt::null;       // マウスの下のエンティティ（精密ピッキングの結果。ホバー強調用）

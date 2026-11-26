@@ -3871,6 +3871,27 @@ bool PathMatches(const std::string& rel, const std::string& target)
     return false;
 }
 
+// メモリ上のパスは assets 相対とは限らない（エディタのアセットブラウザからの配置は絶対パスで入る）。
+// field が assets 配下の絶対パスなら assets 相対へ直したものを返す。そうでなければ空。
+std::string AbsFieldToRel(const std::string& field)
+{
+    namespace fs = std::filesystem;
+    if (field.empty() || !fs::path(field).is_absolute()) return {};
+    const std::string base = PathResolver::AssetsDir();
+    if (base.empty()) return {};
+    const std::string rel = MakeRelative(field, base);
+    if (rel.empty() || fs::path(rel).is_absolute()) return {};
+    return rel;
+}
+
+// field が rel（またはその配下）を指しているか。相対・assets 配下の絶対のどちらでも見る。
+bool FieldRefersTo(const std::string& field, const std::string& rel)
+{
+    if (PathMatches(field, rel)) return true;
+    const std::string r = AbsFieldToRel(field);
+    return !r.empty() && PathMatches(r, rel);
+}
+
 // 一致したら新しいパスへ差し替える。oldRel がディレクトリなら配下の相対部分を保つ。
 // fn(field, who, kind) の形で全参照フィールドを訪問する。
 template <typename Fn>
@@ -4067,7 +4088,16 @@ int SceneSerializer::RewriteAssetPathRefs(Scene& scene, const std::string& oldRe
     if (oldRel.empty() || oldRel == newRel) return 0;
     int n = 0;
     auto rewrite = [&](std::string& field, const std::string&, const char*) {
-        if (!PathMatches(field, oldRel)) return;
+        if (!PathMatches(field, oldRel))
+        {
+            // assets 配下の絶対パスで持っている場合は、絶対パスのまま新しい場所へ付け替える
+            const std::string r = AbsFieldToRel(field);
+            if (r.empty() || !PathMatches(r, oldRel)) return;
+            const std::string newFull = (r.size() == oldRel.size()) ? newRel : newRel + r.substr(oldRel.size());
+            field = (std::filesystem::path(PathResolver::AssetsDir()) / newFull).make_preferred().string();
+            ++n;
+            return;
+        }
         // ディレクトリ配下なら、配下の相対部分を保ったまま付け替える
         field = (field.size() == oldRel.size()) ? newRel
                                                 : newRel + field.substr(oldRel.size());
@@ -4098,7 +4128,7 @@ int SceneSerializer::CountAssetPathRefs(const Scene& scene, const std::string& r
     // 実際には書き換えないので const_cast で足りる（Scene の実体は const ではない）。
     auto& mutableScene = const_cast<Scene&>(scene);
     auto count = [&](std::string& field, const std::string& who, const char* kind) {
-        if (!PathMatches(field, rel)) return;
+        if (!FieldRefersTo(field, rel)) return;
         ++n;
         if (outWho && static_cast<int>(outWho->size()) < maxNames)
             outWho->push_back(who + ": " + kind);

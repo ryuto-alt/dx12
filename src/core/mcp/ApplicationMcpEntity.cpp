@@ -932,6 +932,37 @@ void Application::RegisterMcpEntityMethods()
             //   （実際に踏んだ: 3 枚のレイヤーを作ったのに全部 1 枚目へ上書きされた）。
             if (data.is_object() && params.contains("layer") && !data.contains("layer"))
                 data["layer"] = params["layer"];
+            // BUG-07: particleEmitter の layer 指定が範囲外・不明なら、黙って汎用マージへ落とさずエラーで返す
+            //（ApplyOrphanComponent は「該当なし」と「失敗」の両方で false を返すため、ここで先に検査する）。
+            // 検査は Undo の記録より前に行い、失敗した呼び出しが履歴に残らないようにする。
+            if (comp == "particleEmitter" && data.is_object() && data.contains("layer"))
+            {
+                // 放出器が無い場合は ApplyOrphanComponent が 1 枚目を作るので、レイヤー数は 1 として扱う
+                auto* curEm = reg.try_get<ParticleEmitter>(e);
+                const int layerCount = curEm ? static_cast<int>(curEm->layers.size()) : 1;
+                const json& lj = data["layer"];
+                bool ok = false;
+                if (lj.is_number_integer())
+                {
+                    const int idx = lj.get<int>();
+                    ok = idx >= 0 && idx < std::max(layerCount, 1);
+                }
+                else if (lj.is_string())
+                {
+                    ok = curEm ? curEm->FindLayer(lj.get<std::string>()) != nullptr : lj.get<std::string>().empty();
+                }
+                if (!ok)
+                {
+                    McpError err(McpErr::InvalidParam,
+                                 "set_component: particleEmitter の layer が範囲外または見つかりません",
+                                 "layer は 0〜" + std::to_string(std::max(layerCount, 1) - 1)
+                                 + " の添字か、既存のレイヤー名。一覧は dx12_list_particle_layers、足すなら dx12_add_particle_layer");
+                    err.name = "E_OUT_OF_RANGE";
+                    err.cause = "layer が既存のレイヤーを指していない（黙って 1 枚目を書き換えないよう、何も変更せずに断る）";
+                    err.details = {{"field", "layer"}, {"value", lj}, {"max", std::max(layerCount, 1) - 1}};
+                    throw err;
+                }
+            }
             McpUndo().TrackByJsonKey(e, comp);   // 未知のキーは下で UNKNOWN_COMPONENT になる
             if (comp == "transform")
             {

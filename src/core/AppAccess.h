@@ -11,6 +11,7 @@
 
 namespace dx12e
 {
+enum class QualityPresetId : u8;   // renderer/QualityPreset.h
 struct AppAccess
 {
     // ==== lane-A begin ====
@@ -34,6 +35,8 @@ struct AppAccess
     static void AnnotateAutosave(Application&, nlohmann::json& resp, const std::string& method);
     // 未保存の新規シーン（_mcp_untitled_*）の置き場: <project>/.dx12/untitled/
     static std::string UntitledDir();
+    // UI テスト用: 自動保存の退避の最短間隔の起点を消す（実時間で 30 秒待たずに次の退避を撮れるように）。
+    static void ResetAutoProtectThrottleForTest();
     // W05-04: GraphicsDevice の caps（DeviceCaps.h を include した TU だけが型を使える）。デバイスが無ければ nullptr。
     static const struct DeviceCaps* GetDeviceCaps(Application&);
     // ==== lane-A end ====
@@ -44,6 +47,10 @@ struct AppAccess
     // ==== lane-B end ====
 
     // ==== lane-C begin ====
+    // W1-C1: 品質プリセット（定義は core/QualityPresetApply.cpp。自由関数の窓口は core/QualityPresetApply.h）。
+    //   QualityPresetId は renderer/QualityPreset.h（使う TU が include する。ここは前方宣言で重くしない）。
+    static bool SetQualityPreset(Application&, QualityPresetId, bool recordUndo);
+    static QualityPresetId GetQualityPreset(const Application&);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====

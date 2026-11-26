@@ -1,0 +1,8 @@
+# サブセットの書体に入れない UI 字（別の書体へ縮退させる）。font_subset_test が「未収録」と数えない字の許可リスト。
+# ・⏮ ⏸ ▾ ✕ ✗ : Lucide のアイコン書体（assets/editor/fonts/lucide.ttf）またはシステムの記号書体（Segoe UI Symbol）
+# ・U+E4E8 (私用領域) : Lucide のアイコン
+# ・U+275A (❚、GG の一時停止タグ「❚❚ 一時停止」): Lucide のポーズアイコン、または Segoe UI Symbol
+# ・U+2300 (⌀) / U+23FB (⏻) / U+25B8 (▸): GG 仕様の記号。どの UI 書体にも無いので Segoe UI Symbol へ縮退（▸ は以前 PlemolJP の Hack 由来の字形だったので外した）
+# ・U+1F52C (顕微鏡の絵文字) : システムの絵文字書体（Segoe UI Emoji）
+# 増やすときは、その字を描く書体を決めてからここへ足す（# で始まる行は無視）。
+⏮⏸▾✕✗🔬❚⌀⏻▸
