@@ -35,9 +35,14 @@ bool ResolveEnabled(bool requested);
 //   exe 名には頼らない（BuildGame は GameRuntime.exe を <productName>.exe に改名するため）。--dred / --no-dred は尊重する。
 bool ResolveForMode(bool gameMode);
 
-// デバイス作成の前に呼ぶ。on=true なら FORCED_ON、false なら FORCED_OFF に明示する（同一プロセスの後続デバイスに
-// 前の設定を引きずらない）。設定を適用できたら true（インターフェースが取れなければ false）。
-bool EnableBeforeDeviceCreation(bool on = true);
+// デバイス作成の前に呼ぶ。ForcedOn / ForcedOff に明示する（同一プロセスの後続デバイスに前の設定を引きずらない）。
+// SystemControlled は OS / WER の判断に任せる（出荷ゲームの既定 OFF は、エンジンが設定に触れなかった従来どおりこれにする）。
+// 設定を適用できたら true（インターフェースが取れなければ false。Settings1 が無ければ Settings にフォールバック）。
+enum class Enablement { ForcedOn, ForcedOff, SystemControlled };
+bool EnableBeforeDeviceCreation(Enablement mode = Enablement::ForcedOn);
+
+// コマンドラインが明示的に --no-dred か（最後に書いた方が勝つ）。
+bool IsExplicitNoDred();
 
 // DRED から取った生のデータ（単体テストが手で組み立てられるよう公開）。ポインタは呼び出し側が生かしておく。
 struct ReportData

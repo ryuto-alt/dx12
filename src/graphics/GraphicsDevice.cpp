@@ -149,7 +149,9 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
     }
     else
     {
-        dred::EnableBeforeDeviceCreation(false);   // 同一プロセスの先行デバイスが ON にした設定を持ち越さない
+        // 明示の --no-dred は FORCED_OFF。既定 OFF（出荷ゲームなど）はエンジンが触れない従来どおり SYSTEM_CONTROLLED にして、
+        // OS / WER が TDR 多発アプリで DRED を有効にできる余地を残す（同一プロセスの先行デバイスが ON にした設定は上書きして持ち越さない）。
+        dred::EnableBeforeDeviceCreation(dred::IsExplicitNoDred() ? dred::Enablement::ForcedOff : dred::Enablement::SystemControlled);
         Logger::Info("DRED: OFF");
     }
 

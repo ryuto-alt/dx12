@@ -398,8 +398,8 @@ if(COMMAND uno_agility_test_exe)
 
     # DredReportTests（gpu）: W05-05。DRED の既定の判定、BeginEvent("TestPass") → RemoveDevice で JSON が書かれ、
     #   removedReason が入る。リソースの SetName（Buffer / RenderTarget / Texture）。gameMode=true なら exe 名に関わらず既定 OFF。
-    #   ★コンテキスト "TestPass"・コマンドリスト名の中身は合成データで検査する。実デバイスではパンくずが埋まった時だけ検査する
-    #   （Windows 11 26300 + NVIDIA R610 では RemoveDevice 経由だと 0 件。夜間・別 PC での実機確認が必要）。
+    #   ★実デバイスは、決して Signal しないフェンスでキューを待たせて未完了のリストを残し、RemoveDevice 後に
+    #   コンテキスト "TestPass"・コマンドリスト名 DredTestList・lastCompleted の整合を必須で検査する（未実機確認: -Gpu で要実行）。
     add_executable(DredReportTests dred_report_test.cpp)
     target_include_directories(DredReportTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     target_link_libraries(DredReportTests PRIVATE Graphics Input)

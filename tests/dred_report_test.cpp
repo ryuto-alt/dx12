@@ -187,8 +187,7 @@ int main()
     }
 
     // 本物のデバイスで RemoveDevice → JSON が書かれ、removedReason が入り、パースできる。
-    //   ★パンくずの中身（"TestPass" など）は、この環境（Windows 11 26300 + NVIDIA R610）では RemoveDevice() 経由では
-    //   DRED が埋まらないため必須にしない（最小のスタンドアロンでも空だった）。埋まる環境では中身も検査する。
+    //   キューを未 Signal のフェンスで待たせて、リストを未完了のまま RemoveDevice する（完了したリストは DRED から落ちる）。
     ID3D12Device5* d5 = dev.GetDevice();
     {
         CommandQueue queue;
@@ -208,6 +207,15 @@ int main()
         list->SetMarker(0, kEvent, sizeof(kEvent));
         list->EndEvent();
         list->Close();
+        // キューを「決して Signal しないフェンス」で待たせ、コマンドリストが RemoveDevice 時点で未完了のまま残るようにする
+        // （GPU が終わらせたリストは DRED のパンくずから落ちるので、待たせないと空になるのが普通）。
+        ComPtr<ID3D12Fence> gate;
+        if (FAILED(d5->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gate))))
+        {
+            std::printf("FAIL: フェンスを作れない\n");
+            return 1;
+        }
+        CHECK(SUCCEEDED(queue.GetQueue()->Wait(gate.Get(), 1)), "キューの Wait に失敗");
         queue.ExecuteCommandList(list.Get());
 
         CHECK(SUCCEEDED(d5->GetDeviceRemovedReason()), "RemoveDevice の前にデバイスが消えている");
@@ -216,6 +224,7 @@ int main()
         CHECK(FAILED(reason), "RemoveDevice の後に GetDeviceRemovedReason が失敗しない");
         const std::string path = dred::WriteReport(d5, reason, dev.GetOptions().dred, outDir);
         CHECK(!path.empty(), "レポートを書けない");
+        gate->Signal(1);   // レポートを書いた後に解放（キューの破棄が待ちで止まらないように）
         if (!path.empty())
         {
             std::ifstream f(std::filesystem::path(std::u8string(path.begin(), path.end())), std::ios::binary);
@@ -233,17 +242,24 @@ int main()
                 for (const auto& b : j["breadcrumbs"])
                     for (const auto& c : b["contexts"])
                         if (c.value("context", "") == "TestPass") foundCtx = true;
-                // パンくずが埋まる環境（夜間・別 PC・本物のハング）では中身を必須にする。
-                if (!j["breadcrumbs"].empty())
-                {
-                    CHECK(foundCtx, "パンくずがあるのにコンテキスト TestPass が無い");
-                    bool foundList = false;
-                    for (const auto& b : j["breadcrumbs"])
-                        if (b.value("commandList", "") == "DredTestList") { foundList = true; CHECK(b.contains("lastCompletedOp"), "lastCompletedOp が無い"); }
-                    CHECK(foundList, "commandList == DredTestList のノードが無い");
-                }
-                std::printf("NOTE: 実デバイスのパンくず %zu 件、コンテキスト TestPass %s\n", j["breadcrumbs"].size(),
-                            foundCtx ? "あり" : "なし（この環境では RemoveDevice で DRED が埋まらない）");
+                // 未完了のリストが残っているので、パンくずとコンテキストは必須。
+                CHECK(!j["breadcrumbs"].empty(), "未完了のコマンドリストがあるのにパンくずが空");
+                CHECK(foundCtx, "コンテキスト TestPass が無い");
+                bool foundList = false;
+                for (const auto& b : j["breadcrumbs"])
+                    if (b.value("commandList", "") == "DredTestList")
+                    {
+                        foundList = true;
+                        // lastCompleted == 0（1 つも終わっていない）は正常。lastCompletedOp は 0 より大きいときだけ入る。
+                        CHECK(b.contains("lastCompleted") && b.contains("ops") && b.contains("opsTotal"), "lastCompleted / ops / opsTotal が無い");
+                        const unsigned last = b.value("lastCompleted", 0u);
+                        const unsigned total = b.value("breadcrumbCount", 0u);
+                        CHECK(total > 0 && last <= total, "lastCompleted と breadcrumbCount が矛盾");
+                        if (last > 0) CHECK(b.contains("lastCompletedOp"), "lastCompleted > 0 なのに lastCompletedOp が無い");
+                        if (last < total) CHECK(b.contains("nextOp"), "未完了なのに nextOp が無い");
+                    }
+                CHECK(foundList, "commandList == DredTestList のノードが無い");
+                std::printf("NOTE: 実デバイスのパンくず %zu 件、コンテキスト TestPass %s\n", j["breadcrumbs"].size(), foundCtx ? "あり" : "なし");
             }
         }
     }

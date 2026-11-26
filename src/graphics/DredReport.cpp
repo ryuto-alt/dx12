@@ -3,10 +3,12 @@
 #include <nlohmann/json.hpp>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
+#include <vector>
 
 #include "core/CrashReport.h"
 
@@ -105,13 +107,20 @@ const char* AllocTypeName(D3D12_DRED_ALLOCATION_TYPE t)
 // 連結リストは壊れていても無限ループしないよう、個数に上限を付けて辿る。
 constexpr int kMaxNodes = 256;
 constexpr UINT kMaxOpsPerList = 4096;
+// クラッシュ時に同期で作って書くので、op は lastCompleted の前後だけにする（全体の個数は opsTotal に残す）。
+constexpr UINT kOpsWindow = 64;
 
-nlohmann::json AllocationList(const D3D12_DRED_ALLOCATION_NODE1* head)
+// unnamed には「名前の無かった割り当ての数」を返す（"(unnamed)" は名前が付いた扱いにしない）。
+nlohmann::json AllocationList(const D3D12_DRED_ALLOCATION_NODE1* head, int* unnamed = nullptr)
 {
     nlohmann::json arr = nlohmann::json::array();
     int n = 0;
     for (const D3D12_DRED_ALLOCATION_NODE1* p = head; p && n < kMaxNodes; p = p->pNext, ++n)
-        arr.push_back({{"name", NameOf(p->ObjectNameW, p->ObjectNameA)}, {"type", AllocTypeName(p->AllocationType)}});
+    {
+        const std::string name = NameOf(p->ObjectNameW, p->ObjectNameA);
+        if (unnamed && name == "(unnamed)") ++*unnamed;
+        arr.push_back({{"name", name}, {"type", AllocTypeName(p->AllocationType)}});
+    }
     return arr;
 }
 
@@ -199,16 +208,37 @@ bool ResolveForMode(bool gameMode)
     return Decide(true, ParseCommandLine(::GetCommandLineW()), gameMode);
 }
 
-bool EnableBeforeDeviceCreation(bool on)
+bool IsExplicitNoDred()
+{
+    return ParseCommandLine(::GetCommandLineW()) == CmdLine::ForceOff;
+}
+
+bool EnableBeforeDeviceCreation(Enablement mode)
 {
     // 設定はデバイス作成前に適用すればよく、保持は不要（ローカル。static を持たないのでスレッド競合もない）。
-    ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> s;
-    if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&s))) || !s) return false;
-    const D3D12_DRED_ENABLEMENT e = on ? D3D12_DRED_ENABLEMENT_FORCED_ON : D3D12_DRED_ENABLEMENT_FORCED_OFF;
-    s->SetAutoBreadcrumbsEnablement(e);
-    s->SetPageFaultEnablement(e);
-    s->SetBreadcrumbContextEnablement(e);
-    return true;
+    D3D12_DRED_ENABLEMENT e = D3D12_DRED_ENABLEMENT_SYSTEM_CONTROLLED;
+    if (mode == Enablement::ForcedOn) e = D3D12_DRED_ENABLEMENT_FORCED_ON;
+    else if (mode == Enablement::ForcedOff) e = D3D12_DRED_ENABLEMENT_FORCED_OFF;
+
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> s1;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&s1))) && s1)
+    {
+        s1->SetAutoBreadcrumbsEnablement(e);
+        s1->SetPageFaultEnablement(e);
+        s1->SetBreadcrumbContextEnablement(e);
+        return true;
+    }
+    // 古いランタイム（Agility が無く in-box に縮退した場合など）: Settings（コンテキスト無し）にフォールバックする。
+    ComPtr<ID3D12DeviceRemovedExtendedDataSettings> s0;
+    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&s0))) && s0)
+    {
+        s0->SetAutoBreadcrumbsEnablement(e);
+        s0->SetPageFaultEnablement(e);
+        std::fprintf(stderr, "DRED: ID3D12DeviceRemovedExtendedDataSettings1 が無いため Settings にフォールバック（BreadcrumbContext 無し）\n");
+        return true;
+    }
+    std::fprintf(stderr, "DRED: DeviceRemovedExtendedDataSettings / Settings1 のどちらも取れない\n");
+    return false;
 }
 
 std::string BuildReportJsonFromData(const ReportData& d, HRESULT removedReason, bool dredEnabled)
@@ -240,10 +270,15 @@ std::string BuildReportJsonFromData(const ReportData& d, HRESULT removedReason, 
                 node["lastCompletedOp"] = OpName(p->pCommandHistory[last - 1]);
             if (p->pCommandHistory && last < total)
                 node["nextOp"] = OpName(p->pCommandHistory[last]);
+            // op は lastCompleted の前後 kOpsWindow 件だけ（opsFrom が先頭の添字、opsTotal が全体の個数）。
             nlohmann::json ops = nlohmann::json::array();
+            const UINT from = last > kOpsWindow ? last - kOpsWindow : 0;
+            const UINT to = std::min<UINT>(std::min<UINT>(total, last + kOpsWindow), from + kMaxOpsPerList);
             if (p->pCommandHistory)
-                for (UINT k = 0; k < total && k < kMaxOpsPerList; ++k)
+                for (UINT k = from; k < to; ++k)
                     ops.push_back(OpName(p->pCommandHistory[k]));
+            node["opsFrom"] = from;
+            node["opsTotal"] = total;
             node["ops"] = std::move(ops);
             nlohmann::json ctx = nlohmann::json::array();
             if (p->pBreadcrumbContexts)
@@ -256,9 +291,14 @@ std::string BuildReportJsonFromData(const ReportData& d, HRESULT removedReason, 
 
         if (d.hasPageFault)
         {
+            int unnamedExisting = 0, unnamedFreed = 0;
+            auto existing = AllocationList(d.pageFault.pHeadExistingAllocationNode, &unnamedExisting);
+            auto freed = AllocationList(d.pageFault.pHeadRecentFreedAllocationNode, &unnamedFreed);
             j["pageFault"] = {{"va", Hex(d.pageFault.PageFaultVA)},
-                              {"existing", AllocationList(d.pageFault.pHeadExistingAllocationNode)},
-                              {"recentFreed", AllocationList(d.pageFault.pHeadRecentFreedAllocationNode)}};
+                              {"existing", std::move(existing)},
+                              {"recentFreed", std::move(freed)},
+                              {"unnamedExisting", unnamedExisting},
+                              {"unnamedRecentFreed", unnamedFreed}};
         }
     }
     catch (...)
@@ -275,6 +315,7 @@ std::string BuildReportJson(ID3D12Device* device, HRESULT removedReason, bool dr
     try
     {
         ComPtr<ID3D12DeviceRemovedExtendedData2> dred2;
+        ComPtr<ID3D12DeviceRemovedExtendedData1> dred1;
         if (device && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dred2))) && dred2)
         {
             d.deviceState = dred2->GetDeviceState();
@@ -283,6 +324,16 @@ std::string BuildReportJson(ID3D12Device* device, HRESULT removedReason, bool dr
             if (FAILED(d.breadcrumbsHr)) d.breadcrumbs = {};
             d.hasPageFault = SUCCEEDED(dred2->GetPageFaultAllocationOutput1(&d.pageFault));
         }
+        else if (device && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dred1))) && dred1)
+        {
+            // Data2（デバイス状態）が無い古いランタイム: Data1 のパンくず・ページフォルトだけ取る。
+            std::fprintf(stderr, "DRED: ID3D12DeviceRemovedExtendedData2 が無いため Data1 にフォールバック\n");
+            d.breadcrumbsHr = dred1->GetAutoBreadcrumbsOutput1(&d.breadcrumbs);
+            if (FAILED(d.breadcrumbsHr)) d.breadcrumbs = {};
+            d.hasPageFault = SUCCEEDED(dred1->GetPageFaultAllocationOutput1(&d.pageFault));
+        }
+        else if (device)
+            std::fprintf(stderr, "DRED: ID3D12DeviceRemovedExtendedData1/2 のどちらも取れない（パンくず無し）\n");
     }
     catch (...) {}
     return BuildReportJsonFromData(d, removedReason, dredEnabled);
