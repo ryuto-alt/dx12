@@ -81,6 +81,10 @@ struct AppAccess
     static bool TimeFrozen(const Application&);
     //   FreezePinsRender … freeze_time が描画の時間依存を固定する約束の最中か（撮影の後始末が決定論キャプチャを戻す先）。
     static bool FreezePinsRender(const Application&);
+    //   FreezeApply … 凍結の約束（FreezeModel）に m_deterministicCapture / paused を合わせる。MCP クライアントの切断（5 秒）で凍結を解く。
+    //   FreezeTick  … 毎フレーム 1 回（UpdateShadingRevision の先頭から呼ぶ）。撮影の中断・Play/Stop・シーン切替の後始末を約束へ戻す。
+    static void FreezeApply(Application&, bool restartHistory, bool releasedNow);
+    static void FreezeTick(Application&);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====

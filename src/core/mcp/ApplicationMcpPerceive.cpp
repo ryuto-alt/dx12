@@ -14,6 +14,7 @@
 // ★要求が無いフレームでは何も走らない（最終画は 1 ビットも変わらない。tools/bench/golden.mjs）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AppAccess.h"
 
 #include <cmath>
 
@@ -114,7 +115,7 @@ void Application::RegisterMcpPerceiveMethods()
             if (m_mcpPerceive)
                 throw McpError(McpErr::ModeConflict, "a perceive request is already in flight",
                                "前の dx12_perceive の応答を待ってから撃ち直す（1 本ずつしか受け付けない）");
-            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture
+            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || (m_deterministicCapture && !AppAccess::TimeFrozen(*this))
                 || m_mcpGameViewReply.client != 0 || m_mcpRenderDebugFramesLeft > 0)
                 throw McpError(McpErr::ModeConflict, "a screenshot / render_debug is in flight",
                                "撮影系（screenshot / screenshot_final / render_debug）の応答を待ってから撃ち直す");

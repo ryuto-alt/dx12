@@ -9,6 +9,8 @@
 #include "core/QualityPresetApply.h"
 #include "renderer/QualityPreset.h"
 
+#include <chrono>
+
 namespace dx12e
 {
 namespace
@@ -32,22 +34,56 @@ nlohmann::json QualityPresetJson(QualityPresetId id)
 }
 
 // FU-E-24: freeze_time が立てた状態の記録（Application.h は凍結なので、この TU に持つ。エンジンは 1 つ）。
-struct FreezeState
-{
-    bool frozen     = false;   // freeze_time（または frame_step の自動凍結）で止めている
-    bool pinRender  = true;    // 描画の時間依存（totalTime・TAA ジッタ・パーティクル等）を固定しているか
-};
-FreezeState g_freeze;
+// 状態の持ち主はここ 1 か所（FrameStepLogic.h の FreezeModel）。m_deterministicCapture / paused は
+// FreezeApply が毎フレームこの約束に合わせる（撮影の中断・Play/Stop・MCP 切断の後始末もここへ集約）。
+FreezeModel g_freeze;
+std::chrono::steady_clock::time_point g_lastConnected = std::chrono::steady_clock::now();
 } // namespace
 
 bool AppAccess::TimeFrozen(const Application& app)
 {
-    return g_freeze.frozen && app.m_deterministicCapture;
+    return g_freeze.WantPin() && app.m_deterministicCapture;
 }
 
 bool AppAccess::FreezePinsRender(const Application&)
 {
-    return g_freeze.frozen && g_freeze.pinRender;
+    return g_freeze.WantPin();
+}
+
+void AppAccess::FreezeApply(Application& app, bool restartHistory, bool releasedNow)
+{
+    if (!g_freeze.frozen && !g_freeze.ownsCapture && !releasedNow) return;   // 何も張っていない（通常はここで抜ける）
+    const auto now = std::chrono::steady_clock::now();
+    const bool connected = !app.m_mcpBridge || app.m_mcpBridge->ClientCount() > 0;
+    if (connected) g_lastConnected = now;
+
+    FreezeView v;
+    v.captureOn       = app.m_deterministicCapture;
+    v.shotInFlight    = app.m_mcpFinalShot.reply.client != 0 || app.m_mcpFinalShot.pending || app.m_mcpFinalShot.captured   // ★deterministic / wantSceneRt は撮影後も残る印なので見ない（reply.client が撮影中の印）
+                        || app.m_mcpPerceive != nullptr || app.m_deterministicFramesLeft > 0;
+    v.playing         = app.m_engineMode == Application::EngineMode::Playing && !app.m_isGameMode;
+    v.paused          = app.m_editorCtx && app.m_editorCtx->paused;
+    v.stepping        = app.m_mcpStepFramesLeft > 0 || app.m_mcpStepReply.client != 0;
+    v.disconnectedSec = std::chrono::duration<double>(now - g_lastConnected).count();
+
+    const FreezePlan p = PlanFreeze(g_freeze, v, restartHistory, releasedNow);
+    if (p.releaseFreeze)
+    {
+        g_freeze.frozen = false;
+        Logger::Info("freeze_time: MCP が {} 秒切れていたので凍結を解いた", kFreezeLeaseSec);
+    }
+    if (p.invalidateHistory) app.InvalidateTemporalHistory();   // 固定を張る前に履歴を捨て、固定ジッタで収束させ直す
+    if (p.setCapture)
+    {
+        app.m_deterministicCapture = p.captureValue;
+        g_freeze.ownsCapture       = p.captureValue;
+    }
+    if (p.setPaused && app.m_editorCtx) app.m_editorCtx->paused = p.pausedValue;
+}
+
+void AppAccess::FreezeTick(Application& app)
+{
+    FreezeApply(app, false, false);
 }
 
 void Application::RegisterMcpLaneCMethods()
@@ -85,27 +121,23 @@ void Application::RegisterMcpLaneCMethods()
     //     frozen:false（renderPinned:false）で知らせる。frame_step は毎回張り直す。
     static const auto freezeInfo = [](Application& app) {
         nlohmann::json j = nlohmann::json::object();
-        const bool pinned  = app.m_deterministicCapture;
-        const bool simHeld = app.m_editorCtx && app.m_editorCtx->paused && app.m_engineMode == EngineMode::Playing;
-        j["frozen"]       = g_freeze.frozen && (pinned || !g_freeze.pinRender);
-        j["renderPinned"] = pinned;
+        const bool simHeld = app.m_editorCtx && app.m_editorCtx->paused && app.m_engineMode == EngineMode::Playing
+                             && !app.m_isGameMode;
+        j["frozen"]       = g_freeze.frozen;
+        j["renderPinned"] = app.m_deterministicCapture && g_freeze.WantPin();
+        j["pinRender"]    = g_freeze.pinRender;
         j["simHeld"]      = simHeld;
         j["mode"]         = app.m_engineMode == EngineMode::Playing ? "Playing" : "Editor";
         return j;
     };
-    // 凍結する。実行中の撮影と衝突させない。
+    // 凍結する（張り直す）。実行中の撮影と衝突させない。
     static const auto engageFreeze = [](Application& app, bool pinRender) {
         if (app.m_mcpFinalShot.reply.client != 0 || app.m_mcpPerceive != nullptr)
             throw McpError(McpErr::ModeConflict, "撮影（screenshot_final / perceive）の最中は凍結を変えられない",
                            "撮影の応答を待ってから呼ぶ");
+        g_freeze.frozen    = true;
         g_freeze.pinRender = pinRender;
-        if (pinRender && !app.m_deterministicCapture)
-        {
-            app.InvalidateTemporalHistory();      // 凍結前の履歴を捨てて、固定ジッタで収束させ直す
-            app.m_deterministicCapture = true;
-        }
-        if (app.m_editorCtx && app.m_engineMode == EngineMode::Playing) app.m_editorCtx->paused = true;
-        g_freeze.frozen = true;
+        AppAccess::FreezeApply(app, /*restartHistory*/ true, /*releasedNow*/ false);
     };
     McpDefine("freeze_time", "frozen:bool,pinRender:bool", DX12E_MCP_HANDLER
         {
@@ -128,14 +160,13 @@ void Application::RegisterMcpLaneCMethods()
             {
                 if (m_mcpFinalShot.reply.client != 0 || m_mcpPerceive != nullptr)
                     throw McpError(McpErr::ModeConflict, "撮影の最中は凍結を解除できない", "撮影の応答を待ってから呼ぶ");
-                if (g_freeze.pinRender) m_deterministicCapture = false;   // 固定を張っていたのは私たち
-                if (m_editorCtx && m_engineMode == EngineMode::Playing) m_editorCtx->paused = false;
                 g_freeze.frozen = false;
+                AppAccess::FreezeApply(*this, /*restartHistory*/ false, /*releasedNow*/ true);   // 固定と paused を戻す
             }
             resp["ok"]     = true;
             resp["result"] = freezeInfo(*this);
             resp["result"]["note"] = freeze
-                ? "止めた。frame_step で 1 フレームずつ進める。解除は frozen:false"
+                ? "止めた。frame_step で 1 フレームずつ進める（描画を固定している間の撮影は常に決定論経路）。解除は frozen:false"
                 : "解除した。時間は実時間で流れる";
         });
     McpDefine("frame_step", "frames:int,dt:number,pinRender:bool", DX12E_MCP_HANDLER
@@ -155,8 +186,11 @@ void Application::RegisterMcpLaneCMethods()
             m_mcpStepFixedDt         = true;
             m_mcpStepFramesLeft      = req.frames;
             m_mcpStepFramesRequested = req.frames;
-            m_mcpStepExtra           = { {"frozen", true}, {"renderPinned", g_freeze.pinRender},
-                                         {"api", "frame_step"} };
+            m_mcpStepExtra           = { {"frozen", true}, {"renderPinned", m_deterministicCapture && g_freeze.WantPin()},
+                                         {"api", "frame_step"},
+                                         {"note", g_freeze.pinRender
+                                             ? "描画の時間は固定（Editor では絵は変わらない）。dt が効くのは Play 中のシミュだけ"
+                                             : "描画の時間は固定していない"} };
             m_mcpStepReply = deferred;
             isDeferred     = true;
         });

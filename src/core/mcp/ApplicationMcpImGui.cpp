@@ -20,6 +20,7 @@
 //   imgui_screenshot {path}                             ImGui 込みの最終画面
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AppAccess.h"
 #include "gui/VirtualInputImGui.h"
 
 namespace dx12e
@@ -437,7 +438,7 @@ void Application::RegisterMcpImGuiMethods()
         {
             if (m_isGameMode || !m_imguiManager)
                 throw McpError(McpErr::ModeConflict, "editor UI is not available", "エディタとして起動していること");
-            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || (m_deterministicCapture && !AppAccess::TimeFrozen(*this)))
                 throw McpError(McpErr::ModeConflict,
                     "a screenshot is already pending; retry shortly",
                     "前の imgui_screenshot / screenshot_final の応答を待ってから撮る（通常 1〜2 フレームで返る）");

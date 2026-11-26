@@ -1050,6 +1050,7 @@ void Application::EnsureInstancePrevBuffer()
 // ---------------------------------------------------------------------------
 void AppAccess::UpdateShadingRevision(Application& app)
 {
+    AppAccess::FreezeTick(app);   // FU-E-24: freeze_time の約束へ毎フレーム合わせる（相乗り。Application.cpp は A の所有）
     if (!app.m_scene || !app.m_commandQueue || !app.m_graphicsDevice || !app.m_rootSignature) return;
     const u8 want = (app.m_scene->GetShadingSettings().shadingRevision == 2) ? 2 : 1;
     if (app.m_graphMaterials) app.m_graphMaterials->SetShadingRevision(want);

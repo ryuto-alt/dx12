@@ -246,9 +246,11 @@ void Application::RegisterMcpEditorMethods()
             //   待つ必要があるときだけ決定論経路（履歴を捨てて収束させる＝時刻・位相は固定。deterministic:false でも決定論になる）へ回し、
             //   収束フレームを足す（settleFrames は 240 で頭打ちにしてから足すので、IBL の待ちは削られない）。無ければ従来どおり。
             const int iblWait = params.value("waitIblRebake", false) ? AppAccess::IblRebakeWaitFrames(*this) : 0;
-            if (params.value("deterministic", false) || iblWait > 0)
+            // FU-E-24: freeze_time で描画を固定している間の撮影は常に決定論経路（履歴を捨てて同じフレーム数だけ回す）。
+            //   固定しただけでは TAA / フォグ / SSGI の履歴が撮影までのフレーム数ぶん育つので、絵が撮るたびにずれる。
+            if (params.value("deterministic", false) || iblWait > 0 || AppAccess::FreezePinsRender(*this))
             {
-                if (m_deterministicCapture || m_mcpFinalShot.reply.client != 0)
+                if ((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpFinalShot.reply.client != 0)
                     throw McpError(McpErr::ModeConflict,
                         "another deterministic screenshot is in flight; retry shortly",
                         "前の決定論スクショの応答を待ってから撮る（settleFrames ぶん、既定 8 フレームで返る）。"
@@ -300,7 +302,7 @@ void Application::RegisterMcpEditorMethods()
                     "waitIblRebake:true は IBL の焼き直しが未了のとき決定論経路に回るので、deterministic:false でも同じ衝突が起きる");
             // W1-C9（BUG-17）: waitIblRebake:true なら IBL の焼き直しが終わるまで収束フレームを足す（待つ必要があるときだけ決定論経路へ）。
             const int iblWait = params.value("waitIblRebake", false) ? AppAccess::IblRebakeWaitFrames(*this) : 0;
-            const bool det = params.value("deterministic", false) || iblWait > 0;
+            const bool det = params.value("deterministic", false) || iblWait > 0 || AppAccess::FreezePinsRender(*this);   // FU-E-24: 固定中は常に決定論
             m_mcpFinalShot = {};
             m_mcpFinalShot.path          = params.value("path", std::string());
             m_mcpFinalShot.reply         = deferred;
@@ -364,7 +366,7 @@ void Application::RegisterMcpEditorMethods()
             //   dx12_imgui_screenshot と同じ経路（遅延応答）へ回す。返り値の形は上位互換（path/width/height + α）。
             if (vinput::Enabled() && !m_isGameMode && m_imguiManager)
             {
-                if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+                if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || (m_deterministicCapture && !AppAccess::TimeFrozen(*this)))
                     throw McpError(McpErr::ModeConflict,
                         "a screenshot is already pending; retry shortly",
                         "前のスクショの応答を待ってから撮る（通常 1〜2 フレームで返る）");
