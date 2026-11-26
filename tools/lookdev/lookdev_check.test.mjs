@@ -52,5 +52,11 @@ test("PT 基準: 既定は切。FLIP の判定は計算できたときだけ効�
   assert.equal(flipMean({ skipped: "x" }), null);
   assert.equal(judgePtFlip({ metrics: { flip_ldr_mean: 0.05 } }, 0.08).pass, true);
   assert.equal(judgePtFlip({ metrics: { flip_ldr_mean: 0.2 } }, 0.08).pass, false);
-  assert.equal(judgePtFlip({ skipped: "x" }, 0.08).pass, true);
+  const sk = judgePtFlip({ skipped: "x" }, 0.08);
+  assert.equal(sk.inconclusive, true);
+  assert.equal(judgePtFlip({ error: "e" }, 0.08).pass, false);
+  assert.equal(judgePtFlip({ metrics: {} }, 0.08).inconclusive, true);
+  const tr = judgePtFlip({ metrics: { flip_ldr_mean: 0.01 } }, 0.08, { truncated: true });
+  assert.equal(tr.inconclusive, true);
+  assert.ok(tr.reasons.length);
 });

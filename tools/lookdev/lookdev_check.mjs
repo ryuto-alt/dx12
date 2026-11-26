@@ -118,11 +118,19 @@ export function flipMean(f) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-/** PT 基準の判定（純関数）。FLIP が計算できていないときは合否に使わない。 */
-export function judgePtFlip(f, max) {
+/**
+ * PT 基準の判定（純関数）。-PtReference を指定したときの結果は 3 つ:
+ *  - error（比較の失敗）は不合格
+ *  - FLIP を計算できない（venv なし・基準なし・基準が打ち切り）は inconclusive（合格にしない。終了コード 2）
+ *  - 計算できたら上限と比べる
+ * truncated（maxSeconds で打ち切られた基準）は判定に使わず、理由を残す。
+ */
+export function judgePtFlip(f, max, opts = {}) {
+  if (opts.truncated) return { pass: true, inconclusive: true, reasons: ["PT 基準が maxSeconds で打ち切られたため判定に使わない（--pt-max-seconds を増やす）"] };
+  if (f?.error) return { pass: false, inconclusive: false, reasons: [`FLIP の比較に失敗: ${f.error}`] };
   const v = flipMean(f);
-  if (v === null) return { pass: true, reasons: [] };
-  return v <= max ? { pass: true, reasons: [] } : { pass: false, reasons: [`PT 基準との FLIP ${v.toFixed(4)} > 上限 ${max}`] };
+  if (v === null) return { pass: true, inconclusive: true, reasons: [`FLIP を計算できず判定できない（${f?.skipped ?? "flip_ldr_mean が無い。flip-evaluator が必要"}）`] };
+  return v <= max ? { pass: true, inconclusive: false, reasons: [] } : { pass: false, inconclusive: false, reasons: [`PT 基準との FLIP ${v.toFixed(4)} > 上限 ${max}`] };
 }
 
 /** エンジンのパストレーサーで基準画像を作る。出力は <base>.pfm / .png。 */
@@ -141,10 +149,10 @@ async function renderPtReference(conn, a, base, size) {
 }
 
 /** tools/parity の compare で FLIP を出す。python / flip-evaluator が無ければ null（合否には使わない）。 */
-function runFlip(py, refPng, testPng, outDir) {
+function runFlip(py, refPng, testPng, outDir, extra = []) {
   if (!py) return null;
   const parityDir = path.join(REPO_ROOT, "tools", "parity");
-  const r = spawnSync(py, ["-m", "parity", "compare", "--metrics", "flip", "--json", "--out", outDir, refPng, testPng],
+  const r = spawnSync(py, ["-m", "parity", "compare", "--metrics", "flip", "--json", "--out", outDir, ...extra, refPng, testPng],
     { cwd: parityDir, encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
   if (r.status !== 0 && r.status !== 1) return { error: (r.stderr || r.stdout || "").trim().slice(0, 300) };
   try { const j = JSON.parse(r.stdout); return { metrics: j.metrics ?? j }; } catch { return { error: "JSON を読めない" }; }
@@ -219,6 +227,7 @@ export async function runLookdev(a) {
         const lastRev = a.revisions[a.revisions.length - 1];
         const testFile = path.join(a.out, `${s.name}.v${lastRev}.0.native.png`);
         let refFile = null;
+        let flipExtra = [];
         if (a.ptReference && imgs[lastRev]) {
           const base = path.join(a.out, `${s.name}.pt`);
           await conn.call("set_shading", { shadingRevision: lastRev });
@@ -226,18 +235,22 @@ export async function runLookdev(a) {
           await conn.call("step_frames", { frames: 4 }, 60_000);
           const st = await renderPtReference(conn, a, base, [imgs[lastRev].width, imgs[lastRev].height]);
           rec.ptReference = { spp: st.output?.sppDone ?? a.ptSpp, files: st.output?.files ?? [], truncated: st.output?.truncated ?? false };
-          refFile = `${base}.png`;
+          // 線形の PFM で比べ、エンジンの ACES を parity 側で掛ける（基準の簡易プレビュー PNG は使わない）
+          refFile = fs.existsSync(`${base}.pfm`) ? `${base}.pfm` : `${base}.png`;
+          if (refFile.endsWith(".pfm")) flipExtra = ["--tonemap", "engine_aces", "--exposure", "none"];
+          try { rec.rasterPost = await conn.call("get_post_process", {}); } catch (e) { rec.rasterPost = { error: e.message }; }
         } else if (a.referenceDir) {
           refFile = path.join(a.referenceDir, `${s.name}.png`);
         }
         if (refFile && a.saveImages) {
           const ptFlip = fs.existsSync(refFile)
-            ? (runFlip(py, refFile, testFile, path.join(a.out, "flip", `${s.name}.vs_ref`)) ?? { skipped: "tools/parity の venv が無い（pwsh tools/parity/setup.ps1）" })
+            ? (runFlip(py, refFile, testFile, path.join(a.out, "flip", `${s.name}.vs_ref`), flipExtra) ?? { skipped: "tools/parity の venv が無い（pwsh tools/parity/setup.ps1）" })
             : { skipped: `基準画像が無い: ${refFile}` };
           rec.flipReference = { revision: lastRev, reference: path.basename(refFile), ...ptFlip };
           if (a.ptReference) {
-            const j = judgePtFlip(ptFlip, a.ptFlipMax);
+            const j = judgePtFlip(ptFlip, a.ptFlipMax, { truncated: rec.ptReference?.truncated });
             if (!j.pass) { rec.pass = false; rec.reasons.push(...j.reasons); }
+            else if (j.inconclusive) { rec.inconclusive = true; rec.reasons.push(...j.reasons); }
           }
         }
       } catch (e) {
@@ -245,11 +258,14 @@ export async function runLookdev(a) {
         rec.reasons.push(`撮影失敗: ${e.message}`);
       }
       if (!rec.pass) report.pass = false;
+      if (rec.inconclusive) report.inconclusive = true;
     }
   } finally {
     try { conn?.close(); } catch { /* 既に切れている */ }
     eng.kill();
   }
+  // -PtReference で FLIP が出ていない（不合格ではない）ときは、合格扱いにしない
+  if (a.ptReference && !report.scenes.length) report.inconclusive = true;
   report.reasons = report.scenes.flatMap((s) => s.reasons.map((r) => `${s.name}: ${r}`));
   const file = path.join(a.out, "lookdev_check.json");
   fs.writeFileSync(file, JSON.stringify(report, null, 2) + "\n");

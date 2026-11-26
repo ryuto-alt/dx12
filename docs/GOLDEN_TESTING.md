@@ -102,10 +102,10 @@ node tools/bench/golden.mjs --no-ui                    3D のゴールデンだ�
   終了コード 0 = 合格 / 1 = 不合格（決定論の崩れ・V2 が V1 から逸脱・撮影失敗）/ 2 = エラー。全機能 OFF の V2 は V1 と同じ絵（C3）なので、既定のしきい値は
   差画素 0.1% 以下・平均差 0.25 以下。MH-2 などで V2 を意図して変えたら `-V2RecordOnly` に切り替え、V1 のゴールデンはそのまま残す。
 - GPU の時間は記録だけで合否に使わない（性能の合否は夜間の計測窓）。FLIP は `tools/parity` の venv（`pwsh tools\parity\setup.ps1`）があるときだけ
-  V1 → V2 で計算する。FLIP の詳細は `<out>lip\` 以下に出る。
+  V1 → V2 で計算する。FLIP の詳細は `<out>\flip\` 以下に出る。
 - `-PtReference [-PtSpp 1024] [-PtFlipMax 0.08]`: 各シーンをエンジンのパストレーサー（`render_reference`、同じカメラ・撮った絵と同じ大きさ）で描いて
   `<out>\<id>.pt.png` / `.pt.pfm` を作り、最後のリビジョン（既定 V2）と FLIP（`flip_ldr_mean`）を比べて上限を超えたら不合格にする。
-  1 シーン 20〜40 秒の GPU を食うので離席中に回す（既定は切）。FLIP を計算できないとき（venv 無し）は不合格にせず `skipped` と出る。
+  1 シーン 20〜40 秒の GPU を食うので離席中に回す（既定は切）。FLIP を計算できないとき（venv 無し・基準が maxSeconds で打ち切り）は合格にせず inconclusive（終了コード 2）、比較の失敗は不合格。基準は線形の PFM に parity 側で engine_aces を掛けて比べ、ラスタ側の post 設定は JSON の `rasterPost` に残す。
   既に基準画像があるなら `-ReferenceDir`（`<id>.png`）で渡せる。
 - ポートは `-Port` か `LOOKDEV_PORT` が必須（他レーンのポートを取らないため空きの自動選択はしない。無いと終了コード 2）。
 - 白い炉（furnace）のシーンと異方性・sheen の撮影は W1 では持たない。MH-1 の白い炉は CPU の方向アルベド（下）で見て、
