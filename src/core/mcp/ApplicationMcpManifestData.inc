@@ -280,11 +280,12 @@ void FillManifestChunk3(ManifestRows& o)
         "render", "render_setting", "shading", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_shading", {
         })});
-    o.push_back({"set_shading", M("材質シェーディングのシーン設定(マルチスキャッタのエネルギー補償 ON/OFF)を設定する。OFF にすると従来(補償なし)と同じ絵になる。",
-        "set shading 材質シェーディング設定変更 マルチスキャッタ",
+    o.push_back({"set_shading", M("材質シェーディングのシーン設定を設定する。multiScatter = マルチスキャッタのエネルギー補償 ON/OFF(OFF にすると従来と同じ絵)。shadingRevision = 1(従来 V1。既定) / 2(UNO_SHADING_V2。次のフレームの先頭でフォワード系 PSO とグラフ材質が切り替わる)。",
+        "set shading 材質シェーディング設定変更 マルチスキャッタ shadingRevision UNO_SHADING_V2 V2",
         "render", "render_setting", "shading", McpEffect::WriteSetting, "any", 10000, true, false,
         "none", "dx12_set_shading", {
             P("multiScatter", "bool", false, nullptr, nullptr, nullptr, nullptr, "マルチスキャッタのエネルギー補償(粗い金属が暗く沈まない)。既定 true。false で従来どおり"),
+            P("shadingRevision", "int", false, nullptr, "1", "2", nullptr, "シェーディングの世代。1 = 従来(V1。既定)、2 = UNO_SHADING_V2。範囲外は E_OUT_OF_RANGE。シーンファイルにはまだ保存されない(W1)。"),
         })});
     o.push_back({"get_occlusion", M("Hi-Z オクルージョンカリングの状態を返す。{enabled, active, ready, pyramid{width,height,mips}}。",
         "get occlusion オクルージョンカリング取得",

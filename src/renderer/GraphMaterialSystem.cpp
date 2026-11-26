@@ -365,6 +365,7 @@ void GraphMaterialSystem::WorkerMain(int /*index*/)
         JobResult res;
         res.hash = job.hash;
         res.kind = job.kind;
+        res.rev = job.rev;
         res.level = job.stage;
         if (job.phase) job.phase->store(1);   // DXC（キャッシュの参照を含む）
         if (dxcOk || !job.force)
@@ -417,6 +418,7 @@ bool GraphMaterialSystem::CompileBlobs(const Job& job, ShaderRuntimeCompiler& co
         // Forward の最適化版は G2b と同じ文字列（既存のディスクキャッシュのキーを変えない）。他は種別 / -Od を足す
         psIn.extra = std::string("ps_6_6|") + ki.entryName + "|" + kDxcArgsKey;
         if (job.kind != Kind::Forward) psIn.extra += std::string("|") + ki.tag;
+        if (job.rev > 1) psIn.extra += "|sv" + std::to_string(job.rev);   // W1-C3: V1（rev=1）のキーは 1 文字も変えない
         if (od) psIn.extra += "|Od";
         return matgraph::MakeShaderKey(psIn);
     };
@@ -473,7 +475,9 @@ bool GraphMaterialSystem::CompileBlobs(const Job& job, ShaderRuntimeCompiler& co
 
     if (!psHit)
     {
-        if (!compile(job.hlsl, ki.entry, L"ps_6_6", "_graph/material.hlsl", od, ki.defines, ps)) return false;
+        std::vector<std::wstring> psDefines = ki.defines;
+        if (job.rev > 1) psDefines.push_back(L"UNO_SHADING_V2=1");   // W1-C3: shadingRevision==2 の ForwardGraph
+        if (!compile(job.hlsl, ki.entry, L"ps_6_6", "_graph/material.hlsl", od, psDefines, ps)) return false;
         if (od) ++m_fastCompiles; else ++m_optCompiles;
         m_cache->Store(psKey, "ps", ps);
     }
@@ -680,7 +684,8 @@ bool GraphMaterialSystem::BakeForBuild(std::vector<BakedBlob>& out, std::vector<
 // ---------------------------------------------------------------------------------------------
 std::shared_ptr<GraphMaterialSystem::Variant> GraphMaterialSystem::GetOrCreateVariant(const matgraph::CompileResult& cr, Kind kind, bool force)
 {
-    const u64 vkey = VKey(cr.hash, kind);
+    const u8 rev = RevFor(kind);
+    const u64 vkey = VKey(cr.hash, kind, rev);
     auto it = m_variants.find(vkey);
     if (it != m_variants.end() && !force)
     {
@@ -690,6 +695,7 @@ std::shared_ptr<GraphMaterialSystem::Variant> GraphMaterialSystem::GetOrCreateVa
     auto v = std::make_shared<Variant>();
     v->hash = cr.hash;
     v->kind = kind;
+    v->rev = rev;
     v->createdAt = Clock::now();
     v->lastUsedFrame = m_frame;
     if (it != m_variants.end())
@@ -705,7 +711,7 @@ std::shared_ptr<GraphMaterialSystem::Variant> GraphMaterialSystem::GetOrCreateVa
     if (twoStage)
     {
         Job f;
-        f.hash = cr.hash; f.kind = kind; f.hlsl = cr.hlsl; f.force = force; f.stage = 1;
+        f.hash = cr.hash; f.kind = kind; f.rev = rev; f.hlsl = cr.hlsl; f.force = force; f.stage = 1;
         f.phase = v->phaseFast;
         EnqueueJob(std::move(f));
         v->optQueued = true;
@@ -713,6 +719,7 @@ std::shared_ptr<GraphMaterialSystem::Variant> GraphMaterialSystem::GetOrCreateVa
     Job j;
     j.hash = cr.hash;
     j.kind = kind;
+    j.rev = rev;
     j.hlsl = cr.hlsl;
     j.force = force;
     j.stage = 2;
@@ -727,14 +734,14 @@ void GraphMaterialSystem::CancelVariant(const std::shared_ptr<Variant>& v)
     size_t n = 0;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        n = m_jobs.CancelIf([&](const Job& j) { return j.hash == v->hash && j.kind == v->kind; });
+        n = m_jobs.CancelIf([&](const Job& j) { return j.hash == v->hash && j.kind == v->kind && j.rev == v->rev; });
     }
     if (n > 0)
     {
         m_inFlight -= static_cast<u32>(n);
         m_counters.jobsCancelled += static_cast<u32>(n);
     }
-    auto it = m_variants.find(VKey(v->hash, v->kind));
+    auto it = m_variants.find(VKey(v->hash, v->kind, v->rev));
     if (it != m_variants.end() && it->second == v) m_variants.erase(it);
 }
 
@@ -759,7 +766,7 @@ void GraphMaterialSystem::DrainResults()
     for (JobResult& r : done)
     {
         ++m_counters.jobsDone;
-        auto it = m_variants.find(VKey(r.hash, r.kind));
+        auto it = m_variants.find(VKey(r.hash, r.kind, r.rev));
         if (it == m_variants.end()) continue;   // 取り消された / 捨てられた変種（古い編集）の結果
         Variant& v = *it->second;
         if (r.ok)
@@ -791,7 +798,7 @@ void GraphMaterialSystem::DrainResults()
                 size_t n = 0;
                 {
                     std::lock_guard<std::mutex> lock(m_mutex);
-                    n = m_jobs.CancelIf([&](const Job& j) { return j.hash == v.hash && j.kind == v.kind; });
+                    n = m_jobs.CancelIf([&](const Job& j) { return j.hash == v.hash && j.kind == v.kind && j.rev == v.rev; });
                 }
                 if (n > 0) { m_inFlight -= static_cast<u32>(n); m_counters.jobsCancelled += static_cast<u32>(n); }
             }
@@ -820,7 +827,7 @@ void GraphMaterialSystem::DrainResults()
             size_t n = 0;
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                n = m_jobs.CancelIf([&](const Job& j) { return j.hash == v.hash && j.kind == v.kind; });
+                n = m_jobs.CancelIf([&](const Job& j) { return j.hash == v.hash && j.kind == v.kind && j.rev == v.rev; });
             }
             if (n > 0) { m_inFlight -= static_cast<u32>(n); m_counters.jobsCancelled += static_cast<u32>(n); }
             Logger::Error("マテリアルグラフ: シェーダーのコンパイルに失敗しました {:016x}（旧版があればそのまま描画します）\n{}", v.hash, v.errorLog);
@@ -1053,12 +1060,13 @@ void GraphMaterialSystem::RebuildInstance(Instance& inst, ID3D12GraphicsCommandL
         {
             inst.failed = false;
             const u64 h = cr->hash;
-            if (inst.active && inst.active->cr->hash == h)
+            const u8 wantRev = RevFor(inst.kind);   // W1-C3: HLSL が同じでも shadingRevision が違えば別の Build（V1 / V2 の PSO が違う）
+            if (inst.active && inst.active->cr->hash == h && inst.active->rev == wantRev)
             {
                 inst.active->cr = cr;   // 同じ HLSL: スロット表の既定値だけ変わりうる
                 ReleaseBuild(inst.pending);
             }
-            else if (inst.pending && inst.pending->cr->hash == h)
+            else if (inst.pending && inst.pending->cr->hash == h && inst.pending->rev == wantRev)
             {
                 inst.pending->cr = cr;
             }
@@ -1066,6 +1074,7 @@ void GraphMaterialSystem::RebuildInstance(Instance& inst, ID3D12GraphicsCommandL
             {
                 auto nb = std::make_unique<Build>();
                 nb->cr = cr;
+                nb->rev = wantRev;
                 if (!AllocRecord(static_cast<u32>(cr->slotCount), nb->rec))
                 {
                     inst.failed = true;
@@ -1113,6 +1122,18 @@ void GraphMaterialSystem::SetInstanceGraphText(const std::string& instanceKey, c
     Instance& inst = InstanceFor(instanceKey);
     inst.memText = dxmgText;
     inst.graphDirty = true;
+}
+
+void GraphMaterialSystem::SetShadingRevision(u8 rev)
+{
+    const u8 want = (rev == 2) ? 2 : 1;
+    if (want == m_shadingRev) return;
+    m_shadingRev = want;
+    // Forward 種別の作り済みインスタンスを作り直す。HLSL は同じなので CPU 側のコンパイルは数 ms。
+    // 旧版（active）は新しい版が描ける（Promote）まで残る。V2 の変種はここで初めて DXC + PSO が走る（シーンを V2 にするまで作らない）。
+    for (auto& kv : m_instances)
+        if (kv.second && kv.second->kind == Kind::Forward && kv.second->built) kv.second->graphDirty = true;
+    Logger::Info("マテリアルグラフ: shadingRevision={}（グラフ材質を作り直します）", static_cast<int>(want));
 }
 
 void GraphMaterialSystem::SetInstanceKind(const std::string& instanceKey, Kind kind)
