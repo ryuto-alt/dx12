@@ -874,6 +874,9 @@ void ToolbarPanel::Render(bool isPlaying,
                 // 保存され、その後 ProcessFrameBoundaryCommands が starterPath を新しいパスとして使う。
                 ctx.pendingNewScenePath = fullPath;
                 ctx.pendingNewScene = true;  // 新規シーン作成
+                // この要求は人の UI 操作（名前入力のモーダルで「作成」）。未保存の変更があれば確認を出す。仮想入力でも
+                // モーダルは押せる（MCP の new_scene は pendingNewSceneSkipConfirm で別経路）ので virtualInput は偽（W1-A16 / R1-11）。
+                ctx.pendingDiscard = {EditorContext::DiscardReason::NewScene, EditOrigin::Human, /*virtualInput=*/false};
             }
             else
             {

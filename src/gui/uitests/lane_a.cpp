@@ -11,6 +11,8 @@
 #include "core/PathResolver.h"
 #include "core/SceneBackup.h"
 #include "core/SafeRemove.h"
+#include "core/Logger.h"
+#include "project/ProjectManager.h"
 #include "input/VirtualInput.h"
 #include "editor/AssetBrowserLogic.h"
 #include "editor/BottomDock.h"
@@ -618,6 +620,403 @@ void T_VfxApplyConfirm(ImGuiTestContext* ctx)
     IM_CHECK(reg.get<ParticleEmitter>(e) != original);
     ed->undoSystem.Undo();
     IM_CHECK(reg.get<ParticleEmitter>(e) == original);
+}
+
+
+// ===========================================================================
+// W1-A16: DG05 の取りこぼし（エディタの操作性）。仮想入力（--background）で動く。
+// ===========================================================================
+namespace
+{
+ImGuiWindow* NavRoot()
+{
+    ImGuiContext* g = ImGui::GetCurrentContext();
+    return (g && g->NavWindow) ? g->NavWindow->RootWindow : nullptr;
+}
+bool NavIs(const char* name)
+{
+    ImGuiWindow* w = NavRoot();
+    return w && std::strcmp(w->Name, name) == 0;
+}
+
+// 後始末（シーンの保存先と「保存済み」の印を元へ戻す）
+struct SceneStateGuard
+{
+    EditorContext* ed; Application* app; std::string prevPath;
+    ~SceneStateGuard()
+    {
+        ed->currentScenePath = prevPath;
+        if (!prevPath.empty()) ProjectManager::SaveLastOpenedScene(prevPath);
+        ed->saveAsOverwrite.open = false;
+        ed->saveAsOverwrite.path.clear();
+        ed->showNewSceneDialog = false;
+        if (app->GetScene()) ed->MarkSceneSaved(SceneSettingsFingerprint(*app->GetScene()));
+    }
+};
+} // namespace
+
+// (a) R1-08 / R3-02: ブロッキングなモーダル（上書き確認）が開いている間、ビューポートのクリックによる選択変更・
+//     Ctrl+Z・Ctrl+S はシーンに効かない。閉じれば効く（同じ操作で対照）。
+void T_ModalBlocksSceneActions(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+
+    const fs::path probe = fs::path(PathResolver::AssetsDir()) / "scenes" / "_a16_modal_probe.json";
+    std::error_code ec;
+    fs::remove(probe, ec);
+    SceneStateGuard guard{ed, app, ed->currentScenePath};
+    ed->currentScenePath = probe.string();   // Ctrl+S が保存先の確認ではなく本当に保存へ行く状態にする
+    ed->aiSessionEver = false;
+
+    LogStep(ctx, "Box を作る（未保存の人の編集）");
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneDirty());
+    const entt::entity sel = ed->selectedEntity;
+    IM_CHECK(sel != entt::null && app->GetScene()->GetRegistry().valid(sel));
+    const size_t depth = ed->undoSystem.UndoDepth();
+    IM_CHECK(ed->viewportW > 100.0f && ed->viewportH > 100.0f);
+    // ビューポートの左下（モーダルは画面中央・ビュー操作の帯は上端なので、何も重ならない空所）
+    const ImVec2 spot(ed->viewportX + ed->viewportW * 0.08f, ed->viewportY + ed->viewportH * 0.85f);
+
+    LogStep(ctx, "対照: モーダルが無ければ、空所のクリックで選択が外れる");
+    ctx->MouseMoveToPos(spot);
+    ctx->MouseClick(0);
+    ctx->Yield(4);
+    IM_CHECK(!ed->HasSelection());
+    ed->Select(sel);
+    ctx->Yield(2);
+
+    LogStep(ctx, "上書き確認のモーダルを開く");
+    ed->saveAsOverwrite.path = (fs::path(PathResolver::AssetsDir()) / "scenes" / "_a16_modal_target.json").string();
+    ed->saveAsOverwrite.open = true;
+    ctx->Yield(4);
+    const ImGuiID modal = FocusWindow(ctx, "//名前を付けて保存###SaveAsOverwritePopup");
+    IM_CHECK(modal != 0);
+
+    LogStep(ctx, "空所のクリックで選択が外れない");
+    ctx->MouseMoveToPos(spot);
+    ctx->MouseClick(0);
+    ctx->Yield(4);
+    IM_CHECK(ed->HasSelection() && ed->selectedEntity == sel);
+
+    LogStep(ctx, "Ctrl+Z で Box が消えない（Undo されない）");
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth);
+    IM_CHECK(app->GetScene()->GetRegistry().valid(sel));
+    ctx->KeyPress(ImGuiKey_Y | ImGuiMod_Ctrl);
+    ctx->Yield(4);
+    IM_CHECK(ed->undoSystem.RedoDepth() == 0);
+
+    LogStep(ctx, "Ctrl+S でファイルが書かれず、未保存のまま");
+    ctx->KeyPress(ImGuiKey_S | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(!fs::exists(probe, ec));
+    IM_CHECK(ed->IsSceneDirty());
+
+    LogStep(ctx, "キャンセルで閉じると、同じ Ctrl+Z が効く");
+    ctx->SetRef(modal);
+    ctx->ItemClick("キャンセル");
+    ctx->Yield(6);
+    IM_CHECK(FocusWindow(ctx, "//名前を付けて保存###SaveAsOverwritePopup") == 0);
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(ed->undoSystem.UndoDepth() == depth - 1);
+    fs::remove(probe, ec);
+}
+
+// (b) R2-03: MCP が作った無題のシーン（.dx12/untitled/ へ仮の保存先が付いている）で人が Ctrl+S → 名前を聞く。
+void T_SaveUntitledAsksName(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+
+    SceneStateGuard guard{ed, app, ed->currentScenePath};
+    std::error_code ec;
+    const fs::path untitled = fs::path(AppAccess::UntitledDir()) / "_mcp_untitled_a16probe.json";
+    fs::remove(untitled, ec);
+
+    LogStep(ctx, "仮の保存先（.dx12/untitled/）が付いたシーンで Ctrl+S");
+    ed->currentScenePath = untitled.string();
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_S | ImGuiMod_Ctrl);
+    ctx->Yield(8);
+    const ImGuiID dlg = FocusWindow(ctx, "//名前を付けて保存###NewScenePopup");
+    IM_CHECK(dlg != 0);                      // 名前を聞く
+    IM_CHECK(!fs::exists(untitled, ec));     // 隠しフォルダへは書かれない
+    if (dlg != 0) { ctx->SetRef(dlg); ctx->ItemClick("キャンセル"); }
+    ctx->Yield(6);
+    IM_CHECK(FocusWindow(ctx, "//名前を付けて保存###NewScenePopup") == 0);
+
+    LogStep(ctx, "対照: scenes/ の普通のシーンは名前を聞かずに保存される");
+    const fs::path normal = fs::path(PathResolver::AssetsDir()) / "scenes" / "_a16_normal_probe.json";
+    fs::remove(normal, ec);
+    ed->currentScenePath = normal.string();
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_S | ImGuiMod_Ctrl);
+    ctx->Yield(8);
+    IM_CHECK(fs::exists(normal, ec));
+    IM_CHECK(FocusWindow(ctx, "//名前を付けて保存###NewScenePopup") == 0);
+    fs::remove(normal, ec);
+}
+
+// (c) R1-04: 「エラーで前面」は 1 回のバーストにつき 1 回。エラーが出続けてもフォーカスを奪い続けず、モーダルが開いている間は奪わない。
+void T_ConsoleErrorFocusOnce(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr);
+    if (!ed) return;
+    IM_CHECK(FocusWindow(ctx, kWinConsole) != 0);   // コンソールが出ている前提（無いなら検査にならない）
+    IM_CHECK(FocusWindow(ctx, kWinHierarchy) != 0);
+    ctx->SleepNoSkip(2.5f, 0.1f);                    // 直前のエラーから間を空けて、新しいバーストにする
+
+    LogStep(ctx, "最初のエラーでコンソールが前面に来る");
+    Logger::Error("A16 テスト用のエラー 0（意図したもの）");
+    ctx->Yield(4);
+    IM_CHECK(NavIs("コンソール"));
+
+    LogStep(ctx, "エラーが出続けても、ヒエラルキーへ戻したフォーカスを奪い返さない");
+    IM_CHECK(FocusWindow(ctx, kWinHierarchy) != 0);
+    IM_CHECK(NavIs("ヒエラルキー"));
+    for (int i = 1; i <= 40; ++i)
+    {
+        Logger::Error("A16 テスト用のエラー {}（意図したもの）", i);
+        ctx->Yield(1);
+        IM_CHECK(NavIs("ヒエラルキー"));
+    }
+
+    LogStep(ctx, "モーダルが開いている間は、間を空けた新しいバーストでも奪わない");
+    ctx->SleepNoSkip(2.5f, 0.1f);
+    ed->saveAsOverwrite.path = "_a16_dummy.json";
+    ed->saveAsOverwrite.open = true;
+    ctx->Yield(4);
+    const ImGuiID modal = FocusWindow(ctx, "//名前を付けて保存###SaveAsOverwritePopup");
+    IM_CHECK(modal != 0);
+    Logger::Error("A16 テスト用のエラー（モーダル中・意図したもの）");
+    ctx->Yield(6);
+    IM_CHECK(!NavIs("コンソール"));
+    IM_CHECK(ImGui::GetTopMostPopupModal() != nullptr);
+    ctx->SetRef(modal);
+    ctx->ItemClick("キャンセル");
+    ctx->Yield(6);
+    ed->saveAsOverwrite.path.clear();
+}
+
+// (d) R1-05: F2 のあと、拡張子まで打っても二重にならない（box4.txt → box4.txt、box4.txt.txt にならない）。
+void T_RenameTypedExtNotDoubled(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr && ed->assetBrowser != nullptr);
+    if (!ed || !ed->assetBrowser) return;
+    AssetBrowserPanel* ab = ed->assetBrowser;
+    const fs::path assets = fs::path(PathResolver::AssetsDir()).lexically_normal();
+    const fs::path work = assets / "__a16_rename_ext_test";
+    const uint32_t origMask = ab->KindMask();
+    std::error_code ec;
+    saferm::RemoveAll(work, ec, assets);
+    fs::create_directories(work);
+    { std::ofstream(work / "x.txt", std::ios::binary) << "a"; }
+    { std::ofstream(work / "y.txt", std::ios::binary) << "b"; }
+
+    auto itemsWindow = [&]() -> ImGuiID
+    {
+        ImGuiID id = ChildWindowId(ctx, "//アセットブラウザ/##FileGrid/##Items");
+        if (id != 0) return id;
+        for (ImGuiWindow* w : ctx->UiContext->Windows)
+            if (w->WasActive && std::strstr(w->Name, "##Items") && std::strstr(w->Name, "アセットブラウザ")) return w->ID;
+        return 0;
+    };
+    auto waitExists = [&](const fs::path& p, bool want)
+    {
+        for (int i = 0; i < 240; ++i)
+        {
+            std::error_code e2;
+            if (fs::exists(p, e2) == want) { ctx->Yield(3); return true; }
+            ctx->Yield(1);
+        }
+        return false;
+    };
+    auto beginF2 = [&](const fs::path& target)
+    {
+        FocusWindow(ctx, kWinAssets);
+        ab->SelectOnly(target);
+        ctx->Yield(2);
+        ctx->KeyPress(ImGuiKey_F2);
+        ImGuiID items = 0;
+        for (int i = 0; i < 30 && !(items = itemsWindow(), ItemExistsIn(ctx, items, "**/##Rename")); ++i) ctx->Yield(1);
+        ctx->Yield(8);   // 入力欄の準備（3 フレーム）と初期選択の掛け直し（5 フレーム）を越える
+        return ItemExistsIn(ctx, items, "**/##Rename");
+    };
+
+    LogStep(ctx, "使い捨てフォルダへ移動");
+    ab->SetListView(false);
+    ab->NavigateTo(work);
+    for (int i = 0; i < 600 && (ab->IsScanning() || ab->EntryCount() != 2); ++i) ctx->Yield(1);
+    IM_CHECK(ab->EntryCount() == 2);
+
+    LogStep(ctx, "x.txt: F2 → 拡張子まで打つ（box4.txt）→ Enter → box4.txt（box4.txt.txt にならない）");
+    IM_CHECK(beginF2(work / "x.txt"));
+    ctx->KeyChars("box4.txt");
+    ctx->KeyPress(ImGuiKey_Enter);
+    IM_CHECK(waitExists(work / "box4.txt", true));
+    IM_CHECK(!fs::exists(work / "box4.txt.txt", ec));
+    IM_CHECK(!fs::exists(work / "x.txt", ec));
+
+    LogStep(ctx, "y.txt: 大文字の拡張子（Box5.TXT）でも二重にならない");
+    IM_CHECK(beginF2(work / "y.txt"));
+    ctx->KeyChars("Box5.TXT");
+    ctx->KeyPress(ImGuiKey_Enter);
+    for (int i = 0; i < 240 && fs::exists(work / "y.txt", ec); ++i) ctx->Yield(1);
+    ctx->Yield(4);
+    int found = 0;
+    for (const auto& de : fs::directory_iterator(work, ec))
+    {
+        std::string n = de.path().filename().string();
+        for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (n == "box5.txt") ++found;
+        IM_CHECK(n != "box5.txt.txt");
+    }
+    IM_CHECK(found == 1);
+
+    LogStep(ctx, "後始末");
+    ab->SetKindMask(origMask);
+    ab->NavigateTo(assets);
+    ctx->Yield(10);
+    saferm::RemoveAll(work, ec, assets);
+}
+
+// (e) R1-09: 人の編集をすべて Undo で戻すと、保存した状態に戻ったことになり「未保存」が解ける（Redo で再び未保存）。
+void T_UndoToSavedStateClearsDirty(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+
+    const fs::path probe = fs::path(PathResolver::AssetsDir()) / "scenes" / "_a16_savepoint_probe.json";
+    std::error_code ec;
+    fs::remove(probe, ec);
+    SceneStateGuard guard{ed, app, ed->currentScenePath};
+    ed->currentScenePath = probe.string();
+
+    LogStep(ctx, "Ctrl+S で保存して「保存済み」にする");
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_S | ImGuiMod_Ctrl);
+    ctx->Yield(8);
+    IM_CHECK(fs::exists(probe, ec));
+    IM_CHECK(!ed->IsSceneDirty() && !ed->IsSceneHumanDirty());
+
+    LogStep(ctx, "Box を 2 つ作る → 未保存");
+    AddEntity(ctx, "Box");
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneDirty() && ed->IsSceneHumanDirty());
+
+    LogStep(ctx, "1 つ戻してもまだ未保存、全部戻すと保存した状態 = 未保存でなくなる");
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(ed->IsSceneDirty() && ed->IsSceneHumanDirty());
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(!ed->IsSceneDirty());
+    IM_CHECK(!ed->IsSceneHumanDirty());   // 自動保存を止める条件が外れる
+    IM_CHECK(!ed->autosaveBlockedByHumanEdits);
+
+    LogStep(ctx, "Redo でまた未保存、もう一度 Undo で解ける");
+    ctx->KeyPress(ImGuiKey_Y | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(ed->IsSceneDirty());
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(!ed->IsSceneDirty());
+
+    LogStep(ctx, "設定が保存時と違う状態（Undo を積まない変更）が混ざると解けない");
+    AddEntity(ctx, "Box");
+    ed->savedSettingsHash ^= 1;   // 設定が保存時と違う状態を作る
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(ed->IsSceneDirty());
+    ed->savedSettingsHash ^= 1;
+    fs::remove(probe, ec);
+}
+
+// (f) R1-11: 仮想入力でも、未保存の人の編集があるとき Ctrl+N の「作成」で未保存の確認が出る（MCP のセッション中でも）。
+void T_NewSceneConfirmUnderVirtualInput(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+    IM_CHECK(vinput::Enabled());   // このテストは仮想入力下でしか意味が無い
+
+    const fs::path scenes = fs::path(PathResolver::AssetsDir()) / "scenes";
+    const fs::path target = scenes / "_a16_newscene_target.json";
+    std::error_code ec;
+    fs::remove(target, ec);
+    const bool origAi = ed->aiSessionEver;
+    const std::string snapshot = app->SaveSceneSnapshot();
+    SceneStateGuard guard{ed, app, ed->currentScenePath};
+    ed->currentScenePath = (scenes / "_a16_newscene_old.json").string();
+    ed->aiSessionEver = true;   // MCP が繋がったセッション（以前はここで確認が出ず、黙って退避していた）
+
+    LogStep(ctx, "人の編集（Box）を作る");
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneHumanDirty());
+    const size_t entitiesBefore = app->GetScene()->GetRegistry().storage<entt::entity>().size();
+
+    LogStep(ctx, "Ctrl+N の名前入力で「作成」→ 未保存の確認が出て、まだシーンは入れ替わらない");
+    ed->newSceneDialogIsCreate = true;
+    std::memset(ed->newSceneNameBuf, 0, sizeof(ed->newSceneNameBuf));
+    strncpy_s(ed->newSceneNameBuf, "_a16_newscene_target", _TRUNCATE);
+    ed->showNewSceneDialog = true;
+    ctx->Yield(4);
+    const ImGuiID dlg = FocusWindow(ctx, "//新規シーン###NewScenePopup");
+    IM_CHECK(dlg != 0);
+    if (dlg != 0) { ctx->SetRef(dlg); ctx->ItemClick("作成"); }
+    ctx->Yield(10);
+    IM_CHECK(ed->showUnsavedConfirm);
+    const ImGuiID confirm = FocusWindow(ctx, "//##UnsavedConfirm");
+    IM_CHECK(confirm != 0);
+    IM_CHECK(app->GetScene()->GetRegistry().storage<entt::entity>().size() == entitiesBefore);
+    IM_CHECK(!fs::exists(target, ec));
+
+    LogStep(ctx, "キャンセルで何も変わらない");
+    if (confirm != 0) { ctx->SetRef(confirm); ctx->ItemClick("キャンセル"); }
+    for (int i = 0; i < 120 && (ed->showUnsavedConfirm || ed->pendingNewScene); ++i) ctx->Yield(1);
+    ctx->Yield(6);
+    IM_CHECK(!ed->showUnsavedConfirm && !ed->pendingNewScene);
+    IM_CHECK(app->GetScene()->GetRegistry().storage<entt::entity>().size() == entitiesBefore);
+    IM_CHECK(ed->IsSceneHumanDirty());
+    IM_CHECK(!fs::exists(target, ec));
+
+    LogStep(ctx, "後始末");
+    ed->aiSessionEver = origAi;
+    if (!snapshot.empty()) { fs::remove(snapshot, ec); }
+    fs::remove(target, ec);
+}
+
+// (g) R1-10: グローバル game.lua の場所は、開いているプロジェクトのルート（BaseDir）の下で解決される。
+void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx)
+{
+    (void)ctx;
+    const std::string base = PathResolver::BaseDir();
+    const std::string path = PathResolver::GameLuaPath();
+    IM_CHECK(!base.empty());
+    IM_CHECK(path.size() > base.size());
+    IM_CHECK(path.compare(0, base.size(), base) == 0);   // <project>/scripts/game.lua か <project>/assets/game.lua
+    IM_CHECK(path.find("/scripts/game.lua") != std::string::npos || path.find("/assets/game.lua") != std::string::npos);
 }
 
 } // namespace uitest

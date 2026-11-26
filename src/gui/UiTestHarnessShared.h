@@ -87,6 +87,13 @@ void T_AutosaveProtectKeepsForcedMerge(ImGuiTestContext* ctx);   // DF-W05-R3-01
 void T_MatgraphZoomStress(ImGuiTestContext* ctx);   // MOD-ED-01 / MOD-ED-14
 void T_WsAnimationPlaceholder(ImGuiTestContext* ctx);   // W1-A10
 void T_VfxApplyConfirm(ImGuiTestContext* ctx);   // W1-A15
+void T_ModalBlocksSceneActions(ImGuiTestContext* ctx);        // W1-A16 (a)
+void T_SaveUntitledAsksName(ImGuiTestContext* ctx);           // W1-A16 (b)
+void T_ConsoleErrorFocusOnce(ImGuiTestContext* ctx);          // W1-A16 (c)
+void T_RenameTypedExtNotDoubled(ImGuiTestContext* ctx);       // W1-A16 (d)
+void T_UndoToSavedStateClearsDirty(ImGuiTestContext* ctx);    // W1-A16 (e)
+void T_NewSceneConfirmUnderVirtualInput(ImGuiTestContext* ctx);   // W1-A16 (f)
+void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx);        // W1-A16 (g)
 // ==== lane-A:decl end ====
 // ==== lane-B:decl begin ====
 void T_SaveAsOverwriteConfirm(ImGuiTestContext* ctx);   // W05-12

@@ -30,6 +30,7 @@
 #include "core/Logger.h"
 // シーンビューのライティング編集（太陽ドラッグ / ライトのハンドル / ライティング・パネル）
 #include "editor/LightHandles.h"
+#include "gui/ImGuizmo.h"
 #include "editor/AiDebugOverlay.h"
 #include "editor/panels/LightingPanel.h"
 #include "editor/panels/AudioMixerPanel.h"
@@ -235,6 +236,11 @@ void EditorLayer::Render(bool isPlaying,
         m_ctx->camFwd = camera->GetForward();
         m_ctx->camValid = true;
     }
+
+    // フレームの先頭でモーダルが開いていたか。モーダルのボタンを押したクリックは、その同じフレームの
+    // うちにモーダルを閉じる（ツールバーの描画）。後ろのビューポート処理が閉じた後の状態だけを見ると、
+    // そのクリックが背後のシーンのピッキングに漏れる。
+    const bool modalWasOpenAtFrameStart = cmd::IsBlockingModalOpen(*m_ctx);
 
     // ===== ショートカット（コマンド表が唯一の正）=====
     // 表のキーが押されたら Execute。Application に散っていた処理の移設先。
@@ -597,6 +603,10 @@ void EditorLayer::Render(bool isPlaying,
     }
 
     // ===== 3D ビューポート操作（カメラナビ + ピッキング + ギズモ + 削除）=====
+    // ブロッキングなモーダルが開いている間は、ビューポートの操作を全部止める。ImGui の IsMouseClicked は
+    // 生の入力なので、モーダルのボタンを押したクリックも背後のビューポートのクリックとして拾われ、
+    // 黙ってシーンの選択が変わってしまう（W1-A16 / DG05 R1-08）。
+    const bool modalBlocksViewport = modalWasOpenAtFrameStart || cmd::IsBlockingModalOpen(*m_ctx);
     if (!isPlaying)
     {
         // ゲーム内 UI のプレビュー（UI編集モード ON のとき）。背景 DrawList に描くため
@@ -606,9 +616,10 @@ void EditorLayer::Render(bool isPlaying,
                                      m_viewportPos.x, m_viewportPos.y,
                                      m_viewportSize.x, m_viewportSize.y,
                                      resourceManager, srvHeap, cmdList);
-        m_sceneView->HandleCameraNavigation(reg, *m_ctx, camera,
-                                            m_viewportPos.x, m_viewportPos.y,
-                                            m_viewportSize.x, m_viewportSize.y);
+        if (!modalBlocksViewport)
+            m_sceneView->HandleCameraNavigation(reg, *m_ctx, camera,
+                                                m_viewportPos.x, m_viewportPos.y,
+                                                m_viewportSize.x, m_viewportSize.y);
         // ギズモ(Manipulate)を先に回す → ピッキングを後に回す。
         // 理由: HandlePicking は「ギズモ上か」を ImGuizmo::IsOver()/IsUsing() で判定するが、
         //   Manipulate を呼ぶ前だと ImGuizmo の内部当たり判定が「前フレームのマウス位置・行列」で
@@ -616,38 +627,49 @@ void EditorLayer::Render(bool isPlaying,
         //   横取りされ「見えてる輪とズレた所で反応する」状態になる。先に Manipulate を回せば
         //   現在フレームのマウスで掴み判定が確定し、IsUsing() が立つので HandlePicking が正しく弾く。
         if (m_ctx->vpPrefs.showGizmo)   // 表示フラグ（帯 > 表示 > 変形ギズモ）。既定 ON
+        {
+            ImGuizmo::Enable(!modalBlocksViewport);   // モーダル中は描くだけ（掴めない）。掴み中なら離させる
             m_sceneView->RenderGizmo(reg, *m_ctx, camera,
                                      m_viewportPos.x, m_viewportPos.y,
                                      m_viewportSize.x, m_viewportSize.y);
+            ImGuizmo::Enable(true);
+        }
         // ライトの直接操作（L+マウスで太陽を回す / コーン角・range・向きのハンドル）と
         // 影響範囲ワイヤの描画。RunViewportTools より前に呼ぶこと：当たり判定とドラッグ処理を
         // 「今フレームのマウス位置」で先に済ませ、その結果を viewportToolHandlers 経由で
         // 「このクリックは食った」として伝えるため（ギズモを先に回すのと同じ理由）。
-        if (m_ctx->vpPrefs.showLightHandles)
+        if (m_ctx->vpPrefs.showLightHandles && !modalBlocksViewport)
             LightHandlesFrame(reg, *m_ctx, camera);
         // ビューポートツール（地形ブラシ / ライトのハンドル操作など）の受け口。
         // ギズモの次・UI 編集/3D ピッキングの前に回し、消費されたら以降の編集操作をしない。
-        m_sceneView->RunViewportTools(*m_ctx, camera,
-                                      m_viewportPos.x, m_viewportPos.y,
-                                      m_viewportSize.x, m_viewportSize.y);
+        if (!modalBlocksViewport)
+            m_sceneView->RunViewportTools(*m_ctx, camera,
+                                          m_viewportPos.x, m_viewportPos.y,
+                                          m_viewportSize.x, m_viewportSize.y);
         // UI 編集モードの UI 要素編集（選択/移動/リサイズ）はギズモ確定後・3D ピッキング前。
         // UI 要素にヒットしたクリックはここで消費され、HandlePicking へは渡らない。
-        m_sceneView->HandleUiEditing(reg, *m_ctx,
-                                     m_viewportPos.x, m_viewportPos.y,
-                                     m_viewportSize.x, m_viewportSize.y);
-        m_sceneView->HandlePicking(reg, *m_ctx, camera,
-                                   m_viewportPos.x, m_viewportPos.y,
-                                   m_viewportSize.x, m_viewportSize.y);
+        if (!modalBlocksViewport)
+        {
+            m_sceneView->HandleUiEditing(reg, *m_ctx,
+                                         m_viewportPos.x, m_viewportPos.y,
+                                         m_viewportSize.x, m_viewportSize.y);
+            m_sceneView->HandlePicking(reg, *m_ctx, camera,
+                                       m_viewportPos.x, m_viewportPos.y,
+                                       m_viewportSize.x, m_viewportSize.y);
+        }
         // ホバー強調用のレイ（ピッキングの後。クリックで選択が変わったフレームは古い結果を使わない）
         m_sceneView->UpdateHover(reg, *m_ctx, camera,
                                  m_viewportPos.x, m_viewportPos.y,
                                  m_viewportSize.x, m_viewportSize.y);
-        m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
-                                     m_viewportPos.x, m_viewportPos.y,
-                                     m_viewportSize.x, m_viewportSize.y);
-        m_sceneView->HandleTextureContextMenu(reg, *m_ctx, camera,
-                                              m_viewportPos.x, m_viewportPos.y,
-                                              m_viewportSize.x, m_viewportSize.y);
+        if (!modalBlocksViewport)
+        {
+            m_sceneView->HandleDeleteKey(reg, *m_ctx, scene,
+                                         m_viewportPos.x, m_viewportPos.y,
+                                         m_viewportSize.x, m_viewportSize.y);
+            m_sceneView->HandleTextureContextMenu(reg, *m_ctx, camera,
+                                                  m_viewportPos.x, m_viewportPos.y,
+                                                  m_viewportSize.x, m_viewportSize.y);
+        }
     }
     else
     {

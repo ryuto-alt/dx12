@@ -109,6 +109,16 @@ std::string CurrentSceneStem(const EditorContext& ctx, const char* fallback)
 
 } // namespace
 
+// ---------------- 公開: モーダルの判定 ----------------
+
+bool IsBlockingModalOpen(const EditorContext& ctx)
+{
+    // 開く要求（次の Begin で OpenPopup される）。窓がまだ無いフレームの取りこぼしを防ぐ。
+    if (ctx.paletteOpen || ctx.showNewSceneDialog || ctx.saveAsOverwrite.open || ctx.showUnsavedConfirm)
+        return true;
+    return ImGui::GetTopMostPopupModal() != nullptr;
+}
+
 // ---------------- 公開: 表の引き当て ----------------
 
 const char* IconFor(std::string_view id)
@@ -400,8 +410,7 @@ void ProcessShortcuts(EditorContext& ctx, const Env& env)
     s_popupWasOpen = popupOpenNow;
 
     if (!ctx.appForeground) return;
-    if (ctx.paletteOpen) return;                          // パレットが自分でキーを処理する
-    if (ImGui::GetTopMostAndVisiblePopupModal()) return;  // 確認モーダル中は効かせない
+    if (IsBlockingModalOpen(ctx)) return;   // パレット（自分でキーを処理する）・確認モーダル中は効かせない
 
     const ImGuiIO& io = ImGui::GetIO();
     for (const Bound& b : Bindings())

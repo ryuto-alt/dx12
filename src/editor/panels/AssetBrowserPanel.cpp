@@ -1737,6 +1737,22 @@ void AssetBrowserPanel::DrawRenameField(EditorContext& ctx)
     if (m_renameWarmup == 0 && !ImGui::IsItemActive() && !ImGui::IsItemFocused()) CommitRename(ctx);   // フォーカスが外れたら確定
 }
 
+namespace
+{
+// name の末尾が「元の拡張子 + 元の拡張子」（大文字小文字を無視）なら 1 つ削る。
+// 例: 元 "a.glb" で name "box4.glb.glb" → "box4.glb"。元に拡張子が無い・name が拡張子だけの二重なら何もしない。
+void CollapseDoubledExtension(const std::string& oldName, std::string& name)
+{
+    const size_t pos = abl::ExtensionPos(oldName);
+    if (pos == std::string::npos) return;
+    const std::string ext = oldName.substr(pos);   // ".glb"
+    if (name.size() <= ext.size() * 2) return;      // 名前の本体が 1 文字も無い（".glb.glb" など）は触らない
+    const std::string tail = abl::LowerAscii(std::string_view(name).substr(name.size() - ext.size() * 2));
+    const std::string lext = abl::LowerAscii(ext);
+    if (tail == lext + lext) name.resize(name.size() - ext.size());
+}
+} // namespace
+
 void AssetBrowserPanel::CommitRename(EditorContext& ctx)
 {
     const std::filesystem::path src = m_renamePath;
@@ -1750,6 +1766,9 @@ void AssetBrowserPanel::CommitRename(EditorContext& ctx)
     const std::string typed = name;
     if (std::error_code dec; !std::filesystem::is_directory(src, dec))
     {
+        // F2 は拡張子の前までを選んで始まるので、名前のあとに元の拡張子が残っている。そこへ拡張子まで打つと
+        // "box4.glb" + ".glb" = "box4.glb.glb" になる。元の拡張子が 2 つ続いて終わるときは 1 つにする（W1-A16 / R1-05）。
+        CollapseDoubledExtension(src.filename().string(), name);
         const abl::RenamedName rn = abl::ComposeRenamedFileName(src.filename().string(), name);
         name = rn.name;
         extChanged = rn.extChanged;

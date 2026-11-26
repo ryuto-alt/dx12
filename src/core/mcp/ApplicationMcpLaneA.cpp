@@ -84,8 +84,21 @@ struct LaneAState
     std::string rollingAutoScene;             // rollingAutoId を作ったシーンのパス（別シーンの退避は消さない。DF-W05-R3-01）
     std::string untitledStem;                 // 保存先の無い新規シーンの退避の名前（MarkSceneClean まで同じ）
     bool        saveWroteHumanEdits = false;  // 直近の save_scene が人の未保存の変更を含めて本体へ書いた
+    // 保存済みの内容の指紋（W1-A16 / R1-09）。保存・読み込み・破棄のたびに取り直し、Undo / Redo で内容がこれに
+    // 戻ったら「未保存」を解く。UndoCore.h（凍結）に保存点の印は足せないので、内容そのもので比べる。
+    bool        savedContentValid = false;
+    u64         savedContentHash  = 0;
 };
 LaneAState& S() { static LaneAState s; return s; }
+
+// シーンを保存ファイルと同じ直列化にした文字列の指紋（FNV-1a 64）。保存済みの内容と今の内容が同じかの比較に使う。
+u64 SceneContentHash(Scene& scene)
+{
+    const std::string text = SceneSerializer::SaveToStringV2(scene, PathResolver::AssetsDir());
+    u64 h = 1469598103934665603ull;
+    for (const unsigned char c : text) { h ^= c; h *= 1099511628211ull; }
+    return h;
+}
 
 // MCP の書き込みの後に、遅延実行（後のフレームで走る生成・読み込み）の設定変更が着地するまでのフレーム数。
 // 時間（秒）ではなくフレームで数える: 人の変更をこの間だけ見落とす（約 50ms）代わりに、MCP の書き込みが続いても人の変更を拾える。
@@ -336,5 +349,37 @@ void AppAccess::OnSceneMarkedClean(Application& app)
     st.hasProtected = false;
     st.untitledStem.clear();
     st.trackValid = false;   // 次の定期の更新で取り直す
+
+    // 保存済みの内容の指紋を取り直す。読み込み中・Play 中は内容が確定していないので、取らない（Undo では解かない）。
+    st.savedContentValid = false;
+    if (app.m_scene && !app.m_loading && !app.m_sceneLoadJob && app.m_engineMode == Application::EngineMode::Editor)
+    {
+        st.savedContentHash  = SceneContentHash(*app.m_scene);
+        st.savedContentValid = true;
+    }
+}
+
+void AppAccess::OnUndoRedoApplied(Application& app)
+{
+    EditorContext* ctx = app.m_editorCtx.get();
+    LaneAState& st = S();
+    if (!ctx || !app.m_scene || !st.savedContentValid) return;
+    if (app.m_loading || app.m_sceneLoadJob || app.m_engineMode != Application::EngineMode::Editor) return;
+    if (!ctx->IsSceneDirty()) return;   // もともと保存済み
+    // Undo を積まない設定（ポスト・空・フォグ…）は指紋で別に追っている。そちらが保存時と違うなら未保存のまま。
+    const u64 freshSettings = SceneSettingsFingerprint(*app.m_scene);
+    if (freshSettings != ctx->savedSettingsHash) return;
+    if (SceneContentHash(*app.m_scene) != st.savedContentHash) return;
+
+    // 内容が保存した状態と同じ: 保存済みの印（EditSeq）を今に合わせ、人の変更の旗と退避の状態を落とす。
+    // 自動保存は IsSceneHumanDirty が偽になれば再び本体へ書ける。
+    ctx->sceneSavedSeq = ctx->undoSystem.EditSeq();
+    ctx->settingsHash  = freshSettings;
+    ctx->humanSettingsDirty = false;
+    ctx->autosaveBlockedByHumanEdits = false;
+    st.stamp.Reset();
+    st.failedStamp.Reset();
+    st.hasProtected = false;
+    st.trackValid = false;
 }
 } // namespace dx12e

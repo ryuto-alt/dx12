@@ -3586,8 +3586,11 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     //   あるときは、AI が押せない心配が無いので下の通常の確認を出す。
     const EditorContext::PendingDiscard pd = m_editorCtx->pendingDiscard;
     const bool humanDirty = m_editorCtx->IsSceneHumanDirty();
+    // 新規シーン（Ctrl+N → 名前入力 → 作成）は仮想入力でもモーダルを押せる UI 操作なので、仮想入力でも確認を出す
+    // （W1-A16 / R1-11）。閉じる要求は「押せない」前提のまま（pd.virtualInput で別に表す）。
+    const bool uiDrivesModal = pd.reason == EditorContext::DiscardReason::NewScene;
     const bool realHuman  = pd.reason != EditorContext::DiscardReason::None && pd.origin == EditOrigin::Human
-                         && !pd.virtualInput && !vinput::Enabled();
+                         && !pd.virtualInput && (uiDrivesModal || !vinput::Enabled());
     if (m_editorCtx->aiSessionEver && !(humanDirty && realHuman))
     {
         m_editorCtx->pendingDiscard = {};   // この要求の起点は使い終わった（古い Human の要求を次の確認へ持ち越さない）
@@ -3686,7 +3689,22 @@ void Application::EditorSaveScene()
         m_editorCtx->Notify(ui::ToastKind::Warn, "Play 中は保存できません。停止してから保存してください");
         return;
     }
-    if (m_editorCtx->currentScenePath.empty())
+    // MCP の自動保存が「保存先の無い新規シーン」へ割り当てた仮の保存先（<project>/.dx12/untitled/）も、
+    // 人から見ればまだ無題のシーン。そこへ黙って保存せず、保存先が未設定のときと同じく名前を聞く（W1-A16 / R2-03）。
+    bool untitledScene = m_editorCtx->currentScenePath.empty();
+    if (!untitledScene)
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path dir  = fs::weakly_canonical(fs::path(AppAccess::UntitledDir()), ec);
+        const fs::path file = fs::weakly_canonical(fs::path(m_editorCtx->currentScenePath), ec);
+        if (!ec && !dir.empty() && !file.empty())
+        {
+            const auto rel = file.lexically_relative(dir);
+            untitledScene = !rel.empty() && *rel.begin() != fs::path("..") && !rel.is_absolute();
+        }
+    }
+    if (untitledScene)
     {
         // 保存先が未設定 → 名前入力ダイアログ（保存モード）。OS のダイアログは仮想入力中に出せないので使わない。
         m_editorCtx->showNewSceneDialog = true;
