@@ -536,7 +536,8 @@ void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
 
 // W1-A15（BUG-21 の暫定策）: パーティクルエディタの「適用」は、レイヤー 0 に中身があると確認を出す。
 //   キャンセルでレイヤーが不変・Undo も積まれない / 「置き換え」で適用され、Ctrl+Z 相当の Undo で元の値に戻る。
-//   MCP のセッション（aiSessionEver）ではモーダルを出さず、そのまま適用される（AI は押せないため）。
+//   MCP のセッション（aiSessionEver）かつ仮想入力中はモーダルを出さず、そのまま適用される（AI は押せないため）。
+//   実入力で aiSessionEver=true でも確認が出ることは単体テスト（ShouldConfirmReplace）で固定している。
 void T_VfxApplyConfirm(ImGuiTestContext* ctx)
 {
     EditorContext* ed  = Editor();

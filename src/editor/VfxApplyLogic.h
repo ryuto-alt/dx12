@@ -7,6 +7,11 @@
 
 #include "core/Types.h"
 #include "ecs/Components.h"
+#include "editor/UndoCore.h"
+#include "editor/UndoSystem.h"
+
+#include <entt/entt.hpp>
+#include <memory>
 
 namespace dx12e
 {
@@ -75,6 +80,16 @@ inline bool ReplaceNeedsConfirm(const ParticleEmitter& em)
     return em.layers[0] != ParticleLayer{};
 }
 
+// 確認を出すか。置き換え（asNewLayer=false）で中身が失われるときだけ。
+// MCP のセッションがあり（aiSessionEver）かつ仮想入力中は、AI がボタンを押せないので出さない（Undo で戻せる）。
+// 実入力の人は、過去に MCP が接続していても必ず確認する（ConfirmDiscardScene と同じ考え方）。
+inline bool ShouldConfirmReplace(const ParticleEmitter& em, bool asNewLayer, bool aiSessionEver, bool virtualInput)
+{
+    if (asNewLayer) return false;
+    if (aiSessionEver && virtualInput) return false;
+    return ReplaceNeedsConfirm(em);
+}
+
 // VfxAsset の中身を 1 枚のレイヤーへ写す（gpu / offset / shaderPath / name は触らない。従来どおり）。
 inline void CopyAssetToLayer(ParticleLayer& t, const VfxAsset& a)
 {
@@ -114,6 +129,19 @@ inline ParticleEmitter BuildApplied(const ParticleEmitter& before, const VfxAsse
     CopyAssetToLayer(dst, asset);
     // gpu はこのエディタの対象外（CPUパーティクルのまま据え置く）
     return after;
+}
+
+// 放出器へ適用して Undo を 1 件積む（パネルとテストが同じ経路を通る）。
+inline bool ApplyWithUndo(entt::registry& reg, entt::entity e, UndoSystem& undo, const VfxAsset& asset,
+                          const std::string& assetPath, bool asNewLayer)
+{
+    if (e == entt::null || !reg.valid(e) || !reg.all_of<ParticleEmitter>(e)) return false;
+    const ParticleEmitter before = reg.get<ParticleEmitter>(e);
+    const ParticleEmitter after = BuildApplied(before, asset, assetPath, asNewLayer);
+    reg.get<ParticleEmitter>(e) = after;
+    undo.PushCommand(std::make_unique<ComponentEditCommand<ParticleEmitter>>(
+        &reg, e, before, after, "VFX アセットを適用"));
+    return true;
 }
 
 }  // namespace vfxapply

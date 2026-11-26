@@ -97,8 +97,8 @@ int main()
         const ParticleEmitter after = vfxapply::BuildApplied(before, MakeAsset(), "", true);
         CHECK(after.layers.size() == 2 && after.layers[0] == before.layers[0]);
         CHECK(after.layers[1].name == "Campfire" && after.layers[1].rate == 77.0f);
-        reg.get<ParticleEmitter>(e) = after;
-        undo.PushCommand(std::make_unique<ComponentEditCommand<ParticleEmitter>>(&reg, e, before, after, "VFX アセットを適用"));
+        CHECK(vfxapply::ApplyWithUndo(reg, e, undo, MakeAsset(), "", true));
+        CHECK(reg.get<ParticleEmitter>(e) == after);
         undo.Undo();
         CHECK(reg.get<ParticleEmitter>(e) == before);
         CHECK(reg.get<ParticleEmitter>(e).layers.size() == 1);
@@ -111,14 +111,26 @@ int main()
         CHECK(after.layers.size() == 1 && after.layers[0].rate == 77.0f);
     }
 
+    // 確認の要否（実入力の人は aiSessionEver でも確認する）
+    {
+        ParticleEmitter full; full.layers.emplace_back(); full.layers[0].rate = 11.0f;
+        CHECK( vfxapply::ShouldConfirmReplace(full, false, false, false));
+        CHECK( vfxapply::ShouldConfirmReplace(full, false, false, true));
+        CHECK( vfxapply::ShouldConfirmReplace(full, false, true,  false));   // 実入力 + 過去に MCP 接続: 出す
+        CHECK(!vfxapply::ShouldConfirmReplace(full, false, true,  true));    // MCP + 仮想入力: 出さない
+        CHECK(!vfxapply::ShouldConfirmReplace(full, true,  false, false));   // 追加は常に出さない
+        CHECK(!vfxapply::ShouldConfirmReplace(ParticleEmitter{}, false, false, false));
+    }
+
     // 配線
     {
         const std::string root = UI_LINT_ROOT;
         const std::string panel = Slurp(fs::path(root) / "src/editor/panels/VfxEditorPanel.cpp");
         CHECK(panel.find("VfxReplaceLayer0Popup") != std::string::npos);
-        CHECK(panel.find("ReplaceNeedsConfirm") != std::string::npos);
         CHECK(panel.find("RequestApply(reg, ctx, /*asNewLayer=*/false)") != std::string::npos);
-        CHECK(panel.find("aiSessionEver") != std::string::npos);
+        CHECK(panel.find("ShouldConfirmReplace") != std::string::npos);
+        CHECK(panel.find("vinput::Enabled()") != std::string::npos);
+        CHECK(panel.find("ApplyWithUndo") != std::string::npos);
     }
 
     if (g_fail == 0) std::puts("PASS particle_apply_undo");

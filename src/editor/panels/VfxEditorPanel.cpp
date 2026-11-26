@@ -262,10 +262,13 @@ void VfxEditorPanel::RequestApply(entt::registry& reg, EditorContext& ctx, bool 
     const entt::entity e = ctx.selectedEntity;
     if (e == entt::null || !reg.valid(e) || !reg.all_of<ParticleEmitter>(e)) return;
 
-    // 上書きで失われる内容があるときだけ確認（W1-A15）。MCP のセッションでは出さない（AI は押せない。Undo で戻せる）。
-    if (!asNewLayer && !ctx.aiSessionEver && vfxapply::ReplaceNeedsConfirm(reg.get<ParticleEmitter>(e)))
+    // 上書きで失われる内容があるときだけ確認（W1-A15）。MCP のセッション中でも仮想入力のときだけ出さない
+    // （AI は押せない。Undo で戻せる）。実入力の人には、過去に MCP が接続していても確認する。
+    if (vfxapply::ShouldConfirmReplace(reg.get<ParticleEmitter>(e), asNewLayer, ctx.aiSessionEver, vinput::Enabled()))
     {
         m_confirmEntity = e;
+        m_confirmReg = &reg;
+        m_confirmBefore = reg.get<ParticleEmitter>(e);
         m_openReplaceConfirm = true;
         return;
     }
@@ -277,12 +280,7 @@ void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx, bo
     entt::entity e = ctx.selectedEntity;
     if (e == entt::null || !reg.valid(e) || !reg.all_of<ParticleEmitter>(e)) return;
 
-    const ParticleEmitter before = reg.get<ParticleEmitter>(e);
-    const ParticleEmitter after = vfxapply::BuildApplied(before, m_current, m_currentPath, asNewLayer);
-
-    reg.get<ParticleEmitter>(e) = after;
-    ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<ParticleEmitter>>(
-        &reg, e, before, after, "VFX アセットを適用"));
+    vfxapply::ApplyWithUndo(reg, e, ctx.undoSystem, m_current, m_currentPath, asNewLayer);
     m_statusMsg = "選択エンティティへ適用しました";
     m_statusFlash = 2.0f;
 }
@@ -765,23 +763,26 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
         ImGui::TextUnformatted("選択中の放出器のレイヤー 0 を、このアセットの内容で置き換えます。");
         ImGui::TextDisabled("Ctrl+Z で元に戻せます。残したいときは「レイヤーとして追加」を使ってください。");
         ImGui::Spacing();
-        if (ImGui::Button("置き換え", ui::Px(120.0f, 0.0f)))
+        if (ui::DangerButton("置き換え", ui::Px(120.0f, 0.0f)))
         {
             // 確認中に選択が変わっても、確認を出した相手に適用する
-            if (m_confirmEntity != entt::null && reg.valid(m_confirmEntity))
+            // シーンが入れ替わっていたら（別レジストリ、または同じ id の別の放出器）適用せず閉じる
+            if (m_confirmEntity != entt::null && m_confirmReg == &reg && reg.valid(m_confirmEntity)
+                && reg.all_of<ParticleEmitter>(m_confirmEntity)
+                && reg.get<ParticleEmitter>(m_confirmEntity) == m_confirmBefore)
             {
                 const entt::entity keep = ctx.selectedEntity;
                 ctx.selectedEntity = m_confirmEntity;
                 ApplyToSelected(reg, ctx, /*asNewLayer=*/false);
                 ctx.selectedEntity = keep;
             }
-            m_confirmEntity = entt::null;
+            m_confirmEntity = entt::null; m_confirmReg = nullptr; m_confirmBefore = ParticleEmitter{};
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
         {
-            m_confirmEntity = entt::null;
+            m_confirmEntity = entt::null; m_confirmReg = nullptr; m_confirmBefore = ParticleEmitter{};
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

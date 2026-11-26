@@ -55,7 +55,7 @@ private:
     // asNewLayer=false … 選択エンティティの 1 枚目を置き換える（従来の「適用」）
     // asNewLayer=true  … レイヤーとして追加する（炎の上に煙を重ねる、等）
     // W1-A15: 置き換える側（asNewLayer=false）で 1 枚目に中身があるときは確認（モーダル）を挟む。
-    //   MCP のセッションがある（aiSessionEver）ときは AI がボタンを押せないので出さずに適用する（Undo で戻せる）。
+    //   MCP のセッションがあり（aiSessionEver）かつ仮想入力中は AI がボタンを押せないので出さずに適用する（Undo で戻せる）。
     void RequestApply(entt::registry& reg, EditorContext& ctx, bool asNewLayer);
     void ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer = false);
     // Scene* と assetsDir は SpawnEntityCommand（Undo）に必要。
@@ -94,6 +94,8 @@ private:
     std::string m_statusMsg;
     f32 m_statusFlash = 0.0f;
     bool         m_openReplaceConfirm = false;   // 次のフレームで確認モーダルを開く
+    entt::registry* m_confirmReg = nullptr;       // 確認を出したときのレジストリ（入れ替わり検出）
+    ParticleEmitter m_confirmBefore{};            // 確認を出したときの放出器（同じ id の別物への誤適用を防ぐ）
     entt::entity m_confirmEntity = entt::null;   // 確認の対象（確認中に選択が変わっても元の相手に適用する）
 };
 
