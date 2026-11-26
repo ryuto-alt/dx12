@@ -11,6 +11,7 @@
 
 namespace dx12e
 {
+enum class QualityPresetId : u8;   // renderer/QualityPreset.h
 struct AppAccess
 {
     // ==== lane-A begin ====
@@ -46,6 +47,10 @@ struct AppAccess
     // ==== lane-B end ====
 
     // ==== lane-C begin ====
+    // W1-C1: 品質プリセット（定義は core/QualityPresetApply.cpp。自由関数の窓口は core/QualityPresetApply.h）。
+    //   QualityPresetId は renderer/QualityPreset.h（使う TU が include する。ここは前方宣言で重くしない）。
+    static bool SetQualityPreset(Application&, QualityPresetId, bool recordUndo);
+    static QualityPresetId GetQualityPreset(const Application&);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====
