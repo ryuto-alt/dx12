@@ -1,0 +1,2344 @@
+{
+  "skybox": {
+    "iblIntensity": 1,
+    "skyboxIntensity": 1,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          -0.35,
+          -0.8,
+          0.3
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 3,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 40,
+      "color": [
+        0.22,
+        0.22,
+        0.23
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m0_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -3.1500000000000004,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m0_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.2
+      },
+      "transform": {
+        "position": [
+          -2.1,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m0_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          -1.05,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m0_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m0_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.65
+      },
+      "transform": {
+        "position": [
+          1.05,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m0_r5",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          2.1,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m0_r6",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          3.1500000000000004,
+          0.45,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m1_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.16666666666666666,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -3.1500000000000004,
+          0.45,
+          1.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m1_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.16666666666666666,
+        "roughness": 0.2
+      },
+      "transform": {
+        "position": [
+          -2.1,
+          0.45,
+          1.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m1_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.16666666666666666,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          -1.05,
+          0.45,
+          1.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m1_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.16666666666666666,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.45,
+          1.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m1_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.16666666666666666,
+        "roughness": 0.65
+      },
+      "transform": {
+        "position": [
+          1.05,
+          0.45,
+          1.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m1_r5",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.16666666666666666,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          2.1,
+          0.45,
+          1.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m1_r6",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.16666666666666666,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          3.1500000000000004,
+          0.45,
+          1.05
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m2_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.3333333333333333,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -3.1500000000000004,
+          0.45,
+          2.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m2_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.3333333333333333,
+        "roughness": 0.2
+      },
+      "transform": {
+        "position": [
+          -2.1,
+          0.45,
+          2.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m2_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.3333333333333333,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          -1.05,
+          0.45,
+          2.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m2_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.3333333333333333,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.45,
+          2.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m2_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.3333333333333333,
+        "roughness": 0.65
+      },
+      "transform": {
+        "position": [
+          1.05,
+          0.45,
+          2.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m2_r5",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.3333333333333333,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          2.1,
+          0.45,
+          2.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m2_r6",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.3333333333333333,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          3.1500000000000004,
+          0.45,
+          2.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m3_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.5,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -3.1500000000000004,
+          0.45,
+          3.1500000000000004
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m3_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.5,
+        "roughness": 0.2
+      },
+      "transform": {
+        "position": [
+          -2.1,
+          0.45,
+          3.1500000000000004
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m3_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.5,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          -1.05,
+          0.45,
+          3.1500000000000004
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m3_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.5,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.45,
+          3.1500000000000004
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m3_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.5,
+        "roughness": 0.65
+      },
+      "transform": {
+        "position": [
+          1.05,
+          0.45,
+          3.1500000000000004
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m3_r5",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.5,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          2.1,
+          0.45,
+          3.1500000000000004
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m3_r6",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.5,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          3.1500000000000004,
+          0.45,
+          3.1500000000000004
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m4_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.6666666666666666,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -3.1500000000000004,
+          0.45,
+          4.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m4_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.6666666666666666,
+        "roughness": 0.2
+      },
+      "transform": {
+        "position": [
+          -2.1,
+          0.45,
+          4.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m4_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.6666666666666666,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          -1.05,
+          0.45,
+          4.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m4_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.6666666666666666,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.45,
+          4.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m4_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.6666666666666666,
+        "roughness": 0.65
+      },
+      "transform": {
+        "position": [
+          1.05,
+          0.45,
+          4.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m4_r5",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.6666666666666666,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          2.1,
+          0.45,
+          4.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m4_r6",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.6666666666666666,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          3.1500000000000004,
+          0.45,
+          4.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m5_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.8333333333333334,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -3.1500000000000004,
+          0.45,
+          5.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m5_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.8333333333333334,
+        "roughness": 0.2
+      },
+      "transform": {
+        "position": [
+          -2.1,
+          0.45,
+          5.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m5_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.8333333333333334,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          -1.05,
+          0.45,
+          5.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m5_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.8333333333333334,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.45,
+          5.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m5_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.8333333333333334,
+        "roughness": 0.65
+      },
+      "transform": {
+        "position": [
+          1.05,
+          0.45,
+          5.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m5_r5",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.8333333333333334,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          2.1,
+          0.45,
+          5.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m5_r6",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 0.8333333333333334,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          3.1500000000000004,
+          0.45,
+          5.25
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m6_r0",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.05
+      },
+      "transform": {
+        "position": [
+          -3.1500000000000004,
+          0.45,
+          6.300000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m6_r1",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.2
+      },
+      "transform": {
+        "position": [
+          -2.1,
+          0.45,
+          6.300000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m6_r2",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          -1.05,
+          0.45,
+          6.300000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m6_r3",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0,
+          0.45,
+          6.300000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m6_r4",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.65
+      },
+      "transform": {
+        "position": [
+          1.05,
+          0.45,
+          6.300000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m6_r5",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          2.1,
+          0.45,
+          6.300000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "G_m6_r6",
+      "primitive": "sphere",
+      "primitiveSize": 0.45,
+      "color": [
+        0.82,
+        0.82,
+        0.82
+      ],
+      "material": {
+        "metallic": 1,
+        "roughness": 1
+      },
+      "transform": {
+        "position": [
+          3.1500000000000004,
+          0.45,
+          6.300000000000001
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "GrayCard18",
+      "primitive": "box",
+      "color": [
+        0.18,
+        0.18,
+        0.18
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.9
+      },
+      "transform": {
+        "position": [
+          -5.9,
+          0.6,
+          1.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.1,
+          1.2,
+          0.04
+        ]
+      }
+    },
+    {
+      "name": "Patch_0",
+      "primitive": "box",
+      "color": [
+        0.17144,
+        0.08438,
+        0.05781
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          4.8500000000000005,
+          2.55,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_1",
+      "primitive": "box",
+      "color": [
+        0.53948,
+        0.30499,
+        0.22323
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          5.470000000000001,
+          2.55,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_2",
+      "primitive": "box",
+      "color": [
+        0.12214,
+        0.19462,
+        0.33716
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.090000000000001,
+          2.55,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_3",
+      "primitive": "box",
+      "color": [
+        0.09531,
+        0.14996,
+        0.05613
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.71,
+          2.55,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_4",
+      "primitive": "box",
+      "color": [
+        0.23455,
+        0.21586,
+        0.43966
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.33,
+          2.55,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_5",
+      "primitive": "box",
+      "color": [
+        0.13563,
+        0.50888,
+        0.40198
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.95,
+          2.55,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_6",
+      "primitive": "box",
+      "color": [
+        0.67244,
+        0.20864,
+        0.02519
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          4.8500000000000005,
+          1.9299999999999997,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_7",
+      "primitive": "box",
+      "color": [
+        0.08022,
+        0.10462,
+        0.38133
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          5.470000000000001,
+          1.9299999999999997,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_8",
+      "primitive": "box",
+      "color": [
+        0.53328,
+        0.10224,
+        0.12477
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.090000000000001,
+          1.9299999999999997,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_9",
+      "primitive": "box",
+      "color": [
+        0.11193,
+        0.04519,
+        0.14996
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.71,
+          1.9299999999999997,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_10",
+      "primitive": "box",
+      "color": [
+        0.33716,
+        0.50289,
+        0.05127
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.33,
+          1.9299999999999997,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_11",
+      "primitive": "box",
+      "color": [
+        0.7454,
+        0.36625,
+        0.02732
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.95,
+          1.9299999999999997,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_12",
+      "primitive": "box",
+      "color": [
+        0.03955,
+        0.04667,
+        0.30499
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          4.8500000000000005,
+          1.3099999999999998,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_13",
+      "primitive": "box",
+      "color": [
+        0.06125,
+        0.29614,
+        0.06663
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          5.470000000000001,
+          1.3099999999999998,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_14",
+      "primitive": "box",
+      "color": [
+        0.42869,
+        0.03689,
+        0.04519
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.090000000000001,
+          1.3099999999999998,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_15",
+      "primitive": "box",
+      "color": [
+        0.7991,
+        0.57112,
+        0.0137
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.71,
+          1.3099999999999998,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_16",
+      "primitive": "box",
+      "color": [
+        0.49693,
+        0.09306,
+        0.30054
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.33,
+          1.3099999999999998,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_17",
+      "primitive": "box",
+      "color": [
+        0.00243,
+        0.23455,
+        0.3564
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.95,
+          1.3099999999999998,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_18",
+      "primitive": "box",
+      "color": [
+        0.89627,
+        0.89627,
+        0.88792
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          4.8500000000000005,
+          0.69,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_19",
+      "primitive": "box",
+      "color": [
+        0.57758,
+        0.57758,
+        0.57758
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          5.470000000000001,
+          0.69,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_20",
+      "primitive": "box",
+      "color": [
+        0.35153,
+        0.35153,
+        0.35153
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.090000000000001,
+          0.69,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_21",
+      "primitive": "box",
+      "color": [
+        0.19462,
+        0.19462,
+        0.1912
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          6.71,
+          0.69,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_22",
+      "primitive": "box",
+      "color": [
+        0.09084,
+        0.09084,
+        0.09084
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.33,
+          0.69,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    },
+    {
+      "name": "Patch_23",
+      "primitive": "box",
+      "color": [
+        0.03434,
+        0.03434,
+        0.03434
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          7.95,
+          0.69,
+          3.2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.56,
+          0.56,
+          0.03
+        ]
+      }
+    }
+  ],
+  "shadows": true
+}

@@ -514,6 +514,101 @@ else()
     message(WARNING "Python3 が見つからないため FontSubsetCheck を登録できません（tools/subset_fonts.py --check は標準ライブラリだけで動く）")
 endif()
 
+# --- Graphite Gauge のトークン（W1-A2）。生成物と tokens.json の突き合わせ。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(GgTokensGenTests gg_tokens_gen_test.cpp)
+    target_link_libraries(GgTokensGenTests PRIVATE Gui)
+    target_include_directories(GgTokensGenTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(GgTokensGenTests PRIVATE GG_TEST_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(GgTokensGenTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GgTokensGenTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GgTokensGenTests COMMAND GgTokensGenTests)
+endif()
+# tools/theme/gen_gg_tokens.py --check（標準ライブラリだけ。生成物が最新か / tokens の SHA256 が lock と一致か / integrate_check が全緑か）
+if(Python3_Interpreter_FOUND)
+    add_test(NAME GgTokensGenCheck COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/theme/gen_gg_tokens.py --check)
+    set_tests_properties(GgTokensGenCheck PROPERTIES TIMEOUT 60)
+endif()
+
+# --- 直書き色の lint（W1-A3 / RM-A5）。src/editor・src/gui の IM_COL32 / 色の ImVec4 をファイルごとの件数の棚で止め、黄系は 0 件 ---
+if(TARGET Gui)
+    add_executable(UiTokenLintTests ui_token_lint_test.cpp)
+    target_link_libraries(UiTokenLintTests PRIVATE Gui)
+    target_include_directories(UiTokenLintTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(UiTokenLintTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(UiTokenLintTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(UiTokenLintTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME UiTokenLintTests COMMAND UiTokenLintTests)
+    set_tests_properties(UiTokenLintTests PROPERTIES TIMEOUT 60)
+endif()
+
+# --- ui::anim（W1-A4 / GG-3）。曲線・ばね・retarget・Instant・Reduce Motion・状態の掃除。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(UiMotionTests ui_motion_test.cpp)
+    target_link_libraries(UiMotionTests PRIVATE Gui)
+    target_include_directories(UiMotionTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(UiMotionTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(UiMotionTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME UiMotionTests COMMAND UiMotionTests)
+    set_tests_properties(UiMotionTests PROPERTIES TIMEOUT 60)
+endif()
+
+# --- text::EllipsizeEnd と進捗の刻み送り（W1-A5 / RM-A3）。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(TextFitTests text_fit_test.cpp)
+    target_link_libraries(TextFitTests PRIVATE Gui)
+    target_include_directories(TextFitTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(TextFitTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(TextFitTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(TextFitTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME TextFitTests COMMAND TextFitTests)
+    set_tests_properties(TextFitTests PROPERTIES TIMEOUT 60)
+endif()
+
+# --- 裏に回ったときのフレーム間引きの状態遷移（W1-A11 / MOD-ED-11）。純ロジック。GPU 不要 ---
+add_executable(FrameThrottleTests frame_throttle_test.cpp)
+target_include_directories(FrameThrottleTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(FrameThrottleTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+if(MSVC)
+    target_compile_options(FrameThrottleTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(FrameThrottleTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME FrameThrottleTests COMMAND FrameThrottleTests)
+set_tests_properties(FrameThrottleTests PROPERTIES TIMEOUT 60)
+
+# --- ワンショット放出器の寿命と再トリガー（W1-A12 / BUG-12）。純ロジック。GPU 不要 ---
+if(TARGET Scene)   # Components.h は entt 等が要る。Scene が依存を伝播する（単体構成ではスキップ）
+add_executable(ParticleOneShotTests particle_oneshot_test.cpp)
+target_link_libraries(ParticleOneShotTests PRIVATE Scene)
+target_compile_definitions(ParticleOneShotTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+if(MSVC)
+    target_compile_options(ParticleOneShotTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(ParticleOneShotTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ParticleOneShotTests COMMAND ParticleOneShotTests)
+set_tests_properties(ParticleOneShotTests PROPERTIES TIMEOUT 60)
+
+# --- パーティクルエディタの「適用」の確認と Undo（W1-A15 / BUG-21 の暫定策）。純ロジック。GPU 不要 ---
+add_executable(ParticleApplyUndoTests particle_apply_undo_test.cpp ../src/editor/UndoSystem.cpp)
+target_link_libraries(ParticleApplyUndoTests PRIVATE Scene)
+target_include_directories(ParticleApplyUndoTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(ParticleApplyUndoTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+if(MSVC)
+    target_compile_options(ParticleApplyUndoTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(ParticleApplyUndoTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ParticleApplyUndoTests COMMAND ParticleApplyUndoTests)
+set_tests_properties(ParticleApplyUndoTests PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
@@ -1167,8 +1262,39 @@ if(TARGET Renderer)
     endif()
     add_test(NAME QualityPresetTableTests COMMAND QualityPresetTableTests)
 endif()
+# UNO_SHADING_V2 の軸（宣言表 ⇔ V1、結線、空の枠、ForwardGraph のキー）の静的な検査。GPU / DXC 不要。W1-C3。
+add_executable(ShadingV2AxisTests shading_v2_axis_test.cpp)
+target_compile_definitions(ShadingV2AxisTests PRIVATE DX12E_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+if(MSVC)
+    target_compile_options(ShadingV2AxisTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(ShadingV2AxisTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ShadingV2AxisTests COMMAND ShadingV2AxisTests)
+# IBL 焼き直しのきっかけと撮影の待ちの判定表（ヘッダだけ）。W1-C9。
+add_executable(IblRebakeTriggerTests ibl_rebake_trigger_test.cpp)
+target_include_directories(IblRebakeTriggerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME IblRebakeTriggerTests COMMAND IblRebakeTriggerTests)
+# MCP の純ロジック（シーンパス / create_entity の引数検査 / DLSS 警告。ヘッダのみ）
+add_executable(McpLogicTests mcp_logic_test.cpp)
+target_include_directories(McpLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(McpLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME McpLogicTests COMMAND McpLogicTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
+# VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
+# ゲートでは cmake -DVFX_BAKE_PYTHON=<pytest と numpy 入りの python> -DVFX_BAKE_REQUIRED=ON を渡すと、走らなければ失敗になる。
+add_test(NAME VfxBakePyTests
+    COMMAND ${CMAKE_COMMAND} -DVFX_BAKE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake -DVFX_BAKE_PYTHON=${VFX_BAKE_PYTHON} -DVFX_BAKE_REQUIRED=${VFX_BAKE_REQUIRED} -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/vfx_bake/run_pytests.cmake)
+set_tests_properties(VfxBakePyTests PROPERTIES
+    SKIP_REGULAR_EXPRESSION "VFXBAKE_SKIP"
+    ENVIRONMENT "PYTHONUTF8=1"
+    TIMEOUT 900)
 # ==== lane-D end ====
 
 # 頂点スカルプト（素体生成 / 溶接・隣接 / 各ブラシ / 法線の部分再計算 / 対称 / .smsh 往復）テスト。

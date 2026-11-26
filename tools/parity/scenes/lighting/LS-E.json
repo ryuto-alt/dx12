@@ -1,0 +1,313 @@
+{
+ "id": "LS-E",
+ "title": "LS-E 窓から光が差す霧の部屋",
+ "description": "GR-1 と同じ小窓の部屋(西壁の窓から太陽 方位 270°/高度 33°)。体積霧(fog 条件)を足して光芒を見る。パストレーサーは霧を持たないので EV は情報のみ。",
+ "spec": {
+  "version": 1,
+  "name": "ls_e",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#8a6a4c",
+    "material": {
+     "roughness": 0.6
+    }
+   },
+   {
+    "name": "LVL_Ceiling",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.3,
+     0
+    ],
+    "size": [
+     8.4,
+     0.2,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_N",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     3.1
+    ],
+    "size": [
+     8.4,
+     3.2,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     -3.1
+    ],
+    "size": [
+     8.4,
+     3.2,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_E",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4.1,
+     1.6,
+     0
+    ],
+    "size": [
+     0.2,
+     3.2,
+     6.4
+    ],
+    "color": "#3f8a4a",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_Lo",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     0.5,
+     0
+    ],
+    "size": [
+     0.2,
+     1.0,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_Hi",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     2.8,
+     0
+    ],
+    "size": [
+     0.2,
+     0.8,
+     6.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     1.7,
+     -2.1
+    ],
+    "size": [
+     0.2,
+     1.4,
+     2.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W_R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4.1,
+     1.7,
+     2.1
+    ],
+    "size": [
+     0.2,
+     1.4,
+     2.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Ground",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.45,
+     0
+    ],
+    "size": [
+     40,
+     0.2,
+     40
+    ],
+    "color": "#6e6a5e",
+    "material": {
+     "roughness": 0.95
+    }
+   },
+   {
+    "name": "ENV_Rug",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.7,
+     0.015,
+     0
+    ],
+    "size": [
+     2.2,
+     0.03,
+     2.2
+    ],
+    "color": "#c02a22",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     270,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 270,
+  "elevation": 33,
+  "intensity": 3.0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -4.0,
+   0.0,
+   -3.0
+  ],
+  "max": [
+   4.0,
+   3.2,
+   3.0
+  ],
+  "spacing": 0.8
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    3.3,
+    1.7,
+    -2.7
+   ],
+   "target": [
+    -2,
+    0.9,
+    1
+   ]
+  }
+ ],
+ "regions": {
+  "walls": {
+   "entities": [
+    "LVL_Wall_N",
+    "LVL_Wall_S",
+    "LVL_Wall_E"
+   ]
+  },
+  "floor": {
+   "entities": [
+    "LVL_Floor"
+   ]
+  },
+  "rug": {
+   "entities": [
+    "ENV_Rug"
+   ]
+  }
+ },
+ "criteria": {
+  "information": {
+   "regions": [
+    "walls",
+    "floor",
+    "rug"
+   ],
+   "cameras": [
+    "main"
+   ]
+  }
+ },
+ "conditions": [
+  "epic",
+  "epic_fog"
+ ]
+}

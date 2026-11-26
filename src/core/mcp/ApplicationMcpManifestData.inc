@@ -280,11 +280,12 @@ void FillManifestChunk3(ManifestRows& o)
         "render", "render_setting", "shading", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_get_shading", {
         })});
-    o.push_back({"set_shading", M("材質シェーディングのシーン設定(マルチスキャッタのエネルギー補償 ON/OFF)を設定する。OFF にすると従来(補償なし)と同じ絵になる。",
-        "set shading 材質シェーディング設定変更 マルチスキャッタ",
+    o.push_back({"set_shading", M("材質シェーディングのシーン設定を設定する。multiScatter = マルチスキャッタのエネルギー補償 ON/OFF(OFF にすると従来と同じ絵)。shadingRevision = 1(従来 V1。既定) / 2(UNO_SHADING_V2。次のフレームの先頭でフォワード系 PSO とグラフ材質が切り替わる)。",
+        "set shading 材質シェーディング設定変更 マルチスキャッタ shadingRevision UNO_SHADING_V2 V2",
         "render", "render_setting", "shading", McpEffect::WriteSetting, "any", 10000, true, false,
         "none", "dx12_set_shading", {
             P("multiScatter", "bool", false, nullptr, nullptr, nullptr, nullptr, "マルチスキャッタのエネルギー補償(粗い金属が暗く沈まない)。既定 true。false で従来どおり"),
+            P("shadingRevision", "int", false, nullptr, "1", "2", nullptr, "シェーディングの世代。1 = 従来(V1。既定)、2 = UNO_SHADING_V2。範囲外は E_OUT_OF_RANGE。シーンファイルにはまだ保存されない(W1)。"),
         })});
     o.push_back({"get_occlusion", M("Hi-Z オクルージョンカリングの状態を返す。{enabled, active, ready, pyramid{width,height,mips}}。",
         "get occlusion オクルージョンカリング取得",
@@ -897,6 +898,7 @@ void FillManifestChunk9(ManifestRows& o)
             P("deterministic", "bool", false, nullptr, nullptr, nullptr, nullptr, "true でピクセル完全再現モード。既定 false。time を固定(deband ディザ/グレイン/wave/glitch/パーティクルが止まる)し、…"),
             P("settleFrames", "int", false, nullptr, nullptr, nullptr, nullptr, "deterministic:true のとき履歴を捨ててから回すフレーム数(1..240)。既定 8。増やすと TAA / SSGI の収束が進む(決定性そのものは 8 で得られる)。"),
             P("gizmos", "bool", false, nullptr, nullptr, nullptr, nullptr, "false でこの 1 枚だけエディタのデバッグ描画を止めて撮る。既定 true(従来どおり)。"),
+            P("waitIblRebake", "bool", false, nullptr, nullptr, nullptr, nullptr, "true で、物理大気の ON/OFF・時刻の変更に伴う IBL の焼き直しが終わるまで待ってから撮る(焼き直しが未了のときだけ決定論経路へ回り、待ちフレームを settleFrames に足す)。既定 false。"),
         })});
     o.push_back({"screenshot_final", M("★見た目を判断するときの既定の撮り方。バックバッファ(ポスト適用後の最終画)のビューポート矩形を PNG で返す。",
         "screenshot final 最終画スクリーンショット(ポスト後)",
@@ -906,6 +908,7 @@ void FillManifestChunk9(ManifestRows& o)
             P("deterministic", "bool", false, nullptr, nullptr, nullptr, nullptr, "true でピクセル完全再現モード。既定 false。time を固定(deband ディザ/グレイン/wave/glitch/パーティクルが止まる)し、…"),
             P("settleFrames", "int", false, nullptr, nullptr, nullptr, nullptr, "deterministic:true のとき履歴を捨ててから回すフレーム数(1..240)。既定 8。増やすと TAA / SSGI の収束が進む(決定性そのものは 8 で得られる)。"),
             P("gizmos", "bool", false, nullptr, nullptr, nullptr, nullptr, "false でこの 1 枚だけエディタのデバッグ描画を止めて撮る。既定 true(従来どおり)。"),
+            P("waitIblRebake", "bool", false, nullptr, nullptr, nullptr, nullptr, "true で、物理大気の ON/OFF・時刻の変更に伴う IBL の焼き直しが終わるまで待ってから撮る(焼き直しが未了のときだけ決定論経路へ回り、待ちフレームを settleFrames に足す)。既定 false。"),
             P("format", "string", false, nullptr, nullptr, nullptr, nullptr, "出力形式: png(既定・8bit) / pfm / exr(ポスト前・露出前の線形 float。物理単位なら nit。tools/parity が読める)。path の拡張子は無視され形式ごとに同じ基準名で書く。"),
             P("formats", "any", false, nullptr, nullptr, nullptr, nullptr, "複数形式を同じフレームで撮る: [\"png\",\"pfm\"] など。応答の files に形式ごとのパスが入る。"),
             P("width", "int", false, nullptr, nullptr, nullptr, nullptr, "オフスクリーン出力の幅(height と両方指定。1 辺 16〜8192・総画素 8192x4096 まで・pfm/exr は 4096x4096 まで)。ウィンドウ/レターボックスと無関係。--size WxH が既定。"),

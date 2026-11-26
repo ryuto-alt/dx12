@@ -31,6 +31,9 @@ struct AppAccess
     static void PollHumanSettings(Application&, bool active, u64 freshHash);
     // MarkSceneClean の後（保存済みに揃えた）。
     static void OnSceneMarkedClean(Application&);
+    // 保存点の追跡（毎フレーム、PollHumanSettings から）。保存した内容の指紋を取り、Undo / Redo で内容が保存した状態へ
+    // 戻ったら「未保存」を解く（W1-A16 / R1-09）。
+    static void TrackSavePoint(Application&, u64 freshSettingsHash);
     // 保存系と editor_state の MCP 結果に autosave: { blockedByHumanEdits, lastBackupId } を足す（真なら warnings[] にも）。
     static void AnnotateAutosave(Application&, nlohmann::json& resp, const std::string& method);
     // 未保存の新規シーン（_mcp_untitled_*）の置き場: <project>/.dx12/untitled/
@@ -39,6 +42,13 @@ struct AppAccess
     static void ResetAutoProtectThrottleForTest();
     // W05-04: GraphicsDevice の caps（DeviceCaps.h を include した TU だけが型を使える）。デバイスが無ければ nullptr。
     static const struct DeviceCaps* GetDeviceCaps(Application&);
+    // W1-A10: エディタのプレビュー再生中のシーケンス名（無ければ空。定義は core/ApplicationSequencer.cpp）。UI テスト用。
+    static std::string SequenceEditorPlayingDoc(Application&);
+    // UI テスト用: エディタのシーケンス編集セッションを終える（元の値へ戻す）。
+    static void SequenceEditorStopForTest(Application&);
+    // UI テスト用: 読み込んだ .dxseq の文書を閉じる / その assets 相対パス（テストが一覧に文書を残さないため）。
+    static void SequenceCloseDocForTest(Application&, const std::string& nameOrRel);
+    static std::string SequenceDocRelForTest(Application&, const std::string& nameOrRel);   // 開いていなければ空
     // ==== lane-A end ====
 
     // ==== lane-B begin ====
@@ -61,6 +71,12 @@ struct AppAccess
     //   QualityPresetId は renderer/QualityPreset.h（使う TU が include する。ここは前方宣言で重くしない）。
     static bool SetQualityPreset(Application&, QualityPresetId, bool recordUndo);
     static QualityPresetId GetQualityPreset(const Application&);
+    // W1-C3: shadingRevision（1 / 2）を PSO とグラフ材質へ反映する（定義は ApplicationPipeline.cpp。Run ループの先頭 = フレーム外で呼ぶ）。
+    static void UpdateShadingRevision(Application&);
+    // W1-C3: 今 PSO に反映済みの revision と、V2 の .cso から作れた PSO の数（フォワード / スキンド / 地形）。MCP の get_shading 用。
+    static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain);
+    // W1-C9: 撮影が IBL の焼き直しを待つために足すフレーム数（0 = 待たない。定義は core/ApplicationAtmosphere.cpp）。
+    static int IblRebakeWaitFrames(Application&);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====

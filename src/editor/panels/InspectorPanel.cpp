@@ -14,6 +14,7 @@
 #include "editor/undo/ScriptPropertyUndo.h"   // Lua プロパティの Undo（W05-14）
 #include "editor/AssetDrop.h"
 #include "ecs/Components.h"
+#include "ecs/ParticleOneShot.h"   // ワンショットの寿命・再生（W1-A12）
 #include "ecs/InstanceGroup.h"   // インスタンス群（Inspector）
 #include "renderer/foliage/FoliageLayerOps.h"   // 植生 F1（Inspector の統計）
 #include "ai/AiSystem.h"   // Brain の実行中の状態（得点の内訳）
@@ -3751,6 +3752,10 @@ void InspectorPanel::Render(entt::registry& reg,
                 }
                 ImGui::SameLine();
                 ImGui::TextDisabled("%d 枚", static_cast<int>(emitter.layers.size()));
+                ImGui::SameLine();
+                if (ImGui::SmallButton("▶ 再生"))
+                    ParticleOneShot::Retrigger(emitter);   // ランタイム状態のみ。データは変えない（Undo 対象外）
+                ImGui::SetItemTooltip("ワンショットを先頭から再生し直します（ループのレイヤーは変化なし）");
 
                 int layerToRemove = -1;
                 for (size_t li = 0; li < emitter.layers.size(); ++li)

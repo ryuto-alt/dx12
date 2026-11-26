@@ -1,0 +1,27 @@
+{
+  "schema": "uno/gg_spec.lock@1",
+  "sha256Normalization": "crlf->lf（*Sha256 は改行を LF にそろえてから数えた値。生のファイルの値は *Sha256Raw）",
+  "tokensSha256": "fa050cd1d8a7e6f9a6bf3848fa572463214995df7cca83fc7f87567ef024024d",
+  "tokensSha256Raw": "512529d2ea8499b33b1fbfef291b13b0ea32dd6129267d50366a3cde9d218513",
+  "contrastSha256": "703953615ea16077abe599f081d41aa1a71f865c3433d15d74d4a89ef1db7b81",
+  "contrastSha256Raw": "4f139d08cced8cc3cd42b1ad10154d956475bb0b5a11667c660688956194e152",
+  "metaVersion": "3.1.0",
+  "integrateCheck": {
+    "sha256": "ef36fcfecdf37e62f79a1127ec0c6351c8abf75afda0b49d9e0c0da70ba533b3",
+    "sha256Raw": "4d78863466da99cebd70ba93b437add28ee0c95f5f16cf89c552638b6db967ed",
+    "allGreen": true,
+    "result": {
+      "contrastFails": 0,
+      "cvdNG": [],
+      "yellowZoneViolations": 0,
+      "removedTokensAbsent": true,
+      "cssHasNew": true,
+      "reduceMotionKeepsWaits": true,
+      "colorCount": 169,
+      "durations": 34,
+      "auxTabs": 32,
+      "tabNoUnique": true
+    }
+  },
+  "syncedAt": "2026-11-26T15:12:00Z"
+}

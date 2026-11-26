@@ -1,6 +1,7 @@
 #include "editor/UiWidgets.h"
 #include "editor/panels/ConsolePanel.h"
 #include "editor/EditorContext.h"
+#include "editor/EditorCommands.h"   // cmd::IsBlockingModalOpen
 #include "editor/EditorTheme.h"
 #include "resource/ShaderDiagnostics.h"
 #include "scripting/ScriptEngine.h"
@@ -61,10 +62,18 @@ void ConsolePanel::PullNewEntries()
     if (fresh.empty()) { m_newThisFrame = false; return; }
 
     m_newThisFrame = true;
+    // 「エラーで前面」は 1 回の連続したエラー（バースト）につき 1 回だけ。エラーが出続けている間（最後のエラーから
+    // kErrorBurstGapSec 秒以内）は前面に出し直さない。毎フレーム SetWindowFocus するとフォーカスを奪い続け、
+    // Ctrl+K やツールバーのポップアップが開けなくなる（W1-A16 / R1-04）。
+    const double now = ImGui::GetTime();
     for (auto& e : fresh)
     {
-        if (m_focusOnError && SeverityOf(e) == 2)
-            m_wantFocus = true;
+        if (SeverityOf(e) == 2)
+        {
+            if (m_focusOnError && now - m_lastErrorAt >= kErrorBurstGapSec)
+                m_wantFocus = true;
+            m_lastErrorAt = now;   // 連続している間は延び続ける（洪水の間ずっと 1 バーストのまま）
+        }
         m_entries.push_back(std::move(e));
     }
     // ローカルも無制限には持たない（リング容量の2倍で頭を捨てる）
@@ -129,9 +138,12 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
     m_prevPlaying = isPlaying;
 
     // 新着エラーでタブを前面へ（Begin より前ならどこで呼んでもよい）
+    // ポップアップ・モーダル・Ctrl+K パレットが開いている間は奪わない（開いた操作を壊す）。要求は捨てる。
     if (m_wantFocus)
     {
-        ImGui::SetWindowFocus(kWindowName);
+        const bool blocked = (ctx && cmd::IsBlockingModalOpen(*ctx))
+            || ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+        if (!blocked) ImGui::SetWindowFocus(kWindowName);
         m_wantFocus = false;
     }
 
