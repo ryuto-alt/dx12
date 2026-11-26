@@ -11,7 +11,7 @@ import { ManifestStore } from "./manifest.ts";
 import { Catalog, CONDITIONAL_GUARDED, CONDITIONAL_WRITE, buildCatalog, type ParamDoc, type ToolDoc, type ToolEntry } from "./catalog.ts";
 import { CONSOLIDATED, CORE_GUARDED_TOOL, RENDER_SETTING_TARGETS, rewriteFixToCore, routeConsolidated, toCoreCall } from "./coreSpec.ts";
 import { SearchIndex } from "./search.ts";
-import { envelope, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions, type ErrorBody, type Fix } from "./errors.ts";
+import { envelope, dropSelfFixes, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions, type ErrorBody, type Fix } from "./errors.ts";
 import { structureError } from "./structure.ts";
 import { validateAgainstParams, validateAgainstShape } from "./validate.ts";
 import { runDoctor } from "./doctor.ts";
@@ -169,7 +169,7 @@ export class ShellRuntime {
     await this.refresh();
     let doc = this.catalog.resolve(name);
     if (!doc) { await this.refresh(true); doc = this.catalog.resolve(name); }
-    if (!doc) return errorResult(this.unknownToolBody(name, {}));
+    if (!doc) return errorResult(this.unknownToolBody(name, {}, "describe"));
     let params = doc.params;
     const t = String(input.target ?? "").trim().toLowerCase();
     let shown: unknown = params;
@@ -261,7 +261,7 @@ export class ShellRuntime {
     return textResult(out);
   }
 
-  private unknownToolBody(name: string, args: Record<string, unknown>): ErrorBody {
+  private unknownToolBody(name: string, args: Record<string, unknown>, scope: string = ""): ErrorBody {
     const names = this.catalog.names();
     const bare = name.replace(/^dx12_/, "");
     const near = nearest(bare, names.map((n) => n.replace(/^dx12_/, "")), 5).map((n) => this.catalog.resolve(n)?.id ?? n);
@@ -273,11 +273,11 @@ export class ShellRuntime {
     fix.push({ tool: "dx12_tool_search", args: { query: bare.replace(/_/g, " ") }, why: "名前で検索する" });
     if (!near[0] && hits[0]) fix.push({ tool: hits[0], args, why: `意味の近い候補(確信度は低い。dx12_tool_describe で引数を確認してから使う)` });
     // ★直接呼べない名前(tools/list に無いツール・エンジンの method 名)は dx12_call の形で示す(BUG-14)。同じ案を 2 回返したら打ち切りの文面へ。
-    return guardRepeatedFix(tidyUnknownToolSuggestions({
+    return guardRepeatedFix(tidyUnknownToolSuggestions(dropSelfFixes({
       code: "E_UNKNOWN_TOOL", message: `ツール/メソッド '${name}' は無い`, cause: "名前の打ち間違いか、エンジンにまだ無い method",
       didYouMean: dym, fix: routeFixViaCall(fix, (n) => this.isDirectlyCallable(n), (n) => this.fixVia(n)), docs: "dx12_tool_search {query}",
       details: { manifest: this.manifestInfo(), hint: "エンジンに method を足した直後なら、エンジンを再ビルド・再起動してからもう一度撃つ(MCP サーバの再起動は不要)。tools/list に無い名前は dx12_call {name:'<名前>', args} で呼ぶ" },
-    }, name, (n) => this.isDirectlyCallable(n)), name);
+    }, name), name, (n) => this.isDirectlyCallable(n)), name, undefined, scope);
   }
 
   /** 直接呼べない名前を包む実行口。core 面の guarded は dx12_call では通らないので dx12_call_guarded。 */
@@ -422,6 +422,12 @@ export class ShellRuntime {
         if (idemKey && entry && !declaresKey) await idemCtx.run(newIdemCtx(idemKey), inner); else await inner();
       } catch (e) { thrown = e; }
     };
+    // fix に載せる args から、自動採番した冪等キーを外す(コピーされて別の呼び出しに使い回されないように)
+    const fixArgs = (): Record<string, unknown> => {
+      if (userKey || !idemKey || !("idempotency_key" in callArgs) || callArgs.idempotency_key !== idemKey) return callArgs;
+      const { idempotency_key: _k, ...rest } = callArgs;
+      return rest;
+    };
     await runOnce();
     let attempts = 0;
     let tookMs = Date.now() - t0;
@@ -430,7 +436,7 @@ export class ShellRuntime {
       let body: ErrorBody;
       const prebuilt = result ? (ERROR_BODY.get(result) as ErrorBody | undefined) : undefined;   // dx12_engine_* など、最初から構造化して返すツール
       if (prebuilt) body = { ...prebuilt };
-      else if (src) body = await structureError(src, { tool: ctxTool, args: callArgs, engine: this.deps.engine, suggestNames: () => this.catalog.names(), isDirect: (n) => this.isDirectlyCallable(n), routeVia: (n) => this.fixVia(n), noRepeatGuard: true });
+      else if (src) body = await structureError(src, { tool: ctxTool, args: fixArgs(), engine: this.deps.engine, suggestNames: () => this.catalog.names(), isDirect: (n) => this.isDirectlyCallable(n), routeVia: (n) => this.fixVia(n), noRepeatGuard: true });
       else {
         const msg = (result?.content ?? []).filter((c): c is { type: "text"; text: string } => c.type === "text").map((c) => c.text).join("\n");
         body = { code: "E_INVALID_PARAM", message: msg || `${doc.id} が失敗した`, retryable: false, fix: [{ tool: "dx12_tool_describe", args: { name: doc.id }, why: "引数と注意点を確認する" }] };

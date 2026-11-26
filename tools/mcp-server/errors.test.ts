@@ -88,6 +88,12 @@ for (const c of cases.cases) {
   if (e.didYouMean0 && b.didYouMean?.[0] !== e.didYouMean0) problems.push(`didYouMean[0]=${b.didYouMean?.[0]} (期待 ${e.didYouMean0})`);
   if (e.fixTool && !b.fix?.some((f: any) => f.tool === e.fixTool)) problems.push(`fix に ${e.fixTool} が無い: ${JSON.stringify(b.fix?.map((f: any) => f.tool))}`);
   if (e.fixCommand && !b.fix?.some((f: any) => String(f.command ?? "").includes(e.fixCommand))) problems.push(`fix に command(${e.fixCommand}) が無い`);
+  // 失敗した名前自身を撃ち直す fix(直接 / dx12_call {name}) を含まない
+  if (e.fixLacksName) {
+    const self = (f: any) => [f.tool, f.args?.name].some((n) => typeof n === "string" && n.replace(/^dx12_/, "") === String(e.fixLacksName).replace(/^dx12_/, ""));
+    if (b.fix?.some(self)) problems.push(`fix に失敗名 ${e.fixLacksName} が残っている: ${JSON.stringify(b.fix)}`);
+    if (b.didYouMean?.some((n: string) => n.replace(/^dx12_/, "") === String(e.fixLacksName).replace(/^dx12_/, ""))) problems.push("didYouMean に失敗名が残っている");
+  }
   // BUG-14: 呼べない名前(tools/list に無いツール)を勧める fix は dx12_call の形で、同じ fix を 2 回返したら打ち切りの文面にする
   if (e.giveUp !== undefined && (b.details?.giveUp === true) !== e.giveUp) problems.push(`details.giveUp=${b.details?.giveUp} (期待 ${e.giveUp})`);
   if (e.giveUp === true) {
