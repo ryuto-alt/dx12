@@ -1,0 +1,10 @@
+{
+  "name": "lookdev_emissive_room",
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/lookdev_emissive_room.json",
+  "camera": {
+    "position": [0, 2.0, 0.4],
+    "target": [0, 1.4, 4.5]
+  },
+  "note": "MH-1 ルックデブ: 太陽の無い閉じた部屋。発光パネル・発光球・点光源 3 灯"
+}
