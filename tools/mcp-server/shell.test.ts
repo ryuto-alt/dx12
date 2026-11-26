@@ -65,6 +65,13 @@ console.log("[1] shell 5 本(プロセス内・偽エンジン)");
   const unk = await shell.describe({ name: "dx12_set_ssoa" });
   const ub = parse(unk);
   check("describe: 未知の名前は E_UNKNOWN_TOOL + didYouMean(dx12_set_ssao) + fix", (unk as any).isError && ub.error_code === "E_UNKNOWN_TOOL" && ub.didYouMean?.[0] === "dx12_set_ssao" && ub.fix?.length > 0, ub);
+  {
+    // describe してから call する推奨手順で、最初の call が打ち切り扱いにならない
+    await shell.describe({ name: "dx12_teleportx_zz" });
+    const cb = parse(await shell.call({ name: "dx12_teleportx_zz", args: {} }));
+    check("describe の後の call は giveUp にならない", cb.error_code === "E_UNKNOWN_TOOL" && cb.details?.giveUp !== true, cb);
+    check("call の fix に失敗名自身が無い", !(cb.fix ?? []).some((f: any) => String(f.tool).replace(/^dx12_/, "") === "teleportx_zz" || String(f.args?.name ?? "").replace(/^dx12_/, "") === "teleportx_zz"), cb.fix);
+  }
 }
 {
   const r = parse(await shell.call({ name: "dx12_get_entity", args: { name: "Player" } }));

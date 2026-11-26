@@ -7,7 +7,7 @@
 
 import type { EngineClient, EngineCallError } from "./engineClient.ts";
 import type { ErrorBody, ErrorCodeName, Fix } from "./errors.ts";
-import { ERROR_CODES, classifyCode, extractValidValues, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions } from "./errors.ts";
+import { ERROR_CODES, classifyCode, extractValidValues, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions, dropSelfFixes } from "./errors.ts";
 import { launchFixes } from "./doctor.ts";
 
 export type StructureCtx = {
@@ -175,9 +175,11 @@ export async function structureError(e: any, ctx: StructureCtx = {}): Promise<Er
         const bad = ctx.tool ?? fromMsg ?? "";
         if (!body.didYouMean?.length && ctx.suggestNames && bad) body.didYouMean = nearest(bare(bad), ctx.suggestNames().map(bare), 5);
         const fixes: Fix[] = [];
+        if (ctx.noRepeatGuard && body.didYouMean?.length) { const kept = body.didYouMean.filter((n) => bare(n) !== bare(bad)); body.didYouMean = kept.length ? kept : undefined; }
         if (body.didYouMean?.[0]) fixes.push({ tool: body.didYouMean[0].startsWith("dx12_") ? body.didYouMean[0] : "dx12_" + body.didYouMean[0], args, why: `'${bad}' に最も近い名前で撃ち直す` });
         fixes.push({ tool: "dx12_tool_search", args: { query: bare(bad).replace(/_/g, " ") }, why: "名前で検索する" });
         body.fix = routeFixViaCall([...fixes, ...(body.fix ?? [])], ctx.isDirect, ctx.routeVia);
+        if (ctx.noRepeatGuard) dropSelfFixes(body, bad);   // dx12_call 経由で今まさに失敗した名前は勧めない(SDK 直の未登録名は dx12_call 形で勧める)
         tidyUnknownToolSuggestions(body, bad, ctx.isDirect);
         if (!ctx.noRepeatGuard) guardRepeatedFix(body, bad);
       }

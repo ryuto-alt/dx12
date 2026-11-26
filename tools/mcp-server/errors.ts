@@ -284,6 +284,15 @@ export function guardRepeatedFix(body: ErrorBody, requestedName: string, now: nu
  * E_UNKNOWN_TOOL の didYouMean から、今まさに失敗した名前そのものを外す(同じ名前の撃ち直しを誘わない)。
  * 直接呼べない候補は残すが、details.didYouMeanVia に「dx12_call の name に渡す」と注記する。
  */
+/** 失敗した名前自身を撃ち直す fix(直接でも dx12_call {name} でも)を落とす。今まさに失敗した呼び出しを勧めない。 */
+export function dropSelfFixes(body: ErrorBody, requestedName: string): ErrorBody {
+  if (!body.fix?.length || !requestedName) return body;
+  const bare = (s: string) => s.replace(/^dx12_/, "");
+  const target = (f: { tool?: string; args?: unknown }) => (f.tool === CALL_TOOL || f.tool === "dx12_call_guarded") ? String((f.args as any)?.name ?? "") : String(f.tool ?? "");
+  body.fix = body.fix.filter((f) => !f.tool || bare(target(f)) !== bare(requestedName));
+  return body;
+}
+
 export function tidyUnknownToolSuggestions(body: ErrorBody, requestedName: string, isDirect: ((name: string) => boolean) | undefined): ErrorBody {
   if (!body.didYouMean?.length) return body;
   const bare = (s: string) => s.replace(/^dx12_/, "");
