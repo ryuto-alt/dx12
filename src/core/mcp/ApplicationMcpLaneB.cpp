@@ -178,6 +178,7 @@ bool AppAccess::VfxPlace(Application& app, const std::string& presetOrAsset, con
     reg.emplace<Transform>(e, t);
     VfxComponent vc;
     vc.asset = asset;
+    vc.seed = (static_cast<u32>(entt::to_integral(e)) + 1u) * 0x85EBCA6Bu;   // 同じ preset を並べても粒子が揃わないよう、エンティティごとに固定（保存される）
     reg.emplace<VfxComponent>(e, std::move(vc));
 
     // Undo: 生成 1 件（MCP の呼び出し中は「AI: vfx_place」の 1 エントリへ取り込まれる）
@@ -221,6 +222,8 @@ void Application::RegisterMcpLaneBMethods()
             }
             entt::entity parent = entt::null;
             auto& reg = m_scene->GetRegistry();
+            if (params.contains("parent") && params.contains("parentName"))
+                throw McpError(McpErr::InvalidParam, "parent と parentName は同時に指定できない", "どちらか 1 つだけ渡す（entityId か名前）");
             if (params.contains("parent"))
             {
                 if (!params["parent"].is_number_integer() || params["parent"].get<long long>() < 0)

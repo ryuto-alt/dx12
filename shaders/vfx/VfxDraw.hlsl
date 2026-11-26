@@ -14,7 +14,7 @@ cbuffer DrawCB : register(b0)
     float4   camUp;
     float4   params;     // x = intensity, y = softDistance, z = fade（0 none, 1 linear, 2 quad, 3 inout）, w = stretch
     float4   params2;    // x = projA, y = projB, z = 1/W, w = 1/H
-    uint4    uP;         // x = base, y = 深度 SRV 番号, z = 0（additive）/ 1（alpha）, w = 1 なら実深度あり（手前にあるシーンの面より奥の断片を捨てる）
+    uint4    uP;         // x = base, y = 深度 SRV 番号, z = bit0: 0（additive）/ 1（alpha）, bit1: 正射, w = 1 なら実深度あり（手前にあるシーンの面より奥の断片を捨てる）
 };
 
 StructuredBuffer<GPart> gPool : register(t0);
@@ -93,15 +93,33 @@ float4 PSMain(VSOut i) : SV_Target
     {
         Texture2D<float> depth = ResourceDescriptorHeap[uP.y];
         float d = depth.Load(int3(int2(i.pos.xy), 0));
-        float den = d - params2.x;   // 標準 Z: d = A + B / z（A = proj._33, B = proj._43 < 0）→ 分母は負。符号を保ったまま割る
-        if (d < 1.0 && abs(den) > 1e-8)
+        if (d < 1.0)
         {
-            float sceneZ = params2.y / den;   // 線形ビュー深度
-            // ハードウェアの深度テストの代わり（PSO は深度なし）: 不透明の面より奥は softDistance が 0 でも描かない
-            if (sceneZ < i.viewZ) discard;
-            if (params.y > 0.0) a *= saturate((sceneZ - i.viewZ) / params.y);
+            // ハードウェアの深度テストの代わり（PSO は深度なし）: 不透明の面より奥は softDistance が 0 でも描かない。
+            // NDC 深度の比較なので透視・正射のどちらでも正しい（標準 Z）
+            if (i.pos.z > d) discard;
+            if (params.y > 0.0)
+            {
+                // 線形ビュー深度: 透視は d = A + B / z、正射は d = A * z + B（A = proj._33, B = proj._43）
+                bool ortho = (uP.z & 2u) != 0u;
+                float den = d - params2.x;
+                if (ortho)
+                {
+                    if (abs(params2.x) > 1e-12)
+                    {
+                        float sceneZ = (d - params2.y) / params2.x;
+                        float selfZ  = (i.pos.z - params2.y) / params2.x;
+                        a *= saturate((sceneZ - selfZ) / params.y);
+                    }
+                }
+                else if (abs(den) > 1e-8)
+                {
+                    float sceneZ = params2.y / den;
+                    a *= saturate((sceneZ - i.viewZ) / params.y);
+                }
+            }
         }
     }
     float3 rgb = i.color.rgb * a;
-    return float4(rgb, uP.z == 0 ? 0.0 : a);
+    return float4(rgb, (uP.z & 1u) == 0u ? 0.0 : a);
 }

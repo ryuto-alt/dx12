@@ -427,6 +427,7 @@ VfxSystem::Instance* VfxSystem::FindOrCreate(entt::entity e, u32 emitter, const 
     }
     m_poolWarned = false;
     in.paused = !autoplay;
+    in.fresh = true;
     auto res = m_instances.emplace(key, std::move(in));
     return &res.first->second;
 }
@@ -557,7 +558,8 @@ void VfxSystem::Execute(StageCtx& ctx, std::vector<Work>& work)
 
 void VfxSystem::PublishStats(ID3D12GraphicsCommandList* cmd)
 {
-    // GPU の統計（生存数）を読み戻しリングへ。4 つ前に書いた分を読む（フレームの多重化は 3）。
+    // GPU の統計（生存数）を読み戻しリングへ。インクリメント後に (written - 4) % 4 を読む = 3 コピー前に書いた分。
+    // 安全性は BeginFrame がフレーム N-3 のフェンスを待つこと（多重化 3）に依る。多重化数を増やすならここでフェンスを明示すること。
     // 計算が走ったフレームから 4 フレームだけコピーを続ける（止まっている間は何も記録しない）。
     if (cmd && m_gpuReady && !m_instances.empty() && m_statsDirty > 0)
     {
@@ -618,7 +620,8 @@ void VfxSystem::Update(StageCtx& ctx)
     const bool any = view.begin() != view.end();
     if (!any && m_instances.empty())   // 何も無い: コマンドは 1 つも記録しない
     {
-        Stats s; s.gpuFailed = m_gpuFailed; s.lastError = m_gpuError;
+        Stats s; s.gpuReady = m_gpuReady; s.gpuFailed = m_gpuFailed; s.lastError = m_gpuError;
+        s.poolCapacity = m_gpuReady ? kPoolCapacity : 0; s.vramBytes = m_gpuReady ? m_vram : 0;
         rt.PublishStats(std::move(s));
         rt.TakeSeeks();
         return;
@@ -668,6 +671,7 @@ void VfxSystem::Update(StageCtx& ctx)
                     if (s.entity == entt::null || s.entity == e) sk = &s;
 
                 Work w; w.in = in;
+                if (in->fresh) { w.clear = true; in->fresh = false; }   // 確保の直後: 再利用した範囲に残る前の粒子を消す
                 if (sk)
                 {
                     // 決定論の seek: 巻き戻して、固定ステップで t まで再シミュレーションする（放出体は今の位置に固定）
@@ -775,7 +779,7 @@ void VfxSystem::Draw(StageCtx& ctx)
         switch (r.fade) { case Fade::None: fade = 0.0f; break; case Fade::Linear: fade = 1.0f; break; case Fade::Quad: fade = 2.0f; break; default: break; }
         cb.params[0] = r.intensity; cb.params[1] = r.softDistance; cb.params[2] = fade; cb.params[3] = r.stretch;
         cb.uP[0] = in.base;
-        cb.uP[2] = r.blend == Blend::Alpha ? 1u : 0u;
+        cb.uP[2] = (r.blend == Blend::Alpha ? 1u : 0u) | (v.orthographic ? 2u : 0u);
         cmd->SetGraphicsRoot32BitConstants(0, 36, &cb, 0);
         cmd->DrawInstanced(6, std::min(in.clk.spawned, in.cap), 0, 0);
     }

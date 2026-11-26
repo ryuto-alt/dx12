@@ -753,7 +753,7 @@ add_test(NAME VfxAssetTests COMMAND VfxAssetTests
     ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_fire.uvfx ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_burst.uvfx)
 add_test(NAME VfxSpawnMathTests COMMAND VfxSpawnMathTests)
 set_tests_properties(VfxAssetTests VfxSpawnMathTests PROPERTIES TIMEOUT 120)
-# VfxGpuTests（gpu）: カール場の Texture3D を窓なしの D3D12 で引き、CPU 参照（SampleCurl）と 1e-3 以内で一致することを確かめる。GPU が無ければ SKIP。
+# VfxGpuTests（gpu）: カール場の Texture3D を窓なしの D3D12 で引き、CPU 参照（SampleCurl）と一致（テクセル中心は 1e-5、フィルタ込みは 2.5e-3 以内）することを確かめる。GPU が無ければ SKIP。
 if(TARGET Renderer)
     add_executable(VfxGpuTests vfx_gpu_test.cpp)
     target_include_directories(VfxGpuTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

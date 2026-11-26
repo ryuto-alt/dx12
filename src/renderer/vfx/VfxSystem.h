@@ -68,6 +68,7 @@ private:
         bool         paused = false;
         bool         finished = false;
         bool         touched = false;
+        bool         fresh = true;   // 確保直後（最初の Update で範囲をクリアする）
         u32          seed = 0;
     };
 
