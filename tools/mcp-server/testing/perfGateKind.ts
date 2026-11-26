@@ -16,7 +16,7 @@ import {
 } from "./budgets.ts";
 import {
   PROTOCOL, ababSchedule, acquireGpuWindow, appendHistory, clockStats, columnActive, compareAB, detectRegression, dropByClock, historyKey, readHistory,
-  readWindow, startClockPoller, summarizeWindows, upscalerSetup, vramGate, type ClockPoller, type Window,
+  readGpuMemUsedMB, readWindow, startClockPoller, summarizeWindows, upscalerSetup, vramGate, type ClockPoller, type Window,
 } from "./perfCore.ts";
 import { openSceneWait } from "./visualCore.ts";
 
@@ -49,6 +49,8 @@ export type PerfDeps = {
   clock?: () => ClockPoller;
   lockFile?: string;
   historyDir?: string;
+  /** テスト用: GPU 全体の使用中 VRAM(MB)。省略なら nvidia-smi。 */
+  gpuMemUsedMB?: () => Promise<number | null>;
   repoDir: string;
   /** テスト用: 待ちを短くする。 */
   sleepMs?: number;
@@ -57,7 +59,7 @@ export type PerfDeps = {
 /** 結果の指標の定義(PP-NB1 の「GPU p95/p99」との差を隠さない)。 */
 export const METRIC_DEFINITIONS = Object.freeze({
   frameMsP95: "benchmark の CPU 壁時計フレーム時間の p95(姿勢ごと・窓の中央値)。GPU の p95 ではない",
-  frameMsP99: "窓ごとの p95 を並べた p95(厳密な p99 ではない)。予算の p99Ms と比べる近似",
+  frameMsP99: "窓ごとの p95 を並べた p95(厳密な p99 ではない)。記録のみで合否には使わない(GPU の p99 はエンジン側の計装待ち)",
   gpuTotalMs: "perf_stats.gpuPassMs.total の窓平均(GPU の p95 ではない)",
   cpu: "perf_stats の窓平均を窓ごとに並べた p95 の近似",
 });
@@ -65,11 +67,36 @@ export const METRIC_DEFINITIONS = Object.freeze({
 type PoseSpec = { name?: string; position?: number[]; target?: number[] };
 const poseName = (p: PoseSpec, i: number) => p.name ?? (p.position ? `pose${i + 1}` : "current");
 
+/** 列ごとの描画解像度の狙い。DLSS は出力解像度に固定して DLSS の内部解像度に任せる。
+ *  TAAU は view size を固定すると render_scale が効かない(エンジンは固定中 render=view とする)ので、view size 自体を出力×renderScale にする。 */
+export function columnView(budget: Budget, col: ColumnId): { width: number; height: number; expectRender: [number, number] | null } {
+  const [ow, oh] = budget.output;
+  if (col === "taau") {
+    const k = budget.columns[col]!.renderScale; const ev = (v: number) => Math.max(2, Math.round(v / 2) * 2);
+    const w = ev(ow * k), h = ev(oh * k);
+    return { width: w, height: h, expectRender: [w, h] };
+  }
+  return { width: ow, height: oh, expectRender: col === "taaNative" ? [ow, oh] : null };
+}
+
 async function setupColumn(call: EngineCall, budget: Budget, col: ColumnId) {
+  const v = columnView(budget, col);
+  await call("set_view_size", { width: v.width, height: v.height }, { timeout: 15_000 }).catch(() => {});
   for (const s of upscalerSetup(col, budget.columns[col]!.renderScale)) await call(s.method, s.params, { timeout: 15_000 });
   await call("step_frames", { frames: 3 }, { timeout: 60_000 });
   const up = await call("get_upscaler", {}, { timeout: 8000 });
-  return { up, active: columnActive(col, up) };
+  let active = columnActive(col, up);
+  // 描画解像度が狙いと一致するか(取れるときだけ確かめる)。
+  let renderResolution: [number, number] | null = null;
+  if (active.ok && v.expectRender) {
+    const rs = await call("get_render_scale", {}, { timeout: 8000 }).catch(() => null);
+    const rr = rs?.renderResolution ?? up?.renderResolution;
+    if (Array.isArray(rr) && rr.length === 2 && rr.every((x: unknown) => typeof x === "number")) {
+      renderResolution = [rr[0], rr[1]];
+      if (Math.abs(rr[0] - v.expectRender[0]) > 2 || Math.abs(rr[1] - v.expectRender[1]) > 2) active = { ok: false, reason: `描画解像度が狙いと違う(${rr[0]}x${rr[1]}、期待 ${v.expectRender[0]}x${v.expectRender[1]})。この列の値は記録しない` };
+    }
+  }
+  return { up, active, renderResolution };
 }
 
 type Proc = { frames: number; warmup: number; window: number; repeats: number };
@@ -104,7 +131,7 @@ export async function measurePose(call: EngineCall, ctx: Pick<InprocCtx, "signal
 }
 
 function toMeasured(s: ReturnType<typeof summarizeWindows>): Measured {
-  return { frameMsP95: s.frameMsP95, frameMsP99: s.frameMsP99, gpuTotalMs: s.gpuTotalMs, leafMs: s.leafMs, cpu: s.cpu, vramUsedMB: s.vramUsedMB, vramBudgetMB: s.vramBudgetMB };
+  return { frameMsP95: s.frameMsP95, gpuTotalMs: s.gpuTotalMs, leafMs: s.leafMs, cpu: s.cpu, vramUsedMB: s.vramUsedMB, vramBudgetMB: s.vramBudgetMB };
 }
 
 export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: InprocCtx, env: KindEnv) {
@@ -151,11 +178,10 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
     try { budget = loadBudget(presetName, { projectDir: ping0?.baseDir ?? null }); }
     catch (e) { if (e instanceof BudgetError) return jobFail({ code: e.code, message: e.message, retryable: false, ...(e.validValues ? { details: { validValues: e.validValues } } : {}) }); throw e; }
 
-    // VRAM の前提確認(Budget は他プロセスの使用量が引かれた後の値)
-    const gate = vramGate(ping0?.vramBudgetMB, ping0?.vramUsedMB, precheckMB(budget));
+    // VRAM の前提確認(Budget − 他プロセスの使用量 ≥ precheck)
+    const gate = vramGate(ping0?.vramBudgetMB, ping0?.vramUsedMB, precheckMB(budget), await (deps.gpuMemUsedMB ?? readGpuMemUsedMB)());
     if (!gate.ok) jobFail({ code: "E_FLEET_RESOURCE", message: `perf_gate: VRAM の余裕が足りないので計測を中止した(${gate.reason})`, retryable: true, details: { vramCheck: gate }, cause: "他のプロセス(ゲーム・ビルドなど)が VRAM を使っている間は、予算の判定が歪むので測らない" });
 
-    await call("set_view_size", { width: budget.output[0], height: budget.output[1] }, { timeout: 15_000 }).catch(() => {});
     const qp = a.qualityPreset ?? presetName.split("_")[0];
     let qualityPreset: string | null = null;
     try { await call("set_quality_preset", { preset: qp }, { timeout: 15_000 }); qualityPreset = qp; } catch { /* W1-C3 より前のエンジンには無い */ }
@@ -163,7 +189,9 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
 
     const cols: ColumnId[] = (a.columns?.length ? a.columns : COLUMN_IDS.filter((c) => budget.columns[c])) as ColumnId[];
     for (const c of cols) if (!budget.columns[c]) jobFail({ code: "E_INVALID_PARAM", message: `予算 ${budget.preset} に列 ${c} が無い`, retryable: false, details: { validValues: Object.keys(budget.columns) } });
-    const hist = deps.historyDir ?? path.join(homeDir("DX12_PERF_HOME", "perf"), projectKeyOf(ping0?.baseDir));
+    // 履歴のキーは複製前の元プロジェクトとシーンで決める(複製先は毎回別の一時フォルダなので使わない)。
+    const histBase = launching ? path.resolve(a.project ?? path.join(deps.repoDir, "tests", "golden", "projects", "golden_core")) : ping0?.baseDir;
+    const hist = deps.historyDir ?? path.join(homeDir("DX12_PERF_HOME", "perf"), projectKeyOf(histBase), ...(a.scene ? [projectKeyOf(String(a.scene))] : []));
     const history = readHistory(hist);
     const out: Record<string, any> = {};
     const incomplete: string[] = [];
@@ -175,7 +203,8 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
       const colRes: any = { gate: c.gate, gating: c.gate === "gate", renderScale: c.renderScale, totalMsBudget: c.totalMs, poses: {} };
       out[col] = colRes;
       ctx.progress({ phase: "setup", pct: Math.round(5 + (n * 90) / total), message: `列 ${col} を設定` });
-      const { up, active } = await setupColumn(call, budget, col);
+      const { up, active, renderResolution } = await setupColumn(call, budget, col);
+      colRes.renderResolution = renderResolution;
       colRes.upscaler = { mode: up?.mode ?? null, effective: up?.effective ?? null, reason: up?.reason ?? up?.fallbackReason ?? null };
       if (!active.ok) { colRes.status = "unavailable"; colRes.reason = active.reason; colRes.pass = c.gate === "gate" ? null : undefined; n += poses.length; continue; }
       let colPass = true, colIncomplete = false;
@@ -251,8 +280,7 @@ export async function runAB(a: Record<string, any>, deps: PerfDeps, ctx: InprocC
     const h = await deps.provider.launch({ name: `perfab-${ctx.job.id.slice(-6)}`, project: copy, mode: "headless", buildDir: sd.buildDir, extraArgs: ["--no-dred", ...(sd.args ?? [])] });
     try {
       const ping = await h.call("ping", {}, { timeout: 8000 });
-      const g = vramGate(ping?.vramBudgetMB, ping?.vramUsedMB, precheckMB(budget));
-      await h.call("set_view_size", { width: budget.output[0], height: budget.output[1] }, { timeout: 15_000 }).catch(() => {});
+      const g = vramGate(ping?.vramBudgetMB, ping?.vramUsedMB, precheckMB(budget), await (deps.gpuMemUsedMB ?? readGpuMemUsedMB)());
       const { active } = await setupColumn(h.call, budget, col);
       if (a.scene) await openSceneWait(h.call, a.scene, ctx.signal);
       const per: Record<string, { avg: number | null; p95: number | null; gpu: number | null }> = {};
@@ -317,7 +345,7 @@ export async function runAB(a: Record<string, any>, deps: PerfDeps, ctx: InprocC
 }
 
 export function perfGateKind(env: KindEnv, injected?: Partial<PerfDeps>): KindDef {
-  const deps: PerfDeps = { provider: injected?.provider ?? defaultProvider(env), repoDir: injected?.repoDir ?? env.cfg.repoDir, clock: injected?.clock, lockFile: injected?.lockFile, historyDir: injected?.historyDir };
+  const deps: PerfDeps = { provider: injected?.provider ?? defaultProvider(env), repoDir: injected?.repoDir ?? env.cfg.repoDir, clock: injected?.clock, gpuMemUsedMB: injected?.gpuMemUsedMB, lockFile: injected?.lockFile, historyDir: injected?.historyDir };
   return {
     kind: "perf_gate", executor: "inproc",
     describe: "性能の合否判定。予算(testing/budgets)に GPU の葉・フレーム p95・CPU p95・VRAM を当てる。合否は gate 列(W1 は DLSS)だけで、TAAU / TAA native は記録。エンジンは --no-dred、計測窓のロックと VRAM の前提確認つき。mode:'ab' は 2 ビルドの ABAB 比較(A/A と閾値つき)。",

@@ -10,7 +10,7 @@ import "./testEnv.ts";
 import { tmpDir, rmTree } from "./fleetTestKit.ts";
 import { loadJobsConfig } from "./jobs/config.ts";
 import type { KindEnv } from "./jobs/env.ts";
-import { perfGateKind } from "./testing/perfGateKind.ts";
+import { perfGateKind, columnView } from "./testing/perfGateKind.ts";
 import { COLUMN_IDS, evaluateColumn, gateColumnOf, listBudgetPresets, loadBudget, vramLimitMB, type Measured } from "./testing/budgets.ts";
 import {
   PROTOCOL, ababSchedule, abThreshold, acquireGpuWindow, columnActive, compareAB, detectRegression, dropByClock, historyKey, upscalerSetup, vramGate,
@@ -93,16 +93,18 @@ function fullMeasured(b: ReturnType<typeof loadBudget>, col: "dlss" | "taau" | "
 
 // ── 偽エンジン(列と倍率で値が変わる) ───────────────────────────────────────────
 const epic = loadBudget("epic_1080p60");
-type World = { k: number; mode: string; scale: number; dlssAvailable: boolean; dred: boolean; vramBudget: number; calls: string[]; view: number[] | null; kByBuild: Record<string, number> };
+type World = { k: number; mode: string; scale: number; dlssAvailable: boolean; dred: boolean; vramBudget: number; calls: string[]; view: number[] | null; kByBuild: Record<string, number>; viewLog: number[][]; scene?: string };
 function makeEngine(w: World, buildKey = "") {
   return async (method: string, params: any = {}): Promise<any> => {
     w.calls.push(method);
     const col = w.mode === "dlss" ? "dlss" : w.scale >= 0.99 ? "taaNative" : "taau";
     const k = w.k * (w.kByBuild[buildKey] ?? 1);
     switch (method) {
-      case "ping": return { baseDir: null, vramUsedMB: 4000, vramBudgetMB: w.vramBudget, gpu: { name: "FakeGPU" } };
-      case "set_view_size": w.view = [params.width, params.height]; return {};
-      case "set_quality_preset": case "set_editor_camera": case "step_frames": case "open_scene": case "cancel": return {};
+      case "ping": return { baseDir: null, currentScene: w.scene, vramUsedMB: 4000, vramBudgetMB: w.vramBudget, gpu: { name: "FakeGPU" } };
+      case "set_view_size": w.view = [params.width, params.height]; w.viewLog.push([params.width, params.height]); return {};
+      case "get_render_scale": { const v = w.view ?? [1920, 1080]; return { scale: w.scale, renderResolution: w.mode === "dlss" ? [Math.round(v[0] * 2 / 3), Math.round(v[1] * 2 / 3)] : v }; }
+      case "open_scene": w.scene = params.path; return {};
+      case "set_quality_preset": case "set_editor_camera": case "step_frames": case "cancel": return {};
       case "set_upscaler": if (params.mode) w.mode = params.mode; return {};
       case "set_render_scale": w.scale = params.scale; return {};
       case "get_upscaler": return { mode: w.mode, effective: w.mode === "dlss" && !w.dlssAvailable ? "taa" : w.mode, reason: w.mode === "dlss" && !w.dlssAvailable ? "nvngx_dlss.dll が無い" : undefined };
@@ -115,14 +117,14 @@ function makeEngine(w: World, buildKey = "") {
     }
   };
 }
-const newWorld = (o: Partial<World> = {}): World => ({ k: 0.8, mode: "taa", scale: 1, dlssAvailable: true, dred: false, vramBudget: 7000, calls: [], view: null, kByBuild: {}, ...o });
+const newWorld = (o: Partial<World> = {}): World => ({ k: 0.8, mode: "taa", scale: 1, dlssAvailable: true, dred: false, vramBudget: 7000, calls: [], view: null, kByBuild: {}, viewLog: [], ...o });
 const cfg = { ...loadJobsConfig({ ...process.env, DX12_JOBS_DIR: mk("jobs") }), repoDir: REPO };
 const env = { cfg, resolveEngineId: () => undefined, enginePort: () => undefined, callEngine: async () => ({}), fleet: () => null, callTool: async () => ({ text: "", isError: true, images: 0 }), now: () => Date.now() } as unknown as KindEnv;
 const clock = () => ({ stop: async () => [{ smMHz: 2500, tempC: 60 }] });
 const mkCtx = () => ({ job: { id: "j-perf01" }, signal: new AbortController().signal, progress() {}, log() {}, artifactsDir: mk("art"), addArtifact() {}, setEngine() {} }) as any;
 function kindFor(w: World, extra: any = {}) {
   const provider: EngineProvider = { attach: () => ({ call: makeEngine(w) as any, close: async () => {} }), launch: async (o) => ({ call: makeEngine(w, o.buildDir ?? "") as any, close: async () => {} }) };
-  return perfGateKind(env, { provider, repoDir: REPO, clock, lockFile: path.join(mk("lock"), "gpu.lock"), historyDir: mk("hist"), ...extra });
+  return perfGateKind(env, { provider, repoDir: REPO, clock, lockFile: path.join(mk("lock"), "gpu.lock"), historyDir: mk("hist"), gpuMemUsedMB: async () => null, ...extra });
 }
 const small = { benchFrames: 60, warmupFrames: 0, statsWindow: 10, repeats: 3 };
 
@@ -145,7 +147,10 @@ console.log("[3] ジョブ本体");
   check("予算の 80% で合格(gate 列 = dlss)", r.ok === true && s.verdict === "pass" && s.gateColumn === "dlss", s);
   check("3 列とも測り、dlss だけが gating", s.columns.dlss.gate === "gate" && s.columns.taau.gate === "gateAfterW2BD" && s.columns.taaNative.gate === "record" && s.columns.taaNative.status === "measured", s.columns);
   check("DRED は OFF(--no-dred)を記録", s.noDred === true, s.noDred);
-  check("set_view_size は予算の出力解像度", w.view?.[0] === epic.output[0] && w.view?.[1] === epic.output[1], w.view);
+  check("set_view_size は予算の出力解像度(DLSS / TAA native 列)", w.view?.[0] === epic.output[0] && w.view?.[1] === epic.output[1], w.view);
+  const tv = columnView(epic, "taau");
+  check("TAAU 列は view size を出力×renderScale にする(固定中は render_scale が効かないため)", tv.width < epic.output[0] && tv.height < epic.output[1] && Math.abs(tv.width - epic.output[0] * epic.columns.taau!.renderScale) <= 2 && w.viewLog.some((v) => v[0] === tv.width && v[1] === tv.height), { tv, log: w.viewLog });
+  check("TAAU 列の描画解像度は狙いと一致して測られる", (r.result as any).detail.taau.status === "measured" && (r.result as any).detail.taau.renderResolution?.[0] === tv.width, (r.result as any).detail.taau);
   check("A/A 的な繰り返しのばらつき(repeatSigma)とクロックを記録", (r.result as any).detail.dlss.poses.current.clock.perRun.length === 3 && (r.result as any).detail.dlss.poses.current.clock.refMHz === 2500, (r.result as any).detail.dlss.poses.current.clock);
 
   const wbad = newWorld({ k: 1.2 });
@@ -168,6 +173,27 @@ console.log("[3] ジョブ本体");
   const hist = fs.readFileSync(path.join(hdir, "perf-history.jsonl"), "utf8").trim().split("\n");
   check("perf-history.jsonl に追記される", hist.length === 4 && JSON.parse(hist[0]).key === historyKey("epic_1080p60", "dlss", "current"), hist.length);
 
+  // 実運用(既定の専用エンジン)では、プロジェクトは毎回別の一時フォルダへ複製される。履歴は元のプロジェクトで引き当てる。
+  {
+    const ph = mk("perfhome"); const old = process.env.DX12_PERF_HOME; process.env.DX12_PERF_HOME = ph;
+    try {
+      const noHist = (x: any) => ({ ...x });
+      const kp = kindFor(newWorld(), { historyDir: undefined });
+      for (let i = 0; i < 2; i++) await kp.run(noHist({ preset: "epic_1080p60", launch: true, ...small, columns: ["dlss"] }), mkCtx());
+      const rr = await kindFor(newWorld({ k: 0.8 * 1.12 }), { historyDir: undefined }).run({ preset: "epic_1080p60", launch: true, ...small, columns: ["dlss"] }, mkCtx());
+      check("launch(毎回別の一時コピー)でも履歴が引き当たり、+12% で regression", (rr.summary as any).verdict === "regression", (rr.result as any)?.detail?.dlss?.poses?.current?.regression);
+      const rs = await kindFor(newWorld({ k: 0.8 * 1.12 }), { historyDir: undefined }).run({ preset: "epic_1080p60", launch: true, scene: "other.scene", ...small, columns: ["dlss"] }, mkCtx());
+      check("別のシーンの履歴は混ざらない", (rs.summary as any).verdict !== "regression" && (rs.result as any).detail.dlss.poses.current.regression.status === "insufficient", (rs.result as any).detail.dlss.poses.current.regression);
+    } finally { if (old === undefined) delete process.env.DX12_PERF_HOME; else process.env.DX12_PERF_HOME = old; }
+  }
+  {
+    const g1 = vramGate(7000, 1000, 6656, 1100), g2 = vramGate(7000, 1000, 6656, 3000), g3 = vramGate(7000, 1000, 6656, null);
+    check("VRAM の門: Budget − 他プロセス(nvidia-smi 全体 − 自分)で判定", g1.ok && g1.othersUsedMB === 100 && !g2.ok && g2.othersUsedMB === 2000 && g2.availableMB === 5000 && g3.ok && g3.othersUsedMB === null, { g1, g2, g3 });
+    let ev: any = null;
+    try { await kindFor(newWorld(), { gpuMemUsedMB: async () => 5000 }).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss"] }, mkCtx()); } catch (x: any) { ev = x.body; }
+    check("ゲーム等が VRAM を使っていれば(Budget が減らなくても)計測を中止", ev?.code === "E_FLEET_RESOURCE" && ev.details?.vramCheck?.othersUsedMB === 1000, ev);
+  }
+
   let e: any = null;
   try { await kindFor(newWorld({ dred: true })).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss"] }, mkCtx()); } catch (x: any) { e = x.body; }
   check("DRED が ON のエンジンでは測らない", /DRED/.test(e?.message ?? ""), e);
@@ -182,7 +208,7 @@ console.log("[3] ジョブ本体");
   const wdrift = newWorld();
   const base = makeEngine(wdrift);
   const driftProvider: EngineProvider = { attach: () => ({ call: (async (m: string, p: any) => { const r = await base(m, p); return m === "perf_stats" ? { ...r, gpuPassMs: {} } : r; }) as any, close: async () => {} }), launch: async () => { throw new Error("no"); } };
-  const rd = await perfGateKind(env, { provider: driftProvider, repoDir: REPO, clock, lockFile: path.join(mk("lock"), "gpu.lock"), historyDir: mk("hist") }).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss"] }, mkCtx());
+  const rd = await perfGateKind(env, { provider: driftProvider, repoDir: REPO, clock, lockFile: path.join(mk("lock"), "gpu.lock"), historyDir: mk("hist"), gpuMemUsedMB: async () => null }).run({ preset: "epic_1080p60", engine: "fake", ...small, columns: ["dlss"] }, mkCtx());
   check("gpuPassMs.total が取れなければ inconclusive(pass にならない)", (rd.summary as any).verdict === "inconclusive" && rd.ok === false && (rd.summary as any).unmeasuredInGateColumn?.length > 0, rd.summary);
 
   // gate 列以外の悪化は verdict に効かない(info)

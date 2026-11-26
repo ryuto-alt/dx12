@@ -74,12 +74,29 @@ export function ababSchedule(rounds: number): { round: number; side: "A" | "B" }
   return s;
 }
 
-/** VRAM の門。Budget は OS が他プロセスの使用量を引いた後の値なので、二重に引かない(othersUsedMB は記録用)。 */
-export function vramGate(budgetMB: number | null | undefined, othersUsedMB: number | null | undefined, minMB: number) {
-  const others = typeof othersUsedMB === "number" && Number.isFinite(othersUsedMB) ? Math.round(othersUsedMB) : null;
-  if (typeof budgetMB !== "number" || !Number.isFinite(budgetMB) || budgetMB <= 0) return { ok: false, reason: "VRAM の予算(Budget)を取得できない", budgetMB: null, othersUsedMB: others, minMB };
-  const ok = budgetMB >= minMB;
-  return { ok, reason: ok ? null : `Budget ${Math.round(budgetMB)}MB < ${minMB}MB`, budgetMB: Math.round(budgetMB), othersUsedMB: others, minMB };
+/** VRAM の門(PP-NB1 / W05-39): Budget − 他プロセスの使用量 < minMB なら中止。
+ *  他プロセスの使用量 = nvidia-smi の memory.used(GPU 全体) − エンジン自身の使用量。取れなければ Budget だけで見る(注記つき)。 */
+export function vramGate(budgetMB: number | null | undefined, ownUsedMB: number | null | undefined, minMB: number, totalUsedMB?: number | null) {
+  const own = typeof ownUsedMB === "number" && Number.isFinite(ownUsedMB) ? Math.round(ownUsedMB) : null;
+  const total = typeof totalUsedMB === "number" && Number.isFinite(totalUsedMB) ? Math.round(totalUsedMB) : null;
+  const others = own !== null && total !== null ? Math.max(0, total - own) : null;
+  if (typeof budgetMB !== "number" || !Number.isFinite(budgetMB) || budgetMB <= 0) return { ok: false, reason: "VRAM の予算(Budget)を取得できない", budgetMB: null, ownUsedMB: own, othersUsedMB: others, availableMB: null, minMB };
+  const avail = Math.round(budgetMB - (others ?? 0));
+  const ok = avail >= minMB;
+  return { ok, reason: ok ? null : `Budget ${Math.round(budgetMB)}MB − 他プロセス ${others ?? "不明(0 とみなす)"}MB = ${avail}MB < ${minMB}MB`, budgetMB: Math.round(budgetMB), ownUsedMB: own, othersUsedMB: others, availableMB: avail, minMB, ...(others === null ? { note: "他プロセスの使用量を取れなかった(nvidia-smi 無し)。Budget だけで判定" } : {}) };
+}
+
+/** GPU 全体の使用中 VRAM(MB)。nvidia-smi が無ければ null。 */
+export function readGpuMemUsedMB(): Promise<number | null> {
+  return new Promise((resolve) => {
+    try {
+      const c = spawn("nvidia-smi", ["--query-gpu=memory.used", "--format=csv,noheader,nounits"], { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+      let out = ""; const t = setTimeout(() => { try { c.kill(); } catch { /* 無視 */ } resolve(null); }, 5000);
+      c.stdout?.on("data", (d) => { out += d.toString(); });
+      c.on("error", () => { clearTimeout(t); resolve(null); });
+      c.on("close", () => { clearTimeout(t); const v = Number(String(out).trim().split(/\s+/)[0]); resolve(Number.isFinite(v) ? v : null); });
+    } catch { resolve(null); }
+  });
 }
 
 // ── 1 回の窓の読み取り ─────────────────────────────────────────────────────────

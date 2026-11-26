@@ -11,7 +11,7 @@ import { defaultProvider, type EngineProvider } from "./engineProvider.ts";
 import { toJunit, type JunitCase } from "./junit.ts";
 import { runGate, type PerfDeps } from "./perfGateKind.ts";
 import { runGolden, runProject } from "./visualKind.ts";
-import { loadDiffLib } from "./visualCore.ts";
+import { loadDiffLib, openSceneWait } from "./visualCore.ts";
 
 export const CI_CHECKS = ["layout", "errors", "playtests", "visual", "perf", "ui_tests"] as const;
 export type CiCheck = { check: (typeof CI_CHECKS)[number]; [k: string]: unknown };
@@ -47,14 +47,14 @@ function defaultRunners(deps: CiDeps): Record<CiCheck["check"], CheckRunner> {
       const scenes: string[] = (c.scenes as string[] | undefined) ?? args.scenes ?? [];
       let errors = 0, checked = 0; const issues: unknown[] = [];
       for (const s of scenes.length ? scenes : [null]) {
-        if (s) await call("open_scene", { path: s }, { timeout: 300_000 });
+        if (s) await openSceneWait(call, s);
         const v = await call("validate_layout", {});
         errors += v?.errors ?? 0; checked += v?.checked ?? 0; issues.push(...(v?.issues ?? []).filter((i: any) => i.level === "error").slice(0, 20));
       }
       return errors ? { status: "fail", message: `配置検査のエラー ${errors} 件`, detail: issues } : { status: "pass", detail: { checked } };
     },
     async errors(_c, { call }) {
-      const r = await call("get_script_errors", {}).catch(() => null);
+      const r = await call("get_script_errors", {});   // 取れなければ error(握りつぶして pass にしない)
       const list: unknown[] = Array.isArray(r?.errors) ? r.errors : [];
       return list.length ? { status: "fail", message: `スクリプトエラー ${list.length} 件`, detail: list.slice(0, 20) } : { status: "pass" };
     },

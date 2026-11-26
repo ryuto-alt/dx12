@@ -2,7 +2,7 @@
 //   ・比較ロジックは移植しない。tools/bench/lib/imageDiff.mjs(sha256 / resampleArea / compareImages / judge)を遅延 import して使い、
 //     判定の出どころを golden.mjs と 1 つに保つ(配布版 dx12-mcp にはこのファイルが無いので、無ければ E_UNSUPPORTED)。
 //   ・判定は 3 段: (1) bitExact = ネイティブ解像度の SHA-256 /(2) 面積平均で縮めた絵の許容差(合否はここ)/(3) 任意の FLIP(parity の venv があるときだけ)。
-//   ・suite は 2 種類: golden(tests/golden。golden.mjs と合否が全件一致する)/ project(<project>/.dx12/baselines。adapter 違いは比べず skipped)。
+//   ・suite は 2 種類: golden(tests/golden。golden.mjs と同じ基準・許容差。全件の合否一致は実機照合待ち)/ project(<project>/.dx12/baselines。adapter 違いは比べず skipped)。
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
