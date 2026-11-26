@@ -92,13 +92,17 @@ inline u32 JitterPhaseCount(u32 renderW, u32 outW)
     return std::clamp(n, 8u, 64u);
 }
 
-// テクスチャのミップバイアス = log2(内部 / 表示)。内部 >= 表示（DLAA / ネイティブ）なら 0。
-// アップスケール時は負（細かいミップを選ぶ）。アップスケーラが時間方向に積むので、
-// 表示解像度ぶんのテクスチャ詳細を内部解像度のサンプルで拾う必要がある。
+// テクスチャのミップバイアス = log2(内部 / 表示) - 1.0 + kMipBiasEpsilon（NVIDIA DLSS ガイドの推奨式）。
+// DLAA（内部 == 表示）でも -1.0。Quality(1.5x) は約 -1.585、Balanced は約 -1.786、Performance は -2.0。
+// 適用は DLSS のフレームだけ（呼び出し側 ApplicationRender.cpp。TAA の経路には掛けない）。
+// 内部 > 表示（スーパーサンプリング）でも 0 へ clamp しない（log2 - 1 のまま。clamp の要否は判断済みで、しない）。
+// 材質ごとのバイアス無効は W3 の PI-07。
+inline constexpr float kMipBiasEpsilon = 0.0f;
 inline float TextureMipBias(u32 renderW, u32 outW)
 {
-    if (renderW == 0 || outW == 0 || renderW >= outW) return 0.0f;
-    return static_cast<float>(std::log2(static_cast<double>(renderW) / static_cast<double>(outW)));
+    if (renderW == 0 || outW == 0) return 0.0f;
+    return static_cast<float>(std::log2(static_cast<double>(renderW) / static_cast<double>(outW)) - 1.0)
+         + kMipBiasEpsilon;
 }
 
 // NDC のジッタ（TaaJitter.h の ComputeTaaJitterNdc と同じ規約: jx = 2*hx/W, jy = -2*hy/H）を
