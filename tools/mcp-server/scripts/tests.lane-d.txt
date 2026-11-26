@@ -3,3 +3,4 @@ runTestsList.test.mjs
 vfxPreviewTx.test.ts
 fleetMaterialize.test.ts
 genBudgets.test.mjs
+../scorecard/report.test.mjs
