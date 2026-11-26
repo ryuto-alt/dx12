@@ -225,6 +225,29 @@ void TestNames()
     CHECK(std::string(th::VariantName(th::Variant::B)).find("グラス") != std::string::npos);
     CHECK(std::string(th::VariantName(th::Variant::C)).find("シグナル") != std::string::npos);
 }
+// W1 A2a: Graphite の形（値は A2 が入れる）。旧案は互換値で Metrics のフォントが 16/14、Graphite は 17/15。
+void TestGraphiteShape()
+{
+    th::Variant v = th::Variant::Default;
+    CHECK(th::kVariantCount == 5);
+    CHECK(static_cast<int>(th::Variant::Graphite) == 4);
+    CHECK(th::ParseVariant("graphite", v) && v == th::Variant::Graphite);
+    v = th::Variant::Default;
+    CHECK(th::ParseVariant("g", v) && v == th::Variant::Graphite);
+    v = th::Variant::Default;
+    CHECK(th::ParseVariant("4", v) && v == th::Variant::Graphite);
+    CHECK(std::string(th::VariantName(th::Variant::Graphite)) == "Graphite Gauge");
+    for (th::Variant var : kAll)
+    {
+        CHECK(th::SpecOf(var).gg == nullptr);
+        CHECK(th::SpecOf(var).m.fontBase == 16.0f && th::SpecOf(var).m.fontMono == 14.0f);
+    }
+    CHECK(th::SpecOf(th::Variant::Graphite).m.fontBase == 17.0f && th::SpecOf(th::Variant::Graphite).m.fontMono == 15.0f);
+    th::SetVariant(th::Variant::Graphite);
+    CHECK(th::CurrentVariant() == th::Variant::Graphite);
+    th::SetVariant(th::Variant::Default);
+    CHECK(th::HairPx() >= 1.0f && th::AccentPx() >= th::HairPx());
+}
 } // namespace
 
 int main()
@@ -236,6 +259,7 @@ int main()
     TestLayoutInvariant();
     TestSetVariantRoundTrip();
     TestNames();
+    TestGraphiteShape();
     if (g_fail == 0) std::printf("ThemeVariantTests: all passed\n");
     else std::printf("ThemeVariantTests: %d failure(s)\n", g_fail);
     return g_fail == 0 ? 0 : 1;

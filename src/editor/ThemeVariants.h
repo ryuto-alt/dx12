@@ -28,6 +28,10 @@
 namespace dx12e::theme
 {
 
+// Graphite Gauge の生成仕様（ThemeGraphite.gen.h）。完全型は生成ヘッダを include する唯一の TU（ThemeGraphite.cpp）だけが持つ。
+// ここは重ヘッダなので前方宣言だけ（W1 A2a）。
+namespace gg { struct GgSpec; }
+
 // 0xRRGGBB → ImVec4（sRGB のまま。ImGui の頂点カラーに合わせてガンマ変換はしない）
 inline ImVec4 Hex(unsigned int rgb, float a = 1.0f)
 {
@@ -42,8 +46,9 @@ enum class Variant : int
     Default = 0,   // ネオン・エッジ（エディタの既定）
     B       = 2,   // グラス・レイヤー（別テーマ）
     C       = 3,   // インク・アンド・シグナル（別テーマ）
+    Graphite = 4,  // Graphite Gauge（W1 で追加。既定の選択を切り替えるのは A14）
 };
-inline constexpr int kVariantCount = 4;   // 番号 1 は旧案 A（Default に統合済み）で欠番
+inline constexpr int kVariantCount = 5;   // 番号 1 は旧案 A（Default に統合済み）で欠番
 
 inline const char* VariantName(Variant v)
 {
@@ -51,11 +56,12 @@ inline const char* VariantName(Variant v)
     {
     case Variant::B: return "B: グラス・レイヤー";
     case Variant::C: return "C: インク・アンド・シグナル";
+    case Variant::Graphite: return "Graphite Gauge";
     default:         return "既定: ネオン・エッジ";
     }
 }
 
-// "a" / "A" / "b" / "c" / "default" / "0".."3"（a・1 は旧案 A ＝ 現在の既定と同一）。解釈できなければ false（out は変えない）。
+// "a" / "A" / "b" / "c" / "g" / "graphite" / "default" / "0".."4"（a・1 は旧案 A ＝ 現在の既定と同一）。解釈できなければ false（out は変えない）。
 inline bool ParseVariant(const std::string& s, Variant& out)
 {
     if (s.size() == 1)
@@ -65,11 +71,13 @@ inline bool ParseVariant(const std::string& s, Variant& out)
         case 'a': case 'A': case '1': out = Variant::Default; return true;
         case 'b': case 'B': case '2': out = Variant::B;       return true;
         case 'c': case 'C': case '3': out = Variant::C;       return true;
+        case 'g': case 'G': case '4': out = Variant::Graphite; return true;
         case '0':                     out = Variant::Default; return true;
         default: return false;
         }
     }
     if (s == "default" || s == "Default" || s == "classic") { out = Variant::Default; return true; }
+    if (s == "graphite" || s == "Graphite") { out = Variant::Graphite; return true; }
     return false;
 }
 
@@ -107,6 +115,19 @@ struct Metrics
     float windowRounding, childRounding, frameRounding, grabRounding, popupRounding, tabRounding, scrollbarRounding;
     float windowBorder, childBorder, popupBorder, frameBorder;
     float tabBarBorder, tabOverline, dockSeparator;
+    float fontBase, fontMono;   // 本文 / 等幅のフォントサイズ（論理 px）。旧案は 16 / 14、Graphite は 17 / 15
+};
+
+// ---- 案ごとの追加トークン（W1 A2a。Palette を太らせず Spec に別枠で持つ）----
+// 旧案は既存の値から導いた互換値（見た目は変わらない）。Graphite は A2 が生成仕様の値で埋める。
+struct Extra
+{
+    ImVec4 needleDim;               // 指針（Needle）の減光
+    ImVec4 inLine;                  // 面内の細い区切り線
+    ImVec4 info;                    // 情報色
+    ImVec4 warnText, badText;       // 文字用の警告 / 異常色（面用 warn / bad とは別）
+    ImVec4 axisX, axisY, axisZ;     // 軸の色
+    float  hairPx, accentPx, playFramePx;   // 線幅（論理 px。実描画は theme::HairPx() 等が倍率を掛ける）
 };
 
 // ---- 装飾の方針（描画ヘルパ deco::* が読む。案の「シグネチャ要素」の有無と強さ）----
@@ -139,7 +160,14 @@ struct Spec
     Palette pal;
     Metrics m;
     Deco    deco;
+    Extra   ext{};
+    const gg::GgSpec* gg = nullptr;   // Graphite のときだけ非 null（ThemeGraphite.cpp が提供。旧案は null）
 };
+
+// Graphite の Spec の提供口。生成ヘッダ（ThemeGraphite.gen.h）は重ヘッダから include しないので、
+// ThemeGraphite.cpp（A2）が自分の Spec を返す関数をここへ登録する。未登録の間は SpecOf(Graphite) が
+// 旧 Default 由来の暫定値を返す（既定の選択は変えないので通常は呼ばれない）。
+inline const Spec& (*g_graphiteSpecFn)() = nullptr;
 
 namespace detail
 {
@@ -176,6 +204,13 @@ inline Spec MakeBase()
     m.popupRounding = 4.0f;  m.tabRounding = 3.0f;   m.scrollbarRounding = 6.0f;
     m.windowBorder = 1.0f; m.childBorder = 1.0f; m.popupBorder = 1.0f; m.frameBorder = 1.0f;
     m.tabBarBorder = 1.0f; m.tabOverline = 2.0f; m.dockSeparator = 3.0f;
+    m.fontBase = 16.0f; m.fontMono = 14.0f;
+
+    Extra& x = s.ext;
+    x.needleDim = Hex(0x2F8CFF, 0.60f); x.inLine = p.border; x.info = p.accent;
+    x.warnText = p.warn; x.badText = p.bad;
+    x.axisX = Hex(0xE5534B); x.axisY = Hex(0x4CBF7A); x.axisZ = Hex(0x2F8CFF);
+    x.hairPx = 1.0f; x.accentPx = 2.0f; x.playFramePx = 3.0f;
 
     Deco& d = s.deco;
     d.glow = 0.0f; d.hoverTint = 0.0f; d.easeSec = 0.0f;
@@ -320,13 +355,23 @@ inline Spec MakeC()
 
 } // namespace detail
 
+// 旧 Default 由来の暫定 Graphite（フォントだけ Graphite 値）。g_graphiteSpecFn 未登録のときだけ使う。
+inline Spec MakeGraphitePlaceholder()
+{
+    Spec s = detail::MakeDefault();
+    s.m.fontBase = 17.0f; s.m.fontMono = 15.0f;
+    return s;
+}
+
 inline const Spec& SpecOf(Variant v)
 {
     static const Spec kDefault = detail::MakeDefault();
     static const Spec kB = detail::MakeB();
     static const Spec kC = detail::MakeC();
+    static const Spec kGraphitePlaceholder = MakeGraphitePlaceholder();
     switch (v)
     {
+    case Variant::Graphite: return g_graphiteSpecFn ? g_graphiteSpecFn() : kGraphitePlaceholder;
     case Variant::B: return kB;
     case Variant::C: return kC;
     default:         return kDefault;

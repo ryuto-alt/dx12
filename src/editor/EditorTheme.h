@@ -104,6 +104,17 @@ inline ImVec4 AccentLight = AccentHover;
 inline ImVec4 AccentDim   = SelectionHover;
 inline ImVec4 AccentDim2  = Selection;
 
+// ---- W1 A2a: Graphite Gauge 用の追加トークン（旧案では互換値。見た目は変わらない）----
+// ★AccentDim は旧名（= SelectionHover）が既にあるので、指針の減光は NeedleDim という名前にする。
+inline ImVec4 NeedleDim = SpecOf(Variant::Default).ext.needleDim;
+inline ImVec4 InLine    = SpecOf(Variant::Default).ext.inLine;
+inline ImVec4 Info      = SpecOf(Variant::Default).ext.info;
+inline ImVec4 WarnText  = SpecOf(Variant::Default).ext.warnText;
+inline ImVec4 BadText   = SpecOf(Variant::Default).ext.badText;
+inline ImVec4 AxisX     = SpecOf(Variant::Default).ext.axisX;
+inline ImVec4 AxisY     = SpecOf(Variant::Default).ext.axisY;
+inline ImVec4 AxisZ     = SpecOf(Variant::Default).ext.axisZ;
+
 // 案を切り替える（トークンを書き換える）。ImGuiStyle への反映は ApplyStyle（と ImGuiManager::SetThemeVariant）が行う。
 inline void SetVariant(Variant v)
 {
@@ -123,6 +134,9 @@ inline void SetVariant(Variant v)
     AppBg = p.bg0; PanelBg = p.bg1; Chrome = p.bg1; GroupBg = p.bg2;
     FrameBg = p.inputBg; FrameBgHi = p.inputBgHover; FrameBgActive = p.inputBgActive;
     BorderSoft = p.inputBorder; AccentLight = p.accentHover; AccentDim = p.selectionHover; AccentDim2 = p.selection;
+    const Extra& x = SpecOf(v).ext;
+    NeedleDim = x.needleDim; InLine = x.inLine; Info = x.info; WarnText = x.warnText; BadText = x.badText;
+    AxisX = x.axisX; AxisY = x.axisY; AxisZ = x.axisZ;
 }
 
 // ---- 寸法トークン ----
@@ -235,6 +249,14 @@ inline ImGuiStyle ScaleStyleFrom(const ImGuiStyle& base, float scale)
     s._MainScale = base._MainScale * scale;
     return s;
 }
+
+// ---- 線幅のヘルパ（W1 A2a）。案の論理 px（Extra）に倍率を掛け、1px 未満にならないよう整数へ丸める ----
+inline float HairPx()      { return (std::max)(1.0f, Px(CurrentSpec().ext.hairPx)); }
+inline float AccentPx()    { return (std::max)(1.0f, Px(CurrentSpec().ext.accentPx)); }
+inline float PlayFramePx() { return (std::max)(1.0f, Px(CurrentSpec().ext.playFramePx)); }
+// 案ごとのフォントサイズ（論理 px）。旧案は size::kFontBase / kFontMono と同じ（16 / 14）、Graphite は 17 / 15。
+inline float FontBaseOf() { return CurrentSpec().m.fontBase; }
+inline float FontMonoOf() { return CurrentSpec().m.fontMono; }
 
 // ---- フォントのハンドル（ImGuiManager が起動時に埋める。null なら既定フォント）----
 struct Fonts
