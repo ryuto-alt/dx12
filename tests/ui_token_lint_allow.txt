@@ -1,5 +1,5 @@
 # 直書き色の棚（W1-A3 / RM-A5）。tests/ui_token_lint_test.cpp が読む。ファイルごとの件数で、増えたら ctest が赤になる。
-# [colors]: src/editor・src/gui の IM_COL32( と色の ImVec4( の件数。
+# [colors]: src/editor・src/gui の IM_COL32( / 色リテラルの ImVec4（直接初期化・波括弧含む）/ ImColor( / th::Hex(0x…) の件数。
 # [yellow_legacy]: 黄系（accent の色相 ±5°・彩度 0.6 以上）の直書きの既存分。新規は 0 件のみ。置き換えたら減らす（A14 / W2 で 0 にする）。
 # [accent_lines]: 線・縁取りを引く 1 行に Accent 系が出る呼び出しの件数（deco::Needle へ寄せたら減らす）。
 # 件数が減ったら UiTokenLintTests --print で締め直す。増やす場合は依頼（メインが承認）。
@@ -9,19 +9,21 @@ src/editor/AiDebugOverlay.cpp 15
 src/editor/CommandPalette.cpp 4
 src/editor/EditorLayer.cpp 6
 src/editor/EditorTheme.h 5
-src/editor/LauncherScreen.cpp 1
+src/editor/LauncherScreen.cpp 7
 src/editor/LightHandles.cpp 13
 src/editor/PostPresetSwatch.h 8
-src/editor/PropertyGrid.h 8
+src/editor/PropertyGrid.h 10
 src/editor/ThemeVariants.h 2
-src/editor/UiWidgets.cpp 3
+src/editor/UiWidgets.cpp 8
 src/editor/WhatsNewScreen.cpp 1
+src/editor/nodegraph/GraphTokens.h 1
 src/editor/nodegraph/GraphViewDraw.cpp 15
 src/editor/panels/AnimationEditorPanel.cpp 17
 src/editor/panels/AssetBrowserPanel.cpp 7
 src/editor/panels/AudioMixerPanel.cpp 10
+src/editor/panels/ConsolePanel.cpp 1
 src/editor/panels/FoliagePanel.cpp 2
-src/editor/panels/HardwarePanel.cpp 1
+src/editor/panels/HardwarePanel.cpp 4
 src/editor/panels/HierarchyPanel.cpp 5
 src/editor/panels/InspectorPanel.cpp 23
 src/editor/panels/LightingPanel.cpp 1
@@ -38,7 +40,7 @@ src/editor/panels/TerrainPanel.cpp 4
 src/editor/panels/ToolbarPanel.cpp 9
 src/editor/panels/TransitionPreviewPanel.cpp 10
 src/editor/panels/UiEditorPanel.cpp 18
-src/gui/ImGuiManager.cpp 5
+src/gui/ImGuiManager.cpp 31
 src/gui/ImGuizmo.cpp 27
 src/gui/UiTestHarness.cpp 11
 src/gui/VirtualInputImGui.cpp 7
@@ -48,6 +50,7 @@ src/editor/EditorLayer.cpp 1
 src/editor/LightHandles.cpp 3
 src/editor/panels/AnimationEditorPanel.cpp 1
 src/editor/panels/AudioMixerPanel.cpp 1
+src/editor/panels/HardwarePanel.cpp 1
 src/editor/panels/InspectorPanel.cpp 1
 src/editor/panels/LightingPanel.cpp 1
 src/editor/panels/SceneViewPanel.cpp 2
@@ -59,9 +62,11 @@ src/gui/UiTestHarness.cpp 2
 src/editor/LauncherScreen.cpp 12
 src/editor/UiWidgets.cpp 10
 src/editor/WhatsNewScreen.cpp 1
+src/editor/nodegraph/GraphViewDraw.cpp 7
 src/editor/nodegraph/GraphViewUi.cpp 1
 src/editor/panels/AnimationEditorPanel.cpp 1
 src/editor/panels/MaterialGraphPanel.cpp 1
-src/editor/panels/SceneViewPanel.cpp 1
+src/editor/panels/SceneViewPanel.cpp 2
 src/editor/panels/SpriteSheetEditorPanel.cpp 1
+src/editor/panels/UiEditorPanel.cpp 3
 src/editor/panels/ViewportToolbar.cpp 2

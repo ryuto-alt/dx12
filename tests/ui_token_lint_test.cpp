@@ -1,11 +1,15 @@
 // 直書き色の lint（W1-A3 / RM-A5）。GPU 不要。
 //   src/editor/** と src/gui/** の `IM_COL32(` と、色のリテラルの `ImVec4(r, g, b, a)`（先頭の 3 つが [0,1] の数値リテラル）を数え、
 //   tests/ui_token_lint_allow.txt の「ファイルごとの件数」を超えたら赤にする（増やせない棚。減る分には通り、--print で棚を締め直せる）。
+//   ・数える色の形: IM_COL32( / ImVec4 の色リテラル（`ImVec4(` `ImVec4{` `ImVec4 x(` `ImVec4 x{`）/ ImColor( / th::Hex(0x...)（テーマ本体 EditorTheme.h・ThemeVariants.h・*.gen.h の Hex は除く）。
+//     未対応: 生の ImU32 0xAABBGGRR。
 //   ・黄系の直書き（色相が Graphite の accent から ±5° 以内、かつ彩度 0.6 以上）は、新規には 0 件。
 //     W1-A3 の時点で既にあった分だけ [yellow_legacy]（ファイルごとの件数。増えたら赤、減る一方）に載せ、A14/W2 の置き換えで 0 にする。
-//     accent の色相は gg の生成物（kGraphitePalette.accent）から取り、数値を lint に書かない。
-//   ・黄の線を引く呼び出し（AddLine / AddRect / AddPolyline / AddTriangle / AddQuad / AddBezier* / AddCircle の 1 行に
-//     Accent 系の識別子が出る行）を数え、ファイルごとの件数を許可リストの [accent_lines] で棚にする（増えたら赤）。
+//     accent の色相は gg の生成物（kGraphitePalette.accent = F0C23B、色相 約 44.75°）から取り、数値を lint に書かない。
+//     （EXEC は gg::kGgSpec と書くが、kGgSpec にパレットの accent は無く、生成パレットの accent が同じ値の唯一の出どころ。±5° は PP の 40〜50° 相当）
+//   ・黄の線を引く呼び出し（AddLine / AddRect / AddPolyline / AddTriangle / AddQuad / AddBezier* / AddCircle / PathStroke の 1 行に
+//     accent を語に含む識別子（Accent* / accent* / kAccentCol / pal.accent 等。ImGuiKey_GraveAccent と onAccent は除く）が出る行。
+//     1 行内の照合のみで、複数行にまたがる呼び出しは数えない）を数え、ファイルごとの件数を許可リストの [accent_lines] で棚にする（増えたら赤）。
 //     W1-A7 の `deco::Needle`（src/editor/deco/Needle.*）の中は数えない。
 // 使い方:  UiTokenLintTests            検査（ctest）
 //          UiTokenLintTests --print    現状の件数を許可リストの書式で標準出力へ（棚を締め直すとき）
@@ -210,19 +214,77 @@ int LineOf(const std::string& s, size_t pos)
     return 1 + static_cast<int>(std::count(s.begin(), s.begin() + static_cast<std::ptrdiff_t>(pos), '\n'));
 }
 
-bool HasIdent(const std::string& s, const char* id)
+// 識別子が「accent」を語として含むか（AccentHover / accentDim / kUiAccentCol / m_tok.accentHover / NeedleDim）。
+// ImGuiKey_GraveAccent のような ImGui のキー名と、onAccent（アクセント上の文字色）は除く。
+bool IsAccentIdent(const std::string& id)
 {
-    const size_t L = std::char_traits<char>::length(id);
-    for (size_t p = s.find(id); p != std::string::npos; p = s.find(id, p + 1))
+    if (id.rfind("ImGuiKey_", 0) == 0) return false;
+    if (id == "NeedleDim") return true;
+    std::vector<std::string> seg;
+    std::string cur;
+    for (size_t i = 0; i < id.size(); ++i)
     {
-        const bool l = (p == 0) || !IsIdent(s[p - 1]);
-        const bool r = (p + L >= s.size()) || !IsIdent(s[p + L]);
-        if (l && r) return true;
+        const char c = id[i];
+        if (c == '_') { if (!cur.empty()) seg.push_back(cur); cur.clear(); continue; }
+        const bool up = std::isupper(static_cast<unsigned char>(c)) != 0;
+        const bool prevLow = i > 0 && std::islower(static_cast<unsigned char>(id[i - 1]));
+        if (up && prevLow && !cur.empty()) { seg.push_back(cur); cur.clear(); }
+        cur.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (!cur.empty()) seg.push_back(cur);
+    for (size_t i = 0; i < seg.size(); ++i)
+        if (seg[i] == "accent") return !(i > 0 && seg[i - 1] == "on");
+    return false;
+}
+
+bool LineHasAccentIdent(const std::string& line)
+{
+    size_t i = 0;
+    while (i < line.size())
+    {
+        if (IsIdent(line[i]) && !std::isdigit(static_cast<unsigned char>(line[i])))
+        {
+            size_t e = i;
+            while (e < line.size() && IsIdent(line[e])) ++e;
+            if (IsAccentIdent(line.substr(i, e - i))) return true;
+            i = e;
+        }
+        else if (IsIdent(line[i])) { while (i < line.size() && IsIdent(line[i])) ++i; }
+        else ++i;
     }
     return false;
 }
 
-ScanResult ScanText(const std::string& raw, bool countAccentLines)
+size_t SkipSpace(const std::string& s, size_t i)
+{
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    return i;
+}
+
+// IM_COL32 の定義そのもの（`#define IM_COL32(`、# や define の前後の空白可）だけを除く。他のマクロの本体に出る IM_COL32 は数える。
+bool IsImCol32Definition(const std::string& s, size_t p)
+{
+    size_t ls = s.rfind('\n', p);
+    ls = (ls == std::string::npos) ? 0 : ls + 1;
+    size_t i = SkipSpace(s, ls);
+    if (i >= p || s[i] != '#') return false;
+    i = SkipSpace(s, i + 1);
+    if (s.compare(i, 6, "define") != 0) return false;
+    i = SkipSpace(s, i + 6);
+    return i == p;
+}
+
+// 色の hex リテラル用: 0xRRGGBB
+bool IsHexColorLiteral(const std::string& a, float& r, float& g, float& b)
+{
+    double v;
+    if (!ParseNumber(a, v) || v < 0 || v > 16777215.0) return false;
+    const unsigned long u = static_cast<unsigned long>(v);
+    r = float((u >> 16) & 0xFF) / 255.0f; g = float((u >> 8) & 0xFF) / 255.0f; b = float(u & 0xFF) / 255.0f;
+    return true;
+}
+
+ScanResult ScanText(const std::string& raw, bool countAccentLines, bool countHex = true)
 {
     ScanResult r;
     const std::string s = Blank(raw);
@@ -232,10 +294,7 @@ ScanResult ScanText(const std::string& raw, bool countAccentLines)
     for (size_t p = s.find(kCol32); p != std::string::npos; p = s.find(kCol32, p + 1))
     {
         if (p > 0 && IsIdent(s[p - 1])) continue;
-        // `#define IM_COL32(` の定義行は数えない
-        size_t ls = s.rfind('\n', p);
-        ls = (ls == std::string::npos) ? 0 : ls + 1;
-        if (s.compare(ls, 7, "#define") == 0) continue;
+        if (IsImCol32Definition(s, p)) continue;
         auto a = SplitArgs(s, p + sizeof(kCol32) - 2);
         ++r.colorLiterals;
         if (a.size() == 4)
@@ -246,12 +305,24 @@ ScanResult ScanText(const std::string& raw, bool countAccentLines)
         }
     }
 
-    // ImVec4(r, g, b, a): 先頭の 3 つが [0,1] の数値リテラルのもの（矩形や位置の ImVec4 は数えない）
-    static const char kVec4[] = "ImVec4(";
+    // ImVec4 の色リテラル: 先頭の 3 つが [0,1] の数値リテラルのもの（矩形や位置の ImVec4 は数えない）。
+    //   ImVec4(r,g,b,a) / ImVec4{r,g,b,a} / ImVec4 name(r,g,b,a) / ImVec4 name{r,g,b,a} を数える。
+    //   ImVec4 name = ImVec4(...) は右辺の ImVec4( で 1 回だけ数える。
+    static const char kVec4[] = "ImVec4";
     for (size_t p = s.find(kVec4); p != std::string::npos; p = s.find(kVec4, p + 1))
     {
         if (p > 0 && IsIdent(s[p - 1])) continue;
-        auto a = SplitArgs(s, p + sizeof(kVec4) - 2);
+        size_t i = p + sizeof(kVec4) - 1;
+        if (i < s.size() && IsIdent(s[i])) continue;
+        i = SkipSpace(s, i);
+        if (i < s.size() && IsIdent(s[i]))
+        {
+            // 宣言: ImVec4 <ident> ( or {
+            while (i < s.size() && IsIdent(s[i])) ++i;
+            i = SkipSpace(s, i);
+        }
+        if (i >= s.size() || (s[i] != '(' && s[i] != '{')) continue;
+        auto a = SplitArgs(s, i);
         if (a.size() != 4) continue;
         double v[3];
         if (!(ParseNumber(a[0], v[0]) && ParseNumber(a[1], v[1]) && ParseNumber(a[2], v[2]))) continue;
@@ -260,11 +331,44 @@ ScanResult ScanText(const std::string& raw, bool countAccentLines)
         if (IsYellow(float(v[0]), float(v[1]), float(v[2]))) r.yellowLines.push_back(LineOf(s, p));
     }
 
-    // 黄の線を引く呼び出し: 1 行に「線・縁取りの描画」と「Accent 系の識別子」が並ぶもの（塗りつぶし Filled は数えない）
+    // ImColor(r,g,b[,a]): 3 つが数値リテラル。小数点があれば [0,1]、無ければ 0..255 として黄を判定する。
+    {
+        static const char kImColor[] = "ImColor(";
+        for (size_t p = s.find(kImColor); p != std::string::npos; p = s.find(kImColor, p + 1))
+        {
+            if (p > 0 && IsIdent(s[p - 1])) continue;
+            auto a = SplitArgs(s, p + sizeof(kImColor) - 2);
+            if (a.size() < 3 || a.size() > 4) continue;
+            double v[3];
+            if (!(ParseNumber(a[0], v[0]) && ParseNumber(a[1], v[1]) && ParseNumber(a[2], v[2]))) continue;
+            ++r.colorLiterals;
+            const bool isFloat = a[0].find('.') != std::string::npos || a[1].find('.') != std::string::npos || a[2].find('.') != std::string::npos;
+            const double k = isFloat ? 1.0 : 255.0;
+            if (IsYellow(float(v[0] / k), float(v[1] / k), float(v[2] / k))) r.yellowLines.push_back(LineOf(s, p));
+        }
+    }
+
+    // th::Hex(0xRRGGBB[, alpha]) / Hex(0x...): 数値リテラルを渡すものだけ（テーマ本体 EditorTheme.h・ThemeVariants.h・*.gen.h は呼び出し側が外す）
+    if (countHex)
+    {
+        static const char kHex[] = "Hex(";
+        for (size_t p = s.find(kHex); p != std::string::npos; p = s.find(kHex, p + 1))
+        {
+            if (p > 0 && IsIdent(s[p - 1])) continue;
+            auto a = SplitArgs(s, p + sizeof(kHex) - 2);
+            if (a.empty()) continue;
+            float cr, cg, cb;
+            if (!IsHexColorLiteral(a[0], cr, cg, cb)) continue;
+            ++r.colorLiterals;
+            if (IsYellow(cr, cg, cb)) r.yellowLines.push_back(LineOf(s, p));
+        }
+    }
+
+    // 黄の線を引く呼び出し: 1 行に「線・縁取りの描画」と「accent を語に含む識別子」が並ぶもの（塗りつぶし Filled は数えない）。
+    // ★限界: 1 行内の照合なので、引数が複数行にまたがる呼び出しは数えない（PathStroke は PathLineTo の行ではなく PathStroke の行で数える）。
     if (countAccentLines)
     {
-        static const char* kDraw[] = { "AddLine(", "AddRect(", "AddPolyline(", "AddTriangle(", "AddQuad(", "AddBezierCubic(", "AddBezierQuadratic(", "AddCircle(", "AddNgon(" };
-        static const char* kAcc[] = { "Accent", "AccentHover", "AccentPressed", "AccentLight", "AccentDim", "AccentDim2", "NeedleDim" };
+        static const char* kDraw[] = { "AddLine(", "AddRect(", "AddPolyline(", "AddTriangle(", "AddQuad(", "AddBezierCubic(", "AddBezierQuadratic(", "AddCircle(", "AddNgon(", "PathStroke(" };
         std::istringstream is(s);
         std::string line;
         while (std::getline(is, line))
@@ -276,9 +380,7 @@ ScanResult ScanText(const std::string& raw, bool countAccentLines)
                 if (p != std::string::npos && (p == 0 || line[p - 1] == '>' || line[p - 1] == '.' || !IsIdent(line[p - 1]))) { draw = true; break; }
             }
             if (!draw) continue;
-            bool acc = false;
-            for (const char* a : kAcc) if (HasIdent(line, a)) { acc = true; break; }
-            if (acc) ++r.accentLineDraws;
+            if (LineHasAccentIdent(line)) ++r.accentLineDraws;
         }
     }
     return r;
@@ -309,7 +411,8 @@ Allow LoadAllow(const fs::path& p)
         std::string path;
         int n = -1;
         ls >> path >> n;
-        if (path.empty() || n < 0) { a.ok = false; std::printf("allow: bad line: %s\n", line.c_str()); continue; }
+        std::string extra;
+        if (path.empty() || ls.fail() || n < 0 || (ls >> extra)) { a.ok = false; std::printf("allow: bad line: %s\n", line.c_str()); continue; }
         if (sect == "[colors]") a.colors[path] = n;
         else if (sect == "[accent_lines]") a.accentLines[path] = n;
         else if (sect == "[yellow_legacy]") a.yellowLegacy[path] = n;
@@ -338,6 +441,13 @@ bool IsNeedleImpl(const std::string& rel)
     return rel.rfind("src/editor/deco/Needle.", 0) == 0;
 }
 
+// テーマ本体（Hex を定義・使って表を作る場所）は Hex( の数に入れない。
+bool IsThemeSource(const std::string& rel)
+{
+    if (rel == "src/editor/EditorTheme.h" || rel == "src/editor/ThemeVariants.h") return true;
+    return rel.size() > 6 && rel.compare(rel.size() - 6, 6, ".gen.h") == 0;
+}
+
 struct Totals
 {
     std::map<std::string, ScanResult> files;
@@ -354,11 +464,63 @@ Totals ScanTree(const fs::path& root)
         {
             if (!it->is_regular_file() || !IsSource(it->path())) continue;
             std::string rel = fs::relative(it->path(), root).generic_string();
-            ScanResult r = ScanText(ReadAll(it->path()), !IsNeedleImpl(rel));
+            ScanResult r = ScanText(ReadAll(it->path()), !IsNeedleImpl(rel), !IsThemeSource(rel));
             if (r.colorLiterals > 0 || !r.yellowLines.empty() || r.accentLineDraws > 0) t.files[rel] = std::move(r);
         }
     }
     return t;
+}
+
+// ---- 棚の判定（走査結果 x 許可リスト）。失敗の件数を返す。quiet なら表示しない（自己検査用）----
+int Evaluate(const Totals& t, const Allow& allow, const fs::path& root, bool quiet, int* totalOut = nullptr, int* accentOut = nullptr)
+{
+    int fails = 0;
+    auto fail = [&](const std::string& msg) { ++fails; if (!quiet) std::printf("FAIL %s\n", msg.c_str()); };
+    auto fmt = [](const char* f, auto... args) { char buf[1024]; std::snprintf(buf, sizeof(buf), f, args...); return std::string(buf); };
+    int total = 0, accentTotal = 0;
+    for (const auto& [rel, r] : t.files)
+    {
+        total += r.colorLiterals;
+        accentTotal += r.accentLineDraws;
+
+        // 黄系の直書き: 棚（[yellow_legacy]）を超えたら赤。棚の既定は 0 件
+        if (!r.yellowLines.empty())
+        {
+            const auto it = allow.yellowLegacy.find(rel);
+            const int cap = it == allow.yellowLegacy.end() ? 0 : it->second;
+            if (static_cast<int>(r.yellowLines.size()) > cap)
+                for (int ln : r.yellowLines)
+                    fail(fmt("%s:%d  黄系（accent の色相 ±%.0f°、彩度 %.1f 以上）の直書き（棚 %d 件を超過）。accent 系のトークンを使うこと",
+                             rel.c_str(), ln, kYellowHueTolDeg, kYellowMinSat, cap));
+        }
+
+        if (r.colorLiterals > 0)
+        {
+            const auto it = allow.colors.find(rel);
+            const int cap = it == allow.colors.end() ? 0 : it->second;
+            if (r.colorLiterals > cap)
+                fail(fmt("%s: 直書き色 %d 件（許可 %d 件）。色は EditorTheme / gg のトークンから取ること。件数を増やす場合はメインに依頼", rel.c_str(), r.colorLiterals, cap));
+            else if (r.colorLiterals < cap && !quiet)
+                std::printf("note: %s は許可 %d 件に対し %d 件に減った（UiTokenLintTests --print で棚を締められる）\n", rel.c_str(), cap, r.colorLiterals);
+        }
+        if (r.accentLineDraws > 0)
+        {
+            const auto it = allow.accentLines.find(rel);
+            const int cap = it == allow.accentLines.end() ? 0 : it->second;
+            if (r.accentLineDraws > cap)
+                fail(fmt("%s: 黄の線の呼び出し %d 件（許可 %d 件）。線は deco::Needle 経由で引くこと", rel.c_str(), r.accentLineDraws, cap));
+        }
+    }
+    // 許可リストにあるのに存在しないファイル（改名・削除の取り残し）は、棚が緩むので赤にする
+    for (const auto& [rel, n] : allow.colors)
+        if (!fs::exists(root / rel)) fail(fmt("許可リスト [colors] のファイルが無い: %s", rel.c_str()));
+    for (const auto& [rel, n] : allow.yellowLegacy)
+        if (!fs::exists(root / rel)) fail(fmt("許可リスト [yellow_legacy] のファイルが無い: %s", rel.c_str()));
+    for (const auto& [rel, n] : allow.accentLines)
+        if (!fs::exists(root / rel)) fail(fmt("許可リスト [accent_lines] のファイルが無い: %s", rel.c_str()));
+    if (totalOut) *totalOut = total;
+    if (accentOut) *accentOut = accentTotal;
+    return fails;
 }
 
 // ---- スキャナの自己検査 ----
@@ -367,7 +529,10 @@ void SelfTest()
     // 数える: IM_COL32 は引数が変数でも数える。色の ImVec4 だけ数える（矩形は [0,1] の外・変数混じりで外れる）
     {
         auto r = ScanText("auto a = IM_COL32(10, 20, 30, alpha);\nImVec4 b(0.1f, 0.2f, 0.3f, 1.0f);\nImVec4 rc = ImVec4(0, 0, 640, 480);\nImVec4 d = ImVec4(c.x, c.y, c.z, 0.5f);\n", true);
-        CHECKF(r.colorLiterals == 1, "self: IM_COL32 only (ImVec4 b( is a declaration, not ImVec4( call) got %d", r.colorLiterals);
+        CHECKF(r.colorLiterals == 2, "self: IM_COL32 + direct-init ImVec4 b(...) got %d", r.colorLiterals);
+        auto r2 = ScanText("const ImVec4 kWarn (1.00f, 0.80f, 0.35f, 1.0f);\nImVec4 q{0.1f,0.2f,0.3f,1};\nauto z = ImVec4{0.1f,0.2f,0.3f,1};\nImVec4 c = ImVec4(0.1f,0.2f,0.3f,1);\nImVec4 Foo(float a, float b);\nImVec4 rc(0,0,640,480);\n", true);
+        CHECKF(r2.colorLiterals == 4, "self: ImVec4 decl/brace/assign forms got %d", r2.colorLiterals);
+        CHECKF(r2.yellowLines.size() == 1, "self: yellow kWarn (direct init) got %zu", r2.yellowLines.size());
     }
     {
         auto r = ScanText("x = ImVec4(0.1f, 0.2f, 0.3f, 1.0f);\ny = ImVec4(0,0,640,480);\nz = ImVec4(c.x,c.y,c.z,1);\n", true);
@@ -380,8 +545,11 @@ void SelfTest()
     }
     // 識別子の一部・#define は数えない
     {
-        auto r = ScanText("#define IM_COL32(R,G,B,A) 0\nint MY_IM_COL32(1,2,3,4);\nauto w = IM_COL32_WHITE;\n", true);
+        auto r = ScanText("#define IM_COL32(R,G,B,A) 0\n  #  define IM_COL32(R,G,B,A) 0\nint MY_IM_COL32(1,2,3,4);\nauto w = IM_COL32_WHITE;\n", true);
         CHECKF(r.colorLiterals == 0, "self: define/ident got %d", r.colorLiterals);
+        // 他のマクロの本体に出る IM_COL32 は数える（黄も拾う）
+        auto r2 = ScanText("#define COL_WARN IM_COL32(240,194,59,255)\n", true);
+        CHECKF(r2.colorLiterals == 1 && r2.yellowLines.size() == 1, "self: macro body IM_COL32 got %d/%zu", r2.colorLiterals, r2.yellowLines.size());
     }
     // 黄: accent と同じ色は検出、灰・青・暗い黄土色は対象外。16 進と小数
     {
@@ -402,6 +570,51 @@ void SelfTest()
         CHECKF(r.accentLineDraws == 2, "self: accent line draws got %d", r.accentLineDraws);
         auto r2 = ScanText("dl->AddLine(a, b, U(th::Accent), 2);\n", false);
         CHECK(r2.accentLineDraws == 0);
+    }
+    // 小文字・メンバ・k 接頭辞の accent 識別子も拾う。ImGuiKey_GraveAccent / onAccent は拾わない。PathStroke も数える
+    {
+        auto r = ScanText("dl->AddRect(a,b,U(pal.accent));\ndl->AddLine(a,b,U(gg::kGraphitePalette.accent),1);\ndl->AddLine(a,b,U(m_tok.accentHover));\n"
+                          "dl->AddRect(a,b,kAccentCol);\ndl->AddRect(a,b,kUiAccentCol);\ndl->AddCircle(c,r,accentDim);\n"
+                          "dl->PathStroke(U(th::Accent), 0, 2);\n"
+                          "dl->AddLine(a,b,U(ImGuiKey_GraveAccent));\ndl->AddLine(a,b,U(onAccent));\ndl->AddLine(a,b,U(th::Border));\n", true);
+        CHECKF(r.accentLineDraws == 7, "self: accent ident forms got %d", r.accentLineDraws);
+        // 限界: 複数行にまたがる呼び出しは数えない
+        auto r2 = ScanText("dl->AddLine(a, b,\n    U(th::Accent), 2);\n", true);
+        CHECKF(r2.accentLineDraws == 0, "self: multi-line call is not counted (known limitation) got %d", r2.accentLineDraws);
+    }
+    // Hex(0x...) と ImColor(...) の直書き。変数引数の Hex・識別子の一部（FormatXHex）は数えない。theme ファイルは countHex=false
+    {
+        auto r = ScanText("a = th::Hex(0xF0C23B);\nb = Hex(0x0A1630, 0.5f);\nc = th::Hex(d.gradA);\nd = FormatGuidHex(1);\ne = ImColor(240,194,59);\nf = ImColor(0.1f,0.2f,0.3f,1.0f);\n", true);
+        CHECKF(r.colorLiterals == 4, "self: Hex/ImColor count got %d", r.colorLiterals);
+        CHECKF(r.yellowLines.size() == 2, "self: Hex/ImColor yellow got %zu", r.yellowLines.size());
+        auto r2 = ScanText("a = Hex(0xF0C23B);\n", true, false);
+        CHECKF(r2.colorLiterals == 0, "self: countHex=false got %d", r2.colorLiterals);
+    }
+    // 棚の判定（許可リストの読み込みと上限の比較）
+    {
+        const fs::path dir = fs::temp_directory_path() / "ui_token_lint_selftest";
+        std::error_code ec;
+        fs::create_directories(dir / "src", ec);
+        { std::ofstream f(dir / "src" / "a.cpp"); f << "x\n"; }
+        auto writeAllow = [&](const char* txt) { const fs::path ap = dir / "allow.txt"; { std::ofstream f(ap); f << txt; } return LoadAllow(ap); };
+
+        const Allow good = writeAllow("[colors]\nsrc/a.cpp 2\n[yellow_legacy]\nsrc/a.cpp 1\n[accent_lines]\nsrc/a.cpp 1\n");
+        CHECK(good.ok && good.colors.at("src/a.cpp") == 2 && good.yellowLegacy.at("src/a.cpp") == 1 && good.accentLines.at("src/a.cpp") == 1);
+        CHECK(!writeAllow("[bogus]\nsrc/a.cpp 1\n").ok);          // 未知の節
+        CHECK(!writeAllow("[colors]\nsrc/a.cpp\n").ok);           // 件数が無い
+        CHECK(!writeAllow("[colors]\nsrc/a.cpp x\n").ok);         // 件数が数でない
+        { Allow none = LoadAllow(dir / "nonexistent.txt"); CHECK(!none.ok); }
+
+        auto mk = [](int col, size_t yel, int acc) { Totals t; ScanResult r; r.colorLiterals = col; r.yellowLines.assign(yel, 1); r.accentLineDraws = acc; t.files["src/a.cpp"] = r; return t; };
+        CHECK(Evaluate(mk(2, 1, 1), good, dir, true) == 0);        // ちょうど棚
+        CHECK(Evaluate(mk(1, 0, 0), good, dir, true) == 0);        // 減る分は通る
+        CHECK(Evaluate(mk(3, 1, 1), good, dir, true) > 0);         // colors 超過
+        CHECK(Evaluate(mk(2, 2, 1), good, dir, true) > 0);         // yellow_legacy 超過
+        CHECK(Evaluate(mk(2, 1, 2), good, dir, true) > 0);         // accent_lines 超過
+        CHECK(Evaluate(mk(1, 1, 0), Allow{}, dir, true) > 0);      // 棚に載っていないファイルは 0 件扱い
+        const Allow missing = writeAllow("[colors]\nsrc/gone.cpp 1\n");
+        CHECK(Evaluate(Totals{}, missing, dir, true) > 0);         // 棚にあるファイルが無い
+        fs::remove_all(dir, ec);
     }
     // 色相の環状差
     CHECK(HueDiff(359.0f, 1.0f) == 2.0f);
@@ -437,46 +650,7 @@ int main(int argc, char** argv)
 
     const Totals t = ScanTree(root);
     int total = 0, accentTotal = 0;
-    for (const auto& [rel, r] : t.files)
-    {
-        total += r.colorLiterals;
-        accentTotal += r.accentLineDraws;
-
-        // 黄系の直書き: 棚（[yellow_legacy]）を超えたら赤。棚の既定は 0 件
-        if (!r.yellowLines.empty())
-        {
-            const auto it = allow.yellowLegacy.find(rel);
-            const int cap = it == allow.yellowLegacy.end() ? 0 : it->second;
-            if (static_cast<int>(r.yellowLines.size()) > cap)
-                for (int ln : r.yellowLines)
-                    CHECKF(false, "%s:%d  黄系（accent の色相 ±%.0f°、彩度 %.1f 以上）の直書き（棚 %d 件を超過）。accent 系のトークンを使うこと",
-                           rel.c_str(), ln, kYellowHueTolDeg, kYellowMinSat, cap);
-        }
-
-        if (r.colorLiterals > 0)
-        {
-            const auto it = allow.colors.find(rel);
-            const int cap = it == allow.colors.end() ? 0 : it->second;
-            CHECKF(r.colorLiterals <= cap, "%s: 直書き色 %d 件（許可 %d 件）。色は EditorTheme / gg のトークンから取ること。件数を増やす場合はメインに依頼",
-                   rel.c_str(), r.colorLiterals, cap);
-            if (r.colorLiterals < cap)
-                std::printf("note: %s は許可 %d 件に対し %d 件に減った（UiTokenLintTests --print で棚を締められる）\n", rel.c_str(), cap, r.colorLiterals);
-        }
-        if (r.accentLineDraws > 0)
-        {
-            const auto it = allow.accentLines.find(rel);
-            const int cap = it == allow.accentLines.end() ? 0 : it->second;
-            CHECKF(r.accentLineDraws <= cap, "%s: 黄の線の呼び出し %d 件（許可 %d 件）。線は deco::Needle 経由で引くこと",
-                   rel.c_str(), r.accentLineDraws, cap);
-        }
-    }
-    // 許可リストにあるのに存在しないファイル（改名・削除の取り残し）は、棚が緩むので赤にする
-    for (const auto& [rel, n] : allow.colors)
-        CHECKF(fs::exists(root / rel), "許可リスト [colors] のファイルが無い: %s", rel.c_str());
-    for (const auto& [rel, n] : allow.yellowLegacy)
-        CHECKF(fs::exists(root / rel), "許可リスト [yellow_legacy] のファイルが無い: %s", rel.c_str());
-    for (const auto& [rel, n] : allow.accentLines)
-        CHECKF(fs::exists(root / rel), "許可リスト [accent_lines] のファイルが無い: %s", rel.c_str());
+    g_fail += Evaluate(t, allow, root, false, &total, &accentTotal);
 
     std::printf("ui_token_lint: 直書き色 %d 件（%zu ファイル）、黄の線の呼び出し %d 件。\n", total, t.files.size(), accentTotal);
     if (g_fail)
