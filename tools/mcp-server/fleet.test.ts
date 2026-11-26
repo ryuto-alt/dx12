@@ -160,6 +160,7 @@ console.log("[4] 起動(インスタンス分離・ポート割当・上限・vi
   const srcExe = path.join(bd, "DX12Engine.exe");
   check("exe は実コピー(元とは別ファイル。ハードリンクではない = LNK1104 を避ける)", fs.existsSync(exe) && fs.statSync(exe).nlink === 1 && fs.statSync(exe).ino !== fs.statSync(srcExe).ino, { nlink: fs.statSync(exe).nlink });
   check("通常の dll は実コピー、dxil.dll(再ビルドされない大きい DLL)と GameRuntime.exe(dx12_build_game の材料。実行されない)だけハードリンク", fs.statSync(path.join(bin, "fake.dll")).nlink === 1 && fs.statSync(path.join(bin, "dxil.dll")).nlink >= 2 && fs.statSync(path.join(bin, "GameRuntime.exe")).nlink >= 2 && r.exe.linked.includes("dxil.dll") && r.exe.linked.includes("GameRuntime.exe"), r.exe.linked);
+  check("bin/D3D12/D3D12Core.dll がある(Agility SDK。サブフォルダも再帰)・ハードリンク(nlink>=2)・r.exe.linked に載る", fs.existsSync(path.join(bin, "D3D12", "D3D12Core.dll")) && fs.statSync(path.join(bin, "D3D12", "D3D12Core.dll")).nlink >= 2 && fs.existsSync(path.join(bin, "D3D12", "sub", "nested.bin")) && r.exe.linked.includes("D3D12/D3D12Core.dll") && r.exe.linked.includes("D3D12/sub/nested.bin"), r.exe.linked);
   check("shaders / assets も実コピー・pdb は持ってこない", fs.existsSync(path.join(bin, "shaders", "a.cso")) && fs.statSync(path.join(bin, "shaders", "a.cso")).nlink === 1 && fs.existsSync(path.join(bin, "assets", "editor", "x.txt")) && !fs.existsSync(path.join(bin, "DX12Engine.pdb")));
   const marker = JSON.parse(fs.readFileSync(path.join(r.dir.data, "mock_marker.json"), "utf8"));
   check("DX12E_DATA_DIR がインスタンスの data フォルダ(ユーザーの %APPDATA% ではない)", path.resolve(marker.dataDir) === path.resolve(r.dir.data) && !marker.dataDir.toLowerCase().includes("appdata\\roaming"), marker.dataDir);
@@ -605,6 +606,7 @@ console.log("[9] refresh / 古い exe コピー");
   check("refresh 中にスイープが走り続けても、エントリ・インスタンスを消されずに再起動できる", r.engineId === a.engineId && !!fleet.registry.read().engines[a.engineId] && fs.existsSync(r.dir.instance), r.error);
   check("refresh は使い捨てプロジェクトの作業内容を初期シーンで上書きしない(自動保存された作業が残る)", fs.readFileSync(path.join(a.dir.project, "assets", "scenes", "main.json"), "utf8").includes("MyWork") && fs.existsSync(path.join(a.dir.project, "assets", "scenes", "marker.txt")));
   check("refresh: 同じ id・ポートで新しい pid に再起動し、古い pid は死ぬ", r.engineId === a.engineId && r.port === a.port && r.pid !== a.pid && !pidAlive(a.pid) && pidAlive(r.pid) && r.previous.wasStale === true, r);
+  check("refresh(再 materialize)後も元の D3D12/D3D12Core.dll は無傷(ハードリンク先を消さない)", fs.readFileSync(path.join(bd, "D3D12", "D3D12Core.dll"), "utf8") === "core" && fs.existsSync(path.join(r.dir.bin, "D3D12", "D3D12Core.dll")));
   check("refresh 後は exe コピーが新しい(サイズ更新)・stale が消える・束縛が保たれる", fs.statSync(r.exe.path).size === 210_000 && r.exe.stale === false && router.boundId() === a.engineId);
   check("refresh 後のエンジンへ繋がる(同じ束縛スロットが繋ぎ直す)", (await router.call("ping", {})).pid === r.pid);
   check("refresh のエントリ: state ready・pid 更新・args 保持", (() => { const e = fleet.registry.read().engines[a.engineId]; return e.state === "ready" && e.pid === r.pid && e.args.includes("--background") && e.args[e.args.indexOf("--mcp-port") + 1] === String(a.port); })());
@@ -619,7 +621,7 @@ console.log("[9] refresh / 古い exe コピー");
 // ────────────────────────────────────────────────────────────────────────────
 console.log("[10] 終了処理(shutdownSync)と使い捨てプロジェクトの GC");
 {
-  const { fleet, router } = newFleet();
+  const { fleet, router, bd } = newFleet();
   const a: any = await fleet.launch({}); const b: any = await fleet.launch({});
   const other = spawnSleeper(); track(other.pid);
   const oe = spawnSleeper(); track(oe.pid);
@@ -628,6 +630,7 @@ console.log("[10] 終了処理(shutdownSync)と使い捨てプロジェクトの
   fleet.shutdownSync();
   check("shutdownSync: 自分が owner のエンジンを全部止める(プロセスツリーごと)", !pidAlive(a.pid) && !pidAlive(b.pid), Date.now() - t0);
   check("shutdownSync: 自分のエントリとインスタンスを消し、他人のエントリ・プロセスには触れない", (() => { const e = fleet.registry.read().engines; return Object.keys(e).length === 1 && !!e["e-other"] && pidAlive(oe.pid!) && !fs.existsSync(a.dir.instance); })());
+  check("shutdownSync / インスタンス削除後も元の D3D12/D3D12Core.dll は無傷", fs.readFileSync(path.join(bd, "D3D12", "D3D12Core.dll"), "utf8") === "core");
   console.log(`      shutdownSync(2 台)${Date.now() - t0} ms`);
   killTreeSync(oe.pid!); killTreeSync(other.pid!);
   void router;
