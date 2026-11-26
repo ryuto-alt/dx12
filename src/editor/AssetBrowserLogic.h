@@ -36,9 +36,12 @@ namespace dx12e::abl
 enum class Kind : int
 {
     Folder = 0, Model, Texture, Scene, Script, Audio, Prefab, Shader, Material,
-    UiAnim, SpriteSheet, MaterialGraph, Other,
+    UiAnim, SpriteSheet, MaterialGraph,
+    Sequence,   // .dxseq（W1 A10。ダブルクリックで再生）
+    Vfx,        // .uvfx（W1 A10。ダブルクリックで置く）
+    Other,
 };
-inline constexpr int kKindCount = 13;
+inline constexpr int kKindCount = 15;
 
 inline std::string LowerAscii(std::string_view s)
 {
@@ -62,7 +65,20 @@ inline Kind ClassifyExtension(std::string_view extIn)
     if (ext == ".dxmg")    return Kind::MaterialGraph;
     if (ext == ".uianim")  return Kind::UiAnim;
     if (ext == ".spranim") return Kind::SpriteSheet;
+    if (ext == ".dxseq")   return Kind::Sequence;
+    if (ext == ".uvfx")    return Kind::Vfx;
     return Kind::Other;
+}
+
+// assets ルートからの相対パス（'/' 区切り）。ルートの外・空の場合は絶対パスをそのまま '/' 区切りで返す。
+// A10: .dxseq / .uvfx のダブルクリックが EditorContext の pending* へ入れる値の形（"sequences/Intro.dxseq"）。
+inline std::string AssetsRelative(const std::filesystem::path& root, const std::filesystem::path& p)
+{
+    std::error_code ec;
+    std::filesystem::path rel = std::filesystem::relative(p, root, ec);
+    const std::string r = rel.generic_string();
+    if (ec || rel.empty() || r.rfind("..", 0) == 0) return p.generic_string();
+    return r;
 }
 
 // UI に出す種別名（日本語主・チップの文言）。
@@ -82,6 +98,8 @@ inline const char* KindLabel(Kind k)
     case Kind::UiAnim:        return "UI アニメ";
     case Kind::SpriteSheet:   return "スプライト";
     case Kind::MaterialGraph: return "マテリアルグラフ";
+    case Kind::Sequence:      return "シーケンス";
+    case Kind::Vfx:           return "VFX";
     default:                  return "その他";
     }
 }
@@ -103,6 +121,8 @@ inline const char* KindShortName(Kind k)
     case Kind::UiAnim:        return "UiAnim";
     case Kind::SpriteSheet:   return "SpriteSheet";
     case Kind::MaterialGraph: return "MatGraph";
+    case Kind::Sequence:      return "Sequence";
+    case Kind::Vfx:           return "Vfx";
     default:                  return "File";
     }
 }

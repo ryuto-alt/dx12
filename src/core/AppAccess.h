@@ -39,6 +39,13 @@ struct AppAccess
     static void ResetAutoProtectThrottleForTest();
     // W05-04: GraphicsDevice の caps（DeviceCaps.h を include した TU だけが型を使える）。デバイスが無ければ nullptr。
     static const struct DeviceCaps* GetDeviceCaps(Application&);
+    // W1-A10: エディタのプレビュー再生中のシーケンス名（無ければ空。定義は core/ApplicationSequencer.cpp）。UI テスト用。
+    static std::string SequenceEditorPlayingDoc(Application&);
+    // UI テスト用: エディタのシーケンス編集セッションを終える（元の値へ戻す）。
+    static void SequenceEditorStopForTest(Application&);
+    // UI テスト用: 読み込んだ .dxseq の文書を閉じる / その assets 相対パス（テストが一覧に文書を残さないため）。
+    static void SequenceCloseDocForTest(Application&, const std::string& nameOrRel);
+    static std::string SequenceDocRelForTest(Application&, const std::string& nameOrRel);   // 開いていなければ空
     // ==== lane-A end ====
 
     // ==== lane-B begin ====
