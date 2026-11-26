@@ -95,7 +95,7 @@ const lumaOf = (img) => {
 function engineArgs(args, extra = []) {
   return [...(args.noDred ? ["--no-dred"] : []), ...extra];
 }
-async function waitReady(conn, tries = 480) {
+export async function waitReady(conn, tries = 480) {
   // 起動直後はプロジェクトのロード中。ping が通り、sceneLoading が落ち、数フレーム回せるまで待つ。
   for (let i = 0; i < tries; i++) {
     try {
@@ -229,7 +229,7 @@ async function stageUi(args) {
 }
 
 // ─── 段 3: golden_core と新規シーン（3D） ─────────────────────────────────
-async function openScene(conn, scene) {
+export async function openScene(conn, scene) {
   for (let i = 0; i < 600; i++) {
     const p = await conn.call("ping");
     if (p.currentScene === scene) return p;
@@ -239,7 +239,7 @@ async function openScene(conn, scene) {
   }
   throw new Error(`シーンが開かない: ${scene}`);
 }
-async function createNewScene(conn) {
+export async function createNewScene(conn) {
   let before = (await conn.call("ping")).sceneGeneration;
   for (let i = 0; i < 600; i++) {
     const p = await conn.call("ping");
