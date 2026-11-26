@@ -1,4 +1,4 @@
-// ジョブ種別 visual_regression(MCP-01)。suite:"golden"(tests/golden。golden.mjs と合否が全件一致)/ "project"(<project>/.dx12/baselines)。
+// ジョブ種別 visual_regression(MCP-01)。suite:"golden"(tests/golden。golden.mjs と同じ基準・許容差(全件一致は実機照合待ち))/ "project"(<project>/.dx12/baselines)。
 // 比較ロジックは visualCore.ts(= tools/bench/lib/imageDiff.mjs を遅延 import)。エンジンは窓を出さない起動(headless / background)だけ。
 import fs from "node:fs";
 import path from "node:path";

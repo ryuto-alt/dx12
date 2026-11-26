@@ -229,7 +229,7 @@
           ],
           "degrade": "体数を減らす",
           "owner": "LS-16（GpuTimer のスコープ未作成）",
-          "leavesPending": false
+          "leavesPending": true
         },
         {
           "id": "Reactive",
@@ -537,7 +537,7 @@
           ],
           "degrade": "体数を減らす",
           "owner": "LS-16（GpuTimer のスコープ未作成）",
-          "leavesPending": false
+          "leavesPending": true
         },
         {
           "id": "Reactive",
@@ -846,7 +846,7 @@
           ],
           "degrade": "体数を減らす",
           "owner": "LS-16（GpuTimer のスコープ未作成）",
-          "leavesPending": false
+          "leavesPending": true
         },
         {
           "id": "Reactive",

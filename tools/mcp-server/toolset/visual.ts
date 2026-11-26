@@ -109,7 +109,8 @@ export async function runVisual(a: Args): Promise<unknown> {
       const r = await runGoldenUpdate(cfg.repoDir, a.only);
       return { updated: r.code === 0, exitCode: r.code, only: a.only, reason: a.reason, approvedBy: "ai", note: "tests/golden の基準を golden.mjs --update で撮り直した。差分(git diff tests/golden)を人が確認してからコミットする", tail: r.tail };
     }
-    if (a.op === "compare" || a.op === "capture") {
+    if (a.op === "capture") bad("E_UNSUPPORTED", "golden の capture は未対応(基準を変えずに撮るだけの経路が無い)。比べるなら op:\"compare\"");
+    if (a.op === "compare") {
       const v = await getJobs().start({ kind: "visual_regression", args: { suite: "golden", ...(a.only ? { only: a.only } : {}), ...(a.metric ? { metric: a.metric } : {}) }, approved: isGuardApproved() });
       if (a.waitSec && a.waitSec > 0) { const done = await getJobs().wait(v.id, { waitMs: a.waitSec * 1000, until: "done" }); return { job: done.id, state: done.state, summary: done.summary, error: done.error ?? null }; }
       return { job: v.id, state: v.state, next: "dx12_job_status {id, waitSec:30} → dx12_job_result" };
