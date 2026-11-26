@@ -1,0 +1,1081 @@
+{
+  "_note": "予算の唯一の正（メインが所有。PROGRAM_PLAN §3 の表から作成）。値を変えたら node tools/gen_budgets.mjs で生成物を作り直してコミットする。maxParticles は既存の GpuParticleSystem::kMaxParticles と同じ値（W1-BD で決め直す）",
+  "schema": 1,
+  "presets": {
+    "epic_1080p60": {
+      "_note": "PROGRAM_PLAN §3.1 / §3.3 / §3.4。小計（常時）DLSS 15.4 / TAAU 14.95。Capsule の葉 capsule は GpuTimer に未作成（--check-leaves が赤になる。T-00 の追加かメインの裁定待ち）",
+      "label": "Epic",
+      "targetFps": 60,
+      "output": [
+        1920,
+        1080
+      ],
+      "p95Ms": 15.5,
+      "p99Ms": 16.6,
+      "rows": [
+        {
+          "id": "DepthPrepass",
+          "ms": 0.5,
+          "leaves": [
+            "depthPrepass"
+          ],
+          "degrade": "PDO を OFF にする",
+          "owner": "既存、MH-13"
+        },
+        {
+          "id": "ClusterCull",
+          "ms": 0.2,
+          "leaves": [
+            "hiZ",
+            "clusterCull",
+            "vgCull"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Raytracing",
+          "ms": 0.25,
+          "leaves": [
+            "raytracing"
+          ],
+          "degrade": "refit を 2 フレームに 1 回にする",
+          "owner": "LS-10、AS-10"
+        },
+        {
+          "id": "Skinning",
+          "ms": 0.2,
+          "leaves": [
+            "skinning"
+          ],
+          "degrade": "遠くの敵は 30Hz",
+          "owner": "AS-9/10"
+        },
+        {
+          "id": "MainScene",
+          "ms": 3.6,
+          "leaves": [
+            "mainScene"
+          ],
+          "degrade": "ディテールを距離で切る、LTC を代表点にする、POM を距離で切る",
+          "owner": "既存、MH-6/10/11/13（V2 の基本 3.3 と重い群 0.3 を 1 行にまとめた）"
+        },
+        {
+          "id": "Characters",
+          "ms": 0.3,
+          "leaves": [
+            "characters"
+          ],
+          "degrade": "LOD を手前へ",
+          "owner": "AS-9/10"
+        },
+        {
+          "id": "ShadowCsm",
+          "ms": 0.25,
+          "leaves": [
+            "shadowCsm"
+          ],
+          "degrade": "3 枚目のカスケードを 2 フレームに 1 回",
+          "owner": "LS-02a"
+        },
+        {
+          "id": "ShadowLocal",
+          "ms": 0.5,
+          "leaves": [
+            "shadowLocal"
+          ],
+          "degrade": "更新するタイルを減らす（動的な物の近くは除く）",
+          "owner": "LS-08"
+        },
+        {
+          "id": "RtShadow",
+          "ms": 0.55,
+          "leaves": [
+            "rtShadow",
+            "rtShadowDenoise"
+          ],
+          "degrade": "2spp の適応を切る",
+          "owner": "既存、LS-10"
+        },
+        {
+          "id": "ScreenShadow",
+          "ms": 0.2,
+          "leaves": [
+            "screenShadow"
+          ],
+          "degrade": "太陽だけにする",
+          "owner": "LS-03"
+        },
+        {
+          "id": "SsLighting",
+          "ms": 0.55,
+          "leaves": [
+            "ssLighting",
+            "screenSpaceGi"
+          ],
+          "degrade": "スライス 2 本、12 ステップ",
+          "owner": "LS-07（GTAO と SSGI を置き換える）"
+        },
+        {
+          "id": "Ddgi",
+          "ms": 0.7,
+          "leaves": [
+            "ddgi"
+          ],
+          "degrade": "更新を減らす",
+          "owner": "既存"
+        },
+        {
+          "id": "RtReflect",
+          "ms": 0.75,
+          "leaves": [
+            "rtReflection"
+          ],
+          "degrade": "SSR にする",
+          "owner": "既存、LS-14"
+        },
+        {
+          "id": "Atmosphere",
+          "ms": 0.25,
+          "leaves": [
+            "atmosphere"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Clouds",
+          "ms": 0.75,
+          "leaves": [
+            "clouds",
+            "cloudShadow"
+          ],
+          "degrade": "32 ステップにする",
+          "owner": "既存"
+        },
+        {
+          "id": "VolumetricFog",
+          "ms": 0.8,
+          "leaves": [
+            "volFog",
+            "godRays"
+          ],
+          "degrade": "96 スライスにする",
+          "owner": "LS-05"
+        },
+        {
+          "id": "Water",
+          "ms": 0.35,
+          "leaves": [
+            "water"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Foliage",
+          "ms": 0.9,
+          "leaves": [
+            "foliage"
+          ],
+          "degrade": "密度 0.6、インポスターの距離を手前へ",
+          "owner": "AS-12"
+        },
+        {
+          "id": "Transparent",
+          "ms": 0.3,
+          "leaves": [
+            "transparent"
+          ],
+          "degrade": "屈折を OFF にする",
+          "owner": "MH-7"
+        },
+        {
+          "id": "Decals",
+          "ms": 0.1,
+          "leaves": [
+            "decals"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存、VFX-12"
+        },
+        {
+          "id": "Capsule",
+          "ms": 0.15,
+          "leaves": [
+            "capsule"
+          ],
+          "degrade": "体数を減らす",
+          "owner": "LS-16（GpuTimer のスコープ未作成）"
+        },
+        {
+          "id": "Reactive",
+          "ms": 0.1,
+          "leaves": [
+            "reactive"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "PI-03"
+        },
+        {
+          "id": "Bloom",
+          "ms": 0.3,
+          "leaves": [
+            "bloom",
+            "lensFx"
+          ],
+          "degrade": "ダートを OFF にする",
+          "owner": "PI-05"
+        },
+        {
+          "id": "ColorLut",
+          "ms": 0.2,
+          "leaves": [
+            "colorLut",
+            "uber"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "PI-02/10"
+        },
+        {
+          "id": "AutoExposure",
+          "ms": 0.15,
+          "leaves": [
+            "autoExposure",
+            "localExposure"
+          ],
+          "degrade": "LE を OFF にする",
+          "owner": "PI-09"
+        },
+        {
+          "id": "GameHud",
+          "ms": 0.1,
+          "leaves": [
+            "gameHud"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "GG-6、SC-6ui"
+        }
+      ],
+      "upscalerColumns": {
+        "dlss": {
+          "gate": "gate",
+          "renderScale": 0.6667,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 1.1,
+              "leaves": [
+                "upscale"
+              ],
+              "degrade": "DLSS の CNN プリセットにする、または Balanced にする",
+              "owner": "PI-07 / PI-03 / PI-10"
+            }
+          ]
+        },
+        "taau": {
+          "gate": "gateAfterW2BD",
+          "renderScale": 0.6667,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 0.65,
+              "leaves": [
+                "taa",
+                "upscale"
+              ],
+              "degrade": "DLSS の CNN プリセットにする、または Balanced にする",
+              "owner": "PI-07 / PI-03 / PI-10"
+            }
+          ]
+        },
+        "taaNative": {
+          "gate": "record",
+          "renderScale": 1,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 0.6,
+              "leaves": [
+                "taa",
+                "upscale"
+              ],
+              "degrade": "DLSS の CNN プリセットにする、または Balanced にする",
+              "owner": "PI-07 / PI-03 / PI-10"
+            }
+          ]
+        }
+      },
+      "vfx": {
+        "rows": [
+          {
+            "id": "VfxSim",
+            "ms": 0.5,
+            "leaves": [
+              "vfxSim"
+            ],
+            "leavesPending": true,
+            "degrade": "放出の倍率を 0.75 にする",
+            "owner": "VFX 全体（Sim と Draw の配分は暫定。合計 1.3 が §3.1 の値）"
+          },
+          {
+            "id": "VfxDraw",
+            "ms": 0.8,
+            "leaves": [
+              "vfxDraw",
+              "vfxLighting",
+              "vfxShadow"
+            ],
+            "leavesPending": true,
+            "degrade": "放出の倍率を 0.75 にする",
+            "owner": "VFX 全体（Draw＋Lighting＋Shadow＋Lights。半解像度の合成は必須）"
+          }
+        ],
+        "emissionMultiplier": 1,
+        "maxParticles": 131072,
+        "peakMs": 2.3
+      },
+      "vram": {
+        "capGb": 6,
+        "marginGb": 0.6,
+        "precheckGb": 6.5,
+        "totalGb": 4.8
+      },
+      "cpu": {
+        "gameThreadP95Ms": 6,
+        "renderRecordP95Ms": 4,
+        "editorUiP95Ms": 1.5
+      },
+      "expectedTotalMs": {
+        "dlss": 15.4,
+        "taau": 14.95
+      }
+    },
+    "high_1080p60": {
+      "_note": "暫定: PROGRAM_PLAN に High の表は無い（High は RT なし。4096 の CSM と Gather PCSS の行は W2 の LS-02b でメインが足す）。それまでは Epic と同じ値で判定する",
+      "label": "High",
+      "targetFps": 60,
+      "output": [
+        1920,
+        1080
+      ],
+      "p95Ms": 15.5,
+      "p99Ms": 16.6,
+      "rows": [
+        {
+          "id": "DepthPrepass",
+          "ms": 0.5,
+          "leaves": [
+            "depthPrepass"
+          ],
+          "degrade": "PDO を OFF にする",
+          "owner": "既存、MH-13"
+        },
+        {
+          "id": "ClusterCull",
+          "ms": 0.2,
+          "leaves": [
+            "hiZ",
+            "clusterCull",
+            "vgCull"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Raytracing",
+          "ms": 0.25,
+          "leaves": [
+            "raytracing"
+          ],
+          "degrade": "refit を 2 フレームに 1 回にする",
+          "owner": "LS-10、AS-10"
+        },
+        {
+          "id": "Skinning",
+          "ms": 0.2,
+          "leaves": [
+            "skinning"
+          ],
+          "degrade": "遠くの敵は 30Hz",
+          "owner": "AS-9/10"
+        },
+        {
+          "id": "MainScene",
+          "ms": 3.6,
+          "leaves": [
+            "mainScene"
+          ],
+          "degrade": "ディテールを距離で切る、LTC を代表点にする、POM を距離で切る",
+          "owner": "既存、MH-6/10/11/13（V2 の基本 3.3 と重い群 0.3 を 1 行にまとめた）"
+        },
+        {
+          "id": "Characters",
+          "ms": 0.3,
+          "leaves": [
+            "characters"
+          ],
+          "degrade": "LOD を手前へ",
+          "owner": "AS-9/10"
+        },
+        {
+          "id": "ShadowCsm",
+          "ms": 0.25,
+          "leaves": [
+            "shadowCsm"
+          ],
+          "degrade": "3 枚目のカスケードを 2 フレームに 1 回",
+          "owner": "LS-02a"
+        },
+        {
+          "id": "ShadowLocal",
+          "ms": 0.5,
+          "leaves": [
+            "shadowLocal"
+          ],
+          "degrade": "更新するタイルを減らす（動的な物の近くは除く）",
+          "owner": "LS-08"
+        },
+        {
+          "id": "RtShadow",
+          "ms": 0.55,
+          "leaves": [
+            "rtShadow",
+            "rtShadowDenoise"
+          ],
+          "degrade": "2spp の適応を切る",
+          "owner": "既存、LS-10"
+        },
+        {
+          "id": "ScreenShadow",
+          "ms": 0.2,
+          "leaves": [
+            "screenShadow"
+          ],
+          "degrade": "太陽だけにする",
+          "owner": "LS-03"
+        },
+        {
+          "id": "SsLighting",
+          "ms": 0.55,
+          "leaves": [
+            "ssLighting",
+            "screenSpaceGi"
+          ],
+          "degrade": "スライス 2 本、12 ステップ",
+          "owner": "LS-07（GTAO と SSGI を置き換える）"
+        },
+        {
+          "id": "Ddgi",
+          "ms": 0.7,
+          "leaves": [
+            "ddgi"
+          ],
+          "degrade": "更新を減らす",
+          "owner": "既存"
+        },
+        {
+          "id": "RtReflect",
+          "ms": 0.75,
+          "leaves": [
+            "rtReflection"
+          ],
+          "degrade": "SSR にする",
+          "owner": "既存、LS-14"
+        },
+        {
+          "id": "Atmosphere",
+          "ms": 0.25,
+          "leaves": [
+            "atmosphere"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Clouds",
+          "ms": 0.75,
+          "leaves": [
+            "clouds",
+            "cloudShadow"
+          ],
+          "degrade": "32 ステップにする",
+          "owner": "既存"
+        },
+        {
+          "id": "VolumetricFog",
+          "ms": 0.8,
+          "leaves": [
+            "volFog",
+            "godRays"
+          ],
+          "degrade": "96 スライスにする",
+          "owner": "LS-05"
+        },
+        {
+          "id": "Water",
+          "ms": 0.35,
+          "leaves": [
+            "water"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Foliage",
+          "ms": 0.9,
+          "leaves": [
+            "foliage"
+          ],
+          "degrade": "密度 0.6、インポスターの距離を手前へ",
+          "owner": "AS-12"
+        },
+        {
+          "id": "Transparent",
+          "ms": 0.3,
+          "leaves": [
+            "transparent"
+          ],
+          "degrade": "屈折を OFF にする",
+          "owner": "MH-7"
+        },
+        {
+          "id": "Decals",
+          "ms": 0.1,
+          "leaves": [
+            "decals"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存、VFX-12"
+        },
+        {
+          "id": "Capsule",
+          "ms": 0.15,
+          "leaves": [
+            "capsule"
+          ],
+          "degrade": "体数を減らす",
+          "owner": "LS-16（GpuTimer のスコープ未作成）"
+        },
+        {
+          "id": "Reactive",
+          "ms": 0.1,
+          "leaves": [
+            "reactive"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "PI-03"
+        },
+        {
+          "id": "Bloom",
+          "ms": 0.3,
+          "leaves": [
+            "bloom",
+            "lensFx"
+          ],
+          "degrade": "ダートを OFF にする",
+          "owner": "PI-05"
+        },
+        {
+          "id": "ColorLut",
+          "ms": 0.2,
+          "leaves": [
+            "colorLut",
+            "uber"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "PI-02/10"
+        },
+        {
+          "id": "AutoExposure",
+          "ms": 0.15,
+          "leaves": [
+            "autoExposure",
+            "localExposure"
+          ],
+          "degrade": "LE を OFF にする",
+          "owner": "PI-09"
+        },
+        {
+          "id": "GameHud",
+          "ms": 0.1,
+          "leaves": [
+            "gameHud"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "GG-6、SC-6ui"
+        }
+      ],
+      "upscalerColumns": {
+        "dlss": {
+          "gate": "gate",
+          "renderScale": 0.6667,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 1.1,
+              "leaves": [
+                "upscale"
+              ],
+              "degrade": "DLSS の CNN プリセットにする、または Balanced にする",
+              "owner": "PI-07 / PI-03 / PI-10"
+            }
+          ]
+        },
+        "taau": {
+          "gate": "gateAfterW2BD",
+          "renderScale": 0.6667,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 0.65,
+              "leaves": [
+                "taa",
+                "upscale"
+              ],
+              "degrade": "DLSS の CNN プリセットにする、または Balanced にする",
+              "owner": "PI-07 / PI-03 / PI-10"
+            }
+          ]
+        },
+        "taaNative": {
+          "gate": "record",
+          "renderScale": 1,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 0.6,
+              "leaves": [
+                "taa",
+                "upscale"
+              ],
+              "degrade": "DLSS の CNN プリセットにする、または Balanced にする",
+              "owner": "PI-07 / PI-03 / PI-10"
+            }
+          ]
+        }
+      },
+      "vfx": {
+        "rows": [
+          {
+            "id": "VfxSim",
+            "ms": 0.5,
+            "leaves": [
+              "vfxSim"
+            ],
+            "leavesPending": true,
+            "degrade": "放出の倍率を 0.75 にする",
+            "owner": "VFX 全体（Sim と Draw の配分は暫定。合計 1.3 が §3.1 の値）"
+          },
+          {
+            "id": "VfxDraw",
+            "ms": 0.8,
+            "leaves": [
+              "vfxDraw",
+              "vfxLighting",
+              "vfxShadow"
+            ],
+            "leavesPending": true,
+            "degrade": "放出の倍率を 0.75 にする",
+            "owner": "VFX 全体（Draw＋Lighting＋Shadow＋Lights。半解像度の合成は必須）"
+          }
+        ],
+        "emissionMultiplier": 1,
+        "maxParticles": 131072,
+        "peakMs": 2.3
+      },
+      "vram": {
+        "capGb": 6,
+        "marginGb": 0.6,
+        "precheckGb": 6.5
+      },
+      "cpu": {
+        "gameThreadP95Ms": 6,
+        "renderRecordP95Ms": 4,
+        "editorUiP95Ms": 1.5
+      },
+      "expectedTotalMs": {
+        "dlss": 15.4,
+        "taau": 14.95
+      }
+    },
+    "cinematic_1080p30": {
+      "_note": "PROGRAM_PLAN §3.2（Epic に加算）。数値の無い項目（SSILVB のフル解像度、Bend 60 サンプル、雲の影を毎フレーム）は行に入れていない（p95 25ms までの余白 0.8ms で吸収）。RtGi の葉 rtGi と VfxVolume の葉は GpuTimer に未作成",
+      "label": "Cinematic",
+      "targetFps": 30,
+      "output": [
+        1920,
+        1080
+      ],
+      "p95Ms": 25,
+      "p99Ms": 33.3,
+      "rows": [
+        {
+          "id": "DepthPrepass",
+          "ms": 0.5,
+          "leaves": [
+            "depthPrepass"
+          ],
+          "degrade": "PDO を OFF にする",
+          "owner": "既存、MH-13"
+        },
+        {
+          "id": "ClusterCull",
+          "ms": 0.2,
+          "leaves": [
+            "hiZ",
+            "clusterCull",
+            "vgCull"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Raytracing",
+          "ms": 0.25,
+          "leaves": [
+            "raytracing"
+          ],
+          "degrade": "refit を 2 フレームに 1 回にする",
+          "owner": "LS-10、AS-10"
+        },
+        {
+          "id": "Skinning",
+          "ms": 0.2,
+          "leaves": [
+            "skinning"
+          ],
+          "degrade": "遠くの敵は 30Hz",
+          "owner": "AS-9/10"
+        },
+        {
+          "id": "MainScene",
+          "ms": 3.6,
+          "leaves": [
+            "mainScene"
+          ],
+          "degrade": "ディテールを距離で切る、LTC を代表点にする、POM を距離で切る",
+          "owner": "既存、MH-6/10/11/13（V2 の基本 3.3 と重い群 0.3 を 1 行にまとめた）"
+        },
+        {
+          "id": "Characters",
+          "ms": 0.3,
+          "leaves": [
+            "characters"
+          ],
+          "degrade": "LOD を手前へ",
+          "owner": "AS-9/10"
+        },
+        {
+          "id": "ShadowCsm",
+          "ms": 0.25,
+          "leaves": [
+            "shadowCsm"
+          ],
+          "degrade": "3 枚目のカスケードを 2 フレームに 1 回",
+          "owner": "LS-02a"
+        },
+        {
+          "id": "ShadowLocal",
+          "ms": 0.5,
+          "leaves": [
+            "shadowLocal"
+          ],
+          "degrade": "更新するタイルを減らす（動的な物の近くは除く）",
+          "owner": "LS-08"
+        },
+        {
+          "id": "RtShadow",
+          "ms": 0.55,
+          "leaves": [
+            "rtShadow",
+            "rtShadowDenoise"
+          ],
+          "degrade": "2spp の適応を切る",
+          "owner": "既存、LS-10"
+        },
+        {
+          "id": "ScreenShadow",
+          "ms": 0.2,
+          "leaves": [
+            "screenShadow"
+          ],
+          "degrade": "太陽だけにする",
+          "owner": "LS-03"
+        },
+        {
+          "id": "SsLighting",
+          "ms": 0.55,
+          "leaves": [
+            "ssLighting",
+            "screenSpaceGi"
+          ],
+          "degrade": "スライス 2 本、12 ステップ",
+          "owner": "LS-07（GTAO と SSGI を置き換える）"
+        },
+        {
+          "id": "RtGi",
+          "ms": 1.8,
+          "leaves": [
+            "rtGi"
+          ],
+          "degrade": "Cinematic でも RT 短距離 GI を OFF にする",
+          "owner": "LS-11（GpuTimer のスコープ未作成）"
+        },
+        {
+          "id": "RtLocalShadow",
+          "ms": 1.5,
+          "leaves": [
+            "rtLocalShadow"
+          ],
+          "degrade": "K=2 にする",
+          "owner": "LS-09（RT のローカル影 K=4・フル解像度）"
+        },
+        {
+          "id": "Dof",
+          "ms": 1.6,
+          "leaves": [
+            "dof"
+          ],
+          "degrade": "DoF を Epic の品質にする",
+          "owner": "PI-06（DoF Cinematic）"
+        },
+        {
+          "id": "MotionBlur",
+          "ms": 0.7,
+          "leaves": [
+            "motionBlur"
+          ],
+          "degrade": "MB を OFF にする",
+          "owner": "PI-08"
+        },
+        {
+          "id": "Ddgi",
+          "ms": 0.7,
+          "leaves": [
+            "ddgi"
+          ],
+          "degrade": "更新を減らす",
+          "owner": "既存"
+        },
+        {
+          "id": "RtReflect",
+          "ms": 1.35,
+          "leaves": [
+            "rtReflection"
+          ],
+          "degrade": "SSR にする",
+          "owner": "既存、LS-14"
+        },
+        {
+          "id": "Atmosphere",
+          "ms": 0.25,
+          "leaves": [
+            "atmosphere"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Clouds",
+          "ms": 0.75,
+          "leaves": [
+            "clouds",
+            "cloudShadow"
+          ],
+          "degrade": "32 ステップにする",
+          "owner": "既存"
+        },
+        {
+          "id": "VolumetricFog",
+          "ms": 0.8,
+          "leaves": [
+            "volFog",
+            "godRays"
+          ],
+          "degrade": "96 スライスにする",
+          "owner": "LS-05"
+        },
+        {
+          "id": "Water",
+          "ms": 0.35,
+          "leaves": [
+            "water"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存"
+        },
+        {
+          "id": "Foliage",
+          "ms": 0.9,
+          "leaves": [
+            "foliage"
+          ],
+          "degrade": "密度 0.6、インポスターの距離を手前へ",
+          "owner": "AS-12"
+        },
+        {
+          "id": "Transparent",
+          "ms": 0.3,
+          "leaves": [
+            "transparent"
+          ],
+          "degrade": "屈折を OFF にする",
+          "owner": "MH-7"
+        },
+        {
+          "id": "Decals",
+          "ms": 0.1,
+          "leaves": [
+            "decals"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "既存、VFX-12"
+        },
+        {
+          "id": "Capsule",
+          "ms": 0.15,
+          "leaves": [
+            "capsule"
+          ],
+          "degrade": "体数を減らす",
+          "owner": "LS-16（GpuTimer のスコープ未作成）"
+        },
+        {
+          "id": "Reactive",
+          "ms": 0.1,
+          "leaves": [
+            "reactive"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "PI-03"
+        },
+        {
+          "id": "Bloom",
+          "ms": 1,
+          "leaves": [
+            "bloom",
+            "lensFx"
+          ],
+          "degrade": "ダートを OFF にする",
+          "owner": "PI-05"
+        },
+        {
+          "id": "ColorLut",
+          "ms": 0.2,
+          "leaves": [
+            "colorLut",
+            "uber"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "PI-02/10"
+        },
+        {
+          "id": "AutoExposure",
+          "ms": 0.15,
+          "leaves": [
+            "autoExposure",
+            "localExposure"
+          ],
+          "degrade": "LE を OFF にする",
+          "owner": "PI-09"
+        },
+        {
+          "id": "GameHud",
+          "ms": 0.1,
+          "leaves": [
+            "gameHud"
+          ],
+          "degrade": "なし（縮退しない）",
+          "owner": "GG-6、SC-6ui"
+        }
+      ],
+      "upscalerColumns": {
+        "dlss": {
+          "gate": "gate",
+          "renderScale": 1,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 1.6,
+              "leaves": [
+                "upscale"
+              ],
+              "degrade": "DLAA をやめて DLSS Quality にする",
+              "owner": "PI-07（DLAA。Epic の 1.1 に +0.5）"
+            }
+          ]
+        },
+        "taau": {
+          "gate": "gateAfterW2BD",
+          "renderScale": 1,
+          "rows": [
+            {
+              "id": "Upscale",
+              "ms": 1.15,
+              "leaves": [
+                "taa",
+                "upscale"
+              ],
+              "degrade": "DLAA をやめて DLSS Quality にする",
+              "owner": "PI-03（TAA v2 を renderScale 1.0 で）"
+            }
+          ]
+        }
+      },
+      "vfx": {
+        "rows": [
+          {
+            "id": "VfxSim",
+            "ms": 0.5,
+            "leaves": [
+              "vfxSim"
+            ],
+            "leavesPending": true,
+            "degrade": "放出の倍率を 0.75 にする",
+            "owner": "VFX 全体（Sim と Draw の配分は暫定。合計 1.3 が §3.1 の値）"
+          },
+          {
+            "id": "VfxDraw",
+            "ms": 0.8,
+            "leaves": [
+              "vfxDraw",
+              "vfxLighting",
+              "vfxShadow"
+            ],
+            "leavesPending": true,
+            "degrade": "放出の倍率を 0.75 にする",
+            "owner": "VFX 全体（Draw＋Lighting＋Shadow＋Lights。半解像度の合成は必須）"
+          },
+          {
+            "id": "VfxVolume",
+            "ms": 1.4,
+            "leaves": [
+              "vfxVolume"
+            ],
+            "leavesPending": true,
+            "degrade": "体積の炎を 64³ にする",
+            "owner": "VFX-14（体積の炎 96³）"
+          }
+        ],
+        "emissionMultiplier": 1,
+        "maxParticles": 131072,
+        "peakMs": 3.6999999999999997
+      },
+      "vram": {
+        "capGb": null,
+        "marginGb": 0.6,
+        "precheckGb": 6.5,
+        "totalGb": 5.6
+      },
+      "cpu": {
+        "gameThreadP95Ms": 6,
+        "renderRecordP95Ms": 4,
+        "editorUiP95Ms": 1.5
+      },
+      "expectedTotalMs": {
+        "dlss": 24.2
+      }
+    }
+  }
+}

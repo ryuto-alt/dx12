@@ -1,8 +1,12 @@
 <#
   NVIDIA DLSS SDK(NGX)を third_party/dlss へ取得する。
 
-    pwsh tools/fetch_dlss.ps1              # 既定のタグ(下の $Tag)を取得
-    pwsh tools/fetch_dlss.ps1 -Tag v310.9.16
+    pwsh tools/fetch_dlss.ps1              # 固定のタグ(下の $Tag)とコミット($ExpectedCommit)を取得
+    pwsh tools/fetch_dlss.ps1 -Tag vX.Y.Z -ExpectedCommit <sha>   # 版を上げるとき(両方を一緒に変える)
+
+  - 版の正はこのファイルの $Tag と $ExpectedCommit(注釈付きタグの指すコミット)。取得後に HEAD が
+    $ExpectedCommit と一致しなければ失敗する(タグの付け替え・取得先のすり替えへの備え)。
+    DLL の実体は git-lfs が pointer の sha256 で照合する。
 
   - SDK はリポジトリにコミットしない(.gitignore 済み)。NVIDIA RTX SDK ライセンスは
     「SDK をオープンソースのライセンス条件に服させる形で結合・配布しない」ことを求めるため、
@@ -12,7 +16,9 @@
   - 外へ出るのは github.com への git clone(+ LFS の取得)だけ。
 #>
 param(
-    [string]$Tag = 'v310.9.16'
+    [string]$Tag = 'v310.9.16',
+    # タグ v310.9.16 が指すコミット(git ls-remote の ^{} の値)。-Tag を変えるときは一緒に変える。
+    [string]$ExpectedCommit = '9981c6350dc58c0ce21f024fd65e31e851c31689'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +43,14 @@ if (Test-Path (Join-Path $dest '.git')) {
     & git -c advice.detachedHead=false clone --depth 1 --branch $Tag https://github.com/NVIDIA/DLSS.git $dest
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
+
+# 固定したコミットと一致するか(LFS の取得より前に確かめる)
+$head = (& git -C $dest rev-parse HEAD).Trim()
+if ($head -ne $ExpectedCommit) {
+    Write-Host "[dlss] コミットが固定値と違う: $head (期待 $ExpectedCommit)。タグが付け替えられたか、取得先が違う。中身を信用しない"
+    exit 4
+}
+Write-Host "[dlss] コミット照合 OK: $head"
 
 # 必要な Windows のバイナリだけ LFS から実体化する(Linux 向けや dlssd は取らない)
 & git -C $dest lfs pull --include 'lib/Windows_x86_64/**'
