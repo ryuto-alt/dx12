@@ -7,6 +7,9 @@
     { "id": "tool-typo-4", "group": "tool-name", "env": "normal", "call": { "name": "dx12_listentities", "args": {} }, "expect": { "code": "E_UNKNOWN_TOOL", "didYouMean0": "dx12_list_entities" } },
     { "id": "tool-none", "group": "tool-name", "env": "normal", "call": { "name": "dx12_teleport_player", "args": {} }, "expect": { "code": "E_UNKNOWN_TOOL", "fixTool": "dx12_tool_search" } },
     { "id": "method-typo", "group": "tool-name", "env": "normal", "call": { "name": "describe_mcp_manifes", "args": {} }, "expect": { "code": "E_UNKNOWN_TOOL", "didYouMean0": "describe_mcp_manifest" } },
+    { "id": "tool-unlisted-typo", "group": "tool-name", "env": "normal", "call": { "name": "dx12_sequnce", "args": { "op": "list" } }, "expect": { "code": "E_UNKNOWN_TOOL", "didYouMean0": "dx12_sequence", "didYouMeanVia": true, "fixTool": "dx12_call", "fixArgs": { "name": "dx12_sequence" } } },
+    { "id": "tool-unlisted-typo-again", "group": "tool-name", "env": "normal", "prime": 1, "call": { "name": "dx12_sequnce", "args": { "op": "list" } }, "expect": { "code": "E_UNKNOWN_TOOL", "giveUp": true, "fixTool": "dx12_tool_search", "retryable": false } },
+    { "id": "sequence-via-call", "group": "tool-name", "env": "normal", "call": { "name": "dx12_sequence", "args": { "op": "list" } }, "expect": { "code": "E_ENGINE_TOO_OLD", "fixTool": "dx12_doctor" } },
     { "id": "tool-empty", "group": "tool-name", "env": "normal", "call": { "name": "", "args": {} }, "expect": { "code": "E_MISSING_PARAM" } },
 
     { "id": "param-unknown-1", "group": "unknown-param", "env": "normal", "call": { "name": "dx12_set_transform", "args": { "name": "Floor", "postion": [0, 0, 0] } }, "expect": { "code": "E_UNKNOWN_PARAM", "didYouMean0": "position" } },
@@ -47,8 +50,8 @@
     { "id": "mode-terrain-playing", "group": "mode", "env": "playing", "call": { "name": "dx12_terrain_generate", "args": { "name": "T" } }, "expect": { "code": "E_MODE_CONFLICT", "fixTool": "dx12_stop" } },
     { "id": "virtual-input-off", "group": "mode", "env": "vinput-off", "call": { "name": "dx12_imgui_pointer", "args": { "action": "click", "x": 10, "y": 10 } }, "expect": { "code": "E_VIRTUAL_INPUT_OFF", "fixTool": "dx12_imgui_virtual_input" } },
 
-    { "id": "engine-unknown-method", "group": "engine", "env": "gone", "call": { "name": "mock_gone", "args": {} }, "expect": { "code": "E_UNKNOWN_TOOL" } },
-    { "id": "engine-unknown-method-old", "group": "engine", "env": "gone-old", "call": { "name": "mock_gone", "args": {} }, "expect": { "code": "E_UNKNOWN_TOOL" } },
+    { "id": "engine-unknown-method", "group": "engine", "env": "gone", "call": { "name": "mock_gone", "args": {} }, "expect": { "code": "E_UNKNOWN_TOOL", "fixLacksName": "dx12_mock_gone" } },
+    { "id": "engine-unknown-method-old", "group": "engine", "env": "gone-old", "call": { "name": "mock_gone", "args": {} }, "expect": { "code": "E_UNKNOWN_TOOL", "fixLacksName": "dx12_mock_gone" } },
     { "id": "guarded-push", "group": "guarded", "env": "normal", "call": { "name": "dx12_git_push", "args": {} }, "expect": { "code": "E_GUARDED", "fixTool": "dx12_call" } },
     { "id": "guarded-eval", "group": "guarded", "env": "normal", "call": { "name": "dx12_eval_lua", "args": { "code": "return 1" } }, "expect": { "code": "E_GUARDED" } },
     { "id": "file-io", "group": "engine", "env": "normal", "call": { "name": "dx12_save_scene", "args": {} }, "expect": { "code": "E_FILE_IO" } },
