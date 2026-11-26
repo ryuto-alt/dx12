@@ -295,6 +295,7 @@ void Application::RenderPostProcessWindows()
                  if (resChanged)
                  {
                      m_renderResFlush     = true;    // 内部解像度を次フレームで即反映
+                     m_dlssFallbackLogged = false;
                      InvalidateTemporalHistory(/*includeDdgi*/ false);
                  }
                  if (kind == 1) return;   // 以下は内蔵 TAA の調整（DLSS では使わない）

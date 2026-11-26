@@ -5,7 +5,8 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
-#include "core/mcp/McpC14Logic.h"   // C14: パス正規化 / create_entity 引数検査（純ロジック）
+#include "core/mcp/McpScenePath.h"
+#include "core/mcp/McpCreateEntityParams.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/AtomicFile.h"      // 原子的な保存（Lua / シェーダの書き出し）
 #include "scene/ScenePartition.h"   // 分割保存のシーン（セルファイルの扱い）
@@ -456,30 +457,32 @@ void Application::RegisterMcpEntityMethods()
                 for (auto it = params.begin(); it != params.end(); ++it) keys.push_back(it.key());
                 const std::string typeIn = (params.contains("type") && params["type"].is_string()) ? params["type"].get<std::string>() : std::string();
                 std::string bad;
-                switch (mcpc14::ValidateCreateEntityKeys(keys, typeIn, bad))
+                switch (mcpcreate::Validate(keys, typeIn, bad))
                 {
-                case mcpc14::CreateEntityCheck::UnknownKey:
+                case mcpcreate::Check::UnknownKey:
                 {
                     McpError err(McpErr::InvalidParam, "unknown parameter '" + bad + "' for create_entity",
-                        "使える引数は type（必須）, name, position, parent, parentName, size, subdivisions。"
+                        "Accepted: type (required), name, position, parent, parentName, size, subdivisions. "
                         "向きや拡大は作成後に dx12_set_transform、色や質感は dx12_set_component / dx12_material_apply で変える");
                     err.name  = "E_UNKNOWN_PARAM";
                     err.cause = "create_entity が受け取らない引数が渡された（黙って無視すると意図と違うものが作られる）";
+                    if (const std::string closest = mcpcreate::NearestKey(bad); !closest.empty()) err.didYouMean.push_back(closest);
                     throw err;
                 }
-                case mcpc14::CreateEntityCheck::MissingType:
-                    throw McpError(McpErr::InvalidParam, "missing required 'type' (string)",
+                case mcpcreate::Check::MissingType:
+                {
+                    McpError err(McpErr::InvalidParam, "create_entity: missing required param 'type'",
                         "type は必須: box, sphere, plane, empty, camera, light_directional, light_point, light_spot, "
                         "particle_emitter, trigger, decal, water, ui_*。3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"");
-                case mcpc14::CreateEntityCheck::ParentOnNonUi:
-                {
-                    McpError err(McpErr::InvalidParam, "'" + bad + "' は ui_* の type にだけ効く（type:'" + typeIn + "' では使えない）",
-                        "親子にするなら作成後に dx12_set_parent を使う。parent / parentName は ui_image / ui_text / ui_button など UI 要素の親指定専用");
-                    err.name  = "E_UNKNOWN_PARAM";
-                    err.cause = "UI 以外の type に parent を渡すと黙って無視され、ルートに作られてしまう";
+                    err.name  = "E_MISSING_PARAM";
+                    err.cause = "必須の引数 'type' が渡されていない（黙って box にしない）";
+                    err.details = {{"param", "type"}, {"type", "string"}};
                     throw err;
                 }
-                case mcpc14::CreateEntityCheck::Ok: break;
+                case mcpcreate::Check::ParentOnCanvas:
+                    throw McpError(McpErr::InvalidParam, "'" + bad + "' cannot be used with type 'ui_canvas' (a canvas is always a root)",
+                        "ui_canvas は常にルートに作られる。UI 要素（ui_image / ui_text など）には parent / parentName が使える");
+                case mcpcreate::Check::Ok: break;
                 }
             }
             const std::string type = params["type"].get<std::string>();
@@ -513,9 +516,9 @@ void Application::RegisterMcpEntityMethods()
                 "ui_text, ui_button, ui_slider, ui_toggle, ui_scrollview",
                 "3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"。モデルは dx12_spawn_model、プレハブは dx12_spawn_prefab");
 
-            // UI 要素の親の明示指定(id か名前)。ui_canvas はルート生成なので対象外。
+            // 親の明示指定(id か名前)。全種別で有効（ui_canvas だけは常にルートなので検査で弾いている）。
             entt::entity uiParentOverride = entt::null;
-            if (type.rfind("ui_", 0) == 0 && type != "ui_canvas"
+            if (type != "ui_canvas"
                 && (params.contains("parent") || params.contains("parentName")))
             {
                 auto& reg = m_scene->GetRegistry();
@@ -742,7 +745,8 @@ void Application::RegisterMcpEntityMethods()
             // （別名保存は「今開いているシーン」が保存されたわけではない）
             if (rel.empty() && m_editorCtx) MarkSceneClean();
             resp["ok"] = true;
-            resp["result"] = {{"path", rel.empty() ? mcpc14::SceneRel(m_editorCtx->currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir()) : rel}};   // ping.currentScene と同じ形
+            resp["result"] = json::object();
+            mcpscene::AddTo(resp["result"], mcpscene::Resolve(full, PathResolver::AssetsDir(), PathResolver::BaseDir()));   // path（assets 相対）/ projectPath
             // 分割保存（シーン設定 partition.cellSize > 0）のときは、書いたファイルの内訳を返す（§4.3）
             if (const auto& sr = SceneSerializer::LastSaveReport(); sr.cellSize > 0.0f)
                 resp["result"]["partition"] = {{"cellSize", sr.cellSize}, {"partitioned", sr.partitioned},
@@ -774,7 +778,8 @@ void Application::RegisterMcpEntityMethods()
             //   進行中だったジョブの FinishSceneLoad が【こちらの】遅延応答を消費してしまい、
             //   要求したシーンがまだ読まれていないのに ok が返る（実際に踏んだ: 別シーンの
             //   完了で 9 秒後に ok が返り、要求したシーンのロードはその後に始まっていた）。
-            if (m_loading || m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob)
+            if (m_loading || m_mcpLoadReply.client != 0 || !m_editorCtx->pendingLoadPath.empty() || m_sceneLoadJob
+                || m_editorCtx->pendingNewScene)
                 throw McpError(McpErr::ModeConflict, "a scene load is already in progress; retry after it completes",
                     "読み込み中のシーンが終わるまで待つ。dx12_ping の sceneLoading が false になったら呼び直す");
             const std::string full = PathResolver::AssetsDir() + rel;
@@ -1539,7 +1544,6 @@ void Application::RegisterMcpEntityMethods()
                 {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
                 {"entityCount", entityCount},
                 {"sceneGeneration", m_sceneGeneration},
-                {"currentScene", mcpc14::SceneRel(m_editorCtx->currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir())},
                 {"sceneDirty", m_editorCtx->IsSceneDirty()},   // 未保存の変更があるか
                 // シーン/プロジェクトの読み込み中か。true の間は open_scene / new_scene / open_project が
                 // E_MODE_CONFLICT で断られる。起動直後の操作はこれが false になってから。
@@ -1584,6 +1588,10 @@ void Application::RegisterMcpEntityMethods()
                 {"vramBudgetMB", vramBudgetMB},
                 {"safety", McpSafetyInfoJson()}   // M5: guarded ゲート / 冪等ストア / ジャーナル（ApplicationMcpManifest.cpp）
             };
+            // 現在のシーン。currentScene = assets 相対（open_scene に渡せる形。assets の外なら null）、
+            // currentSceneProjectPath = プロジェクトルート相対（未保存の自動退避は ".dx12/untitled/..."）。
+            mcpscene::AddTo(resp["result"], mcpscene::Resolve(m_editorCtx->currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir()),
+                            "currentScene", "currentSceneProjectPath");
         });
 
     McpDefine("find_entity", "name:string", DX12E_MCP_HANDLER
