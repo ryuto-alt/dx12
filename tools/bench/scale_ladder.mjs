@@ -37,8 +37,10 @@
 //     listSort（→2.16ms）。影を削って GPU 律速でなくなった「後」に効いてくる順序。
 // ------------------------------------------------------------------------------
 import net from "node:net";
+import { resolvePerfTestProject } from "./lib/perftestProject.mjs";
 
-const PERFTEST_PROJECT = "C:/Users/ryuto/Documents/game/PerfTest";
+// PerfTest の場所は環境変数 DX12_PERFTEST_PROJECT（または DX12_GOLDEN_PROJECTS_ROOT の親フォルダ）で渡す。
+const PERFTEST_PROJECT = resolvePerfTestProject();
 const DEFAULT_SCENES = ["stress_500", "stress_2000", "stress_5000", "stress_10000",
                         "stress_20000", "stress_50000", "stress_100000"];
 
@@ -86,6 +88,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await connect();
 const ping = await call("ping");
 if (!String(ping.result?.assetsDir ?? "").includes("PerfTest")) {
+  if (!PERFTEST_PROJECT) {
+    console.error("PerfTest プロジェクトが開かれていません。環境変数 DX12_PERFTEST_PROJECT（または DX12_GOLDEN_PROJECTS_ROOT）を設定するか、先に開いてください。");
+    process.exit(2);
+  }
   console.log("PerfTest プロジェクトを開き直す…");
   await call("open_project", { path: PERFTEST_PROJECT });
   await sleep(3000);
