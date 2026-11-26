@@ -50,7 +50,8 @@ if (ENHANCED && SURFACE !== "legacy") {
         return errResult(e);
       }
     };
-    const hidden = SURFACE === "shell" || SURFACE === "core";
+    // 長尾: どの面でも tools/list には出さない(visual.ts と同じ作法。M0 基準を動かさない)。dx12_call / dx12_tool_search で使う。
+    const hidden = true;
     const registered = server.registerTool(
       name,
       { title: def.title, description: def.description, inputSchema: z.object(def.shape).passthrough() as any, annotations: { title: def.title, ...def.annotations } },

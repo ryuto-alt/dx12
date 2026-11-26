@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 427982,
+ "totalBytes": 425603,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -445,8 +445,8 @@
   },
   {
    "name": "dx12_set_pbr",
-   "sha256": "473409172a4da43af0a2cb1d9a931245345866e95b85024a3a919ce7da492968",
-   "semSha256": "262ba2c712daef9f00c3a5aba3d43a116720af64e1b3f4281e4e297abff348e2",
+   "sha256": "f8c3090bee92bb779d9e4c4563d8798ca1129bdcbc496f6d6832d1998629f1bd",
+   "semSha256": "6a841db60280d0fe8f9737aed69c89aa182ea2dab0b988b0d73b9265ca3e1528",
    "outputSchemaBytes": 303,
    "argKeys": [
     "entity",
@@ -460,17 +460,7 @@
     "opacity",
     "emissiveIntensity",
     "emissiveColor",
-    "aoStrength",
-    "clearCoat",
-    "clearCoatRoughness",
-    "anisotropy",
-    "anisotropyRotation",
-    "anisotropyRotationDeg",
-    "sheenColor",
-    "sheenRoughness",
-    "specularFactor",
-    "specularColor",
-    "ior"
+    "aoStrength"
    ],
    "annotations": {
     "title": "PBR マテリアル設定",
@@ -1103,8 +1093,8 @@
   },
   {
    "name": "dx12_perf_stats",
-   "sha256": "dfbcfa3cdb99ae3e07c5b3b14c80efd4c9e95138e34f9caf148a4adb3fa7e3b1",
-   "semSha256": "e9bbe67e9b4a7474e15f2d5572764fc24bccff1d12c53cd7ae880d104f1acf53",
+   "sha256": "0483cb45e8b86eca8933ba8ac328c68d1ee178c5d7509d4e194f16349273cb7e",
+   "semSha256": "f0f1656831a040fa8e130d5a987ac9a071f129cb62ccbd5c7930fde77b59bbce",
    "outputSchemaBytes": 303,
    "argKeys": [
     "window"
@@ -1408,8 +1398,8 @@
   },
   {
    "name": "dx12_get_ssao",
-   "sha256": "8d25cc2722dc18f95209a3248b890d5a770889800e3babcfb224fe302e4facb5",
-   "semSha256": "f75a6a94cdcbd0bbe5f50117cefb443493e134cf71a6973815f2e03d0fa0d7fe",
+   "sha256": "15b0a94e57be5cd7ea0b8309fb8671dc192b4599302830d8b0b85fc1e209f424",
+   "semSha256": "71be75cc336a0e9687ca169f60526b9ed446e5018377b8a5a3875508888d2569",
    "outputSchemaBytes": 303,
    "argKeys": [],
    "annotations": {
@@ -1420,8 +1410,8 @@
   },
   {
    "name": "dx12_set_ssao",
-   "sha256": "3e6fd2ff54614a32a5d2d6544db28c1f88f1fed83f63324c2dbe64178a2fb4cd",
-   "semSha256": "630f99cfb2604eb74616e86b91da7f2c822e2cf1fe26fcd22bff1b2f87145cb4",
+   "sha256": "9d7fb12486c100727086cb57c92d241749833856b6dd579e81f16fe4990bff99",
+   "semSha256": "789076b059232d7b8df8f7c16951cbf81e5ffbb068a7423fc93cf2b59a8ee524",
    "outputSchemaBytes": 303,
    "argKeys": [
     "enabled",
@@ -1430,8 +1420,7 @@
     "intensity",
     "power",
     "sampleCount",
-    "blur",
-    "multiBounce"
+    "blur"
    ],
    "annotations": {
     "title": "SSAO設定変更",
