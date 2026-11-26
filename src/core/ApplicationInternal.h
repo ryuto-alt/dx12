@@ -32,7 +32,6 @@
 #include "graphics/DeferredRelease.h"
 #include "graphics/SwapChain.h"
 #include "graphics/FrameResources.h"
-#include "core/SplashScreen.h"
 #include "graphics/DescriptorHeap.h"
 #include "graphics/GpuResource.h"
 #include "graphics/Buffer.h"
@@ -1147,6 +1146,8 @@ inline const char* McpPostParamSpec()
 #define DX12E_MCP_PP_S(f) t += #f ":string,";
         DX12E_POST_FIELDS(DX12E_MCP_PP_B, DX12E_MCP_PP_F, DX12E_MCP_PP_I,
                           DX12E_MCP_PP_V, DX12E_MCP_PP_S)
+        DX12E_POST_FIELDS_V2(DX12E_MCP_PP_B, DX12E_MCP_PP_F, DX12E_MCP_PP_I,
+                             DX12E_MCP_PP_V, DX12E_MCP_PP_S)
 #undef DX12E_MCP_PP_B
 #undef DX12E_MCP_PP_F
 #undef DX12E_MCP_PP_I

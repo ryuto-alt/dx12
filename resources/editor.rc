@@ -1,0 +1,19 @@
+#include "resource.h"
+
+// エディタ（DX12Engine.exe）だけに付けるリソース。ゲームのランタイム（GameRuntime.exe）には入れない。
+// アイコンとマニフェストは両方の exe 共通なので app.rc に残す。
+// 識別用の RCDATA（エディタの exe であることの印。pe_resources.py の `has` で確かめる）。
+UNO_EDITOR_MARKER RCDATA
+BEGIN
+    "uno-editor\0"
+END
+
+// 他のレーンが足すエディタ専用リソース（スプラッシュの起動音など）は、レーンごとのブロックに書く。
+// ==== lane-A begin ====
+// ==== lane-A end ====
+// ==== lane-B begin ====
+// ==== lane-B end ====
+// ==== lane-C begin ====
+// ==== lane-C end ====
+// ==== lane-D begin ====
+// ==== lane-D end ====

@@ -2,6 +2,7 @@
 
 #include "scene/Scene.h"
 #include "core/Types.h"
+#include "scene/PostV2Fields.h"
 
 #include <cstddef>
 #include <string>
@@ -48,6 +49,9 @@ inline u64 SceneSettingsFingerprint(const Scene& scene)
 #undef DX12E_PPH_I
 #undef DX12E_PPH_V
 #undef DX12E_PPH_S
+        // V2 は既定と違うものだけ混ぜる（既定のままなら既存シーンの指紋が 1 ビットも変わらない）
+        static const PostProcessSettings kPostDefault{};
+        UNO_POST_V2_HASH(DX12E_POST_FIELDS_V2, pp, kPostDefault, mix)
     }
 
     pod(scene.GetSSAOSettings());

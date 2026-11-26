@@ -3,6 +3,7 @@
 // ==== lane-A begin ====
 // ==== lane-A end ====
 // ==== lane-B begin ====
+UNO_LUA_BIND(BindPost)   // post.* / ssao.*（bind/Post.cpp）
 // ==== lane-B end ====
 // ==== lane-C begin ====
 // ==== lane-C end ====

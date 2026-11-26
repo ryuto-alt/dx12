@@ -35,6 +35,8 @@ void Application::RegisterMcpRenderMethods()
 #define DX12E_MCP_PPGET_S(f) out[#f] = pp.f;
             DX12E_POST_FIELDS(DX12E_MCP_PPGET_B, DX12E_MCP_PPGET_F, DX12E_MCP_PPGET_I,
                               DX12E_MCP_PPGET_V, DX12E_MCP_PPGET_S)
+            DX12E_POST_FIELDS_V2(DX12E_MCP_PPGET_B, DX12E_MCP_PPGET_F, DX12E_MCP_PPGET_I,
+                                 DX12E_MCP_PPGET_V, DX12E_MCP_PPGET_S)
 #undef DX12E_MCP_PPGET_B
 #undef DX12E_MCP_PPGET_F
 #undef DX12E_MCP_PPGET_I
@@ -61,6 +63,8 @@ void Application::RegisterMcpRenderMethods()
 #define DX12E_MCP_PPSET_S(f) pp.f = params.value(#f, pp.f);
             DX12E_POST_FIELDS(DX12E_MCP_PPSET_B, DX12E_MCP_PPSET_F, DX12E_MCP_PPSET_I,
                               DX12E_MCP_PPSET_V, DX12E_MCP_PPSET_S)
+            DX12E_POST_FIELDS_V2(DX12E_MCP_PPSET_B, DX12E_MCP_PPSET_F, DX12E_MCP_PPSET_I,
+                                 DX12E_MCP_PPSET_V, DX12E_MCP_PPSET_S)
 #undef DX12E_MCP_PPSET_B
 #undef DX12E_MCP_PPSET_F
 #undef DX12E_MCP_PPSET_I
