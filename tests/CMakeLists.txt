@@ -860,9 +860,9 @@ add_test(NAME VfxAssetTests COMMAND VfxAssetTests
 add_test(NAME VfxSpawnMathTests COMMAND VfxSpawnMathTests)
 set_tests_properties(VfxAssetTests VfxSpawnMathTests PROPERTIES TIMEOUT 120)
 # VfxRuntimeTests（FU-E-19）: GPU 初期化の失敗が統計（vfx_stats）へ出る。GPU 不要。
-add_executable(VfxRuntimeTests vfx_runtime_test.cpp ../src/renderer/vfx/VfxRuntime.cpp)
+add_executable(VfxRuntimeTests vfx_runtime_test.cpp)
 target_include_directories(VfxRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
-target_link_libraries(VfxRuntimeTests PRIVATE EnTT::EnTT)
+target_link_libraries(VfxRuntimeTests PRIVATE Renderer ECS EnTT::EnTT)
 if(MSVC)
     target_compile_options(VfxRuntimeTests PRIVATE ${DX12_COMPILE_OPTIONS})
     target_compile_definitions(VfxRuntimeTests PRIVATE ${DX12_COMPILE_DEFS})

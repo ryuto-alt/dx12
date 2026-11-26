@@ -747,7 +747,7 @@ bool VfxSystem::WantsUpdate() const
 {
     Runtime& rt = Runtime::Get();
     if (!rt.HasHost()) return false;
-    if (m_gpuFailed) return false;   // 失敗は統計に出し済み。毎フレーム空回りしない
+    if (m_gpuFailed) return false;   // 失敗は統計に出し済み（Active が配線されれば、以後このステージを空回りしない。今は Update が EnsureGpu で即戻る）
     if (!m_instances.empty() || rt.HasSeeks()) return true;
     const Host& host = rt.GetHost();
     entt::registry* reg = host.registry(host.user);

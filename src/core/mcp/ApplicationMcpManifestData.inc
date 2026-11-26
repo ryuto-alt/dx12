@@ -1754,7 +1754,7 @@ void FillGeneratedManifestRows(ManifestRows& o)
             P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。"),
             P("resume", "bool", false, nullptr, nullptr, nullptr, "false", "true で seek 後も再生を続ける。既定は止める。"),
         })});
-    o.push_back({"vfx_stats", M("UnoFX の状態(プールの使用量・インスタンスごとの放出数と生存数(数フレーム遅れ)・時刻・停止中か・VRAM)を返す。読み取り専用。",
+    o.push_back({"vfx_stats", M("UnoFX の状態(プールの使用量・インスタンスごとの放出数と生存数(数フレーム遅れ)・時刻・停止中か・VRAM・GPU 初期化の失敗(gpuFailed / lastError))を返す。読み取り専用。",
         "vfx stats 粒子数 生存数 VRAM 状態",
         "vfx", "", "", McpEffect::Read, "any", 8000, true, false,
         "none", "", {

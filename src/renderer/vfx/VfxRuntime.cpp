@@ -10,7 +10,7 @@ Runtime& Runtime::Get()
 
 void Runtime::ReportGpuFailure(const std::string& reason)
 {
-    m_stats.gpuReady = false;
+    m_stats = Stats{};   // 失敗前の古い値（instances / poolUsed / list）を残さない
     m_stats.gpuFailed = true;
     m_stats.lastError = reason;
 }
