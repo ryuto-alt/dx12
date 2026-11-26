@@ -12,6 +12,15 @@ int main()
     // ---- 焼き直しのきっかけ ----
     IblRebakeInput in;
     in.sinceStartSec = 10.0;
+    {   // 不変条件: 既定の閾値では、高度の条件が単独で決めることは無い（高度差 <= 角度差）。
+        //   角度が閾値以下なら、高度差も 0.5° 未満で、焼かない。角度が閾値を超えたら、高度に関わらず焼く。
+        for (double ang = 0.0; ang <= 1.0; ang += 0.01)
+        {
+            IblRebakeInput i = in; i.sunAngleDeg = ang; i.sunElevDeltaDeg = ang;   // 高度差の最大は角度差
+            const bool need = DecideIblRebake(i).need;
+            CHECK(need == (ang > i.thresholdDeg));
+        }
+    }
     {   // 何も動かない → 焼かない
         auto d = DecideIblRebake(in);
         CHECK(!d.need && !d.start && !d.burst);
