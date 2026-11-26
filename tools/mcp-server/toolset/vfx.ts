@@ -265,12 +265,15 @@ regRaw(
     let restorePos: number[] | null = null;   // 退けた放出器を戻すための元位置
     let firedLayers: number[] = [];
     let playing = false;
+    let savedCam: { position: number[]; yawDeg: number; pitchDeg: number } | null = null;   // 人のエディタカメラ(撮影後に戻す。R1-07)
     let ownTx = false;   // 自分で開いたトランザクションがあるか(finally で必ず rollback する)
+    let ownComponentWrites = 0;   // うち set_component の発行数(エンジンは Undo コマンド名を種類ごとに付けるので、名前では自分の分と区別できない)
     let ownWrites = 0;   // トランザクション中に自分が出したUndo を積む書き込み(set_transform / set_component)の発行数(eval_lua は Undo を積まないので数えない)
     const preNotes: string[] = [];
     let result: ToolResult | undefined;
     const call = (method: string, params: any) => {
       if (ownTx && (method === "set_transform" || method === "set_component")) ownWrites++;
+      if (ownTx && method === "set_component") ownComponentWrites++;
       return engine.call(method, params);
     };
     try {
@@ -317,6 +320,14 @@ regRaw(
       // カメラを 3/4 の位置へ。target は少し上(立ち上る効果を画角に入れるため)。
       const camPos: [number, number, number] = [pos[0] + dist * 0.75, pos[1] + dist * 0.45, pos[2] + dist * 0.75];
       const camTarget: [number, number, number] = [pos[0], pos[1] + lookY, pos[2]];
+      // 撮影用にカメラを動かす前に、人が見ているエディタカメラを控える(set_editor_camera は Undo に載らず rollback でも戻らない)。
+      try {
+        const cam = await call("get_editor_camera", {}) as any;
+        if (cam?.mode !== "Playing" && Array.isArray(cam?.position) && cam.position.length === 3
+            && Number.isFinite(cam.yawDeg) && Number.isFinite(cam.pitchDeg)) {
+          savedCam = { position: cam.position, yawDeg: cam.yawDeg, pitchDeg: cam.pitchDeg };
+        }
+      } catch { /* 読めなければ復元はできない(release だけ行う) */ }
       await call("set_editor_camera", { position: camPos, target: camTarget });
 
       // ★撮影先は必ず【絶対パスで明示】する。省略するとエンジンは自分の CWD へ書くが、
@@ -449,6 +460,11 @@ regRaw(
       }
       await call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
       // 撮影用のカメラ固定を残さない(残るとゲーム画面の撮影が全部この視点になる)
+      if (savedCam) {
+        await call("set_editor_camera", { position: savedCam.position, yawDeg: savedCam.yawDeg, pitchDeg: savedCam.pitchDeg }).catch((e: any) => {
+          preNotes.push(`★エディタカメラを元の視点へ戻せなかった(${e?.message ?? e})。`);
+        });
+      }
       await call("set_editor_camera", { release: true }).catch(() => {});
       // 最後に rollback(成功・失敗どちらでも)。Undo には残さない(自動保存の扱いはエンジン側 L1 の修正待ち)。
       // rollback の失敗・想定外の中身は握りつぶさず、結果に載せる。
@@ -459,7 +475,15 @@ regRaw(
           let human = 0;
           try {
             const ts = await engine.call("transaction_status", {}) as any;
-            if (Array.isArray(ts?.callNames)) foreign = ts.callNames.filter((n: any) => n !== "set_transform" && n !== "set_component").map(String);
+            // ★callNames はエンジンの Undo コマンド名("Transform" など)で、MCP の method 名("set_transform")ではない。
+            //   method 名だけを自分の分とみなすと、本物のエンジンでは自分の set_transform が全部「他の呼び出し」になり偽の警告が出る(R1-06)。
+            //   set_transform 由来の "Transform" は自分の分。set_component 由来は名前が種類ごとに違うので、自分が発行した数だけ許す。
+            if (Array.isArray(ts?.callNames)) {
+              const others = ts.callNames.map(String).filter((n: string) => n !== "set_transform" && n !== "Transform");
+              const compLike = others.filter((n: string) => n === "set_component");
+              const rest = others.filter((n: string) => n !== "set_component");
+              foreign = [...compLike, ...rest.slice(Math.min(ownComponentWrites, rest.length))];
+            }
             human = Number(ts?.humanEditsDuringTransaction) || 0;
           } catch { /* 読めなければ calls の件数で代用 */ }
           const rb = await engine.call("transaction_rollback", {}) as any;
