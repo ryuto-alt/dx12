@@ -3,6 +3,7 @@
 #include "graphics/DeferredRelease.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "graphics/DredReport.h"
 
 #include <cstring>
 
@@ -80,6 +81,7 @@ void Buffer::CreateBuffer(
     allocDesc.HeapType = heapType;
 
     CreateResource(allocator, desc, initialState, allocDesc);
+    dred::NameBuffer(m_resource.Get(), L"Buffer", sizeInBytes);   // W05-05: ページフォルトの割り当て名
 }
 
 // ===========================================================================

@@ -9,6 +9,7 @@
 #include "core/PathResolver.h"
 #include "core/Version.h"
 #include "ecs/Components.h"
+#include "graphics/DeferredRelease.h"
 #include "graphics/DeviceCaps.h"
 #include "renderer/DrawItem.h"
 #include "renderer/Mesh.h"
@@ -2091,6 +2092,14 @@ DeepDiagReport DeepDiag::RenderHealth(Application& app)
             r.Add(1, "SRV ディスクリプタヒープの残りが 1 割を切りました（" + usage + " 使用）");
         else
             r.Add(0, "SRV ディスクリプタヒープ: " + usage + " 使用");
+
+        // W05-06: ディスクリプタは返却がフェンス完了まで遅延される。遅延待ちが多い間は
+        // 空き数が一時的に少なく見える(シーン入れ替え直後の数フレーム)。長く続くなら要注意。
+        const size_t pending = DeferredRelease::GetPendingCount();
+        if (pending > 8192)
+            r.Add(1, "遅延解放の待ち行列が " + std::to_string(pending) + " 件あります"
+                     "（ピーク " + std::to_string(DeferredRelease::GetPeakPendingCount())
+                     + "）。数フレームで減らないなら GPU の完了が進んでいません");
     }
 
     // ---- 6) カメラ ----

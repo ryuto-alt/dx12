@@ -3,6 +3,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "graphics/CommandList.h"
 #include "core/Assert.h"
+#include "graphics/DredReport.h"
 
 namespace dx12e
 {
@@ -62,6 +63,7 @@ void RenderTarget::CreateResourceAndViews(GraphicsDevice& device, bool allocateV
     ThrowIfFailed(dev->CreateCommittedResource(
         &heapProps, D3D12_HEAP_FLAG_NONE,
         &desc, m_state, &clear, IID_PPV_ARGS(&m_resource)));
+    dred::NameTexture(m_resource.Get(), L"RenderTarget", m_width, m_height, 1, m_format);   // W05-05
 
     if (allocateViews)
     {
