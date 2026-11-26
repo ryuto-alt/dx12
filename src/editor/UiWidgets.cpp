@@ -1288,12 +1288,12 @@ void ProgressBar(const char* id, float t01, ImVec2 size, ProgressState state, Pr
     if (state == ProgressState::Failed)
     {
         const float bw = Px(static_cast<float>(kGgDeco.badBarW));
-        const float x1 = (std::clamp)(tipX + bw * 0.5f, p0.x + bw, p0.x + w), x0 = x1 - bw;
+        const float x1 = (std::clamp)(tipX + bw * 0.5f, p0.x + (std::min)(bw, w), p0.x + w), x0 = x1 - bw;
         dl->AddRectFilled(ImVec2(x0, ny0), ImVec2(x1, ny0 + needleH), Col(th::Bad), 0.0f);
     }
     else if (nAlpha > 0.004f)
     {
-        const float x1 = (std::clamp)(tipX + nw * 0.5f, p0.x + nw, p0.x + w), x0 = x1 - nw;
+        const float x1 = (std::clamp)(tipX + nw * 0.5f, p0.x + (std::min)(nw, w), p0.x + w), x0 = x1 - nw;
         const ImVec2 mn(x0, ny0), mx(x1, ny0 + needleH);
         if (role == ProgressRole::StatusJob && state == ProgressState::Running)
             deco::NeedleBar(dl, mn, mx, ColA(th::Accent, nAlpha));

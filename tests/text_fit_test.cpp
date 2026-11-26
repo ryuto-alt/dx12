@@ -242,16 +242,16 @@ void TestLegacyEquivalence()
                 std::string old = name;   // 旧ループ（AssetBrowserPanel）
                 if (widthOf(old) > maxW)
                 {
-                    while (old.size() > 2 && widthOf(old + "â¦") > maxW) old.pop_back();
-                    old += "â¦";
+                    while (old.size() > 2 && widthOf(old + text::kEllipsis) > maxW) old.pop_back();
+                    old += text::kEllipsis;
                 }
                 const float usable = std::floor(maxW);
                 const text::FitResult fr = text::FitEndBytesLegacy(name, usable, [&](std::string_view sv, bool ell)
                 {
-                    std::string x(sv); if (ell) x += "â¦"; return widthOf(x);
+                    std::string x(sv); if (ell) x += text::kEllipsis; return widthOf(x);
                 });
                 std::string now = name.substr(0, fr.keepBytes);
-                if (fr.ellipsis) now += "â¦";
+                if (fr.ellipsis) now += text::kEllipsis;
                 CHECKF(now == old, "legacy mismatch len=%d maxW=%.1f perChar=%.2f", len, maxW, perChar);
             }
         }
