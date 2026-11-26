@@ -64,8 +64,9 @@ int main()
         UndoSystem undo;
         const ParticleEmitter before = reg.get<ParticleEmitter>(e);
         const ParticleEmitter after = vfxapply::BuildApplied(before, asset, "vfx/Campfire.json", false);
-        reg.get<ParticleEmitter>(e) = after;
-        undo.PushCommand(std::make_unique<ComponentEditCommand<ParticleEmitter>>(&reg, e, before, after, "VFX アセットを適用"));
+        // パネルが使う経路（置き換え = asNewLayer=false）を共通の ApplyWithUndo で通す
+        CHECK(vfxapply::ApplyWithUndo(reg, e, undo, asset, "vfx/Campfire.json", false));
+        CHECK(reg.get<ParticleEmitter>(e) == after);
         CHECK(undo.UndoDepth() == 1);
 
         const ParticleEmitter& cur = reg.get<ParticleEmitter>(e);

@@ -277,7 +277,11 @@ void VfxEditorPanel::RequestApply(entt::registry& reg, EditorContext& ctx, bool 
 
 void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer)
 {
-    entt::entity e = ctx.selectedEntity;
+    ApplyToEntity(reg, ctx, ctx.selectedEntity, asNewLayer);
+}
+
+void VfxEditorPanel::ApplyToEntity(entt::registry& reg, EditorContext& ctx, entt::entity e, bool asNewLayer)
+{
     if (e == entt::null || !reg.valid(e) || !reg.all_of<ParticleEmitter>(e)) return;
 
     vfxapply::ApplyWithUndo(reg, e, ctx.undoSystem, m_current, m_currentPath, asNewLayer);
@@ -771,10 +775,12 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
                 && reg.all_of<ParticleEmitter>(m_confirmEntity)
                 && reg.get<ParticleEmitter>(m_confirmEntity) == m_confirmBefore)
             {
-                const entt::entity keep = ctx.selectedEntity;
-                ctx.selectedEntity = m_confirmEntity;
-                ApplyToSelected(reg, ctx, /*asNewLayer=*/false);
-                ctx.selectedEntity = keep;
+                ApplyToEntity(reg, ctx, m_confirmEntity, /*asNewLayer=*/false);
+            }
+            else
+            {
+                m_statusMsg = "確認中に対象が変わったため、適用しませんでした";
+                m_statusFlash = 3.0f;
             }
             m_confirmEntity = entt::null; m_confirmReg = nullptr; m_confirmBefore = ParticleEmitter{};
             ImGui::CloseCurrentPopup();

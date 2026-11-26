@@ -58,6 +58,7 @@ private:
     //   MCP のセッションがあり（aiSessionEver）かつ仮想入力中は AI がボタンを押せないので出さずに適用する（Undo で戻せる）。
     void RequestApply(entt::registry& reg, EditorContext& ctx, bool asNewLayer);
     void ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer = false);
+    void ApplyToEntity(entt::registry& reg, EditorContext& ctx, entt::entity e, bool asNewLayer);
     // Scene* と assetsDir は SpawnEntityCommand（Undo）に必要。
     // 無いと「新規エンティティとして配置」が Ctrl+Z で消えない。
     void SpawnEntity(entt::registry& reg, EditorContext& ctx,

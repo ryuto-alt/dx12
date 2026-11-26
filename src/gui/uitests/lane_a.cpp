@@ -10,6 +10,8 @@
 #include "core/DpiScale.h"
 #include "core/PathResolver.h"
 #include "core/SceneBackup.h"
+#include "core/SafeRemove.h"
+#include "input/VirtualInput.h"
 #include "editor/AssetBrowserLogic.h"
 #include "editor/BottomDock.h"
 #include "editor/EditorIcons.h"
@@ -411,7 +413,7 @@ void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
             ed->pendingSequencePlay.clear();
             ed->pendingVfxPlace.clear();
             std::error_code ec;
-            fs::remove_all(workDir, ec);                                  // このテストが作った一時フォルダだけ
+            saferm::RemoveAll(workDir, ec, seqRoot);                      // このテストが作った一時フォルダだけ
             if (madeSeqRoot && fs::is_empty(seqRoot, ec)) fs::remove(seqRoot, ec);
         }
     };
@@ -569,6 +571,9 @@ void T_VfxApplyConfirm(ImGuiTestContext* ctx)
     const ParticleEmitter original = reg.get<ParticleEmitter>(e);
     ed->aiSessionEver = false;
     ed->Select(e);
+    // 最後の「MCP では出ない」手順は仮想入力が前提。そうでない実行では理由を明示して止める
+    IM_CHECK(vinput::Enabled());
+    if (!vinput::Enabled()) return;
 
     const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showVfxEditor, kWinVfx);
     IM_CHECK(win != 0);
@@ -600,7 +605,9 @@ void T_VfxApplyConfirm(ImGuiTestContext* ctx)
     ctx->Yield(6);
     IM_CHECK(reg.get<ParticleEmitter>(e) != original);
     IM_CHECK(ed->undoSystem.UndoDepth() == undoBefore + 1);
-    ed->undoSystem.Undo();
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);                         // Ctrl+Z の経路
+    ctx->Yield(6);
     IM_CHECK(reg.get<ParticleEmitter>(e) == original);
 
     LogStep(ctx, "MCP のセッションではモーダルを出さずにそのまま適用される");
