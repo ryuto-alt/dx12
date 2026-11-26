@@ -558,8 +558,12 @@ OFL_BY_PATH = (
 )
 
 
+def _strip_comments(text, prefixes):
+    return "\n".join(l for l in text.splitlines() if not l.strip().startswith(prefixes))
+
+
 def check_ofl_licenses(fonts):
-    """OFL の同梱義務: 書体を同梱しているのに、ライセンス文が無い / 空 / ビルドとインストーラが運ばない、を落とす。"""
+    """OFL の同梱義務: 書体を同梱しているのに、ライセンス文が無い / 空 / ビルド・インストーラ・自動更新 zip が運ばない、を落とす。"""
     ok = True
     need = set()
     for spec in fonts:
@@ -569,10 +573,31 @@ def check_ofl_licenses(fonts):
             ok = False
             continue
         need.add(hit[0])
-    cmake_p = os.path.join(ROOT, "CMakeLists.txt")
-    iss_p = os.path.join(ROOT, "installer", "dx12engine.iss")
-    cmake_text = read_text(cmake_p) if os.path.exists(cmake_p) else ""
-    iss_text = read_text(iss_p) if os.path.exists(iss_p) else ""
+
+    # assets/ 以下はそのまま配られる。subset_fonts を通さずに足された書体も、対応するライセンス文が要る
+    listed = {os.path.normpath(spec["out"]) for spec in fonts}
+    assets_root = os.path.join(ROOT, "assets")
+    for dp, _dn, fn in os.walk(assets_root):
+        for name in fn:
+            if not name.lower().endswith((".ttf", ".otf", ".woff", ".woff2", ".ttc")):
+                continue
+            rel = os.path.normpath(os.path.relpath(os.path.join(dp, name), ROOT))
+            if rel in listed:
+                continue
+            sibling = [f for f in os.listdir(dp) if f.upper().startswith("LICENSE")]
+            if not sibling:
+                print("NG %s はライセンス文のない書体です（同じフォルダに LICENSE-*.txt を置くか、subset_fonts の FONTS に入れる）" % rel)
+                ok = False
+
+    def read_opt(*parts):
+        p = os.path.join(ROOT, *parts)
+        return read_text(p) if os.path.exists(p) else ""
+
+    # コメント行を除いた本文だけを見る（コメントに名前を書いただけでは通さない）
+    cmake_text = _strip_comments(read_opt("CMakeLists.txt"), ("#",))
+    iss_lines = [l for l in _strip_comments(read_opt("installer", "dx12engine.iss"), (";",)).splitlines()
+                 if l.lstrip().startswith("Source:")]
+    ps_text = _strip_comments(read_opt("installer", "build.ps1"), ("#",))
     for lic in sorted(need):
         p = os.path.join(ROOT, "third_party", "licenses", lic)
         if not os.path.exists(p):
@@ -580,14 +605,17 @@ def check_ofl_licenses(fonts):
             ok = False
             continue
         body = read_text(p)
-        if "SIL OPEN FONT LICENSE" not in body.upper() or "copyright" not in body.lower():
-            print("NG %s に著作権表示か OFL 本文がありません" % lic)
+        if len(body) < 500 or "SIL OPEN FONT LICENSE" not in body.upper() or "copyright" not in body.lower()                 or "PREAMBLE" not in body.upper():
+            print("NG %s に著作権表示か OFL 本文（前文を含む）がありません" % lic)
             ok = False
-        if lic not in cmake_text:
+        if ("third_party/licenses/" + lic) not in cmake_text:
             print("NG ルート CMakeLists.txt が %s をビルド出力の licenses/ へコピーしていません" % lic)
             ok = False
-        if lic not in iss_text:
-            print("NG installer/dx12engine.iss が %s を {app}\\licenses へ入れていません" % lic)
+        if not any(("third_party\\licenses\\" + lic) in l and "{app}\\licenses" in l for l in iss_lines):
+            print("NG installer/dx12engine.iss が %s を {app}\\licenses へ入れる Source 行がありません" % lic)
+            ok = False
+        if lic not in ps_text:
+            print("NG installer/build.ps1 が %s を自動更新 zip の licenses/ へ入れていません" % lic)
             ok = False
     return ok
 

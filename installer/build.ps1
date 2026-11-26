@@ -191,6 +191,8 @@ Copy-Item $agilityCore -Destination (Join-Path $stage "D3D12/D3D12Core.dll")
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "licenses") | Out-Null
 Copy-Item $agilityLicense -Destination (Join-Path $stage "licenses/Microsoft.Direct3D.D3D12-LICENSE.txt")
 if ($bundleDlss) { Copy-Item $dlssLicense -Destination (Join-Path $stage "licenses/NVIDIA_DLSS_LICENSE.txt") }
+# 書体の OFL ライセンス文（OFL の同梱義務。assets/ の書体を zip でも配るので、自動更新の zip にも入れる）。tools/subset_fonts.py --check がこの記述を検査する
+foreach ($ofl in "IBM-Plex-OFL.txt", "Noto-OFL.txt", "PlemolJP-OFL.txt") { Copy-Item (Join-Path $repoRoot "third_party/licenses/$ofl") -Destination (Join-Path $stage "licenses/$ofl") }
 # shaders（.cso）
 Copy-Item (Join-Path $srcDir "shaders") -Destination (Join-Path $stage "shaders") -Recurse -ErrorAction SilentlyContinue
 # shaders-src（.hlsl/.hlsli ソース。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用。
