@@ -55,6 +55,53 @@ float Hash01(uint32_t x)
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
     return static_cast<float>(x & 0xFFFFFF) / static_cast<float>(0xFFFFFF);
 }
+
+// MOD-ED-14: ズームのたびに別サイズのグリフを焼かないよう、フォントのサイズを段（zoom 換算で
+// 0.5/0.75/1/1.25/1.5/2/3/4）に量子化し、段との差は頂点の拡縮で吸収する。
+// 段は zoom 以上の最小のものを選ぶ＝焼くサイズは常に目標以上で、描画は縮小のみ（拡大しないので滲まない）。
+// 段ちょうどのズーム（既定の 1.0 を含む）では比が 1 で、頂点にもクリップにも触らない。
+struct QuantText { float qpx; float r; };
+QuantText QuantizeText(float px, float zoom)
+{
+    static constexpr float kSteps[] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 4.0f};
+    const float z = std::max(0.01f, zoom);
+    float step = kSteps[7];
+    for (float s : kSteps)
+        if (s >= z * 0.9995f) { step = s; break; }
+    const float qpx = std::max(1.0f, std::floor(px * step / z + 0.5f));
+    return {qpx, px / qpx};
+}
+ImVec2 TextSizeQ(ImFont* font, float px, float zoom, const char* text)
+{
+    const QuantText q = QuantizeText(px, zoom);
+    const ImVec2 s = font->CalcTextSizeA(q.qpx, FLT_MAX, 0.0f, text);
+    return ImVec2(s.x * q.r, s.y * q.r);
+}
+void AddTextQ(ImDrawList* dl, ImFont* font, float px, float zoom, ImVec2 pos, ImU32 col, const char* text, const ImVec4* clip)
+{
+    const QuantText q = QuantizeText(px, zoom);
+    if (q.qpx == px)
+    {
+        dl->AddText(font, px, pos, col, text, nullptr, 0.0f, clip);
+        return;
+    }
+    // クリップは qpx 空間へ（AddText の細かいクリップは qpx の幾何で行われ、その後に頂点を r 倍するため）
+    ImVec4 qc;
+    const ImVec4* qclip = nullptr;
+    if (clip)
+    {
+        qc = ImVec4(pos.x + (clip->x - pos.x) / q.r, pos.y + (clip->y - pos.y) / q.r, pos.x + (clip->z - pos.x) / q.r, pos.y + (clip->w - pos.y) / q.r);
+        qclip = &qc;
+    }
+    const int v0 = dl->VtxBuffer.Size;
+    dl->AddText(font, q.qpx, pos, col, text, nullptr, 0.0f, qclip);
+    for (int i = v0; i < dl->VtxBuffer.Size; ++i)
+    {
+        ImDrawVert& v = dl->VtxBuffer[i];
+        v.pos.x = pos.x + (v.pos.x - pos.x) * q.r;
+        v.pos.y = pos.y + (v.pos.y - pos.y) * q.r;
+    }
+}
 } // namespace
 
 void GraphView::AnimStep(Spring& sp, float target, float freq, float damping)
@@ -76,29 +123,7 @@ void GraphView::DrawText(ImDrawList* dl, ImFont* font, float units, ImVec2 pos, 
 {
     const float px = std::floor(units * m_vp.Scale() + 0.5f);
     if (px < 5.0f || !font) return;
-    // MOD-ED-14: ズームのたびに別サイズのグリフを焼かないよう、フォントのサイズを 6 段
-    // (0.5/0.75/1/1.25/1.5/2.0 × DPI) に量子化し、段との差は頂点の拡縮で吸収する。
-    // 段ちょうどのズーム（既定の 1.0 を含む）では比が 1 で、従来と同じ描画（頂点に触らない）。
-    static constexpr float kSteps[6] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f};
-    const float z = std::max(0.01f, m_vp.zoom);
-    float step = kSteps[0];
-    for (float s : kSteps)
-        if (std::fabs(std::log(z / s)) < std::fabs(std::log(z / step))) step = s;
-    const float qpx = std::max(1.0f, std::floor(units * step * m_vp.dpi + 0.5f));
-    if (qpx == px)
-    {
-        dl->AddText(font, px, pos, col, text, nullptr, 0.0f, clip);
-        return;
-    }
-    const int v0 = dl->VtxBuffer.Size;
-    dl->AddText(font, qpx, pos, col, text, nullptr, 0.0f, clip);
-    const float r = px / qpx;
-    for (int i = v0; i < dl->VtxBuffer.Size; ++i)
-    {
-        ImDrawVert& v = dl->VtxBuffer[i];
-        v.pos.x = pos.x + (v.pos.x - pos.x) * r;
-        v.pos.y = pos.y + (v.pos.y - pos.y) * r;
-    }
+    AddTextQ(dl, font, px, m_vp.zoom, pos, col, text, clip);
 }
 
 void GraphView::DrawGlow(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, ImU32 col, float strength, float radiusPx) const
@@ -340,8 +365,8 @@ void GraphView::DrawComments(ImDrawList* dl)
         const float px = std::floor(unitsTitle * scale + 0.5f);
         if (px >= 5.0f && !c.title.empty())
         {
-            const float lh = FontBold()->CalcTextSizeA(px, FLT_MAX, 0.0f, "Ag").y;
-            dl->AddText(FontBold(), px, ImVec2(mn.x + 10.0f * scale, mn.y + (th - lh) * 0.5f), m_tok.text, c.title.c_str(), nullptr, 0.0f, &clip);
+            const float lh = TextSizeQ(FontBold(), px, m_vp.zoom, "Ag").y;
+            AddTextQ(dl, FontBold(), px, m_vp.zoom, ImVec2(mn.x + 10.0f * scale, mn.y + (th - lh) * 0.5f), m_tok.text, c.title.c_str(), &clip);
         }
         // リサイズハンドル（右下の斜線 3 本）
         if (sel || hov)
@@ -447,9 +472,9 @@ void GraphView::DrawSlot(ImDrawList* dl, const NodeData& n, int pinIndex, const 
     {
         const float px = std::floor(cfg.textUnits * scale + 0.5f);
         if (px < 5.0f) return;
-        const ImVec2 ts = FontMono()->CalcTextSizeA(px, FLT_MAX, 0.0f, txt);
+        const ImVec2 ts = TextSizeQ(FontMono(), px, m_vp.zoom, txt);
         const ImVec4 clip(a.x, a.y, b.x, b.y);
-        dl->AddText(FontMono(), px, ImVec2(std::floor((a.x + b.x - ts.x) * 0.5f + 0.5f), std::floor((a.y + b.y - ts.y) * 0.5f + 0.5f)), col, txt, nullptr, 0.0f, &clip);
+        AddTextQ(dl, FontMono(), px, m_vp.zoom, ImVec2(std::floor((a.x + b.x - ts.x) * 0.5f + 0.5f), std::floor((a.y + b.y - ts.y) * 0.5f + 0.5f)), col, txt, &clip);
     };
 
     switch (pd.valueKind)
@@ -489,9 +514,9 @@ void GraphView::DrawSlot(ImDrawList* dl, const NodeData& n, int pinIndex, const 
         const float px = std::floor(cfg.textUnits * scale + 0.5f);
         if (px >= 5.0f)
         {
-            const float lh = FontBody()->CalcTextSizeA(px, FLT_MAX, 0.0f, "Ag").y;
+            const float lh = TextSizeQ(FontBody(), px, m_vp.zoom, "Ag").y;
             const ImVec4 clip(mn.x, mn.y, mx.x - 14.0f * scale, mx.y);
-            dl->AddText(FontBody(), px, ImVec2(mn.x + pad, (mn.y + mx.y - lh) * 0.5f), AlphaMul(m_tok.slotText, alpha), label.c_str(), nullptr, 0.0f, &clip);
+            AddTextQ(dl, FontBody(), px, m_vp.zoom, ImVec2(mn.x + pad, (mn.y + mx.y - lh) * 0.5f), AlphaMul(m_tok.slotText, alpha), label.c_str(), &clip);
         }
         // ▾
         const ImVec2 cc(mx.x - 9.0f * scale, (mn.y + mx.y) * 0.5f);
@@ -715,7 +740,7 @@ void GraphView::DrawNodes(ImDrawList* dl)
             if (px >= 5.0f)
             {
                 const ImVec4 clip(mn.x, mn.y, mx.x - 4.0f * scale, mn.y + hh);
-                dl->AddText(FontBold(), px, ImVec2(tx, std::floor(mn.y + (hh - m_lhTitle) * 0.5f + 0.5f)), AlphaMul(m_tok.text, dim), t.title.c_str(), nullptr, 0.0f, &clip);
+                AddTextQ(dl, FontBold(), px, m_vp.zoom, ImVec2(tx, std::floor(mn.y + (hh - m_lhTitle) * 0.5f + 0.5f)), AlphaMul(m_tok.text, dim), t.title.c_str(), &clip);
             }
         }
         // ---- 名前欄（ヘッダ直下。パラメータ名・テクスチャ名など。NodeTypeDesc::hasLabel）----
@@ -725,10 +750,10 @@ void GraphView::DrawNodes(ImDrawList* dl)
             const float px = std::floor(cfg.textUnits * scale + 0.5f);
             if (px >= 5.0f && !n->label.empty())
             {
-                const float lh = FontBody()->CalcTextSizeA(px, FLT_MAX, 0.0f, "Ag").y;
+                const float lh = TextSizeQ(FontBody(), px, m_vp.zoom, "Ag").y;
                 const ImVec4 clip(mn.x, ly0, mx.x - cfg.padX * 0.5f * scale, ly1);
-                dl->AddText(FontBody(), px, ImVec2(std::floor(mn.x + cfg.padX * scale + 0.5f), std::floor((ly0 + ly1 - lh) * 0.5f + 0.5f)),
-                            AlphaMul(m_tok.textMid, dim), n->label.c_str(), nullptr, 0.0f, &clip);
+                AddTextQ(dl, FontBody(), px, m_vp.zoom, ImVec2(std::floor(mn.x + cfg.padX * scale + 0.5f), std::floor((ly0 + ly1 - lh) * 0.5f + 0.5f)),
+                         AlphaMul(m_tok.textMid, dim), n->label.c_str(), &clip);
             }
             dl->AddLine(ImVec2(mn.x + cfg.padX * scale * 0.5f, ly1), ImVec2(mx.x - cfg.padX * scale * 0.5f, ly1), AlphaMul(m_tok.nodeBorder, 0.55f * dim), 1.0f);
         }
@@ -740,7 +765,7 @@ void GraphView::DrawNodes(ImDrawList* dl)
             const ImU32 bcol = state == NodeState::Error ? m_tok.bad : m_tok.warn;
             dl->AddCircleFilled(bc, br, bcol, 14);
             const float px = std::floor(9.5f * scale);
-            if (px >= 5.0f) dl->AddText(FontBold(), px, ImVec2(bc.x - px * 0.24f, bc.y - m_lhTitle * 0.5f * (px / std::max(1.0f, std::floor(cfg.titleUnits * scale)))), IM_COL32(20, 20, 24, 240), "!");
+            if (px >= 5.0f) AddTextQ(dl, FontBold(), px, m_vp.zoom, ImVec2(bc.x - px * 0.24f, bc.y - m_lhTitle * 0.5f * (px / std::max(1.0f, std::floor(cfg.titleUnits * scale)))), IM_COL32(20, 20, 24, 240), "!", nullptr);
         }
 
         // ---- ピン・ラベル・値欄 ----
@@ -803,13 +828,13 @@ void GraphView::DrawNodes(ImDrawList* dl)
                 const float ly = std::floor(cy - m_lhLabel * 0.5f + 0.5f);
                 if (output)
                 {
-                    const float w = FontBody()->CalcTextSizeA(px, FLT_MAX, 0.0f, pd.name.c_str()).x;
-                    dl->AddText(FontBody(), px, ImVec2(std::floor(mn.x + L.outLabelRight * scale - w + 0.5f), ly), lcol, pd.name.c_str());
+                    const float w = TextSizeQ(FontBody(), px, m_vp.zoom, pd.name.c_str()).x;
+                    AddTextQ(dl, FontBody(), px, m_vp.zoom, ImVec2(std::floor(mn.x + L.outLabelRight * scale - w + 0.5f), ly), lcol, pd.name.c_str(), nullptr);
                 }
                 else
                 {
                     const float lx = mn.x + L.inLabelX * scale;
-                    dl->AddText(FontBody(), px, ImVec2(std::floor(lx + 0.5f), ly), lcol, pd.name.c_str());
+                    AddTextQ(dl, FontBody(), px, m_vp.zoom, ImVec2(std::floor(lx + 0.5f), ly), lcol, pd.name.c_str(), nullptr);
                 }
             }
         };

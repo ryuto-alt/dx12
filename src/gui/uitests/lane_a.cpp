@@ -271,6 +271,11 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
     MaterialGraphPanel::DebugCall(*ed, "{\"op\":\"new\",\"template\":\"sample\"}");
     ctx->Yield(10);
 
+    // 基準: アトラスの現在のテクスチャ（UniqueID）と SRV ヒープの空き数。
+    const int atlasId0 = ImGui::GetIO().Fonts->TexData ? ImGui::GetIO().Fonts->TexData->UniqueID : -1;
+    const u32 srvFree0 = app->GetDiagRenderHealth().srvHeapFree;
+    bool atlasGrew = false;
+
     static const float kScales[] = {1.0f, 1.5f, 2.0f, 1.0f};
     for (float sc : kScales)
     {
@@ -284,11 +289,14 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
         }
         ctx->Yield(10);
 
-        // 多サイズのグリフを焼いて、アトラスのテクスチャを増やす（日本語＋ラテン）
+        // 多サイズのグリフを焼いて、アトラスを育てる（ラテン＋かな。日本語は u8 エスケープ）
         {
             ImFont* font = ImGui::GetFont();
-            for (float px = 8.0f; px <= 96.0f; px += 4.0f)
-                font->CalcTextSizeA(px, FLT_MAX, 0.0f, "Material Graph ãããªã¢ã«ã°ã©ã");
+            for (float px = 24.0f; px <= 120.0f; px += 8.0f)
+            {
+                font->CalcTextSizeA(px, FLT_MAX, 0.0f, "Material Graph ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789");
+                font->CalcTextSizeA(px, FLT_MAX, 0.0f, "ãããªã¢ã«ã°ã©ãããããã");
+            }
             ctx->Yield(3);
         }
 
@@ -302,11 +310,14 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
             ctx->Yield(2);
         }
         ctx->Yield(6);
-        ctx->LogInfo("dpi %.2f: atlas textures=%d", sc, ImGui::GetPlatformIO().Textures.Size);
+        const int atlasId = ImGui::GetIO().Fonts->TexData ? ImGui::GetIO().Fonts->TexData->UniqueID : -1;
+        if (atlasId != atlasId0) atlasGrew = true;
+        ctx->LogInfo("dpi %.2f: atlas textures=%d uniqueId=%d (base %d)", sc, ImGui::GetPlatformIO().Textures.Size, atlasId, atlasId0);
         IM_CHECK(ImGui::FindWindowByName("###MaterialGraph") != nullptr);
         ImGuiWindow* tb = ImGui::FindWindowByName("##Toolbar");
         ImGuiWindow* hw = ImGui::FindWindowByName("ヒエラルキー");
         IM_CHECK(tb != nullptr && tb->Active && tb->Size.x > 50.0f);   // UI が全部消えていない
+        IM_CHECK(tb->DrawList != nullptr && tb->DrawList->VtxBuffer.Size > 0);   // クロームが実際に描かれている
         IM_CHECK(hw != nullptr && hw->Active && hw->Size.x > 50.0f);
     }
 
@@ -314,6 +325,14 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
     ctx->Yield(20);
     ed->showMaterialGraph = false;
     ctx->Yield(6);
+
+    // アトラスが育ち（旧テクスチャの破棄と新規確保が走り）、SRV が漏れていないこと。
+    // 返却は NumFramesInFlight フレーム遅れるので、数フレーム回してから数える。
+    ctx->Yield(30);
+    const u32 srvFree1 = app->GetDiagRenderHealth().srvHeapFree;
+    ctx->LogInfo("srv free: %u -> %u, atlas grew=%d", srvFree0, srvFree1, atlasGrew ? 1 : 0);
+    IM_CHECK(atlasGrew);
+    IM_CHECK(srvFree1 + 2 >= srvFree0);
 }
 
 } // namespace uitest

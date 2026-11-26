@@ -672,7 +672,9 @@ void ImGuiManager::Initialize(
     initInfo.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outCpu, D3D12_GPU_DESCRIPTOR_HANDLE* outGpu)
     {
         auto* heap = static_cast<DescriptorHeap*>(info->UserData);
-        const u32 idx = heap->AllocateIndex();   // 枯渇時は例外で fail-fast
+        u32 idx = 0;
+        try { idx = heap->AllocateIndex(); }   // 枯渇時は例外で fail-fast
+        catch (...) { Logger::Error("ImGui SrvDescriptorAllocFn: SRV ヒープが枯渇した（ImGui のテクスチャ確保）"); throw; }
         *outCpu = heap->GetCpuHandle(idx);
         *outGpu = heap->GetGpuHandle(idx);
     };
@@ -681,7 +683,13 @@ void ImGuiManager::Initialize(
         auto* heap = static_cast<DescriptorHeap*>(info->UserData);
         const SIZE_T base = heap->GetCpuHandle(0).ptr;
         const u32 size = heap->GetDescriptorSize();
-        if (size == 0 || cpu.ptr < base) return;
+        // 範囲・刻みの検証（外来や 0 のハンドルで別のスロットを解放しない）
+        const SIZE_T off = cpu.ptr - base;
+        if (size == 0 || cpu.ptr < base || (off % size) != 0 || (off / size) >= heap->GetCapacity())
+        {
+            Logger::Error("ImGui SrvDescriptorFreeFn: 不正なハンドルを拒否した (ptr={})", static_cast<unsigned long long>(cpu.ptr));
+            return;
+        }
         heap->Free(static_cast<u32>((cpu.ptr - base) / size));
     };
 
