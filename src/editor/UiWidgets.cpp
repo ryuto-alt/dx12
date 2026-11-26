@@ -1233,6 +1233,7 @@ constexpr th::gg::GgLayout kGgLayout{};
 constexpr th::gg::GgDeco   kGgDeco{};
 constexpr float kPi = 3.14159265358979f;
 constexpr int kTickSteps = 12;   // 生存ティックの 1 周
+constexpr double kReadoutHoldMs = 600.0;   // motion.waitsMs.readoutHold（Reduce Motion でも保つ待ち）
 } // namespace
 
 void ProgressBar(const char* id, float t01, ImVec2 size, ProgressState state, ProgressRole role)
@@ -1274,8 +1275,13 @@ void ProgressBar(const char* id, float t01, ImVec2 size, ProgressState state, Pr
     // 先端の指針: Done = 消す / Failed = 異常の止め線 / Paused = t3 / Running = t1。黄は StatusJob の Running だけ。
     const float tipX = p0.x + (std::min)(static_cast<float>(shown) * stepPx, w);
     const float ny0 = p0.y + (h - needleH) * 0.5f;
-    const float nw = Px(2.0f);
-    const float nAlpha = anim::Animate(gid ^ 0x5A17u, state == ProgressState::Done ? 0.0f : 1.0f, anim::dur::kProgressDoneFade);
+    const float nw = th::AccentPx();
+    // 終端に着いたら readoutHold（600ms）保持してから、progressDoneFade で指針を消す。
+    const ImGuiID tipId = ImHashStr("##tip", 0, gid);
+    const bool atEnd = state == ProgressState::Done && shown >= target;
+    const double heldSec = anim::StepToward(tipId, atEnd ? 1 : 0, 0.0f).sinceChangeSec;
+    const bool fadeOut = atEnd && heldSec * 1000.0 >= kReadoutHoldMs;
+    const float nAlpha = anim::Animate(ImHashStr("##tipA", 0, gid), fadeOut ? 0.0f : 1.0f, anim::dur::kProgressDoneFade);
     if (state == ProgressState::Failed)
     {
         const float bw = Px(static_cast<float>(kGgDeco.badBarW));
@@ -1313,7 +1319,7 @@ void ProgressGauge(const char* id, float t01, const char* label, float pxLogical
     const int shown = anim::StepToward(gid, target, anim::dur::kProgressStep.ms).shown;
     ImDrawList* dl = win->DrawList;
     const ImVec2 c(p0.x + d * 0.5f, p0.y + bb.GetHeight() * 0.5f);
-    const float thick = (std::max)(th::HairPx(), Px(2.0f));
+    const float thick = (std::max)(th::HairPx(), th::AccentPx());
     const float r = d * 0.5f - thick;
     dl->AddCircle(c, r, Col(th::Bg3), 48, thick);
     if (shown > 0)
@@ -1337,12 +1343,13 @@ void ProgressGauge(const char* id, float t01, const char* label, float pxLogical
 
 GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uint32_t eventCount, float pxLogical)
 {
-    const anim::StepInfo si = anim::StepToward(id, static_cast<int>((std::min)(eventCount, 0x7FFFFFu)), anim::dur::kProgressStep.ms);
+    const int events = static_cast<int>((std::min)(eventCount, 0x7FFFFFu));
+    const anim::StepInfo si = anim::StepToward(id, events, anim::dur::kProgressStep.ms, kTickSteps);
     GaugeSpinnerInfo info;
-    info.laps = si.shown / kTickSteps;
+    info.laps = events / kTickSteps;
     info.sinceEventSec = si.sinceChangeSec;
     info.elapsedSec = si.sinceStartSec;
-    info.stalled = si.sinceChangeSec >= 10.0;
+    info.stalled = events > 0 && si.sinceChangeSec >= 10.0;
 
     const int sz = pxLogical < 17.0f ? 14 : pxLogical < 26.0f ? 20 : pxLogical < 44.0f ? 32 : 56;
     const float r = Px(static_cast<float>(sz)) * 0.5f;
@@ -1368,7 +1375,8 @@ GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uin
         }
     }
     const float needleLen = sz <= 20 ? r * 0.8f : r - Px(sz == 32 ? 5.0f : 8.0f) - Px(1.0f);
-    dl->AddLine(center, ImVec2(center.x + dir.x * needleLen, center.y + dir.y * needleLen), Col(th::Text), Px(2.0f));
+    const float needleW = th::AccentPx();   // 針の太さ（整数 px）。色は t1
+    dl->AddLine(center, ImVec2(center.x + dir.x * needleLen, center.y + dir.y * needleLen), Col(th::Text), needleW);
     if (sz >= 32) dl->AddCircleFilled(center, Px(sz == 32 ? 2.5f : 3.5f), Col(th::Text), 16);
     return info;
 }
@@ -1381,16 +1389,24 @@ void GaugeSpinner(const char* id, uint32_t eventCount, float pxLogical, bool sho
     const float d = Px(pxLogical < 17.0f ? 14.0f : pxLogical < 26.0f ? 20.0f : pxLogical < 44.0f ? 32.0f : 56.0f);
     const float h = (std::max)(d, ImGui::GetFrameHeight());
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImGui::ItemSize(ImRect(p0, ImVec2(p0.x + d, p0.y + h)));
-    if (!ImGui::ItemAdd(ImRect(p0, ImVec2(p0.x + d, p0.y + h)), gid)) return;
-    const GaugeSpinnerInfo info = DrawGaugeSpinner(win->DrawList, ImVec2(p0.x + d * 0.5f, p0.y + h * 0.5f), gid, eventCount, pxLogical);
-    if (!showElapsed) return;
-    char txt[64];
-    if (info.stalled) std::snprintf(txt, sizeof(txt), "応答待ち %d s", static_cast<int>(info.sinceEventSec));
-    else if (info.laps > 0) std::snprintf(txt, sizeof(txt), "×%d  %d s", info.laps, static_cast<int>(info.elapsedSec));
-    else std::snprintf(txt, sizeof(txt), "%d s", static_cast<int>(info.elapsedSec));
-    win->DrawList->AddText(ImVec2(p0.x + d + Px(8.0f), p0.y + (h - ImGui::GetFontSize()) * 0.5f), Col(th::TextDim), txt);
-    ImGui::SameLine(0.0f, Px(8.0f) + ImGui::CalcTextSize(txt).x);   // 文字の分だけカーソルを送る
+    // 文字は状態（経過秒）から決まるので、先に状態を進めて幅を測り、項目の矩形に文字ぶんを含める。
+    const anim::StepInfo si = anim::StepToward(gid, static_cast<int>((std::min)(eventCount, 0x7FFFFFu)), anim::dur::kProgressStep.ms, kTickSteps);
+    char txt[64] = "";
+    float tw = 0.0f;
+    if (showElapsed)
+    {
+        const int laps = static_cast<int>((std::min)(eventCount, 0x7FFFFFu)) / kTickSteps;
+        if (si.sinceChangeSec >= 10.0 && eventCount > 0u) std::snprintf(txt, sizeof(txt), "応答待ち %d s", static_cast<int>(si.sinceChangeSec));
+        else if (laps > 0) std::snprintf(txt, sizeof(txt), "×%d  %d s", laps, static_cast<int>(si.sinceStartSec));
+        else std::snprintf(txt, sizeof(txt), "%d s", static_cast<int>(si.sinceStartSec));
+        tw = Px(8.0f) + ImGui::CalcTextSize(txt).x;
+    }
+    const ImRect bb(p0, ImVec2(p0.x + d + tw, p0.y + h));
+    ImGui::ItemSize(bb);
+    if (!ImGui::ItemAdd(bb, gid)) return;
+    DrawGaugeSpinner(win->DrawList, ImVec2(p0.x + d * 0.5f, p0.y + h * 0.5f), gid, eventCount, pxLogical);
+    if (showElapsed)
+        win->DrawList->AddText(ImVec2(p0.x + d + Px(8.0f), p0.y + (h - ImGui::GetFontSize()) * 0.5f), Col(th::TextDim), txt);
 }
 
 } // namespace dx12e::ui

@@ -197,13 +197,23 @@ void TestStepToward()
     CHECK(anim::StepToward(6, 9, stepMs).shown == 9);
     anim::SetBackground(false);
 
-    // Reduce Motion でも刻みは残す（Stepped の規則）
+    // Reduce Motion では送りは即時（刻みの量子化は呼び出し側が保つので、shown は整数の刻み数のまま行き先に着く）
     anim::SetReduceMotionOverride(1);
     SetTime(30.0);
     CHECK(anim::StepToward(7, 0, stepMs).shown == 0);
     SetTime(30.01);
-    CHECK(anim::StepToward(7, 6, stepMs).shown == 1);
+    CHECK(anim::StepToward(7, 6, stepMs).shown == 6);
     anim::SetReduceMotionOverride(0);
+
+    // 遅れの上限: 出来事が溜まっても、止まった後に回り続けない
+    SetTime(40.0);
+    CHECK(anim::StepToward(10, 0, stepMs, 12).shown == 0);
+    SetTime(40.001);
+    CHECK(anim::StepToward(10, 1000, stepMs, 12).shown >= 988);   // 1000 件の連続でも 12 刻み以内の遅れ
+    SetTime(40.001 + stepMs * 0.001 * 13.0);
+    CHECK(anim::StepToward(10, 1000, stepMs, 12).shown == 1000);  // 出来事が止まれば 13 刻みぶん（約 0.8 秒）で止まる
+    SetTime(40.001 + stepMs * 0.001 * 40.0);
+    CHECK(anim::StepToward(10, 1000, stepMs, 12).shown == 1000);  // 以降は動かない
 
     // 参照されない状態は捨てる
     anim::Reset();

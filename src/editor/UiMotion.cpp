@@ -251,7 +251,7 @@ ImVec4 AnimateColor(ImGuiID id, ImVec4 target, float durMs, Curve curve)
     return ImVec4(r[0], r[1], r[2], r[3]);
 }
 
-StepInfo StepToward(ImGuiID id, int targetSteps, float stepMs)
+StepInfo StepToward(ImGuiID id, int targetSteps, float stepMs, int maxLag)
 {
     Purge();
     const uint64_t frame = clock::FrameIndex();
@@ -277,10 +277,12 @@ StepInfo StepToward(ImGuiID id, int targetSteps, float stepMs)
     }
     if (s->shown < s->target)
     {
-        const bool instant = clock::Deterministic() || g_background.load() || g_virtual.load() || stepMs <= 0.0f;
+        const bool instant = clock::Deterministic() || g_background.load() || g_virtual.load() || ReduceMotion() || stepMs <= 0.0f;
         if (instant) s->shown = s->target;
         else
         {
+            // 遅れの上限。出来事が刻みの速さより多く来ても、止まった後に回り続けない。
+            if (maxLag > 0 && s->target - s->shown > maxLag) s->shown = s->target - maxLag;
             while (s->shown < s->target && now >= s->nextAt)
             {
                 ++s->shown;
