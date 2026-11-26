@@ -117,18 +117,6 @@ export function judgeGolden(lib: DiffLib, o: { native: Rgba; ref: Rgba | null; b
   return v;
 }
 
-/** golden.mjs の applyMasks と同じ(0..1 の矩形をマゼンタで塗る)。 */
-export function applyMasks(img: Rgba, masks?: number[][]): Rgba {
-  if (!masks?.length) return img;
-  const data = Buffer.from(img.data);
-  for (const [x0, y0, x1, y1] of masks) {
-    const ax = Math.max(0, Math.floor(x0 * img.width)), bx = Math.min(img.width, Math.ceil(x1 * img.width));
-    const ay = Math.max(0, Math.floor(y0 * img.height)), by = Math.min(img.height, Math.ceil(y1 * img.height));
-    for (let y = ay; y < by; y++) for (let x = ax; x < bx; x++) { const o = (y * img.width + x) * 4; data[o] = 255; data[o + 1] = 0; data[o + 2] = 255; data[o + 3] = 255; }
-  }
-  return { width: img.width, height: img.height, data };
-}
-
 // ── 撮影(golden.mjs の captureScene / openScene / createNewScene と同じ手順) ─────────────────────────
 export async function openSceneWait(call: EngineCall, scene: string, signal?: AbortSignal): Promise<void> {
   for (let i = 0; i < 600; i++) {
@@ -158,12 +146,6 @@ export async function captureFinal(call: EngineCall, outFile: string, s: Capture
   return { img: readPng(file), file };
 }
 
-export function uiExtraArgs(s: { dpi?: number; theme?: string }, forceTheme: string | null): string[] {
-  const a = ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0)];
-  const theme = forceTheme ?? s.theme ?? "default";
-  if (theme !== "default") a.push("--theme-variant", theme);
-  return a;
-}
 
 // ── project suite: <project>/.dx12/baselines ──────────────────────────────────
 export type BaselineKey = { adapter: string | null; driverVersion: string | null; engineVersion: string | null; renderSettingsHash: string | null; qualityPreset: string | null };

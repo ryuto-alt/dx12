@@ -14,7 +14,7 @@ import { tmpDir, rmTree } from "./fleetTestKit.ts";
 import { loadJobsConfig } from "./jobs/config.ts";
 import type { KindEnv } from "./jobs/env.ts";
 import { JobFailure } from "./jobs/manager.ts";
-import { visualRegressionKind } from "./testing/visualKind.ts";
+import { visualRegressionKind, loadGoldenScenes } from "./testing/visualKind.ts";
 import { approveProjectItem, compareImagesPair, judgeGolden, keyCompat, loadDiffLib, PROJECT_TOLERANCE, readBaselines, readHistoryLog, pendingHumanReview } from "./testing/visualCore.ts";
 import type { EngineProvider } from "./testing/engineProvider.ts";
 import { readPng } from "./testing/visualPng.ts";
@@ -115,6 +115,10 @@ console.log("[3] golden suite の判定(golden.mjs と同じ式)");
 {
   const gm: any = await import(pathToFileURL(path.join(REPO, "tools", "bench", "golden.mjs")).href);
   check("既定の許容差は golden.mjs の export と同一(写しを持たない)", lib.DEFAULT_TOLERANCE === gm.DEFAULT_TOLERANCE && lib.DEFAULT_TOLERANCE.pixelThreshold === 12, lib.DEFAULT_TOLERANCE);
+
+  const ls = await loadGoldenScenes(REPO);
+  check("MCP のシーン一覧は golden.mjs loadConfig() と全項目一致(写しを持たない)", ls.scenes.length > 0 && JSON.stringify(ls.scenes) === JSON.stringify(gm.loadConfig(path.join(REPO, "tests", "golden"))), ls.scenes.length);
+  check("applyMasks / uiExtraArgs は golden.mjs の export を使う", ls.gm.applyMasks === gm.applyMasks && ls.gm.uiExtraArgs === gm.uiExtraArgs);
 
   const goldenDir = path.join(REPO, "tests", "golden");
   const store: any = await import(new URL(`file:///${path.join(REPO, "tools/bench/lib/goldenStore.mjs").replace(/\\/g, "/")}`).href);
