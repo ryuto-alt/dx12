@@ -673,7 +673,6 @@ void Application::GetMainViewRect(u32& x, u32& y, u32& w, u32& h) const
 // ★Run ループのフレーム外で呼ぶ（作り直しは WaitIdle 込み）。DSV / RTV / SRV のスロットは初回だけ確保し、以後は張り直す。
 void Application::EnsureSplitResources()
 {
-    AppAccess::UpdateShadingRevision(*this);   // W1-C3: shadingRevision に合わせてフォワード系 PSO を差し替える（フレーム外。分割画面でなくても呼ぶ）
     const u32 n = SplitScreenCount();
     if (n < 2 || !m_graphicsDevice || !m_commandQueue || !m_dsvHeap || !m_srvHeap || !m_offscreenRtvHeap) return;
 
@@ -1046,7 +1045,7 @@ void Application::EnsureInstancePrevBuffer()
 //   ・グラフ材質（ForwardGraph の実行時コンパイル）には毎回今の値を渡す（変化があれば GraphMaterialSystem 側で作り直す）。
 //   ・水 / 植生 / 仮想ジオメトリの V2 .cso は宣言済みだが、選ぶ側（WaterRenderer / FoliageSystem / VirtualGeometrySystem）は
 //     C3 の所有外のため未結線（引き継ぎ事項）。
-// 呼び出し元: EnsureSplitResources の先頭（Application.cpp は W1 で A の所有のため、Run ループの同じ位置にある C の関数に相乗りする）。
+// 呼び出し元: Application::Run ループの UpdateLightingUnits の隣（フレーム外。FU-E-2 で EnsureSplitResources への相乗りを外した）。
 // ---------------------------------------------------------------------------
 void AppAccess::UpdateShadingRevision(Application& app)
 {

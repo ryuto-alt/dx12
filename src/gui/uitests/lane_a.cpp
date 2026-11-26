@@ -1232,5 +1232,25 @@ void T_VfxTickEachFrame(ImGuiTestContext* ctx)
     IM_CHECK(rt.TickDriven());
 }
 
+// FU-E-2: shadingRevision の反映は Run ループ（UpdateLightingUnits の隣）が行う。分割画面でなくても 2 に切り替わり、1 に戻せる。
+void T_ShadingRevisionAppliedInRunLoop(ImGuiTestContext* ctx)
+{
+    Application* app = App();
+    IM_CHECK(app && app->GetScene());
+    auto& sh = app->GetScene()->GetShadingSettings();
+    const u8 prev = sh.shadingRevision;
+    int applied = 0, a = 0, b = 0, c = 0;
+    sh.shadingRevision = 2;
+    ctx->Yield(3);
+    AppAccess::QueryShadingPsos(*app, applied, a, b, c);
+    IM_CHECK_EQ(applied, 2);
+    sh.shadingRevision = 1;
+    ctx->Yield(3);
+    AppAccess::QueryShadingPsos(*app, applied, a, b, c);
+    IM_CHECK_EQ(applied, 1);
+    sh.shadingRevision = prev;
+    ctx->Yield(3);
+}
+
 } // namespace uitest
 } // namespace dx12e

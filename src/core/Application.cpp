@@ -1830,6 +1830,7 @@ void Application::Run()
         EnsureSplitResources();   // 画面分割の区画 2..N（フレーム外・WaitIdle 込み）
         // Q2（校正）: ライティング単位の PSO 差し替え / オフスクリーン撮影の進行。どちらも既定では何もしない。
         UpdateLightingUnits();
+        AppAccess::UpdateShadingRevision(*this);   // W1-C3 / FU-E-2: shadingRevision に合わせてフォワード系 PSO を差し替える（フレーム外・分割画面でなくても呼ぶ）
         ServiceOffscreenShot();
 
         m_gameClock.Tick();

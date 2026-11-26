@@ -4958,6 +4958,7 @@ const DiagReg kTests[] = {
     { "editor-ux", "undo_after_save_as_stays_dirty", "エディタ操作", "名前を付けて保存のあとに Undo で戻しても、ディスクと違えば未保存のまま（無題からの命名保存も）", uitest::T_UndoAfterSaveAsStaysDirty },
     { "editor-ux", "game_lua_under_project_root", "エディタ操作", "グローバル game.lua はプロジェクトルートの下で解決される", uitest::T_GameLuaUnderProjectRoot },
     { "vfx", "vfx_tick_each_frame", "パーティクルエディタ", "MCP を使わなくても Application::Update が毎フレーム VfxTick を呼ぶ（結線済み・Tick 駆動）", uitest::T_VfxTickEachFrame },
+    { "render", "shading_revision_run_loop", "シェーディング", "shadingRevision の反映は Run ループが行う（分割画面でなくても 1⇄2 が切り替わる）", uitest::T_ShadingRevisionAppliedInRunLoop },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },
