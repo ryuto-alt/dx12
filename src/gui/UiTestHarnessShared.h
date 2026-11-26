@@ -95,6 +95,7 @@ void T_UndoToSavedStateClearsDirty(ImGuiTestContext* ctx);    // W1-A16 (e)
 void T_UndoToBaselineWithoutSave(ImGuiTestContext* ctx);      // W1-A16 (e)
 void T_UnsavedConfirmSaveUntitledAsksName(ImGuiTestContext* ctx); // W1-A16 (b)/(f)
 void T_NewSceneConfirmUnderVirtualInput(ImGuiTestContext* ctx);   // W1-A16 (f)
+void T_UndoAfterSaveAsStaysDirty(ImGuiTestContext* ctx);     // W1-A16 (e)
 void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx);        // W1-A16 (g)
 // ==== lane-A:decl end ====
 // ==== lane-B:decl begin ====

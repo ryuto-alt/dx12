@@ -541,7 +541,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // ゲームスクリプト読み込み（グローバル game.lua）
         // 配布ゲームは起動＝ゲームプレイ開始なので OnStart を呼ぶ。
         // エディタは「プロジェクトを開いただけ」なので呼ばない（Play を押したときに呼ばれる）。
-        LoadGameScript(/*callOnStart=*/m_isGameMode);
+        // ランチャー表示中はまだプロジェクトのルートが決まっていないので探さない（engine instance の場所を見てしまう）。
+        // プロジェクトを開くと BeginProjectLoad が読み直す（W1-A16 / R1-10）。
+        if (m_isGameMode || !m_showLauncher)
+            LoadGameScript(/*callOnStart=*/m_isGameMode);
 
         // ★開始シーンを読む前に遅延解放を有効にする。以前は Initialize の末尾で有効にしていたため、
         //   シーン読込中（地形の頂点バッファの作り直しなど、同じコマンドリストが GPU 参照を持ったまま

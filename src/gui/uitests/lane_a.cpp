@@ -1111,6 +1111,85 @@ void T_NewSceneConfirmUnderVirtualInput(ImGuiTestContext* ctx)
     fs::remove(target, ec);
 }
 
+// (e)/(b) R1-09: 名前を付けて保存（MarkSceneClean を通らない保存）のあとに、保存より前の状態へ Undo で戻しても未保存が解けない。
+//  開く → Box → 名前を付けて保存（Box を含むファイルを書く）→ Ctrl+Z で Box が消える = ディスクと違う = 未保存のまま。
+void T_UndoAfterSaveAsStaysDirty(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+
+    const std::string snapshot = app->SaveSceneSnapshot();
+    IM_CHECK(!snapshot.empty());
+    if (snapshot.empty()) return;
+    SceneStateGuard guard{ed, app, ed->currentScenePath};
+    std::error_code ec;
+    const fs::path untitled = fs::path(AppAccess::UntitledDir()) / "_mcp_untitled_a16saveas.json";
+    const fs::path target   = fs::path(PathResolver::AssetsDir()) / "scenes" / "_a16_saveas_target.json";
+    fs::remove(target, ec);
+
+    auto openSnapshot = [&]()
+    {
+        ed->pendingLoadSkipConfirm = true;
+        ed->pendingLoadPath = snapshot;
+        ctx->Yield(2);
+        for (int i = 0; i < 300 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield(1);
+        ctx->Yield(40);   // 保存済みの内容の指紋が取られるまで
+    };
+    auto saveAsNamed = [&](const char* key)
+    {
+        ctx->SetRef(kWinHierarchy);
+        ctx->KeyPress(key[0] == 'S' ? (ImGuiKey_S | ImGuiMod_Ctrl | ImGuiMod_Shift) : (ImGuiKey_S | ImGuiMod_Ctrl));
+        ctx->Yield(8);
+        const ImGuiID dlg = FocusWindow(ctx, "//名前を付けて保存###NewScenePopup");
+        IM_CHECK(dlg != 0);
+        if (dlg == 0) return;
+        ctx->SetRef(dlg);
+        ctx->ItemInputValue("##SceneName", "_a16_saveas_target");
+        ctx->Yield(4);   // 入力欄は Enter で確定する（EnterReturnsTrue）ので、閉じていなければ保存を押す
+        if (FocusWindow(ctx, "//名前を付けて保存###NewScenePopup") != 0) { ctx->SetRef(dlg); ctx->ItemClick("保存"); }
+        ctx->Yield(8);
+        const ImGuiID ow = FocusWindow(ctx, "//名前を付けて保存###SaveAsOverwritePopup");
+        if (ow != 0) { ctx->SetRef(ow); ctx->ItemClick("上書き"); ctx->Yield(8); }
+    };
+
+    LogStep(ctx, "開く → Box → Ctrl+Shift+S で名前を付けて保存 → Ctrl+Z しても未保存のまま");
+    openSnapshot();
+    IM_CHECK(!ed->IsSceneDirty());
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneDirty());
+    saveAsNamed("S");
+    IM_CHECK(fs::exists(target, ec));
+    IM_CHECK(!ed->IsSceneDirty());
+    ctx->Yield(10);
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(8);
+    IM_CHECK(ed->IsSceneDirty());
+    IM_CHECK(ed->IsSceneHumanDirty());
+
+    LogStep(ctx, "無題（MCP の仮の保存先）→ Box → Ctrl+S で命名して保存 → Ctrl+Z しても未保存のまま");
+    fs::remove(target, ec);
+    openSnapshot();
+    ed->currentScenePath = untitled.string();
+    AddEntity(ctx, "Box");
+    saveAsNamed("s");
+    IM_CHECK(fs::exists(target, ec));
+    IM_CHECK(!fs::exists(untitled, ec));
+    ctx->Yield(10);
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(8);
+    IM_CHECK(ed->IsSceneDirty());
+
+    LogStep(ctx, "後始末");
+    openSnapshot();
+    fs::remove(snapshot, ec);
+    fs::remove(target, ec);
+}
+
 // (g) R1-10: グローバル game.lua の場所は、開いているプロジェクトのルート（BaseDir）の下で解決される。
 void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx)
 {
@@ -1122,13 +1201,23 @@ void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx)
     IM_CHECK(path.compare(0, base.size(), base) == 0);   // <project>/scripts/game.lua か <project>/assets/game.lua
     IM_CHECK(path.find("/scripts/game.lua") != std::string::npos || path.find("/assets/game.lua") != std::string::npos);
 
-    // 起動から今までのログに、game.lua が無いことの警告（レベル 3 以上）が出ていない（任意のファイルなので情報どまり）。
+    // 起動から今までのログで、実際に探した game.lua の場所（「グローバル game.lua はありません（任意）: <path>」）が
+    // すべてプロジェクトルートの下にあり、警告（レベル 3 以上）になっていない。
     std::vector<LogEntry> entries;
     Logger::ReadBuffered(0, entries);
-    int warnCount = 0;
+    const std::string marker = "グローバル game.lua はありません（任意）: ";
+    int outside = 0, warns = 0;
     for (const LogEntry& e : entries)
-        if (e.level >= 3 && e.text.find("ゲームスクリプトが見つかりません") != std::string::npos) ++warnCount;
-    IM_CHECK_EQ(warnCount, 0);
+    {
+        const size_t p = e.text.find(marker);
+        if (p == std::string::npos) continue;
+        if (e.level >= 3) ++warns;
+        std::string searched = e.text.substr(p + marker.size());
+        std::replace(searched.begin(), searched.end(), '\\', '/');
+        if (searched.compare(0, base.size(), base) != 0) ++outside;
+    }
+    IM_CHECK_EQ(outside, 0);
+    IM_CHECK_EQ(warns, 0);
 }
 
 } // namespace uitest
