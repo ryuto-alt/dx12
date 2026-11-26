@@ -34,7 +34,7 @@ bool IsMcpReadOnlyMethod(const std::string& method)
         "get_bounds", "get_editor_camera", "get_scene_settings", "get_post_process",
         "get_ssao", "get_ssr", "get_ssgi", "get_taa", "get_upscaler", "get_contact_shadow",
         "get_normal_filter", "get_shading",
-        "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_physics_state",
+        "get_shadow_pcss", "get_volumetric_fog", "get_dxr", "get_device_caps", "get_physics_state",
         "audio_state",
         "brain_state",
         // ビルドは出力フォルダへ書くだけでシーンのデータは変えない（未保存扱いにしない）。

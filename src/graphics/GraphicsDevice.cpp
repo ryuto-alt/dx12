@@ -253,17 +253,12 @@ void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions&
 // SupportsInlineRaytracing() だけを見て安全に分岐できるようにする。
 void GraphicsDevice::QueryCapabilities()
 {
-    // --- ① レイトレーシング Tier の実値 ---
-    {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
-        HRESULT hr = m_device->CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5));
-        if (SUCCEEDED(hr))
-            m_raytracingTier = options5.RaytracingTier;
-        m_dxrSupported = (m_raytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED);
-    }
+    // --- 全ての問い合わせは DeviceCaps（唯一の正）で 1 回だけ行う。以下の getter 用メンバはその写し ---
+    m_caps = std::make_unique<DeviceCaps>(QueryDeviceCaps(m_device.Get()));
+    DeviceCaps& caps = *m_caps;
 
-    // --- ①' DXR 非対応 GPU のシミュレーション（環境変数 DX12_DISABLE_DXR=1）---
+    // --- ① レイトレーシング Tier の実値 ---
+    // DXR 非対応 GPU のシミュレーション（環境変数 DX12_DISABLE_DXR=1）。
     // ★フォールバック経路（計画09 §5.3）を対応 GPU 上で実際に踏むための逃げ道。
     //   Tier を丸ごと NOT_SUPPORTED に落とすので、ログ・エディタ UI・診断・
     //   レンダリングの全経路が「本当に非対応な GPU」とまったく同じ挙動になる。
@@ -272,72 +267,39 @@ void GraphicsDevice::QueryCapabilities()
         size_t len = 0;
         if (::getenv_s(&len, buf, sizeof(buf), "DX12_DISABLE_DXR") == 0 && len > 0 && buf[0] == '1')
         {
-            m_raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
-            m_dxrSupported   = false;
+            caps.raytracingTier     = 0;
+            caps.omm                = false;
+            caps.serActuallyReorders = false;
             Logger::Warn("DX12_DISABLE_DXR=1 のため DXR を非対応として扱います（フォールバック検証用）");
         }
     }
+    m_raytracingTier = static_cast<D3D12_RAYTRACING_TIER>(caps.raytracingTier);
+    m_dxrSupported   = (m_raytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED);
 
-    // --- ② 最高シェーダモデル ---
-    // CheckFeatureSupport は「ランタイムが知らない SM 値」を渡すと E_INVALIDARG を返す。
-    // 公式ドキュメントの推奨どおり、高い方から 1 段ずつ下げて再試行する
-    // （成功時は「渡した値以下で、かつデバイスが対応する最高値」が書き戻される）。
-    {
-        static constexpr D3D_SHADER_MODEL kProbe[] = {
-            D3D_SHADER_MODEL_6_9, D3D_SHADER_MODEL_6_8, D3D_SHADER_MODEL_6_7,
-            D3D_SHADER_MODEL_6_6, D3D_SHADER_MODEL_6_5, D3D_SHADER_MODEL_6_4,
-            D3D_SHADER_MODEL_6_3, D3D_SHADER_MODEL_6_2, D3D_SHADER_MODEL_6_1,
-            D3D_SHADER_MODEL_6_0,
-        };
-        for (D3D_SHADER_MODEL sm : kProbe)
-        {
-            D3D12_FEATURE_DATA_SHADER_MODEL data{};
-            data.HighestShaderModel = sm;
-            if (SUCCEEDED(m_device->CheckFeatureSupport(
-                    D3D12_FEATURE_SHADER_MODEL, &data, sizeof(data))))
-            {
-                m_highestShaderModel = data.HighestShaderModel;
-                break;
-            }
-        }
-    }
-
-    // --- ③ DXR 1.2（SER）。今は使わないがログに出しておく（計画09 §3.3 / R18）---
-    if (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_2)
-    {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS22 options22{};
-        if (SUCCEEDED(m_device->CheckFeatureSupport(
-                D3D12_FEATURE_D3D12_OPTIONS22, &options22, sizeof(options22))))
-        {
-            m_serActuallyReorders = (options22.ShaderExecutionReorderingActuallyReorders != FALSE);
-        }
-    }
-
-    // --- ③.5 リソースバインディング Tier（SM 6.6 Dynamic Resources の必要条件）---
-    // 仕様が要求するのは「SM 6.6」かつ「Tier 3」の 2 つだけ。FL 12_2 の GPU は Tier 3 が必須。
-    {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS opts{};
-        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts))))
-            m_resourceBindingTier = opts.ResourceBindingTier;
-    }
+    // --- ② 最高シェーダモデル / ③ DXR 1.2（SER）/ ③.5 リソースバインディング Tier ---
+    m_highestShaderModel  = static_cast<D3D_SHADER_MODEL>(caps.highestShaderModel);
+    m_serActuallyReorders = caps.serActuallyReorders;
+    m_resourceBindingTier = static_cast<D3D12_RESOURCE_BINDING_TIER>(caps.resourceBindingTier);
 
     // --- ③.6 メッシュシェーダ Tier（仮想ジオメトリ P3）。DX12_DISABLE_MESHSHADER=1 で非対応として扱う ---
     {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS7 o7{};
-        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &o7, sizeof(o7))))
-            m_meshShaderTier = o7.MeshShaderTier;
         char buf[8]{};
         size_t len = 0;
         if (::getenv_s(&len, buf, sizeof(buf), "DX12_DISABLE_MESHSHADER") == 0 && len > 0 && buf[0] == '1')
         {
-            m_meshShaderTier = D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+            caps.meshShaderTier = 0;
+            caps.meshShader     = false;
             Logger::Warn("DX12_DISABLE_MESHSHADER=1 のためメッシュシェーダを非対応として扱います（縮退検証用。VG はプロキシ描画になる）");
         }
+        m_meshShaderTier = static_cast<D3D12_MESH_SHADER_TIER>(caps.meshShaderTier);
         Logger::Info("VG: MeshShaderTier={} / ShaderModel>=6.5={} → メッシュシェーダ {}",
                      m_meshShaderTier >= D3D12_MESH_SHADER_TIER_1 ? "1" : "none",
                      m_highestShaderModel >= D3D_SHADER_MODEL_6_5 ? "yes" : "no",
                      SupportsMeshShaders() ? "使用可" : "使用不可");
     }
+
+    // --- ③.7 caps の 1 行要約（全項目は DeepDiagnostics `caps` と MCP get_device_caps）。この段では読むだけ ---
+    Logger::Info("{}", DeviceCapsSummary(caps));
 
     // --- ④ 起動ログ 1 行（dx12_get_log / DeepDiagnostics `dxr` の一次情報）---
     const int tierMajor = (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_0)

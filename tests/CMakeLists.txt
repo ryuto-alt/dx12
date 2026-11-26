@@ -383,6 +383,19 @@ if(COMMAND uno_agility_test_exe)
     add_test(NAME AgilityLoadTests COMMAND AgilityLoadTests)
     set_tests_properties(AgilityLoadTests PROPERTIES LABELS gpu TIMEOUT 120)
 
+    # DeviceCapsTests（gpu）: caps の全項目が取れ、SM が 6.9（ドライバが 595 未満なら 6.8 を許容）で、
+    #   独立に問い合わせた値と一致する。
+    add_executable(DeviceCapsTests device_caps_test.cpp)
+    target_include_directories(DeviceCapsTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    # GraphicsDevice::Initialize が Window& を取る（Window.cpp が InputSystem を参照）
+    target_link_libraries(DeviceCapsTests PRIVATE Graphics Input)
+    if(MSVC)
+        target_compile_options(DeviceCapsTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(DeviceCapsTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DeviceCapsTests COMMAND DeviceCapsTests)
+    set_tests_properties(DeviceCapsTests PROPERTIES LABELS gpu TIMEOUT 120)
+
     # AgilityVersionPolicy（GPU 不要）: lock の SDK が 600 以上 700 未満（プレビューを出荷しない）、
     #   ビルドした exe 2 本の export と同梱 DLL の export と lock の 3 つが一致、D3D12SDKPath、DLL の SHA256。
     add_executable(AgilityPolicyCheck agility_policy_test.cpp)
