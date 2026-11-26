@@ -1,6 +1,7 @@
 // UI テストのレーン A の本体。宣言は gui/UiTestHarnessShared.h の lane-A:decl、
 // 登録は gui/UiTestHarness.cpp の kTests の lane-A ブロックに足す。
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -1407,7 +1408,12 @@ void T_ConsoleDefaults(ImGuiTestContext* ctx)
         for (const LogEntry& e : got)
         {
             if (e.level >= 4) { luaError = true; errText = e.text; }
-            if (e.text.find("エンティティ数") != std::string::npos) ranOk = true;
+            // 入力のエコー（"> ..."）にも文字列が入るので、結果の行（"エンティティ数: <数字>"）だけを見る
+            if (e.text.rfind("> ", 0) == 0) continue;
+            const size_t p = e.text.find("エンティティ数: ");
+            if (p != std::string::npos && p + std::strlen("エンティティ数: ") < e.text.size() &&
+                std::isdigit(static_cast<unsigned char>(e.text[p + std::strlen("エンティティ数: ")])))
+                ranOk = true;
         }
         if (luaError) IM_ERRORF("例文がエラーになりました: %s", errText.c_str());
         IM_CHECK(!luaError);
@@ -1433,11 +1439,47 @@ void T_ConsoleDefaults(ImGuiTestContext* ctx)
             lw = listWindow();
             IM_CHECK(lw != nullptr);
             if (lw) IM_CHECK(lw->Scroll.y >= lw->ScrollMax.y - 2.0f);
+
+            LogStep(ctx, "上へスクロールして読み戻している間は、新着が来ても位置が変わらない");
+            if (lw)
+            {
+                ctx->SetRef(win);
+                ctx->ScrollToY(ImGuiTestRef(lw->ID), 0.0f);
+                ctx->Yield(3);
+                lw = listWindow();
+                IM_CHECK(lw != nullptr);
+                if (lw)
+                {
+                    const float before = lw->Scroll.y;
+                    IM_CHECK(before < lw->ScrollMax.y - 10.0f);
+                    for (int i = 160; i < 200; ++i) { Logger::Info("A13 情報ログ {}", i); ctx->Yield(1); }
+                    ctx->Yield(4);
+                    lw = listWindow();
+                    IM_CHECK(lw != nullptr);
+                    if (lw)
+                    {
+                        if (std::fabs(lw->Scroll.y - before) > 1.0f) IM_ERRORF("scroll %.1f -> %.1f", before, lw->Scroll.y);
+                        IM_CHECK(std::fabs(lw->Scroll.y - before) <= 1.0f);
+                    }
+                }
+            }
         }
     }
 
+    LogStep(ctx, "debug（MCP の接続・切断の 1 件ごと等）は既定の一覧に出ない");
+    {
+        ctx->SetRef(win);
+        ctx->ItemClick("クリア");
+        ctx->Yield(4);
+        for (int i = 0; i < 200; ++i) Logger::Debug("MCP bridge: client #{} connected ({} connected)", i, 1);
+        ctx->Yield(6);
+        ImGuiWindow* lw = listWindow();
+        IM_CHECK(lw != nullptr);
+        if (lw) IM_CHECK(lw->ScrollMax.y <= 0.0f);   // 一覧は空のまま
+    }
+
     LogStep(ctx, "背景モード（ダイアログを出せない）でインポートを押すと案内が出る");
-    if (dx12e::guard::Blocked("A13 test probe"))
+    IM_CHECK(dx12e::guard::Blocked("A13 test probe"));   // UI テスト中は必ず仮想入力扱い（出ないなら環境がおかしい）
     {
         const ImGuiID assets = FocusWindow(ctx, kWinAssets);
         IM_CHECK(assets != 0);
@@ -1447,6 +1489,10 @@ void T_ConsoleDefaults(ImGuiTestContext* ctx)
         ctx->ItemClick("**/" ICON_UPLOAD " インポート");
         ctx->Yield(4);
         IM_CHECK(ui::ToastLiveCount() >= 1);
+        bool found = false;
+        for (const ui::ToastRecord& r : ui::ToastHistory(8))
+            if (r.live && r.text.find("import_asset") != std::string::npos) found = true;
+        IM_CHECK(found);
     }
 }
 

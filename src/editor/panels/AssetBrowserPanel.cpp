@@ -2141,7 +2141,7 @@ void AssetBrowserPanel::OpenImportDialog(EditorContext& ctx)
     if (dx12e::guard::Blocked("Asset import dialog"))   // 仮想入力 / 背景モード / UI テスト中はダイアログを出さない
     {
         // BUG-35: 黙って何も起きないと壊れたように見える。代わりの経路を案内する。
-        ctx.Notify(ui::ToastKind::Warn, "背景モードではファイルダイアログを出せません。MCP の import_asset を使ってください");
+        ctx.Notify(ui::ToastKind::Warn, "この環境（背景モード・MCP 操作中）ではファイルダイアログを出せません。MCP の import_asset を使ってください");
         return;
     }
     std::vector<wchar_t> buf(65536, L'\0');

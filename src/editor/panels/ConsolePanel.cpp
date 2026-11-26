@@ -31,6 +31,9 @@ int SeverityOf(const LogEntry& e)
     return 0;
 }
 
+// trace / debug（spdlog level 0,1）。接続の出入りなど調査用の細かい行。既定では一覧に出さない。
+bool IsDetail(const LogEntry& e) { return e.level <= 1; }
+
 // ASCII のみ大文字小文字を無視した部分一致（UTF-8 日本語はバイト一致）
 bool ContainsCI(const std::string& hay, const char* needle)
 {
@@ -86,14 +89,15 @@ void ConsolePanel::RebuildView()
 {
     m_view.clear();
     m_viewCount.clear();
-    m_cntInfo = m_cntWarn = m_cntError = 0;
+    m_cntInfo = m_cntWarn = m_cntError = m_cntDebug = 0;
 
     std::unordered_map<std::string, int> collapseMap;   // text → m_view 添字
     for (int i = 0; i < static_cast<int>(m_entries.size()); ++i)
     {
         const LogEntry& e = m_entries[i];
         const int sev = SeverityOf(e);
-        if (sev == 0) ++m_cntInfo;
+        if (IsDetail(e)) { ++m_cntDebug; if (!m_showDetail) continue; }   // trace/debug は「詳細」トグルが OFF の間は隠す（BUG-31）
+        else if (sev == 0) ++m_cntInfo;
         else if (sev == 1) ++m_cntWarn;
         else ++m_cntError;
 
@@ -125,6 +129,8 @@ void ConsolePanel::ClearLocal()
     m_view.clear();
     m_viewCount.clear();
     m_selectedId = 0;
+    m_stickToEnd = true;    // クリア後は末尾追従に戻す
+    m_prevScrollY = -1.0f;
     m_viewDirty  = true;
 }
 
@@ -186,9 +192,11 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
         const float w1 = ui::Px(78.0f);
         ImGui::SameLine();
         const float rightStart = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x
-                               - (w1 * 3.0f + ui::Px(8.0f));
+                               - (w1 * 4.0f + ui::Px(12.0f));
         if (rightStart > ImGui::GetCursorPosX())
             ImGui::SetCursorPosX(rightStart);
+        sevToggle("詳細",   m_cntDebug, &m_showDetail, theme::TextDim);
+        ImGui::SameLine();
         sevToggle("情報",   m_cntInfo,  &m_showInfo,  theme::TextMid);
         ImGui::SameLine();
         sevToggle("警告",   m_cntWarn,  &m_showWarn,  theme::Warn);
@@ -308,13 +316,26 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
         // 毎フレーム位置から判定すると、一度に大量に届いた直後は ScrollMax が 1 フレーム遅れるため末尾から外れたと誤判定する。
         // 最大値は 1 フレーム遅れて育つので、末尾に居る間は新着が無いフレームでも最大値へ寄せ続ける（数フレームで収束）。
         {
-            const bool userScrolled = ImGui::IsWindowHovered() &&
+            // スクロールバーのドラッグ中は ActiveId が立ち、既定の IsWindowHovered は false になる。許可フラグを付ける。
+            const bool userScrolled = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
                 (ImGui::GetIO().MouseWheel != 0.0f || ImGui::IsMouseDown(ImGuiMouseButton_Left));
-            if (userScrolled)
-                m_stickToEnd = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - rowH * 2.0f;
-            if (m_autoScroll && m_stickToEnd && !userScrolled &&
-                (m_newThisFrame || ImGui::GetScrollY() < ImGui::GetScrollMaxY() - 0.5f))
-                ImGui::SetScrollY(ImGui::GetScrollMaxY());
+            const float curY = ImGui::GetScrollY();
+            const float maxY = ImGui::GetScrollMaxY();
+            // 自分が前フレームに置いた位置より外から上へ動いていたら、人が読み戻している（ドラッグ / 細かいホイール / トラックパッド）。
+            // 最大値が縮んだ（クリア・フィルタ）ことによる丸めは除く。
+            const bool scrolledUp = m_prevScrollY >= 0.0f && curY < m_prevScrollY - 0.5f && maxY >= m_prevScrollY - 0.5f;
+            if (scrolledUp)
+                m_stickToEnd = false;
+            else if (userScrolled)
+                m_stickToEnd = curY >= maxY - rowH * 2.0f;
+            if (m_autoScroll && m_stickToEnd && !userScrolled && !scrolledUp &&
+                (m_newThisFrame || curY < maxY - 0.5f))
+            {
+                ImGui::SetScrollY(maxY);
+                m_prevScrollY = maxY;
+            }
+            else
+                m_prevScrollY = curY;
         }
 
         if (m_view.empty())

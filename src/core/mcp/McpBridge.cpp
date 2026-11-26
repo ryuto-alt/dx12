@@ -64,20 +64,29 @@ struct McpBridge::Impl
     }
 
     // 接続の出入りは 1 件ごとには debug（短命のクライアントが大量に出入りしてコンソールを埋めるため。BUG-31）。
-    // 接続数が 0 と 1 以上の間を行き来したときだけ info を 1 行出す（調査用。30 秒に 1 回まで）。
+    // info は接続数が 0 と 1 以上の間を行き来したときだけ。直前の info から 30 秒以内の「接続」は間引き、
+    // 次に出す info に「間に N 回出入り」を添える。「全部切れた(0)」は、最後に出した info が接続中のときは必ず出す
+    // （ログの最後の状態が実際と食い違わないように）。
     void LogClientChange(const char* verb, uint64_t id, int count)
     {
         Logger::Debug("MCP bridge: client #{} {} ({} connected)", id, verb, count);
-        const bool edge = (count == 0) || (count == 1 && verb[0] == 'c');
-        if (!edge) return;
+        const int state = count > 0 ? 1 : 0;
+        if (state == lastLoggedState.load()) { if (state == 1 && verb[0] == 'c') ++skippedFlaps; return; }
         const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
-        int64_t last = lastClientInfoSec.load();
-        if (last != 0 && now - last < 30) return;
-        if (!lastClientInfoSec.compare_exchange_strong(last, now)) return;
-        Logger::Info("MCP bridge: {} clients connected", count);
+        const int64_t last = lastClientInfoSec.load();
+        if (state == 1 && last != 0 && now - last < 30) { ++skippedFlaps; return; }
+        lastLoggedState.store(state);
+        lastClientInfoSec.store(now);
+        const int flaps = skippedFlaps.exchange(0);
+        if (flaps > 0)
+            Logger::Info("MCP bridge: {} clients connected (間に {} 回出入り)", count, flaps);
+        else
+            Logger::Info("MCP bridge: {} clients connected", count);
     }
     std::atomic<int64_t> lastClientInfoSec{0};
+    std::atomic<int> lastLoggedState{0};
+    std::atomic<int> skippedFlaps{0};
 
     void ReadLoop(uint64_t id, SOCKET sock)
     {
