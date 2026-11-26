@@ -467,6 +467,7 @@ export class ShellRuntime {
       }
       // 撃ち直しの fix が tools/list に無いツール(full 面の dx12_sequence など)を指すなら dx12_call の形にする(BUG-14: 直接呼んで「ツールが無い」に戻らせない)
       if (body.fix) body.fix = routeFixViaCall(body.fix, (n) => this.isDirectlyCallable(n), (n) => this.fixVia(n));
+      if (body.code !== "E_UNKNOWN_TOOL") clearRepeatMarks(body);   // prebuilt に付いた印が TOO_OLD などへ漏れない
       // 最終コードが E_UNKNOWN_TOOL のときだけ「同じ fix の繰り返し」を数える(E_ENGINE_TOO_OLD に書き換わる呼び出しは数えない)
       if (body.code === "E_UNKNOWN_TOOL") { tidyUnknownToolSuggestions(body, ctxTool ?? doc.id, (n) => this.isDirectlyCallable(n)); guardRepeatedFix(body, ctxTool ?? doc.id, Date.now(), "call"); }
       const late = this.deps.engine.drainLateResults();

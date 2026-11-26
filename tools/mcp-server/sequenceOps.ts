@@ -10,7 +10,7 @@
 // ★autoplay の下位操作(list|set|add|remove|clear)は、統合の都合で引数名を `action` にしている(dx12_sequence の op と衝突するため)。
 //   エンジンへは `op` として渡す。
 
-import { nearest, type ErrorBody, type Fix } from "./errors.ts";
+import { clearRepeatMarks, nearest, type ErrorBody, type Fix } from "./errors.ts";
 import type { EffectName } from "./manifest.ts";
 
 export const SEQUENCE_TOOL = "dx12_sequence";
@@ -380,6 +380,7 @@ export function finishSequenceError(body: ErrorBody, op: SequenceOp, args: Recor
   const spec = SEQUENCE_OP_SPECS[op];
   if (body.code === "E_UNKNOWN_TOOL" && /unknown method/i.test(body.message)) {
     body.code = "E_ENGINE_TOO_OLD";
+    clearRepeatMarks(body);   // E_UNKNOWN_TOOL として数えられた印を残さない(打ち切りは E_UNKNOWN_TOOL だけ)
     body.message = `エンジンが method '${spec.method}' を持たない(dx12_sequence {op:'${op}'} が呼ぶ method)`;
     body.cause = "エンジンが古いか、シーケンサーを含まないビルド。名前の打ち間違いではない";
     body.retryable = false;

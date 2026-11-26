@@ -93,7 +93,7 @@ async function invoke(rawArgs: Record<string, unknown> | undefined): Promise<Too
   } catch (e: any) {
     let body: ErrorBody;
     try {
-      body = isSequenceNotFound(e) ? sequenceNotFoundBody(e, plan.op, args) : await structureError(e, { tool: SEQUENCE_TOOL, args, engine });
+      body = isSequenceNotFound(e) ? sequenceNotFoundBody(e, plan.op, args) : await structureError(e, { tool: SEQUENCE_TOOL, args, engine, noRepeatGuard: callContext.getStore()?.mode === "call" });
       body = finishSequenceError(body, plan.op, args);
     } catch {
       body = { code: "E_INTERNAL", message: `dx12_sequence {op:'${plan.op}'}: ${e?.message ?? e}`, fix: [{ tool: "dx12_doctor", args: {}, why: "接続と版を確認する" }] };

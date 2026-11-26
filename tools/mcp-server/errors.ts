@@ -245,8 +245,8 @@ export function routeFixViaCall(fixes: Fix[] | undefined, isDirect: ((name: stri
 /** 打ち切りの印(details.giveUp / repeatedFix)を本文から外す。E_ENGINE_TOO_OLD へ書き換えるときにも使う。 */
 export function clearRepeatMarks(body: ErrorBody): ErrorBody {
   if (body.details) {
-    const d = body.details as Record<string, unknown>;
-    delete d.giveUp; delete d.repeatedFix;
+    const { giveUp: _g, repeatedFix: _r, ...rest } = body.details as Record<string, unknown>;
+    body.details = rest;   // 共有された details(ERROR_BODY の使い回しなど)を壊さないよう、コピーに差し替える
   }
   return body;
 }

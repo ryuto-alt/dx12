@@ -112,6 +112,8 @@ console.log("[1] 純ロジック(sequenceOps.ts)");
   check("fix のエンジン method 名を dx12_sequence {op} へ書き直す(autoplay の下位 op は action)/ 他は触らない", rw?.[0].tool === "dx12_sequence" && eq(rw[0].args, { op: "load", name: "X", create: true }) && eq(rw[1].args, { op: "autoplay", action: "add", sequence: "X" }) && rw[2].tool === "dx12_stop" && rw[3].tool === "dx12_sequence_author");
   const old = finishSequenceError({ code: "E_UNKNOWN_TOOL", message: "unknown method: sequence_list", didYouMean: ["ping"], fix: [] }, "list", { op: "list" });
   check("エンジンが method を持たない → E_ENGINE_TOO_OLD(打ち間違いの案内ではなく更新の案内)", old.code === "E_ENGINE_TOO_OLD" && !old.didYouMean && old.fix?.[0]?.tool === "dx12_doctor", old);
+  const old2 = finishSequenceError({ code: "E_UNKNOWN_TOOL", message: "unknown method: sequence_list", fix: [], details: { repeatedFix: 3, giveUp: true, keep: 1 } }, "list", { op: "list" });
+  check("FU-E-35: E_ENGINE_TOO_OLD へ書き換えると giveUp / repeatedFix の印を外す(他の details は残す)", old2.code === "E_ENGINE_TOO_OLD" && (old2.details as any)?.giveUp === undefined && (old2.details as any)?.repeatedFix === undefined && (old2.details as any)?.keep === 1, old2);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
