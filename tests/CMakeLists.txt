@@ -887,6 +887,20 @@ if(TARGET Renderer)
     add_test(NAME VfxGpuTests COMMAND VfxGpuTests ${DX12_REPO_ROOT}/assets/engine/vfx)
     set_tests_properties(VfxGpuTests PROPERTIES LABELS gpu TIMEOUT 120)
 endif()
+# 起動画面 Graphite Gauge の描画器（W1-BD3）: 段階 L/M/S・工程の対応・トークンの一致・キーフレーム 10 枚 x DPI 3 種のゴールデン・
+# 参照画像との SSIM・WARP の描画時間・黄の予算・スキップ。窓は作らない（D3D11 の WARP + D2D のオフスクリーン）。
+# ゴールデンの更新: SplashGaugeRendererTests <repo-root> --update-golden
+if(TARGET Core)
+    add_executable(SplashGaugeRendererTests splash_gauge_renderer_test.cpp)
+    target_link_libraries(SplashGaugeRendererTests PRIVATE Core)
+    target_include_directories(SplashGaugeRendererTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(SplashGaugeRendererTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SplashGaugeRendererTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SplashGaugeRendererTests COMMAND SplashGaugeRendererTests ${DX12_REPO_ROOT})
+    set_tests_properties(SplashGaugeRendererTests PROPERTIES TIMEOUT 300)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、

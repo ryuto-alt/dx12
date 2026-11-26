@@ -5,6 +5,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cwctype>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -116,6 +117,71 @@ float EffectiveDpiScale()
     if (HMODULE u = GetModuleHandleW(L"user32.dll"))
         if (auto fn = reinterpret_cast<Fn>(GetProcAddress(u, "GetDpiForSystem"))) { const UINT v = fn(); if (v) d = v; }
     return dpi::EffectiveScale(dpi::DpiToScale(d));
+}
+
+float MonitorDpiScale(void* hmonitor)
+{
+    // Shcore の GetDpiForMonitor（MDT_EFFECTIVE_DPI = 0）。リンクせず動的に引く（Win8.1 以降にある。無ければ従来の倍率）
+    using Fn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    if (hmonitor)
+        if (HMODULE m = LoadLibraryExW(L"shcore.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32))
+        {
+            UINT dx = 0, dy = 0;
+            const auto fn = reinterpret_cast<Fn>(GetProcAddress(m, "GetDpiForMonitor"));
+            const bool ok = fn && SUCCEEDED(fn(static_cast<HMONITOR>(hmonitor), 0, &dx, &dy)) && dx > 0;
+            FreeLibrary(m);
+            if (ok) return dpi::EffectiveScale(dpi::DpiToScale(dx));
+        }
+    return EffectiveDpiScale();
+}
+
+bool ParseGaugeStyle(std::wstring_view cmd, std::wstring_view env)
+{
+    auto lower = [](std::wstring_view v) {
+        std::wstring o(v);
+        for (auto& c : o) c = static_cast<wchar_t>(::towlower(c));
+        return o;
+    };
+    const std::wstring c = lower(cmd);
+    const std::wstring key = L"--splash-style";
+    size_t pos = c.find(key);
+    while (pos != std::wstring::npos)
+    {
+        size_t i = pos + key.size();
+        if (i < c.size() && (c[i] == L' ' || c[i] == L'=' || c[i] == L'	'))
+        {
+            while (i < c.size() && (c[i] == L' ' || c[i] == L'=' || c[i] == L'	' || c[i] == L'"')) ++i;
+            const std::wstring rest = c.substr(i, 7);
+            if (rest.rfind(L"classic", 0) == 0) return false;
+            if (rest.rfind(L"gauge", 0) == 0) return true;
+        }
+        pos = c.find(key, pos + 1);
+    }
+    return lower(env) != L"classic";
+}
+
+bool UseGaugeStyle()
+{
+    wchar_t env[16] = {};
+    GetEnvironmentVariableW(L"UNO_SPLASH_STYLE", env, 16);
+    return ParseGaugeStyle(GetCommandLineW(), env);
+}
+
+bool ReduceMotionRequested()
+{
+    wchar_t env[8] = {};
+    if (GetEnvironmentVariableW(L"UNO_SPLASH_REDUCE_MOTION", env, 8) > 0 && env[0] != L'0') return true;
+    BOOL on = TRUE;
+    if (SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, &on, 0) && !on) return true;
+    return false;
+}
+
+std::wstring SplashFontPath(const std::wstring& assetsRoot)
+{
+    if (assetsRoot.empty()) return {};
+    const auto p = std::filesystem::path(assetsRoot) / L"editor" / L"splash" / L"fonts" / L"splash_subset.ttf";
+    std::error_code ec;
+    return std::filesystem::exists(p, ec) ? p.wstring() : std::wstring();
 }
 
 } // namespace dx12e::splash

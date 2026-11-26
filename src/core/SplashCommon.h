@@ -27,4 +27,19 @@ std::vector<std::wstring> ParseRecentNames(std::string_view json, int max);
 // プライマリモニタ相当の表示倍率（Per-Monitor V2 の GetDpiForSystem / 96）。--dpi-scale の上書きも反映。
 float EffectiveDpiScale();
 
+// 指定モニター（HMONITOR）の表示倍率（GetDpiForMonitor / 96。--dpi-scale の上書きは EffectiveDpiScale と同じに反映）。取れなければ EffectiveDpiScale()。
+float MonitorDpiScale(void* hmonitor);
+
+// ---- 起動画面の見た目（W1-BD3）
+// コマンドライン文字列（GetCommandLineW の全体）と環境変数 UNO_SPLASH_STYLE の値から、Graphite Gauge を使うか決める純関数。
+// 「--splash-style classic」（または環境変数 classic）なら false（従来のカード）。それ以外（無指定・gauge）は true。
+// コマンドラインが環境変数より優先。
+bool ParseGaugeStyle(std::wstring_view commandLine, std::wstring_view envValue);
+// 実プロセスの値で上を呼ぶ。
+bool UseGaugeStyle();
+// Reduce Motion（SPI_GETCLIENTAREAANIMATION が FALSE）。UNO_SPLASH_REDUCE_MOTION=1 でも有効（検証用）。
+bool ReduceMotionRequested();
+// 起動画面の書体（Uno Splash Mono）のパス。assetsRoot = <assets>。無ければ空。
+std::wstring SplashFontPath(const std::wstring& assetsRoot);
+
 } // namespace dx12e::splash
