@@ -2007,12 +2007,8 @@ void Application::EnterEditorMode()
         //   焼いた結果が消える（利用者から見ると「再生したらナビメッシュが無くなった」）。
         nav::NavMesh savedNav = std::move(m_scene->GetNavMesh());
 
-        // ★暫定対策（W05-11 レビュー blocker）: Scene::Clear() は Scene 所有の Mesh（プリミティブ・読み込みモデル等）を解放する。
-        //   ComponentEditCommand<MeshRenderer> などは MeshRenderer を値コピーして生の Mesh* を握っているので、
-        //   id を保ったまま Undo を残すと解放済みポインタが書き戻される（use-after-free）。
-        //   凍結ファイル（UndoSystem.h / Scene.cpp）を直せるまでは、Scene が Mesh を所有しているときは履歴を残さない。
-        //   恒久策は MeshRenderer 用の ComponentEditCommand 特殊化、または Stop をまたいで Mesh を生かすこと。
-        const bool sceneOwnsMeshes = m_scene->GetOwnedMeshCount() > 0;
+        // Undo コマンドはランタイム所有のハンドル（Mesh* / 物理ボディ ID など）を持たない（UndoValueTraits）ので、
+        // Scene::Clear() で Mesh が解放されても、id を保ったまま Undo 履歴を残して安全。
 
         bool restored = false;
         SceneSerializer::SceneLoadOptions loadOpts;
@@ -2034,7 +2030,7 @@ void Application::EnterEditorMode()
             }
         }
         // ディスクからの再読込（id は新規）に落ちた場合も、id が一致しなかった場合も、Undo 履歴は使えない。
-        idsPreserved = restored && loadOpts.idsPreserved && !usedDiskFallback && !sceneOwnsMeshes;
+        idsPreserved = restored && loadOpts.idsPreserved && !usedDiskFallback;
         if (!restored)
             Logger::Error("EnterEditorMode: Stop 後のシーンが空です（有効なスナップショットもディスクのシーンもありません）");
 
@@ -2062,7 +2058,7 @@ void Application::EnterEditorMode()
 
     // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
     // W05-11: id が保たれたなら Undo 履歴を残し、Play 中に積まれた分だけ捨てる。選択は GUID から張り直す。
-    //   保てなかった（id の衝突・ディスクからの再読込・Scene が Mesh を所有している）ときだけ従来どおり履歴を消す。
+    //   保てなかった（id の衝突・ディスクからの再読込）ときだけ従来どおり履歴を消す。
     //   注意: Play 中に 1 件でも Push されると redo 側は消える（Play 前の redo は Stop 後に戻らない）。
     McpUndoAutoClose("play");
     if (idsPreserved)

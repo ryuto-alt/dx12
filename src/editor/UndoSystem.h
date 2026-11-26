@@ -17,6 +17,79 @@ class Scene;
 
 // IUndoCommand / CompositeCommand / AiUndoEntry / UndoSystem は editor/UndoCore.h（依存ゼロ）。
 
+
+// ── Undo が値として持ってよい形（W05-11 恒久策 / EXEC §0.3b）──
+// Undo コマンドは「ランタイムが所有するポインタ・ハンドル」（Mesh* / Material* / 物理ボディ ID / スクリプトの環境）を
+// 保持してはいけない。Stop（Scene::Clear）や再読み込みで持ち主が消えると、Undo が解放済みの値を書き戻してしまう。
+//   Capture : コンポーネントをコマンドへ預けるときに、実行時ハンドルを空にした値（= 純データ）へ変える
+//   Merge   : Undo / Redo のとき、**いま生きているコンポーネント**の実行時ハンドルはそのまま残し、
+//             純データの部分だけを書き戻す（= ハンドルは「戻すたびに生きている側から解決し直す」）
+// 既定は値コピー / 代入（ハンドルを持たない型）。ハンドルを持つ型は下で特殊化する。
+// ★新しいコンポーネントが実行時ハンドルを持つなら、ここに特殊化を足すこと（tests/undo_handle_free_test.cpp が見張る）。
+template<typename T>
+struct UndoValueTraits
+{
+    static T    Capture(const T& v) { return v; }
+    static void Merge(T& live, const T& stored) { live = stored; }
+};
+
+template<>
+struct UndoValueTraits<MeshRenderer>
+{
+    static MeshRenderer Capture(const MeshRenderer& v)
+    {
+        MeshRenderer c = v;
+        c.meshes.clear();
+        c.materials.clear();
+        c.meshNodeTransforms.clear();
+        c.vgAutoPath.clear();
+        return c;
+    }
+    static void Merge(MeshRenderer& live, const MeshRenderer& stored)
+    {
+        // モデル本体（modelPath とそこから解決した Mesh* / Material* / ノード行列）は生きている側のまま。
+        // モデルの差し替えは ModelSwapCommand（エンティティごと作り直す）の担当で、ここでは戻さない。
+        std::vector<Mesh*>               meshes   = std::move(live.meshes);
+        std::vector<Material*>           mats     = std::move(live.materials);
+        std::vector<DirectX::XMFLOAT4X4> nodeXf   = std::move(live.meshNodeTransforms);
+        std::string                      modelPath = std::move(live.modelPath);
+        std::string                      vgAuto    = std::move(live.vgAutoPath);
+        live = stored;
+        live.meshes             = std::move(meshes);
+        live.materials          = std::move(mats);
+        live.meshNodeTransforms = std::move(nodeXf);
+        live.modelPath          = std::move(modelPath);
+        live.vgAutoPath         = std::move(vgAuto);
+        live._remapKey          = 0;   // 再解決させる（materialRemap / materialAsset が変わった可能性）
+    }
+};
+
+template<>
+struct UndoValueTraits<RigidBody>
+{
+    static RigidBody Capture(const RigidBody& v) { RigidBody c = v; c.bodyId = kInvalidBodyId; return c; }
+    static void Merge(RigidBody& live, const RigidBody& stored)
+    {
+        const uint32_t bodyId = live.bodyId;   // Jolt のボディは生きている側のもの
+        live = stored;
+        live.bodyId = bodyId;
+    }
+};
+
+template<>
+struct UndoValueTraits<LuaScript>
+{
+    static LuaScript Capture(const LuaScript& v) { LuaScript c = v; c.env.reset(); c.self.reset(); return c; }
+    static void Merge(LuaScript& live, const LuaScript& stored)
+    {
+        auto env  = std::move(live.env);    // sol の環境・テーブルは Lua 状態の持ち物
+        auto self = std::move(live.self);
+        live = stored;
+        live.env  = std::move(env);
+        live.self = std::move(self);
+    }
+};
+
 // ── Transform 変更コマンド ──
 class TransformCommand : public IUndoCommand
 {
@@ -390,6 +463,14 @@ private:
     std::string m_old, m_new;
 };
 
+// 純データの値から、コンポーネントを付ける（既にあれば Merge で書き戻す。無ければ純データをそのまま付ける）。
+template<typename T>
+void EmplaceValue(entt::registry& reg, entt::entity e, const T& stored)
+{
+    if (reg.all_of<T>(e)) { UndoValueTraits<T>::Merge(reg.get<T>(e), stored); return; }
+    reg.emplace<T>(e, stored);   // stored はハンドルを持たない純データ（ハンドルは空のまま付く）
+}
+
 // ── 汎用コンポーネント編集コマンド（値のコピーで before/after を保持） ──
 template<typename T>
 class ComponentEditCommand : public IUndoCommand
@@ -397,18 +478,20 @@ class ComponentEditCommand : public IUndoCommand
 public:
     ComponentEditCommand(entt::registry* reg, entt::entity entity,
                          const T& before, const T& after, const char* name)
-        : m_reg(reg), m_entity(entity), m_before(before), m_after(after), m_name(name) {}
+        : m_reg(reg), m_entity(entity),
+          m_before(UndoValueTraits<T>::Capture(before)),
+          m_after(UndoValueTraits<T>::Capture(after)), m_name(name) {}
 
     void Undo() override
     {
         if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
-            m_reg->get<T>(m_entity) = m_before;
+            UndoValueTraits<T>::Merge(m_reg->get<T>(m_entity), m_before);
     }
 
     void Redo() override
     {
         if (m_reg->valid(m_entity) && m_reg->all_of<T>(m_entity))
-            m_reg->get<T>(m_entity) = m_after;
+            UndoValueTraits<T>::Merge(m_reg->get<T>(m_entity), m_after);
     }
 
     const char* GetName() const override { return m_name; }
@@ -428,7 +511,7 @@ class AddComponentCommand : public IUndoCommand
 public:
     AddComponentCommand(entt::registry* reg, entt::entity entity,
                         const T& value, const char* name)
-        : m_reg(reg), m_entity(entity), m_value(value), m_name(name) {}
+        : m_reg(reg), m_entity(entity), m_value(UndoValueTraits<T>::Capture(value)), m_name(name) {}
 
     void Undo() override
     {
@@ -439,7 +522,7 @@ public:
     void Redo() override
     {
         if (m_reg->valid(m_entity))
-            m_reg->emplace_or_replace<T>(m_entity, m_value);
+            EmplaceValue<T>(*m_reg, m_entity, m_value);
     }
 
     const char* GetName() const override { return m_name; }
@@ -458,12 +541,12 @@ class RemoveComponentCommand : public IUndoCommand
 public:
     RemoveComponentCommand(entt::registry* reg, entt::entity entity,
                            const T& removedValue, const char* name)
-        : m_reg(reg), m_entity(entity), m_value(removedValue), m_name(name) {}
+        : m_reg(reg), m_entity(entity), m_value(UndoValueTraits<T>::Capture(removedValue)), m_name(name) {}
 
     void Undo() override
     {
         if (m_reg->valid(m_entity))
-            m_reg->emplace_or_replace<T>(m_entity, m_value);
+            EmplaceValue<T>(*m_reg, m_entity, m_value);
     }
 
     void Redo() override

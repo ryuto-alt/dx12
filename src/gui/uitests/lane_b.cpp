@@ -9,6 +9,7 @@
 #include "editor/AssetBrowserLogic.h"
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/UndoSystem.h"
 #include "project/ProjectManager.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
@@ -307,7 +308,7 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     const size_t depth0 = ed->undoSystem.UndoDepth();
     std::vector<entt::entity> existing;
     for (auto e : reg.view<NameTag>()) existing.push_back(e);
-    AddEntity(ctx, "Point Light");   // Mesh を持たない種別（Mesh 所有時は履歴を捨てる暫定仕様のため）
+    AddEntity(ctx, "Box");   // Scene が Mesh を所有する種別（W05-11 恒久策: Stop をまたいでも履歴は残る）
     IM_CHECK(reg.view<NameTag>().size() == before + 1);
     IM_CHECK(ed->undoSystem.UndoDepth() == depth0 + 1);
     entt::entity box = entt::null;   // 新しいエンティティの自動選択は W05-21 の担当なので、ここでは差分から見つけて選ぶ
@@ -315,10 +316,30 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
         if (std::find(existing.begin(), existing.end(), e) == existing.end()) box = e;
     if (box != entt::null) ed->Select(box);
     IM_CHECK(box != entt::null && reg.valid(box));
-    const size_t depth = ed->undoSystem.UndoDepth();
+    do {   // 途中で続けられないときは break で後始末へ
+    if (box == entt::null || !reg.valid(box) || !reg.all_of<MeshRenderer>(box) || !reg.all_of<Transform>(box)) break;
+    IM_CHECK(scene->GetOwnedMeshCount() > 0);
 
-    // Scene が Mesh を所有していると履歴は捨てられる（解放済み Mesh* の書き戻しを避ける暫定仕様）。
-    const bool ownsMeshes = scene->GetOwnedMeshCount() > 0;
+    LogStep(ctx, "Box の位置とマテリアルを編集（Undo コマンドを直に積む。決定的）");
+    const Transform trBefore = reg.get<Transform>(box);
+    {
+        Transform after = trBefore;
+        after.position.x += 5.0f;
+        reg.get<Transform>(box) = after;
+        ed->undoSystem.PushCommand(std::make_unique<TransformCommand>(&reg, box, trBefore, after));
+    }
+    const MeshRenderer mrBefore = reg.get<MeshRenderer>(box);
+    {
+        MeshRenderer after = mrBefore;
+        after.overrideMetallic  = 0.75f;
+        after.overrideRoughness = 0.25f;
+        reg.get<MeshRenderer>(box).overrideMetallic  = after.overrideMetallic;
+        reg.get<MeshRenderer>(box).overrideRoughness = after.overrideRoughness;
+        ed->undoSystem.PushCommand(std::make_unique<ComponentEditCommand<MeshRenderer>>(
+            &reg, box, mrBefore, reg.get<MeshRenderer>(box), "Material"));
+    }
+    const size_t depth = ed->undoSystem.UndoDepth();
+    IM_CHECK(depth == depth0 + 3);
 
     LogStep(ctx, "Play → Stop");
     app->RequestMode(Application::EngineMode::Playing);
@@ -330,24 +351,29 @@ void T_PlayStopKeepsUndo(ImGuiTestContext* ctx)
     IM_CHECK(app->GetEngineMode() == Application::EngineMode::Editor);
     ctx->Yield(10);
 
-    LogStep(ctx, "Undo 履歴と選択が残り、id が同じで、Ctrl+Z でエンティティが消える");
-    if (ownsMeshes)
-    {
-        // Mesh 所有シーン: 履歴は捨てられるが、選択は GUID から戻り、落ちないこと。
-        IM_CHECK(ed->undoSystem.UndoDepth() == 0);
-        IM_CHECK(ed->selectedEntity != entt::null);
-        goto cleanup;
-    }
+    LogStep(ctx, "Undo 履歴と選択が残り、id が同じ");
     IM_CHECK(ed->undoSystem.UndoDepth() == depth);
-    IM_CHECK(ed->selectedEntity == box);          // id も選択も同じ
-    IM_CHECK(reg.valid(box));
+    IM_CHECK(ed->selectedEntity == box);
+    IM_CHECK(reg.valid(box) && reg.all_of<MeshRenderer>(box));
+    if (!reg.valid(box) || !reg.all_of<MeshRenderer>(box)) break;
+    IM_CHECK(!reg.get<MeshRenderer>(box).meshes.empty());   // Stop で作り直された Mesh が付いている
+
+    LogStep(ctx, "Ctrl+Z を 1 回ずつ: マテリアル → 位置 → Box が戻る / 消える（クラッシュしない）");
     ctx->SetRef("//$FOCUSED");
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<MeshRenderer>(box).overrideMetallic == mrBefore.overrideMetallic);
+    IM_CHECK(reg.get<MeshRenderer>(box).overrideRoughness == mrBefore.overrideRoughness);
+    IM_CHECK(!reg.get<MeshRenderer>(box).meshes.empty());   // 実行時ハンドルは生きている側のまま
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    IM_CHECK(reg.get<Transform>(box).position.x == trBefore.position.x);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(reg.view<NameTag>().size() == before);
     IM_CHECK(!reg.valid(box) || !reg.all_of<NameTag>(box));
+    } while (false);
 
-cleanup:
     LogStep(ctx, "後始末（元のシーンへ戻す）");
     if (!snapshot.empty())
     {
