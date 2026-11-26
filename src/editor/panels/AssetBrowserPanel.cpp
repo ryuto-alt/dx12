@@ -1887,6 +1887,7 @@ bool AssetBrowserPanel::ExecuteRelocate(EditorContext* ctx, const std::vector<Re
 {
     namespace fs = std::filesystem;
     int moved = 0;
+    int rewrittenRefs = 0;
     std::string lastError;
     std::string lastName;
     for (const RelocateOp& op : ops)
@@ -1899,6 +1900,12 @@ bool AssetBrowserPanel::ExecuteRelocate(EditorContext* ctx, const std::vector<Re
         if (!moveRes.ok) { lastError = moveRes.error; continue; }
         ++moved;
         lastName = op.dst.filename().string();
+        // アセットを参照している開いているシーン（未保存の分も）とファイルを新しいパスへ付け替える
+        if (ctx && ctx->rewriteAssetRefs)
+        {
+            const std::string fromRel = AssetRelPath(op.src), toRel = AssetRelPath(op.dst);
+            if (!fromRel.empty() && !toRel.empty()) rewrittenRefs += ctx->rewriteAssetRefs(fromRel, toRel);
+        }
         // 開いているシーン / 選択 / 現在のフォルダが動いた分を追従させる
         if (ctx && !ctx->currentScenePath.empty())
         {
@@ -1927,6 +1934,7 @@ bool AssetBrowserPanel::ExecuteRelocate(EditorContext* ctx, const std::vector<Re
         {
             if (moved == 1) ctx->Notify(ui::ToastKind::Success, std::string(ops.front().src.parent_path() == ops.front().dst.parent_path() ? "名前を変更しました: " : "移動しました: ") + lastName);
             else ctx->Notify(ui::ToastKind::Success, std::to_string(moved) + " 個を移動しました");
+            if (rewrittenRefs > 0) ctx->Notify(ui::ToastKind::Info, "参照 " + std::to_string(rewrittenRefs) + " 件を新しいパスへ付け替えました");
         }
     }
     if (!lastError.empty() && ctx) ctx->Notify(ui::ToastKind::Error, "一部を移動できませんでした: " + lastError);
@@ -2285,7 +2293,7 @@ void AssetBrowserPanel::DrawModals(EditorContext& ctx)
         if (one) ImGui::Text("「%s」を%sしますか？", m_relocate.ops[0].src.filename().string().c_str(), m_relocate.isRename ? "名前変更" : "移動");
         else ImGui::Text("%zu 個を移動しますか？", m_relocate.ops.size());
         ImGui::PushStyleColor(ImGuiCol_Text, th::Warn);
-        ImGui::TextWrapped("参照しているファイルが %zu 件%s見つかりました。参照はパス文字列なので自動では更新されません（実行後に切れます）。",
+        ImGui::TextWrapped("参照しているファイルが %zu 件%s見つかりました。実行すると、開いているシーンと他のファイルの参照は新しい名前へ自動で付け替えます（保存し忘れに注意）。",
                            m_relocate.refs.size(), m_relocate.refsTruncated ? "以上" : "");
         ImGui::PopStyleColor();
         ImGui::Spacing();

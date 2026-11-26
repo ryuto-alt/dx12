@@ -2007,12 +2007,8 @@ void Application::EnterEditorMode()
         //   焼いた結果が消える（利用者から見ると「再生したらナビメッシュが無くなった」）。
         nav::NavMesh savedNav = std::move(m_scene->GetNavMesh());
 
-        // ★暫定対策（W05-11 レビュー blocker）: Scene::Clear() は Scene 所有の Mesh（プリミティブ・読み込みモデル等）を解放する。
-        //   ComponentEditCommand<MeshRenderer> などは MeshRenderer を値コピーして生の Mesh* を握っているので、
-        //   id を保ったまま Undo を残すと解放済みポインタが書き戻される（use-after-free）。
-        //   凍結ファイル（UndoSystem.h / Scene.cpp）を直せるまでは、Scene が Mesh を所有しているときは履歴を残さない。
-        //   恒久策は MeshRenderer 用の ComponentEditCommand 特殊化、または Stop をまたいで Mesh を生かすこと。
-        const bool sceneOwnsMeshes = m_scene->GetOwnedMeshCount() > 0;
+        // Undo コマンドはランタイム所有のハンドル（Mesh* / 物理ボディ ID など）を持たない（UndoValueTraits）ので、
+        // Scene::Clear() で Mesh が解放されても、id を保ったまま Undo 履歴を残して安全。
 
         bool restored = false;
         SceneSerializer::SceneLoadOptions loadOpts;
@@ -2034,7 +2030,7 @@ void Application::EnterEditorMode()
             }
         }
         // ディスクからの再読込（id は新規）に落ちた場合も、id が一致しなかった場合も、Undo 履歴は使えない。
-        idsPreserved = restored && loadOpts.idsPreserved && !usedDiskFallback && !sceneOwnsMeshes;
+        idsPreserved = restored && loadOpts.idsPreserved && !usedDiskFallback;
         if (!restored)
             Logger::Error("EnterEditorMode: Stop 後のシーンが空です（有効なスナップショットもディスクのシーンもありません）");
 
@@ -2042,6 +2038,18 @@ void Application::EnterEditorMode()
         // 既に読まれているので、そちら（ファイルの内容）を優先して上書きしない。
         if (m_scene->GetNavMesh().Empty() && !savedNav.Empty())
             m_scene->GetNavMesh() = std::move(savedNav);
+
+        // Undo 履歴の整理は Lua 状態を壊す前に済ませる（Play 中に積まれたエントリが sol の環境などを
+        // 握ったまま lua_State が先に消えると、後始末が死んだ状態を触る。防御のための順序）。
+        // W05-11: id が保たれたなら Undo 履歴を残し、Play 中に積まれた分だけ捨てる。保てなかったときだけ従来どおり消す。
+        McpUndoAutoClose("play");
+        if (idsPreserved)
+            m_editorCtx->undoSystem.TruncateTo(m_editorCtx->playUndoSeq, m_editorCtx->playHumanSeq);
+        else
+        {
+            Logger::Warn("Stop: エンティティ id を復元できなかったため Undo 履歴を破棄しました");
+            m_editorCtx->undoSystem.Clear();
+        }
 
         m_scriptEngine->Shutdown();
         m_scriptEngine->Initialize(m_scene.get(), m_inputSystem.get(),
@@ -2062,16 +2070,9 @@ void Application::EnterEditorMode()
 
     // シーン再構築でエンティティ ID が変わり Undo スタックの参照が無効になるためクリア
     // W05-11: id が保たれたなら Undo 履歴を残し、Play 中に積まれた分だけ捨てる。選択は GUID から張り直す。
-    //   保てなかった（id の衝突・ディスクからの再読込・Scene が Mesh を所有している）ときだけ従来どおり履歴を消す。
+    //   保てなかった（id の衝突・ディスクからの再読込）ときだけ従来どおり履歴を消す。
     //   注意: Play 中に 1 件でも Push されると redo 側は消える（Play 前の redo は Stop 後に戻らない）。
-    McpUndoAutoClose("play");
-    if (idsPreserved)
-        m_editorCtx->undoSystem.TruncateTo(m_editorCtx->playUndoSeq, m_editorCtx->playHumanSeq);
-    else
-    {
-        Logger::Warn("Stop: エンティティ id を復元できなかったため Undo 履歴を破棄しました");
-        m_editorCtx->undoSystem.Clear();
-    }
+    // （Undo 履歴の整理は m_scriptEngine->Shutdown() の前に済ませてある）
     // 選択は GUID から張り直す（id が保てた場合も保てなかった場合も同じ。後者でも選択は失わない）。
     m_editorCtx->ClearSelection();
     for (uint64_t g : m_editorCtx->playSelectionGuids)

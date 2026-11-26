@@ -1214,8 +1214,8 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
             else
             {
-                Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture : m_resourceManager->GetDefaultWhiteTexture();
-                matSrv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+                // 単独の SRV ではなく既定の材質ブロック(5 連続)を張る。t25(height) などブロック +4 まで読まれるため。
+                matSrv = m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultMaterialSrvBlock());
             }
             // 同一マテリアル連続時はディスクリプタテーブル張り替えをスキップ
             if (matSrv.ptr != lastMatSrv)
@@ -1636,9 +1636,8 @@ void Application::RenderSceneMeshes(ID3D12GraphicsCommandList* nativeCmdList, u3
                 matSrv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
             else
             {
-                Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture
-                                                           : m_resourceManager->GetDefaultWhiteTexture();
-                matSrv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+                // 単独の SRV ではなく既定の材質ブロック(5 連続)を張る。t25(height) などブロック +4 まで読まれるため。
+                matSrv = m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultMaterialSrvBlock());
             }
             if (matSrv.ptr != lastMatSrv)
             {
@@ -2134,9 +2133,8 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
         else if (mat && mat->srvBlockIndex != 0xFFFFFFFFu) srv = m_srvHeap->GetGpuHandle(mat->srvBlockIndex);
         else
         {
-            Texture* tex = (mat && mat->albedoTexture) ? mat->albedoTexture
-                                                       : m_resourceManager->GetDefaultWhiteTexture();
-            srv = m_srvHeap->GetGpuHandle(tex->GetSrvIndex());
+            // 単独の SRV ではなく既定の材質ブロック(5 連続)を張る。t25(height) などブロック +4 まで読まれるため。
+                srv = m_srvHeap->GetGpuHandle(m_resourceManager->GetDefaultMaterialSrvBlock());
         }
         m_commandList->SetSRVTable(RootSignature::kSlotSRVTable, srv);
 

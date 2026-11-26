@@ -1,8 +1,10 @@
 // UI テストのレーン A の本体。宣言は gui/UiTestHarnessShared.h の lane-A:decl、
 // 登録は gui/UiTestHarness.cpp の kTests の lane-A ブロックに足す。
+#include <algorithm>
 #include "gui/UiTestHarnessShared.h"
 
 #include "core/Application.h"
+#include "core/AppAccess.h"
 #include "core/PathResolver.h"
 #include "core/SceneBackup.h"
 #include "editor/EditorContext.h"
@@ -94,6 +96,158 @@ void T_AutosaveHumanEditNotWritten(ImGuiTestContext* ctx)
 
     // 後始末: Box は Undo で戻す（退避・保存先・検査用のシーンは Cleanup が戻す）
     ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+}
+
+// DF-W05-R2-02: 人の編集が続いて自動保存が退避を繰り返しても、退避は 1 枠に畳まれ、世代数の上限で
+//   AI の最初の保存の前の原本（強制で取った世代）を押し出さない。最短間隔はテスト用の口で飛ばす。
+void T_AutosaveProtectRollingSlot(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+
+    const fs::path scenePath = fs::path(PathResolver::AssetsDir()) / "scenes" / "_autosave_roll_probe.json";
+    const fs::path root      = fs::path(PathResolver::BaseDir());
+    const std::string prevPath = ed->currentScenePath;
+    const scenebackup::Policy prevPolicy = scenebackup::GlobalPolicy();
+    IM_CHECK(SceneSerializer::Save(*app->GetScene(), scenePath.string(), PathResolver::AssetsDir()));
+    ed->currentScenePath = scenePath.string();
+    ed->MarkSceneSaved(SceneSettingsFingerprint(*app->GetScene()));
+    ed->autosaveBlockedByHumanEdits = false;
+    ed->humanSettingsDirty = false;
+    scenebackup::GlobalPolicy().enabled = true;
+    scenebackup::GlobalPolicy().generations = 2;
+    scenebackup::GlobalPolicy().minIntervalSec = 60;
+
+    const std::vector<std::string> idsBefore = [&] {
+        std::vector<std::string> v;
+        for (const auto& g : scenebackup::List(root, scenePath, false)) v.push_back(g.id);
+        return v;
+    }();
+    struct Cleanup
+    {
+        EditorContext* ed; Application* app; fs::path root, scenePath; std::string prevPath; scenebackup::Policy prevPolicy; std::vector<std::string> idsBefore;
+        ~Cleanup()
+        {
+            ed->aiSessionEver = false;
+            ed->mcpSaveCountdown = -1.0f;
+            for (const auto& g : scenebackup::List(root, scenePath, false))
+                if (std::find(idsBefore.begin(), idsBefore.end(), g.id) == idsBefore.end()) scenebackup::Remove(root, g.id);
+            scenebackup::GlobalPolicy() = prevPolicy;
+            ed->currentScenePath = prevPath;
+            if (app->GetScene()) ed->MarkSceneSaved(SceneSettingsFingerprint(*app->GetScene()));
+            std::error_code ec;
+            fs::remove(scenePath, ec);
+        }
+    } cleanup{ed, app, root, scenePath, prevPath, prevPolicy, idsBefore};
+
+    // AI の最初の保存の前の原本（強制の世代）
+    std::string why;
+    const std::string original = scenebackup::Snapshot(root, scenePath, /*force=*/true, &why);
+    IM_CHECK(!original.empty());
+
+    ed->aiSessionEver = true;
+    for (int cycle = 0; cycle < 2; ++cycle)
+    {
+        LogStep(ctx, "退避の最短間隔の起点を消してから、人の編集 -> 自動保存");
+        AppAccess::ResetAutoProtectThrottleForTest();
+        AddEntity(ctx, "Box");
+        IM_CHECK(ed->IsSceneHumanDirty());
+        ed->mcpSaveCountdown = 0.5f;
+        ctx->SleepNoSkip(3.0f, 0.1f);
+    }
+
+    const auto gens = scenebackup::List(root, scenePath, true);
+    bool hasOriginal = false;
+    int autoCount = 0;
+    for (const auto& g : gens)
+    {
+        if (g.id == original) hasOriginal = true;
+        if (g.reason == "protect-human-edits:Autosave") ++autoCount;
+    }
+    IM_CHECK(hasOriginal);          // 原本は押し出されない
+    IM_CHECK_EQ(autoCount, 1);      // 自動保存の退避は 1 枠
+    IM_CHECK_EQ(gens.size(), size_t(2));
+
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+}
+
+// DF-W05-R3-01: 強制の退避（OpenScene）が重複排除で自動保存の世代へ合流したあと、次の自動保存がその世代を消さない
+//   （破棄された編集の唯一の写し）。人の編集 -> 自動保存 -> OpenScene の退避 -> 人の編集 -> 自動保存。
+void T_AutosaveProtectKeepsForcedMerge(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+
+    const fs::path scenePath = fs::path(PathResolver::AssetsDir()) / "scenes" / "_autosave_merge_probe.json";
+    const fs::path root      = fs::path(PathResolver::BaseDir());
+    const std::string prevPath = ed->currentScenePath;
+    const scenebackup::Policy prevPolicy = scenebackup::GlobalPolicy();
+    IM_CHECK(SceneSerializer::Save(*app->GetScene(), scenePath.string(), PathResolver::AssetsDir()));
+    ed->currentScenePath = scenePath.string();
+    ed->MarkSceneSaved(SceneSettingsFingerprint(*app->GetScene()));
+    ed->autosaveBlockedByHumanEdits = false;
+    ed->humanSettingsDirty = false;
+    scenebackup::GlobalPolicy().enabled = true;
+    scenebackup::GlobalPolicy().generations = 8;
+    scenebackup::GlobalPolicy().minIntervalSec = 60;
+
+    std::vector<std::string> idsBefore;
+    for (const auto& g : scenebackup::List(root, scenePath, false)) idsBefore.push_back(g.id);
+    struct Cleanup
+    {
+        EditorContext* ed; Application* app; fs::path root, scenePath; std::string prevPath; scenebackup::Policy prevPolicy; std::vector<std::string> idsBefore;
+        ~Cleanup()
+        {
+            ed->aiSessionEver = false;
+            ed->mcpSaveCountdown = -1.0f;
+            for (const auto& g : scenebackup::List(root, scenePath, false))
+                if (std::find(idsBefore.begin(), idsBefore.end(), g.id) == idsBefore.end()) scenebackup::Remove(root, g.id);
+            scenebackup::GlobalPolicy() = prevPolicy;
+            ed->currentScenePath = prevPath;
+            if (app->GetScene()) ed->MarkSceneSaved(SceneSettingsFingerprint(*app->GetScene()));
+            std::error_code ec;
+            fs::remove(scenePath, ec);
+        }
+    } cleanup{ed, app, root, scenePath, prevPath, prevPolicy, idsBefore};
+
+    ed->aiSessionEver = true;
+    AppAccess::ResetAutoProtectThrottleForTest();
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneHumanDirty());
+    ed->mcpSaveCountdown = 0.5f;
+    ctx->SleepNoSkip(3.0f, 0.1f);
+
+    std::string firstId;
+    for (const auto& g : scenebackup::List(root, scenePath, true))
+        if (g.reason == "protect-human-edits:Autosave") firstId = g.id;
+    IM_CHECK(!firstId.empty());
+
+    // OpenScene の強制の退避（同じ内容なので firstId へ合流する）
+    IM_CHECK(AppAccess::ProtectBeforeSceneReplace(*app, EditorContext::DiscardReason::OpenScene));
+
+    AppAccess::ResetAutoProtectThrottleForTest();
+    AddEntity(ctx, "Sphere");
+    ed->mcpSaveCountdown = 0.5f;
+    ctx->SleepNoSkip(3.0f, 0.1f);
+
+    bool stillThere = false;
+    for (const auto& g : scenebackup::List(root, scenePath, true))
+        if (g.id == firstId) stillThere = true;
+    IM_CHECK(stillThere);   // 破棄された編集の写しを自動保存が消さない
+
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
 }

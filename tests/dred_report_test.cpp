@@ -188,6 +188,7 @@ int main()
 
     // 本物のデバイスで RemoveDevice → JSON が書かれ、removedReason が入り、パースできる。
     //   キューを未 Signal のフェンスで待たせて、リストを未完了のまま RemoveDevice する（完了したリストは DRED から落ちる）。
+    bool envSkipped = false;
     ID3D12Device5* d5 = dev.GetDevice();
     {
         CommandQueue queue;
@@ -238,28 +239,40 @@ int main()
                       "removedReason が無い");
                 CHECK(j.value("dredEnabled", false), "dredEnabled が false");
                 CHECK(j.contains("breadcrumbs") && j.contains("pageFault"), "breadcrumbs / pageFault の欄が無い");
-                bool foundCtx = false;
-                for (const auto& b : j["breadcrumbs"])
-                    for (const auto& c : b["contexts"])
-                        if (c.value("context", "") == "TestPass") foundCtx = true;
-                // 未完了のリストが残っているので、パンくずとコンテキストは必須。
-                CHECK(!j["breadcrumbs"].empty(), "未完了のコマンドリストがあるのにパンくずが空");
-                CHECK(foundCtx, "コンテキスト TestPass が無い");
-                bool foundList = false;
-                for (const auto& b : j["breadcrumbs"])
-                    if (b.value("commandList", "") == "DredTestList")
-                    {
-                        foundList = true;
-                        // lastCompleted == 0（1 つも終わっていない）は正常。lastCompletedOp は 0 より大きいときだけ入る。
-                        CHECK(b.contains("lastCompleted") && b.contains("ops") && b.contains("opsTotal"), "lastCompleted / ops / opsTotal が無い");
-                        const unsigned last = b.value("lastCompleted", 0u);
-                        const unsigned total = b.value("breadcrumbCount", 0u);
-                        CHECK(total > 0 && last <= total, "lastCompleted と breadcrumbCount が矛盾");
-                        if (last > 0) CHECK(b.contains("lastCompletedOp"), "lastCompleted > 0 なのに lastCompletedOp が無い");
-                        if (last < total) CHECK(b.contains("nextOp"), "未完了なのに nextOp が無い");
-                    }
-                CHECK(foundList, "commandList == DredTestList のノードが無い");
-                std::printf("NOTE: 実デバイスのパンくず %zu 件、コンテキスト TestPass %s\n", j["breadcrumbs"].size(), foundCtx ? "あり" : "なし");
+                // この環境のドライバ/OS が RemoveDevice で DRED を埋めない（deviceState=unknown かつパンくず 0 件）ときは、
+                // 実デバイスのパンくず検査だけを環境スキップにする（合成データの検査は上で必須。終了コード 77 = ctest の SKIP）。
+                const bool envNoDred = j["breadcrumbs"].empty() && j.value("deviceState", "") == "unknown";
+                if (envNoDred)
+                {
+                    envSkipped = true;
+                    std::printf("SKIP(env): この環境は RemoveDevice で DRED を埋めない（deviceState=unknown, パンくず 0 件）。実デバイスのパンくず検査を省略\n");
+                }
+                else
+                {
+                    bool foundCtx = false;
+                    for (const auto& b : j["breadcrumbs"])
+                        for (const auto& c : b["contexts"])
+                            if (c.value("context", "") == "TestPass") foundCtx = true;
+                    // 未完了のリストが残っているので、パンくずとコンテキストは必須。
+                    CHECK(!j["breadcrumbs"].empty(), "未完了のコマンドリストがあるのにパンくずが空");
+                    CHECK(foundCtx, "コンテキスト TestPass が無い");
+                    bool foundList = false;
+                    for (const auto& b : j["breadcrumbs"])
+                        if (b.value("commandList", "") == "DredTestList")
+                        {
+                            foundList = true;
+                            // lastCompleted == 0（1 つも終わっていない）は正常。lastCompletedOp は 0 より大きいときだけ入る。
+                            CHECK(b.contains("lastCompleted") && b.contains("ops") && b.contains("opsTotal"), "lastCompleted / ops / opsTotal が無い");
+                            const unsigned last = b.value("lastCompleted", 0u);
+                            const unsigned total = b.value("breadcrumbCount", 0u);
+                            CHECK(total > 0 && last <= total, "lastCompleted と breadcrumbCount が矛盾");
+                            if (last > 0) CHECK(b.contains("lastCompletedOp"), "lastCompleted > 0 なのに lastCompletedOp が無い");
+                            if (last < total) CHECK(b.contains("nextOp"), "未完了なのに nextOp が無い");
+                        }
+                    CHECK(foundList, "commandList == DredTestList のノードが無い");
+                }
+                std::printf("NOTE: breadcrumbsHr=%s deviceState=%s\n", j.value("breadcrumbsHr", "?").c_str(), j.value("deviceState", "?").c_str());
+                std::printf("NOTE: 実デバイスのパンくず %zu\n", j["breadcrumbs"].size());
             }
         }
     }
@@ -271,6 +284,7 @@ int main()
     }
 
     fs::remove_all(outDir, ec);
-    if (g_fail == 0) std::printf("OK\n");
-    return g_fail == 0 ? 0 : 1;
+    if (g_fail == 0) std::printf(envSkipped ? "OK (一部を環境スキップ)\n" : "OK\n");
+    if (g_fail != 0) return 1;
+    return envSkipped ? 77 : 0;   // 77 = ctest の SKIP_RETURN_CODE
 }

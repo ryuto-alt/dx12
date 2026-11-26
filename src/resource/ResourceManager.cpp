@@ -137,6 +137,14 @@ void ResourceManager::Initialize(GraphicsDevice* device, DescriptorHeap* srvHeap
         m_defaultBlack->SetSrvIndex(bIdx);
         m_defaultBlack->CreateSRV(*device, m_srvHeap->GetCpuHandle(bIdx));
     }
+    // 既定の材質 SRV ブロック。単独テクスチャの SRV をテーブル先頭に張ると、+1..+4 に隣の
+    // 無関係なディスクリプタ（StructuredBuffer 等）が読まれてデバッグレイヤーが毎フレーム報告する。
+    m_defaultMaterialBlock = m_srvHeap->AllocateBlock(kMaterialSrvBlockSize);
+    m_defaultWhite->CreateSRV(*device, m_srvHeap->GetCpuHandle(m_defaultMaterialBlock));
+    m_defaultNormal->CreateSRV(*device, m_srvHeap->GetCpuHandle(m_defaultMaterialBlock + 1));
+    m_defaultMetalRoughness->CreateSRV(*device, m_srvHeap->GetCpuHandle(m_defaultMaterialBlock + 2));
+    m_defaultBlack->CreateSRV(*device, m_srvHeap->GetCpuHandle(m_defaultMaterialBlock + 3));
+    m_defaultBlack->CreateSRV(*device, m_srvHeap->GetCpuHandle(m_defaultMaterialBlock + kMaterialHeightSrvOffset));
     m_uploadsPending = true;  // 既定テクスチャのアップロードを初回フレームで確定させる
 }
 

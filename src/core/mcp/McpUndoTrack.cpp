@@ -146,20 +146,17 @@ private:
 
 void McpRestore<MeshRenderer>::Apply(Scene& scene, entt::registry& reg, entt::entity e, const MeshRenderer& v)
 {
-    // ★メッシュ / マテリアルの実体ポインタは今のものを残す。スナップショットの後に
-    //   reload_assets がモデルを読み直すと古い Mesh* は解放済みで、そのまま戻すとぶら下がる。
-    //   MCP の追跡対象ハンドラ（set_pbr / set_color / set_texture / set_mesh_shader …）は
-    //   モデル自体を差し替えないので、値だけ戻せば十分。
+    // ★メッシュ / マテリアルの実体ポインタは今のものを残す（UndoValueTraits<MeshRenderer>::Merge。
+    //   スナップショットの後に reload_assets や Stop がモデルを読み直すと古い Mesh* は解放済みなので、
+    //   スロットは最初からハンドルを持たない形で預かっている）。MCP の追跡対象ハンドラ
+    //   （set_pbr / set_color / set_texture / set_mesh_shader …）はモデル自体を差し替えない。
     auto* cur = reg.try_get<MeshRenderer>(e);
     if (!cur) return;   // MeshRenderer を足す/消す MCP は無い（追跡時に有無を確かめてある）
-    MeshRenderer next = v;
-    next.modelPath          = cur->modelPath;
-    next.meshes             = cur->meshes;
-    next.materials          = cur->materials;
-    next.meshNodeTransforms = cur->meshNodeTransforms;
-    next._animT             = cur->_animT;
-    const bool uvChanged = cur->uvScaleU != next.uvScaleU || cur->uvScaleV != next.uvScaleV;
-    *cur = std::move(next);
+    const float animT = cur->_animT;
+    const float oldU = cur->uvScaleU, oldV = cur->uvScaleV;
+    UndoValueTraits<MeshRenderer>::Merge(*cur, v);
+    cur->_animT = animT;
+    const bool uvChanged = oldU != cur->uvScaleU || oldV != cur->uvScaleV;
     // ★uvScale は頂点へ焼く方式なので、値を戻すだけでは絵が戻らない（MeshRendererLookCommand と同じ）。
     if (uvChanged && scene.GetDevice())
         for (auto* mesh : cur->meshes)
