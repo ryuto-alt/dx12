@@ -187,8 +187,8 @@ def capture_all(a, scenes: list[GS.GiScene], out: Path, log) -> dict:
                     apply_condition(cl, PT_CONDITION, s)
                     GE.step(cl, 30)
                     log(f"  {v['id']}/{cam['name']}: PT {a.spp}spp / {a.bounces} bounces")
-                    GE.render_pt(cl, d / "pt", size, a.spp, a.bounces, a.seed, a.frame_budget_ms, a.pt_timeout, log,
-                                 extra={"sunAngularRadiusDeg": SUN_RADIUS_DEG})
+                    GE.render_pt(_PtParams(cl, {"sunAngularRadiusDeg": SUN_RADIUS_DEG}), d / "pt", size, a.spp, a.bounces, a.seed,
+                                 a.frame_budget_ms, a.pt_timeout, log)
                 for cn in conds:
                     apply_condition(cl, cn, s)
                     t0 = time.time()
@@ -294,12 +294,27 @@ def texel_report(a, s: GS.GiScene) -> list[dict] | None:
                             res=a.csm_res, n=4, lam=a.csm_lambda)
 
 
+class _PtParams:
+    """EngineClient の薄い包み。render_reference の呼び出しにだけ追加の引数(太陽の角半径など)を足す(gi_eval.py は変えない)。"""
+
+    def __init__(self, cli, extra: dict):
+        self._cli, self._extra = cli, extra
+
+    def call(self, method, params=None, **kw):
+        if method == "render_reference":
+            params = {**(params or {}), **self._extra}
+        return self._cli.call(method, params, **kw)
+
+    def __getattr__(self, name):
+        return getattr(self._cli, name)
+
+
 def judge(s: GS.GiScene, vid: str, cams: dict, cn: str) -> dict:
     """シーン JSON の criteria を、条件 cn の数値から判定する。数値が無ければ 判定不能。ベースライン段階の参考(合否の集計には使わない)。
     criteria のキーの先頭語が種類: coverage* / acne* / temporal* を判定する。"variant" を持つ基準はその variant だけで判定する。
     それ以外(edge_char・information など)は判定せず「情報のみ(判定しない)」と出す。
     ★coverage の合否は captured(PT の影画素のうち、ラスタも影にした割合)。ratio(画素数の比)はずれた影でも 1 になり得るので参考値。
-    ★temporal は影の領域(shadowRegions)の 8bit 最大差で判定する(C6 の目的は影のちらつき)。全画面は幾何の縁などを含むので full_max_range に情報として出す。"""
+    ★temporal は影の領域(shadowRegions)の 8bit の p99_range(安定な統計量)で判定する。max_range は外れ値で揺れるので情報のみ。(C6 の目的は影のちらつき)。全画面は幾何の縁などを含むので full_max_range に情報として出す。"""
     out: dict = {}
     cr = s.data.get("criteria", {})
     sc = lambda cam, reg: ((cams.get(cam, {}).get("conditions", {}).get(cn, {}).get("shadow") or {}).get(reg))  # noqa: E731
@@ -327,8 +342,11 @@ def judge(s: GS.GiScene, vid: str, cams: dict, cn: str) -> dict:
             reg = [r for t_ in tl for r in (t_.get("regions") or {}).values() if r.get("evaluable")]
             full = [t_["full"] for t_ in tl if (t_.get("full") or {}).get("evaluable")]
             if reg:
-                mx = max(x["max_range"] for x in reg)
-                out[key] = {"status": "PASS" if mx <= c["max_range"] else "FAIL", "max_range": mx, "need": c["max_range"], "scope": "shadow_regions",
+                # 合否は安定な統計量 p99_range(上位 1% を除いた最大差)。max_range は外れ値 1 画素で 13〜49 段揺れるので情報のみ(--compare からも外す)。
+                p99 = max(x["p99_range"] for x in reg)
+                need = c.get("p99_range", c.get("max_range"))
+                out[key] = {"status": "PASS" if p99 <= need else "FAIL", "p99_range": p99, "need": need, "scope": "shadow_regions",
+                            "max_range_info": max(x["max_range"] for x in reg),
                             "full_max_range": max((x["max_range"] for x in full), default=None)}
             else:
                 out[key] = {"status": "判定不能"}
@@ -410,7 +428,7 @@ def format_summary(result: dict) -> str:
                         L.append(f"  {vid}/{cam}/{cn}: 全体 EV {g['ev_mean']:+.2f}  HDR-FLIP " + (f"{f:.3f}" if f is not None else "n/a"))
                     for rn, r in (c.get("shadow") or {}).items():
                         cov, ac, ed = r["coverage"], r["acne"], r["edge"]
-                        L.append(f"     {rn:20} coverage {cov['ratio'] if cov['ratio'] is None else round(cov['ratio'], 3)}  acne "
+                        L.append(f"     {rn:20} captured {cov.get('captured') if cov.get('captured') is None else round(cov['captured'], 3)} (ratio 参考 {cov['ratio'] if cov['ratio'] is None else round(cov['ratio'], 3)})  acne "
                                  f"{ac['rate'] if ac['rate'] is None else round(ac['rate'], 5)}  edge(px) r/pt "
                                  f"{ed['raster'].get('width_px')}/{ed['pt'].get('width_px')}")
         if srec.get("texelBands"):
@@ -424,7 +442,9 @@ def format_summary(result: dict) -> str:
 # 緩めるのは TAA の時間のフレーム列(max_range / p99_range / sigma_mean)と縁の幅だけ(下の実測)。
 DET_TOL = 1e-5
 # 実測(--view-size 固定で起動・解像度の切り替え無し・同条件 2 回): max_range は最大 28 段(49 と 21。外れ値の順序統計なので揺れる)・p99_range は最大 1 段・sigma_mean は最大 0.012。
-TEMPORAL_TOL = {"max_range": 30.0, "p99_range": 2.0, "sigma_mean": 0.03}
+TEMPORAL_TOL = {"p99_range": 2.0, "sigma_mean": 0.03}
+# max_range は TAA のジッタ位相に依存して揺れる(MCP 呼び出しの合間にもエンジンが実フレームを描くため)ので --compare の対象にしない。
+INFO_ONLY_SUFFIX = ("max_range",)
 # 縁の幅は「半影の画素数 / 境界の長さ」で、しきい値の際の 1 画素が入れ替わると動く(実測の最大差: 幅 4.6e-4 px・相対誤差 5e-5)。
 EDGE_TOL = {"edge_width_raster_px": 0.01, "edge_width_pt_px": 0.01, "edge_error_rel": 0.005}
 TOLERANCE = {"texels_per_px": 1e-9, **TEMPORAL_TOL, **EDGE_TOL}
@@ -437,6 +457,8 @@ def compare(a_json: dict, b_json: dict) -> dict:
         if k not in sa or k not in sb:
             bad.append(k)
             rows.append({"key": k, "a": sa.get(k), "b": sb.get(k), "ok": False, "why": "片方に無い"})
+            continue
+        if k.rsplit("/", 1)[-1] in INFO_ONLY_SUFFIX:
             continue
         tol = TOLERANCE.get(k.rsplit("/", 1)[-1], DET_TOL)
         d = abs(sa[k] - sb[k])
