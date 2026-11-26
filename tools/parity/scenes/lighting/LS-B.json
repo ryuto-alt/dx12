@@ -1,0 +1,323 @@
+{
+ "id": "LS-B",
+ "title": "LS-B 接地・凹部",
+ "description": "10x3.2x10m の部屋。床に置いた球・箱・マネキンの足元の接地と、北壁の凹部(幅 1.2m)の隅の暗さを見る。太陽 方位 100°/高度 40°。",
+ "spec": {
+  "version": 1,
+  "name": "ls_b",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     0
+    ],
+    "size": [
+     10.4,
+     0.2,
+     10.4
+    ],
+    "color": "#8a6a4c",
+    "material": {
+     "roughness": 0.6
+    }
+   },
+   {
+    "name": "LVL_Wall_N",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     5.1
+    ],
+    "size": [
+     10.4,
+     3.2,
+     0.2
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -5.1,
+     1.6,
+     0
+    ],
+    "size": [
+     0.2,
+     3.2,
+     10.4
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_RecessL",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.0,
+     1.0,
+     4.7
+    ],
+    "size": [
+     0.6,
+     2.0,
+     0.6
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_RecessR",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     1.0,
+     1.0,
+     4.7
+    ],
+    "size": [
+     0.6,
+     2.0,
+     0.6
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_RecessTop",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     2.1,
+     4.7
+    ],
+    "size": [
+     2.2,
+     0.2,
+     0.6
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Sphere",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     -2.5,
+     0.5,
+     1.5
+    ],
+    "size": 1.0,
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.7
+    }
+   },
+   {
+    "name": "ENV_Box",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     2.5,
+     0.4,
+     1.5
+    ],
+    "size": [
+     0.8,
+     0.8,
+     0.8
+    ],
+    "color": "#d8d4cc",
+    "material": {
+     "roughness": 0.7
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     100,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 100,
+  "elevation": 40,
+  "intensity": 3.0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -10.0,
+   0.0,
+   -10.0
+  ],
+  "max": [
+   10.0,
+   4.0,
+   10.0
+  ],
+  "spacing": 1.0,
+  "follow": true
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    0.5,
+    1.8,
+    -4.2
+   ],
+   "target": [
+    0,
+    0.8,
+    2.5
+   ],
+   "shadowRegions": [
+    "shadow_box",
+    "shadow_char"
+   ]
+  },
+  {
+   "name": "recess",
+   "position": [
+    0,
+    1.5,
+    0.0
+   ],
+   "target": [
+    0,
+    1.2,
+    4.7
+   ],
+   "shadowRegions": []
+  }
+ ],
+ "regions": {
+  "floor": {
+   "entities": [
+    "LVL_Floor"
+   ]
+  },
+  "floor_near_sphere": {
+   "entities": [
+    "LVL_Floor"
+   ],
+   "nearEntity": "ENV_Sphere",
+   "maxDist": 0.45
+  },
+  "floor_near_box": {
+   "entities": [
+    "LVL_Floor"
+   ],
+   "nearEntity": "ENV_Box",
+   "maxDist": 0.45
+  },
+  "recess": {
+   "entities": [
+    "ENV_RecessL",
+    "ENV_RecessR",
+    "LVL_Wall_N"
+   ],
+   "nearEntity": "ENV_RecessTop",
+   "maxDist": 1.0
+  }
+ },
+ "criteria": {
+  "information": {
+   "regions": [
+    "floor_near_sphere",
+    "floor_near_box",
+    "recess"
+   ],
+   "cameras": [
+    "main",
+    "recess"
+   ]
+  }
+ },
+ "models": [
+  {
+   "name": "Mannequin",
+   "path": "assets/engine/characters/mannequin/mannequin.glb",
+   "at": [
+    0.0,
+    0,
+    2.6
+   ],
+   "proxy": {
+    "size": [
+     0.7,
+     1.8,
+     0.4
+    ]
+   }
+  }
+ ],
+ "shadowRegions": {
+  "shadow_box": {
+   "receivers": [
+    "LVL_Floor"
+   ],
+   "occluders": [
+    "ENV_Box"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  },
+  "shadow_char": {
+   "receivers": [
+    "LVL_Floor"
+   ],
+   "occluders": [
+    "Mannequin"
+   ],
+   "state": "roi",
+   "roiPx": 30
+  }
+ },
+ "conditions": [
+  "high",
+  "epic"
+ ]
+}

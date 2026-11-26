@@ -1,0 +1,330 @@
+{
+ "id": "LS-C",
+ "title": "LS-C 暗い回廊",
+ "description": "幅 2.4m・長さ 20m の密閉した廊下。天井に赤い電球 3 灯、床に木箱。太陽は 0。暗部の黒潰れと DDGI の漏れを見る(GR-4 と同系)。",
+ "spec": {
+  "version": 1,
+  "name": "ls_c",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     0
+    ],
+    "size": [
+     2.8,
+     0.2,
+     20.4
+    ],
+    "color": "#4a423a",
+    "material": {
+     "roughness": 0.5
+    }
+   },
+   {
+    "name": "LVL_Ceiling",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.1,
+     0
+    ],
+    "size": [
+     2.8,
+     0.2,
+     20.4
+    ],
+    "color": "#38352f",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.3,
+     1.5,
+     0
+    ],
+    "size": [
+     0.2,
+     3.0,
+     20.0
+    ],
+    "color": "#4e4a42",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     1.3,
+     1.5,
+     0
+    ],
+    "size": [
+     0.2,
+     3.0,
+     20.0
+    ],
+    "color": "#4e4a42",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_End",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.5,
+     10.1
+    ],
+    "size": [
+     2.8,
+     3.2,
+     0.2
+    ],
+    "color": "#4e4a42",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_Start",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.5,
+     -10.1
+    ],
+    "size": [
+     2.8,
+     3.2,
+     0.2
+    ],
+    "color": "#4e4a42",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Crate",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0.6,
+     0.4,
+     3.0
+    ],
+    "size": [
+     0.8,
+     0.8,
+     0.8
+    ],
+    "color": "#6a5a46",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "LGT_Bulb_1",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0,
+     2.8,
+     -4.0
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 6.0,
+      "range": 7.0,
+      "color": [
+       1.0,
+       0.25,
+       0.15
+      ],
+      "castShadows": true
+     }
+    }
+   },
+   {
+    "name": "LGT_Bulb_2",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0,
+     2.8,
+     2.0
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 6.0,
+      "range": 7.0,
+      "color": [
+       1.0,
+       0.25,
+       0.15
+      ],
+      "castShadows": true
+     }
+    }
+   },
+   {
+    "name": "LGT_Bulb_3",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0,
+     2.8,
+     8.0
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 6.0,
+      "range": 7.0,
+      "color": [
+       1.0,
+       0.25,
+       0.15
+      ],
+      "castShadows": true
+     }
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     270,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 270,
+  "elevation": 33,
+  "intensity": 0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -1.4,
+   0.0,
+   -10.0
+  ],
+  "max": [
+   1.4,
+   3.1,
+   10.0
+  ],
+  "spacing": 0.8
+ },
+ "cameras": [
+  {
+   "name": "main",
+   "position": [
+    0,
+    1.6,
+    -9.0
+   ],
+   "target": [
+    0,
+    1.3,
+    9.0
+   ]
+  },
+  {
+   "name": "side",
+   "position": [
+    -0.9,
+    1.4,
+    0.0
+   ],
+   "target": [
+    0.9,
+    0.9,
+    7.0
+   ]
+  }
+ ],
+ "regions": {
+  "walls": {
+   "entities": [
+    "LVL_Wall_L",
+    "LVL_Wall_R"
+   ]
+  },
+  "floor": {
+   "entities": [
+    "LVL_Floor"
+   ]
+  },
+  "ceiling": {
+   "entities": [
+    "LVL_Ceiling"
+   ]
+  },
+  "end": {
+   "entities": [
+    "LVL_Wall_End"
+   ]
+  },
+  "crate": {
+   "entities": [
+    "ENV_Crate"
+   ]
+  }
+ },
+ "criteria": {
+  "information": {
+   "regions": [
+    "walls",
+    "floor",
+    "ceiling",
+    "end",
+    "crate"
+   ],
+   "cameras": [
+    "main",
+    "side"
+   ]
+  }
+ },
+ "conditions": [
+  "epic"
+ ]
+}
