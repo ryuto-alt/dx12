@@ -362,9 +362,11 @@ bool VirtualGeometrySystem::LoadResolvePs()
     if (pk.fellBack)
         Logger::Warn("VG: VgResolveV2_PS.cso が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）");
     auto bc = LoadCsoNoThrow(m_desc.shaderDir + pk.name);
-    if (bc.GetSize() == 0) return false;
+    if (bc.GetSize() == 0) return false;   // 古い PS / PSO / フラグには触らない（呼び出し側が決める）
     m_bcResolvePs = std::move(bc.data);
     m_resolvePsIsV2 = pk.usedV2;
+    m_psoResolve.Reset();   // PS が変わったので、次の DrawResolve が作り直す
+    m_psoResolveRs = nullptr;
     return true;
 }
 
@@ -374,8 +376,6 @@ bool VirtualGeometrySystem::SetShadingV2(bool v2)
     if (m_shadingV2Requested == v2) return true;
     m_shadingV2Requested = v2;
     if (m_bcResolveVs.empty() || m_bcResolvePs.empty()) return true;   // resolve が無効 / まだ作っていない
-    m_psoResolve.Reset();   // 次の DrawResolve が新しい PS で作り直す
-    m_psoResolveRs = nullptr;
     return LoadResolvePs();
 }
 

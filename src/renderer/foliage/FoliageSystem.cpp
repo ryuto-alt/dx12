@@ -181,7 +181,7 @@ bool FoliageSystem::Impl::BuildForwardPsos()
             b.SetDepthFunc(leq ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_LESS);
             if (!psoMain[mask][leq]) psoMain[mask][leq] = std::make_unique<PipelineState>();
             psoMain[mask][leq]->Initialize(*d.gdev, b);
-            if (pk[mask].usedV2) ++v2PsoCount;
+            if (pk[mask].usedV2 && psoMain[mask][leq] && psoMain[mask][leq]->Get()) ++v2PsoCount;   // 実体ができたものだけ数える
         }
     }
     return true;

@@ -1063,9 +1063,10 @@ void AppAccess::UpdateShadingRevision(Application& app)
     const bool fwdOff = (want != s_shadingRevApplied);
     if (!fwdOff && !waterOff && !foliageOff && !vgOff) return;
     app.m_commandQueue->WaitIdle();
-    if (waterOff) app.m_water->SetShadingV2(v2);
-    if (foliageOff) app.m_foliage->SetShadingV2(v2);
-    if (vgOff) app.m_vg->SetShadingV2(v2);
+    // 戻り値が偽 = シェーダを読めず前の PSO / PS のまま（要求は更新済みなので毎フレームは再試行しない。警告は各システムが出す）
+    if (waterOff && !app.m_water->SetShadingV2(v2)) Logger::Warn("水: shadingRevision={} への切替に失敗（前の PSO のまま）", v2 ? 2 : 1);
+    if (foliageOff && !app.m_foliage->SetShadingV2(v2)) Logger::Warn("植生: shadingRevision={} への切替に失敗（前の PSO のまま）", v2 ? 2 : 1);
+    if (vgOff && !app.m_vg->SetShadingV2(v2)) Logger::Warn("VG: shadingRevision={} への切替に失敗（前の PS のまま）", v2 ? 2 : 1);
     if (!fwdOff)
     {
         Logger::Info("shadingRevision={}: 水 {} / 植生 {} / VG {} の V2 PSO を追従させました", static_cast<int>(want),

@@ -1308,6 +1308,14 @@ if(MSVC)
     target_compile_definitions(FrameStepLogicTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME FrameStepLogicTests COMMAND FrameStepLogicTests)
+# 水 / 植生 / VG が shadingRevision=2 のとき *V2_PS.cso を選ぶ純ロジック（ヘッダのみ）。FU-E-25。
+add_executable(ShadingRevisionPickTests shading_revision_pick_test.cpp)
+target_include_directories(ShadingRevisionPickTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(ShadingRevisionPickTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(ShadingRevisionPickTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ShadingRevisionPickTests COMMAND ShadingRevisionPickTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。

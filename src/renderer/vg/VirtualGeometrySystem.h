@@ -419,7 +419,7 @@ public:
     // shadingRevision（FU-E-25）。v2 = true で VgResolveV2_PS.cso を選ぶ（無ければ警告して V1 へ縮退）。GPU が止まっているときだけ呼ぶこと。
     bool SetShadingV2(bool v2);
     bool ShadingV2Requested() const { return m_shadingV2Requested; }
-    int  V2PsoCount() const { return (m_resolvePsIsV2 && ResolveSupported()) ? 1 : 0; }   // resolve の PSO は初回の描画で作る（PS が V2 なら 1）
+    int  V2PsoCount() const { return (m_resolvePsIsV2 && m_psoResolve) ? 1 : 0; }   // resolve の PSO は初回の描画で作る。作れてから 1（描く前は 0）
     bool ResolveSupported() const { return m_rasterOk && m_extHeap && !m_bcResolveVs.empty() && !m_bcResolvePs.empty(); }
     bool UsesExternalHeap() const { return m_extHeap; }
     uint32_t DescriptorsInUse() const;             // VG が確保しているディスクリプタ数（固定領域 + アセット）

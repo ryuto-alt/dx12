@@ -206,7 +206,6 @@ bool WaterRenderer::Impl::BuildPsos()
     const auto pickUnder = shadingpick::PickPs(v2, physical, L"WaterUnder_PS.cso", L"WaterUnderPhys_PS.cso", L"WaterUnderV2_PS.cso", L"WaterUnderPhysV2_PS.cso", exists);
     if (pickSurf.fellBack || pickUnder.fellBack)
         Logger::Warn("水: V2 の .cso が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）");
-    v2PsoCount = 0;
     auto ps = ShaderCompiler::LoadFromFile(d.shaderDir + pickSurf.name);
     auto uvs = ShaderCompiler::LoadFromFile(d.shaderDir + L"WaterUnder_VS.cso");
     auto ups = ShaderCompiler::LoadFromFile(d.shaderDir + pickUnder.name);
@@ -217,6 +216,8 @@ bool WaterRenderer::Impl::BuildPsos()
     }
     static const D3D12_INPUT_ELEMENT_DESC kLayout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
+    // 両方作れたときだけ差し替える（失敗しても前の PSO を残す＝Draw が null の PSO を設定しない。FU-E-25 レビュー対応）
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> newMain, newUnder;
     {
         PipelineStateBuilder b;
         b.SetRootSignature(rs.Get())
@@ -230,7 +231,7 @@ bool WaterRenderer::Impl::BuildPsos()
          .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL)
          .SetAlphaBlendEnabled(true)
          .SetCullMode(D3D12_CULL_MODE_NONE);
-        psoMain = b.Build(*d.gdev);
+        newMain = b.Build(*d.gdev);
     }
     {
         PipelineStateBuilder b;
@@ -241,11 +242,17 @@ bool WaterRenderer::Impl::BuildPsos()
          .SetDepthStencilFormat(DXGI_FORMAT_UNKNOWN)
          .SetDepthEnabled(false)
          .SetCullMode(D3D12_CULL_MODE_NONE);
-        psoUnder = b.Build(*d.gdev);
+        newUnder = b.Build(*d.gdev);
     }
-    if (psoMain && psoUnder)
-        v2PsoCount = (pickSurf.usedV2 ? 1 : 0) + (pickUnder.usedV2 ? 1 : 0);
-    return psoMain && psoUnder;
+    if (!newMain || !newUnder)
+    {
+        Logger::Warn("水: PSO を作れなかった。前の PSO のまま描画します");
+        return false;
+    }
+    psoMain = std::move(newMain);
+    psoUnder = std::move(newUnder);
+    v2PsoCount = (pickSurf.usedV2 ? 1 : 0) + (pickUnder.usedV2 ? 1 : 0);
+    return true;
 }
 
 Microsoft::WRL::ComPtr<ID3D12Resource> WaterRenderer::Impl::UploadBuffer(u64 bytes)

@@ -29,11 +29,11 @@ V2 の中身（C4 以降）は項目ごとにここへ追記する。
 | `ForwardV2_PS` / `ForwardPhysV2_PS` | `forward/Forward.hlsl` `PSMain` | `UNO_PHYSICAL_LIGHTS=1`（Phys） | `ApplicationPipeline.cpp`（静的メッシュ・スキンド共用） | 結線済み |
 | `ForwardMaskV2_PS` / `ForwardMaskPhysV2_PS` | 同上 | `ALPHA_TEST=1` | 同上 | 結線済み |
 | `TerrainV2_PS` / `TerrainPhysV2_PS` | `forward/Terrain.hlsl` | | `ApplicationPipeline.cpp` | 結線済み |
-| `VgResolveV2_PS` | `vg/VgResolve.hlsl`（ps_6_6） | | `VirtualGeometrySystem.cpp` | **宣言のみ（未結線）** |
-| `ForwardFoliage{,Phys,Mask,MaskPhys}V2_PS` | `foliage/ForwardFoliage_PS.hlsl` | `FOLIAGE_MASK=1`、`UNO_PHYSICAL_LIGHTS=1` | `FoliageSystem.cpp` | **宣言のみ（未結線）** |
-| `WaterSurface{,Phys}V2_PS` / `WaterUnder{,Phys}V2_PS` | `water/WaterSurface.hlsl` / `water/WaterUnder.hlsl` | `UNO_PHYSICAL_LIGHTS=1` | `WaterRenderer.cpp` | **宣言のみ（未結線）** |
+| `VgResolveV2_PS` | `vg/VgResolve.hlsl`（ps_6_6） | | `VirtualGeometrySystem.cpp`（`LoadResolvePs`） | 結線済み（FU-E-25） |
+| `ForwardFoliage{,Phys,Mask,MaskPhys}V2_PS` | `foliage/ForwardFoliage_PS.hlsl` | `FOLIAGE_MASK=1`、`UNO_PHYSICAL_LIGHTS=1` | `FoliageSystem.cpp`（`BuildForwardPsos`） | 結線済み（FU-E-25） |
+| `WaterSurface{,Phys}V2_PS` / `WaterUnder{,Phys}V2_PS` | `water/WaterSurface.hlsl` / `water/WaterUnder.hlsl` | `UNO_PHYSICAL_LIGHTS=1` | `WaterRenderer.cpp`（`BuildPsos`） | 結線済み（FU-E-25） |
 
-未結線の 3 系統（仮想ジオメトリ・植生・水）は、選ぶ側のファイルが C3 の所有外のため、軸の宣言だけを入れた。
+仮想ジオメトリ・植生・水の 3 系統は C3 では軸の宣言だけだったが、FU-E-25 で結線した（`renderer/ShadingRevisionPick.h` の `PickPs` が `FwdPsNameRev` と同じ流儀で `*V2_PS.cso` を選び、無ければ警告して V1 へ縮退する。`UpdateShadingRevision` が GPU を待った後に `SetShadingV2` で追従させる）。
 結線は、選ぶ側のファイルの所有が決まった項目で行う（`FwdPsNameRev` と同じ形: V2 が無ければ警告して V1 へ縮退）。
 
 ## 4. 実行時の経路
@@ -48,7 +48,7 @@ Run ループの先頭（フレーム外）→ EnsureSplitResources → AppAcces
                                      └─ FwdPsNameRev が V2 の .cso を選ぶ（無ければ警告して V1 へ縮退）
 ```
 
-- 反映済みの値と V2 の PSO の数は `dx12_get_shading` の `appliedRevision` / `v2PsoCount`（`v2Pso.{forward,skinned,terrain}`）と、ログの
+- 反映済みの値と V2 の PSO の数は `dx12_get_shading` の `appliedRevision` / `v2PsoCount`（`v2Pso.{forward,skinned,terrain,water,foliage,vg}`。water = 水面+水中の PSO（0..2）、foliage = フォワード PSO（0..4）、vg = resolve の PSO（作った後だけ 1。VG を描く前は 0）。いずれも実体ができた V2 PSO だけを数える）と、ログの
   `shadingRevision=2: フォワードの V2 PSO N 本` で確認できる。
 - `Application.h` は W1 では凍結なので、反映済みの値は `ApplicationPipeline.cpp` の中に持つ（`s_shadingRevApplied`）。
 - `ForwardPsoProvider`（ステージフックの読み取り口）は、PSO のポインタを毎フレーム `m_pipelineState*` から詰める。
@@ -86,7 +86,7 @@ Run ループの先頭（フレーム外）→ EnsureSplitResources → AppAcces
 
 ## 8. 未解決（メインの判断待ち。C3 の所有外）
 
-1. **水 / 植生 / VG の V2 の選択**: V2 の .cso（WaterSurface/Under{,Phys}V2、ForwardFoliage*V2、VgResolveV2）は宣言・ビルド済みだが、
+1. **水 / 植生 / VG の V2 の選択（FU-E-25 で解決済み。下は経緯）**: V2 の .cso（WaterSurface/Under{,Phys}V2、ForwardFoliage*V2、VgResolveV2）は宣言・ビルド済みだが、
    選ぶ側（`WaterRenderer`・`ApplicationWater.cpp`・`FoliageSystem.cpp`・`VirtualGeometrySystem.cpp`）は W1 の所有表に所有者がいない。
    C6（影のバイアスを「シーン全体が V2 のときだけ」下げる）の前提なので、所有を決めて `FwdPsNameRev` と同じ流儀で結線すること。
 2. **shadingRevision の保存**: `SceneSerializer` は凍結のため保存されない。`set_shading` でシーンは dirty になるが、
