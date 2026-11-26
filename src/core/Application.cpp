@@ -3571,6 +3571,31 @@ void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
     Logger::Warn("保存されていない自動保存が見つかりました（{}）。復旧するか確認します", when);
 }
 
+namespace
+{
+// 保存先が未設定、または MCP の自動保存が割り当てた仮の保存先（<project>/.dx12/untitled/ 配下）か。
+bool IsUntitledScenePath(const std::string& path)
+{
+    if (path.empty()) return true;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir  = fs::weakly_canonical(fs::path(AppAccess::UntitledDir()), ec);
+    const fs::path file = fs::weakly_canonical(fs::path(path), ec);
+    if (ec || dir.empty() || file.empty()) return false;
+    const auto rel = file.lexically_relative(dir);
+    return !rel.empty() && *rel.begin() != fs::path("..") && !rel.is_absolute();
+}
+
+// 名前入力ダイアログ（保存モード）を開く。
+void OpenSaveAsDialog(EditorContext& ctx)
+{
+    ctx.showNewSceneDialog = true;
+    ctx.newSceneDialogIsCreate = false;
+    std::memset(ctx.newSceneNameBuf, 0, sizeof(ctx.newSceneNameBuf));
+    strncpy_s(ctx.newSceneNameBuf, "Untitled", _TRUNCATE);
+}
+} // namespace
+
 bool Application::ConfirmDiscardScene(bool& outCancelled)
 {
     outCancelled = false;
@@ -3631,6 +3656,14 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     switch (choice)
     {
     case Choice::Save:
+        if (IsUntitledScenePath(m_editorCtx->currentScenePath))
+        {
+            // 保存先が無い / MCP の仮の保存先（.dx12/untitled/）。そこへ黙って書いて先へ進まず、操作を取り消して
+            // 名前を聞く（Ctrl+S と同じ。W1-A16 / R2-03）。
+            OpenSaveAsDialog(*m_editorCtx);
+            outCancelled = true;
+            return false;
+        }
         if (m_scene && !m_editorCtx->currentScenePath.empty() &&
             SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
         {
@@ -3691,26 +3724,11 @@ void Application::EditorSaveScene()
     }
     // MCP の自動保存が「保存先の無い新規シーン」へ割り当てた仮の保存先（<project>/.dx12/untitled/）も、
     // 人から見ればまだ無題のシーン。そこへ黙って保存せず、保存先が未設定のときと同じく名前を聞く（W1-A16 / R2-03）。
-    bool untitledScene = m_editorCtx->currentScenePath.empty();
-    if (!untitledScene)
-    {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        const fs::path dir  = fs::weakly_canonical(fs::path(AppAccess::UntitledDir()), ec);
-        const fs::path file = fs::weakly_canonical(fs::path(m_editorCtx->currentScenePath), ec);
-        if (!ec && !dir.empty() && !file.empty())
-        {
-            const auto rel = file.lexically_relative(dir);
-            untitledScene = !rel.empty() && *rel.begin() != fs::path("..") && !rel.is_absolute();
-        }
-    }
+    const bool untitledScene = IsUntitledScenePath(m_editorCtx->currentScenePath);
     if (untitledScene)
     {
         // 保存先が未設定 → 名前入力ダイアログ（保存モード）。OS のダイアログは仮想入力中に出せないので使わない。
-        m_editorCtx->showNewSceneDialog = true;
-        m_editorCtx->newSceneDialogIsCreate = false;
-        std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
-        strncpy_s(m_editorCtx->newSceneNameBuf, "Untitled", _TRUNCATE);
+        OpenSaveAsDialog(*m_editorCtx);
         return;
     }
 

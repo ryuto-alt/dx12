@@ -1768,7 +1768,8 @@ void AssetBrowserPanel::CommitRename(EditorContext& ctx)
     {
         // F2 は拡張子の前までを選んで始まるので、名前のあとに元の拡張子が残っている。そこへ拡張子まで打つと
         // "box4.glb" + ".glb" = "box4.glb.glb" になる。元の拡張子が 2 つ続いて終わるときは 1 つにする（W1-A16 / R1-05）。
-        CollapseDoubledExtension(src.filename().string(), name);
+        // 打ち直していない（元の名前のまま）なら触らない: すでに二重の名前（過去の不具合の産物）を黙って直さない。
+        if (name != src.filename().string()) CollapseDoubledExtension(src.filename().string(), name);
         const abl::RenamedName rn = abl::ComposeRenamedFileName(src.filename().string(), name);
         name = rn.name;
         extChanged = rn.extChanged;

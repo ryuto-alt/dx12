@@ -92,6 +92,8 @@ void T_SaveUntitledAsksName(ImGuiTestContext* ctx);           // W1-A16 (b)
 void T_ConsoleErrorFocusOnce(ImGuiTestContext* ctx);          // W1-A16 (c)
 void T_RenameTypedExtNotDoubled(ImGuiTestContext* ctx);       // W1-A16 (d)
 void T_UndoToSavedStateClearsDirty(ImGuiTestContext* ctx);    // W1-A16 (e)
+void T_UndoToBaselineWithoutSave(ImGuiTestContext* ctx);      // W1-A16 (e)
+void T_UnsavedConfirmSaveUntitledAsksName(ImGuiTestContext* ctx); // W1-A16 (b)/(f)
 void T_NewSceneConfirmUnderVirtualInput(ImGuiTestContext* ctx);   // W1-A16 (f)
 void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx);        // W1-A16 (g)
 // ==== lane-A:decl end ====

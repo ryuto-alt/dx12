@@ -16,7 +16,6 @@
 #include "editor/LightMath.h"   // 新規シーンの太陽の既定（W05-22）
 #include "editor/LauncherScreen.h"   // プロジェクトランチャー
 #include "core/ApplicationInternal.h"
-#include "core/AppAccess.h"   // W1-A16: Undo / Redo の後に保存点を見る
 #include "renderer/FrameConstants.h"
 #include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
@@ -4177,7 +4176,6 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         McpUndoAutoClose("human_undo");
         if (m_editorCtx->pendingUndo) m_editorCtx->undoSystem.Undo();
         if (m_editorCtx->pendingRedo) m_editorCtx->undoSystem.Redo();
-        AppAccess::OnUndoRedoApplied(*this);   // 保存した状態まで戻ったら未保存を解く（自動保存の抑止も外れる）
         m_editorCtx->pendingUndo = false;
         m_editorCtx->pendingRedo = false;
     }

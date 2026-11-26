@@ -31,8 +31,9 @@ struct AppAccess
     static void PollHumanSettings(Application&, bool active, u64 freshHash);
     // MarkSceneClean の後（保存済みに揃えた）。
     static void OnSceneMarkedClean(Application&);
-    // 人の Undo / Redo を実行した直後。内容が保存済みの状態へ戻っていたら「未保存」を解く（W1-A16 / R1-09）。
-    static void OnUndoRedoApplied(Application&);
+    // 保存点の追跡（毎フレーム、PollHumanSettings から）。保存した内容の指紋を取り、Undo / Redo で内容が保存した状態へ
+    // 戻ったら「未保存」を解く（W1-A16 / R1-09）。
+    static void TrackSavePoint(Application&, u64 freshSettingsHash);
     // 保存系と editor_state の MCP 結果に autosave: { blockedByHumanEdits, lastBackupId } を足す（真なら warnings[] にも）。
     static void AnnotateAutosave(Application&, nlohmann::json& resp, const std::string& method);
     // 未保存の新規シーン（_mcp_untitled_*）の置き場: <project>/.dx12/untitled/

@@ -86,8 +86,17 @@ struct LaneAState
     bool        saveWroteHumanEdits = false;  // 直近の save_scene が人の未保存の変更を含めて本体へ書いた
     // 保存済みの内容の指紋（W1-A16 / R1-09）。保存・読み込み・破棄のたびに取り直し、Undo / Redo で内容がこれに
     // 戻ったら「未保存」を解く。UndoCore.h（凍結）に保存点の印は足せないので、内容そのもので比べる。
+    // 指紋は MarkSceneClean の「後」に確定する内容（読み込み完了・新規シーンの既定の配置・エディタ用グリッド）を含めたいので、
+    // MarkSceneClean では印を立てるだけにして、次の静かなフレームで取る（needFingerprint）。
+    bool        needFingerprint   = false;
     bool        savedContentValid = false;
     u64         savedContentHash  = 0;
+    u64         savedSettingsFp   = 0;     // 指紋を取った時点の設定の指紋（Undo できない設定はこれと比べる）
+    // 直前のフレームの Undo スタックの様子（人の Undo / Redo を検出する）
+    u64         lastEditSeq   = 0;
+    u64         lastPushSeq   = 0;
+    size_t      lastUndoDepth = 0;
+    bool        lastValid     = false;
 };
 LaneAState& S() { static LaneAState s; return s; }
 
@@ -293,12 +302,60 @@ void AppAccess::McpWriteEnd(Application& app)
     st.trackValid = true;
 }
 
+// 保存点の追跡（W1-A16 / R1-09）。UndoCore.h（凍結）に保存点の印は足せないので、保存した内容の指紋で比べる。
+//  1. MarkSceneClean の後、読み込み・新規シーンの構築が終わって内容が静かになった最初のフレームで指紋を取る。
+//  2. 人（または MCP）の Undo / Redo が実行されたら（EditSeq だけ進み、押された回数 PushSeq は同じで、スタックの深さが変わった）
+//     内容と設定が保存した状態へ戻っていないか見て、戻っていれば保存済みの印を今に合わせて未保存を解く。
+void AppAccess::TrackSavePoint(Application& app, u64 freshSettings)
+{
+    EditorContext* ctx = app.m_editorCtx.get();
+    LaneAState& st = S();
+    if (!ctx || !app.m_scene) return;
+    UndoSystem& us = ctx->undoSystem;
+    const u64 editSeq = us.EditSeq(), pushSeq = us.PushSeq();
+    const size_t depth = us.UndoDepth();
+    const bool undoRedoApplied = st.lastValid && editSeq != st.lastEditSeq && pushSeq == st.lastPushSeq && depth != st.lastUndoDepth;
+    st.lastEditSeq = editSeq; st.lastPushSeq = pushSeq; st.lastUndoDepth = depth; st.lastValid = true;
+
+    const bool quiet = !app.m_loading && !app.m_sceneLoadJob && app.m_engineMode == Application::EngineMode::Editor;
+    if (!quiet) return;
+    if (st.needFingerprint)
+    {
+        // 保存した状態から変わっていない間だけ取る（変わっていたら、次の MarkSceneClean まで待つ）。
+        if (editSeq == ctx->sceneSavedSeq)
+        {
+            st.savedContentHash  = SceneContentHash(*app.m_scene);
+            st.savedSettingsFp   = freshSettings;
+            st.savedContentValid = true;
+            st.needFingerprint   = false;
+        }
+        return;
+    }
+    if (!undoRedoApplied || !st.savedContentValid) return;
+    if (!ctx->IsSceneDirty()) return;   // もともと保存済み
+    if (freshSettings != st.savedSettingsFp) return;   // Undo を積まない設定（ポスト・空・フォグ…）が保存時と違う
+    if (SceneContentHash(*app.m_scene) != st.savedContentHash) return;
+
+    // 内容が保存した状態と同じ: 保存済みの印（EditSeq）を今に合わせ、人の変更の旗と退避の状態を落とす。
+    // 自動保存は IsSceneHumanDirty が偽になれば再び本体へ書ける。
+    ctx->sceneSavedSeq      = editSeq;
+    ctx->settingsHash       = freshSettings;
+    ctx->savedSettingsHash  = freshSettings;
+    ctx->humanSettingsDirty = false;
+    ctx->autosaveBlockedByHumanEdits = false;
+    st.stamp.Reset();
+    st.failedStamp.Reset();
+    st.hasProtected = false;
+    st.trackValid = false;
+}
+
 void AppAccess::PollHumanSettings(Application& app, bool active, u64 freshHash)
 {
     EditorContext* ctx = app.m_editorCtx.get();
     if (!ctx) return;
     LaneAState& st = S();
-    if (!active) { st.trackValid = false; return; }   // Play 中と Stop の復元のフレームは判定しない（Stop の後に取り直す）
+    if (!active) { st.trackValid = false; st.lastValid = false; return; }   // Play 中と Stop の復元のフレームは判定しない（Stop の後に取り直す）
+    TrackSavePoint(app, freshHash);
     if (st.framesSinceMcpWrite < 1000000) ++st.framesSinceMcpWrite;
     if (!st.trackValid) { st.trackHash = freshHash; st.trackValid = true; }
     else if (freshHash != st.trackHash)
@@ -350,36 +407,8 @@ void AppAccess::OnSceneMarkedClean(Application& app)
     st.untitledStem.clear();
     st.trackValid = false;   // 次の定期の更新で取り直す
 
-    // 保存済みの内容の指紋を取り直す。読み込み中・Play 中は内容が確定していないので、取らない（Undo では解かない）。
+    // 保存済みの内容の指紋は取り直す（次の静かなフレームで。PollHumanSettings）。それまでは Undo では解かない。
     st.savedContentValid = false;
-    if (app.m_scene && !app.m_loading && !app.m_sceneLoadJob && app.m_engineMode == Application::EngineMode::Editor)
-    {
-        st.savedContentHash  = SceneContentHash(*app.m_scene);
-        st.savedContentValid = true;
-    }
-}
-
-void AppAccess::OnUndoRedoApplied(Application& app)
-{
-    EditorContext* ctx = app.m_editorCtx.get();
-    LaneAState& st = S();
-    if (!ctx || !app.m_scene || !st.savedContentValid) return;
-    if (app.m_loading || app.m_sceneLoadJob || app.m_engineMode != Application::EngineMode::Editor) return;
-    if (!ctx->IsSceneDirty()) return;   // もともと保存済み
-    // Undo を積まない設定（ポスト・空・フォグ…）は指紋で別に追っている。そちらが保存時と違うなら未保存のまま。
-    const u64 freshSettings = SceneSettingsFingerprint(*app.m_scene);
-    if (freshSettings != ctx->savedSettingsHash) return;
-    if (SceneContentHash(*app.m_scene) != st.savedContentHash) return;
-
-    // 内容が保存した状態と同じ: 保存済みの印（EditSeq）を今に合わせ、人の変更の旗と退避の状態を落とす。
-    // 自動保存は IsSceneHumanDirty が偽になれば再び本体へ書ける。
-    ctx->sceneSavedSeq = ctx->undoSystem.EditSeq();
-    ctx->settingsHash  = freshSettings;
-    ctx->humanSettingsDirty = false;
-    ctx->autosaveBlockedByHumanEdits = false;
-    st.stamp.Reset();
-    st.failedStamp.Reset();
-    st.hasProtected = false;
-    st.trackValid = false;
+    st.needFingerprint   = true;
 }
 } // namespace dx12e

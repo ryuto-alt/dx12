@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 #include "gui/UiTestHarnessShared.h"
 
 #include "core/Application.h"
@@ -768,6 +769,57 @@ void T_SaveUntitledAsksName(ImGuiTestContext* ctx)
     fs::remove(normal, ec);
 }
 
+// (b)/(f) 未保存の確認の「保存して続行」も、保存先が MCP の仮の保存先なら隠しフォルダへ書かず、操作を取り消して名前を聞く。
+void T_UnsavedConfirmSaveUntitledAsksName(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+
+    const fs::path target   = fs::path(PathResolver::AssetsDir()) / "scenes" / "_a16_untitledconfirm_target.json";
+    const fs::path untitled = fs::path(AppAccess::UntitledDir()) / "_mcp_untitled_a16confirm.json";
+    std::error_code ec;
+    fs::remove(target, ec);
+    fs::remove(untitled, ec);
+    const bool origAi = ed->aiSessionEver;
+    SceneStateGuard guard{ed, app, ed->currentScenePath};
+    ed->currentScenePath = untitled.string();
+    ed->aiSessionEver = true;
+
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneHumanDirty());
+    const size_t entitiesBefore = app->GetScene()->GetRegistry().storage<entt::entity>().size();
+
+    LogStep(ctx, "Ctrl+N の「作成」→ 未保存の確認 →「保存して続行」");
+    ed->newSceneDialogIsCreate = true;
+    std::memset(ed->newSceneNameBuf, 0, sizeof(ed->newSceneNameBuf));
+    strncpy_s(ed->newSceneNameBuf, "_a16_untitledconfirm_target", _TRUNCATE);
+    ed->showNewSceneDialog = true;
+    ctx->Yield(4);
+    const ImGuiID dlg = FocusWindow(ctx, "//新規シーン###NewScenePopup");
+    IM_CHECK(dlg != 0);
+    if (dlg != 0) { ctx->SetRef(dlg); ctx->ItemClick("作成"); }
+    ctx->Yield(10);
+    const ImGuiID confirm = FocusWindow(ctx, "//##UnsavedConfirm");
+    IM_CHECK(confirm != 0);
+    if (confirm != 0) { ctx->SetRef(confirm); ctx->ItemClick("保存して続行"); }
+    ctx->Yield(12);
+
+    IM_CHECK(!fs::exists(untitled, ec));      // 隠しフォルダへは書かれない
+    IM_CHECK(!fs::exists(target, ec));        // 新しいシーンへも入れ替わっていない
+    IM_CHECK(app->GetScene()->GetRegistry().storage<entt::entity>().size() == entitiesBefore);
+    const ImGuiID saveAs = FocusWindow(ctx, "//名前を付けて保存###NewScenePopup");
+    IM_CHECK(saveAs != 0);                    // 名前を聞く
+    if (saveAs != 0) { ctx->SetRef(saveAs); ctx->ItemClick("キャンセル"); }
+    ctx->Yield(6);
+
+    ed->aiSessionEver = origAi;
+    fs::remove(target, ec);
+    fs::remove(untitled, ec);
+}
+
 // (c) R1-04: 「エラーで前面」は 1 回のバーストにつき 1 回。エラーが出続けてもフォーカスを奪い続けず、モーダルが開いている間は奪わない。
 void T_ConsoleErrorFocusOnce(ImGuiTestContext* ctx)
 {
@@ -942,13 +994,65 @@ void T_UndoToSavedStateClearsDirty(ImGuiTestContext* ctx)
 
     LogStep(ctx, "設定が保存時と違う状態（Undo を積まない変更）が混ざると解けない");
     AddEntity(ctx, "Box");
-    ed->savedSettingsHash ^= 1;   // 設定が保存時と違う状態を作る
+    app->GetScene()->GetPostSettings().evComp += 0.5f;   // Undo できない設定の変更（保存時と違う状態）
     ctx->SetRef(kWinHierarchy);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(ed->IsSceneDirty());
-    ed->savedSettingsHash ^= 1;
+    app->GetScene()->GetPostSettings().evComp -= 0.5f;
     fs::remove(probe, ec);
+}
+
+// (e) R1-09: 保存を押さなくても、シーンを開いた直後・新規シーンを作った直後を基準に、全部 Undo で戻せば未保存が解ける。
+void T_UndoToBaselineWithoutSave(ImGuiTestContext* ctx)
+{
+    namespace fs = std::filesystem;
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+
+    const std::string snapshot = app->SaveSceneSnapshot();
+    IM_CHECK(!snapshot.empty());
+    if (snapshot.empty()) return;
+    SceneStateGuard guard{ed, app, ed->currentScenePath};
+
+    auto waitIdle = [&](bool& flag) { for (int i = 0; i < 300 && flag; ++i) ctx->Yield(1); ctx->Yield(30); };
+
+    LogStep(ctx, "シーンを開く（保存はしない）→ Box を作る → Ctrl+Z で未保存が解ける");
+    ed->pendingLoadSkipConfirm = true;
+    ed->pendingLoadPath = snapshot;
+    ctx->Yield(2);
+    for (int i = 0; i < 300 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield(1);
+    ctx->Yield(40);
+    IM_CHECK(!ed->IsSceneDirty());
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneDirty() && ed->IsSceneHumanDirty());
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(8);
+    IM_CHECK(!ed->IsSceneDirty());
+    IM_CHECK(!ed->IsSceneHumanDirty());
+
+    LogStep(ctx, "新規シーンを作る（保存はしない）→ Box を作る → Ctrl+Z で未保存が解ける");
+    ed->pendingNewSceneSkipConfirm = true;
+    ed->pendingNewScene = true;
+    waitIdle(ed->pendingNewScene);
+    AddEntity(ctx, "Box");
+    IM_CHECK(ed->IsSceneHumanDirty());
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(8);
+    IM_CHECK(!ed->IsSceneDirty());
+    IM_CHECK(!ed->IsSceneHumanDirty());
+
+    LogStep(ctx, "後始末（元のシーンへ戻す）");
+    ed->pendingLoadSkipConfirm = true;
+    ed->pendingLoadPath = snapshot;
+    for (int i = 0; i < 300 && !ed->pendingLoadPath.empty(); ++i) ctx->Yield(1);
+    ctx->Yield(40);
+    std::error_code ec;
+    fs::remove(snapshot, ec);
 }
 
 // (f) R1-11: 仮想入力でも、未保存の人の編集があるとき Ctrl+N の「作成」で未保存の確認が出る（MCP のセッション中でも）。
@@ -1017,6 +1121,14 @@ void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx)
     IM_CHECK(path.size() > base.size());
     IM_CHECK(path.compare(0, base.size(), base) == 0);   // <project>/scripts/game.lua か <project>/assets/game.lua
     IM_CHECK(path.find("/scripts/game.lua") != std::string::npos || path.find("/assets/game.lua") != std::string::npos);
+
+    // 起動から今までのログに、game.lua が無いことの警告（レベル 3 以上）が出ていない（任意のファイルなので情報どまり）。
+    std::vector<LogEntry> entries;
+    Logger::ReadBuffered(0, entries);
+    int warnCount = 0;
+    for (const LogEntry& e : entries)
+        if (e.level >= 3 && e.text.find("ゲームスクリプトが見つかりません") != std::string::npos) ++warnCount;
+    IM_CHECK_EQ(warnCount, 0);
 }
 
 } // namespace uitest
