@@ -151,7 +151,7 @@ reg(
 reg(
   "dx12_get_ssao",
   "SSAO設定取得",
-  "現在のシーンの SSAO(スクリーンスペース環境遮蔽)設定を返す。{enabled, radius, bias, intensity, power, sampleCount, blur}。★正射カメラ(俯瞰パズル等)では SSAO は自動無効化される(エンジン側の既知の制約)。",
+  "現在のシーンの SSAO(スクリーンスペース環境遮蔽)設定を返す。{enabled, radius, bias, intensity, power, sampleCount, blur, multiBounce}。★正射カメラ(俯瞰パズル等)では SSAO は自動無効化される(エンジン側の既知の制約)。",
   {},
   { readOnlyHint: true },
   () => run(() => engine.call("get_ssao", {})),
@@ -160,7 +160,7 @@ reg(
 reg(
   "dx12_set_ssao",
   "SSAO設定変更",
-  "SSAO のフィールドを指定分だけ更新する(未指定は現状維持)。radius=ワールド空間半径, bias=自己遮蔽バイアス, intensity=遮蔽の強さ, power=コントラスト(pow指数), sampleCount=8か16, blur=4x4ボックスブラーの有無。",
+  "SSAO のフィールドを指定分だけ更新する(未指定は現状維持)。radius=ワールド空間半径, bias=自己遮蔽バイアス, intensity=遮蔽の強さ, power=コントラスト(pow指数), sampleCount=8か16, blur=4x4ボックスブラーの有無, multiBounce=多重反射の補正(明るい面で AO が黒く沈むのを抑える)。",
   {
     enabled: z.boolean().optional(),
     radius: z.number().optional(),
@@ -169,6 +169,7 @@ reg(
     power: z.number().optional(),
     sampleCount: z.number().int().optional().describe("8 か 16。"),
     blur: z.boolean().optional(),
+    multiBounce: z.boolean().optional().describe("多重反射の補正(既定はエンジン側)。"),
   },
   { idempotentHint: true },
   (a) => run(() => applyAndVerify("set_ssao", "get_ssao", a)),
