@@ -15,3 +15,4 @@ ciSuite.test.ts
 screenshotIblHints.test.ts
 engineE2e.test.ts
 qualityPresetTools.test.ts
+../bench/vfx_shimmer.test.mjs

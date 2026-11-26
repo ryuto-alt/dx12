@@ -1,0 +1,39 @@
+{
+  "source": "tokens.json に数値が無い項目の置き場（NB5）。出典: GG brand/verify.py v3.1（起動画面の黄の画素比 1.0%、弱い黄 C>=0.02 h70-110 を 9x9 で侵食）、boot_impl_spec.md §7。tokens が数値を持ったらそちらを優先して、ここから消す。",
+  "bootYellowRatioPct": 1.0,
+  "weakYellow": {
+    "chromaMin": 0.02,
+    "hueMin": 70,
+    "hueMax": 110
+  },
+  "bootFaceWindowPx": 9,
+  "tokenColor": {
+    "aaToleranceRgb": 2.5
+  },
+  "av": {
+    "audioOnsetMaxErrMs": 0.5,
+    "audioReferenceMaxLagMs": 0.05,
+    "visualEventMaxFrames": 1.0,
+    "needleAngleMaxErrDeg": 0.35,
+    "needleTipMaxErrPx": 0.6,
+    "skewMaxMs": 4.0,
+    "lockStillMaxFrames": 1,
+    "overshootMaxPx": 2.0,
+    "audioOnsetEvents": [
+      "click:*",
+      "latch:0"
+    ],
+    "visualEvents": [
+      "click:*",
+      "latch:0",
+      "latch:1",
+      "bell:*",
+      "ping:0"
+    ],
+    "lockEvent": "latch:0",
+    "measureWindowMs": {
+      "firstPad": 10,
+      "axisBandPx": 1.5
+    }
+  }
+}
