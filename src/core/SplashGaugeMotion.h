@@ -360,6 +360,7 @@ public:
                 m_knots.insert(m_knots.begin() + static_cast<std::ptrdiff_t>(firstNew), Knot{ tMs, pNow });
         }
         m_lastWall = tMs;
+        std::erase_if(m_taken, [&](const TakenCue& k) { return k.playAtMs < m_lastWall; });   // もう鳴った予約は取り消し対象から外す
         Trim();
     }
 
@@ -387,11 +388,11 @@ public:
         if (m_approach && tMs >= m_lockWall) return;   // ロック以降のスキップは何もしない（巻き戻さない・ロック音を重ねない）
         m_skipped = true;
         m_skipWall = tMs;
-        std::erase_if(m_cues, [&](const GaugeCue& c) { return c.playAtMs > tMs; });
-        // 取り出し済み（音の側へ渡した）で、まだ鳴っていない予約（playAt > tMs）の取り消しを積む。音の側は TakeCancelledCueIds() の id を
+        std::erase_if(m_cues, [&](const GaugeCue& c) { return c.playAtMs >= tMs; });   // 未取得のうち tMs 以降のもの（ちょうど tMs も含む）は捨てる
+        // 取り出し済み（音の側へ渡した）で、まだ鳴っていない予約（playAt >= tMs。ちょうど tMs も「まだ鳴っていない」側。Click も最終接近の LockTail も含む）の取り消しを積む。音の側は TakeCancelledCueIds() の id を
         // 予約表から外し、鳴っているボイスの 30ms フェードアウトと LockTail の頭出しとあわせて行う（取り消さないと、スキップ後にクリックが鳴る）
         for (const TakenCue& k : m_taken)
-            if (k.playAtMs > tMs) m_cancelIds.push_back(k.id);
+            if (k.playAtMs >= tMs) m_cancelIds.push_back(k.id);
         m_taken.clear();
         GaugeCue c;
         c.playAtMs = tMs; c.issuedAtMs = tMs; c.kind = GaugeCueKind::LockTail;
@@ -405,11 +406,11 @@ public:
         std::vector<GaugeCue> out;
         out.swap(m_cues);
         for (const GaugeCue& c : out)
-            if (c.kind == GaugeCueKind::Click) m_taken.push_back(TakenCue{ c.id, c.playAtMs });
+            if (!m_skipped) m_taken.push_back(TakenCue{ c.id, c.playAtMs });   // Click も最終接近の LockTail も記録（スキップ後の LockTail は取り消さないので記録しない）
         return out;
     }
     // スキップで取り消す予約の id（TakeCues で受け渡し済みで、スキップ時刻より後に鳴るはずだったもの）。取り出すと空になる。
-    // スキップしなければ常に空。LockTail は取り消さない（スキップの LockTail は TakeCues の側にある）
+    // スキップしなければ常に空。最終接近の LockTail も取り消す（スキップの LockTail は TakeCues の側にあり、取り消さない。音の側が鳴らす LockTail は 1 本だけになる）
     std::vector<std::uint32_t> TakeCancelledCueIds() { std::vector<std::uint32_t> out; out.swap(m_cancelIds); return out; }
     const std::vector<GaugeCue>& PendingCues() const { return m_cues; }
 
@@ -563,6 +564,7 @@ private:
         lock.playAtMs = m_lockWall;
         lock.issuedAtMs = wallNow;
         lock.kind = GaugeCueKind::LockTail;
+        lock.id = ++m_nextCueId;
         m_cues.push_back(lock);
     }
 
@@ -611,7 +613,7 @@ private:
     bool m_skipped = false;
     double m_skipWall = 0;
     struct TakenCue { std::uint32_t id; double playAtMs; };
-    std::vector<TakenCue> m_taken;          // TakeCues で渡した Click（Skip で playAt > tSkip のものを取り消す）
+    std::vector<TakenCue> m_taken;          // TakeCues で渡した予約（Click と最終接近の LockTail。Skip で playAt >= tSkip のものを取り消す）
     std::vector<std::uint32_t> m_cancelIds; // Skip が積んだ取り消し
     std::uint32_t m_nextCueId = 0;
 };

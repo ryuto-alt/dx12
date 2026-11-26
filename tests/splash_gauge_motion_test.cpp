@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <vector>
 
 namespace
@@ -487,7 +488,7 @@ void Test_Skip()
         CHECK(d.Skipped());
         const auto cues = d.PendingCues();
         CHECK(!cues.empty() && cues.back().kind == sp::GaugeCueKind::LockTail && cues.back().playAtMs == t);
-        for (const auto& c : cues) CHECK(c.playAtMs <= t);   // 先の予約は捨てられる
+        for (const auto& c : cues) CHECK(c.playAtMs <= t);   // 先の予約は捨てられる（ちょうど t のスキップの LockTail は残る）
         for (double dt = 0; dt < 1500.0; dt += 7.0)
             CHECK(SameFrame(d.Frame(t + dt), sp::EvaluateAfterLock(dt, ev)));
         CHECK(d.Frame(t).locked && d.Frame(t).needleDeg == 360.f);
@@ -528,7 +529,7 @@ void Test_SkipCancelsHandedOverCues()
         std::size_t expect = 0;
         for (const auto& c : handed)
         {
-            const bool want = c.kind == sp::GaugeCueKind::Click && c.playAtMs > t;
+            const bool want = c.playAtMs >= t;   // Click も最終接近の LockTail も対象
             std::size_t n = 0;
             for (auto id : cancelled) n += (id == c.id);
             CHECK(n == (want ? 1u : 0u));
@@ -573,7 +574,7 @@ void Test_SkipCancelsHandedOverCues()
         d.Skip(t);
         const auto cancelled = d.TakeCancelledCueIds();
         std::size_t expect = 0;
-        for (const auto& c : handed) expect += (c.kind == sp::GaugeCueKind::Click && c.playAtMs > t);
+        for (const auto& c : handed) expect += (c.playAtMs >= t);
         CHECK(cancelled.size() == expect);
     }
     {
@@ -581,6 +582,70 @@ void Test_SkipCancelsHandedOverCues()
         for (double t = 0; t < 1000.0; t += 16.0) d.Update(t, 0.1f, false);
         d.Skip(1000.0);
         CHECK(d.TakeCancelledCueIds().empty());
+    }
+}
+
+// 最終接近の途中（完了要求のあと・ロック前）のスキップ: 渡し済みの Click と LockTail を取り消し、鳴る LockTail は 1 本だけ（FU-E-18 レビュー対応）
+template <class Driver>
+void CheckSkipDuringApproach(Driver& d, double tSkip, std::uint32_t seed)
+{
+    (void)seed;
+    std::vector<sp::GaugeCue> handed;
+    double t = 0;
+    for (; t < 912.0; t += 16.0) { d.Update(t, static_cast<float>(t / 3500.0), false); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+    d.Update(t, 1.0f, true);
+    for (const auto& c : d.TakeCues()) handed.push_back(c);
+    for (t += 16.0; t < tSkip; t += 16.0) { d.Update(t, 1.0f, true); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+    const double lockWall = d.LockWallMs();
+    CHECK(!std::isnan(lockWall));
+    if (t >= lockWall) return;   // ロック後はスキップ無効（別テスト）
+    d.Skip(t);
+    // id は全て非 0 かつ一意（LockTail 含む）
+    std::set<std::uint32_t> seen;
+    for (const auto& c : handed) { CHECK(c.id != 0); CHECK(seen.insert(c.id).second); }
+    auto cancelled = d.TakeCancelledCueIds();
+    auto after = d.TakeCues();
+    for (const auto& c : after) { CHECK(c.id != 0); CHECK(seen.insert(c.id).second); }
+    // 音の側の有効な予約 = 渡し済み - 取り消し + 新規。playAt >= t の古い予約は全て取り消されている
+    std::set<std::uint32_t> active;
+    for (const auto& c : handed) active.insert(c.id);
+    for (auto id : cancelled) CHECK(active.erase(id) == 1);
+    for (const auto& c : handed) if (c.playAtMs >= t) CHECK(!active.count(c.id));
+    int lockTails = 0;
+    for (const auto& c : handed) if (active.count(c.id) && c.kind == sp::GaugeCueKind::LockTail) ++lockTails;
+    for (const auto& c : after) { active.insert(c.id); lockTails += (c.kind == sp::GaugeCueKind::LockTail); }
+    CHECK(lockTails == 1);
+    CHECK(d.TakeCancelledCueIds().empty());
+}
+
+void Test_SkipDuringApproach()
+{
+    // 完了要求は t=912 付近。ロックまで 1 秒弱ある窓の中の複数時刻
+    for (double tSkip : { 930.0, 1000.0, 1200.0, 1500.0, 1800.0, 1950.0, 1985.0 })
+    {
+        { sp::GaugeSlowDriver d; CheckSkipDuringApproach(d, tSkip, 1); }
+    }
+    // Fast: 持ち替え後に完了要求 → スキップ
+    for (double tSkip : { 1900.0, 2000.0, 2100.0 })
+    {
+        sp::GaugeFastDriver d;
+        std::vector<sp::GaugeCue> handed;
+        double t = 0;
+        const double dec = Ev().clickMs[sp::CalibrateEvents::kClicks - 2];
+        for (; t < dec + 300.0; t += 16.0) { d.Update(t, 0.1f, false); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        CHECK(d.HandedOver());
+        d.Update(t, 1.0f, true);
+        for (const auto& c : d.TakeCues()) handed.push_back(c);
+        for (t += 16.0; t < dec + 300.0 + (tSkip - 1900.0) * 0.3 + 32.0; t += 16.0) { d.Update(t, 1.0f, true); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        if (t >= d.LockWallMs()) continue;
+        d.Skip(t);
+        std::set<std::uint32_t> seen, active;
+        for (const auto& c : handed) { CHECK(c.id != 0); CHECK(seen.insert(c.id).second); active.insert(c.id); }
+        for (auto id : d.TakeCancelledCueIds()) CHECK(active.erase(id) == 1);
+        int lockTails = 0;
+        for (const auto& c : handed) if (active.count(c.id) && c.kind == sp::GaugeCueKind::LockTail) ++lockTails;
+        for (const auto& c : d.TakeCues()) lockTails += (c.kind == sp::GaugeCueKind::LockTail);
+        CHECK(lockTails == 1);
     }
 }
 
@@ -645,6 +710,7 @@ int main()
     Test_SlowFinishFromRest();
     Test_Skip();
     Test_SkipCancelsHandedOverCues();
+    Test_SkipDuringApproach();
     Test_Reduce();
     Test_Blur();
     if (g_fail == 0) std::printf("SplashGaugeMotionTests: ALL PASS\n");
