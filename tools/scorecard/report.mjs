@@ -6,6 +6,9 @@
 //   node tools/scorecard/report.mjs compare --a <runDirA> --b <runDirB> [--out <compare.json>]
 //        2 回撮った結果の差が「決定論の範囲」に収まるかを判定する。収まらなければ終了コード 1。
 //   node tools/scorecard/report.mjs derive-vfx-tol --runs <r1,r2,r3> [--out vfx_tol.json]   （compare の --vfx-tol へ渡す。--expect-stages all で全段必須。部分比較は終了コード 3）
+//   node tools/scorecard/report.mjs mcp14-set --in <result.json> [--out tests/scorecard/w0_mcp14.json]
+//        W05-37 の結果（6 課題の採点と再現条件）を検査して w0_mcp14.json へ書く。summarize は同じファイルを mcp14 欄へ併合する
+//        （w0.json を summarize で作り直しても mcp14 は消えない）。書式は validateMcp14 を参照。
 //   node tools/scorecard/report.mjs diff --base tests/scorecard/w0.json --now <summary.json>
 //        W0 との差分レポート（各 Wave のゲート用）。値の増減を表で出す。
 //
@@ -47,7 +50,51 @@ function readPng(file) {
 }
 
 // ─── 要約 ────────────────────────────────────────────────────────────────
-export function summarizeRun(runDir) {
+// ─── MCP-14（W05-37）の記録 ──────────────────────────────────────────────
+// 別ファイル tests/scorecard/w0_mcp14.json に置き、summarize が併合する。「同じ手順」と言える条件を全部ここに残す。
+export const MCP14_FILE = path.join(REPO_ROOT, "tests/scorecard/w0_mcp14.json");
+export const MCP14_TASK_COUNT = 6;
+const HEX64 = /^[0-9a-f]{64}$/, HEXC = /^[0-9a-f]{7,40}$/;
+export function validateMcp14(r) {
+  const e = [];
+  const str = (v) => typeof v === "string" && v.length > 0;
+  const need = (k, ok) => { if (!ok(r?.[k])) e.push(`${k} が無い、または形式が違う`); };
+  need("subagentModelId", str);            // 例 claude-sonnet-5-5。毎 Wave 同じにする
+  need("procedureVersion", str);           // 手順の版（run_e2e.ts のヘッダの版 + task_<id>.md テンプレートの版）
+  need("templateSha256", (v) => HEX64.test(v ?? ""));      // task_<id>.md のテンプレートの sha
+  need("tasksJsonSha256", (v) => HEX64.test(v ?? ""));     // e2e_tasks.json の sha
+  need("e2eToolsCommit", (v) => HEXC.test(v ?? ""));       // run_e2e.ts / score_e2e.ts / replay_e2e.ts を含む commit
+  need("preOverhaulCommit", (v) => HEXC.test(v ?? ""));    // タグ pre-overhaul の commit
+  need("tsRef", str); need("buildRef", str);
+  need("launchMode", (v) => v === "agent-tool" || v === "claude-p");   // どちらで回したか
+  need("otherMcpIsolated", (v) => v === true);   // 親セッションのほかの MCP を見せない手段をとった（手段は isolationMethod）
+  need("isolationMethod", str);
+  need("pointerRegistered", (v) => typeof v === "boolean");   // mcp.pointer.json を登録したか
+  need("port", (v) => v === 8856);
+  need("noPaidApiKeyChecked", (v) => v === true);   // assertNoPaidApiKey を通った（ANTHROPIC_API_KEY が無い）
+  need("replayMatch", (v) => v === true);           // replay_e2e が同じ採点
+  const t = r?.tasks;
+  if (!Array.isArray(t) || t.length !== MCP14_TASK_COUNT) e.push(`tasks は ${MCP14_TASK_COUNT} 件が要る`);
+  else {
+    const ids = new Set();
+    for (const x of t) {
+      if (!x || !str(x.id) || typeof x.score !== "number" || !HEX64.test(x.traceSha256 ?? "")) e.push(`tasks の行が不正: ${JSON.stringify(x)}`);
+      else ids.add(x.id);
+    }
+    if (ids.size !== t.length) e.push("tasks の id が重複している");
+  }
+  if (/[A-Za-z]:[\\/]/.test(JSON.stringify(r ?? {}))) e.push("絶対パスを含んでいる");
+  return e;
+}
+export function loadMcp14(file = MCP14_FILE) {
+  if (!fs.existsSync(file)) return null;
+  const r = readJson(file);
+  const e = validateMcp14(r);
+  if (e.length) throw new Error(`${path.basename(file)} が不正: ${e.join(" / ")}`);
+  return r;
+}
+
+export function summarizeRun(runDir, opts = {}) {
   const meta = fs.existsSync(path.join(runDir, "meta.json")) ? readJson(path.join(runDir, "meta.json")) : {};
   const stages = {};
   for (const s of STAGE_NAMES) {
@@ -66,19 +113,22 @@ export function summarizeRun(runDir) {
     }
     stages[s] = { captured: true, ok: st.ok, errors: st.errors.map((e) => ({ id: e.id, message: scrub(e.message) })), notes: st.notes.map(scrub), items };
   }
-  return {
+  const mcp14 = opts.mcp14 ?? null;
+  const out = {
     version: SUMMARY_VERSION,
     wave: "w0",
     meta,
     stages,
+    ...(mcp14 ? { mcp14 } : {}),
     // 後から埋まる欄（このスクリプトでは撮らない）
     pending: {
       "ls-a-f": "LS-A〜F は W1 の NB3 の後で追加する",
-      mcp14: "W05-37 が埋める（API を使わない E2E のベースライン）",
+      ...(mcp14 ? {} : { mcp14: "W05-37 が埋める（tests/scorecard/w0_mcp14.json を report.mjs mcp14-set で書く。summarize が併合する）" }),
       startupQuantity: "W7 の 1.4s 目標を startup_ready_ema（--background・スプラッシュ無し）と ST-1 のスプラッシュ経路 EMA のどちらで判定するか、main セッションの決定待ち",
       perf: "W05-39 が baseline_perf.json に記録する",
     },
   };
+  return out;
 }
 
 // ─── 比較（決定論） ──────────────────────────────────────────────────────
@@ -217,13 +267,23 @@ function main() {
   const o = parse(process.argv.slice(2));
   if (o.cmd === "summarize") {
     if (!o.run) throw new Error("--run が要る");
-    const sum = summarizeRun(path.resolve(o.run));
+    const sum = summarizeRun(path.resolve(o.run), { mcp14: loadMcp14(o.mcp14 ? path.resolve(o.mcp14) : MCP14_FILE) });
     const text = JSON.stringify(sum, null, 2) + "\n";
     fs.writeFileSync(path.join(path.resolve(o.run), "summary.json"), text);
     if (o.out) { fs.mkdirSync(path.dirname(path.resolve(o.out)), { recursive: true }); fs.writeFileSync(path.resolve(o.out), text); }
     const bad = Object.entries(sum.stages).filter(([, v]) => v.captured && !v.ok).map(([k]) => k);
     console.log(`[scorecard] summary: ${Object.entries(sum.stages).map(([k, v]) => `${k}=${v.captured ? Object.keys(v.items).length : "-"}`).join(" ")}${bad.length ? `  ERRORS: ${bad.join(",")}` : ""}`);
     return bad.length ? 1 : 0;
+  }
+  if (o.cmd === "mcp14-set") {
+    if (!o.in) throw new Error("--in が要る");
+    const r = readJson(path.resolve(o.in)), e = validateMcp14(r);
+    if (e.length) { for (const m of e) console.log(`  不正: ${m}`); return 1; }
+    const out = path.resolve(o.out ?? MCP14_FILE);
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, JSON.stringify(r, null, 2) + "\n");
+    console.log(`[scorecard] mcp14: ${r.tasks.length} 課題を ${path.basename(out)} に書いた`);
+    return 0;
   }
   if (o.cmd === "compare") {
     if (!o.a || !o.b) throw new Error("--a と --b が要る");

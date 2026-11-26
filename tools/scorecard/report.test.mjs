@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ema, parseArgs, sanitizeMsg } from "./capture_engine.mjs";
-import { compareRuns, deriveVfxTol, vfxFloor, diffSummaries, summarizeRun, relOk, scrub, TOL } from "./report.mjs";
+import { compareRuns, deriveVfxTol, vfxFloor, diffSummaries, summarizeRun, validateMcp14, relOk, scrub, TOL } from "./report.mjs";
 
 test("ema: 先頭から alpha で畳む", () => {
   assert.equal(ema([]), null);
@@ -51,6 +51,22 @@ test("summarize: 絶対パスを含まず pending 欄を持つ", () => {
   assert.equal(s.wave, "w0");
   assert.ok(s.pending.mcp14);
   assert.ok(!JSON.stringify(s).includes(os.tmpdir().replaceAll("\\", "\\\\")));
+});
+
+test("mcp14: 記録の検査と summarize への併合（pending を置き換える）", () => {
+  const h = "a".repeat(64);
+  const rec = { subagentModelId: "claude-sonnet-5-5", procedureVersion: "e2e-1", templateSha256: h, tasksJsonSha256: h, e2eToolsCommit: "abc1234",
+    preOverhaulCommit: "def5678", tsRef: "pre-overhaul", buildRef: "pre-overhaul", launchMode: "agent-tool", otherMcpIsolated: true,
+    isolationMethod: "x", pointerRegistered: true, port: 8856, noPaidApiKeyChecked: true, replayMatch: true,
+    tasks: ["T1", "T2", "T3", "T4", "T5", "T6"].map((id) => ({ id, score: 1, traceSha256: h })) };
+  assert.deepEqual(validateMcp14(rec), []);
+  assert.ok(validateMcp14({ ...rec, replayMatch: false }).length);
+  assert.ok(validateMcp14({ ...rec, tasks: rec.tasks.slice(1) }).length);
+  assert.ok(validateMcp14({ ...rec, isolationMethod: "C:\\Users\\x" }).length);
+  const d = mkRun(1, { coverage: 0, lumaGain: 0, flicker: 0 });
+  const s = summarizeRun(d, { mcp14: rec });
+  assert.equal(s.mcp14.tasks.length, 6);
+  assert.equal(s.pending.mcp14, undefined);
 });
 
 test("diff: 変化なし / 変化あり / 数値の増減", () => {
