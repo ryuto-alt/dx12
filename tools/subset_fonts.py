@@ -549,6 +549,49 @@ def read_charset_file(path):
     return out
 
 
+# 出力の置き場所 -> OFL ライセンス文（third_party/licenses/ の下）。PlemolJP 由来の起動画面書体もここに含まれる
+OFL_BY_PATH = (
+    ("/ibm-plex/", "IBM-Plex-OFL.txt"),
+    ("/noto-sans-jp/", "Noto-OFL.txt"),
+    ("/plemoljp/", "PlemolJP-OFL.txt"),
+    ("/splash/fonts/", "PlemolJP-OFL.txt"),
+)
+
+
+def check_ofl_licenses(fonts):
+    """OFL の同梱義務: 書体を同梱しているのに、ライセンス文が無い / 空 / ビルドとインストーラが運ばない、を落とす。"""
+    ok = True
+    need = set()
+    for spec in fonts:
+        hit = [lic for key, lic in OFL_BY_PATH if key in "/" + spec["out"]]
+        if not hit:
+            print("NG %s に対応するライセンス文が OFL_BY_PATH にありません（書体を足したら対応を足す）" % spec["out"])
+            ok = False
+            continue
+        need.add(hit[0])
+    cmake_p = os.path.join(ROOT, "CMakeLists.txt")
+    iss_p = os.path.join(ROOT, "installer", "dx12engine.iss")
+    cmake_text = read_text(cmake_p) if os.path.exists(cmake_p) else ""
+    iss_text = read_text(iss_p) if os.path.exists(iss_p) else ""
+    for lic in sorted(need):
+        p = os.path.join(ROOT, "third_party", "licenses", lic)
+        if not os.path.exists(p):
+            print("NG ライセンス文がありません（OFL の同梱義務）: third_party/licenses/" + lic)
+            ok = False
+            continue
+        body = read_text(p)
+        if "SIL OPEN FONT LICENSE" not in body.upper() or "copyright" not in body.lower():
+            print("NG %s に著作権表示か OFL 本文がありません" % lic)
+            ok = False
+        if lic not in cmake_text:
+            print("NG ルート CMakeLists.txt が %s をビルド出力の licenses/ へコピーしていません" % lic)
+            ok = False
+        if lic not in iss_text:
+            print("NG installer/dx12engine.iss が %s を {app}\\licenses へ入れていません" % lic)
+            ok = False
+    return ok
+
+
 def do_check(src_dir):
     ok = True
     lock = load_lock()
@@ -635,6 +678,8 @@ def do_check(src_dir):
                 if f.read() != data:
                     ok = False
                     print("NG 元ファイルから作り直した結果が生成物と一致しません:", out)
+    # 4) OFL の同梱義務（書体を同梱したのにライセンス文が無い状態を落とす）
+    ok = check_ofl_licenses(FONTS) and ok
     print("OK subset_fonts --check（合計 %.2f MB / 上限 %.0f MB）" % (total / 1048576.0, LIMIT_TOTAL / 1048576.0) if ok else "FAILED")
     return 0 if ok else 1
 

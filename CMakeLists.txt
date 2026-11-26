@@ -295,6 +295,19 @@ if(UNO_DLSS_ACTIVE)
         endif()
     endforeach()
 endif()
+# UI 書体（IBM Plex / Noto Sans JP / PlemolJP。SIL OFL 1.1）のライセンス文。OFL は書体を配るとき、著作権表示とライセンス文を
+# 一緒に運ぶ義務がある。exe の隣の licenses/ へ置き、インストーラ（installer/dx12engine.iss）も同じ物を入れる。
+# 揃っているかは tools/subset_fonts.py --check（ctest の FontSubsetCheck）が検査する。
+foreach(DX12_OFL_TARGET DX12Engine GameRuntime)
+    add_custom_command(TARGET ${DX12_OFL_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${DX12_OFL_TARGET}>/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/licenses/IBM-Plex-OFL.txt"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/licenses/Noto-OFL.txt"
+            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/licenses/PlemolJP-OFL.txt"
+            "$<TARGET_FILE_DIR:${DX12_OFL_TARGET}>/licenses"
+        COMMENT "Bundling font OFL licenses next to ${DX12_OFL_TARGET}.exe")
+endforeach()
 # TracyClient.dll（Tracy 有効ビルドのみ）。dxil.dll / meshoptimizer.dll と同じ理由で明示コピー。
 if(DX12_ENABLE_TRACY)
     foreach(DX12_TRACY_TARGET DX12Engine GameRuntime)
