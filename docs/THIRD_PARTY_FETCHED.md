@@ -59,4 +59,4 @@ M2 の夕方（メイン）: 本体を `-DVCPKG_MANIFEST_INSTALL=ON` で 1 回 c
   - インストーラ / 更新用 zip（`installer/build.ps1 [-Dlss auto|require|off]`）: 既定 `auto` は DLL が無ければ警告つきで DLSS 無しの配布物を作る。
     公式リリースは `-Dlss require`（DLL かライセンス文が無ければ失敗）。
 - 検査: ctest `DlssWiringCheck`（`DlssBackend::CompiledIn()` と exe の隣の `nvngx_dlss.dll` の有無の一致、`installer/build.ps1` の auto / require の判定）。
-- 実行時: DLSS が使えない環境では `DlssBackend` が Warn を 1 回だけログに出し、TAA で描く（`get_upscaler` の `fallbackReason` に理由が入る）。
+- 実行時: 現状、DLSS が使えない環境では `UpscalerPass` が起動時に Info を 1 行出し、TAA で描く（`get_upscaler` の `fallbackReason` に理由が入る）。DLSS を要求されたときだけ Warn を 1 回出す変更は `UpscalerPass` 側の変更待ち（`DlssBackend` は Warn を出さない）。

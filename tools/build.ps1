@@ -162,6 +162,8 @@ try {
     $dlssMarker = Join-Path (Join-Path $root $Dir) '.uno_dlss_configured'
     # 要求(-Dlss)も含めて記録する: ON / OFF:nosdk（SDK 無しで OFF）/ OFF:off（-Dlss off）
     $dlssWant = if ($dlssWanted) { 'ON' } elseif ($Dlss -eq 'off') { 'OFF:off' } else { 'OFF:nosdk' }
+    # 注: マーカーが無い既存ビルドは最初の 1 回だけ（状態が同じでも）構成し直す。未構成のディレクトリは build.ps1 が configure しないので -Dlss off は効かない。
+    # -Dlss require で SDK 無しの終了コード 3 はロック待ちタイムアウトと同じ。ログの "[build] -Dlss require" 行で見分ける。
     $dlssHave = ''
     if (Test-Path $dlssMarker) { $raw = Get-Content $dlssMarker -Raw; if ($raw) { $dlssHave = $raw.Trim() } }
     if ((Test-Path $cache) -and $dlssHave -ne $dlssWant) {

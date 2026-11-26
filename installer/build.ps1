@@ -13,7 +13,7 @@
 #   -Dlss auto    … 既定。build\release に nvngx_dlss.dll が無ければ警告つきで DLSS 無しの配布物を作る。
 #   -Dlss require … 公式リリース用。nvngx_dlss.dll か NVIDIA のライセンス文が無ければ失敗する。
 #   -Dlss off     … DLSS を配布物へ入れない（nvngx_dlss.dll を除く）。
-#   DLSS を同梱するときは third_party\dlss\LICENSE.txt を licenses\NVIDIA_DLSS_LICENSE.txt として必ず添える。
+#   DLSS を同梱するときは build\release\licenses\NVIDIA_DLSS_LICENSE.txt（SDK の LICENSE.txt のコピー）を licenses\NVIDIA_DLSS_LICENSE.txt として必ず添える。
 #   -CheckDlssOnly … DLSS の判定だけ行って終了する（ctest DlssWiringCheck 用）。-SrcDir で exe のフォルダを差し替え可。
 param(
   [ValidateSet("auto", "require", "off")][string]$Dlss = "auto",
@@ -38,7 +38,8 @@ Write-Host "Uno Engine v$version の配布物をビルドします" -ForegroundC
 
 # --- DLSS の扱いを決める（SDK の中身は git に無い。取得は tools\fetch_dlss.ps1） ---
 $dlssDll     = Join-Path $srcDir "nvngx_dlss.dll"
-$dlssLicense = Join-Path $repoRoot "third_party\dlss\LICENSE.txt"
+# ライセンス文はビルド出力（CMake が UNO_DLSS_SDK_DIR\LICENSE.txt から licenses\ へコピー）を使う。SDK の置き場を替えても DLL と一致する。
+$dlssLicense = Join-Path $srcDir "licenses\NVIDIA_DLSS_LICENSE.txt"
 $bundleDlss  = $false
 if ($Dlss -eq "off") {
   Write-Host "DLSS: OFF (-Dlss off)" -ForegroundColor Yellow
