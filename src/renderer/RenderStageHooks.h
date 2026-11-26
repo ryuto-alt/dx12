@@ -54,12 +54,15 @@
 //   - RequestVelocityPrepass は BeforeShadows / AfterShadows だけ有効（速度プリパスの判定より前）。
 // ===========================================================================
 #include "core/Types.h"
+#include "graphics/GpuEvent.h"
 
 #include <directx/d3d12.h>
 #include <DirectXMath.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace dx12e
@@ -271,6 +274,23 @@ public:
         }
     }
 
+    // GPU イベント名（"Stage:<名前>"）と長さ（NUL を含まない）。ステージごとに 1 回だけ作る（毎フレーム strlen しない）。
+    struct EventName { std::string text; u32 len = 0; };
+    static const EventName& StageNameForEvent(Stage s)
+    {
+        static const std::array<EventName, kStageCount> names = []
+        {
+            std::array<EventName, kStageCount> n;
+            for (u32 i = 0; i < kStageCount; ++i)
+            {
+                n[i].text = std::string("Stage:") + StageName(static_cast<Stage>(i));
+                n[i].len = static_cast<u32>(n[i].text.size());
+            }
+            return n;
+        }();
+        return names[static_cast<u32>(s)];
+    }
+
     // 登録が 0 件のステージは何もしない（true なら Run を呼ぶ必要が無い）。
     bool Empty(Stage s) const { return m_perStage[static_cast<u32>(s)].empty(); }
     bool Empty() const { return m_owned.empty(); }
@@ -278,6 +298,9 @@ public:
 
     void Run(Stage s, StageCtx& ctx)
     {
+        if (m_perStage[static_cast<u32>(s)].empty()) return;
+        const EventName& en = StageNameForEvent(s);
+        GpuEventScope stageScope(ctx.cmd, en.text.c_str(), en.len);   // W05-27: PIX / DRED にステージ名を出す（イベントだけ。計測は増やさない）
         for (const Entry& e : m_perStage[static_cast<u32>(s)])
             e.feature->Record(s, ctx);
     }
