@@ -37,7 +37,7 @@ nlohmann::json QualityPresetJson(QualityPresetId id)
 // 状態の持ち主はここ 1 か所（FrameStepLogic.h の FreezeModel）。m_deterministicCapture / paused は
 // FreezeApply が毎フレームこの約束に合わせる（撮影の中断・Play/Stop・MCP 切断の後始末もここへ集約）。
 FreezeModel g_freeze;
-std::chrono::steady_clock::time_point g_lastConnected = std::chrono::steady_clock::now();
+std::chrono::steady_clock::time_point g_lastConnected{};   // 値初期化（動的初期化を増やさない）。freeze_time / frame_step の呼び出しと接続中に更新する
 } // namespace
 
 bool AppAccess::TimeFrozen(const Application& app)
@@ -141,6 +141,7 @@ void Application::RegisterMcpLaneCMethods()
     };
     McpDefine("freeze_time", "frozen:bool,pinRender:bool", DX12E_MCP_HANDLER
         {
+            g_lastConnected = std::chrono::steady_clock::now();   // 最後の呼び出しからリースを数える（接続を毎回切る fleet でも保つ）
             // 引数なしは状態の読み取り。frozen:true で止める（既定）/ false で解除。
             if (!params.contains("frozen") && !params.contains("pinRender"))
             {
@@ -171,6 +172,7 @@ void Application::RegisterMcpLaneCMethods()
         });
     McpDefine("frame_step", "frames:int,dt:number,pinRender:bool", DX12E_MCP_HANDLER
         {
+            g_lastConnected = std::chrono::steady_clock::now();
             if (m_mcpStepReply.client != 0)
                 throw McpError(McpErr::ModeConflict, "a step is already pending; retry shortly",
                                "前の step_frames / frame_step の応答を待ってから呼ぶ");

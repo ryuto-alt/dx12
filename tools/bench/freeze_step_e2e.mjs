@@ -6,7 +6,8 @@
 //   2. 凍結を解いて張り直しても、同じ状態なら同じ絵（実行内で再現する）。
 //   3. pinRender の切り替え・解除のあとに固定が居座らない（screenshot_final が ModeConflict にならない）。
 //   4. 凍結中でも screenshot / imgui_screenshot が撮れる。
-//   5. MCP が切れて 5 秒すぎたら凍結が自動で解ける。
+//   5. 凍結中に perceive と screenshot_final を同時に撃っても ModeConflict で弾かれ、固定が居座らない。
+//   6. MCP が切れて 60 秒すぎたら凍結が自動で解ける。
 // 窓は出さない（--background）。止めるのは自分のインスタンスだけ。
 import fs from "node:fs";
 import os from "node:os";
@@ -89,12 +90,24 @@ try {
   st = await c.call("freeze_time", {});
   check(st.frozen && st.renderPinned, "撮影の中断の後始末なしでも固定が戻っている");
 
-  // --- 5. 切断リース ---
+  // --- 5. 凍結中の perceive と screenshot_final の同時発行 ---
+  await c.call("freeze_time", { frozen: true });
+  const pp = c.call("perceive", { settleFrames: 20 }).catch((e) => ({ err: String(e) }));
+  let conflict = false;
+  try { await c.call("screenshot_final", {}); } catch (e) { conflict = true; }
+  await pp;
+  check(conflict, "perceive 実行中の screenshot_final は ModeConflict で弾かれる");
+  st = await c.call("freeze_time", { frozen: false });
+  check(!st.frozen, "同時発行のあとでも凍結を解除できる");
+  await c.call("freeze_time", { frozen: true });
+  check(typeof (await shot()) === "string", "同時発行のあとでも screenshot_final が通る");
+
+  // --- 6. 切断リース ---
   c.close();
-  await sleep(7000);
+  await sleep(65000);
   c = await connect(inst.port);
   st = await c.call("freeze_time", {});
-  check(!st.frozen && !st.renderPinned, "MCP が 5 秒以上切れたら凍結が自動で解ける");
+  check(!st.frozen && !st.renderPinned, "MCP が 60 秒以上切れたら凍結が自動で解ける");
   c.close();
 } finally {
   inst.kill();

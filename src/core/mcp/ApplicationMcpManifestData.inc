@@ -1772,7 +1772,7 @@ void FillGeneratedManifestRows(ManifestRows& o)
         "none", "", {
             P("preset", "enum", true, "low|medium|high|epic|cinematic", nullptr, nullptr, nullptr, "品質プリセット名。"),
         })});
-    o.push_back({"freeze_time", M("時間を止める / 解除 / 状態を読む（引数なし）。Play 中のシミュと、描画の時間依存（決定論キャプチャと同じ固定）を止める。止めている間の撮影は常に決定論経路（履歴を捨てて settleFrames 回す）なので、同じ状態ならビット一致。MCP が 5 秒切れると自動解除。Play/Stop・シーン切替では止め直す。",
+    o.push_back({"freeze_time", M("時間を止める / 解除 / 状態を読む（引数なし）。Play 中のシミュと、描画の時間依存（決定論キャプチャと同じ固定）を止める。止めている間の撮影は常に決定論経路なので同じ状態ならビット一致。最後の freeze_time / frame_step から 60 秒（接続も無い場合）で自動解除。pinRender 中は VFX・大気の時間も進まない。Play/Stop・シーン切替では止め直す。",
         "freeze time 時間停止 凍結 フリーズ 静止 決定論",
         "play", "", "", McpEffect::Runtime, "any", 8000, false, false,
         "none", "", {

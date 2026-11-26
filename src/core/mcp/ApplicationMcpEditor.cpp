@@ -250,7 +250,7 @@ void Application::RegisterMcpEditorMethods()
             //   固定しただけでは TAA / フォグ / SSGI の履歴が撮影までのフレーム数ぶん育つので、絵が撮るたびにずれる。
             if (params.value("deterministic", false) || iblWait > 0 || AppAccess::FreezePinsRender(*this))
             {
-                if ((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpFinalShot.reply.client != 0)
+                if (((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpPerceive != nullptr || m_deterministicFramesLeft > 0) || m_mcpFinalShot.reply.client != 0)
                     throw McpError(McpErr::ModeConflict,
                         "another deterministic screenshot is in flight; retry shortly",
                         "前の決定論スクショの応答を待ってから撮る（settleFrames ぶん、既定 8 フレームで返る）。"
@@ -295,7 +295,7 @@ void Application::RegisterMcpEditorMethods()
     //   1 フレーム描いてから撮るので遅延応答。
     McpDefine("screenshot_final", "deterministic:bool,format:string,formats:any,gizmos:bool,height:int,path:string,settleFrames:int,waitIblRebake:bool,width:int", DX12E_MCP_HANDLER
         {
-            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || (m_deterministicCapture && !AppAccess::TimeFrozen(*this)))   // FU-E-24: freeze_time の固定は撮影中ではない
+            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || ((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpPerceive != nullptr || m_deterministicFramesLeft > 0))   // FU-E-24: freeze_time の固定は撮影中ではない
                 throw McpError(McpErr::ModeConflict,
                     "a final screenshot is already pending; retry shortly",
                     "前の screenshot_final の応答を待ってから撮る（通常 1〜9 フレームで返る）。"
@@ -366,7 +366,7 @@ void Application::RegisterMcpEditorMethods()
             //   dx12_imgui_screenshot と同じ経路（遅延応答）へ回す。返り値の形は上位互換（path/width/height + α）。
             if (vinput::Enabled() && !m_isGameMode && m_imguiManager)
             {
-                if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || (m_deterministicCapture && !AppAccess::TimeFrozen(*this)))
+                if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || ((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpPerceive != nullptr || m_deterministicFramesLeft > 0))
                     throw McpError(McpErr::ModeConflict,
                         "a screenshot is already pending; retry shortly",
                         "前のスクショの応答を待ってから撮る（通常 1〜2 フレームで返る）");

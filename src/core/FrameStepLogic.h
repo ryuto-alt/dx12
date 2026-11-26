@@ -45,7 +45,7 @@ inline f32 FrameStepSimulatedSec(const FrameStepRequest& r) { return r.dt * stat
 // 撮影の中断（bail / AbortOffscreenShot / perceive の後始末）が m_deterministicCapture を落としても、
 // 次のフレームの調整が約束（frozen && pinRender）へ戻す。
 // ---------------------------------------------------------------------------
-constexpr double kFreezeLeaseSec = 5.0;     // MCP クライアントが 1 本も繋がっていない時間がこれを超えたら凍結を解く
+constexpr double kFreezeLeaseSec = 60.0;    // 最後の freeze_time / frame_step と MCP 接続のどちらからも、これだけ離れたら凍結を解く（fleet の 1.5 秒リースで切れる接続でも保てる長さ）
 
 struct FreezeModel
 {
