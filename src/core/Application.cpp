@@ -21,6 +21,7 @@
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
+#include "editor/UiMotion.h"
 #include "editor/panels/MaterialGraphPanel.h"   // マテリアルグラフ G2c: ライブプレビュー / サムネイルの GPU 側（InitializeGpu / ShutdownGpu）
 
 namespace dx12e
@@ -149,6 +150,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     if (m_bgOptions.Active())
     {
         SplashScreen::SetSuppressed(true);          // プロジェクト読込のスプラッシュも出さない
+        ui::anim::SetBackground(true);               // --background は UI の動きを使わない（決定論。W1 A4）
         Window::DisablePowerThrottling();             // 裏の窓でも EcoQoS / タイマ粗化で間引かれない
         Logger::Info("--background={}{}: 手前に出さない起動",
                      BackgroundModeName(m_bgOptions.mode), m_bgOptions.toolWindow ? ",tool" : "");

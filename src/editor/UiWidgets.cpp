@@ -1,4 +1,5 @@
 #include "editor/UiWidgets.h"
+#include "editor/UiMotion.h"
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -240,9 +241,19 @@ void ToolButtonFace(ImDrawList* dl, ImVec2 mn, ImVec2 mx, bool active, bool hov,
     const th::Deco& d = th::CurrentDeco();
     const th::Variant v = th::CurrentVariant();
     const float h = deco::Ease(id, 0, hov ? 1.0f : 0.0f);
-    const float a = deco::Ease(id, 1, active ? 1.0f : 0.0f);
+    // 選択中のツールは slot 3（Graphite では kToolUnderline = 160ms。押下の kPress/kRelease とは別）。旧テーマは slot 1 のまま
+    const float a = deco::Ease(id, v == th::Variant::Graphite ? 3 : 1, active ? 1.0f : 0.0f);
     const float rr = Px(v == th::Variant::B ? 6.0f : v == th::Variant::C ? 2.0f : 4.0f);
     const float b1 = Px(1.0f);
+    if (v == th::Variant::Graphite)
+    {
+        // 面は bg3（ホバー）/ bg4（押下）。選択中は下線（ホストが 1 本でスライドさせる場合は描かない。ToolbarPanel）
+        if (held) dl->AddRectFilled(mn, mx, Col(th::Bg4), rr);
+        else if (h > 0.004f) dl->AddRectFilled(mn, mx, ColA(th::Bg3, h), rr);
+        if (a > 0.004f && !ui::anim::ToolUnderlineHosted())
+            deco::NeedleBar(dl, ImVec2(mn.x + Px(4.0f), mx.y - th::AccentPx()), ImVec2(mx.x - Px(4.0f), mx.y), ColA(face, a));
+        return;
+    }
     if (v == th::Variant::C)
     {
         if (held) dl->AddRectFilled(mn, mx, Col(th::Bg4), rr);
@@ -831,6 +842,15 @@ ImGuiStorage& EaseStore() { static ImGuiStorage s; return s; }
 
 float Ease(ImGuiID id, int slot, float target)
 {
+    if (th::CurrentVariant() == th::Variant::Graphite)
+    {
+        // Graphite Gauge: motion トークンの曲線と時間（UiMotion.h）。slot 0=hover 1=press/active 2=focus 3=選択中のツール（下線 kToolUnderline）
+        namespace anim = ui::anim;
+        const ImGuiID key = ImHashData(&slot, sizeof(slot), id);
+        const bool rising = target > 0.5f;
+        const anim::dur::D d = anim::DecoSlotDur(slot, rising);
+        return anim::Animate(key, target, d);
+    }
     const float tau = th::CurrentDeco().easeSec;
     if (tau <= 0.0f) return target;
     ImGuiStorage& st = EaseStore();
@@ -933,6 +953,12 @@ void CardSelected(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding)
     }
     else
         dl->AddRect(mn, mx, ImGui::GetColorU32(th::Accent), rounding, 0, Px(2.0f));
+}
+
+void NeedleBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx, ImU32 col)
+{
+    auto snap = [](float v) { return std::floor(v + 0.5f); };
+    dl->AddRectFilled(ImVec2(snap(mn.x), snap(mn.y)), ImVec2(snap(mx.x), snap(mx.y)), col, 0.0f);
 }
 
 void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx)

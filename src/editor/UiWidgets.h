@@ -152,6 +152,9 @@ void CardSelected(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding);
 
 // 左端の選択バー（ツリー行の選択）。Default = 2px のアクセント。
 void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx);
+// Graphite の黄の指針（選択行の左バー・選択中ツールの下線）。端を整数 px へ丸める（スライド中も 2px 幅の線が滲まない = GG モーション則 01）。
+// 名前を Needle で始めるのは A3 の UiTokenLint が黄の線として数える入口を、ここへ一本化するため（本体は数えない）。
+void NeedleBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx, ImU32 col);
 
 // 浮遊するカード（トースト等）。影 + 面 + 縁。Default は従来のトーストと同じ描画。
 // face = 面の色（alpha 込み）、alpha = 全体のフェード。

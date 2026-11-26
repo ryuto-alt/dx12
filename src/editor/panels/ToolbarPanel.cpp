@@ -4,6 +4,7 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UiWidgets.h"
+#include "editor/UiMotion.h"      // アクティブツールの下線のスライド（kToolUnderline）
 #include "editor/EditorCommands.h"   // メニュー/ショートカットはコマンド表から描く
 #include "editor/ToolWindows.h"      // ツール窓レジストリ（表示 / ツール / 窓▾ の共通の表）
 #include "editor/Toast.h"
@@ -495,12 +496,32 @@ void ToolbarPanel::Render(bool isPlaying,
     //   キー W/E/R/T は従来どおり。帯を隠している時だけ、操作の入口が無くならないよう上段に出す（帯が正・上段は代替）。
     if (!ctx.vpPrefs.barVisible)
     {
+        // Graphite: 3 ツールの下線は 1 本が選択中のボタンへスライドする（kToolUnderline 160ms）。ボタンごとの下線は描かせない。
+        const bool slideUnderline = th::CurrentVariant() == th::Variant::Graphite;
+        ui::anim::SetToolUnderlineHosted(slideUnderline);
+        ImVec2 ulMin(0.0f, 0.0f), ulMax(0.0f, 0.0f);
+        bool   ulHas = false;
+        auto noteActive = [&](bool active)
+        {
+            if (!active) return;
+            ulMin = ImGui::GetItemRectMin(); ulMax = ImGui::GetItemRectMax(); ulHas = true;
+        };
         if (iconBtn("gizmoMove", ICON_MOVE, "移動ギズモ  (W)", ctx.gizmoMode == GizmoMode::Translate, "移動"))
             ctx.gizmoMode = GizmoMode::Translate;
+        noteActive(ctx.gizmoMode == GizmoMode::Translate);
         if (iconBtn("gizmoRotate", ICON_ROTATE, "回転ギズモ  (E)", ctx.gizmoMode == GizmoMode::Rotate, "回転"))
             ctx.gizmoMode = GizmoMode::Rotate;
+        noteActive(ctx.gizmoMode == GizmoMode::Rotate);
         if (iconBtn("gizmoScale", ICON_SCALE, "拡大縮小ギズモ  (R)", ctx.gizmoMode == GizmoMode::Scale, "拡縮"))
             ctx.gizmoMode = GizmoMode::Scale;
+        noteActive(ctx.gizmoMode == GizmoMode::Scale);
+        ui::anim::SetToolUnderlineHosted(false);
+        if (slideUnderline && ulHas)
+        {
+            const float x0 = ui::anim::AnimatePx(ImGui::GetID("##toolUnderlineX0"), ulMin.x + ui::Px(4.0f), ui::anim::dur::kToolUnderline);
+            const float x1 = ui::anim::AnimatePx(ImGui::GetID("##toolUnderlineX1"), ulMax.x - ui::Px(4.0f), ui::anim::dur::kToolUnderline);
+            ui::deco::NeedleBar(tdl, ImVec2(x0, ulMax.y - th::AccentPx()), ImVec2(x1, ulMax.y), ImGui::GetColorU32(th::Accent));
+        }
         if (iconBtn("gizmoSpace", ctx.gizmoLocalSpace ? ICON_SPACE_LOCAL : ICON_SPACE_WORLD,
                     ctx.gizmoLocalSpace ? "ローカル空間  (T で切替)" : "ワールド空間  (T で切替)", false,
                     ctx.gizmoLocalSpace ? "ローカル" : "ワールド"))
