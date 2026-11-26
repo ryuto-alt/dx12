@@ -408,12 +408,11 @@ void DashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float dash, float
     seg(a, ImVec2(b.x, a.y)); seg(ImVec2(b.x, a.y), b); seg(b, ImVec2(a.x, b.y)); seg(ImVec2(a.x, b.y), a);
 }
 
-void Spinner(ImDrawList* dl, ImVec2 c, float r, const ImVec4& col, double t)
+// 生存ティック（Graphite Gauge D18: 時間では回さない）。出来事（進捗の通知）が無い処理は針が止まったまま、
+// 経過秒だけが 1 秒ごとに進む。10 秒進まなければ「応答待ち」。ランチャーの待ちは件数を持たないので出来事は 0 件。
+ui::GaugeSpinnerInfo Spinner(ImDrawList* dl, ImVec2 c, float pxLogical, ImGuiID id)
 {
-    const float a0 = static_cast<float>(t) * 5.2f;
-    dl->PathClear();
-    dl->PathArcTo(c, r, a0, a0 + 4.3f, 24);
-    dl->PathStroke(U(col), 0, P(2.2f));
+    return ui::DrawGaugeSpinner(dl, c, id, 0u, pxLogical);
 }
 
 void Icon(ImVec2 center, const char* glyph, const ImVec4& col, float pxLogical, float alpha = 1.0f)
@@ -1054,7 +1053,7 @@ void DrawNav(State& s, const LauncherHost& host, ImVec2 O, ImVec2 Sz, float navW
             {
                 DText(FBody(), 13.0f, ImVec2(tx, p.y + P(10.0f)), U(th::Text), "ログイン待ち");
                 DText(FBody(), 11.5f, ImVec2(tx, p.y + P(30.0f)), U(th::TextFaint), FitEnd(FBody(), 11.5f, "ブラウザで認証してください", tw).c_str());
-                Spinner(ImGui::GetWindowDrawList(), ImVec2(p.x + bw - P(20.0f), p.y + h * 0.5f), P(7.0f), th::AccentHover, s.time);
+                Spinner(ImGui::GetWindowDrawList(), ImVec2(p.x + bw - P(20.0f), p.y + h * 0.5f), 14.0f, ImGui::GetID("##ghLoginTick"));
             }
             else if (loggedIn)
             {
@@ -2103,7 +2102,14 @@ void DrawCloneTab(State& s, const LauncherHost& host, ImVec2 O, ImVec2 Sz, float
     // 進行 / 結果
     if (running)
     {
-        Spinner(dl, ImVec2(fx + pad + P(12.0f), y + P(20.0f)), P(9.0f), th::AccentHover, s.time);
+        const ui::GaugeSpinnerInfo tick = Spinner(dl, ImVec2(fx + pad + P(12.0f), y + P(20.0f)), 20.0f, ImGui::GetID("##cloneTick"));
+        {
+            char el[48];
+            if (tick.stalled) std::snprintf(el, sizeof(el), "応答待ち %d s", static_cast<int>(tick.sinceEventSec));
+            else std::snprintf(el, sizeof(el), "%d s", static_cast<int>(tick.elapsedSec));
+            const float ew = TextW(FBody(), 12.5f, el);
+            DText(FBody(), 12.5f, ImVec2(fx + fw - pad - ew, y + P(13.0f)), U(th::TextDim), el);
+        }
         DText(FBold(), 14.0f, ImVec2(fx + pad + P(34.0f), y + P(11.0f)), U(th::Text), "クローン中…（大きなリポジトリは時間がかかります）");
         y += P(44.0f);
     }

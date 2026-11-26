@@ -559,6 +559,20 @@ if(TARGET Gui)
     set_tests_properties(UiMotionTests PROPERTIES TIMEOUT 60)
 endif()
 
+# --- text::EllipsizeEnd と進捗の刻み送り（W1-A5 / RM-A3）。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(TextFitTests text_fit_test.cpp)
+    target_link_libraries(TextFitTests PRIVATE Gui)
+    target_include_directories(TextFitTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(TextFitTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(TextFitTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(TextFitTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME TextFitTests COMMAND TextFitTests)
+    set_tests_properties(TextFitTests PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。

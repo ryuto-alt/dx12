@@ -1,5 +1,6 @@
 #include "editor/UiWidgets.h"
 #include "editor/UiMotion.h"
+#include "editor/ThemeGraphite.gen.h"   // GgLayout の寸法（progressH 等）だけ読む
 
 #pragma warning(push)
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
@@ -1221,5 +1222,175 @@ void PaintChrome()
 }
 
 } // namespace deco
+
+
+// ===========================================================================
+// ゲージ型の進捗・生存ティック（W1-A5）
+// ===========================================================================
+namespace
+{
+constexpr th::gg::GgLayout kGgLayout{};
+constexpr th::gg::GgDeco   kGgDeco{};
+constexpr float kPi = 3.14159265358979f;
+constexpr int kTickSteps = 12;   // 生存ティックの 1 周
+} // namespace
+
+void ProgressBar(const char* id, float t01, ImVec2 size, ProgressState state, ProgressRole role)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    if (win->SkipItems) return;
+    const bool thin = role == ProgressRole::StatusJob;
+    const float needleH = Px(static_cast<float>(thin ? kGgLayout.progressNeedleH - 2 : kGgLayout.progressNeedleH));
+    const float grooveH = Px(static_cast<float>(thin ? kGgLayout.progressThinH : kGgLayout.progressH));
+    const float w = size.x > 0.0f ? size.x : (std::max)(1.0f, ImGui::GetContentRegionAvail().x);
+    const float h = size.y > 0.0f ? (std::max)(size.y, needleH) : needleH;
+    const ImGuiID gid = win->GetID(id);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImRect bb(p0, ImVec2(p0.x + w, p0.y + h));
+    ImGui::ItemSize(bb);
+    if (!ImGui::ItemAdd(bb, gid)) return;
+
+    const float t = std::isfinite(t01) ? std::clamp(t01, 0.0f, 1.0f) : 0.0f;
+    const float stepPx = Px(static_cast<float>(kGgDeco.progressStep));
+    const int cells = (std::max)(1, static_cast<int>(std::ceil(w / stepPx - 1e-4f)));
+    int target = state == ProgressState::Done || t >= 1.0f ? cells : static_cast<int>(std::floor(t * w / stepPx + 1e-4f));
+    target = (std::min)(target, cells);
+    const int shown = anim::StepToward(gid, target, anim::dur::kProgressStep.ms).shown;
+
+    ImDrawList* dl = win->DrawList;
+    const float gy0 = std::floor(p0.y + (h - grooveH) * 0.5f);
+    const float gy1 = gy0 + grooveH;
+    dl->AddRectFilled(ImVec2(p0.x, gy0), ImVec2(p0.x + w, gy1), Col(th::Bg3), 0.0f);
+
+    const float gap = th::HairPx();
+    const ImU32 fillCol = Col(th::TextDim);   // t3
+    for (int i = 0; i < shown; ++i)
+    {
+        const float x0 = p0.x + static_cast<float>(i) * stepPx;
+        const float x1 = (std::min)(p0.x + w, x0 + stepPx - gap);
+        if (x1 > x0) dl->AddRectFilled(ImVec2(x0, gy0), ImVec2(x1, gy1), fillCol, 0.0f);
+    }
+
+    // 先端の指針: Done = 消す / Failed = 異常の止め線 / Paused = t3 / Running = t1。黄は StatusJob の Running だけ。
+    const float tipX = p0.x + (std::min)(static_cast<float>(shown) * stepPx, w);
+    const float ny0 = p0.y + (h - needleH) * 0.5f;
+    const float nw = Px(2.0f);
+    const float nAlpha = anim::Animate(gid ^ 0x5A17u, state == ProgressState::Done ? 0.0f : 1.0f, anim::dur::kProgressDoneFade);
+    if (state == ProgressState::Failed)
+    {
+        const float bw = Px(static_cast<float>(kGgDeco.badBarW));
+        const float x1 = (std::min)(tipX + bw * 0.5f, p0.x + w), x0 = x1 - bw;
+        dl->AddRectFilled(ImVec2(x0, ny0), ImVec2(x1, ny0 + needleH), Col(th::Bad), 0.0f);
+    }
+    else if (nAlpha > 0.004f)
+    {
+        const float x1 = (std::min)(tipX + nw * 0.5f, p0.x + w), x0 = x1 - nw;
+        const ImVec2 mn(x0, ny0), mx(x1, ny0 + needleH);
+        if (role == ProgressRole::StatusJob && state == ProgressState::Running)
+            deco::NeedleBar(dl, mn, mx, ColA(th::Accent, nAlpha));
+        else
+            deco::NeedleBar(dl, mn, mx, ColA(state == ProgressState::Paused ? th::TextDim : th::Text, nAlpha));
+    }
+}
+
+void ProgressGauge(const char* id, float t01, const char* label, float pxLogical)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    if (win->SkipItems) return;
+    const float d = Px(pxLogical);
+    const ImGuiID gid = win->GetID(id);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const bool hasLabel = label && *label;
+    const float gapX = hasLabel ? Px(8.0f) : 0.0f;
+    const float lw = hasLabel ? ImGui::CalcTextSize(label).x : 0.0f;
+    const ImRect bb(p0, ImVec2(p0.x + d + gapX + lw, p0.y + (std::max)(d, ImGui::GetFrameHeight())));
+    ImGui::ItemSize(bb);
+    if (!ImGui::ItemAdd(bb, gid)) return;
+
+    const float t = std::isfinite(t01) ? std::clamp(t01, 0.0f, 1.0f) : 0.0f;
+    constexpr int kCells = 24;   // 15° 刻み
+    const int target = t >= 1.0f ? kCells : static_cast<int>(std::floor(t * kCells + 1e-4f));
+    const int shown = anim::StepToward(gid, target, anim::dur::kProgressStep.ms).shown;
+    ImDrawList* dl = win->DrawList;
+    const ImVec2 c(p0.x + d * 0.5f, p0.y + bb.GetHeight() * 0.5f);
+    const float thick = (std::max)(th::HairPx(), Px(2.0f));
+    const float r = d * 0.5f - thick;
+    dl->AddCircle(c, r, Col(th::Bg3), 48, thick);
+    if (shown > 0)
+    {
+        const float a0 = -kPi * 0.5f;
+        const float a1 = a0 + 2.0f * kPi * static_cast<float>((std::min)(shown, kCells)) / static_cast<float>(kCells);
+        dl->PathArcTo(c, r, a0, a1, (std::max)(2, shown * 2));
+        dl->PathStroke(Col(th::TextDim), ImDrawFlags_None, thick);
+        const float in = r - Px(3.0f);   // 先端の指針（t1）
+        dl->AddLine(ImVec2(c.x + std::cos(a1) * in, c.y + std::sin(a1) * in),
+                    ImVec2(c.x + std::cos(a1) * r, c.y + std::sin(a1) * r), Col(th::Text), thick);
+    }
+    char num[16];
+    std::snprintf(num, sizeof(num), "%d", static_cast<int>(std::floor(t * 100.0f + 0.5f)));
+    const float fs = ImGui::GetFontSize() * 0.78f;
+    const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, num);
+    dl->AddText(ImGui::GetFont(), fs, ImVec2(std::floor(c.x - ts.x * 0.5f), std::floor(c.y - ts.y * 0.5f)), Col(th::Text), num);
+    if (hasLabel)
+        dl->AddText(ImVec2(p0.x + d + gapX, p0.y + (bb.GetHeight() - ImGui::GetFontSize()) * 0.5f), Col(th::TextMid), label);
+}
+
+GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uint32_t eventCount, float pxLogical)
+{
+    const anim::StepInfo si = anim::StepToward(id, static_cast<int>((std::min)(eventCount, 0x7FFFFFu)), anim::dur::kProgressStep.ms);
+    GaugeSpinnerInfo info;
+    info.laps = si.shown / kTickSteps;
+    info.sinceEventSec = si.sinceChangeSec;
+    info.elapsedSec = si.sinceStartSec;
+    info.stalled = si.sinceChangeSec >= 10.0;
+
+    const int sz = pxLogical < 17.0f ? 14 : pxLogical < 26.0f ? 20 : pxLogical < 44.0f ? 32 : 56;
+    const float r = Px(static_cast<float>(sz)) * 0.5f;
+    const float hair = th::HairPx();
+    // 12 刻みで 1 周したら即時に 0 へ戻る（shown % 12）。時間では回さない。
+    const float ang = -kPi * 0.5f + static_cast<float>(si.shown % kTickSteps) * (2.0f * kPi / kTickSteps);
+    const ImVec2 dir(std::cos(ang), std::sin(ang));
+    if (sz <= 20)
+    {
+        dl->AddCircle(center, r - hair * 0.5f, Col(th::BorderStrong), 32, hair);
+    }
+    else
+    {
+        const float major = Px(sz == 32 ? 5.0f : 8.0f), minor = Px(sz == 32 ? 3.0f : 5.0f);
+        for (int i = 0; i < kTickSteps; ++i)
+        {
+            const float a = -kPi * 0.5f + static_cast<float>(i) * (2.0f * kPi / kTickSteps);
+            const bool isMajor = (i % 3) == 0;
+            const float len = isMajor ? major : minor;
+            const ImVec2 u(std::cos(a), std::sin(a));
+            dl->AddLine(ImVec2(center.x + u.x * (r - len), center.y + u.y * (r - len)),
+                        ImVec2(center.x + u.x * r, center.y + u.y * r), Col(isMajor ? th::TextDim : th::TextFaint), hair);
+        }
+    }
+    const float needleLen = sz <= 20 ? r * 0.8f : r - Px(sz == 32 ? 5.0f : 8.0f) - Px(1.0f);
+    dl->AddLine(center, ImVec2(center.x + dir.x * needleLen, center.y + dir.y * needleLen), Col(th::Text), Px(2.0f));
+    if (sz >= 32) dl->AddCircleFilled(center, Px(sz == 32 ? 2.5f : 3.5f), Col(th::Text), 16);
+    return info;
+}
+
+void GaugeSpinner(const char* id, uint32_t eventCount, float pxLogical, bool showElapsed)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    if (win->SkipItems) return;
+    const ImGuiID gid = win->GetID(id);
+    const float d = Px(pxLogical < 17.0f ? 14.0f : pxLogical < 26.0f ? 20.0f : pxLogical < 44.0f ? 32.0f : 56.0f);
+    const float h = (std::max)(d, ImGui::GetFrameHeight());
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::ItemSize(ImRect(p0, ImVec2(p0.x + d, p0.y + h)));
+    if (!ImGui::ItemAdd(ImRect(p0, ImVec2(p0.x + d, p0.y + h)), gid)) return;
+    const GaugeSpinnerInfo info = DrawGaugeSpinner(win->DrawList, ImVec2(p0.x + d * 0.5f, p0.y + h * 0.5f), gid, eventCount, pxLogical);
+    if (!showElapsed) return;
+    char txt[64];
+    if (info.stalled) std::snprintf(txt, sizeof(txt), "応答待ち %d s", static_cast<int>(info.sinceEventSec));
+    else if (info.laps > 0) std::snprintf(txt, sizeof(txt), "×%d  %d s", info.laps, static_cast<int>(info.elapsedSec));
+    else std::snprintf(txt, sizeof(txt), "%d s", static_cast<int>(info.elapsedSec));
+    win->DrawList->AddText(ImVec2(p0.x + d + Px(8.0f), p0.y + (h - ImGui::GetFontSize()) * 0.5f), Col(th::TextDim), txt);
+    ImGui::SameLine(0.0f, Px(8.0f) + ImGui::CalcTextSize(txt).x);   // 文字の分だけカーソルを送る
+}
 
 } // namespace dx12e::ui

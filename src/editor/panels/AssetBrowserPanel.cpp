@@ -1,5 +1,6 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/UiWidgets.h"
+#include "editor/TextFit.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/EditorContext.h"
@@ -1114,13 +1115,9 @@ void AssetBrowserPanel::DrawGridCell(EditorContext& ctx, int viewIdx, float x, f
     }
     else
     {
-        std::string name = e.name;
+        // コードポイント（結合文字・絵文字の連結を含む）の境界で省略する（バイト単位の pop_back は日本語を壊した）
         const float maxW = cw - ui::Px(6.0f);
-        if (ImGui::CalcTextSize(name.c_str()).x > maxW)
-        {
-            while (name.size() > 2 && ImGui::CalcTextSize((name + "…").c_str()).x > maxW) name.pop_back();
-            name += "…";
-        }
+        const std::string name = text::EllipsizeEnd(e.name, maxW, ImGui::GetFont(), ImGui::GetFontSize());
         const float nameW = ImGui::CalcTextSize(name.c_str()).x;
         // フォルダは白、ファイルは少し落として「入れ物」と「中身」を見分けやすくする
         dl->AddText(ImVec2(x + (cw - nameW) * 0.5f, nameY),

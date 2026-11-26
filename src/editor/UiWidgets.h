@@ -21,6 +21,7 @@
 #pragma warning(pop)
 
 #include <cstddef>
+#include <cstdint>
 
 namespace dx12e::ui
 {
@@ -170,5 +171,37 @@ void Halo(ImDrawList* dl, ImVec2 center, float radius, const ImVec4& col, float 
 // 選択タブの光 / ポップアップ・メニュー・パレットの影 / ステータスバーの線など「窓の外側から足す」装飾。Default は何もしない。
 void PaintChrome();
 } // namespace deco
+
+// ===========================================================================
+// ゲージ型の進捗・生存ティック（W1-A5 / RM-A3。Graphite Gauge §4.18 / §4.19）
+// ---------------------------------------------------------------------------
+// ★進捗は連続に伸ばさず 12px（progressStep）刻みで、1 刻みを 60ms で送る（決定論 / background では即時）。
+// ★指針は t1（パネル内）。黄になるのはステータスバーの主ジョブ 1 本（ProgressRole::StatusJob）だけで、
+//   呼び出しは StatusBar（A7）の 1 か所に限る（tests/text_fit_test が StatusJob の使用箇所を固定している）。
+// ★スピナーは時間では回さない（決定 D18）。出来事 1 件で 30° 刻む。出来事が無い間は止まっている。
+// 全部の旧テーマでも同じ絵（トークンは Bg3 / TextDim / Text / Bad だけ）。既存の ImGui::ProgressBar は置き換えない。
+// ===========================================================================
+enum class ProgressState : uint8_t { Running, Paused, Done, Failed };
+enum class ProgressRole  : uint8_t { Panel, StatusJob };
+
+// 主尺と副尺のある進捗バー。溝 6px（StatusJob は細型 4px）+ 12px 刻みの塗り + 先端の指針。id は状態のキー（窓の中で一意）。
+// size.x <= 0 で残り幅いっぱい。項目の高さは指針の高さ（12px。細型は 10px）。
+void ProgressBar(const char* id, float t01, ImVec2 size = ImVec2(0, 0),
+                 ProgressState state = ProgressState::Running, ProgressRole role = ProgressRole::Panel);
+// 細い輪と数値（％）。label があれば右に添える。刻みは 15°（24 刻み）。
+void ProgressGauge(const char* id, float t01, const char* label = nullptr, float pxLogical = 36.0f);
+
+struct GaugeSpinnerInfo
+{
+    int    laps = 0;              // 12 刻み（= 1 周）を超えた回数。「×n」の n
+    double sinceEventSec = 0;     // 最後に出来事の数が変わってからの秒
+    double elapsedSec = 0;        // この id を使い始めてからの秒
+    bool   stalled = false;       // 10 秒以上進んでいない（「応答待ち 10 s」）
+};
+// 生存ティックの輪だけを DrawList へ描く（center = 中心、物理 px）。eventCount = 出来事の累計。
+// pxLogical は 14 / 20（輪 + 指針）、32 / 56（12 目盛り + 指針 + 軸）。それ以外は近い方へ丸める。
+GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uint32_t eventCount, float pxLogical = 20.0f);
+// レイアウトに置く形。showElapsed なら右に「×n」と経過秒（10 秒進まなければ「応答待ち 10 s」）を添える。
+void GaugeSpinner(const char* id, uint32_t eventCount, float pxLogical = 20.0f, bool showElapsed = false);
 
 } // namespace dx12e::ui
