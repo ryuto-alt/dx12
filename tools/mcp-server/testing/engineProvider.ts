@@ -54,6 +54,10 @@ export function defaultProvider(env: KindEnv): EngineProvider {
           },
         };
       }
+      // フリート経由ではビルドのフォルダを選べない。指定されたのに黙って無視すると A/B が同じバイナリになるので、できないと返す。
+      if (o.buildDir && env.cfg.buildDir && path.resolve(o.buildDir) !== path.resolve(env.cfg.buildDir)) {
+        throw new StepError(errBody("E_UNSUPPORTED", `buildDir(${o.buildDir})でエンジンを起動できない(tools/bench が無い配布版では、フリートが使うビルドしか起動できない)`));
+      }
       const fleet = env.fleet();
       if (!fleet) throw new StepError(errBody("E_FLEET_DISABLED", "専用エンジンを起動できない(tools/bench が無く、フリートも無効)"));
       const r: any = await fleet.launch({

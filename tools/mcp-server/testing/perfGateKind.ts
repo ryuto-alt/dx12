@@ -29,7 +29,7 @@ const shape = {
   poses: z.array(pose).max(12).optional().describe("姿勢(カメラ)。省略でいまのカメラ 1 姿勢。"),
   scene: z.string().optional().describe("計測前に開くシーン(assets 相対)。"),
   project: z.string().optional().describe("専用エンジンで開くプロジェクト(省略で束縛エンジン、または tests/golden/projects/golden_core の複製)。"),
-  launch: z.boolean().optional().describe("true = 専用エンジンを --no-dred で起動して測る(既定: engine / project を渡さないときだけ束縛エンジン)。"),
+  launch: z.boolean().optional().describe("専用エンジンを --no-dred で起動して測る(既定。engine を渡したときだけ束縛エンジンに付く。false で束縛エンジン。付いたエンジンの DRED が ON なら何も変えず中止し、終わりに upscaler などを戻す)。"),
   engine: z.string().optional().describe("束縛するエンジン(id / name / port)。DRED が ON なら中止する。"),
   buildDir: z.string().optional().describe("launch 時の DX12Engine.exe のフォルダ。"),
   repeats: z.number().int().min(1).max(9).optional().describe("姿勢ごとの繰り返し(中央値を取る。既定 3)。"),
@@ -53,6 +53,14 @@ export type PerfDeps = {
   /** テスト用: 待ちを短くする。 */
   sleepMs?: number;
 };
+
+/** 結果の指標の定義(PP-NB1 の「GPU p95/p99」との差を隠さない)。 */
+export const METRIC_DEFINITIONS = Object.freeze({
+  frameMsP95: "benchmark の CPU 壁時計フレーム時間の p95(姿勢ごと・窓の中央値)。GPU の p95 ではない",
+  frameMsP99: "窓ごとの p95 を並べた p95(厳密な p99 ではない)。予算の p99Ms と比べる近似",
+  gpuTotalMs: "perf_stats.gpuPassMs.total の窓平均(GPU の p95 ではない)",
+  cpu: "perf_stats の窓平均を窓ごとに並べた p95 の近似",
+});
 
 type PoseSpec = { name?: string; position?: number[]; target?: number[] };
 const poseName = (p: PoseSpec, i: number) => p.name ?? (p.position ? `pose${i + 1}` : "current");
@@ -107,9 +115,11 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
   const release = await acquireGpuWindow({ file: deps.lockFile, waitSec: a.waitLockSec ?? 0, owner: "perf_gate", signal: ctx.signal });
   if (!release) jobFail({ code: "E_ENGINE_BUSY", message: "計測窓のロックを取れない(他の計測が走っている)", retryable: true, cause: "%TEMP%\\uno-gpu-window.lock を別のプロセスが持っている。GPU の計測は同時に 1 つだけ", fix: [{ tool: "dx12_job_start", args: { kind: "perf_gate", args: { ...a, waitLockSec: 600 } }, why: "ロックが空くのを待つ" }] });
   let h: EngineHandle | null = null;
+  let restore: (() => Promise<unknown>) | null = null;
   const tmpProject: string[] = [];
   try {
-    const launching = a.launch === true || (a.launch !== false && !a.engine && !!a.project);
+    // 既定は専用エンジンを --no-dred で起動する。束縛エンジン(DRED ON のエディタ)に付くのは launch:false か engine 指定のときだけ。
+    const launching = a.launch === true || (a.launch !== false && !a.engine);
     if (launching) {
       const proj = a.project ?? path.join(deps.repoDir, "tests", "golden", "projects", "golden_core");
       if (!fs.existsSync(proj)) jobFail({ code: "E_NOT_FOUND", message: `プロジェクトが無い: ${proj}`, retryable: false });
@@ -120,6 +130,19 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
     } else {
       h = deps.provider.attach(a.engine);
       if (h.id) ctx.setEngine(h.id);
+      // 何も変える前に DRED を確かめる(ON のエンジンの設定を触らない)。変える設定は終わりに戻す。
+      const pre = await h.call("perf_stats", { window: 1 }, { timeout: 30_000 }).catch(() => null);
+      if (pre?.dred === true) jobFail({ code: "E_ENGINE_BUSY", message: "perf_gate: DRED が ON のエンジンでは測れない(--no-dred で起動したエンジンだけ比べられる)。エンジンの設定は変えていない", retryable: false, fix: [{ tool: "dx12_job_start", args: { kind: "perf_gate", args: { ...a, launch: true, engine: undefined } }, why: "専用エンジンを --no-dred で起動して測る" }] });
+      const hc = h.call;
+      const before: Record<string, any> = {};
+      for (const m of ["get_upscaler", "get_render_scale", "get_quality_preset"]) before[m] = await hc(m, {}, { timeout: 8000 }).catch(() => null);
+      restore = async () => {
+        const up = before.get_upscaler, rs = before.get_render_scale, qp = before.get_quality_preset;
+        const tryCall = (m: string, p: any) => hc(m, p, { timeout: 15_000 }).catch(() => null);
+        if (qp && typeof (qp.preset ?? qp.name) === "string") await tryCall("set_quality_preset", { preset: qp.preset ?? qp.name });
+        if (up && typeof up.mode === "string") await tryCall("set_upscaler", { mode: up.mode, ...(typeof up.quality === "string" ? { quality: up.quality } : {}) });
+        if (rs && typeof (rs.scale ?? rs.renderScale) === "number") await tryCall("set_render_scale", { scale: rs.scale ?? rs.renderScale });
+      };
     }
     const call = h.call;
     ctx.progress({ phase: "preparing", pct: 3, message: "エンジンへ接続" });
@@ -143,6 +166,7 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
     const hist = deps.historyDir ?? path.join(homeDir("DX12_PERF_HOME", "perf"), projectKeyOf(ping0?.baseDir));
     const history = readHistory(hist);
     const out: Record<string, any> = {};
+    const incomplete: string[] = [];
     let dredState: boolean | null = null;
     const total = cols.length * poses.length;
     let n = 0;
@@ -154,7 +178,7 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
       const { up, active } = await setupColumn(call, budget, col);
       colRes.upscaler = { mode: up?.mode ?? null, effective: up?.effective ?? null, reason: up?.reason ?? up?.fallbackReason ?? null };
       if (!active.ok) { colRes.status = "unavailable"; colRes.reason = active.reason; colRes.pass = c.gate === "gate" ? null : undefined; n += poses.length; continue; }
-      let colPass = true;
+      let colPass = true, colIncomplete = false;
       for (let i = 0; i < poses.length; i++) {
         const name = poseName(poses[i], i);
         ctx.progress({ phase: "measuring", pct: Math.round(5 + (n * 90) / total), message: `列 ${col} / 姿勢 ${name}(${proc.repeats} 回 × ${proc.frames} フレーム)` });
@@ -167,27 +191,33 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
         const reg = detectRegression(history, key, { frameMsP95: m.summary.frameMsP95, gpuTotalMs: m.summary.gpuTotalMs });
         colRes.poses[name] = {
           measured: { frameMsAvg: round(m.summary.frameMsAvg, 3), frameMsP95: round(m.summary.frameMsP95, 3), gpuTotalMs: round(m.summary.gpuTotalMs, 3), cpu: m.summary.cpu, vramUsedMB: m.summary.vramUsedMB, windows: m.summary.windows },
-          checks: ev.checks, pass: ev.pass, failed: ev.failed.map((f) => f.id), unmeasured: ev.unmeasured.map((f) => f.id),
+          checks: ev.checks, pass: ev.pass, complete: ev.complete, missing: ev.missing, failed: ev.failed.map((f) => f.id), unmeasured: ev.unmeasured.map((f) => f.id),
           degrade: degradeAdvice(budget, col, ev.failed), regression: reg, clock: m.clock, repeatSigmaMs: m.repeatSigmaMs,
         };
         if (!ev.pass) colPass = false;
+        if (!ev.complete) { colIncomplete = true; if (c.gate === "gate") incomplete.push(`${col}/${name}: ${ev.missing.join(", ")}`); }
         if (a.record !== false) appendHistory(hist, { at: new Date().toISOString(), key, preset: budget.preset, column: col, pose: name, frameMsP95: m.summary.frameMsP95, gpuTotalMs: m.summary.gpuTotalMs, pass: ev.pass });
         n++;
       }
-      colRes.status = "measured"; colRes.pass = colPass;
+      colRes.status = "measured"; colRes.pass = colPass; colRes.complete = !colIncomplete;
     }
     const gateCol = gateColumnOf(budget);
     const gated = gateCol && out[gateCol] ? out[gateCol] : null;
-    const regs = Object.values<any>(out).flatMap((c) => Object.entries<any>(c.poses ?? {}).filter(([, p]) => p.regression?.status === "regression").map(([k]) => k));
+    const regsOf = (c: any) => Object.entries<any>(c?.poses ?? {}).filter(([, p]) => p.regression?.status === "regression").map(([k]) => k);
+    // 回帰で判定に効くのは gate 列だけ。ほかの列(記録のみ)の悪化は info として報告するだけ。
+    const regs = gated ? regsOf(gated) : [];
+    const regsInfo = Object.entries<any>(out).filter(([k]) => k !== gateCol).map(([k, c]) => ({ column: k, poses: regsOf(c) })).filter((x) => x.poses.length);
     let verdict: "pass" | "fail" | "inconclusive" | "regression";
     if (!gated || gated.status === "unavailable" || gated.status !== "measured") verdict = "inconclusive";
     else if (!gated.pass) verdict = "fail";
+    else if (incomplete.length) verdict = "inconclusive";   // 指標が測れていない合格は合格にしない
     else if (regs.length) verdict = "regression";
     else verdict = "pass";
     const summary = {
       preset: budget.preset, mode: "gate", verdict, gateColumn: gateCol, overridden: budget.overridden ?? [], qualityPreset, noDred: dredState === false ? true : dredState,
       vramCheck: gate, columns: Object.fromEntries(Object.entries<any>(out).map(([k, v]) => [k, { gate: v.gate, status: v.status, pass: v.pass ?? null, reason: v.reason ?? null, poses: Object.fromEntries(Object.entries<any>(v.poses).map(([pk, pv]) => [pk, { pass: pv.pass, failed: pv.failed, frameMsP95: pv.measured.frameMsP95, gpuTotalMs: pv.measured.gpuTotalMs, regression: pv.regression.status }])) }])),
-      regressions: regs,
+      regressions: regs, regressionsInfo: regsInfo, ...(incomplete.length ? { unmeasuredInGateColumn: incomplete } : {}),
+      metricDefinitions: METRIC_DEFINITIONS,
     };
     const file = path.join(ctx.artifactsDir, "perf_gate.json");
     fs.mkdirSync(ctx.artifactsDir, { recursive: true });
@@ -195,6 +225,7 @@ export async function runGate(a: Record<string, any>, deps: PerfDeps, ctx: Inpro
     ctx.addArtifact({ path: file, kind: "manifest" });
     return { summary, result: { summary, detail: out }, verdict };
   } finally {
+    try { await (restore as (() => Promise<unknown>) | null)?.(); } catch { /* 戻せなくても結果は返す */ }
     await h?.close();
     release();
     for (const d of tmpProject) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* 無視 */ } }
@@ -265,12 +296,23 @@ export async function runAB(a: Record<string, any>, deps: PerfDeps, ctx: InprocC
       }
     }
     const slower = Object.entries(metrics).filter(([, v]) => v.verdict === "b-slower").map(([k]) => k);
-    const summary = { preset: budget.preset, mode: "ab", column: col, verdict: slower.length ? "b-slower" : "within-or-faster", slower, rounds, clockRefMHz: ref === null ? null : Math.round(ref), discarded: { ab: abK.dropped, aa: aaK.dropped }, metrics };
+    // 比べてよい条件が揃っているか。揃っていなければ pass にしない(inconclusive)。
+    const sessions = [...abRounds, ...aaRounds].flatMap((r) => [r.a, r.b]);
+    const reasons: string[] = [];
+    if (sessions.some((x) => !x.columnOk)) reasons.push(`列 ${col} が有効にならなかったセッションがある(A/B が別の経路で測られた可能性)`);
+    if (sessions.some((x) => !x.vramOk)) reasons.push("VRAM の前提(Budget)を満たさないセッションがある");
+    const minKept = Math.max(1, Math.ceil(rounds / 2));
+    if (abK.rs.length < minKept) reasons.push(`クロックが揃った ABAB の回が足りない(${abK.rs.length}/${rounds}、最低 ${minKept}。nvidia-smi が無いと全部捨てられる)`);
+    if (aaK.rs.length < Math.min(2, rounds)) reasons.push(`クロックが揃った A/A の回が足りない(${aaK.rs.length}/${rounds})`);
+    const verdictV = Object.values<any>(metrics);
+    if (!verdictV.length || verdictV.every((v) => v.verdict === "insufficient")) reasons.push("比べられた指標が無い(すべて insufficient)");
+    const verdictAB = reasons.length ? "inconclusive" : slower.length ? "b-slower" : "within-or-faster";
+    const summary = { preset: budget.preset, mode: "ab", column: col, verdict: verdictAB, ...(reasons.length ? { inconclusiveReasons: reasons } : {}), slower, rounds, clockRefMHz: ref === null ? null : Math.round(ref), discarded: { ab: abK.dropped, aa: aaK.dropped }, metrics, metricDefinitions: METRIC_DEFINITIONS };
     const file = path.join(ctx.artifactsDir, "perf_gate_ab.json");
     fs.mkdirSync(ctx.artifactsDir, { recursive: true });
     fs.writeFileSync(file, JSON.stringify(summary, null, 2));
     ctx.addArtifact({ path: file, kind: "manifest" });
-    return { summary, result: { summary }, verdict: slower.length ? "fail" : "pass" } as any;
+    return { summary, result: { summary }, verdict: verdictAB === "inconclusive" ? "inconclusive" : slower.length ? "fail" : "pass" } as any;
   } finally { release(); for (const d of tmp) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* 無視 */ } } }
 }
 

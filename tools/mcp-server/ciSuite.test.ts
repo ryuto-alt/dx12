@@ -69,6 +69,18 @@ const GPU = { gpu: { name: "RTX", driver: "1" } };
   check("checks も file も無ければ E_MISSING_PARAM", e2?.code === "E_MISSING_PARAM", e2);
 }
 
+console.log("[2b] 検査の中の JobFailure は error として記録し、JUnit を書く");
+{
+  const { JobFailure } = await import("./jobs/manager.ts");
+  const k = ciSuiteKind(env, { provider: provider(GPU), runners: { ...allOk, perf: async () => { throw new JobFailure({ code: "E_ENGINE_BUSY", message: "ロックが取れない", retryable: true }); } } });
+  const r = await k.run({ checks: [{ check: "layout" }, { check: "perf" }, { check: "errors" }] }, mkCtx());
+  const s: any = r.summary;
+  check("ci_suite は落ちず、perf が error・残りも実行・exitCode 1・JUnit あり", r.ok === false && s.exitCode === 1 && s.total === 3 && s.checks[1].status === "error" && /E_ENGINE_BUSY/.test(s.checks[1].message) && fs.existsSync(s.junit), s);
+  const k2 = ciSuiteKind(env, { provider: provider(GPU), runners: { ...allOk, visual: async () => ({ status: "error", message: "全件 skipped" }) } });
+  const r2 = await k2.run({ checks: [{ check: "visual" }] }, mkCtx());
+  check("visual が error なら exitCode 1", (r2.summary as any).exitCode === 1);
+}
+
 console.log("[3] GPU なしでは visual / perf を skipped");
 {
   for (const [label, ping] of [["gpu 情報なし", {}], ["ソフトウェアレンダラ", { gpu: { name: "Microsoft Basic Render Driver" } }]] as const) {
