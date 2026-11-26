@@ -100,6 +100,9 @@ public:
     size_t SelectionCount() const { return m_sel.set.size(); }
     bool IsSelected(const std::filesystem::path& p) const { return m_sel.Has(p.string()); }
     void SelectOnly(const std::filesystem::path& p) { m_sel.Clear(); m_sel.set.insert(p.string()); m_sel.primary = p.string(); m_sel.anchor = p.string(); }
+    // 種別のアイコン（ICON_*）と色（ImGui::GetColorU32 した値）。一覧・グリッドが描くものと同じ表から引く（UI テストが検査する）。
+    static const char* KindIcon(abl::Kind k);
+    static u32 KindTintU32(abl::Kind k);
 
 private:
     using Entry = abl::Entry;

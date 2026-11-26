@@ -178,7 +178,7 @@ static ImVec4 KindColor(Kind k)
     case Kind::SpriteSheet:   return th::TypeUi;
     case Kind::MaterialGraph: return th::TypeLight;
     case Kind::Sequence:      return th::TypeUi;        // アニメ系（UI アニメと同じ）
-    case Kind::Vfx:           return th::TypeLight;     // 光り物
+    case Kind::Vfx:           return th::TypeFolder;    // 無彩色（GG: kind.vfx は作らない。ライトと混ぜない）
     default:                  return th::TypeEmpty;
     }
 }
@@ -204,6 +204,9 @@ static const char* KindGlyph(Kind k)
     default:                  return ICON_FILE;
     }
 }
+
+const char* AssetBrowserPanel::KindIcon(Kind k) { return KindGlyph(k); }
+u32 AssetBrowserPanel::KindTintU32(Kind k) { return ImGui::GetColorU32(KindColor(k)); }
 
 static bool KindIsDraggableToScene(Kind k)
 {

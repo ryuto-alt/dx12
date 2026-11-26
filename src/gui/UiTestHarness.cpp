@@ -1757,7 +1757,7 @@ void T_LayoutSaveRestore(ImGuiTestContext* ctx)
     W_ResetLayout(ctx, ed);
 }
 
-// 下部ドックのスロット: 登録タブ（ダミーのタイムライン）を開くと中央下ノードへ入る・ビューポートの矩形が変わらない・
+// 下部ドックのスロット: 登録タブ（タイムライン）を開くと中央下ノードへ入る・ビューポートの矩形が変わらない・
 // 最大化 / 元に戻す（コマンドとタブ帯のダブルクリック）で寸法が往復・最大化中もゲーム絵の矩形が 0 にならない・再登録で置き換わる。
 void T_BottomDockSlot(ImGuiTestContext* ctx)
 {
@@ -1771,7 +1771,7 @@ void T_BottomDockSlot(ImGuiTestContext* ctx)
     IM_CHECK_GT(ed->dockNodeBottom, 0u);
     const f32 vpW0 = ed->viewportW, vpH0 = ed->viewportH;
 
-    Step(ctx, "ダミータブを開くと中央下ノード（アセットブラウザと同じ）へ入り、ビューポートは変わらない");
+    Step(ctx, "タイムラインのタブを開くと中央下ノード（アセットブラウザと同じ）へ入り、ビューポートは変わらない");
     bottomdock::SetOpen("timeline", true);
     ctx->Yield(12);
     const std::string winName = bottomdock::WindowName(*bottomdock::Find("timeline"));
@@ -1828,21 +1828,21 @@ void T_BottomDockSlot(ImGuiTestContext* ctx)
 
     Step(ctx, "同じ id で再登録すると置き換わる（開閉は保つ。シーケンサーが本物を差し込む経路）");
     const size_t nTabs = bottomdock::Tabs().size();
+    const bottomdock::Tab* origTab = bottomdock::Find("timeline");
+    IM_CHECK(origTab != nullptr);
+    const bottomdock::Tab savedTab = *origTab;   // 本物の登録（A10 の案内）。最後に戻す
     bool drawn = false;
     static bool* s_drawn = nullptr;
     s_drawn = &drawn;
-    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM, [](EditorContext&) { if (s_drawn) *s_drawn = true; }});
+    bottomdock::Register({"timeline", savedTab.title, ICON_FILM, [](EditorContext&) { if (s_drawn) *s_drawn = true; }});
     ctx->Yield(6);
     s_drawn = nullptr;   // 以降は呼ばれても触らない（drawn はこの関数のローカル）
     IM_CHECK_EQ(bottomdock::Tabs().size(), nTabs);
     IM_CHECK(bottomdock::IsOpen("timeline"));
     IM_CHECK(drawn);
-    // 元のダミーの本文へ戻す（他のテストの見た目に影響させない）
-    bottomdock::Register({"timeline", "タイムライン（ダミー）", ICON_FILM, [](EditorContext&) {
-        ImGui::Spacing();
-        ImGui::TextDisabled("ここにシーケンサーのタイムラインが入ります（下部ドックのスロット。動作確認用のダミー）。");
-        ImGui::TextDisabled("タブ帯をダブルクリックすると下部ドックが広がります（もう一度で元に戻ります）。");
-    }});
+    // 元の登録（案内の本文つき）へ戻す。他のテスト・スクリーンショットが A10 の案内を見られるように
+    bottomdock::Register(savedTab);
+    IM_CHECK_EQ(bottomdock::Tabs().size(), nTabs);
 
     bottomdock::SetOpen("timeline", false);
     W_ResetLayout(ctx, ed);

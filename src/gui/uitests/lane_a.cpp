@@ -1,6 +1,8 @@
 // UI テストのレーン A の本体。宣言は gui/UiTestHarnessShared.h の lane-A:decl、
 // 登録は gui/UiTestHarness.cpp の kTests の lane-A ブロックに足す。
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include "gui/UiTestHarnessShared.h"
 
 #include "core/Application.h"
@@ -10,6 +12,9 @@
 #include "core/SceneBackup.h"
 #include "editor/AssetBrowserLogic.h"
 #include "editor/BottomDock.h"
+#include "editor/EditorIcons.h"
+#include "editor/EditorTheme.h"
+#include "editor/panels/AssetBrowserPanel.h"
 #include "editor/EditorCommands.h"
 #include "editor/WorkspaceLogic.h"
 #include "editor/nodegraph/GraphTextQuant.h"
@@ -376,67 +381,155 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
 }
 
 // W1-A10 / BUG-02 / BUG-42: アニメ・シーケンサーの暫定の案内、.dxseq / .uvfx の種別、.dxseq の再生要求。
-//   (1) 下部タブ「timeline」の案内文に「ダミー」が無く、W3 と .dxseq のダブルクリックを案内する。
-//   (2) .dxseq = 「シーケンス」/ .uvfx = 「VFX」。
-//   (3) アセットブラウザのダブルクリックが立てる pendingSequencePlay を Application が消費して再生を始める。
-//       （.uvfx の pendingVfxPlace は BD4 が消費するので、ここでは立てても消えないことだけ見る = A は触らない）
+//   (1) 下部タブ「timeline」: 登録タイトルに「ダミー」が無く、描かれた案内の文面が ws::kTimelineGuidance（W3 と .dxseq のダブルクリックを案内）。
+//   (2) .dxseq = 「シーケンス」+ ICON_T_LAYERS + アニメ系の色 / .uvfx = 「VFX」+ ICON_T_PARTICLE + 光り物の色。
+//   (3) アセットブラウザの本物のダブルクリック → .dxseq は assets 相対パスで再生が始まる / .uvfx は pendingVfxPlace が立つ（消すのは BD4）。
 void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
 {
     EditorContext* ed  = Editor();
     Application*   app = App();
     IM_CHECK(ed != nullptr && app != nullptr);
+    namespace fs = std::filesystem;
+    const std::string prevWs = ed->currentWorkspace;
 
-    // (1) 案内文
+    // 後始末（IM_CHECK で途中終了しても必ず走る）: 再生を止める・文書を閉じる・一時ファイルとフォルダを消す。
+    struct Cleanup
+    {
+        Application* app; EditorContext* ed; fs::path seqRoot, workDir; bool madeSeqRoot; std::string docRel; std::string prevWs;
+        ~Cleanup()
+        {
+            AppAccess::SequenceEditorStopForTest(*app);
+            if (ed->assetBrowser) ed->assetBrowser->NavigateTo(seqRoot.parent_path());   // 消すフォルダの中に居残らない
+            if (!prevWs.empty() && ed->currentWorkspace != prevWs)
+            {
+                const cmd::Env env{app->GetScene(), PathResolver::AssetsDir()};
+                cmd::Execute(*ed, env, "workspace." + prevWs);
+            }
+            if (!docRel.empty()) AppAccess::SequenceCloseDocForTest(*app, docRel);
+            ed->pendingSequencePlay.clear();
+            ed->pendingVfxPlace.clear();
+            std::error_code ec;
+            fs::remove_all(workDir, ec);                                  // このテストが作った一時フォルダだけ
+            if (madeSeqRoot && fs::is_empty(seqRoot, ec)) fs::remove(seqRoot, ec);
+        }
+    };
+
+    // (2) 種別の部品（描画に使う表と同じものを引く）
+    {
+        IM_CHECK(abl::ClassifyExtension(".dxseq") == abl::Kind::Sequence);
+        IM_CHECK(abl::ClassifyExtension(".DXSEQ") == abl::Kind::Sequence);
+        IM_CHECK(abl::ClassifyExtension(".uvfx") == abl::Kind::Vfx);
+        IM_CHECK(std::string(abl::KindLabel(abl::Kind::Sequence)) == "シーケンス");
+        IM_CHECK(std::string(abl::KindLabel(abl::Kind::Vfx)) == "VFX");
+        IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) == ICON_T_LAYERS);
+        IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Vfx)) == ICON_T_PARTICLE);
+        IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) != ICON_FILE);
+        IM_CHECK(AssetBrowserPanel::KindTintU32(abl::Kind::Sequence) == ImGui::ColorConvertFloat4ToU32(dx12e::theme::TypeUi));
+        IM_CHECK(AssetBrowserPanel::KindTintU32(abl::Kind::Vfx) == ImGui::ColorConvertFloat4ToU32(dx12e::theme::TypeFolder));
+    }
+
+    // (1) ワークスペース「アニメ・シーケンサー」→ 下部タブが開き、描かれた案内が定数と同じ文面
     {
         const std::string g = ws::kTimelineGuidance;
         IM_CHECK(g.find("ダミー") == std::string::npos);
         IM_CHECK(g.find("W3") != std::string::npos);
         IM_CHECK(g.find(".dxseq") != std::string::npos);
         IM_CHECK(g.find("ダブルクリック") != std::string::npos);
-        // 登録タブのタイトルは見ない（bottom_dock_slot が検査用に再登録して残すため順序依存になる）
-        const bottomdock::Tab* tab = bottomdock::Find("timeline");
-        IM_CHECK(tab != nullptr);
-    }
 
-    // (2) 種別
-    IM_CHECK(abl::ClassifyExtension(".dxseq") == abl::Kind::Sequence);
-    IM_CHECK(abl::ClassifyExtension(".DXSEQ") == abl::Kind::Sequence);
-    IM_CHECK(abl::ClassifyExtension(".uvfx") == abl::Kind::Vfx);
-    IM_CHECK(std::string(abl::KindLabel(abl::Kind::Sequence)) == "シーケンス");
-    IM_CHECK(std::string(abl::KindLabel(abl::Kind::Vfx)) == "VFX");
-
-    // ワークスペース「アニメ・シーケンサー」で下部タブが開く
-    {
         const cmd::Env env{app->GetScene(), PathResolver::AssetsDir()};
         cmd::Execute(*ed, env, "workspace.animation");
         ctx->Yield(12);
         IM_CHECK(ed->currentWorkspace == "animation");
         IM_CHECK(bottomdock::IsOpen("timeline"));
+
+        const bottomdock::Tab* tab = bottomdock::Find("timeline");
+        IM_CHECK(tab != nullptr);
+        IM_CHECK(tab->title.find("ダミー") == std::string::npos);   // タブに出る名前（bottom_dock_slot は終わりに本物を戻す）
+        const std::string winName = bottomdock::WindowName(*tab);
+        const ImGuiID win = FocusWindow(ctx, winName.c_str());
+        IM_CHECK(win != 0);
+        ctx->SetRef(win);
+        const ImGuiTestItemInfo info = ctx->ItemInfo("##timelineGuidance", ImGuiTestOpFlags_NoError);
+        IM_CHECK(info.ID != 0);
+        const float want = ImGui::CalcTextSize(ws::kTimelineGuidance).x;   // 描かれた文字の矩形 = 定数の文面の幅
+        ctx->LogInfo("案内の幅 %.1f（期待 %.1f）", info.RectFull.GetWidth(), want);
+        IM_CHECK_LT(std::fabs(info.RectFull.GetWidth() - want), 2.0f);
     }
 
-    // (3) .dxseq の再生要求 → 再生が始まる
-    namespace fs = std::filesystem;
-    const fs::path dir = fs::path(PathResolver::AssetsDir()) / "sequences";
-    const fs::path file = dir / "__a10_ui_test.dxseq";
+    // (3) アセットブラウザの本物のダブルクリック
+    AssetBrowserPanel* ab = ed->assetBrowser;
+    IM_CHECK(ab != nullptr);
+    IM_CHECK(app->GetEngineMode() == Application::EngineMode::Editor);
+    const fs::path seqRoot = fs::path(PathResolver::AssetsDir()) / "sequences";
     std::error_code ec;
-    fs::create_directories(dir, ec);
+    Cleanup cl{app, ed, seqRoot, seqRoot / "__a10_ui_dir", !fs::exists(seqRoot, ec), {}, prevWs};
+    fs::create_directories(cl.workDir, ec);
+    const fs::path seqFile = cl.workDir / "__a10_ui_test.dxseq";
+    const fs::path vfxFile = cl.workDir / "__a10_ui_test.uvfx";
     {
-        std::ofstream o(file, std::ios::binary);
+        std::ofstream o(seqFile, std::ios::binary);
         o << "{\"format\":\"dxseq\",\"version\":1,\"id\":\"q_a10test\",\"name\":\"__a10_ui_test\",\"ticksPerSecond\":6000,"
              "\"frameRate\":30,\"range\":[0,60000],\"meta\":{},\"cuts\":[],\"markers\":[],\"bindings\":[]}";
     }
-    IM_CHECK(app->GetEngineMode() == Application::EngineMode::Editor);
-    ed->pendingSequencePlay = "sequences/__a10_ui_test.dxseq";
-    ctx->Yield(6);
-    const bool consumed = ed->pendingSequencePlay.empty();
-    const std::string playing = AppAccess::SequenceEditorPlayingDoc(*app);
-    ctx->LogInfo("consumed=%d playing doc='%s'", consumed ? 1 : 0, playing.c_str());
+    const std::string seqRel = "sequences/__a10_ui_dir/__a10_ui_test.dxseq";
+    const std::string vfxRel = "sequences/__a10_ui_dir/__a10_ui_test.uvfx";
+    cl.docRel = seqRel;
+
+    // 一覧をこのフォルダへ（「上へ」が 0 番、ファイルが 1 番）
+    const ImGuiID assets = FocusWindow(ctx, kWinAssets);
+    IM_CHECK(assets != 0);
+    ab->NavigateTo(cl.workDir);
+    auto waitOne = [&]() {
+        for (int i = 0; i < 600; ++i)
+        {
+            ctx->Yield(1);
+            if (ab->CurrentDir() == cl.workDir && !ab->IsScanning() && ab->EntryCount() == 1) { ctx->Yield(3); return true; }
+        }
+        return false;
+    };
+    auto itemsWindow = [&]() -> ImGuiID {
+        for (ImGuiWindow* w : ctx->UiContext->Windows)
+            if (w->WasActive && std::strstr(w->Name, "##Items") != nullptr && std::strstr(w->Name, "アセットブラウザ") != nullptr) return w->ID;
+        return 0;
+    };
+    auto doubleClickFirst = [&]() -> bool {
+        const ImGuiID items = itemsWindow();
+        if (items == 0) return false;
+        ctx->SetRef(items);
+        const char* path = ctx->ItemExists("**/$$1/##cell") ? "**/$$1/##cell" : (ctx->ItemExists("**/$$1/##row") ? "**/$$1/##row" : nullptr);
+        if (!path) return false;
+        ctx->ItemDoubleClick(path);
+        return true;
+    };
+
+    IM_CHECK(waitOne());
+    IM_CHECK(doubleClickFirst());
+    std::string playing;
+    for (int i = 0; i < 60 && playing.empty(); ++i) { ctx->Yield(1); playing = AppAccess::SequenceEditorPlayingDoc(*app); }
+    const std::string loadedRel = AppAccess::SequenceDocRelForTest(*app, seqRel);
+    ctx->LogInfo("playing='%s' doc rel='%s' pending='%s'", playing.c_str(), loadedRel.c_str(), ed->pendingSequencePlay.c_str());
+    IM_CHECK(ed->pendingSequencePlay.empty());      // Application が消費した
+    IM_CHECK(loadedRel == seqRel);                  // パネルが組んだ assets 相対パスがそのまま読み込まれた
+    IM_CHECK(!playing.empty());                     // 再生が始まった
     AppAccess::SequenceEditorStopForTest(*app);
-    fs::remove(file, ec);
-    IM_CHECK(consumed);
-    IM_CHECK(!playing.empty());
     IM_CHECK(AppAccess::SequenceEditorPlayingDoc(*app).empty());
 
+    // .uvfx のダブルクリック: 置く要求が立つ（消費は BD4。A は消さない）
+    fs::remove(seqFile, ec);
+    {
+        std::ofstream o(vfxFile, std::ios::binary);
+        o << "{}";
+    }
+    ab->NavigateTo(cl.workDir);
+    ctx->Yield(2);
+    IM_CHECK(waitOne());
+    ed->pendingVfxPlace.clear();
+    IM_CHECK(doubleClickFirst());
+    // BD4 が先に統合済みなら、要求は同フレームで消費されて空になる。未統合なら立ったまま。どちらでも可（立っているなら値を検査）。
+    ctx->Yield(1);
+    ctx->LogInfo("pendingVfxPlace='%s'", ed->pendingVfxPlace.c_str());
+    IM_CHECK(ed->pendingVfxPlace.empty() || ed->pendingVfxPlace == vfxRel);
+    IM_CHECK(ed->pendingSequencePlay.empty());
 }
 
 } // namespace uitest

@@ -122,6 +122,8 @@ void EditorLayer::Initialize(EditorContext* ctx,
         [](EditorContext&) {
             ImGui::Spacing();
             ImGui::TextDisabled("%s", ws::kTimelineGuidance);
+            // UI テストが「描かれた案内の文面」の幅を測れるよう、文字の矩形に ID を付ける（操作はできない）
+            ImGui::ItemAdd(ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax()), ImGui::GetID("##timelineGuidance"), nullptr, ImGuiItemFlags_NoNav);
             ImGui::TextDisabled("タブ帯をダブルクリックすると下部ドックが広がります（もう一度で元に戻ります）。");
         }});
     m_workspace = std::make_unique<WorkspaceManager>();

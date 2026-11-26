@@ -41,6 +41,13 @@ void Application::InitSequencer()
 
 void Application::UpdateSequencers(f32 dt, bool paused)
 {
+    // A10: シーンが無い（またはホストが無い）ときの再生要求は、溜めずに捨てて知らせる（後でシーンを開いた時に突然鳴り出さないように）。
+    if ((!m_sequencer || !m_scene) && m_editorCtx && !m_editorCtx->pendingSequencePlay.empty())
+    {
+        const std::string rel = std::move(m_editorCtx->pendingSequencePlay);
+        m_editorCtx->pendingSequencePlay.clear();
+        m_editorCtx->Notify(ui::ToastKind::Warn, "シーンが開いていないため、シーケンスを再生できません: " + rel);
+    }
     if (!m_sequencer || !m_scene) return;
     m_sequencer->SetScene(m_scene.get());
     // A10: アセットブラウザの .dxseq のダブルクリック（EditorContext::pendingSequencePlay = assets 相対パス）。
@@ -60,7 +67,10 @@ void Application::UpdateSequencers(f32 dt, bool paused)
             }
             else
             {
-                ok = m_sequencer->EditorScrub(d, 0, err) && m_sequencer->EditorPlay(d, /*loop=*/false, /*rate=*/1.0, err);
+                // 先頭 = 範囲の始まり（range が 0 から始まらない .dxseq もある）
+                seq::Tick a = 0, b = 0;
+                seq::GetRange(d->seq, a, b);
+                ok = m_sequencer->EditorScrub(d, a, err) && m_sequencer->EditorPlay(d, /*loop=*/false, /*rate=*/1.0, err);
             }
         }
         if (ok) m_editorCtx->Notify(ui::ToastKind::Info, "シーケンスを再生します: " + rel);
@@ -93,6 +103,20 @@ std::string AppAccess::SequenceEditorPlayingDoc(Application& app)
     if (!app.m_sequencer) return {};
     const seqhost::EditorStatus st = app.m_sequencer->GetEditorStatus();
     return (st.active && st.playing) ? st.doc : std::string();
+}
+
+void AppAccess::SequenceCloseDocForTest(Application& app, const std::string& nameOrRel)
+{
+    if (!app.m_sequencer) return;
+    std::string err;
+    app.m_sequencer->CloseDoc(nameOrRel, err);
+}
+
+std::string AppAccess::SequenceDocRelForTest(Application& app, const std::string& nameOrRel)
+{
+    if (!app.m_sequencer) return {};
+    const seqhost::DocPtr d = app.m_sequencer->FindDoc(nameOrRel);
+    return d ? d->rel : std::string();
 }
 
 void AppAccess::SequenceEditorStopForTest(Application& app)
