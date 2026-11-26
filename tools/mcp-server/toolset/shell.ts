@@ -178,7 +178,7 @@ if (ENHANCED) {
           const args = (request?.params?.arguments ?? {}) as Record<string, unknown>;
           if (/^MCP error -32602: Tool .* not found/.test(text)) {
             const body = await structureError(Object.assign(new Error(`unknown method: ${name}`), { code: 8, errName: "E_UNKNOWN_TOOL" }), {
-              tool: name, args, suggestNames: () => shell.catalog.names(),
+              tool: name, args, suggestNames: () => shell.catalog.names(), isDirect: (n) => shell.isDirectlyCallable(n),
             });
             body.message = `ツール '${name}' は無い`;
             recordError({ at: Date.now(), tool: name, code: body.code, message: body.message });
