@@ -1,0 +1,57 @@
+# UI 文字の追加分（subset_fonts.py が charset に足す。# で始まる行は無視）
+# GG final(tokens.json v3.1.0) の tabIds（番号付きタブの表題）と、図番 UN-x.y.z・表題欄に使う字。
+# タブ表題は ASCII 以外が日本語なので、ソースの文字列リテラルに現れる前でも字を確保しておく。
+UN-0123456789.xyz XYZ
+ヒエラルキー 01 hierarchy
+レイヤー 02 layers
+シーン 03 scene
+ゲーム 04 game
+マテリアル 05 material
+インスペクター 06 inspector
+ライティング 07 lighting
+コンテンツブラウザ 08 content
+アニメーション 09 animation
+プロファイラ 10 profiler
+コンソール 11 console
+出力ログ 12 outputLog
+Post Process 13 postProcess
+Post Process パラメータ 14 postParams
+Skybox / IBL 15 skybox
+SSAO 16 ssao
+SSR / SSGI 17 ssr
+Volumetric Fog 18 fog
+ライティング 07 lighting
+エンジン設定 19 engineSettings
+ビルド設定 20 buildSettings
+Scene Flow 21 sceneFlow
+Project 22 project
+Git 変更 23 git
+地形ツール 24 terrain
+植生ツール 25 foliage
+スカルプト 26 sculpt
+ナビメッシュ 27 navmesh
+リファレンスレンダー 28 pathTracer
+パーティクルエディタ 29 particle
+UIエディタ 30 uiEditor
+UIアニメーション 31 uiAnim
+スプライトシート 32 spriteSheet
+トランジション 33 transition
+マテリアルエディタ 05 material
+マテリアルライブラリ (Poly Haven) 34 materialLib
+マテリアルグラフ 35 materialGraph
+ノードグラフ サンドボックス 36 nodeGraphSandbox
+オーディオミキサー 37 audioMixer
+MCP / AI Bridge 38 mcp
+Network 39 network
+Network 設定 40 networkSettings
+ハードウェア 41 hardware
+エンジン診断 (UI 自動テスト) 42 diagnostics
+# GG tokens.json（v3.1.0）の記号・単位（タグ文言 ❚❚ 一時停止、番号 ①〜④ など）
+§°±²µ·×÷Δαστω–—…›↑→↔∈−≒≤≥⋯①②③④△▶▸◇★✓❚、。「」『』〜（）＋＝
+# GG 仕様の記号（␣ キー・丸数字）。A2〜A8 が使っても書体の作り直しが要らないように先に確保しておく
+␣ ⑤
+
+[splash]
+# 起動画面（GG の boot_impl_spec §3 / §5: 起動シーケンス・工程・新規プロジェクト・シーン解析・シェーダーキャッシュを検証中 など）が
+# 描きうる字。仕様書にある非 ASCII 字をすべて入れておく（BD3 が文言を足しても、ここに収まる限り資産の作り直しは要らない）
+§°·×α—…′←→∪≤○、。「」〜あいうえおかがきぎくけげこごさしじすずせそただちっつてでとどなにねのはばびぶへほまみむめもやよらりるれろわをんァアィイウェエォカキクグケゲコゴサシジスセゼソタダッテデトドニハバパピフブプベボポマムメモャュョラリルレロワン・ー一三上下不中丸主了互仕他付代以件位体余作使例侵個倍値側備像元先光入全公内円出分切列初判別刻則前割力動化単即参収取受台右合同名周呼品四回図在地域基報場壊声変外多大太央失始字存完定実寸対射小尺尾届属層工左差帯常幅広度座廃引弧張弾当形彩影待後従心応情態成扇手扱択拡持指捗接描提換放敗数文新方既日明時普書替最期末本条析枚枠柔査校根梱検業構様標欄次止正残段毎比水法流消済渡測準演点無焼照版物状現理生画略番発的盛盤目直省眉真眼瞬矩確示秒移程穴空窓立端第築簡約素細終組絵線編縁縮置考腕自色落行表装製要見規角解計記証認読象起足跡軌輪辺込返追退送逃透通進過選部郭重針鎖開間降限除隅階際集静面音韻響頂項順領題食高鳴黄％（）＋／

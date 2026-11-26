@@ -493,6 +493,27 @@ if(TARGET Renderer)   # Renderer があるのは本体と一緒に構成した�
     set_tests_properties(DlssWiringCheck PROPERTIES TIMEOUT 120)
 endif()
 
+# --- UI 書体のサブセット（W1-A1）。生成物と字の集合の検査。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(FontSubsetTests font_subset_test.cpp)
+    target_link_libraries(FontSubsetTests PRIVATE Gui)
+    target_compile_definitions(FontSubsetTests PRIVATE FONT_TEST_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(FontSubsetTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(FontSubsetTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME FontSubsetTests COMMAND FontSubsetTests)
+endif()
+# tools/subset_fonts.py --check（標準ライブラリだけ。charset と生成物の SHA256 と上限）
+# Windows Store の python.exe スタブ（実体が無い）を拾わないよう、実行して確かめる FindPython3 を使う。見つからなければ警告を出す（黙って登録しない）
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME FontSubsetCheck COMMAND ${Python3_EXECUTABLE} -I ${DX12_REPO_ROOT}/tools/subset_fonts.py --check)
+    set_tests_properties(FontSubsetCheck PROPERTIES TIMEOUT 120)
+else()
+    message(WARNING "Python3 が見つからないため FontSubsetCheck を登録できません（tools/subset_fonts.py --check は標準ライブラリだけで動く）")
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
