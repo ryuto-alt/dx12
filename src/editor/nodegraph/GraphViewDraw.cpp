@@ -76,7 +76,29 @@ void GraphView::DrawText(ImDrawList* dl, ImFont* font, float units, ImVec2 pos, 
 {
     const float px = std::floor(units * m_vp.Scale() + 0.5f);
     if (px < 5.0f || !font) return;
-    dl->AddText(font, px, pos, col, text, nullptr, 0.0f, clip);
+    // MOD-ED-14: ズームのたびに別サイズのグリフを焼かないよう、フォントのサイズを 6 段
+    // (0.5/0.75/1/1.25/1.5/2.0 × DPI) に量子化し、段との差は頂点の拡縮で吸収する。
+    // 段ちょうどのズーム（既定の 1.0 を含む）では比が 1 で、従来と同じ描画（頂点に触らない）。
+    static constexpr float kSteps[6] = {0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f};
+    const float z = std::max(0.01f, m_vp.zoom);
+    float step = kSteps[0];
+    for (float s : kSteps)
+        if (std::fabs(std::log(z / s)) < std::fabs(std::log(z / step))) step = s;
+    const float qpx = std::max(1.0f, std::floor(units * step * m_vp.dpi + 0.5f));
+    if (qpx == px)
+    {
+        dl->AddText(font, px, pos, col, text, nullptr, 0.0f, clip);
+        return;
+    }
+    const int v0 = dl->VtxBuffer.Size;
+    dl->AddText(font, qpx, pos, col, text, nullptr, 0.0f, clip);
+    const float r = px / qpx;
+    for (int i = v0; i < dl->VtxBuffer.Size; ++i)
+    {
+        ImDrawVert& v = dl->VtxBuffer[i];
+        v.pos.x = pos.x + (v.pos.x - pos.x) * r;
+        v.pos.y = pos.y + (v.pos.y - pos.y) * r;
+    }
 }
 
 void GraphView::DrawGlow(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float rounding, ImU32 col, float strength, float radiusPx) const

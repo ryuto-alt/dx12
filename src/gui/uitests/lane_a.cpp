@@ -5,8 +5,10 @@
 
 #include "core/Application.h"
 #include "core/AppAccess.h"
+#include "core/DpiScale.h"
 #include "core/PathResolver.h"
 #include "core/SceneBackup.h"
+#include "editor/panels/MaterialGraphPanel.h"
 #include "editor/EditorContext.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
@@ -249,6 +251,68 @@ void T_AutosaveProtectKeepsForcedMerge(ImGuiTestContext* ctx)
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
+    ctx->Yield(6);
+}
+
+// MOD-ED-01 / MOD-ED-14: マテリアルグラフを DPI 1.0 / 1.5 / 2.0 で開き、ホイールでズームを 40 回往復する。
+//   フォントのサイズは 6 段に量子化され、ImGui のテクスチャ用 SRV は DescriptorHeap の遅延返却つき確保で賄う。
+//   ImGui の assert（テストエンジンが失敗に変える）が 0、往復のあとも UI（ツールバー・ヒエラルキー）が残ること。
+//   アトラスの枚数は多サイズのグリフを焼いて 2 枚以上へ育てたうえで、描画が崩れない（UI が消えない）ことを見る。
+void T_MatgraphZoomStress(ImGuiTestContext* ctx)
+{
+    EditorContext* ed  = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr);
+    const bool  bg = app->IsBackground();
+    const float origOverride = dpi::Override();
+
+    ed->showMaterialGraph = true;
+    ctx->Yield(10);
+    MaterialGraphPanel::DebugCall(*ed, "{\"op\":\"new\",\"template\":\"sample\"}");
+    ctx->Yield(10);
+
+    static const float kScales[] = {1.0f, 1.5f, 2.0f, 1.0f};
+    for (float sc : kScales)
+    {
+        app->SetUiScaleOverride(sc);
+        for (int f = 0; f < 90; ++f)
+        {
+            ctx->Yield(1);
+            const bool sizeOk = !bg || (std::fabs(static_cast<float>(app->GetClientWidthPx()) - 1920.0f * sc) < 1.5f
+                                        && std::fabs(static_cast<float>(app->GetClientHeightPx()) - 1080.0f * sc) < 1.5f);
+            if (std::fabs(app->GetUiScale() - sc) < 0.001f && sizeOk && f >= 4) break;
+        }
+        ctx->Yield(10);
+
+        // 多サイズのグリフを焼いて、アトラスのテクスチャを増やす（日本語＋ラテン）
+        {
+            ImFont* font = ImGui::GetFont();
+            for (float px = 8.0f; px <= 96.0f; px += 4.0f)
+                font->CalcTextSizeA(px, FLT_MAX, 0.0f, "Material Graph ãããªã¢ã«ã°ã©ã");
+            ctx->Yield(3);
+        }
+
+        ImGuiWindow* gw = ImGui::FindWindowByName("###MaterialGraph");
+        IM_CHECK(gw != nullptr);
+        const ImVec2 c(gw->Pos.x + gw->Size.x * 0.5f, gw->Pos.y + gw->Size.y * 0.5f);
+        ctx->MouseMoveToPos(c);
+        for (int i = 0; i < 40; ++i)
+        {
+            ctx->MouseWheelY((i % 20) < 10 ? 2.0f : -2.0f);   // 10 回拡大 → 10 回縮小 を 2 往復
+            ctx->Yield(2);
+        }
+        ctx->Yield(6);
+        ctx->LogInfo("dpi %.2f: atlas textures=%d", sc, ImGui::GetPlatformIO().Textures.Size);
+        IM_CHECK(ImGui::FindWindowByName("###MaterialGraph") != nullptr);
+        ImGuiWindow* tb = ImGui::FindWindowByName("##Toolbar");
+        ImGuiWindow* hw = ImGui::FindWindowByName("ヒエラルキー");
+        IM_CHECK(tb != nullptr && tb->Active && tb->Size.x > 50.0f);   // UI が全部消えていない
+        IM_CHECK(hw != nullptr && hw->Active && hw->Size.x > 50.0f);
+    }
+
+    app->SetUiScaleOverride(origOverride);
+    ctx->Yield(20);
+    ed->showMaterialGraph = false;
     ctx->Yield(6);
 }
 
