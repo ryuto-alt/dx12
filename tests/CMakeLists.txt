@@ -595,6 +595,18 @@ if(MSVC)
 endif()
 add_test(NAME ParticleOneShotTests COMMAND ParticleOneShotTests)
 set_tests_properties(ParticleOneShotTests PROPERTIES TIMEOUT 60)
+
+# --- パーティクルエディタの「適用」の確認と Undo（W1-A15 / BUG-21 の暫定策）。純ロジック。GPU 不要 ---
+add_executable(ParticleApplyUndoTests particle_apply_undo_test.cpp ../src/editor/UndoSystem.cpp)
+target_link_libraries(ParticleApplyUndoTests PRIVATE Scene)
+target_include_directories(ParticleApplyUndoTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(ParticleApplyUndoTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+if(MSVC)
+    target_compile_options(ParticleApplyUndoTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(ParticleApplyUndoTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ParticleApplyUndoTests COMMAND ParticleApplyUndoTests)
+set_tests_properties(ParticleApplyUndoTests PROPERTIES TIMEOUT 60)
 endif()
 
 # ==== lane-A end ====

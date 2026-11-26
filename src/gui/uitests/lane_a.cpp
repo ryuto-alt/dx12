@@ -10,6 +10,8 @@
 #include "core/DpiScale.h"
 #include "core/PathResolver.h"
 #include "core/SceneBackup.h"
+#include "core/SafeRemove.h"
+#include "input/VirtualInput.h"
 #include "editor/AssetBrowserLogic.h"
 #include "editor/BottomDock.h"
 #include "editor/EditorIcons.h"
@@ -20,6 +22,8 @@
 #include "editor/nodegraph/GraphTextQuant.h"
 #include "editor/panels/MaterialGraphPanel.h"
 #include "editor/EditorContext.h"
+#include "editor/UndoSystem.h"
+#include "ecs/Components.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
 #include "scene/SceneSettingsHash.h"
@@ -409,7 +413,7 @@ void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
             ed->pendingSequencePlay.clear();
             ed->pendingVfxPlace.clear();
             std::error_code ec;
-            fs::remove_all(workDir, ec);                                  // このテストが作った一時フォルダだけ
+            saferm::RemoveAll(workDir, ec, seqRoot);                      // このテストが作った一時フォルダだけ
             if (madeSeqRoot && fs::is_empty(seqRoot, ec)) fs::remove(seqRoot, ec);
         }
     };
@@ -530,6 +534,90 @@ void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
     ctx->LogInfo("pendingVfxPlace='%s'", ed->pendingVfxPlace.c_str());
     IM_CHECK(ed->pendingVfxPlace.empty() || ed->pendingVfxPlace == vfxRel);
     IM_CHECK(ed->pendingSequencePlay.empty());
+}
+
+// W1-A15（BUG-21 の暫定策）: パーティクルエディタの「適用」は、レイヤー 0 に中身があると確認を出す。
+//   キャンセルでレイヤーが不変・Undo も積まれない / 「置き換え」で適用され、Ctrl+Z 相当の Undo で元の値に戻る。
+//   MCP のセッション（aiSessionEver）かつ仮想入力中はモーダルを出さず、そのまま適用される（AI は押せないため）。
+//   実入力で aiSessionEver=true でも確認が出ることは単体テスト（ShouldConfirmReplace）で固定している。
+void T_VfxApplyConfirm(ImGuiTestContext* ctx)
+{
+    EditorContext* ed  = Editor();
+    Application*   app = App();
+    IM_CHECK(ed != nullptr && app != nullptr && app->GetScene() != nullptr);
+    if (!ed || !app || !app->GetScene()) return;
+    auto& reg = app->GetScene()->GetRegistry();
+
+    struct Cleanup
+    {
+        EditorContext* ed; entt::registry* reg; entt::entity e; bool prevShow; bool prevAi;
+        ~Cleanup()
+        {
+            ed->aiSessionEver = prevAi;
+            ed->showVfxEditor = prevShow;
+            if (reg->valid(e)) { ed->ClearSelection(); reg->destroy(e); }
+        }
+    } cleanup{ed, &reg, entt::null, ed->showVfxEditor, ed->aiSessionEver};
+
+    LogStep(ctx, "中身のあるレイヤー 0 を持つ放出器を作って選ぶ");
+    const entt::entity e = reg.create();
+    cleanup.e = e;
+    reg.emplace<NameTag>(e, NameTag{"UiTestVfxApply"});
+    reg.emplace<Transform>(e);
+    ParticleEmitter em;
+    em.layers.emplace_back();
+    em.layers[0].name = "Torch"; em.layers[0].rate = 11.0f; em.layers[0].kind = 3;
+    reg.emplace<ParticleEmitter>(e, em);
+    const ParticleEmitter original = reg.get<ParticleEmitter>(e);
+    ed->aiSessionEver = false;
+    ed->Select(e);
+    // 最後の「MCP では出ない」手順は仮想入力が前提。そうでない実行では理由を明示して止める
+    IM_CHECK(vinput::Enabled());
+    if (!vinput::Enabled()) return;
+
+    const ImGuiID win = OpenToolWindow(ctx, &EditorContext::showVfxEditor, kWinVfx);
+    IM_CHECK(win != 0);
+    if (win == 0) return;
+    ctx->Yield(4);
+
+    const size_t undoBefore = ed->undoSystem.UndoDepth();
+
+    LogStep(ctx, "「選択エンティティへ適用」で確認が出る（まだ適用されない）");
+    IM_CHECK(ClickPath(ctx, ChildWindowId(ctx, kWinVfxMain), "選択エンティティへ適用"));
+    ctx->Yield(6);
+    ImGuiID confirm = FocusWindow(ctx, "//レイヤー 0 を置き換えます###VfxReplaceLayer0Popup");
+    IM_CHECK(confirm != 0);
+    IM_CHECK(reg.get<ParticleEmitter>(e) == original);
+
+    LogStep(ctx, "キャンセルでレイヤーが不変・Undo も積まれない");
+    if (confirm != 0) { ctx->SetRef(confirm); ctx->ItemClick("キャンセル"); }
+    ctx->Yield(6);
+    IM_CHECK(reg.get<ParticleEmitter>(e) == original);
+    IM_CHECK(ed->undoSystem.UndoDepth() == undoBefore);
+    IM_CHECK(FocusWindow(ctx, "//レイヤー 0 を置き換えます###VfxReplaceLayer0Popup") == 0);
+
+    LogStep(ctx, "もう一度押して「置き換え」で適用され、Undo で元に戻る");
+    IM_CHECK(ClickPath(ctx, ChildWindowId(ctx, kWinVfxMain), "選択エンティティへ適用"));
+    ctx->Yield(6);
+    confirm = FocusWindow(ctx, "//レイヤー 0 を置き換えます###VfxReplaceLayer0Popup");
+    IM_CHECK(confirm != 0);
+    if (confirm != 0) { ctx->SetRef(confirm); ctx->ItemClick("置き換え"); }
+    ctx->Yield(6);
+    IM_CHECK(reg.get<ParticleEmitter>(e) != original);
+    IM_CHECK(ed->undoSystem.UndoDepth() == undoBefore + 1);
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);                         // Ctrl+Z の経路
+    ctx->Yield(6);
+    IM_CHECK(reg.get<ParticleEmitter>(e) == original);
+
+    LogStep(ctx, "MCP のセッションではモーダルを出さずにそのまま適用される");
+    ed->aiSessionEver = true;
+    IM_CHECK(ClickPath(ctx, ChildWindowId(ctx, kWinVfxMain), "選択エンティティへ適用"));
+    ctx->Yield(6);
+    IM_CHECK(FocusWindow(ctx, "//レイヤー 0 を置き換えます###VfxReplaceLayer0Popup") == 0);
+    IM_CHECK(reg.get<ParticleEmitter>(e) != original);
+    ed->undoSystem.Undo();
+    IM_CHECK(reg.get<ParticleEmitter>(e) == original);
 }
 
 } // namespace uitest
