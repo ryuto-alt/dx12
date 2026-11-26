@@ -199,7 +199,7 @@ static const char* KindGlyph(Kind k)
     case Kind::UiAnim:        return ICON_T_ANIM;
     case Kind::SpriteSheet:   return ICON_T_GRID;
     case Kind::MaterialGraph: return ICON_T_SPLINE;   // .dxmg（ノードのつながり）
-    case Kind::Sequence:      return ICON_T_LAYERS;   // .dxseq（トラックの重なり）
+    case Kind::Sequence:      return ICON_T_SEQUENCE; // .dxseq（カチンコ。Post Process の layers と別の絵）
     case Kind::Vfx:           return ICON_T_PARTICLE; // .uvfx
     default:                  return ICON_FILE;
     }

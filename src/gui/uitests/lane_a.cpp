@@ -395,7 +395,7 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
 
 // W1-A10 / BUG-02 / BUG-42: アニメ・シーケンサーの暫定の案内、.dxseq / .uvfx の種別、.dxseq の再生要求。
 //   (1) 下部タブ「timeline」: 登録タイトルに「ダミー」が無く、描かれた案内の文面が ws::kTimelineGuidance（W3 と .dxseq のダブルクリックを案内）。
-//   (2) .dxseq = 「シーケンス」+ ICON_T_LAYERS + アニメ系の色 / .uvfx = 「VFX」+ ICON_T_PARTICLE + 光り物の色。
+//   (2) .dxseq = 「シーケンス」+ ICON_T_SEQUENCE + アニメ系の色 / .uvfx = 「VFX」+ ICON_T_PARTICLE + 光り物の色。
 //   (3) アセットブラウザの本物のダブルクリック → .dxseq は assets 相対パスで再生が始まる / .uvfx は pendingVfxPlace が立つ（消すのは BD4）。
 void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
 {
@@ -434,7 +434,8 @@ void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
         IM_CHECK(abl::ClassifyExtension(".uvfx") == abl::Kind::Vfx);
         IM_CHECK(std::string(abl::KindLabel(abl::Kind::Sequence)) == "シーケンス");
         IM_CHECK(std::string(abl::KindLabel(abl::Kind::Vfx)) == "VFX");
-        IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) == ICON_T_LAYERS);
+        IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) == ICON_T_SEQUENCE);
+        IM_CHECK(std::string(ICON_T_SEQUENCE) != std::string(ICON_T_LAYERS));   // FU-E-12: Post Process と同じ絵にしない
         IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Vfx)) == ICON_T_PARTICLE);
         IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) != ICON_FILE);
         IM_CHECK(AssetBrowserPanel::KindTintU32(abl::Kind::Sequence) == ImGui::ColorConvertFloat4ToU32(dx12e::theme::TypeUi));
