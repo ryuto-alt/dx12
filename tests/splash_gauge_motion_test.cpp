@@ -89,9 +89,9 @@ void Test_FastCanonical()
 
     // 立ち上がり: トンボ 8〜148、文字盤 8〜268、黒から
     CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, 0.0, 0.f).tomboT == 0.f);
-    CHECK_NEAR(sp::EvaluateGauge(sp::GaugePath::Fast, 148.0, 0.f).tomboT, 1.0, 1e-6);
+    CHECK_NEAR(sp::EvaluateGauge(sp::GaugePath::Fast, sp::gauge::kTomboStartMs + sp::gauge::kTomboDurMs, 0.f).tomboT, 1.0, 1e-6);
     CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, 0.0, 0.f).tickLit == 0);
-    CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, 268.0, 0.f).tickLit == sp::gauge::kDialTickCount);
+    CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, ev.clickMs[0], 0.f).tickLit == sp::gauge::kDialTickCount);
     CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, 138.0, 0.f).tickLit > 0 && sp::EvaluateGauge(sp::GaugePath::Fast, 138.0, 0.f).tickLit < sp::gauge::kDialTickCount);
 
     // 時刻の逆戻りでも決定論（純関数）
@@ -110,6 +110,9 @@ double MaxDeltaOmega(const std::vector<double>& deg1ms, std::size_t* where = nul
     return m;
 }
 
+double g_canonMaxDw = 12.6;   // 正規曲線の 1ms あたりの角速度変化の最大（Test_FastVelocityContinuity が実測で上書き）
+constexpr double kSlowDwFactor = 4.0;   // 遅い経路の許容 = 正規の最大 x 4（最終接近の最初の区間は次の歯までが短い。実測は約 3.1 倍）
+
 void Test_FastVelocityContinuity()
 {
     std::vector<double> v;
@@ -118,6 +121,7 @@ void Test_FastVelocityContinuity()
     const double m = MaxDeltaOmega(v, &at);
     std::printf("  fast canonical max d-omega = %.3f at %zu ms\n", m, at);
     CHECK(m < 15.0);   // 加速度の上限（15,000 度/s^2）。速度の段差が無いことは別に解析的に確かめる
+    g_canonMaxDw = m;
 }
 
 struct SlowRun
@@ -178,7 +182,7 @@ void Test_SlowScenarios()
         std::printf("  fin=%.0f: max d-omega %.3f at %zu ms (approach start %.1f, lock %.1f)%c", fin, dw, dwAt, fin + sp::gauge::kDisplayLagMs, r.lockWall, 10);
         // (debug print removed)
         if (!(dw < 5.0)) std::printf("  (fin=%.0f max d-omega = %.3f deg/s per ms)\n", fin, dw);
-        CHECK(dw < 100.0);   // 加速度の暴れが無い（最終接近の最初の区間は次の歯までが短いので大きくなりうる）
+        CHECK(dw < kSlowDwFactor * g_canonMaxDw);   // |Δω| は正規の最大の k 倍以内（EXEC §2.6 の 5 度/s/フレームは正規曲線自体が満たさないので、この形に改めた）
         // 継ぎ目（バネ -> 最終接近）で角速度が連続: 片側差分で |Δω| < 5 度/s
         {
             const double j = d.ApproachWallMs(), e = 0.01;
@@ -190,6 +194,7 @@ void Test_SlowScenarios()
         // 最後の C23 は 360 度、ロックで 360
         CHECK_NEAR(d.Frame(r.lockWall).needleDeg, 360.0, 0.01);
         CHECK(d.Frame(r.lockWall).locked);
+        CHECK(SameFrame(d.Frame(r.lockWall), sp::EvaluateAfterLock(0.0, ev)));   // ロックの瞬間は丸めに関わらずロックのフレーム
         CHECK(!d.Frame(r.lockWall - 0.5).locked);
 
         // ロック以降は正規と同一（全フィールド。ロックからの経過 0..2200ms を 0.5ms 刻み）
@@ -210,7 +215,7 @@ void Test_SlowScenarios()
                 CHECK_NEAR(c.playAtMs, r.lockWall, 1e-9);
             }
             else lastClickIdx = std::max(lastClickIdx, c.index);
-            CHECK(c.playAtMs - c.issuedAtMs >= sp::gauge::kLookaheadMs - 1e-9);      // (4)
+            CHECK(c.playAtMs - c.issuedAtMs >= sp::gauge::kLookaheadMs - 1e-6);      // (4)
         }
         CHECK(tail == 1);
         CHECK(lastClickIdx == 23);
@@ -241,6 +246,98 @@ void Test_SlowScenarios()
             CHECK_NEAR(i2 / i1, (ev.clickMs[23] - ev.clickMs[22]) / (ev.clickMs[22] - ev.clickMs[21]), 0.02);
         }
     }
+}
+
+// ヒッチ・不規則なフレーム間隔・進捗の飛びでも、先読み 50ms・単調・345 度・ロックの瞬間の一致が保たれる（決定論の疑似乱数）
+void Test_SlowHitches()
+{
+    for (std::uint32_t run = 0; run < 400; ++run)
+    {
+        sp::GaugeSlowDriver d;
+        const double fin = 300.0 + sp::Rand01(11, run) * 6000.0;
+        double t = 0, progress = 0, lastNeedle = 0, lastTimeline = 0;
+        std::uint32_t k = 0;
+        bool finished = false;
+        for (int step = 0; step < 4000 && !(finished && t > d.LockWallMs() + 5.0); ++step)
+        {
+            const double r = sp::Rand01(100 + run, k++);
+            t += (r < 0.12) ? 40.0 + sp::Rand01(200 + run, k++) * 400.0 : 8.0 + sp::Rand01(300 + run, k++) * 12.0;   // ヒッチ 40..440ms
+            if (sp::Rand01(400 + run, k++) < 0.2) progress = std::min(1.0, progress + sp::Rand01(500 + run, k++) * 0.9);   // 進捗の飛び
+            const bool f = t >= fin;
+            d.Update(t, static_cast<float>(progress), f);
+            finished = finished || f;
+            for (const auto& c : d.TakeCues())
+            {
+                CHECK(c.playAtMs - c.issuedAtMs >= sp::gauge::kLookaheadMs - 1e-6);
+                CHECK(c.playAtMs >= t);
+            }
+            const auto fr = d.Frame(t);
+            CHECK(fr.needleDeg + 1e-3f >= lastNeedle);
+            CHECK(fr.timelineMs + 1e-3f >= lastTimeline);
+            if (!finished) CHECK(fr.needleDeg <= 345.0f + 1e-3f);
+            if (!fr.needleShown) CHECK(fr.needleDeg == 0.f);
+            lastNeedle = fr.needleDeg; lastTimeline = fr.timelineMs;
+        }
+        CHECK(!std::isnan(d.LockWallMs()));
+        CHECK(SameFrame(d.Frame(d.LockWallMs()), sp::EvaluateAfterLock(0.0)));
+        CHECK(!d.Frame(d.LockWallMs() - 1e-3).locked);
+        for (double s = 0; s <= 2200.0; s += 3.7) CHECK(SameFrame(d.Frame(d.LockWallMs() + s), sp::EvaluateAfterLock(s)));
+    }
+}
+
+// 進捗が上限（0.95 = 342 度）に達して待っているところへ完了要求: 先読みと一致が保たれる
+void Test_SlowFinishAtCap()
+{
+    sp::GaugeSlowDriver d;
+    double t = 0;
+    for (; t < 6000.0; t += 1000.0 / 60.0) d.Update(t, 1.0f, false);
+    d.Update(t, 1.0f, true);
+    const auto cues = d.TakeCues();
+    CHECK(!cues.empty());
+    for (const auto& c : cues) CHECK(c.playAtMs - c.issuedAtMs >= sp::gauge::kLookaheadMs - 1e-6);
+    CHECK(SameFrame(d.Frame(d.LockWallMs()), sp::EvaluateAfterLock(0.0)));
+}
+
+// 速い経路でロードが C22 より遅れた: 345 度で待ち、完了要求から最終接近でロック（BA-2 の縮退）
+void Test_FastLateFinish()
+{
+    const auto& ev = Ev();
+    {   // C22 より前に完了要求: 最後まで正規
+        sp::GaugeFastDriver d;
+        for (double t = 0; t < 2500.0; t += 1000.0 / 60.0) d.Update(t, 1.0f, t >= 1000.0);
+        CHECK(!d.HandedOver());
+        CHECK_NEAR(d.LockWallMs(), ev.lockMs, 1e-9);
+        for (double t = 0; t < 2500.0; t += 5.3) CHECK(SameFrame(d.Frame(t), sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f)));
+    }
+    sp::GaugeFastDriver d;
+    double t = 0, lastNeedle = 0;
+    std::vector<sp::GaugeCue> cues;
+    for (; t < 4000.0; t += 1000.0 / 60.0)
+    {
+        d.Update(t, 0.2f, false);
+        for (const auto& c : d.TakeCues()) cues.push_back(c);
+        const auto f = d.Frame(t);
+        CHECK(f.needleDeg + 1e-3f >= lastNeedle);
+        CHECK(f.needleDeg <= 345.0f + 0.5f);
+        CHECK(!f.locked);
+        lastNeedle = f.needleDeg;
+    }
+    CHECK(d.HandedOver());
+    CHECK(std::isnan(d.LockWallMs()));
+    CHECK_NEAR(d.Frame(3000.0).needleDeg, 345.0, 1e-3);
+    CHECK_NEAR(d.Frame(ev.clickMs[22] - 1.0).needleDeg, 345.0, 1.0);   // 持ち替えの前後で絵が連続
+    d.Update(t, 0.2f, true);
+    for (const auto& c : d.TakeCues()) cues.push_back(c);
+    CHECK(!std::isnan(d.LockWallMs()));
+    int clicks = 0, tails = 0;
+    for (const auto& c : cues)
+    {
+        CHECK(c.playAtMs - c.issuedAtMs >= sp::gauge::kLookaheadMs - 1e-6);
+        if (c.kind == sp::GaugeCueKind::Click) { ++clicks; CHECK(c.index == 23); } else ++tails;
+    }
+    CHECK(clicks == 1 && tails == 1);
+    CHECK(SameFrame(d.Frame(d.LockWallMs()), sp::EvaluateAfterLock(0.0)));
+    for (double s = 0; s <= 2200.0; s += 0.5) CHECK(SameFrame(d.Frame(d.LockWallMs() + s), sp::EvaluateGauge(sp::GaugePath::Fast, ev.lockMs + s, 0.f)));
 }
 
 // 行き過ぎは遅い経路でも 2px 以下で、ピークがある
@@ -355,6 +452,9 @@ int main()
     Test_FastCanonical();
     Test_FastVelocityContinuity();
     Test_SlowScenarios();
+    Test_SlowHitches();
+    Test_SlowFinishAtCap();
+    Test_FastLateFinish();
     Test_SlowOvershoot();
     Test_SlowWaitsAtCap();
     Test_SlowFinishFromRest();

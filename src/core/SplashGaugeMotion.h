@@ -43,14 +43,14 @@ struct GaugeFrame
     float bellT = 0.f;              // ベゼルの鏡面スイープの進み 0..1（1,648〜1,848。反射の移動として描く）
     float pinT = 0.f;               // 登録のピン（図番 UN-x.y.z の刻印）の進み 0..1（2,148 から 120ms）
     bool locked = false;            // ロック（1,628）以降
-    float overshootPx = 0.f;        // 行き過ぎ 0..2px（指針の先端の外向き。C23 から ロックまでの 85ms）
+    float overshootPx = 0.f;        // 行き過ぎ 0..2px（指針の先端が進行方向＝円周の接線方向へ出る長さ。C23 からロックまでの 85ms）
     std::uint32_t alignStep = 0;    // 整列波の段 0..5（ベルの各音に 1 段ずつ）
     // --- 描画側が欲しい追加分（BD2 で足したもの） ---
     bool needleShown = false;       // 指針が現れた（177ms。0° に静止したまま）
     bool seated = false;            // 着座（1,646。表題欄の状態が「校正中」→「校正済」）
     float tomboT = 0.f;             // 四隅のトンボの進み 0..1（8〜148、linear）
     float fadeOutT = 0.f;           // 窓の退場 0..1（2,148〜2,328 の α フェード。alpha = 1 - fadeOutT）
-    float timelineMs = 0.f;         // この絵の正規タイムライン上の時刻（Slow では実時間と一致しない）
+    float timelineMs = 0.f;         // この絵の正規タイムライン上の時刻。単調（Slow はロックまで lockMs-1e-6 で止まり、ロックで lockMs から再開する）。演出の reveal はこれで決める
 
     bool operator==(const GaugeFrame&) const = default;
 };
@@ -116,15 +116,20 @@ inline const CalibrateEvents& DefaultCalibrateEvents()
 namespace gauge
 {
 inline constexpr std::uint32_t kDialTickCount = 60;     // 文字盤の目盛りの数（点灯数 tickLit の上限）
-inline constexpr double kTomboStartMs = 8.0;            // 四隅のトンボ（GG の tomboDraw 140ms）
+// キュー表（SplashCalibrateEvents.h）から導ける時刻は導く。四隅のトンボ・目盛りの刻み始めは LEAD（風切りの層の開始）、
+// 目盛りの刻み終わりは最初のクリック（C00）。
+inline constexpr double kTomboStartMs = calibrate::kSweepStartMs;
+inline constexpr double kDialStartMs = calibrate::kSweepStartMs;
+inline constexpr double kDialEndMs = calibrate::kClickMs[0];
+// 暫定値（キュー表にも GG final の tokens.json にも出どころが無い。BD3 の kGaugeTokens で確定する）:
+// トンボは 8〜148ms、ベゼルの鏡面スイープは最初のベルから 200ms（1,648〜1,848）、ピンの刻印は 120ms、窓の α フェードは 180ms（〜2,328）。
+// 注意: GG の motion.tomboDraw（160ms）は 3D 選択のトンボの値で、ここの起動画面のトンボとは別。
 inline constexpr double kTomboDurMs = 140.0;
-inline constexpr double kDialStartMs = 8.0;             // 文字盤の目盛りを刻む区間（linear）
-inline constexpr double kDialEndMs = 268.0;
-inline constexpr double kBezelSweepMs = 200.0;          // ベゼルの鏡面スイープ（最初のベルから）
-inline constexpr double kPinStampMs = 120.0;            // ピンの刻印が出きるまで
-inline constexpr double kFadeOutMs = 180.0;             // 窓の α フェード（ピンから）
+inline constexpr double kBezelSweepMs = 200.0;
+inline constexpr double kPinStampMs = 120.0;
+inline constexpr double kFadeOutMs = 180.0;
 inline constexpr double kOvershootPx = 2.0;             // 行き過ぎの最大（2px）
-inline constexpr double kNeedleRadiusPx = 248.0;        // 指針の半径（行き過ぎの px ↔ 度の換算）
+inline constexpr double kNeedleRadiusPx = 248.0;        // 指針の半径。行き過ぎは「指針の先端が円周の接線方向（進行方向）へ出る長さ」で、度への換算は OvershootDegOf()
 inline constexpr double kBlurWindowMs = 1000.0 / 60.0;  // 残像 = 直近 1 フレームの移動量
 inline constexpr double kSlowCapDeg = 345.0;            // 遅い経路の上限（最後の 1 歯はロックのために取っておく）
 inline constexpr double kSlowProgressCap = 0.95;        // 遅い経路の目標 = 360 * min(p, 0.95)
@@ -136,6 +141,8 @@ inline constexpr double kDisplayLagMs = kLookaheadMs + kMaxFrameMs;   // 遅い�
 inline constexpr double kApproachFullMs = 1275.0;       // 最終接近: 360 度ぶんの所要（残りの角度に比例）
 inline constexpr double kApproachMinMs = 300.0;
 inline constexpr double kHermiteSlopeLimit = 3.0;       // 単調性の条件（端の傾き <= 3 * 割線）
+// 行き過ぎ px を角度（度）へ（先端の円周方向。2px は半径 248 で +0.46 度）。needleDeg には足さない（描画側が使う場合の換算）
+inline constexpr double OvershootDegOf(double px) { return px / kNeedleRadiusPx * (180.0 / 3.14159265358979323846); }
 } // namespace gauge
 
 // ---------------------------------------------------------------- 単調な区分 3 次エルミート（PCHIP）
@@ -268,7 +275,7 @@ inline double GaugeSkippedTimelineMs(double tNowMs, double tSkipMs, const Calibr
 }
 
 // 状態を持たない評価。Fast: 正規のタイムライン。Reduce: ロックの状態の静止フレーム（ピン・退場だけ時計で進む）。
-// Slow: 状態が要るので GaugeSlowDriver を使うこと。ここでは「その時刻・進捗を保持した場合の目標の姿」（バネ前の素の値）を返す。
+// Slow: 非対応（状態が要る）。GaugeSlowDriver を使うこと。GaugeFrame{}（全 0）を返す。
 inline GaugeFrame EvaluateGauge(GaugePath path, double tMs, float loadProgress01, const CalibrateEvents& ev = DefaultCalibrateEvents())
 {
     const HermiteSpline needle = gauge_detail::MakeCanonicalNeedle(ev);
@@ -289,14 +296,10 @@ inline GaugeFrame EvaluateGauge(GaugePath path, double tMs, float loadProgress01
     }
     case GaugePath::Slow:
     default:
-    {
-        GaugeFrame f = gauge_detail::CanonicalFrame(ev, needle, std::min(std::max(0.0, tMs), ev.lockMs - 1e-6));
-        const double target = std::min(gauge::kSlowCapDeg, 360.0 * std::min<double>(Clamp01(loadProgress01), gauge::kSlowProgressCap));
-        f.needleDeg = static_cast<float>(target);
-        f.blurDeg = 0.f; f.overshootPx = 0.f;
-        return f;
+        break;   // 非対応: 状態が要るので GaugeSlowDriver / GaugeFastDriver を使う。全フィールド 0 の GaugeFrame{} を返す（描画しても何も出ない）
     }
-    }
+    (void)loadProgress01;
+    return GaugeFrame{};
 }
 
 // ---------------------------------------------------------------- 遅い経路（状態を持つ）
@@ -314,28 +317,52 @@ struct GaugeCue
 };
 
 // 使い方: 起動時に生成し、フレームごとに Update(t, 実進捗, 完了要求) → Frame(t) と TakeCues()。t は生成からの ms。
-//   ・計算（バネ・歯の検出・予約）は t で進め、絵は kDisplayLagMs 遅れた時刻の状態を出す。こうすると、
-//     歯を跨ぐ瞬間の絵と音が同じ時刻に揃い、予約は 50ms 以上先になる。
+//   ・Frame(t) は【直近の Update に渡した t】（またはそれ以降。ロック後の全フレームの照会を含む）に対して呼ぶ。
+//   ・スレッド: 全体がスプラッシュのスレッド専用（同期なし）。TakeCues / PendingCues も Update と同じスレッドから呼ぶ
+//     （BD5 の音のスレッドへは、取り出した GaugeCue を値で渡す）。
+//   ・時計は 2 本。実時計（Update の t）と、計算の時計 S（バネ・歯の検出）。S は 1 回の Update で最大 kMaxFrameMs しか進まず、
+//     進み残し（ヒッチ）は欠損 D = t - S に積む（D は単調増加。最終接近が始まったら固定）。絵は S - kDisplayLagMs の時点を出し、
+//     予約は playAt = 歯の S + kDisplayLagMs + D。こうすると、どんなフレーム間隔でも playAt - issuedAt >= kLookaheadMs（50ms）が
+//     成り立つ（歯は S の直近 kMaxFrameMs 以内にしか生まれないため）。ヒッチの間は絵が止まって見え（先へ飛ばない）、音と絵は揃ったまま。
+//     ヒッチが発音待ちの予約（最大 134ms 先）に重なると、その予約ぶんだけ絵が遅れる（音は主時計）。
 //   ・完了要求が来たら残りの歯を Calibrate の減速で送り、最後の歯 + 85ms にロックする。以後は EvaluateAfterLock と同じ。
-//   ・指針の上限は 345°（最後の 1 歯はロックのために取っておく）。進捗は単調（減ったら無視）。
+//   ・指針の上限は 345°（最後の 1 歯はロックのために取っておく）。進捗は単調（減ったら無視）。指針は NeedleStartMs（177ms）まで 0° のまま。
 class GaugeSlowDriver
 {
 public:
     explicit GaugeSlowDriver(const CalibrateEvents& ev = DefaultCalibrateEvents())
-        : m_ev(ev), m_canon(gauge_detail::MakeCanonicalNeedle(ev)) {}
+        : m_ev(ev) {}
 
+    // 引数 t は実時計 ms。Update の間隔は任意（1 回のヒッチが何 ms でも先読みは保たれる）。
     void Update(double tMs, float loadProgress01, bool finishRequested)
     {
         if (m_skipped) return;
-        tMs = std::max(tMs, m_lastT);
+        tMs = std::max(tMs, m_lastWall);
         m_progress = std::max(m_progress, static_cast<double>(Clamp01(loadProgress01)));
         if (!m_approach)
         {
-            Follow(tMs);
-            if (finishRequested) BeginApproach(tMs);
+            const double dt = tMs - m_lastWall;
+            const double adv = std::min(dt, gauge::kMaxFrameMs);
+            m_deficit += dt - adv;
+            Follow(m_lastT + adv, tMs);
+            if (finishRequested) BeginApproach(m_lastT, tMs);
         }
-        m_nowMs = tMs;
-        Trim(tMs);
+        m_lastWall = tMs;
+        Trim();
+    }
+
+    // 「指針が wallMs に deg 度で止まっている」状態から始める（GaugeFastDriver の持ち替え用）。Update より前に 1 回だけ呼ぶ。
+    void StartHeld(double wallMs, double deg)
+    {
+        m_lastWall = m_lastT = wallMs;
+        m_deficit = 0.0;
+        m_theta = deg;
+        m_omega = 0.0;
+        m_holdDeg = deg;                 // 進捗が低くても、持ち替えた角度より戻らない
+        m_nextTooth = 0;
+        while (m_nextTooth < CalibrateEvents::kClicks - 1 && m_ev.clickDeg[m_nextTooth] <= deg + 1e-9) ++m_nextTooth;
+        m_segs.clear();
+        m_segs.push_back(Seg{ -1e9, wallMs, deg, 0.0, 0.0 });
     }
 
     // スキップ: 絵は tMs にロックのフレームへ飛ぶ。tMs より先の未取得の予約は捨て、LockTail を tMs に即時で入れる
@@ -358,29 +385,28 @@ public:
     bool Skipped() const { return m_skipped; }
     bool Approaching() const { return m_approach; }
     // 最終接近が絵に現れる時刻（Update の時計）。完了要求の前は NaN
-    double ApproachWallMs() const { return m_approach ? m_fApp + gauge::kDisplayLagMs : std::nan(""); }
-    // ロックの絵が出る時刻（Update の時計）。完了要求の前は NaN
+    double ApproachWallMs() const { return m_approach ? m_approachWall : std::nan(""); }
+    // ロックの絵が出る時刻（Update の時計）。完了要求の前は NaN。Frame(LockWallMs()) は EvaluateAfterLock(0) と一致する
     double LockWallMs() const
     {
         if (m_skipped) return m_skipWall;
-        return m_approach ? m_lockSim + gauge::kDisplayLagMs : std::nan("");
+        return m_approach ? m_lockWall : std::nan("");
     }
 
-    // 指針の角度（倍精度。絵の時計 = tMs - kDisplayLagMs の時点。行き過ぎは含まない）。解析・テスト用
-    double NeedleDegAt(double tMs) const { return NeedleAt(tMs - gauge::kDisplayLagMs); }
+    // 指針の角度（倍精度。行き過ぎは含まない）。解析・テスト用
+    double NeedleDegAt(double tMs) const { return NeedleAt(tMs); }
 
     GaugeFrame Frame(double tMs) const
     {
         if (m_skipped && tMs >= m_skipWall) return EvaluateAfterLock(tMs - m_skipWall, m_ev);
-        const double d = tMs - gauge::kDisplayLagMs;
-        if (m_approach && d >= m_lockSim) return EvaluateAfterLock(d - m_lockSim, m_ev);
+        if (m_approach && tMs >= m_lockWall) return EvaluateAfterLock(tMs - m_lockWall, m_ev);
+        const double d = PictureTime(tMs);
 
         GaugeFrame f;
-        gauge_detail::FillItems(m_ev, std::min(std::max(d, 0.0), m_ev.lockMs - 1e-6), f);
-        f.timelineMs = static_cast<float>(std::max(d, 0.0));
-        const double th = NeedleAt(d);
+        gauge_detail::FillItems(m_ev, std::min(std::max(d, 0.0), m_ev.lockMs - 1e-6), f);   // timelineMs も単調（ロックまで lockMs-1e-6 で止まる）
+        const double th = NeedleAt(tMs);
         f.needleDeg = static_cast<float>(th);
-        f.blurDeg = static_cast<float>(std::max(0.0, th - NeedleAt(d - gauge::kBlurWindowMs)));
+        f.blurDeg = static_cast<float>(std::max(0.0, th - NeedleAtPicture(d - gauge::kBlurWindowMs, tMs)));
         if (m_approach && d >= m_toothLastMs)
             f.overshootPx = static_cast<float>(gauge_detail::OvershootPxAt(d - m_toothLastMs, gauge_detail::OvershootSpanMs(m_ev)));
         return f;
@@ -389,20 +415,25 @@ public:
 private:
     struct Seg { double t0, t1, target, a, b; };   // x(u) = (a + b u) e^{-w u} + target
 
+    double PictureTime(double wallMs) const { return wallMs - gauge::kDisplayLagMs - m_deficit; }
+
     double SegTheta(const Seg& s, double t) const
     {
         const double u = (t - s.t0) * 1e-3;
         return std::min(gauge::kSlowCapDeg, std::max(0.0, s.target + (s.a + s.b * u) * std::exp(-gauge::kSlowOmega * u)));
     }
 
-    void Follow(double tMs)
+    // simEnd までバネを 1 区間で進める（simEnd - m_lastT <= kMaxFrameMs）。wallNow は予約の issuedAt。
+    void Follow(double simEnd, double wallNow)
     {
-        const double dt = tMs - m_lastT;
+        const double dt = simEnd - m_lastT;
         if (dt <= 0.0) return;
-        const double target = std::min(gauge::kSlowCapDeg, 360.0 * std::min(m_progress, gauge::kSlowProgressCap));
+        // 指針が現れる（NeedleStartMs）まではバネを 0° に保つ（早い進捗で途中の角度に突然現れない）
+        const double target = (m_lastT < gauge_detail::NeedleStartMs(m_ev)) ? 0.0
+            : std::max(m_holdDeg, std::min(gauge::kSlowCapDeg, 360.0 * std::min(m_progress, gauge::kSlowProgressCap)));
         const double w = gauge::kSlowOmega;
         Seg s;
-        s.t0 = m_lastT; s.t1 = tMs; s.target = target;
+        s.t0 = m_lastT; s.t1 = simEnd; s.target = target;
         s.a = m_theta - target;
         s.b = m_omega + w * s.a;                       // m_omega は度/s
         const double u = dt * 1e-3, e = std::exp(-w * u);
@@ -422,33 +453,36 @@ private:
             if (hi - m_lastCueSim >= 1000.0 / gauge::kClickMaxRateHz)
             {
                 m_lastCueSim = hi;
-                PushClick(m_nextTooth, hi, tMs);
+                PushClick(m_nextTooth, hi, wallNow);
             }
             ++m_nextTooth;
         }
         m_segs.push_back(s);
         m_theta = newTheta;
         m_omega = newOmega;
-        m_lastT = tMs;
+        m_lastT = simEnd;
     }
 
-    void PushClick(int tooth, double simMs, double issuedMs)
+    void PushClick(int tooth, double simMs, double issuedWallMs)
     {
         GaugeCue c;
-        c.playAtMs = simMs + gauge::kDisplayLagMs;
-        c.issuedAtMs = issuedMs;
+        c.playAtMs = simMs + gauge::kDisplayLagMs + m_deficit;
+        c.issuedAtMs = issuedWallMs;
         c.kind = GaugeCueKind::Click;
         c.index = tooth;
         c.pan = static_cast<float>(m_ev.clickPan[tooth]);
         m_cues.push_back(c);
     }
 
-    // 完了要求: 現在の (θ, ω) から残りの歯を Calibrate の減速で送る。
+    // 完了要求: 現在の (θ, ω) から残りの歯を Calibrate の減速で送る。fMs は計算の時計 S、wallNow は実時計。
     // 結び目 = (F, θ0) と、残りの歯（時刻は正規の間隔を所要 D に伸縮）。始点の傾きは今の角速度（C1）、終点の傾きは 0。
-    void BeginApproach(double fMs)
+    // 以降 m_deficit は固定（ここで全ての予約が決まる）。
+    void BeginApproach(double fMs, double wallNow)
     {
         m_approach = true;
+        fMs = std::max(fMs, gauge_detail::NeedleStartMs(m_ev));   // 指針が現れる前に動かさない（早すぎる完了要求は現れる時刻まで待つ）
         m_fApp = fMs;
+        m_approachWall = fMs + gauge::kDisplayLagMs + m_deficit;
         const int last = CalibrateEvents::kClicks - 1;
         const double theta0 = m_theta;
         int m = 0;                                           // 跨ぎ済みの歯の数
@@ -475,47 +509,119 @@ private:
 
         m_toothLastMs = m_spline.t[static_cast<std::size_t>(m_spline.n - 1)];
         m_lockSim = m_toothLastMs + gauge_detail::OvershootSpanMs(m_ev);
-        for (int j = m; j <= last; ++j) PushClick(j, m_spline.t[static_cast<std::size_t>(1 + j - m)], fMs);
+        m_lockWall = m_lockSim + gauge::kDisplayLagMs + m_deficit;
+        for (int j = m; j <= last; ++j) PushClick(j, m_spline.t[static_cast<std::size_t>(1 + j - m)], wallNow);
         GaugeCue lock;
-        lock.playAtMs = m_lockSim + gauge::kDisplayLagMs;
-        lock.issuedAtMs = fMs;
+        lock.playAtMs = m_lockWall;
+        lock.issuedAtMs = wallNow;
         lock.kind = GaugeCueKind::LockTail;
         m_cues.push_back(lock);
     }
 
-    double NeedleAt(double d) const
+    // d = 絵の時計（S 軸）。最終接近以降は spline、それ以前は履歴
+    double NeedleAtPicture(double d, double wallMs) const
     {
         if (d <= 0.0) return 0.0;
-        if (m_approach && d >= m_fApp) return m_spline.Eval(d);
-        // 計算の履歴から（d は直近の kDisplayLagMs 以内が普通。古い d は先頭の区間に丸める）
+        if (m_approach && wallMs >= m_approachWall) return m_spline.Eval(d);
         if (m_segs.empty()) return 0.0;
         auto it = std::lower_bound(m_segs.begin(), m_segs.end(), d, [](const Seg& s, double x) { return s.t1 < x; });
         if (it == m_segs.end()) return m_theta;
         if (d < it->t0) return SegTheta(*it, it->t0);
         return SegTheta(*it, d);
     }
+    double NeedleAt(double wallMs) const { return NeedleAtPicture(PictureTime(wallMs), wallMs); }
 
-    void Trim(double tMs)
+    // 履歴は 5 秒分だけ保持（それより古い時刻を Frame に渡すと不定）
+    void Trim()
     {
-        const double keepFrom = tMs - gauge::kDisplayLagMs - 5000.0;
+        const double keepFrom = m_lastT - gauge::kDisplayLagMs - 5000.0;
         std::size_t drop = 0;
         while (drop + 1 < m_segs.size() && m_segs[drop].t1 < keepFrom) ++drop;
         if (drop) m_segs.erase(m_segs.begin(), m_segs.begin() + static_cast<std::ptrdiff_t>(drop));
     }
 
     CalibrateEvents m_ev;
-    HermiteSpline m_canon;                  // 予備（正規の形を参照したいとき）
     std::vector<Seg> m_segs;
     std::vector<GaugeCue> m_cues;
     HermiteSpline m_spline;                 // 最終接近
-    double m_lastT = 0, m_nowMs = 0;
-    double m_theta = 0, m_omega = 0;        // 度、度/s（計算の時計）
+    double m_lastWall = 0;                  // 直近の Update の実時計
+    double m_lastT = 0;                     // 計算の時計 S
+    double m_deficit = 0;                   // D = 実時計 - S（ヒッチの積み。最終接近の開始で固定）
+    double m_theta = 0, m_omega = 0;        // 度、度/s（S の時点）
     double m_progress = 0;
+    double m_holdDeg = 0;                   // 指針の下限（StartHeld の角度）
     int m_nextTooth = 0;
     double m_lastCueSim = -1e9;
     bool m_approach = false;
     double m_fApp = 0, m_toothLastMs = 0, m_lockSim = 0;
+    double m_approachWall = 0, m_lockWall = 0;
     bool m_skipped = false;
+    double m_skipWall = 0;
+};
+
+// ---------------------------------------------------------------- 速い経路の「ロードが C22 までに終わらなかった」ときの縮退
+//
+// PROGRAM_PLAN BA-2 の規則: 完了要求が C22（1,475ms）より後なら、C22 の歯（345 度）で止めて待ち、完了要求から最終接近でロックする。
+// 速い経路は t=0 では選べない（ロードがいつ終わるか分からない）ので、最初は正規のタイムライン（graphite_1.wav と同じ時計）を出し、
+// C22 の時刻でまだ完了要求が来ていなければ GaugeSlowDriver（345 度で静止、残りは C23 の 1 歯 + ロック）へ持ち替える。
+//   ・持ち替えの瞬間の角速度は C22 の正規の速度（約 300 度/s）から 0 へ段差で止まる（C0。C22 の絵は 345 度で一致）。
+//   ・持ち替え後の予約（C23 とロックの LockTail）は GaugeSlowDriver と同じ。持ち替える前の音は graphite_1.wav 側（BD5 が C22 で止める判断をする）。
+//   ・完了要求が C22 より前なら最後まで正規（ロックは ev.lockMs）。以降の全フレームは EvaluateAfterLock と同じ。
+// スレッド: GaugeSlowDriver と同じ（スプラッシュのスレッド専用）。
+class GaugeFastDriver
+{
+public:
+    explicit GaugeFastDriver(const CalibrateEvents& ev = DefaultCalibrateEvents())
+        : m_ev(ev), m_slow(ev), m_decisionMs(ev.clickMs[CalibrateEvents::kClicks - 2]) {}
+
+    void Update(double tMs, float loadProgress01, bool finishRequested)
+    {
+        if (finishRequested) m_finish = true;
+        if (!m_decided && tMs >= m_decisionMs)
+        {
+            m_decided = true;
+            if (!m_finish)
+            {
+                m_handed = true;
+                m_slow.StartHeld(tMs, m_ev.clickDeg[CalibrateEvents::kClicks - 2]);
+            }
+        }
+        if (m_handed) m_slow.Update(tMs, loadProgress01, finishRequested);
+    }
+
+    void Skip(double tMs)
+    {
+        if (m_handed) { m_slow.Skip(tMs); return; }
+        if (m_skipped) return;
+        m_skipped = true;
+        m_skipWall = tMs;
+    }
+
+    GaugeFrame Frame(double tMs) const
+    {
+        if (m_handed) return m_slow.Frame(tMs);
+        if (m_skipped && tMs >= m_skipWall) return EvaluateAfterLock(tMs - m_skipWall, m_ev);
+        return EvaluateGauge(GaugePath::Fast, tMs, 0.f, m_ev);
+    }
+
+    // 持ち替えた後の予約（持ち替える前は空。速い経路の音は graphite_1.wav）
+    std::vector<GaugeCue> TakeCues() { return m_slow.TakeCues(); }
+
+    bool HandedOver() const { return m_handed; }   // 345 度で待つ縮退に入った
+    double HandOverMs() const { return m_decisionMs; }
+    // ロックの絵が出る時刻。完了要求（または縮退）の前は NaN
+    double LockWallMs() const
+    {
+        if (m_handed) return m_slow.LockWallMs();
+        if (m_skipped) return m_skipWall;
+        return m_finish ? m_ev.lockMs : std::nan("");
+    }
+
+private:
+    CalibrateEvents m_ev;
+    GaugeSlowDriver m_slow;
+    double m_decisionMs;
+    bool m_finish = false, m_decided = false, m_handed = false, m_skipped = false;
     double m_skipWall = 0;
 };
 
