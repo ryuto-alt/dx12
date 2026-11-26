@@ -584,6 +584,19 @@ endif()
 add_test(NAME FrameThrottleTests COMMAND FrameThrottleTests)
 set_tests_properties(FrameThrottleTests PROPERTIES TIMEOUT 60)
 
+# --- ワンショット放出器の寿命と再トリガー（W1-A12 / BUG-12）。純ロジック。GPU 不要 ---
+if(TARGET Scene)   # Components.h は entt 等が要る。Scene が依存を伝播する（単体構成ではスキップ）
+add_executable(ParticleOneShotTests particle_oneshot_test.cpp)
+target_link_libraries(ParticleOneShotTests PRIVATE Scene)
+target_compile_definitions(ParticleOneShotTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+if(MSVC)
+    target_compile_options(ParticleOneShotTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(ParticleOneShotTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ParticleOneShotTests COMMAND ParticleOneShotTests)
+set_tests_properties(ParticleOneShotTests PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
