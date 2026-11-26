@@ -573,6 +573,17 @@ if(TARGET Gui)
     set_tests_properties(TextFitTests PROPERTIES TIMEOUT 60)
 endif()
 
+# --- 裏に回ったときのフレーム間引きの状態遷移（W1-A11 / MOD-ED-11）。純ロジック。GPU 不要 ---
+add_executable(FrameThrottleTests frame_throttle_test.cpp)
+target_include_directories(FrameThrottleTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(FrameThrottleTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+if(MSVC)
+    target_compile_options(FrameThrottleTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(FrameThrottleTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME FrameThrottleTests COMMAND FrameThrottleTests)
+set_tests_properties(FrameThrottleTests PROPERTIES TIMEOUT 60)
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。

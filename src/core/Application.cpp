@@ -22,6 +22,8 @@
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
 #include "editor/UiMotion.h"
+#include "editor/FrameThrottle.h"   // W1-A11: 裏に回ったときのフレーム間引き（純ロジック）
+#include "editor/EditorPrefs.h"      // W1-A11: 「常にリアルタイム」の設定（perf.alwaysRealtime）
 #include "editor/panels/MaterialGraphPanel.h"   // マテリアルグラフ G2c: ライブプレビュー / サムネイルの GPU 側（InitializeGpu / ShutdownGpu）
 
 namespace dx12e
@@ -1483,6 +1485,51 @@ void Application::Run()
     // Windowsタイマー精度を1msに設定
     timeBeginPeriod(1);
 
+    // ---- W1-A11: 裏に回ったときの間引き（MOD-ED-11）の補助 ----
+    //   mcpActivity: このフレーム（または直前の待ち中）に MCP の要求を 1 件でも処理した。
+    //   間引き中の待ちは短い刻みで MCP の要求を Poll して、要求を受けた瞬間に起きる（応答を遅らせない）。
+    bool mcpActivity = false;
+    auto pollMcp = [this, &mcpActivity]() {
+        m_mcpBridge->Poll([this, &mcpActivity](uint64_t client, const std::string& line) {
+            mcpActivity = true;
+            return HandleMcpCommand(client, line);
+        });
+    };
+    // 再生・MCP の要求と応答待ち・仮想入力の待ち・ジョブ。これらがある間は間引かない。
+    auto throttleBusy = [this, &mcpActivity]() -> bool {
+        return mcpActivity
+            || m_engineMode == EngineMode::Playing
+            || (m_sequencer && m_sequencer->AnyPlaying())
+            || m_mcpStepFramesLeft > 0 || m_mcpStepReply.client != 0
+            || m_mcpModeReply.client != 0 || m_mcpLoadReply.client != 0
+            || m_mcpGameViewReply.client != 0 || m_mcpRenderDebugFramesLeft > 0
+            || m_benchFramesLeft > 0 || m_diagFrameStatsRequest
+            || !m_mcpVInputWaits.empty()
+            || IsSceneLoadJobActive() || m_buildJob != nullptr;
+    };
+    // 窓が前面（同じプロセスの窓を含む。ImGui の別ビューポート窓）にあり、最小化されていない。
+    // --background / --headless は窓を出さないので常に false（MCP の要求が無い間だけ間引かれる）。
+    auto throttleWindowActive = [this]() -> bool {
+        if (m_bgOptions.Active() || m_headless || !m_window) return false;
+        const HWND h  = m_window->GetHwnd();
+        const HWND fg = GetForegroundWindow();
+        if (!h || !fg || IsIconic(h)) return false;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fg, &pid);
+        return pid == GetCurrentProcessId();
+    };
+    // 実入力（マウス移動・ボタン・ホイール・キー・文字）。ImGui の IO は直前フレームの確定値。
+    auto throttleHasInput = []() -> bool {
+        if (!ImGui::GetCurrentContext()) return false;
+        const ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f || io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f
+            || ImGui::IsAnyMouseDown() || !io.InputQueueCharacters.empty())
+            return true;
+        for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_GamepadStart; ++k)
+            if (ImGui::IsKeyDown(static_cast<ImGuiKey>(k))) return true;
+        return false;
+    };
+
     while (!m_window->ShouldClose())
     {
         m_frameStart = std::chrono::high_resolution_clock::now();
@@ -1497,9 +1544,7 @@ void Application::Run()
         {
             CpuScopeTimer _tMcp(&m_cpuMs[CpuMcp]);
             DX12_PROFILE_ZONE_N("MCP/Poll");
-            m_mcpBridge->Poll([this](uint64_t client, const std::string& line) {
-                return HandleMcpCommand(client, line);
-            });
+            pollMcp();
         }
 
         // ---- フリート運用の自己終了（--owner-pid / --idle-exit。core/mcp/FleetGuard.h）----
@@ -2166,9 +2211,29 @@ void Application::Run()
         //   計測は最大 3600 フレームで終わり、終了時に m_benchRestore が戻る＝回しっぱなしにはならない。
         const bool  benchUncapped = m_benchRestore && m_benchFramesLeft > 0;
         const bool  bgPace     = m_bgOptions.Active() && !benchUncapped;
-        const f32   paceLimit  = bgPace ? (m_fpsLimit > 0.0f ? (std::min)(m_fpsLimit, 60.0f) : 60.0f)
-                                        : m_fpsLimit;
-        if ((!m_useVsync || bgPace) && paceLimit > 0.0f)
+        const f32   paceLimitBase = bgPace ? (m_fpsLimit > 0.0f ? (std::min)(m_fpsLimit, 60.0f) : 60.0f)
+                                           : m_fpsLimit;
+
+        // ---- W1-A11 MOD-ED-11: 裏に回ったときの間引き（AUD-14）----
+        //   窓が非アクティブなら 10fps、アクティブでも 5 秒活動が無ければ 30fps。MCP の要求・仮想入力・再生・ジョブがある間と
+        //   「常にリアルタイム」（prefs perf.alwaysRealtime）では間引かない。判定は editor/FrameThrottle.h（純ロジック）。
+        //   間引くのは歩調取りの待ちだけ。オーディオ・ネットワークの更新と MCP の応答（待ち中も短い刻みで Poll する）は止めない。
+        float throttleFps = 0.0f;
+        const bool throttleAllowed = m_editorCtx && !m_isGameMode && !m_uiTestsRequested;
+        if (throttleAllowed)
+        {
+            throttle::Inputs ti;
+            ti.nowSec         = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            ti.allowed        = true;
+            ti.alwaysRealtime = prefs::GetBool("perf.alwaysRealtime", false);
+            ti.windowActive   = throttleWindowActive();
+            ti.busy           = throttleBusy();
+            ti.input          = throttleHasInput();
+            throttleFps = throttle::TierFps(throttle::Evaluate(m_editorCtx->frameThrottle, ti));
+        }
+        mcpActivity = false;   // このフレーム分は評価に使った。次の活動は次の Poll が立てる
+        const f32   paceLimit  = throttle::CombineFps(paceLimitBase, throttleFps);
+        if ((!m_useVsync || bgPace || throttleFps > 0.0f) && paceLimit > 0.0f)
         {
             using namespace std::chrono;
             auto targetDuration = duration_cast<high_resolution_clock::duration>(
@@ -2176,32 +2241,53 @@ void Application::Run()
             auto elapsed = high_resolution_clock::now() - m_frameStart;
             auto remaining = targetDuration - elapsed;
 
-            // ★高分解能の待機可能タイマーで寝る。
-            //   旧実装は「1ms 残るまで Sleep → 残りは _mm_pause() でスピン」だった。
-            //   スピンは 1 コアを 100% 回し続けるだけで何も進めない。ノートでは
-            //   その発熱がクロック低下になって返ってくるので、待つなら本当に寝る。
-            //   CREATE_WAITABLE_TIMER_HIGH_RESOLUTION は Win10 1803+ で ~0.5ms 精度。
-            //   古い OS では作成に失敗するので、その時だけ従来の Sleep+スピンへ落ちる。
-            static HANDLE s_frameTimer = CreateWaitableTimerExW(
-                nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-            if (s_frameTimer && remaining > microseconds(0))
+            if (throttleFps > 0.0f)
             {
-                // 100ns 単位・負値で「相対時間」を表す（Win32 の作法）。
-                LARGE_INTEGER due{};
-                due.QuadPart = -static_cast<LONGLONG>(
-                    duration_cast<nanoseconds>(remaining).count() / 100);
-                if (due.QuadPart < 0
-                    && SetWaitableTimerEx(s_frameTimer, &due, 0, nullptr, nullptr, nullptr, 0))
+                // 間引き中の待ち: 5ms 以下の刻みで寝て、(1) MCP の要求が来た (2) 実のキー・ボタン入力が来た
+                // (3) 再生・ジョブなどの活動が始まった (4) 窓の前面/背面が変わった、のどれかで即座に抜ける。
+                const bool wasActive = throttleWindowActive();
+                const auto deadline  = m_frameStart + targetDuration;
+                while (true)
                 {
-                    WaitForSingleObject(s_frameTimer, INFINITE);
+                    const auto now = high_resolution_clock::now();
+                    if (now >= deadline) break;
+                    const auto leftMs = duration_cast<milliseconds>(deadline - now).count();
+                    const DWORD slice = static_cast<DWORD>((std::clamp)(static_cast<long long>(leftMs), 1ll, 5ll));
+                    MsgWaitForMultipleObjectsEx(0, nullptr, slice, QS_KEY | QS_MOUSEBUTTON, MWMO_INPUTAVAILABLE);
+                    if (HIWORD(GetQueueStatus(QS_KEY | QS_MOUSEBUTTON)) != 0) break;
+                    if (m_mcpBridge) { pollMcp(); if (mcpActivity) break; }
+                    if (throttleBusy() || throttleWindowActive() != wasActive) break;
                 }
             }
             else
             {
-                if (remaining > milliseconds(1))
-                    std::this_thread::sleep_for(remaining - milliseconds(1));
-                while (high_resolution_clock::now() - m_frameStart < targetDuration)
-                    _mm_pause();
+                // ★高分解能の待機可能タイマーで寝る。
+                //   旧実装は「1ms 残るまで Sleep → 残りは _mm_pause() でスピン」だった。
+                //   スピンは 1 コアを 100% 回し続けるだけで何も進めない。ノートでは
+                //   その発熱がクロック低下になって返ってくるので、待つなら本当に寝る。
+                //   CREATE_WAITABLE_TIMER_HIGH_RESOLUTION は Win10 1803+ で ~0.5ms 精度。
+                //   古い OS では作成に失敗するので、その時だけ従来の Sleep+スピンへ落ちる。
+                static HANDLE s_frameTimer = CreateWaitableTimerExW(
+                    nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+                if (s_frameTimer && remaining > microseconds(0))
+                {
+                    // 100ns 単位・負値で「相対時間」を表す（Win32 の作法）。
+                    LARGE_INTEGER due{};
+                    due.QuadPart = -static_cast<LONGLONG>(
+                        duration_cast<nanoseconds>(remaining).count() / 100);
+                    if (due.QuadPart < 0
+                        && SetWaitableTimerEx(s_frameTimer, &due, 0, nullptr, nullptr, nullptr, 0))
+                    {
+                        WaitForSingleObject(s_frameTimer, INFINITE);
+                    }
+                }
+                else
+                {
+                    if (remaining > milliseconds(1))
+                        std::this_thread::sleep_for(remaining - milliseconds(1));
+                    while (high_resolution_clock::now() - m_frameStart < targetDuration)
+                        _mm_pause();
+                }
             }
         }
 
