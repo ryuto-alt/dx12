@@ -995,7 +995,8 @@ void Application::FinishFinalScreenshot()
     if (m_mcpFinalShot.withImGui) vinput_gui::SetCursorHidden(false);
     const bool wasDeterministic = m_mcpFinalShot.deterministic;
     const bool hidGizmos        = m_mcpFinalShot.hideGizmos;
-    m_deterministicCapture = false;   // 撮り終わったら必ず通常の時間へ戻す
+    // 撮り終わったら通常の時間へ戻す。ただし freeze_time で固定している最中なら固定へ戻す（FU-E-24）。
+    m_deterministicCapture = AppAccess::FreezePinsRender(*this);
 
     McpDeferred reply = m_mcpFinalShot.reply;
     m_mcpFinalShot.reply = {};

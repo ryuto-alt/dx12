@@ -1772,6 +1772,21 @@ void FillGeneratedManifestRows(ManifestRows& o)
         "none", "", {
             P("preset", "enum", true, "low|medium|high|epic|cinematic", nullptr, nullptr, nullptr, "品質プリセット名。"),
         })});
+    o.push_back({"freeze_time", M("時間を止める / 解除する / 状態を読む（引数なし = 読み取り）。Play 中のシミュ（一時停止）と、描画の時間依存（決定論キャプチャと同じ固定: time・TAA ジッタ・パーティクル・大気/雲）を止める。止めている間も描画・MCP・スクショは動く。frame_step で 1 フレームずつ進める。",
+        "freeze time 時間停止 凍結 フリーズ 静止 決定論",
+        "play", "", "", McpEffect::Runtime, "any", 8000, false, false,
+        "none", "", {
+            P("frozen", "bool", false, nullptr, nullptr, nullptr, nullptr, "true（既定）で止める、false で解除。省略かつ pinRender も無ければ状態を返すだけ。"),
+            P("pinRender", "bool", false, nullptr, nullptr, nullptr, nullptr, "true（既定）で描画の時間依存も固定する。false なら Play 中のシミュだけ止める。"),
+        })});
+    o.push_back({"frame_step", M("止めたまま N フレーム（固定 dt）だけ進めて、また止めてから応答する同期バリア。凍結していなければ自動で凍結する。静止した複数フレームを決定論で撮る用（step_frames は待つだけで時間は止まらない）。",
+        "frame step コマ送り 1フレーム 進める 決定論 静止",
+        "play", "", "", McpEffect::Runtime, "any", 30000, false, true,
+        "none", "", {
+            P("frames", "int", false, nullptr, nullptr, nullptr, nullptr, "進めるフレーム数（既定 1、最大 600）。"),
+            P("dt", "number", false, nullptr, nullptr, nullptr, nullptr, "1 フレームあたりの秒（既定 1/60。0 より大きく 0.1 以下）。"),
+            P("pinRender", "bool", false, nullptr, nullptr, nullptr, nullptr, "描画の時間依存も固定するか（既定: 凍結中なら今の設定、でなければ true）。"),
+        })});
     // ==== lane-C end ====
     // ==== lane-D begin ====
     // ==== lane-D end ====

@@ -77,6 +77,10 @@ struct AppAccess
     static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain);
     // W1-C9: 撮影が IBL の焼き直しを待つために足すフレーム数（0 = 待たない。定義は core/ApplicationAtmosphere.cpp）。
     static int IblRebakeWaitFrames(Application&);
+    // FU-E-24: freeze_time で描画の時間依存を固定している最中か（screenshot_final が「決定論キャプチャ中」と取り違えないため。定義は mcp/ApplicationMcpLaneC.cpp）。
+    static bool TimeFrozen(const Application&);
+    //   FreezePinsRender … freeze_time が描画の時間依存を固定する約束の最中か（撮影の後始末が決定論キャプチャを戻す先）。
+    static bool FreezePinsRender(const Application&);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====

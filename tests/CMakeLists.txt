@@ -1300,6 +1300,14 @@ if(MSVC)
     target_compile_options(VelocityPolicyTests PRIVATE /W4 /WX /permissive- /utf-8)
 endif()
 add_test(NAME VelocityPolicyTests COMMAND VelocityPolicyTests)
+# 時間を止めて 1 フレームずつ進める口（freeze_time / frame_step）の引数検証。ヘッダのみ。FU-E-24。
+add_executable(FrameStepLogicTests frame_step_logic_test.cpp)
+target_include_directories(FrameStepLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(FrameStepLogicTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(FrameStepLogicTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME FrameStepLogicTests COMMAND FrameStepLogicTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。

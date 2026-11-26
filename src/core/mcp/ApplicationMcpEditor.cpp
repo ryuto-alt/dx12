@@ -293,7 +293,7 @@ void Application::RegisterMcpEditorMethods()
     //   1 フレーム描いてから撮るので遅延応答。
     McpDefine("screenshot_final", "deterministic:bool,format:string,formats:any,gizmos:bool,height:int,path:string,settleFrames:int,waitIblRebake:bool,width:int", DX12E_MCP_HANDLER
         {
-            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || (m_deterministicCapture && !AppAccess::TimeFrozen(*this)))   // FU-E-24: freeze_time の固定は撮影中ではない
                 throw McpError(McpErr::ModeConflict,
                     "a final screenshot is already pending; retry shortly",
                     "前の screenshot_final の応答を待ってから撮る（通常 1〜9 フレームで返る）。"
