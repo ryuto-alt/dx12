@@ -174,6 +174,24 @@ try {
     check("layer を params 直下に書いても同じ拒否", eLayerP?.error_name === "E_OUT_OF_RANGE" && eLayerP.error_details?.max === 2 && JSON.stringify(await call("get_entity", { name: "Em3" })) === em0, eLayerP);
     await call("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 2, rate: 99 } });
     check("範囲内の layer:2 は通る", (await call("get_entity", { name: "Em3" })).particleEmitter.rate === 99);
+    check("list_particle_layers は 3 枚", (await call("list_particle_layers", { name: "Em3" })).count === 3);
+    // 呼び出し側の入力を書き換えない
+    const inData = { rate: 7 };
+    await call("set_component", { name: "Em3", component: "particleEmitter", layer: 1, data: inData });
+    check("set_component は呼び出し側の data を書き換えない", JSON.stringify(inData) === JSON.stringify({ rate: 7 }), inData);
+    // rollback でレイヤー数も戻る(同じ id の新放出器へ持ち越さない)
+    await call("transaction_begin", { label: "layers" });
+    await call("create_entity", { type: "particle_emitter", name: "EmTx" });
+    await call("add_particle_layer", { name: "EmTx" });
+    await call("add_particle_layer", { name: "EmTx" });
+    await call("transaction_rollback", {});
+    await call("create_entity", { type: "particle_emitter", name: "EmTx2" });
+    const eTx = await fail("set_component", { name: "EmTx2", component: "particleEmitter", data: { layer: 2 } });
+    check("rollback 後の新放出器は 1 層: layer:2 は E_OUT_OF_RANGE max:0", eTx?.error_name === "E_OUT_OF_RANGE" && eTx.error_details?.max === 0, eTx);
+    await call("transaction_begin", { label: "layers2" });
+    await call("add_particle_layer", { name: "Em3" });
+    await call("transaction_rollback", {});
+    check("既存放出器への add_particle_layer も rollback で戻る", (await call("list_particle_layers", { name: "Em3" })).count === 3);
     const q = await call("set_transform", { name: "B", quaternion: [0, 0.7071068, 0, 0.7071068] });
     check("quaternion → euler(yaw 90)", nearV((await call("get_entity", { name: "B" })).transform.rotation, [0, 90, 0], 0.01) && q.entityId > 0);
     const badPos = await fail("set_transform", { name: "B", position: [1, 2] });

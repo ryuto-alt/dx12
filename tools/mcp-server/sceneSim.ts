@@ -35,6 +35,8 @@ export type SimEntity = {
   tags?: string[];
   data?: Record<string, { t: string; v: any }>;
   internal?: boolean;
+  /** particleEmitter の追加レイヤー名(既定の 1 枚目 "Layer 1" を含む)。clone/rollback/削除/複製/hash に自動で乗せるため実体側に持つ。未設定=1 枚。 */
+  particleLayers?: string[];
 };
 
 export type SimFailure = { method: string; nth: number; name?: string; message: string; code: number; count: number };
@@ -567,29 +569,37 @@ export function createSceneSim(opts: SimOptions = {}) {
     return { entityId: e.id, path, slot, ...undoInfo("set_texture") };
   });
   // particleEmitter のレイヤー(実エンジンは放出器ごとに最大 16 枚)。名前は add_particle_layer が付けたものだけ追う。
-  const emitterLayers = new Map<number, string[]>();
-  const layersOf = (e: SimEntity): string[] => emitterLayers.get(e.id) ?? ["Layer 1"];
+  const layersOf = (e: SimEntity): string[] => e.particleLayers ?? ["Layer 1"];
+  // エラーの code/名前は実エンジン(ApplicationMcpEntity.cpp add_particle_layer)に合わせる: 放出器なし=NotFound(1)、16 枚超=InvalidParam(2)。
   def("add_particle_layer", "write_scene", (p) => {
     const e = resolve(p);
-    if (!e.comps.particleEmitter) throw simErr(6, "放出器が無い", { error_name: "E_NOT_FOUND_COMPONENT" });
+    if (!e.comps.particleEmitter) throw simErr(1, "entity has no ParticleEmitter", { error_name: "E_NOT_FOUND_COMPONENT" });
     const ls = [...layersOf(e)];
-    if (ls.length >= 16) throw simErr(3, "レイヤーは 16 枚まで", { error_name: "E_LIMIT_REACHED" });
+    if (ls.length >= 16) throw simErr(2, "レイヤーが多すぎます（上限 16 枚）", { error_name: "E_INVALID_PARAM" });
     ls.push(typeof p.layerName === "string" && p.layerName ? p.layerName : `Layer ${ls.length + 1}`);
-    emitterLayers.set(e.id, ls);
+    e.particleLayers = ls;
     return { entityId: e.id, index: ls.length - 1, count: ls.length, ...undoInfo("add_particle_layer") };
+  });
+  def("list_particle_layers", "read", (p) => {
+    const e = resolve(p);
+    if (!e.comps.particleEmitter) throw simErr(1, "entity has no ParticleEmitter", { error_name: "E_NOT_FOUND_COMPONENT" });
+    const ls = layersOf(e);
+    return { entityId: e.id, layers: ls.map((name, index) => ({ index, name })), count: ls.length };
   });
   def("set_component", "write_scene", (p) => {
     const e = resolve(p);
     const comp = String(p.component ?? "");
     if (!comp) throw simErr(2, "missing 'component'", { error_name: "E_MISSING_PARAM" });
-    const data = p.data !== undefined ? p.data : p.values;
+    // 呼び出し側の p.data を書き換えないよう複製してから扱う(実エンジンも複製で処理する)。
+    const rawData = p.data !== undefined ? p.data : p.values;
+    const data = rawData && typeof rawData === "object" ? clone(rawData) : rawData;
     // layer は選択子。範囲外・不明は【何も変えずに】E_OUT_OF_RANGE(実エンジン BUG-07 と同じ形: details={field,value,max})。
     if (comp === "particleEmitter" && p.layer !== undefined && !(data && typeof data === "object" && "layer" in data)) {
       if (data && typeof data === "object" && !Array.isArray(data)) (data as any).layer = p.layer;
     }
     if (comp === "particleEmitter" && data && typeof data === "object" && "layer" in data) {
       const ls = layersOf(e); const lj = (data as any).layer;
-      const ok = Number.isInteger(lj) ? lj >= 0 && lj < ls.length : typeof lj === "string" && ls.includes(lj);
+      const ok = Number.isInteger(lj) ? lj >= 0 && lj < ls.length : typeof lj === "string" && (e.comps.particleEmitter ? ls.includes(lj) : lj === "");   // 放出器が無い時は 1 枚目が作られるので "" だけ通る(実エンジンと同じ)
       if (!ok) throw simErr(2, "set_component: particleEmitter の layer が範囲外または見つかりません", {
         error_name: "E_OUT_OF_RANGE", error_cause: "layer が既存のレイヤーを指していない(何も変更せずに断る)", error_details: { field: "layer", value: lj, max: ls.length - 1 },
       });
@@ -933,6 +943,7 @@ export function createSceneSim(opts: SimOptions = {}) {
       name: e.name, parent: nameOf(e.parent), kind: e.kind, primitive: e.primitive ?? null, modelPath: e.modelPath ?? null,
       transform: e.transform, color: e.color ?? null, material: e.material ?? null, textures: e.textures ?? null,
       comps: e.comps, tags: e.tags ?? null, data: e.data ?? null,
+      ...(e.particleLayers ? { particleLayers: e.particleLayers } : {}),
     }));
   };
   const hash = (): string => crypto.createHash("sha1").update(JSON.stringify(normalized(state.entities))).digest("hex").slice(0, 16);

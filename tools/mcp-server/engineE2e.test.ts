@@ -204,6 +204,20 @@ try {
     const em = await c.call("create_entity", { type: "particle_emitter", name: "E2eEmitter" });
     const l = await c.call("list_particle_layers", { entity: em.entityId });
     check("既定の放出器にレイヤーが 1 枚（名前は Layer 1）", l.count === 1 && l.layers?.[0]?.name === "Layer 1", l);
+    // FU-E-39 (C2): 3 層の放出器へ layer:7 → E_OUT_OF_RANGE / details {field,value,max:2} / 何も変わらない
+    await c.call("add_particle_layer", { entity: em.entityId });
+    await c.call("add_particle_layer", { entity: em.entityId });
+    const l3 = await c.call("list_particle_layers", { entity: em.entityId });
+    check("add_particle_layer x2 で 3 層", l3.count === 3, l3);
+    const ent0 = JSON.stringify(await c.call("get_entity", { entity: em.entityId }));
+    const lay0 = JSON.stringify(l3);
+    const oor = await expectErr(c, "set_component", { entity: em.entityId, component: "particleEmitter", data: { layer: 7, rate: 99 } });
+    check("3 層へ layer:7 → E_OUT_OF_RANGE + details {field:layer,value:7,max:2}",
+      oor?.errName === "E_OUT_OF_RANGE" && JSON.stringify(oor.errDetails) === JSON.stringify({ field: "layer", value: 7, max: 2 }), { errName: oor?.errName, errDetails: oor?.errDetails });
+    check("拒否後も get_entity / list_particle_layers が呼ぶ前と同一",
+      JSON.stringify(await c.call("get_entity", { entity: em.entityId })) === ent0 && JSON.stringify(await c.call("list_particle_layers", { entity: em.entityId })) === lay0);
+    await c.call("set_component", { entity: em.entityId, component: "particleEmitter", data: { layer: 2, rate: 99 } });
+    check("範囲内の layer:2 は通る", true);
   }
 
   // ---------------------------------------------------------------- [5b]
