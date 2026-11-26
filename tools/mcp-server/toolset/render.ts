@@ -257,6 +257,31 @@ reg(
   (a) => run(() => engine.call("set_render_scale", a)),
 );
 
+const QUALITY_PRESETS = ["low", "medium", "high", "epic", "cinematic"] as const;
+
+reg(
+  "dx12_get_quality_preset",
+  "品質プリセット取得",
+  "現在の品質プリセット(low / medium / high / epic / cinematic)と、その予算(目標 fps・出力解像度・p95 / p99・"
+  + "VFX の放出倍率と最大粒子数)を返す。読み取り専用。値の正は budgets/quality_presets.json の生成表。"
+  + "★C1 時点では選択の記録だけで、返り値の applied:false は『絵にはまだ反映していない』の意味。",
+  {},
+  { readOnlyHint: true },
+  () => run(() => engine.call("get_quality_preset", {})),
+);
+
+reg(
+  "dx12_set_quality_preset",
+  "品質プリセット変更",
+  "品質プリセット(low / medium / high / epic / cinematic)を選ぶ。値の正は生成表(budgets/quality_presets.json)。"
+  + "★C1 時点では選択の記録だけで、絵への反映と Undo は後続(C7)で入る。返り値に applied:false と note が付く。"
+  + "★プリセット名は小文字で渡すこと(エンジンの manifest の enum が小文字)。"
+  + "性能を測る前に合わせる用途は dx12_perf_gate が内部で呼ぶ。",
+  { preset: z.enum(QUALITY_PRESETS).describe("品質プリセット名(小文字)。low | medium | high | epic | cinematic") },
+  { idempotentHint: true },
+  (a) => run(() => engine.call("set_quality_preset", a)),
+);
+
 reg(
   "dx12_get_depth_prepass",
   "深度プリパス単独トグル取得",
