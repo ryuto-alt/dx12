@@ -84,3 +84,25 @@ node tools/bench/golden.mjs --no-ui                    3D のゴールデンだ�
         if: always()
         with: { name: golden-out, path: build/golden-out }
 ```
+
+## ルックデブ（MH-1。`lookdev_*`）
+
+材質・ライティングの見た目を V1（既定）と V2（`UNO_SHADING_V2`）で撮り分けて検証する 4 シーン。`golden_core` に入っていて、V1 の絵は通常のゴールデンとして登録済み（`tests/golden/entries/lookdev_*.json`）。
+
+| ID | 見るもの |
+|---|---|
+| `lookdev_grid` | 粗さ（7 列）x 金属度（7 行）の球、18% グレーカード、24 パッチ（ColorChecker 近似） |
+| `lookdev_grazing` | 高タイリングの法線マップ（手続き生成）の床をかすめる角度で。スペキュラ AA・水平線。向かい風の低い太陽 |
+| `lookdev_glass` | 縞の前のガラス（blend + IOR）、色つきの透過、クリアコート |
+| `lookdev_emissive_room` | 太陽の無い閉じた部屋。発光パネル・発光球・点光源 3 灯 |
+
+- シーンは `tests/golden/projects/golden_core/gen_scenes.mjs`、法線マップと `.dxmat` は `gen_lookdev_textures.mjs` で再生成する（外部アセットなし）。
+- `pwsh tools\lookdev_check.ps1 [-Only lookdev_grid] [-Port N] [-V2RecordOnly]`: 4 シーンを V1 / V2 で撮り（各 2 回。決定論を確かめる）、
+  V1 と V2 の差、輝度の統計、`perf_stats` の `gpuPassMs.mainScene` を JSON（既定 `%USERPROFILE%\dx12-scorecard\lookdev\lookdev_check.json`）に出す。
+  終了コード 0 = 合格 / 1 = 不合格（決定論の崩れ・V2 が V1 から逸脱・撮影失敗）/ 2 = エラー。全機能 OFF の V2 は V1 と同じ絵（C3）なので、既定のしきい値は
+  差画素 0.1% 以下・平均差 0.25 以下。MH-2 などで V2 を意図して変えたら `-V2RecordOnly` に切り替え、V1 のゴールデンはそのまま残す。
+- GPU の時間は記録だけで合否に使わない（性能の合否は夜間の計測窓）。FLIP は `tools/parity` の venv（`pwsh tools\parity\setup.ps1`）があるときだけ
+  V1 → V2 で計算する。パストレーサーを基準にした FLIP は `-ReferenceDir`（`<id>.png`）で基準画像を渡す。
+- CPU 側の物差し: `tests/shading_brdf_test.cpp`（`ShadingBrdfTests`）の白い炉・相反性に加え、V2 の方向アルベドを 1024² の格子で積分する（白い金属 0.97〜1.01）。
+  `BrdfV2.hlsli` の中身が入る（MH-2）ときは、テストの `EvalV2` を差し替える。
+- 純関数の単体テスト: `node --test tools/lookdev`。
