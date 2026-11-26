@@ -40,8 +40,53 @@ public:
         RtShadowDenoise, // RT 影デノイザ: 時間蓄積 + 空間フィルタ（RtScreen の内数。トレースは含まない）
         Upscale,       // 時間方向アップスケーラ（DLSS の MV 準備 + 評価。PostFX の内数）
         VgShadow,      // 仮想ジオメトリ: 太陽の CSM へ VG のクラスタを深度だけで描く（Shadows の内数）
+        // ---- W05-26: 新しい 30 本（番号は固定。対応するパスが無い間は常に 0 ms）----
+        ShadowCsm,     // 影: 太陽の CSM（Shadows の内数）
+        ShadowLocal,   // 影: スポット / ポイント（Shadows の内数）
+        ScreenShadow,  // スクリーン空間の影（コンタクトシャドウ等。PrepassSSAO の内数）
+        RtShadow,      // RT 太陽影（RtScreen の内数）
+        RtLocalShadow, // RT ローカルライト影（RtScreen の内数）
+        SsLighting,    // スクリーン空間ライティング（PrepassSSAO の内数）
+        Skinning,      // スキニング（GPU スキン）
+        Characters,    // キャラクター専用パス（髪・肌など）
+        Transparent,   // 半透明
+        Water,         // 水
+        Foliage,       // 植生
+        Atmosphere,    // 大気（空 LUT + 空 + AP）
+        GodRays,       // ゴッドレイ（PostFX の内数）
+        Decals,        // デカール
+        VfxSim,        // VFX: シミュレーション
+        VfxDraw,       // VFX: 描画
+        VfxLighting,   // VFX: ライティング
+        VfxShadow,     // VFX: 影
+        Reactive,      // アップスケーラ用リアクティブマスク（PostFX の内数）
+        Taa,           // TAA（PostFX の内数）
+        Dof,           // 被写界深度（PostFX の内数）
+        MotionBlur,    // モーションブラー（PostFX の内数）
+        AutoExposure,  // 自動露出（PostFX の内数）
+        LocalExposure, // ローカル露出（PostFX の内数）
+        Bloom,         // ブルーム（PostFX の内数）
+        LensFx,        // レンズ効果（PostFX の内数）
+        ColorLut,      // カラー LUT（PostFX の内数）
+        Uber,          // uber ポスト（PostFX の内数）
+        EditorOverlay, // エディタのオーバーレイ（UI の内数）
+        GameHud,       // ゲーム HUD（UI の内数）
         Count
     };
+    static constexpr u32 kMaxScopes = 64;   // 64 ビットの書込みマスク（1ull << s）に収まる上限
+    static_assert(Count <= kMaxScopes, "GpuTimer のスコープは 64 本まで（書込みマスクが u64）");
+
+    // スコープの属性。parent は「この区間の中に入る」親（トップレベルは Total。Total 自身は Total）。
+    // 子を持たないスコープが葉。alias は別名（大文字小文字を無視して FindScope で引ける）。
+    struct ScopeInfo { const char* name; Scope parent; const char* alias; };
+    static const ScopeInfo& Info(Scope s);
+    static bool IsLeaf(Scope s);
+    // 名前または別名からスコープを引く（大文字小文字を無視。旧名 volFog / 別名 fogScatter など）。
+    static bool FindScope(const char* nameOrAlias, Scope& out);
+    // 実効の葉: 構造上の葉、または子が全部 0 ms の親（対応するパスを未計装の間は親を葉として数える）。
+    static bool IsEffectiveLeaf(Scope s, const float* ms);
+    // 実効の葉の合計（Total は含めない）。
+    static float LeafSumMs(const float* ms);
     static const char* Name(u32 s);
 
     static constexpr u32 kFrames = 3;   // FrameResources::kFrameCount と一致させる
@@ -60,6 +105,13 @@ public:
     // 直近の完了フレームの計測値(ms)。未計測スコープは 0。
     float GetMs(Scope s) const { return (s < Count) ? m_ms[s] : 0.0f; }
 
+    // 実行時の検査の結果（NewFrame が読み戻しのたびに調べる）。
+    //  - 子の区間が親の区間（Begin/End のタイムスタンプ）の外に出た回数
+    //  - 葉の合計が Total + 0.1ms を超えた回数
+    u32 NestViolations()    const { return m_nestViolations; }
+    u32 LeafSumViolations() const { return m_leafViolations; }
+    static constexpr float kLeafSumToleranceMs = 0.1f;
+
 private:
     u32 QueryIndex(u32 frame, u32 scope, u32 beginEnd) const
     {
@@ -71,8 +123,11 @@ private:
     u64   m_freq = 0;
     bool  m_valid = false;
     u32   m_frame = 0;                  // NewFrame で受けた現在スロット
-    u32   m_writtenMask[kFrames] = {};  // スロットごとの「このフレームで End まで打った」スコープビット
+    u64   m_writtenMask[kFrames] = {};  // スロットごとの「このフレームで End まで打った」スコープビット（1ull << s）
     float m_ms[Count] = {};
+    u32   m_nestViolations = 0;
+    u32   m_leafViolations = 0;
+    u64   m_nestWarned = 0;             // 親子の逸脱を警告したスコープ（1 スコープ 1 回だけ）
 };
 
 } // namespace dx12e

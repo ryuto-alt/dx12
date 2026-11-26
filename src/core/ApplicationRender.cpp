@@ -2860,6 +2860,7 @@ void Application::BeginRenderFrame(RenderFrameContext& frame)
 
     // GPU パス計測: このスロットの前回結果（約3フレーム前）を読み戻してから今フレームの計測開始
     static_assert(GpuTimer::Count <= kPerfGpuScopes, "kPerfGpuScopes を GpuTimer::Count に合わせて広げること");
+    static_assert(kPerfGpuScopes == GpuTimer::kMaxScopes, "kPerfGpuScopes は GpuTimer::kMaxScopes と同じ");
     m_gpuTimer->NewFrame(m_swapChain->GetCurrentBackBufferIndex());
     m_gpuTimer->Begin(nativeCmdList, GpuTimer::Total);
     // オクルージョン統計も同じタイミングで回収する（このスロットの GPU 作業は

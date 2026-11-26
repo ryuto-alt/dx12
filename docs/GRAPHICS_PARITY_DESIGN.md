@@ -138,6 +138,28 @@ VG 書の統合方針（プロキシ + 可視性バッファ + 全画面 resolve
 
 ---
 
+**2.0.5 方針の撤回（2026-11-26 オーナー決定）と GpuTimer のスコープ表（W05-26）**
+
+- 「Agility SDK を使わない」「フルフレームグラフを却下」という旧方針は**撤回（2026-11-26 オーナー決定）**。F0〜F4（Agility、Enhanced Barriers、bindless、レンダーグラフ）は EXEC_W05_W1 / MODERNIZATION_BACKLOG (c) に従って進める。各段で既定の経路のゴールデンがビット一致すること。`docs/VIRTUAL_GEOMETRY_DESIGN.md` の「Work Graphs（Agility SDK が要る。このエンジンは意図的に使っていない）」も同じ決定で上書きされる（Work Graphs 自体の採否は別。プレビュー版の機能は出荷しない）。
+- GpuTimer は 64 本まで（書込みマスクは u64）。旧 22 本の名前と番号は不変で、新しい 30 本を後ろに足して 52 本。子を持たないスコープが葉で、予算の合計は**葉だけ**で出す（`perf_stats` の `gpuLeafMs`。親は `gpuPassMs` に今までどおり出る）。`gpuScopeTree` が親子と別名を返す。新しいスコープは対応するパスが計装されるまで 0 ms。
+
+| スコープ（JSON 名） | 親 | 別名 / 備考 |
+|---|---|---|
+| total | — | フレーム全体（葉の合計の上限: Total + 0.1ms） |
+| shadows | total | 子: vgShadow, shadowCsm, shadowLocal |
+| prepassSsao | total | 子: depthPrepass, hiZ, vgCull, rtScreen, screenSpaceGi, cloudShadow, screenShadow, ssLighting |
+| rtScreen | prepassSsao | 子: rtShadowDenoise, rtShadow, rtLocalShadow |
+| particles | total | 子: clouds |
+| postFx | total | 子: upscale, godRays, reactive, taa, dof, motionBlur, autoExposure, localExposure, bloom, lensFx, colorLut, uber |
+| ui | total | 子: editorOverlay, gameHud |
+| raytracing | total | 別名 asBuild |
+| rtReflection | total | 別名 rtReflect |
+| volFog | total | 別名 fogScatter |
+| clusterCull, ddgi, mainScene | total | 葉 |
+| skinning, characters, transparent, water, foliage, atmosphere, decals, vfxSim, vfxDraw, vfxLighting, vfxShadow | total | 新規・葉（未計装の間は 0） |
+
+- 実行時の検査: 子の Begin/End が親の Begin/End の中に入っていること（`perf_stats.gpuTimerChecks.nestViolations`）、葉の合計 ≤ Total + 0.1ms（同 `leafSumViolations`）。親の子がすべて 0 ms の間は親自身を葉として数える（未計装で合計が痩せないため）。
+
 ### 2.1 大気・空・ボリュメトリッククラウド
 
 #### 2.1.1 推奨手法: Hillaire 2020 の 4 LUT

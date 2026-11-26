@@ -848,6 +848,17 @@ if(TARGET Renderer)
     endif()
     add_test(NAME RenderStageHooksTests COMMAND RenderStageHooksTests)
 endif()
+# GpuTimer のスコープ表（64 本化・葉と親・別名）。GPU は使わない。W05-26。
+if(TARGET Renderer)
+    add_executable(GpuTimerScopeTests gpu_timer_scope_test.cpp)
+    target_include_directories(GpuTimerScopeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(GpuTimerScopeTests PRIVATE Renderer)
+    if(MSVC)
+        target_compile_options(GpuTimerScopeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(GpuTimerScopeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME GpuTimerScopeTests COMMAND GpuTimerScopeTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====

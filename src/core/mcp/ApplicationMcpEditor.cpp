@@ -7,6 +7,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1 の JSON 変換
+#include "core/mcp/FleetGuard.h"   // vramBaselineMB（QueryVideoMemoryMB）
 
 namespace dx12e
 {
@@ -924,6 +925,34 @@ void Application::RegisterMcpEditorMethods()
             // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。
             // OFF / 正射カメラのときは「先頭 64 灯を総当たり」フォールバックで走る。
             rep["clustered"]  = m_clusteredEnabled;
+            // W05-26 T-00: 葉だけの GPU 時間 / 親子関係 / VRAM。gpuPassMs（旧名を含む全スコープ）の形は変えない。
+            {
+                auto r2 = [](double v) { return std::round(v * 100.0) / 100.0; };
+                float msf[GpuTimer::Count];
+                for (u32 g = 0; g < GpuTimer::Count; ++g) msf[g] = static_cast<float>(s.gpuMs[g]);
+                nlohmann::json leaf = nlohmann::json::object();
+                nlohmann::json tree = nlohmann::json::object();
+                for (u32 g = 0; g < GpuTimer::Count; ++g)
+                {
+                    const auto sc = static_cast<GpuTimer::Scope>(g);
+                    const GpuTimer::ScopeInfo& inf = GpuTimer::Info(sc);
+                    if (GpuTimer::IsEffectiveLeaf(sc, msf)) leaf[inf.name] = r2(s.gpuMs[g]);
+                    nlohmann::json node = {{"parent", g == GpuTimer::Total ? nlohmann::json(nullptr)
+                                                                            : nlohmann::json(GpuTimer::Name(inf.parent))},
+                                           {"leaf", GpuTimer::IsLeaf(sc)}};
+                    if (inf.alias) node["alias"] = inf.alias;
+                    tree[inf.name] = node;
+                }
+                rep["gpuLeafMs"]      = leaf;                                   // 葉の合計 ≤ gpuPassMs.total + 0.1ms
+                rep["gpuLeafSumMs"]   = r2(GpuTimer::LeafSumMs(msf));
+                rep["gpuScopeTree"]   = tree;
+                rep["gpuTimerChecks"] = {{"nestViolations",    m_gpuTimer ? m_gpuTimer->NestViolations() : 0u},
+                                         {"leafSumViolations", m_gpuTimer ? m_gpuTimer->LeafSumViolations() : 0u}};
+                double vu = -1.0, vb = 0.0;   // このプロセスの VRAM 使用量（基盤の実測）。取れなければ -1
+                if (m_graphicsDevice) { double u = 0.0, b = 0.0; if (fleet::QueryVideoMemoryMB(m_graphicsDevice->GetDevice(), u, b)) { vu = u; vb = b; } }
+                (void)vb;
+                rep["vramBaselineMB"] = r2(vu);
+            }
             rep["occlusion"]  = OcclusionReportJson();
             rep["upscaler"]   = UpscalerJson();   // 時間方向アップスケーラ（off/taa/dlss・内部/出力解像度）。gpuPassMs.upscale が DLSS の GPU 時間
             if (m_vg) rep["virtualGeometry"] = VirtualGeometryStatsJson();   // 仮想ジオメトリ P2（有効化した後だけ出る）
