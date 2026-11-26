@@ -722,6 +722,18 @@ if(Python3_Interpreter_FOUND)
 else()
     message(WARNING "Python3 が見つからないため CalibrateSoundAssets を登録できません")
 endif()
+# AUD-05（W1-BD9）: pak の並列読み取りがスレッドセーフ（8 スレッド x 1000 回で直列の結果と一致）。
+if(TARGET Core)
+    add_executable(PakParallelReadTests pak_parallel_read_test.cpp)
+    target_link_libraries(PakParallelReadTests PRIVATE Core)
+    target_include_directories(PakParallelReadTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(PakParallelReadTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(PakParallelReadTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME PakParallelReadTests COMMAND PakParallelReadTests)
+    set_tests_properties(PakParallelReadTests PROPERTIES TIMEOUT 120)
+endif()
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
