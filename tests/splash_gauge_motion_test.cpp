@@ -494,6 +494,96 @@ void Test_Skip()
     }
 }
 
+// スキップで、音の側へ受け渡し済みの予約（playAt が先のもの）を取り消せる（FU-E-18）
+void Test_SkipCancelsHandedOverCues()
+{
+    // スキップしなければ取り消しは出ない / id は 1 から単調で一意
+    {
+        sp::GaugeSlowDriver d;
+        std::vector<std::uint32_t> ids;
+        for (double t = 0; t < 2500.0; t += 16.0)
+        {
+            d.Update(t, static_cast<float>(t / 3000.0), false);
+            for (const auto& c : d.TakeCues()) ids.push_back(c.id);
+            CHECK(d.TakeCancelledCueIds().empty());
+        }
+        CHECK(!ids.empty());
+        for (std::size_t i = 0; i < ids.size(); ++i) CHECK(ids[i] == i + 1);
+    }
+    std::size_t totalCancelled = 0;
+    for (std::uint32_t k = 0; k < 24; ++k)
+    {
+        const double tSkip = 300.0 + sp::Rand01(131, k) * 2500.0;
+        sp::GaugeSlowDriver d;
+        std::vector<sp::GaugeCue> handed;
+        double t = 0;
+        for (; t < tSkip; t += 16.0)
+        {
+            d.Update(t, static_cast<float>(t / 3500.0), false);
+            for (const auto& c : d.TakeCues()) handed.push_back(c);
+        }
+        d.Skip(t);
+        const auto cancelled = d.TakeCancelledCueIds();
+        // 受け渡し済みで playAt > tSkip のものだけ、過不足なく取り消される
+        std::size_t expect = 0;
+        for (const auto& c : handed)
+        {
+            const bool want = c.kind == sp::GaugeCueKind::Click && c.playAtMs > t;
+            std::size_t n = 0;
+            for (auto id : cancelled) n += (id == c.id);
+            CHECK(n == (want ? 1u : 0u));
+            expect += want;
+        }
+        CHECK(cancelled.size() == expect);
+        totalCancelled += expect;
+        CHECK(d.TakeCancelledCueIds().empty());
+        // スキップの LockTail は取り消し対象でなく、id は取り消しと重ならない
+        const auto after = d.TakeCues();
+        CHECK(after.size() == 1 && after[0].kind == sp::GaugeCueKind::LockTail && after[0].playAtMs == t);
+        for (auto id : cancelled) CHECK(id != after[0].id);
+        // スキップ後は新しい取り消しが出ない
+        d.Update(t + 16.0, 1.0f, true);
+        CHECK(d.TakeCancelledCueIds().empty() && d.TakeCues().empty());
+    }
+    CHECK(totalCancelled > 0);   // 予約は発音の 50ms 以上前に渡る。歯の直後のスキップでは必ず取り消しが出る（24 時刻のどこかで当たる）
+    // 取り出す前にスキップ（まだ渡していない予約）は取り消しではなく破棄
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 1200.0; t += 16.0) d.Update(t, static_cast<float>(t / 3500.0), false);
+        d.Skip(t);
+        CHECK(d.TakeCancelledCueIds().empty());
+    }
+    // ロック以降のスキップは何もしない（取り消しも出ない）
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 800.0; t += 16.0) { d.Update(t, 0.4f, false); d.TakeCues(); }
+        for (; !(d.Approaching() && t >= d.LockWallMs() + 10.0); t += 16.0) { d.Update(t, 1.0f, true); d.TakeCues(); }
+        d.Skip(t);
+        CHECK(!d.Skipped() && d.TakeCancelledCueIds().empty());
+    }
+    // 速い経路 → 持ち替え後のスキップは Slow と同じ。持ち替え前のスキップは予約が無いので取り消しも無い
+    {
+        sp::GaugeFastDriver d;
+        double t = 0;
+        std::vector<sp::GaugeCue> handed;
+        for (; t < Ev().clickMs[sp::CalibrateEvents::kClicks - 2] + 400.0; t += 16.0) { d.Update(t, 0.1f, false); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        CHECK(d.HandedOver());
+        d.Skip(t);
+        const auto cancelled = d.TakeCancelledCueIds();
+        std::size_t expect = 0;
+        for (const auto& c : handed) expect += (c.kind == sp::GaugeCueKind::Click && c.playAtMs > t);
+        CHECK(cancelled.size() == expect);
+    }
+    {
+        sp::GaugeFastDriver d;
+        for (double t = 0; t < 1000.0; t += 16.0) d.Update(t, 0.1f, false);
+        d.Skip(1000.0);
+        CHECK(d.TakeCancelledCueIds().empty());
+    }
+}
+
 // (6) Reduce
 void Test_Reduce()
 {
@@ -554,6 +644,7 @@ int main()
     Test_SlowWaitsAtCap();
     Test_SlowFinishFromRest();
     Test_Skip();
+    Test_SkipCancelsHandedOverCues();
     Test_Reduce();
     Test_Blur();
     if (g_fail == 0) std::printf("SplashGaugeMotionTests: ALL PASS\n");

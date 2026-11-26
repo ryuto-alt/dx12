@@ -317,6 +317,7 @@ struct GaugeCue
     GaugeCueKind kind = GaugeCueKind::Click;
     int index = 0;            // Click: 歯の番号 0..23
     float pan = 0.f;          // -1..1
+    std::uint32_t id = 0;     // 予約の通し番号（1 から。ドライバごとに単調）。スキップの取り消し（TakeCancelledCueIds）はこの id で指す
 };
 
 // 使い方: 起動時に生成し、フレームごとに Update(t, 実進捗, 完了要求) → Frame(t) と TakeCues()。t は生成からの ms。
@@ -387,13 +388,29 @@ public:
         m_skipped = true;
         m_skipWall = tMs;
         std::erase_if(m_cues, [&](const GaugeCue& c) { return c.playAtMs > tMs; });
+        // 取り出し済み（音の側へ渡した）で、まだ鳴っていない予約（playAt > tMs）の取り消しを積む。音の側は TakeCancelledCueIds() の id を
+        // 予約表から外し、鳴っているボイスの 30ms フェードアウトと LockTail の頭出しとあわせて行う（取り消さないと、スキップ後にクリックが鳴る）
+        for (const TakenCue& k : m_taken)
+            if (k.playAtMs > tMs) m_cancelIds.push_back(k.id);
+        m_taken.clear();
         GaugeCue c;
         c.playAtMs = tMs; c.issuedAtMs = tMs; c.kind = GaugeCueKind::LockTail;
+        c.id = ++m_nextCueId;
         m_cues.push_back(c);
     }
 
-    // たまった予約を取り出す（以後は空）
-    std::vector<GaugeCue> TakeCues() { std::vector<GaugeCue> out; out.swap(m_cues); return out; }
+    // たまった予約を取り出す（以後は空）。取り出した予約は、スキップのときに取り消しの対象になりうる（TakeCancelledCueIds）
+    std::vector<GaugeCue> TakeCues()
+    {
+        std::vector<GaugeCue> out;
+        out.swap(m_cues);
+        for (const GaugeCue& c : out)
+            if (c.kind == GaugeCueKind::Click) m_taken.push_back(TakenCue{ c.id, c.playAtMs });
+        return out;
+    }
+    // スキップで取り消す予約の id（TakeCues で受け渡し済みで、スキップ時刻より後に鳴るはずだったもの）。取り出すと空になる。
+    // スキップしなければ常に空。LockTail は取り消さない（スキップの LockTail は TakeCues の側にある）
+    std::vector<std::uint32_t> TakeCancelledCueIds() { std::vector<std::uint32_t> out; out.swap(m_cancelIds); return out; }
     const std::vector<GaugeCue>& PendingCues() const { return m_cues; }
 
     bool Skipped() const { return m_skipped; }
@@ -500,6 +517,7 @@ private:
         c.kind = GaugeCueKind::Click;
         c.index = tooth;
         c.pan = static_cast<float>(m_ev.clickPan[tooth]);
+        c.id = ++m_nextCueId;
         m_cues.push_back(c);
     }
 
@@ -592,6 +610,10 @@ private:
     double m_approachWall = 0, m_lockWall = 0;
     bool m_skipped = false;
     double m_skipWall = 0;
+    struct TakenCue { std::uint32_t id; double playAtMs; };
+    std::vector<TakenCue> m_taken;          // TakeCues で渡した Click（Skip で playAt > tSkip のものを取り消す）
+    std::vector<std::uint32_t> m_cancelIds; // Skip が積んだ取り消し
+    std::uint32_t m_nextCueId = 0;
 };
 
 // ---------------------------------------------------------------- 速い経路の「ロードが C22 までに終わらなかった」ときの縮退
@@ -644,6 +666,8 @@ public:
 
     // 持ち替えた後の予約（持ち替える前は空。速い経路の音は graphite_1.wav）
     std::vector<GaugeCue> TakeCues() { return m_slow.TakeCues(); }
+    // スキップで取り消す予約の id（GaugeSlowDriver と同じ。持ち替える前は常に空）
+    std::vector<std::uint32_t> TakeCancelledCueIds() { return m_slow.TakeCancelledCueIds(); }
 
     bool HandedOver() const { return m_handed; }   // 345 度で待つ縮退に入った
     double HandOverMs() const { return m_decisionMs; }
