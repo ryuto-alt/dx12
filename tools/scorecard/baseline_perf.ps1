@@ -11,6 +11,8 @@
     #   tools/nightly.ps1 -Ref <M2 の直前のコミット> -Out dx12-before-m2 と -Ref <M2 のコミット> -Out dx12-after-m2 で用意する。
     pwsh tools/scorecard/baseline_perf.ps1 ab --id f0 --a-dir <before-m2> --a-label before-m2 --a-no-dred --b-dir <after-m2> --b-label after-m2 --b-no-dred
     pwsh tools/scorecard/baseline_perf.ps1 ab --id hooks --a-dir <M4 の直前> --a-label before-m4 --a-no-dred --b-dir <M4> --b-label after-m4 --b-no-dred
+    # VRAM の門: DXGI の Budget が 6500MB 以上（nvidia-smi の使用量は引かない。--vram-min-mb は protocol に記録され、試走の扱いにはならない）。
+    # DRED の旗は --a-no-dred / --b-no-dred でも --a-args "--no-dred" でも同じ意味（--dred は拒否）。
     pwsh tools/scorecard/baseline_perf.ps1 probe --engine-dir <nightly>    # VRAM の門の値だけを表示（離席中に 1 回）
     # 試走（--frames などを変えた実行）は --out を明示しないと拒否される（公式の JSON に混ぜないため）。
     pwsh tools/scorecard/baseline_perf.ps1 validate --require pre-overhaul,w05-end,dred,f0,hooks

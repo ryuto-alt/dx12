@@ -53,14 +53,30 @@ test("compareAB: 閾値内は within、超えたら遅い側を指す、デー�
   assert.equal(compareAB([], [1], []).verdict, "insufficient");
 });
 
-test("VRAM の門: Budget − 他の使用量 < 6.5GB は中止、取れなければ中止", () => {
-  assert.equal(vramGate(7600, 1000).ok, true);          // 6600 >= 6500
-  const g = vramGate(7600, 2000);                       // 5600
+test("VRAM の門: Budget が 6.5GB 未満なら中止（nvidia-smi の使用量は引かない）、Budget が取れなければ中止", () => {
+  assert.equal(vramGate(7127, 2122).ok, true);          // 実測（アイドル）: 通る
+  assert.equal(vramGate(7600, null).ok, true);          // 他の使用量が取れなくても Budget で判定
+  const g = vramGate(6000, 100);
   assert.equal(g.ok, false);
-  assert.equal(g.availableMB, 5600);
   assert.match(g.reason, /6500MB/);
   assert.equal(vramGate(NaN, 100).ok, false);
-  assert.equal(vramGate(7600, null).ok, false);
+  assert.equal(vramGate(undefined, 100).ok, false);
+});
+
+test("dropByClock: 共通の基準（refMHz）を渡すと A/B と A/A で同じ基準になる", () => {
+  const r = dropByClock([{ index: 0, clockA: 2500, clockB: 2500 }], 3, 2300);   // 自分の中央値なら残るが、基準 2300 からは 8%
+  assert.equal(r.dropped.length, 1);
+  assert.equal(r.refMHz, 2300);
+});
+
+test("parseArgs: --a-args の --no-dred は aNoDred に読み替え、--dred は拒否", () => {
+  const base = ["ab", "--id", "dred", "--a-dir", ".", "--b-dir", ".", "--a-label", "a", "--b-label", "b"];
+  const o = parseArgs([...base, "--a-args", "--no-dred --foo"]);
+  assert.equal(o.aNoDred, true);
+  assert.deepEqual(o.aArgs, ["--foo"]);
+  assert.equal(o.bNoDred, false);
+  assert.throws(() => parseArgs([...base, "--b-args", "--dred"]));
+  assert.equal(parseArgs([...base, "--vram-min-mb", "5000"]).smoke, false);   // 門の値は試走の判定に入れない
 });
 
 test("summarizeWindows: 窓の中央値", () => {
@@ -77,8 +93,8 @@ test("clockStats: アイドルの低いクロックを混ぜない", () => {
 });
 
 const sc = (mk) => Object.fromEntries(EXPECTED_SCENES.map((id) => [id, mk]));
-const mkSnap = (label) => ({ label, noDred: true, smoke: false, engine: { exeSha256: "a".repeat(64) }, scenes: sc({ keptRounds: 3, summary: { frameMsTypical: 1.2 } }) });
-const mkAb = (id) => ({ id, smoke: false, sameBinary: true, a: { noDred: true, dredFlag: "passed" }, b: { noDred: id !== "dred" }, aa: { pairs: 3 }, scenes: sc({ verdict: "within" }) });
+const mkSnap = (label) => ({ label, noDred: true, dredFlag: label === "pre-overhaul" ? "binary-has-no-dred" : "passed", smoke: false, engine: { exeSha256: "a".repeat(64) }, scenes: sc({ keptRounds: 3, summary: { frameMsTypical: 1.2 } }) });
+const mkAb = (id) => ({ id, smoke: false, sameBinary: true, a: { noDred: true, dredFlag: "passed", extraArgs: [] }, b: { noDred: id !== "dred", dredFlag: "passed", extraArgs: [] }, aa: { pairs: 3 }, scenes: sc({ verdict: "within" }) });
 
 test("mergeInto は同じキーだけ置き換える", () => {
   let j = mergeInto(emptyBaseline(), { snapshot: mkSnap("pre-overhaul") });
@@ -119,6 +135,17 @@ test("validate: DRED を揃えていない記録は NG", () => {
   assert.ok(validateBaseline(b, REQ).errors.some((e) => /旗/.test(e)));
 });
 
+test("validate: DRED の B 側が OFF の A/B、旗を受け取っていない w05-end と hooks は NG", () => {
+  const a = full(); a.abTests.dred.b.extraArgs = ["--no-dred"];
+  assert.ok(validateBaseline(a, REQ).errors.some((e) => /B 側が DRED OFF/.test(e)));
+  const b = full(); b.abTests.dred.b.noDred = true;
+  assert.ok(validateBaseline(b, REQ).errors.some((e) => /B 側が DRED OFF/.test(e)));
+  const c = full(); c.snapshots["w05-end"].dredFlag = "binary-has-no-dred";
+  assert.ok(validateBaseline(c, REQ).errors.some((e) => /w05-end.*受け取っていない/.test(e)));
+  const d = full(); d.abTests.hooks.b.dredFlag = "binary-has-no-dred";
+  assert.ok(validateBaseline(d, REQ).errors.some((e) => /ab hooks.*受け取っていない/.test(e)));
+});
+
 test("validate: シーンの欠落・集合の不一致は NG", () => {
   const a = full(); delete a.snapshots["w05-end"].scenes[EXPECTED_SCENES[0]];
   const e = validateBaseline(a, REQ).errors.join("; ");
@@ -140,8 +167,12 @@ test("試走の既定出力先の拒否に使う outExplicit", () => {
   assert.throws(() => parseArgs(["probe"]));
 });
 
+const tmpDirs = [];
+const mkLockFile = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), "lk-")); tmpDirs.push(d); return path.join(d, "w.lock"); };
+test.after(() => { for (const d of tmpDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* 無視 */ } } });
+
 test("計測窓のロック: 排他、古い持ち主は奪う、解放で消える", async () => {
-  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lk-")), "w.lock");
+  const f = mkLockFile();
   const rel = await acquireGpuWindow({ file: f });
   assert.ok(rel);
   assert.equal(await acquireGpuWindow({ file: f, waitSec: 0 }), null);   // 自分が持っている
@@ -154,7 +185,7 @@ test("計測窓のロック: 排他、古い持ち主は奪う、解放で消え
 });
 
 test("古いロックの奪取: 持ち主の PID が居ないときだけ。生きている持ち主のロックは消さない", async () => {
-  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lk-")), "w.lock");
+  const f = mkLockFile();
   fs.writeFileSync(f, JSON.stringify({ pid: process.pid, owner: "alive" }));
   assert.equal(await acquireGpuWindow({ file: f, waitSec: 0 }), null);
   assert.equal(JSON.parse(fs.readFileSync(f, "utf8")).owner, "alive");
