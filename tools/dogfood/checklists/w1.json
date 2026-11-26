@@ -789,32 +789,24 @@
       "target": [
         "A15"
       ],
-      "title": "パーティクルエディタの「適用」確認と Undo",
+      "title": "パーティクルエディタの「適用」確認と Undo（UI テスト vfx_apply_confirm）",
       "steps": [
         {
-          "kind": "engine",
-          "action": "start"
-        },
-        {
-          "kind": "input",
-          "op": "virtual_input",
-          "params": {
-            "enabled": true
-          }
+          "kind": "note",
+          "text": "DG1 の MCP は仮想入力の経路で、MCP 中は「適用」の確認モーダルが出ない（仕様）。そのためこの項目は MCP で確かめず、UI テスト vfx_apply_confirm で確かめる。エンジンを別に起動しない（テスト用スクリプトが自分のインスタンスを起動して終了する）"
         },
         {
           "kind": "note",
-          "text": "パーティクルエディタで「適用」→ 確認 → キャンセル → レイヤー不変。適用 → Ctrl+Z"
+          "text": "実行: pwsh tools/run_ui_tests.ps1 -Only vfx_apply_confirm （レーンの worktree では -Name / -Port で他と分ける。窓は前面に出ない）。標準出力の最終行 [uitests] 1 run, 0 failed と foreground window unchanged を証拠のログとして残す"
         },
         {
-          "kind": "mcp",
-          "method": "get_entity"
+          "kind": "note",
+          "text": "テストが見ること: レイヤー 0 に中身があると「適用」で確認が出る → キャンセルでレイヤー不変 → 置き換え → Undo（Ctrl+Z）で元に戻る。MCP 中は確認なし"
         }
       ],
-      "expect": "確認が出る。キャンセルでレイヤーが不変。適用後の Ctrl+Z で元に戻る",
+      "expect": "vfx_apply_confirm が 1 件実行され失敗 0（確認が出る・キャンセルでレイヤー不変・適用後の Undo で元に戻る）。前面ウィンドウは変わらない",
       "evidence": [
-        "screenshot",
-        "json"
+        "log"
       ],
       "severityIfFail": "major"
     }
