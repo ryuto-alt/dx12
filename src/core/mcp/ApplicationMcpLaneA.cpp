@@ -11,6 +11,7 @@
 #include "graphics/GraphicsDevice.h"
 #include "scene/SceneSettingsHash.h"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -79,6 +80,7 @@ struct LaneAState
     std::chrono::steady_clock::time_point lastProtect{};
     bool        hasProtected = false;
     std::string lastBackupId;
+    std::string rollingAutoId;                // 自動保存の経路の退避の世代（1 枠。次の退避で置き換える。DF-W05-R2-02）
     std::string untitledStem;                 // 保存先の無い新規シーンの退避の名前（MarkSceneClean まで同じ）
     bool        saveWroteHumanEdits = false;  // 直近の save_scene が人の未保存の変更を含めて本体へ書いた
 };
@@ -125,6 +127,14 @@ std::string AppAccess::UntitledDir()
     return PathResolver::BaseDir() + ".dx12/untitled/";
 }
 
+void AppAccess::ResetAutoProtectThrottleForTest()
+{
+    LaneAState& st = S();
+    st.hasProtected = false;
+    st.stamp.Reset();
+    st.failedStamp.Reset();
+}
+
 bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason reason, bool forceArg, bool includeMcp)
 {
     namespace fs = std::filesystem;
@@ -145,7 +155,7 @@ bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason
     {
         if (st.failedStamp.Same(humanSeq, sflag)) return false;   // 同じ状態で失敗済み（毎回直列化・通知しない）
         const double since = st.hasProtected ? std::chrono::duration<double>(std::chrono::steady_clock::now() - st.lastProtect).count() : 0.0;
-        if (autosaveguard::CanSkipProtect(false, ctx->autosaveBlockedByHumanEdits && st.stamp.Same(humanSeq, sflag), st.hasProtected, since, kAutoProtectMinIntervalSec))
+        if (autosaveguard::CanSkipProtect(false, ctx->autosaveBlockedByHumanEdits && st.stamp.Same(humanSeq, sflag), st.hasProtected, since, (std::max)(kAutoProtectMinIntervalSec, static_cast<double>(scenebackup::GlobalPolicy().minIntervalSec))))
             return true;
     }
 
@@ -170,6 +180,14 @@ bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason
         }
         else if (!SceneSerializer::Save(*app.m_scene, staging, PathResolver::AssetsDir()))
         { if (err) *err = "退避用にシーンを書けません"; return {}; }
+        // 新しい世代を作る前に前回の自動の退避を消す（作った後だと Prune が世代数の上限で原本を先に押し出す）。
+        //   消すのは理由が自動保存の世代だけ。強制の世代（AI の最初の保存の前の原本など）には触れない。
+        if (!force && !st.rollingAutoId.empty())
+        {
+            if (scenebackup::ReadReason(projectRoot, st.rollingAutoId) == std::string("protect-human-edits:") + ReasonName(reason))
+                scenebackup::Remove(projectRoot, st.rollingAutoId);
+            st.rollingAutoId.clear();
+        }
         std::string why;
         std::string id = scenebackup::SnapshotExternal(projectRoot, fs::path(scenePath), fs::path(staging),
                                                        std::string("protect-human-edits:") + ReasonName(reason), &why);
@@ -189,6 +207,10 @@ bool AppAccess::ProtectHumanEdits(Application& app, EditorContext::DiscardReason
         return false;
     }
     st.failedStamp.Reset();
+    // DF-W05-R2-02: 自動保存の経路の退避は 1 枠に畳む（前回の自動の退避は backup 内で先に消してある）。
+    if (!force)
+        st.rollingAutoId = (scenebackup::ReadReason(projectRoot, r.backupId) == std::string("protect-human-edits:") + ReasonName(reason))
+                         ? r.backupId : std::string();
     if (!humanBlock) { st.lastBackupId = r.backupId; return true; }   // MCP 由来だけの退避（Play 中）。自動保存の停止表示にはしない
     const bool changed = !ctx->autosaveBlockedByHumanEdits || r.backupId != st.lastBackupId;
     ctx->autosaveBlockedByHumanEdits = true;
