@@ -1104,6 +1104,13 @@ if(MSVC)
     target_compile_definitions(IblRebakeTriggerTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME IblRebakeTriggerTests COMMAND IblRebakeTriggerTests)
+# MCP の純ロジック（シーンパス / create_entity の引数検査 / DLSS 警告。ヘッダのみ）
+add_executable(McpLogicTests mcp_logic_test.cpp)
+target_include_directories(McpLogicTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(McpLogicTests PRIVATE /W4 /WX /permissive- /utf-8)
+endif()
+add_test(NAME McpLogicTests COMMAND McpLogicTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。

@@ -403,7 +403,6 @@ void Application::RegisterMcpRenderMethods()
                 m_upscaler->SetDebugJitterSign(static_cast<float>(McpFloatParam(params, "debugJitterSign", 1.0f, -1.0f, 1.0f)));
             // 内部解像度が変わる（DLSS の品質 / 空間スケールとの切替）。次フレームの先頭で即反映し、履歴は捨てる。
             m_renderResFlush     = true;
-            m_dlssFallbackLogged = false;
             InvalidateTemporalHistory(/*includeDdgi*/ false);
             resp["ok"] = true;
             resp["result"] = UpscalerJson();
