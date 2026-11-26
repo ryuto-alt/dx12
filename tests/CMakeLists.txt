@@ -532,6 +532,20 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(GgTokensGenCheck PROPERTIES TIMEOUT 60)
 endif()
 
+# --- 直書き色の lint（W1-A3 / RM-A5）。src/editor・src/gui の IM_COL32 / 色の ImVec4 をファイルごとの件数の棚で止め、黄系は 0 件 ---
+if(TARGET Gui)
+    add_executable(UiTokenLintTests ui_token_lint_test.cpp)
+    target_link_libraries(UiTokenLintTests PRIVATE Gui)
+    target_include_directories(UiTokenLintTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(UiTokenLintTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(UiTokenLintTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(UiTokenLintTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME UiTokenLintTests COMMAND UiTokenLintTests)
+    set_tests_properties(UiTokenLintTests PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
