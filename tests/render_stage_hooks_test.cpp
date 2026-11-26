@@ -32,6 +32,8 @@ public:
         if (ctx.cmd) g_log += "CMD;";   // cmd が null のままでも落ちないこと（ここでは触らない）
     }
     u64 VramBytes() const override { return 100; }
+    bool Active(Stage) const override { return m_active; }
+    bool m_active = true;
 private:
     const char* m_name;
     StageMask   m_mask;
@@ -57,6 +59,31 @@ int main()
         }
         CHECK(g_log.empty());
         CHECK(reg.TotalVramBytes() == 0);
+    }
+
+    // Active: 非 Active の機能は数えず、全部そうなら何も記録しない（イベントも出さない）。
+    {
+        FeatureRegistry reg;
+        auto a = std::make_unique<Probe>("A", StageBit(Stage::AfterTranslucent), 10);
+        auto b = std::make_unique<Probe>("B", StageBit(Stage::AfterTranslucent), 20);
+        Probe* pa = a.get(); Probe* pb = b.get();
+        reg.Add(std::move(a)); reg.Add(std::move(b));
+        StageCtx ctx;
+        pa->m_active = false;
+        CHECK(!reg.Empty(Stage::AfterTranslucent));
+        g_log.clear(); GpuMarker::ResetStats();
+        reg.Run(Stage::AfterTranslucent, ctx);
+        CHECK(g_log == "B@AfterTranslucent;");
+        CHECK(GpuMarker::Stats().begins == 1);
+        pb->m_active = false;
+        CHECK(reg.Empty(Stage::AfterTranslucent));
+        CHECK(!reg.Empty());   // 登録自体は残る
+        g_log.clear(); GpuMarker::ResetStats();
+        reg.Run(Stage::AfterTranslucent, ctx);
+        CHECK(g_log.empty());
+        CHECK(GpuMarker::Stats().begins == 0 && GpuMarker::Stats().ends == 0);
+        pa->m_active = true;
+        CHECK(!reg.Empty(Stage::AfterTranslucent));
     }
 
     // 順序: 優先度の昇順、同じ優先度は登録順。ステージの選別。
