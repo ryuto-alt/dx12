@@ -171,9 +171,12 @@ struct Spec
 // ThemeGraphite.cpp（A2）が自分の Spec を返す関数をここへ登録する。
 // ★未登録のまま SpecOf(Graphite) / SetVariant(Graphite) が呼ばれたら、暫定値へ黙って落とさず stderr に出して abort する
 //   （登録漏れで既定の見た目が黙ってネオンに戻り、UI ゴールデンに焼き込まれるのを防ぐ）。
-// ★申し送り（A2）: (1) main.cpp の --theme-variant 解釈（SetVariant）より前に必ず登録すること（main.cpp の担当レーンはメインが決める）。
-//   登録を静的ライブラリの自己登録で書かない（リンカがその TU を落とす）。起動時に明示的な関数呼び出しで登録すること。
-//   (2) 登録済みかは IsGraphiteRegistered() で検査できる。
+// ★登録の仕組み（A2・実装済み）: ThemeGraphite.cpp の theme::RegisterGraphite()（ThemeGraphite.h。冪等）が g_graphiteSpecFn を設定する。
+//   (1) 正規の経路: main.cpp が WinMain の先頭（--theme-variant の SetVariant より前）で RegisterGraphite() を明示的に呼ぶ。
+//   (2) ImGuiManager.cpp も RegisterGraphite() を呼ぶ。これは登録の保険であると同時に、ThemeGraphite.cpp の TU を静的ライブラリから
+//       確実にリンクさせる参照にもなる（静的初期化だけの自己登録は、参照の無い TU をリンカが落とすので当てにしない）。
+//   (3) ThemeGraphite.cpp 内の静的初期化による登録は、main 前に登録しておく補助にすぎない。登録の保証は (1)(2) の明示呼び出しが負う。
+//   登録済みかは IsGraphiteRegistered() で検査できる。新しい登録先を足す時も、明示的な関数呼び出しにすること。
 // ★注意: Graphite の Spec::gg は ThemeGraphite.cpp の登録関数が返す Spec では非 null だが、登録の無い環境（単体テスト等）の
 //   スタブは null のことがある。gg を参照するコード（deco::* / ビューポート / タイムライン）は必ず null を検査すること。
 inline const Spec& (*g_graphiteSpecFn)() = nullptr;
