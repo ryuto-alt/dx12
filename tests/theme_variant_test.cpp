@@ -235,6 +235,8 @@ void TestGraphiteShape()
     v = th::Variant::Default;
     CHECK(th::ParseVariant("g", v) && v == th::Variant::Graphite);
     v = th::Variant::Default;
+    CHECK(th::ParseVariant("G", v) && v == th::Variant::Graphite);
+    v = th::Variant::Default;
     CHECK(th::ParseVariant("4", v) && v == th::Variant::Graphite);
     CHECK(std::string(th::VariantName(th::Variant::Graphite)) == "Graphite Gauge");
     for (th::Variant var : kAll)
@@ -246,7 +248,33 @@ void TestGraphiteShape()
     th::SetVariant(th::Variant::Graphite);
     CHECK(th::CurrentVariant() == th::Variant::Graphite);
     th::SetVariant(th::Variant::Default);
-    CHECK(th::HairPx() >= 1.0f && th::AccentPx() >= th::HairPx());
+    // 旧案の Extra は各案のパレットから導かれていること
+    for (th::Variant var : kAll)
+    {
+        const th::Spec& sp = th::SpecOf(var);
+        CHECK(SameVec4(sp.ext.info, sp.pal.accent));
+        CHECK(SameVec4(sp.ext.needleDim, sp.pal.tabOverlineDim));
+        CHECK(SameVec4(sp.ext.warnText, sp.pal.warn));
+        CHECK(SameVec4(sp.ext.badText, sp.pal.bad));
+        CHECK(SameVec4(sp.ext.inLine, sp.pal.border));
+    }
+    CHECK(SameVec4(th::SpecOf(th::Variant::Default).ext.axisX, th::Hex(0xE25454)));
+    CHECK(SameVec4(th::SpecOf(th::Variant::C).ext.axisX, th::Hex(0xB87672)));
+    CHECK(!th::IsGraphiteRegistered());   // この target には ThemeGraphite.cpp が無い
+    // 線幅の規則（DPI 1.0 / 1.25 / 1.5 / 1.75 / 2.0）
+    const float scales[] = { 1.0f, 1.25f, 1.5f, 1.75f, 2.0f };
+    const float hair[]   = { 1, 1, 1, 1, 2 };
+    const float accent[] = { 2, 3, 3, 4, 4 };
+    const float play[]   = { 3, 4, 5, 5, 6 };
+    for (int i = 0; i < 5; ++i)
+    {
+        th::SetScale(scales[i]);
+        CHECKF(th::HairPx() == hair[i], "hair %g @%g", th::HairPx(), scales[i]);
+        CHECKF(th::AccentPx() == accent[i], "accent %g @%g", th::AccentPx(), scales[i]);
+        CHECKF(th::PlayFramePx() == play[i], "play %g @%g", th::PlayFramePx(), scales[i]);
+        CHECK(th::TickAlphaScale() == (hair[i] >= 2 ? 0.75f : 1.0f));
+    }
+    th::SetScale(1.0f);
 }
 } // namespace
 

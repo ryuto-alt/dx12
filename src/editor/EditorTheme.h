@@ -250,10 +250,14 @@ inline ImGuiStyle ScaleStyleFrom(const ImGuiStyle& base, float scale)
     return s;
 }
 
-// ---- 線幅のヘルパ（W1 A2a）。案の論理 px（Extra）に倍率を掛け、1px 未満にならないよう整数へ丸める ----
-inline float HairPx()      { return (std::max)(1.0f, Px(CurrentSpec().ext.hairPx)); }
-inline float AccentPx()    { return (std::max)(1.0f, Px(CurrentSpec().ext.accentPx)); }
-inline float PlayFramePx() { return (std::max)(1.0f, Px(CurrentSpec().ext.playFramePx)); }
+// ---- 線幅のヘルパ（W1 A2a）。GG tokens の line 規則どおり（倍率 s = Scale()）----
+//   hairPx = max(1, floor(s)) / accentPx = max(2, round(2s)) / playFramePx = max(3, round(3s))
+//   keylinePx = hairPx / tickAlphaScale = hairPx>=2 のとき 0.75（それ以外 1.0）
+inline float HairPx()      { return (std::max)(1.0f, std::floor(Scale() + 1e-4f)); }
+inline float AccentPx()    { return (std::max)(2.0f, std::floor(2.0f * Scale() + 0.5f)); }
+inline float PlayFramePx() { return (std::max)(3.0f, std::floor(3.0f * Scale() + 0.5f)); }
+inline float KeylinePx()   { return HairPx(); }
+inline float TickAlphaScale() { return HairPx() >= 2.0f ? 0.75f : 1.0f; }
 // 案ごとのフォントサイズ（論理 px）。旧案は size::kFontBase / kFontMono と同じ（16 / 14）、Graphite は 17 / 15。
 inline float FontBaseOf() { return CurrentSpec().m.fontBase; }
 inline float FontMonoOf() { return CurrentSpec().m.fontMono; }
@@ -264,6 +268,9 @@ struct Fonts
     ImFont* body = nullptr;   // Segoe UI + Yu Gothic UI + Segoe UI Symbol + Lucide（既定）
     ImFont* bold = nullptr;   // 見出し / タブ / 選択名（Segoe UI Bold + Yu Gothic UI Semibold + Lucide）
     ImFont* mono = nullptr;   // 数値（Cascadia Mono / Consolas + Lucide）
+    ImFont* medium    = nullptr;   // NEW（GG）: Plex Medium（bodyMedium / overline。A14 が埋める）
+    ImFont* monoJP    = nullptr;   // NEW（GG）: 等幅の日本語（A14 が埋める）
+    ImFont* monoLight = nullptr;   // NEW（GG）: 等幅 Light（大きな数値。A14 が埋める）
     bool    icons = false;    // Lucide を読み込めたか（false のとき ICON_* は化ける）
 };
 inline Fonts g_fonts;

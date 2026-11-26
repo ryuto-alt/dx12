@@ -119,7 +119,8 @@ struct Metrics
 };
 
 // ---- 案ごとの追加トークン（W1 A2a。Palette を太らせず Spec に別枠で持つ）----
-// 旧案は既存の値から導いた互換値（見た目は変わらない）。Graphite は A2 が生成仕様の値で埋める。
+// 旧案は各案のパレットから導いた互換値（CompatExtra）。Graphite は A2 が生成仕様の値で埋める。
+// 線幅（hairPx 等）は tokens では「規則」なので数値として持たない（theme::HairPx() 等が倍率から計算する）。
 struct Extra
 {
     ImVec4 needleDim;               // 指針（Needle）の減光
@@ -127,7 +128,6 @@ struct Extra
     ImVec4 info;                    // 情報色
     ImVec4 warnText, badText;       // 文字用の警告 / 異常色（面用 warn / bad とは別）
     ImVec4 axisX, axisY, axisZ;     // 軸の色
-    float  hairPx, accentPx, playFramePx;   // 線幅（論理 px。実描画は theme::HairPx() 等が倍率を掛ける）
 };
 
 // ---- 装飾の方針（描画ヘルパ deco::* が読む。案の「シグネチャ要素」の有無と強さ）----
@@ -167,7 +167,10 @@ struct Spec
 // Graphite の Spec の提供口。生成ヘッダ（ThemeGraphite.gen.h）は重ヘッダから include しないので、
 // ThemeGraphite.cpp（A2）が自分の Spec を返す関数をここへ登録する。未登録の間は SpecOf(Graphite) が
 // 旧 Default 由来の暫定値を返す（既定の選択は変えないので通常は呼ばれない）。
+// ★申し送り（A2）: (1) main.cpp の --theme-variant 解釈（SetVariant）より前に必ず登録すること（後だと可変グローバルが暫定値のまま）。
+//   (2) 登録済みかは IsGraphiteRegistered() で検査できる。DX12Engine の起動直後に assert / ログで確認すること。
 inline const Spec& (*g_graphiteSpecFn)() = nullptr;
+inline bool IsGraphiteRegistered() { return g_graphiteSpecFn != nullptr; }
 
 namespace detail
 {
@@ -206,11 +209,6 @@ inline Spec MakeBase()
     m.tabBarBorder = 1.0f; m.tabOverline = 2.0f; m.dockSeparator = 3.0f;
     m.fontBase = 16.0f; m.fontMono = 14.0f;
 
-    Extra& x = s.ext;
-    x.needleDim = Hex(0x2F8CFF, 0.60f); x.inLine = p.border; x.info = p.accent;
-    x.warnText = p.warn; x.badText = p.bad;
-    x.axisX = Hex(0xE5534B); x.axisY = Hex(0x4CBF7A); x.axisZ = Hex(0x2F8CFF);
-    x.hairPx = 1.0f; x.accentPx = 2.0f; x.playFramePx = 3.0f;
 
     Deco& d = s.deco;
     d.glow = 0.0f; d.hoverTint = 0.0f; d.easeSec = 0.0f;
@@ -353,21 +351,34 @@ inline Spec MakeC()
     return s;
 }
 
+// 旧案の Extra を、確定したパレットから導く（SpecOf が各案の組み立て後に 1 回呼ぶ）。
+// 軸の色は PropertyGrid の既存の帯の色（C だけ彩度を落とした別の色）。
+inline Spec CompatExtra(Spec s, bool mutedAxes)
+{
+    const Palette& p = s.pal;
+    Extra& x = s.ext;
+    x.needleDim = p.tabOverlineDim; x.inLine = p.border; x.info = p.accent;
+    x.warnText = p.warn; x.badText = p.bad;
+    if (mutedAxes) { x.axisX = Hex(0xB87672); x.axisY = Hex(0x94B080); x.axisZ = Hex(0x7C94C2); }
+    else           { x.axisX = Hex(0xE25454); x.axisY = Hex(0x7ECC58); x.axisZ = Hex(0x5484F0); }
+    return s;
+}
+
 } // namespace detail
 
 // 旧 Default 由来の暫定 Graphite（フォントだけ Graphite 値）。g_graphiteSpecFn 未登録のときだけ使う。
 inline Spec MakeGraphitePlaceholder()
 {
-    Spec s = detail::MakeDefault();
+    Spec s = detail::CompatExtra(detail::MakeDefault(), false);
     s.m.fontBase = 17.0f; s.m.fontMono = 15.0f;
     return s;
 }
 
 inline const Spec& SpecOf(Variant v)
 {
-    static const Spec kDefault = detail::MakeDefault();
-    static const Spec kB = detail::MakeB();
-    static const Spec kC = detail::MakeC();
+    static const Spec kDefault = detail::CompatExtra(detail::MakeDefault(), false);
+    static const Spec kB = detail::CompatExtra(detail::MakeB(), false);
+    static const Spec kC = detail::CompatExtra(detail::MakeC(), true);
     static const Spec kGraphitePlaceholder = MakeGraphitePlaceholder();
     switch (v)
     {
