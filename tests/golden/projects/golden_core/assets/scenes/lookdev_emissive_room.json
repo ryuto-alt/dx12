@@ -96,6 +96,36 @@
       }
     },
     {
+      "name": "Front",
+      "primitive": "box",
+      "color": [
+        0.78,
+        0.78,
+        0.76
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0,
+          2,
+          -0.1
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          8,
+          4,
+          0.2
+        ]
+      }
+    },
+    {
       "name": "Left",
       "primitive": "box",
       "color": [

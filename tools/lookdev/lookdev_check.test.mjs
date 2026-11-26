@@ -1,7 +1,7 @@
 // lookdev_check の純関数の単体テスト（GPU もエンジンも要らない）。 node --test tools/lookdev
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseLookdevArgs, lumaStats, judgeV2 } from "./lookdev_check.mjs";
+import { parseLookdevArgs, lumaStats, judgeV2, flipMean, judgePtFlip } from "./lookdev_check.mjs";
 
 const solid = (w, h, r, g, b) => {
   const data = Buffer.alloc(w * h * 4);
@@ -40,4 +40,17 @@ test("V2 の判定: しきい値内は合格、超えたら理由つきで不合
   assert.equal(bad.pass, false);
   assert.equal(bad.reasons.length, 2);
   assert.equal(judgeV2({ diffRatio: 0.5, meanAbs: 50 }, { ...a, v2RecordOnly: true }).pass, true);
+});
+
+test("PT 基準: 既定は切。FLIP の判定は計算できたときだけ効く", () => {
+  const a = parseLookdevArgs(["--pt-reference", "--pt-spp", "64"], {});
+  assert.equal(a.ptReference, true);
+  assert.equal(a.ptSpp, 64);
+  assert.equal(parseLookdevArgs([], {}).ptReference, false);
+  assert.throws(() => parseLookdevArgs(["--pt-reference", "--no-save-images"], {}), /画像の保存/);
+  assert.equal(flipMean({ metrics: { flip_ldr_mean: 0.05 } }), 0.05);
+  assert.equal(flipMean({ skipped: "x" }), null);
+  assert.equal(judgePtFlip({ metrics: { flip_ldr_mean: 0.05 } }, 0.08).pass, true);
+  assert.equal(judgePtFlip({ metrics: { flip_ldr_mean: 0.2 } }, 0.08).pass, false);
+  assert.equal(judgePtFlip({ skipped: "x" }, 0.08).pass, true);
 });

@@ -12,7 +12,9 @@
   GPU の時間（mainScene）は JSON に出すが合否には使わない（性能の合否は夜間の計測窓）。
   FLIP は tools\parity の venv（pwsh tools\parity\setup.ps1）があるときだけ。無ければ JSON に skipped と出る。
   並行レーンと取り合わないよう、インスタンス名はリポジトリのパスから決まる。ポートは -Port か環境変数 LOOKDEV_PORT
-  （worktree_setup.ps1 が表示した自分のレーンのもの）。省略時は 8850..8899 の空き。
+  （worktree_setup.ps1 が表示した自分のレーンのもの）が必須。他レーンのポートを取らないため、空きの自動選択はしない（無ければ終了コード 2）。
+  -PtReference: PT（render_reference）で基準画像を作り、最後のリビジョン（V2）と FLIP を比べて -PtFlipMax（既定 0.08）で判定する。
+    1 シーン 20〜40 秒の GPU を食うので離席中に回す。FLIP は tools\parity の venv が要る。
 #>
 param(
     [string[]]$Only = @(),
@@ -24,19 +26,37 @@ param(
     [double]$V2MaxDiffRatio = 0.001,
     [switch]$V2RecordOnly,
     [string]$ReferenceDir = '',
-    [string]$FlipPython = ''
+    [string]$FlipPython = '',
+    [int]$Repeat = 0,
+    [string]$Revisions = '',
+    [switch]$NoSaveImages,
+    [switch]$PtReference,
+    [int]$PtSpp = 0,
+    [double]$PtFlipMax = 0.08
 )
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
-$node = (Get-Command node -ErrorAction Stop).Source
-$argv = @((Join-Path $root 'tools\lookdev\lookdev_check.mjs'))
-if ($Only.Count) { $argv += @('--only', ($Only -join ',')) }
-if ($OutDir) { $argv += @('--out', $OutDir) }
-if ($Exe) { $argv += @('--exe', $Exe) }
-if ($Port -gt 0) { $argv += @('--port', "$Port") }
-$argv += @('--perf-window', "$PerfWindow", '--v2-max-mean-abs', "$V2MaxMeanAbs", '--v2-max-diff-ratio', "$V2MaxDiffRatio")
-if ($V2RecordOnly) { $argv += '--v2-record-only' }
-if ($ReferenceDir) { $argv += @('--reference-dir', $ReferenceDir) }
-if ($FlipPython) { $argv += @('--flip-python', $FlipPython) }
-Push-Location $root
-try { & $node @argv; exit $LASTEXITCODE } finally { Pop-Location }
+# 起動前の失敗（node が無い等）は「不合格(1)」ではなく「エラー(2)」で返す
+try {
+    $root = Split-Path -Parent $PSScriptRoot
+    $node = (Get-Command node -ErrorAction Stop).Source
+    $argv = @((Join-Path $root 'tools\lookdev\lookdev_check.mjs'))
+    if ($Only.Count) { $argv += @('--only', ($Only -join ',')) }
+    if ($OutDir) { $argv += @('--out', $OutDir) }
+    if ($Exe) { $argv += @('--exe', $Exe) }
+    if ($Port -gt 0) { $argv += @('--port', "$Port") }
+    $argv += @('--perf-window', "$PerfWindow", '--v2-max-mean-abs', "$V2MaxMeanAbs", '--v2-max-diff-ratio', "$V2MaxDiffRatio")
+    if ($V2RecordOnly) { $argv += '--v2-record-only' }
+    if ($ReferenceDir) { $argv += @('--reference-dir', $ReferenceDir) }
+    if ($FlipPython) { $argv += @('--flip-python', $FlipPython) }
+    if ($Repeat -gt 0) { $argv += @('--repeat', "$Repeat") }
+    if ($Revisions) { $argv += @('--revisions', $Revisions) }
+    if ($NoSaveImages) { $argv += '--no-save-images' }
+    if ($PtReference) { $argv += @('--pt-reference', '--pt-flip-max', "$PtFlipMax") }
+    if ($PtSpp -gt 0) { $argv += @('--pt-spp', "$PtSpp") }
+    Push-Location $root
+    try { & $node @argv; $code = $LASTEXITCODE } finally { Pop-Location }
+    exit $code
+} catch {
+    Write-Error $_.Exception.Message -ErrorAction Continue
+    exit 2
+}

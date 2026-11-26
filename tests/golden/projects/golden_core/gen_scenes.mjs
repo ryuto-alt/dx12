@@ -67,20 +67,22 @@ const write = (name, scene) => fs.writeFileSync(path.join(OUT, `${name}.json`), 
     sphere("Ball", [1.8, 0.5, 0.5], 0.5, [0.8, 0.4, 0.3], 0.0, 0.5)] });
 }
 // ─── MH-1 ルックデブ（W1-C4）。tools/lookdev_check.ps1 が V1 / V2 の両方で撮る ─────────────────────────────
-// 6) lookdev_grid: 粗さ x 金属度の 7x7 球 + 18% グレーカード + 24 パッチ（ColorChecker 近似の sRGB 値。色の欄はそのまま書く）
+// 6) lookdev_grid: 粗さ x 金属度の 7x7 球 + 18% グレーカード + 24 パッチ（ColorChecker 近似）。
+//    エンジンは entity の color を線形の乗数として読む（Forward.hlsl: albedo = tex * color）ので、sRGB の値は線形へ直して書く。
+const srgbToLinear = (v) => { const c = v / 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
 {
   const es = [sun([-0.35, -0.8, 0.3], 3.0), ground(40, [0.22, 0.22, 0.23])];
   const R = [0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 1.0];   // 列 = 粗さ
   const M = [0.0, 1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6, 1.0];   // 行 = 金属度（手前が誘電体）
   M.forEach((m, row) => R.forEach((r, col) =>
     es.push(sphere(`G_m${row}_r${col}`, [(col - 3) * 1.05, 0.45, row * 1.05], 0.45, [0.82, 0.82, 0.82], m, r))));
-  es.push(box("GrayCard18", [-5.9, 0.6, 1.5], [1.1, 1.2, 0.04], [0.46, 0.46, 0.46], 0.0, 0.9));
+  es.push(box("GrayCard18", [-5.9, 0.6, 1.5], [1.1, 1.2, 0.04], [0.18, 0.18, 0.18], 0.0, 0.9));
   const cc = [[115,82,68],[194,150,130],[98,122,157],[87,108,67],[133,128,177],[103,189,170],
     [214,126,44],[80,91,166],[193,90,99],[94,60,108],[157,188,64],[224,163,46],
     [56,61,150],[70,148,73],[175,54,60],[231,199,31],[187,86,149],[8,133,161],
     [243,243,242],[200,200,200],[160,160,160],[122,122,121],[85,85,85],[52,52,52]];
   cc.forEach((c, i) => es.push(box(`Patch_${i}`, [(i % 6 - 2.5) * 0.62 + 6.4, 2.55 - Math.floor(i / 6) * 0.62, 3.2], [0.56, 0.56, 0.03],
-    c.map((v) => +(v / 255).toFixed(4)), 0.0, 0.85)));
+    c.map((v) => +srgbToLinear(v).toFixed(5)), 0.0, 0.85)));
   write("lookdev_grid", { skybox: { iblIntensity: 1.0, skyboxIntensity: 1.0, drawSkybox: true }, entities: es, shadows: true });
 }
 // 7) lookdev_grazing: 高タイリングの法線マップの床（textures/lookdev/grazing_n.png、gen_lookdev_textures.mjs が生成）を
@@ -108,13 +110,14 @@ const write = (name, scene) => fs.writeFileSync(path.join(OUT, `${name}.json`), 
   es.push(sphere("Coat", [4.2, 0.55, -0.9], 0.55, [0.75, 0.08, 0.06], 0.0, 0.55, { clearCoat: 1.0, clearCoatRoughness: 0.03 }));
   write("lookdev_glass", { skybox: { iblIntensity: 1.0, skyboxIntensity: 1.0, drawSkybox: true }, entities: es, shadows: true });
 }
-// 9) lookdev_emissive_room: 太陽の無い閉じた部屋。天井の発光パネルと色つきの発光球、点光源 3 灯。IBL は弱くして室内光だけを見る
+// 9) lookdev_emissive_room: 太陽の無い閉じた部屋（床・天井・四方の壁。カメラは部屋の中）。天井の発光パネルと色つきの発光球、点光源 3 灯。IBL は弱くして室内光だけを見る
 {
   const W = 8, H = 4, D = 8, t = 0.2, wall = [0.78, 0.78, 0.76];
   const es = [
     box("Floor", [0, -t / 2, D / 2], [W, t, D], [0.6, 0.6, 0.58], 0.0, 0.35),
     box("Ceiling", [0, H + t / 2, D / 2], [W, t, D], wall, 0.0, 0.8),
     box("Back", [0, H / 2, D + t / 2], [W, H, t], wall, 0.0, 0.8),
+    box("Front", [0, H / 2, -t / 2], [W, H, t], wall, 0.0, 0.8),
     box("Left", [-W / 2 - t / 2, H / 2, D / 2], [t, H, D], [0.75, 0.12, 0.1], 0.0, 0.8),
     box("Right", [W / 2 + t / 2, H / 2, D / 2], [t, H, D], [0.12, 0.6, 0.18], 0.0, 0.8),
     box("PanelStrip", [0, H - 0.05, D / 2], [2.4, 0.06, 5.0], [1.0, 0.95, 0.85], 0.0, 0.5, { emissiveColor: [1.0, 0.92, 0.78], emissiveIntensity: 8.0 }),

@@ -91,10 +91,10 @@ node tools/bench/golden.mjs --no-ui                    3D のゴールデンだ�
 
 | ID | 見るもの |
 |---|---|
-| `lookdev_grid` | 粗さ（7 列）x 金属度（7 行）の球、18% グレーカード、24 パッチ（ColorChecker 近似） |
+| `lookdev_grid` | 粗さ（7 列）x 金属度（7 行）の球、18% グレーカード、24 パッチ（ColorChecker 近似。色は線形で書く: グレーカード 0.18、パッチは sRGB から線形へ変換。エンジンは entity の color を線形の乗数として読む） |
 | `lookdev_grazing` | 高タイリングの法線マップ（手続き生成）の床をかすめる角度で。スペキュラ AA・水平線。向かい風の低い太陽 |
 | `lookdev_glass` | 縞の前のガラス（blend + IOR）、色つきの透過、クリアコート |
-| `lookdev_emissive_room` | 太陽の無い閉じた部屋。発光パネル・発光球・点光源 3 灯 |
+| `lookdev_emissive_room` | 太陽の無い閉じた部屋（床・天井・四方の壁。カメラは部屋の中）。発光パネル・発光球・点光源 3 灯 |
 
 - シーンは `tests/golden/projects/golden_core/gen_scenes.mjs`、法線マップと `.dxmat` は `gen_lookdev_textures.mjs` で再生成する（外部アセットなし）。
 - `pwsh tools\lookdev_check.ps1 [-Only lookdev_grid] [-Port N] [-V2RecordOnly]`: 4 シーンを V1 / V2 で撮り（各 2 回。決定論を確かめる）、
@@ -102,7 +102,14 @@ node tools/bench/golden.mjs --no-ui                    3D のゴールデンだ�
   終了コード 0 = 合格 / 1 = 不合格（決定論の崩れ・V2 が V1 から逸脱・撮影失敗）/ 2 = エラー。全機能 OFF の V2 は V1 と同じ絵（C3）なので、既定のしきい値は
   差画素 0.1% 以下・平均差 0.25 以下。MH-2 などで V2 を意図して変えたら `-V2RecordOnly` に切り替え、V1 のゴールデンはそのまま残す。
 - GPU の時間は記録だけで合否に使わない（性能の合否は夜間の計測窓）。FLIP は `tools/parity` の venv（`pwsh tools\parity\setup.ps1`）があるときだけ
-  V1 → V2 で計算する。パストレーサーを基準にした FLIP は `-ReferenceDir`（`<id>.png`）で基準画像を渡す。
+  V1 → V2 で計算する。FLIP の詳細は `<out>lip\` 以下に出る。
+- `-PtReference [-PtSpp 1024] [-PtFlipMax 0.08]`: 各シーンをエンジンのパストレーサー（`render_reference`、同じカメラ・撮った絵と同じ大きさ）で描いて
+  `<out>\<id>.pt.png` / `.pt.pfm` を作り、最後のリビジョン（既定 V2）と FLIP（`flip_ldr_mean`）を比べて上限を超えたら不合格にする。
+  1 シーン 20〜40 秒の GPU を食うので離席中に回す（既定は切）。FLIP を計算できないとき（venv 無し）は不合格にせず `skipped` と出る。
+  既に基準画像があるなら `-ReferenceDir`（`<id>.png`）で渡せる。
+- ポートは `-Port` か `LOOKDEV_PORT` が必須（他レーンのポートを取らないため空きの自動選択はしない。無いと終了コード 2）。
+- 白い炉（furnace）のシーンと異方性・sheen の撮影は W1 では持たない。MH-1 の白い炉は CPU の方向アルベド（下）で見て、
+  シーン（`lookdev_furnace`、aniso / sheen 付き）は MH-2 で足す（baseline は新しい ID で）。
 - CPU 側の物差し: `tests/shading_brdf_test.cpp`（`ShadingBrdfTests`）の白い炉・相反性に加え、V2 の方向アルベドを 1024² の格子で積分する（白い金属 0.97〜1.01）。
   `BrdfV2.hlsli` の中身が入る（MH-2）ときは、テストの `EvalV2` を差し替える。
 - 純関数の単体テスト: `node --test tools/lookdev`。

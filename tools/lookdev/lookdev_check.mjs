@@ -15,6 +15,10 @@
 //   node tools/lookdev/lookdev_check.mjs [--only a,b] [--out DIR] [--exe PATH] [--port N] [--revisions 1,2]
 //        [--perf-window 120] [--repeat 2] [--v2-max-mean-abs 0.25] [--v2-max-diff-ratio 0.001] [--v2-record-only]
 //        [--reference-dir DIR] [--flip-python PATH] [--no-save-images]
+//        [--pt-reference] [--pt-spp 1024] [--pt-flip-max 0.08] [--pt-max-seconds 120]
+//   --pt-reference: 各シーンをエンジンのパストレーサー（render_reference）で描いて <out>/<シーン>.pt.png / .pt.pfm を作り、
+//     最後のリビジョン（既定 V2）と FLIP（flip_ldr_mean）を比べる。1 シーン 20〜40 秒の GPU を食うので、離席中に回す（既定は切）。
+//     FLIP が --pt-flip-max を超えたら不合格（FLIP を計算できないときは不合格にせず skipped と出す）。
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -33,6 +37,7 @@ export function parseLookdevArgs(argv, env = process.env) {
     revisions: [1, 2], perfWindow: 120, repeat: 2,
     v2MaxMeanAbs: 0.25, v2MaxDiffRatio: 0.001, v2RecordOnly: false,
     referenceDir: null, flipPython: null, saveImages: true, help: false,
+    ptReference: false, ptSpp: 1024, ptFlipMax: 0.08, ptMaxSeconds: 120,
   };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
@@ -50,9 +55,14 @@ export function parseLookdevArgs(argv, env = process.env) {
     else if (k === "--reference-dir") a.referenceDir = path.resolve(val());
     else if (k === "--flip-python") a.flipPython = path.resolve(val());
     else if (k === "--no-save-images") a.saveImages = false;
+    else if (k === "--pt-reference") a.ptReference = true;
+    else if (k === "--pt-spp") a.ptSpp = Math.max(1, Number(val()) || 1024);
+    else if (k === "--pt-flip-max") a.ptFlipMax = Number(val());
+    else if (k === "--pt-max-seconds") a.ptMaxSeconds = Math.max(1, Number(val()) || 120);
     else if (k === "--help" || k === "-h") a.help = true;
     else throw new Error(`不明な引数: ${k}`);
   }
+  if (a.ptReference && !a.saveImages) throw new Error("--pt-reference には画像の保存が要る（--no-save-images と併用できない）");
   if (!a.revisions.length || a.revisions.some((r) => r !== 1 && r !== 2)) throw new Error("--revisions は 1 と 2 だけ（例 1,2）");
   return a;
 }
@@ -102,11 +112,39 @@ function findFlipPython(a) {
   return cands.find((c) => fs.existsSync(c)) ?? null;
 }
 
+/** FLIP の結果から flip_ldr_mean を取り出す（純関数）。無ければ null。 */
+export function flipMean(f) {
+  const v = f?.metrics?.flip_ldr_mean;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+/** PT 基準の判定（純関数）。FLIP が計算できていないときは合否に使わない。 */
+export function judgePtFlip(f, max) {
+  const v = flipMean(f);
+  if (v === null) return { pass: true, reasons: [] };
+  return v <= max ? { pass: true, reasons: [] } : { pass: false, reasons: [`PT 基準との FLIP ${v.toFixed(4)} > 上限 ${max}`] };
+}
+
+/** エンジンのパストレーサーで基準画像を作る。出力は <base>.pfm / .png。 */
+async function renderPtReference(conn, a, base, size) {
+  await conn.call("render_reference", {
+    spp: a.ptSpp, bounces: 8, size, seed: 1, output: base, formats: ["pfm", "png"], frameBudgetMs: 40, maxSeconds: a.ptMaxSeconds,
+  }, 60_000);
+  const t0 = Date.now();
+  for (;;) {
+    const st = await conn.call("render_reference_status", {}, 30_000);
+    if (st.state === "done") return st;
+    if (st.state === "failed" || st.state === "cancelled") throw new Error(`PT 基準が ${st.state}: ${st.error ?? ""}`);
+    if (Date.now() - t0 > (a.ptMaxSeconds + 120) * 1000) throw new Error("PT 基準が時間切れ");
+    await sleep(1000);
+  }
+}
+
 /** tools/parity の compare で FLIP を出す。python / flip-evaluator が無ければ null（合否には使わない）。 */
-function runFlip(py, refPng, testPng) {
+function runFlip(py, refPng, testPng, outDir) {
   if (!py) return null;
   const parityDir = path.join(REPO_ROOT, "tools", "parity");
-  const r = spawnSync(py, ["-m", "parity", "compare", "--metrics", "flip", "--json", refPng, testPng],
+  const r = spawnSync(py, ["-m", "parity", "compare", "--metrics", "flip", "--json", "--out", outDir, refPng, testPng],
     { cwd: parityDir, encoding: "utf8", env: { ...process.env, PYTHONIOENCODING: "utf-8" } });
   if (r.status !== 0 && r.status !== 1) return { error: (r.stderr || r.stdout || "").trim().slice(0, 300) };
   try { const j = JSON.parse(r.stdout); return { metrics: j.metrics ?? j }; } catch { return { error: "JSON を読めない" }; }
@@ -121,7 +159,8 @@ export async function runLookdev(a) {
   const instName = `lookdev-${createHash("sha1").update(REPO_ROOT).digest("hex").slice(0, 8)}`;
   const report = {
     schema: SCHEMA, commit: gitHead(), exe: path.relative(REPO_ROOT, a.exe), capturedAt: new Date().toISOString(),
-    thresholds: { v2MaxMeanAbs: a.v2MaxMeanAbs, v2MaxDiffRatio: a.v2MaxDiffRatio, v2RecordOnly: a.v2RecordOnly },
+    thresholds: { v2MaxMeanAbs: a.v2MaxMeanAbs, v2MaxDiffRatio: a.v2MaxDiffRatio, v2RecordOnly: a.v2RecordOnly, ptReference: a.ptReference, ptFlipMax: a.ptFlipMax },
+    // 白い炉（furnace）の統計はここには無い。MH-2 の受け入れ（CPU テストの方向アルベド）で見る。docs/GOLDEN_TESTING.md の「ルックデブ」参照
     scenes: [], pass: true, reasons: [],
   };
   const eng = await launchEngine({ exe: a.exe, project, port: a.port || undefined, name: instName });
@@ -172,14 +211,34 @@ export async function runLookdev(a) {
           const j = judgeV2(cmp, a);
           if (!j.pass) { rec.pass = false; rec.reasons.push(...j.reasons); }
           if (a.saveImages) {
-            const f = runFlip(py, path.join(a.out, `${s.name}.v1.0.native.png`), path.join(a.out, `${s.name}.v2.0.native.png`));
+            const f = runFlip(py, path.join(a.out, `${s.name}.v1.0.native.png`), path.join(a.out, `${s.name}.v2.0.native.png`), path.join(a.out, "flip", `${s.name}.v1vs2`));
             rec.flipV1vsV2 = f ?? { skipped: "tools/parity の venv が無い（pwsh tools/parity/setup.ps1）" };
           }
         }
-        if (a.referenceDir && a.saveImages) {
-          const refFile = path.join(a.referenceDir, `${s.name}.png`);
-          const testFile = path.join(a.out, `${s.name}.v${a.revisions[0]}.0.native.png`);
-          rec.flipReference = fs.existsSync(refFile) ? (runFlip(py, refFile, testFile) ?? { skipped: "tools/parity の venv が無い" }) : { skipped: `基準画像が無い: ${refFile}` };
+        // 基準画像との FLIP は、計画のしきい値（FLIP <= 0.08）が掛かる最後のリビジョン（既定 V2）で比べる
+        const lastRev = a.revisions[a.revisions.length - 1];
+        const testFile = path.join(a.out, `${s.name}.v${lastRev}.0.native.png`);
+        let refFile = null;
+        if (a.ptReference && imgs[lastRev]) {
+          const base = path.join(a.out, `${s.name}.pt`);
+          await conn.call("set_shading", { shadingRevision: lastRev });
+          await conn.call("set_editor_camera", { position: s.camera.position, target: s.camera.target });
+          await conn.call("step_frames", { frames: 4 }, 60_000);
+          const st = await renderPtReference(conn, a, base, [imgs[lastRev].width, imgs[lastRev].height]);
+          rec.ptReference = { spp: st.output?.sppDone ?? a.ptSpp, files: st.output?.files ?? [], truncated: st.output?.truncated ?? false };
+          refFile = `${base}.png`;
+        } else if (a.referenceDir) {
+          refFile = path.join(a.referenceDir, `${s.name}.png`);
+        }
+        if (refFile && a.saveImages) {
+          const ptFlip = fs.existsSync(refFile)
+            ? (runFlip(py, refFile, testFile, path.join(a.out, "flip", `${s.name}.vs_ref`)) ?? { skipped: "tools/parity の venv が無い（pwsh tools/parity/setup.ps1）" })
+            : { skipped: `基準画像が無い: ${refFile}` };
+          rec.flipReference = { revision: lastRev, reference: path.basename(refFile), ...ptFlip };
+          if (a.ptReference) {
+            const j = judgePtFlip(ptFlip, a.ptFlipMax);
+            if (!j.pass) { rec.pass = false; rec.reasons.push(...j.reasons); }
+          }
         }
       } catch (e) {
         rec.pass = false;
@@ -203,7 +262,11 @@ if (isMain) {
   let a;
   try { a = parseLookdevArgs(process.argv.slice(2)); }
   catch (e) { console.error(e.message); process.exit(2); }
-  if (a.help) { console.log("node tools/lookdev/lookdev_check.mjs [--only a,b] [--out DIR] [--exe PATH] [--port N] [--revisions 1,2] [--v2-record-only] ..."); process.exit(0); }
+  if (!a.help && !a.port) {
+    console.error("ポートが要る（--port か環境変数 LOOKDEV_PORT。worktree_setup.ps1 が表示した自分のレーンのもの）。他レーンのポートを取らないため、空きの自動選択はしない");
+    process.exit(2);
+  }
+  if (a.help) { console.log("node tools/lookdev/lookdev_check.mjs [--only a,b] [--out DIR] [--exe PATH] [--port N] [--revisions 1,2] [--v2-record-only] [--pt-reference] ..."); process.exit(0); }
   runLookdev(a).then((r) => {
     for (const s of r.scenes) {
       const v = s.revisions;

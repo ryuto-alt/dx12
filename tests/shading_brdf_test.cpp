@@ -391,6 +391,11 @@ void Test_V2DirectionalAlbedo()
             const double mi = Albedo(metal, nov);   // 重要度サンプルの積分（別の求め方）との突き合わせ
             std::printf("  r=%.1f NoV=%.1f  白い金属(補償) 格子 V1 %.4f / V2 %.4f / 重要度 %.4f  誘電体 V2 %.4f\n", r, nov, mg1, mg2, mi, dg2);
             // 白い炉: V2 は 0.97..1.01（PROGRAM_PLAN MH-1 のしきい値）。V1 は記録だけ
+            // 【MH-2 で締める】今の EvalV2 は V1 と同じ式で、E_Direct は評価器と同じ G1/GGX から積分しているため
+            //   補償後の値は構成上ほぼ 1 になる（格子と重要度サンプルが 4 桁で一致するのも同じ理由）。
+            //   MH-2 は E を LUT（実装が使う方）から引いて検査し、r < 0.3 も含めた全粗さで見ること。
+            //   誘電体（拡散 + 鏡面）の上限は計画では 0.97..1.01。r=0.3 / NoV=0.3 の実測 1.029 が 1.03 の縁にいるので、
+            //   MH-2 の拡散の補償（Fdez-Aguera 型）が入ったら 1.01 へ下げる
             CHECK_MSG(mg2 >= 0.97 && mg2 <= 1.01, "V2 白い金属(補償) 0.97..1.01 r=%.1f NoV=%.1f: %.4f", r, nov, mg2);
             CHECK_MSG(dg2 <= 1.03, "V2 白い誘電体は 1 を大きく超えない r=%.1f NoV=%.1f: %.4f", r, nov, dg2);
             // 格子と重要度サンプルの積分が 1.5% 以内で一致（積分器の物差しが正しいことの確認）
@@ -405,7 +410,7 @@ void Test_V2DirectionalAlbedo()
         Mat m; m.albedo = 0.0; m.metallic = 1.0; m.roughness = 0.4; m.aniso = aniso;
         const double a = EvalV2(m, V, L, 1.0, 1.0, 1.0, 1.0) / L.z;
         const double b = EvalV2(m, L, V, 1.0, 1.0, 1.0, 1.0) / V.z;
-        CHECK_MSG(std::fabs(a - b) < 1e-3 * std::max(a, 1e-6) + 1e-6, "V2 の相反性 aniso=%.1f: %.6f vs %.6f", aniso, a, b);
+        CHECK_MSG(std::fabs(a - b) < 1e-4 * std::max(a, 1e-6) + 1e-6, "V2 の相反性 aniso=%.1f: %.6f vs %.6f", aniso, a, b);
     }
 }
 
