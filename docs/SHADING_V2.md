@@ -96,3 +96,9 @@ Run ループの先頭（フレーム外）→ EnsureSplitResources → AppAcces
 4. **Application.cpp への直接の呼び出し**: `UpdateShadingRevision` は `EnsureSplitResources` の先頭から呼ばれている（相乗り）。
    マージ時に lane A が Run ループの `UpdateLightingUnits` の隣へ明示的に呼び、相乗りを外すこと。
 5. 切替時に `InvalidateTemporalHistory(true)` を呼ぶ（TAA / DDGI / フォグの履歴を捨てる）。
+
+### 8.x 追補（レビュー指摘の検証結果）
+- 水・植生・VG の V2 結線、`shadingRevision` の保存（SceneSerializer）、ShaderRegistry の V2 エントリ: 指摘は正しい。いずれも W1 の所有表に所有者がない（または凍結）ため C3 では直していない。メインが所有を決める。
+- ホットリロード: rev=2 のとき警告を出すようにした（ShaderRegistry 対応までの暫定）。§8.3 の「登録済み」は「ハンドラの対象ファイル名に登録済み。再コンパイル表は未対応」と読み替える。
+- `s_v2PsoCount[2]` は地形の .cso が無い早期 return でも 0 に戻すようにした。
+- BrdfV2.hlsli を include するシェーダが現れると `ShadingV2AxisTests` が失敗する（BakeForBuild の V2 対応が先）。

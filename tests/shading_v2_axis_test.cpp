@@ -9,6 +9,7 @@
 //
 // 実行: ctest --output-on-failure -R ShadingV2Axis
 
+#include <filesystem>
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -147,6 +148,24 @@ int main()
     const std::string brdf = ReadFile("shaders/forward/BrdfV2.hlsli");
     Check(brdf.find("#ifdef UNO_SHADING_V2") != std::string::npos, "BrdfV2.hlsli が UNO_SHADING_V2 で守られていない");
     Check(brdf.find("#ifndef UNO_BRDF_V2_HLSLI") != std::string::npos, "BrdfV2.hlsli にインクルードガードが無い");
+
+    // BrdfV2.hlsli を #include するシェーダが現れたら、配布ビルド（GraphMaterialSystem::BakeForBuild は V1 のみ焼く）と
+    // エディタの描画が分かれる。BakeForBuild を V2 対応にするまで、この検査で止める（C5 / MH-2 は同じ変更で直す）。
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(fs::path(DX12E_SOURCE_ROOT) / "shaders", ec), end; !ec && it != end; it.increment(ec))
+        {
+            if (!it->is_regular_file()) continue;
+            const std::string ext = it->path().extension().string();
+            if (ext != ".hlsl" && ext != ".hlsli") continue;
+            if (it->path().filename() == "BrdfV2.hlsli") continue;
+            const std::string rel = fs::relative(it->path(), DX12E_SOURCE_ROOT).generic_string();
+            const std::string src = ReadFile(rel);
+            Check(src.find("BrdfV2.hlsli") == std::string::npos,
+                  rel + " が BrdfV2.hlsli を include している: GraphMaterialSystem::BakeForBuild の V2 対応と ShaderRegistry の staticDeps が先");
+        }
+    }
 
     // ForwardGraph: rev=1 のキーを変えない
     const std::string gms = ReadFile("src/renderer/GraphMaterialSystem.cpp");

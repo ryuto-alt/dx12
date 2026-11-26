@@ -377,6 +377,7 @@ void Application::RecreateTerrainPsos()
     {
         // .cso が無い＝ビルドし忘れ。地形は layerSetPath 空なら従来経路で描けるので致命ではない。
         Logger::Warn("Terrain_VS/PS.cso が読めません（地形スプラットは無効。従来経路で描画します）");
+        s_v2PsoCount[2] = 0;   // 古い値を残さない（get_shading の v2Pso が嘘になる）
         return;
     }
 
@@ -1071,6 +1072,15 @@ void AppAccess::QueryShadingPsos(const Application&, int& appliedRevision, int& 
     v2Terrain = s_v2PsoCount[2];
 }
 
+// shadingRevision=2 のとき、実行時の再コンパイル表（ShaderRegistry）には V2 の .cso が無いので、
+// ソースを編集しても再コンパイルされるのは V1 の .cso だけ。再読込みは古い V2 の .cso を読み直す。
+// ShaderRegistry に所有者ができるまでの警告（docs/SHADING_V2.md §8）。
+static void WarnReloadAtV2()
+{
+    if (s_shadingRevApplied == 2)
+        Logger::Warn("shadingRevision=2: シェーダのホットリロードは V2 の .cso を再コンパイルしません（ShaderRegistry が V2 未対応）。tools/build.ps1 で再ビルドしてください");
+}
+
 void Application::RegisterShaderReloadHandlers()
 {
     if (!m_shaderManager)
@@ -1080,17 +1090,17 @@ void Application::RegisterShaderReloadHandlers()
         { L"Forward_VS.cso", L"Forward_PS.cso", L"ForwardLdr_PS.cso", L"ForwardInstanced_VS.cso",
           L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso",
           L"ForwardV2_PS.cso", L"ForwardMaskV2_PS.cso", L"ForwardPhysV2_PS.cso", L"ForwardMaskPhysV2_PS.cso" },
-        [this]() { RecreateForwardPsos(); });
+        [this]() { WarnReloadAtV2(); RecreateForwardPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"ForwardSkinned_VS.cso", L"Forward_PS.cso", L"ForwardMask_PS.cso", L"ForwardPhys_PS.cso", L"ForwardMaskPhys_PS.cso",
           L"ForwardV2_PS.cso", L"ForwardMaskV2_PS.cso", L"ForwardPhysV2_PS.cso", L"ForwardMaskPhysV2_PS.cso" },
-        [this]() { RecreateSkinnedPsos(); });
+        [this]() { WarnReloadAtV2(); RecreateSkinnedPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"ForwardGrid_VS.cso", L"ForwardGrid_PS.cso" },
         [this]() { RecreateGridPso(); });
     m_shaderManager->RegisterReloadHandler(
         { L"Terrain_VS.cso", L"Terrain_PS.cso", L"TerrainPhys_PS.cso", L"TerrainV2_PS.cso", L"TerrainPhysV2_PS.cso" },
-        [this]() { RecreateTerrainPsos(); });
+        [this]() { WarnReloadAtV2(); RecreateTerrainPsos(); });
     m_shaderManager->RegisterReloadHandler(
         { L"Emissive_VS.cso", L"Emissive_PS.cso" },
         [this]() { RecreateEmissivePso(); });
