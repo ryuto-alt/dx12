@@ -1288,12 +1288,12 @@ void ProgressBar(const char* id, float t01, ImVec2 size, ProgressState state, Pr
     if (state == ProgressState::Failed)
     {
         const float bw = Px(static_cast<float>(kGgDeco.badBarW));
-        const float x1 = (std::clamp)(tipX + bw * 0.5f, p0.x + (std::min)(bw, w), p0.x + w), x0 = x1 - bw;
+        const float x1 = (std::clamp)(tipX + bw * 0.5f, p0.x + (std::min)(bw, w), p0.x + w), x0 = (std::max)(x1 - bw, p0.x);
         dl->AddRectFilled(ImVec2(x0, ny0), ImVec2(x1, ny0 + needleH), Col(th::Bad), 0.0f);
     }
     else if (nAlpha > 0.004f)
     {
-        const float x1 = (std::clamp)(tipX + nw * 0.5f, p0.x + (std::min)(nw, w), p0.x + w), x0 = x1 - nw;
+        const float x1 = (std::clamp)(tipX + nw * 0.5f, p0.x + (std::min)(nw, w), p0.x + w), x0 = (std::max)(x1 - nw, p0.x);
         const ImVec2 mn(x0, ny0), mx(x1, ny0 + needleH);
         if (role == ProgressRole::StatusJob && state == ProgressState::Running)
             deco::NeedleBar(dl, mn, mx, ColA(th::Accent, nAlpha));
@@ -1338,8 +1338,9 @@ void ProgressGauge(const char* id, float t01, const char* label, float pxLogical
     char num[16];
     std::snprintf(num, sizeof(num), "%d", static_cast<int>(std::floor(t * 100.0f + 0.5f)));
     const float fs = Px(th::FontMonoOf());   // typography の mono（端数サイズを作らない）
-    const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(fs, FLT_MAX, 0.0f, num);
-    dl->AddText(ImGui::GetFont(), fs, ImVec2(std::floor(c.x - ts.x * 0.5f), std::floor(c.y - ts.y * 0.5f)), Col(th::Text), num);
+    ImFont* numFont = th::g_fonts.mono ? th::g_fonts.mono : ImGui::GetFont();   // 数字は等幅（gaugeNum / gaugeReadout）
+    const ImVec2 ts = numFont->CalcTextSizeA(fs, FLT_MAX, 0.0f, num);
+    dl->AddText(numFont, fs, ImVec2(std::floor(c.x - ts.x * 0.5f), std::floor(c.y - ts.y * 0.5f)), Col(th::Text), num);
     if (hasLabel)
         dl->AddText(ImVec2(p0.x + d + gapX, p0.y + (bb.GetHeight() - ImGui::GetFontSize()) * 0.5f), Col(th::TextMid), label);
 }

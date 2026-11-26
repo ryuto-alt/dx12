@@ -16,6 +16,7 @@
 //   短い名前のコピーのみで、計測のキャッシュで得をする部分は変わらない）。
 // ★UI スレッド専用（キャッシュは static・ロック無し）。キーは ImFont のポインタ + サイズ + 幅 + 計測方式なので、書体を切り替えても古い結果は返らない（ただし ImFont を解放して同じアドレスに作り直す場合は別。フォントを再構築する箇所では ClearEllipsizeCache() を呼ぶこと）
 //   （アトラスを作り直しても同じ書体・同じサイズの字幅は変わらない）。明示的に捨てたいときは text::ClearEllipsizeCache()。
+// ★A14（GG-2b 書体切替）への申し送り: フォント / アトラスを作り直す箇所（ImGuiManager）で text::ClearEllipsizeCache() を呼ぶこと。
 // ★matchCalcTextSize = true は旧アセットブラウザと同じ判定（CalcTextSize の切り上げ幅・最低 2 バイト）。
 //
 // アルゴリズム本体（FitEndBytes）は計測関数を受け取るテンプレートで、ImGui・フォント無しでテストできる。
