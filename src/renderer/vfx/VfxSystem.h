@@ -75,6 +75,7 @@ private:
 
     // ---- 初期化 ----
     bool EnsureGpu(StageCtx& ctx, bool wait);   // wait=true: カール場の生成を待つ（seek / 決定論キャプチャ）。false: 未了なら今フレームは見送る
+    void FailGpu(const std::string& reason);    // 失敗を記録・ログ・統計へ出す（1 回だけ）
     bool CreatePipelines(ID3D12Device* dev);
     bool CreateBuffers(ID3D12Device* dev, StageCtx& ctx);
     bool CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cmd, StageCtx& ctx, const std::vector<u16>& half);

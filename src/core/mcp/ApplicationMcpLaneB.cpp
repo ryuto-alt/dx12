@@ -54,6 +54,7 @@ nlohmann::json VfxStatsJson()
     const vfx::Stats& st = vfx::Runtime::Get().GetStats();
     nlohmann::json j = nlohmann::json::object();
     j["gpuReady"] = st.gpuReady;
+    j["gpuFailed"] = st.gpuFailed;
     j["poolUsed"] = st.poolUsed;
     j["poolCapacity"] = st.poolCapacity;
     j["instances"] = st.instances;
@@ -273,7 +274,7 @@ void Application::RegisterMcpLaneBMethods()
             if (targets == 0)
                 throw McpError(McpErr::NotFound, "VFX のエンティティが無い", "先に dx12_vfx_place で置く");
             if (vfx::Runtime::Get().GetStats().gpuFailed)
-                throw McpError(McpErr::Unsupported, "UnoFX の GPU 初期化に失敗している: " + vfx::Runtime::Get().GetStats().lastError,
+                throw McpError(McpErr::Unsupported, "UnoFX の GPU 初期化に失敗している: " + vfx::Runtime::Get().DescribeGpuFailure(),
                                "dx12_vfx_stats の lastError とログを確認。シェーダの .cso（ビルドの Shaders）が無い可能性");
             vfx::Runtime::Get().RequestSeek(r);
             resp["ok"] = true;

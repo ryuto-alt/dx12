@@ -293,6 +293,15 @@ bool VfxSystem::CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cm
     return true;
 }
 
+void VfxSystem::FailGpu(const std::string& reason)
+{
+    if (m_gpuFailed) return;
+    m_gpuFailed = true;
+    m_gpuError = reason;
+    Logger::Error("{}。UnoFX を無効にします（以後 VFX は描かれません。vfx_stats の gpuFailed / lastError で確認できます）", reason);
+    Runtime::Get().ReportGpuFailure(reason);
+}
+
 bool VfxSystem::EnsureGpu(StageCtx& ctx, bool wait)
 {
     if (m_gpuReady) return true;
@@ -300,15 +309,14 @@ bool VfxSystem::EnsureGpu(StageCtx& ctx, bool wait)
     ComPtr<ID3D12Device> dev;
     if (!ctx.cmd || !ctx.descriptors || FAILED(ctx.cmd->GetDevice(IID_PPV_ARGS(&dev))))
     {
-        m_gpuFailed = true; m_gpuError = "UnoFX: コマンドリストかデスクリプタヒープが無い";
+        FailGpu("UnoFX: コマンドリストかデスクリプタヒープが無い");
         return false;
     }
     if (!m_gpuBase)
     {
         if (!CreatePipelines(dev.Get()) || !CreateBuffers(dev.Get(), ctx))
         {
-            m_gpuFailed = true; m_gpuError = "UnoFX: GPU リソース / パイプラインを作れなかった（ログとシェーダの .cso を確認）";
-            Logger::Error("{}。UnoFX を無効にします", m_gpuError);
+            FailGpu("UnoFX: GPU リソース / パイプラインを作れなかった（ログとシェーダの .cso を確認）");
             return false;
         }
         // 64^3 のカール場の生成（約 240 万回のノイズ評価）は別スレッドへ。出来るまで今フレームは見送る
@@ -319,8 +327,7 @@ bool VfxSystem::EnsureGpu(StageCtx& ctx, bool wait)
     const std::vector<u16> half = m_curlFuture.get();
     if (!CreateCurlField(dev.Get(), ctx.cmd, ctx, half))
     {
-        m_gpuFailed = true; m_gpuError = "UnoFX: カール場のテクスチャを作れなかった";
-        Logger::Error("{}。UnoFX を無効にします", m_gpuError);
+        FailGpu("UnoFX: カール場のテクスチャを作れなかった");
         return false;
     }
     m_ranges.clear();
@@ -740,6 +747,7 @@ bool VfxSystem::WantsUpdate() const
 {
     Runtime& rt = Runtime::Get();
     if (!rt.HasHost()) return false;
+    if (m_gpuFailed) return false;   // 失敗は統計に出し済み。毎フレーム空回りしない
     if (!m_instances.empty() || rt.HasSeeks()) return true;
     const Host& host = rt.GetHost();
     entt::registry* reg = host.registry(host.user);
