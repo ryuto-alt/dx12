@@ -72,7 +72,7 @@ export const SEARCH_HINTS: Record<string, string> = {
   open_scene: "シーンを開く 読み込む ロード 切り替え 開き直す",
   open_project: "プロジェクトを開く 切り替え",
   new_scene: "新規シーン 空のシーン 作り直す",
-  save_scene: "保存 セーブ シーンを保存 書き出す",
+  save_scene: "保存 セーブ シーンを保存 書き出す autosave 自動保存 人の未保存の変更 保存を依頼 blockedByHumanEdits",
   build_game: "ビルド 配布 パッケージ 書き出し exe 出力 リリース",
   // Undo
   undo: "元に戻す 取り消す 取消 アンドゥ 直前の変更 戻す さっきの変更 ctrl+z",
@@ -142,6 +142,9 @@ export const SEARCH_HINTS: Record<string, string> = {
   set_dxr: "DXR レイトレーシング 反射 影 GI ハードウェアRT",
   get_taa: "TAA アンチエイリアス 読む",
   set_taa: "TAA アンチエイリアス ジャギー ちらつき 揺れ",
+  editor_state: "エディタの状態 未保存 自動保存 autosave 人の編集 保存を依頼 blockedByHumanEdits",
+  get_upscaler: "アップスケーラ DLSS TAAU フォールバック 理由 fallbackReason 効いていない DLSS が使えない 解像度 内部解像度 upscaler",
+  get_device_caps: "caps 機能 対応 GPU 機能 Agility SM6.9 シェーダーモデル Enhanced Barriers DXR SER OMM 使えるハードウェア機能 デバイス能力 device caps",
   get_volumetric_fog: "ボリュームフォグ 霧 読む",
   set_volumetric_fog: "霧 フォグ ボリュームフォグ 空気感 ゴッドレイ もや 光の筋",
   render_debug: "デバッグ表示 中間バッファ 可視化 法線 深度 G-buffer AO 見え方の切り分け なぜ変に見えるか",
@@ -264,6 +267,9 @@ export const SEARCH_HINTS: Record<string, string> = {
 
 // 英語の言い回し(同じ意味の日本語は上の表)。Claude は英語で検索することも多いので、主要なツールに足してある。
 export const SEARCH_HINTS_EN: Record<string, string> = {
+  get_upscaler: "upscaler dlss taau fallbackReason fallback reason why dlss not used render resolution",
+  get_device_caps: "caps device caps agility SM6.9 shader model enhanced barriers DXR SER OMM gpu features capabilities",
+  editor_state: "editor state autosave blockedByHumanEdits human edits unsaved",
   tool_search: "search find tool discover which tool lookup",
   tool_describe: "describe schema arguments parameters usage details example",
   call: "call invoke run execute any tool method dry run",
@@ -315,7 +321,7 @@ export const SEARCH_HINTS_EN: Record<string, string> = {
   imgui_pointer: "click pointer mouse drag field inspector editor ui virtual click press button input value",
   imgui_key: "key input editor ui virtual keyboard type text shortcut",
   open_scene: "open scene load switch scene",
-  save_scene: "save scene write scene to disk store",
+  save_scene: "autosave blockedByHumanEdits human unsaved edits ask human to save save scene write scene to disk store",
   new_scene: "new scene empty scene create scene",
   navmesh_build: "navmesh bake build navigation mesh pathfinding walkable",
   check_reachable: "reachable reachability goal can reach path check unreachable stuck",

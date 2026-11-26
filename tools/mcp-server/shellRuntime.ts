@@ -380,7 +380,7 @@ export class ShellRuntime {
       try {
         const pong = await this.deps.engine.call("ping", {}, { timeout: 2000, retry: false });
         sceneDirty = !!pong?.sceneDirty;
-        if (sceneDirty) warnings.push(`未保存の変更がある(sceneDirty:true)。${bare} は現在のシーンを閉じる。MCP 接続中は自動保存されるが、外部でシーン JSON を書き換えた直後なら先に dx12_save_scene で確定するか、意図した変更か確認すること`);
+        if (sceneDirty) warnings.push(`未保存の変更がある(sceneDirty:true)。${bare} は現在のシーンを閉じる。MCP の編集は自動保存されるが人の未保存の変更があると止まる(guide autosave)。外部でシーン JSON を書き換えた直後なら先に dx12_save_scene で確定するか、意図した変更か確認すること`);
       } catch { /* 警告が取れなくても続行 */ }
     }
 

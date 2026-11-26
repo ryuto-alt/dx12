@@ -133,7 +133,7 @@ if (ENHANCED) {
 
   regShell(
     "dx12_guide", "使い方ガイド",
-    "目的別の最短手順・危険操作の注意・仮想入力の運用ルールを返す(Markdown)。topic 省略で一覧。トピック: build_scene / scene_spec(仕様 JSON で部屋・ステージ・街を作る) / test / lighting / ui / editor / safety / errors / perf / fleet(専用エンジンの起動・上限・後始末) / jobs(長い処理のジョブ API) / engine_dev(エンジンに method を足したら何をするか)。",
+    "目的別の最短手順・危険操作の注意・仮想入力の運用ルールを返す(Markdown)。topic 省略で一覧。トピック: build_scene / scene_spec(仕様 JSON で部屋・ステージ・街を作る) / test / lighting / ui / editor / safety / errors / perf / fleet(専用エンジンの起動・後始末) / jobs(ジョブ API) / engine_dev(エンジンに method を足したら何をするか) / autosave / device_caps。",
     { topic: z.string().optional().describe("トピック id(省略で一覧)。") },
     { readOnlyHint: true, idempotentHint: true },
     async (a) => shell.guide(a),

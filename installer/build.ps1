@@ -9,12 +9,25 @@
 #   取得する（エディタの「MCP / AI Bridge」パネルのワンクリック導入 / --install-mcp）。
 #
 # 前提: build\release が先にビルド済みであること（build_release.bat 等）。ISCC は任意。
-# 使い方: pwsh -ExecutionPolicy Bypass -File installer\build.ps1
+# 使い方: pwsh -ExecutionPolicy Bypass -File installer\build.ps1 [-Dlss auto|require|off]
+#   -Dlss auto    … 既定。build\release に nvngx_dlss.dll が無ければ警告つきで DLSS 無しの配布物を作る。
+#   -Dlss require … 公式リリース用。nvngx_dlss.dll か NVIDIA のライセンス文が無ければ失敗する。
+#   -Dlss off     … DLSS を配布物へ入れない（nvngx_dlss.dll を除く）。
+#   DLSS を同梱するときは build\release\licenses\NVIDIA_DLSS_LICENSE.txt（SDK の LICENSE.txt のコピー）を licenses\NVIDIA_DLSS_LICENSE.txt として必ず添える。
+#   -CheckDlssOnly … DLSS の判定だけ行って終了する（ctest DlssWiringCheck 用）。-SrcDir で exe のフォルダを差し替え可。
+param(
+  [ValidateSet("auto", "require", "off")][string]$Dlss = "auto",
+  [string]$SrcDir = "",
+  [switch]$CheckDlssOnly
+)
 $ErrorActionPreference = "Stop"
 
 $here     = Split-Path -Parent $MyInvocation.MyCommand.Path   # installer/
 $repoRoot = Split-Path -Parent $here
-$srcDir   = Join-Path $repoRoot "build\release"               # exe + dll + shaders
+if ($SrcDir -and -not $CheckDlssOnly) {
+  Write-Error "-SrcDir は -CheckDlssOnly と一緒にだけ使える（ISCC は dx12engine.iss の build\release を使うため、別の場所を指すと DLSS の判定と配布物がずれる）。"
+}
+$srcDir   = if ($SrcDir) { $SrcDir } else { Join-Path $repoRoot "build\release" }   # exe + dll + shaders
 $outDir   = Join-Path $here "output"
 
 # --- バージョンを Version.cpp から取得（定数の実体は Version.cpp に一本化した） ---
@@ -22,6 +35,26 @@ $verLine = Select-String -Path (Join-Path $repoRoot "src\core\Version.cpp") -Pat
 if (-not $verLine) { Write-Error "Version.cpp から kEngineVersion を取得できませんでした" }
 $version = $verLine.Matches[0].Groups[1].Value
 Write-Host "Uno Engine v$version の配布物をビルドします" -ForegroundColor Cyan
+
+# --- DLSS の扱いを決める（SDK の中身は git に無い。取得は tools\fetch_dlss.ps1） ---
+$dlssDll     = Join-Path $srcDir "nvngx_dlss.dll"
+# ライセンス文はビルド出力（CMake が UNO_DLSS_SDK_DIR\LICENSE.txt から licenses\ へコピー）を使う。SDK の置き場を替えても DLL と一致する。
+$dlssLicense = Join-Path $srcDir "licenses\NVIDIA_DLSS_LICENSE.txt"
+$bundleDlss  = $false
+if ($Dlss -eq "off") {
+  Write-Host "DLSS: OFF (-Dlss off)" -ForegroundColor Yellow
+} elseif (Test-Path $dlssDll) {
+  if (-not (Test-Path $dlssLicense)) {
+    Write-Error "nvngx_dlss.dll はあるが NVIDIA のライセンス文が無い: $dlssLicense（pwsh tools/fetch_dlss.ps1）。DLL とライセンス文は必ずセットで配る。"
+  }
+  $bundleDlss = $true
+  Write-Host "DLSS: ON（nvngx_dlss.dll と NVIDIA_DLSS_LICENSE.txt を同梱）" -ForegroundColor Green
+} elseif ($Dlss -eq "require") {
+  Write-Error "-Dlss require: $dlssDll が無い。pwsh tools/fetch_dlss.ps1 で SDK を取得し、tools\build.ps1 -Dlss require で建て直してください。"
+} else {
+  Write-Warning "DLSS: OFF（nvngx_dlss.dll が無い。DLSS 無しの配布物になる。pwsh tools/fetch_dlss.ps1 → tools\build.ps1 -Dlss require）"
+}
+if ($CheckDlssOnly) { exit 0 }
 
 if (-not (Test-Path (Join-Path $srcDir "DX12Engine.exe"))) {
   Write-Error "build\release\DX12Engine.exe が無い。先に build_release.bat を実行してください。"
@@ -134,7 +167,10 @@ if (-not (Test-Path $agilityLicense)) { Write-Error "Agility のライセンス�
 
 if ($iscc) {
   Write-Host "[1/2] インストーラを生成 (ISCC)..." -ForegroundColor Yellow
-  & $iscc "/DMyAppVersion=$version" "/DAgilityVersion=$agilityVersion" (Join-Path $here "dx12engine.iss")
+  $isccArgs = @("/DMyAppVersion=$version", "/DAgilityVersion=$agilityVersion")
+  if ($bundleDlss) { $isccArgs += "/DDlssLicense=1" }       # .iss がライセンス文を {app}\licenses へ入れる
+  if ($Dlss -eq "off") { $isccArgs += "/DDllExcludes=nvngx_dlss.dll" }
+  & $iscc @isccArgs (Join-Path $here "dx12engine.iss")
 } else {
   Write-Warning "[1/2] ISCC.exe が見つからないためインストーラはスキップします（Inno Setup 6 を入れてください）。"
 }
@@ -146,7 +182,7 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
 # exe + dll（build\release 直下）
-Get-ChildItem -Path $srcDir -File | Where-Object { $_.Extension -in ".exe", ".dll" } |
+Get-ChildItem -Path $srcDir -File | Where-Object { $_.Extension -in ".exe", ".dll" -and -not ($Dlss -eq "off" -and $_.Name -eq "nvngx_dlss.dll") } |
   ForEach-Object { Copy-Item $_.FullName -Destination $stage }
 # D3D12 Agility のランタイム（D3D12Core.dll だけ。d3d12SDKLayers.dll は配らない）。
 # Updater.cpp が robocopy /E で上書きするので、zip に無いと自動更新した環境が壊れる。
@@ -154,6 +190,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $stage "D3D12") | Out-Null
 Copy-Item $agilityCore -Destination (Join-Path $stage "D3D12/D3D12Core.dll")
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "licenses") | Out-Null
 Copy-Item $agilityLicense -Destination (Join-Path $stage "licenses/Microsoft.Direct3D.D3D12-LICENSE.txt")
+if ($bundleDlss) { Copy-Item $dlssLicense -Destination (Join-Path $stage "licenses/NVIDIA_DLSS_LICENSE.txt") }
 # shaders（.cso）
 Copy-Item (Join-Path $srcDir "shaders") -Destination (Join-Path $stage "shaders") -Recurse -ErrorAction SilentlyContinue
 # shaders-src（.hlsl/.hlsli ソース。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用。

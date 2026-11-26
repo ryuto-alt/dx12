@@ -4,7 +4,7 @@
 ## 0. 前提
 - `dx12_doctor` で接続を確認する。`dx12_ping` の `sceneDirty:false` を確認してから始める。
 - エンティティは `name` で指定する(`entityId` は Stop / open_scene で変わる。`sceneGeneration` が同じ間だけ安定)。
-- MCP 接続中は編集の 2 秒後に自動で本保存される。外部でシーン JSON を書く場合は、書いたら**すぐ** `dx12_open_scene`(事前に `sceneDirty:false` を確認)。
+- MCP の編集は 2 秒後に自動で本保存されるが、人の未保存の変更があると止まる(`dx12_guide autosave`)。外部でシーン JSON を書く場合は、書いたら**すぐ** `dx12_open_scene`(事前に `sceneDirty:false` を確認)。
 
 ## 1. 骨格を作る(命名規約)
 ```

@@ -136,7 +136,7 @@ export function fleetIssues(f: Record<string, any>): DoctorIssue[] {
     issues.push({
       code: "FLEET_STALE_EXE", severity: "warn",
       message: `exe コピーが古いエンジンがある(${stale.join(", ")})。ビルド出力の DX12Engine.exe がコピー後に更新されている`,
-      fix: (mine.length ? mine : stale.slice(0, 1)).map((id) => ({ tool: "dx12_engine_refresh", args: { engine: id }, why: `${id} を最新の exe で再起動する(entityId は失効。シーンは自動保存されたものが開き直される)` })),
+      fix: (mine.length ? mine : stale.slice(0, 1)).map((id) => ({ tool: "dx12_engine_refresh", args: { engine: id }, why: `${id} を最新の exe で再起動する(entityId は失効。人の未保存の変更は本体に含まれない。先に dx12_editor_state で autosave を確認)` })),
     });
   }
   const orphans: string[] = Array.isArray(f.orphans) ? f.orphans : [];
@@ -280,7 +280,7 @@ export async function runDoctor(d: DoctorDeps, opts: { deep?: boolean } = {}): P
       });
     }
     if (pong.sceneDirty) {
-      issues.push({ code: "SCENE_DIRTY", severity: "info", message: "未保存の変更がある。dx12_open_scene / dx12_new_scene / dx12_open_project は現在のシーンを閉じる(MCP 接続中は自動保存されるが、外部でシーン JSON を書く前は sceneDirty:false を確認する)", fix: [{ tool: "dx12_save_scene", args: {}, why: "先に保存する" }] });
+      issues.push({ code: "SCENE_DIRTY", severity: "info", message: "未保存の変更がある。dx12_open_scene / dx12_new_scene / dx12_open_project は現在のシーンを閉じる(MCP の編集は自動保存されるが、人の未保存の変更があると止まる(guide autosave)。外部でシーン JSON を書く前は sceneDirty:false を確認する)", fix: [{ tool: "dx12_save_scene", args: {}, why: "先に保存する" }] });
     }
     if (pong.virtualInput === false && pong.background) {
       issues.push({ code: "VIRTUAL_INPUT_OFF", severity: "info", message: "--background で起動しているが仮想入力モードが OFF。エディタ UI を操作するなら先に ON にする(実入力は使わない)", fix: [{ tool: "dx12_imgui_virtual_input", args: { enable: true }, why: "仮想入力モードを ON" }] });

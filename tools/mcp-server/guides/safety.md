@@ -18,7 +18,7 @@
 ファイルを書く操作(`save_scene` / `create_lua_component` / `create_shader` / `move_asset` / `delete_asset` / `import_asset` / `create_prefab` と TS の `dx12_scene_write`)は、上書き・削除・移動の前に元の内容を `<project>/.dx12/journal/` へ退避する。`dx12_batch`(atomic)が失敗して rollback すると、シーンと一緒に**ファイルも元に戻る**(応答の `transaction.journal`)。journal 未対応の write_file(地形の保存など)を含む batch は `transaction.warning` で「戻らない」と明記される。後から戻すには `dx12_call {name:"journal_list"}` → `{name:"journal_restore", args:{id}}`(先に `dryRun:true`。復元自体も 1 エントリとして残る)。tx を開いている間は自動保存が保留される。
 
 ## 未保存の変更を消す操作
-`open_scene` / `new_scene` / `open_project` は現在のシーンを閉じる。`sceneDirty:true` のときは meta.warnings に出る。MCP 接続中は自動保存されるが、外部でシーン JSON を書き換えた直後は上書きの競合に注意(書いたら即 open、事前に `sceneDirty:false`)。
+`open_scene` / `new_scene` / `open_project` は現在のシーンを閉じる。`sceneDirty:true` のときは meta.warnings に出る。MCP 接続中は自動保存されるが、人の未保存の変更があると止まる(`dx12_guide {topic:"autosave"}`)。外部でシーン JSON を書き換えた直後は上書きの競合に注意(書いたら即 open、事前に `sceneDirty:false`)。
 
 ## Undo
 ## シーンの世代(scene_backups)

@@ -1,0 +1,822 @@
+{
+  "wave": "w1",
+  "source": "EXEC_W05_W1 2.9 (G1-G20)",
+  "version": 1,
+  "checks": [
+    {
+      "id": "G1",
+      "area": "theme",
+      "target": [
+        "A14"
+      ],
+      "title": "初回起動で Graphite Gauge、旧テーマへ切り替えて戻せる",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start",
+          "freshData": true
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        },
+        {
+          "kind": "note",
+          "text": "設定 → テーマ →「ネオン（旧）」→ 再起動 → 旧テーマ → 戻す"
+        }
+      ],
+      "expect": "初回は Graphite Gauge。旧テーマに変えて再起動しても旧テーマのまま。戻せる",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G2",
+      "area": "ui",
+      "target": [
+        "A1",
+        "A14",
+        "A9"
+      ],
+      "title": "DPI × 全ワークスペースで豆腐・はみ出し・黒画面が無い",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start",
+          "args": [
+            "--dpi-scale",
+            "1.0"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "全ワークスペースを順に開いて imgui_screenshot"
+        },
+        {
+          "kind": "engine",
+          "action": "restart",
+          "args": [
+            "--dpi-scale",
+            "1.5"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "同上"
+        },
+        {
+          "kind": "engine",
+          "action": "restart",
+          "args": [
+            "--dpi-scale",
+            "2.0"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "同上"
+        }
+      ],
+      "expect": "豆腐（字の欠け）が無い、文字がはみ出さない、黒画面が無い",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "major",
+      "dpi": [
+        1,
+        1.5,
+        2
+      ]
+    },
+    {
+      "id": "G3",
+      "area": "theme",
+      "target": [
+        "A2",
+        "A5",
+        "A7"
+      ],
+      "title": "編集画面に黄の面が無い",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "note",
+          "text": "編集中の画面を撮り、splash_golden.py と同じ関数で黄を検査（黄の線 9 本以下、画素比 1.5% 以下）"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        }
+      ],
+      "expect": "黄の面 = 0",
+      "evidence": [
+        "screenshot",
+        "json"
+      ],
+      "severityIfFail": "minor"
+    },
+    {
+      "id": "G4",
+      "area": "quality",
+      "target": [
+        "A8",
+        "C7"
+      ],
+      "title": "品質プリセットの切り替えと Undo、DXR 無しの縮退",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "set_quality",
+          "params": {
+            "preset": "low"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "set_quality",
+          "params": {
+            "preset": "epic"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "undo"
+        },
+        {
+          "kind": "mcp",
+          "method": "get_quality"
+        },
+        {
+          "kind": "note",
+          "text": "DXR が使えない条件を作る（DXR 無効化の手段がエンジンに実装されていればそれで再起動する。無ければこの後半は blocked にして理由を書く）"
+        },
+        {
+          "kind": "mcp",
+          "method": "set_quality",
+          "params": {
+            "preset": "epic"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "get_quality"
+        }
+      ],
+      "expect": "Low → Epic → Ctrl+Z → Low に戻る。DXR が無い条件で Epic が縮退の表示",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "major",
+      "note": "メソッド名は実装に合わせて読み替える"
+    },
+    {
+      "id": "G5",
+      "area": "render",
+      "target": [
+        "C8",
+        "W05-22"
+      ],
+      "title": "new_scene が Epic のルック",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "new_scene"
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity",
+          "params": {
+            "name": "DirectionalLight"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot"
+        },
+        {
+          "kind": "mcp",
+          "method": "perf_stats"
+        }
+      ],
+      "expect": "太陽が斜め、白飛びしない（輝度の 99 パーセンタイル < 0.98）、DDGI があれば SSGI のスコープが無い",
+      "evidence": [
+        "screenshot",
+        "json"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G6",
+      "area": "render",
+      "target": [
+        "C10"
+      ],
+      "title": "apply_lighting_preset night と Undo",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "apply_lighting_preset",
+          "params": {
+            "preset": "night"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot"
+        },
+        {
+          "kind": "mcp",
+          "method": "undo"
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot"
+        }
+      ],
+      "expect": "空・IBL・露出・フォグが変わる。Ctrl+Z で戻る",
+      "evidence": [
+        "screenshot",
+        "json"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G7",
+      "area": "render",
+      "target": [
+        "C9"
+      ],
+      "title": "物理大気 ON で白飛びしない",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "set_component",
+          "params": {
+            "name": "DirectionalLight",
+            "component": "atmosphere",
+            "values": {
+              "enabled": true
+            }
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot",
+          "params": {
+            "waitIblRebake": true
+          }
+        }
+      ],
+      "expect": "白飛びしない",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G8",
+      "area": "vfx",
+      "target": [
+        "C2"
+      ],
+      "title": "set_component layer:7 が範囲外エラー",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "Emitter3",
+            "type": "particle_emitter"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "set_component",
+          "params": {
+            "name": "Emitter3",
+            "component": "particleEmitter",
+            "values": {
+              "layer": 7
+            }
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity",
+          "params": {
+            "name": "Emitter3"
+          }
+        }
+      ],
+      "expect": "E_OUT_OF_RANGE。どのレイヤーも不変",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G9",
+      "area": "data-loss",
+      "target": [
+        "W05-41"
+      ],
+      "title": "vfx_preview の前後で状態不変",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "open_scene",
+          "params": {
+            "path": "scenes/main.json"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "create_entity",
+          "params": {
+            "name": "VfxProbe",
+            "type": "particle_emitter"
+          }
+        },
+        {
+          "kind": "wait",
+          "ms": 10000
+        },
+        {
+          "kind": "note",
+          "text": "放出器 VfxProbe を置いてから基準を取る（シーンが空だと vfx_preview が何も動かさず、不変が自明に通ってしまう）"
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "file",
+          "path": "assets/scenes/main.json",
+          "check": "record_hash"
+        },
+        {
+          "kind": "mcp",
+          "method": "vfx_preview",
+          "params": {
+            "name": "VfxProbe"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "editor_state"
+        },
+        {
+          "kind": "file",
+          "path": "assets/scenes/main.json",
+          "check": "hash_unchanged"
+        }
+      ],
+      "expect": "undoDepth と main.json が不変",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "blocker"
+    },
+    {
+      "id": "G10",
+      "area": "vfx",
+      "target": [
+        "BD4",
+        "BD7",
+        "NB8",
+        "A10",
+        "A12"
+      ],
+      "title": "焚き火の配置・シーク・決定論・Undo",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "mcp",
+          "method": "vfx_place",
+          "params": {
+            "preset": "p_campfire"
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "vfx_seek",
+          "params": {
+            "t": 2
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot"
+        },
+        {
+          "kind": "mcp",
+          "method": "vfx_seek",
+          "params": {
+            "t": 2
+          }
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot"
+        },
+        {
+          "kind": "mcp",
+          "method": "undo"
+        },
+        {
+          "kind": "input",
+          "op": "find",
+          "params": {
+            "name": "*.uvfx"
+          }
+        },
+        {
+          "kind": "input",
+          "op": "pointer",
+          "params": {
+            "action": "double_click"
+          }
+        },
+        {
+          "kind": "note",
+          "text": "旧系の爆発（ワンショット）が寿命で止まること"
+        }
+      ],
+      "expect": "2 回の撮影がビット一致。Undo で消える。.uvfx のダブルクリックでも置ける。旧系の爆発が寿命で止まる",
+      "evidence": [
+        "screenshot",
+        "json"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G11",
+      "area": "splash",
+      "target": [
+        "BD1",
+        "BD2",
+        "BD3",
+        "BD4",
+        "BD5",
+        "BD6",
+        "NB5"
+      ],
+      "title": "起動演出のセルフテスト",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "run",
+          "args": [
+            "--splash-selftest",
+            "{evidence}/splash_selftest"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "selftest の出力先（{evidence}/splash_selftest）のキーフレーム PNG・黄の検査（boot の許可集合）・オフライン音のダンプでロックと絵の静止フレームの差を確認"
+        }
+      ],
+      "expect": "キーフレームの PNG が出る（窓は出ない）。黄の検査が緑。ロックと絵の静止フレームの差が ±1 フレーム",
+      "evidence": [
+        "screenshot",
+        "log"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G12",
+      "area": "ui",
+      "target": [
+        "A9"
+      ],
+      "title": "マテリアルグラフ DPI 2.0 でズーム 40 往復",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start",
+          "args": [
+            "--dpi-scale",
+            "2.0"
+          ]
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "マテリアルグラフでズームを 40 回往復"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        }
+      ],
+      "expect": "UI が崩れない",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "major",
+      "dpi": [
+        2
+      ]
+    },
+    {
+      "id": "G13",
+      "area": "editor",
+      "target": [
+        "A10"
+      ],
+      "title": "アニメ・シーケンサーの案内と .dxseq",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "アニメ・シーケンサーのワークスペースを開く。.dxseq の種別表示とダブルクリック再生"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        }
+      ],
+      "expect": "案内が出る。.dxseq が「シーケンス」と表示され、ダブルクリックで再生",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "minor"
+    },
+    {
+      "id": "G14",
+      "area": "editor",
+      "target": [
+        "A13"
+      ],
+      "title": "コンソールの例文・フィルタ・自動スクロール",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "コンソールの例文を実行。情報フィルタの既定、自動スクロール。背景モードのインポート案内"
+        },
+        {
+          "kind": "input",
+          "op": "screenshot"
+        }
+      ],
+      "expect": "例文が動く、情報フィルタが既定で ON、自動スクロール。背景モードのインポートで案内が出る（A13 が P1 へ送られたらこのチェックも W2 へ送る）",
+      "evidence": [
+        "screenshot"
+      ],
+      "severityIfFail": "minor"
+    },
+    {
+      "id": "G15",
+      "area": "perf",
+      "target": [
+        "A11"
+      ],
+      "title": "非アクティブ時の 10fps 絞り",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "wait",
+          "ms": 5000
+        },
+        {
+          "kind": "mcp",
+          "method": "perf_stats"
+        },
+        {
+          "kind": "mcp",
+          "method": "step_frames",
+          "params": {
+            "count": 60
+          }
+        }
+      ],
+      "expect": "MCP の要求が無い間、非アクティブのエディタが 10fps 前後に落ちる。step_frames の所要時間は変わらない",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "minor"
+    },
+    {
+      "id": "G16",
+      "area": "scene",
+      "target": [
+        "C11"
+      ],
+      "title": "FPS テンプレートで scene_lint が 0",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "note",
+          "text": "FPS テンプレートの新規プロジェクトを作る"
+        },
+        {
+          "kind": "mcp",
+          "method": "scene_lint"
+        }
+      ],
+      "expect": "Z_FIGHT と FLOATING が 0",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "minor"
+    },
+    {
+      "id": "G17",
+      "area": "showcase",
+      "target": [
+        "NB13"
+      ],
+      "title": "SC-1 の 3 視点とデバッグレイヤー",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start",
+          "env": [
+            "DX12_D3D_DEBUG=1"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "SC-1 を開き 3 視点を撮る"
+        },
+        {
+          "kind": "mcp",
+          "method": "screenshot"
+        },
+        {
+          "kind": "file",
+          "path": "dx12_engine.log",
+          "check": "contains",
+          "pattern": "Debug Layer enabled",
+          "base": "instance"
+        }
+      ],
+      "expect": "「Debug Layer enabled」があり、デバッグレイヤーのエラー 0",
+      "evidence": [
+        "screenshot",
+        "log"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G18",
+      "area": "regression",
+      "target": [
+        "W0.5"
+      ],
+      "title": "W0.5 の回帰（D1, D1b, D2〜D8, D11, D16）",
+      "steps": [
+        {
+          "kind": "note",
+          "text": "w05.json の D1、D1b、D2〜D8、D11、D16 を再実行し、その結果をここに写す"
+        }
+      ],
+      "expect": "全て緑",
+      "evidence": [
+        "json"
+      ],
+      "severityIfFail": "blocker",
+      "reuse": [
+        "D1",
+        "D1b",
+        "D2",
+        "D3",
+        "D4",
+        "D5",
+        "D6",
+        "D7",
+        "D8",
+        "D11",
+        "D16"
+      ]
+    },
+    {
+      "id": "G19",
+      "area": "splash",
+      "target": [
+        "BD3",
+        "BD5"
+      ],
+      "title": "起動演出のスキップと Reduce Motion",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "run",
+          "args": [
+            "--splash-selftest",
+            "{evidence}/splash_selftest_g19"
+          ]
+        },
+        {
+          "kind": "note",
+          "text": "スキップの仮想イベントを 3 時刻に入れる。Reduce Motion で指針が回らず graphite_1_rm.wav が鳴る（音のダンプ）"
+        }
+      ],
+      "expect": "ロック以降のフレームが一致。音のダンプにクリックノイズが無い。Reduce Motion で指針が回らず graphite_1_rm.wav が鳴る",
+      "evidence": [
+        "screenshot",
+        "log"
+      ],
+      "severityIfFail": "major"
+    },
+    {
+      "id": "G20",
+      "area": "editor",
+      "target": [
+        "A15"
+      ],
+      "title": "パーティクルエディタの「適用」確認と Undo",
+      "steps": [
+        {
+          "kind": "engine",
+          "action": "start"
+        },
+        {
+          "kind": "input",
+          "op": "virtual_input",
+          "params": {
+            "enabled": true
+          }
+        },
+        {
+          "kind": "note",
+          "text": "パーティクルエディタで「適用」→ 確認 → キャンセル → レイヤー不変。適用 → Ctrl+Z"
+        },
+        {
+          "kind": "mcp",
+          "method": "get_entity"
+        }
+      ],
+      "expect": "確認が出る。キャンセルでレイヤーが不変。適用後の Ctrl+Z で元に戻る",
+      "evidence": [
+        "screenshot",
+        "json"
+      ],
+      "severityIfFail": "major"
+    }
+  ]
+}
