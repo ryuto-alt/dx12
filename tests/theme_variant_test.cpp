@@ -102,6 +102,15 @@ void TestParse()
     CHECK(th::ParseVariant("b", v) && v == th::Variant::B);
     CHECK(th::ParseVariant("C", v) && v == th::Variant::C);
     CHECK(th::ParseVariant("default", v) && v == th::Variant::Default);
+    {   // ヘルプ文の語がすべて ParseVariant で解釈できる（graphite|g を含む）
+        const std::string usage = th::kVariantUsage;
+        CHECK(usage.find("graphite|g") != std::string::npos);
+        for (const char* w : { "a", "b", "c", "graphite", "g", "default" })
+        {
+            th::Variant t = th::Variant::B;
+            CHECK(th::ParseVariant(w, t));
+        }
+    }
     CHECK(th::ParseVariant("0", v) && v == th::Variant::Default);
     v = th::Variant::B;
     CHECK(!th::ParseVariant("", v) && v == th::Variant::B);      // 解釈できなければ out を変えない

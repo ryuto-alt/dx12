@@ -12,6 +12,7 @@
 #include "gui/UiTestHarness.h"   // --ui-tests-skip（UI テストの除外指定）
 #include "gui/UiClock.h"         // --ui-deterministic（UI の時計を「フレーム番号 × 1/60」に固定）
 #include "editor/EditorTheme.h"   // --theme-variant（エディタのアイデンティティ案。開発用）
+#include "editor/ThemeGraphite.h"   // theme::RegisterGraphite（--theme-variant graphite の Spec 登録）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
 #include "core/OffscreenShot.h"     // --size WxH（screenshot_final の既定の撮影解像度。純ロジック）
 #include "editor/McpInstaller.h"   // --install-mcp（MCP サーバのヘッドレス導入）
@@ -307,6 +308,10 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
 {
     // 最初期: DPI aware（窓を 1 枚も作る前）。
     EnableProcessDpiAwareness();
+
+    // Graphite Gauge の Spec を最初に明示登録する（--theme-variant の SetVariant より前）。
+    // ImGuiManager.cpp の参照と ThemeGraphite.cpp の静的初期化にも頼っているが、どちらが外れても graphite が壊れないようにする。冪等。
+    dx12e::theme::RegisterGraphite();
 
     // ネイティブクラッシュ(アクセス違反等)でも原因が追えるよう、最初にクラッシュハンドラを仕込む。
     // クラッシュ時は CWD に dx12_crash.log(スタックトレース) + dx12_crash.dmp(ミニダンプ)が残る。
@@ -651,14 +656,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                     }
                     else if (wcscmp(argv[i], L"--theme-variant") == 0 || wcsncmp(argv[i], L"--theme-variant=", 16) == 0)
                     {
-                        // 開発用: エディタの見た目のアイデンティティ案。a | b | c | default（既定 = 現行。指定なしなら 1px も変わらない）。
+                        // 開発用: エディタの見た目のアイデンティティ案。a | b | c | graphite|g | default（既定 = 現行。指定なしなら 1px も変わらない）。
                         std::string value;
                         if (argv[i][15] == L'=') value = toUtf8(argv[i] + 16);
                         else if (i + 1 < argc)   value = toUtf8(argv[++i]);
                         dx12e::theme::Variant tv = dx12e::theme::Variant::Default;
                         dx12e::theme::g_variantSwitchEnabled = true;   // 切替コマンド（コマンドパレット）を有効にする
                         if (dx12e::theme::ParseVariant(value, tv)) dx12e::theme::SetVariant(tv);
-                        else OutputDebugStringA(("--theme-variant の値が不正です（a | b | c | default）: " + value + "\n").c_str());
+                        else OutputDebugStringA(("--theme-variant の値が不正です（" + std::string(dx12e::theme::kVariantUsage) + "）: " + value + "\n").c_str());
                     }
                     else if (wcscmp(argv[i], L"--mcp-port") == 0 && i + 1 < argc)
                         mcpPort = _wtoi(argv[++i]);
