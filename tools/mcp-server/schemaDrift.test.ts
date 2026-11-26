@@ -59,7 +59,7 @@ const tools = parseTsTools(indexSrc);
 const SPREADS: Record<string, string[]> = {
   "...entityRef": ["entity", "name"],
   // dx12_screenshot / dx12_screenshot_final の共通引数($ref 回避でファクトリにしてある)。
-  "...captureParams()": ["path", "deterministic", "settleFrames", "gizmos"],
+  "...captureParams()": ["path", "deterministic", "settleFrames", "gizmos", "waitIblRebake"],
   // dx12_screenshot_final 専用(Q2 校正): 出力形式と任意解像度。
   "...finalOnlyParams()": ["format", "formats", "width", "height"],
   // ナビメッシュ: 生成パラメータ(build / settings が共有)と探索の許容ずれ(path / sample / raycast)。
@@ -223,7 +223,7 @@ console.log("\n[3] PostProcessSettings.h の名前表(X マクロ)と突き合�
   const postFields = parseFieldMacro(header, "DX12E_POST_FIELDS");
   const ssaoFields = parseFieldMacro(header, "DX12E_SSAO_FIELDS");
   check("DX12E_POST_FIELDS を読めている", postFields.length >= 80, `${postFields.length} fields`);
-  check("DX12E_SSAO_FIELDS を読めている", ssaoFields.length === 7, ssaoFields.join(","));
+  check("DX12E_SSAO_FIELDS を読めている", ssaoFields.length === 8, ssaoFields.join(","));
 
   const pp = tools.find((t) => t.tool === "dx12_set_post_process")!;
   const ppKeys = keysOf(pp);
@@ -625,8 +625,8 @@ console.log("\n[13] 遅延同期 method のタイムアウトが engine の待�
     "resolveAssetsDir が ping を呼んでいない");
   // エンジンが本当に ping で返しているかの裏取り(片側だけ消すと壊れる)。
   // 上限は暴走防止のためだけ。ping のハンドラにフィールドやコメントを足すと
-  // すぐ届かなくなるので、handler の実長より十分広く取る（1200 では sceneDirty 追加で切れた）。
-  const ping = cpp.match(/McpDefine\("ping"[\s\S]{0,4200}?\}\);/);
+  // すぐ届かなくなるので、handler の実長より十分広く取る（1200 では sceneDirty 追加で、4200 では W1-C14 の currentSceneProjectPath 追加で切れた）。
+  const ping = cpp.match(/McpDefine\("ping"[\s\S]{0,8000}?\}\);/);
   check("engine の ping が assetsDir を返している",
     ping != null && /"assetsDir"/.test(ping[0]) && /"protocolVersion"\s*,\s*4/.test(ping[0]),
     "ApplicationMcp*.cpp(連結) の ping に assetsDir / protocolVersion 4 が無い");

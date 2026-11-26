@@ -25,3 +25,10 @@ dx12_autoplay {}                                                # 実際に走�
 - ゲームは `step_frames` 中も実時間で走る。短い演出は読み出し前に終わるので、Play 直後に間髪入れず入力を送る。
 - `hold:true` の間は時間が止まる。撮り終わりに `hold:false`。
 - `dx12_set_editor_camera` の固定が残っているとゲーム画面が撮れない。撮影前に `{release:true}`。
+
+## 視覚回帰と CI(MCP-01)
+- `dx12_visual`(長尾。`dx12_call` で使う): `capture`(基準は変えずに撮る)/ `compare`(基準と比べる)/ `approve`(基準を更新。**reason 必須**。履歴 `.dx12/baselines/history.jsonl` に `approvedBy:"ai"` で残り、人が見るまで `needsHumanReview`)/ `list` / `history`。
+- 判定は 3 段: bitExact(ネイティブ解像度の SHA-256)→ 面積平均で縮めた絵の許容差(合否はここ)→ 任意の FLIP(`metric:"flip"`。tools/parity の venv があるときだけ)。adapter が違う基準とは比べず `skipped`。
+- `suite:"golden"` は tests/golden(リポジトリの基準)。`compare` は `visual_regression` ジョブを起動し、`node tools/bench/golden.mjs` と同じ基準・許容差で判定する(全件の合否一致は実機での照合待ち)。`op:"capture"` は golden では未対応。**golden の `approve` は guarded**(`dx12_call_guarded` / `confirm:true`)。既定の見た目を黙って変えない。AI が通すために基準を更新しない。
+- ジョブ: `dx12_job_start {kind:"visual_regression", args:{suite:"golden"|"project", only?, metric?}}`。結果は `summary` と `result.results[]`(`diffBBox` / `diffPng` / `sideBySide`)。`sideBySide` は PNG(長辺 1024px)。
+- `dx12_job_start {kind:"ci_suite", args:{checks:[{check:"layout"},{check:"errors"},{check:"playtests"},{check:"visual"},{check:"perf"},{check:"ui_tests"}]}}`: `summary.exitCode`(0/1)と JUnit XML(`summary.junit`)。落とすのは blocking だけ。GPU が無い環境では visual / perf は `skipped:"no-gpu-adapter"`。

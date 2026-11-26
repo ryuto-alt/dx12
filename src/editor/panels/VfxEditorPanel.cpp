@@ -257,50 +257,34 @@ bool VfxEditorPanel::SaveAsset(const std::string& path)
     return static_cast<bool>(dx12e::atomicfile::WriteJson(fs::path(path), j, 2));
 }
 
-void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer)
+void VfxEditorPanel::RequestApply(entt::registry& reg, EditorContext& ctx, bool asNewLayer)
 {
-    entt::entity e = ctx.selectedEntity;
+    const entt::entity e = ctx.selectedEntity;
     if (e == entt::null || !reg.valid(e) || !reg.all_of<ParticleEmitter>(e)) return;
 
-    const ParticleEmitter before = reg.get<ParticleEmitter>(e);
-    ParticleEmitter after = before;
+    // 上書きで失われる内容があるときだけ確認（W1-A15）。MCP のセッション中でも仮想入力のときだけ出さない
+    // （AI は押せない。Undo で戻せる）。実入力の人には、過去に MCP が接続していても確認する。
+    if (vfxapply::ShouldConfirmReplace(reg.get<ParticleEmitter>(e), asNewLayer, ctx.aiSessionEver, vinput::Enabled()))
+    {
+        m_confirmEntity = e;
+        m_confirmReg = &reg;
+        m_confirmBefore = reg.get<ParticleEmitter>(e);
+        m_openReplaceConfirm = true;
+        return;
+    }
+    ApplyToSelected(reg, ctx, asNewLayer);
+}
 
-    // asNewLayer=false … 1 枚目を置き換える（従来の「適用」）
-    // asNewLayer=true  … レイヤーとして足す（炎の上に煙を重ねる、等）
-    if (asNewLayer || after.layers.empty())
-        after.layers.emplace_back();
-    ParticleLayer& dst = asNewLayer ? after.layers.back() : after.layers[0];
+void VfxEditorPanel::ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer)
+{
+    ApplyToEntity(reg, ctx, ctx.selectedEntity, asNewLayer);
+}
 
-    // どの VFX アセットから来たかを残す（表示専用の来歴。値はコピー済み）。
-    dst.vfxPath = m_currentPath.empty() ? std::string() : m_currentPath;
-    if (dst.name.empty()) dst.name = m_current.name;
+void VfxEditorPanel::ApplyToEntity(entt::registry& reg, EditorContext& ctx, entt::entity e, bool asNewLayer)
+{
+    if (e == entt::null || !reg.valid(e) || !reg.all_of<ParticleEmitter>(e)) return;
 
-    ParticleEmitter& afterRef = after;   // 以下は dst に書く（変数名を保つための別名）
-    (void)afterRef;
-    ParticleLayer& target = dst;
-    target.kind = m_current.kind;   target.blend = m_current.blend;
-    target.orient = m_current.orient;
-    target.rate = m_current.rate;   target.playOnStart = m_current.playOnStart;
-    target.looping = m_current.looping; target.duration = m_current.duration;
-    target.dir = m_current.dir;     target.spread = m_current.spread;
-    target.speed = m_current.speed; target.speedVar = m_current.speedVar;
-    target.size = m_current.size;   target.sizeEnd = m_current.sizeEnd; target.sizeMid = m_current.sizeMid;
-    target.life = m_current.life;   target.lifeVar = m_current.lifeVar;
-    target.color = m_current.color; target.colorMid = m_current.colorMid; target.colorEnd = m_current.colorEnd;
-    target.hasColorMid = m_current.hasColorMid;
-    target.intensity = m_current.intensity;
-    target.gravity = m_current.gravity; target.drag = m_current.drag; target.up = m_current.up;
-    target.stretch = m_current.stretch;
-    target.turbStrength = m_current.turbStrength; target.turbFreq = m_current.turbFreq;
-    target.distort = m_current.distort;
-    target.light = m_current.light; target.lightRange = m_current.lightRange;
-    target.flicker = m_current.flicker; target.flickerFreq = m_current.flickerFreq;
-    target.texturePath = m_current.texturePath;
-    // gpu はこのエディタの対象外（CPUパーティクルのまま据え置く）
-
-    reg.get<ParticleEmitter>(e) = after;
-    ctx.undoSystem.PushCommand(std::make_unique<ComponentEditCommand<ParticleEmitter>>(
-        &reg, e, before, after, "VFX アセットを適用"));
+    vfxapply::ApplyWithUndo(reg, e, ctx.undoSystem, m_current, m_currentPath, asNewLayer);
     m_statusMsg = "選択エンティティへ適用しました";
     m_statusFlash = 2.0f;
 }
@@ -747,7 +731,7 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
     const bool canApply = ctx.selectedEntity != entt::null && reg.valid(ctx.selectedEntity)
                         && reg.all_of<ParticleEmitter>(ctx.selectedEntity);
     if (!canApply) ImGui::BeginDisabled();
-    if (ImGui::Button("選択エンティティへ適用")) ApplyToSelected(reg, ctx, /*asNewLayer=*/false);
+    if (ImGui::Button("選択エンティティへ適用")) RequestApply(reg, ctx, /*asNewLayer=*/false);
     ImGui::SetItemTooltip("選択中の放出器の 1 枚目を、このアセットの内容で置き換えます");
     ImGui::SameLine();
     if (ImGui::Button("レイヤーとして追加"))    ApplyToSelected(reg, ctx, /*asNewLayer=*/true);
@@ -768,6 +752,46 @@ void VfxEditorPanel::RenderWindow(entt::registry& reg, EditorContext& ctx, const
         ImGui::SameLine();
         ImGui::TextColored(theme::Good, "%s", m_statusMsg.c_str());
         m_statusFlash -= ImGui::GetIO().DeltaTime;
+    }
+
+    // ---- W1-A15: 「適用」の置き換え確認（レイヤー 0 に中身があるとき） ----
+    if (m_openReplaceConfirm)
+    {
+        ImGui::OpenPopup("レイヤー 0 を置き換えます###VfxReplaceLayer0Popup");
+        m_openReplaceConfirm = false;
+    }
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::BeginPopupModal("レイヤー 0 を置き換えます###VfxReplaceLayer0Popup", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::TextUnformatted("選択中の放出器のレイヤー 0 を、このアセットの内容で置き換えます。");
+        ImGui::TextDisabled("Ctrl+Z で元に戻せます。残したいときは「レイヤーとして追加」を使ってください。");
+        ImGui::Spacing();
+        if (ui::DangerButton("置き換え", ui::Px(120.0f, 0.0f)))
+        {
+            // 確認中に選択が変わっても、確認を出した相手に適用する
+            // シーンが入れ替わっていたら（別レジストリ、または同じ id の別の放出器）適用せず閉じる
+            if (m_confirmEntity != entt::null && m_confirmReg == &reg && reg.valid(m_confirmEntity)
+                && reg.all_of<ParticleEmitter>(m_confirmEntity)
+                && reg.get<ParticleEmitter>(m_confirmEntity) == m_confirmBefore)
+            {
+                ApplyToEntity(reg, ctx, m_confirmEntity, /*asNewLayer=*/false);
+            }
+            else
+            {
+                m_statusMsg = "確認中に対象が変わったため、適用しませんでした";
+                m_statusFlash = 3.0f;
+            }
+            m_confirmEntity = entt::null; m_confirmReg = nullptr; m_confirmBefore = ParticleEmitter{};
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("キャンセル", ui::Px(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape))
+        {
+            m_confirmEntity = entt::null; m_confirmReg = nullptr; m_confirmBefore = ParticleEmitter{};
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 
     ImGui::EndChild();

@@ -176,9 +176,9 @@ if (ENHANCED) {
           const text: string = res.content?.[0]?.text ?? "";
           const name: string = request?.params?.name ?? "";
           const args = (request?.params?.arguments ?? {}) as Record<string, unknown>;
-          if (/^MCP error -32602: Tool .* not found/.test(text)) {
+          if (/^MCP error -32602: Tool .* (not found|disabled)/.test(text)) {
             const body = await structureError(Object.assign(new Error(`unknown method: ${name}`), { code: 8, errName: "E_UNKNOWN_TOOL" }), {
-              tool: name, args, suggestNames: () => shell.catalog.names(),
+              tool: name, args, suggestNames: () => shell.catalog.names(), isDirect: (n) => shell.isDirectlyCallable(n), routeVia: (n) => shell.fixVia(n),
             });
             body.message = `ツール '${name}' は無い`;
             recordError({ at: Date.now(), tool: name, code: body.code, message: body.message });

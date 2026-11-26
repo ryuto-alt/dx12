@@ -6,6 +6,7 @@
 #include "core/ApplicationInternal.h"
 #include "renderer/FrameConstants.h"
 #include "core/SplashScreen.h"   // 直接 include（ApplicationInternal.h 経由に頼らない。W05-01）
+#include "ecs/ParticleOneShot.h"   // ワンショットの寿命・再生（W1-A12）
 #include "core/AtomicFileJson.h"
 #include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
@@ -21,6 +22,10 @@
 #include "core/Profiler.h"   // Tracy ゾーン（無効時は完全に消える）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit の自己終了
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
+#include "core/PathTracerHost.h"   // PtHost::Busy（基準レンダ中は間引かない）
+#include "editor/UiMotion.h"
+#include "editor/FrameThrottle.h"   // W1-A11: 裏に回ったときのフレーム間引き（純ロジック）
+#include "editor/EditorPrefs.h"      // W1-A11: 「常にリアルタイム」の設定（perf.alwaysRealtime）
 #include "editor/panels/MaterialGraphPanel.h"   // マテリアルグラフ G2c: ライブプレビュー / サムネイルの GPU 側（InitializeGpu / ShutdownGpu）
 
 namespace dx12e
@@ -149,6 +154,7 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
     if (m_bgOptions.Active())
     {
         SplashScreen::SetSuppressed(true);          // プロジェクト読込のスプラッシュも出さない
+        ui::anim::SetBackground(true);               // --background は UI の動きを使わない（決定論。W1 A4）
         Window::DisablePowerThrottling();             // 裏の窓でも EcoQoS / タイマ粗化で間引かれない
         Logger::Info("--background={}{}: 手前に出さない起動",
                      BackgroundModeName(m_bgOptions.mode), m_bgOptions.toolWindow ? ",tool" : "");
@@ -535,7 +541,10 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
         // ゲームスクリプト読み込み（グローバル game.lua）
         // 配布ゲームは起動＝ゲームプレイ開始なので OnStart を呼ぶ。
         // エディタは「プロジェクトを開いただけ」なので呼ばない（Play を押したときに呼ばれる）。
-        LoadGameScript(/*callOnStart=*/m_isGameMode);
+        // ランチャー表示中はまだプロジェクトのルートが決まっていないので探さない（engine instance の場所を見てしまう）。
+        // プロジェクトを開くと BeginProjectLoad が読み直す（W1-A16 / R1-10）。
+        if (m_isGameMode || !m_showLauncher)
+            LoadGameScript(/*callOnStart=*/m_isGameMode);
 
         // ★開始シーンを読む前に遅延解放を有効にする。以前は Initialize の末尾で有効にしていたため、
         //   シーン読込中（地形の頂点バッファの作り直しなど、同じコマンドリストが GPU 参照を持ったまま
@@ -1481,6 +1490,63 @@ void Application::Run()
     // Windowsタイマー精度を1msに設定
     timeBeginPeriod(1);
 
+    // ---- W1-A11: 裏に回ったときの間引き（MOD-ED-11）の補助 ----
+    //   mcpActivity: このフレーム（または直前の待ち中）に MCP の要求を 1 件でも処理した。
+    //   間引き中の待ちは短い刻みで MCP の要求を Poll して、要求を受けた瞬間に起きる（応答を遅らせない）。
+    bool mcpActivity = false;
+    auto pollMcp = [this, &mcpActivity]() {
+        m_mcpBridge->Poll([this, &mcpActivity](uint64_t client, const std::string& line) {
+            mcpActivity = true;
+            return HandleMcpCommand(client, line);
+        });
+    };
+    // 再生・MCP の要求と応答待ち・仮想入力の待ち・ジョブ。これらがある間は間引かない。
+    auto throttleBusy = [this, &mcpActivity]() -> bool {
+        return mcpActivity
+            || m_engineMode == EngineMode::Playing
+            || (m_sequencer && m_sequencer->AnyPlaying())
+            || m_mcpStepFramesLeft > 0 || m_mcpStepReply.client != 0
+            || m_mcpModeReply.client != 0 || m_mcpLoadReply.client != 0
+            || m_mcpGameViewReply.client != 0 || m_mcpRenderDebugFramesLeft > 0
+            || m_benchFramesLeft > 0 || m_diagFrameStatsRequest
+            || !m_mcpVInputWaits.empty()
+            || IsSceneLoadJobActive() || m_buildJob != nullptr
+            // 遅延応答・毎フレーム少しずつ進むジョブ（5 秒を超えても間引かない）
+            || m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending   // screenshot_final / オフスクリーン撮影の収束待ち
+            || m_mcpPerceive != nullptr                                      // dx12_perceive
+            || !m_hwReads.empty()                                            // hw_read（最長 10 秒）
+            || !m_mcpUndoRequests.empty()                                    // undo / redo / commit / rollback
+            || m_deterministicFramesLeft > 0                                 // 決定論撮影の収束フレーム
+            || m_benchReply.client != 0 || m_mcpRenderDebugReply.client != 0
+            || m_loading || m_scenePreloadJob != nullptr                     // プロジェクト読み込み・シーン先読み
+            || (m_thumbRenderer && m_thumbRenderer->GetPendingCount() > 0)   // サムネイル生成（1 フレーム 1 枚）
+            || (m_ptHost && m_ptHost->Busy());                               // パストレーサの基準レンダ（1 フレーム 1 スライス）
+        // editor_command_run の待ち（ApplicationMcpEditorUi.cpp の内部。最長 6 秒・180 フレーム）は
+        // 要求の 5 秒の猶予で覆われる。その先は同ファイルの所有者が口を足すこと。
+    };
+    // 窓が前面（同じプロセスの窓を含む。ImGui の別ビューポート窓）にあり、最小化されていない。
+    // --background / --headless は窓を出さないので常に false（MCP の要求が無い間だけ間引かれる）。
+    auto throttleWindowActive = [this]() -> bool {
+        if (m_bgOptions.Active() || m_headless || !m_window) return false;
+        const HWND h  = m_window->GetHwnd();
+        const HWND fg = GetForegroundWindow();
+        if (!h || !fg || IsIconic(h)) return false;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(fg, &pid);
+        return pid == GetCurrentProcessId();
+    };
+    // 実入力（マウス移動・ボタン・ホイール・キー・文字）。ImGui の IO は直前フレームの確定値。
+    auto throttleHasInput = []() -> bool {
+        if (!ImGui::GetCurrentContext()) return false;
+        const ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f || io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f
+            || ImGui::IsAnyMouseDown() || !io.InputQueueCharacters.empty())
+            return true;
+        for (int k = ImGuiKey_NamedKey_BEGIN; k < ImGuiKey_GamepadStart; ++k)
+            if (ImGui::IsKeyDown(static_cast<ImGuiKey>(k))) return true;
+        return false;
+    };
+
     while (!m_window->ShouldClose())
     {
         m_frameStart = std::chrono::high_resolution_clock::now();
@@ -1495,9 +1561,7 @@ void Application::Run()
         {
             CpuScopeTimer _tMcp(&m_cpuMs[CpuMcp]);
             DX12_PROFILE_ZONE_N("MCP/Poll");
-            m_mcpBridge->Poll([this](uint64_t client, const std::string& line) {
-                return HandleMcpCommand(client, line);
-            });
+            pollMcp();
         }
 
         // ---- フリート運用の自己終了（--owner-pid / --idle-exit。core/mcp/FleetGuard.h）----
@@ -2164,9 +2228,29 @@ void Application::Run()
         //   計測は最大 3600 フレームで終わり、終了時に m_benchRestore が戻る＝回しっぱなしにはならない。
         const bool  benchUncapped = m_benchRestore && m_benchFramesLeft > 0;
         const bool  bgPace     = m_bgOptions.Active() && !benchUncapped;
-        const f32   paceLimit  = bgPace ? (m_fpsLimit > 0.0f ? (std::min)(m_fpsLimit, 60.0f) : 60.0f)
-                                        : m_fpsLimit;
-        if ((!m_useVsync || bgPace) && paceLimit > 0.0f)
+        const f32   paceLimitBase = bgPace ? (m_fpsLimit > 0.0f ? (std::min)(m_fpsLimit, 60.0f) : 60.0f)
+                                           : m_fpsLimit;
+
+        // ---- W1-A11 MOD-ED-11: 裏に回ったときの間引き（AUD-14）----
+        //   窓が非アクティブなら 10fps、アクティブでも 5 秒活動が無ければ 30fps。MCP の要求・仮想入力・再生・ジョブがある間と
+        //   「常にリアルタイム」（prefs perf.alwaysRealtime）では間引かない。判定は editor/FrameThrottle.h（純ロジック）。
+        //   間引くのは歩調取りの待ちだけ。オーディオ・ネットワークの更新と MCP の応答（待ち中も短い刻みで Poll する）は止めない。
+        float throttleFps = 0.0f;
+        const bool throttleAllowed = m_editorCtx && !m_isGameMode && !m_uiTestsRequested;
+        if (throttleAllowed)
+        {
+            throttle::Inputs ti;
+            ti.nowSec         = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            ti.allowed        = true;
+            ti.alwaysRealtime = prefs::GetBool("perf.alwaysRealtime", false);
+            ti.windowActive   = throttleWindowActive();
+            ti.busy           = throttleBusy();
+            ti.input          = throttleHasInput();
+            throttleFps = throttle::TierFps(throttle::Evaluate(m_editorCtx->frameThrottle, ti));
+        }
+        mcpActivity = false;   // このフレーム分は評価に使った。次の活動は次の Poll が立てる
+        const f32   paceLimit  = throttle::CombineFps(paceLimitBase, throttleFps);
+        if ((!m_useVsync || bgPace || throttleFps > 0.0f) && paceLimit > 0.0f)
         {
             using namespace std::chrono;
             auto targetDuration = duration_cast<high_resolution_clock::duration>(
@@ -2174,32 +2258,53 @@ void Application::Run()
             auto elapsed = high_resolution_clock::now() - m_frameStart;
             auto remaining = targetDuration - elapsed;
 
-            // ★高分解能の待機可能タイマーで寝る。
-            //   旧実装は「1ms 残るまで Sleep → 残りは _mm_pause() でスピン」だった。
-            //   スピンは 1 コアを 100% 回し続けるだけで何も進めない。ノートでは
-            //   その発熱がクロック低下になって返ってくるので、待つなら本当に寝る。
-            //   CREATE_WAITABLE_TIMER_HIGH_RESOLUTION は Win10 1803+ で ~0.5ms 精度。
-            //   古い OS では作成に失敗するので、その時だけ従来の Sleep+スピンへ落ちる。
-            static HANDLE s_frameTimer = CreateWaitableTimerExW(
-                nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-            if (s_frameTimer && remaining > microseconds(0))
+            if (throttleFps > 0.0f)
             {
-                // 100ns 単位・負値で「相対時間」を表す（Win32 の作法）。
-                LARGE_INTEGER due{};
-                due.QuadPart = -static_cast<LONGLONG>(
-                    duration_cast<nanoseconds>(remaining).count() / 100);
-                if (due.QuadPart < 0
-                    && SetWaitableTimerEx(s_frameTimer, &due, 0, nullptr, nullptr, nullptr, 0))
+                // 間引き中の待ち: 5ms 以下の刻みで寝て、(1) MCP の要求が来た (2) 実のキー・ボタン入力が来た
+                // (3) 再生・ジョブなどの活動が始まった (4) 窓の前面/背面が変わった、のどれかで即座に抜ける。
+                const bool wasActive = throttleWindowActive();
+                const auto deadline  = m_frameStart + targetDuration;
+                while (true)
                 {
-                    WaitForSingleObject(s_frameTimer, INFINITE);
+                    const auto now = high_resolution_clock::now();
+                    if (now >= deadline) break;
+                    const auto leftMs = duration_cast<milliseconds>(deadline - now).count();
+                    const DWORD slice = static_cast<DWORD>((std::clamp)(static_cast<long long>(leftMs), 1ll, 5ll));
+                    MsgWaitForMultipleObjectsEx(0, nullptr, slice, QS_KEY | QS_MOUSEBUTTON, MWMO_INPUTAVAILABLE);
+                    if (HIWORD(GetQueueStatus(QS_KEY | QS_MOUSEBUTTON)) != 0) break;
+                    if (m_mcpBridge) { pollMcp(); if (mcpActivity) break; }
+                    if (throttleBusy() || throttleWindowActive() != wasActive) break;
                 }
             }
             else
             {
-                if (remaining > milliseconds(1))
-                    std::this_thread::sleep_for(remaining - milliseconds(1));
-                while (high_resolution_clock::now() - m_frameStart < targetDuration)
-                    _mm_pause();
+                // ★高分解能の待機可能タイマーで寝る。
+                //   旧実装は「1ms 残るまで Sleep → 残りは _mm_pause() でスピン」だった。
+                //   スピンは 1 コアを 100% 回し続けるだけで何も進めない。ノートでは
+                //   その発熱がクロック低下になって返ってくるので、待つなら本当に寝る。
+                //   CREATE_WAITABLE_TIMER_HIGH_RESOLUTION は Win10 1803+ で ~0.5ms 精度。
+                //   古い OS では作成に失敗するので、その時だけ従来の Sleep+スピンへ落ちる。
+                static HANDLE s_frameTimer = CreateWaitableTimerExW(
+                    nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+                if (s_frameTimer && remaining > microseconds(0))
+                {
+                    // 100ns 単位・負値で「相対時間」を表す（Win32 の作法）。
+                    LARGE_INTEGER due{};
+                    due.QuadPart = -static_cast<LONGLONG>(
+                        duration_cast<nanoseconds>(remaining).count() / 100);
+                    if (due.QuadPart < 0
+                        && SetWaitableTimerEx(s_frameTimer, &due, 0, nullptr, nullptr, nullptr, 0))
+                    {
+                        WaitForSingleObject(s_frameTimer, INFINITE);
+                    }
+                }
+                else
+                {
+                    if (remaining > milliseconds(1))
+                        std::this_thread::sleep_for(remaining - milliseconds(1));
+                    while (high_resolution_clock::now() - m_frameStart < targetDuration)
+                        _mm_pause();
+                }
             }
         }
 
@@ -2776,7 +2881,8 @@ void Application::Update()
     UpdateAtmosphereTime((simRunning && !m_deterministicCapture) ? dt : 0.0f);
 
     // 配置パーティクル放出器（ParticleEmitter）を駆動。
-    // エディタでも常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
+    // ループはエディタで常時プレビュー（実 dt で放出/前進）し、Play では _active に従う。
+    // ワンショット（looping=false）はエディタでも Play でも duration で止まる（BUG-12）。
     if (m_particleSystem && !paused)   // 一時停止中は放出も止める（止めないと同じ位置に溜まる）
     {
         auto& peReg = m_scene->GetRegistry();
@@ -2792,13 +2898,8 @@ void Application::Update()
             // ★レイヤーを 1 枚ずつ回す。1 エンティティに炎+煙+火の粉、が成立するのはここ。
             for (ParticleLayer& pe : emitter.layers)
             {
-            const bool live = pedPlaying ? pe._active : true;  // エディタは常時プレビュー
-            if (!live) continue;
-            if (!pe.looping && pedPlaying)
-            {
-                pe._age += dt;
-                if (pe._age >= pe.duration) pe._active = false;
-            }
+            // ループはエディタで常時プレビュー、ワンショットはエディタでも duration で止まる（BUG-12）。
+            if (!dx12e::ParticleOneShot::Advance(pe, pedPlaying, dt)) continue;
             if (pe.rate <= 0.0f) continue;
             pe._emitAccum += pe.rate * dt;
             int n = static_cast<int>(pe._emitAccum);
@@ -3473,6 +3574,31 @@ void Application::CheckAutosaveRecovery(const std::string& sceneFullPath)
     Logger::Warn("保存されていない自動保存が見つかりました（{}）。復旧するか確認します", when);
 }
 
+namespace
+{
+// 保存先が未設定、または MCP の自動保存が割り当てた仮の保存先（<project>/.dx12/untitled/ 配下）か。
+bool IsUntitledScenePath(const std::string& path)
+{
+    if (path.empty()) return true;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir  = fs::weakly_canonical(fs::path(AppAccess::UntitledDir()), ec);
+    const fs::path file = fs::weakly_canonical(fs::path(path), ec);
+    if (ec || dir.empty() || file.empty()) return false;
+    const auto rel = file.lexically_relative(dir);
+    return !rel.empty() && *rel.begin() != fs::path("..") && !rel.is_absolute();
+}
+
+// 名前入力ダイアログ（保存モード）を開く。
+void OpenSaveAsDialog(EditorContext& ctx)
+{
+    ctx.showNewSceneDialog = true;
+    ctx.newSceneDialogIsCreate = false;
+    std::memset(ctx.newSceneNameBuf, 0, sizeof(ctx.newSceneNameBuf));
+    strncpy_s(ctx.newSceneNameBuf, "Untitled", _TRUNCATE);
+}
+} // namespace
+
 bool Application::ConfirmDiscardScene(bool& outCancelled)
 {
     outCancelled = false;
@@ -3488,8 +3614,11 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     //   あるときは、AI が押せない心配が無いので下の通常の確認を出す。
     const EditorContext::PendingDiscard pd = m_editorCtx->pendingDiscard;
     const bool humanDirty = m_editorCtx->IsSceneHumanDirty();
+    // 新規シーン（Ctrl+N → 名前入力 → 作成）は仮想入力でもモーダルを押せる UI 操作なので、仮想入力でも確認を出す
+    // （W1-A16 / R1-11）。閉じる要求は「押せない」前提のまま（pd.virtualInput で別に表す）。
+    const bool uiDrivesModal = pd.reason == EditorContext::DiscardReason::NewScene;
     const bool realHuman  = pd.reason != EditorContext::DiscardReason::None && pd.origin == EditOrigin::Human
-                         && !pd.virtualInput && !vinput::Enabled();
+                         && !pd.virtualInput && (uiDrivesModal || !vinput::Enabled());
     if (m_editorCtx->aiSessionEver && !(humanDirty && realHuman))
     {
         m_editorCtx->pendingDiscard = {};   // この要求の起点は使い終わった（古い Human の要求を次の確認へ持ち越さない）
@@ -3530,6 +3659,14 @@ bool Application::ConfirmDiscardScene(bool& outCancelled)
     switch (choice)
     {
     case Choice::Save:
+        if (IsUntitledScenePath(m_editorCtx->currentScenePath))
+        {
+            // 保存先が無い / MCP の仮の保存先（.dx12/untitled/）。そこへ黙って書いて先へ進まず、操作を取り消して
+            // 名前を聞く（Ctrl+S と同じ。W1-A16 / R2-03）。
+            OpenSaveAsDialog(*m_editorCtx);
+            outCancelled = true;
+            return false;
+        }
         if (m_scene && !m_editorCtx->currentScenePath.empty() &&
             SceneSerializer::Save(*m_scene, m_editorCtx->currentScenePath, PathResolver::AssetsDir()))
         {
@@ -3588,13 +3725,13 @@ void Application::EditorSaveScene()
         m_editorCtx->Notify(ui::ToastKind::Warn, "Play 中は保存できません。停止してから保存してください");
         return;
     }
-    if (m_editorCtx->currentScenePath.empty())
+    // MCP の自動保存が「保存先の無い新規シーン」へ割り当てた仮の保存先（<project>/.dx12/untitled/）も、
+    // 人から見ればまだ無題のシーン。そこへ黙って保存せず、保存先が未設定のときと同じく名前を聞く（W1-A16 / R2-03）。
+    const bool untitledScene = IsUntitledScenePath(m_editorCtx->currentScenePath);
+    if (untitledScene)
     {
         // 保存先が未設定 → 名前入力ダイアログ（保存モード）。OS のダイアログは仮想入力中に出せないので使わない。
-        m_editorCtx->showNewSceneDialog = true;
-        m_editorCtx->newSceneDialogIsCreate = false;
-        std::memset(m_editorCtx->newSceneNameBuf, 0, sizeof(m_editorCtx->newSceneNameBuf));
-        strncpy_s(m_editorCtx->newSceneNameBuf, "Untitled", _TRUNCATE);
+        OpenSaveAsDialog(*m_editorCtx);
         return;
     }
 

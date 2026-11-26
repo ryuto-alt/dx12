@@ -17,7 +17,7 @@
 | E_ENGINE_BUSY | 接続は通るが応答が無い(別セッションが保持/処理中) | 他セッションを閉じる。少し待つ |
 | E_ENGINE_TIMEOUT | 期限内に応答が来ない。エンジンは処理を続けている可能性 | `dx12_ping` で応答確認 → 結果を確かめてから撃ち直す(生成系は二重生成に注意。`idempotency_key` を使う)。遅れて届いた結果は次の `meta.lateResults` |
 | E_ENGINE_TOO_OLD | エンジンが古い | エンジンを更新・再ビルドして再起動(MCP の再起動は不要) |
-| E_UNKNOWN_TOOL | ツール/メソッドが無い | `didYouMean` / `dx12_tool_search` |
+| E_UNKNOWN_TOOL | ツール/メソッドが無い | `fix[0]`(tools/list に無い名前は `dx12_call {name, args}` の形。そのまま撃つ)/ `didYouMean`(`details.didYouMeanVia` の名前は dx12_call 経由)。繰り返すと `giveUp:true` で打ち切り=撃ち直さず報告 |
 | E_UNKNOWN_PARAM / E_MISSING_PARAM / E_BAD_TYPE / E_BAD_ENUM / E_OUT_OF_RANGE | 引数不正 | `fix[0].args`(機械的に直した引数)/ `validValues` |
 | E_NOT_FOUND_ENTITY / E_NOT_FOUND_ASSET / E_NOT_FOUND_SCENE / E_NOT_FOUND_COMPONENT / E_NOT_FOUND_COMMAND | 対象が無い | `didYouMean`(近い名前)/ 一覧ツール(dx12_list_entities / dx12_list_assets / dx12_list_scenes / dx12_describe_components / エディタのコマンド id は `dx12_editor_command {op:"list"}`) |
 | E_STALE_SCENE | `expectGeneration` が古い | `dx12_list_entities` で引き直す(name 指定なら世代に影響されない) |

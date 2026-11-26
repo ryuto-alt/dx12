@@ -31,6 +31,9 @@ struct AppAccess
     static void PollHumanSettings(Application&, bool active, u64 freshHash);
     // MarkSceneClean の後（保存済みに揃えた）。
     static void OnSceneMarkedClean(Application&);
+    // 保存点の追跡（毎フレーム、PollHumanSettings から）。保存した内容の指紋を取り、Undo / Redo で内容が保存した状態へ
+    // 戻ったら「未保存」を解く（W1-A16 / R1-09）。
+    static void TrackSavePoint(Application&, u64 freshSettingsHash);
     // 保存系と editor_state の MCP 結果に autosave: { blockedByHumanEdits, lastBackupId } を足す（真なら warnings[] にも）。
     static void AnnotateAutosave(Application&, nlohmann::json& resp, const std::string& method);
     // 未保存の新規シーン（_mcp_untitled_*）の置き場: <project>/.dx12/untitled/
@@ -39,11 +42,28 @@ struct AppAccess
     static void ResetAutoProtectThrottleForTest();
     // W05-04: GraphicsDevice の caps（DeviceCaps.h を include した TU だけが型を使える）。デバイスが無ければ nullptr。
     static const struct DeviceCaps* GetDeviceCaps(Application&);
+    // W1-A10: エディタのプレビュー再生中のシーケンス名（無ければ空。定義は core/ApplicationSequencer.cpp）。UI テスト用。
+    static std::string SequenceEditorPlayingDoc(Application&);
+    // UI テスト用: エディタのシーケンス編集セッションを終える（元の値へ戻す）。
+    static void SequenceEditorStopForTest(Application&);
+    // UI テスト用: 読み込んだ .dxseq の文書を閉じる / その assets 相対パス（テストが一覧に文書を残さないため）。
+    static void SequenceCloseDocForTest(Application&, const std::string& nameOrRel);
+    static std::string SequenceDocRelForTest(Application&, const std::string& nameOrRel);   // 開いていなければ空
     // ==== lane-A end ====
 
     // ==== lane-B begin ====
     // W05-13: モデルのサムネイルのキャッシュ済みハンドル（0 = まだ無い）。UI テスト用。
     static uint64_t ModelThumbHandle(Application& app, const std::string& path);
+    // W1-BD4（UnoFX）: 定義は mcp/ApplicationMcpLaneB.cpp。
+    //   VfxBindHost … renderer/vfx の Runtime へ「レジストリ・dt・品質・保留中の配置」の口を入れる。
+    //                 MCP の登録口と VfxTick が呼ぶ。
+    //   VfxPlace    … .uvfx（preset 名 or assets 相対パス）のエフェクトを 1 つ置く（Undo 1 件。呼び出し中の MCP の積み口に載る）。失敗は false と err。
+    static void VfxBindHost(Application&);
+    //   VfxTick     … ★毎フレーム 1 回、Editor / ゲームの更新（コマンド記録の外）から呼んでほしい（依頼: Application.cpp の持ち主へ）。
+    //                 初回に VfxBindHost を呼び（MCP を使わない起動でも VFX が出る）、保留中の配置（pendingVfxPlace）を Editor モードだけで消化する。
+    static void VfxTick(Application&);
+    static bool VfxPlace(Application&, const std::string& presetOrAsset, const DirectX::XMFLOAT3& worldPos, entt::entity parent,
+                         const std::string& name, entt::entity& outEntity, std::string& outAsset, std::string& err);
     // ==== lane-B end ====
 
     // ==== lane-C begin ====

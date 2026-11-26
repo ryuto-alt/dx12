@@ -156,6 +156,8 @@ export const CONDITIONAL_GUARDED: Record<string, (args: Record<string, unknown>)
   dx12_job_start: (a) => a.kind === "external",
   // 正解の封印(toolset/oracles.ts)は人の承認が要る。AI が自分で封印し直して改ざんを隠せないようにする。
   dx12_oracle: (a) => a.op === "seal",
+  // tests/golden(リポジトリの基準)の approve は人の承認が要る(toolset/visual.ts)。
+  dx12_visual: (a) => a.op === "approve" && a.suite === "golden",
   // 仕様に無いエンティティを消す適用(prune)は削除 = guarded。plan(mode:"plan" / dryRun)は誰でも撃てる。
   dx12_apply_scene_spec: (a) => a.prune === true && a.mode !== "plan" && a.dryRun !== true,
 };

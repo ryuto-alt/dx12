@@ -191,7 +191,7 @@ try {
   const sel3 = await core.call("dx12_call", { name: "dx12_editor_select", args: { names: ["Wall_01"], mode: "remove" } });
   check("select {mode:remove} → 1 体に", sel3.result.selection.count === 1 && sel3.result.selection.primary.name === "Wall_02", sel3);
   const sel4 = await core.call("dx12_call", { name: "dx12_editor_select", args: { names: ["Wal_09"] } });
-  check("select: 見つからない名前 → E_NOT_FOUND_ENTITY + didYouMean + 撃ち直し", sel4.ok === false && sel4.error_code === "E_NOT_FOUND_ENTITY" && sel4.didYouMean?.length > 0 && sel4.fix?.[0]?.tool === "dx12_editor_select" && sel4.fix?.some((f: any) => f.tool === "dx12_list_entities"), sel4);
+  check("select: 見つからない名前 → E_NOT_FOUND_ENTITY + didYouMean + 撃ち直し", sel4.ok === false && sel4.error_code === "E_NOT_FOUND_ENTITY" && sel4.didYouMean?.length > 0 && (sel4.fix?.[0]?.tool === "dx12_editor_select" || (sel4.fix?.[0]?.tool === "dx12_call" && sel4.fix?.[0]?.args?.name === "dx12_editor_select")) && sel4.fix?.some((f: any) => f.tool === "dx12_list_entities"), sel4);
   const sel5 = await core.call("dx12_call", { name: "dx12_editor_select", args: {} });
   check("select: 対象なし → E_MISSING_PARAM", sel5.ok === false && sel5.error_code === "E_MISSING_PARAM", sel5);
   await core.call("dx12_call", { name: "dx12_editor_select", args: { mode: "clear" } });

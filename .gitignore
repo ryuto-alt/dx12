@@ -122,3 +122,6 @@ zz_*_test_proj/
 # MIT 公開のこのリポジトリには入れない。各自 pwsh tools/fetch_dlss.ps1 で取得する。
 /third_party/dlss/
 /third_party/agility/
+# W1-C4: ゴールデン / ルックデブの実行でテスト用プロジェクトに生成されるキャッシュ
+tests/golden/projects/**/assets/.texcache/
+tests/golden/projects/**/assets/.thumbcache/

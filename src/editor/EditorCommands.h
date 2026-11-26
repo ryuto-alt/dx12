@@ -46,6 +46,14 @@ bool IsChecked(const EditorContext& ctx, std::string_view id);
 // 未知の id は何もしない（false を返す）。
 bool Execute(EditorContext& ctx, const Env& env, std::string_view id);
 
+// ブロッキングなモーダル（新規シーン / 名前を付けて保存 / 上書き確認 / 未保存の確認 / 各種の確認 / Ctrl+K パレット）が
+// 開いている、または開く要求が立っている間は true。この間、シーンへ効く操作（ビューポートのピッキング・ギズモ・
+// Ctrl+Z / Ctrl+Y / Ctrl+S などの全体ショートカット）は受け付けない（背後のシーンが黙って変わるのを防ぐ）。
+// ★ImGui の GetTopMostAndVisiblePopupModal は「今フレームに Begin 済みの窓」しか見ない。EditorLayer の前半
+//   （ショートカット処理）では、モーダルの Begin が後ろ（ツールバー）にあるので常に偽になる。ここでは
+//   開いている印（GetTopMostPopupModal）と、開く要求のフラグの両方を見る。
+bool IsBlockingModalOpen(const EditorContext& ctx);
+
 // ショートカットの処理。EditorLayer::Render から毎フレーム 1 回。
 void ProcessShortcuts(EditorContext& ctx, const Env& env);
 

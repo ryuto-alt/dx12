@@ -898,6 +898,7 @@ void FillManifestChunk9(ManifestRows& o)
             P("deterministic", "bool", false, nullptr, nullptr, nullptr, nullptr, "true でピクセル完全再現モード。既定 false。time を固定(deband ディザ/グレイン/wave/glitch/パーティクルが止まる)し、…"),
             P("settleFrames", "int", false, nullptr, nullptr, nullptr, nullptr, "deterministic:true のとき履歴を捨ててから回すフレーム数(1..240)。既定 8。増やすと TAA / SSGI の収束が進む(決定性そのものは 8 で得られる)。"),
             P("gizmos", "bool", false, nullptr, nullptr, nullptr, nullptr, "false でこの 1 枚だけエディタのデバッグ描画を止めて撮る。既定 true(従来どおり)。"),
+            P("waitIblRebake", "bool", false, nullptr, nullptr, nullptr, nullptr, "true で、物理大気の ON/OFF・時刻の変更に伴う IBL の焼き直しが終わるまで待ってから撮る(焼き直しが未了のときだけ決定論経路へ回り、待ちフレームを settleFrames に足す)。既定 false。"),
         })});
     o.push_back({"screenshot_final", M("★見た目を判断するときの既定の撮り方。バックバッファ(ポスト適用後の最終画)のビューポート矩形を PNG で返す。",
         "screenshot final 最終画スクリーンショット(ポスト後)",
@@ -907,6 +908,7 @@ void FillManifestChunk9(ManifestRows& o)
             P("deterministic", "bool", false, nullptr, nullptr, nullptr, nullptr, "true でピクセル完全再現モード。既定 false。time を固定(deband ディザ/グレイン/wave/glitch/パーティクルが止まる)し、…"),
             P("settleFrames", "int", false, nullptr, nullptr, nullptr, nullptr, "deterministic:true のとき履歴を捨ててから回すフレーム数(1..240)。既定 8。増やすと TAA / SSGI の収束が進む(決定性そのものは 8 で得られる)。"),
             P("gizmos", "bool", false, nullptr, nullptr, nullptr, nullptr, "false でこの 1 枚だけエディタのデバッグ描画を止めて撮る。既定 true(従来どおり)。"),
+            P("waitIblRebake", "bool", false, nullptr, nullptr, nullptr, nullptr, "true で、物理大気の ON/OFF・時刻の変更に伴う IBL の焼き直しが終わるまで待ってから撮る(焼き直しが未了のときだけ決定論経路へ回り、待ちフレームを settleFrames に足す)。既定 false。"),
             P("format", "string", false, nullptr, nullptr, nullptr, nullptr, "出力形式: png(既定・8bit) / pfm / exr(ポスト前・露出前の線形 float。物理単位なら nit。tools/parity が読める)。path の拡張子は無視され形式ごとに同じ基準名で書く。"),
             P("formats", "any", false, nullptr, nullptr, nullptr, nullptr, "複数形式を同じフレームで撮る: [\"png\",\"pfm\"] など。応答の files に形式ごとのパスが入る。"),
             P("width", "int", false, nullptr, nullptr, nullptr, nullptr, "オフスクリーン出力の幅(height と両方指定。1 辺 16〜8192・総画素 8192x4096 まで・pfm/exr は 4096x4096 まで)。ウィンドウ/レターボックスと無関係。--size WxH が既定。"),
@@ -1732,6 +1734,31 @@ void FillGeneratedManifestRows(ManifestRows& o)
         })});
     // ==== lane-A end ====
     // ==== lane-B begin ====
+    o.push_back({"vfx_place", M("UnoFX(.uvfx)のエフェクトを 1 つ置く(エディタ専用)。プリセット名(engine/vfx2/presets/ 等)か assets 相対パスを渡す。Undo 1 件。",
+        "vfx place 焚き火 松明 パーティクル エフェクト 配置 uvfx p_campfire",
+        "vfx", "", "", McpEffect::WriteScene, "editor", 10000, false, false,
+        "none", "", {
+            P("preset", "string", false, nullptr, nullptr, nullptr, nullptr, "プリセット名(例 p_campfire)。asset と排他。"),
+            P("asset", "assetPath", false, nullptr, nullptr, nullptr, nullptr, "assets 相対の .uvfx のパス。preset と排他。"),
+            P("position", "vec3", false, nullptr, nullptr, nullptr, nullptr, "ワールド座標 [x,y,z]。省略時 [0,0,0]。"),
+            P("parent", "int", false, nullptr, nullptr, nullptr, nullptr, "親エンティティ id(ワールド位置を保って子にする)。parentName と排他。"),
+            P("parentName", "string", false, nullptr, nullptr, nullptr, nullptr, "親エンティティ名(完全一致)。"),
+            P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名。省略でアセット名。"),
+        })});
+    o.push_back({"vfx_seek", M("UnoFX のエフェクトを決定論で時刻 t へ移す(巻き戻して固定ステップ 1/60s で再シミュレーション)。既定は t で止める。同じ t は同じ絵(撮影・ゴールデン用)。",
+        "vfx seek 時刻 固定 決定論 スクリーンショット 焚き火",
+        "vfx", "", "", McpEffect::Runtime, "any", 10000, true, false,
+        "none", "", {
+            P("t", "number", true, nullptr, "0", "60", nullptr, "エフェクトの時刻(秒)。"),
+            P("entity", "entityRef", false, nullptr, nullptr, nullptr, nullptr, "エンティティ id(int)。name と排他。両方省略で VFX 全部。"),
+            P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(完全一致)。"),
+            P("resume", "bool", false, nullptr, nullptr, nullptr, "false", "true で seek 後も再生を続ける。既定は止める。"),
+        })});
+    o.push_back({"vfx_stats", M("UnoFX の状態(プールの使用量・インスタンスごとの放出数と生存数(数フレーム遅れ)・時刻・停止中か・VRAM)を返す。読み取り専用。",
+        "vfx stats 粒子数 生存数 VRAM 状態",
+        "vfx", "", "", McpEffect::Read, "any", 8000, true, false,
+        "none", "", {
+        })});
     // ==== lane-B end ====
     // ==== lane-C begin ====
     o.push_back({"get_quality_preset", M("現在の品質プリセット(low/medium/high/epic/cinematic)と、その予算(目標 fps・出力解像度・p95/p99・VFX の放出倍率と最大粒子数)を返す。読み取り専用。",

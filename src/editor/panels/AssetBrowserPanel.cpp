@@ -1,5 +1,6 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/UiWidgets.h"
+#include "editor/TextFit.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/EditorContext.h"
@@ -176,6 +177,8 @@ static ImVec4 KindColor(Kind k)
     case Kind::UiAnim:        return th::TypeUi;        // アニメ系はマゼンタ寄りで統一
     case Kind::SpriteSheet:   return th::TypeUi;
     case Kind::MaterialGraph: return th::TypeLight;
+    case Kind::Sequence:      return th::TypeUi;        // アニメ系（UI アニメと同じ）
+    case Kind::Vfx:           return th::TypeFolder;    // 無彩色（GG: kind.vfx は作らない。ライトと混ぜない）
     default:                  return th::TypeEmpty;
     }
 }
@@ -196,9 +199,14 @@ static const char* KindGlyph(Kind k)
     case Kind::UiAnim:        return ICON_T_ANIM;
     case Kind::SpriteSheet:   return ICON_T_GRID;
     case Kind::MaterialGraph: return ICON_T_SPLINE;   // .dxmg（ノードのつながり）
+    case Kind::Sequence:      return ICON_T_LAYERS;   // .dxseq（トラックの重なり）
+    case Kind::Vfx:           return ICON_T_PARTICLE; // .uvfx
     default:                  return ICON_FILE;
     }
 }
+
+const char* AssetBrowserPanel::KindIcon(Kind k) { return KindGlyph(k); }
+u32 AssetBrowserPanel::KindTintU32(Kind k) { return ImGui::GetColorU32(KindColor(k)); }
 
 static bool KindIsDraggableToScene(Kind k)
 {
@@ -1114,13 +1122,9 @@ void AssetBrowserPanel::DrawGridCell(EditorContext& ctx, int viewIdx, float x, f
     }
     else
     {
-        std::string name = e.name;
+        // コードポイント（結合文字・絵文字の連結を含む）の境界で省略する（バイト単位の pop_back は日本語を壊した）
         const float maxW = cw - ui::Px(6.0f);
-        if (ImGui::CalcTextSize(name.c_str()).x > maxW)
-        {
-            while (name.size() > 2 && ImGui::CalcTextSize((name + "…").c_str()).x > maxW) name.pop_back();
-            name += "…";
-        }
+        const std::string name = text::EllipsizeEnd(e.name, maxW, ImGui::GetFont(), ImGui::GetFontSize());
         const float nameW = ImGui::CalcTextSize(name.c_str()).x;
         // フォルダは白、ファイルは少し落として「入れ物」と「中身」を見分けやすくする
         dl->AddText(ImVec2(x + (cw - nameW) * 0.5f, nameY),
@@ -1450,6 +1454,12 @@ void AssetBrowserPanel::OpenEntry(EditorContext& ctx, const Entry& e)
         ctx.pendingOpenSpriteSheetPath = e.path.string();
         ctx.showSpriteSheetEditor = true;
         break;
+    case Kind::Sequence:
+        ctx.pendingSequencePlay = abl::AssetsRelative(m_assetsRoot, e.path);   // ApplicationSequencer が sequence_play と同じ関数で再生する
+        break;
+    case Kind::Vfx:
+        ctx.pendingVfxPlace = abl::AssetsRelative(m_assetsRoot, e.path);       // 置くのは BD4（ビューポートの注視点）
+        break;
     default:
         dx12e::guard::ShellExecuteGuarded(nullptr, "open", e.path.string().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         break;
@@ -1491,6 +1501,14 @@ void AssetBrowserPanel::DrawItemMenu(EditorContext& ctx, const Entry& e)
                 req.position = SpawnPositionFrontOfCamera(ctx);
                 ctx.pendingSpawns.push_back(req);
             }
+        }
+        else if (e.kind == Kind::Sequence)
+        {
+            if (ui::MenuItem(ICON_PLAY, "再生")) OpenEntry(ctx, e);
+        }
+        else if (e.kind == Kind::Vfx)
+        {
+            if (ui::MenuItem(ICON_PLUS, "シーンに置く")) OpenEntry(ctx, e);
         }
         else if (e.kind == Kind::Material || e.kind == Kind::MaterialGraph || e.kind == Kind::UiAnim || e.kind == Kind::SpriteSheet)
         {
@@ -1719,6 +1737,22 @@ void AssetBrowserPanel::DrawRenameField(EditorContext& ctx)
     if (m_renameWarmup == 0 && !ImGui::IsItemActive() && !ImGui::IsItemFocused()) CommitRename(ctx);   // フォーカスが外れたら確定
 }
 
+namespace
+{
+// name の末尾が「元の拡張子 + 元の拡張子」（大文字小文字を無視）なら 1 つ削る。
+// 例: 元 "a.glb" で name "box4.glb.glb" → "box4.glb"。元に拡張子が無い・name が拡張子だけの二重なら何もしない。
+void CollapseDoubledExtension(const std::string& oldName, std::string& name)
+{
+    const size_t pos = abl::ExtensionPos(oldName);
+    if (pos == std::string::npos) return;
+    const std::string ext = oldName.substr(pos);   // ".glb"
+    if (name.size() <= ext.size() * 2) return;      // 名前の本体が 1 文字も無い（".glb.glb" など）は触らない
+    const std::string tail = abl::LowerAscii(std::string_view(name).substr(name.size() - ext.size() * 2));
+    const std::string lext = abl::LowerAscii(ext);
+    if (tail == lext + lext) name.resize(name.size() - ext.size());
+}
+} // namespace
+
 void AssetBrowserPanel::CommitRename(EditorContext& ctx)
 {
     const std::filesystem::path src = m_renamePath;
@@ -1732,6 +1766,10 @@ void AssetBrowserPanel::CommitRename(EditorContext& ctx)
     const std::string typed = name;
     if (std::error_code dec; !std::filesystem::is_directory(src, dec))
     {
+        // F2 は拡張子の前までを選んで始まるので、名前のあとに元の拡張子が残っている。そこへ拡張子まで打つと
+        // "box4.glb" + ".glb" = "box4.glb.glb" になる。元の拡張子が 2 つ続いて終わるときは 1 つにする（W1-A16 / R1-05）。
+        // 打ち直していない（元の名前のまま）なら触らない: すでに二重の名前（過去の不具合の産物）を黙って直さない。
+        if (name != src.filename().string()) CollapseDoubledExtension(src.filename().string(), name);
         const abl::RenamedName rn = abl::ComposeRenamedFileName(src.filename().string(), name);
         name = rn.name;
         extChanged = rn.extChanged;

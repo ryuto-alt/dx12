@@ -2119,8 +2119,18 @@ void Application::LoadGameScript(bool callOnStart)
         //   という一番たちの悪い形になっていた（初期化・BGM 開始・キー割り当てが全部無言で消える）。
         if (callOnStart) m_scriptEngine->CallOnStart();
     }
+    else if (!m_isGameMode && m_showLauncher)
+    {
+        // 起動直後（ランチャー表示中）はプロジェクトがまだ開かれていない。ここで見ているのはエンジン側の既定の場所で、
+        // プロジェクトの <root>/scripts/game.lua ではない。プロジェクトを開くと BeginProjectLoad が読み直すので、
+        // 見つからなくても警告にしない（W1-A16 / R1-10）。
+        Logger::Info("グローバル game.lua は未読み込み（プロジェクトを開くと <project>/scripts/game.lua を読みます）");
+    }
     else
-        Logger::Warn("ゲームスクリプトが見つかりません: {}（グローバル game.lua は任意）", scriptPath);
+    {
+        // 任意のファイルなので、無いのは警告ではなく情報。プロジェクトの場所（SetProjectRoot 後は <root>/scripts/）を示す。
+        Logger::Info("グローバル game.lua はありません（任意）: {}", scriptPath);
+    }
 }
 
 // エンジン診断が検査前に現在のシーンを退避するための保存先。assets 配下に置くのは、

@@ -282,6 +282,7 @@ struct State
     EnvProbe*  env = nullptr;
     LoginJob*  login = nullptr;
     CloneJob*  clone = nullptr;
+    int        loginGen = 0, cloneGen = 0;   // 生存ティックの状態キー用（操作ごとに増やし、前回の経過秒を引き継がない）
     bool       gitAvail = false, ghAvail = false;
     bool       envReady = false;          // git / gh の確認が 1 回終わった
     std::string ghUser;
@@ -408,12 +409,11 @@ void DashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float dash, float
     seg(a, ImVec2(b.x, a.y)); seg(ImVec2(b.x, a.y), b); seg(b, ImVec2(a.x, b.y)); seg(ImVec2(a.x, b.y), a);
 }
 
-void Spinner(ImDrawList* dl, ImVec2 c, float r, const ImVec4& col, double t)
+// 生存ティック（Graphite Gauge D18: 時間では回さない）。出来事（進捗の通知）が無い処理は針が止まったまま、
+// 経過秒だけが 1 秒ごとに進む。ランチャーの待ちは出来事の源を持たないので、「応答待ち」は出さず経過秒だけを見せる。
+ui::GaugeSpinnerInfo Spinner(ImDrawList* dl, ImVec2 c, float pxLogical, ImGuiID id)
 {
-    const float a0 = static_cast<float>(t) * 5.2f;
-    dl->PathClear();
-    dl->PathArcTo(c, r, a0, a0 + 4.3f, 24);
-    dl->PathStroke(U(col), 0, P(2.2f));
+    return ui::DrawGaugeSpinner(dl, c, id, 0u, pxLogical);
 }
 
 void Icon(ImVec2 center, const char* glyph, const ImVec4& col, float pxLogical, float alpha = 1.0f)
@@ -716,6 +716,7 @@ void PumpAsync(State& s)
 void StartLogin(State& s)
 {
     if (!s.login || s.login->running.load()) return;
+    ++s.loginGen;
     s.login->running.store(true);
     s.login->done.store(false);
     std::thread([l = s.login]()
@@ -738,6 +739,7 @@ void StartClone(State& s, const std::string& url, const std::string& parent)
         s.clone->output.clear();
         s.clone->repoDir.clear();
     }
+    ++s.cloneGen;
     s.clone->state.store(1);
     std::thread([c = s.clone, url, parent]()
     {
@@ -1054,7 +1056,11 @@ void DrawNav(State& s, const LauncherHost& host, ImVec2 O, ImVec2 Sz, float navW
             {
                 DText(FBody(), 13.0f, ImVec2(tx, p.y + P(10.0f)), U(th::Text), "ログイン待ち");
                 DText(FBody(), 11.5f, ImVec2(tx, p.y + P(30.0f)), U(th::TextFaint), FitEnd(FBody(), 11.5f, "ブラウザで認証してください", tw).c_str());
-                Spinner(ImGui::GetWindowDrawList(), ImVec2(p.x + bw - P(20.0f), p.y + h * 0.5f), P(7.0f), th::AccentHover, s.time);
+                const ui::GaugeSpinnerInfo lt = Spinner(ImGui::GetWindowDrawList(), ImVec2(p.x + bw - P(20.0f), p.y + h * 0.5f), 14.0f, ImGui::GetID("##ghLoginTick") ^ static_cast<ImGuiID>(s.loginGen * 0x9E3779B1u));
+                char lel[32];
+                std::snprintf(lel, sizeof(lel), "%d s", static_cast<int>(lt.elapsedSec));
+                const float lw = TextW(FBody(), 11.5f, lel);
+                DText(FBody(), 11.5f, ImVec2(p.x + bw - P(34.0f) - lw, p.y + P(10.0f)), U(th::TextFaint), lel);
             }
             else if (loggedIn)
             {
@@ -2103,7 +2109,13 @@ void DrawCloneTab(State& s, const LauncherHost& host, ImVec2 O, ImVec2 Sz, float
     // 進行 / 結果
     if (running)
     {
-        Spinner(dl, ImVec2(fx + pad + P(12.0f), y + P(20.0f)), P(9.0f), th::AccentHover, s.time);
+        const ui::GaugeSpinnerInfo tick = Spinner(dl, ImVec2(fx + pad + P(12.0f), y + P(20.0f)), 20.0f, ImGui::GetID("##cloneTick") ^ static_cast<ImGuiID>(s.cloneGen * 0x9E3779B1u));
+        {
+            char el[48];
+            std::snprintf(el, sizeof(el), "%d s", static_cast<int>(tick.elapsedSec));
+            const float ew = TextW(FBody(), 12.5f, el);
+            DText(FBody(), 12.5f, ImVec2(fx + fw - pad - ew, y + P(13.0f)), U(th::TextDim), el);
+        }
         DText(FBold(), 14.0f, ImVec2(fx + pad + P(34.0f), y + P(11.0f)), U(th::Text), "クローン中…（大きなリポジトリは時間がかかります）");
         y += P(44.0f);
     }

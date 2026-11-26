@@ -43,17 +43,31 @@ void PakArchive::closeFile()
 
 bool PakArchive::readAt(uint64_t offset, void* buf, std::size_t size) const
 {
+    // スレッドセーフ: SetFilePointerEx + ReadFile はファイルポインタを共有するため、並列の Read が
+    // 互いの位置を壊す（AUD-05）。OVERLAPPED の Offset/OffsetHigh で位置を ReadFile に渡す 1 回の
+    // 呼び出しにし、共有状態に触れない。ハンドルは同期のまま（FILE_FLAG_OVERLAPPED は付けない）。
     if (m_handle == nullptr)
         return false;
     HANDLE f = reinterpret_cast<HANDLE>(m_handle);
-    LARGE_INTEGER li;
-    li.QuadPart = static_cast<LONGLONG>(offset);
-    if (!SetFilePointerEx(f, li, nullptr, FILE_BEGIN))
-        return false;
-    DWORD got = 0;
-    if (!ReadFile(f, buf, static_cast<DWORD>(size), &got, nullptr))
-        return false;
-    return got == static_cast<DWORD>(size);
+    auto* dst = static_cast<uint8_t*>(buf);
+    // DWORD に収まらない巨大な読み取りは 1 GiB 単位に分ける。
+    constexpr std::size_t kChunk = 1u << 30;
+    while (size != 0)
+    {
+        const DWORD want = static_cast<DWORD>(size < kChunk ? size : kChunk);
+        OVERLAPPED ov{};
+        ov.Offset     = static_cast<DWORD>(offset & 0xFFFFFFFFull);
+        ov.OffsetHigh = static_cast<DWORD>(offset >> 32);
+        DWORD got = 0;
+        if (!ReadFile(f, dst, want, &got, &ov))
+            return false;
+        if (got != want) // ファイル末尾をまたぐ読み取りは失敗（部分読みを成功にしない）
+            return false;
+        dst    += want;
+        offset += want;
+        size   -= want;
+    }
+    return true;
 }
 
 bool PakArchive::Mount(const std::string& path)

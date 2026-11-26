@@ -21,6 +21,12 @@
       "holdout": "run the whole ctest suite as a job" },
     { "id": "J7", "expect": ["dx12_job_start"], "core": true,
       "queries": ["複数のカメラと表示倍率でスクショを一括撮影したい", "ベンチを 3 回繰り返して中央値を出す"],
-      "holdout": "batch screenshots across cameras and DPI scales" }
+      "holdout": "batch screenshots across cameras and DPI scales" },
+    { "id": "J8", "expect": ["dx12_visual", "dx12_job_start"], "core": false,
+      "queries": ["ゴールデン画像と比べて見た目が変わっていないか視覚回帰を調べたい", "スクショの基準を更新したい(承認して approve)"],
+      "holdout": "run visual regression against the golden baselines" },
+    { "id": "J9", "expect": ["dx12_perf_gate", "dx12_job_start"], "core": false,
+      "queries": ["Epic の性能予算に収まっているか 16.6ms の合否を判定したい", "2 つのビルドの性能を ABAB で比べて回帰を調べる"],
+      "holdout": "check the performance budget gate for frame time and VRAM" }
   ]
 }

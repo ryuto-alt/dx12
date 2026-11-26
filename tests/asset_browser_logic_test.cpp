@@ -53,8 +53,17 @@ void TestClassify()
     CHECK(abl::ClassifyExtension(".xyz") == abl::Kind::Other, "不明");
     CHECK(abl::ClassifyExtension("") == abl::Kind::Other, "空");
     // 並びが AssetBrowserPanel::AssetType と同じ（CommandPalette が int で使う）
-    CHECK(static_cast<int>(abl::Kind::Folder) == 0 && static_cast<int>(abl::Kind::Model) == 1 && static_cast<int>(abl::Kind::Other) == 12, "enum の並び");
-    CHECK(abl::kKindCount == 13, "種別数");
+    CHECK(static_cast<int>(abl::Kind::Folder) == 0 && static_cast<int>(abl::Kind::Model) == 1 && static_cast<int>(abl::Kind::MaterialGraph) == 11 && static_cast<int>(abl::Kind::Other) == 14, "enum の並び");
+    CHECK(abl::kKindCount == 15, "種別数");
+    CHECK(abl::ClassifyExtension(".dxseq") == abl::Kind::Sequence && abl::ClassifyExtension(".DXSEQ") == abl::Kind::Sequence, "dxseq はシーケンス");
+    CHECK(abl::ClassifyExtension(".uvfx") == abl::Kind::Vfx, "uvfx は VFX");
+    CHECK(std::string(abl::KindLabel(abl::Kind::Sequence)) == "シーケンス" && std::string(abl::KindLabel(abl::Kind::Vfx)) == "VFX", "種別名");
+    CHECK(std::string(abl::KindShortName(abl::Kind::Sequence)) == "Sequence" && std::string(abl::KindShortName(abl::Kind::Vfx)) == "Vfx", "短い種別名");
+    {   // assets 相対（ダブルクリックが pending* へ入れる形）
+        const fs::path root = fs::path("C:/proj/assets");
+        CHECK(abl::AssetsRelative(root, root / "sequences" / "Intro.dxseq") == "sequences/Intro.dxseq", "assets 相対");
+        CHECK(abl::AssetsRelative(root, fs::path("D:/other/x.uvfx")).find("..") == std::string::npos, "外は絶対のまま");
+    }
 
     // フィルタ: フォルダは常に通る / マテリアルのチップは MaterialGraph も含む
     CHECK(abl::PassesKind(abl::Kind::Folder, true, abl::KindBit(abl::Kind::Texture)), "フォルダは常に通る");
@@ -63,6 +72,7 @@ void TestClassify()
     CHECK(abl::PassesKind(abl::Kind::MaterialGraph, false, abl::ChipMask(abl::Kind::Material)), "マテリアルのチップ = MaterialGraph 込み");
     CHECK(!abl::PassesKind(abl::Kind::MaterialGraph, false, abl::KindBit(abl::Kind::Material)), "素のビットでは含まない");
     CHECK(abl::kChipCount == 10, "チップ数");
+    CHECK(!abl::PassesKind(abl::Kind::Sequence, false, abl::KindBit(abl::Kind::Texture)), "シーケンスは別種別で落ちる");
 }
 
 void TestNaturalSort()
