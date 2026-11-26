@@ -267,12 +267,14 @@ regRaw(
     let playing = false;
     let savedCam: { position: number[]; yawDeg: number; pitchDeg: number } | null = null;   // 人のエディタカメラ(撮影後に戻す。R1-07)
     let ownTx = false;   // 自分で開いたトランザクションがあるか(finally で必ず rollback する)
-    let ownComponentWrites = 0;   // うち set_component の発行数(エンジンは Undo コマンド名を種類ごとに付けるので、名前では自分の分と区別できない)
+    let ownTransformWrites = 0;   // うち set_transform の発行数
+    let ownComponentWrites = 0;   // うち set_component の発行数
     let ownWrites = 0;   // トランザクション中に自分が出したUndo を積む書き込み(set_transform / set_component)の発行数(eval_lua は Undo を積まないので数えない)
     const preNotes: string[] = [];
     let result: ToolResult | undefined;
     const call = (method: string, params: any) => {
       if (ownTx && (method === "set_transform" || method === "set_component")) ownWrites++;
+      if (ownTx && method === "set_transform") ownTransformWrites++;
       if (ownTx && method === "set_component") ownComponentWrites++;
       return engine.call(method, params);
     };
@@ -475,14 +477,18 @@ regRaw(
           let human = 0;
           try {
             const ts = await engine.call("transaction_status", {}) as any;
-            // ★callNames はエンジンの Undo コマンド名("Transform" など)で、MCP の method 名("set_transform")ではない。
-            //   method 名だけを自分の分とみなすと、本物のエンジンでは自分の set_transform が全部「他の呼び出し」になり偽の警告が出る(R1-06)。
-            //   set_transform 由来の "Transform" は自分の分。set_component 由来は名前が種類ごとに違うので、自分が発行した数だけ許す。
+            // ★callNames は McpUndoRouter が Undo に積んだエントリ名で、実エンジンでは "AI: <method>"(例 "AI: set_transform")。
+            //   旧形式の素の method 名も受ける。自分の分は「自分が発行した数まで」だけ許し、超過分と他の名前は全部 foreign にする
+            //   (別クライアントが同じ method を撃っても数で検出できる)。
             if (Array.isArray(ts?.callNames)) {
-              const others = ts.callNames.map(String).filter((n: string) => n !== "set_transform" && n !== "Transform");
-              const compLike = others.filter((n: string) => n === "set_component");
-              const rest = others.filter((n: string) => n !== "set_component");
-              foreign = [...compLike, ...rest.slice(Math.min(ownComponentWrites, rest.length))];
+              let budT = ownTransformWrites;
+              let budC = ownComponentWrites;
+              foreign = [];
+              for (const n of ts.callNames.map(String)) {
+                if ((n === "AI: set_transform" || n === "set_transform") && budT > 0) budT--;
+                else if ((n === "AI: set_component" || n === "set_component") && budC > 0) budC--;
+                else foreign.push(n);
+              }
             }
             human = Number(ts?.humanEditsDuringTransaction) || 0;
           } catch { /* 読めなければ calls の件数で代用 */ }

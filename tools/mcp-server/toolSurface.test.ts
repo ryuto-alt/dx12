@@ -30,15 +30,12 @@ const eq = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const snap = JSON.parse(fs.readFileSync(path.join(here, "legacy-tools.snapshot.json"), "utf8"));
 const SNAP_BY_NAME = new Map<string, any>(snap.tools.map((t: any) => [t.name, t]));
 const LEGACY_NAMES: string[] = snap.tools.map((t: any) => t.name);
-// NB16(W05): エンジンにあるのに TS に無かった dx12_vg_cook / dx12_get_shading / dx12_set_shading の 3 本ぶん(約 3.7 KB)の余裕。旧 220 本の基準そのものは動かさない。
-const NEW_TOOLS_ALLOWANCE = 4096;
-const M0_BYTES: number = snap.totalBytes + NEW_TOOLS_ALLOWANCE;
+const M0_BYTES: number = snap.totalBytes;
 const CORE_MAX_BYTES = 120 * 1024;   // 設計書 §5.2 M3 (d)① / §4.1.7
 
 // DXR パストレーサー(Q1a)。toolset/pathTracer.ts が full / core / shell 面の末尾へ足す(legacy 面には出さない)。
 const PT_TOOLS = ["dx12_render_reference", "dx12_render_reference_status", "dx12_render_reference_cancel"];
-const VG_TOOLS = ["dx12_vg_stats", "dx12_set_virtual_geometry", "dx12_vg_cook"];
-const SHADING_TOOLS = ["dx12_get_shading", "dx12_set_shading"];
+const VG_TOOLS = ["dx12_vg_stats", "dx12_set_virtual_geometry"];
 const BLENDER_PLACE_TOOLS = ["dx12_blender_place"];   // toolset/blenderPlace.ts(Blender の配置をそのまま置く)
 const ORACLE_TOOLS = ["dx12_oracle"];   // toolset/oracles.ts(書き換えられない正解: 金画像・性能予算・封印。seal だけ guarded)
 const VISUAL_TOOLS = ["dx12_visual", "dx12_perf_gate"];   // toolset/visual.ts(視覚回帰と性能ゲート。長尾 = tools/list には出さず dx12_call で使う。M0 の総バイト数の上限に収めるため。golden の approve だけ guarded)
@@ -58,7 +55,7 @@ check("先頭 5 本が shell", eq(full.tools.slice(0, 5).map((t: any) => t.name)
 const restAll = full.tools.slice(5);
 const rest = restAll.slice(0, 220);
 check("旧 220 本の名前と並びが同一のまま続く", rest.length === 220 && eq(rest.map((t: any) => t.name), LEGACY_NAMES), rest.length);
-check("旧 220 本の後ろ(末尾)にパストレーサーの 3 本と仮想ジオメトリの 3 本と材質シェーディングの 2 本と lua_step の 1 本と oracle の 1 本と blender_place の 1 本とフリートの 6 本とジョブの 6 本とエディタ操作の 4 本とシーン仕様の 2 本だけが足される", eq(restAll.slice(220).map((t: any) => t.name), [...PT_TOOLS, ...VG_TOOLS, ...SHADING_TOOLS, ...LUA_STEP_TOOLS, ...ORACLE_TOOLS, ...BLENDER_PLACE_TOOLS, ...FLEET_TOOLS, ...JOB_TOOLS, ...EDITOR_TOOLS, ...SCENE_SPEC_TOOLS]), restAll.slice(220).map((t: any) => t.name));
+check("旧 220 本の後ろ(末尾)にパストレーサーの 3 本と仮想ジオメトリの 2 本と lua_step の 1 本と oracle の 1 本と blender_place の 1 本とフリートの 6 本とジョブの 6 本とエディタ操作の 4 本とシーン仕様の 2 本だけが足される", eq(restAll.slice(220).map((t: any) => t.name), [...PT_TOOLS, ...VG_TOOLS, ...LUA_STEP_TOOLS, ...ORACLE_TOOLS, ...BLENDER_PLACE_TOOLS, ...FLEET_TOOLS, ...JOB_TOOLS, ...EDITOR_TOOLS, ...SCENE_SPEC_TOOLS]), restAll.slice(220).map((t: any) => t.name));
 const semDiff = rest.filter((t: any) => sha(semanticView(t)) !== SNAP_BY_NAME.get(t.name)?.semSha256).map((t: any) => t.name);
 check("旧 220 本の name / title / 説明 / inputSchema / annotations / _meta が意味的に同一(outputSchema と destructiveHint 以外は 1 バイトも変わらない)", semDiff.length === 0, semDiff.slice(0, 10));
 const inputDiff = rest.filter((t: any, i: number) => sha(t.inputSchema) !== sha(legacy.tools[i].inputSchema) || t.description !== legacy.tools[i].description).map((t: any) => t.name);

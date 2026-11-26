@@ -490,7 +490,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_describe_components` | `{component?:string}` | `{components:[{jsonKey, settable, removable, fields:[{name,type,default}], note?}]}` |
 | `dx12_get_scene_settings` | `{}` | `{skybox:{envMapPath, iblIntensity, skyboxIntensity, drawSkybox}, decalAtlasPath, atmosphere:{全項目}, atmosphereState:{太陽の高度/方位・IBL 再ベイク回数・GPU 時間}, note}` ※物理大気は [docs/ATMOSPHERE.md](ATMOSPHERE.md) |
 | `dx12_get_post_process` | `{}` | ポストプロセス全フィールド(約25エフェクトの `<name>On`/パラメータ) |
-| `dx12_get_ssao` | `{}` | `{enabled, radius, bias, intensity, power, sampleCount, blur}` |
+| `dx12_get_ssao` | `{}` | `{enabled, radius, bias, intensity, power, sampleCount, blur, multiBounce}` |
 | `dx12_get_contact_shadow` | `{}` | `{enabled, rayLength, thickness, bias, intensity, steps, maxDistance, fadeDistance}` |
 | `dx12_get_taa` | `{}` | `{enabled, sampleCount, feedbackMin, feedbackMax, varianceGamma, jitterScale, debugVelocity, active, fxaaSuppressed}` |
 | `get_upscaler`（`dx12_call`） | `{}` | `{mode, quality, effective, renderResolution, outputResolution, renderScaleUsed, jitterPhases, textureMipBias, dlss{compiledIn, available, reason, featureVramMB, evalCount, lastEvalOk, evalErrors, jitterSign, cameraCuts, fallbackReason?}, gpuMs}` ※時間方向アップスケーラ。`mode`=頼んだもの、`effective`=今フレーム実際に解決しているもの（DLSS が使えないと `taa`） |
@@ -561,7 +561,7 @@ MCP ツール名は `dx12_` 接頭辞付き。同期欄: **同期** = 即返り�
 | `dx12_set_post_process` | 約25エフェクトの `<name>On`/パラメータ(指定分のみ適用) | `{applied}` |
 | `dx12_set_post_process`（Q2 校正: 露出 / トーンマップ / ライティング単位） | `{lightingUnits?:0\|1, exposureMode?:0\|1\|2, ev100?, evComp?, aeMinEv100?, aeMaxEv100?, aeSpeedUp?, aeSpeedDown?, aeLowPercent?, aeHighPercent?, tonemapper?:0..5, filmSlope?, filmToe?, filmShoulder?, filmBlackClip?, filmWhiteClip?}` | `{applied}` ※既定値では従来と絵が 1 ビットも変わらない。`lightingUnits:1` = 物理単位（太陽 lux・点/スポット cd の逆二乗・空/IBL/自己発光 nit。シーン RT の 1.0 = 1 nit）。`exposureMode:1` = 手動 EV100（係数 `1/(1.2·2^(ev100−evComp))`。既定 EV100=15 が「露出 0」の基準。マスター `enabled` が OFF でも効く）/ `2` = 自動（ヒストグラム。平均輝度を 18% グレー×2^evComp へ。`aeMin/MaxEv100` が上下限）。`tonemapper` = 0 ACES / 1 AgX / 2 なし(ガンマのみ) / **3 UE Filmic / 4 線形(クリップのみ) / 5 Khronos PBR Neutral**（3〜5 は sRGB OETF）。詳細・根拠・不確実性は `docs/PARITY_HARNESS.md` の Q2 節 |
 | `dx12_set_post_process`（被写界深度） | `{dofOn?, dofFocusDist?, dofFocusName?, dofAperture?, dofFocalLength?, dofBlurSize?, dofFocusRange?}` | `{applied}` ※**DoF は絞り基準（物理モード）が既定**。`dofAperture`＝F 値（既定 2.8）と `dofFocalLength`（mm。**0 でカメラの画角から導出**）から薄レンズの錯乱円 `CoC = |z-zf|/z * f²/(N*(zf-f))` を出し、35mm 判のセンサ高 24mm で px 化する。＝**画面解像度に依存する `dofBlurSize` は「暴走防止の上限」へ後退**し、絵作りは F 値だけで決まる。`dofAperture:0` で旧来の `dofFocusRange` 方式（範囲基準）へ戻る。`dofFocusName` にエンティティ名を入れると**毎フレームそのエンティティまでのビュー距離を合焦距離に使う**（＝被写体に合焦したまま寄る/回るカメラワークが Lua 無しで書ける。空なら `dofFocusDist`）|
-| `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?}` | `{applied}` |
+| `dx12_set_ssao` | `{enabled?, radius?, bias?, intensity?, power?, sampleCount?, blur?, multiBounce?}` | `{applied}` |
 | `dx12_set_contact_shadow` | `{enabled?, rayLength?, thickness?, bias?, intensity?, steps?, maxDistance?, fadeDistance?}` | `{applied}` ※太陽(平行光)専用のスクリーン空間近接遮蔽。正射/2Dビューでは自動無効 |
 | `dx12_get_normal_filter` | `{}` | `{enabled, strength, varianceClamp, geometricBlend}` |
 | `dx12_get_shading` | `{}` | `{multiScatter}` |

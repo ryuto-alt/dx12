@@ -12,7 +12,7 @@ import { McpStdio, payload, startFakeEngine } from "./jev/testHarness.ts";
 let passed = 0;
 const pass = (label: string) => { passed++; console.log(`  OK  ${label}`); };
 
-const st = { open: false, undoDepth: 3, saves: 0, failScreenshot: false, noTx: false, pending: 0, rbFail: false, foreignAt: 0, beginErr: "", beginTimeoutOpen: false, names: [] as string[], engineNames: false, cam: { position: [1, 2, 3], yawDeg: 30, pitchDeg: -10 } as any, camSets: [] as any[] };
+const st = { open: false, undoDepth: 3, saves: 0, failScreenshot: false, noTx: false, pending: 0, rbFail: false, foreignAt: 0, beginErr: "", beginTimeoutOpen: false, names: [] as string[], pendNames: [] as string[], cam: { position: [1, 2, 3], yawDeg: 30, pitchDeg: -10 } as any, camSets: [] as any[] };
 const png = (() => { const p = new PNG({ width: 8, height: 8 }); p.data.fill(60); return PNG.sync.write(p); })();
 const err = (code: number, message: string) => Object.assign(new Error(message), { code });
 
@@ -21,19 +21,19 @@ function handler(method: string, params: any): any {
     case "get_entity": return { entityId: 5, name: "Fire", transform: { position: [0, 0, 0] }, particleEmitter: { layers: [{ looping: true, lifetime: 1 }] } };
     case "transaction_begin":
       if (st.noTx) throw err(1, "unknown method: transaction_begin");
-      if (st.beginErr) { if (st.beginTimeoutOpen) { st.open = true; st.pending = 0; } throw err(3, st.beginErr); }
+      if (st.beginErr) { if (st.beginTimeoutOpen) { st.open = true; st.pending = 0; st.pendNames = []; } throw err(3, st.beginErr); }
       if (st.open) throw err(3, "transaction already open");
-      st.open = true; st.pending = 0; return { open: true };
+      st.open = true; st.pending = 0; st.pendNames = []; return { open: true };
     case "transaction_rollback":
       if (!st.open) throw err(3, "no open transaction");
       if (st.rbFail) { st.open = false; throw err(3, "no open transaction (closed by Play)"); }
-      { const calls = st.pending + st.foreignAt; st.open = false; st.pending = 0; return { rolledBack: true, calls }; }
+      { const calls = st.pending + st.foreignAt; st.open = false; st.pending = 0; st.pendNames = []; return { rolledBack: true, calls }; }
     case "transaction_status":
-      return { open: st.open, label: st.open ? "vfx_preview" : undefined, callNames: [...Array(st.pending).fill(st.engineNames ? "Transform" : "set_transform"), ...Array(st.foreignAt).fill("other_client_write"), ...st.names], humanEditsDuringTransaction: 0 };
+      return { open: st.open, label: st.open ? "vfx_preview" : undefined, callNames: [...st.pendNames, ...Array(st.foreignAt).fill("other_client_write"), ...st.names], humanEditsDuringTransaction: 0 };
     case "transaction_commit":
       st.open = false; st.undoDepth += 1; return { committed: true };
     case "set_transform": case "set_component":
-      if (st.open) st.pending++; else st.undoDepth++;
+      if (st.open) { st.pending++; st.pendNames.push("AI: " + method); } else st.undoDepth++;   // 実エンジンの McpUndoRouter は "AI: <method>" で積む
       return { ok: true };
     case "get_editor_camera": return { ...st.cam, mode: "Editor" };
     case "set_editor_camera":
@@ -149,17 +149,21 @@ try {
     st.beginErr = ""; st.beginTimeoutOpen = false;
     pass("実際は開いていた begin を adopt して rollback する");
   }
-  console.log("[R1-06/07] 実エンジンのコマンド名(Transform)で偽の rollback 警告が出ない・人のカメラを戻す");
+  console.log("[R1-06/07] 実エンジンのエントリ名(AI: set_transform)で偽の rollback 警告が出ない・人のカメラを戻す");
   {
-    st.engineNames = true;
     const out = payload(await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000)) as any;
-    st.engineNames = false;
     const warn = (out.notes ?? []).filter((x: string) => x.includes("警告"));
     assert.deepEqual(warn, [], `偽の警告が出ている: ${warn.join(" / ")}`);
     const last = st.camSets.filter((x) => !x.release).pop();
     assert.deepEqual(last, { position: [1, 2, 3], yawDeg: 30, pitchDeg: -10 }, "最後の set_editor_camera が人の視点への復元");
     assert.ok(st.camSets[st.camSets.length - 1].release === true, "最後は release");
     pass("偽の警告なし + エディタカメラを元の視点へ戻して release");
+    // 他クライアントの "AI: set_transform" も、自分の発行数を超えた分は foreign として警告する
+    st.names = ["AI: set_transform"];
+    const out2 = payload(await mcp.call("dx12_vfx_preview", { name: "Fire", frames: 2, seconds: 0.2 }, 60000)) as any;
+    st.names = [];
+    assert.ok(out2.notes?.some((x: string) => /破棄された可能性/.test(x) && /AI: set_transform/.test(x)), "超過した AI: set_transform を警告");
+    pass("自分の発行数を超えた \"AI: set_transform\" は他の呼び出しとして警告");
   }
 } catch (e) {
   console.log(`  NG  ${(e as Error).message}`);
