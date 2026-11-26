@@ -1,0 +1,22 @@
+{
+  "schema": "uno/gg_spec.lock@1",
+  "tokensSha256": "fa050cd1d8a7e6f9a6bf3848fa572463214995df7cca83fc7f87567ef024024d",
+  "metaVersion": "3.1.0",
+  "integrateCheck": {
+    "sha256": "ef36fcfecdf37e62f79a1127ec0c6351c8abf75afda0b49d9e0c0da70ba533b3",
+    "allGreen": true,
+    "result": {
+      "contrastFails": 0,
+      "cvdNG": [],
+      "yellowZoneViolations": 0,
+      "removedTokensAbsent": true,
+      "cssHasNew": true,
+      "reduceMotionKeepsWaits": true,
+      "colorCount": 169,
+      "durations": 34,
+      "auxTabs": 32,
+      "tabNoUnique": true
+    }
+  },
+  "syncedAt": "2026-11-26T14:41:34Z"
+}
