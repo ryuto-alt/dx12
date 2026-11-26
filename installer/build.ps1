@@ -203,6 +203,8 @@ Copy-Item (Join-Path $repoRoot "assets") -Destination (Join-Path $stage "assets"
 #   無くても起動音は埋め込みの案 A へ自動で縮退する。
 Get-ChildItem -Path (Join-Path $stage "assets\editor\sounds") -Filter "splash_d.*" -ErrorAction SilentlyContinue |
   Remove-Item -Force
+# ★editor.rc で exe へ RCDATA 埋め込み済みの Calibrate WAV（stems 含む約 2MB）は assets 側へ二重に入れない（iss の Excludes と同じ）。
+Remove-Item -Recurse -Force (Join-Path $stage "assets\editor\sounds\calibrate") -ErrorAction SilentlyContinue
 # ★ tools\mcp-server は同梱しない（別リポジトリ ryuto-alt/dx12-mcp から配布）
 # tools\lua-defs（VSCode 補完用の Lua API 型定義）
 $luaDefs = Join-Path $repoRoot "tools\lua-defs"
