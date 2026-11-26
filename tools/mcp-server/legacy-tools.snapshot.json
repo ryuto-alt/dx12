@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 425597,
+ "totalBytes": 425603,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -3451,8 +3451,8 @@
   },
   {
    "name": "dx12_diagnose",
-   "sha256": "8efec6932619a98351b5b0b9ce43627f218043e7cb63aad228cd55b1694f8572",
-   "semSha256": "330778c471bdadb5c87bead6bf2fc0b79f2dbe56ee709c42d670bde16116a451",
+   "sha256": "3200479b78e98df5c54e7e03771cae3e5daa1b1ad46639bccd07b6b6f459b07e",
+   "semSha256": "2d0d37b4e2b5626a6299f0ffb6c06d335142fa59c03560227f59dab7a39bab24",
    "outputSchemaBytes": 303,
    "argKeys": [
     "only",
