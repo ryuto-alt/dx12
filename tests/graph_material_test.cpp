@@ -550,6 +550,44 @@ int main()
         CHECK(!vfs::InGameMode());
     }
 
+    // ---- 9. shadingRevision（W1-C3 MH-0a）: V2 の変種は別の PSO・V1 に戻せる・V1 のキーは変わらない ----------------
+    std::printf("stage: shading revision\n");
+    {
+        CHECK(sys->ShadingRevision() == 1);
+        GraphMaterialSystem::DrawParams pv1{};
+        CHECK_MSG(resolve("materials/m1.dxmat", pv1) && pv1.pso, "V1 の PSO が取れない");
+        const auto before = sys->GetCounters();
+        sys->SetShadingRevision(2);
+        sys->SetShadingRevision(2);   // 同じ値は何もしない（2 回目で作り直しが重ならない）
+        CHECK(sys->ShadingRevision() == 2);
+        // 旧版（V1）で描き続けながら V2 の変種を待つ
+        GraphMaterialSystem::DrawParams pv2{};
+        resolve("materials/m1.dxmat", pv2);
+        CHECK_MSG(pv2.pso == nullptr || pv2.pso == pv1.pso, "V2 の PSO が出来る前は旧版（V1）で描き続けるはず");
+        CHECK_MSG(sys->WaitIdle(120000, cmd), "V2 のビルドが終わらない");
+        ex.Submit();
+        rm.FinishUploads();
+        for (int i = 0; i < 4; ++i) { pump(); resolve("materials/m1.dxmat", pv2); }
+        CHECK_MSG(resolve("materials/m1.dxmat", pv2) && pv2.pso, "V2 の Resolve が false");
+        CHECK_MSG(pv2.pso != pv1.pso, "shadingRevision=2 で PSO が V1 のまま（-D UNO_SHADING_V2 が効いていない）");
+        const auto after = sys->GetCounters();
+        CHECK_MSG(after.variants == before.variants + 1, "V2 の変種が別に作られていない（%u → %u）", before.variants, after.variants);
+        {
+            GraphMaterialSystem::InstanceStatus st;
+            CHECK(sys->GetInstanceStatus("materials/m1.dxmat", st));
+            CHECK_MSG(st.hasActive && !st.failed, "V2 のビルドが失敗: %s", st.errorLog.c_str());
+        }
+        // V1 に戻す: V1 の変種がまだ残っていれば再コンパイルなしで戻る
+        sys->SetShadingRevision(1);
+        GraphMaterialSystem::DrawParams pv1b{};
+        for (int i = 0; i < 8; ++i) { pump(); resolve("materials/m1.dxmat", pv1b); }
+        CHECK_MSG(sys->WaitIdle(120000, cmd), "V1 へ戻すビルドが終わらない");
+        ex.Submit();
+        rm.FinishUploads();
+        for (int i = 0; i < 4; ++i) { pump(); resolve("materials/m1.dxmat", pv1b); }
+        CHECK_MSG(resolve("materials/m1.dxmat", pv1b) && pv1b.pso == pv1.pso, "V1 に戻しても元の PSO にならない");
+    }
+
     sys.reset();
     fs::remove_all(proj, ec);
     std::printf("%s: %d checks, %d failures\n", g_failures == 0 ? "PASS" : "FAIL", g_checks, g_failures);

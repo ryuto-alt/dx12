@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/AppAccess.h"
 
 namespace dx12e
 {
@@ -215,19 +216,48 @@ void Application::RegisterMcpRenderMethods()
     // ---- 材質シェーディングのシーン設定（マルチスキャッタのエネルギー補償）----
     McpDefine("get_shading", "", DX12E_MCP_HANDLER
         {
+            const auto& sh = m_scene->GetShadingSettings();
+            int applied = 1, v2Fwd = 0, v2Skin = 0, v2Terr = 0;
+            AppAccess::QueryShadingPsos(*this, applied, v2Fwd, v2Skin, v2Terr);
             resp["ok"] = true;
-            resp["result"] = {{"multiScatter", m_scene->GetShadingSettings().multiScatter}};
+            // shadingRevision = シーンの設定（1 = V1 / 2 = UNO_SHADING_V2）。appliedRevision = 今 PSO に反映済みの値（次のフレーム先頭で追いつく）。
+            // v2PsoCount = V2 の .cso から作れたフォワード系 PSO の数（revision=1 のときは 0）。
+            resp["result"] = {{"multiScatter", sh.multiScatter},
+                              {"shadingRevision", static_cast<int>(sh.shadingRevision)},
+                              {"appliedRevision", applied},
+                              {"v2PsoCount", v2Fwd + v2Skin + v2Terr},
+                              {"v2Pso", {{"forward", v2Fwd}, {"skinned", v2Skin}, {"terrain", v2Terr}}}};
         });
 
-    McpDefine("set_shading", "multiScatter:any", DX12E_MCP_HANDLER
+    McpDefine("set_shading", "multiScatter:any,shadingRevision:any", DX12E_MCP_HANDLER
         {
             auto& sh = m_scene->GetShadingSettings();
             if (params.contains("multiScatter") && !params["multiScatter"].is_boolean())
                 throw McpError(McpErr::InvalidParam, "multiScatter は true / false",
                     "例: multiScatter:false（従来の補償なしに戻す）");
+            // shadingRevision: 1 = 従来（V1。既定）/ 2 = UNO_SHADING_V2。範囲外は E_OUT_OF_RANGE で弾く（黙って丸めない）。
+            u8 rev = sh.shadingRevision;
+            if (params.contains("shadingRevision") && !params["shadingRevision"].is_null())
+            {
+                const auto& v = params["shadingRevision"];
+                if (!v.is_number_integer())
+                    throw McpError(McpErr::InvalidParam, "shadingRevision は整数（1 または 2）",
+                        "例: shadingRevision:2（UNO_SHADING_V2。次のフレームの先頭でフォワード系 PSO とグラフ材質が切り替わる）");
+                const long long n = v.get<long long>();
+                if (n < 1 || n > 2)
+                {
+                    McpError err(McpErr::InvalidParam, "shadingRevision が範囲外: " + std::to_string(n), "有効値は 1（従来）か 2（UNO_SHADING_V2）");
+                    err.name = "E_OUT_OF_RANGE";
+                    err.cause = "shadingRevision は 1 か 2 だけ";
+                    err.details = {{"param", "shadingRevision"}, {"value", n}, {"range", {{"min", 1}, {"max", 2}}}};
+                    throw err;
+                }
+                rev = static_cast<u8>(n);
+            }
             sh.multiScatter = params.value("multiScatter", sh.multiScatter);
+            sh.shadingRevision = rev;
             resp["ok"] = true;
-            resp["result"] = {{"applied", true}, {"multiScatter", sh.multiScatter}};
+            resp["result"] = {{"applied", true}, {"multiScatter", sh.multiScatter}, {"shadingRevision", static_cast<int>(sh.shadingRevision)}};
         });
 
     // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----

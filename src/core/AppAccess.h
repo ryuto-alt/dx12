@@ -51,6 +51,10 @@ struct AppAccess
     //   QualityPresetId は renderer/QualityPreset.h（使う TU が include する。ここは前方宣言で重くしない）。
     static bool SetQualityPreset(Application&, QualityPresetId, bool recordUndo);
     static QualityPresetId GetQualityPreset(const Application&);
+    // W1-C3: shadingRevision（1 / 2）を PSO とグラフ材質へ反映する（定義は ApplicationPipeline.cpp。Run ループの先頭 = フレーム外で呼ぶ）。
+    static void UpdateShadingRevision(Application&);
+    // W1-C3: 今 PSO に反映済みの revision と、V2 の .cso から作れた PSO の数（フォワード / スキンド / 地形）。MCP の get_shading 用。
+    static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====

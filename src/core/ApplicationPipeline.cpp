@@ -6,6 +6,9 @@
 #include "core/ApplicationInternal.h"
 #include "resource/ShaderDiagnostics.h"
 #include "core/SplitScreen.h"
+#include "core/AppAccess.h"
+#include "renderer/ShadingSettings.h"
+#include "renderer/GraphMaterialSystem.h"
 
 #include <iterator>
 
@@ -103,11 +106,38 @@ static std::wstring FwdPsName(bool physical, const wchar_t* normal, const wchar_
     return phys;
 }
 
+// W1-C3 MH-0a: UNO_SHADING_V2 の軸。今の PSO に反映済みの shadingRevision（1 = V1 / 2 = V2）と、V2 の .cso から作れた PSO の数。
+// Application.h は W1 では凍結なので、メンバにせずこの TU の中に持つ（Application は 1 個しか無い）。
+// 切り替えは AppAccess::UpdateShadingRevision（Run ループの先頭 = フレーム外）だけが行う。既存シーンは V1 のまま＝既定の経路は 1 バイトも変わらない。
+static u8  s_shadingRevApplied = 1;
+static int s_v2PsoCount[3]     = {0, 0, 0};   // [0] = フォワード（静的）、[1] = スキンド、[2] = 地形
+
+// V2 のときは V2 の .cso（*V2_PS.cso）を選ぶ。無ければ（ビルドし忘れ）警告して V1 へ縮退する。*usedV2 は V2 を選べたかどうか。
+// V1（v2=false）のときは FwdPsName と同じ＝名前をそのまま返す。
+static std::wstring FwdPsNameRev(bool physical, bool v2, const wchar_t* normal, const wchar_t* phys,
+                                 const wchar_t* normalV2, const wchar_t* physV2, bool* usedV2)
+{
+    if (usedV2) *usedV2 = false;
+    if (!v2) return FwdPsName(physical, normal, phys);
+    const wchar_t* want = physical ? physV2 : normalV2;
+    auto probe = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + want);
+    if (probe.GetSize() == 0)
+    {
+        Logger::Warn("{} が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）", PathResolver::WideToUtf8(want));
+        return FwdPsName(physical, normal, phys);
+    }
+    if (usedV2) *usedV2 = true;
+    return want;
+}
+
 void Application::RecreateForwardPsos()
 {
     const bool physUnits = (m_lightingUnitsApplied == 1);
+    const bool v2 = (s_shadingRevApplied == 2);
+    bool v2Ps = false, v2PsMask = false;
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Forward_VS.cso");
-    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"Forward_PS.cso", L"ForwardPhys_PS.cso"));
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW()
+        + FwdPsNameRev(physUnits, v2, L"Forward_PS.cso", L"ForwardPhys_PS.cso", L"ForwardV2_PS.cso", L"ForwardPhysV2_PS.cso", &v2Ps));
 
     // 通常 forward は DepthFunc=LESS（既定）。毎フレーム深度を 1.0 へクリアして描くため、
     // 同深度フラグメントは先勝ち（従来の z-fight 解決を維持）。
@@ -158,7 +188,7 @@ void Application::RecreateForwardPsos()
     // PS だけ ForwardMask_PS（-D ALPHA_TEST）に差し替える。頂点処理も PSO の他の状態も同じ。
     // ★clip を含む PS は early-Z が効かないので不透明とは別 PSO にしてある（性能の分離）。
     {
-        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"ForwardMask_PS.cso", L"ForwardMaskPhys_PS.cso"));
+        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsNameRev(physUnits, v2, L"ForwardMask_PS.cso", L"ForwardMaskPhys_PS.cso", L"ForwardMaskV2_PS.cso", L"ForwardMaskPhysV2_PS.cso", &v2PsMask));
         if (psMask.GetSize() > 0)
         {
             PipelineStateBuilder mb;
@@ -230,13 +260,22 @@ void Application::RecreateForwardPsos()
     builder.SetPixelShader(psLdr.GetData(), psLdr.GetSize());
     if (!m_pipelineStateThumb) m_pipelineStateThumb = std::make_unique<PipelineState>();
     m_pipelineStateThumb->Initialize(*m_graphicsDevice, builder);
+
+    // V2 の .cso から作れた PSO の数（通常 5 本 = 通常 / LEqual / インスタンス 2 / BLEND、MASK 4 本）。MCP の get_shading が読む。
+    auto cnt = [](const std::unique_ptr<PipelineState>& p) { return (p && p->Get()) ? 1 : 0; };
+    s_v2PsoCount[0] = (v2Ps ? cnt(m_pipelineState) + cnt(m_pipelineStateLEqual) + cnt(m_pipelineStateInst) + cnt(m_pipelineStateInstLEqual) + cnt(m_pipelineStateBlend) : 0)
+                    + (v2PsMask ? cnt(m_pipelineStateMask) + cnt(m_pipelineStateMaskLEqual) + cnt(m_pipelineStateInstMask) + cnt(m_pipelineStateInstMaskLEqual) : 0);
+    if (v2) Logger::Info("shadingRevision=2: フォワードの V2 PSO {} 本（PS: {} / MASK PS: {}）", s_v2PsoCount[0], v2Ps ? "V2" : "V1 に縮退", v2PsMask ? "V2" : "V1 に縮退");
 }
 
 void Application::RecreateSkinnedPsos()
 {
     const bool physUnits = (m_lightingUnitsApplied == 1);
+    const bool v2 = (s_shadingRevApplied == 2);
+    bool v2Ps = false, v2PsMask = false;
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"ForwardSkinned_VS.cso");
-    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"Forward_PS.cso", L"ForwardPhys_PS.cso"));
+    auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW()
+        + FwdPsNameRev(physUnits, v2, L"Forward_PS.cso", L"ForwardPhys_PS.cso", L"ForwardV2_PS.cso", L"ForwardPhysV2_PS.cso", &v2Ps));
 
     // 通常 forward(skinned) は DepthFunc=LESS（既定）。SSAO 無効時の z-fight 解決を維持。
     PipelineStateBuilder builder;
@@ -259,7 +298,7 @@ void Application::RecreateSkinnedPsos()
 
     // MASK（髪・まつ毛・葉を持つキャラ）。PS だけ差し替える。
     {
-        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsName(physUnits, L"ForwardMask_PS.cso", L"ForwardMaskPhys_PS.cso"));
+        auto psMask = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + FwdPsNameRev(physUnits, v2, L"ForwardMask_PS.cso", L"ForwardMaskPhys_PS.cso", L"ForwardMaskV2_PS.cso", L"ForwardMaskPhysV2_PS.cso", &v2PsMask));
         if (psMask.GetSize() > 0)
         {
             PipelineStateBuilder mb;
@@ -294,6 +333,11 @@ void Application::RecreateSkinnedPsos()
         if (!m_skinnedPipelineStateBlend) m_skinnedPipelineStateBlend = std::make_unique<PipelineState>();
         m_skinnedPipelineStateBlend->Initialize(*m_graphicsDevice, bb);
     }
+
+    auto cnt = [](const std::unique_ptr<PipelineState>& p) { return (p && p->Get()) ? 1 : 0; };
+    s_v2PsoCount[1] = (v2Ps ? cnt(m_skinnedPipelineState) + cnt(m_skinnedPipelineStateLEqual) + cnt(m_skinnedPipelineStateBlend) : 0)
+                    + (v2PsMask ? cnt(m_skinnedPipelineStateMask) + cnt(m_skinnedPipelineStateMaskLEqual) : 0);
+    if (v2) Logger::Info("shadingRevision=2: スキンドの V2 PSO {} 本", s_v2PsoCount[1]);
 }
 
 void Application::RecreateGridPso()
@@ -324,9 +368,11 @@ void Application::RecreateTerrainPsos()
     // 地形マテリアル（4 レイヤースプラット）。ルートシグネチャ・入力レイアウト・RT 形式は
     // 通常 forward とまったく同じで、VS/PS だけ差し替える。
     // ★t0/t1 に Texture2DArray を張るのはここではなく EnsureTerrainSrv（PSO には関係しない）。
+    const bool v2 = (s_shadingRevApplied == 2);
+    bool v2Ps = false;
     auto vs = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW() + L"Terrain_VS.cso");
     auto ps = ShaderCompiler::LoadFromFile(PathResolver::ShaderDirW()
-        + FwdPsName(m_lightingUnitsApplied == 1, L"Terrain_PS.cso", L"TerrainPhys_PS.cso"));
+        + FwdPsNameRev(m_lightingUnitsApplied == 1, v2, L"Terrain_PS.cso", L"TerrainPhys_PS.cso", L"TerrainV2_PS.cso", L"TerrainPhysV2_PS.cso", &v2Ps));
     if (vs.GetSize() == 0 || ps.GetSize() == 0)
     {
         // .cso が無い＝ビルドし忘れ。地形は layerSetPath 空なら従来経路で描けるので致命ではない。
@@ -351,6 +397,9 @@ void Application::RecreateTerrainPsos()
     builder.SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL);
     if (!m_terrainPipelineStateLEqual) m_terrainPipelineStateLEqual = std::make_unique<PipelineState>();
     m_terrainPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
+
+    s_v2PsoCount[2] = v2Ps ? ((m_terrainPipelineState->Get() ? 1 : 0) + (m_terrainPipelineStateLEqual->Get() ? 1 : 0)) : 0;
+    if (v2) Logger::Info("shadingRevision=2: 地形の V2 PSO {} 本", s_v2PsoCount[2]);
 }
 
 void Application::RecreateEmissivePso()
@@ -623,6 +672,7 @@ void Application::GetMainViewRect(u32& x, u32& y, u32& w, u32& h) const
 // ★Run ループのフレーム外で呼ぶ（作り直しは WaitIdle 込み）。DSV / RTV / SRV のスロットは初回だけ確保し、以後は張り直す。
 void Application::EnsureSplitResources()
 {
+    AppAccess::UpdateShadingRevision(*this);   // W1-C3: shadingRevision に合わせてフォワード系 PSO を差し替える（フレーム外。分割画面でなくても呼ぶ）
     const u32 n = SplitScreenCount();
     if (n < 2 || !m_graphicsDevice || !m_commandQueue || !m_dsvHeap || !m_srvHeap || !m_offscreenRtvHeap) return;
 
@@ -986,6 +1036,38 @@ void Application::EnsureInstancePrevBuffer()
     }
     Logger::Info("速度パス用の per-instance 前ワールドバッファを確保しました ({} MB)",
                  kMaxInstances * sizeof(MeshInstancePrevData) * FrameResources::kFrameCount / (1024 * 1024));
+}
+
+// ---------------------------------------------------------------------------
+// W1-C3: shadingRevision（1 / 2）の反映。Run ループの先頭（フレーム外）で呼ぶ。
+//   ・シーンの ShadingSettings::shadingRevision が変わっていたら、GPU を待ってフォワード系 PSO を V2 / V1 の .cso で作り直す
+//     （V2 のシーンを開くまで V2 の PSO は作らない＝起動時間を延ばさない。UpdateLightingUnits と同じ流儀）。
+//   ・グラフ材質（ForwardGraph の実行時コンパイル）には毎回今の値を渡す（変化があれば GraphMaterialSystem 側で作り直す）。
+//   ・水 / 植生 / 仮想ジオメトリの V2 .cso は宣言済みだが、選ぶ側（WaterRenderer / FoliageSystem / VirtualGeometrySystem）は
+//     C3 の所有外のため未結線（引き継ぎ事項）。
+// 呼び出し元: EnsureSplitResources の先頭（Application.cpp は W1 で A の所有のため、Run ループの同じ位置にある C の関数に相乗りする）。
+// ---------------------------------------------------------------------------
+void AppAccess::UpdateShadingRevision(Application& app)
+{
+    if (!app.m_scene || !app.m_commandQueue || !app.m_graphicsDevice || !app.m_rootSignature) return;
+    const u8 want = (app.m_scene->GetShadingSettings().shadingRevision == 2) ? 2 : 1;
+    if (app.m_graphMaterials) app.m_graphMaterials->SetShadingRevision(want);
+    if (want == s_shadingRevApplied) return;
+    app.m_commandQueue->WaitIdle();
+    s_shadingRevApplied = want;
+    app.RecreateForwardPsos();
+    app.RecreateSkinnedPsos();
+    app.RecreateTerrainPsos();
+    Logger::Info("shadingRevision: {}（フォワード系 PSO を差し替えました。V2 PSO {} 本）", static_cast<int>(want),
+                 s_v2PsoCount[0] + s_v2PsoCount[1] + s_v2PsoCount[2]);
+}
+
+void AppAccess::QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain)
+{
+    appliedRevision = s_shadingRevApplied;
+    v2Forward = s_v2PsoCount[0];
+    v2Skinned = s_v2PsoCount[1];
+    v2Terrain = s_v2PsoCount[2];
 }
 
 void Application::RegisterShaderReloadHandlers()

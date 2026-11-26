@@ -1088,6 +1088,14 @@ if(TARGET Renderer)
     endif()
     add_test(NAME QualityPresetTableTests COMMAND QualityPresetTableTests)
 endif()
+# UNO_SHADING_V2 の軸（宣言表 ⇔ V1、結線、空の枠、ForwardGraph のキー）の静的な検査。GPU / DXC 不要。W1-C3。
+add_executable(ShadingV2AxisTests shading_v2_axis_test.cpp)
+target_compile_definitions(ShadingV2AxisTests PRIVATE DX12E_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+if(MSVC)
+    target_compile_options(ShadingV2AxisTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(ShadingV2AxisTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ShadingV2AxisTests COMMAND ShadingV2AxisTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # ==== lane-D end ====
