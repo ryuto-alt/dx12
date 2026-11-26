@@ -3,6 +3,7 @@
 # W05-03: Agility のランタイム情報（AgilityExports.cpp / AgilityTestGuard.cpp は exe へ直接リンクするのでここに入れない）。
 target_sources(Graphics PRIVATE
     AgilityRuntime.cpp
+    DredReport.cpp          # W05-05: DRED とデバイス消失のレポート
     DeviceCaps.cpp          # W05-04: デバイスの機能（caps）の判定
 )
 target_include_directories(Graphics PRIVATE "${UNO_AGILITY_GEN_DIR}")

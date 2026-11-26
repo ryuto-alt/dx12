@@ -396,6 +396,20 @@ if(COMMAND uno_agility_test_exe)
     add_test(NAME DeviceCapsTests COMMAND DeviceCapsTests)
     set_tests_properties(DeviceCapsTests PROPERTIES LABELS gpu TIMEOUT 120)
 
+    # DredReportTests（gpu）: W05-05。DRED の既定の判定、BeginEvent("TestPass") → RemoveDevice で JSON が書かれ、
+    #   removedReason が入る。リソースの SetName（Buffer / RenderTarget / Texture）。gameMode=true なら exe 名に関わらず既定 OFF。
+    #   ★実デバイスは、決して Signal しないフェンスでキューを待たせて未完了のリストを残し、RemoveDevice 後に
+    #   コンテキスト "TestPass"・コマンドリスト名 DredTestList・lastCompleted の整合を必須で検査する（未実機確認: -Gpu で要実行）。
+    add_executable(DredReportTests dred_report_test.cpp)
+    target_include_directories(DredReportTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(DredReportTests PRIVATE Graphics Input)
+    if(MSVC)
+        target_compile_options(DredReportTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(DredReportTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DredReportTests COMMAND DredReportTests)
+    set_tests_properties(DredReportTests PROPERTIES LABELS gpu TIMEOUT 120)
+
     # AgilityVersionPolicy（GPU 不要）: lock の SDK が 600 以上 700 未満（プレビューを出荷しない）、
     #   ビルドした exe 2 本の export と同梱 DLL の export と lock の 3 つが一致、D3D12SDKPath、DLL の SHA256。
     add_executable(AgilityPolicyCheck agility_policy_test.cpp)
@@ -437,6 +451,19 @@ if(COMMAND uno_agility_test_exe)
                     -ExeDir $<TARGET_FILE_DIR:DX12Engine> -McpPort ${_uno_lane_port})
         set_tests_properties(AgilityMissingRedist PROPERTIES LABELS "nightly;gpu" TIMEOUT 180)
     endif()
+endif()
+
+# W05-06（AUD-04）: ディスクリプタの遅延返却（GPU 不要。DescriptorHeap の管理表だけを使う）。
+if(TARGET Graphics)
+    add_executable(DescriptorDeferredFreeTests descriptor_deferred_free_test.cpp)
+    target_include_directories(DescriptorDeferredFreeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(DescriptorDeferredFreeTests PRIVATE Graphics)
+    if(MSVC)
+        target_compile_options(DescriptorDeferredFreeTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(DescriptorDeferredFreeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME DescriptorDeferredFreeTests COMMAND DescriptorDeferredFreeTests)
+    set_tests_properties(DescriptorDeferredFreeTests PROPERTIES TIMEOUT 60)
 endif()
 
 # ==== lane-A end ====

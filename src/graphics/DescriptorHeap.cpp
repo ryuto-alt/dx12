@@ -3,9 +3,66 @@
 #include "GraphicsDevice.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "DeferredRelease.h"
+
+#include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 namespace dx12e
 {
+
+// 遅延返却のコールバックはヒープより長生きし得る(FlushAll がヒープ破棄の後になる、
+// 同じアドレスに別のヒープが再構築される、Initialize し直される等)。
+// コールバックはポインタではなく世代 id を捕まえ、mutex の下で表を引く。
+// 破棄・再初期化で id を表から消すので、古いコールバックは何もしない。
+namespace
+{
+std::mutex& RegistryMutex()
+{
+    static std::mutex m;
+    return m;
+}
+std::unordered_map<u64, DescriptorHeap*>& Registry()
+{
+    static std::unordered_map<u64, DescriptorHeap*> r;
+    return r;
+}
+u64 NextHeapId()
+{
+    static std::atomic<u64> next{1};
+    return next.fetch_add(1);
+}
+} // namespace
+
+// 呼び出し側が m_heapId を更新する(登録解除 + 新規登録)。
+static u64 ReRegister(u64 oldId, DescriptorHeap* heap)
+{
+    std::lock_guard<std::mutex> lock(RegistryMutex());
+    if (oldId != 0)
+        Registry().erase(oldId);
+    u64 id = NextHeapId();
+    Registry()[id] = heap;
+    return id;
+}
+
+DescriptorHeap::~DescriptorHeap()
+{
+    if (m_heapId != 0)
+    {
+        std::lock_guard<std::mutex> lock(RegistryMutex());
+        Registry().erase(m_heapId);
+    }
+}
+
+void DescriptorHeap::InitializeBookkeepingOnly(u32 numDescriptors, bool shaderVisible)
+{
+    m_numDescriptors = numDescriptors;
+    m_descriptorSize = 1;
+    m_allocator.Initialize(numDescriptors);
+    m_shaderVisible  = shaderVisible;
+    m_heapId         = ReRegister(m_heapId, this);
+}
 
 void DescriptorHeap::Initialize(GraphicsDevice& device, D3D12_DESCRIPTOR_HEAP_TYPE type,
                                 u32 numDescriptors, bool shaderVisible)
@@ -14,6 +71,7 @@ void DescriptorHeap::Initialize(GraphicsDevice& device, D3D12_DESCRIPTOR_HEAP_TY
     m_numDescriptors = numDescriptors;
     m_allocator.Initialize(numDescriptors);
     m_shaderVisible  = shaderVisible;
+    m_heapId         = ReRegister(m_heapId, this);
 
     D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
     heapDesc.Type           = type;
@@ -89,7 +147,22 @@ void DescriptorHeap::Free(u32 index)
         return;
     }
     DX_ASSERT(index < m_numDescriptors, "DescriptorHeap::Free index out of range");
-    m_allocator.Free(index);
+    // 未登録、またはシェーダから見えないヒープは遅延不要。
+    if (m_heapId == 0 || !m_shaderVisible)
+    {
+        FreeNow(index);
+        return;
+    }
+    const u64 id = m_heapId;
+    DeferredRelease::Defer(
+        [](u64 hid, u32 idx, u32)
+        {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            auto it = Registry().find(hid);
+            if (it != Registry().end())
+                it->second->FreeNow(idx);
+        },
+        id, index, 0);
 }
 
 void DescriptorHeap::FreeBlock(u32 start, u32 count)
@@ -99,6 +172,30 @@ void DescriptorHeap::FreeBlock(u32 start, u32 count)
         return;
     }
     DX_ASSERT(start + count <= m_numDescriptors, "DescriptorHeap::FreeBlock range out of bounds");
+    if (m_heapId == 0 || !m_shaderVisible)
+    {
+        FreeBlockNow(start, count);
+        return;
+    }
+    const u64 id = m_heapId;
+    DeferredRelease::Defer(
+        [](u64 hid, u32 st, u32 cnt)
+        {
+            std::lock_guard<std::mutex> lock(RegistryMutex());
+            auto it = Registry().find(hid);
+            if (it != Registry().end())
+                it->second->FreeBlockNow(st, cnt);
+        },
+        id, start, count);
+}
+
+void DescriptorHeap::FreeNow(u32 index)
+{
+    m_allocator.Free(index);
+}
+
+void DescriptorHeap::FreeBlockNow(u32 start, u32 count)
+{
     m_allocator.FreeBlock(start, count);
 }
 
