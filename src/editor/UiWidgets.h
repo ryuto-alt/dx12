@@ -200,8 +200,12 @@ struct GaugeSpinnerInfo
 };
 // 生存ティックの輪だけを DrawList へ描く（center = 中心、物理 px）。eventCount = 出来事の累計。
 // pxLogical は 14 / 20（輪 + 指針）、32 / 56（12 目盛り + 指針 + 軸）。それ以外は近い方へ丸める。
-GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uint32_t eventCount, float pxLogical = 20.0f);
+// elapsedSec / sinceEventSec: ジョブ側の経過秒・最後の出来事からの秒（>= 0 で採用）。負なら状態の寿命から出す
+// （パネルを開いた時点から数え直すので、ジョブの途中で開く・タブを往復する呼び出しでは必ずジョブ側の値を渡すこと）。
+GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uint32_t eventCount, float pxLogical = 20.0f,
+                                  double elapsedSec = -1.0, double sinceEventSec = -1.0);
 // レイアウトに置く形。showElapsed なら右に「×n」と経過秒（10 秒進まなければ「応答待ち 10 s」）を添える。
-void GaugeSpinner(const char* id, uint32_t eventCount, float pxLogical = 20.0f, bool showElapsed = false);
+void GaugeSpinner(const char* id, uint32_t eventCount, float pxLogical = 20.0f, bool showElapsed = false,
+                  double elapsedSec = -1.0, double sinceEventSec = -1.0);
 
 } // namespace dx12e::ui

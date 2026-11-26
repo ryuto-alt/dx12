@@ -1124,7 +1124,7 @@ void AssetBrowserPanel::DrawGridCell(EditorContext& ctx, int viewIdx, float x, f
     {
         // コードポイント（結合文字・絵文字の連結を含む）の境界で省略する（バイト単位の pop_back は日本語を壊した）
         const float maxW = cw - ui::Px(6.0f);
-        const std::string name = text::EllipsizeEnd(e.name, maxW, ImGui::GetFont(), ImGui::GetFontSize());
+        const std::string name = text::EllipsizeEnd(e.name, maxW, ImGui::GetFont(), ImGui::GetFontSize(), true);
         const float nameW = ImGui::CalcTextSize(name.c_str()).x;
         // フォルダは白、ファイルは少し落として「入れ物」と「中身」を見分けやすくする
         dl->AddText(ImVec2(x + (cw - nameW) * 0.5f, nameY),

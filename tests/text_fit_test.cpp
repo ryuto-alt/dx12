@@ -226,6 +226,38 @@ void TestStepToward()
     ImGui::DestroyContext(ctx);
 }
 
+// アセットブラウザ用の旧判定（CalcTextSize の切り上げ幅 + 末尾バイト削り・最低 2 バイト）と ASCII で同じ結果になること。
+void TestLegacyEquivalence()
+{
+    const float cw[] = { 6.7f, 7.0f, 5.3f, 8.13f };
+    for (const float perChar : cw)
+    {
+        const auto widthOf = [&](const std::string& str) { return text::CeilLikeCalcTextSize(perChar * static_cast<float>(str.size()) * 0.9f + 0.37f); };
+        for (int len = 1; len <= 30; ++len)   // 空文字列は EllipsizeEnd が即座に空を返すので対象外
+        {
+            std::string name;
+            for (int i = 0; i < len; ++i) name += static_cast<char>('a' + i % 26);
+            for (float maxW = 0.0f; maxW < 260.0f; maxW += 0.6f)
+            {
+                std::string old = name;   // 旧ループ（AssetBrowserPanel）
+                if (widthOf(old) > maxW)
+                {
+                    while (old.size() > 2 && widthOf(old + "â¦") > maxW) old.pop_back();
+                    old += "â¦";
+                }
+                const float usable = std::floor(maxW);
+                const text::FitResult fr = text::FitEndBytesLegacy(name, usable, [&](std::string_view sv, bool ell)
+                {
+                    std::string x(sv); if (ell) x += "â¦"; return widthOf(x);
+                });
+                std::string now = name.substr(0, fr.keepBytes);
+                if (fr.ellipsis) now += "â¦";
+                CHECKF(now == old, "legacy mismatch len=%d maxW=%.1f perChar=%.2f", len, maxW, perChar);
+            }
+        }
+    }
+}
+
 // 黄の指針（ProgressRole::StatusJob）を使ってよいのはステータスバー（A7）の 1 か所だけ。
 void TestStatusJobBudget()
 {
@@ -263,6 +295,7 @@ int main()
     TestInvalidUtf8();
     TestComplexity();
     TestStepToward();
+    TestLegacyEquivalence();
     TestStatusJobBudget();
     if (g_fail == 0) std::printf("text_fit_test: ALL PASS\n");
     return g_fail == 0 ? 0 : 1;

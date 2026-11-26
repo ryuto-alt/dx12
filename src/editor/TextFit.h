@@ -14,7 +14,9 @@
 // ★「…」だけでも maxW に入らないときは空文字列を返す。
 // ★戻りは std::string（PP は string_view だったが、LRU の追い出しで view が無効になるのを避けて値で返す。
 //   短い名前のコピーのみで、計測のキャッシュで得をする部分は変わらない）。
-// ★フォント（アトラス）を作り直したら text::ClearEllipsizeCache() を呼ぶこと（キーは ImFont::FontId + サイズ + 幅）。
+// ★UI スレッド専用（キャッシュは static・ロック無し）。キーは ImFont のポインタ + サイズ + 幅 + 計測方式なので、書体を切り替えても古い結果は返らない
+//   （アトラスを作り直しても同じ書体・同じサイズの字幅は変わらない）。明示的に捨てたいときは text::ClearEllipsizeCache()。
+// ★matchCalcTextSize = true は旧アセットブラウザと同じ判定（CalcTextSize の切り上げ幅・最低 2 バイト）。
 //
 // アルゴリズム本体（FitEndBytes）は計測関数を受け取るテンプレートで、ImGui・フォント無しでテストできる。
 
@@ -147,33 +149,82 @@ FitResult FitEndBytes(std::string_view s, float maxW, Measure&& measure)
     return r;
 }
 
+// ImGui::CalcTextSize と同じ丸め（imgui 1.92: IM_TRUNC(x + 0.99999f) = 整数 px へ切り上げ）。
+inline float CeilLikeCalcTextSize(float x) { return std::floor(x + 0.99999f); }
+
+// 旧アセットブラウザの省略ループ（CalcTextSize で測り、末尾から 1 バイトずつ削る）と同じ判定をクラスタ境界で行う版。
+//   ・全文が収まる（ceil 幅 <= maxW）ならそのまま。
+//   ・収まらなければ、(prefix + "…") の幅（結合して測る）が収まる最長の prefix。最低 2 バイトは残す。
+// measureJoined(std::string_view prefix, bool withEllipsis) -> 幅（丸め済み）。ASCII では旧ループと結果が一致する。
+template <class MeasureJoined>
+FitResult FitEndBytesLegacy(std::string_view s, float maxW, MeasureJoined&& measureJoined)
+{
+    FitResult r;
+    r.keepBytes = s.size();
+    if (s.empty()) return r;
+    ++r.measureCalls;
+    if (measureJoined(s, false) <= maxW) return r;
+    r.ellipsis = true;
+    std::vector<size_t> bounds;
+    detail::ClusterBoundaries(s, bounds);
+    const size_t n = bounds.size() - 1;                     // 塊の数
+    size_t kmin = 1;                                        // 2 バイト以上を残す最小の塊数
+    while (kmin < n && bounds[kmin] < 2) ++kmin;
+    if (n <= kmin || bounds[kmin] >= s.size()) { r.keepBytes = s.size(); return r; }   // 旧: size<=2 は削らず「…」だけ足す
+    ++r.measureCalls;
+    if (measureJoined(s.substr(0, bounds[kmin]), true) > maxW) { r.keepBytes = bounds[kmin]; return r; }
+    size_t lo = kmin, hi = n;                               // lo: 入る / hi: 入らない（全文 + 「…」は入らない前提）
+    while (lo + 1 < hi)
+    {
+        const size_t mid = (lo + hi) / 2;
+        ++r.measureCalls;
+        if (measureJoined(s.substr(0, bounds[mid]), true) <= maxW) lo = mid; else hi = mid;
+    }
+    r.keepBytes = bounds[lo];
+    return r;
+}
+
 namespace detail
 {
 struct CacheKey
 {
     std::string text;
-    uint32_t fontId = 0;
+    uintptr_t fontPtr = 0;
     uint32_t sizeBits = 0;
-    int32_t  widthQ = 0;     // maxW を 1/4 px に切り捨てた値（結果は常に maxW 以下の側へ倒れる）
-    bool operator==(const CacheKey& o) const
-    { return fontId == o.fontId && sizeBits == o.sizeBits && widthQ == o.widthQ && text == o.text; }
+    int32_t  widthQ = 0;     // 既定: maxW を 1/4 px に切り捨て / legacy: 整数 px に切り捨て（整数幅との比較と等価）
+    bool     legacy = false;
 };
+struct CacheKeyView
+{
+    std::string_view text;
+    uintptr_t fontPtr; uint32_t sizeBits; int32_t widthQ; bool legacy;
+};
+inline size_t HashKey(std::string_view text, uintptr_t fp, uint32_t sb, int32_t wq, bool lg)
+{
+    size_t h = std::hash<std::string_view>{}(text);
+    const auto mix = [&](uint64_t v) { h ^= static_cast<size_t>(v) + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2); };
+    mix(fp); mix(sb); mix(static_cast<uint32_t>(wq)); mix(lg ? 1u : 0u);
+    return h;
+}
 struct CacheKeyHash
 {
-    size_t operator()(const CacheKey& k) const
-    {
-        size_t h = std::hash<std::string_view>{}(k.text);
-        const auto mix = [&](uint64_t v) { h ^= static_cast<size_t>(v) + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2); };
-        mix(k.fontId); mix(k.sizeBits); mix(static_cast<uint32_t>(k.widthQ));
-        return h;
-    }
+    using is_transparent = void;
+    size_t operator()(const CacheKey& k) const { return HashKey(k.text, k.fontPtr, k.sizeBits, k.widthQ, k.legacy); }
+    size_t operator()(const CacheKeyView& k) const { return HashKey(k.text, k.fontPtr, k.sizeBits, k.widthQ, k.legacy); }
+};
+struct CacheKeyEq
+{
+    using is_transparent = void;
+    template <class A, class B>
+    bool operator()(const A& a, const B& b) const
+    { return a.fontPtr == b.fontPtr && a.sizeBits == b.sizeBits && a.widthQ == b.widthQ && a.legacy == b.legacy && a.text == b.text; }
 };
 struct Cache
 {
     static constexpr size_t kCapacity = 256;
     using Entry = std::pair<CacheKey, std::string>;
     std::list<Entry> lru;   // 先頭 = 最近使った
-    std::unordered_map<CacheKey, std::list<Entry>::iterator, CacheKeyHash> map;
+    std::unordered_map<CacheKey, std::list<Entry>::iterator, CacheKeyHash, CacheKeyEq> map;
     uint64_t hits = 0, misses = 0;
 };
 inline Cache& TheCache() { static Cache c; return c; }
@@ -188,20 +239,20 @@ inline size_t EllipsizeCacheSize() { return detail::TheCache().map.size(); }
 inline uint64_t EllipsizeCacheHits() { return detail::TheCache().hits; }
 inline uint64_t EllipsizeCacheMisses() { return detail::TheCache().misses; }
 
-// font のサイズ size（物理 px）で utf8 を maxW（物理 px）に収める。収まるならそのまま。
-inline std::string EllipsizeEnd(std::string_view utf8, float maxW, ImFont* font, float size)
+// font のサイズ size（物理 px）で utf8 を maxW（物理 px）に収める。収まるならそのまま。UI スレッド専用（ロック無し）。
+// matchCalcTextSize = true: 旧 UI（ImGui::CalcTextSize の切り上げ幅 + 末尾バイト削り）と同じ判定にする（アセットブラウザ用）。
+inline std::string EllipsizeEnd(std::string_view utf8, float maxW, ImFont* font, float size, bool matchCalcTextSize = false)
 {
     if (utf8.empty()) return std::string();
     if (!font) font = ImGui::GetFont();
     detail::Cache& c = detail::TheCache();
 
-    detail::CacheKey key;
-    key.text.assign(utf8.data(), utf8.size());
-    key.fontId = font ? static_cast<uint32_t>(font->FontId) : 0u;
-    std::memcpy(&key.sizeBits, &size, sizeof(float));
-    key.widthQ = static_cast<int32_t>(maxW <= 0.0f ? -1.0f : std::floor(maxW * 4.0f));
+    detail::CacheKeyView kv{ utf8, reinterpret_cast<uintptr_t>(font), 0u, 0, matchCalcTextSize };
+    std::memcpy(&kv.sizeBits, &size, sizeof(float));
+    const float q = matchCalcTextSize ? 1.0f : 4.0f;
+    kv.widthQ = static_cast<int32_t>(maxW <= 0.0f ? -1.0f : std::floor(maxW * q));
 
-    if (const auto it = c.map.find(key); it != c.map.end())
+    if (const auto it = c.map.find(kv); it != c.map.end())
     {
         c.lru.splice(c.lru.begin(), c.lru, it->second);
         ++c.hits;
@@ -209,21 +260,37 @@ inline std::string EllipsizeEnd(std::string_view utf8, float maxW, ImFont* font,
     }
     ++c.misses;
 
-    // キーの幅（1/4 px 切り捨て）で計算する = キャッシュ命中時と未命中時で結果が一致する。
-    const float usableW = static_cast<float>(key.widthQ) * 0.25f;
-    const auto measure = [&](std::string_view sv) -> float
-    {
-        return font->CalcTextSizeA(size, FLT_MAX, 0.0f, sv.data(), sv.data() + sv.size()).x;
-    };
-    const FitResult fr = FitEndBytes(utf8, usableW, measure);
+    // キーの幅（切り捨て）で計算する = キャッシュ命中時と未命中時で結果が一致する。
+    const float usableW = static_cast<float>(kv.widthQ) / q;
     std::string out;
-    if (!fr.fits) out.clear();
-    else
+    if (matchCalcTextSize)
     {
+        std::string tmp;
+        const auto measure = [&](std::string_view sv, bool ell) -> float
+        {
+            tmp.assign(sv.data(), sv.size());
+            if (ell) tmp += kEllipsis;
+            return CeilLikeCalcTextSize(font->CalcTextSizeA(size, FLT_MAX, 0.0f, tmp.c_str(), tmp.c_str() + tmp.size()).x);
+        };
+        const FitResult fr = FitEndBytesLegacy(utf8, usableW, measure);
         out.assign(utf8.data(), fr.keepBytes);
         if (fr.ellipsis) out += kEllipsis;
     }
+    else
+    {
+        const auto measure = [&](std::string_view sv) -> float
+        {
+            return font->CalcTextSizeA(size, FLT_MAX, 0.0f, sv.data(), sv.data() + sv.size()).x;
+        };
+        const FitResult fr = FitEndBytes(utf8, usableW, measure);
+        if (fr.fits)
+        {
+            out.assign(utf8.data(), fr.keepBytes);
+            if (fr.ellipsis) out += kEllipsis;
+        }
+    }
 
+    detail::CacheKey key{ std::string(utf8), kv.fontPtr, kv.sizeBits, kv.widthQ, kv.legacy };
     c.lru.emplace_front(std::move(key), out);
     c.map[c.lru.front().first] = c.lru.begin();
     if (c.lru.size() > detail::Cache::kCapacity)
