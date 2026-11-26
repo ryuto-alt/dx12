@@ -66,6 +66,10 @@ public:
         GpuMarker::BeginEvent(cmd, name, len);
         if (m_timer && m_cmd) m_timer->Begin(m_cmd, m_scope);
     }
+    // 文字列リテラル用。長さは N-1（コンパイル時。strlen なし）。GpuScope(cmd, timer, scope, "TestPass") と書ける。
+    template<size_t N>
+    GpuScope(ID3D12GraphicsCommandList* cmd, GpuTimer* timer, GpuTimer::Scope scope, const char (&name)[N])
+        : GpuScope(cmd, timer, scope, name, static_cast<u32>(N - 1)) {}
     ~GpuScope()
     {
         if (m_hasTimer && m_cmd) m_timer->End(m_cmd, m_scope);

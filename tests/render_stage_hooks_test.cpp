@@ -75,14 +75,19 @@ int main()
 
         StageCtx ctx;
         g_log.clear();
+        GpuMarker::ResetStats();
         reg.Run(Stage::AfterTranslucent, ctx);
         CHECK(g_log == "C_glass@AfterTranslucent;V_vfx@AfterTranslucent;V2_vfx@AfterTranslucent;B_bdb@AfterTranslucent;");
+        CHECK(GpuMarker::Stats().begins == 1 && GpuMarker::Stats().ends == 1);   // 複数登録でもステージ 1 つにつきイベント 1 対（W05-27）
+        CHECK(GpuMarker::Stats().depth == 0);
         g_log.clear();
         reg.Run(Stage::AfterDepthPrepass, ctx);
         CHECK(g_log == "V_vfx@AfterDepthPrepass;");
         g_log.clear();
+        GpuMarker::ResetStats();
         reg.Run(Stage::BeforeShadows, ctx);   // 空のステージは何もしない
         CHECK(g_log.empty());
+        CHECK(GpuMarker::Stats().begins == 0 && GpuMarker::Stats().ends == 0);   // 空のステージはイベントを出さない
         CHECK(reg.TotalVramBytes() == 400);
 
         auto order = reg.OrderOf(Stage::AfterTranslucent);

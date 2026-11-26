@@ -3,6 +3,7 @@
 #include "core/Types.h"
 
 #include <directx/d3d12.h>
+#include <cstddef>
 
 namespace dx12e
 {
@@ -37,6 +38,9 @@ class GpuEventScope
 {
 public:
     GpuEventScope(ID3D12GraphicsCommandList* cmd, const char* name, u32 len) : m_cmd(cmd) { GpuMarker::BeginEvent(cmd, name, len); }
+    // 文字列リテラル用。長さは N-1（コンパイル時）。
+    template<size_t N>
+    GpuEventScope(ID3D12GraphicsCommandList* cmd, const char (&name)[N]) : GpuEventScope(cmd, name, static_cast<u32>(N - 1)) {}
     ~GpuEventScope() { GpuMarker::EndEvent(m_cmd); }
     GpuEventScope(const GpuEventScope&) = delete;
     GpuEventScope& operator=(const GpuEventScope&) = delete;

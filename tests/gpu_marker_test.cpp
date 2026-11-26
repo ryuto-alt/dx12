@@ -37,6 +37,14 @@ int main()
     CHECK(GpuMarker::Stats().maxDepth == 3);
 
     // 早期 return
+    // 文字列リテラル版（長さ N-1 を自動で渡す）。
+    GpuMarker::ResetStats();
+    {
+        GpuScope lit(nullptr, nullptr, GpuTimer::Total, "TestPass");
+        GpuEventScope ev(nullptr, "Ev");
+        CHECK(GpuMarker::Stats().depth == 2);
+    }
+    CHECK(GpuMarker::Stats().begins == 2 && GpuMarker::Stats().ends == 2 && GpuMarker::Stats().depth == 0);
     GpuMarker::ResetStats();
     CHECK(Early(true) == 1);
     CHECK(Early(false) == 0);
