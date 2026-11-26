@@ -3,6 +3,7 @@
 #include "graphics/GraphicsDevice.h"
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "graphics/DredReport.h"
 
 #include <cstring>
 #include <vector>
@@ -37,6 +38,7 @@ void Texture::Initialize(
         desc,
         D3D12_RESOURCE_STATE_COPY_DEST,
         allocDesc);
+    dred::NameTexture(m_resource.Get(), L"Texture", desc.Width, desc.Height, desc.MipLevels, desc.Format);   // W05-05: ページフォルトの割り当て名
 
     // 2. 全 subresource のフットプリント取得でアップロードバッファサイズ計算
     //    （cube/mip 等の多 subresource に対応。2D 単枚は count=1 で従来同様）
@@ -62,6 +64,7 @@ void Texture::Initialize(
     uploadDesc.Layout           = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     uploadDesc.Flags            = D3D12_RESOURCE_FLAG_NONE;
 
+    // 注: m_uploadBuffer（と Buffer.cpp の staging）は短命なので SetName しない（ページフォルトの対象になりにくい）。
     D3D12_HEAP_PROPERTIES uploadHeapProps{};
     uploadHeapProps.Type                 = D3D12_HEAP_TYPE_UPLOAD;
     uploadHeapProps.CPUPageProperty      = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;

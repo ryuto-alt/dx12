@@ -40,6 +40,17 @@ public:
     // 所有権を受け取る。alloc は呼び出し側でメンバを nullptr にすること。
     static void Defer(Microsoft::WRL::ComPtr<ID3D12Resource> res, D3D12MA::Allocation* alloc);
 
+    // 任意の後始末を、現在投入中のフレームのフェンス完了後に実行する(W05-06: ディスクリプタの遅延返却)。
+    // Enable 前/Disable 後は即時に実行する。fn は Collect/FlushAll の中で、
+    // mutex の外で呼ばれる(fn から Defer / DescriptorHeap::Free を呼んでもよい)。
+    // <functional> を避けるため、関数ポインタ + 3 つのペイロードで受ける(std::function の確保も無い)。
+    using Callback = void (*)(u64 a, u32 b, u32 c);
+    static void Defer(Callback fn, u64 a, u32 b, u32 c);
+
+    // 診断: 現在キューに積まれている件数と、その最大値(Enable 以降)。
+    static size_t GetPendingCount();
+    static size_t GetPeakPendingCount();
+
     // 未確定(フェンス未割当)の登録分に「このフェンス値まで待て」を刻む。フレーム送出直後に呼ぶ。
     static void Stamp(u64 fenceValue);
 
@@ -54,6 +65,10 @@ private:
     {
         Microsoft::WRL::ComPtr<ID3D12Resource> res;
         D3D12MA::Allocation*                   alloc = nullptr;
+        Callback                               fn = nullptr;
+        u64                                    pa = 0;
+        u32                                    pb = 0;
+        u32                                    pc = 0;
         u64                                    fence = 0;   // 0 = 未確定(Stamp待ち)
     };
 
@@ -62,6 +77,7 @@ private:
     static std::mutex         s_mutex;
     static std::vector<Entry> s_entries;
     static bool               s_enabled;
+    static size_t             s_peak;
 };
 
 } // namespace dx12e
