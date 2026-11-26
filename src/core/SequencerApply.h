@@ -68,6 +68,9 @@ struct PostFieldInfo
     void (*set)(PostProcessSettings&, int comp, double v) = nullptr;   // S は nullptr(文字列は補間しない)
 };
 const std::vector<PostFieldInfo>& PostFieldTable();
+// t[begin, end) の onIndex を決める。「XxxOn」の bool は、続く値フィールド（次の XxxOn まで）の ON スイッチ。
+// 範囲の先頭で「直前の XxxOn」を忘れる（V1 の末尾の debandOn が V2 の値に継承されないように）。テスト用にも公開。
+void AssignPostOnIndices(std::vector<PostFieldInfo>& t, std::size_t begin, std::size_t end);
 int FindPostField(std::string_view name);            // -1 = 無い
 
 struct PostWrite
