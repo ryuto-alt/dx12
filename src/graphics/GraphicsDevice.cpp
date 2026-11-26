@@ -1,13 +1,46 @@
 #include "GraphicsDevice.h"
 
+#include "DeviceCaps.h"
+
 #include "core/Assert.h"
 #include "core/Logger.h"
+#include "core/PathResolver.h"
 #include "core/Window.h"
+#include "graphics/AgilityRuntime.h"
+
+#include <filesystem>
 
 using Microsoft::WRL::ComPtr;
 
 namespace dx12e
 {
+
+namespace
+{
+// 決まった終了コード（Agility のランタイムが無くデバイスを作れなかった）。AgilityMissingRedist が見る。
+constexpr UINT kExitMissingAgility = 0x2A;
+
+// <exeDir>\D3D12\D3D12Core.dll が無く、in-box のランタイムが lock の SDK 未満でデバイスを作れなかった。
+// GameRuntime（game.pak が exe の隣にある配布ゲーム）は利用者向けのメッセージを出す。エディタはログだけ。
+[[noreturn]] void FailMissingAgility(HRESULT hr)
+{
+    Logger::Error("D3D12 runtime: D3D12/D3D12Core.dll が <exe>/D3D12/ に無く、デバイスを作れません（0x{:08X}）。"
+                  "再インストールしてください。", static_cast<unsigned>(hr));
+    Logger::Shutdown();
+    wchar_t exe[MAX_PATH * 4] = {};
+    const DWORD n = ::GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+    const std::filesystem::path pak = std::filesystem::path(std::wstring(exe, n)).parent_path() / L"game.pak";
+    std::error_code ec;
+    if (std::filesystem::exists(pak, ec))
+    {
+        ::MessageBoxW(nullptr, L"D3D12 フォルダがありません。再インストールしてください。", L"起動できません",
+                      MB_OK | MB_ICONERROR);
+    }
+    ::ExitProcess(kExitMissingAgility);
+}
+} // namespace
+
+GraphicsDevice::GraphicsDevice() = default;
 
 GraphicsDevice::~GraphicsDevice()
 {
@@ -18,8 +51,9 @@ GraphicsDevice::~GraphicsDevice()
     }
 }
 
-void GraphicsDevice::Initialize(Window& /*window*/)
+void GraphicsDevice::Initialize(Window& /*window*/, const GraphicsDeviceOptions& options)
 {
+    m_options = options;
     // --- Debug Layer ---
     // ★Debug ビルド限定にしない。このリポジトリでは Debug ビルドが実際には作られておらず
     //   （build/debug が存在しない）、デバッグレイヤの指摘が「誰にも見えない」状態が続いていた。
@@ -45,6 +79,22 @@ void GraphicsDevice::Initialize(Window& /*window*/)
             debugController->EnableDebugLayer();
             debugController->SetEnableGPUBasedValidation(wantGbv ? TRUE : FALSE);
             Logger::Info("D3D12 Debug Layer enabled (GBV={})", wantGbv ? "on" : "off");
+            {
+                // どの d3d12SDKLayers.dll が読み込まれたか（Agility 版なら <exe>\D3D12\ のはず）をログへ出す。
+                const std::wstring layers = LoadedModulePath(L"d3d12SDKLayers.dll");
+                int n = WideCharToMultiByte(CP_UTF8, 0, layers.c_str(), static_cast<int>(layers.size()), nullptr, 0, nullptr, nullptr);
+                std::string utf8(static_cast<size_t>(n), '\0');
+                if (n > 0)
+                    WideCharToMultiByte(CP_UTF8, 0, layers.c_str(), static_cast<int>(layers.size()), utf8.data(), n, nullptr, nullptr);
+                Logger::Info("D3D12 SDKLayers: {}", utf8.empty() ? std::string("(未読み込み)") : utf8);
+            }
+        }
+        else
+        {
+            // 黙って続けると「デバッグレイヤーのエラー 0」が空振りで合格する。見えるようにする。
+            NoteDebugLayerFailure();
+            Logger::Error("D3D12 Debug Layer を要求しましたが D3D12GetDebugInterface が失敗しました"
+                          "（<exe>/D3D12/d3d12SDKLayers.dll が無い、または Core と版が違う）");
         }
     }
 
@@ -81,6 +131,13 @@ void GraphicsDevice::Initialize(Window& /*window*/)
         Logger::Info("GPU selected: {}", adapterName);
     }
 
+    // --- Agility のランタイムの有無（デバイスを作る前に確かめる）---
+    // in-box が lock の SDK 未満だとデバイス作成が 0x887E0003 で失敗するので、先に原因をログへ出す。
+    const bool redistPresent = AgilityRedistPresent();
+    if (!redistPresent)
+        Logger::Error("D3D12 runtime: <exe>/D3D12/D3D12Core.dll がありません。in-box のランタイムに縮退します"
+                      "（SDK {} 未満だとデバイスを作れません）", RequiredAgilitySdk());
+
     // --- Device Creation ---
     // ★フィーチャーレベルは高い順に試して落ちる。12_1 を無条件要求すると、
     //   D3D12 は動くのに FL は 12_0 止まり、という GPU（AMD GCN/Polaris、Intel Gen9 など）で
@@ -115,7 +172,27 @@ void GraphicsDevice::Initialize(Window& /*window*/)
                 break;
             }
         }
+        if (FAILED(lastHr) && !redistPresent && lastHr == static_cast<HRESULT>(0x887E0003L))
+            FailMissingAgility(lastHr);
         ThrowIfFailed(lastHr);
+    }
+
+    // --- 読み込まれたランタイムのログ（合否は D3D12Core.dll が export する SDK 版だけで判定する）---
+    {
+        const AgilityInfo ai = QueryAgilityRuntime();
+        const std::string path = PathResolver::WideToUtf8(ai.corePath);
+        const std::string fver = PathResolver::WideToUtf8(ai.fileVersion);
+        Logger::Info("D3D12 runtime: {} {} (loaded SDK {}, required {}, redist={})", path, fver,
+                     ai.loadedSdkVersion, RequiredAgilitySdk(), ai.fromRedistDir ? "yes" : "no");
+        if (ai.loadedSdkVersion < RequiredAgilitySdk())
+            Logger::Error("D3D12 runtime: 読み込まれた SDK {} が必要な {} 未満です（Agility のランタイムで動いていません）",
+                          ai.loadedSdkVersion, RequiredAgilitySdk());
+        else if (!ai.fromRedistDir)
+            Logger::Info("D3D12 runtime: <exe>/D3D12/ ではなく OS 同梱のランタイムが選ばれました（SDK {} 以上なので問題なし）",
+                         RequiredAgilitySdk());
+        else if (!ai.sha256Match)
+            Logger::Warn("D3D12 runtime: D3D12Core.dll の SHA256 が agility.lock.json と一致しません");
+        m_device.As(&m_device10);   // 取れなければ nullptr のまま（F1 以降が見る）
     }
 
     // --- Info Queue (Debug) ---
@@ -160,7 +237,9 @@ void GraphicsDevice::Initialize(Window& /*window*/)
         D3D12MA::ALLOCATOR_DESC allocatorDesc{};
         allocatorDesc.pDevice  = m_device.Get();
         allocatorDesc.pAdapter = m_adapter.Get();
-        allocatorDesc.Flags    = D3D12MA::ALLOCATOR_FLAG_NONE;
+        // F0 は D3D12MA 3.3 の配置の自動変更（タイトなアライメント）を使わない。VRAM の統計・エイリアス・
+        // スコアカードの数字が動くため。有効にするのは F1 で、個別の A/B と VRAM の差分を取ってから。
+        allocatorDesc.Flags    = D3D12MA::ALLOCATOR_FLAG_DONT_USE_TIGHT_ALIGNMENT;
 
         ThrowIfFailed(D3D12MA::CreateAllocator(&allocatorDesc, &m_allocator));
         Logger::Info("D3D12 Memory Allocator initialized");
@@ -174,17 +253,12 @@ void GraphicsDevice::Initialize(Window& /*window*/)
 // SupportsInlineRaytracing() だけを見て安全に分岐できるようにする。
 void GraphicsDevice::QueryCapabilities()
 {
-    // --- ① レイトレーシング Tier の実値 ---
-    {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
-        HRESULT hr = m_device->CheckFeatureSupport(
-            D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5));
-        if (SUCCEEDED(hr))
-            m_raytracingTier = options5.RaytracingTier;
-        m_dxrSupported = (m_raytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED);
-    }
+    // --- 全ての問い合わせは DeviceCaps（唯一の正）で 1 回だけ行う。以下の getter 用メンバはその写し ---
+    m_caps = std::make_unique<DeviceCaps>(QueryDeviceCaps(m_device.Get()));
+    DeviceCaps& caps = *m_caps;
 
-    // --- ①' DXR 非対応 GPU のシミュレーション（環境変数 DX12_DISABLE_DXR=1）---
+    // --- ① レイトレーシング Tier の実値 ---
+    // DXR 非対応 GPU のシミュレーション（環境変数 DX12_DISABLE_DXR=1）。
     // ★フォールバック経路（計画09 §5.3）を対応 GPU 上で実際に踏むための逃げ道。
     //   Tier を丸ごと NOT_SUPPORTED に落とすので、ログ・エディタ UI・診断・
     //   レンダリングの全経路が「本当に非対応な GPU」とまったく同じ挙動になる。
@@ -193,72 +267,39 @@ void GraphicsDevice::QueryCapabilities()
         size_t len = 0;
         if (::getenv_s(&len, buf, sizeof(buf), "DX12_DISABLE_DXR") == 0 && len > 0 && buf[0] == '1')
         {
-            m_raytracingTier = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
-            m_dxrSupported   = false;
+            caps.raytracingTier     = 0;
+            caps.omm                = false;
+            caps.serActuallyReorders = false;
             Logger::Warn("DX12_DISABLE_DXR=1 のため DXR を非対応として扱います（フォールバック検証用）");
         }
     }
+    m_raytracingTier = static_cast<D3D12_RAYTRACING_TIER>(caps.raytracingTier);
+    m_dxrSupported   = (m_raytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED);
 
-    // --- ② 最高シェーダモデル ---
-    // CheckFeatureSupport は「ランタイムが知らない SM 値」を渡すと E_INVALIDARG を返す。
-    // 公式ドキュメントの推奨どおり、高い方から 1 段ずつ下げて再試行する
-    // （成功時は「渡した値以下で、かつデバイスが対応する最高値」が書き戻される）。
-    {
-        static constexpr D3D_SHADER_MODEL kProbe[] = {
-            D3D_SHADER_MODEL_6_9, D3D_SHADER_MODEL_6_8, D3D_SHADER_MODEL_6_7,
-            D3D_SHADER_MODEL_6_6, D3D_SHADER_MODEL_6_5, D3D_SHADER_MODEL_6_4,
-            D3D_SHADER_MODEL_6_3, D3D_SHADER_MODEL_6_2, D3D_SHADER_MODEL_6_1,
-            D3D_SHADER_MODEL_6_0,
-        };
-        for (D3D_SHADER_MODEL sm : kProbe)
-        {
-            D3D12_FEATURE_DATA_SHADER_MODEL data{};
-            data.HighestShaderModel = sm;
-            if (SUCCEEDED(m_device->CheckFeatureSupport(
-                    D3D12_FEATURE_SHADER_MODEL, &data, sizeof(data))))
-            {
-                m_highestShaderModel = data.HighestShaderModel;
-                break;
-            }
-        }
-    }
-
-    // --- ③ DXR 1.2（SER）。今は使わないがログに出しておく（計画09 §3.3 / R18）---
-    if (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_2)
-    {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS22 options22{};
-        if (SUCCEEDED(m_device->CheckFeatureSupport(
-                D3D12_FEATURE_D3D12_OPTIONS22, &options22, sizeof(options22))))
-        {
-            m_serActuallyReorders = (options22.ShaderExecutionReorderingActuallyReorders != FALSE);
-        }
-    }
-
-    // --- ③.5 リソースバインディング Tier（SM 6.6 Dynamic Resources の必要条件）---
-    // 仕様が要求するのは「SM 6.6」かつ「Tier 3」の 2 つだけ。FL 12_2 の GPU は Tier 3 が必須。
-    {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS opts{};
-        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &opts, sizeof(opts))))
-            m_resourceBindingTier = opts.ResourceBindingTier;
-    }
+    // --- ② 最高シェーダモデル / ③ DXR 1.2（SER）/ ③.5 リソースバインディング Tier ---
+    m_highestShaderModel  = static_cast<D3D_SHADER_MODEL>(caps.highestShaderModel);
+    m_serActuallyReorders = caps.serActuallyReorders;
+    m_resourceBindingTier = static_cast<D3D12_RESOURCE_BINDING_TIER>(caps.resourceBindingTier);
 
     // --- ③.6 メッシュシェーダ Tier（仮想ジオメトリ P3）。DX12_DISABLE_MESHSHADER=1 で非対応として扱う ---
     {
-        D3D12_FEATURE_DATA_D3D12_OPTIONS7 o7{};
-        if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &o7, sizeof(o7))))
-            m_meshShaderTier = o7.MeshShaderTier;
         char buf[8]{};
         size_t len = 0;
         if (::getenv_s(&len, buf, sizeof(buf), "DX12_DISABLE_MESHSHADER") == 0 && len > 0 && buf[0] == '1')
         {
-            m_meshShaderTier = D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+            caps.meshShaderTier = 0;
+            caps.meshShader     = false;
             Logger::Warn("DX12_DISABLE_MESHSHADER=1 のためメッシュシェーダを非対応として扱います（縮退検証用。VG はプロキシ描画になる）");
         }
+        m_meshShaderTier = static_cast<D3D12_MESH_SHADER_TIER>(caps.meshShaderTier);
         Logger::Info("VG: MeshShaderTier={} / ShaderModel>=6.5={} → メッシュシェーダ {}",
                      m_meshShaderTier >= D3D12_MESH_SHADER_TIER_1 ? "1" : "none",
                      m_highestShaderModel >= D3D_SHADER_MODEL_6_5 ? "yes" : "no",
                      SupportsMeshShaders() ? "使用可" : "使用不可");
     }
+
+    // --- ③.7 caps の 1 行要約（全項目は DeepDiagnostics `caps` と MCP get_device_caps）。この段では読むだけ ---
+    Logger::Info("{}", DeviceCapsSummary(caps));
 
     // --- ④ 起動ログ 1 行（dx12_get_log / DeepDiagnostics `dxr` の一次情報）---
     const int tierMajor = (m_raytracingTier >= D3D12_RAYTRACING_TIER_1_0)

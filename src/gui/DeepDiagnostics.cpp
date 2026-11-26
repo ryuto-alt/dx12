@@ -4,10 +4,12 @@
 #include "animation/Animator.h"
 #include "animation/Skeleton.h"
 #include "animation/SkinningBuffer.h"
+#include "core/AppAccess.h"
 #include "core/Application.h"
 #include "core/PathResolver.h"
 #include "core/Version.h"
 #include "ecs/Components.h"
+#include "graphics/DeviceCaps.h"
 #include "renderer/DrawItem.h"
 #include "renderer/Mesh.h"
 #include "resource/ModelLoader.h"
@@ -2300,11 +2302,41 @@ DeepDiagReport DeepDiag::HiZOcclusion(Application& app)
     return r;
 }
 
+namespace
+{
+// W05-04: デバイスの機能（DeviceCaps）の全項目。判定は GraphicsDevice が作成時に 1 回だけ行ったもの（読むだけ）。
+DeepDiagReport CapsReport(Application& app)
+{
+    DeepDiagReport r;
+    r.title = "デバイスの機能（caps）";
+    const DeviceCaps* caps = AppAccess::GetDeviceCaps(app);
+    ++r.checked;
+    if (!caps)
+    {
+        r.Add(1, "デバイスの caps がまだありません（GraphicsDevice が未初期化）");
+        return r;
+    }
+    r.Add(0, DeviceCapsSummary(*caps));
+    for (const DeviceCapsField& f : DeviceCapsFields(*caps))
+    {
+        char buf[96];
+        if (f.kind == DeviceCapsField::Kind::Hex)       std::snprintf(buf, sizeof(buf), "%s = 0x%llX", f.name, static_cast<unsigned long long>(f.value));
+        else if (f.kind == DeviceCapsField::Kind::Bool) std::snprintf(buf, sizeof(buf), "%s = %s", f.name, f.value ? "yes" : "no");
+        else                                            std::snprintf(buf, sizeof(buf), "%s = %llu", f.name, static_cast<unsigned long long>(f.value));
+        r.Add(0, buf);
+    }
+    // SM 6.9 は Agility SDK のランタイムで動いていてドライバが対応しているときだけ。6.8 止まりは注意（ログに理由を残す）。
+    if (caps->highestShaderModel < 0x69)
+        r.Add(1, "最高シェーダモデルが 6.9 未満です（ドライバが古い、または Agility のランタイムで動いていない可能性）");
+    return r;
+}
+} // namespace
+
 std::vector<std::string> DeepDiag::AllCheckIds()
 {
     return { "shaders", "textures", "models", "gamma", "scene_assets",
              "entity_refs", "lighting", "terrain", "picking", "instancing",
-             "scripts", "dxr", "render_health", "hiz_occlusion" };
+             "scripts", "dxr", "render_health", "hiz_occlusion", "caps" };
 }
 
 nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
@@ -2361,6 +2393,7 @@ nlohmann::json DeepDiag::RunAll(Application& app, const std::string& only)
     if (pick("dxr"))          add("dxr",          DeepDiag::Dxr(app));
     if (pick("render_health")) add("render_health", DeepDiag::RenderHealth(app));
     if (pick("hiz_occlusion")) add("hiz_occlusion", DeepDiag::HiZOcclusion(app));
+    if (pick("caps"))         add("caps",         CapsReport(app));
 
     nlohmann::json summary;
     summary["checks"]     = ran;

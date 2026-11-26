@@ -26,6 +26,9 @@ export function makeFakeBuild(dir: string, opts: { exeBytes?: number } = {}): st
   fs.writeFileSync(path.join(dir, "dxil.dll"), Buffer.alloc(50_000, 2));
   fs.writeFileSync(path.join(dir, "GameRuntime.exe"), Buffer.alloc(30_000, 3));
   fs.writeFileSync(path.join(dir, "DX12Engine.pdb"), "pdb");
+  fs.mkdirSync(path.join(dir, "D3D12", "sub"), { recursive: true });   // Agility SDK(W05-42)
+  fs.writeFileSync(path.join(dir, "D3D12", "D3D12Core.dll"), "core");
+  fs.writeFileSync(path.join(dir, "D3D12", "sub", "nested.bin"), "nested");
   fs.mkdirSync(path.join(dir, "shaders"), { recursive: true });
   fs.writeFileSync(path.join(dir, "shaders", "a.cso"), "cso");
   fs.mkdirSync(path.join(dir, "assets", "editor"), { recursive: true });
