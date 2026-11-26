@@ -1,0 +1,46 @@
+{
+  "uvfx": 1,
+  "name": "p_core_fire",
+  "duration": 0,
+  "loop": true,
+  "emitters": [
+    {
+      "name": "flame",
+      "maxParticles": 2048,
+      "spawn": { "rate": 90 },
+      "init": [
+        { "module": "shape", "kind": "disc", "radius": 0.18 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0.9, 1.6], "spread": 12 },
+        { "module": "lifetime", "range": [0.7, 1.3] },
+        { "module": "size", "start": [0.28, 0.42], "end": [0.05, 0.12] },
+        { "module": "color", "start": [3.2, 1.3, 0.35, 1.0], "end": [0.5, 0.05, 0.0, 0.0], "variation": 0.15 },
+        { "module": "rotation", "angle": [0, 360], "rate": [-40, 40] }
+      ],
+      "update": [
+        { "module": "gravity", "value": [0, 1.2, 0] },
+        { "module": "drag", "coefficient": 1.2 },
+        { "module": "curlNoise", "strength": 2.4, "scale": 1.6, "speed": 0.6 }
+      ],
+      "render": { "kind": "sprite", "blend": "additive", "fade": "inout", "softDistance": 0.4, "intensity": 1.0 }
+    },
+    {
+      "name": "sparks",
+      "maxParticles": 512,
+      "spawn": { "rate": 14 },
+      "init": [
+        { "module": "shape", "kind": "sphere", "radius": 0.1 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [1.5, 3.2], "spread": 35 },
+        { "module": "lifetime", "range": [0.8, 1.8] },
+        { "module": "size", "start": [0.025, 0.04], "end": [0.0, 0.01] },
+        { "module": "color", "start": [6.0, 2.4, 0.6, 1.0], "end": [1.5, 0.2, 0.0, 0.0] }
+      ],
+      "update": [
+        { "module": "gravity", "value": [0, -3.0, 0] },
+        { "module": "drag", "coefficient": 0.4 },
+        { "module": "curlNoise", "strength": 3.0, "scale": 2.0, "speed": 0.8 },
+        { "module": "floor", "height": 0.0, "bounce": 0.3, "friction": 0.4 }
+      ],
+      "render": { "kind": "sprite", "blend": "additive", "fade": "quad", "softDistance": 0.2, "intensity": 1.0, "stretch": 1.0 }
+    }
+  ]
+}

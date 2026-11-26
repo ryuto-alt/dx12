@@ -4,6 +4,7 @@
 // ==== lane-A begin ====
 // ==== lane-A end ====
 // ==== lane-B begin ====
+UNO_COMPONENT_SERIALIZER(RegisterVfxComponentSerializer)   // W1-BD4: UnoFX（"vfx"）
 // ==== lane-B end ====
 // ==== lane-C begin ====
 // ==== lane-C end ====
