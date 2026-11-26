@@ -354,6 +354,78 @@ else()
 endif()
 add_test(NAME AutosaveOriginTests COMMAND AutosaveOriginTests)
 
+# --- W05-03: Agility SDK（F0-1）---
+# gpu ラベルのテスト exe（デバイスを作るもの）には、Agility の export とランタイム（D3D12\）と AgilityTestGuard を足す。
+# スタンドアロン構成（cmake -S tests。CI の unit-tests）では uno_agility_* が無いので何もしない。
+if(COMMAND uno_agility_test_exe)
+    function(dx12_agility_wire_gpu_tests)
+        get_property(_tgts DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY BUILDSYSTEM_TARGETS)
+        foreach(_t IN LISTS _tgts)
+            if(NOT TEST ${_t})
+                continue()
+            endif()
+            get_test_property(${_t} LABELS _labels)
+            if("gpu" IN_LIST _labels)
+                uno_agility_test_exe(${_t})
+            endif()
+        endforeach()
+    endfunction()
+    cmake_language(DEFER DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" CALL dx12_agility_wire_gpu_tests)
+
+    # AgilityLoadTests（gpu）: テスト exe から作ったデバイスが Agility のランタイムで動いている。
+    add_executable(AgilityLoadTests agility_load_test.cpp)
+    target_include_directories(AgilityLoadTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(AgilityLoadTests PRIVATE Graphics)
+    if(MSVC)
+        target_compile_options(AgilityLoadTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(AgilityLoadTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME AgilityLoadTests COMMAND AgilityLoadTests)
+    set_tests_properties(AgilityLoadTests PROPERTIES LABELS gpu TIMEOUT 120)
+
+    # AgilityVersionPolicy（GPU 不要）: lock の SDK が 600 以上 700 未満（プレビューを出荷しない）、
+    #   ビルドした exe 2 本の export と同梱 DLL の export と lock の 3 つが一致、D3D12SDKPath、DLL の SHA256。
+    add_executable(AgilityPolicyCheck agility_policy_test.cpp)
+    target_include_directories(AgilityPolicyCheck PRIVATE "${UNO_AGILITY_GEN_DIR}")
+    if(MSVC)
+        target_compile_options(AgilityPolicyCheck PRIVATE /W4 /WX /permissive- /utf-8)
+    endif()
+    add_test(NAME AgilityVersionPolicy
+        COMMAND AgilityPolicyCheck $<TARGET_FILE:DX12Engine> $<TARGET_FILE:GameRuntime>)
+    set_tests_properties(AgilityVersionPolicy PROPERTIES TIMEOUT 60)
+
+    # AgilityGuardNegative（gpu）: AgilityTestGuard が実際に落とす（D3D12\ 無しで 98、継承した UNO_DEBUG_LAYER_FAILED は無視）。
+    find_program(DX12_PWSH_EXE pwsh)
+    if(DX12_PWSH_EXE)
+        add_test(NAME AgilityGuardNegative
+            COMMAND ${DX12_PWSH_EXE} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/agility_guard_negative.ps1
+                    -ExeDir $<TARGET_FILE_DIR:AgilityLoadTests>)
+        set_tests_properties(AgilityGuardNegative PROPERTIES LABELS gpu TIMEOUT 180)
+    endif()
+
+    # AgilityMissingRedist（夜間）: D3D12\ を抜いた一時コピーを --headless で動かし、縮退か決まったコード（0x2A）で終わる。
+    find_program(DX12_PWSH_EXE pwsh)
+    if(DX12_PWSH_EXE)
+        # エンジンの MCP ポートはレーンごとの固定値（worktree_setup.ps1 の表: lane-a 8851 / b 8852 / c 8853 / d 8855）。
+        # 夜間に 2 レーンが同時に回っても衝突しないよう、worktree のフォルダ名から決める（本体は 8859）。
+        get_filename_component(_uno_wt_name "${CMAKE_SOURCE_DIR}" NAME)
+        set(_uno_lane_port 8859)
+        if(_uno_wt_name STREQUAL "lane-a")
+            set(_uno_lane_port 8851)
+        elseif(_uno_wt_name STREQUAL "lane-b")
+            set(_uno_lane_port 8852)
+        elseif(_uno_wt_name STREQUAL "lane-c")
+            set(_uno_lane_port 8853)
+        elseif(_uno_wt_name STREQUAL "lane-d")
+            set(_uno_lane_port 8855)
+        endif()
+        add_test(NAME AgilityMissingRedist
+            COMMAND ${DX12_PWSH_EXE} -NoProfile -File ${CMAKE_CURRENT_SOURCE_DIR}/agility_missing_redist.ps1
+                    -ExeDir $<TARGET_FILE_DIR:DX12Engine> -McpPort ${_uno_lane_port})
+        set_tests_properties(AgilityMissingRedist PROPERTIES LABELS "nightly;gpu" TIMEOUT 180)
+    endif()
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。
