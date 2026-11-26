@@ -10,7 +10,7 @@ export const INSTRUCTIONS = `DX12 自作エンジン(Uno Engine)のエディタ�
 ■ 作る: 1 体ずつ並べず、まとまった配置は dx12_apply_scene_spec(仕様 JSON。差分適用・自動検証・失敗は specPatch で返る)/ dx12_scatter / dx12_batch を使う。動きの確認は dx12_lua_step(仕掛け→進める→読むを 1 回で)。区切りで dx12_quality_gate。
 ■ エディタ操作: まず dx12_editor_command(コマンド表を id で実行。窓の開閉・Undo・作成・ビュー。list で id を引く)と dx12_editor_state(選択・モーダル・Play・未保存)。ウィジェットの値欄などだけ dx12_imgui_*(仮想入力)。削除・保存の上書きなど guarded なコマンドは E_GUARDED の fix に従う。
 ■ 最重要ルール(人の PC 操作を奪わない): 実マウス/実キーボード/前面化/computer-use/SendInput は使わない。エンジンは --background で起動し、UI は dx12_imgui_*(仮想入力)だけで操作する。dx12_mouse_move / dx12_key_press / dx12_ui_click は Play 中のゲーム入力用で、エディタの操作には使わない。
-■ 保存: MCP 接続中はシーンが自動保存される。シーン JSON を外部で書く前は dx12_ping で sceneDirty:false を確認し、書いたら即 dx12_open_scene。
+■ 保存: 自動保存は人の未保存の変更があると止まる(dx12_guide autosave)。シーン JSON を外部で書く前は dx12_ping で sceneDirty:false を確認し、書いたら即 dx12_open_scene。
 ■ 手順の詳細: dx12_guide {topic: build_scene | scene_spec | test | lighting | ui | editor | safety | errors | perf | fleet | jobs | engine_dev}。`;
 
 // core 面(DX12_MCP_SURFACE=core): 頻出操作は Core ツールを直接呼ぶ。Core に無いものだけ shell 5 本で探す。
@@ -23,7 +23,7 @@ export const INSTRUCTIONS_CORE = `DX12 自作エンジン(Uno Engine)のエデ�
 ■ guarded(git push/commit・eval_lua・delete_asset・build_game 等)は dx12_call では実行できない。dx12_call_guarded から実行する(ユーザーが毎回承認。動きの確認は dx12_lua_step で 1 回に)。先に dryRun:true で影響を確認。write 系は idempotency_key で再送しても二重実行しない。
 ■ エラー: {error_code, cause, fix, didYouMean, validValues} を読み、fix[0](tool+args)をそのまま撃ち直す。同じ呼び出しの繰り返しは無意味。
 ■ 最重要ルール(人の PC 操作を奪わない): 実マウス/実キーボード/前面化/computer-use/SendInput は使わない。エンジンは --background で起動し、UI は dx12_imgui(仮想入力)だけで操作する。
-■ 保存: 接続中は自動保存。JSON を外部で書く前は dx12_ping で sceneDirty:false を確認。区切りで dx12_quality_gate。
+■ 保存: 人の未保存で自動保存は停止(autosave)。外部 JSON 書込前は dx12_ping で sceneDirty:false 確認。区切り dx12_quality_gate。
 ■ 手順の詳細: dx12_guide {topic: build_scene | scene_spec | test | lighting | ui | editor | safety | errors | perf | fleet | jobs | engine_dev}。`;
 
 export function instructionsFor(surface: string): string {
