@@ -326,7 +326,8 @@ void ConsolePanel::Render(ScriptEngine* scriptEngine, bool isPlaying, EditorCont
             const bool scrolledUp = m_prevScrollY >= 0.0f && curY < m_prevScrollY - 0.5f && maxY >= m_prevScrollY - 0.5f;
             if (scrolledUp)
                 m_stickToEnd = false;
-            else if (userScrolled)
+            else if (userScrolled && (ImGui::GetIO().MouseWheel != 0.0f || fabsf(curY - m_prevScrollY) > 0.5f))
+                // 行のクリックだけ(位置もホイールも動いていない)では追従を変えない。ScrollMax が 1 フレーム遅れて伸びる分の誤判定を避ける。
                 m_stickToEnd = curY >= maxY - rowH * 2.0f;
             if (m_autoScroll && m_stickToEnd && !userScrolled && !scrolledUp &&
                 (m_newThisFrame || curY < maxY - 0.5f))
