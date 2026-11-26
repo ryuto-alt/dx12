@@ -46,7 +46,11 @@ CONVENTIONS = {
                  "値は不透明度で正規化済みの光の量(使うときに A を掛ける)。ライト方向 L(ビルボード空間の単位ベクトル。表面から光へ)なら "
                  "光 = Lx²*(Lx>0?R:G of RLU) + Ly²*(Ly>0?B of RLU:R of DBF) + Lz²*(Lz>0?B:G of DBF)。",
     "motionVectors": "R16G16_SNORM。変位 d(枠 uv、u 右・v 下)= snorm * mvRange。フレーム i の絵が i+1 までに動く量。最後の枠は 0 番へ(ループ)。"
-                     "補間(t は 0..1): A を uv - d_A(uv)*t から、B を uv + d_B(uv)*(1-t) から引き、t で混ぜる。MV は色より低解像度(同じ枠 uv で引く)。",
+                     "補間(t は 0..1): A を uv - d_A(uv)*t から、B を uv + d_B(uv)*(1-t) から引き、t で混ぜる。"
+                     "d は出力 uv で 1 回ではなく、引く位置で評価し直す(2 回の不動点反復: p=uv; 2 回 p = uv - d_A(p)*t、B も同様 uv + d_B(p)*(1-t))。"
+                     "引く uv は枠の矩形に半テクセル内側でクランプしてから、アトラスのオフセットを足す(隣の枠を引かない)。MV は色より低解像度(同じ枠 uv で引く)。",
+    "anchoring": "炎と煙は地面(枠の下端)に根元がある『根元固定』の枠で、下端の行に不透明度が残る(炎は最大約 0.6、煙は約 0.85)。"
+                 "地面・ソケット・発生面に置くこと。宙に浮くビルボードに使う場合は、下端をフェードさせるか枠を上へずらして使う。",
     "curl": "RGBA16 SNORM の 64³、軸は [z][y][x]、xyz が速度(周期、ラップでタイル)、w は追加のスカラーノイズ。xyz は snorm * curlScale の意味ではなく snorm そのまま(-1..1)。",
 }
 
@@ -144,7 +148,6 @@ def run(outdir, quick, only, preview=None):
     manifest = {
         "generatorVersion": GENERATOR_VERSION,
         "quick": quick,
-        "numpy": np.__version__,
         "license": "CC0-1.0(自作・手続き生成)",
         "conventions": CONVENTIONS,
         "settings": {"grid": st.grid, "res": st.res, "mvRes": st.mv_res, "cols": st.cols, "rows": st.rows, "spf": st.spf,
@@ -192,7 +195,8 @@ def main():
         if o not in ALL:
             ap.error(f"未知の項目: {o}(使えるもの: {','.join(ALL)})")
     if a.verify:
-        committed = json.load(open(os.path.join(DEFAULT_OUT, "vfx_bake_manifest.json"), encoding="utf-8"))
+        with open(os.path.join(DEFAULT_OUT, "vfx_bake_manifest.json"), encoding="utf-8") as f:
+            committed = json.load(f)
         with tempfile.TemporaryDirectory() as tmp:
             m = run(tmp, False, only)
         bad = [k for k, v in m["files"].items() if committed["files"].get(k, {}).get("sha256") != v["sha256"]]

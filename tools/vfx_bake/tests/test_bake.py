@@ -213,6 +213,9 @@ def test_committed_flipbooks_are_sane():
         assert cover.min() > 0.01, f"{name}: 空の枠がある"
         assert cover.max() < 0.9
         assert alpha[:, :, 0].max() < 0.05 and alpha[:, :, -1].max() < 0.05  # 左右が切れていない
+        assert alpha[:, 0, :].max() < 0.05  # 上端は空(根元固定なので下端だけ残る)
+        assert alpha[:, -1, :].max() < 0.9, name  # 下端の残りは manifest の anchoring に書いた範囲
+    assert "anchoring" in m["conventions"]
     for name in ("fire_mv.dds", "smoke_mv.dds"):
         _d, a = ddsio.read_dds(os.path.join(ASSET_DIR, name))
         assert np.abs(a).max() < 32767 * 0.95  # クリップ無し
@@ -225,3 +228,19 @@ def test_committed_curl_divergence():
     assert a.shape == (64, 64, 64, 4)
     assert divergence_ratio(a[..., :3].astype(np.float32) / 32767) < 0.02
     assert m["files"]["curl64.dds"]["depth"] == 64
+
+
+@pytest.mark.parametrize("kind", ["fire", "smoke"])
+def test_mv_blend_gain_heldout(kind):
+    """調整に使っていない系列(別の乱数シード・別の格子 48)でも PSNR 利得が 3dB 以上。"""
+    st = fb.Settings(grid=48, res=64, mv_res=32, cols=4, rows=3, spf=1, overlap=3, warmup=100, seed=23)
+    s = fb.bake_sequence(kind, st, frames=17)
+    tex = s["tex"]
+    mv = ddsio.snorm16(np.clip(s["mv"] * STRIDE / bake.MV_RANGE, -1, 1)).astype(np.float32) / 32767 * bake.MV_RANGE
+    gains = []
+    for k in range(0, len(tex) - STRIDE, STRIDE):
+        truth = premul(tex[k + STRIDE // 2], kind)
+        warp = premul(fb.blend_frames(tex[k], tex[k + STRIDE], mv[k], mv[k + STRIDE], 0.5), kind)
+        cross = premul(fb.crossfade(tex[k], tex[k + STRIDE], 0.5), kind)
+        gains.append(psnr(warp, truth) - psnr(cross, truth))
+    assert np.mean(gains) >= 3.0, f"{kind}: 保持外の系列の PSNR 利得 {np.mean(gains):.2f}dB"
