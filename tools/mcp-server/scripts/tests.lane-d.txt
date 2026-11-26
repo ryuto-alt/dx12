@@ -13,3 +13,4 @@ visualKind.test.ts
 perfGate.test.ts
 ciSuite.test.ts
 screenshotIblHints.test.ts
+engineE2e.test.ts
