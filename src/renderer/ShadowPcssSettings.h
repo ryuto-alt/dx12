@@ -17,18 +17,9 @@ namespace dx12e
 // ＝カスケードごとの補正が要らず、境界で半影の太さが不連続にならない。
 struct ShadowPcssSettings
 {
+    // ---- bool は先頭にまとめる（W1-C1: SceneSettingsHash が構造体を丸ごとバイト列で畳むので、パディングを最小にして
+    //      偽の「未保存の変更」を避ける。末尾の _pad は明示的にゼロ）。 ----
     bool enabled = false;      // 既定 OFF（従来と同じ絵）
-
-    // 太陽の角半径の tan。0.5 度（実際の太陽）だと tan≒0.0044 で影がほぼ硬いので、
-    // ゲーム的な見栄えのため既定は誇張してある。0.05 ≒ 2.9 度。
-    f32 lightTanAngle = 0.05f;   // 0.001 .. 0.5
-
-    // 半影の上限（シャドウマップのテクセル数）。塗り面積＝コストの上限を決める。
-    f32 maxPenumbraTexels = 16.0f;   // 1 .. 64
-
-    // ブロッカー探索の半径（テクセル数）。大きすぎると「重要な遮蔽物を飛ばして影に穴が開く」、
-    // 小さすぎると遠くの遮蔽物を見つけられず半影が伸びない。既定は maxPenumbra と同じ。
-    f32 blockerSearchTexels = 16.0f; // 1 .. 64
 
     // 時間方向ディザ（TAA が有効なときだけ効かせる）。
     // フレーム連番 × 黄金比でサンプル回転位相を回すと、TAA の蓄積で収束してノイズが消える。
@@ -45,6 +36,25 @@ struct ShadowPcssSettings
     // pancaking: 影 PSO の DepthClipEnable=FALSE（近面より手前の遮蔽物を z=0 に潰して残す）。epicDynamicCsm のときだけ有効。
     bool pancaking = true;
 
+    // Gather ベースの PCSS（ブロッカー探索 GatherRed + フィルタタップ数）。動的 CSM の分にだけ使う。
+    bool gatherPcss = true;
+
+    // カスケード境界のブレンド帯を IGN のディザで片方だけサンプルする（TAA / DLSS に平均させる）。
+    bool cascadeDitherBlend = true;
+
+    u8 _pad[2] = {};
+
+    // 太陽の角半径の tan。0.5 度（実際の太陽）だと tan≒0.0044 で影がほぼ硬いので、
+    // ゲーム的な見栄えのため既定は誇張してある。0.05 ≒ 2.9 度。
+    f32 lightTanAngle = 0.05f;   // 0.001 .. 0.5
+
+    // 半影の上限（シャドウマップのテクセル数）。塗り面積＝コストの上限を決める。
+    f32 maxPenumbraTexels = 16.0f;   // 1 .. 64
+
+    // ブロッカー探索の半径（テクセル数）。大きすぎると「重要な遮蔽物を飛ばして影に穴が開く」、
+    // 小さすぎると遠くの遮蔽物を見つけられず半影が伸びない。既定は maxPenumbra と同じ。
+    f32 blockerSearchTexels = 16.0f; // 1 .. 64
+
     // 受光側の法線オフセット: worldPos += Ngeom * texelWorld[c] * (base + slope * (1 - N.L))。V2 の中だけで使う。
     f32 receiverNormalOffsetBase  = 1.5f;   // 0 .. 4（テクセル数）
     f32 receiverNormalOffsetSlope = 2.0f;   // 0 .. 4
@@ -52,12 +62,7 @@ struct ShadowPcssSettings
     // 影を描く側のラスタ DepthBias の倍率。シーン全体が shadingRevision=2 のときだけ掛ける（V1 の受光面に当てない）。
     f32 casterBiasScaleV2 = 0.25f;          // 0.05 .. 1
 
-    // Gather ベースの PCSS（ブロッカー探索 GatherRed + フィルタタップ数）。動的 CSM の分にだけ使う。
-    bool gatherPcss        = true;
-    u32  gatherFilterTaps  = 24;            // 8 .. 32
-
-    // カスケード境界のブレンド帯を IGN のディザで片方だけサンプルする（TAA / DLSS に平均させる）。
-    bool cascadeDitherBlend = true;
+    u32 gatherFilterTaps = 24;              // 8 .. 32
 };
 
 } // namespace dx12e

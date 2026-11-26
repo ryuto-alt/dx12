@@ -24,6 +24,19 @@ struct ShadingSettings
     //   既存シーンは 1 のまま＝絵はビット一致。2 を選ぶのは新規シーンのルック（C8）と、品質プリセット Epic（C7）だけ。
     //   ★シーンファイルへの保存 / 読み込みは SceneSerializer（W1 では凍結）に依存するため、この項目では行わない（C3 の前にメインが扱いを決める）。
     u8 shadingRevision = 1;
+
+    // ▼ V2 の機能ごとの切り替え（C3 / C5 が読む。C1 では誰も読まない＝既定のままで絵は変わらない）。
+    //   shadingRevision=2 かつ「全機能 OFF」の状態は V1 と同じ絵になること（C3 の受け入れ）。
+    //   既定は C3 の設計どおり ON（V2 を選んだときに全部効く）。V1 のときは無視される。
+    //   PfSlot::ShadingV2 の shadingFlags の microShadow / horizonOcc / gtso ビットに 1 対 1 で対応する。
+    bool microShadow       = true;   // 面の微小な凹凸による自己影（microShadowK で強さ）
+    bool horizonOcclusion  = true;   // 地平線オクルージョン（反射ベクトルが面の下へ潜る分を落とす。horizonK で強さ）
+    bool gtso              = true;   // GTSO（AO から作る指向性スペキュラオクルージョン）
+
+    u8 _pad[3] = {};
+
+    f32 microShadowK = 1.0f;   // 0 .. 2（0 = 効果なし相当、1 = 標準）
+    f32 horizonK     = 1.0f;   // 0 .. 2（同上）
 };
 
 } // namespace dx12e
