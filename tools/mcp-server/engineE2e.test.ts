@@ -213,11 +213,13 @@ try {
     const lay0 = JSON.stringify(l3);
     const oor = await expectErr(c, "set_component", { entity: em.entityId, component: "particleEmitter", data: { layer: 7, rate: 99 } });
     check("3 層へ layer:7 → E_OUT_OF_RANGE + details {field:layer,value:7,max:2}",
-      oor?.errName === "E_OUT_OF_RANGE" && JSON.stringify(oor.errDetails) === JSON.stringify({ field: "layer", value: 7, max: 2 }), { errName: oor?.errName, errDetails: oor?.errDetails });
+      oor?.errName === "E_OUT_OF_RANGE" && oor.errDetails?.field === "layer" && oor.errDetails.value === 7 && oor.errDetails.max === 2 && Object.keys(oor.errDetails).sort().join() === "field,max,value", { errName: oor?.errName, errDetails: oor?.errDetails });
     check("拒否後も get_entity / list_particle_layers が呼ぶ前と同一",
       JSON.stringify(await c.call("get_entity", { entity: em.entityId })) === ent0 && JSON.stringify(await c.call("list_particle_layers", { entity: em.entityId })) === lay0);
     await c.call("set_component", { entity: em.entityId, component: "particleEmitter", data: { layer: 2, rate: 99 } });
-    check("範囲内の layer:2 は通る", true);
+    const lAfter = (await c.call("list_particle_layers", { entity: em.entityId })).layers;
+    check("範囲内の layer:2 は 2 層目だけを書く(rate=99、0・1 層は不変)",
+      lAfter?.[2]?.rate === 99 && lAfter[0].rate === l3.layers[0].rate && lAfter[1].rate === l3.layers[1].rate, lAfter);
   }
 
   // ---------------------------------------------------------------- [5b]

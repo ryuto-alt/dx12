@@ -168,16 +168,27 @@ try {
     await call("add_particle_layer", { name: "Em3" });
     const em0 = JSON.stringify(await call("get_entity", { name: "Em3" }));
     const eLayer = await fail("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 7, rate: 99 } });
-    check("3 層の放出器へ layer:7 → E_OUT_OF_RANGE + error_details {field:layer,value:7,max:2}", eLayer?.error_name === "E_OUT_OF_RANGE" && JSON.stringify(eLayer.error_details) === JSON.stringify({ field: "layer", value: 7, max: 2 }), eLayer);
+    check("3 層の放出器へ layer:7 → E_OUT_OF_RANGE + error_details {field:layer,value:7,max:2}", eLayer?.error_name === "E_OUT_OF_RANGE" && eLayer.error_details?.field === "layer" && eLayer.error_details.value === 7 && eLayer.error_details.max === 2 && Object.keys(eLayer.error_details).sort().join() === "field,max,value", eLayer);
     check("拒否された呼び出しの後もエンティティは変わらない", JSON.stringify(await call("get_entity", { name: "Em3" })) === em0);
     const eLayerP = await fail("set_component", { name: "Em3", component: "particleEmitter", layer: 7, data: { rate: 99 } });
     check("layer を params 直下に書いても同じ拒否", eLayerP?.error_name === "E_OUT_OF_RANGE" && eLayerP.error_details?.max === 2 && JSON.stringify(await call("get_entity", { name: "Em3" })) === em0, eLayerP);
     await call("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 2, rate: 99 } });
-    check("範囲内の layer:2 は通る", (await call("get_entity", { name: "Em3" })).particleEmitter.rate === 99);
-    check("list_particle_layers は 3 枚", (await call("list_particle_layers", { name: "Em3" })).count === 3);
+    // 制限: sim は層別の値を持たないので、書き込み先の形(実エンジンは 2 層以上で {layers:[...]})は検査しない。通ることと層数が変わらないことだけを見る。
+    check("範囲内の layer:2 は通り、層数は変わらない", (await call("list_particle_layers", { name: "Em3" })).count === 3);
+    const lAdd = await call("add_particle_layer", { name: "Em3", layerName: "Smoke" });
+    check("add_particle_layer は {entityId,index,name,count} を返す", lAdd.index === 3 && lAdd.name === "Smoke" && lAdd.count === 4, lAdd);
+    const lList = (await call("list_particle_layers", { name: "Em3" })).layers[3];
+    check("list_particle_layers の各層は index/name/kind/rate/looping/offset/vfxPath", ["index", "name", "kind", "rate", "looping", "offset", "vfxPath"].every((k) => k in lList) && lList.name === "Smoke", lList);
+    await call("remove_component", { name: "Em3", component: "particleEmitter" });
+    const eRm = await fail("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 2, rate: 5 } });
+    check("放出器を消した後の layer:2 は E_OUT_OF_RANGE max:0(古い層を持ち越さない)", eRm?.error_name === "E_OUT_OF_RANGE" && eRm.error_details?.max === 0, eRm);
+    await call("set_component", { name: "Em3", component: "particleEmitter", data: { rate: 5 } });
+    check("作り直した放出器は 1 層", (await call("list_particle_layers", { name: "Em3" })).count === 1);
+    await call("create_entity", { type: "particle_emitter", name: "Em4" });
+    await call("add_particle_layer", { name: "Em4" }); await call("add_particle_layer", { name: "Em4" });
     // 呼び出し側の入力を書き換えない
     const inData = { rate: 7 };
-    await call("set_component", { name: "Em3", component: "particleEmitter", layer: 1, data: inData });
+    await call("set_component", { name: "Em4", component: "particleEmitter", layer: 1, data: inData });
     check("set_component は呼び出し側の data を書き換えない", JSON.stringify(inData) === JSON.stringify({ rate: 7 }), inData);
     // rollback でレイヤー数も戻る(同じ id の新放出器へ持ち越さない)
     await call("transaction_begin", { label: "layers" });
@@ -189,9 +200,9 @@ try {
     const eTx = await fail("set_component", { name: "EmTx2", component: "particleEmitter", data: { layer: 2 } });
     check("rollback 後の新放出器は 1 層: layer:2 は E_OUT_OF_RANGE max:0", eTx?.error_name === "E_OUT_OF_RANGE" && eTx.error_details?.max === 0, eTx);
     await call("transaction_begin", { label: "layers2" });
-    await call("add_particle_layer", { name: "Em3" });
+    await call("add_particle_layer", { name: "Em4" });
     await call("transaction_rollback", {});
-    check("既存放出器への add_particle_layer も rollback で戻る", (await call("list_particle_layers", { name: "Em3" })).count === 3);
+    check("既存放出器への add_particle_layer も rollback で戻る", (await call("list_particle_layers", { name: "Em4" })).count === 3);
     const q = await call("set_transform", { name: "B", quaternion: [0, 0.7071068, 0, 0.7071068] });
     check("quaternion → euler(yaw 90)", nearV((await call("get_entity", { name: "B" })).transform.rotation, [0, 90, 0], 0.01) && q.entityId > 0);
     const badPos = await fail("set_transform", { name: "B", position: [1, 2] });

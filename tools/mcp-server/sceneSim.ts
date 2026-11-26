@@ -578,13 +578,15 @@ export function createSceneSim(opts: SimOptions = {}) {
     if (ls.length >= 16) throw simErr(2, "レイヤーが多すぎます（上限 16 枚）", { error_name: "E_INVALID_PARAM" });
     ls.push(typeof p.layerName === "string" && p.layerName ? p.layerName : `Layer ${ls.length + 1}`);
     e.particleLayers = ls;
-    return { entityId: e.id, index: ls.length - 1, count: ls.length, ...undoInfo("add_particle_layer") };
+    return { entityId: e.id, index: ls.length - 1, name: ls[ls.length - 1], count: ls.length, ...undoInfo("add_particle_layer") };
   });
   def("list_particle_layers", "read", (p) => {
     const e = resolve(p);
     if (!e.comps.particleEmitter) throw simErr(1, "entity has no ParticleEmitter", { error_name: "E_NOT_FOUND_COMPONENT" });
     const ls = layersOf(e);
-    return { entityId: e.id, layers: ls.map((name, index) => ({ index, name })), count: ls.length };
+    // 制限: sim は層ごとの値を持たない(set_component の中身は放出器 1 個に平らに入る)。kind/rate などは放出器の既定値を全層に返すだけで、実エンジンの層別の値とは一致しない。
+    const d = COMP_DEFAULTS.particleEmitter;
+    return { entityId: e.id, layers: ls.map((name, index) => ({ index, name, kind: d.kind, rate: d.rate, looping: d.looping, offset: [0, 0, 0], vfxPath: "" })), count: ls.length };
   });
   def("set_component", "write_scene", (p) => {
     const e = resolve(p);
@@ -601,7 +603,7 @@ export function createSceneSim(opts: SimOptions = {}) {
       const ls = layersOf(e); const lj = (data as any).layer;
       const ok = Number.isInteger(lj) ? lj >= 0 && lj < ls.length : typeof lj === "string" && (e.comps.particleEmitter ? ls.includes(lj) : lj === "");   // 放出器が無い時は 1 枚目が作られるので "" だけ通る(実エンジンと同じ)
       if (!ok) throw simErr(2, "set_component: particleEmitter の layer が範囲外または見つかりません", {
-        error_name: "E_OUT_OF_RANGE", error_cause: "layer が既存のレイヤーを指していない(何も変更せずに断る)", error_details: { field: "layer", value: lj, max: ls.length - 1 },
+        error_name: "E_OUT_OF_RANGE", error_cause: "layer が既存のレイヤーを指していない(何も変更せずに断る)", error_details: { field: "layer", max: ls.length - 1, value: lj },   // キー順は実エンジン(nlohmann::json=ソート済み)の出力に合わせる
       });
     }
     if (comp === "tags" && Array.isArray(data)) {
@@ -622,6 +624,7 @@ export function createSceneSim(opts: SimOptions = {}) {
       }
       e.data = { ...(e.data ?? {}), ...clone(data) };
     } else if (SETTABLE.has(comp) && comp !== "tags") {
+      if (comp === "particleEmitter" && !e.comps.particleEmitter) delete e.particleLayers;   // 放出器を新規に作る=1 層から(古い層名を持ち越さない)
       const cur = e.comps[comp] ?? clone(COMP_DEFAULTS[comp] ?? {});
       const merged: any = { ...cur, ...clone(data) };
       if (comp === "particleEmitter") delete merged.layer;
@@ -640,7 +643,7 @@ export function createSceneSim(opts: SimOptions = {}) {
     let removed = false;
     if (comp === "tags" && e.tags) { delete e.tags; removed = true; }
     else if (comp === "data" && e.data) { delete e.data; removed = true; }
-    else if (comp in e.comps) { delete e.comps[comp]; removed = true; }
+    else if (comp in e.comps) { delete e.comps[comp]; if (comp === "particleEmitter") delete e.particleLayers; removed = true; }
     if (!removed) throw simErr(6, `unknown/unsupported component: ${comp} (call dx12_describe_components)`, { error_name: "E_NOT_FOUND_COMPONENT", error_did_you_mean: nearest(comp, Object.keys(e.comps), 3) });
     return { entityId: e.id, removed: comp, ...undoInfo("remove_component") };
   });
