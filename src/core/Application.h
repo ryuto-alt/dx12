@@ -777,8 +777,7 @@ private:
     // 12 → 14（計画09 が raytracing / rtScreen の 2 スコープを足して 12 使用。残り 2）。
     // 14 → 16（Hi-Z オクルージョンカリングが hiZ を足して 15 使用。残り 1）。
     // 20 → 24（時間方向アップスケーラが upscale を足して 21 使用。残り 3）。
-    // 24 → 64（W05-26: GpuTimer が 53 本に。上限 64）。
-    static constexpr u32 kPerfGpuScopes = 64;   // = GpuTimer::kMaxScopes（ApplicationRender.cpp の static_assert で照合）
+    static constexpr u32 kPerfGpuScopes = 24;
                                                // 現在 8 使用（ClusterCull 追加）。SSR/SSGI/フォグ用に余裕を持たせてある。
     struct PerfFrame
     {

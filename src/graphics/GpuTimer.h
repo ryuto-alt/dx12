@@ -52,7 +52,7 @@ public:
         Transparent,   // 半透明
         Water,         // 水
         Foliage,       // 植生
-        Atmosphere,    // 大気（空 LUT + 空 + AP）
+        Atmosphere,    // 大気の空パス（Sky-View LUT + 空。AP / 雲は Particles 区間の中なので含まない）
         GodRays,       // ゴッドレイ（PostFX の内数）
         Decals,        // デカール
         VfxSim,        // VFX: シミュレーション
@@ -83,10 +83,33 @@ public:
     static bool IsLeaf(Scope s);
     // 名前または別名からスコープを引く（大文字小文字を無視。旧名 volFog / 別名 fogScatter など）。
     static bool FindScope(const char* nameOrAlias, Scope& out);
-    // 実効の葉: 構造上の葉、または子が全部 0 ms の親（対応するパスを未計装の間は親を葉として数える）。
-    static bool IsEffectiveLeaf(Scope s, const float* ms);
-    // 実効の葉の合計（Total は含めない）。
-    static float LeafSumMs(const float* ms);
+
+    // ---- 葉の合計（予算の合計はここから出す）----
+    // 各スコープの「葉としての寄与」: 構造上の葉は自分の時間、親は自分の作業時間 = 親 − Σ子（下限 0。
+    // どの子スコープにも入っていない作業が親に残るため、それを "<親>.self" の合成の葉として数える）。
+    // excludeMask に立っているスコープ（同一フレームに複数ビューで書かれたもの）とその子孫は数えず、
+    // その時間は親の self に残す（2 つ目以降のビューで区間が上書きされるため入れ子が信用できない）。
+    // この規則なら、子が未計装でも過小計上にならず、重なり（二重計上）だけが Total を超える。
+    static u64   ExpandExcludeMask(u64 excludeMask);   // 子孫まで広げる
+    static float LeafMs(Scope s, const float* ms, u64 expandedExclude = 0);
+    static float LeafSumMs(const float* ms, u64 excludeMask = 0);   // Total の self を含む。excludeMask は広げる前の値
+    struct LeafEntry { Scope scope; bool self; float ms; };          // self=true は "<name>.self"
+    // 出力すべき葉の一覧（除外されたスコープは出さない）。out は kMaxScopes 件以上の配列。戻り値は件数。
+    static u32   LeafEntries(const float* ms, u64 excludeMask, LeafEntry* out);
+
+    // 1 フレームぶんのタイムスタンプの検査（GPU を使わない純関数。NewFrame が呼び、テストも直接呼ぶ）。
+    // beginTs/endTs は各スコープの Begin/End のタイムスタンプ（Count 本）、writtenMask は End まで打ったスコープ、
+    // multiMask は同一フレームに 2 回以上 Begin されたスコープ。freq は tick/秒。msOut に各スコープの ms を書く。
+    struct FrameCheck
+    {
+        u32   nestViolations = 0;     // 子の区間が親の区間の外に出た数（複数書込みのスコープは除外）
+        u64   nestViolatedMask = 0;   // 逸脱した子のビット
+        float leafSumMs = 0.0f;
+        float totalMs = 0.0f;
+        bool  leafSumExceeded = false;   // 葉の合計 > Total + kLeafSumToleranceMs
+    };
+    static FrameCheck CheckFrame(const u64* beginTs, const u64* endTs, u64 writtenMask, u64 multiMask,
+                                 double freq, float* msOut);
     static const char* Name(u32 s);
 
     static constexpr u32 kFrames = 3;   // FrameResources::kFrameCount と一致させる
@@ -110,6 +133,18 @@ public:
     //  - 葉の合計が Total + 0.1ms を超えた回数
     u32 NestViolations()    const { return m_nestViolations; }
     u32 LeafSumViolations() const { return m_leafViolations; }
+    // 直近に読み戻したフレームで、同一フレームに複数回 Begin されたスコープ（複数ビュー）。入れ子と葉から外す。
+    u64 MultiWriteMask()    const { return m_multiLast; }
+
+    // ---- 全スコープぶんの履歴 / ベンチ集計（Application.h の PerfFrame は 24 本固定で凍結のため、ここで持つ）----
+    static constexpr u32 kHistory = 240;   // Application::kPerfHistory と同じ
+    void RecordHistory();                                    // 現在の m_ms を履歴に積む（フレームに 1 回）
+    u32  HistoryCount() const { return m_histCount < kHistory ? m_histCount : kHistory; }
+    // 直近 window フレームの平均を out[Count] へ。window は HistoryCount に丸める。戻り値は実際に使った数。
+    u32  AverageHistory(u32 window, float* out) const;
+    void BenchReset();
+    void BenchAdd();                                         // 現在の m_ms を集計へ足す
+    u32  BenchAverage(float* out) const;                     // 集計の平均を out[Count] へ。戻り値は集計フレーム数
     static constexpr float kLeafSumToleranceMs = 0.1f;
 
 private:
@@ -124,10 +159,17 @@ private:
     bool  m_valid = false;
     u32   m_frame = 0;                  // NewFrame で受けた現在スロット
     u64   m_writtenMask[kFrames] = {};  // スロットごとの「このフレームで End まで打った」スコープビット（1ull << s）
+    u64   m_beganMask[kFrames] = {};    // スロットごとの「Begin を打った」ビット（2 回目の Begin を検出する）
+    u64   m_multiMask[kFrames] = {};    // スロットごとの「2 回以上 Begin された」ビット
+    u64   m_multiLast = 0;
     float m_ms[Count] = {};
     u32   m_nestViolations = 0;
     u32   m_leafViolations = 0;
     u64   m_nestWarned = 0;             // 親子の逸脱を警告したスコープ（1 スコープ 1 回だけ）
+    float m_hist[kHistory][Count] = {};
+    u32   m_histCount = 0;              // 積んだ延べ数（リング位置 = % kHistory）
+    double m_benchSum[Count] = {};
+    u32   m_benchN = 0;
 };
 
 } // namespace dx12e

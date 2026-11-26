@@ -1,6 +1,8 @@
 #include "graphics/GpuTimer.h"
 #include "core/Logger.h"
 
+#include <cstring>
+
 namespace dx12e
 {
 
@@ -111,21 +113,86 @@ bool GpuTimer::FindScope(const char* nameOrAlias, Scope& out)
     return false;
 }
 
-bool GpuTimer::IsEffectiveLeaf(Scope s, const float* ms)
+u64 GpuTimer::ExpandExcludeMask(u64 excludeMask)
 {
-    if (s == Total || s >= Count) return false;
-    if (IsLeaf(s)) return true;
-    for (u32 c = 0; c < Count; ++c)
-        if (c != s && kScopeInfo[c].parent == s && ms[c] > 0.0f) return false;   // 計測された子がある
-    return true;   // 子が全部 0 ms（まだ計装されていない）→ 親自身を葉として数える
+    excludeMask &= ~1ull;   // Total は除外しない
+    u64 out = excludeMask;
+    for (u32 i = 1; i < Count; ++i)
+    {
+        u32 cur = kScopeInfo[i].parent, hops = 0;
+        while (cur != Total && hops++ < Count)
+        {
+            if (excludeMask & (1ull << cur)) { out |= (1ull << i); break; }
+            cur = kScopeInfo[cur].parent;
+        }
+    }
+    return out;
 }
 
-float GpuTimer::LeafSumMs(const float* ms)
+float GpuTimer::LeafMs(Scope s, const float* ms, u64 expandedExclude)
 {
+    if (s >= Count || (expandedExclude & (1ull << s))) return 0.0f;
+    if (IsLeaf(s)) return ms[s];
+    float childSum = 0.0f;
+    for (u32 c = 0; c < Count; ++c)
+        if (c != s && kScopeInfo[c].parent == s && !(expandedExclude & (1ull << c))) childSum += ms[c];
+    const float self = ms[s] - childSum;
+    return self > 0.0f ? self : 0.0f;   // 親の作業時間 = 親 − Σ子（下限 0）
+}
+
+float GpuTimer::LeafSumMs(const float* ms, u64 excludeMask)
+{
+    const u64 ex = ExpandExcludeMask(excludeMask);
     float sum = 0.0f;
-    for (u32 i = 0; i < Count; ++i)
-        if (IsEffectiveLeaf(static_cast<Scope>(i), ms)) sum += ms[i];
+    for (u32 i = 0; i < Count; ++i) sum += LeafMs(static_cast<Scope>(i), ms, ex);
     return sum;
+}
+
+u32 GpuTimer::LeafEntries(const float* ms, u64 excludeMask, LeafEntry* out)
+{
+    const u64 ex = ExpandExcludeMask(excludeMask);
+    u32 n = 0;
+    for (u32 i = 0; i < Count; ++i)
+    {
+        if (ex & (1ull << i)) continue;
+        const Scope sc = static_cast<Scope>(i);
+        out[n++] = LeafEntry{ sc, !IsLeaf(sc), LeafMs(sc, ms, ex) };
+    }
+    return n;
+}
+
+GpuTimer::FrameCheck GpuTimer::CheckFrame(const u64* beginTs, const u64* endTs, u64 writtenMask, u64 multiMask,
+                                          double freq, float* msOut)
+{
+    FrameCheck r;
+    for (u32 s = 0; s < Count; ++s)
+    {
+        if (!(writtenMask & (1ull << s))) { msOut[s] = 0.0f; continue; }
+        const u64 b = beginTs[s], e = endTs[s];
+        msOut[s] = (e > b && freq > 0.0) ? static_cast<float>(static_cast<double>(e - b) * 1000.0 / freq) : 0.0f;
+    }
+    // 入れ子の検査: 子の [b, e] が親の [b, e] の中にあること。親子とも書かれたフレームだけ、
+    // 複数ビューで書かれたスコープ（区間が最後のビューのもので上書きされる）は検査しない。
+    const u64 ex = ExpandExcludeMask(multiMask);
+    for (u32 s = 1; s < Count; ++s)
+    {
+        if (!(writtenMask & (1ull << s)) || (ex & (1ull << s))) continue;
+        const u32 par = kScopeInfo[s].parent;
+        if (!(writtenMask & (1ull << par)) || (ex & (1ull << par))) continue;
+        if (beginTs[s] < beginTs[par] || endTs[s] > endTs[par])
+        {
+            ++r.nestViolations;
+            r.nestViolatedMask |= (1ull << s);
+        }
+    }
+    // 葉の合計 ≤ Total + 0.1ms（葉は互いに重ならず、すべて Total の中に入るはず）。
+    if (writtenMask & 1ull)
+    {
+        r.totalMs = msOut[Total];
+        r.leafSumMs = LeafSumMs(msOut, multiMask);
+        r.leafSumExceeded = r.leafSumMs > r.totalMs + kLeafSumToleranceMs;
+    }
+    return r;
 }
 
 const char* GpuTimer::Name(u32 s)
@@ -216,54 +283,49 @@ void GpuTimer::NewFrame(u32 frameIndex)
         if (SUCCEEDED(m_readback->Map(0, &readRange, &p)) && p)
         {
             const u64* ts = static_cast<const u64*>(p);
+            u64 bts[Count] = {}, ets[Count] = {};
             for (u32 s = 0; s < Count; ++s)
             {
-                if (!(mask & (1ull << s))) { m_ms[s] = 0.0f; continue; }
-                const u64 b = ts[QueryIndex(m_frame, s, 0)];
-                const u64 e = ts[QueryIndex(m_frame, s, 1)];
-                m_ms[s] = (e > b)
-                    ? static_cast<float>(static_cast<double>(e - b) * 1000.0 / static_cast<double>(m_freq))
-                    : 0.0f;
-
-                // 入れ子の検査: 子の [b, e] が親の [b, e] の中にあること（親も計測されたフレームだけ）。
-                const u32 par = kScopeInfo[s].parent;
-                if (s != Total && (mask & (1ull << par)))
-                {
-                    const u64 pb = ts[QueryIndex(m_frame, par, 0)];
-                    const u64 pe = ts[QueryIndex(m_frame, par, 1)];
-                    if (b < pb || e > pe)
-                    {
-                        ++m_nestViolations;
-                        if (!(m_nestWarned & (1ull << s)))
-                        {
-                            m_nestWarned |= (1ull << s);
-                            Logger::Warn("GpuTimer: スコープ {} の区間が親 {} の外に出ている", Name(s), Name(par));
-                        }
-                    }
-                }
+                if (!(mask & (1ull << s))) continue;
+                bts[s] = ts[QueryIndex(m_frame, s, 0)];
+                ets[s] = ts[QueryIndex(m_frame, s, 1)];
             }
             const D3D12_RANGE noWrite{ 0, 0 };
             m_readback->Unmap(0, &noWrite);
 
-            // 葉の合計 ≤ Total + 0.1ms（葉は互いに重ならず、すべて Total の中に入るはず）。
-            if (mask & 1ull)
+            const u64 multi = m_multiMask[m_frame];
+            m_multiLast = multi;
+            const FrameCheck chk = CheckFrame(bts, ets, mask, multi, static_cast<double>(m_freq), m_ms);
+
+            if (chk.nestViolations)
             {
-                const float leafSum = LeafSumMs(m_ms);
-                if (leafSum > m_ms[Total] + kLeafSumToleranceMs)
+                m_nestViolations += chk.nestViolations;
+                for (u32 s = 1; s < Count; ++s)
                 {
-                    if (m_leafViolations++ < 3)
-                        Logger::Warn("GpuTimer: 葉の合計 {:.2f}ms が Total {:.2f}ms + {:.1f}ms を超えた",
-                                     leafSum, m_ms[Total], kLeafSumToleranceMs);
+                    const u64 bit = 1ull << s;
+                    if ((chk.nestViolatedMask & bit) && !(m_nestWarned & bit))
+                    {
+                        m_nestWarned |= bit;
+                        Logger::Warn("GpuTimer: スコープ {} の区間が親 {} の外に出ている", Name(s), Name(kScopeInfo[s].parent));
+                    }
                 }
             }
+            if (chk.leafSumExceeded && m_leafViolations++ < 3)
+                Logger::Warn("GpuTimer: 葉の合計 {:.2f}ms が Total {:.2f}ms + {:.1f}ms を超えた",
+                             chk.leafSumMs, chk.totalMs, kLeafSumToleranceMs);
         }
     }
     m_writtenMask[m_frame] = 0;
+    m_beganMask[m_frame] = 0;
+    m_multiMask[m_frame] = 0;
 }
 
 void GpuTimer::Begin(ID3D12GraphicsCommandList* cmd, Scope s)
 {
     if (!m_valid || s >= Count) return;
+    // 同一フレームの 2 回目以降の Begin（複数ビュー）は、クエリ枠を上書きするので印を付ける。
+    if (m_beganMask[m_frame] & (1ull << s)) m_multiMask[m_frame] |= (1ull << s);
+    m_beganMask[m_frame] |= (1ull << s);
     cmd->EndQuery(m_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex(m_frame, s, 0));
 }
 
@@ -272,6 +334,46 @@ void GpuTimer::End(ID3D12GraphicsCommandList* cmd, Scope s)
     if (!m_valid || s >= Count) return;
     cmd->EndQuery(m_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, QueryIndex(m_frame, s, 1));
     m_writtenMask[m_frame] |= (1ull << s);
+}
+
+void GpuTimer::RecordHistory()
+{
+    std::memcpy(m_hist[m_histCount % kHistory], m_ms, sizeof(m_ms));
+    ++m_histCount;
+}
+
+u32 GpuTimer::AverageHistory(u32 window, float* out) const
+{
+    const u32 n = (window < HistoryCount()) ? window : HistoryCount();
+    for (u32 s = 0; s < Count; ++s) out[s] = 0.0f;
+    if (n == 0) return 0;
+    for (u32 i = 0; i < n; ++i)
+    {
+        const float* f = m_hist[(m_histCount - 1 - i) % kHistory];
+        for (u32 s = 0; s < Count; ++s) out[s] += f[s];
+    }
+    const float inv = 1.0f / static_cast<float>(n);
+    for (u32 s = 0; s < Count; ++s) out[s] *= inv;
+    return n;
+}
+
+void GpuTimer::BenchReset()
+{
+    for (u32 s = 0; s < Count; ++s) m_benchSum[s] = 0.0;
+    m_benchN = 0;
+}
+
+void GpuTimer::BenchAdd()
+{
+    for (u32 s = 0; s < Count; ++s) m_benchSum[s] += m_ms[s];
+    ++m_benchN;
+}
+
+u32 GpuTimer::BenchAverage(float* out) const
+{
+    for (u32 s = 0; s < Count; ++s)
+        out[s] = m_benchN ? static_cast<float>(m_benchSum[s] / static_cast<double>(m_benchN)) : 0.0f;
+    return m_benchN;
 }
 
 void GpuTimer::Resolve(ID3D12GraphicsCommandList* cmd)
