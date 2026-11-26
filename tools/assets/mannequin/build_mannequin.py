@@ -99,6 +99,9 @@ bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
 bsdf.inputs["Base Color"].default_value = (0.62, 0.64, 0.68, 1.0)
 bsdf.inputs["Roughness"].default_value = 0.55
 bsdf.inputs["Metallic"].default_value = 0.0
+mat.use_backface_culling = True  # 閉じた楕円体だけなので片面にする（glb の doubleSided を false に）
+if hasattr(mat, "use_backface_culling_shadow"):
+    mat.use_backface_culling_shadow = True
 mesh.materials.append(mat)
 
 # ---- アーマチュア ----
@@ -167,6 +170,7 @@ def rad(d):
     return math.radians(d)
 
 
+hips_inv = pb["hips"].bone.matrix_local.to_3x3().inverted()  # 世界の変位 -> hips のローカル
 N = 30
 for i in range(N + 1):
     ph = 2.0 * math.pi * (i / N)
@@ -181,12 +185,22 @@ for i in range(N + 1):
         pb["foot." + sd].rotation_euler = Euler((rad(-0.25 * knee + 8.0 * s), 0, 0))
         pb["upperarm." + sd].rotation_euler = Euler((rad(22.0 * s), 0, 0))
         pb["forearm." + sd].rotation_euler = Euler((rad(-12.0 - 10.0 * max(0.0, s)), 0, 0))
-    bob = -0.025 * (0.5 - 0.5 * math.cos(2.0 * ph))
-    pb["hips"].location = Vector((0.015 * math.sin(ph), 0, bob))
-    pb["hips"].rotation_euler = Euler((0, rad(3.0 * math.sin(ph)), rad(6.0 * math.sin(ph))))
-    pb["spine"].rotation_euler = Euler((0, 0, rad(-4.0 * math.sin(ph))))
-    pb["chest"].rotation_euler = Euler((0, 0, rad(-4.0 * math.sin(ph))))
-    pb["head"].rotation_euler = Euler((0, 0, rad(3.0 * math.sin(ph))))
+    # 骨盤: 横揺れ(世界 X)と上下は後で足の接地から求める。回転は縦ボーンのローカル Y = 世界の上向き
+    # = ヨー(ひねり)、ローカル Z = 前後軸まわりの傾き。
+    sway_w = Vector((0.015 * math.sin(ph), 0, 0))
+    pb["hips"].location = hips_inv @ sway_w
+    pb["hips"].rotation_euler = Euler((0, rad(6.0 * math.sin(ph)), rad(3.0 * math.sin(ph))))
+    pb["spine"].rotation_euler = Euler((0, rad(-4.0 * math.sin(ph)), 0))
+    pb["chest"].rotation_euler = Euler((0, rad(-4.0 * math.sin(ph)), 0))
+    pb["head"].rotation_euler = Euler((0, rad(3.0 * math.sin(ph)), 0))
+    # 接地: 評価したメッシュの最下点が y=0 になるよう、骨盤を世界の上下に動かす
+    bpy.context.view_layer.update()
+    dg = bpy.context.evaluated_depsgraph_get()
+    ev = obj.evaluated_get(dg)
+    em = ev.to_mesh()
+    minz = min((ev.matrix_world @ v.co).z for v in em.vertices)
+    ev.to_mesh_clear()
+    pb["hips"].location = hips_inv @ (sway_w + Vector((0, 0, -minz)))
     for b in pb:
         b.keyframe_insert("rotation_euler", frame=f)
     pb["hips"].keyframe_insert("location", frame=f)
