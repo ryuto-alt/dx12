@@ -6,6 +6,7 @@
 #include "core/ApplicationInternal.h"
 #include "renderer/FrameConstants.h"
 #include "core/SplashScreen.h"   // 直接 include（ApplicationInternal.h 経由に頼らない。W05-01）
+#include "ecs/ParticleOneShot.h"   // ワンショットの寿命・再生（W1-A12）
 #include "core/AtomicFileJson.h"
 #include "core/OffscreenShot.h"   // --view-size（offshot::Cli）
 #include "core/SceneBackup.h"   // 世代つきバックアップ（.dx12/backups/）
@@ -2893,13 +2894,8 @@ void Application::Update()
             // ★レイヤーを 1 枚ずつ回す。1 エンティティに炎+煙+火の粉、が成立するのはここ。
             for (ParticleLayer& pe : emitter.layers)
             {
-            const bool live = pedPlaying ? pe._active : true;  // エディタは常時プレビュー
-            if (!live) continue;
-            if (!pe.looping && pedPlaying)
-            {
-                pe._age += dt;
-                if (pe._age >= pe.duration) pe._active = false;
-            }
+            // ループはエディタで常時プレビュー、ワンショットはエディタでも duration で止まる（BUG-12）。
+            if (!dx12e::ParticleOneShot::Advance(pe, pedPlaying, dt)) continue;
             if (pe.rate <= 0.0f) continue;
             pe._emitAccum += pe.rate * dt;
             int n = static_cast<int>(pe._emitAccum);
