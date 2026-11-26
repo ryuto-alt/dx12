@@ -2,5 +2,7 @@
 runTestsList.test.mjs
 vfxPreviewTx.test.ts
 fleetMaterialize.test.ts
+eval/e2e.test.ts
+eval/noPaidApi.test.ts
 genBudgets.test.mjs
 ../scorecard/report.test.mjs
