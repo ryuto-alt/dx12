@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ema, parseArgs, sanitizeMsg } from "./capture_engine.mjs";
-import { compareRuns, diffSummaries, summarizeRun, relOk, scrub, TOL } from "./report.mjs";
+import { compareRuns, deriveVfxTol, vfxFloor, diffSummaries, summarizeRun, relOk, scrub, TOL } from "./report.mjs";
 
 test("ema: 先頭から alpha で畳む", () => {
   assert.equal(ema([]), null);
@@ -13,9 +13,13 @@ test("ema: 先頭から alpha で畳む", () => {
   assert.ok(Math.abs(ema([1, 2], 0.5) - 1.5) < 1e-12);
 });
 
+const tmpDirs = [];
+test.after(() => { for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true }); });
+
 function mkRun(startup, vfx, sha = "aa") {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "sc-"));
-  fs.writeFileSync(path.join(d, "stage_startup.json"), JSON.stringify({ ok: true, errors: [], notes: [], items: [{ id: "startup_warm_ema", kind: "metric", value: startup, runs: [] }] }));
+  tmpDirs.push(d);
+  fs.writeFileSync(path.join(d, "stage_startup.json"), JSON.stringify({ ok: true, errors: [], notes: [], items: [{ id: "startup_ready_ema", kind: "metric", value: startup, runs: [] }] }));
   fs.writeFileSync(path.join(d, "stage_templates.json"), JSON.stringify({ ok: true, errors: [], notes: [], items: [{ id: "template_empty", kind: "image", file: "x.png", sha256: sha }] }));
   fs.writeFileSync(path.join(d, "stage_vfx.json"), JSON.stringify({ ok: true, errors: [], notes: [], items: [{ id: "vfx_a", kind: "image", file: "v.png", sha256: sha, metrics: vfx }] }));
   return d;
@@ -28,7 +32,7 @@ test("compare: 起動秒数は max(0.3s, 15%) 以内", () => {
   assert.ok(compareRuns(mkRun(3.0, m), mkRun(3.4, m)).ok);   // 3.0s の 15% = 0.45s
 });
 
-test("compare: VFX 指標は絶対 2e-3 か相対 30%", () => {
+test("compare: VFX 指標は指標別の絶対差の床か相対 30%", () => {
   const a = { coverage: 0.1, lumaGain: 0.05, flicker: 0.01 };
   assert.ok(compareRuns(mkRun(1, a), mkRun(1, { ...a, coverage: 0.12 })).ok);
   assert.ok(!compareRuns(mkRun(1, a), mkRun(1, { ...a, coverage: 0.3 })).ok);
@@ -54,13 +58,13 @@ test("diff: 変化なし / 変化あり / 数値の増減", () => {
   const a = summarizeRun(mkRun(2, m, "aa")), b = summarizeRun(mkRun(1, m, "bb"));
   const t = diffSummaries(a, b).text;
   assert.match(t, /template_empty\s+changed/);
-  assert.match(t, /startup_warm_ema/);
+  assert.match(t, /startup_ready_ema/);
   assert.ok(TOL.startupRel > 0);
 });
 
 test("relOk: 小さい指標でも絶対差の床が効く（0.01 以下なら何でも通るわけではない）", () => {
-  assert.ok(!relOk(0.004, 0.009, TOL.vfxAbs, TOL.vfxRel));
-  assert.ok(relOk(0.004, 0.0041, TOL.vfxAbs, TOL.vfxRel));
+  assert.ok(!relOk(0.004, 0.009, TOL.vfxAbsByMetric.coverage, TOL.vfxRel));
+  assert.ok(relOk(0.004, 0.0041, TOL.vfxAbsByMetric.coverage, TOL.vfxRel));
   assert.ok(relOk(null, null, 1, 1));
   assert.ok(!relOk(null, 1, 1, 1));
 });
@@ -89,4 +93,44 @@ test("要約の文言から絶対パスを消す", () => {
   const m = "failed C:\\Users\\x\\a.exe and /Users/x/b";
   assert.ok(!/Users/.test(scrub(m)));
   assert.ok(!/Users/.test(sanitizeMsg(m)));
+});
+
+test("compare: 片方にしか無い段は不合格、両方に無い段は部分比較（受け入れは全段必須）", () => {
+  const m = { coverage: 0.1, lumaGain: 0.05, flicker: 0.01 };
+  const a = mkRun(1, m), b = mkRun(1, m);
+  fs.rmSync(path.join(b, "stage_startup.json"));
+  const r = compareRuns(a, b);
+  assert.ok(!r.ok);
+  assert.ok(r.stages.startup.asymmetric);
+  const c = mkRun(1, m), d = mkRun(1, m);
+  const ok = compareRuns(c, d);
+  assert.ok(ok.ok);
+  assert.ok(ok.partial.includes("splash"));          // 撮っていない段は partial に出る
+  const strict = compareRuns(c, d, { expectStages: ["splash", "vfx"], vfxTol: {} });
+  assert.ok(!strict.ok);
+  assert.ok(strict.mismatches.some((x) => x.startsWith("splash:")));
+  assert.ok(!compareRuns(c, d, { expectStages: ["vfx"] }).ok);   // --vfx-tol 無しは受け入れにならない
+});
+
+test("VFX: 指標別の床とレシピ別の上書き / 3 回の撮影から導出", () => {
+  assert.ok(vfxFloor(null, "x", "flicker") < vfxFloor(null, "x", "coverage"));
+  assert.equal(vfxFloor({ x: { flicker: 0.01 } }, "x", "flicker"), 0.01);
+  const mk = (f) => { const d = mkRun(1, { coverage: 0.1, lumaGain: 0.05, flicker: f }); return d; };
+  const t = deriveVfxTol([mk(0.01), mk(0.02), mk(0.012)]);
+  assert.ok(Math.abs(t.vfx_a.flicker - 0.015) < 1e-9);   // 最大差 0.01 の 1.5 倍
+  assert.equal(t.vfx_a.coverage, TOL.vfxAbsByMetric.coverage);
+});
+
+test("compare: image-seq のコマ数違い・画像許容差の上限（selfDiff があっても無制限にしない）", () => {
+  const mk = (frames) => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "sc-")); tmpDirs.push(d);
+    fs.writeFileSync(path.join(d, "stage_splash.json"), JSON.stringify({ ok: true, errors: [], notes: [], items: [{ id: "splash_x", kind: "image-seq", count: frames.length, frames }] }));
+    return d;
+  };
+  const f = (h) => ({ file: "n.png", sha256: h });
+  assert.ok(compareRuns(mk([f("a"), f("b")]), mk([f("a"), f("b")])).ok);
+  const r = compareRuns(mk([f("a"), f("b")]), mk([f("a")]));
+  assert.ok(!r.ok);
+  assert.ok(r.mismatches.includes("splash/splash_x"));
+  assert.ok(TOL.maxDiffRatioCap <= 0.02 && TOL.maxMeanAbsCap <= 1.0);
 });

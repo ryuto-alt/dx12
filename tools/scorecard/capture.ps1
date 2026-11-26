@@ -1,3 +1,4 @@
+#Requires -Version 7
 <#
   品質スコアカード（W05-35 / γ4）の撮影。PROGRAM_PLAN §2.3 の「W0 で固定するもの」を、改修前のバイナリでヘッドレスに撮る。
 
@@ -12,6 +13,7 @@
   ・窓を出さない: エンジンは --headless / --background（tools/engine_instance.ps1 経由）、スプラッシュは --splash-preview（窓なし）。
     ビルド出力のフォルダは握らない（exe は常にインスタンス専用フォルダへコピーして使う）。
   ・改修後のバイナリを撮るときは -NoDred（エンジンへ --no-dred を渡す）。
+  ・W0 は W1 のシェーダ変更が入る前に撮る（assets/shaders が pre-overhaul と違えば拒否する。tracked 以外のファイルは検出できないので、撮影は pre-overhaul 由来の worktree で行う）。
   ・LS-A〜F は W1 の NB3 の後で段を足す。MCP-14 は W05-37、性能は W05-39（このスクリプトでは撮らない）。
   ・有料 API は使わない（このスクリプトはエンジンのヘッドレス起動と画像比較だけ）。
 #>
@@ -51,7 +53,8 @@ if (-not $preOverhaul -and -not $AllowNonPreOverhaul) {
 }
 
 # --- exe のコピー（ビルド出力を握らない / 窓の無いツール起動用）
-$tool = Join-Path $env:LOCALAPPDATA 'UnoEngine\agent-instances\scorecard-w0-tool'
+$rootHash = [BitConverter]::ToString([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($root))).Replace('-', '').Substring(0, 8).ToLower()
+$tool = Join-Path $env:LOCALAPPDATA "UnoEngine\agent-instances\scorecard-w0-tool-$rootHash"
 New-Item -ItemType Directory -Force $tool | Out-Null
 function Copy-Checked([string]$Src, [string[]]$Rest) {
     robocopy $Src @Rest /NFL /NDL /NJH /NJS /NP | Out-Null
@@ -80,12 +83,19 @@ try { [Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal' }
 $gpu = @(); try { $gpu = @(Get-CimInstance Win32_VideoController | Where-Object { $_.Name -match 'NVIDIA|AMD Radeon|Intel\(R\)' } | Select-Object -First 1 | ForEach-Object { @{ name = $_.Name; driver = $_.DriverVersion } }) } catch {}
 $exeHash = (Get-FileHash (Join-Path $EngineDir 'DX12Engine.exe') -Algorithm SHA256).Hash.ToLower()
 $captureCommit = (git -C $root rev-parse --short HEAD 2>$null)
+# 撮影の入力はこの worktree から読む（VFX レシピと golden/UI エントリ）。内容のハッシュを残し、pre-overhaul との違いを後で追えるようにする。
+$inputHashes = [ordered]@{}
+foreach ($f in 'tools/mcp-server/vfx.ts', 'tools/mcp-server/contactSheet.ts') { $p = Join-Path $root $f; if (Test-Path $p) { $inputHashes[$f] = (Get-FileHash $p -Algorithm SHA256).Hash.ToLower().Substring(0, 16) } }
+$gd = Join-Path $root 'tests/golden'
+if (Test-Path $gd) { $inputHashes['tests/golden'] = ((Get-ChildItem $gd -Recurse -File | Sort-Object FullName | ForEach-Object { (Get-FileHash $_.FullName -Algorithm SHA256).Hash }) -join '' | ForEach-Object { [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($_))).Replace('-', '').Substring(0, 16).ToLower() }) }
+$pre = git -C $root diff --name-only pre-overhaul -- tools/mcp-server/vfx.ts tests/golden 2>$null
+$inputsDifferFromPreOverhaul = @($pre).Count -gt 0
 $meta = [ordered]@{
     preOverhaul = $preOverhaul; engineRef = $nj.ref; engineCommit = $nj.commit; engineVersion = $nj.engineVersion
     exeSha256 = $exeHash; assetsMatchPreOverhaul = $assetsMatch; noDred = [bool]$NoDred; captureScriptsCommit = $captureCommit
-    gpu = $gpu; os = [Environment]::OSVersion.VersionString; capturedAt = (Get-Date).ToString('s'); stages = $Stages
+    inputHashes = $inputHashes; inputsDifferFromPreOverhaul = $inputsDifferFromPreOverhaul; gpu = $gpu; os = [Environment]::OSVersion.VersionString; capturedAt = (Get-Date).ToString('s'); stages = $Stages
 }
-($meta | ConvertTo-Json -Depth 5) | Set-Content (Join-Path $runDir 'meta.json') -Encoding utf8
+[IO.File]::WriteAllText((Join-Path $runDir 'meta.json'), ($meta | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
 
 # --- 段ごとに撮る
 $node = (Get-Command node).Source

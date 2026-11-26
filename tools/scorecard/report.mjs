@@ -5,13 +5,14 @@
 //        絶対パスや個人情報は入れない（画像は ID・サイズ・ハッシュだけ）。
 //   node tools/scorecard/report.mjs compare --a <runDirA> --b <runDirB> [--out <compare.json>]
 //        2 回撮った結果の差が「決定論の範囲」に収まるかを判定する。収まらなければ終了コード 1。
+//   node tools/scorecard/report.mjs derive-vfx-tol --runs <r1,r2,r3> [--out vfx_tol.json]   （compare の --vfx-tol へ渡す。--expect-stages all で全段必須。部分比較は終了コード 3）
 //   node tools/scorecard/report.mjs diff --base tests/scorecard/w0.json --now <summary.json>
 //        W0 との差分レポート（各 Wave のゲート用）。値の増減を表で出す。
 //
 // 決定論の範囲（compare の合否）:
 //   画像      … 画素ハッシュが同じ、または「違う画素 0.1% 以下かつ平均差 0.25 以下」（セッション内の揺れ×2 まで広げるが、2% / 1.0 を上限とする）
 //               （tools/bench の既定の許容差と同じ。pixelThreshold 12）。
-//   VFX 指標  … 被覆・明るさ・ちらつきが、絶対差 2e-3 以下（A/A 実測で決定）、または相対差 30% 以下。
+//   VFX 指標  … 被覆・明るさ・ちらつきが、指標別の絶対差の床（TOL.vfxAbsByMetric、レシピ別の上書き可）以下、または相対差 30% 以下。
 //               パーティクルの乱数がプロセスごとに変わり絵は 1 画素単位では一致しないので、VFX は指標だけで判定する（画像の差は参考情報）。
 //   起動秒数  … EMA が max(0.30 秒, 15%) 以内（実時間の計測なので画像より緩い）。
 import fs from "node:fs";
@@ -25,7 +26,9 @@ const require = createRequire(import.meta.url);
 
 export const TOL = {
   pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25,
-  vfxAbs: 2e-3, vfxRel: 0.30,           // A/A（同じバイナリを 2 回）の実測: 小さい指標の揺れは最大 1.4e-3、大きい指標は相対 30% 内。絶対 2e-3 未満の指標は雑音扱い
+  // 指標ごとの絶対差の床（各指標の大きさに合わせる。共通の床だと小さい指標が何でも通る）。A/A の暫定値で、
+  // 本番は dx12-preoverhaul で 3 回以上撮り、`report.mjs derive-vfx-tol` の出力（レシピ別）を --vfx-tol で渡す。
+  vfxAbsByMetric: { coverage: 2e-3, lumaGain: 5e-4, flicker: 4e-4 }, vfxRel: 0.30,
   maxDiffRatioCap: 0.02, maxMeanAbsCap: 1.0,   // セッション内の揺れを許す場合の上限（無制限にしない）
   startupAbsSec: 0.3, startupRel: 0.15,
 };
@@ -54,10 +57,10 @@ export function summarizeRun(runDir) {
     const items = {};
     for (const it of st.items) {
       const o = {};
-      for (const k of ["kind", "width", "height", "sha256", "maskedSha256", "count", "deterministicInSession", "selfDiff", "dpi", "layout", "layers", "oneShot", "metrics", "newScene", "scene"])
+      for (const k of ["kind", "width", "height", "sha256", "maskedSha256", "count", "deterministicInSession", "selfDiff", "dpi", "uiDeterministicFlag", "hideCursor", "layout", "layers", "oneShot", "metrics", "newScene", "scene"])
         if (it[k] !== undefined) o[k] = it[k];
       if (it.kind === "image-seq") o.frameCount = it.count;
-      if (it.kind === "metric") for (const k of ["unit", "alpha", "value", "median", "min", "max", "engineStartupJson"]) if (it[k] !== undefined) o[k] = it[k];
+      if (it.kind === "metric") for (const k of ["unit", "alpha", "quantity", "value", "median", "min", "max"]) if (it[k] !== undefined) o[k] = it[k];
       if (it.kind === "metric") o.warmRuns = it.runs.filter((r) => r.kind === "warm").length;
       items[it.id] = o;
     }
@@ -72,6 +75,7 @@ export function summarizeRun(runDir) {
     pending: {
       "ls-a-f": "LS-A〜F は W1 の NB3 の後で追加する",
       mcp14: "W05-37 が埋める（API を使わない E2E のベースライン）",
+      startupQuantity: "W7 の 1.4s 目標を startup_ready_ema（--background・スプラッシュ無し）と ST-1 のスプラッシュ経路 EMA のどちらで判定するか、main セッションの決定待ち",
       perf: "W05-39 が baseline_perf.json に記録する",
     },
   };
@@ -96,11 +100,38 @@ export function cmpImageFiles(fa, fb, self = null) {
   return { ok, diffRatio: c.diffRatio, meanAbs: c.meanAbs, maxDist: c.maxDist };
 }
 
-export function compareRuns(dirA, dirB) {
-  const out = { tolerance: TOL, stages: {}, ok: true, mismatches: [] };
+// derive-vfx-tol の出力: { "<itemId>": { coverage, lumaGain, flicker } }（レシピ別の絶対差の床）
+export function vfxFloor(vfxTol, id, metric) {
+  return vfxTol?.[id]?.[metric] ?? TOL.vfxAbsByMetric[metric] ?? TOL.vfxAbsByMetric.coverage;
+}
+
+/** 3 回以上の撮影（同じバイナリ）から、レシピ別・指標別の揺れ（最大の組み合わせ差の 1.5 倍、床は TOL）を求める。 */
+export function deriveVfxTol(runDirs) {
+  const per = runDirs.map((d) => new Map(readJson(path.join(d, "stage_vfx.json")).items.map((i) => [i.id, i.metrics])));
+  const tol = {};
+  for (const id of per[0].keys()) {
+    tol[id] = {};
+    for (const m of Object.keys(TOL.vfxAbsByMetric)) {
+      let mx = 0;
+      for (let i = 0; i < per.length; i++) for (let j = i + 1; j < per.length; j++) {
+        const x = per[i].get(id)?.[m], y = per[j].get(id)?.[m];
+        if (x != null && y != null) mx = Math.max(mx, Math.abs(x - y));
+      }
+      tol[id][m] = Math.max(TOL.vfxAbsByMetric[m], mx * 1.5);
+    }
+  }
+  return tol;
+}
+
+export function compareRuns(dirA, dirB, opts = {}) {
+  const out = { tolerance: TOL, stages: {}, ok: true, partial: [], mismatches: [] };
+  const vfxTol = opts.vfxTol ?? null;
+  if (opts.expectStages?.includes("vfx") && !vfxTol) { out.ok = false; out.mismatches.push("vfx: 受け入れの比較にはレシピ別の許容差（derive-vfx-tol の出力を --vfx-tol）が要る"); }
   for (const s of STAGE_NAMES) {
     const fa = path.join(dirA, `stage_${s}.json`), fb = path.join(dirB, `stage_${s}.json`);
-    if (!fs.existsSync(fa) || !fs.existsSync(fb)) { out.stages[s] = { compared: false }; continue; }
+    const ea = fs.existsSync(fa), eb = fs.existsSync(fb);
+    if (ea !== eb) { out.stages[s] = { compared: false, asymmetric: true }; out.ok = false; out.mismatches.push(`${s}: 片方の撮影にしか無い段`); continue; }
+    if (!ea) { out.stages[s] = { compared: false }; if (opts.expectStages?.includes(s)) { out.ok = false; out.mismatches.push(`${s}: 両方の撮影に無い（必須の段）`); } else out.partial.push(s); continue; }
     const A = readJson(fa), B = readJson(fb);
     const byB = new Map(B.items.map((i) => [i.id, i]));
     const rows = [];
@@ -113,7 +144,7 @@ export function compareRuns(dirA, dirB) {
         Object.assign(row, { kind: "metric", a: ia.value, b: ib.value, ok });
       } else if (ia.metrics) {
         // VFX: 乱数がプロセスごとに変わるので指標だけで判定し、画像の差は参考として残す。
-        const bad = Object.keys(ia.metrics).filter((k) => !relOk(ia.metrics[k], ib.metrics?.[k], TOL.vfxAbs, TOL.vfxRel));
+        const bad = Object.keys(ia.metrics).filter((k) => !relOk(ia.metrics[k], ib.metrics?.[k], vfxFloor(vfxTol, ia.id, k), TOL.vfxRel));
         const img = ia.sha256 === ib.sha256 ? { exact: true } : cmpImageFiles(path.join(dirA, ia.file), path.join(dirB, ib.file));
         Object.assign(row, { kind: "vfx", badMetrics: bad, image: img, ok: bad.length === 0 });
       } else if (ia.kind === "image-seq") {
@@ -196,12 +227,25 @@ function main() {
   }
   if (o.cmd === "compare") {
     if (!o.a || !o.b) throw new Error("--a と --b が要る");
-    const r = compareRuns(path.resolve(o.a), path.resolve(o.b));
+    const r = compareRuns(path.resolve(o.a), path.resolve(o.b), {
+      vfxTol: o["vfx-tol"] ? readJson(path.resolve(o["vfx-tol"])) : null,
+      expectStages: o["expect-stages"] === "all" ? STAGE_NAMES : o["expect-stages"] ? o["expect-stages"].split(",") : [],
+    });
     if (o.out) fs.writeFileSync(path.resolve(o.out), JSON.stringify(r, null, 2));
     for (const [s, v] of Object.entries(r.stages)) console.log(`${s.padEnd(10)} ${v.compared ? `${v.ok ? "ok  " : "FAIL"} ${v.itemsOk}/${v.items}` : "(未比較)"}`);
     for (const m of r.mismatches) console.log(`  範囲外: ${m}`);
-    console.log(r.ok ? "決定論の範囲に収まっている" : "決定論の範囲を超えた差がある");
-    return r.ok ? 0 : 1;
+    if (!r.ok) { console.log("決定論の範囲を超えた差がある"); return 1; }
+    if (r.partial.length) { console.log(`部分比較（未比較の段: ${r.partial.join(",")}）。比べた段は範囲内だが、受け入れの合格ではない（--expect-stages all で全段を必須にする）`); return 3; }
+    console.log("決定論の範囲に収まっている");
+    return 0;
+  }
+  if (o.cmd === "derive-vfx-tol") {
+    if (!o.runs) throw new Error("--runs a,b,c（3 回以上）が要る");
+    const dirs = o.runs.split(",").map((x) => path.resolve(x));
+    if (dirs.length < 3) throw new Error("同じバイナリの撮影が 3 回以上要る");
+    const text = JSON.stringify(deriveVfxTol(dirs), null, 2) + "\n";
+    if (o.out) fs.writeFileSync(path.resolve(o.out), text); else console.log(text);
+    return 0;
   }
   if (o.cmd === "diff") {
     if (!o.base || !o.now) throw new Error("--base と --now が要る");

@@ -130,6 +130,14 @@ export function createTemplateProject(toolDir, dir, template) {
   return dir;
 }
 
+/** exe がコマンドライン旗や MCP 引数名の文字列を持つか（旧バイナリが未知の旗・引数をどう扱うか分からないので、先に調べて縮退する）。 */
+export function exeKnows(exeFile, token) {
+  try {
+    const b = fs.readFileSync(exeFile);
+    return b.includes(Buffer.from(token, "latin1")) || b.includes(Buffer.from(token, "utf16le"));
+  } catch { return false; }
+}
+
 /** 同じセッションで撮った 2 枚の差（一致なら null）。決定論の範囲を実測で決めるために items へ残す。 */
 export function selfDiff(a, b) {
   if (sha256(a) === sha256(b)) return null;
@@ -175,13 +183,18 @@ async function stageUi(args) {
   const cfg = loadGoldenEntries(path.join(REPO_ROOT, "tests", "golden"));
   const scenes = cfg.scenes.filter((s) => s.kind === "ui" && (s.theme ?? "default") === "default");
   const uiProjectSrc = path.join(REPO_ROOT, "tests", "golden", "ui_project");
+  // 改修前のバイナリは --ui-deterministic も imgui_screenshot の hideCursor も持たない（W0.5 で追加）。
+  // 未対応なら旗を渡さず、待ちフレームを増やして撮り、items に「決定論の旗なし」を残す（selfDiff で揺れを実測する）。
+  const exeFile = path.join(args.toolDir, "DX12Engine.exe");
+  const uiDet = exeKnows(exeFile, "--ui-deterministic"), hideCur = exeKnows(exeFile, "hideCursor");
+  if (!uiDet || !hideCur) res.notes.push(`このバイナリは ${[!uiDet && "--ui-deterministic", !hideCur && "hideCursor"].filter(Boolean).join(" と ")} を持たない。旗なしで撮り、待ちフレームを 3 倍にした（決定論は selfDiff で実測）`);
   for (const s of scenes) {
     const project = path.join(args.runDir, "ui", "_project");
     fs.rmSync(project, { recursive: true, force: true });
     fs.cpSync(uiProjectSrc, project, { recursive: true });
-    const extra = ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0)];
+    const extra = [...(uiDet ? ["--ui-deterministic"] : []), "--dpi-scale", String(s.dpi ?? 1.0)];
     const warm = s.warmupFrames ?? cfg.defaults.uiWarmupFrames ?? 120;
-    const settle = s.settleFrames ?? cfg.defaults.settleFrames ?? 8;
+    const settle = (s.settleFrames ?? cfg.defaults.settleFrames ?? 8) * (uiDet ? 1 : 3);
     try {
       const shots = await withEngine(args, { project, mode: "background", extra }, async (conn) => {
         await waitReady(conn);
@@ -196,7 +209,7 @@ async function stageUi(args) {
         for (let k = 0; k < 2; k++) {
           const file = path.join(args.runDir, "ui", `${s.name}.${k}.png`);
           await conn.call("step_frames", { frames: settle, deterministic: true }, 120_000);
-          const r = await conn.call("imgui_screenshot", { hideCursor: true, path: file }, 120_000);
+          const r = await conn.call("imgui_screenshot", { ...(hideCur ? { hideCursor: true } : {}), path: file }, 120_000);
           out.push(readPng(r.path ?? file));
         }
         return out;
@@ -205,7 +218,7 @@ async function stageUi(args) {
       const sha = sha256(masked[0]);
       res.items.push({
         id: s.name, kind: "image", file: `ui/${s.name}.0.png`, width: shots[0].width, height: shots[0].height,
-        sha256: sha256(shots[0]), maskedSha256: sha, dpi: s.dpi ?? 1, layout: s.layout ?? "default", theme: "default",
+        sha256: sha256(shots[0]), maskedSha256: sha, uiDeterministicFlag: uiDet, hideCursor: hideCur, dpi: s.dpi ?? 1, layout: s.layout ?? "default", theme: "default",
         deterministicInSession: masked.every((x) => sha256(x) === sha), selfDiff: selfDiff(masked[0], masked[1]), masks: s.masks ?? [],
       });
     } catch (e) { fail(res, s.name, e); }
@@ -339,6 +352,12 @@ async function stageVfx(args) {
       await conn.call("delete_entity", { entity: id }).then(() => { removed++; }).catch(() => {});
     }
     res.notes.push(`撮影前に既定エンティティを ${removed} 件消した（全 ${ents.length} 件）`);
+    // 中立の背景: 床（地面に触れるレシピ用）と奥の壁（歪み系・暗い系が映るもの）。既定の素材のまま。空だけだと heat_haze などが無情報になる。
+    const floor = await conn.call("create_entity", { type: "plane", name: "SC_backdrop_floor", position: [0, 0, 0] });
+    await conn.call("set_transform", { entity: floor.entityId, scale: [4, 1, 4] }).catch(() => {});
+    const wall = await conn.call("create_entity", { type: "plane", name: "SC_backdrop_wall", position: [0, 2, 4] });
+    await conn.call("set_transform", { entity: wall.entityId, rotation: [-90, 0, 0], scale: [4, 1, 2] }).catch(() => {});
+    res.notes.push("背景: 床 SC_backdrop_floor（plane 4x4 倍）と奥の壁 SC_backdrop_wall（z=4、plane）を足して撮る");
     await conn.call("set_editor_camera", { position: [pos[0], pos[1] + height, pos[2] - dist], target: [pos[0], pos[1] + height, pos[2]] });
     await step(30);
     const baseImg = PNG.sync.read(await shoot("base"));
@@ -462,16 +481,11 @@ async function stageStartup(args) {
   const warm = runs.filter((r) => r.kind === "warm" && r.readySec !== null).map((r) => r.readySec);
   const sorted = [...warm].sort((a, b) => a - b);
   res.items.push({
-    id: "startup_ready_ema", kind: "metric", unit: "s", alpha: 0.3,
+    id: "startup_ready_ema", kind: "metric", unit: "s", alpha: 0.3, quantity: "ready-background-no-splash",
     value: ema(warm), median: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
     min: sorted[0] ?? null, max: sorted.at(-1) ?? null, runs,
   });
-  // エンジン自身の startup.json（SplashProgress.h の EMA）が残っていれば併記する（スプラッシュ経路の値。--background では更新されないことがある）
-  try {
-    const sj = path.join(instDir, "data", "startup.json");
-    if (fs.existsSync(sj)) res.items.at(-1).engineStartupJson = JSON.parse(fs.readFileSync(sj, "utf8"));
-  } catch { /* 無視 */ }
-  res.notes.push("startup_ready_ema = プロセス起動から ping が通り sceneLoading が false になるまで（--background、スプラッシュ無し、空のテンプレート、alpha 0.3、warm のみ）。★ST-1 の「ウォームスタートの EMA」（SplashProgress.h の startup.json、スプラッシュ経路・1500〜6000ms にクランプ）とは別の量。目標の判定はスプラッシュ経路の値で行うこと。first は直前に 1 回起動した後の先頭 1 回で、本物のコールドではない");
+  res.notes.push("startup_ready_ema = プロセス起動から ping が通り sceneLoading が false になるまで（--background、スプラッシュ無し、空のテンプレート、alpha 0.3、warm のみ）。★ST-1 の「ウォームスタートの EMA」（SplashProgress.h の startup.json、スプラッシュ経路・1500〜6000ms にクランプ）とは別の量。W7 の 1.4s 目標をどちらの量で判定するかは main セッションの決定待ち（w0.json の pending.startupQuantity）。スプラッシュ経路は窓が要るのでここでは測らない。first は直前に 1 回起動した後の先頭 1 回で、本物のコールドではない");
   fs.rmSync(path.join(args.runDir, "startup", "_proj"), { recursive: true, force: true });
   return res;
 }
