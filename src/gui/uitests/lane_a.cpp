@@ -981,13 +981,25 @@ void T_UndoToSavedStateClearsDirty(ImGuiTestContext* ctx)
     IM_CHECK(ed->IsSceneDirty() && ed->IsSceneHumanDirty());
 
     LogStep(ctx, "1 つ戻してもまだ未保存、全部戻すと保存した状態 = 未保存でなくなる");
+    // FU-E-16: 深さが保存時と違う Undo では内容の指紋（シーン全体の直列化）を走らせず、保存時と同じ深さへ戻った Undo だけ走らせる。
+    u64 runs0 = 0, skip0 = 0, runs1 = 0, skip1 = 0, runs2 = 0, skip2 = 0;
+    double lastMs = 0.0, maxMs = 0.0;
+    AppAccess::SavePointHashStats(runs0, skip0, lastMs, maxMs);
     ctx->SetRef(kWinHierarchy);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(ed->IsSceneDirty() && ed->IsSceneHumanDirty());
+    AppAccess::SavePointHashStats(runs1, skip1, lastMs, maxMs);
+    IM_CHECK_EQ(runs1, runs0);          // 深さが違う: 直列化を走らせない
+    IM_CHECK_EQ(skip1, skip0 + 1);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(!ed->IsSceneDirty());
+    AppAccess::SavePointHashStats(runs2, skip2, lastMs, maxMs);
+    IM_CHECK_EQ(runs2, runs1 + 1);      // 保存時と同じ深さ: 1 回だけ走らせて一致を確かめた
+    IM_CHECK_EQ(skip2, skip1);
+    IM_CHECK(lastMs >= 0.0 && maxMs >= lastMs);
+    LogStep(ctx, "保存点の指紋: 1 回 %.2f ms（最大 %.2f ms）、省いた回数 %llu", lastMs, maxMs, static_cast<unsigned long long>(skip2));
     IM_CHECK(!ed->IsSceneHumanDirty());   // 自動保存を止める条件が外れる
     IM_CHECK(!ed->autosaveBlockedByHumanEdits);
 
@@ -1225,6 +1237,34 @@ void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx)
     }
     IM_CHECK_EQ(outside, 0);
     IM_CHECK_EQ(warns, 0);
+
+    // 強化（FU-E-16）: 場所は BaseDir 直下の 2 候補のどちらかに正確に一致し、'..' や二重の区切りを含まない。
+    // 探しに行った場所（ログ）も、同じ 2 候補のどちらかである（BaseDir の外や別の相対でない）。
+    const std::string rel = path.substr(base.size());
+    IM_CHECK(rel == "scripts/game.lua" || rel == "assets/game.lua");
+    IM_CHECK(path.find("..") == std::string::npos);
+    IM_CHECK(path.find("//") == std::string::npos || path.find("//") == 0 || path.find("://") != std::string::npos);
+    IM_CHECK(path.find(static_cast<char>(92)) == std::string::npos);   // バックスラッシュ
+    int notCandidate = 0, seen = 0;
+    for (const LogEntry& e : entries)
+    {
+        const size_t p = e.text.find(marker);
+        if (p == std::string::npos) continue;
+        ++seen;
+        std::string searched = e.text.substr(p + marker.size());
+        std::replace(searched.begin(), searched.end(), static_cast<char>(92), '/');
+        if (searched.size() <= base.size()) { ++notCandidate; continue; }
+        const std::string r = searched.substr(base.size());
+        if (r != "scripts/game.lua" && r != "assets/game.lua") ++notCandidate;
+    }
+    IM_CHECK_EQ(notCandidate, 0);
+    // 「未読み込み」の案内（ランチャー中）は警告にしない。ログに出ていれば情報レベル（2 以下）。
+    const std::string launcherMarker = "グローバル game.lua は未読み込み";
+    int launcherWarn = 0;
+    for (const LogEntry& e : entries)
+        if (e.text.find(launcherMarker) != std::string::npos && e.level >= 3) ++launcherWarn;
+    IM_CHECK_EQ(launcherWarn, 0);
+    (void)seen;
 }
 
 // FU-E-1: Application::Update が毎フレーム 1 回 AppAccess::VfxTick を呼ぶ。
