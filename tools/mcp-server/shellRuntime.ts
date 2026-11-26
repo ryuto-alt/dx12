@@ -11,7 +11,7 @@ import { ManifestStore } from "./manifest.ts";
 import { Catalog, CONDITIONAL_GUARDED, CONDITIONAL_WRITE, buildCatalog, type ParamDoc, type ToolDoc, type ToolEntry } from "./catalog.ts";
 import { CONSOLIDATED, CORE_GUARDED_TOOL, RENDER_SETTING_TARGETS, rewriteFixToCore, routeConsolidated, toCoreCall } from "./coreSpec.ts";
 import { SearchIndex } from "./search.ts";
-import { envelope, dropSelfFixes, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions, type ErrorBody, type Fix } from "./errors.ts";
+import { clearRepeatMarks, envelope, dropSelfFixes, guardRepeatedFix, nearest, routeFixViaCall, tidyUnknownToolSuggestions, type ErrorBody, type Fix } from "./errors.ts";
 import { structureError } from "./structure.ts";
 import { validateAgainstParams, validateAgainstShape } from "./validate.ts";
 import { runDoctor } from "./doctor.ts";
@@ -336,7 +336,7 @@ export class ShellRuntime {
     await this.refresh();
     let doc = this.catalog.resolve(name);
     if (!doc) { await this.refresh(true); doc = this.catalog.resolve(name); }   // エンジンに増えた method を取り込む
-    if (!doc) { const b = this.unknownToolBody(name, args); recordError({ at: Date.now(), tool: name, code: b.code, message: b.message }); return errorResult(b); }
+    if (!doc) { const b = this.unknownToolBody(name, args, "call"); recordError({ at: Date.now(), tool: name, code: b.code, message: b.message }); return errorResult(b); }
     if (doc.kind === "shell") return errorResult({ code: "E_INVALID_PARAM", message: `${doc.id} は shell ツール。dx12_call 経由では呼べない`, fix: [{ tool: doc.id, args, why: "MCP から直接呼ぶ" }] });
 
     // 統合ツール(dx12_set_render_settings / dx12_capture / dx12_edit_terrain など): 旧ツールへ振り分けて同じ経路で実行する。
@@ -461,7 +461,7 @@ export class ShellRuntime {
           body.cause = "エンジンが古いか、この method を含まないビルド。名前の打ち間違いではない";
           body.retryable = false;
           body.didYouMean = undefined;
-          if (body.details) { delete (body.details as any).giveUp; delete (body.details as any).repeatedFix; delete (body.details as any).didYouMeanVia; }
+          clearRepeatMarks(body); if (body.details) delete (body.details as any).didYouMeanVia;
           body.fix = [{ tool: "dx12_doctor", args: {}, why: "エンジンの版とマニフェストを確認する" }, { why: "エンジンを更新(または最新をビルド)して再起動する。MCP サーバ(Node)の再起動は要らない" }];
         }
       }
@@ -634,7 +634,7 @@ export class ShellRuntime {
         const e = await this.deps.engine.call("get_entity", ref, { timeout: 3000, retry: false });
         targets.push({ kind: "entity", ref, exists: true, entityId: e?.entityId ?? null, componentTypes: e?.componentTypes ?? null });
       } catch (err: any) {
-        const b = await structureError(err, { tool: doc.id, args, engine: this.deps.engine });
+        const b = await structureError(err, { tool: doc.id, args, engine: this.deps.engine, noRepeatGuard: true });   // dryRun の下見は「同じ fix の繰り返し」に数えない
         targets.push({ kind: "entity", ref, exists: false, didYouMean: b.didYouMean ?? [] });
         warnings.push(`対象のエンティティが見つからない(${JSON.stringify(ref)})。実行すると失敗する`);
       }

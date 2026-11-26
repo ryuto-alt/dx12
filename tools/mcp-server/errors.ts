@@ -242,6 +242,15 @@ export function routeFixViaCall(fixes: Fix[] | undefined, isDirect: ((name: stri
   });
 }
 
+/** 打ち切りの印(details.giveUp / repeatedFix)を本文から外す。E_ENGINE_TOO_OLD へ書き換えるときにも使う。 */
+export function clearRepeatMarks(body: ErrorBody): ErrorBody {
+  if (body.details) {
+    const d = body.details as Record<string, unknown>;
+    delete d.giveUp; delete d.repeatedFix;
+  }
+  return body;
+}
+
 type RepeatRecord = { n: number; at: number };
 const REPEAT_WINDOW_MS = 10 * 60 * 1000;
 const REPEAT_MAX_KEYS = 128;
@@ -255,6 +264,10 @@ export function resetRepeatedFixGuard(): void { repeatedFixes.clear(); }
  * 鍵は「呼ばれた名前 + 先頭の fix」。同じ呼び出しがもう一度来た = 前回の fix では直っていない。
  */
 export function guardRepeatedFix(body: ErrorBody, requestedName: string, now: number = Date.now(), scope: string = ""): ErrorBody {
+  // ★判定の初期化: 前の呼び出しの本文を使い回した(prebuilt のコピーなど)ときに、古い giveUp / repeatedFix が残って
+  //   1 回目が打ち切り扱いになるのを防ぐ。E_UNKNOWN_TOOL 以外(E_ENGINE_TOO_OLD など)には打ち切りを付けず、数えもしない。
+  clearRepeatMarks(body);
+  if (body.code !== "E_UNKNOWN_TOOL") return body;
   const head = body.fix?.find((f) => f.tool);
   const isCallForm = head?.tool === CALL_TOOL || head?.tool === "dx12_call_guarded";
   // 引数が違っても「同じ名前を同じ形で勧めた」なら同じ鍵(名前が通らない理由は引数と無関係)。scope は経路(SDK 直 / dx12_call)ごとに数えを分ける
