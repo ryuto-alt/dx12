@@ -9,6 +9,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "graphics/RenderTarget.h"
 #include "renderer/ParticleSystem.h"
+#include "editor/VfxApplyLogic.h"   // VfxAsset と「適用」の純ロジック（W1-A15）
 
 struct ID3D12GraphicsCommandList;
 
@@ -20,59 +21,6 @@ class CommandList;
 class EditorContext;
 class ResourceManager;
 class Scene;   // SpawnEntityCommand（Undo）に渡すだけ
-
-// 名前付き VFX プリセット（assets/vfx/*.json）。ParticleEmitter コンポーネントの
-// フィールドをほぼそのまま保持しつつ、Lua fx:burst{} 生成用のフィールド（burstCount）も
-// 併せ持つ上位互換のデータ形式。配置エンティティへの「適用」と Lua コード生成の両方に使える。
-struct VfxAsset
-{
-    std::string name = "NewEffect";
-
-    int  kind  = 1;   // ParticleKind（既定 = Fire）
-    int  blend = 0;   // ParticleBlend
-    int  orient = 0;  // 粒子の向き 0=ビルボード 1=水平(地面) 2=垂直(+Z)
-
-    // 配置エンティティ（継続放出）用
-    f32  rate        = 30.0f;
-    bool playOnStart  = true;
-    bool looping      = true;
-    f32  duration     = 1.0f;
-    // Lua fx:burst{} 生成用（一度に発生させる粒子数）
-    int  burstCount   = 24;
-
-    DirectX::XMFLOAT3 dir{0.0f, 1.0f, 0.0f};
-    f32  spread   = 0.4f;
-    f32  speed    = 3.0f;
-    f32  speedVar = 0.4f;
-
-    f32  size    = 0.3f;
-    f32  sizeMid = -1.0f;   // >=0 で3キーサイズカーブ
-    f32  sizeEnd = 0.0f;
-    f32  life    = 0.8f;
-    f32  lifeVar = 0.3f;
-
-    DirectX::XMFLOAT3 color{1.0f, 0.6f, 0.2f};
-    DirectX::XMFLOAT3 colorMid{1.0f, 0.6f, 0.2f};
-    DirectX::XMFLOAT3 colorEnd{1.0f, 0.12f, 0.05f};
-    bool hasColorMid = false;
-    f32  intensity   = 3.0f;
-
-    f32  gravity = 0.0f;
-    f32  drag    = 1.0f;
-    f32  up      = 0.0f;
-    f32  stretch = 0.0f;
-
-    f32  turbStrength = 0.0f;
-    f32  turbFreq     = 1.0f;
-
-    f32  flicker     = 0.0f;
-    f32  flickerFreq = 18.0f;
-
-    f32  distort    = 0.0f;
-    bool light      = false;
-    f32  lightRange = 3.0f;
-    std::string texturePath;   // assets 相対パス。空ならプロシージャル質感(kind依存)
-};
 
 // パーティクルエフェクトを見ながら作れる専用ツール窓（ツール > パーティクルエディタ）。
 // 独立したプレビュー枠（自前の ParticleSystem インスタンス・オフスクリーン RenderTarget・
@@ -106,6 +54,9 @@ private:
     bool SaveAsset(const std::string& path);
     // asNewLayer=false … 選択エンティティの 1 枚目を置き換える（従来の「適用」）
     // asNewLayer=true  … レイヤーとして追加する（炎の上に煙を重ねる、等）
+    // W1-A15: 置き換える側（asNewLayer=false）で 1 枚目に中身があるときは確認（モーダル）を挟む。
+    //   MCP のセッションがある（aiSessionEver）ときは AI がボタンを押せないので出さずに適用する（Undo で戻せる）。
+    void RequestApply(entt::registry& reg, EditorContext& ctx, bool asNewLayer);
     void ApplyToSelected(entt::registry& reg, EditorContext& ctx, bool asNewLayer = false);
     // Scene* と assetsDir は SpawnEntityCommand（Undo）に必要。
     // 無いと「新規エンティティとして配置」が Ctrl+Z で消えない。
@@ -142,6 +93,8 @@ private:
     char m_nameBuf[128] = "NewEffect";
     std::string m_statusMsg;
     f32 m_statusFlash = 0.0f;
+    bool         m_openReplaceConfirm = false;   // 次のフレームで確認モーダルを開く
+    entt::entity m_confirmEntity = entt::null;   // 確認の対象（確認中に選択が変わっても元の相手に適用する）
 };
 
 } // namespace dx12e
