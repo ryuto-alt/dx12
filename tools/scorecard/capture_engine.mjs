@@ -9,7 +9,7 @@
 //
 // 使い方（通常は capture.ps1 から）:
 //   node tools/scorecard/capture_engine.mjs --stage <splash|ui|golden|templates|vfx|startup>
-//        --engine-dir <exe のあるフォルダ> --run-dir <出力> --tool-dir <exe のコピー置き場> [--port 8854] [--no-dred]
+//        --engine-dir <exe のあるフォルダ> --run-dir <出力> --tool-dir <exe のコピー置き場> [--port 8855] [--no-dred]
 //        [--startup-runs 6]
 // 出力: <run-dir>/stage_<stage>.json（{stage, ok, items[], notes[], errors[]}）と各画像。
 import fs from "node:fs";
@@ -31,9 +31,14 @@ export const TEMPLATES = ["empty", "fps", "tps", "2d"];
 export const CORE_SCENES = ["core_pbr_spheres", "core_csm_shadows", "core_transparency", "core_post_stack", "core_load_defaults"];
 export const NEW_SCENE_ID = "core_new_scene_gi";
 
+// 絶対パス・ユーザー名を要約に残さない
+export function sanitizeMsg(m) {
+  return String(m ?? "").replace(/[A-Za-z]:[\\/][^\s"'`<>|,;)]*/g, "<path>").replace(/\/(?:Users|home)\/[^\s"']*/g, "<path>");
+}
+
 // ─── 引数 ──────────────────────────────────────────────────────────────
 export function parseArgs(argv) {
-  const a = { stage: null, engineDir: null, runDir: null, toolDir: null, port: 8854, noDred: false, startupRuns: 6, instance: null };
+  const a = { stage: null, engineDir: null, runDir: null, toolDir: null, port: 8855, noDred: false, startupRuns: 6, instance: null };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     const v = () => { if (i + 1 >= argv.length) throw new Error(`${k} に値が要る`); return argv[++i]; };
@@ -132,7 +137,7 @@ export function selfDiff(a, b) {
   return { diffRatio: c.diffRatio, meanAbs: c.meanAbs };
 }
 function stageResult(stage) { return { stage, ok: true, items: [], notes: [], errors: [] }; }
-function fail(res, id, e) { res.ok = false; res.errors.push({ id, message: String(e?.message ?? e) }); }
+function fail(res, id, e) { res.ok = false; res.errors.push({ id, message: sanitizeMsg(e?.message ?? e).slice(0, 400) }); }
 
 // ─── 段 1: 旧スプラッシュ（--splash-preview の書き出し） ──────────────────
 async function stageSplash(args) {
@@ -157,8 +162,8 @@ async function stageSplash(args) {
     const csv = path.join(dir, "frames.csv");
     if (fs.existsSync(csv)) {
       const sheet = path.join(args.runDir, "splash", `${id}_contact.png`);
-      const py = spawnSync("python", [path.join(REPO_ROOT, "tools", "splash_contact_sheet.py"), dir, "--out", sheet], { encoding: "utf8", timeout: 120_000, windowsHide: true });
-      if (py.status !== 0) res.notes.push(`コンタクトシートは作らなかった(${id}): python 不在か PIL 無し`);
+      const py = spawnSync("python", ["-I", path.join(REPO_ROOT, "tools", "splash_contact_sheet.py"), dir, sheet], { encoding: "utf8", timeout: 120_000, windowsHide: true });
+      if (py.status !== 0) res.notes.push(`コンタクトシートは作らなかった(${id}): status=${py.status} ${sanitizeMsg(py.error?.message ?? py.stderr ?? "").slice(0, 200)}`);
     }
   }
   return res;
@@ -313,7 +318,7 @@ async function stageVfx(args) {
   res.notes.push(`レシピ ${ids.length} 件（tools/mcp-server/vfx.ts）`);
   const proj = path.join(args.runDir, "vfx", "_proj", "empty");
   createTemplateProject(args.toolDir, proj, "empty");
-  const pos = [0, 0, 0], dist = 5, height = 1;
+  const pos = [0, 0, 0], dist = 3.5, height = 1;   // 粒子は原点の上 1m、カメラは 3.5m 手前
   await withEngine(args, { project: proj, mode: "headless" }, async (conn) => {
     await waitReady(conn);
     const shoot = async (tag) => {
@@ -322,7 +327,19 @@ async function stageVfx(args) {
       return fs.readFileSync(r.path ?? file);
     };
     const step = (n) => conn.call("step_frames", { frames: n, deterministic: true, hold: true }, 120_000);
-    await conn.call("set_editor_camera", { position: [pos[0], pos[1] + height, pos[2] - dist], target: [pos[0], pos[1] + height - 0.2, pos[2]] });
+    // テンプレートの既定エンティティ（原点の立方体など）が粒子を隠すので、カメラ・ライト以外を全部消す。
+    const listed = await conn.call("list_entities", { limit: 0 });
+    const ents = listed.entities ?? listed.items ?? (Array.isArray(listed) ? listed : []);
+    let removed = 0;
+    for (const en of ents) {
+      const comps = JSON.stringify(en.components ?? en.componentTypes ?? "");
+      if (/camera|light|Camera|Light/.test(comps) || /camera|light/i.test(String(en.name ?? ""))) continue;
+      const id = en.entityId ?? en.entity ?? en.id;
+      if (id === undefined) continue;
+      await conn.call("delete_entity", { entity: id }).then(() => { removed++; }).catch(() => {});
+    }
+    res.notes.push(`撮影前に既定エンティティを ${removed} 件消した（全 ${ents.length} 件）`);
+    await conn.call("set_editor_camera", { position: [pos[0], pos[1] + height, pos[2] - dist], target: [pos[0], pos[1] + height, pos[2]] });
     await step(30);
     const baseImg = PNG.sync.read(await shoot("base"));
     const baseLuma = lumaOf(baseImg);
@@ -331,7 +348,7 @@ async function stageVfx(args) {
       let entity;
       try {
         const r = vfxMod.resolveVfx(id);
-        const made = await conn.call("create_entity", { type: r.layers.length ? "particle_emitter" : "empty", name: `FX_${id}`, position: pos });
+        const made = await conn.call("create_entity", { type: r.layers.length ? "particle_emitter" : "empty", name: `FX_${id}`, position: [pos[0], pos[1] + height - 0.5, pos[2]] });
         entity = made.entityId;
         const ref = { entity };
         for (let i = 0; i < r.layers.length; i++) {
@@ -344,9 +361,19 @@ async function stageVfx(args) {
         if (r.trail) await conn.call("set_component", { ...ref, component: "trailRenderer", data: { ...r.trail } });
         const oneShot = r.layers.length > 0 && r.layers.every((l) => l.looping === false);
         if (oneShot) await conn.call("eval_lua", { code: `return tostring(fx:play(${JSON.stringify(`FX_${id}`)}))` }).catch(() => null);
-        await step(oneShot ? 6 : 90);   // ループ系は 1.5 秒ならして定常へ。ワンショットは鳴らした直後から撮る
+        // トレイルは動く実体が要るので、撮影中は 5 フレームごとに X 方向へ往復させる。
+        let tick = 0;
+        const advance = async (n) => {
+          if (!r.trail) { await step(n); return; }
+          for (let done = 0; done < n; done += 5) {
+            tick++;
+            await conn.call("set_transform", { entity, position: [Math.sin(tick * 0.35) * 1.2, pos[1] + height - 0.5, pos[2]] }).catch(() => {});
+            await step(Math.min(5, n - done));
+          }
+        };
+        await advance(oneShot ? 6 : 90);   // ループ系は 1.5 秒ならして定常へ。ワンショットは鳴らした直後から撮る
         const bufs = [];
-        for (let f = 0; f < VFX_FRAMES; f++) { await step(VFX_STEP); bufs.push(await shoot(`${id}_${f}`)); }
+        for (let f = 0; f < VFX_FRAMES; f++) { await advance(VFX_STEP); bufs.push(await shoot(`${id}_${f}`)); }
         const imgs = bufs.map((b) => PNG.sync.read(b));
         // 指標: 被覆（基準画から 12/441 以上離れた画素の割合）、明るさの増分、ちらつき（フレーム平均輝度の標準偏差）
         const lumas = imgs.map(lumaOf);
@@ -360,7 +387,7 @@ async function stageVfx(args) {
         }
         const mean = gains.reduce((a, b) => a + b, 0) / gains.length;
         const flicker = Math.sqrt(gains.reduce((a, b) => a + (b - mean) ** 2, 0) / gains.length);
-        const sheet = sheetMod.buildContactSheet(bufs, { columns: VFX_FRAMES, tileWidth: 240 });
+        const sheet = sheetMod.buildContactSheet(bufs, { columns: VFX_FRAMES, tileWidth: 320 });
         const file = path.join(args.runDir, "vfx", `${id}.png`);
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, sheet.sheetPng);
@@ -375,9 +402,9 @@ async function stageVfx(args) {
     }
     await conn.call("step_frames", { frames: 1, deterministic: true, hold: false }).catch(() => {});
     if (tiles.length) {
-      const ov = sheetMod.buildContactSheet(tiles, { columns: 6, tileWidth: 200, label: false });
+      const ov = sheetMod.buildContactSheet(tiles, { columns: 6, tileWidth: 300, label: true });
       fs.writeFileSync(path.join(args.runDir, "vfx", "_overview.png"), ov.sheetPng);
-      res.notes.push(`全体の一覧: vfx/_overview.png（並びは ${ids.join(",")} の順）`);
+      res.notes.push(`全体の一覧: vfx/_overview.png（コマの番号 n は次の並びの n 番目: ${ids.join(",")} の順）`);
     }
   });
   fs.rmSync(path.join(args.runDir, "vfx", "_tmp"), { recursive: true, force: true });
@@ -429,17 +456,22 @@ async function stageStartup(args) {
       }
       if (tReady === null) err = "120 秒で ready にならない";
     } finally { killPid(child.pid); await sleep(1500); }
-    runs.push({ run: i, kind: i === 0 ? "cold" : "warm", portOpenSec: tPort === null ? null : tPort / 1000, readySec: tReady === null ? null : tReady / 1000, ...(err ? { error: err } : {}) });
+    runs.push({ run: i, kind: i === 0 ? "first" : "warm", portOpenSec: tPort === null ? null : tPort / 1000, readySec: tReady === null ? null : tReady / 1000, ...(err ? { error: err } : {}) });
     if (err) fail(res, `run${i}`, err);
   }
   const warm = runs.filter((r) => r.kind === "warm" && r.readySec !== null).map((r) => r.readySec);
   const sorted = [...warm].sort((a, b) => a - b);
   res.items.push({
-    id: "startup_warm_ema", kind: "metric", unit: "s", alpha: 0.3,
+    id: "startup_ready_ema", kind: "metric", unit: "s", alpha: 0.3,
     value: ema(warm), median: sorted.length ? sorted[Math.floor(sorted.length / 2)] : null,
     min: sorted[0] ?? null, max: sorted.at(-1) ?? null, runs,
   });
-  res.notes.push("起動秒数 = プロセス起動から ping が通り sceneLoading が false になるまで（--background、スプラッシュ無し、空のテンプレートのプロジェクト）。cold は先頭 1 回、EMA は warm のみ（alpha 0.3）");
+  // エンジン自身の startup.json（SplashProgress.h の EMA）が残っていれば併記する（スプラッシュ経路の値。--background では更新されないことがある）
+  try {
+    const sj = path.join(instDir, "data", "startup.json");
+    if (fs.existsSync(sj)) res.items.at(-1).engineStartupJson = JSON.parse(fs.readFileSync(sj, "utf8"));
+  } catch { /* 無視 */ }
+  res.notes.push("startup_ready_ema = プロセス起動から ping が通り sceneLoading が false になるまで（--background、スプラッシュ無し、空のテンプレート、alpha 0.3、warm のみ）。★ST-1 の「ウォームスタートの EMA」（SplashProgress.h の startup.json、スプラッシュ経路・1500〜6000ms にクランプ）とは別の量。目標の判定はスプラッシュ経路の値で行うこと。first は直前に 1 回起動した後の先頭 1 回で、本物のコールドではない");
   fs.rmSync(path.join(args.runDir, "startup", "_proj"), { recursive: true, force: true });
   return res;
 }

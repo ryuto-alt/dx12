@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ema } from "./capture_engine.mjs";
-import { compareRuns, diffSummaries, summarizeRun, TOL } from "./report.mjs";
+import { ema, parseArgs, sanitizeMsg } from "./capture_engine.mjs";
+import { compareRuns, diffSummaries, summarizeRun, relOk, scrub, TOL } from "./report.mjs";
 
 test("ema: 先頭から alpha で畳む", () => {
   assert.equal(ema([]), null);
@@ -28,9 +28,9 @@ test("compare: 起動秒数は max(0.3s, 15%) 以内", () => {
   assert.ok(compareRuns(mkRun(3.0, m), mkRun(3.4, m)).ok);   // 3.0s の 15% = 0.45s
 });
 
-test("compare: VFX 指標は絶対 0.01 か相対 15%", () => {
+test("compare: VFX 指標は絶対 2e-3 か相対 30%", () => {
   const a = { coverage: 0.1, lumaGain: 0.05, flicker: 0.01 };
-  assert.ok(compareRuns(mkRun(1, a), mkRun(1, { ...a, coverage: 0.108 })).ok);
+  assert.ok(compareRuns(mkRun(1, a), mkRun(1, { ...a, coverage: 0.12 })).ok);
   assert.ok(!compareRuns(mkRun(1, a), mkRun(1, { ...a, coverage: 0.3 })).ok);
 });
 
@@ -56,4 +56,37 @@ test("diff: 変化なし / 変化あり / 数値の増減", () => {
   assert.match(t, /template_empty\s+changed/);
   assert.match(t, /startup_warm_ema/);
   assert.ok(TOL.startupRel > 0);
+});
+
+test("relOk: 小さい指標でも絶対差の床が効く（0.01 以下なら何でも通るわけではない）", () => {
+  assert.ok(!relOk(0.004, 0.009, TOL.vfxAbs, TOL.vfxRel));
+  assert.ok(relOk(0.004, 0.0041, TOL.vfxAbs, TOL.vfxRel));
+  assert.ok(relOk(null, null, 1, 1));
+  assert.ok(!relOk(null, 1, 1, 1));
+});
+
+test("compare: 片方にしかない項目は不合格", () => {
+  const m = { coverage: 0.1, lumaGain: 0.05, flicker: 0.01 };
+  const a = mkRun(1, m), b = mkRun(1, m);
+  const f = path.join(b, "stage_vfx.json");
+  const j = JSON.parse(fs.readFileSync(f, "utf8")); j.items.push({ id: "vfx_extra", kind: "image", file: "e.png", sha256: "x", metrics: m });
+  fs.writeFileSync(f, JSON.stringify(j));
+  const r = compareRuns(a, b);
+  assert.ok(!r.ok);
+  assert.ok(r.mismatches.includes("vfx/vfx_extra"));
+  const r2 = compareRuns(b, a);
+  assert.ok(r2.mismatches.includes("vfx/vfx_extra"));
+});
+
+test("parseArgs: 既定ポートは lane-d の 8855、不正な引数は拒む", () => {
+  const base = ["--stage", "vfx", "--engine-dir", ".", "--run-dir", ".", "--tool-dir", "."];
+  assert.equal(parseArgs(base).port, 8855);
+  assert.throws(() => parseArgs([...base, "--bogus"]));
+  assert.throws(() => parseArgs(["--stage", "nope", "--engine-dir", ".", "--run-dir", ".", "--tool-dir", "."]));
+});
+
+test("要約の文言から絶対パスを消す", () => {
+  const m = "failed C:\\Users\\x\\a.exe and /Users/x/b";
+  assert.ok(!/Users/.test(scrub(m)));
+  assert.ok(!/Users/.test(sanitizeMsg(m)));
 });

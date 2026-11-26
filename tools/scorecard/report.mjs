@@ -9,9 +9,9 @@
 //        W0 との差分レポート（各 Wave のゲート用）。値の増減を表で出す。
 //
 // 決定論の範囲（compare の合否）:
-//   画像      … 画素ハッシュが同じ、または 640x360 比較ではなくネイティブで「違う画素 0.1% 以下かつ平均差 0.25 以下」
+//   画像      … 画素ハッシュが同じ、または「違う画素 0.1% 以下かつ平均差 0.25 以下」（セッション内の揺れ×2 まで広げるが、2% / 1.0 を上限とする）
 //               （tools/bench の既定の許容差と同じ。pixelThreshold 12）。
-//   VFX 指標  … 被覆・明るさ・ちらつきが、絶対差 0.01 以下、または相対差 15% 以下。
+//   VFX 指標  … 被覆・明るさ・ちらつきが、絶対差 2e-3 以下（A/A 実測で決定）、または相対差 30% 以下。
 //               パーティクルの乱数がプロセスごとに変わり絵は 1 画素単位では一致しないので、VFX は指標だけで判定する（画像の差は参考情報）。
 //   起動秒数  … EMA が max(0.30 秒, 15%) 以内（実時間の計測なので画像より緩い）。
 import fs from "node:fs";
@@ -25,12 +25,17 @@ const require = createRequire(import.meta.url);
 
 export const TOL = {
   pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25,
-  vfxAbs: 0.01, vfxRel: 0.15,
+  vfxAbs: 2e-3, vfxRel: 0.30,           // A/A（同じバイナリを 2 回）の実測: 小さい指標の揺れは最大 1.4e-3、大きい指標は相対 30% 内。絶対 2e-3 未満の指標は雑音扱い
+  maxDiffRatioCap: 0.02, maxMeanAbsCap: 1.0,   // セッション内の揺れを許す場合の上限（無制限にしない）
   startupAbsSec: 0.3, startupRel: 0.15,
 };
 export const SUMMARY_VERSION = 1;
 const STAGE_NAMES = ["splash", "ui", "golden", "templates", "vfx", "startup"];
 
+// 要約に絶対パスを残さない
+export function scrub(m) {
+  return String(m ?? "").replace(/[A-Za-z]:[\\/][^\s"'`<>|,;)]*/g, "<path>").replace(/\/(?:Users|home)\/[^\s"']*/g, "<path>").slice(0, 400);
+}
 const readJson = (f) => JSON.parse(fs.readFileSync(f, "utf8"));
 function readPng(file) {
   const { PNG } = require(path.join(REPO_ROOT, "tools/mcp-server/node_modules/pngjs"));
@@ -52,11 +57,11 @@ export function summarizeRun(runDir) {
       for (const k of ["kind", "width", "height", "sha256", "maskedSha256", "count", "deterministicInSession", "selfDiff", "dpi", "layout", "layers", "oneShot", "metrics", "newScene", "scene"])
         if (it[k] !== undefined) o[k] = it[k];
       if (it.kind === "image-seq") o.frameCount = it.count;
-      if (it.kind === "metric") for (const k of ["unit", "alpha", "value", "median", "min", "max"]) o[k] = it[k];
+      if (it.kind === "metric") for (const k of ["unit", "alpha", "value", "median", "min", "max", "engineStartupJson"]) if (it[k] !== undefined) o[k] = it[k];
       if (it.kind === "metric") o.warmRuns = it.runs.filter((r) => r.kind === "warm").length;
       items[it.id] = o;
     }
-    stages[s] = { captured: true, ok: st.ok, errors: st.errors.map((e) => ({ id: e.id, message: e.message })), notes: st.notes, items };
+    stages[s] = { captured: true, ok: st.ok, errors: st.errors.map((e) => ({ id: e.id, message: scrub(e.message) })), notes: st.notes.map(scrub), items };
   }
   return {
     version: SUMMARY_VERSION,
@@ -73,24 +78,20 @@ export function summarizeRun(runDir) {
 }
 
 // ─── 比較（決定論） ──────────────────────────────────────────────────────
-function relOk(a, b, absTol, relTol) {
+export function relOk(a, b, absTol, relTol) {
   if (a == null || b == null) return a == b;
   const d = Math.abs(a - b);
   return d <= absTol || d <= relTol * Math.max(Math.abs(a), Math.abs(b));
 }
 
-function imageFilePairs(runDir, item) {
-  // image は file 1 枚、image-seq は frames[] の各ファイル（stage_*.json から読む）。
-  return item;
-}
-
-function cmpImageFiles(fa, fb, self = null) {
+export function cmpImageFiles(fa, fb, self = null) {
   if (!fs.existsSync(fa) || !fs.existsSync(fb)) return { ok: false, why: "画像ファイルが無い" };
   const a = readPng(fa), b = readPng(fb);
   if (a.width !== b.width || a.height !== b.height) return { ok: false, why: `サイズが違う ${a.width}x${a.height} / ${b.width}x${b.height}` };
   const c = compareImages(a, b, TOL.pixelThreshold);
   // 同じセッションの 2 枚でも一致しない項目（パーティクル・RT のノイズ）は、その実測差の 2 倍まで許す。
-  const maxR = Math.max(TOL.maxDiffRatio, self ? self.diffRatio * 2 : 0), maxM = Math.max(TOL.maxMeanAbs, self ? self.meanAbs * 2 : 0);
+  const maxR = Math.min(TOL.maxDiffRatioCap, Math.max(TOL.maxDiffRatio, self ? self.diffRatio * 2 : 0));
+  const maxM = Math.min(TOL.maxMeanAbsCap, Math.max(TOL.maxMeanAbs, self ? self.meanAbs * 2 : 0));
   const ok = c.diffRatio <= maxR && c.meanAbs <= maxM;
   return { ok, diffRatio: c.diffRatio, meanAbs: c.meanAbs, maxDist: c.maxDist };
 }
@@ -106,7 +107,7 @@ export function compareRuns(dirA, dirB) {
     for (const ia of A.items) {
       const ib = byB.get(ia.id);
       const row = { id: ia.id };
-      if (!ib) { row.status = "missing"; row.ok = false; rows.push(row); continue; }
+      if (!ib) { row.status = "missing"; row.ok = false; rows.push(row); out.mismatches.push(`${s}/${ia.id}`); continue; }
       if (ia.kind === "metric") {
         const ok = relOk(ia.value, ib.value, TOL.startupAbsSec, TOL.startupRel);
         Object.assign(row, { kind: "metric", a: ia.value, b: ib.value, ok });

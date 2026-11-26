@@ -7,3 +7,4 @@ eval/e2e.test.ts
 eval/noPaidApi.test.ts
 ../dogfood/collect.test.mjs
 genBudgets.test.mjs
+../scorecard/report.test.mjs
