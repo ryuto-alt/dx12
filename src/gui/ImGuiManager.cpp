@@ -658,23 +658,44 @@ void ImGuiManager::Initialize(
     }
 
     // DX12 backend
-    m_srvIndex = srvHeap.AllocateIndex();
-
+    // MOD-ED-01: テクスチャ用の SRV は DescriptorHeap から 1 枚ずつ確保/返却する（Legacy の単一 SRV は使わない）。
+    //   フォントアトラスが育って複数枚になっても、Legacy 単一 SRV の assert に当たらない。
+    //   返却は DescriptorHeap::Free（遅延返却）経由なので、GPU が使い終わる前に再利用されない。
     ImGui_ImplDX12_InitInfo initInfo = {};
     initInfo.Device            = device.GetDevice();
     initInfo.CommandQueue      = commandQueue;
     initInfo.NumFramesInFlight = frameCount;
     initInfo.RTVFormat         = rtvFormat;
     initInfo.DSVFormat         = DXGI_FORMAT_UNKNOWN;
+    initInfo.UserData          = &srvHeap;
     initInfo.SrvDescriptorHeap = srvHeap.GetHeap();
-    initInfo.SrvDescriptorAllocFn  = nullptr;
-    initInfo.SrvDescriptorFreeFn   = nullptr;
-    initInfo.LegacySingleSrvCpuDescriptor = srvHeap.GetCpuHandle(m_srvIndex);
-    initInfo.LegacySingleSrvGpuDescriptor = srvHeap.GetGpuHandle(m_srvIndex);
+    initInfo.SrvDescriptorAllocFn = [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE* outCpu, D3D12_GPU_DESCRIPTOR_HANDLE* outGpu)
+    {
+        auto* heap = static_cast<DescriptorHeap*>(info->UserData);
+        u32 idx = 0;
+        try { idx = heap->AllocateIndex(); }   // 枯渇時は例外で fail-fast
+        catch (...) { Logger::Error("ImGui SrvDescriptorAllocFn: SRV ヒープが枯渇した（ImGui のテクスチャ確保）"); throw; }
+        *outCpu = heap->GetCpuHandle(idx);
+        *outGpu = heap->GetGpuHandle(idx);
+    };
+    initInfo.SrvDescriptorFreeFn = [](ImGui_ImplDX12_InitInfo* info, D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE)
+    {
+        auto* heap = static_cast<DescriptorHeap*>(info->UserData);
+        const SIZE_T base = heap->GetCpuHandle(0).ptr;
+        const u32 size = heap->GetDescriptorSize();
+        // 範囲・刻みの検証（外来や 0 のハンドルで別のスロットを解放しない）
+        const SIZE_T off = cpu.ptr - base;
+        if (size == 0 || cpu.ptr < base || (off % size) != 0 || (off / size) >= heap->GetCapacity())
+        {
+            Logger::Error("ImGui SrvDescriptorFreeFn: 不正なハンドルを拒否した (ptr={})", static_cast<unsigned long long>(cpu.ptr));
+            return;
+        }
+        heap->Free(static_cast<u32>((cpu.ptr - base) / size));
+    };
 
     ImGui_ImplDX12_Init(&initInfo);
 
-    Logger::Info("ImGui initialized (SRV index={})", m_srvIndex);
+    Logger::Info("ImGui initialized (SRV allocator: DescriptorHeap, deferred free)");
 }
 
 void ImGuiManager::SetIniPath(const std::string& utf8Path)

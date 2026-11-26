@@ -84,6 +84,7 @@ inline constexpr const char* kMenuScript      = "スクリプト";
 void T_AutosaveHumanEditNotWritten(ImGuiTestContext* ctx);   // W05-02
 void T_AutosaveProtectRollingSlot(ImGuiTestContext* ctx);    // DF-W05-R2-02
 void T_AutosaveProtectKeepsForcedMerge(ImGuiTestContext* ctx);   // DF-W05-R3-01
+void T_MatgraphZoomStress(ImGuiTestContext* ctx);   // MOD-ED-01 / MOD-ED-14
 // ==== lane-A:decl end ====
 // ==== lane-B:decl begin ====
 void T_SaveAsOverwriteConfirm(ImGuiTestContext* ctx);   // W05-12
