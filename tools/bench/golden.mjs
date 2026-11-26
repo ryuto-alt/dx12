@@ -45,9 +45,9 @@ import { fileURLToPath } from "node:url";
 import { REPO_ROOT, findDefaultExe, resolveProject, launchEngine, launchInstance, connect, sleep } from "./lib/engine.mjs";
 import { parseArgs, selectScenes } from "./lib/sceneSelect.mjs";
 import { loadGoldenEntries, loadBaseline, writeBaselineEntries } from "./lib/goldenStore.mjs";
-import { sha256, resampleArea, compareImages, judge } from "./lib/imageDiff.mjs";
+import { sha256, resampleArea, compareImages, judge, DEFAULT_TOLERANCE } from "./lib/imageDiff.mjs";
 
-export { sha256, resampleArea, compareImages, judge };
+export { sha256, resampleArea, compareImages, judge, DEFAULT_TOLERANCE };
 
 const require = createRequire(import.meta.url);
 const { PNG } = require(path.join(REPO_ROOT, "tools/mcp-server/node_modules/pngjs"));
@@ -79,7 +79,7 @@ export function loadConfig(goldenDir = GOLDEN_DIR) {
     settleFrames: d.settleFrames ?? 8, warmupFrames: d.warmupFrames ?? 60,
     ...s,
     ...(s.kind === "ui" ? { warmupFrames: s.warmupFrames ?? d.uiWarmupFrames ?? 120 } : {}),
-    tolerance: { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25, ...(d.tolerance ?? {}), ...(s.tolerance ?? {}) },
+    tolerance: { ...DEFAULT_TOLERANCE, ...(d.tolerance ?? {}), ...(s.tolerance ?? {}) },
   }));
 }
 

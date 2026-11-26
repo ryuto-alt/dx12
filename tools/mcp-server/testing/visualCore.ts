@@ -17,19 +17,19 @@ export type DiffLib = {
   resampleArea(img: Rgba, w: number, h: number): Rgba;
   compareImages(a: Rgba, b: Rgba, th: number): { diffPixels: number; diffRatio: number; meanAbs: number; maxDist: number; diffImage: Rgba };
   judge(c: any, tol: Tolerance): { pass: boolean; reasons: string[] };
+  /** golden.mjs と共有する既定の許容差(imageDiff.mjs が持つ。ここに値を写さない)。 */
+  DEFAULT_TOLERANCE: Tolerance;
 };
 
 let libCache: { dir: string; lib: DiffLib } | null = null;
 export async function loadDiffLib(repoDir: string): Promise<DiffLib> {
   if (libCache && libCache.dir === repoDir) return libCache.lib;
   const m = await importBench(repoDir, "imageDiff.mjs");
-  if (!m || typeof m.compareImages !== "function") fail("E_UNSUPPORTED", "visual_regression: tools/bench/lib/imageDiff.mjs が見つからない(リポジトリの外では比較ロジックを持てない)", { fix: [{ command: "DX12_REPO_DIR にエンジンのリポジトリのルートを渡す", why: "判定の出どころを golden.mjs と共有するため" }] });
+  if (!m || typeof m.compareImages !== "function" || !m.DEFAULT_TOLERANCE) fail("E_UNSUPPORTED", "visual_regression: tools/bench/lib/imageDiff.mjs が見つからない(リポジトリの外では比較ロジックを持てない)", { fix: [{ command: "DX12_REPO_DIR にエンジンのリポジトリのルートを渡す", why: "判定の出どころを golden.mjs と共有するため" }] });
   libCache = { dir: repoDir, lib: m as DiffLib };
   return m as DiffLib;
 }
 
-/** golden.mjs の既定の許容差(golden.mjs が定数を export していないので値を写している。golden.mjs 側の値を変えたらここも変える)。 */
-export const DEFAULT_TOLERANCE: Tolerance = { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 };
 /** project suite の既定。基準は同じ adapter で撮ったものだけなので、golden より厳しい(1 画素でも 2 LSB を超えて違えば不合格。±2 LSB のゆらぎは許す)。 */
 export const PROJECT_TOLERANCE: Tolerance = { pixelThreshold: 2, maxDiffRatio: 0, maxMeanAbs: 0.25 };
 

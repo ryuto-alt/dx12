@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { sha256, resampleArea, compareImages, judge } from "./lib/imageDiff.mjs";
+import { sha256, resampleArea, compareImages, judge, DEFAULT_TOLERANCE } from "./lib/imageDiff.mjs";
 import { resolveProject, REPO_ROOT } from "./lib/engine.mjs";
 import os from "node:os";
 import { loadGoldenEntries, loadBaseline, writeBaselineEntries } from "./lib/goldenStore.mjs";
@@ -176,4 +176,11 @@ test("リポジトリの entries と baseline: ID が重複せず、基準 PNG �
   assert.equal(new Set(cfg.map((s) => s.name)).size, cfg.length);
   for (const s of cfg) assert.ok(bl[s.name], `baseline/${s.name}.json`);
   assert.deepEqual(Object.keys(bl).filter((k) => !cfg.some((s) => s.name === k)), []);
+});
+test("既定の許容差: imageDiff が持ち、golden.mjs も visual_regression も同じ値を使う(写しを持たない)", async () => {
+  assert.deepEqual({ ...DEFAULT_TOLERANCE }, { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 });
+  assert.ok(Object.isFrozen(DEFAULT_TOLERANCE));
+  const g = await import("./golden.mjs");
+  assert.equal(g.DEFAULT_TOLERANCE, DEFAULT_TOLERANCE);                    // golden.mjs が再 export する
+  for (const s of g.loadConfig()) for (const k of Object.keys(DEFAULT_TOLERANCE)) assert.equal(typeof s.tolerance[k], "number");
 });

@@ -9,7 +9,7 @@ import type { KindEnv } from "../jobs/env.ts";
 import { bodyFromThrown, projectDirOf, sleep } from "./common.ts";
 import { defaultProvider, importBench, type EngineHandle, type EngineProvider } from "./engineProvider.ts";
 import {
-  applyMasks, baselineKeyOf, captureFinal, compareProjectItem, DEFAULT_TOLERANCE, PROJECT_TOLERANCE, judgeGolden, loadDiffLib, newSceneWait, openSceneWait, readBaselineKey,
+  applyMasks, baselineKeyOf, captureFinal, compareProjectItem, PROJECT_TOLERANCE, judgeGolden, loadDiffLib, newSceneWait, openSceneWait, readBaselineKey,
   readBaselines, uiExtraArgs, writeEvidence, type DiffLib, type GoldenBaseline, type ProjectItemResult, type Tolerance,
 } from "./visualCore.ts";
 import { readPng, writePng } from "./visualPng.ts";
@@ -37,12 +37,13 @@ export async function loadGoldenScenes(repoDir: string): Promise<{ scenes: Golde
   const sel = await importBench(repoDir, "sceneSelect.mjs");
   if (!store || !sel) jobFail({ code: "E_UNSUPPORTED", message: "visual_regression {suite:'golden'}: tools/bench/lib が見つからない(リポジトリの外では golden を回せない)", retryable: false });
   const goldenDir = path.join(repoDir, "tests", "golden");
+  const diff = await loadDiffLib(repoDir);
   const cfg = store.loadGoldenEntries(goldenDir);
   const d = cfg.defaults;
   const all = cfg.scenes.map((s: any) => ({
     width: d.width ?? 640, height: d.height ?? 360, settleFrames: d.settleFrames ?? 8, warmupFrames: d.warmupFrames ?? 60,
     ...s, ...(s.kind === "ui" ? { warmupFrames: s.warmupFrames ?? d.uiWarmupFrames ?? 120 } : {}),
-    tolerance: { ...DEFAULT_TOLERANCE, ...(d.tolerance ?? {}), ...(s.tolerance ?? {}) },
+    tolerance: { ...diff.DEFAULT_TOLERANCE, ...(d.tolerance ?? {}), ...(s.tolerance ?? {}) },
   }));
   return { scenes: all, baseline: store.loadBaseline(goldenDir), goldenDir, gated: [] , ...{ _sel: sel } } as any;
 }

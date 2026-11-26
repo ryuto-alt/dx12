@@ -5,6 +5,7 @@
 //   [4] ツール dx12_visual: reason 無しは E_MISSING_PARAM、tests/golden の approve は E_GUARDED(dx12_call は confirm が要る)
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import "./testEnv.ts";
 import { startMcp } from "./stdioClient.ts";
@@ -112,6 +113,9 @@ console.log("[2] project suite(ジョブ本体)");
 
 console.log("[3] golden suite の判定(golden.mjs と同じ式)");
 {
+  const gm: any = await import(pathToFileURL(path.join(REPO, "tools", "bench", "golden.mjs")).href);
+  check("既定の許容差は golden.mjs の export と同一(写しを持たない)", lib.DEFAULT_TOLERANCE === gm.DEFAULT_TOLERANCE && lib.DEFAULT_TOLERANCE.pixelThreshold === 12, lib.DEFAULT_TOLERANCE);
+
   const goldenDir = path.join(REPO, "tests", "golden");
   const store: any = await import(new URL(`file:///${path.join(REPO, "tools/bench/lib/goldenStore.mjs").replace(/\\/g, "/")}`).href);
   const cfgG = store.loadGoldenEntries(goldenDir), base = store.loadBaseline(goldenDir);
