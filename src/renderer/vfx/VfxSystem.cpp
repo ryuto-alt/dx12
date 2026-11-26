@@ -300,6 +300,7 @@ void VfxSystem::FailGpu(const std::string& reason)
     m_gpuError = reason;
     Logger::Error("{}。UnoFX を無効にします（以後 VFX は描かれません。vfx_stats の gpuFailed / lastError で確認できます）", reason);
     Runtime::Get().ReportGpuFailure(reason);
+    Runtime::Get().TakeSeeks();   // 失敗後は消化されないので捨てる
 }
 
 bool VfxSystem::EnsureGpu(StageCtx& ctx, bool wait)
