@@ -510,9 +510,9 @@
 {"color":[0.3,0.22,0.15],"guid":"b7645e78495bd113","material":{"metallic":0.0,"roughness":0.9},"name":"Torch_Pole_4","primitive":"box","transform":{"position":[6.0,1.1,6.0],"scale":[0.1,2.2,0.1]}},
 {"guid":"331ee5604f68d8a4","name":"Torch_4","transform":{"position":[6.0,2.25,6.0]},"vfx":{"asset":"engine/vfx2/presets/p_torch.uvfx","seed":3284425019}},
 {"color":[0.45,0.46,0.48],"guid":"08bd85ec257bab0c","material":{"metallic":0.7,"roughness":0.4},"name":"Vane_Pole","primitive":"box","transform":{"position":[9.0,2.2,-4.0],"scale":[0.1,4.4,0.1]}},
-{"guid":"14ac5a7d17edd9c4","luaScript":{"enabled":true,"scriptPath":"sc1_vane"},"name":"Vane_Rotor","transform":{"position":[9.0,4.4,-4.0],"rotation":[0.0,35.0,0.0]}},
+{"guid":"14ac5a7d17edd9c4","luaScript":{"enabled":true,"scriptPath":"components/sc1_vane.lua"},"name":"Vane_Rotor","transform":{"position":[9.0,4.4,-4.0],"rotation":[0.0,35.0,0.0]}},
 {"color":[0.7,0.55,0.2],"guid":"be54bd41e84dff90","material":{"metallic":0.8,"roughness":0.35},"name":"Vane_Arm","parentGuid":"14ac5a7d17edd9c4","primitive":"box","transform":{"position":[0.0,0.0,0.0],"scale":[1.8,0.07,0.07]}},
 {"color":[0.7,0.55,0.2],"guid":"0588b42bb15e7e08","material":{"metallic":0.8,"roughness":0.35},"name":"Vane_Fin","parentGuid":"14ac5a7d17edd9c4","primitive":"box","transform":{"position":[-0.8,0.0,0.0],"scale":[0.4,0.5,0.03]}},
-{"guid":"fbf25e2fe0dba8a6","luaScript":{"enabled":true,"scriptPath":"sc1_walker"},"material":{"metallic":0.0,"roughness":0.55},"meshRenderer":{"modelPath":"models/mannequin.glb"},"name":"Mannequin","transform":{"position":[-1.2,0.0,-2.2],"rotation":[0.0,70.0,0.0]}}
+{"guid":"fbf25e2fe0dba8a6","luaScript":{"enabled":true,"scriptPath":"components/sc1_walker.lua"},"material":{"metallic":0.0,"roughness":0.55},"meshRenderer":{"modelPath":"models/mannequin.glb"},"name":"Mannequin","transform":{"position":[-1.2,0.0,-2.2],"rotation":[0.0,70.0,0.0]}}
   ]
 }

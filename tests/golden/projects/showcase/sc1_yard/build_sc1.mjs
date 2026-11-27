@@ -131,7 +131,7 @@ await call("create_lua_component", {
     "",
   ].join("\n"),
 });
-await call("attach_lua_component", { name: "Vane_Rotor", script: "sc1_vane" });
+await call("attach_lua_component", { name: "Vane_Rotor", script: "components/sc1_vane.lua" });
 
 // ─── 9. 歩く人形（NB14 のマネキン。スキンド。Play 中は Walk を回して円を歩く） ──
 await call("import_asset", { sourcePath: path.join(REPO, "assets/engine/characters/mannequin/mannequin.glb").replace(/\\/g, "/"), destPath: "models/mannequin.glb", overwrite: true });
@@ -157,7 +157,7 @@ await call("create_lua_component", {
     "",
   ].join("\n"),
 });
-await call("attach_lua_component", { name: "Mannequin", script: "sc1_walker" });
+await call("attach_lua_component", { name: "Mannequin", script: "components/sc1_walker.lua" });
 
 // ─── 10. カメラと保存 ──────────────────────────────────────────────
 await call("set_editor_camera", { position: [-4, 5, -26], target: [-8, 16, 8] });

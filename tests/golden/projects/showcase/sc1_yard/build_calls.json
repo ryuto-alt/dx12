@@ -5793,7 +5793,7 @@
    "method": "attach_lua_component",
    "params": {
     "name": "Vane_Rotor",
-    "script": "sc1_vane"
+    "script": "components/sc1_vane.lua"
    }
   },
   {
@@ -5848,7 +5848,7 @@
    "method": "attach_lua_component",
    "params": {
     "name": "Mannequin",
-    "script": "sc1_walker"
+    "script": "components/sc1_walker.lua"
    }
   },
   {
