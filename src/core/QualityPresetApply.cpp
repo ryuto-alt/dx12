@@ -105,7 +105,7 @@ void AppAccess::ApplyNewSceneLookState(Application& app, const QualityPlan& plan
     ApplyEpicSceneLook(*app.m_scene, plan, giNewApplied);
     // ユーザーの全体設定（settings.json の quality_preset / render_scale）は書き換えない。新規シーンに当てるのはシーンの設定だけ
     // （Ctrl+N のたびに保存済みの設定が上書きされ、後で開く既存シーンの描画にまで及ぶのを避ける）。
-    app.m_renderResFlush = true;
+    // render_scale は変えないので描画リソースの作り直しは要らない（時間履歴の破棄だけ）。
     app.InvalidateTemporalHistory(/*includeDdgi*/ false);
     for (u8 i = 0; i < plan.degradeCount; ++i)
         Logger::Info("新規シーン（Epic）: 縮退 {} … {}", plan.degrades[i].row, plan.degrades[i].text);
