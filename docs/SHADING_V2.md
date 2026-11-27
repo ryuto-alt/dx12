@@ -102,6 +102,7 @@ Run ループの先頭（フレーム外）→ EnsureSplitResources → AppAcces
 - ホットリロード: rev=2 のとき警告を出すようにした（ShaderRegistry 対応までの暫定）。§8.3 の「登録済み」は「ハンドラの対象ファイル名に登録済み。再コンパイル表は未対応」と読み替える。
 - `s_v2PsoCount[2]` は地形の .cso が無い早期 return でも 0 に戻すようにした。
 - BrdfV2.hlsli を include するシェーダが現れると `ShadingV2AxisTests` が失敗する（BakeForBuild の V2 対応が先）。
+- C3 の残り確認（FU-E-28、2026-11）: `shadingRevision=2` で V2 の 3 機能（microShadow / horizonOcclusion / gtso）を全部 OFF にすると、golden_core の core_pbr_spheres / core_csm_shadows / core_transparency / core_post_stack は V1 とネイティブ解像度で画素 SHA-256 が一致（appliedRevision=2・v2PsoCount=16）。機能を ON にすると差が出る（意図どおり）。GPU の `GraphMaterialTests`（§9 の shadingRevision の節を含む）は合格。
 
 ## 9. C5: マイクロシャドウ・GTSO・地平線オクルージョン（W1-C5）
 
