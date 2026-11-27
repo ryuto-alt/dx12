@@ -207,3 +207,25 @@ test("judgeScene: 3D と UI の順序・文言(環境違い / 基準画像なし
   const bad = { width: 4, height: 4, data: Buffer.alloc(64, 200) };
   assert.equal(judgeScene({ ...base, small: bad, ref: img, baseline: undefined, strict: true }).pass, false);
 });
+
+test("UI 撮影用プロジェクトのコピーに、git が持てない空フォルダ（基準の絵に写る）が必ず作られる (FU-L-1)", async () => {
+  const { prepareUiProject, UI_PROJECT_EMPTY_DIRS } = await import("./golden.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "uigold-"));
+  try {
+    const src = path.join(tmp, "src");
+    fs.mkdirSync(path.join(src, "assets", "scenes"), { recursive: true });
+    fs.mkdirSync(path.join(src, "assets", "components"), { recursive: true });
+    const dst = prepareUiProject(path.join(tmp, "out"), src);
+    for (const d of UI_PROJECT_EMPTY_DIRS) assert.ok(fs.statSync(path.join(dst, d)).isDirectory(), d);
+    assert.deepEqual(fs.readdirSync(path.join(dst, "assets")).sort(),
+      ["audio", "components", "models", "prefabs", "scenes", "shaders", "textures"]);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("Graphite の UI ゴールデン: ビューポートのマスクが 3D の下端（1080p で y=699）まで届く (FU-L-1)", () => {
+  for (const d of ["100", "150"]) {
+    const e = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "tests", "golden", "entries", `ui_dpi${d}_graphite.json`), "utf8"));
+    const vp = e.masks[0];
+    assert.ok(vp[3] * 1080 >= 700, `ui_dpi${d}_graphite の下端 ${vp[3]} が 3D（y=699）に届かない`);
+  }
+});

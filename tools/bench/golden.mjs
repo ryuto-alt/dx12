@@ -153,12 +153,16 @@ export function applyMasks(img, masks) {
   return { width: img.width, height: img.height, data };
 }
 
+/** アセットブラウザの絵に出るので、基準の撮影時と同じ空フォルダを必ず用意する（git は空フォルダを持てず、worktree では欠ける）。 */
+export const UI_PROJECT_EMPTY_DIRS = ["assets/audio", "assets/models", "assets/prefabs", "assets/shaders", "assets/textures"];
+
 /** 撮影用プロジェクトを build/golden-out/ui_project へ作り直す（毎回まっさらにする）。 */
-function prepareUiProject() {
-  if (!fs.existsSync(UI_PROJECT_SRC)) throw new Error(`UI 撮影用プロジェクトが無い: ${path.relative(REPO_ROOT, UI_PROJECT_SRC)}`);
-  const dst = path.join(OUT_DIR, "ui_project");
+export function prepareUiProject(outDir = OUT_DIR, srcDir = UI_PROJECT_SRC) {
+  if (!fs.existsSync(srcDir)) throw new Error(`UI 撮影用プロジェクトが無い: ${path.relative(REPO_ROOT, srcDir)}`);
+  const dst = path.join(outDir, "ui_project");
   fs.rmSync(dst, { recursive: true, force: true });
-  fs.cpSync(UI_PROJECT_SRC, dst, { recursive: true });
+  fs.cpSync(srcDir, dst, { recursive: true });
+  for (const d of UI_PROJECT_EMPTY_DIRS) fs.mkdirSync(path.join(dst, d), { recursive: true });
   return dst;
 }
 
