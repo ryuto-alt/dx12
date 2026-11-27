@@ -517,7 +517,7 @@ void Application::RegisterMcpRenderMethods()
                     p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
                 p.temporalDither = params.value("temporalDither", p.temporalDither);
                 // W1-C6 LS-02a: Epic の動的 CSM（2048 D16 x3 + pancaking。V2 の受光側の法線オフセット / Gather PCSS / バイアス縮小は shadingRevision=2 と組み合わせて効く）。
-                //   シーン JSON には保存しない（SceneSerializer は W1 では凍結。shadingRevision と同じ）。切り替えは次のフレームの先頭で反映される。
+                //   シーン JSON の shadowPcss に保存される（W1-FU-L-3 で SceneSerializer の凍結を解いた）。切り替えは次のフレームの先頭で反映される。
                 p.epicDynamicCsm     = params.value("epicDynamicCsm", p.epicDynamicCsm);
                 p.pancaking          = params.value("pancaking", p.pancaking);
                 p.gatherPcss         = params.value("gatherPcss", p.gatherPcss);
