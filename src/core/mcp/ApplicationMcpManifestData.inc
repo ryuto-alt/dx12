@@ -684,6 +684,7 @@ void FillManifestChunk7(ManifestRows& o)
         "scene", "", "", McpEffect::WriteScene, "editor", 45000, false, false,
         "none", "dx12_new_scene", {
             P("savePath", "assetPath", false, nullptr, nullptr, nullptr, nullptr, "新シーンの保存先 assets 相対パス(任意)。"),
+            P("profile", "enum", false, "epic|classic", nullptr, nullptr, "epic", "W1-C8: 新規シーンのルック。epic(既定。品質プリセット Epic + 物理大気 + UE Filmic + 自動露出。DXR / DLSS が無ければ縮退) | classic(従来の新規シーン)。"),
         })});
     o.push_back({"open_project", M("プロジェクトを開く(ランチャーのクリックと同等)。path はプロジェクトルートの絶対パス(.dx12proj のあるフォルダ)。",
         "open project プロジェクトを開く",
