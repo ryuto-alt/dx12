@@ -23,6 +23,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpScenePath.h"
 #include "core/mcp/McpDlssWarn.h"
+#include "core/FrameStepLogic.h"   // AutoExposureDt（FU-L-2）
 #include "renderer/FrameConstants.h"
 #include "editor/panels/HardwarePanel.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
@@ -7581,8 +7582,12 @@ void Application::RenderPostChain(const PostChainInputs& in, ID3D12Resource*& ou
                                || ppApplied.exposureMode == 2))
         {
             postGpuBegin(GpuTimer::AutoExposure);
+            // FU-L-2: 決定論キャプチャでは適応の時間刻みを実時間にしない（実時間だと撮るたびに露出がずれ、
+            //   Epic の自動露出の絵が毎回違う）。即適応（dt 無限大）にして露出を「そのフレームの絵」だけで決める
+            //   ＝履歴の収束と同じ不動点になり、ビット再現する。通常描画の適応は変えない。
+            const float exposureDt = AutoExposureDt(m_deterministicCapture, m_gameClock.GetDeltaTime());
             m_autoExposure->Generate(nativeCmdList, curSceneSrv, 0u, 0u, pW, pH,
-                                     m_gameClock.GetDeltaTime(), ppApplied);
+                                     exposureDt, ppApplied);
             postGpuEnd(GpuTimer::AutoExposure);
         }
         D3D12_GPU_VIRTUAL_ADDRESS exposureVA = 0;
