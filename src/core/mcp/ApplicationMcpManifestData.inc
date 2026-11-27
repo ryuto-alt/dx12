@@ -286,6 +286,11 @@ void FillManifestChunk3(ManifestRows& o)
         "none", "dx12_set_shading", {
             P("multiScatter", "bool", false, nullptr, nullptr, nullptr, nullptr, "マルチスキャッタのエネルギー補償(粗い金属が暗く沈まない)。既定 true。false で従来どおり"),
             P("shadingRevision", "int", false, nullptr, "1", "2", nullptr, "シェーディングの世代。1 = 従来(V1。既定)、2 = UNO_SHADING_V2。範囲外は E_OUT_OF_RANGE。シーンファイルにはまだ保存されない(W1)。"),
+            P("microShadow", "bool", false, nullptr, nullptr, nullptr, nullptr, "V2: マイクロシャドウ(AO から作る小さな凹凸の自己影。太陽とローカル光に掛ける)。既定 true。shadingRevision=2 のときだけ効く"),
+            P("horizonOcclusion", "bool", false, nullptr, nullptr, nullptr, nullptr, "V2: 地平線オクルージョン(面の下へ潜る反射を IBL・プローブ・SSR の鏡面から落とす)。既定 true。shadingRevision=2 のときだけ効く"),
+            P("gtso", "bool", false, nullptr, nullptr, nullptr, nullptr, "V2: GTSO(AO と粗さから求める指向性スペキュラオクルージョン)。既定 true。shadingRevision=2 のときだけ効く"),
+            P("microShadowK", "number", false, nullptr, "0", "2", nullptr, "V2: マイクロシャドウの強さ。0 = 効果なし、1 = 標準(既定)、2 = 強め。範囲外は E_OUT_OF_RANGE"),
+            P("horizonK", "number", false, nullptr, "0", "2", nullptr, "V2: 地平線オクルージョンの強さ。0 = 効果なし、1 = 標準(既定)、2 = 強め。範囲外は E_OUT_OF_RANGE"),
         })});
     o.push_back({"get_occlusion", M("Hi-Z オクルージョンカリングの状態を返す。{enabled, active, ready, pyramid{width,height,mips}}。",
         "get occlusion オクルージョンカリング取得",

@@ -242,6 +242,20 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         shadow = min(shadow, g_contactShadow.Load(int3(si.svPos, 0)).r);
 #endif
 
+#ifdef UNO_SHADING_V2
+    // ===== V2: マイクロシャドウ（太陽 + ローカル光。W1-C5）=====
+    //   AO は下の ao と同じ値（SSAO x 材質 AO）。IBL / 間接光には掛けない（AO が既に掛かっている）。
+    const uint v2Flags = UnoV2Flags();
+    float v2Ao = s.ao;
+#ifndef UNO_SHADE_LITE
+    v2Ao *= (aoEnabled > 0.5) ? g_ssao.Load(int3(si.svPos, 0)) : 1.0;
+#endif
+    bc.v2Ao     = v2Ao;
+    bc.v2MicroK = ((v2Flags & UNO_V2_FLAG_MICRO_SHADOW) != 0u) ? _clusterReserved[2].y : 0.0;
+    [branch] if (bc.v2MicroK > 0.0)
+        shadow *= UnoV2MicroShadow(dot(N, L), v2Ao, bc.v2MicroK);
+#endif
+
     // Directional Light（影付き）
     float3 Lo = UnoShadePunctualCtx(N, V, L, lightColor * shadow, bc);
 
@@ -393,6 +407,15 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
             kD = (1.0 - saturate((specF * envBRDF.x + envBRDF.y * bc.F90) * msCompIbl)) * (1.0 - metallic);
         }
 
+#ifdef UNO_SHADING_V2
+        // V2: 地平線オクルージョン（IBL・反射プローブ・SSR が入った後の鏡面に掛ける。幾何法線の面より下へ向く反射を落とす）
+        [branch] if ((v2Flags & UNO_V2_FLAG_HORIZON_OCC) != 0u)
+        {
+            float3 Ng = normalize(si.worldNormal);
+            if (dot(Ng, N) < 0.0) Ng = -Ng;
+            specularIBL *= UnoV2HorizonOcclusion(dot(R, Ng), _clusterReserved[2].z);
+        }
+#endif
         // ★AO の掛け方（二重計上の解消）:
         //   SSGI/SSR が担当していない分にだけ AO を掛ける。どちらも「実際に届いた光」を
         //   画面空間で積分した結果なので遮蔽は織り込み済み。そこへ AO を重ねると
@@ -405,6 +428,11 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         // 鏡面遮蔽（Lagarde 2014）: AO と NoV・粗さから鏡面の可視率を近似。ao=1 なら so=1。
         float  soExp = exp2(-16.0 * roughness - 1.0);
         float  so    = saturate(pow(max(NoV + ao, 1e-4), soExp) - 1.0 + ao);
+#ifdef UNO_SHADING_V2
+        // V2: GTSO（Lagarde の近似を置き換える）。ao は SSAO x 材質 AO。
+        [branch] if ((v2Flags & UNO_V2_FLAG_GTSO) != 0u)
+            so = UnoV2Gtso(dot(N, R), ao, roughness);
+#endif
         float aoSpec = lerp(so, 1.0, ssrConf);
         float3 ambBase = kD * diffuseIBL * aoDiffV + specularIBL * aoSpec;
         [branch] if (extFlags != 0u)
@@ -489,7 +517,15 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
             const float2 ab = float2(-1.04, 1.04) * aa + rr.zw;
             const float  soExp2 = exp2(-16.0 * roughness - 1.0);
             const float  so2    = saturate(pow(max(NoVp + ao, 1e-4), soExp2) - 1.0 + ao);
-            const float3 probeSpec = pr.rgb * (F0 * ab.x + ab.y) * so2 * msCompIbl;
+            float3 probeSpec = pr.rgb * (F0 * ab.x + ab.y) * so2 * msCompIbl;
+#ifdef UNO_SHADING_V2
+            [branch] if ((v2Flags & UNO_V2_FLAG_HORIZON_OCC) != 0u)
+            {
+                float3 Ngp = normalize(si.worldNormal);
+                if (dot(Ngp, N) < 0.0) Ngp = -Ngp;
+                probeSpec *= UnoV2HorizonOcclusion(dot(Rp, Ngp), _clusterReserved[2].z);
+            }
+#endif
             // 既存の鏡面（F0 * ambientStrength）を重み分だけ引いて、プローブの寄与を足す。SSR が当たった所は SSR 優先。
             ambient -= ambientStrength * ambientSpecular * ao * pr.a * (1.0 - ssrConf);
             ambient += probeSpec * (1.0 - ssrConf);

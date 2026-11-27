@@ -224,13 +224,16 @@ void Application::RegisterMcpRenderMethods()
             // v2PsoCount = V2 の .cso から作れたフォワード系 PSO の数（revision=1 のときは 0）。FU-E-25: 水・植生・VG（resolve）も足す。
             resp["result"] = {{"multiScatter", sh.multiScatter},
                               {"shadingRevision", static_cast<int>(sh.shadingRevision)},
+                              // V2 の機能ごとの切り替えと強さ（shadingRevision=2 のときだけ効く。W1-C5）
+                              {"microShadow", sh.microShadow}, {"horizonOcclusion", sh.horizonOcclusion}, {"gtso", sh.gtso},
+                              {"microShadowK", sh.microShadowK}, {"horizonK", sh.horizonK},
                               {"appliedRevision", applied},
                               {"v2PsoCount", v2Fwd + v2Skin + v2Terr + v2Water + v2Fol + v2Vg},
                               {"v2Pso", {{"forward", v2Fwd}, {"skinned", v2Skin}, {"terrain", v2Terr},
                                          {"water", v2Water}, {"foliage", v2Fol}, {"vg", v2Vg}}}};
         });
 
-    McpDefine("set_shading", "multiScatter:any,shadingRevision:any", DX12E_MCP_HANDLER
+    McpDefine("set_shading", "multiScatter:any,shadingRevision:any,microShadow:any,horizonOcclusion:any,gtso:any,microShadowK:any,horizonK:any", DX12E_MCP_HANDLER
         {
             auto& sh = m_scene->GetShadingSettings();
             if (params.contains("multiScatter") && !params["multiScatter"].is_boolean())
@@ -255,10 +258,42 @@ void Application::RegisterMcpRenderMethods()
                 }
                 rev = static_cast<u8>(n);
             }
+            // V2 の機能ごとの切り替え（bool）と強さ（0..2。範囲外は E_OUT_OF_RANGE で弾く）
+            for (const char* key : {"microShadow", "horizonOcclusion", "gtso"})
+                if (params.contains(key) && !params[key].is_null() && !params[key].is_boolean())
+                    throw McpError(McpErr::InvalidParam, std::string(key) + " は true / false",
+                        std::string("例: ") + key + ":false（この機能だけ OFF。shadingRevision=2 のときだけ効く）");
+            float strength[2] = {sh.microShadowK, sh.horizonK};
+            const char* const strengthKey[2] = {"microShadowK", "horizonK"};
+            for (int i = 0; i < 2; ++i)
+            {
+                if (!params.contains(strengthKey[i]) || params[strengthKey[i]].is_null()) continue;
+                const auto& v = params[strengthKey[i]];
+                if (!v.is_number())
+                    throw McpError(McpErr::InvalidParam, std::string(strengthKey[i]) + " は数値（0 〜 2）",
+                        std::string("例: ") + strengthKey[i] + ":1（標準）");
+                const double d = v.get<double>();
+                if (!(d >= 0.0 && d <= 2.0))
+                {
+                    McpError err(McpErr::InvalidParam, std::string(strengthKey[i]) + " が範囲外: " + std::to_string(d), "有効値は 0 〜 2（0 = 効果なし、1 = 標準）");
+                    err.name = "E_OUT_OF_RANGE";
+                    err.cause = std::string(strengthKey[i]) + " は 0 〜 2 だけ";
+                    err.details = {{"param", strengthKey[i]}, {"value", d}, {"range", {{"min", 0}, {"max", 2}}}};
+                    throw err;
+                }
+                strength[i] = static_cast<float>(d);
+            }
+            sh.microShadow = params.value("microShadow", sh.microShadow);
+            sh.horizonOcclusion = params.value("horizonOcclusion", sh.horizonOcclusion);
+            sh.gtso = params.value("gtso", sh.gtso);
+            sh.microShadowK = strength[0];
+            sh.horizonK = strength[1];
             sh.multiScatter = params.value("multiScatter", sh.multiScatter);
             sh.shadingRevision = rev;
             resp["ok"] = true;
-            resp["result"] = {{"applied", true}, {"multiScatter", sh.multiScatter}, {"shadingRevision", static_cast<int>(sh.shadingRevision)}};
+            resp["result"] = {{"applied", true}, {"multiScatter", sh.multiScatter}, {"shadingRevision", static_cast<int>(sh.shadingRevision)},
+                              {"microShadow", sh.microShadow}, {"horizonOcclusion", sh.horizonOcclusion}, {"gtso", sh.gtso},
+                              {"microShadowK", sh.microShadowK}, {"horizonK", sh.horizonK}};
         });
 
     // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----

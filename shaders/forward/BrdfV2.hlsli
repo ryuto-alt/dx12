@@ -9,8 +9,9 @@
 //     src/resource/ShaderRegistry.cpp の依存表（staticDeps）にも "forward/BrdfV2.hlsli" を足すこと
 //     （ShaderIncludeDeps テストが漏れを検出する）。
 //
-//   入る予定のもの（docs/SHADING_V2.md の表）:
-//     C5   マイクロシャドウ / GTSO / horizon occlusion（PfSlot::ShadingV2 の shadingFlags で個別に切る）
+//   入った / 入る予定のもの（docs/SHADING_V2.md の表）:
+//     C5   マイクロシャドウ / GTSO / horizon occlusion は W1-C5 で Lighting.hlsli / ForwardShade.hlsli の #ifdef UNO_SHADING_V2 に入った
+//          （この枠を include するには ShaderRegistry の依存表と BakeForBuild の V2 対応が先。docs/SHADING_V2.md §9.4）。MH-2 でここへ移す
 //     MH-2 直接光の BRDF v2（height-correlated Smith、EON の拡散、層の合成、球と太陽の円盤、F82）
 // ===========================================================================
 #ifndef UNO_BRDF_V2_HLSLI

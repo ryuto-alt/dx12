@@ -1316,6 +1316,15 @@ if(MSVC)
     target_compile_definitions(ShadingRevisionPickTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME ShadingRevisionPickTests COMMAND ShadingRevisionPickTests)
+# UNO_SHADING_V2 のマイクロシャドウ / GTSO / 地平線の CPU 写しと、シェーダとの配線の静的検査（ヘッダだけ。GPU 不要）。W1-C5。
+add_executable(ShadingV2MathTests shading_v2_math_test.cpp)
+target_include_directories(ShadingV2MathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(ShadingV2MathTests PRIVATE DX12E_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+if(MSVC)
+    target_compile_options(ShadingV2MathTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(ShadingV2MathTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ShadingV2MathTests COMMAND ShadingV2MathTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。

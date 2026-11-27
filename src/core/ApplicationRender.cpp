@@ -4,6 +4,7 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/SplitScreen.h"
+#include "renderer/ShadingV2Math.h"
 #include "renderer/VelocityPolicy.h"
 #include "core/GameUiFont.h"
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
@@ -7924,6 +7925,14 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
         const bool lutOk = m_iblReady && m_iblBaker && m_iblBaker->IsBrdfLutReady();
         const bool msOn  = m_scene ? m_scene->GetShadingSettings().multiScatter : true;
         fc._clusterReserved[9] = {(msOn && lutOk) ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f};
+    }
+
+    // UNO_SHADING_V2（W1-C5）: マイクロシャドウ / 地平線 / GTSO のフラグと強さ。shadingRevision != 2 は x = 0（全機能 OFF）。
+    //   w は他の項目（C6 / MH-2 の太陽の角半径）の欄なので触らない。V1 の .cso はこの欄を読まない。
+    {
+        const shadingv2::SlotValue v2 = shadingv2::PackSlot(m_scene ? m_scene->GetShadingSettings() : ShadingSettings{});
+        DirectX::XMFLOAT4& slot = Pf(fc, PfSlot::ShadingV2);
+        slot.x = v2.x; slot.y = v2.y; slot.z = v2.z;
     }
 
     // 植生 F1: 風のフレーム共通値を予約領域 [0..1] へ（FoliageLayer があるときだけ書く。他の誰も読まない領域）
