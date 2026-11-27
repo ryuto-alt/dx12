@@ -192,7 +192,10 @@ inline double AlignGlintAt(double alignT, int k, double tickDeg)
     const double d = std::abs(tickDeg - centre) / kAlignHalfWidthDeg;
     if (d >= 1.0) return 0.0;
     const double c = std::cos(1.5707963267948966 * d);
-    return c * c * std::sin(3.14159265358979323846 * alignT);   // 扇の端で消えるよう、通過の進みでも包む
+    // 扇の境界（72 度ごと）で段が出ないよう、境界から半幅の半分（4.5 度）までは滑らかに 0 へ絞る
+    const double edge = std::min(tickDeg - s0, s0 + kAlignSectorDeg - tickDeg) / (kAlignHalfWidthDeg * 0.5);
+    const double e = edge >= 1.0 ? 1.0 : (edge <= 0.0 ? 0.0 : edge * edge * (3.0 - 2.0 * edge));
+    return c * c * e * std::sin(3.14159265358979323846 * alignT);   // 扇の端で消えるよう、通過の進みでも包む
 }
 // 全 5 段のうち最も強いもの
 inline double AlignGlintMax(const std::array<float, 5>& alignT, double tickDeg)

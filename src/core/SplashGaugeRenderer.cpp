@@ -134,6 +134,9 @@ struct GaugeRenderer::Impl
     void DrawDynamic(const GaugeFrame& f, const GaugeReveal& rv, const SplashInfo& info);
     void DrawTicks(std::uint32_t lit, double alpha, const GaugeFrame& f);
     void DrawBezelSweep(const GaugeFrame& f);
+    // スイープの弧（2 度刻みの固定の格子）のジオメトリのキャッシュ。[リング 0/1][格子の番号]
+    ComPtr<ID2D1PathGeometry> sweepGeo[2][180];
+    float sweepCx = -1.f, sweepCy = -1.f, sweepR = -1.f;
     void DrawUiDynamic(const GaugeFrame& f, const GaugeReveal& rv, const SplashInfo& info);
     void DrawLayer(ID2D1Bitmap1* bmp, double opacity);
     bool Render(const GaugeFrame& f, const SplashInfo& info);
@@ -602,27 +605,42 @@ void GaugeRenderer::Impl::DrawBezelSweep(const GaugeFrame& f)
     const double step = gauge::kSweepStepDeg;
     struct Ring { float r; float w; double scale; };
     const Ring rings[2] = { { g.rBezel, 2.f, 1.0 }, { g.rBezel - 7.f * g.k, 1.f, 0.6 } };
+    if (sweepCx != g.dcx || sweepCy != g.dcy || sweepR != g.rBezel)
+    {
+        for (auto& row : sweepGeo) for (auto& p : row) p.Reset();
+        sweepCx = g.dcx; sweepCy = g.dcy; sweepR = g.rBezel;
+    }
+    const int cells = static_cast<int>(std::lround(360.0 / step));
     for (int second = 0; second < 2; ++second)
     {
         const double centre = gauge::SweepCentreDeg(f.bellT) + (second ? 180.0 : 0.0);
-        for (double a0 = centre - gauge::kSweepHalfWidthDeg; a0 < centre + gauge::kSweepHalfWidthDeg - 1e-9; a0 += step)
+        // 固定の格子（step 度刻み）に沿って描く。弧の形は格子ごとに 1 度だけ作ってキャッシュする（フレームごとに作らない）
+        const int k0 = static_cast<int>(std::floor((centre - gauge::kSweepHalfWidthDeg) / step));
+        const int k1 = static_cast<int>(std::ceil((centre + gauge::kSweepHalfWidthDeg) / step));
+        for (int k = k0; k < k1; ++k)
         {
-            const double mid = a0 + step * 0.5;
-            const double p = gauge::SweepProfileAt(f.bellT, std::fmod(mid + 720.0, 360.0), second != 0);
+            const double a0 = k * step;
+            const double p = gauge::SweepProfileAt(f.bellT, std::fmod(a0 + step * 0.5 + 720.0, 360.0), second != 0);
             if (p <= 0.004) continue;
-            for (const Ring& rg : rings)
+            const int ci = ((k % cells) + cells) % cells;
+            for (int ri = 0; ri < 2; ++ri)
             {
-                ComPtr<ID2D1PathGeometry> pg;
-                if (FAILED(fac->CreatePathGeometry(&pg))) continue;
-                ComPtr<ID2D1GeometrySink> s;
-                if (FAILED(pg->Open(&s))) continue;
-                float sx, sy, ex, ey;
-                Polar(g.dcx, g.dcy, a0, rg.r, sx, sy);
-                Polar(g.dcx, g.dcy, a0 + step, rg.r, ex, ey);
-                s->BeginFigure(D2D1::Point2F(sx, sy), D2D1_FIGURE_BEGIN_HOLLOW);
-                s->AddArc(D2D1::ArcSegment(D2D1::Point2F(ex, ey), D2D1::SizeF(rg.r, rg.r), 0.f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
-                s->EndFigure(D2D1_FIGURE_END_OPEN);
-                s->Close();
+                const Ring& rg = rings[ri];
+                ComPtr<ID2D1PathGeometry>& pg = sweepGeo[ri][ci];
+                if (!pg)
+                {
+                    if (FAILED(fac->CreatePathGeometry(&pg))) continue;
+                    ComPtr<ID2D1GeometrySink> s;
+                    if (FAILED(pg->Open(&s))) { pg.Reset(); continue; }
+                    float sx, sy, ex, ey;
+                    // 隣との継ぎ目にアンチエイリアスの隙間が出ないよう、終端を 0.3 度だけ次の弧へ重ねる
+                    Polar(g.dcx, g.dcy, ci * step, rg.r, sx, sy);
+                    Polar(g.dcx, g.dcy, ci * step + step + 0.3, rg.r, ex, ey);
+                    s->BeginFigure(D2D1::Point2F(sx, sy), D2D1_FIGURE_BEGIN_HOLLOW);
+                    s->AddArc(D2D1::ArcSegment(D2D1::Point2F(ex, ey), D2D1::SizeF(rg.r, rg.r), 0.f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                    s->EndFigure(D2D1_FIGURE_END_OPEN);
+                    s->Close();
+                }
                 solid->SetColor(Col(c.t1, gauge::kSweepPeakAlpha * p * rg.scale));
                 dc->DrawGeometry(pg.Get(), solid.Get(), rg.w);
             }

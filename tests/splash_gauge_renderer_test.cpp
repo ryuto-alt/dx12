@@ -403,21 +403,27 @@ void Test_Perf()
     GaugeSurface surf;
     CHECK(surf.Init(1.0f, PickGaugeLayout(1e9, 1e9), true));
     SplashInfo info = HeroInfo(L"");
-    std::vector<double> ms;
     Image im;
-    for (int i = 0; i < 40; ++i)
+    // 区間 A: 残像が最も重い 700〜1350。区間 B: ベゼルのスイープ 1648〜1848（弧のジオメトリの作成を含む）
+    struct Range { const char* name; double t0, dt; };
+    const Range ranges[2] = { { "trail 700-1350", 700.0, 16.7 }, { "sweep 1648-1848", 1650.0, 5.0 } };
+    for (const Range& rg : ranges)
     {
-        GaugeFrame f = EvaluateGauge(GaugePath::Fast, 700.0 + i * 16.7, 0.f);
-        const auto t0 = std::chrono::steady_clock::now();
-        const bool ok = surf.Draw(f, info) && Render2(surf, im);   // 描画 + 完了待ち（読み戻しで GPU / WARP の実行を待つ）
-        const auto t1 = std::chrono::steady_clock::now();
-        CHECK(ok);
-        if (i >= 5) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        std::vector<double> ms;
+        for (int i = 0; i < 40; ++i)
+        {
+            GaugeFrame f = EvaluateGauge(GaugePath::Fast, rg.t0 + i * rg.dt, 0.f);
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool ok = surf.Draw(f, info) && Render2(surf, im);   // 描画 + 完了待ち（読み戻しで GPU / WARP の実行を待つ）
+            const auto t1 = std::chrono::steady_clock::now();
+            CHECK(ok);
+            if (i >= 5) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        const double med = ms[ms.size() / 2], mx = ms.back();
+        std::printf("  WARP draw + readback (dpi 1.0, 1600x900, %s): median %.2f ms  max %.2f ms\n", rg.name, med, mx);
+        CHECK_MSG(med <= 12.0, "WARP の描画 (%s) %.2f ms", rg.name, med);
     }
-    std::sort(ms.begin(), ms.end());
-    const double med = ms[ms.size() / 2], mx = ms.back();
-    std::printf("  WARP draw + readback (dpi 1.0, 1600x900): median %.2f ms  max %.2f ms\n", med, mx);
-    CHECK_MSG(med <= 12.0, "WARP の描画 %.2f ms", med);
 }
 
 // ---------------------------------------------------------------- (7) スキップ
