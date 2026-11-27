@@ -33,7 +33,7 @@ bool IsNewSceneProfileName(const std::string& name);
 // 次の新規シーンのプロファイルを予約する（MCP new_scene {profile}。1 回で消費され、以後は既定の epic へ戻る）。
 void SetNextNewSceneProfile(const std::string& name);
 // 新規シーンの直後（空シーンの組み立てと gi::ApplyNew の後）に呼ぶ。予約されたプロファイル（無ければ epic）を Scene へ当て、
-// 品質プリセットの id・空間スケール・時間履歴を揃える。当てたプロファイル名を返す。Undo は積まない（新規シーンは履歴ごと空）。
+// 時間履歴を捨てる（settings.json の品質プリセット id・render_scale は変えない）。当てたプロファイル名を返す。Undo は積まない（新規シーンは履歴ごと空）。
 //   giNewApplied: gi::ApplyNew が通ったか。
 std::string ApplyNewSceneProfile(Application& app, bool giNewApplied);
 

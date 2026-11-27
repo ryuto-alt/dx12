@@ -1037,4 +1037,5 @@ DXR / DLSS が無い PC では縮退する（`get_quality_preset` の `plan.degr
 
 - `new_scene {profile:"epic"}`（既定）/ `{profile:"classic"}`（従来の新規シーン）。応答に `profile` が入る。
 - 既存シーンを開いたときには何も当てない（ユーザーが目にするのは新規シーン・テンプレート・明示の移行だけ）。
+- 新規シーンはシーンの設定だけを書く。settings.json の `quality_preset` と `render_scale` は変えない（Ctrl+N で保存済みの設定を上書きしない）。そのため `get_quality_preset` の `matchesScene` は、選んでいるプリセットが Epic でなければ false になりうる。
 - 値の正は品質プリセットの生成表と `src/scene/SceneLookProfile.h`（`ApplyEpicSceneLook`）。

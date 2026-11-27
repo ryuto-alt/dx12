@@ -2980,7 +2980,10 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         bool cancelled = false;
         newSceneAllowed = m_editorCtx->pendingNewSceneSkipConfirm || ConfirmDiscardScene(cancelled);
         if (cancelled)
+        {
             m_editorCtx->pendingNewScene = false;
+            SetNextNewSceneProfile("epic");   // 要求ごと捨てたら予約も戻す（後の Ctrl+N に classic が残らない）
+        }
     }
     if (newSceneAllowed)
     {

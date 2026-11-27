@@ -13,7 +13,6 @@ namespace dx12e
 {
 enum class QualityPresetId : u8;   // renderer/QualityPreset.h
 struct QualityScenePack;          // core/QualityPresetScene.h
-struct QualityPlan;               // renderer/QualityPresetPlan.h
 struct AppAccess
 {
     // ==== lane-A begin ====
@@ -99,7 +98,7 @@ struct AppAccess
     static void FreezeApply(Application&, bool restartHistory, bool releasedNow);
     static void FreezeTick(Application&);
     // W1-C8: 新規シーンのルック（定義は QualityPresetApply.cpp。自由関数の窓口は core/QualityPresetApply.h）。
-    //   プロファイルの Scene への書き込み + 品質プリセットの id・空間スケール・時間履歴の同期。Undo は積まない。
+    //   プロファイルの Scene への書き込み + 時間履歴の破棄。settings.json（品質プリセット id・render_scale）は書かない。Undo は積まない。
     static void ApplyNewSceneLookState(Application&, const struct QualityPlan& plan, bool epic, bool giNewApplied);
     // ==== lane-C end ====
 

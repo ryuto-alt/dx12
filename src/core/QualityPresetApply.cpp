@@ -103,8 +103,8 @@ void AppAccess::ApplyNewSceneLookState(Application& app, const QualityPlan& plan
 {
     if (!app.m_scene || !epic) return;   // Classic は何も足さない（従来の新規シーンのまま）
     ApplyEpicSceneLook(*app.m_scene, plan, giNewApplied);
-    if (plan.setRenderScale) app.SetRenderScale(plan.renderScale);
-    app.PersistSet("quality_preset", static_cast<double>(static_cast<u8>(plan.id)));
+    // ユーザーの全体設定（settings.json の quality_preset / render_scale）は書き換えない。新規シーンに当てるのはシーンの設定だけ
+    // （Ctrl+N のたびに保存済みの設定が上書きされ、後で開く既存シーンの描画にまで及ぶのを避ける）。
     app.m_renderResFlush = true;
     app.InvalidateTemporalHistory(/*includeDdgi*/ false);
     for (u8 i = 0; i < plan.degradeCount; ++i)
