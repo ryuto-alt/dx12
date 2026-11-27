@@ -7,6 +7,7 @@
 #include "scene/PostV2Fields.h"
 #include "scene/ScenePartition.h"   // シーンの分割保存（§4.3）
 #include "scene/Scene.h"
+#include "scene/SceneShadingSerializerLaneC.h"   // W1-FU-E-27: shading V2 / LS-02a の欄（lane-C サイドカー）
 #include "ecs/Components.h"
 #include "physics/ColliderShape.h"         // ConvexHullCollider の頂点の間引き（collider::ReduceHullPoints。ヘッダのみ）
 #include "ecs/ComponentMeta.h"             // entt::meta フィールド反映（シリアライズの単一ソース）
@@ -1438,6 +1439,8 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir, boo
         if (pc.gatherFilterTaps != def.gatherFilterTaps) pj["gatherFilterTaps"] = pc.gatherFilterTaps;
     }
 
+    SaveSceneShadingLaneC(scene, root);   // W1-FU-E-27（lane-C サイドカー）
+
     // DXR レイトレーシング（シーン単位）。既定 OFF なので、未設定シーンは従来どおり。
     // forceBuildTlas は目視検証用の一時トグルなので保存しない。
     {
@@ -2600,6 +2603,7 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     catch (const json::exception& e) { Logger::Warn("ssr/ssgi 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadShadowPcssSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("shadowPcss 設定をスキップしました（型不正）: {}", e.what()); }
+    LoadSceneShadingLaneC(scene, root);   // W1-FU-E-27（lane-C サイドカー: shading V2 / LS-02a の欄）
     try { LoadVolumetricFogSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadRtSettings(scene, root); }

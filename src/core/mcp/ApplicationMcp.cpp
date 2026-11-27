@@ -12,6 +12,7 @@
 #include "core/mcp/McpPendingReplies.h"   // FU-E-15: 未応答の遅延応答の数え上げ（A11 の間引きの busy 判定）
 #include "core/mcp/McpSafety.h"    // M5: guarded ゲート / 冪等ストア / dryRun プレビュー / ファイルジャーナル
 #include "renderer/PhotometricMath.h"   // Q2: 露出(EV100)とトーンマップの純関数（screenshot の CPU ミラーが共有）
+#include "core/mcp/McpIblShot.h"   // W1-FU-E-30
 #include "renderer/LinearCapturePass.h"  // Q2: 線形 HDR スクリーンショットの読み出し
 #include "renderer/pt/PtImageIO.h"      // Q2: PFM / EXR の書き出し（パストレーサーの出力と同じ規約・同じ実装を共有）
 
@@ -1127,8 +1128,7 @@ void Application::FinishFinalScreenshot()
         return;
     }
     const PostProcessSettings& pp = m_scene->GetPostSettings();
-    CompleteMcp(m_mcpBridge.get(), reply,
-        nlohmann::json{{"path", primaryPath},
+    nlohmann::json finalReply{{"path", primaryPath},
                        {"files", q2Files}, {"linear", q2Linear},
                        {"offscreen", m_mcpFinalShot.offW > 0},
                        {"width", w}, {"height", h},
@@ -1140,7 +1140,9 @@ void Application::FinishFinalScreenshot()
                        {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
                        {"note", "ポスト適用後のバックバッファ。ImGui を描く前に撮るので"
                                 "エディタのパネル/ギズモは写らない。dx12_screenshot（ポスト前の "
-                                "m_sceneRT）とは別物なので、見た目の判断はこちらを使う"}});
+                                "m_sceneRT）とは別物なので、見た目の判断はこちらを使う"}};
+    mcpibl::Append(*this, finalReply);   // W1-FU-E-30: IBL 待ちの欄（状態は lane-C の McpIblShot.h）
+    CompleteMcp(m_mcpBridge.get(), reply, finalReply);
 }
 
 Application::DiagRenderInfo Application::GetDiagRenderInfo() const

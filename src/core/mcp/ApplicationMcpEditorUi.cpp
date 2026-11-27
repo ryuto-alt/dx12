@@ -17,6 +17,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpManifestBuild.h"
 #include "core/mcp/McpPendingReplies.h"
+#include "core/mcp/McpScenePath.h"
 #include "core/mcp/McpSafety.h"
 #include "editor/EditorCommandMcp.h"
 #include "editor/EditorStateMcp.h"
@@ -614,6 +615,10 @@ void Application::RegisterMcpEditorUiMethods()
                         const auto f = m_camera->GetForward();
                         viewport["camera"] = {{"position", {p.x, p.y, p.z}}, {"forward", {f.x, f.y, f.z}}, {"fovY", m_camera->GetFovY()}};
                     }
+                    // scene.path = assets 相対 / projectPath = プロジェクト相対（絶対パスは漏らさない）。
+                    json sceneJ = {{"dirty", ctx.IsSceneDirty()}, {"generation", m_sceneGeneration},
+                                   {"entityCount", m_scene->GetRegistry().view<NameTag>().size()}};
+                    mcpscene::AddTo(sceneJ, mcpscene::Resolve(ctx.currentScenePath, PathResolver::AssetsDir(), PathResolver::BaseDir()));
                     json tx = {{"open", ctx.mcpUndo.TxOpen()}};
                     if (ctx.mcpUndo.TxOpen()) tx["label"] = ctx.mcpUndo.TxLabel();
                     r["mode"] = {{"engineMode", m_engineMode == EngineMode::Playing ? "playing" : "editor"},
@@ -622,8 +627,7 @@ void Application::RegisterMcpEditorUiMethods()
                                  {"background", {{"mode", BackgroundModeName(m_bgOptions.mode)}, {"toolWindow", m_bgOptions.toolWindow}}},
                                  {"virtualInput", vinput::Enabled()},
                                  {"dpiScale", m_imguiManager ? m_imguiManager->GetUiScale() : 1.0f},
-                                 {"scene", {{"path", ctx.currentScenePath}, {"dirty", ctx.IsSceneDirty()}, {"generation", m_sceneGeneration},
-                                            {"entityCount", m_scene->GetRegistry().view<NameTag>().size()}}},
+                                 {"scene", std::move(sceneJ)},
                                  {"aiTransaction", std::move(tx)},
                                  {"viewport", std::move(viewport)}};
                 }

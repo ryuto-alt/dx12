@@ -89,19 +89,21 @@ Run ループの先頭（フレーム外）→ EnsureSplitResources → AppAcces
 1. **水 / 植生 / VG の V2 の選択（FU-E-25 で解決済み。下は経緯）**: V2 の .cso（WaterSurface/Under{,Phys}V2、ForwardFoliage*V2、VgResolveV2）は宣言・ビルド済みだが、
    選ぶ側（`WaterRenderer`・`ApplicationWater.cpp`・`FoliageSystem.cpp`・`VirtualGeometrySystem.cpp`）は W1 の所有表に所有者がいない。
    C6（影のバイアスを「シーン全体が V2 のときだけ」下げる）の前提なので、所有を決めて `FwdPsNameRev` と同じ流儀で結線すること。
-2. **shadingRevision の保存**: `SceneSerializer` は凍結のため保存されない。`set_shading` でシーンは dirty になるが、
-   開き直すと 1 に戻る（C7 / C8 の前に、1 行の解凍か側路の判断が必要）。
+2. **shadingRevision の保存（FU-E-27 で解決済み）**: `scene/SceneShadingSerializerLaneC.cpp`（lane-C のサイドカー。`SceneSerializer.cpp` は保存 1 行・読み込み 1 行の呼び出しだけ）が
+   `shading`（`shadingRevision` と V2 の欄）と `shadowPcss`（LS-02a の欄）を、既定と違う値だけ書く。`set_shading` / `set_shadow_pcss` は Undo 対象。
 3. **ホットリロード**: Forward / Skinned / Terrain の V2 .cso は `RegisterShaderReloadHandlers` に登録済み。
-   `ShaderRegistry.cpp`（所有者なし）の依存表への V2 名の追加は、`BrdfV2.hlsli` を include する変更で一緒に行う。
+   再コンパイル表（`ShaderRegistry`）には FU-E-26 で ForwardV2 / ForwardPhysV2 / TerrainV2 を足した。ForwardMaskV2 / ForwardMaskPhysV2 / TerrainPhysV2 / 水・植生・VG の V2 は未登録（rev=2 のとき警告を出す）。
+   `BrdfV2.hlsli` を include するシェーダが現れたら `staticDeps` に足すこと。
 4. **Application.cpp への直接の呼び出し**: `UpdateShadingRevision` は `EnsureSplitResources` の先頭から呼ばれている（相乗り）。
    マージ時に lane A が Run ループの `UpdateLightingUnits` の隣へ明示的に呼び、相乗りを外すこと。
 5. 切替時に `InvalidateTemporalHistory(true)` を呼ぶ（TAA / DDGI / フォグの履歴を捨てる）。
 
 ### 8.x 追補（レビュー指摘の検証結果）
-- 水・植生・VG の V2 結線、`shadingRevision` の保存（SceneSerializer）、ShaderRegistry の V2 エントリ: 指摘は正しい。いずれも W1 の所有表に所有者がない（または凍結）ため C3 では直していない。メインが所有を決める。
-- ホットリロード: rev=2 のとき警告を出すようにした（ShaderRegistry 対応までの暫定）。§8.3 の「登録済み」は「ハンドラの対象ファイル名に登録済み。再コンパイル表は未対応」と読み替える。
+- 水・植生・VG の V2 結線、`shadingRevision` の保存、ShaderRegistry の V2 エントリ: 指摘は正しい。C3 では直さず、保存は FU-E-27（lane-C のサイドカー）、ShaderRegistry は FU-E-26 で対応した。
+- ホットリロード: rev=2 のとき警告を出す。FU-E-26 で ForwardV2 / ForwardPhysV2 / TerrainV2 は再コンパイル表に入った。警告は残りの ForwardMaskV2 / ForwardMaskPhysV2 / TerrainPhysV2 / 水・植生・VG の V2 を名指しする。
 - `s_v2PsoCount[2]` は地形の .cso が無い早期 return でも 0 に戻すようにした。
 - BrdfV2.hlsli を include するシェーダが現れると `ShadingV2AxisTests` が失敗する（BakeForBuild の V2 対応が先）。
+- C3 の残り確認（FU-E-28、2026-11）: `shadingRevision=2` で V2 の 3 機能（microShadow / horizonOcclusion / gtso）を全部 OFF にすると、golden_core の core_pbr_spheres / core_csm_shadows / core_transparency / core_post_stack は V1 とネイティブ解像度で画素 SHA-256 が一致（appliedRevision=2・v2PsoCount=16）。機能を ON にすると差が出る（意図どおり）。GPU の `GraphMaterialTests`（§9 の shadingRevision の節を含む）は合格。
 
 ## 9. C5: マイクロシャドウ・GTSO・地平線オクルージョン（W1-C5）
 
@@ -122,7 +124,7 @@ CPU の写しは `src/renderer/ShadingV2Math.h`、性質の検査は `ShadingV2M
 `ApplicationRender.cpp` が毎フレーム書く。`shadingRevision != 2` のときは x = 0。分岐はすべて定数バッファの値による一様分岐。
 
 ### 9.3 MCP
-`set_shading` / `get_shading` に `microShadow` / `horizonOcclusion` / `gtso`（bool、既定 true）と `microShadowK` / `horizonK`（0..2、既定 1。範囲外は `E_OUT_OF_RANGE`）。シーン JSON には保存しない（`SceneSerializer` は W1 では凍結。shadingRevision と同じ）。
+`set_shading` / `get_shading` に `microShadow` / `horizonOcclusion` / `gtso`（bool、既定 true）と `microShadowK` / `horizonK`（0..2、既定 1。範囲外は `E_OUT_OF_RANGE`）。シーン JSON の `shading` に保存する（FU-E-27。既定と違う値だけ書く）。
 TS 側（`tools/mcp-server/toolset/shading.ts` の shape）は NB の担当。それまでは `dx12_call` か生の MCP で使う。
 
 ### 9.4 BrdfV2.hlsli を使わない理由
@@ -130,7 +132,7 @@ TS 側（`tools/mcp-server/toolset/shading.ts` の shape）は NB の担当。�
 C5 は所有範囲に収めるため、既に全消費者の依存表に載っている `Lighting.hlsli` / `ForwardShade.hlsli` の `#ifdef UNO_SHADING_V2` の中に置いた。MH-2 で `BrdfV2.hlsli` へ移すときに一緒に整理する。
 
 ### 9.5 配布ビルド
-`BakeForBuild` は V1 だけ焼く。V2 のシーンのグラフ材質は配布先で V1 の絵になる（`shadingRevision` がシーンに保存されない W1 では、配布先は常に V1）。
+`BakeForBuild` は V1 だけ焼く。V2 のシーンのグラフ材質は配布先で V1 の絵になる（`shadingRevision` はシーンに保存される（FU-E-27）が、配布ビルドの焼き込みは V1 だけなので配布先の絵は V1）。
 
 ### 9.6 適用範囲（W1 時点）
 地平線オクルージョンはベース層の `specularIBL` / `probeSpec` だけ。クリアコート層の IBL・プローブ・SSR（`UNO_EXT_COAT` の中）には掛けていないので、法線マップ付きの金属にコートを載せると地平線の下を映すことがある。
@@ -169,7 +171,7 @@ CPU の写しと性質は `src/renderer/EpicCsm.h` / `tests/shadow_bias_math_tes
 
 ### 10.3 MCP
 `set_shadow_pcss` / `get_shadow_pcss` に `epicDynamicCsm` / `pancaking` / `gatherPcss` / `cascadeDitherBlend` / `receiverNormalOffsetBase` / `receiverNormalOffsetSlope`（0..4）/ `casterBiasScaleV2`（0.05..1）/ `gatherFilterTaps`（8..32）。
-`get` は `epicCsmApplied`（D16 × 3 へ切り替え済みか）を返す。シーン JSON には保存しない（`SceneSerializer` は W1 では凍結。`shadingRevision` と同じ。C7 / C8 が品質プリセット / プロファイルから立てる）。
+`get` は `epicCsmApplied`（D16 × 3 へ切り替え済みか）を返す。シーン JSON の `shadowPcss` に保存する（FU-E-27。既定と違う値だけ書く。C7 / C8 が品質プリセット / プロファイルから立てる）。
 TS 側（`tools/mcp-server`）は NB の担当。
 
 ### 10.4 既知の範囲外

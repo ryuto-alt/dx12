@@ -233,12 +233,14 @@
     addPreview("create_entity", [=, this](const json& p) -> json
     {
         static const char* const kTypes[] = {"box", "sphere", "plane", "empty", "camera", "light_directional", "light_point",
-            "light_spot", "particle_emitter", "trigger", "decal", "ui_canvas", "ui_image", "ui_text", "ui_button", "ui_slider",
+            "light_spot", "particle_emitter", "trigger", "decal", "water", "ui_canvas", "ui_image", "ui_text", "ui_button", "ui_slider",
             "ui_toggle", "ui_scrollview"};
-        const std::string type = p.value("type", std::string("box"));
+        // 実行側と同じ検査（type 必須・未知キー拒否・ui_canvas に parent 不可）。文言も実行側と共通。
+        ThrowIfInvalidCreateEntityParams(p);
+        const std::string type = p.value("type", std::string());
         bool ok = false;
         for (const char* t : kTypes) if (type == t) ok = true;
-        if (!ok) throw McpError(McpErr::InvalidParam, "type '" + type + "' は使えない", "type は box / sphere / plane / empty / camera / light_* / ui_* など");
+        if (!ok) throw McpError(McpErr::InvalidParam, "type '" + type + "' は使えない", "type は box / sphere / plane / empty / camera / light_* / water / ui_* など");
         const std::string name = p.value("name", std::string());
         json pv = mk("エンティティを 1 つ生成する(" + type + ")", false, kUndoScene);
         json t = {{"kind", "entity"}, {"exists", false}, {"wouldCreate", true}, {"type", type},

@@ -399,6 +399,19 @@ int main()
           "render_setting の group / target");
     Check(metaOf.count("play") && metaOf["play"]->deferred && metaOf.count("create_entity") && metaOf["create_entity"]->deferred,
           "deferred: play / create_entity");
+    // FU-E-32: new_scene は遅延応答（{sceneName,path,projectPath,...} を返す）。create_entity の type に water がある。
+    Check(metaOf.count("new_scene") && metaOf["new_scene"]->deferred, "deferred: new_scene（遅延応答）");
+    {
+        bool water = false, parentDoc = false;
+        if (metaOf.count("create_entity"))
+            for (const auto& pr : metaOf["create_entity"]->params)
+            {
+                if (pr.name == "type") for (const auto& v : pr.enumValues) if (v == "water") water = true;
+                if (pr.name == "parent" && pr.desc.find("全種別") != std::string::npos) parentDoc = true;
+            }
+        Check(water, "create_entity の type 列挙に water がある");
+        Check(parentDoc, "create_entity の parent は全種別で有効と書かれている");
+    }
     Check(metaOf.count("ping") && !metaOf["ping"]->deferred, "ping は deferred でない");
     Check(metaOf.count("terrain_erode") && metaOf["terrain_erode"]->timeoutMs == 60000, "timeoutMs は TIMEOUT_BY_METHOD 由来（terrain_erode=60000）");
     std::printf("  --  effect:");

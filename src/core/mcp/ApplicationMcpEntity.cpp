@@ -7,7 +7,7 @@
 #include "core/ApplicationInternal.h"
 #include "core/QualityPresetApply.h"
 #include "core/mcp/McpScenePath.h"
-#include "core/mcp/McpCreateEntityParams.h"
+#include "core/mcp/McpCreateEntityValidate.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/AtomicFile.h"      // 原子的な保存（Lua / シェーダの書き出し）
 #include "scene/ScenePartition.h"   // 分割保存のシーン（セルファイルの扱い）
@@ -453,39 +453,7 @@ void Application::RegisterMcpEntityMethods()
                     "dx12_stop で Editor へ戻してから作る（Play 中に作っても Stop で消える）");
             // ★type は必須。省略や綴り違いを黙って box にすると「頼んだ物と違う箱」が増えるだけで気づけない（R2-04 / R3-03）。
             //   宣言していないキー（position の綴り違いや size の誤記など）も黙って捨てず、明示エラーで返す。
-            {
-                std::vector<std::string> keys;
-                for (auto it = params.begin(); it != params.end(); ++it) keys.push_back(it.key());
-                const std::string typeIn = (params.contains("type") && params["type"].is_string()) ? params["type"].get<std::string>() : std::string();
-                std::string bad;
-                switch (mcpcreate::Validate(keys, typeIn, bad))
-                {
-                case mcpcreate::Check::UnknownKey:
-                {
-                    McpError err(McpErr::InvalidParam, "unknown parameter '" + bad + "' for create_entity",
-                        "Accepted: type (required), name, position, parent, parentName, size, subdivisions. "
-                        "向きや拡大は作成後に dx12_set_transform、色や質感は dx12_set_component / dx12_material_apply で変える");
-                    err.name  = "E_UNKNOWN_PARAM";
-                    err.cause = "create_entity が受け取らない引数が渡された（黙って無視すると意図と違うものが作られる）";
-                    if (const std::string closest = mcpcreate::NearestKey(bad); !closest.empty()) err.didYouMean.push_back(closest);
-                    throw err;
-                }
-                case mcpcreate::Check::MissingType:
-                {
-                    McpError err(McpErr::InvalidParam, "create_entity: missing required param 'type'",
-                        "type は必須: box, sphere, plane, empty, camera, light_directional, light_point, light_spot, "
-                        "particle_emitter, trigger, decal, water, ui_*。3D の箱なら type:\"box\"、何も描かない親なら type:\"empty\"");
-                    err.name  = "E_MISSING_PARAM";
-                    err.cause = "必須の引数 'type' が渡されていない（黙って box にしない）";
-                    err.details = {{"param", "type"}, {"type", "string"}};
-                    throw err;
-                }
-                case mcpcreate::Check::ParentOnCanvas:
-                    throw McpError(McpErr::InvalidParam, "'" + bad + "' cannot be used with type 'ui_canvas' (a canvas is always a root)",
-                        "ui_canvas は常にルートに作られる。UI 要素（ui_image / ui_text など）には parent / parentName が使える");
-                case mcpcreate::Check::Ok: break;
-                }
-            }
+            ThrowIfInvalidCreateEntityParams(params);   // 実行と dryRun で同じ検査（McpCreateEntityValidate.h）
             const std::string type = params["type"].get<std::string>();
             std::string name = params.value("name", std::string());
             const auto pos = params.value("position", std::vector<float>{0.0f, 0.0f, 0.0f});

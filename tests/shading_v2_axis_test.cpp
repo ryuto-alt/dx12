@@ -144,6 +144,22 @@ int main()
         Check(pipe.find(std::string("L\"") + n + ".cso\"") != std::string::npos, std::string("ApplicationPipeline.cpp が参照していない: ") + n);
     }
 
+    // ホットリロードの宣言表（ShaderRegistry.cpp）にも V2 が載っている（W1-FU-E-26）。
+    // レジストリに無いと、V2 の .hlsl を保存しても V2 の .cso だけ再コンパイルされず古いまま動く。
+    {
+        const std::string reg = ReadFile("src/resource/ShaderRegistry.cpp");
+        Check(!reg.empty(), "ShaderRegistry.cpp を読めない");
+        for (const char* n : {"ForwardV2_PS", "ForwardPhysV2_PS", "TerrainV2_PS"})
+        {
+            const std::size_t p = reg.find(std::string("L\"") + n + ".cso\"");
+            Check(p != std::string::npos, std::string("ShaderRegistry.cpp に V2 の .cso が無い: ") + n);
+            if (p == std::string::npos) continue;
+            const std::size_t e = reg.find("},", p);
+            Check(e != std::string::npos && reg.substr(p, e - p).find("UNO_SHADING_V2=1") != std::string::npos,
+                  std::string("ShaderRegistry.cpp の V2 の define に UNO_SHADING_V2=1 が無い: ") + n);
+        }
+    }
+
     // 空の枠
     const std::string brdf = ReadFile("shaders/forward/BrdfV2.hlsli");
     Check(brdf.find("#ifdef UNO_SHADING_V2") != std::string::npos, "BrdfV2.hlsli が UNO_SHADING_V2 で守られていない");

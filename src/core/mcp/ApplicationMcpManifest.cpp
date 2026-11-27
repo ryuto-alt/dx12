@@ -17,6 +17,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpManifestBuild.h"
+#include "core/mcp/McpCreateEntityValidate.h"
 #include "scene/GiMigration.h"   // S5: migrate_gi
 #include "core/mcp/McpSafety.h"   // M5: ガードトークン / 冪等ストア / プレビュー表 / ジャーナル
 #include "resource/VgAutoCook.h"   // vg_cook（仮想ジオメトリの手動 cook）

@@ -98,6 +98,8 @@ bool ShaderManager::CompileSourceAllVariants(const ShaderSource& src, const std:
         req.profile  = variant.profile;
         if (variant.define)
             req.defines.push_back(variant.define);
+        if (variant.define2)
+            req.defines.push_back(variant.define2);
         req.includeDirs = includeDirs;
 
         ShaderRuntimeCompiler::CompileResult result = m_compiler.Compile(req);

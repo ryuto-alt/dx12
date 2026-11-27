@@ -29,6 +29,7 @@
 #include "core/mcp/McpPendingReplies.h"   // FU-E-15: 未応答の遅延応答 / editor_command_run の待ち（間引きの busy 判定）
 #include "editor/FrameThrottle.h"   // W1-A11: 裏に回ったときのフレーム間引き（純ロジック）
 #include "editor/EditorPrefs.h"      // W1-A11: 「常にリアルタイム」の設定（perf.alwaysRealtime）
+#include "core/mcp/McpIblShot.h"   // W1-FU-E-30: IBL 待ちの応答欄（呼び出し 1 か所のみ）
 #include "editor/panels/MaterialGraphPanel.h"   // マテリアルグラフ G2c: ライブプレビュー / サムネイルの GPU 側（InitializeGpu / ShutdownGpu）
 
 namespace dx12e
@@ -2102,14 +2103,17 @@ void Application::Run()
                     FailMcp(m_mcpBridge.get(), m_mcpFinalShot.reply, McpErr::Internal,
                             derr.empty() ? "screenshot failed" : derr);
                 else
-                    CompleteMcp(m_mcpBridge.get(), m_mcpFinalShot.reply,
-                        nlohmann::json{{"path", dpath},
+                {
+                    nlohmann::json shotReply{{"path", dpath},
                                        {"width",  m_sceneRT ? m_sceneRT->GetWidth()  : 0u},
                                        {"height", m_sceneRT ? m_sceneRT->GetHeight() : 0u},
                                        {"source", "sceneRT(pre-post)"},
                                        {"deterministic", true},
                                        {"note", "決定論モード: time / TAA ジッタ / フォグ・SSGI の位相を固定し、"
-                                                "履歴を収束させてから撮った。ゲームのシミュレーションは止まらない"}});
+                                                "履歴を収束させてから撮った。ゲームのシミュレーションは止まらない"}};
+                    mcpibl::Append(*this, shotReply);   // W1-FU-E-30: IBL 待ちの欄（状態は lane-C の McpIblShot.h）
+                    CompleteMcp(m_mcpBridge.get(), m_mcpFinalShot.reply, shotReply);
+                }
                 m_mcpFinalShot = {};
                 m_deterministicCapture = false;
             }

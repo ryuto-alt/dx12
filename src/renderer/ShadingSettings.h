@@ -22,7 +22,7 @@ struct ShadingSettings
     // ▼ shadingRevision（W1-C1。80 TU から読まれる重ヘッダなので、ここで 1 回だけ足した）
     //   1 = 従来（V1。既定）。2 = UNO_SHADING_V2 の PSO / シェーダ（W1-C3 以降。マイクロシャドウ・GTSO・地平線・受光側の影の補正）。
     //   既存シーンは 1 のまま＝絵はビット一致。2 を選ぶのは新規シーンのルック（C8）と、品質プリセット Epic（C7）だけ。
-    //   ★シーンファイルへの保存 / 読み込みは SceneSerializer（W1 では凍結）に依存するため、この項目では行わない（C3 の前にメインが扱いを決める）。
+    //   ★シーンへの保存 / 読み込みは scene/SceneShadingSerializerLaneC.cpp（W1-FU-E-27。既定と違う値だけ書く。rev は 1 / 2 のみ）。
     u8 shadingRevision = 1;
 
     // ▼ V2 の機能ごとの切り替え（C3 / C5 が読む。C1 では誰も読まない＝既定のままで絵は変わらない）。
