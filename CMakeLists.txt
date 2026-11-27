@@ -179,6 +179,20 @@ if(EXISTS "${DX12_GH_CLI_EXE}")
         COMMENT "Bundling gh.exe next to DX12Engine.exe")
 endif()
 
+# --- UI 書体（W1-A14 / GG-2b。IBM Plex / PlemolJP / Noto Sans JP のサブセット。third_party/fonts/README.md）---
+# exe 隣の assets/editor/fonts/ui/ へ平らにコピーする（ImGuiManager::FindUiFontFile が最初に見る場所。インストーラも同じ配置）。
+# 元の置き場（third_party/fonts/<組>/subset/）は開発ビルドが直接読むので、無くてもビルドは通る（書体が無ければ旧書体で起動する）。
+file(GLOB DX12_UI_FONT_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/third_party/fonts/ibm-plex/subset/*.ttf"
+    "${CMAKE_SOURCE_DIR}/third_party/fonts/plemoljp/subset/*.ttf"
+    "${CMAKE_SOURCE_DIR}/third_party/fonts/noto-sans-jp/subset/*.ttf")
+if(DX12_UI_FONT_FILES)
+    add_custom_command(TARGET DX12Engine POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:DX12Engine>/assets/editor/fonts/ui"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DX12_UI_FONT_FILES} "$<TARGET_FILE_DIR:DX12Engine>/assets/editor/fonts/ui"
+        COMMENT "Bundling UI fonts (IBM Plex subset) next to DX12Engine.exe")
+endif()
+
 # --- GameRuntime: ゲーム専用実行ファイル（DX12_GAME_RUNTIME で常にゲームモード固定）---
 add_executable(GameRuntime WIN32 src/main.cpp ${DX12_APP_ICON_RC} ${DX12_APP_MANIFEST})
 uno_agility_exe(GameRuntime)

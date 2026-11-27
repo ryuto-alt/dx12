@@ -10,6 +10,7 @@
 #include "core/Types.h"
 #include "core/mcp/McpDeferred.h"
 #include "editor/UndoSystem.h"
+#include "editor/ViewportLogic.h"   // vp::g_startupAspect（W1-A14）
 #include "editor/McpUndoRouter.h"   // MCP の編集を Undo に積む窓口 + トランザクション
 #include "editor/EditorIcons.h"
 #include "editor/Toast.h"          // ctx.Notify(): 右下トースト通知
@@ -254,7 +255,7 @@ public:
     struct ViewportPrefs
     {
         bool  barVisible      = true;    // 上端の帯（表示 > ビューポートの帯）。false なら従来と同じ矩形
-        int   aspectIndex     = 0;       // vp::kAspects の番号（既定 16:9。Play 中は常に 16:9）
+        int   aspectIndex     = vp::g_startupAspect;   // vp::kAspects の番号（既定 = フィット。--viewport-aspect で変えられる。Play 中は常に 16:9）
         float fovDeg          = 45.0f;   // エディタカメラの視野角（縦・度）。既定は従来の固定値と同じ
         // 表示フラグ（既定は全部従来どおり）
         bool  showGizmo       = true;    // 変形ギズモ

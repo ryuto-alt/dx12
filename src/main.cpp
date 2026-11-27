@@ -13,6 +13,8 @@
 #include "gui/UiClock.h"         // --ui-deterministic（UI の時計を「フレーム番号 × 1/60」に固定）
 #include "editor/EditorTheme.h"   // --theme-variant（エディタのアイデンティティ案。開発用）
 #include "editor/ThemeGraphite.h"   // theme::RegisterGraphite（--theme-variant graphite の Spec 登録）
+#include "editor/ViewportLogic.h"   // --viewport-aspect
+#include "editor/EditorPrefs.h"      // 保存済みの既定テーマ（ui.themeVariant。W1-A14）
 #include "core/mcp/FleetGuard.h"   // --owner-pid / --idle-exit / --instance-id（フリート運用の自己終了）
 #include "core/OffscreenShot.h"     // --size WxH（screenshot_final の既定の撮影解像度。純ロジック）
 #include "editor/McpInstaller.h"   // --install-mcp（MCP サーバのヘッドレス導入）
@@ -662,8 +664,27 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
                         else if (i + 1 < argc)   value = toUtf8(argv[++i]);
                         dx12e::theme::Variant tv = dx12e::theme::Variant::Default;
                         dx12e::theme::g_variantSwitchEnabled = true;   // 切替コマンド（コマンドパレット）を有効にする
+                        dx12e::theme::g_variantExplicit = true;        // 保存済みの設定（ui.themeVariant）より優先する（保存はしない）
                         if (dx12e::theme::ParseVariant(value, tv)) dx12e::theme::SetVariant(tv);
                         else OutputDebugStringA(("--theme-variant の値が不正です（" + std::string(dx12e::theme::kVariantUsage) + "）: " + value + "\n").c_str());
+                    }
+                    else if (wcscmp(argv[i], L"--ui-font") == 0 || wcsncmp(argv[i], L"--ui-font=", 10) == 0)
+                    {
+                        // W1-A14: UI の書体。legacy = 旧書体（Segoe UI + Yu Gothic UI。UI ゴールデンの旧の組）/ plex = IBM Plex（既定）。
+                        std::string value;
+                        if (argv[i][9] == L'=') value = toUtf8(argv[i] + 10);
+                        else if (i + 1 < argc)  value = toUtf8(argv[++i]);
+                        if (value == "legacy")    dx12e::theme::g_uiFontLegacy = true;
+                        else if (value == "plex") dx12e::theme::g_uiFontLegacy = false;
+                        else OutputDebugStringA(("--ui-font の値が不正です（legacy | plex）: " + value + "\n").c_str());
+                    }
+                    else if (wcscmp(argv[i], L"--viewport-aspect") == 0 && i + 1 < argc)
+                    {
+                        // W1-A14: ビューポートの起動時のアスペクト（16:9 / 16:10 / 21:9 / 4:3 / 1:1 / fit。既定は fit）。3D ゴールデンは 16:9 に固定して撮る。
+                        const std::string value = toUtf8(argv[++i]);
+                        int ai = 0;
+                        if (dx12e::vp::ParseAspectLabel(value, ai)) dx12e::vp::g_startupAspect = ai;
+                        else OutputDebugStringA(("--viewport-aspect の値が不正です（16:9 | 16:10 | 21:9 | 4:3 | 1:1 | fit）: " + value + "\n").c_str());
                     }
                     else if (wcscmp(argv[i], L"--mcp-port") == 0 && i + 1 < argc)
                         mcpPort = _wtoi(argv[++i]);
@@ -733,6 +754,14 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPSTR lpCm
 
         // exe の場所を基準に assets/shaders/scripts のパスを確定（配布 exe を別フォルダで動かすため）
         dx12e::PathResolver::Initialize(gameMode);
+
+#ifndef DX12_GAME_RUNTIME
+        // W1-A14: 既定のテーマ。--theme-variant の指定が無ければ、保存済みの設定（ui.themeVariant。ユーザーが選んだときだけ書く）を使い、
+        // 無ければ Graphite Gauge。旧テーマ（ネオン）を選んだ人の設定は "default" で残っているので上書きしない。
+        // ゲームモード（配布ゲーム相当）ではエディタのテーマを使わないので何もしない。
+        if (!gameMode && !dx12e::theme::g_variantExplicit)
+            dx12e::theme::SetVariant(dx12e::theme::StartupVariant(dx12e::prefs::GetString(dx12e::theme::kThemePrefKey)));
+#endif
 
 #ifdef DX12_GAME_RUNTIME
         // game.pak をマウント（GameRuntime ブート時の必須手順）。失敗したら致命的エラー。

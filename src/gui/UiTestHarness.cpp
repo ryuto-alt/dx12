@@ -490,7 +490,9 @@ void T_ViewportBar(ImGuiTestContext* ctx)
     IM_CHECK_NO_RET(ed->viewportY >= bar->Pos.y + bar->Size.y - 1.0f);
     IM_CHECK_NO_RET(ed->viewportW > 100.0f && ed->viewportH > 100.0f);
     auto ratioIs = [&](float want) { return std::fabs(ed->viewportW / ed->viewportH - want) < 0.02f; };
-    IM_CHECK_NO_RET(ratioIs(16.0f / 9.0f));   // 既定は従来どおり 16:9
+    // 既定は「フィット」（W1-A14。16:9 の黒帯をやめて、帯の下の領域いっぱい）
+    IM_CHECK_NO_RET(ed->vpPrefs.aspectIndex == vp::kAspectFit);
+    IM_CHECK_NO_RET(ed->viewportW >= bar->Size.x * 0.5f);
 
     // アスペクト: 帯のメニューから選ぶ（ポップオーバーの中の項目も実際に押す）
     Step(ctx, "アスペクトを 4:3 へ（帯 > アスペクト）");
@@ -514,7 +516,7 @@ void T_ViewportBar(ImGuiTestContext* ctx)
     }
     ed->vpPrefs.aspectIndex = vp::kAspectDefault;
     ctx->Yield(4);
-    IM_CHECK_NO_RET(ratioIs(16.0f / 9.0f));
+    IM_CHECK_NO_RET(ed->viewportW >= bar->Size.x * 0.5f);   // 既定 = フィット
 
     // 帯を隠せば従来と同じ矩形（＝帯の高さぶん 3D が広がる。決定論スクショの基準）
     Step(ctx, "帯を隠す / 戻す");
@@ -1644,13 +1646,14 @@ void T_WorkspaceSwitch(ImGuiTestContext* ctx)
         }
         if (!bad.empty()) IM_ERRORF("ワークスペース %s の窓の開閉が期待と違う:%s", p.id, bad.c_str());
 
-        // ビューポートは崩れない（16:9 のはめ込みのまま・0 にならない）
+        // ビューポートは崩れない（既定はフィット。0 にならない）
         const f32 w = ed->viewportW, h = ed->viewportH;
         ctx->LogInfo("  viewport %.1fx%.1f  layout L%.3f R%.3f B%.3f / measured L%.4f R%.4f B%.4f", w, h,
                      ed->dockRatioLeft, ed->dockRatioRight, ed->dockRatioBottom, ed->dockMeasLeft, ed->dockMeasRight, ed->dockMeasBottom);
         IM_CHECK_GT(w, 100.0f);
         IM_CHECK_GT(h, 50.0f);
-        IM_CHECK_LT(std::fabs(w / h - 16.0f / 9.0f), 0.03f);
+        IM_CHECK_GT(w / h, 0.5f);   // 極端に潰れない（縦長でも横長でもない範囲）
+        IM_CHECK_LT(w / h, 4.0f);
     }
 
     Step(ctx, "ワークスペースの「最後の状態」が保たれる（material に窓を足して往復）");

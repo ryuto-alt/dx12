@@ -25,5 +25,6 @@
     ]
   ],
   "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-  "note": "エディタ UI 全体（Lighting ワークスペース・DPI 100%・テーマ b）"
+  "note": "エディタ UI 全体（Lighting ワークスペース・DPI 100%・テーマ b）",
+  "uiFont": "legacy"
 }

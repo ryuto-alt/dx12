@@ -37,6 +37,13 @@ inline bool IsDefaultVariant() { return g_variant == Variant::Default; }
 // 実行中の切替要求（コマンドパレット等から）。ImGuiManager::BeginFrame が NewFrame の前に適用する（-1 = 要求なし）。
 inline bool g_variantSwitchEnabled = false;   // --theme-variant を付けて起動した時だけ true（パレットに切替コマンドを出す）
 inline int  g_pendingVariant = -1;
+// ---- 書体（W1-A14 / GG-2b）----
+// g_uiFontLegacy: --ui-font legacy で true。旧書体（Segoe UI + Yu Gothic UI。UI ゴールデンの旧の組）を強制する。
+// g_plexFonts   : ImGuiManager が IBM Plex の書体一式を読み込めたとき true（FontSizeBase と行高の決め方が変わる）。
+inline bool g_uiFontLegacy = false;
+inline bool g_plexFonts    = false;
+// --theme-variant を明示した（= 保存済みの設定を読まない）。
+inline bool g_variantExplicit = false;
 inline void RequestVariant(Variant v) { g_pendingVariant = static_cast<int>(v); }
 // 窓外装飾（ui::deco::PaintChrome）の呼び出し口。Gui ライブラリは Editor に依存できないので、EditorLayer が設定する
 // （g_restoreMainScaleFn と同じ流儀）。ImGuiManager::EndFrame が全パネルの描画後に 1 回呼ぶ。

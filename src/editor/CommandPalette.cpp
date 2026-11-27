@@ -241,8 +241,8 @@ void CommandPalette::BuildCommandItems(EditorContext& ctx, const std::string& q,
     {
         // パレット自身の起動コマンドは出さない（開いているのに「パレットを開く」は無意味）
         if (std::string_view(d.id).rfind("palette.", 0) == 0) continue;
-        // 開発用のテーマ案切替は --theme-variant を付けて起動した時だけ出す（既定の見た目・候補一覧を変えない）
-        if (!theme::g_variantSwitchEnabled && std::string_view(d.id).rfind("view.theme.", 0) == 0) continue;
+        // Graphite Gauge / ネオン（旧）の 2 つは常に出す（W1-A14。設定から旧テーマへ戻せる）。開発用の案 B / C は --theme-variant を付けて起動した時だけ。
+        if (!theme::g_variantSwitchEnabled && (std::string_view(d.id) == "view.theme.b" || std::string_view(d.id) == "view.theme.c")) continue;
         add(d.id, d.label, d.labelEn, d.category, cmd::ChordLabel(d));
     }
     for (const tools::Desc& t : tools::kAll)

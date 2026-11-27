@@ -87,8 +87,9 @@ void TestAspect()
     // 退化した領域でも 0 除算・負サイズを作らない
     r = FitAspect(0, 0, 0, 0, 16.0f / 9.0f);
     CHECK(r.w >= 1.0f && r.h >= 1.0f && std::isfinite(r.w) && std::isfinite(r.h), "0 領域");
-    // 既定は従来と同じ 16:9
-    CHECK(Near(kAspects[kAspectDefault].ratio, 16.0f / 9.0f), "既定 = 16:9");
+    // Play 中は 16:9 固定、エディタの既定は「フィット」（W1-A14。ratio 0 = 領域いっぱい）
+    CHECK(Near(kAspects[kAspectPlay].ratio, 16.0f / 9.0f), "Play = 16:9");
+    CHECK(kAspects[kAspectDefault].ratio == 0.0f && kAspectDefault == kAspectFit, "既定 = フィット");
     // 番号と表示名の一意性
     for (int i = 0; i < kAspectCount; ++i)
         for (int j = i + 1; j < kAspectCount; ++j)

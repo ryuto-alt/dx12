@@ -200,6 +200,10 @@ Copy-Item (Join-Path $srcDir "shaders") -Destination (Join-Path $stage "shaders"
 Copy-Item (Join-Path $repoRoot "shaders") -Destination (Join-Path $stage "shaders-src") -Recurse -ErrorAction SilentlyContinue
 # assets
 Copy-Item (Join-Path $repoRoot "assets") -Destination (Join-Path $stage "assets") -Recurse
+# UI 書体のサブセット（IBM Plex / PlemolJP / Noto Sans JP。W1-A14）。.iss と同じ assets\editor\fonts\ui\ へ平らに入れる。
+$uiFontDir = Join-Path $stage "assets\editor\fonts\ui"
+New-Item -ItemType Directory -Force -Path $uiFontDir | Out-Null
+foreach ($g in "ibm-plex", "plemoljp", "noto-sans-jp") { Copy-Item (Join-Path $repoRoot "third_party/fonts/$g/subset/*.ttf") -Destination $uiFontDir }
 # ★起動音 splash_d.*（出どころ/ライセンス未確認の素材）は配布物へ入れない。開発機に変換済み WAV があっても
 #   ここで落とす（.gitignore 済みだが、assets を丸ごとコピーするのでファイルが手元にあると混ざる）。
 #   無くても起動音は埋め込みの案 A へ自動で縮退する。

@@ -25,5 +25,6 @@
     ]
   ],
   "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる）/ 右下の FPS 表示 / 右下のトースト",
-  "note": "同上を --theme-variant b で。Default との差分を検出できることの証拠にもなる"
+  "note": "同上を --theme-variant b で。Default との差分を検出できることの証拠にもなる",
+  "uiFont": "legacy"
 }

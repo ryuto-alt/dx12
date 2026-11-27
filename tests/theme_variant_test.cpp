@@ -7,6 +7,7 @@
 // ImGui のコンテキストは要らない（ImGuiStyle は単なる構造体）。EditorTheme.h が imgui.h を include するので Gui ターゲットで有効。
 #include "editor/EditorTheme.h"
 #include "editor/ThemeGraphite.h"
+#include "editor/UiType.h"
 #include "editor/ThemeGraphite.gen.h"   // 値を直接読む（Graphite の固定値・黄の予算・コントラスト）
 
 #include <cmath>
@@ -434,6 +435,31 @@ void TestGraphiteValues()
     CHECK(SameVec4(th::AxisX, gg::kAxis.x) && SameVec4(th::BadText, gg::kStatus.badText));
     th::SetVariant(th::Variant::Default);
 }
+// W1-A14: 既定テーマ（設定が無い人だけ Graphite。旧テーマを選んだ人の設定は残る）と書体の役割
+void TestStartupVariantAndType()
+{
+    CHECK(th::StartupVariant("") == th::Variant::Graphite);              // 初回起動（設定なし）
+    CHECK(th::StartupVariant("garbage") == th::Variant::Graphite);       // 壊れた値
+    CHECK(th::StartupVariant("default") == th::Variant::Default);        // ネオン（旧）を選んだ人
+    CHECK(th::StartupVariant("graphite") == th::Variant::Graphite);
+    CHECK(th::StartupVariant("b") == th::Variant::B && th::StartupVariant("c") == th::Variant::C);
+    // 保存名は ParseVariant で読み戻せる（往復）
+    for (th::Variant v : { th::Variant::Default, th::Variant::B, th::Variant::C, th::Variant::Graphite })
+    {
+        th::Variant back = th::Variant::Default;
+        CHECK(th::ParseVariant(th::VariantPrefName(v), back) && back == v);
+    }
+    // 書体の役割のサイズ: Graphite は 本文 17 / 補助 15 / H2 18 / H1 23 / 等幅 15（GG typography.scale の imguiPx）。旧案は本文 16 / 等幅 14
+    th::SetVariant(th::Variant::Graphite);
+    CHECK(dx12e::ui::type::SizeOf(dx12e::ui::type::Role::Body) == 17.0f && dx12e::ui::type::SizeOf(dx12e::ui::type::Role::BodyBold) == 17.0f);
+    CHECK(dx12e::ui::type::SizeOf(dx12e::ui::type::Role::Caption) == 15.0f);
+    CHECK(dx12e::ui::type::SizeOf(dx12e::ui::type::Role::H2) == 18.0f && dx12e::ui::type::SizeOf(dx12e::ui::type::Role::H1) == 23.0f);
+    CHECK(dx12e::ui::type::SizeOf(dx12e::ui::type::Role::Mono) == 15.0f && dx12e::ui::type::SizeOf(dx12e::ui::type::Role::Numeric) == 15.0f);
+    th::SetVariant(th::Variant::Default);
+    CHECK(dx12e::ui::type::SizeOf(dx12e::ui::type::Role::Body) == 16.0f && dx12e::ui::type::SizeOf(dx12e::ui::type::Role::Mono) == 14.0f);
+    // 数値は必ず等幅の書体（書体のハンドルが空でも同じ分岐: Numeric と Mono は同じ）
+    CHECK(dx12e::ui::type::FontOf(dx12e::ui::type::Role::Numeric) == dx12e::ui::type::FontOf(dx12e::ui::type::Role::Mono));
+}
 } // namespace
 
 int main()
@@ -448,6 +474,7 @@ int main()
     TestNames();
     TestGraphiteShape();
     TestGraphiteValues();
+    TestStartupVariantAndType();
     if (g_fail == 0) std::printf("ThemeVariantTests: all passed\n");
     else std::printf("ThemeVariantTests: %d failure(s)\n", g_fail);
     return g_fail == 0 ? 0 : 1;

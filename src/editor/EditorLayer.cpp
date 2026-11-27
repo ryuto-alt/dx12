@@ -403,10 +403,10 @@ void EditorLayer::Render(bool isPlaying,
         const float barH = (std::min)(ViewportToolbar::HeightPx(*m_ctx), nodeSize.y * 0.5f);
         m_viewportBar->Update(*m_ctx, camera, scene, isPlaying, ImGui::GetIO().DeltaTime);
 
-        // アスペクト: 既定は 16:9 固定（中央ノードに収まる最大の矩形を中央寄せ。余白はバックバッファのクリア色の帯）。
+        // アスペクト: 既定は「フィット」（W1-A14。中央ノードいっぱい。16:9 などを選ぶと、収まる最大の矩形を中央寄せで余白は帯）。
         // エディタ中は帯のメニューで 16:10 / 21:9 / 4:3 / 1:1 / 縦 / フィット を選べる。Play 中は常に 16:9（ゲームの絵と揃える）。
         const int aspIdx = std::clamp(m_ctx->vpPrefs.aspectIndex, 0, vp::kAspectCount - 1);
-        const float aspect = isPlaying ? vp::kAspects[vp::kAspectDefault].ratio : vp::kAspects[aspIdx].ratio;
+        const float aspect = isPlaying ? vp::kAspects[vp::kAspectPlay].ratio : vp::kAspects[aspIdx].ratio;
         const vp::Rect fit = vp::FitAspect(nodePos.x, nodePos.y + barH, nodeSize.x, nodeSize.y - barH, aspect);
         const ImVec2 vpSize(fit.w, fit.h);
 

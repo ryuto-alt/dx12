@@ -115,7 +115,7 @@ test("parseArgs: 既定は strict・--no-strict で緩む・--group/--only/--rep
 
 test("C3: layout:material の UI ゴールデン 4 件（DPI 1.0/1.5 x default/b）が定義され、基準 PNG がある", () => {
   const g = loadGoldenEntries(path.join(REPO_ROOT, "tests/golden"));
-  const mats = g.scenes.filter((s) => s.kind === "ui" && s.layout === "material");
+  const mats = g.scenes.filter((s) => s.kind === "ui" && s.layout === "material" && s.theme !== "graphite");
   assert.equal(mats.length, 4);
   assert.deepEqual(mats.map((s) => `${s.dpi}/${s.theme}`).sort(), ["1.5/b", "1.5/default", "1/b", "1/default"]);
   for (const s of mats) assert.ok(fs.existsSync(path.join(REPO_ROOT, "tests/golden/ui", `${s.name}.png`)), `${s.name}.png`);

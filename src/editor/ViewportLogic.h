@@ -79,7 +79,7 @@ struct AspectPreset
     float       ratio;   // 幅 / 高さ。0 = 領域いっぱい（フィット）
 };
 inline constexpr AspectPreset kAspects[] = {
-    { "16:9",       16.0f / 9.0f },   // 既定（従来の固定と同じ）
+    { "16:9",       16.0f / 9.0f },   // Play 中はこれ固定（kAspectPlay）
     { "16:10",      16.0f / 10.0f },
     { "21:9",       21.0f / 9.0f },
     { "4:3",        4.0f / 3.0f },
@@ -88,7 +88,19 @@ inline constexpr AspectPreset kAspects[] = {
     { "フィット",    0.0f },
 };
 inline constexpr int kAspectCount = static_cast<int>(sizeof(kAspects) / sizeof(kAspects[0]));
-inline constexpr int kAspectDefault = 0;
+inline constexpr int kAspectPlay    = 0;   // Play 中のゲームの絵の比（16:9。ゲームビルドと揃える）
+inline constexpr int kAspectFit     = 6;   // 「フィット」（領域いっぱい）
+inline constexpr int kAspectDefault = kAspectFit;   // エディタの既定（W1-A14。16:9 の黒帯をやめて、ウィンドウに合わせる）
+// 起動時の番号。--viewport-aspect <ラベル> で上書きする（3D ゴールデンの撮影は 16:9 に固定して、表示矩形を従来と同じにする）。
+inline int g_startupAspect = kAspectDefault;
+// "16:9" / "fit" / "フィット" など（ラベルと一致、または fit）。解釈できなければ false（out は変えない）。
+inline bool ParseAspectLabel(const std::string& s, int& out)
+{
+    if (s == "fit" || s == "Fit") { out = kAspectFit; return true; }
+    for (int i = 0; i < kAspectCount; ++i)
+        if (s == kAspects[i].label) { out = i; return true; }
+    return false;
+}
 
 struct Rect
 {

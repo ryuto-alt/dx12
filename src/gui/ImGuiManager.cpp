@@ -28,6 +28,7 @@
 #pragma warning(disable: 4100 4189 4201 4244 4267 4996)
 #include <imgui.h>
 #include <imgui_internal.h>   // g.Windows（別ビューポートの警告に窓名を出す）
+#include <imgui_freetype.h>   // LightHinting（Plex の読み込み。W1-A14）
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
 #pragma warning(pop)
@@ -230,6 +231,7 @@ struct FontSrc
     ImU32       fontNo    = 0;
     float       sizeScale = 1.0f;          // ExtraSizeScale（字の大きさの微調整）
     ImVec2      offset    = ImVec2(0, 0);  // GlyphOffset（縦位置の微調整）
+    bool        lightHint = false;         // FreeType LightHinting（IBM Plex。旧書体は従来どおり付けない＝旧の組のビット一致）
 };
 
 std::string WinFontPath(const char* file)
@@ -263,12 +265,132 @@ ImFont* BuildFont(ImGuiIO& io, float size, const std::vector<FontSrc>& srcs)
         cfg.MergeMode      = (font != nullptr);
         cfg.ExtraSizeScale = s.sizeScale;
         cfg.GlyphOffset    = s.offset;
+        if (s.lightHint) cfg.FontLoaderFlags |= ImGuiFreeTypeLoaderFlags_LightHinting;
         // Windows 標準フォントは ttc の中に複数入っている。名前はデバッグ用。
         std::snprintf(cfg.Name, sizeof(cfg.Name), "%s", std::filesystem::path(s.path).filename().string().c_str());
         ImFont* f = io.Fonts->AddFontFromFileTTF(s.path.c_str(), size, &cfg);
         if (!font) font = f;
     }
     return font;
+}
+
+// ---- IBM Plex の書体一式（W1-A14 / GG-2b）----
+// 置き場: 配布 = exe 隣の assets/editor/fonts/ui/（インストーラ / POST_BUILD がコピー）、開発 = third_party/fonts/<組>/subset/。
+// 元は tools/subset_fonts.py が作るサブセット（名前は「Uno UI …」に付け替え済み。third_party/fonts/README.md）。
+std::string FindUiFontFile(const char* group, const char* file)
+{
+    namespace fs = std::filesystem;
+    std::vector<std::string> cands;
+    {
+        wchar_t exe[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, exe, MAX_PATH))
+            cands.push_back(PathResolver::WideToUtf8((fs::path(exe).parent_path() / L"assets" / L"editor" / L"fonts" / L"ui").wstring())
+                            + "/" + file);
+    }
+    cands.push_back(PathResolver::AssetsDir() + "editor/fonts/ui/" + file);
+    cands.push_back(PathResolver::BaseDir() + "assets/editor/fonts/ui/" + file);
+    cands.push_back(PathResolver::BaseDir() + "third_party/fonts/" + group + "/subset/" + file);
+    for (const auto& c : cands)
+    {
+        std::error_code ec;
+        if (fs::is_regular_file(fs::path(PathResolver::Utf8ToWide(c)), ec)) return c;
+    }
+    return {};
+}
+
+FontSrc PlexSrc(const char* group, const char* file)
+{
+    FontSrc s;
+    s.path      = FindUiFontFile(group, file);
+    s.lightHint = true;
+    return s;
+}
+
+// Plex を読み込んで theme::g_fonts へ渡す。必須（Sans JP / Sans / Mono の Regular と SemiBold）が揃わなければ false（呼び出し側が旧書体へ戻す）。
+//   本文   = Plex Sans（欧文）+ Lucide + Plex Sans JP（和文）+ Noto Sans JP（足りない字）+ Yu Gothic UI + Segoe UI Symbol
+//   太字   = 同じ並びの SemiBold（600）/ 中太 = Medium（500）
+//   等幅   = Plex Mono + Lucide + Plex Sans JP（等幅の欧文の中の和文）+ …
+//   等幅JP = PlemolJP（和欧 1:2。ログ・パス）/ 等幅 Light = Plex Mono Light（大きな数値）
+bool LoadPlexFonts(ImGuiIO& io)
+{
+    using namespace dx12e::theme;
+    const float base = FontBaseOf();
+
+    const char* kPlex = "ibm-plex";
+    const FontSrc sansR = PlexSrc(kPlex, "UnoUISans-Regular.ttf"), sansM = PlexSrc(kPlex, "UnoUISans-Medium.ttf"), sansB = PlexSrc(kPlex, "UnoUISans-SemiBold.ttf");
+    const FontSrc jpR   = PlexSrc(kPlex, "UnoUISansJP-Regular.ttf"), jpM = PlexSrc(kPlex, "UnoUISansJP-Medium.ttf"), jpB = PlexSrc(kPlex, "UnoUISansJP-SemiBold.ttf");
+    const FontSrc monoR = PlexSrc(kPlex, "UnoUIMono-Regular.ttf"), monoL = PlexSrc(kPlex, "UnoUIMono-Light.ttf");
+    const FontSrc monoJP = PlexSrc("plemoljp", "UnoUIMonoJP-Regular.ttf");
+    FontSrc noto = PlexSrc("noto-sans-jp", "NotoSansJP-Regular.ttf");
+    if (noto.path.empty()) noto.path = bundled_font::JapaneseFontPath();   // 開発 / 配布のどちらでも見つかる従来の同梱フォント
+    noto.lightHint = true;
+
+    if (sansR.path.empty() || sansB.path.empty() || jpR.path.empty() || jpB.path.empty() || monoR.path.empty())
+    {
+        Logger::Warn("IBM Plex の書体ファイルが見つかりません。旧書体（Segoe UI + Yu Gothic UI）で続行します"
+                     "（assets/editor/fonts/ui/ か third_party/fonts/ibm-plex/subset/ を確認）");
+        return false;
+    }
+
+    // 足りない字の最後の砦（OS 標準。Plex と Noto に無い字だけがここへ来る）
+    FontSrc yu = FirstExisting({ {WinFontPath("YuGothM.ttc"), 1}, {WinFontPath("YuGothR.ttc"), 1}, {WinFontPath("meiryo.ttc"), 2}, {WinFontPath("msgothic.ttc"), 0} });
+    FontSrc symbol = FirstExisting({ {WinFontPath("seguisym.ttf")} });
+
+    FontSrc lucide = FirstExisting({
+        {PathResolver::BaseDir() + "assets/editor/fonts/lucide.ttf"},
+        {PathResolver::AssetsDir() + "editor/fonts/lucide.ttf"},
+    });
+    lucide.sizeScale = 0.90f;                     // 旧書体と同じ（1em = 本文サイズ × 0.9）
+    lucide.offset    = ImVec2(0.0f, 2.6f);        // 本文のベースラインへ合わせる
+
+    // ★Lucide は和文・記号フォントより【先に】マージする（マージは先勝ち。後ろの書体は私用領域に別のグリフを持つ）。
+    auto stack = [&](FontSrc latin, float latinScale, const FontSrc& jp, bool withJpPlex = true) {
+        std::vector<FontSrc> v;
+        latin.sizeScale = latinScale;
+        v.push_back(latin);
+        if (!lucide.path.empty()) v.push_back(lucide);
+        if (withJpPlex && !jp.path.empty()) v.push_back(jp);
+        if (!noto.path.empty())   v.push_back(noto);
+        if (!yu.path.empty())     v.push_back(yu);
+        if (!symbol.path.empty()) v.push_back(symbol);
+        return v;
+    };
+
+    ImFont* body   = BuildFont(io, base, stack(sansR, 1.0f, jpR));
+    if (!body) return false;
+    ImFont* bold   = BuildFont(io, base, stack(sansB, 1.0f, jpB));
+    ImFont* medium = (!sansM.path.empty() && !jpM.path.empty()) ? BuildFont(io, base, stack(sansM, 1.0f, jpM)) : nullptr;
+    const float monoScale = FontMonoOf() / FontBaseOf();   // 15 / 17（旧案は 14 / 16 = 0.875）。PushFont(mono, 0) は本文サイズを使うので倍率で縮める
+    ImFont* mono   = BuildFont(io, base, stack(monoR, monoScale, jpR));
+    ImFont* monoLt = monoL.path.empty() ? nullptr : BuildFont(io, base, stack(monoL, monoScale, jpR));
+    ImFont* monoJp = nullptr;
+    if (!monoJP.path.empty())
+        monoJp = BuildFont(io, base, stack(monoJP, monoScale, jpR, /*withJpPlex*/ false));
+
+    // ゲーム UI のプレビュー用（出荷したゲームと文字の幅・行高を揃える。従来と同じ）
+    {
+        FontSrc game = FirstExisting({ {bundled_font::JapaneseFontPath()} });
+        if (game.path.empty())
+            game = FirstExisting({ {WinFontPath("YuGothM.ttc"), 0}, {WinFontPath("meiryo.ttc"), 0} });
+        if (!game.path.empty())
+            GameUiDefaultFont() = BuildFont(io, 17.0f, { game });
+    }
+
+    g_fonts.body      = body;
+    g_fonts.bold      = bold   ? bold   : body;
+    g_fonts.mono      = mono   ? mono   : body;
+    g_fonts.medium    = medium ? medium : g_fonts.bold;
+    g_fonts.monoJP    = monoJp ? monoJp : g_fonts.mono;
+    g_fonts.monoLight = monoLt ? monoLt : g_fonts.mono;
+    g_fonts.icons     = !lucide.path.empty();
+    g_plexFonts       = true;
+    io.FontDefault    = body;
+    Logger::Info("UI fonts: IBM Plex（Sans JP / Sans / Mono + PlemolJP, Noto={}, Yu={}, Symbol={}, icons={}）",
+                 noto.path.empty() ? "-" : "ok", yu.path.empty() ? "-" : "ok", symbol.path.empty() ? "-" : "ok",
+                 lucide.path.empty() ? "MISSING" : "lucide");
+    if (lucide.path.empty())
+        Logger::Error("assets/editor/fonts/lucide.ttf が見つかりません。ツールバー/ヒエラルキーのアイコンが '?' になります");
+    return true;
 }
 
 // エディタのフォント一式（本文 / 太字 / 等幅 + Lucide アイコン）を読み込んで theme::g_fonts へ渡す。
@@ -280,6 +402,9 @@ ImFont* BuildFont(ImGuiIO& io, float size, const std::vector<FontSrc>& srcs)
 bool LoadEditorFonts(ImGuiIO& io)
 {
     using namespace dx12e::theme;
+    // W1-A14: 既定は IBM Plex（--ui-font legacy で旧書体を強制。Plex の資産が無いときも旧書体へ戻す）。
+    g_plexFonts = false;
+    if (!g_uiFontLegacy && LoadPlexFonts(io)) return true;
     const float base = size::kFontBase;
 
     const FontSrc latin     = FirstExisting({ {WinFontPath("segoeui.ttf")} });
@@ -346,6 +471,15 @@ bool LoadEditorFonts(ImGuiIO& io)
     if (lucide.path.empty())
         Logger::Error("assets/editor/fonts/lucide.ttf が見つかりません。ツールバー/ヒエラルキーのアイコンが '?' になります");
     return true;
+}
+
+// 書体に合わせた本文サイズと行高（W1-A14）。Plex のときは案ごとの本文サイズ（旧案 16 / Graphite 17）にし、
+// 行高 kRowH を保つよう FramePadding.y を引き直す（16 のとき 3.5 = 従来と同じ。旧書体では何もしない）。
+void ApplyFontMetricsToStyle(ImGuiStyle& style)
+{
+    if (!theme::g_plexFonts) { style.FontSizeBase = theme::size::kFontBase; return; }
+    style.FontSizeBase = theme::FontBaseOf();
+    style.FramePadding.y = (theme::size::kRowH - style.FontSizeBase) * 0.5f;
 }
 
 // 配布ゲーム(GameRuntime)向けの旧スタイル。エディタ専用テーマ（EditorTheme.h）の値を変えても
@@ -620,7 +754,7 @@ void ImGuiManager::Initialize(
         // 値の実体は editor/EditorTheme.h（トークン）。
         ImGui::StyleColorsDark();
         theme::ApplyStyle(style);
-        style.FontSizeBase = theme::size::kFontBase;
+        ApplyFontMetricsToStyle(style);
         g_editorStyle = true;
         // 基準スタイル（100% 相当）を保持。倍率が変わるたびにここから作り直す（累積しない）。
         theme::BaseStyle() = style;
@@ -796,6 +930,7 @@ void ImGuiManager::BeginFrame()
         {
             theme::SetVariant(v);
             theme::ApplyStyle(theme::BaseStyle());   // 100% の基準スタイルを作り直し、下で現在の倍率へ展開し直す
+            ApplyFontMetricsToStyle(theme::BaseStyle());   // 本文サイズ（Plex は案ごと）と行高の FramePadding
             g_appliedScale = 0.0f;
             Logger::Info("テーマ案を切り替え: {}", theme::VariantName(v));
             SyncTitleBarTheme(g_mainHwnd);

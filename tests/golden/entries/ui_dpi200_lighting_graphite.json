@@ -1,0 +1,29 @@
+{
+  "name": "ui_dpi200_lighting_graphite",
+  "kind": "ui",
+  "dpi": 2,
+  "theme": "graphite",
+  "layout": "lighting",
+  "masks": [
+    [
+      0.178,
+      0.095,
+      0.806,
+      0.652
+    ],
+    [
+      0.76,
+      0.972,
+      1,
+      1
+    ],
+    [
+      0.808,
+      0.908,
+      0.985,
+      0.96
+    ]
+  ],
+  "maskNote": "3D ビューポート（ノイズが ±1 LSB 揺れる。W1-A14: 既定がフィットになったので領域いっぱい。x 0.18〜0.80・下端 0.652）/ 右下の FPS 表示 / 右下のトースト",
+  "note": "Graphite Gauge（W1-A14）。lighting ワークスペース・DPI 200%（IBM Plex）"
+}

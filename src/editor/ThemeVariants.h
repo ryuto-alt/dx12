@@ -60,7 +60,7 @@ inline const char* VariantName(Variant v)
     case Variant::B: return "B: グラス・レイヤー";
     case Variant::C: return "C: インク・アンド・シグナル";
     case Variant::Graphite: return "Graphite Gauge";
-    default:         return "既定: ネオン・エッジ";
+    default:         return "ネオン（旧）";
     }
 }
 
@@ -82,6 +82,28 @@ inline bool ParseVariant(const std::string& s, Variant& out)
     if (s == "default" || s == "Default" || s == "classic") { out = Variant::Default; return true; }
     if (s == "graphite" || s == "Graphite") { out = Variant::Graphite; return true; }
     return false;
+}
+
+// ---- 既定テーマの選び方（W1-A14）----
+// EditorPrefs の "ui.themeVariant" に保存する名前（ParseVariant が読める綴り）。ユーザーが選んだときだけ書く。
+inline constexpr const char* kThemePrefKey = "ui.themeVariant";
+inline const char* VariantPrefName(Variant v)
+{
+    switch (v)
+    {
+    case Variant::B:        return "b";
+    case Variant::C:        return "c";
+    case Variant::Graphite: return "graphite";
+    default:                return "default";
+    }
+}
+// 起動時に使うテーマ。保存済みの設定（空 = 未設定）が解釈できればそれ、無ければ（初回起動・壊れた値）Graphite Gauge。
+// 旧テーマ（ネオン）を選んだ人の設定は "default" として残っているので上書きしない。
+inline Variant StartupVariant(const std::string& saved)
+{
+    Variant v = Variant::Graphite;
+    if (!saved.empty() && ParseVariant(saved, v)) return v;
+    return Variant::Graphite;
 }
 
 // ---- 色トークン一式（案ごとに 1 つ）----

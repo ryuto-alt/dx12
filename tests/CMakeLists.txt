@@ -614,6 +614,11 @@ add_test(NAME InstallerRcDedupCheck
     COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${DX12_REPO_ROOT} -P ${CMAKE_CURRENT_SOURCE_DIR}/installer_rc_dedup_check.cmake)
 set_tests_properties(InstallerRcDedupCheck PROPERTIES TIMEOUT 30)
 
+# W1-A14: UI 書体のサブセットがインストーラ・配布 zip・POST_BUILD に入っていること。
+add_test(NAME InstallerFontsCheck
+    COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${DX12_REPO_ROOT} -P ${CMAKE_CURRENT_SOURCE_DIR}/installer_fonts_check.cmake)
+set_tests_properties(InstallerFontsCheck PROPERTIES TIMEOUT 30)
+
 # --- 計器のクロム（W1-A7 / GG-4）。主尺・キャリパーの幾何、ステータスバーの純ロジック、黄の呼び出し箇所の固定。GPU 不要 ---
 if(TARGET Gui)
     add_executable(EditorChromeTests editor_chrome_test.cpp)
