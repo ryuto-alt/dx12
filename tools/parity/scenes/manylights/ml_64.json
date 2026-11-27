@@ -1436,9 +1436,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     -7.166,
-     4.45,
-     -0.385
+     -5.821,
+     3.243,
+     -0.47
     ],
     "components": {
      "pointLight": {
@@ -1459,32 +1459,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     -6.037,
-     1.291,
-     2.135
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.78,
-       0.45
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
-    "name": "LGT_Court_011",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
-     -7.263,
-     1.845,
-     6.411
+     -5.942,
+     4.695,
+     3.662
     ],
     "components": {
      "pointLight": {
@@ -1500,14 +1477,14 @@
     }
    },
    {
-    "name": "LGT_Court_012",
+    "name": "LGT_Court_011",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
-     -6.796,
-     1.197,
-     8.975
+     -7.214,
+     4.774,
+     6.069
     ],
     "components": {
      "pointLight": {
@@ -1523,14 +1500,14 @@
     }
    },
    {
-    "name": "LGT_Court_013",
+    "name": "LGT_Court_012",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
-     -4.117,
+     -7.26,
      4.658,
-     -9.003
+     9.854
     ],
     "components": {
      "pointLight": {
@@ -1546,14 +1523,14 @@
     }
    },
    {
-    "name": "LGT_Court_014",
+    "name": "LGT_Court_013",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
      -3.921,
      1.248,
-     -6.522
+     -9.665
     ],
     "components": {
      "pointLight": {
@@ -1569,14 +1546,37 @@
     }
    },
    {
-    "name": "LGT_Court_015",
+    "name": "LGT_Court_014",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
      -3.216,
      2.584,
-     -2.818
+     -5.961
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_015",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.547,
+     3.784,
+     -2.155
     ],
     "components": {
      "pointLight": {
@@ -1597,9 +1597,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     -3.547,
-     3.784,
-     0.988
+     -3.443,
+     2.672,
+     0.562
     ],
     "components": {
      "pointLight": {
@@ -1607,8 +1607,8 @@
       "range": 6.0,
       "color": [
        1.0,
-       0.78,
-       0.45
+       0.88,
+       0.72
       ],
       "castShadows": false
      }
@@ -1620,9 +1620,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     -3.443,
-     2.672,
-     3.705
+     -3.033,
+     3.927,
+     4.197
     ],
     "components": {
      "pointLight": {
@@ -1643,18 +1643,18 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     -3.033,
-     3.927,
-     7.34
+     -3.159,
+     2.974,
+     7.332
     ],
     "components": {
      "pointLight": {
       "intensity": 7.0,
       "range": 6.0,
       "color": [
-       1.0,
-       0.88,
-       0.72
+       0.45,
+       0.65,
+       1.0
       ],
       "castShadows": false
      }
@@ -1666,9 +1666,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     -3.57,
-     1.113,
-     9.154
+     -2.44,
+     4.684,
+     10.252
     ],
     "components": {
      "pointLight": {
@@ -1689,18 +1689,18 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     0.851,
-     4.412,
-     -10.123
+     -0.897,
+     2.983,
+     -10.202
     ],
     "components": {
      "pointLight": {
       "intensity": 7.0,
       "range": 6.0,
       "color": [
-       0.45,
-       0.65,
-       1.0
+       1.0,
+       0.88,
+       0.72
       ],
       "castShadows": false
      }
@@ -1712,9 +1712,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     0.703,
-     4.684,
-     -5.462
+     0.677,
+     4.3,
+     -6.097
     ],
     "components": {
      "pointLight": {
@@ -1722,8 +1722,8 @@
       "range": 6.0,
       "color": [
        1.0,
-       0.88,
-       0.72
+       0.78,
+       0.45
       ],
       "castShadows": false
      }
@@ -1735,9 +1735,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     -0.897,
-     2.983,
-     -3.916
+     -0.503,
+     4.155,
+     -3.631
     ],
     "components": {
      "pointLight": {
@@ -1745,8 +1745,8 @@
       "range": 6.0,
       "color": [
        1.0,
-       0.88,
-       0.72
+       0.78,
+       0.45
       ],
       "castShadows": false
      }
@@ -1758,55 +1758,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     0.677,
-     4.3,
-     0.188
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.78,
-       0.45
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
-    "name": "LGT_Court_024",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
-     -0.503,
-     4.155,
-     2.655
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.78,
-       0.45
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
-    "name": "LGT_Court_025",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
      0.862,
      3.761,
-     6.873
+     0.587
     ],
     "components": {
      "pointLight": {
@@ -1822,14 +1776,14 @@
     }
    },
    {
-    "name": "LGT_Court_026",
+    "name": "LGT_Court_024",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
      1.078,
      3.429,
-     9.557
+     3.271
     ],
     "components": {
      "pointLight": {
@@ -1845,14 +1799,60 @@
     }
    },
    {
+    "name": "LGT_Court_025",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.037,
+     1.699,
+     6.133
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_026",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.055,
+     3.167,
+     8.793
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
     "name": "LGT_Court_027",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
-     3.18,
-     1.699,
-     -9.581
+     2.342,
+     1.561,
+     -10.2
     ],
     "components": {
      "pointLight": {
@@ -1873,9 +1873,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     3.198,
-     3.167,
-     -6.921
+     3.787,
+     2.757,
+     -6.375
     ],
     "components": {
      "pointLight": {
@@ -1896,55 +1896,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     2.342,
-     1.561,
-     -3.914
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.62,
-       0.3
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
-    "name": "LGT_Court_030",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
-     3.787,
-     2.757,
-     -0.089
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.78,
-       0.45
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
-    "name": "LGT_Court_031",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
      3.686,
      3.532,
-     4.065
+     -2.221
     ],
     "components": {
      "pointLight": {
@@ -1960,14 +1914,14 @@
     }
    },
    {
-    "name": "LGT_Court_032",
+    "name": "LGT_Court_030",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
      3.615,
      4.083,
-     6.723
+     0.437
     ],
     "components": {
      "pointLight": {
@@ -1977,6 +1931,52 @@
        1.0,
        0.62,
        0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_031",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.602,
+     1.138,
+     2.357
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_032",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.971,
+     2.823,
+     6.127
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.78,
+       0.45
       ],
       "castShadows": false
      }
@@ -1988,9 +1988,32 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     3.602,
-     1.138,
-     8.643
+     4.203,
+     2.05,
+     10.01
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_034",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.073,
+     4.335,
+     -10.435
     ],
     "components": {
      "pointLight": {
@@ -2006,37 +2029,14 @@
     }
    },
    {
-    "name": "LGT_Court_034",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
-     6.114,
-     2.823,
-     -9.587
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.78,
-       0.45
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
     "name": "LGT_Court_035",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
-     7.346,
-     2.05,
-     -5.704
+     6.077,
+     4.586,
+     -5.933
     ],
     "components": {
      "pointLight": {
@@ -2044,8 +2044,8 @@
       "range": 6.0,
       "color": [
        1.0,
-       0.78,
-       0.45
+       0.62,
+       0.3
       ],
       "castShadows": false
      }
@@ -2057,9 +2057,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     6.073,
-     4.335,
-     -4.149
+     5.865,
+     2.902,
+     -2.326
     ],
     "components": {
      "pointLight": {
@@ -2080,9 +2080,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     6.653,
-     4.71,
-     -0.57
+     5.314,
+     4.091,
+     0.631
     ],
     "components": {
      "pointLight": {
@@ -2103,9 +2103,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     7.077,
-     3.694,
-     2.853
+     6.403,
+     1.542,
+     3.321
     ],
     "components": {
      "pointLight": {
@@ -2126,9 +2126,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     5.865,
-     2.902,
-     7.102
+     5.432,
+     1.059,
+     6.669
     ],
     "components": {
      "pointLight": {
@@ -2136,8 +2136,8 @@
       "range": 6.0,
       "color": [
        1.0,
-       0.62,
-       0.3
+       0.78,
+       0.45
       ],
       "castShadows": false
      }
@@ -2149,9 +2149,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     5.314,
-     4.091,
-     10.059
+     6.04,
+     3.249,
+     9.514
     ],
     "components": {
      "pointLight": {
@@ -2172,18 +2172,18 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     9.546,
-     1.542,
-     -9.25
+     9.676,
+     1.857,
+     -10.249
     ],
     "components": {
      "pointLight": {
       "intensity": 7.0,
       "range": 6.0,
       "color": [
-       1.0,
-       0.62,
-       0.3
+       0.45,
+       0.65,
+       1.0
       ],
       "castShadows": false
      }
@@ -2195,9 +2195,9 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     8.575,
-     1.059,
-     -5.902
+     10.411,
+     1.354,
+     -5.199
     ],
     "components": {
      "pointLight": {
@@ -2218,9 +2218,78 @@
     "light": "point",
     "group": "LGT",
     "at": [
-     9.183,
-     3.249,
-     -3.058
+     9.544,
+     3.335,
+     -2.886
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_044",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.108,
+     3.353,
+     -1.006
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_045",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.122,
+     3.402,
+     2.569
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 7.0,
+      "range": 6.0,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_046",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.748,
+     3.284,
+     6.22
     ],
     "components": {
      "pointLight": {
@@ -2236,83 +2305,14 @@
     }
    },
    {
-    "name": "LGT_Court_044",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
-     9.676,
-     1.857,
-     -0.82
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       0.45,
-       0.65,
-       1.0
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
-    "name": "LGT_Court_045",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
-     10.411,
-     1.354,
-     4.23
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.78,
-       0.45
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
-    "name": "LGT_Court_046",
-    "kind": "light",
-    "light": "point",
-    "group": "LGT",
-    "at": [
-     9.544,
-     3.335,
-     6.542
-    ],
-    "components": {
-     "pointLight": {
-      "intensity": 7.0,
-      "range": 6.0,
-      "color": [
-       1.0,
-       0.78,
-       0.45
-      ],
-      "castShadows": false
-     }
-    }
-   },
-   {
     "name": "LGT_Court_047",
     "kind": "light",
     "light": "point",
     "group": "LGT",
     "at": [
-     10.108,
-     3.353,
-     8.422
+     8.764,
+     3.281,
+     9.213
     ],
     "components": {
      "pointLight": {
@@ -2320,8 +2320,8 @@
       "range": 6.0,
       "color": [
        1.0,
-       0.78,
-       0.45
+       0.88,
+       0.72
       ],
       "castShadows": false
      }

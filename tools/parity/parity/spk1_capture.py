@@ -73,6 +73,12 @@ def main(argv: list[str] | None = None) -> int:
             files.update({f"raster_{k}": v.get("file") for k, v in ce["configs"].items()})
             row = {}
             pt_ev = None
+            # PT が無い(--no-pt・撮影失敗)ときは、PT の露出の代わりにラスタ自身の露出を使う(PNG は必ず出す)
+            if not files.get("pt") or not Path(files["pt"]).exists():
+                for key, f in files.items():
+                    if f and Path(f).exists():
+                        pt_ev = GE._display_ev(np.asarray(load_image(f, "linear").rgb, dtype=np.float32), {})
+                        break
             for key, f in files.items():
                 if not f or not Path(f).exists():
                     continue

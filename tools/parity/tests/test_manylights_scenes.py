@@ -49,9 +49,18 @@ def test_cameras_inside_and_regions_resolve():
             assert set(r["entities"]) <= names
 
 
-def test_generator_is_deterministic(tmp_path):
+def test_lights_clear_of_occluders():
+    """全灯が遮蔽物(箱・球の AABB)の外で、表面から 0.3m 以上離れている(中に閉じた灯・壁際の灯は基準線と PT をずらす)。"""
     import manylights_scenes as M
-    M.main.__globals__["sys"].argv = ["x", "--out", str(tmp_path)]
+    occ = M.occluders()
+    for s in GS.discover_scenes(DIR):
+        for e in _points(s):
+            assert M.blocked(e["at"], occ) is None, (s.id, e["name"], M.blocked(e["at"], occ))
+
+
+def test_generator_is_deterministic(tmp_path, monkeypatch):
+    import manylights_scenes as M
+    monkeypatch.setattr(sys, "argv", ["x", "--out", str(tmp_path)])
     M.main()
     for f in ("ml_64.json", "ml_256.json"):
         assert (tmp_path / f).read_text(encoding="utf-8") == (DIR / f).read_text(encoding="utf-8")

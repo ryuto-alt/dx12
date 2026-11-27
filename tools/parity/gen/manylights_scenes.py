@@ -95,6 +95,31 @@ def geometry() -> list[dict]:
     return e
 
 
+CLEARANCE = 0.3  # 灯と遮蔽物(箱・球)の表面との最小距離(m)
+
+
+def occluders() -> list[tuple[str, list[float], list[float]]]:
+    """geometry() の箱・球を (名前, 最小角, 最大角) の AABB にしたもの(球は外接箱)。灯の置き場の検査用。"""
+    out = []
+    for e in geometry():
+        if e["kind"] == "box":
+            half = [v / 2 for v in e["size"]]
+        elif e["kind"] == "sphere":
+            half = [e["size"] / 2] * 3
+        else:
+            continue
+        out.append((e["name"], [a - h for a, h in zip(e["at"], half)], [a + h for a, h in zip(e["at"], half)]))
+    return out
+
+
+def blocked(pos: list[float], occ, margin: float = CLEARANCE) -> str | None:
+    """pos が遮蔽物の AABB(margin だけ広げる)に入っていればその名前。球は外接箱で見る(やや厳しめ)。"""
+    for name, lo, hi in occ:
+        if all(l - margin < p < h + margin for p, l, h in zip(pos, lo, hi)):
+            return name
+    return None
+
+
 def lights(n: int, intensity: float, rng_court: float, rng_corr: float) -> list[dict]:
     """回廊 n/4 灯(2 列・等間隔)+ 中庭 3n/4 灯(層化した格子 + ジッタ)。固定シード。"""
     rnd = random.Random(SEED)
@@ -114,10 +139,25 @@ def lights(n: int, intensity: float, rng_court: float, rng_corr: float) -> list[
     rnd.shuffle(cells)
     cells = sorted(cells[:n_court])
     span = 2 * (COURT_HALF - 1.0)
+    occ = occluders()
     for k, (i, j) in enumerate(cells):
-        x = -COURT_HALF + 1.0 + (i + 0.15 + 0.7 * rnd.random()) * span / g
-        z = -COURT_HALF + 1.0 + (j + 0.15 + 0.7 * rnd.random()) * span / g
-        y = 1.0 + 3.8 * rnd.random()
+        # 遮蔽物の中・表面から CLEARANCE 以内に入ったら同じセルの中で引き直す
+        for _ in range(200):
+            x = -COURT_HALF + 1.0 + (i + 0.15 + 0.7 * rnd.random()) * span / g
+            z = -COURT_HALF + 1.0 + (j + 0.15 + 0.7 * rnd.random()) * span / g
+            y = 1.0 + 3.8 * rnd.random()
+            if blocked([round(x, 3), round(y, 3), round(z, 3)], occ) is None:
+                break
+        else:
+            # セルが遮蔽物でほぼ埋まっている(256 灯では柱 + 余白がセルより大きい): 中庭の全域から引く
+            for _ in range(2000):
+                x = -COURT_HALF + 1.0 + rnd.random() * span
+                z = -COURT_HALF + 1.0 + rnd.random() * span
+                y = 1.0 + 3.8 * rnd.random()
+                if blocked([round(x, 3), round(y, 3), round(z, 3)], occ) is None:
+                    break
+            else:
+                raise RuntimeError(f"セル ({i},{j}) の灯の置き場が無い")
         col = COURT_PALETTE[rnd.randrange(len(COURT_PALETTE))]
         out.append(point(f"LGT_Court_{k:03d}", [round(x, 3), round(y, 3), round(z, 3)], intensity, rng_court, col, cast=False))
     assert len(out) == n, (len(out), n)
