@@ -30,9 +30,13 @@ struct SceneLookProfile
     // 空・IBL の強さ（SkyboxSettings）。環境光の主役は IBL なので、夜は桁で落とす。
     f32  skyboxIntensity;
     f32  iblIntensity;
-    // 露出補正[EV]。露出モード 1（手動 EV）/ 2（自動）のときだけ効く。
-    //   モード 0（従来）では LightingPreset の exposure 乗算を使う（C8 の規則: Epic は自動露出、それ以外は手動 EV）。
+    // 露出補正[EV]。露出モード 2（自動露出）のときだけ使う（太陽・空・IBL の暗さに自動露出が追従して持ち上げるので、
+    //   負の補正でルックの暗さを保つ）。
     f32  evComp;
+    // 手動 EV（露出モード 1）用の補正[EV]。太陽・IBL・空はプリセットで既に暗いので、ここは
+    //   モード 0 の exposure 乗算の log2（night 0.90 → -0.15 など）と同じ小さな値にして、二重に暗くしない。
+    //   モード 0（従来）では LightingPreset の exposure 乗算を使う。
+    f32  evManual;
     // フォグ（froxel ボリュメトリック）。fogOn=false はスイッチを切るだけ（他の値は触らない）。
     bool fogOn;
     f32  fogDensity;
@@ -44,13 +48,13 @@ struct SceneLookProfile
 
 // ライティング・プリセットごとのルック（LightingPreset と同じ並び・同じ id）。
 inline const SceneLookProfile kLightingLooks[] = {
-    // id       時刻   空     IBL    EV     fog    濃さ    g     高減衰  albedo               ambient
-    {"day",     12.0f, 1.00f, 1.00f,  0.0f, false, 0.020f, 0.30f, 0.10f, {1.00f, 1.00f, 1.00f}, {0.20f, 0.24f, 0.32f}},
-    {"dusk",    17.5f, 1.00f, 0.90f, -0.5f, true,  0.008f, 0.55f, 0.08f, {1.00f, 0.82f, 0.66f}, {0.22f, 0.16f, 0.14f}},
-    {"night",    1.0f, 0.25f, 0.15f, -2.0f, true,  0.012f, 0.25f, 0.12f, {0.62f, 0.72f, 1.00f}, {0.03f, 0.04f, 0.07f}},
-    {"indoor",  -1.0f, 0.60f, 0.50f,  0.0f, false, 0.020f, 0.30f, 0.10f, {1.00f, 0.92f, 0.80f}, {0.20f, 0.17f, 0.14f}},
-    {"horror",  -1.0f, 0.08f, 0.06f, -2.5f, true,  0.050f, 0.20f, 0.25f, {0.55f, 0.62f, 0.70f}, {0.010f, 0.015f, 0.025f}},
-    {"studio",  -1.0f, 0.60f, 1.00f,  0.0f, false, 0.020f, 0.30f, 0.10f, {1.00f, 1.00f, 1.00f}, {0.20f, 0.24f, 0.32f}},
+    // id       時刻   空     IBL    EV(自動) EV(手動) fog    濃さ    g     高減衰  albedo               ambient
+    {"day",     12.0f, 1.00f, 1.00f,  0.0f, 0.0f, false, 0.020f, 0.30f, 0.10f, {1.00f, 1.00f, 1.00f}, {0.20f, 0.24f, 0.32f}},
+    {"dusk",    17.5f, 1.00f, 0.90f, -0.5f, 0.0704f, true,  0.008f, 0.55f, 0.08f, {1.00f, 0.82f, 0.66f}, {0.22f, 0.16f, 0.14f}},
+    {"night",    1.0f, 0.25f, 0.15f, -2.0f, -0.152f, true,  0.012f, 0.25f, 0.12f, {0.62f, 0.72f, 1.00f}, {0.03f, 0.04f, 0.07f}},
+    {"indoor",  -1.0f, 0.60f, 0.50f,  0.0f, 0.0f, false, 0.020f, 0.30f, 0.10f, {1.00f, 0.92f, 0.80f}, {0.20f, 0.17f, 0.14f}},
+    {"horror",  -1.0f, 0.08f, 0.06f, -2.5f, -0.322f, true,  0.050f, 0.20f, 0.25f, {0.55f, 0.62f, 0.70f}, {0.010f, 0.015f, 0.025f}},
+    {"studio",  -1.0f, 0.60f, 1.00f,  0.0f, 0.0f, false, 0.020f, 0.30f, 0.10f, {1.00f, 1.00f, 1.00f}, {0.20f, 0.24f, 0.32f}},
 };
 
 inline constexpr int kLightingLookCount =
@@ -93,7 +97,7 @@ inline void RestoreSceneLookPack(Scene& s, const SceneLookPack& k)
 
 // プリセットのルックを base に当てた結果を返す（base は書き換えない）。
 //   post の露出以外（ブルーム等）は LightingPreset 側（ApplyLightingPresetToPost）が決めるので、ここでは
-//   露出モード 1/2 の evComp だけを書く。
+//   露出モード 1（手動 EV）は evManual、2（自動）は evComp だけを書く。
 inline SceneLookPack ApplySceneLook(const SceneLookProfile& look, const SceneLookPack& base)
 {
     SceneLookPack out = base;
@@ -104,12 +108,17 @@ inline SceneLookPack ApplySceneLook(const SceneLookProfile& look, const SceneLoo
     if (out.atmo.enabled)
     {
         if (look.timeOfDay >= 0.0f)
+        {
             out.atmo.timeOfDay = look.timeOfDay;
+            out.atmo.sunMode   = 0;   // 直前に向き指定のプリセットが sunMode=1 にしていても戻す（適用順に依らない）
+        }
         else
             out.atmo.sunMode = 1;   // 向きを直接指定するプリセット: 時刻で太陽が動かないようにする（set_sun の方位指定と同じ）
     }
 
-    if (out.post.exposureMode >= 1)
+    if (out.post.exposureMode == 1)
+        out.post.evComp = look.evManual;
+    else if (out.post.exposureMode == 2)
         out.post.evComp = look.evComp;
 
     out.fog.enabled = look.fogOn;
@@ -124,7 +133,7 @@ inline SceneLookPack ApplySceneLook(const SceneLookProfile& look, const SceneLoo
     return out;
 }
 
-// LightingPresets.h が前方宣言で宣言した関数の本体（このヘッダを include した TU でだけ使える）。
+// プリセット id からルックを引く（未知なら先頭=昼）。
 inline const SceneLookProfile& LightingPresetLook(const char* presetId)
 {
     const SceneLookProfile* p = FindSceneLook(presetId);

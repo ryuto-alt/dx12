@@ -23,7 +23,6 @@ namespace dx12e
 // W1-C10: 空・IBL・露出補正・フォグの値は scene/SceneLookProfile.h の表（kLightingLooks。id は同じ）に置く。
 // ここは前方宣言だけ（このヘッダは ApplicationInternal.h 経由で 48 TU が読むので、Scene.h を引き込まない）。
 // 適用する側（MCP の apply_lighting_preset とライティング窓）が SceneLookProfile.h を include して使う。
-struct SceneLookProfile;
 
 struct LightingPreset
 {
@@ -113,7 +112,7 @@ inline PostProcessSettings ApplyLightingPresetToPost(const LightingPreset& p,
 {
     PostProcessSettings out = base;
     // 露出: モード 0（従来）だけ乗算の値を使う。モード 1/2（手動 EV / 自動）では乗算を二重に掛けず、
-    // 露出補正 evComp を SceneLookProfile 側（ApplySceneLook）が決める。
+    // 露出補正を SceneLookProfile 側（ApplySceneLook）が決める。
     if (base.exposureMode == 0)
     {
         out.exposureOn = p.exposureOn;

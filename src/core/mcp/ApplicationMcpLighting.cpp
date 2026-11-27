@@ -298,7 +298,8 @@ void Application::RegisterMcpLightingMethods()
                 {"note", sun == entt::null
                     ? "平行光(太陽)が無いのでポスト・空/IBL・フォグだけ適用した。dx12_create_entity(type:\"light_directional\") で作れる"
                     : "太陽 + ポスト + 空/IBL の強さ + フォグ(+ 物理大気なら時刻)をまとめて適用した(冪等・Undo 1 回)。"
-                      "露出は露出モード 0 なら乗算、1/2(手動 EV / 自動)なら露出補正 evComp。"
+                      "露出は露出モード 0 なら乗算、1(手動 EV)なら乗算と同じ小さな補正、2(自動)なら大きな負の補正 evComp。"
+                      "物理大気 ON で向き指定のプリセット(室内/ホラー/スタジオ)は sunMode=1 になり、driveSun が ON だと直射光は大気の昼の値になる。"
                       "細部は dx12_set_sun / dx12_set_post_process / dx12_set_volumetric_fog で詰める"}};
         });
 
