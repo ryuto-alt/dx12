@@ -628,6 +628,27 @@ if(TARGET Gui)
     set_tests_properties(EditorChromeTests PROPERTIES TIMEOUT 60)
 endif()
 
+# --- アイコンの種別表と GG の製図ペンのアイコン（W1-A6 / RM-A4）。GPU 不要 ---
+if(TARGET Gui AND TARGET Scene)
+    add_executable(IconTableTests icon_table_test.cpp ../src/editor/IconTable.cpp)
+    target_link_libraries(IconTableTests PRIVATE Gui Scene)
+    target_include_directories(IconTableTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(IconTableTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(IconTableTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(IconTableTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME IconTableTests COMMAND IconTableTests)
+    set_tests_properties(IconTableTests PROPERTIES TIMEOUT 60)
+endif()
+
+# GG アイコンの生成物（.json / GgIcons.gen.h）が gg_icons.txt と食い違っていないこと。python が無い環境では飛ばす。
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME GgIconsGenCheck COMMAND ${Python3_EXECUTABLE} ${DX12_REPO_ROOT}/tools/theme/gen_gg_icons.py --check)
+    set_tests_properties(GgIconsGenCheck PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。

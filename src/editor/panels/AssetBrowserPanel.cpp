@@ -1,6 +1,7 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/UiWidgets.h"
 #include "editor/TextFit.h"
+#include "editor/IconTable.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/EditorContext.h"
@@ -161,49 +162,9 @@ using abl::Kind;
 
 // ============================================================ 種別の色 / グリフ（テーマのトークンだけを引く）
 
-static ImVec4 KindColor(Kind k)
-{
-    switch (k)
-    {
-    case Kind::Folder:        return th::TypeFolder;
-    case Kind::Model:         return th::TypeCamera;    // 青
-    case Kind::Texture:       return th::TypePhysics;   // 緑
-    case Kind::Scene:         return th::TypeScene;     // 橙
-    case Kind::Script:        return th::TypeScript;    // 紫
-    case Kind::Audio:         return th::TypeAudio;     // ティール
-    case Kind::Prefab:        return th::TypePrefab;
-    case Kind::Shader:        return th::TypeScript;    // コード系はスクリプトと同じ紫
-    case Kind::Material:      return th::TypeLight;     // 琥珀
-    case Kind::UiAnim:        return th::TypeUi;        // アニメ系はマゼンタ寄りで統一
-    case Kind::SpriteSheet:   return th::TypeUi;
-    case Kind::MaterialGraph: return th::TypeLight;
-    case Kind::Sequence:      return th::TypeUi;        // アニメ系（UI アニメと同じ）
-    case Kind::Vfx:           return th::TypeFolder;    // 無彩色（GG: kind.vfx は作らない。ライトと混ぜない）
-    default:                  return th::TypeEmpty;
-    }
-}
-
-static const char* KindGlyph(Kind k)
-{
-    switch (k)
-    {
-    case Kind::Folder:        return ICON_FOLDER;
-    case Kind::Model:         return ICON_T_MESH;
-    case Kind::Texture:       return ICON_IMAGE;
-    case Kind::Scene:         return ICON_FILM;
-    case Kind::Script:        return ICON_FILE_CODE;
-    case Kind::Audio:         return ICON_MUSIC;
-    case Kind::Prefab:        return ICON_PACKAGE;
-    case Kind::Shader:        return ICON_T_SHADER;
-    case Kind::Material:      return ICON_T_MATERIAL;
-    case Kind::UiAnim:        return ICON_T_ANIM;
-    case Kind::SpriteSheet:   return ICON_T_GRID;
-    case Kind::MaterialGraph: return ICON_T_SPLINE;   // .dxmg（ノードのつながり）
-    case Kind::Sequence:      return ICON_T_SEQUENCE; // .dxseq（カチンコ。Post Process の layers と別の絵）
-    case Kind::Vfx:           return ICON_T_PARTICLE; // .uvfx
-    default:                  return ICON_FILE;
-    }
-}
+// 表の実体は editor/IconTable.h（ForAsset）。ここは従来の関数名のまま薄く包む。
+static ImVec4 KindColor(Kind k) { return *icons::ForAsset(k).tint; }
+static const char* KindGlyph(Kind k) { return icons::ForAsset(k).glyph; }
 
 const char* AssetBrowserPanel::KindIcon(Kind k) { return KindGlyph(k); }
 u32 AssetBrowserPanel::KindTintU32(Kind k) { return ImGui::GetColorU32(KindColor(k)); }
