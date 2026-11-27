@@ -50,6 +50,8 @@ public:
 // Graphite Gauge の起動音 Calibrate（W1-BD5）。音が主時計: 絵の時刻はここの再生位置から取る（TimelineMs）。
 // ミキシングは core/SplashSequencer.h（純ロジック）。出力は WASAPI 共有モード（イベント駆動・IAudioClock）、開けなければ waveOut へ縮退。
 // 別のストリームは開かない（ワンショットのボイスは同じバッファに混ぜる）。素材はエディタの exe の RCDATA（UNO_CALIBRATE_*）。
+// 仕様との差: EXEC の「Mixer に one-shot のボイスを足す」は、SplashMixer を広げず CalibrateSequencer が 1 本のバッファへ混ぜる形にした（パンには Haas 遅延つき）。
+// 縮退: 音の時計が QPC に落ちたら音は止める（絵とずれるため）。音のスレッドは 60 秒で止まるので、それ以降に遅い経路で準備完了になると LockTail は鳴らない。
 // 鳴らさない条件（SoundGate）なら何もせず、デバイスも開かない。全 API は未開始・多重呼び出しに安全で、呼び出しスレッドは問わない。
 class CalibrateSound
 {

@@ -460,11 +460,16 @@ DWORD WINAPI SplashThread(LPVOID)
     sp::TimelineClock gClock;               // 絵の時計。音が動いていれば音の時計（音が主）、無い・止まったときは QPC
     bool gAudioExpected = false;            // 起動音を始める（デバイスを開きに行く）予定
     bool gAudioStarted = false;
+    double gAudioStartWall = -1.0;          // Start を呼んだ時刻（デバイスを開くのに掛かった時間の診断用）
+    bool gAudioOpenLogged = false;
     auto startGaugeSound = [&]() {
         if (!gauge || gAudioStarted) return;
+        if (!gAudioExpected) { gAudioStarted = true; return; }
+        if (g.soundStopped.load()) { gAudioExpected = false; return; }      // Start が abortReq を戻す前に StopSound が来ていたら鳴らさない
         gAudioStarted = true;
-        if (!gAudioExpected) return;
         gAudioExpected = CalibrateSound::Start(g.soundGate, gReduce);
+        if (g.soundStopped.load()) CalibrateSound::Abort();                // Start の最中に来た StopSound は Start に消されないよう再度伝える
+        gAudioStartWall = CalibrateSound::QpcMs();
     };
     bool gThrough = false;
     bool gMainLocked = false;   // 完了要求を観測し、かつロックの絵に達した（本体を出す・窓を入力透過にする条件）
@@ -517,10 +522,26 @@ DWORD WINAPI SplashThread(LPVOID)
         if (gAudioExpected && gAudioStarted)
         {
             double a = 0.0;
-            if (CalibrateSound::TimelineMs(wallMs, &a)) audioMs = a;
+            if (CalibrateSound::TimelineMs(wallMs, &a))
+            {
+                audioMs = a;
+                if (!gAudioOpenLogged && gAudioStartWall >= 0.0)
+                {
+                    gAudioOpenLogged = true;
+                    SplashDiag("起動音(Calibrate): 音の時計が動くまで " + std::to_string(static_cast<int>(wallMs - gAudioStartWall)) + " ms（絵はそのあいだ t=0 で待つ）");
+                }
+            }
             if (CalibrateSound::GetState() == CalibrateSound::State::Failed) gClock.ForceWall(wallMs);
         }
+        if (gAudioStarted && !gAudioExpected) gClock.ForceWall(wallMs);   // Start が断られた・止められた: 猶予を待たず QPC で進める
         const double tMs = gClock.Now(wallMs, audioMs);
+        // 絵が QPC へ落ちた（デバイスを開くのが遅い・止まった）なら、あとから始まる音は絵とずれるので止める。以降、音へは何も渡さない
+        if (gAudioExpected && gAudioStarted && !gClock.UsingAudio())
+        {
+            CalibrateSound::Abort();
+            gAudioExpected = false;
+        }
+        const bool audioLive = sp::AudioDrivesPicture(gAudioExpected, gAudioStarted, gClock);
         std::wstring status;
         double target = 0.0;
         int idx = 0, total = 0;
@@ -545,7 +566,7 @@ DWORD WINAPI SplashThread(LPVOID)
             const double finMs = finishReq ? std::max(0.0, tMs - (Now() - finishAt) * 1000.0) : std::nan("");
             f = sp::EvaluateGauge(sp::GaugePath::Reduce, tMs, 0.f, ev, sp::GaugeExitStartMs(ev.pingMs, finMs));
             lockedForMain = finishReq;
-            if (g.skipReq.exchange(false)) { double used = tMs; CalibrateSound::Skip(tMs, &used); }   // Reduce Motion でも音はロック以降へ（絵は最初から静的）。master のロックを過ぎていれば音は何もしない
+            if (g.skipReq.exchange(false)) { double used = tMs; if (audioLive) CalibrateSound::Skip(tMs, &used); }   // Reduce Motion でも音はロック以降へ（絵は最初から静的）。master のロックを過ぎていれば音は何もしない
         }
         else
         {
@@ -553,20 +574,24 @@ DWORD WINAPI SplashThread(LPVOID)
             // （音は master のまま最後まで。絵も速い経路のままにして、C23 とロックの音が二重に鳴らないようにする）
             if (gdrv.HandOverPending(tMs, finishReq))
             {
-                if (!CalibrateSound::HandOver(tMs)) gdrv.VetoHandOver();
+                if (audioLive && !CalibrateSound::HandOver(tMs)) gdrv.VetoHandOver();
             }
             gdrv.Update(tMs, static_cast<float>(target), finishReq);
             if (g.skipReq.exchange(false))
             {
                 // 音は描き置き済みのぶんを書き換えられない。音が描き終えた時刻以降にスキップし（読み取りと同じ 1 回の呼び出しで）、絵も同じ時刻でロックへ飛ばす（音と絵が揃う）
                 double used = tMs;
-                CalibrateSound::Skip(tMs, &used);
+                if (audioLive) CalibrateSound::Skip(tMs, &used);
                 gdrv.Skip(used);
             }
-            CalibrateSound::CancelCues(gdrv.TakeCancelledCueIds());
             {
+                const std::vector<std::uint32_t> cancelled = gdrv.TakeCancelledCueIds();
                 const std::vector<sp::GaugeCue> cues = gdrv.TakeCues();
-                if (!cues.empty()) CalibrateSound::AddCues(cues);
+                if (audioLive)
+                {
+                    CalibrateSound::CancelCues(cancelled);
+                    if (!cues.empty()) CalibrateSound::AddCues(cues);
+                }
             }
             f = gdrv.Frame(tMs);
             const double lockWall = gdrv.LockWallMs();

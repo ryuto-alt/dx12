@@ -550,6 +550,22 @@ void TestClockMap()
     }
 }
 
+void TestAudioDrives()
+{
+    // この表示で音なし（Start しない）: 前の表示の音の状態が残っていても、持ち替え・スキップ・予約を音へ渡さない
+    sp::TimelineClock none;
+    none.Begin(0.0, false);
+    CHECK(!sp::AudioDrivesPicture(false, true, none));
+    CHECK(!sp::AudioDrivesPicture(true, true, none));          // 時計が QPC（音が期待されていても落ちている）
+    sp::TimelineClock live;
+    live.Begin(0.0, true);
+    CHECK(sp::AudioDrivesPicture(true, true, live));
+    CHECK(!sp::AudioDrivesPicture(true, false, live));         // Start 前
+    live.Now(800.0, -1.0);                                     // 猶予 700ms を過ぎても動かない → QPC へ
+    CHECK(!live.UsingAudio());
+    CHECK(!sp::AudioDrivesPicture(true, true, live));          // 絵が落ちたら音へ渡さない（あとから始まる音とずれない）
+}
+
 void TestTimelineClock()
 {
     {
@@ -662,6 +678,7 @@ int main(int argc, char** argv)
     }
     TestClockMap();
     TestTimelineClock();
+    TestAudioDrives();
     TestGate();
     TestPanLaw();
     std::printf(g_fail ? "SplashSequencerTests: %d FAILED\n" : "SplashSequencerTests: ALL PASS\n", g_fail);

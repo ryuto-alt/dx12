@@ -232,6 +232,14 @@ private:
     bool m_expect = false, m_useWall = true, m_sawAudio = false, m_started = false;
 };
 
+// この表示で音を主時計にしてよいか（持ち替え・スキップ・予約を音へ渡してよいか）。
+// CalibrateSound はプロセスに 1 つだけで、前の表示の状態（描き終えた時刻・持ち替え済み）が残る。この表示で Start が成功しなかった（音なし）・
+// 絵が QPC へ落ちた（デバイスを開くのが遅い・止まった）ときは、音へ何も渡さない（HandOver が誤って断られたり、Skip が遅れたりしない）。
+inline bool AudioDrivesPicture(bool audioExpected, bool audioStarted, const TimelineClock& clock)
+{
+    return audioExpected && audioStarted && clock.UsingAudio();
+}
+
 // 鳴らさない条件（GG の se_cue_sheet §5 から。EXEC §2.6）。どれか 1 つでも当てはまれば音声デバイスを開かない。
 struct SoundGate
 {
