@@ -1,11 +1,11 @@
 {
   "nativeWidth": 977,
   "nativeHeight": 550,
-  "nativeSha256": "1f3a89b7431fea459979214adf4e5fcbfdf34ba2f958f3eb3595ff5d7183dcc6",
-  "compareSha256": "220741617baa65c710a6ae86771f2e6169f79b7ac6749b0c9da7b20efa6a7cbc",
+  "nativeSha256": "637cdfc9eebd5435a0f769b7bdac59494bd1a13d7d05d62f19c243c8f884428f",
+  "compareSha256": "499d51f6d4a5460bd497d28ef252213e9c06ca9592967c89da90cc92c153cf4f",
   "width": 640,
   "height": 360,
-  "commit": "f003b08",
-  "capturedAt": "2026-11-27T00:19:18.369Z",
-  "deterministicInSession": false
+  "commit": "4054c5b",
+  "capturedAt": "2026-11-27T05:28:08.479Z",
+  "deterministicInSession": null
 }
