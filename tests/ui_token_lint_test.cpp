@@ -238,6 +238,8 @@ bool IsAccentIdent(const std::string& id)
         cur.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
     }
     if (!cur.empty()) seg.push_back(cur);
+    // 末尾が Px の識別子（th::AccentPx() 等）は線の太さ（整数 px）を返す関数で、色ではない。
+    if (seg.size() > 1 && seg.back() == "px") return false;
     for (size_t i = 0; i < seg.size(); ++i)
         if (seg[i] == "accent") return !(i > 0 && seg[i - 1] == "on");
     return false;
@@ -639,6 +641,11 @@ void SelfTest()
         CHECKF(r.accentLineDraws == 2, "self: accent line draws got %d", r.accentLineDraws);
         auto r2 = ScanText("dl->AddLine(a, b, U(th::Accent), 2);\n", false);
         CHECK(r2.accentLineDraws == 0);
+    }
+    // 太さの関数 th::AccentPx() は色ではないので数えない（A5 の指摘 FU-E-8）。色の Accent が同じ呼び出しにあれば数える
+    {
+        auto r = ScanText("dl->AddLine(a, b, U(th::Border), th::AccentPx());\ndl->AddRect(a, b, U(th::Border), 0, 0, accentPx);\ndl->AddLine(a, b, U(th::Accent), th::AccentPx());\n", true);
+        CHECKF(r.accentLineDraws == 1, "self: AccentPx is width not color got %d", r.accentLineDraws);
     }
     // 小文字・メンバ・k 接頭辞の accent 識別子も拾う。ImGuiKey_GraveAccent / onAccent は拾わない。PathStroke も数える
     {

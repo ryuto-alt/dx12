@@ -11,8 +11,10 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -226,6 +228,193 @@ void TestStepToward()
     ImGui::DestroyContext(ctx);
 }
 
+// アセットブラウザ用の旧判定（CalcTextSize の切り上げ幅 + 末尾バイト削り・最低 2 バイト）と ASCII で同じ結果になること。
+void TestLegacyEquivalence()
+{
+    const float cw[] = { 6.7f, 7.0f, 5.3f, 8.13f };
+    for (const float perChar : cw)
+    {
+        const auto widthOf = [&](const std::string& str) { return text::CeilLikeCalcTextSize(perChar * static_cast<float>(str.size()) * 0.9f + 0.37f); };
+        for (int len = 1; len <= 30; ++len)   // 空文字列は EllipsizeEnd が即座に空を返すので対象外
+        {
+            std::string name;
+            for (int i = 0; i < len; ++i) name += static_cast<char>('a' + i % 26);
+            for (float maxW = 0.0f; maxW < 260.0f; maxW += 0.6f)
+            {
+                std::string old = name;   // 旧ループ（AssetBrowserPanel）
+                if (widthOf(old) > maxW)
+                {
+                    while (old.size() > 2 && widthOf(old + text::kEllipsis) > maxW) old.pop_back();
+                    old += text::kEllipsis;
+                }
+                const float usable = std::floor(maxW);
+                const text::FitResult fr = text::FitEndBytesLegacy(name, usable, [&](std::string_view sv, bool ell)
+                {
+                    std::string x(sv); if (ell) x += text::kEllipsis; return widthOf(x);
+                });
+                std::string now = name.substr(0, fr.keepBytes);
+                if (fr.ellipsis) now += text::kEllipsis;
+                CHECKF(now == old, "legacy mismatch len=%d maxW=%.1f perChar=%.2f", len, maxW, perChar);
+            }
+        }
+    }
+}
+
+// 旧判定互換版（アセットブラウザが実際に通る経路）を UTF-8 の入力で検査する。フォント不要（計測は Measure）。
+//   ・結果は必ずクラスタの境界（途中で切らない）/ 不正でない UTF-8
+//   ・最初のクラスタが 2 バイト以上のとき kmin = 1、1 バイトのときは 2 バイト以上になる塊数まで残す
+//   ・塊が kmin 以下（n <= kmin）のときは削らず「…」だけ足す
+void TestLegacyUtf8()
+{
+    const auto measureJoined = [](std::string_view sv, bool ell) -> float
+    {
+        float w = Measure(sv);
+        if (ell) w += 1.0f;
+        return w;
+    };
+    const auto Legacy = [&](std::string_view s, float maxW, text::FitResult* out = nullptr)
+    {
+        const text::FitResult fr = text::FitEndBytesLegacy(s, maxW, measureJoined);
+        if (out) *out = fr;
+        std::string r(s.substr(0, fr.keepBytes));
+        if (fr.ellipsis) r += text::kEllipsis;
+        return r;
+    };
+    const char* samples[] = {
+        "\xE3\x81\x82\xE3\x81\x84\xE3\x81\x86\xE3\x81\x88\xE3\x81\x8A",                       // あいうえお
+        "\xE3\x81\x8B\xE3\x82\x99\xE3\x81\x8D\xE3\x82\x99\xE3\x81\x8F",                       // か゛き゛く（結合濁点）
+        "e\xCC\x81" "abc" "e\xCC\x81" "def",                                                   // 結合アクセント
+        "a\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7" "bcd",   // a + ZWJ 連結の家族 + bcd
+        "\xF0\x9F\x87\xAF\xF0\x9F\x87\xB5\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8" "xyz",            // 国旗 2 つ + xyz
+        "\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD" "ab" "\xF0\x9F\x98\x80" "cd",                       // 肌色修飾子つき + ab + 絵文字 + cd
+        "ab\xE3\x81\x82\xE3\x81\x84\xE3\x81\x86",                                              // ab + あいう
+    };
+    std::vector<size_t> bounds;
+    for (const char* sample : samples)
+    {
+        const std::string_view s(sample);
+        text::detail::ClusterBoundaries(s, bounds);
+        for (float maxW = 0.0f; maxW <= 30.0f; maxW += 1.0f)
+        {
+            text::FitResult fr;
+            const std::string out = Legacy(s, maxW, &fr);
+            bool onBoundary = false;
+            for (size_t b : bounds) if (b == fr.keepBytes) onBoundary = true;
+            CHECKF(onBoundary, "legacy cut inside a cluster: keep=%zu maxW=%.0f", fr.keepBytes, maxW);
+            CHECKF(ValidUtf8(out), "legacy produced invalid UTF-8 maxW=%.0f", maxW);
+            if (fr.ellipsis) CHECK(fr.keepBytes >= (std::min<size_t>)(2, s.size()));   // 最低 2 バイトは残す
+            if (Measure(s) <= maxW) CHECK(out == std::string(s));
+        }
+    }
+    // 最初のクラスタが 3 バイト（kmin = 1）
+    {
+        const std::string s = "\xE3\x81\x82\xE3\x81\x84\xE3\x81\x86\xE3\x81\x88";
+        text::FitResult fr;
+        const std::string out = Legacy(s, 5.0f, &fr);   // あ(2)+…(1)=3 / あい+…=5 / あいう+…=7
+        CHECK(fr.ellipsis);
+        CHECKF(fr.keepBytes == 6, "keep=%zu", fr.keepBytes);
+        CHECK(out == "\xE3\x81\x82\xE3\x81\x84" + std::string(text::kEllipsis));
+        Legacy(s, 0.0f, &fr);   // 1 塊でも入らない: 旧ループ同様に最小の塊だけ残して「…」を足す
+        CHECK(fr.ellipsis && fr.keepBytes == 3);
+    }
+    // 最初のクラスタが 1 バイト（ASCII）: 2 バイト以上残る最小の塊数（2 塊）まで
+    {
+        text::FitResult fr;
+        Legacy("abcdef", 0.0f, &fr);
+        CHECK(fr.ellipsis && fr.keepBytes == 2);
+    }
+    // 塊が kmin 以下: 削らず「…」だけ足す（旧: size <= 2）
+    {
+        text::FitResult fr;
+        const std::string out = Legacy("\xE3\x81\x82", 1.0f, &fr);   // 全角 1 文字（幅 2 > 1）
+        CHECK(fr.ellipsis && fr.keepBytes == 3);
+        CHECK(out == "\xE3\x81\x82" + std::string(text::kEllipsis));
+        Legacy("ab", 1.0f, &fr);   // 2 バイトだけ
+        CHECK(fr.ellipsis && fr.keepBytes == 2);
+        Legacy("e\xCC\x81", 0.0f, &fr);   // 1 クラスタ（3 バイト）
+        CHECK(fr.ellipsis && fr.keepBytes == 3);
+    }
+    // 不正な UTF-8 でも落ちない・前へ進む
+    {
+        text::FitResult fr;
+        Legacy("\x80\x80\xFF\xC3", 1.0f, &fr);
+        CHECK(fr.keepBytes <= 4);
+    }
+}
+
+// EllipsizeEnd（実フォントの計測）。ImGui 同梱の ProggyClean で CPU のまま検査する。
+//   (a) 旧ループ（CalcTextSize + pop_back）と ASCII で一致 = CeilLikeCalcTextSize の前提の検証
+//   (b) legacy / 既定は別キー  (c) キャッシュ命中は未命中と同じ結果
+void TestEllipsizeEndWithFont()
+{
+    ImGuiContext* ctx = ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    ImFont* font = io.Fonts->AddFontDefault();
+    CHECK(font != nullptr);
+    if (!font) { ImGui::DestroyContext(ctx); return; }
+    const float size = 13.0f;
+    text::ClearEllipsizeCache();
+
+    const auto calc = [&](const std::string& str)
+    {
+        const ImVec2 v = font->CalcTextSizeA(size, FLT_MAX, 0.0f, str.c_str(), str.c_str() + str.size());
+        return std::floor(v.x + 0.99999f);   // ImGui::CalcTextSize の IM_TRUNC(x + 0.99999f)
+    };
+    CHECK(calc("W") > 0.0f);
+
+    const std::string names[] = { "a", "ab", "Texture_Albedo_Brick", "mesh_fbx_01.png", "The quick brown fox jumps over", "iiiiiiiiiiiiiiiiiiii", "WWWWWWWWWWWWWWWW" };
+    int mism = 0;
+    for (const std::string& name : names)
+    {
+        for (float maxW = 0.0f; maxW < 260.0f; maxW += 3.7f)
+        {
+            std::string old = name;   // 旧ループ（AssetBrowserPanel）
+            if (calc(old) > maxW)
+            {
+                while (old.size() > 2 && calc(old + text::kEllipsis) > maxW) old.pop_back();
+                old += text::kEllipsis;
+            }
+            const std::string now = text::EllipsizeEnd(name, maxW, font, size, true);
+            if (now != old) { ++mism; std::printf("  mismatch name=%s maxW=%.1f old=%s now=%s\n", name.c_str(), maxW, old.c_str(), now.c_str()); }
+        }
+    }
+    CHECKF(mism == 0, "EllipsizeEnd(legacy) != old loop (%d)", mism);
+
+    // (b) 同じ文字列・フォント・サイズ・幅でも legacy と既定は別キー
+    {
+        text::ClearEllipsizeCache();
+        const std::string name = "Texture_Albedo_Brick_Wall_Diffuse";
+        const float maxW = 120.0f;
+        const std::string a = text::EllipsizeEnd(name, maxW, font, size, true);
+        CHECK(text::EllipsizeCacheSize() == 1 && text::EllipsizeCacheMisses() == 1);
+        const std::string b = text::EllipsizeEnd(name, maxW, font, size, false);
+        CHECKF(text::EllipsizeCacheSize() == 2 && text::EllipsizeCacheMisses() == 2, "legacy and default must not share a key (size=%zu)", text::EllipsizeCacheSize());
+        CHECK(text::EllipsizeEnd(name, maxW, font, size, true) == a);
+        CHECK(text::EllipsizeEnd(name, maxW, font, size, false) == b);
+        CHECK(text::EllipsizeCacheHits() == 2 && text::EllipsizeCacheSize() == 2);
+        CHECK(font->CalcTextSizeA(size, FLT_MAX, 0.0f, b.c_str(), b.c_str() + b.size()).x <= maxW + 0.001f);
+        CHECK(calc(a) <= std::floor(maxW) || a.size() <= 2 + std::strlen(text::kEllipsis));
+    }
+    // (c) 命中は未命中と同じ結果（日本語・絵文字を含む）
+    {
+        const std::string jp = "\xE3\x83\x86\xE3\x82\x99\xE3\x82\xB9\xE3\x83\x88\xE3\x83\xA2\xE3\x83\x87\xE3\x83\xAB\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD" "_final.fbx";
+        for (const bool legacy : { true, false })
+        {
+            for (float maxW = 8.0f; maxW < 200.0f; maxW += 17.3f)
+            {
+                text::ClearEllipsizeCache();
+                const std::string miss = text::EllipsizeEnd(jp, maxW, font, size, legacy);
+                const std::string hit = text::EllipsizeEnd(jp, maxW, font, size, legacy);
+                CHECKF(miss == hit, "cache hit differs from miss (legacy=%d maxW=%.1f)", legacy ? 1 : 0, maxW);
+                CHECK(text::EllipsizeCacheHits() == 1 && text::EllipsizeCacheMisses() == 1);
+                CHECK(ValidUtf8(miss));
+            }
+        }
+    }
+    text::ClearEllipsizeCache();
+    ImGui::DestroyContext(ctx);
+}
+
 // 黄の指針（ProgressRole::StatusJob）を使ってよいのはステータスバー（A7）の 1 か所だけ。
 void TestStatusJobBudget()
 {
@@ -263,6 +452,9 @@ int main()
     TestInvalidUtf8();
     TestComplexity();
     TestStepToward();
+    TestLegacyEquivalence();
+    TestLegacyUtf8();
+    TestEllipsizeEndWithFont();
     TestStatusJobBudget();
     if (g_fail == 0) std::printf("text_fit_test: ALL PASS\n");
     return g_fail == 0 ? 0 : 1;

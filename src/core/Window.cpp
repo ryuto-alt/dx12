@@ -822,3 +822,32 @@ void Window::SetFileDropHandler(FileDropHandler handler)
 }
 
 } // namespace dx12e
+
+// ---- Windows 11 のダークタイトルバー（W1-A7 / MOD-ED-19）----
+#include "WindowTitleBar.h"
+
+namespace dx12e
+{
+void ApplyTitleBarTheme(HWND hwnd, bool dark, unsigned captionRgb, unsigned textRgb)
+{
+    if (!hwnd) return;
+    static HMODULE s_dwm = ::LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!s_dwm) return;
+    using SetAttrFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
+    static SetAttrFn s_set = reinterpret_cast<SetAttrFn>(::GetProcAddress(s_dwm, "DwmSetWindowAttribute"));
+    if (!s_set) return;
+    constexpr DWORD kImmersiveDark = 20, kBorderColor = 34, kCaptionColor = 35, kTextColor = 36, kSystemBackdrop = 38;
+    constexpr COLORREF kColorDefault = 0xFFFFFFFF;   // DWMWA_COLOR_DEFAULT
+    auto bgr = [](unsigned rgb) { return static_cast<COLORREF>(((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)); };
+    const BOOL useDark = dark ? TRUE : FALSE;
+    const COLORREF cap = dark ? bgr(captionRgb) : kColorDefault;
+    const COLORREF txt = dark ? bgr(textRgb) : kColorDefault;
+    const int backdrop = dark ? 1 : 0;   // DWMSBT_NONE / DWMSBT_AUTO
+    // 属性が未対応の OS では E_INVALIDARG が返るだけ。戻り値は見ない。
+    s_set(hwnd, kImmersiveDark, &useDark, sizeof(useDark));
+    s_set(hwnd, kCaptionColor, &cap, sizeof(cap));
+    s_set(hwnd, kBorderColor, &cap, sizeof(cap));
+    s_set(hwnd, kTextColor, &txt, sizeof(txt));
+    s_set(hwnd, kSystemBackdrop, &backdrop, sizeof(backdrop));
+}
+} // namespace dx12e

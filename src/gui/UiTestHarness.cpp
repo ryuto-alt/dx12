@@ -4957,6 +4957,11 @@ const DiagReg kTests[] = {
     { "editor-ux", "new_scene_confirm_virtual_input", "エディタ操作", "仮想入力・MCP セッションでも Ctrl+N の作成で未保存の確認が出る", uitest::T_NewSceneConfirmUnderVirtualInput },
     { "editor-ux", "undo_after_save_as_stays_dirty", "エディタ操作", "名前を付けて保存のあとに Undo で戻しても、ディスクと違えば未保存のまま（無題からの命名保存も）", uitest::T_UndoAfterSaveAsStaysDirty },
     { "editor-ux", "game_lua_under_project_root", "エディタ操作", "グローバル game.lua はプロジェクトルートの下で解決される", uitest::T_GameLuaUnderProjectRoot },
+    { "vfx", "vfx_tick_each_frame", "パーティクルエディタ", "MCP を使わなくても Application::Update が毎フレーム VfxTick を呼ぶ（結線済み・Tick 駆動）", uitest::T_VfxTickEachFrame },
+    { "render", "shading_revision_run_loop", "シェーディング", "shadingRevision の反映は Run ループが行う（分割画面でなくても 1⇄2 が切り替わる）", uitest::T_ShadingRevisionAppliedInRunLoop },
+    { "panel", "viewport_tool_underline_hosted", "パネル", "Graphite のビューポート帯: 移動/回転/拡縮の下線は選択中の 1 本（左右 4px 内側・整数 px）。既定テーマでは出ない", uitest::T_ViewportToolUnderlineHosted },
+    { "editor-ux", "console_defaults", "エディタ操作", "コンソール: 例文が動く・情報が既定で表示・自動スクロール・背景モードのインポートで案内", uitest::T_ConsoleDefaults },
+    { "panel", "graphite_chrome", "パネル", "Graphite の計器のクロム: 主尺・フォーカス・キャリパー・22px のステータスバー・16px のロゴ・黄の予算（線 9 本以下 / 画素比 1.5% 以下 / 面 0）。既定テーマでは出ない", uitest::T_GraphiteChrome },
     // ==== lane-A end ====
     // ==== lane-B begin ====
     { "panel", "save_as_overwrite_confirm", "パネル", "名前を付けて保存: 既存の名前で確認 → キャンセルでファイル不変 / 上書き", uitest::T_SaveAsOverwriteConfirm },

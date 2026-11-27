@@ -6,6 +6,7 @@
 //   ・「常にリアルタイム」と allowed=false（ゲーム・UI テスト）は常に tier 0
 //   ・fps 上限の合成（既存の上限との min）
 //   ・Application.cpp に配線の要点が残っている（回帰: 要求を受けた瞬間に起きる / 応答待ちを間引かない）
+#include "core/mcp/McpPendingReplies.h"
 #include "editor/FrameThrottle.h"
 
 #include <cstdio>
@@ -134,6 +135,11 @@ void TestWiring()
     CHECK(!app.empty());
     CHECK(app.find("throttle::Evaluate(") != std::string::npos);
     CHECK(app.find("perf.alwaysRealtime") != std::string::npos);
+    // 設定画面（エンジン設定）に同じキーの切り替えがある（FU-E-14）
+    const std::string insp = ReadAll(fs::path(UI_LINT_ROOT) / "src" / "editor" / "panels" / "InspectorPanel.cpp");
+    CHECK(!insp.empty());
+    CHECK(insp.find("prefs::GetBool(\"perf.alwaysRealtime\"") != std::string::npos);
+    CHECK(insp.find("prefs::SetBool(\"perf.alwaysRealtime\"") != std::string::npos);
     // 待ち中に MCP を Poll する（要求を受けた瞬間に起きる）
     CHECK(app.find("pollMcp(); if (mcpActivity) break;") != std::string::npos);
     // 応答待ち・step_frames・仮想入力の待ち・ジョブを busy に数える
@@ -150,9 +156,49 @@ void TestWiring()
     CHECK(app.find("m_loading || m_scenePreloadJob != nullptr") != std::string::npos);
     CHECK(app.find("m_thumbRenderer->GetPendingCount() > 0") != std::string::npos);
     CHECK(app.find("m_ptHost && m_ptHost->Busy()") != std::string::npos);
+    // FU-E-15: editor_command_run の待ちと、未応答の遅延応答の数え上げ
+    CHECK(app.find("HasPendingEditorRunWaits()") != std::string::npos);
+    CHECK(app.find("mcppending::Replies().Count(") != std::string::npos);
+    const std::string mcp = ReadAll(fs::path(UI_LINT_ROOT) / "src" / "core" / "mcp" / "ApplicationMcp.cpp");
+    CHECK(mcp.find("mcppending::Replies().Add(") != std::string::npos);
+    CHECK(mcp.find("mcppending::Replies().Resolve(") != std::string::npos);
+    const std::string eui = ReadAll(fs::path(UI_LINT_ROOT) / "src" / "core" / "mcp" / "ApplicationMcpEditorUi.cpp");
+    CHECK(eui.find("bool HasPendingEditorRunWaits()") != std::string::npos);
     // ゲームと UI テストでは間引かない
     CHECK(app.find("m_editorCtx && !m_isGameMode && !m_uiTestsRequested") != std::string::npos);
 #endif
+}
+
+// 未応答の遅延応答の数え上げ（FU-E-15）
+void TestPendingReplies()
+{
+    mcppending::PendingReplies r;
+    CHECK(r.Count(100.0) == 0);
+    r.Add(1, 10, 100.0);
+    r.Add(1, 11, 100.5);
+    r.Add(2, 10, 101.0);                 // 別クライアントの同じ id は別項目
+    CHECK(r.Count(101.0) == 3);
+    r.Resolve(1, 10);
+    CHECK(r.Count(101.0) == 2);
+    r.Resolve(1, 10);                    // 二重の Resolve・未登録の Resolve は無害
+    r.Resolve(9, 99);
+    CHECK(r.Count(101.0) == 2);
+    // 応答が出ないまま古くなった項目は数えない（永久に busy にしない）
+    CHECK(r.Count(131.0, 30.0) == 1);    // (1,11) は 30.5 秒経過で掃除され (2,10) だけが残る
+    CHECK(r.Count(132.0, 30.0) == 0);
+    r.Add(3, 1, 200.0);
+    r.Clear();
+    CHECK(r.Count(200.0) == 0);
+
+    // 未応答があるあいだは busy として tier 0 に保たれ、応答後は猶予（5 秒）を経て非アクティブは tier 2 へ
+    State st;
+    r.Add(1, 1, 0.0);
+    double t = 1.0;
+    for (; t < 20.0; t += 1.0)
+        CHECK(throttle::Evaluate(st, In(t, false, r.Count(t) > 0)) == 0);
+    r.Resolve(1, 1);
+    CHECK(throttle::Evaluate(st, In(t, false, r.Count(t) > 0)) == 0);
+    CHECK(throttle::Evaluate(st, In(t + 6.0, false, r.Count(t + 6.0) > 0)) == 2);
 }
 } // namespace
 
@@ -163,6 +209,7 @@ int main()
     TestCombine();
     TestStepFramesUnchanged();
     TestWiring();
+    TestPendingReplies();
     if (g_fail) { std::printf("frame_throttle_test: %d failure(s)\n", g_fail); return 1; }
     std::printf("frame_throttle_test: OK\n");
     return 0;

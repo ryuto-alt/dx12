@@ -100,6 +100,7 @@
 #define ICON_T_TEXT         "\xee\x86\x98"   // U+E198 lucide:type
 #define ICON_T_BUTTON       "\xee\x84\xa0"   // U+E120 lucide:mouse-pointer-click
 #define ICON_T_LAYERS       "\xee\x94\xa9"   // U+E529 lucide:layers
+#define ICON_T_SEQUENCE     ""   // U+E29B lucide:clapperboard（.dxseq / シーケンス。Post Process の layers と見分ける）
 #define ICON_T_GRID         "\xee\x83\xa9"   // U+E0E9 lucide:grid-3x3
 #define ICON_T_NAV          "\xee\x84\xa3"   // U+E123 lucide:navigation
 #define ICON_T_PREFAB       "\xee\x93\xba"   // U+E4FA lucide:blocks

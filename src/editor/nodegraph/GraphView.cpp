@@ -5,6 +5,7 @@
 #include "core/CpuScope.h"
 #include "editor/EditorCommandTable.h"
 #include "editor/UiWidgets.h"
+#include "editor/nodegraph/GraphTextQuant.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -296,14 +297,21 @@ void GraphView::Draw(const char* strId, ImVec2 size)
         m_windowFocused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         m_hovered = hovered;
 
-        // 1 行の高さ（今の倍率で。中央寄せに使う）
-        {
+        // 1 行の高さ（中央寄せに使う）。描画（TextSizeQ / AddTextQ）と同じ量子化で測る: 焼くサイズ qpx で測って r 倍する。
+        auto updateLineHeights = [&]() {
             const LayoutConfig& c = m_doc->Layout().Config();
             const float scale = m_zoom * m_dpi;
-            m_lhLabel = FontBody()->CalcTextSizeA(std::max(1.0f, std::floor(c.textUnits * scale + 0.5f)), FLT_MAX, 0.0f, "Ag").y;
-            m_lhTitle = FontBold()->CalcTextSizeA(std::max(1.0f, std::floor(c.titleUnits * scale + 0.5f)), FLT_MAX, 0.0f, "Ag").y;
-            m_lhMono  = FontMono()->CalcTextSizeA(std::max(1.0f, std::floor(c.textUnits * scale + 0.5f)), FLT_MAX, 0.0f, "0.").y;
-        }
+            auto lineH = [&](ImFont* f, float units, const char* t) {
+                const float px = std::max(1.0f, std::floor(units * scale + 0.5f));
+                const QuantText q = QuantizeText(px, m_zoom);
+                // qpx*(px/qpx) の丸め誤差で中央寄せの floor が 1px ずれないよう、px 単位に丸める
+                return std::floor(f->CalcTextSizeA(q.qpx, FLT_MAX, 0.0f, t).y * q.r + 0.5f);
+            };
+            m_lhLabel = lineH(FontBody(), c.textUnits, "Ag");
+            m_lhTitle = lineH(FontBold(), c.titleUnits, "Ag");
+            m_lhMono  = lineH(FontMono(), c.textUnits, "0.");
+        };
+        updateLineHeights();
 
         m_vp.origin = Vec2(m_canvasMin.x, m_canvasMin.y);
         m_vp.size = Vec2(size.x, size.y);
@@ -317,6 +325,7 @@ void GraphView::Draw(const char* strId, ImVec2 size)
         AutoPan(m_dt);
         m_vp.pan = m_pan;
         m_vp.zoom = m_zoom;
+        updateLineHeights();   // 描画に使う最終の zoom で測り直す（ホイールや枠合わせの最中に測りと描画の段がずれない）
         m_vp.Scale();
         Render();
         m_stats.zoom = m_zoom;

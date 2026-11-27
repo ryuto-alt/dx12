@@ -8,6 +8,7 @@
 #include "ecs/EditorFlags.h"         // EntityDisabled
 #include "editor/UiWidgets.h"
 #include "editor/EntityGlyph.h"
+#include "editor/IconTable.h"
 #include "gui/VirtualInputImGui.h"
 #include "editor/UiEditUtil.h"
 #include "editor/UndoSystem.h"
@@ -335,28 +336,10 @@ HeaderIcon HeaderIconFor(const dx12e::EditorUiIcons* ic, dx12e::u64 tex, const c
 {
     namespace th = dx12e::theme;
     if (tex == 0) return { nullptr, nullptr };
-    auto has = [&](const char* k) { return std::strstr(label, k) != nullptr; };
-    if (has("Network"))                                   return { ICON_T_NET,       &th::TypeEmpty };
-    if (has("Transform"))                                 return { ICON_T_TRANSFORM, &th::TypeEmpty };
-    if (has("Camera"))                                    return { ICON_T_CAMERA,    &th::TypeCamera };
-    if (has("Collider"))                                  return { ICON_T_COLLIDER,  &th::TypePhysics };
-    if (has("Character"))                                 return { ICON_T_CHARACTER, &th::TypePhysics };
-    if (has("MeshRenderer"))                              return { ICON_T_MESH,      &th::TypeMesh };
-    if (has("Material"))                                  return { ICON_T_MATERIAL,  &th::TypeMesh };
-    if (has("Audio"))                                     return { ICON_T_AUDIO,     &th::TypeAudio };
-    if (has("Particle"))                                  return { ICON_T_PARTICLE,  &th::TypeLight };
-    if (has("Trail"))                                     return { ICON_T_TRAIL,     &th::TypeLight };
-    if (has("Decal"))                                     return { ICON_T_DECAL,     &th::TypeMesh };
-    if (has("Brain"))                                     return { ICON_T_BRAIN,     &th::TypeScript };
-    if (has("Trigger"))                                   return { ICON_T_TRIGGER,   &th::TypeScript };
-    if (has("Gimmick"))                                   return { ICON_T_TRIGGER,   &th::TypeScript };
-    if (has("Sprite"))                                    return { ICON_T_SPRITE,    &th::TypeMesh };
-    if (has("UIText"))                                    return { ICON_T_TEXT,      &th::TypeUi };
-    if (has("UIButton"))                                  return { ICON_T_BUTTON,    &th::TypeUi };
-    if (has("UI"))                                        return { ICON_T_UI,        &th::TypeUi };
-    if (has("Anim") || has("FootIK"))                     return { ICON_T_ANIM,      &th::TypeScript };
-    if (has("GridPlane"))                                 return { ICON_T_GRID,      &th::TypeEmpty };
-    if (has("Lua"))                                       return { ICON_T_SCRIPT,    &th::TypeScript };
+    // 名前の完全一致（editor/IconTable.h）。"UI" を含むだけの名前を UI アイコンにしない。表に無い名前は下の tex の同一性へ落ちる。
+    bool found = false;
+    const dx12e::icons::KindVisual kv = dx12e::icons::ForComponent(label, &found);
+    if (found) return { kv.glyph, kv.tint };
     if (ic)
     {
         if (tex == ic->entMesh)     return { ICON_T_MESH,     &th::TypeMesh };
@@ -5736,6 +5719,21 @@ void InspectorPanel::RenderEngineSettings(EditorContext& ctx,
                       nullptr, "Ctrl ドラッグ中に倍率がこの刻みへ吸着する");
             pg::Checkbox("常にスナップ", &ctx.snapAlways,
                          "ON にすると Ctrl を押さなくても常にスナップする");
+            pg::End();
+        }
+    }
+
+    // --- Performance ---
+    // 「常にリアルタイム」（prefs perf.alwaysRealtime）。ON で裏に回ったとき・無操作時の間引き（editor/FrameThrottle.h）を止める。
+    // Application のメインループが毎フレーム prefs から読むので、切り替えは即時に効く。
+    if (IconHeader(nullptr, 0, "パフォーマンス"))
+    {
+        if (pg::Begin("EnginePerf"))
+        {
+            bool alwaysRealtime = prefs::GetBool("perf.alwaysRealtime", false);
+            if (pg::Checkbox("常にリアルタイム", &alwaysRealtime,
+                             "ON にすると、窓が裏に回っても無操作でも描画を間引かない（既定は OFF）"))
+                prefs::SetBool("perf.alwaysRealtime", alwaysRealtime);
             pg::End();
         }
     }

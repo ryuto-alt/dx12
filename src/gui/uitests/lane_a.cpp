@@ -1,7 +1,9 @@
 // UI テストのレーン A の本体。宣言は gui/UiTestHarnessShared.h の lane-A:decl、
 // 登録は gui/UiTestHarness.cpp の kTests の lane-A ブロックに足す。
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 #include "gui/UiTestHarnessShared.h"
@@ -13,6 +15,8 @@
 #include "core/SceneBackup.h"
 #include "core/SafeRemove.h"
 #include "core/Logger.h"
+#include "core/VirtualGuard.h"
+#include "editor/panels/ConsolePanel.h"
 #include "project/ProjectManager.h"
 #include "input/VirtualInput.h"
 #include "editor/AssetBrowserLogic.h"
@@ -26,8 +30,13 @@
 #include "editor/panels/MaterialGraphPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/UndoSystem.h"
+#include "editor/UiMotion.h"
+#include "editor/UiWidgets.h"
+#include "editor/EditorChrome.h"
+#include "editor/ThemeGraphite.gen.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
+#include "renderer/vfx/VfxRuntime.h"
 #include "scene/SceneSerializer.h"
 #include "scene/SceneSettingsHash.h"
 
@@ -346,6 +355,7 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
         ImGuiWindow* gw = ImGui::FindWindowByName("###MaterialGraph");
         IM_CHECK(gw != nullptr);
         const ImVec2 c(gw->Pos.x + gw->Size.x * 0.5f, gw->Pos.y + gw->Size.y * 0.5f);
+        const int baked0 = ImGui::GetIO().Fonts->Builder ? ImGui::GetIO().Fonts->Builder->BakedPool.Size : -1;
         ctx->MouseMoveToPos(c);
         for (int i = 0; i < 40; ++i)
         {
@@ -354,9 +364,11 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
         }
         ctx->Yield(6);
         {
-            // 焼いた（ImFontBaked）数。GraphView.cpp の行高さ測定が量子化されるまでは増えるので、ログだけ残す。
+            // 焼いた（ImFontBaked）数。行高さ測定も量子化されているので、ホイール往復での増分は段数×フォント数で頭打ちになる。
             ImFontAtlas* atlas = ImGui::GetIO().Fonts;
-            ctx->LogInfo("dpi %.2f: baked=%d", sc, atlas->Builder ? atlas->Builder->BakedPool.Size : -1);
+            const int baked1 = atlas->Builder ? atlas->Builder->BakedPool.Size : -1;
+            ctx->LogInfo("dpi %.2f: baked=%d (sweep +%d)", sc, baked1, baked1 - baked0);
+            IM_CHECK(baked0 < 0 || baked1 - baked0 <= ng::kTextZoomStepCount * 3 * 3);
         }
         const int atlasId = ImGui::GetIO().Fonts->TexData ? ImGui::GetIO().Fonts->TexData->UniqueID : -1;
         if (atlasId != atlasId0) atlasGrew = true;
@@ -389,7 +401,7 @@ void T_MatgraphZoomStress(ImGuiTestContext* ctx)
 
 // W1-A10 / BUG-02 / BUG-42: アニメ・シーケンサーの暫定の案内、.dxseq / .uvfx の種別、.dxseq の再生要求。
 //   (1) 下部タブ「timeline」: 登録タイトルに「ダミー」が無く、描かれた案内の文面が ws::kTimelineGuidance（W3 と .dxseq のダブルクリックを案内）。
-//   (2) .dxseq = 「シーケンス」+ ICON_T_LAYERS + アニメ系の色 / .uvfx = 「VFX」+ ICON_T_PARTICLE + 光り物の色。
+//   (2) .dxseq = 「シーケンス」+ ICON_T_SEQUENCE + アニメ系の色 / .uvfx = 「VFX」+ ICON_T_PARTICLE + 光り物の色。
 //   (3) アセットブラウザの本物のダブルクリック → .dxseq は assets 相対パスで再生が始まる / .uvfx は pendingVfxPlace が立つ（消すのは BD4）。
 void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
 {
@@ -428,7 +440,8 @@ void T_WsAnimationPlaceholder(ImGuiTestContext* ctx)
         IM_CHECK(abl::ClassifyExtension(".uvfx") == abl::Kind::Vfx);
         IM_CHECK(std::string(abl::KindLabel(abl::Kind::Sequence)) == "シーケンス");
         IM_CHECK(std::string(abl::KindLabel(abl::Kind::Vfx)) == "VFX");
-        IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) == ICON_T_LAYERS);
+        IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) == ICON_T_SEQUENCE);
+        IM_CHECK(std::string(ICON_T_SEQUENCE) != std::string(ICON_T_LAYERS));   // FU-E-12: Post Process と同じ絵にしない
         IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Vfx)) == ICON_T_PARTICLE);
         IM_CHECK(std::string(AssetBrowserPanel::KindIcon(abl::Kind::Sequence)) != ICON_FILE);
         IM_CHECK(AssetBrowserPanel::KindTintU32(abl::Kind::Sequence) == ImGui::ColorConvertFloat4ToU32(dx12e::theme::TypeUi));
@@ -974,13 +987,25 @@ void T_UndoToSavedStateClearsDirty(ImGuiTestContext* ctx)
     IM_CHECK(ed->IsSceneDirty() && ed->IsSceneHumanDirty());
 
     LogStep(ctx, "1 つ戻してもまだ未保存、全部戻すと保存した状態 = 未保存でなくなる");
+    // FU-E-16: 深さが保存時と違う Undo では内容の指紋（シーン全体の直列化）を走らせず、保存時と同じ深さへ戻った Undo だけ走らせる。
+    u64 runs0 = 0, skip0 = 0, runs1 = 0, skip1 = 0, runs2 = 0, skip2 = 0;
+    double lastMs = 0.0, maxMs = 0.0;
+    AppAccess::SavePointHashStats(runs0, skip0, lastMs, maxMs);
     ctx->SetRef(kWinHierarchy);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(ed->IsSceneDirty() && ed->IsSceneHumanDirty());
+    AppAccess::SavePointHashStats(runs1, skip1, lastMs, maxMs);
+    IM_CHECK_EQ(runs1, runs0);          // 深さが違う: 直列化を走らせない
+    IM_CHECK_EQ(skip1, skip0 + 1);
     ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);
     ctx->Yield(6);
     IM_CHECK(!ed->IsSceneDirty());
+    AppAccess::SavePointHashStats(runs2, skip2, lastMs, maxMs);
+    IM_CHECK_EQ(runs2, runs1 + 1);      // 保存時と同じ深さ: 1 回だけ走らせて一致を確かめた
+    IM_CHECK_EQ(skip2, skip1);
+    IM_CHECK(lastMs >= 0.0 && maxMs >= lastMs);
+    LogStep(ctx, "保存点の指紋: 1 回 %.2f ms（最大 %.2f ms）、省いた回数 %llu", lastMs, maxMs, static_cast<unsigned long long>(skip2));
     IM_CHECK(!ed->IsSceneHumanDirty());   // 自動保存を止める条件が外れる
     IM_CHECK(!ed->autosaveBlockedByHumanEdits);
 
@@ -1218,6 +1243,459 @@ void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx)
     }
     IM_CHECK_EQ(outside, 0);
     IM_CHECK_EQ(warns, 0);
+
+    // 強化（FU-E-16）: 場所は BaseDir 直下の 2 候補のどちらかに正確に一致し、'..' や二重の区切りを含まない。
+    // 探しに行った場所（ログ）も、同じ 2 候補のどちらかである（BaseDir の外や別の相対でない）。
+    const std::string rel = path.substr(base.size());
+    IM_CHECK(rel == "scripts/game.lua" || rel == "assets/game.lua");
+    IM_CHECK(path.find("..") == std::string::npos);
+    IM_CHECK(path.find("//") == std::string::npos || path.find("//") == 0 || path.find("://") != std::string::npos);
+    IM_CHECK(path.find(static_cast<char>(92)) == std::string::npos);   // バックスラッシュ
+    int notCandidate = 0, seen = 0;
+    for (const LogEntry& e : entries)
+    {
+        const size_t p = e.text.find(marker);
+        if (p == std::string::npos) continue;
+        ++seen;
+        std::string searched = e.text.substr(p + marker.size());
+        std::replace(searched.begin(), searched.end(), static_cast<char>(92), '/');
+        if (searched.size() <= base.size()) { ++notCandidate; continue; }
+        const std::string r = searched.substr(base.size());
+        if (r != "scripts/game.lua" && r != "assets/game.lua") ++notCandidate;
+    }
+    IM_CHECK_EQ(notCandidate, 0);
+    // 「未読み込み」の案内（ランチャー中）は警告にしない。ログに出ていれば情報レベル（2 以下）。
+    const std::string launcherMarker = "グローバル game.lua は未読み込み";
+    int launcherWarn = 0;
+    for (const LogEntry& e : entries)
+        if (e.text.find(launcherMarker) != std::string::npos && e.level >= 3) ++launcherWarn;
+    IM_CHECK_EQ(launcherWarn, 0);
+    (void)seen;
+}
+
+// FU-E-1: Application::Update が毎フレーム 1 回 AppAccess::VfxTick を呼ぶ。
+// Tick 駆動のフラグを下ろして数フレーム進め、立ち直る（= 毎フレームの呼び出しがある）ことで確かめる。
+void T_VfxTickEachFrame(ImGuiTestContext* ctx)
+{
+    vfx::Runtime& rt = vfx::Runtime::Get();
+    rt.SetTickDriven(false);
+    ctx->Yield(3);
+    IM_CHECK(rt.HasHost());
+    IM_CHECK(rt.TickDriven());
+}
+
+// FU-E-2: shadingRevision の反映は Run ループ（UpdateLightingUnits の隣）が行う。分割画面でなくても 2 に切り替わり、1 に戻せる。
+void T_ShadingRevisionAppliedInRunLoop(ImGuiTestContext* ctx)
+{
+    Application* app = App();
+    IM_CHECK(app && app->GetScene());
+    auto& sh = app->GetScene()->GetShadingSettings();
+    const u8 prev = sh.shadingRevision;
+    int applied = 0, a = 0, b = 0, c = 0;
+    sh.shadingRevision = 2;
+    ctx->Yield(3);
+    AppAccess::QueryShadingPsos(*app, applied, a, b, c);
+    IM_CHECK_EQ(applied, 2);
+    sh.shadingRevision = 1;
+    ctx->Yield(3);
+    AppAccess::QueryShadingPsos(*app, applied, a, b, c);
+    IM_CHECK_EQ(applied, 1);
+    sh.shadingRevision = prev;
+    ctx->Yield(3);
+}
+
+// FU-E-11: Graphite のビューポート帯（##ViewportBar）の移動 / 回転 / 拡縮は、アクティブ下線を 1 本だけ描く（ホスト描画）。
+//   下線 = アクセント色の NeedleBar（高さ AccentPx）。選択中のボタンの下辺に、左右 4px 内側で整数 px に丸めて出る。
+//   ボタン側の下線は ToolUnderlineHosted で止まり、描画の後はフラグが戻る。ほかのテーマ（既定）では帯のホスト描画は出ない。
+void T_ViewportToolUnderlineHosted(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr);
+    namespace th = dx12e::theme;
+    const th::Variant prevVariant = th::CurrentVariant();
+    const GizmoMode   prevMode    = ed->gizmoMode;
+    const auto        prevPrefs   = ed->vpPrefs;
+    ed->vpPrefs.barVisible = true;
+
+    // 帯の描画リストから、アクセント色の塗りの頂点を拾い、ボタンの下辺付近（[btnMaxY - AccentPx - 1, btnMaxY + 1]）に絞る。
+    struct Span { float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f; int verts = 0; };
+    auto scan = [&](float rowMaxY, float xMin, float xMax, ImU32 col) -> Span
+    {
+        Span sp;
+        ImGuiWindow* bar = ImGui::FindWindowByName("##ViewportBar");
+        if (!bar || !bar->WasActive) return sp;
+        const ImDrawList* dl = bar->DrawList;
+        for (int i = 0; i < dl->VtxBuffer.Size; ++i)
+        {
+            const ImDrawVert& v = dl->VtxBuffer[i];
+            if (v.col != col) continue;
+            if (v.pos.y < rowMaxY - th::AccentPx() - 1.0f || v.pos.y > rowMaxY + 1.0f) continue;
+            if (v.pos.x < xMin || v.pos.x > xMax) continue;
+            sp.x0 = (std::min)(sp.x0, v.pos.x); sp.x1 = (std::max)(sp.x1, v.pos.x);
+            sp.y0 = (std::min)(sp.y0, v.pos.y); sp.y1 = (std::max)(sp.y1, v.pos.y);
+            ++sp.verts;
+        }
+        return sp;
+    };
+
+    struct Tool { const char* id; GizmoMode mode; };
+    const Tool tools[] = { { "vpMove", GizmoMode::Translate }, { "vpRotate", GizmoMode::Rotate }, { "vpScale", GizmoMode::Scale } };
+
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const bool graphite = (pass == 0);
+        th::SetVariant(graphite ? th::Variant::Graphite : th::Variant::Default);
+        ctx->Yield(6);
+        ctx->SetRef("//##ViewportBar");
+        const ImGuiTestItemInfo first = ctx->ItemInfo("vpMove/##ib", ImGuiTestOpFlags_NoError);
+        const ImGuiTestItemInfo last  = ctx->ItemInfo("vpScale/##ib", ImGuiTestOpFlags_NoError);
+        IM_CHECK(first.ID != 0 && last.ID != 0);
+        const float xMin = first.RectFull.Min.x - 2.0f, xMax = last.RectFull.Max.x + 2.0f;
+        const ImU32 accent = ImGui::GetColorU32(th::Accent);
+
+        for (const Tool& t : tools)
+        {
+            ed->gizmoMode = t.mode;
+            ctx->Yield(6);
+            const ImGuiTestItemInfo it = ctx->ItemInfo((std::string(t.id) + "/##ib").c_str(), ImGuiTestOpFlags_NoError);
+            IM_CHECK(it.ID != 0);
+            IM_CHECK(!ui::anim::ToolUnderlineHosted());   // フレームの終わりでホストのフラグは戻っている
+            const Span sp = scan(it.RectFull.Max.y, xMin, xMax, accent);
+            if (graphite)
+            {
+                IM_CHECK(sp.verts > 0);
+                // 左右は 4px 内側（整数 px）。1 本だけ = 選択中ボタンの幅の外に出ない
+                const float wantX0 = std::floor(it.RectFull.Min.x + ui::Px(4.0f) + 0.5f);
+                const float wantX1 = std::floor(it.RectFull.Max.x - ui::Px(4.0f) + 0.5f);
+                IM_CHECK(std::fabs(sp.x0 - wantX0) < 0.51f);
+                IM_CHECK(std::fabs(sp.x1 - wantX1) < 0.51f);
+                IM_CHECK(std::fabs(sp.y1 - std::floor(it.RectFull.Max.y + 0.5f)) < 0.51f);
+                IM_CHECK(std::fabs((sp.y1 - sp.y0) - th::AccentPx()) < 0.51f);
+            }
+            else
+                IM_CHECK_EQ(sp.verts, 0);   // 既定テーマでは 1 本のホスト下線は出ない（ネオンの下線は別の色・形）
+        }
+    }
+
+    th::SetVariant(prevVariant);
+    ed->gizmoMode = prevMode;
+    ed->vpPrefs   = prevPrefs;
+    ctx->Yield(4);
+}
+
+
+// W1-A13 (BUG-30 / BUG-31 / BUG-35): コンソールの例文が動く / 情報が既定で見える / 自動スクロール / 背景モードのインポートの案内。
+void T_ConsoleDefaults(ImGuiTestContext* ctx)
+{
+    const ImGuiID win = FocusWindow(ctx, kWinConsole);
+    IM_CHECK(win != 0);
+    if (win == 0) return;
+
+    auto listWindow = [&]() -> ImGuiWindow* {
+        for (ImGuiWindow* w : ctx->UiContext->Windows)
+            if (w->WasActive && std::strstr(w->Name, "##consolelist") != nullptr) return w;
+        return nullptr;
+    };
+
+    LogStep(ctx, "例文を実行してもエラーにならない（エンティティが無くても）");
+    {
+        std::vector<LogEntry> tmp;
+        const uint64_t cursor = Logger::ReadBuffered(0, tmp);
+        ctx->SetRef(win);
+        ctx->ItemInputValue("##luainput", kConsoleLuaExample);
+        ctx->Yield(8);
+        std::vector<LogEntry> got;
+        Logger::ReadBuffered(cursor, got);
+        bool ranOk = false, luaError = false;
+        std::string errText;
+        for (const LogEntry& e : got)
+        {
+            if (e.level >= 4) { luaError = true; errText = e.text; }
+            // 入力のエコー（"> ..."）にも文字列が入るので、結果の行（"エンティティ数: <数字>"）だけを見る
+            if (e.text.rfind("> ", 0) == 0) continue;
+            const size_t p = e.text.find("エンティティ数: ");
+            if (p != std::string::npos && p + std::strlen("エンティティ数: ") < e.text.size() &&
+                std::isdigit(static_cast<unsigned char>(e.text[p + std::strlen("エンティティ数: ")])))
+                ranOk = true;
+        }
+        if (luaError) IM_ERRORF("例文がエラーになりました: %s", errText.c_str());
+        IM_CHECK(!luaError);
+        IM_CHECK(ranOk);
+    }
+
+    LogStep(ctx, "情報のログが既定で一覧に出て、末尾に自動で追従する");
+    {
+        ctx->SetRef(win);
+        ctx->ItemClick("クリア");
+        ctx->Yield(4);
+        for (int i = 0; i < 120; ++i) Logger::Info("A13 情報ログ {}", i);
+        ctx->Yield(6);
+        ImGuiWindow* lw = listWindow();
+        IM_CHECK(lw != nullptr);
+        if (lw)
+        {
+            IM_CHECK(lw->ScrollMax.y > 0.0f);   // 情報が表示されている（既定 OFF だと行が無く 0 のまま）
+            if (lw->Scroll.y < lw->ScrollMax.y - 2.0f) IM_ERRORF("scroll=%.1f max=%.1f", lw->Scroll.y, lw->ScrollMax.y);
+            IM_CHECK(lw->Scroll.y >= lw->ScrollMax.y - 2.0f);
+            for (int i = 120; i < 160; ++i) { Logger::Info("A13 情報ログ {}", i); ctx->Yield(1); }
+            ctx->Yield(4);
+            lw = listWindow();
+            IM_CHECK(lw != nullptr);
+            if (lw) IM_CHECK(lw->Scroll.y >= lw->ScrollMax.y - 2.0f);
+
+            LogStep(ctx, "上へスクロールして読み戻している間は、新着が来ても位置が変わらない");
+            if (lw)
+            {
+                ctx->SetRef(win);
+                ctx->ScrollToY(ImGuiTestRef(lw->ID), 0.0f);
+                ctx->Yield(3);
+                lw = listWindow();
+                IM_CHECK(lw != nullptr);
+                if (lw)
+                {
+                    const float before = lw->Scroll.y;
+                    IM_CHECK(before < lw->ScrollMax.y - 10.0f);
+                    for (int i = 160; i < 200; ++i) { Logger::Info("A13 情報ログ {}", i); ctx->Yield(1); }
+                    ctx->Yield(4);
+                    lw = listWindow();
+                    IM_CHECK(lw != nullptr);
+                    if (lw)
+                    {
+                        if (std::fabs(lw->Scroll.y - before) > 1.0f) IM_ERRORF("scroll %.1f -> %.1f", before, lw->Scroll.y);
+                        IM_CHECK(std::fabs(lw->Scroll.y - before) <= 1.0f);
+                    }
+                }
+            }
+        }
+    }
+
+    LogStep(ctx, "debug（MCP の接続・切断の 1 件ごと等）は既定の一覧に出ない");
+    {
+        ctx->SetRef(win);
+        ctx->ItemClick("クリア");
+        ctx->Yield(4);
+        for (int i = 0; i < 200; ++i) Logger::Debug("MCP bridge: client #{} connected ({} connected)", i, 1);
+        ctx->Yield(6);
+        ImGuiWindow* lw = listWindow();
+        IM_CHECK(lw != nullptr);
+        if (lw) IM_CHECK(lw->ScrollMax.y <= 0.0f);   // 一覧は空のまま
+    }
+
+    LogStep(ctx, "背景モード（ダイアログを出せない）でインポートを押すと案内が出る");
+    IM_CHECK(dx12e::guard::Blocked("A13 test probe"));   // UI テスト中は必ず仮想入力扱い（出ないなら環境がおかしい）
+    {
+        const ImGuiID assets = FocusWindow(ctx, kWinAssets);
+        IM_CHECK(assets != 0);
+        ui::ToastClearAll();
+        ctx->Yield(2);
+        ctx->SetRef(assets);
+        ctx->ItemClick("**/" ICON_UPLOAD " インポート");
+        ctx->Yield(4);
+        IM_CHECK(ui::ToastLiveCount() >= 1);
+        bool found = false;
+        for (const ui::ToastRecord& r : ui::ToastHistory(8))
+            if (r.live && r.text.find("import_asset") != std::string::npos) found = true;
+        IM_CHECK(found);
+    }
+}
+
+// W1-A7 (GG-4): 計器のクロム。Graphite だけ、タイトルバー下端の主尺とフォーカス・キャリパー、22px のステータスバー、16px のロゴが出る。
+//   黄の予算（kGgSpec.budget: 線の数・画素比・面）は描画リストの三角形から数える（数値は tokens から生成した値を読む）。
+//   旧テーマ（既定）では主尺もキャリパーも出ず、ステータスバーは 28px のまま。
+namespace
+{
+struct YellowStats { int components = 0; int fills = 0; float ratio = 0.0f; int wideInTitleBar = 0; float capX0 = 0.0f, capX1 = 0.0f; std::string dump; };
+
+// 描画リストの各三角形を、所属する ImDrawCmd の ClipRect で切って列挙する（スキッサーで全て消える三角形は飛ばす）。
+// vis = 外接矩形を ClipRect で切った可視部分、visFrac = 可視部分の面積 / 外接矩形の面積（軸平行図形なので面積比で近似できる）。
+template <typename F>
+void ForEachVisibleTri(const ImDrawList* dl, F&& f)
+{
+    for (const ImDrawCmd& cmd : dl->CmdBuffer)
+    {
+        for (unsigned int k = 0; k + 2 < cmd.ElemCount; k += 3)
+        {
+            const int i = static_cast<int>(cmd.IdxOffset + k);
+            if (i + 2 >= dl->IdxBuffer.Size) break;
+            const ImDrawVert& a = dl->VtxBuffer[dl->IdxBuffer[i]];
+            const ImDrawVert& b = dl->VtxBuffer[dl->IdxBuffer[i + 1]];
+            const ImDrawVert& c = dl->VtxBuffer[dl->IdxBuffer[i + 2]];
+            const float bx0 = (std::min)({ a.pos.x, b.pos.x, c.pos.x }), by0 = (std::min)({ a.pos.y, b.pos.y, c.pos.y });
+            const float bx1 = (std::max)({ a.pos.x, b.pos.x, c.pos.x }), by1 = (std::max)({ a.pos.y, b.pos.y, c.pos.y });
+            const float vx0 = (std::max)(bx0, cmd.ClipRect.x), vy0 = (std::max)(by0, cmd.ClipRect.y);
+            const float vx1 = (std::min)(bx1, cmd.ClipRect.z), vy1 = (std::min)(by1, cmd.ClipRect.w);
+            if (vx1 <= vx0 || vy1 <= vy0) continue;   // 面積 0 に切られる = 画面に出ない
+            const float full = (bx1 - bx0) * (by1 - by0);
+            const float frac = full > 0.0f ? ((vx1 - vx0) * (vy1 - vy0)) / full : 1.0f;
+            f(a, b, c, ImVec4(vx0, vy0, vx1, vy1), frac);
+        }
+    }
+}
+
+YellowStats AuditYellow(float titleBarMaxY)
+{
+    namespace th = dx12e::theme;
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    const ImVec4 ys[4] = { th::Accent, th::AccentHover, th::AccentPressed, th::NeedleDim };
+    ImU32 rgb[4];
+    for (int i = 0; i < 4; ++i) rgb[i] = ImGui::ColorConvertFloat4ToU32(ImVec4(ys[i].x, ys[i].y, ys[i].z, 1.0f)) & 0x00FFFFFFu;
+    struct Box { float x0, y0, x1, y1, fillArea; };
+    std::vector<Box> boxes;
+    float area = 0.0f;
+    auto scanList = [&](const ImDrawList* dl)
+    {
+        if (!dl) return;
+        ForEachVisibleTri(dl, [&](const ImDrawVert& a, const ImDrawVert& b, const ImDrawVert& c, const ImVec4& vis, float visFrac)
+        {
+            if (a.col != b.col || b.col != c.col || (a.col >> 24) == 0) return;
+            // 文字・アイコンのグリフ（フォントのアトラスを引く三角形）は塗りではない。白画素の UV の三角形だけを数える
+            const ImVec2 wu = ImGui::GetCurrentContext()->DrawListSharedData.TexUvWhitePixel;
+            if (a.uv.x != wu.x || a.uv.y != wu.y || b.uv.x != wu.x || b.uv.y != wu.y || c.uv.x != wu.x || c.uv.y != wu.y) return;
+            const ImU32 key = a.col & 0x00FFFFFFu;
+            if (key != rgb[0] && key != rgb[1] && key != rgb[2] && key != rgb[3]) return;
+            // 箱は ClipRect で切った可視部分だけ（スキッサーで全部消える図形は数えない）
+            Box bx{ vis.x, vis.y, vis.z, vis.w, 0.0f };
+            const float tri = std::fabs((b.pos.x - a.pos.x) * (c.pos.y - a.pos.y) - (c.pos.x - a.pos.x) * (b.pos.y - a.pos.y)) * 0.5f * visFrac;
+            bx.fillArea = tri;
+            area += tri;
+            boxes.push_back(bx);
+        });
+    };
+    for (ImGuiWindow* w : g.Windows)
+        if (w->WasActive && !w->Hidden && w->Viewport == ImGui::GetMainViewport()) scanList(w->DrawList);
+    // 触れ合う箱を 1 つの連結成分にまとめる（1px の隙間までつなぐ）
+    bool merged = true;
+    while (merged)
+    {
+        merged = false;
+        for (size_t i = 0; i < boxes.size() && !merged; ++i)
+            for (size_t j = i + 1; j < boxes.size() && !merged; ++j)
+            {
+                const Box p = boxes[i], q = boxes[j];
+                if (p.x0 <= q.x1 + 1.0f && q.x0 <= p.x1 + 1.0f && p.y0 <= q.y1 + 1.0f && q.y0 <= p.y1 + 1.0f)
+                {
+                    boxes[i] = Box{ (std::min)(p.x0, q.x0), (std::min)(p.y0, q.y0), (std::max)(p.x1, q.x1), (std::max)(p.y1, q.y1), p.fillArea + q.fillArea };
+                    boxes.erase(boxes.begin() + static_cast<std::ptrdiff_t>(j));
+                    merged = true;
+                }
+            }
+    }
+    YellowStats st;
+    st.components = static_cast<int>(boxes.size());
+    const float sc = th::Scale();
+    const float minSide = std::floor(4.0f * sc + 0.5f);   // 4x4 の面の窓は DPI に合わせて round(4 x scale)
+    for (const Box& b : boxes)
+    {
+        const float w = b.x1 - b.x0, h = b.y1 - b.y0;
+        // 塗り = 短辺と面積が窓以上で、外接矩形がほぼ塗りつぶされているもの（線 + 顎の外接矩形は塗りではない）
+        if (w * h >= 16.0f * sc * sc && (std::min)(w, h) >= minSide && b.fillArea >= 0.85f * w * h) ++st.fills;
+        { char tmp[96]; std::snprintf(tmp, sizeof(tmp), "[%.0f,%.0f %.0fx%.0f]", b.x0, b.y0, w, h); st.dump += tmp; }
+        if (w >= 100.0f * sc && b.y1 <= titleBarMaxY + 1.0f) { ++st.wideInTitleBar; st.capX0 = b.x0; st.capX1 = b.x1; }
+    }
+    const ImVec2 ds = ImGui::GetMainViewport()->Size;
+    st.ratio = ds.x * ds.y > 0.0f ? area / (ds.x * ds.y) : 0.0f;
+    return st;
+}
+
+// 可視（ClipRect 内）の三角形の頂点だけを数える。yMin/yMax を渡すと、可視部分がその帯に収まるものだけを数える。
+int CountVertsWithColor(const ImDrawList* dl, ImU32 col, float yMin = -1e30f, float yMax = 1e30f)
+{
+    int n = 0;
+    if (!dl) return 0;
+    ForEachVisibleTri(dl, [&](const ImDrawVert& a, const ImDrawVert& b, const ImDrawVert& c, const ImVec4& vis, float)
+    {
+        if (vis.y < yMin - 0.5f || vis.w > yMax + 0.5f) return;
+        n += (a.col == col) + (b.col == col) + (c.col == col);
+    });
+    return n;
+}
+} // namespace
+
+void T_GraphiteChrome(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr);
+    namespace th = dx12e::theme;
+    const th::Variant prev = th::CurrentVariant();
+
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const bool graphite = (pass == 0);
+        th::SetVariant(graphite ? th::Variant::Graphite : th::Variant::Default);
+        ctx->Yield(8);
+        const ImGuiID hier = FocusWindow(ctx, kWinHierarchy);
+        IM_CHECK(hier != 0);
+        ctx->Yield(8);
+
+        ImGuiWindow* tb = ImGui::FindWindowByName("##Toolbar");
+        ImGuiWindow* sb = ImGui::FindWindowByName("##StatusBar");
+        IM_CHECK(tb != nullptr && tb->WasActive && sb != nullptr && sb->WasActive);
+        if (!tb || !sb) break;
+        const th::Spec& sp = th::CurrentSpec();
+        const float titleBottom = tb->MenuBarRect().Max.y;
+        const ImRect logo = EditorChrome::LogoRectScreen();
+
+        if (graphite)
+        {
+            IM_CHECK(sp.gg != nullptr);
+            if (!sp.gg) break;
+            const th::gg::GgSpec& gg = *sp.gg;
+            // 寸法
+            ctx->LogInfo("statusbar h=%.2f want=%.2f scale=%.2f", sb->Size.y, ui::Px(static_cast<float>(gg.layout.statusBarH)), th::Scale());
+            IM_CHECK(std::fabs(sb->Size.y - ui::Px(static_cast<float>(gg.layout.statusBarH))) < 0.51f);
+            IM_CHECK(std::fabs(logo.GetWidth() - ui::Px(16.0f)) < 0.51f && std::fabs(logo.GetHeight() - ui::Px(16.0f)) < 0.51f);
+            IM_CHECK(logo.Min.y >= tb->Pos.y && logo.Max.y <= titleBottom + 0.5f);
+            // 主尺: タイトルバーの描画リストに主目盛りの色の頂点がある
+            const ImU32 major = ImGui::GetColorU32(gg.chrome.tickMajor);
+            const ImU32 minor = ImGui::GetColorU32(gg.chrome.tickMinor);
+            // 可視（ClipRect 内）の目盛りだけを数え、かつタイトルバー下端の帯（主目盛りの高さ）に収まっていること
+            const float rulerTop = titleBottom - ui::Px(static_cast<float>(gg.deco.scaleMajorH)) - 1.0f;
+            IM_CHECK(CountVertsWithColor(tb->DrawList, major, rulerTop, titleBottom) >= 3 * 10);
+            IM_CHECK(CountVertsWithColor(tb->DrawList, minor, rulerTop, titleBottom) >= 3 * 20);
+            IM_CHECK(CountVertsWithColor(tb->DrawList, major) == CountVertsWithColor(tb->DrawList, major, rulerTop, titleBottom));
+            // 黄の予算（編集中）
+            const YellowStats st = AuditYellow(titleBottom);
+            ctx->LogInfo("yellow: components=%d fills=%d ratio=%.4f caliper=[%.1f,%.1f] fillBoxes=%s", st.components, st.fills, st.ratio, st.capX0, st.capX1, st.dump.c_str());
+            IM_CHECK(st.wideInTitleBar == 1);   // フォーカス・キャリパー（線 + 顎で 1 つの成分）
+            IM_CHECK(st.components >= 1 && st.components <= gg.budget.editLinesMax);
+            IM_CHECK(st.fills <= gg.budget.editFillsMax);
+            IM_CHECK(st.ratio <= gg.budget.editPixelRatioMax * 0.01f);
+            // キャリパーはフォーカス中パネル（ヒエラルキー）の全幅
+            ImGuiWindow* hw = ImGui::FindWindowByName(kWinHierarchyName);
+            IM_CHECK(hw != nullptr);
+            if (hw && hw->DockNode)
+            {
+                IM_CHECK(std::fabs(st.capX0 - std::floor(hw->DockNode->Pos.x + 0.5f)) < 1.01f);
+                IM_CHECK(std::fabs(st.capX1 - std::floor(hw->DockNode->Pos.x + hw->DockNode->Size.x + 0.5f)) < 1.01f);
+            }
+            // 別のパネルへフォーカスを移すとキャリパーの範囲も移る
+            const ImGuiID con = FocusWindow(ctx, kWinConsole);
+            if (con != 0)
+            {
+                ctx->Yield(8);
+                const YellowStats st2 = AuditYellow(ImGui::FindWindowByName("##Toolbar")->MenuBarRect().Max.y);
+                IM_CHECK(st2.wideInTitleBar == 1);
+                IM_CHECK(std::fabs(st2.capX0 - st.capX0) > 1.0f || std::fabs(st2.capX1 - st.capX1) > 1.0f);
+            }
+        }
+        else
+        {
+            const th::Spec& gsp = th::SpecOf(th::Variant::Graphite);
+            IM_CHECK(gsp.gg != nullptr);
+            if (gsp.gg)
+            {
+                const ImU32 major = ImGui::GetColorU32(gsp.gg->chrome.tickMajor);
+                IM_CHECK_EQ(CountVertsWithColor(tb->DrawList, major), 0);       // 主尺は出ない
+            }
+            // ステータスバーは従来のまま（論理 28。ImGui の WindowMinSize で実寸はそれ以上になりうる）。Graphite の 22 にはならない
+            IM_CHECK(sb->Size.y >= ui::Px(28.0f) - 0.51f);
+            const YellowStats st = AuditYellow(titleBottom);
+            IM_CHECK_EQ(st.wideInTitleBar, 0);                                   // キャリパーは出ない
+        }
+    }
+
+    th::SetVariant(prev);
+    ctx->Yield(6);
 }
 
 } // namespace uitest

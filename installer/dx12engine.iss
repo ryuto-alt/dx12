@@ -68,12 +68,16 @@ Source: "{#SrcDir}\licenses\NVIDIA_DLSS_LICENSE.txt"; DestDir: "{app}\licenses";
 Source: "{#SrcDir}\D3D12\D3D12Core.dll"; DestDir: "{app}\D3D12"; Flags: ignoreversion
 ; Agility の再頒布ライセンス文（third_party\agility は configure が取得する物）
 Source: "{#RepoRoot}\third_party\agility\{#AgilityVersion}\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "Microsoft.Direct3D.D3D12-LICENSE.txt"; Flags: ignoreversion
+; UI 書体（IBM Plex / Noto Sans JP / PlemolJP）の SIL OFL 1.1 ライセンス文。書体を配る以上は必ず同梱する（tools/subset_fonts.py --check が揃っているか検査）。
+Source: "{#RepoRoot}\third_party\licenses\IBM-Plex-OFL.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#RepoRoot}\third_party\licenses\Noto-OFL.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#RepoRoot}\third_party\licenses\PlemolJP-OFL.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; シェーダーソース(.hlsl/.hlsli)。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用
 ; (PathResolver::ShaderSourceDirW() が配布時に exe 隣の shaders-src/ を見る)。
 Source: "{#RepoRoot}\shaders\*"; DestDir: "{app}\shaders-src"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; 起動音 splash_d.*（出どころ/ライセンス未確認）は配布しない。開発機に変換済み WAV があっても入れない。
-Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Excludes: "splash_d.*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#RepoRoot}\assets\*"; DestDir: "{app}\assets"; Excludes: "splash_d.*,editor\sounds\calibrate\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; MCP(AI ブリッジ)サーバは同梱しない。エディタの「MCP / AI Bridge」窓のボタン 1 回（または DX12Engine.exe --install-mcp）で
 ; https://github.com/ryuto-alt/dx12-mcp から取得し、Node.js も無ければ自動で入れて Codex / Claude Code などへ登録する。
 ; VSCode 補完用の Lua API 型定義（導入手順は同フォルダの README.md）

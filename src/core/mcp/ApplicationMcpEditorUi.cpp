@@ -16,6 +16,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpManifestBuild.h"
+#include "core/mcp/McpPendingReplies.h"
 #include "core/mcp/McpSafety.h"
 #include "editor/EditorCommandMcp.h"
 #include "editor/EditorStateMcp.h"
@@ -894,6 +895,11 @@ void Application::RegisterMcpEditorUiMethods()
 // ---------------------------------------------------------------------------
 // 遅延応答（毎フレーム）。表のコマンドが立てたフラグが消化され、UI が反応した後に返す。
 // ---------------------------------------------------------------------------
+bool HasPendingEditorRunWaits()
+{
+    return !Waits().empty();
+}
+
 void Application::ServiceMcpEditorUi()
 {
     auto& waits = Waits();

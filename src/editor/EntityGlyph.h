@@ -6,6 +6,7 @@
 // （全部同じ濃青チップだった旧 PNG アイコンをやめ、モノクロのグリフ + 種別ごとの色にした）。
 
 #include "editor/EditorTheme.h"
+#include "editor/IconTable.h"
 #include "editor/EditorIcons.h"
 #include "ecs/Components.h"
 
@@ -26,26 +27,11 @@ struct EntityGlyph
 };
 
 // hasChildren: コンポーネントを持たない空の親を「グループ」（フォルダ）アイコンにする。
+// 判定の実体は IconTable.h（icons::EntityId）。ここは従来の呼び出し口（glyph + テーマ色のポインタ）を保つ薄い橋渡し。
 inline EntityGlyph PickEntityGlyph(entt::registry& reg, entt::entity e, bool hasChildren)
 {
-    using namespace dx12e::theme;
-    if (reg.all_of<CameraComponent>(e))                            return { ICON_T_CAMERA,   &TypeCamera };
-    if (reg.all_of<DirectionalLight>(e))                           return { ICON_T_SUN,      &TypeLight };
-    if (reg.any_of<PointLight, SpotLight>(e))                      return { ICON_T_LIGHT,    &TypeLight };
-    if (reg.any_of<UICanvas, UIRect, UIImage, UIText, UIButton>(e)) return { ICON_T_UI,       &TypeUi };
-    if (reg.all_of<Terrain>(e))                                    return { ICON_T_TERRAIN,  &TypeMesh };
-    if (reg.all_of<ParticleEmitter>(e))                            return { ICON_T_PARTICLE, &TypeLight };
-    if (reg.all_of<DecalComponent>(e))                             return { ICON_T_DECAL,    &TypeMesh };
-    if (reg.all_of<ReflectionProbe>(e))                            return { ICON_T_LIGHT,    &TypeLight };
-    if (reg.all_of<MeshRenderer>(e) || reg.all_of<SculptMesh>(e))  return { ICON_T_MESH,     &TypeMesh };
-    if (reg.any_of<AudioSource, AudioReverbZone>(e))               return { ICON_T_AUDIO,    &TypeAudio };
-    if (reg.any_of<RigidBody, CharacterController>(e))             return { ICON_T_PHYSICS,  &TypePhysics };
-    if (reg.any_of<BoxCollider, SphereCollider, CapsuleCollider,
-                   ConvexHullCollider, MeshCollider>(e))           return { ICON_T_COLLIDER, &TypePhysics };
-    if (reg.all_of<Brain>(e))                                      return { ICON_T_BRAIN,    &TypeScript };
-    if (reg.all_of<LuaScript>(e))                                  return { ICON_T_SCRIPT,   &TypeScript };
-    if (hasChildren)                                               return { ICON_T_GROUP,    &TypeFolder };
-    return { ICON_T_EMPTY, &TypeEmpty };
+    const icons::KindVisual v = icons::ForEntity(reg, e, hasChildren);
+    return { v.glyph, v.tint };
 }
 
 } // namespace dx12e

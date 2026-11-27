@@ -41,6 +41,8 @@ struct AppAccess
     static std::string UntitledDir();
     // UI テスト用: 自動保存の退避の最短間隔の起点を消す（実時間で 30 秒待たずに次の退避を撮れるように）。
     static void ResetAutoProtectThrottleForTest();
+    // FU-E-16: 保存点の判定（SceneContentHash）の負荷。実行回数・Undo の深さが違って省いた回数・直近と最大の時間（ms）。UI テスト用。
+    static void SavePointHashStats(u64& runs, u64& skipped, double& lastMs, double& maxMs);
     // W05-04: GraphicsDevice の caps（DeviceCaps.h を include した TU だけが型を使える）。デバイスが無ければ nullptr。
     static const struct DeviceCaps* GetDeviceCaps(Application&);
     // W1-A10: エディタのプレビュー再生中のシーケンス名（無ければ空。定義は core/ApplicationSequencer.cpp）。UI テスト用。

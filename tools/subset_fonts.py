@@ -549,6 +549,77 @@ def read_charset_file(path):
     return out
 
 
+# 出力の置き場所 -> OFL ライセンス文（third_party/licenses/ の下）。PlemolJP 由来の起動画面書体もここに含まれる
+OFL_BY_PATH = (
+    ("/ibm-plex/", "IBM-Plex-OFL.txt"),
+    ("/noto-sans-jp/", "Noto-OFL.txt"),
+    ("/plemoljp/", "PlemolJP-OFL.txt"),
+    ("/splash/fonts/", "PlemolJP-OFL.txt"),
+)
+
+
+def _strip_comments(text, prefixes):
+    return "\n".join(l for l in text.splitlines() if not l.strip().startswith(prefixes))
+
+
+def check_ofl_licenses(fonts):
+    """OFL の同梱義務: 書体を同梱しているのに、ライセンス文が無い / 空 / ビルド・インストーラ・自動更新 zip が運ばない、を落とす。"""
+    ok = True
+    need = set()
+    for spec in fonts:
+        hit = [lic for key, lic in OFL_BY_PATH if key in "/" + spec["out"]]
+        if not hit:
+            print("NG %s に対応するライセンス文が OFL_BY_PATH にありません（書体を足したら対応を足す）" % spec["out"])
+            ok = False
+            continue
+        need.add(hit[0])
+
+    # assets/ 以下はそのまま配られる。subset_fonts を通さずに足された書体も、対応するライセンス文が要る
+    listed = {os.path.normpath(spec["out"]) for spec in fonts}
+    assets_root = os.path.join(ROOT, "assets")
+    for dp, _dn, fn in os.walk(assets_root):
+        for name in fn:
+            if not name.lower().endswith((".ttf", ".otf", ".woff", ".woff2", ".ttc")):
+                continue
+            rel = os.path.normpath(os.path.relpath(os.path.join(dp, name), ROOT))
+            if rel in listed:
+                continue
+            sibling = [f for f in os.listdir(dp) if f.upper().startswith("LICENSE")]
+            if not sibling:
+                print("NG %s はライセンス文のない書体です（同じフォルダに LICENSE-*.txt を置くか、subset_fonts の FONTS に入れる）" % rel)
+                ok = False
+
+    def read_opt(*parts):
+        p = os.path.join(ROOT, *parts)
+        return read_text(p) if os.path.exists(p) else ""
+
+    # コメント行を除いた本文だけを見る（コメントに名前を書いただけでは通さない）
+    cmake_text = _strip_comments(read_opt("CMakeLists.txt"), ("#",))
+    iss_lines = [l for l in _strip_comments(read_opt("installer", "dx12engine.iss"), (";",)).splitlines()
+                 if l.lstrip().startswith("Source:")]
+    ps_text = _strip_comments(read_opt("installer", "build.ps1"), ("#",))
+    for lic in sorted(need):
+        p = os.path.join(ROOT, "third_party", "licenses", lic)
+        if not os.path.exists(p):
+            print("NG ライセンス文がありません（OFL の同梱義務）: third_party/licenses/" + lic)
+            ok = False
+            continue
+        body = read_text(p)
+        if len(body) < 500 or "SIL OPEN FONT LICENSE" not in body.upper() or "copyright" not in body.lower()                 or "PREAMBLE" not in body.upper():
+            print("NG %s に著作権表示か OFL 本文（前文を含む）がありません" % lic)
+            ok = False
+        if ("third_party/licenses/" + lic) not in cmake_text:
+            print("NG ルート CMakeLists.txt が %s をビルド出力の licenses/ へコピーしていません" % lic)
+            ok = False
+        if not any(("third_party\\licenses\\" + lic) in l and "{app}\\licenses" in l for l in iss_lines):
+            print("NG installer/dx12engine.iss が %s を {app}\\licenses へ入れる Source 行がありません" % lic)
+            ok = False
+        if lic not in ps_text:
+            print("NG installer/build.ps1 が %s を自動更新 zip の licenses/ へ入れていません" % lic)
+            ok = False
+    return ok
+
+
 def do_check(src_dir):
     ok = True
     lock = load_lock()
@@ -635,6 +706,8 @@ def do_check(src_dir):
                 if f.read() != data:
                     ok = False
                     print("NG 元ファイルから作り直した結果が生成物と一致しません:", out)
+    # 4) OFL の同梱義務（書体を同梱したのにライセンス文が無い状態を落とす）
+    ok = check_ofl_licenses(FONTS) and ok
     print("OK subset_fonts --check（合計 %.2f MB / 上限 %.0f MB）" % (total / 1048576.0, LIMIT_TOTAL / 1048576.0) if ok else "FAILED")
     return 0 if ok else 1
 

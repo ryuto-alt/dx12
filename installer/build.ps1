@@ -191,6 +191,8 @@ Copy-Item $agilityCore -Destination (Join-Path $stage "D3D12/D3D12Core.dll")
 New-Item -ItemType Directory -Force -Path (Join-Path $stage "licenses") | Out-Null
 Copy-Item $agilityLicense -Destination (Join-Path $stage "licenses/Microsoft.Direct3D.D3D12-LICENSE.txt")
 if ($bundleDlss) { Copy-Item $dlssLicense -Destination (Join-Path $stage "licenses/NVIDIA_DLSS_LICENSE.txt") }
+# 書体の OFL ライセンス文（OFL の同梱義務。assets/ の書体を zip でも配るので、自動更新の zip にも入れる）。tools/subset_fonts.py --check がこの記述を検査する
+foreach ($ofl in "IBM-Plex-OFL.txt", "Noto-OFL.txt", "PlemolJP-OFL.txt") { Copy-Item (Join-Path $repoRoot "third_party/licenses/$ofl") -Destination (Join-Path $stage "licenses/$ofl") }
 # shaders（.cso）
 Copy-Item (Join-Path $srcDir "shaders") -Destination (Join-Path $stage "shaders") -Recurse -ErrorAction SilentlyContinue
 # shaders-src（.hlsl/.hlsli ソース。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用。
@@ -203,6 +205,8 @@ Copy-Item (Join-Path $repoRoot "assets") -Destination (Join-Path $stage "assets"
 #   無くても起動音は埋め込みの案 A へ自動で縮退する。
 Get-ChildItem -Path (Join-Path $stage "assets\editor\sounds") -Filter "splash_d.*" -ErrorAction SilentlyContinue |
   Remove-Item -Force
+# ★editor.rc で exe へ RCDATA 埋め込み済みの Calibrate WAV（stems 含む約 2MB）は assets 側へ二重に入れない（iss の Excludes と同じ）。
+Remove-Item -Recurse -Force (Join-Path $stage "assets\editor\sounds\calibrate") -ErrorAction SilentlyContinue
 # ★ tools\mcp-server は同梱しない（別リポジトリ ryuto-alt/dx12-mcp から配布）
 # tools\lua-defs（VSCode 補完用の Lua API 型定義）
 $luaDefs = Join-Path $repoRoot "tools\lua-defs"

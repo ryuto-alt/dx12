@@ -72,7 +72,6 @@ public:
     static LRESULT WndProcHandler(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 private:
-    u32 m_srvIndex = 0;
     HWND m_hwnd = nullptr;
     std::function<void(int, bool)> m_virtualKeySink;
     u32  m_logicalW = 0, m_logicalH = 0;

@@ -85,7 +85,7 @@ const char* AssetIcon(int type, int& tint)
     case T::UiAnim:      tint = 7; return ICON_T_ANIM;
     case T::SpriteSheet: tint = 7; return ICON_T_SPRITE;
     case T::MaterialGraph: tint = 1; return ICON_T_SPLINE;   // アセットブラウザ（KindGlyph / KindColor）と同じ
-    case T::Sequence:    tint = 7; return ICON_T_LAYERS;
+    case T::Sequence:    tint = 7; return ICON_T_SEQUENCE;
     case T::Vfx:         tint = 1; return ICON_T_PARTICLE;
     default:             return ICON_FILE;
     }

@@ -92,6 +92,12 @@ struct LaneAState
     bool        savedContentValid = false;
     u64         savedContentHash  = 0;
     u64         savedSettingsFp   = 0;     // 指紋を取った時点の設定の指紋（Undo できない設定はこれと比べる）
+    size_t      savedUndoDepth    = 0;     // 指紋を取った時点の Undo の深さ。Undo / Redo だけで保存した内容へ戻るなら深さも同じ（FU-E-16）
+    // 指紋の計算の負荷の計測（FU-E-16）。直列化 1 回ぶんの時間を測り、深さが違うときは計算ごと省く。
+    u64         hashRuns     = 0;          // SceneContentHash を実際に走らせた回数
+    u64         hashSkipped  = 0;          // 深さが保存時と違うので省いた回数
+    double      hashLastMs   = 0.0;
+    double      hashMaxMs    = 0.0;
     // 直前のフレームの Undo スタックの様子（人の Undo / Redo を検出する）
     u64         lastEditSeq   = 0;
     u64         lastPushSeq   = 0;
@@ -106,9 +112,21 @@ LaneAState& S() { static LaneAState s; return s; }
 // シーンを保存ファイルと同じ直列化にした文字列の指紋（FNV-1a 64）。保存済みの内容と今の内容が同じかの比較に使う。
 u64 SceneContentHash(Scene& scene)
 {
+    const auto t0 = std::chrono::steady_clock::now();
     const std::string text = SceneSerializer::SaveToStringV2(scene, PathResolver::AssetsDir());
     u64 h = 1469598103934665603ull;
     for (const unsigned char c : text) { h ^= c; h *= 1099511628211ull; }
+    LaneAState& st = S();
+    st.hashLastMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    st.hashMaxMs  = (std::max)(st.hashMaxMs, st.hashLastMs);
+    ++st.hashRuns;
+    constexpr double kSlowHashMs = 20.0;   // 大きいシーンでは Undo / Redo の 1 回ごとに重い。気づけるよう 1 度ずつ知らせる
+    static bool warned = false;
+    if (st.hashLastMs > kSlowHashMs && !warned)
+    {
+        warned = true;
+        Logger::Info("シーンの内容の指紋に {:.1f} ms かかりました（{} バイト。保存点の判定。Undo の深さが保存時と違うときは計算しません）", st.hashLastMs, text.size());
+    }
     return h;
 }
 
@@ -151,6 +169,12 @@ void CleanStaging(const std::filesystem::path& dir, const std::string& stem)
 std::string AppAccess::UntitledDir()
 {
     return PathResolver::BaseDir() + ".dx12/untitled/";
+}
+
+void AppAccess::SavePointHashStats(u64& runs, u64& skipped, double& lastMs, double& maxMs)
+{
+    const LaneAState& st = S();
+    runs = st.hashRuns; skipped = st.hashSkipped; lastMs = st.hashLastMs; maxMs = st.hashMaxMs;
 }
 
 void AppAccess::ResetAutoProtectThrottleForTest()
@@ -351,6 +375,7 @@ void AppAccess::TrackSavePoint(Application& app, u64 freshSettings)
         {
             st.savedContentHash  = SceneContentHash(*app.m_scene);
             st.savedSettingsFp   = freshSettings;
+            st.savedUndoDepth    = depth;
             st.savedContentValid = true;
             st.needFingerprint   = false;
         }
@@ -359,6 +384,9 @@ void AppAccess::TrackSavePoint(Application& app, u64 freshSettings)
     if (!undoRedoApplied || !st.savedContentValid) return;
     if (!ctx->IsSceneDirty()) return;   // もともと保存済み
     if (freshSettings != st.savedSettingsFp) return;   // Undo を積まない設定（ポスト・空・フォグ…）が保存時と違う
+    // Undo / Redo だけで保存した内容へ戻るなら、スタックの深さも保存時と同じ。違うなら直列化（シーン全体の文字列化）を省く。
+    // 取りこぼすのは「保存後に A→B→A と編集して、その途中へ Undo / Redo で行き来する」ような稀な形だけ（未保存のまま残る安全側）。
+    if (depth != st.savedUndoDepth) { ++st.hashSkipped; return; }
     if (SceneContentHash(*app.m_scene) != st.savedContentHash) return;
 
     // 内容が保存した状態と同じ: 保存済みの印（EditSeq）を今に合わせ、人の変更の旗と退避の状態を落とす。

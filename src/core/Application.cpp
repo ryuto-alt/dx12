@@ -24,6 +24,7 @@
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
 #include "core/PathTracerHost.h"   // PtHost::Busy（基準レンダ中は間引かない）
 #include "editor/UiMotion.h"
+#include "core/mcp/McpPendingReplies.h"   // FU-E-15: 未応答の遅延応答 / editor_command_run の待ち（間引きの busy 判定）
 #include "editor/FrameThrottle.h"   // W1-A11: 裏に回ったときのフレーム間引き（純ロジック）
 #include "editor/EditorPrefs.h"      // W1-A11: 「常にリアルタイム」の設定（perf.alwaysRealtime）
 #include "editor/panels/MaterialGraphPanel.h"   // マテリアルグラフ G2c: ライブプレビュー / サムネイルの GPU 側（InitializeGpu / ShutdownGpu）
@@ -1520,9 +1521,9 @@ void Application::Run()
             || m_benchReply.client != 0 || m_mcpRenderDebugReply.client != 0
             || m_loading || m_scenePreloadJob != nullptr                     // プロジェクト読み込み・シーン先読み
             || (m_thumbRenderer && m_thumbRenderer->GetPendingCount() > 0)   // サムネイル生成（1 フレーム 1 枚）
-            || (m_ptHost && m_ptHost->Busy());                               // パストレーサの基準レンダ（1 フレーム 1 スライス）
-        // editor_command_run の待ち（ApplicationMcpEditorUi.cpp の内部。最長 6 秒・180 フレーム）は
-        // 要求の 5 秒の猶予で覆われる。その先は同ファイルの所有者が口を足すこと。
+            || (m_ptHost && m_ptHost->Busy())                                // パストレーサの基準レンダ（1 フレーム 1 スライス）
+            || HasPendingEditorRunWaits()                                    // editor_command_run の待ち（最長 6 秒・180 フレーム）
+            || mcppending::Replies().Count(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count()) > 0;   // 未応答の遅延応答すべて
     };
     // 窓が前面（同じプロセスの窓を含む。ImGui の別ビューポート窓）にあり、最小化されていない。
     // --background / --headless は窓を出さないので常に false（MCP の要求が無い間だけ間引かれる）。
@@ -1830,6 +1831,7 @@ void Application::Run()
         EnsureSplitResources();   // 画面分割の区画 2..N（フレーム外・WaitIdle 込み）
         // Q2（校正）: ライティング単位の PSO 差し替え / オフスクリーン撮影の進行。どちらも既定では何もしない。
         UpdateLightingUnits();
+        AppAccess::UpdateShadingRevision(*this);   // W1-C3 / FU-E-2: shadingRevision に合わせてフォワード系 PSO を差し替える（フレーム外・分割画面でなくても呼ぶ）
         ServiceOffscreenShot();
 
         m_gameClock.Tick();
@@ -2628,6 +2630,10 @@ void Application::Update()
     UpdateProjectThumbnail(dt);
     // 非同期 git 操作の完了回収
     UpdateGitOp();
+
+    // UnoFX（BD4）: 毎フレーム 1 回、コマンド記録の外で VFX の結線と保留中の配置の消化を回す。
+    // MCP を使わない起動・GameRuntime・.uvfx のダブルクリック（pendingVfxPlace）でも VFX が出る。
+    AppAccess::VfxTick(*this);
 
     // 「テストクライアント起動」ボタン(フェーズ⑨): フレーム境界で別プロセスを起動
     if (m_editorCtx->netTestLaunchClientRequested)

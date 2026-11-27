@@ -9,6 +9,7 @@
 #include "core/SceneBackup.h"        // W05-02: 人の未保存の変更の退避 / settings 指紋の追跡
 #include "core/mcp/FleetGuard.h"   // ping / manifest 以外の method を「活動」に数える（--idle-exit）
 #include "gui/VirtualInputImGui.h"   // imgui_screenshot の hideCursor を撮影後に戻す
+#include "core/mcp/McpPendingReplies.h"   // FU-E-15: 未応答の遅延応答の数え上げ（A11 の間引きの busy 判定）
 #include "core/mcp/McpSafety.h"    // M5: guarded ゲート / 冪等ストア / dryRun プレビュー / ファイルジャーナル
 #include "renderer/PhotometricMath.h"   // Q2: 露出(EV100)とトーンマップの純関数（screenshot の CPU ミラーが共有）
 #include "renderer/LinearCapturePass.h"  // Q2: 線形 HDR スクリーンショットの読み出し
@@ -174,6 +175,12 @@ void Application::EnsureMcpMethodTable()
     mcpsafety::SendObserver() = [](uint64_t client, const std::string& line)
     {
         auto& st = mcpsafety::Idempotency();
+        // 応答が出ていった遅延応答を数え上げから外す（冪等ストアの有無に関係なく）
+        {
+            const nlohmann::json jr = nlohmann::json::parse(line, nullptr, /*allow_exceptions=*/false);
+            if (jr.is_object() && jr.contains("id") && jr["id"].is_number_integer())
+                mcppending::Replies().Resolve(client, jr["id"].get<long long>());
+        }
         if (st.PendingRequests() == 0) return;
         const nlohmann::json j = nlohmann::json::parse(line, nullptr, /*allow_exceptions=*/false);
         if (!j.is_object() || !j.contains("id") || !j["id"].is_number_integer()) return;
@@ -615,6 +622,10 @@ std::string Application::HandleMcpCommand(uint64_t client, const std::string& li
         resp["error_code"] = McpErr::InvalidParam;   // 大半は引数検証エラー
         isDeferred = false;
     }
+    // FU-E-15: 遅延応答を受理した。応答が SendToClient から出ていくまで「未応答」として数える（間引きの busy 判定）。
+    if (isDeferred && deferred.requestId != 0)
+        mcppending::Replies().Add(client, deferred.requestId,
+            std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
     // M5: 冪等ストアへ確定。非遅延は成功なら Done・失敗なら InFlight を消す。遅延は応答が出るとき（SendToClient の観測点）に確定する。
     if (!idemKey.empty())
     {

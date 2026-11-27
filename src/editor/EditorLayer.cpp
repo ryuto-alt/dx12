@@ -2,6 +2,9 @@
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
 #include "editor/UiWidgets.h"
+#include <directx/d3d12.h>
+#include <wrl/client.h>
+#include "editor/StatusBar.h"      // Graphite のステータスバー（W1-A7）
 #include "editor/EditorCommands.h"   // ショートカット処理（コマンド表が唯一の正）
 #include "editor/CommandPalette.h"   // Ctrl+K / Ctrl+P
 #include "editor/ToolWindows.h"      // ツール窓レジストリ（既定のドック先・すべて閉じる）
@@ -135,7 +138,12 @@ void EditorLayer::Initialize(EditorContext* ctx,
     m_inspector->SetAssetBrowser(m_assetBrowser.get());
 }
 
-f32 EditorLayer::StatusBarHeight() { return theme::Px(kStatusBarHeight); }
+f32 EditorLayer::StatusBarHeight()
+{
+    // Graphite は 22 論理 px（GgLayout::statusBarH）。旧テーマは従来の 28 のまま。
+    if (theme::CurrentVariant() == theme::Variant::Graphite) return status::GraphiteHeightPx();
+    return theme::Px(kStatusBarHeight);
+}
 
 // 既定レイアウトを作る。★呼ぶのは起動時と「レイアウトをリセット」だけ（窓の開閉では呼ばない）。
 //
@@ -183,6 +191,16 @@ void EditorLayer::Render(bool isPlaying,
                          ID3D12GraphicsCommandList* cmdList)
 {
     m_ctx->isPlaying = isPlaying;   // 各パネルが「Play 中は押せない」を判定するのに使う
+
+    // ステータスバー（Graphite）の VRAM / GPU 名の問い合わせ先。デバイスは 1 度だけ cmdList から得る（所有しない）。
+    {
+        static bool s_deviceGiven = false;
+        if (!s_deviceGiven && cmdList)
+        {
+            Microsoft::WRL::ComPtr<ID3D12Device> dev;
+            if (SUCCEEDED(cmdList->GetDevice(IID_PPV_ARGS(&dev)))) { status::SetDevice(dev.Get()); s_deviceGiven = true; }
+        }
+    }
 
     // OS（エクスプローラー）からのファイルドロップをアセットブラウザ（取り込み）へ流す。窓ごとに 1 回だけ設定する。
     {
@@ -705,6 +723,13 @@ void EditorLayer::Render(bool isPlaying,
 
 void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock, bool isPlaying)
 {
+    if (theme::CurrentVariant() == theme::Variant::Graphite)
+    {
+        status::Input in;
+        in.ctx = m_ctx; in.scene = scene; in.camera = camera; in.clock = clock; in.isPlaying = isPlaying;
+        status::RenderGraphite(in);
+        return;
+    }
     auto& reg = scene->GetRegistry();
 
     const ImGuiViewport* mainVp = ImGui::GetMainViewport();
@@ -829,35 +854,7 @@ void EditorLayer::RenderStatusBar(Scene* scene, Camera* camera, GameClock* clock
         ImGui::SetTooltip("カメラの移動速度（右ドラッグ中にホイールでも変えられます）");
     if (ImGui::BeginPopup("##CamQuickSettings"))
     {
-        ImGui::TextDisabled("カメラ");
-        f32 speed = camera->GetMoveSpeed();
-        ImGui::SetNextItemWidth(ui::Px(200.0f));
-        // 対数目盛り: 遅い側(1〜10)を細かく、速い側(〜200)をざっくり動かせる
-        if (ui::SliderFloat("移動速度", &speed, 0.2f, 200.0f, "%.1f m/s",
-                            ImGuiSliderFlags_Logarithmic))
-            camera->SetMoveSpeed(speed);
-
-        struct Preset { const char* label; f32 speed; };
-        static const Preset presets[] = {
-            {"精密 1",  1.0f}, {"標準 5",  5.0f}, {"広域 20", 20.0f}, {"最速 80", 80.0f}};
-        for (int i = 0; i < 4; ++i)
-        {
-            if (i > 0) ImGui::SameLine();
-            if (ImGui::SmallButton(presets[i].label)) camera->SetMoveSpeed(presets[i].speed);
-        }
-
-        f32 sens = camera->GetMouseSensitivity();
-        ImGui::SetNextItemWidth(ui::Px(200.0f));
-        if (ui::SliderFloat("マウス感度", &sens, 0.0005f, 0.02f, "%.4f"))
-            camera->SetMouseSensitivity(sens);
-
-        // グリッド床の表示/非表示。UI やライティングを見るとき邪魔になるので手元に置く。
-        ImGui::Separator();
-        for (auto [e, gp] : reg.view<GridPlane>().each())
-        {
-            ui::Checkbox("グリッドを表示", &gp.enabled);
-            break;   // グリッドは1枚だけ
-        }
+        status::CameraQuickPopupBody(camera, reg);
         ImGui::EndPopup();
     }
 

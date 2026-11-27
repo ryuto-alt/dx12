@@ -8,6 +8,7 @@
 #include "core/Logger.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <deque>
 #include <mutex>
@@ -62,6 +63,48 @@ struct McpBridge::Impl
         clientCount.store(static_cast<int>(clients.size()));
     }
 
+    // 接続の出入りは 1 件ごとには debug（短命のクライアントが大量に出入りしてコンソールを埋めるため。BUG-31）。
+    // info は「接続数が 0 と 1 以上の間を行き来した」ときだけ、SyncInfo が実際の接続数と最後に出した info を突き合わせて出す。
+    //  - 0 への切断は即出す。
+    //  - 0 からの接続は、直前の info から 30 秒以内なら出さずに保留し、Poll(毎フレーム)が 30 秒たった時点でまだ
+    //    接続中なら出す。保留中に切れて 0 に戻れば何も出さない。つまり info の最後の行は、遅くとも 30 秒後には実際と一致する。
+    //  - 間引いた出入りは次の info に「間に N 回出入り」と添える。
+    // 全体を logMtx で排他する(Accept と各 ReadLoop のスレッドから同時に呼ばれる)。
+    void LogClientChange(const char* verb, uint64_t id, int count)
+    {
+        Logger::Debug("MCP bridge: client #{} {} ({} connected)", id, verb, count);
+        {
+            std::lock_guard<std::mutex> lk(logMtx);
+            if (verb[0] == 'c' && count == 1) ++connectsSinceInfo;   // 0→1 の接続だけ数える
+        }
+        SyncInfo();
+    }
+
+    void SyncInfo()
+    {
+        std::lock_guard<std::mutex> lk(logMtx);
+        int count;
+        { std::lock_guard<std::mutex> cl(clientsMtx); count = static_cast<int>(clients.size()); }
+        const int state = count > 0 ? 1 : 0;
+        if (state == lastLoggedState.load()) return;
+        const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (state == 1 && lastClientInfoSec != 0 && now - lastClientInfoSec < 30) return;   // 保留(Poll が再確認)
+        // 接続を出すときはその 1 回を除いたぶん、切断を出すときは間に挟まった接続のぶんが「出入り」。
+        const int flaps = state == 1 ? connectsSinceInfo - 1 : connectsSinceInfo;
+        lastLoggedState.store(state);
+        lastClientInfoSec = now;
+        connectsSinceInfo = 0;
+        if (flaps > 0)
+            Logger::Info("MCP bridge: {} clients connected (間に {} 回出入り)", count, flaps);
+        else
+            Logger::Info("MCP bridge: {} clients connected", count);
+    }
+    std::mutex logMtx;
+    int64_t lastClientInfoSec = 0;          // logMtx で守る
+    int connectsSinceInfo = 0;              // logMtx で守る
+    std::atomic<int> lastLoggedState{0};
+
     void ReadLoop(uint64_t id, SOCKET sock)
     {
         std::string buf;
@@ -89,7 +132,7 @@ struct McpBridge::Impl
             }
         }
         DropClient(id);
-        Logger::Info("MCP bridge: client #{} disconnected ({} connected)", id, clientCount.load());
+        LogClientChange("disconnected", id, clientCount.load());
     }
 
     void AcceptLoop()
@@ -119,7 +162,7 @@ struct McpBridge::Impl
                 clients.emplace(id, sock);
                 clientCount.store(static_cast<int>(clients.size()));
             }
-            Logger::Info("MCP bridge: client #{} connected ({} connected)", id, clientCount.load());
+            LogClientChange("connected", id, clientCount.load());
             activeReaders.fetch_add(1);
             // 読み取りは接続ごとのスレッド。終わったら自分で抜ける(detach)。Stop は activeReaders が 0 になるのを待つ。
             std::thread([this, id, sock] {
@@ -243,6 +286,7 @@ void McpBridge::Stop()
 void McpBridge::Poll(const std::function<std::string(uint64_t, const std::string&)>& handler)
 {
     auto& s = *m_impl;
+    if ((s.clientCount.load() > 0 ? 1 : 0) != s.lastLoggedState.load()) s.SyncInfo();   // 保留していた接続の info
     std::vector<std::pair<uint64_t, std::string>> work;
     {
         std::lock_guard<std::mutex> lock(s.mtx);

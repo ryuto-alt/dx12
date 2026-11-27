@@ -156,6 +156,12 @@ void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx);
 // Graphite の黄の指針（選択行の左バー・選択中ツールの下線）。端を整数 px へ丸める（スライド中も 2px 幅の線が滲まない = GG モーション則 01）。
 // 名前を Needle で始めるのは A3 の UiTokenLint が黄の線として数える入口を、ここへ一本化するため（本体は数えない）。
 void NeedleBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx, ImU32 col);
+// 主尺（タイトルバー下端の目盛り。細 8px・高さ 3 / 主 40px・高さ 6。W1-A7）。bar = タイトルバーの矩形（物理 px）。下辺に沿って描く。
+// Graphite のときだけ呼ぶこと（色は gg::GgChrome の tickMinor / tickMajor）。
+void ScaleRuler(ImDrawList* dl, ImVec2 mn, ImVec2 mx);
+// フォーカス・キャリパー（黄の予算 01。顎 2x8 + 2px の線）。[x0, x1] = フォーカス中パネルの全幅、yBottom = タイトルバーの下端（物理 px）。
+// 線は主尺の主目盛りの上に乗る。focused=false は NeedleDim。呼び出し箇所は EditorChrome.cpp の 1 か所だけ（tests/editor_chrome_test が固定）。
+void Caliper(ImDrawList* dl, float x0, float x1, float yBottom, bool focused);
 
 // 浮遊するカード（トースト等）。影 + 面 + 縁。Default は従来のトーストと同じ描画。
 // face = 面の色（alpha 込み）、alpha = 全体のフェード。
@@ -200,8 +206,12 @@ struct GaugeSpinnerInfo
 };
 // 生存ティックの輪だけを DrawList へ描く（center = 中心、物理 px）。eventCount = 出来事の累計。
 // pxLogical は 14 / 20（輪 + 指針）、32 / 56（12 目盛り + 指針 + 軸）。それ以外は近い方へ丸める。
-GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uint32_t eventCount, float pxLogical = 20.0f);
+// elapsedSec / sinceEventSec: ジョブ側の経過秒・最後の出来事からの秒（>= 0 で採用）。負なら状態の寿命から出す
+// （パネルを開いた時点から数え直すので、ジョブの途中で開く・タブを往復する呼び出しでは必ずジョブ側の値を渡すこと）。
+GaugeSpinnerInfo DrawGaugeSpinner(ImDrawList* dl, ImVec2 center, ImGuiID id, uint32_t eventCount, float pxLogical = 20.0f,
+                                  double elapsedSec = -1.0, double sinceEventSec = -1.0);
 // レイアウトに置く形。showElapsed なら右に「×n」と経過秒（10 秒進まなければ「応答待ち 10 s」）を添える。
-void GaugeSpinner(const char* id, uint32_t eventCount, float pxLogical = 20.0f, bool showElapsed = false);
+void GaugeSpinner(const char* id, uint32_t eventCount, float pxLogical = 20.0f, bool showElapsed = false,
+                  double elapsedSec = -1.0, double sinceEventSec = -1.0);
 
 } // namespace dx12e::ui

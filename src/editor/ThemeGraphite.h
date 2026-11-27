@@ -16,4 +16,8 @@ const Spec& GraphiteSpec();
 // ThemeGraphite.cpp は静的初期化でも自分を登録するが、リンカが TU を落とさないよう ImGuiManager からも明示的に呼ぶ。
 void RegisterGraphite();
 
+
+// --theme-variant の値の一覧（main.cpp のエラー文・ヘルプ文。TestParse が各語を ParseVariant に通して食い違いを防ぐ）。
+inline constexpr const char* kVariantUsage = "a | b | c | graphite|g | default";
+
 } // namespace dx12e::theme

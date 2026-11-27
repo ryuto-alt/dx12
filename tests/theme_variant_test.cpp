@@ -102,6 +102,30 @@ void TestParse()
     CHECK(th::ParseVariant("b", v) && v == th::Variant::B);
     CHECK(th::ParseVariant("C", v) && v == th::Variant::C);
     CHECK(th::ParseVariant("default", v) && v == th::Variant::Default);
+    {   // ヘルプ文の語がすべて ParseVariant で解釈できる（graphite|g を含む）
+        const std::string usage = th::kVariantUsage;
+        CHECK(usage.find("graphite|g") != std::string::npos);
+        size_t pos = 0;
+        int n = 0;
+        while (pos <= usage.size())
+        {
+            size_t e = usage.find_first_of("|", pos);
+            size_t sp = usage.find(" | ", pos);
+            if (sp != std::string::npos && sp < e) e = sp;
+            if (e == std::string::npos) e = usage.size();
+            std::string w = usage.substr(pos, e - pos);
+            while (!w.empty() && w.front() == ' ') w.erase(w.begin());
+            while (!w.empty() && w.back() == ' ') w.pop_back();
+            if (!w.empty())
+            {
+                th::Variant t = th::Variant::B;
+                CHECK(th::ParseVariant(w, t));
+                ++n;
+            }
+            pos = e + 1;
+        }
+        CHECK(n == 6);
+    }
     CHECK(th::ParseVariant("0", v) && v == th::Variant::Default);
     v = th::Variant::B;
     CHECK(!th::ParseVariant("", v) && v == th::Variant::B);      // 解釈できなければ out を変えない

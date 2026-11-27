@@ -9,6 +9,9 @@
 namespace dx12e
 {
 class ScriptEngine;
+
+// コンソールの入力欄に出す例文。どのシーンでも（エンティティが無くても）エラーにならないこと（BUG-30。UI テスト console_defaults が実行して確かめる）。
+inline constexpr const char* kConsoleLuaExample = "log(\"エンティティ数: \" .. scene:getEntityCount())";
 class EditorContext;
 
 // エディタ内コンソール（Unity の Console + Unreal の Output Log 参考）。
@@ -37,12 +40,15 @@ private:
     std::vector<int>      m_viewCount;  // 折りたたみ時の同文件数（m_view と対）
     uint64_t              m_cursor = 0; // Logger 読み取りカーソル
 
-    // 表示オプション（既定は警告+エラーのみ。情報は右上のトグルでいつでも表示できる）
-    bool m_showInfo     = false;
+    // 表示オプション（既定は情報・警告・エラーをすべて表示。BUG-31: 情報が既定で OFF だと、件数は増えるのに一覧が空に見えた）
+    bool m_showInfo     = true;
+    bool m_showDetail   = false;  // trace/debug（接続の出入りなど）。既定 OFF
     bool m_showWarn     = true;
     bool m_showError    = true;
     bool m_collapse     = false;
     bool m_autoScroll   = true;
+    float m_prevScrollY = -1.0f;  // 前フレーム末に自分が置いた/観測した ScrollY（外からの上スクロール検知用）
+    bool m_stickToEnd   = true;   // 一覧の末尾に居る（人が上へスクロールするまで true。自動スクロールの追従対象）
     bool m_clearOnPlay  = true;
     bool m_focusOnError = true;
     char m_filter[128]  = "";
@@ -61,7 +67,7 @@ private:
     bool     m_wantFocus    = false; // 新着エラーでタブを前面へ
     double   m_lastErrorAt  = -1.0e9; // 最後にエラーを取り込んだ時刻（ImGui::GetTime。バースト判定）
     static constexpr double kErrorBurstGapSec = 2.0;   // これ以上エラーが途切れたら次は新しいバースト
-    int      m_cntInfo = 0, m_cntWarn = 0, m_cntError = 0;   // 全体件数（フィルタ非依存）
+    int      m_cntDebug = 0, m_cntInfo = 0, m_cntWarn = 0, m_cntError = 0;   // 全体件数（フィルタ非依存）
 };
 
 } // namespace dx12e

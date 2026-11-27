@@ -1,6 +1,7 @@
 #include "editor/panels/AssetBrowserPanel.h"
 #include "editor/UiWidgets.h"
 #include "editor/TextFit.h"
+#include "editor/IconTable.h"
 #include "core/VirtualGuard.h"   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/EditorContext.h"
@@ -161,49 +162,9 @@ using abl::Kind;
 
 // ============================================================ 種別の色 / グリフ（テーマのトークンだけを引く）
 
-static ImVec4 KindColor(Kind k)
-{
-    switch (k)
-    {
-    case Kind::Folder:        return th::TypeFolder;
-    case Kind::Model:         return th::TypeCamera;    // 青
-    case Kind::Texture:       return th::TypePhysics;   // 緑
-    case Kind::Scene:         return th::TypeScene;     // 橙
-    case Kind::Script:        return th::TypeScript;    // 紫
-    case Kind::Audio:         return th::TypeAudio;     // ティール
-    case Kind::Prefab:        return th::TypePrefab;
-    case Kind::Shader:        return th::TypeScript;    // コード系はスクリプトと同じ紫
-    case Kind::Material:      return th::TypeLight;     // 琥珀
-    case Kind::UiAnim:        return th::TypeUi;        // アニメ系はマゼンタ寄りで統一
-    case Kind::SpriteSheet:   return th::TypeUi;
-    case Kind::MaterialGraph: return th::TypeLight;
-    case Kind::Sequence:      return th::TypeUi;        // アニメ系（UI アニメと同じ）
-    case Kind::Vfx:           return th::TypeFolder;    // 無彩色（GG: kind.vfx は作らない。ライトと混ぜない）
-    default:                  return th::TypeEmpty;
-    }
-}
-
-static const char* KindGlyph(Kind k)
-{
-    switch (k)
-    {
-    case Kind::Folder:        return ICON_FOLDER;
-    case Kind::Model:         return ICON_T_MESH;
-    case Kind::Texture:       return ICON_IMAGE;
-    case Kind::Scene:         return ICON_FILM;
-    case Kind::Script:        return ICON_FILE_CODE;
-    case Kind::Audio:         return ICON_MUSIC;
-    case Kind::Prefab:        return ICON_PACKAGE;
-    case Kind::Shader:        return ICON_T_SHADER;
-    case Kind::Material:      return ICON_T_MATERIAL;
-    case Kind::UiAnim:        return ICON_T_ANIM;
-    case Kind::SpriteSheet:   return ICON_T_GRID;
-    case Kind::MaterialGraph: return ICON_T_SPLINE;   // .dxmg（ノードのつながり）
-    case Kind::Sequence:      return ICON_T_LAYERS;   // .dxseq（トラックの重なり）
-    case Kind::Vfx:           return ICON_T_PARTICLE; // .uvfx
-    default:                  return ICON_FILE;
-    }
-}
+// 表の実体は editor/IconTable.h（ForAsset）。ここは従来の関数名のまま薄く包む。
+static ImVec4 KindColor(Kind k) { return *icons::ForAsset(k).tint; }
+static const char* KindGlyph(Kind k) { return icons::ForAsset(k).glyph; }
 
 const char* AssetBrowserPanel::KindIcon(Kind k) { return KindGlyph(k); }
 u32 AssetBrowserPanel::KindTintU32(Kind k) { return ImGui::GetColorU32(KindColor(k)); }
@@ -1124,7 +1085,7 @@ void AssetBrowserPanel::DrawGridCell(EditorContext& ctx, int viewIdx, float x, f
     {
         // コードポイント（結合文字・絵文字の連結を含む）の境界で省略する（バイト単位の pop_back は日本語を壊した）
         const float maxW = cw - ui::Px(6.0f);
-        const std::string name = text::EllipsizeEnd(e.name, maxW, ImGui::GetFont(), ImGui::GetFontSize());
+        const std::string name = text::EllipsizeEnd(e.name, maxW, ImGui::GetFont(), ImGui::GetFontSize(), true);
         const float nameW = ImGui::CalcTextSize(name.c_str()).x;
         // フォルダは白、ファイルは少し落として「入れ物」と「中身」を見分けやすくする
         dl->AddText(ImVec2(x + (cw - nameW) * 0.5f, nameY),
@@ -2138,7 +2099,12 @@ void AssetBrowserPanel::PollImport(EditorContext& ctx)
 
 void AssetBrowserPanel::OpenImportDialog(EditorContext& ctx)
 {
-    if (dx12e::guard::Blocked("Asset import dialog")) return;   // 仮想入力 / UI テスト中はダイアログを出さない
+    if (dx12e::guard::Blocked("Asset import dialog"))   // 仮想入力 / 背景モード / UI テスト中はダイアログを出さない
+    {
+        // BUG-35: 黙って何も起きないと壊れたように見える。代わりの経路を案内する。
+        ctx.Notify(ui::ToastKind::Warn, "この環境（背景モード・MCP 操作中）ではファイルダイアログを出せません。MCP の import_asset を使ってください");
+        return;
+    }
     std::vector<wchar_t> buf(65536, L'\0');
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
