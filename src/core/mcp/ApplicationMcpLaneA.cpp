@@ -90,6 +90,7 @@ struct LaneAState
     // MarkSceneClean では印を立てるだけにして、次の静かなフレームで取る（needFingerprint）。
     bool        needFingerprint   = false;
     bool        savedContentValid = false;
+    int         quietFrames       = 0;   // 読み込み・新規構築が終わってからの静かなフレーム数（指紋は内容が落ち着いてから取る）
     u64         savedContentHash  = 0;
     u64         savedSettingsFp   = 0;     // 指紋を取った時点の設定の指紋（Undo できない設定はこれと比べる）
     size_t      savedUndoDepth    = 0;     // 指紋を取った時点の Undo の深さ。Undo / Redo だけで保存した内容へ戻るなら深さも同じ（FU-E-16）
@@ -133,6 +134,7 @@ u64 SceneContentHash(Scene& scene)
 // MCP の書き込みの後に、遅延実行（後のフレームで走る生成・読み込み）の設定変更が着地するまでのフレーム数。
 // 時間（秒）ではなくフレームで数える: 人の変更をこの間だけ見落とす（約 50ms）代わりに、MCP の書き込みが続いても人の変更を拾える。
 constexpr int kMcpDeferredFrames = 3;
+constexpr int kFingerprintSettleFrames = 4;   // 静かになってから保存済みの内容の指紋を取るまでの待ち
 constexpr double kAutoProtectMinIntervalSec = 30.0;   // 自動保存の経路の退避の最短間隔（閉じる・開く・終了は無視する）
 
 std::string UntitledStem()
@@ -342,6 +344,7 @@ static void ResetAfterSaved(EditorContext& ctx, LaneAState& st)
     // 保存済みの内容の指紋は取り直す（次の静かなフレームで。TrackSavePoint）。それまでは Undo では解かない。
     st.savedContentValid = false;
     st.needFingerprint   = true;
+    st.quietFrames       = 0;
 }
 
 // 保存点の追跡（W1-A16 / R1-09）。UndoCore.h（凍結）に保存点の印は足せないので、保存した内容の指紋で比べる。
@@ -367,9 +370,12 @@ void AppAccess::TrackSavePoint(Application& app, u64 freshSettings)
     st.lastSavedSeqValid = true;
 
     const bool quiet = !app.m_loading && !app.m_sceneLoadJob && app.m_engineMode == Application::EngineMode::Editor;
-    if (!quiet) return;
+    if (!quiet) { st.quietFrames = 0; return; }
+    if (st.quietFrames < 1000000) ++st.quietFrames;
     if (st.needFingerprint)
     {
+        // 物理大気の太陽の色・強度などは最初の描画のあとで内容へ反映される。構築直後の指紋だと Undo で戻した内容と食い違うため、数フレーム待つ。
+        if (st.quietFrames < kFingerprintSettleFrames) return;
         // 保存した状態から変わっていない間だけ取る（変わっていたら、次の MarkSceneClean まで待つ）。
         if (editSeq == ctx->sceneSavedSeq)
         {
