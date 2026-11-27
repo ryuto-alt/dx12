@@ -1,0 +1,15 @@
+{
+  "kind": "ui",
+  "nativeWidth": 3840,
+  "nativeHeight": 2160,
+  "nativeSha256": "6c387dc43af53e188886540d5a92f32d59c8a263a67de5f915a7c2c6be518acd",
+  "compareSha256": "5176b9cc4ace7610af3513ed4cd7779953dbc1660853ca956eeafe87f762f506",
+  "width": 640,
+  "height": 360,
+  "dpi": 2,
+  "theme": "graphite",
+  "uiFont": "plex",
+  "commit": "728e8d8",
+  "capturedAt": "2026-11-27T04:45:35.959Z",
+  "deterministicInSession": true
+}

@@ -1,6 +1,7 @@
 #include "editor/EditorCommands.h"
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
+#include "editor/EditorPrefs.h"   // ui.themeVariant（W1-A14）
 #include "editor/EditorIcons.h"
 #include "editor/ToolWindows.h"
 #include "editor/panels/NodeGraphSandboxPanel.h"   // graph.* コマンドをサンドボックス窓へ渡す（マテリアルグラフ G0）
@@ -136,7 +137,7 @@ const char* IconFor(std::string_view id)
         {"view.gizmoSpace", ICON_SPACE_WORLD}, {"view.fill", ICON_T_SUN}, {"view.flyMode", ICON_KEYBOARD},
         {"view.toggle2D", ICON_VIEW_2D}, {"view.resetLayout", ICON_REFRESH}, {"view.closeTools", ICON_CLOSE},
         {"view.fullscreen", ICON_T_MONITOR}, {"view.viewportBar", ICON_AXIS3D}, {"view.outline", ICON_SCAN_EYE},
-        {"view.theme.default", ICON_T_SUN}, {"view.theme.b", ICON_T_SUN}, {"view.theme.c", ICON_T_SUN},
+        {"view.theme.graphite", ICON_T_SUN}, {"view.theme.default", ICON_T_SUN}, {"view.theme.b", ICON_T_SUN}, {"view.theme.c", ICON_T_SUN},
         {"play.toggle", ICON_PLAY}, {"play.stop", ICON_STOP}, {"play.pause", ICON_PAUSE},
         {"palette.commands", ICON_SEARCH}, {"palette.quickOpen", ICON_SEARCH}, {"help.whatsNew", ICON_MEGAPHONE},
         {"matgraph.new", ICON_FILE_PLUS}, {"matgraph.newPbr", ICON_FILE_PLUS}, {"matgraph.open", ICON_FOLDER_OPEN}, {"matgraph.save", ICON_SAVE},
@@ -179,6 +180,7 @@ bool IsChecked(const EditorContext& ctx, std::string_view id)
     if (id.rfind("workspace.", 0) == 0) return ctx.currentWorkspace == id.substr(10);
     if (id == "layout.bottomMaximize") return ctx.bottomDockMaximized;
     if (id == "view.outline") return ctx.vpPrefs.outline;
+    if (id == "view.theme.graphite") return theme::CurrentVariant() == theme::Variant::Graphite;
     if (id == "view.theme.default") return theme::CurrentVariant() == theme::Variant::Default;
     if (id == "view.theme.b") return theme::CurrentVariant() == theme::Variant::B;
     if (id == "view.theme.c") return theme::CurrentVariant() == theme::Variant::C;
@@ -378,9 +380,16 @@ bool Execute(EditorContext& ctx, const Env& env, std::string_view id)
     if (id == "layout.bottomMaximize") { ctx.bottomDockMaximizeToggle = true; return true; }
     if (id == "view.closeTools")  { tools::CloseAll(ctx); return true; }
     if (id == "view.fullscreen")  { ctx.pendingToggleFullscreen = true; return true; }
-    if (id == "view.theme.default") { theme::RequestVariant(theme::Variant::Default); return true; }
-    if (id == "view.theme.b")       { theme::RequestVariant(theme::Variant::B);       return true; }
-    if (id == "view.theme.c")       { theme::RequestVariant(theme::Variant::C);       return true; }
+    // テーマの切替。ユーザーが選んだ値だけを EditorPrefs（ui.themeVariant）へ保存する（次の起動で使う。--theme-variant の指定は保存しない）。
+    if (id == "view.theme.graphite" || id == "view.theme.default" || id == "view.theme.b" || id == "view.theme.c")
+    {
+        const theme::Variant v = id == "view.theme.graphite" ? theme::Variant::Graphite
+                               : id == "view.theme.default"  ? theme::Variant::Default
+                               : id == "view.theme.b"        ? theme::Variant::B : theme::Variant::C;
+        theme::RequestVariant(v);
+        prefs::SetString(theme::kThemePrefKey, theme::VariantPrefName(v));
+        return true;
+    }
 
     // ---- 再生 ----
     if (id == "play.toggle") { ctx.pendingPlayRequest = ctx.isPlaying ? 2 : 1; return true; }

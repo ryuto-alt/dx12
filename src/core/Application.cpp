@@ -24,6 +24,8 @@
 #include "core/SequencerHost.h"       // シーケンサー S1b（unique_ptr<SequencerHost> のデストラクタ / Update / カメラ選択）
 #include "core/PathTracerHost.h"   // PtHost::Busy（基準レンダ中は間引かない）
 #include "editor/UiMotion.h"
+#include "editor/QualityPresetUi.h"   // W1-A8: ビューポート帯の品質プリセット
+#include "core/QualityPresetApply.h"
 #include "core/mcp/McpPendingReplies.h"   // FU-E-15: 未応答の遅延応答 / editor_command_run の待ち（間引きの busy 判定）
 #include "editor/FrameThrottle.h"   // W1-A11: 裏に回ったときのフレーム間引き（純ロジック）
 #include "editor/EditorPrefs.h"      // W1-A11: 「常にリアルタイム」の設定（perf.alwaysRealtime）
@@ -136,6 +138,23 @@ void Application::Initialize(HINSTANCE hInstance, int nCmdShow, bool gameMode,
                 PathResolver::AssetsDir(), from, to, m_editorCtx->currentScenePath);
             return n + files.refsChanged;
         };
+    // W1-A8: ビューポート帯の品質プリセット（editor/QualityPresetUi.h）。実体は core/QualityPresetApply.h（C7）。
+    if (!gameMode)
+    {
+        QualityPresetUiHook& qh = QualityPresetUi();
+        qh.get = [this]() { return static_cast<int>(GetQualityPreset(*this)); };
+        qh.set = [this](int id) {
+            if (id < 0 || id >= static_cast<int>(QualityPresetId::Count)) return false;
+            return SetQualityPreset(*this, static_cast<QualityPresetId>(id), /*recordUndo*/ true);
+        };
+        qh.degrades = [this]() {
+            std::vector<std::string> out;
+            const QualityPlan plan = CurrentQualityPlan(*this);
+            for (u8 i = 0; i < plan.degradeCount; ++i)
+                out.push_back(std::string(plan.degrades[i].row) + ": " + plan.degrades[i].text);
+            return out;
+        };
+    }
     // エディタ（別ライブラリ）へ Application 側のフレームデータを読み取り専用で貸す。
     // どちらも Application の寿命いっぱい生きるメンバなのでアドレスは不変＝ここで一度だけ渡す。
     //   drawItems  … 精密ピッキングのブロードフェーズ候補（ワールド行列/球が計算済み）

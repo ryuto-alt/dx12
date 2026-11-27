@@ -101,6 +101,7 @@ void T_UndoAfterSaveAsStaysDirty(ImGuiTestContext* ctx);     // W1-A16 (e)
 void T_GameLuaUnderProjectRoot(ImGuiTestContext* ctx);        // W1-A16 (g)
 void T_ViewportToolUnderlineHosted(ImGuiTestContext* ctx);    // FU-E-11
 void T_ConsoleDefaults(ImGuiTestContext* ctx);                // W1-A13
+void T_ViewportQualityPreset(ImGuiTestContext* ctx);          // W1-A8
 void T_GraphiteChrome(ImGuiTestContext* ctx);                 // W1-A7
 // ==== lane-A:decl end ====
 // ==== lane-B:decl begin ====

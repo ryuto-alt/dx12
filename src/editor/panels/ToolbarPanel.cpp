@@ -328,6 +328,9 @@ void ToolbarPanel::Render(bool isPlaying,
             cmd::MenuItem(ctx, cmdEnv, "view.viewportBar");   // ビューポート上端の帯（隠すと従来と同じ 3D の矩形）
             cmd::MenuItem(ctx, cmdEnv, "view.outline");       // 選択 / ホバーの輪郭（エディタ専用）
             ImGui::Separator();
+            cmd::MenuItem(ctx, cmdEnv, "view.theme.graphite");   // テーマ（W1-A14。選ぶと保存され次の起動でも使う）
+            cmd::MenuItem(ctx, cmdEnv, "view.theme.default");
+            ImGui::Separator();
             {
                 bool fill = ctx.viewportFill > 0.0f;
                 if (ui::MenuItem(cmd::IconFor("view.fill"), "編集用の照らし込み", cmd::ShortcutText("view.fill"), &fill))

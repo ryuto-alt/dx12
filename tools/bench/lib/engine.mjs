@@ -81,12 +81,12 @@ export async function findFreePort(start = Number(process.env.DX12_BENCH_PORT_ST
  * --mcp-port を明示するので %TEMP%/dx12_mcp.port は書き換わらない＝人のエディタの接続を奪わない。
  * 戻り値: { port, dir, kill }。kill は自分のインスタンスの PID だけを落とす。
  */
-export async function launchEngine({ exe = DEFAULT_EXE, project, scene, port, name, timeoutMs = 180_000 } = {}) {
+export async function launchEngine({ exe = DEFAULT_EXE, project, scene, port, name, timeoutMs = 180_000, extraArgs = [] } = {}) {
   if (!fs.existsSync(exe)) throw new Error(`エンジンが無い: ${exe}（build/dev をビルドしたか）`);
   const instName = name ?? `golden-3d-${createHash("sha1").update(REPO_ROOT).digest("hex").slice(0, 8)}`;
   return launchInstance({
     name: instName, project, port, buildDir: path.dirname(exe), mode: "headless",
-    extraArgs: scene ? ["--scene", scene] : [], timeoutMs,
+    extraArgs: [...(scene ? ["--scene", scene] : []), ...extraArgs], timeoutMs,
   });
 }
 

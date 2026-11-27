@@ -30,6 +30,8 @@
 #include "editor/panels/MaterialGraphPanel.h"
 #include "editor/EditorContext.h"
 #include "editor/UndoSystem.h"
+#include "editor/QualityPresetUi.h"
+#include "renderer/QualityPreset.h"
 #include "editor/UiMotion.h"
 #include "editor/UiWidgets.h"
 #include "editor/EditorChrome.h"
@@ -1380,6 +1382,75 @@ void T_ViewportToolUnderlineHosted(ImGuiTestContext* ctx)
     th::SetVariant(prevVariant);
     ed->gizmoMode = prevMode;
     ed->vpPrefs   = prevPrefs;
+    ctx->Yield(4);
+}
+
+
+// W1-A8 (RM-C3ui): ビューポート帯の品質ドロップダウン。Epic を選ぶ → Undo 1 回で元に戻る。DXR が無い PC では縮退の表示が出る。
+void T_ViewportQualityPreset(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr);
+    const QualityPresetUiHook& qh = QualityPresetUi();
+    IM_CHECK(qh.Available());
+    if (!qh.Available()) return;
+    const auto prevPrefs = ed->vpPrefs;
+    ed->vpPrefs.barVisible = true;
+    ctx->Yield(4);
+
+    constexpr int kLow = static_cast<int>(QualityPresetId::Low), kEpic = static_cast<int>(QualityPresetId::Epic);
+    const int prev = qh.get();
+    const size_t depth0 = ed->undoSystem.UndoDepth();
+    bool startedFromPrev = false;
+    if (prev != kLow)
+    {
+        IM_CHECK(qh.set(kLow));           // 出発点を Low にそろえる（最後に Undo で prev へ戻す）
+        startedFromPrev = true;
+    }
+    ctx->Yield(4);
+    IM_CHECK_EQ(qh.get(), kLow);
+    const size_t depth1 = ed->undoSystem.UndoDepth();
+
+    LogStep(ctx, "帯の「品質」を開く → Epic を選ぶ");
+    ctx->SetRef("//##ViewportBar");
+    IM_CHECK(ctx->ItemInfo("vpQuality/##ldb", ImGuiTestOpFlags_NoError).ID != 0);
+    ctx->ItemClick("vpQuality/##ldb");
+    ctx->Yield(3);
+    ctx->SetRef("//$FOCUSED");
+    ctx->ItemClick("Epic##qp3");
+    ctx->Yield(4);
+    IM_CHECK_EQ(qh.get(), kEpic);
+    IM_CHECK_EQ(ed->undoSystem.UndoDepth(), depth1 + 1);   // Undo は 1 回分だけ
+
+    LogStep(ctx, "Epic の縮退の表示（DXR が無い PC だけ）");
+    {
+        const std::vector<std::string> deg = qh.degrades ? qh.degrades() : std::vector<std::string>{};
+        for (const std::string& d : deg) IM_CHECK(!d.empty());
+        ctx->LogInfo("縮退 %d 行", static_cast<int>(deg.size()));
+        ctx->SetRef("//##ViewportBar");
+        ctx->ItemClick("vpQuality/##ldb");
+        ctx->Yield(3);
+        ctx->SetRef("//$FOCUSED");
+        // 選択中の行をもう一度選んでも Undo は積まれない
+        ctx->ItemClick("Epic##qp3");
+        ctx->Yield(4);
+        IM_CHECK_EQ(ed->undoSystem.UndoDepth(), depth1 + 1);
+    }
+
+    LogStep(ctx, "Undo 1 回で Low に戻る");
+    ed->undoSystem.Undo();
+    ctx->Yield(4);
+    IM_CHECK_EQ(qh.get(), kLow);
+    IM_CHECK_EQ(ed->undoSystem.UndoDepth(), depth1);
+
+    if (startedFromPrev)
+    {
+        ed->undoSystem.Undo();            // 出発点の Low も戻して、元の品質へ
+        ctx->Yield(4);
+        IM_CHECK_EQ(qh.get(), prev);
+    }
+    IM_CHECK_EQ(ed->undoSystem.UndoDepth(), depth0);
+    ed->vpPrefs = prevPrefs;
     ctx->Yield(4);
 }
 

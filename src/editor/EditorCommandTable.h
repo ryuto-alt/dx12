@@ -120,7 +120,8 @@ inline constexpr Def kCommands[] = {
     {"view.bookmark.set.8", "カメラブックマーク 8 に現在の視点を保存", "Camera Bookmark 8 Save", "表示", "Ctrl+8", "", "今のカメラ位置と向きを 8 番に保存", Scope::Editor, KeyMode::Typing},
     {"view.bookmark.set.9", "カメラブックマーク 9 に現在の視点を保存", "Camera Bookmark 9 Save", "表示", "Ctrl+9", "", "今のカメラ位置と向きを 9 番に保存", Scope::Editor, KeyMode::Typing},
     // 別テーマ（B / C）への切替（ThemeVariants.h）。--theme-variant 付きで起動した時だけパレット(Ctrl+K)に出る（将来のテーマ切替機能の下地）。
-    {"view.theme.default","テーマ: 既定（ネオン・エッジ）",     "Theme Variant Default Neon Edge", "表示", "",           "", "",                                     Scope::Always, KeyMode::Global},
+    {"view.theme.graphite","テーマ: Graphite Gauge",             "Theme Variant Graphite Gauge", "表示", "",          "", "既定のテーマ。選ぶと保存され、次の起動でもこのテーマになる", Scope::Always, KeyMode::Global},
+    {"view.theme.default","テーマ: ネオン（旧）",               "Theme Variant Default Neon Edge Legacy", "表示", "", "", "従来のテーマ。選ぶと保存され、次の起動でもこのテーマになる", Scope::Always, KeyMode::Global},
     {"view.theme.b",     "テーマ: グラス・レイヤー（別テーマ）", "Theme Variant B Glass Layer", "表示", "",     "", "",                                     Scope::Always, KeyMode::Global},
     {"view.theme.c",     "テーマ: インク・アンド・シグナル（別テーマ）", "Theme Variant C Ink Signal", "表示", "",  "", "",                                     Scope::Always, KeyMode::Global},
     {"view.fullscreen",  "ボーダレスフルスクリーン",         "Fullscreen",        "表示",     "F11",          "", "ボーダレスフルスクリーン切り替え",     Scope::Always, KeyMode::External},

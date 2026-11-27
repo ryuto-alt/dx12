@@ -115,7 +115,7 @@ test("parseArgs: 既定は strict・--no-strict で緩む・--group/--only/--rep
 
 test("C3: layout:material の UI ゴールデン 4 件（DPI 1.0/1.5 x default/b）が定義され、基準 PNG がある", () => {
   const g = loadGoldenEntries(path.join(REPO_ROOT, "tests/golden"));
-  const mats = g.scenes.filter((s) => s.kind === "ui" && s.layout === "material");
+  const mats = g.scenes.filter((s) => s.kind === "ui" && s.layout === "material" && s.theme !== "graphite");
   assert.equal(mats.length, 4);
   assert.deepEqual(mats.map((s) => `${s.dpi}/${s.theme}`).sort(), ["1.5/b", "1.5/default", "1/b", "1/default"]);
   for (const s of mats) assert.ok(fs.existsSync(path.join(REPO_ROOT, "tests/golden/ui", `${s.name}.png`)), `${s.name}.png`);
@@ -206,4 +206,27 @@ test("judgeScene: 3D と UI の順序・文言(環境違い / 基準画像なし
   assert.equal(ok.pass, true); assert.equal(ok.bitExact, true); assert.ok(ok.diffImage);
   const bad = { width: 4, height: 4, data: Buffer.alloc(64, 200) };
   assert.equal(judgeScene({ ...base, small: bad, ref: img, baseline: undefined, strict: true }).pass, false);
+});
+
+test("UI 撮影用プロジェクトのコピーに、git が持てない空フォルダ（基準の絵に写る）が必ず作られる (FU-L-1)", async () => {
+  const { prepareUiProject, UI_PROJECT_EMPTY_DIRS } = await import("./golden.mjs");
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "uigold-"));
+  try {
+    const src = path.join(tmp, "src");
+    fs.mkdirSync(path.join(src, "assets", "scenes"), { recursive: true });
+    fs.mkdirSync(path.join(src, "assets", "components"), { recursive: true });
+    const dst = prepareUiProject(path.join(tmp, "out"), src);
+    for (const d of UI_PROJECT_EMPTY_DIRS) assert.ok(fs.statSync(path.join(dst, d)).isDirectory(), d);
+    assert.deepEqual(fs.readdirSync(path.join(dst, "assets")).sort(),
+      ["audio", "components", "models", "prefabs", "scenes", "shaders", "textures"]);
+    assert.deepEqual(fs.readdirSync(path.join(dst, "assets", "audio")).sort(), ["bgm", "sfx"]);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test("Graphite の UI ゴールデン: ビューポートのマスクが 3D の下端（1080p で y=699）まで届く (FU-L-1)", () => {
+  for (const d of ["100", "150"]) {
+    const e = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "tests", "golden", "entries", `ui_dpi${d}_graphite.json`), "utf8"));
+    const vp = e.masks[0];
+    assert.ok(vp[3] * 1080 >= 700, `ui_dpi${d}_graphite の下端 ${vp[3]} が 3D（y=699）に届かない`);
+  }
 });

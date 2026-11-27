@@ -72,6 +72,10 @@ Source: "{#RepoRoot}\third_party\agility\{#AgilityVersion}\LICENSE.txt"; DestDir
 Source: "{#RepoRoot}\third_party\licenses\IBM-Plex-OFL.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#RepoRoot}\third_party\licenses\Noto-OFL.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#RepoRoot}\third_party\licenses\PlemolJP-OFL.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+; UI 書体のサブセット（IBM Plex / PlemolJP / Noto Sans JP。W1-A14）。ImGuiManager が exe 隣の assets\editor\fonts\ui\ から読む。
+Source: "{#RepoRoot}\third_party\fonts\ibm-plex\subset\*.ttf"; DestDir: "{app}\assets\editor\fonts\ui"; Flags: ignoreversion
+Source: "{#RepoRoot}\third_party\fonts\plemoljp\subset\*.ttf"; DestDir: "{app}\assets\editor\fonts\ui"; Flags: ignoreversion
+Source: "{#RepoRoot}\third_party\fonts\noto-sans-jp\subset\*.ttf"; DestDir: "{app}\assets\editor\fonts\ui"; Flags: ignoreversion
 Source: "{#SrcDir}\shaders\*"; DestDir: "{app}\shaders"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; シェーダーソース(.hlsl/.hlsli)。配布エディタでのシェーダーホットリロード/エンジンシェーダー編集用
 ; (PathResolver::ShaderSourceDirW() が配布時に exe 隣の shaders-src/ を見る)。

@@ -153,16 +153,19 @@ export function applyMasks(img, masks) {
   return { width: img.width, height: img.height, data };
 }
 
+/** アセットブラウザの絵に出るので、基準の撮影時と同じ空フォルダを必ず用意する（git は空フォルダを持てず、worktree では欠ける）。 */
+export const UI_PROJECT_EMPTY_DIRS = ["assets/audio", "assets/audio/bgm", "assets/audio/sfx", "assets/models", "assets/prefabs", "assets/shaders", "assets/textures"];
+
 /** 撮影用プロジェクトを build/golden-out/ui_project へ作り直す（毎回まっさらにする）。 */
-function prepareUiProject() {
-  if (!fs.existsSync(UI_PROJECT_SRC)) throw new Error(`UI 撮影用プロジェクトが無い: ${path.relative(REPO_ROOT, UI_PROJECT_SRC)}`);
-  const dst = path.join(OUT_DIR, "ui_project");
+export function prepareUiProject(outDir = OUT_DIR, srcDir = UI_PROJECT_SRC) {
+  if (!fs.existsSync(srcDir)) throw new Error(`UI 撮影用プロジェクトが無い: ${path.relative(REPO_ROOT, srcDir)}`);
+  const dst = path.join(outDir, "ui_project");
   fs.rmSync(dst, { recursive: true, force: true });
-  fs.cpSync(UI_PROJECT_SRC, dst, { recursive: true });
+  fs.cpSync(srcDir, dst, { recursive: true });
+  for (const d of UI_PROJECT_EMPTY_DIRS) fs.mkdirSync(path.join(dst, d), { recursive: true });
   return dst;
 }
 
-/** 起動引数（決定論・DPI・テーマ案）。テーマ default は何も付けない＝現行の見た目そのまま。 */
 // "1.1" / "6.5" 形式のバージョン文字列を [major, minor] にする（不正なら [0,0]）。
 function parseVer(v) {
   const m = /^(\d+)\.(\d+)/.exec(String(v ?? ""));
@@ -220,11 +223,20 @@ export function judgeScene({ native, sha, small, ref, baseline: b, tolerance, st
   return v;
 }
 
+/** W1-A14: UI の書体。entries の uiFont（"legacy" | "plex"）を優先し、無ければ graphite は plex、それ以外は旧書体。 */
+export function uiFontOf(s, theme) {
+  return s.uiFont ?? (theme === "graphite" ? "plex" : "legacy");
+}
+
+/**
+ * 起動引数（決定論・DPI・テーマ・書体）。★テーマと書体は常に明示する（W1-A14: 既定のテーマが Graphite になったので、
+ * 何も付けないと「その人の設定 / 既定」に引きずられる）。旧の組 = --theme-variant default --ui-font legacy --viewport-aspect 16:9、新の組 = --theme-variant graphite --ui-font plex --viewport-aspect fit。
+ */
 export function uiExtraArgs(s, forceTheme = null) {
-  const a = ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0)];
   const theme = forceTheme ?? s.theme ?? "default";
-  if (theme !== "default") a.push("--theme-variant", theme);
-  return a;
+  // ビューポートのアスペクトも明示する: 旧の組は従来どおり 16:9（黒帯あり）、新の組（graphite）は既定のフィット。
+  const aspect = s.viewportAspect ?? (theme === "graphite" ? "fit" : "16:9");
+  return ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0), "--theme-variant", theme, "--ui-font", uiFontOf(s, theme), "--viewport-aspect", aspect];
 }
 
 /** 1 つの UI シーンを撮る（起動 → 落ち着くまで回す → imgui_screenshot を repeat 回）。 */
@@ -294,7 +306,7 @@ async function runUiScenes(list, args, baseline, results) {
         writePng(refFile, small);
         baseline.scenes[s.name] = {
           kind: "ui", nativeWidth: first.img.width, nativeHeight: first.img.height, nativeSha256: r.sha /* マスク後 */,
-          compareSha256: sha256(small), width: s.width, height: s.height, dpi: s.dpi ?? 1.0, theme: s.theme ?? "default",
+          compareSha256: sha256(small), width: s.width, height: s.height, dpi: s.dpi ?? 1.0, theme: s.theme ?? "default", uiFont: uiFontOf(s, s.theme ?? "default"),
           commit: head, capturedAt: new Date().toISOString(), deterministicInSession: r.deterministic,
         };
         r.updated = true;
@@ -356,7 +368,9 @@ async function main() {
       continue;
     }
     const t0 = Date.now();
-    const eng = await launchEngine({ exe: args.exe, project, scene: list[0].scene ?? list[0].launchScene });
+    // 3D ゴールデンの表示矩形は UI のレイアウトで決まる。基準（977x550）は旧テーマ・旧書体・16:9 で撮ったので、W1-A14 で既定を変えた後も同じ組で撮る。
+    const eng = await launchEngine({ exe: args.exe, project, scene: list[0].scene ?? list[0].launchScene,
+      extraArgs: ["--theme-variant", "default", "--ui-font", "legacy", "--viewport-aspect", "16:9"] });
     let conn;
     try {
       conn = await connect(eng.port);
