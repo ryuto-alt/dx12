@@ -35,7 +35,7 @@ W2 C の末尾で行う計測スパイク(EXEC §3 の SPK-1)の準備。この�
 # tools/parity を作業ディレクトリにして実行する
 $env:PYTHONUTF8 = '1'
 # PT 1024spp + 現行ラスタ(legacy)を 2 シーン x 4 カメラ撮る。出力は <repo>/.dx12/parity/spk1/<日時>/(git 管理外)
-.\.venv\Scripts\python.exe -m parity.spk1_capture --build-dir <buildelease のあるフォルダ> --port <自分のレーンのポート> --spp 1024
+.\.venv\Scripts\python.exe -m parity.spk1_capture --build-dir <build\release のあるフォルダ> --port <自分のレーンのポート> --spp 1024
 # 1 シーンだけ・軽い確認(2 シーン 4 カメラで約 2 分)
 .\.venv\Scripts\python.exe -m parity.spk1_capture --build-dir <...> --port <...> --scenes ml_64 --spp 128 --out <dir>
 ```
