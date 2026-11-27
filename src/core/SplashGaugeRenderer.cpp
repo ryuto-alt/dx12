@@ -130,9 +130,10 @@ struct GaugeRenderer::Impl
     void DrawUiStatic(const SplashInfo& info);
     void ComputeCells(const SplashInfo& info);
 
-    void DrawTicks(std::uint32_t lit, double alpha);
     void DrawLabels(double alpha);
     void DrawDynamic(const GaugeFrame& f, const GaugeReveal& rv, const SplashInfo& info);
+    void DrawTicks(std::uint32_t lit, double alpha, const GaugeFrame& f);
+    void DrawBezelSweep(const GaugeFrame& f);
     void DrawUiDynamic(const GaugeFrame& f, const GaugeReveal& rv, const SplashInfo& info);
     void DrawLayer(ID2D1Bitmap1* bmp, double opacity);
     bool Render(const GaugeFrame& f, const SplashInfo& info);
@@ -562,7 +563,7 @@ void GaugeRenderer::Impl::DrawLayer(ID2D1Bitmap1* bmp, double opacity)
     dc->SetTransform(D2D1::Matrix3x2F::Scale(Sc(), Sc()));
 }
 
-void GaugeRenderer::Impl::DrawTicks(std::uint32_t lit, double alpha)
+void GaugeRenderer::Impl::DrawTicks(std::uint32_t lit, double alpha, const GaugeFrame& f)
 {
     const GaugeGeo& g = G();
     const GaugeColors& c = kGaugeColors;
@@ -573,11 +574,59 @@ void GaugeRenderer::Impl::DrawTicks(std::uint32_t lit, double alpha)
         if (!g.minor && !mid) continue;
         const float ln = (major ? 18.f : (mid ? 12.f : 7.f)) * kk;
         const GaugeRgba& col = major ? c.t2 : (mid ? c.t3 : c.t4);
-        const double op = major ? 1.0 : (mid ? 0.75 : 0.45);
+        double op = major ? 1.0 : (mid ? 0.75 : 0.45);
+        // 整列波（BD6）: 反射が通る目盛りは t1 へ寄せて濃くする（線の色の切り替えだけ。光らせない）。通り抜けたあとは元に戻る
+        const double gl = gauge::AlignGlintMax(f.alignT, i * 3.6);
+        GaugeRgba cc = col;
+        if (gl > 0.0)
+        {
+            auto mix = [&](std::uint8_t a, std::uint8_t b) { return static_cast<std::uint8_t>(std::lround(a + (b - a) * gl)); };
+            cc = GaugeRgba{ mix(col.r, c.t1.r), mix(col.g, c.t1.g), mix(col.b, c.t1.b), col.a };
+            op = op + (1.0 - op) * gl;
+        }
         float x0, y0, x1, y1;
         Polar(g.dcx, g.dcy, i * 3.6, g.rTickOut, x0, y0);
         Polar(g.dcx, g.dcy, i * 3.6, g.rTickOut - ln, x1, y1);
-        Line(x0, y0, x1, y1, col, op * alpha, major ? 2.f : 1.f);
+        Line(x0, y0, x1, y1, cc, op * alpha, major ? 2.f : 1.f);
+    }
+}
+
+// ベゼルの鏡面スイープ（BD6）: 縁（外の 2px の線と内側の 1px の線）に沿って、細い弧の重ね描きで反射を動かす。ぼかし・グロー・面は使わない。
+void GaugeRenderer::Impl::DrawBezelSweep(const GaugeFrame& f)
+{
+    if (!(f.bellT > 0.f && f.bellT < 1.f)) return;
+    const GaugeGeo& g = G();
+    const GaugeColors& c = kGaugeColors;
+    ComPtr<ID2D1Factory> fac;
+    dc->GetFactory(&fac);
+    const double step = gauge::kSweepStepDeg;
+    struct Ring { float r; float w; double scale; };
+    const Ring rings[2] = { { g.rBezel, 2.f, 1.0 }, { g.rBezel - 7.f * g.k, 1.f, 0.6 } };
+    for (int second = 0; second < 2; ++second)
+    {
+        const double centre = gauge::SweepCentreDeg(f.bellT) + (second ? 180.0 : 0.0);
+        for (double a0 = centre - gauge::kSweepHalfWidthDeg; a0 < centre + gauge::kSweepHalfWidthDeg - 1e-9; a0 += step)
+        {
+            const double mid = a0 + step * 0.5;
+            const double p = gauge::SweepProfileAt(f.bellT, std::fmod(mid + 720.0, 360.0), second != 0);
+            if (p <= 0.004) continue;
+            for (const Ring& rg : rings)
+            {
+                ComPtr<ID2D1PathGeometry> pg;
+                if (FAILED(fac->CreatePathGeometry(&pg))) continue;
+                ComPtr<ID2D1GeometrySink> s;
+                if (FAILED(pg->Open(&s))) continue;
+                float sx, sy, ex, ey;
+                Polar(g.dcx, g.dcy, a0, rg.r, sx, sy);
+                Polar(g.dcx, g.dcy, a0 + step, rg.r, ex, ey);
+                s->BeginFigure(D2D1::Point2F(sx, sy), D2D1_FIGURE_BEGIN_HOLLOW);
+                s->AddArc(D2D1::ArcSegment(D2D1::Point2F(ex, ey), D2D1::SizeF(rg.r, rg.r), 0.f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+                s->EndFigure(D2D1_FIGURE_END_OPEN);
+                s->Close();
+                solid->SetColor(Col(c.t1, gauge::kSweepPeakAlpha * p * rg.scale));
+                dc->DrawGeometry(pg.Get(), solid.Get(), rg.w);
+            }
+        }
     }
 }
 
@@ -617,7 +666,7 @@ void GaugeRenderer::Impl::DrawDynamic(const GaugeFrame& f, const GaugeReveal& rv
     dc->GetFactory(&fac);
     const D2D1_MATRIX_3X2_F base = D2D1::Matrix3x2F::Scale(Sc(), Sc());
 
-    DrawTicks(rv.litTicks, rv.dial > 0.f ? 1.0 : 0.0);
+    DrawTicks(rv.litTicks, rv.dial > 0.f ? 1.0 : 0.0, f);
     DrawLabels(rv.labels);
 
     if (rv.ring)
@@ -648,6 +697,8 @@ void GaugeRenderer::Impl::DrawDynamic(const GaugeFrame& f, const GaugeReveal& rv
         }
     }
 
+    DrawBezelSweep(f);
+
     // 校正三角（ベゼルの真上）。ロックの前は輪郭だけ、ロックで面になる
     if (rv.litTicks >= 100)
     {
@@ -670,18 +721,18 @@ void GaugeRenderer::Impl::DrawDynamic(const GaugeFrame& f, const GaugeReveal& rv
         }
     }
 
-    // 指針の残像線（面にしない。1px の線 2 本）
-    if (f.needleShown && f.blurDeg > 0.2f && !f.locked)
+    // 指針の残像（重ね描きのモーションブラー。面にしない。1px の線を blurDeg に応じて 1.2 度刻みで最大 12 本。BD6）
+    if (f.needleShown && !f.locked)
     {
+        const int n = gauge::TrailLineCount(f.blurDeg);
         const float len = g.rTickOut - 6.f;
         const double ang = f.needleDeg + gauge::OvershootDegOf(f.overshootPx);
-        const double dd[2] = { L::kGhostNear * f.blurDeg, L::kGhostFar * f.blurDeg };
-        const float al[2] = { L::kGhostAlphaNear, L::kGhostAlphaFar };
-        for (int i = 0; i < 2; ++i)
+        for (int i = 0; i < n; ++i)
         {
+            const gauge::TrailLine tl = gauge::TrailLineAt(i, n, f.blurDeg);
             float x1, y1;
-            Polar(g.dcx, g.dcy, ang - dd[i], len, x1, y1);
-            Line(g.dcx, g.dcy, x1, y1, c.accent, al[i], 1.f);
+            Polar(g.dcx, g.dcy, ang - tl.offsetDeg, len, x1, y1);
+            Line(g.dcx, g.dcy, x1, y1, c.accent, tl.alpha, 1.f);
         }
     }
 

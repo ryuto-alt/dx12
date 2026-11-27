@@ -48,6 +48,7 @@ struct GaugeFrame
     bool locked = false;            // ロック（1,628）以降
     float overshootPx = 0.f;        // 行き過ぎ 0..2px（指針の先端が進行方向＝円周の接線方向へ出る長さ。C23 からロックまでの 85ms）
     std::uint32_t alignStep = 0;    // 整列波の段 0..5（ベルの各音に 1 段ずつ）
+    std::array<float, 5> alignT{};  // 整列波: 段 k（文字盤を 72 度ずつ 5 つに分けた扇）の反射が通る進み 0..1。ベル k の時刻から kAlignPassMs。0 = まだ、1 = 通り過ぎた（BD6）
     // --- 描画側が欲しい追加分（BD2 で足したもの） ---
     bool needleShown = false;       // 指針が現れた（177ms。0° に静止したまま）
     bool seated = false;            // 着座（1,646。表題欄の状態が「校正中」→「校正済」）
@@ -131,6 +132,7 @@ inline constexpr double kTomboDurMs = 140.0;
 inline constexpr double kBezelSweepMs = 200.0;
 inline constexpr double kPinStampMs = 120.0;
 inline constexpr double kFadeOutMs = 180.0;
+inline constexpr double kAlignPassMs = 130.0;           // 整列波: 1 段の反射が扇の中を通り抜ける時間（BD6。ベルの間隔 25ms より長く、5 つの反射が重なって時計回りに流れる）
 inline constexpr double kOvershootPx = 2.0;             // 行き過ぎの最大（2px）
 inline constexpr double kNeedleRadiusPx = 248.0;        // 指針の半径。行き過ぎは「指針の先端が円周の接線方向（進行方向）へ出る長さ」で、度への換算は OvershootDegOf()
 inline constexpr double kBlurWindowMs = 1000.0 / 60.0;  // 残像 = 直近 1 フレームの移動量
@@ -146,6 +148,85 @@ inline constexpr double kApproachMinMs = 300.0;
 inline constexpr double kHermiteSlopeLimit = 3.0;       // 単調性の条件（端の傾き <= 3 * 割線）
 // 行き過ぎ px を角度（度）へ（先端の円周方向。2px は半径 248 で +0.46 度）。needleDeg には足さない（描画側が使う場合の換算）
 inline constexpr double OvershootDegOf(double px) { return px / kNeedleRadiusPx * (180.0 / 3.14159265358979323846); }
+
+// ---------------------------------------------------------------- 校正の振り付け（W1-BD6）: 残像・整列波・ベゼルの鏡面スイープ
+// 3 つとも GaugeFrame だけから決まる純関数（描画器は結果をそのまま線に引く）。どれも光らせない（グロー・ぼかし・放射グラデーションを使わない）。
+// 面を作らず、1px 前後の細い線の重ね描きと、線の色（t1 / t2 / t3）の切り替えだけで「反射の移動」と「重ね描きのモーションブラー」を表す。
+
+// 指針の残像（重ね描きのモーションブラー）。blurDeg（直近 1 フレームに進んだ角度）を、kTrailStepDeg ごとに 1 本の細い線で埋める。
+// 最速区間（C13〜C15。間隔 約 27ms で約 9 度）で 6 本以上になる（EXEC §2.6 BD6。boot_impl_spec の 2 本から増やした）。
+inline constexpr double kTrailMinBlurDeg = 0.2;       // これ以下は描かない（止まっているとき・ごくゆっくり）
+inline constexpr double kTrailStepDeg = 1.2;          // 線の間隔（半径 244px で約 5px。1px の線がつながって面にならない）
+inline constexpr int kTrailMaxLines = 12;
+inline constexpr double kTrailAlphaNear = 0.24;       // 指針に最も近い線（boot_impl_spec: 後ろ側の残像線の濃い方）
+inline constexpr double kTrailAlphaFar = 0.05;        // 最も遠い線（尾の先。0.10 からさらに淡くして、本数を増やしても黄の量を増やしすぎない）
+inline int TrailLineCount(double blurDeg)
+{
+    if (!(blurDeg > kTrailMinBlurDeg)) return 0;
+    const int n = static_cast<int>(std::ceil(blurDeg / kTrailStepDeg - 1e-9));
+    return std::min(std::max(n, 1), kTrailMaxLines);
+}
+struct TrailLine { double offsetDeg = 0.0; double alpha = 0.0; };   // offsetDeg: 指針から後ろへ何度（正）
+// i = 0..n-1（指針に近い順）。線は blurDeg を n 等分した位置に置き、遠いほど淡くする（線形）。
+inline TrailLine TrailLineAt(int i, int n, double blurDeg)
+{
+    TrailLine l;
+    if (n <= 0) return l;
+    const double u = n > 1 ? static_cast<double>(i) / static_cast<double>(n - 1) : 0.0;
+    l.offsetDeg = blurDeg * (static_cast<double>(i) + 1.0) / static_cast<double>(n);
+    l.alpha = kTrailAlphaNear + (kTrailAlphaFar - kTrailAlphaNear) * u;
+    return l;
+}
+
+// 整列波: 文字盤の目盛りの帯（100 本）を 72 度ずつ 5 つの扇に分け、ベルの k 音目で扇 k の中を反射が時計回りに通り抜ける。
+// 5 つの反射が 25ms ずつずれて重なり、帯全体が 1 周の波のように「揃っていく」。通り抜けたあとは何も残らない（alignT が 0 か 1 のとき 0）。
+inline constexpr double kAlignSectorDeg = 72.0;
+inline constexpr double kAlignHalfWidthDeg = 9.0;     // 反射の半幅（目盛りの間隔 3.6 度の 5 本ぶん）
+// 目盛りの角度 tickDeg（0..360、真上から時計回り）に対する、扇 k の反射の強さ 0..1。扇の外の目盛りには掛からない。
+inline double AlignGlintAt(double alignT, int k, double tickDeg)
+{
+    if (!(alignT > 0.0 && alignT < 1.0) || k < 0 || k >= 5) return 0.0;
+    const double s0 = k * kAlignSectorDeg;
+    if (tickDeg < s0 - 1e-9 || tickDeg >= s0 + kAlignSectorDeg - 1e-9) return 0.0;
+    const double centre = s0 + kAlignSectorDeg * alignT;
+    const double d = std::abs(tickDeg - centre) / kAlignHalfWidthDeg;
+    if (d >= 1.0) return 0.0;
+    const double c = std::cos(1.5707963267948966 * d);
+    return c * c * std::sin(3.14159265358979323846 * alignT);   // 扇の端で消えるよう、通過の進みでも包む
+}
+// 全 5 段のうち最も強いもの
+inline double AlignGlintMax(const std::array<float, 5>& alignT, double tickDeg)
+{
+    double m = 0.0;
+    for (int k = 0; k < 5; ++k) m = std::max(m, AlignGlintAt(alignT[static_cast<std::size_t>(k)], k, tickDeg));
+    return m;
+}
+
+// ベゼルの鏡面スイープ（1,648〜1,848）: 金属の縁に当たる光の反射が、真上から 2 つ（反対側に 1 つずつ）時計回りに 180 度ずつ動いて縁を一周する。
+// bellT = 0..1（0 と 1 では出ない）。反射は細い弧（2 度刻みの線分）の重ね描きで、中心から端へ cos^2 で淡くなる。光彩にしない（ぼかさない）。
+inline constexpr double kSweepHalfWidthDeg = 16.0;
+inline constexpr double kSweepStepDeg = 2.0;
+inline constexpr double kSweepPeakAlpha = 0.55;       // 1 つ目の反射の最大の濃さ（t1。反対側は 0.55 倍）
+inline constexpr double kSweepSecondScale = 0.55;
+inline double SweepCentreDeg(double bellT)            // 1 つ目の反射の中心角（0..180。滑らかに始まり滑らかに止まる）
+{
+    const double u = std::min(std::max(bellT, 0.0), 1.0);
+    return 180.0 * u * u * (3.0 - 2.0 * u);
+}
+inline double SweepEnvelope(double bellT) { return bellT > 0.0 && bellT < 1.0 ? std::sin(3.14159265358979323846 * bellT) : 0.0; }
+// 縁の角度 angDeg（0..360）に対する反射の濃さ 0..1（2 つ目の分は含まない。second = true で反対側の反射）
+inline double SweepProfileAt(double bellT, double angDeg, bool second)
+{
+    const double env = SweepEnvelope(bellT);
+    if (env <= 0.0) return 0.0;
+    double centre = SweepCentreDeg(bellT) + (second ? 180.0 : 0.0);
+    double d = std::fmod(std::abs(angDeg - centre), 360.0);
+    if (d > 180.0) d = 360.0 - d;
+    d /= kSweepHalfWidthDeg;
+    if (d >= 1.0) return 0.0;
+    const double c = std::cos(1.5707963267948966 * d);
+    return env * c * c * (second ? kSweepSecondScale : 1.0);
+}
 } // namespace gauge
 
 // ---------------------------------------------------------------- 単調な区分 3 次エルミート（PCHIP）
@@ -248,6 +329,8 @@ inline void FillItems(const CalibrateEvents& ev, double t, GaugeFrame& f)
     std::uint32_t step = 0;
     for (double b : ev.bellMs) if (t >= b) ++step;
     f.alignStep = step;
+    for (int k = 0; k < CalibrateEvents::kBells; ++k)
+        f.alignT[static_cast<std::size_t>(k)] = static_cast<float>(Clamp01((t - ev.bellMs[k]) / gauge::kAlignPassMs));
     f.bellT = static_cast<float>(Clamp01((t - ev.bellMs[0]) / gauge::kBezelSweepMs));
     f.pinT = static_cast<float>(EaseOutCubic((t - ev.pingMs) / gauge::kPinStampMs));
     f.fadeOutT = static_cast<float>(Clamp01((t - ev.pingMs) / gauge::kFadeOutMs));
@@ -318,7 +401,7 @@ inline GaugeFrame EvaluateGauge(GaugePath path, double tMs, float loadProgress01
     {
         // ロックの整列が終わったあとの静止した姿。動き（回転・残像・行き過ぎ・整列波のスイープ）は無い。
         GaugeFrame f = gauge_detail::CanonicalFrame(ev, needle, std::max(ev.bellMs[CalibrateEvents::kBells - 1], std::max(0.0, tMs)));
-        f.needleDeg = 360.f; f.blurDeg = 0.f; f.overshootPx = 0.f; f.bellT = 1.f;
+        f.needleDeg = 360.f; f.blurDeg = 0.f; f.overshootPx = 0.f; f.bellT = 1.f; f.alignT.fill(1.f);
         const double t = std::max(0.0, tMs);   // timelineMs は CanonicalFrame の値（最後のベルの時刻以上）のまま。reveal は動かない
         const double exitStart = std::isnan(exitStartMs) ? ev.pingMs : exitStartMs;
         f.pinT = t >= exitStart ? 1.f : 0.f;                       // 動かさない: 刻印は出るだけ

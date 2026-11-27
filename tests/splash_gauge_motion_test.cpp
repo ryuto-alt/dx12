@@ -9,8 +9,10 @@
 //  加えて: スキップ（ランダム 5 時刻）、経路によらずロック以降の全フレームが同じ
 #include "core/SplashGaugeMotion.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 #include <vector>
@@ -19,6 +21,7 @@ namespace
 {
 int g_fail = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++g_fail; } } while (0)
+#define CHECK_MSG(cond, ...) do { if (!(cond)) { std::printf("FAIL %s:%d  %s  ", __FILE__, __LINE__, #cond); std::printf(__VA_ARGS__); std::printf("\n"); ++g_fail; } } while (0)
 #define CHECK_NEAR(a, b, eps) do { const double aa_ = (a), bb_ = (b); if (!(std::fabs(aa_ - bb_) <= (eps))) { \
     std::printf("FAIL %s:%d  %s=%.6f vs %s=%.6f\n", __FILE__, __LINE__, #a, aa_, #b, bb_); ++g_fail; } } while (0)
 
@@ -820,6 +823,170 @@ void Test_Blur()
     CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, 50.0, 0.f).blurDeg == 0.f);
 }
 
+// ---------------------------------------------------------------- 校正の振り付け（W1-BD6）
+
+// 残像の本数: 最速区間（C13〜C15）の全フレームで 6 本以上。止まっているとき（開始前・ロック後）は 0。上限 12。
+void Test_TrailLines()
+{
+    const auto& ev = Ev();
+    int minN = 99, maxN = 0;
+    for (double t = ev.clickMs[13]; t <= ev.clickMs[15]; t += 0.25)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        const int n = sp::gauge::TrailLineCount(f.blurDeg);
+        minN = std::min(minN, n);
+        maxN = std::max(maxN, n);
+    }
+    std::printf("  最速区間 C13〜C15 の残像の本数: 最少 %d 本 / 最多 %d 本\n", minN, maxN);
+    CHECK(minN >= 6 && maxN <= sp::gauge::kTrailMaxLines);
+    // 全区間で本数は 0..12。ロック後と開始前は 0
+    for (double t = 0.0; t <= 2400.0; t += 1.0)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        const int n = sp::gauge::TrailLineCount(f.blurDeg);
+        CHECK(n >= 0 && n <= sp::gauge::kTrailMaxLines);
+        if (f.locked || t < 150.0) CHECK(n == 0);
+    }
+    // 線の並び: 指針に近い順に離れ、濃さは線形に淡くなる。最も遠い線は blurDeg（直近 1 フレームの移動量）に一致する
+    for (double blur : { 0.5, 3.0, 9.3, 14.0, 40.0 })
+    {
+        const int n = sp::gauge::TrailLineCount(blur);
+        CHECK(n >= 1);
+        double prevOff = 0.0, prevAl = 2.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const sp::gauge::TrailLine l = sp::gauge::TrailLineAt(i, n, blur);
+            CHECK(l.offsetDeg > prevOff && l.offsetDeg <= blur + 1e-9);
+            CHECK(l.alpha < prevAl + 1e-12 && l.alpha >= sp::gauge::kTrailAlphaFar - 1e-9 && l.alpha <= sp::gauge::kTrailAlphaNear + 1e-9);
+            prevOff = l.offsetDeg; prevAl = l.alpha;
+        }
+        CHECK_NEAR(sp::gauge::TrailLineAt(n - 1, n, blur).offsetDeg, blur, 1e-9);
+        CHECK_NEAR(sp::gauge::TrailLineAt(0, n, blur).alpha, sp::gauge::kTrailAlphaNear, 1e-9);
+    }
+    CHECK(sp::gauge::TrailLineCount(0.0) == 0 && sp::gauge::TrailLineCount(0.2) == 0 && sp::gauge::TrailLineCount(0.25) == 1);
+}
+
+// 整列波とベゼルの鏡面スイープ: ベルの 5 音（1,648〜1,748）に 1 段ずつ。スイープは 1,648〜1,848。通り抜けたあとは何も残らない。
+void Test_AlignWaveAndSweep()
+{
+    const auto& ev = Ev();
+    for (int k = 0; k < 5; ++k)
+    {
+        const sp::GaugeFrame before = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k] - 0.01, 0.f);
+        const sp::GaugeFrame at = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k], 0.f);
+        const sp::GaugeFrame mid = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k] + sp::gauge::kAlignPassMs * 0.5, 0.f);
+        const sp::GaugeFrame done = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k] + sp::gauge::kAlignPassMs, 0.f);
+        CHECK(before.alignT[static_cast<size_t>(k)] == 0.f && at.alignT[static_cast<size_t>(k)] == 0.f);
+        CHECK_NEAR(mid.alignT[static_cast<size_t>(k)], 0.5, 1e-5);
+        CHECK(done.alignT[static_cast<size_t>(k)] == 1.f);
+        // 反射は扇 k の目盛りにだけ掛かる。中ほどで 1 本以上の目盛りが強く反応する
+        double best = 0.0;
+        for (int i = 0; i < 100; ++i)
+        {
+            const double deg = i * 3.6;
+            const double gl = sp::gauge::AlignGlintAt(mid.alignT[static_cast<size_t>(k)], k, deg);
+            const bool inSector = deg >= k * 72.0 - 1e-9 && deg < (k + 1) * 72.0 - 1e-9;
+            if (!inSector) CHECK(gl == 0.0);
+            CHECK(gl >= 0.0 && gl <= 1.0);
+            best = std::max(best, gl);
+        }
+        CHECK_MSG(best > 0.8, "扇 %d の反射が弱い %.3f", k, best);
+    }
+    // 整列が終わった（最後の反射が通り抜けた）あとは、どの目盛りにも掛からない。Reduce も同じ（静止の姿）
+    const double settled = ev.bellMs[4] + sp::gauge::kAlignPassMs;
+    for (double t = settled; t <= 2400.0; t += 5.0)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        for (int i = 0; i < 100; ++i) CHECK(sp::gauge::AlignGlintMax(f.alignT, i * 3.6) == 0.0);
+    }
+    for (double t : { 0.0, 1000.0, 1748.0, 2200.0 })
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Reduce, t, 0.f);
+        for (int i = 0; i < 100; ++i) CHECK(sp::gauge::AlignGlintMax(f.alignT, i * 3.6) == 0.0);
+        CHECK(sp::gauge::SweepEnvelope(f.bellT) == 0.0);
+    }
+    // 整列の前（ロックの前）は何も掛からない
+    for (double t = 0.0; t < ev.bellMs[0]; t += 7.0)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        for (int i = 0; i < 100; ++i) CHECK(sp::gauge::AlignGlintMax(f.alignT, i * 3.6) == 0.0);
+        CHECK(f.bellT == 0.f);
+    }
+    // スイープ: 1,648 で始まり 1,848 で終わる。反射は縁を一周（2 つの反射が 180 度ずつ）。最大の濃さは 0.55 以下
+    CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[0] - 0.01, 0.f).bellT == 0.f);
+    CHECK_NEAR(sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[0] + 100.0, 0.f).bellT, 0.5, 1e-5);
+    CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[0] + 200.0, 0.f).bellT == 1.f);
+    CHECK_NEAR(sp::gauge::SweepCentreDeg(0.0), 0.0, 1e-12);
+    CHECK_NEAR(sp::gauge::SweepCentreDeg(1.0), 180.0, 1e-12);
+    double prev = -1.0, peak = 0.0;
+    for (double u = 0.0; u <= 1.0 + 1e-12; u += 0.01)
+    {
+        const double c = sp::gauge::SweepCentreDeg(u);
+        CHECK(c >= prev - 1e-12);
+        prev = c;
+        for (double a = 0.0; a < 360.0; a += 0.5)
+            for (bool second : { false, true })
+            {
+                const double p = sp::gauge::SweepProfileAt(u, a, second);
+                CHECK(p >= 0.0 && p <= 1.0);
+                peak = std::max(peak, p * sp::gauge::kSweepPeakAlpha);
+            }
+    }
+    CHECK(peak <= sp::gauge::kSweepPeakAlpha + 1e-9 && peak > 0.4);
+    CHECK(sp::gauge::SweepProfileAt(0.0, 0.0, false) == 0.0 && sp::gauge::SweepProfileAt(1.0, 180.0, false) == 0.0);
+    // 一周: 全方位のどこかで、スイープ中に必ず反射が通る
+    for (double a = 0.0; a < 360.0; a += 3.0)
+    {
+        double m = 0.0;
+        for (double u = 0.0; u <= 1.0; u += 0.005) m = std::max(m, std::max(sp::gauge::SweepProfileAt(u, a, false), sp::gauge::SweepProfileAt(u, a, true)));
+        CHECK_MSG(m > 0.05, "角度 %.0f にスイープが届かない", a);
+    }
+}
+
+// イベントのフレームが音と ±1 フレーム（60Hz の表示。120fps のダンプでも確かめる）。
+// 音は時刻 T に鳴る。絵は「T 以降の最初のフレーム」で変わる。ここでは、絵が変わる最初のフレームと音のフレームの差を数える。
+void Test_EventFramesVsAudio()
+{
+    const auto& ev = Ev();
+    for (double fps : { 60.0, 120.0 })
+    {
+        const double dt = 1000.0 / fps;
+        auto audioFrame = [&](double tMs) { return static_cast<long>(std::ceil(tMs / dt - 1e-9)); };
+        auto firstFrame = [&](auto&& pred) {
+            for (long n = 0; n < static_cast<long>(3000.0 / dt); ++n)
+                if (pred(sp::EvaluateGauge(sp::GaugePath::Fast, n * dt, 0.f))) return n;
+            return -1L;
+        };
+        auto expectNear = [&](const char* what, long vis, double tAudio) {
+            const long aud = audioFrame(tAudio);
+            CHECK_MSG(vis >= 0 && std::labs(vis - aud) <= 1, "%s fps=%.0f 絵 %ld / 音 %ld", what, fps, vis, aud);
+        };
+        for (int i = 0; i < sp::CalibrateEvents::kClicks; ++i)
+        {
+            const double target = ev.clickDeg[i];
+            expectNear("クリック", firstFrame([&](const sp::GaugeFrame& f) { return f.needleDeg >= target - 1e-3; }), ev.clickMs[i]);
+        }
+        expectNear("ロック", firstFrame([](const sp::GaugeFrame& f) { return f.locked; }), ev.lockMs);
+        expectNear("着座", firstFrame([](const sp::GaugeFrame& f) { return f.seated; }), ev.seatMs);
+        for (int k = 0; k < 5; ++k)
+        {
+            expectNear("整列（段）", firstFrame([&](const sp::GaugeFrame& f) { return f.alignStep >= static_cast<std::uint32_t>(k + 1); }), ev.bellMs[k]);
+            expectNear("整列（反射）", firstFrame([&](const sp::GaugeFrame& f) { return f.alignT[static_cast<size_t>(k)] > 0.f; }), ev.bellMs[k]);
+        }
+        expectNear("ベゼルのスイープ", firstFrame([](const sp::GaugeFrame& f) { return f.bellT > 0.f; }), ev.bellMs[0]);
+        expectNear("登録のピン", firstFrame([](const sp::GaugeFrame& f) { return f.pinT > 0.f; }), ev.pingMs);
+        // ロックの行き過ぎ: 2px 以下（指針の先端が円周の接線方向へ出る長さ）で、ロックの時刻までに 0 へ戻る
+        double peak = 0.0;
+        for (long n = 0; n * dt < 2400.0; ++n)
+        {
+            const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, n * dt, 0.f);
+            peak = std::max(peak, static_cast<double>(f.overshootPx));
+            if (n * dt >= ev.lockMs) CHECK(f.overshootPx == 0.f);
+        }
+        CHECK(peak <= 2.0 + 1e-6 && peak > 1.0);
+    }
+}
+
 // 生成ヘッダ由来: 時刻を手で持っていないこと（ビューが SplashCalibrateEvents.h と同じ）
 void Test_EventsView()
 {
@@ -855,6 +1022,9 @@ int main()
     Test_SkipThenLongLoad();
     Test_Reduce();
     Test_Blur();
+    Test_TrailLines();
+    Test_AlignWaveAndSweep();
+    Test_EventFramesVsAudio();
     if (g_fail == 0) std::printf("SplashGaugeMotionTests: ALL PASS\n");
     else std::printf("SplashGaugeMotionTests: %d FAIL\n", g_fail);
     return g_fail == 0 ? 0 : 1;

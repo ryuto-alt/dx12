@@ -520,6 +520,191 @@ void Test_TiersAndDpi(const fs::path& root)
         CHECK(Render(s2, f, pi, im));
     }
 }
+// ---------------------------------------------------------------- 校正の振り付け（W1-BD6）の描画
+// 残像の本数（画素で数える）: 最速区間のフレームを、blurDeg = 0 にした同じフレームと比べ、文字盤の内側の円周（半径 160）で差のある線を数える。
+int CountTrailRuns(const Image& a, const Image& b, float dpi, double fromDeg, double toDeg)
+{
+    const double cx = 520.0 * dpi, cy = 450.0 * dpi, r = 160.0 * dpi;
+    int runs = 0; bool in = false;
+    for (double d = fromDeg; d <= toDeg; d += 0.05)
+    {
+        const double rad = d * 3.14159265358979323846 / 180.0;
+        const int x = static_cast<int>(std::lround(cx + std::sin(rad) * r)), y = static_cast<int>(std::lround(cy - std::cos(rad) * r));
+        const size_t i = (static_cast<size_t>(y) * a.w + x) * 4;
+        int m = 0;
+        for (int c = 0; c < 3; ++c) m = std::max(m, std::abs(a.bgra[i + c] - b.bgra[i + c]));
+        const bool on = m >= 3;
+        if (on && !in) ++runs;
+        in = on;
+    }
+    return runs;
+}
+
+void Test_Choreography(const fs::path& root)
+{
+    using namespace sp;
+    const std::wstring font = SplashFontPath((root / "assets").wstring());
+    const CalibrateEvents& ev = DefaultCalibrateEvents();
+    for (float dpi : { 1.0f, 2.0f })
+    {
+        GaugeSurface surf;
+        CHECK(surf.Init(dpi, PickGaugeLayout(1e9, 1e9), true));
+        SplashInfo info = HeroInfo(font);
+        int minRuns = 99;
+        for (double t = ev.clickMs[13]; t <= ev.clickMs[15]; t += 4.0)
+        {
+            GaugeFrame f = EvaluateGauge(GaugePath::Fast, t, 0.f);
+            GaugeFrame f0 = f; f0.blurDeg = 0.f;
+            Image a, b;
+            CHECK(Render(surf, f, info, a));
+            CHECK(Render(surf, f0, info, b));
+            const int n = gauge::TrailLineCount(f.blurDeg);
+            const double ang = f.needleDeg;
+            // 指針の後ろ側（blurDeg + 余裕）だけを調べる
+            const int runs = CountTrailRuns(a, b, dpi, ang - f.blurDeg - 1.0, ang - 0.6);
+            minRuns = std::min(minRuns, runs);
+            CHECK_MSG(runs >= n - 1 && runs <= n + 1, "t=%.0f dpi=%.1f 描かれた線 %d / 期待 %d", t, dpi, runs, n);
+        }
+        std::printf("  dpi %.1f: 最速区間で画素から数えた残像の線 最少 %d 本\n", dpi, minRuns);
+        CHECK_MSG(minRuns >= 6, "最速区間の残像が %d 本", minRuns);
+    }
+}
+
+// グローなし: スイープと整列波が変えるのは、縁（ベゼル）の細い帯と目盛りの帯だけ。それより外・内に光が漏れない。
+void Test_NoGlow(const fs::path& root)
+{
+    using namespace sp;
+    const std::wstring font = SplashFontPath((root / "assets").wstring());
+    const CalibrateEvents& ev = DefaultCalibrateEvents();
+    GaugeSurface surf;
+    CHECK(surf.Init(1.0f, PickGaugeLayout(1e9, 1e9), true));
+    SplashInfo info = HeroInfo(font);
+    info.progress = 1.0;
+    const GaugeLayout lay = PickGaugeLayout(1e9, 1e9);
+    const double cx = lay.geo.dcx, cy = lay.geo.dcy, rB = lay.geo.rBezel, rT = lay.geo.rTickOut;
+    auto diffBands = [&](const Image& a, const Image& b, double lo, double hi, long& inBand, long& outBand) {
+        inBand = outBand = 0;
+        for (int y = 0; y < a.h; ++y)
+            for (int x = 0; x < a.w; ++x)
+            {
+                const size_t i = (static_cast<size_t>(y) * a.w + x) * 4;
+                if (a.bgra[i] == b.bgra[i] && a.bgra[i + 1] == b.bgra[i + 1] && a.bgra[i + 2] == b.bgra[i + 2]) continue;
+                const double r = std::hypot(x + 0.5 - cx, y + 0.5 - cy);
+                (r >= lo && r <= hi ? inBand : outBand)++;
+            }
+    };
+    // (1) ベゼルのスイープ: bellT のみ違う 2 枚の差が、半径 [rB-9, rB+2] の外に出ない
+    {
+        GaugeFrame f = EvaluateGauge(GaugePath::Fast, ev.bellMs[0] + 100.0, 0.f);
+        f.alignT.fill(1.f);
+        GaugeFrame f0 = f; f0.bellT = 0.f;
+        Image a, b;
+        CHECK(Render(surf, f, info, a));
+        CHECK(Render(surf, f0, info, b));
+        long inB, outB;
+        diffBands(a, b, rB - 9.0, rB + 2.0, inB, outB);
+        std::printf("  ベゼルのスイープ: 帯の中 %ld 画素 / 帯の外 %ld 画素\n", inB, outB);
+        CHECK(inB > 100 && outB == 0);
+    }
+    // (2) 整列波: alignT のみ違う 2 枚の差が、目盛りの帯 [rT-19, rT+1] の外に出ない
+    {
+        GaugeFrame f = EvaluateGauge(GaugePath::Fast, ev.bellMs[2] + 65.0, 0.f);
+        f.bellT = 0.f;
+        GaugeFrame f0 = f; f0.alignT.fill(0.f);
+        Image a, b;
+        CHECK(Render(surf, f, info, a));
+        CHECK(Render(surf, f0, info, b));
+        long inB, outB;
+        diffBands(a, b, rT - 19.0, rT + 1.0, inB, outB);
+        std::printf("  整列波: 帯の中 %ld 画素 / 帯の外 %ld 画素\n", inB, outB);
+        CHECK(inB > 50 && outB == 0);
+    }
+    // (3) 反射が通り抜けたあと（alignT 全 1 / bellT 1）は、反射の無い絵と画素まで同じ（何も残らない）
+    {
+        GaugeFrame f = EvaluateGauge(GaugePath::Fast, 1900.0, 0.f);
+        GaugeFrame f0 = f; f0.alignT.fill(0.f); f0.bellT = 0.f;
+        Image a, b;
+        CHECK(Render(surf, f, info, a));
+        CHECK(Render(surf, f0, info, b));
+        CHECK(a.bgra == b.bgra);
+    }
+}
+
+// 周期的な明滅が無い: 120fps で 0〜2.4 秒を描き、全体と文字盤の平均輝度の時系列の 0.3〜5Hz の成分（直線の傾向を除いた Hann 窓の DFT）を測る。
+double BandPeak(const std::vector<double>& y, double fps)
+{
+    const int n = static_cast<int>(y.size());
+    double sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (int i = 0; i < n; ++i) { sx += i; sy += y[i]; sxx += double(i) * i; sxy += i * y[i]; }
+    const double slope = (n * sxy - sx * sy) / (n * sxx - sx * sx), icpt = (sy - slope * sx) / n;
+    double peak = 0;
+    for (double f = 0.3; f <= 5.0 + 1e-9; f += 0.1)
+    {
+        double re = 0, im = 0, wsum = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double w = 0.5 - 0.5 * std::cos(2.0 * 3.14159265358979323846 * i / (n - 1));
+            const double v = (y[i] - (slope * i + icpt)) * w;
+            const double ph = 2.0 * 3.14159265358979323846 * f * i / fps;
+            re += v * std::cos(ph); im -= v * std::sin(ph); wsum += w;
+        }
+        peak = std::max(peak, 2.0 * std::hypot(re, im) / wsum);
+    }
+    return peak;
+}
+
+void Test_NoPeriodicFlicker(const fs::path& root)
+{
+    using namespace sp;
+    // 検出器の感度: 2Hz・振幅 0.7（平均輝度の 1% 程度）を入れたら必ず検出する
+    {
+        std::vector<double> s;
+        for (int i = 0; i < 288; ++i) s.push_back(60.0 + 0.7 * std::sin(2.0 * 3.14159265358979323846 * 2.0 * i / 120.0));
+        CHECK(BandPeak(s, 120.0) > 0.4);
+        std::vector<double> t2;
+        for (int i = 0; i < 288; ++i) t2.push_back(60.0 + 0.15 * std::sin(2.0 * 3.14159265358979323846 * 1.0 * i / 120.0));
+        CHECK(BandPeak(t2, 120.0) > 0.10);   // 0.15 の 1Hz も検出する（しきい値 0.05 / 0.10 より大きい）
+    }
+    const std::wstring font = SplashFontPath((root / "assets").wstring());
+    GaugeSurface surf;
+    CHECK(surf.Init(1.0f, PickGaugeLayout(1e9, 1e9), true));
+    SplashInfo info = HeroInfo(font);
+    info.progress = 1.0;
+    // 校正の振り付け（残像・整列波・ベゼルのスイープ）だけが作る輝度の変化 = 実際のフレーム - 振り付けを切った同じフレーム。
+    // 画面全体の変化（方眼・文字・退場のフェード）は 1 回きりの立ち上がりなので別に測って表示だけする。
+    std::vector<double> whole, dial, chorWhole, chorDial;
+    auto means = [&](const Image& im, double& w, double& d) {
+        double sw = 0, sd = 0; long cd = 0;
+        for (int y = 0; y < im.h; ++y)
+            for (int x = 0; x < im.w; ++x)
+            {
+                const double l = Luma(im, (static_cast<size_t>(y) * im.w + x) * 4);
+                sw += l;
+                if (std::abs(x - 520) < 300 && std::abs(y - 450) < 300) { sd += l; ++cd; }
+            }
+        w = sw / (static_cast<double>(im.w) * im.h);
+        d = sd / static_cast<double>(cd);
+    };
+    for (int n = 0; n < 288; ++n)
+    {
+        const GaugeFrame f = EvaluateGauge(GaugePath::Fast, n * 1000.0 / 120.0, 0.f);
+        GaugeFrame off = f; off.alignT.fill(0.f); off.bellT = 0.f; off.blurDeg = 0.f;
+        Image im, im0;
+        CHECK(Render(surf, f, info, im));
+        CHECK(Render(surf, off, info, im0));
+        double w, d, w0, d0;
+        means(im, w, d); means(im0, w0, d0);
+        whole.push_back(w); dial.push_back(d);
+        chorWhole.push_back(w - w0); chorDial.push_back(d - d0);
+    }
+    const double pw = BandPeak(whole, 120.0), pd = BandPeak(dial, 120.0);
+    const double cw = BandPeak(chorWhole, 120.0), cd = BandPeak(chorDial, 120.0);
+    std::printf("  0.3〜5Hz の成分の最大 全体の絵: %.4f / 文字盤 %.4f（参考。1 回きりの立ち上がりを含む）\n", pw, pd);
+    std::printf("  0.3〜5Hz の成分の最大 振り付けの分: 全体 %.4f / 文字盤 %.4f（輝度 0..255）\n", cw, cd);
+    CHECK_MSG(cw < 0.05, "振り付けの明滅（全体）%.4f", cw);
+    CHECK_MSG(cd < 0.10, "振り付けの明滅（文字盤）%.4f", cd);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -533,6 +718,9 @@ int main(int argc, char** argv)
     Test_Perf();
     Test_Skip(root);
     Test_TiersAndDpi(root);
+    Test_Choreography(root);
+    Test_NoGlow(root);
+    Test_NoPeriodicFlicker(root);
     if (g_fail == 0) std::printf("SplashGaugeRendererTests: OK\n");
     else std::printf("SplashGaugeRendererTests: %d FAIL\n", g_fail);
     return g_fail == 0 ? 0 : 1;

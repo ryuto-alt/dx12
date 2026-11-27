@@ -150,8 +150,7 @@ inline constexpr float kLoadTop = 490.0f, kStepsTop = 586.0f;
 inline constexpr float kNeedleW0 = 4.4f, kNeedleW1 = 2.4f;   // 主マークの指針の幅（根元 / 先端。100 グリッド）
 inline constexpr float kNeedleWScaleRoot = 0.66f, kNeedleWScaleTip = 0.95f;   // 文字盤の指針は主マークより細い（boot.py）
 inline constexpr float kNeedleHaloW = 3.0f;            // 指針の外周の bg0 の縁
-inline constexpr double kGhostNear = 0.5, kGhostFar = 1.0;   // 残像線の位置（blurDeg に対する比）
-inline constexpr float kGhostAlphaNear = 0.24f, kGhostAlphaFar = 0.10f;
+// 残像線の本数・間隔・濃さは SplashGaugeMotion.h の gauge::kTrail*（BD6。純関数 TrailLineCount / TrailLineAt）
 }
 
 } // namespace dx12e::splash
