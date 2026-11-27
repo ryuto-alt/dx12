@@ -158,6 +158,91 @@ int main()
         CHECK(s.intensity == lightmath::SampleTimeOfDay(night->hour).intensity);
     }
 
+
+    // =====================================================================
+    // W1-C8: 新規シーンのルックのプロファイル（Epic / Classic）。caps ごとの分岐、既存シーンの不変、BUG-04。
+    // =====================================================================
+    {
+        NewSceneProfile pr{};
+        CHECK(ParseNewSceneProfile("epic", pr) && pr == NewSceneProfile::Epic);
+        CHECK(ParseNewSceneProfile("classic", pr) && pr == NewSceneProfile::Classic);
+        CHECK(!ParseNewSceneProfile("Epic", pr) && !ParseNewSceneProfile("", pr) && !ParseNewSceneProfile(nullptr, pr));
+        CHECK(std::strcmp(NewSceneProfileName(NewSceneProfile::Epic), "epic") == 0
+              && std::strcmp(NewSceneProfileName(NewSceneProfile::Classic), "classic") == 0);
+
+        // 既存シーン（何も当てていない Scene）は Epic ではない。Classic を当てても 1 欄も変わらない。
+        {
+            Scene scene;
+            CHECK(!SceneHasEpicLook(scene));
+            const QualityScenePack q0 = CaptureQualityScenePack(scene);
+            const SceneLookPack    l0 = CaptureSceneLookPack(scene);
+            ApplySceneProfile(scene, NewSceneProfile::Classic, BuildQualityPlan(QualityPresetId::Epic, { true, true }), true);
+            const QualityScenePack q1 = CaptureQualityScenePack(scene);
+            const SceneLookPack    l1 = CaptureSceneLookPack(scene);
+            CHECK(!SceneHasEpicLook(scene));
+            CHECK(q1.shading.shadingRevision == q0.shading.shadingRevision && q1.taa.enabled == q0.taa.enabled
+                  && q1.ssgi.enabled == q0.ssgi.enabled && q1.ddgi.enabled == q0.ddgi.enabled && q1.rt.shadowEnabled == q0.rt.shadowEnabled);
+            CHECK(l1.atmo == l0.atmo && l1.post.tonemapper == l0.post.tonemapper && l1.post.exposureMode == l0.post.exposureMode);
+        }
+
+        struct CapsCase { bool dxr, dlss; };
+        for (const CapsCase c : { CapsCase{true, true}, CapsCase{true, false}, CapsCase{false, true}, CapsCase{false, false} })
+        {
+            Scene scene;
+            const QualityPlan plan = BuildQualityPlan(QualityPresetId::Epic, { c.dxr, c.dlss });
+            // 新規シーンの直後: gi::ApplyNew が通った（dxr）ときは DDGI と SSGI が両方 ON になっている（ApplyNew の既定）
+            scene.GetSsgiSettings().enabled = true;
+            if (c.dxr) scene.GetDdgiSettings().enabled = true;
+            ApplySceneProfile(scene, NewSceneProfile::Epic, plan, /*giNewApplied*/ c.dxr);
+
+            CHECK(SceneHasEpicLook(scene));
+            // 物理大気は ON、太陽の向きはライトのまま（W05-22 の方位 220° / 高度 38° を保つ）、色と強さは大気から
+            const AtmosphereSettings& a = scene.GetAtmosphereSettings();
+            CHECK(a.enabled && a.sunMode == 1 && a.driveSun && a.driveIBL);
+            // 表示変換は UE Filmic、露出はヒストグラムの自動露出（手動 EV 1.0 のままでは昼が白飛びする）
+            const PostProcessSettings& p = scene.GetPostSettings();
+            CHECK(p.tonemapper == 3 && p.exposureMode == 2);
+            CHECK(p.aeLowPercent > 0.0f && p.aeHighPercent < 1.0f && p.aeLowPercent < p.aeHighPercent);
+            // V2 のシェーディングと Epic の太陽影
+            CHECK(scene.GetShadingSettings().shadingRevision == 2);
+            CHECK(scene.GetShadowPcssSettings().enabled && scene.GetShadowPcssSettings().epicDynamicCsm);
+            CHECK(scene.GetShadingSettings().microShadow);
+            // GTAO / SSR
+            CHECK(scene.GetSSAOSettings().enabled && scene.GetSsrSettings().enabled);
+            // caps ごとの分岐: DXR があれば RT 影 / RT 反射 / DDGI、無ければ全部 OFF
+            CHECK(scene.GetRtSettings().shadowEnabled == c.dxr);
+            CHECK(scene.GetRtSettings().reflectionsEnabled == c.dxr);
+            CHECK(scene.GetDdgiSettings().enabled == c.dxr);
+            // BUG-04: DDGI が有効なら SSGI は OFF、DDGI が無ければ SSGI を使う（GI を失わない）
+            CHECK(scene.GetSsgiSettings().enabled == !scene.GetDdgiSettings().enabled);
+            // アップスケーラ: DLSS があれば DLSS、無ければ TAA
+            CHECK(scene.GetTaaSettings().enabled);
+            CHECK(scene.GetTaaSettings().upscaler == static_cast<int>(c.dlss ? upscale::Kind::Dlss : upscale::Kind::Taa));
+            // 品質プリセットの計画と一致している（Epic を選んだ状態と同じ）
+            CHECK(QualityPlanMatchesScene(plan, scene));
+        }
+
+        // DXR はあるが gi::ApplyNew が通らなかった（DDGI の初期化失敗）: DDGI は ON にせず SSGI を使う
+        {
+            Scene scene;
+            ApplySceneProfile(scene, NewSceneProfile::Epic, BuildQualityPlan(QualityPresetId::Epic, { true, false }), /*giNewApplied*/ false);
+            CHECK(!scene.GetDdgiSettings().enabled && scene.GetSsgiSettings().enabled);
+        }
+
+        // 冪等: 2 回当てても同じ（新規シーンの組み立てと明示の再適用で食い違わない）
+        {
+            Scene a, b;
+            const QualityPlan plan = BuildQualityPlan(QualityPresetId::Epic, { true, true });
+            ApplySceneProfile(a, NewSceneProfile::Epic, plan, true);
+            ApplySceneProfile(b, NewSceneProfile::Epic, plan, true);
+            ApplySceneProfile(b, NewSceneProfile::Epic, plan, true);
+            CHECK(a.GetAtmosphereSettings() == b.GetAtmosphereSettings());
+            CHECK(a.GetPostSettings().exposureMode == b.GetPostSettings().exposureMode
+                  && a.GetPostSettings().evComp == b.GetPostSettings().evComp
+                  && a.GetSsgiSettings().enabled == b.GetSsgiSettings().enabled);
+        }
+    }
+
     std::printf("scene_look_profile_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

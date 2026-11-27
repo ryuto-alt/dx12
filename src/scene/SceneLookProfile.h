@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "core/QualityPresetScene.h"
 #include "renderer/PostProcessSettings.h"
 #include "renderer/VolumetricFogSettings.h"
 #include "renderer/atmosphere/AtmosphereSettings.h"
@@ -138,6 +139,72 @@ inline const SceneLookProfile& LightingPresetLook(const char* presetId)
 {
     const SceneLookProfile* p = FindSceneLook(presetId);
     return p ? *p : kLightingLooks[0];
+}
+
+// ===========================================================================
+// 新規シーンのルックのプロファイル（W1-C8 RM-C2 / BUG-04）。
+//   「ユーザーが目にするのは新規シーン・テンプレート・明示の移行だけ」: 既存シーンを開いたときには何も当てない。
+//   Epic = 品質プリセット Epic の構成（BuildQualityPlan。shadingRevision 2・LS-02a の太陽影・マイクロシャドウ・GTAO・SSR・
+//          RT 影 / RT 反射・DDGI。DXR / DLSS が無ければ縮退）＋ 物理大気 ＋ UE Filmic ＋ ヒストグラムの自動露出。
+//   Classic = 従来の新規シーン（何も足さない。ゴールデンの比較用・旧来の絵が欲しい人向け）。
+//   ★数値の正は予算表（QualityPresetTable.inc）と PostProcessSettings の既定。ここに書くのはルックの選択だけ。
+// ===========================================================================
+enum class NewSceneProfile : u8 { Epic, Classic };
+
+inline const char* NewSceneProfileName(NewSceneProfile p) { return p == NewSceneProfile::Classic ? "classic" : "epic"; }
+
+inline bool ParseNewSceneProfile(const char* name, NewSceneProfile& out)
+{
+    if (!name) return false;
+    if (std::strcmp(name, "epic") == 0)    { out = NewSceneProfile::Epic;    return true; }
+    if (std::strcmp(name, "classic") == 0) { out = NewSceneProfile::Classic; return true; }
+    return false;
+}
+
+// Epic のルックの露出補正[EV]（ヒストグラム測光の 18% グレーへの補正。太陽が斜めの昼で白飛びしない値）。
+inline constexpr f32 kEpicLookEvComp        = 0.0f;
+// UE のヒストグラム測光の既定（暗部と極端な明部を測光から外す）。
+inline constexpr f32 kEpicLookAeLowPercent  = 0.80f;
+inline constexpr f32 kEpicLookAeHighPercent = 0.983f;
+
+// Epic のルックを Scene へ書く（GPU 不要。計画 = BuildQualityPlan(Epic, caps)）。
+//   giNewApplied: 新規シーン直後に gi::ApplyNew が通ったか（DDGI が実際に使える）。使えなければ DDGI は OFF のまま SSGI を使う。
+//   BUG-04: DDGI が有効なら SSGI は OFF（縞とホタルを新規シーンで見せない。SSGI の時間方向の修正そのものは W2-C）。
+//   太陽の向きは触らない（sunMode=1 = DirectionalLight の向きをそのまま使う。W05-22 の方位 220° / 高度 38° を保つ）。
+inline void ApplyEpicSceneLook(Scene& s, const QualityPlan& plan, bool giNewApplied)
+{
+    ApplyQualityPlanToScene(plan, s);
+
+    DdgiSettings& dd = s.GetDdgiSettings();
+    dd.enabled = plan.ddgi && giNewApplied;
+    s.GetSsgiSettings().enabled = !dd.enabled;
+
+    AtmosphereSettings& a = s.GetAtmosphereSettings();
+    a.enabled  = true;
+    a.sunMode  = 1;      // 太陽ライトの向きを使う（時刻で動かさない）
+    a.driveSun = true;   // 太陽の色と強さは大気の透過率から
+    a.driveIBL = true;   // 空 = 環境光の元
+
+    PostProcessSettings& p = s.GetPostSettings();
+    p.tonemapper    = 3;   // UE Filmic
+    p.exposureMode  = 2;   // 自動（ヒストグラム測光）。物理大気は昼が明るく、手動 EV 1.0 のままでは白飛びする（R-05）
+    p.evComp        = kEpicLookEvComp;
+    p.aeLowPercent  = kEpicLookAeLowPercent;
+    p.aeHighPercent = kEpicLookAeHighPercent;
+}
+
+// プロファイルを適用する（Classic は何もしない）。
+inline void ApplySceneProfile(Scene& s, NewSceneProfile profile, const QualityPlan& epicPlan, bool giNewApplied)
+{
+    if (profile == NewSceneProfile::Epic) ApplyEpicSceneLook(s, epicPlan, giNewApplied);
+}
+
+// Epic のルックが Scene に当たっているか（テスト・MCP の結果用）。
+inline bool SceneHasEpicLook(const Scene& s)
+{
+    const PostProcessSettings& p = s.GetPostSettings();
+    return s.GetAtmosphereSettings().enabled && p.tonemapper == 3 && p.exposureMode == 2
+        && s.GetShadingSettings().shadingRevision == 2;
 }
 
 } // namespace dx12e

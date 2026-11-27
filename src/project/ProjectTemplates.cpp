@@ -111,7 +111,7 @@ end
 
 constexpr const char* kEmptyMainScene = R"JSON({
   "gi": { "mode": "new" },
-  "raytracing": { "shadowEnabled": true,
+  "raytracing": { "shadowEnabled": true, "reflectionsEnabled": true, "reflectionHalfRes": true,
     "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
               "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
@@ -128,7 +128,12 @@ constexpr const char* kEmptyMainScene = R"JSON({
       "luaScript": { "scriptPath": "components/Spinner.lua", "enabled": true, "props": [] },
       "transform": { "position": [0.0, 0.5, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] } }
   ],
-  "postProcess": { "enabled": true, "fxaaOn": true },
+  "atmosphere": { "enabled": true, "sunMode": 1, "driveSun": true, "driveIBL": true },
+  "taa": { "enabled": true },
+  "shadowPcss": { "enabled": true },
+  "ssr": { "enabled": true },
+  "postProcess": { "enabled": true,
+    "tonemapper": 3, "exposureMode": 2, "aeLowPercent": 0.8, "aeHighPercent": 0.983 },
   "ssao": { "enabled": true },
   "shadows": true
 })JSON";
@@ -323,7 +328,7 @@ end
 
 constexpr const char* kFpsMainScene = R"JSON({
   "gi": { "mode": "new" },
-  "raytracing": { "shadowEnabled": true,
+  "raytracing": { "shadowEnabled": true, "reflectionsEnabled": true, "reflectionHalfRes": true,
     "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
               "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
@@ -466,19 +471,23 @@ constexpr const char* kFpsMainScene = R"JSON({
       "uiText": { "text": "まもなくリザルトへ…", "fontSize": 22, "color": [1.0, 1.0, 1.0, 0.6],
                   "alignH": 1, "alignV": 1 } }
   ],
+  "atmosphere": { "enabled": true, "sunMode": 1, "driveSun": true, "driveIBL": true },
+  "taa": { "enabled": true },
+  "shadowPcss": { "enabled": true },
+  "ssr": { "enabled": true },
   "postProcess": { "enabled": true,
+    "tonemapper": 3, "exposureMode": 2, "aeLowPercent": 0.8, "aeHighPercent": 0.983,
     "bloomOn": true, "bloom": 0.45, "bloomThreshold": 0.75,
     "vignetteOn": true, "vignette": 0.3,
     "saturationOn": true, "saturation": 1.08,
-    "contrastOn": true, "contrast": 1.04,
-    "fxaaOn": true },
+    "contrastOn": true, "contrast": 1.04 },
   "ssao": { "enabled": true },
   "shadows": true
 })JSON";
 
 constexpr const char* kFpsTitleScene = R"JSON({
   "gi": { "mode": "new" },
-  "raytracing": { "shadowEnabled": true,
+  "raytracing": { "shadowEnabled": true, "reflectionsEnabled": true, "reflectionHalfRes": true,
     "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
               "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
@@ -574,10 +583,14 @@ constexpr const char* kFpsTitleScene = R"JSON({
       "uiText": { "text": "prototype v0.1", "fontSize": 20, "color": [1.0, 1.0, 1.0, 0.35],
                   "alignH": 2, "alignV": 1 } }
   ],
+  "atmosphere": { "enabled": true, "sunMode": 1, "driveSun": true, "driveIBL": true },
+  "taa": { "enabled": true },
+  "shadowPcss": { "enabled": true },
+  "ssr": { "enabled": true },
   "postProcess": { "enabled": true,
+    "tonemapper": 3, "exposureMode": 2, "aeLowPercent": 0.8, "aeHighPercent": 0.983,
     "bloomOn": true, "bloom": 0.5, "bloomThreshold": 0.7,
-    "vignetteOn": true, "vignette": 0.35,
-    "fxaaOn": true },
+    "vignetteOn": true, "vignette": 0.35 },
   "ssao": { "enabled": true },
   "shadows": true
 })JSON";
@@ -854,7 +867,7 @@ end
 
 constexpr const char* kTpsMainScene = R"JSON({
   "gi": { "mode": "new" },
-  "raytracing": { "shadowEnabled": true,
+  "raytracing": { "shadowEnabled": true, "reflectionsEnabled": true, "reflectionHalfRes": true,
     "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
               "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
@@ -1002,19 +1015,23 @@ constexpr const char* kTpsMainScene = R"JSON({
       "uiText": { "text": "まもなくリザルトへ…", "fontSize": 22, "color": [1.0, 1.0, 1.0, 0.6],
                   "alignH": 1, "alignV": 1 } }
   ],
+  "atmosphere": { "enabled": true, "sunMode": 1, "driveSun": true, "driveIBL": true },
+  "taa": { "enabled": true },
+  "shadowPcss": { "enabled": true },
+  "ssr": { "enabled": true },
   "postProcess": { "enabled": true,
+    "tonemapper": 3, "exposureMode": 2, "aeLowPercent": 0.8, "aeHighPercent": 0.983,
     "bloomOn": true, "bloom": 0.5, "bloomThreshold": 0.7,
     "vignetteOn": true, "vignette": 0.26,
     "saturationOn": true, "saturation": 1.15,
-    "warmthOn": true, "warmth": 0.06,
-    "fxaaOn": true },
+    "warmthOn": true, "warmth": 0.06 },
   "ssao": { "enabled": true },
   "shadows": true
 })JSON";
 
 constexpr const char* kTpsTitleScene = R"JSON({
   "gi": { "mode": "new" },
-  "raytracing": { "shadowEnabled": true,
+  "raytracing": { "shadowEnabled": true, "reflectionsEnabled": true, "reflectionHalfRes": true,
     "ddgi": { "enabled": true, "followCamera": true, "probeCountX": 22, "probeCountY": 8, "probeCountZ": 22, "spacing": 0.8,
               "spacing1": 2.0, "bounceIntensity": 1.0 } },
   "ssgi": { "enabled": true },
@@ -1101,12 +1118,16 @@ constexpr const char* kTpsTitleScene = R"JSON({
       "uiText": { "text": "prototype v0.1", "fontSize": 20, "color": [1.0, 1.0, 1.0, 0.35],
                   "alignH": 2, "alignV": 1 } }
   ],
+  "atmosphere": { "enabled": true, "sunMode": 1, "driveSun": true, "driveIBL": true },
+  "taa": { "enabled": true },
+  "shadowPcss": { "enabled": true },
+  "ssr": { "enabled": true },
   "postProcess": { "enabled": true,
+    "tonemapper": 3, "exposureMode": 2, "aeLowPercent": 0.8, "aeHighPercent": 0.983,
     "bloomOn": true, "bloom": 0.5, "bloomThreshold": 0.65,
     "vignetteOn": true, "vignette": 0.3,
     "saturationOn": true, "saturation": 1.12,
-    "warmthOn": true, "warmth": 0.08,
-    "fxaaOn": true },
+    "warmthOn": true, "warmth": 0.08 },
   "ssao": { "enabled": true },
   "shadows": true
 })JSON";

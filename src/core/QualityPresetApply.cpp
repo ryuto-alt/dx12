@@ -8,6 +8,7 @@
 #include "core/AppAccess.h"
 #include "core/Logger.h"
 #include "core/QualityPresetScene.h"
+#include "scene/SceneLookProfile.h"
 #include "renderer/UpscalerPass.h"
 
 namespace dx12e
@@ -96,6 +97,47 @@ bool AppAccess::QualityMatchesScene(const Application& app)
     bool dxr = false, dlss = false;
     QueryQualityCaps(app, dxr, dlss);
     return QualityPlanMatchesScene(BuildQualityPlan(GetQualityPreset(app), { dxr, dlss }), *app.m_scene);
+}
+
+void AppAccess::ApplyNewSceneLookState(Application& app, const QualityPlan& plan, bool epic, bool giNewApplied)
+{
+    if (!app.m_scene || !epic) return;   // Classic は何も足さない（従来の新規シーンのまま）
+    ApplyEpicSceneLook(*app.m_scene, plan, giNewApplied);
+    if (plan.setRenderScale) app.SetRenderScale(plan.renderScale);
+    app.PersistSet("quality_preset", static_cast<double>(static_cast<u8>(plan.id)));
+    app.m_renderResFlush = true;
+    app.InvalidateTemporalHistory(/*includeDdgi*/ false);
+    for (u8 i = 0; i < plan.degradeCount; ++i)
+        Logger::Info("新規シーン（Epic）: 縮退 {} … {}", plan.degrades[i].row, plan.degrades[i].text);
+}
+
+namespace
+{
+// 次の新規シーンのプロファイル（Application は 1 つ。1 回で消費）。
+NewSceneProfile g_nextNewSceneProfile = NewSceneProfile::Epic;
+}
+
+bool IsNewSceneProfileName(const std::string& name)
+{
+    NewSceneProfile p{};
+    return ParseNewSceneProfile(name.c_str(), p);
+}
+
+void SetNextNewSceneProfile(const std::string& name)
+{
+    NewSceneProfile p{};
+    g_nextNewSceneProfile = ParseNewSceneProfile(name.c_str(), p) ? p : NewSceneProfile::Epic;
+}
+
+std::string ApplyNewSceneProfile(Application& app, bool giNewApplied)
+{
+    const NewSceneProfile prof = g_nextNewSceneProfile;
+    g_nextNewSceneProfile = NewSceneProfile::Epic;
+    bool dxr = false, dlss = false;
+    AppAccess::QueryQualityCaps(app, dxr, dlss);
+    const QualityPlan plan = BuildQualityPlan(QualityPresetId::Epic, { dxr, dlss });
+    AppAccess::ApplyNewSceneLookState(app, plan, prof == NewSceneProfile::Epic, giNewApplied);
+    return NewSceneProfileName(prof);
 }
 
 bool SetQualityPreset(Application& app, QualityPresetId id, bool recordUndo)

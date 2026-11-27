@@ -7,6 +7,8 @@
 // ===========================================================================
 #include "renderer/QualityPresetPlan.h"
 
+#include <string>
+
 namespace dx12e
 {
 class Application;
@@ -24,5 +26,15 @@ QualityPlan CurrentQualityPlan(const Application& app);
 
 // 選んだ後にシーンの設定を手で変えていないか。
 bool QualityMatchesScene(const Application& app);
+
+// ---- W1-C8: 新規シーンのルックのプロファイル（"epic" | "classic"。実体は scene/SceneLookProfile.h）----
+// 名前が有効か（MCP new_scene {profile} の検査用）。
+bool IsNewSceneProfileName(const std::string& name);
+// 次の新規シーンのプロファイルを予約する（MCP new_scene {profile}。1 回で消費され、以後は既定の epic へ戻る）。
+void SetNextNewSceneProfile(const std::string& name);
+// 新規シーンの直後（空シーンの組み立てと gi::ApplyNew の後）に呼ぶ。予約されたプロファイル（無ければ epic）を Scene へ当て、
+// 品質プリセットの id・空間スケール・時間履歴を揃える。当てたプロファイル名を返す。Undo は積まない（新規シーンは履歴ごと空）。
+//   giNewApplied: gi::ApplyNew が通ったか。
+std::string ApplyNewSceneProfile(Application& app, bool giNewApplied);
 
 } // namespace dx12e

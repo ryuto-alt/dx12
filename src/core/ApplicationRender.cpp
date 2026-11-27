@@ -37,6 +37,7 @@
 #include "renderer/TransitionPresets.h"
 #include "renderer/ViewDesc.h"
 #include "renderer/RenderStageHooks.h"   // W05-25: ステージフック（FeatureRegistry）
+#include "core/QualityPresetApply.h"
 #include "renderer/ViewPasses.h"
 #include "renderer/instancegpu/InstanceGpuMath.h"   // kLodScaleDefault
 #include "editor/AssetDrop.h"
@@ -3029,6 +3030,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         }
         // 新規シーンの既定は GI モード「新」（S5）: DDGI 自動配置 + 環境光 0 + SSGI + RT 影。
         // 使えない環境（DXR 非対応 / DDGI 初期化失敗）は従来のまま作る（理由は起動時のログにも出している）。
+        bool giNewApplied = false;
         {
             gi::Options go;
             go.dxrSupported = m_dxrEnabled && m_ddgi && m_ddgi->SupportsGiNew();
@@ -3038,12 +3040,18 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 go.whyNot = "DDGI（新モード）を初期化できなかったため、従来の GI で作りました";
             go.refitGrid = true;
             const gi::Result gr = gi::ApplyNew(*m_scene, go);
+            giNewApplied = gr.applied;
             if (gr.applied)
                 Logger::Info("新規シーン: GI モード「新」（DDGI {}x{}x{} 間隔 {:.2f}m）",
                              gr.ddgi.probeCountX, gr.ddgi.probeCountY, gr.ddgi.probeCountZ, gr.ddgi.spacing);
             else
                 Logger::Info("新規シーン: GI モードは旧のまま（{}）", gr.reason);
         }
+        // W1-C8 RM-C2: 新規シーンのルック（既定 Epic。MCP new_scene {profile:"classic"} なら従来のまま）。
+        //   Epic = 品質プリセット Epic の構成 + 物理大気 + UE Filmic + 自動露出。DDGI が有効なら SSGI は OFF（BUG-04）。
+        //   保存の前に当てる（starterPath があればこの後 Save する）。既存シーンを開くときは当てない。
+        const std::string newSceneProfile = ApplyNewSceneProfile(*this, giNewApplied);
+        Logger::Info("新規シーンのプロファイル: {}", newSceneProfile);
         if (!starterPath.empty())
             m_currentSceneRel = ToAssetRel(starterPath);
         // 作成と同時にシーンファイルを保存
@@ -3087,6 +3095,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                                                                                 : std::string("Untitled"))},
                                   {"entityCount", entityCount},
                                   {"sceneGeneration", m_sceneGeneration},
+                                  {"profile", newSceneProfile},
                                   {"saved", starterSaved}};   // savePath を渡してファイルを作れたときだけ true
             mcpscene::AddTo(result, paths);
             CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply, std::move(result));

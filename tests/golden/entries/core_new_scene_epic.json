@@ -1,0 +1,21 @@
+{
+  "name": "core_new_scene_epic",
+  "group": "repeat",
+  "requiresDxr": true,
+  "newScene": true,
+  "launchScene": "scenes/pbr_spheres.json",
+  "project": "tests/golden/projects/golden_core",
+  "camera": {
+    "position": [
+      4,
+      3,
+      -9
+    ],
+    "target": [
+      0,
+      0.5,
+      0
+    ]
+  },
+  "note": "W1-C8: 既定の new_scene（Epic のルック = 品質プリセット Epic + 物理大気 + UE Filmic + ヒストグラム自動露出。DXR / DDGI があれば RT 影・RT 反射・DDGI、SSGI は OFF）の結果。DLSS は決定論モードで常に OFF（TAA で撮る）。DDGI/DXR で決定論が崩れうるので group:repeat（--group repeat のときだけ回す）。従来の新規シーンは new_scene {profile:'classic'}（core_new_scene_gi の旧い絵）"
+}

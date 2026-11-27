@@ -5,6 +5,7 @@
 // method の足し方は本ファイル内 McpDefine の並びに倣う（作法は ApplicationInternal.h の DX12E_MCP_HANDLER 付近）。
 // ===========================================================================
 #include "core/ApplicationInternal.h"
+#include "core/QualityPresetApply.h"
 #include "core/mcp/McpScenePath.h"
 #include "core/mcp/McpCreateEntityParams.h"
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
@@ -1884,7 +1885,7 @@ void Application::RegisterMcpEntityMethods()
 
     // undo / redo は mcp/ApplicationMcpUndo.cpp（トランザクションと一緒に置いてある）。
 
-    McpDefine("new_scene", "savePath:string", DX12E_MCP_HANDLER
+    McpDefine("new_scene", "savePath:string,profile:string", DX12E_MCP_HANDLER
         {
             if (busyPlaying)
                 throw McpError(McpErr::ModeConflict, "cannot create a new scene while Playing",
@@ -1896,6 +1897,16 @@ void Application::RegisterMcpEntityMethods()
                 || m_editorCtx->pendingNewScene)
                 throw McpError(McpErr::ModeConflict, "a scene/project load is in progress; new_scene was not applied",
                     "読み込み中は新規シーンを作れない（既存シーンへ上書きされる恐れ）。dx12_ping の sceneLoading が false になってから呼び直す");
+            // W1-C8: profile = "epic"（既定。品質プリセット Epic の構成 + 物理大気 + UE Filmic + 自動露出。DXR / DLSS が無ければ縮退）
+            //        | "classic"（従来の新規シーン）。
+            std::string profile = "epic";
+            if (params.contains("profile") && !params["profile"].is_null())
+            {
+                if (!params["profile"].is_string() || !IsNewSceneProfileName(params["profile"].get<std::string>()))
+                    throw McpError(McpErr::InvalidParam, "profile は epic | classic",
+                        "例: profile:'epic'（既定）。従来の新規シーンなら profile:'classic'");
+                profile = params["profile"].get<std::string>();
+            }
             std::string rel = params.value("savePath", std::string());
             if (!rel.empty())
             {
@@ -1905,6 +1916,7 @@ void Application::RegisterMcpEntityMethods()
                         "savePath は assets 相対（例: scenes/level2.json）。省略すると未保存の新規シーンになる");
                 m_editorCtx->pendingNewScenePath = PathResolver::AssetsDir() + rel;
             }
+            SetNextNewSceneProfile(profile);   // 次の新規シーン 1 回だけ（フレーム境界で ApplyNewSceneProfile が消費する）
             m_editorCtx->pendingNewScene        = true;   // フレーム境界で空シーン生成 + sceneGeneration++
             m_editorCtx->pendingNewSceneSkipConfirm = true;   // 未保存モーダルを出さない（AI は押せない）
             // 切り替えが終わってから本当の結果（sceneName / path / entityCount / sceneGeneration）を返す。

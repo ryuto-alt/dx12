@@ -1027,3 +1027,14 @@ Jolt の **`MeshShape`（三角形メッシュ形状）**として登録され�
 
 UI 要素を「プレハブにする」と `assets/prefabs/ui/` へ保存され、**UIエディタ左下のパレット**に並ぶ。
 そこからキャンバスへドラッグすると、落とした位置の UI ノードの子として配置される。
+
+## 新規シーンのルック（Epic プロファイル / W1-C8）
+
+新規シーン（Ctrl+N・MCP `new_scene`）と 3D テンプレートは、既定で **Epic のルック**になる。
+品質プリセット Epic の構成（shadingRevision 2・Epic の太陽影・マイクロシャドウ・GTAO・SSR・DXR があれば RT 影 / RT 反射 / DDGI。DLSS が無ければ TAA）に、
+物理大気（太陽の向きは Sun ライトのまま）・UE Filmic・ヒストグラムの自動露出を足したもの。DDGI が有効なら SSGI は OFF にする。
+DXR / DLSS が無い PC では縮退する（`get_quality_preset` の `plan.degrades`）。
+
+- `new_scene {profile:"epic"}`（既定）/ `{profile:"classic"}`（従来の新規シーン）。応答に `profile` が入る。
+- 既存シーンを開いたときには何も当てない（ユーザーが目にするのは新規シーン・テンプレート・明示の移行だけ）。
+- 値の正は品質プリセットの生成表と `src/scene/SceneLookProfile.h`（`ApplyEpicSceneLook`）。
