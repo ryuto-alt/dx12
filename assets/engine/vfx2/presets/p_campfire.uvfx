@@ -1,0 +1,93 @@
+{
+  "uvfx": 1,
+  "name": "p_campfire",
+  "duration": 0,
+  "loop": true,
+  "emitters": [
+    {
+      "name": "flame",
+      "maxParticles": 12,
+      "spawn": { "rate": 3 },
+      "init": [
+        { "module": "shape", "kind": "disc", "radius": 0.08 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0, 0], "spread": 0 },
+        { "module": "lifetime", "range": [2.8, 3.2] },
+        { "module": "size", "start": [1.0, 1.25], "end": [1.0, 1.25] },
+        { "module": "color", "start": [1.0, 1.0, 1.0, 1.0], "end": [1.0, 1.0, 1.0, 1.0], "variation": 0.0 },
+        { "module": "rotation", "angle": [0, 0], "rate": [0, 0] }
+      ],
+      "update": [],
+      "render": {
+        "kind": "flipbook", "blend": "additive", "fade": "inout", "softDistance": 0.3, "intensity": 1.0,
+        "texture": "engine/vfx/fire_flipbook.dds",
+        "flipbook": { "cols": 6, "rows": 6, "frames": 36, "fps": 12, "channels": "fire", "mv": "engine/vfx/fire_mv.dds", "mvRange": 0.5,
+                      "anchor": "bottom", "tempMin": 1000, "tempMax": 2400, "emission": 10.0, "erodeStart": 0.6, "erodeWidth": 0.15 }
+      }
+    },
+    {
+      "name": "smoke",
+      "maxParticles": 20,
+      "spawn": { "rate": 2.5 },
+      "init": [
+        { "module": "shape", "kind": "disc", "radius": 0.06 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0.55, 0.95], "spread": 8 },
+        { "module": "lifetime", "range": [5.0, 7.0] },
+        { "module": "size", "start": [0.55, 0.75], "end": [1.4, 1.9] },
+        { "module": "color", "start": [0.5, 0.48, 0.46, 0.55], "end": [0.32, 0.31, 0.3, 0.0], "variation": 0.1 },
+        { "module": "rotation", "angle": [0, 0], "rate": [0, 0] }
+      ],
+      "update": [
+        { "module": "drag", "coefficient": 0.8 },
+        { "module": "curlNoise", "strength": 0.6, "scale": 0.8, "speed": 0.3 }
+      ],
+      "render": {
+        "kind": "flipbook", "blend": "alpha", "fade": "inout", "softDistance": 0.5, "intensity": 1.0,
+        "texture": "engine/vfx/smoke_6way_rlu.dds",
+        "flipbook": { "cols": 6, "rows": 6, "frames": 36, "fps": 12, "channels": "smoke6way", "dbf": "engine/vfx/smoke_6way_dbf.dds",
+                      "mv": "engine/vfx/smoke_mv.dds", "mvRange": 0.5, "anchor": "bottom", "rootFade": 0.15, "erodeStart": 0.5, "erodeWidth": 0.2 }
+      }
+    },
+    {
+      "name": "sparks",
+      "maxParticles": 64,
+      "spawn": { "rate": 9 },
+      "init": [
+        { "module": "shape", "kind": "sphere", "radius": 0.1 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [1.2, 2.8], "spread": 28 },
+        { "module": "lifetime", "range": [0.9, 1.9] },
+        { "module": "size", "start": [0.02, 0.035], "end": [0.0, 0.008] },
+        { "module": "color", "start": [6.0, 2.4, 0.6, 1.0], "end": [1.5, 0.2, 0.0, 0.0] }
+      ],
+      "update": [
+        { "module": "gravity", "value": [0, -2.6, 0] },
+        { "module": "drag", "coefficient": 0.4 },
+        { "module": "curlNoise", "strength": 2.6, "scale": 2.0, "speed": 0.8 },
+        { "module": "floor", "height": 0.0, "bounce": 0.3, "friction": 0.4 }
+      ],
+      "render": { "kind": "sprite", "blend": "additive", "fade": "quad", "softDistance": 0.2, "intensity": 1.0, "stretch": 1.0 }
+    },
+    {
+      "name": "embers",
+      "maxParticles": 24,
+      "spawn": { "rate": 4 },
+      "init": [
+        { "module": "shape", "kind": "disc", "radius": 0.25 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0.5, 1.1], "spread": 20 },
+        { "module": "lifetime", "range": [3.0, 5.0] },
+        { "module": "size", "start": [0.05, 0.08], "end": [0.04, 0.06] },
+        { "module": "color", "start": [1.0, 1.0, 1.0, 1.0], "end": [1.0, 1.0, 1.0, 1.0], "variation": 0.0 },
+        { "module": "rotation", "angle": [0, 0], "rate": [0, 0] }
+      ],
+      "update": [
+        { "module": "drag", "coefficient": 0.5 },
+        { "module": "curlNoise", "strength": 1.4, "scale": 1.1, "speed": 0.4 }
+      ],
+      "render": {
+        "kind": "flipbook", "blend": "additive", "fade": "inout", "softDistance": 0.2, "intensity": 1.0,
+        "texture": "engine/vfx/embers.dds",
+        "flipbook": { "cols": 4, "rows": 4, "frames": 16, "fps": 0, "channels": "fire", "anchor": "center",
+                      "tempMin": 900, "tempMax": 1800, "emission": 14.0, "erodeStart": 0.7, "erodeWidth": 0.2 }
+      }
+    }
+  ]
+}
