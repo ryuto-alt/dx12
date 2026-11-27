@@ -1,0 +1,308 @@
+{
+  "skybox": {
+    "iblIntensity": 3000,
+    "skyboxIntensity": 6000,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          0.25,
+          -0.4,
+          -0.88
+        ],
+        "color": [
+          1,
+          0.96,
+          0.88
+        ],
+        "intensity": 100000,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 40,
+      "color": [
+        0.25,
+        0.25,
+        0.26
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Lamp",
+      "primitive": "sphere",
+      "primitiveSize": 0.35,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.8,
+          0.5
+        ],
+        "emissiveIntensity": 64
+      },
+      "transform": {
+        "position": [
+          -1.2,
+          1.4,
+          4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Room_Wall_B",
+      "primitive": "box",
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.9
+      },
+      "transform": {
+        "position": [
+          3,
+          1,
+          3.6
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.1,
+          2,
+          2.2
+        ]
+      }
+    },
+    {
+      "name": "Room_Wall_F",
+      "primitive": "box",
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.9
+      },
+      "transform": {
+        "position": [
+          3,
+          1,
+          1.4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.9,
+          2,
+          0.1
+        ]
+      }
+    },
+    {
+      "name": "Room_Wall_R",
+      "primitive": "box",
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.9
+      },
+      "transform": {
+        "position": [
+          4,
+          1,
+          2.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.1,
+          2,
+          2.2
+        ]
+      }
+    },
+    {
+      "name": "Room_Roof",
+      "primitive": "box",
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.9
+      },
+      "transform": {
+        "position": [
+          3.5,
+          2.05,
+          2.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          2.1,
+          0.1,
+          2.3
+        ]
+      }
+    },
+    {
+      "name": "Room_Panel",
+      "primitive": "box",
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.9,
+          0.75
+        ],
+        "emissiveIntensity": 1
+      },
+      "transform": {
+        "position": [
+          3.5,
+          1.9,
+          2.5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1.2,
+          0.03,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Room_Ball",
+      "primitive": "sphere",
+      "primitiveSize": 0.4,
+      "color": [
+        0.7,
+        0.3,
+        0.2
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          3.4,
+          0.4,
+          2.4
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "shadows": true,
+  "postProcess": {
+    "enabled": true,
+    "lightingUnits": 1,
+    "exposureMode": 1,
+    "ev100": 15,
+    "evComp": 0,
+    "bloomOn": true,
+    "bloom": 0.5
+  }
+}

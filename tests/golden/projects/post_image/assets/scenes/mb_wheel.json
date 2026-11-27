@@ -1,0 +1,2032 @@
+{
+  "skybox": {
+    "iblIntensity": 1,
+    "skyboxIntensity": 1,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          -0.4,
+          -0.9,
+          0.3
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 3.5,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 40,
+      "color": [
+        0.3,
+        0.3,
+        0.32
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Post_0",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -6,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_1",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -5.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_2",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_3",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -4.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_4",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -4,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_5",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_6",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -3,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_7",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -2.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_8",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -2,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_9",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -1.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_10",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -1,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_11",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          -0.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_12",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          0,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_13",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          0.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_14",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          1,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_15",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          1.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_16",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          2,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_17",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          2.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_18",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_19",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          3.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_20",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          4,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_21",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          4.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_22",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_23",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          5.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_24",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          6,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_25",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          6.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_26",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          7,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_27",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.2,
+        0.15
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          7.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_28",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          8,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Post_29",
+      "primitive": "box",
+      "color": [
+        0.7,
+        0.7,
+        0.72
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.6
+      },
+      "transform": {
+        "position": [
+          8.5,
+          0.75,
+          5
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.12,
+          1.5,
+          0.12
+        ]
+      }
+    },
+    {
+      "name": "Wheel",
+      "transform": {
+        "position": [
+          0,
+          1.3,
+          2
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Spoke_0",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Spoke_1",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          22.5
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Spoke_2",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          45
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Spoke_3",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          67.5
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Spoke_4",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          90
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Spoke_5",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          112.5
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Spoke_6",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          135
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Spoke_7",
+      "primitive": "box",
+      "color": [
+        0.9,
+        0.85,
+        0.8
+      ],
+      "material": {
+        "metallic": 0.6,
+        "roughness": 0.35
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          157.5
+        ],
+        "scale": [
+          0.08,
+          1.7,
+          0.08
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_0",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.85,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          90
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_1",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.8210369523457081,
+          0.21999618833714263,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          105
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_2",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.7361215932167728,
+          0.42499999999999993,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          120
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_3",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.6010407640085654,
+          0.6010407640085653,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          135
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_4",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.4250000000000001,
+          0.7361215932167728,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          150
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_5",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.21999618833714263,
+          0.8210369523457081,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          165
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_6",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          5.204748896376251e-17,
+          0.85,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          180
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_7",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.2199961883371427,
+          0.8210369523457081,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          195
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_8",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.4249999999999998,
+          0.7361215932167728,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          210
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_9",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.6010407640085653,
+          0.6010407640085654,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          225
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_10",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.7361215932167728,
+          0.42499999999999993,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          240.00000000000003
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_11",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.821036952345708,
+          0.21999618833714285,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          254.99999999999997
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_12",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.85,
+          1.0409497792752501e-16,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          270
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_13",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.8210369523457082,
+          -0.2199961883371423,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          285
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_14",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.7361215932167728,
+          -0.4250000000000001,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          300
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_15",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.6010407640085655,
+          -0.6010407640085653,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          315
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_16",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.4250000000000004,
+          -0.7361215932167727,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          330
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_17",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -0.21999618833714252,
+          -0.8210369523457081,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          345
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_18",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          -1.5614246689128752e-16,
+          -0.85,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          360
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_19",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.21999618833714224,
+          -0.8210369523457082,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          375
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_20",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.4250000000000001,
+          -0.7361215932167728,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          390.00000000000006
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_21",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.6010407640085652,
+          -0.6010407640085655,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          405
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_22",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.7361215932167726,
+          -0.4250000000000004,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          419.99999999999994
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Rim_23",
+      "primitive": "box",
+      "color": [
+        0.12,
+        0.12,
+        0.14
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5
+      },
+      "transform": {
+        "position": [
+          0.8210369523457081,
+          -0.21999618833714257,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          435
+        ],
+        "scale": [
+          0.26,
+          0.1,
+          0.12
+        ]
+      },
+      "parent": 32
+    },
+    {
+      "name": "Hub",
+      "primitive": "box",
+      "color": [
+        0.8,
+        0.15,
+        0.1
+      ],
+      "material": {
+        "metallic": 0.3,
+        "roughness": 0.3
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.2,
+          0.2,
+          0.2
+        ]
+      },
+      "parent": 32
+    }
+  ],
+  "shadows": true,
+  "postProcess": {
+    "enabled": true,
+    "motionBlurOn": true,
+    "mbStrength": 1,
+    "mbSamples": 16
+  },
+  "taa": {
+    "enabled": true,
+    "sampleCount": 8,
+    "feedbackMin": 0.88,
+    "feedbackMax": 0.97,
+    "varianceGamma": 1,
+    "jitterScale": 1
+  }
+}
