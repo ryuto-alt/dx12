@@ -1,10 +1,12 @@
 // 起動音ミキサーのオフライン書き出し（音デバイスは開かない）。
 //   SplashSyncDump <出力ディレクトリ> [splash_d.wav のパス]
+//   SplashSyncDump --calibrate <repo-root> <出力ディレクトリ>   … Graphite Gauge の起動音 Calibrate（W1-BD5）。下を参照
 // 頂点の予測を T=3.0s として、実際の初期化が「早い(1.6s) / 定刻(3.0s) / 遅い(5.0s)」の 3 シナリオを
 // ミキサーで計算し、sync_early.wav / sync_ontime.wav / sync_late.wav と、区間境界の一覧 sync_*.json を書く。
 // つなぎ目のクリック検査は tools/check_splash_sync.py（WAV を独立に読んで境界の不連続量を測る）。
 // 素材: 引数の WAV（+同名の .json メタ）があればそれ。無ければ埋め込みの案 A（riser 無しの単発音）。
 #include "core/SplashMixer.h"
+#include "core/SplashSequencer.h"
 #include "core/SplashSoundData.h"
 
 #include <cmath>
@@ -70,11 +72,136 @@ void WriteWav16(const std::string& path, const std::vector<float>& st, int sr)
 }
 
 struct Boundary { std::string name; int64_t frame; };
+
+// ---------------------------------------------------------------- Calibrate（W1-BD5）のオフライン書き出し
+// 速い経路（full / rm）・遅い経路 6 シナリオ・スキップ 5 時刻を、実機と同じシーケンサ + ドライバでメモリ上に描いて WAV と JSON に書く。
+// 音デバイスは開かない。JSON の tailFrame（lock_tail の頭）・handoverFrame・skipFrame は、A/V 検証（BD8）が音と絵の時刻を突き合わせるのに使う。
+std::vector<uint8_t> ReadBytes(const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+void WriteWavExact(const std::string& path, const std::vector<float>& st, int sr)
+{
+    std::ofstream f(path, std::ios::binary);
+    auto u32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto u16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    const uint32_t bytes = static_cast<uint32_t>(st.size() * 2);
+    f.write("RIFF", 4); u32(36 + bytes); f.write("WAVE", 4);
+    f.write("fmt ", 4); u32(16); u16(1); u16(2); u32(static_cast<uint32_t>(sr)); u32(static_cast<uint32_t>(sr * 4)); u16(4); u16(16);
+    f.write("data", 4); u32(bytes);
+    for (float v : st) u16(static_cast<uint16_t>(sp::seq::FloatToPcm16(v)));   // ParseWavPcm16 の厳密な逆（graphite_1.wav とバイト一致できる）
+}
+
+struct CalRun
+{
+    std::vector<float> out;
+    int64_t handoverFrame = -1, skipFrame = -1, tailFrame = -1;
+    double lockMs = std::nan("");
+};
+
+CalRun RunCalibrate(const std::shared_ptr<const sp::CalibrateBank>& bank, bool reduce, double finishMs, double skipMs, double endMs)
+{
+    sp::CalibrateSequencer seq(bank, reduce);
+    sp::GaugeFastDriver drv;
+    CalRun r;
+    constexpr int64_t kAhead = 882;   // 音は 20ms 先まで描き置く
+    std::vector<float> tmp(441 * 2);
+    auto fill = [&](int64_t target) {
+        while (static_cast<int64_t>(r.out.size() / 2) < target)
+        {
+            seq.Render(tmp.data(), 441);
+            r.out.insert(r.out.end(), tmp.begin(), tmp.end());
+        }
+    };
+    seq.Begin();
+    fill(kAhead);
+    bool skipped = false, skipDone = false;
+    for (int k = 0;; ++k)
+    {
+        const double t = k * 1000.0 / 60.0;
+        if (t > endMs) break;
+        if (!reduce)
+        {
+            const bool fin = !std::isnan(finishMs) && t >= finishMs;
+            if (drv.HandOverPending(t, fin))
+            {
+                if (seq.HandOver(t)) r.handoverFrame = seq.HandOverFrame();
+                else drv.VetoHandOver();
+            }
+            drv.Update(t, std::isnan(finishMs) ? 0.2f : static_cast<float>(std::min(0.99, t / finishMs)), fin);
+        }
+        if (!std::isnan(skipMs) && !skipDone && t >= skipMs)
+        {
+            skipDone = true;
+            double used = t;
+            skipped = seq.Skip(t, &used);
+            if (!reduce) drv.Skip(used);
+        }
+        if (!reduce)
+        {
+            for (uint32_t id : drv.TakeCancelledCueIds()) seq.CancelCue(id);
+            for (const sp::GaugeCue& c : drv.TakeCues()) seq.AddCue(c);
+        }
+        fill(sp::seq::MsToFrame(t) + kAhead);
+    }
+    while (!seq.Idle() && r.out.size() / 2 < 20u * 44100u) fill(static_cast<int64_t>(r.out.size() / 2) + 441);
+    r.tailFrame = seq.TailStartFrame();
+    r.skipFrame = skipped ? r.tailFrame : -1;
+    r.lockMs = reduce ? std::nan("") : drv.LockWallMs();
+    return r;
+}
+
+int DumpCalibrate(const std::string& root, const std::string& outDir)
+{
+    const std::string dir = root + "/assets/editor/sounds/calibrate/";
+    sp::CalibrateBlobs b;
+    std::vector<uint8_t> full = ReadBytes(dir + "graphite_1.wav"), rm = ReadBytes(dir + "graphite_1_rm.wav"), bed = ReadBytes(dir + "stems/bed.wav"),
+                         tail = ReadBytes(dir + "stems/lock_tail.wav"), clicks[24];
+    auto v = [](const std::vector<uint8_t>& x) { return sp::BlobView{ x.data(), x.size() }; };
+    b.full = v(full); b.rm = v(rm); b.bed = v(bed); b.lockTail = v(tail);
+    for (int i = 0; i < 24; ++i)
+    {
+        char n[40];
+        std::snprintf(n, sizeof(n), "stems/click_%02d.wav", i);
+        clicks[i] = ReadBytes(dir + n);
+        b.click[i] = v(clicks[i]);
+    }
+    auto bank = std::make_shared<sp::CalibrateBank>();
+    if (!sp::BuildCalibrateBank(b, *bank)) { std::printf("calibrate bank load failed (%s)\n", dir.c_str()); return 1; }
+
+    struct Scn { std::string name; bool reduce; double finish, skip, end; };
+    const double nan = std::nan("");
+    std::vector<Scn> scns = { { "cal_fast", false, 1200, nan, 5000 }, { "cal_fast_rm", true, nan, nan, 5000 } };
+    for (double f : { 1500.0, 1800.0, 2300.0, 3200.0, 5000.0, 9000.0 }) scns.push_back({ "cal_slow_" + std::to_string(static_cast<int>(f)), false, f, nan, f + 3000 });
+    for (double s : { 300.0, 800.0, 1300.0, 1700.0, 2500.0 }) scns.push_back({ "cal_skip_" + std::to_string(static_cast<int>(s)), false, nan, s, s + 4500 });
+    scns.push_back({ "cal_skip_rm_800", true, nan, 800, 5000 });
+
+    const float srcMax = sp::MaxStepDiff(bank->full, 0, static_cast<size_t>(bank->FullFrames()));
+    int rc = 0;
+    for (const Scn& sc : scns)
+    {
+        const CalRun r = RunCalibrate(bank, sc.reduce, sc.finish, sc.skip, sc.end);
+        WriteWavExact(outDir + "/" + sc.name + ".wav", r.out, 44100);
+        const float m = sp::MaxStepDiff(r.out, 0, r.out.size() / 2);
+        std::ofstream j(outDir + "/" + sc.name + ".json");
+        j << "{\n  \"scenario\": \"" << sc.name << "\",\n  \"sampleRate\": 44100,\n  \"reduceMotion\": " << (sc.reduce ? "true" : "false")
+          << ",\n  \"frames\": " << r.out.size() / 2 << ",\n  \"handoverFrame\": " << r.handoverFrame << ",\n  \"skipFrame\": " << r.skipFrame
+          << ",\n  \"tailFrame\": " << r.tailFrame << ",\n  \"maxStep\": " << m << ",\n  \"masterMaxStep\": " << srcMax << "\n}\n";
+        const bool ok = m <= srcMax * 1.6f;
+        std::printf("%-16s frames=%-7zu handover=%-6lld tail=%-7lld maxStep=%.5f (master %.5f) %s\n", sc.name.c_str(), r.out.size() / 2,
+                    static_cast<long long>(r.handoverFrame), static_cast<long long>(r.tailFrame), m, srcMax, ok ? "OK" : "CLICK?");
+        if (!ok) rc = 1;
+    }
+    return rc;
+}
 } // namespace
 
 int main(int argc, char** argv)
 {
-    if (argc < 2) { std::printf("usage: SplashSyncDump <outDir> [splash_d.wav]\n"); return 2; }
+    if (argc >= 4 && std::string(argv[1]) == "--calibrate") return DumpCalibrate(argv[2], argv[3]);
+    if (argc < 2) { std::printf("usage: SplashSyncDump <outDir> [splash_d.wav] | --calibrate <repo-root> <outDir>\n"); return 2; }
     const std::string outDir = argv[1];
     std::string what;
     auto asset = LoadAsset(argc >= 3 ? argv[2] : "", what);

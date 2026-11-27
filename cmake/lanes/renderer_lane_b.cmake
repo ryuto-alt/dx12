@@ -5,5 +5,6 @@ target_sources(Renderer PRIVATE
     vfx/VfxCurl.cpp       # W1-BD4: 64^3 カール場の生成と CPU 参照
     vfx/VfxRuntime.cpp    # W1-BD4: ホストとの口・MCP からの要求
     vfx/VfxSystem.cpp     # W1-BD4: GPU リソースとシミュレーション・描画の記録
+    vfx/VfxFlipbook.cpp   # W1-BD7: フリップブックの算術（CPU 参照）と DDS の読み込み
     vfx/VfxFeature.cpp    # W1-BD4: IRenderFeature（UnoFX）
 )

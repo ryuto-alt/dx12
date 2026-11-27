@@ -71,6 +71,42 @@ int main(int argc, char** argv)
     CHECK(r2.ok);
     CHECK(SerializeUvfx(r2.asset) == s1);
 
+    // フリップブックの既定値と規約（W1-BD7）: channels の既定は color（中心）、mvRange は NB2 の焼き込みと同じ 0.5
+    CHECK(e.render.flipChannels == "color" && e.render.flipFrames == 0 && e.render.flipMv.empty() && e.render.flipMvRange == 0.5f);
+    CHECK(!e.render.AnchorBottom());
+    CHECK(s1.find("\"anchor\": \"center\"") != std::string::npos);
+    {   // fire / smoke6way は根元固定。ただし stretch > 0（火花）は中心
+        RenderDesc rd; rd.flipChannels = "fire";
+        CHECK(rd.AnchorBottom());
+        rd.stretch = 1.0f;
+        CHECK(!rd.AnchorBottom());
+        rd.flipAnchorSet = true; rd.flipAnchorBottom = true;
+        CHECK(rd.AnchorBottom());   // 明示した anchor は尊重する
+    }
+    {
+        const ParseResult fr = ParseUvfx(R"({"uvfx":1,"emitters":[{"render":{"kind":"flipbook","texture":"s.dds",
+            "flipbook":{"cols":6,"rows":6,"frames":36,"fps":12,"channels":"smoke6way","dbf":"d.dds","mv":"m.dds","mvRange":0.5,"anchor":"center","tempMin":900,"tempMax":2400,"emission":2,"erodeStart":0.2,"erodeWidth":0.1,"rootFade":0.15}}}]})");
+        CHECK(fr.ok);
+        CHECK(fr.asset.emitters[0].render.flipRootFade == 0.15f);
+        const RenderDesc& rd = fr.asset.emitters[0].render;
+        CHECK(rd.flipFrames == 36 && rd.flipChannels == "smoke6way" && rd.flipDbf == "d.dds" && rd.flipMv == "m.dds");
+        CHECK(!rd.AnchorBottom() && rd.flipTempMin == 900.0f && rd.flipTempMax == 2400.0f && rd.flipEmission == 2.0f);
+        CHECK(rd.flipErodeStart == 0.2f && rd.flipErodeWidth == 0.1f);
+        const std::string t1 = SerializeUvfx(fr.asset);
+        const ParseResult fr2 = ParseUvfx(t1);
+        CHECK(fr2.ok && SerializeUvfx(fr2.asset) == t1);
+        // channels が color なら既定は center、smoke6way の既定は bottom
+        const ParseResult col = ParseUvfx(R"({"uvfx":1,"emitters":[{"render":{"kind":"flipbook","flipbook":{"channels":"color"}}}]})");
+        CHECK(col.ok && !col.asset.emitters[0].render.AnchorBottom());
+    }
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"channels":"neon"}}}]})", "neon"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"cols":4,"rows":4,"frames":17}}}]})", "frames"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"anchor":"top"}}}]})", "anchor"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"kind":"flipbook","flipbook":{"channels":"smoke6way"}}}]})", "dbf"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"rootFade":0.9}}}]})", "rootFade"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"tempMin":3000,"tempMax":2000}}}]})", "tempMax"));
+    CHECK(Fails(R"({"uvfx":1,"emitters":[{"render":{"flipbook":{"mvRange":-1}}}]})", "mvRange"));
+
     // 命令列
     CompiledEmitter ce; std::string err;
     CHECK(CompileEmitter(e, ce, err));

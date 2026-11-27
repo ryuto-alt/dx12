@@ -9,4 +9,8 @@ uno_shader(NAME VfxStatClear_CS FILE vfx/VfxSim.hlsl  ENTRY CSStatClear PROFILE 
 uno_shader(NAME VfxDraw_VS      FILE vfx/VfxDraw.hlsl ENTRY VSMain      PROFILE vs_6_6 NEW)
 uno_shader(NAME VfxDraw_PS      FILE vfx/VfxDraw.hlsl ENTRY PSMain      PROFILE ps_6_6 NEW)
 uno_shader(NAME VfxCurlProbe_CS FILE vfx/VfxCurlProbe.hlsl ENTRY CSProbe PROFILE cs_6_6 NEW)   # 試験用（tests/vfx_gpu_test.cpp）
+# UnoFX フリップブック（W1-BD7）。炎族 / 6-way / 色。VfxFlipbookProbe は試験用（tests/vfx_gpu_test.cpp）
+uno_shader(NAME VfxSpriteDraw_VS FILE vfx/VfxSpriteDraw.hlsl ENTRY VSMain PROFILE vs_6_6 NEW)
+uno_shader(NAME VfxSpriteDraw_PS FILE vfx/VfxSpriteDraw.hlsl ENTRY PSMain PROFILE ps_6_6 NEW)
+uno_shader(NAME VfxFlipbookProbe_CS FILE vfx/VfxFlipbookProbe.hlsl ENTRY CSProbe PROFILE cs_6_6 NEW)
 # ==== lane-B:shaders end ====

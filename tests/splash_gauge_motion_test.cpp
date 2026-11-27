@@ -9,15 +9,19 @@
 //  加えて: スキップ（ランダム 5 時刻）、経路によらずロック以降の全フレームが同じ
 #include "core/SplashGaugeMotion.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <set>
 #include <vector>
 
 namespace
 {
 int g_fail = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++g_fail; } } while (0)
+#define CHECK_MSG(cond, ...) do { if (!(cond)) { std::printf("FAIL %s:%d  %s  ", __FILE__, __LINE__, #cond); std::printf(__VA_ARGS__); std::printf("\n"); ++g_fail; } } while (0)
 #define CHECK_NEAR(a, b, eps) do { const double aa_ = (a), bb_ = (b); if (!(std::fabs(aa_ - bb_) <= (eps))) { \
     std::printf("FAIL %s:%d  %s=%.6f vs %s=%.6f\n", __FILE__, __LINE__, #a, aa_, #b, bb_); ++g_fail; } } while (0)
 
@@ -386,7 +390,7 @@ void Test_FastSkipBeforeHandover()
     d.Skip(tSkip);
     for (t = tSkip; t < 4000.0; t += 1000.0 / 60.0)
     {
-        d.Update(t, 0.1f, false);
+        d.Update(t, 0.1f, true);
         const auto f = d.Frame(t);
         CHECK(SameFrame(f, sp::EvaluateAfterLock(t - tSkip, ev)));
         CHECK(f.locked);
@@ -487,10 +491,305 @@ void Test_Skip()
         CHECK(d.Skipped());
         const auto cues = d.PendingCues();
         CHECK(!cues.empty() && cues.back().kind == sp::GaugeCueKind::LockTail && cues.back().playAtMs == t);
-        for (const auto& c : cues) CHECK(c.playAtMs <= t);   // 先の予約は捨てられる
+        for (const auto& c : cues) CHECK(c.playAtMs <= t);   // 先の予約は捨てられる（ちょうど t のスキップの LockTail は残る）
+        d.Update(t, 1.0f, true);   // ロードはスキップと同時に完了（退場は自然な時刻。待たされる側は Test_SkipThenLongLoad）
         for (double dt = 0; dt < 1500.0; dt += 7.0)
             CHECK(SameFrame(d.Frame(t + dt), sp::EvaluateAfterLock(dt, ev)));
         CHECK(d.Frame(t).locked && d.Frame(t).needleDeg == 360.f);
+    }
+}
+
+// スキップで、音の側へ受け渡し済みの予約（playAt が先のもの）を取り消せる（FU-E-18）
+void Test_SkipCancelsHandedOverCues()
+{
+    // スキップしなければ取り消しは出ない / id は 1 から単調で一意
+    {
+        sp::GaugeSlowDriver d;
+        std::vector<std::uint32_t> ids;
+        for (double t = 0; t < 2500.0; t += 16.0)
+        {
+            d.Update(t, static_cast<float>(t / 3000.0), false);
+            for (const auto& c : d.TakeCues()) ids.push_back(c.id);
+            CHECK(d.TakeCancelledCueIds().empty());
+        }
+        CHECK(!ids.empty());
+        for (std::size_t i = 0; i < ids.size(); ++i) CHECK(ids[i] == i + 1);
+    }
+    std::size_t totalCancelled = 0;
+    for (std::uint32_t k = 0; k < 24; ++k)
+    {
+        const double tSkip = 300.0 + sp::Rand01(131, k) * 2500.0;
+        sp::GaugeSlowDriver d;
+        std::vector<sp::GaugeCue> handed;
+        double t = 0;
+        for (; t < tSkip; t += 16.0)
+        {
+            d.Update(t, static_cast<float>(t / 3500.0), false);
+            for (const auto& c : d.TakeCues()) handed.push_back(c);
+        }
+        d.Skip(t);
+        const auto cancelled = d.TakeCancelledCueIds();
+        // 受け渡し済みで playAt > tSkip のものだけ、過不足なく取り消される
+        std::size_t expect = 0;
+        for (const auto& c : handed)
+        {
+            const bool want = c.playAtMs >= t;   // Click も最終接近の LockTail も対象
+            std::size_t n = 0;
+            for (auto id : cancelled) n += (id == c.id);
+            CHECK(n == (want ? 1u : 0u));
+            expect += want;
+        }
+        CHECK(cancelled.size() == expect);
+        totalCancelled += expect;
+        CHECK(d.TakeCancelledCueIds().empty());
+        // スキップの LockTail は取り消し対象でなく、id は取り消しと重ならない
+        const auto after = d.TakeCues();
+        CHECK(after.size() == 1 && after[0].kind == sp::GaugeCueKind::LockTail && after[0].playAtMs == t);
+        for (auto id : cancelled) CHECK(id != after[0].id);
+        // スキップ後は新しい取り消しが出ない
+        d.Update(t + 16.0, 1.0f, true);
+        CHECK(d.TakeCancelledCueIds().empty() && d.TakeCues().empty());
+    }
+    CHECK(totalCancelled > 0);   // 予約は発音の 50ms 以上前に渡る。歯の直後のスキップでは必ず取り消しが出る（24 時刻のどこかで当たる）
+    // 取り出す前にスキップ（まだ渡していない予約）は取り消しではなく破棄
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 1200.0; t += 16.0) d.Update(t, static_cast<float>(t / 3500.0), false);
+        d.Skip(t);
+        CHECK(d.TakeCancelledCueIds().empty());
+    }
+    // ロック以降のスキップは何もしない（取り消しも出ない）
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 800.0; t += 16.0) { d.Update(t, 0.4f, false); d.TakeCues(); }
+        for (; !(d.Approaching() && t >= d.LockWallMs() + 10.0); t += 16.0) { d.Update(t, 1.0f, true); d.TakeCues(); }
+        d.Skip(t);
+        CHECK(!d.Skipped() && d.TakeCancelledCueIds().empty());
+    }
+    // 速い経路 → 持ち替え後のスキップは Slow と同じ。持ち替え前のスキップは予約が無いので取り消しも無い
+    {
+        sp::GaugeFastDriver d;
+        double t = 0;
+        std::vector<sp::GaugeCue> handed;
+        for (; t < Ev().clickMs[sp::CalibrateEvents::kClicks - 2] + 400.0; t += 16.0) { d.Update(t, 0.1f, false); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        CHECK(d.HandedOver());
+        d.Skip(t);
+        const auto cancelled = d.TakeCancelledCueIds();
+        std::size_t expect = 0;
+        for (const auto& c : handed) expect += (c.playAtMs >= t);
+        CHECK(cancelled.size() == expect);
+    }
+    {
+        sp::GaugeFastDriver d;
+        for (double t = 0; t < 1000.0; t += 16.0) d.Update(t, 0.1f, false);
+        d.Skip(1000.0);
+        CHECK(d.TakeCancelledCueIds().empty());
+    }
+}
+
+// 最終接近の途中（完了要求のあと・ロック前）のスキップ: 渡し済みの Click と LockTail を取り消し、鳴る LockTail は 1 本だけ（FU-E-18 レビュー対応）
+template <class Driver>
+bool CheckSkipDuringApproach(Driver& d, double tSkip)
+{
+    std::vector<sp::GaugeCue> handed;
+    double t = 0;
+    for (; t < 912.0; t += 16.0) { d.Update(t, static_cast<float>(t / 3500.0), false); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+    d.Update(t, 1.0f, true);
+    for (const auto& c : d.TakeCues()) handed.push_back(c);
+    for (t += 16.0; t < tSkip; t += 16.0) { d.Update(t, 1.0f, true); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+    const double lockWall = d.LockWallMs();
+    CHECK(!std::isnan(lockWall));
+    if (t >= lockWall) return false;   // ロック後はスキップ無効（別テスト）。呼び出し側が実行数を数えて検査する
+    d.Skip(t);
+    // id は全て非 0 かつ一意（LockTail 含む）
+    std::set<std::uint32_t> seen;
+    for (const auto& c : handed) { CHECK(c.id != 0); CHECK(seen.insert(c.id).second); }
+    auto cancelled = d.TakeCancelledCueIds();
+    auto after = d.TakeCues();
+    for (const auto& c : after) { CHECK(c.id != 0); CHECK(seen.insert(c.id).second); }
+    // 音の側の有効な予約 = 渡し済み - 取り消し + 新規。playAt >= t の古い予約は全て取り消されている
+    std::set<std::uint32_t> active;
+    for (const auto& c : handed) active.insert(c.id);
+    for (auto id : cancelled) CHECK(active.erase(id) == 1);
+    for (const auto& c : handed) if (c.playAtMs >= t) CHECK(!active.count(c.id));
+    int lockTails = 0;
+    for (const auto& c : handed) if (active.count(c.id) && c.kind == sp::GaugeCueKind::LockTail) ++lockTails;
+    for (const auto& c : after) { active.insert(c.id); lockTails += (c.kind == sp::GaugeCueKind::LockTail); }
+    CHECK(lockTails == 1);
+    CHECK(d.TakeCancelledCueIds().empty());
+    return true;
+}
+
+void Test_SkipDuringApproach()
+{
+    // 完了要求は t=912 付近。ロックまで 1 秒弱ある窓の中の複数時刻
+    int ranSlow = 0;
+    const double slowSkips[] = { 930.0, 1000.0, 1200.0, 1500.0, 1800.0, 1950.0, 1965.0 };
+    for (double tSkip : slowSkips)
+    {
+        sp::GaugeSlowDriver d;
+        ranSlow += CheckSkipDuringApproach(d, tSkip) ? 1 : 0;
+    }
+    CHECK(ranSlow == static_cast<int>(std::size(slowSkips)));   // 全ケースが実際にロック前のスキップになっている（時刻が変わっても黙って落ちない）
+    // Fast: 持ち替え後に完了要求 → 完了要求からの周回数 extraFrames 後にスキップ
+    int ranFast = 0;
+    const int fastExtraFrames[] = { 4, 10, 16 };
+    for (int extra : fastExtraFrames)
+    {
+        sp::GaugeFastDriver d;
+        std::vector<sp::GaugeCue> handed;
+        double t = 0;
+        const double dec = Ev().clickMs[sp::CalibrateEvents::kClicks - 2];
+        for (; t < dec + 300.0; t += 16.0) { d.Update(t, 0.1f, false); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        CHECK(d.HandedOver());
+        d.Update(t, 1.0f, true);
+        for (const auto& c : d.TakeCues()) handed.push_back(c);
+        for (int i = 0; i < extra; ++i) { t += 16.0; d.Update(t, 1.0f, true); for (const auto& c : d.TakeCues()) handed.push_back(c); }
+        t += 16.0;
+        if (t >= d.LockWallMs()) continue;
+        ++ranFast;
+        d.Skip(t);
+        std::set<std::uint32_t> seen, active;
+        for (const auto& c : handed) { CHECK(c.id != 0); CHECK(seen.insert(c.id).second); active.insert(c.id); }
+        for (auto id : d.TakeCancelledCueIds()) CHECK(active.erase(id) == 1);
+        int lockTails = 0;
+        for (const auto& c : handed) if (active.count(c.id) && c.kind == sp::GaugeCueKind::LockTail) ++lockTails;
+        for (const auto& c : d.TakeCues()) lockTails += (c.kind == sp::GaugeCueKind::LockTail);
+        CHECK(lockTails == 1);
+    }
+    CHECK(ranFast == static_cast<int>(std::size(fastExtraFrames)));
+}
+
+// スキップのあとロードが長引く: 退場（ピン・フェード）はロードの完了まで始まらず、完了後にその時刻から進む（FU-E-18）
+template <class Frame, class Fn>
+void CheckExitHeld(Frame frameAt, double skipWall, double finishWall, double exitStart, Fn&& /*unused*/)
+{
+    const auto& ev = Ev();
+    const double nat = ev.pingMs - ev.lockMs;
+    CHECK_NEAR(exitStart, skipWall + std::max(nat, finishWall - skipWall), 1e-9);
+    for (double t = skipWall; t < exitStart; t += 7.0)
+    {
+        const auto f = frameAt(t);
+        CHECK(f.pinT == 0.f && f.fadeOutT == 0.f);
+        CHECK(f.locked);
+    }
+    CHECK(frameAt(exitStart).pinT == 0.f);
+    CHECK(frameAt(exitStart + sp::gauge::kPinStampMs).pinT == 1.f);
+    CHECK_NEAR(frameAt(exitStart + sp::gauge::kFadeOutMs * 0.5).fadeOutT, 0.5, 1e-5);
+    CHECK(frameAt(exitStart + sp::gauge::kFadeOutMs).fadeOutT == 1.f);
+}
+
+void Test_SkipThenLongLoad()
+{
+    const auto& ev = Ev();
+    const double nat = ev.pingMs - ev.lockMs;
+    // Slow: t=500 でスキップ、ロードは t=6000 まで続く
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(t);
+        const double skipWall = t;
+        CHECK(std::isnan(d.ExitStartWallMs()));
+        for (; t < 6000.0; t += 16.0) d.Update(t, 0.3f, false);
+        CHECK(!d.FinishObserved() && std::isnan(d.ExitStartWallMs()));
+        for (double u = skipWall; u < 6000.0; u += 11.0)
+        {
+            const auto f = d.Frame(u);
+            CHECK(f.pinT == 0.f && f.fadeOutT == 0.f && f.locked);   // 自然な退場時刻（skip + nat）を過ぎても保持
+        }
+        CHECK(d.Frame(skipWall + nat + 50.0).fadeOutT == 0.f);
+        d.Update(6000.0, 1.0f, true);
+        CHECK(d.FinishObserved());
+        const double fw = 6000.0;
+        CheckExitHeld([&](double u) { return d.Frame(u); }, skipWall, fw, d.ExitStartWallMs(), 0);
+        CHECK_NEAR(d.ExitStartWallMs(), fw, 1e-9);
+        d.Update(6016.0, 1.0f, true);   // 以後の Update で動かない
+        CHECK_NEAR(d.ExitStartWallMs(), fw, 1e-9);
+    }
+    // Slow: スキップの前に完了要求が出ていたなら自然な時刻（待たない）
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 400.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Update(t, 1.0f, true);
+        t += 16.0;
+        d.Update(t, 1.0f, true);
+        d.Skip(t);
+        CHECK_NEAR(d.ExitStartWallMs(), t + nat, 1e-9);
+        CHECK(d.Frame(t + nat + sp::gauge::kPinStampMs).pinT == 1.f);
+    }
+    // Slow: スキップより先に完了要求が来てもスキップ後すぐ終わる場合も、完了要求が自然な時刻より早ければ自然な時刻
+    {
+        sp::GaugeSlowDriver d;
+        double t = 0;
+        for (; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(t);
+        const double skipWall = t;
+        d.Update(t + 16.0, 1.0f, true);   // ロックの絵から 16ms で完了
+        CHECK_NEAR(d.ExitStartWallMs(), skipWall + nat, 1e-9);
+    }
+    // Fast: 持ち替え前（C22 の前）にスキップ、ロードは長く続く
+    {
+        sp::GaugeFastDriver d;
+        double t = 0;
+        for (; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(t);
+        const double skipWall = t;
+        for (; t < 7000.0; t += 16.0) d.Update(t, 0.3f, false);
+        CHECK(!d.HandedOver() && !d.FinishObserved() && std::isnan(d.ExitStartWallMs()));
+        for (double u = skipWall; u < 7000.0; u += 11.0)
+        {
+            const auto f = d.Frame(u);
+            CHECK(f.pinT == 0.f && f.fadeOutT == 0.f && f.locked);
+        }
+        d.Update(7000.0, 1.0f, true);
+        CheckExitHeld([&](double u) { return d.Frame(u); }, skipWall, 7000.0, d.ExitStartWallMs(), 0);
+        CHECK_NEAR(d.ExitStartWallMs(), 7000.0, 1e-9);
+    }
+    // Fast: 持ち替え後（C22 より後）にスキップ → 遅い経路と同じ扱い
+    {
+        sp::GaugeFastDriver d;
+        double t = 0;
+        const double dec = ev.clickMs[sp::CalibrateEvents::kClicks - 2];
+        for (; t < dec + 200.0; t += 16.0) d.Update(t, 0.2f, false);
+        CHECK(d.HandedOver());
+        d.Skip(t);
+        const double skipWall = t;
+        for (; t < 6000.0; t += 16.0) d.Update(t, 0.3f, false);
+        for (double u = skipWall; u < 6000.0; u += 13.0) { const auto f = d.Frame(u); CHECK(f.pinT == 0.f && f.fadeOutT == 0.f); }
+        d.Update(6000.0, 1.0f, true);
+        CheckExitHeld([&](double u) { return d.Frame(u); }, skipWall, 6000.0, d.ExitStartWallMs(), 0);
+    }
+    // Reduce（状態なし）: 完了要求の観測時刻から退場
+    {
+        const double fin = 5000.0;
+        const double held = std::numeric_limits<double>::infinity();
+        for (double u = 0; u < 9000.0; u += 37.0)
+        {
+            const auto f = sp::EvaluateGauge(sp::GaugePath::Reduce, u, 0.3f, ev, held);
+            CHECK(f.pinT == 0.f && f.fadeOutT == 0.f);
+        }
+        const double es = sp::GaugeExitStartMs(ev.pingMs, fin);
+        CHECK_NEAR(es, fin, 1e-9);
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, fin - 1.0, 1.f, ev, es).fadeOutT == 0.f);
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, fin, 1.f, ev, es).pinT == 1.f);
+        CHECK_NEAR(sp::EvaluateGauge(sp::GaugePath::Reduce, fin + 90.0, 1.f, ev, es).fadeOutT, 0.5, 1e-5);
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, fin + 180.0, 1.f, ev, es).fadeOutT == 1.f);
+        // 早く終わるなら自然な時刻
+        CHECK_NEAR(sp::GaugeExitStartMs(ev.pingMs, 300.0), ev.pingMs, 1e-9);
+        CHECK(std::isinf(sp::GaugeExitStartMs(ev.pingMs, std::nan(""))));
+        // 既定（引数なし）は従来どおり
+        CHECK(sp::EvaluateGauge(sp::GaugePath::Reduce, ev.pingMs + 500.0, 0.f).fadeOutT == 1.f);
+    }
+    // Skip の時刻は直近の Update より前には戻らない（契約）
+    {
+        sp::GaugeSlowDriver d;
+        for (double t = 0; t < 500.0; t += 16.0) d.Update(t, 0.2f, false);
+        d.Skip(100.0);
+        CHECK(d.LockWallMs() >= 496.0);
     }
 }
 
@@ -524,6 +823,170 @@ void Test_Blur()
     CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, 50.0, 0.f).blurDeg == 0.f);
 }
 
+// ---------------------------------------------------------------- 校正の振り付け（W1-BD6）
+
+// 残像の本数: 最速区間（C13〜C15）の全フレームで 6 本以上。止まっているとき（開始前・ロック後）は 0。上限 12。
+void Test_TrailLines()
+{
+    const auto& ev = Ev();
+    int minN = 99, maxN = 0;
+    for (double t = ev.clickMs[13]; t <= ev.clickMs[15]; t += 0.25)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        const int n = sp::gauge::TrailLineCount(f.blurDeg);
+        minN = std::min(minN, n);
+        maxN = std::max(maxN, n);
+    }
+    std::printf("  最速区間 C13〜C15 の残像の本数: 最少 %d 本 / 最多 %d 本\n", minN, maxN);
+    CHECK(minN >= 6 && maxN <= sp::gauge::kTrailMaxLines);
+    // 全区間で本数は 0..12。ロック後と開始前は 0
+    for (double t = 0.0; t <= 2400.0; t += 1.0)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        const int n = sp::gauge::TrailLineCount(f.blurDeg);
+        CHECK(n >= 0 && n <= sp::gauge::kTrailMaxLines);
+        if (f.locked || t < 150.0) CHECK(n == 0);
+    }
+    // 線の並び: 指針に近い順に離れ、濃さは線形に淡くなる。最も遠い線は blurDeg（直近 1 フレームの移動量）に一致する
+    for (double blur : { 0.5, 3.0, 9.3, 14.0, 40.0 })
+    {
+        const int n = sp::gauge::TrailLineCount(blur);
+        CHECK(n >= 1);
+        double prevOff = 0.0, prevAl = 2.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const sp::gauge::TrailLine l = sp::gauge::TrailLineAt(i, n, blur);
+            CHECK(l.offsetDeg > prevOff && l.offsetDeg <= blur + 1e-9);
+            CHECK(l.alpha < prevAl + 1e-12 && l.alpha >= sp::gauge::kTrailAlphaFar - 1e-9 && l.alpha <= sp::gauge::kTrailAlphaNear + 1e-9);
+            prevOff = l.offsetDeg; prevAl = l.alpha;
+        }
+        CHECK_NEAR(sp::gauge::TrailLineAt(n - 1, n, blur).offsetDeg, blur, 1e-9);
+        CHECK_NEAR(sp::gauge::TrailLineAt(0, n, blur).alpha, sp::gauge::kTrailAlphaNear, 1e-9);
+    }
+    CHECK(sp::gauge::TrailLineCount(0.0) == 0 && sp::gauge::TrailLineCount(0.2) == 0 && sp::gauge::TrailLineCount(0.25) == 1);
+}
+
+// 整列波とベゼルの鏡面スイープ: ベルの 5 音（1,648〜1,748）に 1 段ずつ。スイープは 1,648〜1,848。通り抜けたあとは何も残らない。
+void Test_AlignWaveAndSweep()
+{
+    const auto& ev = Ev();
+    for (int k = 0; k < 5; ++k)
+    {
+        const sp::GaugeFrame before = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k] - 0.01, 0.f);
+        const sp::GaugeFrame at = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k], 0.f);
+        const sp::GaugeFrame mid = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k] + sp::gauge::kAlignPassMs * 0.5, 0.f);
+        const sp::GaugeFrame done = sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[k] + sp::gauge::kAlignPassMs, 0.f);
+        CHECK(before.alignT[static_cast<size_t>(k)] == 0.f && at.alignT[static_cast<size_t>(k)] == 0.f);
+        CHECK_NEAR(mid.alignT[static_cast<size_t>(k)], 0.5, 1e-5);
+        CHECK(done.alignT[static_cast<size_t>(k)] == 1.f);
+        // 反射は扇 k の目盛りにだけ掛かる。中ほどで 1 本以上の目盛りが強く反応する
+        double best = 0.0;
+        for (int i = 0; i < 100; ++i)
+        {
+            const double deg = i * 3.6;
+            const double gl = sp::gauge::AlignGlintAt(mid.alignT[static_cast<size_t>(k)], k, deg);
+            const bool inSector = deg >= k * 72.0 - 1e-9 && deg < (k + 1) * 72.0 - 1e-9;
+            if (!inSector) CHECK(gl == 0.0);
+            CHECK(gl >= 0.0 && gl <= 1.0);
+            best = std::max(best, gl);
+        }
+        CHECK_MSG(best > 0.8, "扇 %d の反射が弱い %.3f", k, best);
+    }
+    // 整列が終わった（最後の反射が通り抜けた）あとは、どの目盛りにも掛からない。Reduce も同じ（静止の姿）
+    const double settled = ev.bellMs[4] + sp::gauge::kAlignPassMs;
+    for (double t = settled; t <= 2400.0; t += 5.0)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        for (int i = 0; i < 100; ++i) CHECK(sp::gauge::AlignGlintMax(f.alignT, i * 3.6) == 0.0);
+    }
+    for (double t : { 0.0, 1000.0, 1748.0, 2200.0 })
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Reduce, t, 0.f);
+        for (int i = 0; i < 100; ++i) CHECK(sp::gauge::AlignGlintMax(f.alignT, i * 3.6) == 0.0);
+        CHECK(sp::gauge::SweepEnvelope(f.bellT) == 0.0);
+    }
+    // 整列の前（ロックの前）は何も掛からない
+    for (double t = 0.0; t < ev.bellMs[0]; t += 7.0)
+    {
+        const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, t, 0.f);
+        for (int i = 0; i < 100; ++i) CHECK(sp::gauge::AlignGlintMax(f.alignT, i * 3.6) == 0.0);
+        CHECK(f.bellT == 0.f);
+    }
+    // スイープ: 1,648 で始まり 1,848 で終わる。反射は縁を一周（2 つの反射が 180 度ずつ）。最大の濃さは 0.55 以下
+    CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[0] - 0.01, 0.f).bellT == 0.f);
+    CHECK_NEAR(sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[0] + 100.0, 0.f).bellT, 0.5, 1e-5);
+    CHECK(sp::EvaluateGauge(sp::GaugePath::Fast, ev.bellMs[0] + 200.0, 0.f).bellT == 1.f);
+    CHECK_NEAR(sp::gauge::SweepCentreDeg(0.0), 0.0, 1e-12);
+    CHECK_NEAR(sp::gauge::SweepCentreDeg(1.0), 180.0, 1e-12);
+    double prev = -1.0, peak = 0.0;
+    for (double u = 0.0; u <= 1.0 + 1e-12; u += 0.01)
+    {
+        const double c = sp::gauge::SweepCentreDeg(u);
+        CHECK(c >= prev - 1e-12);
+        prev = c;
+        for (double a = 0.0; a < 360.0; a += 0.5)
+            for (bool second : { false, true })
+            {
+                const double p = sp::gauge::SweepProfileAt(u, a, second);
+                CHECK(p >= 0.0 && p <= 1.0);
+                peak = std::max(peak, p * sp::gauge::kSweepPeakAlpha);
+            }
+    }
+    CHECK(peak <= sp::gauge::kSweepPeakAlpha + 1e-9 && peak > 0.4);
+    CHECK(sp::gauge::SweepProfileAt(0.0, 0.0, false) == 0.0 && sp::gauge::SweepProfileAt(1.0, 180.0, false) == 0.0);
+    // 一周: 全方位のどこかで、スイープ中に必ず反射が通る
+    for (double a = 0.0; a < 360.0; a += 3.0)
+    {
+        double m = 0.0;
+        for (double u = 0.0; u <= 1.0; u += 0.005) m = std::max(m, std::max(sp::gauge::SweepProfileAt(u, a, false), sp::gauge::SweepProfileAt(u, a, true)));
+        CHECK_MSG(m > 0.05, "角度 %.0f にスイープが届かない", a);
+    }
+}
+
+// イベントのフレームが音と ±1 フレーム（60Hz の表示。120fps のダンプでも確かめる）。
+// 音は時刻 T に鳴る。絵は「T 以降の最初のフレーム」で変わる。ここでは、絵が変わる最初のフレームと音のフレームの差を数える。
+void Test_EventFramesVsAudio()
+{
+    const auto& ev = Ev();
+    for (double fps : { 60.0, 120.0 })
+    {
+        const double dt = 1000.0 / fps;
+        auto audioFrame = [&](double tMs) { return static_cast<long>(std::ceil(tMs / dt - 1e-9)); };
+        auto firstFrame = [&](auto&& pred) {
+            for (long n = 0; n < static_cast<long>(3000.0 / dt); ++n)
+                if (pred(sp::EvaluateGauge(sp::GaugePath::Fast, n * dt, 0.f))) return n;
+            return -1L;
+        };
+        auto expectNear = [&](const char* what, long vis, double tAudio) {
+            const long aud = audioFrame(tAudio);
+            CHECK_MSG(vis >= 0 && std::labs(vis - aud) <= 1, "%s fps=%.0f 絵 %ld / 音 %ld", what, fps, vis, aud);
+        };
+        for (int i = 0; i < sp::CalibrateEvents::kClicks; ++i)
+        {
+            const double target = ev.clickDeg[i];
+            expectNear("クリック", firstFrame([&](const sp::GaugeFrame& f) { return f.needleDeg >= target - 1e-3; }), ev.clickMs[i]);
+        }
+        expectNear("ロック", firstFrame([](const sp::GaugeFrame& f) { return f.locked; }), ev.lockMs);
+        expectNear("着座", firstFrame([](const sp::GaugeFrame& f) { return f.seated; }), ev.seatMs);
+        for (int k = 0; k < 5; ++k)
+        {
+            expectNear("整列（段）", firstFrame([&](const sp::GaugeFrame& f) { return f.alignStep >= static_cast<std::uint32_t>(k + 1); }), ev.bellMs[k]);
+            expectNear("整列（反射）", firstFrame([&](const sp::GaugeFrame& f) { return f.alignT[static_cast<size_t>(k)] > 0.f; }), ev.bellMs[k]);
+        }
+        expectNear("ベゼルのスイープ", firstFrame([](const sp::GaugeFrame& f) { return f.bellT > 0.f; }), ev.bellMs[0]);
+        expectNear("登録のピン", firstFrame([](const sp::GaugeFrame& f) { return f.pinT > 0.f; }), ev.pingMs);
+        // ロックの行き過ぎ: 2px 以下（指針の先端が円周の接線方向へ出る長さ）で、ロックの時刻までに 0 へ戻る
+        double peak = 0.0;
+        for (long n = 0; n * dt < 2400.0; ++n)
+        {
+            const sp::GaugeFrame f = sp::EvaluateGauge(sp::GaugePath::Fast, n * dt, 0.f);
+            peak = std::max(peak, static_cast<double>(f.overshootPx));
+            if (n * dt >= ev.lockMs) CHECK(f.overshootPx == 0.f);
+        }
+        CHECK(peak <= 2.0 + 1e-6 && peak > 1.0);
+    }
+}
+
 // 生成ヘッダ由来: 時刻を手で持っていないこと（ビューが SplashCalibrateEvents.h と同じ）
 void Test_EventsView()
 {
@@ -554,8 +1017,14 @@ int main()
     Test_SlowWaitsAtCap();
     Test_SlowFinishFromRest();
     Test_Skip();
+    Test_SkipCancelsHandedOverCues();
+    Test_SkipDuringApproach();
+    Test_SkipThenLongLoad();
     Test_Reduce();
     Test_Blur();
+    Test_TrailLines();
+    Test_AlignWaveAndSweep();
+    Test_EventFramesVsAudio();
     if (g_fail == 0) std::printf("SplashGaugeMotionTests: ALL PASS\n");
     else std::printf("SplashGaugeMotionTests: %d FAIL\n", g_fail);
     return g_fail == 0 ? 0 : 1;

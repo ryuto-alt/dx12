@@ -4,6 +4,7 @@
 //   GPU が無い / .cso が無い環境（CI）では「SKIP」を出して 0 で終わる。
 //   環境変数: DX12E_TEST_D3D_DEBUG=1 でデバッグレイヤ（DX12E_TEST_D3D_GBV=1 で GPU ベース検証）。警告 / エラーが 1 件でもあれば失敗。
 #include "renderer/vfx/VfxCurl.h"
+#include "renderer/vfx/VfxFlipbook.h"
 
 #include <Windows.h>
 #include <directx/d3d12.h>
@@ -24,6 +25,7 @@
 
 using namespace dx12e;
 using namespace dx12e::vfx;
+namespace fb = dx12e::vfx::flip;
 using Microsoft::WRL::ComPtr;
 
 namespace { int g_failures = 0, g_checks = 0; }
@@ -297,9 +299,180 @@ void TestCurlSampling(Gpu& g, const std::wstring& shaderDir)
     CHECK(maxRandom <= 2.5e-3);
     CHECK(maxWrap <= 2.5e-3);   // ±整数ずらしでも同程度（ラップ）
 }
+
+// ---- フリップブック（W1-BD7）: VfxFlipbook.hlsli / VfxSixWay.hlsli の GPU 実行を、CPU 参照（VfxFlipbook.cpp）と比べる ----
+ComPtr<ID3D12Resource> UploadTex2D(Gpu& g, const fb::CpuTex& t)
+{
+    D3D12_HEAP_PROPERTIES hp{}; hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC td{};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = t.w; td.Height = t.h; td.DepthOrArraySize = 1; td.MipLevels = 1;
+    td.Format = static_cast<DXGI_FORMAT>(t.dxgi); td.SampleDesc = {1, 0};
+    ComPtr<ID3D12Resource> tex;
+    if (FAILED(g.dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&tex)))) return nullptr;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT rows = 0; UINT64 rowSize = 0, total = 0;
+    g.dev->GetCopyableFootprints(&td, 0, 1, 0, &fp, &rows, &rowSize, &total);
+    ComPtr<ID3D12Resource> up = MakeBuf(g, total, D3D12_HEAP_TYPE_UPLOAD);
+    u8* p = nullptr; const D3D12_RANGE none{0, 0};
+    up->Map(0, &none, reinterpret_cast<void**>(&p));
+    for (u32 y = 0; y < t.h; ++y) std::memcpy(p + u64(y) * fp.Footprint.RowPitch, &t.px[size_t(y) * t.w * t.bpp], size_t(t.w) * t.bpp);
+    up->Unmap(0, nullptr);
+    auto* c = g.Begin();
+    D3D12_TEXTURE_COPY_LOCATION dst{}, src{};
+    dst.pResource = tex.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.pResource = up.Get(); src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT; src.PlacedFootprint = fp;
+    c->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+    Barrier(c, tex.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    g.Submit();
+    return tex;
+}
+
+void TestFlipbookParity(Gpu& g, const std::wstring& shaderDir, const std::string& assetDir)
+{
+    if (assetDir.empty()) { std::printf("SKIP flipbook parity: 第 1 引数（assets/engine/vfx）が無い\n"); return; }
+    std::ifstream f(shaderDir + L"VfxFlipbookProbe_CS.cso", std::ios::binary);
+    if (!f) { std::printf("SKIP flipbook parity: VfxFlipbookProbe_CS.cso が無い（Shaders ターゲットを先にビルド）\n"); return; }
+    std::vector<char> bc((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+    const char* names[5] = {"fire_flipbook.dds", "fire_mv.dds", "smoke_6way_rlu.dds", "smoke_6way_dbf.dds", "smoke_mv.dds"};
+    fb::CpuTex cpu[5];
+    ComPtr<ID3D12Resource> gpuTex[5];
+    for (int i = 0; i < 5; ++i)
+    {
+        std::ifstream df(assetDir + "/" + names[i], std::ios::binary);
+        std::vector<u8> bytes((std::istreambuf_iterator<char>(df)), std::istreambuf_iterator<char>());
+        std::string err;
+        if (bytes.empty() || !fb::LoadDds(bytes.data(), bytes.size(), cpu[i], err)) { std::printf("FAIL %s: %s\n", names[i], err.c_str()); CHECK(false); return; }
+        gpuTex[i] = UploadTex2D(g, cpu[i]);
+        if (!gpuTex[i]) { CHECK(false); return; }
+    }
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 5; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ComPtr<ID3D12DescriptorHeap> heap;
+    g.dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap));
+    const UINT inc = g.dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    for (u32 i = 0; i < 5; ++i)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC sv{};
+        sv.Format = static_cast<DXGI_FORMAT>(cpu[i].dxgi); sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; sv.Texture2D.MipLevels = 1;
+        D3D12_CPU_DESCRIPTOR_HANDLE h = heap->GetCPUDescriptorHandleForHeapStart(); h.ptr += SIZE_T(i) * inc;
+        g.dev->CreateShaderResourceView(gpuTex[i].Get(), &sv, h);
+    }
+
+    D3D12_ROOT_PARAMETER rp[4]{};
+    rp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; rp[0].Constants = {0, 0, 12};
+    rp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; rp[1].Descriptor = {0, 0};
+    rp[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; rp[2].Descriptor = {1, 0};
+    rp[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV; rp[3].Descriptor = {0, 0};
+    D3D12_STATIC_SAMPLER_DESC ss{};
+    ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    ss.MaxLOD = D3D12_FLOAT32_MAX; ss.ShaderRegister = 0; ss.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    D3D12_ROOT_SIGNATURE_DESC rsd{};
+    rsd.NumParameters = 4; rsd.pParameters = rp; rsd.NumStaticSamplers = 1; rsd.pStaticSamplers = &ss;
+    rsd.Flags = D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
+    ComPtr<ID3DBlob> blob, err;
+    if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err))) { CHECK(false); return; }
+    ComPtr<ID3D12RootSignature> rs;
+    g.dev->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&rs));
+    D3D12_COMPUTE_PIPELINE_STATE_DESC pd{}; pd.pRootSignature = rs.Get(); pd.CS = {bc.data(), bc.size()};
+    ComPtr<ID3D12PipelineState> pso;
+    if (FAILED(g.dev->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso)))) { CHECK(false); return; }
+
+    struct Q { float u, v, t, tl; };
+    struct Fr { u32 a, b, c, d; };
+    std::vector<Q> qs; std::vector<Fr> frs;
+    std::mt19937 rng(777);
+    std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+    std::uniform_int_distribution<u32> fi(0, 35);
+    constexpr u32 N = 8192;
+    for (u32 i = 0; i < N; ++i)
+    {
+        Q q{u01(rng), u01(rng), u01(rng), u01(rng)};
+        // 枠の端も狙う（クランプの確認）
+        if (i % 8 == 0) q.u = (i % 16 == 0) ? 0.0f : 1.0f;
+        if (i % 8 == 1) q.v = (i % 16 == 1) ? 0.0f : 1.0f;
+        qs.push_back(q);
+        const u32 a = fi(rng);
+        frs.push_back({a, (a + 1) % 36, 0, 0});
+    }
+    const D3D12_RANGE none{0, 0};
+    ComPtr<ID3D12Resource> inBuf = MakeBuf(g, u64(N) * 16, D3D12_HEAP_TYPE_UPLOAD), frBuf = MakeBuf(g, u64(N) * 16, D3D12_HEAP_TYPE_UPLOAD);
+    { void* m = nullptr; inBuf->Map(0, &none, &m); std::memcpy(m, qs.data(), u64(N) * 16); inBuf->Unmap(0, nullptr); }
+    { void* m = nullptr; frBuf->Map(0, &none, &m); std::memcpy(m, frs.data(), u64(N) * 16); frBuf->Unmap(0, nullptr); }
+    const u64 outBytes = u64(N) * 4 * 16;
+    ComPtr<ID3D12Resource> outBuf = MakeBuf(g, outBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+    ComPtr<ID3D12Resource> rb = MakeBuf(g, outBytes, D3D12_HEAP_TYPE_READBACK);
+    const float lightB[3] = {0.4f, 0.7f, 0.5f};
+    {
+        auto* c = g.Begin();
+        Barrier(c, outBuf.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        ID3D12DescriptorHeap* hs[] = {heap.Get()};
+        c->SetDescriptorHeaps(1, hs);
+        c->SetComputeRootSignature(rs.Get());
+        c->SetPipelineState(pso.Get());
+        u32 pc[12] = {N, 6, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        const float mvr[2] = {0.5f, 0.5f};
+        std::memcpy(&pc[4], mvr, 8);
+        std::memcpy(&pc[8], lightB, 12);
+        c->SetComputeRoot32BitConstants(0, 12, pc, 0);
+        c->SetComputeRootShaderResourceView(1, inBuf->GetGPUVirtualAddress());
+        c->SetComputeRootShaderResourceView(2, frBuf->GetGPUVirtualAddress());
+        c->SetComputeRootUnorderedAccessView(3, outBuf->GetGPUVirtualAddress());
+        c->Dispatch((N + 63) / 64, 1, 1);
+        Barrier(c, outBuf.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        c->CopyBufferRegion(rb.Get(), 0, outBuf.Get(), 0, outBytes);
+        g.Submit();
+    }
+    std::vector<float> got(size_t(N) * 16);
+    { void* m = nullptr; D3D12_RANGE rr{0, SIZE_T(outBytes)}; rb->Map(0, &rr, &m); std::memcpy(got.data(), m, size_t(outBytes)); rb->Unmap(0, &none); }
+
+    const fb::Grid grid{6, 6, 36};
+    fb::FireParams fp;
+    fb::SmokeParams sp;
+    double sumInterp = 0, maxInterp = 0, maxFire = 0, maxSmokeS = 0, maxSmoke = 0; u64 cnt = 0;
+    for (u32 i = 0; i < N; ++i)
+    {
+        const Q& q = qs[i]; const Fr& r = frs[i];
+        const fb::V2 uv = {q.u, q.v};
+        auto mvf = [&grid](const fb::CpuTex& m) { return [&m, &grid](u32 fr, fb::V2 p) { return fb::SampleMv(m, grid, fr, p, 0.5f); }; };
+        // 炎
+        fb::Taps tp = fb::ResolveTaps(uv, q.t, r.a, r.b, mvf(cpu[1]));
+        const fb::V4 s0 = fb::Lerp(fb::SampleFrame(cpu[0], grid, r.a, tp.pa), fb::SampleFrame(cpu[0], grid, r.b, tp.pb), q.t);
+        const fb::Shaded sf = fb::ShadeFire(s0, q.tl, fp);
+        // 煙
+        tp = fb::ResolveTaps(uv, q.t, r.a, r.b, mvf(cpu[4]));
+        const fb::V4 rlu = fb::Lerp(fb::SampleFrame(cpu[2], grid, r.a, tp.pa), fb::SampleFrame(cpu[2], grid, r.b, tp.pb), q.t);
+        const fb::V4 dbf = fb::Lerp(fb::SampleFrame(cpu[3], grid, r.a, tp.pa), fb::SampleFrame(cpu[3], grid, r.b, tp.pb), q.t);
+        const float ll = std::sqrt(lightB[0] * lightB[0] + lightB[1] * lightB[1] + lightB[2] * lightB[2]);
+        const fb::Shaded ss2 = fb::ShadeSmoke(rlu, dbf, {lightB[0] / ll, lightB[1] / ll, lightB[2] / ll}, q.tl, {0.5f, 0.45f, 0.4f}, {0.2f, 0.25f, 0.3f}, {2.0f, 1.8f, 1.5f}, sp);
+        const float* o = &got[size_t(i) * 16];
+        const float c0[4] = {s0.x, s0.y, s0.z, s0.w};
+        double e0 = 0;
+        for (int k = 0; k < 4; ++k) e0 = std::max(e0, double(std::fabs(o[k] - c0[k])));
+        sumInterp += e0; maxInterp = std::max(maxInterp, e0); ++cnt;
+        const float cf[4] = {sf.rgb.x, sf.rgb.y, sf.rgb.z, sf.a};
+        for (int k = 0; k < 4; ++k) maxFire = std::max(maxFire, double(std::fabs(o[4 + k] - cf[k])) / std::max(1.0, double(std::fabs(cf[k]))));
+        const float cr[4] = {rlu.x, rlu.y, rlu.z, rlu.w};
+        for (int k = 0; k < 4; ++k) maxSmoke = std::max(maxSmoke, double(std::fabs(o[8 + k] - cr[k])));
+        const float cs[4] = {ss2.rgb.x, ss2.rgb.y, ss2.rgb.z, ss2.a};
+        for (int k = 0; k < 4; ++k) maxSmokeS = std::max(maxSmokeS, double(std::fabs(o[12 + k] - cs[k])) / std::max(1.0, double(std::fabs(cs[k]))));
+    }
+    std::printf("  flipbook GPU vs CPU: 炎の補間 mean %.3g max %.3g / ShadeFire max %.3g / 煙の補間 max %.3g / ShadeSmoke max %.3g\n",
+                sumInterp / double(cnt), maxInterp, maxFire, maxSmoke, maxSmokeS);
+    // ハードウェアの線形フィルタの重みは約 8 ビットに量子化され、MV の 2 回の反復で引く位置がずれる（カールと同じ理由）。式の取り違え
+    // （軸・クランプ・反復の回数・枠の割り当て）は 0.1 以上の差になるので、平均と最大の両方で見る。
+    // 実測（RTX 5060）: 平均 2e-5 / 最大 1.6e-3。余裕を見て上限を置く。
+    CHECK(sumInterp / double(cnt) < 2e-4);
+    CHECK(maxInterp < 6e-3);
+    CHECK(maxSmoke < 6e-3);
+    CHECK(maxFire < 6e-3);
+    CHECK(maxSmokeS < 6e-3);
+}
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 #ifdef DX12E_SHADER_DIR
@@ -311,6 +484,7 @@ int main()
     if (!g.Init()) { std::printf("SKIP vfx_gpu_test: D3D12 ハードウェアデバイスが無い\n"); return 0; }
     std::printf("adapter: %ls\n", g.adapterName.c_str());
     TestCurlSampling(g, shaderDir);
+    TestFlipbookParity(g, shaderDir, argc >= 2 ? std::string(argv[1]) : std::string());
     if (const u64 msgs = g.MessageCount()) { std::printf("FAIL: D3D12 デバッグレイヤのメッセージ %llu 件\n", static_cast<unsigned long long>(msgs)); ++g_failures; }
     std::printf("vfx_gpu_test: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;

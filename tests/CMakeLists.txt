@@ -844,10 +844,33 @@ if(MSVC)
         target_compile_definitions(${_t} PRIVATE ${DX12_COMPILE_DEFS})
     endforeach()
 endif()
+# VfxFlipbookMathTests（W1-BD7）: フリップブックの算術（枠・MV 補間・6-way・黒体・浸食）と焼き込み済み DDS の読み込み。GPU 不要。
+add_executable(VfxFlipbookMathTests vfx_flipbook_math_test.cpp ../src/renderer/vfx/VfxFlipbook.cpp)
+target_include_directories(VfxFlipbookMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(VfxFlipbookMathTests PRIVATE nlohmann_json::nlohmann_json)
+if(MSVC)
+    target_compile_options(VfxFlipbookMathTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(VfxFlipbookMathTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME VfxFlipbookMathTests COMMAND VfxFlipbookMathTests ${DX12_REPO_ROOT}/assets/engine/vfx)
+set_tests_properties(VfxFlipbookMathTests PROPERTIES TIMEOUT 120)
 add_test(NAME VfxAssetTests COMMAND VfxAssetTests
-    ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_fire.uvfx ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_burst.uvfx)
+    ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_fire.uvfx ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_burst.uvfx
+    ${DX12_REPO_ROOT}/assets/engine/vfx_core/p_core_flipbook_fire.uvfx)
 add_test(NAME VfxSpawnMathTests COMMAND VfxSpawnMathTests)
 set_tests_properties(VfxAssetTests VfxSpawnMathTests PROPERTIES TIMEOUT 120)
+# VfxRuntimeTests（FU-E-19）: GPU 初期化の失敗が統計（vfx_stats）へ出る。GPU 不要。
+if(TARGET Renderer AND TARGET ECS)
+    add_executable(VfxRuntimeTests vfx_runtime_test.cpp)
+    target_include_directories(VfxRuntimeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_link_libraries(VfxRuntimeTests PRIVATE Renderer ECS EnTT::EnTT)
+    if(MSVC)
+        target_compile_options(VfxRuntimeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(VfxRuntimeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME VfxRuntimeTests COMMAND VfxRuntimeTests)
+    set_tests_properties(VfxRuntimeTests PROPERTIES TIMEOUT 60)
+endif()
 # VfxGpuTests（gpu）: カール場の Texture3D を窓なしの D3D12 で引き、CPU 参照（SampleCurl）と一致（テクセル中心は 1e-5、フィルタ込みは 2.5e-3 以内）することを確かめる。GPU が無ければ SKIP。
 if(TARGET Renderer)
     add_executable(VfxGpuTests vfx_gpu_test.cpp)
@@ -861,9 +884,37 @@ if(TARGET Renderer)
         target_compile_options(VfxGpuTests PRIVATE ${DX12_COMPILE_OPTIONS})
         target_compile_definitions(VfxGpuTests PRIVATE ${DX12_COMPILE_DEFS})
     endif()
-    add_test(NAME VfxGpuTests COMMAND VfxGpuTests)
+    add_test(NAME VfxGpuTests COMMAND VfxGpuTests ${DX12_REPO_ROOT}/assets/engine/vfx)
     set_tests_properties(VfxGpuTests PROPERTIES LABELS gpu TIMEOUT 120)
 endif()
+# 起動画面 Graphite Gauge の描画器（W1-BD3）: 段階 L/M/S・工程の対応・トークンの一致・キーフレーム 10 枚 x DPI 3 種のゴールデン・
+# 参照画像との SSIM・WARP の描画時間・黄の予算・スキップ。窓は作らない（D3D11 の WARP + D2D のオフスクリーン）。
+# ゴールデンの更新: SplashGaugeRendererTests <repo-root> --update-golden
+if(TARGET Core)
+    add_executable(SplashGaugeRendererTests splash_gauge_renderer_test.cpp)
+    target_link_libraries(SplashGaugeRendererTests PRIVATE Core)
+    target_include_directories(SplashGaugeRendererTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(SplashGaugeRendererTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(SplashGaugeRendererTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SplashGaugeRendererTests COMMAND SplashGaugeRendererTests ${DX12_REPO_ROOT})
+    set_tests_properties(SplashGaugeRendererTests PROPERTIES TIMEOUT 300)
+endif()
+# 起動音 Calibrate の音を主時計にする純ロジック（W1-BD5。core/SplashSequencer.h）: 速い経路のビット一致・遅い経路 6 シナリオ・スキップ・
+# ステムの再構築・時計の換算（モック）・鳴らさない条件。音デバイスは開かない。ヘッダオンリー・GPU 不要。
+add_executable(SplashSequencerTests splash_sequencer_test.cpp)
+target_include_directories(SplashSequencerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SplashSequencerTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(SplashSequencerTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME SplashSequencerTests COMMAND SplashSequencerTests ${DX12_REPO_ROOT})
+set_tests_properties(SplashSequencerTests PROPERTIES TIMEOUT 300)
+# 起動画面の A/V 検証用ダンプ（W1-BD8）: --splash-dump が frames.csv（event は ';' 区切り・gpu_ms / cpu_ms）・av.json・audio.wav を窓なしで書く。
+# （DX12Engine は親の CMakeLists でこの後に定義されるので、TARGET では判定せず生成式で参照する）
+add_test(NAME SplashDumpAvShape COMMAND ${CMAKE_COMMAND} -DENGINE=$<TARGET_FILE:DX12Engine> -DOUT=${CMAKE_CURRENT_BINARY_DIR}/splash_dump_av -P ${CMAKE_CURRENT_SOURCE_DIR}/splash_dump_av_check.cmake)
+set_tests_properties(SplashDumpAvShape PROPERTIES TIMEOUT 300)
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、

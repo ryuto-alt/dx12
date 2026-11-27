@@ -19,6 +19,9 @@
 
 #include "core/SplashMotion.h"
 
+struct ID2D1DeviceContext;   // Windows のインターフェース（グローバル名前空間）
+struct IDWriteFactory;
+
 namespace dx12e::splash
 {
 
@@ -71,6 +74,40 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> p_;
+};
+
+// ---------------------------------------------------------------- Graphite Gauge 用の描画器インターフェース（W1-BD3）
+// 実装は SplashGaugeRenderer.{h,cpp}。classic（上の SplashRenderer）とは独立で、classic のコードは変えない。
+struct GaugeFrame;      // SplashGaugeMotion.h
+
+struct SplashStepCell
+{
+    std::wstring no, name;       // 「01」「コア」
+    double sec = -1.0;           // 終わった工程の実測秒（< 0 = 未表示）
+};
+
+// 起動画面（Graphite Gauge）の文言と実進捗。時間に依らない値だけ（時間の絵は GaugeFrame）。
+struct SplashInfo
+{
+    bool projectMode = false, isNew = false;
+    std::wstring projectName, sceneName;
+    std::wstring version;                         // 「v2.6.1」
+    std::vector<std::wstring> verLines;           // 左下の版情報（1 行目 = 版とビルド、2・3 行目 = GPU・前回時間）
+    std::wstring drawingNo;                       // 図番「UN-2.6.1」
+    std::wstring stepTitle, stepDetail;           // 現在の工程の 1 行（s1）と補足（s2）
+    std::vector<SplashStepCell> steps;            // 表示工程（5 本。プロジェクトは 4〜5 本）
+    int stepCur = 0;                              // 現在の工程の添字（steps 内）
+    double progress = 0.0;                        // 実進捗 0..1
+    std::wstring fontFile;                        // 起動画面用の書体（Uno Splash Mono）のパス。空 / 読めなければシステム書体
+};
+
+struct ISplashRenderer
+{
+    virtual ~ISplashRenderer() = default;
+    virtual bool Init(ID2D1DeviceContext* dc, IDWriteFactory* dw, float dpi) = 0;
+    // 現在のターゲット（窓全体）へ 1 フレーム描く。静的な層はキャッシュする。false = デバイス消失など。
+    virtual bool Render(const GaugeFrame& frame, const SplashInfo& info) = 0;
+    virtual void OnDpiChanged(float dpi) = 0;
 };
 
 // 日本語 UI に使うフォントの選択（存在チェック + フォールバック）。テスト/診断用に公開。

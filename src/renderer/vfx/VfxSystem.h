@@ -11,6 +11,7 @@
 
 #include <future>
 #include <map>
+#include <set>
 #include <memory>
 #include <string>
 #include <vector>
@@ -74,9 +75,25 @@ private:
 
     // ---- 初期化 ----
     bool EnsureGpu(StageCtx& ctx, bool wait);   // wait=true: カール場の生成を待つ（seek / 決定論キャプチャ）。false: 未了なら今フレームは見送る
+    void FailGpu(const std::string& reason);    // 失敗を記録・ログ・統計へ出す（1 回だけ）
     bool CreatePipelines(ID3D12Device* dev);
     bool CreateBuffers(ID3D12Device* dev, StageCtx& ctx);
     bool CreateCurlField(ID3D12Device* dev, ID3D12GraphicsCommandList* cmd, StageCtx& ctx, const std::vector<u16>& half);
+
+    // ---- フリップブックのテクスチャ（BD7）----
+    struct FlipTex
+    {
+        bool ok = false;
+        std::string error;
+        u32  gen = 0;                 // 失敗の再試行判定（アセット世代）
+        Microsoft::WRL::ComPtr<ID3D12Resource> res;
+        u32  srv = 0xFFFFFFFFu;
+        u32  w = 0, h = 0, bpp = 4, dxgi = 0;
+    };
+    FlipTex* GetFlipTex(StageCtx& ctx, const std::string& path);                 // Update で呼ぶ（アップロードのコマンドを記録する）
+    void     PrepareFlipbook(StageCtx& ctx, const RenderDesc& r);
+    const FlipTex* FindFlipTex(const std::string& path) const;
+    bool     BindFlipbook(const RenderDesc& r, u32 out[24], const StageCtx& ctx) const;   // false = テクスチャが足りない（スプライトへ縮退）
 
     // ---- アセット / インスタンス ----
     AssetEntry* GetAsset(const std::string& path);
@@ -110,7 +127,7 @@ private:
     bool m_opsFullWarned = false, m_poolWarned = false;
     u32  m_statsDirty = 0;                         // 統計の読み戻しを続けるフレーム数（計算した後の 4 フレーム）
     Microsoft::WRL::ComPtr<ID3D12RootSignature> m_simRS, m_drawRS;
-    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoEmit, m_psoSim, m_psoClear, m_psoStatClear, m_psoDraw;
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoEmit, m_psoSim, m_psoClear, m_psoStatClear, m_psoDraw, m_psoFlip;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_pool, m_stats, m_opsUpload, m_curl, m_dummyDepth;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_readback[4];
     GOp*  m_opsMapped = nullptr;
@@ -125,6 +142,8 @@ private:
 
     // ---- CPU ----
     std::map<std::string, AssetEntry> m_assets;
+    std::map<std::string, FlipTex> m_flipTex;
+    mutable std::set<std::string> m_flipWarned;   // 縮退を警告した（アセット|texture）
     std::map<u64, Instance> m_instances;
     struct Range { u32 base, size; bool used; };
     std::vector<Range> m_ranges;

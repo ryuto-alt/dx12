@@ -10,14 +10,21 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "core/DpiScale.h"
+#include "core/SplashAudio.h"
+#include "core/SplashBrandGeometry.h"
 #include "core/SplashCommon.h"
+#include "core/SplashControl.h"
 #include "core/SplashDirector.h"
+#include "core/SplashGaugeRenderer.h"
 #include "core/SplashProgress.h"
 #include "core/SplashRenderer.h"
+#include "core/SplashSequencer.h"
 #include "core/SplashScreen.h"
 #include "core/Version.h"
 
@@ -38,7 +45,25 @@ struct Options
     std::wstring projectName = L"Junction";
     std::string backdrop = "mid";
     double fps = 30.0;
+    // ---- Graphite Gauge（--splash-dump / 既定のスタイル）
+    bool dump = false;                       // --splash-dump <dir>
+    std::vector<double> times;               // --splash-times 0,148,...（ms）。空なら 1000/fps ごと
+    std::vector<double> skipAt;              // --splash-skip-at ms,...（仮想スキップ）
+    double finishAtMs = 1000.0;              // --splash-finish-at ms（完了要求の時刻。台本）
+    std::string tier = "L";                  // --splash-tier L|M|S
+    bool warp = false;                       // --splash-warp（WARP で測る）
+    bool reduce = false;                     // --splash-reduce（Reduce Motion の姿）
+    bool classic = false;                    // --splash-style classic
 };
+
+std::vector<double> ParseNumList(const std::wstring& w)
+{
+    std::vector<double> v;
+    std::wstringstream ss(w);
+    std::wstring item;
+    while (std::getline(ss, item, L',')) if (!item.empty()) v.push_back(_wtof(item.c_str()));
+    return v;
+}
 
 // 数値・キーワードだけの引数用（ASCII 前提）。
 std::string Narrow(const std::wstring& w)
@@ -58,6 +83,14 @@ bool ParseArgs(int argc, wchar_t** argv, Options& o, bool& requested)
         auto next = [&](std::wstring& out) { if (i + 1 < argc) { out = argv[++i]; return true; } return false; };
         std::wstring v;
         if (a == L"--splash-preview") { if (next(v)) { o.dir = v; requested = true; } }
+        else if (a == L"--splash-dump") { if (next(v)) { o.dir = v; o.dump = true; requested = true; } }
+        else if (a == L"--splash-times") { if (next(v)) o.times = ParseNumList(v); }
+        else if (a == L"--splash-skip-at") { if (next(v)) o.skipAt = ParseNumList(v); }
+        else if (a == L"--splash-finish-at") { if (next(v)) o.finishAtMs = _wtof(v.c_str()); }
+        else if (a == L"--splash-tier") { if (next(v)) o.tier = Narrow(v); }
+        else if (a == L"--splash-warp") o.warp = true;
+        else if (a == L"--splash-reduce") o.reduce = true;
+        else if (a == L"--splash-style") { if (next(v)) o.classic = (v == L"classic"); }
         else if (a == L"--dpi-scale") { if (next(v)) { float s = 1.0f; if (dpi::ParseScale(Narrow(v), s)) o.dpi = s; } }
         else if (a.rfind(L"--dpi-scale=", 0) == 0) { float s = 1.0f; if (dpi::ParseScale(Narrow(a.substr(12)), s)) o.dpi = s; }
         else if (a == L"--splash-mode") { if (next(v)) o.projectMode = (v == L"project"); }
@@ -112,6 +145,272 @@ const char* PhaseName(sp::Phase p)
 
 struct StageEvent { double t; sp::Stage stage; };
 
+// 開発ツリー / 配布のどちらでも <assets>/editor/splash/fonts を探す
+std::wstring FindSplashFont()
+{
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::filesystem::path base = std::filesystem::path(exe).parent_path();
+    std::error_code ec;
+    for (int up = 0; up < 5; ++up)
+    {
+        const std::wstring f = sp::SplashFontPath((base / L"assets").wstring());
+        if (!f.empty()) return f;
+        base = base.parent_path();
+    }
+    return {};
+}
+
+// 台本の文言（決定論。実機の GPU 名などは入れない）
+sp::SplashInfo MakeDumpInfo(const Options& o)
+{
+    sp::SplashInfo info;
+    info.projectMode = o.projectMode;
+    info.projectName = o.projectName;
+    info.sceneName = L"scenes/main.json";
+    info.version = L"v" + sp::Utf8ToWide(kEngineVersion);
+    info.drawingNo = L"UN-" + sp::Utf8ToWide(kEngineVersion);
+    info.verLines = { L"2026-11-27 12:00 ビルド", L"GPU 8 GB · Driver 0.00", L"前回 3.78 s" };
+    info.fontFile = FindSplashFont();
+    const int n = sp::GaugeStepCount(o.projectMode, false);
+    for (int i = 0; i < n; ++i)
+    {
+        sp::SplashStepCell c;
+        wchar_t no[8];
+        std::swprintf(no, 8, L"%02d", i + 1);
+        c.no = no;
+        c.name = sp::GaugeStepName(o.projectMode, false, i);
+        info.steps.push_back(std::move(c));
+    }
+    return info;
+}
+
+// PCM16 ステレオの WAV（float interleaved を丸めて書く）
+bool WriteWavPcm16(const std::filesystem::path& path, const std::vector<float>& st, int sampleRate)
+{
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    const uint32_t dataBytes = static_cast<uint32_t>(st.size() * 2);
+    auto w32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto w16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    f.write("RIFF", 4); w32(36 + dataBytes); f.write("WAVE", 4);
+    f.write("fmt ", 4); w32(16); w16(1); w16(2); w32(static_cast<uint32_t>(sampleRate)); w32(static_cast<uint32_t>(sampleRate) * 4); w16(4); w16(16);
+    f.write("data", 4); w32(dataBytes);
+    for (float v : st)
+    {
+        const int16_t q = static_cast<int16_t>(std::lround(std::max(-1.0f, std::min(1.0f, v)) * 32767.0f));
+        f.write(reinterpret_cast<const char*>(&q), 2);
+    }
+    return static_cast<bool>(f);
+}
+
+// events.json の kind と同じ小文字の名前
+const char* EventKindName(sp::calibrate::EventKind k)
+{
+    using K = sp::calibrate::EventKind;
+    switch (k)
+    {
+    case K::Duck: return "duck";
+    case K::Click: return "click";
+    case K::Latch: return "latch";
+    case K::Tok: return "tok";
+    case K::Sub: return "sub";
+    case K::Bell: return "bell";
+    case K::Ping: return "ping";
+    case K::End: return "end";
+    }
+    return "?";
+}
+
+// --splash-dump / 既定のプレビュー（Graphite Gauge）: 窓なし・音なしで、指定時刻の絵を PNG に書く。
+// 実窓と同じ GaugeSurface + GaugeFastDriver を 60Hz の台本で走らせる（時計は仮想）。
+int RunGaugeDump(const Options& o)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(o.dir, ec);
+    if (o.dpi != 1.0f) dpi::SetOverride(o.dpi);
+    sp::GaugeLayout lay;
+    lay.tier = o.tier == "M" ? sp::GaugeTier::M : (o.tier == "S" ? sp::GaugeTier::S : sp::GaugeTier::L);
+    lay.geo = sp::MakeGaugeGeo(lay.tier);
+    sp::GaugeSurface surf;
+    if (!surf.Init(o.dpi, lay, o.warp))
+    {
+        std::fprintf(stderr, "splash-dump: 描画面の初期化に失敗: %s\n", surf.LastError().c_str());
+        return 1;
+    }
+    std::printf("splash-dump: dpi=%.2f tier=%s size=%dx%d px  %s%s\n", o.dpi, o.tier.c_str(), surf.Width(), surf.Height(),
+                surf.UsedWarp() ? "WARP" : "GPU", o.reduce ? " reduce" : "");
+
+    std::vector<double> times = o.times;
+    if (times.empty())
+        for (double t = 0.0; t <= 2500.0 + 1e-9; t += 1000.0 / o.fps) times.push_back(t);
+    std::sort(times.begin(), times.end());
+    const double maxT = times.back();
+
+    sp::SplashInfo info = MakeDumpInfo(o);
+    const int n = static_cast<int>(info.steps.size());
+    const sp::CalibrateEvents& ev = sp::DefaultCalibrateEvents();
+    sp::GaugeFastDriver drv;
+    // A/V 検証用の音（W1-BD8）: 実デバイスを開かず、実窓と同じ CalibrateSequencer をオフラインで回す。窓の経路（SplashScreen.cpp）と同じ順序でコマンドを出す
+    std::unique_ptr<sp::CalibrateSequencer> aseq;
+    std::vector<float> audio;   // ステレオ interleaved。先頭サンプル = タイムライン 0ms
+    if (const auto bank = CalibrateSound::LoadBankOffline(); bank && bank->Valid())
+    {
+        aseq = std::make_unique<sp::CalibrateSequencer>(bank, o.reduce);
+        aseq->Begin();
+    }
+    else std::fprintf(stderr, "splash-dump: 起動音の素材（exe の RCDATA）を読めないので audio.wav は書きません\n");
+    auto renderAudioTo = [&](double ms)
+    {
+        if (!aseq) return;
+        const std::int64_t target = sp::seq::MsToFrame(ms);
+        while (aseq->OutFrame() < target)
+        {
+            const int n = static_cast<int>(std::min<std::int64_t>(1024, target - aseq->OutFrame()));
+            const size_t at = audio.size();
+            audio.resize(at + static_cast<size_t>(n) * 2);
+            aseq->Render(audio.data() + at, n);
+        }
+    };
+    double skipCutoffMs = -1.0;   // スキップが効いた時点のタイムライン時刻。これより後のイベント（スキップで鳴らなくなる音）は event 列に載せない
+    std::vector<double> skip = o.skipAt;
+    std::sort(skip.begin(), skip.end());
+    size_t nextSkip = 0;
+
+    // 更新の時刻列 = 60Hz の格子 + 書き出す時刻（単調）
+    std::vector<double> ticks;
+    for (double t = 0.0; t <= maxT + 1e-9; t += 1000.0 / 60.0) ticks.push_back(t);
+    for (double t : times) ticks.push_back(t);
+    for (double t : skip) ticks.push_back(t);
+    std::sort(ticks.begin(), ticks.end());
+    ticks.erase(std::unique(ticks.begin(), ticks.end()), ticks.end());
+
+    const int W = surf.Width(), H = surf.Height();
+    std::vector<uint8_t> px(static_cast<size_t>(W) * static_cast<size_t>(H) * 4);
+    std::ofstream csv(o.dir / "frames.csv");
+    // t / phase / percent は classic の frames.csv と同じ列（splash_contact_sheet.py 互換）。
+    // t は【その絵の正規タイムライン上の時刻[秒]】（GaugeFrame.timelineMs / 1000）。tMs は仮想の壁時計[ms]（速い経路では同じ値）。
+    // 後ろの 4 列は A/V 検証用（W1-BD8。tools/check_splash_av.py が読む。契約はその冒頭）:
+    //   event  = 前の絵のタイムライン時刻（含まない）〜この絵の時刻（含む）に入る音のイベント。"kind:index"（events.json と同じ名前）を ';' でつなぐ。無ければ空
+    //            スキップが効いた後は載せない（鳴らなくなるため。スキップの LockTail は載らない）。Reduce Motion は絵が最初から静止で、ロック（latch:0）は表の時刻のまま載る（検査の対象外）
+    //            既定の書き出し（0〜2500ms）には end:0（3750ms）は入らない
+    //   frame  = 出力 fps の格子での番号（round(t * fps)）
+    //   gpu_ms = Draw の GPU 時間（D3D11 のタイムスタンプ。読めなければ -1）、cpu_ms = Draw 呼び出しの CPU 時間
+    csv << "index,tMs,needleDeg,locked,file,t,phase,percent,event,frame,gpu_ms,cpu_ms\n";
+    surf.EnableGpuTiming(true);
+    double prevTimelineMs = -1.0;
+    size_t wi = 0;
+    int written = 0;
+    double drawSum = 0.0, drawMax = 0.0, copySum = 0.0;
+    auto wall = [] { LARGE_INTEGER c, f; QueryPerformanceCounter(&c); QueryPerformanceFrequency(&f); return static_cast<double>(c.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart); };
+    int lastStep = -1;
+    for (double t : ticks)
+    {
+        renderAudioTo(t);   // 音は壁時計 t まで描き置く（以降の予約は t より後ろにしか入らない）
+        const bool finishReq = t >= o.finishAtMs;
+        const double prog = std::min(0.995, sp::Clamp01(t / std::max(1.0, o.finishAtMs)) * 0.995);
+        sp::GaugeFrame f;
+        bool locked = false;
+        if (o.reduce)
+        {
+            const double finMs = finishReq ? o.finishAtMs : std::nan("");
+            f = sp::EvaluateGauge(sp::GaugePath::Reduce, t, 0.f, ev, sp::GaugeExitStartMs(ev.pingMs, finMs));
+            locked = finishReq;
+            while (nextSkip < skip.size() && skip[nextSkip] <= t + 1e-9)   // Reduce Motion でも音はロック以降へ（絵は最初から静的）
+            {
+                double used = t;
+                if (aseq && aseq->Skip(t, &used) && skipCutoffMs < 0.0) skipCutoffMs = t;
+                ++nextSkip;
+            }
+        }
+        else
+        {
+            // 窓の経路（SplashScreen.cpp）と同じ順序: 持ち替えの可否 → Update → スキップ（音が描き終えた時刻に絵も合わせる）→ 予約の取り消しと追加
+            if (drv.HandOverPending(t, finishReq) && aseq && !aseq->HandOver(t)) drv.VetoHandOver();
+            drv.Update(t, static_cast<float>(prog), finishReq);
+            while (nextSkip < skip.size() && skip[nextSkip] <= t + 1e-9)
+            {
+                const double preTl = drv.Frame(t).timelineMs;
+                double used = t;
+                if (aseq) aseq->Skip(t, &used);
+                drv.Skip(used);
+                if (drv.Skipped() && skipCutoffMs < 0.0) skipCutoffMs = preTl;
+                ++nextSkip;
+            }
+            if (aseq)
+            {
+                for (std::uint32_t id : drv.TakeCancelledCueIds()) aseq->CancelCue(id);
+                for (const sp::GaugeCue& c : drv.TakeCues()) aseq->AddCue(c);
+            }
+            f = drv.Frame(t);
+            const double lw = drv.LockWallMs();
+            locked = !std::isnan(lw) && t >= lw;
+        }
+        const int step = std::min(n - 1, static_cast<int>(prog * n));
+        if (step > lastStep)
+        {
+            if (lastStep >= 0) info.steps[static_cast<size_t>(lastStep)].sec = 0.20 + 0.11 * lastStep;
+            lastStep = step;
+        }
+        info.stepCur = std::max(0, lastStep);
+        static const wchar_t* const kTitles[5] = { L"コアを初期化中", L"グラフィックスデバイスを初期化中", L"シェーダーとパイプラインを構築中", L"アセットを読み込み中", L"エディタUIを初期化中" };
+        info.stepTitle = locked ? L"校正完了" : kTitles[std::min(info.stepCur, 4)];
+        info.stepDetail = locked ? L"すべての工程が完了しました" : L"8,536 / 12,480 件";
+        info.progress = locked ? 1.0 : prog;
+        if (wi >= times.size() || std::fabs(t - times[wi]) > 1e-9) continue;
+        ++wi;
+        const double d0 = wall();
+        if (!surf.Draw(f, info)) { std::fprintf(stderr, "splash-dump: 描画に失敗 (t=%.1f): %s\n", t, surf.LastError().c_str()); return 1; }
+        const double d1 = wall();
+        if (!surf.CopyPixels(px.data(), W * 4)) { std::fprintf(stderr, "splash-dump: 読み戻しに失敗\n"); return 1; }
+        const double d2 = wall();
+        drawSum += d1 - d0; drawMax = std::max(drawMax, d1 - d0); copySum += d2 - d1;
+        char name[64];
+        std::snprintf(name, sizeof(name), "kf_%04d_ms.png", static_cast<int>(std::lround(t)));
+        if (!WritePng(o.dir / name, px.data(), W, H)) { std::fprintf(stderr, "splash-dump: PNG を書けません: %s\n", name); return 1; }
+        std::string evs;
+        const double tlMs = static_cast<double>(f.timelineMs);
+        constexpr double kEps = 1.5e-4;   // timelineMs は float（2.5 秒付近で 2.4e-4ms 刻み）
+        for (const auto& e : sp::calibrate::kEvents)
+        {
+            if (!(e.tMs > prevTimelineMs + kEps && e.tMs <= tlMs + kEps)) continue;
+            if (skipCutoffMs >= 0.0 && e.tMs > skipCutoffMs + kEps) continue;
+            if (!evs.empty()) evs += ';';
+            evs += EventKindName(e.kind);
+            evs += ':';
+            evs += std::to_string(e.index);
+        }
+        prevTimelineMs = tlMs;
+        char row[360];
+        std::snprintf(row, sizeof(row), "%d,%.1f,%.2f,%d,%s,%.9f,%s,%.1f,%s,%ld,%.4f,%.4f\n", written, t, f.needleDeg, f.locked ? 1 : 0, name, tlMs / 1000.0,
+                      locked ? "locked" : (finishReq ? "finish" : "gauge"), info.progress * 100.0, evs.c_str(),
+                      std::lround(tlMs * o.fps / 1000.0), surf.LastGpuMs(), d1 - d0);
+        csv << row;
+        ++written;
+    }
+    // av.json / audio.wav（tools/check_splash_av.py の契約）。layout は画素の縁を原点とする連続座標。regions（黄の許可領域）は出さない
+    {
+        const float sc = o.dpi * lay.fit;
+        const sp::GaugeGeo& g = lay.geo;
+        const double needleLen = (g.rTickOut - 6.f) * sc;
+        const double hubR = uno::brand::kHubR * g.K * sc;
+        const double halfW = 0.5 * std::max(sp::gauge_layout::kNeedleW0 * sp::gauge_layout::kNeedleWScaleRoot,
+                                            sp::gauge_layout::kNeedleW1 * sp::gauge_layout::kNeedleWScaleTip) * g.K * sc;
+        const bool haveAudio = aseq && WriteWavPcm16(o.dir / "audio.wav", audio, sp::calibrate::kSampleRate);
+        std::ofstream av(o.dir / "av.json");
+        char buf[640];
+        std::snprintf(buf, sizeof(buf),
+                      "{\"version\":1,\"fps\":%.6g,\"dpiScale\":%.6g,%s\"audioOriginMs\":0.0,\n"
+                      " \"layout\":{\"hub\":[%.6f,%.6f],\"needleLenPx\":%.6f,\"hubRadiusPx\":%.6f,\"needleHalfWidthPx\":%.6f}}\n",
+                      o.fps, static_cast<double>(o.dpi), haveAudio ? "\"audio\":\"audio.wav\"," : "",
+                      static_cast<double>(g.dcx * sc), static_cast<double>(g.dcy * sc), needleLen, hubR, halfW);
+        av << buf;
+    }
+    std::printf("splash-dump: %d 枚 -> %ls  draw avg %.2f ms max %.2f ms  readback avg %.2f ms  staticBakes=%u\n", written, o.dir.c_str(),
+                written ? drawSum / written : 0.0, drawMax, written ? copySum / written : 0.0, surf.StaticBakeCount());
+    return 0;
+}
+
 } // namespace
 
 // ---- 実窓のコードを窓なしで通す自己検査
@@ -120,10 +419,12 @@ bool RunSelfTest(int argc, wchar_t** argv, int& exitCode)
     std::filesystem::path dir;
     float dpiScale = 1.0f;
     bool requested = false;
+    std::vector<double> skipAtMs;      // --splash-skip-at ms,...: Show からの経過時刻で SplashScreen::Skip() を呼ぶ（仮想入力）
     for (int i = 1; i < argc; ++i)
     {
         const std::wstring a = argv[i];
-        if (a == L"--splash-selftest" && i + 1 < argc) { dir = argv[++i]; requested = true; }
+        if (a == L"--splash-skip-at" && i + 1 < argc) skipAtMs = ParseNumList(argv[++i]);
+        else if (a == L"--splash-selftest" && i + 1 < argc) { dir = argv[++i]; requested = true; }
         else if (a == L"--dpi-scale" && i + 1 < argc) { float s = 1.0f; if (dpi::ParseScale(Narrow(argv[++i]), s)) dpiScale = s; }
     }
     if (!requested) return false;
@@ -168,8 +469,14 @@ bool RunSelfTest(int argc, wchar_t** argv, int& exitCode)
                               sp::Stage::Shaders, sp::Stage::Assets, sp::Stage::Scripts, sp::Stage::ShadowMap, sp::Stage::EditorUi,
                               sp::Stage::Renderer, sp::Stage::EnvMap, sp::Stage::Finalize };
     const double tStart = wallSec();
+    size_t skipIdx = 0;
+    std::sort(skipAtMs.begin(), skipAtMs.end());
+    auto pumpSkips = [&] {
+        while (skipIdx < skipAtMs.size() && (wallSec() - w0) * 1000.0 >= skipAtMs[skipIdx]) { sp::RequestSplashSkip(); ++skipIdx; }
+    };
     for (sp::Stage st : seq)
     {
+        pumpSkips();
         SplashScreen::SetStage(st);
         if (st == sp::Stage::Renderer) Sleep(700);   // 重い処理（メインスレッドが固まる）
         else Sleep(180);
@@ -185,6 +492,7 @@ bool RunSelfTest(int argc, wchar_t** argv, int& exitCode)
     double doneAt = -1.0;
     while (wallSec() - finishReq < 6.0)
     {
+        pumpSkips();
         SplashScreen::PumpMainThread();
         if (!SplashScreen::IsShowing()) { doneAt = wallSec() - finishReq; break; }
         Sleep(8);
@@ -202,7 +510,19 @@ bool RunSelfTest(int argc, wchar_t** argv, int& exitCode)
     log << "splash gone at +" << doneAt << " s after Finish (expected ~" << expectCb + tp.transitionDur << " s)\n";
     // UNO_SPLASH_FORCE_GDI=1 のときは縮退経路（GDI+）を通す検査なので、D2D でなくてよい
     const bool forcedGdi = GetEnvironmentVariableW(L"UNO_SPLASH_FORCE_GDI", nullptr, 0) > 0;
-    bool ok = (st.d2d || forcedGdi) && st.frames > 100 && cbAt >= expectCb - 0.05 && cbAt < expectCb + 0.5 && doneAt > cbAt && doneAt < expectCb + tp.transitionDur + 0.6;
+    const bool gaugeStyle = sp::UseGaugeStyle() && !forcedGdi;
+    bool ok = false;
+    if (gaugeStyle)
+    {
+        // Graphite Gauge: 本体はロックの瞬間に出る（完了要求から 0.3〜1.7 秒の最終接近、または正規のタイムライン）。
+        // 退場（ピン → 窓のフェード 180ms）まで見届けて消える。時刻は SplashGaugeMotion.h の規則（絶対値は固定しない）。
+        log << "style: Graphite Gauge" << (sp::ReduceMotionRequested() ? " (Reduce Motion)" : "") << "\n";
+        ok = st.d2d && st.frames > 100 && cbAt >= 0.0 && cbAt < 4.0 && doneAt > cbAt && doneAt < cbAt + 2.5;
+    }
+    else
+    {
+        ok = (st.d2d || forcedGdi) && st.frames > 100 && cbAt >= expectCb - 0.05 && cbAt < expectCb + 0.5 && doneAt > cbAt && doneAt < expectCb + tp.transitionDur + 0.6;
+    }
     // 700ms 固まっている間も描画が続いていたか（フレーム数が 60fps 相当なら止まっていない）
     ok = ok && static_cast<double>(before.frames) > 60.0 * 0.8 * (initElapsed - 0.3);
     log << (ok ? "RESULT: OK\n" : "RESULT: NG\n");
@@ -220,6 +540,18 @@ bool RunSplashPreviewIfRequested(int argc, wchar_t** argv, int& exitCode)
     exitCode = 1;
     std::error_code ec;
     std::filesystem::create_directories(o.dir, ec);
+
+    // 既定のスタイルは Graphite Gauge。--splash-style classic（または環境変数 UNO_SPLASH_STYLE=classic）で従来のカード
+    {
+        wchar_t envv[16] = {};
+        GetEnvironmentVariableW(L"UNO_SPLASH_STYLE", envv, 16);
+        const bool gaugeStyle = !o.classic && sp::ParseGaugeStyle(L"", envv);
+        if (o.dump || gaugeStyle)
+        {
+            exitCode = RunGaugeDump(o);
+            return true;
+        }
+    }
 
     // ---- 描画器（実窓と同じ）。DPI は --dpi-scale（無ければ 1.0）
     if (o.dpi != 1.0f) dpi::SetOverride(o.dpi);

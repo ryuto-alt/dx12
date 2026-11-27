@@ -80,6 +80,11 @@ public:
 
     void PublishStats(Stats&& s) { m_stats = std::move(s); }
     const Stats& GetStats() const { return m_stats; }
+    // GPU の初期化に失敗したことを統計へ即座に出す（VfxSystem が失敗した瞬間に 1 回呼ぶ。統計は初期値へ戻して gpuFailed / lastError だけ立てる。PublishStats は上書きなので、以後 gpuFailed を保つのは VfxSystem が作る Stats に m_gpuFailed / m_gpuError を写す側）。
+    //   黙って無効にせず、vfx_stats の gpuFailed / lastError で外から見えるようにする（FU-E-19）。
+    void ReportGpuFailure(const std::string& reason);
+    // 失敗の 1 行説明（ログ・MCP のエラー文・UI 用）。失敗していなければ空。
+    std::string DescribeGpuFailure() const;
 
 private:
     Host m_host;

@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <ShlObj.h>
+#include <dwmapi.h>
 #include <algorithm>
 // gdiplus ヘッダは min/max マクロ前提で書かれており、NOMINMAX 環境ではそのままだと
 // コンパイルできない。std::min/max を Gdiplus 名前空間へ引き込むのが定石の回避策。
@@ -25,12 +26,16 @@ namespace Gdiplus { using std::min; using std::max; }
 #include "core/Logger.h"
 #include "core/SplashAudio.h"
 #include "core/SplashCommon.h"
+#include "core/SplashControl.h"
 #include "core/SplashDiag.h"
 #include "core/SplashDirector.h"
+#include "core/SplashGaugeRenderer.h"
 #include "core/SplashProgress.h"
 #include "core/SplashRenderer.h"
+#include "core/SplashSequencer.h"
 
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 namespace dx12e
 {
@@ -46,6 +51,7 @@ struct G
     std::wstring title, version, logoPath, soundDir, projectName, sceneName, status;
     bool projectMode = false;
     bool playSound = false;                   // この表示で起動音を鳴らす
+    splash::SoundGate soundGate;              // 鳴らさない条件（Calibrate。デバイスを開く前に見る）
     bool isNew = false;
     std::vector<std::wstring> recents;
     sp::ProgressTracker tracker;
@@ -62,6 +68,8 @@ struct G
     std::atomic<bool> soundOn{true};
     std::atomic<bool> soundStopped{false};    // StopSound 済み（この表示ではもう鳴らさない）
     std::atomic<bool> expectProject{false};
+    std::atomic<bool> skipReq{false};         // スキップ要求（クリック / Skip()）。Graphite Gauge だけが見る
+    std::atomic<int> curStage{-1};            // 直近に入った splash::Stage（Graphite Gauge の工程表示用）
     std::atomic<bool> wantMain{false};
     std::atomic<double> finishAt{-1.0};
     std::atomic<double> mainShownAt{-1.0};
@@ -230,6 +238,7 @@ LRESULT CALLBACK SplashProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg)
     {
     case WM_MOUSEACTIVATE: return MA_NOACTIVATE;       // クリックしても前面を奪わない
+    case WM_LBUTTONDOWN: case WM_KEYDOWN: S().skipReq.store(true); return 0;   // スキップ（Graphite Gauge。ロック以降は窓が入力を通すので届かない）
     case WM_CLOSE: DestroyWindow(hwnd); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     case WM_ERASEBKGND: return 1;
@@ -274,7 +283,7 @@ DWORD WINAPI SplashThread(LPVOID)
 {
     G& g = S();
     const bool projectMode = g.projectMode;
-    const float scale = sp::EffectiveDpiScale();
+    float scale = sp::EffectiveDpiScale();   // Gauge は窓を出すモニターの倍率に差し替える
 
     WNDCLASSEXW wc{};
     wc.cbSize        = sizeof(wc);
@@ -289,12 +298,38 @@ DWORD WINAPI SplashThread(LPVOID)
     int winW = static_cast<int>(std::lround(sp::kWindowW * scale));
     int winH = static_cast<int>(std::lround(sp::kWindowH * scale));
     const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    int posX = (sw - winW) / 2, posY = (sh - winH) / 2;
+
+    // Graphite Gauge（既定）。UNO_SPLASH_FORCE_GDI のときは縮退経路（classic の GDI+）を通すので使わない。
+    bool gauge = sp::UseGaugeStyle() && GetEnvironmentVariableW(L"UNO_SPLASH_FORCE_GDI", nullptr, 0) == 0;
+    sp::GaugeLayout gLayout;
+    RECT work{ 0, 0, sw, sh };
+    if (gauge)
+    {
+        // マウスカーソルのあるモニターの作業領域の中央（カーソルは読むだけ。動かさない）
+        POINT cur{};
+        GetCursorPos(&cur);
+        MONITORINFO mi{ sizeof(mi) };
+        const HMONITOR mon = MonitorFromPoint(cur, MONITOR_DEFAULTTOPRIMARY);
+        if (GetMonitorInfoW(mon, &mi)) work = mi.rcWork;
+        scale = sp::MonitorDpiScale(mon);   // 段階 L/M/S と窓の物理サイズは、そのモニターの倍率で決める（混在 DPI）
+        gLayout = sp::PickGaugeLayout((work.right - work.left) / scale, (work.bottom - work.top) / scale);
+        sp::GaugeWindowPixels(gLayout, scale, winW, winH);
+        posX = work.left + ((work.right - work.left) - winW) / 2;
+        posY = work.top + ((work.bottom - work.top) - winH) / 2;
+    }
 
     // WS_POPUP=枠なし / WS_EX_TOOLWINDOW=タスクバー非表示 / WS_EX_LAYERED=per-pixel alpha。
     // TOPMOST にはしない（アップデータの MessageBox 等を隠さないため。最前面へ上げるのはメイン窓を出す直前だけ）。
     HWND hwnd = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOOLWINDOW, L"UnoSplashWnd", L"", WS_POPUP,
-                                (sw - winW) / 2, (sh - winH) / 2, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
+                                posX, posY, winW, winH, nullptr, nullptr, wc.hInstance, nullptr);
     g.hwnd.store(hwnd);
+    if (hwnd && gauge)
+    {
+        // 四角い窓（Win11 が角を丸めない）。地は不透明
+        const DWORD pref = 1;   // DWMWCP_DONOTROUND
+        DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &pref, sizeof(pref));
+    }
     if (g.readyEv) SetEvent(g.readyEv);                // ウィンドウ生成完了（メインスレッドを待たせない）
     if (!hwnd)
     {
@@ -304,15 +339,31 @@ DWORD WINAPI SplashThread(LPVOID)
     }
 
     // ---- 描画器。失敗 = GDI+ の簡易描画へ縮退（窓はカードの大きさに直す）
+    std::unique_ptr<sp::GaugeSurface> gsurf;
+    if (gauge)
+    {
+        gsurf = std::make_unique<sp::GaugeSurface>();
+        if (!gsurf->Init(scale, gLayout))
+        {
+            SplashDiag("Graphite Gauge の描画面の初期化に失敗（従来のカードへ切り替え）: " + gsurf->LastError());
+            gsurf.reset();
+            gauge = false;
+            scale = sp::EffectiveDpiScale();   // 従来のカードはプライマリ中央・システム倍率
+            // 窓を従来のカードの大きさ・位置へ戻す
+            winW = static_cast<int>(std::lround(sp::kWindowW * scale));
+            winH = static_cast<int>(std::lround(sp::kWindowH * scale));
+            SetWindowPos(hwnd, nullptr, (sw - winW) / 2, (sh - winH) / 2, winW, winH, SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
     auto renderer = std::make_unique<sp::SplashRenderer>();
     // UNO_SPLASH_FORCE_GDI=1: D2D の初期化に失敗したことにして、縮退経路（GDI+）を通す（検証用。--splash-selftest と併用）。
     const bool forceGdi = GetEnvironmentVariableW(L"UNO_SPLASH_FORCE_GDI", nullptr, 0) > 0;
-    bool d2d = !forceGdi && renderer->Init(scale, g.logoPath);
+    bool d2d = gauge ? true : (!forceGdi && renderer->Init(scale, g.logoPath));
     if (forceGdi) SplashDiag("UNO_SPLASH_FORCE_GDI: 縮退経路（GDI+）を強制します");
     else if (!d2d) SplashDiag("D2D 描画器の初期化に失敗（GDI+ の簡易描画へ縮退）: " + renderer->LastError());
-    else if (renderer->UsedWarp()) SplashDiag("D3D11 はソフトウェア（WARP）で動作");
+    else if (gauge ? gsurf->UsedWarp() : renderer->UsedWarp()) SplashDiag("D3D11 はソフトウェア（WARP）で動作");
     g.usedD2d.store(d2d);
-    g.usedWarp.store(d2d && renderer->UsedWarp());
+    g.usedWarp.store(d2d && (gauge ? gsurf->UsedWarp() : renderer->UsedWarp()));
     const double lifeT0 = Now();
 
     ULONG_PTR gdipToken = 0;
@@ -331,6 +382,7 @@ DWORD WINAPI SplashThread(LPVOID)
             if (legacyLogo->GetLastStatus() != Gdiplus::Ok) legacyLogo.reset();
         }
     }
+    if (gauge) { winW = gsurf->Width(); winH = gsurf->Height(); }
     DibSurface dib;
     if (!dib.Create(winW, winH))
     {
@@ -362,6 +414,7 @@ DWORD WINAPI SplashThread(LPVOID)
     bool soundStarted = false, hitFired = false;
     double hitAt = 0.0;    // ready 開始からの秒
     auto startSound = [&]() {
+        if (gauge) return;   // Graphite Gauge の起動音（Calibrate）は BD5 で音を主時計にして鳴らす。ここの旧音は鳴らさない
         if (!g.playSound || g.soundStopped.load()) return;
         const double raw = ReadStartupMsRaw();
         const double predicted = sp::ClampStartupMs(raw > 0.0 ? raw : sp::kStartupDefaultMs) / 1000.0;
@@ -391,7 +444,211 @@ DWORD WINAPI SplashThread(LPVOID)
         ReleaseDC(nullptr, scr);
     };
 
+    auto recordStats = [&](double r0) {
+        const double ms = (Now() - r0) * 1000.0;
+        if (g.frames.fetch_add(1) + 1 == 30) { g.cpuAt30 = ThreadCpuSec(); g.tAt30 = Now(); }   // 初期化（D3D/D2D の立ち上げ）を除いた定常の CPU を測るための基準
+        double cur = g.renderMsSum.load();
+        while (!g.renderMsSum.compare_exchange_weak(cur, cur + ms)) {}
+        if (ms > g.renderMsMax.load()) g.renderMsMax.store(ms);
+    };
+
+    // ---- Graphite Gauge の 1 フレーム
+    sp::SplashInfo ginfo;
+    sp::GaugeFastDriver gdrv;
+    const bool gReduce = gauge && sp::ReduceMotionRequested();
+    double gStart = -1.0;
+    sp::TimelineClock gClock;               // 絵の時計。音が動いていれば音の時計（音が主）、無い・止まったときは QPC
+    bool gAudioExpected = false;            // 起動音を始める（デバイスを開きに行く）予定
+    bool gAudioStarted = false;
+    double gAudioStartWall = -1.0;          // Start を呼んだ時刻（デバイスを開くのに掛かった時間の診断用）
+    bool gAudioOpenLogged = false;
+    auto startGaugeSound = [&]() {
+        if (!gauge || gAudioStarted) return;
+        if (!gAudioExpected) { gAudioStarted = true; return; }
+        if (g.soundStopped.load()) { gAudioExpected = false; return; }      // Start が abortReq を戻す前に StopSound が来ていたら鳴らさない
+        gAudioStarted = true;
+        gAudioExpected = CalibrateSound::Start(g.soundGate, gReduce);
+        if (g.soundStopped.load()) CalibrateSound::Abort();                // Start の最中に来た StopSound は Start に消されないよう再度伝える
+        gAudioStartWall = CalibrateSound::QpcMs();
+    };
+    bool gThrough = false;
+    bool gMainLocked = false;   // 完了要求を観測し、かつロックの絵に達した（本体を出す・窓を入力透過にする条件）
+    int gLastStep = -1;
+    double gStepEnter = 0.0;
+    if (gauge)
+    {
+        ginfo.projectMode = projectMode;
+        ginfo.isNew = g.isNew;
+        ginfo.projectName = g.projectName;
+        ginfo.version = g.version;
+        std::wstring dn = g.version;
+        if (!dn.empty() && (dn[0] == L'v' || dn[0] == L'V')) dn.erase(0, 1);
+        ginfo.drawingNo = L"UN-" + dn;
+        ginfo.verLines.push_back(sp::BuildInfoText());
+        ginfo.verLines.push_back(gsurf->AdapterName() + (gsurf->UsedWarp() ? L" · WARP" : L""));
+        const double prevMs = ReadStartupMsRaw();
+        if (prevMs > 0.0)
+        {
+            wchar_t b[40];
+            std::swprintf(b, 40, L"前回 %.2f s", prevMs / 1000.0);
+            ginfo.verLines.push_back(b);
+        }
+        std::filesystem::path assets;
+        if (!g.logoPath.empty()) assets = std::filesystem::path(g.logoPath).parent_path().parent_path().parent_path();
+        ginfo.fontFile = sp::SplashFontPath(assets.wstring());
+        const int n = sp::GaugeStepCount(projectMode, g.isNew);
+        for (int i = 0; i < n; ++i)
+        {
+            sp::SplashStepCell c;
+            wchar_t no[8];
+            std::swprintf(no, 8, L"%02d", i + 1);
+            c.no = no;
+            c.name = sp::GaugeStepName(projectMode, g.isNew, i);
+            ginfo.steps.push_back(std::move(c));
+        }
+    }
+
+    auto tickGauge = [&]() -> bool {
+        const double wall = Now();
+        const double wallMs = CalibrateSound::QpcMs();
+        if (gStart < 0.0)
+        {
+            gStart = wall;
+            gAudioExpected = g.playSound && !g.soundStopped.load();
+            gClock.Begin(wallMs, gAudioExpected);
+        }
+        // 絵の時刻 = 聞こえている音の時刻（音が主時計）。音のデバイスを開けなかった・止まったときは QPC で完走する
+        double audioMs = -1.0;
+        if (gAudioExpected && gAudioStarted)
+        {
+            double a = 0.0;
+            if (CalibrateSound::TimelineMs(wallMs, &a))
+            {
+                audioMs = a;
+                if (!gAudioOpenLogged && gAudioStartWall >= 0.0)
+                {
+                    gAudioOpenLogged = true;
+                    SplashDiag("起動音(Calibrate): 音の時計が動くまで " + std::to_string(static_cast<int>(wallMs - gAudioStartWall)) + " ms（絵はそのあいだ t=0 で待つ）");
+                }
+            }
+            if (CalibrateSound::GetState() == CalibrateSound::State::Failed) gClock.ForceWall(wallMs);
+        }
+        if (gAudioStarted && !gAudioExpected) gClock.ForceWall(wallMs);   // Start が断られた・止められた: 猶予を待たず QPC で進める
+        const double tMs = gClock.Now(wallMs, audioMs);
+        // 絵が QPC へ落ちた（デバイスを開くのが遅い・止まった）なら、あとから始まる音は絵とずれるので止める。以降、音へは何も渡さない
+        if (gAudioExpected && gAudioStarted && !gClock.UsingAudio())
+        {
+            CalibrateSound::Abort();
+            gAudioExpected = false;
+        }
+        const bool audioLive = sp::AudioDrivesPicture(gAudioExpected, gAudioStarted, gClock);
+        std::wstring status;
+        double target = 0.0;
+        int idx = 0, total = 0;
+        {
+            std::lock_guard<std::mutex> lk(g.mu);
+            status = g.status;
+            target = g.tracker.Value(wall);
+            idx = g.tracker.StepIndex();
+            total = g.tracker.StepTotal();
+            if (g.manualStep) { idx = g.manualIdx; total = g.manualTotal; }
+            ginfo.sceneName = g.sceneName;
+            if (!g.projectName.empty()) ginfo.projectName = g.projectName;
+        }
+        const double finishAt = g.finishAt.load();
+        const bool finishReq = finishAt >= 0.0;
+        const sp::CalibrateEvents& ev = sp::DefaultCalibrateEvents();
+        sp::GaugeFrame f;
+        bool lockedForMain = false;
+        if (gReduce)
+        {
+            // 完了要求のタイムライン時刻 = いまの時刻 - 要求からの経過（Now() は秒。要求は Finish() が Now() で記録）
+            const double finMs = finishReq ? std::max(0.0, tMs - (Now() - finishAt) * 1000.0) : std::nan("");
+            f = sp::EvaluateGauge(sp::GaugePath::Reduce, tMs, 0.f, ev, sp::GaugeExitStartMs(ev.pingMs, finMs));
+            lockedForMain = finishReq;
+            if (g.skipReq.exchange(false)) { double used = tMs; if (audioLive) CalibrateSound::Skip(tMs, &used); }   // Reduce Motion でも音はロック以降へ（絵は最初から静的）。master のロックを過ぎていれば音は何もしない
+        }
+        else
+        {
+            // 速い経路 → 遅い経路: full を落としてベッド + クリックへ。音がすでに C23 の頭の近くまで描き置きされていて手遅れなら持ち替えない
+            // （音は master のまま最後まで。絵も速い経路のままにして、C23 とロックの音が二重に鳴らないようにする）
+            if (gdrv.HandOverPending(tMs, finishReq))
+            {
+                if (audioLive && !CalibrateSound::HandOver(tMs)) gdrv.VetoHandOver();
+            }
+            gdrv.Update(tMs, static_cast<float>(target), finishReq);
+            if (g.skipReq.exchange(false))
+            {
+                // 音は描き置き済みのぶんを書き換えられない。音が描き終えた時刻以降にスキップし（読み取りと同じ 1 回の呼び出しで）、絵も同じ時刻でロックへ飛ばす（音と絵が揃う）
+                double used = tMs;
+                if (audioLive) CalibrateSound::Skip(tMs, &used);
+                gdrv.Skip(used);
+            }
+            {
+                const std::vector<std::uint32_t> cancelled = gdrv.TakeCancelledCueIds();
+                const std::vector<sp::GaugeCue> cues = gdrv.TakeCues();
+                if (audioLive)
+                {
+                    CalibrateSound::CancelCues(cancelled);
+                    if (!cues.empty()) CalibrateSound::AddCues(cues);
+                }
+            }
+            f = gdrv.Frame(tMs);
+            const double lockWall = gdrv.LockWallMs();
+            // 完了要求の前にスキップしても、絵がロックするだけで「完了」の扱いにはしない（読み込みはまだ続いている）
+            lockedForMain = gdrv.FinishObserved() && !std::isnan(lockWall) && tMs >= lockWall;
+        }
+        gMainLocked = lockedForMain;
+        if (lockedForMain && !g.wantMain.load()) g.wantMain.store(true);
+
+        // 工程の表示（5 本。終わった工程の秒数は実測）
+        {
+            const int stage = g.curStage.load();
+            int step = stage >= 0 ? sp::GaugeDisplayStep(static_cast<sp::Stage>(stage), projectMode, g.isNew) : -1;
+            const int n = static_cast<int>(ginfo.steps.size());
+            if (step >= n) step = n - 1;
+            if (step < 0 && gLastStep < 0) step = 0;
+            if (step > gLastStep)
+            {
+                if (gLastStep >= 0) ginfo.steps[static_cast<size_t>(gLastStep)].sec = wall - gStepEnter;
+                gStepEnter = wall;
+                gLastStep = step;
+            }
+            ginfo.stepCur = std::max(gLastStep, 0);
+        }
+        while (!status.empty() && (status.back() == L'.' || status.back() == L'\u2026')) status.pop_back();
+        ginfo.stepTitle = lockedForMain ? L"校正完了" : status;
+        if (lockedForMain) ginfo.stepDetail = L"すべての工程が完了しました";
+        else if (total > 0) { wchar_t b[32]; std::swprintf(b, 32, L"手順 %d / %d", idx, total); ginfo.stepDetail = b; }
+        else ginfo.stepDetail.clear();
+        ginfo.progress = lockedForMain ? 1.0 : target;
+
+        const double r0 = Now();
+        bool ok = gsurf->Draw(f, ginfo) && gsurf->CopyPixels(static_cast<uint8_t*>(dib.bits), winW * 4);
+        if (!ok) { if (++failCount >= 3) return false; }
+        else failCount = 0;
+        present(1.0 - static_cast<double>(f.fadeOutT));
+        recordStats(r0);
+        if (!shown)
+        {
+            if (!g.testNoShow.load()) ShowWindow(hwnd, SW_SHOWNORMAL);
+            shown = true;
+            startGaugeSound();   // 1 枚目を載せてから鳴らす（音の時計が動き出すまで絵は t=0 で待つ）
+        }
+        // ロックの瞬間に本体を出す。以降、マウスとキーは本体へ届く（窓は入力を通し、前面は奪わない）
+        if (gMainLocked && !gThrough && !g.testNoShow.load())
+        {
+            gThrough = true;
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, GetWindowLongPtrW(hwnd, GWL_EXSTYLE) | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE);
+            SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        // 本体を出し終えて（またはコールバックが無くて）、退場のフェードが済んだら閉じる
+        const bool mainDone = g.mainShownAt.load() >= 0.0 || !g.hasCb.load();
+        return !(f.fadeOutT >= 1.0f && mainDone);
+    };
+
     auto tick = [&]() -> bool {
+        if (gauge) return tickGauge();
         const double t = Now();
         std::wstring status;
         double target = 0.0;
@@ -421,13 +678,7 @@ DWORD WINAPI SplashThread(LPVOID)
         if (!ok) { if (++failCount >= 3) return false; }
         else failCount = 0;
         present(f.windowAlpha);
-        {
-            const double ms = (Now() - r0) * 1000.0;
-            if (g.frames.fetch_add(1) + 1 == 30) { g.cpuAt30 = ThreadCpuSec(); g.tAt30 = Now(); }   // 初期化（D3D/D2D の立ち上げ）を除いた定常の CPU を測るための基準
-            double cur = g.renderMsSum.load();
-            while (!g.renderMsSum.compare_exchange_weak(cur, cur + ms)) {}
-            if (ms > g.renderMsMax.load()) g.renderMsMax.store(ms);
-        }
+        recordStats(r0);
         if (!shown)
         {
             if (!g.testNoShow.load()) ShowWindow(hwnd, SW_SHOWNORMAL);   // 1 枚目を載せてから出す（空の窓が一瞬見えない）
@@ -474,6 +725,7 @@ DWORD WINAPI SplashThread(LPVOID)
     g.lifetimeSec = Now() - lifeT0;
     g.threadCpuSec = ThreadCpuSec();
     renderer.reset();
+    gsurf.reset();
     if (gdipToken) { legacyLogo.reset(); Gdiplus::GdiplusShutdown(gdipToken); }
     g.done.store(true);
     return 0;
@@ -540,15 +792,22 @@ void ShowCommon(bool projectMode, const std::string& titleUtf8, const std::strin
             assets = std::filesystem::path(g.logoPath).parent_path().parent_path().parent_path();
         g.soundDir = assets.empty() ? std::wstring() : (assets / L"editor" / L"sounds").wstring() + L"\\";
         // 起動音: 起動のみ / 引数・環境変数・設定でオフ可 / デバイスは Start が黙って判定
-        bool on = !projectMode && g.soundOn.load() && !g.testNoShow.load();
-        if (on)
+        // 鳴らさない条件（設定オフ / --no-splash-sound / UNO_NO_SPLASH_SOUND / ヘッドレス・selftest / リモートデスクトップ）は SoundGate が持ち、
+        // どれか 1 つでも当てはまれば音声デバイスを開かない（W1-BD5）
+        splash::SoundGate gate;
+        gate.argOn = g.soundOn.load();
+        gate.headless = g.testNoShow.load() || g.suppressed.load();
+        gate.remoteSession = GetSystemMetrics(SM_REMOTESESSION) != 0;
         {
             wchar_t env[8] = {};
-            if (GetEnvironmentVariableW(L"UNO_NO_SPLASH_SOUND", env, 8) > 0 && env[0] != L'0') on = false;
+            gate.envOff = GetEnvironmentVariableW(L"UNO_NO_SPLASH_SOUND", env, 8) > 0 && env[0] != L'0';
         }
-        if (on && !ReadStartupSoundSetting()) on = false;
-        g.playSound = on;
+        gate.settingOn = ReadStartupSoundSetting();
+        g.soundGate = gate;
+        g.playSound = !projectMode && gate.Allowed();
         g.soundStopped.store(false);
+        g.skipReq.store(false);
+        g.curStage.store(-1);
     }
     StartThread(g);
 }
@@ -577,9 +836,12 @@ void SplashScreen::StopSound()
 {
     S().soundStopped.store(true);
     SplashSound::Abort();
+    CalibrateSound::Abort();
 }
 
 void SplashScreen::SetTestNoShow(bool on) { S().testNoShow.store(on); }
+
+namespace splash { void RequestSplashSkip() { S().skipReq.store(true); } }
 
 SplashScreen::TestStats SplashScreen::GetTestStats()
 {
@@ -652,6 +914,7 @@ void SplashScreen::SetStage(sp::Stage stage, const std::string& labelUtf8)
     const int before = g.tracker.CurrentStageIndex();
     if (!g.tracker.Begin(stage, t)) return;   // 計画に無い段階/逆戻りは無視（文言も触らない）
     g.status = sp::Utf8ToWide(labelUtf8.empty() ? std::string(sp::StageLabelUtf8(stage)) : labelUtf8);
+    g.curStage.store(static_cast<int>(stage));
     g.manualStep = false;
     if (g.tracker.CurrentStageIndex() != before)
     {
@@ -742,6 +1005,7 @@ void SplashScreen::Close()
 {
     G& g = S();
     SplashSound::Abort();
+    CalibrateSound::Abort();
     {
         std::lock_guard<std::mutex> lk(g.mu);
         g.finishCb = nullptr;

@@ -63,8 +63,10 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
     {
         // 速度方向へ伸ばす（火花）
         float3 vd = normalize(p.vel);
-        float3 axisX = cross(vd, camRight.xyz);
-        if (dot(axisX, axisX) < 1e-5) axisX = camUp.xyz;
+        // 幅の軸 = vd × 視線（camRight との外積だと真上へ昇る火花などが真横から見る向きになり消える）
+        float3 towardCam = -cross(camRight.xyz, camUp.xyz);
+        float3 axisX = cross(vd, towardCam);
+        if (dot(axisX, axisX) < 1e-5) axisX = camRight.xyz;   // 速度がほぼ視線方向
         axisX = normalize(axisX);
         float stretch = 1.0 + params.w * min(length(p.vel), 30.0) * 0.06;
         right = axisX * 0.55; up = vd * stretch;

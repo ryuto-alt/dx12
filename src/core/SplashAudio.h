@@ -11,10 +11,15 @@
 // ★検証で実デバイスを鳴らさないこと: 単体テストとプレビューは Mixer をオフラインで回して WAV に書き出す
 //   （tests/splash_sync_dump.cpp）。ここは実機のスプラッシュからしか呼ばれない。
 
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace dx12e
 {
+
+namespace splash { struct GaugeCue; struct SoundGate; struct CalibrateBank; }
 
 class SplashSound
 {
@@ -41,6 +46,36 @@ public:
 
     // 使った音源の名前（診断用）。
     static const char* SourceName();
+};
+
+// Graphite Gauge の起動音 Calibrate（W1-BD5）。音が主時計: 絵の時刻はここの再生位置から取る（TimelineMs）。
+// ミキシングは core/SplashSequencer.h（純ロジック）。出力は WASAPI 共有モード（イベント駆動・IAudioClock）、開けなければ waveOut へ縮退。
+// 別のストリームは開かない（ワンショットのボイスは同じバッファに混ぜる）。素材はエディタの exe の RCDATA（UNO_CALIBRATE_*）。
+// 仕様との差: EXEC の「Mixer に one-shot のボイスを足す」は、SplashMixer を広げず CalibrateSequencer が 1 本のバッファへ混ぜる形にした（パンには Haas 遅延つき）。
+// 縮退: 音の時計が QPC に落ちたら音は止める（絵とずれるため）。音のスレッドは 60 秒で止まるので、それ以降に遅い経路で準備完了になると LockTail は鳴らない。
+// 鳴らさない条件（SoundGate）なら何もせず、デバイスも開かない。全 API は未開始・多重呼び出しに安全で、呼び出しスレッドは問わない。
+class CalibrateSound
+{
+public:
+    enum class State : std::uint8_t { NotStarted, Opening, Running, Failed, Finished };
+
+    // 起動音を始める（デバイスは専用スレッドで開く。ここは待たない）。鳴らさない条件・素材なしなら false（デバイスは開かない）
+    static bool Start(const splash::SoundGate& gate, bool reduceMotion);
+    static State GetState();
+    static bool Expected();                       // Start が成功した（デバイスを開きに行った）
+    // 聞こえているタイムライン時刻（ms）。音の時計がまだ動いていなければ false。qpcMs は QpcMs() と同じ時計
+    static bool TimelineMs(double qpcMs, double* outMs);
+    static double QpcMs();                        // 単調な QPC（ms）。TimelineMs / TimelineClock に渡す
+    static double RenderedMs();                   // 音が描き終えたタイムライン時刻（スキップはこれ以降にしか効かない。絵も同じ時刻で飛ばす）
+    static bool HandOver(double nowMs);           // 速い経路 → 遅い経路の持ち替え。手遅れ（描き置きが C23 に掛かる）なら false（何もしない。絵も速い経路のままにする）。音が無ければ true
+    static void AddCues(const std::vector<splash::GaugeCue>& cues);
+    static void CancelCues(const std::vector<std::uint32_t>& ids);
+    // スキップ: 30ms で落として lock_tail を頭から。描き置き済みのぶんは書き換えられないので実際の時刻は max(tMs, 描き終えた時刻)（usedMs に返す。絵も同じ時刻で飛ばす）。効いたら true
+    static bool Skip(double tMs, double* usedMs);
+    static void Abort();                          // 中止（短くフェードアウトして止める）
+    static const char* BackendName();             // "wasapi" / "waveout" / "none"（診断用）
+    // 検証用（--splash-dump のオフライン音声）: exe の RCDATA から素材を読む。デバイスは開かない。無ければ nullptr
+    static std::shared_ptr<const splash::CalibrateBank> LoadBankOffline();
 };
 
 } // namespace dx12e
