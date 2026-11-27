@@ -3,6 +3,7 @@
 #include "gui/VirtualInputImGui.h"   // dx12_imgui_find 用アンカー   // 仮想入力モード中は ShellExecute / ダイアログを実行しない
 #include "editor/EditorContext.h"
 #include "editor/EditorTheme.h"
+#include "editor/EditorChrome.h"   // 計器のクロム（W1-A7）
 #include "editor/UiWidgets.h"
 #include "editor/UiMotion.h"      // アクティブツールの下線のスライド（kToolUnderline）
 #include "editor/EditorCommands.h"   // メニュー/ショートカットはコマンド表から描く
@@ -207,6 +208,7 @@ void ToolbarPanel::Render(bool isPlaying,
     //  余白部分のドラッグ移動は Window::SetCaptionInfo 経由で WM_NCHITTEST が HTCAPTION を返す)
     bool openShortcutsPopup = false;
     bool openAboutPopup     = false;
+    const bool th_isGraphite = dx12e::theme::CurrentVariant() == dx12e::theme::Variant::Graphite;
     ImRect titleBarRect;   // EndMenuBar後のドラッグ判定・キャプション高さ報告に使う
     if (ImGui::BeginMenuBar())
     {
@@ -215,12 +217,20 @@ void ToolbarPanel::Render(bool isPlaying,
         // ---- ロゴ(タイトルバー左端。UEのエンジンアイコン位置) ----
         if (ctx.icons && ctx.icons->logo)
         {
-            const float kLogoSz = ui::Px(20.0f);
+            const float kLogoSz = EditorChrome::LogoSizePx();   // Graphite は 16 論理 px、旧テーマは従来の 20
             ImVec2 cur = ImGui::GetCursorScreenPos();
-            ImGui::GetWindowDrawList()->AddImage(
-                static_cast<ImTextureID>(ctx.icons->logo),
-                ImVec2(cur.x, titleBarRect.GetCenter().y - kLogoSz * 0.5f),
-                ImVec2(cur.x + kLogoSz, titleBarRect.GetCenter().y + kLogoSz * 0.5f));
+            const ImVec2 logoMin(cur.x, std::floor(titleBarRect.GetCenter().y - kLogoSz * 0.5f + 0.5f));
+            if (th_isGraphite)
+            {
+                ImGui::GetWindowDrawList()->AddImage(static_cast<ImTextureID>(ctx.icons->logo), logoMin,
+                                                     ImVec2(logoMin.x + kLogoSz, logoMin.y + kLogoSz));
+                EditorChrome::NoteLogoRect(logoMin, ImVec2(logoMin.x + kLogoSz, logoMin.y + kLogoSz));
+            }
+            else
+                ImGui::GetWindowDrawList()->AddImage(
+                    static_cast<ImTextureID>(ctx.icons->logo),
+                    ImVec2(cur.x, titleBarRect.GetCenter().y - kLogoSz * 0.5f),
+                    ImVec2(cur.x + kLogoSz, titleBarRect.GetCenter().y + kLogoSz * 0.5f));
             ImGui::Dummy(ImVec2(kLogoSz + ui::Px(8.0f), 0.0f));
         }
 
@@ -451,6 +461,9 @@ void ToolbarPanel::Render(bool isPlaying,
         ImGui::EndMenuBar();
     }
     ImGui::PopStyleVar();   // FramePadding(タイトルバー用の縦増し。以降のツール列は通常値に戻す)
+
+    // Graphite: タイトルバー下端の主尺とフォーカス・キャリパー（旧テーマでは何も描かない）。
+    EditorChrome::DrawTitleBar(titleBarRect, ImGui::GetWindowDrawList());
 
     // タイトルバー帯のドラッグ可否をWindowへ報告する。アイテム(メニュー/ボタン)上や
     // ポップアップ表示中はドラッグさせない。値は次のWM_NCHITTESTから効く(1フレーム遅れ許容)。

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 #include "gui/UiTestHarnessShared.h"
@@ -31,6 +32,8 @@
 #include "editor/UndoSystem.h"
 #include "editor/UiMotion.h"
 #include "editor/UiWidgets.h"
+#include "editor/EditorChrome.h"
+#include "editor/ThemeGraphite.gen.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
 #include "renderer/vfx/VfxRuntime.h"
@@ -1494,6 +1497,173 @@ void T_ConsoleDefaults(ImGuiTestContext* ctx)
             if (r.live && r.text.find("import_asset") != std::string::npos) found = true;
         IM_CHECK(found);
     }
+}
+
+// W1-A7 (GG-4): 計器のクロム。Graphite だけ、タイトルバー下端の主尺とフォーカス・キャリパー、22px のステータスバー、16px のロゴが出る。
+//   黄の予算（kGgSpec.budget: 線の数・画素比・面）は描画リストの三角形から数える（数値は tokens から生成した値を読む）。
+//   旧テーマ（既定）では主尺もキャリパーも出ず、ステータスバーは 28px のまま。
+namespace
+{
+struct YellowStats { int components = 0; int fills = 0; float ratio = 0.0f; int wideInTitleBar = 0; float capX0 = 0.0f, capX1 = 0.0f; std::string dump; };
+
+YellowStats AuditYellow(float titleBarMaxY)
+{
+    namespace th = dx12e::theme;
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    const ImVec4 ys[4] = { th::Accent, th::AccentHover, th::AccentPressed, th::NeedleDim };
+    ImU32 rgb[4];
+    for (int i = 0; i < 4; ++i) rgb[i] = ImGui::ColorConvertFloat4ToU32(ImVec4(ys[i].x, ys[i].y, ys[i].z, 1.0f)) & 0x00FFFFFFu;
+    struct Box { float x0, y0, x1, y1, fillArea; };
+    std::vector<Box> boxes;
+    float area = 0.0f;
+    auto scanList = [&](const ImDrawList* dl)
+    {
+        if (!dl) return;
+        for (int i = 0; i + 2 < dl->IdxBuffer.Size; i += 3)
+        {
+            const ImDrawVert& a = dl->VtxBuffer[dl->IdxBuffer[i]];
+            const ImDrawVert& b = dl->VtxBuffer[dl->IdxBuffer[i + 1]];
+            const ImDrawVert& c = dl->VtxBuffer[dl->IdxBuffer[i + 2]];
+            if (a.col != b.col || b.col != c.col || (a.col >> 24) == 0) continue;
+            // 文字・アイコンのグリフ（フォントのアトラスを引く三角形）は塗りではない。白画素の UV の三角形だけを数える
+            const ImVec2 wu = ImGui::GetCurrentContext()->DrawListSharedData.TexUvWhitePixel;
+            if (a.uv.x != wu.x || a.uv.y != wu.y || b.uv.x != wu.x || b.uv.y != wu.y || c.uv.x != wu.x || c.uv.y != wu.y) continue;
+            const ImU32 key = a.col & 0x00FFFFFFu;
+            if (key != rgb[0] && key != rgb[1] && key != rgb[2] && key != rgb[3]) continue;
+            Box bx{ (std::min)({ a.pos.x, b.pos.x, c.pos.x }), (std::min)({ a.pos.y, b.pos.y, c.pos.y }),
+                    (std::max)({ a.pos.x, b.pos.x, c.pos.x }), (std::max)({ a.pos.y, b.pos.y, c.pos.y }), 0.0f };
+            bx.fillArea = std::fabs((b.pos.x - a.pos.x) * (c.pos.y - a.pos.y) - (c.pos.x - a.pos.x) * (b.pos.y - a.pos.y)) * 0.5f;
+            area += std::fabs((b.pos.x - a.pos.x) * (c.pos.y - a.pos.y) - (c.pos.x - a.pos.x) * (b.pos.y - a.pos.y)) * 0.5f;
+            boxes.push_back(bx);
+        }
+    };
+    for (ImGuiWindow* w : g.Windows)
+        if (w->WasActive && !w->Hidden && w->Viewport == ImGui::GetMainViewport()) scanList(w->DrawList);
+    // 触れ合う箱を 1 つの連結成分にまとめる（1px の隙間までつなぐ）
+    bool merged = true;
+    while (merged)
+    {
+        merged = false;
+        for (size_t i = 0; i < boxes.size() && !merged; ++i)
+            for (size_t j = i + 1; j < boxes.size() && !merged; ++j)
+            {
+                const Box p = boxes[i], q = boxes[j];
+                if (p.x0 <= q.x1 + 1.0f && q.x0 <= p.x1 + 1.0f && p.y0 <= q.y1 + 1.0f && q.y0 <= p.y1 + 1.0f)
+                {
+                    boxes[i] = Box{ (std::min)(p.x0, q.x0), (std::min)(p.y0, q.y0), (std::max)(p.x1, q.x1), (std::max)(p.y1, q.y1), p.fillArea + q.fillArea };
+                    boxes.erase(boxes.begin() + static_cast<std::ptrdiff_t>(j));
+                    merged = true;
+                }
+            }
+    }
+    YellowStats st;
+    st.components = static_cast<int>(boxes.size());
+    const float sc = th::Scale();
+    const float minSide = std::floor(4.0f * sc + 0.5f);   // 4x4 の面の窓は DPI に合わせて round(4 x scale)
+    for (const Box& b : boxes)
+    {
+        const float w = b.x1 - b.x0, h = b.y1 - b.y0;
+        // 塗り = 短辺と面積が窓以上で、外接矩形がほぼ塗りつぶされているもの（線 + 顎の外接矩形は塗りではない）
+        if (w * h >= 16.0f * sc * sc && (std::min)(w, h) >= minSide && b.fillArea >= 0.85f * w * h) ++st.fills;
+        { char tmp[96]; std::snprintf(tmp, sizeof(tmp), "[%.0f,%.0f %.0fx%.0f]", b.x0, b.y0, w, h); st.dump += tmp; }
+        if (w >= 100.0f * sc && b.y1 <= titleBarMaxY + 1.0f) { ++st.wideInTitleBar; st.capX0 = b.x0; st.capX1 = b.x1; }
+    }
+    const ImVec2 ds = ImGui::GetMainViewport()->Size;
+    st.ratio = ds.x * ds.y > 0.0f ? area / (ds.x * ds.y) : 0.0f;
+    return st;
+}
+
+int CountVertsWithColor(const ImDrawList* dl, ImU32 col)
+{
+    int n = 0;
+    if (!dl) return 0;
+    for (int i = 0; i < dl->VtxBuffer.Size; ++i) if (dl->VtxBuffer[i].col == col) ++n;
+    return n;
+}
+} // namespace
+
+void T_GraphiteChrome(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    IM_CHECK(ed != nullptr);
+    namespace th = dx12e::theme;
+    const th::Variant prev = th::CurrentVariant();
+
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        const bool graphite = (pass == 0);
+        th::SetVariant(graphite ? th::Variant::Graphite : th::Variant::Default);
+        ctx->Yield(8);
+        const ImGuiID hier = FocusWindow(ctx, kWinHierarchy);
+        IM_CHECK(hier != 0);
+        ctx->Yield(8);
+
+        ImGuiWindow* tb = ImGui::FindWindowByName("##Toolbar");
+        ImGuiWindow* sb = ImGui::FindWindowByName("##StatusBar");
+        IM_CHECK(tb != nullptr && tb->WasActive && sb != nullptr && sb->WasActive);
+        if (!tb || !sb) break;
+        const th::Spec& sp = th::CurrentSpec();
+        const float titleBottom = tb->MenuBarRect().Max.y;
+        const ImRect logo = EditorChrome::LogoRectScreen();
+
+        if (graphite)
+        {
+            IM_CHECK(sp.gg != nullptr);
+            if (!sp.gg) break;
+            const th::gg::GgSpec& gg = *sp.gg;
+            // 寸法
+            ctx->LogInfo("statusbar h=%.2f want=%.2f scale=%.2f", sb->Size.y, ui::Px(static_cast<float>(gg.layout.statusBarH)), th::Scale());
+            IM_CHECK(std::fabs(sb->Size.y - ui::Px(static_cast<float>(gg.layout.statusBarH))) < 0.51f);
+            IM_CHECK(std::fabs(logo.GetWidth() - ui::Px(16.0f)) < 0.51f && std::fabs(logo.GetHeight() - ui::Px(16.0f)) < 0.51f);
+            IM_CHECK(logo.Min.y >= tb->Pos.y && logo.Max.y <= titleBottom + 0.5f);
+            // 主尺: タイトルバーの描画リストに主目盛りの色の頂点がある
+            const ImU32 major = ImGui::GetColorU32(gg.chrome.tickMajor);
+            const ImU32 minor = ImGui::GetColorU32(gg.chrome.tickMinor);
+            IM_CHECK(CountVertsWithColor(tb->DrawList, major) >= 4 * 10);
+            IM_CHECK(CountVertsWithColor(tb->DrawList, minor) >= 4 * 20);
+            // 黄の予算（編集中）
+            const YellowStats st = AuditYellow(titleBottom);
+            ctx->LogInfo("yellow: components=%d fills=%d ratio=%.4f caliper=[%.1f,%.1f] fillBoxes=%s", st.components, st.fills, st.ratio, st.capX0, st.capX1, st.dump.c_str());
+            IM_CHECK(st.wideInTitleBar == 1);   // フォーカス・キャリパー（線 + 顎で 1 つの成分）
+            IM_CHECK(st.components >= 1 && st.components <= gg.budget.editLinesMax);
+            IM_CHECK(st.fills <= gg.budget.editFillsMax);
+            IM_CHECK(st.ratio <= gg.budget.editPixelRatioMax * 0.01f);
+            // キャリパーはフォーカス中パネル（ヒエラルキー）の全幅
+            ImGuiWindow* hw = ImGui::FindWindowByName(kWinHierarchyName);
+            IM_CHECK(hw != nullptr);
+            if (hw && hw->DockNode)
+            {
+                IM_CHECK(std::fabs(st.capX0 - std::floor(hw->DockNode->Pos.x + 0.5f)) < 1.01f);
+                IM_CHECK(std::fabs(st.capX1 - std::floor(hw->DockNode->Pos.x + hw->DockNode->Size.x + 0.5f)) < 1.01f);
+            }
+            // 別のパネルへフォーカスを移すとキャリパーの範囲も移る
+            const ImGuiID con = FocusWindow(ctx, kWinConsole);
+            if (con != 0)
+            {
+                ctx->Yield(8);
+                const YellowStats st2 = AuditYellow(ImGui::FindWindowByName("##Toolbar")->MenuBarRect().Max.y);
+                IM_CHECK(st2.wideInTitleBar == 1);
+                IM_CHECK(std::fabs(st2.capX0 - st.capX0) > 1.0f || std::fabs(st2.capX1 - st.capX1) > 1.0f);
+            }
+        }
+        else
+        {
+            const th::Spec& gsp = th::SpecOf(th::Variant::Graphite);
+            IM_CHECK(gsp.gg != nullptr);
+            if (gsp.gg)
+            {
+                const ImU32 major = ImGui::GetColorU32(gsp.gg->chrome.tickMajor);
+                IM_CHECK_EQ(CountVertsWithColor(tb->DrawList, major), 0);       // 主尺は出ない
+            }
+            // ステータスバーは従来のまま（論理 28。ImGui の WindowMinSize で実寸はそれ以上になりうる）。Graphite の 22 にはならない
+            IM_CHECK(sb->Size.y >= ui::Px(28.0f) - 0.51f);
+            const YellowStats st = AuditYellow(titleBottom);
+            IM_CHECK_EQ(st.wideInTitleBar, 0);                                   // キャリパーは出ない
+        }
+    }
+
+    th::SetVariant(prev);
+    ctx->Yield(6);
 }
 
 } // namespace uitest

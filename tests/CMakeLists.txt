@@ -614,6 +614,20 @@ add_test(NAME InstallerRcDedupCheck
     COMMAND ${CMAKE_COMMAND} -DREPO_ROOT=${DX12_REPO_ROOT} -P ${CMAKE_CURRENT_SOURCE_DIR}/installer_rc_dedup_check.cmake)
 set_tests_properties(InstallerRcDedupCheck PROPERTIES TIMEOUT 30)
 
+# --- 計器のクロム（W1-A7 / GG-4）。主尺・キャリパーの幾何、ステータスバーの純ロジック、黄の呼び出し箇所の固定。GPU 不要 ---
+if(TARGET Gui)
+    add_executable(EditorChromeTests editor_chrome_test.cpp)
+    target_link_libraries(EditorChromeTests PRIVATE Gui)
+    target_include_directories(EditorChromeTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    target_compile_definitions(EditorChromeTests PRIVATE UI_LINT_ROOT="${DX12_REPO_ROOT}")
+    if(MSVC)
+        target_compile_options(EditorChromeTests PRIVATE ${DX12_COMPILE_OPTIONS})
+        target_compile_definitions(EditorChromeTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME EditorChromeTests COMMAND EditorChromeTests)
+    set_tests_properties(EditorChromeTests PROPERTIES TIMEOUT 60)
+endif()
+
 # ==== lane-A end ====
 
 # シーンファイル形式 v2（既定値の省略・最短 float・整形・補完）の純関数テスト。GPU 不要。

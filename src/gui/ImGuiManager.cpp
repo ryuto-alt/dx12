@@ -6,6 +6,7 @@
 #include "core/GameUiFont.h"
 #include "core/BundledFont.h"   // 同梱の日本語フォント（Noto Sans JP サブセット）
 #include "core/DpiScale.h"
+#include "core/WindowTitleBar.h"   // ダークタイトルバー（W1-A7）
 #include "gui/ImGuizmo.h"
 #include <vector>
 #include <set>
@@ -63,6 +64,23 @@ float g_appliedScale  = 0.0f;
 float g_iniScale      = 0.0f;   // imgui.ini に書かれていた倍率（0 = 記録なし = 旧版の ini = 100% 基準）
 float g_initialScale  = 1.0f;   // ini を読む時点のメイン倍率
 float (*g_origGetWindowDpiScale)(ImGuiViewport*) = nullptr;
+
+bool g_titleBarDark = false;   // いま DWM に設定しているダークタイトルバーの状態（W1-A7）
+
+// Graphite のときだけ Windows 11 のダークタイトルバーにする（旧テーマは触らない）。状態が変わったときだけ DWM を呼ぶ。
+void SyncTitleBarTheme(HWND h)
+{
+    if (!h) return;
+    const bool want = theme::CurrentVariant() == theme::Variant::Graphite;
+    if (want == g_titleBarDark) return;
+    g_titleBarDark = want;
+    auto pack = [](const ImVec4& c)
+    {
+        auto b = [](float v) { return static_cast<unsigned>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+        return (b(c.x) << 16) | (b(c.y) << 8) | b(c.z);
+    };
+    dx12e::ApplyTitleBarTheme(h, want, pack(theme::Bg0), pack(theme::Text));
+}
 
 float ScaleForHwnd(HWND h)
 {
@@ -608,6 +626,7 @@ void ImGuiManager::Initialize(
         theme::BaseStyle() = style;
         theme::BaseStyleValid() = true;
         g_mainHwnd     = hwnd;
+        SyncTitleBarTheme(hwnd);
         g_mainScale    = ComputeMainScale();
         g_initialScale = g_mainScale;
         g_appliedScale = 0.0f;
@@ -779,6 +798,7 @@ void ImGuiManager::BeginFrame()
             theme::ApplyStyle(theme::BaseStyle());   // 100% の基準スタイルを作り直し、下で現在の倍率へ展開し直す
             g_appliedScale = 0.0f;
             Logger::Info("テーマ案を切り替え: {}", theme::VariantName(v));
+            SyncTitleBarTheme(g_mainHwnd);
         }
     }
     if (g_editorStyle)

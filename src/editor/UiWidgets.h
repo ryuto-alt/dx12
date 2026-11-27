@@ -156,6 +156,12 @@ void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx);
 // Graphite の黄の指針（選択行の左バー・選択中ツールの下線）。端を整数 px へ丸める（スライド中も 2px 幅の線が滲まない = GG モーション則 01）。
 // 名前を Needle で始めるのは A3 の UiTokenLint が黄の線として数える入口を、ここへ一本化するため（本体は数えない）。
 void NeedleBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx, ImU32 col);
+// 主尺（タイトルバー下端の目盛り。細 8px・高さ 3 / 主 40px・高さ 6。W1-A7）。bar = タイトルバーの矩形（物理 px）。下辺に沿って描く。
+// Graphite のときだけ呼ぶこと（色は gg::GgChrome の tickMinor / tickMajor）。
+void ScaleRuler(ImDrawList* dl, ImVec2 mn, ImVec2 mx);
+// フォーカス・キャリパー（黄の予算 01。顎 2x8 + 2px の線）。[x0, x1] = フォーカス中パネルの全幅、yBottom = タイトルバーの下端（物理 px）。
+// 線は主尺の主目盛りの上に乗る。focused=false は NeedleDim。呼び出し箇所は EditorChrome.cpp の 1 か所だけ（tests/editor_chrome_test が固定）。
+void Caliper(ImDrawList* dl, float x0, float x1, float yBottom, bool focused);
 
 // 浮遊するカード（トースト等）。影 + 面 + 縁。Default は従来のトーストと同じ描画。
 // face = 面の色（alpha 込み）、alpha = 全体のフェード。

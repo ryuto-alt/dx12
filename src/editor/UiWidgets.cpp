@@ -1,5 +1,6 @@
 #include "editor/UiWidgets.h"
 #include "editor/UiMotion.h"
+#include "editor/EditorChromeLogic.h"
 #include "editor/ThemeGraphite.gen.h"   // GgLayout の寸法（progressH 等）だけ読む
 
 #pragma warning(push)
@@ -960,6 +961,37 @@ void NeedleBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx, ImU32 col)
 {
     auto snap = [](float v) { return std::floor(v + 0.5f); };
     dl->AddRectFilled(ImVec2(snap(mn.x), snap(mn.y)), ImVec2(snap(mx.x), snap(mx.y)), col, 0.0f);
+}
+
+void ScaleRuler(ImDrawList* dl, ImVec2 mn, ImVec2 mx)
+{
+    const th::Spec& sp = th::CurrentSpec();
+    if (!sp.gg) return;
+    const th::gg::GgDeco& d = sp.gg->deco;
+    std::vector<chrome::RulerTick> ticks;
+    chrome::RulerTicks(mn.x, mx.x, th::Scale(), d.scaleMinorStep, d.scaleMajorStep, ticks);
+    const float hair = std::max(1.0f, std::floor(th::HairPx() + 0.5f));
+    const float minorH = std::floor(Px(static_cast<float>(d.scaleMinorH)) + 0.5f);
+    const float majorH = std::floor(Px(static_cast<float>(d.scaleMajorH)) + 0.5f);
+    const float yb = std::floor(mx.y + 0.5f);
+    const ImU32 cMinor = Col(sp.gg->chrome.tickMinor), cMajor = Col(sp.gg->chrome.tickMajor);
+    dl->PushClipRect(mn, mx, true);
+    for (const chrome::RulerTick& t : ticks)
+        dl->AddRectFilled(ImVec2(t.x, yb - (t.major ? majorH : minorH)), ImVec2(t.x + hair, yb), t.major ? cMajor : cMinor);
+    dl->PopClipRect();
+}
+
+void Caliper(ImDrawList* dl, float x0, float x1, float yBottom, bool focused)
+{
+    const th::Spec& sp = th::CurrentSpec();
+    if (!sp.gg) return;
+    const th::gg::GgDeco& d = sp.gg->deco;
+    const chrome::CaliperGeom g = chrome::CaliperGeometry(x0, x1, yBottom, Px(static_cast<float>(d.scaleMajorH)), th::AccentPx(),
+                                                          Px(static_cast<float>(d.caliperJawW)), Px(static_cast<float>(d.caliperJawH)));
+    if (!g.valid) return;
+    const ImU32 col = Col(focused ? th::Accent : th::NeedleDim);
+    for (const chrome::PxRect& r : { g.line, g.jawL, g.jawR })
+        dl->AddRectFilled(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), col);
 }
 
 void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx)
