@@ -259,7 +259,7 @@ int RunGaugeDump(const Options& o)
         aseq = std::make_unique<sp::CalibrateSequencer>(bank, o.reduce);
         aseq->Begin();
     }
-    else std::fprintf(stderr, "splash-dump: 起動音の素材（exe の RCDATA）を読めないので audio.wav は書きません\n");
+    else std::fprintf(stderr, "splash-dump: 起動音の音源（exe の RCDATA）を読めないので audio.wav は書きません\n");
     auto renderAudioTo = [&](double ms)
     {
         if (!aseq) return;

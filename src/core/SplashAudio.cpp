@@ -515,7 +515,7 @@ DWORD WINAPI CalibThread(LPVOID)
         }
     }
     else
-        SplashDiag("起動音(Calibrate): 素材を読めませんでした（無音で続行。絵は QPC の時計で進む）");
+        SplashDiag("起動音(Calibrate): 音源を読めませんでした（無音で続行。絵は QPC の時計で進む）");
     if (!out)
     {
         c.state.store(static_cast<int>(CalibrateSound::State::Failed));
@@ -554,8 +554,8 @@ DWORD WINAPI CalibThread(LPVOID)
         if (c.seq->LateCues() || c.seq->DroppedCues() || c.seq->StolenVoices() || c.seq->HandOverRefused())
         {
             // 予約の先読み（50ms）より出力の遅れが大きいデバイス（Bluetooth など）では LateCues が出て、クリックとロックの音が絵より遅れる
-            SplashDiag("起動音(Calibrate): 診断 遅れた予約 " + std::to_string(c.seq->LateCues()) + " / 落とした予約 " + std::to_string(c.seq->DroppedCues())
-                       + " / 外したクリック " + std::to_string(c.seq->StolenVoices()) + " / 持ち替えを断った " + std::to_string(c.seq->HandOverRefused()));
+            SplashDiag("起動音(Calibrate): 間に合わなかった予約 " + std::to_string(c.seq->LateCues()) + " / 落とした予約 " + std::to_string(c.seq->DroppedCues())
+                       + " / 外したクリック " + std::to_string(c.seq->StolenVoices()) + " / 持ち替えを見送った " + std::to_string(c.seq->HandOverRefused()));
         }
     }
     out->Drain();
