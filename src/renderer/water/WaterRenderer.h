@@ -118,7 +118,12 @@ public:
     void Shutdown();
     bool IsReady() const { return m_ready; }
     // シェーダのホットリロード / ライティング単位の切替（PS だけ作り直す）
-    bool RecreatePipelines(bool physical);
+    bool RecreatePipelines(bool physical);          // v2 は今の要求のまま
+    bool RecreatePipelines(bool physical, bool v2); // 初回: shadingRevision（FU-E-25。v2 = *V2_PS.cso、無ければ V1 へ縮退）
+    // shadingRevision の切替（GPU が止まっているときだけ。変わらなければ何もしない）。Initialize 前は false。
+    bool SetShadingV2(bool v2);
+    bool ShadingV2Requested() const;
+    int  V2PsoCount() const;   // V2 の .cso から作れた PSO の数（get_shading の v2Pso.water）
 
     // フレームで 1 回（同じ frameId の 2 回目は何もしない）。戻り値 = このフレーム描く水域の数。コピー先のサイズ変更・初回アップロードもここ。
     u32 BeginFrame(const FrameIn& in);

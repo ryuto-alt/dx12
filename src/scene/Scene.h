@@ -112,9 +112,19 @@ public:
                     DirectX::XMFLOAT3 rotation = {0, 0, 0},
                     DirectX::XMFLOAT3 scale = {1, 1, 1});
 
+    // 球の分割数（BUG-45）。既定は従来の 16x16 のまま＝シーンの読み込み・スクリプト・既存の呼び出しは
+    // 1 頂点も変わらない（既存のゴールデンはビット一致）。エディタ／MCP が「新しく作る」球だけが
+    // kSphereSlicesNew / kSphereStacksNew を渡す（シルエットの角を 5.6 度刻みにする）。
+    static constexpr u32 kSphereSlicesLegacy = 16;
+    static constexpr u32 kSphereStacksLegacy = 16;
+    static constexpr u32 kSphereSlicesNew    = 64;
+    static constexpr u32 kSphereStacksNew    = 32;
+
     Entity SpawnSphere(const std::string& name,
                        DirectX::XMFLOAT3 position,
-                       f32 radius = 0.5f);
+                       f32 radius = 0.5f,
+                       u32 slices = kSphereSlicesLegacy,
+                       u32 stacks = kSphereStacksLegacy);
 
     // --- ハイトフィールド地形 ---
     // params の resolution / worldSize / heightmapPath 等を元に HeightField を用意し、
@@ -294,6 +304,11 @@ public:
     // キャッシュからも外すこと**（キーが Mesh* なので、同じアドレスに再確保された別メッシュが
     // 古い BLAS を掴んで、レイトレだけ違う形で映る）。
     void CollectUnusedMeshes(std::vector<const Mesh*>& outFreed);
+
+    // W1-C13: 読み込み / 複製 / Undo で SphereSubdiv（applied=false）が付いた球のメッシュを、保存された分割数で作り直す。
+    // フレームの頭（描画リストを作る前）に呼ぶ。古いメッシュは参照を外すだけ＝CollectUnusedMeshes が
+    // 回収し、そのとき呼び出し側が BLAS キャッシュからも外す（既存の経路）。
+    void ApplyPendingSphereSubdiv();
 
     // 上の回収が効いているかを外から見るための数（UI テスト / 診断用）。
     size_t GetOwnedMeshCount() const { return m_ownedMeshes.size(); }

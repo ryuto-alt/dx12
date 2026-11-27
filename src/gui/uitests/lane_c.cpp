@@ -7,6 +7,7 @@
 #include "ecs/Components.h"
 #include "editor/EditorCommands.h"
 #include "editor/EditorContext.h"
+#include "renderer/Mesh.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
 
@@ -261,6 +262,59 @@ void T_CreateEntitySelects(ImGuiTestContext* ctx)
     IM_CHECK(!reg.valid(made));
     IM_CHECK(ed->selectedEntities.empty());
     IM_CHECK(ed->selectedEntity == entt::null);
+}
+
+// C13（BUG-45）: 新しく作る球（エディタ／MCP の生成経路）だけ分割数が上がり、既定の SpawnSphere
+// （シーンの読み込み・スクリプトが通る経路）は従来の 16x16 のまま＝既存シーンの見た目は変わらない。
+void T_SphereSubdivNewOnly(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    if (!ed || !app || !app->GetScene()) { IM_ERRORF("Application / Scene を取得できません"); return; }
+    Scene* scene = app->GetScene();
+    auto& reg = scene->GetRegistry();
+
+    auto indexCount = [&](entt::entity e) -> u32 {
+        const auto* mr = reg.try_get<MeshRenderer>(e);
+        return (mr && !mr->meshes.empty() && mr->meshes[0]) ? mr->meshes[0]->GetIndexCountLod(0) : 0u;
+    };
+
+    LogStep(ctx, "C13: 新しく作る球（生成経路）");
+    ed->ClearSelection();
+    PendingSpawnRequest sp; sp.modelPath = "__primitive_sphere__";
+    ed->pendingSpawns.push_back(sp);
+    ctx->Yield(8);
+    IM_CHECK(ed->selectedEntity != entt::null && reg.valid(ed->selectedEntity));
+    IM_CHECK_EQ(indexCount(ed->selectedEntity),
+                Scene::kSphereSlicesNew * Scene::kSphereStacksNew * 6u);
+
+    LogStep(ctx, "C13: 既定の SpawnSphere（読み込み経路）は従来のまま");
+    Entity legacy = scene->SpawnSphere("__T_C13_Legacy", { 0.0f, -50.0f, 0.0f });
+    IM_CHECK_EQ(indexCount(legacy.GetHandle()),
+                Scene::kSphereSlicesLegacy * Scene::kSphereStacksLegacy * 6u);
+    IM_CHECK_EQ(Scene::kSphereSlicesLegacy * Scene::kSphereStacksLegacy * 6u, 16u * 16u * 6u);
+
+    // 複製（保存 / 読み込みと同じ経路）を通しても 64x32 のまま、旧い球は 16x16 のまま
+    LogStep(ctx, "C13: 複製で分割数が保つ");
+    const std::string assets = PathResolver::AssetsDir();
+    const entt::entity src = ed->selectedEntity;
+    const entt::entity dup = SceneSerializer::DuplicateEntity(*scene, src, assets);
+    IM_CHECK(dup != entt::null);
+    ctx->Yield(4);   // フレームの頭で ApplyPendingSphereSubdiv が走る
+    IM_CHECK_EQ(indexCount(dup), Scene::kSphereSlicesNew * Scene::kSphereStacksNew * 6u);
+    const entt::entity dupLegacy = SceneSerializer::DuplicateEntity(*scene, legacy.GetHandle(), assets);
+    IM_CHECK(dupLegacy != entt::null);
+    ctx->Yield(4);
+    IM_CHECK_EQ(indexCount(dupLegacy), Scene::kSphereSlicesLegacy * Scene::kSphereStacksLegacy * 6u);
+
+    // 後始末（後続のテストにエンティティと選択を残さない）
+    for (entt::entity e : { dup, dupLegacy, legacy.GetHandle() })
+        if (reg.valid(e)) reg.destroy(e);
+    ctx->SetRef(kWinHierarchy);
+    ctx->KeyPress(ImGuiKey_Z | ImGuiMod_Ctrl);   // 生成の Undo 履歴を 1 つ戻す（球本体も消える）
+    ctx->Yield(8);
+    IM_CHECK(!reg.valid(src));
+    ed->ClearSelection();
 }
 
 } // namespace uitest

@@ -13,6 +13,7 @@
 #include "graphics/DescriptorHeap.h"
 #include "graphics/FrameResources.h"
 #include "renderer/Mesh.h"
+#include "ecs/components/SphereSubdiv.h"
 #include "renderer/Material.h"
 #include "animation/Skeleton.h"
 #include "animation/AnimationClip.h"
@@ -303,7 +304,9 @@ Entity Scene::SpawnBox(const std::string& name,
 
 Entity Scene::SpawnSphere(const std::string& name,
                           DirectX::XMFLOAT3 position,
-                          f32 radius)
+                          f32 radius,
+                          u32 slices,
+                          u32 stacks)
 {
     Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
 
@@ -319,7 +322,7 @@ Entity Scene::SpawnSphere(const std::string& name,
     else
     {
         auto sphereMesh = std::make_unique<Mesh>();
-        sphereMesh->InitializeAsSphere(*m_device, radius);
+        sphereMesh->InitializeAsSphere(*m_device, radius, (std::max)(3u, slices), (std::max)(2u, stacks));
         renderer.meshes.push_back(sphereMesh.get());
         m_ownedMeshes.push_back(std::move(sphereMesh));
     }
@@ -490,6 +493,25 @@ void Scene::CollectUnusedMeshes(std::vector<const Mesh*>& outFreed)
     m_ownedMeshes.erase(it, m_ownedMeshes.end());   // ここで ~Mesh → DeferredRelease
     Logger::Info("未参照メッシュを {} 個回収しました（{} → {}）",
                  before - m_ownedMeshes.size(), before, m_ownedMeshes.size());
+}
+
+void Scene::ApplyPendingSphereSubdiv()
+{
+    if (!m_device) return;
+    for (auto [e, sub] : m_registry.view<SphereSubdiv>().each())
+    {
+        if (sub.applied) continue;
+        sub.applied = true;
+        auto* mr = m_registry.try_get<MeshRenderer>(e);
+        if (!mr || mr->instanced || mr->meshes.size() != 1 || !mr->meshes[0]) continue;
+        // 半径は旧メッシュの AABB から（赤道のリングがあるので正確）。
+        const f32 radius = mr->meshes[0]->GetAABBMax().x;
+        if (!(radius > 0.0f)) continue;
+        auto mesh = std::make_unique<Mesh>();
+        mesh->InitializeAsSphere(*m_device, radius, sub.slices, sub.stacks);
+        mr->meshes[0] = mesh.get();
+        m_ownedMeshes.push_back(std::move(mesh));
+    }
 }
 
 void Scene::Clear()

@@ -7,6 +7,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "renderer/ViewDesc.h"
+#include "graphics/RenderBackendExt.h"
 #include "renderer/foliage/FoliageSystem.h"
 
 namespace dx12e
@@ -107,6 +108,7 @@ void Application::FoliageBeginAndCull(ID3D12GraphicsCommandList* cmd, const View
     {
         vi.cascade[c].viewProj = m_cascadeViewProj[c];
         vi.cascade[c].valid = shadowsOn;
+        vi.cascade[c].dropNearPlane = (m_backendExt && m_backendExt->epicCsm.active && m_backendExt->epicCsm.pancake);   // W1-C6: pancaking
     }
     m_foliage->Cull(cmd, vi, fi);
 }

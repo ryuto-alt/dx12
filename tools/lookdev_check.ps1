@@ -5,7 +5,7 @@
 
     pwsh tools\lookdev_check.ps1                       # 4 シーン x V1/V2 を撮って判定
     pwsh tools\lookdev_check.ps1 -Only lookdev_grid    # 1 シーンだけ
-    pwsh tools\lookdev_check.ps1 -V2RecordOnly         # V2 の差を記録だけ（合否に使わない。MH-2 で V2 を意図して変えた後）
+    pwsh tools\lookdev_check.ps1 -V2Gate               # V2 が V1 と同じ絵であることを合否にする（既定は記録のみ。C5 以降 V2 は意図して違う）
 
   出力: <OutDir>\lookdev_check.json（既定 %USERPROFILE%\dx12-scorecard\lookdev）、撮った絵、V1/V2 の差分画像。
   終了コード: 0 合格 / 1 不合格 / 2 エラー。
@@ -24,7 +24,8 @@ param(
     [int]$PerfWindow = 120,
     [double]$V2MaxMeanAbs = 0.25,
     [double]$V2MaxDiffRatio = 0.001,
-    [switch]$V2RecordOnly,
+    [switch]$V2RecordOnly,   # 既定が記録のみになったので指定は不要（互換のため残す）
+    [switch]$V2Gate,
     [string]$ReferenceDir = '',
     [string]$FlipPython = '',
     [int]$Repeat = 0,
@@ -45,7 +46,7 @@ try {
     if ($Exe) { $argv += @('--exe', $Exe) }
     if ($Port -gt 0) { $argv += @('--port', "$Port") }
     $argv += @('--perf-window', "$PerfWindow", '--v2-max-mean-abs', "$V2MaxMeanAbs", '--v2-max-diff-ratio', "$V2MaxDiffRatio")
-    if ($V2RecordOnly) { $argv += '--v2-record-only' }
+    if ($V2Gate) { $argv += '--v2-gate' } elseif ($V2RecordOnly) { $argv += '--v2-record-only' }
     if ($ReferenceDir) { $argv += @('--reference-dir', $ReferenceDir) }
     if ($FlipPython) { $argv += @('--flip-python', $FlipPython) }
     if ($Repeat -gt 0) { $argv += @('--repeat', "$Repeat") }

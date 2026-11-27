@@ -13,7 +13,8 @@ test("引数: 既定は V1 と V2 の両方・2 回撮る", () => {
   const a = parseLookdevArgs([], { USERPROFILE: "X" });
   assert.deepEqual(a.revisions, [1, 2]);
   assert.equal(a.repeat, 2);
-  assert.equal(a.v2RecordOnly, false);
+  assert.equal(a.v2RecordOnly, true);   // 既定は記録のみ（C5 以降 V2 は意図して違う）
+  assert.equal(parseLookdevArgs(["--v2-gate"], {}).v2RecordOnly, false);
 });
 
 test("引数: --only と --revisions と範囲外の拒否", () => {

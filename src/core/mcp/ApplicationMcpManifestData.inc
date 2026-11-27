@@ -286,6 +286,11 @@ void FillManifestChunk3(ManifestRows& o)
         "none", "dx12_set_shading", {
             P("multiScatter", "bool", false, nullptr, nullptr, nullptr, nullptr, "マルチスキャッタのエネルギー補償(粗い金属が暗く沈まない)。既定 true。false で従来どおり"),
             P("shadingRevision", "int", false, nullptr, "1", "2", nullptr, "シェーディングの世代。1 = 従来(V1。既定)、2 = UNO_SHADING_V2。範囲外は E_OUT_OF_RANGE。シーンファイルにはまだ保存されない(W1)。"),
+            P("microShadow", "bool", false, nullptr, nullptr, nullptr, nullptr, "V2: マイクロシャドウ(AO から作る小さな凹凸の自己影。太陽とローカル光に掛ける)。既定 true。shadingRevision=2 のときだけ効く"),
+            P("horizonOcclusion", "bool", false, nullptr, nullptr, nullptr, nullptr, "V2: 地平線オクルージョン(面の下へ潜る反射を IBL・プローブ・SSR の鏡面から落とす)。既定 true。shadingRevision=2 のときだけ効く"),
+            P("gtso", "bool", false, nullptr, nullptr, nullptr, nullptr, "V2: GTSO(AO と粗さから求める指向性スペキュラオクルージョン)。既定 true。shadingRevision=2 のときだけ効く"),
+            P("microShadowK", "number", false, nullptr, "0", "2", nullptr, "V2: マイクロシャドウの強さ。0 = 効果なし、1 = 標準(既定)、2 = 強め。範囲外は E_OUT_OF_RANGE"),
+            P("horizonK", "number", false, nullptr, "0", "2", nullptr, "V2: 地平線オクルージョンの強さ。0 = 効果なし、1 = 標準(既定)、2 = 強め。範囲外は E_OUT_OF_RANGE"),
         })});
     o.push_back({"get_occlusion", M("Hi-Z オクルージョンカリングの状態を返す。{enabled, active, ready, pyramid{width,height,mips}}。",
         "get occlusion オクルージョンカリング取得",
@@ -1325,6 +1330,14 @@ void FillManifestChunk11(ManifestRows& o)
             P("maxPenumbraTexels", "number", false, nullptr, nullptr, nullptr, nullptr, "ペナンブラ幅の上限(シャドウマップのテクセル数)。1..64 にクランプ。大きいほど柔らかく重い。"),
             P("blockerSearchTexels", "number", false, nullptr, nullptr, nullptr, nullptr, "ブロッカー探索の半径(シャドウマップのテクセル数)。1..64 にクランプ。小さすぎると遠くの影が硬いまま。"),
             P("temporalDither", "bool", false, nullptr, nullptr, nullptr, nullptr, "サンプル位置をフレームごとに回してバンディングを散らす。★TAA 有効時のみ効く(無効だとチラつくだけなのでエンジンが自動で切る)。"),
+            P("epicDynamicCsm", "bool", false, nullptr, nullptr, nullptr, nullptr, "Epic の動的 CSM(2048 D16 x3 + pancaking)。RT が静的な物、CSM は動的な物だけを描く構成。既定 false(従来の 2048 D32 x4 の PCF のまま)。シーン JSON には保存しない。次のフレームの先頭で反映(epicCsmApplied で確認)。"),
+            P("pancaking", "bool", false, nullptr, nullptr, nullptr, nullptr, "epicDynamicCsm のとき、影 PSO を DepthClip=FALSE にして CPU / VG / 植生のカリングから near 面を外す。既定 true。"),
+            P("gatherPcss", "bool", false, nullptr, nullptr, nullptr, nullptr, "epicDynamicCsm かつ shadingRevision=2 かつ enabled のとき、PCSS を Gather 版(GatherRed / GatherCmpRed)にする。既定 true。"),
+            P("cascadeDitherBlend", "bool", false, nullptr, nullptr, nullptr, nullptr, "epicDynamicCsm かつ shadingRevision=2 のとき、カスケード境界を IGN のディザで片方だけサンプルする(TAA / DLSS が平均する)。既定 true。"),
+            P("receiverNormalOffsetBase", "number", false, nullptr, nullptr, nullptr, nullptr, "受光側の法線オフセットの基準(テクセル数)。0..4。V2 の Epic だけ。既定 1.5。"),
+            P("receiverNormalOffsetSlope", "number", false, nullptr, nullptr, nullptr, nullptr, "受光側の法線オフセットの傾き分(掠める角度ほど足す。テクセル数)。0..4。V2 の Epic だけ。既定 2.0。"),
+            P("casterBiasScaleV2", "number", false, nullptr, nullptr, nullptr, nullptr, "影を描く側のラスタバイアスの倍率。Epic かつシーン全体が shadingRevision=2 のときだけ掛かる。0.05..1。既定 0.25。"),
+            P("gatherFilterTaps", "number", false, nullptr, nullptr, nullptr, nullptr, "Gather 版 PCSS のフィルタのタップ数(1 回で 2x2 の比較 4 つ)。8..32。既定 24。"),
         })});
     o.push_back({"set_sprite_shader", M("エンティティの Sprite2D::shaderPath を設定/解除する(Inspector の Sprite2D「Shader」欄と同じ操作)。",
         "set sprite shader Sprite2Dカスタムシェーダー割当",
@@ -1761,16 +1774,31 @@ void FillGeneratedManifestRows(ManifestRows& o)
         })});
     // ==== lane-B end ====
     // ==== lane-C begin ====
-    o.push_back({"get_quality_preset", M("現在の品質プリセット(low/medium/high/epic/cinematic)と、その予算(目標 fps・出力解像度・p95/p99・VFX の放出倍率と最大粒子数)を返す。読み取り専用。",
+    o.push_back({"get_quality_preset", M("現在の品質プリセット(low/medium/high/epic/cinematic)と、その予算(目標 fps・出力解像度・p95/p99・VFX の放出倍率と最大粒子数)を返す。plan(今の DXR / DLSS で入る構成と縮退)と、シーンが選択中のプリセットと一致しているか(matchesScene)も返す。読み取り専用。",
         "get quality preset 品質プリセット epic high cinematic 予算",
         "render", "render_setting", "quality_preset", McpEffect::Read, "any", 8000, true, false,
         "none", "", {
         })});
-    o.push_back({"set_quality_preset", M("品質プリセットを選ぶ(low/medium/high/epic/cinematic)。値の正は生成表(budgets/quality_presets.json)。W1-C1 時点では選択の記録だけで、絵への反映と Undo は後続(C7)で入る。",
+    o.push_back({"set_quality_preset", M("品質プリセットを選ぶ(low/medium/high/epic/cinematic)。値の正は生成表(budgets/quality_presets.json)。影・GI・反射・アップスケーラ・VFX の倍率へ実際に反映する(DXR / DLSS が無ければ縮退し、結果の degrades に出る)。Editor では Undo 1 回分。",
         "set quality preset 品質プリセット epic high cinematic 切替",
         "render", "render_setting", "quality_preset", McpEffect::WriteSetting, "any", 10000, true, false,
         "none", "", {
             P("preset", "enum", true, "low|medium|high|epic|cinematic", nullptr, nullptr, nullptr, "品質プリセット名。"),
+        })});
+    o.push_back({"freeze_time", M("時間を止める / 解除 / 状態を読む（引数なし）。Play 中のシミュと、描画の時間依存（決定論キャプチャと同じ固定）を止める。止めている間の撮影は常に決定論経路なので同じ状態ならビット一致。最後の freeze_time / frame_step から 60 秒（接続も無い場合）で自動解除。pinRender 中は VFX・大気の時間も進まない。Play/Stop・シーン切替では止め直す。",
+        "freeze time 時間停止 凍結 フリーズ 静止 決定論",
+        "play", "", "", McpEffect::Runtime, "any", 8000, false, false,
+        "none", "", {
+            P("frozen", "bool", false, nullptr, nullptr, nullptr, nullptr, "true（既定）で止める、false で解除。省略かつ pinRender も無ければ状態を返すだけ。"),
+            P("pinRender", "bool", false, nullptr, nullptr, nullptr, nullptr, "true（既定）で描画の時間依存も固定する。false なら Play 中のシミュだけ止める。"),
+        })});
+    o.push_back({"frame_step", M("止めたまま N フレーム（固定 dt）だけ進めて、また止めてから応答する同期バリア。凍結していなければ自動で凍結する。静止した複数フレームを決定論で撮る用（step_frames は待つだけで時間は止まらない）。pinRender 中は描画の時間が進まないので Editor では絵は変わらない（dt が効くのは Play 中のシミュだけ）。呼ぶたびに TAA 履歴を捨てる。",
+        "frame step コマ送り 1フレーム 進める 決定論 静止",
+        "play", "", "", McpEffect::Runtime, "any", 30000, false, true,
+        "none", "", {
+            P("frames", "int", false, nullptr, nullptr, nullptr, nullptr, "進めるフレーム数（既定 1、最大 600）。"),
+            P("dt", "number", false, nullptr, nullptr, nullptr, nullptr, "1 フレームあたりの秒（既定 1/60。0 より大きく 0.1 以下）。"),
+            P("pinRender", "bool", false, nullptr, nullptr, nullptr, nullptr, "描画の時間依存も固定するか（既定: 凍結中なら今の設定、でなければ true）。"),
         })});
     // ==== lane-C end ====
     // ==== lane-D begin ====

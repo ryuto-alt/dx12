@@ -12,6 +12,7 @@
 namespace dx12e
 {
 enum class QualityPresetId : u8;   // renderer/QualityPreset.h
+struct QualityScenePack;          // core/QualityPresetScene.h
 struct AppAccess
 {
     // ==== lane-A begin ====
@@ -71,12 +72,34 @@ struct AppAccess
     //   QualityPresetId は renderer/QualityPreset.h（使う TU が include する。ここは前方宣言で重くしない）。
     static bool SetQualityPreset(Application&, QualityPresetId, bool recordUndo);
     static QualityPresetId GetQualityPreset(const Application&);
+    // W1-C7: 品質プリセットの本体（定義は QualityPresetApply.cpp）。caps（DXR / DLSS）の問い合わせ、現在のシーンが選択中のプリセットと
+    //   一致しているか、Undo / Redo の復元。
+    //   ReloadQualityPresetFromSettings は互換のために残した空の関数（GetQualityPreset が毎回 settings.json を引くので呼ぶ必要は無い）。
+    static void QueryQualityCaps(const Application&, bool& dxr, bool& dlss);
+    static bool QualityMatchesScene(const Application&);
+    static void ReloadQualityPresetFromSettings(Application&);
+    static void RestoreQualityState(Application&, const QualityScenePack&, u8 id, f32 renderScale);
     // W1-C3: shadingRevision（1 / 2）を PSO とグラフ材質へ反映する（定義は ApplicationPipeline.cpp。Run ループの先頭 = フレーム外で呼ぶ）。
     static void UpdateShadingRevision(Application&);
+    // W1-C6: Epic の動的 CSM（2048 D16 x3 + pancaking）の切り替え。UpdateShadingRevision の先頭から呼ぶ（フレーム外。定義は ApplicationPipeline.cpp）。
+    static void UpdateEpicCsm(Application&);
     // W1-C3: 今 PSO に反映済みの revision と、V2 の .cso から作れた PSO の数（フォワード / スキンド / 地形）。MCP の get_shading 用。
-    static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain);
+    //   FU-E-25: 水 / 植生 / 仮想ジオメトリの V2 PSO の本数も返す（実体が無い / V1 のときは 0）。
+    static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain,
+                                 int& v2Water, int& v2Foliage, int& v2Vg);
     // W1-C9: 撮影が IBL の焼き直しを待つために足すフレーム数（0 = 待たない。定義は core/ApplicationAtmosphere.cpp）。
     static int IblRebakeWaitFrames(Application&);
+    // FU-E-24: freeze_time で描画の時間依存を固定している最中か（screenshot_final が「決定論キャプチャ中」と取り違えないため。定義は mcp/ApplicationMcpLaneC.cpp）。
+    static bool TimeFrozen(const Application&);
+    //   FreezePinsRender … freeze_time が描画の時間依存を固定する約束の最中か（撮影の後始末が決定論キャプチャを戻す先）。
+    static bool FreezePinsRender(const Application&);
+    //   FreezeApply … 凍結の約束（FreezeModel）に m_deterministicCapture / paused を合わせる。MCP クライアントの切断（5 秒）で凍結を解く。
+    //   FreezeTick  … 毎フレーム 1 回（UpdateShadingRevision の先頭から呼ぶ）。撮影の中断・Play/Stop・シーン切替の後始末を約束へ戻す。
+    static void FreezeApply(Application&, bool restartHistory, bool releasedNow);
+    static void FreezeTick(Application&);
+    // W1-C8: 新規シーンのルック（定義は QualityPresetApply.cpp。自由関数の窓口は core/QualityPresetApply.h）。
+    //   プロファイルの Scene への書き込み + 時間履歴の破棄。settings.json（品質プリセット id・render_scale）は書かない。Undo は積まない。
+    static void ApplyNewSceneLookState(Application&, const struct QualityPlan& plan, bool epic, bool giNewApplied);
     // ==== lane-C end ====
 
     // ==== lane-D begin ====

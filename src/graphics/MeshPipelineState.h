@@ -89,6 +89,7 @@ public:
     }
     MeshPipelineStateBuilder& SetRenderTargetFormat(DXGI_FORMAT f) { return SetRenderTargetFormats(1, &f); }
     MeshPipelineStateBuilder& SetDepthStencilFormat(DXGI_FORMAT f) { m_desc.DSVFormat = f; return *this; }
+    MeshPipelineStateBuilder& SetDepthClip(bool on) { m_desc.RasterizerState.DepthClipEnable = on ? TRUE : FALSE; return *this; }   // W1-C6: false = pancaking
     MeshPipelineStateBuilder& SetDepthEnabled(bool on) { m_desc.DepthStencilState.DepthEnable = on ? TRUE : FALSE; return *this; }
     MeshPipelineStateBuilder& SetDepthWrite(bool on)
     {

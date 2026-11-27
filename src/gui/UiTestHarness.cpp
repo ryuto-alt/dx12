@@ -4968,6 +4968,7 @@ const DiagReg kTests[] = {
     // ==== lane-B end ====
     // ==== lane-C begin ====
     { "basic", "create_entity_selects", "基本操作", "新しく作ったエンティティが選択される（W05-21）", uitest::T_CreateEntitySelects },
+    { "basic", "sphere_subdiv_new_only", "基本操作", "新しく作る球は 64x32 分割、読み込み・既定の生成は従来の 16x16 のまま（C13）", uitest::T_SphereSubdivNewOnly },
     // ==== lane-C end ====
     // ==== lane-D begin ====
     // ==== lane-D end ====

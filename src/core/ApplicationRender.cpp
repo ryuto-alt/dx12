@@ -4,11 +4,16 @@
 // Application.cpp から機械分割した実装 TU。分割の全体像は ApplicationInternal.h。
 // ===========================================================================
 #include "core/SplitScreen.h"
+#include "renderer/ShadingV2Math.h"
+#include "renderer/EpicCsm.h"
+#include "graphics/RenderBackendExt.h"
+#include "renderer/VelocityPolicy.h"
 #include "core/GameUiFont.h"
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
 #include "editor/UiWidgets.h"
 #include "editor/SelectionOutline.h"   // エディタ専用: 選択 / ホバーの輪郭・ワイヤ表示モード（最終画の撮影より後）
 #include "editor/ViewportLogic.h"       // ビューモード → RenderDebugMode
+#include "ecs/components/SphereSubdiv.h"   // W1-C13
 #include "ecs/EditorFlags.h"            // [H] エディタ専用の非表示（BuildDrawList）
 #include "ecs/InstanceGroup.h"         // インスタンス群の展開（BuildDrawList）
 #include "editor/InstanceGroupCommand.h"   // インスタンス群: 変換 / 展開の Undo（エディタの「まとめる」「展開」）
@@ -33,6 +38,7 @@
 #include "renderer/TransitionPresets.h"
 #include "renderer/ViewDesc.h"
 #include "renderer/RenderStageHooks.h"   // W05-25: ステージフック（FeatureRegistry）
+#include "core/QualityPresetApply.h"
 #include "renderer/ViewPasses.h"
 #include "renderer/instancegpu/InstanceGpuMath.h"   // kLodScaleDefault
 #include "editor/AssetDrop.h"
@@ -40,6 +46,7 @@
 #include "editor/panels/MaterialGraphPanel.h"       // マテリアルグラフ G2c: プレビュー / サムネイルの GPU 描画（RenderGpu）
 #include "graphics/GpuTimer.h"
 #include "graphics/GpuMarker.h"
+#include "renderer/StageReadOnlyDsv.h"
 
 
 namespace
@@ -124,6 +131,37 @@ void ComputeMeshUvScaleOffset(const MeshRenderer& r, float& sx, float& sy, float
         ox = du - std::floor(du);
         oy = dv - std::floor(dv);
     }
+}
+
+// FU-E-21: StageCtx::depthDsvReadOnly 用の読み取り専用 DSV。ステージの呼び出しごとに小さな CPU 専用 DSV ヒープの次の枠へ
+// 作り直す（CPU ハンドルは記録時に消費されるので、数枠の輪で足りる）。ヒープは Application.h を変えないよう、ここに 1 つだけ持つ。
+// 作れない深度（D32_FLOAT 以外・MSAA など）と失敗時は ptr==0。
+D3D12_CPU_DESCRIPTOR_HANDLE AcquireStageReadOnlyDsv(ID3D12Device* dev, ID3D12Resource* depth)
+{
+    constexpr u32 kSlots = 8;
+    static Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> s_heap;
+    static ID3D12Device* s_dev = nullptr;
+    static u32 s_next = 0;
+    D3D12_CPU_DESCRIPTOR_HANDLE h{};
+    if (!dev || !depth) return h;
+    if (!dx12e::CanMakeReadOnlyDsv(depth->GetDesc())) return h;
+    if (!s_heap || s_dev != dev)
+    {
+        s_heap.Reset();
+        D3D12_DESCRIPTOR_HEAP_DESC hd{};
+        hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        hd.NumDescriptors = kSlots;
+        hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&s_heap)))) return h;
+        s_dev = dev;
+        s_next = 0;
+    }
+    h = s_heap->GetCPUDescriptorHandleForHeapStart();
+    h.ptr += SIZE_T(s_next) * dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+    s_next = (s_next + 1) % kSlots;
+    const D3D12_DEPTH_STENCIL_VIEW_DESC dv = dx12e::MakeReadOnlyDsvDesc();
+    dev->CreateDepthStencilView(depth, &dv, h);
+    return h;
 }
 } // namespace
 
@@ -1994,7 +2032,12 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     const bool skipTransparent = prepass && prepass->skipTransparent;
     const bool shadowPass = (prepass == nullptr);   // 影マップ（CSM / スポット / ポイント）の呼び出し
     PipelineState* const instPsoForGpu = instPSO;   // GPU 駆動のインスタンス群（4-3）は専用の前フレームストリームを持つので、前ワールド VB の有無に依らない
-    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;  // 前ワールドVBが無ければ従来経路
+    // ★FU-E-23: 速度パスを個別ドローへ落とさない。フォワードは同じ物を自動インスタンシングで描くので、
+    //   ここだけ個別ドロー（world*viewProj を CPU で畳んだ MVP）にするとクリップ Z がずれ、LESS_EQUAL で大きな面が欠ける。
+    //   前ワールド VB が無ければここで確保する（呼び出し側が先に確保済みなら何もしない）。
+    if (velocityMode) EnsureInstancePrevBuffer();
+    // （EnsureInstancePrevBuffer は確保に失敗すると例外を投げる。ここの null チェックは未確保の保険）
+    if (velocityMode && !m_instancePrevMapped[frameIndex]) instPSO = nullptr;
 
     // 速度+G-Buffer パスの b0。静的/スキンドは 40 DWORD（ルート定数の上限ぴったり）、
     // インスタンシングは 36 DWORD（法線はインスタンスデータから取れるので行列を送らない）。
@@ -2075,7 +2118,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     // このパスの視錐台（ライト/カメラ視点）で描画リストを球カリングする。
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE のため、落とすのは
     // 「現状でもラスタライザにクリップされている範囲」だけ＝影の見た目は不変。
-    const Frustum frustum = Frustum::FromViewProj(viewProj);
+    // W1-C6 pancaking: Epic の動的 CSM（影 PSO が DepthClipEnable=FALSE）のカスケードでは、光に近い側の遮蔽物を near 面で落とさない。
+    //   近いだけで箱の外の物も z=0 に潰れて影を落とす。それ以外（旧経路・スポット・ポイント・プリパス）は従来どおり 6 面で判定する。
+    Frustum frustum = Frustum::FromViewProj(viewProj);
+    if (shadowPass && cascadeTexelWorld > 0.0f && m_backendExt && m_backendExt->epicCsm.active && m_backendExt->epicCsm.psosValid && m_backendExt->epicCsm.pancake)
+        epiccsm::DropNearPlane(frustum);
 
     // ★このパスで使う LOD。カメラ距離で決まる item.lod に加えて、
     //   「シャドウマップ上で何テクセルを占めるか」でも粗くする。
@@ -2621,7 +2668,9 @@ void Application::RecordPerceptionIds(ID3D12GraphicsCommandList* cmd, ID3D12Reso
 void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar)
 {
     using namespace DirectX;
-    const u32 N = kNumCascades;
+    // W1-C6: Epic の動的 CSM は 3 カスケード（残りは番兵 = 影なし）。
+    const bool epicCsm = m_backendExt && m_backendExt->epicCsm.active;
+    const u32 N = epiccsm::CascadeCount(epicCsm);
 
     // CSM は透視前提（スライス錐台を XMMatrixPerspectiveFovLH で復元する）。
     // 編集2Dビュー等でカメラが正射になると錐台復元が破綻し影が崩れるため、
@@ -2633,7 +2682,7 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
     if (m_camera->IsOrthographic() || shadowsOff)
     {
         XMMATRIX id = XMMatrixIdentity();
-        for (u32 i = 0; i < N; ++i)
+        for (u32 i = 0; i < kNumCascades; ++i)
         {
             XMStoreFloat4x4(&m_cascadeViewProj[i], id);
             m_cascadeSplitsView[i] = 1e9f;  // 全成分を遠端 → cascade0 固定
@@ -2718,6 +2767,13 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
 
         XMStoreFloat4x4(&m_cascadeViewProj[ci], shadowVP);  // 行優先（world*VP 用、非転置）
         prevSplit = f;
+    }
+    // 使わないカスケード（Epic は 4 本目）: 射影すると必ず UV が範囲外 = 影なし。選択は手前のカスケードの遠端のまま。
+    for (u32 ci = N; ci < kNumCascades; ++ci)
+    {
+        m_cascadeViewProj[ci] = epiccsm::UnusedCascadeMatrix();
+        m_cascadeSplitsView[ci] = m_cascadeSplitsView[N - 1];
+        m_cascadeRadius[ci] = 0.0f;
     }
 }
 
@@ -2925,7 +2981,10 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         bool cancelled = false;
         newSceneAllowed = m_editorCtx->pendingNewSceneSkipConfirm || ConfirmDiscardScene(cancelled);
         if (cancelled)
+        {
             m_editorCtx->pendingNewScene = false;
+            SetNextNewSceneProfile("epic");   // 要求ごと捨てたら予約も戻す（後の Ctrl+N に classic が残らない）
+        }
     }
     if (newSceneAllowed)
     {
@@ -2975,6 +3034,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         }
         // 新規シーンの既定は GI モード「新」（S5）: DDGI 自動配置 + 環境光 0 + SSGI + RT 影。
         // 使えない環境（DXR 非対応 / DDGI 初期化失敗）は従来のまま作る（理由は起動時のログにも出している）。
+        bool giNewApplied = false;
         {
             gi::Options go;
             go.dxrSupported = m_dxrEnabled && m_ddgi && m_ddgi->SupportsGiNew();
@@ -2984,12 +3044,18 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 go.whyNot = "DDGI（新モード）を初期化できなかったため、従来の GI で作りました";
             go.refitGrid = true;
             const gi::Result gr = gi::ApplyNew(*m_scene, go);
+            giNewApplied = gr.applied;
             if (gr.applied)
                 Logger::Info("新規シーン: GI モード「新」（DDGI {}x{}x{} 間隔 {:.2f}m）",
                              gr.ddgi.probeCountX, gr.ddgi.probeCountY, gr.ddgi.probeCountZ, gr.ddgi.spacing);
             else
                 Logger::Info("新規シーン: GI モードは旧のまま（{}）", gr.reason);
         }
+        // W1-C8 RM-C2: 新規シーンのルック（既定 Epic。MCP new_scene {profile:"classic"} なら従来のまま）。
+        //   Epic = 品質プリセット Epic の構成 + 物理大気 + UE Filmic + 自動露出。DDGI が有効なら SSGI は OFF（BUG-04）。
+        //   保存の前に当てる（starterPath があればこの後 Save する）。既存シーンを開くときは当てない。
+        const std::string newSceneProfile = ApplyNewSceneProfile(*this, giNewApplied);
+        Logger::Info("新規シーンのプロファイル: {}", newSceneProfile);
         if (!starterPath.empty())
             m_currentSceneRel = ToAssetRel(starterPath);
         // 作成と同時にシーンファイルを保存
@@ -3033,6 +3099,7 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                                                                                 : std::string("Untitled"))},
                                   {"entityCount", entityCount},
                                   {"sceneGeneration", m_sceneGeneration},
+                                  {"profile", newSceneProfile},
                                   {"saved", starterSaved}};   // savePath を渡してファイルを作れたときだけ true
             mcpscene::AddTo(result, paths);
             CompleteMcp(m_mcpBridge.get(), m_mcpLoadReply, std::move(result));
@@ -3191,6 +3258,9 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         }
     }
 
+    // W1-C13: 読み込み / 複製 / Undo された球の分割数を反映（描画リストを作る前＝フレームの頭）
+    if (m_scene) m_scene->ApplyPendingSphereSubdiv();
+
     // エンティティ生成（前フレームのドラッグ&ドロップ等から遅延実行）
     if (!m_editorCtx->pendingSpawns.empty())
     {
@@ -3275,7 +3345,12 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             }
             else if (req.modelPath == "__primitive_sphere__")
             {
-                auto e = m_scene->SpawnSphere(name, req.position);
+                // 新しく作る球だけ分割数を上げる（BUG-45）。読み込み経路は既定の 16x16 のまま。
+                auto e = m_scene->SpawnSphere(name, req.position, 0.5f,
+                                              Scene::kSphereSlicesNew, Scene::kSphereStacksNew);
+                // 分割数を保存 / 複製 / Undo で引き継ぐ（applied=true＝メッシュは今の値で作成済み）。
+                m_scene->GetRegistry().emplace_or_replace<SphereSubdiv>(
+                    e.GetHandle(), SphereSubdiv{ Scene::kSphereSlicesNew, Scene::kSphereStacksNew, true });
                 spawnedEntity = e.GetHandle();
             }
             else if (req.modelPath == "__primitive_plane__")
@@ -4608,18 +4683,22 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         m_shadowMapDirty = false;
         m_shadowMap.Reset();
 
+        // W1-C6: Epic の動的 CSM は D16 × 3 スライス（TYPELESS、DSV = D16_UNORM、SRV = R16_UNORM）。旧経路は従来どおり D32 × 4。
+        const bool epicMap = m_backendExt && m_backendExt->epicCsm.active;
+        const epiccsm::DepthFormats shFmt = epiccsm::FormatsFor(epicMap);
+        const u32 shCascades = epiccsm::CascadeCount(epicMap);
         D3D12_RESOURCE_DESC shadowDesc{};
         shadowDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         shadowDesc.Width = m_shadowMapSize;
         shadowDesc.Height = m_shadowMapSize;
-        shadowDesc.DepthOrArraySize = static_cast<u16>(kNumCascades);
+        shadowDesc.DepthOrArraySize = static_cast<u16>(shCascades);
         shadowDesc.MipLevels = 1;
-        shadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        shadowDesc.Format = shFmt.resource;
         shadowDesc.SampleDesc = {1, 0};
         shadowDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
         D3D12_CLEAR_VALUE clearValue{};
-        clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+        clearValue.Format = shFmt.dsv;
         clearValue.DepthStencil = {1.0f, 0};
 
         D3D12_HEAP_PROPERTIES heapProps{};
@@ -4631,10 +4710,10 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             &clearValue, IID_PPV_ARGS(&m_shadowMap)));
 
         // DSV はハンドル再利用（初回 Allocate 済み）。スライス毎に再作成。
-        for (u32 i = 0; i < kNumCascades; ++i)
+        for (u32 i = 0; i < shCascades; ++i)
         {
             D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
-            dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+            dsvDesc.Format = shFmt.dsv;
             dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
             dsvDesc.Texture2DArray.FirstArraySlice = i;
             dsvDesc.Texture2DArray.ArraySize = 1;
@@ -4644,15 +4723,15 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-        srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        srvDesc.Format = shFmt.srv;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.Texture2DArray.MipLevels = 1;
         srvDesc.Texture2DArray.FirstArraySlice = 0;
-        srvDesc.Texture2DArray.ArraySize = kNumCascades;
+        srvDesc.Texture2DArray.ArraySize = shCascades;
         m_graphicsDevice->GetDevice()->CreateShaderResourceView(
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
-        Logger::Info("Shadow map resized ({}x{})", m_shadowMapSize, m_shadowMapSize);
+        Logger::Info("Shadow map resized ({}x{} x{} {})", m_shadowMapSize, m_shadowMapSize, shCascades, epicMap ? "D16 (Epic)" : "D32");
     }
 
     // ===== メインパスのビューポートとカメラ投影を先に確定 =====
@@ -4849,7 +4928,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         //   （最終カスケードの外は無影）。近景の解像度を保つため分割は lambda 0.7（Application.h）で
         //   手前寄りに取る: 分割 ≒ 31/64/125/400m（旧 25/52/90/200m）。RT サン影が有効なら静的ジオメトリは
         //   無限遠まで RT が担当するので、CSM はスキンド / 半透明の分だけ。
-        camFar = (std::min)(camFar, 400.0f);
+        camFar = epiccsm::CascadeFar(camFar, m_backendExt && m_backendExt->epicCsm.active);
         ComputeCascades(lightDir, camNear, camFar);
     }
 
@@ -4915,8 +4994,26 @@ void Application::PrepareFrame(RenderFrameContext& frame)
     const bool ssGiWantsPrepass =
         m_screenSpaceGi && m_screenSpaceGi->IsReady() && taaViewOk
         && (m_scene->GetSsrSettings().enabled || m_scene->GetSsgiSettings().enabled);
-    if (taaActive || ssGiWantsPrepass) EnsureInstancePrevBuffer();
-    m_trackPrevWorld = taaActive || ssGiWantsPrepass;
+    // ★FU-E-23: RT 影デノイザ / RT-AO / RT 反射も速度プリパスを要求する（velocityPrepass の条件と揃えること。renderer/VelocityPolicy.h）。
+    //   ここに入れないと前ワールド VB が無いまま速度パスが個別ドローへ落ち、フォワードの自動インスタンシングと Z がずれて大きな面が欠ける。
+    PrepareFrameVelocityInputs velIn;
+    velIn.taaActive = taaActive;
+    velIn.ssGiWantsPrepass = ssGiWantsPrepass;
+    velIn.ssrEnabled = m_scene->GetSsrSettings().enabled;
+    velIn.ssgiEnabled = m_scene->GetSsgiSettings().enabled;
+    velIn.rtSceneReady = m_rtScene != nullptr;
+    velIn.taaPassExists = m_taaPass != nullptr;
+    {
+        const RtSettings& rtVel = m_scene->GetRtSettings();
+        velIn.rtShadowEnabled = rtVel.shadowEnabled;
+        velIn.rtShadowDenoise = rtVel.shadowDenoise;
+        velIn.rtAoEnabled     = rtVel.aoEnabled;
+        velIn.rtReflEnabled   = rtVel.reflectionsEnabled;
+    }
+    const VelocityPrepassReasons velReasons = MakePrepareFrameVelocityReasons(velIn);
+    const bool wantsVelocityPrevWorld = WantsVelocityPrevWorld(velReasons);   // velocityPrepass の上位集合（理由は VelocityPolicy.h）
+    if (wantsVelocityPrevWorld) EnsureInstancePrevBuffer();
+    m_trackPrevWorld = wantsVelocityPrevWorld;
 
     // ★かつてここに「ビューポート矩形が変わったら履歴を捨てる」ブロックがあったが、
     //   #16 でシーンは常に RT 全面に描くようになり、履歴の UV 対応が表示矩形に依存しなくなった。
@@ -5430,6 +5527,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             { auto* o = static_cast<StageStateOps*>(u); o->depth->Require(*o->cl, to); };
         }
         sc.stateUser = &stateOps;
+        // FU-E-21: AfterTranslucent だけ、読み取り専用 DSV を渡す（VFX のハードウェア深度テスト用）。
+        if (st == Stage::AfterTranslucent && wiring.depthValid && depthRes && m_graphicsDevice)
+            sc.depthDsvReadOnly = AcquireStageReadOnlyDsv(m_graphicsDevice->GetDevice(), depthRes);
         if (wiring.hiZSrv != 0xFFFFFFFFu)      sc.hiZSrv      = m_srvHeap->GetGpuHandle(wiring.hiZSrv);
         if (wiring.velocitySrv != 0xFFFFFFFFu) sc.velocitySrv = m_srvHeap->GetGpuHandle(wiring.velocitySrv);
         sc.perFrameGpuVa = stagePfVa;
@@ -5548,10 +5648,23 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // ヒープ / ルートシグネチャ / 遷移 / ビューポート / クリアは ShadowMapPass が張る
         // （RenderPass.h の状態の契約）。ここは「どのスライスをどの viewProj で描くか」だけ。
         // 描く中身は 3 種とも RenderDepthOnlyScene（影 PSO / 1 段粗い LOD / MASK は ShadowMask）。
-        auto shadowDepth = [&](bool skipRtCovered)
+        // W1-C6: epic=true は Epic の動的 CSM 用の D16 / DepthClip=FALSE の PSO 束（UpdateEpicCsm が作る）で描く。
+        EpicCsmState* const epicSt = (m_backendExt && m_backendExt->epicCsm.active && m_backendExt->epicCsm.psosValid) ? &m_backendExt->epicCsm : nullptr;
+        const DepthMaskPsos epicMaskPsos{ epicSt ? epicSt->maskStat.get() : nullptr, epicSt ? epicSt->maskInst.get() : nullptr,
+                                          epicSt ? epicSt->maskSkin.get() : nullptr };
+        auto shadowDepth = [&](bool skipRtCovered, bool epic = false)
         {
-            return [&, skipRtCovered](const ShadowMapPass::Slice& s)
+            return [&, skipRtCovered, epic](const ShadowMapPass::Slice& s)
             {
+                if (epic && epicSt)
+                {
+                    RenderDepthOnlyScene(XMLoadFloat4x4(&s.viewProj), *epicSt->stat, *epicSt->skin,
+                                         /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
+                                         epicSt->inst.get(), /*prepass*/ nullptr,
+                                         skipRtCovered, /*cascadeTexelWorld*/ s.texelWorld,
+                                         &epicMaskPsos);
+                    return;
+                }
                 RenderDepthOnlyScene(XMLoadFloat4x4(&s.viewProj),
                                      *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                      /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
@@ -5754,8 +5867,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             //   副産物として CSM のドロー数も大きく減る。
             // texelWorld = このカスケードの 1 テクセルが何メートルか。遠カスケードほど大きくなり、
             //   そこへフル解像度のメッシュを投げる無駄を passLod が落とす。
+            const u32 csmCount = epiccsm::CascadeCount(epicSt != nullptr);   // Epic = 3（D16）、旧経路 = 4（D32）
             std::array<ShadowMapPass::Slice, kNumCascades> slices{};
-            for (u32 ci = 0; ci < kNumCascades; ++ci)
+            for (u32 ci = 0; ci < csmCount; ++ci)
             {
                 slices[ci].dsv        = m_shadowDsvHandles[ci];
                 slices[ci].viewProj   = m_cascadeViewProj[ci];
@@ -5767,17 +5881,19 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             csmIn.size       = m_shadowMapSize;
             csmIn.rootSig    = m_rootSignature.get();
             csmIn.slices     = slices.data();
-            csmIn.sliceCount = kNumCascades;
-            csmIn.drawDepth  = shadowDepth(/*skipRtCovered*/ m_rtShadowActiveThisFrame);
+            csmIn.sliceCount = csmCount;
+            csmIn.drawDepth  = shadowDepth(/*skipRtCovered*/ m_rtShadowActiveThisFrame, /*epic*/ epicSt != nullptr);
             // 植生: 近距離の 2 カスケードへ ExecuteIndirect で描く（遠い LOD は影を落とさない）。ShadowMapPass はスライスを 0..n-1 の順に呼ぶ。
             u32 foliageCsmSlice = 0;
             if (foliageOn)
             {
                 auto baseDraw = csmIn.drawDepth;
-                csmIn.drawDepth = [this, nativeCmdList, baseDraw, &foliageCsmSlice](const ShadowMapPass::Slice& sl)
+                const bool epicMapOn = (epicSt != nullptr);
+                csmIn.drawDepth = [this, nativeCmdList, baseDraw, &foliageCsmSlice, epicMapOn](const ShadowMapPass::Slice& sl)
                 {
                     baseDraw(sl);
-                    if (foliageCsmSlice < 2) FoliageDrawShadow(nativeCmdList, foliageCsmSlice, sl.viewProj);
+                    // PSO の DSV 形式が影マップ（D16 / D32）と合わないときは描かない（作成直後の 1 フレームの追従遅れ。UpdateEpicCsm が次の先頭で追いつく）
+                    if (foliageCsmSlice < 2 && m_foliage && m_foliage->ShadowEpicOn() == epicMapOn) FoliageDrawShadow(nativeCmdList, foliageCsmSlice, sl.viewProj);
                     ++foliageCsmSlice;
                 };
             }
@@ -5907,7 +6023,10 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
     //   空間デノイザは丸ごとスキップされる。
     // ★RT 影デノイザ（shadowDenoise）も速度（時間蓄積の再投影）と G-Buffer（空間フィルタの法線）を使う。
     const bool useRtShadowDenoise = useRtShadow && m_scene->GetRtSettings().shadowDenoise && m_taaPass;
-    const bool velocityPrepass = (taaActive || stageVelocityReq || useSsr || useSsgi || useRtAo || useRtRefl || useRtShadowDenoise)
+    VelocityPrepassReasons velNow;   // 判定は renderer/VelocityPolicy.h（PrepareFrame の前ワールド追跡と同じ関数）
+    velNow.taa = taaActive; velNow.stage = stageVelocityReq; velNow.ssr = useSsr; velNow.ssgi = useSsgi;
+    velNow.rtAo = useRtAo; velNow.rtReflections = useRtRefl; velNow.rtShadowDenoise = useRtShadowDenoise;
+    const bool velocityPrepass = WantsVelocityPrepass(velNow)
                                && m_velocityPSO && m_velocityPSOSkinned;
     // TAA 解決まで走らせるか。速度が書かれていないフレームでは絶対に解決しない
     // （履歴を速度なしで再投影すると全面がゴーストする）。
@@ -7864,6 +7983,23 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
         fc._clusterReserved[9] = {(msOn && lutOk) ? 0.0f : 1.0f, 0.0f, 0.0f, 0.0f};
     }
 
+    // UNO_SHADING_V2（W1-C5）: マイクロシャドウ / 地平線 / GTSO のフラグと強さ。shadingRevision != 2 は x = 0（全機能 OFF）。
+    //   W1-C6: Epic の動的 CSM のビット（受光側の法線オフセット / Gather PCSS）も x へ足し、w に法線オフセットの係数とフィルタタップ数を詰める。
+    //   V1 の .cso はこの欄を読まない。
+    {
+        const ShadingSettings& shs = m_scene ? m_scene->GetShadingSettings() : ShadingSettings{};
+        const ShadowPcssSettings& pcs = m_scene ? m_scene->GetShadowPcssSettings() : ShadowPcssSettings{};
+        const shadingv2::SlotValue v2 = shadingv2::PackSlot(shs);
+        DirectX::XMFLOAT4& slot = Pf(fc, PfSlot::ShadingV2);
+        slot.x = std::bit_cast<float>(shadingv2::PackFlags(shs, pcs));
+        slot.y = v2.y; slot.z = v2.z;
+        const bool epicRecv = (shs.shadingRevision == 2) && pcs.epicDynamicCsm;
+        slot.w = epicRecv ? std::bit_cast<float>(epiccsm::PackReceiver(pcs.receiverNormalOffsetBase, pcs.receiverNormalOffsetSlope, pcs.gatherFilterTaps)) : 0.0f;
+        // 各カスケードの 1 テクセルが何 m か（受光側の法線オフセット用。V1 は読まない）
+        DirectX::XMFLOAT4& tx = Pf(fc, PfSlot::CsmTexel);
+        const f32 invSize = 2.0f / static_cast<f32>((std::max)(m_shadowMapSize, 1u));
+        tx = {m_cascadeRadius[0] * invSize, m_cascadeRadius[1] * invSize, m_cascadeRadius[2] * invSize, m_cascadeRadius[3] * invSize};
+    }
     // 植生 F1: 風のフレーム共通値を予約領域 [0..1] へ（FoliageLayer があるときだけ書く。他の誰も読まない領域）
     FoliageFillFrameConstants(fc._clusterReserved);
 }

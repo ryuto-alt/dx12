@@ -35,6 +35,8 @@ public:
     PipelineStateBuilder& SetCullMode(D3D12_CULL_MODE mode);
     PipelineStateBuilder& SetDepthBias(i32 bias, f32 slopeScaledBias);
     PipelineStateBuilder& SetDepthFunc(D3D12_COMPARISON_FUNC func);  // 深度比較関数（プリパス併用で LESS_EQUAL 等）
+    // 深度クリップ（既定 ON）。OFF は pancaking 用: ニア / ファーの外の頂点を捨てずに深度 [0,1] へ押し付ける（W1-C6）。
+    PipelineStateBuilder& SetDepthClip(bool enabled);
 
     Microsoft::WRL::ComPtr<ID3D12PipelineState> Build(GraphicsDevice& device);
 

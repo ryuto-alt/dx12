@@ -1,6 +1,7 @@
 #include "renderer/foliage/FoliageSystem.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include "graphics/RootSignature.h"
 #include "renderer/Material.h"
 #include "renderer/Mesh.h"
+#include "renderer/ShadingRevisionPick.h"
 #include "renderer/foliage/FoliageLayerOps.h"
 #include "resource/ResourceManager.h"
 #include "resource/ShaderCompiler.h"
@@ -72,8 +74,17 @@ struct FoliageSystem::Impl
     std::unique_ptr<PipelineState> psoMain[2][2];   // [mask][depthLEqual]
     std::unique_ptr<PipelineState> psoDepth[2];     // [mask]
     std::unique_ptr<PipelineState> psoShadow[2];    // [mask]
+    // W1-C6: Epic の動的 CSM（D16 / DepthClip=FALSE / D16 換算のバイアス）用の影 PSO。epicOn のときだけ作る。
+    std::unique_ptr<PipelineState> psoShadowEpic[2];
+    bool  epicOn = false;
+    int   epicBias = 0;
+    float epicSlope = 0.0f;
+    bool  epicPancake = true;
+    bool BuildEpicShadowPsos();
     std::unique_ptr<PipelineState> psoVel[2];       // [mask]
     bool physApplied = false;
+    bool v2 = false;            // shadingRevision=2 を求めている（FU-E-25）
+    int  v2PsoCount = 0;        // V2 の .cso から作れたフォワード PSO の数（0..4 = [mask][depthLEqual]）
 
     ComPtr<ID3D12Resource> windCb[8];
     u8* windCbMapped[8] = {};
@@ -148,8 +159,15 @@ FoliageSystem::~FoliageSystem() { Shutdown(); }
 // ---------------------------------------------------------------------------
 bool FoliageSystem::Impl::BuildForwardPsos()
 {
-    const wchar_t* ps[2] = {physApplied ? L"ForwardFoliagePhys_PS.cso" : L"ForwardFoliage_PS.cso",
-                            physApplied ? L"ForwardFoliageMaskPhys_PS.cso" : L"ForwardFoliageMask_PS.cso"};
+    // FU-E-25: shadingRevision=2 のときは *V2_PS.cso を選ぶ。無ければ警告して V1 へ縮退（FwdPsNameRev と同じ流儀）。
+    const auto exists = [this](const std::wstring& n) { return shadingpick::CsoFileExists(d.shaderDir + n); };
+    const auto pk = std::array<shadingpick::Pick, 2>{
+        shadingpick::PickPs(v2, physApplied, L"ForwardFoliage_PS.cso", L"ForwardFoliagePhys_PS.cso", L"ForwardFoliageV2_PS.cso", L"ForwardFoliagePhysV2_PS.cso", exists),
+        shadingpick::PickPs(v2, physApplied, L"ForwardFoliageMask_PS.cso", L"ForwardFoliageMaskPhys_PS.cso", L"ForwardFoliageMaskV2_PS.cso", L"ForwardFoliageMaskPhysV2_PS.cso", exists)};
+    if (pk[0].fellBack || pk[1].fellBack)
+        Logger::Warn("植生: V2 の .cso が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）");
+    const std::wstring ps[2] = {pk[0].name, pk[1].name};
+    v2PsoCount = 0;
     auto vs = ShaderCompiler::LoadFromFile(d.shaderDir + L"ForwardFoliage_VS.cso");
     if (vs.GetSize() == 0) { Logger::Warn("植生: ForwardFoliage_VS.cso が読めない"); return false; }
     for (int mask = 0; mask < 2; ++mask)
@@ -170,6 +188,7 @@ bool FoliageSystem::Impl::BuildForwardPsos()
             b.SetDepthFunc(leq ? D3D12_COMPARISON_FUNC_LESS_EQUAL : D3D12_COMPARISON_FUNC_LESS);
             if (!psoMain[mask][leq]) psoMain[mask][leq] = std::make_unique<PipelineState>();
             psoMain[mask][leq]->Initialize(*d.gdev, b);
+            if (pk[mask].usedV2 && psoMain[mask][leq] && psoMain[mask][leq]->Get()) ++v2PsoCount;   // 実体ができたものだけ数える
         }
     }
     return true;
@@ -217,8 +236,62 @@ bool FoliageSystem::Impl::BuildPsos()
             psoVel[mask]->Initialize(*d.gdev, b);
         }
     }
+    return epicOn ? BuildEpicShadowPsos() : true;   // W1-C6: シェーダの再読込みでも Epic の影 PSO を作り直す
+}
+
+// W1-C6: Epic の動的 CSM の影 PSO の切り替え。GPU が止まっているときだけ呼ぶこと。
+bool FoliageSystem::ShadowEpicMatches(bool on, int bias, float slope, bool pancake) const
+{
+    if (!m_impl) return true;   // まだ無い（Initialize の後に追いつく）
+    return m_impl->epicOn == on && (!on || (m_impl->epicBias == bias && m_impl->epicSlope == slope && m_impl->epicPancake == pancake));
+}
+
+bool FoliageSystem::ShadowEpicOn() const { return m_impl && m_impl->epicOn; }
+
+bool FoliageSystem::SetShadowEpic(bool on, int bias, float slope, bool pancake)
+{
+    if (!m_impl) return true;
+    Impl& I = *m_impl;
+    I.epicOn = on; I.epicBias = bias; I.epicSlope = slope; I.epicPancake = pancake;
+    if (!on) { I.psoShadowEpic[0].reset(); I.psoShadowEpic[1].reset(); return true; }
+    return I.BuildEpicShadowPsos();
+}
+
+bool FoliageSystem::Impl::BuildEpicShadowPsos()
+{
+    auto vsD = ShaderCompiler::LoadFromFile(d.shaderDir + L"FoliageDepth_VS.cso");
+    if (vsD.GetSize() == 0) return false;
+    for (int mask = 0; mask < 2; ++mask)
+    {
+        auto psD = ShaderCompiler::LoadFromFile(d.shaderDir + (mask ? L"FoliageDepthMask_PS.cso" : L"FoliageDepth_PS.cso"));
+        if (psD.GetSize() == 0) return false;
+        PipelineStateBuilder b;
+        b.SetRootSignature(d.rootSig->Get())
+         .SetVertexShader(vsD.GetData(), vsD.GetSize())
+         .SetPixelShader(psD.GetData(), psD.GetSize())
+         .SetInputLayout(kFoliageLayout, static_cast<u32>(std::size(kFoliageLayout)))
+         .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+         .SetDepthStencilFormat(DXGI_FORMAT_D16_UNORM)
+         .SetDepthEnabled(true)
+         .SetCullMode(D3D12_CULL_MODE_NONE)
+         .SetDepthClip(!epicPancake)
+         .SetDepthBias(epicBias, epicSlope);
+        if (!psoShadowEpic[mask]) psoShadowEpic[mask] = std::make_unique<PipelineState>();
+        psoShadowEpic[mask]->Initialize(*d.gdev, b);
+    }
     return true;
 }
+
+bool FoliageSystem::SetShadingV2(bool v2)
+{
+    m_v2Requested = v2;
+    if (!m_impl) return true;               // Initialize が拾う
+    if (m_impl->v2 == v2) return true;
+    m_impl->v2 = v2;
+    return m_impl->BuildForwardPsos();      // GPU が止まっている間（UpdateShadingRevision の WaitIdle 後）にだけ呼ぶこと
+}
+
+int FoliageSystem::V2PsoCount() const { return m_impl ? m_impl->v2PsoCount : 0; }
 
 bool FoliageSystem::Initialize(const Deps& d, std::string* err)
 {
@@ -228,6 +301,7 @@ bool FoliageSystem::Initialize(const Deps& d, std::string* err)
     m_impl = std::make_unique<Impl>();
     Impl& I = *m_impl;
     I.d = d;
+    I.v2 = m_v2Requested;   // 先に SetShadingV2 されていれば最初から V2 の PSO で作る
     I.dev = d.gdev->GetDevice();
     I.frameCount = std::min(std::max(d.frameCount, 1u), 8u);
     std::string e;
@@ -686,6 +760,7 @@ void FoliageSystem::Cull(ID3D12GraphicsCommandList* cmd, const ViewIn& v, const 
                 d.p.cullDist = std::max(1.0f, std::min(rt.params.shadowDistance, rt.params.cullDistance));
                 d.p.thinStart = 1.0f - 1e-3f;   // 影は間引かない（密度フェードは主ビューだけ）
                 PlanesFromViewProj(v.cascade[c].viewProj, d.p.planes);
+                if (v.cascade[c].dropNearPlane) { d.p.planes[4][0] = 0.0f; d.p.planes[4][1] = 0.0f; d.p.planes[4][2] = 0.0f; d.p.planes[4][3] = 1.0f; }   // W1-C6: pancaking
                 ds.push_back(d);
                 rt.shadowCulled[c] = true;
             }
@@ -877,7 +952,7 @@ void FoliageSystem::DrawShadow(ID3D12GraphicsCommandList* cmd, u32 cascade, cons
         for (const auto& g : rt.groups)
         {
             if (g.lod > static_cast<u32>(std::max(rt.params.shadowMaxLod, 0))) continue;
-            PipelineState* pso = I.psoShadow[g.mask ? 1 : 0].get();
+            PipelineState* pso = (I.epicOn ? I.psoShadowEpic[g.mask ? 1 : 0] : I.psoShadow[g.mask ? 1 : 0]).get();
             if (!pso || !pso->Get()) continue;
             if (pso->Get() != lastPso) { cmd->SetPipelineState(pso->Get()); lastPso = pso->Get(); }
             const bool wind = rt.params.windEnabled;

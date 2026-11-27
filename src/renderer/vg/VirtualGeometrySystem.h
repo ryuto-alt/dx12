@@ -261,6 +261,7 @@ struct ShadowView
     uint32_t size = 2048;                 // スライスの解像度（正方形）
     D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
     uint32_t userCount = 0;               // 呼び出し側の数（このビューで VG に描かせた物の数など）。統計と一緒に返す（ShadowStats::viewUserCount）
+    bool dropNearPlane = false;           // W1-C6: pancaking（Epic の動的 CSM）。カリングの near 面を外す（常に内側の平面へ差し替える）
 };
 struct ShadowDesc
 {
@@ -274,6 +275,8 @@ struct ShadowDesc
     int   depthBias = 8000;               // 影の PSO と同じ値（ApplicationPipeline.cpp RecreateShadowPsos）
     float slopeBias = 2.0f;
     bool  cullBack = true;                // 影の PSO と同じ（既定 CULL_BACK）
+    DXGI_FORMAT depthFormat = DXGI_FORMAT_D32_FLOAT;   // 影マップの DSV の型（PSO の DSVFormat）。Epic の動的 CSM は D16_UNORM
+    bool  depthClip = true;               // false = DepthClipEnable=FALSE（pancaking）
     ID3D12DescriptorHeap* restoreHeap = nullptr;
 };
 struct ShadowStats
@@ -416,6 +419,10 @@ public:
     bool GetAssetMaterialsGpu(uint32_t id, std::vector<VgMaterialGpu>& out) const;
     bool DrawGBuffer(const GBufferDesc& d);
     bool DrawResolve(const ResolveDesc& d);
+    // shadingRevision（FU-E-25）。v2 = true で VgResolveV2_PS.cso を選ぶ（無ければ警告して V1 へ縮退）。GPU が止まっているときだけ呼ぶこと。
+    bool SetShadingV2(bool v2);
+    bool ShadingV2Requested() const { return m_shadingV2Requested; }
+    int  V2PsoCount() const { return (m_resolvePsIsV2 && m_psoResolve) ? 1 : 0; }   // resolve の PSO は初回の描画で作る。作れてから 1（描く前は 0）
     bool ResolveSupported() const { return m_rasterOk && m_extHeap && !m_bcResolveVs.empty() && !m_bcResolvePs.empty(); }
     bool UsesExternalHeap() const { return m_extHeap; }
     uint32_t DescriptorsInUse() const;             // VG が確保しているディスクリプタ数（固定領域 + アセット）
@@ -519,6 +526,9 @@ private:
     std::unordered_map<uint32_t, KeyedMat> m_keyedMats;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoSort, m_psoGBuffer, m_psoResolve;
     std::vector<uint8_t> m_bcGbVs, m_bcGbPs, m_bcResolveVs, m_bcResolvePs;
+    bool m_shadingV2Requested = false;   // Shutdown では戻さない（シーンの shadingRevision の写し）
+    bool m_resolvePsIsV2 = false;        // m_bcResolvePs が V2 の .cso
+    bool LoadResolvePs();
     ID3D12RootSignature* m_psoResolveRs = nullptr;
     DXGI_FORMAT m_psoResolveFormat = DXGI_FORMAT_UNKNOWN;
     DXGI_FORMAT m_psoGbFormats[2] = {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN};
@@ -568,7 +578,7 @@ private:
 
     // 影（ExecuteShadow。初回に確保）
     bool EnsureShadowResources();
-    ID3D12PipelineState* GetShadowPso(int bias, float slope, bool cullBack);
+    ID3D12PipelineState* GetShadowPso(int bias, float slope, bool cullBack, DXGI_FORMAT fmt, bool depthClip);
     bool m_shadowRes = false;
     Microsoft::WRL::ComPtr<ID3D12Resource> m_shadowInstBuf[8], m_shadowAssetBuf[8], m_shadowCbBuf[8], m_shadowReadback[8];
     uint8_t* m_shadowInstMapped[8]{}; uint8_t* m_shadowAssetMapped[8]{}; uint8_t* m_shadowCbMapped[8]{};
@@ -578,7 +588,7 @@ private:
     uint32_t m_shadowInstCount[8]{};
     bool m_tsShadow[8]{};
     Microsoft::WRL::ComPtr<ID3D12PipelineState> m_psoShadow;
-    int m_psoShadowBias = 0; float m_psoShadowSlope = 0.0f; bool m_psoShadowCull = false;
+    int m_psoShadowBias = 0; float m_psoShadowSlope = 0.0f; bool m_psoShadowCull = false; DXGI_FORMAT m_psoShadowFmt = DXGI_FORMAT_D32_FLOAT; bool m_psoShadowClip = true;
     ShadowStats m_shadowStats;
 
     // 統計

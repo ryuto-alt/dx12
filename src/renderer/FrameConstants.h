@@ -89,7 +89,7 @@ static_assert(offsetof(FrameConstantsData, ddgiScroll3) == 1584, "ddgiScroll3 of
 enum class PfSlot : u32
 {
     FoliageWind0 = 0, FoliageWind1 = 1,   // 既存
-    ShadingV2    = 2,   // C: x=shadingFlags(asuint) y=microShadowK z=horizonK w=sunAngularRadius
+    ShadingV2    = 2,   // C: x=shadingFlags(asuint) y=microShadowK z=horizonK w=受光側の影の係数（C6: base / slope / タップ数を 8 ビットずつ。MH-2 の sunAngularRadius は別の枠を決めて使うこと）
     CsmTexel     = 3,   // C: csmTexelWorld[4]
     Weather      = 4,   // C: wetness, puddle, rain, snow
     PostView     = 5,   // C が書く口を持つ。x=preExposure（値は BD）、y=debugViewMode（値は A）

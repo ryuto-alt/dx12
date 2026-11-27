@@ -87,6 +87,47 @@ float CalcShadow(float3 worldPos, float viewDepth, float2 svPos)
     return shadow;
 }
 
+#ifdef UNO_SHADING_V2
+// ===== V2: Epic の動的 CSM の受光側（W1-C6 LS-02a）=====
+//   受光側の法線オフセット: worldPos += Ng * texelWorld[c] * (base + slope * (1 - |N.L|))（CPU の写しは renderer/EpicCsm.h の ReceiverNormalOffset）。
+//   Ng は光の側へ向けた幾何法線。係数は PfSlot::ShadingV2.w（8 ビットずつ base / slope / タップ数）、テクセルの大きさは PfSlot::CsmTexel。
+//   Gather の PCSS は UNO_V2_FLAG_GATHER_PCSS のときだけ。フラグが無い V2 のシーン（epicDynamicCsm=false）は従来の CalcShadow を通る。
+float SampleCascadeV2(int cascade, float3 worldPos, float3 Ng, float NoLg, float2 svPos, bool gather)
+{
+    const uint rb = asuint(_clusterReserved[2].w);
+    const float base  = (float)(rb & 255u) * (4.0 / 255.0);
+    const float slope = (float)((rb >> 8) & 255u) * (4.0 / 255.0);
+    const uint  taps  = (rb >> 16) & 255u;
+    const float texelW = _clusterReserved[3][cascade];
+    const float3 p = worldPos + Ng * (texelW * (base + slope * (1.0 - NoLg)));
+    return SampleShadowCascadeCommonV2(g_shadowMap, g_brdfSampler, cascade, p, svPos, shadowParams.y, gather, taps);
+}
+
+float CalcShadowV2(float3 worldPos, float3 Ng, float NoLg, float viewDepth, float2 svPos, bool gather, bool dither)
+{
+    if (cascadeSplitsView.x > 1.0e8) return 1.0f;
+    int c = SelectCascade(viewDepth);
+    [loop]
+    while (c < NUM_CASCADES - 1 && !ShadowCascadeContains(c, worldPos)) ++c;
+    float shadow = SampleCascadeV2(c, worldPos, Ng, NoLg, svPos, gather);
+    float band = shadowParams.z;
+    if (band > 0.0f && c < NUM_CASCADES - 1)
+    {
+        float edge = cascadeSplitsView[c];
+        float t = saturate((edge - viewDepth) / max(band, 1e-4));
+        if (t < 1.0f)
+        {
+            // dither: 2 回サンプルして混ぜる代わりに、IGN と時間位相（pcssParams.z。TAA 無効時は 0）で片方だけ選ぶ（TAA / DLSS が平均する）。
+            if (dither)
+                shadow = (frac(PcssIgn(svPos) + pcssParams.z) < (1.0f - t)) ? SampleCascadeV2(c + 1, worldPos, Ng, NoLg, svPos, gather) : shadow;
+            else
+                shadow = lerp(SampleCascadeV2(c + 1, worldPos, Ng, NoLg, svPos, gather), shadow, t);
+        }
+    }
+    return shadow;
+}
+#endif // UNO_SHADING_V2
+
 // ---- ピクセルの幾何入力（PSInput の型はシェーダごとに違うので、尾部が読む分だけを束ねる）----
 struct UnoShadeInput
 {
@@ -233,13 +274,39 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
     float shadow = 1.0;
 #else
     // Shadow (CSM カスケード選択 PCF)
+#ifdef UNO_SHADING_V2
+    // W1-C6: Epic の動的 CSM（シーン全体が V2 かつ epicDynamicCsm）は受光側の法線オフセット + Gather PCSS。それ以外の V2 のシーンは従来の CalcShadow。
+    float shadow;
+    [branch] if ((UnoV2Flags() & UNO_V2_FLAG_CSM_RECEIVER) != 0u)
+    {
+        float3 Ngs = normalize(si.worldNormal);
+        const float ngl = dot(Ngs, L);
+        Ngs = (ngl < 0.0) ? -Ngs : Ngs;   // 光の側の法線（裏面でも光へ寄せる）
+        shadow = CalcShadowV2(si.worldPos, Ngs, abs(ngl), si.viewDepth, si.svPos, (UnoV2Flags() & UNO_V2_FLAG_GATHER_PCSS) != 0u, (UnoV2Flags() & UNO_V2_FLAG_CASCADE_DITHER) != 0u);
+    }
+    else
+        shadow = CalcShadow(si.worldPos, si.viewDepth, si.svPos);
+#else
     float shadow = CalcShadow(si.worldPos, si.viewDepth, si.svPos);
+#endif
 
     // コンタクトシャドウ（スクリーン空間・フル解像度・同一ビューポートなのでピクセル直読み）。
     // contactShadowEnabled=0（無効/正射/フォールバック）のときは読まず 1.0。
     // 白ダミーは 1x1 のため Load(画面座標) が範囲外で 0 を返し、太陽光を全消しするのを防ぐ。
     if (contactShadowEnabled > 0.5)
         shadow = min(shadow, g_contactShadow.Load(int3(si.svPos, 0)).r);
+#endif
+
+#ifdef UNO_SHADING_V2
+    // ===== V2: マイクロシャドウ（太陽 + ローカル光。W1-C5）=====
+    //   AO は材質 AO だけ（Chan 2018 / Filament と同じ）。SSAO は画面依存で間接光向けなので、直接光には入れない
+    //   （入れると日向の接地部が暗くなり、画面端や深度の段差に縁が出る）。AO マップの無い材質では実質 no-op。
+    const uint v2Flags = UnoV2Flags();
+    float v2Ao = s.ao;
+    bc.v2Ao     = v2Ao;
+    bc.v2MicroK = ((v2Flags & UNO_V2_FLAG_MICRO_SHADOW) != 0u) ? _clusterReserved[2].y : 0.0;
+    [branch] if (bc.v2MicroK > 0.0)
+        shadow *= UnoV2MicroShadow(dot(N, L), v2Ao, bc.v2MicroK);
 #endif
 
     // Directional Light（影付き）
@@ -393,6 +460,15 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
             kD = (1.0 - saturate((specF * envBRDF.x + envBRDF.y * bc.F90) * msCompIbl)) * (1.0 - metallic);
         }
 
+#ifdef UNO_SHADING_V2
+        // V2: 地平線オクルージョン（IBL・反射プローブ・SSR が入った後の鏡面に掛ける。幾何法線の面より下へ向く反射を落とす）
+        [branch] if ((v2Flags & UNO_V2_FLAG_HORIZON_OCC) != 0u)
+        {
+            float3 Ng = normalize(si.worldNormal);
+            if (dot(Ng, N) < 0.0) Ng = -Ng;
+            specularIBL *= UnoV2HorizonOcclusion(dot(R, Ng), _clusterReserved[2].z);
+        }
+#endif
         // ★AO の掛け方（二重計上の解消）:
         //   SSGI/SSR が担当していない分にだけ AO を掛ける。どちらも「実際に届いた光」を
         //   画面空間で積分した結果なので遮蔽は織り込み済み。そこへ AO を重ねると
@@ -405,6 +481,11 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
         // 鏡面遮蔽（Lagarde 2014）: AO と NoV・粗さから鏡面の可視率を近似。ao=1 なら so=1。
         float  soExp = exp2(-16.0 * roughness - 1.0);
         float  so    = saturate(pow(max(NoV + ao, 1e-4), soExp) - 1.0 + ao);
+#ifdef UNO_SHADING_V2
+        // V2: GTSO（Lagarde の近似を置き換える）。ao は SSAO x 材質 AO。
+        [branch] if ((v2Flags & UNO_V2_FLAG_GTSO) != 0u)
+            so = UnoV2Gtso(dot(N, R), ao, roughness);
+#endif
         float aoSpec = lerp(so, 1.0, ssrConf);
         float3 ambBase = kD * diffuseIBL * aoDiffV + specularIBL * aoSpec;
         [branch] if (extFlags != 0u)
@@ -489,7 +570,15 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
             const float2 ab = float2(-1.04, 1.04) * aa + rr.zw;
             const float  soExp2 = exp2(-16.0 * roughness - 1.0);
             const float  so2    = saturate(pow(max(NoVp + ao, 1e-4), soExp2) - 1.0 + ao);
-            const float3 probeSpec = pr.rgb * (F0 * ab.x + ab.y) * so2 * msCompIbl;
+            float3 probeSpec = pr.rgb * (F0 * ab.x + ab.y) * so2 * msCompIbl;
+#ifdef UNO_SHADING_V2
+            [branch] if ((v2Flags & UNO_V2_FLAG_HORIZON_OCC) != 0u)
+            {
+                float3 Ngp = normalize(si.worldNormal);
+                if (dot(Ngp, N) < 0.0) Ngp = -Ngp;
+                probeSpec *= UnoV2HorizonOcclusion(dot(Rp, Ngp), _clusterReserved[2].z);
+            }
+#endif
             // 既存の鏡面（F0 * ambientStrength）を重み分だけ引いて、プローブの寄与を足す。SSR が当たった所は SSR 優先。
             ambient -= ambientStrength * ambientSpecular * ao * pr.a * (1.0 - ssrConf);
             ambient += probeSpec * (1.0 - ssrConf);

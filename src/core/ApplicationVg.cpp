@@ -13,6 +13,8 @@
 #include "core/ApplicationInternal.h"
 #include "core/PathTracerHost.h"   // PtHost::Invalidate（張り替えでジョブを中止）
 #include "renderer/ViewDesc.h"
+#include "renderer/EpicCsm.h"
+#include "graphics/RenderBackendExt.h"
 #include "renderer/vg/VgEligibility.h"
 #include "renderer/vg/VgeoFormat.h"     // P4: 材質の flags（kMat*）/ テクスチャパスの安全検査
 #include "resource/VgAutoCook.h"         // 仮想ジオメトリの自動 cook（状態 / 差し替え）
@@ -228,6 +230,7 @@ bool Application::PrepareVirtualGeometryShadow(const DirectX::XMFLOAT3& camPos)
         {
             vg::FrustumPlanes fp;
             vg::ExtractFrustumPlanes(&m_cascadeViewProj[ci]._11, fp);
+            if (m_backendExt && m_backendExt->epicCsm.active && m_backendExt->epicCsm.pancake) epiccsm::DropNearPlane(fp.p);   // W1-C6: pancaking（near 面で落とさない）
             cand.clear();
             for (u32 i = 0; i < m_vgShadowInst.size(); ++i)
             {
@@ -291,9 +294,10 @@ bool Application::RunVirtualGeometryShadowCsm(ID3D12GraphicsCommandList* cmd, u3
     if (m_vgShadowInst.empty() || m_vgShadowVgViews == 0) return false;
     const vg::VirtualGeometrySettings& st = m_scene->GetVirtualGeometrySettings();
     // ビュー番号 = カスケード番号（インスタンスの shadowSkipMask のビットと一致させる）
+    const EpicCsmState* const epicSt = (m_backendExt && m_backendExt->epicCsm.active) ? &m_backendExt->epicCsm : nullptr;   // W1-C6
     std::array<vg::ShadowView, kNumCascades> views{};
-    const u32 nv = kNumCascades;
-    for (u32 ci = 0; ci < kNumCascades; ++ci)
+    const u32 nv = epiccsm::CascadeCount(epicSt != nullptr);
+    for (u32 ci = 0; ci < nv; ++ci)
     {
         vg::ShadowView& v = views[ci];
         std::memcpy(v.viewProj, &m_cascadeViewProj[ci], 64);
@@ -302,6 +306,7 @@ bool Application::RunVirtualGeometryShadowCsm(ID3D12GraphicsCommandList* cmd, u3
         v.size = m_shadowMapSize;
         v.dsv = m_shadowDsvHandles[ci];
         v.userCount = m_vgShadowCasters[ci];   // 統計と一緒に返る（三角形の目安の見直しに使う）
+        v.dropNearPlane = (epicSt != nullptr && epicSt->pancake);
     }
     vg::ShadowDesc d;
     d.cmd = cmd;
@@ -311,8 +316,10 @@ bool Application::RunVirtualGeometryShadowCsm(ID3D12GraphicsCommandList* cmd, u3
     d.views = views.data();
     d.viewCount = nv;
     d.tauTexels = st.shadowLodTexels;
-    d.depthBias = 8000;      // RecreateShadowPsos（m_shadowPipelineState）と同じ
-    d.slopeBias = 2.0f;
+    d.depthBias = epicSt ? epicSt->depthBias : 8000;      // RecreateShadowPsos（m_shadowPipelineState）と同じ（Epic は D16 の同等値）
+    d.slopeBias = epicSt ? epicSt->slopeBias : 2.0f;
+    d.depthFormat = epicSt ? DXGI_FORMAT_D16_UNORM : DXGI_FORMAT_D32_FLOAT;
+    d.depthClip = (epicSt == nullptr || !epicSt->pancake);
     d.cullBack = true;
     d.restoreHeap = m_srvHeap->GetHeap();
     return m_vg->ExecuteShadow(d);

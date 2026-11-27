@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/AppAccess.h"
+#include "graphics/RenderBackendExt.h"
 
 namespace dx12e
 {
@@ -217,19 +218,23 @@ void Application::RegisterMcpRenderMethods()
     McpDefine("get_shading", "", DX12E_MCP_HANDLER
         {
             const auto& sh = m_scene->GetShadingSettings();
-            int applied = 1, v2Fwd = 0, v2Skin = 0, v2Terr = 0;
-            AppAccess::QueryShadingPsos(*this, applied, v2Fwd, v2Skin, v2Terr);
+            int applied = 1, v2Fwd = 0, v2Skin = 0, v2Terr = 0, v2Water = 0, v2Fol = 0, v2Vg = 0;
+            AppAccess::QueryShadingPsos(*this, applied, v2Fwd, v2Skin, v2Terr, v2Water, v2Fol, v2Vg);
             resp["ok"] = true;
             // shadingRevision = シーンの設定（1 = V1 / 2 = UNO_SHADING_V2）。appliedRevision = 今 PSO に反映済みの値（次のフレーム先頭で追いつく）。
-            // v2PsoCount = V2 の .cso から作れたフォワード系 PSO の数（revision=1 のときは 0）。
+            // v2PsoCount = V2 の .cso から作れたフォワード系 PSO の数（revision=1 のときは 0）。FU-E-25: 水・植生・VG（resolve）も足す。
             resp["result"] = {{"multiScatter", sh.multiScatter},
                               {"shadingRevision", static_cast<int>(sh.shadingRevision)},
+                              // V2 の機能ごとの切り替えと強さ（shadingRevision=2 のときだけ効く。W1-C5）
+                              {"microShadow", sh.microShadow}, {"horizonOcclusion", sh.horizonOcclusion}, {"gtso", sh.gtso},
+                              {"microShadowK", sh.microShadowK}, {"horizonK", sh.horizonK},
                               {"appliedRevision", applied},
-                              {"v2PsoCount", v2Fwd + v2Skin + v2Terr},
-                              {"v2Pso", {{"forward", v2Fwd}, {"skinned", v2Skin}, {"terrain", v2Terr}}}};
+                              {"v2PsoCount", v2Fwd + v2Skin + v2Terr + v2Water + v2Fol + v2Vg},
+                              {"v2Pso", {{"forward", v2Fwd}, {"skinned", v2Skin}, {"terrain", v2Terr},
+                                         {"water", v2Water}, {"foliage", v2Fol}, {"vg", v2Vg}}}};
         });
 
-    McpDefine("set_shading", "multiScatter:any,shadingRevision:any", DX12E_MCP_HANDLER
+    McpDefine("set_shading", "multiScatter:any,shadingRevision:any,microShadow:any,horizonOcclusion:any,gtso:any,microShadowK:any,horizonK:any", DX12E_MCP_HANDLER
         {
             auto& sh = m_scene->GetShadingSettings();
             if (params.contains("multiScatter") && !params["multiScatter"].is_boolean())
@@ -254,10 +259,42 @@ void Application::RegisterMcpRenderMethods()
                 }
                 rev = static_cast<u8>(n);
             }
+            // V2 の機能ごとの切り替え（bool）と強さ（0..2。範囲外は E_OUT_OF_RANGE で弾く）
+            for (const char* key : {"microShadow", "horizonOcclusion", "gtso"})
+                if (params.contains(key) && !params[key].is_boolean())
+                    throw McpError(McpErr::InvalidParam, std::string(key) + " は true / false",
+                        std::string("例: ") + key + ":false（この機能だけ OFF。shadingRevision=2 のときだけ効く）");
+            float strength[2] = {sh.microShadowK, sh.horizonK};
+            const char* const strengthKey[2] = {"microShadowK", "horizonK"};
+            for (int i = 0; i < 2; ++i)
+            {
+                if (!params.contains(strengthKey[i]) || params[strengthKey[i]].is_null()) continue;
+                const auto& v = params[strengthKey[i]];
+                if (!v.is_number())
+                    throw McpError(McpErr::InvalidParam, std::string(strengthKey[i]) + " は数値（0 〜 2）",
+                        std::string("例: ") + strengthKey[i] + ":1（標準）");
+                const double d = v.get<double>();
+                if (!(d >= 0.0 && d <= 2.0))
+                {
+                    McpError err(McpErr::InvalidParam, std::string(strengthKey[i]) + " が範囲外: " + std::to_string(d), "有効値は 0 〜 2（0 = 効果なし、1 = 標準）");
+                    err.name = "E_OUT_OF_RANGE";
+                    err.cause = std::string(strengthKey[i]) + " は 0 〜 2 だけ";
+                    err.details = {{"param", strengthKey[i]}, {"value", d}, {"range", {{"min", 0}, {"max", 2}}}};
+                    throw err;
+                }
+                strength[i] = static_cast<float>(d);
+            }
+            sh.microShadow = params.value("microShadow", sh.microShadow);
+            sh.horizonOcclusion = params.value("horizonOcclusion", sh.horizonOcclusion);
+            sh.gtso = params.value("gtso", sh.gtso);
+            sh.microShadowK = strength[0];
+            sh.horizonK = strength[1];
             sh.multiScatter = params.value("multiScatter", sh.multiScatter);
             sh.shadingRevision = rev;
             resp["ok"] = true;
-            resp["result"] = {{"applied", true}, {"multiScatter", sh.multiScatter}, {"shadingRevision", static_cast<int>(sh.shadingRevision)}};
+            resp["result"] = {{"applied", true}, {"multiScatter", sh.multiScatter}, {"shadingRevision", static_cast<int>(sh.shadingRevision)},
+                              {"microShadow", sh.microShadow}, {"horizonOcclusion", sh.horizonOcclusion}, {"gtso", sh.gtso},
+                              {"microShadowK", sh.microShadowK}, {"horizonK", sh.horizonK}};
         });
 
     // ---- 内部解像度スケール（#16。レンダー解像度と表示解像度の分離）----
@@ -463,7 +500,8 @@ void Application::RegisterMcpRenderMethods()
         });
 
     McpDefine("get_shadow_pcss|set_shadow_pcss", "blockerSearchTexels:number,enabled:any,lightTanAngle:number,maxPenumbraTexels:number,"
-              "temporalDither:any", DX12E_MCP_HANDLER
+              "temporalDither:any,epicDynamicCsm:any,pancaking:any,gatherPcss:any,cascadeDitherBlend:any,"
+              "receiverNormalOffsetBase:number,receiverNormalOffsetSlope:number,casterBiasScaleV2:number,gatherFilterTaps:any", DX12E_MCP_HANDLER
         {
             // get/set を 1 本のハンドラで捌く（"a|b" 登録）。束ねる義務はもう無い（C1061 は根治済み）が、
             // 返り値が同一なのでこの形の方が読みやすい。
@@ -478,6 +516,20 @@ void Application::RegisterMcpRenderMethods()
                 if (params.contains("blockerSearchTexels"))
                     p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
                 p.temporalDither = params.value("temporalDither", p.temporalDither);
+                // W1-C6 LS-02a: Epic の動的 CSM（2048 D16 x3 + pancaking。V2 の受光側の法線オフセット / Gather PCSS / バイアス縮小は shadingRevision=2 と組み合わせて効く）。
+                //   シーン JSON には保存しない（SceneSerializer は W1 では凍結。shadingRevision と同じ）。切り替えは次のフレームの先頭で反映される。
+                p.epicDynamicCsm     = params.value("epicDynamicCsm", p.epicDynamicCsm);
+                p.pancaking          = params.value("pancaking", p.pancaking);
+                p.gatherPcss         = params.value("gatherPcss", p.gatherPcss);
+                p.cascadeDitherBlend = params.value("cascadeDitherBlend", p.cascadeDitherBlend);
+                if (params.contains("receiverNormalOffsetBase"))
+                    p.receiverNormalOffsetBase = McpFloatParam(params, "receiverNormalOffsetBase", p.receiverNormalOffsetBase, 0.0f, 4.0f);
+                if (params.contains("receiverNormalOffsetSlope"))
+                    p.receiverNormalOffsetSlope = McpFloatParam(params, "receiverNormalOffsetSlope", p.receiverNormalOffsetSlope, 0.0f, 4.0f);
+                if (params.contains("casterBiasScaleV2"))
+                    p.casterBiasScaleV2 = McpFloatParam(params, "casterBiasScaleV2", p.casterBiasScaleV2, 0.05f, 1.0f);
+                if (params.contains("gatherFilterTaps"))
+                    p.gatherFilterTaps = static_cast<u32>(McpIntParam(params, "gatherFilterTaps", static_cast<i32>(p.gatherFilterTaps), 8, 32));
             }
             resp["ok"] = true;
             resp["result"] = {{"enabled", p.enabled},
@@ -485,6 +537,15 @@ void Application::RegisterMcpRenderMethods()
                               {"maxPenumbraTexels", p.maxPenumbraTexels},
                               {"blockerSearchTexels", p.blockerSearchTexels},
                               {"temporalDither", p.temporalDither},
+                              {"epicDynamicCsm", p.epicDynamicCsm},
+                              {"epicCsmApplied", m_backendExt && m_backendExt->epicCsm.active},   // D16 x3 の影マップへ切り替え済みか（PSO を作れないと false のまま）
+                              {"pancaking", p.pancaking},
+                              {"gatherPcss", p.gatherPcss},
+                              {"cascadeDitherBlend", p.cascadeDitherBlend},
+                              {"receiverNormalOffsetBase", p.receiverNormalOffsetBase},
+                              {"receiverNormalOffsetSlope", p.receiverNormalOffsetSlope},
+                              {"casterBiasScaleV2", p.casterBiasScaleV2},
+                              {"gatherFilterTaps", p.gatherFilterTaps},
                               // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
                               {"active", p.enabled && m_scene->GetShadowsEnabled()
                                          && !m_camera->IsOrthographic()},

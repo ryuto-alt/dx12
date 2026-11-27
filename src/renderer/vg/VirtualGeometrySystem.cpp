@@ -4,6 +4,7 @@
 #include "core/Logger.h"
 #include "core/vfs/Vfs.h"
 #include "graphics/MeshPipelineState.h"
+#include "renderer/ShadingRevisionPick.h"
 #include "renderer/vg/VgeoFormat.h"
 #include "resource/ShaderCompiler.h"
 
@@ -353,6 +354,31 @@ bool VirtualGeometrySystem::CreatePipelines(std::string* err)
     return true;
 }
 
+// resolve の PS を読む（m_shadingV2Requested に従う。V2 が無ければ V1 へ縮退）。失敗 = V1 も読めない。
+bool VirtualGeometrySystem::LoadResolvePs()
+{
+    const auto exists = [this](const std::wstring& n) { return shadingpick::CsoFileExists(m_desc.shaderDir + n); };
+    const auto pk = shadingpick::PickPs(m_shadingV2Requested, false, L"VgResolve_PS.cso", L"VgResolve_PS.cso", L"VgResolveV2_PS.cso", L"VgResolveV2_PS.cso", exists);
+    if (pk.fellBack)
+        Logger::Warn("VG: VgResolveV2_PS.cso が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）");
+    auto bc = LoadCsoNoThrow(m_desc.shaderDir + pk.name);
+    if (bc.GetSize() == 0) return false;   // 古い PS / PSO / フラグには触らない（呼び出し側が決める）
+    m_bcResolvePs = std::move(bc.data);
+    m_resolvePsIsV2 = pk.usedV2;
+    m_psoResolve.Reset();   // PS が変わったので、次の DrawResolve が作り直す
+    m_psoResolveRs = nullptr;
+    return true;
+}
+
+// shadingRevision の切替（GPU が止まっているときだけ）。Initialize の前でも呼べる（次の CreateRasterPipelines が拾う）。
+bool VirtualGeometrySystem::SetShadingV2(bool v2)
+{
+    if (m_shadingV2Requested == v2) return true;
+    m_shadingV2Requested = v2;
+    if (m_bcResolveVs.empty() || m_bcResolvePs.empty()) return true;   // resolve が無効 / まだ作っていない
+    return LoadResolvePs();
+}
+
 // P3: メッシュシェーダのラスタ（MS / AS / PS の PSO・引数生成・コマンドシグネチャ）。非致命。
 //   ★同じ専用ルートシグネチャ（b0 CBV + b1 定数 8 個 / HEAP_DIRECTLY_INDEXED）をグラフィックスでもそのまま使う。
 bool VirtualGeometrySystem::CreateRasterPipelines()
@@ -394,9 +420,10 @@ bool VirtualGeometrySystem::CreateRasterPipelines()
         m_bcGbVs.clear(); m_bcGbPs.clear();
         Logger::Warn("VG: G-Buffer のシェーダ（VgGBuffer_*.cso）が読めない。VG 画素の速度 / G-Buffer は書かれない");
     }
-    if (!load(L"VgResolve_VS.cso", m_bcResolveVs) || !load(L"VgResolve_PS.cso", m_bcResolvePs))
+    // FU-E-25: shadingRevision=2 のときは VgResolveV2_PS.cso。無ければ警告して V1 へ縮退（FwdPsNameRev と同じ流儀）。
+    if (!load(L"VgResolve_VS.cso", m_bcResolveVs) || !LoadResolvePs())
     {
-        m_bcResolveVs.clear(); m_bcResolvePs.clear();
+        m_bcResolveVs.clear(); m_bcResolvePs.clear(); m_resolvePsIsV2 = false;
         Logger::Warn("VG: resolve のシェーダ（VgResolve_*.cso）が読めない。VG は暫定シェーディングで描かれる");
     }
     auto makeCs = [&](const wchar_t* cso, ComPtr<ID3D12PipelineState>& out) -> bool
@@ -675,7 +702,7 @@ void VirtualGeometrySystem::Shutdown()
     if (m_matBuf && m_matMapped) m_matBuf->Unmap(0, nullptr);
     m_matMapped = nullptr; m_matBuf.Reset();
     m_psoSort.Reset(); m_psoGBuffer.Reset(); m_psoResolve.Reset(); m_psoResolveRs = nullptr;
-    m_bcGbVs.clear(); m_bcGbPs.clear(); m_bcResolveVs.clear(); m_bcResolvePs.clear();
+    m_bcGbVs.clear(); m_bcGbPs.clear(); m_bcResolveVs.clear(); m_bcResolvePs.clear(); m_resolvePsIsV2 = false;
     m_work.Reset(); m_extra.Reset(); m_args.Reset(); m_dumpReadback.Reset();
     m_queryHeap.Reset(); m_queryReadback.Reset();
     m_psoReset.Reset(); m_psoArgs.Reset(); m_psoInstance.Reset(); m_psoTraverse.Reset(); m_psoCluster.Reset();
@@ -1566,20 +1593,21 @@ bool VirtualGeometrySystem::EnsureShadowResources()
 }
 
 // 深度だけのメッシュシェーダ PSO（PS なし・RT なし）。ラスタの状態は影の PSO（ApplicationPipeline.cpp RecreateShadowPsos）と揃える。
-ID3D12PipelineState* VirtualGeometrySystem::GetShadowPso(int bias, float slope, bool cullBack)
+ID3D12PipelineState* VirtualGeometrySystem::GetShadowPso(int bias, float slope, bool cullBack, DXGI_FORMAT fmt, bool depthClip)
 {
-    if (m_psoShadow && m_psoShadowBias == bias && m_psoShadowSlope == slope && m_psoShadowCull == cullBack) return m_psoShadow.Get();
+    if (m_psoShadow && m_psoShadowBias == bias && m_psoShadowSlope == slope && m_psoShadowCull == cullBack && m_psoShadowFmt == fmt && m_psoShadowClip == depthClip)
+        return m_psoShadow.Get();
     MeshPipelineStateBuilder b;
     b.SetRootSignature(m_rootSig.Get());
     b.SetMeshShader(m_bcMsPlain.data(), m_bcMsPlain.size())
-     .SetRenderTargetFormats(0, nullptr).SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+     .SetRenderTargetFormats(0, nullptr).SetDepthStencilFormat(fmt).SetDepthClip(depthClip)
      .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS).SetCullMode(cullBack ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE)
      .SetDepthBias(bias, slope);
     std::string err;
     ComPtr<ID3D12PipelineState> pso = b.Build(m_device.Get(), &err);
     if (!pso) { Logger::Warn("VG: 影の PSO を作れない: {}", err); return nullptr; }
     m_psoShadow = pso;
-    m_psoShadowBias = bias; m_psoShadowSlope = slope; m_psoShadowCull = cullBack;
+    m_psoShadowBias = bias; m_psoShadowSlope = slope; m_psoShadowCull = cullBack; m_psoShadowFmt = fmt; m_psoShadowClip = depthClip;
     return m_psoShadow.Get();
 }
 
@@ -1587,7 +1615,7 @@ bool VirtualGeometrySystem::ExecuteShadow(const ShadowDesc& d)
 {
     if (!m_ready || !m_rasterOk || !d.cmd || d.frameSlot >= m_desc.frameCount || !d.views || d.viewCount == 0) return false;
     if (!EnsureShadowResources()) return false;
-    ID3D12PipelineState* pso = GetShadowPso(d.depthBias, d.slopeBias, d.cullBack);
+    ID3D12PipelineState* pso = GetShadowPso(d.depthBias, d.slopeBias, d.cullBack, d.depthFormat, d.depthClip);
     if (!pso) return false;
     ID3D12GraphicsCommandList* cmd = d.cmd;
     const uint32_t f = d.frameSlot;
@@ -1628,6 +1656,7 @@ bool VirtualGeometrySystem::ExecuteShadow(const ShadowDesc& d)
         transposeTo(sv.viewProj, c.prevViewProjNJ);
         FrustumPlanes fp;
         ExtractFrustumPlanes(sv.viewProj, fp);
+        if (sv.dropNearPlane) { fp.p[4][0] = 0.0f; fp.p[4][1] = 0.0f; fp.p[4][2] = 0.0f; fp.p[4][3] = 1.0f; }   // W1-C6: pancaking（near 面で落とさない）
         std::memcpy(c.planes, fp.p, sizeof(c.planes));
         c.camPos[0] = sv.camPos[0]; c.camPos[1] = sv.camPos[1]; c.camPos[2] = sv.camPos[2]; c.camPos[3] = sv.zNear;
         c.viewport[0] = 0.0f; c.viewport[1] = 0.0f; c.viewport[2] = static_cast<float>(sv.size); c.viewport[3] = static_cast<float>(sv.size);

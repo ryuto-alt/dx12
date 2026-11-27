@@ -11,7 +11,8 @@
 //   ・n = min(n_hist + 1, 上限)、α = lerp(0.05, 1, sqrt(max(8-n,0)/8))（FFX と同じ。最小 0.05）。平均とモーメントを同じ α で更新。
 //   ・2 次モーメントは空間フィルタが分散（輝度重み）を作るのに使う。
 //   ・★履歴は今フレームの近傍の平均 μ・標準偏差 σ の箱 [μ-0.5σ, μ+0.5σ] へクランプし、外れた分だけ n を縮める。
-//     AMD FidelityFX Shadow Denoiser（ffx_denoiser_shadows_tileclassification.h）と同じ式。
+//     AMD FidelityFX Shadow Denoiser（ffx_denoiser_shadows_tileclassification.h）の式。ただし履歴が今フレームの値 cur と
+//     ほぼ一致する画素（|履歴 - cur| < 0.1）だけ、箱を cur まで広げる（FU-E-23。細い影で n が毎フレーム 0 に縮むのを防ぐ）。
 //     クランプが無いと、歩くと前のフレームの影の位置が 32 フレーム残り、影の縁が遅れてついてくる
 //     （AssetBench・5 m/s で地面の影の縁の 2.3% の画素が停止後と 20/255 以上ずれていた、2026-10-17）。
 //     近傍は FFX の 17×17（半径 8・重み exp(-3i²/81)）を 2 画素おきの 9×9 点で近似する（読み込み 289 → 81）。
@@ -99,12 +100,23 @@ float4 PSMain(FSQuadVSOut i) : SV_TARGET
         }
     }
 
-    // ---- 履歴のクランプと n の減衰（FFX と同じ: 箱は ±0.5σ、減衰は exp(-t²/20)）----
+    // ---- 履歴のクランプと n の減衰（FFX 由来: 箱は ±0.5σ（履歴が cur と一致するときだけ cur まで広げる）、減衰は exp(-t²/20)）----
     if (histN > 0.0)
     {
-        const float t = (histMean - nbMean) / max(0.5 * nbSd, 0.001);
+        // ★FU-E-23: 履歴が今フレームの値 cur とほぼ一致するときだけ、箱を cur まで広げる。
+        //   広げないと、細い影（遠くの柱の影は 1〜3 画素幅）の画素では近傍がほぼ日向（μ≈0.95・σ 小）なので、
+        //   履歴が影（0）のまま正しくても箱の外になり、n が毎フレーム 0 へ縮む → 空間フィルタの輝度重みが効かず
+        //   （lumTrust = 0）、日向の隣画素に混ぜられて影が消える（LS-A の 15m / 30m / 60m の柱で捕捉 0.15 / 0.07 / 0）。
+        //   cur は 1 spp で半影ではほぼ 0/1 の二値なので、常に広げると影の縁の遅れ（上の AssetBench の件）が戻る。
+        //   そのため履歴が cur と一致するときに限る。履歴が cur と食い違う（影が動いた）画素は従来どおり箱で捨てる。
+        const bool  agree   = abs(histMean - cur) < 0.1;
+        const float boxLo   = agree ? min(nbMean - 0.5 * nbSd, cur) : (nbMean - 0.5 * nbSd);
+        const float boxHi   = agree ? max(nbMean + 0.5 * nbSd, cur) : (nbMean + 0.5 * nbSd);
+        const float boxMid  = 0.5 * (boxLo + boxHi);
+        const float boxHalf = 0.5 * (boxHi - boxLo);
+        const float t = (histMean - boxMid) / max(boxHalf, 0.001);
         histN   *= exp(-t * t / 20.0);
-        const float clamped = clamp(histMean, nbMean - 0.5 * nbSd, nbMean + 0.5 * nbSd);
+        const float clamped = clamp(histMean, boxLo, boxHi);
         // 2 次モーメントは平均を動かした分だけ平行移動する（分散は保つ）。
         histMom  = max(histMom + clamped * clamped - histMean * histMean, 0.0);
         histMean = clamped;

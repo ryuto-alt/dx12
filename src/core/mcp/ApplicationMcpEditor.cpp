@@ -8,6 +8,7 @@
 #include "core/AppAccess.h"   // W1-C9: IblRebakeWaitFrames
 #include "core/mcp/McpSafety.h"   // M5: ファイルジャーナル（書く直前に JournalBackup）
 #include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1 の JSON 変換
+#include "core/mcp/McpPerfGpuStats.h"   // FU-E-22: gpuFrameMs の分位点
 #include "core/mcp/FleetGuard.h"   // vramBaselineMB（QueryVideoMemoryMB）
 
 namespace dx12e
@@ -245,9 +246,11 @@ void Application::RegisterMcpEditorMethods()
             //   待つ必要があるときだけ決定論経路（履歴を捨てて収束させる＝時刻・位相は固定。deterministic:false でも決定論になる）へ回し、
             //   収束フレームを足す（settleFrames は 240 で頭打ちにしてから足すので、IBL の待ちは削られない）。無ければ従来どおり。
             const int iblWait = params.value("waitIblRebake", false) ? AppAccess::IblRebakeWaitFrames(*this) : 0;
-            if (params.value("deterministic", false) || iblWait > 0)
+            // FU-E-24: freeze_time で描画を固定している間の撮影は常に決定論経路（履歴を捨てて同じフレーム数だけ回す）。
+            //   固定しただけでは TAA / フォグ / SSGI の履歴が撮影までのフレーム数ぶん育つので、絵が撮るたびにずれる。
+            if (params.value("deterministic", false) || iblWait > 0 || AppAccess::FreezePinsRender(*this))
             {
-                if (m_deterministicCapture || m_mcpFinalShot.reply.client != 0)
+                if (((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpPerceive != nullptr || m_deterministicFramesLeft > 0) || m_mcpFinalShot.reply.client != 0)
                     throw McpError(McpErr::ModeConflict,
                         "another deterministic screenshot is in flight; retry shortly",
                         "前の決定論スクショの応答を待ってから撮る（settleFrames ぶん、既定 8 フレームで返る）。"
@@ -292,14 +295,14 @@ void Application::RegisterMcpEditorMethods()
     //   1 フレーム描いてから撮るので遅延応答。
     McpDefine("screenshot_final", "deterministic:bool,format:string,formats:any,gizmos:bool,height:int,path:string,settleFrames:int,waitIblRebake:bool,width:int", DX12E_MCP_HANDLER
         {
-            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+            if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || ((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpPerceive != nullptr || m_deterministicFramesLeft > 0))   // FU-E-24: freeze_time の固定は撮影中ではない
                 throw McpError(McpErr::ModeConflict,
                     "a final screenshot is already pending; retry shortly",
                     "前の screenshot_final の応答を待ってから撮る（通常 1〜9 フレームで返る）。"
                     "waitIblRebake:true は IBL の焼き直しが未了のとき決定論経路に回るので、deterministic:false でも同じ衝突が起きる");
             // W1-C9（BUG-17）: waitIblRebake:true なら IBL の焼き直しが終わるまで収束フレームを足す（待つ必要があるときだけ決定論経路へ）。
             const int iblWait = params.value("waitIblRebake", false) ? AppAccess::IblRebakeWaitFrames(*this) : 0;
-            const bool det = params.value("deterministic", false) || iblWait > 0;
+            const bool det = params.value("deterministic", false) || iblWait > 0 || AppAccess::FreezePinsRender(*this);   // FU-E-24: 固定中は常に決定論
             m_mcpFinalShot = {};
             m_mcpFinalShot.path          = params.value("path", std::string());
             m_mcpFinalShot.reply         = deferred;
@@ -363,7 +366,7 @@ void Application::RegisterMcpEditorMethods()
             //   dx12_imgui_screenshot と同じ経路（遅延応答）へ回す。返り値の形は上位互換（path/width/height + α）。
             if (vinput::Enabled() && !m_isGameMode && m_imguiManager)
             {
-                if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || m_deterministicCapture)
+                if (m_mcpFinalShot.reply.client != 0 || m_mcpFinalShot.pending || ((m_deterministicCapture && !AppAccess::TimeFrozen(*this)) || m_mcpPerceive != nullptr || m_deterministicFramesLeft > 0))
                     throw McpError(McpErr::ModeConflict,
                         "a screenshot is already pending; retry shortly",
                         "前のスクショの応答を待ってから撮る（通常 1〜2 フレームで返る）");
@@ -903,9 +906,12 @@ void Application::RegisterMcpEditorMethods()
             f64 mainDraws = 0, mainTris = 0, shadowDraws = 0, shadowTris = 0;
             std::vector<f32> fm;
             fm.reserve(n);
+            std::vector<f32> gpuTotals;   // FU-E-22: フレームごとの GPU Total（p95/p99 用。PerfFrame::gpuMs の先頭は Total）
+            gpuTotals.reserve(n);
             for (u32 i = 0; i < n; ++i)
             {
                 const PerfFrame& f = m_perfHistory[static_cast<size_t>((m_perfTotalFrames - 1 - i) % kPerfHistory)];
+                gpuTotals.push_back(f.gpuMs[GpuTimer::Total]);
                 if (f.frameMs > 0.0f) fm.push_back(f.frameMs);   // 起動直後の未計測 0 は除外
                 s.workMs += f.workMs; s.fenceWaitMs += f.fenceWaitMs; s.presentMs += f.presentMs;
                 s.draws += f.draws; s.culled += f.culled; s.tris += f.tris;
@@ -935,6 +941,18 @@ void Application::RegisterMcpEditorMethods()
             }
             nlohmann::json rep = PerfReportJson(s, m_useVsync, m_fpsLimit);
             // W05-05: DRED の実際の ON/OFF（--dred / --no-dred / gameMode 解決後の値）。計測は --no-dred で行うので、読む側が確認できるようにする。
+            {   // FU-E-22: SC-1「GPU p95 <= 11ms」の判定用（平均ではなくフレームごとの分布）と、A11 の間引きの状態
+                auto r2 = [](double v) { return std::round(v * 100.0) / 100.0; };
+                const mcpperf::GpuFrameStats gs = mcpperf::ComputeGpuFrameStats(std::move(gpuTotals));
+                rep["gpuFrameMs"] = {{"p50", r2(gs.p50)}, {"p95", r2(gs.p95)}, {"p99", r2(gs.p99)},
+                                     {"max", r2(gs.max)}, {"samples", gs.samples}};
+                // frameMs にも p99 を足す（既存の avg/min/max/p95 は変えない）
+                if (!fm.empty()) rep["frameMs"]["p99"] = r2(PerfPercentile(fm, 0.99));
+                // throttleTier: 0 = 制限なし / 1 = 入力なし 30fps / 2 = 非アクティブ 10fps。
+                // 計測は tier 0 で行うこと（間引き中の fps / frameMs は上限で頭打ちになる）。
+                rep["throttleTier"]    = m_editorCtx ? m_editorCtx->frameThrottle.tier : 0;
+                rep["alwaysRealtime"]  = m_editorCtx ? m_editorCtx->frameThrottle.alwaysRealtime : false;
+            }
             rep["dred"] = m_graphicsDevice ? m_graphicsDevice->GetOptions().dred : false;
             rep["instancing"] = m_instancingEnabled;   // settings.json "render_instancing" で A/B 可
             // クラスタードライティング（Forward+）。settings.json "render_clustered" で A/B 可。

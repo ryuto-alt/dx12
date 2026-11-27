@@ -9,6 +9,9 @@
 #include "core/AppAccess.h"
 #include "renderer/ShadingSettings.h"
 #include "renderer/GraphMaterialSystem.h"
+#include "renderer/EpicCsm.h"
+#include "graphics/RenderBackendExt.h"
+#include "renderer/foliage/FoliageSystem.h"
 
 #include <iterator>
 
@@ -110,6 +113,7 @@ static std::wstring FwdPsName(bool physical, const wchar_t* normal, const wchar_
 // Application.h は W1 では凍結なので、メンバにせずこの TU の中に持つ（Application は 1 個しか無い）。
 // 切り替えは AppAccess::UpdateShadingRevision（Run ループの先頭 = フレーム外）だけが行う。既存シーンは V1 のまま＝既定の経路は 1 バイトも変わらない。
 static u8  s_shadingRevApplied = 1;
+static bool s_v2Degraded[3]    = {false, false, false};   // [0]=フォワード（MASK 含む）[1]=スキンド [2]=地形: V2 要求なのに V1 へ縮退した（W1-C6 のバイアス判定）
 static int s_v2PsoCount[3]     = {0, 0, 0};   // [0] = フォワード（静的）、[1] = スキンド、[2] = 地形
 
 // V2 のときは V2 の .cso（*V2_PS.cso）を選ぶ。無ければ（ビルドし忘れ）警告して V1 へ縮退する。*usedV2 は V2 を選べたかどうか。
@@ -265,6 +269,7 @@ void Application::RecreateForwardPsos()
     auto cnt = [](const std::unique_ptr<PipelineState>& p) { return (p && p->Get()) ? 1 : 0; };
     s_v2PsoCount[0] = (v2Ps ? cnt(m_pipelineState) + cnt(m_pipelineStateLEqual) + cnt(m_pipelineStateInst) + cnt(m_pipelineStateInstLEqual) + cnt(m_pipelineStateBlend) : 0)
                     + (v2PsMask ? cnt(m_pipelineStateMask) + cnt(m_pipelineStateMaskLEqual) + cnt(m_pipelineStateInstMask) + cnt(m_pipelineStateInstMaskLEqual) : 0);
+    s_v2Degraded[0] = v2 && !(v2Ps && v2PsMask);
     if (v2) Logger::Info("shadingRevision=2: フォワードの V2 PSO {} 本（PS: {} / MASK PS: {}）", s_v2PsoCount[0], v2Ps ? "V2" : "V1 に縮退", v2PsMask ? "V2" : "V1 に縮退");
 }
 
@@ -337,6 +342,7 @@ void Application::RecreateSkinnedPsos()
     auto cnt = [](const std::unique_ptr<PipelineState>& p) { return (p && p->Get()) ? 1 : 0; };
     s_v2PsoCount[1] = (v2Ps ? cnt(m_skinnedPipelineState) + cnt(m_skinnedPipelineStateLEqual) + cnt(m_skinnedPipelineStateBlend) : 0)
                     + (v2PsMask ? cnt(m_skinnedPipelineStateMask) + cnt(m_skinnedPipelineStateMaskLEqual) : 0);
+    s_v2Degraded[1] = v2 && !(v2Ps && v2PsMask);
     if (v2) Logger::Info("shadingRevision=2: スキンドの V2 PSO {} 本", s_v2PsoCount[1]);
 }
 
@@ -377,6 +383,7 @@ void Application::RecreateTerrainPsos()
     {
         // .cso が無い＝ビルドし忘れ。地形は layerSetPath 空なら従来経路で描けるので致命ではない。
         Logger::Warn("Terrain_VS/PS.cso が読めません（地形スプラットは無効。従来経路で描画します）");
+        s_v2Degraded[2] = false;   // .cso が無い＝地形は描かない（縮退ではない）
         s_v2PsoCount[2] = 0;   // 古い値を残さない（get_shading の v2Pso が嘘になる）
         return;
     }
@@ -400,6 +407,7 @@ void Application::RecreateTerrainPsos()
     m_terrainPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
 
     s_v2PsoCount[2] = v2Ps ? ((m_terrainPipelineState->Get() ? 1 : 0) + (m_terrainPipelineStateLEqual->Get() ? 1 : 0)) : 0;
+    s_v2Degraded[2] = v2 && !v2Ps;
     if (v2) Logger::Info("shadingRevision=2: 地形の V2 PSO {} 本", s_v2PsoCount[2]);
 }
 
@@ -479,6 +487,7 @@ void Application::RecreateShadowPsos()
 
     // MASK マテリアル用（葉の影を葉の形に抜く）
     RecreateDepthMaskPsos(/*forShadow*/ true);
+    if (m_backendExt) m_backendExt->epicCsm.dirty = true;   // W1-C6: 再読込み後、Epic の影 PSO も作り直す（UpdateEpicCsm）
 }
 
 // ShadowMask.hlsl バリアントの深度 PSO を 3 本作る（静的 / インスタンシング / スキンド）。
@@ -1040,36 +1049,172 @@ void Application::EnsureInstancePrevBuffer()
 }
 
 // ---------------------------------------------------------------------------
+// W1-C6 LS-02a: Epic の動的 CSM（2048 D16 × 3 カスケード、pancaking）の切り替え。Run ループの先頭（フレーム外）で呼ぶ。
+//   ・ShadowPcssSettings::epicDynamicCsm が立つと、D16 / DepthClip=FALSE の影 PSO 束（静的 / インスタンシング / スキンド / MASK 3 種）を作り、
+//     影マップを D16 × 3 へ作り直す（m_shadowMapDirty。実体の作り直しは Render の頭）。植生の影 PSO も同じ形へ追従させる。
+//   ・影を描く側のバイアスは、Epic かつシーン全体が shadingRevision=2 のときだけ casterBiasScaleV2 倍にする（V1 の受光面にアクネを出さない）。
+//   ・立っていない（既定）ときは何も作らず何も触らない＝旧経路（2048 D32 × 4 の PCF）は 1 ビットも変わらない。
+//   PSO を 1 本でも作れなければ旧経路のまま（active にしない）。
+// ---------------------------------------------------------------------------
+static bool BuildEpicCsmPsos(ID3D12RootSignature* rootSig, GraphicsDevice& gdev, EpicCsmState& st, const epiccsm::CasterBias& cb, bool pancake)
+{
+    const std::wstring dir = PathResolver::ShaderDirW();
+    auto build = [&](const wchar_t* vsName, bool instanced, bool mask, std::unique_ptr<PipelineState>& out) -> bool
+    {
+        auto vs = ShaderCompiler::LoadFromFile(dir + vsName);
+        if (vs.GetSize() == 0) return false;
+        PipelineStateBuilder b;
+        b.SetRootSignature(rootSig)
+         .SetVertexShader(vs.GetData(), vs.GetSize())
+         .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+         .SetDepthStencilFormat(DXGI_FORMAT_D16_UNORM)
+         .SetDepthEnabled(true)
+         .SetDepthClip(!pancake)   // pancaking: near / far の外を捨てずに [0,1] へ押し付ける
+         .SetDepthBias(cb.depthBias, cb.slopeBias);
+        if (instanced) b.SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount());
+        else           b.SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount());
+        if (mask)
+        {
+            auto ps = ShaderCompiler::LoadFromFile(dir + L"ShadowMask_PS.cso");
+            if (ps.GetSize() == 0) return false;
+            b.SetPixelShader(ps.GetData(), ps.GetSize()).SetCullMode(D3D12_CULL_MODE_NONE);
+            if (!out) out = std::make_unique<PipelineState>();
+            out->Initialize(gdev, b);
+            return true;
+        }
+        if (!out) out = std::make_unique<PipelineState>();
+        out->Initialize(gdev, b);
+        return true;
+    };
+    st.stat.reset(); st.inst.reset(); st.skin.reset(); st.maskStat.reset(); st.maskInst.reset(); st.maskSkin.reset();
+    // 必須の 3 本（静的 / スキンド。インスタンシングは旧経路でも「無ければ null」）
+    if (!build(L"ShadowPass_VS.cso", false, false, st.stat)) return false;
+    if (!build(L"ShadowPassSkinned_VS.cso", false, false, st.skin)) return false;
+    build(L"ShadowPassInstanced_VS.cso", true, false, st.inst);
+    // MASK（葉の影を葉の形に抜く）。無ければ警告だけ（板の影になる。旧経路の ShadowMask_PS 不在と同じ扱い）。
+    if (!build(L"ShadowMask_VS.cso", false, true, st.maskStat))
+        Logger::Warn("Epic の動的 CSM: ShadowMask_PS.cso / ShadowMask_VS.cso が無い: アルファクリップの影が板のままになります");
+    build(L"ShadowMaskInstanced_VS.cso", true, true, st.maskInst);
+    build(L"ShadowMaskSkinned_VS.cso", false, true, st.maskSkin);
+    st.depthBias = cb.depthBias;
+    st.slopeBias = cb.slopeBias;
+    st.pancake = pancake;
+    st.psosValid = true;
+    st.dirty = false;
+    st.buildFailed = false;
+    return true;
+}
+
+void AppAccess::UpdateEpicCsm(Application& app)
+{
+    if (!app.m_scene || !app.m_commandQueue || !app.m_graphicsDevice || !app.m_rootSignature) return;
+    const ShadowPcssSettings& pc = app.m_scene->GetShadowPcssSettings();
+    const bool want = pc.epicDynamicCsm;
+    if (!want && !(app.m_backendExt && app.m_backendExt->epicCsm.active)) return;   // 既定: 何もしない
+    if (!app.m_backendExt) app.m_backendExt.reset(new RenderBackendExt());
+    EpicCsmState& st = app.m_backendExt->epicCsm;
+    // バイアスを下げてよいのは「実際に適用された状態が全面 V2」のときだけ。V2 の .cso が無くて V1 へ縮退した PSO
+    // （フォワード / スキンド / 水 / 植生 / VG）が 1 つでも混ざるなら、受光側の法線オフセットが無いのでアクネが出る。
+    const bool sceneV2 = (app.m_scene->GetShadingSettings().shadingRevision == 2) && (s_shadingRevApplied == 2)
+        && s_v2PsoCount[0] > 0 && s_v2PsoCount[1] > 0 && !s_v2Degraded[0] && !s_v2Degraded[1] && !s_v2Degraded[2]
+        && (!app.m_water || !app.m_water->IsReady() || app.m_water->V2PsoCount() > 0)
+        && (!app.m_foliage || !app.m_foliage->ShadingV2Requested() || app.m_foliage->V2PsoCount() > 0 || app.m_foliage->LayerCount() == 0);
+    const int rev = sceneV2 ? 2 : 1;
+    const f32 scale = epiccsm::CasterBiasScale(want, rev, pc.casterBiasScaleV2);
+    const epiccsm::CasterBias cb = epiccsm::CasterBiasFor(DXGI_FORMAT_D16_UNORM, scale);
+    const bool psoStale = want && (!st.psosValid || st.dirty || st.pancake != pc.pancaking || st.depthBias != cb.depthBias || st.slopeBias != cb.slopeBias);
+    const bool foliageStale = app.m_foliage && !app.m_foliage->ShadowEpicMatches(want && st.active, cb.depthBias, cb.slopeBias, pc.pancaking);
+    if (want && !st.active && st.buildFailed && !st.dirty) return;   // 作れなかった（シェーダ無し）: 再読込みまで再試行しない
+    if (want == st.active && !psoStale && !foliageStale) return;
+
+    app.m_commandQueue->WaitIdle();   // PSO と影マップを差し替える（前のフレームが読んでいない状態で）
+    bool nowActive = false;
+    if (want)
+    {
+        if (psoStale || !st.psosValid)
+        {
+            st.psosValid = false;
+            if (!BuildEpicCsmPsos(app.m_rootSignature->Get(), *app.m_graphicsDevice, st, cb, pc.pancaking))
+                {
+                    Logger::Warn("Epic の動的 CSM: 影 PSO を作れない（ShadowPass_VS.cso 等が無い）。旧経路（2048 D32 × 4）のままにします");
+                st.buildFailed = true; st.dirty = false;
+            }
+        }
+        nowActive = st.psosValid;
+    }
+    else
+    {
+        st.stat.reset(); st.inst.reset(); st.skin.reset(); st.maskStat.reset(); st.maskInst.reset(); st.maskSkin.reset();
+        st.psosValid = false;
+    }
+    if (nowActive != st.active)
+    {
+        st.active = nowActive;
+        app.m_shadowMapDirty = true;           // D16 × 3 ⇄ D32 × 4 の作り直し（Render の頭）
+        app.InvalidateTemporalHistory(false);  // 影の絵が変わる
+        if (nowActive) Logger::Info("動的 CSM: Epic（D16 x3、pancaking。casterBias {} + {:.2f}）", cb.depthBias, cb.slopeBias);
+        else Logger::Info("動的 CSM: 従来（D32 x4）");
+    }
+    if (app.m_foliage && !app.m_foliage->SetShadowEpic(st.active, cb.depthBias, cb.slopeBias, pc.pancaking))
+        Logger::Warn("植生: Epic の動的 CSM の影 PSO を作れない");
+}
+
+// ---------------------------------------------------------------------------
 // W1-C3: shadingRevision（1 / 2）の反映。Run ループの先頭（フレーム外）で呼ぶ。
 //   ・シーンの ShadingSettings::shadingRevision が変わっていたら、GPU を待ってフォワード系 PSO を V2 / V1 の .cso で作り直す
 //     （V2 のシーンを開くまで V2 の PSO は作らない＝起動時間を延ばさない。UpdateLightingUnits と同じ流儀）。
 //   ・グラフ材質（ForwardGraph の実行時コンパイル）には毎回今の値を渡す（変化があれば GraphMaterialSystem 側で作り直す）。
-//   ・水 / 植生 / 仮想ジオメトリの V2 .cso は宣言済みだが、選ぶ側（WaterRenderer / FoliageSystem / VirtualGeometrySystem）は
-//     C3 の所有外のため未結線（引き継ぎ事項）。
+//   ・水 / 植生 / 仮想ジオメトリ（FU-E-25）: 各システムが自分で *V2_PS.cso を選ぶ（shadingpick::PickPs。無ければ V1 へ縮退）。
+//     要求がシーンの値とずれていたら、同じ WaitIdle の後に SetShadingV2 で追いつく（後から作られたものは次のフレームの先頭で追いつく）。
 // 呼び出し元: EnsureSplitResources の先頭（Application.cpp は W1 で A の所有のため、Run ループの同じ位置にある C の関数に相乗りする）。
 // ---------------------------------------------------------------------------
 void AppAccess::UpdateShadingRevision(Application& app)
 {
+    AppAccess::FreezeTick(app);   // FU-E-24: freeze_time の約束へ毎フレーム合わせる（相乗り。Application.cpp は A の所有）
+    AppAccess::UpdateEpicCsm(app);   // W1-C6: Epic の動的 CSM（D16 x3）の切り替え（既定 OFF のときは何もしない）
     if (!app.m_scene || !app.m_commandQueue || !app.m_graphicsDevice || !app.m_rootSignature) return;
     const u8 want = (app.m_scene->GetShadingSettings().shadingRevision == 2) ? 2 : 1;
     if (app.m_graphMaterials) app.m_graphMaterials->SetShadingRevision(want);
-    if (want == s_shadingRevApplied) return;
+    // FU-E-25: 水 / 植生 / 仮想ジオメトリは、自分の要求（V1 / V2）が今のシーンの値とずれていたら追いつく。
+    //   後から作られたもの（シーンを開いた後に WaterBody / FoliageLayer が足された等）も、ここで次のフレームの先頭に追いつく。
+    const bool v2 = (want == 2);
+    const bool waterOff = app.m_water && app.m_water->IsReady() && app.m_water->ShadingV2Requested() != v2;
+    const bool foliageOff = app.m_foliage && app.m_foliage->ShadingV2Requested() != v2;
+    const bool vgOff = app.m_vg && app.m_vg->ShadingV2Requested() != v2;
+    const bool fwdOff = (want != s_shadingRevApplied);
+    if (!fwdOff && !waterOff && !foliageOff && !vgOff) return;
     app.m_commandQueue->WaitIdle();
+    // 戻り値が偽 = シェーダを読めず前の PSO / PS のまま（要求は更新済みなので毎フレームは再試行しない。警告は各システムが出す）
+    if (waterOff && !app.m_water->SetShadingV2(v2)) Logger::Warn("水: shadingRevision={} への切替に失敗（前の PSO のまま）", v2 ? 2 : 1);
+    if (foliageOff && !app.m_foliage->SetShadingV2(v2)) Logger::Warn("植生: shadingRevision={} への切替に失敗（前の PSO のまま）", v2 ? 2 : 1);
+    if (vgOff && !app.m_vg->SetShadingV2(v2)) Logger::Warn("VG: shadingRevision={} への切替に失敗（前の PS のまま）", v2 ? 2 : 1);
+    if (!fwdOff)
+    {
+        Logger::Info("shadingRevision={}: 水 {} / 植生 {} / VG {} の V2 PSO を追従させました", static_cast<int>(want),
+                     app.m_water ? app.m_water->V2PsoCount() : 0, app.m_foliage ? app.m_foliage->V2PsoCount() : 0,
+                     app.m_vg ? app.m_vg->V2PsoCount() : 0);
+        return;
+    }
     s_shadingRevApplied = want;
     app.RecreateForwardPsos();
     app.RecreateSkinnedPsos();
     app.RecreateTerrainPsos();
     app.InvalidateTemporalHistory(true);   // V1<->V2 で絵が変わる（C5 以降）ので TAA / DDGI / フォグの履歴を捨てる
-    Logger::Info("shadingRevision: {}（フォワード系 PSO を差し替えました。V2 PSO {} 本）", static_cast<int>(want),
-                 s_v2PsoCount[0] + s_v2PsoCount[1] + s_v2PsoCount[2]);
+    Logger::Info("shadingRevision: {}（フォワード系 PSO を差し替えました。V2 PSO {} 本。水 {} / 植生 {} / VG {}）", static_cast<int>(want),
+                 s_v2PsoCount[0] + s_v2PsoCount[1] + s_v2PsoCount[2], app.m_water ? app.m_water->V2PsoCount() : 0,
+                 app.m_foliage ? app.m_foliage->V2PsoCount() : 0, app.m_vg ? app.m_vg->V2PsoCount() : 0);
 }
 
-void AppAccess::QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain)
+void AppAccess::QueryShadingPsos(const Application& app, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain,
+                                 int& v2Water, int& v2Foliage, int& v2Vg)
 {
     appliedRevision = s_shadingRevApplied;
     v2Forward = s_v2PsoCount[0];
     v2Skinned = s_v2PsoCount[1];
     v2Terrain = s_v2PsoCount[2];
+    v2Water = app.m_water ? app.m_water->V2PsoCount() : 0;       // FU-E-25: 実体が無ければ 0（V1 のシーンも 0）
+    v2Foliage = app.m_foliage ? app.m_foliage->V2PsoCount() : 0;
+    v2Vg = app.m_vg ? app.m_vg->V2PsoCount() : 0;
 }
 
 // shadingRevision=2 のとき、実行時の再コンパイル表（ShaderRegistry）には V2 の .cso が無いので、

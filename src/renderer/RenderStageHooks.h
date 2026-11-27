@@ -194,6 +194,12 @@ struct StageCtx
     D3D12_GPU_DESCRIPTOR_HANDLE sceneColorSrv{};           // ポストのステージでは「今のチェーンの絵」の SRV
     ID3D12Resource*             depth = nullptr;
     D3D12_GPU_DESCRIPTOR_HANDLE depthSrv{};
+    // 読み取り専用の DSV（READ_ONLY_DEPTH。CPU ハンドル）。AfterTranslucent の主ビュー / 副ビューで有効、それ以外のステージと
+    // 作れない深度（D32_FLOAT 以外・MSAA）では ptr==0。深度のテストだけして書かない描画（VFX など）が OMSetRenderTargets に渡す。
+    // ハンドルは Run の間だけ有効（次のステージ呼び出しで使い回される。保持しないこと）。
+    // リソース状態: 入口は通常 DEPTH_WRITE（読み取り専用 DSV はそのまま使える）。深度を SRV としても読むなら
+    // ctx.RequireDepth(DEPTH_READ | PIXEL_SHADER_RESOURCE | NON_PIXEL_SHADER_RESOURCE) を呼んでから束ねる（DEPTH_READ を含めること）。
+    D3D12_CPU_DESCRIPTOR_HANDLE depthDsvReadOnly{};
     D3D12_GPU_DESCRIPTOR_HANDLE hiZSrv{};                  // Hi-Z が作られたフレームの AfterDepthPrepass 以降（ポスト含む）。無ければ ptr==0
     D3D12_GPU_DESCRIPTOR_HANDLE velocitySrv{};             // 速度プリパスのフレームの AfterDepthPrepass 以降（ポスト含む）。無ければ ptr==0
     // 入口の状態（sceneColor / depth が null のときは意味を持たない）。変えるときは Require* を使う。
@@ -251,6 +257,9 @@ struct IRenderFeature
     virtual void        DeclareResources(StageResourceDecl&) {}   // F3 でレンダーグラフへ移すための口。今は何もしない
     virtual void        Record(Stage, StageCtx&) = 0;
     virtual u64         VramBytes() const { return 0; }
+    // このフレームのこのステージで記録するものがあるか。false の機能は Empty() / Run() で数えず、全部そうなら
+    // そのステージは何も記録しない（GPU イベントも出さない）。毎フレーム何度か呼ばれるので軽くすること。
+    virtual bool        Active(Stage) const { return true; }
 };
 
 class FeatureRegistry
@@ -291,18 +300,23 @@ public:
         return names[static_cast<u32>(s)];
     }
 
-    // 登録が 0 件のステージは何もしない（true なら Run を呼ぶ必要が無い）。
-    bool Empty(Stage s) const { return m_perStage[static_cast<u32>(s)].empty(); }
+    // 登録が 0 件、または登録された機能が全て Active(s)==false のステージは何もしない（true なら Run を呼ぶ必要が無い）。
+    bool Empty(Stage s) const
+    {
+        for (const Entry& e : m_perStage[static_cast<u32>(s)])
+            if (e.feature->Active(s)) return false;
+        return true;
+    }
     bool Empty() const { return m_owned.empty(); }
     size_t Count() const { return m_owned.size(); }
 
     void Run(Stage s, StageCtx& ctx)
     {
-        if (m_perStage[static_cast<u32>(s)].empty()) return;
+        if (Empty(s)) return;   // 全機能が非 Active なら何も記録しない（イベントも出さない）
         const EventName& en = StageNameForEvent(s);
         GpuEventScope stageScope(ctx.cmd, en.text.c_str(), en.len);   // W05-27: PIX / DRED にステージ名を出す（イベントだけ。計測は増やさない）
         for (const Entry& e : m_perStage[static_cast<u32>(s)])
-            e.feature->Record(s, ctx);
+            if (e.feature->Active(s)) e.feature->Record(s, ctx);
     }
 
     // 解像度が変わったときだけ全機能へ通知する（変化が無ければ何もしない。初回は必ず通知する）。

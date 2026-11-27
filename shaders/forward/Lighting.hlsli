@@ -408,6 +408,63 @@ float3 ShadePunctual(float3 N, float3 V, float3 L, float3 radiance,
     return ShadePunctualMS(N, V, L, radiance, albedo, F0, metallic, roughness, float3(1.0, 1.0, 1.0));
 }
 
+// ===== UNO_SHADING_V2（W1-C5 LS-01 x MH-3a。-D UNO_SHADING_V2=1 の .cso とグラフ材質の実行時コンパイルだけ）=====
+//   マイクロシャドウ / 地平線オクルージョン / GTSO。CPU 側の写しと式の説明は src/renderer/ShadingV2Math.h。
+//   フラグは PfSlot::ShadingV2（_clusterReserved[2]）。x = shadingFlags（asuint）、y = microShadowK、z = horizonK。
+//   V1 の .cso は UNO_SHADING_V2 を定義しないので、この区画は 1 命令も入らない（DXIL 不変）。
+#ifdef UNO_SHADING_V2
+static const uint UNO_V2_FLAG_MICRO_SHADOW = 1u << 0;
+static const uint UNO_V2_FLAG_HORIZON_OCC  = 1u << 1;
+static const uint UNO_V2_FLAG_GTSO         = 1u << 2;
+static const uint UNO_V2_FLAG_CSM_RECEIVER = 1u << 3;   // W1-C6: Epic の動的 CSM の受光側の法線オフセット
+static const uint UNO_V2_FLAG_GATHER_PCSS  = 1u << 4;   // W1-C6: Gather ベースの PCSS（動的 CSM の分だけ）
+static const uint UNO_V2_FLAG_CASCADE_DITHER = 1u << 5;   // W1-C6: カスケード境界のブレンドを IGN のディザで片方だけサンプルする
+
+uint UnoV2Flags() { return asuint(_clusterReserved[2].x) & 0xFFu; }
+
+// Chan 2018: saturate(|N.L| + 2 ao^2 - 1)。強さ k は 1 + k (ms - 1)（k=1 で標準、0 で恒等）。
+float UnoV2MicroShadow(float NoL, float ao, float k)
+{
+    const float ms = saturate(abs(NoL) + 2.0 * ao * ao - 1.0);
+    return saturate(1.0 + k * (ms - 1.0));
+}
+
+// 反射ベクトルが幾何法線の面より下へ潜る分を落とす（Filament の horizon fade）。saturate(1 + k R.Ng)^2。
+float UnoV2HorizonOcclusion(float rDotNg, float k)
+{
+    const float h = saturate(1.0 + k * rDotNg);
+    return h * h;
+}
+
+// 球面キャップの重なり（Oat & Sander 2007）。cosCap = キャップの半角の cos、cosDistance = 中心どうしの角度の cos。
+float UnoV2CapsIntersection(float cosCap1, float cosCap2, float cosDistance)
+{
+    const float r1 = acos(clamp(cosCap1, -1.0, 1.0));
+    const float r2 = acos(clamp(cosCap2, -1.0, 1.0));
+    const float d  = acos(clamp(cosDistance, -1.0, 1.0));
+    if (min(r1, r2) <= max(r1, r2) - d) return 1.0 - max(cosCap1, cosCap2);
+    if (r1 + r2 <= d) return 0.0;
+    const float delta = abs(r1 - r2);
+    const float x = 1.0 - saturate((d - delta) / max(r1 + r2 - delta, 1.0e-4));
+    return (x * x * (3.0 - 2.0 * x)) * (1.0 - max(cosCap1, cosCap2));
+}
+
+// GTSO（Jimenez 2016）。可視円錐（cos^2 Av = 1 - ao）と反射ローブ円錐（cos As = 2^(-3.32193 alpha^2)）の重なりを、
+// 同じローブと半球の重なりで割る（ao = 1 なら 1。地平線で切れる分は horizon とスプリットサムの LUT が持つ）。NoR = N.R（軸は N と R の中間 = 近似ベントノーマル）。
+float UnoV2Gtso(float NoR, float ao, float roughness)
+{
+    const float alpha = max(roughness * roughness, 1.0e-4);
+    const float cosAs = exp2(-3.32193 * alpha * alpha);
+    const float cosAv = sqrt(saturate(1.0 - ao));
+    // 近似ベントノーマル: 軸を N と R の中間へ傾ける（真のベントノーマルが入る LS-07 まで）。
+    //   軸 = normalize(N+R) なら軸と R のなす角は N と R の半分: cos = sqrt((1+NoR)/2)。N のままだと掠める角度で R が円錐の外へ出て黒い縁になる。
+    const float cosD = sqrt(saturate(0.5 + 0.5 * NoR));
+    const float iv = UnoV2CapsIntersection(cosAv, cosAs, cosD);
+    const float i0 = UnoV2CapsIntersection(0.0, cosAs, cosD);
+    return (i0 > 1.0e-4) ? saturate(iv / i0) : 1.0;
+}
+#endif // UNO_SHADING_V2
+
 // ===== 拡張シェーディングの文脈（1 画素ぶん。UnoShadeLighting が作り、直接光の全灯で使い回す）=====
 //   flags = 0 かつ msComp = 1 なら UnoShadePunctualCtx は ShadePunctual と同じ値（既存の材質は絵が変わらない）。
 struct UnoBrdfCtx
@@ -434,6 +491,11 @@ struct UnoBrdfCtx
     float  coatRoughness;
     float  coatAttenV;    // 下層の減衰 1 - coat·Fc(Nc·V)
     float  coatMs;        // コートのマルチスキャッタ補償（F0 = 0.04）
+#ifdef UNO_SHADING_V2
+    // W1-C5: ローカル光のマイクロシャドウ用（0 埋めの既定 = microK 0 = 何もしない）
+    float  v2Ao;          // 材質 AO のみ（SSAO は含めない）
+    float  v2MicroK;      // マイクロシャドウの強さ（機能 OFF のとき 0）
+#endif
 };
 
 UnoBrdfCtx UnoBrdfCtxDefault(float3 albedo, float3 F0, float metallic, float roughness)
@@ -600,6 +662,10 @@ float3 AccumulatePunctualLightsCtx(float3 N, float3 V, float3 worldPos, UnoBrdfC
         if (L.contactChannel > 0.5 && _clusterReserved[8].x > 0.5)
             radiance *= g_contactShadow.Load(int3(int2(svPosXY), 0))[(int)L.contactChannel];
 
+#ifdef UNO_SHADING_V2
+        [branch] if (bc.v2MicroK > 0.0)
+            radiance *= UnoV2MicroShadow(dot(N, Ldir), bc.v2Ao, bc.v2MicroK);
+#endif
         Lo += UnoShadePunctualCtx(N, V, Ldir, radiance, bc);
     }
 

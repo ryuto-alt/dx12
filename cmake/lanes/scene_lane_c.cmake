@@ -1,4 +1,5 @@
 # scene のレーン C 用の追加ソース。
 # 自分のレーンのファイルだけを編集する（他レーンのファイルは触らない）。
 target_sources(Scene PRIVATE
+    SphereSubdivSerializer.cpp   # W1-C13: 球の分割数（"sphereSubdiv"）の保存 / 読み込み / Undo
 )

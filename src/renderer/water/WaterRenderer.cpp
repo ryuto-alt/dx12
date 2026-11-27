@@ -13,6 +13,7 @@
 #include "graphics/RenderTarget.h"
 #include "renderer/Frustum.h"
 #include "renderer/RenderPass.h"
+#include "renderer/ShadingRevisionPick.h"
 #include "resource/ShaderCompiler.h"
 
 namespace dx12e::water
@@ -46,6 +47,8 @@ struct WaterRenderer::Impl
     ID3D12Device* dev = nullptr;
     u32 frames = 3;
     bool physical = false;
+    bool v2 = false;          // shadingRevision=2 を求めている（FU-E-25）
+    int  v2PsoCount = 0;      // V2 の .cso から作れた PSO の数（水面 + 水中。0..2）
 
     Microsoft::WRL::ComPtr<ID3D12RootSignature> rs;
     Microsoft::WRL::ComPtr<ID3D12PipelineState> psoMain, psoUnder;
@@ -197,9 +200,15 @@ bool WaterRenderer::Impl::CreateRootSignature()
 bool WaterRenderer::Impl::BuildPsos()
 {
     auto vs = ShaderCompiler::LoadFromFile(d.shaderDir + L"WaterSurface_VS.cso");
-    auto ps = ShaderCompiler::LoadFromFile(d.shaderDir + (physical ? L"WaterSurfacePhys_PS.cso" : L"WaterSurface_PS.cso"));
+    // FU-E-25: shadingRevision=2 のときは *V2_PS.cso を選ぶ。無ければ警告して V1 へ縮退（ApplicationPipeline.cpp の FwdPsNameRev と同じ流儀）。
+    const auto exists = [this](const std::wstring& n) { return shadingpick::CsoFileExists(d.shaderDir + n); };
+    const auto pickSurf = shadingpick::PickPs(v2, physical, L"WaterSurface_PS.cso", L"WaterSurfacePhys_PS.cso", L"WaterSurfaceV2_PS.cso", L"WaterSurfacePhysV2_PS.cso", exists);
+    const auto pickUnder = shadingpick::PickPs(v2, physical, L"WaterUnder_PS.cso", L"WaterUnderPhys_PS.cso", L"WaterUnderV2_PS.cso", L"WaterUnderPhysV2_PS.cso", exists);
+    if (pickSurf.fellBack || pickUnder.fellBack)
+        Logger::Warn("水: V2 の .cso が無い: shadingRevision=2 を使えないので V1 のシェーダで描画します（ビルドし直してください）");
+    auto ps = ShaderCompiler::LoadFromFile(d.shaderDir + pickSurf.name);
     auto uvs = ShaderCompiler::LoadFromFile(d.shaderDir + L"WaterUnder_VS.cso");
-    auto ups = ShaderCompiler::LoadFromFile(d.shaderDir + (physical ? L"WaterUnderPhys_PS.cso" : L"WaterUnder_PS.cso"));
+    auto ups = ShaderCompiler::LoadFromFile(d.shaderDir + pickUnder.name);
     if (vs.GetSize() == 0 || ps.GetSize() == 0 || uvs.GetSize() == 0 || ups.GetSize() == 0)
     {
         Logger::Warn("水: .cso が読めない（シェーダをビルドし直してください）");
@@ -207,6 +216,8 @@ bool WaterRenderer::Impl::BuildPsos()
     }
     static const D3D12_INPUT_ELEMENT_DESC kLayout[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
+    // 両方作れたときだけ差し替える（失敗しても前の PSO を残す＝Draw が null の PSO を設定しない。FU-E-25 レビュー対応）
+    Microsoft::WRL::ComPtr<ID3D12PipelineState> newMain, newUnder;
     {
         PipelineStateBuilder b;
         b.SetRootSignature(rs.Get())
@@ -220,7 +231,7 @@ bool WaterRenderer::Impl::BuildPsos()
          .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS_EQUAL)
          .SetAlphaBlendEnabled(true)
          .SetCullMode(D3D12_CULL_MODE_NONE);
-        psoMain = b.Build(*d.gdev);
+        newMain = b.Build(*d.gdev);
     }
     {
         PipelineStateBuilder b;
@@ -231,9 +242,17 @@ bool WaterRenderer::Impl::BuildPsos()
          .SetDepthStencilFormat(DXGI_FORMAT_UNKNOWN)
          .SetDepthEnabled(false)
          .SetCullMode(D3D12_CULL_MODE_NONE);
-        psoUnder = b.Build(*d.gdev);
+        newUnder = b.Build(*d.gdev);
     }
-    return psoMain && psoUnder;
+    if (!newMain || !newUnder)
+    {
+        Logger::Warn("水: PSO を作れなかった。前の PSO のまま描画します");
+        return false;
+    }
+    psoMain = std::move(newMain);
+    psoUnder = std::move(newUnder);
+    v2PsoCount = (pickSurf.usedV2 ? 1 : 0) + (pickUnder.usedV2 ? 1 : 0);
+    return true;
 }
 
 Microsoft::WRL::ComPtr<ID3D12Resource> WaterRenderer::Impl::UploadBuffer(u64 bytes)
@@ -515,6 +534,24 @@ bool WaterRenderer::RecreatePipelines(bool physical)
     m_impl->physical = physical;
     return m_impl->BuildPsos();
 }
+
+bool WaterRenderer::RecreatePipelines(bool physical, bool v2)
+{
+    if (!m_impl) return false;
+    m_impl->v2 = v2;
+    return RecreatePipelines(physical);
+}
+
+bool WaterRenderer::SetShadingV2(bool v2)
+{
+    if (!m_impl) return false;
+    if (m_impl->v2 == v2) return true;
+    m_impl->v2 = v2;
+    return m_impl->BuildPsos();   // GPU が止まっている間（UpdateShadingRevision の WaitIdle 後）にだけ呼ぶこと
+}
+
+bool WaterRenderer::ShadingV2Requested() const { return m_impl && m_impl->v2; }
+int WaterRenderer::V2PsoCount() const { return m_impl ? m_impl->v2PsoCount : 0; }
 
 void WaterRenderer::BeginFrameTimers(u32 frameSlot)
 {
