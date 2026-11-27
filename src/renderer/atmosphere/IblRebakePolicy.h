@@ -16,6 +16,7 @@
 // ===========================================================================
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace dx12e::atmosphere
 {
@@ -94,6 +95,17 @@ inline int IblRebakeWaitFrames(const IblWaitState& s, int stageCount)
 {
     if (!IblRebakePending(s)) return 0;
     return kIblWaitBaseFrames + (s.iblRunning ? std::max(stageCount, 0) : 0);
+}
+
+// 撮影の応答の note に足す一文（W1-FU-E-30 / C9）。waitIblRebake を頼まれていなければ空。
+// waitFrames > 0 なら「焼き直しが未了だったので決定論経路へ切り替え、収束フレームを足した」旨、0 なら「待つ必要が無かった」旨。
+inline std::string IblShotNote(bool requested, int waitFrames)
+{
+    if (!requested) return std::string();
+    if (waitFrames > 0)
+        return "waitIblRebake: IBL の焼き直しが未了(iblRebakePending=true)だったので決定論経路へ切り替え、収束フレームを "
+               + std::to_string(waitFrames) + " 足して撮った(iblWaitFrames=" + std::to_string(waitFrames) + ")。";
+    return "waitIblRebake: IBL の焼き直しは未了ではなかった(iblRebakePending=false, iblWaitFrames=0)ので、そのまま撮った。";
 }
 
 } // namespace dx12e::atmosphere

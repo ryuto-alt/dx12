@@ -27,6 +27,7 @@
 #include "editor/FrameThrottle.h"   // W1-A11: 裏に回ったときのフレーム間引き（純ロジック）
 #include "editor/EditorPrefs.h"      // W1-A11: 「常にリアルタイム」の設定（perf.alwaysRealtime）
 #include "editor/panels/MaterialGraphPanel.h"   // マテリアルグラフ G2c: ライブプレビュー / サムネイルの GPU 側（InitializeGpu / ShutdownGpu）
+#include "renderer/atmosphere/IblRebakePolicy.h"   // W1-FU-E-30: IblShotNote
 
 namespace dx12e
 {
@@ -2087,7 +2088,10 @@ void Application::Run()
                                        {"height", m_sceneRT ? m_sceneRT->GetHeight() : 0u},
                                        {"source", "sceneRT(pre-post)"},
                                        {"deterministic", true},
-                                       {"note", "決定論モード: time / TAA ジッタ / フォグ・SSGI の位相を固定し、"
+                                       {"iblRebakePending", m_mcpFinalShot.iblWaitFrames > 0},   // W1-FU-E-30: 撮影の依頼時点で未了だったか
+                                       {"iblWaitFrames", m_mcpFinalShot.iblWaitFrames},
+                                       {"note", atmosphere::IblShotNote(m_mcpFinalShot.iblRequested, m_mcpFinalShot.iblWaitFrames) +
+                                                "決定論モード: time / TAA ジッタ / フォグ・SSGI の位相を固定し、"
                                                 "履歴を収束させてから撮った。ゲームのシミュレーションは止まらない"}});
                 m_mcpFinalShot = {};
                 m_deterministicCapture = false;

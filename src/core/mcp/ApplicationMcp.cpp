@@ -13,6 +13,7 @@
 #include "renderer/PhotometricMath.h"   // Q2: 露出(EV100)とトーンマップの純関数（screenshot の CPU ミラーが共有）
 #include "renderer/LinearCapturePass.h"  // Q2: 線形 HDR スクリーンショットの読み出し
 #include "renderer/pt/PtImageIO.h"      // Q2: PFM / EXR の書き出し（パストレーサーの出力と同じ規約・同じ実装を共有）
+#include "renderer/atmosphere/IblRebakePolicy.h"   // W1-FU-E-30: IblShotNote
 
 #include <algorithm>
 #include <unordered_set>
@@ -995,6 +996,8 @@ void Application::FinishFinalScreenshot()
     if (m_mcpFinalShot.withImGui) vinput_gui::SetCursorHidden(false);
     const bool wasDeterministic = m_mcpFinalShot.deterministic;
     const bool hidGizmos        = m_mcpFinalShot.hideGizmos;
+    const bool iblRequestedShot = m_mcpFinalShot.iblRequested;    // W1-FU-E-30
+    const int  iblWaitFramesShot = m_mcpFinalShot.iblWaitFrames;
     // 撮り終わったら通常の時間へ戻す。ただし freeze_time で固定している最中なら固定へ戻す（FU-E-24）。
     m_deterministicCapture = AppAccess::FreezePinsRender(*this);
 
@@ -1127,7 +1130,10 @@ void Application::FinishFinalScreenshot()
                        {"gizmos", !hidGizmos},
                        {"taa", m_scene->GetTaaSettings().enabled},
                        {"mode", m_engineMode == EngineMode::Playing ? "Playing" : "Editor"},
-                       {"note", "ポスト適用後のバックバッファ。ImGui を描く前に撮るので"
+                       {"iblRebakePending", iblWaitFramesShot > 0},   // W1-FU-E-30: 撮影の依頼時点で未了だったか
+                       {"iblWaitFrames", iblWaitFramesShot},
+                       {"note", atmosphere::IblShotNote(iblRequestedShot, iblWaitFramesShot) +
+                                "ポスト適用後のバックバッファ。ImGui を描く前に撮るので"
                                 "エディタのパネル/ギズモは写らない。dx12_screenshot（ポスト前の "
                                 "m_sceneRT）とは別物なので、見た目の判断はこちらを使う"}});
 }

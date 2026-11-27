@@ -129,6 +129,18 @@ int main()
         s.envWantedPrev = true;
         CHECK(IblRebakePending(s));
     }
+    // ---- 撮影応答の note（W1-FU-E-30） ----
+    CHECK(IblShotNote(false, 0).empty());
+    CHECK(IblShotNote(false, 9).empty());   // 頼まれていなければ何も足さない
+    {
+        const std::string n = IblShotNote(true, 8);
+        CHECK(n.find("iblRebakePending=true") != std::string::npos);
+        CHECK(n.find("iblWaitFrames=8") != std::string::npos);
+        CHECK(n.find("決定論経路") != std::string::npos);
+        const std::string z = IblShotNote(true, 0);
+        CHECK(z.find("iblRebakePending=false") != std::string::npos);
+        CHECK(z.find("iblWaitFrames=0") != std::string::npos);
+    }
     std::printf(g_fail ? "IblRebakeTriggerTests FAILED (%d)\n" : "IblRebakeTriggerTests OK\n", g_fail);
     return g_fail ? 1 : 0;
 }
