@@ -7,6 +7,7 @@
 UNO_COMPONENT_SERIALIZER(RegisterVfxComponentSerializer)   // W1-BD4: UnoFX（"vfx"）
 // ==== lane-B end ====
 // ==== lane-C begin ====
+UNO_COMPONENT_SERIALIZER(RegisterSphereSubdivSerializer)   // W1-C13: 球の分割数（"sphereSubdiv"）
 // ==== lane-C end ====
 // ==== lane-D begin ====
 // ==== lane-D end ====

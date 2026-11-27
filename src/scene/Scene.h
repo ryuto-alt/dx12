@@ -305,6 +305,11 @@ public:
     // 古い BLAS を掴んで、レイトレだけ違う形で映る）。
     void CollectUnusedMeshes(std::vector<const Mesh*>& outFreed);
 
+    // W1-C13: 読み込み / 複製 / Undo で SphereSubdiv（applied=false）が付いた球のメッシュを、保存された分割数で作り直す。
+    // フレームの頭（描画リストを作る前）に呼ぶ。古いメッシュは参照を外すだけ＝CollectUnusedMeshes が
+    // 回収し、そのとき呼び出し側が BLAS キャッシュからも外す（既存の経路）。
+    void ApplyPendingSphereSubdiv();
+
     // 上の回収が効いているかを外から見るための数（UI テスト / 診断用）。
     size_t GetOwnedMeshCount() const { return m_ownedMeshes.size(); }
 

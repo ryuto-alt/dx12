@@ -13,6 +13,7 @@
 #include "editor/UiWidgets.h"
 #include "editor/SelectionOutline.h"   // エディタ専用: 選択 / ホバーの輪郭・ワイヤ表示モード（最終画の撮影より後）
 #include "editor/ViewportLogic.h"       // ビューモード → RenderDebugMode
+#include "ecs/components/SphereSubdiv.h"   // W1-C13
 #include "ecs/EditorFlags.h"            // [H] エディタ専用の非表示（BuildDrawList）
 #include "ecs/InstanceGroup.h"         // インスタンス群の展開（BuildDrawList）
 #include "editor/InstanceGroupCommand.h"   // インスタンス群: 変換 / 展開の Undo（エディタの「まとめる」「展開」）
@@ -3257,6 +3258,9 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
         }
     }
 
+    // W1-C13: 読み込み / 複製 / Undo された球の分割数を反映（描画リストを作る前＝フレームの頭）
+    if (m_scene) m_scene->ApplyPendingSphereSubdiv();
+
     // エンティティ生成（前フレームのドラッグ&ドロップ等から遅延実行）
     if (!m_editorCtx->pendingSpawns.empty())
     {
@@ -3344,6 +3348,9 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
                 // 新しく作る球だけ分割数を上げる（BUG-45）。読み込み経路は既定の 16x16 のまま。
                 auto e = m_scene->SpawnSphere(name, req.position, 0.5f,
                                               Scene::kSphereSlicesNew, Scene::kSphereStacksNew);
+                // 分割数を保存 / 複製 / Undo で引き継ぐ（applied=true＝メッシュは今の値で作成済み）。
+                m_scene->GetRegistry().emplace_or_replace<SphereSubdiv>(
+                    e.GetHandle(), SphereSubdiv{ Scene::kSphereSlicesNew, Scene::kSphereStacksNew, true });
                 spawnedEntity = e.GetHandle();
             }
             else if (req.modelPath == "__primitive_plane__")
