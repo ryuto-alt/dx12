@@ -21,7 +21,11 @@
   やっていること:
     1. 名前付き Mutex で同時ビルド数を制限する(既定 2 本。環境変数 DX12_BUILD_SLOTS=1..3)。
        - スロット: Global\dx12-build(スロット 1。旧版 build.ps1 はこれだけを取る)と Global\dx12-build-<k>(k>=2)。
-         スロット 2 以降は空き物理メモリが DX12_BUILD_MIN_FREE_GB(既定 8)以上のときだけ取る。
+         利用者が操作中はビルド 1 本、10 分以上操作が無いときだけ 2 本目を Idle 優先度で走らせる。
+         スロット 2 以降は「最後の入力から DX12_BUILD_IDLE_MIN 分(既定 10)以上」かつ
+         「空き物理メモリが DX12_BUILD_MIN_FREE_GB(既定 8)以上」のときだけ取る。
+         スロット 2 以降のビルドは Idle 優先度・-j 8(-Jobs で上書き可)。スロット 1 は BelowNormal・従来の -j。
+         (テスト用: DX12_BUILD_FAKE_IDLE_SEC で「最後の入力からの秒数」を差し替え)
        - 先にビルドディレクトリ単位の Mutex(Global\dx12-build-dir-<パスの SHA1 先頭16桁>)と
          <Dir>\.build-in-progress(PID。旧版は書かない)で、同じディレクトリを同時に建てないようにする。
        - 待っている間は待機中と表示する(30 秒ごとに各スロットの状態)。
@@ -65,6 +69,7 @@ if ($Dlss -eq 'require' -and -not $sdkPresent) {
 $dlssWanted = ($Dlss -ne 'off') -and $sdkPresent   # このビルドで DLSS が有効になるはずか
 
 # --- 並列数: 論理コアの半分、最大 12（16GB 機で cl 1本が最大 ~1GB 使うため）
+$jobsExplicit = $Jobs -gt 0
 if ($Jobs -le 0) {
     $logical = [Environment]::ProcessorCount
     $Jobs = [Math]::Max(2, [Math]::Min(12, [int]($logical / 2)))
@@ -76,6 +81,8 @@ if ($Jobs -le 0) {
 $slotPrefix = if ($env:DX12_BUILD_SLOT_PREFIX) { $env:DX12_BUILD_SLOT_PREFIX } else { 'Global\dx12-build' }
 $slotCount = 2
 if ($env:DX12_BUILD_SLOTS -match '^\d+$') { $slotCount = [Math]::Max(1, [Math]::Min(3, [int]$env:DX12_BUILD_SLOTS)) }
+$idleMinMin = 10.0
+if ($env:DX12_BUILD_IDLE_MIN -match '^\d+(\.\d+)?$') { $idleMinMin = [double]$env:DX12_BUILD_IDLE_MIN }
 $minFreeGb = 8.0
 if ($env:DX12_BUILD_MIN_FREE_GB -match '^\d+(\.\d+)?$') { $minFreeGb = [double]$env:DX12_BUILD_MIN_FREE_GB }
 
@@ -91,6 +98,25 @@ function Enter-BuildMutex([System.Threading.Mutex]$m, [int]$ms, [string]$what) {
         Write-Host "[build] note: $what was abandoned by a crashed build. taking it over"
         return $true
     }
+}
+# 最後のキー/マウス入力からの経過秒。取れなければ 0(= 操作中扱いで安全側)。DX12_BUILD_FAKE_IDLE_SEC で差し替え可
+function Get-UserIdleSec {
+    if ($env:DX12_BUILD_FAKE_IDLE_SEC -match '^\d+(\.\d+)?$') { return [double]$env:DX12_BUILD_FAKE_IDLE_SEC }
+    try {
+        if (-not ('Dx12BuildIdle' -as [type])) {
+            Add-Type -Name 'Dx12BuildIdle' -Namespace 'Dx12' -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+[DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO p);
+public static double IdleSec() {
+    LASTINPUTINFO li = new LASTINPUTINFO(); li.cbSize = (uint)Marshal.SizeOf(typeof(LASTINPUTINFO));
+    if (!GetLastInputInfo(ref li)) return 0;
+    uint now = unchecked((uint)Environment.TickCount64);
+    return unchecked(now - li.dwTime) / 1000.0;
+}
+'@ -UsingNamespace 'System.Runtime.InteropServices'
+        }
+        return [Dx12.Dx12BuildIdle]::IdleSec()
+    } catch { return 0 }
 }
 function Get-FreePhysicalGb {
     try { return [double](Get-CimInstance Win32_OperatingSystem -Property FreePhysicalMemory).FreePhysicalMemory / 1MB } catch { return 1e9 }
@@ -135,8 +161,10 @@ try {
         $state = @()
         for ($k = 1; $k -le $slotCount; $k++) {
             if ($k -ge 2) {
+                $idle = Get-UserIdleSec
+                if ($idle -lt $idleMinMin * 60) { $state += ("slot {0} not used: user active (idle {1:n0}s < {2:n0}s)" -f $k, $idle, ($idleMinMin * 60)); continue }
                 $free = Get-FreePhysicalGb
-                if ($free -lt $minFreeGb) { $state += ("slot {0} held back (free {1:n1} GB < {2:n1} GB)" -f $k, $free, $minFreeGb); continue }
+                if ($free -lt $minFreeGb) { $state += ("slot {0} not used: low memory (free {1:n1} GB < {2:n1} GB)" -f $k, $free, $minFreeGb); continue }
             }
             if (Enter-BuildMutex $slotMutexes[$k - 1] 0 "slot $k") { $slotGot = $k; break }
             $state += "slot $k busy"
@@ -152,6 +180,9 @@ try {
     }
     if ($announced) { Write-Host ("[build] lock acquired after {0:n0}s" -f $sw.Elapsed.TotalSeconds) }
     Write-Host "[build] slot $slotGot/$slotCount"
+    # スロット 2 以降は -Jobs 未指定なら -j 8(利用者が戻ってきても影響を小さくする)
+    if (-not $jobsExplicit -and $slotGot -ge 2) { $Jobs = 8 }
+    $prio = if ($slotGot -ge 2) { 'Idle' } else { 'BelowNormal' }
 
     # マーカー(ディレクトリが既にある場合だけ。無ければ cmake が作るので省略)
     if (Test-Path -LiteralPath $dirFull) { try { Set-Content -LiteralPath $markerPath -Value $PID -NoNewline; $markerWritten = $true } catch {} }
@@ -165,8 +196,8 @@ try {
         exit 0
     }
 
-    # --- 2. 優先度を下げる（子プロセスに継承される）
-    try { (Get-Process -Id $PID).PriorityClass = 'BelowNormal' } catch {}
+    # --- 2. 優先度を下げる（子プロセスに継承される。スロット 2 以降は Idle）
+    try { (Get-Process -Id $PID).PriorityClass = $prio } catch {}
 
     # --- 4. vcvars64 を取り込む
     if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
@@ -266,7 +297,7 @@ try {
     $args2 = @('--build', $Dir, '-j', $Jobs)
     if (-not $Tests) { foreach ($t in $Target) { $args2 += @('--target', $t) } }
     $args2 += @('--', '-l', ([Environment]::ProcessorCount - 2))
-    Write-Host "[build] cmake $($args2 -join ' ')  (jobs=$Jobs, priority=BelowNormal)"
+    Write-Host "[build] cmake $($args2 -join ' ')  (jobs=$Jobs, priority=$prio)"
     $bsw = [Diagnostics.Stopwatch]::StartNew()
     $cmdArgs = ($args2 | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join ' '
     $oldCp = $null

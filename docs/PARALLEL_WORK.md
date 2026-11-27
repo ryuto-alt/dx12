@@ -69,7 +69,7 @@ worktree 側には入らない(本体で追加・再インストールしてか�
 
 ## 3. ビルドとテスト
 
-- ビルドは必ず `pwsh tools/build.ps1`(PC 全体で同時ビルド 2 本まで = Mutex のスロット制、BelowNormal。`DX12_BUILD_SLOTS` で 1〜3。同じビルドディレクトリは同時に建てない)。ビルドを待つレーンは最大 3。
+- ビルドは必ず `pwsh tools/build.ps1`(PC 全体で Mutex のスロット制。利用者が操作中はビルド 1 本、10 分以上操作が無いときだけ 2 本目を Idle 優先度・-j 8 で走らせる(`DX12_BUILD_IDLE_MIN`)。1 本目は BelowNormal。`DX12_BUILD_SLOTS` で 1〜3。同じビルドディレクトリは同時に建てない)。ビルドを待つレーンは最大 3。
 - テストは `pwsh tools/ctest.ps1`(VS 同梱の ctest を自動で探し、BelowNormal、`-j3 --timeout 300 --output-on-failure`)。
   - 既定は `-LE "^(gpu|ui)$"`。ラベルは小文字(`gpu` / `ui` / `dxc`)。
   - `-Gpu` で GPU テスト、`-Ui` で UI テスト(エンジンを起動する)を含める。**オーナーの離席中か、メインの指示があるときだけ**。
