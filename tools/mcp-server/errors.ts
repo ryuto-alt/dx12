@@ -56,6 +56,38 @@ export type ErrorBody = {
   hint?: string;
 };
 
+/**
+ * E_OUT_OF_RANGE の details の形(エンジン側の 3 つの出どころ。W1-C2 / FU-E-39)。AI は details だけで撃ち直せる。
+ *  - range: 数値引数が許される範囲を出た(マニフェストの min / max。例 shadingRevision / microShadowK / horizonK)
+ *      details = {param, value, range:{min?, max?}}
+ *  - index: 添字が既存の要素を指していない(例 set_component particleEmitter の layer。max = 最大の有効な添字)
+ *      details = {field, value, max}   ← 余計なキーを持たない
+ *  - length: 文字列の長さが範囲外(例 editor_notify の message は 1〜400 文字)
+ *      details = {param, length, range:{min, max}}
+ */
+export const OUT_OF_RANGE_DETAILS = {
+  range: { keys: ["param", "value", "range"], rangeKeys: ["min", "max"] },
+  index: { keys: ["field", "value", "max"] },
+  length: { keys: ["param", "length", "range"], rangeKeys: ["min", "max"] },
+} as const;
+
+/** details が OUT_OF_RANGE_DETAILS のどれかの形か(キーの過不足なし。range は min / max だけ)。当てはまる形の名前を返す。 */
+export function outOfRangeDetailsKind(d: unknown): keyof typeof OUT_OF_RANGE_DETAILS | null {
+  if (!d || typeof d !== "object" || Array.isArray(d)) return null;
+  const keys = Object.keys(d as object).sort().join();
+  const rangeOk = (r: unknown, need: boolean) => {
+    if (r === undefined) return !need;
+    if (!r || typeof r !== "object" || Array.isArray(r)) return false;
+    const ks = Object.keys(r as object);
+    return ks.every((k) => k === "min" || k === "max") && ks.every((k) => typeof (r as any)[k] === "number") && (!need || ks.length > 0);
+  };
+  const o = d as Record<string, unknown>;
+  if (keys === [...OUT_OF_RANGE_DETAILS.index.keys].sort().join()) return typeof o.field === "string" && typeof o.max === "number" ? "index" : null;
+  if (keys === [...OUT_OF_RANGE_DETAILS.length.keys].sort().join()) return typeof o.param === "string" && typeof o.length === "number" && rangeOk(o.range, true) ? "length" : null;
+  if (keys === [...OUT_OF_RANGE_DETAILS.range.keys].sort().join()) return typeof o.param === "string" && rangeOk(o.range, false) ? "range" : null;
+  return null;
+}
+
 /** コード表(ドキュメントと errors.test.ts の突き合わせ用)。retryable は既定値。 */
 export const ERROR_CODES: Record<ErrorCodeName, { legacy: number | null; retryable: boolean; meaning: string }> = {
   E_ENGINE_UNREACHABLE: { legacy: null, retryable: true, meaning: "エンジンに繋がらない(ポートが閉じている/プロセスが無い/切断)" },
@@ -67,7 +99,7 @@ export const ERROR_CODES: Record<ErrorCodeName, { legacy: number | null; retryab
   E_MISSING_PARAM: { legacy: 2, retryable: false, meaning: "必須の引数が無い" },
   E_BAD_TYPE: { legacy: 2, retryable: false, meaning: "引数の型が違う" },
   E_BAD_ENUM: { legacy: 2, retryable: false, meaning: "列挙値に無い値" },
-  E_OUT_OF_RANGE: { legacy: 2, retryable: false, meaning: "範囲外の値" },
+  E_OUT_OF_RANGE: { legacy: 2, retryable: false, meaning: "範囲外の値(details の形は OUT_OF_RANGE_DETAILS。値は黙って丸めず、何も変えずに断る)" },
   E_NOT_FOUND_ENTITY: { legacy: 1, retryable: false, meaning: "エンティティが無い(近い名前を添える)" },
   E_NOT_FOUND_ASSET: { legacy: 1, retryable: false, meaning: "アセットが無い(近いパスを添える)" },
   E_NOT_FOUND_SCENE: { legacy: 1, retryable: false, meaning: "シーンが無い(近いシーンを添える)" },

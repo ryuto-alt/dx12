@@ -174,6 +174,7 @@ export function effectClassOf(effect: EffectName): EffectClass {
  * dx12_select_entity は 1 体だけ選ぶ旧ツール。複数選択・名前パターン・追加/解除・全解除は M7 の dx12_editor_select(長尾)。
  */
 const EXTRA_NEXT: Record<string, { tool: string; when?: string }[]> = {
+  dx12_vfx_apply: [{ tool: "dx12_vfx_place", when: "UnoFX(.uvfx)のエフェクトを置くとき。決定論で撮るなら続けて dx12_vfx_seek。旧レシピ(複数レイヤーの放出器)ならこのツール" }],
   dx12_select_entity: [{ tool: "dx12_editor_select", when: "複数選択・名前のパターン(Wall*)・タグ・追加/解除・全解除・フォーカス(1 体だけならこのツールで足りる)" }],
 };
 
@@ -184,7 +185,19 @@ const EXTRA_EXAMPLES: Record<string, { args: Record<string, unknown>; note?: str
   dx12_get_device_caps: [{ args: {}, note: "GPU の機能(Agility・SM6.9・Enhanced Barriers・DXR・SER・OMM など)を読む。読み取り専用。経路は切り替わらない" }],
   dx12_get_upscaler: [{ args: {}, note: "mode と effective が違えばフォールバック中。理由は dlss.fallbackReason" }],
   dx12_get_quality_preset: [{ args: {}, note: "現在のプリセット。high/epic/cinematic は hasBudget:true で予算(目標 fps・p95/p99・VFX)付き。low/medium は hasBudget:false で予算なし。applied:false は C7 まで絵に未反映の意味" }],
-  dx12_set_quality_preset: [{ args: { preset: "epic" }, note: "プリセット名は小文字。C1 時点では選択の記録だけ(applied:false)。性能測定の前に合わせる" }],
+  dx12_set_quality_preset: [{ args: { preset: "epic" }, note: "プリセット名は小文字。影・GI・反射・アップスケーラ・VFX 倍率へ反映する(C7。applied:true、Editor では Undo 1 回分)。DXR / DLSS が無い環境の縮退は結果の plan に出る。性能測定の前に合わせる" }],
+  dx12_new_scene: [{ args: { profile: "classic" }, note: "profile は epic(既定。Epic のルック) | classic(従来の見た目)。ゴールデンや旧シーンと比べるときは classic を固定する" }],
+  dx12_vfx_place: [
+    { args: { preset: "p_campfire", position: [0, 0, 0] }, note: "UnoFX(.uvfx)のプリセットを置く。Editor 専用・Undo 1 件。旧レシピ版は dx12_vfx_apply" },
+    { args: { asset: "engine/vfx2/presets/p_campfire.uvfx", position: [2, 0, 1], name: "Campfire_A" }, note: "assets 相対の .uvfx を指定して名前を付ける。preset と asset は排他" },
+  ],
+  dx12_vfx_seek: [{ args: { t: 1.5 }, note: "全 VFX を t=1.5 秒へ決定論で移して止める(同じ t は同じ絵)。この後に deterministic の screenshot_final を撮る。resume:true で再生を続ける" }],
+  dx12_freeze_time: [
+    { args: {}, note: "引数なしは状態を読むだけ({frozen, renderPinned, simHeld, mode})" },
+    { args: { frozen: true, pinRender: true }, note: "Play 中のシミュと描画の時間依存(TAA ジッタ・大気・粒子の dt)を止める。解除は frozen:false。撮影の前に止めると連続した絵が揃う" },
+  ],
+  dx12_frame_step: [{ args: { frames: 8 }, note: "止めたまま固定 dt で 8 フレーム進め、また止めてから応答する(凍結していなければ自動で凍結)。最大 600。静止した連続フレームを撮る用" }],
+  dx12_vfx_stats: [{ args: {}, note: "プール使用量・放出数と生存数(数フレーム遅れ)・VRAM。gpuFailed:true なら lastError を読む。読み取り専用" }],
   dx12_editor_state: [{ args: { scope: "mode" }, note: "結果の autosave.blockedByHumanEdits が true なら人の未保存の変更あり。人に保存を依頼する(dx12_guide {topic:'autosave'})" }],
 };
 
