@@ -219,6 +219,7 @@ test("UI 撮影用プロジェクトのコピーに、git が持てない空フ�
     for (const d of UI_PROJECT_EMPTY_DIRS) assert.ok(fs.statSync(path.join(dst, d)).isDirectory(), d);
     assert.deepEqual(fs.readdirSync(path.join(dst, "assets")).sort(),
       ["audio", "components", "models", "prefabs", "scenes", "shaders", "textures"]);
+    assert.deepEqual(fs.readdirSync(path.join(dst, "assets", "audio")).sort(), ["bgm", "sfx"]);
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 

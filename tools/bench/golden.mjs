@@ -154,7 +154,7 @@ export function applyMasks(img, masks) {
 }
 
 /** アセットブラウザの絵に出るので、基準の撮影時と同じ空フォルダを必ず用意する（git は空フォルダを持てず、worktree では欠ける）。 */
-export const UI_PROJECT_EMPTY_DIRS = ["assets/audio", "assets/models", "assets/prefabs", "assets/shaders", "assets/textures"];
+export const UI_PROJECT_EMPTY_DIRS = ["assets/audio", "assets/audio/bgm", "assets/audio/sfx", "assets/models", "assets/prefabs", "assets/shaders", "assets/textures"];
 
 /** 撮影用プロジェクトを build/golden-out/ui_project へ作り直す（毎回まっさらにする）。 */
 export function prepareUiProject(outDir = OUT_DIR, srcDir = UI_PROJECT_SRC) {
