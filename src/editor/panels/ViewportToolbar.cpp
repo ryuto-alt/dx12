@@ -1,4 +1,6 @@
 #include "editor/panels/ViewportToolbar.h"
+#include "editor/QualityPresetUi.h"
+#include "renderer/QualityPreset.h"
 
 #include "core/AtomicFile.h"
 #include "core/Logger.h"
@@ -687,6 +689,62 @@ void ViewportToolbar::Render(EditorContext& ctx, Camera* camera, Scene* scene, b
                 }
                 ImGui::EndDisabled();
                 ImGui::PopID();
+            }
+            ImGui::EndPopup();
+        }
+        PopPopoverStyle();
+    }
+
+    // ===== 品質プリセット（W1-A8 RM-C3ui。Application が QualityPresetUi() を渡したときだけ）=====
+    if (const QualityPresetUiHook& qh = QualityPresetUi(); qh.Available())
+    {
+        sep();
+        const int cur = qh.get();
+        const bool curOk = cur >= 0 && cur < static_cast<int>(QualityPresetId::Count);
+        const QualityPreset* curP = curOk ? &GetPreset(static_cast<QualityPresetId>(cur)) : nullptr;
+        const std::vector<std::string> degraded = qh.degrades ? qh.degrades() : std::vector<std::string>{};
+        // 縮退中の「品質」はボタンを active にして気づけるようにする（本文は下のポップオーバー）。
+        if (ui::LabelDropdownButton("vpQuality", ICON_GAUGE, compact ? nullptr : "品質",
+                                    "品質プリセット: Low 〜 Cinematic（選ぶと設定がまとめて変わる。Ctrl+Z で 1 回で戻る）",
+                                    !degraded.empty(), btn, curP ? curP->label : "-"))
+            ImGui::OpenPopup("##vpQualityPop");
+        vinput_gui::AnchorLastItem("button", "ビュー:品質");
+        openUnder("##vpQualityPop");
+        PushPopoverStyle();
+        if (ImGui::BeginPopup("##vpQualityPop"))
+        {
+            for (int i = 0; i < static_cast<int>(QualityPresetId::Count); ++i)
+            {
+                const QualityPreset& p = GetPreset(static_cast<QualityPresetId>(i));
+                char lb[48];
+                std::snprintf(lb, sizeof(lb), "%s##qp%d", p.label, i);
+                if (ImGui::Selectable(lb, i == cur, 0, ImVec2(ui::Px(200.0f), 0)))
+                {
+                    if (i != cur) qh.set(i);
+                    ImGui::CloseCurrentPopup();
+                }
+                // 右に目標の出力（予算の行があるプリセットだけ。数値は生成表から）
+                if (p.hasBudget)
+                {
+                    char det[32];
+                    std::snprintf(det, sizeof(det), "%up / %.0ffps", p.outH, static_cast<double>(p.targetFps));
+                    ImGui::SameLine(ui::Px(92.0f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, th::TextFaint);
+                    ui::PushMono();
+                    ImGui::TextUnformatted(det);
+                    ui::PopMono();
+                    ImGui::PopStyleColor();
+                }
+            }
+            if (!degraded.empty())
+            {
+                ImGui::Separator();
+                ImGui::PushStyleColor(ImGuiCol_Text, th::Warn);
+                ImGui::TextUnformatted("この PC では縮退して動きます");
+                ImGui::PopStyleColor();
+                ImGui::PushStyleColor(ImGuiCol_Text, th::TextDim);
+                for (const std::string& d : degraded) ImGui::BulletText("%s", d.c_str());
+                ImGui::PopStyleColor();
             }
             ImGui::EndPopup();
         }

@@ -4961,6 +4961,7 @@ const DiagReg kTests[] = {
     { "render", "shading_revision_run_loop", "シェーディング", "shadingRevision の反映は Run ループが行う（分割画面でなくても 1⇄2 が切り替わる）", uitest::T_ShadingRevisionAppliedInRunLoop },
     { "panel", "viewport_tool_underline_hosted", "パネル", "Graphite のビューポート帯: 移動/回転/拡縮の下線は選択中の 1 本（左右 4px 内側・整数 px）。既定テーマでは出ない", uitest::T_ViewportToolUnderlineHosted },
     { "editor-ux", "console_defaults", "エディタ操作", "コンソール: 例文が動く・情報が既定で表示・自動スクロール・背景モードのインポートで案内", uitest::T_ConsoleDefaults },
+    { "panel", "viewport_quality_preset", "パネル", "ビューポート帯の品質: ドロップダウンで Epic を選ぶ→Undo 1 回で元の品質に戻る。同じ値の選び直しは Undo を積まない", uitest::T_ViewportQualityPreset },
     { "panel", "graphite_chrome", "パネル", "Graphite の計器のクロム: 主尺・フォーカス・キャリパー・22px のステータスバー・16px のロゴ・黄の予算（線 9 本以下 / 画素比 1.5% 以下 / 面 0）。既定テーマでは出ない", uitest::T_GraphiteChrome },
     // ==== lane-A end ====
     // ==== lane-B begin ====
