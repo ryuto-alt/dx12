@@ -189,10 +189,25 @@ inline QualityPlan BuildQualityPlan(QualityPresetId id, QualityCaps caps)
                 p.AddDegrade("RtReflect",   t ? t : "DXR が無い: SSR にする");
             }
             p.AddDegrade("Ddgi", "DXR が無い: DDGI の代わりに SSGI を使う");
+            if (p.id == QualityPresetId::Cinematic)
+            {
+                // Cinematic だけの DXR 専用の行。RtSettings に機能が出るまでは構成に現れないが、表の行は縮退として示す。
+                p.AddDegrade("RtAo", "DXR が無い: RT-AO は使わず SSAO のまま");
+                for (const char* row : { "RtGi", "RtLocalShadow" })
+                {
+                    const char* t = qualityplan::TableDegradeText(p.id, row);
+                    p.AddDegrade(row, t ? t : "DXR が無い: この行は使わない");
+                }
+            }
         }
     }
     if (!caps.dlss && p.upscaler == QualityUpscaler::Taa && pre.hasBudget)
-        p.AddDegrade("Upscale", "DLSS が無い: TAA（空間スケールは TAA native の列。合否の対象ではなく記録のみ）");
+    {
+        if (p.column == QualityColumn::TaaNative)
+            p.AddDegrade("Upscale", "DLSS が無い: TAA（空間スケールは TAA native の列。合否の対象ではなく記録のみ）");
+        else
+            p.AddDegrade("Upscale", "DLSS が無い: TAA（空間スケールは TAAU の列）");
+    }
     return p;
 }
 

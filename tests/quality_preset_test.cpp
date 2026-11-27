@@ -84,8 +84,13 @@ int main()
         {
             rows.insert(p.degrades[i].row);
             CHECK(p.degrades[i].text[0] != '\0');
-            CHECK(qualityplan::HasBudgetRow(id, p.degrades[i].row));
+            if (std::strcmp(p.degrades[i].row, "RtAo") != 0)   // RT-AO は表に行がまだ無い
+                CHECK(qualityplan::HasBudgetRow(id, p.degrades[i].row));
         }
+        if (id == QualityPresetId::Cinematic)
+            CHECK(rows.count("RtAo") && rows.count("RtGi") && rows.count("RtLocalShadow"));
+        else
+            CHECK(!rows.count("RtAo"));
         CHECK(rows.count("Raytracing") && rows.count("RtShadow") && rows.count("RtReflect") && rows.count("Ddgi"));
         CHECK(p.ssr && p.ssgi && !p.ddgi && p.epicDynamicCsm);   // RT 反射 → SSR、DDGI → SSGI、CSM が全部描く
     }
@@ -99,6 +104,10 @@ int main()
         }
         CHECK(ddgiRow && upscaleRow);
         CHECK(BuildQualityPlan(QualityPresetId::Low, {false, false}).degradeCount == 0);
+        // Cinematic が DLSS 無しのときの Upscale 文は TAAU の列を名乗る（TAA native ではない）
+        const QualityPlan cn = BuildQualityPlan(QualityPresetId::Cinematic, {true, false});
+        for (u8 i = 0; i < cn.degradeCount; ++i)
+            if (std::strcmp(cn.degrades[i].row, "Upscale") == 0) CHECK(std::strstr(cn.degrades[i].text, "TAAU") != nullptr);
     }
 
     // ---- 生成表との一致: 3 列の形、合否の列、予算の合計（Epic の葉の合計）、VRAM ----

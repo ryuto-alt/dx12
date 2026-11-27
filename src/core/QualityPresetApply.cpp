@@ -1,23 +1,20 @@
 // 品質プリセットの設定 / 取得（W1-C7 RM-C3）。
 //   選択中の id は Application.h が凍結なのでこの TU に持つ（Application は 1 つ）。
 //   SetQualityPreset は計画（BuildQualityPlan）をシーンの設定へ当て、Undo は 1 回分（QualityPresetCommand）。
-//   id の永続化は settings.json "quality_preset"（0..4）。--quality / プロジェクトを開いた後の読み直しは
-//   ReloadQualityPresetFromSettings を ApplicationProject.cpp の持ち主が呼ぶ（依頼）。
+//   id の永続化は settings.json "quality_preset"（0..4）。取得のたびに PersistGet を引くので、プロジェクトを開き直せば
+//   そのプロジェクトの値に追従する（キャッシュしない）。--quality は未実装（main.cpp の持ち主へ依頼）。
+//   SetRenderScale は High / Epic / Cinematic の適用で呼ばれ、保存済みの render_scale を上書きする（Undo で戻る）。
 #include "core/QualityPresetApply.h"
 #include "core/AppAccess.h"
 #include "core/Logger.h"
 #include "core/QualityPresetScene.h"
 #include "renderer/UpscalerPass.h"
 
-#include <atomic>
-
 namespace dx12e
 {
 namespace
 {
 // 既定は High（従来の見た目。ゴールデンはビット一致のまま。設定ファイルに値があればそれ）。
-std::atomic<u8>   g_currentPreset{static_cast<u8>(QualityPresetId::High)};
-std::atomic<bool> g_loaded{false};
 
 // Undo / Redo の 1 回分。前後のシーン設定・id・空間スケールを値で持つ（ポインタは持たない）。
 class QualityPresetCommand final : public IUndoCommand
@@ -28,7 +25,7 @@ public:
         : m_app(app), m_b(before), m_a(after), m_idB(idBefore), m_idA(idAfter), m_sB(scaleBefore), m_sA(scaleAfter) {}
     void Undo() override { AppAccess::RestoreQualityState(*m_app, m_b, m_idB, m_sB); }
     void Redo() override { AppAccess::RestoreQualityState(*m_app, m_a, m_idA, m_sA); }
-    const char* GetName() const override { return "Quality Preset"; }
+    const char* GetName() const override { return "品質プリセット"; }
 private:
     Application* m_app;
     QualityScenePack m_b, m_a;
@@ -45,15 +42,12 @@ void AppAccess::QueryQualityCaps(const Application& app, bool& dxr, bool& dlss)
 
 void AppAccess::ReloadQualityPresetFromSettings(Application& app)
 {
-    const int v = static_cast<int>(app.PersistGet("quality_preset", static_cast<double>(static_cast<int>(QualityPresetId::High))));
-    if (v >= 0 && v < static_cast<int>(QualityPresetId::Count)) g_currentPreset.store(static_cast<u8>(v), std::memory_order_relaxed);
-    g_loaded.store(true, std::memory_order_relaxed);
+    (void)app.PersistGet("quality_preset", 0.0);   // 互換のために残す。取得は毎回 PersistGet を引くので読み直しは不要
 }
 
 void AppAccess::RestoreQualityState(Application& app, const QualityScenePack& k, u8 id, f32 scale)
 {
     if (app.m_scene) RestoreQualityScenePack(*app.m_scene, k);
-    g_currentPreset.store(id, std::memory_order_relaxed);
     app.PersistSet("quality_preset", static_cast<double>(id));
     app.SetRenderScale(scale);
     app.m_renderResFlush = true;
@@ -74,7 +68,6 @@ bool AppAccess::SetQualityPreset(Application& app, QualityPresetId id, bool reco
 
     ApplyQualityPlanToScene(plan, *app.m_scene);
     if (plan.setRenderScale) app.SetRenderScale(plan.renderScale);
-    g_currentPreset.store(static_cast<u8>(id), std::memory_order_relaxed);
     app.PersistSet("quality_preset", static_cast<double>(static_cast<u8>(id)));
     app.m_renderResFlush = true;
     app.InvalidateTemporalHistory(/*includeDdgi*/ false);   // アップスケーラ・GI・影の構成が変わる。履歴を捨てて収束し直す
@@ -92,9 +85,9 @@ bool AppAccess::SetQualityPreset(Application& app, QualityPresetId id, bool reco
 
 QualityPresetId AppAccess::GetQualityPreset(const Application& app)
 {
-    if (!g_loaded.load(std::memory_order_relaxed))
-        ReloadQualityPresetFromSettings(const_cast<Application&>(app));   // PersistGet は論理的に読むだけ（初回だけ設定ファイルを読む）
-    return static_cast<QualityPresetId>(g_currentPreset.load(std::memory_order_relaxed));
+    // PersistGet は非 const だが、論理的には読むだけ（未読み込みなら現在のプロジェクトの settings.json を読む）。
+    const int v = static_cast<int>(const_cast<Application&>(app).PersistGet("quality_preset", static_cast<double>(static_cast<int>(QualityPresetId::High))));
+    return (v >= 0 && v < static_cast<int>(QualityPresetId::Count)) ? static_cast<QualityPresetId>(v) : QualityPresetId::High;
 }
 
 bool AppAccess::QualityMatchesScene(const Application& app)
