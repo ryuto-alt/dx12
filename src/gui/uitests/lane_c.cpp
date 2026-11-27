@@ -7,6 +7,7 @@
 #include "ecs/Components.h"
 #include "editor/EditorCommands.h"
 #include "editor/EditorContext.h"
+#include "renderer/Mesh.h"
 #include "scene/Scene.h"
 #include "scene/SceneSerializer.h"
 
@@ -261,6 +262,37 @@ void T_CreateEntitySelects(ImGuiTestContext* ctx)
     IM_CHECK(!reg.valid(made));
     IM_CHECK(ed->selectedEntities.empty());
     IM_CHECK(ed->selectedEntity == entt::null);
+}
+
+// C13（BUG-45）: 新しく作る球（エディタ／MCP の生成経路）だけ分割数が上がり、既定の SpawnSphere
+// （シーンの読み込み・スクリプトが通る経路）は従来の 16x16 のまま＝既存シーンの見た目は変わらない。
+void T_SphereSubdivNewOnly(ImGuiTestContext* ctx)
+{
+    EditorContext* ed = Editor();
+    Application*   app = App();
+    if (!ed || !app || !app->GetScene()) { IM_ERRORF("Application / Scene を取得できません"); return; }
+    Scene* scene = app->GetScene();
+    auto& reg = scene->GetRegistry();
+
+    auto indexCount = [&](entt::entity e) -> u32 {
+        const auto* mr = reg.try_get<MeshRenderer>(e);
+        return (mr && !mr->meshes.empty() && mr->meshes[0]) ? mr->meshes[0]->GetIndexCountLod(0) : 0u;
+    };
+
+    LogStep(ctx, "C13: 新しく作る球（生成経路）");
+    ed->ClearSelection();
+    PendingSpawnRequest sp; sp.modelPath = "__primitive_sphere__";
+    ed->pendingSpawns.push_back(sp);
+    ctx->Yield(8);
+    IM_CHECK(ed->selectedEntity != entt::null && reg.valid(ed->selectedEntity));
+    IM_CHECK_EQ(indexCount(ed->selectedEntity),
+                Scene::kSphereSlicesNew * Scene::kSphereStacksNew * 6u);
+
+    LogStep(ctx, "C13: 既定の SpawnSphere（読み込み経路）は従来のまま");
+    Entity legacy = scene->SpawnSphere("__T_C13_Legacy", { 0.0f, -50.0f, 0.0f });
+    IM_CHECK_EQ(indexCount(legacy.GetHandle()),
+                Scene::kSphereSlicesLegacy * Scene::kSphereStacksLegacy * 6u);
+    IM_CHECK_EQ(Scene::kSphereSlicesLegacy * Scene::kSphereStacksLegacy * 6u, 16u * 16u * 6u);
 }
 
 } // namespace uitest

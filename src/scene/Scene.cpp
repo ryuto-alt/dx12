@@ -303,7 +303,9 @@ Entity Scene::SpawnBox(const std::string& name,
 
 Entity Scene::SpawnSphere(const std::string& name,
                           DirectX::XMFLOAT3 position,
-                          f32 radius)
+                          f32 radius,
+                          u32 slices,
+                          u32 stacks)
 {
     Entity entity = CreateEntityWithTransform(name, position, {0, 0, 0}, {1, 1, 1});
 
@@ -319,7 +321,7 @@ Entity Scene::SpawnSphere(const std::string& name,
     else
     {
         auto sphereMesh = std::make_unique<Mesh>();
-        sphereMesh->InitializeAsSphere(*m_device, radius);
+        sphereMesh->InitializeAsSphere(*m_device, radius, (std::max)(3u, slices), (std::max)(2u, stacks));
         renderer.meshes.push_back(sphereMesh.get());
         m_ownedMeshes.push_back(std::move(sphereMesh));
     }

@@ -112,9 +112,19 @@ public:
                     DirectX::XMFLOAT3 rotation = {0, 0, 0},
                     DirectX::XMFLOAT3 scale = {1, 1, 1});
 
+    // 球の分割数（BUG-45）。既定は従来の 16x16 のまま＝シーンの読み込み・スクリプト・既存の呼び出しは
+    // 1 頂点も変わらない（既存のゴールデンはビット一致）。エディタ／MCP が「新しく作る」球だけが
+    // kSphereSlicesNew / kSphereStacksNew を渡す（シルエットの角を 5.6 度刻みにする）。
+    static constexpr u32 kSphereSlicesLegacy = 16;
+    static constexpr u32 kSphereStacksLegacy = 16;
+    static constexpr u32 kSphereSlicesNew    = 64;
+    static constexpr u32 kSphereStacksNew    = 32;
+
     Entity SpawnSphere(const std::string& name,
                        DirectX::XMFLOAT3 position,
-                       f32 radius = 0.5f);
+                       f32 radius = 0.5f,
+                       u32 slices = kSphereSlicesLegacy,
+                       u32 stacks = kSphereStacksLegacy);
 
     // --- ハイトフィールド地形 ---
     // params の resolution / worldSize / heightmapPath 等を元に HeightField を用意し、

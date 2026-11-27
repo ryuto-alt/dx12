@@ -108,6 +108,7 @@ void T_LuaPropUndo(ImGuiTestContext* ctx);               // W05-14
 // ==== lane-B:decl end ====
 // ==== lane-C:decl begin ====
 void T_CreateEntitySelects(ImGuiTestContext* ctx);   // W05-21
+void T_SphereSubdivNewOnly(ImGuiTestContext* ctx);   // C13（BUG-45）
 // ==== lane-C:decl end ====
 // ==== lane-D:decl begin ====
 // ==== lane-D:decl end ====

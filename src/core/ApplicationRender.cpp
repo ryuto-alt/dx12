@@ -3341,7 +3341,9 @@ void Application::ProcessFrameBoundaryCommands(ID3D12GraphicsCommandList* native
             }
             else if (req.modelPath == "__primitive_sphere__")
             {
-                auto e = m_scene->SpawnSphere(name, req.position);
+                // 新しく作る球だけ分割数を上げる（BUG-45）。読み込み経路は既定の 16x16 のまま。
+                auto e = m_scene->SpawnSphere(name, req.position, 0.5f,
+                                              Scene::kSphereSlicesNew, Scene::kSphereStacksNew);
                 spawnedEntity = e.GetHandle();
             }
             else if (req.modelPath == "__primitive_plane__")
