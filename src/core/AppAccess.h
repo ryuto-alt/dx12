@@ -12,6 +12,7 @@
 namespace dx12e
 {
 enum class QualityPresetId : u8;   // renderer/QualityPreset.h
+struct QualityScenePack;          // core/QualityPresetScene.h
 struct AppAccess
 {
     // ==== lane-A begin ====
@@ -71,6 +72,13 @@ struct AppAccess
     //   QualityPresetId は renderer/QualityPreset.h（使う TU が include する。ここは前方宣言で重くしない）。
     static bool SetQualityPreset(Application&, QualityPresetId, bool recordUndo);
     static QualityPresetId GetQualityPreset(const Application&);
+    // W1-C7: 品質プリセットの本体（定義は QualityPresetApply.cpp）。caps（DXR / DLSS）の問い合わせ、現在のシーンが選択中のプリセットと
+    //   一致しているか、設定ファイル（settings.json "quality_preset"）からの読み直し（プロジェクトを開いた後に呼んでほしい。
+    //   依頼: ApplicationProject.cpp の持ち主へ）、Undo / Redo の復元。
+    static void QueryQualityCaps(const Application&, bool& dxr, bool& dlss);
+    static bool QualityMatchesScene(const Application&);
+    static void ReloadQualityPresetFromSettings(Application&);
+    static void RestoreQualityState(Application&, const QualityScenePack&, u8 id, f32 renderScale);
     // W1-C3: shadingRevision（1 / 2）を PSO とグラフ材質へ反映する（定義は ApplicationPipeline.cpp。Run ループの先頭 = フレーム外で呼ぶ）。
     static void UpdateShadingRevision(Application&);
     // W1-C6: Epic の動的 CSM（2048 D16 x3 + pancaking）の切り替え。UpdateShadingRevision の先頭から呼ぶ（フレーム外。定義は ApplicationPipeline.cpp）。

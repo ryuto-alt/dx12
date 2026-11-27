@@ -8,6 +8,7 @@
 #include "core/FrameStepLogic.h"
 #include "core/QualityPresetApply.h"
 #include "renderer/QualityPreset.h"
+#include "renderer/QualityPresetPlan.h"
 
 #include <chrono>
 
@@ -30,6 +31,46 @@ nlohmann::json QualityPresetJson(QualityPresetId id)
         j["p99Ms"]     = p.p99Ms;
         j["vfx"]       = { {"emissionMultiplier", p.emissionMultiplier}, {"maxParticles", p.maxParticles} };
     }
+    return j;
+}
+
+const char* UpscalerName(QualityUpscaler u)
+{
+    switch (u) { case QualityUpscaler::Off: return "off"; case QualityUpscaler::Taa: return "taa"; case QualityUpscaler::Dlss: return "dlss"; }
+    return "off";
+}
+const char* ColumnName(QualityColumn c)
+{
+    switch (c) { case QualityColumn::Dlss: return "dlss"; case QualityColumn::Taau: return "taau"; case QualityColumn::TaaNative: return "taaNative"; default: break; }
+    return "";
+}
+
+// 今の caps で入る構成（縮退つき）。get / set の両方が返す。
+nlohmann::json QualityPlanJson(const QualityPlan& p, bool matchesScene)
+{
+    nlohmann::json j = nlohmann::json::object();
+    j["caps"]        = { {"dxr", p.caps.dxr}, {"dlss", p.caps.dlss} };
+    j["upscaler"]    = UpscalerName(p.upscaler);
+    if (p.upscaler == QualityUpscaler::Dlss) j["dlssQuality"] = upscale::QualityName(upscale::ClampQuality(p.dlssQuality));
+    j["shadingRevision"] = p.shadingRevision;
+    j["shadows"]     = { {"pcss", p.pcss}, {"dynamicCsm", p.epicDynamicCsm}, {"rtSun", p.rtShadow}, {"contact", p.contactShadow} };
+    j["gi"]          = { {"ddgi", p.ddgi}, {"ssgi", p.ssgi}, {"ssao", p.ssao} };
+    j["reflections"] = { {"ssr", p.ssr}, {"rt", p.rtReflect}, {"rtHalfRes", p.rtReflectHalfRes} };
+    if (p.setRenderScale) j["renderScale"] = p.renderScale;
+    const QualityPreset& pre = GetPreset(p.id);
+    if (pre.hasBudget)
+    {
+        // 合否の列: DLSS があれば dlss（W1 の合否）。無ければ taaNative（記録のみ）。
+        j["budgetColumn"] = ColumnName(p.column);
+        j["budgetGated"]  = qualityplan::IsGated(pre, p.column);
+        j["budgetTotalMs"] = pre.Column(p.column).totalMs;
+        j["vram"] = { {"capGb", pre.hasVramCap ? nlohmann::json(pre.vramCapGb) : nlohmann::json(nullptr)},
+                      {"marginGb", pre.vramMarginGb}, {"precheckGb", pre.vramPrecheckGb} };
+    }
+    nlohmann::json deg = nlohmann::json::array();
+    for (u8 i = 0; i < p.degradeCount; ++i) deg.push_back({ {"row", p.degrades[i].row}, {"text", p.degrades[i].text} });
+    j["degrades"]     = deg;
+    j["matchesScene"] = matchesScene;   // false = 選んだ後にシーンの設定を手で変えた（または別のシーンを開いた）
     return j;
 }
 
@@ -89,12 +130,12 @@ void AppAccess::FreezeTick(Application& app)
 void Application::RegisterMcpLaneCMethods()
 {
     using namespace appdetail;
-    // W1-C1: 品質プリセットの口。C1 は選択の記録だけ（絵への反映と Undo は C7）。
+    // W1-C7: 品質プリセット。set は計画をシーンの設定へ書く（Undo は呼び出し 1 回分）。get は今の構成と縮退を返す。
     McpDefine("get_quality_preset", "", DX12E_MCP_HANDLER
         {
             resp["ok"]     = true;
             resp["result"] = QualityPresetJson(GetQualityPreset(*this));
-            resp["result"]["applied"] = false;   // C7 までは記録のみ
+            resp["result"]["plan"] = QualityPlanJson(CurrentQualityPlan(*this), QualityMatchesScene(*this));
         });
     McpDefine("set_quality_preset", "preset:string", DX12E_MCP_HANDLER
         {
@@ -107,9 +148,9 @@ void Application::RegisterMcpLaneCMethods()
                 throw McpError(McpErr::Internal, "品質プリセットを設定できなかった", "もう一度試す");
             resp["ok"]     = true;
             resp["result"] = QualityPresetJson(id);
-            // C1 は選択の記録だけ。絵・シーン・Undo には何も反映しない（C7 で入る）。
-            resp["result"]["applied"] = false;
-            resp["result"]["note"]    = "選択を記録しただけで、まだ絵には反映しない（品質プリセットの適用は C7 で入る）";
+            resp["result"]["applied"] = true;
+            resp["result"]["plan"]    = QualityPlanJson(CurrentQualityPlan(*this), QualityMatchesScene(*this));
+            resp["result"]["note"]    = "シーンの設定へ反映した（Undo 1 回分）。アップスケーラ・解像度は次のフレームから";
         });
 
     // ---- FU-E-24: 時間を止めて 1 フレームずつ進める口（NB3 の「静止した 8 フレーム」を決定論で撮るため）----

@@ -1334,6 +1334,17 @@ if(MSVC)
     target_compile_definitions(ShadowBiasMathTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME ShadowBiasMathTests COMMAND ShadowBiasMathTests)
+# 品質プリセットの本体（計画 / 縮退 / 生成表との一致 / 予算の合計 / VRAM の上限 / Scene への適用の往復。GPU 不要）。W1-C7。
+if(TARGET Scene)
+    add_executable(QualityPresetTests quality_preset_test.cpp)
+    target_link_libraries(QualityPresetTests PRIVATE Scene)
+    target_include_directories(QualityPresetTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(QualityPresetTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(QualityPresetTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME QualityPresetTests COMMAND QualityPresetTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
