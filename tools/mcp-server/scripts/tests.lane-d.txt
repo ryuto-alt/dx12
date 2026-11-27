@@ -18,3 +18,4 @@ qualityPresetTools.test.ts
 ../bench/vfx_shimmer.test.mjs
 ../bench/temporal_metrics.test.mjs
 mcpCoverage.test.ts
+guideVfxSequence.test.ts
