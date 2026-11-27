@@ -90,6 +90,7 @@ VSOut VSMain(uint vid : SV_VertexID, uint iid : SV_InstanceID)
         axisX = normalize(axisX);
         bx = vd; by = axisX;
         bz = cross(bx, by); if (dot(bz, towardCam) < 0.0) bz = -bz;
+        // 注意: ここで bz を反転すると基底の手系が反転し、6-way の左右の光が鏡映しになる。伸ばす描画に smoke6way を付けるときは要見直し（今は炎族のみ）
         float stretch = 1.0 + params.w * min(length(p.vel), 30.0) * 0.06;
         wp = p.pos + (vd * stretch) * (c.x * size) + (axisX * 0.55) * (c.y * size);
         angle = 0.0;
