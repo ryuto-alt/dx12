@@ -11,6 +11,7 @@
 #include "editor/UndoSystem.h"
 #include "ecs/Components.h"
 #include "scene/Scene.h"
+#include "scene/SceneLookProfile.h"   // W1-C10: プリセットの空/IBL/露出補正/フォグ
 #include "scene/SceneSerializer.h"   // 分割保存の直近の保存の概要（LastSaveReport）
 #include "renderer/atmosphere/AtmosphereMath.h"   // 大気の読み取り表示（太陽の高度・方位・照度）
 
@@ -132,35 +133,34 @@ void UnmuteOne(entt::registry& reg, EditorContext& ctx, entt::entity e, f32 rest
                                                   "ライトのミュート解除"));
 }
 
-// ── ライティング・プリセット（太陽 + ポストをまとめて置き換え。Undo は 1 エントリ）──
+// ── ライティング・プリセット（太陽 + ポスト + 空/IBL + フォグ + 大気の時刻をまとめて置き換え。Undo は 1 エントリ）──
 class LightingPresetCommand : public IUndoCommand
 {
 public:
     LightingPresetCommand(entt::registry* reg, entt::entity sun, Scene* scene,
                           const DirectionalLight& sunBefore, const DirectionalLight& sunAfter,
-                          const PostProcessSettings& postBefore,
-                          const PostProcessSettings& postAfter)
+                          const SceneLookPack& lookBefore, const SceneLookPack& lookAfter)
         : m_reg(reg), m_sun(sun), m_scene(scene),
           m_sunBefore(sunBefore), m_sunAfter(sunAfter),
-          m_postBefore(postBefore), m_postAfter(postAfter) {}
+          m_lookBefore(lookBefore), m_lookAfter(lookAfter) {}
 
-    void Undo() override { Apply(m_sunBefore, m_postBefore); }
-    void Redo() override { Apply(m_sunAfter,  m_postAfter); }
+    void Undo() override { Apply(m_sunBefore, m_lookBefore); }
+    void Redo() override { Apply(m_sunAfter,  m_lookAfter); }
     const char* GetName() const override { return "ライティング・プリセット"; }
 
 private:
-    void Apply(const DirectionalLight& dl, const PostProcessSettings& pp)
+    void Apply(const DirectionalLight& dl, const SceneLookPack& look)
     {
         if (m_sun != entt::null && m_reg->valid(m_sun) && m_reg->all_of<DirectionalLight>(m_sun))
             m_reg->get<DirectionalLight>(m_sun) = dl;
-        if (m_scene) m_scene->GetPostSettings() = pp;
+        if (m_scene) RestoreSceneLookPack(*m_scene, look);
     }
 
-    entt::registry*     m_reg;
-    entt::entity        m_sun;
-    Scene*              m_scene;
-    DirectionalLight    m_sunBefore, m_sunAfter;
-    PostProcessSettings m_postBefore, m_postAfter;
+    entt::registry*  m_reg;
+    entt::entity     m_sun;
+    Scene*           m_scene;
+    DirectionalLight m_sunBefore, m_sunAfter;
+    SceneLookPack    m_lookBefore, m_lookAfter;
 };
 
 // ── 3 点ライト設置（Undo で消す / Redo で作り直す）──
@@ -1000,7 +1000,7 @@ void RenderLightingPanel(Scene* scene,
     // =====================================================================
     if (SectionHeader(nullptr, 0, "プリセット", ImGuiTreeNodeFlags_DefaultOpen))
     {
-        ImGui::TextDisabled("太陽 + ポストをまとめて設定します（Undo 1 回で戻せます）");
+        ImGui::TextDisabled("太陽 + ポスト + 空/IBL + フォグをまとめて設定します（Undo 1 回で戻せます）");
 
         const float availW = ImGui::GetContentRegionAvail().x;
         const float btnW   = (availW - ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
@@ -1017,15 +1017,18 @@ void RenderLightingPanel(Scene* scene,
 
                 // 値と式は editor/LightingPresets.h に 1 本化（MCP と同じ結果になる）
                 const DirectionalLight    sunAfter  = ApplyLightingPresetToSun(p, sunBefore);
-                const PostProcessSettings postBefore = scene->GetPostSettings();
-                const PostProcessSettings postAfter  = ApplyLightingPresetToPost(p, postBefore);
+                // 空/IBL・フォグ・露出補正・大気の時刻は scene/SceneLookProfile.h の表（MCP と同じ）
+                const SceneLookPack lookBefore = CaptureSceneLookPack(*scene);
+                SceneLookPack       lookAfter  = lookBefore;
+                lookAfter.post = ApplyLightingPresetToPost(p, lookAfter.post);
+                lookAfter      = ApplySceneLook(LightingPresetLook(p.id), lookAfter);
 
                 if (hasSun) reg.get<DirectionalLight>(sun) = sunAfter;
-                scene->GetPostSettings() = postAfter;
+                RestoreSceneLookPack(*scene, lookAfter);
 
                 ctx.undoSystem.PushCommand(std::make_unique<LightingPresetCommand>(
                     &reg, hasSun ? sun : entt::null, scene,
-                    sunBefore, sunAfter, postBefore, postAfter));
+                    sunBefore, sunAfter, lookBefore, lookAfter));
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", p.tip);
         }

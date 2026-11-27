@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1（set_sun の時刻 / 向きの振り分け）
+#include "scene/SceneLookProfile.h"   // W1-C10: ライティング・プリセットの空/IBL/露出補正/フォグの表
 
 namespace dx12e
 {
@@ -257,7 +258,11 @@ void Application::RegisterMcpLightingMethods()
             // view.front() は空なら entt::null。break 付きの for だと MSVC が C4702 を出す。
             const entt::entity sun = reg.view<DirectionalLight>().front();
             json sunJson = nullptr;
-            McpUndo().TrackSceneValue(m_scene->GetPostSettings());   // 太陽とポストを 1 エントリで戻す
+            // 太陽・ポスト・空/IBL・フォグ・大気の時刻を 1 エントリで戻す（W1-C10。値の表は scene/SceneLookProfile.h）
+            McpUndo().TrackSceneValue(m_scene->GetPostSettings());
+            McpUndo().TrackSceneValue(m_scene->GetSkyboxSettings());
+            McpUndo().TrackSceneValue(m_scene->GetVolumetricFogSettings());
+            McpUndo().TrackSceneValue(m_scene->GetAtmosphereSettings());
             if (sun != entt::null)
             {
                 McpUndo().Track<DirectionalLight>(sun);
@@ -268,8 +273,12 @@ void Application::RegisterMcpLightingMethods()
                            {"color", {dl.color.x, dl.color.y, dl.color.z}},
                            {"intensity", dl.intensity}, {"ambient", dl.ambient}};
             }
-            const PostProcessSettings after = ApplyLightingPresetToPost(p, m_scene->GetPostSettings());
-            m_scene->GetPostSettings() = after;
+            const SceneLookProfile& look = LightingPresetLook(p.id);
+            SceneLookPack pack = CaptureSceneLookPack(*m_scene);
+            pack.post = ApplyLightingPresetToPost(p, pack.post);
+            pack = ApplySceneLook(look, pack);
+            RestoreSceneLookPack(*m_scene, pack);
+            const PostProcessSettings& after = pack.post;
 
             resp["ok"] = true;
             resp["result"] = {
@@ -279,10 +288,18 @@ void Application::RegisterMcpLightingMethods()
                           {"bloomOn", after.bloomOn}, {"bloom", after.bloom},
                           {"bloomThreshold", after.bloomThreshold},
                           {"vignetteOn", after.vignetteOn}, {"vignette", after.vignette},
-                          {"saturationOn", after.saturationOn}, {"saturation", after.saturation}}},
+                          {"saturationOn", after.saturationOn}, {"saturation", after.saturation},
+                          {"exposureMode", after.exposureMode}, {"evComp", after.evComp}}},
+                {"sky", {{"skyboxIntensity", pack.sky.skyboxIntensity}, {"iblIntensity", pack.sky.iblIntensity},
+                         {"atmosphere", pack.atmo.enabled},
+                         {"timeOfDay", pack.atmo.timeOfDay}, {"sunMode", pack.atmo.sunMode}}},
+                {"fog", {{"enabled", pack.fog.enabled}, {"density", pack.fog.density},
+                         {"anisotropy", pack.fog.anisotropy}, {"heightFalloff", pack.fog.heightFalloff}}},
                 {"note", sun == entt::null
-                    ? "平行光(太陽)が無いのでポストだけ適用した。dx12_create_entity(type:\"light_directional\") で作れる"
-                    : "太陽 + ポストをまとめて適用した(冪等)。細部は dx12_set_sun / dx12_set_post_process で詰める"}};
+                    ? "平行光(太陽)が無いのでポスト・空/IBL・フォグだけ適用した。dx12_create_entity(type:\"light_directional\") で作れる"
+                    : "太陽 + ポスト + 空/IBL の強さ + フォグ(+ 物理大気なら時刻)をまとめて適用した(冪等・Undo 1 回)。"
+                      "露出は露出モード 0 なら乗算、1/2(手動 EV / 自動)なら露出補正 evComp。"
+                      "細部は dx12_set_sun / dx12_set_post_process / dx12_set_volumetric_fog で詰める"}};
         });
 
     // ════════════════════════════════════════════════════════════

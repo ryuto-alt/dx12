@@ -1345,6 +1345,17 @@ if(TARGET Scene)
     endif()
     add_test(NAME QualityPresetTests COMMAND QualityPresetTests)
 endif()
+# ライティング・プリセットと SceneLookProfile の一本化（空 / IBL / 露出補正 / フォグ / 大気の時刻、往復、冪等。GPU 不要）。W1-C10。
+if(TARGET Scene)
+    add_executable(SceneLookProfileTests scene_look_profile_test.cpp)
+    target_link_libraries(SceneLookProfileTests PRIVATE Scene)
+    target_include_directories(SceneLookProfileTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+    if(MSVC)
+        target_compile_options(SceneLookProfileTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+        target_compile_definitions(SceneLookProfileTests PRIVATE ${DX12_COMPILE_DEFS})
+    endif()
+    add_test(NAME SceneLookProfileTests COMMAND SceneLookProfileTests)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
