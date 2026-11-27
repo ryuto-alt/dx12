@@ -12,7 +12,6 @@ struct EpicCsmState
 {
     bool  active = false;      // D16 × 3 の影マップへ切り替え済み（m_shadowMapDirty で作り直す）
     bool  psosValid = false;
-    int   rev = 0;             // PSO を作ったときの shadingRevision
     float biasScale = 0.0f;    // PSO を作ったときの倍率
     int   depthBias = 0;
     float slopeBias = 0.0f;

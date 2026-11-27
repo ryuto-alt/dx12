@@ -5867,10 +5867,12 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             if (foliageOn)
             {
                 auto baseDraw = csmIn.drawDepth;
-                csmIn.drawDepth = [this, nativeCmdList, baseDraw, &foliageCsmSlice](const ShadowMapPass::Slice& sl)
+                const bool epicMapOn = (epicSt != nullptr);
+                csmIn.drawDepth = [this, nativeCmdList, baseDraw, &foliageCsmSlice, epicMapOn](const ShadowMapPass::Slice& sl)
                 {
                     baseDraw(sl);
-                    if (foliageCsmSlice < 2) FoliageDrawShadow(nativeCmdList, foliageCsmSlice, sl.viewProj);
+                    // PSO の DSV 形式が影マップ（D16 / D32）と合わないときは描かない（作成直後の 1 フレームの追従遅れ。UpdateEpicCsm が次の先頭で追いつく）
+                    if (foliageCsmSlice < 2 && m_foliage && m_foliage->ShadowEpicOn() == epicMapOn) FoliageDrawShadow(nativeCmdList, foliageCsmSlice, sl.viewProj);
                     ++foliageCsmSlice;
                 };
             }

@@ -95,6 +95,7 @@ public:
     // W1-C6: Epic の動的 CSM（D16 / DepthClip=FALSE）の影 PSO。GPU が止まっているときだけ SetShadowEpic を呼ぶ。ShadowEpicMatches は今の状態と同じなら true。
     bool SetShadowEpic(bool on, int bias, float slope, bool pancake);
     bool ShadowEpicMatches(bool on, int bias, float slope, bool pancake) const;
+    bool ShadowEpicOn() const;   // 今の影 PSO が Epic（D16）用か。影マップの型と合わないときは DrawShadow を呼ばない
     bool ShadingV2Requested() const { return m_v2Requested; }
     int  V2PsoCount() const;   // V2 の .cso から作れたフォワード PSO の数（get_shading の v2Pso.foliage）
     void Shutdown();

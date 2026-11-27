@@ -1053,7 +1053,6 @@ void Application::EnsureInstancePrevBuffer()
 // ---------------------------------------------------------------------------
 static bool BuildEpicCsmPsos(ID3D12RootSignature* rootSig, GraphicsDevice& gdev, EpicCsmState& st, const epiccsm::CasterBias& cb, bool pancake)
 {
-    PathResolver::ShaderDirW();
     const std::wstring dir = PathResolver::ShaderDirW();
     auto build = [&](const wchar_t* vsName, bool instanced, bool mask, std::unique_ptr<PipelineState>& out) -> bool
     {
@@ -1109,7 +1108,13 @@ void AppAccess::UpdateEpicCsm(Application& app)
     if (!want && !(app.m_backendExt && app.m_backendExt->epicCsm.active)) return;   // 既定: 何もしない
     if (!app.m_backendExt) app.m_backendExt.reset(new RenderBackendExt());
     EpicCsmState& st = app.m_backendExt->epicCsm;
-    const int rev = (app.m_scene->GetShadingSettings().shadingRevision == 2) ? 2 : 1;
+    // バイアスを下げてよいのは「実際に適用された状態が全面 V2」のときだけ。V2 の .cso が無くて V1 へ縮退した PSO
+    // （フォワード / スキンド / 水 / 植生 / VG）が 1 つでも混ざるなら、受光側の法線オフセットが無いのでアクネが出る。
+    const bool sceneV2 = (app.m_scene->GetShadingSettings().shadingRevision == 2) && (s_shadingRevApplied == 2)
+        && s_v2PsoCount[0] > 0 && s_v2PsoCount[1] > 0
+        && (!app.m_water || !app.m_water->IsReady() || app.m_water->V2PsoCount() > 0)
+        && (!app.m_foliage || !app.m_foliage->ShadingV2Requested() || app.m_foliage->V2PsoCount() > 0 || app.m_foliage->LayerCount() == 0);
+    const int rev = sceneV2 ? 2 : 1;
     const f32 scale = epiccsm::CasterBiasScale(want, rev, pc.casterBiasScaleV2);
     const epiccsm::CasterBias cb = epiccsm::CasterBiasFor(DXGI_FORMAT_D16_UNORM, scale);
     const bool psoStale = want && (!st.psosValid || st.dirty || st.pancake != pc.pancaking || st.depthBias != cb.depthBias || st.slopeBias != cb.slopeBias);
@@ -1131,7 +1136,6 @@ void AppAccess::UpdateEpicCsm(Application& app)
             }
         }
         nowActive = st.psosValid;
-        if (nowActive) st.rev = rev;
     }
     else
     {

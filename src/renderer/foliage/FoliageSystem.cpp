@@ -246,6 +246,8 @@ bool FoliageSystem::ShadowEpicMatches(bool on, int bias, float slope, bool panca
     return m_impl->epicOn == on && (!on || (m_impl->epicBias == bias && m_impl->epicSlope == slope && m_impl->epicPancake == pancake));
 }
 
+bool FoliageSystem::ShadowEpicOn() const { return m_impl && m_impl->epicOn; }
+
 bool FoliageSystem::SetShadowEpic(bool on, int bias, float slope, bool pancake)
 {
     if (!m_impl) return true;
