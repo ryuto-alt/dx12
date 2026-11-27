@@ -9,6 +9,7 @@
     pwsh tools/build.ps1 -Dir build\tracy    # 別ビルドディレクトリ
     pwsh tools/build.ps1 -Dlss require       # DLSS SDK が無ければ失敗(終了コード 3)。夜間ビルドと公式リリース用
     pwsh tools/build.ps1 -Dlss off           # DLSS を入れない(-DUNO_ENABLE_DLSS=OFF)
+    pwsh tools/build.ps1 -SlotProbe 15       # テスト用: 本番と同じ手順でロックを取り、スロット番号を出して 15 秒待つだけ(cmake なし)
 
   -Dlss auto|require|off (既定 auto):
     auto    … SDK(third_party/dlss。pwsh tools/fetch_dlss.ps1 で取得)があれば DLSS 付き。無ければビルドの最後に
@@ -18,7 +19,13 @@
     ゴールデンとショーケースは決定論モードで常に DLSS OFF なので、どのモードでも結果は同じ。
 
   やっていること:
-    1. 名前付き Mutex(Global\dx12-build)で全ビルドを直列化。待っている間は待機中と表示する。
+    1. 名前付き Mutex で同時ビルド数を制限する(既定 2 本。環境変数 DX12_BUILD_SLOTS=1..3)。
+       - スロット: Global\dx12-build(スロット 1。旧版 build.ps1 はこれだけを取る)と Global\dx12-build-<k>(k>=2)。
+         スロット 2 以降は空き物理メモリが DX12_BUILD_MIN_FREE_GB(既定 8)以上のときだけ取る。
+       - 先にビルドディレクトリ単位の Mutex(Global\dx12-build-dir-<パスの SHA1 先頭16桁>)と
+         <Dir>\.build-in-progress(PID。旧版は書かない)で、同じディレクトリを同時に建てないようにする。
+       - 待っている間は待機中と表示する(30 秒ごとに各スロットの状態)。
+       - 接頭辞は DX12_BUILD_SLOT_PREFIX で差し替え可(テスト用。既定 Global\dx12-build)。
     2. プロセス優先度を BelowNormal にする(cl.exe / link.exe に継承される)。PC 操作が重くならない。
     3. 並列数を制限(-j)し、Ninja の負荷平均制限(-l)も付ける。
     4. vcvars64 を自動で読み込む(通常の PowerShell / bash から直接呼べる)。
@@ -31,6 +38,7 @@ param(
     [int]$Jobs = 0,
     [switch]$Tests,
     [int]$WaitMinutes = 40,
+    [int]$SlotProbe = 0,
     [ValidateSet('auto', 'require', 'off')][string]$Dlss = 'auto'
 )
 
@@ -41,7 +49,8 @@ Set-Location $root
 # --- DLSS SDK の有無（CMakeLists.txt の UNO_DLSS_ACTIVE と同じ 3 ファイルで判定する）
 $dlssSdk = Join-Path $root 'third_party\dlss'
 # 構成済みなら CMake キャッシュの UNO_DLSS_SDK_DIR（ユーザーが差し替え可能）を優先する
-$dlssCache = Join-Path (Join-Path $root $Dir) 'CMakeCache.txt'
+$dirFull = [IO.Path]::GetFullPath([IO.Path]::Combine($root, $Dir))
+$dlssCache = Join-Path $dirFull 'CMakeCache.txt'
 if (Test-Path $dlssCache) {
     $sd = Select-String -Path $dlssCache -Pattern '^UNO_DLSS_SDK_DIR:[A-Z]+=(.+)$' | Select-Object -First 1
     if ($sd) { $dlssSdk = $sd.Matches[0].Groups[1].Value.Trim() -replace '/', '\' }
@@ -61,22 +70,101 @@ if ($Jobs -le 0) {
     $Jobs = [Math]::Max(2, [Math]::Min(12, [int]($logical / 2)))
 }
 
-# --- 1. 排他ロック（別プロセスのビルドが終わるまで待つ）
-$mutex = [System.Threading.Mutex]::new($false, 'Global\dx12-build')
+# --- 1. 排他ロック: ビルドディレクトリ単位のロック + 最大 N 個の「スロット」(同時ビルド数)
+#   スロット 1 は旧名 Global\dx12-build のまま(旧版 build.ps1 / nightly.ps1 はスロット 1 だけを取る)。
+#   スロット k>=2 は Global\dx12-build-<k>。接頭辞は DX12_BUILD_SLOT_PREFIX で差し替え可(テスト用)。
+$slotPrefix = if ($env:DX12_BUILD_SLOT_PREFIX) { $env:DX12_BUILD_SLOT_PREFIX } else { 'Global\dx12-build' }
+$slotCount = 2
+if ($env:DX12_BUILD_SLOTS -match '^\d+$') { $slotCount = [Math]::Max(1, [Math]::Min(3, [int]$env:DX12_BUILD_SLOTS)) }
+$minFreeGb = 8.0
+if ($env:DX12_BUILD_MIN_FREE_GB -match '^\d+(\.\d+)?$') { $minFreeGb = [double]$env:DX12_BUILD_MIN_FREE_GB }
+
+$dirMutex = $null; $dirGot = $false
+$slotMutexes = @(); $slotGot = 0       # $slotGot = 取れたスロット番号(0 = 未取得)
+$markerPath = Join-Path $dirFull '.build-in-progress'; $markerWritten = $false
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$got = $false
-try {
-    if (-not $mutex.WaitOne(0)) {
-        Write-Host "[build] another build is running. waiting for the lock (up to $WaitMinutes min)..."
-        $got = $mutex.WaitOne([TimeSpan]::FromMinutes($WaitMinutes))
-        if (-not $got) { Write-Host "[build] lock timeout"; exit 3 }
-        Write-Host ("[build] lock acquired after {0:n0}s" -f $sw.Elapsed.TotalSeconds)
-    } else { $got = $true }
-} catch [System.Threading.AbandonedMutexException] {
-    $got = $true   # 前のビルドが異常終了して残したロック。引き継いで進める
+
+# Mutex を取る。放棄された Mutex(前のビルドが異常終了)も取得扱いにする。
+function Enter-BuildMutex([System.Threading.Mutex]$m, [int]$ms, [string]$what) {
+    try { return $m.WaitOne($ms) }
+    catch [System.Threading.AbandonedMutexException] {
+        Write-Host "[build] note: $what was abandoned by a crashed build. taking it over"
+        return $true
+    }
+}
+function Get-FreePhysicalGb {
+    try { return [double](Get-CimInstance Win32_OperatingSystem -Property FreePhysicalMemory).FreePhysicalMemory / 1MB } catch { return 1e9 }
+}
+function Test-MarkerBusy([string]$path) {
+    # 別プロセスが同じディレクトリをビルド中なら true(マーカーの PID が生きている)。旧版はマーカーを書かない
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    try { $raw = (Get-Content -LiteralPath $path -Raw -ErrorAction Stop).Trim() } catch { return $false }
+    if ($raw -notmatch '^\d+$' -or [int]$raw -eq $PID) { return $false }
+    return [bool](Get-Process -Id ([int]$raw) -ErrorAction SilentlyContinue)
 }
 
 try {
+    $deadline = [DateTime]::UtcNow.AddMinutes($WaitMinutes)
+    $announced = $false
+    function Wait-Announce { if (-not $script:announced) { $script:announced = $true; Write-Host "[build] another build is running. waiting for the lock (up to $WaitMinutes min)..." } }
+
+    # 1a. ディレクトリ単位のロック(同じディレクトリを同時に建てない)
+    $dirHash = [BitConverter]::ToString([Security.Cryptography.SHA1]::HashData([Text.Encoding]::UTF8.GetBytes($dirFull.ToLowerInvariant()))).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+    $dirMutex = [System.Threading.Mutex]::new($false, "$slotPrefix-dir-$dirHash")
+    if (-not (Enter-BuildMutex $dirMutex 0 'dir lock')) {
+        Wait-Announce
+        Write-Host "[build] same build dir is being built by another process. waiting..."
+        $left = [int][Math]::Max(0, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        if (-not (Enter-BuildMutex $dirMutex $left 'dir lock')) { Write-Host "[build] lock timeout"; exit 3 }
+    }
+    $dirGot = $true
+    # 旧版(マーカーを書かない)との移行期の競合は残る。各レーンは自分の worktree のディレクトリを建てるので許容。
+    while (Test-MarkerBusy $markerPath) {
+        Wait-Announce
+        if ([DateTime]::UtcNow -ge $deadline) { Write-Host "[build] lock timeout"; exit 3 }
+        Start-Sleep -Seconds 3
+    }
+
+    # 1b. スロット取得: 1..N を WaitOne(0) で順に試す。k>=2 は空きメモリが足りるときだけ。3 秒ごとにポーリング
+    for ($k = 1; $k -le $slotCount; $k++) {
+        $name = if ($k -eq 1) { $slotPrefix } else { "$slotPrefix-$k" }
+        $slotMutexes += , [System.Threading.Mutex]::new($false, $name)
+    }
+    $lastReport = [DateTime]::UtcNow
+    while ($slotGot -eq 0) {
+        $state = @()
+        for ($k = 1; $k -le $slotCount; $k++) {
+            if ($k -ge 2) {
+                $free = Get-FreePhysicalGb
+                if ($free -lt $minFreeGb) { $state += ("slot {0} held back (free {1:n1} GB < {2:n1} GB)" -f $k, $free, $minFreeGb); continue }
+            }
+            if (Enter-BuildMutex $slotMutexes[$k - 1] 0 "slot $k") { $slotGot = $k; break }
+            $state += "slot $k busy"
+        }
+        if ($slotGot -ne 0) { break }
+        Wait-Announce
+        if ([DateTime]::UtcNow -ge $deadline) { Write-Host "[build] lock timeout"; exit 3 }
+        if (([DateTime]::UtcNow - $lastReport).TotalSeconds -ge 30) {
+            Write-Host ("[build] waiting {0:n0}s: {1}" -f $sw.Elapsed.TotalSeconds, ($state -join ', '))
+            $lastReport = [DateTime]::UtcNow
+        }
+        Start-Sleep -Seconds 3
+    }
+    if ($announced) { Write-Host ("[build] lock acquired after {0:n0}s" -f $sw.Elapsed.TotalSeconds) }
+    Write-Host "[build] slot $slotGot/$slotCount"
+
+    # マーカー(ディレクトリが既にある場合だけ。無ければ cmake が作るので省略)
+    if (Test-Path -LiteralPath $dirFull) { try { Set-Content -LiteralPath $markerPath -Value $PID -NoNewline; $markerWritten = $true } catch {} }
+
+    # -SlotProbe: ロックの取り方を本番と同じにして、スロット番号を出して待つだけ(cmake は動かさない)
+    if ($SlotProbe -gt 0) {
+        $t0 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        Write-Host "PROBE slot=$slotGot/$slotCount acquired=$t0 waited=$([int]$sw.Elapsed.TotalSeconds)"
+        Start-Sleep -Seconds $SlotProbe
+        Write-Host "PROBE released=$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+        exit 0
+    }
+
     # --- 2. 優先度を下げる（子プロセスに継承される）
     try { (Get-Process -Id $PID).PriorityClass = 'BelowNormal' } catch {}
 
@@ -220,6 +308,9 @@ try {
     exit $code
 }
 finally {
-    if ($got) { try { $mutex.ReleaseMutex() } catch {} }
-    $mutex.Dispose()
+    if ($markerWritten) { try { Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue } catch {} }
+    if ($slotGot -ne 0) { try { $slotMutexes[$slotGot - 1].ReleaseMutex() } catch {} }
+    foreach ($m in $slotMutexes) { try { $m.Dispose() } catch {} }
+    if ($dirGot) { try { $dirMutex.ReleaseMutex() } catch {} }
+    if ($dirMutex) { try { $dirMutex.Dispose() } catch {} }
 }
