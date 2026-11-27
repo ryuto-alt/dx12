@@ -1,0 +1,8 @@
+{
+  "assetsDir": "assets",
+  "defaultScene": "scenes/sc1_yard.json",
+  "lastOpenedScene": "",
+  "name": "sc1_yard",
+  "scriptsDir": "scripts",
+  "version": "0.1.0"
+}

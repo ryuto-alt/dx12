@@ -1,0 +1,29 @@
+{
+  "name": "sc1_fire",
+  "group": "repeat",
+  "requiresDxr": true,
+  "project": "tests/golden/projects/showcase/sc1_yard",
+  "scene": "scenes/sc1_yard.json",
+  "vfxSeek": {
+    "t": 2
+  },
+  "deterministicWarmup": true,
+  "camera": {
+    "position": [
+      3.5,
+      1.5,
+      -4.5
+    ],
+    "target": [
+      0,
+      1.0,
+      0
+    ]
+  },
+  "note": "W1-NB13 SC-1「校正の庭」: 焚き火の近景（炎と煙のフリップブック・火の粉・人形のスキンドの影）。Epic のルック（RT 太陽影 + 動的 CSM + PCSS、品質プリセット Epic をシーンへ反映済み）、太陽の高度 15°。VFX は vfxSeek で t=2 秒に固定。DLSS OFF（DLSS 無しのビルド / TAA）で撮る。人形と風見の Lua は Play 中だけ動くので、エディタ撮影では静止ポーズ。 Epic のルック（RT 太陽影・DDGI・RT 反射・SSAO）はフレームごとのノイズが同じセッションでも 揺れる（実測: 同じセッションの撮り直しで差画素 0.02〜0.08%・平均差 0.3〜1.1、別起動の基準との差は差画素 0.013% 以下・平均差 0.2 以下）ので、既存の Epic のゴールデンと同じく group:repeat とし、許容差を広げた。ビット一致は出せない（要メイン裁定）。",
+  "tolerance": {
+    "pixelThreshold": 24,
+    "maxDiffRatio": 0.003,
+    "maxMeanAbs": 0.8
+  }
+}

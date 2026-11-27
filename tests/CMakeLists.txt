@@ -1454,6 +1454,17 @@ if(TARGET Scene)
 endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
+# ゲート(§2.10 / DG1 G11): cmake -DUNO_GATE=ON で、Python の依存が無くて「スキップ（= 走らなかったのに緑）」になる 3 本
+# (VfxBakePyTests / SplashAvPyTests / ParityHarnessPyTests)を失敗扱いにする。個別に -D<名前>_REQUIRED=ON でも同じ。
+# 先に tools/gate_configure.ps1 が依存入りの python(tools/parity/.venv)を用意して、この旗と *_PYTHON をまとめて渡す。
+option(UNO_GATE "ゲート構成: Python 依存の無いスキップを失敗にする" OFF)
+if(UNO_GATE)
+    foreach(_gv VFX_BAKE_REQUIRED SPLASH_AV_REQUIRED PARITY_REQUIRED)
+        if(NOT DEFINED ${_gv})
+            set(${_gv} ON)
+        endif()
+    endforeach()
+endif()
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
 # ゲートでは cmake -DVFX_BAKE_PYTHON=<pytest と numpy 入りの python> -DVFX_BAKE_REQUIRED=ON を渡すと、走らなければ失敗になる。
 add_test(NAME VfxBakePyTests
@@ -2460,8 +2471,9 @@ endif()
 
 # パリティ基盤(tools/parity)の Python テスト(pytest。指標・ノイズ床・ゲート・シーン仕様・偽エンジンでのランナー統合)。
 # Python か依存(numpy / scikit-image / flip-evaluator など。pwsh tools/parity/setup.ps1)が無い環境ではスキップ扱い。
+# ゲートでは cmake -DUNO_GATE=ON（下の lane-D ブロック。または -DPARITY_REQUIRED=ON -DPARITY_PYTHON=<依存入りの python>）で、走らなければ失敗になる。
 add_test(NAME ParityHarnessPyTests
-    COMMAND ${CMAKE_COMMAND} -DPARITY_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../tools/parity -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/parity/run_pytests.cmake)
+    COMMAND ${CMAKE_COMMAND} -DPARITY_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../tools/parity -DPARITY_PYTHON=${PARITY_PYTHON} -DPARITY_REQUIRED=${PARITY_REQUIRED} -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/parity/run_pytests.cmake)
 set_tests_properties(ParityHarnessPyTests PROPERTIES
     SKIP_REGULAR_EXPRESSION "PARITY_SKIP"
     ENVIRONMENT "PYTHONUTF8=1"

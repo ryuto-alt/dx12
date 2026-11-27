@@ -1,0 +1,69 @@
+{
+  "uvfx": 1,
+  "name": "p_torch",
+  "duration": 0,
+  "loop": true,
+  "emitters": [
+    {
+      "name": "flame",
+      "maxParticles": 6,
+      "spawn": { "rate": 2 },
+      "init": [
+        { "module": "shape", "kind": "point" },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0, 0], "spread": 0 },
+        { "module": "lifetime", "range": [2.8, 3.2] },
+        { "module": "size", "start": [0.42, 0.5], "end": [0.42, 0.5] },
+        { "module": "color", "start": [1.0, 1.0, 1.0, 1.0], "end": [1.0, 1.0, 1.0, 1.0], "variation": 0.0 },
+        { "module": "rotation", "angle": [0, 0], "rate": [0, 0] }
+      ],
+      "update": [],
+      "render": {
+        "kind": "flipbook", "blend": "additive", "fade": "inout", "softDistance": 0.15, "intensity": 1.0,
+        "texture": "engine/vfx/fire_flipbook.dds",
+        "flipbook": { "cols": 6, "rows": 6, "frames": 36, "fps": 12, "channels": "fire", "mv": "engine/vfx/fire_mv.dds", "mvRange": 0.5,
+                      "anchor": "bottom", "tempMin": 1000, "tempMax": 2200, "emission": 9.0, "erodeStart": 0.6, "erodeWidth": 0.15 }
+      }
+    },
+    {
+      "name": "smoke",
+      "maxParticles": 10,
+      "spawn": { "rate": 1.2 },
+      "init": [
+        { "module": "shape", "kind": "disc", "radius": 0.03 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0.5, 0.8], "spread": 8 },
+        { "module": "lifetime", "range": [3.5, 5.0] },
+        { "module": "size", "start": [0.22, 0.3], "end": [0.7, 0.95] },
+        { "module": "color", "start": [0.5, 0.48, 0.46, 0.4], "end": [0.32, 0.31, 0.3, 0.0], "variation": 0.1 },
+        { "module": "rotation", "angle": [0, 0], "rate": [0, 0] }
+      ],
+      "update": [
+        { "module": "drag", "coefficient": 0.8 },
+        { "module": "curlNoise", "strength": 0.5, "scale": 1.0, "speed": 0.3 }
+      ],
+      "render": {
+        "kind": "flipbook", "blend": "alpha", "fade": "inout", "softDistance": 0.3, "intensity": 1.0,
+        "texture": "engine/vfx/smoke_6way_rlu.dds",
+        "flipbook": { "cols": 6, "rows": 6, "frames": 36, "fps": 12, "channels": "smoke6way", "dbf": "engine/vfx/smoke_6way_dbf.dds",
+                      "mv": "engine/vfx/smoke_mv.dds", "mvRange": 0.5, "anchor": "bottom", "rootFade": 0.15, "erodeStart": 0.5, "erodeWidth": 0.2 }
+      }
+    },
+    {
+      "name": "sparks",
+      "maxParticles": 16,
+      "spawn": { "rate": 3 },
+      "init": [
+        { "module": "shape", "kind": "sphere", "radius": 0.04 },
+        { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0.8, 1.8], "spread": 35 },
+        { "module": "lifetime", "range": [0.7, 1.4] },
+        { "module": "size", "start": [0.012, 0.022], "end": [0.0, 0.005] },
+        { "module": "color", "start": [6.0, 2.4, 0.6, 1.0], "end": [1.5, 0.2, 0.0, 0.0] }
+      ],
+      "update": [
+        { "module": "gravity", "value": [0, -2.4, 0] },
+        { "module": "drag", "coefficient": 0.4 },
+        { "module": "curlNoise", "strength": 2.0, "scale": 2.0, "speed": 0.8 }
+      ],
+      "render": { "kind": "sprite", "blend": "additive", "fade": "quad", "softDistance": 0.15, "intensity": 1.0, "stretch": 1.0 }
+    }
+  ]
+}

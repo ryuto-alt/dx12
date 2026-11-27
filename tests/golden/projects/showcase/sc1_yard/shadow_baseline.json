@@ -1,0 +1,44 @@
+{
+  "scene": "scenes/sc1_yard.json",
+  "camera": {
+    "position": [
+      -6.115044147211524,
+      10,
+      28.680139688961518
+    ],
+    "target": [
+      -1.3267622691915157,
+      0,
+      15.524442951174299
+    ]
+  },
+  "sunElevationDeg": 15,
+  "samples": {
+    "shadow": 12,
+    "lit": 9
+  },
+  "results": [
+    {
+      "label": "epic",
+      "preset": "epic",
+      "rtSun": true,
+      "dynamicCsm": true,
+      "shadowMean": 30.23,
+      "litMean": 107.66,
+      "ratio": 0.2808,
+      "shadowPointsDarkerThan80pct": "12/12",
+      "pass": true
+    },
+    {
+      "label": "high",
+      "preset": "high",
+      "rtSun": false,
+      "dynamicCsm": false,
+      "shadowMean": 52.44,
+      "litMean": 111.8,
+      "ratio": 0.469,
+      "shadowPointsDarkerThan80pct": "12/12",
+      "note": "W1 は記録だけ（合否にしない）。W2 の LS-02b で合否にする"
+    }
+  ]
+}
