@@ -154,6 +154,10 @@ public:
     int Width() const;     // 物理 px
     int Height() const;
     bool Draw(const GaugeFrame& frame, const SplashInfo& info);
+    // 検証用（--splash-dump の csv）: Draw を D3D11 のタイムスタンプ問い合わせで挟む。待ちは入れない
+    // （結果は CopyPixels の同期の後で読む。まだ読めなければ負の値）。窓の本番経路では有効にしない。
+    bool EnableGpuTiming(bool on);
+    double LastGpuMs() const;   // 直近の Draw の GPU 時間（ms）。無効 / 取得不可は -1
     // 直近の Draw の結果を BGRA（premultiplied。アルファは全面 255）で dst へ（行間 dstPitch バイト）
     bool CopyPixels(std::uint8_t* dst, int dstPitch);
     // 別の DPI のモニターへ移ったとき（ターゲットを作り直す。失敗は false）。BD3 の窓側は未配線（起動中に窓を動かさない想定。BA-12 で扱う）

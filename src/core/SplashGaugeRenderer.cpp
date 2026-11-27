@@ -957,6 +957,10 @@ struct GaugeSurface::Impl
     ComPtr<ID2D1Bitmap1> target, readback;
     ComPtr<IDWriteFactory> dw;
     GaugeRenderer renderer;
+    // GPU タイマ（検証用。EnableGpuTiming）
+    ComPtr<ID3D11DeviceContext> ctx;
+    ComPtr<ID3D11Query> qDisjoint, qBegin, qEnd;
+    bool timing = false, timingPending = false;
 
     bool MakeTarget()
     {
@@ -1027,8 +1031,39 @@ int GaugeSurface::Width() const { return p_->W; }
 int GaugeSurface::Height() const { return p_->H; }
 bool GaugeSurface::Draw(const GaugeFrame& frame, const SplashInfo& info)
 {
-    if (!p_->renderer.Render(frame, info)) { p_->err = p_->renderer.LastError(); return false; }
+    Impl& s = *p_;
+    const bool t = s.timing && s.ctx && s.qDisjoint && s.qBegin && s.qEnd;
+    if (t) { s.ctx->Begin(s.qDisjoint.Get()); s.ctx->End(s.qBegin.Get()); }
+    const bool ok = s.renderer.Render(frame, info);
+    if (t) { s.ctx->End(s.qEnd.Get()); s.ctx->End(s.qDisjoint.Get()); s.timingPending = true; }
+    if (!ok) { s.err = s.renderer.LastError(); return false; }
     return true;
+}
+bool GaugeSurface::EnableGpuTiming(bool on)
+{
+    Impl& s = *p_;
+    s.timing = false;
+    if (!on) return true;
+    if (!s.ctx) s.d3d->GetImmediateContext(&s.ctx);
+    D3D11_QUERY_DESC d{};
+    d.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+    if (FAILED(s.d3d->CreateQuery(&d, &s.qDisjoint))) return false;
+    d.Query = D3D11_QUERY_TIMESTAMP;
+    if (FAILED(s.d3d->CreateQuery(&d, &s.qBegin)) || FAILED(s.d3d->CreateQuery(&d, &s.qEnd))) return false;
+    s.timing = s.ctx != nullptr;
+    return s.timing;
+}
+double GaugeSurface::LastGpuMs() const
+{
+    const Impl& s = *p_;
+    if (!s.timing || !s.timingPending) return -1.0;
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+    UINT64 t0 = 0, t1 = 0;
+    // フラグ 0 で 1 回だけ読む（待たない。CopyPixels の同期の後なので通常は読める）
+    if (s.ctx->GetData(s.qDisjoint.Get(), &dj, sizeof(dj), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK || dj.Disjoint || dj.Frequency == 0) return -1.0;
+    if (s.ctx->GetData(s.qBegin.Get(), &t0, sizeof(t0), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return -1.0;
+    if (s.ctx->GetData(s.qEnd.Get(), &t1, sizeof(t1), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) return -1.0;
+    return static_cast<double>(t1 - t0) * 1000.0 / static_cast<double>(dj.Frequency);
 }
 bool GaugeSurface::CopyPixels(std::uint8_t* dst, int dstPitch)
 {

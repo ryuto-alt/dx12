@@ -181,6 +181,24 @@ sp::SplashInfo MakeDumpInfo(const Options& o)
     return info;
 }
 
+// events.json の kind と同じ小文字の名前
+const char* EventKindName(sp::calibrate::EventKind k)
+{
+    using K = sp::calibrate::EventKind;
+    switch (k)
+    {
+    case K::Duck: return "duck";
+    case K::Click: return "click";
+    case K::Latch: return "latch";
+    case K::Tok: return "tok";
+    case K::Sub: return "sub";
+    case K::Bell: return "bell";
+    case K::Ping: return "ping";
+    case K::End: return "end";
+    }
+    return "?";
+}
+
 // --splash-dump / 既定のプレビュー（Graphite Gauge）: 窓なし・音なしで、指定時刻の絵を PNG に書く。
 // 実窓と同じ GaugeSurface + GaugeFastDriver を 60Hz の台本で走らせる（時計は仮想）。
 int RunGaugeDump(const Options& o)
@@ -225,7 +243,14 @@ int RunGaugeDump(const Options& o)
     const int W = surf.Width(), H = surf.Height();
     std::vector<uint8_t> px(static_cast<size_t>(W) * static_cast<size_t>(H) * 4);
     std::ofstream csv(o.dir / "frames.csv");
-    csv << "index,tMs,needleDeg,locked,file,t,phase,percent\n";   // t / phase / percent は classic の frames.csv と同じ列（splash_contact_sheet.py 互換）
+    // t / phase / percent は classic の frames.csv と同じ列（splash_contact_sheet.py 互換）。
+    // 後ろの 4 列は A/V 検証用（W1-BD8。tools/check_splash_av.py が読む）:
+    //   event  = 前の書き出し時刻（含まない）〜この時刻（含む）に入る音のイベント。"kind:index"（events.json と同じ名前）を '|' でつなぐ。無ければ空
+    //   frame  = 出力 fps の格子での番号（round(tMs * fps / 1000)）
+    //   gpuMs  = Draw の GPU 時間（D3D11 のタイムスタンプ。読めなければ -1）、cpuMs = Draw 呼び出しの CPU 時間
+    csv << "index,tMs,needleDeg,locked,file,t,phase,percent,event,frame,gpuMs,cpuMs\n";
+    surf.EnableGpuTiming(true);
+    double prevWrittenT = -1.0;
     size_t wi = 0;
     int written = 0;
     double drawSum = 0.0, drawMax = 0.0, copySum = 0.0;
@@ -273,9 +298,20 @@ int RunGaugeDump(const Options& o)
         char name[64];
         std::snprintf(name, sizeof(name), "kf_%04d_ms.png", static_cast<int>(std::lround(t)));
         if (!WritePng(o.dir / name, px.data(), W, H)) { std::fprintf(stderr, "splash-dump: PNG を書けません: %s\n", name); return 1; }
-        char row[160];
-        std::snprintf(row, sizeof(row), "%d,%.1f,%.2f,%d,%s,%.4f,%s,%.1f\n", written, t, f.needleDeg, f.locked ? 1 : 0, name, t / 1000.0,
-                      locked ? "locked" : (finishReq ? "finish" : "gauge"), info.progress * 100.0);
+        std::string evs;
+        for (const auto& e : sp::calibrate::kEvents)
+        {
+            if (!(e.tMs > prevWrittenT && e.tMs <= t + 1e-9)) continue;
+            if (!evs.empty()) evs += '|';
+            evs += EventKindName(e.kind);
+            evs += ':';
+            evs += std::to_string(e.index);
+        }
+        prevWrittenT = t;
+        char row[320];
+        std::snprintf(row, sizeof(row), "%d,%.1f,%.2f,%d,%s,%.4f,%s,%.1f,%s,%ld,%.4f,%.4f\n", written, t, f.needleDeg, f.locked ? 1 : 0, name, t / 1000.0,
+                      locked ? "locked" : (finishReq ? "finish" : "gauge"), info.progress * 100.0, evs.c_str(),
+                      std::lround(t * o.fps / 1000.0), surf.LastGpuMs(), d1 - d0);
         csv << row;
         ++written;
     }
