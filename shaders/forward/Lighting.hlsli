@@ -447,14 +447,17 @@ float UnoV2CapsIntersection(float cosCap1, float cosCap2, float cosDistance)
 }
 
 // GTSO（Jimenez 2016）。可視円錐（cos^2 Av = 1 - ao）と反射ローブ円錐（cos As = 2^(-3.32193 alpha^2)）の重なりを、
-// 同じローブと半球の重なりで割る（ao = 1 なら 1。地平線で切れる分は horizon とスプリットサムの LUT が持つ）。NoR = N.R（N をベントノーマルの代わりに使う）。
+// 同じローブと半球の重なりで割る（ao = 1 なら 1。地平線で切れる分は horizon とスプリットサムの LUT が持つ）。NoR = N.R（軸は N と R の中間 = 近似ベントノーマル）。
 float UnoV2Gtso(float NoR, float ao, float roughness)
 {
     const float alpha = max(roughness * roughness, 1.0e-4);
     const float cosAs = exp2(-3.32193 * alpha * alpha);
     const float cosAv = sqrt(saturate(1.0 - ao));
-    const float iv = UnoV2CapsIntersection(cosAv, cosAs, NoR);
-    const float i0 = UnoV2CapsIntersection(0.0, cosAs, NoR);
+    // 近似ベントノーマル: 軸を N と R の中間へ傾ける（真のベントノーマルが入る LS-07 まで）。
+    //   軸 = normalize(N+R) なら軸と R のなす角は N と R の半分: cos = sqrt((1+NoR)/2)。N のままだと掠める角度で R が円錐の外へ出て黒い縁になる。
+    const float cosD = sqrt(saturate(0.5 + 0.5 * NoR));
+    const float iv = UnoV2CapsIntersection(cosAv, cosAs, cosD);
+    const float i0 = UnoV2CapsIntersection(0.0, cosAs, cosD);
     return (i0 > 1.0e-4) ? saturate(iv / i0) : 1.0;
 }
 #endif // UNO_SHADING_V2
@@ -487,7 +490,7 @@ struct UnoBrdfCtx
     float  coatMs;        // コートのマルチスキャッタ補償（F0 = 0.04）
 #ifdef UNO_SHADING_V2
     // W1-C5: ローカル光のマイクロシャドウ用（0 埋めの既定 = microK 0 = 何もしない）
-    float  v2Ao;          // SSAO x 材質 AO
+    float  v2Ao;          // 材質 AO のみ（SSAO は含めない）
     float  v2MicroK;      // マイクロシャドウの強さ（機能 OFF のとき 0）
 #endif
 };

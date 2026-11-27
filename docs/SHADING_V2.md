@@ -111,8 +111,8 @@ CPU の写しは `src/renderer/ShadingV2Math.h`、性質の検査は `ShadingV2M
 ### 9.1 式
 | 機能 | 式 | 掛ける先 |
 |---|---|---|
-| マイクロシャドウ（Chan 2018） | `saturate(1 + k (saturate(abs(N.L) + 2 ao^2 - 1) - 1))`。ao = SSAO x 材質 AO | 太陽の `shadow`（CSM とコンタクト影の後）と、クラスタライトの radiance。IBL・間接光には掛けない |
-| GTSO（Jimenez 2016） | 可視円錐（cos^2 Av = 1 - ao）と反射ローブ円錐（cos As = 2^(-3.32193 a^2)、a = roughness^2）の球面キャップの重なり（Oat and Sander の smoothstep 近似）÷「同じローブと半球の重なり」。N をベントノーマルの代わりに使う | V1 の Lagarde の `so` を置き換え、`aoSpec`（IBL の鏡面。SSR が当たった所は SSR 優先）へ |
+| マイクロシャドウ（Chan 2018） | `saturate(1 + k (saturate(abs(N.L) + 2 ao^2 - 1) - 1))`。ao = 材質 AO のみ（SSAO は画面依存で間接光向けなので入れない） | 太陽の `shadow`（CSM とコンタクト影の後）と、クラスタライトの radiance。IBL・間接光には掛けない |
+| GTSO（Jimenez 2016） | 可視円錐（cos^2 Av = 1 - ao）と反射ローブ円錐（cos As = 2^(-3.32193 a^2)、a = roughness^2）の球面キャップの重なり（Oat and Sander の smoothstep 近似）÷「同じローブと半球の重なり」。軸は N と R の中間（近似ベントノーマル。N のままだと掠める角度で R が円錐の外へ出て黒い縁になる。真のベントノーマルは LS-07） | V1 の Lagarde の `so` を置き換え、`aoSpec`（IBL の鏡面。SSR が当たった所は SSR 優先）へ |
 | 地平線（Filament の horizon fade） | `saturate(1 + k R.Ng)^2`。Ng = 視線側へ向けた幾何法線 | IBL・プローブ・SSR が入った後の `specularIBL`、IBL 無しの屋内では `probeSpec` |
 
 ★GTSO を半球の重なりで割るのは意図した差。割らないと ao = 1 でも掠める角度の反射が半分に落ち（フレネルが強い所）、地平線で切れる分を horizon とスプリットサムの LUT が持つので二重に暗くなる。
@@ -131,3 +131,8 @@ C5 は所有範囲に収めるため、既に全消費者の依存表に載っ�
 
 ### 9.5 配布ビルド
 `BakeForBuild` は V1 だけ焼く。V2 のシーンのグラフ材質は配布先で V1 の絵になる（`shadingRevision` がシーンに保存されない W1 では、配布先は常に V1）。
+
+### 9.6 適用範囲（W1 時点）
+地平線オクルージョンはベース層の `specularIBL` / `probeSpec` だけ。クリアコート層の IBL・プローブ・SSR（`UNO_EXT_COAT` の中）には掛けていないので、法線マップ付きの金属にコートを載せると地平線の下を映すことがある。
+`UnoShadeLighting` を通らない水・植生・地形は V2 の PSO が使われていても C5 は効かない。いずれも PP の範囲外で、必要になったら別項目で足す。
+`shadingFlags`（PfSlot::ShadingV2 の x）を書くのは `shadingv2::PackFlags` だけ。後続項目のビットも必ずそこへ足す。

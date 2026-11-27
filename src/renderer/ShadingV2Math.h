@@ -32,6 +32,8 @@ inline float ClampStrength(float k)
     return std::min(k, kMaxStrength);
 }
 
+// ★shadingFlags（PfSlot::ShadingV2 の x）を書くのはこの PackFlags だけ。後続の項目（LS-03 screenShadowMode、MH-6 weatherOn、
+//   MH-14 emissiveExpComp、LS-08/09 atlasOn / rtLocalOn など）も必ずここへビットを足す（PackSlot が x を毎フレーム全部書き直すため、別の所で書くと消える）。
 // 設定 → shadingFlags。shadingRevision が 2 でなければ 0（V2 の PSO が残っている 1 フレームでも V1 と同じ絵になる）。
 inline std::uint32_t PackFlags(const ShadingSettings& s)
 {
@@ -84,7 +86,7 @@ inline float HorizonOcclusion(float rDotNg, float k)
 //   2 つの球面キャップの重なりの面積で鏡面の可視率を求める（Oat & Sander 2007 の smoothstep 近似）。
 //   ★ここでの違い（意図した差）: 重なりを「同じローブと半球（cos = 0）の重なり」で割る。ao = 1（遮蔽なし）なら必ず 1 になり、
 //     地平線で切れる分は HorizonOcclusion / スプリットサムの LUT が持つ（二重に暗くしない。掠める角度のフレネルの反射を落とさない）。
-//   N をベントノーマルの代わりに使う（ベントノーマルを持たないため）。cosAB = N.R。
+//   ベントノーマルを持たないため、軸は N と R の中間（近似）。NoR = N.R。
 inline float SphericalCapsIntersection(float cosCap1, float cosCap2, float cosDistance)
 {
     const float r1 = std::acos(std::clamp(cosCap1, -1.0f, 1.0f));
@@ -103,8 +105,11 @@ inline float Gtso(float NoR, float ao, float roughness)
     const float alpha = std::max(roughness * roughness, 1.0e-4f);
     const float cosAs = std::exp2(-3.32193f * alpha * alpha);
     const float cosAv = std::sqrt(std::clamp(1.0f - ao, 0.0f, 1.0f));
-    const float iv = SphericalCapsIntersection(cosAv, cosAs, NoR);
-    const float i0 = SphericalCapsIntersection(0.0f, cosAs, NoR);
+    // 近似ベントノーマル: 軸を N と R の中間へ傾ける（真のベントノーマルが入る LS-07 まで）。軸と R の cos = sqrt((1 + NoR) / 2)。
+    //   N のままだと掠める角度（NoR -> 0）で R が可視円錐の外へ出て so -> 0 になり、球の縁が黒くなる。
+    const float cosD = std::sqrt(std::clamp(0.5f + 0.5f * NoR, 0.0f, 1.0f));
+    const float iv = SphericalCapsIntersection(cosAv, cosAs, cosD);
+    const float i0 = SphericalCapsIntersection(0.0f, cosAs, cosD);
     return i0 > 1.0e-4f ? std::clamp(iv / i0, 0.0f, 1.0f) : 1.0f;
 }
 

@@ -260,7 +260,7 @@ void Application::RegisterMcpRenderMethods()
             }
             // V2 の機能ごとの切り替え（bool）と強さ（0..2。範囲外は E_OUT_OF_RANGE で弾く）
             for (const char* key : {"microShadow", "horizonOcclusion", "gtso"})
-                if (params.contains(key) && !params[key].is_null() && !params[key].is_boolean())
+                if (params.contains(key) && !params[key].is_boolean())
                     throw McpError(McpErr::InvalidParam, std::string(key) + " は true / false",
                         std::string("例: ") + key + ":false（この機能だけ OFF。shadingRevision=2 のときだけ効く）");
             float strength[2] = {sh.microShadowK, sh.horizonK};

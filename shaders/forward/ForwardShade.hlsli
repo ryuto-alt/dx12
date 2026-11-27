@@ -244,12 +244,10 @@ float3 UnoShadeLighting(UnoSurface s, float3 normalWS, UnoShadeInput si)
 
 #ifdef UNO_SHADING_V2
     // ===== V2: マイクロシャドウ（太陽 + ローカル光。W1-C5）=====
-    //   AO は下の ao と同じ値（SSAO x 材質 AO）。IBL / 間接光には掛けない（AO が既に掛かっている）。
+    //   AO は材質 AO だけ（Chan 2018 / Filament と同じ）。SSAO は画面依存で間接光向けなので、直接光には入れない
+    //   （入れると日向の接地部が暗くなり、画面端や深度の段差に縁が出る）。AO マップの無い材質では実質 no-op。
     const uint v2Flags = UnoV2Flags();
     float v2Ao = s.ao;
-#ifndef UNO_SHADE_LITE
-    v2Ao *= (aoEnabled > 0.5) ? g_ssao.Load(int3(si.svPos, 0)) : 1.0;
-#endif
     bc.v2Ao     = v2Ao;
     bc.v2MicroK = ((v2Flags & UNO_V2_FLAG_MICRO_SHADOW) != 0u) ? _clusterReserved[2].y : 0.0;
     [branch] if (bc.v2MicroK > 0.0)
