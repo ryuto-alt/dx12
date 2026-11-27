@@ -207,3 +207,26 @@ test("judgeScene: 3D と UI の順序・文言(環境違い / 基準画像なし
   const bad = { width: 4, height: 4, data: Buffer.alloc(64, 200) };
   assert.equal(judgeScene({ ...base, small: bad, ref: img, baseline: undefined, strict: true }).pass, false);
 });
+
+// FU-L-6: taa_torture の回ごとの揺れ（差画素 0.06〜0.23%）の原因は、温めの step_frames が実 dt で粒子（火花）を進めること。
+// 温めを固定 dt にする deterministicWarmup:true を持つシーンだけ deterministic:true を渡し、他のシーンは従来どおり（ビット一致を壊さない）。
+import { captureScene, loadConfig } from "./golden.mjs";
+const fakeEngine = () => {
+  const calls = [];
+  return { calls, call: async (m, p) => { calls.push([m, p]); return { path: "x.png" }; } };
+};
+test("taa_torture は deterministicWarmup:true（温めを固定 dt にする）", () => {
+  const s = loadConfig().find((x) => x.name === "taa_torture");
+  assert.ok(s, "taa_torture のエントリが無い");
+  assert.equal(s.deterministicWarmup, true);
+});
+test("captureScene: deterministicWarmup が真のときだけ温めの step_frames に deterministic:true を渡す", async () => {
+  const run = async (extra) => {
+    const e = fakeEngine();
+    try { await captureScene(e, { name: "t", camera: { position: [0, 0, 0], target: [0, 0, 1] }, warmupFrames: 5, settleFrames: 2, ...extra }, ""); }
+    catch { /* 撮った PNG が無いので readPng で落ちる。呼び出し列だけ見る */ }
+    return e.calls.find((c) => c[0] === "step_frames")[1];
+  };
+  assert.deepEqual(await run({ deterministicWarmup: true }), { frames: 5, deterministic: true });
+  assert.deepEqual(await run({}), { frames: 5 });
+});

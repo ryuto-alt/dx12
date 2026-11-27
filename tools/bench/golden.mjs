@@ -126,10 +126,14 @@ async function createNewScene(eng, args = {}) {
 }
 
 /** 1 シーンを決定論モードで撮る。戻り値はネイティブ解像度の画像と保存先。 */
-async function captureScene(eng, s, tag) {
+export async function captureScene(eng, s, tag) {
   await eng.call("set_editor_camera", { position: s.camera.position, target: s.camera.target });
   // ロード直後はテクスチャの非同期読み込みや自動露出が落ち着いていないので、先に数十フレーム回す
-  if (s.warmupFrames > 0) await eng.call("step_frames", { frames: s.warmupFrames }, 300_000);
+  // deterministicWarmup:true のシーンは固定 dt（1/60）で温める。粒子（火花など）は実 dt で進むので、既定の step_frames では
+  // 「温める間に何フレーム分の実時間が過ぎたか」で撮れる絵が回ごとに揺れる（taa_torture の差画素 0.06〜0.23%）。
+  // 既定は従来どおり（他のシーンのビット一致を壊さない）。
+  if (s.warmupFrames > 0)
+    await eng.call("step_frames", s.deterministicWarmup ? { frames: s.warmupFrames, deterministic: true } : { frames: s.warmupFrames }, 300_000);
   const file = path.join(OUT_DIR, `${s.name}${tag}.native.png`);
   const r = await eng.call("screenshot_final",
     { deterministic: true, gizmos: false, settleFrames: s.settleFrames, path: file }, 300_000);
