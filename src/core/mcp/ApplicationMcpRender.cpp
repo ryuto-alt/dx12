@@ -509,29 +509,32 @@ void Application::RegisterMcpRenderMethods()
             auto& p = m_scene->GetShadowPcssSettings();
             if (method == "set_shadow_pcss")
             {
-                McpUndo().TrackSceneValue(p);   // W1-FU-E-27: Undo 1 回分
-                p.enabled = params.value("enabled", p.enabled);
+                // 検証で弾かれても設定を半端に書き換えないよう、コピーへ書いて最後に 1 回で反映する（W1-FU-E-27 の再検査）。
+                ShadowPcssSettings np = p;
+                np.enabled = params.value("enabled", np.enabled);
                 if (params.contains("lightTanAngle"))
-                    p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
+                    np.lightTanAngle = McpFloatParam(params, "lightTanAngle", np.lightTanAngle, 0.001f, 0.5f);
                 if (params.contains("maxPenumbraTexels"))
-                    p.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", p.maxPenumbraTexels, 1.0f, 64.0f);
+                    np.maxPenumbraTexels = McpFloatParam(params, "maxPenumbraTexels", np.maxPenumbraTexels, 1.0f, 64.0f);
                 if (params.contains("blockerSearchTexels"))
-                    p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
-                p.temporalDither = params.value("temporalDither", p.temporalDither);
+                    np.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", np.blockerSearchTexels, 1.0f, 64.0f);
+                np.temporalDither = params.value("temporalDither", np.temporalDither);
                 // W1-C6 LS-02a: Epic の動的 CSM（2048 D16 x3 + pancaking。V2 の受光側の法線オフセット / Gather PCSS / バイアス縮小は shadingRevision=2 と組み合わせて効く）。
-                //   シーン JSON には保存しない（SceneSerializer は W1 では凍結。shadingRevision と同じ）。切り替えは次のフレームの先頭で反映される。
-                p.epicDynamicCsm     = params.value("epicDynamicCsm", p.epicDynamicCsm);
-                p.pancaking          = params.value("pancaking", p.pancaking);
-                p.gatherPcss         = params.value("gatherPcss", p.gatherPcss);
-                p.cascadeDitherBlend = params.value("cascadeDitherBlend", p.cascadeDitherBlend);
+                //   シーン JSON の shadowPcss に保存する（W1-FU-E-27。既定と違う値だけ書く）。切り替えは次のフレームの先頭で反映される。
+                np.epicDynamicCsm     = params.value("epicDynamicCsm", np.epicDynamicCsm);
+                np.pancaking          = params.value("pancaking", np.pancaking);
+                np.gatherPcss         = params.value("gatherPcss", np.gatherPcss);
+                np.cascadeDitherBlend = params.value("cascadeDitherBlend", np.cascadeDitherBlend);
                 if (params.contains("receiverNormalOffsetBase"))
-                    p.receiverNormalOffsetBase = McpFloatParam(params, "receiverNormalOffsetBase", p.receiverNormalOffsetBase, 0.0f, 4.0f);
+                    np.receiverNormalOffsetBase = McpFloatParam(params, "receiverNormalOffsetBase", np.receiverNormalOffsetBase, 0.0f, 4.0f);
                 if (params.contains("receiverNormalOffsetSlope"))
-                    p.receiverNormalOffsetSlope = McpFloatParam(params, "receiverNormalOffsetSlope", p.receiverNormalOffsetSlope, 0.0f, 4.0f);
+                    np.receiverNormalOffsetSlope = McpFloatParam(params, "receiverNormalOffsetSlope", np.receiverNormalOffsetSlope, 0.0f, 4.0f);
                 if (params.contains("casterBiasScaleV2"))
-                    p.casterBiasScaleV2 = McpFloatParam(params, "casterBiasScaleV2", p.casterBiasScaleV2, 0.05f, 1.0f);
+                    np.casterBiasScaleV2 = McpFloatParam(params, "casterBiasScaleV2", np.casterBiasScaleV2, 0.05f, 1.0f);
                 if (params.contains("gatherFilterTaps"))
-                    p.gatherFilterTaps = static_cast<u32>(McpIntParam(params, "gatherFilterTaps", static_cast<i32>(p.gatherFilterTaps), 8, 32));
+                    np.gatherFilterTaps = static_cast<u32>(McpIntParam(params, "gatherFilterTaps", static_cast<i32>(np.gatherFilterTaps), 8, 32));
+                McpUndo().TrackSceneValue(p);   // W1-FU-E-27: Undo 1 回分（検証を通ったあとだけ）
+                p = np;
             }
             resp["ok"] = true;
             resp["result"] = {{"enabled", p.enabled},

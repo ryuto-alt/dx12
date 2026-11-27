@@ -10,7 +10,7 @@
 #include "core/mcp/McpAtmosphere.h"   // 物理ベース大気 A1 の JSON 変換
 #include "core/mcp/McpPerfGpuStats.h"   // FU-E-22: gpuFrameMs の分位点
 #include "core/mcp/FleetGuard.h"   // vramBaselineMB（QueryVideoMemoryMB）
-#include "renderer/atmosphere/IblRebakePolicy.h"   // W1-FU-E-30: IblShotNote
+#include "core/mcp/McpIblShot.h"   // W1-FU-E-30: IBL 待ちの応答欄
 
 namespace dx12e
 {
@@ -261,8 +261,7 @@ void Application::RegisterMcpEditorMethods()
                 m_mcpFinalShot.reply         = deferred;
                 m_mcpFinalShot.wantSceneRt   = true;
                 m_mcpFinalShot.deterministic = true;
-                m_mcpFinalShot.iblRequested  = params.value("waitIblRebake", false);   // W1-FU-E-30
-                m_mcpFinalShot.iblWaitFrames = iblWait;
+                mcpibl::Arm(params.value("waitIblRebake", false), iblWait);   // W1-FU-E-30
                 // gizmos:false = この 1 枚だけデバッグ描画を止める(既定 true = 従来どおり)。
                 // 撮り終われば m_mcpFinalShot ごと {} に戻るので後始末は不要。
                 m_mcpFinalShot.hideGizmos    = !params.value("gizmos", true);
@@ -287,13 +286,12 @@ void Application::RegisterMcpEditorMethods()
                               // ★#16: シーン RT は「レンダー解像度」そのもの。renderScale<1 なら
                               //   表示解像度より小さい絵が返る（拡大前）。表示解像度で見たいなら final。
                               {"renderScale", m_renderScale},
-                              {"iblRebakePending", false},   // W1-FU-E-30: ここへ来るのは waitIblRebake 未指定、または待つ必要が無かったとき
-                              {"iblWaitFrames", 0},
-                              {"note", atmosphere::IblShotNote(params.value("waitIblRebake", false), 0) +
-                                       "ポストプロセス前のシーン RT（レンダー解像度）。グレーディング/"
+                              {"note", "ポストプロセス前のシーン RT（レンダー解像度）。グレーディング/"
                                        "ブルーム/ビネット/TAA は写らない。最終画は dx12_screenshot_final"
                                        "（gizmos:false は deterministic:true のときだけ効く＝"
                                        "この経路は直前フレームの読み戻しで撮り直さないため）"}};
+            mcpibl::Arm(params.value("waitIblRebake", false), 0);   // W1-FU-E-30: ここへ来るのは waitIblRebake 未指定、または待つ必要が無かったとき
+            mcpibl::Append(*this, resp["result"]);
         });
 
     // ★§6 B5 の根治。バックバッファ（ポスト適用後の最終画）のビューポート矩形を撮る。
@@ -313,8 +311,7 @@ void Application::RegisterMcpEditorMethods()
             m_mcpFinalShot.path          = params.value("path", std::string());
             m_mcpFinalShot.reply         = deferred;
             m_mcpFinalShot.deterministic = det;
-            m_mcpFinalShot.iblRequested  = params.value("waitIblRebake", false);   // W1-FU-E-30
-            m_mcpFinalShot.iblWaitFrames = iblWait;
+            mcpibl::Arm(params.value("waitIblRebake", false), iblWait);   // W1-FU-E-30
             // ★gizmos:false = この 1 枚だけエディタのデバッグ描画(アイコン / 選択枠 /
             //   カメラ視錐台の水色の線 / 物理・ナビのワイヤ / 床グリッド)を止めて撮る。
             //   既定 true は従来どおり。render_debug と同じで「必ず元へ戻す」が要るが、

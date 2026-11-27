@@ -7,6 +7,8 @@
 #include "core/AppAccess.h"
 #include "core/FrameStepLogic.h"
 #include "core/QualityPresetApply.h"
+#include "core/mcp/McpIblShot.h"
+#include "renderer/atmosphere/IblRebakePolicy.h"
 #include "renderer/QualityPreset.h"
 #include "renderer/QualityPresetPlan.h"
 
@@ -238,4 +240,44 @@ void Application::RegisterMcpLaneCMethods()
             isDeferred     = true;
         });
 }
+
+// ---------------------------------------------------------------------------
+// W1-FU-E-30: screenshot / screenshot_final の IBL 待ちの応答欄（McpIblShot.h）。
+// ---------------------------------------------------------------------------
+namespace mcpibl
+{
+namespace
+{
+struct ShotState
+{
+    bool requested = false;   // waitIblRebake:true で頼まれた
+    int  waitFrames = 0;      // 依頼時点で足した待ちフレーム数（0 = 待つ必要が無かった）
+};
+ShotState g_shot;
+} // namespace
+
+void Arm(bool requested, int waitFrames)
+{
+    g_shot.requested  = requested;
+    g_shot.waitFrames = waitFrames;
+}
+
+void Append(Application& app, nlohmann::json& reply)
+{
+    const ShotState st = g_shot;
+    g_shot = {};
+    // 撮影が終わった今、焼き直しがまだ残っているか（待ったのに未了のまま = IBL が古い絵）を取り直す。
+    const bool pendingAtCapture = st.requested && AppAccess::IblRebakeWaitFrames(app) > 0;
+    reply["iblRebakePending"]          = st.waitFrames > 0;
+    reply["iblWaitFrames"]             = st.waitFrames;
+    reply["iblRebakePendingAtCapture"] = pendingAtCapture;
+    const std::string prefix = atmosphere::IblShotNote(st.requested, st.waitFrames, pendingAtCapture);
+    if (!prefix.empty())
+    {
+        const std::string old = reply.value("note", std::string());
+        reply["note"] = prefix + old;
+    }
+}
+} // namespace mcpibl
+
 } // namespace dx12e

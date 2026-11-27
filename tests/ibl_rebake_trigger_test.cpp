@@ -140,6 +140,12 @@ int main()
         const std::string z = IblShotNote(true, 0);
         CHECK(z.find("iblRebakePending=false") != std::string::npos);
         CHECK(z.find("iblWaitFrames=0") != std::string::npos);
+        // 完了時点の取り直し（W1-FU-E-30 の再検査）
+        CHECK(n.find("iblRebakePendingAtCapture=false") != std::string::npos);
+        const std::string stale = IblShotNote(true, 8, true);
+        CHECK(stale.find("iblRebakePendingAtCapture=true") != std::string::npos);
+        CHECK(stale.find("古い") != std::string::npos);
+        CHECK(IblShotNote(false, 0, true).empty());   // 頼まれていなければ、取り直しの結果でも何も足さない
     }
     std::printf(g_fail ? "IblRebakeTriggerTests FAILED (%d)\n" : "IblRebakeTriggerTests OK\n", g_fail);
     return g_fail ? 1 : 0;

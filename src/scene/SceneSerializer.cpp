@@ -7,6 +7,7 @@
 #include "scene/PostV2Fields.h"
 #include "scene/ScenePartition.h"   // シーンの分割保存（§4.3）
 #include "scene/Scene.h"
+#include "scene/SceneShadingSerializerLaneC.h"   // W1-FU-E-27: shading V2 / LS-02a の欄（lane-C サイドカー）
 #include "ecs/Components.h"
 #include "physics/ColliderShape.h"         // ConvexHullCollider の頂点の間引き（collider::ReduceHullPoints。ヘッダのみ）
 #include "ecs/ComponentMeta.h"             // entt::meta フィールド反映（シリアライズの単一ソース）
@@ -1362,20 +1363,8 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir, boo
     }
 
     // 材質シェーディング設定（シーン単位）。既定（マルチスキャッタ ON）のときは何も書かない＝既存シーンの保存結果は不変
-    //   W1-FU-E-27（メインの 1 回だけの例外）: shadingRevision と V2 の欄も、既定と違うものだけ書く（既定のシーンは 1 バイトも変わらない）。
-    {
-        const ShadingSettings& sh = scene.GetShadingSettings();
-        static const ShadingSettings kShDef{};
-        json& sj = root["shading"];
-        if (!sh.multiScatter)                    sj["multiScatter"]      = false;
-        if (sh.shadingRevision != kShDef.shadingRevision) sj["shadingRevision"] = static_cast<int>(sh.shadingRevision);
-        if (sh.microShadow != kShDef.microShadow)           sj["microShadow"]      = sh.microShadow;
-        if (sh.horizonOcclusion != kShDef.horizonOcclusion) sj["horizonOcclusion"] = sh.horizonOcclusion;
-        if (sh.gtso != kShDef.gtso)                         sj["gtso"]             = sh.gtso;
-        if (sh.microShadowK != kShDef.microShadowK)         sj["microShadowK"]     = sh.microShadowK;
-        if (sh.horizonK != kShDef.horizonK)                 sj["horizonK"]         = sh.horizonK;
-        if (sj.is_null()) root.erase("shading");
-    }
+    if (!scene.GetShadingSettings().multiScatter)
+        root["shading"]["multiScatter"] = false;
 
     // SSR / SSGI 設定（シーン単位）。どちらも既定 OFF なので旧シーンは無変更で開く。
     {
@@ -1434,18 +1423,9 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir, boo
             {"blockerSearchTexels", pc.blockerSearchTexels},
             {"temporalDither",      pc.temporalDither},
         };
-        // W1-FU-E-27: LS-02a（Epic の太陽影）の欄。既定と違うものだけ書く。
-        static const ShadowPcssSettings kPcDef{};
-        json& pj = root["shadowPcss"];
-        if (pc.epicDynamicCsm != kPcDef.epicDynamicCsm)         pj["epicDynamicCsm"]            = pc.epicDynamicCsm;
-        if (pc.pancaking != kPcDef.pancaking)                   pj["pancaking"]                 = pc.pancaking;
-        if (pc.gatherPcss != kPcDef.gatherPcss)                 pj["gatherPcss"]                = pc.gatherPcss;
-        if (pc.cascadeDitherBlend != kPcDef.cascadeDitherBlend) pj["cascadeDitherBlend"]        = pc.cascadeDitherBlend;
-        if (pc.receiverNormalOffsetBase != kPcDef.receiverNormalOffsetBase)   pj["receiverNormalOffsetBase"]  = pc.receiverNormalOffsetBase;
-        if (pc.receiverNormalOffsetSlope != kPcDef.receiverNormalOffsetSlope) pj["receiverNormalOffsetSlope"] = pc.receiverNormalOffsetSlope;
-        if (pc.casterBiasScaleV2 != kPcDef.casterBiasScaleV2)   pj["casterBiasScaleV2"]         = pc.casterBiasScaleV2;
-        if (pc.gatherFilterTaps != kPcDef.gatherFilterTaps)     pj["gatherFilterTaps"]          = pc.gatherFilterTaps;
     }
+
+    SaveSceneShadingLaneC(scene, root);   // W1-FU-E-27（lane-C サイドカー）
 
     // DXR レイトレーシング（シーン単位）。既定 OFF なので、未設定シーンは従来どおり。
     // forceBuildTlas は目視検証用の一時トグルなので保存しない。
@@ -1717,17 +1697,7 @@ static void LoadShadingSettings(Scene& scene, const json& root)
 {
     ShadingSettings sh;
     if (root.contains("shading") && root["shading"].is_object())
-    {
-        const auto& shj = root["shading"];
-        sh.multiScatter = shj.value("multiScatter", sh.multiScatter);
-        // W1-FU-E-27: shadingRevision（1 / 2 以外は 1）と V2 の欄。無ければ既定。
-        sh.shadingRevision   = (shj.value("shadingRevision", 1) == 2) ? 2 : 1;
-        sh.microShadow       = shj.value("microShadow",      sh.microShadow);
-        sh.horizonOcclusion  = shj.value("horizonOcclusion", sh.horizonOcclusion);
-        sh.gtso              = shj.value("gtso",             sh.gtso);
-        sh.microShadowK      = std::clamp(shj.value("microShadowK", sh.microShadowK), 0.0f, 2.0f);
-        sh.horizonK          = std::clamp(shj.value("horizonK",     sh.horizonK),     0.0f, 2.0f);
-    }
+        sh.multiScatter = root["shading"].value("multiScatter", sh.multiScatter);
     scene.GetShadingSettings() = sh;
 }
 
@@ -1806,15 +1776,6 @@ static void LoadShadowPcssSettings(Scene& scene, const json& root)
         pc.maxPenumbraTexels   = pj.value("maxPenumbraTexels",   pc.maxPenumbraTexels);
         pc.blockerSearchTexels = pj.value("blockerSearchTexels", pc.blockerSearchTexels);
         pc.temporalDither      = pj.value("temporalDither",      pc.temporalDither);
-        // W1-FU-E-27: LS-02a の欄（範囲は set_shadow_pcss と同じ）
-        pc.epicDynamicCsm      = pj.value("epicDynamicCsm",      pc.epicDynamicCsm);
-        pc.pancaking           = pj.value("pancaking",           pc.pancaking);
-        pc.gatherPcss          = pj.value("gatherPcss",          pc.gatherPcss);
-        pc.cascadeDitherBlend  = pj.value("cascadeDitherBlend",  pc.cascadeDitherBlend);
-        pc.receiverNormalOffsetBase  = std::clamp(pj.value("receiverNormalOffsetBase",  pc.receiverNormalOffsetBase),  0.0f, 4.0f);
-        pc.receiverNormalOffsetSlope = std::clamp(pj.value("receiverNormalOffsetSlope", pc.receiverNormalOffsetSlope), 0.0f, 4.0f);
-        pc.casterBiasScaleV2   = std::clamp(pj.value("casterBiasScaleV2", pc.casterBiasScaleV2), 0.05f, 1.0f);
-        pc.gatherFilterTaps    = std::clamp<u32>(pj.value("gatherFilterTaps", pc.gatherFilterTaps), 8u, 32u);
     }
     scene.GetShadowPcssSettings() = pc;
 }
@@ -2615,6 +2576,7 @@ static bool ApplySceneJson(Scene& scene, json& root, const std::string& assetsDi
     catch (const json::exception& e) { Logger::Warn("ssr/ssgi 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadShadowPcssSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("shadowPcss 設定をスキップしました（型不正）: {}", e.what()); }
+    LoadSceneShadingLaneC(scene, root);   // W1-FU-E-27（lane-C サイドカー: shading V2 / LS-02a の欄）
     try { LoadVolumetricFogSettings(scene, root); }
     catch (const json::exception& e) { Logger::Warn("volumetricFog 設定をスキップしました（型不正）: {}", e.what()); }
     try { LoadRtSettings(scene, root); }

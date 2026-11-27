@@ -1357,7 +1357,8 @@ if(TARGET Scene)
     add_test(NAME SceneLookProfileTests COMMAND SceneLookProfileTests)
     # W1-FU-E-27: shadingRevision / V2 の欄 / LS-02a の欄の保存・読み込みの往復と Undo の写し。GPU 不要。
     add_executable(SceneShadingPersistTests scene_shading_persist_test.cpp)
-    target_link_libraries(SceneShadingPersistTests PRIVATE Scene)
+    # McpUndoTracker（Core の奥まで引く）を使うので McpUndoRegistryTests と同じリンク集合
+    target_link_libraries(SceneShadingPersistTests PRIVATE Core Graphics Renderer Resource Animation ECS Audio Input Hardware Terrain Nav AI Scene Scripting Physics Network Gui Ui Editor ProjectLib)
     target_include_directories(SceneShadingPersistTests PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/../src)
     if(MSVC)
         target_compile_options(SceneShadingPersistTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)

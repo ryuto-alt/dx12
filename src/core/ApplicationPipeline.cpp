@@ -1217,13 +1217,13 @@ void AppAccess::QueryShadingPsos(const Application& app, int& appliedRevision, i
     v2Vg = app.m_vg ? app.m_vg->V2PsoCount() : 0;
 }
 
-// shadingRevision=2 のとき、実行時の再コンパイル表（ShaderRegistry）には V2 の .cso が無いので、
-// ソースを編集しても再コンパイルされるのは V1 の .cso だけ。再読込みは古い V2 の .cso を読み直す。
-// ShaderRegistry に所有者ができるまでの警告（docs/SHADING_V2.md §8）。
+// shadingRevision=2 のとき、実行時の再コンパイル表（ShaderRegistry）に V2 の .cso があるのは
+// ForwardV2 / ForwardPhysV2 / TerrainV2 だけ（FU-E-26）。それ以外（ForwardMaskV2 / ForwardMaskPhysV2 / TerrainPhysV2 /
+// 水・植生・VG の V2）はソースを編集しても再コンパイルされず、再読込みは古い V2 の .cso を読み直す（docs/SHADING_V2.md §8）。
 static void WarnReloadAtV2()
 {
     if (s_shadingRevApplied == 2)
-        Logger::Warn("shadingRevision=2: シェーダのホットリロードは V2 の .cso を再コンパイルしません（ShaderRegistry が V2 未対応）。tools/build.ps1 で再ビルドしてください");
+        Logger::Warn("shadingRevision=2: シェーダのホットリロードは ForwardV2 / ForwardPhysV2 / TerrainV2 以外の V2 の .cso（ForwardMaskV2 / ForwardMaskPhysV2 / TerrainPhysV2 / 水・植生・VG）は再コンパイルしません（ShaderRegistry に未登録）。tools/build.ps1 で再ビルドしてください");
 }
 
 void Application::RegisterShaderReloadHandlers()

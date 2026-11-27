@@ -565,8 +565,6 @@ private:
         bool        captured = false;   // コピー済み → Run ループが PNG 化して応答する
         bool        wantSceneRt = false;// true なら m_sceneRT を撮る（dx12_screenshot の決定論モード）
         bool        deterministic = false;   // 応答に載せる印
-        bool        iblRequested = false;    // W1-FU-E-30: waitIblRebake:true で頼まれた（応答に iblRebakePending / iblWaitFrames を載せる）
-        int         iblWaitFrames = 0;       // 同: 足した IBL 待ちフレーム数（0 = 待つ必要が無かった）
         // ★この 1 枚だけエディタのデバッグ描画（アイコン / 選択枠 / カメラ視錐台 /
         //   物理・ナビのワイヤ / 床グリッド）を止めて撮る（dx12_screenshot_final gizmos:false）。
         //   撮影が終われば m_mcpFinalShot ごと {} に戻るので後始末は要らない

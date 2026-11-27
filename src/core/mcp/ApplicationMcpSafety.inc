@@ -235,34 +235,8 @@
         static const char* const kTypes[] = {"box", "sphere", "plane", "empty", "camera", "light_directional", "light_point",
             "light_spot", "particle_emitter", "trigger", "decal", "water", "ui_canvas", "ui_image", "ui_text", "ui_button", "ui_slider",
             "ui_toggle", "ui_scrollview"};
-        // 実行側と同じ検査（type 必須・未知キー拒否・ui_canvas に parent 不可）を通す。
-        {
-            std::vector<std::string> keys;
-            for (auto it = p.begin(); it != p.end(); ++it) keys.push_back(it.key());
-            const std::string typeIn = (p.contains("type") && p["type"].is_string()) ? p["type"].get<std::string>() : std::string();
-            std::string bad;
-            switch (mcpcreate::Validate(keys, typeIn, bad))
-            {
-            case mcpcreate::Check::UnknownKey:
-            {
-                McpError err(McpErr::InvalidParam, "unknown parameter '" + bad + "' for create_entity",
-                    "Accepted: type (required), name, position, parent, parentName, size, subdivisions");
-                err.name = "E_UNKNOWN_PARAM";
-                if (const std::string closest = mcpcreate::NearestKey(bad); !closest.empty()) err.didYouMean.push_back(closest);
-                throw err;
-            }
-            case mcpcreate::Check::MissingType:
-            {
-                McpError err(McpErr::InvalidParam, "create_entity: missing required param 'type'", "type は必須(省略しても box にはならない)");
-                err.name = "E_MISSING_PARAM";
-                throw err;
-            }
-            case mcpcreate::Check::ParentOnCanvas:
-                throw McpError(McpErr::InvalidParam, "'" + bad + "' cannot be used with type 'ui_canvas' (a canvas is always a root)",
-                    "ui_canvas は常にルート。parent / parentName は他の種別で使える");
-            case mcpcreate::Check::Ok: break;
-            }
-        }
+        // 実行側と同じ検査（type 必須・未知キー拒否・ui_canvas に parent 不可）。文言も実行側と共通。
+        ThrowIfInvalidCreateEntityParams(p);
         const std::string type = p.value("type", std::string());
         bool ok = false;
         for (const char* t : kTypes) if (type == t) ok = true;

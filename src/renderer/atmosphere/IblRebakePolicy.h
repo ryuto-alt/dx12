@@ -99,13 +99,22 @@ inline int IblRebakeWaitFrames(const IblWaitState& s, int stageCount)
 
 // 撮影の応答の note に足す一文（W1-FU-E-30 / C9）。waitIblRebake を頼まれていなければ空。
 // waitFrames > 0 なら「焼き直しが未了だったので決定論経路へ切り替え、収束フレームを足した」旨、0 なら「待つ必要が無かった」旨。
-inline std::string IblShotNote(bool requested, int waitFrames)
+// pendingAtCapture = 撮影の完了時点で IblRebakePending を取り直した結果。true なら「待ったのにまだ残っている＝IBL が古い絵」と知らせる。
+inline std::string IblShotNote(bool requested, int waitFrames, bool pendingAtCapture = false)
 {
     if (!requested) return std::string();
+    std::string n;
     if (waitFrames > 0)
-        return "waitIblRebake: IBL の焼き直しが未了(iblRebakePending=true)だったので決定論経路へ切り替え、収束フレームを "
-               + std::to_string(waitFrames) + " 足して撮った(iblWaitFrames=" + std::to_string(waitFrames) + ")。";
-    return "waitIblRebake: IBL の焼き直しは未了ではなかった(iblRebakePending=false, iblWaitFrames=0)ので、そのまま撮った。";
+        n = "waitIblRebake: IBL の焼き直しが未了(iblRebakePending=true)だったので決定論経路へ切り替え、収束フレームを "
+            + std::to_string(waitFrames) + " 足して撮った(iblWaitFrames=" + std::to_string(waitFrames) + ")。";
+    else
+        n = "waitIblRebake: IBL の焼き直しは未了ではなかった(iblRebakePending=false, iblWaitFrames=0)ので、そのまま撮った。";
+    if (pendingAtCapture)
+        n += "★撮影の完了時点でも焼き直しが残っていた(iblRebakePendingAtCapture=true)。この絵の IBL は古い可能性がある。"
+             "時刻・大気を動かし終えてから撮り直すこと。";
+    else
+        n += "撮影の完了時点では焼き直しは残っていなかった(iblRebakePendingAtCapture=false)。";
+    return n;
 }
 
 } // namespace dx12e::atmosphere

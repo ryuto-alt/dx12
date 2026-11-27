@@ -454,26 +454,27 @@ void TestFpsTemplateFlameIntensity()
     int flames = 0;
     for (const char* rel : { "assets/scenes/title.json", "assets/scenes/main.json" })
     {
-        const std::string* body = nullptr;
+        std::string body;
+        bool found = false;
         for (const auto& f : dx12e::templates::GetFiles("fps"))
-            if (std::string(f.relPath) == rel) body = new std::string(f.content);
-        CHECK(body != nullptr);
-        if (!body) continue;
+            if (std::string(f.relPath) == rel) { body = f.content; found = true; }
+        CHECK(found);
         size_t pos = 0;
-        while ((pos = body->find("\"name\": \"Flame", pos)) != std::string::npos)
+        while ((pos = body.find("\"name\": \"Flame", pos)) != std::string::npos)
         {
-            const size_t end = body->find('}', pos);               // 同じエンティティの括弧内に収める
-            const size_t k = body->find("\"intensity\":", pos);
+            // 次のエンティティの "name" までを、この炎の範囲とする（欄の並びが変わっても括弧の位置に依らない）。
+            const size_t next = body.find("\"name\":", pos + 1);
+            const size_t end = next == std::string::npos ? body.size() : next;
+            const size_t k = body.find("\"intensity\":", pos);
             CHECK(k != std::string::npos && k < end);
             if (k != std::string::npos && k < end)
             {
-                const double v = std::atof(body->c_str() + k + 12);
+                const double v = std::atof(body.c_str() + k + 12);
                 CHECK(v > 0.0 && v <= 1.5);
                 ++flames;
             }
-            pos = end == std::string::npos ? body->size() : end;
+            pos = end;
         }
-        delete body;
     }
     CHECK(flames == 4);   // main の Flame_1/2 と title の Flame_L/R
 }
