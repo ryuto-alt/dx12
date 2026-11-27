@@ -383,6 +383,43 @@ static void Test_SceneWind()
     }
 }
 
+static void Test_ShadowPcssEpic()
+{
+    {
+        // 既定は新キーを書かない（既定シーンの JSON はビット一致）
+        Scene src;
+        const std::string js = SceneSerializer::SaveToString(src, "");
+        CHECK(js.find("epicDynamicCsm") == std::string::npos);
+        CHECK(js.find("gatherFilterTaps") == std::string::npos);
+    }
+    {
+        Scene src;
+        auto& p = src.GetShadowPcssSettings();
+        p.enabled = true; p.epicDynamicCsm = true; p.pancaking = false; p.gatherPcss = false;
+        p.cascadeDitherBlend = false; p.receiverNormalOffsetBase = 0.75f; p.receiverNormalOffsetSlope = 3.5f;
+        p.casterBiasScaleV2 = 0.5f; p.gatherFilterTaps = 12;
+        const std::string js = SceneSerializer::SaveToString(src, "");
+        Scene dst;
+        CHECK(SceneSerializer::LoadFromString(dst, js, ""));
+        const auto& q = dst.GetShadowPcssSettings();
+        CHECK(q.enabled && q.epicDynamicCsm && !q.pancaking && !q.gatherPcss && !q.cascadeDitherBlend);
+        CHECK_F(q.receiverNormalOffsetBase, 0.75f);
+        CHECK_F(q.receiverNormalOffsetSlope, 3.5f);
+        CHECK_F(q.casterBiasScaleV2, 0.5f);
+        CHECK(q.gatherFilterTaps == 12u);
+    }
+    {
+        // 旧シーン（キー無し）は既定、範囲外は丸める
+        Scene dst;
+        CHECK(SceneSerializer::LoadFromString(dst, "{\"entities\":[],\"shadowPcss\":{\"enabled\":true}}", ""));
+        CHECK(!dst.GetShadowPcssSettings().epicDynamicCsm && dst.GetShadowPcssSettings().pancaking);
+        Scene d2;
+        CHECK(SceneSerializer::LoadFromString(d2, "{\"entities\":[],\"shadowPcss\":{\"casterBiasScaleV2\":9,\"gatherFilterTaps\":1}}", ""));
+        CHECK_F(d2.GetShadowPcssSettings().casterBiasScaleV2, 1.0f);
+        CHECK(d2.GetShadowPcssSettings().gatherFilterTaps == 8u);
+    }
+}
+
 static void Test_ParticleEmitter()
 {
     Case<ParticleEmitter>(
@@ -2453,6 +2490,7 @@ int main()
     Test_VirtualGeometry();
     Test_FoliageLayer();
     Test_SceneWind();
+    Test_ShadowPcssEpic();
     Test_BoxCollider();
     Test_SphereCollider();
     Test_CapsuleCollider();

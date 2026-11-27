@@ -854,6 +854,9 @@ bool Application::DlssWanted(std::string* reason) const
     const TaaSettings& t = m_scene->GetTaaSettings();
     if (!t.enabled || t.upscaler != static_cast<int>(upscale::Kind::Dlss)) return false;   // 頼まれていない（理由は空）
     auto no = [&](const std::string& r) { if (reason) *reason = r; return false; };
+    // FU-L-2: 決定論キャプチャ（ゴールデン・freeze_time の描画固定）では DLSS を使わず TAA で描く。
+    //   DLSS の絵はドライバ/モデル次第でビットが揺れ、ゲートの照合は DLSS OFF が前提のため。DLSS SDK 有無のビルド差も消える。
+    if (m_deterministicCapture)                        return no("決定論キャプチャ中は DLSS を使わない（照合は DLSS OFF が前提）");
     if (!m_upscaler)                                   return no("アップスケーラが初期化されていない");
     if (!m_upscaler->DlssAvailable())                  return no(m_upscaler->DlssReason());
     if (!m_taaPass || !m_taaPass->IsReady() || !m_velocityPSO || !m_velocityPSOSkinned)

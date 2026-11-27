@@ -93,6 +93,11 @@ int main()
           CHECK(p.releaseFreeze && p.setCapture && !p.captureValue && p.setPaused && !p.pausedValue); }
     }
 
+    // FU-L-2: 決定論キャプチャの自動露出は実時間に依存しない（即適応）。通常は実 dt のまま
+    CHECK(AutoExposureDt(true, 0.016f) == AutoExposureDt(true, 0.5f));
+    CHECK(AutoExposureDt(true, 0.016f) > 1.0e8f);
+    CHECK(AutoExposureDt(false, 0.016f) == 0.016f);
+
     std::printf("FrameStepLogicTests: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

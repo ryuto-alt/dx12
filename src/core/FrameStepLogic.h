@@ -40,6 +40,13 @@ inline FrameStepRequest ParseFrameStepRequest(int frames, bool hasDt, double dt)
 inline f32 FrameStepSimulatedSec(const FrameStepRequest& r) { return r.dt * static_cast<f32>(r.frames); }
 
 // ---------------------------------------------------------------------------
+// 自動露出の時間刻み（FU-L-2）。決定論キャプチャでは実時間の dt を使わず即適応（dt = 1e9。AutoExposure.hlsl は
+// dt > 1e8 で目標値へ直行する）にする。実時間だと撮るたびに露出がずれ、自動露出の絵が決定論にならない。
+// ---------------------------------------------------------------------------
+constexpr f32 kDeterministicExposureDt = 1.0e9f;
+inline f32 AutoExposureDt(bool deterministicCapture, f32 realDt) { return deterministicCapture ? kDeterministicExposureDt : realDt; }
+
+// ---------------------------------------------------------------------------
 // 凍結（freeze_time）の状態機械。状態の持ち主は 1 か所（FreezeModel）で、毎フレームと各ハンドラが
 // 「今の観測（FreezeView）→ すべき操作（FreezePlan）」を PlanFreeze から得て適用する。
 // 撮影の中断（bail / AbortOffscreenShot / perceive の後始末）が m_deterministicCapture を落としても、
