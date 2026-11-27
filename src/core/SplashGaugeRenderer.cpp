@@ -136,7 +136,7 @@ struct GaugeRenderer::Impl
     void DrawBezelSweep(const GaugeFrame& f);
     // スイープの弧（2 度刻みの固定の格子）のジオメトリのキャッシュ。[リング 0/1][格子の番号]
     ComPtr<ID2D1PathGeometry> sweepGeo[2][180];
-    float sweepCx = -1.f, sweepCy = -1.f, sweepR = -1.f;
+    float sweepCx = -1.f, sweepCy = -1.f, sweepR = -1.f, sweepRIn = -1.f;
     void DrawUiDynamic(const GaugeFrame& f, const GaugeReveal& rv, const SplashInfo& info);
     void DrawLayer(ID2D1Bitmap1* bmp, double opacity);
     bool Render(const GaugeFrame& f, const SplashInfo& info);
@@ -152,6 +152,9 @@ static std::uint64_t HashStr(std::uint64_t h, const std::wstring& s)
 bool GaugeRenderer::Impl::Init(ID2D1DeviceContext* d, IDWriteFactory* w, float dpiScale)
 {
     dc = d; dw = w;
+    // 弧のジオメトリは作った factory に属するので、別の dc で Init し直したら捨てる
+    for (auto& row : sweepGeo) for (auto& p : row) p.Reset();
+    sweepCx = sweepCy = sweepR = sweepRIn = -1.f;
     dpi = dpiScale < 0.5f ? 1.0f : (dpiScale > 4.0f ? 4.0f : dpiScale);
     if (FAILED(dc->CreateSolidColorBrush(Col(kGaugeColors.t1), &solid))) { err = "CreateSolidColorBrush"; return false; }
     ComPtr<ID2D1Factory> fac;
@@ -605,10 +608,10 @@ void GaugeRenderer::Impl::DrawBezelSweep(const GaugeFrame& f)
     const double step = gauge::kSweepStepDeg;
     struct Ring { float r; float w; double scale; };
     const Ring rings[2] = { { g.rBezel, 2.f, 1.0 }, { g.rBezel - 7.f * g.k, 1.f, 0.6 } };
-    if (sweepCx != g.dcx || sweepCy != g.dcy || sweepR != g.rBezel)
+    if (sweepCx != g.dcx || sweepCy != g.dcy || sweepR != g.rBezel || sweepRIn != rings[1].r)
     {
         for (auto& row : sweepGeo) for (auto& p : row) p.Reset();
-        sweepCx = g.dcx; sweepCy = g.dcy; sweepR = g.rBezel;
+        sweepCx = g.dcx; sweepCy = g.dcy; sweepR = g.rBezel; sweepRIn = rings[1].r;
     }
     const int cells = static_cast<int>(std::lround(360.0 / step));
     for (int second = 0; second < 2; ++second)
@@ -633,9 +636,9 @@ void GaugeRenderer::Impl::DrawBezelSweep(const GaugeFrame& f)
                     ComPtr<ID2D1GeometrySink> s;
                     if (FAILED(pg->Open(&s))) { pg.Reset(); continue; }
                     float sx, sy, ex, ey;
-                    // 隣との継ぎ目にアンチエイリアスの隙間が出ないよう、終端を 0.3 度だけ次の弧へ重ねる
+                    // 継ぎ目は重ねない（半透明を二重に塗ると継ぎ目だけ明るい玉になる）。弧は隣と ちょうど接する
                     Polar(g.dcx, g.dcy, ci * step, rg.r, sx, sy);
-                    Polar(g.dcx, g.dcy, ci * step + step + 0.3, rg.r, ex, ey);
+                    Polar(g.dcx, g.dcy, ci * step + step, rg.r, ex, ey);
                     s->BeginFigure(D2D1::Point2F(sx, sy), D2D1_FIGURE_BEGIN_HOLLOW);
                     s->AddArc(D2D1::ArcSegment(D2D1::Point2F(ex, ey), D2D1::SizeF(rg.r, rg.r), 0.f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
                     s->EndFigure(D2D1_FIGURE_END_OPEN);

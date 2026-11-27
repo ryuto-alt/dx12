@@ -625,6 +625,38 @@ void Test_NoGlow(const fs::path& root)
         std::printf("  整列波: 帯の中 %ld 画素 / 帯の外 %ld 画素\n", inB, outB);
         CHECK(inB > 50 && outB == 0);
     }
+    // (4) 鏡面スイープに継ぎ目の玉が無い: 反射の中のリング上の輝度を 0.5 度刻みで測り、2 度の格子の継ぎ目の平均が格子の中央より 12% 以上明るくならない
+    {
+        const double centre = gauge::SweepCentreDeg(0.5f);
+        GaugeFrame f = EvaluateGauge(GaugePath::Fast, ev.bellMs[0] + 100.0, 0.f);
+        f.alignT.fill(0.f);
+        f.bellT = 0.5f;
+        GaugeFrame f0 = f; f0.bellT = 0.f;
+        Image a, b;
+        CHECK(Render(surf, f, info, a));
+        CHECK(Render(surf, f0, info, b));
+        double sum[4] = {0, 0, 0, 0}; long cnt[4] = {0, 0, 0, 0};
+        for (int y = 0; y < a.h; ++y)
+            for (int x = 0; x < a.w; ++x)
+            {
+                const double dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+                const double r = std::hypot(dx, dy);
+                if (r < rB - 1.5 || r > rB + 1.0) continue;
+                double th = std::atan2(dx, -dy) * 180.0 / 3.14159265358979323846;
+                if (th < 0) th += 360.0;
+                double rel = std::fmod(th - centre + 540.0, 360.0) - 180.0;
+                if (std::fabs(rel) > 12.0) continue;
+                const size_t i = (static_cast<size_t>(y) * a.w + x) * 4;
+                const double d = std::fabs(double(a.bgra[i]) - b.bgra[i]) + std::fabs(double(a.bgra[i + 1]) - b.bgra[i + 1]) + std::fabs(double(a.bgra[i + 2]) - b.bgra[i + 2]);
+                const int bin = static_cast<int>(std::floor(th / 0.5)) % 4;
+                sum[bin] += d; cnt[bin]++;
+            }
+        CHECK(cnt[0] > 0 && cnt[1] > 0 && cnt[2] > 0 && cnt[3] > 0);
+        const double seam = (sum[3] + sum[0]) / double(cnt[3] + cnt[0]);
+        const double mid = (sum[1] + sum[2]) / double(cnt[1] + cnt[2]);
+        std::printf("  スイープの継ぎ目: 継ぎ目 %.1f / 中央 %.1f (比 %.3f)\n", seam, mid, seam / std::max(mid, 1e-9));
+        CHECK(mid > 5.0 && seam / mid < 1.12);
+    }
     // (3) 反射が通り抜けたあと（alignT 全 1 / bellT 1）は、反射の無い絵と画素まで同じ（何も残らない）
     {
         GaugeFrame f = EvaluateGauge(GaugePath::Fast, 1900.0, 0.f);
