@@ -366,6 +366,10 @@ VfxSystem::FlipTex* VfxSystem::GetFlipTex(StageCtx& ctx, const std::string& path
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
     UINT rows = 0; UINT64 rowSize = 0, total = 0;
     dev->GetCopyableFootprints(&d, 0, 1, 0, &fp, &rows, &rowSize, &total);
+    {   // DRED / デバッグレイヤーの報告に出る名前（アセットのパス）
+        const std::wstring wn = L"UnoFX Flipbook " + std::wstring(path.begin(), path.end());
+        res->SetName(wn.c_str());
+    }
     ComPtr<ID3D12Resource> upload;
     if (!CreateBuffer(dev.Get(), D3D12_HEAP_TYPE_UPLOAD, total, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_GENERIC_READ, upload))
     { t.error = path + ": アップロード用バッファを作れない"; return nullptr; }

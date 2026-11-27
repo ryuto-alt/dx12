@@ -1,5 +1,5 @@
 // UnoFX（W1-BD7）のゴールデン用シーンを生成する。gen_scenes.mjs とは別（VFX の資産は engine/ 側にあり、プロジェクトの外を指す）。
-//   vfx_flipbook : 夜の地面に、フリップブックの焚き火（炎 + 6-way の煙）を 1 つ。時刻は --deterministic のフレーム数で決まる。
+//   vfx_flipbook : 夜の地面に、フリップブックの焚き火（炎 + 6-way の煙）を 1 つ。時刻は vfx_seek で決める（素の warmup は実時間 dt で、読み込み直後にハッシュがずれうる。golden 登録は golden.mjs に seek 指定が入ってから）。
 //   vfx_sprite   : 同じ配置で旧系（スプライト）の p_core_fire。BD7 の A/B 比較（上半分の明るさ・ちらつき）用で、ゴールデンには登録しない。
 import fs from "node:fs";
 import path from "node:path";

@@ -6,8 +6,8 @@
   "emitters": [
     {
       "name": "flame",
-      "maxParticles": 24,
-      "spawn": { "rate": 4 },
+      "maxParticles": 12,
+      "spawn": { "rate": 2 },
       "init": [
         { "module": "shape", "kind": "point" },
         { "module": "velocity", "mode": "direction", "direction": [0, 1, 0], "speed": [0, 0], "spread": 0 },
@@ -21,7 +21,7 @@
         "kind": "flipbook", "blend": "additive", "fade": "inout", "softDistance": 0.3, "intensity": 1.0,
         "texture": "engine/vfx/fire_flipbook.dds",
         "flipbook": { "cols": 6, "rows": 6, "frames": 36, "fps": 12, "channels": "fire", "mv": "engine/vfx/fire_mv.dds", "mvRange": 0.5,
-                      "anchor": "bottom", "tempMin": 1000, "tempMax": 2800, "emission": 3.0, "erodeStart": 0.6, "erodeWidth": 0.15 }
+                      "anchor": "bottom", "tempMin": 1000, "tempMax": 2400, "emission": 10.0, "erodeStart": 0.6, "erodeWidth": 0.15 }
       }
     },
     {
