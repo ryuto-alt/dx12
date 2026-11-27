@@ -284,6 +284,7 @@ void Application::RegisterMcpRenderMethods()
                 }
                 strength[i] = static_cast<float>(d);
             }
+            McpUndo().TrackSceneValue(sh);   // W1-FU-E-27: Undo 1 回分（保存もされるようになったので、変更は未保存扱いにもなる）
             sh.microShadow = params.value("microShadow", sh.microShadow);
             sh.horizonOcclusion = params.value("horizonOcclusion", sh.horizonOcclusion);
             sh.gtso = params.value("gtso", sh.gtso);
@@ -508,6 +509,7 @@ void Application::RegisterMcpRenderMethods()
             auto& p = m_scene->GetShadowPcssSettings();
             if (method == "set_shadow_pcss")
             {
+                McpUndo().TrackSceneValue(p);   // W1-FU-E-27: Undo 1 回分
                 p.enabled = params.value("enabled", p.enabled);
                 if (params.contains("lightTanAngle"))
                     p.lightTanAngle = McpFloatParam(params, "lightTanAngle", p.lightTanAngle, 0.001f, 0.5f);
