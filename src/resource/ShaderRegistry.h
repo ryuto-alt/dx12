@@ -13,6 +13,7 @@ struct ShaderVariant
     const wchar_t* entry;             // 例: L"VSMain"
     const wchar_t* profile;           // 例: L"vs_6_0" / L"ps_6_0" / L"cs_6_0"
     const wchar_t* define = nullptr;  // 例: L"LDR_OUTPUT=1"。無ければ nullptr
+    const wchar_t* define2 = nullptr; // 2 つ目の define（例: L"UNO_SHADING_V2=1"）。無ければ nullptr（W1-FU-E-26）
 };
 
 // 1つの .hlsl ソースと、そこから生成される全バリアント。

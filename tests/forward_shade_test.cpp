@@ -218,12 +218,13 @@ struct Dxc
 
     // 実行時ホットリロード（ShaderRuntimeCompiler）と同じ引数: -E -T [-D] -I。ファイルのあるフォルダも -I に足す。
     bool Compile(const fs::path& file, const std::wstring& entry, const std::wstring& profile, const wchar_t* define,
-                 const fs::path& shaderRoot, std::string& log) const
+                 const fs::path& shaderRoot, std::string& log, const wchar_t* define2 = nullptr) const
     {
         const std::string src = ReadFile(file);
         if (src.empty()) { log = "ソースが読めない: " + file.string(); return false; }
         std::vector<std::wstring> a = { L"-E", entry, L"-T", profile, L"-I", file.parent_path().wstring(), L"-I", shaderRoot.wstring() };
         if (define && *define) { a.push_back(L"-D"); a.push_back(define); }
+        if (define2 && *define2) { a.push_back(L"-D"); a.push_back(define2); }
         std::vector<LPCWSTR> args;
         for (const auto& s : a) args.push_back(s.c_str());
         DxcBuffer buf{ src.data(), src.size(), DXC_CP_UTF8 };
@@ -253,7 +254,7 @@ void Test_Dxc()
         for (const dx12e::ShaderVariant& v : src.variants)
         {
             std::string log;
-            const bool ok = dxc.Compile(shaders / src.relPath, v.entry, v.profile, v.define, shaders, log);
+            const bool ok = dxc.Compile(shaders / src.relPath, v.entry, v.profile, v.define, shaders, log, v.define2);
             std::wstring name = v.csoName;
             CHECK_MSG(ok, "%ls のコンパイルに失敗:\n%s", name.c_str(), log.substr(0, 1500).c_str());
             ++compiled;

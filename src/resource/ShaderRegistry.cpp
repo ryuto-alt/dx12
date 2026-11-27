@@ -34,6 +34,10 @@ const std::vector<ShaderSource>& BuildRegistry()
                 { L"ForwardLdr_PS.cso", L"PSMain", L"ps_6_0", L"LDR_OUTPUT=1" },
                 // Q2: 物理ライティング単位バリアント（点/スポットが逆二乗。既定の .cso は無変更）
                 { L"ForwardPhys_PS.cso", L"PSMain", L"ps_6_0", L"UNO_PHYSICAL_LIGHTS=1" },
+                // W1-FU-E-26: UNO_SHADING_V2=1 版（shaders/manifest/lane_c.cmake の *V2_PS と同期。選ぶのは ApplicationPipeline.cpp）。
+                //   BrdfV2.hlsli を #include するシェーダが現れたら、下の staticDeps に "forward/BrdfV2.hlsli" も足すこと。
+                { L"ForwardV2_PS.cso", L"PSMain", L"ps_6_0", L"UNO_SHADING_V2=1" },
+                { L"ForwardPhysV2_PS.cso", L"PSMain", L"ps_6_0", L"UNO_PHYSICAL_LIGHTS=1", L"UNO_SHADING_V2=1" },
             },
             // ★DecalApply/DecalCommon を落としていた。Forward.hlsl も ForwardSkinned.hlsl も
             //   実際に #include しているのに、この手書き表に無いせいで DecalApply.hlsli を
@@ -122,6 +126,7 @@ const std::vector<ShaderSource>& BuildRegistry()
             {
                 { L"Terrain_VS.cso", L"VSMain", L"vs_6_0" },
                 { L"Terrain_PS.cso", L"PSMain", L"ps_6_0" },
+                { L"TerrainV2_PS.cso", L"PSMain", L"ps_6_0", L"UNO_SHADING_V2=1" },   // W1-FU-E-26
             },
             { "forward/PBR.hlsli", "forward/Lighting.hlsli", "forward/BrdfExt.hlsli", "forward/ShadowPcss.hlsli", "forward/ClusterCommon.hlsli",
               "forward/DecalCommon.hlsli", "forward/DecalApply.hlsli", "ddgi/DdgiCommon.hlsli",
