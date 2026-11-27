@@ -116,6 +116,12 @@ inline KindVisual Make(Id id, const ImVec4* tintOverride = nullptr)
 {
     const Row r = RowOf(id);
     const ImVec4* t = tintOverride ? tintOverride : r.tint;
+    // Graphite のときだけ Material / Texture は GG 仕様の kind 色にする（画面によらず同じ色）。
+    if (dx12e::theme::CurrentVariant() == dx12e::theme::Variant::Graphite)
+    {
+        if (id == Id::Material) { if (const ImVec4* g = GraphiteKindTint(0)) t = g; }
+        if (id == Id::Texture)  { if (const ImVec4* g = GraphiteKindTint(1)) t = g; }
+    }
     return { r.glyph, ImGui::ColorConvertFloat4ToU32(*t), r.label, r.gg, t };
 }
 
@@ -243,7 +249,7 @@ inline Id AssetId(AssetKind k)
 }
 
 // アセットの種別。グリフと色は従来のアセットブラウザと同じ（Model=青 / Texture=緑 / Scene=橙 / Script=紫 / Audio=ティール …）。
-// Graphite のときだけ Material と Texture が GG 仕様の kind.material / kind.texture の色になる。
+// Graphite のときの Material / Texture の色は detail::Make が差し替える。
 inline KindVisual ForAsset(AssetKind k)
 {
     namespace th = dx12e::theme;
@@ -257,11 +263,6 @@ inline KindVisual ForAsset(AssetKind k)
     case AssetKind::SpriteSheet:   tint = &th::TypeUi;     break;
     case AssetKind::MaterialGraph: tint = &th::TypeLight;  break;
     default: break;
-    }
-    if (th::CurrentVariant() == th::Variant::Graphite)
-    {
-        if (k == AssetKind::Material) { if (const ImVec4* g = GraphiteKindTint(0)) tint = g; }
-        if (k == AssetKind::Texture)  { if (const ImVec4* g = GraphiteKindTint(1)) tint = g; }
     }
     return detail::Make(id, tint);
 }

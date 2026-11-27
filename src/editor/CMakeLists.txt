@@ -173,8 +173,3 @@ include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_a.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_b.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_c.cmake)
 include(${CMAKE_SOURCE_DIR}/cmake/lanes/editor_lane_d.cmake)
-
-# アイコンの種別表の Graphite 専用の色の取得口（W1-A6。ThemeGraphite.gen.h をここだけが読む）。
-target_sources(Editor PRIVATE
-    IconTable.cpp
-)
