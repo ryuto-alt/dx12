@@ -74,6 +74,13 @@ struct FoliageSystem::Impl
     std::unique_ptr<PipelineState> psoMain[2][2];   // [mask][depthLEqual]
     std::unique_ptr<PipelineState> psoDepth[2];     // [mask]
     std::unique_ptr<PipelineState> psoShadow[2];    // [mask]
+    // W1-C6: Epic の動的 CSM（D16 / DepthClip=FALSE / D16 換算のバイアス）用の影 PSO。epicOn のときだけ作る。
+    std::unique_ptr<PipelineState> psoShadowEpic[2];
+    bool  epicOn = false;
+    int   epicBias = 0;
+    float epicSlope = 0.0f;
+    bool  epicPancake = true;
+    bool BuildEpicShadowPsos();
     std::unique_ptr<PipelineState> psoVel[2];       // [mask]
     bool physApplied = false;
     bool v2 = false;            // shadingRevision=2 を求めている（FU-E-25）
@@ -228,6 +235,47 @@ bool FoliageSystem::Impl::BuildPsos()
             if (!psoVel[mask]) psoVel[mask] = std::make_unique<PipelineState>();
             psoVel[mask]->Initialize(*d.gdev, b);
         }
+    }
+    return epicOn ? BuildEpicShadowPsos() : true;   // W1-C6: シェーダの再読込みでも Epic の影 PSO を作り直す
+}
+
+// W1-C6: Epic の動的 CSM の影 PSO の切り替え。GPU が止まっているときだけ呼ぶこと。
+bool FoliageSystem::ShadowEpicMatches(bool on, int bias, float slope, bool pancake) const
+{
+    if (!m_impl) return true;   // まだ無い（Initialize の後に追いつく）
+    return m_impl->epicOn == on && (!on || (m_impl->epicBias == bias && m_impl->epicSlope == slope && m_impl->epicPancake == pancake));
+}
+
+bool FoliageSystem::SetShadowEpic(bool on, int bias, float slope, bool pancake)
+{
+    if (!m_impl) return true;
+    Impl& I = *m_impl;
+    I.epicOn = on; I.epicBias = bias; I.epicSlope = slope; I.epicPancake = pancake;
+    if (!on) { I.psoShadowEpic[0].reset(); I.psoShadowEpic[1].reset(); return true; }
+    return I.BuildEpicShadowPsos();
+}
+
+bool FoliageSystem::Impl::BuildEpicShadowPsos()
+{
+    auto vsD = ShaderCompiler::LoadFromFile(d.shaderDir + L"FoliageDepth_VS.cso");
+    if (vsD.GetSize() == 0) return false;
+    for (int mask = 0; mask < 2; ++mask)
+    {
+        auto psD = ShaderCompiler::LoadFromFile(d.shaderDir + (mask ? L"FoliageDepthMask_PS.cso" : L"FoliageDepth_PS.cso"));
+        if (psD.GetSize() == 0) return false;
+        PipelineStateBuilder b;
+        b.SetRootSignature(d.rootSig->Get())
+         .SetVertexShader(vsD.GetData(), vsD.GetSize())
+         .SetPixelShader(psD.GetData(), psD.GetSize())
+         .SetInputLayout(kFoliageLayout, static_cast<u32>(std::size(kFoliageLayout)))
+         .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+         .SetDepthStencilFormat(DXGI_FORMAT_D16_UNORM)
+         .SetDepthEnabled(true)
+         .SetCullMode(D3D12_CULL_MODE_NONE)
+         .SetDepthClip(!epicPancake)
+         .SetDepthBias(epicBias, epicSlope);
+        if (!psoShadowEpic[mask]) psoShadowEpic[mask] = std::make_unique<PipelineState>();
+        psoShadowEpic[mask]->Initialize(*d.gdev, b);
     }
     return true;
 }
@@ -710,6 +758,7 @@ void FoliageSystem::Cull(ID3D12GraphicsCommandList* cmd, const ViewIn& v, const 
                 d.p.cullDist = std::max(1.0f, std::min(rt.params.shadowDistance, rt.params.cullDistance));
                 d.p.thinStart = 1.0f - 1e-3f;   // 影は間引かない（密度フェードは主ビューだけ）
                 PlanesFromViewProj(v.cascade[c].viewProj, d.p.planes);
+                if (v.cascade[c].dropNearPlane) { d.p.planes[4][0] = 0.0f; d.p.planes[4][1] = 0.0f; d.p.planes[4][2] = 0.0f; d.p.planes[4][3] = 1.0f; }   // W1-C6: pancaking
                 ds.push_back(d);
                 rt.shadowCulled[c] = true;
             }
@@ -901,7 +950,7 @@ void FoliageSystem::DrawShadow(ID3D12GraphicsCommandList* cmd, u32 cascade, cons
         for (const auto& g : rt.groups)
         {
             if (g.lod > static_cast<u32>(std::max(rt.params.shadowMaxLod, 0))) continue;
-            PipelineState* pso = I.psoShadow[g.mask ? 1 : 0].get();
+            PipelineState* pso = (I.epicOn ? I.psoShadowEpic[g.mask ? 1 : 0] : I.psoShadow[g.mask ? 1 : 0]).get();
             if (!pso || !pso->Get()) continue;
             if (pso->Get() != lastPso) { cmd->SetPipelineState(pso->Get()); lastPso = pso->Get(); }
             const bool wind = rt.params.windEnabled;

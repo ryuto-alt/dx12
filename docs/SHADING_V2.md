@@ -141,3 +141,37 @@ V1 の絵が変わらないことは、`shading_v2_math_test` が V2 の記述�
 GTSO は解析式（`UnoV2CapsIntersection` を 2 回 = acos 6 回 / V2 画素）。V2 のフォワード GPU 時間は `lookdev_check` の perf（mainScene）で V1 と並べて記録する。予約済みの t40 GTSO LUT に替える余地がある。
 **未達の受け入れ（C5 は完了にしない。C7/C8 は V2 を既定にしない）**: 金属球の地平線漏れ −50%（法線マップ付き金属球のシーンが無い）、GR-1 の凹部 EV ±0.1（`gi_eval` に shadingRevision=2 の条件が無い。NB の依頼）。Epic（DDGI あり）の測定も未実施。
 `shadingFlags`（PfSlot::ShadingV2 の x）を書くのは `shadingv2::PackFlags` だけ。後続項目のビットも必ずそこへ足す。
+
+## 10. C6: Epic の太陽影の構成（W1-C6 / LS-02a + AUD-01）
+
+Epic = **RT の太陽影が静的な物を描き、動的 CSM は動的な物（スキンド・半透明）だけを描く**（既存の `skipRtCovered` の分担）。
+`ShadowPcssSettings::epicDynamicCsm`（既定 false）が立ったときだけ働く。**既定（false）の経路は 1 ビットも変わらない**（V1 の DXIL 同値、3D ゴールデンのビット一致）。
+CPU の写しと性質は `src/renderer/EpicCsm.h` / `tests/shadow_bias_math_test.cpp`。
+
+### 10.1 構成
+| 項目 | 旧経路（既定） | Epic（epicDynamicCsm） |
+|---|---|---|
+| カスケード | 4 本、遠端 400m | 3 本、遠端 200m（4 本目は「射影すると UV が範囲外 = 影なし」の番兵行列） |
+| 影マップ | 2048 D32 × 4（64 MiB） | 2048 D16 × 3（24 MiB。`m_shadowMapDirty` で作り直す。SRV は R16_UNORM） |
+| 影 PSO | DepthClip=TRUE、bias 8000 / 2.0 | **DepthClip=FALSE（pancaking）**、bias は D16 の単位へ換算（31 / 2.0）。静的・インスタンシング・スキンド・MASK 3 種・植生・VG |
+| カリング | 6 面 | **near 面を外す**: `RenderDepthOnlyScene`（CPU）、VG の影の錐台（CPU の `PrepareVirtualGeometryShadow` と GPU の `ExecuteShadow`）、植生の影カスケードのカリング |
+| PCSS | 3×3 PCF / Vogel の Load + SampleCmp | V2 の中だけ **Gather 版**: ブロッカー探索は `GatherRed` 8 回 × 4 テクセル、フィルタは `GatherCmpRed` × `gatherFilterTaps`（8..32） |
+| カスケード境界 | 2 回サンプルして lerp | `cascadeDitherBlend` のとき IGN + 時間位相で片方だけサンプル（TAA / DLSS が平均する） |
+
+切り替えは `AppAccess::UpdateEpicCsm`（`UpdateShadingRevision` の先頭から毎フレーム。GPU を待ってから PSO と影マップを差し替える）。PSO を 1 本でも作れなければ旧経路のまま（`epicCsmApplied=false`）。
+状態と PSO は `RenderBackendExt::epicCsm`（Application.h は凍結なのでここへ持つ）。
+
+### 10.2 バイアスの規則（V1 の受光面にアクネを出さない）
+1. **影を描く側（ラスタ DepthBias）を `casterBiasScaleV2`（既定 0.25）倍にするのは「Epic かつシーン全体が `shadingRevision=2`」のときだけ**。V1 のシーンでは倍率 1（D16 換算のみ）。revision や倍率が変わると PSO を作り直す。
+2. **受光側の法線オフセットは V2 の .cso の中だけ**（`UNO_V2_FLAG_CSM_RECEIVER`）: `worldPos += Ng * texelWorld[c] * (base + slope * (1 - |N.L|))`。`Ng` は光の側へ向けた幾何法線、
+   `texelWorld` は `PfSlot::CsmTexel`、`base` / `slope` / タップ数は `PfSlot::ShadingV2.w`（各 8 ビット。`EpicCsm.h` の `PackReceiver`）。受光側の深度バイアス（`shadowParams.y`）は従来のまま。
+3. フラグ（`PackFlags(settings, pcss)`）: bit3 受光側オフセット、bit4 Gather PCSS（PCSS 有効時のみ）、bit5 カスケードのディザ。**epicDynamicCsm かつ shadingRevision=2 のときだけ立つ**。
+
+### 10.3 MCP
+`set_shadow_pcss` / `get_shadow_pcss` に `epicDynamicCsm` / `pancaking` / `gatherPcss` / `cascadeDitherBlend` / `receiverNormalOffsetBase` / `receiverNormalOffsetSlope`（0..4）/ `casterBiasScaleV2`（0.05..1）/ `gatherFilterTaps`（8..32）。
+`get` は `epicCsmApplied`（D16 × 3 へ切り替え済みか）を返す。シーン JSON には保存しない（`SceneSerializer` は W1 では凍結。`shadingRevision` と同じ。C7 / C8 が品質プリセット / プロファイルから立てる）。
+TS 側（`tools/mcp-server`）は NB の担当。
+
+### 10.4 既知の範囲外
+- GPU 駆動のインスタンス群（`GpuInstDrawDepth` → `GpuInstCull`、`ApplicationInstanceGpu.cpp`）のカリングは near 面を外していない（所有者のいないファイル）。旧経路と同じく、光に近い側で箱の外の群は落ちる。
+- 夜間に測る項目（ShadowCsm ≤ 0.25ms、静止 8 フレームの差、LS-A のスキンドの影の縁の幅、LS-F の夕方の cascade0）は GPU を占有する窓で行う。

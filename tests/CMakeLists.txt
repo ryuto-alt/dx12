@@ -1325,6 +1325,15 @@ if(MSVC)
     target_compile_definitions(ShadingV2MathTests PRIVATE ${DX12_COMPILE_DEFS})
 endif()
 add_test(NAME ShadingV2MathTests COMMAND ShadingV2MathTests)
+# Epic の動的 CSM（D16 x3、pancaking、受光側の法線オフセット、バイアス）の純関数と配線の静的検査（GPU 不要）。W1-C6。
+add_executable(ShadowBiasMathTests shadow_bias_math_test.cpp)
+target_include_directories(ShadowBiasMathTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(ShadowBiasMathTests PRIVATE DX12E_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/..")
+if(MSVC)
+    target_compile_options(ShadowBiasMathTests PRIVATE ${DX12_COMPILE_OPTIONS} /utf-8)
+    target_compile_definitions(ShadowBiasMathTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME ShadowBiasMathTests COMMAND ShadowBiasMathTests)
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。

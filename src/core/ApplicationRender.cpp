@@ -5,6 +5,8 @@
 // ===========================================================================
 #include "core/SplitScreen.h"
 #include "renderer/ShadingV2Math.h"
+#include "renderer/EpicCsm.h"
+#include "graphics/RenderBackendExt.h"
 #include "renderer/VelocityPolicy.h"
 #include "core/GameUiFont.h"
 #include "core/SafeRemove.h"   // 再帰削除の最後の砦（ルート・ホームなどは消さない）
@@ -2114,7 +2116,11 @@ void Application::RenderDepthOnlyScene(DirectX::XMMATRIX viewProj, PipelineState
     // このパスの視錐台（ライト/カメラ視点）で描画リストを球カリングする。
     // CSM はタイトフィット正射 + DepthClipEnable=TRUE のため、落とすのは
     // 「現状でもラスタライザにクリップされている範囲」だけ＝影の見た目は不変。
-    const Frustum frustum = Frustum::FromViewProj(viewProj);
+    // W1-C6 pancaking: Epic の動的 CSM（影 PSO が DepthClipEnable=FALSE）のカスケードでは、光に近い側の遮蔽物を near 面で落とさない。
+    //   近いだけで箱の外の物も z=0 に潰れて影を落とす。それ以外（旧経路・スポット・ポイント・プリパス）は従来どおり 6 面で判定する。
+    Frustum frustum = Frustum::FromViewProj(viewProj);
+    if (shadowPass && cascadeTexelWorld > 0.0f && m_backendExt && m_backendExt->epicCsm.active && m_backendExt->epicCsm.psosValid && m_backendExt->epicCsm.pancake)
+        epiccsm::DropNearPlane(frustum);
 
     // ★このパスで使う LOD。カメラ距離で決まる item.lod に加えて、
     //   「シャドウマップ上で何テクセルを占めるか」でも粗くする。
@@ -2660,7 +2666,9 @@ void Application::RecordPerceptionIds(ID3D12GraphicsCommandList* cmd, ID3D12Reso
 void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear, f32 camFar)
 {
     using namespace DirectX;
-    const u32 N = kNumCascades;
+    // W1-C6: Epic の動的 CSM は 3 カスケード（残りは番兵 = 影なし）。
+    const bool epicCsm = m_backendExt && m_backendExt->epicCsm.active;
+    const u32 N = epiccsm::CascadeCount(epicCsm);
 
     // CSM は透視前提（スライス錐台を XMMatrixPerspectiveFovLH で復元する）。
     // 編集2Dビュー等でカメラが正射になると錐台復元が破綻し影が崩れるため、
@@ -2672,7 +2680,7 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
     if (m_camera->IsOrthographic() || shadowsOff)
     {
         XMMATRIX id = XMMatrixIdentity();
-        for (u32 i = 0; i < N; ++i)
+        for (u32 i = 0; i < kNumCascades; ++i)
         {
             XMStoreFloat4x4(&m_cascadeViewProj[i], id);
             m_cascadeSplitsView[i] = 1e9f;  // 全成分を遠端 → cascade0 固定
@@ -2757,6 +2765,13 @@ void Application::ComputeCascades(const DirectX::XMVECTOR& lightDir, f32 camNear
 
         XMStoreFloat4x4(&m_cascadeViewProj[ci], shadowVP);  // 行優先（world*VP 用、非転置）
         prevSplit = f;
+    }
+    // 使わないカスケード（Epic は 4 本目）: 射影すると必ず UV が範囲外 = 影なし。選択は手前のカスケードの遠端のまま。
+    for (u32 ci = N; ci < kNumCascades; ++ci)
+    {
+        m_cascadeViewProj[ci] = epiccsm::UnusedCascadeMatrix();
+        m_cascadeSplitsView[ci] = m_cascadeSplitsView[N - 1];
+        m_cascadeRadius[ci] = 0.0f;
     }
 }
 
@@ -4647,18 +4662,22 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         m_shadowMapDirty = false;
         m_shadowMap.Reset();
 
+        // W1-C6: Epic の動的 CSM は D16 × 3 スライス（TYPELESS、DSV = D16_UNORM、SRV = R16_UNORM）。旧経路は従来どおり D32 × 4。
+        const bool epicMap = m_backendExt && m_backendExt->epicCsm.active;
+        const epiccsm::DepthFormats shFmt = epiccsm::FormatsFor(epicMap);
+        const u32 shCascades = epiccsm::CascadeCount(epicMap);
         D3D12_RESOURCE_DESC shadowDesc{};
         shadowDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         shadowDesc.Width = m_shadowMapSize;
         shadowDesc.Height = m_shadowMapSize;
-        shadowDesc.DepthOrArraySize = static_cast<u16>(kNumCascades);
+        shadowDesc.DepthOrArraySize = static_cast<u16>(shCascades);
         shadowDesc.MipLevels = 1;
-        shadowDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        shadowDesc.Format = shFmt.resource;
         shadowDesc.SampleDesc = {1, 0};
         shadowDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
 
         D3D12_CLEAR_VALUE clearValue{};
-        clearValue.Format = DXGI_FORMAT_D32_FLOAT;
+        clearValue.Format = shFmt.dsv;
         clearValue.DepthStencil = {1.0f, 0};
 
         D3D12_HEAP_PROPERTIES heapProps{};
@@ -4670,10 +4689,10 @@ void Application::PrepareFrame(RenderFrameContext& frame)
             &clearValue, IID_PPV_ARGS(&m_shadowMap)));
 
         // DSV はハンドル再利用（初回 Allocate 済み）。スライス毎に再作成。
-        for (u32 i = 0; i < kNumCascades; ++i)
+        for (u32 i = 0; i < shCascades; ++i)
         {
             D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc{};
-            dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+            dsvDesc.Format = shFmt.dsv;
             dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
             dsvDesc.Texture2DArray.FirstArraySlice = i;
             dsvDesc.Texture2DArray.ArraySize = 1;
@@ -4683,15 +4702,15 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         }
 
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
-        srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        srvDesc.Format = shFmt.srv;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srvDesc.Texture2DArray.MipLevels = 1;
         srvDesc.Texture2DArray.FirstArraySlice = 0;
-        srvDesc.Texture2DArray.ArraySize = kNumCascades;
+        srvDesc.Texture2DArray.ArraySize = shCascades;
         m_graphicsDevice->GetDevice()->CreateShaderResourceView(
             m_shadowMap.Get(), &srvDesc, m_srvHeap->GetCpuHandle(m_shadowSrvIndex));
-        Logger::Info("Shadow map resized ({}x{})", m_shadowMapSize, m_shadowMapSize);
+        Logger::Info("Shadow map resized ({}x{} x{} {})", m_shadowMapSize, m_shadowMapSize, shCascades, epicMap ? "D16 (Epic)" : "D32");
     }
 
     // ===== メインパスのビューポートとカメラ投影を先に確定 =====
@@ -4888,7 +4907,7 @@ void Application::PrepareFrame(RenderFrameContext& frame)
         //   （最終カスケードの外は無影）。近景の解像度を保つため分割は lambda 0.7（Application.h）で
         //   手前寄りに取る: 分割 ≒ 31/64/125/400m（旧 25/52/90/200m）。RT サン影が有効なら静的ジオメトリは
         //   無限遠まで RT が担当するので、CSM はスキンド / 半透明の分だけ。
-        camFar = (std::min)(camFar, 400.0f);
+        camFar = epiccsm::CascadeFar(camFar, m_backendExt && m_backendExt->epicCsm.active);
         ComputeCascades(lightDir, camNear, camFar);
     }
 
@@ -5608,10 +5627,23 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
         // ヒープ / ルートシグネチャ / 遷移 / ビューポート / クリアは ShadowMapPass が張る
         // （RenderPass.h の状態の契約）。ここは「どのスライスをどの viewProj で描くか」だけ。
         // 描く中身は 3 種とも RenderDepthOnlyScene（影 PSO / 1 段粗い LOD / MASK は ShadowMask）。
-        auto shadowDepth = [&](bool skipRtCovered)
+        // W1-C6: epic=true は Epic の動的 CSM 用の D16 / DepthClip=FALSE の PSO 束（UpdateEpicCsm が作る）で描く。
+        EpicCsmState* const epicSt = (m_backendExt && m_backendExt->epicCsm.active && m_backendExt->epicCsm.psosValid) ? &m_backendExt->epicCsm : nullptr;
+        const DepthMaskPsos epicMaskPsos{ epicSt ? epicSt->maskStat.get() : nullptr, epicSt ? epicSt->maskInst.get() : nullptr,
+                                          epicSt ? epicSt->maskSkin.get() : nullptr };
+        auto shadowDepth = [&](bool skipRtCovered, bool epic = false)
         {
-            return [&, skipRtCovered](const ShadowMapPass::Slice& s)
+            return [&, skipRtCovered, epic](const ShadowMapPass::Slice& s)
             {
+                if (epic && epicSt)
+                {
+                    RenderDepthOnlyScene(XMLoadFloat4x4(&s.viewProj), *epicSt->stat, *epicSt->skin,
+                                         /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
+                                         epicSt->inst.get(), /*prepass*/ nullptr,
+                                         skipRtCovered, /*cascadeTexelWorld*/ s.texelWorld,
+                                         &epicMaskPsos);
+                    return;
+                }
                 RenderDepthOnlyScene(XMLoadFloat4x4(&s.viewProj),
                                      *m_shadowPipelineState, *m_shadowSkinnedPipelineState,
                                      /*updateSkinning*/ false, frameIndex, /*lodBias*/ 1,
@@ -5814,8 +5846,9 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             //   副産物として CSM のドロー数も大きく減る。
             // texelWorld = このカスケードの 1 テクセルが何メートルか。遠カスケードほど大きくなり、
             //   そこへフル解像度のメッシュを投げる無駄を passLod が落とす。
+            const u32 csmCount = epiccsm::CascadeCount(epicSt != nullptr);   // Epic = 3（D16）、旧経路 = 4（D32）
             std::array<ShadowMapPass::Slice, kNumCascades> slices{};
-            for (u32 ci = 0; ci < kNumCascades; ++ci)
+            for (u32 ci = 0; ci < csmCount; ++ci)
             {
                 slices[ci].dsv        = m_shadowDsvHandles[ci];
                 slices[ci].viewProj   = m_cascadeViewProj[ci];
@@ -5827,8 +5860,8 @@ void Application::RenderView(const ViewDesc& view, RenderFrameContext& frame)
             csmIn.size       = m_shadowMapSize;
             csmIn.rootSig    = m_rootSignature.get();
             csmIn.slices     = slices.data();
-            csmIn.sliceCount = kNumCascades;
-            csmIn.drawDepth  = shadowDepth(/*skipRtCovered*/ m_rtShadowActiveThisFrame);
+            csmIn.sliceCount = csmCount;
+            csmIn.drawDepth  = shadowDepth(/*skipRtCovered*/ m_rtShadowActiveThisFrame, /*epic*/ epicSt != nullptr);
             // 植生: 近距離の 2 カスケードへ ExecuteIndirect で描く（遠い LOD は影を落とさない）。ShadowMapPass はスライスを 0..n-1 の順に呼ぶ。
             u32 foliageCsmSlice = 0;
             if (foliageOn)
@@ -7928,13 +7961,22 @@ void Application::FillSceneFrameConstants(FrameConstants& fc, const RenderFrameC
     }
 
     // UNO_SHADING_V2（W1-C5）: マイクロシャドウ / 地平線 / GTSO のフラグと強さ。shadingRevision != 2 は x = 0（全機能 OFF）。
-    //   w は他の項目（C6 / MH-2 の太陽の角半径）の欄なので触らない。V1 の .cso はこの欄を読まない。
+    //   W1-C6: Epic の動的 CSM のビット（受光側の法線オフセット / Gather PCSS）も x へ足し、w に法線オフセットの係数とフィルタタップ数を詰める。
+    //   V1 の .cso はこの欄を読まない。
     {
-        const shadingv2::SlotValue v2 = shadingv2::PackSlot(m_scene ? m_scene->GetShadingSettings() : ShadingSettings{});
+        const ShadingSettings& shs = m_scene ? m_scene->GetShadingSettings() : ShadingSettings{};
+        const ShadowPcssSettings& pcs = m_scene ? m_scene->GetShadowPcssSettings() : ShadowPcssSettings{};
+        const shadingv2::SlotValue v2 = shadingv2::PackSlot(shs);
         DirectX::XMFLOAT4& slot = Pf(fc, PfSlot::ShadingV2);
-        slot.x = v2.x; slot.y = v2.y; slot.z = v2.z;
+        slot.x = std::bit_cast<float>(shadingv2::PackFlags(shs, pcs));
+        slot.y = v2.y; slot.z = v2.z;
+        const bool epicRecv = (shs.shadingRevision == 2) && pcs.epicDynamicCsm;
+        slot.w = epicRecv ? std::bit_cast<float>(epiccsm::PackReceiver(pcs.receiverNormalOffsetBase, pcs.receiverNormalOffsetSlope, pcs.gatherFilterTaps)) : 0.0f;
+        // 各カスケードの 1 テクセルが何 m か（受光側の法線オフセット用。V1 は読まない）
+        DirectX::XMFLOAT4& tx = Pf(fc, PfSlot::CsmTexel);
+        const f32 invSize = 2.0f / static_cast<f32>((std::max)(m_shadowMapSize, 1u));
+        tx = {m_cascadeRadius[0] * invSize, m_cascadeRadius[1] * invSize, m_cascadeRadius[2] * invSize, m_cascadeRadius[3] * invSize};
     }
-
     // 植生 F1: 風のフレーム共通値を予約領域 [0..1] へ（FoliageLayer があるときだけ書く。他の誰も読まない領域）
     FoliageFillFrameConstants(fc._clusterReserved);
 }

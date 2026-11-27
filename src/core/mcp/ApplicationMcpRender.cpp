@@ -6,6 +6,7 @@
 // ===========================================================================
 #include "core/ApplicationInternal.h"
 #include "core/AppAccess.h"
+#include "graphics/RenderBackendExt.h"
 
 namespace dx12e
 {
@@ -499,7 +500,8 @@ void Application::RegisterMcpRenderMethods()
         });
 
     McpDefine("get_shadow_pcss|set_shadow_pcss", "blockerSearchTexels:number,enabled:any,lightTanAngle:number,maxPenumbraTexels:number,"
-              "temporalDither:any", DX12E_MCP_HANDLER
+              "temporalDither:any,epicDynamicCsm:any,pancaking:any,gatherPcss:any,cascadeDitherBlend:any,"
+              "receiverNormalOffsetBase:number,receiverNormalOffsetSlope:number,casterBiasScaleV2:number,gatherFilterTaps:any", DX12E_MCP_HANDLER
         {
             // get/set を 1 本のハンドラで捌く（"a|b" 登録）。束ねる義務はもう無い（C1061 は根治済み）が、
             // 返り値が同一なのでこの形の方が読みやすい。
@@ -514,6 +516,20 @@ void Application::RegisterMcpRenderMethods()
                 if (params.contains("blockerSearchTexels"))
                     p.blockerSearchTexels = McpFloatParam(params, "blockerSearchTexels", p.blockerSearchTexels, 1.0f, 64.0f);
                 p.temporalDither = params.value("temporalDither", p.temporalDither);
+                // W1-C6 LS-02a: Epic の動的 CSM（2048 D16 x3 + pancaking。V2 の受光側の法線オフセット / Gather PCSS / バイアス縮小は shadingRevision=2 と組み合わせて効く）。
+                //   シーン JSON には保存しない（SceneSerializer は W1 では凍結。shadingRevision と同じ）。切り替えは次のフレームの先頭で反映される。
+                p.epicDynamicCsm     = params.value("epicDynamicCsm", p.epicDynamicCsm);
+                p.pancaking          = params.value("pancaking", p.pancaking);
+                p.gatherPcss         = params.value("gatherPcss", p.gatherPcss);
+                p.cascadeDitherBlend = params.value("cascadeDitherBlend", p.cascadeDitherBlend);
+                if (params.contains("receiverNormalOffsetBase"))
+                    p.receiverNormalOffsetBase = McpFloatParam(params, "receiverNormalOffsetBase", p.receiverNormalOffsetBase, 0.0f, 4.0f);
+                if (params.contains("receiverNormalOffsetSlope"))
+                    p.receiverNormalOffsetSlope = McpFloatParam(params, "receiverNormalOffsetSlope", p.receiverNormalOffsetSlope, 0.0f, 4.0f);
+                if (params.contains("casterBiasScaleV2"))
+                    p.casterBiasScaleV2 = McpFloatParam(params, "casterBiasScaleV2", p.casterBiasScaleV2, 0.05f, 1.0f);
+                if (params.contains("gatherFilterTaps"))
+                    p.gatherFilterTaps = static_cast<u32>(McpIntParam(params, "gatherFilterTaps", static_cast<i32>(p.gatherFilterTaps), 8, 32));
             }
             resp["ok"] = true;
             resp["result"] = {{"enabled", p.enabled},
@@ -521,6 +537,15 @@ void Application::RegisterMcpRenderMethods()
                               {"maxPenumbraTexels", p.maxPenumbraTexels},
                               {"blockerSearchTexels", p.blockerSearchTexels},
                               {"temporalDither", p.temporalDither},
+                              {"epicDynamicCsm", p.epicDynamicCsm},
+                              {"epicCsmApplied", m_backendExt && m_backendExt->epicCsm.active},   // D16 x3 の影マップへ切り替え済みか（PSO を作れないと false のまま）
+                              {"pancaking", p.pancaking},
+                              {"gatherPcss", p.gatherPcss},
+                              {"cascadeDitherBlend", p.cascadeDitherBlend},
+                              {"receiverNormalOffsetBase", p.receiverNormalOffsetBase},
+                              {"receiverNormalOffsetSlope", p.receiverNormalOffsetSlope},
+                              {"casterBiasScaleV2", p.casterBiasScaleV2},
+                              {"gatherFilterTaps", p.gatherFilterTaps},
                               // ON でも実際に走らない条件を明示する（誤診断を防ぐ）
                               {"active", p.enabled && m_scene->GetShadowsEnabled()
                                          && !m_camera->IsOrthographic()},

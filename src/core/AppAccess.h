@@ -73,6 +73,8 @@ struct AppAccess
     static QualityPresetId GetQualityPreset(const Application&);
     // W1-C3: shadingRevision（1 / 2）を PSO とグラフ材質へ反映する（定義は ApplicationPipeline.cpp。Run ループの先頭 = フレーム外で呼ぶ）。
     static void UpdateShadingRevision(Application&);
+    // W1-C6: Epic の動的 CSM（2048 D16 x3 + pancaking）の切り替え。UpdateShadingRevision の先頭から呼ぶ（フレーム外。定義は ApplicationPipeline.cpp）。
+    static void UpdateEpicCsm(Application&);
     // W1-C3: 今 PSO に反映済みの revision と、V2 の .cso から作れた PSO の数（フォワード / スキンド / 地形）。MCP の get_shading 用。
     //   FU-E-25: 水 / 植生 / 仮想ジオメトリの V2 PSO の本数も返す（実体が無い / V1 のときは 0）。
     static void QueryShadingPsos(const Application&, int& appliedRevision, int& v2Forward, int& v2Skinned, int& v2Terrain,

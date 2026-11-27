@@ -8,7 +8,9 @@
 //   PfSlot::ShadingV2（_clusterReserved[2]）: x = shadingFlags（asuint）、y = microShadowK、z = horizonK、w = 予約（C6 / MH-2）。
 //   shadingRevision != 2 のときは x = 0（全機能 OFF = V1 と同じ命令列の結果）。V2 の .cso でも x = 0 なら V1 と同じ絵になる。
 
+#include "renderer/EpicCsm.h"
 #include "renderer/ShadingSettings.h"
+#include "renderer/ShadowPcssSettings.h"
 
 #include <algorithm>
 #include <bit>
@@ -22,6 +24,9 @@ namespace dx12e::shadingv2
 inline constexpr std::uint32_t kFlagMicroShadow = 1u << 0;
 inline constexpr std::uint32_t kFlagHorizonOcc  = 1u << 1;
 inline constexpr std::uint32_t kFlagGtso        = 1u << 2;
+inline constexpr std::uint32_t kFlagCsmReceiver  = 1u << 3;   // W1-C6: Epic の動的 CSM の受光側の法線オフセット（V2 の中だけ）
+inline constexpr std::uint32_t kFlagGatherPcss    = 1u << 4;   // W1-C6: Gather ベースの PCSS（動的 CSM の分だけ）
+inline constexpr std::uint32_t kFlagCascadeDither  = 1u << 5;   // W1-C6: カスケード境界のブレンドを IGN のディザで片方だけサンプルする（TAA / DLSS に平均させる）
 inline constexpr std::uint32_t kFlagMask        = 0xFFu;   // シェーダは下位 8 ビットだけ読む（上は将来の機能のために空ける）
 
 inline constexpr float kMaxStrength = 2.0f;   // microShadowK / horizonK の上限（0 = 効果なし相当、1 = 標準）
@@ -42,6 +47,20 @@ inline std::uint32_t PackFlags(const ShadingSettings& s)
     if (s.microShadow)      f |= kFlagMicroShadow;
     if (s.horizonOcclusion) f |= kFlagHorizonOcc;
     if (s.gtso)             f |= kFlagGtso;
+    return f;
+}
+
+// W1-C6: Epic の動的 CSM のビット。シーン全体が V2（shadingRevision=2）かつ epicDynamicCsm のときだけ立つ。
+//   gatherPcss は PCSS が有効（enabled）のときだけ意味がある。
+inline std::uint32_t PackFlags(const ShadingSettings& s, const ShadowPcssSettings& p)
+{
+    std::uint32_t f = PackFlags(s);
+    if (s.shadingRevision == 2 && p.epicDynamicCsm)
+    {
+        f |= kFlagCsmReceiver;
+        if (p.enabled && p.gatherPcss) f |= kFlagGatherPcss;
+        if (p.cascadeDitherBlend) f |= kFlagCascadeDither;
+    }
     return f;
 }
 

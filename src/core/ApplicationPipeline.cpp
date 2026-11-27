@@ -9,6 +9,9 @@
 #include "core/AppAccess.h"
 #include "renderer/ShadingSettings.h"
 #include "renderer/GraphMaterialSystem.h"
+#include "renderer/EpicCsm.h"
+#include "graphics/RenderBackendExt.h"
+#include "renderer/foliage/FoliageSystem.h"
 
 #include <iterator>
 
@@ -479,6 +482,7 @@ void Application::RecreateShadowPsos()
 
     // MASK マテリアル用（葉の影を葉の形に抜く）
     RecreateDepthMaskPsos(/*forShadow*/ true);
+    if (m_backendExt) m_backendExt->epicCsm.dirty = true;   // W1-C6: 再読込み後、Epic の影 PSO も作り直す（UpdateEpicCsm）
 }
 
 // ShadowMask.hlsl バリアントの深度 PSO を 3 本作る（静的 / インスタンシング / スキンド）。
@@ -1040,6 +1044,113 @@ void Application::EnsureInstancePrevBuffer()
 }
 
 // ---------------------------------------------------------------------------
+// W1-C6 LS-02a: Epic の動的 CSM（2048 D16 × 3 カスケード、pancaking）の切り替え。Run ループの先頭（フレーム外）で呼ぶ。
+//   ・ShadowPcssSettings::epicDynamicCsm が立つと、D16 / DepthClip=FALSE の影 PSO 束（静的 / インスタンシング / スキンド / MASK 3 種）を作り、
+//     影マップを D16 × 3 へ作り直す（m_shadowMapDirty。実体の作り直しは Render の頭）。植生の影 PSO も同じ形へ追従させる。
+//   ・影を描く側のバイアスは、Epic かつシーン全体が shadingRevision=2 のときだけ casterBiasScaleV2 倍にする（V1 の受光面にアクネを出さない）。
+//   ・立っていない（既定）ときは何も作らず何も触らない＝旧経路（2048 D32 × 4 の PCF）は 1 ビットも変わらない。
+//   PSO を 1 本でも作れなければ旧経路のまま（active にしない）。
+// ---------------------------------------------------------------------------
+static bool BuildEpicCsmPsos(ID3D12RootSignature* rootSig, GraphicsDevice& gdev, EpicCsmState& st, const epiccsm::CasterBias& cb, bool pancake)
+{
+    PathResolver::ShaderDirW();
+    const std::wstring dir = PathResolver::ShaderDirW();
+    auto build = [&](const wchar_t* vsName, bool instanced, bool mask, std::unique_ptr<PipelineState>& out) -> bool
+    {
+        auto vs = ShaderCompiler::LoadFromFile(dir + vsName);
+        if (vs.GetSize() == 0) return false;
+        PipelineStateBuilder b;
+        b.SetRootSignature(rootSig)
+         .SetVertexShader(vs.GetData(), vs.GetSize())
+         .SetRenderTargetFormat(DXGI_FORMAT_UNKNOWN)
+         .SetDepthStencilFormat(DXGI_FORMAT_D16_UNORM)
+         .SetDepthEnabled(true)
+         .SetDepthClip(!pancake)   // pancaking: near / far の外を捨てずに [0,1] へ押し付ける
+         .SetDepthBias(cb.depthBias, cb.slopeBias);
+        if (instanced) b.SetInputLayout(Mesh::GetInstancedInputLayout(), Mesh::GetInstancedInputLayoutCount());
+        else           b.SetInputLayout(Mesh::GetInputLayout(), Mesh::GetInputLayoutCount());
+        if (mask)
+        {
+            auto ps = ShaderCompiler::LoadFromFile(dir + L"ShadowMask_PS.cso");
+            if (ps.GetSize() == 0) return false;
+            b.SetPixelShader(ps.GetData(), ps.GetSize()).SetCullMode(D3D12_CULL_MODE_NONE);
+            if (!out) out = std::make_unique<PipelineState>();
+            out->Initialize(gdev, b);
+            return true;
+        }
+        if (!out) out = std::make_unique<PipelineState>();
+        out->Initialize(gdev, b);
+        return true;
+    };
+    st.stat.reset(); st.inst.reset(); st.skin.reset(); st.maskStat.reset(); st.maskInst.reset(); st.maskSkin.reset();
+    // 必須の 3 本（静的 / スキンド。インスタンシングは旧経路でも「無ければ null」）
+    if (!build(L"ShadowPass_VS.cso", false, false, st.stat)) return false;
+    if (!build(L"ShadowPassSkinned_VS.cso", false, false, st.skin)) return false;
+    build(L"ShadowPassInstanced_VS.cso", true, false, st.inst);
+    // MASK（葉の影を葉の形に抜く）。無ければ警告だけ（板の影になる。旧経路の ShadowMask_PS 不在と同じ扱い）。
+    if (!build(L"ShadowMask_VS.cso", false, true, st.maskStat))
+        Logger::Warn("Epic の動的 CSM: ShadowMask_PS.cso / ShadowMask_VS.cso が無い: アルファクリップの影が板のままになります");
+    build(L"ShadowMaskInstanced_VS.cso", true, true, st.maskInst);
+    build(L"ShadowMaskSkinned_VS.cso", false, true, st.maskSkin);
+    st.depthBias = cb.depthBias;
+    st.slopeBias = cb.slopeBias;
+    st.pancake = pancake;
+    st.psosValid = true;
+    st.dirty = false;
+    st.buildFailed = false;
+    return true;
+}
+
+void AppAccess::UpdateEpicCsm(Application& app)
+{
+    if (!app.m_scene || !app.m_commandQueue || !app.m_graphicsDevice || !app.m_rootSignature) return;
+    const ShadowPcssSettings& pc = app.m_scene->GetShadowPcssSettings();
+    const bool want = pc.epicDynamicCsm;
+    if (!want && !(app.m_backendExt && app.m_backendExt->epicCsm.active)) return;   // 既定: 何もしない
+    if (!app.m_backendExt) app.m_backendExt.reset(new RenderBackendExt());
+    EpicCsmState& st = app.m_backendExt->epicCsm;
+    const int rev = (app.m_scene->GetShadingSettings().shadingRevision == 2) ? 2 : 1;
+    const f32 scale = epiccsm::CasterBiasScale(want, rev, pc.casterBiasScaleV2);
+    const epiccsm::CasterBias cb = epiccsm::CasterBiasFor(DXGI_FORMAT_D16_UNORM, scale);
+    const bool psoStale = want && (!st.psosValid || st.dirty || st.pancake != pc.pancaking || st.depthBias != cb.depthBias || st.slopeBias != cb.slopeBias);
+    const bool foliageStale = app.m_foliage && !app.m_foliage->ShadowEpicMatches(want && st.active, cb.depthBias, cb.slopeBias, pc.pancaking);
+    if (want && !st.active && st.buildFailed && !st.dirty) return;   // 作れなかった（シェーダ無し）: 再読込みまで再試行しない
+    if (want == st.active && !psoStale && !foliageStale) return;
+
+    app.m_commandQueue->WaitIdle();   // PSO と影マップを差し替える（前のフレームが読んでいない状態で）
+    bool nowActive = false;
+    if (want)
+    {
+        if (psoStale || !st.psosValid)
+        {
+            st.psosValid = false;
+            if (!BuildEpicCsmPsos(app.m_rootSignature->Get(), *app.m_graphicsDevice, st, cb, pc.pancaking))
+                {
+                    Logger::Warn("Epic の動的 CSM: 影 PSO を作れない（ShadowPass_VS.cso 等が無い）。旧経路（2048 D32 × 4）のままにします");
+                st.buildFailed = true; st.dirty = false;
+            }
+        }
+        nowActive = st.psosValid;
+        if (nowActive) st.rev = rev;
+    }
+    else
+    {
+        st.stat.reset(); st.inst.reset(); st.skin.reset(); st.maskStat.reset(); st.maskInst.reset(); st.maskSkin.reset();
+        st.psosValid = false;
+    }
+    if (nowActive != st.active)
+    {
+        st.active = nowActive;
+        app.m_shadowMapDirty = true;           // D16 × 3 ⇄ D32 × 4 の作り直し（Render の頭）
+        app.InvalidateTemporalHistory(false);  // 影の絵が変わる
+        if (nowActive) Logger::Info("動的 CSM: Epic（D16 x3、pancaking。casterBias {} + {:.2f}）", cb.depthBias, cb.slopeBias);
+        else Logger::Info("動的 CSM: 従来（D32 x4）");
+    }
+    if (app.m_foliage && !app.m_foliage->SetShadowEpic(st.active, cb.depthBias, cb.slopeBias, pc.pancaking))
+        Logger::Warn("植生: Epic の動的 CSM の影 PSO を作れない");
+}
+
+// ---------------------------------------------------------------------------
 // W1-C3: shadingRevision（1 / 2）の反映。Run ループの先頭（フレーム外）で呼ぶ。
 //   ・シーンの ShadingSettings::shadingRevision が変わっていたら、GPU を待ってフォワード系 PSO を V2 / V1 の .cso で作り直す
 //     （V2 のシーンを開くまで V2 の PSO は作らない＝起動時間を延ばさない。UpdateLightingUnits と同じ流儀）。
@@ -1051,6 +1162,7 @@ void Application::EnsureInstancePrevBuffer()
 void AppAccess::UpdateShadingRevision(Application& app)
 {
     AppAccess::FreezeTick(app);   // FU-E-24: freeze_time の約束へ毎フレーム合わせる（相乗り。Application.cpp は A の所有）
+    AppAccess::UpdateEpicCsm(app);   // W1-C6: Epic の動的 CSM（D16 x3）の切り替え（既定 OFF のときは何もしない）
     if (!app.m_scene || !app.m_commandQueue || !app.m_graphicsDevice || !app.m_rootSignature) return;
     const u8 want = (app.m_scene->GetShadingSettings().shadingRevision == 2) ? 2 : 1;
     if (app.m_graphMaterials) app.m_graphMaterials->SetShadingRevision(want);

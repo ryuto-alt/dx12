@@ -92,6 +92,9 @@ public:
     // shadingRevision（FU-E-25）。v2 = true で ForwardFoliage*V2_PS.cso を選ぶ（無ければ警告して V1 へ縮退）。
     //   Initialize の前でも呼べる（次の Initialize が拾う）。GPU が止まっているときだけ呼ぶこと。
     bool SetShadingV2(bool v2);
+    // W1-C6: Epic の動的 CSM（D16 / DepthClip=FALSE）の影 PSO。GPU が止まっているときだけ SetShadowEpic を呼ぶ。ShadowEpicMatches は今の状態と同じなら true。
+    bool SetShadowEpic(bool on, int bias, float slope, bool pancake);
+    bool ShadowEpicMatches(bool on, int bias, float slope, bool pancake) const;
     bool ShadingV2Requested() const { return m_v2Requested; }
     int  V2PsoCount() const;   // V2 の .cso から作れたフォワード PSO の数（get_shading の v2Pso.foliage）
     void Shutdown();
@@ -133,7 +136,7 @@ public:
         f32 width = 0, height = 0;
         DirectX::XMFLOAT4X4 prevVP{};         // HZB を作った時のジッタ付き viewProj
     };
-    struct CascadeIn { DirectX::XMFLOAT4X4 viewProj; bool valid = false; };
+    struct CascadeIn { DirectX::XMFLOAT4X4 viewProj; bool valid = false; bool dropNearPlane = false; };   // dropNearPlane = W1-C6 pancaking
     struct ViewIn
     {
         DirectX::XMFLOAT3 camPos{0, 0, 0};

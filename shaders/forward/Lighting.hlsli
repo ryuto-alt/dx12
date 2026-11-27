@@ -416,6 +416,9 @@ float3 ShadePunctual(float3 N, float3 V, float3 L, float3 radiance,
 static const uint UNO_V2_FLAG_MICRO_SHADOW = 1u << 0;
 static const uint UNO_V2_FLAG_HORIZON_OCC  = 1u << 1;
 static const uint UNO_V2_FLAG_GTSO         = 1u << 2;
+static const uint UNO_V2_FLAG_CSM_RECEIVER = 1u << 3;   // W1-C6: Epic の動的 CSM の受光側の法線オフセット
+static const uint UNO_V2_FLAG_GATHER_PCSS  = 1u << 4;   // W1-C6: Gather ベースの PCSS（動的 CSM の分だけ）
+static const uint UNO_V2_FLAG_CASCADE_DITHER = 1u << 5;   // W1-C6: カスケード境界のブレンドを IGN のディザで片方だけサンプルする
 
 uint UnoV2Flags() { return asuint(_clusterReserved[2].x) & 0xFFu; }
 

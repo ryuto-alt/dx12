@@ -1593,20 +1593,21 @@ bool VirtualGeometrySystem::EnsureShadowResources()
 }
 
 // 深度だけのメッシュシェーダ PSO（PS なし・RT なし）。ラスタの状態は影の PSO（ApplicationPipeline.cpp RecreateShadowPsos）と揃える。
-ID3D12PipelineState* VirtualGeometrySystem::GetShadowPso(int bias, float slope, bool cullBack)
+ID3D12PipelineState* VirtualGeometrySystem::GetShadowPso(int bias, float slope, bool cullBack, DXGI_FORMAT fmt, bool depthClip)
 {
-    if (m_psoShadow && m_psoShadowBias == bias && m_psoShadowSlope == slope && m_psoShadowCull == cullBack) return m_psoShadow.Get();
+    if (m_psoShadow && m_psoShadowBias == bias && m_psoShadowSlope == slope && m_psoShadowCull == cullBack && m_psoShadowFmt == fmt && m_psoShadowClip == depthClip)
+        return m_psoShadow.Get();
     MeshPipelineStateBuilder b;
     b.SetRootSignature(m_rootSig.Get());
     b.SetMeshShader(m_bcMsPlain.data(), m_bcMsPlain.size())
-     .SetRenderTargetFormats(0, nullptr).SetDepthStencilFormat(DXGI_FORMAT_D32_FLOAT)
+     .SetRenderTargetFormats(0, nullptr).SetDepthStencilFormat(fmt).SetDepthClip(depthClip)
      .SetDepthFunc(D3D12_COMPARISON_FUNC_LESS).SetCullMode(cullBack ? D3D12_CULL_MODE_BACK : D3D12_CULL_MODE_NONE)
      .SetDepthBias(bias, slope);
     std::string err;
     ComPtr<ID3D12PipelineState> pso = b.Build(m_device.Get(), &err);
     if (!pso) { Logger::Warn("VG: 影の PSO を作れない: {}", err); return nullptr; }
     m_psoShadow = pso;
-    m_psoShadowBias = bias; m_psoShadowSlope = slope; m_psoShadowCull = cullBack;
+    m_psoShadowBias = bias; m_psoShadowSlope = slope; m_psoShadowCull = cullBack; m_psoShadowFmt = fmt; m_psoShadowClip = depthClip;
     return m_psoShadow.Get();
 }
 
@@ -1614,7 +1615,7 @@ bool VirtualGeometrySystem::ExecuteShadow(const ShadowDesc& d)
 {
     if (!m_ready || !m_rasterOk || !d.cmd || d.frameSlot >= m_desc.frameCount || !d.views || d.viewCount == 0) return false;
     if (!EnsureShadowResources()) return false;
-    ID3D12PipelineState* pso = GetShadowPso(d.depthBias, d.slopeBias, d.cullBack);
+    ID3D12PipelineState* pso = GetShadowPso(d.depthBias, d.slopeBias, d.cullBack, d.depthFormat, d.depthClip);
     if (!pso) return false;
     ID3D12GraphicsCommandList* cmd = d.cmd;
     const uint32_t f = d.frameSlot;
@@ -1655,6 +1656,7 @@ bool VirtualGeometrySystem::ExecuteShadow(const ShadowDesc& d)
         transposeTo(sv.viewProj, c.prevViewProjNJ);
         FrustumPlanes fp;
         ExtractFrustumPlanes(sv.viewProj, fp);
+        if (sv.dropNearPlane) { fp.p[4][0] = 0.0f; fp.p[4][1] = 0.0f; fp.p[4][2] = 0.0f; fp.p[4][3] = 1.0f; }   // W1-C6: pancaking（near 面で落とさない）
         std::memcpy(c.planes, fp.p, sizeof(c.planes));
         c.camPos[0] = sv.camPos[0]; c.camPos[1] = sv.camPos[1]; c.camPos[2] = sv.camPos[2]; c.camPos[3] = sv.zNear;
         c.viewport[0] = 0.0f; c.viewport[1] = 0.0f; c.viewport[2] = static_cast<float>(sv.size); c.viewport[3] = static_cast<float>(sv.size);

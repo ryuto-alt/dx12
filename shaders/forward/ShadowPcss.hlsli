@@ -151,4 +151,73 @@ float SampleShadowCascadeCommon(Texture2DArray shadowMap, int cascade,
     return SampleShadowPcf3x3(shadowMap, cascade, uv, current);
 }
 
+// ===== UNO_SHADING_V2（W1-C6 LS-02a）: Epic の動的 CSM 用の Gather 版 PCSS ==========================================
+//   V1 の .cso には 1 命令も入らない（UNO_SHADING_V2 を定義した .cso だけ）。使うのは ForwardShade.hlsli の SampleCascadeV2 だけ。
+//   動的 CSM は 2048 の D16（SRV は R16_UNORM）。ブロッカー探索は GatherRed（1 回で 4 テクセル）、フィルタは GatherCmpRed（1 回で 4 つの比較）。
+//   rawSamp = 比較ではない sampler（g_brdfSampler: LINEAR CLAMP。Gather はフィルタを使わない）。taps = フィルタのタップ数（8..32）。
+#ifdef UNO_SHADING_V2
+#define PCSS_GATHER_BLOCKER_TAPS 8
+float SampleShadowPcssGather(Texture2DArray shadowMap, SamplerState rawSamp, int cascade,
+                             float2 uv, float zRecv, float2 svPos, uint taps)
+{
+    const float texel    = shadowParams.x;
+    const float tanTheta = pcssParams.x;
+    const float maxPenUV = pcssParams.y * texel;
+    const float searchUV = pcssParams.w * texel;
+    const float phi = (PcssIgn(svPos) + pcssParams.z) * 6.28318531;
+
+    // 1) ブロッカー探索（8 回 x 4 テクセル）
+    float blockerSum = 0.0, blockerCount = 0.0;
+    [unroll]
+    for (int i = 0; i < PCSS_GATHER_BLOCKER_TAPS; ++i)
+    {
+        const float2 suv = uv + PcssVogelDisk(i, PCSS_GATHER_BLOCKER_TAPS, phi) * searchUV;
+        const float4 d = shadowMap.GatherRed(rawSamp, float3(saturate(suv), (float)cascade));
+        [unroll]
+        for (int k = 0; k < 4; ++k)
+        {
+            if (d[k] < zRecv) { blockerSum += d[k]; blockerCount += 1.0; }
+        }
+    }
+    if (blockerCount < 0.5) return 1.0;
+    const float zBlocker = blockerSum / blockerCount;
+
+    // 2) 半影幅（下限 0.75 テクセル）
+    const float penUV = clamp((zRecv - zBlocker) * tanTheta, texel * 0.75, maxPenUV);
+
+    // 3) 可変幅フィルタ（GatherCmpRed: 1 回で 2x2 の比較結果 4 つ）
+    const uint n = clamp(taps, 8u, 32u);
+    float s = 0.0;
+    [loop]
+    for (uint j = 0; j < n; ++j)
+    {
+        const float2 o = PcssVogelDisk((int)j, (int)n, phi + 1.0) * penUV;
+        const float4 c = shadowMap.GatherCmpRed(g_shadowSampler, float3(uv + o, (float)cascade), zRecv);
+        s += dot(c, float4(0.25, 0.25, 0.25, 0.25));
+    }
+    return s / (float)n;
+}
+
+// SampleShadowCascadeCommon の V2 版。gather = true かつ PCSS が有効（pcssParams.x > 0）のときだけ Gather の PCSS を使う。
+float SampleShadowCascadeCommonV2(Texture2DArray shadowMap, SamplerState rawSamp, int cascade,
+                                  float3 worldPos, float2 svPos, float bias, bool gather, uint taps)
+{
+    float4 lc   = mul(float4(worldPos, 1.0f), cascadeViewProj[cascade]);
+    float3 proj = lc.xyz / lc.w;
+    float2 uv   = proj.xy * 0.5f + 0.5f;
+    uv.y = 1.0f - uv.y;
+    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1) return 1.0f;
+    if (proj.z > 1.0f) return 1.0f;
+    const float current = proj.z - bias;
+    [branch]
+    if (pcssParams.x > 0.0)
+    {
+        [branch]
+        if (gather) return SampleShadowPcssGather(shadowMap, rawSamp, cascade, uv, current, svPos, taps);
+        return SampleShadowPcss(shadowMap, cascade, uv, current, svPos);
+    }
+    return SampleShadowPcf3x3(shadowMap, cascade, uv, current);
+}
+#endif // UNO_SHADING_V2
+
 #endif // SHADOW_PCSS_HLSLI

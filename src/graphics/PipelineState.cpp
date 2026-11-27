@@ -174,6 +174,12 @@ PipelineStateBuilder& PipelineStateBuilder::SetDepthFunc(D3D12_COMPARISON_FUNC f
     return *this;
 }
 
+PipelineStateBuilder& PipelineStateBuilder::SetDepthClip(bool enabled)
+{
+    m_desc.RasterizerState.DepthClipEnable = enabled ? TRUE : FALSE;
+    return *this;
+}
+
 Microsoft::WRL::ComPtr<ID3D12PipelineState> PipelineStateBuilder::Build(GraphicsDevice& device)
 {
     DX_ASSERT(m_desc.pRootSignature, "Root signature must be set before building PSO");
