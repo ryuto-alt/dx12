@@ -1,7 +1,7 @@
 #Requires -Version 7.0
 <#
   夜間ビルド / 改修前バイナリ作成。統合ブランチ(または任意の Ref)を専用 worktree でビルドして、
-  exe 一式を出力フォルダへ置く。ビルドは tools/build.ps1 経由(名前付き Mutex Global\dx12-build、BelowNormal)。
+  exe 一式を出力フォルダへ置く。ビルドは tools/build.ps1 経由(名前付き Mutex のスロット制。nightly はスロット 1 = Global\dx12-build を取る、BelowNormal)。
   窓は出さない(ビルドと robocopy のみ。エンジンは起動しない)。
 
     pwsh tools/nightly.ps1                                         # overhaul/wave0 を dx12-wt\nightly でビルド → %USERPROFILE%\dx12-nightly
