@@ -65,11 +65,11 @@ void FillManifestChunk0(ManifestRows& o)
         "create entity エンティティ生成",
         "entity", "", "", McpEffect::WriteScene, "editor", 15000, false, true,
         "none", "dx12_create_entity", {
-            P("type", "enum", true, "box|sphere|plane|empty|camera|light_directional|light_point|light_spot|particle_emitter|trigger|decal|ui_canvas|ui_image|ui_text|ui_button|ui_slider|ui_toggle|ui_scrollview", nullptr, nullptr, nullptr, "種別。empty は Transform のみ。light_*/camera/particle_emitter/trigger は該当コンポーネント付きで生成(値は既定。"),
+            P("type", "enum", true, "box|sphere|plane|empty|camera|light_directional|light_point|light_spot|particle_emitter|trigger|decal|water|ui_canvas|ui_image|ui_text|ui_button|ui_slider|ui_toggle|ui_scrollview", nullptr, nullptr, nullptr, "種別。empty は Transform のみ。light_*/camera/particle_emitter/trigger は該当コンポーネント付きで生成(値は既定。"),
             P("name", "string", false, nullptr, nullptr, nullptr, nullptr, "エンティティ名(一意推奨)。省略時は種別名。"),
-            P("position", "vec3", false, nullptr, nullptr, nullptr, nullptr, "[x,y,z]。省略時 [0,0,0]。UI 要素では未使用(uiRect で配置)。"),
-            P("parent", "int", false, nullptr, nullptr, nullptr, nullptr, "UI 要素の親エンティティ id(ui_canvas 以外で有効)。parentName と排他。"),
-            P("parentName", "string", false, nullptr, nullptr, nullptr, nullptr, "UI 要素の親エンティティ名(完全一致)。"),
+            P("position", "vec3", false, nullptr, nullptr, nullptr, nullptr, "[x,y,z]。省略時 [0,0,0]。parent / parentName を渡したときは親からの相対(ローカル)。UI 要素では未使用(uiRect で配置)。"),
+            P("parent", "int", false, nullptr, nullptr, nullptr, nullptr, "親エンティティ id(全種別で有効。ui_canvas だけは常にルートなので不可)。parentName と排他。position は親からの相対(ローカル)になる。"),
+            P("parentName", "string", false, nullptr, nullptr, nullptr, nullptr, "親エンティティ名(完全一致。全種別で有効。ui_canvas 不可)。position は親からの相対(ローカル)になる。"),
             P("size", "number", false, nullptr, nullptr, nullptr, nullptr, "type:\"plane\" のときの一辺(m)。0/省略で既定。"),
             P("subdivisions", "int", false, nullptr, nullptr, nullptr, nullptr, "type:\"plane\" の分割数(既定 1 = 4 頂点の板)。★水/海のカスタムシェーダーを貼るなら上げること。4 頂点のままだと頂点を動かす波が一切出ない。"),
         })});
@@ -679,11 +679,12 @@ void FillManifestChunk7(ManifestRows& o)
         "net", "", "", McpEffect::Read, "any", 10000, true, false,
         "none", "dx12_net_status", {
         })});
-    o.push_back({"new_scene", M("新規シーンを作る(現在のシーンを破棄)。savePath を渡すとそのパスに紐づけて作る。フレーム境界で実処理され {applied} を同期で返す。",
+    o.push_back({"new_scene", M("新規シーンを作る(現在のシーンを破棄)。savePath を渡すとそのパスに紐づけて作る。フレーム境界で実処理され、切り替え完了後に {sceneName,path,projectPath,entityCount,sceneGeneration,saved} を返す遅延応答。",
         "new scene 新規シーン",
-        "scene", "", "", McpEffect::WriteScene, "editor", 45000, false, false,
+        "scene", "", "", McpEffect::WriteScene, "editor", 45000, false, true,
         "none", "dx12_new_scene", {
             P("savePath", "assetPath", false, nullptr, nullptr, nullptr, nullptr, "新シーンの保存先 assets 相対パス(任意)。"),
+            P("profile", "enum", false, "epic|classic", nullptr, nullptr, "\"epic\"", "新規シーンのルック。epic(既定。品質プリセット Epic + 物理大気 + UE Filmic + 自動露出。DXR / DLSS が無ければ縮退)/ classic(従来の新規シーン)。"),
         })});
     o.push_back({"open_project", M("プロジェクトを開く(ランチャーのクリックと同等)。path はプロジェクトルートの絶対パス(.dx12proj のあるフォルダ)。",
         "open project プロジェクトを開く",
