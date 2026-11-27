@@ -115,10 +115,10 @@ export async function openSceneWait(call: EngineCall, scene: string, signal?: Ab
   }
   fail("E_NOT_FOUND_SCENE", `シーンが開かない: ${scene}`);
 }
-export async function newSceneWait(call: EngineCall): Promise<void> {
+export async function newSceneWait(call: EngineCall, args: Record<string, unknown> = {}): Promise<void> {
   let before = (await call("ping")).sceneGeneration;
   for (let i = 0; i < 600; i++) { const p = await call("ping"); if (!p.sceneLoading) { before = p.sceneGeneration; break; } await sleep(500); }
-  await call("new_scene", {}, { timeout: 300_000 });
+  await call("new_scene", args, { timeout: 300_000 });   // args: entries の newSceneArgs（例 {profile:"classic"}。W1-C8）
   for (let i = 0; i < 600; i++) { const p = await call("ping"); if (!p.sceneLoading && p.sceneGeneration > before) return; await sleep(200); }
   fail("E_ENGINE_TIMEOUT", "new_scene が完了しない");
 }

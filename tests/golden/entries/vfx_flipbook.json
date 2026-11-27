@@ -1,0 +1,22 @@
+{
+  "name": "vfx_flipbook",
+  "project": "tests/golden/projects/golden_core",
+  "scene": "scenes/vfx_flipbook.json",
+  "vfxSeek": {
+    "name": "Fire",
+    "t": 2
+  },
+  "camera": {
+    "position": [
+      0,
+      1.4,
+      -3.5
+    ],
+    "target": [
+      0,
+      0.7,
+      0
+    ]
+  },
+  "note": "W1-BD7: UnoFX のフリップブックの焚き火（炎 + 6-way の煙、NB2 の焼き込み資産）を夜の地面で。粒の時刻は vfxSeek（vfx_seek で t=2 秒へ移して止める）で決定論にする。"
+}

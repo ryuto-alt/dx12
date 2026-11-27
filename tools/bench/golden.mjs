@@ -109,14 +109,14 @@ async function openScene(eng, scene) {
  * 実際の「新規シーン」コマンド（new_scene。エディタの「新規シーン」と同じ経路で DirectionalLight + MainCamera + gi::ApplyNew が走る）で
  * シーンを作る。保存先は指定しない（リポジトリのプロジェクトを汚さない）。作り直しの完了は sceneGeneration の増加で待つ。
  */
-async function createNewScene(eng) {
+async function createNewScene(eng, args = {}) {
   let before = (await eng.call("ping")).sceneGeneration;
   for (let i = 0; i < 600; i++) {
     const p = await eng.call("ping");
     if (!p.sceneLoading) { before = p.sceneGeneration; break; }
     await sleep(500);
   }
-  await eng.call("new_scene", {}, 300_000);
+  await eng.call("new_scene", args, 300_000);   // args: entries の newSceneArgs（例 {profile:"classic"}。W1-C8）
   for (let i = 0; i < 600; i++) {
     const p = await eng.call("ping");
     if (!p.sceneLoading && p.sceneGeneration > before) return p;
@@ -374,7 +374,9 @@ async function main() {
           if (dxrJudge.status === "skip") { r.skipped = true; r.reasons.push(dxrJudge.reason); continue; }
         }
         try {
-          if (s.newScene) await createNewScene(conn); else await openScene(conn, s.scene);
+          if (s.newScene) await createNewScene(conn, s.newSceneArgs ?? {}); else await openScene(conn, s.scene);
+          // UnoFX（W1-BD7）: 粒の時刻は実時間 dt で進むので、entries の vfxSeek（例 {name:"Fire", t:2}）で決定論の時刻へ移して止める
+          if (s.vfxSeek) await conn.call("vfx_seek", s.vfxSeek);
           const shots = [];
           for (let k = 0; k < args.repeat; k++)
             shots.push(await captureScene(conn, s, args.repeat > 1 ? `.${k}` : ""));

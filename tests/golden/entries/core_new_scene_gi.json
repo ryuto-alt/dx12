@@ -3,6 +3,9 @@
   "group": "repeat",
   "requiresDxr": true,
   "newScene": true,
+  "newSceneArgs": {
+    "profile": "classic"
+  },
   "launchScene": "scenes/pbr_spheres.json",
   "project": "tests/golden/projects/golden_core",
   "camera": {

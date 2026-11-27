@@ -1,0 +1,11 @@
+{
+  "nativeWidth": 977,
+  "nativeHeight": 550,
+  "nativeSha256": "b8bf1dd897c6696be530d62537157f5014c2d28519f4d560060eb299e01622e1",
+  "compareSha256": "9d8c5acba221303f106a539996d88937fbba1028df29afb34d12ac7e9061548c",
+  "width": 640,
+  "height": 360,
+  "commit": "f1753a0",
+  "capturedAt": "2026-11-27T03:38:49.188Z",
+  "deterministicInSession": null
+}

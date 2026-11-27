@@ -99,7 +99,8 @@ export async function runGolden(a: Record<string, any>, deps: GoldenRunDeps): Pr
             if (dxr.status === "fail") { r.pass = false; r.reasons.push(dxr.reason); continue; }
             if (dxr.status === "skip") { r.skipped = true; r.reasons.push(dxr.reason); continue; }
           }
-          if (s.newScene) await newSceneWait(call); else await openSceneWait(call, s.scene, ctx.signal);
+          if (s.newScene) await newSceneWait(call, s.newSceneArgs ?? {}); else await openSceneWait(call, s.scene, ctx.signal);
+          if (s.vfxSeek) await call("vfx_seek", s.vfxSeek);   // golden.mjs と同じ: UnoFX の時刻を決定論で固定（W1-BD7）
           const shots: { img: any; file: string }[] = [];
           for (let k = 0; k < repeat; k++) shots.push(await captureFinal(call, path.join(deps.outDir, `${s.name}${repeat > 1 ? `.${k}` : ""}.native.png`), { camera: s.camera, warmupFrames: s.warmupFrames, settleFrames: s.settleFrames }));
           const first = shots[0];
