@@ -13,6 +13,7 @@
 #include "graphics/DeviceCaps.h"
 #include "renderer/DrawItem.h"
 #include "renderer/Mesh.h"
+#include "renderer/PhotometricMath.h"   // ToneMapper（kTmCount）
 #include "resource/ModelLoader.h"
 #include "resource/ShaderManager.h"
 #include "resource/ShaderDiagnostics.h"
@@ -788,12 +789,13 @@ DeepDiagReport DeepDiag::Gamma(Application& app)
         r.Add(0, "深度バッファが " + FormatName(info.depthFormat) + "（想定は D32_FLOAT）");
 
     ++r.checked;
-    if (info.tonemapper < 0 || info.tonemapper > 2)
+    if (info.tonemapper < 0 || info.tonemapper >= photo::kTmCount)   // 3..5 = UE Filmic / 線形 / PBR Neutral（W1-C8 の Epic の新規シーンは UE Filmic）
         r.Add(2, "トーンマップ設定が範囲外 (" + std::to_string(info.tonemapper) + ")。シーン JSON が壊れている");
 
     // ③ 参考情報。スクリーンショットは この設定を CPU 側で再現して書き出す。
-    static const char* kToneNames[] = { "ACES", "AgX", "なし(ガンマのみ)" };
-    if (info.tonemapper >= 0 && info.tonemapper <= 2)
+    static const char* kToneNames[] = { "ACES", "AgX", "なし(ガンマのみ)", "UE Filmic", "線形(クリップ)", "PBR Neutral" };
+    static_assert(sizeof(kToneNames) / sizeof(kToneNames[0]) == photo::kTmCount, "トーンマップの名前の表が ToneMapper と合わない");
+    if (info.tonemapper >= 0 && info.tonemapper < photo::kTmCount)
         r.Add(0, std::string("トーンマップ: ") + kToneNames[info.tonemapper]
                  + " / ポスト処理: " + (info.postEnabled ? "有効" : "無効")
                  + " / 露出: " + (info.exposureOn ? std::to_string(info.exposure) : "既定"));
