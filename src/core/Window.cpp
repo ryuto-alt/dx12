@@ -831,7 +831,7 @@ namespace dx12e
 void ApplyTitleBarTheme(HWND hwnd, bool dark, unsigned captionRgb, unsigned textRgb)
 {
     if (!hwnd) return;
-    static HMODULE s_dwm = ::LoadLibraryW(L"dwmapi.dll");
+    static HMODULE s_dwm = ::LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!s_dwm) return;
     using SetAttrFn = HRESULT(WINAPI*)(HWND, DWORD, LPCVOID, DWORD);
     static SetAttrFn s_set = reinterpret_cast<SetAttrFn>(::GetProcAddress(s_dwm, "DwmSetWindowAttribute"));

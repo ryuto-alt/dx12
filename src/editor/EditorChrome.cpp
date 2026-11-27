@@ -96,7 +96,8 @@ void EditorChrome::DrawTitleBar(const ImRect& bar, ImDrawList* dl)
     x1 = (std::min)(x1, bar.Max.x);
     const float ax0 = ui::anim::AnimatePx(ImGui::GetID("##caliperX0"), x0, ui::anim::dur::kCaliperSlide);
     const float ax1 = ui::anim::AnimatePx(ImGui::GetID("##caliperX1"), x1, ui::anim::dur::kCaliperSlide);
-    dl->PushClipRect(bar.Min, bar.Max, true);
+    // EndMenuBar 後の窓の InnerClipRect はメニューバーの下から始まるため、intersect すると高さ 0 になって全部切れる。
+    dl->PushClipRect(bar.Min, bar.Max, false);
     ui::deco::Caliper(dl, ax0, ax1, bar.Max.y, focused);
     dl->PopClipRect();
 }

@@ -1506,6 +1506,32 @@ namespace
 {
 struct YellowStats { int components = 0; int fills = 0; float ratio = 0.0f; int wideInTitleBar = 0; float capX0 = 0.0f, capX1 = 0.0f; std::string dump; };
 
+// 描画リストの各三角形を、所属する ImDrawCmd の ClipRect で切って列挙する（スキッサーで全て消える三角形は飛ばす）。
+// vis = 外接矩形を ClipRect で切った可視部分、visFrac = 可視部分の面積 / 外接矩形の面積（軸平行図形なので面積比で近似できる）。
+template <typename F>
+void ForEachVisibleTri(const ImDrawList* dl, F&& f)
+{
+    for (const ImDrawCmd& cmd : dl->CmdBuffer)
+    {
+        for (unsigned int k = 0; k + 2 < cmd.ElemCount; k += 3)
+        {
+            const int i = static_cast<int>(cmd.IdxOffset + k);
+            if (i + 2 >= dl->IdxBuffer.Size) break;
+            const ImDrawVert& a = dl->VtxBuffer[dl->IdxBuffer[i]];
+            const ImDrawVert& b = dl->VtxBuffer[dl->IdxBuffer[i + 1]];
+            const ImDrawVert& c = dl->VtxBuffer[dl->IdxBuffer[i + 2]];
+            const float bx0 = (std::min)({ a.pos.x, b.pos.x, c.pos.x }), by0 = (std::min)({ a.pos.y, b.pos.y, c.pos.y });
+            const float bx1 = (std::max)({ a.pos.x, b.pos.x, c.pos.x }), by1 = (std::max)({ a.pos.y, b.pos.y, c.pos.y });
+            const float vx0 = (std::max)(bx0, cmd.ClipRect.x), vy0 = (std::max)(by0, cmd.ClipRect.y);
+            const float vx1 = (std::min)(bx1, cmd.ClipRect.z), vy1 = (std::min)(by1, cmd.ClipRect.w);
+            if (vx1 <= vx0 || vy1 <= vy0) continue;   // 面積 0 に切られる = 画面に出ない
+            const float full = (bx1 - bx0) * (by1 - by0);
+            const float frac = full > 0.0f ? ((vx1 - vx0) * (vy1 - vy0)) / full : 1.0f;
+            f(a, b, c, ImVec4(vx0, vy0, vx1, vy1), frac);
+        }
+    }
+}
+
 YellowStats AuditYellow(float titleBarMaxY)
 {
     namespace th = dx12e::theme;
@@ -1519,23 +1545,21 @@ YellowStats AuditYellow(float titleBarMaxY)
     auto scanList = [&](const ImDrawList* dl)
     {
         if (!dl) return;
-        for (int i = 0; i + 2 < dl->IdxBuffer.Size; i += 3)
+        ForEachVisibleTri(dl, [&](const ImDrawVert& a, const ImDrawVert& b, const ImDrawVert& c, const ImVec4& vis, float visFrac)
         {
-            const ImDrawVert& a = dl->VtxBuffer[dl->IdxBuffer[i]];
-            const ImDrawVert& b = dl->VtxBuffer[dl->IdxBuffer[i + 1]];
-            const ImDrawVert& c = dl->VtxBuffer[dl->IdxBuffer[i + 2]];
-            if (a.col != b.col || b.col != c.col || (a.col >> 24) == 0) continue;
+            if (a.col != b.col || b.col != c.col || (a.col >> 24) == 0) return;
             // 文字・アイコンのグリフ（フォントのアトラスを引く三角形）は塗りではない。白画素の UV の三角形だけを数える
             const ImVec2 wu = ImGui::GetCurrentContext()->DrawListSharedData.TexUvWhitePixel;
-            if (a.uv.x != wu.x || a.uv.y != wu.y || b.uv.x != wu.x || b.uv.y != wu.y || c.uv.x != wu.x || c.uv.y != wu.y) continue;
+            if (a.uv.x != wu.x || a.uv.y != wu.y || b.uv.x != wu.x || b.uv.y != wu.y || c.uv.x != wu.x || c.uv.y != wu.y) return;
             const ImU32 key = a.col & 0x00FFFFFFu;
-            if (key != rgb[0] && key != rgb[1] && key != rgb[2] && key != rgb[3]) continue;
-            Box bx{ (std::min)({ a.pos.x, b.pos.x, c.pos.x }), (std::min)({ a.pos.y, b.pos.y, c.pos.y }),
-                    (std::max)({ a.pos.x, b.pos.x, c.pos.x }), (std::max)({ a.pos.y, b.pos.y, c.pos.y }), 0.0f };
-            bx.fillArea = std::fabs((b.pos.x - a.pos.x) * (c.pos.y - a.pos.y) - (c.pos.x - a.pos.x) * (b.pos.y - a.pos.y)) * 0.5f;
-            area += std::fabs((b.pos.x - a.pos.x) * (c.pos.y - a.pos.y) - (c.pos.x - a.pos.x) * (b.pos.y - a.pos.y)) * 0.5f;
+            if (key != rgb[0] && key != rgb[1] && key != rgb[2] && key != rgb[3]) return;
+            // 箱は ClipRect で切った可視部分だけ（スキッサーで全部消える図形は数えない）
+            Box bx{ vis.x, vis.y, vis.z, vis.w, 0.0f };
+            const float tri = std::fabs((b.pos.x - a.pos.x) * (c.pos.y - a.pos.y) - (c.pos.x - a.pos.x) * (b.pos.y - a.pos.y)) * 0.5f * visFrac;
+            bx.fillArea = tri;
+            area += tri;
             boxes.push_back(bx);
-        }
+        });
     };
     for (ImGuiWindow* w : g.Windows)
         if (w->WasActive && !w->Hidden && w->Viewport == ImGui::GetMainViewport()) scanList(w->DrawList);
@@ -1573,11 +1597,16 @@ YellowStats AuditYellow(float titleBarMaxY)
     return st;
 }
 
-int CountVertsWithColor(const ImDrawList* dl, ImU32 col)
+// 可視（ClipRect 内）の三角形の頂点だけを数える。yMin/yMax を渡すと、可視部分がその帯に収まるものだけを数える。
+int CountVertsWithColor(const ImDrawList* dl, ImU32 col, float yMin = -1e30f, float yMax = 1e30f)
 {
     int n = 0;
     if (!dl) return 0;
-    for (int i = 0; i < dl->VtxBuffer.Size; ++i) if (dl->VtxBuffer[i].col == col) ++n;
+    ForEachVisibleTri(dl, [&](const ImDrawVert& a, const ImDrawVert& b, const ImDrawVert& c, const ImVec4& vis, float)
+    {
+        if (vis.y < yMin - 0.5f || vis.w > yMax + 0.5f) return;
+        n += (a.col == col) + (b.col == col) + (c.col == col);
+    });
     return n;
 }
 } // namespace
@@ -1619,8 +1648,11 @@ void T_GraphiteChrome(ImGuiTestContext* ctx)
             // 主尺: タイトルバーの描画リストに主目盛りの色の頂点がある
             const ImU32 major = ImGui::GetColorU32(gg.chrome.tickMajor);
             const ImU32 minor = ImGui::GetColorU32(gg.chrome.tickMinor);
-            IM_CHECK(CountVertsWithColor(tb->DrawList, major) >= 4 * 10);
-            IM_CHECK(CountVertsWithColor(tb->DrawList, minor) >= 4 * 20);
+            // 可視（ClipRect 内）の目盛りだけを数え、かつタイトルバー下端の帯（主目盛りの高さ）に収まっていること
+            const float rulerTop = titleBottom - ui::Px(static_cast<float>(gg.deco.scaleMajorH)) - 1.0f;
+            IM_CHECK(CountVertsWithColor(tb->DrawList, major, rulerTop, titleBottom) >= 3 * 10);
+            IM_CHECK(CountVertsWithColor(tb->DrawList, minor, rulerTop, titleBottom) >= 3 * 20);
+            IM_CHECK(CountVertsWithColor(tb->DrawList, major) == CountVertsWithColor(tb->DrawList, major, rulerTop, titleBottom));
             // 黄の予算（編集中）
             const YellowStats st = AuditYellow(titleBottom);
             ctx->LogInfo("yellow: components=%d fills=%d ratio=%.4f caliper=[%.1f,%.1f] fillBoxes=%s", st.components, st.fills, st.ratio, st.capX0, st.capX1, st.dump.c_str());

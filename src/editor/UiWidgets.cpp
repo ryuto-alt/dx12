@@ -975,7 +975,7 @@ void ScaleRuler(ImDrawList* dl, ImVec2 mn, ImVec2 mx)
     const float majorH = std::floor(Px(static_cast<float>(d.scaleMajorH)) + 0.5f);
     const float yb = std::floor(mx.y + 0.5f);
     const ImU32 cMinor = Col(sp.gg->chrome.tickMinor), cMajor = Col(sp.gg->chrome.tickMajor);
-    dl->PushClipRect(mn, mx, true);
+    dl->PushClipRect(mn, mx, false);   // 呼び出し側の窓の InnerClipRect（メニューバーの下）と交差させない
     for (const chrome::RulerTick& t : ticks)
         dl->AddRectFilled(ImVec2(t.x, yb - (t.major ? majorH : minorH)), ImVec2(t.x + hair, yb), t.major ? cMajor : cMinor);
     dl->PopClipRect();
@@ -991,7 +991,7 @@ void Caliper(ImDrawList* dl, float x0, float x1, float yBottom, bool focused)
     if (!g.valid) return;
     const ImU32 col = Col(focused ? th::Accent : th::NeedleDim);
     for (const chrome::PxRect& r : { g.line, g.jawL, g.jawR })
-        dl->AddRectFilled(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), col);
+        NeedleBar(dl, ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), col);
 }
 
 void SelectionBar(ImDrawList* dl, ImVec2 mn, ImVec2 mx)
