@@ -64,7 +64,6 @@ struct QualityPlan
     bool rtShadow        = false;
     bool rtReflect       = false;
     bool rtReflectHalfRes = true;
-    bool rtAo            = false;
 
     // ---- 縮退（DXR / DLSS が無くて置き換えた行）----
     static constexpr size_t kMaxDegrades = 8;
@@ -154,8 +153,7 @@ inline QualityPlan BuildQualityPlan(QualityPresetId id, QualityCaps caps)
         p.ddgi      = caps.dxr;
         if (p.id == QualityPresetId::Cinematic)
         {
-            p.rtReflectHalfRes = false;   // フル解像度の RT 反射
-            p.rtAo             = caps.dxr;
+            p.rtReflectHalfRes = false;   // フル解像度の RT 反射（AO は SSAO のまま。RT-AO は仕様に無い）
         }
         break;
     case QualityPresetId::Count: break;
@@ -185,19 +183,15 @@ inline QualityPlan BuildQualityPlan(QualityPresetId id, QualityCaps caps)
             {
                 p.AddDegrade("Raytracing",  "DXR が無い: TLAS を作らない（RT の各行を縮退へ置き換える）");
                 p.AddDegrade("RtShadow",    "DXR が無い: RT 太陽影の代わりに動的 CSM が静的な物も描く");
-                const char* t = qualityplan::TableDegradeText(p.id, "RtReflect");   // 表の文（SSR にする）を使う
-                p.AddDegrade("RtReflect",   t ? t : "DXR が無い: SSR にする");
+                p.AddDegrade("RtReflect",   "DXR が無い: RT 反射は使わず SSR にする");
             }
             p.AddDegrade("Ddgi", "DXR が無い: DDGI の代わりに SSGI を使う");
             if (p.id == QualityPresetId::Cinematic)
             {
                 // Cinematic だけの DXR 専用の行。RtSettings に機能が出るまでは構成に現れないが、表の行は縮退として示す。
-                p.AddDegrade("RtAo", "DXR が無い: RT-AO は使わず SSAO のまま");
-                for (const char* row : { "RtGi", "RtLocalShadow" })
-                {
-                    const char* t = qualityplan::TableDegradeText(p.id, row);
-                    p.AddDegrade(row, t ? t : "DXR が無い: この行は使わない");
-                }
+                // 文は DXR が無い場合専用（表の文は「予算超過時」の縮退なので流用しない）。
+                p.AddDegrade("RtGi",          "DXR が無い: RT 短距離 GI は使わず SSGI のまま");
+                p.AddDegrade("RtLocalShadow", "DXR が無い: RT ローカル影は使わずシャドウアトラスのまま");
             }
         }
     }

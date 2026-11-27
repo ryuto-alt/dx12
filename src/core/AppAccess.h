@@ -73,8 +73,8 @@ struct AppAccess
     static bool SetQualityPreset(Application&, QualityPresetId, bool recordUndo);
     static QualityPresetId GetQualityPreset(const Application&);
     // W1-C7: 品質プリセットの本体（定義は QualityPresetApply.cpp）。caps（DXR / DLSS）の問い合わせ、現在のシーンが選択中のプリセットと
-    //   一致しているか、設定ファイル（settings.json "quality_preset"）からの読み直し（プロジェクトを開いた後に呼んでほしい。
-    //   依頼: ApplicationProject.cpp の持ち主へ）、Undo / Redo の復元。
+    //   一致しているか、Undo / Redo の復元。
+    //   ReloadQualityPresetFromSettings は互換のために残した空の関数（GetQualityPreset が毎回 settings.json を引くので呼ぶ必要は無い）。
     static void QueryQualityCaps(const Application&, bool& dxr, bool& dlss);
     static bool QualityMatchesScene(const Application&);
     static void ReloadQualityPresetFromSettings(Application&);

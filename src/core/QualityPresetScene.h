@@ -73,7 +73,7 @@ inline void ApplyQualityPlanToScene(const QualityPlan& p, Scene& s)
     r.shadowEnabled     = p.rtShadow;
     r.reflectionsEnabled = p.rtReflect;
     r.reflectionHalfRes = p.rtReflectHalfRes;
-    r.aoEnabled         = p.rtAo;
+    r.aoEnabled         = false;   // RT-AO はどのプリセットでも使わない（AO は SSAO）
 }
 
 // 現在のシーンが計画と一致しているか（プリセットを選んだ後に手で変えたら false）。
@@ -91,7 +91,7 @@ inline bool QualityPlanMatchesScene(const QualityPlan& p, const Scene& s)
         && s.GetSSAOSettings().enabled == p.ssao && s.GetSsrSettings().enabled == p.ssr
         && s.GetSsgiSettings().enabled == p.ssgi && s.GetDdgiSettings().enabled == p.ddgi
         && r.shadowEnabled == p.rtShadow && r.reflectionsEnabled == p.rtReflect
-        && r.reflectionHalfRes == p.rtReflectHalfRes && r.aoEnabled == p.rtAo;
+        && r.reflectionHalfRes == p.rtReflectHalfRes && !r.aoEnabled;
 }
 
 } // namespace dx12e

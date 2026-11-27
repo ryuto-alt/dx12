@@ -24,10 +24,10 @@ const QualityCaps kCaps[] = { {true, true}, {true, false}, {false, true}, {false
 std::string Sig(const QualityPlan& p)
 {
     char b[96];
-    std::snprintf(b, sizeof(b), "%d.%d|%d|%d%d%d|%d%d%d%d|%d%d%d%d", static_cast<int>(p.upscaler),
+    std::snprintf(b, sizeof(b), "%d.%d|%d|%d%d%d|%d%d%d%d|%d%d%d", static_cast<int>(p.upscaler),
                   p.upscaler == QualityUpscaler::Dlss ? p.dlssQuality : 0,
                   p.shadingRevision, p.pcss, p.epicDynamicCsm, p.contactShadow, p.ssao, p.ssr, p.ssgi, p.ddgi,
-                  p.rtShadow, p.rtReflect, p.rtReflectHalfRes, p.rtAo);
+                  p.rtShadow, p.rtReflect, p.rtReflectHalfRes);
     return b;
 }
 } // namespace
@@ -43,7 +43,7 @@ int main()
             const QualityPlan p = BuildQualityPlan(id, caps);
             CHECK(p.id == id);
             sigs.insert(Sig(p));
-            if (!caps.dxr) CHECK(!p.rtShadow && !p.rtReflect && !p.rtAo && !p.ddgi);   // DXR が無いのに RT を入れない
+            if (!caps.dxr) CHECK(!p.rtShadow && !p.rtReflect && !p.ddgi);   // DXR が無いのに RT を入れない
             if (!caps.dlss) CHECK(p.upscaler != QualityUpscaler::Dlss);               // DLSS が無いのに DLSS を選ばない
             if (p.ddgi) CHECK(!p.ssgi);                                               // BUG-04: DDGI が有効なら SSGI は OFF
             CHECK(p.shadingRevision == 1 || p.shadingRevision == 2);
@@ -66,7 +66,7 @@ int main()
         CHECK(n.setRenderScale && n.renderScale == GetPreset(QualityPresetId::Epic).Column(QualityColumn::TaaNative).renderScale);
         // Cinematic は DLAA。DLSS が無ければ TAA（表に taaNative の列が無いので taau の列）
         const QualityPlan c = BuildQualityPlan(QualityPresetId::Cinematic, {true, true});
-        CHECK(c.dlssQuality == static_cast<u8>(upscale::DlssQuality::Dlaa) && !c.rtReflectHalfRes && c.rtAo);
+        CHECK(c.dlssQuality == static_cast<u8>(upscale::DlssQuality::Dlaa) && !c.rtReflectHalfRes);
         const QualityPlan cn = BuildQualityPlan(QualityPresetId::Cinematic, {true, false});
         CHECK(cn.upscaler == QualityUpscaler::Taa && cn.column == QualityColumn::Taau);
         // Low / Medium は表の行が無いので解像度スケールを触らない
@@ -84,13 +84,11 @@ int main()
         {
             rows.insert(p.degrades[i].row);
             CHECK(p.degrades[i].text[0] != '\0');
-            if (std::strcmp(p.degrades[i].row, "RtAo") != 0)   // RT-AO は表に行がまだ無い
-                CHECK(qualityplan::HasBudgetRow(id, p.degrades[i].row));
+            CHECK(qualityplan::HasBudgetRow(id, p.degrades[i].row));
         }
         if (id == QualityPresetId::Cinematic)
-            CHECK(rows.count("RtAo") && rows.count("RtGi") && rows.count("RtLocalShadow"));
-        else
-            CHECK(!rows.count("RtAo"));
+            CHECK(rows.count("RtGi") && rows.count("RtLocalShadow"));
+        CHECK(!rows.count("RtAo"));   // RT-AO はどのプリセットにも無い
         CHECK(rows.count("Raytracing") && rows.count("RtShadow") && rows.count("RtReflect") && rows.count("Ddgi"));
         CHECK(p.ssr && p.ssgi && !p.ddgi && p.epicDynamicCsm);   // RT 反射 → SSR、DDGI → SSGI、CSM が全部描く
     }
@@ -117,7 +115,7 @@ int main()
         const float taau = SumBudgetRows(QualityPresetId::Epic, QualityColumn::Taau);
         const float nat  = SumBudgetRows(QualityPresetId::Epic, QualityColumn::TaaNative);
         CHECK(dlss > 0.0f && dlss <= epic.p95Ms + 1e-3f);    // DLSS 列 15.5 以下（W1 の合否）
-        CHECK(taau > 0.0f && taau <= epic.p99Ms + 1e-3f);    // TAAU 列 16.6 以下
+        CHECK(taau > 0.0f && taau <= 16.6f + 1e-3f);    // TAAU 列 16.6 以下
         CHECK(nat > 0.0f);                                   // TAA native は記録だけ（上限の判定はしない）
         CHECK(std::fabs(dlss - epic.Column(QualityColumn::Dlss).totalMs) < 0.05f);
         CHECK(std::fabs(taau - epic.Column(QualityColumn::Taau).totalMs) < 0.05f);
