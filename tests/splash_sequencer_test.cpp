@@ -72,7 +72,8 @@ bool EqualRange(const std::vector<float>& a, std::int64_t aFrom, const std::vect
     return true;
 }
 
-// ---- 実機の音のスレッド + スプラッシュのスレッドの模擬（60fps。音は 20ms 先まで描き置く。時計は「聞こえている時刻」）
+// ---- 実機の音のスレッド + スプラッシュのスレッドの模擬（60fps。音は aheadFrames 先まで描き置く。時計は「聞こえている時刻」）
+// 持ち替えとスキップは SplashScreen.cpp と同じ手順: 持ち替えは音が先（手遅れならドライバも速い経路のまま）、スキップは音が決めた時刻でドライバも飛ぶ。
 struct Sim
 {
     std::vector<float> out;
@@ -80,48 +81,63 @@ struct Sim
     int lateCues = 0;
     double lockWallMs = std::nan("");
     bool handed = false;
+    bool vetoed = false;
+    std::int64_t handFrame = -1, handLen = 0;
     bool skipped = false;
     double skipWall = std::nan("");
     int cues = 0, cancelled = 0;
+    std::size_t maxVoices = 0;
 };
 
-Sim Run(const std::shared_ptr<const sp::CalibrateBank>& bank, bool reduce, double finishMs, const std::vector<double>& skipsMs, double endMs)
+Sim Run(const std::shared_ptr<const sp::CalibrateBank>& bank, bool reduce, double finishMs, const std::vector<double>& skipsMs, double endMs,
+        std::int64_t aheadFrames = 882)
 {
     sp::CalibrateSequencer seq(bank, reduce);
     sp::GaugeFastDriver drv;
     Sim r;
-    constexpr std::int64_t kAhead = 882;
     std::vector<float> tmp(441 * 2);
     auto fill = [&](std::int64_t target) {
         while (static_cast<std::int64_t>(r.out.size() / 2) < target)
         {
             seq.Render(tmp.data(), 441);
             r.out.insert(r.out.end(), tmp.begin(), tmp.end());
+            r.maxVoices = std::max(r.maxVoices, seq.VoiceCount());
         }
     };
     seq.Begin();
-    fill(kAhead);
+    fill(aheadFrames);
     size_t nextSkip = 0;
-    bool handSent = false, skipSent = false;
     for (int k = 0;; ++k)
     {
         const double t = k * 1000.0 / 60.0;
         if (t > endMs) break;
         const bool fin = !std::isnan(finishMs) && t >= finishMs;
         const float prog = std::isnan(finishMs) ? 0.2f : static_cast<float>(std::min(0.99, t / finishMs));
-        if (!reduce) drv.Update(t, prog, fin);
-        if (!reduce && drv.HandedOver() && !handSent) { seq.HandOver(t); handSent = true; r.handed = true; }
+        if (!reduce)
+        {
+            if (drv.HandOverPending(t, fin))
+            {
+                if (seq.HandOver(t)) { r.handed = true; r.handFrame = seq.HandOverFrame(); r.handLen = seq.HandOverLen(); }
+                else { drv.VetoHandOver(); r.vetoed = true; }
+            }
+            drv.Update(t, prog, fin);
+        }
         while (nextSkip < skipsMs.size() && skipsMs[nextSkip] <= t)
         {
             ++nextSkip;
-            // スキップ時刻は「聞こえている時刻」と「音が描き終えた時刻」の遅い方（描き置き済みの音は書き換えられない）。絵も同じ時刻でロックへ飛ぶので音と揃う
-            const double tSkip = std::max(t, sp::seq::FrameToMs(static_cast<double>(seq.OutFrame())));
-            drv.Skip(tSkip);
-            if (drv.Skipped() && !skipSent) { skipSent = true; r.skipped = true; r.skipWall = drv.SkipWallMs(); seq.Skip(r.skipWall); }
+            const bool first = !r.skipped;
+            double used = t;
+            const bool eff = seq.Skip(t, &used);
+            if (!reduce) drv.Skip(used);
+            if (!reduce && first) CHECK_MSG(eff == drv.Skipped(), "audio/driver skip disagree at %.1f (audio %d, driver %d)", t, eff, drv.Skipped());
+            if (eff && first) { r.skipped = true; r.skipWall = used; }
         }
-        for (std::uint32_t id : drv.TakeCancelledCueIds()) { seq.CancelCue(id); ++r.cancelled; }
-        for (const sp::GaugeCue& c : drv.TakeCues()) { seq.AddCue(c); ++r.cues; }
-        fill(sp::seq::MsToFrame(t) + kAhead);
+        if (!reduce)
+        {
+            for (std::uint32_t id : drv.TakeCancelledCueIds()) { seq.CancelCue(id); ++r.cancelled; }
+            for (const sp::GaugeCue& c : drv.TakeCues()) { seq.AddCue(c); ++r.cues; }
+        }
+        fill(sp::seq::MsToFrame(t) + aheadFrames);
     }
     while (!seq.Idle() && r.out.size() / 2 < 20u * 44100u) fill(static_cast<std::int64_t>(r.out.size() / 2) + 441);
     r.tailFrame = seq.TailStartFrame();
@@ -182,20 +198,30 @@ void TestBankAndFast(const std::shared_ptr<const sp::CalibrateBank>& bank, const
 // ステムからの再構築（ベッド + クリックのパン・Haas）が master に近い（ロック前、ベッドがループに入る手前まで）
 void TestStemReconstruction(const std::shared_ptr<const sp::CalibrateBank>& bank)
 {
+    // 実機と同じく、予約は発音の 50ms 前に出す（一度に全部入れるとボイスの上限 8 に当たる）
     sp::CalibrateSequencer s(bank, false);
     s.BeginSlow();
-    for (int i = 0; i < 24; ++i)
-    {
-        sp::GaugeCue c;
-        c.kind = sp::GaugeCueKind::Click;
-        c.index = i;
-        c.playAtMs = sp::calibrate::kClickMs[i];
-        c.pan = static_cast<float>(sp::DefaultCalibrateEvents().clickPan[i]);
-        c.id = static_cast<std::uint32_t>(i + 1);
-        s.AddCue(c);
-    }
+    int next = 0;
+    std::vector<float> out, tmp(441 * 2);
     const std::int64_t n = sp::seq::MsToFrame(1500.0);
-    const std::vector<float> out = RenderAll(s, n);
+    while (static_cast<std::int64_t>(out.size() / 2) < n)
+    {
+        const double nowMs = sp::seq::FrameToMs(static_cast<double>(s.OutFrame()));
+        while (next < 24 && sp::calibrate::kClickMs[next] <= nowMs + 50.0)
+        {
+            sp::GaugeCue c;
+            c.kind = sp::GaugeCueKind::Click;
+            c.index = next;
+            c.playAtMs = sp::calibrate::kClickMs[next];
+            c.pan = static_cast<float>(sp::DefaultCalibrateEvents().clickPan[next]);
+            c.id = static_cast<std::uint32_t>(next + 1);
+            s.AddCue(c);
+            ++next;
+        }
+        s.Render(tmp.data(), 441);
+        out.insert(out.end(), tmp.begin(), tmp.end());
+    }
+    CHECK(s.DroppedCues() == 0 && s.LateCues() == 0);
     double se = 0, sr = 0;
     for (std::int64_t i = 0; i < n * 2; ++i)
     {
@@ -205,7 +231,8 @@ void TestStemReconstruction(const std::shared_ptr<const sp::CalibrateBank>& bank
     }
     const double rmsDb = 10.0 * std::log10(se / static_cast<double>(n * 2) + 1e-30);
     std::printf("stem reconstruction residual RMS %.3f dBFS (signal %.1f)\n", rmsDb, 10.0 * std::log10(sr / static_cast<double>(n * 2)));
-    CHECK_MSG(rmsDb <= -59.5, "residual %.3f dBFS", rmsDb);
+    // 受け入れの -60 dBFS（BD1: ステムを足し戻した残差）。以前の -59.965 はボイスの上限を超えた全予約の一括投入でクリックを外していたための誤差だった
+    CHECK_MSG(rmsDb <= -60.0, "residual %.3f dBFS", rmsDb);
 }
 
 void TestSlowScenarios(const std::shared_ptr<const sp::CalibrateBank>& bank)
@@ -232,12 +259,79 @@ void TestSlowScenarios(const std::shared_ptr<const sp::CalibrateBank>& bank)
         CHECK_MSG(m <= srcMax * 1.6f, "fin=%.0f maxStep %.5f > %.5f", fin, m, srcMax * 1.6f);
         // 持ち替え前は master そのまま
         CHECK(EqualRange(r.out, 0, bank->full, 0, sp::seq::MsToFrame(1475.0)));
+        CHECK(r.handFrame >= sp::seq::MsToFrame(1475.0) && r.handLen >= sp::seq::MsToFrame(sp::seq::kHandoverMinFadeMs));
+        // 持ち替えの区間: master の落ち（等パワーでない raised-cosine）とベッドの上がりの和になっている（包絡）。段差も細かい（master の同じ区間は 0.04 を超える）
+        {
+            double worstEnv = 0;
+            for (std::int64_t i = 0; i < r.handLen; ++i)
+            {
+                const double eo = 0.5 * (1.0 + std::cos(3.14159265358979323846 * static_cast<double>(i) / static_cast<double>(r.handLen)));
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const size_t idx = static_cast<size_t>((r.handFrame + i) * 2 + ch);
+                    const double want = bank->full[idx] * eo + bank->bed[idx] * (1.0 - eo);
+                    worstEnv = std::max(worstEnv, std::fabs(static_cast<double>(r.out[idx]) - want));
+                }
+            }
+            const float mh = MaxStep(r.out, r.handFrame - 2, r.handFrame + r.handLen + 2);
+            std::printf("  handover@%lld len %lld  envelope err %.2e  maxStep %.5f\n", static_cast<long long>(r.handFrame), static_cast<long long>(r.handLen), worstEnv, mh);
+            CHECK_MSG(worstEnv < 1e-3, "fin=%.0f handover envelope err %.2e", fin, worstEnv);
+            CHECK_MSG(mh < 0.01f, "fin=%.0f handover step %.5f", fin, mh);
+            // 持ち替えは master の C23 の頭（1,543ms）までに終わる
+            CHECK(r.handFrame + r.handLen < sp::seq::MsToFrame(sp::calibrate::kClickMs[sp::calibrate::kClickCount - 1]));
+        }
+        if (r.tailFrame > sp::seq::MsToFrame(2500.0))
+        {
+            // ベッドのループ継ぎ目（2,000ms = 1,600 + 400）と、ロック直前の 20ms のカット
+            const std::int64_t seam = sp::seq::MsToFrame(sp::calibrate::kBedLoopEndMs + (sp::calibrate::kBedLoopEndMs - sp::calibrate::kBedLoopStartMs));
+            const float ms = MaxStep(r.out, seam - 64, seam + 64);
+            const float mc = MaxStep(r.out, r.tailFrame - sp::seq::MsToFrame(sp::seq::kTailCutFadeMs) - 2, r.tailFrame);
+            std::printf("  loop seam %.5f  pre-lock cut %.5f\n", ms, mc);
+            CHECK_MSG(ms < 0.01f, "fin=%.0f loop seam step %.5f", fin, ms);
+            CHECK_MSG(mc < 0.01f, "fin=%.0f pre-lock cut step %.5f", fin, mc);
+            // ロックの直前（クリックもベッドも）は 0 になっている
+            CHECK(std::fabs(r.out[static_cast<size_t>((r.tailFrame - 1) * 2)]) < 1e-3f);
+        }
     }
     // 完了が持ち替えの前なら速い経路のまま、全体が master と一致
     {
         const Sim r = Run(bank, false, 1200, {}, 5000);
         CHECK(!r.handed);
         CHECK(EqualRange(r.out, 0, bank->full, 0, bank->FullFrames()));
+    }
+}
+
+// 持ち替えが遅れた（音が先まで描き置いている）とき: master の C23 とロックが二重に鳴らない。音は master のまま最後まで、絵も速い経路のまま
+void TestLateHandover(const std::shared_ptr<const sp::CalibrateBank>& bank)
+{
+    for (std::int64_t aheadMs : { 20, 40, 60, 100, 150, 400 })
+    {
+        const std::int64_t ahead = sp::seq::MsToFrame(static_cast<double>(aheadMs));
+        const Sim r = Run(bank, false, 5000, {}, 8000, ahead);
+        std::printf("late handover: ahead %lldms -> %s%s (handFrame %lld len %lld)\n", static_cast<long long>(aheadMs), r.handed ? "handed" : "", r.vetoed ? "vetoed" : "",
+                    static_cast<long long>(r.handFrame), static_cast<long long>(r.handLen));
+        CHECK(r.handed != r.vetoed);
+        if (r.vetoed)
+        {
+            // master のまま最後まで（C23 もロックも 1 回だけ）。ロックの音の予約も出ない
+            CHECK_MSG(EqualRange(r.out, 0, bank->full, 0, bank->FullFrames()), "ahead %lld vetoed but output differs from master", static_cast<long long>(aheadMs));
+            CHECK(r.cues == 0 && r.tailFrame < 0 && r.lateCues == 0);
+        }
+        else
+        {
+            CHECK(r.handFrame + r.handLen < sp::seq::MsToFrame(sp::calibrate::kClickMs[sp::calibrate::kClickCount - 1]));
+            CHECK(r.tailFrame > 0);
+        }
+        CHECK(r.maxVoices <= 8);
+    }
+    // 60ms: 持ち替えるが、フェードは短くなり C23 の頭までに終わる。100ms 以上は断る（描き置きが C23 の頭に掛かる）。20ms は通常のフェード（30ms）
+    {
+        const Sim r60 = Run(bank, false, 5000, {}, 3000, sp::seq::MsToFrame(60.0));
+        CHECK(r60.handed && r60.handLen < sp::seq::MsToFrame(sp::seq::kHandoverFadeMs));
+        CHECK(Run(bank, false, 5000, {}, 3000, sp::seq::MsToFrame(100.0)).vetoed);
+        CHECK(Run(bank, false, 5000, {}, 3000, sp::seq::MsToFrame(150.0)).vetoed);
+        const Sim r20 = Run(bank, false, 5000, {}, 3000, sp::seq::MsToFrame(20.0));
+        CHECK(r20.handed && r20.handLen == sp::seq::MsToFrame(sp::seq::kHandoverFadeMs));
     }
 }
 
@@ -260,9 +354,36 @@ void TestSkip(const std::shared_ptr<const sp::CalibrateBank>& bank)
         if (sk < 1400) CHECK(EqualRange(r.out, 0, bank->full, 0, f));
         // クリックノイズ無し: 全体で最大段差が master の 1.6 倍以内。フェードの区間でも同じ
         const float m = MaxStep(r.out, 0, static_cast<std::int64_t>(r.out.size() / 2));
-        const float mf = MaxStep(r.out, f - 2, f + fade + 2);
-        std::printf("skip %.0f  tail@%lld  maxStep %.5f fadeRegion %.5f (master %.5f)\n", sk, static_cast<long long>(f), m, mf, srcMax);
+        std::printf("skip %.0f  tail@%lld  maxStep %.5f (master %.5f)\n", sk, static_cast<long long>(f), m, srcMax);
         CHECK_MSG(m <= srcMax * 1.6f, "skip %.0f maxStep %.5f", sk, m);
+        // フェードの区間: lock_tail の頭の打撃を引いた残り（落ちていく音）が滑らか。master の同じ区間は 0.04 を超える
+        {
+            std::vector<float> d;
+            for (std::int64_t i = -2; i <= fade + 2; ++i)
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const size_t idx = static_cast<size_t>((f + i) * 2 + ch);
+                    d.push_back(r.out[idx] - (i >= 0 ? bank->lockTail[static_cast<size_t>(i * 2 + ch)] : 0.0f));
+                }
+            const float mf = MaxStep(d, 0, d.size() / 2);
+            std::printf("   fade region step %.5f\n", mf);
+            CHECK_MSG(mf < 0.01f, "skip %.0f fade region step %.5f", sk, mf);
+            // 包絡: master だけが鳴っている時刻（持ち替え前）は out - lock_tail = master * raised-cosine
+            if (sk < 1400)
+            {
+                double worst = 0;
+                for (std::int64_t i = 0; i < fade; ++i)
+                {
+                    const double env = 0.5 * (1.0 + std::cos(3.14159265358979323846 * static_cast<double>(i) / static_cast<double>(fade)));
+                    for (int ch = 0; ch < 2; ++ch)
+                    {
+                        const double got = d[static_cast<size_t>((i + 2) * 2 + ch)];
+                        worst = std::max(worst, std::fabs(got - bank->full[static_cast<size_t>((f + i) * 2 + ch)] * env));
+                    }
+                }
+                CHECK_MSG(worst < 1e-5, "skip %.0f fade envelope err %.2e", sk, worst);
+            }
+        }
     }
     // 2 回目のスキップは音に何もしない
     {
@@ -283,32 +404,109 @@ void TestSkip(const std::shared_ptr<const sp::CalibrateBank>& bank)
         s.Begin();
         std::vector<float> out = RenderAll(s, 441 * 40);
         const std::int64_t f = static_cast<std::int64_t>(out.size() / 2);
-        s.Skip(sp::seq::FrameToMs(static_cast<double>(f)));
+        double used = 0;
+        CHECK(s.Skip(sp::seq::FrameToMs(static_cast<double>(f)), &used));
         std::vector<float> more = RenderAll(s, tl + 100);
         out.insert(out.end(), more.begin(), more.end());
         CHECK(EqualRange(out, f + 1323, bank->lockTail, 1323, tl - 1323));
+    }
+    // Reduce Motion / 速い経路のままロック（1,628ms）を過ぎたあとのスキップは何もしない（master の続きがそのまま鳴る。lock_tail を頭から重ねない）
+    for (bool reduce : { true, false })
+    {
+        for (double late : { 1700.0, 2500.0, 3000.0 })
+        {
+            sp::CalibrateSequencer s(bank, reduce);
+            s.Begin();
+            const std::vector<float>& ref = reduce ? bank->rm : bank->full;
+            std::vector<float> out = RenderAll(s, sp::seq::MsToFrame(late));
+            double used = 0;
+            CHECK_MSG(!s.Skip(late, &used), "late skip %.0f reduce=%d must be a no-op", late, reduce);
+            CHECK(!s.Skipped() && !s.TailStarted());
+            std::vector<float> more = RenderAll(s, bank->FullFrames());
+            out.insert(out.end(), more.begin(), more.end());
+            CHECK_MSG(EqualRange(out, 0, ref, 0, bank->FullFrames()), "late skip %.0f reduce=%d changed the output", late, reduce);
+        }
+    }
+    // 持ち替えを断った速い経路（手遅れ）でも、ロック以降のスキップはドライバ・音の両方が何もしない
+    {
+        const Sim r = Run(bank, false, std::nan(""), { 2500 }, 4000, 6615);
+        CHECK(r.vetoed);
+        CHECK(!r.skipped);
+        CHECK(EqualRange(r.out, 0, bank->full, 0, bank->FullFrames()));
     }
 }
 
 void TestCancelAndSteal(const std::shared_ptr<const sp::CalibrateBank>& bank)
 {
-    sp::CalibrateSequencer s(bank, false);
-    s.BeginSlow();
     sp::GaugeCue c;
     c.kind = sp::GaugeCueKind::Click; c.index = 3; c.playAtMs = 500; c.pan = 0.f; c.id = 7;
-    s.AddCue(c);
-    CHECK(s.CountKind(sp::VoiceKind::Click) == 1);
-    s.CancelCue(7);
-    CHECK(s.CountKind(sp::VoiceKind::Click) == 0);
-    // 同時 8 本を超えると、いちばん古いクリックを 2ms で落とす
-    for (int i = 0; i < 12; ++i)
     {
-        c.index = i; c.id = static_cast<std::uint32_t>(100 + i); c.playAtMs = 600.0 + i;
+        sp::CalibrateSequencer s(bank, false);
+        s.BeginSlow();
         s.AddCue(c);
+        CHECK(s.CountKind(sp::VoiceKind::Click) == 1);
+        s.CancelCue(7);
+        CHECK(s.CountKind(sp::VoiceKind::Click) == 0);
     }
-    CHECK(s.StolenVoices() >= 4);
-    const std::vector<float> out = RenderAll(s, sp::seq::MsToFrame(900));
-    CHECK(MaxStep(out, 0, static_cast<std::int64_t>(out.size() / 2)) < 0.5f);
+    // 同時 8 本が上限。Render と Render の間に予約が重なっても、数は 8 を超えない（フェード中で残っているものも数える）
+    {
+        sp::CalibrateSequencer s(bank, false);
+        s.BeginSlow();                                       // ベッド 1 本
+        std::size_t worst = 0;
+        for (int i = 0; i < 40; ++i)
+        {
+            c.index = i % 24; c.id = static_cast<std::uint32_t>(100 + i); c.playAtMs = 600.0 + i;
+            s.AddCue(c);
+            worst = std::max(worst, s.VoiceCount());
+            CHECK_MSG(s.VoiceCount() <= 8, "voices %zu after cue %d", s.VoiceCount(), i);
+        }
+        CHECK(s.DroppedCues() >= 33);                        // ベッド + 7 本だけ受け付ける
+        std::vector<float> tmp(441 * 2);
+        std::vector<float> out;
+        for (int k = 0; k < 90; ++k)
+        {
+            s.Render(tmp.data(), 441);
+            out.insert(out.end(), tmp.begin(), tmp.end());
+            CHECK_MSG(s.VoiceCount() <= 8, "voices %zu after render %d", s.VoiceCount(), k);
+            worst = std::max(worst, s.VoiceCount());
+        }
+        std::printf("voice cap: worst %zu, dropped %d, evicted %d\n", worst, s.DroppedCues(), s.StolenVoices());
+        CHECK(worst <= 8);
+        CHECK(MaxStep(out, 0, static_cast<std::int64_t>(out.size() / 2)) < 0.5f);
+    }
+    // 満杯のときに LockTail / スキップが来ても、ロックの音は必ず鳴り、数は 8 を超えない
+    {
+        sp::CalibrateSequencer s(bank, false);
+        s.BeginSlow();
+        for (int i = 0; i < 12; ++i)
+        {
+            c.index = i; c.id = static_cast<std::uint32_t>(200 + i); c.playAtMs = 600.0;
+            s.AddCue(c);
+        }
+        sp::GaugeCue lk;
+        lk.kind = sp::GaugeCueKind::LockTail; lk.playAtMs = 650.0; lk.id = 999;
+        s.AddCue(lk);
+        CHECK(s.TailStarted());
+        CHECK(s.VoiceCount() <= 8);
+        CHECK(s.StolenVoices() >= 1);
+        std::vector<float> out = RenderAll(s, sp::seq::MsToFrame(650) + 4000);
+        const std::int64_t f = sp::seq::MsToFrame(650);
+        CHECK(EqualRange(out, f, bank->lockTail, 0, 4000));
+    }
+    {
+        sp::CalibrateSequencer s(bank, false);
+        s.BeginSlow();
+        for (int i = 0; i < 12; ++i)
+        {
+            c.index = i; c.id = static_cast<std::uint32_t>(300 + i); c.playAtMs = 100.0;
+            s.AddCue(c);
+        }
+        RenderAll(s, 441 * 20);                              // 全部鳴っている
+        CHECK(s.VoiceCount() <= 8);
+        CHECK(s.Skip(300.0));
+        CHECK(s.VoiceCount() <= 8);
+        CHECK(s.TailStarted());
+    }
 }
 
 void TestClockMap()
@@ -378,6 +576,21 @@ void TestTimelineClock()
         CHECK(t > 250.0);   // 猶予（700ms）の間は 0 で待ち、そこから QPC で進む
     }
     {
+        sp::TimelineClock c;                                // デバイスを開くのが遅い（400ms）。音が動き出した時点を基準に停止判定する（止まったと誤判定しない）
+        c.Begin(0.0, true);
+        double last = 0;
+        for (int k = 1; k <= 180; ++k)
+        {
+            const double wall = k * 16.7;
+            const double audio = wall < 400.0 ? -1.0 : wall - 400.0;
+            const double t = c.Now(wall, audio);
+            CHECK(t >= last);
+            last = t;
+        }
+        CHECK(c.UsingAudio());
+        CHECK(std::fabs(last - (180 * 16.7 - 400.0)) < 1e-6);
+    }
+    {
         sp::TimelineClock c;                                // 止まった: 飛ばない・戻らない
         c.Begin(0.0, true);
         double last = 0;
@@ -443,6 +656,7 @@ int main(int argc, char** argv)
         TestBankAndFast(bank, fl);
         TestStemReconstruction(bank);
         TestSlowScenarios(bank);
+        TestLateHandover(bank);
         TestSkip(bank);
         TestCancelAndSteal(bank);
     }

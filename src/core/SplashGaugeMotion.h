@@ -704,7 +704,7 @@ public:
         if (m_handed) { m_slow.Skip(tMs); return; }
         if (m_skipped) return;
         tMs = std::max(tMs, m_lastWall);               // 契約: スキップ時刻 >= 直近の Update 時刻
-        if (m_finish && tMs >= m_ev.lockMs) return;   // ロック以降は何もしない
+        if ((m_finish || m_vetoed) && tMs >= m_ev.lockMs) return;   // ロック以降は何もしない（持ち替えを断った速い経路は master がロックまで鳴らす）
         m_skipped = true;
         m_skipWall = tMs;
     }
@@ -734,6 +734,10 @@ public:
     bool Skipped() const { return m_handed ? m_slow.Skipped() : m_skipped; }
     double SkipWallMs() const { return m_handed ? m_slow.LockWallMs() : m_skipWall; }
     bool HandedOver() const { return m_handed; }   // 345 度で待つ縮退に入った
+    // この Update(tMs, ..., finishRequested) で持ち替える（C22 の時刻で、完了要求もスキップも無い）か。BD5 は Update の前に見て、音の持ち替えが手遅れなら VetoHandOver する
+    bool HandOverPending(double tMs, bool finishRequested) const { return !m_decided && tMs >= m_decisionMs && !finishRequested && !m_finish && !m_skipped; }
+    // 持ち替えない（音の持ち替えが手遅れ: 描き置きが C23 に掛かる）。以後は最後まで速い経路（master と同じ時計）のまま
+    void VetoHandOver() { if (!m_decided) { m_decided = true; m_vetoed = true; } }
     double HandOverMs() const { return m_decisionMs; }
     // ロックの絵が出る時刻。完了要求（または縮退）の前は NaN
     double LockWallMs() const
@@ -752,7 +756,7 @@ private:
     CalibrateEvents m_ev;
     GaugeSlowDriver m_slow;
     double m_decisionMs;
-    bool m_finish = false, m_decided = false, m_handed = false, m_skipped = false;
+    bool m_finish = false, m_decided = false, m_handed = false, m_skipped = false, m_vetoed = false;
     double m_skipWall = 0;
     double m_lastWall = 0, m_finishWall = 0;
 };

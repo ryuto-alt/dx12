@@ -48,7 +48,6 @@ inline constexpr double kSkipFadeMs = 30.0;                       // スキッ�
 inline constexpr double kTailCutFadeMs = 20.0;                    // LockTail の直前にベッドを 0 へ落とす長さ（LockTail の開始時刻に 0 になる）
 inline constexpr double kHandoverFadeMs = 30.0;                   // 速い経路 → 遅い経路の持ち替えのクロスフェード
 inline constexpr double kHandoverMinFadeMs = 4.0;                 // 持ち替えが遅れても、これより短くはしない
-inline constexpr double kStealFadeMs = 2.0;                       // ボイスが足りないとき、いちばん古いクリックを落とす長さ
 inline constexpr double kCancelFadeMs = 5.0;                      // 取り消す予約が鳴り始めていたときの落とし方
 inline constexpr double kAbortFadeMs = 60.0;                      // 中止（エディタの終了など）
 
@@ -200,6 +199,7 @@ public:
     void ForceWall(double wallMs) { if (!m_useWall) SwitchToWall(wallMs); }
 
     // audioMs: 音の時計の時刻（動いていなければ負）。戻り値: 絵のタイムライン時刻（ms。単調）
+    // 停止判定は「音を初めて観測した時点の (wall, audio)」を基準にした相対値で行う（デバイスを開くのに時間が掛かっても止まったと誤判定しない）
     double Now(double wallMs, double audioMs)
     {
         if (!m_started) Begin(wallMs, false);
@@ -209,13 +209,12 @@ public:
             if (audioMs >= 0.0)
             {
                 t = audioMs;
-                m_sawAudio = true;
-                const double wallT = wallMs - m_base;
-                if (wallT - t > kStallMs && wallT > kOpenGraceMs) SwitchToWall(wallMs);   // 止まった
+                if (!m_sawAudio) { m_sawAudio = true; m_refWall = wallMs; m_refAudio = audioMs; }
+                if ((wallMs - m_refWall) - (t - m_refAudio) > kStallMs) SwitchToWall(wallMs);   // 止まった（音の進みが QPC の進みより大きく遅れた）
             }
             else if (!m_sawAudio && wallMs - m_begin > kOpenGraceMs)
-                SwitchToWall(wallMs);                                                      // 開けなかった・動き出さない
-            else if (m_sawAudio && wallMs - m_base - m_last > kStallMs)
+                SwitchToWall(wallMs);                                                            // 開けなかった・動き出さない
+            else if (m_sawAudio && (wallMs - m_refWall) - (m_last - m_refAudio) > kStallMs)
                 SwitchToWall(wallMs);
         }
         if (m_useWall) t = wallMs - m_base;
@@ -229,7 +228,7 @@ private:
         m_useWall = true;
         m_base = wallMs - m_last;       // いまの時刻から連続させる（戻らない・飛ばない）
     }
-    double m_begin = 0, m_base = 0, m_last = 0;
+    double m_begin = 0, m_base = 0, m_last = 0, m_refWall = 0, m_refAudio = 0;
     bool m_expect = false, m_useWall = true, m_sawAudio = false, m_started = false;
 };
 
@@ -268,25 +267,32 @@ public:
         v.kind = VoiceKind::Master;
         v.src = (m_reduce ? m_bank->rm : m_bank->full).data();
         v.frames = m_bank->FullFrames();
+        m_hasMaster = true;
         AddVoice(v);
     }
     // 遅い経路を最初から（GaugeSlowDriver を単独で使う場合）。ベッドをフレーム 0 から鳴らす
     void BeginSlow() { StartBed(0, 0); }
 
     // ---- コマンド（タイムライン ms → 出力フレーム。出力フレーム = タイムラインのサンプル）
-    // 速い経路 → 遅い経路の持ち替え（GaugeFastDriver::HandedOver が立った最初のフレームで 1 回）。nowMs はいま聞こえている時刻。
-    void HandOver(double nowMs)
+    // 速い経路 → 遅い経路の持ち替え（GaugeFastDriver::HandOverPending が立った最初のフレームで 1 回）。nowMs はいま聞こえている時刻。
+    // 戻り値: 持ち替えた（または持ち替えが要らない状態）なら true。手遅れ（master の C23 の頭までに最短のフェードを終えられない。描き置きが進み過ぎ）なら
+    // false で何もしない: master のまま最後まで鳴らす。呼び出し側は絵（ドライバ）も速い経路のままにすること（VetoHandOver）。
+    bool HandOver(double nowMs)
     {
-        if (m_handed || m_skipped || m_tailStarted || m_reduce) return;
-        m_handed = true;
+        if (m_handed || m_skipped || m_tailStarted || m_reduce) return true;
         const std::int64_t s = std::max(m_outFrame, seq::MsToFrame(nowMs));
         // full のクリック C23 の頭（1,543）までにフェードを終える（遅れても 4ms は掛ける）
         const std::int64_t deadline = seq::MsToFrame(calibrate::kClickMs[calibrate::kClickCount - 1]);
         const std::int64_t minLen = seq::MsToFrame(seq::kHandoverMinFadeMs);
+        if (m_hasMaster && s + minLen > deadline - 1) { ++m_handRefused; return false; }   // C23 とロックが二重に鳴るので持ち替えない
+        m_handed = true;
         const std::int64_t len = std::clamp<std::int64_t>(deadline - s - 1, minLen, seq::MsToFrame(seq::kHandoverFadeMs));
+        m_handFrame = s;
+        m_handLen = len;
         for (Voice& v : m_voices)
             if (v.kind == VoiceKind::Master) FadeOut(v, s, len);
         StartBed(s, len);
+        return true;
     }
 
     // 予約（GaugeCue）。Click は click_NN（パンつき）、LockTail は lock_tail を T_lock' にサンプル単位で合わせる。
@@ -332,12 +338,17 @@ public:
         }
     }
 
-    // スキップ（キー・クリック）。鳴っているボイスを 30ms で落とし、lock_tail を頭から鳴らす。以降の予約は鳴らさない。ロックの音が既に鳴り始めていたら何もしない。
-    void Skip(double tMs)
+    // スキップ（キー・クリック）。鳴っているボイスを 30ms で落とし、lock_tail を頭から鳴らす。以降の予約は鳴らさない。
+    // 描き置き済みのぶんは書き換えられないので、実際の時刻は max(tMs, 描き終えた時刻)。usedMs にそれを返す（絵も同じ時刻でロックへ飛ばす。1 回の呼び出しで原子的）。
+    // 効いたら true。ロックの音が既に鳴り始めている・master のロックを過ぎている・2 回目なら何もせず false（ロック音を重ねない）。
+    bool Skip(double tMs, double* usedMs = nullptr)
     {
-        if (m_skipped) return;
         const std::int64_t f = std::max(m_outFrame, seq::MsToFrame(tMs));
-        if (m_tailStarted && m_tailT <= f) return;   // ドライバと同じ: ロック以降のスキップは何もしない（ロック音を重ねない）
+        const double used = f > seq::MsToFrame(tMs) ? seq::FrameToMs(static_cast<double>(f)) : tMs;
+        if (usedMs) *usedMs = used;
+        if (m_skipped) return false;
+        if (m_tailStarted && m_tailT <= f) return false;   // ドライバと同じ: ロック以降のスキップは何もしない（ロック音を重ねない）
+        if (m_hasMaster && !m_handed && !m_tailStarted && used >= calibrate::kLockMs) return false;   // master 自身がロックを鳴らしている（Reduce Motion の通常経路も）
         m_skipped = true;
         const std::int64_t len = seq::MsToFrame(seq::kSkipFadeMs);
         for (std::size_t i = 0; i < m_voices.size();)
@@ -349,6 +360,7 @@ public:
         }
         m_tailStarted = false;
         StartTail(f, /*cutOthers*/ false);
+        return true;
     }
 
     // 中止（短くフェードアウト）。以降の予約は受け付けない
@@ -386,7 +398,11 @@ public:
     bool TailStarted() const { return m_tailStarted; }
     std::int64_t TailStartFrame() const { return m_tailStarted ? m_tailT : -1; }
     int LateCues() const { return m_lateCues; }                              // 発音時刻に間に合わず後ろへずれた予約の数（診断）
-    int StolenVoices() const { return m_stolen; }
+    int StolenVoices() const { return m_stolen; }                            // ボイスの枠が足りず、ほかのクリックを外した数
+    int DroppedCues() const { return m_dropped; }                            // 枠が無くて鳴らせなかった数
+    int HandOverRefused() const { return m_handRefused; }                    // 手遅れで持ち替えを断った数（診断）
+    std::int64_t HandOverFrame() const { return m_handed ? m_handFrame : -1; }
+    std::int64_t HandOverLen() const { return m_handed ? m_handLen : 0; }
     // 診断: 種別ごとの生きているボイス数
     int CountKind(VoiceKind k) const { int n = 0; for (const Voice& v : m_voices) if (v.kind == k) ++n; return n; }
 
@@ -419,23 +435,41 @@ private:
         v.fadeOutLen = len;
     }
 
-    void AddVoice(Voice v)
+    // 同時に鳴るボイス（フェード中で残っているものも数える）は常に kMaxVoices 以下。満杯のとき:
+    //   ・Click は鳴らさない（落とした数を数える。大量の歯を一度に跨いだときだけ起きる）
+    //   ・大事なボイス（Bed / LockTail）はクリックを 1 本外して枠を空ける
+    bool AddVoice(Voice v)
     {
         v.order = ++m_order;
-        if (static_cast<int>(m_voices.size()) >= seq::kMaxVoices) StealOne();
+        if (static_cast<int>(m_voices.size()) >= seq::kMaxVoices)
+        {
+            if (v.kind == VoiceKind::Click || !EvictClick()) { ++m_dropped; return false; }
+        }
         m_voices.push_back(v);
+        return true;
     }
 
-    // 足りないとき: いちばん古いクリック（なければ古い順に Master/LockTail 以外）を短く落とす。落ち切るまでは枠を使い続けるので、枠が空くのを待たず追加する
-    void StealOne()
+    // クリックを 1 本外す。まだ鳴っていないもの（無音）→ フェード中で終わりが近いもの → いちばん古いもの の順
+    bool EvictClick()
     {
-        Voice* victim = nullptr;
-        for (Voice& v : m_voices)
-            if (v.kind == VoiceKind::Click && (!victim || v.order < victim->order)) victim = &v;
-        if (!victim) for (Voice& v : m_voices) if (v.kind == VoiceKind::Bed && (!victim || v.order < victim->order)) victim = &v;
-        if (!victim) return;
-        FadeOut(*victim, std::max(m_outFrame, victim->start), seq::MsToFrame(seq::kStealFadeMs));
+        std::size_t best = m_voices.size();
+        int bestRank = 3;
+        std::int64_t bestKey = 0;
+        for (std::size_t i = 0; i < m_voices.size(); ++i)
+        {
+            const Voice& v = m_voices[i];
+            if (v.kind != VoiceKind::Click) continue;
+            int rank;
+            std::int64_t key;
+            if (v.start > m_outFrame) { rank = 0; key = -v.start; }
+            else if (v.fadeOutStart >= 0) { rank = 1; key = v.fadeOutStart + v.fadeOutLen; }
+            else { rank = 2; key = static_cast<std::int64_t>(v.order); }
+            if (rank < bestRank || (rank == bestRank && key < bestKey)) { best = i; bestRank = rank; bestKey = key; }
+        }
+        if (best == m_voices.size()) return false;
+        m_voices.erase(m_voices.begin() + static_cast<std::ptrdiff_t>(best));
         ++m_stolen;
+        return true;
     }
 
     // ベッド（stems/bed.wav）をタイムライン時刻 atFrame から。bed はタイムラインと揃っている（srcOffset = atFrame）。ループ区間と継ぎ目は events.json の loop
@@ -549,7 +583,9 @@ private:
     std::uint64_t m_order = 0;
     bool m_handed = false, m_skipped = false, m_tailStarted = false, m_aborted = false;
     std::int64_t m_tailT = 0;
-    int m_lateCues = 0, m_stolen = 0;
+    int m_lateCues = 0, m_stolen = 0, m_dropped = 0, m_handRefused = 0;
+    bool m_hasMaster = false;
+    std::int64_t m_handFrame = 0, m_handLen = 0;
 };
 
 } // namespace dx12e::splash

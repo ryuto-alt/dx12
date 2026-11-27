@@ -64,10 +64,11 @@ public:
     static bool TimelineMs(double qpcMs, double* outMs);
     static double QpcMs();                        // 単調な QPC（ms）。TimelineMs / TimelineClock に渡す
     static double RenderedMs();                   // 音が描き終えたタイムライン時刻（スキップはこれ以降にしか効かない。絵も同じ時刻で飛ばす）
-    static void HandOver(double nowMs);           // 速い経路 → 遅い経路の持ち替え
+    static bool HandOver(double nowMs);           // 速い経路 → 遅い経路の持ち替え。手遅れ（描き置きが C23 に掛かる）なら false（何もしない。絵も速い経路のままにする）。音が無ければ true
     static void AddCues(const std::vector<splash::GaugeCue>& cues);
     static void CancelCues(const std::vector<std::uint32_t>& ids);
-    static void Skip(double tMs);                 // スキップ: 30ms で落として lock_tail を頭から
+    // スキップ: 30ms で落として lock_tail を頭から。描き置き済みのぶんは書き換えられないので実際の時刻は max(tMs, 描き終えた時刻)（usedMs に返す。絵も同じ時刻で飛ばす）。効いたら true
+    static bool Skip(double tMs, double* usedMs);
     static void Abort();                          // 中止（短くフェードアウトして止める）
     static const char* BackendName();             // "wasapi" / "waveout" / "none"（診断用）
 };

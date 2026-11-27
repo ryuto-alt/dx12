@@ -14,6 +14,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "core/SplashDiag.h"
@@ -290,7 +291,7 @@ struct CalState
     std::atomic<bool> abortReq{false};
     std::atomic<bool> expected{false};
     bool reduce = false;
-    const char* backend = "none";
+    std::atomic<const char*> backend{"none"};
 };
 
 CalState& CS()
@@ -407,7 +408,7 @@ struct WasapiOut final : IOut
 
 struct WaveOutDev final : IOut
 {
-    static constexpr int kBuffers = 4, kChunk = 256;   // 4 x 5.8ms = 23ms 先まで（予約の先読み 50ms より短く）
+    static constexpr int kBuffers = 5, kChunk = 512;   // 5 x 11.6ms = 58ms 先まで（waveOut は WASAPI の上のエミュレーションで、短いと途切れやすい。縮退の経路だけ）
     HWAVEOUT hwo = nullptr;
     HANDLE ev = nullptr;
     std::vector<std::vector<int16_t>> pcm;
@@ -521,9 +522,9 @@ DWORD WINAPI CalibThread(LPVOID)
         if (comOk) CoUninitialize();
         return 0;
     }
-    c.backend = out->Name();
+    c.backend.store(out->Name());
     c.state.store(static_cast<int>(CalibrateSound::State::Running));
-    SplashDiag(std::string("起動音(Calibrate): ") + c.backend);
+    SplashDiag(std::string("起動音(Calibrate): ") + out->Name());
 
     const double t0 = QpcNowMs();
     bool aborting = false;
@@ -548,6 +549,15 @@ DWORD WINAPI CalibThread(LPVOID)
         if (aborting && now - abortAt > 400.0) break;
         if (now - t0 > 60000.0) break;               // 何があっても 1 分で止める
     }
+    {
+        std::lock_guard<std::mutex> lk(c.mu);
+        if (c.seq->LateCues() || c.seq->DroppedCues() || c.seq->StolenVoices() || c.seq->HandOverRefused())
+        {
+            // 予約の先読み（50ms）より出力の遅れが大きいデバイス（Bluetooth など）では LateCues が出て、クリックとロックの音が絵より遅れる
+            SplashDiag("起動音(Calibrate): 診断 遅れた予約 " + std::to_string(c.seq->LateCues()) + " / 落とした予約 " + std::to_string(c.seq->DroppedCues())
+                       + " / 外したクリック " + std::to_string(c.seq->StolenVoices()) + " / 持ち替えを断った " + std::to_string(c.seq->HandOverRefused()));
+        }
+    }
     out->Drain();
     out.reset();
     c.state.store(static_cast<int>(CalibrateSound::State::Finished));
@@ -567,6 +577,7 @@ bool CalibrateSound::Start(const splash::SoundGate& gate, bool reduceMotion)
         c.thread = CreateThread(nullptr, 0, CalibThread, nullptr, 0, nullptr);
         if (!c.thread) { c.state.store(static_cast<int>(State::Failed)); return false; }
         SetThreadPriority(c.thread, THREAD_PRIORITY_HIGHEST);
+        CloseHandle(c.thread);                 // 待たない（終了は state で見る）。ハンドルは閉じるが「起動済み」の印として c.thread は残す
         c.expected.store(true);
         return true;
     });
@@ -575,7 +586,7 @@ bool CalibrateSound::Start(const splash::SoundGate& gate, bool reduceMotion)
 CalibrateSound::State CalibrateSound::GetState() { return static_cast<State>(CS().state.load()); }
 bool CalibrateSound::Expected() { return CS().expected.load(); }
 double CalibrateSound::QpcMs() { return QpcNowMs(); }
-const char* CalibrateSound::BackendName() { return CS().backend; }
+const char* CalibrateSound::BackendName() { return CS().backend.load(); }
 
 bool CalibrateSound::TimelineMs(double qpcMs, double* outMs)
 {
@@ -595,11 +606,11 @@ double CalibrateSound::RenderedMs()
     return c.seq ? c.seq->RenderedMs() : 0.0;
 }
 
-void CalibrateSound::HandOver(double nowMs)
+bool CalibrateSound::HandOver(double nowMs)
 {
     CalState& c = CS();
     std::lock_guard<std::mutex> lk(c.mu);
-    if (c.seq) c.seq->HandOver(nowMs);
+    return c.seq ? c.seq->HandOver(nowMs) : true;
 }
 
 void CalibrateSound::AddCues(const std::vector<splash::GaugeCue>& cues)
@@ -616,11 +627,13 @@ void CalibrateSound::CancelCues(const std::vector<std::uint32_t>& ids)
     if (c.seq) for (std::uint32_t id : ids) c.seq->CancelCue(id);
 }
 
-void CalibrateSound::Skip(double tMs)
+bool CalibrateSound::Skip(double tMs, double* usedMs)
 {
     CalState& c = CS();
     std::lock_guard<std::mutex> lk(c.mu);
-    if (c.seq) c.seq->Skip(tMs);
+    if (c.seq) return c.seq->Skip(tMs, usedMs);
+    if (usedMs) *usedMs = tMs;
+    return false;
 }
 
 void CalibrateSound::Abort() { CS().abortReq.store(true); }

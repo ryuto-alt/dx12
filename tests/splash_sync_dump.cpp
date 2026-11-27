@@ -117,22 +117,27 @@ CalRun RunCalibrate(const std::shared_ptr<const sp::CalibrateBank>& bank, bool r
     };
     seq.Begin();
     fill(kAhead);
-    bool handed = false, skipped = false, skipDone = false;
+    bool skipped = false, skipDone = false;
     for (int k = 0;; ++k)
     {
         const double t = k * 1000.0 / 60.0;
         if (t > endMs) break;
         if (!reduce)
         {
-            drv.Update(t, std::isnan(finishMs) ? 0.2f : static_cast<float>(std::min(0.99, t / finishMs)), !std::isnan(finishMs) && t >= finishMs);
-            if (drv.HandedOver() && !handed) { handed = true; r.handoverFrame = std::max(seq.OutFrame(), sp::seq::MsToFrame(t)); seq.HandOver(t); }
+            const bool fin = !std::isnan(finishMs) && t >= finishMs;
+            if (drv.HandOverPending(t, fin))
+            {
+                if (seq.HandOver(t)) r.handoverFrame = seq.HandOverFrame();
+                else drv.VetoHandOver();
+            }
+            drv.Update(t, std::isnan(finishMs) ? 0.2f : static_cast<float>(std::min(0.99, t / finishMs)), fin);
         }
         if (!std::isnan(skipMs) && !skipDone && t >= skipMs)
         {
             skipDone = true;
-            const double ts = std::max(t, sp::seq::FrameToMs(static_cast<double>(seq.OutFrame())));
-            if (reduce) { seq.Skip(ts); skipped = true; }
-            else { drv.Skip(ts); if (drv.Skipped()) { seq.Skip(drv.SkipWallMs()); skipped = true; } }
+            double used = t;
+            skipped = seq.Skip(t, &used);
+            if (!reduce) drv.Skip(used);
         }
         if (!reduce)
         {

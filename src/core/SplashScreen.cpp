@@ -460,7 +460,6 @@ DWORD WINAPI SplashThread(LPVOID)
     sp::TimelineClock gClock;               // 絵の時計。音が動いていれば音の時計（音が主）、無い・止まったときは QPC
     bool gAudioExpected = false;            // 起動音を始める（デバイスを開きに行く）予定
     bool gAudioStarted = false;
-    bool gHandSent = false, gSkipSent = false;
     auto startGaugeSound = [&]() {
         if (!gauge || gAudioStarted) return;
         gAudioStarted = true;
@@ -546,17 +545,23 @@ DWORD WINAPI SplashThread(LPVOID)
             const double finMs = finishReq ? std::max(0.0, tMs - (Now() - finishAt) * 1000.0) : std::nan("");
             f = sp::EvaluateGauge(sp::GaugePath::Reduce, tMs, 0.f, ev, sp::GaugeExitStartMs(ev.pingMs, finMs));
             lockedForMain = finishReq;
-            if (g.skipReq.exchange(false)) CalibrateSound::Skip(std::max(tMs, CalibrateSound::RenderedMs()));   // Reduce Motion でも音はロック以降へ（絵は最初から静的）
+            if (g.skipReq.exchange(false)) { double used = tMs; CalibrateSound::Skip(tMs, &used); }   // Reduce Motion でも音はロック以降へ（絵は最初から静的）。master のロックを過ぎていれば音は何もしない
         }
         else
         {
+            // 速い経路 → 遅い経路: full を落としてベッド + クリックへ。音がすでに C23 の頭の近くまで描き置きされていて手遅れなら持ち替えない
+            // （音は master のまま最後まで。絵も速い経路のままにして、C23 とロックの音が二重に鳴らないようにする）
+            if (gdrv.HandOverPending(tMs, finishReq))
+            {
+                if (!CalibrateSound::HandOver(tMs)) gdrv.VetoHandOver();
+            }
             gdrv.Update(tMs, static_cast<float>(target), finishReq);
-            if (gdrv.HandedOver() && !gHandSent) { gHandSent = true; CalibrateSound::HandOver(tMs); }   // 速い経路 → 遅い経路: full を落としてベッド + クリックへ
             if (g.skipReq.exchange(false))
             {
-                // 音は描き置き済みのぶんを書き換えられない。スキップの時刻は音が描き終えた時刻以降にして、絵も同じ時刻でロックへ飛ばす（音と絵が揃う）
-                gdrv.Skip(std::max(tMs, CalibrateSound::RenderedMs()));
-                if (gdrv.Skipped() && !gSkipSent) { gSkipSent = true; CalibrateSound::Skip(gdrv.SkipWallMs()); }
+                // 音は描き置き済みのぶんを書き換えられない。音が描き終えた時刻以降にスキップし（読み取りと同じ 1 回の呼び出しで）、絵も同じ時刻でロックへ飛ばす（音と絵が揃う）
+                double used = tMs;
+                CalibrateSound::Skip(tMs, &used);
+                gdrv.Skip(used);
             }
             CalibrateSound::CancelCues(gdrv.TakeCancelledCueIds());
             {
