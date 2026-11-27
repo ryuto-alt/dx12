@@ -16,6 +16,8 @@
 #include <unordered_map>
 
 #include "core/SplashBrandGeometry.h"
+#include "core/SplashDiag.h"
+#include "core/SplashFonts.h"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "d3d11.lib")
@@ -82,7 +84,8 @@ struct GaugeRenderer::Impl
     std::uint64_t uiKey = 0;     // 静的な UI の層の作り直しの鍵
 
     // 書体
-    ComPtr<IDWriteFontCollection1> collection;
+    SplashFontSet fonts;                       // メモリから読んだ Uno Splash Mono + システムのフォールバック（BD10）
+    ComPtr<IDWriteFontCollection1> collection; // fonts のコレクション（無ければ null = システム書体）
     std::wstring family = L"Consolas";
     std::wstring triedFontFile;
     std::unordered_map<std::wstring, ComPtr<IDWriteTextFormat>> formats;
@@ -211,24 +214,16 @@ void GaugeRenderer::Impl::LoadFont(const std::wstring& file)
 {
     if (file == triedFontFile) return;
     triedFontFile = file;
-    collection.Reset();
-    family = L"Consolas";
+    // TextFormat / TextLayout は loader のバッファを参照するので、先に捨ててから SplashFontSet を作り直す
     ResetFonts();
-    if (file.empty()) return;
-    ComPtr<IDWriteFactory5> f5;
-    if (FAILED(dw->QueryInterface(IID_PPV_ARGS(&f5)))) return;
-    ComPtr<IDWriteFontFile> ff;
-    if (FAILED(f5->CreateFontFileReference(file.c_str(), nullptr, &ff))) return;
-    ComPtr<IDWriteFontSetBuilder1> b;
-    if (FAILED(f5->CreateFontSetBuilder(&b))) return;
-    if (FAILED(b->AddFontFile(ff.Get()))) return;
-    ComPtr<IDWriteFontSet> set;
-    if (FAILED(b->CreateFontSet(&set))) return;
-    ComPtr<IDWriteFontCollection1> col;
-    if (FAILED(f5->CreateFontCollectionFromFontSet(set.Get(), &col))) return;
-    UINT32 idx = 0; BOOL ex = FALSE;
-    if (FAILED(col->FindFamilyName(kFontFamilyCustom, &idx, &ex)) || !ex) return;
-    collection = col;
+    collection.Reset();
+    fonts.Reset();
+    family = L"Consolas";
+    const bool ok = fonts.Load(dw, file, kFontFamilyCustom);
+    SplashDiag(std::string("splash font: ") + (ok ? "in-memory " : "system fallback (") + (ok ? std::to_string(fonts.Bytes()) + " bytes, " : fonts.Error() + "), ") +
+               std::to_string(fonts.LoadMs()) + " ms");
+    if (!ok) return;
+    collection = fonts.Collection();
     family = kFontFamilyCustom;
 }
 
@@ -247,6 +242,7 @@ IDWriteTextFormat* GaugeRenderer::Impl::Format(float size, float lineH)
                                         DWRITE_FONT_STRETCH_NORMAL, size, L"ja-jp", &f)))
             return nullptr;
     }
+    if (ComPtr<IDWriteTextFormat1> f1; fonts.Fallback() && SUCCEEDED(f.As(&f1))) f1->SetFontFallback(fonts.Fallback());
     f->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     f->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, lineH, lineH * 0.8f);
     auto* raw = f.Get();

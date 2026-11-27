@@ -26,7 +26,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <dwrite_3.h>
+
 #include "core/SplashCommon.h"
+#include "core/SplashFonts.h"
 
 #pragma comment(lib, "windowscodecs.lib")
 
@@ -745,6 +748,122 @@ void Test_NoPeriodicFlicker(const fs::path& root)
 
 } // namespace
 
+// (8) 書体（W1-BD10）: splash_subset.ttf をメモリから読む。遅れの増分 5ms 以下、字の欠け 0（charset_splash.txt の全字）、
+//     等幅（和欧 1:2）、字が無いときのシステム書体への縮退、読み込み後に TextLayout が loader のバッファで描ける（寿命）
+struct FallbackSrc final : IDWriteTextAnalysisSource
+{
+    const wchar_t* t; UINT32 n;
+    FallbackSrc(const wchar_t* tt, UINT32 nn) : t(tt), n(nn) {}
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override { return E_NOINTERFACE; }
+    HRESULT STDMETHODCALLTYPE GetTextAtPosition(UINT32 p, WCHAR const** s, UINT32* l) override { *s = p < n ? t + p : nullptr; *l = p < n ? n - p : 0; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetTextBeforePosition(UINT32 p, WCHAR const** s, UINT32* l) override { *s = p ? t : nullptr; *l = p; return S_OK; }
+    DWRITE_READING_DIRECTION STDMETHODCALLTYPE GetParagraphReadingDirection() override { return DWRITE_READING_DIRECTION_LEFT_TO_RIGHT; }
+    HRESULT STDMETHODCALLTYPE GetLocaleName(UINT32, UINT32* l, WCHAR const** nm) override { *l = n; *nm = L"ja-jp"; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetNumberSubstitution(UINT32, UINT32* l, IDWriteNumberSubstitution** ns) override { *l = n; *ns = nullptr; return S_OK; }
+};
+
+void Test_Fonts(const fs::path& root)
+{
+    using namespace sp;
+    using Microsoft::WRL::ComPtr;
+    const std::wstring file = SplashFontPath((root / "assets").wstring());
+    CHECK(!file.empty());
+    ComPtr<IDWriteFactory5> f5;
+    CHECK(SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory5), reinterpret_cast<IUnknown**>(f5.GetAddressOf()))));
+    if (!f5) return;
+
+    // 遅れの増分: OS のファイルキャッシュが温まった状態（= 起動のたびに近い）の 5 回の最良値で見る
+    double best = 1e9;
+    for (int i = 0; i < 5; ++i)
+    {
+        SplashFontSet tmp;
+        CHECK_MSG(tmp.Load(f5.Get(), file, L"Uno Splash Mono"), "load: %s", tmp.Error().c_str());
+        best = std::min(best, tmp.LoadMs());
+    }
+    std::printf("[font] in-memory load best of 5 = %.2f ms\n", best);
+    CHECK_MSG(best <= 5.0, "font load %.2f ms > 5 ms", best);
+
+    SplashFontSet fs;
+    CHECK(fs.Load(f5.Get(), file, L"Uno Splash Mono"));
+    CHECK(fs.Collection() && fs.Fallback());
+    CHECK(fs.Bytes() > 1000 && fs.Bytes() <= 200u * 1024u);   // Plex の全体（数 MB）ではなく、サブセットだけ
+
+    // 字の欠け 0
+    ComPtr<IDWriteFontFamily> fam;
+    ComPtr<IDWriteFont> font;
+    UINT32 idx = 0; BOOL ex = FALSE;
+    CHECK(SUCCEEDED(fs.Collection()->FindFamilyName(L"Uno Splash Mono", &idx, &ex)) && ex);
+    CHECK(SUCCEEDED(fs.Collection()->GetFontFamily(idx, &fam)));
+    if (fam) CHECK(SUCCEEDED(fam->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_LIGHT, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, &font)));
+    if (!font) return;
+    std::wstring chars;
+    {
+        std::ifstream in(root / "third_party" / "fonts" / "charset_splash.txt", std::ios::binary);
+        std::string u8((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const int n = MultiByteToWideChar(CP_UTF8, 0, u8.data(), static_cast<int>(u8.size()), nullptr, 0);
+        chars.resize(static_cast<size_t>(std::max(n, 0)));
+        if (n > 0) MultiByteToWideChar(CP_UTF8, 0, u8.data(), static_cast<int>(u8.size()), chars.data(), n);
+    }
+    int checked = 0, missing = 0;
+    for (size_t i = 0; i < chars.size(); ++i)
+    {
+        UINT32 cp = chars[i];
+        if (cp == 0x0A || cp == 0x0D) continue;
+        if (cp >= 0xD800 && cp < 0xDC00 && i + 1 < chars.size()) { cp = 0x10000 + ((cp - 0xD800) << 10) + (chars[i + 1] - 0xDC00); ++i; }
+        BOOL has = FALSE;
+        font->HasCharacter(cp, &has);
+        ++checked;
+        if (!has) { ++missing; std::printf("[font] missing U+%04X\n", cp); }
+    }
+    CHECK(checked > 100);
+    CHECK_MSG(missing == 0, "%d chars missing in splash_subset.ttf", missing);
+
+    // 等幅: 半角は全部同じ幅、全角は半角の 2 倍
+    ComPtr<IDWriteTextFormat> tf;
+    CHECK(SUCCEEDED(f5->CreateTextFormat(L"Uno Splash Mono", fs.Collection(), DWRITE_FONT_WEIGHT_LIGHT, DWRITE_FONT_STYLE_NORMAL,
+                                         DWRITE_FONT_STRETCH_NORMAL, 100.f, L"ja-jp", &tf)));
+    auto widthOf = [&](const wchar_t* t) {
+        ComPtr<IDWriteTextLayout> l;
+        f5->CreateTextLayout(t, static_cast<UINT32>(wcslen(t)), tf.Get(), 4000.f, 200.f, &l);
+        DWRITE_TEXT_METRICS m{};
+        if (l) l->GetMetrics(&m);
+        return m.widthIncludingTrailingWhitespace;
+    };
+    const float w0 = widthOf(L"0");
+    CHECK(w0 > 10.f);
+    for (const wchar_t* t : { L"1", L"8", L"i", L"W", L"m", L".", L"%", L"A" })
+        CHECK_MSG(std::fabs(widthOf(t) - w0) < 0.01f, "'%ls' width %.3f != %.3f", t, widthOf(t), w0);
+    const wchar_t kana[] = { 0x3042, 0 };            // あ
+    const wchar_t kata2[] = { 0x30AB, 0x30AB, 0 };   // カカ
+    CHECK_MSG(std::fabs(widthOf(kana) - 2.f * w0) < 0.02f, "kana width %.3f != 2 x %.3f", widthOf(kana), w0);
+    CHECK_MSG(std::fabs(widthOf(kata2) - 4.f * w0) < 0.05f, "katakana x2");
+
+    // 縮退: フォントに無い字（雪だるま U+2603）はフォールバックの書体で埋まる（欠けた箱ではない）
+    BOOL snowHas = TRUE;
+    font->HasCharacter(0x2603, &snowHas);
+    CHECK(!snowHas);
+    UINT32 mapped = 0; float scale = 0.f;
+    ComPtr<IDWriteFont> mf;
+    const wchar_t snow[] = { 0x2603, 0 };
+    FallbackSrc src(snow, 1);
+    const HRESULT hr = fs.Fallback()->MapCharacters(&src, 0, 1, fs.Collection(), L"Uno Splash Mono", DWRITE_FONT_WEIGHT_LIGHT,
+                                                    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, &mapped, &mf, &scale);
+    CHECK(SUCCEEDED(hr));
+    CHECK_MSG(mapped == 1 && mf != nullptr, "fallback did not map U+2603 (mapped=%u)", mapped);
+
+    // 寿命: TextFormat を捨ててから SplashFontSet を壊し、作り直しても落ちない
+    tf.Reset();
+    fs.Reset();
+    SplashFontSet fs2;
+    CHECK(fs2.Load(f5.Get(), file, L"Uno Splash Mono"));
+    // 存在しないファイルは縮退（Loaded = false、フォールバックだけ持つ）
+    SplashFontSet bad;
+    CHECK(!bad.Load(f5.Get(), file + L".nope", L"Uno Splash Mono"));
+    CHECK(!bad.Loaded() && bad.Fallback());
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2) { std::printf("usage: SplashGaugeRendererTests <repo-root> [--update-golden]\n"); return 2; }
@@ -759,6 +878,7 @@ int main(int argc, char** argv)
     Test_Choreography(root);
     Test_NoGlow(root);
     Test_NoPeriodicFlicker(root);
+    Test_Fonts(root);
     if (g_fail == 0) std::printf("SplashGaugeRendererTests: OK\n");
     else std::printf("SplashGaugeRendererTests: %d FAIL\n", g_fail);
     return g_fail == 0 ? 0 : 1;
