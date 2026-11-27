@@ -1,0 +1,5876 @@
+{
+ "port": 8854,
+ "count": 457,
+ "calls": [
+  {
+   "method": "new_scene",
+   "params": {
+    "profile": "epic"
+   }
+  },
+  {
+   "method": "delete_entity",
+   "params": {
+    "name": "Cube"
+   }
+  },
+  {
+   "method": "delete_entity",
+   "params": {
+    "name": "Ground"
+   }
+  },
+  {
+   "method": "delete_entity",
+   "params": {
+    "name": "Grid"
+   }
+  },
+  {
+   "method": "set_sun",
+   "params": {
+    "elevation": 15,
+    "azimuth": 250
+   }
+  },
+  {
+   "method": "set_quality_preset",
+   "params": {
+    "preset": "epic"
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Ground",
+    "type": "plane",
+    "position": [
+     0,
+     0,
+     0
+    ],
+    "size": 1000
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Ground",
+    "color": [
+     0.26,
+     0.27,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Ground",
+    "metallic": 0,
+    "roughness": 0.95
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_Leg_0",
+    "type": "box",
+    "position": [
+     -23.6,
+     28,
+     6.4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_Leg_0",
+    "position": [
+     -23.6,
+     28,
+     6.4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.5,
+     56,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_Leg_0",
+    "color": [
+     0.55,
+     0.56,
+     0.58
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_Leg_0",
+    "metallic": 0.6,
+    "roughness": 0.45
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_Leg_1",
+    "type": "box",
+    "position": [
+     -20.4,
+     28,
+     6.4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_Leg_1",
+    "position": [
+     -20.4,
+     28,
+     6.4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.5,
+     56,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_Leg_1",
+    "color": [
+     0.55,
+     0.56,
+     0.58
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_Leg_1",
+    "metallic": 0.6,
+    "roughness": 0.45
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_Leg_2",
+    "type": "box",
+    "position": [
+     -23.6,
+     28,
+     9.6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_Leg_2",
+    "position": [
+     -23.6,
+     28,
+     9.6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.5,
+     56,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_Leg_2",
+    "color": [
+     0.55,
+     0.56,
+     0.58
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_Leg_2",
+    "metallic": 0.6,
+    "roughness": 0.45
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_Leg_3",
+    "type": "box",
+    "position": [
+     -20.4,
+     28,
+     9.6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_Leg_3",
+    "position": [
+     -20.4,
+     28,
+     9.6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.5,
+     56,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_Leg_3",
+    "color": [
+     0.55,
+     0.56,
+     0.58
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_Leg_3",
+    "metallic": 0.6,
+    "roughness": 0.45
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX_1",
+    "type": "box",
+    "position": [
+     -22,
+     10,
+     6.4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX_1",
+    "position": [
+     -22,
+     10,
+     6.4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX_1",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX_1",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX2_1",
+    "type": "box",
+    "position": [
+     -22,
+     10,
+     9.6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX2_1",
+    "position": [
+     -22,
+     10,
+     9.6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX2_1",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX2_1",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ_1",
+    "type": "box",
+    "position": [
+     -23.6,
+     10,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ_1",
+    "position": [
+     -23.6,
+     10,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ_1",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ_1",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ2_1",
+    "type": "box",
+    "position": [
+     -20.4,
+     10,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ2_1",
+    "position": [
+     -20.4,
+     10,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ2_1",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ2_1",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX_2",
+    "type": "box",
+    "position": [
+     -22,
+     20,
+     6.4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX_2",
+    "position": [
+     -22,
+     20,
+     6.4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX_2",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX_2",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX2_2",
+    "type": "box",
+    "position": [
+     -22,
+     20,
+     9.6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX2_2",
+    "position": [
+     -22,
+     20,
+     9.6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX2_2",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX2_2",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ_2",
+    "type": "box",
+    "position": [
+     -23.6,
+     20,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ_2",
+    "position": [
+     -23.6,
+     20,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ_2",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ_2",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ2_2",
+    "type": "box",
+    "position": [
+     -20.4,
+     20,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ2_2",
+    "position": [
+     -20.4,
+     20,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ2_2",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ2_2",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX_3",
+    "type": "box",
+    "position": [
+     -22,
+     30,
+     6.4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX_3",
+    "position": [
+     -22,
+     30,
+     6.4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX_3",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX_3",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX2_3",
+    "type": "box",
+    "position": [
+     -22,
+     30,
+     9.6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX2_3",
+    "position": [
+     -22,
+     30,
+     9.6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX2_3",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX2_3",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ_3",
+    "type": "box",
+    "position": [
+     -23.6,
+     30,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ_3",
+    "position": [
+     -23.6,
+     30,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ_3",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ_3",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ2_3",
+    "type": "box",
+    "position": [
+     -20.4,
+     30,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ2_3",
+    "position": [
+     -20.4,
+     30,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ2_3",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ2_3",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX_4",
+    "type": "box",
+    "position": [
+     -22,
+     40,
+     6.4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX_4",
+    "position": [
+     -22,
+     40,
+     6.4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX_4",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX_4",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX2_4",
+    "type": "box",
+    "position": [
+     -22,
+     40,
+     9.6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX2_4",
+    "position": [
+     -22,
+     40,
+     9.6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX2_4",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX2_4",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ_4",
+    "type": "box",
+    "position": [
+     -23.6,
+     40,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ_4",
+    "position": [
+     -23.6,
+     40,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ_4",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ_4",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ2_4",
+    "type": "box",
+    "position": [
+     -20.4,
+     40,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ2_4",
+    "position": [
+     -20.4,
+     40,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ2_4",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ2_4",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX_5",
+    "type": "box",
+    "position": [
+     -22,
+     50,
+     6.4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX_5",
+    "position": [
+     -22,
+     50,
+     6.4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX_5",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX_5",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandX2_5",
+    "type": "box",
+    "position": [
+     -22,
+     50,
+     9.6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandX2_5",
+    "position": [
+     -22,
+     50,
+     9.6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     3.2,
+     0.25,
+     0.25
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandX2_5",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandX2_5",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ_5",
+    "type": "box",
+    "position": [
+     -23.6,
+     50,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ_5",
+    "position": [
+     -23.6,
+     50,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ_5",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ_5",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_BandZ2_5",
+    "type": "box",
+    "position": [
+     -20.4,
+     50,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_BandZ2_5",
+    "position": [
+     -20.4,
+     50,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.25,
+     0.25,
+     3.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_BandZ2_5",
+    "color": [
+     0.5,
+     0.51,
+     0.53
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_BandZ2_5",
+    "metallic": 0.6,
+    "roughness": 0.5
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_Cabin",
+    "type": "box",
+    "position": [
+     -22,
+     58,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_Cabin",
+    "position": [
+     -22,
+     58,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     4.4,
+     4,
+     4.4
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_Cabin",
+    "color": [
+     0.82,
+     0.8,
+     0.74
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_Cabin",
+    "metallic": 0,
+    "roughness": 0.7
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Tower_Base",
+    "type": "box",
+    "position": [
+     -22,
+     0.4,
+     8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Tower_Base",
+    "position": [
+     -22,
+     0.4,
+     8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     5.2,
+     0.8,
+     5.2
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Tower_Base",
+    "color": [
+     0.4,
+     0.4,
+     0.4
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Tower_Base",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_00",
+    "type": "box",
+    "position": [
+     8.026066243415698,
+     1.6642142042401247,
+     4.059465962462127
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_00",
+    "position": [
+     8.026066243415698,
+     1.6642142042401247,
+     4.059465962462127
+    ],
+    "rotation": [
+     0,
+     23.361002882011235,
+     0
+    ],
+    "scale": [
+     0.22,
+     3.3284284084802493,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_00",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_00",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_01",
+    "type": "box",
+    "position": [
+     22.897292107110843,
+     1.769437036535237,
+     4.201113079674542
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_01",
+    "position": [
+     22.897292107110843,
+     1.769437036535237,
+     4.201113079674542
+    ],
+    "rotation": [
+     0,
+     7.7331435098312795,
+     0
+    ],
+    "scale": [
+     0.22,
+     3.538874073070474,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_01",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_01",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_02",
+    "type": "box",
+    "position": [
+     22.585811025695875,
+     2.575799363083206,
+     -5.799963113851845
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_02",
+    "position": [
+     22.585811025695875,
+     2.575799363083206,
+     -5.799963113851845
+    ],
+    "rotation": [
+     0,
+     32.23995203152299,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.151598726166412,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_02",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_02",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_03",
+    "type": "box",
+    "position": [
+     11.556863234611228,
+     3.6713589706923813,
+     -3.4119256967678666
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_03",
+    "position": [
+     11.556863234611228,
+     3.6713589706923813,
+     -3.4119256967678666
+    ],
+    "rotation": [
+     0,
+     18.097508393693715,
+     0
+    ],
+    "scale": [
+     0.22,
+     7.3427179413847625,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_03",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_03",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_04",
+    "type": "box",
+    "position": [
+     22.758657075930387,
+     3.1998107961262576,
+     10.200496774632484
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_04",
+    "position": [
+     22.758657075930387,
+     3.1998107961262576,
+     10.200496774632484
+    ],
+    "rotation": [
+     0,
+     65.35868525505066,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.399621592252515,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_04",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_04",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_05",
+    "type": "box",
+    "position": [
+     21.98725076415576,
+     3.3984779924503528,
+     1.3616563389077783
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_05",
+    "position": [
+     21.98725076415576,
+     3.3984779924503528,
+     1.3616563389077783
+    ],
+    "rotation": [
+     0,
+     61.60228512017056,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.7969559849007055,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_05",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_05",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_06",
+    "type": "box",
+    "position": [
+     18.679616143461317,
+     2.6634484824026003,
+     -7.954858717042953
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_06",
+    "position": [
+     18.679616143461317,
+     2.6634484824026003,
+     -7.954858717042953
+    ],
+    "rotation": [
+     0,
+     45.8785760239698,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.326896964805201,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_06",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_06",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_07",
+    "type": "box",
+    "position": [
+     9.611041431082413,
+     2.511894412105903,
+     9.663758742623031
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_07",
+    "position": [
+     9.611041431082413,
+     2.511894412105903,
+     9.663758742623031
+    ],
+    "rotation": [
+     0,
+     12.457278391811997,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.023788824211806,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_07",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_07",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_08",
+    "type": "box",
+    "position": [
+     13.499389515025541,
+     2.940157211269252,
+     2.3796230577863753
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_08",
+    "position": [
+     13.499389515025541,
+     2.940157211269252,
+     2.3796230577863753
+    ],
+    "rotation": [
+     0,
+     2.6742957858368754,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.880314422538504,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_08",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_08",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_09",
+    "type": "box",
+    "position": [
+     14.865805573994294,
+     3.6211717633414082,
+     -5.411591376643628
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_09",
+    "position": [
+     14.865805573994294,
+     3.6211717633414082,
+     -5.411591376643628
+    ],
+    "rotation": [
+     0,
+     20.10329197626561,
+     0
+    ],
+    "scale": [
+     0.22,
+     7.2423435266828164,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_09",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_09",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_10",
+    "type": "box",
+    "position": [
+     18.277858845191076,
+     2.7016410244395956,
+     -5.670813628938049
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_10",
+    "position": [
+     18.277858845191076,
+     2.7016410244395956,
+     -5.670813628938049
+    ],
+    "rotation": [
+     0,
+     33.341078229714185,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.403282048879191,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_10",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_10",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_11",
+    "type": "box",
+    "position": [
+     11.907608196837828,
+     1.906944042420946,
+     4.139221373014152
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_11",
+    "position": [
+     11.907608196837828,
+     1.906944042420946,
+     4.139221373014152
+    ],
+    "rotation": [
+     0,
+     38.82552525959909,
+     0
+    ],
+    "scale": [
+     0.22,
+     3.813888084841892,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_11",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_11",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_12",
+    "type": "box",
+    "position": [
+     16.501525653526187,
+     1.565102483436931,
+     4.146248067263514
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_12",
+    "position": [
+     16.501525653526187,
+     1.565102483436931,
+     4.146248067263514
+    ],
+    "rotation": [
+     0,
+     25.626565071288496,
+     0
+    ],
+    "scale": [
+     0.22,
+     3.130204966873862,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_12",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_12",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_13",
+    "type": "box",
+    "position": [
+     5.273487542755902,
+     3.0926024439395405,
+     -5.911810408346355
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_13",
+    "position": [
+     5.273487542755902,
+     3.0926024439395405,
+     -5.911810408346355
+    ],
+    "rotation": [
+     0,
+     11.212723685894161,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.185204887879081,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_13",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_13",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_14",
+    "type": "box",
+    "position": [
+     6.034789896104485,
+     2.556872191198636,
+     11.483846436720341
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_14",
+    "position": [
+     6.034789896104485,
+     2.556872191198636,
+     11.483846436720341
+    ],
+    "rotation": [
+     0,
+     1.851243101991713,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.113744382397272,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_14",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_14",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_15",
+    "type": "box",
+    "position": [
+     15.940428244881332,
+     3.2407671030960046,
+     1.475725696887821
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_15",
+    "position": [
+     15.940428244881332,
+     3.2407671030960046,
+     1.475725696887821
+    ],
+    "rotation": [
+     0,
+     16.819295610766858,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.481534206192009,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_15",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_15",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_16",
+    "type": "box",
+    "position": [
+     11.764524039579555,
+     3.1046409487025812,
+     -0.2703386042267084
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_16",
+    "position": [
+     11.764524039579555,
+     3.1046409487025812,
+     -0.2703386042267084
+    ],
+    "rotation": [
+     0,
+     47.4726901226677,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.2092818974051625,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_16",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_16",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_17",
+    "type": "box",
+    "position": [
+     10.924611425492913,
+     2.634735489380546,
+     -10.982750691007823
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_17",
+    "position": [
+     10.924611425492913,
+     2.634735489380546,
+     -10.982750691007823
+    ],
+    "rotation": [
+     0,
+     61.749900199938565,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.269470978761092,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_17",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_17",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_18",
+    "type": "box",
+    "position": [
+     13.305693489033729,
+     1.5260235823807307,
+     9.416845528874546
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_18",
+    "position": [
+     13.305693489033729,
+     1.5260235823807307,
+     9.416845528874546
+    ],
+    "rotation": [
+     0,
+     0.4920397815294564,
+     0
+    ],
+    "scale": [
+     0.22,
+     3.0520471647614613,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_18",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_18",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_19",
+    "type": "box",
+    "position": [
+     22.26339498278685,
+     2.713569837855175,
+     -7.714439547620714
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_19",
+    "position": [
+     22.26339498278685,
+     2.713569837855175,
+     -7.714439547620714
+    ],
+    "rotation": [
+     0,
+     1.252687624655664,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.42713967571035,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_19",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_19",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_20",
+    "type": "box",
+    "position": [
+     22.26185624091886,
+     2.9690401583793573,
+     8.384614647366107
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_20",
+    "position": [
+     22.26185624091886,
+     2.9690401583793573,
+     8.384614647366107
+    ],
+    "rotation": [
+     0,
+     30.22117102984339,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.938080316758715,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_20",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_20",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_21",
+    "type": "box",
+    "position": [
+     20.16920831333846,
+     2.025495596404653,
+     -13.19640996819362
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_21",
+    "position": [
+     20.16920831333846,
+     2.025495596404653,
+     -13.19640996819362
+    ],
+    "rotation": [
+     0,
+     4.205254276748747,
+     0
+    ],
+    "scale": [
+     0.22,
+     4.050991192809306,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_21",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_21",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_22",
+    "type": "box",
+    "position": [
+     14.281807624967769,
+     2.8780130859813653,
+     3.962377839256078
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_22",
+    "position": [
+     14.281807624967769,
+     2.8780130859813653,
+     3.962377839256078
+    ],
+    "rotation": [
+     0,
+     79.30300295585766,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.756026171962731,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_22",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_22",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_23",
+    "type": "box",
+    "position": [
+     9.256715257884935,
+     2.3494174636434764,
+     6.601118639111519
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_23",
+    "position": [
+     9.256715257884935,
+     2.3494174636434764,
+     6.601118639111519
+    ],
+    "rotation": [
+     0,
+     78.71939356438816,
+     0
+    ],
+    "scale": [
+     0.22,
+     4.698834927286953,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_23",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_23",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_24",
+    "type": "box",
+    "position": [
+     21.924597554840147,
+     3.3317891594488174,
+     -10.837874942459166
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_24",
+    "position": [
+     21.924597554840147,
+     3.3317891594488174,
+     -10.837874942459166
+    ],
+    "rotation": [
+     0,
+     22.98930692486465,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.663578318897635,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_24",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_24",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_25",
+    "type": "box",
+    "position": [
+     23.010701701277867,
+     3.3596958374837413,
+     -0.3440544926561415
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_25",
+    "position": [
+     23.010701701277867,
+     3.3596958374837413,
+     -0.3440544926561415
+    ],
+    "rotation": [
+     0,
+     10.695796043146402,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.719391674967483,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_25",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_25",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_26",
+    "type": "box",
+    "position": [
+     5.460780307650566,
+     2.1192759553086944,
+     -4.011434702202678
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_26",
+    "position": [
+     5.460780307650566,
+     2.1192759553086944,
+     -4.011434702202678
+    ],
+    "rotation": [
+     0,
+     74.35416379244998,
+     0
+    ],
+    "scale": [
+     0.22,
+     4.238551910617389,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_26",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_26",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_27",
+    "type": "box",
+    "position": [
+     19.10634425911121,
+     3.1388261531246826,
+     4.504955558106303
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_27",
+    "position": [
+     19.10634425911121,
+     3.1388261531246826,
+     4.504955558106303
+    ],
+    "rotation": [
+     0,
+     35.92752081574872,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.277652306249365,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_27",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_27",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_28",
+    "type": "box",
+    "position": [
+     19.606180684641004,
+     2.122719927923754,
+     -10.663645775523037
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_28",
+    "position": [
+     19.606180684641004,
+     2.122719927923754,
+     -10.663645775523037
+    ],
+    "rotation": [
+     0,
+     63.236743120942265,
+     0
+    ],
+    "scale": [
+     0.22,
+     4.245439855847508,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_28",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_28",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_29",
+    "type": "box",
+    "position": [
+     13.822725638281554,
+     3.5964109895867296,
+     -7.910511828958988
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_29",
+    "position": [
+     13.822725638281554,
+     3.5964109895867296,
+     -7.910511828958988
+    ],
+    "rotation": [
+     0,
+     76.53166440781206,
+     0
+    ],
+    "scale": [
+     0.22,
+     7.192821979173459,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_29",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_29",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_30",
+    "type": "box",
+    "position": [
+     10.513327060965821,
+     2.6188359321677126,
+     -5.3426354373805225
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_30",
+    "position": [
+     10.513327060965821,
+     2.6188359321677126,
+     -5.3426354373805225
+    ],
+    "rotation": [
+     0,
+     68.57796136289835,
+     0
+    ],
+    "scale": [
+     0.22,
+     5.237671864335425,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_30",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_30",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_31",
+    "type": "box",
+    "position": [
+     16.712657685391605,
+     2.48620259645395,
+     -0.3691910966299474
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_31",
+    "position": [
+     16.712657685391605,
+     2.48620259645395,
+     -0.3691910966299474
+    ],
+    "rotation": [
+     0,
+     7.035527536645532,
+     0
+    ],
+    "scale": [
+     0.22,
+     4.9724051929079,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_31",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_31",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_32",
+    "type": "box",
+    "position": [
+     5.743925466900691,
+     3.1256882915622555,
+     -1.3232683674432337
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_32",
+    "position": [
+     5.743925466900691,
+     3.1256882915622555,
+     -1.3232683674432337
+    ],
+    "rotation": [
+     0,
+     9.852411272004247,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.251376583124511,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_32",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_32",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_33",
+    "type": "box",
+    "position": [
+     20.655380816897377,
+     3.0001264432794414,
+     11.465559205040336
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_33",
+    "position": [
+     20.655380816897377,
+     3.0001264432794414,
+     11.465559205040336
+    ],
+    "rotation": [
+     0,
+     76.06778071727604,
+     0
+    ],
+    "scale": [
+     0.22,
+     6.000252886558883,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_33",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_33",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_34",
+    "type": "box",
+    "position": [
+     17.62708473065868,
+     2.238511170842685,
+     2.61952919093892
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_34",
+    "position": [
+     17.62708473065868,
+     2.238511170842685,
+     2.61952919093892
+    ],
+    "rotation": [
+     0,
+     21.11791249131784,
+     0
+    ],
+    "scale": [
+     0.22,
+     4.47702234168537,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_34",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_34",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Pillar_35",
+    "type": "box",
+    "position": [
+     11.664723008172587,
+     2.387324539013207,
+     -13.134010752197355
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Pillar_35",
+    "position": [
+     11.664723008172587,
+     2.387324539013207,
+     -13.134010752197355
+    ],
+    "rotation": [
+     0,
+     10.571892235893756,
+     0
+    ],
+    "scale": [
+     0.22,
+     4.774649078026414,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Pillar_35",
+    "color": [
+     0.62,
+     0.58,
+     0.5
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Pillar_35",
+    "metallic": 0,
+    "roughness": 0.75
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_00",
+    "type": "box",
+    "position": [
+     -16,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_00",
+    "position": [
+     -16,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_00",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_00",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_01",
+    "type": "box",
+    "position": [
+     -14,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_01",
+    "position": [
+     -14,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_01",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_01",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_02",
+    "type": "box",
+    "position": [
+     -12,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_02",
+    "position": [
+     -12,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_02",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_02",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_03",
+    "type": "box",
+    "position": [
+     -10,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_03",
+    "position": [
+     -10,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_03",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_03",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_04",
+    "type": "box",
+    "position": [
+     -8,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_04",
+    "position": [
+     -8,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_04",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_04",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_05",
+    "type": "box",
+    "position": [
+     -6,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_05",
+    "position": [
+     -6,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_05",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_05",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_06",
+    "type": "box",
+    "position": [
+     -4,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_06",
+    "position": [
+     -4,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_06",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_06",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_07",
+    "type": "box",
+    "position": [
+     -2,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_07",
+    "position": [
+     -2,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_07",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_07",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_08",
+    "type": "box",
+    "position": [
+     0,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_08",
+    "position": [
+     0,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_08",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_08",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_09",
+    "type": "box",
+    "position": [
+     2,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_09",
+    "position": [
+     2,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_09",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_09",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_10",
+    "type": "box",
+    "position": [
+     4,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_10",
+    "position": [
+     4,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_10",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_10",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_11",
+    "type": "box",
+    "position": [
+     6,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_11",
+    "position": [
+     6,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_11",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_11",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_12",
+    "type": "box",
+    "position": [
+     8,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_12",
+    "position": [
+     8,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_12",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_12",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_13",
+    "type": "box",
+    "position": [
+     10,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_13",
+    "position": [
+     10,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_13",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_13",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_14",
+    "type": "box",
+    "position": [
+     12,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_14",
+    "position": [
+     12,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_14",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_14",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_15",
+    "type": "box",
+    "position": [
+     14,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_15",
+    "position": [
+     14,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_15",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_15",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Post_16",
+    "type": "box",
+    "position": [
+     16,
+     0.65,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Post_16",
+    "position": [
+     16,
+     0.65,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Post_16",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Post_16",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Rail_Lo",
+    "type": "box",
+    "position": [
+     0,
+     0.5,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Rail_Lo",
+    "position": [
+     0,
+     0.5,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     32,
+     0.08,
+     0.06
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Rail_Lo",
+    "color": [
+     0.45,
+     0.33,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Rail_Lo",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_Rail_Hi",
+    "type": "box",
+    "position": [
+     0,
+     1.05,
+     -13
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_Rail_Hi",
+    "position": [
+     0,
+     1.05,
+     -13
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     32,
+     0.08,
+     0.06
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_Rail_Hi",
+    "color": [
+     0.45,
+     0.33,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_Rail_Hi",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_PostE_1",
+    "type": "box",
+    "position": [
+     16,
+     0.65,
+     -11
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_PostE_1",
+    "position": [
+     16,
+     0.65,
+     -11
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_PostE_1",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_PostE_1",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_PostE_2",
+    "type": "box",
+    "position": [
+     16,
+     0.65,
+     -9
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_PostE_2",
+    "position": [
+     16,
+     0.65,
+     -9
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_PostE_2",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_PostE_2",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_PostE_3",
+    "type": "box",
+    "position": [
+     16,
+     0.65,
+     -7
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_PostE_3",
+    "position": [
+     16,
+     0.65,
+     -7
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_PostE_3",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_PostE_3",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_PostE_4",
+    "type": "box",
+    "position": [
+     16,
+     0.65,
+     -5
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_PostE_4",
+    "position": [
+     16,
+     0.65,
+     -5
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_PostE_4",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_PostE_4",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_PostE_5",
+    "type": "box",
+    "position": [
+     16,
+     0.65,
+     -3
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_PostE_5",
+    "position": [
+     16,
+     0.65,
+     -3
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.14,
+     1.3,
+     0.14
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_PostE_5",
+    "color": [
+     0.42,
+     0.3,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_PostE_5",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_RailE_Lo",
+    "type": "box",
+    "position": [
+     16,
+     0.5,
+     -8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_RailE_Lo",
+    "position": [
+     16,
+     0.5,
+     -8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.06,
+     0.08,
+     10
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_RailE_Lo",
+    "color": [
+     0.45,
+     0.33,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_RailE_Lo",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Fence_RailE_Hi",
+    "type": "box",
+    "position": [
+     16,
+     1.05,
+     -8
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Fence_RailE_Hi",
+    "position": [
+     16,
+     1.05,
+     -8
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.06,
+     0.08,
+     10
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Fence_RailE_Hi",
+    "color": [
+     0.45,
+     0.33,
+     0.22
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Fence_RailE_Hi",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Step_0",
+    "type": "box",
+    "position": [
+     -13,
+     0.11,
+     -4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Step_0",
+    "position": [
+     -13,
+     0.11,
+     -4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.9,
+     0.22,
+     5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Step_0",
+    "color": [
+     0.5,
+     0.48,
+     0.44
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Step_0",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Step_1",
+    "type": "box",
+    "position": [
+     -13.9,
+     0.22,
+     -4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Step_1",
+    "position": [
+     -13.9,
+     0.22,
+     -4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.9,
+     0.44,
+     5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Step_1",
+    "color": [
+     0.5,
+     0.48,
+     0.44
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Step_1",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Step_2",
+    "type": "box",
+    "position": [
+     -14.8,
+     0.33,
+     -4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Step_2",
+    "position": [
+     -14.8,
+     0.33,
+     -4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.9,
+     0.66,
+     5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Step_2",
+    "color": [
+     0.5,
+     0.48,
+     0.44
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Step_2",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Step_3",
+    "type": "box",
+    "position": [
+     -15.7,
+     0.44,
+     -4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Step_3",
+    "position": [
+     -15.7,
+     0.44,
+     -4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.9,
+     0.88,
+     5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Step_3",
+    "color": [
+     0.5,
+     0.48,
+     0.44
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Step_3",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Step_4",
+    "type": "box",
+    "position": [
+     -16.6,
+     0.55,
+     -4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Step_4",
+    "position": [
+     -16.6,
+     0.55,
+     -4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.9,
+     1.1,
+     5
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Step_4",
+    "color": [
+     0.5,
+     0.48,
+     0.44
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Step_4",
+    "metallic": 0,
+    "roughness": 0.85
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_0",
+    "type": "box",
+    "position": [
+     0.75,
+     0.13,
+     0
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_0",
+    "position": [
+     0.75,
+     0.13,
+     0
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_0",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_0",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_1",
+    "type": "box",
+    "position": [
+     0.5303300858899107,
+     0.13,
+     0.5303300858899106
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_1",
+    "position": [
+     0.5303300858899107,
+     0.13,
+     0.5303300858899106
+    ],
+    "rotation": [
+     0,
+     45,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_1",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_1",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_2",
+    "type": "box",
+    "position": [
+     4.592425496802574e-17,
+     0.13,
+     0.75
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_2",
+    "position": [
+     4.592425496802574e-17,
+     0.13,
+     0.75
+    ],
+    "rotation": [
+     0,
+     90,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_2",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_2",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_3",
+    "type": "box",
+    "position": [
+     -0.5303300858899106,
+     0.13,
+     0.5303300858899107
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_3",
+    "position": [
+     -0.5303300858899106,
+     0.13,
+     0.5303300858899107
+    ],
+    "rotation": [
+     0,
+     135,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_3",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_3",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_4",
+    "type": "box",
+    "position": [
+     -0.75,
+     0.13,
+     9.184850993605148e-17
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_4",
+    "position": [
+     -0.75,
+     0.13,
+     9.184850993605148e-17
+    ],
+    "rotation": [
+     0,
+     180,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_4",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_4",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_5",
+    "type": "box",
+    "position": [
+     -0.5303300858899107,
+     0.13,
+     -0.5303300858899106
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_5",
+    "position": [
+     -0.5303300858899107,
+     0.13,
+     -0.5303300858899106
+    ],
+    "rotation": [
+     0,
+     225,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_5",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_5",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_6",
+    "type": "box",
+    "position": [
+     -1.3777276490407724e-16,
+     0.13,
+     -0.75
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_6",
+    "position": [
+     -1.3777276490407724e-16,
+     0.13,
+     -0.75
+    ],
+    "rotation": [
+     0,
+     270,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_6",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_6",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "FireStone_7",
+    "type": "box",
+    "position": [
+     0.5303300858899105,
+     0.13,
+     -0.5303300858899107
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "FireStone_7",
+    "position": [
+     0.5303300858899105,
+     0.13,
+     -0.5303300858899107
+    ],
+    "rotation": [
+     0,
+     315,
+     0
+    ],
+    "scale": [
+     0.3,
+     0.26,
+     0.24
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "FireStone_7",
+    "color": [
+     0.36,
+     0.35,
+     0.34
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "FireStone_7",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "vfx_place",
+   "params": {
+    "preset": "p_campfire",
+    "name": "Campfire",
+    "position": [
+     0,
+     0.05,
+     0
+    ]
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Torch_Pole_1",
+    "type": "box",
+    "position": [
+     -6,
+     1.1,
+     -6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Torch_Pole_1",
+    "position": [
+     -6,
+     1.1,
+     -6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.1,
+     2.2,
+     0.1
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Torch_Pole_1",
+    "color": [
+     0.3,
+     0.22,
+     0.15
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Torch_Pole_1",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "vfx_place",
+   "params": {
+    "preset": "p_torch",
+    "name": "Torch_1",
+    "position": [
+     -6,
+     2.25,
+     -6
+    ]
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Torch_Pole_2",
+    "type": "box",
+    "position": [
+     6,
+     1.1,
+     -6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Torch_Pole_2",
+    "position": [
+     6,
+     1.1,
+     -6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.1,
+     2.2,
+     0.1
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Torch_Pole_2",
+    "color": [
+     0.3,
+     0.22,
+     0.15
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Torch_Pole_2",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "vfx_place",
+   "params": {
+    "preset": "p_torch",
+    "name": "Torch_2",
+    "position": [
+     6,
+     2.25,
+     -6
+    ]
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Torch_Pole_3",
+    "type": "box",
+    "position": [
+     -6,
+     1.1,
+     6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Torch_Pole_3",
+    "position": [
+     -6,
+     1.1,
+     6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.1,
+     2.2,
+     0.1
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Torch_Pole_3",
+    "color": [
+     0.3,
+     0.22,
+     0.15
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Torch_Pole_3",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "vfx_place",
+   "params": {
+    "preset": "p_torch",
+    "name": "Torch_3",
+    "position": [
+     -6,
+     2.25,
+     6
+    ]
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Torch_Pole_4",
+    "type": "box",
+    "position": [
+     6,
+     1.1,
+     6
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Torch_Pole_4",
+    "position": [
+     6,
+     1.1,
+     6
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.1,
+     2.2,
+     0.1
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Torch_Pole_4",
+    "color": [
+     0.3,
+     0.22,
+     0.15
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Torch_Pole_4",
+    "metallic": 0,
+    "roughness": 0.9
+   }
+  },
+  {
+   "method": "vfx_place",
+   "params": {
+    "preset": "p_torch",
+    "name": "Torch_4",
+    "position": [
+     6,
+     2.25,
+     6
+    ]
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Vane_Pole",
+    "type": "box",
+    "position": [
+     9,
+     2.2,
+     -4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Vane_Pole",
+    "position": [
+     9,
+     2.2,
+     -4
+    ],
+    "rotation": [
+     0,
+     0,
+     0
+    ],
+    "scale": [
+     0.1,
+     4.4,
+     0.1
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Vane_Pole",
+    "color": [
+     0.45,
+     0.46,
+     0.48
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Vane_Pole",
+    "metallic": 0.7,
+    "roughness": 0.4
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Vane_Rotor",
+    "type": "empty",
+    "position": [
+     9,
+     4.4,
+     -4
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Vane_Rotor",
+    "position": [
+     9,
+     4.4,
+     -4
+    ],
+    "rotation": [
+     0,
+     35,
+     0
+    ],
+    "scale": [
+     1,
+     1,
+     1
+    ]
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Vane_Arm",
+    "type": "box",
+    "position": [
+     9,
+     4.4,
+     -4
+    ],
+    "parentName": "Vane_Rotor"
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Vane_Arm",
+    "position": [
+     9,
+     4.4,
+     -4
+    ],
+    "rotation": [
+     0,
+     35,
+     0
+    ],
+    "scale": [
+     1.8,
+     0.07,
+     0.07
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Vane_Arm",
+    "color": [
+     0.7,
+     0.55,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Vane_Arm",
+    "metallic": 0.8,
+    "roughness": 0.35
+   }
+  },
+  {
+   "method": "create_entity",
+   "params": {
+    "name": "Vane_Fin",
+    "type": "box",
+    "position": [
+     8.2,
+     4.4,
+     -4
+    ],
+    "parentName": "Vane_Rotor"
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Vane_Fin",
+    "position": [
+     8.2,
+     4.4,
+     -4
+    ],
+    "rotation": [
+     0,
+     35,
+     0
+    ],
+    "scale": [
+     0.4,
+     0.5,
+     0.03
+    ]
+   }
+  },
+  {
+   "method": "set_color",
+   "params": {
+    "name": "Vane_Fin",
+    "color": [
+     0.7,
+     0.55,
+     0.2
+    ]
+   }
+  },
+  {
+   "method": "set_pbr",
+   "params": {
+    "name": "Vane_Fin",
+    "metallic": 0.8,
+    "roughness": 0.35
+   }
+  },
+  {
+   "method": "create_lua_component",
+   "params": {
+    "name": "sc1_vane",
+    "code": "-- SC-1: 風見の腕を Y 軸まわりに一定の角速度で回す（Play 中だけ。エディタの撮影では固定角のまま）\nfunction OnUpdate(self, dt)\n    self.angle = (self.angle or 35) + 40 * dt\n    self.entity.transform.rotation = Vec3.new(0, self.angle, 0)\nend\n"
+   }
+  },
+  {
+   "method": "attach_lua_component",
+   "params": {
+    "name": "Vane_Rotor",
+    "script": "sc1_vane"
+   }
+  },
+  {
+   "method": "import_asset",
+   "params": {
+    "sourcePath": "<repo>/assets/engine/characters/mannequin/mannequin.glb",
+    "destPath": "models/mannequin.glb",
+    "overwrite": true
+   }
+  },
+  {
+   "method": "spawn_model",
+   "params": {
+    "name": "Mannequin",
+    "path": "models/mannequin.glb",
+    "position": [
+     -1.2,
+     0,
+     -2.2
+    ]
+   }
+  },
+  {
+   "method": "set_transform",
+   "params": {
+    "name": "Mannequin",
+    "position": [
+     -1.2,
+     0,
+     -2.2
+    ],
+    "rotation": [
+     0,
+     70,
+     0
+    ],
+    "scale": [
+     1,
+     1,
+     1
+    ]
+   }
+  },
+  {
+   "method": "create_lua_component",
+   "params": {
+    "name": "sc1_walker",
+    "code": "-- SC-1: 人形が焚き火のまわり（半径 4m）を Walk のループで歩く（Play 中だけ）\nfunction OnStart(self)\n    self.entity:playAnimByName('Walk', 0.0)\n    self.entity:setLooping(true)\n    self.t = 0\nend\nfunction OnUpdate(self, dt)\n    self.t = self.t + dt * 0.35\n    local x, z = 4.0 * math.cos(self.t), 4.0 * math.sin(self.t)\n    self.entity.transform.position = Vec3.new(x, 0, z)\n    self.entity.transform.rotation = Vec3.new(0, -math.deg(self.t), 0)\nend\n"
+   }
+  },
+  {
+   "method": "attach_lua_component",
+   "params": {
+    "name": "Mannequin",
+    "script": "sc1_walker"
+   }
+  },
+  {
+   "method": "set_editor_camera",
+   "params": {
+    "position": [
+     -4,
+     5,
+     -26
+    ],
+    "target": [
+     -8,
+     16,
+     8
+    ]
+   }
+  },
+  {
+   "method": "save_scene",
+   "params": {
+    "path": "scenes/sc1_yard.json"
+   }
+  }
+ ]
+}
