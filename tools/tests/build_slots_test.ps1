@@ -9,6 +9,7 @@ $tmpRoot = Join-Path ([IO.Path]::GetTempPath()) ("dx12-slots-test-" + [Guid]::Ne
 New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 $env:DX12_BUILD_SLOT_PREFIX = 'Global\dx12-build-test-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $env:DX12_BUILD_MIN_FREE_GB = '0'
+$env:DX12_BUILD_FAKE_IDLE_SEC = '99999'   # 既定は「利用者は離席中」
 $fail = 0
 
 function Assert-That([bool]$cond, [string]$msg) {
@@ -55,7 +56,7 @@ function Test-NoOverlap($res) {
 }
 
 try {
-    Write-Host '(a) 3 probes x 15s, different dirs, DX12_BUILD_SLOTS=2'
+    Write-Host '(a) 3 probes x 15s, different dirs, DX12_BUILD_SLOTS=2, user idle'
     $a = Invoke-Probes @(1..3 | ForEach-Object { @{ Dir = (Join-Path $tmpRoot "a$_"); Sec = 15 } }) 2 'a'
     Assert-That (@($a | Where-Object { $_.Exit -ne 0 }).Count -eq 0) 'all probes exit 0'
     Assert-That ((Get-MaxConcurrency $a) -eq 2) "max concurrency is 2 (got $(Get-MaxConcurrency $a))"
@@ -69,6 +70,14 @@ try {
     Assert-That (@($b | Where-Object { $_.Exit -ne 0 }).Count -eq 0) 'all probes exit 0'
     Assert-That (Test-NoOverlap $b) 'same-dir probes serialize'
 
+    Write-Host '(d) 3 probes x 5s, different dirs, DX12_BUILD_SLOTS=2, user ACTIVE (idle 5s)'
+    $env:DX12_BUILD_FAKE_IDLE_SEC = '5'
+    $d = Invoke-Probes @(1..3 | ForEach-Object { @{ Dir = (Join-Path $tmpRoot "d$_"); Sec = 5 } }) 2 'd'
+    $env:DX12_BUILD_FAKE_IDLE_SEC = '99999'
+    Assert-That (@($d | Where-Object { $_.Exit -ne 0 }).Count -eq 0) 'all probes exit 0'
+    Assert-That (Test-NoOverlap $d) 'user active: serialized (slot 1 only)'
+    Assert-That (@($d | Where-Object { $_.Slot -ne 1 }).Count -eq 0) 'user active: only slot 1 used'
+
     Write-Host '(c) 3 probes x 5s, different dirs, DX12_BUILD_SLOTS=1'
     $c = Invoke-Probes @(1..3 | ForEach-Object { @{ Dir = (Join-Path $tmpRoot "c$_"); Sec = 5 } }) 1 'c'
     Assert-That (@($c | Where-Object { $_.Exit -ne 0 }).Count -eq 0) 'all probes exit 0'
@@ -76,7 +85,7 @@ try {
     Assert-That ((Get-MaxConcurrency $c) -eq 1) 'max concurrency is 1'
 }
 finally {
-    Remove-Item Env:\DX12_BUILD_SLOT_PREFIX, Env:\DX12_BUILD_SLOTS, Env:\DX12_BUILD_MIN_FREE_GB -ErrorAction SilentlyContinue
+    Remove-Item Env:\DX12_BUILD_FAKE_IDLE_SEC, Env:\DX12_BUILD_SLOT_PREFIX, Env:\DX12_BUILD_SLOTS, Env:\DX12_BUILD_MIN_FREE_GB -ErrorAction SilentlyContinue
     try { Remove-Item -Recurse -Force -LiteralPath $tmpRoot -ErrorAction SilentlyContinue } catch {}
 }
 if ($fail -eq 0) { Write-Host 'ALL PASS'; exit 0 } else { Write-Host "FAILED: $fail"; exit 1 }
