@@ -1,7 +1,7 @@
 # 植生 F1（FoliageLayer + GPU カリング + ExecuteIndirect + 風）
 
 設計は `docs/GRAPHICS_PARITY_DESIGN.md` §2.3。実装の場所は `src/renderer/foliage/`・`shaders/foliage/`。
-実測値・やらなかったこと・申し送りは `C:\Users\ryuto\Documents\dx12-ui-audit\FOLIAGE_F1_REPORT.md`。
+実測値・やらなかったこと・申し送りは `<作業メモ置き場>\FOLIAGE_F1_REPORT.md`。
 
 ## 1. 構成
 

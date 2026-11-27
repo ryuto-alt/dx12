@@ -63,7 +63,7 @@ def check(path: Path) -> bool:
 def main() -> int:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
-    d = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(r"C:\Users\ryuto\Documents\dx12-ui-audit\splash")
+    d = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "build" / "splash_plots"
     files = sorted(d.glob("sync_*.wav"))
     if not files:
         print("sync_*.wav がありません（SplashSyncDump を先に実行）")

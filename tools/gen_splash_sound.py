@@ -41,7 +41,7 @@ LN1000 = 6.907755278982137          # exp(-t/tau) が -60dB になる t = tau * 
 REPO = Path(__file__).resolve().parent.parent
 SOUND_DIR = REPO / "assets" / "editor" / "sounds"
 HEADER_PATH = REPO / "src" / "core" / "SplashSoundData.h"
-DEFAULT_PLOT_DIR = Path(r"C:\Users\ryuto\Documents\dx12-ui-audit\splash")
+DEFAULT_PLOT_DIR = REPO / "build" / "splash_plots"   # --plot-dir で変更可
 
 PEAK_TARGET_DB = -6.0               # 仕様は -3dBFS 以下。余裕を見て -6dBFS に揃える
 FADE_IN_SEC = 0.006                 # 仕様 5ms 以上

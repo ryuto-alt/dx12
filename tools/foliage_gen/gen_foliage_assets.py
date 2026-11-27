@@ -34,8 +34,7 @@ import zlib
 
 import numpy as np
 
-DEFAULT_OUT = (r"C:\Users\ryuto\AppData\Local\Temp\claude\C--Windows-System32"
-               r"\9c1abfab-1ef3-4472-84d8-27f0717dbf64\scratchpad\f1proj\assets")
+DEFAULT_OUT = os.path.join(os.environ.get("TEMP", "."), "foliage_gen_out", "assets")   # --out で変更可
 
 
 # ============================================================================

@@ -96,7 +96,7 @@
 - 既存の流儀: 既定 OFF の機能は絵を 1px も変えない（旧モードのシーン）。ルートシグネチャのスロットは増やさない（DDGI は専用ルートシグネチャ、フォワードは既存テーブルに相乗り。t 番号は GRAPHICS_PARITY_DESIGN §2.0 の表に従う）。PerFrame の追加値は `_clusterReserved` の予約領域に置き、C++/HLSL のバイト一致をテストで固定する。
 - 共有ファイル（`ApplicationRender.cpp`・`Lighting.hlsli`・`ForwardShade.hlsli`・`DdgiProbeUpdate.hlsl`）は段階ごとに担当を 1 つにする（同じ波で 2 人が触らない）。
 - 数値で判定する。測れなかったものは「未確認」と書く。
-- `docs/AGENT_RULES` 相当（`C:\Users\ryuto\Documents\dx12-ui-audit\AGENT_RULES.md`）に従う。commit / push は親。
+- `docs/AGENT_RULES` 相当（`<作業メモ置き場>\AGENT_RULES.md`）に従う。commit / push は親。
 
 ## 4. 担当と波（同時 3 体まで）
 
