@@ -407,7 +407,8 @@ def main():
         txt = ((d / "icons_base.txt").read_text(encoding="utf-8").rstrip("\n") + "\n"
                + (d / "icons_extra.txt").read_text(encoding="utf-8").rstrip("\n") + "\n")
         SRC.write_text(txt, encoding="utf-8", newline="\n")
-    raw = SRC.read_bytes()
+    # 改行は LF に揃えてから SHA を取る（core.autocrlf=true の checkout では入力が CRLF になり、生成物が古いと誤判定されるため）
+    raw = SRC.read_bytes().replace(b"\r\n", b"\n")
     sha = hashlib.sha256(raw).hexdigest()
     icons = load_icons(raw.decode("utf-8"))
     ids = [i["id"] for i in icons]
