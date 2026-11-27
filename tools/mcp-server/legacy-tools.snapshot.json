@@ -1,7 +1,7 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 429485,
+ "totalBytes": 430366,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
@@ -900,11 +900,12 @@
   },
   {
    "name": "dx12_new_scene",
-   "sha256": "136ddb9049ca5064e48bde19998f4016896abbdbd2c7c624662021b535d2dba0",
-   "semSha256": "47afcbbad0c969c106e9011c0ad8d90dcc1209a07468d218a13d21bf93501cec",
+   "sha256": "ec76dd9967c76b939e12f74e549c7b57bbf37cff75cf256cf3a58f8bd2a2ac18",
+   "semSha256": "09def28de92f03163055eddc1a732b15e3ed861ef6033b0d84d3109f36c67cbf",
    "outputSchemaBytes": 303,
    "argKeys": [
-    "savePath"
+    "savePath",
+    "profile"
    ],
    "annotations": {
     "title": "新規シーン",
@@ -1680,15 +1681,23 @@
   },
   {
    "name": "dx12_set_shadow_pcss",
-   "sha256": "8e920eaa513f4af7b34aa8cc93c0e95df1e17efe40a1d6b4337e64cf9cc82f50",
-   "semSha256": "eac0eaca7950c852b99340a8eabd68c2e15580e0dc49fa2bda129ce7f372f57c",
+   "sha256": "dba62867c2cefdfb783c05f95867fb376040676f91cb76944d0ddc7d820da8ea",
+   "semSha256": "6f0dda459c40f9af5d939107d8ce91641a4d5bf0f805d59c4d99e611e297f4c0",
    "outputSchemaBytes": 303,
    "argKeys": [
     "enabled",
     "lightTanAngle",
     "maxPenumbraTexels",
     "blockerSearchTexels",
-    "temporalDither"
+    "temporalDither",
+    "epicDynamicCsm",
+    "pancaking",
+    "gatherPcss",
+    "cascadeDitherBlend",
+    "receiverNormalOffsetBase",
+    "receiverNormalOffsetSlope",
+    "casterBiasScaleV2",
+    "gatherFilterTaps"
    ],
    "annotations": {
     "title": "PCSSソフトシャドウ設定変更",

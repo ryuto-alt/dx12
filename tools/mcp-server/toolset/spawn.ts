@@ -212,9 +212,12 @@ reg(
   "dx12_new_scene",
   "新規シーン",
   "新規シーンを作る(現在のシーンを破棄)。savePath を渡すとそのパスに紐づけて作る。フレーム境界で実処理され、切り替えが終わってから本当の結果 {sceneName, path, projectPath, entityCount, sceneGeneration, saved} を返す(path は assets 相対で dx12_open_scene / dx12_save_scene にそのまま渡せる。projectPath はプロジェクトルート相対。savePath を渡さなければ path/projectPath は null で saved:false の未保存シーン)。現在の編集内容は失われるので注意。完了の再確認は dx12_ping の currentScene / currentSceneProjectPath。",
-  { savePath: z.string().optional().describe("新シーンの保存先 assets 相対パス(任意)。") },
+  {
+    savePath: z.string().optional().describe("新シーンの保存先 assets 相対パス(任意)。"),
+    profile: z.enum(["epic", "classic"]).optional().describe("ルック。epic(既定) | classic(従来)。W1-C8。"),
+  },
   { destructiveHint: true },
-  ({ savePath }) => run(() => engine.call("new_scene", { savePath })),
+  ({ savePath, profile }) => run(() => engine.call("new_scene", { savePath, profile })),
 );
 
 reg(

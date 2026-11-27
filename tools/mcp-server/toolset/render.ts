@@ -431,6 +431,15 @@ reg(
       "ブロッカー探索の半径(シャドウマップのテクセル数)。1..64 にクランプ。小さすぎると遠くの影が硬いまま。"),
     temporalDither: z.boolean().optional().describe(
       "サンプル位置をフレームごとに回してバンディングを散らす。★TAA 有効時のみ効く(無効だとチラつくだけなのでエンジンが自動で切る)。"),
+    // W1-C6: Epic の太陽影(シーン JSON には保存しない)。説明は最小限(旧ツールの tools/list を太らせない)。
+    epicDynamicCsm: z.boolean().optional().describe("Epic の動的 CSM(2048 D16 x3)。"),
+    pancaking: z.boolean().optional().describe("影の深度クリップを切る(pancaking)。"),
+    gatherPcss: z.boolean().optional().describe("Gather PCSS(V2 のみ)。"),
+    cascadeDitherBlend: z.boolean().optional().describe("カスケードの継ぎ目をディザで混ぜる。"),
+    receiverNormalOffsetBase: z.number().optional().describe("受光側の法線オフセット 0..4(V2)。"),
+    receiverNormalOffsetSlope: z.number().optional().describe("同・傾き係数 0..4(V2)。"),
+    casterBiasScaleV2: z.number().optional().describe("V2 の投影側バイアス倍率 0.05..1。"),
+    gatherFilterTaps: z.number().int().optional().describe("Gather PCSS のタップ数 8..32。"),
   },
   { idempotentHint: true },
   (a) => run(() => applyAndVerify("set_shadow_pcss", "get_shadow_pcss", a)),

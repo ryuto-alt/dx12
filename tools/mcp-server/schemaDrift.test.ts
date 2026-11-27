@@ -83,6 +83,8 @@ const SHARED_BLOCK_KEYS: Record<string, string[]> = {
   // ApplicationMcp*.cpp(連結) `get_shadow_pcss || set_shadow_pcss`。get は引数を取らない({} が正)。
   get_shadow_pcss: [
     "enabled", "lightTanAngle", "maxPenumbraTexels", "blockerSearchTexels", "temporalDither",
+    "epicDynamicCsm", "pancaking", "gatherPcss", "cascadeDitherBlend",
+    "receiverNormalOffsetBase", "receiverNormalOffsetSlope", "casterBiasScaleV2", "gatherFilterTaps",   // W1-C6
   ],
   // ApplicationMcp*.cpp(連結) `get_dxr || set_dxr`。同じく get は引数を取らない。
   get_dxr: [
@@ -434,6 +436,8 @@ console.log("\n[10] 新規ツール(エンジンに実装済みで TS 定義が�
     dx12_terrain_splat_info: ["entity", "name", "gridSize", "point", "points"],
     dx12_set_shadow_pcss: [
       "enabled", "lightTanAngle", "maxPenumbraTexels", "blockerSearchTexels", "temporalDither",
+      "epicDynamicCsm", "pancaking", "gatherPcss", "cascadeDitherBlend",
+      "receiverNormalOffsetBase", "receiverNormalOffsetSlope", "casterBiasScaleV2", "gatherFilterTaps",   // W1-C6
     ],
     dx12_get_shadow_pcss: [],
     dx12_set_dxr: [
