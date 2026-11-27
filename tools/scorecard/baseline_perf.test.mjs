@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// 実機の GPU 枠マーカー(%TEMP%\uno-gpu-slot-holders)に左右されないよう、空の置き場へ向ける
+process.env.DX12_GPU_MARKER_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "gm-"));
 import {
   median, stddev, summarizeWindows, abThreshold, dropByClock, compareAB, ababSchedule, vramGate,
   emptyBaseline, mergeInto, validateBaseline, acquireGpuWindow, parseArgs, clockStats, EXPECTED_SCENES,
@@ -182,6 +184,26 @@ test("計測窓のロック: 排他、古い持ち主は奪う、解放で消え
   const rel2 = await acquireGpuWindow({ file: f });
   assert.ok(rel2);
   rel2();
+});
+
+test("GPU 枠のマーカー: 生きた持ち主がいる間は窓を取らず(取った窓は返す)、消えれば取れる。枠の中の子は見ない", async () => {
+  const { liveGpuSlotHolders } = await import("./baseline_perf.mjs");
+  const md = fs.mkdtempSync(path.join(os.tmpdir(), "gm2-")); tmpDirs.push(md);
+  const f = mkLockFile();
+  const marker = path.join(md, "1-1.json");
+  fs.writeFileSync(marker, JSON.stringify({ pid: process.ppid, slot: 1 }));   // 生きているプロセス(親)
+  assert.deepEqual(liveGpuSlotHolders(md), [process.ppid]);
+  assert.equal(await acquireGpuWindow({ file: f, waitSec: 0, markerDir: md }), null);
+  assert.ok(!fs.existsSync(f), "取った窓は返している");
+  const saved = process.env.DX12_SLOT_HELD_GPU;
+  process.env.DX12_SLOT_HELD_GPU = "1";   // 自分が枠の中(親が持っている)なら見ない
+  try { const r = await acquireGpuWindow({ file: f, markerDir: md }); assert.ok(r); r(); } finally { if (saved === undefined) delete process.env.DX12_SLOT_HELD_GPU; else process.env.DX12_SLOT_HELD_GPU = saved; }
+  fs.writeFileSync(marker, JSON.stringify({ pid: 2147483000, slot: 1 }));   // 死んだ持ち主のマーカーは捨てる
+  assert.deepEqual(liveGpuSlotHolders(md), []);
+  assert.ok(!fs.existsSync(marker));
+  const r2 = await acquireGpuWindow({ file: f, markerDir: md });
+  assert.ok(r2);
+  r2();
 });
 
 test("古いロックの奪取: 持ち主の PID が居ないときだけ。生きている持ち主のロックは消さない", async () => {

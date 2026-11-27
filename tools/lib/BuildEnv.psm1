@@ -35,9 +35,14 @@ function Get-DxEnvSnapshot {
 }
 
 # `set` の出力行から、ベースラインとの差分(変更/追加された変数。PATH は足されたエントリ)を作る
-function ConvertTo-VcvarsDelta([string[]]$SetLines, [hashtable]$Baseline) {
+# 呼び出し元がすでに vcvars の一部(VS の cmake/ninja、Windows Kits、INCLUDE など)を持っていると、差分だけでは足りなくなる。
+# そこで「差分」に加えて、vcvars 由来と分かる変数(名前で判定)と PATH エントリ(VS のルート / Windows Kits / SDK 配下)は、ベースラインにあっても必ず保存する。
+$script:VcvarsVarPattern = '^(INCLUDE|LIB|LIBPATH|EXTERNAL_INCLUDE|VC.*|VS.*|__VS.*|VSCMD.*|Windows.*|UCRT.*|UniversalCRT.*|DevEnvDir|ExtensionSdkDir|Platform|Framework.*|NETFX.*|CommandPromptType|__DOTNET.*)$'
+function ConvertTo-VcvarsDelta([string[]]$SetLines, [hashtable]$Baseline, [string]$VcPath = '') {
     $vars = [ordered]@{}
     $pathAdd = @()
+    $roots = @('\windows kits\', '\microsoft sdks\', '\.net framework\')
+    if ($VcPath) { try { $roots += ((Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $VcPath)))).TrimEnd('\') + '\').ToLowerInvariant() } catch {} }
     foreach ($line in $SetLines) {
         if ($line -notmatch '^([^=]+)=(.*)$') { continue }
         $n = $Matches[1]; $v = $Matches[2]
@@ -45,9 +50,14 @@ function ConvertTo-VcvarsDelta([string[]]$SetLines, [hashtable]$Baseline) {
         foreach ($k in $Baseline.Keys) { if ($k -ieq $n) { $old = $Baseline[$k]; break } }
         if ($n -ieq 'PATH') {
             $oldEntries = @(($old -split ';') | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\').ToLowerInvariant() })
-            foreach ($p in ($v -split ';')) { if ($p -and ($oldEntries -notcontains $p.TrimEnd('\').ToLowerInvariant())) { $pathAdd += $p } }
+            foreach ($p in ($v -split ';')) {
+                if (-not $p) { continue }
+                $pl = $p.TrimEnd('\').ToLowerInvariant() + '\'
+                $isVc = $false; foreach ($rt in $roots) { if ($pl.Contains($rt)) { $isVc = $true; break } }
+                if ($isVc -or ($oldEntries -notcontains $p.TrimEnd('\').ToLowerInvariant())) { if ($pathAdd -notcontains $p) { $pathAdd += $p } }
+            }
         }
-        elseif ($null -eq $old -or $old -ne $v) { $vars[$n] = $v }
+        elseif ($null -eq $old -or $old -ne $v -or $n -match $script:VcvarsVarPattern) { $vars[$n] = $v }
     }
     return [pscustomobject]@{ vars = $vars; pathAdd = $pathAdd }
 }
@@ -87,7 +97,7 @@ function Import-VcvarsEnv {
     }
     $baseline = Get-DxEnvSnapshot
     $lines = if ($Runner) { @(& $Runner $VcPath) } else { @(& cmd /c "`"$VcPath`" >nul && set") }
-    $delta = ConvertTo-VcvarsDelta $lines $baseline
+    $delta = ConvertTo-VcvarsDelta $lines $baseline $VcPath
     Set-VcvarsDelta $delta
     if ($useCache -and $delta.vars.Contains('VCToolsInstallDir')) {
         try {

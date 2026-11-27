@@ -93,3 +93,14 @@ test("無い ID は null / truncBytes はバイト数を守る", () => {
   const t = truncBytes("あいうえお\nかきくけこ", 20);
   assert.ok(byteLen(t) <= 20);
 });
+
+test("受け入れが 2.8KB を超えるときは、切った旨の注記が付く(黙って切らない)", () => {
+  const longAcc = "- **受け入れ**: " + "い".repeat(1500) + "\n  続き。\n";
+  const doc = `# 文書\n\n## 2. 本編\n\n##### C3 受け入れが長い項目（A、S=1、依存なし）\n- **設計**: 短い。\n${longAcc}- **レビュー観点**: 末尾。\n`;
+  const b = makeBrief(doc, "C3", { source: "EXEC_X.md" });
+  assert.ok(b);
+  assert.match(b.text, /…\(受け入れは \d+ バイトあり、ここには約 2800 バイト。続きは EXEC_X\.md:\d+-\d+\)/);
+  assert.ok(b.bytes <= 8192);
+  const short = makeBrief(DOC, "A1");
+  assert.ok(!/受け入れは \d+ バイトあり/.test(short.text), "短い受け入れには注記を付けない");
+});

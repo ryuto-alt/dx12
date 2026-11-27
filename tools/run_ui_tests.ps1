@@ -25,7 +25,7 @@
     -Base <ref>      -Auto の基準(既定 DX12_BASE_REF > overhaul/wave0 > master)
     -AutoPlan        -Auto の選択結果を JSON で出して終了(エンジンは起動しない)
     -StrictRed       tools/known_red.json の 'ui' を無視する(既知の赤も失敗扱い)
-    GPU の枠(Global\dx12-gpu)を取ってから走らせる(昼 1 本・離席中 2 本。2 本目は Idle 優先度)。待ち時間は最大 40 分(-SlotWaitMinutes)。
+    GPU の枠(Global\dx12-gpu)を取ってから走らせる(昼 1 本・離席中 2 本。2 本目は Idle 優先度)。待ち時間の既定は 8 分(DX12_SLOT_WAIT_MIN / -SlotWaitMinutes。取れなければ終了コード 3)。
     DX12_SLOTS_DISABLE=1 で従来どおり。エンジン起動(engine_instance.ps1)は親の枠を引き継ぐので二重に取らない。
 #>
 [CmdletBinding(PositionalBinding = $false)]
@@ -43,7 +43,7 @@ param(
     [string]$Base = '',
     [switch]$AutoPlan,
     [switch]$StrictRed,
-    [int]$SlotWaitMinutes = 40,
+    [int]$SlotWaitMinutes = -1,  # -1 = 既定(DX12_SLOT_WAIT_MIN > 8 分)。取れなければ終了コード 3(あとでもう一度)
     [string]$BuildDir = '',   # 既定は build\release。ASan ビルド（build\asan-undo など）の exe で流したいときに指す
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs = @()

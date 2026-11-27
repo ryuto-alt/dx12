@@ -68,6 +68,16 @@ try {
     Assert-That (-not (Test-DepsCheckNeeded $bd)) 'stamp matches -> skipped'
     Add-Content (Join-Path $bd '.ninja_deps') 'more'
     Assert-That (Test-DepsCheckNeeded $bd) '.ninja_deps changed (build wrote deps) -> needed'
+
+    Write-Host '(d) a caller that already has part of vcvars: the cache still stores the full vcvars entries'
+    $vc = Join-Path $tmp 'VS\VC\Auxiliary\Build\vcvars64.bat'
+    $kits = 'C:\Fake\Windows Kits\10\bin\x64'; $vsCmake = Join-Path $tmp 'VS\Common7\IDE\CommonExtensions\CMake\bin'
+    $baseline = @{ PATH = "C:\keep;$kits;$vsCmake"; INCLUDE = 'C:\inc'; Other = 'same' }
+    $lines = @("PATH=C:\newtool;C:\keep;$kits;$vsCmake", 'INCLUDE=C:\inc', 'Other=same', 'VCToolsInstallDir=C:\vc\', 'UCRTVersion=10.0.1')
+    $d = ConvertTo-VcvarsDelta $lines $baseline $vc
+    Assert-That (($d.pathAdd -contains $kits) -and ($d.pathAdd -contains $vsCmake) -and ($d.pathAdd -contains 'C:\newtool')) 'Windows Kits / VS entries kept even when the caller already had them'
+    Assert-That (-not ($d.pathAdd -contains 'C:\keep')) 'ordinary caller PATH entries are not stored'
+    Assert-That ($d.vars.Contains('INCLUDE') -and $d.vars.Contains('UCRTVersion') -and -not $d.vars.Contains('Other')) 'vcvars variables kept by name, unrelated unchanged ones are not'
 }
 finally {
     $env:PATH = $savedPath

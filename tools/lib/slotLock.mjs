@@ -20,9 +20,11 @@ export const HOLD_SCRIPT = path.join(HERE, "slot_hold.ps1");
 
 const noop = (kind, extra = {}) => ({ kind, slot: 0, count: 0, priority: "BelowNormal", nested: false, disabled: false, waitedSec: 0, release() {}, ...extra });
 
-/** 枠を取る。options: { label, waitMin=40, env=process.env, log=console.error, shell="pwsh" } */
+/** 枠を取る。options: { label, waitMin=8(DX12_SLOT_WAIT_MIN), env=process.env, log=console.error, shell="pwsh" } */
 export async function acquireSlot(kind, options = {}) {
-  const { label = "", waitMin = 40, env = process.env, log = (s) => console.error(s), shell = "pwsh" } = options;
+  const { env = process.env, label = "", log = (s) => console.error(s), shell = "pwsh" } = options;
+  // 既定は 8 分(エージェントの前景ツールは 10 分で切れる)。長く待ちたいときは DX12_SLOT_WAIT_MIN。0 = 1 回だけ試す
+  const waitMin = options.waitMin ?? (Number(env.DX12_SLOT_WAIT_MIN) > 0 ? Number(env.DX12_SLOT_WAIT_MIN) : 8);
   const up = kind.toUpperCase();
   if (env.DX12_SLOTS_DISABLE === "1") return noop(kind, { disabled: true });
   if (/^\d+$/.test(env[`DX12_SLOT_HELD_${up}`] ?? "")) return noop(kind, { nested: true, slot: Number(env[`DX12_SLOT_HELD_${up}`]), priority: env.DX12_SLOT_PRIORITY ?? "BelowNormal" });

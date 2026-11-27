@@ -40,6 +40,29 @@ try {
     Write-Host '(d) screenshot without an engine reports a JSON error'
     $r = Run-Kit @('screenshot', '-Port', '8889')
     Assert-That (($r.Code -ne 0) -and ($r.Text -match '"ok":false')) 'no engine -> ok:false, non-zero'
+
+    Write-Host '(e) golden-subset confines golden.mjs engines to the kit port range (8851-8860 are another workflow)'
+    $fakeBin = Join-Path $tmp 'fakebin'; New-Item -ItemType Directory -Force $fakeBin | Out-Null
+    Set-Content (Join-Path $fakeBin 'node.cmd') '@echo PORTRANGE=%DX12_BENCH_PORT_START%-%DX12_BENCH_PORT_END%' -Encoding ascii
+    $savedPath = $env:PATH; $env:PATH = "$fakeBin;$env:PATH"
+    try { $r = Run-Kit @('golden-subset', 'a,b') } finally { $env:PATH = $savedPath }
+    Assert-That ($r.Text -match 'PORTRANGE=8881-8889') "golden child gets DX12_BENCH_PORT_START/END ($($r.Text -replace '\s+', ' '))"
+
+    Write-Host '(f) port reservation: a reserved port is not handed out twice'
+    $savedLocal = $env:LOCALAPPDATA; $env:LOCALAPPDATA = Join-Path $tmp 'local'
+    $pd = Join-Path $env:LOCALAPPDATA 'UnoEngine\agent-ports'; New-Item -ItemType Directory -Force $pd | Out-Null
+    $sl = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 120')
+    try {
+        foreach ($p in 8881..8889) { (@{ name = 'other-agent'; kitPid = $sl.Id; port = $p } | ConvertTo-Json -Compress) | Set-Content (Join-Path $pd "$p.json") }
+        $r = Run-Kit @('engine-start', '-Port', '8885')
+        Assert-That (($r.Code -eq 2) -and ($r.Text -match '予約中')) "explicit port reserved by a live owner is refused ($($r.Text -replace '\s+', ' '))"
+        $r = Run-Kit @('engine-start')
+        Assert-That (($r.Code -ne 0) -and ($r.Text -match '空きポート')) 'all ports reserved -> no free port (no double hand-out)'
+        $sl.Kill(); $null = $sl.WaitForExit(5000)   # 持ち主が死んだ予約は古いものとして捨てられる(ここでは予約だけ確かめ、エンジンは起動しない)
+        $r = Run-Kit @('engine-start', '-Port', '8885', '-Mode', 'headless', '-Project', (Join-Path $tmp 'noproj'), '-BuildDir', (Join-Path $tmp 'no-such-build'))
+        Assert-That ($r.Text -notmatch '予約中') 'stale reservation (dead owner) is dropped'
+        & pwsh -NoProfile -File $kit engine-stop -Name "kit-$(Split-Path -Leaf (Split-Path -Parent $PSScriptRoot))" | Out-Null
+    } finally { if (-not $sl.HasExited) { $sl.Kill() }; $env:LOCALAPPDATA = $savedLocal }
 }
 finally { Remove-Item Env:\KIT_LOG_DIR -ErrorAction SilentlyContinue; Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
 if ($fail -gt 0) { Write-Host "FAILED: $fail"; exit 1 }

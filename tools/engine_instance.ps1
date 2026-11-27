@@ -16,6 +16,8 @@
     枠を持つ専用プロセス(tools/lib/slot_hold.ps1)を先に立て、エンジンの pid ファイルを見張らせる。
     エンジンが終了する(-Stop、--idle-exit、クラッシュ)と自動で解放される。昼は枠が 1 本なので、
     使い終わったら必ず -Stop すること(放置すると --idle-exit までの最大 45 分、他の GPU 作業が待たされる)。
+    枠待ちの既定は 8 分(DX12_SLOT_WAIT_MIN / -SlotWaitMin)。エージェントの前景ツールは 10 分で切れるので、取れなければ終了コード 3 で返る(あとでもう一度)。
+    起動した engine_instance が待っている間に kill されても、枠を待つ専用プロセスは取らずに終わる(-ParentPid)。
     親(run_ui_tests.ps1 / golden.mjs)が既に枠を持っているとき(DX12_SLOT_HELD_GPU)は取らない。
     -NoSlot または DX12_SLOTS_DISABLE=1 で従来どおり(枠なし)。スロット 2(離席中)で取れたときはエンジンも Idle 優先度。
 #>
@@ -32,7 +34,7 @@ param(
     [switch]$Refresh,
     [switch]$List,
     [switch]$NoSlot,           # GPU の枠を取らない(従来の挙動)
-    [int]$SlotWaitMin = 40     # 枠が空くまで待つ分数。超えたら終了コード 3
+    [int]$SlotWaitMin = -1     # 枠が空くまで待つ分数(-1 = 既定。DX12_SLOT_WAIT_MIN > 8 分)。超えたら終了コード 3(あとでもう一度)
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -94,14 +96,18 @@ robocopy (Join-Path $root 'shaders') (Join-Path $dir 'shaders-src') /MIR /NFL /N
 
 # --- GPU の枠(エンジンの寿命のあいだ持つ)
 $slotInfo = 'none'; $slotPrio = 'BelowNormal'; $holdProc = $null
+if ($SlotWaitMin -lt 0) { Import-Module (Join-Path $PSScriptRoot 'lib\SlotLock.psm1') -Force; $SlotWaitMin = Get-DxSlotDefaultWaitMin }
 if (-not $NoSlot -and $env:DX12_SLOTS_DISABLE -ne '1') {
     if ($env:DX12_SLOT_HELD_GPU -match '^\d+$') { $slotInfo = "nested:$($env:DX12_SLOT_HELD_GPU)"; if ($env:DX12_SLOT_PRIORITY) { $slotPrio = $env:DX12_SLOT_PRIORITY } }
     else {
         $ready = Join-Path $dir 'slot.ready'
         Remove-Item $ready -ErrorAction SilentlyContinue
         Remove-Item (Join-Path $dir 'engine.pid') -ErrorAction SilentlyContinue
-        $holdProc = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'lib\slot_hold.ps1'),
-            '-Kind', 'gpu', '-Label', "engine:$Name", '-WaitMinutes', $SlotWaitMin, '-WatchPidFile', (Join-Path $dir 'engine.pid'), '-ReadyFile', $ready)
+        # Start-Process は配列の要素を囲まないので、空白を含むパス(ユーザープロファイル・インスタンス名)でも壊れないよう 1 本の文字列にして全部 "" で囲む
+        $q = { param($v) '"' + ([string]$v -replace '"', '\"') + '"' }
+        $holdArgs = @('-NoProfile', '-File', (Join-Path $PSScriptRoot 'lib\slot_hold.ps1'), '-Kind', 'gpu', '-Label', "engine:$Name", '-WaitMinutes', "$SlotWaitMin",
+            '-ParentPid', "$PID", '-WatchPidFile', (Join-Path $dir 'engine.pid'), '-ReadyFile', $ready)
+        $holdProc = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList (($holdArgs | ForEach-Object { & $q $_ }) -join ' ')
         Set-Content -Path (Join-Path $dir 'slot.holder.pid') -Value $holdProc.Id
         $t0 = Get-Date
         while (-not (Test-Path $ready) -and -not $holdProc.HasExited -and ((Get-Date) - $t0).TotalMinutes -lt ($SlotWaitMin + 1)) { Start-Sleep -Milliseconds 300 }
@@ -109,7 +115,7 @@ if (-not $NoSlot -and $env:DX12_SLOTS_DISABLE -ne '1') {
         if ($r -notmatch '^ACQUIRED slot=(\d+)/\d+ priority=(\w+)') {
             try { & taskkill /PID $holdProc.Id /T /F 2>$null | Out-Null } catch {}
             Remove-Item (Join-Path $dir 'slot.holder.pid') -ErrorAction SilentlyContinue
-            Write-Error "GPU の枠が $SlotWaitMin 分以内に取れませんでした(他の GPU 作業が実行中)"; exit 3
+            Write-Error "GPU の枠が $SlotWaitMin 分以内に取れませんでした(他の GPU 作業が実行中)。しばらくしてから同じコマンドをもう一度(retry)"; exit 3
         }
         $slotInfo = "gpu:$($Matches[1])"; $slotPrio = $Matches[2]
     }

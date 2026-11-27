@@ -39,10 +39,20 @@ add_test(NAME GammaTests COMMAND GammaTests)
     Write-Host '(b) ctest selection'
     $s = Get-DxCtestSelection -Changed @('tests/alpha_test.cpp') -Tests $tests -SourceMap $smap
     Assert-That (($s.Mode -eq 'subset') -and (Same $s.Names @('AlphaTests'))) 'test source -> its test'
-    $s = Get-DxCtestSelection -Changed @('src/core/Alpha.cpp') -Tests $tests -SourceMap $smap
-    Assert-That (Same $s.Names @('AlphaTests')) 'src listed in add_executable -> its test'
-    $s = Get-DxCtestSelection -Changed @('src/core/Widget.h') -Tests $tests -SourceMap $smap -TestSourceText $src -Stamp @{ x = '1' }
+    # 全部のテストの exe が「前回合格のまま」(署名が一致)の記録
+    $stampOk = @{ AlphaTests = (Get-DxExeSig $exeA); BetaTests = ''; GammaTests = '' }
+    $s = Get-DxCtestSelection -Changed @('src/core/Alpha.cpp') -Tests $tests -SourceMap $smap -Stamp $stampOk
+    Assert-That (Same $s.Names @('AlphaTests')) 'src listed in add_executable -> its test (nothing else relinked)'
+    $s = Get-DxCtestSelection -Changed @('src/core/Widget.h') -Tests $tests -SourceMap $smap -TestSourceText $src -Stamp $stampOk
     Assert-That (Same $s.Names @('BetaTests')) 'header included by a test source -> that test'
+    # レビュー指摘 1: 直接対応するテストがあっても、リンクし直された他の exe(ライブラリ経由・推移的な include)を落とさない
+    $stampBetaStale = @{ AlphaTests = (Get-DxExeSig $exeA); BetaTests = 'old'; GammaTests = '' }
+    $s = Get-DxCtestSelection -Changed @('src/core/Alpha.cpp') -Tests $tests -SourceMap $smap -Stamp $stampBetaStale
+    Assert-That (Same $s.Names @('AlphaTests', 'BetaTests')) "direct hit + relinked exe both selected ($($s.Names -join ','))"
+    $s = Get-DxCtestSelection -Changed @('src/core/Widget.h') -Tests $tests -SourceMap $smap -TestSourceText $src -Stamp @{ AlphaTests = 'old'; BetaTests = ''; GammaTests = '' }
+    Assert-That (Same $s.Names @('AlphaTests', 'BetaTests')) 'header: include hit + transitively relinked exe both selected'
+    $s = Get-DxCtestSelection -Changed @('src/core/Alpha.cpp') -Tests $tests -SourceMap $smap
+    Assert-That ($s.Mode -eq 'full') 'direct hit but no pass record -> full'
     $s = Get-DxCtestSelection -Changed @('docs/X.md', 'tools/mcp-server/a.ts') -Tests $tests -SourceMap $smap
     Assert-That ($s.Mode -eq 'none') 'docs / mcp-server only -> nothing to run'
     $s = Get-DxCtestSelection -Changed @('src/core/Orphan.cpp') -Tests $tests -SourceMap $smap
@@ -63,6 +73,29 @@ add_test(NAME GammaTests COMMAND GammaTests)
     $s = Get-DxCtestSelection -Changed @('shaders/x.hlsl') -Tests $tests -SourceMap $smap -Rules $rules -Stamp @{ x = '1' }
     Assert-That (Same $s.Names @('GammaTests')) 'rule table maps a path to tests'
 
+    Write-Host '(b2) script tests, unmapped paths, not-rebuilt detection'
+    $pyArgs = @('tools/check_anchors.mjs', 'docs')
+    $tests2 = $tests + @([pscustomobject]@{ name = 'AnchorLint'; exe = 'C:\Program Files\nodejs\node.exe'; args = $pyArgs; labels = @() })
+    $s = Get-DxCtestSelection -Changed @('tools/check_anchors.mjs') -Tests $tests2 -SourceMap $smap
+    Assert-That (($s.Mode -eq 'subset') -and (Same $s.Names @('AnchorLint'))) "tools script named in a test command -> that test ($($s.Mode): $($s.Names -join ','))"
+    $s = Get-DxCtestSelection -Changed @('src/core/Alpha.cpp') -Tests $tests2 -SourceMap $smap -Stamp $stampOk
+    Assert-That (Same $s.Names @('AlphaTests', 'AnchorLint')) 'script tests always run when something changed'
+    $s = Get-DxCtestSelection -Changed @('tools/never_heard_of.py') -Tests $tests2 -SourceMap $smap
+    Assert-That ($s.Mode -eq 'full') 'unmapped path -> full (never an empty green)'
+    $s = Get-DxCtestSelection -Changed @('Dockerfile') -Tests $tests -SourceMap $smap
+    Assert-That ($s.Mode -eq 'full') 'unmapped root file -> full'
+    # ビルド忘れ: 変更ファイルが最新の exe より新しい
+    $repo = Join-Path $tmp 'repo'; New-Item -ItemType Directory -Force (Join-Path $repo 'src\core') | Out-Null
+    Set-Content (Join-Path $repo 'src\core\Orphan.cpp') 'x'
+    (Get-Item $exeA).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(-30)
+    $stampA = @{ AlphaTests = (Get-DxExeSig $exeA); BetaTests = ''; GammaTests = '' }
+    $s = Get-DxCtestSelection -Changed @('src/core/Orphan.cpp') -Tests $tests -SourceMap $smap -Stamp $stampA -RepoRoot $repo
+    Assert-That ($s.Mode -eq 'full') "source newer than every test exe -> full ($($s.Reasons -join ' / '))"
+    (Get-Item $exeA).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(5)
+    $stampA = @{ AlphaTests = (Get-DxExeSig $exeA); BetaTests = ''; GammaTests = '' }
+    $s = Get-DxCtestSelection -Changed @('src/core/Orphan.cpp') -Tests $tests -SourceMap $smap -Stamp $stampA -RepoRoot $repo
+    Assert-That ($s.Mode -ne 'full') 'exe newer than the source (built after editing) -> normal selection'
+
     Write-Host '(c) pass stamp / junit / known_red'
     $sp = Join-Path $tmp 'stamp.json'
     Write-DxPassStamp $sp @{ A = '1:2'; B = '3:4' }
@@ -72,6 +105,8 @@ add_test(NAME GammaTests COMMAND GammaTests)
     Set-Content $jx '<testsuite><testcase name="P" status="run"/><testcase name="F" status="fail"><failure/></testcase><testcase name="S"><skipped/></testcase></testsuite>'
     $jr = Read-DxJunit $jx
     Assert-That (($jr['P'] -eq 'passed') -and ($jr['F'] -eq 'failed') -and ($jr['S'] -eq 'skipped')) 'junit parsed'
+    Set-Content $jx '<testsuite><testcase name="N" status="notrun"/></testsuite>'
+    Assert-That ((Read-DxJunit $jx)['N'] -eq 'notrun') 'junit: notrun is its own state (does not count as skipped)'
     $kj = Join-Path $tmp 'kr.json'
     Set-Content $kj '{"ctest":[{"name":"Old","reason":"r1","expires":"2020-01-01"},{"name":"Live","reason":"r2","expires":"2099-01-01"},{"name":"NoExp","reason":"r3"}],"ui":[{"name":"U","reason":"x"}]}'
     $kr = Get-DxKnownRed $kj 'ctest' ([datetime]'2026-11-27')
@@ -92,6 +127,10 @@ add_test(NAME GammaTests COMMAND GammaTests)
     Assert-That (($u.Mode -eq 'full') -and ($u.Names.Count -eq $regs.Count)) 'test harness change -> full'
     $u = Get-DxUiSelection -Changed @('src/editor/EditorTheme.h') -Regs $regs -Rules $rules
     Assert-That ($u.Mode -eq 'full') 'theme change -> full'
+    $u = Get-DxUiSelection -Changed @('src/scene/SceneGraph.cpp') -Regs $regs -Rules $rules
+    Assert-That (($u.Mode -eq 'full') -and ($u.Names.Count -eq $regs.Count)) 'engine source outside editor/gui (scene/renderer/...) -> full, not smoke only'
+    $u = Get-DxUiSelection -Changed @('shaders/forward/Forward.hlsl') -Regs $regs -Rules $rules
+    Assert-That ($u.Mode -eq 'full') 'shader change -> full'
 }
 finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
 if ($fail -gt 0) { Write-Host "FAILED: $fail"; exit 1 }

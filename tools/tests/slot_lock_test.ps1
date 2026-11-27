@@ -121,6 +121,77 @@ try {
     Assert-That ($json2.slot -eq 'nested:1') 'nested parent slot: engine_instance does not take another'
     Remove-Item Env:\DX12_SLOT_HELD_GPU
     & pwsh -NoProfile -File $inst -Name slottest -Stop | Out-Null; & pwsh -NoProfile -File $inst -Name slottest2 -Stop | Out-Null
+
+    Write-Host '(h2) a long-lived fake engine keeps the gpu slot until -Stop / until it exits (engine_instance itself has exited)'
+    $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    if (-not (Test-Path $csc)) { Write-Host '  SKIP: csc.exe not found' }
+    else {
+        $fake2 = Join-Path $tmp 'fake build 2'   # 空白を含むパス(Start-Process の引数の囲み)も同時に確かめる
+        New-Item -ItemType Directory -Force $fake2, (Join-Path $fake2 'shaders') | Out-Null
+        $cs = Join-Path $tmp 'eng.cs'
+        Set-Content $cs 'class P { static void Main() { System.Threading.Thread.Sleep(120000); } }'
+        $engOut = Join-Path $fake2 'DX12Engine.exe'
+        & $csc /nologo "/out:$engOut" $cs | Out-Null
+        $env:LOCALAPPDATA = Join-Path $tmp 'local app data'   # 空白入りのインスタンス置き場
+        New-Item -ItemType Directory -Force $env:LOCALAPPDATA | Out-Null
+        $j3 = & pwsh -NoProfile -File $inst -Name 'slot long' -Port 8887 -BuildDir $fake2 -SlotWaitMin 1 | Select-Object -Last 1 | ConvertFrom-Json
+        Assert-That ($j3.slot -eq 'gpu:1') "engine start with spaces in paths/name works ($($j3.slot))"
+        Start-Sleep -Seconds 3   # engine_instance は終了済み。それでも枠は持たれたまま
+        $h2 = Start-Holder 'gpu'
+        Assert-That ($h2.Line -eq 'timeout') 'second gpu acquire times out while the engine is alive'
+        & pwsh -NoProfile -File $inst -Name 'slot long' -Stop | Out-Null
+        Start-Sleep -Seconds 2
+        $h3 = Start-Holder 'gpu'
+        Assert-That ($h3.Line -match 'slot=1/1') 'after -Stop the slot is free again'
+        Stop-Holder $h3
+        # エンジンが自分で終了した場合
+        $j4 = & pwsh -NoProfile -File $inst -Name 'slot long' -Port 8887 -BuildDir $fake2 -SlotWaitMin 1 | Select-Object -Last 1 | ConvertFrom-Json
+        Stop-Process -Id $j4.pid -Force
+        Start-Sleep -Seconds 3
+        $h4 = Start-Holder 'gpu'
+        Assert-That ($h4.Line -match 'slot=1/1') 'slot is released when the engine process dies on its own'
+        Stop-Holder $h4
+        & pwsh -NoProfile -File $inst -Name 'slot long' -Stop | Out-Null
+    }
+
+    Write-Host '(i) gpu marker for perf tools: written while the gpu slot is held, removed on release'
+    $env:DX12_GPU_MARKER_DIR = Join-Path $tmp 'markers'
+    $m1 = Start-Holder 'gpu'
+    $mk = @(Get-ChildItem $env:DX12_GPU_MARKER_DIR -Filter *.json -ErrorAction SilentlyContinue)
+    Assert-That (($mk.Count -eq 1) -and ($mk[0].Name -like "$($m1.Proc.Id)-*")) "marker file exists for the holder ($($mk.Name))"
+    Stop-Holder $m1
+    Assert-That (@(Get-ChildItem $env:DX12_GPU_MARKER_DIR -Filter *.json -ErrorAction SilentlyContinue).Count -eq 0) 'marker removed after release'
+    $mt = Start-Holder 'test'
+    Assert-That (-not (Test-Path $env:DX12_GPU_MARKER_DIR) -or @(Get-ChildItem $env:DX12_GPU_MARKER_DIR -Filter *.json -ErrorAction SilentlyContinue).Count -eq 0) 'test kind writes no marker'
+    Stop-Holder $mt
+
+    Write-Host '(j) lock order gpu -> test: asking for gpu while holding test tries once and does not wait'
+    $g1 = Start-Holder 'gpu'
+    $env:DX12_SLOT_HELD_TEST = '1'
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $g2 = Start-Holder 'gpu' 5
+    Remove-Item Env:\DX12_SLOT_HELD_TEST
+    Assert-That (($g2.Line -eq 'timeout') -and ($sw.Elapsed.TotalSeconds -lt 20)) "gpu while holding test: refused quickly ($([int]$sw.Elapsed.TotalSeconds)s)"
+    Stop-Holder $g1
+
+    Write-Host '(k) default wait is 8 minutes (DX12_SLOT_WAIT_MIN overrides)'
+    Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'lib\SlotLock.psm1') -Force
+    Assert-That ((Get-DxSlotDefaultWaitMin) -eq 8) 'default 8'
+    $env:DX12_SLOT_WAIT_MIN = '3'
+    Assert-That ((Get-DxSlotDefaultWaitMin) -eq 3) 'env override'
+    Remove-Item Env:\DX12_SLOT_WAIT_MIN
+
+    Write-Host '(l) a waiter whose -ParentPid dies stops queueing without taking the slot'
+    $busy2 = Start-Holder 'gpu'
+    $sleeper2 = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 120')
+    $o2 = Join-Path $tmp 'orphan.out'
+    $orph = Start-Process pwsh -PassThru -WindowStyle Hidden -RedirectStandardOutput $o2 -ArgumentList @('-NoProfile', '-File', $hold, '-Kind', 'gpu', '-WaitMinutes', '5', '-ParentPid', $sleeper2.Id)
+    Start-Sleep -Seconds 3
+    Assert-That (-not $orph.HasExited) 'waiter is queueing while its parent lives'
+    $sleeper2.Kill()
+    Assert-That ($orph.WaitForExit(15000)) 'waiter exits after its parent died'
+    Stop-Holder $busy2
+    Assert-That ((Get-Content $o2 -Raw) -notmatch 'ACQUIRED') 'orphan never acquired the slot'
 }
 finally {
     Get-Process pwsh -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $PID -and $_.MainWindowHandle -eq 0 -and $false } | Out-Null

@@ -91,14 +91,20 @@ function Read-DxJsonFile([string]$Path) {
     try { return (Get-Content -LiteralPath $Path -Raw -Encoding utf8 | ConvertFrom-Json) } catch { return $null }
 }
 
+function Test-DxScriptTest($t) {
+    $leaf = [IO.Path]::GetFileName([string]$t.exe)
+    return ((-not $leaf) -or ($leaf -match '^(python3?|py|node|cmake|pwsh|powershell|bash|sh|npm|npx)(\.exe|\.cmd)?$'))
+}
+
 <#
   ctest の選択。
     -Changed   変更ファイル(repo 相対・スラッシュ区切り)
-    -Tests     @{ name; exe; labels[] } の配列(ctest --show-only=json-v1 から)
+    -Tests     @{ name; exe; args[]; labels[] } の配列(ctest --show-only=json-v1 から)
     -SourceMap Read-DxTestSourceMap の結果
     -Rules     ctest_changed_map.json の rules(pattern/tests/ignore)。$null 可
     -CMakeNames tests/CMakeLists.txt の追加行に出た識別子(Get-DxCMakeAddedNames)。$null = 不明
     -Stamp     前回合格の署名(Read-DxPassStamp)。空 = 記録なし
+    -RepoRoot  リポジトリのルート(変更ファイルが exe より新しい=ビルド忘れ、の判定に使う)。空なら判定しない
     -TestSourceText  scriptblock { param($relPath) -> ファイル全文(include 検索用) }。$null 可
   戻り値: Mode = subset | full | none、Names、Reasons(説明の行)
 #>
@@ -110,7 +116,8 @@ function Get-DxCtestSelection {
         $Rules = $null,
         $CMakeNames = $null,
         [hashtable]$Stamp = @{},
-        [scriptblock]$TestSourceText = $null
+        [scriptblock]$TestSourceText = $null,
+        [string]$RepoRoot = ''
     )
     $reasons = New-Object System.Collections.Generic.List[string]
     $sel = New-Object System.Collections.Generic.HashSet[string]
@@ -131,9 +138,23 @@ function Get-DxCtestSelection {
         if ($n -gt 0) { $reasons.Add("$why -> $n test(s)") }
     }
 
-    $unmatchedSrc = @()
-    $ignore = '^(docs/|.*\.(md|png|jpg|jpeg|gif|ico|svg)$|\.github/|tools/mcp-server/|tools/briefs/|tools/lib/|tools/kit\.ps1$|tools/tests/|LICENSE)'
+    $ignore = '^(docs/|.*\.(md|png|jpg|jpeg|gif|ico|svg)$|\.github/|[^/]+\.bat$|\.gitignore$|\.gitattributes$|\.editorconfig$|tools/mcp-server/|tools/briefs/|tools/lib/|tools/kit\.ps1$|tools/tests/|tools/known_red\.json$|tools/(ctest_changed_map|ui_tests_map)\.json$|LICENSE)'
+    # スクリプト系のテスト(python / node / cmake など、ビルドした exe ではないもの)。安いので変更があれば常に流す
+    $scriptTests = @($Tests | Where-Object { Test-DxScriptTest $_ })
+    $builtTests = @($Tests | Where-Object { -not (Test-DxScriptTest $_) })
+    $argText = @{}
+    foreach ($t in $scriptTests) { $argText[$t.name] = ((@($t.args) -join ' ') -replace '\\', '/') }
+    $argMatch = {
+        param($f)
+        $leaf = [IO.Path]::GetFileName($f); $hits = @()
+        foreach ($t in $scriptTests) { $tx = $argText[$t.name]; if ($tx -and ($tx.Contains($f) -or ($leaf.Length -ge 5 -and $tx.Contains("/$leaf")))) { $hits += $t.name } }
+        return $hits
+    }
+    $relinkFiles = @()
     foreach ($f in $Changed) {
+        # スクリプト系テストの引数に出てくるパス(tools/check_anchors.mjs など)は、そのテストを選ぶ
+        $ah = @(& $argMatch $f)
+        if ($ah.Count -gt 0) { foreach ($n in $ah) { [void]$sel.Add($n) }; $reasons.Add("test command mentions $f -> $($ah.Count) test(s)") }
         if ($f -match $ignore) { continue }
         # 設定の表(ignore / tests)
         $ruleHit = $false
@@ -158,16 +179,19 @@ function Get-DxCtestSelection {
             continue
         }
         if ($f -match '(^|/)CMakeLists\.txt$|^cmake/|^CMakePresets\.json$|^vcpkg\.json$|\.cmake$|^third_party/') { return (& $full "build config changed: $f") }
-        if ($srcToTargets.ContainsKey($f)) { & $addTargets $srcToTargets[$f] "source $f"; continue }
+        $isBuildInput = ($f -match '^(src|include|shaders|assets)/')
+        if ($srcToTargets.ContainsKey($f)) { & $addTargets $srcToTargets[$f] "source $f" }
         if ($f -match '^tests/') {
-            if (-not $ruleHit) { $reasons.Add("tests file without a target (script/data): $f") }
+            if ($srcToTargets.ContainsKey($f)) { continue }
             # スクリプト類のテスト(add_test に名前がある)は名前の一致で拾う
             $stem = [IO.Path]::GetFileNameWithoutExtension($f) -replace '[_\-]', ''
-            foreach ($t in $allNames) { if (($t -replace '[_\-]', '') -ieq $stem -and $sel.Add($t)) { $reasons.Add("test script $f -> $t") } }
+            $nameHit = $false
+            foreach ($t in $allNames) { if (($t -replace '[_\-]', '') -ieq $stem) { [void]$sel.Add($t); $nameHit = $true; $reasons.Add("test script $f -> $t") } }
+            if (-not $nameHit -and -not $ruleHit -and $ah.Count -eq 0) { return (& $full "tests file maps to no test: $f") }
             continue
         }
-        if ($f -match '^(src|include|shaders|assets)/') {
-            # 直接のテストが無い: テストのソースが basename を include していれば拾う
+        if ($isBuildInput) {
+            # テストのソースが basename を include していれば拾う(それだけでは足りない: 下の「リンクし直された exe」も常に足す)
             $base = [IO.Path]::GetFileName($f)
             $hit = 0
             if ($TestSourceText -and $f -match '\.(h|hpp|cpp|inc|hlsl|hlsli)$') {
@@ -179,20 +203,37 @@ function Get-DxCtestSelection {
                 }
             }
             if ($hit -gt 0) { $reasons.Add("tests include $base -> $hit test(s)") }
-            if (-not $ruleHit -and $hit -eq 0) { $unmatchedSrc += $f }
+            if (-not $ruleHit) { $relinkFiles += $f }
             continue
         }
-        if (-not $ruleHit) { $reasons.Add("no mapping (ignored): $f") }
+        # tools/ やルート直下など、どこにも対応しないもの: 迷ったら全件(「何も選ばず緑」にしない)
+        if (-not $ruleHit -and $ah.Count -eq 0) { return (& $full "no mapping for: $f") }
     }
-    if ($unmatchedSrc.Count -gt 0) {
-        # 直接の対応が無い変更: ninja が実際にリンクし直した exe(前回合格の署名と違うもの)を使う
-        if ($Stamp.Count -eq 0) { return (& $full "no pass record yet and $($unmatchedSrc.Count) changed file(s) have no direct test (e.g. $($unmatchedSrc[0]))") }
+    if ($relinkFiles.Count -gt 0) {
+        # ビルドを回していないと exe が古いままで、リンクし直しも起きない: 変更が最新の exe より新しければ全件にする
+        $newestExe = [datetime]::MinValue; $exeCount = 0
+        foreach ($t in $builtTests) {
+            if ($t.exe -and (Test-Path -LiteralPath $t.exe)) { $exeCount++; $w = (Get-Item -LiteralPath $t.exe).LastWriteTimeUtc; if ($w -gt $newestExe) { $newestExe = $w } }
+        }
+        if ($RepoRoot) {
+            if ($exeCount -eq 0) { return (& $full 'test executables are not built (run tools/build.ps1 -Tests first)') }
+            foreach ($f in $relinkFiles) {
+                $p = Join-Path $RepoRoot $f
+                if ((Test-Path -LiteralPath $p) -and (Get-Item -LiteralPath $p).LastWriteTimeUtc -gt $newestExe) { return (& $full "tests not rebuilt after editing $f (run tools/build.ps1 -Tests, then -Changed)") }
+            }
+        }
+        # ninja が実際にリンクし直した exe(前回合格の署名と違うもの)。直接対応するテストがあっても、他の exe に推移的に入ることがあるので常に足す
+        if ($Stamp.Count -eq 0) { return (& $full "no pass record yet and $($relinkFiles.Count) changed build input(s) (e.g. $($relinkFiles[0]))") }
         $stale = 0
-        foreach ($t in $Tests) {
+        foreach ($t in $builtTests) {
             $sig = Get-DxExeSig $t.exe
             if (-not $Stamp.ContainsKey($t.name) -or $Stamp[$t.name] -ne $sig) { if ($sel.Add($t.name)) { $stale++ } }
         }
-        $reasons.Add("exe changed since last pass (relinked or new) -> $stale test(s); $($unmatchedSrc.Count) file(s) rely on this (build first)")
+        $reasons.Add("exe changed since last pass (relinked or new) -> $stale test(s); $($relinkFiles.Count) build input(s)")
+    }
+    if ($Changed.Count -gt 0 -and $scriptTests.Count -gt 0) {
+        $n = 0; foreach ($t in $scriptTests) { if ($sel.Add($t.name)) { $n++ } }
+        if ($n -gt 0) { $reasons.Add("script/python/node tests always run on any change -> $n test(s)") }
     }
     $names = @($allNames | Where-Object { $sel.Contains($_) })
     return [pscustomobject]@{ Mode = $(if ($names.Count -gt 0) { 'subset' } else { 'none' }); Names = $names; Reasons = $reasons.ToArray() }
@@ -213,7 +254,7 @@ function Get-DxKnownRed([string]$Path, [string]$Section = 'ctest', [datetime]$No
     return $res
 }
 
-# ctest の JUnit XML(--output-junit)から 名前 -> passed|failed|skipped
+# ctest の JUnit XML(--output-junit)から 名前 -> passed|failed|skipped|notrun
 function Read-DxJunit([string]$Path) {
     $r = [ordered]@{}
     if (-not (Test-Path -LiteralPath $Path)) { return $r }
@@ -222,7 +263,8 @@ function Read-DxJunit([string]$Path) {
         foreach ($tc in $x.SelectNodes('//testcase')) {
             $st = 'passed'
             if ($tc.SelectSingleNode('failure') -or $tc.SelectSingleNode('error')) { $st = 'failed' }
-            elseif ($tc.SelectSingleNode('skipped') -or $tc.status -eq 'notrun') { $st = 'skipped' }
+            elseif ($tc.status -eq 'notrun') { $st = 'notrun' }
+            elseif ($tc.SelectSingleNode('skipped')) { $st = 'skipped' }
             $r[$tc.name] = $st
         }
     } catch {}
@@ -265,9 +307,11 @@ function Get-DxUiSelection {
     if ($Rules -and $Rules.fullPattern) { $fullPat = $Rules.fullPattern }
     foreach ($f in $Changed) {
         if ($f -match $fullPat) { return [pscustomobject]@{ Mode = 'full'; Names = $all; Reasons = @("shared UI infrastructure changed: $f") } }
+        $handled = $false
         if ($Rules -and $Rules.rules) {
             foreach ($r in $Rules.rules) {
                 if ($f -match $r.pattern) {
+                    $handled = $true
                     $n = 0
                     foreach ($x in @($r.only)) { foreach ($nm in $all) { if ($nm -eq $x -and $sel.Add($nm)) { $n++ } } }
                     foreach ($c in @($r.categories)) { foreach ($rg in $Regs) { if ($rg.category -eq $c -and $sel.Add($rg.name)) { $n++ } } }
@@ -276,6 +320,7 @@ function Get-DxUiSelection {
             }
         }
         if ($f -match '^src/(editor|gui)/(.+/)?([A-Za-z0-9_]+)\.(cpp|h|hpp|inc)$') {
+            $handled = $true
             $stem = $Matches[3] -replace 'Panel$|Logic$|Window$', ''
             if ($stem.Length -lt 3) { continue }
             $flat = ($stem -replace '[_\-]', '').ToLowerInvariant()
@@ -287,6 +332,9 @@ function Get-DxUiSelection {
             if ($n -gt 0) { $reasons.Add("UI source $f -> $n test(s) by name/body match") }
             else { foreach ($rg in $Regs) { if ($rg.category -eq 'panel' -and $sel.Add($rg.name)) { } }; $reasons.Add("UI source ${f}: no direct match -> category 'panel'") }
         }
+        # editor/gui の外のエンジン本体(scene / renderer / ecs / core ...)や shaders・assets は、ヒエラルキー・生成・Undo・インスペクタなどの UI テストを壊しうる。
+        # 対応が読めないものは「smoke だけ」にせず全件にする
+        if (-not $handled -and $f -match '^(src|include|shaders|assets)/') { return [pscustomobject]@{ Mode = 'full'; Names = $all; Reasons = @("engine source outside editor/gui changed, UI impact unknown: $f") } }
     }
     foreach ($s in $smoke) { if ($all -contains $s) { [void]$sel.Add($s) } }
     $names = @($all | Where-Object { $sel.Contains($_) })

@@ -4,7 +4,7 @@
   GPU とテストにも広げたもの。docs/AGENT_KIT.md の「枠」の節を参照。
 
     Import-Module (Join-Path $PSScriptRoot 'lib\SlotLock.psm1') -Force
-    $h = Enter-DxSlot -Kind gpu -Label 'ui-tests'     # 取れるまで待つ(既定 40 分。タイムアウトは $null)
+    $h = Enter-DxSlot -Kind gpu -Label 'ui-tests'     # 取れるまで待つ(既定 8 分。DX12_SLOT_WAIT_MIN で変更。タイムアウトは $null)
     try { ... } finally { Exit-DxSlot $h }
 
   種類(Kind):
@@ -20,6 +20,8 @@
     DX12_SLOT_HELD_GPU / _TEST    … 入れ子用: 親が既に枠を持っているとき(値は枠番号)、子は取らずに通す
     DX12_SLOT_PRIORITY            … 親が取った枠の優先度(Idle / BelowNormal)。子プロセスが従う
     DX12_GPU_WINDOW_IGNORE=1      … 性能計測の窓ロックを無視する(下記)
+    DX12_SLOT_WAIT_MIN            … 枠を待つ分数の既定(8)。エージェントの前景ツールは 10 分で切れるので短くしてある
+    DX12_GPU_MARKER_DIR           … GPU 枠のマーカーの置き場(テスト用。既定 %TEMP%\uno-gpu-slot-holders)
     DX12_GPU_WINDOW_FILE          … 窓ロックのパス(テスト用。既定 %TEMP%\uno-gpu-window.lock)
 
   性能計測の窓ロック(%TEMP%\uno-gpu-window.lock。tools/mcp-server/testing/perfCore.ts と
@@ -61,6 +63,29 @@ function Get-DxIdleMinutesThreshold {
 # 利用者が離席中か(スロット 2 以降を使ってよい状態か)。ctest の -j6 判定などにも使う
 function Test-DxUserAway {
     return ((Get-DxSlotUserIdleSec) -ge ((Get-DxIdleMinutesThreshold) * 60))
+}
+
+# 枠を待つ既定の分数。エージェントの前景ツールは 10 分(timeout 600000)で切れるので 8 分にする。
+# 取れなければ終了コード 3(= あとでもう一度)。長く待ちたい人・夜間は DX12_SLOT_WAIT_MIN で伸ばす
+function Get-DxSlotDefaultWaitMin {
+    if ($env:DX12_SLOT_WAIT_MIN -match '^\d+$' -and [int]$env:DX12_SLOT_WAIT_MIN -gt 0) { return [int]$env:DX12_SLOT_WAIT_MIN }
+    return 8
+}
+
+# --- GPU 枠のマーカー: 性能計測ツール(perfCore.ts / baseline_perf.mjs)は窓ロックしか取らないので、
+# GPU の枠を持っているプロセスは %TEMP%\uno-gpu-slot-holders\<pid>-<slot>.json を置く。計測側は生きたマーカーがある間は待つ。
+function Get-DxGpuMarkerDir {
+    if ($env:DX12_GPU_MARKER_DIR) { return $env:DX12_GPU_MARKER_DIR }
+    return (Join-Path ([IO.Path]::GetTempPath()) 'uno-gpu-slot-holders')
+}
+function Write-DxGpuMarker([int]$Slot, [string]$Label) {
+    try {
+        $d = Get-DxGpuMarkerDir
+        New-Item -ItemType Directory -Force $d | Out-Null
+        $f = Join-Path $d ("{0}-{1}.json" -f $PID, $Slot)
+        (@{ pid = $PID; slot = $Slot; label = $Label; startedAt = (Get-Date).ToString('o') } | ConvertTo-Json -Compress) | Set-Content -LiteralPath $f -Encoding utf8
+        return $f
+    } catch { return $null }
 }
 
 function Get-DxSlotConfig([string]$Kind) {
@@ -107,11 +132,13 @@ function Enter-DxSlot {
     param(
         [Parameter(Mandatory)][ValidateSet('gpu', 'test')][string]$Kind,
         [string]$Label = '',
-        [int]$WaitMinutes = 40,
+        [int]$WaitMinutes = -1,   # -1 = 既定(Get-DxSlotDefaultWaitMin)。0 = 1 回だけ試す
+        [int]$AbortIfPidDead = 0,   # この pid が死んだら待つのをやめて $null(孤児になった待ち手を残さない)
         [switch]$Quiet
     )
     $cfg = Get-DxSlotConfig $Kind
     $up = $cfg.Kind.ToUpperInvariant()
+    if ($WaitMinutes -lt 0) { $WaitMinutes = Get-DxSlotDefaultWaitMin }
     $mk = {
         param($slot, $nested, $disabled, $waited, $mutexes, $prio)
         [pscustomobject]@{ Kind = $cfg.Kind; Slot = $slot; Count = $cfg.Count; Nested = $nested; Disabled = $disabled
@@ -124,13 +151,19 @@ function Enter-DxSlot {
         return (& $mk ([int]$held) $true $false 0 @() $pr)
     }
 
+    # 順序は gpu -> test。test を持ったまま gpu を取りに行くと、gpu -> test の相手と互いに待ち合う。1 回だけ試して取れなければ断る
+    $once = $false
+    if ($cfg.Kind -eq 'gpu' -and ($env:DX12_SLOT_HELD_TEST -match '^\d+$')) {
+        $once = $true
+        if (-not $Quiet) { Write-Host '[slot:gpu] lock order: gpu must be taken before test (holding test now) - trying once, no waiting' }
+    }
     $idleMin = Get-DxIdleMinutesThreshold
     $minFree = 8.0
     if ($env:DX12_BUILD_MIN_FREE_GB -match '^\d+(\.\d+)?$') { $minFree = [double]$env:DX12_BUILD_MIN_FREE_GB }
     $mutexes = @()
     for ($k = 1; $k -le $cfg.Count; $k++) { $mutexes += , [System.Threading.Mutex]::new($false, (Get-DxSlotName $cfg.Prefix $k)) }
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $deadline = [DateTime]::UtcNow.AddMinutes($WaitMinutes)
+    $deadline = if ($once) { [DateTime]::UtcNow } else { [DateTime]::UtcNow.AddMinutes($WaitMinutes) }
     $lastReport = [DateTime]::UtcNow
     $announced = $false
     $got = 0
@@ -148,6 +181,10 @@ function Enter-DxSlot {
         }
         if ($got -ne 0) { break }
         if (-not $announced -and -not $Quiet) { $announced = $true; Write-Host "[slot:$($cfg.Kind)] busy. waiting for a slot (up to $WaitMinutes min)... $Label" }
+        if ($AbortIfPidDead -gt 0 -and -not (Get-Process -Id $AbortIfPidDead -ErrorAction SilentlyContinue)) {
+            foreach ($m in $mutexes) { try { $m.Dispose() } catch {} }
+            return $null
+        }
         if ([DateTime]::UtcNow -ge $deadline) {
             foreach ($m in $mutexes) { try { $m.Dispose() } catch {} }
             if (-not $Quiet) { Write-Host "[slot:$($cfg.Kind)] lock timeout" }
@@ -163,12 +200,18 @@ function Enter-DxSlot {
     $h = & $mk $got $false $false ([int]$sw.Elapsed.TotalSeconds) $mutexes $prio
     $h | Add-Member -NotePropertyName Owned -NotePropertyValue $got
 
-    # GPU の枠は、性能計測の窓ロックが生きている間は待つ(枠は持ったまま)
+    # GPU の枠は、性能計測の窓ロックが生きている間は待つ(枠は持ったまま)。
+    # 取れたらマーカーを置き、置いたあとでもう一度窓を見る(計測側は「窓 -> マーカー」の順に見るので、どちらかが必ず相手に気づく)
     if ($cfg.Kind -eq 'gpu') {
         while ($true) {
             $owner = Get-DxGpuWindowOwnerPid
-            if ($owner -eq 0) { break }
-            if ([DateTime]::UtcNow -ge $deadline) {
+            if ($owner -eq 0) {
+                $mf = Write-DxGpuMarker $got $Label
+                if ((Get-DxGpuWindowOwnerPid) -eq 0) { $h | Add-Member -NotePropertyName Marker -NotePropertyValue $mf; break }
+                if ($mf) { Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue }
+                continue
+            }
+            if (([DateTime]::UtcNow -ge $deadline) -or ($AbortIfPidDead -gt 0 -and -not (Get-Process -Id $AbortIfPidDead -ErrorAction SilentlyContinue))) {
                 Exit-DxSlot $h
                 if (-not $Quiet) { Write-Host "[slot:gpu] lock timeout (gpu measurement window held by pid $owner)" }
                 return $null
@@ -196,6 +239,7 @@ function Exit-DxSlot($Handle) {
         [Environment]::SetEnvironmentVariable('DX12_SLOT_PRIORITY', $null)
         $Handle.EnvSet = $false
     }
+    if ($Handle.PSObject.Properties['Marker'] -and $Handle.Marker) { Remove-Item -LiteralPath $Handle.Marker -Force -ErrorAction SilentlyContinue; $Handle.Marker = $null }
     if ($Handle.Owned -and $Handle.Mutexes.Count -ge $Handle.Owned) {
         try { $Handle.Mutexes[$Handle.Owned - 1].ReleaseMutex() } catch {}
         $Handle.Owned = 0
@@ -212,11 +256,11 @@ function Set-DxSlotPriority($Handle) {
 
 # 枠を取ってからスクリプトブロックを実行する(必ず解放する)。取れなければ $null を返し $LASTEXITCODE=3
 function Invoke-WithDxSlot {
-    param([Parameter(Mandatory)][string]$Kind, [Parameter(Mandatory)][scriptblock]$Script, [string]$Label = '', [int]$WaitMinutes = 40)
+    param([Parameter(Mandatory)][string]$Kind, [Parameter(Mandatory)][scriptblock]$Script, [string]$Label = '', [int]$WaitMinutes = -1)
     $h = Enter-DxSlot -Kind $Kind -Label $Label -WaitMinutes $WaitMinutes
     if (-not $h) { $global:LASTEXITCODE = 3; return $null }
     try { Set-DxSlotPriority $h; & $Script $h } finally { Exit-DxSlot $h }
 }
 
-Export-ModuleMember -Function Get-DxSlotUserIdleSec, Get-DxSlotFreePhysicalGb, Get-DxIdleMinutesThreshold, Test-DxUserAway,
+Export-ModuleMember -Function Get-DxSlotDefaultWaitMin, Get-DxGpuMarkerDir, Get-DxSlotUserIdleSec, Get-DxSlotFreePhysicalGb, Get-DxIdleMinutesThreshold, Test-DxUserAway,
     Get-DxSlotConfig, Get-DxSlotName, Get-DxGpuWindowOwnerPid, Enter-DxSlot, Exit-DxSlot, Set-DxSlotPriority, Invoke-WithDxSlot

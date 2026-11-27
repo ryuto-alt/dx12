@@ -70,15 +70,54 @@ function Invoke-Logged([string]$Label, [string]$Script, [hashtable]$P = @{}) {
 }
 function Finish($r, [string]$what) {
     Write-Host ("[kit] {0}: {1} exit={2} {3:n0}s log={4}" -f $what, $(if ($r.Code -eq 0) { 'OK' } else { 'FAILED' }), $r.Code, $r.Sec, $r.Log)
+    if ($r.Code -eq 3) { Write-Host '[kit] retry: 枠(GPU / テスト / ビルド)が空かず時間切れ。他の作業が終わるのを待ってから、同じコマンドをもう一度実行する(失敗ではない)' }
     exit $r.Code
 }
 
 function Test-PortOpen([int]$p) {
     try { $c = [Net.Sockets.TcpClient]::new(); $a = $c.BeginConnect('127.0.0.1', $p, $null, $null); $ok = $a.AsyncWaitHandle.WaitOne(200); if ($ok -and $c.Connected) { $c.Close(); return $true }; $c.Close(); return $false } catch { return $false }
 }
-function Get-FreePort {
-    for ($p = $portMin; $p -le $portMax; $p++) { if (-not (Test-PortOpen $p)) { return $p } }
+# --- ポートの予約: ポートが空いて見えても、別のエージェントの engine-start が GPU の枠を待っている最中(エンジンはまだ立っていない)かもしれない。
+# 予約ファイルを CreateNew で排他に作る。持ち主が生きている間(kit のプロセス、またはその名前のエンジン)は有効。
+$portDir = Join-Path $env:LOCALAPPDATA 'UnoEngine\agent-ports'
+$instBase = Join-Path $env:LOCALAPPDATA 'UnoEngine\agent-instances'
+function Test-ReservationLive([string]$f) {
+    try {
+        $j = Get-Content -LiteralPath $f -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($j.kitPid -and (Get-Process -Id ([int]$j.kitPid) -ErrorAction SilentlyContinue)) { return $true }
+        $pf = Join-Path $instBase "$($j.name)\engine.pid"
+        if (Test-Path $pf) { $ep = [int](Get-Content $pf -ErrorAction SilentlyContinue | Select-Object -First 1); if ($ep -gt 0 -and (Get-Process -Id $ep -ErrorAction SilentlyContinue)) { return $true } }
+        return $false
+    } catch { return ((Get-Item -LiteralPath $f -ErrorAction SilentlyContinue).LastWriteTime -gt (Get-Date).AddSeconds(-5)) }   # 書き込み途中かもしれない
+}
+function Reserve-Port([int]$p, [string]$name) {
+    New-Item -ItemType Directory -Force $portDir | Out-Null
+    $f = Join-Path $portDir "$p.json"
+    for ($try = 0; $try -lt 2; $try++) {
+        try {
+            $fs = [IO.File]::Open($f, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try { $b = [Text.Encoding]::UTF8.GetBytes((@{ name = $name; kitPid = $PID; port = $p; at = (Get-Date).ToString('o') } | ConvertTo-Json -Compress)); $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }
+            return $true
+        } catch [IO.IOException] {
+            if (Test-ReservationLive $f) { return $false }
+            Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+        }
+    }
+    return $false
+}
+function Release-Ports([string]$name) {
+    if (-not (Test-Path $portDir)) { return }
+    foreach ($f in Get-ChildItem $portDir -Filter *.json -ErrorAction SilentlyContinue) {
+        try { $j = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json; if ($j.name -eq $name) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue } } catch {}
+    }
+}
+function Get-FreePort([string]$name) {
+    for ($p = $portMin; $p -le $portMax; $p++) { if (-not (Test-PortOpen $p) -and (Reserve-Port $p $name)) { return $p } }
     throw "空きポートが $portMin..$portMax にありません(他のエンジンを engine-stop するか KIT_PORT_MIN/MAX を調整)"
+}
+function Get-ListenerPid([int]$p) {
+    try { $c = @(Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction Stop | Select-Object -First 1); if ($c.Count -gt 0) { return [int]$c[0].OwningProcess } } catch {}
+    return 0
 }
 function Get-SlotStatus([string]$Kind) {
     $cfg = Get-DxSlotConfig $Kind
@@ -121,6 +160,7 @@ switch ($Cmd.ToLowerInvariant()) {
         if (Opt 'dir') { $a.Dir = [string](Opt 'dir') }
         if (Opt 'dlss') { $a.Dlss = [string](Opt 'dlss') }
         if (Opt 'jobs') { $a.Jobs = [int](Opt 'jobs') }
+        $a.WaitMinutes = Get-DxSlotDefaultWaitMin   # build.ps1 の既定は 40 分。前景ツールの 10 分に収める(取れなければ終了コード 3)
         $r = Invoke-Logged 'build' (Join-Path $PSScriptRoot 'build.ps1') $a
         Show-Lines $r.Lines @('^\[build\]', 'error\s+C\d+', 'error\s+LNK\d+', 'fatal error', ': error', 'FAILED:') 36
         Finish $r 'build'
@@ -156,6 +196,8 @@ switch ($Cmd.ToLowerInvariant()) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $ga = @('tools/bench/golden.mjs', '--only', $ids)
         if (Opt 'uionly') { $ga += '--ui-only' }
+        # golden.mjs の launchInstance は既定で 8850..8899 から空きを探す(8851-8860 は別のワークフローのもの)。範囲を kit のポート範囲に絞って子に渡す
+        $env:DX12_BENCH_PORT_START = "$portMin"; $env:DX12_BENCH_PORT_END = "$portMax"
         $lines = @(& node @ga 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
         $lines | Set-Content -LiteralPath $log -Encoding utf8
@@ -164,9 +206,12 @@ switch ($Cmd.ToLowerInvariant()) {
     }
     'engine-start' {
         $name = [string](Opt 'name' "kit-$leaf")
-        $port = if (Opt 'port') { [int](Opt 'port') } else { Get-FreePort }
-        if ($port -lt $portMin -or $port -gt $portMax) { Write-Host "[kit] ポート $port は範囲外($portMin-$portMax)"; exit 2 }
-        if (Test-PortOpen $port) { Write-Host "[kit] ポート $port は使用中"; exit 2 }
+        if (Opt 'port') {
+            $port = [int](Opt 'port')
+            if ($port -lt $portMin -or $port -gt $portMax) { Write-Host "[kit] ポート $port は範囲外($portMin-$portMax)"; exit 2 }
+            if (Test-PortOpen $port) { Write-Host "[kit] ポート $port は使用中"; exit 2 }
+            if (-not (Reserve-Port $port $name)) { Write-Host "[kit] ポート $port は別のエンジンが予約中"; exit 2 }
+        } else { $port = Get-FreePort $name }
         $proj = [string](Opt 'project' '')
         if (-not $proj) {   # 使い捨てプロジェクト(実プロジェクトには触れない)
             $proj = Join-Path $env:TEMP "dx12_kit_proj_$name"
@@ -174,14 +219,30 @@ switch ($Cmd.ToLowerInvariant()) {
             New-Item -ItemType Directory -Force (Join-Path $proj 'assets\scenes'), (Join-Path $proj 'scripts') | Out-Null
             '{ "assetsDir": "assets", "defaultScene": "scenes/test.json", "lastOpenedScene": "scenes/test.json", "name": "KitProj", "scriptsDir": "scripts", "version": "0.1.0" }' | Set-Content (Join-Path $proj 'KitProj.dx12proj') -Encoding UTF8
         }
-        $a = @('-Name', $name, '-Port', "$port", '-Project', $proj, '-Mode', [string](Opt 'mode' 'background'))
+        # 枠待ち + 起動待ちを合わせて前景ツールの 10 分に収める(枠待ち 5 分 + 起動待ち 2.5 分)。取れなければ終了コード 3(あとでもう一度)
+        $slotWait = if ($env:KIT_ENGINE_SLOT_WAIT_MIN -match '^\d+$' -and [int]$env:KIT_ENGINE_SLOT_WAIT_MIN -gt 0) { [int]$env:KIT_ENGINE_SLOT_WAIT_MIN } else { 5 }
+        $a = @('-Name', $name, '-Port', "$port", '-Project', $proj, '-Mode', [string](Opt 'mode' 'background'), '-SlotWaitMin', "$slotWait")
         if (Opt 'builddir') { $a += @('-BuildDir', [string](Opt 'builddir')) }
         $out = @(& pwsh -NoProfile -File (Join-Path $PSScriptRoot 'engine_instance.ps1') @a 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
-        if ($code -ne 0) { $out | Select-Object -Last 8 | ForEach-Object { Write-Host $_ }; Write-Host "[kit] engine-start FAILED exit=$code"; exit $code }
+        if ($code -ne 0) {
+            Release-Ports $name
+            $out | Select-Object -Last 8 | ForEach-Object { Write-Host $_ }; Write-Host "[kit] engine-start FAILED exit=$code"
+            if ($code -eq 3) { Write-Host '[kit] retry: GPU の枠が空かなかった。他の GPU 作業が終わってから同じコマンドをもう一度(失敗ではない)' }
+            exit $code
+        }
+        $enginePid = 0
+        try { $enginePid = [int](($out | Select-Object -Last 1 | ConvertFrom-Json).pid) } catch {}
+        $stopOurs = { & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'engine_instance.ps1') -Name $name -Stop | Out-Null; Release-Ports $name }
         $t0 = Get-Date
-        while (-not (Test-PortOpen $port) -and ((Get-Date) - $t0).TotalSeconds -lt 150) { Start-Sleep -Milliseconds 700 }
-        if (-not (Test-PortOpen $port)) { & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'engine_instance.ps1') -Name $name -Stop | Out-Null; Write-Host "[kit] engine-start: ポート $port が 150 秒以内に開かなかった(停止した)"; exit 1 }
+        while (-not (Test-PortOpen $port) -and ((Get-Date) - $t0).TotalSeconds -lt 150) {
+            if ($enginePid -gt 0 -and -not (Get-Process -Id $enginePid -ErrorAction SilentlyContinue)) { break }   # 自分のエンジンが落ちた(ポートの取り合いに負けた等)
+            Start-Sleep -Milliseconds 700
+        }
+        if (-not (Test-PortOpen $port)) { & $stopOurs; Write-Host "[kit] engine-start: ポート $port が開かなかった(自分のエンジンが落ちたか 150 秒超過。停止した)"; exit 1 }
+        # 開いたポートの持ち主が自分のエンジンか確かめる(別のエージェントのエンジンを自分のものと取り違えない)
+        $lp = Get-ListenerPid $port
+        if ($enginePid -gt 0 -and $lp -gt 0 -and $lp -ne $enginePid) { & $stopOurs; Write-Host "[kit] engine-start: ポート $port の持ち主は pid=$lp で自分のエンジン(pid=$enginePid)ではない。停止した。もう一度実行"; exit 1 }
         Write-Host ("[kit] engine ready: name={0} port={1} {2}" -f $name, $port, ($out | Select-Object -Last 1))
         Write-Host "[kit] 使い終わったら: pwsh tools/kit.ps1 engine-stop -Name $name  (GPU の枠もそのとき戻る)"
         exit 0
@@ -189,6 +250,7 @@ switch ($Cmd.ToLowerInvariant()) {
     'engine-stop' {
         $name = [string](Opt 'name' "kit-$leaf")
         & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'engine_instance.ps1') -Name $name -Stop | Out-Null
+        Release-Ports $name
         Write-Host "[kit] engine stopped: $name"
         exit 0
     }
@@ -207,7 +269,7 @@ switch ($Cmd.ToLowerInvariant()) {
         $evDir = Join-Path $root 'build\kit\evidence'; New-Item -ItemType Directory -Force $evDir | Out-Null
         $ev = Join-Path $evDir "$($id -replace '[^\w.-]', '_').txt"
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        $buildArgs = @{ Tests = $true }; if (Opt 'dir') { $buildArgs.Dir = [string](Opt 'dir') }
+        $buildArgs = @{ Tests = $true; WaitMinutes = (Get-DxSlotDefaultWaitMin) }; if (Opt 'dir') { $buildArgs.Dir = [string](Opt 'dir') }
         $b = Invoke-Logged 'build' (Join-Path $PSScriptRoot 'build.ps1') $buildArgs
         $t = $null
         if ($b.Code -eq 0) {

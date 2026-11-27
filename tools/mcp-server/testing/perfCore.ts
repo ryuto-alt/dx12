@@ -207,12 +207,34 @@ function stealStale(file: string) {
   if (h && Number.isInteger(h.pid) && pidAlive(h.pid)) { try { fs.linkSync(moved, file); } catch { /* 別のロックが既にある */ } }
   try { fs.rmSync(moved, { force: true }); } catch { /* 無視 */ }
 }
-export async function acquireGpuWindow(o: { file?: string; waitSec?: number; owner?: string; pollMs?: number; signal?: AbortSignal } = {}): Promise<(() => void) | null> {
+/** GPU の枠(tools/lib/SlotLock.psm1)を持っているプロセスのマーカー(%TEMP%\uno-gpu-slot-holders\<pid>-<slot>.json)のうち生きているものの pid。
+ *  自分が枠の中(DX12_SLOT_HELD_GPU)なら見ない。窓を取った「あとで」見る(枠の側は「マーカー → 窓」の順なので、どちらかが必ず相手に気づく)。 */
+export function liveGpuSlotHolders(dir: string = process.env.DX12_GPU_MARKER_DIR || path.join(os.tmpdir(), "uno-gpu-slot-holders")): number[] {
+  if (process.env.DX12_SLOTS_DISABLE === "1" || /^\d+$/.test(process.env.DX12_SLOT_HELD_GPU ?? "")) return [];
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const live: number[] = [];
+  for (const n of names) {
+    const f = path.join(dir, n);
+    let pid = 0;
+    try { pid = Number(JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, "")).pid); } catch { /* 書き込み途中か壊れ */ }
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && pidAlive(pid)) live.push(pid);
+    else if (pid > 0) { try { fs.rmSync(f, { force: true }); } catch { /* 無視 */ } }
+  }
+  return live;
+}
+export async function acquireGpuWindow(o: { file?: string; waitSec?: number; owner?: string; pollMs?: number; signal?: AbortSignal; markerDir?: string } = {}): Promise<(() => void) | null> {
   const file = o.file ?? LOCK_FILE, waitSec = o.waitSec ?? 0, pollMs = o.pollMs ?? 2000;
   const t0 = Date.now();
   for (;;) {
     try {
       fs.writeFileSync(file, JSON.stringify({ pid: process.pid, owner: o.owner ?? "perf_gate", startedAt: new Date().toISOString() }), { flag: "wx" });
+      if (liveGpuSlotHolders(o.markerDir).length > 0) {
+        try { fs.rmSync(file, { force: true }); } catch { /* 無視 */ }
+        if (o.signal?.aborted || Date.now() - t0 >= waitSec * 1000) return null;
+        await sleep(pollMs);
+        continue;
+      }
       let released = false;
       return () => { if (released) return; released = true; try { fs.rmSync(file, { force: true }); } catch { /* 無視 */ } };
     } catch (e: any) {

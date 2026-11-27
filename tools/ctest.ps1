@@ -48,7 +48,7 @@ param(
     [string]$Dir = 'build\release',
     [int]$Jobs = 3,
     [int]$Timeout = 300,
-    [int]$SlotWaitMinutes = 40,
+    [int]$SlotWaitMinutes = -1,  # -1 = 既定: DX12_SLOT_WAIT_MIN > 8 分(エージェントの前景ツールは 10 分で切れる。取れなければ終了コード 3 + retry の案内)
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
 )
 
@@ -99,7 +99,8 @@ function Get-TestList {
         $labels = @()
         foreach ($p in @($t.properties)) { if ($p.name -eq 'LABELS') { $labels = @($p.value) } }
         $exe = if ($t.command -and $t.command.Count -gt 0) { [string]$t.command[0] } else { '' }
-        $list += [pscustomobject]@{ name = $t.name; exe = $exe; labels = $labels }
+        $targs = if ($t.command -and $t.command.Count -gt 1) { @($t.command | Select-Object -Skip 1 | ForEach-Object { [string]$_ }) } else { @() }
+        $list += [pscustomobject]@{ name = $t.name; exe = $exe; args = $targs; labels = $labels }
     }
     return $list
 }
@@ -125,7 +126,7 @@ if ($Changed -and $tests.Count -gt 0) {
         if ($ch.Files -contains 'tests/CMakeLists.txt') { $cmNames = Get-DxCMakeAddedNames $root $ch.MergeBase }
         $stamp = Read-DxPassStamp (Join-Path $buildDir '.ctest-pass-stamp.json')
         $srcText = { param($rel) $p = Join-Path $root $rel; if (Test-Path -LiteralPath $p) { Get-Content -LiteralPath $p -Raw -Encoding utf8 } else { '' } }
-        $sel = Get-DxCtestSelection -Changed $ch.Files -Tests $eligible -SourceMap $smap -Rules $rules -CMakeNames $cmNames -Stamp $stamp -TestSourceText $srcText
+        $sel = Get-DxCtestSelection -Changed $ch.Files -Tests $eligible -SourceMap $smap -Rules $rules -CMakeNames $cmNames -Stamp $stamp -TestSourceText $srcText -RepoRoot $root
         $selMode = $sel.Mode
         Write-Host ("[ctest] -Changed vs {0} ({1} files): mode={2}, {3}/{4} tests" -f $ch.Base, $ch.Files.Count, $sel.Mode, $sel.Names.Count, $eligible.Count)
         foreach ($r in ($sel.Reasons | Select-Object -First 12)) { Write-Host "         - $r" }
@@ -158,18 +159,20 @@ if ($N) {
 }
 
 # --- 5. 枠(gpu -> test の順)
+if ($SlotWaitMinutes -lt 0) { $SlotWaitMinutes = Get-DxSlotDefaultWaitMin }
 $gpuSlot = $null; $testSlot = $null
 try {
     if ($Gpu -or $Ui) {
         $gpuSlot = Enter-DxSlot -Kind gpu -Label 'ctest -Gpu/-Ui' -WaitMinutes $SlotWaitMinutes
-        if (-not $gpuSlot) { exit 3 }
+        if (-not $gpuSlot) { Write-Host '[ctest] retry: GPU の枠が空かなかった。しばらくしてからこのコマンドをもう一度(終了コード 3)'; exit 3 }
     }
     $testSlot = Enter-DxSlot -Kind test -Label 'ctest' -WaitMinutes $SlotWaitMinutes
-    if (-not $testSlot) { exit 3 }
+    if (-not $testSlot) { Write-Host '[ctest] retry: テストの枠が空かなかった。しばらくしてからこのコマンドをもう一度(終了コード 3)'; exit 3 }
     # --- 2. 優先度(枠 2 以降は Idle)
     try { (Get-Process -Id $PID).PriorityClass = $(if ($testSlot.Priority -eq 'Idle' -or ($gpuSlot -and $gpuSlot.Priority -eq 'Idle')) { 'Idle' } else { 'BelowNormal' }) } catch {}
     $jobs2 = $Jobs
-    if (-not $PSBoundParameters.ContainsKey('Jobs') -and (Test-DxUserAway)) { $jobs2 = 6 }
+    # -j6 は枠 2 以降(離席中に取れた分。Idle 優先度)だけ。枠 1 は -j3 のまま(枠 3 本 x -j6 の同時過多と、戻ってきた後に -j6 のまま残るのを避ける)
+    if (-not $PSBoundParameters.ContainsKey('Jobs') -and $testSlot.Slot -ge 2) { $jobs2 = 6 }
     $args2 = @('-j', "$jobs2") + $args2
     $junit = Join-Path ([IO.Path]::GetTempPath()) ("dx12-ctest-" + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.xml')
     $args2 += @('--output-junit', $junit)
@@ -185,6 +188,7 @@ try {
     $red = @($res.Keys | Where-Object { $res[$_] -eq 'failed' })
     $passed = @($res.Keys | Where-Object { $res[$_] -eq 'passed' })
     $skipped = @($res.Keys | Where-Object { $res[$_] -eq 'skipped' })
+    $notRun = @($res.Keys | Where-Object { $res[$_] -eq 'notrun' })
     $kr = if ($StrictRed -or $env:DX12_KNOWN_RED_DISABLE -eq '1') { @{ Active = @{}; Expired = @() } }
           else { Get-DxKnownRed $(if ($KnownRed) { $KnownRed } else { Join-Path $PSScriptRoot 'known_red.json' }) 'ctest' }
     $newRed = @($red | Where-Object { -not $kr.Active.ContainsKey($_) })
@@ -193,6 +197,7 @@ try {
     if ($res.Count -gt 0) {
         Write-Host ("[ctest] summary: {0} run, {1} passed, {2} skipped, {3} NEW RED, {4} known red, {5:n0}s" -f $res.Count, $passed.Count, $skipped.Count, $newRed.Count, $knownRed.Count, $sw.Elapsed.TotalSeconds)
         foreach ($n in $newRed) { Write-Host "  NEW RED: $n" }
+        foreach ($n in $notRun) { Write-Host "  NOT RUN (exe missing?): $n" }
         foreach ($n in $knownRed) { Write-Host "  known red: $n ($($kr.Active[$n]))" }
         foreach ($n in $kr.Expired) { if ($res.Contains($n) -and $res[$n] -eq 'failed') { Write-Host "  EXPIRED known red (counts as new): $n" } }
         foreach ($n in $fixed) { Write-Host "  now passing - remove from tools/known_red.json: $n" }
@@ -201,7 +206,7 @@ try {
         $stamp = Read-DxPassStamp $stampPath
         foreach ($t in $tests) { if ($res.Contains($t.name)) { if ($res[$t.name] -eq 'passed') { $stamp[$t.name] = Get-DxExeSig $t.exe } else { $stamp.Remove($t.name) } } }
         try { Write-DxPassStamp $stampPath $stamp } catch {}
-        if ($code -ne 0 -and $newRed.Count -eq 0 -and $knownRed.Count -gt 0 -and $red.Count -eq $knownRed.Count) {
+        if ($code -ne 0 -and $newRed.Count -eq 0 -and $knownRed.Count -gt 0 -and $red.Count -eq $knownRed.Count -and $notRun.Count -eq 0) {
             Write-Host '[ctest] 赤はすべて known_red に載っている既知のものだけ -> 終了コード 0'
             $code = 0
         }

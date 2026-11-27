@@ -7,7 +7,7 @@
 //
 // 入るもの(優先度の高い順。8KB を超えるときは本文の中ほどから削る):
 //   1. 見出しと出典(ファイルの行範囲。省略したときの「続きはここ」)
-//   2. 受け入れ(項目の「受け入れ」の段落。省略しない。最大 2.8KB)
+//   2. 受け入れ(項目の「受け入れ」の段落。2.8KB を超えるときだけ、切った旨の注記つきで切る)
 //   3. 所有(その項目のレーンの行/列と、凍結ファイルの行。所有表から)
 //   4. §0 の要約(文書の表題と冒頭の箇条書き。最大 1KB)
 //   5. 項目の本文(受け入れの段落を除いたもの。残りの予算の全部)
@@ -141,7 +141,8 @@ export function makeBrief(text, id, options = {}) {
   const owner = extractOwnership(text, lane, 1800);
   const where = `${source}:${item.startLine + 1}-${item.endLine}`;
   const head = `# ブリーフ: ${item.title}\n\n出典: ${where}(足りないときだけ、この範囲を読む)。レーン: ${lane ?? "不明"}\n`;
-  const accBlock = acceptance ? `\n## 受け入れ\n${truncBytes(acceptance, 2800)}\n` : "\n## 受け入れ\n(この項目に「受け入れ」の段落が無い。本文の「設計」と「レビュー観点」を見る)\n";
+  const accOut = byteLen(acceptance) > 2800 ? `${truncBytes(acceptance, 2800)}\n…(受け入れは ${byteLen(acceptance)} バイトあり、ここには約 2800 バイト。続きは ${where})` : acceptance;
+  const accBlock = acceptance ? `\n## 受け入れ\n${accOut}\n` : "\n## 受け入れ\n(この項目に「受け入れ」の段落が無い。本文の「設計」と「レビュー観点」を見る)\n";
   const ownBlock = owner ? `\n## 所有と凍結(レーン ${lane ?? "?"})\n${owner}\n` : "";
   const sumBlock = summary ? `\n## 文書の要約(§0)\n${summary}\n` : "";
   const fixed = head + accBlock + ownBlock + sumBlock;
