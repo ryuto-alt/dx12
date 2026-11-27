@@ -2,13 +2,14 @@
   "kind": "ui",
   "nativeWidth": 1920,
   "nativeHeight": 1080,
-  "nativeSha256": "29a6057873492403b21998416316959002ba9a5cb57615dc46f2a38089f0dba4",
-  "compareSha256": "178ede65811d175914f1baf7c4aae174bcd0ae1a14a3e17299a9f27cd5e369e6",
+  "nativeSha256": "524ab654507bf31cf45499a03ae12bdbabeec7bc9b39952b332cb0fd622aebbb",
+  "compareSha256": "c8f9a2568ecb087a881e91aad248c07c4fe44b8b6ba7e84d2a65783a82424ae2",
   "width": 640,
   "height": 360,
   "dpi": 1,
   "theme": "default",
-  "commit": "59c2804",
-  "capturedAt": "2026-11-25T15:54:19.224Z",
+  "uiFont": "legacy",
+  "commit": "c932701",
+  "capturedAt": "2026-11-27T05:32:44.417Z",
   "deterministicInSession": true
 }
