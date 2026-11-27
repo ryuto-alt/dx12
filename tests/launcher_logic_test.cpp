@@ -7,6 +7,7 @@
 #include "project/ProjectTemplates.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -446,6 +447,37 @@ void TestTemplates()
         }
 }
 
+// FPS テンプレートの炎（Flame*）の intensity が 1.5 以下（BUG-43: 4.0 だと加算合成で白飛びする）。
+// 修正後の title.json / main.json の実体に対する回帰テスト。
+void TestFpsTemplateFlameIntensity()
+{
+    int flames = 0;
+    for (const char* rel : { "assets/scenes/title.json", "assets/scenes/main.json" })
+    {
+        const std::string* body = nullptr;
+        for (const auto& f : dx12e::templates::GetFiles("fps"))
+            if (std::string(f.relPath) == rel) body = new std::string(f.content);
+        CHECK(body != nullptr);
+        if (!body) continue;
+        size_t pos = 0;
+        while ((pos = body->find("\"name\": \"Flame", pos)) != std::string::npos)
+        {
+            const size_t end = body->find('}', pos);               // 同じエンティティの括弧内に収める
+            const size_t k = body->find("\"intensity\":", pos);
+            CHECK(k != std::string::npos && k < end);
+            if (k != std::string::npos && k < end)
+            {
+                const double v = std::atof(body->c_str() + k + 12);
+                CHECK(v > 0.0 && v <= 1.5);
+                ++flames;
+            }
+            pos = end == std::string::npos ? body->size() : end;
+        }
+        delete body;
+    }
+    CHECK(flames == 4);   // main の Flame_1/2 と title の Flame_L/R
+}
+
 // ---------------------------------------------------------------- 動き
 void TestMotion()
 {
@@ -558,6 +590,7 @@ int main()
     TestRecents();
     TestThumbnail();
     TestTemplates();
+    TestFpsTemplateFlameIntensity();
     TestMotion();
     TestNews();
     if (g_fail == 0) std::printf("LauncherTests: all passed\n");
