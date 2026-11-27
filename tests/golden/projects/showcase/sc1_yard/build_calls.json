@@ -5682,9 +5682,9 @@
     "name": "Vane_Arm",
     "type": "box",
     "position": [
-     9,
-     4.4,
-     -4
+     0,
+     0,
+     0
     ],
     "parentName": "Vane_Rotor"
    }
@@ -5694,13 +5694,13 @@
    "params": {
     "name": "Vane_Arm",
     "position": [
-     9,
-     4.4,
-     -4
+     0,
+     0,
+     0
     ],
     "rotation": [
      0,
-     35,
+     0,
      0
     ],
     "scale": [
@@ -5735,9 +5735,9 @@
     "name": "Vane_Fin",
     "type": "box",
     "position": [
-     8.2,
-     4.4,
-     -4
+     -0.8,
+     0,
+     0
     ],
     "parentName": "Vane_Rotor"
    }
@@ -5747,13 +5747,13 @@
    "params": {
     "name": "Vane_Fin",
     "position": [
-     8.2,
-     4.4,
-     -4
+     -0.8,
+     0,
+     0
     ],
     "rotation": [
      0,
-     35,
+     0,
      0
     ],
     "scale": [
@@ -5786,7 +5786,7 @@
    "method": "create_lua_component",
    "params": {
     "name": "sc1_vane",
-    "code": "-- SC-1: 風見の腕を Y 軸まわりに一定の角速度で回す（Play 中だけ。エディタの撮影では固定角のまま）\nfunction OnUpdate(self, dt)\n    self.angle = (self.angle or 35) + 40 * dt\n    self.entity.transform.rotation = Vec3.new(0, self.angle, 0)\nend\n"
+    "code": "-- SC-1: 風見の腕を Y 軸まわりに一定の角速度で回す（Play 中だけ。エディタの撮影では固定角のまま）\nfunction OnUpdate(self, dt)\n    self.angle = (self.angle or 35) + 40 * dt\n    self.transform.rotation = Vec3.new(0, self.angle, 0)\nend\n"
    }
   },
   {
@@ -5841,7 +5841,7 @@
    "method": "create_lua_component",
    "params": {
     "name": "sc1_walker",
-    "code": "-- SC-1: 人形が焚き火のまわり（半径 4m）を Walk のループで歩く（Play 中だけ）\nfunction OnStart(self)\n    self.entity:playAnimByName('Walk', 0.0)\n    self.entity:setLooping(true)\n    self.t = 0\nend\nfunction OnUpdate(self, dt)\n    self.t = self.t + dt * 0.35\n    local x, z = 4.0 * math.cos(self.t), 4.0 * math.sin(self.t)\n    self.entity.transform.position = Vec3.new(x, 0, z)\n    self.entity.transform.rotation = Vec3.new(0, -math.deg(self.t), 0)\nend\n"
+    "code": "-- SC-1: 人形が焚き火のまわり（半径 4m）を Walk のループで歩く（Play 中だけ）\nfunction OnStart(self)\n    local e = scene:findEntity(self.name)\n    e:playAnimByName('Walk', 0.0)\n    e:setLooping(true)\n    self.t = 0\nend\nfunction OnUpdate(self, dt)\n    self.t = self.t + dt * 0.35\n    local x, z = 4.0 * math.cos(self.t), 4.0 * math.sin(self.t)\n    self.transform.position = Vec3.new(x, 0, z)\n    self.transform.rotation = Vec3.new(0, -math.deg(self.t), 0)\nend\n"
    }
   },
   {

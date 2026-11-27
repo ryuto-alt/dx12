@@ -118,15 +118,15 @@ const VX = 9, VZ = -4;
 await box("Vane_Pole", [VX, 2.2, VZ], [0.1, 4.4, 0.1], { color: [0.45, 0.46, 0.48], metallic: 0.7, roughness: 0.4 });
 await call("create_entity", { name: "Vane_Rotor", type: "empty", position: [VX, 4.4, VZ] });
 await call("set_transform", { name: "Vane_Rotor", position: [VX, 4.4, VZ], rotation: [0, 35, 0], scale: [1, 1, 1] });
-await box("Vane_Arm", [VX, 4.4, VZ], [1.8, 0.07, 0.07], { color: [0.7, 0.55, 0.2], metallic: 0.8, roughness: 0.35, rotY: 35, parent: "Vane_Rotor" });
-await box("Vane_Fin", [VX - 0.8, 4.4, VZ], [0.4, 0.5, 0.03], { color: [0.7, 0.55, 0.2], metallic: 0.8, roughness: 0.35, rotY: 35, parent: "Vane_Rotor" });
+await box("Vane_Arm", [0, 0, 0], [1.8, 0.07, 0.07], { color: [0.7, 0.55, 0.2], metallic: 0.8, roughness: 0.35, rotY: 0, parent: "Vane_Rotor" });
+await box("Vane_Fin", [-0.8, 0, 0], [0.4, 0.5, 0.03], { color: [0.7, 0.55, 0.2], metallic: 0.8, roughness: 0.35, rotY: 0, parent: "Vane_Rotor" });
 await call("create_lua_component", {
   name: "sc1_vane",
   code: [
     "-- SC-1: 風見の腕を Y 軸まわりに一定の角速度で回す（Play 中だけ。エディタの撮影では固定角のまま）",
     "function OnUpdate(self, dt)",
     "    self.angle = (self.angle or 35) + 40 * dt",
-    "    self.entity.transform.rotation = Vec3.new(0, self.angle, 0)",
+    "    self.transform.rotation = Vec3.new(0, self.angle, 0)",
     "end",
     "",
   ].join("\n"),
@@ -143,15 +143,16 @@ await call("create_lua_component", {
   code: [
     "-- SC-1: 人形が焚き火のまわり（半径 4m）を Walk のループで歩く（Play 中だけ）",
     "function OnStart(self)",
-    "    self.entity:playAnimByName('Walk', 0.0)",
-    "    self.entity:setLooping(true)",
+    "    local e = scene:findEntity(self.name)",
+    "    e:playAnimByName('Walk', 0.0)",
+    "    e:setLooping(true)",
     "    self.t = 0",
     "end",
     "function OnUpdate(self, dt)",
     "    self.t = self.t + dt * 0.35",
     "    local x, z = 4.0 * math.cos(self.t), 4.0 * math.sin(self.t)",
-    "    self.entity.transform.position = Vec3.new(x, 0, z)",
-    "    self.entity.transform.rotation = Vec3.new(0, -math.deg(self.t), 0)",
+    "    self.transform.position = Vec3.new(x, 0, z)",
+    "    self.transform.rotation = Vec3.new(0, -math.deg(self.t), 0)",
     "end",
     "",
   ].join("\n"),
