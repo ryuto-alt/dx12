@@ -587,6 +587,7 @@ CalibrateSound::State CalibrateSound::GetState() { return static_cast<State>(CS(
 bool CalibrateSound::Expected() { return CS().expected.load(); }
 double CalibrateSound::QpcMs() { return QpcNowMs(); }
 const char* CalibrateSound::BackendName() { return CS().backend.load(); }
+std::shared_ptr<const splash::CalibrateBank> CalibrateSound::LoadBankOffline() { return LoadCalibrateBank(); }
 
 bool CalibrateSound::TimelineMs(double qpcMs, double* outMs)
 {

@@ -12,13 +12,14 @@
 //   （tests/splash_sync_dump.cpp）。ここは実機のスプラッシュからしか呼ばれない。
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace dx12e
 {
 
-namespace splash { struct GaugeCue; struct SoundGate; }
+namespace splash { struct GaugeCue; struct SoundGate; struct CalibrateBank; }
 
 class SplashSound
 {
@@ -73,6 +74,8 @@ public:
     static bool Skip(double tMs, double* usedMs);
     static void Abort();                          // 中止（短くフェードアウトして止める）
     static const char* BackendName();             // "wasapi" / "waveout" / "none"（診断用）
+    // 検証用（--splash-dump のオフライン音声）: exe の RCDATA から素材を読む。デバイスは開かない。無ければ nullptr
+    static std::shared_ptr<const splash::CalibrateBank> LoadBankOffline();
 };
 
 } // namespace dx12e

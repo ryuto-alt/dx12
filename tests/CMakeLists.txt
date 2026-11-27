@@ -911,6 +911,10 @@ if(MSVC)
 endif()
 add_test(NAME SplashSequencerTests COMMAND SplashSequencerTests ${DX12_REPO_ROOT})
 set_tests_properties(SplashSequencerTests PROPERTIES TIMEOUT 300)
+# 起動画面の A/V 検証用ダンプ（W1-BD8）: --splash-dump が frames.csv（event は ';' 区切り・gpu_ms / cpu_ms）・av.json・audio.wav を窓なしで書く。
+# （DX12Engine は親の CMakeLists でこの後に定義されるので、TARGET では判定せず生成式で参照する）
+add_test(NAME SplashDumpAvShape COMMAND ${CMAKE_COMMAND} -DENGINE=$<TARGET_FILE:DX12Engine> -DOUT=${CMAKE_CURRENT_BINARY_DIR}/splash_dump_av -P ${CMAKE_CURRENT_SOURCE_DIR}/splash_dump_av_check.cmake)
+set_tests_properties(SplashDumpAvShape PROPERTIES TIMEOUT 300)
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、

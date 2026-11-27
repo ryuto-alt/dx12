@@ -10,17 +10,21 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "core/DpiScale.h"
+#include "core/SplashAudio.h"
+#include "core/SplashBrandGeometry.h"
 #include "core/SplashCommon.h"
 #include "core/SplashControl.h"
 #include "core/SplashDirector.h"
 #include "core/SplashGaugeRenderer.h"
 #include "core/SplashProgress.h"
 #include "core/SplashRenderer.h"
+#include "core/SplashSequencer.h"
 #include "core/SplashScreen.h"
 #include "core/Version.h"
 
@@ -181,6 +185,25 @@ sp::SplashInfo MakeDumpInfo(const Options& o)
     return info;
 }
 
+// PCM16 ステレオの WAV（float interleaved を丸めて書く）
+bool WriteWavPcm16(const std::filesystem::path& path, const std::vector<float>& st, int sampleRate)
+{
+    std::ofstream f(path, std::ios::binary);
+    if (!f) return false;
+    const uint32_t dataBytes = static_cast<uint32_t>(st.size() * 2);
+    auto w32 = [&](uint32_t v) { f.write(reinterpret_cast<const char*>(&v), 4); };
+    auto w16 = [&](uint16_t v) { f.write(reinterpret_cast<const char*>(&v), 2); };
+    f.write("RIFF", 4); w32(36 + dataBytes); f.write("WAVE", 4);
+    f.write("fmt ", 4); w32(16); w16(1); w16(2); w32(static_cast<uint32_t>(sampleRate)); w32(static_cast<uint32_t>(sampleRate) * 4); w16(4); w16(16);
+    f.write("data", 4); w32(dataBytes);
+    for (float v : st)
+    {
+        const int16_t q = static_cast<int16_t>(std::lround(std::max(-1.0f, std::min(1.0f, v)) * 32767.0f));
+        f.write(reinterpret_cast<const char*>(&q), 2);
+    }
+    return static_cast<bool>(f);
+}
+
 // events.json の kind と同じ小文字の名前
 const char* EventKindName(sp::calibrate::EventKind k)
 {
@@ -228,6 +251,28 @@ int RunGaugeDump(const Options& o)
     const int n = static_cast<int>(info.steps.size());
     const sp::CalibrateEvents& ev = sp::DefaultCalibrateEvents();
     sp::GaugeFastDriver drv;
+    // A/V 検証用の音（W1-BD8）: 実デバイスを開かず、実窓と同じ CalibrateSequencer をオフラインで回す。窓の経路（SplashScreen.cpp）と同じ順序でコマンドを出す
+    std::unique_ptr<sp::CalibrateSequencer> aseq;
+    std::vector<float> audio;   // ステレオ interleaved。先頭サンプル = タイムライン 0ms
+    if (const auto bank = CalibrateSound::LoadBankOffline(); bank && bank->Valid())
+    {
+        aseq = std::make_unique<sp::CalibrateSequencer>(bank, o.reduce);
+        aseq->Begin();
+    }
+    else std::fprintf(stderr, "splash-dump: 起動音の素材（exe の RCDATA）を読めないので audio.wav は書きません\n");
+    auto renderAudioTo = [&](double ms)
+    {
+        if (!aseq) return;
+        const std::int64_t target = sp::seq::MsToFrame(ms);
+        while (aseq->OutFrame() < target)
+        {
+            const int n = static_cast<int>(std::min<std::int64_t>(1024, target - aseq->OutFrame()));
+            const size_t at = audio.size();
+            audio.resize(at + static_cast<size_t>(n) * 2);
+            aseq->Render(audio.data() + at, n);
+        }
+    };
+    double skipCutoffMs = -1.0;   // スキップが効いた時点のタイムライン時刻。これより後のイベント（スキップで鳴らなくなる音）は event 列に載せない
     std::vector<double> skip = o.skipAt;
     std::sort(skip.begin(), skip.end());
     size_t nextSkip = 0;
@@ -244,13 +289,16 @@ int RunGaugeDump(const Options& o)
     std::vector<uint8_t> px(static_cast<size_t>(W) * static_cast<size_t>(H) * 4);
     std::ofstream csv(o.dir / "frames.csv");
     // t / phase / percent は classic の frames.csv と同じ列（splash_contact_sheet.py 互換）。
-    // 後ろの 4 列は A/V 検証用（W1-BD8。tools/check_splash_av.py が読む）:
-    //   event  = 前の書き出し時刻（含まない）〜この時刻（含む）に入る音のイベント。"kind:index"（events.json と同じ名前）を '|' でつなぐ。無ければ空
-    //   frame  = 出力 fps の格子での番号（round(tMs * fps / 1000)）
-    //   gpuMs  = Draw の GPU 時間（D3D11 のタイムスタンプ。読めなければ -1）、cpuMs = Draw 呼び出しの CPU 時間
-    csv << "index,tMs,needleDeg,locked,file,t,phase,percent,event,frame,gpuMs,cpuMs\n";
+    // t は【その絵の正規タイムライン上の時刻[秒]】（GaugeFrame.timelineMs / 1000）。tMs は仮想の壁時計[ms]（速い経路では同じ値）。
+    // 後ろの 4 列は A/V 検証用（W1-BD8。tools/check_splash_av.py が読む。契約はその冒頭）:
+    //   event  = 前の絵のタイムライン時刻（含まない）〜この絵の時刻（含む）に入る音のイベント。"kind:index"（events.json と同じ名前）を ';' でつなぐ。無ければ空
+    //            スキップが効いた後は載せない（鳴らなくなるため。スキップの LockTail は載らない）。Reduce Motion は絵が最初から静止で、ロック（latch:0）は表の時刻のまま載る（検査の対象外）
+    //            既定の書き出し（0〜2500ms）には end:0（3750ms）は入らない
+    //   frame  = 出力 fps の格子での番号（round(t * fps)）
+    //   gpu_ms = Draw の GPU 時間（D3D11 のタイムスタンプ。読めなければ -1）、cpu_ms = Draw 呼び出しの CPU 時間
+    csv << "index,tMs,needleDeg,locked,file,t,phase,percent,event,frame,gpu_ms,cpu_ms\n";
     surf.EnableGpuTiming(true);
-    double prevWrittenT = -1.0;
+    double prevTimelineMs = -1.0;
     size_t wi = 0;
     int written = 0;
     double drawSum = 0.0, drawMax = 0.0, copySum = 0.0;
@@ -258,6 +306,7 @@ int RunGaugeDump(const Options& o)
     int lastStep = -1;
     for (double t : ticks)
     {
+        renderAudioTo(t);   // 音は壁時計 t まで描き置く（以降の予約は t より後ろにしか入らない）
         const bool finishReq = t >= o.finishAtMs;
         const double prog = std::min(0.995, sp::Clamp01(t / std::max(1.0, o.finishAtMs)) * 0.995);
         sp::GaugeFrame f;
@@ -267,11 +316,32 @@ int RunGaugeDump(const Options& o)
             const double finMs = finishReq ? o.finishAtMs : std::nan("");
             f = sp::EvaluateGauge(sp::GaugePath::Reduce, t, 0.f, ev, sp::GaugeExitStartMs(ev.pingMs, finMs));
             locked = finishReq;
+            while (nextSkip < skip.size() && skip[nextSkip] <= t + 1e-9)   // Reduce Motion でも音はロック以降へ（絵は最初から静的）
+            {
+                double used = t;
+                if (aseq && aseq->Skip(t, &used) && skipCutoffMs < 0.0) skipCutoffMs = t;
+                ++nextSkip;
+            }
         }
         else
         {
+            // 窓の経路（SplashScreen.cpp）と同じ順序: 持ち替えの可否 → Update → スキップ（音が描き終えた時刻に絵も合わせる）→ 予約の取り消しと追加
+            if (drv.HandOverPending(t, finishReq) && aseq && !aseq->HandOver(t)) drv.VetoHandOver();
             drv.Update(t, static_cast<float>(prog), finishReq);
-            while (nextSkip < skip.size() && skip[nextSkip] <= t + 1e-9) { drv.Skip(t); ++nextSkip; }
+            while (nextSkip < skip.size() && skip[nextSkip] <= t + 1e-9)
+            {
+                const double preTl = drv.Frame(t).timelineMs;
+                double used = t;
+                if (aseq) aseq->Skip(t, &used);
+                drv.Skip(used);
+                if (drv.Skipped() && skipCutoffMs < 0.0) skipCutoffMs = preTl;
+                ++nextSkip;
+            }
+            if (aseq)
+            {
+                for (std::uint32_t id : drv.TakeCancelledCueIds()) aseq->CancelCue(id);
+                for (const sp::GaugeCue& c : drv.TakeCues()) aseq->AddCue(c);
+            }
             f = drv.Frame(t);
             const double lw = drv.LockWallMs();
             locked = !std::isnan(lw) && t >= lw;
@@ -299,21 +369,42 @@ int RunGaugeDump(const Options& o)
         std::snprintf(name, sizeof(name), "kf_%04d_ms.png", static_cast<int>(std::lround(t)));
         if (!WritePng(o.dir / name, px.data(), W, H)) { std::fprintf(stderr, "splash-dump: PNG を書けません: %s\n", name); return 1; }
         std::string evs;
+        const double tlMs = static_cast<double>(f.timelineMs);
+        constexpr double kEps = 1.5e-4;   // timelineMs は float（2.5 秒付近で 2.4e-4ms 刻み）
         for (const auto& e : sp::calibrate::kEvents)
         {
-            if (!(e.tMs > prevWrittenT && e.tMs <= t + 1e-9)) continue;
-            if (!evs.empty()) evs += '|';
+            if (!(e.tMs > prevTimelineMs + kEps && e.tMs <= tlMs + kEps)) continue;
+            if (skipCutoffMs >= 0.0 && e.tMs > skipCutoffMs + kEps) continue;
+            if (!evs.empty()) evs += ';';
             evs += EventKindName(e.kind);
             evs += ':';
             evs += std::to_string(e.index);
         }
-        prevWrittenT = t;
-        char row[320];
-        std::snprintf(row, sizeof(row), "%d,%.1f,%.2f,%d,%s,%.4f,%s,%.1f,%s,%ld,%.4f,%.4f\n", written, t, f.needleDeg, f.locked ? 1 : 0, name, t / 1000.0,
+        prevTimelineMs = tlMs;
+        char row[360];
+        std::snprintf(row, sizeof(row), "%d,%.1f,%.2f,%d,%s,%.9f,%s,%.1f,%s,%ld,%.4f,%.4f\n", written, t, f.needleDeg, f.locked ? 1 : 0, name, tlMs / 1000.0,
                       locked ? "locked" : (finishReq ? "finish" : "gauge"), info.progress * 100.0, evs.c_str(),
-                      std::lround(t * o.fps / 1000.0), surf.LastGpuMs(), d1 - d0);
+                      std::lround(tlMs * o.fps / 1000.0), surf.LastGpuMs(), d1 - d0);
         csv << row;
         ++written;
+    }
+    // av.json / audio.wav（tools/check_splash_av.py の契約）。layout は画素の縁を原点とする連続座標。regions（黄の許可領域）は出さない
+    {
+        const float sc = o.dpi * lay.fit;
+        const sp::GaugeGeo& g = lay.geo;
+        const double needleLen = (g.rTickOut - 6.f) * sc;
+        const double hubR = uno::brand::kHubR * g.K * sc;
+        const double halfW = 0.5 * std::max(sp::gauge_layout::kNeedleW0 * sp::gauge_layout::kNeedleWScaleRoot,
+                                            sp::gauge_layout::kNeedleW1 * sp::gauge_layout::kNeedleWScaleTip) * g.K * sc;
+        const bool haveAudio = aseq && WriteWavPcm16(o.dir / "audio.wav", audio, sp::calibrate::kSampleRate);
+        std::ofstream av(o.dir / "av.json");
+        char buf[640];
+        std::snprintf(buf, sizeof(buf),
+                      "{\"version\":1,\"fps\":%.6g,\"dpiScale\":%.6g,%s\"audioOriginMs\":0.0,\n"
+                      " \"layout\":{\"hub\":[%.6f,%.6f],\"needleLenPx\":%.6f,\"hubRadiusPx\":%.6f,\"needleHalfWidthPx\":%.6f}}\n",
+                      o.fps, static_cast<double>(o.dpi), haveAudio ? "\"audio\":\"audio.wav\"," : "",
+                      static_cast<double>(g.dcx * sc), static_cast<double>(g.dcy * sc), needleLen, hubR, halfW);
+        av << buf;
     }
     std::printf("splash-dump: %d 枚 -> %ls  draw avg %.2f ms max %.2f ms  readback avg %.2f ms  staticBakes=%u\n", written, o.dir.c_str(),
                 written ? drawSum / written : 0.0, drawMax, written ? copySum / written : 0.0, surf.StaticBakeCount());
