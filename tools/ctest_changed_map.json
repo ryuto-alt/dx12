@@ -1,0 +1,9 @@
+{
+  "_comment": "ctest.ps1 -Changed の対応表。pattern は変更ファイル(repo 相対・スラッシュ区切り)への正規表現。tests は選ぶテスト名の正規表現(複数可)。ignore:true なら、そのファイルは対応づけに使わない。書いた表は docs/AGENT_KIT.md を参照。迷ったら全件になるので、ここは「確実に分かるもの」だけ足す。",
+  "rules": [
+    { "pattern": "^shaders/", "tests": ["(?i)shader|dxil|hlsl"] },
+    { "pattern": "^tools/(parity|vfx_bake)/", "tests": ["(?i)ParityHarnessPy|VfxBakePy"] },
+    { "pattern": "^hardware/", "tests": ["(?i)hardware"] },
+    { "pattern": "^assets/(icons|fonts)/", "ignore": true }
+  ]
+}
