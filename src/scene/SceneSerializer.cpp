@@ -42,7 +42,6 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
-#include <cmath>
 #include <cctype>
 #include <random>    // エンティティ GUID の生成
 #include <cstdio>     // GUID の hex 整形
@@ -1424,19 +1423,6 @@ static json BuildSceneJson(const Scene& scene, const std::string& assetsDir, boo
             {"blockerSearchTexels", pc.blockerSearchTexels},
             {"temporalDither",      pc.temporalDither},
         };
-        // W1-FU-L-3: C6 の Epic 影の設定。全て既定のときは書かない（既定シーンの JSON をビット一致に保つ）。
-        const ShadowPcssSettings def;
-        auto& pj = root["shadowPcss"];
-        const auto putB = [&](const char* k, bool v, bool d) { if (v != d) pj[k] = v; };
-        const auto putF = [&](const char* k, f32 v, f32 d) { if (v != d) pj[k] = v; };
-        putB("epicDynamicCsm",     pc.epicDynamicCsm,     def.epicDynamicCsm);
-        putB("pancaking",          pc.pancaking,          def.pancaking);
-        putB("gatherPcss",         pc.gatherPcss,         def.gatherPcss);
-        putB("cascadeDitherBlend", pc.cascadeDitherBlend, def.cascadeDitherBlend);
-        putF("receiverNormalOffsetBase",  pc.receiverNormalOffsetBase,  def.receiverNormalOffsetBase);
-        putF("receiverNormalOffsetSlope", pc.receiverNormalOffsetSlope, def.receiverNormalOffsetSlope);
-        putF("casterBiasScaleV2",         pc.casterBiasScaleV2,         def.casterBiasScaleV2);
-        if (pc.gatherFilterTaps != def.gatherFilterTaps) pj["gatherFilterTaps"] = pc.gatherFilterTaps;
     }
 
     SaveSceneShadingLaneC(scene, root);   // W1-FU-E-27（lane-C サイドカー）
@@ -1790,19 +1776,6 @@ static void LoadShadowPcssSettings(Scene& scene, const json& root)
         pc.maxPenumbraTexels   = pj.value("maxPenumbraTexels",   pc.maxPenumbraTexels);
         pc.blockerSearchTexels = pj.value("blockerSearchTexels", pc.blockerSearchTexels);
         pc.temporalDither      = pj.value("temporalDither",      pc.temporalDither);
-        // W1-FU-L-3: Epic 影の設定（無ければ既定＝従来と同じ）。範囲は MCP の set_shadow_pcss と同じ。
-        pc.epicDynamicCsm      = pj.value("epicDynamicCsm",      pc.epicDynamicCsm);
-        pc.pancaking           = pj.value("pancaking",           pc.pancaking);
-        pc.gatherPcss          = pj.value("gatherPcss",          pc.gatherPcss);
-        pc.cascadeDitherBlend  = pj.value("cascadeDitherBlend",  pc.cascadeDitherBlend);
-        const auto clampF = [&](const char* k, f32 cur, f32 lo, f32 hi) {
-            const f32 v = pj.value(k, cur);
-            return std::isfinite(v) ? std::clamp(v, lo, hi) : cur;
-        };
-        pc.receiverNormalOffsetBase  = clampF("receiverNormalOffsetBase",  pc.receiverNormalOffsetBase,  0.0f, 4.0f);
-        pc.receiverNormalOffsetSlope = clampF("receiverNormalOffsetSlope", pc.receiverNormalOffsetSlope, 0.0f, 4.0f);
-        pc.casterBiasScaleV2         = clampF("casterBiasScaleV2",         pc.casterBiasScaleV2,         0.05f, 1.0f);
-        pc.gatherFilterTaps = std::clamp<u32>(pj.value("gatherFilterTaps", pc.gatherFilterTaps), 8u, 32u);
     }
     scene.GetShadowPcssSettings() = pc;
 }

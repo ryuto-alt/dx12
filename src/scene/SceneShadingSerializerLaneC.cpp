@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cmath>
 
 namespace dx12e
 {
@@ -82,9 +83,14 @@ void LoadSceneShadingLaneC(Scene& scene, const json& root)
             pc.pancaking           = pj.value("pancaking",           pc.pancaking);
             pc.gatherPcss          = pj.value("gatherPcss",          pc.gatherPcss);
             pc.cascadeDitherBlend  = pj.value("cascadeDitherBlend",  pc.cascadeDitherBlend);
-            pc.receiverNormalOffsetBase  = std::clamp(pj.value("receiverNormalOffsetBase",  pc.receiverNormalOffsetBase),  0.0f, 4.0f);
-            pc.receiverNormalOffsetSlope = std::clamp(pj.value("receiverNormalOffsetSlope", pc.receiverNormalOffsetSlope), 0.0f, 4.0f);
-            pc.casterBiasScaleV2   = std::clamp(pj.value("casterBiasScaleV2", pc.casterBiasScaleV2), 0.05f, 1.0f);
+            // 非有限（NaN / Inf）は現在値のまま（W1-FU-L-3 の読み込みと同じ扱い。統合で 1 本化）
+            const auto clampF = [&](const char* k, float cur, float lo, float hi) {
+                const float v = pj.value(k, cur);
+                return std::isfinite(v) ? std::clamp(v, lo, hi) : cur;
+            };
+            pc.receiverNormalOffsetBase  = clampF("receiverNormalOffsetBase",  pc.receiverNormalOffsetBase,  0.0f, 4.0f);
+            pc.receiverNormalOffsetSlope = clampF("receiverNormalOffsetSlope", pc.receiverNormalOffsetSlope, 0.0f, 4.0f);
+            pc.casterBiasScaleV2         = clampF("casterBiasScaleV2",         pc.casterBiasScaleV2,         0.05f, 1.0f);
             pc.gatherFilterTaps    = std::clamp<u32>(pj.value("gatherFilterTaps", pc.gatherFilterTaps), 8u, 32u);
         }
     }
