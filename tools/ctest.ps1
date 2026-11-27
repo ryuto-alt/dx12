@@ -192,21 +192,21 @@ try {
     $kr = if ($StrictRed -or $env:DX12_KNOWN_RED_DISABLE -eq '1') { @{ Active = @{}; Expired = @() } }
           else { Get-DxKnownRed $(if ($KnownRed) { $KnownRed } else { Join-Path $PSScriptRoot 'known_red.json' }) 'ctest' }
     $newRed = @($red | Where-Object { -not $kr.Active.ContainsKey($_) })
-    $knownRed = @($red | Where-Object { $kr.Active.ContainsKey($_) })
+    $knownRedNames = @($red | Where-Object { $kr.Active.ContainsKey($_) })
     $fixed = @($kr.Active.Keys | Where-Object { $res.Contains($_) -and $res[$_] -eq 'passed' })
     if ($res.Count -gt 0) {
-        Write-Host ("[ctest] summary: {0} run, {1} passed, {2} skipped, {3} NEW RED, {4} known red, {5:n0}s" -f $res.Count, $passed.Count, $skipped.Count, $newRed.Count, $knownRed.Count, $sw.Elapsed.TotalSeconds)
-        foreach ($n in $newRed) { Write-Host "  NEW RED: $n" }
-        foreach ($n in $notRun) { Write-Host "  NOT RUN (exe missing?): $n" }
-        foreach ($n in $knownRed) { Write-Host "  known red: $n ($($kr.Active[$n]))" }
-        foreach ($n in $kr.Expired) { if ($res.Contains($n) -and $res[$n] -eq 'failed') { Write-Host "  EXPIRED known red (counts as new): $n" } }
-        foreach ($n in $fixed) { Write-Host "  now passing - remove from tools/known_red.json: $n" }
+        Write-Host ("[ctest] summary: {0} run, {1} passed, {2} skipped, {3} NEW RED, {4} known red, {5:n0}s" -f $res.Count, $passed.Count, $skipped.Count, $newRed.Count, $knownRedNames.Count, $sw.Elapsed.TotalSeconds)
+        foreach ($tn in $newRed) { Write-Host "  NEW RED: $tn" }
+        foreach ($tn in $notRun) { Write-Host "  NOT RUN (exe missing?): $tn" }
+        foreach ($tn in $knownRedNames) { Write-Host "  known red: $tn ($($kr.Active[$tn]))" }
+        foreach ($tn in $kr.Expired) { if ($res.Contains($tn) -and $res[$tn] -eq 'failed') { Write-Host "  EXPIRED known red (counts as new): $tn" } }
+        foreach ($tn in $fixed) { Write-Host "  now passing - remove from tools/known_red.json: $tn" }
         # 合格の記録(exe の署名)
         $stampPath = Join-Path $buildDir '.ctest-pass-stamp.json'
         $stamp = Read-DxPassStamp $stampPath
         foreach ($t in $tests) { if ($res.Contains($t.name)) { if ($res[$t.name] -eq 'passed') { $stamp[$t.name] = Get-DxExeSig $t.exe } else { $stamp.Remove($t.name) } } }
         try { Write-DxPassStamp $stampPath $stamp } catch {}
-        if ($code -ne 0 -and $newRed.Count -eq 0 -and $knownRed.Count -gt 0 -and $red.Count -eq $knownRed.Count -and $notRun.Count -eq 0) {
+        if ($code -ne 0 -and $newRed.Count -eq 0 -and $knownRedNames.Count -gt 0 -and $red.Count -eq $knownRedNames.Count -and $notRun.Count -eq 0) {
             Write-Host '[ctest] 赤はすべて known_red に載っている既知のものだけ -> 終了コード 0'
             $code = 0
         }
