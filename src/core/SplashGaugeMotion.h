@@ -730,6 +730,9 @@ public:
     }
     bool FinishObserved() const { return m_finish; }
 
+    // スキップが実際に効いたか（ロック以降のスキップは何もしないので false のまま）と、その時刻（絵がロックへ飛んだ Update の時計）。BD5 が音のスキップを合わせる
+    bool Skipped() const { return m_handed ? m_slow.Skipped() : m_skipped; }
+    double SkipWallMs() const { return m_handed ? m_slow.LockWallMs() : m_skipWall; }
     bool HandedOver() const { return m_handed; }   // 345 度で待つ縮退に入った
     double HandOverMs() const { return m_decisionMs; }
     // ロックの絵が出る時刻。完了要求（または縮退）の前は NaN

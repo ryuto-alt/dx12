@@ -32,6 +32,7 @@ namespace Gdiplus { using std::min; using std::max; }
 #include "core/SplashGaugeRenderer.h"
 #include "core/SplashProgress.h"
 #include "core/SplashRenderer.h"
+#include "core/SplashSequencer.h"
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "dwmapi.lib")
@@ -50,6 +51,7 @@ struct G
     std::wstring title, version, logoPath, soundDir, projectName, sceneName, status;
     bool projectMode = false;
     bool playSound = false;                   // この表示で起動音を鳴らす
+    splash::SoundGate soundGate;              // 鳴らさない条件（Calibrate。デバイスを開く前に見る）
     bool isNew = false;
     std::vector<std::wstring> recents;
     sp::ProgressTracker tracker;
@@ -455,6 +457,16 @@ DWORD WINAPI SplashThread(LPVOID)
     sp::GaugeFastDriver gdrv;
     const bool gReduce = gauge && sp::ReduceMotionRequested();
     double gStart = -1.0;
+    sp::TimelineClock gClock;               // 絵の時計。音が動いていれば音の時計（音が主）、無い・止まったときは QPC
+    bool gAudioExpected = false;            // 起動音を始める（デバイスを開きに行く）予定
+    bool gAudioStarted = false;
+    bool gHandSent = false, gSkipSent = false;
+    auto startGaugeSound = [&]() {
+        if (!gauge || gAudioStarted) return;
+        gAudioStarted = true;
+        if (!gAudioExpected) return;
+        gAudioExpected = CalibrateSound::Start(g.soundGate, gReduce);
+    };
     bool gThrough = false;
     bool gMainLocked = false;   // 完了要求を観測し、かつロックの絵に達した（本体を出す・窓を入力透過にする条件）
     int gLastStep = -1;
@@ -494,8 +506,22 @@ DWORD WINAPI SplashThread(LPVOID)
 
     auto tickGauge = [&]() -> bool {
         const double wall = Now();
-        if (gStart < 0.0) gStart = wall;
-        const double tMs = (wall - gStart) * 1000.0;
+        const double wallMs = CalibrateSound::QpcMs();
+        if (gStart < 0.0)
+        {
+            gStart = wall;
+            gAudioExpected = g.playSound && !g.soundStopped.load();
+            gClock.Begin(wallMs, gAudioExpected);
+        }
+        // 絵の時刻 = 聞こえている音の時刻（音が主時計）。音のデバイスを開けなかった・止まったときは QPC で完走する
+        double audioMs = -1.0;
+        if (gAudioExpected && gAudioStarted)
+        {
+            double a = 0.0;
+            if (CalibrateSound::TimelineMs(wallMs, &a)) audioMs = a;
+            if (CalibrateSound::GetState() == CalibrateSound::State::Failed) gClock.ForceWall(wallMs);
+        }
+        const double tMs = gClock.Now(wallMs, audioMs);
         std::wstring status;
         double target = 0.0;
         int idx = 0, total = 0;
@@ -516,14 +542,27 @@ DWORD WINAPI SplashThread(LPVOID)
         bool lockedForMain = false;
         if (gReduce)
         {
-            const double finMs = finishReq ? std::max(0.0, (finishAt - gStart) * 1000.0) : std::nan("");
+            // 完了要求のタイムライン時刻 = いまの時刻 - 要求からの経過（Now() は秒。要求は Finish() が Now() で記録）
+            const double finMs = finishReq ? std::max(0.0, tMs - (Now() - finishAt) * 1000.0) : std::nan("");
             f = sp::EvaluateGauge(sp::GaugePath::Reduce, tMs, 0.f, ev, sp::GaugeExitStartMs(ev.pingMs, finMs));
             lockedForMain = finishReq;
+            if (g.skipReq.exchange(false)) CalibrateSound::Skip(std::max(tMs, CalibrateSound::RenderedMs()));   // Reduce Motion でも音はロック以降へ（絵は最初から静的）
         }
         else
         {
             gdrv.Update(tMs, static_cast<float>(target), finishReq);
-            if (g.skipReq.exchange(false)) gdrv.Skip(tMs);
+            if (gdrv.HandedOver() && !gHandSent) { gHandSent = true; CalibrateSound::HandOver(tMs); }   // 速い経路 → 遅い経路: full を落としてベッド + クリックへ
+            if (g.skipReq.exchange(false))
+            {
+                // 音は描き置き済みのぶんを書き換えられない。スキップの時刻は音が描き終えた時刻以降にして、絵も同じ時刻でロックへ飛ばす（音と絵が揃う）
+                gdrv.Skip(std::max(tMs, CalibrateSound::RenderedMs()));
+                if (gdrv.Skipped() && !gSkipSent) { gSkipSent = true; CalibrateSound::Skip(gdrv.SkipWallMs()); }
+            }
+            CalibrateSound::CancelCues(gdrv.TakeCancelledCueIds());
+            {
+                const std::vector<sp::GaugeCue> cues = gdrv.TakeCues();
+                if (!cues.empty()) CalibrateSound::AddCues(cues);
+            }
             f = gdrv.Frame(tMs);
             const double lockWall = gdrv.LockWallMs();
             // 完了要求の前にスキップしても、絵がロックするだけで「完了」の扱いにはしない（読み込みはまだ続いている）
@@ -564,6 +603,7 @@ DWORD WINAPI SplashThread(LPVOID)
         {
             if (!g.testNoShow.load()) ShowWindow(hwnd, SW_SHOWNORMAL);
             shown = true;
+            startGaugeSound();   // 1 枚目を載せてから鳴らす（音の時計が動き出すまで絵は t=0 で待つ）
         }
         // ロックの瞬間に本体を出す。以降、マウスとキーは本体へ届く（窓は入力を通し、前面は奪わない）
         if (gMainLocked && !gThrough && !g.testNoShow.load())
@@ -722,14 +762,19 @@ void ShowCommon(bool projectMode, const std::string& titleUtf8, const std::strin
             assets = std::filesystem::path(g.logoPath).parent_path().parent_path().parent_path();
         g.soundDir = assets.empty() ? std::wstring() : (assets / L"editor" / L"sounds").wstring() + L"\\";
         // 起動音: 起動のみ / 引数・環境変数・設定でオフ可 / デバイスは Start が黙って判定
-        bool on = !projectMode && g.soundOn.load() && !g.testNoShow.load();
-        if (on)
+        // 鳴らさない条件（設定オフ / --no-splash-sound / UNO_NO_SPLASH_SOUND / ヘッドレス・selftest / リモートデスクトップ）は SoundGate が持ち、
+        // どれか 1 つでも当てはまれば音声デバイスを開かない（W1-BD5）
+        splash::SoundGate gate;
+        gate.argOn = g.soundOn.load();
+        gate.headless = g.testNoShow.load() || g.suppressed.load();
+        gate.remoteSession = GetSystemMetrics(SM_REMOTESESSION) != 0;
         {
             wchar_t env[8] = {};
-            if (GetEnvironmentVariableW(L"UNO_NO_SPLASH_SOUND", env, 8) > 0 && env[0] != L'0') on = false;
+            gate.envOff = GetEnvironmentVariableW(L"UNO_NO_SPLASH_SOUND", env, 8) > 0 && env[0] != L'0';
         }
-        if (on && !ReadStartupSoundSetting()) on = false;
-        g.playSound = on;
+        gate.settingOn = ReadStartupSoundSetting();
+        g.soundGate = gate;
+        g.playSound = !projectMode && gate.Allowed();
         g.soundStopped.store(false);
         g.skipReq.store(false);
         g.curStage.store(-1);
@@ -761,6 +806,7 @@ void SplashScreen::StopSound()
 {
     S().soundStopped.store(true);
     SplashSound::Abort();
+    CalibrateSound::Abort();
 }
 
 void SplashScreen::SetTestNoShow(bool on) { S().testNoShow.store(on); }
@@ -929,6 +975,7 @@ void SplashScreen::Close()
 {
     G& g = S();
     SplashSound::Abort();
+    CalibrateSound::Abort();
     {
         std::lock_guard<std::mutex> lk(g.mu);
         g.finishCb = nullptr;

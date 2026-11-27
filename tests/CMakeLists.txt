@@ -901,6 +901,16 @@ if(TARGET Core)
     add_test(NAME SplashGaugeRendererTests COMMAND SplashGaugeRendererTests ${DX12_REPO_ROOT})
     set_tests_properties(SplashGaugeRendererTests PROPERTIES TIMEOUT 300)
 endif()
+# 起動音 Calibrate の音を主時計にする純ロジック（W1-BD5。core/SplashSequencer.h）: 速い経路のビット一致・遅い経路 6 シナリオ・スキップ・
+# ステムの再構築・時計の換算（モック）・鳴らさない条件。音デバイスは開かない。ヘッダオンリー・GPU 不要。
+add_executable(SplashSequencerTests splash_sequencer_test.cpp)
+target_include_directories(SplashSequencerTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+if(MSVC)
+    target_compile_options(SplashSequencerTests PRIVATE ${DX12_COMPILE_OPTIONS})
+    target_compile_definitions(SplashSequencerTests PRIVATE ${DX12_COMPILE_DEFS})
+endif()
+add_test(NAME SplashSequencerTests COMMAND SplashSequencerTests ${DX12_REPO_ROOT})
+set_tests_properties(SplashSequencerTests PROPERTIES TIMEOUT 300)
 # ==== lane-B end ====
 
 # .dxmat(マテリアルアセット)JSON往復テスト。Resource(GPU非依存の純ロジック部分のみ使用)をリンクするため、
